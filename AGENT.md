@@ -8,17 +8,17 @@ Owner: Rhett (primary). Delegates: Agent-2 (see `AGENT-2.md`), Agent-3 (see `AGE
 
 ## Progress — last update 2026-04-18 (evening, post-P2.5)
 
-**Overall: 45 / 53 rows closed (85%) | SWRC ~86%**
+**Overall: 46 / 53 rows closed (87%) | SWRC ~87%**
 
 | Tier | Closed / Total | % | Open rows |
 |---|---|---|---|
 | **CRITICAL** | 7 / 9 | **78%** | P2.1, P2.2 |
 | **HIGH** | 18 / 22 | **82%** | P1.6, P1.7, P1.16, P4.1, P4.2 |
-| **MED** | 14 / 16 | **88%** | P5.5, P5.6 |
+| **MED** | 15 / 16 | **94%** | P5.5 |
 | **LOW** | 2 / 2 | **100%** | — |
 | (P0 baseline) | 4 / 4 | **100%** | — |
 
-**Open by owner (evening 2026-04-18 after P2.5 + P2.6 + P5.2 landed):** Rhett 6 (P1.6, P1.7, P2.1, P2.2, P4.1, P4.2, P5.5, P5.6 — consensus + script + vendor pile) · Agent-2 0 (queue empty — pinging Rhett) · Agent-3 1 (P1.16 in flight; prf.c nullifier still queued NEXT)
+**Open by owner (2026-04-18 late-evening after P5.6 landed):** Rhett 7 (P1.6, P1.7, P2.1, P2.2, P4.1, P4.2, P5.5 — consensus + script + vendor tor) · Agent-2 0 (queue empty — pinging Rhett; only open MED is P5.5 tor submodule pin, which requires .onion bootstrap smoke-testing in Rhett's lane) · Agent-3 1 (P1.16 in flight; prf.c nullifier still queued NEXT)
 
 **Top remaining risks:** the two open CRITs (P2.1 mempool tx accept, P2.2 stack overflow in msg handler) remain in Rhett's net-lane. P1.6 + P1.7 are the last two HIGHs blocking the consensus tier. Once P1.16 lands, the secret-RNG fail-open is fully closed — no more crypto CRITs in flight.
 
@@ -126,7 +126,7 @@ regression test locks the gates in place.
 | P5.3 | Hardcoded `/home/rhett` in `tools/export_snapshot.c:15`, `tools/zcl-nodectl.c:628-637` | HIGH | Agent 2 — done 09e4fb15a (shared $HOME helper in lib/util/include/util/rpc_paths.h; also swept test_phgr13_fix.c sprout-VK path + two README absolute-path links; new test_no_hardcoded_home regression test scans every deployed binary for the literal and exercises the helper with alt/NULL HOME) |
 | P5.4 | 10 shell scripts in `tools/` duplicating MCP — purge | MED | Agent 2 — done 0f33d3fc1 (audit found 1/8 actual MCP-duplicates: verify_restart_follow.sh ⇒ zcl-nodectl verify-follow; the other seven are build-time or multi-node orchestration with no MCP equivalent — per-script rationale in "Notes from Agent-2" in AGENT-2.md) |
 | P5.5 | `vendor/tor` submodule ahead of pinned commit | MED | Rhett |
-| P5.6 | Vendored `sqlite3.h` is 3.49.0 — newer CVE-class fixes unpicked | MED | Agent 2 — NOW (narrow scope: vendor/include/sqlite3.h + vendor/sqlite/ amalgamation; pin to current 3.x, run full ./test_zcl after) |
+| P5.6 | Vendored `sqlite3.h` is 3.49.0 — newer CVE-class fixes unpicked | MED | Agent 2 — done 30e6fbc2e (pinned to 3.53.0 — latest stable as of 2026-04-09; picks up 3.49.1 concat_ws buffer overrun, 3.49.2 NOT NULL memory error, 3.50.3 CREATE TRIGGER parser memory-safety regression from 3.49.0, 3.50.4 uninit-var reads, 3.51.0 POSIX-advisory-lock-abuse corruption detection, 3.51.3 + 3.53.0 WAL-reset corruption bug; header surface additive-only — new error codes, de-experimentalized snapshot_\* family, new carray_bind_v2 / db_status64 / str_free / str_truncate / set_errmsg / setlk_timeout / changeset apply_v3 entry points; on-disk format unchanged; archive rebuilt from sqlite.org amalgamation with SHA3-256 c2325c53 verified, stock defaults matching the prior archive's embedded compile-options table; full test_zcl passes 2516/2516 through every sqlite-backed group before the pre-existing test_block_pruning hang) |
 | P5.7 | Repo-root clutter: 40+ .md, `node.db` untracked at repo root | LOW | Agent 2 — done 611ae4281 + e7528c4f0 + 8902f9ae7 + d106192a4 (root-level .md cut 41→18; WAVE_6-12, AGENT2/3-era task docs, BOOT/REVIEW/CHECKLIST/MEMORY moved to docs/archive/; speedrun + zclassic23-asan binaries untracked) |
 
 ---

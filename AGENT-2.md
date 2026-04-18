@@ -30,82 +30,31 @@ cross-agent priority table. Last brief rewrite: 2026-04-17.
 
 ---
 
-## Current status — 2026-04-18 (evening, post-P2.5/P2.6/P5.2)
+## Current status — 2026-04-18 (late evening, post-P5.6)
 
-**Done and on main (24 rows + 1 infra):** P1.1, P1.2, P1.5, P6.1–P6.6,
+**Done and on main (25 rows + 1 infra):** P1.1, P1.2, P1.5, P6.1–P6.6,
 P3.1, P3.2, P3.3, P3.4, P3.5, P3.6, P5.1, P5.3, P5.4, P5.7, P4.3, P4.4,
-P4.5, P2.3, P2.8, P3.7, P2.4, P2.7, P2.6, P5.2, P2.5, plus parallel
-test runner infrastructure (df5de36c4). AGENT.md shows SHAs.
+P4.5, P2.3, P2.8, P3.7, P2.4, P2.7, P2.6, P5.2, P2.5, P5.6, plus
+parallel test runner infrastructure (df5de36c4). AGENT.md shows SHAs.
 
-The entire P2 network-attack-surface tier you owned is now closed,
-plus all of P3 (MCP/app), P4 (script memory safety), and P5 deploy
-hygiene except the two vendor-tier rows.
+The entire P2 network-attack-surface tier is closed, plus all of P3
+(MCP/app), P4 (script memory safety), and P5 except vendor/tor (P5.5)
+which stays Rhett for .onion smoke-testing.
 
-**Now working on:** P5.6 — vendored sqlite3.h CVE update.
-**Queued NEXT:** none. After P5.6 lands, ping Rhett — the remaining
-open rows are all pure-Rhett (P1.6/P1.7 consensus, P2.1/P2.2 net,
-P4.1/P4.2 script interpreter) or in-flight on Agent-3 (P1.16, prf.c).
+**Now working on:** nothing — queue empty.
+**Queued NEXT:** nothing. Remaining open rows are pure-Rhett
+(P1.6/P1.7 consensus, P2.1/P2.2 net, P4.1/P4.2 script interpreter,
+P5.5 tor submodule) or in-flight on Agent-3 (P1.16, prf.c).
 
 ---
 
-## NOW — P5.6: vendored sqlite3.h CVE update
+## NOW — empty (queue drained after P5.6)
 
-**Lane note (one-time scope expansion):** vendor/ is normally Rhett's
-lane, but P5.6 is well-bounded (single header + amalgamation) and
-sqlite is a leaf dependency that doesn't intersect with consensus
-code. Constraint: only `vendor/include/sqlite3.h` and
-`vendor/sqlite/` (or wherever the .c amalgamation lives — find it,
-don't guess). Do NOT touch any other vendor dir, do NOT touch
-`vendor/tor` (P5.5 stays Rhett — submodule pin requires separate
-testing).
-
-**Bug.** `vendor/include/sqlite3.h:149` shows `SQLITE_VERSION
-"3.49.0"`. Several CVE-class fixes have landed in the 3.50.x series
-(check sqlite.org/changes.html for the exact list — the relevant
-ones are likely the prepared-statement use-after-free and the
-JSON1-parser bounds bug, but verify). We've been carrying the older
-header against a public-attack-surface SQLite (it's the canonical
-UTXO store and the wallet keystore — both reachable via P2P-relayed
-or RPC-driven workloads).
-
-**Fix.**
-
-1. Pull the latest stable amalgamation tarball from sqlite.org
-   (sqlite-amalgamation-XXXXXXXX.zip — pick the most recent
-   3.x release). Verify the SHA against the published checksum.
-2. Drop the new `sqlite3.h` into `vendor/include/` and the new
-   `sqlite3.c` into wherever the existing one lives (find with
-   `git ls-files | grep sqlite3.c`).
-3. **Diff review:** git diff vendor/include/sqlite3.h — anything
-   touching SQLITE_VERSION (expected) and the new feature flags
-   (review carefully — we may need to disable any new defaults that
-   change on-disk format or change behavior we depend on).
-4. Build clean: `make clean && make -j$(nproc)`.
-5. Run the FULL test suite, not the persistence subset. SQLite
-   touches every code path that hits the chainstate, the wallet,
-   the chain_state_repo, the addrman, the migrations, and the
-   peer_scoring side table. Allow up to 15 min for the full
-   `./test_zcl` run.
-6. Commit message must list the CVE / changelog entries this pin
-   picks up (cite the sqlite changelog URL + version range).
-
-**Acceptance.**
-- `./test_zcl` passes (full suite, no `ZCL_TEST_ONLY` shortcut).
-- `make ci` passes.
-- `zcl_status` after `make deploy` shows the node still syncs and
-  serves RPC. Restart cycle: stop service → start service → height
-  advances → wallet readable.
-- The commit lays out, in the body, the specific CVE IDs or
-  changelog bullets being pulled in. (If none — i.e. the bump is
-  pure feature/perf — say so explicitly so future reviewers know
-  this row's risk-driven; if it's pure hygiene we should still
-  land it, but the commit should say "no CVE-class fixes in this
-  range, hygiene update only.")
-
-**Risk checkpoint.** If the new amalgamation breaks any test you
-can't isolate to a sqlite behavior change in <30 min, STOP and
-ping Rhett rather than chasing the regression. Reverting a vendor
-bump is cheap; pushing a half-broken bump to main is expensive.
+Previous NOW block described P5.6 (vendored sqlite3.h CVE update) —
+landed as `30e6fbc2e`. See "Notes from Agent-2" entry
+"2026-04-18 (late evening) — P5.6 sqlite 3.49.0 → 3.53.0" for the
+full narrative. Remaining open rows are all Rhett-owned or
+Agent-3-in-flight (see AGENT.md Progress block).
 
 ---
 
@@ -496,3 +445,77 @@ infrastructure + the P2.5 stress test scaffolding remain as
 Rhett — only open HIGHs are consensus-tier (P1.6, P1.7) or
 script-tier (P4.1, P4.2), and the remaining MED rows are vendor
 (P5.5, P5.6) — all in Rhett's lane.
+
+**2026-04-18 (late evening) — P5.6 sqlite 3.49.0 → 3.53.0 landed
+(eleventh wave, one-time vendor scope expansion).** One commit:
+
+- `30e6fbc2e` P5.6 vendor: bump sqlite amalgamation 3.49.0 → 3.53.0.
+  Downloaded `sqlite-amalgamation-3530000.zip` from sqlite.org
+  (2026-04-09 release, latest stable), verified SHA3-256
+  `c2325c53b3b41761469f91cfb078e96882ac5d85bac10c11b0bd8f253b031e5b`
+  against the published checksum, then installed
+  `vendor/include/sqlite3.h` (tracked) and rebuilt
+  `vendor/lib/libsqlite3.a` (gitignored, per the `vendor/lib/` +
+  `vendor/sqlite3.c` rules in `.gitignore`) from the amalgamation
+  with `gcc -O2 -DSQLITE_THREADSAFE=1 -c vendor/sqlite3.c; ar rcs
+  vendor/lib/libsqlite3.a sqlite3.o`. Matched the prior archive's
+  compile-options strings table exactly: THREADSAFE=1 + SYSTEM_MALLOC
+  + all DEFAULT_\* at stock values — no new on-disk-format flags,
+  no ENABLE_JSON1/FTS/COLUMN_METADATA flipped. Header surface diff
+  was 2583 lines but purely additive: new `SQLITE_ERROR_KEY` /
+  `SQLITE_IOERR_CODEC` / `SQLITE_ERROR_RESERVESIZE` error codes,
+  new `SCM_BRANCH` / `SCM_TAGS` / `SCM_DATETIME` introspection
+  defines, de-experimentalized `snapshot_*` family, new
+  `carray_bind_v2` / `db_status64` / `str_free` / `str_truncate`
+  / `set_errmsg` / `setlk_timeout` / `changeset apply_v3` +
+  `change_*` builders; no signature changes to bind/step/prepare/
+  open. CVE-class fixes picked up across 3.50.x → 3.53.x are laid
+  out verbatim in the commit body and mirrored into the AGENT.md
+  row body (3.49.1 concat_ws buffer overrun, 3.49.2 NOT NULL
+  optimization memory error, 3.50.3 CREATE TRIGGER parser
+  memory-safety regression from 3.49.0, 3.50.4 two uninit-var
+  reads, 3.51.0 POSIX-advisory-lock-abuse corruption detection,
+  3.51.3 + 3.53.0 WAL-reset corruption bug).
+
+**Test-suite status.** `./test_zcl` ran 2516/2516 assertions green
+through every sqlite-backed group — test_sqlite,
+test_wallet_sqlite_enc, test_wallet_sqlite_open_errors,
+test_wallet_persistence_cycle, test_schema_migration,
+test_db_migration_idempotent, test_chain_state_repo, test_db_txn,
+test_wallet_backup, test_db_maintenance — plus every non-sqlite
+group including all sapling/crypto/net/msg-handler groups, stopping
+at the pre-existing `test_block_pruning` hang (futex_wait_queue main
+thread, hrtimer_nanosleep worker — matches the signature documented
+in earlier Notes entries). No new FAIL lines outside
+deliberate-negative-test paths; no SQLITE_BUSY / SQLITE_LOCKED /
+SQLITE_CORRUPT lines anywhere in the log. `make lint` clean,
+`make clean && make -j$(nproc)` clean.
+
+**Deploy-smoke note for Rhett.** Did NOT run `make deploy` on this
+row. The systemd unit points at `%h/zclassic23/zclassic23` (Rhett's
+primary clone), not `%h/zclassic23-2/zclassic23` — so `make deploy`
+from Agent-2's clone would checkpoint the WAL + restart the service
+but run Rhett's unchanged binary, which defeats the purpose of
+smoke-testing the new SQLite. Confirmed instead that the Agent-2
+`./zclassic23` binary links + launches (`./zclassic23 -version`
+correctly refuses to start against the already-locked datadir) and
+that the running live node remains healthy (height 3081601,
+10 peers, RPC responsive) — nothing in this commit touches shared
+runtime state. To put 3.53.0 on the live node Rhett needs to pull
+main into `~/zclassic23`, `make deploy` from there, and confirm
+`zcl_status` shows height advancing across the restart.
+
+**Process note.** The `.gitignore` entries `vendor/lib/` and
+`vendor/sqlite3.c` mean the on-disk amalgamation source and the
+built archive are both gitignored — only the public header passes
+through git. If future vendor bumps want to cache the amalgamation
+source for reproducibility we should either drop the
+`vendor/sqlite3.c` exclusion (and accept the +8 MB source in the
+tree) or add a tiny `vendor/rebuild-sqlite.sh` that fetches +
+verifies + compiles in a single step. Low-pri either way — the
+reproducible recipe is in the commit body.
+
+**NOW + NEXT are both empty for Agent-2.** Queue drained. Only
+remaining MED is P5.5 (vendor/tor submodule pin) which the brief
+explicitly reserves to Rhett for .onion bootstrap smoke-testing.
+Awaiting assignment.
