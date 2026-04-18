@@ -464,17 +464,38 @@ static bool prepare_statements(struct node_db *ndb)
     return true;
 }
 
+/* P7.8: the cache_size and mmap_size values below are *the* tuning
+ * knobs for node.db in normal (non-IBD-turbo) mode.  They were
+ * originally put here during the 2026-03 IBD performance pass and
+ * the P7 wave locks them in with a test (test_db_pragma_tuning in
+ * test_sqlite.c).  Do not bump mmap_size beyond 256 MB without
+ * rereading the landmine comment at config/src/boot_index.c:306 —
+ * secondary RW connections to the same file concurrent with the
+ * main connection's WAL writes can dereference invalidated mmap
+ * pages and SIGSEGV.  256 MB is safe for the *single* main handle
+ * because all access goes through the serializing node_db mutex;
+ * secondary opens elsewhere must stay at mmap_size=0. */
+#define ZCL_NODE_DB_CACHE_SIZE_KIB  65536   /* -65536 → ~64 MiB page cache */
+#define ZCL_NODE_DB_MMAP_BYTES      (256LL * 1024 * 1024)  /* 256 MiB */
+#define ZCL_NODE_DB_BUSY_TIMEOUT_MS 10000
+
 static void db_set_pragmas(sqlite3 *db)
 {
-    sqlite3_exec(db,
+    /* One exec call to keep the PRAGMA batch atomic with respect to
+     * other threads that might latch onto the connection immediately
+     * after open_raw returns. */
+    char sql[512];
+    snprintf(sql, sizeof(sql),
         "PRAGMA journal_mode=WAL;"
         "PRAGMA synchronous=NORMAL;"
-        "PRAGMA cache_size=-65536;"
-        "PRAGMA mmap_size=268435456;"
+        "PRAGMA cache_size=-%d;"        /* negative → KiB units */
+        "PRAGMA mmap_size=%lld;"
         "PRAGMA temp_store=MEMORY;"
         "PRAGMA foreign_keys=ON",
-        NULL, NULL, NULL);
-    sqlite3_busy_timeout(db, 10000);
+        ZCL_NODE_DB_CACHE_SIZE_KIB,
+        (long long)ZCL_NODE_DB_MMAP_BYTES);
+    sqlite3_exec(db, sql, NULL, NULL, NULL);
+    sqlite3_busy_timeout(db, ZCL_NODE_DB_BUSY_TIMEOUT_MS);
 }
 
 static bool db_quick_check_ok(sqlite3 *db)

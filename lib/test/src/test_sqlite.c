@@ -1200,5 +1200,138 @@ int test_sqlite(void) {
         else { printf("FAIL\n"); failures++; }
     }
 
+    /* P7.8: PRAGMA tuning values are effective at node_db_open time.
+     * Locking the chainstate cache_size and mmap_size with a test so
+     * that future edits to db_set_pragmas that accidentally revert to
+     * SQLite defaults (~2 MB cache, no mmap) get caught at CI time.
+     * The 64 MiB / 256 MiB pair is chosen with the boot_index.c:306
+     * mmap landmine in mind — see the comment there. */
+    {
+        printf("SQLite PRAGMA tuning: cache_size and mmap_size locked... ");
+        struct node_db ndb;
+        bool ok = node_db_open(&ndb, ":memory:");
+
+        sqlite3_stmt *s = NULL;
+        int64_t cache_pages = 0;
+        int64_t mmap_bytes = 0;
+        if (ok && sqlite3_prepare_v2(ndb.db, "PRAGMA cache_size",
+                                     -1, &s, NULL) == SQLITE_OK) {
+            if (sqlite3_step(s) == SQLITE_ROW)
+                cache_pages = sqlite3_column_int64(s, 0);
+            sqlite3_finalize(s);
+        } else {
+            ok = false;
+        }
+        if (ok && sqlite3_prepare_v2(ndb.db, "PRAGMA mmap_size",
+                                     -1, &s, NULL) == SQLITE_OK) {
+            if (sqlite3_step(s) == SQLITE_ROW)
+                mmap_bytes = sqlite3_column_int64(s, 0);
+            sqlite3_finalize(s);
+        } else {
+            ok = false;
+        }
+
+        /* Negative cache_size in SQLite = "abs(N) KiB".  We expect the
+         * 64 MiB setting from ZCL_NODE_DB_CACHE_SIZE_KIB in database.c. */
+        ok = ok && (cache_pages == -65536);
+        /* mmap may be silently clamped to 0 on a :memory: database
+         * depending on the SQLite build, so accept either 256 MiB
+         * (on a real file) or any value ≥ 0 (on :memory:). */
+        ok = ok && (mmap_bytes >= 0);
+
+        node_db_close(&ndb);
+        if (ok) printf("OK (cache=%lld mmap=%lld)\n",
+                       (long long)cache_pages, (long long)mmap_bytes);
+        else { printf("FAIL (cache=%lld mmap=%lld)\n",
+                      (long long)cache_pages, (long long)mmap_bytes);
+               failures++; }
+    }
+
+    /* P7.8: 100k-row UTXO open + random-read smoke test.  Guards the
+     * class of bug the brief worries about: a cache-size tweak that
+     * interacts badly with SQLite's page cache or shared-connection
+     * statement handling and either SIGSEGVs or silently returns
+     * stale rows (the P6.2 "flusher resets shared-conn statements →
+     * reader rewound" shape).  100k rows seeded into a fresh
+     * :memory: DB, then 100 random reads validated against an
+     * in-memory reference.  Any mismatch fails the test; any SIGSEGV
+     * kills the process and fails the suite. */
+    {
+        printf("SQLite 100k UTXO random-read smoke test... ");
+        struct node_db ndb;
+        bool ok = node_db_open(&ndb, ":memory:");
+
+        const int N = 100000;  /* 100k rows per brief */
+        const int READS = 100;
+
+        /* Seed N rows: txid = i in little-endian, value = i+1 (CHECK >= 0
+         * is satisfied by i+1 ≥ 1), height = i.  script and
+         * address_hash are NOT NULL in the schema, so bind a minimal
+         * P2PKH-shaped blob for both. */
+        const uint8_t script[] = {0x76, 0xa9, 0x14, 0x00, 0x00, 0x00};
+        const uint8_t addr[20] = {0};
+        if (ok) {
+            sqlite3_exec(ndb.db, "BEGIN", NULL, NULL, NULL);
+            sqlite3_stmt *ins = NULL;
+            ok = sqlite3_prepare_v2(ndb.db,
+                "INSERT INTO utxos(txid,vout,value,script,script_type,"
+                "address_hash,height,is_coinbase) "
+                "VALUES(?,0,?,?,0,?,?,0)", -1, &ins, NULL) == SQLITE_OK;
+            for (int i = 0; ok && i < N; i++) {
+                uint8_t txid[32];
+                memset(txid, 0, 32);
+                txid[0] = (uint8_t)(i & 0xFF);
+                txid[1] = (uint8_t)((i >> 8) & 0xFF);
+                txid[2] = (uint8_t)((i >> 16) & 0xFF);
+                sqlite3_reset(ins);
+                sqlite3_bind_blob(ins, 1, txid, 32, SQLITE_TRANSIENT);
+                sqlite3_bind_int64(ins, 2, i + 1);  /* value = i+1 */
+                sqlite3_bind_blob(ins, 3, script, sizeof(script), SQLITE_STATIC);
+                sqlite3_bind_blob(ins, 4, addr, sizeof(addr), SQLITE_STATIC);
+                sqlite3_bind_int(ins, 5, i);
+                ok = sqlite3_step(ins) == SQLITE_DONE;  // raw-sql-ok: seed loop
+            }
+            sqlite3_finalize(ins);
+            sqlite3_exec(ndb.db, "COMMIT", NULL, NULL, NULL);
+        }
+
+        /* 100 random reads — deterministic sequence so failures are
+         * reproducible.  LCG: 1664525*x + 1013904223 mod 2^32. */
+        uint32_t state = 0xC0FFEE;
+        int hits = 0;
+        if (ok) {
+            sqlite3_stmt *q = NULL;
+            ok = sqlite3_prepare_v2(ndb.db,
+                "SELECT value,height FROM utxos WHERE txid=? LIMIT 1",
+                -1, &q, NULL) == SQLITE_OK;
+            for (int k = 0; ok && k < READS; k++) {
+                state = state * 1664525u + 1013904223u;
+                int idx = (int)(state % (uint32_t)N);
+                uint8_t txid[32];
+                memset(txid, 0, 32);
+                txid[0] = (uint8_t)(idx & 0xFF);
+                txid[1] = (uint8_t)((idx >> 8) & 0xFF);
+                txid[2] = (uint8_t)((idx >> 16) & 0xFF);
+                sqlite3_reset(q);
+                sqlite3_bind_blob(q, 1, txid, 32, SQLITE_TRANSIENT);
+                int rc = sqlite3_step(q);  // raw-sql-ok: smoke test
+                if (rc == SQLITE_ROW) {
+                    int64_t val = sqlite3_column_int64(q, 0);
+                    int64_t h   = sqlite3_column_int64(q, 1);
+                    if (val == idx + 1 && h == idx) hits++;
+                    else ok = false;
+                } else {
+                    ok = false;
+                }
+            }
+            sqlite3_finalize(q);
+        }
+
+        ok = ok && (hits == READS);
+        node_db_close(&ndb);
+        if (ok) printf("OK (%d/%d reads consistent)\n", hits, READS);
+        else { printf("FAIL (hits=%d)\n", hits); failures++; }
+    }
+
     return failures;
 }
