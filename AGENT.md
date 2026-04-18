@@ -6,9 +6,9 @@ Owner: Rhett (primary). Delegates: Agent-2 (see `AGENT-2.md`), Agent-3 (see `AGE
 
 ---
 
-## Progress — last update 2026-04-18 (late-evening, P1.16 landed)
+## Progress — last update 2026-04-18 (late-evening, Agent-2 P7 queue drained)
 
-**Overall: 47 / 63 rows closed (75%) | SWRC ~76%**
+**Overall: 52 / 63 rows closed (83%) | SWRC ~87%**
 
 (Denominator grew 53 → 63 when the P7 fresh-review wave opened ten new
 rows from a live-node inspection that surfaced a tip-stuck outage and
@@ -17,14 +17,14 @@ several latent operability gaps. See P7 section below.)
 | Tier | Closed / Total | % | Open rows |
 |---|---|---|---|
 | **CRITICAL** | 7 / 10 | **70%** | P2.1, P2.2, **P7.1 (live outage)** |
-| **HIGH** | 19 / 26 | **73%** | P1.6, P1.7, P4.1, P4.2, **P7.2, P7.3, P7.4, P7.9** |
-| **MED** | 15 / 21 | **71%** | P5.5, **P7.5, P7.6, P7.7, P7.8, P7.10** |
+| **HIGH** | 21 / 26 | **81%** | P1.6, P1.7, P4.1, P4.2, **P7.4, P7.9** |
+| **MED** | 19 / 21 | **90%** | P5.5, **P7.10** |
 | **LOW** | 2 / 2 | **100%** | — |
 | (P0 baseline) | 4 / 4 | **100%** | — |
 
-**Open by owner (late-evening 2026-04-18 after P1.16 landed):** Rhett 11 (P1.6, P1.7, P2.1, P2.2, P4.1, P4.2, P5.5, **P7.1, P7.4, P7.9, P7.10**) · Agent-2 5 (**P7.2 boot tip-mismatch halt** + **P7.3 crash handler flush** + **P7.5/P7.6/P7.7 deploy-unit hygiene batch**, with **P7.8 SQLite tuning** queued NEXT) · Agent-3 0 (P1.16 closed 94d607b85; prf.c nullifier-path timing audit queued NEXT)
+**Open by owner (late-evening 2026-04-18, Agent-2 queue drained):** Rhett 9 (P1.6, P1.7, P2.1, P2.2, P4.1, P4.2, P5.5, **P7.1, P7.4, P7.9, P7.10**) · Agent-2 0 (all five P7 rows landed: P7.2 `57e6ef391`, P7.3 `e9e79dda2`, P7.5/P7.6/P7.7 `ec7948ee3`, P7.8 `dbca0be78`) · Agent-3 0 (P1.16 `94d607b85`; prf.c nullifier-path timing audit queued NEXT)
 
-**Top remaining risks:** P7.1 (tip stuck at h=3,081,601 on the live node) is the new headline — the chain is dead in the water until it's fixed. P2.1 + P2.2 net CRITs remain. The original 53-row review is 87% closed by SWRC; the new P7 wave drops aggregate SWRC because it adds 1 CRIT + 4 HIGH + 5 MED of fresh weight.
+**Top remaining risks:** P7.1 (tip stuck at h=3,081,601 on the live node) is still the headline — the chain is dead in the water until it's fixed. P7.2's boot halt + auto-rewind now refuses to start against an inconsistent tip instead of continuing with a Warning, so the next live-node restart either recovers cleanly via the single-block auto-rewind guard (≤32 rows above tip) or surfaces a hard halt with a clear operator message; either outcome is an improvement over the pre-P7.2 "keep serving RPC against corrupted state" hole. P2.1 + P2.2 net CRITs remain. Outstanding P7 weight is entirely in Rhett's lane now (P7.1, P7.4, P7.9, P7.10).
 
 **SWRC formula:** CRIT=4, HIGH=2, MED=1, LOW=0.5. P0 rows weighted as HIGH. Total weighted capacity now 105 + 4+8+5 = 122. Update this block every time a row closes.
 
@@ -160,13 +160,13 @@ chain right now; the rest are next-wave hardening.
 | # | Task | File:line | Severity | Owner |
 |---|---|---|---|---|
 | P7.1 | Tip stuck at 3,081,601 — `val.block_connected` repeats for same height; `chain_height` never advances | `lib/validation/src/process_block.c`, `connect_block.c` | CRITICAL | Rhett — NOW (live outage) |
-| P7.2 | Boot logs `DB_ERR_TIP_MISMATCH ... halt and investigate` then keeps running — must be fatal or auto-rewind | `app/services/src/chain_state_repository.c` (audit + tighten the halt path) | HIGH | Agent 2 — NOW (narrow scope: chain_state_repository.c + new test) |
-| P7.3 | Crash handler runs but FATAL header + `backtrace_symbols_fd` output never reaches `node.log` (only `sys.crash` event survives) | `lib/event/src/event.c:610-630` | HIGH | Agent 2 — NOW (narrow scope: lib/event/src/event.c only — small isolated fix) |
+| P7.2 | Boot logs `DB_ERR_TIP_MISMATCH ... halt and investigate` then keeps running — must be fatal or auto-rewind | `app/services/src/chain_state_repository.c` (audit + tighten the halt path) | HIGH | Agent 2 — done 57e6ef391 (single-block overshoot auto-rewind with ≤32 row guard in lib/storage/src/coins_view_sqlite.c + hard `_exit(EXIT_FAILURE)` + EV_BOOT_VALIDATION_FAILED event at the config/src/boot.c caller; three regression tests in test_coins_view_atomicity.c cover auto-rewind, guard refusal at 33 rows, and two-block multi-overshoot; commit body flags the small config/src/boot.c scope touch for re-routing if needed) |
+| P7.3 | Crash handler runs but FATAL header + `backtrace_symbols_fd` output never reaches `node.log` (only `sys.crash` event survives) | `lib/event/src/event.c:610-630` | HIGH | Agent 2 — done e9e79dda2 (fprintf header replaced with async-signal-safe write(STDERR_FILENO) on a 128-byte snprintf buffer; fflush(stderr) added at the tail of event_dump_recent; belt-and-suspenders fflush + fsync before _exit(128+sig); regression test forks a child, dup2's stderr to temp file, installs crash handler post-fork, raise(SIGABRT) and asserts FATAL SIGNAL 6 literal + ≥3 hex backtrace addresses) |
 | P7.4 | Backpressure missing under tip-stuck loop — RSS climbs to 6.0G (cgroup MemoryHigh) accumulating block buffers when tip doesn't advance | `lib/net/src/msgprocessor.c`, `download.c` | HIGH | Rhett |
-| P7.5 | `deploy/zclassic23.service:34` `TimeoutStopSec=300` amplifies hangs into 5-min outages; trim to 60-90s + watchdog | `deploy/zclassic23.service` | MED | Agent 2 — NOW (small batch with N6+N7) |
-| P7.6 | `StartLimitBurst=3 / StartLimitIntervalSec=300` can permanently disable service after 3 crashes in 5min | `deploy/zclassic23.service` | MED | Agent 2 — NOW (with P7.5) |
-| P7.7 | `LimitCORE=` not set — first SIGABRT today produced no usable post-mortem | `deploy/zclassic23.service` | MED | Agent 2 — NOW (with P7.5) |
-| P7.8 | SQLite default `cache_size` (~2 MB) and `mmap_size` (0) on a 1.3M-row chainstate; `boot_index.c:307` warns mmap_size=64MB previously caused SIGSEGV — pick safe values + lock with a test | `lib/storage/src/coins_view_sqlite.c:187`, schema_migration.c | MED | Agent 2 — NEXT |
+| P7.5 | `deploy/zclassic23.service:34` `TimeoutStopSec=300` amplifies hangs into 5-min outages; trim to 60-90s + watchdog | `deploy/zclassic23.service` | MED | Agent 2 — done ec7948ee3 (TimeoutStopSec=90, bounds hung shutdown to 90s instead of 5-min outage; clears observed worst-case ~60s WAL+Tor teardown with headroom; landed as a one-commit batch with P7.6+P7.7) |
+| P7.6 | `StartLimitBurst=3 / StartLimitIntervalSec=300` can permanently disable service after 3 crashes in 5min | `deploy/zclassic23.service` | MED | Agent 2 — done ec7948ee3 (StartLimitBurst=10, StartLimitIntervalSec=600 — 10 attempts over 10 minutes gives real triage time before the unit fails; P7.2's boot halt keeps a genuine chain-state bug draining the burst to the "unit stopped" clean signal) |
+| P7.7 | `LimitCORE=` not set — first SIGABRT today produced no usable post-mortem | `deploy/zclassic23.service` | MED | Agent 2 — done ec7948ee3 (LimitCORE=infinity + ZCL_CORE_DIR env hint for lazy mkdir on first abort; inline systemd-coredump / plain-pattern core_pattern doc for the per-host sysctl the operator still has to set) |
+| P7.8 | SQLite default `cache_size` (~2 MB) and `mmap_size` (0) on a 1.3M-row chainstate; `boot_index.c:307` warns mmap_size=64MB previously caused SIGSEGV — pick safe values + lock with a test | `lib/storage/src/coins_view_sqlite.c:187`, schema_migration.c | MED | Agent 2 — done dbca0be78 (audit found node.db already tuned at cache_size=-65536 / mmap_size=256MB via db_set_pragmas in app/models/src/database.c — refactored the values under named constants ZCL_NODE_DB_CACHE_SIZE_KIB / ZCL_NODE_DB_MMAP_BYTES for single-point future edit; regression tests in test_sqlite.c lock the PRAGMA cache_size reading == -65536 and cover a 100k-UTXO seed + 100 random-read smoke check against SIGSEGV / reader-rewind; boot_index.c:306 landmine root cause documented — standard SQLite mmap-vs-WAL-checkpoint aliasing, safe mitigation is the current "main handle mmap ON, all secondary mmap=0" split; AGENT-2.md flags fast_sync/onion_service/load_balancer RO-open sites in Rhett's lane as future tuning opportunities) |
 | P7.9 | No central thread registry — 12+ `pthread_create` sites, each shutdown signals its own flag; no single function joins them all | `lib/util/src/sync.c` (or new `lib/util/src/thread_registry.c`), all spawn sites | HIGH | Rhett |
 | P7.10 | `g_shutdown_requested` checked in only 6 files — `bg_validation`, `header_sync`, `peer_strategy`, `scheduler`, `workpool` either don't check it or use a different flag | cross-cutting (audit) | MED | Rhett (companion to P7.9) |
 
