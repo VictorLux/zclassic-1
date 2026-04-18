@@ -30,173 +30,114 @@ cross-agent priority table. Last brief rewrite: 2026-04-17.
 
 ---
 
-## Current status — 2026-04-17
+## Current status — 2026-04-18
 
-**Done and on main:**
+**Done and on main (15 rows):** P1.1, P1.2, P1.5, P6.1–P6.6, P3.1, P3.2,
+P3.3, P3.4, P3.5, P3.6, P5.1, P5.3, P5.4, P5.7, P4.3, P4.4, P4.5.
 
-| Row | What | SHA |
-|---|---|---|
-| P1.1 | Wallet wrapper silent-error | 8608820e7 |
-| P1.2 | Flush commits partial state | 8608820e7 |
-| P1.5 | Raw sqlite3_step in UTXO batch writer | 152603fdc |
-| P6.1 | write_sapling_key UPDATE failure propagates | 8608820e7 |
-| P6.2 | Flusher reset scoped to own stmts | 152603fdc |
-| P6.3 | read_keys LOG_ERR on malformed rows | 8608820e7 |
-| P6.4 | Migration bookkeeping rc-checked | 767d9d3e7 |
-| P6.5 | Hot-path prepare hoisted to init | 8608820e7 |
-| P6.6 | coins_alloc OOM logged | dc60b7e7b |
-| P3.3 | ~115 raw sqlite3_step sites across 17 files | 2a59ac938 + 8 siblings |
-| **P3.1** | **MCP `zcl_send` JSON injection closed** | **b0134339b** |
-| **P3.2** | **MCP `zcl_sendtoaddress` JSON injection closed** | **b0134339b** |
-| **P3.4** | **store address checksum validation** | **64a4afffc** |
-| **P3.5** | **rpc_client realloc leak closed** | **f0e8d31d3** |
-| **P3.6** | **URL-decode + HMAC form token** | **efa211811** |
+Every row in your original brief plus the entire P3 group plus the
+narrow-P4 expansion plus full P5 hygiene wave is now closed. AGENT.md
+shows the SHAs.
 
-Every CRITICAL/HIGH row in your original lane is now closed. The full
-P3 group is done except P3.7 (stays with Rhett — `lib/rpc/` is
-off-limits for you).
-
-**Now working on:** P5 operator hygiene — see NOW below.
-**Queued:** narrow expansion into `lib/script/` / `lib/validation/` for
-three small P4 rows, plus an infrastructure contribution (parallel test
-runner). See NEXT.
+**Now working on:** narrow-scope expansion into the network and RPC
+lanes — see NOW below. Three small AGENT.md rows.
+**Queued:** parallel test runner (infrastructure). See NEXT.
 
 ---
 
-## NOW — P5 operator hygiene (pre-authorized)
+## NOW — narrow expansion into lib/net/ + lib/rpc/
 
-Do in order, smallest first. These were previously "queued"; now
-they're active.
-
-### P5.1 — remove tracked export_snapshot ELF (HIGH)
-
-The 1.1 MB `export_snapshot` binary is in git despite `.gitignore`. Fix:
-
-```bash
-git rm --cached export_snapshot
-```
-
-Verify `.gitignore` actually matches. One commit: `build: untrack
-export_snapshot ELF`.
-
-### P5.7 — repo-root clutter (LOW)
-
-Audit tracked `.md` at repo root against what's still relevant. Move
-superseded hardening docs to `docs/archive/`; delete anything confirmed
-unused. Add runtime artifacts (`node.db`, `*.log`) to `.gitignore`. One
-commit per logical group.
-
-### P5.3 — hardcoded `/home/rhett` paths (HIGH)
-
-Files: `tools/export_snapshot.c:15`, `tools/zcl-nodectl.c:628-637`,
-plus anywhere else `grep -rn "/home/rhett" tools/ app/ lib/ config/`
-finds. Replace with `getenv("HOME")` for runtime paths, `zcl_datadir()`
-for data paths, install-prefix default otherwise. Don't introduce new
-config; use what's already there.
-
-Add a regression test that exercises a non-`/home/rhett` `$HOME`.
-
-### P5.4 — purge shell scripts in `tools/*.sh` that MCP replaces (MED)
-
-For each `tools/*.sh`:
-
-1. Identify the MCP tool that replaces it (usually the naming matches:
-   `tools/zcl-balance.sh` → `zcl_balance`).
-2. If MCP covers the functionality: delete the script.  Commit message:
-   `tools: purge zcl-FOO.sh (superseded by MCP tool zcl_FOO)`.
-3. If functionality is missing from MCP: TODO comment, flag Rhett,
-   leave the script in place.
-
-Project rule: no standalone shell scripts — everything in the binary.
-See `feedback_no_external_tools.md` in Rhett's memory.
-
----
-
-## NEXT — narrow P4 expansion + parallel test runner (pre-authorized)
-
-Rhett is formally expanding your lane to cover three small, well-bounded
-P4 rows. All three have sharp specs, are ≤100 LoC each, and don't
-touch the interpreter core (which P4.1/P4.2 own — those stay Rhett).
+Three more bounded fixes. Each is in a single file, each has a sharp
+spec, each is the kind of work you've already proven you do well.
 
 **Expanded read/write scope for this wave:**
-- `lib/script/src/script.c` and `lib/script/include/script/script.h`
-  (P4.3 only)
-- `lib/script/src/sigencoding.c` (P4.5 only)
-- `lib/validation/src/connect_block.c` (P4.4 only)
+- `lib/net/src/fast_sync.c` (P2.3 only)
+- `lib/net/src/net.c` (P2.8 only)
+- `lib/rpc/src/httpserver.c` (P3.7 only)
 
-**Still off-limits:** `lib/script/src/interpreter.c`, all other
-`lib/validation/` files, `lib/consensus/`, `lib/net/`, `lib/rpc/`.
+**Still off-limits:** every other file in `lib/net/`, `lib/rpc/`,
+`lib/validation/`, `lib/consensus/`, `lib/script/` (except the two
+P4 files you already touched).
 
-### P4.3 — script_num_serialize outsize bounds check (MED)
+### P2.3 — fast_sync bypasses AR_BEGIN_SAVE (HIGH)
 
-File: `lib/script/include/script/script.h:239-258`
+File: `lib/net/src/fast_sync.c:480-526`
 
-**Bug.** `script_num_serialize(out, outsize, v)` writes up to 9 bytes
-(max `CScriptNum`) but doesn't check `outsize`. If a caller passes a
-short buffer, it's a heap overflow.
+**Bug.** The fast-sync chunk writer takes the same shortcut every other
+raw-step site did pre-P3.3 — calls `sqlite3_step()` directly, skipping
+the activerecord transaction wrapper. A partial chunk write under power
+loss / OOM kill leaves the chainstate in a half-imported state.
 
-**Fix.** Return 0 / false if `outsize < required`. Update every caller
-to handle the rejection (compile error tells you where they are). Add a
-test that passes `outsize = 1, v = INT64_MAX` and asserts rejection
-without writing past the buffer.
+**Fix.** Same migration pattern as P3.3 / P1.5: hoist the prepare into
+the init path, route stepping through `AR_BEGIN_SAVE` for writes /
+`AR_STEP_ROW_READONLY` for reads. If a step needs to remain raw for
+performance, document it with a `// raw-sql-ok: <reason>` annotation.
 
-### P4.4 — disconnect_block unbounded realloc on vin.prevout.n (MED)
+**Acceptance.** Add a test that simulates a mid-chunk SQLITE_IOERR and
+asserts the surrounding chunk transaction rolls back atomically.
 
-File: `lib/validation/src/connect_block.c:586-607`
+### P2.8 — no global byte budget on recv queue (MED)
 
-**Bug.** The realloc size is derived from an attacker-controlled
-`vin.prevout.n` without an upper bound. A block with a malformed
-transaction (n = 2³²−1) makes us attempt a ~128 GiB alloc during
-disconnect.
+File: `lib/net/src/net.c:104-115`
 
-**Fix.** Clamp `n` to the actual vout count of the prevout's funding
-transaction (known at this point). If `n >= funding_tx.vout_count`,
-reject the block as `bad-txns-inputs-invalid` with a LOG_FAIL. Add a
-test that constructs a block with out-of-range prevout.n and asserts
-rejection.
+**Bug.** The recv queue grows unbounded — a peer can fill our memory
+by sending data we haven't processed yet. Per-connection limits exist;
+a process-wide cap doesn't.
 
-### P4.5 — sigencoding strict-DER bound inconsistency vs Bitcoin (MED)
+**Fix.** Track total recv-queue bytes across all peers in an atomic
+counter incremented on enqueue / decremented on dequeue. Reject the
+TCP read (or stop reading from the socket — backpressure) when the
+total exceeds a configurable cap (`-maxrecvbuffertotal=N`, default
+e.g. 256 MiB). LOG_ERR with peer count + total bytes when the cap
+trips so operators can tune.
 
-File: `lib/script/src/sigencoding.c:11-56`
+**Acceptance.** Test that fills the budget from one synthetic peer
+and asserts the next read is refused / paused without crashing.
 
-**Bug.** Our strict-DER check has an off-by-one vs. the Bitcoin /
-upstream Zcash implementation — we reject signatures with length ==
-`r_len + s_len + 6` that they accept, or vice versa. Consensus risk.
+### P3.7 — `/metrics` open on TLS listener with no auth (MED)
 
-**Fix.** Compare our code against
-`vendor/sources/zcashd/src/script/interpreter.cpp` (if vendored) or
-the current upstream Bitcoin Core `IsValidSignatureEncoding`. Align
-the bounds exactly. Add a regression test vector from the Bitcoin
-test suite.
+File: `lib/rpc/src/httpserver.c:355-381`
 
-### Infrastructure — parallel test runner (no severity, high leverage)
+**Bug.** The Prometheus-style `/metrics` endpoint is registered on the
+public TLS listener with no auth gate. It exposes peer counts, tx
+volume, mempool size — all useful to a stalker / network adversary for
+fingerprinting.
 
-Rhett asked about this earlier. Current `test_zcl` is single-binary,
-single-threaded, and runs ~140 test groups in sequence. On a 32-core
-box we use ~3%. Tests take 8–15 minutes.
+**Fix.** Gate `/metrics` behind the same RPC cookie auth (or an explicit
+`-metrics-allowed-cidr=` option) the wallet RPCs already use. Look at
+how `getblockchaininfo` is registered and apply the same auth shim.
 
-Build a fork-parallel driver under `lib/test/src/test_parallel.c` that:
+**Acceptance.** Test that posts to `/metrics` without a cookie and
+asserts 401; with a valid cookie and asserts 200 + Prometheus body.
 
-1. Enumerates the test-group symbols (same list as `test.c:38-194`).
-2. `fork()`s one child per group, capped at `nproc` workers.
-3. Each child redirects stdout / stderr to a temp file, runs its group,
+---
+
+## NEXT — parallel test runner (infra, pull up if NOW closes quickly)
+
+`test_zcl` is single-binary, single-threaded, runs ~140 test groups in
+sequence. On a 32-core box we use ~3%. Tests take 8–15 minutes per
+iteration — biggest productivity drag in the project right now.
+
+Build a fork-parallel driver under `lib/test/src/test_parallel.c`:
+
+1. Enumerate the test-group symbols (same list as `test.c:38-194`).
+2. `fork()` one child per group, capped at `nproc` workers.
+3. Child redirects stdout / stderr to a temp file, runs its group,
    exits with 0 / 1.
-4. Parent waits on all children, collects pass/fail, prints the union
+4. Parent waits on all children, collects pass/fail, prints union
    output in group order, returns 1 if any failed.
-5. Skip forking for groups that call `ecc_start()` / `ecc_verify_init()`
-   — those either need to be moved into each group's setup, or the
-   driver forks a fresh process per group (cleaner but slightly slower
-   — acceptable).
+5. Groups that call `ecc_start()` / `ecc_verify_init()` either need
+   their setup hoisted, or the driver forks a fresh process per group
+   (cleaner but slightly slower — acceptable).
 
-Ship as a new `make test-parallel` target. Keep the sequential
-`./test_zcl` working as-is — the parallel runner is additive.
+Ship as a new `make test-parallel` target. Keep sequential `./test_zcl`
+unchanged — the parallel runner is additive.
 
 **Acceptance.** On a 32-core box, `make test-parallel` should be ≥10×
 faster than `./test_zcl` with the same pass/fail outcome.
 
-This is pure infrastructure — touches only `lib/test/`, the Makefile,
-and a new `main()` in `test_parallel.c`. No consensus, no wallet, no
-crypto.
+Pure infrastructure — touches only `lib/test/` and the Makefile.
+No consensus, no wallet, no crypto.
 
 ---
 

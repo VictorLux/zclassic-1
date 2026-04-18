@@ -17,112 +17,104 @@ cross-agent priority table. Last brief rewrite: 2026-04-17.
 - `lib/keys/`
 - `lib/test/` — only to add/modify tests covering your changes
 
+**Full edit access (additional, per 2026-04-18 narrow expansion):**
+- `lib/core/src/random.c` (P1.16 only — the root-cause fix for the
+  `GetRandBytes` fail-open you flagged during P1.15)
+
 **Read-only / off-limits:**
 - `lib/wallet/`, `lib/storage/`, `lib/coins/` — Agent-2's lane
 - `app/controllers/`, `app/services/`, `app/models/`, `app/views/` — Agent-2's lane
 - `tools/mcp/` — Agent-2's lane (MCP JSON-injection fixes are at P3.1/P3.2)
 - `lib/rpc/`, `lib/validation/`, `lib/consensus/`, `lib/net/`,
   `lib/script/` — Rhett's lane
+- `lib/core/` — Rhett's lane EXCEPT for `random.c` per the line above
 - `vendor/` — Rhett (submodule pins, CVE cherry-picks) — you may *read*
   constant-time reference implementations under `vendor/tor/src/ext/ed25519/`
 
 ---
 
-## Current status — 2026-04-17
+## Current status — 2026-04-18
 
-**Done and on main:**
+**Done and on main (10 rows):** P1.3, P1.4, P1.8, P1.9, P1.10, P1.11,
+P1.11b, P1.12, P1.13, P1.14, P1.15. AGENT.md shows the SHAs.
 
-| Row | What | SHA |
-|---|---|---|
-| P1.3 | Sapling verify fail-open on NULL VK | 3b4b08ba9 |
-| P1.4 | Sapling params SHA-512 integrity check | 785db18b1 |
-| P1.8 | Ed25519 S<L canonicality | c510c7335 |
-| P1.9 | RedJubjub S<Fs canonicality | 8440cd864 |
-| P1.10 | find_group_hash abort-on-fail (fixed generators) | e221e0212 |
-| P1.11 | LOG_FAIL audit across lib/crypto + lib/sapling | ca139a5ad (+ 8 predecessors) |
-| P1.11b | esk nonce-reuse sanity guard (Step 8) | 909636215 |
-| — | Regression tests for P1.3/P1.4/P1.8/P1.9 rejection paths | ebc470342 |
-| — | FIXME comment flagging jub_scalar_mul as not-constant-time | ecd24894e (to be removed by P1.12) |
+Every row in your original brief plus the entire Wave 2 (curve25519 CT,
+ed25519 CT, RNG hygiene) is now closed.
 
-P1.11 scope note: `fr.c`, `fr_avx512.c`, `equihash_solver.c`,
-`sha3_avx512.c` internal math helpers intentionally left un-logged —
-their `return false` is "out-of-range input" by algorithmic design, not
-a security event. See `fr.c` header for the rationale.
-
-**Now working on:** Wave 2 — curve25519 + ed25519 CT audits + RNG hygiene (P1.12 done). See NOW below.
-**Queued:** Follow-on nullifier / prf timing audit — see NEXT below.
+**Now working on:** P1.16 — close the `lib/core/random.c` root cause
+you flagged in the P1.15 commit message. See NOW below.
+**Queued:** prf.c nullifier-path timing audit, then optionally formal
+verification scaffolding for `sapling_check_*`. See NEXT.
 
 ---
 
-## P1.12 — DONE (2026-04-17)
+## NOW — P1.16: close the `lib/core/random.c` GetRandBytes fail-open
 
-Shipped as `15218ba2f sapling: constant-time jub_scalar_mul (P1.12)`:
-masked linear-scan table select + unconditional-add-with-mask; diff
-test against the old implementation + scalar-weight timing test, both
-now permanent in `lib/test/src/test_sapling_crypto.c`. The FIXME
-comment at ecd24894e has been removed as part of the commit.
+File: `lib/core/src/random.c`
+
+This is the root cause your P1.15 wrapper papers over. `GetRandBytes`
+can silently return all-zero bytes on certain failure paths (e.g.
+`/dev/urandom` open fails, `getrandom()` returns short, etc.) — every
+caller that doesn't go through your new `zcl_random_secret_bytes`
+wrapper still believes "true means I got entropy" when the actual
+result is a deterministic zero buffer.
+
+**Fix.** Audit every error path inside `GetRandBytes` (and any sibling
+functions in this file). For each:
+
+- If the syscall fails: don't silently fill with zeros — return
+  `false` AND `LOG_FAIL` AND make sure the buffer is left in a state
+  the caller can detect (zero-fill is not detectable; consider an
+  explicit `0xFF` fill or a separate sentinel pattern that's then
+  re-checked at every secret-derivation site).
+- The cleanest fix is to make the error code unambiguous: return
+  `bool false` only when the buffer was NOT filled with entropy, and
+  abort the process if the caller ignores it (assertion in test
+  builds, `LOG_FAIL` + caller-side panic in production paths).
+
+**Acceptance.** Add a test that injects a `getrandom()` failure
+(LD_PRELOAD shim or `#ifdef ZCL_TEST_FORCE_RNG_FAIL`) and asserts
+every secret-derivation path either returns failure or aborts —
+never proceeds with zero bytes.
+
+When P1.16 lands, also flip every remaining direct `GetRandBytes`
+call site to `zcl_random_secret_bytes` so the wrapper is the only
+public path. Update AGENT.md row P1.16 to `done <SHA>`.
+
+**Scope boundary.** Only `lib/core/src/random.c` and the per-call-site
+migration. Do not touch any other file under `lib/core/`.
 
 ---
 
-## NOW — Wave 2: curve25519 + ed25519 constant-time + RNG hygiene
+## NEXT (pre-authorized) — prf.c nullifier-path timing audit
 
-Same iteration protocol as P1.12 — for CT audits, diff test +
-timing test are mandatory before merge. For RNG hygiene, small
-per-call-site commits are fine.
+After P1.16 lands. File: `lib/sapling/src/prf.c`.
 
-### Step H — `lib/crypto/src/curve25519.c` constant-time audit
+**Threat model.** Sapling nullifiers are computed from `(nk, ρ)` where
+`nk` is a long-lived secret (one per spending key, reused across all
+spends from that key). Any cache-timing leak on `prf_nullifier`
+correlates across many spends — much more dangerous than a one-shot
+side channel.
 
-Same hazard class as P1.12, one layer down. This file implements
-Curve25519 scalar mult on paths that touch secret material (X25519 DH,
-ephemeral-key derivation for message encryption). Audit every table
-lookup and every `if (bit)` / `if (nibble)` for secret-dependent
-branching.
+**Pattern.** Same plan as P1.12/P1.13:
 
-Reference CT implementations: `curve25519-donna`, `ref10/`, `tweetnacl`
-— all well-studied and easy to diff against.
+1. Audit every secret-dependent branch / table lookup in `prf.c`.
+2. Replace with masked / branchless equivalents.
+3. Diff test (10k random inputs, old-vs-new bit-for-bit match).
+4. Timing test (varying nullifier secret entropy, assert no
+   correlation in mean/stddev).
 
-Reuse the diff-test + timing-test harness you built for P1.12, scoped
-to the curve25519 functions you change.
-
-### Step I — `lib/crypto/src/ed25519.c` full constant-time pass
-
-You already touched this file for P1.8 (S<L canonicality) and P1.11
-(LOG_FAIL on verify mismatch). Now the systematic timing audit:
-
-- `ed25519_sign`: secret key `a` must not influence timing
-- `ed25519_sign_open` (verify): public keys only, lower priority —
-  audit for belt-and-suspenders
-- Any internal `ge_scalarmult_base` call: Ed25519 base-point mult has
-  a well-known CT pattern; confirm the project's vendored copy is
-  one of `donna` / `ref10` (both CT) and not a rolled-own variant
-
-### Step J — RNG hygiene grep across lib/crypto/ + lib/sapling/
-
-Grep both trees for:
-
-- `rand()`, `random()`, `drand48()`, `srand*()` — non-crypto PRNGs
-  must not appear on any path touching secrets
-- `getrandom(...)` — every call must have a fallback to `/dev/urandom`
-  OR assert on failure; never silently continue with zero bytes
-- `arc4random` — should be absent on Linux targets
-- Weak seed sources: `time()`, pid-only, jitter-alone — not on
-  consensus or secret-generation paths
-
-For every hit that isn't clearly justified, commit a fix or a LOG_FAIL
-upgrade. Never log the random bytes themselves.
+Reference: the masked-linear-scan pattern you built for `jub_scalar_mul`
+in P1.12 carries over directly.
 
 ### Stopping point
 
-After H + I + J are all on main, ping Rhett. Likely next:
-(a) audit `lib/sapling/src/prf.c` for timing leaks in the nullifier
-    path (nullifiers are a correlation hazard — same key across many
-    notes, so any side channel on the nullifier derivation is much
-    more dangerous than it looks),
-(b) formal-verification scaffolding for `sapling_check_spend` /
-    `sapling_check_output` — there's a small-enough spec that a CBMC
-    / cppcheck style tool could exhaustively cover the decode/reject
-    paths,
-(c) join Rhett on P2 DoS hardening if the network-lane work is open.
+After P1.16 + the prf.c audit are both on main, ping Rhett. Likely
+next: (a) formal-verification scaffolding for `sapling_check_spend` /
+`sapling_check_output` — small-enough spec that a CBMC / cppcheck-style
+tool could exhaustively cover the decode/reject paths, or
+(b) join Rhett on the P2 network DoS hardening if you want to stretch
+out of crypto for a wave.
 
 ---
 

@@ -8,20 +8,25 @@ Owner: Rhett (primary). Delegates: Agent-2 (see `AGENT-2.md`), Agent-3 (see `AGE
 
 ## Progress — last update 2026-04-18
 
-**Overall: 37 / 50 rows closed (74%) | SWRC 71%**
+**Overall: 37 / 53 rows closed (70%) | SWRC 70%**
+
+(Denominator grew from 50 to 53 when Agent-3's Wave 2 opened three new
+rows — P1.13 curve25519 CT, P1.14 ed25519 CT, P1.15 RNG hygiene — and
+closed all three in the same push.)
 
 | Tier | Closed / Total | % | Open rows |
 |---|---|---|---|
 | **CRITICAL** | 7 / 9 | **78%** | P2.1, P2.2 |
-| **HIGH** | 13 / 20 | **65%** | P1.6, P1.7, P2.3–P2.6, P4.1, P4.2, P5.2 |
-| **MED** | 11 / 15 | **73%** | P2.7, P2.8, P3.7, P5.5, P5.6 |
+| **HIGH** | 13 / 22 | **59%** | P1.6, P1.7, P2.3–P2.6, P4.1, P4.2, P5.2 |
+| **MED** | 11 / 16 | **69%** | P2.7, P2.8, P3.7, P5.5, P5.6 |
 | **LOW** | 2 / 2 | **100%** | — |
+| (P0 baseline) | 4 / 4 | **100%** | — |
 
-**Open by owner:** Rhett 15 · Agent-2 1 (parallel-test-runner infra) · Agent-3 0 (Wave 2 shipped — curve25519 + ed25519 CT + RNG hygiene all done)
+**Open by owner (after 2026-04-18 reassignment):** Rhett 12 · Agent-2 4 (P2.3 + P2.8 + P3.7 + parallel-test-runner infra) · Agent-3 2 (root-cause `lib/core/random.c` fail-open they flagged + prf.c nullifier-path timing audit)
 
-**Top remaining risks:** the two open CRITs are both in the network lane (P2.1 mempool tx accept, P2.2 stack overflow in msg handler) — chain-split risk on deploy is close to eliminated, DoS-on-deploy is now the headline.
+**Top remaining risks:** the two open CRITs are both in the network lane (P2.1 mempool tx accept, P2.2 stack overflow in msg handler). Chain-split risk on deploy is essentially eliminated; DoS-on-deploy is now the headline. P1.6 + P1.7 are the last two HIGHs in the consensus tier and block Rhett.
 
-**SWRC formula:** CRIT=4, HIGH=2, MED=1, LOW=0.5. Total weighted capacity = 92. Update this block every time a row closes.
+**SWRC formula:** CRIT=4, HIGH=2, MED=1, LOW=0.5. P0 rows weighted as HIGH. Total weighted capacity = 105. Update this block every time a row closes.
 
 ---
 
@@ -70,22 +75,23 @@ regression test locks the gates in place.
 | P1.12 | `jub_scalar_mul` constant-time rewrite (side-channel on secret keys) | `lib/sapling/src/fr.c:307-333` | HIGH | Agent 3 — done 15218ba2f (masked linear-scan table select + unconditional-add-with-mask; diff test + timing test in test_sapling_crypto.c) |
 | P1.13 | curve25519 constant-time audit (X25519 DH, esk in note encryption) | `lib/crypto/src/curve25519.c` | HIGH | Agent 3 — done da3dbbccb (audit comment in source documenting CT properties of the TweetNaCl ladder; Hamming-weight regression timing test in test_sapling.c — Wave 2 / Step H) |
 | P1.14 | ed25519 constant-time pass (verify-only path, JoinSplit consensus) | `lib/crypto/src/ed25519.c` | MED | Agent 3 — done b63b149c9 (audit comment confirms verify-only file uses cswap + XOR-OR diff check; no `ed25519_sign` exists, sign-side guidance documented for future work — Wave 2 / Step I) |
-| P1.15 | RNG hygiene wrapper + secret-generation call-site sweep | `lib/crypto/`, `lib/sapling/` | HIGH | Agent 3 — done 7abe359c5 (new `zcl_random_secret_bytes` wrapper rejects `GetRandBytes` all-zero fail-open; migrated esk/groth16-blind/redjubjub-T/sapling-r/sha3-nonce; lib/core/random.c root-cause flagged for Rhett — Wave 2 / Step J) |
+| P1.15 | RNG hygiene wrapper + secret-generation call-site sweep | `lib/crypto/`, `lib/sapling/` | HIGH | Agent 3 — done 7abe359c5 (new `zcl_random_secret_bytes` wrapper rejects `GetRandBytes` all-zero fail-open; migrated esk/groth16-blind/redjubjub-T/sapling-r/sha3-nonce; lib/core/random.c root-cause flagged) |
+| P1.16 | `lib/core/random.c` GetRandBytes root-cause fail-open (flagged during P1.15) | `lib/core/src/random.c` | HIGH | Agent 3 — next (narrow scope: lib/core/src/random.c only) |
 
 ---
 
-## Priority 2 — P2P attack surface (Owner: Rhett)
+## Priority 2 — P2P attack surface
 
-| # | Task | File:line | Severity |
-|---|---|---|---|
-| P2.1 | Mempool accepts any peer tx — no sig/UTXO/fee check | `lib/net/src/msg_tx.c:34-69` | CRITICAL |
-| P2.2 | 1.6 MB stack alloc in message handler | `lib/net/src/msg_tx.c:288` | CRITICAL |
-| P2.3 | fast_sync bypasses AR_BEGIN_SAVE | `lib/net/src/fast_sync.c:480-526` | HIGH |
-| P2.4 | Swarm per-chunk hash verification effectively absent | `lib/net/src/fast_sync.c:892-895`, `msgprocessor.c:1968` | HIGH |
-| P2.5 | connman deadlock risk: `cs_nodes` held across callback | `lib/net/src/connman.c:802-836` | HIGH |
-| P2.6 | `g_swarm_active` TOCTOU → state leak | `lib/net/src/msgprocessor.c:1961-1981, 2040` | HIGH |
-| P2.7 | FlyClient challenge amplification — no rate limit | `lib/net/src/msgprocessor.c:1864-1900` | MED |
-| P2.8 | No global byte budget on recv queue | `lib/net/src/net.c:104-115` | MED |
+| # | Task | File:line | Severity | Owner |
+|---|---|---|---|---|
+| P2.1 | Mempool accepts any peer tx — no sig/UTXO/fee check | `lib/net/src/msg_tx.c:34-69` | CRITICAL | Rhett |
+| P2.2 | 1.6 MB stack alloc in message handler | `lib/net/src/msg_tx.c:288` | CRITICAL | Rhett |
+| P2.3 | fast_sync bypasses AR_BEGIN_SAVE | `lib/net/src/fast_sync.c:480-526` | HIGH | Agent 2 — queued (narrow scope: same migration pattern as P3.3) |
+| P2.4 | Swarm per-chunk hash verification effectively absent | `lib/net/src/fast_sync.c:892-895`, `msgprocessor.c:1968` | HIGH | Rhett |
+| P2.5 | connman deadlock risk: `cs_nodes` held across callback | `lib/net/src/connman.c:802-836` | HIGH | Rhett (mutex discipline — careful) |
+| P2.6 | `g_swarm_active` TOCTOU → state leak | `lib/net/src/msgprocessor.c:1961-1981, 2040` | HIGH | Rhett |
+| P2.7 | FlyClient challenge amplification — no rate limit | `lib/net/src/msgprocessor.c:1864-1900` | MED | Rhett |
+| P2.8 | No global byte budget on recv queue | `lib/net/src/net.c:104-115` | MED | Agent 2 — queued (narrow scope: lib/net/src/net.c only) |
 
 ---
 
@@ -99,7 +105,7 @@ regression test locks the gates in place.
 | P3.4 | `store_controller` accepts addresses without checksum | `app/controllers/src/store_controller.c:663-685` | HIGH | Agent 2 — done 64a4afffc (Base58Check + Bech32 verification; 400 on bad checksum; 2 regression tests) |
 | P3.5 | `rpc_client.c` realloc overwrite w/ no NULL check | `tools/mcp/rpc_client.c:126` | HIGH | Agent 2 — done f0e8d31d3 (zcl_realloc via tmp; only call-site) |
 | P3.6 | `parse_form_field` does not URL-decode; no CSRF token | `app/controllers/src/store_controller.c:803-823` | MED | Agent 2 — done efa211811 (URL-decode ported; HMAC-bound per-product-id form token; 3 regression tests) |
-| P3.7 | `/metrics` open on TLS listener with no auth | `lib/rpc/src/httpserver.c:355-381` | MED | Rhett |
+| P3.7 | `/metrics` open on TLS listener with no auth | `lib/rpc/src/httpserver.c:355-381` | MED | Agent 2 — queued (narrow scope: lib/rpc/src/httpserver.c only) |
 
 ---
 
