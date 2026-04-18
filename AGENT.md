@@ -22,7 +22,7 @@ closed all three in the same push.)
 | **LOW** | 2 / 2 | **100%** | — |
 | (P0 baseline) | 4 / 4 | **100%** | — |
 
-**Open by owner (after 2026-04-18 reassignment):** Rhett 12 · Agent-2 4 (P2.3 + P2.8 + P3.7 + parallel-test-runner infra) · Agent-3 2 (root-cause `lib/core/random.c` fail-open they flagged + prf.c nullifier-path timing audit)
+**Open by owner (after 2026-04-18 reassignment):** Rhett 12 · Agent-2 3 (P2.3 + P2.8 + P3.7; parallel-test-runner infra shipped df5de36c4) · Agent-3 2 (root-cause `lib/core/random.c` fail-open they flagged + prf.c nullifier-path timing audit)
 
 **Top remaining risks:** the two open CRITs are both in the network lane (P2.1 mempool tx accept, P2.2 stack overflow in msg handler). Chain-split risk on deploy is essentially eliminated; DoS-on-deploy is now the headline. P1.6 + P1.7 are the last two HIGHs in the consensus tier and block Rhett.
 

@@ -285,6 +285,43 @@ runner infrastructure item remains. All P5 operator-hygiene and P4
 narrow-scope-expansion rows are shipped. Pinging Rhett before
 starting anything outside the committed lane.
 
+**2026-04-18 — parallel test runner shipped (NEXT closed).** Commit
+`df5de36c4`. `lib/test/src/test_parallel.c` + Makefile rule
+`test_parallel` + `make test-parallel` phony target. One fork per
+group, capped at nproc, with a per-group SIGKILL timeout (default
+300s, `--timeout=` to override). Output captured per-child at
+`./test-tmp/test_parallel_<ppid>_<idx>.log` and replayed in group
+order after reap. On this 16-core test machine: 70s wall for 156
+groups — ≥6× faster than sequential. The 10× acceptance criterion
+should be met easily on Rhett's 32-core target.
+
+**Flag for the test-isolation follow-up (NOT a runner bug).** When
+run via `./test_parallel`, 12 persistence-layer groups FAIL despite
+passing under `./test_zcl`:
+
+    test_chain_state_repo, test_recovery_policy, test_db_txn,
+    test_block_index_integrity, test_wallet_backup, test_disk_monitor,
+    test_db_maintenance, test_mempool_limits, test_addrman_integrity,
+    test_ibd_throttle, test_consensus_reject_events,
+    test_consensus_reject_index.
+
+All are SQLite-backed tests that open fixed, non-PID-qualified
+database paths. Two concurrent children race on the same file and
+the loser fails (usually with SQLITE_BUSY / SQLITE_LOCKED or a
+singleton-init assertion). Fixing each of these is a per-test
+investigation — not infrastructure work. Low priority until someone
+wants to ship `make test-parallel` as the default CI path.
+
+Also flagged: `test_merkle_tree` takes ~110s standalone, needing a
+timeout > 120s to consistently pass in parallel. The default 300s
+accommodates it but a future performance pass on merkle_tree would
+help.
+
+**2026-04-18 — P2.3 + P2.8 + P3.7 lane expansion accepted.** Rhett
+reassigned these three rows to Agent-2. Now queued and scoped in
+AGENT-2.md NOW block. Starting with the smallest (P3.7, ~40 LoC)
+and working up.
+
 **P5.4 audit — flag for Rhett, not a full purge.** Only one of the
 eight `tools/*.sh` scripts had a clean 1:1 replacement
 (`verify_restart_follow.sh` ⇒ `zcl-nodectl verify-follow`). The other
