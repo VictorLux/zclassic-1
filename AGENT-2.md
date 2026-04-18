@@ -38,34 +38,168 @@ gap analysis. See `AGENT.md` for the cross-agent priority table.
 
 ---
 
-## Current status — 2026-04-19 (evening, P2.1 shipped)
+## Current status — 2026-04-19 (late night, post-deploy, P8.9 hotfix filed)
 
 **Done and on main (33 rows + 2 infra):** P1.1, P1.2, P1.5, P6.1–P6.6,
 P3.1–P3.7, P5.1, P5.2, P5.3, P5.4, P5.6, P5.7, P4.3, P4.4, P4.5,
-P2.1 (`da318931d`), P2.2 (`352a83167`), P2.3, P2.4, P2.5, P2.6, P2.7,
+P2.1 (`d8c5442d1`), P2.2 (`352a83167`), P2.3, P2.4, P2.5, P2.6, P2.7,
 P2.8, P7.1 (`a6bedccad`), P7.2, P7.3, P7.5, P7.6, P7.7, P7.8. Plus
-parallel test runner infra (`df5de36c4`) + block_pruning self-deadlock
-fix uncovered while running P2.1 tests (`3979340c9`).
+parallel test runner infra (`df5de36c4`) + block_pruning deadlock
+fix (`3979340c9`).
 
-With P2.1 landed all P-tier CRIT rows are closed. Rhett still needs
-to `make deploy` for production to pick up the P7.1 fix — chain is
-still stuck at h=3,081,411.
+**Rhett ran `make deploy` at 2026-04-19 22:07.** Binary rebuilt from
+HEAD. Live node came up, auto-rewind fired, Sapling tree rebuilt,
+peers reconnected — then **stalled at h=3,081,407** with
+`bad-txns-BIP30` on every `connect_tip(3081408)`. This is a NEW CRIT
+regression downstream of your P7.2 rewind → filed as **P8.9 HOTFIX**.
 
-**Open queue (2 logical tasks, both HIGH):**
+**Open queue (priority order):**
 
 | Order | Row | Size | Severity |
 |---|---|---|---|
-| NOW | **P4.1 + P4.2** script interpreter stack refactor (paired) | large | HIGH |
-| NEXT | **P7.9 + P7.10** thread registry + shutdown audit (paired) | large | HIGH |
+| **NOW** | **P8.9 HOTFIX** — P7.2 incomplete rewind → BIP30 false-positive stalling prod | small-med | **CRIT** |
+| NEXT | **P4.1 + P4.2** script interpreter stack refactor (paired) | large | HIGH |
+| NEXT+2 | **P7.9 + P7.10** thread registry + shutdown audit (paired) | large | HIGH |
+| NEXT+4 | **P8.1** zmsg_deserialize heap overflow (peer-reachable) | small | CRIT |
+| NEXT+5 | **P8.2** dandelion PRNG seed quality | small | HIGH |
+| NEXT+6 | **P8.4** compact-block O(n·m) reconstruction → khash | medium | MED |
+| NEXT+7 | **P8.5** rolling_bloom missing MAX_BLOOM_HASH_FUNCS clamp | trivial | MED |
+| NEXT+8 | **P8.6** zslp_service short-key ambiguity | small | MED |
+| NEXT+9 | **P8.7** zmarket_offer size_bytes overflow | trivial | MED |
+| NEXT+10 | **P8.8** ZNAM builder vs parser type gate divergence | trivial | MED |
 
-**P7.4 reassigned to Agent-3** — they now own it in parallel with
-your P4.1+P4.2 work so both of you produce in this session. No file
-overlap: they're in `lib/net/src/msgprocessor.c` + `download.c`, you're
-in `lib/script/`.
+If P4.1+P4.2 is in your working tree right now, **git stash** it
+before starting P8.9 — do NOT abandon the refactor, just park it.
+
+Agent-3 is working on **P8.3** (MMB height bound) in parallel — no
+file overlap.
 
 ---
 
-## NOW — P4.1 + P4.2: script interpreter stack refactor
+## NOW — P8.9 (HOTFIX-CRIT): P7.2 rewind is incomplete, BIP30 false-positive stalling production
+
+Files: `lib/coins/src/coins_view_sqlite.c` (the P7.2 rewind path) +
+`lib/validation/src/connect_block.c:212-233` (the BIP30 check).
+
+### Evidence
+
+Boot log from 2026-04-19 22:10 after `make deploy`:
+
+```
+SQLite tip: height=3081408
+[coins] DB_ERR_TIP_MISMATCH: utxos max_height=3081408 = tip_height+1
+        (2 rows above tip, ≤ 32 guard) — attempting single-block auto-rewind
+[coins] auto-rewind: removed 2 UTXO row(s) above tip_height=3081407
+        and cleared utxo_commitment — continuing boot
+...
+activate_best_chain: first connect h=3081408 last h=3081601 path_len=194
+connect_tip: connect_block FAILED h=3081408: bad-txns-BIP30
+Propagated BLOCK_FAILED_CHILD to 195 descendants
+activate_best_chain: connect_tip FAILED at height 3081408
+                      reason=bad-txns-BIP30 invalid=1
+```
+
+Chain tip pinned at 3,081,407. Header tip advances (peers report
+3,082,600+). Only `connect_block(3081408)` is broken.
+
+### Root-cause hypothesis
+
+P7.2's `coins_view_sqlite_rewind_above_tip` removes rows where
+`height > tip_height` from the `utxos` table — but **only 2 rows**
+above tip is the wrong cardinality for a block whose coinbase has
+multiple outputs and whose regular transactions consume dozens of
+inputs. The rewind is partial: some spent inputs weren't restored,
+or some coinbase outputs that should be removed weren't (only those
+with height-column > tip, not those indexed under a different
+height-column like `creation_height` vs `block_height`).
+
+At `lib/validation/src/connect_block.c:212-233`:
+```c
+bool skip_bip30 = (g_assume_valid_height >= 0 &&
+                   pindex->nHeight <= g_assume_valid_height);
+for (size_t i = 0; !skip_bip30 && i < block->num_vtx; i++) {
+    if (coins_view_cache_have_coins(view, &block->vtx[i].hash)) {
+        struct coins existing;
+        coins_init(&existing);
+        if (coins_view_cache_get_coins(view, &block->vtx[i].hash, &existing)) {
+            if (!coins_is_pruned(&existing)) {
+                coins_free(&existing);
+                return validation_state_dos(state, 100, false,
+                    REJECT_INVALID, "bad-txns-BIP30", ...);
+            }
+        }
+    }
+}
+```
+
+The coins view reports the coinbase txid already has unspent
+outputs → BIP30 trips. These are remnants of the partially-applied
+block 3081408 from the pre-P7.1 stall.
+
+### Fix (options, pick what the evidence supports after instrumenting)
+
+**A. Strengthen the rewind.** In `rewind_above_tip`, also DELETE any
+rows where `(txid, vout)` matches any tx in the last-applied-but-
+uncommitted block. Requires keeping a list of txids touched by the
+aborted block — may need journaling. The ≤32 row guard already caps
+blast radius, so a full PURGE of all rows claiming h=tip+1 plus a
+sweep of `coins_view_cache` is safe.
+
+**B. Treat anchor-adjacent BIP30 as evidence of incomplete rewind.**
+At connect_block time, if BIP30 trips at exactly `tip+1` **and**
+`tip+1 == rewind_target_height` (recorded by P7.2), invalidate the
+matching unspent coins entries and retry. One-shot, logged loudly.
+
+**C. Both.** Strengthen the rewind AND keep the anchor-adjacent
+retry as a defense-in-depth.
+
+Prefer (A) — fixes the root cause. (B) is a valid fallback but
+requires carrying state across boot.
+
+### STOP + ping Rhett
+
+- Any change to the serialized UTXO format (CREATE TABLE utxos … is
+  consensus-adjacent — SHA3 commitment is over on-disk bytes).
+- Any change to BIP30 consensus logic itself. The fix must be on the
+  STORAGE side — BIP30 is correct; the coins view is lying.
+
+### Acceptance
+
+1. New `test_storage_rewind` unit: pre-seed `utxos` with a mix of
+   rows at `h=tip+1` (coinbase outputs, regular outputs, some
+   already-spent); invoke `coins_view_sqlite_rewind_above_tip`; assert
+   coins view has NO entries where `coins.height = tip+1` and
+   NO `have_coins(txid)` returns true for any tx that only exists in
+   block `tip+1`.
+2. New `test_validation_bip30_after_rewind` integration: boot a
+   fixture node with `tip_height=3081407` and 2 stale rows at
+   h=3081408; call `activate_best_chain` with the real block 3081408
+   in the block index; assert `connect_block` succeeds (no BIP30).
+3. Deploy canary: after push, Rhett runs `make deploy`; assert chain
+   advances past 3,081,407 within 120s.
+4. Full `./test_zcl` + ASAN passes.
+
+### Commit template
+
+```
+coins/val: strengthen P7.2 rewind to purge stale coinbase entries (P8.9)
+
+Fixes P8.9 (AGENT.md). P7.2's rewind_above_tip removed rows from the
+utxos table but left matching entries in the coins cache, so the next
+connect_block(tip+1) tripped BIP30 on the orphan coinbase.
+
+Live-node evidence: 2026-04-19 22:10 deploy stalled at h=3,081,407
+with "bad-txns-BIP30" on every activate_best_chain cycle. Fix purges
+all (txid, vout) rows indexed to h=tip+1 AND invalidates the cache
+view entries before boot continues.
+
+Tests: test_storage_rewind + test_validation_bip30_after_rewind.
+Deploy canary: chain advanced past 3,081,407 within <fill>.
+```
+
+---
+
+## NEXT — P4.1 + P4.2: script interpreter stack refactor
 
 Files: `lib/script/include/script/interpreter.h:22-30`,
 `lib/script/src/interpreter.c:619-652`.

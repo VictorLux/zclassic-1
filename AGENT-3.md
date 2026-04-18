@@ -38,25 +38,117 @@ See `AGENT.md` for the cross-agent priority table.
 
 ---
 
-## Current status — 2026-04-19 (night, P7.4 landed)
+## Current status — 2026-04-19 (late night, P8 audit landed)
 
-**Done and on main (17 rows):** P1.3, P1.4, P1.6 (`f6aa0b080`),
+**Done and on main (17 rows + audit):** P1.3, P1.4, P1.6 (`f6aa0b080`),
 P1.7 (`5ce252bb6`), P1.8, P1.9, P1.10, P1.11, P1.11b, P1.12, P1.13,
 P1.14, P1.15, P1.16 (`94d607b85`), P1.16b (`c841defd2`), P5.5
-(`75576d7a0`), P7.4 (`f6474c77b`). AGENT.md shows SHAs.
+(`75576d7a0`), P7.4 (`f6474c77b`), and the P8-wave audit pass
+(`6751d9bfa` — opened 8 new rows).
 
 All crypto + consensus + vendor + net-backpressure rows shipped.
-Queue now has a single audit-only task: open the P8 wave.
+P8 audit triaged: P8.1/P8.2/P8.4–P8.8 → Agent-2's lanes; **P8.3**
+(MMB unbounded mountain height on deserialize) is yours — adjacent
+to your P5.5/FlyClient/MMB lane.
 
-**Open queue (1 audit task):**
+**Open queue (1 task, then ping Rhett):**
 
 | Order | Row | Size | Severity |
 |---|---|---|---|
-| NOW | **Fresh code-review pass** → open the P8 wave | audit | — |
+| **NOW** | **P8.3** — MMB `mmb_deserialize` accepts unbounded `height` field | small | HIGH |
+| NEXT | (queue empty — ping Rhett) | — | — |
 
 ---
 
-## NOW — P7.4: backpressure watchdog under tip-stuck
+## NOW — P8.3: cap MMB mountain height on deserialize
+
+Files: `lib/chain/src/mmb.c:254-261` (deserialize), with downstream
+defense in `mmb_merge_after_insert` (lines ~100-115).
+
+### Bug
+
+`mmb_deserialize` reads each mountain's `height` as a raw little-
+endian `uint32_t` from the input buffer with no upper-bound check —
+only `nm` (mountain count) is capped against `MMB_MAX_MOUNTAINS`.
+
+For any practical chain, `height ≤ ⌈log2(num_leaves)⌉ ≤ 64`. The
+code today happily accepts `UINT32_MAX`. Downstream
+`mmb_merge_after_insert` increments `height` during merges — a
+deserialized state with `height` near `UINT32_MAX` triggers
+signed/unsigned wraparound on the next `mmb_append`, silently
+corrupting the FlyClient/snapshot trust root.
+
+Snapshot input may transit fast-sync/swarm before P2.4's hash check
+binds — defense-in-depth gap.
+
+### Fix
+
+Cap each mountain's `height` at `MMB_MAX_HEIGHT` on read. Reject
+the entire MMB blob if any mountain exceeds the cap.
+
+```c
+#define MMB_MAX_HEIGHT 64  /* ⌈log2(num_leaves)⌉ for any plausible chain */
+
+/* in mmb_deserialize, per-mountain loop */
+uint32_t height = read_le32(...);
+if (height > MMB_MAX_HEIGHT) {
+    LOG_FAIL("mmb", "deserialize: mountain height %u exceeds cap %u",
+             height, MMB_MAX_HEIGHT);
+    return false;
+}
+```
+
+Mirror the cap in `mmb_merge_after_insert`: assert (or reject) when
+a merge would push `height` past `MMB_MAX_HEIGHT`. That second guard
+catches in-memory corruption that bypasses the deserialize path.
+
+### STOP + ping Rhett
+
+- Any change to the MMB on-disk serialization format (field order,
+  encoding, length-prefix) — that's consensus-adjacent because the
+  SHA3 root commits over the bytes.
+- Adding the cap is a NEW input validation, not a format change —
+  this is allowed.
+
+### Acceptance
+
+1. Unit test in `lib/test/src/test_chain.c` (or `test_mmb.c` if it
+   exists): build a malicious blob with a single mountain at
+   `height = MMB_MAX_HEIGHT + 1`; assert `mmb_deserialize` returns
+   false + emits the LOG_FAIL.
+2. Round-trip test: serialize a real MMB at h=3,000,000-ish; assert
+   no mountain exceeds `MMB_MAX_HEIGHT` (sanity check the cap is
+   above any real-world value).
+3. Wraparound test: construct an MMB with `height = UINT32_MAX - 1`
+   in-memory (bypassing deserialize); call `mmb_append`; assert the
+   merge guard fires before any state corruption.
+4. Full `./test_zcl` + `make ci` green.
+
+### Commit template
+
+```
+chain/mmb: cap mountain height on deserialize to prevent wraparound (P8.3)
+
+Fixes P8.3 (AGENT.md). mmb_deserialize accepted height fields up to
+UINT32_MAX with no bound; downstream mmb_merge_after_insert would
+wraparound on the next append, silently corrupting the FlyClient
+trust root. Adds MMB_MAX_HEIGHT=64 cap at parse time and a defensive
+assert in the merge path.
+
+Tests: malicious-blob reject + real-chain round-trip + wraparound
+guard.
+```
+
+---
+
+## NEXT — (queue empty after P8.3 lands)
+
+Ping Rhett. The triage pass already covered every lane — no further
+audit work pre-authorized.
+
+---
+
+## (Below: archived NOW for P7.4 — reference only) — P7.4 backpressure watchdog
 
 Files: `lib/net/src/msgprocessor.c`, `lib/net/src/download.c`.
 
