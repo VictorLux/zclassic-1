@@ -1040,3 +1040,72 @@ sibling noted in the P2.6 wave) and the `make asan` target if
 Rhett wants it.  Everything else is Rhett's lane (P1.6, P1.7,
 P4.1/P4.2, P5.5, P7.1, P7.4, P7.9, P7.10) or Agent-3's (P1.16
 shipped + prf.c nullifier NEXT per the 6e321beac status bump).
+
+**2026-04-19 — P2.2 + P7.1 lane-expansion wave landed (fourteenth
+wave).** Two commits, in order:
+
+- `352a83167` P2.2 `process_mempool` scratch. `struct uint256
+  hashes[MAX_INV_SZ]` at `lib/net/src/msg_tx.c:288` was a 1.6 MB
+  stack allocation on every call — default pthread stack is 2 MB,
+  so one recursive call or a deep framework frame under this
+  function SIGSEGVs the message-handler thread with no auditable
+  failure mode. Heap-allocated via `zcl_malloc`, `LOG_FAIL` on
+  OOM, single free on exit. File-scope test hook
+  `msgprocessor_test_set_mempool_alloc_hook` swaps the allocator
+  so the OOM branch is reachable from tests without a global
+  malloc override. Two regression rows in `test_mempool.c`:
+  100-tx happy path pushes every hash through
+  `p2p_node_push_inventory`; forced-OOM returns false with
+  `inventory_to_send` untouched. Pattern matches the existing
+  msg_compact.c mempool collection that already used zcl_malloc.
+
+- `a6bedccad` P7.1 live outage at h=3,081,601. Root cause:
+  `update_tip` at `lib/validation/src/process_block.c:525` was
+  `static void` and silently discarded the bool from
+  `process_block_commit_tip`. When the csr refused the commit
+  (coins_mismatch / tip_not_in_index / stale_index /
+  hash_mismatch / utxo_delta_too_big / oom),
+  process_block_commit_tip correctly returned false with
+  `csr: REJECTED` on stderr, but update_tip swallowed it;
+  connect_tip still returned true, EV_TIP_UPDATED even fired
+  with the stale new_tip height, and active_chain_tip stayed at
+  the previous block forever — re-emitting
+  `val.block_connected h=3081601` 43+ times per second from
+  every peer until the download queue buffered the node to
+  6 GB RSS and SIGABRT. Fix propagates the bool: update_tip
+  returns `bool`, connect_tip returns
+  `validation_state_error("csr-tip-commit-rejected")` on refuse,
+  disconnect_tip mirrors with
+  `"csr-tip-rollback-rejected"`. Regression test
+  `csr/p7.1: update_tip propagates csr rejection (was silent)`
+  in test_chain_state_repo.c — wires the csr singleton to a real
+  block_map, hands a new `process_block_test_update_tip` wrapper a
+  block_index NOT in the map (CSR_REJECTED_TIP_NOT_IN_INDEX),
+  asserts wrapper returns false + active_chain_height unchanged
+  + commits_rejected counter ticked by 1.
+
+**P7.1 live-verification flag for Rhett.** The fix is in main but
+the running `zclassic23.service` unit still points at
+`%h/zclassic23/zclassic23`, not this clone's binary — same deploy-
+smoke situation as P7.2 and P5.6. Before live verification:
+`cd ~/zclassic23 && git pull origin main && make deploy`, then
+`zcl_status` should show either height advancing past 3,081,601
+(if P7.2's auto-rewind at boot clears the upstream coins_view
+mismatch), OR a loud stream of
+`val.validation-error reason=csr-tip-commit-rejected` events that
+point the operator at the underlying trigger. Either outcome is
+a strict improvement over the 6 GB RSS loop.
+
+**Runtime-P7.2 follow-up flag.** My P7.1 audit also found
+`[coins_view] get_coins: invalid arguments (cvs=%p txid=%p)` in
+the running node.log — meaning `cvs->db` or `cvs->stmt_get` is
+NULL despite the struct pointer being non-null. That's a half-
+open coins_view, consistent with the pre-P7.2 boot code path
+("Warning: Could not open SQLite coins view" continued booting).
+P7.2 (landed `57e6ef391`) should fix the boot side once deployed.
+No separate action needed on this clone; flagging so Rhett knows
+what to expect on the next deploy restart.
+
+**Still in Agent-2's NOW queue:** P2.1 (mempool accept-path
+verification — same msg_tx.c as P2.2, ~3 regression tests on
+invalid-sig / double-spend / zero-fee). Pre-authorized.
