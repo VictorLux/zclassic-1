@@ -33,33 +33,32 @@ cross-agent priority table. Last brief rewrite: 2026-04-17.
 
 ---
 
-## Current status — 2026-04-19 (morning, lane expansion to consensus + vendor)
+## Current status — 2026-04-19 (late afternoon, P1.16b on main)
 
-**Done and on main (11 rows):** P1.3, P1.4, P1.8, P1.9, P1.10, P1.11,
-P1.11b, P1.12, P1.13, P1.14, P1.15, **P1.16 (`94d607b85`)**. AGENT.md
-shows the SHAs.
+**Done and on main (13 rows):** P1.3, P1.4, P1.8, P1.9, P1.10, P1.11,
+P1.11b, P1.12, P1.13, P1.14, P1.15, P1.16 (`94d607b85`),
+**P1.16b (`c841defd2`)**. AGENT.md shows the SHAs.
 
-P1.16 (GetRandBytes root-cause fail-open) landed cleanly with
-getrandom(2) primary → /dev/urandom fallback → abort() on total
-failure, plus a SIGABRT fault-injection regression test.
+P1.16b (jubjub_to_scalar constant-time reduction) closed the prf.c
+nullifier-path audit.  Replaced the pre-existing early-exit bi_cmp +
+borrow-branch bi_sub + per-bit branch with a single bi_cond_sub that
+always runs the full 9-limb subtract and selects limb-wise via a
+mask derived from the final borrow.  Shipping timing ratio is 1.002
+(well inside the 0.85..1.15 gate).  Diff test: 10k random 64-byte
+inputs + 5 corners (zero, all-ones, lsb-only, msb-only, exactly-r).
 
 **Key scope change (2026-04-19):** Rhett is coordinator only and does
-NOT code. Three new rows transfer into your lane from Rhett:
+NOT code. Three rows transferred into your lane from Rhett:
 **P1.6** (P2SH sigop accounting — consensus-split risk),
 **P1.7** (skip_diffbits difficulty-check escape hatch), and **P5.5**
-(vendor/tor submodule pin + .onion smoke test). These are outside
-your original "crypto / sapling / keys" lane but consensus-crypto
-and vendor-pin respectively are close neighbors of your existing
-work. Read the P1.6 row carefully — consensus-sensitive, STOP + ping
-triggers apply.
+(vendor/tor submodule pin + .onion smoke test). Read the P1.6 row
+carefully — consensus-sensitive, STOP + ping triggers apply.
 
-**Now working on:** prf.c nullifier-path constant-time audit
-(originally queued NEXT — now NOW).
+**Now working on:** P1.6 — P2SH sigop accounting (promoted from NEXT).
 
 **Queued NEXT (pre-authorized):**
-1. **P1.6** — consensus: P2SH sigop accounting
-2. **P1.7** — consensus: skip_diffbits difficulty-check removal
-3. **P5.5** — vendor: tor submodule pin bump + .onion smoke test
+1. **P1.7** — consensus: skip_diffbits difficulty-check removal
+2. **P5.5** — vendor: tor submodule pin bump + .onion smoke test
 
 ---
 

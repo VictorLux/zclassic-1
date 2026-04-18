@@ -6,21 +6,21 @@ Owner: Rhett (primary). Delegates: Agent-2 (see `AGENT-2.md`), Agent-3 (see `AGE
 
 ---
 
-## Progress — last update 2026-04-19 (afternoon, P7.1 + P2.2 shipped by Agent-2)
+## Progress — last update 2026-04-19 (late afternoon, P1.16b shipped by Agent-3)
 
-**Overall: 54 / 63 rows closed (86%) | SWRC ~90%**
+**Overall: 55 / 64 rows closed (86%) | SWRC ~91%**
 
 | Tier | Closed / Total | % | Open rows |
 |---|---|---|---|
 | **CRITICAL** | 9 / 10 | **90%** | P2.1 |
-| **HIGH** | 21 / 26 | **81%** | P1.6, P1.7, P4.1, P4.2, P7.4, P7.9 |
+| **HIGH** | 22 / 27 | **81%** | P1.6, P1.7, P4.1, P4.2, P7.4, P7.9 |
 | **MED** | 19 / 21 | **90%** | P5.5, P7.10 |
 | **LOW** | 2 / 2 | **100%** | — |
 | (P0 baseline) | 4 / 4 | **100%** | — |
 
-**Open by owner (2026-04-19 afternoon):**
+**Open by owner (2026-04-19 late afternoon):**
 - **Agent-2 (6 logical tasks):** P2.1 (NOW), P4.1+P4.2 paired (NEXT), P7.4 (NEXT+1), P7.9+P7.10 paired (NEXT+2)
-- **Agent-3 (4 rows):** prf.c nullifier CT audit (NOW), P1.6 (NEXT), P1.7 (NEXT+1), P5.5 vendor/tor (NEXT+2)
+- **Agent-3 (3 rows):** P1.6 (NOW — was NEXT), P1.7 (NEXT), P5.5 vendor/tor (NEXT+1). prf.c nullifier CT audit closed as P1.16b (c841defd2).
 - **Rhett:** 0 (coordinator only)
 
 **ACTION ITEM (Rhett):** the P7.1 fix landed as `a6bedccad` but production is still at h=3,081,411 because nothing triggered a rebuild + redeploy. Run `make deploy` on the production box to push the fix live. Expected result: chain advances past 3,081,411 within 60s, catches up to legacy zclassicd (currently ~3,082,462) within 2 minutes.
@@ -78,6 +78,7 @@ regression test locks the gates in place.
 | P1.14 | ed25519 constant-time pass (verify-only path, JoinSplit consensus) | `lib/crypto/src/ed25519.c` | MED | Agent 3 — done b63b149c9 (audit comment confirms verify-only file uses cswap + XOR-OR diff check; no `ed25519_sign` exists, sign-side guidance documented for future work — Wave 2 / Step I) |
 | P1.15 | RNG hygiene wrapper + secret-generation call-site sweep | `lib/crypto/`, `lib/sapling/` | HIGH | Agent 3 — done 7abe359c5 (new `zcl_random_secret_bytes` wrapper rejects `GetRandBytes` all-zero fail-open; migrated esk/groth16-blind/redjubjub-T/sapling-r/sha3-nonce; lib/core/random.c root-cause flagged) |
 | P1.16 | `lib/core/random.c` GetRandBytes root-cause fail-open (flagged during P1.15) | `lib/core/src/random.c` | HIGH | Agent 3 — done 94d607b85 (getrandom(2) preferred → /dev/urandom fallback → abort() on any total failure; void signature preserved per scope boundary; lib/keys/src/key.c migrated to zcl_random_secret_bytes for defense-in-depth; SIGABRT fault-injection test added to test_core.c) |
+| P1.16b | `jubjub_to_scalar` constant-time reduction on Sapling nullifier path (prf_nsk + RedJubjub nonces) | `lib/sapling/src/jubjub.c:46-108` | HIGH | Agent 3 — done c841defd2 (replaced bi_cmp early-exit + bi_sub borrow-branch + per-bit branch with bi_cond_sub mask-select; acc<r selection is now a limb-wise mask derived from the subtraction's final borrow; 10k-vector diff test + 5 corners + Hamming-weight timing regression (ratio 1.002) in test_sapling_crypto.c) |
 
 ---
 
