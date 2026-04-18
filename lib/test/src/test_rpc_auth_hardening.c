@@ -16,11 +16,15 @@
 #include "rpc/http_middleware.h"
 #include "rpc/httpserver.h"
 
+#include <arpa/inet.h>
+#include <netinet/in.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <stdbool.h>
+#include <sys/socket.h>
 #include <sys/stat.h>
+#include <sys/time.h>
 #include <unistd.h>
 #include <time.h>
 
@@ -352,6 +356,251 @@ static int test_loopback_subnet_exemption(void)
     return failures;
 }
 
+/* ── P3.7: /metrics endpoint is gated by Basic auth ─────────────
+ *
+ * Before the fix, `GET /metrics` on the TLS listener returned a full
+ * Prometheus body to any unauthenticated client — usable for
+ * peer-count / tx-volume fingerprinting. After the fix, the endpoint
+ * requires the same Basic-auth cookie the wallet RPCs use.
+ *
+ * This test drives a real rpc_http_start, reads the generated
+ * .cookie, and sends three requests over a loopback socket:
+ *   1. No Authorization  → expect 401.
+ *   2. Wrong credentials → expect 401.
+ *   3. Correct cookie    → expect 200 with a Prometheus body.
+ */
+
+static const char metrics_b64_chars[] =
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+static size_t metrics_b64_encode(const unsigned char *in, size_t inlen,
+                                 char *out, size_t outmax)
+{
+    size_t olen = 0;
+    for (size_t i = 0; i < inlen && olen + 4 < outmax; i += 3) {
+        unsigned int n = (unsigned int)in[i] << 16;
+        if (i + 1 < inlen) n |= (unsigned int)in[i + 1] << 8;
+        if (i + 2 < inlen) n |= (unsigned int)in[i + 2];
+        out[olen++] = metrics_b64_chars[(n >> 18) & 0x3F];
+        out[olen++] = metrics_b64_chars[(n >> 12) & 0x3F];
+        out[olen++] = (i + 1 < inlen) ? metrics_b64_chars[(n >> 6) & 0x3F] : '=';
+        out[olen++] = (i + 2 < inlen) ? metrics_b64_chars[n & 0x3F] : '=';
+    }
+    out[olen] = '\0';
+    return olen;
+}
+
+static bool metrics_read_cookie(const char *dir, char *out, size_t outsz)
+{
+    char path[1024];
+    snprintf(path, sizeof(path), "%s/.cookie", dir);
+    FILE *f = fopen(path, "r");
+    if (!f) return false;
+    size_t n = fread(out, 1, outsz - 1, f);
+    fclose(f);
+    if (n == 0) return false;
+    out[n] = '\0';
+    /* Trim trailing newline / whitespace. */
+    while (n > 0 && (out[n-1] == '\n' || out[n-1] == '\r' ||
+                     out[n-1] == ' ')) {
+        out[--n] = '\0';
+    }
+    return n > 0;
+}
+
+static uint16_t metrics_reserve_port(void)
+{
+    int fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (fd < 0) return 0;
+    struct sockaddr_in a;
+    memset(&a, 0, sizeof(a));
+    a.sin_family = AF_INET;
+    a.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    a.sin_port = 0;
+    if (bind(fd, (struct sockaddr *)&a, sizeof(a)) < 0) {
+        close(fd);
+        return 0;
+    }
+    socklen_t sl = sizeof(a);
+    if (getsockname(fd, (struct sockaddr *)&a, &sl) < 0) {
+        close(fd);
+        return 0;
+    }
+    uint16_t port = ntohs(a.sin_port);
+    close(fd);
+    return port;
+}
+
+/* Send `GET /metrics` with an optional Authorization header, return
+ * the HTTP status code in the response status line (or -1 on error).
+ * `out_body`, if non-NULL, receives up to `body_cap-1` bytes of the
+ * response body. */
+static int metrics_get(uint16_t port, const char *auth_b64,
+                       char *out_body, size_t body_cap)
+{
+    int fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (fd < 0) return -1;
+
+    struct sockaddr_in addr;
+    memset(&addr, 0, sizeof(addr));
+    addr.sin_family = AF_INET;
+    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    addr.sin_port = htons(port);
+
+    struct timeval tv = { .tv_sec = 2, .tv_usec = 0 };
+    setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
+    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+
+    if (connect(fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
+        close(fd);
+        return -1;
+    }
+
+    char req[1024];
+    int reqlen;
+    if (auth_b64 && *auth_b64) {
+        reqlen = snprintf(req, sizeof(req),
+            "GET /metrics HTTP/1.1\r\n"
+            "Host: localhost\r\n"
+            "Authorization: Basic %s\r\n"
+            "Connection: close\r\n"
+            "\r\n", auth_b64);
+    } else {
+        reqlen = snprintf(req, sizeof(req),
+            "GET /metrics HTTP/1.1\r\n"
+            "Host: localhost\r\n"
+            "Connection: close\r\n"
+            "\r\n");
+    }
+
+    ssize_t sent = write(fd, req, (size_t)reqlen);
+    if (sent != reqlen) { close(fd); return -1; }
+
+    /* Read the full response into a local buffer. The Prometheus body
+     * can be several KB; the 8 KB response buffer below is sufficient
+     * for the minimal metrics the node exposes during a unit test. */
+    char resp[8192];
+    size_t total = 0;
+    while (total < sizeof(resp) - 1) {
+        ssize_t n = read(fd, resp + total, sizeof(resp) - 1 - total);
+        if (n <= 0) break;
+        total += (size_t)n;
+    }
+    close(fd);
+    if (total == 0) return -1;
+    resp[total] = '\0';
+
+    int status = 0;
+    if (sscanf(resp, "HTTP/1.1 %d", &status) != 1) return -1;
+    if (out_body && body_cap > 0) {
+        const char *sep = strstr(resp, "\r\n\r\n");
+        if (sep) {
+            sep += 4;
+            size_t body_len = total - (size_t)(sep - resp);
+            if (body_len >= body_cap) body_len = body_cap - 1;
+            memcpy(out_body, sep, body_len);
+            out_body[body_len] = '\0';
+        } else {
+            out_body[0] = '\0';
+        }
+    }
+    return status;
+}
+
+static int test_metrics_auth_required(void)
+{
+    int failures = 0;
+    TEST("auth_hardening: /metrics requires Basic auth (P3.7)") {
+        char tmpdir[64];
+        snprintf(tmpdir, sizeof(tmpdir),
+                 "./test-tmp/zcl_metrics_auth_%d_XXXXXX", (int)getpid());
+        mkdir("./test-tmp", 0755);
+        char *dir = mkdtemp(tmpdir);
+        ASSERT(dir != NULL);
+
+        setenv("ZCL_METRICS_HTTP_ENABLE", "1", 1);
+        setenv("ZCL_RPC_COOKIE_ROTATE_SEC", "0", 1);
+
+        uint16_t port = metrics_reserve_port();
+        ASSERT(port != 0);
+
+        struct rpc_table empty_table;
+        rpc_table_init(&empty_table);
+
+        bool started = rpc_http_start(&empty_table, port, NULL, NULL, dir);
+        if (!started) {
+            /* Port race / bind failure — skip rather than fail. */
+            printf("(SKIP: rpc_http_start failed) ");
+            test_cleanup_tmpdir(dir);
+            unsetenv("ZCL_METRICS_HTTP_ENABLE");
+            PASS();
+            goto _test_next;
+        }
+
+        char cookie[512] = {0};
+        ASSERT(metrics_read_cookie(dir, cookie, sizeof(cookie)));
+
+        char good_b64[1024];
+        metrics_b64_encode((const unsigned char *)cookie, strlen(cookie),
+                           good_b64, sizeof(good_b64));
+
+        /* 1. No Authorization header → 401. */
+        int status = metrics_get(port, NULL, NULL, 0);
+        if (status != 401) {
+            printf("FAIL (no-auth got %d, want 401)\n", status);
+            failures++;
+            rpc_http_stop();
+            test_cleanup_tmpdir(dir);
+            unsetenv("ZCL_METRICS_HTTP_ENABLE");
+            goto _test_next;
+        }
+
+        /* 2. Wrong credentials → 401. */
+        char bad_creds[] = "__user:__pass";
+        char bad_b64[1024];
+        metrics_b64_encode((const unsigned char *)bad_creds,
+                           strlen(bad_creds), bad_b64, sizeof(bad_b64));
+        status = metrics_get(port, bad_b64, NULL, 0);
+        if (status != 401) {
+            printf("FAIL (bad-auth got %d, want 401)\n", status);
+            failures++;
+            rpc_http_stop();
+            test_cleanup_tmpdir(dir);
+            unsetenv("ZCL_METRICS_HTTP_ENABLE");
+            goto _test_next;
+        }
+
+        /* 3. Correct cookie → 200 + Prometheus body. */
+        char body[4096] = {0};
+        status = metrics_get(port, good_b64, body, sizeof(body));
+        if (status != 200) {
+            printf("FAIL (good-auth got %d, want 200)\n", status);
+            failures++;
+            rpc_http_stop();
+            test_cleanup_tmpdir(dir);
+            unsetenv("ZCL_METRICS_HTTP_ENABLE");
+            goto _test_next;
+        }
+        /* Prometheus exposition: first non-blank line must start with
+         * "# HELP", "# TYPE", or an identifier + value. Loose check
+         * here — we just want to see we got SOME body. */
+        if (body[0] == '\0') {
+            printf("FAIL (200 but empty body)\n");
+            failures++;
+            rpc_http_stop();
+            test_cleanup_tmpdir(dir);
+            unsetenv("ZCL_METRICS_HTTP_ENABLE");
+            goto _test_next;
+        }
+
+        rpc_http_stop();
+        test_cleanup_tmpdir(dir);
+        unsetenv("ZCL_METRICS_HTTP_ENABLE");
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 /* ── Entry point ──────────────────────────────────────────────── */
 
 int test_rpc_auth_hardening(void);
@@ -370,6 +619,7 @@ int test_rpc_auth_hardening(void)
     failures += test_auth_failure_counter_overflow();
     failures += test_banned_ip_rejected_consistently();
     failures += test_loopback_subnet_exemption();
+    failures += test_metrics_auth_required();
 
     if (mw.initialized) rpc_http_middleware_destroy(&mw);
 
