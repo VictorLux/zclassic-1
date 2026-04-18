@@ -13,6 +13,13 @@
 
 #define MAX_ADDNODES 16
 
+/* Capacity of the deferred-free list: max # of nodes that can be awaiting
+ * free in one socket cycle. Must exceed DEFAULT_MAX_PEER_CONNECTIONS (125)
+ * with headroom, since the P2.5 fix can also re-defer a node whose ref_count
+ * is still non-zero — that means the list can accumulate across cycles when
+ * the message handler holds references. 256 leaves ~125 slots of headroom. */
+#define CONNMAN_DEFERRED_FREE_CAP 256
+
 struct connman {
     struct net_manager manager;
     const struct chain_params *params;
@@ -21,7 +28,7 @@ struct connman {
     bool socket_thread_started;
     bool open_thread_started;
     bool message_thread_started;
-    struct p2p_node *deferred_free[64];
+    struct p2p_node *deferred_free[CONNMAN_DEFERRED_FREE_CAP];
     size_t num_deferred_free;
     /* Persistent addnode list — reconnected automatically on disconnect */
     struct net_address addnodes[MAX_ADDNODES];
@@ -61,5 +68,23 @@ void connman_relay_transaction(struct connman *cm,
  * Returns NULL if bandwidth quotas are not active. */
 struct peer_bandwidth;
 struct peer_bandwidth *connman_peer_bandwidth(void);
+
+/* P2.5: one pass of the message-handler loop body.
+ *
+ * Snapshots cm->manager.nodes[] under cs_nodes + bumps ref_count on each
+ * non-disconnected entry, releases cs_nodes, calls the process_messages
+ * and send_messages signals against the local copy, then re-acquires
+ * cs_nodes to decrement refs. Returns true if any peer saw work.
+ *
+ * Exposed outside the message thread so the P2.5 stress test can drive
+ * the cycle directly without needing to stand up a full connman_start(). */
+bool connman_run_message_cycle(struct connman *cm);
+
+/* P2.5: one pass of the socket-handler deferred-free sweep.
+ *
+ * Walks cm->deferred_free[], freeing entries whose ref_count has reached
+ * zero and re-parking any that are still held by an in-flight snapshot.
+ * Caller must hold cm->manager.cs_nodes. Exposed for the stress test. */
+void connman_run_deferred_free_sweep(struct connman *cm);
 
 #endif

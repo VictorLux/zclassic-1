@@ -1,5 +1,6 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0 */
 
+#define _DEFAULT_SOURCE
 #include "test/test_helpers.h"
 #include "primitives/transaction.h"
 #include "chain/chainparams.h"
@@ -7,6 +8,7 @@
 #include "net/fast_sync.h"
 #include "net/onion_service.h"
 #include "net/msgprocessor.h"
+#include "net/connman.h"
 #include "net/peer_strategy.h"
 #include <sqlite3.h>
 #include <unistd.h>
@@ -39,6 +41,95 @@ static void *p26_race_worker(void *arg)
     pthread_barrier_wait(a->barrier);
     if (msgprocessor_test_swarm_try_claim())
         atomic_fetch_add(a->won, 1);
+    return NULL;
+}
+
+/* ── P2.5 connman snapshot-iterate stress scaffolding ─────────── */
+
+struct p25_ctx {
+    struct connman *cm;
+    _Atomic bool   stop;
+    _Atomic int    cycles_run;
+    _Atomic int    callbacks_run;
+    /* Probability of mock process_messages marking the peer to
+     * disconnect, as 1-in-N. Higher N means slower churn. */
+    int            disconnect_1_in_n;
+};
+
+static _Atomic int g_p25_counter;
+
+static bool p25_mock_process_messages(void *ctx, struct p2p_node *node)
+{
+    struct p25_ctx *c = ctx;
+    atomic_fetch_add(&c->callbacks_run, 1);
+    /* Simulate a few microseconds of work under NO lock — this is the
+     * whole point of the fix: callbacks run without cs_nodes held. */
+    for (volatile int i = 0; i < 100; i++) { /* spin */ }
+    int tick = atomic_fetch_add(&g_p25_counter, 1);
+    if (c->disconnect_1_in_n > 0 &&
+        (tick % c->disconnect_1_in_n) == 0) {
+        node->disconnect = true;
+    }
+    return true;
+}
+
+static bool p25_mock_send_messages(void *ctx, struct p2p_node *node,
+                                   bool send_trickle)
+{
+    (void)node; (void)send_trickle;
+    struct p25_ctx *c = ctx;
+    atomic_fetch_add(&c->callbacks_run, 1);
+    for (volatile int i = 0; i < 50; i++) { /* spin */ }
+    return true;
+}
+
+static void *p25_message_worker(void *arg)
+{
+    struct p25_ctx *c = arg;
+    while (!atomic_load(&c->stop)) {
+        connman_run_message_cycle(c->cm);
+        atomic_fetch_add(&c->cycles_run, 1);
+    }
+    return NULL;
+}
+
+/* Drives the disconnect + deferred_free_sweep half of the loop. Mimics
+ * thread_socket_handler's cleanup pass: remove disconnected nodes from
+ * the array, append to deferred_free, then sweep. */
+static void *p25_socket_worker(void *arg)
+{
+    struct p25_ctx *c = arg;
+    while (!atomic_load(&c->stop)) {
+        zcl_mutex_lock(&c->cm->manager.cs_nodes);
+
+        connman_run_deferred_free_sweep(c->cm);
+
+        for (size_t i = 0; i < c->cm->manager.num_nodes; ) {
+            struct p2p_node *n = c->cm->manager.nodes[i];
+            if (n->disconnect &&
+                c->cm->num_deferred_free < CONNMAN_DEFERRED_FREE_CAP) {
+                /* Match production thread_socket_handler's discipline:
+                 * drop recv_msg_count before parking for free so
+                 * p2p_node_free doesn't dereference the sentinel value
+                 * our mock uses to trigger process_messages. */
+                n->recv_msg_count = 0;
+                c->cm->manager.nodes[i] =
+                    c->cm->manager.nodes[c->cm->manager.num_nodes - 1];
+                c->cm->manager.num_nodes--;
+                c->cm->deferred_free[c->cm->num_deferred_free++] = n;
+            } else {
+                i++;
+            }
+        }
+
+        zcl_mutex_unlock(&c->cm->manager.cs_nodes);
+        usleep(1000);  /* 1ms pacing */
+    }
+    /* Drain remaining deferred_free so the test doesn't leak across
+     * cases. Callers must free any nodes still left in nodes[]. */
+    zcl_mutex_lock(&c->cm->manager.cs_nodes);
+    connman_run_deferred_free_sweep(c->cm);
+    zcl_mutex_unlock(&c->cm->manager.cs_nodes);
     return NULL;
 }
 
@@ -3701,6 +3792,107 @@ skip_parallel_tests:
         }
         if (found) printf("OK\n");
         else { printf("FAIL\n"); failures++; }
+    }
+
+    /* ── P2.5 connman snapshot-iterate stress (opt-in) ──────────
+     * Exercise the refactored message-cycle + deferred-free-sweep
+     * contract under concurrent disconnect pressure. Opt-in via
+     * ZCL_STRESS_TESTS=1 so the default ./test_zcl doesn't pay the
+     * ~1-second wall cost for a path that rarely regresses. */
+    if (getenv("ZCL_STRESS_TESTS")) {
+        printf("p25_connman: 50 peers × 1s concurrent "
+               "message_cycle + disconnect churn... ");
+
+        const struct chain_params *params = chain_params_get();
+        struct p25_ctx ctx;
+        memset(&ctx, 0, sizeof(ctx));
+
+        struct connman cm;
+        struct node_signals sigs;
+        memset(&sigs, 0, sizeof(sigs));
+        sigs.ctx = &ctx;
+        sigs.process_messages = p25_mock_process_messages;
+        sigs.send_messages    = p25_mock_send_messages;
+        /* connman_init replaces sigs with its own copy, so point at the
+         * real mock functions by passing sigs before init. */
+
+        connman_init(&cm, params, &sigs);
+        ctx.cm = &cm;
+        ctx.disconnect_1_in_n = 20;
+
+        /* Allocate a nodes array large enough to hold 50 fake peers.
+         * Bypass nm_add_node (static) by growing the manager's nodes
+         * slot directly. Pattern only valid for tests. */
+        const int n_peers = 50;
+        cm.manager.nodes = zcl_realloc(
+            cm.manager.nodes,
+            (size_t)n_peers * sizeof(*cm.manager.nodes),
+            "p25_test_node_array");
+        cm.manager.nodes_cap = (size_t)n_peers;
+
+        /* Bump recv_msg_count so process_messages actually fires on
+         * each iteration; without outbound sockets the normal
+         * recv-path would leave recv_msg_count at 0. */
+        struct net_address fake_addr;
+        memset(&fake_addr, 0, sizeof(fake_addr));
+        fake_addr.svc.port = 18033;
+
+        for (int i = 0; i < n_peers; i++) {
+            char name[32];
+            snprintf(name, sizeof(name), "peer%03d", i);
+            struct p2p_node *n = p2p_node_create(
+                &cm.manager, ZCL_INVALID_SOCKET,
+                &fake_addr, name, false);
+            n->state = PEER_HANDSHAKE_COMPLETE;
+            n->recv_msg_count = 1;  /* make process_messages fire */
+            cm.manager.nodes[cm.manager.num_nodes++] = n;
+        }
+
+        /* Run two worker threads for ~1 second: one drives the
+         * message cycle, one drives the socket-cleanup + sweep. */
+        pthread_t t_msg, t_sock;
+        atomic_store(&ctx.stop, false);
+        pthread_create(&t_sock, NULL, p25_socket_worker,  &ctx);
+        pthread_create(&t_msg,  NULL, p25_message_worker, &ctx);
+
+        usleep(1000 * 1000);  /* 1s test window */
+
+        atomic_store(&ctx.stop, true);
+        pthread_join(t_msg,  NULL);
+        pthread_join(t_sock, NULL);
+
+        /* Teardown: drop recv_msg_count so p2p_node_free doesn't chase
+         * invalid recv_msgs, then free any surviving nodes plus the
+         * nodes-array itself. The socket worker's final sweep already
+         * drained deferred_free. */
+        zcl_mutex_lock(&cm.manager.cs_nodes);
+        for (size_t i = 0; i < cm.manager.num_nodes; i++) {
+            cm.manager.nodes[i]->recv_msg_count = 0;
+            p2p_node_free(cm.manager.nodes[i]);
+        }
+        cm.manager.num_nodes = 0;
+        zcl_mutex_unlock(&cm.manager.cs_nodes);
+
+        int cycles    = atomic_load(&ctx.cycles_run);
+        int callbacks = atomic_load(&ctx.callbacks_run);
+        size_t deferred_remaining = cm.num_deferred_free;
+
+        connman_free(&cm);
+
+        /* Expectations:
+         *   - ≥100 full message cycles completed in 1s (conservative;
+         *     real hardware runs thousands).
+         *   - ≥100 callbacks executed (process_messages + send_messages
+         *     per peer per cycle).
+         *   - deferred_free drained cleanly (0 entries left).
+         *   - Both threads joined (we got here without hanging). */
+        bool ok = (cycles >= 100) && (callbacks >= 100) &&
+                  (deferred_remaining == 0);
+        if (ok) printf("OK (cycles=%d callbacks=%d)\n", cycles, callbacks);
+        else { printf("FAIL (cycles=%d callbacks=%d "
+                      "deferred_remaining=%zu)\n",
+                      cycles, callbacks, deferred_remaining);
+               failures++; }
     }
 
     return failures;

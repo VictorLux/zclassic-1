@@ -662,10 +662,10 @@ static void *thread_socket_handler(void *arg)
             if (rev & (POLLHUP | POLLERR))
                 node->disconnect = true;
         }
-        /* Free deferred nodes (still under cs_nodes lock) */
-        for (size_t i = 0; i < cm->num_deferred_free; i++)
-            p2p_node_free(cm->deferred_free[i]);
-        cm->num_deferred_free = 0;
+        /* Free deferred nodes (still under cs_nodes lock). P2.5: refs
+         * held by a parallel message-handler snapshot re-park the node
+         * in deferred_free for the next cycle instead of being freed. */
+        connman_run_deferred_free_sweep(cm);
 
         /* Periodic peer stats (every 60s) */
         {
@@ -786,10 +786,21 @@ static void *thread_socket_handler(void *arg)
                 cm->manager.nodes[i] =
                     cm->manager.nodes[cm->manager.num_nodes - 1];
                 cm->manager.num_nodes--;
-                if (cm->num_deferred_free < 64)
+                if (cm->num_deferred_free < CONNMAN_DEFERRED_FREE_CAP) {
                     cm->deferred_free[cm->num_deferred_free++] = node;
-                else
+                } else if (p2p_node_get_ref(node) > 0) {
+                    /* P2.5 safety belt: with cap=256 and
+                     * max_connections=125 this branch should never fire,
+                     * but if deferred_free overflows while another thread
+                     * still holds a snapshot ref, freeing now would be
+                     * UAF. Leak rather than crash — log for diagnosis. */
+                    fprintf(stderr, "[connman] %s:%d %s(): deferred_free "
+                            "overflow with ref on node %s — leaking to "
+                            "avoid UAF\n", __FILE__, __LINE__, __func__,
+                            node->addr_name);
+                } else {
                     p2p_node_free(node);
+                }
             } else {
                 i++;
             }
@@ -799,37 +810,111 @@ static void *thread_socket_handler(void *arg)
     return NULL;
 }
 
+bool connman_run_message_cycle(struct connman *cm)
+{
+    /* P2.5: snapshot-then-iterate breaks the "cs_nodes held across
+     * callback" anti-pattern. Pre-fix, the message thread held
+     * cs_nodes for the duration of process_messages + send_messages
+     * across every peer — which meant any other thread trying to
+     * acquire cs_nodes (socket thread, RPC handlers, new-peer accept)
+     * could be starved for tens or hundreds of ms, and any callback
+     * that transitively tried to re-take cs_nodes only worked because
+     * zcl_mutex_t is recursive. That recursion masked the latent
+     * inversion hazard with sibling locks.
+     *
+     * Fix: grab cs_nodes just long enough to copy the pointer list and
+     * bump each node's ref_count, release the lock, run the callbacks
+     * against the local copy, then re-acquire cs_nodes to drop refs.
+     * The deferred_free sweep respects ref_count > 0 so a peer
+     * in-flight in a snapshot cannot be freed out from under us. */
+    bool did_work = false;
+
+    /* Phase 1: snapshot + add_ref under cs_nodes. */
+    zcl_mutex_lock(&cm->manager.cs_nodes);
+    size_t num_nodes = cm->manager.num_nodes;
+    size_t snap_count = 0;
+    struct p2p_node **snap = NULL;
+    if (num_nodes > 0) {
+        snap = zcl_malloc(num_nodes * sizeof(*snap),
+                          "message_cycle_snapshot");
+        if (snap) {
+            for (size_t i = 0; i < num_nodes; i++) {
+                struct p2p_node *n = cm->manager.nodes[i];
+                if (n->disconnect) continue;
+                snap[snap_count++] = n;
+                p2p_node_add_ref(n);
+            }
+        }
+    }
+    /* Capture num_nodes for the trickle ratio. Stale is fine — the
+     * read just picks the random-peer probability. */
+    size_t trickle_denom = num_nodes;
+    zcl_mutex_unlock(&cm->manager.cs_nodes);
+
+    if (!snap) return false;
+
+    /* Phase 2: drive callbacks against the local copy, NO lock held. */
+    for (size_t i = 0; i < snap_count; i++) {
+        struct p2p_node *node = snap[i];
+        /* Peer may have disconnected mid-iteration — ref_count still
+         * keeps the pointer valid, but there's no point talking to a
+         * dead socket. */
+        if (node->disconnect) continue;
+
+        if (node->recv_msg_count > 0 &&
+            cm->manager.signals.process_messages) {
+            cm->manager.signals.process_messages(
+                cm->manager.signals.ctx, node);
+            did_work = true;
+        }
+
+        if (!node->disconnect && cm->manager.signals.send_messages) {
+            bool trickle = trickle_denom > 0 &&
+                           (GetRand(trickle_denom) == 0);
+            cm->manager.signals.send_messages(
+                cm->manager.signals.ctx, node, trickle);
+            /* Keep tight loop when serving snapshot — don't sleep */
+            if (node->state == PEER_SNAPSHOT_SERVING ||
+                node->state == PEER_SNAPSHOT_RECEIVING)
+                did_work = true;
+        }
+    }
+
+    /* Phase 3: release refs under cs_nodes. */
+    zcl_mutex_lock(&cm->manager.cs_nodes);
+    for (size_t i = 0; i < snap_count; i++)
+        p2p_node_release(snap[i]);
+    zcl_mutex_unlock(&cm->manager.cs_nodes);
+
+    free(snap);
+    return did_work;
+}
+
+void connman_run_deferred_free_sweep(struct connman *cm)
+{
+    /* Caller must hold cm->manager.cs_nodes. Walks the deferred_free
+     * list and frees each entry whose ref_count has reached zero; any
+     * still referenced by an in-flight snapshot (e.g. the message
+     * handler mid-iterate) is re-packed at the front of the list so
+     * the next socket cycle retries. ref_count is plain int but all
+     * mutations happen under cs_nodes, so no atomics needed. */
+    size_t keep = 0;
+    for (size_t i = 0; i < cm->num_deferred_free; i++) {
+        struct p2p_node *n = cm->deferred_free[i];
+        if (p2p_node_get_ref(n) > 0)
+            cm->deferred_free[keep++] = n;
+        else
+            p2p_node_free(n);
+    }
+    cm->num_deferred_free = keep;
+}
+
 static void *thread_message_handler(void *arg)
 {
     struct connman *cm = (struct connman *)arg;
 
     while (!g_stop) {
-        bool did_work = false;
-
-        zcl_mutex_lock(&cm->manager.cs_nodes);
-        for (size_t i = 0; i < cm->manager.num_nodes; i++) {
-            struct p2p_node *node = cm->manager.nodes[i];
-            if (node->disconnect) continue;
-
-            if (node->recv_msg_count > 0 &&
-                cm->manager.signals.process_messages) {
-                cm->manager.signals.process_messages(
-                    cm->manager.signals.ctx, node);
-                did_work = true;
-            }
-
-            if (!node->disconnect && cm->manager.signals.send_messages) {
-                bool trickle = (GetRand(cm->manager.num_nodes) == 0);
-                cm->manager.signals.send_messages(
-                    cm->manager.signals.ctx, node, trickle);
-                /* Keep tight loop when serving snapshot — don't sleep */
-                if (node->state == PEER_SNAPSHOT_SERVING ||
-                    node->state == PEER_SNAPSHOT_RECEIVING)
-                    did_work = true;
-            }
-        }
-        zcl_mutex_unlock(&cm->manager.cs_nodes);
-
+        bool did_work = connman_run_message_cycle(cm);
         if (!did_work)
             usleep(100000);
     }
