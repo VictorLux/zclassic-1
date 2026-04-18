@@ -33,32 +33,25 @@ cross-agent priority table. Last brief rewrite: 2026-04-17.
 
 ---
 
-## Current status — 2026-04-19 (late afternoon, P1.16b on main)
+## Current status — 2026-04-19 (evening, P1.6 on main)
 
-**Done and on main (13 rows):** P1.3, P1.4, P1.8, P1.9, P1.10, P1.11,
-P1.11b, P1.12, P1.13, P1.14, P1.15, P1.16 (`94d607b85`),
-**P1.16b (`c841defd2`)**. AGENT.md shows the SHAs.
+**Done and on main (14 rows):** P1.3, P1.4, P1.6 (`f6aa0b080`),
+P1.8, P1.9, P1.10, P1.11, P1.11b, P1.12, P1.13, P1.14, P1.15,
+P1.16 (`94d607b85`), P1.16b (`c841defd2`). AGENT.md shows the SHAs.
 
-P1.16b (jubjub_to_scalar constant-time reduction) closed the prf.c
-nullifier-path audit.  Replaced the pre-existing early-exit bi_cmp +
-borrow-branch bi_sub + per-bit branch with a single bi_cond_sub that
-always runs the full 9-limb subtract and selects limb-wise via a
-mask derived from the final borrow.  Shipping timing ratio is 1.002
-(well inside the 0.85..1.15 gate).  Diff test: 10k random 64-byte
-inputs + 5 corners (zero, all-ones, lsb-only, msb-only, exactly-r).
+P1.6 shipped a byte-for-byte mirror of zclassicd's
+`GetP2SHSigOpCount` + `CScript::GetSigOpCount(flags, scriptSig)`,
+wired into `connect_block.c` right after `have_inputs`.  Per-input
+15-sigop cap intentionally NOT shipped as consensus (would create
+new divergence in the opposite direction — see the 2026-04-19 P1.6
+note at the bottom of this file).  Left to Rhett to decide whether
+it should land as a mempool-policy rule in Agent-2's lane.
 
-**Key scope change (2026-04-19):** Rhett is coordinator only and does
-NOT code. Three rows transferred into your lane from Rhett:
-**P1.6** (P2SH sigop accounting — consensus-split risk),
-**P1.7** (skip_diffbits difficulty-check escape hatch), and **P5.5**
-(vendor/tor submodule pin + .onion smoke test). Read the P1.6 row
-carefully — consensus-sensitive, STOP + ping triggers apply.
-
-**Now working on:** P1.6 — P2SH sigop accounting (promoted from NEXT).
+**Now working on:** P1.7 — remove skip_diffbits difficulty-check
+escape hatch (promoted from NEXT+1 → NOW).
 
 **Queued NEXT (pre-authorized):**
-1. **P1.7** — consensus: skip_diffbits difficulty-check removal
-2. **P5.5** — vendor: tor submodule pin bump + .onion smoke test
+1. **P5.5** — vendor: tor submodule pin bump + .onion smoke test
 
 ---
 
@@ -326,6 +319,35 @@ and flag the owner of anything out of lane.)_
   and weak seeds (`time(NULL)`, `getpid`) found **zero** hits — both
   trees source secret bytes only via `GetRandBytes`. However see the
   out-of-lane finding immediately below.
+
+### 2026-04-19 — P1.6 shipped mirror-of-zclassicd; per-input 15-cap flagged for Rhett
+
+P1.6 (P2SH redeem-script sigop accounting) landed in
+`lib/validation/src/sigops.c` + `lib/script/src/script.c` +
+`lib/validation/src/connect_block.c`.  The implementation mirrors
+zclassicd `src/main.cpp::GetP2SHSigOpCount` + `src/script/script.cpp::
+CScript::GetSigOpCount(flags, scriptSig)` byte-for-byte: walk each
+non-coinbase input, resolve prevout, if P2SH then count sigops in
+the last-pushed redeem-script payload (accurate mode), add to the
+aggregate.  Only consensus check is `aggregate > MAX_BLOCK_SIGOPS
+(20000)`, identical to zclassicd `ConnectBlock` at main.cpp:2634-2637.
+
+**Brief divergence (flagged to Rhett):** AGENT-3.md NEXT[1] test 2
+asks for block-level rejection when any single P2SH input's redeem
+script has >15 sigops.  That would be STRICTER than zclassicd —
+`MAX_P2SH_SIGOPS=15` in zclassicd is enforced only at policy /
+standardness (`AreInputsStandard` in main.cpp:882-884, via
+`IsStandardTx`), not at ConnectBlock.  Shipping the per-input
+consensus cap would create a NEW consensus divergence where we
+reject blocks zclassicd accepts — which is the exact scenario the
+brief's STOP+ping trigger warns about ("zclassic23 and zclassicd
+DISAGREE on sigop count → stop").  I therefore shipped only the
+mirror-of-zclassicd piece (closes the real consensus-split risk
+where we under-counted) and did NOT add the per-input 15-cap.  If
+Rhett wants the 15-cap as a standardness/mempool rule, the natural
+home is mempool acceptance in Agent-2's lane (`lib/net/src/msg_tx.c`
+or equivalent), not my lane.  Waiting for Rhett's call before
+touching anything further here.
 
 ### 2026-04-17 — Out-of-lane finding (FOR RHETT, lib/core/)
 

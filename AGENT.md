@@ -6,22 +6,22 @@ Owner: Rhett (primary). Delegates: Agent-2 (see `AGENT-2.md`), Agent-3 (see `AGE
 
 ---
 
-## Progress — last update 2026-04-19 (late afternoon, P1.16b shipped by Agent-3)
+## Progress — last update 2026-04-19 (evening, P1.6 shipped by Agent-3)
 
-**Overall: 55 / 64 rows closed (86%) | SWRC ~91%**
+**Overall: 56 / 64 rows closed (88%) | SWRC ~92%**
 
 | Tier | Closed / Total | % | Open rows |
 |---|---|---|---|
 | **CRITICAL** | 9 / 10 | **90%** | P2.1 |
-| **HIGH** | 22 / 27 | **81%** | P1.6, P1.7, P4.1, P4.2, P7.4, P7.9 |
+| **HIGH** | 23 / 27 | **85%** | P1.7, P4.1, P4.2, P7.4, P7.9 |
 | **MED** | 19 / 21 | **90%** | P5.5, P7.10 |
 | **LOW** | 2 / 2 | **100%** | — |
 | (P0 baseline) | 4 / 4 | **100%** | — |
 
-**Open by owner (2026-04-19 late afternoon):**
+**Open by owner (2026-04-19 evening):**
 - **Agent-2 (6 logical tasks):** P2.1 (NOW), P4.1+P4.2 paired (NEXT), P7.4 (NEXT+1), P7.9+P7.10 paired (NEXT+2)
-- **Agent-3 (3 rows):** P1.6 (NOW — was NEXT), P1.7 (NEXT), P5.5 vendor/tor (NEXT+1). prf.c nullifier CT audit closed as P1.16b (c841defd2).
-- **Rhett:** 0 (coordinator only)
+- **Agent-3 (2 rows):** P1.7 (NOW — was NEXT), P5.5 vendor/tor (NEXT). P1.6 closed (f6aa0b080), P1.16b closed (c841defd2).
+- **Rhett:** 0 (coordinator only). ACTION: decide whether MAX_P2SH_SIGOPS=15 per-input should land as a mempool-policy rule (Agent-2 lane) — see the AGENT-3.md 2026-04-19 P1.6 note for context.
 
 **ACTION ITEM (Rhett):** the P7.1 fix landed as `a6bedccad` but production is still at h=3,081,411 because nothing triggered a rebuild + redeploy. Run `make deploy` on the production box to push the fix live. Expected result: chain advances past 3,081,411 within 60s, catches up to legacy zclassicd (currently ~3,082,462) within 2 minutes.
 
@@ -66,7 +66,7 @@ regression test locks the gates in place.
 | P1.3 | Sapling verify fail-open on NULL VK | `lib/sapling/src/sapling.c:505, 559` | CRITICAL | Agent 3 — done 3b4b08ba9 (merged bcab984fd) |
 | P1.4 | Sapling params loaded without integrity check | `lib/sapling/src/params_init.c:47-167` | CRITICAL | Agent 3 — done 785db18b1 (merged bcab984fd) |
 | P1.5 | Raw `sqlite3_step` in UTXO batch writer | `lib/storage/src/coins_view_sqlite.c:461,474,509,557` | CRITICAL | Agent 2 — done 152603fdc |
-| P1.6 | No P2SH sigop accounting — consensus split risk | `lib/validation/src/sigops.c:10-18` | HIGH | Agent 3 — NEXT (narrow scope: lib/validation/src/sigops.c; consensus-sensitive — add parity test against zclassic-cpp before landing) |
+| P1.6 | No P2SH sigop accounting — consensus split risk | `lib/validation/src/sigops.c:10-18` | HIGH | Agent 3 — done f6aa0b080 (mirror of zclassicd `src/main.cpp::GetP2SHSigOpCount` + `src/script/script.cpp:202-228`; new `script_get_sig_op_count_p2sh` + `get_p2sh_sig_op_count` wired into connect_block's post-`have_inputs` path; no per-input 15-cap (see AGENT-3.md notes — deferred to mempool-policy / Agent-2 lane because consensus-level cap would diverge from zclassicd); 6 unit vectors for the P2SH counter in test_validation.c covering non-P2SH fallback, simple redeem, 16×CHECKSIG raw count, CHECKMULTISIG accurate-N, non-push scriptSig, and P2SH-off fallback) |
 | P1.7 | `skip_diffbits` silently skips difficulty check | `lib/validation/src/check_block.c:222,233-250` | HIGH | Agent 3 — NEXT+1 (narrow scope: check_block.c difficulty path; remove the skip_diffbits escape hatch, test with a contrived low-pow block) |
 | P1.8 | Ed25519 missing `S<L` canonicality | `lib/crypto/src/ed25519.c:300-355` | HIGH | Agent 3 — done c510c7335 (merged bcab984fd) |
 | P1.9 | RedJubjub missing `S<r` canonicality | `lib/sapling/src/sapling.c:386` | HIGH | Agent 3 — done 8440cd864 (merged bcab984fd) |
