@@ -38,33 +38,29 @@ See `AGENT.md` for the cross-agent priority table.
 
 ---
 
-## Current status — 2026-04-19 (late night, P8.3 landed — P8.2 reassigned to you)
+## Current status — 2026-04-19 (late night, P8.2 landed — queue empty)
 
-**Done and on main (18 rows + audit):** P1.3, P1.4, P1.6 (`f6aa0b080`),
+**Done and on main (19 rows + audit):** P1.3, P1.4, P1.6 (`f6aa0b080`),
 P1.7 (`5ce252bb6`), P1.8, P1.9, P1.10, P1.11, P1.11b, P1.12, P1.13,
 P1.14, P1.15, P1.16 (`94d607b85`), P1.16b (`c841defd2`), P5.5
-(`75576d7a0`), P7.4 (`f6474c77b`), P8.3 (`c06515cbd`), and the
-P8-wave audit pass (`6751d9bfa` — opened 8 new rows).
+(`75576d7a0`), P7.4 (`f6474c77b`), P8.2 (`576b5cde2`), P8.3
+(`c06515cbd`), and the P8-wave audit pass (`6751d9bfa` — opened 8
+new rows).
 
 All crypto + consensus + vendor + net-backpressure + MMB-hardening
-rows shipped. P8.3 closed.
++ dandelion-RNG rows shipped. HIGH tier across the whole project
+now 100% (29/29). P8.2 + P8.3 closed.
 
-**P8.2 reassigned to you** — natural fit with your RNG lane: you
-own `lib/core/src/random.c` (P1.16) and `lib/crypto/src/random_secret.c`
-(P1.15). The dandelion seed quality issue is exactly the kind of
-RNG-fail-open you've been hardening. Lane expansion into `lib/net/`
-already granted via P7.4.
-
-**Open queue (1 row, then ping Rhett):**
+**Open queue: empty.** Ping Rhett. The P8 triage pass already covered
+every lane — no further audit work pre-authorized.
 
 | Order | Row | Size | Severity |
 |---|---|---|---|
-| **NOW** | **P8.2** — dandelion stem-peer PRNG seeded with ~31 bits of entropy | small | HIGH |
-| NEXT | (queue empty — ping Rhett) | — | — |
+| NOW | (queue empty — ping Rhett) | — | — |
 
 ---
 
-## NOW — P8.2: replace dandelion PRNG with cryptographic RNG
+## (Below: archived NOW for P8.2 — landed `576b5cde2`, reference only) — replace dandelion PRNG with cryptographic RNG
 
 File: `lib/net/src/dandelion.c:42-54` (the seed init + xorshift64 helper).
 
@@ -436,6 +432,60 @@ If build or tests fail — STOP and report.
 
 _(Keep short — 1-3 recent entries.)_
 
+### 2026-04-19 (late night) — P8.2 dandelion PRNG hardened — queue empty
+
+- **P8.2 (`576b5cde2`):** dropped the static `s_dandelion_rng_state`
+  + `dandelion_rand` xorshift64 (seeded from `time(NULL) ^ const`).
+  Both decisions in `lib/net/src/dandelion.c` now route through
+  `zcl_random_secret_bytes` via a small static `dandelion_secret_u64`
+  helper — the same source already used for esk / Sapling rcm/rcv /
+  Groth16 blinding. One fresh /dev/urandom read per Fisher-Yates
+  swap in `dandelion_maybe_rotate_epoch` and one per coin-flip in
+  `dandelion_should_stem`. Picked option B from the brief (full
+  replacement, not just per-epoch reseed) — fewer predictable
+  streams in the codebase, and dandelion is not a hot path.
+  - **Safe-fail policy on RNG failure:** stem-peer rotation aborts
+    leaving `num_stem_peers=0` (next `dandelion_should_stem` returns
+    `false` → tx fluffs via normal relay), and the coin-flip itself
+    returns `false` (tx fluffs). Both options drop privacy for the
+    affected epoch/tx but keep relay working — strictly safer than
+    picking with a compromised RNG. Logs the failure with
+    `[dandelion] stem-peer RNG failed; ...` so a real RNG outage
+    surfaces in the operator log instead of silently regressing
+    privacy.
+  - **Audit comment** at the top of the new RNG block in
+    `dandelion.c` documents the cryptographic-RNG dependency and
+    explicitly tells future "performance" refactors not to swap
+    back to a cheap PRNG. The seed has to be unpredictable to the
+    network, not just statistically random.
+  - **Tests** in `lib/test/src/test_dandelion.c` via two
+    `#ifdef ZCL_TESTING` hooks at the end of `dandelion.c`
+    (`dandelion_test_shuffle`, `dandelion_test_should_stem_coin`)
+    that mirror the production shuffle / coin-flip without needing
+    a populated `net_manager`:
+    `P8.2: dandelion stem shuffle non-deterministic` — back-to-back
+    shuffles of `{1..8}` differ across calls; 5 retries drive the
+    false-FAIL probability below ~1e-20 (8! ^ -5). Pre-fix, two
+    shuffles inside the same wall-clock second produced identical
+    outputs because `time(NULL)` was identical.
+    `P8.2: dandelion fluff coin-flip ±3σ uniformity (10k)` — 10 000
+    coin-flips fall in 8910..9090 stem (3σ around 9000 expected for
+    `FLUFF_PROB=10`). Smoke-tests no bias from the new entropy
+    source. Both new tests green; observed first run was
+    `9042/10000` — comfortably inside the band.
+  - The existing `dandelion_should_stem probability` test (1000
+    trials, 80%-97% stem) still passes against the new RNG path
+    (observed 88.5%) — no regression.
+- **Baseline failures carried forward** (pre-existing on main, not
+  caused by this commit): `test_no_hardcoded_home` ×1
+  (`vendor/tor/libtor.a` build-path leak from Agent-2's tor build —
+  Agent-2 lane), `test_make_lint_gates` ×2 (env leakage from
+  earlier test group in the runner; standalone repro is green). 3
+  total failures = exact match to the AGENT-3.md 2026-04-19 P8.3
+  baseline. `make lint` green.
+- Queue empty — pinging Rhett. All Agent-3-owned rows across
+  P0–P8 closed. HIGH tier across the project now 100% (29/29).
+
 ### 2026-04-19 (late night) — P8.3 MMB height cap landed — queue empty
 
 - **P8.3 (`c06515cbd`):** new `MMB_MAX_HEIGHT=64` in
@@ -521,20 +571,3 @@ _(Keep short — 1-3 recent entries.)_
     (`b669eed33`) before this commit; pre-existing stack/RPC
     interaction flake.
 
-### 2026-04-19 (night) — consensus + vendor + P1.16b closed
-
-- **P1.6 (`f6aa0b080`):** P2SH sigop accounting mirroring zclassicd.
-  Per-input 15-cap deferred to mempool policy (Agent-2 lane) to
-  avoid consensus divergence from legacy Zcash.
-- **P1.7 (`5ce252bb6`):** removed `skip_diffbits` escape hatch;
-  contextual_check_block_header now always calls GetNextWorkRequired.
-- **P5.5 (`75576d7a0`):** vendor/tor pin d14113e → 73bd405. Onion
-  bootstrap smoke test pending Rhett's `make deploy`.
-- **P1.16b (`c841defd2`):** prf.c nullifier CT audit — masked
-  jubjub_to_scalar reduction; 10k diff test + Hamming-weight timing
-  test.
-
-### 2026-04-19 (night) — lane expansion into lib/net
-
-For P7.4, you now have read+write access to msgprocessor.c and
-download.c. Do NOT touch anything else in lib/net/ — Agent-2 owns it.
