@@ -10,6 +10,8 @@
 #include "net/peer_strategy.h"
 #include <sqlite3.h>
 #include <unistd.h>
+#include <pthread.h>
+#include <stdatomic.h>
 #include "util/safe_alloc.h"
 
 static int test_tip_count = 0;
@@ -20,6 +22,24 @@ static void test_updated_block_tip(void *ctx, int height)
     (void)ctx;
     test_tip_count++;
     test_tip_height = height;
+}
+
+/* P2.6 concurrent-racer worker: each thread attempts to claim the
+ * swarm slot. Exactly one must win. The thread writes 1 into the
+ * `won` slot on success, 0 on failure. A shared start barrier makes
+ * both pthreads hit the CAS in the same window. */
+struct p26_race_arg {
+    pthread_barrier_t *barrier;
+    _Atomic int *won;
+};
+
+static void *p26_race_worker(void *arg)
+{
+    struct p26_race_arg *a = arg;
+    pthread_barrier_wait(a->barrier);
+    if (msgprocessor_test_swarm_try_claim())
+        atomic_fetch_add(a->won, 1);
+    return NULL;
 }
 
 int test_net(void)
@@ -3248,6 +3268,73 @@ int test_net(void)
                failures++; }
 
         msgprocessor_test_fc_rate_reset();
+    }
+
+    /* ── P2.6: g_swarm_active TOCTOU (atomic CAS gate) ──────────── */
+    /* The zmanifest handler previously did a plain read/write pair
+     * on g_swarm_active: check `!g_swarm_active`, then later set
+     * `g_swarm_active = true` under g_swarm_mutex. Two peers racing
+     * could both observe false and both call swarm_sync_init. The
+     * fix swapped that for atomic_compare_exchange_strong so exactly
+     * one caller transitions the slot. */
+
+    printf("swarm_cas: no-race fast path claims once... ");
+    {
+        msgprocessor_test_swarm_release();  /* baseline clean */
+
+        bool first  = msgprocessor_test_swarm_try_claim();
+        bool active = msgprocessor_test_swarm_is_active();
+        bool second = msgprocessor_test_swarm_try_claim();  /* must fail */
+
+        msgprocessor_test_swarm_release();
+        bool inactive_after = !msgprocessor_test_swarm_is_active();
+
+        bool ok = first && active && !second && inactive_after;
+        if (ok) printf("OK\n");
+        else { printf("FAIL (first=%d active=%d second=%d inactive_after=%d)\n",
+                      first, active, second, inactive_after);
+               failures++; }
+    }
+
+    printf("swarm_cas: concurrent racers — exactly one claims... ");
+    {
+        msgprocessor_test_swarm_release();
+
+        pthread_barrier_t barrier;
+        pthread_barrier_init(&barrier, NULL, 2);
+        _Atomic int won = 0;
+
+        struct p26_race_arg arg = { .barrier = &barrier, .won = &won };
+        pthread_t t1, t2;
+        pthread_create(&t1, NULL, p26_race_worker, &arg);
+        pthread_create(&t2, NULL, p26_race_worker, &arg);
+        pthread_join(t1, NULL);
+        pthread_join(t2, NULL);
+        pthread_barrier_destroy(&barrier);
+
+        int wins = atomic_load(&won);
+        bool still_active = msgprocessor_test_swarm_is_active();
+        msgprocessor_test_swarm_release();
+
+        bool ok = (wins == 1) && still_active;
+        if (ok) printf("OK (wins=%d)\n", wins);
+        else { printf("FAIL (wins=%d still_active=%d)\n",
+                      wins, still_active);
+               failures++; }
+    }
+
+    printf("swarm_cas: reset cycle re-arms the next CAS... ");
+    {
+        msgprocessor_test_swarm_release();
+
+        bool c1 = msgprocessor_test_swarm_try_claim();   /* claim 1 */
+        msgprocessor_test_swarm_release();               /* finish */
+        bool c2 = msgprocessor_test_swarm_try_claim();   /* claim 2 must succeed */
+        msgprocessor_test_swarm_release();
+
+        bool ok = c1 && c2;
+        if (ok) printf("OK\n");
+        else { printf("FAIL (c1=%d c2=%d)\n", c1, c2); failures++; }
     }
 
     /* Clean up test database */

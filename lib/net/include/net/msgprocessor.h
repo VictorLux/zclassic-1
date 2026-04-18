@@ -118,6 +118,13 @@ uint32_t msgprocessor_test_fc_rate_dropped(node_id_t peer_id);
 bool msgprocessor_test_fc_rate_should_score(node_id_t peer_id);
 void msgprocessor_test_fc_rate_reset(void);
 
+/* P2.6 test hooks: drive the g_swarm_active atomic CAS used by the
+ * zmanifest handler. try_claim returns true exactly once until
+ * release() is called; concurrent callers see at most one success. */
+bool msgprocessor_test_swarm_try_claim(void);
+void msgprocessor_test_swarm_release(void);
+bool msgprocessor_test_swarm_is_active(void);
+
 /* Test helpers for block relay deduplication. */
 bool msgprocessor_test_block_already_seen(const struct uint256 *hash);
 void msgprocessor_test_block_mark_seen(const struct uint256 *hash);

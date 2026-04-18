@@ -260,6 +260,28 @@ void msgprocessor_test_fc_rate_reset(void)
     pthread_mutex_unlock(&g_fc_rate_mutex);
 }
 
+/* ── P2.6 test hooks: g_swarm_active CAS drive ─────────────────
+ * Expose the exact atomic primitive used by the zmanifest handler
+ * so test_net.c can exercise the no-race / concurrent / reset-cycle
+ * paths without a full peer-handshake setup. Body-for-body identical
+ * to the production call sites around lines 2218 and 2398. */
+bool msgprocessor_test_swarm_try_claim(void)
+{
+    bool expected = false;
+    return atomic_compare_exchange_strong(&g_swarm_active,
+                                          &expected, true);
+}
+
+void msgprocessor_test_swarm_release(void)
+{
+    atomic_store(&g_swarm_active, false);
+}
+
+bool msgprocessor_test_swarm_is_active(void)
+{
+    return atomic_load(&g_swarm_active);
+}
+
 /* Global download manager — coordinates parallel block downloads.
  * Initialized once from msg_processor_init, accessed via pointer. */
 static struct download_manager g_download_mgr;
@@ -2210,28 +2232,51 @@ static bool handle_zcl23_sync(struct msg_processor *mp,
 
                         /* If peer is significantly ahead and we have no
                          * active swarm, initialize the swarm coordinator
-                         * from their (now-verified) manifest. */
-                        if (height > our_h + 100 && !g_swarm_active) {
-                            struct sync_manifest peer_manifest = {
-                                .height = height,
-                                .num_utxos = num_utxos,
-                                .num_chunks = num_chunks,
-                                .chunk_size = chunk_size,
-                                .chunk_hashes = hashes
-                            };
-                            memcpy(peer_manifest.block_hash, block_hash, 32);
-                            memcpy(peer_manifest.merkle_root, merkle_root, 32);
+                         * from their (now-verified) manifest.
+                         *
+                         * P2.6: atomic compare-exchange on g_swarm_active
+                         * (false → true) closes the TOCTOU window between
+                         * the "is a swarm already running?" check and the
+                         * "claim the slot" write. Two peers racing on
+                         * near-simultaneous manifests would previously
+                         * both observe false and both call swarm_sync_init
+                         * — the second overwriting the first's chunk index.
+                         * Now whichever peer wins the CAS gets the init;
+                         * the loser drops its message. */
+                        if (height > our_h + 100) {
+                            bool expected = false;
+                            if (!atomic_compare_exchange_strong(
+                                    &g_swarm_active, &expected, true)) {
+                                /* Another peer raced us — drop silently
+                                 * rather than risk state leak. */
+                                printf("Peer %s: swarm already active "
+                                       "(peer raced), dropping manifest\n",
+                                       node->addr_name);
+                            } else {
+                                struct sync_manifest peer_manifest = {
+                                    .height = height,
+                                    .num_utxos = num_utxos,
+                                    .num_chunks = num_chunks,
+                                    .chunk_size = chunk_size,
+                                    .chunk_hashes = hashes
+                                };
+                                memcpy(peer_manifest.block_hash, block_hash, 32);
+                                memcpy(peer_manifest.merkle_root, merkle_root, 32);
 
-                            zcl_mutex_lock(&g_swarm_mutex);
-                            if (swarm_sync_init(&g_swarm, &peer_manifest,
-                                                mp->datadir)) {
-                                g_swarm_last_progress_time =
-                                    (int64_t)time(NULL);
-                                g_swarm_active = true;
-                                printf("Swarm sync started: %u chunks "
-                                       "from h=%d\n", num_chunks, height);
+                                zcl_mutex_lock(&g_swarm_mutex);
+                                if (swarm_sync_init(&g_swarm, &peer_manifest,
+                                                    mp->datadir)) {
+                                    g_swarm_last_progress_time =
+                                        (int64_t)time(NULL);
+                                    printf("Swarm sync started: %u chunks "
+                                           "from h=%d\n", num_chunks, height);
+                                } else {
+                                    /* Init failed — release the claim so
+                                     * another peer's manifest can retry. */
+                                    atomic_store(&g_swarm_active, false);
+                                }
+                                zcl_mutex_unlock(&g_swarm_mutex);
                             }
-                            zcl_mutex_unlock(&g_swarm_mutex);
                         }
                         /* swarm_sync_init deep-copies the hash array, so
                          * our peer copy is ours to free regardless. */
@@ -2373,7 +2418,11 @@ static bool handle_zcl23_sync(struct msg_processor *mp,
                             }
 
                             swarm_sync_free(&g_swarm);
-                            g_swarm_active = false;
+                            /* P2.6: explicit atomic_store for symmetry with
+                             * the CAS at the init site. Functionally
+                             * equivalent to `g_swarm_active = false` on
+                             * _Atomic bool, but documents the pairing. */
+                            atomic_store(&g_swarm_active, false);
                             zcl_mutex_unlock(&g_swarm_mutex);
                         } else {
                             zcl_mutex_unlock(&g_swarm_mutex);
