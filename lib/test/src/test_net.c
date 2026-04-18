@@ -1087,6 +1087,78 @@ int test_net(void)
         else { printf("FAIL\n"); failures++; }
     }
 
+    /* P2.8 — process-wide recv queue budget caps total bytes across
+     * all net_messages, not just per-message. A swarm of peers
+     * staging 2 MB messages must not be able to push our resident
+     * set above the configured ceiling. */
+    {
+        printf("net_message: recv budget rejects over-cap alloc (P2.8)... ");
+        unsigned char magic[MESSAGE_START_SIZE] = {0x24, 0xe9, 0x27, 0x64};
+
+        /* 16 KB cap — smaller than any single real message. */
+        setenv("ZCL_MAX_RECVBUFFER_TOTAL_BYTES", "16384", 1);
+
+        /* Snapshot baseline; other outstanding messages in the test
+         * binary should not affect the delta the assertions below
+         * compute. */
+        size_t base = net_recv_total_bytes();
+
+        /* Three 8 KB messages: #1 and #2 fit (16 KB total), #3 should
+         * be rejected because the cap is exactly 16 KB. */
+        struct net_message m1, m2, m3;
+        net_message_init(&m1, magic);
+        net_message_init(&m2, magic);
+        net_message_init(&m3, magic);
+
+        struct msg_header hdr;
+        msg_header_init_full(&hdr, magic, "ping", 8192);
+        unsigned char payload[8192];
+        memset(payload, 0x42, sizeof(payload));
+
+        net_message_read_header(&m1, (const char *)&hdr, MSG_HEADER_SIZE);
+        int n1 = net_message_read_data(&m1, (const char *)payload,
+                                       sizeof(payload));
+        bool ok = (n1 == (int)sizeof(payload));
+        ok = ok && (net_recv_total_bytes() == base + 8192);
+
+        net_message_read_header(&m2, (const char *)&hdr, MSG_HEADER_SIZE);
+        int n2 = net_message_read_data(&m2, (const char *)payload,
+                                       sizeof(payload));
+        ok = ok && (n2 == (int)sizeof(payload));
+        ok = ok && (net_recv_total_bytes() == base + 16384);
+
+        net_message_read_header(&m3, (const char *)&hdr, MSG_HEADER_SIZE);
+        int n3 = net_message_read_data(&m3, (const char *)payload,
+                                       sizeof(payload));
+        /* Over-cap allocation must fail without charging the budget. */
+        ok = ok && (n3 < 0);
+        ok = ok && (net_recv_total_bytes() == base + 16384);
+
+        /* Freeing m1 must make room for one more 8 KB message. */
+        net_message_free(&m1);
+        ok = ok && (net_recv_total_bytes() == base + 8192);
+
+        net_message_init(&m1, magic);
+        net_message_read_header(&m1, (const char *)&hdr, MSG_HEADER_SIZE);
+        int n4 = net_message_read_data(&m1, (const char *)payload,
+                                       sizeof(payload));
+        ok = ok && (n4 == (int)sizeof(payload));
+        ok = ok && (net_recv_total_bytes() == base + 16384);
+
+        net_message_free(&m1);
+        net_message_free(&m2);
+        net_message_free(&m3);
+        ok = ok && (net_recv_total_bytes() == base);
+
+        /* The cap helper must honour the env override. */
+        ok = ok && (net_recv_total_bytes_cap() == 16384);
+
+        unsetenv("ZCL_MAX_RECVBUFFER_TOTAL_BYTES");
+
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
     /* version_message: serialize/deserialize roundtrip */
     {
         printf("version_message: serialize roundtrip... ");

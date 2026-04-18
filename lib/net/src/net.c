@@ -40,6 +40,45 @@
 #endif
 
 /* --- net_message --- */
+/*
+ * Process-wide recv-queue byte budget (P2.8).
+ *
+ * Per-message size is capped at 2 MB in net_message_read_data below,
+ * but nothing prevented 1000 peers each feeding a 2 MB message into
+ * our recv queue at the same time — 2 GB of kernel-invisible memory
+ * pressure. This counter tracks the sum of every outstanding
+ * msg->recv_alloc across all peers / messages and rejects new
+ * allocations when adding them would push the total past the cap
+ * (default 256 MiB, overridable via ZCL_MAX_RECVBUFFER_TOTAL_BYTES).
+ *
+ * Atomic so the common case (peer-thread read_data) needs no global
+ * mutex. The cap is re-read from the environment on every check so
+ * tests can tune it mid-process without a re-init hook.
+ */
+static _Atomic size_t g_recv_total_bytes = 0;
+
+static size_t recv_total_bytes_cap(void)
+{
+    size_t cap = 256 * 1024 * 1024; /* 256 MiB default */
+    const char *env = getenv("ZCL_MAX_RECVBUFFER_TOTAL_BYTES");
+    if (env && *env) {
+        char *endp = NULL;
+        long long v = strtoll(env, &endp, 10);
+        if (endp != env && v > 0 && (unsigned long long)v < SIZE_MAX)
+            cap = (size_t)v;
+    }
+    return cap;
+}
+
+size_t net_recv_total_bytes(void)
+{
+    return atomic_load(&g_recv_total_bytes);
+}
+
+size_t net_recv_total_bytes_cap(void)
+{
+    return recv_total_bytes_cap();
+}
 
 void net_message_init(struct net_message *msg,
                       const unsigned char msgstart[MESSAGE_START_SIZE])
@@ -57,6 +96,10 @@ void net_message_init(struct net_message *msg,
 
 void net_message_free(struct net_message *msg)
 {
+    if (msg->recv_data) {
+        /* Return this message's bytes to the process-wide budget. */
+        atomic_fetch_sub(&g_recv_total_bytes, msg->recv_alloc);
+    }
     free(msg->recv_data);
     msg->recv_data = NULL;
     msg->recv_alloc = 0;
@@ -109,8 +152,24 @@ int net_message_read_data(struct net_message *msg,
     size_t needed = msg->data_pos + copy;
     if (msg->recv_alloc < needed) {
         size_t alloc = msg->hdr.nMessageSize;
+        /* P2.8: charge the delta against the process-wide recv budget
+         * BEFORE reallocating. A swarm of peers each trying to stage a
+         * 2 MB message must not be able to push our resident set past
+         * the configured ceiling. */
+        size_t delta = alloc - msg->recv_alloc;
+        size_t cap = recv_total_bytes_cap();
+        size_t prev = atomic_fetch_add(&g_recv_total_bytes, delta);
+        if (prev + delta > cap) {
+            atomic_fetch_sub(&g_recv_total_bytes, delta);
+            LOG_ERR("net",
+                    "recv queue budget exhausted: cap=%zu used=%zu add=%zu",
+                    cap, prev, delta);
+        }
         uint8_t *tmp = zcl_realloc(msg->recv_data, alloc, "msg_recv_data");
-        if (!tmp) LOG_ERR("net", "realloc failed for recv_data: size=%zu", alloc);
+        if (!tmp) {
+            atomic_fetch_sub(&g_recv_total_bytes, delta);
+            LOG_ERR("net", "realloc failed for recv_data: size=%zu", alloc);
+        }
         msg->recv_data = tmp;
         msg->recv_alloc = alloc;
     }
