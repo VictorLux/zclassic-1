@@ -30,114 +30,82 @@ cross-agent priority table. Last brief rewrite: 2026-04-17.
 
 ---
 
-## Current status — 2026-04-18
+## Current status — 2026-04-18 (mid-day)
 
-**Done and on main (15 rows):** P1.1, P1.2, P1.5, P6.1–P6.6, P3.1, P3.2,
-P3.3, P3.4, P3.5, P3.6, P5.1, P5.3, P5.4, P5.7, P4.3, P4.4, P4.5.
+**Done and on main (19 rows + 1 infra):** P1.1, P1.2, P1.5, P6.1–P6.6,
+P3.1, P3.2, P3.3, P3.4, P3.5, P3.6, P5.1, P5.3, P5.4, P5.7, P4.3, P4.4,
+P4.5, **P2.3, P2.8, P3.7**, plus parallel test runner infrastructure
+(df5de36c4). AGENT.md shows SHAs.
 
-Every row in your original brief plus the entire P3 group plus the
-narrow-P4 expansion plus full P5 hygiene wave is now closed. AGENT.md
-shows the SHAs.
+You've now touched every public lane except `lib/keys/`, `lib/sapling/`,
+`lib/crypto/`, and the parts of `lib/validation/` / `lib/script/` /
+`lib/net/` that aren't on your current scope expansion.
 
-**Now working on:** narrow-scope expansion into the network and RPC
-lanes — see NOW below. Three small AGENT.md rows.
-**Queued:** parallel test runner (infrastructure). See NEXT.
-
----
-
-## NOW — narrow expansion into lib/net/ + lib/rpc/
-
-Three more bounded fixes. Each is in a single file, each has a sharp
-spec, each is the kind of work you've already proven you do well.
-
-**Expanded read/write scope for this wave:**
-- `lib/net/src/fast_sync.c` (P2.3 only)
-- `lib/net/src/net.c` (P2.8 only)
-- `lib/rpc/src/httpserver.c` (P3.7 only)
-
-**Still off-limits:** every other file in `lib/net/`, `lib/rpc/`,
-`lib/validation/`, `lib/consensus/`, `lib/script/` (except the two
-P4 files you already touched).
-
-### P2.3 — fast_sync bypasses AR_BEGIN_SAVE (HIGH)
-
-File: `lib/net/src/fast_sync.c:480-526`
-
-**Bug.** The fast-sync chunk writer takes the same shortcut every other
-raw-step site did pre-P3.3 — calls `sqlite3_step()` directly, skipping
-the activerecord transaction wrapper. A partial chunk write under power
-loss / OOM kill leaves the chainstate in a half-imported state.
-
-**Fix.** Same migration pattern as P3.3 / P1.5: hoist the prepare into
-the init path, route stepping through `AR_BEGIN_SAVE` for writes /
-`AR_STEP_ROW_READONLY` for reads. If a step needs to remain raw for
-performance, document it with a `// raw-sql-ok: <reason>` annotation.
-
-**Acceptance.** Add a test that simulates a mid-chunk SQLITE_IOERR and
-asserts the surrounding chunk transaction rolls back atomically.
-
-### P2.8 — no global byte budget on recv queue (MED)
-
-File: `lib/net/src/net.c:104-115`
-
-**Bug.** The recv queue grows unbounded — a peer can fill our memory
-by sending data we haven't processed yet. Per-connection limits exist;
-a process-wide cap doesn't.
-
-**Fix.** Track total recv-queue bytes across all peers in an atomic
-counter incremented on enqueue / decremented on dequeue. Reject the
-TCP read (or stop reading from the socket — backpressure) when the
-total exceeds a configurable cap (`-maxrecvbuffertotal=N`, default
-e.g. 256 MiB). LOG_ERR with peer count + total bytes when the cap
-trips so operators can tune.
-
-**Acceptance.** Test that fills the budget from one synthetic peer
-and asserts the next read is refused / paused without crashing.
-
-### P3.7 — `/metrics` open on TLS listener with no auth (MED)
-
-File: `lib/rpc/src/httpserver.c:355-381`
-
-**Bug.** The Prometheus-style `/metrics` endpoint is registered on the
-public TLS listener with no auth gate. It exposes peer counts, tx
-volume, mempool size — all useful to a stalker / network adversary for
-fingerprinting.
-
-**Fix.** Gate `/metrics` behind the same RPC cookie auth (or an explicit
-`-metrics-allowed-cidr=` option) the wallet RPCs already use. Look at
-how `getblockchaininfo` is registered and apply the same auth shim.
-
-**Acceptance.** Test that posts to `/metrics` without a cookie and
-asserts 401; with a valid cookie and asserts 200 + Prometheus body.
+**Now working on:** two more network rows (P2.4 + P2.7) — same narrow
+expansion model. See NOW below.
+**Queued:** none — when these two land, ping Rhett for what's next.
 
 ---
 
-## NEXT — parallel test runner (infra, pull up if NOW closes quickly)
+## NOW — two more network rows
 
-`test_zcl` is single-binary, single-threaded, runs ~140 test groups in
-sequence. On a 32-core box we use ~3%. Tests take 8–15 minutes per
-iteration — biggest productivity drag in the project right now.
+**Expanded read/write scope for this wave (additive):**
+- `lib/net/src/fast_sync.c` (P2.4 — you already touched it for P2.3)
+- `lib/net/src/msgprocessor.c` (P2.4 + P2.7)
 
-Build a fork-parallel driver under `lib/test/src/test_parallel.c`:
+Everything else stays off-limits.
 
-1. Enumerate the test-group symbols (same list as `test.c:38-194`).
-2. `fork()` one child per group, capped at `nproc` workers.
-3. Child redirects stdout / stderr to a temp file, runs its group,
-   exits with 0 / 1.
-4. Parent waits on all children, collects pass/fail, prints union
-   output in group order, returns 1 if any failed.
-5. Groups that call `ecc_start()` / `ecc_verify_init()` either need
-   their setup hoisted, or the driver forks a fresh process per group
-   (cleaner but slightly slower — acceptable).
+### P2.4 — Swarm per-chunk hash verification effectively absent (HIGH)
 
-Ship as a new `make test-parallel` target. Keep sequential `./test_zcl`
-unchanged — the parallel runner is additive.
+Files:
+- `lib/net/src/fast_sync.c:892-895` (chunk receive path)
+- `lib/net/src/msgprocessor.c:1968` (chunk dispatch)
 
-**Acceptance.** On a 32-core box, `make test-parallel` should be ≥10×
-faster than `./test_zcl` with the same pass/fail outcome.
+**Bug.** The swarm download protocol is supposed to verify each chunk
+against a SHA3 commitment before accepting it into the UTXO set. The
+verification call exists but is gated behind a flag that defaults
+on-but-unchecked — a malicious peer can serve garbage chunks and we
+write them straight into chainstate, then the FlyClient verification at
+sync-end fails opaquely.
 
-Pure infrastructure — touches only `lib/test/` and the Makefile.
-No consensus, no wallet, no crypto.
+**Fix.** Compute SHA3-256 over each received chunk *before* the
+P2.3-migrated AR_STEP_DONE writer fires. Reject the chunk and ban-score
+the peer on mismatch. The expected hash for chunk N comes from the
+swarm header the peer already sent; cross-check against it.
+
+**Acceptance.** Test injects a single corrupted byte mid-chunk and
+asserts:
+1. Chunk is rejected (no chainstate writes).
+2. Peer's ban score increments.
+3. Same chunk re-requested from a different peer succeeds.
+
+### P2.7 — FlyClient challenge amplification — no rate limit (MED)
+
+File: `lib/net/src/msgprocessor.c:1864-1900`
+
+**Bug.** A peer can spam us with FlyClient challenges (each one forces
+a Merkle-proof reconstruction over our full block index). Single peer
+can pin a CPU and slow header-sync for everyone.
+
+**Fix.** Token-bucket rate limit per peer: e.g. 10 challenges/sec with
+a burst of 30. Drop excess silently and log per-peer accumulator. Use
+the existing peer-scoring infrastructure (`peer_strategy.c` /
+`peer_scoring.c`) — don't roll your own.
+
+**Acceptance.** Test floods a synthetic peer with 1000 challenges in
+1 second and asserts:
+1. Only ~10 are processed (within tolerance).
+2. Ban-score for the peer increases.
+3. Other peers' challenges still get through.
+
+---
+
+## NEXT — none queued; ping Rhett when NOW closes
+
+Rhett's lane is now the bottleneck (P1.6, P1.7, P2.1, P2.2, P2.5, P2.6,
+P4.1, P4.2, P5.2, P5.5, P5.6 all open). When you finish NOW, surface
+on the next status check and Rhett will either pick something up
+themselves or carve another narrow-scope row for you.
 
 ---
 
