@@ -318,6 +318,34 @@ bool msg_processor_get_manifest_header(struct sync_manifest *out)
     return ok;
 }
 
+bool msg_processor_copy_manifest_hashes(uint8_t (**out_hashes)[32],
+                                        uint32_t *out_count)
+{
+    if (!out_hashes || !out_count)
+        LOG_FAIL("net", "copy_manifest_hashes: NULL output");
+    *out_hashes = NULL;
+    *out_count = 0;
+
+    pthread_mutex_lock(&g_manifest_mutex);
+    bool ok = atomic_load(&g_cached_manifest_valid)
+              && g_cached_manifest.chunk_hashes
+              && g_cached_manifest.num_chunks > 0
+              && g_cached_manifest.num_chunks <= MANIFEST_MAX_CHUNKS;
+    if (ok) {
+        uint32_t n = g_cached_manifest.num_chunks;
+        uint8_t (*copy)[32] = zcl_calloc(n, 32, "manifest_hashes_copy");
+        if (copy) {
+            memcpy(copy, g_cached_manifest.chunk_hashes, (size_t)n * 32);
+            *out_hashes = copy;
+            *out_count = n;
+        } else {
+            ok = false;
+        }
+    }
+    pthread_mutex_unlock(&g_manifest_mutex);
+    return ok;
+}
+
 bool msg_processor_publish_block_manifest(struct block_piece_manifest *manifest,
                                          int32_t built_at_height)
 {
@@ -579,23 +607,45 @@ int msg_get_height(void *ctx)
 void push_manifest(struct msg_processor *mp, struct p2p_node *node)
 {
     struct sync_manifest m;
+    uint8_t (*hashes)[32] = NULL;
+    uint32_t hash_count = 0;
 
     if (node->swarm_manifest_sent ||
         !msg_processor_get_manifest_header(&m))
         return;
+    if (m.num_chunks == 0 || m.num_chunks > MANIFEST_MAX_CHUNKS) {
+        fprintf(stderr, "push_manifest: num_chunks %u out of [1,%u]\n",
+                m.num_chunks, MANIFEST_MAX_CHUNKS);
+        return;
+    }
+    if (!msg_processor_copy_manifest_hashes(&hashes, &hash_count)
+        || hash_count != m.num_chunks) {
+        fprintf(stderr, "push_manifest: chunk_hashes unavailable "
+                "(count=%u vs num_chunks=%u)\n", hash_count, m.num_chunks);
+        free(hashes);
+        return;
+    }
+
     struct byte_stream s;
-    stream_init(&s, 80);
+    stream_init(&s, 84 + (size_t)m.num_chunks * 32);
     stream_write_i32_le(&s, m.height);
     stream_write_bytes(&s, m.block_hash, 32);
     stream_write_u64_le(&s, m.num_utxos);
     stream_write_u32_le(&s, m.num_chunks);
     stream_write_u32_le(&s, m.chunk_size);
     stream_write_bytes(&s, m.merkle_root, 32);
+    /* P2.4: per-chunk SHA3-256 hashes so the receiver can reject a
+     * corrupt or attacker-substituted chunk before it lands in the
+     * utxos table. The receiver Merkle-reconstructs merkle_root from
+     * these hashes and bans the peer on mismatch. */
+    for (uint32_t i = 0; i < m.num_chunks; i++)
+        stream_write_bytes(&s, hashes[i], 32);
 
     p2p_node_begin_message(node, MSG_MANIFEST, mp->params->pchMessageStart);
     p2p_node_write_message_data(node, s.data, s.size);
     p2p_node_end_message(node);
     stream_free(&s);
+    free(hashes);
 
     node->swarm_manifest_sent = true;
     printf("Peer %s: sent manifest (h=%d, %u chunks)\n",
@@ -1943,41 +1993,86 @@ static bool handle_zcl23_sync(struct msg_processor *mp,
             uint64_t num_utxos = 0;
             uint32_t num_chunks = 0, chunk_size = 0;
 
-            if (stream_read_i32_le(s, &height) &&
-                stream_read_bytes(s, block_hash, 32) &&
-                stream_read_u64_le(s, &num_utxos) &&
-                stream_read_u32_le(s, &num_chunks) &&
-                stream_read_u32_le(s, &chunk_size) &&
-                stream_read_bytes(s, merkle_root, 32)) {
+            if (!(stream_read_i32_le(s, &height) &&
+                  stream_read_bytes(s, block_hash, 32) &&
+                  stream_read_u64_le(s, &num_utxos) &&
+                  stream_read_u32_le(s, &num_chunks) &&
+                  stream_read_u32_le(s, &chunk_size) &&
+                  stream_read_bytes(s, merkle_root, 32))) {
+                peer_misbehaving(mp->net_mgr, node, 20,
+                                 "truncated zmanifest header");
+            } else if (num_chunks == 0 || num_chunks > MANIFEST_MAX_CHUNKS
+                       || chunk_size == 0) {
+                fprintf(stderr, "Peer %s: manifest out of bounds "
+                        "(num_chunks=%u cap=%u chunk_size=%u)\n",
+                        node->addr_name, num_chunks, MANIFEST_MAX_CHUNKS,
+                        chunk_size);
+                peer_misbehaving(mp->net_mgr, node, 20,
+                                 "manifest bounds");
+            } else {
+                /* P2.4: read num_chunks * 32 bytes of per-chunk SHA3 hashes
+                 * and reject the manifest if they don't Merkle-reconstruct
+                 * to the merkle_root the same peer advertised above. This
+                 * is the commitment the receiver checks each zchunkdata
+                 * response against before calling fast_sync_apply_chunk. */
+                uint8_t (*hashes)[32] = zcl_calloc(num_chunks, 32,
+                                                    "peer_chunk_hashes");
+                bool hashes_ok = hashes != NULL;
+                for (uint32_t i = 0; i < num_chunks && hashes_ok; i++) {
+                    if (!stream_read_bytes(s, hashes[i], 32))
+                        hashes_ok = false;
+                }
+                if (!hashes_ok) {
+                    free(hashes);
+                    peer_misbehaving(mp->net_mgr, node, 20,
+                                     "truncated zmanifest hashes");
+                } else {
+                    uint8_t computed_root[32];
+                    fast_sync_merkle_root(
+                        (const uint8_t (*)[32])hashes, num_chunks,
+                        computed_root);
+                    if (memcmp(computed_root, merkle_root, 32) != 0) {
+                        free(hashes);
+                        peer_misbehaving(mp->net_mgr, node, 100,
+                                         "manifest merkle root mismatch");
+                    } else {
+                        node->swarm_manifest_received = true;
+                        int our_h = active_chain_height(
+                            &mp->main_state->chain_active);
+                        printf("Peer %s: manifest h=%d chunks=%u "
+                               "(%llu UTXOs)\n",
+                               node->addr_name, height, num_chunks,
+                               (unsigned long long)num_utxos);
 
-                node->swarm_manifest_received = true;
-                int our_h = active_chain_height(&mp->main_state->chain_active);
-                printf("Peer %s: manifest h=%d chunks=%u (%llu UTXOs)\n",
-                       node->addr_name, height, num_chunks,
-                       (unsigned long long)num_utxos);
+                        /* If peer is significantly ahead and we have no
+                         * active swarm, initialize the swarm coordinator
+                         * from their (now-verified) manifest. */
+                        if (height > our_h + 100 && !g_swarm_active) {
+                            struct sync_manifest peer_manifest = {
+                                .height = height,
+                                .num_utxos = num_utxos,
+                                .num_chunks = num_chunks,
+                                .chunk_size = chunk_size,
+                                .chunk_hashes = hashes
+                            };
+                            memcpy(peer_manifest.block_hash, block_hash, 32);
+                            memcpy(peer_manifest.merkle_root, merkle_root, 32);
 
-                /* If peer is significantly ahead and we have no active swarm,
-                 * initialize the swarm coordinator from their manifest. */
-                if (height > our_h + 100 && !g_swarm_active &&
-                    num_chunks > 0 && chunk_size > 0) {
-                    struct sync_manifest peer_manifest = {
-                        .height = height,
-                        .num_utxos = num_utxos,
-                        .num_chunks = num_chunks,
-                        .chunk_size = chunk_size,
-                        .chunk_hashes = NULL
-                    };
-                    memcpy(peer_manifest.block_hash, block_hash, 32);
-                    memcpy(peer_manifest.merkle_root, merkle_root, 32);
-
-                    zcl_mutex_lock(&g_swarm_mutex);
-                    if (swarm_sync_init(&g_swarm, &peer_manifest, mp->datadir)) {
-                        g_swarm_last_progress_time = (int64_t)time(NULL);
-                        g_swarm_active = true;
-                        printf("Swarm sync started: %u chunks from h=%d\n",
-                               num_chunks, height);
+                            zcl_mutex_lock(&g_swarm_mutex);
+                            if (swarm_sync_init(&g_swarm, &peer_manifest,
+                                                mp->datadir)) {
+                                g_swarm_last_progress_time =
+                                    (int64_t)time(NULL);
+                                g_swarm_active = true;
+                                printf("Swarm sync started: %u chunks "
+                                       "from h=%d\n", num_chunks, height);
+                            }
+                            zcl_mutex_unlock(&g_swarm_mutex);
+                        }
+                        /* swarm_sync_init deep-copies the hash array, so
+                         * our peer copy is ours to free regardless. */
+                        free(hashes);
                     }
-                    zcl_mutex_unlock(&g_swarm_mutex);
                 }
             }
 

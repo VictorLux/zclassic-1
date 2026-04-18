@@ -2959,6 +2959,190 @@ int test_net(void)
         free(m.chunk_hashes);
     }
 
+    /* ── P2.4: per-chunk SHA3 verification gates chainstate writes ── */
+    printf("swarm_sync: P2.4 corrupted chunk rejected and not applied... ");
+    {
+        const char *p24_dir = "test_sync_p24";
+        test_cleanup_tmpdir(p24_dir);
+        mkdir(p24_dir, 0755);
+
+        /* Bootstrap an empty node.db with the schema fast_sync_apply_chunk
+         * expects. We close it again so the swarm path can re-open it. */
+        char p24_path[1024];
+        snprintf(p24_path, sizeof(p24_path), "%s/node.db", p24_dir);
+        sqlite3 *p24_db = NULL;
+        bool ok = (sqlite3_open(p24_path, &p24_db) == SQLITE_OK);
+        if (ok) {
+            TEST_DB_EXEC(p24_db,
+                "CREATE TABLE IF NOT EXISTS utxos ("
+                "txid BLOB NOT NULL, vout INTEGER NOT NULL, "
+                "value INTEGER NOT NULL, script BLOB NOT NULL, "
+                "script_type INTEGER NOT NULL DEFAULT 0, "
+                "address_hash BLOB, height INTEGER NOT NULL, "
+                "is_coinbase INTEGER NOT NULL DEFAULT 0, "
+                "PRIMARY KEY (txid, vout))");
+        }
+        sqlite3_close(p24_db);
+
+        /* Synthetic chunk with 3 entries. Compute its real SHA3-256 hash —
+         * that's the value the manifest commits to. */
+        struct utxo_chunk *good = zcl_calloc(1, sizeof(*good), "p24_good");
+        ok = ok && good != NULL;
+        if (good) {
+            good->chunk_index = 0;
+            good->num_entries = 3;
+            for (uint32_t i = 0; i < good->num_entries; i++) {
+                memset(good->entries[i].txid, (int)(0xA0 + i), 32);
+                good->entries[i].vout = i;
+                good->entries[i].value = (int64_t)(i + 1) * 1000;
+                good->entries[i].script[0] = 0x76;
+                good->entries[i].script[1] = 0xA9;
+                good->entries[i].script_len = 2;
+                good->entries[i].height = 100 + (int32_t)i;
+            }
+        }
+        uint8_t expected[32] = {0};
+        if (good) fast_sync_chunk_hash(good, expected);
+
+        /* Single-chunk manifest: merkle_root is the leaf itself. */
+        struct sync_manifest m;
+        memset(&m, 0, sizeof(m));
+        m.height = 500;
+        m.num_utxos = good ? good->num_entries : 0;
+        m.num_chunks = 1;
+        m.chunk_size = SYNC_CHUNK_SIZE;
+        m.chunk_hashes = zcl_calloc(1, 32, "p24_hashes");
+        ok = ok && m.chunk_hashes != NULL;
+        if (m.chunk_hashes) memcpy(m.chunk_hashes[0], expected, 32);
+        fast_sync_merkle_root((const uint8_t (*)[32])m.chunk_hashes,
+                              m.num_chunks, m.merkle_root);
+
+        struct swarm_sync ss;
+        memset(&ss, 0, sizeof(ss));
+        ok = ok && swarm_sync_init(&ss, &m, p24_dir);
+        ok = ok && (swarm_sync_assign_chunk(&ss, 42) == 0);
+
+        /* Single-bit flip → chunk hash diverges from manifest. This is
+         * exactly the P2.4 acceptance scenario from AGENT-2.md. */
+        struct utxo_chunk *bad = zcl_calloc(1, sizeof(*bad), "p24_bad");
+        ok = ok && bad != NULL;
+        if (good && bad) {
+            *bad = *good;
+            bad->entries[1].value ^= 0x01;
+        }
+
+        /* Acceptance #1: corrupted chunk rejected, state reset, no writes. */
+        bool received_bad = ok && swarm_sync_receive_chunk(&ss, bad, 42);
+        ok = ok && !received_bad;
+        ok = ok && (ss.chunk_states[0] == CHUNK_NEEDED);
+        ok = ok && (ss.chunk_retries[0] == 1);
+        ok = ok && (ss.chunk_peer[0] == -1);
+        ok = ok && (ss.chunks_inflight == 0);
+
+        /* Acceptance #1 (cont.): the utxos table must still be empty —
+         * the failed verification has to short-circuit before
+         * fast_sync_apply_chunk's AR_STEP_DONE writer runs. */
+        int bad_rows = -1;
+        {
+            sqlite3 *q = NULL;
+            if (sqlite3_open(p24_path, &q) == SQLITE_OK) {
+                sqlite3_stmt *st = NULL;
+                if (sqlite3_prepare_v2(q,
+                        "SELECT COUNT(*) FROM utxos", -1, &st, NULL)
+                    == SQLITE_OK && sqlite3_step(st) == SQLITE_ROW)
+                    bad_rows = sqlite3_column_int(st, 0);
+                sqlite3_finalize(st);
+                sqlite3_close(q);
+            }
+        }
+        ok = ok && (bad_rows == 0);
+
+        /* Acceptance #3: the same chunk re-requested from a different
+         * peer succeeds and lands in chainstate. */
+        int32_t reassigned = ok ? swarm_sync_assign_chunk(&ss, 99) : -1;
+        ok = ok && (reassigned == 0);
+        bool received_good = ok && swarm_sync_receive_chunk(&ss, good, 99);
+        ok = ok && received_good;
+        ok = ok && (ss.chunk_states[0] == CHUNK_COMPLETE);
+        ok = ok && swarm_sync_is_complete(&ss);
+
+        int good_rows = -1;
+        {
+            sqlite3 *q = NULL;
+            if (sqlite3_open(p24_path, &q) == SQLITE_OK) {
+                sqlite3_stmt *st = NULL;
+                if (sqlite3_prepare_v2(q,
+                        "SELECT COUNT(*) FROM utxos", -1, &st, NULL)
+                    == SQLITE_OK && sqlite3_step(st) == SQLITE_ROW)
+                    good_rows = sqlite3_column_int(st, 0);
+                sqlite3_finalize(st);
+                sqlite3_close(q);
+            }
+        }
+        ok = ok && (good_rows == 3);
+
+        if (ok) printf("OK (bad→reject 0 rows, good→apply 3 rows)\n");
+        else { printf("FAIL (received_bad=%d bad_rows=%d received_good=%d "
+                      "good_rows=%d state=%d retries=%d)\n",
+                      received_bad, bad_rows, received_good, good_rows,
+                      ss.chunk_states ? (int)ss.chunk_states[0] : -1,
+                      ss.chunk_retries ? ss.chunk_retries[0] : -1);
+                      failures++; }
+
+        free(good);
+        free(bad);
+        swarm_sync_free(&ss);
+        free(m.chunk_hashes);
+        test_cleanup_tmpdir(p24_dir);
+    }
+
+    /* P2.4 guard: swarm_sync_init must reject a manifest that omits
+     * chunk_hashes. Otherwise verify-before-apply silently degrades to
+     * verify-against-zeros (pre-fix behavior). */
+    printf("swarm_sync: P2.4 init rejects NULL chunk_hashes... ");
+    {
+        struct sync_manifest m;
+        memset(&m, 0, sizeof(m));
+        m.num_chunks = 4;
+        m.chunk_size = SYNC_CHUNK_SIZE;
+        m.chunk_hashes = NULL;
+
+        struct swarm_sync ss;
+        memset(&ss, 0, sizeof(ss));
+        bool init_ok = swarm_sync_init(&ss, &m, NULL);
+        if (!init_ok) printf("OK\n");
+        else {
+            printf("FAIL (init accepted NULL hashes)\n");
+            failures++;
+            swarm_sync_free(&ss);
+        }
+    }
+
+    /* P2.4 guard: swarm_sync_init must reject num_chunks > MANIFEST_MAX_CHUNKS
+     * so a malicious peer can't force a multi-gigabyte calloc via the
+     * wire manifest. */
+    printf("swarm_sync: P2.4 init rejects oversized num_chunks... ");
+    {
+        uint8_t (*hashes)[32] = zcl_calloc(1, 32, "p24_oversize_hashes");
+        struct sync_manifest m;
+        memset(&m, 0, sizeof(m));
+        m.num_chunks = MANIFEST_MAX_CHUNKS + 1u;
+        m.chunk_size = SYNC_CHUNK_SIZE;
+        m.chunk_hashes = hashes;
+
+        struct swarm_sync ss;
+        memset(&ss, 0, sizeof(ss));
+        bool init_ok = swarm_sync_init(&ss, &m, NULL);
+        if (!init_ok) printf("OK\n");
+        else {
+            printf("FAIL (init accepted num_chunks=%u > %u)\n",
+                   m.num_chunks, MANIFEST_MAX_CHUNKS);
+            failures++;
+            swarm_sync_free(&ss);
+        }
+        free(hashes);
+    }
+
     /* Clean up test database */
     sqlite3_close(test_db);
     test_cleanup_tmpdir(TEST_SYNC_DIR);

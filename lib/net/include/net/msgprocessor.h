@@ -80,6 +80,14 @@ void msg_processor_invalidate_manifest(void);
 bool msg_processor_get_manifest_header(struct sync_manifest *out);
 uint64_t msg_processor_manifest_cache_version(void);
 
+/* Deep-copy the cached manifest's chunk_hashes array so MSG_MANIFEST can
+ * be serialized on the wire without holding g_manifest_mutex through the
+ * socket write. On success *out_hashes is heap-allocated (caller frees)
+ * and *out_count is the number of 32-byte hashes. Returns false if no
+ * manifest is published or allocation fails. */
+bool msg_processor_copy_manifest_hashes(uint8_t (**out_hashes)[32],
+                                        uint32_t *out_count);
+
 bool msg_processor_publish_block_manifest(struct block_piece_manifest *manifest,
                                          int32_t built_at_height);
 void msg_processor_invalidate_block_manifest(void);

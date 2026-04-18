@@ -893,7 +893,19 @@ void sync_manifest_free(struct sync_manifest *m)
 bool swarm_sync_init(struct swarm_sync *ss, const struct sync_manifest *manifest,
                       const char *datadir)
 {
-    GUARD(ss && manifest && manifest->num_chunks > 0, "sync", "swarm_sync_init: invalid args (ss=%p manifest=%p)", (void *)ss, (void *)manifest);
+    /* P2.4: chunk_hashes is REQUIRED. Without it, swarm_sync_receive_chunk
+     * would be unable to verify per-chunk integrity against the manifest
+     * and a malicious peer's chunks would land in chainstate unchecked.
+     * Callers that received an untrusted manifest over the wire MUST
+     * populate chunk_hashes AND verify they Merkle-reconstruct to the
+     * claimed merkle_root before calling this function. */
+    GUARD(ss && manifest && manifest->num_chunks > 0
+          && manifest->num_chunks <= MANIFEST_MAX_CHUNKS
+          && manifest->chunk_hashes, "sync",
+          "swarm_sync_init: invalid args (ss=%p manifest=%p num_chunks=%u hashes=%p)",
+          (void *)ss, (void *)manifest,
+          manifest ? manifest->num_chunks : 0,
+          (manifest && manifest->chunk_hashes) ? (void *)manifest->chunk_hashes : NULL);
     memset(ss, 0, sizeof(*ss));
 
     uint32_t n = manifest->num_chunks;
@@ -902,8 +914,7 @@ bool swarm_sync_init(struct swarm_sync *ss, const struct sync_manifest *manifest
     ss->manifest = *manifest;
     ss->manifest.chunk_hashes = zcl_calloc(n, 32, "chunk_hashes");
     GUARD(ss->manifest.chunk_hashes, "sync", "swarm_sync_init: alloc chunk_hashes failed for %u chunks", n);
-    if (manifest->chunk_hashes)
-        memcpy(ss->manifest.chunk_hashes, manifest->chunk_hashes, (size_t)n * 32);
+    memcpy(ss->manifest.chunk_hashes, manifest->chunk_hashes, (size_t)n * 32);
 
     ss->chunk_states = zcl_calloc(n, sizeof(enum chunk_state), "chunk_states");
     ss->chunk_peer = zcl_calloc(n, sizeof(int), "chunk_peer");
@@ -960,30 +971,33 @@ bool swarm_sync_receive_chunk(struct swarm_sync *ss,
                                 const struct utxo_chunk *chunk,
                                 int peer_id)
 {
-    GUARD(ss && chunk, "sync", "receive_chunk: ss or chunk is NULL");
+    GUARD(ss && chunk && ss->manifest.chunk_hashes, "sync",
+          "receive_chunk: ss, chunk, or chunk_hashes is NULL");
 
     uint32_t idx = chunk->chunk_index;
     if (idx >= ss->manifest.num_chunks)
         LOG_FAIL("sync", "receive_chunk: chunk_index %u >= num_chunks %u",
                  idx, ss->manifest.num_chunks);
 
-    /* Verify chunk hash against manifest */
-    if (ss->manifest.chunk_hashes) {
-        if (!fast_sync_verify_chunk(chunk, ss->manifest.chunk_hashes[idx])) {
-            ss->chunk_retries[idx]++;
-            /* Reset to NEEDED so another peer can retry — unless max retries */
-            if (ss->chunk_retries[idx] >= 5) {
-                ss->chunk_states[idx] = CHUNK_FAILED;
-                ss->chunks_failed++;
-            } else {
-                ss->chunk_states[idx] = CHUNK_NEEDED;
-            }
-            ss->chunk_peer[idx] = -1;
-            if (ss->chunks_inflight > 0)
-                ss->chunks_inflight--;
-            LOG_FAIL("sync", "receive_chunk: chunk %u hash mismatch from peer %d (retry %d/5)",
-                     idx, peer_id, ss->chunk_retries[idx]);
+    /* P2.4: verify SHA3-256 of the received chunk against the per-chunk
+     * hash the peer advertised in the swarm manifest BEFORE handing any
+     * bytes to fast_sync_apply_chunk — otherwise the AR_STEP_DONE writer
+     * would commit attacker-controlled rows into the utxos table and the
+     * only signal would be the end-of-sync Merkle root mismatch. */
+    if (!fast_sync_verify_chunk(chunk, ss->manifest.chunk_hashes[idx])) {
+        ss->chunk_retries[idx]++;
+        /* Reset to NEEDED so another peer can retry — unless max retries */
+        if (ss->chunk_retries[idx] >= 5) {
+            ss->chunk_states[idx] = CHUNK_FAILED;
+            ss->chunks_failed++;
+        } else {
+            ss->chunk_states[idx] = CHUNK_NEEDED;
         }
+        ss->chunk_peer[idx] = -1;
+        if (ss->chunks_inflight > 0)
+            ss->chunks_inflight--;
+        LOG_FAIL("sync", "receive_chunk: chunk %u hash mismatch from peer %d (retry %d/5)",
+                 idx, peer_id, ss->chunk_retries[idx]);
     }
 
     /* Apply chunk to database */

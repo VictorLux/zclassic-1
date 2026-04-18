@@ -40,6 +40,14 @@
 /* Default UTXOs per chunk for parallel sync */
 #define SYNC_CHUNK_SIZE 500
 
+/* P2.4: cap on num_chunks in a wire manifest. The MSG_MANIFEST payload
+ * carries num_chunks*32 bytes of per-chunk SHA3-256 hashes after the
+ * fixed header; this cap keeps the message comfortably below
+ * MAX_PROTOCOL_MESSAGE_LENGTH (2 MiB) and bounds the calloc a peer can
+ * force us to perform. At SYNC_CHUNK_SIZE=500 it still covers 32.5M
+ * UTXOs — many decades of ZCL mainnet growth. */
+#define MANIFEST_MAX_CHUNKS 65000u
+
 /* ── Rate limiting + PoW defense ─────────────────────────── */
 
 /* Difficulty for snapshot request PoW (number of leading zero bits).
