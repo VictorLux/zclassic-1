@@ -43,8 +43,7 @@ See `AGENT.md` for the cross-agent priority table.
 **Done and on main (17 rows):** P1.3, P1.4, P1.6 (`f6aa0b080`),
 P1.7 (`5ce252bb6`), P1.8, P1.9, P1.10, P1.11, P1.11b, P1.12, P1.13,
 P1.14, P1.15, P1.16 (`94d607b85`), P1.16b (`c841defd2`), P5.5
-(`75576d7a0`), P7.4 (see "Notes from Agent-3" below for SHA).
-AGENT.md shows SHAs.
+(`75576d7a0`), P7.4 (`f6474c77b`). AGENT.md shows SHAs.
 
 All crypto + consensus + vendor + net-backpressure rows shipped.
 Queue now has a single audit-only task: open the P8 wave.
@@ -232,7 +231,7 @@ _(Keep short — 1-3 recent entries.)_
 
 ### 2026-04-19 (night) — P7.4 backpressure watchdog landed
 
-- **P7.4 (this commit):** new `lib/net/src/tip_watchdog.c` +
+- **P7.4 (`f6474c77b`):** new `lib/net/src/tip_watchdog.c` +
   `lib/net/include/net/tip_watchdog.h`. State machine with stats +
   test hooks (`tip_watchdog_test_set_now_ns`,
   `tip_watchdog_test_set_queue_bytes`, ...).
