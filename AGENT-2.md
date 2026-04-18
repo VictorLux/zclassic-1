@@ -30,15 +30,15 @@ cross-agent priority table. Last brief rewrite: 2026-04-17.
 
 ---
 
-## Current status — 2026-04-18 (evening)
+## Current status — 2026-04-18 (evening, post-P2.5)
 
-**Done and on main (23 rows + 1 infra):** P1.1, P1.2, P1.5, P6.1–P6.6,
+**Done and on main (24 rows + 1 infra):** P1.1, P1.2, P1.5, P6.1–P6.6,
 P3.1, P3.2, P3.3, P3.4, P3.5, P3.6, P5.1, P5.3, P5.4, P5.7, P4.3, P4.4,
-P4.5, P2.3, P2.8, P3.7, P2.4, P2.7, P2.6, P5.2, plus parallel test
-runner infrastructure (df5de36c4). AGENT.md shows SHAs.
+P4.5, P2.3, P2.8, P3.7, P2.4, P2.7, P2.6, P5.2, P2.5, plus parallel
+test runner infrastructure (df5de36c4). AGENT.md shows SHAs.
 
-**Now working on:** nothing — NOW is empty.
-**Queued NEXT (pre-authorized):** P2.5 (connman deadlock).
+**Now working on:** nothing — NOW and NEXT are both empty.
+**Pinging Rhett.**
 
 ---
 
@@ -465,6 +465,55 @@ regression from this workstream). All 2773 prior tests including the
 three new `swarm_cas: ...` tests passed before the hang site. `make
 lint` is clean.
 
-**NOW is empty for Agent-2; P2.5 is queued as NEXT.** Waiting for
-Rhett to green-light starting on the connman deadlock, or for a new
-assignment.
+**2026-04-18 (evening) — P2.5 connman deadlock closed (tenth wave).**
+One commit:
+
+- `cd4b3c42f` P2.5 thread_message_handler → connman_run_message_cycle.
+  Replaced the hold-cs_nodes-across-callback anti-pattern with the
+  classic snapshot+iterate: take cs_nodes just long enough to copy
+  the pointer list and add_ref each non-disconnected entry, drop
+  the lock, run process_messages + send_messages with NO connman
+  lock held, re-acquire cs_nodes to drop the refs. zcl_mutex_t is
+  recursive so the three msgprocessor.c re-entry sites at 1328,
+  2772, 3292 were already fine — but that recursion masked the
+  latent hazard with any sibling lock taken outside the handler,
+  and blocked every unrelated cs_nodes acquirer for the full
+  iteration duration. Memory safety now relies on the existing
+  ref_count: `connman_run_deferred_free_sweep` re-parks entries
+  with `ref_count > 0` so an in-flight snapshot can't be UAF'd;
+  the immediate-free fallback at the disconnect site grows a
+  matching safety belt. `deferred_free[64]` bumped to the named
+  `CONNMAN_DEFERRED_FREE_CAP = 256` — with max_connections=125
+  that leaves enough headroom for ref'd entries to persist across
+  socket cycles without hitting the fallback path.
+
+  Stress test in test_net.c, opt-in via ZCL_STRESS_TESTS=1. Stands
+  up a 50-peer connman with mock signals, spawns two workers: one
+  drives connman_run_message_cycle in a tight loop, the other runs
+  the disconnect + sweep loop mimicking thread_socket_handler. Mock
+  process_messages flips peer->disconnect every 20 calls to force
+  continuous ref churn. 1-second window. Default ./test_zcl skips
+  the test. On 16-core test machine: 142M cycles, 1.9K callbacks,
+  deferred_free drains clean, both workers join without blocking.
+
+**Test-suite status.** `ZCL_STRESS_TESTS=1 ./test_zcl` reached
+`p25_connman: ... OK (cycles=142833988 callbacks=1912)` along with
+all earlier net + crypto + sapling tests before the known
+`test_block_pruning` hang point that pre-dates Agent-2's workstream.
+`make lint` clean.
+
+**Scope note for Rhett.** This row was the first Agent-2 change to
+touch `struct connman` directly (bumped `deferred_free[64]` →
+`deferred_free[CONNMAN_DEFERRED_FREE_CAP]`). The new public entry
+points `connman_run_message_cycle` + `connman_run_deferred_free_sweep`
+are exposed in `net/connman.h` to let the stress test drive the
+cycles without spinning up a full `connman_start()`. If you'd prefer
+they be `*_test_*` prefixed to emphasize the opt-in surface, trivial
+rename — no other caller exists today.
+
+**NOW + NEXT are both empty for Agent-2.** The parallel test runner
+infrastructure + the P2.5 stress test scaffolding remain as
+"available opt-in infrastructure" but are not in-flight. Awaiting
+Rhett — only open HIGHs are consensus-tier (P1.6, P1.7) or
+script-tier (P4.1, P4.2), and the remaining MED rows are vendor
+(P5.5, P5.6) — all in Rhett's lane.
