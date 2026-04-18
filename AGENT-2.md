@@ -30,112 +30,91 @@ cross-agent priority table. Last brief rewrite: 2026-04-17.
 
 ---
 
-## Current status — 2026-04-18 (evening, post-P2.5)
+## Current status — 2026-04-18 (evening, post-P2.5/P2.6/P5.2)
 
 **Done and on main (24 rows + 1 infra):** P1.1, P1.2, P1.5, P6.1–P6.6,
 P3.1, P3.2, P3.3, P3.4, P3.5, P3.6, P5.1, P5.3, P5.4, P5.7, P4.3, P4.4,
 P4.5, P2.3, P2.8, P3.7, P2.4, P2.7, P2.6, P5.2, P2.5, plus parallel
 test runner infrastructure (df5de36c4). AGENT.md shows SHAs.
 
-**Now working on:** nothing — NOW and NEXT are both empty.
-**Pinging Rhett.**
+The entire P2 network-attack-surface tier you owned is now closed,
+plus all of P3 (MCP/app), P4 (script memory safety), and P5 deploy
+hygiene except the two vendor-tier rows.
+
+**Now working on:** P5.6 — vendored sqlite3.h CVE update.
+**Queued NEXT:** none. After P5.6 lands, ping Rhett — the remaining
+open rows are all pure-Rhett (P1.6/P1.7 consensus, P2.1/P2.2 net,
+P4.1/P4.2 script interpreter) or in-flight on Agent-3 (P1.16, prf.c).
 
 ---
 
-## NOW — P2.6 + P5.2
+## NOW — P5.6: vendored sqlite3.h CVE update
 
-### P2.6 — `g_swarm_active` TOCTOU → state leak
+**Lane note (one-time scope expansion):** vendor/ is normally Rhett's
+lane, but P5.6 is well-bounded (single header + amalgamation) and
+sqlite is a leaf dependency that doesn't intersect with consensus
+code. Constraint: only `vendor/include/sqlite3.h` and
+`vendor/sqlite/` (or wherever the .c amalgamation lives — find it,
+don't guess). Do NOT touch any other vendor dir, do NOT touch
+`vendor/tor` (P5.5 stays Rhett — submodule pin requires separate
+testing).
 
-File: `lib/net/src/msgprocessor.c` (around lines 1961-1981 and 2040 —
-verify against current head; numbers may have shifted after your P2.4
-landing).
+**Bug.** `vendor/include/sqlite3.h:149` shows `SQLITE_VERSION
+"3.49.0"`. Several CVE-class fixes have landed in the 3.50.x series
+(check sqlite.org/changes.html for the exact list — the relevant
+ones are likely the prepared-statement use-after-free and the
+JSON1-parser bounds bug, but verify). We've been carrying the older
+header against a public-attack-surface SQLite (it's the canonical
+UTXO store and the wallet keystore — both reachable via P2P-relayed
+or RPC-driven workloads).
 
-**Bug.** `g_swarm_active` is read, then conditionally written, without
-holding any lock around the pair. Two peers racing on the swarm-init
-path can both observe `g_swarm_active == 0`, both proceed to call
-`swarm_sync_init`, and the second one leaks the first's state (or
-overwrites partially-applied chunk indexes). The TOCTOU window is the
-gap between the read at ~1961 and the write at ~1981.
+**Fix.**
 
-**Fix.** Replace the read/write pair with a single atomic
-compare-exchange (`atomic_compare_exchange_strong`) on a
-`_Atomic int g_swarm_active`. If the CAS fails, the caller raced and
-must back off — log + drop the message + return; do NOT silently
-proceed with the existing-swarm state. Mirror the same pattern at the
-2040 reset site (atomic store, not bare assignment).
+1. Pull the latest stable amalgamation tarball from sqlite.org
+   (sqlite-amalgamation-XXXXXXXX.zip — pick the most recent
+   3.x release). Verify the SHA against the published checksum.
+2. Drop the new `sqlite3.h` into `vendor/include/` and the new
+   `sqlite3.c` into wherever the existing one lives (find with
+   `git ls-files | grep sqlite3.c`).
+3. **Diff review:** git diff vendor/include/sqlite3.h — anything
+   touching SQLITE_VERSION (expected) and the new feature flags
+   (review carefully — we may need to disable any new defaults that
+   change on-disk format or change behavior we depend on).
+4. Build clean: `make clean && make -j$(nproc)`.
+5. Run the FULL test suite, not the persistence subset. SQLite
+   touches every code path that hits the chainstate, the wallet,
+   the chain_state_repo, the addrman, the migrations, and the
+   peer_scoring side table. Allow up to 15 min for the full
+   `./test_zcl` run.
+6. Commit message must list the CVE / changelog entries this pin
+   picks up (cite the sqlite changelog URL + version range).
 
-**Acceptance (3 tests in `lib/test/src/test_net.c`):**
-1. **No-race fast path:** single-thread call inits swarm exactly once,
-   leaves `g_swarm_active == 1`.
-2. **Concurrent racer:** two pthreads each fire the swarm-init message
-   handler. Exactly one returns success and one returns the
-   "already-active" diagnostic — assert by counting init calls (mock
-   `swarm_sync_init` to bump a counter; assert counter == 1).
-3. **Reset cycle:** init, finish, reset, init again succeeds — verifies
-   the atomic store at 2040 is observable to the next CAS.
+**Acceptance.**
+- `./test_zcl` passes (full suite, no `ZCL_TEST_ONLY` shortcut).
+- `make ci` passes.
+- `zcl_status` after `make deploy` shows the node still syncs and
+  serves RPC. Restart cycle: stop service → start service → height
+  advances → wallet readable.
+- The commit lays out, in the body, the specific CVE IDs or
+  changelog bullets being pulled in. (If none — i.e. the bump is
+  pure feature/perf — say so explicitly so future reviewers know
+  this row's risk-driven; if it's pure hygiene we should still
+  land it, but the commit should say "no CVE-class fixes in this
+  range, hygiene update only.")
 
-### P5.2 — deploy/zclassic23.service hygiene
-
-File: `deploy/zclassic23.service` (line 21 hardcodes Rhett's
-`-externalip=205.209.104.118` and 9 specific `-addnode=...:8033` peers).
-
-**Fix.** Move the operator-specific bits behind environment variables
-sourced from `/etc/default/zclassic23` (or
-`~/.config/zclassic23/env`, whichever the linger pattern uses).
-Default to the current values when the env file is missing, so the
-existing deploy on Rhett's box keeps working. The committed unit file
-should expose:
-
-```ini
-EnvironmentFile=-/etc/default/zclassic23
-ExecStart=/usr/local/bin/zclassic23 \
-    ${ZCL_EXTERNALIP_FLAG} ${ZCL_ADDNODE_FLAGS} \
-    -tor -datadir=%h/.zclassic-c23 ...
-```
-
-Plus a one-paragraph note in the deploy README pointing operators at
-the env file. Do NOT commit Rhett's IP/peers as the default in the
-unit — they should appear only in the example env file template, not
-in the binary deployment artifact.
-
-**Acceptance:** `systemctl --user daemon-reload && systemctl --user
-restart zclassic23` works on Rhett's box (env file present) AND on a
-fresh clone (env file absent → node starts without external IP, picks
-up addrman peers via DNS seeds). Smoke test via `zcl_status` showing
-height advances and at least one peer connection.
+**Risk checkpoint.** If the new amalgamation breaks any test you
+can't isolate to a sqlite behavior change in <30 min, STOP and
+ping Rhett rather than chasing the regression. Reverting a vendor
+bump is cheap; pushing a half-broken bump to main is expensive.
 
 ---
 
-## NEXT (pre-authorized) — P2.5 connman deadlock
+## NEXT — empty (after P5.6, ping Rhett)
 
-After P2.6 + P5.2 land. File: `lib/net/src/connman.c:802-836`.
-
-**Bug.** `cs_nodes` is held across a callback that may itself try to
-take the same mutex (or a sibling lock that has the inverse ordering
-elsewhere). Classic deadlock-on-disconnect.
-
-**Approach (typical fix — verify the actual call chain in your audit):**
-copy the relevant node pointers into a small local array under the
-lock, drop the lock, then invoke the callback against the local copy.
-If the callback signals "remove this node," queue the removal in a
-deferred list and apply it in a second pass under the lock.
-
-**Acceptance:** stress test that disconnects 50 peers in parallel
-during heavy block-relay traffic. Pre-fix should hang (run the test
-under a 30s alarm and assert NO timeout). Add the test to
-`test_net.c` guarded by `ZCL_STRESS_TESTS` env var so the default
-`./test_zcl` doesn't pay the cost.
-
----
-
-## Stopping point
-
-After P2.6 + P5.2 + P2.5 are all on main, ping Rhett. At that point
-your network-lane scope expansion is fully consumed and the only open
-HIGHs are pure-Rhett (P1.6 / P1.7 consensus, P4.1 / P4.2 script
-interpreter). Likely next: pivot to docs/operator hygiene (P5.5 / P5.6
-vendor updates) if you want to keep moving while Rhett works the
-consensus-tier rows, or pause and let Agent-3 / Rhett catch up.
+P5.5 (vendor/tor submodule pin) stays Rhett because the pin update
+needs Tor-specific smoke testing (.onion bootstrap timing, hidden
+service descriptor publish) that lives in Rhett's lane. Don't touch
+vendor/tor.
 
 ---
 
