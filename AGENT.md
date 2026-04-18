@@ -6,28 +6,28 @@ Owner: Rhett (primary). Delegates: Agent-2 (see `AGENT-2.md`), Agent-3 (see `AGE
 
 ---
 
-## Progress — last update 2026-04-19 (night, deploy shipped + P8.9 hotfix filed — 73 rows total)
+## Progress — last update 2026-04-19 (night, P8.3 closed — Agent-3 queue empty, 73 rows total)
 
-**Overall: 62 / 73 rows closed (85%) | SWRC ~92%**
+**Overall: 63 / 73 rows closed (86%) | SWRC ~93%**
 
 | Tier | Closed / Total | % | Open rows |
 |---|---|---|---|
 | **CRITICAL** | 11 / 12 | **92%** | P8.1 |
-| **HIGH** | 27 / 29 | **93%** | P7.9, P8.2, P8.3 |
+| **HIGH** | 28 / 29 | **97%** | P7.9, P8.2 |
 | **MED** | 20 / 26 | **77%** | P7.10, P8.4, P8.5, P8.6, P8.7, P8.8 |
 | **LOW** | 2 / 2 | **100%** | — |
 | (P0 baseline) | 4 / 4 | **100%** | — |
 
 **Open by owner (2026-04-19 late night, post-deploy):**
 - **Agent-2 (2 logical tasks + 6 P8 rows):** P8.1 (CRIT zmsg_deserialize overflow, NOW), then P7.9+P7.10, then P8.2/P8.4–P8.8. (P4.1+P4.2 landed `a9fcf6c66`; P8.9 HOTFIX landed `b875152da` — awaiting deploy canary.)
-- **Agent-3 (1 row, then queue empty):** **P8.3 (NOW)** — MMB unbounded mountain height on deserialize. P1.6/P1.7/P1.16b/P5.5/P7.4 + P8 audit all closed.
+- **Agent-3 (queue empty — ping Rhett):** P8.3 landed `c06515cbd`. P1.6/P1.7/P1.16b/P5.5/P7.4 + P8 audit + P8.3 all closed.
 - **Rhett:** 0 (coordinator only). Action items pending:
   1. ~~`make deploy`~~ **DONE 2026-04-19 22:07** (`zclassic23` binary rebuilt from HEAD; onion/Tor bootstrap verified). Deploy surfaced P8.9.
   2. Decide whether MAX_P2SH_SIGOPS=15 per-input should land as a mempool-policy rule (Agent-2 lane) — see AGENT-3.md 2026-04-19 P1.6 note for context.
 
 **LIVE-NODE STATUS:** chain tip still pinned at h=3,081,407 in production — P8.9 hotfix is on main (`b875152da`) but **Rhett must `make deploy` to pick it up**. Expected post-deploy log line: `[coins] auto-rewind: removed N UTXO row(s) above tip_height=3,081,407 (high=X, by-txid=Y, tx_index=Z)`. If `by-txid` or `tx_index` is non-zero, the strengthened sweep was the fix. Acceptance: chain advances past 3,081,407 within 120s.
 
-**Top remaining risks:** P8.9 is the live production-stall root cause. Every other row is hardening work. After P8.9 ships: Agent-2 has script-interp, thread-registry, and the 6 P8 net/bloom/zslp/znam rows; Agent-3 has P8.3 only.
+**Top remaining risks:** P8.9 is the live production-stall root cause. Every other row is hardening work. After P8.9 ships: Agent-2 has script-interp, thread-registry, and the 6 P8 net/bloom/zslp/znam rows; Agent-3 queue is empty (P8.3 closed).
 
 **SWRC formula:** CRIT=4, HIGH=2, MED=1, LOW=0.5. P0 rows weighted as HIGH. Total weighted capacity = 139 (was 135 pre-P8.9; +4 CRIT).
 
@@ -191,7 +191,7 @@ verification, znam parser bounds, store controller (post-P3.4/P3.6).
 |---|---|---|---|---|
 | P8.1 | `zmsg_deserialize` reads peer-controlled `uint8_t slen`/`rlen` (range 0-255) and copies that many bytes into `msg->sender[ZMSG_MAX_ADDR=128]` / `msg->recipient[128]` with no bounds check, then writes `'\0'` at `sender[slen]`. A peer sending `slen=255` corrupts ~127 bytes past the field into the adjacent `recipient`/`body` fields of the heap/stack-resident `struct zmsg_message`. Serialize side caps at 127; deserialize does not. Reachable from any handshake-complete peer that sends a `zmsg` P2P message — no auth, no rate limit on the parse layer. | `lib/net/src/zmsg.c:50-60` (struct in `lib/net/include/net/zmsg.h:43-53`) | CRITICAL | Agent 2 |
 | P8.2 | Dandelion stem-peer PRNG seeded with `(uint64_t)time(NULL) ^ 0xdeadbeefcafe1234ULL` — ~31 bits of effective entropy. The same seed drives the Fisher-Yates shuffle that selects this epoch's stem peers AND the per-tx fluff coin-flip. An attacker with rough boot-time + epoch-rotation timing can replay the xorshift64 state and predict (a) which 2 outbound peers the node uses for stem relay this 10-min epoch, and (b) the stem/fluff outcome of every transaction the node originates — defeating Dandelion's origin-privacy property. Note: callers all hold `ds->cs` so the data race the original review flagged is NOT real; the seed-quality issue is the actual bug. | `lib/net/src/dandelion.c:42-54` | HIGH | Agent 2 |
-| P8.3 | `mmb_deserialize` reads each mountain's `height` as a raw little-endian `uint32_t` from the input buffer with no upper-bound check (only `nm` is capped against `MMB_MAX_MOUNTAINS`). For any practical chain, `height` must be `≤ ⌈log2(num_leaves)⌉ ≤ 64`, but the code happily accepts `UINT32_MAX`. Downstream `mmb_merge_after_insert` (lines 100-115) increments `height` during merges — a deserialized state with `height` near `UINT32_MAX` triggers signed/unsigned wraparound on the next `mmb_append`, silently corrupting the FlyClient/snapshot trust root. Snapshot input may transit fast-sync/swarm before P2.4's hash check binds — defense-in-depth gap. | `lib/chain/src/mmb.c:254-261` | HIGH | Agent 3 |
+| P8.3 | `mmb_deserialize` reads each mountain's `height` as a raw little-endian `uint32_t` from the input buffer with no upper-bound check (only `nm` is capped against `MMB_MAX_MOUNTAINS`). For any practical chain, `height` must be `≤ ⌈log2(num_leaves)⌉ ≤ 64`, but the code happily accepts `UINT32_MAX`. Downstream `mmb_merge_after_insert` (lines 100-115) increments `height` during merges — a deserialized state with `height` near `UINT32_MAX` triggers signed/unsigned wraparound on the next `mmb_append`, silently corrupting the FlyClient/snapshot trust root. Snapshot input may transit fast-sync/swarm before P2.4's hash check binds — defense-in-depth gap. | `lib/chain/src/mmb.c:254-261` | HIGH | Agent 3 — done c06515cbd (new `MMB_MAX_HEIGHT=64` cap in `lib/chain/include/chain/mmb.h`; `mmb_deserialize` rejects any mountain whose height exceeds the cap and re-zeroes the struct so no poisoned peak leaks back; mirror guard in `mmb_merge_after_insert` returns -1 (propagated by `mmb_append`/`mmb_append_hash`) when pre-increment height is at the cap, catching in-memory corruption that bypasses the deserialize path; 3 new tests in `test_mmb.c` — malicious-blob reject + real-chain round-trip at 8192 leaves + wraparound guard at UINT32_MAX-1 and at MMB_MAX_HEIGHT) |
 | P8.4 | Compact-block reconstruction does an O(slots × mempool) linear scan: for every unfilled slot, the reconstructor recomputes `compact_block_short_txid()` (siphash) over **every** mempool entry until it finds a 6-byte match. With a 5 000-tx block and a 25 000-tx mempool that is 125 M siphash + memcmp ops per inbound compact block. A peer can amplify by sending compact blocks whose short-txids are placed late in the mempool iteration order. Code already comments `Simple O(n*m) for now; sufficient for typical mempools.` — promote to a `khash` short-txid table built once before the slot loop. | `lib/net/src/compact_blocks.c:272-319` | MED | Agent 2 |
 | P8.5 | `bloom_filter_init_internal` only applies the `MAX_BLOOM_HASH_FUNCS` cap when `constrained=true` (the public `bloom_filter_init` path). The internal `rolling_bloom_init` path passes `constrained=false` and lets `num_hash_funcs = (data_size * 8 / num_elements * LN2)` grow without ceiling. Every subsequent `rolling_bloom_insert` / `contains` runs that many siphash iterations per call. Pathological tuning (small `num_elements`, large `data_size` from a tight `fp_rate`) produces hot-path CPU blow-up. Extract the `MIN(ideal, MAX_BLOOM_HASH_FUNCS)` clamp into both branches. | `lib/bloom/src/bloom.c:47-52` | MED | Agent 2 |
 | P8.6 | `zslp_service_validate_token_key` returns true for `is_alphanumeric(token_key, len)` with `len ∈ [1, ZSLP_MAX_TOKEN_KEY_LEN]` **OR** the 64-char hex case. Because the alphanumeric branch has no length floor that distinguishes ticker-like names from truncated txids, a 10-char alphanumeric "txid" prefix is accepted and later canonicalized via `snprintf` — different short/long inputs may collide on the same canonical form. RPC callers can then look up tokens by ambiguous short keys; SEND requests targeting an aliased key reach the wrong token's payment service. | `app/services/src/zslp_service.c:62-72` | MED | Agent 2 |

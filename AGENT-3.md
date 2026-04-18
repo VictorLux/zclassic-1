@@ -38,29 +38,28 @@ See `AGENT.md` for the cross-agent priority table.
 
 ---
 
-## Current status — 2026-04-19 (late night, P8 audit landed)
+## Current status — 2026-04-19 (late night, P8.3 landed — queue empty)
 
-**Done and on main (17 rows + audit):** P1.3, P1.4, P1.6 (`f6aa0b080`),
+**Done and on main (18 rows + audit):** P1.3, P1.4, P1.6 (`f6aa0b080`),
 P1.7 (`5ce252bb6`), P1.8, P1.9, P1.10, P1.11, P1.11b, P1.12, P1.13,
 P1.14, P1.15, P1.16 (`94d607b85`), P1.16b (`c841defd2`), P5.5
-(`75576d7a0`), P7.4 (`f6474c77b`), and the P8-wave audit pass
-(`6751d9bfa` — opened 8 new rows).
+(`75576d7a0`), P7.4 (`f6474c77b`), P8.3 (`c06515cbd`), and the
+P8-wave audit pass (`6751d9bfa` — opened 8 new rows).
 
-All crypto + consensus + vendor + net-backpressure rows shipped.
-P8 audit triaged: P8.1/P8.2/P8.4–P8.8 → Agent-2's lanes; **P8.3**
-(MMB unbounded mountain height on deserialize) is yours — adjacent
-to your P5.5/FlyClient/MMB lane.
+All crypto + consensus + vendor + net-backpressure + MMB-hardening
+rows shipped. P8 audit triaged: P8.1/P8.2/P8.4–P8.8 all Agent-2;
+P8.3 closed.
 
-**Open queue (1 task, then ping Rhett):**
+**Open queue (empty — ping Rhett):**
 
 | Order | Row | Size | Severity |
 |---|---|---|---|
-| **NOW** | **P8.3** — MMB `mmb_deserialize` accepts unbounded `height` field | small | HIGH |
+| NOW | (queue empty — ping Rhett) | — | — |
 | NEXT | (queue empty — ping Rhett) | — | — |
 
 ---
 
-## NOW — P8.3: cap MMB mountain height on deserialize
+## (Below: archived NOW for P8.3 — landed `c06515cbd`, reference only) — cap MMB mountain height on deserialize
 
 Files: `lib/chain/src/mmb.c:254-261` (deserialize), with downstream
 defense in `mmb_merge_after_insert` (lines ~100-115).
@@ -320,6 +319,37 @@ If build or tests fail — STOP and report.
 ## Notes from Agent-3
 
 _(Keep short — 1-3 recent entries.)_
+
+### 2026-04-19 (late night) — P8.3 MMB height cap landed — queue empty
+
+- **P8.3 (`c06515cbd`):** new `MMB_MAX_HEIGHT=64` in
+  `lib/chain/include/chain/mmb.h`. `mmb_deserialize` rejects any
+  mountain whose height exceeds the cap and calls `mmb_init(m)`
+  again to re-zero the struct — prevents the caller from ever
+  touching a partially-populated MMB where the cap-violating
+  mountain and its predecessors might still be sitting in the
+  peaks array. Mirror guard in the static
+  `mmb_merge_after_insert` (both the rightmost-pair and the
+  deferred-scan branches) returns `-1` via `LOG_ERR` when the
+  pre-increment height is already at the cap; callers
+  (`mmb_append` / `mmb_append_hash`) propagate that as-is, and
+  `test_snapshot_sync_service.c:69` already treated `< 0` as
+  error so no downstream change was needed.
+  - Test fixtures in `lib/test/src/test_mmb.c`:
+    `test_mmb_deserialize_rejects_oversize_height` (cap+1,
+    UINT32_MAX, and exact-cap accept),
+    `test_mmb_deserialize_real_chain_under_cap` (8192-leaf MMB
+    round-trip — all heights well under 64; 8192 leaves reaches
+    `ceil(log2(8192)) = 13`, 5× headroom vs cap),
+    `test_mmb_merge_guard_blocks_wraparound` (two mountains at
+    UINT32_MAX-1 via direct struct poisoning; then a second
+    branch at MMB_MAX_HEIGHT — both assert guard-refused `rc<0`
+    plus peak bytes + heights untouched after the refusal). All
+    3 new tests green; full `./test_zcl` run shows the same 3
+    pre-existing baseline failures (`test_no_hardcoded_home`,
+    `test_make_lint_gates` ×2) carried forward unchanged.
+- Queue empty — pinging Rhett. All Agent-3-owned rows across
+  P0–P8 closed.
 
 ### 2026-04-19 (night) — P7.4 backpressure watchdog landed
 
