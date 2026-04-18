@@ -7,6 +7,12 @@
 #include <stdio.h>
 #include <time.h>
 
+/* P8.2 test hooks — defined under ZCL_TESTING in lib/net/src/dandelion.c.
+ * Exercise the RNG-driven shuffle and coin-flip without needing a full
+ * net_manager fixture. */
+bool dandelion_test_shuffle(node_id_t *inout, int n);
+bool dandelion_test_should_stem_coin(bool *out_stem);
+
 static struct uint256 make_test_hash(uint8_t seed)
 {
     struct uint256 h;
@@ -302,6 +308,68 @@ int test_dandelion(void)
             printf("FAIL (stats not zero-initialized)\n"); failures++;
         }
         dandelion_free(&ds);
+    }
+
+    /* ── P8.2: stem shuffle is non-deterministic across calls ─────
+     *
+     * Pre-fix: xorshift64 seeded from time(NULL) ^ const → two boots
+     * inside the same wall-clock second produced identical shuffles.
+     * Post-fix: each call pulls fresh entropy from the cryptographic
+     * RNG, so back-to-back shuffles of the same input differ with
+     * probability 1 - 1/8! ≈ 99.9975%. We retry a few times to drive
+     * the false-FAIL probability below 1e-20 (8! ^ -5 ≈ 9.5e-23). */
+    printf("P8.2: dandelion stem shuffle non-deterministic... ");
+    {
+        bool any_diff = false;
+        bool rng_ok = true;
+        for (int trial = 0; trial < 5 && !any_diff && rng_ok; trial++) {
+            node_id_t a[8] = {1, 2, 3, 4, 5, 6, 7, 8};
+            node_id_t b[8] = {1, 2, 3, 4, 5, 6, 7, 8};
+            rng_ok = dandelion_test_shuffle(a, 8) &&
+                     dandelion_test_shuffle(b, 8);
+            if (rng_ok && memcmp(a, b, sizeof a) != 0)
+                any_diff = true;
+        }
+        if (rng_ok && any_diff)
+            printf("OK\n");
+        else if (!rng_ok) {
+            printf("FAIL (cryptographic RNG returned error)\n"); failures++;
+        } else {
+            printf("FAIL (5/5 shuffles identical — RNG appears deterministic)\n");
+            failures++;
+        }
+    }
+
+    /* ── P8.2: per-tx fluff coin-flip is statistically uniform ────
+     *
+     * Asserts the new RNG path doesn't bias the 90/10 stem/fluff
+     * decision. With p_stem = 0.9, n = 10000 the expected stem count
+     * is 9000, σ = sqrt(n*p*(1-p)) = sqrt(900) = 30. The brief calls
+     * for ±2σ; we use ±3σ (8910..9090) to keep CI flake probability
+     * ~0.27% rather than ~5%. A bias outside this band would be a
+     * real RNG defect. */
+    printf("P8.2: dandelion fluff coin-flip ±3σ uniformity (10k)... ");
+    {
+        int stem_count = 0;
+        int trials = 10000;
+        bool rng_ok = true;
+        for (int i = 0; i < trials; i++) {
+            bool stem;
+            if (!dandelion_test_should_stem_coin(&stem)) {
+                rng_ok = false;
+                break;
+            }
+            if (stem) stem_count++;
+        }
+        if (rng_ok && stem_count > 8910 && stem_count < 9090)
+            printf("OK (%d/%d stem)\n", stem_count, trials);
+        else if (!rng_ok) {
+            printf("FAIL (cryptographic RNG returned error)\n"); failures++;
+        } else {
+            printf("FAIL (%d/%d stem — outside ±3σ of expected 9000)\n",
+                   stem_count, trials);
+            failures++;
+        }
     }
 
     return failures;

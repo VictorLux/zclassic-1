@@ -9,6 +9,7 @@
  * (it acquires cs_nodes internally only if not rotating). */
 
 #include "net/dandelion.h"
+#include "crypto/random_secret.h"
 #include "util/log_macros.h"
 #include "util/safe_alloc.h"
 #include <string.h>
@@ -37,20 +38,41 @@ void dandelion_free(struct dandelion_state *ds)
     memset(ds, 0, sizeof(*ds));
 }
 
-/* ── Simple PRNG (xorshift64) for stem decisions ───────────────── */
+/* ── Cryptographic RNG for stem decisions (P8.2) ───────────────────
+ *
+ * Dandelion's stem-peer selection (Fisher-Yates) and per-tx fluff
+ * coin-flip MUST be unpredictable to the network. Pre-P8.2 these ran
+ * on an xorshift64 PRNG seeded from `time(NULL) ^ const` — ~31 bits
+ * of effective entropy. An attacker who knows rough boot time and
+ * epoch cadence could replay the stream and predict (a) which
+ * outbound peers we use for stem relay this epoch and (b) every
+ * fluff outcome — defeating Dandelion's origin-privacy property.
+ *
+ * Both decisions now route through `zcl_random_secret_bytes`, the
+ * same source used for esk / Sapling rcm/rcv / Groth16 blinding.
+ * On RNG failure (open(/dev/urandom) failure or all-zero output —
+ * both extremely rare) callers safe-fail by aborting stem-peer
+ * selection (leaves num_stem_peers=0 → next dandelion_should_stem
+ * returns false → tx fluffs via normal relay) or returning false
+ * from the coin-flip directly (tx fluffs).
+ *
+ * If a future "performance" refactor wants to swap this back to a
+ * cheap PRNG: don't. The seed must be unpredictable to the network,
+ * and fetching fresh per-call entropy is the simplest way to
+ * guarantee that. Dandelion is not a hot path — the per-tx cost of
+ * a /dev/urandom read is negligible compared to script verification.
+ */
 
-static uint64_t s_dandelion_rng_state = 0;
-
-static uint64_t dandelion_rand(void)
+static bool dandelion_secret_u64(uint64_t *out, const char *label)
 {
-    if (s_dandelion_rng_state == 0)
-        s_dandelion_rng_state = (uint64_t)time(NULL) ^ 0xdeadbeefcafe1234ULL;
-    uint64_t x = s_dandelion_rng_state;
-    x ^= x << 13;
-    x ^= x >> 7;
-    x ^= x << 17;
-    s_dandelion_rng_state = x;
-    return x;
+    uint8_t buf[8];
+    if (!zcl_random_secret_bytes(buf, sizeof buf, label))
+        return false;
+    uint64_t v = 0;
+    for (int i = 0; i < 8; i++)
+        v |= (uint64_t)buf[i] << (i * 8);
+    *out = v;
+    return true;
 }
 
 /* ── Epoch management ──────────────────────────────────────────── */
@@ -93,12 +115,32 @@ void dandelion_maybe_rotate_epoch(struct dandelion_state *ds,
     }
     zcl_mutex_unlock(&nm->cs_nodes);
 
-    /* Fisher-Yates shuffle and pick first DANDELION_NUM_STEM_PEERS */
+    /* Fisher-Yates shuffle backed by the cryptographic RNG. On RNG
+     * failure: leave num_stem_peers=0 so dandelion_should_stem returns
+     * false and txs fluff via normal relay (safer than picking with a
+     * compromised RNG). */
+    bool rng_ok = true;
     for (int i = num_candidates - 1; i > 0; i--) {
-        int j = (int)(dandelion_rand() % (uint64_t)(i + 1));
+        uint64_t r;
+        if (!dandelion_secret_u64(&r, "dandelion-stem-shuffle")) {
+            rng_ok = false;
+            break;
+        }
+        int j = (int)(r % (uint64_t)(i + 1));
         node_id_t tmp = candidates[i];
         candidates[i] = candidates[j];
         candidates[j] = tmp;
+    }
+
+    if (!rng_ok) {
+        fprintf(stderr, "[dandelion] stem-peer RNG failed; deferring "
+                        "selection (txs will fluff this epoch)\n");
+        ds->num_stem_peers = 0;
+        ds->stem_rr_index = 0;
+        for (int i = 0; i < DANDELION_NUM_STEM_PEERS; i++)
+            ds->stem_peers[i] = DANDELION_NODE_ID_NONE;
+        zcl_mutex_unlock(&ds->cs);
+        return;
     }
 
     int pick = num_candidates < DANDELION_NUM_STEM_PEERS
@@ -131,9 +173,15 @@ bool dandelion_should_stem(struct dandelion_state *ds, node_id_t from_peer)
         return false;
     }
 
-    /* Each hop independently decides to fluff with DANDELION_FLUFF_PROB% */
-    uint64_t r = dandelion_rand() % 100;
-    bool stem = (r >= DANDELION_FLUFF_PROB);
+    /* Each hop independently decides to fluff with DANDELION_FLUFF_PROB%.
+     * On RNG failure: fluff (safer than stemming with a compromised
+     * RNG; matches the safe-fail policy in maybe_rotate_epoch). */
+    uint64_t r;
+    if (!dandelion_secret_u64(&r, "dandelion-fluff-coin")) {
+        zcl_mutex_unlock(&ds->cs);
+        return false;
+    }
+    bool stem = ((r % 100) >= DANDELION_FLUFF_PROB);
 
     zcl_mutex_unlock(&ds->cs);
     return stem;
@@ -285,3 +333,37 @@ bool dandelion_stempool_contains(struct dandelion_state *ds,
     zcl_mutex_unlock(&ds->cs);
     return false;
 }
+
+#ifdef ZCL_TESTING
+/* P8.2 acceptance hooks. These exercise the same RNG-driven shuffle
+ * and coin-flip used by dandelion_maybe_rotate_epoch and
+ * dandelion_should_stem, in a form that doesn't require a populated
+ * net_manager. NOT for production callers. */
+
+bool dandelion_test_shuffle(node_id_t *inout, int n)
+{
+    if (!inout || n < 0)
+        return false;
+    for (int i = n - 1; i > 0; i--) {
+        uint64_t r;
+        if (!dandelion_secret_u64(&r, "dandelion-test-shuffle"))
+            return false;
+        int j = (int)(r % (uint64_t)(i + 1));
+        node_id_t tmp = inout[i];
+        inout[i] = inout[j];
+        inout[j] = tmp;
+    }
+    return true;
+}
+
+bool dandelion_test_should_stem_coin(bool *out_stem)
+{
+    if (!out_stem)
+        return false;
+    uint64_t r;
+    if (!dandelion_secret_u64(&r, "dandelion-test-coin"))
+        return false;
+    *out_stem = ((r % 100) >= DANDELION_FLUFF_PROB);
+    return true;
+}
+#endif
