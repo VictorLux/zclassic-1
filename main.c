@@ -8,6 +8,7 @@
 #include "config/boot.h"
 #include "rpc/client.h"
 #include "net/file_service.h"
+#include "util/thread_registry.h"
 #include <sqlite3.h>
 #include "json/json.h"
 #include "views/wallet_gui.h"
@@ -230,6 +231,11 @@ static void signal_handler(int sig)
         _exit(1);
     }
     g_shutdown_requested = 1;
+    /* P7.9 — mirror to the thread_registry flag so every loop that
+     * polls thread_registry_shutdown_requested() drains alongside the
+     * legacy g_shutdown_requested readers. The setter is an atomic
+     * store, safe to call from the signal handler. */
+    thread_registry_request_shutdown();
     /* Start watchdog thread to force exit if shutdown hangs */
     pthread_t wd;
     pthread_create(&wd, NULL, shutdown_watchdog, NULL);

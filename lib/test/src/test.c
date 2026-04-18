@@ -153,6 +153,8 @@ int main(void)
     failures += test_rpc_error_envelope();
     failures += test_tx_property();
     failures += test_workpool();
+    { extern int test_thread_registry(void);
+      failures += test_thread_registry(); }
     failures += test_bip113_bip65();
     failures += test_mempool_orphan();
     failures += test_fee_estimation();
