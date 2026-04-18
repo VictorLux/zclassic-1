@@ -30,33 +30,113 @@ cross-agent priority table. Last brief rewrite: 2026-04-17.
 
 ---
 
-## Current status — 2026-04-18 (late-day)
+## Current status — 2026-04-18 (afternoon)
 
 **Done and on main (21 rows + 1 infra):** P1.1, P1.2, P1.5, P6.1–P6.6,
 P3.1, P3.2, P3.3, P3.4, P3.5, P3.6, P5.1, P5.3, P5.4, P5.7, P4.3, P4.4,
-P4.5, P2.3, P2.8, P3.7, **P2.4, P2.7**, plus parallel test runner
+P4.5, P2.3, P2.8, P3.7, P2.4, P2.7, plus parallel test runner
 infrastructure (df5de36c4). AGENT.md shows SHAs.
 
-You've now touched every public lane except `lib/keys/`, `lib/sapling/`,
-`lib/crypto/`, and the parts of `lib/validation/` / `lib/script/` /
-`lib/net/` that aren't on your current scope expansion.
-
-**NOW + NEXT are both empty for Agent-2.** Pinging Rhett for the next
-assignment. Rhett's lane is now the bottleneck (P1.6, P1.7, P2.1, P2.2,
-P2.5, P2.6, P4.1, P4.2, P5.2, P5.5, P5.6 all open).
+**Now working on:** P2.6 (g_swarm_active TOCTOU — same file as P2.4)
+and P5.2 (deploy service hygiene).
+**Queued NEXT (pre-authorized):** P2.5 (connman deadlock).
 
 ---
 
-## NOW — empty
+## NOW — P2.6 + P5.2
 
-The P2.4 + P2.7 wave shipped — see Notes from Agent-2 at the end of
-this file for the wave summary. Awaiting assignment.
+### P2.6 — `g_swarm_active` TOCTOU → state leak
 
-## NEXT — empty
+File: `lib/net/src/msgprocessor.c` (around lines 1961-1981 and 2040 —
+verify against current head; numbers may have shifted after your P2.4
+landing).
 
-Rhett's lane is the bottleneck (P1.6, P1.7, P2.1, P2.2, P2.5, P2.6,
-P4.1, P4.2, P5.2, P5.5, P5.6 all open). Ping Rhett on next status
-check for a fresh narrow-scope row.
+**Bug.** `g_swarm_active` is read, then conditionally written, without
+holding any lock around the pair. Two peers racing on the swarm-init
+path can both observe `g_swarm_active == 0`, both proceed to call
+`swarm_sync_init`, and the second one leaks the first's state (or
+overwrites partially-applied chunk indexes). The TOCTOU window is the
+gap between the read at ~1961 and the write at ~1981.
+
+**Fix.** Replace the read/write pair with a single atomic
+compare-exchange (`atomic_compare_exchange_strong`) on a
+`_Atomic int g_swarm_active`. If the CAS fails, the caller raced and
+must back off — log + drop the message + return; do NOT silently
+proceed with the existing-swarm state. Mirror the same pattern at the
+2040 reset site (atomic store, not bare assignment).
+
+**Acceptance (3 tests in `lib/test/src/test_net.c`):**
+1. **No-race fast path:** single-thread call inits swarm exactly once,
+   leaves `g_swarm_active == 1`.
+2. **Concurrent racer:** two pthreads each fire the swarm-init message
+   handler. Exactly one returns success and one returns the
+   "already-active" diagnostic — assert by counting init calls (mock
+   `swarm_sync_init` to bump a counter; assert counter == 1).
+3. **Reset cycle:** init, finish, reset, init again succeeds — verifies
+   the atomic store at 2040 is observable to the next CAS.
+
+### P5.2 — deploy/zclassic23.service hygiene
+
+File: `deploy/zclassic23.service` (line 21 hardcodes Rhett's
+`-externalip=205.209.104.118` and 9 specific `-addnode=...:8033` peers).
+
+**Fix.** Move the operator-specific bits behind environment variables
+sourced from `/etc/default/zclassic23` (or
+`~/.config/zclassic23/env`, whichever the linger pattern uses).
+Default to the current values when the env file is missing, so the
+existing deploy on Rhett's box keeps working. The committed unit file
+should expose:
+
+```ini
+EnvironmentFile=-/etc/default/zclassic23
+ExecStart=/usr/local/bin/zclassic23 \
+    ${ZCL_EXTERNALIP_FLAG} ${ZCL_ADDNODE_FLAGS} \
+    -tor -datadir=%h/.zclassic-c23 ...
+```
+
+Plus a one-paragraph note in the deploy README pointing operators at
+the env file. Do NOT commit Rhett's IP/peers as the default in the
+unit — they should appear only in the example env file template, not
+in the binary deployment artifact.
+
+**Acceptance:** `systemctl --user daemon-reload && systemctl --user
+restart zclassic23` works on Rhett's box (env file present) AND on a
+fresh clone (env file absent → node starts without external IP, picks
+up addrman peers via DNS seeds). Smoke test via `zcl_status` showing
+height advances and at least one peer connection.
+
+---
+
+## NEXT (pre-authorized) — P2.5 connman deadlock
+
+After P2.6 + P5.2 land. File: `lib/net/src/connman.c:802-836`.
+
+**Bug.** `cs_nodes` is held across a callback that may itself try to
+take the same mutex (or a sibling lock that has the inverse ordering
+elsewhere). Classic deadlock-on-disconnect.
+
+**Approach (typical fix — verify the actual call chain in your audit):**
+copy the relevant node pointers into a small local array under the
+lock, drop the lock, then invoke the callback against the local copy.
+If the callback signals "remove this node," queue the removal in a
+deferred list and apply it in a second pass under the lock.
+
+**Acceptance:** stress test that disconnects 50 peers in parallel
+during heavy block-relay traffic. Pre-fix should hang (run the test
+under a 30s alarm and assert NO timeout). Add the test to
+`test_net.c` guarded by `ZCL_STRESS_TESTS` env var so the default
+`./test_zcl` doesn't pay the cost.
+
+---
+
+## Stopping point
+
+After P2.6 + P5.2 + P2.5 are all on main, ping Rhett. At that point
+your network-lane scope expansion is fully consumed and the only open
+HIGHs are pure-Rhett (P1.6 / P1.7 consensus, P4.1 / P4.2 script
+interpreter). Likely next: pivot to docs/operator hygiene (P5.5 / P5.6
+vendor updates) if you want to keep moving while Rhett works the
+consensus-tier rows, or pause and let Agent-3 / Rhett catch up.
 
 ---
 
