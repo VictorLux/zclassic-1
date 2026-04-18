@@ -340,6 +340,174 @@ static int t_utxos_two_ahead_rejected(void)
     return failures;
 }
 
+/* P8.9: seed a coinbase txid (seed_byte repeated 32x) as a utxos row
+ * at `utxo_height` AND a transactions row at `tx_height`. The live-node
+ * failure had utxo_height == tip_height, tx_height == tip_height + 1 —
+ * so the basic height>tip rewind missed the utxos row but BIP30 still
+ * tripped on the coinbase txid. */
+static void seed_orphan_coinbase(sqlite3 *db, uint8_t seed_byte,
+                                  int utxo_height, int tx_height)
+{
+    uint8_t txid[32];
+    memset(txid, seed_byte, 32);
+    uint8_t block_hash[32];
+    memset(block_hash, 0xF0 | (seed_byte & 0x0F), 32);
+
+    sqlite3_stmt *s = NULL;
+    sqlite3_prepare_v2(db,
+        "INSERT INTO utxos(txid,vout,value,script,script_type,"
+        " address_hash,height,is_coinbase) VALUES(?,0,0,NULL,0,NULL,?,1)",
+        -1, &s, NULL);
+    sqlite3_bind_blob(s, 1, txid, 32, SQLITE_STATIC);
+    sqlite3_bind_int(s, 2, utxo_height);
+    sqlite3_step(s);
+    sqlite3_finalize(s);
+
+    sqlite3_prepare_v2(db,
+        "INSERT INTO transactions(txid,block_hash,block_height,tx_index,"
+        " file_num,file_pos,is_coinbase) VALUES(?,?,?,0,0,0,1)",
+        -1, &s, NULL);
+    sqlite3_bind_blob(s, 1, txid, 32, SQLITE_STATIC);
+    sqlite3_bind_blob(s, 2, block_hash, 32, SQLITE_STATIC);
+    sqlite3_bind_int(s, 3, tx_height);
+    sqlite3_step(s);
+    sqlite3_finalize(s);
+}
+
+static bool build_full_db(sqlite3 **out, const char *dbpath)
+{
+    if (!build_min_db(out, dbpath)) return false;
+    char *err = NULL;
+    int rc = sqlite3_exec(*out,
+        "CREATE TABLE IF NOT EXISTS transactions("
+        " txid BLOB PRIMARY KEY, block_hash BLOB NOT NULL,"
+        " block_height INTEGER NOT NULL, tx_index INTEGER NOT NULL,"
+        " file_num INTEGER NOT NULL, file_pos INTEGER NOT NULL,"
+        " is_coinbase INTEGER NOT NULL DEFAULT 0);",
+        NULL, NULL, &err);
+    if (rc != SQLITE_OK) {
+        fprintf(stderr, "build_full_db: %s\n", err ? err : "?");
+        sqlite3_free(err);
+        return false;
+    }
+    return true;
+}
+
+/* P8.9: live-node BIP30 stall repro — block 3081408's coinbase left
+ * behind as a stale utxos row at height <= tip AND a transactions row
+ * at height = tip+1, so the basic height>tip rewind missed the utxos
+ * row and a re-apply of block 3081408 tripped BIP30 on have_coins of
+ * the orphan coinbase. The strengthened rewind sweeps utxos by txid
+ * whenever a transactions row sits above tip, so the orphan goes away
+ * alongside the rows caught by the direct height delete. */
+static int t_p89_orphan_coinbase_swept_by_txid(void)
+{
+    int failures = 0;
+    char dir[256]; cva_path(dir, sizeof(dir), "p89_bytxid"); mkdir_p(dir);
+    char dbpath[512]; snprintf(dbpath, sizeof(dbpath), "%s/node.db", dir);
+
+    TEST("cva P8.9: orphan coinbase at tip height swept via tx_index") {
+        sqlite3 *db = NULL;
+        ASSERT(build_full_db(&db, dbpath));
+
+        /* A legitimate UTXO at tip height — must survive the rewind. */
+        seed_utxo(db, 100, 0x01);
+
+        /* The orphan coinbase: utxos row labelled at tip (100) so the
+         * basic height>tip rewind skips it, but the tx_index row is at
+         * tip+1 (101), which is the real evidence of the aborted
+         * block. The new sweep purges utxos by matching txid. */
+        seed_orphan_coinbase(db, 0xAA, /*utxo_h*/100, /*tx_h*/101);
+
+        /* A regular overshoot utxos row at 101 so the guard fires and
+         * rewind is actually attempted. */
+        seed_utxo(db, 101, 0x02);
+
+        uint8_t tip[32]; memset(tip, 0xCC, 32);
+        seed_block(db, tip, 100);
+        set_tip(db, tip);
+
+        struct coins_view_sqlite cvs;
+        ASSERT(coins_view_sqlite_open(&cvs, db));
+        coins_view_sqlite_close(&cvs);
+
+        /* Orphan coinbase utxos row purged (lookup by txid). */
+        sqlite3_stmt *s = NULL;
+        uint8_t orphan_txid[32]; memset(orphan_txid, 0xAA, 32);
+        sqlite3_prepare_v2(db,
+            "SELECT COUNT(*) FROM utxos WHERE txid=?", -1, &s, NULL);
+        sqlite3_bind_blob(s, 1, orphan_txid, 32, SQLITE_STATIC);
+        ASSERT(sqlite3_step(s) == SQLITE_ROW);
+        ASSERT_EQ(sqlite3_column_int(s, 0), 0);
+        sqlite3_finalize(s);
+
+        /* transactions row above tip was also purged. */
+        sqlite3_prepare_v2(db,
+            "SELECT COUNT(*) FROM transactions WHERE block_height>100",
+            -1, &s, NULL);
+        ASSERT(sqlite3_step(s) == SQLITE_ROW);
+        ASSERT_EQ(sqlite3_column_int(s, 0), 0);
+        sqlite3_finalize(s);
+
+        /* Legitimate tip-height UTXO survived. */
+        uint8_t legit_txid[32]; memset(legit_txid, 0x01, 32);
+        sqlite3_prepare_v2(db,
+            "SELECT COUNT(*) FROM utxos WHERE txid=?", -1, &s, NULL);
+        sqlite3_bind_blob(s, 1, legit_txid, 32, SQLITE_STATIC);
+        ASSERT(sqlite3_step(s) == SQLITE_ROW);
+        ASSERT_EQ(sqlite3_column_int(s, 0), 1);
+        sqlite3_finalize(s);
+
+        sqlite3_close(db);
+        PASS();
+    } _test_next:;
+    test_cleanup_tmpdir(dir);
+    return failures;
+}
+
+/* P8.9: pure height>tip rows still rewound correctly when the
+ * transactions table is present — no regression on the P7.2 path. */
+static int t_p89_basic_rewind_with_tx_table(void)
+{
+    int failures = 0;
+    char dir[256]; cva_path(dir, sizeof(dir), "p89_basic"); mkdir_p(dir);
+    char dbpath[512]; snprintf(dbpath, sizeof(dbpath), "%s/node.db", dir);
+
+    TEST("cva P8.9: basic height>tip rewind unchanged when transactions present") {
+        sqlite3 *db = NULL;
+        ASSERT(build_full_db(&db, dbpath));
+
+        seed_utxo(db, 100, 0x10);
+        seed_utxo(db, 101, 0x20);
+        seed_utxo(db, 101, 0x21);
+        uint8_t tip[32]; memset(tip, 0xCC, 32);
+        seed_block(db, tip, 100);
+        set_tip(db, tip);
+
+        struct coins_view_sqlite cvs;
+        ASSERT(coins_view_sqlite_open(&cvs, db));
+        coins_view_sqlite_close(&cvs);
+
+        sqlite3_stmt *s = NULL;
+        sqlite3_prepare_v2(db,
+            "SELECT COUNT(*) FROM utxos WHERE height>100", -1, &s, NULL);
+        ASSERT(sqlite3_step(s) == SQLITE_ROW);
+        ASSERT_EQ(sqlite3_column_int(s, 0), 0);
+        sqlite3_finalize(s);
+
+        sqlite3_prepare_v2(db,
+            "SELECT COUNT(*) FROM utxos WHERE height=100", -1, &s, NULL);
+        ASSERT(sqlite3_step(s) == SQLITE_ROW);
+        ASSERT_EQ(sqlite3_column_int(s, 0), 1);
+        sqlite3_finalize(s);
+
+        sqlite3_close(db);
+        PASS();
+    } _test_next:;
+    test_cleanup_tmpdir(dir);
+    return failures;
+}
+
 int test_coins_view_atomicity(void);
 
 int test_coins_view_atomicity(void)
@@ -354,5 +522,7 @@ int test_coins_view_atomicity(void)
     failures += t_utxos_one_ahead_auto_rewound();
     failures += t_utxos_one_ahead_too_many_rejected();
     failures += t_utxos_two_ahead_rejected();
+    failures += t_p89_orphan_coinbase_swept_by_txid();
+    failures += t_p89_basic_rewind_with_tx_table();
     return failures;
 }

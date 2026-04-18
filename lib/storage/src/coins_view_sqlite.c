@@ -69,12 +69,71 @@ static struct coins_view_vtable cvs_vtable = {
  * above tip without operator consent). */
 #define COINS_AUTO_REWIND_MAX_ROWS 32
 
-/* P7.2: helper — crash-recovery auto-rewind for a single-block UTXO
- * overshoot.  Deletes UTXOs strictly above tip_height AND clears the
- * stored `utxo_commitment` row (which may reflect the overshoot set
- * that no longer exists — force recompute on the next connect_block).
- * The guard is enforced at call-site.  Returns true on COMMIT, false
- * on ROLLBACK.  Logs + emits an event in both paths. */
+/* P8.9: existence probe. Production schema has `transactions` but the
+ * test harness builds a minimal DB with only utxos/node_state/blocks,
+ * so the belt-and-suspenders sweep must tolerate the table's absence. */
+static bool coins_view_sqlite_table_exists(sqlite3 *db, const char *name)
+{
+    sqlite3_stmt *s = NULL;
+    bool exists = false;
+    if (sqlite3_prepare_v2(db,
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
+            -1, &s, NULL) == SQLITE_OK) {
+        sqlite3_bind_text(s, 1, name, -1, SQLITE_STATIC);
+        exists = (sqlite3_step(s) == SQLITE_ROW);
+        sqlite3_finalize(s);
+    }
+    return exists;
+}
+
+/* Shared helper for prepare+bind+step+finalize of a single DELETE.
+ * Returns the number of rows deleted, or -1 on error (caller goes to
+ * rollback). */
+static int coins_view_sqlite_delete_bind_height(sqlite3 *db,
+                                                 const char *sql,
+                                                 int64_t tip_height,
+                                                 const char *label)
+{
+    sqlite3_stmt *s = NULL;
+    if (sqlite3_prepare_v2(db, sql, -1, &s, NULL) != SQLITE_OK) {
+        fprintf(stderr,
+            "[coins] auto-rewind: prepare %s failed: %s\n",
+            label, sqlite3_errmsg(db));
+        return -1;
+    }
+    sqlite3_bind_int64(s, 1, tip_height);
+    int rc = sqlite3_step(s);
+    if (rc != SQLITE_DONE) {
+        fprintf(stderr,
+            "[coins] auto-rewind: %s step failed: %s\n",
+            label, sqlite3_errmsg(db));
+        sqlite3_finalize(s);
+        return -1;
+    }
+    int changed = sqlite3_changes(db);
+    sqlite3_finalize(s);
+    return changed;
+}
+
+/* P7.2 + P8.9: crash-recovery auto-rewind for a single-block UTXO
+ * overshoot.
+ *
+ * Original P7.2 behavior (still performed): DELETE utxos where
+ * height > tip_height, clear the stored `utxo_commitment` row.
+ *
+ * P8.9 strengthening (added 2026-04-19 after live-node BIP30 stall):
+ *   - Sweep any utxos row whose txid appears in `transactions` with
+ *     block_height > tip_height, regardless of the utxos.height column
+ *     value. Covers the wrong-height failure mode where a partially-
+ *     applied block left utxos rows at height<=tip but the tx_index
+ *     row at height=tip+1, so `have_coins(coinbase_txid)` tripped
+ *     BIP30 on the orphan coinbase (production 2026-04-19 22:10 stall).
+ *   - Purge the stale `transactions` rows themselves so the tx_index
+ *     stays consistent with the rewound utxos set.
+ *
+ * The ≤32-row guard at the call site still caps blast radius. Returns
+ * true on COMMIT, false on ROLLBACK.  Logs + emits an event in both
+ * paths. */
 static bool coins_view_sqlite_rewind_above_tip(sqlite3 *db,
                                                 int64_t tip_height)
 {
@@ -86,24 +145,25 @@ static bool coins_view_sqlite_rewind_above_tip(sqlite3 *db,
         return false;
     }
 
-    sqlite3_stmt *s = NULL;
-    if (sqlite3_prepare_v2(db,
-            "DELETE FROM utxos WHERE height > ?", -1, &s, NULL) != SQLITE_OK) {
-        fprintf(stderr,
-            "[coins] auto-rewind: prepare DELETE failed: %s\n",
-            sqlite3_errmsg(db));
-        goto rollback;
+    int deleted_high = coins_view_sqlite_delete_bind_height(db,
+        "DELETE FROM utxos WHERE height > ?",
+        tip_height, "utxos-high");
+    if (deleted_high < 0) goto rollback;
+
+    int deleted_bytxid = 0;
+    int deleted_txindex = 0;
+    if (coins_view_sqlite_table_exists(db, "transactions")) {
+        deleted_bytxid = coins_view_sqlite_delete_bind_height(db,
+            "DELETE FROM utxos WHERE txid IN"
+            " (SELECT txid FROM transactions WHERE block_height > ?)",
+            tip_height, "utxos-by-txid");
+        if (deleted_bytxid < 0) goto rollback;
+
+        deleted_txindex = coins_view_sqlite_delete_bind_height(db,
+            "DELETE FROM transactions WHERE block_height > ?",
+            tip_height, "transactions-high");
+        if (deleted_txindex < 0) goto rollback;
     }
-    sqlite3_bind_int64(s, 1, tip_height);
-    if (sqlite3_step(s) != SQLITE_DONE) {
-        fprintf(stderr,
-            "[coins] auto-rewind: DELETE step failed: %s\n",
-            sqlite3_errmsg(db));
-        sqlite3_finalize(s);
-        goto rollback;
-    }
-    int deleted = sqlite3_changes(db);
-    sqlite3_finalize(s);
 
     if (sqlite3_exec(db,
             "DELETE FROM node_state WHERE key='utxo_commitment'",
@@ -122,14 +182,17 @@ static bool coins_view_sqlite_rewind_above_tip(sqlite3 *db,
         goto rollback;
     }
 
+    int deleted_total = deleted_high + deleted_bytxid;
     fprintf(stderr,
         "[coins] auto-rewind: removed %d UTXO row(s) above "
-        "tip_height=%lld and cleared utxo_commitment — "
-        "continuing boot\n",
-        deleted, (long long)tip_height);
+        "tip_height=%lld (high=%d, by-txid=%d, tx_index=%d) "
+        "and cleared utxo_commitment — continuing boot\n",
+        deleted_total, (long long)tip_height,
+        deleted_high, deleted_bytxid, deleted_txindex);
     event_emitf(EV_DB_ERROR, 0,
-        "coins_auto_rewind deleted=%d tip_height=%lld",
-        deleted, (long long)tip_height);
+        "coins_auto_rewind deleted=%d by_txid=%d tx_index=%d tip_height=%lld",
+        deleted_high, deleted_bytxid, deleted_txindex,
+        (long long)tip_height);
     return true;
 
 rollback:
