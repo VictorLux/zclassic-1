@@ -2,8 +2,10 @@
 zclassic23
 zclassic23.old
 test_zcl
+test_parallel
 zcl-rpc
 zcl-browser
+zcl-nodectl
 zclassic-cli
 bench_field
 hodlwave_chart
