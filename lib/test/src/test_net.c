@@ -10,6 +10,9 @@
 #include "net/msgprocessor.h"
 #include "net/connman.h"
 #include "net/peer_strategy.h"
+#include "net/tip_watchdog.h"
+#include "net/download.h"
+#include "event/event.h"
 #include <sqlite3.h>
 #include <unistd.h>
 #include <pthread.h>
@@ -24,6 +27,56 @@ static void test_updated_block_tip(void *ctx, int height)
     (void)ctx;
     test_tip_count++;
     test_tip_height = height;
+}
+
+/* ── P7.4 backpressure-watchdog event observers ──────────── */
+
+static _Atomic uint64_t g_p74_active_emits   = 0;
+static _Atomic uint64_t g_p74_reject_emits   = 0;
+static _Atomic uint64_t g_p74_clear_emits    = 0;
+static _Atomic uint32_t g_p74_last_reject_peer = 0;
+
+static void p74_active_observer(enum event_type type, uint32_t peer_id,
+                                const void *payload, uint32_t payload_len,
+                                void *ctx)
+{
+    (void)type; (void)peer_id; (void)payload;
+    (void)payload_len; (void)ctx;
+    atomic_fetch_add(&g_p74_active_emits, 1);
+}
+
+static void p74_reject_observer(enum event_type type, uint32_t peer_id,
+                                const void *payload, uint32_t payload_len,
+                                void *ctx)
+{
+    (void)type; (void)payload; (void)payload_len; (void)ctx;
+    atomic_store(&g_p74_last_reject_peer, peer_id);
+    atomic_fetch_add(&g_p74_reject_emits, 1);
+}
+
+static void p74_clear_observer(enum event_type type, uint32_t peer_id,
+                               const void *payload, uint32_t payload_len,
+                               void *ctx)
+{
+    (void)type; (void)peer_id; (void)payload;
+    (void)payload_len; (void)ctx;
+    atomic_fetch_add(&g_p74_clear_emits, 1);
+}
+
+static void p74_register_observers(void)
+{
+    /* event_emit is a no-op until event_log_init runs. Other test
+     * groups init lazily; do the same here so the watchdog tests can
+     * run standalone. event_log_init clears all observers, so
+     * registration must follow it. */
+    event_log_init();
+    atomic_store(&g_p74_active_emits, 0);
+    atomic_store(&g_p74_reject_emits, 0);
+    atomic_store(&g_p74_clear_emits, 0);
+    atomic_store(&g_p74_last_reject_peer, 0);
+    event_observe(EV_BACKPRESSURE_ACTIVE, p74_active_observer, NULL);
+    event_observe(EV_BACKPRESSURE_REJECT, p74_reject_observer, NULL);
+    event_observe(EV_BACKPRESSURE_CLEAR,  p74_clear_observer,  NULL);
 }
 
 /* P2.6 concurrent-racer worker: each thread attempts to claim the
@@ -3793,6 +3846,177 @@ skip_parallel_tests:
         if (found) printf("OK\n");
         else { printf("FAIL\n"); failures++; }
     }
+
+    /* ── P7.4 tip-stall backpressure watchdog ─────────────────────
+     * Drive the watchdog with an explicit clock + queue size to
+     * verify (a) it enters BACKPRESSURE_ACTIVE on the documented
+     * (stall_time AND queue_bytes) condition, (b) it rejects new
+     * inv/block messages while active, (c) it clears on tip
+     * advance, and (d) — under ZCL_STRESS_TESTS — that the
+     * rejection layer actually caps memory pressure when a peer
+     * floods us with orphan blocks during a stuck-tip episode. */
+
+    printf("p74_watchdog: enters ACTIVE after 61s stall + 256MB queue... ");
+    {
+        p74_register_observers();
+        tip_watchdog_test_reset();
+
+        /* Pre-fill the simulated download queue past the high water
+         * mark and freeze the clock at t=0. The watchdog's stall
+         * timer is seeded to "now" by tip_watchdog_test_reset, so
+         * we need to push the clock past TIP_STALL_THRESHOLD_SEC
+         * before tip_watchdog_tick will trip. */
+        tip_watchdog_test_set_queue_bytes(DOWNLOAD_QUEUE_HIGH_WATER + 1);
+        tip_watchdog_test_set_now_ns(0);
+        tip_watchdog_test_inject_tip_advance(100, 0);
+
+        /* Force "now" forward by 61s — strictly past the threshold. */
+        tip_watchdog_test_set_now_ns(
+            (int64_t)(TIP_STALL_THRESHOLD_SEC + 1) * 1000000000LL);
+
+        bool went_active = tip_watchdog_tick();
+        bool sees_active = tip_watchdog_is_active();
+        uint64_t active_emits = atomic_load(&g_p74_active_emits);
+
+        /* Now an inbound inv from peer 42 must be rejected. */
+        bool reject_inv   = tip_watchdog_should_reject(42, "inv");
+        bool reject_block = tip_watchdog_should_reject(42, "block");
+        bool keep_tx      = !tip_watchdog_should_reject(42, "tx");
+
+        uint32_t last_peer = atomic_load(&g_p74_last_reject_peer);
+        uint64_t reject_emits = atomic_load(&g_p74_reject_emits);
+
+        bool ok = went_active && sees_active && active_emits == 1 &&
+                  reject_inv && reject_block && keep_tx &&
+                  last_peer == 42 && reject_emits == 2;
+
+        if (ok) printf("OK\n");
+        else { printf("FAIL (active=%d sees=%d emits=%llu inv=%d "
+                      "blk=%d tx_kept=%d peer=%u rej=%llu)\n",
+                      went_active, sees_active,
+                      (unsigned long long)active_emits,
+                      reject_inv, reject_block, keep_tx,
+                      last_peer, (unsigned long long)reject_emits);
+               failures++; }
+    }
+
+    printf("p74_watchdog: clears on tip advance + accepts inv/block again... ");
+    {
+        p74_register_observers();
+        tip_watchdog_test_reset();
+
+        tip_watchdog_test_set_queue_bytes(DOWNLOAD_QUEUE_HIGH_WATER + 1);
+        tip_watchdog_test_inject_tip_advance(100, 0);
+        int64_t t0 = (int64_t)(TIP_STALL_THRESHOLD_SEC + 1) * 1000000000LL;
+        tip_watchdog_test_set_now_ns(t0);
+        (void)tip_watchdog_tick();
+        bool active_now = tip_watchdog_is_active();
+
+        /* Tip advances at t0+100ms; tick should clear immediately
+         * because (now - last_tip_advance) drops below threshold. */
+        int64_t t1 = t0 + 100 * 1000000LL;
+        tip_watchdog_test_inject_tip_advance(101, t1);
+        tip_watchdog_test_set_now_ns(t1);
+        bool still_active = tip_watchdog_tick();
+        bool inv_passes  = !tip_watchdog_should_reject(7, "inv");
+        bool blk_passes  = !tip_watchdog_should_reject(7, "block");
+
+        uint64_t clear_emits = atomic_load(&g_p74_clear_emits);
+
+        bool ok = active_now && !still_active && inv_passes &&
+                  blk_passes && clear_emits == 1;
+        if (ok) printf("OK\n");
+        else { printf("FAIL (active_now=%d still=%d inv=%d blk=%d "
+                      "clears=%llu)\n",
+                      active_now, still_active, inv_passes, blk_passes,
+                      (unsigned long long)clear_emits);
+               failures++; }
+    }
+
+    printf("p74_watchdog: cooldown elapsed clears even without "
+           "tip advance... ");
+    {
+        p74_register_observers();
+        tip_watchdog_test_reset();
+
+        tip_watchdog_test_set_queue_bytes(DOWNLOAD_QUEUE_HIGH_WATER + 1);
+        tip_watchdog_test_inject_tip_advance(100, 0);
+        int64_t t0 = (int64_t)(TIP_STALL_THRESHOLD_SEC + 1) * 1000000000LL;
+        tip_watchdog_test_set_now_ns(t0);
+        (void)tip_watchdog_tick();
+        bool active_after_entry = tip_watchdog_is_active();
+
+        /* Push the clock past the cooldown window without ever
+         * advancing the tip — the watchdog must self-clear. */
+        int64_t t1 = t0 + (int64_t)(BACKPRESSURE_REJECT_SEC + 1) *
+                          1000000000LL;
+        tip_watchdog_test_set_now_ns(t1);
+        bool still_active = tip_watchdog_tick();
+
+        uint64_t clear_emits = atomic_load(&g_p74_clear_emits);
+        bool ok = active_after_entry && !still_active && clear_emits == 1;
+        if (ok) printf("OK\n");
+        else { printf("FAIL (active=%d still=%d clears=%llu)\n",
+                      active_after_entry, still_active,
+                      (unsigned long long)clear_emits);
+               failures++; }
+    }
+
+    /* P7.4 RSS-cap stress (opt-in via ZCL_STRESS_TESTS).
+     *
+     * Live incident reproducer: simulate a synthetic peer pushing
+     * 1000 "block" messages into the should_reject path while the
+     * tip is pinned past the stall threshold. Pre-fix the rejection
+     * layer didn't exist, every block_msg parsed into a 2 MB body,
+     * and total scratch climbed to ~6 GB. With the watchdog in
+     * place the messages get rejected at the dispatch boundary —
+     * we count the rejections and assert the count matches.
+     *
+     * This isn't a true RSS measurement (would require fork + child
+     * sampling /proc/self/status under realistic block-msg parse +
+     * connect_block load, which is out of scope for a unit test).
+     * It IS the operational invariant: while ACTIVE, every inbound
+     * inv/block must be dropped at the dispatch boundary, no
+     * exceptions. */
+    if (getenv("ZCL_STRESS_TESTS")) {
+        printf("p74_watchdog: 1000-orphan-block flood under stuck tip "
+               "drops every message... ");
+        p74_register_observers();
+        tip_watchdog_test_reset();
+
+        tip_watchdog_test_set_queue_bytes(DOWNLOAD_QUEUE_HIGH_WATER + 1);
+        tip_watchdog_test_inject_tip_advance(100, 0);
+        int64_t t0 = (int64_t)(TIP_STALL_THRESHOLD_SEC + 1) * 1000000000LL;
+        tip_watchdog_test_set_now_ns(t0);
+        (void)tip_watchdog_tick();
+
+        const int NB = 1000;
+        int dropped = 0;
+        for (int i = 0; i < NB; i++) {
+            if (tip_watchdog_should_reject((uint32_t)i, "block"))
+                dropped++;
+        }
+
+        uint64_t reject_emits = atomic_load(&g_p74_reject_emits);
+        bool ok = (dropped == NB) && (reject_emits == (uint64_t)NB);
+        if (ok) printf("OK (dropped=%d emits=%llu)\n",
+                       dropped, (unsigned long long)reject_emits);
+        else { printf("FAIL (dropped=%d emits=%llu)\n",
+                      dropped, (unsigned long long)reject_emits);
+               failures++; }
+
+        /* Restore baseline so later tests don't see overrides. */
+        tip_watchdog_test_reset();
+        event_clear_observers(EV_BACKPRESSURE_ACTIVE);
+        event_clear_observers(EV_BACKPRESSURE_REJECT);
+        event_clear_observers(EV_BACKPRESSURE_CLEAR);
+    }
+
+    /* Restore baseline so later tests don't see overrides. */
+    tip_watchdog_test_reset();
+    event_clear_observers(EV_BACKPRESSURE_ACTIVE);
+    event_clear_observers(EV_BACKPRESSURE_REJECT);
+    event_clear_observers(EV_BACKPRESSURE_CLEAR);
 
     /* ── P2.5 connman snapshot-iterate stress (opt-in) ──────────
      * Exercise the refactored message-cycle + deferred-free-sweep

@@ -46,6 +46,7 @@ extern volatile sig_atomic_t g_shutdown_requested;
 #include "util/timedata.h"
 #include "event/event.h"
 #include "net/download.h"
+#include "net/tip_watchdog.h"
 #include "util/sync.h"
 #include "config/boot_internal.h"
 #include <pthread.h>
@@ -720,6 +721,19 @@ void msgprocessor_test_tx_mark_seen(const struct uint256 *hash) {
     tx_mark_seen(hash);
 }
 
+/* P7.4: feed tip-advance signals into the watchdog. Both
+ * EV_BLOCK_CONNECTED (per-block during IBD) and EV_TIP_UPDATED
+ * (caught-up-to-peer transitions) count as forward progress. The
+ * payload is informational; only the timestamp matters. */
+void msgprocessor_watchdog_tip_observer(enum event_type type, uint32_t peer_id,
+                                        const void *payload,
+                                        uint32_t payload_len, void *ctx)
+{
+    (void)type; (void)peer_id; (void)payload;
+    (void)payload_len; (void)ctx;
+    tip_watchdog_note_tip_advance(0);
+}
+
 void msg_processor_init(struct msg_processor *mp,
                          struct main_state *ms,
                          struct tx_mempool *mempool,
@@ -739,6 +753,20 @@ void msg_processor_init(struct msg_processor *mp,
 
     /* Initialize download manager once (before threads start) */
     msg_get_download_mgr();
+
+    /* P7.4: tip-stall backpressure watchdog. Init seeds the stall
+     * timer to "now" so we don't trip during startup; observers on
+     * EV_BLOCK_CONNECTED + EV_TIP_UPDATED keep it warm thereafter. */
+    tip_watchdog_init();
+    {
+        extern void msgprocessor_watchdog_tip_observer(
+            enum event_type type, uint32_t peer_id,
+            const void *payload, uint32_t payload_len, void *ctx);
+        event_observe(EV_BLOCK_CONNECTED,
+                      msgprocessor_watchdog_tip_observer, NULL);
+        event_observe(EV_TIP_UPDATED,
+                      msgprocessor_watchdog_tip_observer, NULL);
+    }
 
     /* Initialize Dandelion++ tx propagation */
     if (!g_dandelion_init) {
@@ -1703,6 +1731,12 @@ bool msg_process_messages(void *ctx, struct p2p_node *node)
 {
     struct msg_processor *mp = (struct msg_processor *)ctx;
 
+    /* P7.4: tip-stall watchdog state-machine tick. Cheap (a couple of
+     * atomics + one stat read on the download manager). One tick per
+     * peer per cycle is plenty — state transitions happen on second-
+     * scale, not per-message scale. */
+    tip_watchdog_tick();
+
     while (node->recv_msg_count > 0 && !node->disconnect) {
         zcl_mutex_lock(&node->cs_recv);
         if (node->recv_msg_count == 0 ||
@@ -1746,6 +1780,16 @@ bool msg_process_messages(void *ctx, struct p2p_node *node)
 
         struct byte_stream s;
         stream_init_from_data(&s, msg.recv_data, msg.data_pos);
+
+        /* P7.4: post-parse / pre-dispatch backpressure rejection.
+         * When the watchdog is active we drop inv + block messages
+         * without dispatching the handler — emits EV_BACKPRESSURE_REJECT
+         * but does not bump ban-score. */
+        if (tip_watchdog_should_reject((uint32_t)node->id, cmd)) {
+            stream_free(&s);
+            net_message_free(&msg);
+            continue;
+        }
 
         bool ok = true;
 

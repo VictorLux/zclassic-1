@@ -1,0 +1,194 @@
+/* Copyright 2026 Rhett Creighton - Apache License 2.0
+ *
+ * P7.4 backpressure watchdog implementation. See net/tip_watchdog.h
+ * for the rationale and state machine. */
+
+#include "net/tip_watchdog.h"
+#include "net/download.h"
+#include "event/event.h"
+#include <pthread.h>
+#include <stdatomic.h>
+#include <stdint.h>
+#include <stddef.h>
+#include <stdio.h>
+#include <stdbool.h>
+#include <string.h>
+#include <time.h>
+
+static _Atomic int64_t g_last_tip_advance_ns = 0;
+static _Atomic int64_t g_entered_active_ns   = 0;
+static _Atomic bool    g_active              = false;
+static _Atomic int     g_last_tip_height     = 0;
+
+static _Atomic uint64_t g_stat_entered  = 0;
+static _Atomic uint64_t g_stat_cleared  = 0;
+static _Atomic uint64_t g_stat_rejected = 0;
+static _Atomic uint64_t g_stat_drained  = 0;
+
+/* Test overrides. -1 means "use the real source". The clock override
+ * is signed so we can encode "unset" cleanly; the queue-bytes override
+ * uses int64 for the same reason. */
+static _Atomic int64_t g_test_now_ns      = -1;
+static _Atomic int64_t g_test_queue_bytes = -1;
+
+static int64_t now_ns_real(void)
+{
+    struct timespec ts;
+    if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0)
+        return (int64_t)time(NULL) * 1000000000LL;
+    return (int64_t)ts.tv_sec * 1000000000LL + (int64_t)ts.tv_nsec;
+}
+
+static int64_t now_ns(void)
+{
+    int64_t t = atomic_load(&g_test_now_ns);
+    return (t >= 0) ? t : now_ns_real();
+}
+
+static size_t download_queue_bytes_estimate(void)
+{
+    int64_t override = atomic_load(&g_test_queue_bytes);
+    if (override >= 0) return (size_t)override;
+
+    struct download_manager *dm = msg_get_download_mgr();
+    if (!dm) return 0;
+    uint64_t in_flight = 0, queued = 0;
+    dl_get_stats(dm, NULL, NULL, NULL, &in_flight, &queued);
+    return (size_t)((in_flight + queued) * BACKPRESSURE_AVG_BLOCK_BYTES);
+}
+
+void tip_watchdog_init(void)
+{
+    atomic_store(&g_last_tip_advance_ns, now_ns());
+}
+
+void tip_watchdog_note_tip_advance(int height)
+{
+    atomic_store(&g_last_tip_advance_ns, now_ns());
+    atomic_store(&g_last_tip_height, height);
+}
+
+bool tip_watchdog_is_active(void)
+{
+    return atomic_load(&g_active);
+}
+
+static int64_t stall_threshold_ns(void)
+{
+    return (int64_t)TIP_STALL_THRESHOLD_SEC * 1000000000LL;
+}
+
+static int64_t reject_window_ns(void)
+{
+    return (int64_t)BACKPRESSURE_REJECT_SEC * 1000000000LL;
+}
+
+static void enter_active(int64_t now)
+{
+    if (atomic_exchange(&g_active, true)) return;
+    atomic_store(&g_entered_active_ns, now);
+
+    size_t drained = 0;
+    struct download_manager *dm = msg_get_download_mgr();
+    if (dm) drained = dl_drain_for_backpressure(dm);
+    atomic_fetch_add(&g_stat_drained, drained);
+    atomic_fetch_add(&g_stat_entered, 1);
+
+    event_emitf(EV_BACKPRESSURE_ACTIVE, 0,
+                "tip_stalled drained=%zu high_water_bytes=%lu",
+                drained, (unsigned long)DOWNLOAD_QUEUE_HIGH_WATER);
+}
+
+static void leave_active(int64_t now, const char *reason)
+{
+    if (!atomic_exchange(&g_active, false)) return;
+    int64_t entered = atomic_load(&g_entered_active_ns);
+    int64_t held_ms = entered ? (now - entered) / 1000000 : 0;
+    atomic_fetch_add(&g_stat_cleared, 1);
+    event_emitf(EV_BACKPRESSURE_CLEAR, 0,
+                "reason=%s held_ms=%lld", reason, (long long)held_ms);
+}
+
+bool tip_watchdog_tick(void)
+{
+    int64_t now = now_ns();
+    int64_t since_advance = now - atomic_load(&g_last_tip_advance_ns);
+    bool active = atomic_load(&g_active);
+    size_t bytes = download_queue_bytes_estimate();
+
+    if (!active) {
+        if (since_advance > stall_threshold_ns() &&
+            bytes > DOWNLOAD_QUEUE_HIGH_WATER) {
+            enter_active(now);
+            return true;
+        }
+        return false;
+    }
+
+    /* ACTIVE: clear if tip has advanced or cooldown elapsed. */
+    if (since_advance < stall_threshold_ns()) {
+        leave_active(now, "tip_advanced");
+        return false;
+    }
+    int64_t in_active = now - atomic_load(&g_entered_active_ns);
+    if (in_active >= reject_window_ns()) {
+        leave_active(now, "cooldown_elapsed");
+        return false;
+    }
+    return true;
+}
+
+bool tip_watchdog_should_reject(uint32_t peer_id, const char *cmd)
+{
+    if (!atomic_load(&g_active) || !cmd) return false;
+    /* Only the two commands that lead to block-body work. inv triggers
+     * a getdata round-trip, block carries the body itself. */
+    if (strcmp(cmd, "inv") != 0 && strcmp(cmd, "block") != 0)
+        return false;
+
+    atomic_fetch_add(&g_stat_rejected, 1);
+    event_emitf(EV_BACKPRESSURE_REJECT, peer_id, "cmd=%s", cmd);
+    return true;
+}
+
+void tip_watchdog_test_reset(void)
+{
+    atomic_store(&g_active, false);
+    atomic_store(&g_entered_active_ns, 0);
+    atomic_store(&g_stat_entered, 0);
+    atomic_store(&g_stat_cleared, 0);
+    atomic_store(&g_stat_rejected, 0);
+    atomic_store(&g_stat_drained, 0);
+    atomic_store(&g_test_now_ns, -1);
+    atomic_store(&g_test_queue_bytes, -1);
+    atomic_store(&g_last_tip_height, 0);
+    atomic_store(&g_last_tip_advance_ns, now_ns_real());
+}
+
+void tip_watchdog_test_set_now_ns(int64_t v)
+{
+    atomic_store(&g_test_now_ns, v);
+}
+
+void tip_watchdog_test_set_queue_bytes(size_t v)
+{
+    atomic_store(&g_test_queue_bytes, (int64_t)v);
+}
+
+void tip_watchdog_test_inject_tip_advance(int height, int64_t when_ns)
+{
+    atomic_store(&g_last_tip_height, height);
+    atomic_store(&g_last_tip_advance_ns, when_ns);
+}
+
+void tip_watchdog_get_stats(struct tip_watchdog_stats *out)
+{
+    if (!out) return;
+    out->entered_active        = atomic_load(&g_stat_entered);
+    out->cleared               = atomic_load(&g_stat_cleared);
+    out->rejected_messages     = atomic_load(&g_stat_rejected);
+    out->drained_queue_entries = atomic_load(&g_stat_drained);
+    out->last_tip_advance_ns   = atomic_load(&g_last_tip_advance_ns);
+    out->entered_active_ns     = atomic_load(&g_entered_active_ns);
+    out->active                = atomic_load(&g_active);
+}

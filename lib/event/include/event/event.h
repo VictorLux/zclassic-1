@@ -171,6 +171,11 @@ enum event_type {
     /* ── Block pruning ────────────────────────────────── */
     EV_BLOCK_PRUNING_DONE,       /* payload: "file=N max_height=N freed=N blocks=N" */
 
+    /* ── Net backpressure watchdog (P7.4) ─────────────── */
+    EV_BACKPRESSURE_ACTIVE,      /* payload: "tip_stalled drained=N" — once on entry */
+    EV_BACKPRESSURE_REJECT,      /* payload: "cmd=inv|block" — per dropped message; peer_id set */
+    EV_BACKPRESSURE_CLEAR,       /* payload: "reason=tip_advanced|cooldown_elapsed held_ms=N" */
+
     EV_NUM_TYPES                 /* sentinel — must be last */
 };
 

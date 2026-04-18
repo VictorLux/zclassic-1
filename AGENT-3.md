@@ -38,23 +38,22 @@ See `AGENT.md` for the cross-agent priority table.
 
 ---
 
-## Current status — 2026-04-19 (night)
+## Current status — 2026-04-19 (night, P7.4 landed)
 
-**Done and on main (16 rows):** P1.3, P1.4, P1.6 (`f6aa0b080`),
+**Done and on main (17 rows):** P1.3, P1.4, P1.6 (`f6aa0b080`),
 P1.7 (`5ce252bb6`), P1.8, P1.9, P1.10, P1.11, P1.11b, P1.12, P1.13,
 P1.14, P1.15, P1.16 (`94d607b85`), P1.16b (`c841defd2`), P5.5
-(`75576d7a0`). AGENT.md shows SHAs.
+(`75576d7a0`), P7.4 (see "Notes from Agent-3" below for SHA).
+AGENT.md shows SHAs.
 
-All crypto + consensus + vendor rows shipped. New assignment: the
-last HIGH-severity row in `lib/net/` (P7.4 backpressure watchdog),
-parallelized with Agent-2's P4.1+P4.2 script-interpreter refactor.
+All crypto + consensus + vendor + net-backpressure rows shipped.
+Queue now has a single audit-only task: open the P8 wave.
 
-**Open queue (2 logical tasks):**
+**Open queue (1 audit task):**
 
 | Order | Row | Size | Severity |
 |---|---|---|---|
-| NOW | **P7.4** backpressure watchdog under tip-stuck | medium | HIGH |
-| NEXT | **Fresh code-review pass** → open the P8 wave | audit | — |
+| NOW | **Fresh code-review pass** → open the P8 wave | audit | — |
 
 ---
 
@@ -230,6 +229,60 @@ If build or tests fail — STOP and report.
 ## Notes from Agent-3
 
 _(Keep short — 1-3 recent entries.)_
+
+### 2026-04-19 (night) — P7.4 backpressure watchdog landed
+
+- **P7.4 (this commit):** new `lib/net/src/tip_watchdog.c` +
+  `lib/net/include/net/tip_watchdog.h`. State machine with stats +
+  test hooks (`tip_watchdog_test_set_now_ns`,
+  `tip_watchdog_test_set_queue_bytes`, ...).
+  - Tip-advance signal wired via sync event observers registered in
+    `msg_processor_init` — EV_BLOCK_CONNECTED (fires per-block during
+    IBD) + EV_TIP_UPDATED (fires on caught-up-to-peer). Both land on
+    `tip_watchdog_note_tip_advance`.
+  - `tip_watchdog_tick()` runs once per call to `msg_process_messages`;
+    cheap (a couple of atomics + one `dl_get_stats` read).
+  - Rejection layer added at top of the msg dispatch loop (after
+    `msg_header_get_command`, before the `g_msg_dispatch` walk) so no
+    handler runs for inv/block while ACTIVE. Drops emit
+    `EV_BACKPRESSURE_REJECT` with peer id + cmd; ban-score untouched.
+  - Queue-bytes estimate = `(in_flight + queued) * 2 MiB` — upper-
+    bound conservative because the download manager only tracks hashes
+    per slot, not per-slot byte cost. The 2 MiB figure is
+    MAX_BLOCK_SIZE; erring high makes the watchdog trip sooner, which
+    is the safer direction for an OOM backstop.
+  - `dl_drain_for_backpressure` added to `download.[ch]`: drops queued
+    hashes + marks every in-flight slot inactive without zeroing the
+    hash bits (find_slot's open-addressing probe relies on those bits
+    to distinguish virgin slots from deletion gaps).
+  - 3 new events registered in event.h/event.c:
+    `net.backpressure_active`, `net.backpressure_reject`,
+    `net.backpressure_clear`.
+  - 4 acceptance tests in `lib/test/src/test_net.c`:
+    (1) ACTIVE entry on 61s stall + 256 MiB queue + inv/block reject,
+    tx-kept; (2) clear-on-advance; (3) cooldown-elapsed-clear
+    (bonus — not in the brief but falls naturally out of the test
+    harness); (4) `ZCL_STRESS_TESTS`-guarded 1000-orphan flood
+    rejection count. All 4 green.
+- **Baseline failures carried forward** (pre-existing on
+  `b669eed33`, not caused by this commit):
+  - `test_no_hardcoded_home` hits one `/home/rhett` occurrence in the
+    zclassic23 binary. Confirmed: `strings ./zclassic23 | grep
+    /home/rhett` → single match `/home/rhett/zclassic23/vendor/tor` in
+    `vendor/tor/libtor.a` debug-section strings, leaked from Agent-2's
+    build path when the Tor submodule was recompiled earlier in the
+    wave. Fix belongs in Agent-2's lane (build-path hygiene).
+  - `test_make_lint_gates` reports the "baseline passes" and "passes
+    after fixture removed" cases as FAIL — but the underlying
+    `make -s check-raw-sqlite` target passes when run standalone
+    (confirmed with a small C reproducer driving `system(...)`
+    identically). Reproduces only when invoked from `test_zcl`'s
+    environment, suggesting env leakage from an earlier group in the
+    runner. Also pre-existing; outside P7.4 scope.
+  - `make ci` under `ulimit -s unlimited` additionally hits a Bus
+    error in `cookie_rotation` — reproduces on clean main
+    (`b669eed33`) before this commit; pre-existing stack/RPC
+    interaction flake.
 
 ### 2026-04-19 (night) — consensus + vendor + P1.16b closed
 

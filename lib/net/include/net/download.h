@@ -164,4 +164,12 @@ size_t dl_peer_adaptive_window(struct download_manager *dm, uint32_t peer_id);
 /* Global download manager accessor (initialized by msg_processor_init). */
 struct download_manager *msg_get_download_mgr(void);
 
+/* P7.4: drain the queue + in-flight tracking under tip-stall
+ * backpressure. Returns the number of (queued + in-flight) entries
+ * dropped. Block bodies that arrive after the drain are no longer
+ * tracked — dl_mark_received returns 0 — and are freed by the
+ * normal net_message_free / block_already_seen paths. The header
+ * chain in main_state is untouched. Safe to call from any thread. */
+size_t dl_drain_for_backpressure(struct download_manager *dm);
+
 #endif /* ZCL_DOWNLOAD_H */

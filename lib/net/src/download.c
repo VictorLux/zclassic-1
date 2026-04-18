@@ -610,3 +610,26 @@ void dl_get_stats(struct download_manager *dm,
     if (queued)     *queued     = dm->queue_len;
     zcl_mutex_unlock(&dm->cs);
 }
+
+size_t dl_drain_for_backpressure(struct download_manager *dm)
+{
+    if (!dm) return 0;
+    zcl_mutex_lock(&dm->cs);
+    size_t drained = dm->queue_len + dm->num_active;
+
+    /* Drop pending hashes outright — peers won't be re-asked until
+     * something else (header sync, activate_best_chain) re-queues. */
+    dm->queue_len = 0;
+
+    /* Mark every in-flight slot inactive WITHOUT zeroing its hash:
+     * find_slot relies on the hash bits to distinguish a virgin slot
+     * from a deletion gap during open-addressing probes. The block
+     * body that arrives later finds no active slot, dl_mark_received
+     * returns 0, and net_message_free reclaims the buffer as usual. */
+    for (size_t i = 0; i < dm->num_slots; i++)
+        dm->slots[i].active = false;
+    dm->num_active = 0;
+
+    zcl_mutex_unlock(&dm->cs);
+    return drained;
+}
