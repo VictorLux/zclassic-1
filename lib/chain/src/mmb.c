@@ -85,7 +85,10 @@ void mmb_init(struct mmb *m)
     m->root_dirty = true;
 }
 
-/* Shared merge logic — called after inserting a height-0 mountain */
+/* Shared merge logic — called after inserting a height-0 mountain.
+ * Returns merge count on success, -1 if the height cap would be
+ * breached (defence against in-memory corruption that bypassed
+ * mmb_deserialize's input cap). */
 static int mmb_merge_after_insert(struct mmb *m)
 {
     int merges = 0;
@@ -94,6 +97,9 @@ static int mmb_merge_after_insert(struct mmb *m)
     if (m->num_mountains >= 2) {
         uint32_t r = m->num_mountains - 1;
         if (m->mountains[r - 1].height == m->mountains[r].height) {
+            if (m->mountains[r - 1].height >= MMB_MAX_HEIGHT)
+                LOG_ERR("mmb", "merge: height %u would exceed cap %d (rightmost pair at idx %u) — refusing to corrupt root",
+                        m->mountains[r - 1].height, MMB_MAX_HEIGHT, r - 1);
             uint8_t merged[32];
             mmb_hash_internal(m->mountains[r - 1].peak,
                               m->mountains[r].peak, merged);
@@ -108,6 +114,9 @@ static int mmb_merge_after_insert(struct mmb *m)
     if (m->num_mountains >= 2) {
         for (uint32_t i = m->num_mountains - 1; i >= 1; i--) {
             if (m->mountains[i - 1].height == m->mountains[i].height) {
+                if (m->mountains[i - 1].height >= MMB_MAX_HEIGHT)
+                    LOG_ERR("mmb", "merge: height %u would exceed cap %d (deferred pair at idx %u) — refusing to corrupt root",
+                            m->mountains[i - 1].height, MMB_MAX_HEIGHT, i - 1);
                 uint8_t merged[32];
                 mmb_hash_internal(m->mountains[i - 1].peak,
                                   m->mountains[i].peak, merged);
@@ -257,6 +266,11 @@ bool mmb_deserialize(struct mmb *m, const uint8_t *buf, size_t len)
         for (int j = 3; j >= 0; j--)
             h = (h << 8) | buf[pos + j];
         pos += 4;
+        if (h > MMB_MAX_HEIGHT) {
+            mmb_init(m);
+            LOG_FAIL("mmb", "deserialize: mountain[%u] height %u exceeds cap %d",
+                     i, h, MMB_MAX_HEIGHT);
+        }
         m->mountains[i].height = h;
     }
 

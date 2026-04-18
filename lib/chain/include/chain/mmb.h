@@ -24,6 +24,12 @@
 
 #define MMB_HASH_SIZE     32
 #define MMB_MAX_MOUNTAINS 64   /* supports 2^64 leaves */
+/* Per-mountain height cap. For any plausible chain,
+ * mountain height ≤ ⌈log2(num_leaves)⌉ ≤ 64. The cap bounds the
+ * deserialize input (defence in depth for fast-sync/swarm paths
+ * before P2.4 hash-binds the blob) and bounds in-memory merges so
+ * an unsigned wraparound can never silently corrupt the trust root. */
+#define MMB_MAX_HEIGHT    64
 
 /* Domain separation tags — distinct from MMR (0x00-0x02) */
 #define MMB_TAG_LEAF      0x10
