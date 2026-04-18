@@ -452,6 +452,14 @@ void event_dump_recent(size_t count)
         format_event(stderr, ev);
     }
     fprintf(stderr, "═══ END EVENT LOG ═══\n\n");
+    /* P7.3: the crash handler invokes us on SIGABRT just before
+     * _exit(); stderr is fully-buffered under systemd's file-
+     * redirected StandardError, so any fprintf we did above sits in
+     * the FILE* buffer and gets dropped by _exit (which bypasses
+     * libc cleanup).  Flush now so the dump reaches node.log even
+     * on the crash path.  In non-crash contexts this is cheap and
+     * matches what an fclose would do on shutdown. */
+    fflush(stderr);
 }
 
 /* ── JSON dump ───────────────────────────────────────────── */
@@ -607,25 +615,55 @@ size_t event_dump_json_filtered(char *buf, size_t buf_size, size_t count,
 
 /* ── Crash handler ───────────────────────────────────────── */
 
+/* P7.3: async-signal-safe stderr write.  When systemd has StandardError
+ * redirected to node.log (fully-buffered FILE*), fprintf() output
+ * silently dies on _exit because libc's atexit handlers don't run.
+ * backtrace_symbols_fd() writes straight to STDERR_FILENO via write(2)
+ * which bypasses the FILE buffer and therefore always lands — that's
+ * why the live-node crash today preserved only the "sys.crash" event,
+ * not the header or the backtrace line.  Fix: everything this handler
+ * emits goes through write(2) directly, and we flush+fsync before
+ * _exit so event_dump_recent's fprintf output lands too. */
+static void crash_write(const char *s, size_t n)
+{
+    ssize_t w = write(STDERR_FILENO, s, n);
+    (void)w;  /* best-effort — nothing we can do if stderr is gone */
+}
+
 static void crash_signal_handler(int sig)
 {
-    /* Async-signal-safe: fprintf to stderr, then _exit.
-     * event_dump_recent uses fprintf which is technically not
-     * async-signal-safe, but on Linux it works in practice for
-     * crash diagnostics. This is a best-effort dump. */
-    fprintf(stderr, "\n\n*** FATAL SIGNAL %d ***\n", sig);
+    char buf[128];
 
-    /* Print stack backtrace — requires -rdynamic for symbol names */
-    {
-        void *frames[64];
-        int nframes = backtrace(frames, 64);
-        fprintf(stderr, "\n=== STACK BACKTRACE (%d frames) ===\n", nframes);
-        backtrace_symbols_fd(frames, nframes, STDERR_FILENO);
-        fprintf(stderr, "=== END BACKTRACE ===\n\n");
-    }
+    /* snprintf is technically not POSIX async-signal-safe but glibc's
+     * implementation of the bounded numeric variant is lock-free, and
+     * the alternative (hand-rolled itoa) doesn't meaningfully improve
+     * safety — any crash that corrupts stderr's fd table already
+     * invalidates every code path below.  Trade-off acknowledged. */
+    int n = snprintf(buf, sizeof(buf),
+                     "\n\n*** FATAL SIGNAL %d ***\n", sig);
+    if (n > 0) crash_write(buf, (size_t)n);
+
+    /* Stack backtrace — requires -rdynamic for symbol names. */
+    void *frames[64];
+    int nframes = backtrace(frames, 64);
+    n = snprintf(buf, sizeof(buf),
+                 "\n=== STACK BACKTRACE (%d frames) ===\n", nframes);
+    if (n > 0) crash_write(buf, (size_t)n);
+    backtrace_symbols_fd(frames, nframes, STDERR_FILENO);
+    static const char end_bt[] = "=== END BACKTRACE ===\n\n";
+    crash_write(end_bt, sizeof(end_bt) - 1);
 
     event_emitf(EV_CRASH, 0, "signal %d", sig);
-    event_dump_recent(200);
+    event_dump_recent(200);  /* fprintf-based; flushes stderr at end */
+
+    /* Belt-and-suspenders flush: event_dump_recent already flushes on
+     * its way out, but a caller that emits more output after this
+     * handler runs (SA_RESETHAND one-shot still lets the default
+     * disposition produce its own output) would want the buffer
+     * drained.  fsync drives the kernel page cache down to the
+     * journald/journal-file so the log line is durable. */
+    fflush(stderr);
+    fsync(STDERR_FILENO);
     _exit(128 + sig);
 }
 

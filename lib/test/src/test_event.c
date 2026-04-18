@@ -7,6 +7,12 @@
 #include <stdio.h>
 #include <pthread.h>
 #include <time.h>
+#include <unistd.h>
+#include <fcntl.h>
+#include <signal.h>
+#include <sys/wait.h>
+#include <sys/stat.h>
+#include <stdlib.h>
 #include "util/safe_alloc.h"
 
 static _Atomic int g_async_observer_calls = 0;
@@ -646,6 +652,103 @@ static int test_async_dispatch_lifecycle(void)
     return failures;
 }
 
+/* P7.3: regression for the SIGABRT-on-live-node incident where
+ * node.log preserved only `sys.crash signal 6` — the FATAL SIGNAL
+ * header and the backtrace_symbols_fd frame addresses never made it
+ * because stderr was fully-buffered under systemd's StandardError
+ * file redirect and _exit() skipped the flush.  Fork a child,
+ * redirect its stderr to a temp file, install the crash handler,
+ * raise(SIGABRT), and assert the temp file contains BOTH the header
+ * literal AND at least 3 hex-shaped backtrace addresses. */
+static int test_crash_handler_stderr_survives_exit(void)
+{
+    int failures = 0;
+
+    TEST("crash_handler: header + ≥3 backtrace frames reach stderr") {
+        mkdir("./test-tmp", 0700);
+        char path[256];
+        snprintf(path, sizeof(path),
+                 "./test-tmp/crash_stderr_%d.log", (int)getpid());
+        unlink(path);
+
+        /* Drain any pending stdio in the parent so the post-fork child
+         * doesn't double-emit its inherited buffer. */
+        fflush(stdout);
+        fflush(stderr);
+
+        pid_t pid = fork();
+        ASSERT(pid >= 0);
+
+        if (pid == 0) {
+            /* Child: redirect stderr to the temp file before anything
+             * writes to it.  dup2'ing the FD does NOT automatically
+             * empty any inherited FILE buffer — we explicitly flushed
+             * parent stderr above so there's nothing in it to carry. */
+            int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0600);
+            if (fd < 0) _exit(42);
+            dup2(fd, STDERR_FILENO);
+            close(fd);
+
+            /* Kill stdout noise too — keeps the test log tidy. */
+            int dn = open("/dev/null", O_WRONLY);
+            if (dn >= 0) { dup2(dn, STDOUT_FILENO); close(dn); }
+
+            /* Install crash handler AFTER the fork so the parent's
+             * signal disposition is untouched — otherwise a later
+             * test that happens to SIGABRT would also trigger our
+             * _exit path. */
+            event_log_init();
+            event_install_crash_handler();
+
+            /* Trigger.  Handler does its write(2) + fprintf + _exit. */
+            raise(SIGABRT);
+
+            /* If the handler didn't _exit (would be a real bug),
+             * fall through to a distinct exit code so the parent's
+             * WEXITSTATUS check surfaces the regression clearly. */
+            _exit(99);
+        }
+
+        int status = 0;
+        pid_t done = waitpid(pid, &status, 0);
+        ASSERT(done == pid);
+        ASSERT(WIFEXITED(status));
+        ASSERT_EQ(WEXITSTATUS(status), 128 + SIGABRT);  /* 134 */
+
+        /* Slurp the temp file. */
+        FILE *f = fopen(path, "r");
+        ASSERT(f != NULL);
+        fseek(f, 0, SEEK_END);
+        long sz = ftell(f);
+        fseek(f, 0, SEEK_SET);
+        ASSERT(sz > 0);
+        char *buf = zcl_malloc((size_t)sz + 1, "crash_log_slurp");
+        ASSERT(buf != NULL);
+        size_t got = fread(buf, 1, (size_t)sz, f);
+        buf[got] = '\0';
+        fclose(f);
+
+        /* Acceptance 1: the header literal landed. */
+        ASSERT(strstr(buf, "FATAL SIGNAL 6") != NULL);
+
+        /* Acceptance 2: at least 3 backtrace frames — each frame line
+         * from backtrace_symbols_fd embeds an address of form
+         * "[0x...]" or "+0x...".  Count distinct 0x hex runs. */
+        int hex_hits = 0;
+        for (const char *p = buf; (p = strstr(p, "0x")) != NULL; ) {
+            hex_hits++;
+            p += 2;  /* advance past "0x" to avoid infinite loop */
+        }
+        ASSERT(hex_hits >= 3);
+
+        free(buf);
+        unlink(path);
+        PASS();
+    } _test_next:;
+
+    return failures;
+}
+
 int test_event(void)
 {
     int failures = 0;
@@ -672,6 +775,7 @@ int test_event(void)
     failures += test_peer_stale_recovery();
     failures += test_concurrent_emit();
     failures += test_async_dispatch_lifecycle();
+    failures += test_crash_handler_stderr_survives_exit();
 
     return failures;
 }
