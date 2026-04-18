@@ -30,82 +30,33 @@ cross-agent priority table. Last brief rewrite: 2026-04-17.
 
 ---
 
-## Current status — 2026-04-18 (mid-day)
+## Current status — 2026-04-18 (late-day)
 
-**Done and on main (19 rows + 1 infra):** P1.1, P1.2, P1.5, P6.1–P6.6,
+**Done and on main (21 rows + 1 infra):** P1.1, P1.2, P1.5, P6.1–P6.6,
 P3.1, P3.2, P3.3, P3.4, P3.5, P3.6, P5.1, P5.3, P5.4, P5.7, P4.3, P4.4,
-P4.5, **P2.3, P2.8, P3.7**, plus parallel test runner infrastructure
-(df5de36c4). AGENT.md shows SHAs.
+P4.5, P2.3, P2.8, P3.7, **P2.4, P2.7**, plus parallel test runner
+infrastructure (df5de36c4). AGENT.md shows SHAs.
 
 You've now touched every public lane except `lib/keys/`, `lib/sapling/`,
 `lib/crypto/`, and the parts of `lib/validation/` / `lib/script/` /
 `lib/net/` that aren't on your current scope expansion.
 
-**Now working on:** two more network rows (P2.4 + P2.7) — same narrow
-expansion model. See NOW below.
-**Queued:** none — when these two land, ping Rhett for what's next.
+**NOW + NEXT are both empty for Agent-2.** Pinging Rhett for the next
+assignment. Rhett's lane is now the bottleneck (P1.6, P1.7, P2.1, P2.2,
+P2.5, P2.6, P4.1, P4.2, P5.2, P5.5, P5.6 all open).
 
 ---
 
-## NOW — two more network rows
+## NOW — empty
 
-**Expanded read/write scope for this wave (additive):**
-- `lib/net/src/fast_sync.c` (P2.4 — you already touched it for P2.3)
-- `lib/net/src/msgprocessor.c` (P2.4 + P2.7)
+The P2.4 + P2.7 wave shipped — see Notes from Agent-2 at the end of
+this file for the wave summary. Awaiting assignment.
 
-Everything else stays off-limits.
+## NEXT — empty
 
-### P2.4 — Swarm per-chunk hash verification effectively absent (HIGH)
-
-Files:
-- `lib/net/src/fast_sync.c:892-895` (chunk receive path)
-- `lib/net/src/msgprocessor.c:1968` (chunk dispatch)
-
-**Bug.** The swarm download protocol is supposed to verify each chunk
-against a SHA3 commitment before accepting it into the UTXO set. The
-verification call exists but is gated behind a flag that defaults
-on-but-unchecked — a malicious peer can serve garbage chunks and we
-write them straight into chainstate, then the FlyClient verification at
-sync-end fails opaquely.
-
-**Fix.** Compute SHA3-256 over each received chunk *before* the
-P2.3-migrated AR_STEP_DONE writer fires. Reject the chunk and ban-score
-the peer on mismatch. The expected hash for chunk N comes from the
-swarm header the peer already sent; cross-check against it.
-
-**Acceptance.** Test injects a single corrupted byte mid-chunk and
-asserts:
-1. Chunk is rejected (no chainstate writes).
-2. Peer's ban score increments.
-3. Same chunk re-requested from a different peer succeeds.
-
-### P2.7 — FlyClient challenge amplification — no rate limit (MED)
-
-File: `lib/net/src/msgprocessor.c:1864-1900`
-
-**Bug.** A peer can spam us with FlyClient challenges (each one forces
-a Merkle-proof reconstruction over our full block index). Single peer
-can pin a CPU and slow header-sync for everyone.
-
-**Fix.** Token-bucket rate limit per peer: e.g. 10 challenges/sec with
-a burst of 30. Drop excess silently and log per-peer accumulator. Use
-the existing peer-scoring infrastructure (`peer_strategy.c` /
-`peer_scoring.c`) — don't roll your own.
-
-**Acceptance.** Test floods a synthetic peer with 1000 challenges in
-1 second and asserts:
-1. Only ~10 are processed (within tolerance).
-2. Ban-score for the peer increases.
-3. Other peers' challenges still get through.
-
----
-
-## NEXT — none queued; ping Rhett when NOW closes
-
-Rhett's lane is now the bottleneck (P1.6, P1.7, P2.1, P2.2, P2.5, P2.6,
-P4.1, P4.2, P5.2, P5.5, P5.6 all open). When you finish NOW, surface
-on the next status check and Rhett will either pick something up
-themselves or carve another narrow-scope row for you.
+Rhett's lane is the bottleneck (P1.6, P1.7, P2.1, P2.2, P2.5, P2.6,
+P4.1, P4.2, P5.2, P5.5, P5.6 all open). Ping Rhett on next status
+check for a fresh narrow-scope row.
 
 ---
 
@@ -345,3 +296,50 @@ Net result: one delete, seven left in place with the above
 rationale. If you want a stricter no-shell policy, the natural next
 step is a `zcl-nodectl deploy-verify` / `soak` refactor — estimate
 ~80 LoC total, no scope boundary crossing.
+
+**2026-04-18 — P2.4 + P2.7 lane-expansion wave closed (eighth wave).**
+Two commits:
+
+- `9e8cfbb27` P2.4 swarm per-chunk SHA3 verification. Root cause was
+  wire-format, not code — `zmanifest` only carried the Merkle root, so
+  `swarm_sync_init` calloc'd a zero-filled `chunk_hashes` buffer on
+  the receive side and every legitimate chunk then failed
+  `fast_sync_verify_chunk` against all-zero hashes. Extended the
+  manifest to carry `num_chunks * 32` bytes of per-chunk SHA3-256
+  after the fixed header (capped at `MANIFEST_MAX_CHUNKS = 65_000` to
+  fit within `MAX_PROTOCOL_MESSAGE_LENGTH` and bound the allocation a
+  peer can force), added merkle-root reconstruction on the receiver
+  side before trusting any chunk hash, and tightened
+  `swarm_sync_init` to require non-NULL chunk_hashes + bounded
+  num_chunks. Receiver side now bans on truncated-manifest (20),
+  bounds (20), or merkle-mismatch (100). Three regression tests:
+  single-bit flip → chunk rejected with 0 rows in utxos + state reset
+  to NEEDED; re-request from another peer lands 3 rows; init refuses
+  NULL and oversized cases.
+
+- `a46410c50` P2.7 FlyClient challenge token-bucket rate limit. Each
+  `zfcchallenge` forces `snapsync_build_fc_response` to rebuild 50
+  MMB proofs over the full block index — tens of ms per challenge.
+  Deliberately kept the state *off* `struct p2p_node` (which lives in
+  Rhett's lane) by using a 64-slot LRU side table in
+  `msgprocessor.c`. Burst 30, refill 10/sec (constants exposed as
+  `FC_CHALLENGE_BURST` / `FC_CHALLENGE_RATE_PER_SEC` in
+  `msgprocessor.h`). On empty bucket we silently drop and fire
+  `PEER_OFFENCE_FLOOD` through the existing `peer_scoring_record`
+  infra — exactly once per flood episode, resets when the peer next
+  consumes a token, so sustained offenders cross the ban threshold
+  while legit bursts never accrue. Three regression tests drive the
+  limiter with an explicit clock: 1000 challenges in 1 ms ticks →
+  ≤45 accepted / 961 dropped; flood → recover → flood re-arms the
+  scoring gate; attacker draining its own bucket leaves a victim
+  peer with its full burst.
+
+**Scope-expansion note for Rhett.** P2.7 was the first Agent-2 row
+touching the FlyClient message handlers directly. No header files
+outside `lib/net/include/net/{fast_sync.h,msgprocessor.h}` were
+modified, no changes to `struct p2p_node`, no crypto or consensus
+code touched. The rate limiter is a drop-in side module — if you
+want it relocated (`lib/net/src/flyclient_rate.c`?) or folded into
+`peer_scoring.c`, happy to rework it.
+
+**NOW + NEXT are both empty for Agent-2.** Awaiting Rhett.
