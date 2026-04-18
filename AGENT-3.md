@@ -33,25 +33,30 @@ cross-agent priority table. Last brief rewrite: 2026-04-17.
 
 ---
 
-## Current status — 2026-04-19 (evening, P1.6 on main)
+## Current status — 2026-04-19 (evening, P1.7 on main)
 
-**Done and on main (14 rows):** P1.3, P1.4, P1.6 (`f6aa0b080`),
-P1.8, P1.9, P1.10, P1.11, P1.11b, P1.12, P1.13, P1.14, P1.15,
-P1.16 (`94d607b85`), P1.16b (`c841defd2`). AGENT.md shows the SHAs.
+**Done and on main (15 rows):** P1.3, P1.4, P1.6 (`f6aa0b080`),
+P1.7 (`5ce252bb6`), P1.8, P1.9, P1.10, P1.11, P1.11b, P1.12,
+P1.13, P1.14, P1.15, P1.16 (`94d607b85`), P1.16b (`c841defd2`).
 
-P1.6 shipped a byte-for-byte mirror of zclassicd's
-`GetP2SHSigOpCount` + `CScript::GetSigOpCount(flags, scriptSig)`,
-wired into `connect_block.c` right after `have_inputs`.  Per-input
-15-sigop cap intentionally NOT shipped as consensus (would create
-new divergence in the opposite direction — see the 2026-04-19 P1.6
-note at the bottom of this file).  Left to Rhett to decide whether
-it should land as a mempool-policy rule in Agent-2's lane.
+P1.7 deleted the window_clean + skip_diffbits goto/label from
+`contextual_check_block_header`.  Every call into that function now
+runs the GetNextWorkRequired check; incomplete-window nodes
+compare against nProofOfWorkLimit (the weakest permitted compact)
+rather than blindly trusting the header's nBits.  Fast-sync / MMB
+callers that need to accept headers without local-window validation
+must bypass the function entirely — process_block.c:732-734's
+pre-existing skip_contextual gate already does this for distant-IBD
+blocks, so no new call-site changes were needed.  Regression test
+in test_chain.c asserts that nBits=0x1d00ffff (Bitcoin limit) is
+rejected against the Zcash expected of 0x1f07ffff with
+"bad-diffbits".
 
-**Now working on:** P1.7 — remove skip_diffbits difficulty-check
-escape hatch (promoted from NEXT+1 → NOW).
+**Now working on:** P5.5 — vendor/tor submodule pin bump
+(promoted from NEXT → NOW).  This is the last Agent-3 row.
 
-**Queued NEXT (pre-authorized):**
-1. **P5.5** — vendor: tor submodule pin bump + .onion smoke test
+**Queued NEXT (pre-authorized):** nothing after P5.5.  Once it
+lands, ping Rhett for the next wave (see "Stopping point" below).
 
 ---
 
