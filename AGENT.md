@@ -6,25 +6,30 @@ Owner: Rhett (primary). Delegates: Agent-2 (see `AGENT-2.md`), Agent-3 (see `AGE
 
 ---
 
-## Progress — last update 2026-04-18 (late-evening, Agent-2 P7 queue drained)
+## Progress — last update 2026-04-19 (morning, Rhett-rows reassigned to agents)
 
 **Overall: 52 / 63 rows closed (83%) | SWRC ~87%**
 
-(Denominator grew 53 → 63 when the P7 fresh-review wave opened ten new
-rows from a live-node inspection that surfaced a tip-stuck outage and
-several latent operability gaps. See P7 section below.)
+Rhett is coordinator only and does not code. All 11 previously-open
+rows have been reassigned to Agent-2 or Agent-3 with narrow-scope
+expansion notes in each row.
 
 | Tier | Closed / Total | % | Open rows |
 |---|---|---|---|
 | **CRITICAL** | 7 / 10 | **70%** | P2.1, P2.2, **P7.1 (live outage)** |
-| **HIGH** | 21 / 26 | **81%** | P1.6, P1.7, P4.1, P4.2, **P7.4, P7.9** |
-| **MED** | 19 / 21 | **90%** | P5.5, **P7.10** |
+| **HIGH** | 21 / 26 | **81%** | P1.6, P1.7, P4.1, P4.2, P7.4, P7.9 |
+| **MED** | 19 / 21 | **90%** | P5.5, P7.10 |
 | **LOW** | 2 / 2 | **100%** | — |
 | (P0 baseline) | 4 / 4 | **100%** | — |
 
-**Open by owner (late-evening 2026-04-18, Agent-2 queue drained):** Rhett 9 (P1.6, P1.7, P2.1, P2.2, P4.1, P4.2, P5.5, **P7.1, P7.4, P7.9, P7.10**) · Agent-2 0 (all five P7 rows landed: P7.2 `57e6ef391`, P7.3 `e9e79dda2`, P7.5/P7.6/P7.7 `ec7948ee3`, P7.8 `dbca0be78`) · Agent-3 0 (P1.16 `94d607b85`; prf.c nullifier-path timing audit queued NEXT)
+**Open by owner (morning 2026-04-19):**
+- **Agent-2 (8 rows):** P2.2 (NOW), P7.1 live outage (NOW), P2.1 (NEXT), P4.1+P4.2 paired (NEXT+2), P7.4 (NEXT+3), P7.9+P7.10 paired (NEXT+4)
+- **Agent-3 (4 rows):** prf.c nullifier CT audit (NOW — from existing brief), P1.6 (NEXT), P1.7 (NEXT+1), P5.5 vendor/tor (NEXT+2)
+- **Rhett:** 0 (coordinator only — see `feedback_rhett_coordinator_only` memory)
 
-**Top remaining risks:** P7.1 (tip stuck at h=3,081,601 on the live node) is still the headline — the chain is dead in the water until it's fixed. P7.2's boot halt + auto-rewind now refuses to start against an inconsistent tip instead of continuing with a Warning, so the next live-node restart either recovers cleanly via the single-block auto-rewind guard (≤32 rows above tip) or surfaces a hard halt with a clear operator message; either outcome is an improvement over the pre-P7.2 "keep serving RPC against corrupted state" hole. P2.1 + P2.2 net CRITs remain. Outstanding P7 weight is entirely in Rhett's lane now (P7.1, P7.4, P7.9, P7.10).
+**Top remaining risks:** P7.1 is the live outage — chain tip stuck at 3,081,601 on the production node. Agent-2 picks it up after P2.2 lands (or in parallel if they fork the msg_tx.c work). P2.1 + P2.2 net CRITs remain.
+
+**SWRC formula:** CRIT=4, HIGH=2, MED=1, LOW=0.5. P0 rows weighted as HIGH. Total weighted capacity = 122. Update this block every time a row closes.
 
 **SWRC formula:** CRIT=4, HIGH=2, MED=1, LOW=0.5. P0 rows weighted as HIGH. Total weighted capacity = 122 (105 original + 17 from the P7 wave). Update this block every time a row closes.
 
@@ -65,8 +70,8 @@ regression test locks the gates in place.
 | P1.3 | Sapling verify fail-open on NULL VK | `lib/sapling/src/sapling.c:505, 559` | CRITICAL | Agent 3 — done 3b4b08ba9 (merged bcab984fd) |
 | P1.4 | Sapling params loaded without integrity check | `lib/sapling/src/params_init.c:47-167` | CRITICAL | Agent 3 — done 785db18b1 (merged bcab984fd) |
 | P1.5 | Raw `sqlite3_step` in UTXO batch writer | `lib/storage/src/coins_view_sqlite.c:461,474,509,557` | CRITICAL | Agent 2 — done 152603fdc |
-| P1.6 | No P2SH sigop accounting — consensus split risk | `lib/validation/src/sigops.c:10-18` | HIGH | Rhett |
-| P1.7 | `skip_diffbits` silently skips difficulty check | `lib/validation/src/check_block.c:222,233-250` | HIGH | Rhett |
+| P1.6 | No P2SH sigop accounting — consensus split risk | `lib/validation/src/sigops.c:10-18` | HIGH | Agent 3 — NEXT (narrow scope: lib/validation/src/sigops.c; consensus-sensitive — add parity test against zclassic-cpp before landing) |
+| P1.7 | `skip_diffbits` silently skips difficulty check | `lib/validation/src/check_block.c:222,233-250` | HIGH | Agent 3 — NEXT+1 (narrow scope: check_block.c difficulty path; remove the skip_diffbits escape hatch, test with a contrived low-pow block) |
 | P1.8 | Ed25519 missing `S<L` canonicality | `lib/crypto/src/ed25519.c:300-355` | HIGH | Agent 3 — done c510c7335 (merged bcab984fd) |
 | P1.9 | RedJubjub missing `S<r` canonicality | `lib/sapling/src/sapling.c:386` | HIGH | Agent 3 — done 8440cd864 (merged bcab984fd) |
 | P1.10 | `find_group_hash` returns ignored → silent zero generators | `lib/sapling/src/sapling.c:81-110` | HIGH | Agent 3 — done e221e0212 (merged bcab984fd) |
@@ -84,7 +89,7 @@ regression test locks the gates in place.
 
 | # | Task | File:line | Severity | Owner |
 |---|---|---|---|---|
-| P2.1 | Mempool accepts any peer tx — no sig/UTXO/fee check | `lib/net/src/msg_tx.c:34-69` | CRITICAL | Rhett |
+| P2.1 | Mempool accepts any peer tx — no sig/UTXO/fee check | `lib/net/src/msg_tx.c:34-69` | CRITICAL | Agent 2 — NEXT (narrow scope: same msg_tx.c as P2.2; wire `check_transaction` + mempool fee rules; 3-test regression covering invalid-sig, double-spend, zero-fee) |
 | P2.2 | 1.6 MB stack alloc in message handler | `lib/net/src/msg_tx.c:288` | CRITICAL | Agent 2 — NOW (narrow scope: lib/net/src/msg_tx.c only — single function, heap-allocate the scratch buffer) |
 | P2.3 | fast_sync bypasses AR_BEGIN_SAVE | `lib/net/src/fast_sync.c:480-526` | HIGH | Agent 2 — done 9ef77899b (migrated bulk-insert loop to AR_BIND_* + AR_STEP_DONE; regression test builds a 2-entry chunk with CHECK-violating height and asserts BEGIN/COMMIT rollback atomicity) |
 | P2.4 | Swarm per-chunk hash verification effectively absent | `lib/net/src/fast_sync.c:892-895`, `msgprocessor.c:1968` | HIGH | Agent 2 — done 9e8cfbb27 (zmanifest carries per-chunk SHA3 hashes + merkle-root reconstruction check; swarm_sync_init requires chunk_hashes + bounds num_chunks at MANIFEST_MAX_CHUNKS; 3 regression tests prove bad chunk → 0 rows + retry, good chunk → 3 rows, init refuses NULL/oversized) |
@@ -113,8 +118,8 @@ regression test locks the gates in place.
 
 | # | Task | File:line | Severity | Owner |
 |---|---|---|---|---|
-| P4.1 | 520 KB `script_stack` passed by value, on-stack | `lib/script/include/script/interpreter.h:22-30`, `interpreter.c:619-652` | HIGH | Rhett (needs careful interpreter refactor) |
-| P4.2 | Silent `stack_push` failures corrupt later stack assumptions | `lib/script/src/interpreter.c:619-620` | HIGH | Rhett (tied to P4.1) |
+| P4.1 | 520 KB `script_stack` passed by value, on-stack | `lib/script/include/script/interpreter.h:22-30`, `interpreter.c:619-652` | HIGH | Agent 2 — NEXT+2 (narrow scope: lib/script/ only; pointer-conversion refactor + P4.2 together in one commit) |
+| P4.2 | Silent `stack_push` failures corrupt later stack assumptions | `lib/script/src/interpreter.c:619-620` | HIGH | Agent 2 — NEXT+2 (paired with P4.1 — same commit) |
 | P4.3 | `script_num_serialize` lacks outsize bounds check | `lib/script/include/script/script.h:239-258` | MED | Agent 2 — done 61104d06d (precompute required length + reject-if-short instead of silent-truncate; 6 boundary assertions in test_script.c) |
 | P4.4 | `disconnect_block` unbounded realloc on `vin.prevout.n` | `lib/validation/src/connect_block.c:586-607` | MED | Agent 2 — done f69956cab (clamp prevout.n ≥ MAX_BLOCK_SIZE → LOG_FAIL + reject; regression test in test_validation.c uses UINT32_MAX to exercise the previously-~128 GB realloc path) |
 | P4.5 | `sigencoding` strict-DER bound inconsistency vs Bitcoin | `lib/script/src/sigencoding.c:11-56` | MED | Agent 2 — done 28fe53112 (byte-for-byte parity audit vs zclassic-cpp sigencoding.cpp: no divergence — "off-by-one" was a false positive from the brief; 16-vector BIP66-style parity table added to test_script.c locks the canonical boundary behavior in place) |
@@ -129,7 +134,7 @@ regression test locks the gates in place.
 | P5.2 | `deploy/zclassic23.service:21` hardcodes Rhett's externalip + 9 addnodes | HIGH | Agent 2 — done ba450ea5c (operator flags moved to EnvironmentFile=-~/.config/zclassic23/env; $VAR form preserves whitespace-splitting for multi-flag ZCL_ADDNODE_FLAGS; fresh clone starts clean when env file absent; deploy/zclassic23.env.example ships the template with Rhett's current values; README gets a one-paragraph pointer; smoke-test on Rhett's box: height 3081407 → 3081408, 4 peers, 205.209.104.118:8033 advertised in getnetworkinfo.localaddresses) |
 | P5.3 | Hardcoded `/home/rhett` in `tools/export_snapshot.c:15`, `tools/zcl-nodectl.c:628-637` | HIGH | Agent 2 — done 09e4fb15a (shared $HOME helper in lib/util/include/util/rpc_paths.h; also swept test_phgr13_fix.c sprout-VK path + two README absolute-path links; new test_no_hardcoded_home regression test scans every deployed binary for the literal and exercises the helper with alt/NULL HOME) |
 | P5.4 | 10 shell scripts in `tools/` duplicating MCP — purge | MED | Agent 2 — done 0f33d3fc1 (audit found 1/8 actual MCP-duplicates: verify_restart_follow.sh ⇒ zcl-nodectl verify-follow; the other seven are build-time or multi-node orchestration with no MCP equivalent — per-script rationale in "Notes from Agent-2" in AGENT-2.md) |
-| P5.5 | `vendor/tor` submodule ahead of pinned commit | MED | Rhett |
+| P5.5 | `vendor/tor` submodule ahead of pinned commit | MED | Agent 3 — NEXT+2 (narrow scope: `git submodule update vendor/tor` + commit; smoke-test by starting node, verify .onion bootstrap in zcl_status) |
 | P5.6 | Vendored `sqlite3.h` is 3.49.0 — newer CVE-class fixes unpicked | MED | Agent 2 — done 30e6fbc2e (pinned to 3.53.0 — latest stable as of 2026-04-09; picks up 3.49.1 concat_ws buffer overrun, 3.49.2 NOT NULL memory error, 3.50.3 CREATE TRIGGER parser memory-safety regression from 3.49.0, 3.50.4 uninit-var reads, 3.51.0 POSIX-advisory-lock-abuse corruption detection, 3.51.3 + 3.53.0 WAL-reset corruption bug; header surface additive-only — new error codes, de-experimentalized snapshot_\* family, new carray_bind_v2 / db_status64 / str_free / str_truncate / set_errmsg / setlk_timeout / changeset apply_v3 entry points; on-disk format unchanged; archive rebuilt from sqlite.org amalgamation with SHA3-256 c2325c53 verified, stock defaults matching the prior archive's embedded compile-options table; full test_zcl passes 2516/2516 through every sqlite-backed group before the pre-existing test_block_pruning hang) |
 | P5.7 | Repo-root clutter: 40+ .md, `node.db` untracked at repo root | LOW | Agent 2 — done 611ae4281 + e7528c4f0 + 8902f9ae7 + d106192a4 (root-level .md cut 41→18; WAVE_6-12, AGENT2/3-era task docs, BOOT/REVIEW/CHECKLIST/MEMORY moved to docs/archive/; speedrun + zclassic23-asan binaries untracked) |
 
@@ -157,16 +162,16 @@ chain right now; the rest are next-wave hardening.
 
 | # | Task | File:line | Severity | Owner |
 |---|---|---|---|---|
-| P7.1 | Tip stuck at 3,081,601 — `val.block_connected` repeats for same height; `chain_height` never advances | `lib/validation/src/process_block.c`, `connect_block.c` | CRITICAL | Rhett — NOW (live outage) |
+| P7.1 | Tip stuck at 3,081,601 — `val.block_connected` repeats for same height; `chain_height` never advances | `lib/validation/src/process_block.c`, `connect_block.c` | CRITICAL | Agent 2 — NOW (LIVE OUTAGE; narrow scope: lib/validation/src/process_block.c + connect_block.c; Agent-2 already owns P7.2 chain_state_repo adjacency) |
 | P7.2 | Boot logs `DB_ERR_TIP_MISMATCH ... halt and investigate` then keeps running — must be fatal or auto-rewind | `app/services/src/chain_state_repository.c` (audit + tighten the halt path) | HIGH | Agent 2 — done 57e6ef391 (single-block overshoot auto-rewind with ≤32 row guard in lib/storage/src/coins_view_sqlite.c + hard `_exit(EXIT_FAILURE)` + EV_BOOT_VALIDATION_FAILED event at the config/src/boot.c caller; three regression tests in test_coins_view_atomicity.c cover auto-rewind, guard refusal at 33 rows, and two-block multi-overshoot; commit body flags the small config/src/boot.c scope touch for re-routing if needed) |
 | P7.3 | Crash handler runs but FATAL header + `backtrace_symbols_fd` output never reaches `node.log` (only `sys.crash` event survives) | `lib/event/src/event.c:610-630` | HIGH | Agent 2 — done e9e79dda2 (fprintf header replaced with async-signal-safe write(STDERR_FILENO) on a 128-byte snprintf buffer; fflush(stderr) added at the tail of event_dump_recent; belt-and-suspenders fflush + fsync before _exit(128+sig); regression test forks a child, dup2's stderr to temp file, installs crash handler post-fork, raise(SIGABRT) and asserts FATAL SIGNAL 6 literal + ≥3 hex backtrace addresses) |
-| P7.4 | Backpressure missing under tip-stuck loop — RSS climbs to 6.0G (cgroup MemoryHigh) accumulating block buffers when tip doesn't advance | `lib/net/src/msgprocessor.c`, `download.c` | HIGH | Rhett |
+| P7.4 | Backpressure missing under tip-stuck loop — RSS climbs to 6.0G (cgroup MemoryHigh) accumulating block buffers when tip doesn't advance | `lib/net/src/msgprocessor.c`, `download.c` | HIGH | Agent 2 — NEXT+3 (narrow scope: lib/net/ — after P7.1 lands, the tip-advance path is understood; add a "tip didn't advance for N seconds → drain download queue + refuse new block-inv" watchdog) |
 | P7.5 | `deploy/zclassic23.service:34` `TimeoutStopSec=300` amplifies hangs into 5-min outages; trim to 60-90s + watchdog | `deploy/zclassic23.service` | MED | Agent 2 — done ec7948ee3 (TimeoutStopSec=90, bounds hung shutdown to 90s instead of 5-min outage; clears observed worst-case ~60s WAL+Tor teardown with headroom; landed as a one-commit batch with P7.6+P7.7) |
 | P7.6 | `StartLimitBurst=3 / StartLimitIntervalSec=300` can permanently disable service after 3 crashes in 5min | `deploy/zclassic23.service` | MED | Agent 2 — done ec7948ee3 (StartLimitBurst=10, StartLimitIntervalSec=600 — 10 attempts over 10 minutes gives real triage time before the unit fails; P7.2's boot halt keeps a genuine chain-state bug draining the burst to the "unit stopped" clean signal) |
 | P7.7 | `LimitCORE=` not set — first SIGABRT today produced no usable post-mortem | `deploy/zclassic23.service` | MED | Agent 2 — done ec7948ee3 (LimitCORE=infinity + ZCL_CORE_DIR env hint for lazy mkdir on first abort; inline systemd-coredump / plain-pattern core_pattern doc for the per-host sysctl the operator still has to set) |
 | P7.8 | SQLite default `cache_size` (~2 MB) and `mmap_size` (0) on a 1.3M-row chainstate; `boot_index.c:307` warns mmap_size=64MB previously caused SIGSEGV — pick safe values + lock with a test | `lib/storage/src/coins_view_sqlite.c:187`, schema_migration.c | MED | Agent 2 — done dbca0be78 (audit found node.db already tuned at cache_size=-65536 / mmap_size=256MB via db_set_pragmas in app/models/src/database.c — refactored the values under named constants ZCL_NODE_DB_CACHE_SIZE_KIB / ZCL_NODE_DB_MMAP_BYTES for single-point future edit; regression tests in test_sqlite.c lock the PRAGMA cache_size reading == -65536 and cover a 100k-UTXO seed + 100 random-read smoke check against SIGSEGV / reader-rewind; boot_index.c:306 landmine root cause documented — standard SQLite mmap-vs-WAL-checkpoint aliasing, safe mitigation is the current "main handle mmap ON, all secondary mmap=0" split; AGENT-2.md flags fast_sync/onion_service/load_balancer RO-open sites in Rhett's lane as future tuning opportunities) |
-| P7.9 | No central thread registry — 12+ `pthread_create` sites, each shutdown signals its own flag; no single function joins them all | `lib/util/src/sync.c` (or new `lib/util/src/thread_registry.c`), all spawn sites | HIGH | Rhett |
-| P7.10 | `g_shutdown_requested` checked in only 6 files — `bg_validation`, `header_sync`, `peer_strategy`, `scheduler`, `workpool` either don't check it or use a different flag | cross-cutting (audit) | MED | Rhett (companion to P7.9) |
+| P7.9 | No central thread registry — 12+ `pthread_create` sites, each shutdown signals its own flag; no single function joins them all | `lib/util/src/sync.c` (or new `lib/util/src/thread_registry.c`), all spawn sites | HIGH | Agent 2 — NEXT+4 (narrow scope: new lib/util/src/thread_registry.c + migrate all pthread_create sites; paired with P7.10 in one commit) |
+| P7.10 | `g_shutdown_requested` checked in only 6 files — `bg_validation`, `header_sync`, `peer_strategy`, `scheduler`, `workpool` either don't check it or use a different flag | cross-cutting (audit) | MED | Agent 2 — NEXT+4 (paired with P7.9 — same commit; every spawn site must register with the new thread_registry and check its shutdown flag) |
 
 ---
 

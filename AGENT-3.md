@@ -33,88 +33,199 @@ cross-agent priority table. Last brief rewrite: 2026-04-17.
 
 ---
 
-## Current status — 2026-04-18
+## Current status — 2026-04-19 (morning, lane expansion to consensus + vendor)
 
-**Done and on main (10 rows):** P1.3, P1.4, P1.8, P1.9, P1.10, P1.11,
-P1.11b, P1.12, P1.13, P1.14, P1.15. AGENT.md shows the SHAs.
+**Done and on main (11 rows):** P1.3, P1.4, P1.8, P1.9, P1.10, P1.11,
+P1.11b, P1.12, P1.13, P1.14, P1.15, **P1.16 (`94d607b85`)**. AGENT.md
+shows the SHAs.
 
-Every row in your original brief plus the entire Wave 2 (curve25519 CT,
-ed25519 CT, RNG hygiene) is now closed.
+P1.16 (GetRandBytes root-cause fail-open) landed cleanly with
+getrandom(2) primary → /dev/urandom fallback → abort() on total
+failure, plus a SIGABRT fault-injection regression test.
 
-**Now working on:** P1.16 — close the `lib/core/random.c` root cause
-you flagged in the P1.15 commit message. See NOW below.
-**Queued:** prf.c nullifier-path timing audit, then optionally formal
-verification scaffolding for `sapling_check_*`. See NEXT.
+**Key scope change (2026-04-19):** Rhett is coordinator only and does
+NOT code. Three new rows transfer into your lane from Rhett:
+**P1.6** (P2SH sigop accounting — consensus-split risk),
+**P1.7** (skip_diffbits difficulty-check escape hatch), and **P5.5**
+(vendor/tor submodule pin + .onion smoke test). These are outside
+your original "crypto / sapling / keys" lane but consensus-crypto
+and vendor-pin respectively are close neighbors of your existing
+work. Read the P1.6 row carefully — consensus-sensitive, STOP + ping
+triggers apply.
 
----
+**Now working on:** prf.c nullifier-path constant-time audit
+(originally queued NEXT — now NOW).
 
-## NOW — P1.16: close the `lib/core/random.c` GetRandBytes fail-open
-
-File: `lib/core/src/random.c`
-
-This is the root cause your P1.15 wrapper papers over. `GetRandBytes`
-can silently return all-zero bytes on certain failure paths (e.g.
-`/dev/urandom` open fails, `getrandom()` returns short, etc.) — every
-caller that doesn't go through your new `zcl_random_secret_bytes`
-wrapper still believes "true means I got entropy" when the actual
-result is a deterministic zero buffer.
-
-**Fix.** Audit every error path inside `GetRandBytes` (and any sibling
-functions in this file). For each:
-
-- If the syscall fails: don't silently fill with zeros — return
-  `false` AND `LOG_FAIL` AND make sure the buffer is left in a state
-  the caller can detect (zero-fill is not detectable; consider an
-  explicit `0xFF` fill or a separate sentinel pattern that's then
-  re-checked at every secret-derivation site).
-- The cleanest fix is to make the error code unambiguous: return
-  `bool false` only when the buffer was NOT filled with entropy, and
-  abort the process if the caller ignores it (assertion in test
-  builds, `LOG_FAIL` + caller-side panic in production paths).
-
-**Acceptance.** Add a test that injects a `getrandom()` failure
-(LD_PRELOAD shim or `#ifdef ZCL_TEST_FORCE_RNG_FAIL`) and asserts
-every secret-derivation path either returns failure or aborts —
-never proceeds with zero bytes.
-
-When P1.16 lands, also flip every remaining direct `GetRandBytes`
-call site to `zcl_random_secret_bytes` so the wrapper is the only
-public path. Update AGENT.md row P1.16 to `done <SHA>`.
-
-**Scope boundary.** Only `lib/core/src/random.c` and the per-call-site
-migration. Do not touch any other file under `lib/core/`.
+**Queued NEXT (pre-authorized):**
+1. **P1.6** — consensus: P2SH sigop accounting
+2. **P1.7** — consensus: skip_diffbits difficulty-check removal
+3. **P5.5** — vendor: tor submodule pin bump + .onion smoke test
 
 ---
 
-## NEXT (pre-authorized) — prf.c nullifier-path timing audit
+## NOW — prf.c nullifier-path constant-time audit
 
-After P1.16 lands. File: `lib/sapling/src/prf.c`.
+File: `lib/sapling/src/prf.c`.
 
-**Threat model.** Sapling nullifiers are computed from `(nk, ρ)` where
-`nk` is a long-lived secret (one per spending key, reused across all
-spends from that key). Any cache-timing leak on `prf_nullifier`
-correlates across many spends — much more dangerous than a one-shot
-side channel.
+**Threat model.** Sapling nullifiers are computed from `(nk, ρ)`
+where `nk` is a long-lived secret (one per spending key, reused
+across all spends from that key). Any cache-timing leak on
+`prf_nullifier` correlates across many spends — much more dangerous
+than a one-shot side channel.
 
 **Pattern.** Same plan as P1.12/P1.13:
-
 1. Audit every secret-dependent branch / table lookup in `prf.c`.
 2. Replace with masked / branchless equivalents.
 3. Diff test (10k random inputs, old-vs-new bit-for-bit match).
 4. Timing test (varying nullifier secret entropy, assert no
    correlation in mean/stddev).
 
-Reference: the masked-linear-scan pattern you built for `jub_scalar_mul`
-in P1.12 carries over directly.
+Reference: the masked-linear-scan pattern you built for
+`jub_scalar_mul` in P1.12 carries over directly.
 
-### Stopping point
+**Acceptance.** Diff test passes + timing test's Hamming-weight
+stddev ratio stays within ±15% across entropy buckets (matching the
+P1.12/P1.13 regression pattern).
 
-After P1.16 + the prf.c audit are both on main, ping Rhett. Likely
-next: (a) formal-verification scaffolding for `sapling_check_spend` /
-`sapling_check_output` — small-enough spec that a CBMC / cppcheck-style
-tool could exhaustively cover the decode/reject paths, or
-(b) join Rhett on the P2 network DoS hardening if you want to stretch
-out of crypto for a wave.
+---
+
+## NEXT — queue, in order (pre-authorized)
+
+### NEXT[1]: P1.6 — P2SH sigop accounting (CONSENSUS-SENSITIVE)
+
+File: `lib/validation/src/sigops.c:10-18`.
+
+**Bug.** The sigop counter (used by block-size/sigop-limit consensus
+rules) does NOT account for sigops inside P2SH redeem scripts. A
+miner/attacker can construct a block whose raw script sigops are
+within limits but whose P2SH redeem scripts push the real sigop count
+far past `MAX_BLOCK_SIGOPS`. zclassicd (the legacy peer) counts these
+correctly, so our node will accept blocks that zclassicd rejects →
+**consensus split**.
+
+**Reference.** The correct algorithm is in zclassicd's
+`src/main.cpp::GetTransactionSigOpCount` (it walks the `vin` and,
+for each input whose prev output is a P2SH script, parses the
+redeem script out of the scriptSig and counts sigops inside it).
+Mirror that logic byte-for-byte; do not invent a new algorithm.
+
+**Fix.**
+1. Audit `lib/validation/src/sigops.c` for every existing sigop
+   counter function. Identify the one(s) called during block
+   acceptance.
+2. Add the P2SH path: when counting sigops for an input, if the
+   prevout scriptPubKey is P2SH, parse the last push in the
+   scriptSig as a redeem script and count sigops inside it.
+3. The `MAX_P2SH_SIGOPS=15` per-input cap matches Bitcoin/Zcash
+   — cap per-input to avoid unbounded work.
+
+**Acceptance (non-negotiable for consensus rows):**
+1. **Parity test against zclassicd.** Construct 10 real blocks from
+   the live chain that contain P2SH inputs. For each, run the
+   zclassic23 sigop counter AND the zclassicd RPC
+   `getblock/getrawtransaction + decodescript` path to count sigops
+   independently. Counts MUST match exactly.
+2. **Regression test.** A synthetic block with one P2SH input whose
+   redeem script contains 16 `OP_CHECKSIG` ops: zclassic23 must
+   reject it (>15 P2SH sigops per input).
+3. **No chain fork on live data.** After deploy, the node must stay
+   in sync with zclassicd-rhett (`zcl_status` height matches legacy
+   peer height within 1 block for 10 minutes).
+
+**STOP + ping Rhett triggers:**
+- Any change to the serialized block/tx format
+- Any change to consensus constants (`MAX_BLOCK_SIGOPS`,
+  `MAX_P2SH_SIGOPS`, etc. — these must match Zcash exactly)
+- If your parity test finds a block where zclassic23 and zclassicd
+  DISAGREE on sigop count — stop, because either our counter is
+  wrong OR zclassicd's is, and either way Rhett needs to decide
+  before we ship
+
+**Commit message template:**
+```
+val: count P2SH redeem-script sigops in block acceptance (P1.6)
+
+Fixes P1.6. Consensus-split risk: zclassicd counts P2SH redeem
+script sigops, zclassic23 did not. Mirrors zclassicd
+src/main.cpp:GetP2SHSigOpCount (MAX_P2SH_SIGOPS=15 per input).
+10-block parity test against legacy peer + synthetic 16-sigop
+rejection test in test_validation.c.
+```
+
+### NEXT[2]: P1.7 — remove skip_diffbits difficulty-check escape hatch
+
+File: `lib/validation/src/check_block.c:222,233-250`.
+
+**Bug.** There's a `skip_diffbits` flag that, when true, silently
+skips the difficulty (`nBits`) check in `CheckBlockHeader`. Any code
+path that sets `skip_diffbits=true` can let a block with an invalid
+PoW target through consensus. Auditing the call sites shows the flag
+is usually set to `true` during "trust-me" paths like fast-sync
+headers — but the intent is to trust the MMB proof, not to skip PoW
+entirely. Current implementation skips BOTH, which is a real hole.
+
+**Fix.** Remove the `skip_diffbits` parameter entirely. Difficulty
+is always checked. If fast-sync / MMB needs to accept headers
+without a full validity check, it must do so BEFORE calling
+`CheckBlockHeader` (e.g. via a separate "mmb_verify_header" path
+that validates MMB-proof equivalence and separately enforces the
+difficulty target).
+
+**Acceptance:**
+1. The `skip_diffbits` parameter no longer exists.
+2. Every previous call-site now either (a) validates difficulty
+   inline via a local check, OR (b) documents in a comment why the
+   path is safe without the `check_block` call.
+3. A synthetic block with correct Merkle / timestamp / sigops but
+   `nBits` = 0x1d00ffff (trivially-low difficulty) is REJECTED
+   on every path that previously could have accepted it.
+
+### NEXT[3]: P5.5 — vendor/tor submodule pin + .onion smoke test
+
+File: `vendor/tor` submodule.
+
+**Bug.** `git submodule status vendor/tor` shows `+73bd405d1b...`
+— the `+` prefix means the submodule HEAD differs from the pinned
+commit. Either the pin is stale (work landed on the dynhost fork
+that should be recorded) or the working tree is dirty (needs
+`git submodule update`).
+
+**Fix.**
+1. `cd vendor/tor && git log origin/main..HEAD` — see what's
+   actually ahead.
+2. If the ahead commits are valid (real work on the fork): bump
+   the pin by `cd ~/zclassic23-3 && git add vendor/tor && git
+   commit -m "vendor: bump tor submodule pin (P5.5)"`.
+3. If the ahead commits are local noise: `git submodule update
+   vendor/tor` to reset.
+4. Rebuild clean: `make clean && make -j$(nproc)`.
+5. **Smoke test (mandatory):** `make deploy`, then via MCP run
+   `zcl_onion_status` — verify the .onion address bootstraps
+   within 60 seconds AND `zcl_status.health.checks.onion_service_ready
+   == true`. If either fails, the pin change broke the embedded
+   Tor — revert immediately.
+
+**Acceptance:**
+- `git submodule status vendor/tor` shows no `+` prefix (clean).
+- `./test_zcl` passes (includes existing Tor tests in
+  `test_tor.c`).
+- Live deploy with `-tor` flag produces a working .onion (verified
+  via `zcl_onion_status`).
+
+**STOP + ping Rhett trigger:** if the pin bump breaks Tor
+bootstrap in any way, revert the commit and ping — do not try to
+patch the Tor fork yourself.
+
+---
+
+## Stopping point
+
+After prf.c + P1.6 + P1.7 + P5.5 are all on main, you will have
+closed every Agent-3-owned row on AGENT.md. At that point ping
+Rhett — likely next wave is either formal-verification scaffolding
+for `sapling_check_spend` / `sapling_check_output` (deep consensus
+review), or a new wave of post-AGENT.md items from the next live-
+node review.
 
 ---
 

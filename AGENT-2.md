@@ -30,7 +30,7 @@ cross-agent priority table. Last brief rewrite: 2026-04-17.
 
 ---
 
-## Current status — 2026-04-18 (late evening, P7 drained + P2.2 assigned)
+## Current status — 2026-04-19 (morning, major lane expansion)
 
 **Done and on main (30 rows + 1 infra):** P1.1, P1.2, P1.5, P6.1–P6.6,
 P3.1, P3.2, P3.3, P3.4, P3.5, P3.6, P5.1, P5.3, P5.4, P5.7, P4.3, P4.4,
@@ -38,17 +38,24 @@ P4.5, P2.3, P2.8, P3.7, P2.4, P2.7, P2.6, P5.2, P2.5, P5.6, P7.2,
 P7.3, P7.5, P7.6, P7.7, P7.8, plus parallel test runner
 infrastructure (df5de36c4). AGENT.md shows SHAs.
 
-**Now working on:** P2.2 — 1.6 MB stack alloc in `process_mempool`.
-This is one of the two remaining P-tier CRITs; stays narrow scope to
-`lib/net/src/msg_tx.c` (single function, tiny diff, no validation-lane
-intrusion).
+**Key scope change (2026-04-19):** Rhett is coordinator only and does
+NOT code. Every previously-Rhett-owned row has been reassigned to
+you or Agent-3. Your queue now contains 8 rows (listed below). The
+previous lane boundaries (lib/net/ read-only, lib/script/ read-only,
+lib/validation/ read-only) are LIFTED — under narrow-scope expansion
+rules, with a STOP + ping trigger for anything that could affect
+consensus.
 
-**Queued NEXT (pre-authorized):** none. After P2.2 lands, the last
-open rows are P2.1 net CRIT (mempool tx accept — needs deep
-integration with check_transaction.c, Rhett's lane), P7.1 live outage
-+ P7.4 backpressure + P7.9/P7.10 thread-registry audit (all Rhett),
-plus P1.6/P1.7 consensus + P4.1/P4.2 script + P5.5 vendor/tor. Ping
-Rhett when P2.2 lands.
+**Now working on:** P2.2 (1.6 MB stack alloc, `lib/net/src/msg_tx.c`)
+AND P7.1 (live outage — chain tip stuck at 3,081,601 on production).
+P2.2 is the 30-minute warm-up; P7.1 is the critical debug work this
+session.
+
+**Queued NEXT (pre-authorized):**
+1. **P2.1** mempool tx accept — wires `check_transaction` + fee rules into `lib/net/src/msg_tx.c`
+2. **P4.1 + P4.2** (paired) — script interpreter stack refactor
+3. **P7.4** backpressure under tip-stuck loop
+4. **P7.9 + P7.10** (paired) — thread registry + shutdown flag audit
 
 ---
 
@@ -97,10 +104,197 @@ touched `lib/net/src/msg_tx.c` beyond the prior P2.3/P2.4 patches —
 same file, known well. Do NOT touch msg_tx.c's other handlers (accept,
 relay, etc.) in this commit; one logical fix per commit.
 
-After this lands, your queue is truly drained; the remaining open
-rows require either lib/validation/ ownership (P7.1, P2.1) or
-cross-cutting refactor (P7.9 thread registry) that lives in Rhett's
-lane.
+---
+
+## NOW (parallel) — P7.1: LIVE OUTAGE — tip stuck at h=3,081,601
+
+**This is the single highest-priority row in AGENT.md.** Production
+zclassic23 is dead in the water and has been since the 2026-04-18
+evening. Root cause unknown. Symptoms (from `~/.zclassic-c23/node.log`
+on Rhett's box):
+
+```
+val.block_connected peer=7  h=3081601
+val.block_connected peer=47 h=3081601
+val.block_connected peer=47 h=3081601   [43+ times in 2 seconds]
+...eventually SIGABRT at ~6.0 GB RSS (cgroup MemoryHigh=6G)
+```
+
+The node "connects" block 3,081,601 over and over from different
+peers, but the chain tip never advances to 3,081,602. Eventually RAM
+fills up (download queue buffers accumulate) and something `abort()`s.
+
+**Files.** `lib/validation/src/process_block.c`,
+`lib/validation/src/connect_block.c`, `lib/validation/src/chainstate.c`.
+Also the feedback path into `lib/net/src/download.c` that would
+normally stop requesting the same block.
+
+**Suspected root causes (investigate in order):**
+
+1. **Tip-write missing or rolled-back.** `connect_block` succeeds,
+   emits `val.block_connected`, but never writes the new tip pointer
+   to `chainstate` (the in-memory struct) or `chain_state_repository`
+   (the SQLite row). Audit the exit paths of `connect_block`: does
+   every success path update `chain_state_repository_set_tip`? Does
+   the transaction commit before return, or does a late error roll
+   back a successful connect?
+2. **Prev-pointer mismatch.** The incoming block at h=3,081,602 has
+   `prev` == hash-of-3,081,601 but the in-memory `chain_tip->hash`
+   somehow differs (stale cache after crash recovery). Every connect
+   attempt of the "next" block fails at the prev-check, while the
+   connect of 3,081,601 itself keeps succeeding (idempotent, because
+   the UTXO set already reflects it).
+3. **UTXO height vs chain height off-by-one.** Related to P7.2 —
+   the auto-rewind landed in Agent-2's prior work for boot-time, but
+   runtime could still have `utxos.max_height` diverge from
+   `chain_height` after connect. Check that `connect_block` keeps
+   them aligned.
+4. **Download queue re-requests the same block.** `lib/net/src/download.c`
+   may not mark 3,081,601 as "have" after connect, so peers' inv
+   messages keep re-advertising it and we keep re-accepting it.
+
+**Acceptance (mandatory, non-negotiable — this is a live outage):**
+
+1. **Root cause identified.** Commit message MUST cite the exact
+   file:line where the tip didn't advance, and explain WHY it didn't.
+   No fix-first-understand-later — if you can't identify the root
+   cause in under 4 hours of audit, STOP and ping Rhett with the
+   evidence gathered.
+2. **Regression test.** Construct a fixture that reproduces the
+   stuck-tip condition (likely a crash-recovery test: boot from a
+   datadir where `chain_tip->hash` is stale one block behind the UTXO
+   set). Assert that after `connect_block`, `chain_tip->hash` matches
+   the just-connected block AND `download_mark_have` was called.
+3. **Live verification.** Ping Rhett for a `make deploy` test run.
+   After deploy, `zcl_status` must show height advancing past
+   3,081,601 within 60 seconds.
+
+**STOP + ping Rhett triggers:**
+- Any change to `lib/consensus/` (pure consensus rules, not tip mgmt)
+- Any change that affects the serialized format of blocks, UTXOs, or
+  chain-state rows (on-disk schema)
+- If you need to touch `lib/net/src/download.c` for more than 10
+  lines (ping so Rhett can review concurrently — Agent-2 hasn't
+  owned download.c before)
+
+**Commit message template:**
+
+```
+val: tip pointer now advances past 3,081,601 (P7.1 root cause: <file:line>)
+
+Fixes P7.1. Live outage since 2026-04-18 evening. Root cause:
+<one-sentence technical explanation>. The fix: <one-sentence>. New
+regression test at test_validation.c:<line> reproduces the pre-fix
+stuck-loop against a synthetic stale-tip fixture and asserts
+chain_tip->hash matches the connected block.
+```
+
+---
+
+## NEXT — queue, in order (pre-authorized)
+
+### NEXT[1]: P2.1 — mempool accepts any peer tx without verification
+
+File: `lib/net/src/msg_tx.c:34-69`. Same file as P2.2, so land P2.2
+first then continue here.
+
+**Bug.** Incoming `tx` messages from peers go straight into the
+mempool with no signature check, no UTXO check, no fee check. An
+attacker can flood the node with invalid/double-spending/zero-fee
+transactions to exhaust memory or poison the mempool.
+
+**Fix.** Wire `check_transaction` (from `lib/validation/`) + the
+mempool's accept-policy (fee rate, per-peer quota) into the handler
+BEFORE inserting into `tx_mempool`. Peers that send invalid txs get
+a ban-score bump via the existing `peer_score` infrastructure.
+
+**Acceptance (3 tests):**
+1. Invalid-signature tx → rejected, peer ban-score increments.
+2. Double-spend against current mempool → rejected, peer ban-score.
+3. Zero-fee tx below min-relay-fee → rejected, no ban-score (rate-
+   limit violation, not malicious).
+
+### NEXT[2]: P4.1 + P4.2 — script interpreter stack refactor
+
+Files: `lib/script/include/script/interpreter.h:22-30`,
+`lib/script/src/interpreter.c:619-652`.
+
+**Bug (P4.1).** `struct script_stack` is 520 KB and passed by value
+into recursive EVAL paths. A crafted script can push the interpreter
+frame past stack limits. **Bug (P4.2).** `stack_push` can fail
+silently under pressure and later `OP_PICK` / `OP_ROLL` assume the
+stack shape is intact.
+
+**Fix.** Convert `script_stack` to a pointer-taking design (out-of-
+band heap buffer owned by the interpreter frame). Make `stack_push`
+return `bool` and propagate the failure all the way up to
+`eval_script`. This is a careful refactor — pair P4.1 + P4.2 in
+one commit, one logical change.
+
+**STOP + ping Rhett trigger:** any change to the serialized script
+format or the set of accepted opcodes. Consensus-sensitive.
+
+**Acceptance:** full `./test_zcl` passes; ASAN build passes; a new
+"deep-recursion" fuzzer test pushes 100 nested `OP_IF` frames and
+asserts the interpreter returns gracefully (not SIGSEGV).
+
+### NEXT[3]: P7.4 — backpressure under tip-stuck loop
+
+Files: `lib/net/src/msgprocessor.c`, `lib/net/src/download.c`.
+
+**Bug.** When the chain tip doesn't advance (e.g. P7.1-class bug or
+a legitimate long fork reorg), block buffers accumulate in the
+download queue and RSS climbs unbounded (observed 6 GB peak).
+
+**Fix.** Watchdog: if `chain_tip` has not changed in N seconds (say
+N=60) AND the download queue has >M bytes pending (say M=256 MB),
+drain the queue, refuse new block-inv messages for the next K seconds,
+emit a health alert via the existing `event` subsystem.
+
+**Acceptance:** a test that fixtures a stuck-tip condition and
+asserts the watchdog fires; verify node.log shows the structured
+event; RSS stays bounded under stress.
+
+### NEXT[4]: P7.9 + P7.10 — thread registry + shutdown flag audit
+
+Files: new `lib/util/src/thread_registry.c` + migrate all
+`pthread_create` sites (12+ known: `connman`, `metrics`, `ws_events`,
+`tor_integration`, `https_server`, `rpc/httpserver`,
+`rpc/async_rpc_queue`, `mining`, etc.).
+
+**Bug (P7.9).** No central registry of spawned threads; SIGTERM
+shutdown relies on 12 independent flags that may not all be checked.
+**Bug (P7.10).** `g_shutdown_requested` is read in only 6 files;
+`bg_validation`, `header_sync`, `peer_strategy`, `scheduler`,
+`workpool` either ignore it or check a different flag — shutdown
+hits the 5-min systemd SIGKILL timeout because these threads refuse
+to exit.
+
+**Fix.** New `thread_registry_spawn(name, fn, arg)` wraps
+`pthread_create` + records the tid in a shared list with a shutdown
+callback. `thread_registry_shutdown()` iterates, signals each thread,
+and joins with a 10-second per-thread timeout. Every spawn site
+migrates. Every long-running loop checks the registry's shutdown
+flag, not a private global.
+
+**Acceptance:** `systemctl --user restart zclassic23` completes in
+<30 seconds (not 5 minutes). Add a stress test that spawns 50
+registered threads and asserts all join on shutdown.
+
+---
+
+## Coordination note — parallel work on msg_tx.c
+
+P2.2 and P7.1 are both in your NOW. P2.1 is in NEXT[1]. All three
+touch `lib/net/src/msg_tx.c` directly or indirectly. Strategy:
+
+1. Land P2.2 first (tiny diff, low risk) to get an early commit.
+2. Then P7.1 (live outage, may take a session).
+3. Then P2.1 (expects P2.2 + P7.1 both green).
+
+If P7.1 takes longer than expected, ship P2.1 in parallel rather
+than serializing — they're logically independent changes to the
+same file.
 
 ---
 
