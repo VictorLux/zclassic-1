@@ -52,6 +52,30 @@ bool process_inv(struct msg_processor *mp, struct p2p_node *node,
                  struct byte_stream *s);
 bool process_mempool(struct msg_processor *mp, struct p2p_node *node);
 
+/* P2.1: classification outcome for an incoming `tx` message. The
+ * handler needs to differentiate malicious rejections (apply peer
+ * ban-score) from non-malicious rejections (orphan, duplicate,
+ * rate-limit) and success. Exposed to tests so regression cases can
+ * exercise the classifier without re-entering Dandelion + wallet
+ * side effects that `process_tx_msg` does after acceptance. */
+enum tx_accept_result {
+    TX_ACCEPT_OK = 0,
+    TX_ACCEPT_INVALID,          /* failed check_transaction / coinbase */
+    TX_ACCEPT_DUPLICATE,        /* already in mempool */
+    TX_ACCEPT_CONFLICT,         /* double-spend vs current mempool */
+    TX_ACCEPT_BELOW_FEE,        /* fee < min_relay_fee */
+    TX_ACCEPT_MISSING_INPUTS,   /* unknown inputs (orphan) */
+    TX_ACCEPT_INTERNAL_ERROR,   /* mempool full / OOM */
+};
+
+/* Classify + add-or-reject a transaction, applying peer scoring for
+ * malicious outcomes. Does NOT dedupe against the tx_already_seen
+ * cache (the handler does that first). Does NOT relay (Dandelion /
+ * wallet sync stays in `process_tx_msg`). */
+enum tx_accept_result msg_tx_accept(struct msg_processor *mp,
+                                    struct p2p_node *node,
+                                    struct transaction *tx);
+
 /* msg_compact.c — compact blocks (BIP152) */
 bool process_sendcmpct(struct p2p_node *node, struct byte_stream *s);
 bool process_cmpctblock(struct msg_processor *mp, struct p2p_node *node,

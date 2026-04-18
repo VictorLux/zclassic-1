@@ -31,41 +31,128 @@
 struct dandelion_state g_dandelion;
 bool g_dandelion_init = false;
 
-static bool accept_to_mempool(struct msg_processor *mp,
-                               struct transaction *tx)
+/* ── P2.1: incoming `tx` classification + scoring ──────────────
+ *
+ * Before P2.1 this helper silently upserted every deserialised tx
+ * into the mempool. check_transaction was called but its failure
+ * collapsed into a generic bool; fee policy was ignored (fee hard-
+ * coded to 0); double-spends were detected only inside
+ * tx_mempool_add_unchecked, where they fold into the same bool;
+ * and malicious peers were never ban-scored. An attacker could
+ * flood the node with invalid or zero-fee txs and poison the
+ * mempool for other peers.
+ *
+ * Refactored to classify each tx into an enum and apply
+ * peer_scoring_record for clearly-malicious outcomes. Orphan /
+ * duplicate / below-fee outcomes are *not* malicious — they're
+ * our problem or a rate-limit, so they drop silently. */
+static enum tx_accept_result msg_tx_classify(struct msg_processor *mp,
+                                              struct transaction *tx)
 {
+    if (!mp || !tx || !mp->mempool)
+        return TX_ACCEPT_INTERNAL_ERROR;
+
+    if (transaction_is_coinbase(tx))
+        return TX_ACCEPT_INVALID;
+
     struct validation_state state;
     validation_state_init(&state);
 
     if (!check_transaction(tx, &state))
-        LOG_FAIL("net", "transaction failed check_transaction");
+        return TX_ACCEPT_INVALID;
 
     struct uint256 hash;
-    transaction_compute_hash((struct transaction *)tx);
+    transaction_compute_hash(tx);
     hash = tx->hash;
 
     if (tx_mempool_exists(mp->mempool, &hash))
-        LOG_FAIL("net", "transaction already exists in mempool");
+        return TX_ACCEPT_DUPLICATE;
 
-    int tip_height = active_chain_height(&mp->main_state->chain_active);
-    uint32_t branch_id = consensus_current_epoch_branch_id(
-        tip_height + 1, &mp->params->consensus);
+    /* Double-spend vs current mempool — explicit probe so the
+     * handler can attribute it to the sending peer. */
+    if (tx_mempool_has_conflict(mp->mempool, tx))
+        return TX_ACCEPT_CONFLICT;
 
+    /* Fee computation — requires a coins view. Absent view (only
+     * happens in unit tests) means we accept at fee=0 and rely on
+     * the post-add policy hook for eviction. With a view we:
+     *   - reject MISSING_INPUTS (orphan, not malicious)
+     *   - reject INVALID if value sums overflow / over-spend
+     *   - reject BELOW_FEE silently if fee < pool->min_relay_fee */
     int64_t fee = 0;
-    double priority = 0.0;
-    bool spends_coinbase = false;
+    if (mp->coins_tip) {
+        if (!coins_view_cache_have_inputs(mp->coins_tip, tx))
+            return TX_ACCEPT_MISSING_INPUTS;
+
+        int64_t value_in = coins_view_cache_get_value_in(mp->coins_tip, tx);
+        if (value_in < 0)
+            return TX_ACCEPT_INVALID;
+
+        int64_t value_out = transaction_get_value_out(tx);
+        if (value_out < 0 || value_in < value_out)
+            return TX_ACCEPT_INVALID;
+
+        fee = value_in - value_out;
+
+        int64_t min_relay_fee = mp->mempool->min_relay_fee;
+        if (min_relay_fee > 0 && fee < min_relay_fee)
+            return TX_ACCEPT_BELOW_FEE;
+    }
+
+    int tip_height = (mp->main_state)
+        ? active_chain_height(&mp->main_state->chain_active)
+        : 0;
+    uint32_t branch_id = (mp->params)
+        ? consensus_current_epoch_branch_id(tip_height + 1,
+                                             &mp->params->consensus)
+        : 0;
 
     struct mempool_entry entry;
-    mempool_entry_init(&entry, tx, fee, (int64_t)time(NULL), priority,
+    mempool_entry_init(&entry, tx, fee, (int64_t)time(NULL), 0.0,
                        (unsigned int)(tip_height + 1),
                        tx_mempool_has_no_inputs_of(mp->mempool, tx),
-                       spends_coinbase, branch_id);
+                       false, branch_id);
 
     bool accepted = tx_mempool_add_unchecked(mp->mempool, &hash, &entry);
-    if (!accepted)
+    if (!accepted) {
         mempool_entry_free(&entry);
+        return TX_ACCEPT_INTERNAL_ERROR;
+    }
 
-    return accepted;
+    return TX_ACCEPT_OK;
+}
+
+enum tx_accept_result msg_tx_accept(struct msg_processor *mp,
+                                    struct p2p_node *node,
+                                    struct transaction *tx)
+{
+    enum tx_accept_result ar = msg_tx_classify(mp, tx);
+
+    /* Peer scoring: only clearly-malicious outcomes get ban-score.
+     * Missing inputs (orphan), duplicates, and below-relay-fee are
+     * either our problem or a rate-limit, not misbehaviour. */
+    if (mp && node && mp->net_mgr) {
+        switch (ar) {
+        case TX_ACCEPT_INVALID:
+            peer_scoring_record(mp->net_mgr, node,
+                                PEER_OFFENCE_INVALID_MESSAGE,
+                                "invalid tx");
+            break;
+        case TX_ACCEPT_CONFLICT:
+            peer_scoring_record(mp->net_mgr, node,
+                                PEER_OFFENCE_INVALID_MESSAGE,
+                                "double-spend");
+            break;
+        case TX_ACCEPT_OK:
+        case TX_ACCEPT_DUPLICATE:
+        case TX_ACCEPT_BELOW_FEE:
+        case TX_ACCEPT_MISSING_INPUTS:
+        case TX_ACCEPT_INTERNAL_ERROR:
+            break;
+        }
+    }
+
+    return ar;
 }
 
 bool process_inv(struct msg_processor *mp, struct p2p_node *node,
@@ -191,7 +278,9 @@ bool process_tx_msg(struct msg_processor *mp, struct p2p_node *node,
     }
     tx_mark_seen(&hash);
 
-    if (accept_to_mempool(mp, &tx)) {
+    enum tx_accept_result ar = msg_tx_accept(mp, node, &tx);
+
+    if (ar == TX_ACCEPT_OK) {
         event_emit(EV_TX_ACCEPTED, (uint32_t)node->id,
                    hash.data, 32);
         struct inv_item inv;

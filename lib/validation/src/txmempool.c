@@ -415,6 +415,26 @@ bool tx_mempool_has_no_inputs_of(const struct tx_mempool *pool,
     return true;
 }
 
+bool tx_mempool_has_conflict(const struct tx_mempool *pool,
+                              const struct transaction *tx)
+{
+    if (!pool || !tx) return false;
+    zcl_mutex_t *cs = (zcl_mutex_t *)&pool->cs;
+    zcl_mutex_lock(cs);
+    for (size_t i = 0; i < tx->num_vin; i++) {
+        struct outpoint op;
+        op.hash = tx->vin[i].prevout.hash;
+        op.n = tx->vin[i].prevout.n;
+        if (outpoint_find((struct outpoint_map_entry *)pool->next_tx,
+                           pool->next_tx_cap, &op) != NULL) {
+            zcl_mutex_unlock(cs);
+            return true;
+        }
+    }
+    zcl_mutex_unlock(cs);
+    return false;
+}
+
 void tx_mempool_query_hashes(struct tx_mempool *pool,
                               struct uint256 *out, size_t max_out,
                               size_t *num_out)

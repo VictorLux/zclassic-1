@@ -4,13 +4,71 @@
 #include "net/net.h"
 #include "net/msgprocessor.h"
 #include "net/msg_internal.h"
+#include "net/peer_scoring.h"
 #include "util/sync.h"
+#include <stdatomic.h>
 
 /* P2.2 OOM hook: unconditionally fails the allocation. */
 static void *p22_force_null_alloc(size_t bytes)
 {
     (void)bytes;
     return NULL;
+}
+
+/* ── P2.1 fixture helpers ──────────────────────────────────────
+ *
+ * Minimal mp + coins_view + net_mgr + p2p_node scaffolding so the
+ * msg_tx_accept classifier can be driven end-to-end without
+ * dragging in snapshot sync, Dandelion, wallet, and block-map
+ * plumbing. The node fixture mirrors the pattern in
+ * test_peer_scoring.c so ban-score increments behave the same way
+ * the real connman observes them. */
+static void p21_setup_node(struct p2p_node *node, const char *name)
+{
+    memset(node, 0, sizeof(*node));
+    snprintf(node->addr_name, sizeof(node->addr_name), "%s", name);
+    /* Non-localhost IPv4-mapped address so is_trusted_peer() returns
+     * false and peer_misbehaving actually accumulates score. */
+    node->addr.svc.addr.ip[10] = 0xff;
+    node->addr.svc.addr.ip[11] = 0xff;
+    node->addr.svc.addr.ip[12] = 1;
+    node->addr.svc.addr.ip[13] = 2;
+    node->addr.svc.addr.ip[14] = 3;
+    node->addr.svc.addr.ip[15] = 4;
+}
+
+/* Stamp a fresh p2p UTXO into the coins_view_cache at `txid` with
+ * `value` in the first vout. Returns true on success. */
+static bool p21_add_utxo(struct coins_view_cache *cache,
+                         const struct uint256 *txid, int64_t value)
+{
+    struct coins_cache_entry *entry =
+        coins_view_cache_modify_new(cache, txid);
+    if (!entry) return false;
+    coins_alloc(&entry->coins, 1);
+    entry->coins.vout[0].value = value;
+    uint8_t pk[] = {0x76};
+    script_set(&entry->coins.vout[0].script_pub_key, pk, 1);
+    entry->coins.height = 1;
+    entry->coins.version = 4;
+    return true;
+}
+
+/* Build a minimal transparent 1-in 1-out transaction spending
+ * `prev_hash:0` for `out_value`. Caller owns the tx and must call
+ * transaction_free. */
+static void p21_build_spend(struct transaction *tx,
+                            const struct uint256 *prev_hash,
+                            int64_t out_value)
+{
+    transaction_init(tx);
+    transaction_alloc(tx, 1, 1);
+    tx->vin[0].prevout.hash = *prev_hash;
+    tx->vin[0].prevout.n = 0;
+    tx->vin[0].sequence = 0xFFFFFFFF;
+    tx->vout[0].value = out_value;
+    tx->lock_time = 0;
+    transaction_compute_hash(tx);
 }
 
 int test_mempool(void)
@@ -654,6 +712,189 @@ int test_mempool(void)
         ok = ok && (node.inventory_to_send == NULL);
 
         zcl_mutex_destroy(&node.cs_inventory);
+        tx_mempool_free(&pool);
+        if (ok) printf("OK\n"); else { printf("FAIL\n"); failures++; }
+    }
+
+    /* ================================================================
+     * P2.1: invalid tx (out-of-range vout value) is rejected with
+     * TX_ACCEPT_INVALID, the mempool stays empty, and the sending
+     * peer's ban-score is incremented by PEER_OFFENCE_INVALID_MESSAGE.
+     * Exercises the check_transaction → peer scoring wiring that was
+     * missing before P2.1. Prior to the fix, the same tx would have
+     * entered the mempool with fee=0 and the peer would have kept
+     * their reputation intact.
+     * ================================================================ */
+    printf("P2.1: invalid tx → INVALID + peer ban-score... ");
+    {
+        /* Baseline scoring config — clean env so defaults apply. */
+        unsetenv("ZCL_PEER_BAN_THRESHOLD");
+        unsetenv("ZCL_PEER_BAN_HOURS");
+        unsetenv("ZCL_PEER_SCORE_DECAY_PER_MIN");
+        peer_scoring_init();
+
+        struct tx_mempool pool;
+        tx_mempool_init(&pool, 0);
+
+        struct coins_view null_view;
+        memset(&null_view, 0, sizeof(null_view));
+        struct coins_view_cache coins;
+        coins_view_cache_init(&coins, &null_view);
+
+        struct net_manager nm;
+        memset(&nm, 0, sizeof(nm));
+        struct p2p_node node;
+        p21_setup_node(&node, "p21_invalid");
+
+        struct msg_processor mp = {0};
+        mp.mempool = &pool;
+        mp.coins_tip = &coins;
+        mp.net_mgr = &nm;
+
+        /* Forge an out-of-range vout value — triggers
+         * "bad-txns-vout-negative" inside check_transaction. */
+        struct uint256 prev;
+        memset(prev.data, 0xAA, 32);
+        struct transaction tx;
+        transaction_init(&tx);
+        transaction_alloc(&tx, 1, 1);
+        tx.vin[0].prevout.hash = prev;
+        tx.vin[0].prevout.n = 0;
+        tx.vin[0].sequence = 0xFFFFFFFF;
+        tx.vout[0].value = -1;  /* forbidden */
+        transaction_compute_hash(&tx);
+
+        enum tx_accept_result ar = msg_tx_accept(&mp, &node, &tx);
+
+        bool ok = (ar == TX_ACCEPT_INVALID);
+        ok = ok && (tx_mempool_size(&pool) == 0);
+        ok = ok && (atomic_load(&node.misbehavior) ==
+                    (int)PEER_OFFENCE_INVALID_MESSAGE);
+
+        transaction_free(&tx);
+        coins_view_cache_free(&coins);
+        tx_mempool_free(&pool);
+        if (ok) printf("OK\n"); else { printf("FAIL\n"); failures++; }
+    }
+
+    /* ================================================================
+     * P2.1: double-spend vs current mempool. First tx accepted,
+     * second tx spending the same UTXO rejected with TX_ACCEPT_CONFLICT,
+     * second peer's ban-score incremented. Mempool size stays at 1.
+     *
+     * Before P2.1, the conflict was detected only inside
+     * tx_mempool_add_unchecked where it collapsed into a generic bool
+     * — and the peer who submitted the conflicting tx was never
+     * penalised, so nothing stopped a flood of colliding txs.
+     * ================================================================ */
+    printf("P2.1: double-spend → CONFLICT + peer ban-score... ");
+    {
+        unsetenv("ZCL_PEER_BAN_THRESHOLD");
+        unsetenv("ZCL_PEER_BAN_HOURS");
+        unsetenv("ZCL_PEER_SCORE_DECAY_PER_MIN");
+        peer_scoring_init();
+
+        struct tx_mempool pool;
+        tx_mempool_init(&pool, 0);
+
+        struct coins_view null_view;
+        memset(&null_view, 0, sizeof(null_view));
+        struct coins_view_cache coins;
+        coins_view_cache_init(&coins, &null_view);
+
+        /* Pre-seed one UTXO worth 100 coin. Both spenders will
+         * target it; only the first should succeed. */
+        struct uint256 utxo;
+        memset(utxo.data, 0xBB, 32);
+        bool ok = p21_add_utxo(&coins, &utxo, 100 * COIN_VALUE);
+
+        struct net_manager nm;
+        memset(&nm, 0, sizeof(nm));
+        struct p2p_node peer_a, peer_b;
+        p21_setup_node(&peer_a, "p21_ds_A");
+        p21_setup_node(&peer_b, "p21_ds_B");
+        peer_b.id = 2;
+
+        struct msg_processor mp = {0};
+        mp.mempool = &pool;
+        mp.coins_tip = &coins;
+        mp.net_mgr = &nm;
+
+        /* First spend — unique output hash so the two txs have
+         * different txids but point to the same outpoint. */
+        struct transaction tx_a;
+        p21_build_spend(&tx_a, &utxo, 50 * COIN_VALUE);
+        enum tx_accept_result ar_a = msg_tx_accept(&mp, &peer_a, &tx_a);
+        ok = ok && (ar_a == TX_ACCEPT_OK);
+        ok = ok && (tx_mempool_size(&pool) == 1);
+        ok = ok && (atomic_load(&peer_a.misbehavior) == 0);
+
+        /* Second spend — same outpoint, different value so the
+         * txid differs and the duplicate check doesn't short-circuit. */
+        struct transaction tx_b;
+        p21_build_spend(&tx_b, &utxo, 40 * COIN_VALUE);
+        enum tx_accept_result ar_b = msg_tx_accept(&mp, &peer_b, &tx_b);
+        ok = ok && (ar_b == TX_ACCEPT_CONFLICT);
+        ok = ok && (tx_mempool_size(&pool) == 1);
+        ok = ok && (atomic_load(&peer_b.misbehavior) ==
+                    (int)PEER_OFFENCE_INVALID_MESSAGE);
+
+        transaction_free(&tx_a);
+        transaction_free(&tx_b);
+        coins_view_cache_free(&coins);
+        tx_mempool_free(&pool);
+        if (ok) printf("OK\n"); else { printf("FAIL\n"); failures++; }
+    }
+
+    /* ================================================================
+     * P2.1: below-relay-fee tx is silently dropped. Returns
+     * TX_ACCEPT_BELOW_FEE, mempool stays empty, and the peer's
+     * ban-score is UNCHANGED — zero-fee floods are a rate-limit
+     * problem, not peer misbehaviour, and penalising would blowback
+     * on honest peers forwarding a CPFP-only transaction.
+     * ================================================================ */
+    printf("P2.1: below-relay-fee → BELOW_FEE, no ban-score... ");
+    {
+        unsetenv("ZCL_PEER_BAN_THRESHOLD");
+        unsetenv("ZCL_PEER_BAN_HOURS");
+        unsetenv("ZCL_PEER_SCORE_DECAY_PER_MIN");
+        peer_scoring_init();
+
+        /* Non-zero min_relay_fee so the check has teeth. */
+        struct tx_mempool pool;
+        tx_mempool_init(&pool, 1000);
+
+        struct coins_view null_view;
+        memset(&null_view, 0, sizeof(null_view));
+        struct coins_view_cache coins;
+        coins_view_cache_init(&coins, &null_view);
+
+        /* UTXO whose value exactly equals the output value → fee=0. */
+        struct uint256 utxo;
+        memset(utxo.data, 0xCC, 32);
+        bool ok = p21_add_utxo(&coins, &utxo, 10 * COIN_VALUE);
+
+        struct net_manager nm;
+        memset(&nm, 0, sizeof(nm));
+        struct p2p_node node;
+        p21_setup_node(&node, "p21_below_fee");
+
+        struct msg_processor mp = {0};
+        mp.mempool = &pool;
+        mp.coins_tip = &coins;
+        mp.net_mgr = &nm;
+
+        struct transaction tx;
+        p21_build_spend(&tx, &utxo, 10 * COIN_VALUE);
+
+        enum tx_accept_result ar = msg_tx_accept(&mp, &node, &tx);
+
+        ok = ok && (ar == TX_ACCEPT_BELOW_FEE);
+        ok = ok && (tx_mempool_size(&pool) == 0);
+        ok = ok && (atomic_load(&node.misbehavior) == 0);
+
+        transaction_free(&tx);
+        coins_view_cache_free(&coins);
         tx_mempool_free(&pool);
         if (ok) printf("OK\n"); else { printf("FAIL\n"); failures++; }
     }
