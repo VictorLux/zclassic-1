@@ -38,7 +38,7 @@ See `AGENT.md` for the cross-agent priority table.
 
 ---
 
-## Current status — 2026-04-19 (late night, P8.3 landed — queue empty)
+## Current status — 2026-04-19 (late night, P8.3 landed — P8.2 reassigned to you)
 
 **Done and on main (18 rows + audit):** P1.3, P1.4, P1.6 (`f6aa0b080`),
 P1.7 (`5ce252bb6`), P1.8, P1.9, P1.10, P1.11, P1.11b, P1.12, P1.13,
@@ -47,15 +47,131 @@ P1.14, P1.15, P1.16 (`94d607b85`), P1.16b (`c841defd2`), P5.5
 P8-wave audit pass (`6751d9bfa` — opened 8 new rows).
 
 All crypto + consensus + vendor + net-backpressure + MMB-hardening
-rows shipped. P8 audit triaged: P8.1/P8.2/P8.4–P8.8 all Agent-2;
-P8.3 closed.
+rows shipped. P8.3 closed.
 
-**Open queue (empty — ping Rhett):**
+**P8.2 reassigned to you** — natural fit with your RNG lane: you
+own `lib/core/src/random.c` (P1.16) and `lib/crypto/src/random_secret.c`
+(P1.15). The dandelion seed quality issue is exactly the kind of
+RNG-fail-open you've been hardening. Lane expansion into `lib/net/`
+already granted via P7.4.
+
+**Open queue (1 row, then ping Rhett):**
 
 | Order | Row | Size | Severity |
 |---|---|---|---|
-| NOW | (queue empty — ping Rhett) | — | — |
+| **NOW** | **P8.2** — dandelion stem-peer PRNG seeded with ~31 bits of entropy | small | HIGH |
 | NEXT | (queue empty — ping Rhett) | — | — |
+
+---
+
+## NOW — P8.2: replace dandelion PRNG with cryptographic RNG
+
+File: `lib/net/src/dandelion.c:42-54` (the seed init + xorshift64 helper).
+
+### Bug
+
+The dandelion stem-peer PRNG is seeded with
+`(uint64_t)time(NULL) ^ 0xdeadbeefcafe1234ULL` — ~31 bits of effective
+entropy. The same seed drives:
+1. The Fisher-Yates shuffle that selects this epoch's stem peers
+2. The per-tx fluff coin-flip
+
+An attacker who knows rough boot-time + epoch rotation cadence can
+replay the xorshift64 state and predict (a) which 2 outbound peers the
+node uses for stem relay this 10-min epoch, and (b) the stem/fluff
+outcome of every transaction the node originates — **defeating
+Dandelion's origin-privacy property**.
+
+(The original P8 audit also flagged a possible data race; on closer
+read, all callers hold `ds->cs` so the race is not real. **The
+seed-quality issue is the actual bug.** Don't waste time on locking.)
+
+### Fix
+
+Replace `srand_xorshift64(time(NULL) ^ ...)` with a per-epoch reseed
+from your already-hardened `zcl_random_secret_bytes`. Two acceptable
+shapes:
+
+**A. Seed xorshift64 from the secret RNG once per epoch** (minimal
+change — keep the xorshift64 stream for cheap intra-epoch calls but
+make the seed unpredictable):
+
+```c
+uint64_t seed;
+zcl_random_secret_bytes((uint8_t *)&seed, sizeof seed);
+ds->rng_state = seed;  // or whatever the field is
+```
+
+**B. Replace xorshift64 entirely with `zcl_random_secret_bytes`** for
+both the Fisher-Yates shuffle and the per-tx fluff coin-flip. Higher
+CPU cost per call (a few siphash rounds), but eliminates the predictable
+stream. Probably negligible — dandelion is not hot-path.
+
+Prefer **B** unless profiling shows the per-tx call cost matters. The
+fewer predictable streams in the codebase, the better.
+
+### STOP + ping Rhett
+
+- Any change to the Dandelion P2P wire format (stem/fluff message
+  layout, epoch rotation cadence, peer-selection topology). The fix
+  is purely the seed/PRNG inside an already-existing helper — that's
+  allowed.
+- Any change to consensus or transaction format. Dandelion is a relay
+  policy layer above consensus; this fix doesn't touch consensus at all.
+
+### Acceptance
+
+1. Unit test in `lib/test/src/test_net.c` (or whichever existing test
+   file covers dandelion): boot two dandelion instances back-to-back
+   within the same wall-clock second; assert their stem-peer
+   selections differ. (Pre-fix: identical because `time(NULL)` is
+   identical. Post-fix: different because the secret RNG is fresh.)
+2. Statistical sanity: run the per-tx fluff coin-flip 10,000 times,
+   assert ~50/50 split within ±2σ. Smoke-tests the new entropy source
+   doesn't bias the coin.
+3. Audit comment in `lib/net/src/dandelion.c` documenting the
+   cryptographic-RNG dependency (so a future "performance" refactor
+   doesn't silently regress to xorshift64-from-time).
+4. Full `./test_zcl` + `make ci` green.
+
+### Lane note
+
+You're touching `lib/net/src/dandelion.c` — outside your usual lane
+but inside the P7.4 expansion. Match Agent-2's coding style (look at
+their P2.1/P2.4 commits for net-layer idioms — `LOG_FAIL` macros,
+header-vs-source split, error-return discipline).
+
+Don't touch `dandelion_relay()`, `dandelion_advance_epoch()`, or
+anything that changes the relay topology — only the seeding helper.
+
+### Commit template
+
+```
+net/dandelion: reseed stem-peer PRNG from cryptographic RNG (P8.2)
+
+Fixes P8.2 (AGENT.md). Dandelion's stem-peer selection + per-tx
+fluff coin-flip both ran on xorshift64 seeded with
+(time(NULL) ^ const) — ~31 bits of attacker-predictable entropy.
+
+A peer with rough boot-time + epoch-rotation cadence could replay
+the stream and predict which 2 outbound peers the node uses for
+stem relay this epoch, plus every fluff outcome — defeating
+Dandelion's origin-privacy property.
+
+Replaces with zcl_random_secret_bytes (already used for esk /
+groth16 blinding / sapling-r). One reseed per epoch; per-tx
+coin-flip pulls from the same source.
+
+Tests: same-wall-clock-second boot pair → distinct stem peers,
+10k coin-flip ±2σ uniformity, audit comment in dandelion.c.
+```
+
+---
+
+## NEXT — (queue empty after P8.2 lands)
+
+Ping Rhett. The triage pass already covered every lane — no further
+audit work pre-authorized.
 
 ---
 

@@ -59,12 +59,15 @@ regression downstream of your P7.2 rewind → filed as **P8.9 HOTFIX**.
 |---|---|---|---|
 | **NOW** | **P8.1** zmsg_deserialize heap overflow (peer-reachable) | small | **CRIT** |
 | NEXT | **P7.9 + P7.10** thread registry + shutdown audit (paired) | large | HIGH |
-| NEXT+2 | **P8.2** dandelion PRNG seed quality | small | HIGH |
-| NEXT+3 | **P8.4** compact-block O(n·m) reconstruction → khash | medium | MED |
-| NEXT+4 | **P8.5** rolling_bloom missing MAX_BLOOM_HASH_FUNCS clamp | trivial | MED |
-| NEXT+5 | **P8.6** zslp_service short-key ambiguity | small | MED |
-| NEXT+6 | **P8.7** zmarket_offer size_bytes overflow | trivial | MED |
-| NEXT+7 | **P8.8** ZNAM builder vs parser type gate divergence | trivial | MED |
+| NEXT+2 | **P8.4** compact-block O(n·m) reconstruction → khash | medium | MED |
+| NEXT+3 | **P8.5** rolling_bloom missing MAX_BLOOM_HASH_FUNCS clamp | trivial | MED |
+| NEXT+4 | **P8.6** zslp_service short-key ambiguity | small | MED |
+| NEXT+5 | **P8.7** zmarket_offer size_bytes overflow | trivial | MED |
+| NEXT+6 | **P8.8** ZNAM builder vs parser type gate divergence | trivial | MED |
+
+**P8.2 reassigned to Agent-3** — dandelion PRNG seed quality is a
+natural fit for their RNG/random_secret lane. Removed from your
+queue. Agent-3 already has lane expansion into `lib/net/` from P7.4.
 
 **Recently landed:** P4.1+P4.2 (`a9fcf6c66`), P8.9 HOTFIX
 (`b875152da`). P8.9 needs Rhett to `make deploy` so the strengthened
