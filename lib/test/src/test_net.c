@@ -3143,6 +3143,113 @@ int test_net(void)
         free(hashes);
     }
 
+    /* ── P2.7: FlyClient challenge rate limit ─────────────────── */
+    /* A flood of zfcchallenge forces snapsync_build_fc_response() to
+     * reconstruct 50 MMB proofs per message, pinning a CPU. The token-
+     * bucket guard (burst 30, refill 10/sec) must cap what a single
+     * peer can consume while leaving other peers unimpacted. */
+    printf("fc_rate: flood of 1000 challenges capped near burst+rate... ");
+    {
+        msgprocessor_test_fc_rate_reset();
+
+        const int flood_count = 1000;
+        int64_t base = 1000000;  /* arbitrary ms epoch — monotonic only */
+        int accepted = 0, rejected = 0;
+        /* 1000 challenges over 1 second → 1ms spacing. Refill at 10/sec
+         * means 1 extra token per 100ms, so total accepted ≈ burst + 10. */
+        for (int i = 0; i < flood_count; i++) {
+            if (msgprocessor_test_fc_rate_acquire(7, base + i))
+                accepted++;
+            else
+                rejected++;
+        }
+
+        uint32_t dropped = msgprocessor_test_fc_rate_dropped(7);
+        bool ok = (accepted >= (int)FC_CHALLENGE_BURST);           /* burst honored */
+        ok = ok && (accepted <= (int)FC_CHALLENGE_BURST + 15);     /* rate capped */
+        ok = ok && (rejected + accepted == flood_count);
+        ok = ok && (dropped == (uint32_t)rejected);                /* telemetry accurate */
+
+        if (ok) printf("OK (accepted=%d rejected=%d dropped=%u burst=%u)\n",
+                        accepted, rejected, dropped, FC_CHALLENGE_BURST);
+        else { printf("FAIL (accepted=%d rejected=%d dropped=%u burst=%u)\n",
+                       accepted, rejected, dropped, FC_CHALLENGE_BURST);
+               failures++; }
+    }
+
+    /* A flood triggers a single ban-score event, not one per drop —
+     * otherwise 1000 challenges would add 20_000 to the score and mask
+     * the cause in logs. The should-score gate resets when the peer
+     * next consumes a token. */
+    printf("fc_rate: flood registers ban-score exactly once per episode... ");
+    {
+        msgprocessor_test_fc_rate_reset();
+
+        int64_t base = 2000000;
+        /* Drain the burst; next call hits the empty bucket. */
+        for (uint32_t i = 0; i < FC_CHALLENGE_BURST; i++)
+            (void)msgprocessor_test_fc_rate_acquire(11, base);
+        bool drained = !msgprocessor_test_fc_rate_acquire(11, base);
+
+        bool first_score  =  msgprocessor_test_fc_rate_should_score(11);
+        bool second_score = !msgprocessor_test_fc_rate_should_score(11);
+
+        /* Refill one second → at least one token available → next acquire
+         * succeeds and clears the flood_scored flag. */
+        bool recovered = msgprocessor_test_fc_rate_acquire(11, base + 1000);
+
+        /* After recovery, the next flood should score again. */
+        bool flood2_drained = true;
+        for (uint32_t i = 0; i < FC_CHALLENGE_BURST + 5u; i++)
+            if (msgprocessor_test_fc_rate_acquire(11, base + 1000)) {
+                /* Tokens eventually exhaust; we just need to reach the drop. */
+            }
+        flood2_drained = !msgprocessor_test_fc_rate_acquire(11, base + 1000);
+        bool third_score = msgprocessor_test_fc_rate_should_score(11);
+
+        bool ok = drained && first_score && second_score
+                  && recovered && flood2_drained && third_score;
+        if (ok) printf("OK\n");
+        else { printf("FAIL (drained=%d first=%d second=%d recovered=%d "
+                      "flood2=%d third=%d)\n",
+                      drained, first_score, second_score,
+                      recovered, flood2_drained, third_score);
+               failures++; }
+    }
+
+    /* Rate-limit is per-peer: one peer under load can't starve another. */
+    printf("fc_rate: victim peer stays servable under attacker flood... ");
+    {
+        msgprocessor_test_fc_rate_reset();
+
+        int64_t base = 3000000;
+        /* Attacker drains its own bucket. */
+        for (int i = 0; i < 1000; i++)
+            (void)msgprocessor_test_fc_rate_acquire(/*attacker=*/101, base + i);
+
+        /* Victim has never issued a challenge — full burst must be
+         * available, and drops counter stays at zero. */
+        int victim_accepted = 0;
+        for (uint32_t i = 0; i < FC_CHALLENGE_BURST; i++)
+            if (msgprocessor_test_fc_rate_acquire(/*victim=*/202, base + 1001))
+                victim_accepted++;
+
+        bool ok = (victim_accepted == (int)FC_CHALLENGE_BURST);
+        ok = ok && (msgprocessor_test_fc_rate_dropped(202) == 0);
+        /* Attacker's bucket saw drops. */
+        ok = ok && (msgprocessor_test_fc_rate_dropped(101) > 900);
+
+        if (ok) printf("OK (victim_accepted=%d attacker_dropped=%u)\n",
+                       victim_accepted,
+                       msgprocessor_test_fc_rate_dropped(101));
+        else { printf("FAIL (victim_accepted=%d/%u attacker_dropped=%u)\n",
+                      victim_accepted, FC_CHALLENGE_BURST,
+                      msgprocessor_test_fc_rate_dropped(101));
+               failures++; }
+
+        msgprocessor_test_fc_rate_reset();
+    }
+
     /* Clean up test database */
     sqlite3_close(test_db);
     test_cleanup_tmpdir(TEST_SYNC_DIR);

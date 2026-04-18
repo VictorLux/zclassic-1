@@ -101,6 +101,23 @@ uint64_t msg_processor_block_manifest_cache_version(void);
 #include "core/uint256.h"
 void msgprocessor_block_clear_seen(const struct uint256 *hash);
 
+/* P2.7: per-peer FlyClient challenge rate-limit tuning. See
+ * msgprocessor.c for the full rationale — short version: each
+ * zfcchallenge is expensive (50 MMB proofs), so we cap per-peer
+ * consumption at BURST on first use and refill at RATE_PER_SEC. A
+ * legitimate IBD peer needs one token per snapshot offer; a flood
+ * burns through the burst, then drops silently. */
+#define FC_CHALLENGE_RATE_PER_SEC 10u
+#define FC_CHALLENGE_BURST        30u
+
+/* P2.7 test hooks: drive the FlyClient challenge rate limiter with an
+ * explicit clock, read dropped-challenge telemetry, and reset the table
+ * between cases. Not intended for production call-sites. */
+bool msgprocessor_test_fc_rate_acquire(node_id_t peer_id, int64_t now_ms);
+uint32_t msgprocessor_test_fc_rate_dropped(node_id_t peer_id);
+bool msgprocessor_test_fc_rate_should_score(node_id_t peer_id);
+void msgprocessor_test_fc_rate_reset(void);
+
 /* Test helpers for block relay deduplication. */
 bool msgprocessor_test_block_already_seen(const struct uint256 *hash);
 void msgprocessor_test_block_mark_seen(const struct uint256 *hash);
