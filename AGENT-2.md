@@ -51,13 +51,17 @@ With P2.1 landed all P-tier CRIT rows are closed. Rhett still needs
 to `make deploy` for production to pick up the P7.1 fix — chain is
 still stuck at h=3,081,411.
 
-**Open queue (3 logical tasks, all HIGH):**
+**Open queue (2 logical tasks, both HIGH):**
 
 | Order | Row | Size | Severity |
 |---|---|---|---|
 | NOW | **P4.1 + P4.2** script interpreter stack refactor (paired) | large | HIGH |
-| NEXT[1] | **P7.4** backpressure watchdog under tip-stuck | medium | HIGH |
-| NEXT[2] | **P7.9 + P7.10** thread registry + shutdown audit (paired) | large | HIGH |
+| NEXT | **P7.9 + P7.10** thread registry + shutdown audit (paired) | large | HIGH |
+
+**P7.4 reassigned to Agent-3** — they now own it in parallel with
+your P4.1+P4.2 work so both of you produce in this session. No file
+overlap: they're in `lib/net/src/msgprocessor.c` + `download.c`, you're
+in `lib/script/`.
 
 ---
 
@@ -88,23 +92,7 @@ SIGSEGV, no memory growth past 10 MB for the interpreter frame).
 
 ## NEXT — queue (pre-authorized, in order)
 
-### NEXT[1]: P7.4 — backpressure watchdog under tip-stuck
-
-Files: `lib/net/src/msgprocessor.c`, `lib/net/src/download.c`.
-
-**Bug.** When chain_tip doesn't advance (P7.1-class bug or long fork
-reorg), download buffers accumulate unbounded (observed 6 GB RSS peak
-that triggered the OOM).
-
-**Fix.** Watchdog: if `chain_tip` unchanged for N=60s AND download
-queue >M=256 MB, drain the queue, refuse new block-inv for K=120s,
-emit `EV_BACKPRESSURE_ACTIVE`.
-
-**Acceptance:** test fixtures a stuck-tip scenario, asserts watchdog
-fires + RSS stays bounded. Watchdog clears cleanly when the tip
-resumes advancing.
-
-### NEXT[2]: P7.9 + P7.10 — thread registry + shutdown flag audit
+### NEXT: P7.9 + P7.10 — thread registry + shutdown flag audit
 
 Files: new `lib/util/src/thread_registry.c` + every `pthread_create`
 site (12+ known — grep for them).
