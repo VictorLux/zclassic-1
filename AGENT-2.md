@@ -57,19 +57,18 @@ regression downstream of your P7.2 rewind → filed as **P8.9 HOTFIX**.
 
 | Order | Row | Size | Severity |
 |---|---|---|---|
-| **NOW** | **P8.9 HOTFIX** — P7.2 incomplete rewind → BIP30 false-positive stalling prod | small-med | **CRIT** |
-| NEXT | **P4.1 + P4.2** script interpreter stack refactor (paired) | large | HIGH |
-| NEXT+2 | **P7.9 + P7.10** thread registry + shutdown audit (paired) | large | HIGH |
-| NEXT+4 | **P8.1** zmsg_deserialize heap overflow (peer-reachable) | small | CRIT |
-| NEXT+5 | **P8.2** dandelion PRNG seed quality | small | HIGH |
-| NEXT+6 | **P8.4** compact-block O(n·m) reconstruction → khash | medium | MED |
-| NEXT+7 | **P8.5** rolling_bloom missing MAX_BLOOM_HASH_FUNCS clamp | trivial | MED |
-| NEXT+8 | **P8.6** zslp_service short-key ambiguity | small | MED |
-| NEXT+9 | **P8.7** zmarket_offer size_bytes overflow | trivial | MED |
-| NEXT+10 | **P8.8** ZNAM builder vs parser type gate divergence | trivial | MED |
+| **NOW** | **P8.1** zmsg_deserialize heap overflow (peer-reachable) | small | **CRIT** |
+| NEXT | **P7.9 + P7.10** thread registry + shutdown audit (paired) | large | HIGH |
+| NEXT+2 | **P8.2** dandelion PRNG seed quality | small | HIGH |
+| NEXT+3 | **P8.4** compact-block O(n·m) reconstruction → khash | medium | MED |
+| NEXT+4 | **P8.5** rolling_bloom missing MAX_BLOOM_HASH_FUNCS clamp | trivial | MED |
+| NEXT+5 | **P8.6** zslp_service short-key ambiguity | small | MED |
+| NEXT+6 | **P8.7** zmarket_offer size_bytes overflow | trivial | MED |
+| NEXT+7 | **P8.8** ZNAM builder vs parser type gate divergence | trivial | MED |
 
-If P4.1+P4.2 is in your working tree right now, **git stash** it
-before starting P8.9 — do NOT abandon the refactor, just park it.
+**Recently landed:** P4.1+P4.2 (`a9fcf6c66`), P8.9 HOTFIX
+(`b875152da`). P8.9 needs Rhett to `make deploy` so the strengthened
+rewind can run against the live DB.
 
 Agent-3 is working on **P8.3** (MMB height bound) in parallel — no
 file overlap.
@@ -287,6 +286,40 @@ If build or tests fail — STOP and report.
 ## Notes from Agent-2
 
 _(Keep short — 1-3 recent entries.)_
+
+### 2026-04-19 (late night) — P8.9 HOTFIX landed
+
+**P8.9 (`b875152da`):** strengthened `coins_view_sqlite_rewind_above_tip`
+to cover the wrong-height orphan-coinbase shape suggested by the
+AGENT-2.md root-cause hypothesis. The original `DELETE FROM utxos
+WHERE height > tip_height` still runs first — when present, the
+`transactions` table is then swept for `block_height > tip` and
+every `utxos` row whose txid matches is also purged, plus the stale
+`transactions` rows themselves. This catches the failure mode where
+the partial block application wrote the coinbase's `utxos` row at a
+height ≤ tip but recorded the tx_index row at tip+1, so `have_coins`
+saw the orphan on the re-apply and tripped BIP30.
+
+Log format changed: `removed N UTXO row(s) above tip_height=X
+(high=A, by-txid=B, tx_index=C)`. Deploy canary will tell us which
+branch was the actual fix — if `by-txid` or `tx_index` is non-zero,
+the wrong-height hypothesis holds.
+
+Tests: 2 new `cva P8.9` cases in `test_coins_view_atomicity.c` — one
+reproduces the orphan-coinbase shape (utxos at h=100, tx_index at
+h=101, tip=100) and asserts the sweep clears the coinbase txid; the
+other verifies no regression on the pure height>tip path when the
+`transactions` table is present. The 7 pre-existing cva tests
+continue to pass (their minimal DB has no `transactions` table, so
+the table-existence guard keeps the new logic inert).
+
+Option B (anchor-adjacent BIP30 retry at connect_block time) was
+NOT implemented — option A by itself should fix the live-node
+shape. If the deploy canary shows the chain still stuck, option B
+as a connect_block fallback is the obvious next step.
+
+**Rhett action item:** `make deploy`; expect chain to advance past
+3,081,407 within ≤120s, per AGENT-2.md acceptance.
 
 ### 2026-04-19 (late night) — P4.1 + P4.2 landed ahead of queue flip
 

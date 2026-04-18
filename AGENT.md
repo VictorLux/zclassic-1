@@ -8,24 +8,24 @@ Owner: Rhett (primary). Delegates: Agent-2 (see `AGENT-2.md`), Agent-3 (see `AGE
 
 ## Progress — last update 2026-04-19 (night, deploy shipped + P8.9 hotfix filed — 73 rows total)
 
-**Overall: 61 / 73 rows closed (84%) | SWRC ~89%**
+**Overall: 62 / 73 rows closed (85%) | SWRC ~92%**
 
 | Tier | Closed / Total | % | Open rows |
 |---|---|---|---|
-| **CRITICAL** | 10 / 12 | **83%** | **P8.9 (HOTFIX)**, P8.1 |
+| **CRITICAL** | 11 / 12 | **92%** | P8.1 |
 | **HIGH** | 27 / 29 | **93%** | P7.9, P8.2, P8.3 |
 | **MED** | 20 / 26 | **77%** | P7.10, P8.4, P8.5, P8.6, P8.7, P8.8 |
 | **LOW** | 2 / 2 | **100%** | — |
 | (P0 baseline) | 4 / 4 | **100%** | — |
 
 **Open by owner (2026-04-19 late night, post-deploy):**
-- **Agent-2 (3 logical tasks + 7 P8 rows):** **P8.9 (HOTFIX-CRIT, NOW)** — production stalled at h=3,081,407 with `bad-txns-BIP30` on every connect attempt; P7.2 rewind incomplete. Then P8.1, P7.9+P7.10, P8.2/P8.4–P8.8. (P4.1+P4.2 landed ahead of queue flip — `a9fcf6c66`.)
+- **Agent-2 (2 logical tasks + 6 P8 rows):** P8.1 (CRIT zmsg_deserialize overflow, NOW), then P7.9+P7.10, then P8.2/P8.4–P8.8. (P4.1+P4.2 landed `a9fcf6c66`; P8.9 HOTFIX landed `b875152da` — awaiting deploy canary.)
 - **Agent-3 (1 row, then queue empty):** **P8.3 (NOW)** — MMB unbounded mountain height on deserialize. P1.6/P1.7/P1.16b/P5.5/P7.4 + P8 audit all closed.
 - **Rhett:** 0 (coordinator only). Action items pending:
   1. ~~`make deploy`~~ **DONE 2026-04-19 22:07** (`zclassic23` binary rebuilt from HEAD; onion/Tor bootstrap verified). Deploy surfaced P8.9.
   2. Decide whether MAX_P2SH_SIGOPS=15 per-input should land as a mempool-policy rule (Agent-2 lane) — see AGENT-3.md 2026-04-19 P1.6 note for context.
 
-**LIVE-NODE STATUS:** chain tip pinned at h=3,081,407 by P8.9 (BIP30 false-positive against orphan coinbase UTXOs left behind by incomplete P7.2 rewind). Header tip climbs normally (3,082,600+) so sync plumbing works — only connect_tip at h=3,081,408 fails. Hotfix must land before the 6 GB MemoryHigh cap fires again (the P7.4 watchdog will bleed the queue but doesn't fix the underlying stall).
+**LIVE-NODE STATUS:** chain tip still pinned at h=3,081,407 in production — P8.9 hotfix is on main (`b875152da`) but **Rhett must `make deploy` to pick it up**. Expected post-deploy log line: `[coins] auto-rewind: removed N UTXO row(s) above tip_height=3,081,407 (high=X, by-txid=Y, tx_index=Z)`. If `by-txid` or `tx_index` is non-zero, the strengthened sweep was the fix. Acceptance: chain advances past 3,081,407 within 120s.
 
 **Top remaining risks:** P8.9 is the live production-stall root cause. Every other row is hardening work. After P8.9 ships: Agent-2 has script-interp, thread-registry, and the 6 P8 net/bloom/zslp/znam rows; Agent-3 has P8.3 only.
 
@@ -197,7 +197,7 @@ verification, znam parser bounds, store controller (post-P3.4/P3.6).
 | P8.6 | `zslp_service_validate_token_key` returns true for `is_alphanumeric(token_key, len)` with `len ∈ [1, ZSLP_MAX_TOKEN_KEY_LEN]` **OR** the 64-char hex case. Because the alphanumeric branch has no length floor that distinguishes ticker-like names from truncated txids, a 10-char alphanumeric "txid" prefix is accepted and later canonicalized via `snprintf` — different short/long inputs may collide on the same canonical form. RPC callers can then look up tokens by ambiguous short keys; SEND requests targeting an aliased key reach the wrong token's payment service. | `app/services/src/zslp_service.c:62-72` | MED | Agent 2 |
 | P8.7 | `zmarket_offer` computes `offer.num_chunks = (uint32_t)((size_bytes + FILE_MARKET_CHUNK_SIZE - 1) / FILE_MARKET_CHUNK_SIZE)` with no upper bound on `size_bytes`. `st.st_size` from `stat(2)` is operator-supplied (RPC argument is a path on the local filesystem), so a sparse file or a deliberately crafted manifest produces `size_bytes` near `UINT64_MAX`. The `+ FILE_MARKET_CHUNK_SIZE - 1` then wraps to a tiny value, making `num_chunks` underestimate the true chunk count. Downstream chunk-challenge / payment math operates on a wrong chunk count without ever logging the mismatch. Lower priority because the input is operator-controlled, but worth a one-line `if (size_bytes > UINT64_MAX - CHUNK_SIZE) reject` guard. | `app/controllers/src/file_market_controller.c:140-142` | MED | Agent 2 |
 | P8.8 | ZNAM builder gates diverge from the parser. `znam_build_register` and `znam_build_update` reject `target_type > 3` (literal — covers only ONION/ZADDR/TADDR), but `znam_parse` and `znam_build_set_record` accept up to `ZNAM_TYPE_CONTENT = 7` (BTC/LTC/DOGE/CONTENT). A user calling REGISTER with a BTC address gets a silent zero-bytes-written return and no logged reason. Either lift the literal-3 cap to `ZNAM_TYPE_CONTENT` (intentional design — REGISTER should support multi-coin per the ENS-inspired spec) or document the restriction with a `LOG_FAIL`. | `lib/znam/src/znam.c:189-205` (vs parser at `:125`) | MED | Agent 2 |
-| P8.9 **HOTFIX** | P7.2 incomplete rewind: auto-rewind at boot removes UTXO rows where `height > tip_height` but leaves the corresponding `(txid, vout)` entries in the coins cache view, so the next `connect_block(tip+1)` trips BIP30 on the coinbase (txid already present, not pruned). Live-node evidence 2026-04-18 post-deploy: boot log says `[coins] auto-rewind: removed 2 UTXO row(s) above tip_height=3081407`, then `connect_tip: connect_block FAILED h=3081408: bad-txns-BIP30` repeats on every activate_best_chain cycle. Header tip advances to 3,082,600+, chain tip pinned at 3,081,407. Fix must rewind ALL rows the partial-block application touched — not just the ≤32 rows above tip, but any stale (txid, vout) entries for block h=tip+1 — OR treat an anchor-adjacent BIP30 hit as evidence of incomplete rewind and retry after a deeper purge. | `lib/coins/src/coins_view_sqlite.c` (P7.2 rewind) + `lib/validation/src/connect_block.c:212-233` (BIP30 check) | CRITICAL | Agent 2 — HOTFIX NOW |
+| P8.9 **HOTFIX** | P7.2 incomplete rewind: auto-rewind at boot removes UTXO rows where `height > tip_height` but leaves the corresponding `(txid, vout)` entries in the coins cache view, so the next `connect_block(tip+1)` trips BIP30 on the coinbase (txid already present, not pruned). Live-node evidence 2026-04-18 post-deploy: boot log says `[coins] auto-rewind: removed 2 UTXO row(s) above tip_height=3081407`, then `connect_tip: connect_block FAILED h=3081408: bad-txns-BIP30` repeats on every activate_best_chain cycle. Header tip advances to 3,082,600+, chain tip pinned at 3,081,407. Fix must rewind ALL rows the partial-block application touched — not just the ≤32 rows above tip, but any stale (txid, vout) entries for block h=tip+1 — OR treat an anchor-adjacent BIP30 hit as evidence of incomplete rewind and retry after a deeper purge. | `lib/coins/src/coins_view_sqlite.c` (P7.2 rewind) + `lib/validation/src/connect_block.c:212-233` (BIP30 check) | CRITICAL | Agent 2 — done b875152da (strengthened rewind sweeps utxos by txid when tx_index rows sit above tip; also purges the stale tx_index rows; 2 new cva tests repro the wrong-height orphan-coinbase shape and the original height>tip path) |
 
 **Triage notes for Rhett:**
 - P8.1 is a wire-format heap overflow reachable from any peer; promote
