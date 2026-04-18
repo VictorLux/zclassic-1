@@ -33,30 +33,28 @@ cross-agent priority table. Last brief rewrite: 2026-04-17.
 
 ---
 
-## Current status — 2026-04-19 (evening, P1.7 on main)
+## Current status — 2026-04-19 (night, Agent-3 queue empty)
 
-**Done and on main (15 rows):** P1.3, P1.4, P1.6 (`f6aa0b080`),
+**Done and on main (16 rows):** P1.3, P1.4, P1.6 (`f6aa0b080`),
 P1.7 (`5ce252bb6`), P1.8, P1.9, P1.10, P1.11, P1.11b, P1.12,
-P1.13, P1.14, P1.15, P1.16 (`94d607b85`), P1.16b (`c841defd2`).
+P1.13, P1.14, P1.15, P1.16 (`94d607b85`), P1.16b (`c841defd2`),
+P5.5 (`75576d7a0`).
 
-P1.7 deleted the window_clean + skip_diffbits goto/label from
-`contextual_check_block_header`.  Every call into that function now
-runs the GetNextWorkRequired check; incomplete-window nodes
-compare against nProofOfWorkLimit (the weakest permitted compact)
-rather than blindly trusting the header's nBits.  Fast-sync / MMB
-callers that need to accept headers without local-window validation
-must bypass the function entirely — process_block.c:732-734's
-pre-existing skip_contextual gate already does this for distant-IBD
-blocks, so no new call-site changes were needed.  Regression test
-in test_chain.c asserts that nBits=0x1d00ffff (Bitcoin limit) is
-rejected against the Zcash expected of 0x1f07ffff with
-"bad-diffbits".
+P5.5 bumped the vendor/tor submodule pin from d14113e → 73bd405 by
+directly updating the outer repo's index entry via
+`git update-index --cacheinfo 160000,<sha>,vendor/tor`.  The two
+ahead commits (39feeefa1 dynhost-outbound-API + 73bd405d1
+symbol-conflict fix) are already pushed to
+`git@github.com:RhettCreighton/tor.git origin/main` — not local
+noise.  Only the outer repo's tree entry changed; libtor.a was not
+touched and the local binary is byte-identical.  Live `.onion`
+smoke test is Rhett's to run from `~/zclassic23` because the
+systemd service unit executes that clone's binary, not this one.
 
-**Now working on:** P5.5 — vendor/tor submodule pin bump
-(promoted from NEXT → NOW).  This is the last Agent-3 row.
+**Now working on:** nothing — queue is empty.
 
-**Queued NEXT (pre-authorized):** nothing after P5.5.  Once it
-lands, ping Rhett for the next wave (see "Stopping point" below).
+Every row assigned to Agent-3 on AGENT.md is now closed.  See the
+"Stopping point" section below — pinging Rhett for the next wave.
 
 ---
 

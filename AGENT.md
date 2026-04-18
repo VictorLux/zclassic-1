@@ -6,22 +6,24 @@ Owner: Rhett (primary). Delegates: Agent-2 (see `AGENT-2.md`), Agent-3 (see `AGE
 
 ---
 
-## Progress — last update 2026-04-19 (evening, P1.7 shipped by Agent-3)
+## Progress — last update 2026-04-19 (night, P5.5 shipped; Agent-3 queue empty)
 
-**Overall: 57 / 64 rows closed (89%) | SWRC ~93%**
+**Overall: 58 / 64 rows closed (91%) | SWRC ~94%**
 
 | Tier | Closed / Total | % | Open rows |
 |---|---|---|---|
 | **CRITICAL** | 9 / 10 | **90%** | P2.1 |
 | **HIGH** | 24 / 27 | **89%** | P4.1, P4.2, P7.4, P7.9 |
-| **MED** | 19 / 21 | **90%** | P5.5, P7.10 |
+| **MED** | 20 / 21 | **95%** | P7.10 |
 | **LOW** | 2 / 2 | **100%** | — |
 | (P0 baseline) | 4 / 4 | **100%** | — |
 
-**Open by owner (2026-04-19 evening):**
+**Open by owner (2026-04-19 night):**
 - **Agent-2 (6 logical tasks):** P2.1 (NOW), P4.1+P4.2 paired (NEXT), P7.4 (NEXT+1), P7.9+P7.10 paired (NEXT+2)
-- **Agent-3 (1 row):** P5.5 vendor/tor (NOW — was NEXT). P1.6 closed (f6aa0b080), P1.7 closed (5ce252bb6), P1.16b closed (c841defd2).
-- **Rhett:** 0 (coordinator only). ACTION: decide whether MAX_P2SH_SIGOPS=15 per-input should land as a mempool-policy rule (Agent-2 lane) — see the AGENT-3.md 2026-04-19 P1.6 note for context.
+- **Agent-3 (0 rows):** queue is empty. P1.6 (f6aa0b080), P1.7 (5ce252bb6), P1.16b (c841defd2), P5.5 (75576d7a0) all closed. Standing by per AGENT-3.md "Stopping point" — ping Rhett for the next wave.
+- **Rhett:** 0 (coordinator only). Action items pending:
+  1. `make deploy` from `~/zclassic23` to push Agent-3's consensus fixes (P1.6 P2SH sigops, P1.7 strict difficulty, P5.5 tor pin) onto the production node + verify `zcl_onion_status` bootstraps within 60s for the P5.5 smoke test.
+  2. Decide whether MAX_P2SH_SIGOPS=15 per-input should land as a mempool-policy rule (Agent-2 lane) — see AGENT-3.md 2026-04-19 P1.6 note for context.
 
 **ACTION ITEM (Rhett):** the P7.1 fix landed as `a6bedccad` but production is still at h=3,081,411 because nothing triggered a rebuild + redeploy. Run `make deploy` on the production box to push the fix live. Expected result: chain advances past 3,081,411 within 60s, catches up to legacy zclassicd (currently ~3,082,462) within 2 minutes.
 
@@ -131,7 +133,7 @@ regression test locks the gates in place.
 | P5.2 | `deploy/zclassic23.service:21` hardcodes Rhett's externalip + 9 addnodes | HIGH | Agent 2 — done ba450ea5c (operator flags moved to EnvironmentFile=-~/.config/zclassic23/env; $VAR form preserves whitespace-splitting for multi-flag ZCL_ADDNODE_FLAGS; fresh clone starts clean when env file absent; deploy/zclassic23.env.example ships the template with Rhett's current values; README gets a one-paragraph pointer; smoke-test on Rhett's box: height 3081407 → 3081408, 4 peers, 205.209.104.118:8033 advertised in getnetworkinfo.localaddresses) |
 | P5.3 | Hardcoded `/home/rhett` in `tools/export_snapshot.c:15`, `tools/zcl-nodectl.c:628-637` | HIGH | Agent 2 — done 09e4fb15a (shared $HOME helper in lib/util/include/util/rpc_paths.h; also swept test_phgr13_fix.c sprout-VK path + two README absolute-path links; new test_no_hardcoded_home regression test scans every deployed binary for the literal and exercises the helper with alt/NULL HOME) |
 | P5.4 | 10 shell scripts in `tools/` duplicating MCP — purge | MED | Agent 2 — done 0f33d3fc1 (audit found 1/8 actual MCP-duplicates: verify_restart_follow.sh ⇒ zcl-nodectl verify-follow; the other seven are build-time or multi-node orchestration with no MCP equivalent — per-script rationale in "Notes from Agent-2" in AGENT-2.md) |
-| P5.5 | `vendor/tor` submodule ahead of pinned commit | MED | Agent 3 — NEXT+2 (narrow scope: `git submodule update vendor/tor` + commit; smoke-test by starting node, verify .onion bootstrap in zcl_status) |
+| P5.5 | `vendor/tor` submodule ahead of pinned commit | MED | Agent 3 — done 75576d7a0 (pin bumped d14113e → 73bd405; ahead commits 39feeefa1 dynhost-outbound-API + 73bd405d1 symbol-conflict-fix are already live on upstream origin/main; only outer-repo tree entry changed via `git update-index --cacheinfo 160000,73bd405...,vendor/tor`; libtor.a untouched, local binary byte-identical; `git submodule status` in Rhett's main clone drops the `+` prefix once he pulls; live .onion smoke test is Rhett's to trigger from `~/zclassic23` because the systemd service ExecStart points at `/home/rhett/zclassic23/zclassic23`, not at this clone) |
 | P5.6 | Vendored `sqlite3.h` is 3.49.0 — newer CVE-class fixes unpicked | MED | Agent 2 — done 30e6fbc2e (pinned to 3.53.0 — latest stable as of 2026-04-09; picks up 3.49.1 concat_ws buffer overrun, 3.49.2 NOT NULL memory error, 3.50.3 CREATE TRIGGER parser memory-safety regression from 3.49.0, 3.50.4 uninit-var reads, 3.51.0 POSIX-advisory-lock-abuse corruption detection, 3.51.3 + 3.53.0 WAL-reset corruption bug; header surface additive-only — new error codes, de-experimentalized snapshot_\* family, new carray_bind_v2 / db_status64 / str_free / str_truncate / set_errmsg / setlk_timeout / changeset apply_v3 entry points; on-disk format unchanged; archive rebuilt from sqlite.org amalgamation with SHA3-256 c2325c53 verified, stock defaults matching the prior archive's embedded compile-options table; full test_zcl passes 2516/2516 through every sqlite-backed group before the pre-existing test_block_pruning hang) |
 | P5.7 | Repo-root clutter: 40+ .md, `node.db` untracked at repo root | LOW | Agent 2 — done 611ae4281 + e7528c4f0 + 8902f9ae7 + d106192a4 (root-level .md cut 41→18; WAVE_6-12, AGENT2/3-era task docs, BOOT/REVIEW/CHECKLIST/MEMORY moved to docs/archive/; speedrun + zclassic23-asan binaries untracked) |
 
