@@ -3,6 +3,17 @@
 
 #include "test/test_helpers.h"
 
+#include <errno.h>
+#include <fcntl.h>
+#include <signal.h>
+#include <sys/wait.h>
+#include <unistd.h>
+
+/* Forward-declared here rather than in core/random.h: the P1.16 scope
+ * boundary keeps lib/core/include/ off-limits, so random.c exposes
+ * this test-only hook via weak linkage instead of a header. */
+extern void zcl_random_test_force_fail(bool on);
+
 int test_core(void)
 {
     int failures = 0;
@@ -144,6 +155,61 @@ int test_core(void)
         GetRandBytes(buf, 32);
         bool nonzero = false;
         for (int i = 0; i < 32; i++) if (buf[i]) nonzero = true;
+        if (nonzero) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* P1.16 regression: when every entropy source is unavailable,
+     * GetRandBytes must abort() rather than silently zero-fill the
+     * output. The prior implementation (lib/core/src/random.c pre-
+     * P1.16) fell back to memset(buf, 0, num) on open("/dev/urandom")
+     * failure, so any caller seeding a private key in a chroot would
+     * silently derive an all-zero secret. We fork a child, force the
+     * test-only failure injection, and assert the child dies with
+     * SIGABRT. */
+    printf("GetRandBytes aborts on RNG failure (no silent zero-fill)... ");
+    {
+        pid_t pid = fork();
+        if (pid < 0) { printf("FAIL (fork: %s)\n", strerror(errno)); failures++; }
+        else if (pid == 0) {
+            /* Child: silence the abort noise so the parent terminal
+             * stays clean, then trip the forced-failure path. Writing
+             * to /dev/null (not close()) keeps fprintf(stderr, ...)
+             * valid inside abort's cleanup. */
+            int devnull = open("/dev/null", O_WRONLY);
+            if (devnull >= 0) { dup2(devnull, STDERR_FILENO); close(devnull); }
+            zcl_random_test_force_fail(true);
+            uint8_t b[32] = {0};
+            GetRandBytes(b, sizeof(b));
+            /* Must never reach here. If we do, write a non-zero exit
+             * code so the parent flags a regression. */
+            _exit(17);
+        } else {
+            int status = 0;
+            if (waitpid(pid, &status, 0) != pid) {
+                printf("FAIL (waitpid)\n"); failures++;
+            } else if (WIFSIGNALED(status) && WTERMSIG(status) == SIGABRT) {
+                printf("OK\n");
+            } else if (WIFEXITED(status)) {
+                printf("FAIL (child exited cleanly with %d — "
+                       "silent zero-fill regression)\n", WEXITSTATUS(status));
+                failures++;
+            } else {
+                printf("FAIL (unexpected status 0x%x)\n", status);
+                failures++;
+            }
+        }
+    }
+
+    /* And recovery: clearing the flag returns GetRandBytes to normal
+     * behavior in the parent. */
+    printf("GetRandBytes recovers after clearing the fault flag... ");
+    {
+        zcl_random_test_force_fail(false);
+        uint8_t b[32] = {0};
+        GetRandBytes(b, 32);
+        bool nonzero = false;
+        for (int i = 0; i < 32; i++) if (b[i]) nonzero = true;
         if (nonzero) printf("OK\n");
         else { printf("FAIL\n"); failures++; }
     }

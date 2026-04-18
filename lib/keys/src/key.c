@@ -6,11 +6,14 @@
 
 #include "keys/key.h"
 #include "crypto/hmac_sha512.h"
+#include "crypto/random_secret.h"
 #include "core/hash.h"
 #include "core/random.h"
+#include "util/log_macros.h"
 #include <assert.h>
 #include <secp256k1.h>
 #include <secp256k1_recovery.h>
+#include <stdlib.h>
 
 /* secp256k1_ec_seckey_tweak_add shim is in secp256k1_compat.c */
 
@@ -19,7 +22,8 @@ static secp256k1_context *secp256k1_ctx_sign = NULL;
 void privkey_make_new(struct privkey *k, bool fCompressed)
 {
     do {
-        GetRandBytes(k->vch, 32);
+        if (!zcl_random_secret_bytes(k->vch, 32, "secp256k1_privkey"))
+            abort(); /* wrapper logged; void return makes propagation impossible */
     } while (!secp256k1_ec_seckey_verify(secp256k1_ctx_sign, k->vch));
     k->fValid = true;
     k->fCompressed = fCompressed;
@@ -75,7 +79,8 @@ bool privkey_verify_pubkey(const struct privkey *k, const struct pubkey *pk)
     if (pubkey_is_compressed(pk) != k->fCompressed)
         return false;
     unsigned char rnd[8];
-    GetRandBytes(rnd, sizeof(rnd));
+    if (!zcl_random_secret_bytes(rnd, sizeof(rnd), "privkey_verify_nonce"))
+        return false;
     const char *str = "Zclassic key verification\n";
     size_t str_len = 26;
     struct sha256_ctx hasher;
@@ -206,7 +211,8 @@ void ecc_start(void)
     secp256k1_context *ctx = secp256k1_context_create(SECP256K1_CONTEXT_SIGN);
     assert(ctx != NULL);
     unsigned char seed[32];
-    GetRandBytes(seed, 32);
+    if (!zcl_random_secret_bytes(seed, 32, "secp256k1_ctx_randomize"))
+        abort(); /* wrapper logged; void return makes propagation impossible */
     bool ret = secp256k1_context_randomize(ctx, seed);
     assert(ret);
     memset(seed, 0, sizeof(seed));
