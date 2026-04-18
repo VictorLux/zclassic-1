@@ -6,9 +6,9 @@ Owner: Rhett (primary). Delegates: Agent-2 (see `AGENT-2.md`), Agent-3 (see `AGE
 
 ---
 
-## Progress — last update 2026-04-18 (late-evening, P5.6 landed + P7 wave opened)
+## Progress — last update 2026-04-18 (late-evening, P1.16 landed)
 
-**Overall: 46 / 63 rows closed (73%) | SWRC ~74%**
+**Overall: 47 / 63 rows closed (75%) | SWRC ~76%**
 
 (Denominator grew 53 → 63 when the P7 fresh-review wave opened ten new
 rows from a live-node inspection that surfaced a tip-stuck outage and
@@ -17,12 +17,12 @@ several latent operability gaps. See P7 section below.)
 | Tier | Closed / Total | % | Open rows |
 |---|---|---|---|
 | **CRITICAL** | 7 / 10 | **70%** | P2.1, P2.2, **P7.1 (live outage)** |
-| **HIGH** | 18 / 26 | **69%** | P1.6, P1.7, P1.16, P4.1, P4.2, **P7.2, P7.3, P7.4, P7.9** |
+| **HIGH** | 19 / 26 | **73%** | P1.6, P1.7, P4.1, P4.2, **P7.2, P7.3, P7.4, P7.9** |
 | **MED** | 15 / 21 | **71%** | P5.5, **P7.5, P7.6, P7.7, P7.8, P7.10** |
 | **LOW** | 2 / 2 | **100%** | — |
 | (P0 baseline) | 4 / 4 | **100%** | — |
 
-**Open by owner (late-evening 2026-04-18 after P7 wave opened):** Rhett 11 (P1.6, P1.7, P2.1, P2.2, P4.1, P4.2, P5.5, **P7.1, P7.4, P7.9, P7.10**) · Agent-2 5 (**P7.2 boot tip-mismatch halt** + **P7.3 crash handler flush** + **P7.5/P7.6/P7.7 deploy-unit hygiene batch**, with **P7.8 SQLite tuning** queued NEXT) · Agent-3 1 (P1.16 in flight; prf.c nullifier still queued NEXT)
+**Open by owner (late-evening 2026-04-18 after P1.16 landed):** Rhett 11 (P1.6, P1.7, P2.1, P2.2, P4.1, P4.2, P5.5, **P7.1, P7.4, P7.9, P7.10**) · Agent-2 5 (**P7.2 boot tip-mismatch halt** + **P7.3 crash handler flush** + **P7.5/P7.6/P7.7 deploy-unit hygiene batch**, with **P7.8 SQLite tuning** queued NEXT) · Agent-3 0 (P1.16 closed 94d607b85; prf.c nullifier-path timing audit queued NEXT)
 
 **Top remaining risks:** P7.1 (tip stuck at h=3,081,601 on the live node) is the new headline — the chain is dead in the water until it's fixed. P2.1 + P2.2 net CRITs remain. The original 53-row review is 87% closed by SWRC; the new P7 wave drops aggregate SWRC because it adds 1 CRIT + 4 HIGH + 5 MED of fresh weight.
 
@@ -78,7 +78,7 @@ regression test locks the gates in place.
 | P1.13 | curve25519 constant-time audit (X25519 DH, esk in note encryption) | `lib/crypto/src/curve25519.c` | HIGH | Agent 3 — done da3dbbccb (audit comment in source documenting CT properties of the TweetNaCl ladder; Hamming-weight regression timing test in test_sapling.c — Wave 2 / Step H) |
 | P1.14 | ed25519 constant-time pass (verify-only path, JoinSplit consensus) | `lib/crypto/src/ed25519.c` | MED | Agent 3 — done b63b149c9 (audit comment confirms verify-only file uses cswap + XOR-OR diff check; no `ed25519_sign` exists, sign-side guidance documented for future work — Wave 2 / Step I) |
 | P1.15 | RNG hygiene wrapper + secret-generation call-site sweep | `lib/crypto/`, `lib/sapling/` | HIGH | Agent 3 — done 7abe359c5 (new `zcl_random_secret_bytes` wrapper rejects `GetRandBytes` all-zero fail-open; migrated esk/groth16-blind/redjubjub-T/sapling-r/sha3-nonce; lib/core/random.c root-cause flagged) |
-| P1.16 | `lib/core/random.c` GetRandBytes root-cause fail-open (flagged during P1.15) | `lib/core/src/random.c` | HIGH | Agent 3 — next (narrow scope: lib/core/src/random.c only) |
+| P1.16 | `lib/core/random.c` GetRandBytes root-cause fail-open (flagged during P1.15) | `lib/core/src/random.c` | HIGH | Agent 3 — done 94d607b85 (getrandom(2) preferred → /dev/urandom fallback → abort() on any total failure; void signature preserved per scope boundary; lib/keys/src/key.c migrated to zcl_random_secret_bytes for defense-in-depth; SIGABRT fault-injection test added to test_core.c) |
 
 ---
 
