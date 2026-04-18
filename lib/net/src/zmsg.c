@@ -47,21 +47,34 @@ bool zmsg_deserialize(struct zmsg_message *msg, struct byte_stream *s)
     ok &= stream_read(s, msg->msg_id, 32);
     ok &= stream_read_i64_le(s, &msg->timestamp);
 
+    /* P8.1 — all three length prefixes are peer-controlled. Reject any
+     * value that would let stream_read overflow the fixed-size field OR
+     * push the trailing NUL write past the buffer. Serialize caps
+     * sender/recipient at 127 and body at ZMSG_MAX_BODY (4096), so a
+     * conformant peer's payload always passes these bounds. */
     uint8_t slen = 0;
     ok &= stream_read_u8(s, &slen);
     if (!ok) LOG_FAIL("zmsg", "deserialize: read sender length failed");
+    if (slen >= ZMSG_MAX_ADDR)
+        LOG_FAIL("zmsg", "deserialize: sender length out of range "
+                 "(slen=%u, max=%d)", slen, ZMSG_MAX_ADDR - 1);
     ok &= stream_read(s, msg->sender, slen);
     msg->sender[slen] = '\0';
 
     uint8_t rlen = 0;
     ok &= stream_read_u8(s, &rlen);
     if (!ok) LOG_FAIL("zmsg", "deserialize: read recipient length failed");
+    if (rlen >= ZMSG_MAX_ADDR)
+        LOG_FAIL("zmsg", "deserialize: recipient length out of range "
+                 "(rlen=%u, max=%d)", rlen, ZMSG_MAX_ADDR - 1);
     ok &= stream_read(s, msg->recipient, rlen);
     msg->recipient[rlen] = '\0';
 
     uint16_t blen = 0;
     ok &= stream_read_u16_le(s, &blen);
-    if (!ok || blen > ZMSG_MAX_BODY) LOG_FAIL("zmsg", "deserialize: body length invalid (blen=%u, max=%d)", blen, ZMSG_MAX_BODY);
+    if (!ok || blen >= ZMSG_MAX_BODY)
+        LOG_FAIL("zmsg", "deserialize: body length invalid "
+                 "(blen=%u, max=%d)", blen, ZMSG_MAX_BODY - 1);
     ok &= stream_read(s, msg->body, blen);
     msg->body[blen] = '\0';
 

@@ -372,6 +372,80 @@ int test_protocols(void)
         if (ok) printf("OK\n"); else { printf("FAIL\n"); failures++; }
     }
 
+    /* ── ZMSG P8.1: deserialize rejects peer-controlled overflows ───
+     * A malicious peer picks slen/rlen = 255 (or blen = ZMSG_MAX_BODY)
+     * so that `stream_read(s, msg->sender, slen)` + the trailing NUL
+     * store would write past the fixed-size fields. Pre-fix, the
+     * deserializer accepted the oversized length and corrupted the
+     * next field in the heap-resident `struct zmsg_message`. */
+    printf("zmsg P8.1: deserialize rejects oversized sender/recipient/body... ");
+    {
+        bool ok = true;
+
+        /* sender overflow */
+        {
+            struct byte_stream s;
+            stream_init(&s, 512);
+            uint8_t zeros32[32] = {0};
+            stream_write(&s, zeros32, 32);          /* msg_id */
+            stream_write_i64_le(&s, 0);             /* timestamp */
+            stream_write_u8(&s, 255);               /* slen */
+            uint8_t pad[255]; memset(pad, 'A', 255);
+            stream_write(&s, pad, 255);
+
+            struct zmsg_message msg2;
+            struct byte_stream rs;
+            stream_init_from_data(&rs, s.data, s.size);
+            ok = ok && !zmsg_deserialize(&msg2, &rs);
+            stream_free(&s);
+        }
+
+        /* recipient overflow (sender within bounds) */
+        {
+            struct byte_stream s;
+            stream_init(&s, 512);
+            uint8_t zeros32[32] = {0};
+            stream_write(&s, zeros32, 32);
+            stream_write_i64_le(&s, 0);
+            stream_write_u8(&s, 4);
+            stream_write(&s, "send", 4);
+            stream_write_u8(&s, 200);               /* rlen oversized */
+            uint8_t pad[200]; memset(pad, 'B', 200);
+            stream_write(&s, pad, 200);
+
+            struct zmsg_message msg2;
+            struct byte_stream rs;
+            stream_init_from_data(&rs, s.data, s.size);
+            ok = ok && !zmsg_deserialize(&msg2, &rs);
+            stream_free(&s);
+        }
+
+        /* body overflow (blen == ZMSG_MAX_BODY — trips the off-by-one on
+         * the NUL write at msg->body[blen]) */
+        {
+            struct byte_stream s;
+            stream_init(&s, ZMSG_MAX_BODY + 128);
+            uint8_t zeros32[32] = {0};
+            stream_write(&s, zeros32, 32);
+            stream_write_i64_le(&s, 0);
+            stream_write_u8(&s, 1);
+            stream_write(&s, "s", 1);
+            stream_write_u8(&s, 1);
+            stream_write(&s, "r", 1);
+            stream_write_u16_le(&s, (uint16_t)ZMSG_MAX_BODY);
+            uint8_t pad[ZMSG_MAX_BODY]; memset(pad, 'C', ZMSG_MAX_BODY);
+            stream_write(&s, pad, ZMSG_MAX_BODY);
+
+            struct zmsg_message msg2;
+            struct byte_stream rs;
+            stream_init_from_data(&rs, s.data, s.size);
+            ok = ok && !zmsg_deserialize(&msg2, &rs);
+            stream_free(&s);
+        }
+
+        if (ok) printf("OK\n"); else { printf("FAIL\n"); failures++; }
+    }
+
     /* ── ZMSG: compute_id deterministic ───────────────────── */
 
     printf("zmsg_compute_id deterministic... ");
