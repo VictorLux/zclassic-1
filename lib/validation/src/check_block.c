@@ -221,22 +221,22 @@ bool contextual_check_block_header(const struct block_header *header,
                   state, 100, "bad-equihash-solution-size");
     }
 
-    /* Difficulty check — always verify (cheap: O(17) block lookups).
-     * Skip if the difficulty window is incomplete: missing nBits,
-     * pprev chain broken, or GetNextWorkRequired would hit NULL.
-     * GetNextWorkRequired walks nPowAveragingWindow (17) blocks +
-     * median time past (11 more) = 28 blocks with valid pprev + nBits.
-     * After a snapshot anchor (pprev=NULL), skip until chain grows. */
-    {
-        bool window_clean = true;
-        const struct block_index *check = pindex_prev;
-        for (int w = 0; w < 28; w++) {
-            if (!check) { window_clean = false; break; }
-            if (check->nBits == 0) { window_clean = false; break; }
-            check = check->pprev;
-        }
-        if (!window_clean) goto skip_diffbits;
-    }
+    /* Difficulty check — always verify (P1.7).  The pre-P1.7 code had a
+     * `skip_diffbits` goto that silently bypassed this check whenever the
+     * 28-ancestor window was incomplete.  That was a real consensus hole:
+     * a peer could ship a header whose nBits claimed trivial difficulty,
+     * and if our local pprev chain had any NULL in the first 28 ancestors
+     * the header rode through unchecked.
+     *
+     * The replacement policy: always run GetNextWorkRequired.  It returns
+     * `nProofOfWorkLimit` (the weakest permissible difficulty) when its
+     * own 17-block averaging window cannot be fully walked, so
+     * incomplete-window nodes compare against the weakest-allowed
+     * difficulty instead of blindly trusting the header.  Callers that
+     * legitimately accept headers without local-window validation (fast-
+     * sync snapshot tail, MMB-proved headers) MUST bypass this function
+     * entirely — see process_block.c's `skip_contextual` gate.  Genesis
+     * is already short-circuited above with an early `return true`. */
     {
         unsigned int expected_bits = GetNextWorkRequired(pindex_prev, header,
                                                          &params->consensus);
@@ -249,7 +249,6 @@ bool contextual_check_block_header(const struct block_header *header,
             REJECT_IF(true, state, 100, "bad-diffbits");
         }
     }
-    skip_diffbits:
 
     /* Timestamp must be after median of previous 11 blocks */
     REJECT_INVALID_IF(

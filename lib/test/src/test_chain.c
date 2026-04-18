@@ -955,6 +955,38 @@ int test_chain(void)
         }
     }
 
+    /* P1.7: removing the skip_diffbits escape hatch must cause a header
+     * whose nBits disagrees with GetNextWorkRequired to be rejected, even
+     * when the 28-ancestor window is incomplete (previously silently
+     * skipped).  Trivial pass-through value 0x1d00ffff (Bitcoin's mainnet
+     * limit) does NOT match Zcash's much tighter powLimit, so the header
+     * must fail with "bad-diffbits". */
+    printf("contextual_check_block_header rejects trivial-low nBits (P1.7)... ");
+    {
+        const struct chain_params *p = chain_params_get();
+        struct validation_state state;
+        validation_state_init(&state);
+        struct block_header hdr;
+        block_header_init(&hdr);
+        hdr.nVersion = 4;
+        hdr.nTime = (uint32_t)GetAdjustedTime();
+        struct block_index prev;
+        block_index_init(&prev);
+        prev.nHeight = 100;              /* well past any early-chain bypass */
+        prev.nTime = (uint32_t)(GetAdjustedTime() - 600);
+        prev.nBits = 0x2007ffff;
+        hdr.nBits = 0x1d00ffff;          /* Bitcoin limit — trivial for Zcash */
+        /* Solution size zero to skip the equihash-size check. */
+        hdr.nSolutionSize = 0;
+        bool ok = contextual_check_block_header(&hdr, &state, p, &prev, false);
+        if (!ok && strcmp(state.reject_reason, "bad-diffbits") == 0)
+            printf("OK\n");
+        else {
+            printf("FAIL (ok=%d reason=%s)\n", ok, state.reject_reason);
+            failures++;
+        }
+    }
+
     printf("contextual_check_block_header version < 4... ");
     {
         const struct chain_params *p = chain_params_get();
