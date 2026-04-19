@@ -64,17 +64,149 @@ hand-waves any of the four required questions.
 those rows; they're parked deliberately. When P10.1 closes, Rhett
 re-triages.
 
-**Open queue (two concrete deliverables):**
+**Open queue (P10.1.2-REVIEW + P11.1 closed; sync MVP rows next):**
 
 | Order | Row | Size | Owner |
 |---|---|---|---|
-| **NOW** | **P10.1.2-REVIEW** — produce written review of Agent-2's root-cause writeup | small (~30 min) | Agent 3 |
-| NEXT | **P11.1** — MVP criterion #2 CI test: Tor onion bootstrap in <60s | medium | Agent 3 |
-| follow-up | (P11.x MVP criteria — TBD per `MVP.md`) | — | TBD |
+| DONE | P10.1.2-REVIEW (`879192ee2`) — CONCUR_WITH_NOTES | — | — |
+| DONE | P11.1 (`63f98909d`) — Tor bootstrap CI test, MVP #2 ✅ | — | — |
+| **NOW** | **P11.3** — MVP criterion #3 CI test: cold-start sync to tip <10 min | medium | Agent 3 |
+| NEXT | **P11.7** — MVP criterion #7 CI test: kill -9 chaos recovery <2 min (after P10.1.4 lands) | medium | Agent 3 |
+| follow-up | P11.4, P11.5, P11.6, P11.8 (the remaining MVP criteria) | — | TBD |
+
+Rhett's directive 2026-04-19: **"work on getting the product
+working and syncing."** P11.3 + P11.7 are the two MVP criteria that
+DIRECTLY test "syncing works." Once both are green CI tests, we
+can prove the syncing claim instead of just asserting it.
 
 ---
 
-## NOW — P10.1.2-REVIEW: written review of root-cause writeup
+## NOW — P11.3: MVP criterion #3 CI test (cold-start sync to tip <10 min)
+
+After P11.1 (`63f98909d`). Independent of Agent-2's P10.1.4 progress.
+
+### Goal
+
+`MVP.md` criterion #3: "Cold-start sync to tip in <10 min."
+Today: untested in CI. Operator has to manually time a fresh boot
+to know whether sync is healthy. Build the assertion that flips
+this from ☐ to ✅.
+
+### Deliverable
+
+New CI test in `lib/test/src/test_cold_start_sync.c` that:
+
+1. Spins up a node with a **fresh empty datadir** + a synthetic
+   peer (or a fixture peer with a small N-block chain).
+2. Polls `zcl_syncstate.phase` (or the underlying state machine)
+   at 1Hz.
+3. Asserts `phase=ready` within 10 minutes of start.
+4. Asserts the chain tip matches the peer's tip.
+5. Marked `ZCL_STRESS_TESTS`-guarded — this test takes minutes,
+   not milliseconds. Don't slow down `make test` for everyone.
+
+### Lane fit
+
+- New test file in `lib/test/src/` — both lanes have access.
+- Synthetic peer fixture: if you need to mock a peer, prefer to
+  add a small helper to `lib/test/include/test_helpers.h` rather
+  than touching `lib/net/` (Agent-2's lane).
+- If you need a small chain fixture, generate it in-test rather
+  than committing a binary blob.
+
+### Acceptance
+
+- Test exists at `lib/test/src/test_cold_start_sync.c`.
+- Runs cleanly under `make stress-test` (or whatever the
+  ZCL_STRESS_TESTS gate is named).
+- Test PASSES today (verifies current behavior meets MVP #3) on a
+  small fixture chain. Real-network 3M-block sync test is too slow
+  for CI; if you can stub the network with a local in-memory peer,
+  even a 100-block chain proves the state-machine reaches `ready`.
+- Updates `MVP.md` criterion #3 from ☐ to ✅ with the test path.
+- Bumps the CI-verified MRS line from 1/8 to 2/8.
+
+### Note on scope
+
+Don't try to test the *real* 3M-block sync — that's a soak test
+(criterion #6), not a unit test. Criterion #3's CI version is "the
+sync state machine reaches `ready` against a small synthetic peer."
+The real network behavior is verified by criterion #6's soak.
+
+### Commit template
+
+```
+test/sync: CI assertion for MVP criterion #3 (cold-start sync) (P11.3)
+
+Fixes P11.3 (AGENT.md). Adds lib/test/src/test_cold_start_sync.c
+which spins a fresh-datadir node against a synthetic peer with an
+N-block fixture chain, polls syncstate.phase at 1Hz, and asserts
+phase=ready within 10 min.
+
+Flips MVP.md criterion #3 from ☐ to ✅. CI-verified MRS now 2/8.
+
+Test passes today; will fail loudly on any future regression in
+the cold-start path.
+```
+
+Mark `done <SHA> [test:0.5]` (forward-looking assertion, bumps
+MRS not HI).
+
+---
+
+## NEXT — P11.7: MVP criterion #7 CI test (kill -9 chaos recovery <2 min)
+
+**Wait for Agent-2's P10.1.4 fix to land before starting this row.**
+Until P10.1.4 closes, the chain is stuck and a chaos test would
+fail for the wrong reason.
+
+### Goal
+
+`MVP.md` criterion #7: "Recover from `kill -9` in <2 min."
+Today: untested. The whole point of P10.1's invariant assertion +
+disconnect_block fix is to make this work. P11.7 is the test that
+proves it.
+
+### Deliverable
+
+New CI test in `lib/test/src/test_kill9_recovery.c` that:
+
+1. Spins up a node, syncs against a synthetic peer to ~50 blocks.
+2. Sends `SIGKILL` to the node mid-block-application (or after a
+   non-deterministic short delay so different runs catch different
+   moments).
+3. Restarts the node from the same datadir.
+4. Asserts the node catches up to the peer's tip within 120s.
+5. Repeats step 2-4 ten times to catch race conditions in the
+   recovery path.
+6. ZCL_STRESS_TESTS-gated.
+
+### Lane fit
+
+- Test file in `lib/test/src/`. The kill-restart mechanics may
+  require a small helper in `lib/test/src/test_helpers.c` for
+  fork/exec/signal — keep that in lib/test/, don't touch
+  lib/util/.
+
+### Acceptance
+
+- Test exists, passes against a node built post-P10.1.4.
+- Updates `MVP.md` criterion #7 from ☐ to ✅.
+- Bumps CI-verified MRS from 2/8 to 3/8.
+
+### Why this matters
+
+Criterion #7 directly validates P10.1's fix. If the chaos test
+fails, P10.1 didn't actually fix the disconnect_block leak — the
+test catches the regression that humans wouldn't.
+
+Mark `done <SHA> [test:0.5]` (forward-looking).
+
+---
+
+## (Below: archived NOW for P10.1.2-REVIEW — landed `879192ee2`, reference only)
+
+## (legacy section header below — archived NOW for P10.1.2-REVIEW: written review of root-cause writeup)
 
 Agent-2 pushed `docs/postmortems/2026-04-19-bip30-stall.md` as
 `5279752d1`. Their TL;DR: `disconnect_block`'s
