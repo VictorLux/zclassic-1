@@ -21,6 +21,10 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+#ifdef ZCL_TESTING
+#include <stdatomic.h>
+#endif
+
 /* Local shorthand for the (de)serialize/wfcheck error paths below. Each use
  * logs function/file/line plus a field name so a corrupted tree on disk
  * leaves a breadcrumb instead of a bare `false`. */
@@ -100,6 +104,18 @@ void sapling_tree_init(struct incremental_merkle_tree *t)
 static struct uint256 s_sapling_empty_roots[MAX_TREE_DEPTH + 1];
 static bool s_sapling_empty_roots_cached = false;
 
+#ifdef ZCL_TESTING
+/* See comment in pedersen_hash.c — P9.5 race observability. */
+_Atomic int zcl_sapling_empty_roots_body_runs_for_test = 0;
+
+void zcl_sapling_empty_roots_reset_for_test(void)
+{
+    s_sapling_empty_roots_cached = false;
+    memset(s_sapling_empty_roots, 0, sizeof(s_sapling_empty_roots));
+    atomic_store(&zcl_sapling_empty_roots_body_runs_for_test, 0);
+}
+#endif
+
 static void ensure_sapling_empty_roots(void (*combine)(const struct uint256 *,
                                                         const struct uint256 *,
                                                         size_t, struct uint256 *),
@@ -107,6 +123,9 @@ static void ensure_sapling_empty_roots(void (*combine)(const struct uint256 *,
 {
     if (s_sapling_empty_roots_cached)
         return;
+#ifdef ZCL_TESTING
+    atomic_fetch_add(&zcl_sapling_empty_roots_body_runs_for_test, 1);
+#endif
     uncommitted(&s_sapling_empty_roots[0]);
     for (size_t d = 0; d < MAX_TREE_DEPTH; d++)
         combine(&s_sapling_empty_roots[d], &s_sapling_empty_roots[d],

@@ -8,17 +8,40 @@
 #include "sapling/fr.h"
 #include <string.h>
 
+#ifdef ZCL_TESTING
+#include <stdatomic.h>
+#endif
+
 #define PEDERSEN_CHUNKS_PER_GENERATOR 63
 #define PEDERSEN_NUM_GENERATORS 6
 
 static struct jub_point cached_generators[PEDERSEN_NUM_GENERATORS];
 static bool generators_loaded = false;
 
+#ifdef ZCL_TESTING
+/* Observability for P9.5 concurrent-first-caller race. Counts how many
+ * times the ensure_generators body actually executes. Pre-fix the plain
+ * `static bool` guard allowed more than one racing thread to enter the
+ * body; post-fix pthread_once pins this to exactly one. */
+_Atomic int zcl_pedersen_generators_body_runs_for_test = 0;
+
+void zcl_pedersen_generators_reset_for_test(void)
+{
+    generators_loaded = false;
+    memset(cached_generators, 0, sizeof(cached_generators));
+    atomic_store(&zcl_pedersen_generators_body_runs_for_test, 0);
+}
+#endif
+
 /* Derive Pedersen hash generators via find_group_hash("Zcash_PH", index).
  * The tag is the 4-byte LE segment index followed by a counter byte. */
 static void ensure_generators(void)
 {
     if (generators_loaded) return;
+
+#ifdef ZCL_TESTING
+    atomic_fetch_add(&zcl_pedersen_generators_body_runs_for_test, 1);
+#endif
 
     const uint8_t pers[8] = {'Z','c','a','s','h','_','P','H'};
 

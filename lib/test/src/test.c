@@ -78,6 +78,8 @@ int main(void)
     failures += test_sqlite();
     failures += test_activerecord();
     failures += test_validation();
+    { extern int test_sapling_lazy_init(void);
+      failures += test_sapling_lazy_init(); }
     failures += test_sapling();
     failures += test_sapling_crypto();
     failures += test_sapling_tree();
