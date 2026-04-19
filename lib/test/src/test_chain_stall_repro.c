@@ -348,6 +348,152 @@ static int t_clean_view_advances(void)
     return failures;
 }
 
+/* ── Test 3 — P10.1.3 RED regression: disconnect_block purges coinbase ──
+ *
+ * The invariant (from `docs/postmortems/2026-04-19-bip30-stall.md`,
+ * Q3): for every txid T in the coins view, the block that created
+ * T's outputs must be on the active chain. Concretely: after
+ * `disconnect_block(B)` runs on a scratch view wrapping a parent
+ * cache, AND `coins_view_cache_flush(scratch)` propagates the
+ * disconnect to the parent, the parent MUST NO LONGER report
+ * `coins_view_cache_have_coins` for any tx in B.
+ *
+ * This test constructs the three-layer shape that production uses
+ * inside `disconnect_tip` (`process_block.c:1669-1693`):
+ *
+ *     null_view  ←  parent   ←  scratch
+ *      (stub)    (coins_tip)  (disconnect_tip's scratchpad)
+ *
+ * `update_coins(blk.vtx[0], parent, h)` seeds the parent with the
+ * coinbase (simulating a prior connect_block). Then the scratch is
+ * layered on top, `disconnect_block` is called on the scratch, and
+ * the scratch is flushed into the parent — exactly the production
+ * sequence. The assertion is that the parent no longer has the
+ * coinbase.
+ *
+ * Today this test FAILS. `disconnect_block` at
+ * `lib/validation/src/connect_block.c:639` calls
+ * `coins_map_erase(&scratch.cache_coins, &tx->hash)` on an empty
+ * scratch map — a no-op — so nothing propagates to the parent, and
+ * the parent retains the coinbase as an unspent entry. The
+ * assertion failure names the bug: the coinbase that belongs to a
+ * disconnected block is still reachable via `coins_view_cache_have_coins`
+ * on the parent.
+ *
+ * This is the P10.1.3 RED regression row. P10.1.4's minimal fix
+ * (emit a DIRTY+pruned tombstone from disconnect_block instead of
+ * a bare erase) flips this assertion from RED to GREEN. After the
+ * fix lands, the test stands as the permanent gate against
+ * regression. */
+
+static int t_disconnect_block_purges_coinbase_from_backing(void)
+{
+    int failures = 0;
+
+    TEST("chain_stall_repro P10.1.3 RED: disconnect_block purges coinbase from the backing parent cache") {
+        atomic_store(&g_assume_valid_height, -1);
+
+        const int coinbase_height = 200;
+
+        /* Build a stand-in for `coins_tip` — the parent cache.  Its
+         * backing is a null view (no SQLite for this test; the
+         * scratch→parent layer is enough to surface the bug). */
+        struct coins_view null_view;
+        memset(&null_view, 0, sizeof(null_view));
+        struct coins_view_cache parent;
+        coins_view_cache_init(&parent, &null_view);
+
+        /* Block whose coinbase lands in the parent, then gets
+         * disconnected via the scratch. */
+        struct uint256 parent_prev_hash;
+        memset(parent_prev_hash.data, 0xC0, sizeof(parent_prev_hash.data));
+        struct block blk;
+        make_block_seeded(&blk, coinbase_height, &parent_prev_hash, 0x33);
+
+        struct uint256 blk_hash;
+        block_header_get_hash(&blk.header, &blk_hash);
+
+        /* block_index for disconnect_block: nHeight + pprev + phashBlock. */
+        struct block_index parent_idx;
+        block_index_init(&parent_idx);
+        parent_idx.nHeight = coinbase_height - 1;
+        parent_idx.phashBlock = &parent_prev_hash;
+        parent_idx.nStatus = BLOCK_VALID_SCRIPTS | BLOCK_HAVE_DATA;
+        parent_idx.nTx = 1;
+        parent_idx.nChainTx = 1;
+        arith_uint256_set_u64(&parent_idx.nChainWork,
+                              (uint64_t)coinbase_height);
+
+        struct block_index blk_idx;
+        block_index_init(&blk_idx);
+        blk_idx.nHeight = coinbase_height;
+        blk_idx.phashBlock = &blk_hash;
+        blk_idx.pprev = &parent_idx;
+        blk_idx.nStatus = BLOCK_VALID_SCRIPTS | BLOCK_HAVE_DATA;
+        blk_idx.nTx = 1;
+
+        /* Seed the parent with the coinbase — simulates a successful
+         * prior connect_block at h=coinbase_height. */
+        update_coins(&blk.vtx[0], &parent, coinbase_height);
+        coins_view_cache_set_best_block(&parent, &blk_hash);
+
+        /* Sanity: parent has the coinbase as unspent. */
+        ASSERT(coins_view_cache_have_coins(&parent, &blk.vtx[0].hash));
+
+        /* Now the interesting part: the scratch view wrapping the
+         * parent, exactly as `disconnect_tip` builds it at
+         * process_block.c:1669-1674. */
+        struct coins_view parent_as_view;
+        coins_view_cache_as_view(&parent_as_view, &parent);
+        struct coins_view_cache scratch;
+        coins_view_cache_init(&scratch, &parent_as_view);
+
+        /* disconnect_block on the scratch. empty undo data is fine
+         * for a coinbase-only block (the coinbase has no restorable
+         * inputs). */
+        struct block_undo empty_undo;
+        block_undo_init(&empty_undo);
+        struct validation_state vs;
+        validation_state_init(&vs);
+        bool disc_ok = disconnect_block(&blk, &vs, &blk_idx,
+                                         &scratch, &empty_undo);
+        ASSERT(disc_ok);
+
+        /* Flush the scratch into the parent — the propagation step
+         * that, per the postmortem, must purge the coinbase. */
+        ASSERT(coins_view_cache_flush(&scratch));
+
+        /* The invariant — TODAY THIS FAILS.  The parent still
+         * reports the coinbase as unspent because
+         * disconnect_block's coins_map_erase at connect_block.c:639
+         * ran on the (empty) scratch map and never emitted a DELETE
+         * signal into the parent.
+         *
+         * P10.1.4 minimal fix: emit a DIRTY+pruned tombstone from
+         * disconnect_block so cvc_batch_write propagates a PRUNED
+         * entry into the parent, and coins_view_cache_have_coins
+         * returns false. When the fix lands this assertion flips
+         * from RED to GREEN. */
+        if (coins_view_cache_have_coins(&parent, &blk.vtx[0].hash)) {
+            printf("FAIL (RED — parent still has coinbase_%d after "
+                   "disconnect+flush; invariant violated at "
+                   "connect_block.c:639)\n",
+                   coinbase_height);
+            failures++;
+            goto _p103_cleanup;
+        }
+        PASS();
+
+    _p103_cleanup:
+        block_undo_free(&empty_undo);
+        coins_view_cache_free(&scratch);
+        coins_view_cache_free(&parent);
+        free_block(&blk);
+    } _test_next:;
+
+    return failures;
+}
+
 int test_chain_stall_repro(void);
 
 int test_chain_stall_repro(void)
@@ -356,5 +502,6 @@ int test_chain_stall_repro(void)
     int failures = 0;
     failures += t_stale_coinbase_trips_bip30();
     failures += t_clean_view_advances();
+    failures += t_disconnect_block_purges_coinbase_from_backing();
     return failures;
 }
