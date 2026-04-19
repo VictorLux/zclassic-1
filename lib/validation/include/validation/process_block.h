@@ -71,6 +71,15 @@ struct coins_view_sqlite;
 void set_coins_sqlite_for_commitment(struct coins_view_sqlite *cvs);
 void set_sapling_tree_for_flush(struct incremental_merkle_tree *tree);
 
+/* Configure the flat-file sapling checkpoint path (P12.1). Call once
+ * from boot.c with the node's datadir; the helper derives
+ * `<datadir>/sapling_tree_ckpt.dat`. After this is set, the commit
+ * path flushes the checkpoint every `SAPLING_CHECKPOINT_BLOCK_INTERVAL`
+ * blocks so crash-recovery replays ≤ that many blocks instead of the
+ * full 2.6M-block Sapling history. Passing NULL disables the
+ * checkpoint (used by unit tests). */
+void set_sapling_checkpoint_datadir(const char *datadir);
+
 bool test_block_validity(struct validation_state *state,
                          const struct chain_params *params,
                          struct coins_view_cache *coins_tip,

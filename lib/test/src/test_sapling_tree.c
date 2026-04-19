@@ -252,5 +252,55 @@ done_corrupt:;
         }
     }
 
+    printf("sapling_tree checkpoint load is <1s for 10k leaves (P12.1)... ");
+    {
+        /* The load path has to stay cheap enough that boot-to-ready
+         * hits the P12.1 target. Build a 10K-leaf tree (larger than
+         * the real Sapling working set typically observed at the
+         * commit boundary), flush, and assert load returns in <1s.
+         * Full-replay takes minutes; 1s is a comfortable upper bound. */
+        strcpy(path, "/tmp/zcl_sapling_speed_XXXXXX");
+        int fd = mkstemp(path);
+        if (fd < 0) {
+            printf("FAIL (mkstemp)\n");
+            failures++;
+            goto done_speed;
+        }
+        close(fd);
+        unlink(path);
+
+        struct incremental_merkle_tree big;
+        build_tree_with(10000, &big);
+        if (!sapling_tree_flush_checkpoint(&big, 123456, path)) {
+            printf("FAIL (flush)\n");
+            failures++;
+            unlink(path);
+            goto done_speed;
+        }
+
+        struct incremental_merkle_tree dst;
+        sapling_tree_init(&dst);
+        int64_t got_h = 0;
+        int64_t t0 = GetTimeMillis();
+        bool ok = sapling_tree_load_checkpoint(&dst, &got_h, path);
+        int64_t elapsed_ms = GetTimeMillis() - t0;
+        unlink(path);
+
+        if (!ok) {
+            printf("FAIL (load)\n");
+            failures++;
+        } else if (elapsed_ms >= 1000) {
+            printf("FAIL (load took %lld ms, expected <1000)\n",
+                   (long long)elapsed_ms);
+            failures++;
+        } else if (!trees_equal_by_root(&big, &dst)) {
+            printf("FAIL (root mismatch after fast load)\n");
+            failures++;
+        } else {
+            printf("OK (%lld ms)\n", (long long)elapsed_ms);
+        }
+done_speed:;
+    }
+
     return failures;
 }

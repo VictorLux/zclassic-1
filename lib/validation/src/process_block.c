@@ -72,6 +72,45 @@ void set_sapling_tree_for_flush(struct incremental_merkle_tree *tree)
     g_sapling_tree_for_flush = tree;
 }
 
+/* ── Flat-file sapling checkpoint (P12.1) ───────────────────────
+ *
+ * Optional path set by boot.c once datadir is known. When populated
+ * and the sapling tree pointer above is also set, every
+ * SAPLING_CHECKPOINT_BLOCK_INTERVAL blocks we flush a self-contained
+ * checkpoint to `<datadir>/sapling_tree_ckpt.dat`. Boot.c loads this
+ * file before the node_state-backed rebuild path fires, so a healthy
+ * checkpoint skips the 2.6M-block replay entirely. */
+#define SAPLING_CHECKPOINT_BLOCK_INTERVAL 10000
+static char g_sapling_ckpt_path[512] = {0};
+
+void set_sapling_checkpoint_datadir(const char *datadir)
+{
+    if (!datadir || datadir[0] == '\0') {
+        g_sapling_ckpt_path[0] = '\0';
+        return;
+    }
+    int n = snprintf(g_sapling_ckpt_path, sizeof(g_sapling_ckpt_path),
+                     "%s/sapling_tree_ckpt.dat", datadir);
+    if (n < 0 || (size_t)n >= sizeof(g_sapling_ckpt_path))
+        g_sapling_ckpt_path[0] = '\0';
+}
+
+static void sapling_checkpoint_maybe_flush(int height)
+{
+    if (!g_sapling_tree_for_flush || g_sapling_ckpt_path[0] == '\0')
+        return;
+    if (height < 0)
+        return;
+    if ((height % SAPLING_CHECKPOINT_BLOCK_INTERVAL) != 0)
+        return;
+    /* Best-effort: a failed flush is not fatal — the next interval
+     * will retry, and the node_state-backed persist path still runs
+     * as a secondary belt. */
+    (void)sapling_tree_flush_checkpoint(g_sapling_tree_for_flush,
+                                        (int64_t)height,
+                                        g_sapling_ckpt_path);
+}
+
 /* ── Flush policy ────────────────────────────────────────────
  * Controls when the in-memory UTXO cache writes to LevelDB.
  * Batching multiple blocks into one LevelDB write improves
@@ -1534,6 +1573,12 @@ retry_connect:
         trace_end(ct_span);
         return false;
     }
+
+    /* Flat-file sapling checkpoint (P12.1). Runs after a successful
+     * coins flush so any state we write here is consistent with what
+     * just landed on disk. Every 10K blocks; no-op if the checkpoint
+     * path isn't configured. */
+    sapling_checkpoint_maybe_flush(pindex_new->nHeight);
 
     if (pblock == &local_block)
         block_free(&local_block);

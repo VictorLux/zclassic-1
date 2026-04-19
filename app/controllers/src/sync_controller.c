@@ -1514,10 +1514,61 @@ int sapling_tree_rebuild(struct node_db *ndb,
     int start_height = sapling_height;
 
     /* Try to resume from a persisted checkpoint to avoid replaying
-     * 2.6M blocks on every crash recovery. The checkpoint height and
-     * tree state are saved together every 100K blocks. */
+     * 2.6M blocks on every crash recovery. Two candidates, most
+     * authoritative first:
+     *   (1) Flat-file checkpoint at <datadir>/sapling_tree_ckpt.dat
+     *       (P12.1) — flushed every 10K blocks, SHA3-verified.
+     *   (2) node_state["sapling_tree"] — flushed every 100K blocks,
+     *       SQLite-backed, legacy path.
+     * The flat-file path short-circuits the node_state path on a hit;
+     * a miss falls through to the original node_state probe. */
     int64_t ckpt_h = 0;
-    if (node_db_state_get_int(ndb, "sapling_tree_rebuild_height", &ckpt_h)
+    {
+        char ckpt_path[512];
+        int n = snprintf(ckpt_path, sizeof(ckpt_path),
+                         "%s/sapling_tree_ckpt.dat", datadir);
+        if (n > 0 && (size_t)n < sizeof(ckpt_path)) {
+            int64_t flat_h = 0;
+            struct incremental_merkle_tree ff_tree;
+            sapling_tree_init(&ff_tree);
+            if (sapling_tree_load_checkpoint(&ff_tree, &flat_h, ckpt_path)
+                && flat_h > sapling_height && flat_h <= chain_tip) {
+                /* Verify against the block-index root at that height
+                 * when we have it — an empty root slot just means the
+                 * block_index.bin load hasn't populated it yet, which
+                 * is fine for crash-recovery paths (the SHA3 trailer
+                 * already proved the file wasn't tampered with). */
+                const struct block_index *ckpt_bi =
+                    active_chain_at(chain, (int)flat_h);
+                static const uint8_t zeros32[32] = {0};
+                bool root_known = ckpt_bi &&
+                    memcmp(ckpt_bi->hashFinalSaplingRoot.data,
+                           zeros32, 32) != 0;
+                bool root_match = true;
+                if (root_known) {
+                    struct uint256 ffr;
+                    incremental_tree_root(&ff_tree, &ffr);
+                    root_match = memcmp(ffr.data,
+                        ckpt_bi->hashFinalSaplingRoot.data, 32) == 0;
+                }
+                if (root_match) {
+                    tree = ff_tree;
+                    start_height = (int)flat_h + 1;
+                    total_commitments =
+                        (int)incremental_tree_size(&tree);
+                    ckpt_h = flat_h; /* skip the SQLite fallback below */
+                    fprintf(stderr, "sapling_tree_rebuild: resuming "
+                        "from flat-file checkpoint h=%lld "
+                        "(%d commitments, P12.1)\n",
+                        (long long)flat_h, total_commitments);
+                    fflush(stderr);
+                }
+            }
+        }
+    }
+
+    if (ckpt_h == 0
+        && node_db_state_get_int(ndb, "sapling_tree_rebuild_height", &ckpt_h)
         && ckpt_h > sapling_height && ckpt_h <= chain_tip) {
         uint8_t tbuf[8192];
         size_t tlen = 0;

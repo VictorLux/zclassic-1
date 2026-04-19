@@ -2081,9 +2081,40 @@ bool app_init(struct app_context *ctx)
     }
 
     t_phase = boot_clock_ms();
+    /* Wire the flat-file sapling checkpoint (P12.1). Tells
+     * process_block.c where to flush every 10K blocks; separate from
+     * the node_state-backed path because the flat file is immune to
+     * the P14 savepoint contention class. */
+    set_sapling_checkpoint_datadir(g_datadir);
+
     /* Load Sapling commitment tree from persistent storage.
+     *
+     * Three-tier fall-back, most-authoritative first:
+     *   (1) Flat-file checkpoint at <datadir>/sapling_tree_ckpt.dat
+     *       (P12.1) — SHA3-verified, atomic, ≤10K blocks stale.
+     *   (2) node_state["sapling_tree"] — SQLite-backed, legacy path,
+     *       kept as a secondary belt.
+     *   (3) Fresh empty tree + replay during the mismatch-check pass.
+     *
      * This tree is maintained by connect_block and verified against
      * hashFinalSaplingRoot in each block header. */
+    if (g_node_db.open && !g_state.sapling_tree_loaded && g_datadir) {
+        char ckpt_path[512];
+        snprintf(ckpt_path, sizeof(ckpt_path),
+                 "%s/sapling_tree_ckpt.dat", g_datadir);
+        sapling_tree_init(&g_state.sapling_tree);
+        int64_t ckpt_height = 0;
+        if (sapling_tree_load_checkpoint(&g_state.sapling_tree,
+                                          &ckpt_height, ckpt_path)) {
+            g_state.sapling_tree_loaded = true;
+            set_sapling_tree_for_flush(&g_state.sapling_tree);
+            printf("Sapling tree loaded from checkpoint: "
+                   "%zu commitments, height=%lld (P12.1)\n",
+                   incremental_tree_size(&g_state.sapling_tree),
+                   (long long)ckpt_height);
+        }
+    }
+
     if (g_node_db.open && !g_state.sapling_tree_loaded) {
         uint8_t tree_buf[8192];
         size_t tree_len = 0;
