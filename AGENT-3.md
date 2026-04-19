@@ -38,36 +38,29 @@ See `AGENT.md` for the cross-agent priority table.
 
 ---
 
-## Current status — 2026-04-19 (late night, P8.2 landed — P8.5 reassigned to you)
+## Current status — 2026-04-19 (late night, P8.5 landed — queue empty)
 
-**Done and on main (19 rows + audit):** P1.3, P1.4, P1.6 (`f6aa0b080`),
+**Done and on main (20 rows + audit):** P1.3, P1.4, P1.6 (`f6aa0b080`),
 P1.7 (`5ce252bb6`), P1.8, P1.9, P1.10, P1.11, P1.11b, P1.12, P1.13,
 P1.14, P1.15, P1.16 (`94d607b85`), P1.16b (`c841defd2`), P5.5
 (`75576d7a0`), P7.4 (`f6474c77b`), P8.2 (`576b5cde2`), P8.3
-(`c06515cbd`), and the P8-wave audit pass (`6751d9bfa` — opened 8
-new rows).
+(`c06515cbd`), P8.5 (`21da0531e`), and the P8-wave audit pass
+(`6751d9bfa` — opened 8 new rows).
 
 All crypto + consensus + vendor + net-backpressure + MMB-hardening
-+ dandelion-RNG rows shipped. HIGH tier across the whole project
-now 100% (29/29).
++ dandelion-RNG + bloom-cost rows shipped. HIGH tier across the
+whole project 100% (29/29); the Agent-3 MED (P8.5) closed with the
+latest commit.
 
-**P8.5 reassigned to you** — `rolling_bloom_init` missing
-`MAX_BLOOM_HASH_FUNCS` clamp. `lib/bloom/` is technically Agent-2's
-lane, but the bug is squarely about siphash iteration counts (the
-exact RNG/crypto-cost domain you've been hardening). Single-line
-fix + one regression test. Keeps you productive while Agent-2
-grinds through P8.10 (live-node hotfix follow-up) + remaining MEDs.
-
-**Open queue (1 row, then ping Rhett):**
+**Queue empty — ping Rhett.** No further audit work pre-authorized.
 
 | Order | Row | Size | Severity |
 |---|---|---|---|
-| **NOW** | **P8.5** — rolling_bloom missing MAX_BLOOM_HASH_FUNCS clamp | trivial | MED |
-| NEXT | (queue empty — ping Rhett) | — | — |
+| NOW | (queue empty — ping Rhett) | — | — |
 
 ---
 
-## NOW — P8.5: clamp `MAX_BLOOM_HASH_FUNCS` in the rolling-bloom path
+## (Below: archived NOW for P8.5 — landed `21da0531e`, reference only) — clamp `MAX_BLOOM_HASH_FUNCS` in the rolling-bloom path
 
 File: `lib/bloom/src/bloom.c:47-52` (the `bloom_filter_init_internal`
 helper) + the rolling_bloom call site.
@@ -531,6 +524,44 @@ If build or tests fail — STOP and report.
 ## Notes from Agent-3
 
 _(Keep short — 1-3 recent entries.)_
+
+### 2026-04-19 (late night) — P8.5 rolling-bloom clamp landed — queue empty
+
+- **P8.5 (`21da0531e`):** lifted the `MIN(ideal, MAX_BLOOM_HASH_FUNCS)`
+  clamp out of the `constrained` branch in `bloom_filter_init_internal`
+  so the internal `rolling_bloom_init` path (which passes
+  `constrained=false`) now bounds `num_hash_funcs` on both internal
+  filters `b1`/`b2`. Kept the `constrained` flag — it's still
+  load-bearing for the `filter_bits` sizing cap in the public
+  `bloom_filter_init` path; only the hash-func count path is now
+  unconditional. Audit comment in `bloom.c` documents why both paths
+  must clamp.
+  - 3 new tests in `lib/test/src/test_bloom.c`:
+    `P8.5: rolling_bloom_init clamps num_hash_funcs` — pathological
+    tuning `rolling_bloom_init(num_elements=1, fp_rate=1e-30)` yields
+    `ideal ≈ 97` pre-fix (filter_bits ≈ 287 → data_size=35, then
+    `35*8/2 * LN2 = 97`); post-fix both `b1.num_hash_funcs` and
+    `b2.num_hash_funcs` are clamped to `MAX_BLOOM_HASH_FUNCS=50`.
+    Observed: `b1=50 b2=50 cap=50`.
+    `P8.5: rolling_bloom_init sane params not over-clamped` — normal
+    tuning `(120 000 elements, fp=1e-6)` stays under the cap
+    (observed `hashes=19`) — asserts everyday rolling-bloom behavior
+    is untouched.
+    `P8.5: bloom_filter_init regression (public path still clamps)` —
+    same pathological params via the public constrained path still
+    clamp to 50; confirms we didn't break the pre-fix public-path
+    behavior while lifting the clamp.
+  - No changes to `MAX_BLOOM_HASH_FUNCS` itself (still 50) or the
+    BIP37 `filterload` wire format — clamp is a CPU-cost guard only,
+    not a protocol change.
+- **Baseline failures carried forward** (pre-existing on main, not
+  caused by this commit): `test_no_hardcoded_home` ×1
+  (`vendor/tor/libtor.a` build-path leak — Agent-2 lane),
+  `test_make_lint_gates` ×2 (env leakage from earlier test group in
+  the runner; standalone repro is green). 3 total failures = exact
+  match to the P8.2/P8.3 baseline. `make lint` green.
+- Queue empty — pinging Rhett. All Agent-3-owned rows across
+  P0–P8 closed.
 
 ### 2026-04-19 (late night) — P8.2 dandelion PRNG hardened — queue empty
 
