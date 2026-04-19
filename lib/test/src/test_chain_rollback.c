@@ -192,9 +192,24 @@ int test_chain_rollback(void)
         CR_CHECK("cr: disconnect_block succeeds for all 20 blocks", all_ok);
     }
 
-    /* After disconnecting all blocks, cache should be empty */
-    CR_CHECK("cr: cache empty after full rollback",
-             cache.cache_coins.size == 0);
+    /* After disconnecting all blocks, no tx may be reachable via
+     * have_coins.  The cache itself may retain DIRTY+pruned
+     * tombstones pending a parent flush — that is the post-P10.1.4
+     * semantics of disconnect_block (connect_block.c:639) replacing
+     * a bare erase with a pruned-entry write so the DELETE signal
+     * propagates to the DIRTY-driven backing store.  The invariant
+     * we care about is reachability, not raw cache_coins.size. */
+    {
+        bool all_unreachable = true;
+        for (int h = 0; h < NUM_BLOCKS; h++) {
+            if (coins_view_cache_have_coins(&cache, &blocks[h].vtx[0].hash)) {
+                all_unreachable = false;
+                break;
+            }
+        }
+        CR_CHECK("cr: no tx reachable via have_coins after full rollback",
+                 all_unreachable);
+    }
 
     /* ── 4. Re-connect and verify commitment matches snapshots ─ */
     {

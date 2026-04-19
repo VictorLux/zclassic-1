@@ -636,7 +636,40 @@ bool disconnect_block(const struct block *block,
             }
         }
 
-        coins_map_erase(&view->cache_coins, &tx->hash);
+        /* Remove this tx's outputs from the coins view.
+         *
+         * The scratch view wrapping coins_tip is populated lazily by
+         * coins_view_cache_modify / get_coins, and cvc_batch_write
+         * (lib/coins/src/coins_view.c:255) only propagates DIRTY
+         * entries to the backing store — the same rule holds for the
+         * SQLite flush at coins_view_sqlite.c:664. A bare
+         * `coins_map_erase` on the scratch is therefore a no-op with
+         * respect to the backing: the tx's outputs survive in
+         * coins_tip, and (after the next flush) in SQLite's utxos
+         * table, even though the block creating them has been
+         * disconnected. Any subsequent reconnect of the same block
+         * trips BIP30 on the have_coins fall-through.
+         *
+         * Fix: materialize the backing entry into the scratch as a
+         * DIRTY+pruned tombstone so cvc_batch_write propagates a
+         * pruned entry to the parent (which in turn drives the
+         * DELETE at coins_view_sqlite.c:667 on the next coins flush).
+         * Matches Bitcoin Core's CCoinsViewCache semantics (erase
+         * semantics propagate through LevelDB's CDBBatch::Erase),
+         * while staying compatible with our DIRTY-driven SQLite
+         * flush path. See docs/postmortems/2026-04-19-bip30-stall.md.
+         *
+         * `coins_view_cache_modify` fetches the backing entry into
+         * the scratch on miss; freeing the coins + re-init'ing makes
+         * coins_is_pruned return true, so cvc_batch_write takes the
+         * pruned branch and the DELETE signal reaches the backing. */
+        struct coins_cache_entry *ghost =
+            coins_view_cache_modify(view, &tx->hash);
+        if (ghost) {
+            coins_free(&ghost->coins);
+            coins_init(&ghost->coins);
+            ghost->flags |= COINS_CACHE_DIRTY;
+        }
     }
 
     if (pindex->pprev && pindex->pprev->phashBlock) {

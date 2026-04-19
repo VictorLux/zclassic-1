@@ -4,6 +4,7 @@
  * Distributed under the MIT software license, see the accompanying
  * file COPYING or http://www.opensource.org/licenses/mit-license.php. */
 
+#include <assert.h>
 #include <sqlite3.h>
 #include "validation/process_block.h"
 #include "validation/check_block.h"
@@ -1712,6 +1713,38 @@ bool disconnect_tip(struct validation_state *state,
         block_free(&block);
         block_undo_free(&blockundo);
         return validation_state_error(state, "csr-tip-rollback-rejected");
+    }
+
+    /* P10.1.4 invariant assertion — the coins view must no longer
+     * report any tx from the disconnected block.
+     *
+     * This catches the 2026-04-19 BIP30 stall shape at the boundary
+     * where it was silently corrupted: if disconnect_block
+     * (`connect_block.c:639`) ever regresses to the bare-erase
+     * pattern, or a new path re-introduces stale unspent coinbase
+     * entries via some other route, this check surfaces the bug
+     * immediately instead of letting it fester until the next
+     * connect_block retry trips bad-txns-BIP30 and loops.
+     *
+     * Debug builds (no NDEBUG) abort so the test suite catches
+     * regressions. Release builds log + emit an event so production
+     * regressions show up in telemetry without crashing. */
+    for (size_t i = 0; i < block.num_vtx; i++) {
+        if (coins_view_cache_have_coins(coins_tip, &block.vtx[i].hash)) {
+            char hex[65];
+            uint256_get_hex(&block.vtx[i].hash, hex);
+            fprintf(stderr,
+                "disconnect_tip: INVARIANT violated h=%d tx[%zu] %s "
+                "still reachable via coins_view_cache_have_coins after "
+                "disconnect — see docs/postmortems/2026-04-19-bip30-stall.md\n",
+                pindex_delete->nHeight, i, hex);
+            event_emitf(EV_UTXO_CHECKPOINT_FAIL, 0,
+                "disconnect_tip_invariant h=%d txid=%s",
+                pindex_delete->nHeight, hex);
+#ifndef NDEBUG
+            assert(!"disconnect_tip: coins view retained disconnected tx");
+#endif
+        }
     }
 
     block_free(&block);
