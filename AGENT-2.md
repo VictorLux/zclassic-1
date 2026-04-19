@@ -80,22 +80,23 @@ behind the chain working. **Your P10.1.1–P10.1.4 unblock criterion
 `done <SHA> [test:1.0]` because the workflow forces RED-test-first.
 The P10.1 sequence is the canonical example of HI=1.0 work.
 
-**Open queue (P10.1 is the only thing — four sequential steps left):**
+**Open queue (P10.1 is the only thing — three sequential steps left):**
 
 | Order | Row | Size | Severity |
 |---|---|---|---|
 | DONE | **P10.1.1** — Reproduce the chain stall on a fixture | medium | done 1243e1766 [test:1.0] |
-| **NOW** | **P10.1.2** — Root-cause writeup in `docs/postmortems/` | medium | (gates P10.1.3) |
-| NEXT | **P10.1.3** — Regression test that fails pre-fix | small | (gates P10.1.4) |
-| NEXT+2 | **P10.1.4** — Minimal fix + invariant assertion | medium | (gates P10.1.5) |
-| NEXT+3 | **P10.1.5** — Live-node verification (Rhett runs deploy) | n/a | Rhett |
+| DONE | **P10.1.2** — Root-cause writeup in `docs/postmortems/` | medium | done <SHA-TBD> (awaiting Agent-3 review) |
+| **NOW** | **P10.1.3** — Regression test that fails pre-fix | small | (gates P10.1.4) |
+| NEXT | **P10.1.4** — Minimal fix + invariant assertion | medium | (gates P10.1.5) |
+| NEXT+2 | **P10.1.5** — Live-node verification (Rhett runs deploy) | n/a | Rhett |
 | **DEFERRED** | P8.4, P8.6, P8.7, P8.8, P7.10 follow-up | — | parked behind P10.1 |
 
-**Recently landed (preserved for context):** P10.1.1 (`1243e1766`),
-P4.1+P4.2 (`a9fcf6c66`), P8.9 HOTFIX (`b875152da` — superseded),
-P8.1 (`b6726f83b`), P7.9 infrastructure (`19b2cac1d`). Agent-3
-closed P8.5 (`21da0531e`), P8.2 (`576b5cde2`), and the P9
-sapling-prover audit (`04247c19a` — 10 findings, all deferred).
+**Recently landed (preserved for context):** P10.1.2 writeup
+(`<SHA-TBD>`), P10.1.1 (`1243e1766`), P4.1+P4.2 (`a9fcf6c66`), P8.9
+HOTFIX (`b875152da` — superseded), P8.1 (`b6726f83b`), P7.9
+infrastructure (`19b2cac1d`). Agent-3 closed P8.5 (`21da0531e`),
+P8.2 (`576b5cde2`), and the P9 sapling-prover audit (`04247c19a` —
+10 findings, all deferred).
 
 ---
 
@@ -132,60 +133,101 @@ the P10.1 definition of a RED-first row.
 
 ---
 
-## NOW — P10.1.2: Root-cause writeup
+## DONE — P10.1.2 (<SHA-TBD>): Root-cause writeup
 
-After P10.1.1 landed. Markdown doc at
-`docs/postmortems/2026-04-19-bip30-stall.md`. Must answer four
-questions:
+Shipped as `docs/postmortems/2026-04-19-bip30-stall.md`. TL;DR:
+`disconnect_block`'s `coins_map_erase(&view->cache_coins, &tx->hash)`
+at `lib/validation/src/connect_block.c:639` leaves the disconnected
+coinbase in the backing store. The flush path
+(`cvc_batch_write` in `lib/coins/src/coins_view.c:255` and the
+SQLite equivalent at `lib/storage/src/coins_view_sqlite.c:664`) only
+writes DIRTY entries, and an erased entry is non-DIRTY — so the
+row survives in `coins_tip` and, on the next flush, in SQLite's
+`utxos` table. Every subsequent reconnect trips `bad-txns-BIP30` on
+the have_coins fall-through to the backing.
 
-1. **What was the EXACT path that took chain `3,081,408 → 3,081,407`
-   without a reorg log line?** Investigate `disconnect_tip`,
-   `InvalidateBlock`, any code that decrements `coins_best_block`
-   height. Cite line numbers.
-2. **WHY does BIP30 trip after P8.9's strengthened sweep ran?**
-   Either the sweep is incomplete (which rows did it miss?), or
-   another code path re-creates the stale state after the sweep.
-   Cite line numbers.
-3. **What invariant should have been enforced?** Phrase as a
-   property: "For every txid T in the coins view, T's coins must be
-   either pruned OR derived from a block in the active chain."
-4. **Why didn't the existing tests catch this?** Audit the existing
-   test_storage / test_validation files. What test would have
-   failed pre-P7.1 if it existed?
+Four questions answered:
 
-No code in this row. Reviewed by Agent-3 before P10.1.3 starts.
+1. **Exact regress path:** `disconnect_tip(3081408)` — most
+   plausibly via the `bad-txns-inputs-missingorspent` recovery at
+   `process_block.c:2082` (site 2 of 2) which fires silently after
+   5 retries at the same height and writes only to stderr. The
+   reorg path at `process_block.c:1929` is excluded because
+   `EV_REORG_START` was not emitted.
+2. **Why BIP30 trips post-P8.9:** the boot-time sweep is gated on
+   `max_utxo_height > tip_height` and goes dormant at steady state.
+   `disconnect_block`'s leak re-creates the stale shape at runtime,
+   where the sweep never fires again.
+3. **Invariant:** "for every txid T in the coins view (cache OR
+   backing), the block that created T's outputs must be on the
+   active chain." Enforcement point: `connect_block.c:639` must
+   emit a DIRTY-pruned tombstone instead of `coins_map_erase`. The
+   debug assertion belongs right after `disconnect_tip` returns.
+4. **Test gap:** all three `disconnect_block` tests
+   (`test_chain_rollback.c`, `test_reorg_safety.c`,
+   `test_validation.c`) use a NULL backing view, so the missing
+   DELETE signal is invisible. The test that would have caught it
+   is the three-layer scratch → parent → SQLite shape (P10.1.3).
+
+Pending: Agent-3 review before P10.1.3 starts. Agent-3 is on-call
+and aware (see AGENT-3.md).
 
 ---
 
-## NEXT — P10.1.3: Regression test that fails pre-fix
+## NOW — P10.1.3: Regression test that fails pre-fix
 
-After P10.1.2 lands. New test in `lib/test/test_validation.c` (or
-wherever fits the affected path). Test name should describe the
-invariant from P10.1.2 question 3 (e.g.,
-`test_connect_block_consistent_on_retry`).
+Ready to start. New test case that mirrors the production call
+shape: a PARENT cache representing `coins_tip`, populated via
+`update_coins` with a coinbase; a SCRATCH cache wrapping the
+parent as backing; `disconnect_block` on the scratch; a flush
+of the scratch into the parent; and finally the assertion:
 
-Test must FAIL on current main (no fix yet). Commit it RED. The
-regression test gates the fix — without it, future regressions
-won't be caught.
+```c
+ASSERT(!coins_view_cache_have_coins(&parent, &blk.vtx[0].hash));
+```
+
+Today that assertion FAILS — the parent still holds the coinbase
+because `coins_map_erase` on the scratch is a no-op (scratch was
+empty) and the parent's prior unspent entry was never tombstoned.
+
+Test name should describe the invariant:
+`test_disconnect_block_purges_coinbase_from_backing` (or similar).
+Commit it RED — the failure is the gate for the P10.1.4 fix.
+
+Either add as a new case in `test_reorg_safety.c` (same domain) or
+a new small test file. Runtime <100ms; no SQLite needed for the
+scratch→parent layer, though an optional second case that extends
+to `coins_view_sqlite` (proving the DELETE is also emitted) would
+lock in the full shape.
 
 ---
 
-## NEXT+2 — P10.1.4: Minimal fix + invariant assertion
+## NEXT — P10.1.4: Minimal fix + invariant assertion
 
 After P10.1.3 lands RED. Smallest diff that makes P10.1.3 pass
-without regressing any other test. No drive-by refactors. Add an
-assertion that PANICS if the invariant is ever violated again
-(debug builds only — release logs + bumps a metric).
+without regressing any other test. Per the P10.1.2 analysis: replace
+`coins_map_erase(&view->cache_coins, &tx->hash)` at
+`lib/validation/src/connect_block.c:639` with a DIRTY pruned
+tombstone — `coins_view_cache_modify(view, &tx->hash)` then clear
+all outputs + leave DIRTY set — so the scratch flush propagates a
+DIRTY+pruned entry to `coins_tip`, and the next SQLite flush emits
+the DELETE row at `lib/storage/src/coins_view_sqlite.c:667`. No
+drive-by refactors.
 
-The fix may look completely different from P8.10's two-bandaid
-proposal. Trust P10.1.2's analysis, not the prior hotfix design.
+Add an assertion that runs after `disconnect_tip` returns in
+process_block.c: walk the disconnected block's txs and assert
+`!coins_view_cache_have_coins(&coins_tip, &tx->hash)`. In debug
+builds this PANICs; in release it logs + bumps a metric so
+regressions surface in telemetry rather than crashing prod.
 
-After this lands: `make test` green, P10.1.1 reproduction also
-passes (chain advances), P10.1.3 regression test passes.
+After this lands: `make test` green, P10.1.1 reproduction
+still asserts the bad state via a separate pre-seeded fixture
+(kept as documentation of the prior bug shape), P10.1.3 regression
+test passes.
 
 ---
 
-## NEXT+3 — P10.1.5: Live-node verification
+## NEXT+2 — P10.1.5: Live-node verification
 
 Rhett's row (coordinator). After P10.1.4 lands and `make ci` is
 green, Rhett runs `make deploy`. Watches for `EV_BLOCK_CONNECTED`
@@ -523,6 +565,42 @@ If build or tests fail — STOP and report.
 ## Notes from Agent-2
 
 _(Keep short — 1-3 recent entries.)_
+
+### 2026-04-19 (post-P10.1.1) — P10.1.2 root-cause writeup
+
+**P10.1.2 (`<SHA-TBD>`):** `docs/postmortems/2026-04-19-bip30-stall.md`.
+The root cause is narrower than the P8.10 hotfix guess (which chased
+the sweep + BLOCK_FAILED_CHILD cap): `disconnect_block`'s
+`coins_map_erase(&view->cache_coins, &tx->hash)` at
+`lib/validation/src/connect_block.c:639` does not propagate a DELETE
+signal to the backing store. The flush path (`cvc_batch_write` at
+`lib/coins/src/coins_view.c:255`, and the SQLite equivalent at
+`lib/storage/src/coins_view_sqlite.c:664`) iterates DIRTY entries
+only — an erased entry is non-DIRTY (it is gone), so the coinbase
+row survives in `coins_tip` and (after the next flush) in SQLite.
+
+Bitcoin Core's equivalent path (`CCoinsViewCache::BatchWrite` →
+`CDBBatch::Erase`) emits an actual LevelDB DELETE, which is why the
+legacy zclassicd code can use the erase pattern without this failure.
+Our SQLite flush being DIRTY-driven is what breaks the analogy.
+
+The invariant, phrased for P10.1.3/P10.1.4: "for every txid T in the
+coins view (cache OR backing), the block that created T's outputs
+must be on the active chain." Enforcement point: `connect_block.c:639`
+must emit a DIRTY+pruned tombstone instead of an erase. The debug
+assertion belongs right after `disconnect_tip` returns.
+
+Test gap explained: all three existing `disconnect_block` tests
+(`test_chain_rollback.c`, `test_reorg_safety.c`, `test_validation.c`)
+use a NULL backing view. The cache-only `have_coins` post-condition
+is satisfied by the erase because there is no backing to reveal the
+leak. The P10.1.3 test models the three-layer scratch → parent → 
+backing shape and asserts `!have_coins` on the parent — which FAILS
+today because the parent still holds the coinbase.
+
+Agent-3 review pending. P10.1.3 (RED regression test) starts next
+and is independent of the review outcome (Agent-3's comments will
+inform the P10.1.4 fix, not the test).
 
 ### 2026-04-19 (post-reset) — P10.1.1 landed; no more hotfix guesses
 
