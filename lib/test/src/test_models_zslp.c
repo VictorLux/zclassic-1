@@ -2,6 +2,7 @@
  * Focused ZSLP model tests. */
 
 #include "test/test_helpers.h"
+#include "services/zslp_service.h"
 #include <unistd.h>
 
 int test_model_zslp(void)
@@ -187,6 +188,111 @@ int test_model_zslp(void)
         snprintf(cmd, sizeof(cmd), "rm -rf %s", dbdir);
         system(cmd);
         if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* ── P8.6: token_key validator disambiguation ─────────────────── */
+
+    printf("P8.6 validate_token_key: accepts 3-char ticker 'ZCL' (has non-hex)... ");
+    {
+        if (zslp_service_validate_token_key("ZCL")) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("P8.6 validate_token_key: accepts 'BTC' (T is non-hex)... ");
+    {
+        if (zslp_service_validate_token_key("BTC")) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("P8.6 validate_token_key: accepts 11-char 'ZCL23ACCESS' "
+           "(has Z/L/S non-hex — real codebase token)... ");
+    {
+        /* This one is load-bearing — store_controller.c:178 seeds
+         * 'ZCL23ACCESS' as a token_id for token-gated access. */
+        if (zslp_service_validate_token_key("ZCL23ACCESS")) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("P8.6 validate_token_key: accepts 10-char 'ZCL23STORE'... ");
+    {
+        if (zslp_service_validate_token_key("ZCL23STORE")) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("P8.6 validate_token_key: rejects 10-char all-hex "
+           "(ambiguous with truncated txid)... ");
+    {
+        /* Pre-fix "abcdef1234" was accepted as alphanumeric; canonicalized
+         * to "ABCDEF1234", indistinguishable from a truncated hex txid
+         * prefix of the same shape — the exact P8.6 collision. */
+        if (!zslp_service_validate_token_key("abcdef1234"))
+            printf("OK\n");
+        else { printf("FAIL (P8.6 collision gate missing)\n"); failures++; }
+    }
+
+    printf("P8.6 validate_token_key: rejects 32-char all-hex "
+           "(mid-range txid prefix)... ");
+    {
+        if (!zslp_service_validate_token_key(
+                "abcdef0123456789abcdef0123456789"))
+            printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("P8.6 validate_token_key: rejects 63-char all-hex "
+           "(just below full txid)... ");
+    {
+        if (!zslp_service_validate_token_key(
+                "abcdef0123456789abcdef0123456789abcdef0123456789abcdef012345678"))
+            printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("P8.6 validate_token_key: accepts 64-char hex txid "
+           "(canonical full-txid form)... ");
+    {
+        if (zslp_service_validate_token_key(
+                "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"))
+            printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("P8.6 validate_token_key: accepts 64-char non-hex alphanumeric... ");
+    {
+        /* 64 chars with 'g' — alphanumeric, non-hex. Not a txid
+         * (txids are hex), not ambiguous with anything — accept. */
+        if (zslp_service_validate_token_key(
+                "gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggg"))
+            printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("P8.6 validate_token_key: rejects empty string... ");
+    {
+        if (!zslp_service_validate_token_key("")) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("P8.6 validate_token_key: rejects >64 chars... ");
+    {
+        /* 65 chars */
+        if (!zslp_service_validate_token_key(
+                "abcdef0123456789abcdef0123456789abcdef0123456789abcdef01234567890"))
+            printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("P8.6 validate_token_key: rejects NULL... ");
+    {
+        if (!zslp_service_validate_token_key(NULL)) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("P8.6 validate_token_key: rejects punctuation (non-alnum)... ");
+    {
+        if (!zslp_service_validate_token_key("ZCL-23"))
+            printf("OK\n");
         else { printf("FAIL\n"); failures++; }
     }
 

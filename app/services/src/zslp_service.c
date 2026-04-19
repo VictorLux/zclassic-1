@@ -67,8 +67,30 @@ bool zslp_service_validate_token_key(const char *token_key)
     len = strlen(token_key);
     if (len == 0 || len > ZSLP_MAX_TOKEN_KEY_LEN)
         LOG_FAIL("zslp_svc", "validate_token_key: bad length %zu", len);
-    return zslp_service_is_alphanumeric(token_key, len) ||
-           (len == 64 && zslp_service_is_hex_string(token_key, len));
+
+    /* Canonical full-txid form: exactly 64 hex chars. Always accepted. */
+    if (len == 64 && zslp_service_is_hex_string(token_key, len))
+        return true;
+
+    /* All other keys must be alphanumeric. */
+    if (!zslp_service_is_alphanumeric(token_key, len))
+        return false;
+
+    /* P8.6: disambiguate ticker-style token IDs from truncated hex txid
+     * prefixes. A string that is ALL hex digits ([0-9a-fA-F]) at any
+     * length < 64 is indistinguishable from the first `len` chars of a
+     * real txid, and both canonicalize (upper-cased) to the same key —
+     * so a short/all-hex lookup can collide with a full txid key.
+     * Legitimate ticker-style keys in this codebase contain at least
+     * one non-hex alphanumeric character (e.g., "ZCL", "BTC",
+     * "ZCL23ACCESS"). The narrow compat break: tickers that are purely
+     * hex digits (e.g., "CAFE", "DEAD") can no longer be used as short
+     * token-key lookups; those tokens must be referenced by their
+     * 64-char txid instead. */
+    if (zslp_service_is_hex_string(token_key, len))
+        return false;
+
+    return true;
 }
 
 bool zslp_service_decode_transparent_destination(const char *addr,
