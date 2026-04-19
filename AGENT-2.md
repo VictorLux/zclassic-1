@@ -38,7 +38,7 @@ gap analysis. See `AGENT.md` for the cross-agent priority table.
 
 ---
 
-## Current status — 2026-04-19 (P10.1 REOPENED — P14 wave is NOW)
+## Current status — 2026-04-19 (P14.1 + P14.2 landed in 2b9b9f4d3 — NOW is P14.3)
 
 **P10.1.5 "canary green" was a misread.** Live-node MCP showed
 h=3,081,601 because `val.block_connected` fires on block RECEIPT,
@@ -77,82 +77,56 @@ hop P10.1.3 variant that exercises `coins_view_sqlite` backing
 end-to-end) as "not yet adopted" at CONCUR_WITH_NOTES time —
 that turned out to be the load-bearing hop.
 
-### NOW — P14.1 (CRITICAL): `SAVEPOINT coins_flush` contention
+### DONE — P14.1 (2b9b9f4d3) + P14.2 (same commit): dedicated sqlite3 connection for `coins_view_sqlite`
 
-**Files in scope:**
-- `lib/storage/src/coins_view_sqlite.c:604-656` — the flush
-  function with the SAVEPOINT vs BEGIN IMMEDIATE branch.
-- `lib/coins/src/coins_view.c` — the cvc_batch_write caller.
-- `lib/storage/src/coins_view_sqlite.c:617-629` — the comment
-  "if an external subsystem is still holding a cursor open,
-  SAVEPOINT will SQLITE_BUSY and we'll bail cleanly" is the exact
-  pathology — it bails, the dirty entries retry forever, no
-  error propagates up.
+Option (a) shipped per the brief. `coins_view_sqlite_open` now
+inspects `sqlite3_db_filename(db, "main")`; for file-backed
+inputs it opens its own `sqlite3 *` on the same path
+(`owns_db=true`, `BEGIN IMMEDIATE` + `COMMIT` only). The
+SAVEPOINT branch stays alive solely as the `:memory:` fallback
+for a handful of unit tests that pass a throwaway handle.
 
-**Two fix options (pick (a) unless profiling says no):**
+Mirror pragmas on the dedicated handle (WAL, synchronous=NORMAL,
+temp_store=MEMORY, foreign_keys=ON) and `busy_timeout(30000)`
+so cross-connection WAL writer contention is handled the way
+the same-connection `nVdbeWrite` guard was NOT.
 
-- **(a) Dedicated connection for `coins_view_sqlite`.** Set
-  `owns_db=true` unconditionally (open a new `sqlite3 *db` for
-  the coins view instead of sharing the node.db handle). The
-  `BEGIN IMMEDIATE` path is already implemented and tested; the
-  SAVEPOINT path becomes dead code and can be removed. Cost: one
-  extra SQLite handle (~MB of page cache); benefit: no SAVEPOINT
-  contention possible, ever. The live node has 95 GB RAM — the
-  cost is zero.
-- **(b) Audit every cursor on the shared connection.** Walk all
-  `sqlite3_prepare_v2` call sites (wallet readers, block_index_db
-  iterators, controller query stmts); ensure each is
-  `sqlite3_reset`-ed or `finalize`-d before the flush fires. One
-  missed cursor = this bug recurs silently.
+P14.2 RED → GREEN in the same commit — `lib/test/src/
+test_chain_stall_repro.c:t_p14_flush_under_shared_cursor_lands_tombstone`:
+- Structural gate: `ASSERT(cvs.owns_db && cvs.db != db)` on a
+  file-backed input — deterministic pre-fix RED marker.
+- SAVEPOINT probe: holds `INSERT ... RETURNING` at SQLITE_ROW
+  on the caller's handle, then runs `SAVEPOINT probe` on the
+  same handle. Must return SQLITE_BUSY with "SQL statements
+  in progress" — exactly the production error signature.
+- End-to-end: three-layer (`coins_view_sqlite` backing +
+  parent cache + scratch cache) disconnect_block + cvc flush +
+  sqlite batch_write. Asserts the tombstone DELETE actually
+  lands in SQLite — the path P10.1.3's null-backing variant
+  could not surface.
 
-Prefer (a). If you go (b), add an assertion at flush-entry that
-walks `sqlite3_next_stmt` and counts SQLITE_ROW statements not
-owned by `coins_view_sqlite`; LOUD LOG_FAIL on non-zero.
+Canary acceptance (Rhett's row, P14 follow-up — unchanged):
+live-node `getblockcount` advances past 3,081,408, stays
+advanced for 24h, log shows zero `SAVEPOINT coins_flush failed`
+lines, zero `WARNING: coins cache flush FAILED` lines, zero
+`connect_block FAILED h=3081408` lines. Must gate on HARD log
+signals (not MCP counters — P14.5 proves those unreliable).
 
-**Discipline (same P10 rule):**
-1. **RED test first** (P14.2 — see next row). DO NOT ship P14.1
-   without a RED test that exercises the failing-flush path.
-2. Root-cause the contention. The `node.log` evidence points at
-   repeated savepoint failures across the last 3 days. Ideally
-   also identify WHICH subsystem leaks the cursor, so the fix is
-   informed rather than blanket.
-3. Fix. RED flips GREEN. Invariant assertion at
-   `process_block.c:1718-1748` continues to NOT fire (correctness
-   proof: cache state still consistent).
-4. **Canary acceptance (Rhett's row, P14 follow-up):** live-node
-   `getblockcount` advances past 3,081,408, stays advanced for
-   24h, log shows zero `SAVEPOINT coins_flush failed` lines, zero
-   `WARNING: coins cache flush FAILED` lines, zero
-   `connect_block FAILED h=3081408` lines. The P10.1.5 mistake
-   should not repeat; acceptance must gate on HARD log signals,
-   not on MCP-surfaced counters that P14.5 proves unreliable.
+Preserved comment in `coins_view_sqlite.c` documents option
+(b)'s risk (one missed cursor recurs silently) to explain why
+option (a) won despite the +1 SQLite handle cost.
 
-**STOP + ping Rhett:**
-- Any change to the on-disk UTXO format (consensus-adjacent via
-  the SHA3 commitment).
-- Any change to the `coins_view` API surface — P14.1 is purely a
-  connection-ownership change, not an API change.
+STOP triggers satisfied:
+- No on-disk UTXO format change.
+- No `coins_view` API surface change — connection-ownership
+  change only.
 
-### Coupled with P14.2 (CRITICAL): true end-to-end RED test
+### NOW — P14.3 (CRITICAL): `zcl_syncdiag` SIGABRT
 
-The existing `test_chain_stall_repro.c` test uses a NULL backing
-view, so `disconnect_block + flush` never hits SQLite. Replace
-(or add a third test) that uses a real `coins_view_sqlite` on a
-temp DB; deliberately hold a reader cursor open (the specific
-pattern that trips SAVEPOINT SQLITE_BUSY); run
-`disconnect_block + cvc_batch_write + sqlite_batch_write`;
-assert the tombstone DELETE is actually in SQLite afterwards.
-
-This is what the `second-hop P10.1.3 variant` Agent-3 suggested
-at CONCUR_WITH_NOTES would have been. Ship it with P14.1 in one
-commit: cache + backing three-layer test = GREEN after the fix.
-
-### NEXT — P14.3 (CRITICAL): `zcl_syncdiag` SIGABRT
-
-After P14.1 + P14.2 land. Independent of the chain stall but just
-as severe — the live node crashes whenever the coordinator calls
-`zcl_syncdiag` via MCP. Stack trace from the last crash (2026-04-19
-16:55:29 UTC, journal exit-code 134):
+P14.1 + P14.2 closed → P14.3 is next. Independent of the chain
+stall but just as severe — the live node crashes whenever the
+coordinator calls `zcl_syncdiag` via MCP. Stack trace from the
+last crash (2026-04-19 16:55:29 UTC, journal exit-code 134):
 
 ```
 /lib/x86_64-linux-gnu/libc.so.6(abort+0xdf)
