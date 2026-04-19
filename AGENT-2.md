@@ -38,7 +38,7 @@ gap analysis. See `AGENT.md` for the cross-agent priority table.
 
 ---
 
-## Current status — 2026-04-19 (late night, post-deploy, P8.9 hotfix filed)
+## Current status — 2026-04-19 (post-P10.1.4 + P8.7; canary pending; CI flagged)
 
 **Done and on main (33 rows + 2 infra):** P1.1, P1.2, P1.5, P6.1–P6.6,
 P3.1–P3.7, P5.1, P5.2, P5.3, P5.4, P5.6, P5.7, P4.3, P4.4, P4.5,
@@ -80,7 +80,7 @@ behind the chain working. **Your P10.1.1–P10.1.4 unblock criterion
 `done <SHA> [test:1.0]` because the workflow forces RED-test-first.
 The P10.1 sequence is the canonical example of HI=1.0 work.
 
-**Open queue (P10.1 — Agent-2 work complete; coordinator canary pending):**
+**Open queue (P10.1 — Agent-2 work complete; coordinator canary pending; P8.7 landed opportunistically):**
 
 | Order | Row | Size | Severity |
 |---|---|---|---|
@@ -89,7 +89,9 @@ The P10.1 sequence is the canonical example of HI=1.0 work.
 | DONE | **P10.1.3** — Regression test that fails pre-fix | small | done ae7caa1fe [test:1.0] (RED) |
 | DONE | **P10.1.4** — Minimal fix + invariant assertion | medium | done ac782fef5 [test:1.0] (flipped P10.1.3 GREEN) |
 | WAITING | **P10.1.5** — Live-node verification (Rhett runs deploy) | n/a | Rhett — coordinator |
-| UNBLOCKED-ON-CANARY | P8.4, P8.6, P8.7, P8.8, P7.10 follow-up | — | ready after canary clears |
+| DONE | **P8.7** — zmarket_offer num_chunks u32 overflow guard | small | done db3054901 [test:0.5] (self-contained; in-lane; NEXT queue pre-authorization) |
+| UNBLOCKED-ON-CANARY | P8.4, P8.6, P8.8, P7.10 follow-up | — | ready after canary clears |
+| FLAGGED | `make ci` bus-error in test_cookie_rotation | n/a | pre-existing, not P10.1 or P8.7 — Rhett |
 
 **Recently landed (preserved for context):** P10.1.4 fix
 (`ac782fef5`), P10.1.3 RED (`ae7caa1fe`), P10.1.2 writeup
@@ -621,6 +623,33 @@ If build or tests fail — STOP and report.
 ## Notes from Agent-2
 
 _(Keep short — 1-3 recent entries.)_
+
+### 2026-04-19 (post-P10.1.4) — P8.7 landed opportunistically; CI bus-error surfaced
+
+**P8.7 (`db3054901`):** new `file_market_num_chunks_for_size()` helper
+in `lib/net/src/file_market.c` rejects `size_bytes > (uint64_t)UINT32_MAX
+* FILE_MARKET_CHUNK_SIZE` — caps at ~225 PB, the real bug was u64→u32
+truncation of the chunk count (not the `+CHUNK_SIZE-1` overflow the
+brief suggested — that's unreachable via signed `off_t` since
+INT64_MAX ≪ UINT64_MAX - CHUNK_SIZE). `zmarket_offer` controller
+additionally rejects `st_size < 0`. 8 new cases in
+`test_file_market.c` — cap, over-cap, silent-truncation shape (the
+exploitable case where u64→u32 wraps to a plausible small value
+like 4 for `UINT32_MAX*CHUNK + 5*CHUNK`, bypassing the
+`num_chunks==0` reject at add_offer), UINT64_MAX, NULL out_chunks.
+
+Landed under the "NEXT — queue (pre-authorized)" brief clause —
+self-contained, in-lane, zero touch to chain-stall / coins-view
+code. No interaction with P10.1.5's canary.
+
+**OOS CI finding:** `make ci` bus-errors in `test_cookie_rotation`
+case #3 ("current password authenticates") under
+`ulimit -s unlimited` (per `Makefile:597`). Reproduces on a clean
+`git stash` of any pending work — independent of P8.7 and P10.1.4.
+The failure only shows under unlimited stack; plain `./test_zcl`
+passes cookie_rotation cleanly. Not investigated further because
+it's outside the file_market / validation lanes that P8.7 and P10.1
+touch. Filed as a FLAGGED row for Rhett's queue.
 
 ### 2026-04-19 (post-P10.1.3) — P10.1.4 fix landed; Agent-2 closed on P10.1
 
