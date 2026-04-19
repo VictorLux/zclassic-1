@@ -365,18 +365,75 @@ bool coins_view_sqlite_open(struct coins_view_sqlite *cvs, sqlite3 *db)
     cvs->view.impl = cvs;
     pthread_mutex_init(&cvs->mutex, NULL);
 
-    /* Use the shared database handle with SAVEPOINT nesting.
-     * A dedicated connection causes WAL lock contention: when node_db
-     * has an open transaction, the dedicated connection's BEGIN IMMEDIATE
-     * gets SQLITE_BUSY (proven at heights 3061210-3061212).
-     * SAVEPOINT nests cleanly inside any existing transaction. */
-    cvs->db = db;
-    cvs->owns_db = false;
-    printf("coins_view_sqlite: using shared connection (SAVEPOINT mode)\n");
+    /* P14.1: prefer a dedicated sqlite3 handle on the same file.
+     *
+     * Live-node stall 2026-04-19 at h=3,081,408 was caused by
+     * SAVEPOINT on the SHARED handle returning SQLITE_BUSY
+     * ("cannot open savepoint - SQL statements in progress")
+     * whenever any other subsystem's writer VDBE had
+     * `nVdbeWrite>0`.  The busy handler is NOT invoked for that
+     * guard — the flush bails immediately, the DIRTY+pruned
+     * tombstone is retained in RAM but never reaches disk, and
+     * the next cache eviction re-reads the stale row → BIP30
+     * trip loop (seen 3,478 times in node.log).
+     *
+     * A dedicated handle puts BEGIN IMMEDIATE on a separate
+     * `nVdbeWrite` counter.  Cross-connection WAL writer
+     * contention is still possible, but that shape IS handled by
+     * sqlite3_busy_timeout — unlike the same-connection
+     * SAVEPOINT guard.  Cost: one extra SQLite page cache (~MB);
+     * live node has 95GB, cost is negligible.
+     *
+     * Fallback: if the input handle has no backing file
+     * (`:memory:` — used only by a handful of unit tests that
+     * open a throwaway DB), share the handle with SAVEPOINT
+     * nesting.  Production always hits the dedicated-connection
+     * path. */
+    const char *fname = sqlite3_db_filename(db, "main");
+    bool opened_dedicated = false;
+    if (fname && fname[0] != '\0') {
+        sqlite3 *cdb = NULL;
+        int rc = sqlite3_open(fname, &cdb);
+        if (rc == SQLITE_OK && cdb) {
+            /* Mirror node_db's pragmas so the dedicated handle
+             * has matching journal / sync / busy behavior. */
+            sqlite3_exec(cdb,
+                "PRAGMA journal_mode=WAL;"
+                "PRAGMA synchronous=NORMAL;"
+                "PRAGMA temp_store=MEMORY;"
+                "PRAGMA foreign_keys=ON",
+                NULL, NULL, NULL);
+            /* 30s matches the flush-time timeout we bump below;
+             * long enough for node_db's normal writes to commit
+             * even under heavy IBD pressure. */
+            sqlite3_busy_timeout(cdb, 30000);
+            cvs->db = cdb;
+            cvs->owns_db = true;
+            opened_dedicated = true;
+            printf("coins_view_sqlite: dedicated connection "
+                   "(path=%s, BEGIN IMMEDIATE mode)\n", fname);
+        } else {
+            fprintf(stderr,
+                "coins_view_sqlite: dedicated open failed (%s): "
+                "%s — falling back to shared handle + SAVEPOINT\n",
+                fname, sqlite3_errstr(rc));
+            if (cdb) sqlite3_close(cdb);
+        }
+    }
+    if (!opened_dedicated) {
+        /* `:memory:` tests or dedicated-open failure. */
+        cvs->db = db;
+        cvs->owns_db = false;
+        printf("coins_view_sqlite: using shared connection (SAVEPOINT mode)\n");
+    }
 
     /* Cap WAL size to 100MB to prevent unbounded growth.
-     * A 6GB WAL was observed when flush failures accumulated. */
-    sqlite3_exec(db, "PRAGMA journal_size_limit = 104857600", NULL, NULL, NULL);
+     * A 6GB WAL was observed when flush failures accumulated.
+     * Apply to BOTH the shared handle (if we're falling back)
+     * AND the dedicated handle when we own it — either way the
+     * journal file is the same on disk. */
+    sqlite3_exec(cvs->db, "PRAGMA journal_size_limit = 104857600",
+                 NULL, NULL, NULL);
 
     int rc;
 

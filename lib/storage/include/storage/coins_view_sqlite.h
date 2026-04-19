@@ -11,11 +11,11 @@
 
 struct coins_view_sqlite {
     struct coins_view view;          /* vtable-based polymorphism */
-    sqlite3 *db;                     /* shared handle for coins (reads+writes) */
-    bool owns_db;                    /* true = we opened db, must close it */
+    sqlite3 *db;                     /* coins handle — dedicated for file DBs (P14.1), shared for :memory: */
+    bool owns_db;                    /* true when db was opened here (file DB); false when shared */
     pthread_mutex_t mutex;           /* serialize all statement access */
 
-    /* Prepared statements (all on shared db handle) */
+    /* Prepared statements (all on cvs->db) */
     sqlite3_stmt *stmt_get;          /* all vouts for a txid */
     sqlite3_stmt *stmt_have;         /* existence check */
     sqlite3_stmt *stmt_insert;       /* upsert single UTXO */
@@ -26,9 +26,14 @@ struct coins_view_sqlite {
     sqlite3_stmt *stmt_commit_set;   /* write UTXO commitment */
 };
 
-/* Open coins view. Opens a dedicated SQLite connection to the same
- * database file as `db`. This avoids SAVEPOINT/transaction conflicts
- * with node_db which runs BEGIN TRANSACTION on the shared handle. */
+/* Open coins view. If `db` is file-backed (`sqlite3_db_filename` returns
+ * a non-empty path), opens a dedicated sqlite3 handle on that same file
+ * so the flush's BEGIN IMMEDIATE runs on an independent `nVdbeWrite`
+ * counter — avoids the live-node stall where SAVEPOINT on a shared
+ * handle failed with "SQL statements in progress" whenever any other
+ * subsystem had a writer VDBE mid-execution (P14.1, 2026-04-19).
+ * `:memory:` handles fall back to the shared connection with SAVEPOINT
+ * nesting (used by a handful of unit tests that pass a throwaway DB). */
 bool coins_view_sqlite_open(struct coins_view_sqlite *cvs, sqlite3 *db);
 void coins_view_sqlite_close(struct coins_view_sqlite *cvs);
 
