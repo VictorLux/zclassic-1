@@ -65,6 +65,35 @@ bool incremental_tree_serialize(const struct incremental_merkle_tree *t,
 bool incremental_tree_deserialize(struct incremental_merkle_tree *t,
                                    struct byte_stream *s);
 
+/* ── Flat-file checkpoint (P12.1) ───────────────────────────────
+ *
+ * Dedicated on-disk checkpoint that lives independently of the
+ * SQLite-backed `node_state` table. Used by boot to skip the
+ * 2.6M-block replay path when a recent checkpoint is available;
+ * the rebuild path falls back to full replay if the file is
+ * missing, corrupt, or its embedded root doesn't match the
+ * deserialized tree.
+ *
+ * File format (little-endian, self-describing):
+ *   4  bytes  magic    = "SPLT"
+ *   4  bytes  version  = 1
+ *   8  bytes  height   (last block included in the tree)
+ *  32  bytes  root     (root hash at this height)
+ *   4  bytes  tree_size (leaf count — informational)
+ *   4  bytes  blob_len
+ *  blob_len bytes      (incremental_tree_serialize output)
+ *  32  bytes  sha3_256(everything above)
+ *
+ * Both entry points return false on any I/O / format / integrity
+ * failure; load also restores `*height_out` and the tree state
+ * only on success. */
+bool sapling_tree_flush_checkpoint(const struct incremental_merkle_tree *t,
+                                   int64_t height,
+                                   const char *path);
+bool sapling_tree_load_checkpoint(struct incremental_merkle_tree *t,
+                                  int64_t *height_out,
+                                  const char *path);
+
 /* Incremental witness — tracks a path to a specific leaf.
  * filled[] stores roots of completed subtrees in the authentication path.
  * For a depth-32 tree, max fills = 32. Use 64 for safety margin. */

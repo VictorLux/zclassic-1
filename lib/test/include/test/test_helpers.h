@@ -186,6 +186,7 @@ int test_transaction(void);
 int test_net(void);
 int test_activerecord(void);
 int test_sapling_crypto(void);
+int test_sapling_tree(void);
 int test_bn254(void);
 int test_merkle_tree(void);
 int test_slp(void);

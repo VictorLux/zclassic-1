@@ -80,6 +80,7 @@ int main(void)
     failures += test_validation();
     failures += test_sapling();
     failures += test_sapling_crypto();
+    failures += test_sapling_tree();
     failures += test_bn254();
     failures += test_merkle_tree();
     failures += test_slp();

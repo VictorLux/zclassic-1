@@ -354,6 +354,33 @@ bool incremental_tree_deserialize(struct incremental_merkle_tree *t,
     return wfcheck(t);
 }
 
+/* --- Flat-file checkpoint (P12.1) — RED stub: returns false ---
+ *
+ * These are the symbols the P12.1 RED test references. The real
+ * implementation (magic + version + root + blob + SHA3 trailer,
+ * atomic .tmp+rename, integrity verification on load) lands in
+ * the GREEN follow-up commit. Until then these return false so
+ * the unit test observes the expected failure. */
+bool sapling_tree_flush_checkpoint(const struct incremental_merkle_tree *t,
+                                   int64_t height,
+                                   const char *path)
+{
+    (void)t;
+    (void)height;
+    (void)path;
+    return false;
+}
+
+bool sapling_tree_load_checkpoint(struct incremental_merkle_tree *t,
+                                  int64_t *height_out,
+                                  const char *path)
+{
+    (void)t;
+    (void)height_out;
+    (void)path;
+    return false;
+}
+
 /* --- Incremental Witness --- */
 
 static size_t next_depth(const struct incremental_merkle_tree *t, size_t skip)
