@@ -121,10 +121,98 @@ STOP triggers satisfied:
 - No `coins_view` API surface change — connection-ownership
   change only.
 
-### NOW — P14.3 (CRITICAL): `zcl_syncdiag` SIGABRT
+### NOW — P14.7 (CRITICAL, NEW from coordinator canary): chain pins at h=3,081,601 post-P14.1
 
-P14.1 + P14.2 closed → P14.3 is next. Independent of the chain
-stall but just as severe — the live node crashes whenever the
+**Reprioritised.** The P14.1 canary deploy ran at 2026-04-19 18:18 UTC
+and the chain advanced 3,081,408 → 3,081,601 in the first ~3 min
+(+193 blocks, zero SAVEPOINT/BIP30 errors, dedicated-conn mode
+confirmed) — but then pinned at h=3,081,601 for the next ~20 min
+despite:
+
+- Headers reaching h=3,083,642 (`getblockchaininfo.headers`)
+- Peers at h=3,083,641 (6 of them, inbound)
+- `completed msg 'block' size=...` firing continuously in the log
+- Download queue 16 in-flight + 1,810 queued
+- **Zero** `connect_tip` / `activate_best_chain` / `update_tip`
+  attempts for any height > 3,081,601 in the log
+- **Zero** BIP30, SAVEPOINT-failed, BLOCK_FAILED_CHILD lines —
+  P14.1 genuinely fixed the flush bug; this is a new, downstream
+  failure mode that P14.1 unblocked
+
+Instead, the activation FSM flaps `ready → connecting: new_block →
+connecting → ready: behind_peers` ~5 times/sec. Each `new_block`
+signal arrives, drives the FSM to `connecting`, and then the FSM
+exits to `ready` via `behind_peers` — **without ever calling
+activate_best_chain**. The block goes into the download queue,
+never comes out. Memory grew 1.7 GB → 3.3 GB in 16 min = 94 MB/min
+steady pile-up.
+
+Two separate IBD status lines are alternating in the log, with
+different h= values — suggesting there are two chain-tip trackers
+in the sync stack and one is still stuck at the anchor height
+(3,081,408) while the other sees real progress (3,081,601):
+
+```
+IBD: h=3081408/3081408 0.0 blk/s ... dl[flight=0 queue=0 timeout=0]
+IBD: h=3081601/3083629 2.6 blk/s ... dl[flight=16 queue=1810 timeout=0]
+```
+
+The 2.6 blk/s rate is a historical average from the initial 193-
+block catch-up; actual current rate is 0 blk/s. Boot-time log
+also recorded `BUG: sync illegal transition headers_download ->
+reorg (chain reorganization)` which is a separate already-
+instrumented warning from the sync FSM.
+
+**Files in scope:**
+- `lib/event/src/event.c` — the activation state machine (`ready`,
+  `connecting`, `behind_peers`, etc.). This is where the FSM
+  transitions live.
+- `app/services/src/chain_activation_controller.c` — the driver
+  that reacts to `new_block` events and decides `connecting →
+  ?`. Grep for `behind_peers` and `activate_best_chain`.
+- `lib/validation/src/process_block.c` — the block receipt path.
+  Confirm each received block IS being queued to the FSM's
+  `new_block` channel (not silently dropped one level earlier).
+- `app/services/src/sync_service.c` — look at why there are TWO
+  IBD reporters (grep `"IBD:"`). One may be the legacy sync
+  tracker, the other the new ZCL23 one. Reconcile or pick one
+  as source of truth.
+
+**Discipline (P14 rule, same as P14.1/P14.2):**
+1. **Reproduce** on a fixture — the simplest is probably an
+   in-process block-arrival test where the FSM is in `ready`
+   state, a `new_block` event fires with a block at tip+1, and
+   you assert `activate_best_chain` was called before the FSM
+   returned to `ready`. Current behaviour: FSM exits to
+   `ready: behind_peers` without calling activate. Post-fix:
+   FSM calls activate, commit succeeds, tip advances, FSM exits
+   to `ready: tip_advanced` (or equivalent).
+2. **Root-cause writeup**: why does the FSM transition to
+   `behind_peers` when a new block at tip+1 is available?
+   Probably `behind_peers = (peer_max_height > chain_height +
+   SOME_THRESHOLD)` and the predicate is true forever during IBD.
+   But the `connecting` state should call activate BEFORE checking
+   behind_peers.
+3. **RED test first.**
+4. **Minimal fix.** Likely a reordering in the FSM's
+   `connecting → ?` decision tree.
+5. **Canary acceptance:** coordinator re-runs `make deploy`; live
+   node `getblockcount` advances continuously (target: within 10
+   blocks of peer tip within 15 min); zero pile-up in the download
+   queue (RSS stable, not climbing from block accumulation).
+
+**Why this is ahead of P14.3 now:** P14.1's canary demonstrated
+the chain CAN advance, so the node is no longer crash-looping —
+P14.3's `zcl_syncdiag` SIGABRT doesn't kill the node because no
+one is calling `zcl_syncdiag`. But the chain still isn't catching
+up to peers. P14.7 is what keeps the node perpetually 2,000 blocks
+behind after P14.1 "fixed" the stall.
+
+### NEXT — P14.3 (CRITICAL): `zcl_syncdiag` SIGABRT
+
+After P14.7. Same brief as before, just re-ordered:
+
+live node crashes whenever the
 coordinator calls `zcl_syncdiag` via MCP. Stack trace from the
 last crash (2026-04-19 16:55:29 UTC, journal exit-code 134):
 
@@ -164,13 +252,15 @@ RED test: drive `rpc_table_execute("getsyncdiag", ...)` 100 times
 under ASAN; before the fix, heap-use-after-free or stack-use-after-
 return; after the fix, clean.
 
-### NEXT (remainder, in order — unchanged)
+### NEXT (remainder, in order — re-prioritised after canary)
 
 | Order | Row | Notes |
 |---|---|---|
-| 4 | **P14.6** (= promoted P12.2) | `BLOCK_FAILED_CHILD` propagation GC — skip when parent already failed; cap per-retry marks. The OOM amplifier. |
-| 5 | **P14.4** FSM debounce | 500ms minimum dwell; coalesce during chain-tip-not-advancing. |
-| 6 | **P14.5** post-commit emission | `val.block_connected` only after `update_tip` returns true. |
+| NOW | **P14.7** | New CRIT — chain pins at 3,081,601, blocks queued but never connected. The actual sync-blocker today. |
+| 2 | **P14.3** | `zcl_syncdiag` SIGABRT (was NOW pre-canary; re-ordered because node is no longer crash-looping — P14.1 fixed that). |
+| 3 | **P14.6** (= promoted P12.2) | `BLOCK_FAILED_CHILD` propagation GC — skip when parent already failed; cap per-retry marks. The OOM amplifier. Pair with P14.7 if it surfaces there too. |
+| 4 | **P14.4** FSM debounce | 500ms minimum dwell; coalesce during chain-tip-not-advancing. Probably fixed naturally by P14.7 since the root cause of the flap is that `new_block` triggers it. Revisit after P14.7 lands. |
+| 5 | **P14.5** post-commit emission | `val.block_connected` only after `update_tip` returns true. |
 | — | — | — |
 | 7 | **P13.1** single-peer sync (was NOW before the real review) |
 | 8 | **P12.3** parity diff service |
