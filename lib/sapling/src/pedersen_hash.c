@@ -6,6 +6,7 @@
 #include "sapling/pedersen_hash.h"
 #include "sapling/sapling.h"
 #include "sapling/fr.h"
+#include <pthread.h>
 #include <string.h>
 
 #ifdef ZCL_TESTING
@@ -16,18 +17,20 @@
 #define PEDERSEN_NUM_GENERATORS 6
 
 static struct jub_point cached_generators[PEDERSEN_NUM_GENERATORS];
-static bool generators_loaded = false;
+static pthread_once_t generators_once = PTHREAD_ONCE_INIT;
 
 #ifdef ZCL_TESTING
-/* Observability for P9.5 concurrent-first-caller race. Counts how many
- * times the ensure_generators body actually executes. Pre-fix the plain
- * `static bool` guard allowed more than one racing thread to enter the
- * body; post-fix pthread_once pins this to exactly one. */
+/* Observability for P9.5 concurrent-first-caller race. Post-fix the
+ * pthread_once guarantees exactly one execution of the init body. */
 _Atomic int zcl_pedersen_generators_body_runs_for_test = 0;
 
 void zcl_pedersen_generators_reset_for_test(void)
 {
-    generators_loaded = false;
+    /* Reassigning a pthread_once_t is not specified by POSIX but is
+     * the canonical test-only trick on glibc (the type is a plain int
+     * with PTHREAD_ONCE_INIT == 0). Only safe to call when no other
+     * thread is racing — the race tests join all workers first. */
+    generators_once = (pthread_once_t)PTHREAD_ONCE_INIT;
     memset(cached_generators, 0, sizeof(cached_generators));
     atomic_store(&zcl_pedersen_generators_body_runs_for_test, 0);
 }
@@ -35,10 +38,8 @@ void zcl_pedersen_generators_reset_for_test(void)
 
 /* Derive Pedersen hash generators via find_group_hash("Zcash_PH", index).
  * The tag is the 4-byte LE segment index followed by a counter byte. */
-static void ensure_generators(void)
+static void load_generators(void)
 {
-    if (generators_loaded) return;
-
 #ifdef ZCL_TESTING
     atomic_fetch_add(&zcl_pedersen_generators_body_runs_for_test, 1);
 #endif
@@ -60,8 +61,11 @@ static void ensure_generators(void)
                 break;
         }
     }
+}
 
-    generators_loaded = true;
+static void ensure_generators(void)
+{
+    pthread_once(&generators_once, load_generators);
 }
 
 

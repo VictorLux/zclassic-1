@@ -21,6 +21,8 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+#include <pthread.h>
+
 #ifdef ZCL_TESTING
 #include <stdatomic.h>
 #endif
@@ -102,7 +104,7 @@ void sapling_tree_init(struct incremental_merkle_tree *t)
 /* Cached empty roots for Sapling Pedersen tree (depth 0..32).
  * Computed once on first use, reused for all subsequent calls. */
 static struct uint256 s_sapling_empty_roots[MAX_TREE_DEPTH + 1];
-static bool s_sapling_empty_roots_cached = false;
+static pthread_once_t s_sapling_empty_roots_once = PTHREAD_ONCE_INIT;
 
 #ifdef ZCL_TESTING
 /* See comment in pedersen_hash.c — P9.5 race observability. */
@@ -110,27 +112,29 @@ _Atomic int zcl_sapling_empty_roots_body_runs_for_test = 0;
 
 void zcl_sapling_empty_roots_reset_for_test(void)
 {
-    s_sapling_empty_roots_cached = false;
+    /* Reassigning a pthread_once_t is not specified by POSIX but is
+     * the canonical test-only trick on glibc. Only safe when no other
+     * thread is racing — the race tests join all workers first. */
+    s_sapling_empty_roots_once = (pthread_once_t)PTHREAD_ONCE_INIT;
     memset(s_sapling_empty_roots, 0, sizeof(s_sapling_empty_roots));
     atomic_store(&zcl_sapling_empty_roots_body_runs_for_test, 0);
 }
 #endif
 
-static void ensure_sapling_empty_roots(void (*combine)(const struct uint256 *,
-                                                        const struct uint256 *,
-                                                        size_t, struct uint256 *),
-                                        void (*uncommitted)(struct uint256 *))
+static void load_sapling_empty_roots(void)
 {
-    if (s_sapling_empty_roots_cached)
-        return;
 #ifdef ZCL_TESTING
     atomic_fetch_add(&zcl_sapling_empty_roots_body_runs_for_test, 1);
 #endif
-    uncommitted(&s_sapling_empty_roots[0]);
+    pedersen_uncommitted(&s_sapling_empty_roots[0]);
     for (size_t d = 0; d < MAX_TREE_DEPTH; d++)
-        combine(&s_sapling_empty_roots[d], &s_sapling_empty_roots[d],
-                d, &s_sapling_empty_roots[d + 1]);
-    s_sapling_empty_roots_cached = true;
+        pedersen_combine(&s_sapling_empty_roots[d], &s_sapling_empty_roots[d],
+                          d, &s_sapling_empty_roots[d + 1]);
+}
+
+static void ensure_sapling_empty_roots(void)
+{
+    pthread_once(&s_sapling_empty_roots_once, load_sapling_empty_roots);
 }
 
 /* Compute empty root at given depth. Uses cache for Pedersen trees. */
@@ -138,7 +142,7 @@ static void empty_root_at_depth(const struct incremental_merkle_tree *t,
                                  size_t depth, struct uint256 *out)
 {
     if (t->combine == pedersen_combine) {
-        ensure_sapling_empty_roots(t->combine, t->uncommitted);
+        ensure_sapling_empty_roots();
         *out = s_sapling_empty_roots[depth];
         return;
     }
