@@ -16,6 +16,7 @@
 #include "keys/key.h"
 #include "core/hash.h"
 #include "core/serialize.h"
+#include "core/utiltime.h"
 #include "script/standard.h"
 #include "storage/disk_block_io.h"
 #include "storage/dbwrapper.h"
@@ -1571,6 +1572,8 @@ int sapling_tree_rebuild(struct node_db *ndb,
             start_height, chain_tip);
     fflush(stderr);
 
+    int64_t t_replay_start = GetTimeMillis();
+
     /* mmap cache — local, thread-safe */
     int cached_file = -1;
     uint8_t *cached_data = NULL;
@@ -1666,6 +1669,12 @@ int sapling_tree_rebuild(struct node_db *ndb,
 
     char root_hex[65];
     uint256_get_hex(&final_root, root_hex);
+    int64_t replay_ms = GetTimeMillis() - t_replay_start;
+    int replayed_blocks = (chain_tip >= start_height)
+                          ? (chain_tip - start_height + 1)
+                          : 0;
+    fprintf(stderr, "sapling_tree_rebuild: replayed %d blocks in %lld ms\n",
+            replayed_blocks, (long long)replay_ms);
     fprintf(stderr, "sapling_tree_rebuild: DONE commitments=%d "
         "mismatches=%d root=%s match=%s\n",
         total_commitments, mismatches, root_hex,
