@@ -44,12 +44,15 @@ static bool bloom_filter_init_internal(struct bloom_filter *f, unsigned int num_
     f->is_full = false;
     f->is_empty = true;
 
-    if (constrained) {
-        unsigned int ideal_funcs = (unsigned int)(f->data_size * 8 / num_elements * LN2);
-        f->num_hash_funcs = ideal_funcs < MAX_BLOOM_HASH_FUNCS ? ideal_funcs : MAX_BLOOM_HASH_FUNCS;
-    } else {
-        f->num_hash_funcs = (unsigned int)(f->data_size * 8 / num_elements * LN2);
-    }
+    /* P8.5: clamp to MAX_BLOOM_HASH_FUNCS on BOTH paths. The internal
+     * rolling_bloom_init caller passes constrained=false for the
+     * filter_bits sizing cap, but the per-insert/contains siphash
+     * iteration count must still be bounded — otherwise pathological
+     * tuning (small num_elements, large data_size from a tight fp_rate)
+     * drives num_hash_funcs well past 50 and every subsequent
+     * insert/contains pays that cost. */
+    unsigned int ideal_funcs = (unsigned int)(f->data_size * 8 / num_elements * LN2);
+    f->num_hash_funcs = ideal_funcs < MAX_BLOOM_HASH_FUNCS ? ideal_funcs : MAX_BLOOM_HASH_FUNCS;
 
     f->tweak = tweak;
     f->flags = flags;

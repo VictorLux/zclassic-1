@@ -391,5 +391,61 @@ int test_bloom(void)
         else { printf("FAIL\n"); failures++; }
     }
 
+    /* ── P8.5: rolling_bloom must clamp MAX_BLOOM_HASH_FUNCS ────────── */
+
+    printf("P8.5: rolling_bloom_init clamps num_hash_funcs... ");
+    {
+        /* Pathological tuning: num_elements=1 (doubled to 2 internally)
+         * with fp_rate=1e-30 produces ideal ≈ 97 hash funcs pre-fix.
+         * Post-fix both internal filters must clamp to MAX_BLOOM_HASH_FUNCS. */
+        struct rolling_bloom_filter rf = {0};
+        bool ok = rolling_bloom_init(&rf, 1, 1e-30);
+        if (ok &&
+            rf.b1.num_hash_funcs == MAX_BLOOM_HASH_FUNCS &&
+            rf.b2.num_hash_funcs == MAX_BLOOM_HASH_FUNCS)
+            printf("OK (b1=%u b2=%u cap=%d)\n",
+                   rf.b1.num_hash_funcs, rf.b2.num_hash_funcs, MAX_BLOOM_HASH_FUNCS);
+        else {
+            printf("FAIL (ok=%d b1=%u b2=%u expected=%d)\n",
+                   ok, rf.b1.num_hash_funcs, rf.b2.num_hash_funcs, MAX_BLOOM_HASH_FUNCS);
+            failures++;
+        }
+        rolling_bloom_free(&rf);
+    }
+
+    printf("P8.5: rolling_bloom_init sane params not over-clamped... ");
+    {
+        /* Normal tuning: ideal << MAX_BLOOM_HASH_FUNCS. Assert the clamp
+         * doesn't regress everyday rolling-bloom behavior. */
+        struct rolling_bloom_filter rf = {0};
+        bool ok = rolling_bloom_init(&rf, 120000, 0.000001);
+        if (ok &&
+            rf.b1.num_hash_funcs > 0 && rf.b1.num_hash_funcs <= MAX_BLOOM_HASH_FUNCS &&
+            rf.b2.num_hash_funcs > 0 && rf.b2.num_hash_funcs <= MAX_BLOOM_HASH_FUNCS)
+            printf("OK (hashes=%u)\n", rf.b1.num_hash_funcs);
+        else {
+            printf("FAIL (ok=%d b1=%u b2=%u)\n",
+                   ok, rf.b1.num_hash_funcs, rf.b2.num_hash_funcs);
+            failures++;
+        }
+        rolling_bloom_free(&rf);
+    }
+
+    printf("P8.5: bloom_filter_init regression (public path still clamps)... ");
+    {
+        /* Same pathological tuning via the public constrained path.
+         * Pre- and post-fix must both clamp; this asserts we didn't
+         * break the existing behavior while lifting the clamp. */
+        struct bloom_filter f = {0};
+        bool ok = bloom_filter_init(&f, 1, 1e-30, 0, BLOOM_UPDATE_NONE);
+        if (ok && f.num_hash_funcs == MAX_BLOOM_HASH_FUNCS)
+            printf("OK\n");
+        else {
+            printf("FAIL (ok=%d hashes=%u)\n", ok, f.num_hash_funcs);
+            failures++;
+        }
+        bloom_filter_free(&f);
+    }
+
     return failures;
 }
