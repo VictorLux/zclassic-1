@@ -38,7 +38,7 @@ gap analysis. See `AGENT.md` for the cross-agent priority table.
 
 ---
 
-## Current status — 2026-04-19 (post-P10.1.4 + P8.6 + P8.7; canary pending; CI flagged)
+## Current status — 2026-04-19 (post-P10.1.4 + P8.6 + P8.7 + P8.8; canary pending; CI flagged)
 
 **Done and on main (33 rows + 2 infra):** P1.1, P1.2, P1.5, P6.1–P6.6,
 P3.1–P3.7, P5.1, P5.2, P5.3, P5.4, P5.6, P5.7, P4.3, P4.4, P4.5,
@@ -91,8 +91,9 @@ The P10.1 sequence is the canonical example of HI=1.0 work.
 | WAITING | **P10.1.5** — Live-node verification (Rhett runs deploy) | n/a | Rhett — coordinator |
 | DONE | **P8.7** — zmarket_offer num_chunks u32 overflow guard | small | done 8e5522a8b [test:0.5] (self-contained; in-lane; NEXT queue pre-authorization) |
 | DONE | **P8.6** — zslp_service token_key disambiguation | small | done 93936c5fb [test:0.5] (self-contained; revised mid-flight when first draft regressed the ZCL23ACCESS store e2e) |
-| UNBLOCKED-ON-CANARY | P8.4, P8.8, P7.10 follow-up | — | ready after canary clears |
-| FLAGGED | `make ci` bus-error in test_cookie_rotation | n/a | pre-existing, not P10.1 / P8.6 / P8.7 — Rhett |
+| DONE | **P8.8** — ZNAM REGISTER/UPDATE accept multi-coin types | small | done bb8f293b1 [test:0.5] (parser-parity — lift cap from literal 3 to ZNAM_TYPE_CONTENT) |
+| UNBLOCKED-ON-CANARY | P8.4, P7.10 follow-up | — | ready after canary clears |
+| FLAGGED | `make ci` bus-error in test_cookie_rotation | n/a | pre-existing, not P10.1 / P8.6 / P8.7 / P8.8 — Rhett |
 
 **Recently landed (preserved for context):** P10.1.4 fix
 (`ac782fef5`), P10.1.3 RED (`ae7caa1fe`), P10.1.2 writeup
@@ -624,6 +625,19 @@ If build or tests fail — STOP and report.
 ## Notes from Agent-2
 
 _(Keep short — 1-3 recent entries.)_
+
+### 2026-04-19 (post-P8.6) — P8.8 ZNAM parser-parity one-liner
+
+**P8.8 (`bb8f293b1`):** `znam_build_register` and `znam_build_update`
+at `lib/znam/src/znam.c:190,205` had a literal-3 `target_type` cap
+(ONION/ZADDR/TADDR only), but `znam_parse` at `:125` and
+`znam_build_set_record` at `:242` both accept up to
+`ZNAM_TYPE_CONTENT = 7`. A wallet calling REGISTER with a BTC/LTC/
+DOGE/CONTENT type got a silent `return 0` with no logged reason.
+Fix: lift the cap to `ZNAM_TYPE_CONTENT` in both builders — parser
+parity. 7 new cases in `test_znam.c` exercise each multi-coin type
+with a parse round-trip assertion, plus negative tests at type=8
+and type=255.
 
 ### 2026-04-19 (post-P8.7) — P8.6 token_key disambiguation; revised mid-flight
 
