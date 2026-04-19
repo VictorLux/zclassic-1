@@ -60,25 +60,155 @@ secondary here — what we need is **independent eyes on the
 analysis**, not crypto expertise. Push back hard if the writeup
 hand-waves any of the four required questions.
 
-**No new code from you until P10.1 closes.** Resist the urge to
-start fixing P9.x rows; they're parked deliberately. When P10.1
-closes, Rhett will re-triage and assign.
+**P9.x crypto fixes stay deferred.** Resist the urge to start
+those rows; they're parked deliberately. When P10.1 closes, Rhett
+re-triages.
 
-**Open queue: empty by design.** Watch for Agent-2's pushes:
+**Open queue (two concrete deliverables):**
 
-| Order | Row | Size | Severity |
+| Order | Row | Size | Owner |
 |---|---|---|---|
-| **NOW** | **On-call**: review Agent-2's P10.1 deliverables when they push | n/a | n/a |
-| NEXT | (queue empty — Rhett re-triages P9 wave after P10.1 closes) | — | — |
+| **NOW** | **P10.1.2-REVIEW** — produce written review of Agent-2's root-cause writeup | small (~30 min) | Agent 3 |
+| NEXT | **P11.1** — MVP criterion #2 CI test: Tor onion bootstrap in <60s | medium | Agent 3 |
+| follow-up | (P11.x MVP criteria — TBD per `MVP.md`) | — | TBD |
 
-When Agent-2 pushes P10.1.2 (root-cause writeup), read it carefully
-and reply with one of:
-- "Concur — root cause looks right, P10.1.3 should test for X."
-- "Disagree — the analysis missed Y, please revisit before P10.1.3."
+---
 
-Your crypto/sapling expertise is most valuable as a sanity check on
-the writeup, not as a parallel investigation. Don't re-investigate
-unless asked.
+## NOW — P10.1.2-REVIEW: written review of root-cause writeup
+
+Agent-2 pushed `docs/postmortems/2026-04-19-bip30-stall.md` as
+`5279752d1`. Their TL;DR: `disconnect_block`'s
+`coins_map_erase(&view->cache_coins, &tx->hash)` at
+`lib/validation/src/connect_block.c:639` leaves the disconnected
+coinbase in the backing store. The flush only writes DIRTY entries,
+and an erased entry is non-DIRTY → row survives in SQLite → next
+reconnect trips BIP30.
+
+### Deliverable
+
+A new markdown file: `docs/reviews/2026-04-19-p10-1-2-review.md`.
+Required structure:
+
+```markdown
+# Review of P10.1.2 root-cause writeup (5279752d1)
+## Reviewer: Agent-3
+## Verdict: CONCUR | CONCUR_WITH_NOTES | DISAGREE
+
+## Question 1 (regress path 3,081,408 → 3,081,407)
+[Your assessment of Agent-2's answer. Either:
+ - "Concur. The disconnect_tip path at process_block.c:2082 matches
+   the log evidence (no EV_REORG_START emitted)."
+ - OR specific disagreement: "Path X looks more likely because Y."]
+
+## Question 2 (why BIP30 trips post-P8.9)
+[Your assessment. Either concur or specifically point to a code
+ path the writeup missed.]
+
+## Question 3 (the invariant)
+[Your assessment. Is the invariant correctly phrased? Does it
+ cover the cache+backing two-layer state correctly?]
+
+## Question 4 (test gap)
+[Your assessment. Which existing test SHOULD have caught this?
+ Why didn't it?]
+
+## Suggested test for P10.1.3
+[Concrete: which file, which existing fixture, what the new test
+ should assert. Be specific enough that Agent-2 can implement
+ directly.]
+
+## Other concerns (optional)
+[Anything else worth flagging.]
+```
+
+### How to do the review
+
+1. Read the writeup carefully — `docs/postmortems/2026-04-19-bip30-stall.md`.
+2. Read the cited line numbers in the actual source — at minimum
+   `connect_block.c:639`, `process_block.c:2082`, `coins_view.c:255`,
+   `coins_view_sqlite.c:664`.
+3. Read Agent-2's reproduction test — `lib/test/src/test_chain_stall_repro.c`
+   (landed `1243e1766`). Confirm the test exercises the SAME path the
+   writeup names (not a different BIP30 trigger).
+4. Write the review file. Time-box: 30 min. If you can't reach
+   CONCUR or DISAGREE within 30 min, emit CONCUR_WITH_NOTES and list
+   the specific things you couldn't verify.
+
+### Why this matters
+
+The MVP target needs HI ≥80%. If P10.1.2's root cause is wrong,
+P10.1.3's regression test will be the wrong test, P10.1.4 will be
+another hotfix in disguise, and the live node won't recover. Your
+job is to be the second pair of eyes that catches that.
+
+### Commit template
+
+```
+docs/reviews: P10.1.2 review — concur with disconnect_block leak (P10.1.2-REVIEW)
+
+Reviewed Agent-2's root-cause writeup (5279752d1) and the cited
+code paths. Verdict: <CONCUR|CONCUR_WITH_NOTES|DISAGREE>.
+
+<one-paragraph summary of the assessment, naming any concerns>.
+```
+
+After this lands, Agent-2 proceeds with P10.1.3 (RED regression
+test). You move to P11.1.
+
+---
+
+## NEXT — P11.1: MVP criterion #2 CI test (Tor onion bootstrap <60s)
+
+After the P10.1.2 review lands. Independent of P10.1's progress.
+
+### Goal
+
+`MVP.md` criterion #2: "Tor onion bootstrap in <60s." Today this
+is **untested in CI** — it's only verified by manual operator
+inspection of `zcl_status` after a fresh boot. Build the harness
+that flips this from ☐ to ✅.
+
+### Deliverable
+
+New CI test in `lib/test/src/test_onion_bootstrap.c` that:
+
+1. Spins up an in-process or temp-datadir node with `-tor`.
+2. Polls `zcl_onion_status` (or the underlying state machine) at
+   1Hz for up to 90 seconds.
+3. Asserts `bootstrap_state == ready` within **60 seconds**.
+4. Asserts the `.onion` address is non-empty + valid format.
+5. Marked `ZCL_STRESS_TESTS`-guarded if it requires the full Tor
+   submodule build (don't slow down `make test` for everyone).
+
+### Lane fit
+
+- `vendor/tor` is your lane (P5.5).
+- `lib/net/src/onion_service.c` + `tor_integration.c` are
+  Agent-2's lane — read-only for you, but you can call into
+  their public API from the test.
+- New test file in `lib/test/src/` — both lanes have access.
+
+### Acceptance
+
+- New test exists.
+- Runs cleanly under `make test` (or `make stress-test` if guarded).
+- Test PASSES today (verifies the current behavior meets MVP #2).
+- Fails loudly if the bootstrap regresses past 60s in the future.
+- Updates `MVP.md` criterion #2 from ☐ to ✅ with the test path.
+
+### Commit template
+
+```
+test/onion: CI assertion for MVP criterion #2 (bootstrap <60s) (P11.1)
+
+Fixes P11.1 (AGENT.md). Adds lib/test/src/test_onion_bootstrap.c
+which spins a temp-datadir node with -tor, polls onion_status at
+1Hz, and asserts bootstrap_state=ready within 60s.
+
+Flips MVP.md criterion #2 from ☐ to ✅. MRS now <fill>/8.
+
+Test passes today; will fail loudly on any future regression.
+```
 
 ---
 
