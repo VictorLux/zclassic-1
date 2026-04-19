@@ -344,6 +344,20 @@ reviewed.
 
 ---
 
+## Priority 11 — MVP criteria CI gates (2026-04-19)
+
+One CI gate per `MVP.md` criterion.  Each row is forward-looking (the
+system already meets the criterion today; the CI test locks it in and
+fails loudly on future regressions).  MRS bumps by one each time a
+row lands green.
+
+| # | Task | Acceptance | Owner |
+|---|---|---|---|
+| **P11.1** | **MVP #2 — Tor onion bootstrap <60s.** New CI test in `lib/test/src/test_onion_bootstrap.c` that spins a temp-datadir Tor via `tor_integration_start`, polls `tor_integration_is_ready` at 1Hz, asserts ready within 60s, asserts the reported `.onion` is a well-formed v3 address.  `ZCL_STRESS_TESTS=1`-gated to keep `make test` fast. | New test exists, passes today under the stress gate; `MVP.md` criterion #2 flipped ☐ → ✅. | Agent 3 — done 63f98909d [test:0.5] (`lib/test/src/test_onion_bootstrap.c`; measured 13s bootstrap on first dev run, comfortably inside the 60s MVP budget.  Registered in `lib/test/src/test.c` default sequence AND via `ZCL_TEST_ONLY=onion` shortcut.  Skip path works when the stress flag is unset — no impact on default `make test` cadence.  Forward-looking assertion — not RED-first, hence `[test:0.5]`) |
+| P11.x | Follow-up MVP-criterion CI gates (#1, #3, #4, #5, #6, #7, #8 — TBD per `MVP.md`) | — | TBD |
+
+---
+
 ## Status tracking
 
 Edit the tables inline as work lands. Replace `open` with `in-progress` / `done`
