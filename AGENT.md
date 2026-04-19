@@ -6,28 +6,28 @@ Owner: Rhett (primary). Delegates: Agent-2 (see `AGENT-2.md`), Agent-3 (see `AGE
 
 ---
 
-## Progress — last update 2026-04-19 (late night, P8.5 landed 21da0531e — Agent-3 queue empty)
+## Progress — last update 2026-04-19 (late night, P9 wave opened — 10 new rows from Agent-3 sapling-prover audit)
 
-**Overall: 67 / 74 rows closed (91%) | SWRC ~95%**
+**Overall: 67 / 84 rows closed (80%) | SWRC ~84%**
 
 | Tier | Closed / Total | % | Open rows |
 |---|---|---|---|
-| **CRITICAL** | 12 / 13 | **92%** | **P8.10 (LIVE-NODE HOTFIX-2)** |
-| **HIGH** | 29 / 29 | **100%** | — |
-| **MED** | 21 / 26 | **81%** | P7.10, P8.4, P8.6, P8.7, P8.8 |
-| **LOW** | 2 / 2 | **100%** | — |
+| **CRITICAL** | 12 / 14 | **86%** | **P8.10 (LIVE-NODE HOTFIX-2)**, P9.2 |
+| **HIGH** | 29 / 33 | **88%** | P9.1, P9.3, P9.4, P9.5 |
+| **MED** | 21 / 30 | **70%** | P7.10, P8.4, P8.6, P8.7, P8.8, P9.6, P9.7, P9.8, P9.9 |
+| **LOW** | 2 / 3 | **67%** | P9.10 |
 | (P0 baseline) | 4 / 4 | **100%** | — |
 
-**Open by owner (2026-04-19 late night, post-P8.5):**
+**Open by owner (2026-04-19 late night, post-P9-wave):**
 - **Agent-2 (5 MED rows + 1 CRIT hotfix):** **P8.10 (CRIT, NOW)** — P8.9 was incomplete: chain advanced 3,081,407→3,081,408 transiently, then regressed back to 3,081,407 within 3h while memory climbed to 5.9G via repeated `BLOCK_FAILED_CHILD` propagation (973+ descendants per retry). Then P8.4/P8.6/P8.7/P8.8 + P7.10 migration follow-up.
-- **Agent-3 (1 audit task):** **Sapling-prover deep audit** → open the P9 wave (sapling-only, ≤10 findings, AGENT.md-only deliverable, ~90 min). The P1 wave touched the API surface; prover internals (`groth16_prover.c`, `sapling_circuit.c`, `circuit_gadgets.c`, `msm_parallel.c`, `pedersen_hash.c`, `incremental_merkle_tree.c`, Sprout PHGR13 corners) got light coverage. P8.5 landed `21da0531e` — Agent-3 lane fully drained otherwise.
-- **Rhett:** 0 (coordinator only).
+- **Agent-3 (10 P9 rows — pending Rhett triage):** P9.1–P9.10 all in `lib/sapling/`. Default ownership = Agent-3 (sapling lane). Severity breakdown: 1 CRIT (P9.2 UB in circuit synth placeholder), 4 HIGH (P9.1 prover-scalar-mul side-channel, P9.3 silent constraint-system OOM corruption, P9.4 FFT/MSM silent no-op on non-power-of-2, P9.5 lazy-init thread-safety), 4 MED (P9.6 witness length validation, P9.7 sprout ic_len underflow, P9.8 pedersen group-hash counter exhaustion, P9.9 stdout printfs in crypto paths), 1 LOW (P9.10 parallel-MSM cache-side-channel).
+- **Rhett:** triage P9.1–P9.10 → assign owners + severity confirmations.
 
-**LIVE-NODE STATUS (2026-04-19):** restarted at 23:22 UTC after memory hit 5.9G/6.0G. Chain at h=3,081,407 — P8.9 hotfix shipped + briefly worked but regressed; P8.10 captures the gap. **Hot path:** Agent-2's P8.10 must land + redeploy before next OOM (~3h cycle observed).
+**LIVE-NODE STATUS (2026-04-19):** restarted at 23:22 UTC after memory hit 5.9G/6.0G. Chain at h=3,081,407 — P8.9 hotfix shipped + briefly worked but regressed; P8.10 captures the gap. **Hot path:** Agent-2's P8.10 must land + redeploy before next OOM (~3h cycle observed). P9 wave is audit-only — no impact on live-node triage.
 
-**Top remaining risks:** P8.10 is the new live-node hotfix. After it ships: Agent-2 has 4 P8 MEDs + P7.10 follow-up; Agent-3 queue empty.
+**Top remaining risks:** P8.10 is the live-node hotfix. P9.2 is the next most-urgent row (undefined-behavior in `sapling_circuit.c` production paths — even though the dead-path guess may shadow it, UB in crypto code is a landmine). P9.1 is the zero-knowledge blinding-factor side-channel — serious for privacy, not for consensus.
 
-**SWRC formula:** CRIT=4, HIGH=2, MED=1, LOW=0.5. P0 rows weighted as HIGH. Total weighted capacity = 143 (+4 for new CRIT P8.10).
+**SWRC formula:** CRIT=4, HIGH=2, MED=1, LOW=0.5. P0 rows weighted as HIGH. Total weighted capacity = 143 + 4 (P8.10) + 4 (P9.2) + 8 (P9.1/3/4/5) + 4 (P9.6/7/8/9) + 0.5 (P9.10) = 163.5.
 
 ---
 
@@ -209,6 +209,42 @@ verification, znam parser bounds, store controller (post-P3.4/P3.6).
   escape paths), p2p_game wire, dandelion epoch lifecycle, mining
   thread loop, flyclient sample/index verification, znam parser
   bounds, store controller (post-P3.4/P3.6).
+
+---
+
+## Priority 9 — Sapling-prover deep audit (2026-04-19, post-P8 drain)
+
+Surfaced by Agent-3's sapling-only audit after P8.5. P1 wave touched
+the API surface; this wave hit prover internals: `groth16_prover.c`,
+`sapling_circuit.c`, `sapling_prover_c23.c`, `msm_parallel.c`,
+`pedersen_hash.c`, `incremental_merkle_tree.c`, `sprout.c`, and the
+`g1_scalar_mul` exit in `bls12_381.c`. Re-audited clean: `circuit_gadgets.c`,
+`bn254.c`. `jubjub.c`, `fr.c`, `note_encryption.c`, `sapling.c` already
+P1-audited and not re-scanned.
+
+| # | Task | File:line | Severity | Owner |
+|---|---|---|---|---|
+| P9.1 | `g1_scalar_mul` is a naïve variable-time double-and-add: `if ((scalar[i] >> bit) & 1) g1_add(...)` branches on every scalar bit. Called from `groth16_prover.c:771,799,825,834,845` with the secret Groth16 blinding scalars `r_blind`, `s_blind`, `r·s`. Leaks blinding via branch-predictor / cache timing, breaking zero-knowledge (not soundness — a timing-observer recovers blinding and can check candidate witnesses). Same bug class as P1.12 / P1.16b fixed for `jub_scalar_mul`. | `lib/sapling/src/bls12_381.c:1708-1722` (prover sites in `groth16_prover.c:771,799,825,834,845`) | HIGH | Agent 3 |
+| P9.2 | `sapling_circuit.c` ships two `/* placeholder */` paths with UB that sit in production `sapling_create_spend_proof` / `sapling_create_output_proof`. At :161-162, `struct jub_point nk_point; jub_scalar_mul(&nk_point, &nk_point, wit->nsk);` — `nk_point` is uninitialized AND self-aliased as input/output of scalar mul. At :65, `jub_scalar_mul(&rcm_point, &hash_point, rcm); /* placeholder */` then the function just returns `hash_point.x` — rcm is discarded, note commitment not randomized per spec. Both reachable from `zclassic_sapling_spend_proof` / `output_proof` (wallet path). Proofs produced here cannot verify. If paths are shadowed by another impl, delete with an explicit LOG_FAIL rather than leaving UB live. | `lib/sapling/src/sapling_circuit.c:65, 161-162` | CRITICAL | Agent 3 |
+| P9.3 | `lc_add_term` / `cs_alloc_var` / `cs_enforce` return `void` and silently drop their input on `zcl_realloc` failure. On OOM mid-proof: (a) terms vanish, (b) new var alloc returns 0 = CS_ONE index, aliasing every subsequent var to ONE, (c) constraints vanish. Output CS is syntactically valid but semantically wrong; prover emits a Groth16 proof for a different circuit than the verifier expects. No log, no signal. Only surfaces under memory pressure — exactly when the node is struggling. | `lib/sapling/src/groth16_prover.c:38-44, 91-103, 117-145` | HIGH | Agent 3 |
+| P9.4 | `fr_fft` / `fr_fft_parallel` silently no-op on non-power-of-2 input: `if ((size_t)1 << log_n != n) return;`. Caller continues with un-FFT'd data → invalid proof. Currently unreachable via `groth16_prove:648-650` which rounds domain to a power of 2, but the pattern sits in the prover waiting for the next caller. Promote to `bool`, LOG_FAIL on bad input, propagate. | `lib/sapling/src/groth16_prover.c:222`; `lib/sapling/src/msm_parallel.c:333,340` | HIGH | Agent 3 |
+| P9.5 | Two lazy Sapling caches init without thread-safety: `pedersen_hash.c:14-42` (`ensure_generators` / `cached_generators[6]`) and `incremental_merkle_tree.c:92-107` (`ensure_sapling_empty_roots` / 33-entry cache), both guarded only by a plain `static bool`. Two concurrent first-callers (wallet RPC thread + bg_validation) race: one reads a partially-initialized cache entry (zero point → silently wrong Pedersen hash → wrong commitment). Manifests as transient "invalid commitment" errors in the first minute after boot under load, gone after caches stabilize. Fix with `pthread_once` or atomic+mutex double-check. | `lib/sapling/src/pedersen_hash.c:14-42`; `lib/sapling/src/incremental_merkle_tree.c:92-107` | HIGH | Agent 3 |
+| P9.6 | `zclassic_sapling_spend_proof` takes `const unsigned char *witness` with no length; loop at :185-188 reads `1 + 32*33 = 1057` bytes gated only by the `depth != 32` first-byte check at :181. Not currently exploitable (live callers hand-build the witness), but the signature forbids compiler-side catching the next caller who passes a shorter buffer. Add `size_t witness_len` + LOG_FAIL on shortfall. | `lib/sapling/src/sapling_prover_c23.c:131-188` | MED | Agent 3 |
+| P9.7 | `sprout_verify_groth16` computes `sprout_vk->ic_len - 1` (size_t). If `ic_len == 0` (fresh-calloc'd VK, partial load failure, defensive reset), underflows to SIZE_MAX — comparison still fails-closed, but LOG_FAIL prints `expected=18446744073709551615` which is operator-hostile. Also no locking: concurrent `sprout_set_vk(NULL)` between :49 and :80 crashes. Snapshot pointer to a local at function top + LOG_FAIL early on `ic_len < 1`. | `lib/sapling/src/sprout.c:11, 49, 80-83` | MED | Agent 3 |
+| P9.8 | `pedersen_hash.c::ensure_generators` loops `for (int c = 0; c < 256; c++) { if (group_hash(...)) break; }` per Pedersen segment. If all 256 fail (cryptographically near-impossible, but a bug/bit-flip in `group_hash` would trigger it), loop exits silently and `cached_generators[i]` stays zero/stale. Pedersen hash then silently uses a zero generator, collapsing note commitments. Same class as P1.10 fixed in `sapling.c::find_group_hash` — mirror the pattern: track success, LOG_FAIL + abort on exhaustion. | `lib/sapling/src/pedersen_hash.c:33-38` | MED | Agent 3 |
+| P9.9 | Prover emits `printf(...)\n` to stdout on every major step: `sapling_circuit.c:260,481` (per proof), `groth16_prover.c:604-605` (per PK load), `params_init.c:216,256,258,285` (per init). Pollutes operator log, leaks wallet-activity timing (spend-proof generation fires the printf, visible to anyone reading the log), conflicts with project-wide `LOG_INFO` / event-bus discipline. Replace with `LOG_INFO` or delete — data is already in events/metrics. | `sapling_circuit.c:260,481`; `groth16_prover.c:604-605`; `params_init.c:216,256,258,285` | MED | Agent 3 |
+| P9.10 | `msm_parallel.c` workers use naïve bucket access: `g1_add(&buckets[val - 1], ...)` with `val` derived from `c` bits of a secret scalar. Every scalar-bit group hits a different cache line → cache-side-channel on the witness (notes, rcm, esk). Same concern as P9.1 but on the witness side. Switch prover-side MSM to CT bucket access (linear scan + masked select), OR document non-CT + confirm single-tenant threat model. Verifier-side MSM (public inputs + VK) is fine. | `lib/sapling/src/msm_parallel.c:60-69, 181-190`; serial at `groth16_prover.c:300-322, 362-381` | LOW | Agent 3 |
+
+**Triage notes for Rhett:**
+- P9.2 is the only CRIT — land first. If the placeholder paths are
+  shadowed by another prover impl, the fix is a 3-line LOG_FAIL; if
+  live, it's a multi-day note-commitment rewrite.
+- P9.1 + P9.10 are the two halves of the prover side-channel story.
+  Consider a single commit — shared helpers and a shared Hamming-
+  weight timing regression, mirror of P1.12 / P1.16b.
+- P9.6, P9.7, P9.8 are small defensive-coding hygiene rows — batchable.
+- P9.9 is a 10-minute commit. P9.5 pairs with any future `sapling/`
+  perf work; the fix is `pthread_once`.
 
 ---
 
