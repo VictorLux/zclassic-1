@@ -8,10 +8,18 @@
 #include "sapling/incremental_merkle_tree.h"
 #include "sapling/pedersen_hash.h"
 #include "crypto/sha256.h"
+#include "crypto/sha3.h"
 #include "util/log_macros.h"
+#include "util/safe_alloc.h"
 #include <assert.h>
+#include <errno.h>
+#include <fcntl.h>
 #include <inttypes.h>
+#include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
+#include <unistd.h>
 
 /* Local shorthand for the (de)serialize/wfcheck error paths below. Each use
  * logs function/file/line plus a field name so a corrupted tree on disk
@@ -354,31 +362,246 @@ bool incremental_tree_deserialize(struct incremental_merkle_tree *t,
     return wfcheck(t);
 }
 
-/* --- Flat-file checkpoint (P12.1) — RED stub: returns false ---
+/* --- Flat-file checkpoint (P12.1) ───────────────────────────
  *
- * These are the symbols the P12.1 RED test references. The real
- * implementation (magic + version + root + blob + SHA3 trailer,
- * atomic .tmp+rename, integrity verification on load) lands in
- * the GREEN follow-up commit. Until then these return false so
- * the unit test observes the expected failure. */
+ * Replaces the 2.6M-block sapling tree replay on crash recovery
+ * with a sub-second load from a dedicated on-disk checkpoint.
+ * Lives outside the SQLite-backed node_state table so it is
+ * immune to P14-class savepoint contention. See header for the
+ * file format. */
+
+#define SAPLING_CKPT_MAGIC     "SPLT"
+#define SAPLING_CKPT_VERSION   1
+#define SAPLING_CKPT_HEADER_SZ (4 + 4 + 8 + 32 + 4 + 4)
+#define SAPLING_CKPT_TRAILER_SZ 32
+#define SAPLING_CKPT_MAX_BLOB  (64u * 1024u)
+
+static bool ckpt_write_u32_le(uint8_t *p, uint32_t v)
+{
+    p[0] = (uint8_t)(v & 0xff);
+    p[1] = (uint8_t)((v >> 8) & 0xff);
+    p[2] = (uint8_t)((v >> 16) & 0xff);
+    p[3] = (uint8_t)((v >> 24) & 0xff);
+    return true;
+}
+
+static bool ckpt_write_u64_le(uint8_t *p, uint64_t v)
+{
+    for (int i = 0; i < 8; i++)
+        p[i] = (uint8_t)((v >> (i * 8)) & 0xff);
+    return true;
+}
+
+static uint32_t ckpt_read_u32_le(const uint8_t *p)
+{
+    return ((uint32_t)p[0]) | ((uint32_t)p[1] << 8) |
+           ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
+}
+
+static uint64_t ckpt_read_u64_le(const uint8_t *p)
+{
+    uint64_t v = 0;
+    for (int i = 0; i < 8; i++)
+        v |= ((uint64_t)p[i]) << (i * 8);
+    return v;
+}
+
 bool sapling_tree_flush_checkpoint(const struct incremental_merkle_tree *t,
                                    int64_t height,
                                    const char *path)
 {
-    (void)t;
-    (void)height;
-    (void)path;
-    return false;
+    if (!t || !path)
+        LOG_FAIL("sapling_tree",
+                 "flush_checkpoint: NULL arg (t=%p path=%p)",
+                 (const void *)t, (const void *)path);
+
+    /* 1. Serialize the tree blob. */
+    struct byte_stream blob;
+    stream_init(&blob, 4096);
+    if (!incremental_tree_serialize(t, &blob)) {
+        stream_free(&blob);
+        LOG_FAIL("sapling_tree",
+                 "flush_checkpoint: serialize failed");
+    }
+    if (blob.size > SAPLING_CKPT_MAX_BLOB) {
+        stream_free(&blob);
+        LOG_FAIL("sapling_tree",
+                 "flush_checkpoint: blob size %zu exceeds max %u",
+                 blob.size, SAPLING_CKPT_MAX_BLOB);
+    }
+
+    /* 2. Compute current root. */
+    struct uint256 root;
+    incremental_tree_root(t, &root);
+
+    /* 3. Build the header + body in a contiguous buffer so we can
+     *    hash it in one shot for the trailer. */
+    size_t body_sz = SAPLING_CKPT_HEADER_SZ + blob.size;
+    uint8_t *body = (uint8_t *)zcl_malloc(body_sz, "sapling_ckpt_body");
+    if (!body) {
+        stream_free(&blob);
+        LOG_FAIL("sapling_tree",
+                 "flush_checkpoint: alloc body %zu failed", body_sz);
+    }
+    memcpy(body + 0, SAPLING_CKPT_MAGIC, 4);
+    ckpt_write_u32_le(body + 4, SAPLING_CKPT_VERSION);
+    ckpt_write_u64_le(body + 8, (uint64_t)height);
+    memcpy(body + 16, root.data, 32);
+    ckpt_write_u32_le(body + 48, (uint32_t)incremental_tree_size(t));
+    ckpt_write_u32_le(body + 52, (uint32_t)blob.size);
+    memcpy(body + SAPLING_CKPT_HEADER_SZ, blob.data, blob.size);
+    stream_free(&blob);
+
+    uint8_t trailer[SAPLING_CKPT_TRAILER_SZ];
+    zcl_sha3_256(body, body_sz, trailer);
+
+    /* 4. Atomic write: .tmp + fsync + rename. */
+    size_t path_len = strlen(path);
+    char *tmp_path = (char *)zcl_malloc(path_len + 8, "sapling_ckpt_tmp_path");
+    if (!tmp_path) {
+        free(body);
+        LOG_FAIL("sapling_tree",
+                 "flush_checkpoint: alloc tmp_path failed");
+    }
+    snprintf(tmp_path, path_len + 8, "%s.tmp", path);
+
+    int fd = open(tmp_path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    if (fd < 0) {
+        int saved_errno = errno;
+        fprintf(stderr,
+                "[sapling_tree] %s:%d %s(): flush_checkpoint: "
+                "open(%s) failed: %s\n",
+                __FILE__, __LINE__, __func__, tmp_path,
+                strerror(saved_errno));
+        free(body);
+        free(tmp_path);
+        return false;
+    }
+
+    bool ok = true;
+    ssize_t w1 = write(fd, body, body_sz);
+    if (w1 < 0 || (size_t)w1 != body_sz) ok = false;
+    ssize_t w2 = write(fd, trailer, SAPLING_CKPT_TRAILER_SZ);
+    if (w2 < 0 || (size_t)w2 != SAPLING_CKPT_TRAILER_SZ) ok = false;
+
+    if (ok && fsync(fd) != 0) ok = false;
+    if (close(fd) != 0) ok = false;
+
+    if (ok) {
+        if (rename(tmp_path, path) != 0) ok = false;
+    } else {
+        unlink(tmp_path);
+    }
+
+    int saved_errno = errno;
+    free(body);
+    free(tmp_path);
+
+    if (!ok) {
+        fprintf(stderr,
+                "[sapling_tree] %s:%d %s(): flush_checkpoint: "
+                "write/rename to %s failed: %s\n",
+                __FILE__, __LINE__, __func__, path,
+                strerror(saved_errno));
+        return false;
+    }
+    return true;
 }
 
 bool sapling_tree_load_checkpoint(struct incremental_merkle_tree *t,
                                   int64_t *height_out,
                                   const char *path)
 {
-    (void)t;
-    (void)height_out;
-    (void)path;
-    return false;
+    if (!t || !path)
+        LOG_FAIL("sapling_tree",
+                 "load_checkpoint: NULL arg (t=%p path=%p)",
+                 (const void *)t, (const void *)path);
+
+    struct stat st;
+    if (stat(path, &st) != 0)
+        return false; /* missing file is a silent not-found */
+
+    if (st.st_size < (off_t)(SAPLING_CKPT_HEADER_SZ + SAPLING_CKPT_TRAILER_SZ))
+        return false; /* too small — treat as corrupt */
+    if ((size_t)st.st_size >
+        SAPLING_CKPT_HEADER_SZ + SAPLING_CKPT_MAX_BLOB + SAPLING_CKPT_TRAILER_SZ)
+        return false; /* too large — refuse */
+
+    uint8_t *buf = (uint8_t *)zcl_malloc((size_t)st.st_size,
+                                         "sapling_ckpt_load");
+    if (!buf)
+        return false;
+
+    int fd = open(path, O_RDONLY);
+    if (fd < 0) {
+        free(buf);
+        return false;
+    }
+    ssize_t r = read(fd, buf, (size_t)st.st_size);
+    close(fd);
+    if (r != st.st_size) {
+        free(buf);
+        return false;
+    }
+
+    size_t body_sz = (size_t)st.st_size - SAPLING_CKPT_TRAILER_SZ;
+    uint8_t expected_trailer[SAPLING_CKPT_TRAILER_SZ];
+    zcl_sha3_256(buf, body_sz, expected_trailer);
+
+    /* Integrity check must run before any field-level parsing so a
+     * tampered magic byte can never steer the loader. */
+    if (memcmp(buf + body_sz, expected_trailer,
+               SAPLING_CKPT_TRAILER_SZ) != 0) {
+        free(buf);
+        return false;
+    }
+
+    if (memcmp(buf, SAPLING_CKPT_MAGIC, 4) != 0) {
+        free(buf);
+        return false;
+    }
+    uint32_t version = ckpt_read_u32_le(buf + 4);
+    if (version != SAPLING_CKPT_VERSION) {
+        free(buf);
+        return false;
+    }
+    int64_t height = (int64_t)ckpt_read_u64_le(buf + 8);
+    uint32_t blob_len = ckpt_read_u32_le(buf + 52);
+    if (blob_len > SAPLING_CKPT_MAX_BLOB ||
+        SAPLING_CKPT_HEADER_SZ + (size_t)blob_len != body_sz) {
+        free(buf);
+        return false;
+    }
+
+    /* Deserialize the tree blob into a scratch tree (preserves the
+     * caller's tree on any failure below). */
+    struct incremental_merkle_tree scratch;
+    sapling_tree_init(&scratch);
+    struct byte_stream s;
+    stream_init_from_data(&s, buf + SAPLING_CKPT_HEADER_SZ, blob_len);
+    if (!incremental_tree_deserialize(&scratch, &s)) {
+        free(buf);
+        return false;
+    }
+
+    /* Root from the loaded tree must match the root field in the file.
+     * The SHA3 trailer already guarantees bit-for-bit integrity, but
+     * the root check also catches pointer-mismatch bugs — e.g. a
+     * future format change that ships a stale root alongside a valid
+     * blob. */
+    struct uint256 computed_root;
+    incremental_tree_root(&scratch, &computed_root);
+    if (memcmp(computed_root.data, buf + 16, 32) != 0) {
+        free(buf);
+        return false;
+    }
+
+    free(buf);
+
+    *t = scratch;
+    if (height_out)
+        *height_out = height;
+    return true;
 }
 
 /* --- Incremental Witness --- */
