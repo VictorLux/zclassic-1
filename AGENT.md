@@ -35,14 +35,14 @@ and test come before any fix.
 
 ## Progress — last update 2026-04-19 (P10.1.1 `1243e1766` + P10.1.2 `5279752d1` + P10.1.3 RED `ae7caa1fe` + P10.1.4 fix `ac782fef5` all land; `make test` back to green modulo pre-existing lint-gate flakes; only P10.1.5 live-node canary remains — coordinator row)
 
-**Overall: 67 / 85 rows closed (79%) | SWRC ~84%**
+**Overall: 68 / 95 rows closed (72%) | SWRC ~78%** (denominator bumped: +1 P11.1 closed; +3 P11.3/P11.7/P11.x open; +8 P12.1–P12.8 open after Rhett's "next things to improve" review)
 
 | Tier | Closed / Total | % | Open rows |
 |---|---|---|---|
-| **CRITICAL** | 12 / 15 | **80%** | **P10.1 (NOW)**, P8.10 (SUPERSEDED — frozen), P9.2 (deferred) |
-| **HIGH** | 29 / 33 | **88%** | P9.1, P9.3, P9.4, P9.5 (all deferred) |
-| **MED** | 21 / 30 | **70%** | P7.10, P8.4, P8.6, P8.7, P8.8, P9.6, P9.7, P9.8, P9.9 (all deferred) |
-| **LOW** | 2 / 3 | **67%** | P9.10 (deferred) |
+| **CRITICAL** | 12 / 16 | **75%** | **P10.1 (NOW)**, P8.10 (SUPERSEDED — frozen), P9.2 (deferred), **P12.1 (deferred — sapling tree checkpoint, highest-leverage)** |
+| **HIGH** | 29 / 35 | **83%** | P9.1, P9.3, P9.4, P9.5, **P12.2** (BLOCK_FAILED_CHILD GC), **P12.3** (parity diff service) — all deferred until P10.1 closes |
+| **MED** | 21 / 36 | **58%** | P7.10, P8.4, P8.6, P8.7, P8.8, P9.6, P9.7, P9.8, P9.9, **P12.4** (Makefile sqlite3 dep), **P12.5** (disconnect-path audit), **P12.6** (structured logging), **P12.7** (height-repair root cause), plus P11.3 (NOW), P11.7 (NEXT) — most deferred |
+| **LOW** | 2 / 4 | **50%** | P9.10, **P12.8** (operator visibility) — deferred |
 | (P0 baseline) | 4 / 4 | **100%** | — |
 
 **Open by owner (2026-04-19 late night, post-reset):**
@@ -354,7 +354,44 @@ row lands green.
 | # | Task | Acceptance | Owner |
 |---|---|---|---|
 | **P11.1** | **MVP #2 — Tor onion bootstrap <60s.** New CI test in `lib/test/src/test_onion_bootstrap.c` that spins a temp-datadir Tor via `tor_integration_start`, polls `tor_integration_is_ready` at 1Hz, asserts ready within 60s, asserts the reported `.onion` is a well-formed v3 address.  `ZCL_STRESS_TESTS=1`-gated to keep `make test` fast. | New test exists, passes today under the stress gate; `MVP.md` criterion #2 flipped ☐ → ✅. | Agent 3 — done 63f98909d [test:0.5] (`lib/test/src/test_onion_bootstrap.c`; measured 13s bootstrap on first dev run, comfortably inside the 60s MVP budget.  Registered in `lib/test/src/test.c` default sequence AND via `ZCL_TEST_ONLY=onion` shortcut.  Skip path works when the stress flag is unset — no impact on default `make test` cadence.  Forward-looking assertion — not RED-first, hence `[test:0.5]`) |
-| P11.x | Follow-up MVP-criterion CI gates (#1, #3, #4, #5, #6, #7, #8 — TBD per `MVP.md`) | — | TBD |
+| P11.3 | **MVP #3 — Cold-start sync to tip <10 min.** New CI test in `lib/test/src/test_cold_start_sync.c` against a synthetic peer with N-block fixture chain. Polls `zcl_syncstate.phase` at 1Hz; asserts `phase=ready` within 10 min. ZCL_STRESS_TESTS-gated. | Test exists, passes today; `MVP.md` #3 flipped ☐ → ✅. | Agent 3 — NOW (assigned in AGENT-3.md `b5fcaf0c0`) |
+| P11.7 | **MVP #7 — kill -9 chaos recovery <2 min.** New CI test in `lib/test/src/test_kill9_recovery.c`: sync 50 blocks → SIGKILL mid-application → restart → assert catch-up within 120s. Repeat 10x. ZCL_STRESS_TESTS-gated. | Test passes against post-P10.1.4 binary; MVP #7 flipped ☐ → ✅. | Agent 3 — NEXT (waits on P10.1.4 verification) |
+| P11.4, P11.5, P11.6, P11.8 | Remaining MVP CI gates (#4 shielded payment, #5 store flow, #6 7-day soak harness, #8 parity diff) | — | TBD |
+
+---
+
+## Priority 12 — Post-P10.1 hardening + sync UX wave (2026-04-19, post-P10.1.4 deploy)
+
+Surfaced by Rhett's "another full review" request after the P10.1.4
+deploy showed the chain bootstrap path remains slow even after the
+BIP30 stall is fixed. Live-node evidence from the 2026-04-19 night
+restart cycle. **No P12 work starts until P10.1.5 (live-node
+verification) closes** — same root-cause discipline as P10.1.
+
+| # | Task | File:line | Severity | Owner |
+|---|---|---|---|---|
+| **P12.1** | **Sapling tree checkpoint — kill the 5-min restart cost.** `Sapling tree root MISMATCH (size=N) — rebuilding from block files... sapling_tree_rebuild: replaying h=476969..3081408` runs on EVERY restart, replaying ~2.6M blocks. ~5 min of unavailability per restart. Operator UX hit + blocks MVP #6 (7-day soak: every restart eats 5 min). **Fix:** flush the IMT state to disk every N blocks (10K?) with a SHA3-256 commitment. On boot, load the latest checkpoint and replay only from there. Same pattern as the existing block-index flat file. | `lib/sapling/src/incremental_merkle_tree.c` (rebuild path); new on-disk format under `~/.zclassic-c23/` | **CRITICAL** | Agent 3 (sapling lane) |
+| **P12.2** | **`BLOCK_FAILED_CHILD` propagation has no GC.** Live evidence: `Propagated BLOCK_FAILED_CHILD to 973 descendants` on every retry of the BIP30-stuck block (range 363–1467 across runs). Marks accumulate in the block_index map without bound; memory climbed 2.3G → 5.9G in 2h51m on the previous deploy. Even with P10.1.4 fixing the stall trigger, ANY future stuck block has the same OOM amplifier. P7.4 watches the download queue, not the block index. **Fix:** skip propagation when the parent is already marked failed (the original cause was redundant work + leak). Optional secondary: cap total marks per stuck-block-hash. | `lib/validation/src/process_block.c` (BLOCK_FAILED_CHILD propagation site) | HIGH | Agent 2 (validation lane) |
+| **P12.3** | **No continuous parity check vs zclassicd.** We have no proof that zclassic23 produces the same UTXO set / block hashes as the legacy peer. Could silently diverge on edge cases (P1.6 P2SH sigops landed but per-input cap deferred; Heartwood/Canopy/NU5 activation parity not continuously verified). Gates MVP criterion #8. **Fix:** background service polling both nodes' `getblockhash <h>` + `getblockchaininfo` + `utxocommitment` at recent heights (every 60s for last 100 blocks); CRITICAL alert + structured event on any mismatch. New MCP tool `zcl_parity_status` exposes the diff. | `app/services/src/parity_diff_service.c` (new); `tools/mcp/controllers/chain_controller.c` (new tool) | HIGH | Agent 2 (app/services + mcp lanes) |
+| **P12.4** | **`make deploy` fails on clean hosts with `sqlite3: not found`.** Makefile target shells out to `sqlite3 $(HOME)/.zclassic-c23/node.db "PRAGMA wal_checkpoint(TRUNCATE);"` — but the sqlite3 CLI isn't installed in stock Ubuntu/Debian (only `libsqlite3-0`). Forces manual restart workaround every deploy (coordinator hit this twice in 24h). Drops MVP criterion #1 (single-binary install). **Fix:** call `tools/wal_checkpoint` (already exists in repo, untracked but available) instead — built from source, no system dep. | `Makefile:343-346` | MED | Agent 2 (Makefile/deploy lane via P5/P7) |
+| **P12.5** | **Disconnect-path audit — was P10.1.4 enough?** P10.1.4 fixed `disconnect_block`'s `coins_map_erase` at `connect_block.c:639` to write a DIRTY+pruned tombstone. But every other `coins_map_erase` caller may have the same gap. **Fix:** grep-audit every `coins_map_erase` call site; verify each is followed by a flush that propagates the deletion to the backing store; add a coins-view-level invariant assertion that catches the next regression by class, not by symptom. Cross-check against the `InvalidateBlock` and reorg-driven disconnect paths in `chainstate.c`. | `lib/validation/src/connect_block.c`, `lib/validation/src/process_block.c`, `lib/coins/src/coins.c` | MED | Agent 2 (validation + coins lanes) |
+| **P12.6** | **Structured JSON logging + per-subsystem rate limits.** Today's log is dominated by `Skipping 51.178.179.75 — already connected inbound` + `completed msg 'block' size=682` repeated indefinitely. P10.1.2's root-cause hunt took hours of log archaeology. Postmortems become 10x faster with structured fields. **Fix:** wrap raw `fprintf(stderr, ...)` and `printf(...)` calls in `LOG_INFO` / `LOG_DEBUG` / `LOG_TRACE` macros with severity gating; `Skipping` and `completed msg` → DEBUG (off by default); add per-subsystem rate-limiter (max N lines / second / category). Don't change the message text — operators may grep for it. | `lib/util/src/log_json.c` (already exists); cross-cutting cleanup across `lib/net/`, `lib/validation/`, `lib/storage/` | MED | Agent 2 (util lane, cross-cutting) |
+| **P12.7** | **Block-index height-repair runs every boot — stale-state symptom.** `[height-repair] found 8/3337146 entries with wrong heights, repairing... [height-repair] repaired 309 heights in 3210 ms` fires on every fresh boot. A healthy index shouldn't need repair. The "repaired N heights" count being non-zero on EVERY boot suggests the index gets corrupted between flushes, OR the repair is over-eager and repairs already-correct entries. **Fix:** instrument the height-write path to find what writes wrong heights; check whether P10.1.4's tombstone fix incidentally cures this; if not, file the actual cause as a follow-up. May be 1-line, may be substantive. | `lib/storage/src/block_index_db.c` (height-repair logic + write path) | MED | Agent 2 (storage lane) |
+| **P12.8** | **Operator visibility: `zcl_health` RSS trajectory + `zcl_mvp_status`.** Coordinator had to manually `systemctl status zclassic23` every cycle to check memory growth — should be a one-call MCP query. MVP score lives in `MVP.md` but isn't surfaced live. **Fix:** (a) extend `zcl_health` to emit current RSS + 1h trajectory + threshold alarm; (b) new `zcl_mvp_status` MCP tool that runs the 8 MVP CI tests on demand and returns per-criterion pass/fail + the live MRS. | `tools/mcp/controllers/ops_controller.c` (zcl_health); `tools/mcp/controllers/meta_controller.c` (new tool) | LOW | Agent 2 (mcp/controllers lane) |
+
+**Triage notes for Rhett:**
+- **P12.1 is the highest-leverage row in the wave.** A 5-min →
+  5-sec restart turns operator UX from "afternoon-killer" to
+  "instant," AND unblocks MVP criterion #6 (7-day soak — currently
+  the soak budget is consumed by restart costs).
+- P12.2 + P12.5 are paired with P10.1 — they protect against the
+  next-class disconnect/propagation bug. File them right after
+  P10.1 closes; do not start before.
+- P12.3 (parity diff) is the gate to MVP #8 and the only way to
+  catch silent consensus divergence.
+- P12.4 is a 1-line Makefile fix; ship in the next pull.
+- P12.6 + P12.7 + P12.8 are quality-of-life — batch when the
+  blocking work clears.
 
 ---
 
