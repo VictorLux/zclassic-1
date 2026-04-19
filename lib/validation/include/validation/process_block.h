@@ -94,4 +94,22 @@ bool test_block_validity(struct validation_state *state,
 bool process_block_test_update_tip(struct main_state *ms,
                                     struct block_index *pindex_new);
 
+/* P14.7 test-only surface: drives the stale-FAILED-mark clear logic
+ * that accept_block_header uses when a header re-arrives for an
+ * existing pindex. Caller owns last_retry_clear — passing 0 forces
+ * a fresh rate-limit window. Returns true if nStatus was modified.
+ *
+ * Rules:
+ *  - if pindex is near tip (height >= tip_h - 100): clear FAILED_MASK
+ *  - else if ONLY FAILED_CHILD is set (no FAILED_VALID): clear
+ *    FAILED_CHILD without rate-limit — propagation marks are stale
+ *    once their root FAILED_VALID is gone, and clearing does not
+ *    trigger re-validation
+ *  - else (FAILED_VALID present, far from tip): rate-limited clear
+ *    of FAILED_MASK once per 300s */
+bool process_block_try_clear_stale_failed(struct block_index *pindex,
+                                           int tip_h,
+                                           time_t now,
+                                           time_t *last_retry_clear);
+
 #endif

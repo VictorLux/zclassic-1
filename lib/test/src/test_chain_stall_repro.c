@@ -61,6 +61,7 @@
 
 #include "test/test_helpers.h"
 #include "validation/connect_block.h"
+#include "validation/process_block.h"
 #include "validation/update_coins.h"
 #include "validation/contextual_check_tx.h"  /* g_assume_valid_height */
 #include "coins/coins_view.h"
@@ -747,6 +748,145 @@ static int t_p14_flush_under_shared_cursor_lands_tombstone(void)
     return failures;
 }
 
+/* ── Test 5 — P14.7 stale FAILED_CHILD mass-clear ──────────────────
+ *
+ * Scenario modelled: after a prior run propagated BLOCK_FAILED_CHILD
+ * to many descendants and the root FAILED_VALID was later cleared
+ * (retry near tip, reorg recovery, boot sweep), the descendant
+ * CHILD-only marks must drain when headers re-arrive.
+ *
+ * Pre-P14.7, accept_block_header rate-limited ALL FAILED-clears of
+ * blocks below tip-100 to one per 300s globally. With ~2,000 stale
+ * CHILD marks above a stuck tip, draining took 166 hours — the shape
+ * that looked like a permanent chain pin after the P14.1 canary.
+ *
+ * This test exercises process_block_try_clear_stale_failed (the
+ * extracted helper) directly to keep the assertion narrow and
+ * deterministic. Two blocks both far below tip, both with FAILED_CHILD
+ * only:
+ *   - call 1 clears A (fresh rate-limit window)
+ *   - call 2 on B within the 300s window
+ *     Pre-fix: rate-limited, B stays FAILED_CHILD  → RED
+ *     Post-fix: CHILD-only branch clears B         → GREEN
+ */
+static int t_p147_stale_failed_child_drains_without_rate_limit(void)
+{
+    int failures = 0;
+
+    TEST("P14.7: consecutive CHILD-only clears drain without rate-limit") {
+        const int tip_h = 1000;
+        const time_t now = 1776600000; /* fixed, matches live-node epoch */
+
+        struct block_index a, b;
+        block_index_init(&a);
+        block_index_init(&b);
+        a.nHeight = 500; /* far below tip - 100 = 900 */
+        b.nHeight = 500;
+        a.nStatus = BLOCK_FAILED_CHILD; /* CHILD-only, no VALID */
+        b.nStatus = BLOCK_FAILED_CHILD;
+
+        /* Pristine rate-limit window owned by this test. */
+        time_t last_retry_clear = 0;
+
+        bool cleared_a = process_block_try_clear_stale_failed(
+            &a, tip_h, now, &last_retry_clear);
+        ASSERT(cleared_a == true);
+        ASSERT((a.nStatus & BLOCK_FAILED_MASK) == 0);
+
+        /* Call 2 on B, same 300s window as call 1. */
+        bool cleared_b = process_block_try_clear_stale_failed(
+            &b, tip_h, now, &last_retry_clear);
+        ASSERT(cleared_b == true);
+        ASSERT((b.nStatus & BLOCK_FAILED_CHILD) == 0);
+        ASSERT((b.nStatus & BLOCK_FAILED_VALID) == 0);
+
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+/* ── Test 6 — P14.7 FAILED_VALID retains rate-limit ────────────────
+ *
+ * Guardrail: the fix must NOT accidentally lift the rate-limit for
+ * real validation failures. Two blocks with FAILED_VALID set, far
+ * below tip. Call 1 clears (fresh window). Call 2 within 300s MUST
+ * NOT clear — otherwise we'd thrash connect_block on a known-bad
+ * block. */
+static int t_p147_failed_valid_keeps_rate_limit(void)
+{
+    int failures = 0;
+
+    TEST("P14.7: FAILED_VALID retains 300s rate-limit") {
+        const int tip_h = 1000;
+        const time_t now = 1776600000;
+
+        struct block_index a, b;
+        block_index_init(&a);
+        block_index_init(&b);
+        a.nHeight = 500;
+        b.nHeight = 500;
+        a.nStatus = BLOCK_FAILED_VALID;
+        b.nStatus = BLOCK_FAILED_VALID;
+
+        time_t last_retry_clear = 0;
+
+        bool cleared_a = process_block_try_clear_stale_failed(
+            &a, tip_h, now, &last_retry_clear);
+        ASSERT(cleared_a == true);
+        ASSERT((a.nStatus & BLOCK_FAILED_MASK) == 0);
+        ASSERT(last_retry_clear == now);
+
+        /* Call 2 on B, same 300s window: MUST NOT clear. */
+        bool cleared_b = process_block_try_clear_stale_failed(
+            &b, tip_h, now + 100, &last_retry_clear);
+        ASSERT(cleared_b == false);
+        ASSERT((b.nStatus & BLOCK_FAILED_VALID) != 0);
+
+        /* After 300s: retries allowed again. */
+        bool cleared_b2 = process_block_try_clear_stale_failed(
+            &b, tip_h, now + 300, &last_retry_clear);
+        ASSERT(cleared_b2 == true);
+        ASSERT((b.nStatus & BLOCK_FAILED_MASK) == 0);
+
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+/* ── Test 7 — P14.7 near-tip always clears (all modes) ─────────────
+ *
+ * Ensures the near-tip shortcut is preserved regardless of which
+ * FAILED bits are set. */
+static int t_p147_near_tip_clears_both_modes(void)
+{
+    int failures = 0;
+
+    TEST("P14.7: near-tip always clears FAILED_MASK (CHILD and VALID)") {
+        const int tip_h = 1000;
+        const time_t now = 1776600000;
+        time_t last_retry_clear = now; /* force rate-limit active */
+
+        struct block_index near_child, near_valid;
+        block_index_init(&near_child);
+        block_index_init(&near_valid);
+        near_child.nHeight = 950;           /* tip - 50, within tip - 100 */
+        near_valid.nHeight = 950;
+        near_child.nStatus = BLOCK_FAILED_CHILD;
+        near_valid.nStatus = BLOCK_FAILED_VALID;
+
+        ASSERT(process_block_try_clear_stale_failed(
+                &near_child, tip_h, now, &last_retry_clear));
+        ASSERT((near_child.nStatus & BLOCK_FAILED_MASK) == 0);
+
+        ASSERT(process_block_try_clear_stale_failed(
+                &near_valid, tip_h, now, &last_retry_clear));
+        ASSERT((near_valid.nStatus & BLOCK_FAILED_MASK) == 0);
+
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 int test_chain_stall_repro(void);
 
 int test_chain_stall_repro(void)
@@ -757,5 +897,8 @@ int test_chain_stall_repro(void)
     failures += t_clean_view_advances();
     failures += t_disconnect_block_purges_coinbase_from_backing();
     failures += t_p14_flush_under_shared_cursor_lands_tombstone();
+    failures += t_p147_stale_failed_child_drains_without_rate_limit();
+    failures += t_p147_failed_valid_keeps_rate_limit();
+    failures += t_p147_near_tip_clears_both_modes();
     return failures;
 }

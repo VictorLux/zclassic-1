@@ -473,6 +473,33 @@ static struct block_index *find_most_work_chain(struct main_state *ms)
                "(no data, nChainTx==0)\n", skipped_no_chaintx);
     }
 
+    /* P14.7 diagnostic: when activate_best_chain will silent-return
+     * (because we picked the current tip as best), emit a
+     * rate-limited log line naming the filter counters. This is how
+     * the canary identifies which shortlisted cause is keeping
+     * production stuck without another investigative round-trip. */
+    {
+        struct block_index *tip = active_chain_tip(&ms->chain_active);
+        if (tip && best == tip) {
+            int header_h = ms->pindex_best_header
+                         ? ms->pindex_best_header->nHeight : 0;
+            if (header_h > tip->nHeight + 100) {
+                static time_t g_last_stuck_log = 0;
+                time_t now_log = time(NULL);
+                if (now_log - g_last_stuck_log >= 60) {
+                    g_last_stuck_log = now_log;
+                    printf("find_most_work_chain: STUCK at tip h=%d "
+                           "(best_header h=%d, gap=%d) "
+                           "skipped[failed=%d invalid=%d no_data=%d]\n",
+                           tip->nHeight, header_h,
+                           header_h - tip->nHeight,
+                           skipped_failed, skipped_invalid,
+                           skipped_no_chaintx);
+                }
+            }
+        }
+    }
+
     return best;
 }
 
@@ -628,6 +655,53 @@ bool process_block_test_update_tip(struct main_state *ms,
     return update_tip(ms, pindex_new);
 }
 
+/* P14.7 — stale-FAILED-mark clear.
+ *
+ * Previous logic rate-limited ALL clears of blocks below tip-100 to
+ * one per 300s globally. For BLOCK_FAILED_CHILD (propagation-only)
+ * marks that was wrong: when the root FAILED_VALID is cleared
+ * (e.g. by a retry near tip, or a reorg-recovery sweep), the
+ * descendant CHILD marks become stale and need to drain. At 300s
+ * per block, draining 2,000 stale CHILD marks took 166 hours — long
+ * enough to look like a permanent chain pin.
+ *
+ * Clearing a CHILD-only mark is cheap: it does not trigger a
+ * connect_block retry by itself. connect_block runs only when
+ * find_most_work_chain selects the block as a candidate tip, at
+ * which point real validation gates the actual re-commit. So the
+ * only cost of un-masking is a possible future validation run,
+ * bounded by the selection logic.
+ *
+ * FAILED_VALID rate-limit stays in place — those are real
+ * validation failures. Thrashing connect_block on a known-bad
+ * block is the scenario we want to avoid. */
+bool process_block_try_clear_stale_failed(struct block_index *pindex,
+                                           int tip_h,
+                                           time_t now,
+                                           time_t *last_retry_clear)
+{
+    if (!pindex || !(pindex->nStatus & BLOCK_FAILED_MASK))
+        return false;
+
+    if (pindex->nHeight >= tip_h - 100) {
+        pindex->nStatus &= ~BLOCK_FAILED_MASK;
+        return true;
+    }
+
+    if ((pindex->nStatus & BLOCK_FAILED_VALID) == 0) {
+        pindex->nStatus &= ~BLOCK_FAILED_CHILD;
+        return true;
+    }
+
+    if (last_retry_clear && now - *last_retry_clear >= 300) {
+        pindex->nStatus &= ~BLOCK_FAILED_MASK;
+        *last_retry_clear = now;
+        return true;
+    }
+
+    return false;
+}
+
 bool accept_block_header(const struct block_header *header,
                          struct validation_state *state,
                          struct main_state *ms,
@@ -680,23 +754,11 @@ bool accept_block_header(const struct block_header *header,
             }
         }
         if (pindex->nStatus & BLOCK_FAILED_MASK) {
-            /* Clear FAILED for blocks near the chain tip — these are new
-             * blocks that may have failed due to transient issues (tree
-             * not synced, VK not loaded, etc.). For blocks far below tip,
-             * rate-limit to prevent infinite CPU-thrashing retry loops. */
             int tip_h = active_chain_height(&ms->chain_active);
-            if (pindex->nHeight >= tip_h - 100) {
-                /* Recent block — always allow retry */
-                pindex->nStatus &= ~BLOCK_FAILED_MASK;
-            } else {
-                /* Old block — rate-limit retries */
-                static time_t last_retry_clear = 0;
-                time_t now = time(NULL);
-                if (now - last_retry_clear >= 300) {
-                    pindex->nStatus &= ~BLOCK_FAILED_MASK;
-                    last_retry_clear = now;
-                }
-            }
+            static time_t last_retry_clear = 0;
+            process_block_try_clear_stale_failed(pindex, tip_h,
+                                                  time(NULL),
+                                                  &last_retry_clear);
         }
         return true;
     }

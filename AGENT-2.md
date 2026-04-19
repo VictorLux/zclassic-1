@@ -38,7 +38,7 @@ gap analysis. See `AGENT.md` for the cross-agent priority table.
 
 ---
 
-## Current status — 2026-04-19 (P14.1 + P14.2 landed in d67817dd2 — NOW is P14.3)
+## Current status — 2026-04-19 (P14.7 first-fix landed in <fill> — canary pending; NEXT is P14.3)
 
 **P10.1.5 "canary green" was a misread.** Live-node MCP showed
 h=3,081,601 because `val.block_connected` fires on block RECEIPT,
@@ -121,7 +121,76 @@ STOP triggers satisfied:
 - No `coins_view` API surface change — connection-ownership
   change only.
 
-### NOW — P14.7 (CRITICAL, NEW from coordinator canary): chain pins at h=3,081,601 post-P14.1
+### DONE (first-fix; canary pending) — P14.7 (<fill>): chain pin at h=3,081,601 post-P14.1
+
+**Brief's hypothesis was incorrect.** It claimed the FSM transitions
+`ready → connecting → ready: behind_peers` "without ever calling
+activate_best_chain". `activation_request_connect` at
+`chain_activation_controller.c:271-317` unconditionally calls
+`activate_best_chain` between the `CONNECTING` transition and the
+post-connect state decision — by code inspection, and confirmed by
+log archaeology. What's actually happening: `activate_best_chain`
+IS called but silent-early-returns at
+`process_block.c:1915-1916` because `find_most_work_chain` returns
+the current tip.
+
+The corrected root-cause writeup + shortlist of sub-hypotheses is
+in `docs/postmortems/2026-04-19-p14.7-chain-pin-3081601.md`. In
+order of likelihood: (1) stale `nChainWork` on blocks above tip —
+height-correction runs but `nChainWork` re-propagation is
+explicitly disabled at `boot_index.c:1060`; (2) stale
+`BLOCK_FAILED_CHILD` marks that `accept_block_header`'s rate-limit
+(1 clear per 300s globally when `pindex->nHeight < tip - 100`)
+drains at ~166h per 2,000 marks; (3) bodies never reaching
+`accept_block`'s `BLOCK_HAVE_DATA` setter because `has_more_work`
+short-circuits on stale `nChainWork`.
+
+**First fix shipped (<fill>):** addresses hypothesis (2). The
+rate-limit in `accept_block_header` at `process_block.c:682-699`
+was pushed into a new helper
+`process_block_try_clear_stale_failed` (declared in
+`process_block.h` as a P14.7 test-only surface, used by production
+via the same path). CHILD-only marks (BLOCK_FAILED_CHILD without
+BLOCK_FAILED_VALID) now clear without rate-limit — they're
+propagation artefacts, not real validation failures, and clearing
+them does not trigger retry thrash since `connect_block` fires
+only when `find_most_work_chain` selects the block. FAILED_VALID
+keeps the 300s rate-limit.
+
+Plus **diagnostic logging** in `find_most_work_chain`:
+rate-limited (once per 60s) log line when the function returns the
+current tip while peers are >100 ahead. Prints the filter counters
+(`skipped[failed=%d invalid=%d no_data=%d]`) so the next canary
+reveals which hypothesis is actually winning without another
+investigative round-trip.
+
+Three new RED→GREEN tests in `test_chain_stall_repro.c`:
+- `t_p147_stale_failed_child_drains_without_rate_limit` — two
+  CHILD-only clears within the same 300s window, both must clear.
+- `t_p147_failed_valid_keeps_rate_limit` — FAILED_VALID retains
+  300s cap; second call within window returns false.
+- `t_p147_near_tip_clears_both_modes` — near-tip shortcut still
+  clears regardless of CHILD/VALID.
+
+STOP triggers satisfied:
+- No on-disk UTXO format change.
+- No consensus-constant change.
+- No P2P wire-format change.
+
+### Canary acceptance (coordinator, unchanged shape)
+
+1. `make deploy` at a clean moment.
+2. Within 15 min, live-node `getblockcount` advances past
+   3,081,601. If the fix addresses the actual production root
+   cause, gap to peer tip closes within 30 min.
+3. If the chain is STILL stuck, the new
+   `find_most_work_chain: STUCK at tip h=X ...
+   skipped[failed=%d invalid=%d no_data=%d]` log line tells us
+   which filter is winning and P14.7.1 starts from that signal.
+4. Rhett fills the SHA in the row above, pins the acceptance
+   snapshot, ships P14.7.1 brief if needed.
+
+### Previous NOW (archived for context) — the original P14.7 brief
 
 **Reprioritised.** The P14.1 canary deploy ran at 2026-04-19 18:18 UTC
 and the chain advanced 3,081,408 → 3,081,601 in the first ~3 min
