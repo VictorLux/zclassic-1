@@ -38,17 +38,183 @@ gap analysis. See `AGENT.md` for the cross-agent priority table.
 
 ---
 
-## Current status — 2026-04-19 (P10.1.5 canary GREEN — P12/P13 waves unblocked)
+## Current status — 2026-04-19 (P10.1 REOPENED — P14 wave is NOW)
 
-**P10.1.5 canary closed by Rhett.** Live-node MCP snapshot at uptime
-10.6h: chain h=3,081,601 (advanced past the 3,081,408 stall),
-validation.verified_height=3,081,408 confirms the fix engaged at
-the exact problematic block, RSS 4.2 GB plateaued (not climbing
-toward the 6 GB cgroup high), no operator restart since the
-`ac782fef5` deploy. P10.1 CLOSED; the entire P12+P13 wave now
-unblocks.
+**P10.1.5 "canary green" was a misread.** Live-node MCP showed
+h=3,081,601 because `val.block_connected` fires on block RECEIPT,
+not on commit. SQLite was genuinely pinned at h=3,081,408 the
+whole time. Log archaeology on `node.log`:
 
-### NOW — P13.1 (CRITICAL): single-peer sync / addnode backoff
+- `connect_tip: connect_block FAILED h=3081408: bad-txns-BIP30`
+  fires **3,478 times** (not once — three thousand).
+- `coins_flush: SAVEPOINT coins_flush failed rc=5: cannot open
+  savepoint - SQL statements in progress` paired with
+  `WARNING: coins cache flush FAILED — retaining 2619 dirty
+  entries for retry` — **this is the real root cause**. Another
+  subsystem holds an un-reset prepared-statement cursor on the
+  shared SQLite connection (SQLITE_ROW mid-iteration); SAVEPOINT
+  can't begin. Your P10.1.4 DIRTY+pruned tombstone lives in the
+  cache correctly (the invariant assertion at `process_block.c:
+  1718-1748` has **never fired** in the log — 0 matches). But the
+  tombstone never reaches SQLite. Any cache eviction/rebuild
+  re-reads the original stale coinbase row → BIP30 trips again.
+- FSM flap: `ready→connecting: new_block ↔ connecting→ready:
+  behind_peers` 279,135 times (one cycle per incoming block).
+- `Propagated BLOCK_FAILED_CHILD to {159, 335, 495, 671, 745,
+  771, 826, 963, 1410, 1411}` descendants per retry — confirms
+  P12.2 (promoted to P14.6) as the memory amplifier behind the
+  repeated 6 GB cgroup OOMs. Journal shows 7 process deaths in
+  the last 3 days: April 16 oom-kill, April 17 timeout+5.9G,
+  April 18 timeout+5.9G + exit-134+6.0G + timeout+6.0G +
+  timeout+4.4G, April 19 timeout+6.0G + timeout+3.7G +
+  timeout+3.3G + exit-134+2.7G (the last one SIGABRT'd during a
+  coordinator `zcl_syncdiag` MCP call — that's a separate bug,
+  P14.3).
+
+P10.1's NULL-backing-view unit test didn't exercise the failing
+flush path. Agent-3's review flagged this class of gap (second
+hop P10.1.3 variant that exercises `coins_view_sqlite` backing
+end-to-end) as "not yet adopted" at CONCUR_WITH_NOTES time —
+that turned out to be the load-bearing hop.
+
+### NOW — P14.1 (CRITICAL): `SAVEPOINT coins_flush` contention
+
+**Files in scope:**
+- `lib/storage/src/coins_view_sqlite.c:604-656` — the flush
+  function with the SAVEPOINT vs BEGIN IMMEDIATE branch.
+- `lib/coins/src/coins_view.c` — the cvc_batch_write caller.
+- `lib/storage/src/coins_view_sqlite.c:617-629` — the comment
+  "if an external subsystem is still holding a cursor open,
+  SAVEPOINT will SQLITE_BUSY and we'll bail cleanly" is the exact
+  pathology — it bails, the dirty entries retry forever, no
+  error propagates up.
+
+**Two fix options (pick (a) unless profiling says no):**
+
+- **(a) Dedicated connection for `coins_view_sqlite`.** Set
+  `owns_db=true` unconditionally (open a new `sqlite3 *db` for
+  the coins view instead of sharing the node.db handle). The
+  `BEGIN IMMEDIATE` path is already implemented and tested; the
+  SAVEPOINT path becomes dead code and can be removed. Cost: one
+  extra SQLite handle (~MB of page cache); benefit: no SAVEPOINT
+  contention possible, ever. The live node has 95 GB RAM — the
+  cost is zero.
+- **(b) Audit every cursor on the shared connection.** Walk all
+  `sqlite3_prepare_v2` call sites (wallet readers, block_index_db
+  iterators, controller query stmts); ensure each is
+  `sqlite3_reset`-ed or `finalize`-d before the flush fires. One
+  missed cursor = this bug recurs silently.
+
+Prefer (a). If you go (b), add an assertion at flush-entry that
+walks `sqlite3_next_stmt` and counts SQLITE_ROW statements not
+owned by `coins_view_sqlite`; LOUD LOG_FAIL on non-zero.
+
+**Discipline (same P10 rule):**
+1. **RED test first** (P14.2 — see next row). DO NOT ship P14.1
+   without a RED test that exercises the failing-flush path.
+2. Root-cause the contention. The `node.log` evidence points at
+   repeated savepoint failures across the last 3 days. Ideally
+   also identify WHICH subsystem leaks the cursor, so the fix is
+   informed rather than blanket.
+3. Fix. RED flips GREEN. Invariant assertion at
+   `process_block.c:1718-1748` continues to NOT fire (correctness
+   proof: cache state still consistent).
+4. **Canary acceptance (Rhett's row, P14 follow-up):** live-node
+   `getblockcount` advances past 3,081,408, stays advanced for
+   24h, log shows zero `SAVEPOINT coins_flush failed` lines, zero
+   `WARNING: coins cache flush FAILED` lines, zero
+   `connect_block FAILED h=3081408` lines. The P10.1.5 mistake
+   should not repeat; acceptance must gate on HARD log signals,
+   not on MCP-surfaced counters that P14.5 proves unreliable.
+
+**STOP + ping Rhett:**
+- Any change to the on-disk UTXO format (consensus-adjacent via
+  the SHA3 commitment).
+- Any change to the `coins_view` API surface — P14.1 is purely a
+  connection-ownership change, not an API change.
+
+### Coupled with P14.2 (CRITICAL): true end-to-end RED test
+
+The existing `test_chain_stall_repro.c` test uses a NULL backing
+view, so `disconnect_block + flush` never hits SQLite. Replace
+(or add a third test) that uses a real `coins_view_sqlite` on a
+temp DB; deliberately hold a reader cursor open (the specific
+pattern that trips SAVEPOINT SQLITE_BUSY); run
+`disconnect_block + cvc_batch_write + sqlite_batch_write`;
+assert the tombstone DELETE is actually in SQLite afterwards.
+
+This is what the `second-hop P10.1.3 variant` Agent-3 suggested
+at CONCUR_WITH_NOTES would have been. Ship it with P14.1 in one
+commit: cache + backing three-layer test = GREEN after the fix.
+
+### NEXT — P14.3 (CRITICAL): `zcl_syncdiag` SIGABRT
+
+After P14.1 + P14.2 land. Independent of the chain stall but just
+as severe — the live node crashes whenever the coordinator calls
+`zcl_syncdiag` via MCP. Stack trace from the last crash (2026-04-19
+16:55:29 UTC, journal exit-code 134):
+
+```
+/lib/x86_64-linux-gnu/libc.so.6(abort+0xdf)
+/home/rhett/zclassic23/zclassic23(+0x467864)   (assert/abort site)
+/home/rhett/zclassic23/zclassic23(+0x4671a6)
+/lib/x86_64-linux-gnu/libc.so.6(+0x45330)      (signal delivery)
+/home/rhett/zclassic23/zclassic23(json_free+0x43)
+/home/rhett/zclassic23/zclassic23(+0x1f47cb)   (rpc_getsyncdiag)
+/home/rhett/zclassic23/zclassic23(rpc_table_execute+0xe0)
+/home/rhett/zclassic23/zclassic23(+0x32e451)   (handle_client)
+/home/rhett/zclassic23/zclassic23(+0x32ecb0)   (rpc_worker_thread_fn)
+```
+
+Handler at `app/controllers/src/health_controller.c:245-308`
+builds nested objects on the stack:
+
+```c
+struct json_value wd;
+json_set_object(&wd);
+json_push_kv_bool(&wd, "enabled", ws.enabled);
+...
+json_push_kv(result, "watchdog", &wd);  // ← aliases stack into heap tree?
+```
+
+If `json_push_kv` stores a pointer (or shallow-copy with shared
+children) rather than a deep copy, the framework-owned `json_free`
+in `rpc_table_execute` walks into stack memory that's already gone
+→ abort. Audit `json_push_kv` ownership (`lib/rpc/src/json_*.c`)
+and either (a) fix the handler to heap-allocate children, (b) fix
+`json_push_kv` to deep-copy, or (c) fix `json_free` to handle
+aliased nodes. Option (b) is safest — push_kv semantics should be
+predictable.
+
+RED test: drive `rpc_table_execute("getsyncdiag", ...)` 100 times
+under ASAN; before the fix, heap-use-after-free or stack-use-after-
+return; after the fix, clean.
+
+### NEXT (remainder, in order — unchanged)
+
+| Order | Row | Notes |
+|---|---|---|
+| 4 | **P14.6** (= promoted P12.2) | `BLOCK_FAILED_CHILD` propagation GC — skip when parent already failed; cap per-retry marks. The OOM amplifier. |
+| 5 | **P14.4** FSM debounce | 500ms minimum dwell; coalesce during chain-tip-not-advancing. |
+| 6 | **P14.5** post-commit emission | `val.block_connected` only after `update_tip` returns true. |
+| — | — | — |
+| 7 | **P13.1** single-peer sync (was NOW before the real review) |
+| 8 | **P12.3** parity diff service |
+| 9 | **P13.4** IBD throughput 32→250 blocks/min |
+| 10 | **P13.3** log spam |
+| 11 | **P13.5** addrman gap |
+| 12 | **P13.2** header oscillation |
+| 13 | **P12.4** deploy sqlite3 CLI |
+| 14 | **P12.5** coins_map_erase audit |
+| 15 | **P12.6** structured logs |
+| 16 | **P12.7** height-repair |
+| 17 | **P8.4** compact-block |
+| 18 | **P7.10** thread_registry migration |
+| 19 | **P12.8** ops MCP tools |
+
+---
+
+## Previous NOW section (archived below for context): P13.1 single-peer sync
 
 Live evidence (same MCP snapshot):
 

@@ -38,15 +38,25 @@ See `AGENT.md` for the cross-agent priority table.
 
 ---
 
-## 2026-04-19 (post-canary): P10.1.5 CLOSED, P12.1 sapling checkpoint is NOW
+## 2026-04-19 (post-real-review): P10.1 REOPENED, your P12.1 NOW is UNCHANGED
 
-**P10.1.5 canary closed by Rhett.** Live-node MCP snapshot at uptime
-10.6h: chain h=3,081,601 past the 3,081,408 stall point, RSS 4.2 GB
-plateaued, no operator restart since the `ac782fef5` deploy. P10.1
-CLOSED; the P12+P13 wave unblocks. Agent-2 picks up P13.1 (single-
-peer sync CRIT). You pick up **P12.1 — sapling tree checkpoint**,
-the other CRIT in the wave and the highest-leverage row in the
-entire post-P10.1 plan.
+**Correction to the earlier brief** — the P10.1.5 "canary green"
+signal was wrong (MCP-surfaced height came from spurious
+`val.block_connected` emissions; SQLite was pinned at h=3,081,408
+the whole time). Agent-2 is now on a P14 wave (P14.1 savepoint
+flush, P14.2 true end-to-end RED, P14.3 `zcl_syncdiag` SIGABRT,
+P14.6 BLOCK_FAILED_CHILD GC, P14.4 FSM debounce, P14.5 post-commit
+emission).
+
+**Your row DOES NOT CHANGE.** P12.1 (sapling tree checkpoint) is
+an independent workstream from the chain-stall lane — Agent-2's
+P14 fixes consensus/flush; your P12.1 fixes restart UX. When P14
+closes and the node runs for days without crashing, P12.1 becomes
+the load-bearing MVP-#6 gate (today it's dwarfed by the 11-16h
+crash cadence, but that's exactly what P14 aims to close).
+
+Continue on **P12.1 — sapling tree checkpoint**. The brief below
+stands unchanged.
 
 ### NOW — P12.1 (CRITICAL): sapling tree checkpoint
 
