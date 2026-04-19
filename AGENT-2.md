@@ -38,7 +38,7 @@ gap analysis. See `AGENT.md` for the cross-agent priority table.
 
 ---
 
-## Current status — 2026-04-19 (P14.1 + P14.2 landed in 2b9b9f4d3 — NOW is P14.3)
+## Current status — 2026-04-19 (P14.1 + P14.2 landed in d67817dd2 — NOW is P14.3)
 
 **P10.1.5 "canary green" was a misread.** Live-node MCP showed
 h=3,081,601 because `val.block_connected` fires on block RECEIPT,
@@ -77,7 +77,7 @@ hop P10.1.3 variant that exercises `coins_view_sqlite` backing
 end-to-end) as "not yet adopted" at CONCUR_WITH_NOTES time —
 that turned out to be the load-bearing hop.
 
-### DONE — P14.1 (2b9b9f4d3) + P14.2 (same commit): dedicated sqlite3 connection for `coins_view_sqlite`
+### DONE — P14.1 (d67817dd2) + P14.2 (same commit): dedicated sqlite3 connection for `coins_view_sqlite`
 
 Option (a) shipped per the brief. `coins_view_sqlite_open` now
 inspects `sqlite3_db_filename(db, "main")`; for file-backed
