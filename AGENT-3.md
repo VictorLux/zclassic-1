@@ -38,7 +38,143 @@ See `AGENT.md` for the cross-agent priority table.
 
 ---
 
-## RESET (2026-04-19): P9 wave shipped, ALL findings deferred — on-call to review Agent-2's P10.1
+## 2026-04-19 (post-canary): P10.1.5 CLOSED, P12.1 sapling checkpoint is NOW
+
+**P10.1.5 canary closed by Rhett.** Live-node MCP snapshot at uptime
+10.6h: chain h=3,081,601 past the 3,081,408 stall point, RSS 4.2 GB
+plateaued, no operator restart since the `ac782fef5` deploy. P10.1
+CLOSED; the P12+P13 wave unblocks. Agent-2 picks up P13.1 (single-
+peer sync CRIT). You pick up **P12.1 — sapling tree checkpoint**,
+the other CRIT in the wave and the highest-leverage row in the
+entire post-P10.1 plan.
+
+### NOW — P12.1 (CRITICAL): sapling tree checkpoint
+
+**Why this is the highest-leverage row.** Today every `make deploy`
+(and every crash-recovery restart) runs:
+
+```
+Sapling tree root MISMATCH (size=N) — rebuilding from block files...
+sapling_tree_rebuild: replaying h=476969..3081408
+```
+
+~2.6M blocks replayed, ~5 minutes of node unavailability per
+restart. Two independent MVP criteria fail because of this:
+
+- **MVP #1** (someone unfamiliar can run the node) — a 5-minute
+  startup is a UX dealbreaker.
+- **MVP #6** (7-day zero-intervention soak) — every crash or
+  rotation eats 5 min of the soak budget. With P10.1 closing the
+  stall, the NEXT restart cause (OOM, disk, power) lands on a
+  node that takes 5 min to come back. The soak claim depends on
+  restarts being cheap.
+
+A sapling-tree disk checkpoint turns that into a 5-second boot.
+Same shape as the existing block-index flat file.
+
+**Files in scope:**
+- `lib/sapling/src/incremental_merkle_tree.c` — rebuild path + the
+  commit/load surface you'll add.
+- `lib/sapling/include/sapling/incremental_merkle_tree.h` — public
+  API for the checkpoint dump / restore.
+- `app/services/src/sapling_tree_service.c` (or wherever the rebuild
+  is kicked off — grep for `sapling_tree_rebuild`) — call site
+  that decides "replay from block 0" vs "load from checkpoint N".
+- `lib/test/src/test_sapling_tree.c` (may be new) — the RED+GREEN
+  tests.
+
+**Deliverable shape:**
+
+1. **On-disk format** under `~/.zclassic-c23/sapling_tree_ckpt.dat`:
+   - `uint32_t version = 1`
+   - `uint64_t height` (checkpoint height — last block included)
+   - `uint8_t root[32]` (root hash at this height — doubles as
+     consistency check on load)
+   - `uint32_t tree_size` (leaf count)
+   - `uint8_t tree_blob[tree_size_bytes]` — serialized IMT peaks,
+     matching whatever format the in-memory IMT already uses for
+     its internal persistence (or define one with SHA3-256 framing
+     of the whole blob for integrity).
+   - Trailing SHA3-256 of the file body (excluding the trailing
+     hash itself) as tamper check.
+
+2. **Flush every N blocks** — start with `N = 10000` so we have
+   at most ~10K blocks of replay on crash recovery. Hook the flush
+   into the existing block-commit path (the same place that drives
+   `update_tip` — look for `EV_BLOCK_CONNECTED`). Atomic write via
+   `.tmp` + `rename(2)`; never half-written on disk.
+
+3. **Load on boot** — before the rebuild path is hit, try to load
+   the checkpoint. If it loads, verify `root` matches what's
+   computed from the deserialized tree; if load or verify fails,
+   fall back to the full replay path (which still works today).
+
+4. **Delta-replay** — after loading the checkpoint at height H,
+   replay from `H+1..tip` instead of `476969..tip`. This is the
+   whole UX win.
+
+**Discipline (P10.x rule — every row from here on is [test:1.0]):**
+
+1. **Reproduce the 5-min cost.** Add a timing probe to the existing
+   rebuild path — log `sapling_tree_rebuild: replayed N blocks in
+   M ms` at INFO. Commit that separately (trivial) so we have a
+   baseline number in the log.
+2. **RED test FIRST** — a unit test that asserts
+   "`sapling_tree_load_checkpoint(path)` succeeds after a
+   `sapling_tree_flush_checkpoint(path)` round-trip, and the
+   loaded root matches the in-memory root." This FAILS today
+   (the functions don't exist). Commit RED.
+3. **Implement the checkpoint serialize + flush.** Test flips to
+   GREEN. Commit.
+4. **Integrate the load path + delta-replay.** Add a second test
+   that asserts delta-replay produces the same root as full-replay
+   for an N-block synthetic chain. Commit with the integration.
+5. **Live verification (Rhett's row).** After Rhett deploys, a
+   second `make deploy` should show ≤5 s to sapling-tree-ready.
+
+**Acceptance:**
+- `lib/test/src/test_sapling_tree.c` covers flush/load round-trip,
+  checkpoint + delta-replay root equivalence, corruption-on-load
+  fall-back to full replay.
+- `./test_zcl` + `make ci` green.
+- Live deploy: boot time from "starting" to "sapling tree ready"
+  drops from ~5 min to ≤5 s on a node that was previously
+  checkpointing.
+
+**STOP + ping Rhett triggers:**
+- Any change to the in-memory IMT layout — `tree_blob` format is a
+  NEW on-disk serialization but the live IMT struct must stay
+  unchanged; the checkpoint file can be a fresh codepath.
+- Any change that re-orders or skips block-level root commitments
+  — we still want per-block root recomputation in the main apply
+  path, just with a fast boot-time starting point.
+
+---
+
+### NEXT queue (pre-authorized; land in order after P12.1)
+
+After P12.1 ships + canary-verifies on Rhett's deploy, drain the
+following without pinging:
+
+| Order | Row | Size | Severity | Brief |
+|---|---|---|---|---|
+| 1 | **P9.5** — pthread_once guard on lazy Sapling caches | small | HIGH | `pedersen_hash.c::ensure_generators` + `incremental_merkle_tree.c::ensure_sapling_empty_roots` — both guarded by a plain `static bool`. Use `pthread_once`. RED: two concurrent first-callers, one gets a zero-generator. Trivial fix. |
+| 2 | **P9.3** — `lc_add_term` / `cs_alloc_var` / `cs_enforce` OOM silent-drop | small | HIGH | `groth16_prover.c:38-44, 91-103, 117-145` — return bool + propagate; LOG_FAIL on realloc failure. |
+| 3 | **P9.4** — `fr_fft` / `fr_fft_parallel` silent no-op on non-pow-2 | small | HIGH | `groth16_prover.c:222`, `msm_parallel.c:333,340` — promote to bool, LOG_FAIL on bad input. Currently unreachable via `groth16_prove` but the pattern waits for the next caller. |
+| 4 | **P9.1** — `g1_scalar_mul` constant-time | medium | HIGH | `lib/sapling/src/bls12_381.c:1708-1722` — mirror P1.12 / P1.16b pattern. Branches on secret blinding scalars (r_blind, s_blind, r·s); masked linear-scan table select + unconditional-add-with-mask. Hamming-weight timing regression test. |
+| 5 | **P9.2** — `sapling_circuit.c` placeholder UB paths | small-or-huge | CRITICAL | `:65, :161-162` — decide first whether these paths are shadowed by another prover impl (`grep -r sapling_create_spend_proof`). If shadowed: 3-line `LOG_FAIL`. If live: multi-day rewrite; STOP + ping Rhett before starting that. |
+| 6 | **P9.6** — `sapling_prover_c23.c` witness length arg | small | MED | Add `size_t witness_len` + LOG_FAIL on shortfall. |
+| 7 | **P9.7** — `sprout_verify_groth16` ic_len=0 underflow | small | MED | Snapshot pointer + LOG_FAIL on `ic_len < 1`. |
+| 8 | **P9.8** — `ensure_generators` exhaustion silent | small | MED | Mirror P1.10 pattern; track success + LOG_FAIL + abort on exhaustion. |
+| 9 | **P9.9** — printf/stdout leak in prover paths | small | MED | Replace with `LOG_INFO` or delete; stdout leak of wallet-activity timing. |
+| 10 | **P9.10** — MSM cache-side-channel on witness | medium | LOW | `msm_parallel.c:60-69, 181-190` + `groth16_prover.c:300-322, 362-381` — CT bucket access. Pairs naturally with P9.1 (shared Hamming-weight timing regression). |
+| 11 | **P11.4 / P11.5 / P11.6 / P11.8** MVP CI gates | medium each | — | TBD — need upstream service work (P12.3 parity service for #8, shielded payment path for #4, store flow for #5, soak harness for #6). Pick up after Agent-2 delivers each upstream row. |
+
+When the queue drains, ping Rhett for next triage.
+
+---
+
+## RESET (2026-04-19): P9 wave shipped, ALL findings deferred — on-call to review Agent-2's P10.1 (ARCHIVED below)
 
 You shipped the P9 sapling-prover audit (`04247c19a`) — 10 solid
 findings (1 CRIT, 4 HIGH, 4 MED, 1 LOW). Good work. **All deferred**

@@ -38,7 +38,107 @@ gap analysis. See `AGENT.md` for the cross-agent priority table.
 
 ---
 
-## Current status — 2026-04-19 (post-P10.1.4 + P8.6 + P8.7 + P8.8; canary pending; CI flagged)
+## Current status — 2026-04-19 (P10.1.5 canary GREEN — P12/P13 waves unblocked)
+
+**P10.1.5 canary closed by Rhett.** Live-node MCP snapshot at uptime
+10.6h: chain h=3,081,601 (advanced past the 3,081,408 stall),
+validation.verified_height=3,081,408 confirms the fix engaged at
+the exact problematic block, RSS 4.2 GB plateaued (not climbing
+toward the 6 GB cgroup high), no operator restart since the
+`ac782fef5` deploy. P10.1 CLOSED; the entire P12+P13 wave now
+unblocks.
+
+### NOW — P13.1 (CRITICAL): single-peer sync / addnode backoff
+
+Live evidence (same MCP snapshot):
+
+```
+peers.total = 5
+  inbound  = 4  (all MagicBean / zclassicd clones — 157.90.223.151,
+                 51.178.179.75, 5.189.187.142, 190.92.241.52)
+  outbound = 1  (212.23.222.231:20022, state=connecting — still not
+                 ACTIVE after 10.6h uptime)
+connections.zcl23   = 0   ← no zclassic23 peer has connected
+connections.magicbean = 4 ← all peers are legacy C++
+```
+
+Historical log evidence from `AGENT.md:412`: external peers from
+`-addnode` list (140.174.189.17, 140.174.189.3, 37.187.76.79,
+162.55.92.62, 157.90.223.151, 157.173.195.203, 85.239.232.93,
+154.38.178.121, 51.178.179.75) all backed off with
+`Peer X: backing off 120s after failed connect` + recurring
+`find_node_by_service: node not found by service addr` LOG_FAIL.
+
+4 inbound feels like luck, not policy. A network blip or an
+adversarial neighbor dropping 4 inbound connections takes the
+node to 0 peers → no sync → P10.1's hard-won stability evaporates.
+MVP criterion #3 (cold-start sync) and #6 (7-day soak) both
+depend on the outbound path actually working.
+
+**Files in scope:**
+- `lib/net/src/connman.c` — outbound connect path
+- `lib/net/src/addrman.c` — `find_node_by_service` + callers
+- `lib/net/src/peer_strategy.c` — backoff policy
+- `lib/net/src/net.c` — handshake / version-check
+
+**Discipline (same P10.x rule):**
+1. Reproduce: pick ONE peer from the addnode list that's currently
+   backing off. `zcl_pingpeer`, `zcl_addnode onetry`, log the exact
+   rejection. If the failure is "version mismatch, expected
+   zclassic23 peer but got MagicBean/2.1.1-10," that's one bug
+   class; if it's "handshake timeout," that's another; if it's
+   "can't even open a TCP socket," that's a third.
+2. Root-cause: read the rejection point. The `-addnode` list is
+   majority MagicBean (zclassicd-family) nodes on port 8033 — do
+   we accept the legacy version byte, or are we demanding a
+   zclassic23-specific capability? Is the sub-version string
+   check too strict?
+3. RED test in `lib/test/src/test_net.c` or new file — pick the
+   narrowest repro (synthetic MagicBean-version handshake on
+   loopback) that FAILS on current main, flips GREEN after the
+   fix. Commit as [test:1.0].
+4. Minimal fix. No drive-by. Ideally a log-reason surface in
+   the backoff line so the next regression is diagnosable in
+   seconds, not hours.
+5. **Acceptance:** ≥4 of the 9 addnode peers reach `state=active`
+   and stay there for ≥1h on the live node. Verified by `zcl_peers`
+   count of outbound state=active ≥4. P13.1 row updated with the
+   SHA + the post-deploy peer snapshot.
+
+**STOP + ping Rhett triggers (unchanged):**
+- Any P2P protocol wire-format change.
+- Any change that would cause us to drop MagicBean peers
+  intentionally (we WANT to talk to zclassicd — it's our
+  bootstrap peer).
+
+---
+
+### NEXT queue (pre-authorized; land in order after P13.1)
+
+After P13.1's fix lands + holds, drain the following without
+pinging Rhett between rows. Each is in-lane + self-contained.
+
+| Order | Row | Size | Severity | Brief |
+|---|---|---|---|---|
+| 1 | **P12.2** — `BLOCK_FAILED_CHILD` propagation GC | small | HIGH | `lib/validation/src/process_block.c` — skip propagation when parent is already marked failed (option (c) from archived P8.10). The re-propagation was both an O(N) memory growth and wasted work. RED test: 1000 repeated `block_failed_child_propagate(parent)` calls on the same parent → assert memory delta is O(1). |
+| 2 | **P12.3** — continuous parity diff vs zclassicd + `zcl_parity_status` | medium | HIGH | New `app/services/src/parity_diff_service.c` polls both nodes' `getblockhash <h>`, `getblockchaininfo`, `utxocommitment` every 60s over last 100 blocks. CRITICAL event on mismatch. New MCP tool via `tools/mcp/controllers/chain_controller.c`. Gates MVP #8. |
+| 3 | **P13.4** — IBD throughput 32→~250 blocks/min | medium-large | HIGH | Profile a 1000-block IBD slice (script-verify serial? sapling-proof check? SQLite write amp?). Leverage existing checkqueue parallelism; consider batching SQLite writes per block-batch. Likely multiple sub-rows. |
+| 4 | **P13.3** — `connect_block_local: failed at height N` log spam | small | MED | `app/controllers/src/sync_controller.c:695` — read the function, determine if it's dead code (CHAIN IS ADVANCING via the main path) or real-but-masked. Delete or fix. |
+| 5 | **P13.5** — addrman `find_node_by_service` gap | small | MED | Depends on P13.1 root cause — may be the same bug. Audit callers, ensure the entry exists at lookup time or downgrade to DEBUG. |
+| 6 | **P13.2** — header tip oscillation (3,081,727 → 480) | medium | HIGH | Counter type confusion in `lib/net/src/msg_headers.c` / `app/services/src/header_sync_service.c`. Find the flipped integer; assert header tip monotonic-non-decreasing outside explicit reorg. |
+| 7 | **P12.4** — `make deploy` fails without `sqlite3` CLI | trivial | MED | Swap `Makefile:343-346`'s `sqlite3` invocation for the in-repo `tools/wal_checkpoint` binary. One-liner. |
+| 8 | **P12.5** — `coins_map_erase` audit (was P10.1.4 enough?) | small | MED | Grep audit every `coins_map_erase` call site; verify flush propagates the deletion; add a coins-view-level invariant that catches the class, not the symptom. |
+| 9 | **P12.6** — structured JSON logs + per-subsystem rate limits | medium (cross-cutting) | MED | Wrap raw `fprintf(stderr, ...)` in `LOG_INFO/DEBUG/TRACE`; rate-limit per category. Don't change message text. |
+| 10 | **P12.7** — block-index height-repair runs every boot | small-medium | MED | `lib/storage/src/block_index_db.c` — find what writes wrong heights; check if P10.1.4 incidentally cured it; else file the cause. |
+| 11 | **P8.4** — compact-block O(n·m) reconstruction | medium | MED | `lib/net/src/compact_blocks.c:272-319` — promote to one-pass khash short-txid table built before the slot loop. Deferred since pre-canary; now free. |
+| 12 | **P7.10** follow-up — migrate `bg_validation` / `header_sync` / `peer_strategy` / `scheduler` / `workpool` / net-listener loops to `thread_registry_spawn` + `thread_registry_shutdown_requested()` | medium (cross-cutting) | MED | Infrastructure landed via P7.9 (`19b2cac1d`); land one subsystem per commit. |
+| 13 | **P12.8** — `zcl_health` RSS trajectory + `zcl_mvp_status` MCP tool | small | LOW | Quality-of-life — after the chain work clears. |
+
+When that queue drains, ping Rhett for the next triage wave.
+
+---
+
+## Pre-P10.1.5 status (archived below for context)
 
 **Done and on main (33 rows + 2 infra):** P1.1, P1.2, P1.5, P6.1–P6.6,
 P3.1–P3.7, P5.1, P5.2, P5.3, P5.4, P5.6, P5.7, P4.3, P4.4, P4.5,
