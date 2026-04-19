@@ -45,11 +45,20 @@ findings (1 CRIT, 4 HIGH, 4 MED, 1 LOW). Good work. **All deferred**
 until P10.1 closes — Rhett's call this evening: live-node fix takes
 priority over crypto hardening.
 
-**Read `AGENT.md` "Core focus" + "Priority 10" sections.** The new
-project-wide rule: no fix without a reproduction + test first.
-Agent-2 owns P10.1.x (chain-stall investigation). You are on-call
-to review their deliverables — especially **P10.1.2** (root-cause
-writeup at `docs/postmortems/2026-04-19-bip30-stall.md`).
+**Read `AGENT.md` "Core focus" + "Priority 10" + [`MVP.md`](../MVP.md).**
+The new project-wide rule: no fix without a reproduction + test
+first. Agent-2 owns P10.1.x (chain-stall investigation). You are
+on-call to review their deliverables — especially **P10.1.2**
+(root-cause writeup at `docs/postmortems/2026-04-19-bip30-stall.md`).
+
+**Why your review matters:** The MVP target (`MVP.md`) needs MRS
+8/8 + HI ≥80%. P10.1 is the gate to MRS criterion #6 (7-day
+soak). If P10.1.2's root-cause analysis is wrong, P10.1.3's
+regression test will be the wrong test, and P10.1.4 will be
+another hotfix in disguise. Your sapling/crypto background is
+secondary here — what we need is **independent eyes on the
+analysis**, not crypto expertise. Push back hard if the writeup
+hand-waves any of the four required questions.
 
 **No new code from you until P10.1 closes.** Resist the urge to
 start fixing P9.x rows; they're parked deliberately. When P10.1

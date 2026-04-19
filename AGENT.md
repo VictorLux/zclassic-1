@@ -58,6 +58,26 @@ and test come before any fix.
 
 ---
 
+## MVP target + Hardening KPI
+
+**MVP target:** "Someone we don't know can run zclassic23 + use it for a
+week without intervention." Eight binary acceptance criteria — see
+[`MVP.md`](MVP.md) for the full list and CI verification.
+
+**MRS (MVP Readiness Score, today): ~3 / 8** — criteria 1, 2, 4 likely
+pass manual test; 3 partial; **5, 6, 7, 8 fail or untested**.
+P10.1 (chain stall fix) is the gate to criterion 6 (7-day soak).
+
+**HI (Hardening Index, today): ~50%** — most closed rows have tests,
+but few were RED-first. Every row from P10 onward is 1.0 by
+construction. **MVP achieved at MRS = 8/8 AND HI ≥ 80%.**
+
+**Update rule for new rows:** mark `done <SHA> [test:1.0]` for the
+P10.1 RED-test pattern, `[test:0.5]` for retroactive tests, `[test:0.0]`
+for hotfix-only. Default = 0.0 if missing.
+
+---
+
 **Ground rules for every agent**
 - zclassic23 is the next-gen product. zclassicd is a legacy bootstrap peer only.
 - Read `CLAUDE.md` and `DEFENSIVE_CODING.md` before touching code.

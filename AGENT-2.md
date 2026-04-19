@@ -53,7 +53,7 @@ peers reconnected — then **stalled at h=3,081,407** with
 `bad-txns-BIP30` on every `connect_tip(3081408)`. This is a NEW CRIT
 regression downstream of your P7.2 rewind → filed as **P8.9 HOTFIX**.
 
-## RESET (2026-04-19): no more hotfixes
+## RESET (2026-04-19): no more hotfixes — work toward MVP
 
 P8.9 (deployed) → P8.10 (proposed) was firefighting. Both are
 **superseded by P10.1**. The new rule is non-negotiable:
@@ -64,10 +64,21 @@ P8.9 (deployed) → P8.10 (proposed) was firefighting. Both are
 4. Implement the fix. Test passes.
 5. Then deploy.
 
-**Read `AGENT.md` "Core focus" + "Priority 10" sections** before
-starting. The chain stall is the only thing that matters until it's
-properly fixed. P8.4/P8.6/P8.7/P8.8 + P7.10 + all of Agent-3's
-P9.x sapling-prover findings are deferred.
+**Read `AGENT.md` "Core focus" + "Priority 10" + [`MVP.md`](../MVP.md)
+before starting.** The chain stall is the only thing that matters
+until it's properly fixed. P8.4/P8.6/P8.7/P8.8 + P7.10 + all of
+Agent-3's P9.x sapling-prover findings are deferred.
+
+**Why P10.1 is the gate:** The MVP target requires "7 days of
+zero-intervention operation" (criterion #6 in `MVP.md`). Today the
+live node needs an operator restart every ~3 hours. Until P10.1
+closes, MRS cannot exceed 3/8 — every other improvement is blocked
+behind the chain working. **Your P10.1.1–P10.1.4 unblock criterion
+#6 (and indirectly #7 chaos-recovery and #8 consensus-parity).**
+
+**HI tracking:** every commit you push for P10.1 must end with
+`done <SHA> [test:1.0]` because the workflow forces RED-test-first.
+The P10.1 sequence is the canonical example of HI=1.0 work.
 
 **Open queue (P10.1 is the only thing — five sequential steps):**
 
