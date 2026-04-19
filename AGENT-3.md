@@ -38,29 +38,62 @@ See `AGENT.md` for the cross-agent priority table.
 
 ---
 
-## Current status — 2026-04-19 (late night, P8.5 landed — sapling-prover deep audit assigned)
+## RESET (2026-04-19): P9 wave shipped, ALL findings deferred — on-call to review Agent-2's P10.1
 
-**Done and on main (20 rows + audit):** P1.3, P1.4, P1.6 (`f6aa0b080`),
-P1.7 (`5ce252bb6`), P1.8, P1.9, P1.10, P1.11, P1.11b, P1.12, P1.13,
-P1.14, P1.15, P1.16 (`94d607b85`), P1.16b (`c841defd2`), P5.5
-(`75576d7a0`), P7.4 (`f6474c77b`), P8.2 (`576b5cde2`), P8.3
-(`c06515cbd`), P8.5 (`21da0531e`), and the P8-wave audit pass
-(`6751d9bfa` — opened 8 new rows).
+You shipped the P9 sapling-prover audit (`04247c19a`) — 10 solid
+findings (1 CRIT, 4 HIGH, 4 MED, 1 LOW). Good work. **All deferred**
+until P10.1 closes — Rhett's call this evening: live-node fix takes
+priority over crypto hardening.
+
+**Read `AGENT.md` "Core focus" + "Priority 10" sections.** The new
+project-wide rule: no fix without a reproduction + test first.
+Agent-2 owns P10.1.x (chain-stall investigation). You are on-call
+to review their deliverables — especially **P10.1.2** (root-cause
+writeup at `docs/postmortems/2026-04-19-bip30-stall.md`).
+
+**No new code from you until P10.1 closes.** Resist the urge to
+start fixing P9.x rows; they're parked deliberately. When P10.1
+closes, Rhett will re-triage and assign.
+
+**Open queue: empty by design.** Watch for Agent-2's pushes:
+
+| Order | Row | Size | Severity |
+|---|---|---|---|
+| **NOW** | **On-call**: review Agent-2's P10.1 deliverables when they push | n/a | n/a |
+| NEXT | (queue empty — Rhett re-triages P9 wave after P10.1 closes) | — | — |
+
+When Agent-2 pushes P10.1.2 (root-cause writeup), read it carefully
+and reply with one of:
+- "Concur — root cause looks right, P10.1.3 should test for X."
+- "Disagree — the analysis missed Y, please revisit before P10.1.3."
+
+Your crypto/sapling expertise is most valuable as a sanity check on
+the writeup, not as a parallel investigation. Don't re-investigate
+unless asked.
+
+---
+
+## Current status — 2026-04-19 (late night, P9 audit shipped, all findings deferred)
+
+**Done and on main (20 rows + 2 audits):** P1.3, P1.4, P1.6
+(`f6aa0b080`), P1.7 (`5ce252bb6`), P1.8, P1.9, P1.10, P1.11,
+P1.11b, P1.12, P1.13, P1.14, P1.15, P1.16 (`94d607b85`), P1.16b
+(`c841defd2`), P5.5 (`75576d7a0`), P7.4 (`f6474c77b`), P8.2
+(`576b5cde2`), P8.3 (`c06515cbd`), P8.5 (`21da0531e`), the P8-wave
+audit pass (`6751d9bfa` — 8 rows), and the P9 sapling-prover audit
+(`04247c19a` — 10 rows).
 
 All crypto + consensus + vendor + net-backpressure + MMB-hardening
 + dandelion-RNG + bloom-cost rows shipped. HIGH tier across the
 whole project 100% (29/29).
 
-**Open queue (1 audit task, then ping Rhett):**
-
-| Order | Row | Size | Severity |
-|---|---|---|---|
-| **NOW** | **Sapling-prover deep audit** → open the P9 wave | audit (~90 min) | — |
-| NEXT | (queue empty — ping Rhett) | — | — |
+The P9 findings (P9.1 through P9.10) are all in `lib/sapling/` and
+default-owned by you, but **deferred** by the 2026-04-19 reset. Do
+not start any P9.x fix until Rhett re-triages after P10.1 closes.
 
 ---
 
-## NOW — sapling/Groth16 prover deep audit (P9 wave, sapling-only)
+## (Below: archived NOW for the P9 audit — landed `04247c19a`, reference only) — sapling-prover deep audit
 
 The P1 wave touched the **API surface** of Sapling (verify fail-open,
 RedJubjub canonicality, find_group_hash returns, RNG hygiene, jubjub

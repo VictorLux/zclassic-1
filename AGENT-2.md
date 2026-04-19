@@ -53,31 +53,175 @@ peers reconnected — then **stalled at h=3,081,407** with
 `bad-txns-BIP30` on every `connect_tip(3081408)`. This is a NEW CRIT
 regression downstream of your P7.2 rewind → filed as **P8.9 HOTFIX**.
 
-**Open queue (priority order):**
+## RESET (2026-04-19): no more hotfixes
+
+P8.9 (deployed) → P8.10 (proposed) was firefighting. Both are
+**superseded by P10.1**. The new rule is non-negotiable:
+
+1. Reproduce the failure on a fixture deterministically.
+2. Identify the EXACT root cause — not the symptom.
+3. Write the regression test FIRST (it must fail pre-fix).
+4. Implement the fix. Test passes.
+5. Then deploy.
+
+**Read `AGENT.md` "Core focus" + "Priority 10" sections** before
+starting. The chain stall is the only thing that matters until it's
+properly fixed. P8.4/P8.6/P8.7/P8.8 + P7.10 + all of Agent-3's
+P9.x sapling-prover findings are deferred.
+
+**Open queue (P10.1 is the only thing — five sequential steps):**
 
 | Order | Row | Size | Severity |
 |---|---|---|---|
-| **NOW** | **P8.10 HOTFIX-2** — P8.9 incomplete; live node regressed 3,081,408→3,081,407 + BLOCK_FAILED_CHILD memory growth (5.9G/6.0G in 3h) | medium | **CRIT** |
-| NEXT | **P8.4** compact-block O(n·m) reconstruction → khash | medium | MED |
-| NEXT+2 | **P8.6** zslp_service short-key ambiguity | small | MED |
-| NEXT+3 | **P8.7** zmarket_offer size_bytes overflow | trivial | MED |
-| NEXT+4 | **P8.8** ZNAM builder vs parser type gate divergence | trivial | MED |
-| follow-up | **P7.10** — migrate long-running loops onto `thread_registry_shutdown_requested()` (opportunistically as each subsystem is touched) | cross-cutting | MED |
+| **NOW** | **P10.1.1** — Reproduce the chain stall on a fixture | medium | **CRIT** |
+| NEXT | **P10.1.2** — Root-cause writeup in `docs/postmortems/` | medium | (gates P10.1.3) |
+| NEXT+2 | **P10.1.3** — Regression test that fails pre-fix | small | (gates P10.1.4) |
+| NEXT+3 | **P10.1.4** — Minimal fix + invariant assertion | medium | (gates P10.1.5) |
+| NEXT+4 | **P10.1.5** — Live-node verification (Rhett runs deploy) | n/a | Rhett |
+| **DEFERRED** | P8.4, P8.6, P8.7, P8.8, P7.10 follow-up | — | parked behind P10.1 |
 
-**P8.2 + P8.5 reassigned to Agent-3** — P8.2 (dandelion PRNG, done
-`576b5cde2`) was a natural RNG fit. P8.5 (bloom hash-funcs clamp)
-moved to Agent-3 to keep them productive while you grind through
-P8.10 + remaining MEDs; siphash adjacency makes it in-lane enough.
-
-**Recently landed:** P4.1+P4.2 (`a9fcf6c66`), P8.9 HOTFIX
-(`b875152da`), P8.1 (`b6726f83b`), P7.9 infrastructure
-(`19b2cac1d`). P8.9 + P8.1 + P7.9 all deployed at 23:22 UTC
-(coordinator restart). Live node briefly advanced past stall, then
-regressed → P8.10 captures the gap.
+**Recently landed (preserved for context):** P4.1+P4.2
+(`a9fcf6c66`), P8.9 HOTFIX (`b875152da` — superseded), P8.1
+(`b6726f83b`), P7.9 infrastructure (`19b2cac1d`). Agent-3 closed
+P8.5 (`21da0531e`), P8.2 (`576b5cde2`), and the P9 sapling-prover
+audit (`04247c19a` — 10 findings, all deferred).
 
 ---
 
-## NOW — P8.10 (HOTFIX-2 CRIT): P8.9 incomplete + BLOCK_FAILED_CHILD memory leak
+## NOW — P10.1.1: Reproduce the chain stall on a fixture
+
+The live node regression `3,081,408 → 3,081,407 → BIP30 loop` has
+NOT been reproduced. Every "fix" so far has been a guess from log
+fragments. This row is the precondition for everything else.
+
+### Deliverable
+
+A self-contained test fixture in `lib/test/test_chain_stall_repro.c`
+(new file) that:
+
+1. Creates a temp datadir with a SQLite `node.db` pre-seeded to the
+   exact post-P7.1 partial-application state. Simplest path: copy the
+   live node's `~/.zclassic-c23/node.db` into the test as a binary
+   fixture (~100 MB? if too big, generate the equivalent state
+   programmatically — small block index + matching utxos rows).
+2. Boots a node from this fixture (in-process, not via fork).
+3. Asserts the BIP30 false-positive reproduces — `connect_block(h)`
+   returns false with `bad-txns-BIP30` for the first block above tip.
+4. Runs in `make test` (mark `ZCL_STRESS_TESTS`-guarded if the
+   fixture is large; default-on if it's small).
+
+### How to obtain the fixture
+
+The live node datadir is at `~/.zclassic-c23/`. Coordinate with
+Rhett to get a snapshot: he can run `tools/zcl-rpc dumpchainstate`
+or copy the SQLite DB while the service is stopped. Anonymize any
+wallet/sapling key material before committing.
+
+If the live state is too large, work backward: identify the minimum
+schema (blocks at h=3,081,406..3,081,408 + utxos for those blocks +
+the tx_index entries that survive partial application) and generate
+equivalents in code. ~50 KB of fixture data should be enough.
+
+### Acceptance
+
+- New test file exists.
+- Test runs and FAILS today (no fix yet — failure proves the bug
+  reproduces, which is the win).
+- Failure message names the symptom precisely (`bad-txns-BIP30` at
+  the expected height).
+- Test takes <30s to run.
+
+### What this row does NOT do
+
+- No fix code.
+- No invariant code.
+- No edits to `connect_block.c`, `coins_view_sqlite.c`,
+  `process_block.c`.
+- No documentation (P10.1.2 is the writeup row).
+
+### Commit template
+
+```
+test/chain: add deterministic reproduction of the BIP30 stall (P10.1.1)
+
+Fixes P10.1.1 (AGENT.md). Self-contained fixture that pre-seeds
+node.db with the post-P7.1 partial-application state observed on
+the live node, boots an in-process node, and asserts connect_block
+trips bad-txns-BIP30 at h=tip+1.
+
+Test FAILS today (no fix yet). The failure is the win — it proves
+the bug reproduces deterministically and gates P10.1.2 (root-cause
+writeup) and P10.1.3 (regression test).
+
+Fixture size: <fill> KB. Runtime: <fill>s.
+```
+
+---
+
+## NEXT — P10.1.2: Root-cause writeup
+
+After P10.1.1 lands. Markdown doc at
+`docs/postmortems/2026-04-19-bip30-stall.md`. Must answer four
+questions:
+
+1. **What was the EXACT path that took chain `3,081,408 → 3,081,407`
+   without a reorg log line?** Investigate `disconnect_tip`,
+   `InvalidateBlock`, any code that decrements `coins_best_block`
+   height. Cite line numbers.
+2. **WHY does BIP30 trip after P8.9's strengthened sweep ran?**
+   Either the sweep is incomplete (which rows did it miss?), or
+   another code path re-creates the stale state after the sweep.
+   Cite line numbers.
+3. **What invariant should have been enforced?** Phrase as a
+   property: "For every txid T in the coins view, T's coins must be
+   either pruned OR derived from a block in the active chain."
+4. **Why didn't the existing tests catch this?** Audit the existing
+   test_storage / test_validation files. What test would have
+   failed pre-P7.1 if it existed?
+
+No code in this row. Reviewed by Agent-3 before P10.1.3 starts.
+
+---
+
+## NEXT+2 — P10.1.3: Regression test that fails pre-fix
+
+After P10.1.2 lands. New test in `lib/test/test_validation.c` (or
+wherever fits the affected path). Test name should describe the
+invariant from P10.1.2 question 3 (e.g.,
+`test_connect_block_consistent_on_retry`).
+
+Test must FAIL on current main (no fix yet). Commit it RED. The
+regression test gates the fix — without it, future regressions
+won't be caught.
+
+---
+
+## NEXT+3 — P10.1.4: Minimal fix + invariant assertion
+
+After P10.1.3 lands RED. Smallest diff that makes P10.1.3 pass
+without regressing any other test. No drive-by refactors. Add an
+assertion that PANICS if the invariant is ever violated again
+(debug builds only — release logs + bumps a metric).
+
+The fix may look completely different from P8.10's two-bandaid
+proposal. Trust P10.1.2's analysis, not the prior hotfix design.
+
+After this lands: `make test` green, P10.1.1 reproduction also
+passes (chain advances), P10.1.3 regression test passes.
+
+---
+
+## NEXT+4 — P10.1.5: Live-node verification
+
+Rhett's row (coordinator). After P10.1.4 lands and `make ci` is
+green, Rhett runs `make deploy`. Watches for `EV_BLOCK_CONNECTED`
+on h=3,081,408 within 120s. Logs RSS plateau over 24h. Updates the
+P10.1.5 row with `done` + canary observations. Only THEN do we
+re-triage the deferred P9 wave + P8 MEDs.
+
+---
+
+## (Below: archived NOW for P8.10 — SUPERSEDED, do NOT implement) — P8.10 HOTFIX-2
 
 Files: `lib/coins/src/coins_view_sqlite.c` (P8.9 sweep — needs
 disconnect→reconnect idempotency), `lib/validation/src/process_block.c`

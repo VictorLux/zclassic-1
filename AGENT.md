@@ -6,28 +6,55 @@ Owner: Rhett (primary). Delegates: Agent-2 (see `AGENT-2.md`), Agent-3 (see `AGE
 
 ---
 
-## Progress — last update 2026-04-19 (late night, P9 wave opened — 10 new rows from Agent-3 sapling-prover audit)
+## Core focus (2026-04-19 reset)
 
-**Overall: 67 / 84 rows closed (80%) | SWRC ~84%**
+Three things matter, in order:
+
+1. **The chain works.** Live node syncs to tip and stays there. No
+   manual surgery. No 3-hour OOM cycle. Everything else is decoration
+   until this is true.
+2. **Consensus parity with zclassicd is provable.** Continuous diff
+   against the legacy peer; CRITICAL alarm on any divergence. Without
+   this, every change is rolling dice on a chain split.
+3. **Recovery is automatic.** Crashes, disk corruption, power loss —
+   the node comes back up and rejoins the chain on its own, every
+   time. No "operator must know to delete this file."
+
+**The rule, all bug fixes:**
+1. Reproduce the failure on a fixture deterministically.
+2. Identify the EXACT root cause — not the symptom.
+3. Write the regression test FIRST. It must fail pre-fix.
+4. Implement the fix. Test passes.
+5. Then deploy.
+
+**No hotfixes.** P8.9 (deployed) → P8.10 (proposed) was firefighting,
+not engineering. Both are superseded by **P10.1** below — investigation
+and test come before any fix.
+
+---
+
+## Progress — last update 2026-04-19 (RESET to root-cause discipline; P10.1 supersedes P8.10; P9 wave preserved + deferred)
+
+**Overall: 67 / 85 rows closed (79%) | SWRC ~84%**
 
 | Tier | Closed / Total | % | Open rows |
 |---|---|---|---|
-| **CRITICAL** | 12 / 14 | **86%** | **P8.10 (LIVE-NODE HOTFIX-2)**, P9.2 |
-| **HIGH** | 29 / 33 | **88%** | P9.1, P9.3, P9.4, P9.5 |
-| **MED** | 21 / 30 | **70%** | P7.10, P8.4, P8.6, P8.7, P8.8, P9.6, P9.7, P9.8, P9.9 |
-| **LOW** | 2 / 3 | **67%** | P9.10 |
+| **CRITICAL** | 12 / 15 | **80%** | **P10.1 (NOW)**, P8.10 (SUPERSEDED — frozen), P9.2 (deferred) |
+| **HIGH** | 29 / 33 | **88%** | P9.1, P9.3, P9.4, P9.5 (all deferred) |
+| **MED** | 21 / 30 | **70%** | P7.10, P8.4, P8.6, P8.7, P8.8, P9.6, P9.7, P9.8, P9.9 (all deferred) |
+| **LOW** | 2 / 3 | **67%** | P9.10 (deferred) |
 | (P0 baseline) | 4 / 4 | **100%** | — |
 
-**Open by owner (2026-04-19 late night, post-P9-wave):**
-- **Agent-2 (5 MED rows + 1 CRIT hotfix):** **P8.10 (CRIT, NOW)** — P8.9 was incomplete: chain advanced 3,081,407→3,081,408 transiently, then regressed back to 3,081,407 within 3h while memory climbed to 5.9G via repeated `BLOCK_FAILED_CHILD` propagation (973+ descendants per retry). Then P8.4/P8.6/P8.7/P8.8 + P7.10 migration follow-up.
-- **Agent-3 (10 P9 rows — pending Rhett triage):** P9.1–P9.10 all in `lib/sapling/`. Default ownership = Agent-3 (sapling lane). Severity breakdown: 1 CRIT (P9.2 UB in circuit synth placeholder), 4 HIGH (P9.1 prover-scalar-mul side-channel, P9.3 silent constraint-system OOM corruption, P9.4 FFT/MSM silent no-op on non-power-of-2, P9.5 lazy-init thread-safety), 4 MED (P9.6 witness length validation, P9.7 sprout ic_len underflow, P9.8 pedersen group-hash counter exhaustion, P9.9 stdout printfs in crypto paths), 1 LOW (P9.10 parallel-MSM cache-side-channel).
-- **Rhett:** triage P9.1–P9.10 → assign owners + severity confirmations.
+**Open by owner (2026-04-19 late night, post-reset):**
+- **Agent-2 (1 row, NOW):** **P10.1 — chain-stall root cause + regression test + fix**. Five sequential sub-rows (P10.1.1–P10.1.5); each gates the next. **No hotfix shortcuts.** P8.4/P8.6/P8.7/P8.8 + P7.10 follow-up are deferred until P10.1 closes.
+- **Agent-3 (idle / on-call):** Their P9 sapling-prover audit (`04247c19a`) landed ~1 min before this reset commit. The 10 findings (P9.1–P9.10) are real and preserved — but **all deferred** until P10.1 closes. Agent-3 is on-call to review Agent-2's P10.1.2 root-cause writeup. No new code from them until P10.1 closes.
+- **Rhett:** 0 (coordinator only).
 
-**LIVE-NODE STATUS (2026-04-19):** restarted at 23:22 UTC after memory hit 5.9G/6.0G. Chain at h=3,081,407 — P8.9 hotfix shipped + briefly worked but regressed; P8.10 captures the gap. **Hot path:** Agent-2's P8.10 must land + redeploy before next OOM (~3h cycle observed). P9 wave is audit-only — no impact on live-node triage.
+**LIVE-NODE STATUS (2026-04-19):** chain at h=3,081,407 (zclassicd at 3,082,897 — gap of 1,490 blocks). The stall is **acceptable** until P10.1 produces a tested fix — operator restarts every ~3h are tolerable; deploying another guess is not.
 
-**Top remaining risks:** P8.10 is the live-node hotfix. P9.2 is the next most-urgent row (undefined-behavior in `sapling_circuit.c` production paths — even though the dead-path guess may shadow it, UB in crypto code is a landmine). P9.1 is the zero-knowledge blinding-factor side-channel — serious for privacy, not for consensus.
+**Top remaining risks:** until P10.1 closes, the entire dev plan blocks. After P10.1: triage which P9 audit findings actually need fixes vs. which are theoretical, drain the deferred P8 MEDs (4 rows), then file Phase 2 work (continuous fuzzing in CI, consensus-parity diff service, sapling-tree checkpoint, structured logs).
 
-**SWRC formula:** CRIT=4, HIGH=2, MED=1, LOW=0.5. P0 rows weighted as HIGH. Total weighted capacity = 143 + 4 (P8.10) + 4 (P9.2) + 8 (P9.1/3/4/5) + 4 (P9.6/7/8/9) + 0.5 (P9.10) = 163.5.
+**SWRC formula:** CRIT=4, HIGH=2, MED=1, LOW=0.5. P0 rows weighted as HIGH. Total weighted capacity = 167.5 (+4 for new CRIT P10.1).
 
 ---
 
@@ -212,7 +239,18 @@ verification, znam parser bounds, store controller (post-P3.4/P3.6).
 
 ---
 
-## Priority 9 — Sapling-prover deep audit (2026-04-19, post-P8 drain)
+## Priority 9 — Sapling-prover deep audit (2026-04-19, post-P8 drain) — **ALL DEFERRED until P10.1 closes**
+
+> **DEFERRED 2026-04-19 (post-reset):** All P9.1–P9.10 rows are
+> real bugs and stay open, but **no fix work starts until P10.1
+> (chain-stall investigation) closes**. The core focus is "the
+> chain works" — sapling-prover hardening is improvement on top.
+> Agent-3 is on-call to review Agent-2's P10.1.2 root-cause
+> writeup, NOT to start fixing P9.x rows.
+>
+> When P10.1 closes, Rhett re-triages P9.1–P9.10. Triage notes
+> from the original audit are preserved at the bottom of this
+> table.
 
 Surfaced by Agent-3's sapling-only audit after P8.5. P1 wave touched
 the API surface; this wave hit prover internals: `groth16_prover.c`,
@@ -235,7 +273,7 @@ P1-audited and not re-scanned.
 | P9.9 | Prover emits `printf(...)\n` to stdout on every major step: `sapling_circuit.c:260,481` (per proof), `groth16_prover.c:604-605` (per PK load), `params_init.c:216,256,258,285` (per init). Pollutes operator log, leaks wallet-activity timing (spend-proof generation fires the printf, visible to anyone reading the log), conflicts with project-wide `LOG_INFO` / event-bus discipline. Replace with `LOG_INFO` or delete — data is already in events/metrics. | `sapling_circuit.c:260,481`; `groth16_prover.c:604-605`; `params_init.c:216,256,258,285` | MED | Agent 3 |
 | P9.10 | `msm_parallel.c` workers use naïve bucket access: `g1_add(&buckets[val - 1], ...)` with `val` derived from `c` bits of a secret scalar. Every scalar-bit group hits a different cache line → cache-side-channel on the witness (notes, rcm, esk). Same concern as P9.1 but on the witness side. Switch prover-side MSM to CT bucket access (linear scan + masked select), OR document non-CT + confirm single-tenant threat model. Verifier-side MSM (public inputs + VK) is fine. | `lib/sapling/src/msm_parallel.c:60-69, 181-190`; serial at `groth16_prover.c:300-322, 362-381` | LOW | Agent 3 |
 
-**Triage notes for Rhett:**
+**Triage notes for Rhett (revisit AFTER P10.1 closes):**
 - P9.2 is the only CRIT — land first. If the placeholder paths are
   shadowed by another prover impl, the fix is a 3-line LOG_FAIL; if
   live, it's a multi-day note-commitment rewrite.
@@ -245,6 +283,44 @@ P1-audited and not re-scanned.
 - P9.6, P9.7, P9.8 are small defensive-coding hygiene rows — batchable.
 - P9.9 is a 10-minute commit. P9.5 pairs with any future `sapling/`
   perf work; the fix is `pthread_once`.
+
+---
+
+## Priority 10 — Root-cause discipline (2026-04-19 reset)
+
+P8.9 (deployed) and P8.10 (proposed) were hotfixes against an
+incompletely-understood failure. **Both are superseded by P10.1.**
+P8.10 is frozen (not deleted — kept for reference) but **must not
+be implemented as written**.
+
+The work order for P10.1 is non-negotiable. Each step is a separate
+commit; the next step does not start until the previous one is
+reviewed.
+
+| # | Task | Acceptance | Owner |
+|---|---|---|---|
+| **P10.1.1** | **Reproduce the chain stall on a fixture.** Build a deterministic test fixture: pre-seed `utxos` + `tx_index` with the post-P7.1 partial-application state observed on the live node (or a smaller equivalent that exercises the same code path). Boot a node from this fixture. Assert the BIP30 false-positive reproduces. Commit the fixture + reproduction script to `lib/test/`. | New `test_chain_stall_repro` lives in `lib/test/`; runs in `make test`; FAILS today (no fix yet). | Agent 2 |
+| **P10.1.2** | **Root-cause writeup.** Markdown doc in `docs/postmortems/2026-04-19-bip30-stall.md`. Must answer: (a) the EXACT path that took chain `3,081,408 → 3,081,407` without a reorg log line; (b) WHY BIP30 trips after P8.9's strengthened sweep ran; (c) the invariant that should have been enforced; (d) why the existing tests didn't catch it. No code in this row. | One commit: `docs/postmortems/...md` + AGENT.md row updated. Reviewed by Agent-3 before P10.1.3 starts. | Agent 2 |
+| **P10.1.3** | **Regression test that fails pre-fix.** Translate P10.1.2's invariant into a unit test in `lib/test/test_validation.c` (or wherever covers the affected path). Test must FAIL on the current main without the fix and PASS after the fix lands. The test name should describe the invariant ("connect_block leaves coins view consistent on retry"). | One commit: test added, `make test` shows the new test failing in `RED`. | Agent 2 |
+| **P10.1.4** | **Minimal fix.** Smallest diff that makes P10.1.3's test pass without regressing any other test. No drive-by refactors. Add an assertion that panics if the invariant is ever violated again (debug builds only — release logs + bumps a metric). | One commit: code fix + assertion. `make test` green. P10.1.1 reproduction also passes (chain advances). | Agent 2 |
+| **P10.1.5** | **Live-node verification.** Coordinator (Rhett, this clone) runs `make deploy` on the production node. Watches for `EV_BLOCK_CONNECTED` on h=3,081,408 within 120s. Logs the post-deploy memory plateau over the next 24h. Updates this row with `done` + the canary observations. | Live node stays advanced for 24h, RSS plateaus instead of climbing. | Rhett (coordinator) |
+
+**Cancelled / deferred by this reset:**
+- All P9.1–P9.10 (Agent-3's sapling-prover audit, `04247c19a`) are
+  **deferred** — see the DEFERRED banner on Priority 9. The findings
+  are real but the chain stall blocks the dev plan; sapling-prover
+  hardening waits until P10.1 closes.
+- All P8 MEDs (P8.4, P8.6, P8.7, P8.8) and the P7.10 follow-up are
+  **deferred** until P10.1 closes. Not cancelled — parked.
+
+**Triage notes:**
+- P8.10 stays in the table for traceability. **Do not implement**
+  the bandaid options listed in its row — they were guessed before
+  P10.1.1 reproduction. The real fix may look completely different.
+- If P10.1.2 surfaces a NEW class of bug (e.g., disconnect_tip's
+  cleanup is broken in general, not just at h=3,081,408), file each
+  finding as P10.2.x — one logical fix per row, same investigate-
+  test-fix discipline.
 
 ---
 
