@@ -89,7 +89,7 @@ The P10.1 sequence is the canonical example of HI=1.0 work.
 | DONE | **P10.1.3** — Regression test that fails pre-fix | small | done ae7caa1fe [test:1.0] (RED) |
 | DONE | **P10.1.4** — Minimal fix + invariant assertion | medium | done ac782fef5 [test:1.0] (flipped P10.1.3 GREEN) |
 | WAITING | **P10.1.5** — Live-node verification (Rhett runs deploy) | n/a | Rhett — coordinator |
-| DONE | **P8.7** — zmarket_offer num_chunks u32 overflow guard | small | done db3054901 [test:0.5] (self-contained; in-lane; NEXT queue pre-authorization) |
+| DONE | **P8.7** — zmarket_offer num_chunks u32 overflow guard | small | done 8e5522a8b [test:0.5] (self-contained; in-lane; NEXT queue pre-authorization) |
 | UNBLOCKED-ON-CANARY | P8.4, P8.6, P8.8, P7.10 follow-up | — | ready after canary clears |
 | FLAGGED | `make ci` bus-error in test_cookie_rotation | n/a | pre-existing, not P10.1 or P8.7 — Rhett |
 
@@ -626,7 +626,7 @@ _(Keep short — 1-3 recent entries.)_
 
 ### 2026-04-19 (post-P10.1.4) — P8.7 landed opportunistically; CI bus-error surfaced
 
-**P8.7 (`db3054901`):** new `file_market_num_chunks_for_size()` helper
+**P8.7 (`8e5522a8b`):** new `file_market_num_chunks_for_size()` helper
 in `lib/net/src/file_market.c` rejects `size_bytes > (uint64_t)UINT32_MAX
 * FILE_MARKET_CHUNK_SIZE` — caps at ~225 PB, the real bug was u64→u32
 truncation of the chunk count (not the `+CHUNK_SIZE-1` overflow the
