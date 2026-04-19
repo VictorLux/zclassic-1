@@ -38,7 +38,7 @@ gap analysis. See `AGENT.md` for the cross-agent priority table.
 
 ---
 
-## Current status — 2026-04-19 (post-P10.1.4 + P8.7; canary pending; CI flagged)
+## Current status — 2026-04-19 (post-P10.1.4 + P8.6 + P8.7; canary pending; CI flagged)
 
 **Done and on main (33 rows + 2 infra):** P1.1, P1.2, P1.5, P6.1–P6.6,
 P3.1–P3.7, P5.1, P5.2, P5.3, P5.4, P5.6, P5.7, P4.3, P4.4, P4.5,
@@ -90,8 +90,9 @@ The P10.1 sequence is the canonical example of HI=1.0 work.
 | DONE | **P10.1.4** — Minimal fix + invariant assertion | medium | done ac782fef5 [test:1.0] (flipped P10.1.3 GREEN) |
 | WAITING | **P10.1.5** — Live-node verification (Rhett runs deploy) | n/a | Rhett — coordinator |
 | DONE | **P8.7** — zmarket_offer num_chunks u32 overflow guard | small | done 8e5522a8b [test:0.5] (self-contained; in-lane; NEXT queue pre-authorization) |
-| UNBLOCKED-ON-CANARY | P8.4, P8.6, P8.8, P7.10 follow-up | — | ready after canary clears |
-| FLAGGED | `make ci` bus-error in test_cookie_rotation | n/a | pre-existing, not P10.1 or P8.7 — Rhett |
+| DONE | **P8.6** — zslp_service token_key disambiguation | small | done 93936c5fb [test:0.5] (self-contained; revised mid-flight when first draft regressed the ZCL23ACCESS store e2e) |
+| UNBLOCKED-ON-CANARY | P8.4, P8.8, P7.10 follow-up | — | ready after canary clears |
+| FLAGGED | `make ci` bus-error in test_cookie_rotation | n/a | pre-existing, not P10.1 / P8.6 / P8.7 — Rhett |
 
 **Recently landed (preserved for context):** P10.1.4 fix
 (`ac782fef5`), P10.1.3 RED (`ae7caa1fe`), P10.1.2 writeup
@@ -623,6 +624,27 @@ If build or tests fail — STOP and report.
 ## Notes from Agent-2
 
 _(Keep short — 1-3 recent entries.)_
+
+### 2026-04-19 (post-P8.7) — P8.6 token_key disambiguation; revised mid-flight
+
+**P8.6 (`93936c5fb`):** `zslp_service_validate_token_key` now rejects
+all-hex strings of length < 64 — the exact collision shape where a
+truncated hex txid prefix canonicalizes (upper-cased) to the same key
+as a hypothetical short ticker. Legitimate ticker-style keys in this
+codebase all contain at least one non-hex alphanumeric char ("ZCL",
+"BTC", "ZCL23ACCESS", "ZCL23STORE", "ACCUM", "SPLIT", "TESTCOIN") and
+still validate. The narrow compat break: pure-hex short tickers like
+"CAFE" / "DEAD" must be referenced by their 64-char txid instead.
+
+**First draft regressed store e2e.** My initial fix restricted
+alphanumeric to `len <= ZSLP_MAX_TICKER_LEN=10` — but
+`store_controller.c:178` hardcodes the 11-char token_id "ZCL23ACCESS"
+as the gated-access product's key, and the `store: e2e: mint
+ZCL23ACCESS + verify gated access 200` test relies on the validator
+accepting it. Caught the regression in the first full test run, not
+the targeted P8.6 run; revised to the "reject all-hex short" rule
+before commit. 13 tests in `test_models_zslp.c` cover both
+realistic-ticker accept and all-hex-short reject.
 
 ### 2026-04-19 (post-P10.1.4) — P8.7 landed opportunistically; CI bus-error surfaced
 
