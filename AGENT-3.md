@@ -71,8 +71,9 @@ re-triages.
 | DONE | P10.1.2-REVIEW (`879192ee2`) — CONCUR_WITH_NOTES | — | — |
 | DONE | P11.1 (`63f98909d`) — Tor bootstrap CI test, MVP #2 ✅ | — | — |
 | DONE | P11.3 (`ffd1112e4`) — cold-start sync CI test, MVP #3 ✅ | — | — |
-| **NOW** | **P11.7** — MVP criterion #7 CI test: kill -9 chaos recovery <2 min (P10.1.4 landed `ac782fef5`) | medium | Agent 3 |
-| follow-up | P11.4, P11.5, P11.6, P11.8 (the remaining MVP criteria) | — | TBD |
+| DONE | P11.7 (`8d3d3b23f`) — kill -9 recovery CI test, MVP #7 ✅ | — | — |
+| **NOW** | queue empty — **ping Rhett** for next triage (CI-verified MRS now 3/8; P11.4/5/6/8 remain TBD, P9.x sapling audit findings still deferred behind P10.1.5) | — | — |
+| follow-up | P11.4 (#4 shielded payment e2e), P11.5 (#5 store flow e2e), P11.6 (#6 7-day soak harness), P11.8 (#8 parity diff service) — all need upstream service work before CI gates can land | — | TBD |
 
 Rhett's directive 2026-04-19: **"work on getting the product
 working and syncing."** P11.3 + P11.7 are the two MVP criteria that
@@ -154,7 +155,7 @@ MRS not HI).
 
 ---
 
-## NOW — P11.7: MVP criterion #7 CI test (kill -9 chaos recovery <2 min)
+## (Below: archived NOW for P11.7 — landed `8d3d3b23f`, reference only) — kill -9 chaos recovery
 
 P10.1.4 landed `ac782fef5`. Unblocked. Run this against the
 post-P10.1.4 binary.
@@ -902,6 +903,52 @@ If build or tests fail — STOP and report.
 ## Notes from Agent-3
 
 _(Keep short — 1-3 recent entries.)_
+
+### 2026-04-19 (overnight) — P11.7 kill -9 recovery CI landed — MRS 2/8 → 3/8 — queue empty
+
+- **P11.7 (`8d3d3b23f`):** new `lib/test/src/test_kill9_recovery.c`.
+  For each of 10 cycles, parent `fork()`s a child running a
+  realistic connect-block-style write loop (BEGIN/COMMIT per
+  "block", 30 blocks at ~1ms cadence, per-block UTXO inserts +
+  tip-pointer update), then `kill(pid, SIGKILL)` after a
+  randomised 0.5-40ms delay (covers pre-begin / mid-insert /
+  pre-commit / post-commit kill windows), `waitpid()`s, reopens
+  the datadir via `coins_view_sqlite_open` (same entry point the
+  live node takes on boot), and asserts (a) reopen succeeds and
+  (b) zero UTXO rows sit above the tip height after recovery.
+  - Dev-box 3-run flake check: 10 cycles in 0-1s each, typical
+    distribution 5-8 clean tip-advances + 2-5 mid-apply SIGKILLs.
+    Every cycle's reopen succeeded with zero UTXO overshoot.
+  - **Design choice B from the research brief** (fork + in-process
+    chainstate + SIGKILL + parent reopen): the heaviest Option A
+    (full `./zclassic23` subprocess on loopback with a synthetic
+    peer) is overkill for a regression gate — MCP E2E already
+    covers that shape in `test_mcp_e2e.c`. Option C (same-process
+    abort) loses real kill -9 kernel semantics. Option B hits the
+    right exercise surface for the on-disk atomicity invariant
+    that P10.1.4 protects.
+  - **Self-contained** — duplicates the SQLite schema + seed
+    helpers from `test_coins_view_atomicity.c` rather than exporting
+    them. Keeps both tests independent (different schema variants
+    over time) and avoids header-surface churn in the lib/test
+    public API.
+  - `ZCL_STRESS_TESTS=1`-gated to match the P11.1/P11.3 convention.
+    Registered in the default sequence at `lib/test/src/test.c`
+    AND via `ZCL_TEST_ONLY=kill9`. Skip path verified.
+- **Baseline failures carried forward** (pre-existing on
+  `c71746023`, not caused by this commit): `test_no_hardcoded_home`
+  ×1 (Agent-2 lane, libtor.a debug-path leak), `test_make_lint_gates`
+  ×2 (env leakage). 3 total failures = exact match to the P11.3
+  baseline and all prior P8.x baselines. `make lint` green.
+- **MVP linkage:** flipped `MVP.md` criterion #7 from ☐ to ✅ with
+  the test path. CI-verified MRS bumps from 2/8 to 3/8. `AGENT.md`
+  Progress block + P11 table + owner lines all synced.
+- **Queue empty:** P11.4/5/6/8 all require upstream service work
+  before CI gates can land (shielded payment flow, store e2e,
+  soak harness, parity diff service — all Agent-2 lanes per the
+  P11.x "follow-up" row in AGENT.md). P9.x sapling-prover audit
+  findings remain deferred behind Rhett's P10.1.5 live-node
+  canary. Pinging Rhett for next triage.
 
 ### 2026-04-19 (overnight) — P11.3 cold-start sync CI landed — MRS 1/8 → 2/8
 
