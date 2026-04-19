@@ -38,27 +38,33 @@ See `AGENT.md` for the cross-agent priority table.
 
 ---
 
-## 2026-04-19 (post-real-review): P10.1 REOPENED, your P12.1 NOW is UNCHANGED
+## 2026-04-19 (late): P12.1 SHIPPED 8fb7cb623, NOW P9.5 unblocked
 
-**Correction to the earlier brief** — the P10.1.5 "canary green"
-signal was wrong (MCP-surfaced height came from spurious
-`val.block_connected` emissions; SQLite was pinned at h=3,081,408
-the whole time). Agent-2 is now on a P14 wave (P14.1 savepoint
-flush, P14.2 true end-to-end RED, P14.3 `zcl_syncdiag` SIGABRT,
-P14.6 BLOCK_FAILED_CHILD GC, P14.4 FSM debounce, P14.5 post-commit
-emission).
+P12.1 landed as a 4-commit wave:
+- `bc4d92170` — timing probe on the replay loop (baseline measurement)
+- `afcca842e` — RED test (stubs return false; 3 of 4 checks fail)
+- `070b1b0a8` — GREEN: real checkpoint (SHA3 trailer + atomic
+  .tmp+rename + verified deserialize)
+- `8fb7cb623` — integration: boot-time load (before rebuild path
+  fires) + every-10K-block flush from connect_tip + sapling_tree_rebuild
+  delta-replay from the flat file
 
-**Your row DOES NOT CHANGE.** P12.1 (sapling tree checkpoint) is
-an independent workstream from the chain-stall lane — Agent-2's
-P14 fixes consensus/flush; your P12.1 fixes restart UX. When P14
-closes and the node runs for days without crashing, P12.1 becomes
-the load-bearing MVP-#6 gate (today it's dwarfed by the 11-16h
-crash cadence, but that's exactly what P14 aims to close).
+Live verification is Rhett's: on the next `make deploy` the log
+should show `Sapling tree loaded from checkpoint: … (P12.1)`
+instead of `Sapling tree root MISMATCH … rebuilding from block
+files …`, and boot-to-ready should be in seconds.
 
-Continue on **P12.1 — sapling tree checkpoint**. The brief below
-stands unchanged.
+### NOW — P9.5: pthread_once guard on lazy Sapling caches
 
-### NOW — P12.1 (CRITICAL): sapling tree checkpoint
+Next row in the NEXT queue below (after P12.1). Both
+`pedersen_hash.c::ensure_generators` and
+`incremental_merkle_tree.c::ensure_sapling_empty_roots` are
+guarded by a plain `static bool`. Two concurrent first-callers
+can race and one gets a zero-generator. Replace with
+`pthread_once`. RED test first (two racing threads), then fix.
+Commit per the usual template. Mark `done <SHA> [test:1.0]`.
+
+### (ARCHIVED — P12.1 brief, now done)
 
 **Why this is the highest-leverage row.** Today every `make deploy`
 (and every crash-recovery restart) runs:
