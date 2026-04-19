@@ -90,6 +90,19 @@ struct file_download {
     char output_path[512];          /* where to save */
 };
 
+/* ── Size Validation ─────────────────────────────────────────────── */
+
+/* Compute num_chunks = ceil(size_bytes / CHUNK_SIZE) with overflow
+ * guards. Returns false (and leaves *out_chunks untouched) if
+ * size_bytes would make num_chunks overflow uint32_t — i.e., if
+ * size_bytes > (uint64_t)UINT32_MAX * FILE_MARKET_CHUNK_SIZE. Also
+ * rejects NULL out_chunks.
+ *
+ * Fixes P8.7 (AGENT.md): zmarket_offer silently truncated 225 PB+
+ * files to a wrong u32 chunk count via (uint32_t)(u64_expr). */
+bool file_market_num_chunks_for_size(uint64_t size_bytes,
+                                     uint32_t *out_chunks);
+
 /* ── Serialization ──────────────────────────────────────────────── */
 
 struct byte_stream;

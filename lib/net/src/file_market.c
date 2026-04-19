@@ -9,6 +9,7 @@
 #include "core/serialize.h"
 #include "models/database.h"
 #include "util/log_macros.h"
+#include <stdint.h>
 #include <string.h>
 #include <time.h>
 #include <stdio.h>
@@ -19,6 +20,33 @@
 static struct file_offer g_offers[FILE_MARKET_MAX_OFFERS];
 static int g_offer_count = 0;
 static pthread_mutex_t g_market_mutex = PTHREAD_MUTEX_INITIALIZER;
+
+/* ── Size Validation ────────────────────────────────────────────── */
+
+bool file_market_num_chunks_for_size(uint64_t size_bytes,
+                                     uint32_t *out_chunks)
+{
+    if (!out_chunks) {
+        LOG_FAIL("market",
+                 "num_chunks_for_size: NULL out_chunks");
+        return false;
+    }
+    /* Reject sizes that would make num_chunks overflow u32. Max
+     * accepted = UINT32_MAX * CHUNK_SIZE (~225 PB) — way above any
+     * plausible real file. This also implicitly caps the
+     * (size + CHUNK_SIZE - 1) u64 arithmetic far below UINT64_MAX. */
+    const uint64_t max_size =
+        (uint64_t)UINT32_MAX * (uint64_t)FILE_MARKET_CHUNK_SIZE;
+    if (size_bytes > max_size) {
+        LOG_FAIL("market",
+                 "num_chunks_for_size: size_bytes too large for u32 "
+                 "chunk count");
+        return false;
+    }
+    *out_chunks = (uint32_t)((size_bytes + FILE_MARKET_CHUNK_SIZE - 1)
+                              / FILE_MARKET_CHUNK_SIZE);
+    return true;
+}
 
 /* ── Serialization ──────────────────────────────────────────────── */
 

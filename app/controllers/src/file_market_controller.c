@@ -137,9 +137,17 @@ static bool rpc_zmarket_offer(const struct json_value *params, bool help,
     name = name ? name + 1 : filepath;
     snprintf(offer.filename, sizeof(offer.filename), "%s", name);
 
+    if (st.st_size < 0) {
+        json_set_str(result, "File size invalid");
+        return false;
+    }
     offer.size_bytes = (uint64_t)st.st_size;
-    offer.num_chunks = (uint32_t)((offer.size_bytes + FILE_MARKET_CHUNK_SIZE - 1)
-                                   / FILE_MARKET_CHUNK_SIZE);
+    if (!file_market_num_chunks_for_size(offer.size_bytes,
+                                         &offer.num_chunks)) {
+        /* P8.7: guard u32 num_chunks overflow (225 PB+ files). */
+        json_set_str(result, "File too large to offer");
+        return false;
+    }
     offer.price_per_mb = price;
     offer.ttl = FILE_MARKET_MAX_TTL;
     offer.last_seen = (int64_t)time(NULL);

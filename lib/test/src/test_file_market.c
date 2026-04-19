@@ -5,6 +5,7 @@
 #include "net/file_market.h"
 #include "core/serialize.h"
 #include "models/database.h"
+#include <stdint.h>
 
 int test_file_market(void)
 {
@@ -289,6 +290,94 @@ int test_file_market(void)
     {
         int pruned = file_market_prune(0);
         if (pruned >= 0) printf("OK (pruned=%d)\n", pruned);
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* ── P8.7: num_chunks overflow guard ──────────────────────── */
+
+    printf("P8.7 num_chunks: 0 bytes -> 0 chunks... ");
+    {
+        uint32_t n = 99;
+        bool ok = file_market_num_chunks_for_size(0, &n);
+        if (ok && n == 0) printf("OK\n");
+        else { printf("FAIL (ok=%d n=%u)\n", ok, n); failures++; }
+    }
+
+    printf("P8.7 num_chunks: 1 byte -> 1 chunk... ");
+    {
+        uint32_t n = 0;
+        bool ok = file_market_num_chunks_for_size(1, &n);
+        if (ok && n == 1) printf("OK\n");
+        else { printf("FAIL (ok=%d n=%u)\n", ok, n); failures++; }
+    }
+
+    printf("P8.7 num_chunks: exactly CHUNK_SIZE -> 1 chunk... ");
+    {
+        uint32_t n = 0;
+        bool ok = file_market_num_chunks_for_size(
+            (uint64_t)FILE_MARKET_CHUNK_SIZE, &n);
+        if (ok && n == 1) printf("OK\n");
+        else { printf("FAIL (ok=%d n=%u)\n", ok, n); failures++; }
+    }
+
+    printf("P8.7 num_chunks: CHUNK_SIZE + 1 -> 2 chunks... ");
+    {
+        uint32_t n = 0;
+        bool ok = file_market_num_chunks_for_size(
+            (uint64_t)FILE_MARKET_CHUNK_SIZE + 1, &n);
+        if (ok && n == 2) printf("OK\n");
+        else { printf("FAIL (ok=%d n=%u)\n", ok, n); failures++; }
+    }
+
+    printf("P8.7 num_chunks: UINT32_MAX * CHUNK_SIZE accepted (at cap)... ");
+    {
+        uint32_t n = 0;
+        uint64_t max_ok =
+            (uint64_t)UINT32_MAX * (uint64_t)FILE_MARKET_CHUNK_SIZE;
+        bool ok = file_market_num_chunks_for_size(max_ok, &n);
+        if (ok && n == UINT32_MAX) printf("OK\n");
+        else { printf("FAIL (ok=%d n=%u)\n", ok, n); failures++; }
+    }
+
+    printf("P8.7 num_chunks: UINT32_MAX * CHUNK_SIZE + 1 rejected "
+           "(pre-fix wrapped to 0)... ");
+    {
+        uint32_t n = 99;
+        uint64_t over =
+            (uint64_t)UINT32_MAX * (uint64_t)FILE_MARKET_CHUNK_SIZE + 1;
+        bool ok = file_market_num_chunks_for_size(over, &n);
+        if (!ok) printf("OK\n");
+        else { printf("FAIL (accepted n=%u for 225 PB file)\n", n); failures++; }
+    }
+
+    printf("P8.7 num_chunks: silent-truncation shape rejected "
+           "(225 PB + 5*CHUNK -> would report 4)... ");
+    {
+        /* The pre-fix expression wraps UINT32_MAX + 5 to 4 — the
+         * exact attack shape where a malformed huge file reports a
+         * plausible small chunk count instead of the add_offer
+         * guard's num_chunks==0 reject. */
+        uint32_t n = 99;
+        uint64_t shape =
+            (uint64_t)UINT32_MAX * (uint64_t)FILE_MARKET_CHUNK_SIZE +
+            5 * (uint64_t)FILE_MARKET_CHUNK_SIZE;
+        bool ok = file_market_num_chunks_for_size(shape, &n);
+        if (!ok) printf("OK\n");
+        else { printf("FAIL (accepted n=%u for truncation shape)\n", n); failures++; }
+    }
+
+    printf("P8.7 num_chunks: UINT64_MAX rejected... ");
+    {
+        uint32_t n = 99;
+        bool ok = file_market_num_chunks_for_size(UINT64_MAX, &n);
+        if (!ok) printf("OK\n");
+        else { printf("FAIL (accepted UINT64_MAX)\n"); failures++; }
+    }
+
+    printf("P8.7 num_chunks: NULL out_chunks rejected... ");
+    {
+        bool ok = file_market_num_chunks_for_size(1000, NULL);
+        if (!ok) printf("OK\n");
         else { printf("FAIL\n"); failures++; }
     }
 
