@@ -38,7 +38,7 @@ gap analysis. See `AGENT.md` for the cross-agent priority table.
 
 ---
 
-## Current status — 2026-04-19 (P14.7 first-fix landed in b3f1903d4 — canary pending; NEXT is P14.3)
+## Current status — 2026-04-19 (P14.7 first-fix in b3f1903d4 + P14.8 in 0e4b6ca35 — canary pending; NEXT is P14.10)
 
 **P10.1.5 "canary green" was a misread.** Live-node MCP showed
 h=3,081,601 because `val.block_connected` fires on block RECEIPT,
@@ -189,6 +189,62 @@ STOP triggers satisfied:
    which filter is winning and P14.7.1 starts from that signal.
 4. Rhett fills the SHA in the row above, pins the acceptance
    snapshot, ships P14.7.1 brief if needed.
+
+### DONE — P14.8 (0e4b6ca35): `block_already_seen` short-circuits retry
+
+Per Rhett's e592eb325 decomposition of P14.7 into a tripod of
+sub-causes — P14.8, P14.9, P14.10. This row lands P14.8.
+
+Pre-fix: `lib/net/src/msg_blocks.c:244-248` marked every arriving
+block `block_mark_seen()` BEFORE `process_new_block()`. Under 6+
+peer concurrent arrival, many blocks hit
+`ACTIVATION_SKIP_ALREADY_RUNNING` because the controller
+serialises connects via mutex. Indexed-but-not-activated blocks
+were permanently dedup'd at the 128-entry ring, so the download
+manager's re-delivery path never got a second chance.
+
+Fix moves `block_mark_seen` out of the pre-process path and splits
+its post-process placement:
+- `validation_state_is_valid` AND `msg_blocks_should_mark_seen()`
+  returns true (pindex is in active chain) → mark_seen (normal
+  dedup of activated blocks).
+- `validation_state_is_invalid` (malformed block) → mark_seen so
+  repeat delivery of a bad block doesn't re-spend cycles.
+- `validation_state_is_valid` but pindex NOT in active chain
+  (SKIP_ALREADY_RUNNING and siblings) → do NOT mark_seen, next
+  arrival retries.
+
+New pure helper `msg_blocks_should_mark_seen(chain, bi)` declared
+in `net/msg_internal.h` wraps the `active_chain_contains` check.
+O(1). 3 unit tests in `test_msg_handlers.c` cover null-safety,
+orphan-rejection (the RED shape), and active-chain accept.
+
+P14.8 likely unsticks the chain on its own for the P14.7 scenario:
+under IBD, peers keep re-delivering unactivated blocks, so once
+the controller mutex frees, the next arrival finds dedup open and
+activation proceeds. P14.10 (deferred-activation queue) is still
+worth landing for cleanliness — it avoids the 1 extra round-trip
+per block — but is not load-bearing for P14.7 closure.
+
+### NEXT — P14.10 (CRITICAL, remaining P14.7 sub-cause)
+
+`lib/validation/src/process_block.c:2263-2272` — caller only
+checks `ACTIVATION_EXEC_FAILED`; swallows `SKIP_ALREADY_RUNNING`,
+`SKIP_ANCHOR_BLOCKS`, `SKIP_WRONG_STATE`, `SKIP_AWAITING_UTXOS`.
+
+With P14.8 landed, SKIP_ALREADY_RUNNING no longer strands the
+block (re-delivery retries). But a proper deferred-activation
+queue in the controller would avoid the round-trip delay.
+Implementation sketch:
+- Controller grows a small ring buffer of pending block hashes
+  (bounded, say 64 entries).
+- `activation_request_connect` under SKIP_ALREADY_RUNNING appends
+  the block hash to the queue.
+- After the current connect finishes (whatever outcome), drain
+  the queue by calling the activation path again for each.
+
+This is a medium change. Land after P14.7 canary confirms P14.8
+was sufficient.
 
 ### Previous NOW (archived for context) — the original P14.7 brief
 
