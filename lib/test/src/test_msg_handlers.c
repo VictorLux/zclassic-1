@@ -148,6 +148,86 @@ static int test_dandelion_initial_state(void)
     return failures;
 }
 
+/* ── P14.8 msg_blocks_should_mark_seen tests ───────────────────────
+ *
+ * Pre-P14.8 bug: block_mark_seen was called BEFORE process_new_block.
+ * If the block was received + indexed but not activated (e.g.
+ * ACTIVATION_SKIP_ALREADY_RUNNING under 6-peer concurrent arrival),
+ * it was permanently dedup'd and never retried.
+ *
+ * Post-P14.8: mark_seen is gated on "block reached active chain"
+ * via msg_blocks_should_mark_seen(). The helper is a pure function
+ * so it can be exercised without full P2P plumbing.
+ */
+
+static int test_p148_should_mark_seen_rejects_null(void)
+{
+    int failures = 0;
+    TEST("P14.8: should_mark_seen rejects NULL chain or pindex") {
+        struct active_chain ac;
+        active_chain_init(&ac);
+        struct block_index bi;
+        block_index_init(&bi);
+
+        ASSERT(!msg_blocks_should_mark_seen(NULL, &bi));
+        ASSERT(!msg_blocks_should_mark_seen(&ac, NULL));
+        ASSERT(!msg_blocks_should_mark_seen(NULL, NULL));
+
+        active_chain_free(&ac);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int test_p148_should_mark_seen_rejects_orphan(void)
+{
+    int failures = 0;
+    TEST("P14.8: should_mark_seen rejects block NOT in active chain") {
+        /* Mirrors the bug shape: block was indexed (has a pindex)
+         * but activation SKIP'd, so it's not in the active chain.
+         * Pre-fix, block_mark_seen was unconditional. Post-fix, we
+         * must NOT mark seen — the dedup ring would otherwise hide
+         * the block from subsequent arrival + retry. */
+        struct active_chain ac;
+        active_chain_init(&ac);
+
+        struct block_index tip;
+        block_index_init(&tip);
+        tip.nHeight = 100;
+        active_chain_set_tip(&ac, &tip);
+
+        struct block_index orphan;
+        block_index_init(&orphan);
+        orphan.nHeight = 101; /* indexed above tip, not connected */
+
+        ASSERT(!msg_blocks_should_mark_seen(&ac, &orphan));
+
+        active_chain_free(&ac);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int test_p148_should_mark_seen_accepts_active(void)
+{
+    int failures = 0;
+    TEST("P14.8: should_mark_seen accepts block that IS in active chain") {
+        struct active_chain ac;
+        active_chain_init(&ac);
+
+        struct block_index tip;
+        block_index_init(&tip);
+        tip.nHeight = 42;
+        active_chain_set_tip(&ac, &tip);
+
+        ASSERT(msg_blocks_should_mark_seen(&ac, &tip));
+
+        active_chain_free(&ac);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 /* ── Entry point ───────────────────────────────────────────────── */
 
 int test_msg_handlers(void);
@@ -165,6 +245,9 @@ int test_msg_handlers(void)
     failures += test_tx_dedup_basic();
     failures += test_tx_dedup_mark_and_check();
     failures += test_dandelion_initial_state();
+    failures += test_p148_should_mark_seen_rejects_null();
+    failures += test_p148_should_mark_seen_rejects_orphan();
+    failures += test_p148_should_mark_seen_accepts_active();
 
     return failures;
 }

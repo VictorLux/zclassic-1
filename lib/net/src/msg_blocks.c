@@ -197,6 +197,13 @@ bool process_getdata(struct msg_processor *mp, struct p2p_node *node,
     return true;
 }
 
+bool msg_blocks_should_mark_seen(const struct active_chain *chain,
+                                  const struct block_index *bi)
+{
+    if (!chain || !bi) return false;
+    return active_chain_contains(chain, bi);
+}
+
 bool process_block_msg(struct msg_processor *mp, struct p2p_node *node,
                        struct byte_stream *s)
 {
@@ -245,7 +252,13 @@ bool process_block_msg(struct msg_processor *mp, struct p2p_node *node,
         block_free(&blk);
         return true;
     }
-    block_mark_seen(&hash);
+    /* P14.8: do NOT mark seen here. We previously called
+     * block_mark_seen() before process_new_block, so a block that
+     * was received + indexed but failed to activate (e.g.
+     * ACTIVATION_SKIP_ALREADY_RUNNING from controller mutex
+     * contention under 6+ peer arrival) got permanently dedup'd and
+     * never retried. mark_seen now happens post-processing, only
+     * when the block actually made it onto the active chain. */
 
     struct validation_state state;
     validation_state_init(&state);
@@ -258,6 +271,14 @@ bool process_block_msg(struct msg_processor *mp, struct p2p_node *node,
         event_emitf(EV_BLOCK_REJECTED, (uint32_t)node->id,
                     "hash=%s reason=%s", hex,
                     state.reject_reason[0] ? state.reject_reason : "unknown");
+
+        /* P14.8 — rejected blocks: mark seen so the dedup ring
+         * short-circuits subsequent deliveries of the same bad block
+         * from other peers. Only the "received but skipped connect"
+         * case (SKIP_ALREADY_RUNNING, etc.) must stay UN-marked so
+         * it can retry; that path is validation_state_is_valid ==
+         * true but with no tip advance, handled below. */
+        block_mark_seen(&hash);
 
         /* When a block fails validation during IBD (likely a fork block),
          * re-request headers from this peer starting at our current tip.
@@ -275,6 +296,19 @@ bool process_block_msg(struct msg_processor *mp, struct p2p_node *node,
          * behave can work off earlier strikes; peers that only feed valid
          * blocks stay at score 0 forever. Safe on trusted peers. */
         peer_scoring_on_good_interaction(node, peer_scoring_now_ms());
+
+        /* P14.8 — mark seen only after successful activation. If the
+         * block is in block_index but NOT in active chain (e.g.
+         * activation was skipped), leave it out of the dedup ring so
+         * the next arrival retries and the controller has another
+         * chance to pick it up once the mutex is free. */
+        {
+            struct block_index *landed = block_map_find(
+                &mp->main_state->map_block_index, &hash);
+            if (msg_blocks_should_mark_seen(&mp->main_state->chain_active,
+                                             landed))
+                block_mark_seen(&hash);
+        }
 
         struct block_index *new_tip = active_chain_tip(
             &mp->main_state->chain_active);

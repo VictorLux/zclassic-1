@@ -105,6 +105,23 @@ void block_clear_seen(const struct uint256 *hash);
 bool tx_already_seen(const struct uint256 *hash);
 void tx_mark_seen(const struct uint256 *hash);
 
+/* P14.8 — decide whether a freshly processed block may safely be
+ * added to the dedup ring. Pre-P14.8, every received block was
+ * marked seen BEFORE process_new_block; if process_new_block
+ * SKIP'd (e.g. ACTIVATION_SKIP_ALREADY_RUNNING from controller
+ * mutex contention), the block was indexed-but-not-connected AND
+ * permanently dedup'd, leaving it stuck in block_index forever.
+ *
+ * Returns true only when the block is in the active chain —
+ * i.e. has actually been activated, not just received and
+ * indexed. Any other state (NULL pindex, orphan, skipped) returns
+ * false so the dedup ring does NOT short-circuit subsequent
+ * arrivals. */
+struct active_chain;
+struct block_index;
+bool msg_blocks_should_mark_seen(const struct active_chain *chain,
+                                  const struct block_index *bi);
+
 /* Shared accessors. */
 struct node_db *msg_node_db(const struct msg_processor *mp);
 struct snapshot_sync_service *msg_snapshot_sync(const struct msg_processor *mp);
