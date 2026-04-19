@@ -38,7 +38,7 @@ gap analysis. See `AGENT.md` for the cross-agent priority table.
 
 ---
 
-## Current status — 2026-04-19 (P14.7 first-fix landed in <fill> — canary pending; NEXT is P14.3)
+## Current status — 2026-04-19 (P14.7 first-fix landed in 670bd844e — canary pending; NEXT is P14.3)
 
 **P10.1.5 "canary green" was a misread.** Live-node MCP showed
 h=3,081,601 because `val.block_connected` fires on block RECEIPT,
@@ -121,7 +121,7 @@ STOP triggers satisfied:
 - No `coins_view` API surface change — connection-ownership
   change only.
 
-### DONE (first-fix; canary pending) — P14.7 (<fill>): chain pin at h=3,081,601 post-P14.1
+### DONE (first-fix; canary pending) — P14.7 (670bd844e): chain pin at h=3,081,601 post-P14.1
 
 **Brief's hypothesis was incorrect.** It claimed the FSM transitions
 `ready → connecting → ready: behind_peers` "without ever calling
@@ -145,7 +145,7 @@ drains at ~166h per 2,000 marks; (3) bodies never reaching
 `accept_block`'s `BLOCK_HAVE_DATA` setter because `has_more_work`
 short-circuits on stale `nChainWork`.
 
-**First fix shipped (<fill>):** addresses hypothesis (2). The
+**First fix shipped (670bd844e):** addresses hypothesis (2). The
 rate-limit in `accept_block_header` at `process_block.c:682-699`
 was pushed into a new helper
 `process_block_try_clear_stale_failed` (declared in
@@ -964,7 +964,7 @@ all (txid, vout) rows indexed to h=tip+1 AND invalidates the cache
 view entries before boot continues.
 
 Tests: test_storage_rewind + test_validation_bip30_after_rewind.
-Deploy canary: chain advanced past 3,081,407 within <fill>.
+Deploy canary: chain advanced past 3,081,407 within 670bd844e.
 ```
 
 ---
