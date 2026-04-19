@@ -80,23 +80,25 @@ behind the chain working. **Your P10.1.1–P10.1.4 unblock criterion
 `done <SHA> [test:1.0]` because the workflow forces RED-test-first.
 The P10.1 sequence is the canonical example of HI=1.0 work.
 
-**Open queue (P10.1 is the only thing — two sequential steps left):**
+**Open queue (P10.1 — Agent-2 work complete; coordinator canary pending):**
 
 | Order | Row | Size | Severity |
 |---|---|---|---|
 | DONE | **P10.1.1** — Reproduce the chain stall on a fixture | medium | done 1243e1766 [test:1.0] |
-| DONE | **P10.1.2** — Root-cause writeup in `docs/postmortems/` | medium | done 5279752d1 (awaiting Agent-3 review) |
+| DONE | **P10.1.2** — Root-cause writeup in `docs/postmortems/` | medium | done 5279752d1 (Agent-3 CONCUR_WITH_NOTES at 879192ee2) |
 | DONE | **P10.1.3** — Regression test that fails pre-fix | small | done ae7caa1fe [test:1.0] (RED) |
-| **NOW** | **P10.1.4** — Minimal fix + invariant assertion | medium | (gates P10.1.5; flips P10.1.3 to GREEN) |
-| NEXT | **P10.1.5** — Live-node verification (Rhett runs deploy) | n/a | Rhett |
-| **DEFERRED** | P8.4, P8.6, P8.7, P8.8, P7.10 follow-up | — | parked behind P10.1 |
+| DONE | **P10.1.4** — Minimal fix + invariant assertion | medium | done ac782fef5 [test:1.0] (flipped P10.1.3 GREEN) |
+| WAITING | **P10.1.5** — Live-node verification (Rhett runs deploy) | n/a | Rhett — coordinator |
+| UNBLOCKED-ON-CANARY | P8.4, P8.6, P8.7, P8.8, P7.10 follow-up | — | ready after canary clears |
 
-**Recently landed (preserved for context):** P10.1.3 RED
-(`ae7caa1fe`), P10.1.2 writeup (`5279752d1`), P10.1.1 (`1243e1766`),
-P4.1+P4.2 (`a9fcf6c66`), P8.9 HOTFIX (`b875152da` — superseded),
-P8.1 (`b6726f83b`), P7.9 infrastructure (`19b2cac1d`). Agent-3
-closed P8.5 (`21da0531e`), P8.2 (`576b5cde2`), and the P9
-sapling-prover audit (`04247c19a` — 10 findings, all deferred).
+**Recently landed (preserved for context):** P10.1.4 fix
+(`ac782fef5`), P10.1.3 RED (`ae7caa1fe`), P10.1.2 writeup
+(`5279752d1`), P10.1.1 (`1243e1766`), P4.1+P4.2 (`a9fcf6c66`),
+P8.9 HOTFIX (`b875152da` — superseded), P8.1 (`b6726f83b`), P7.9
+infrastructure (`19b2cac1d`). Agent-3 closed P8.5 (`21da0531e`),
+P8.2 (`576b5cde2`), the P9 sapling-prover audit (`04247c19a` — 10
+findings, all deferred), the P10.1.2 review (`879192ee2` —
+CONCUR_WITH_NOTES), and P11.1 (`63f98909d`, Tor onion bootstrap CI).
 
 ---
 
@@ -203,43 +205,91 @@ P10.1). The RED clears when P10.1.4's fix lands.
 
 ---
 
-## NOW — P10.1.4: Minimal fix + invariant assertion
+## DONE — P10.1.4 (ac782fef5): Minimal fix + invariant assertion
 
-Ready to start. Per the P10.1.2 analysis: replace
-`coins_map_erase(&view->cache_coins, &tx->hash)` at
-`lib/validation/src/connect_block.c:639` with a DIRTY+pruned
-tombstone — `coins_view_cache_modify(view, &tx->hash)`, clear all
-outputs (or simply free/reinit the coins so `coins_is_pruned`
-returns true), leave DIRTY set — so the scratch flush propagates
-a DIRTY+pruned entry to `coins_tip`, and the next SQLite flush
-emits the DELETE at `lib/storage/src/coins_view_sqlite.c:667`.
+Shipped in one commit: `lib/validation/src/connect_block.c`,
+`lib/validation/src/process_block.c`,
+`lib/test/src/test_chain_rollback.c` (85 lines added, 4 removed).
 
-Post-`disconnect_tip` invariant assertion in `process_block.c`
-(after `disconnect_tip` returns): walk the disconnected block's
-txs and assert `!coins_view_cache_have_coins(coins_tip, &tx->hash)`.
-Debug build → assert (abort); release build → log + metric bump.
+Fix at `connect_block.c:639` — replaces
+`coins_map_erase(&view->cache_coins, &tx->hash)` with:
 
-Acceptance after this lands:
-- `make test` green (P10.1.3 flips RED → GREEN; the two flaky
-  lint-gate failures are the pre-existing baseline).
-- P10.1.1 reproduction is PRESERVED — it asserts a pre-seeded
-  stale-state shape which is still achievable via direct cache
-  seeding (update_coins + best_block pin). The assertion doesn't
-  change.
-- Any other test exercising `disconnect_block` still passes
-  (test_chain_rollback, test_reorg_safety, test_validation).
+```c
+struct coins_cache_entry *ghost =
+    coins_view_cache_modify(view, &tx->hash);
+if (ghost) {
+    coins_free(&ghost->coins);
+    coins_init(&ghost->coins);
+    ghost->flags |= COINS_CACHE_DIRTY;
+}
+```
 
-No drive-by refactors.
+`coins_view_cache_modify` fetches the backing entry into the
+scratch (miss → new entry populated from backing). `coins_free`
++ `coins_init` leaves the coins with `num_vout=0`, which is
+`coins_is_pruned == true`. The DIRTY flag drives
+`cvc_batch_write`'s pruned branch at `lib/coins/src/coins_view.c:265-278`,
+which propagates the DIRTY+pruned entry into the parent coins_tip.
+Coins_tip's subsequent SQLite flush at
+`lib/storage/src/coins_view_sqlite.c:667` emits the `DELETE FROM
+utxos WHERE txid=?` — the write that was silently missing under
+the erase pattern.
+
+Applied unconditionally to all txs in the block (not gated on
+`is_coinbase`) per Agent-3's review note #2 — the non-coinbase
+leak was silent-in-practice today but the unconditional fix is
+strictly safer at zero extra cost.
+
+Invariant assertion at `process_block.c:1718-1748` — after
+`update_tip` returns, walks the disconnected block's txs and
+asserts `!coins_view_cache_have_coins(coins_tip, &tx->hash)`.
+Debug build aborts via `assert(!"disconnect_tip: coins view
+retained disconnected tx")`. Release build logs to stderr and
+emits `EV_UTXO_CHECKPOINT_FAIL` for telemetry. The check runs
+after every production `disconnect_tip` — so any future regression
+at `connect_block.c:639` or new `disconnect_tip` caller surfaces
+immediately instead of festering into another 3h BIP30 loop.
+
+Test updates:
+- `test_chain_rollback.c:196-213` — `cr: cache empty after full
+  rollback` (`cache_coins.size == 0`) relaxed to `cr: no tx
+  reachable via have_coins after full rollback`
+  (`!have_coins(each tx)`). The new assertion is the correct
+  invariant; the cache retains DIRTY+pruned tombstones pending
+  flush propagation, which is expected post-P10.1.4 semantics.
+- P10.1.3 test `t_disconnect_block_purges_coinbase_from_backing`
+  flips RED → GREEN.
+- All other tests (`test_reorg_safety`, `test_validation`,
+  `test_chain`) unchanged; zero regressions.
+
+Acceptance: `make test` exits 0 modulo 2 pre-existing flaky
+lint-gate tests (`addrman select`, two `[lint-gate]` cases) that
+are baseline noise unrelated to this work. No new failures
+introduced by P10.1.4.
 
 ---
 
-## NEXT — P10.1.5: Live-node verification
+## WAITING — P10.1.5: Live-node verification (Rhett)
 
-Rhett's row (coordinator). After P10.1.4 lands and `make ci` is
-green, Rhett runs `make deploy`. Watches for `EV_BLOCK_CONNECTED`
-on h=3,081,408 within 120s. Logs RSS plateau over 24h. Updates the
-P10.1.5 row with `done` + canary observations. Only THEN do we
-re-triage the deferred P9 wave + P8 MEDs.
+Rhett's row (coordinator). With P10.1.4 landed (`ac782fef5`) and
+`make ci` green, Rhett runs `make deploy`. Expected signals:
+
+- **Within 120s:** `EV_BLOCK_CONNECTED h=3,081,408`, followed by
+  catch-up to peer tip.
+- **Over 24h:** RSS plateaus at its pre-leak working set (≤ ~2 GB
+  from recent baselines) instead of climbing toward the 6 GB cgroup
+  high-water mark.
+- **Over 7 days:** no operator restarts; MVP criterion #6 unblocks.
+
+If the node stalls again: the new invariant assertion at
+`process_block.c:1718-1748` will fire before the BIP30 loop starts,
+pointing directly at the (new) failing boundary. That's the P10
+discipline — stalls surface as named assertion failures in stderr
+rather than silent state corruption.
+
+After P10.1.5 closes, the deferred P8 MEDs (P8.4 / P8.6 / P8.7 /
+P8.8), P7.10 follow-up, and the P9 sapling-prover audit findings
+are free to re-enter triage.
 
 ---
 
@@ -571,6 +621,49 @@ If build or tests fail — STOP and report.
 ## Notes from Agent-2
 
 _(Keep short — 1-3 recent entries.)_
+
+### 2026-04-19 (post-P10.1.3) — P10.1.4 fix landed; Agent-2 closed on P10.1
+
+**P10.1.4 (`ac782fef5`):** the minimal fix + invariant assertion.
+`connect_block.c:639` replaces the bare `coins_map_erase` with a
+DIRTY+pruned tombstone via `coins_view_cache_modify` +
+`coins_free` + `coins_init`. `process_block.c:1718-1748` adds the
+post-`disconnect_tip` invariant check.
+
+Agent-3's CONCUR_WITH_NOTES review (`879192ee2`) influenced two
+deliberate choices:
+
+1. **Unconditional fix** — not gated on `is_coinbase`. Agent-3's
+   note #2 argued the non-coinbase leak was silent-in-practice but
+   the unconditional fix is strictly safer. Adopted.
+2. **Downstream plumbing already exists** — `cvc_batch_write`'s
+   pruned branch at `coins_view.c:265-278` and
+   `coins_view_sqlite_batch_write_ex`'s pruned branch at
+   `coins_view_sqlite.c:667-679` are both already exercised by
+   existing flush tests, so the fix is truly minimal and
+   downstream-validated.
+
+Not adopted (deferred to a follow-up row): Agent-3 suggested a
+`[disconnect_tip] caller=...` stderr breadcrumb for forensics on
+future recurrences, and a second-hop P10.1.3 variant that exercises
+`coins_view_sqlite` backing end-to-end. Neither is required for
+the fix itself; filed as ideas for a future "disconnect_tip
+observability" row if one is prioritized after P10.1.5.
+
+Test updates:
+- `test_chain_rollback.c`'s `cr: cache empty after full rollback`
+  assertion relaxed to `cr: no tx reachable via have_coins after
+  full rollback`. The cache now retains DIRTY+pruned tombstones
+  post-disconnect (those are the DELETE signals awaiting flush
+  propagation); `have_coins` returns false for them. The updated
+  assertion is the correct invariant and passes.
+- P10.1.3 flipped RED → GREEN automatically.
+- No other test changes.
+
+`make test` exits 0 modulo 2 pre-existing flaky lint-gate tests
+(baseline noise, unrelated). P10.1.5 is Rhett's row; Agent-2's
+queue is empty until either the canary confirms or a new item
+lands.
 
 ### 2026-04-19 (post-P10.1.2) — P10.1.3 RED regression test
 
