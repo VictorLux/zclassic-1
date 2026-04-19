@@ -38,7 +38,7 @@ See `AGENT.md` for the cross-agent priority table.
 
 ---
 
-## Current status — 2026-04-19 (late night, P8.5 landed — queue empty)
+## Current status — 2026-04-19 (late night, P8.5 landed — sapling-prover deep audit assigned)
 
 **Done and on main (20 rows + audit):** P1.3, P1.4, P1.6 (`f6aa0b080`),
 P1.7 (`5ce252bb6`), P1.8, P1.9, P1.10, P1.11, P1.11b, P1.12, P1.13,
@@ -49,14 +49,89 @@ P1.14, P1.15, P1.16 (`94d607b85`), P1.16b (`c841defd2`), P5.5
 
 All crypto + consensus + vendor + net-backpressure + MMB-hardening
 + dandelion-RNG + bloom-cost rows shipped. HIGH tier across the
-whole project 100% (29/29); the Agent-3 MED (P8.5) closed with the
-latest commit.
+whole project 100% (29/29).
 
-**Queue empty — ping Rhett.** No further audit work pre-authorized.
+**Open queue (1 audit task, then ping Rhett):**
 
 | Order | Row | Size | Severity |
 |---|---|---|---|
-| NOW | (queue empty — ping Rhett) | — | — |
+| **NOW** | **Sapling-prover deep audit** → open the P9 wave | audit (~90 min) | — |
+| NEXT | (queue empty — ping Rhett) | — | — |
+
+---
+
+## NOW — sapling/Groth16 prover deep audit (P9 wave, sapling-only)
+
+The P1 wave touched the **API surface** of Sapling (verify fail-open,
+RedJubjub canonicality, find_group_hash returns, RNG hygiene, jubjub
+constant-time, note-encryption). The **prover internals** —
+`groth16_prover.c`, `sapling_circuit.c`, `sapling_prover_c23.c`,
+`circuit_gadgets.c`, `msm_parallel.c`, `bls12_381.c`, `bn254.c`,
+`pedersen_hash.c`, `incremental_merkle_tree.c` — got light coverage.
+
+Likely surfaces still hiding bugs:
+
+- **Constant-time violations in proof generation**: secret-key paths
+  through Groth16 witness construction. Branches that depend on
+  the spending-key bit pattern. Memory accesses that depend on the
+  randomness `r`. Variable-time field ops on secret data.
+- **Missing input validation on circuit witness data**: malformed
+  diversifiers, out-of-range nullifier components, witness vectors
+  whose lengths the prover trusts without checking.
+- **Memory leak / use-after-free in the prover state machine**:
+  early-exit paths that skip `groth16_prover_free`, error returns
+  that double-free, ownership confusion between caller and prover.
+- **Side-channel leaks**: timing, cache, branch-predictor — especially
+  in Pedersen hash + MSM (multi-scalar multiplication). The MSM
+  parallel code is brand new; check the worker thread coordination
+  for racy reads of secret state.
+- **Incremental Merkle tree corner cases**: the Sapling note
+  commitment tree. Off-by-one on tree-full conditions. Witness path
+  reconstruction after partial tree compaction.
+- **Sprout PHGR13 corners**: only PHGR13 verification has tests.
+  The Groth16 ↔ PHGR13 transition logic during Heartwood activation
+  may have stale code paths.
+
+### Method (~90 min total)
+
+1. Skim each file's `*.c` + `*.h`. For each finding:
+
+```
+[CRIT|HIGH|MED|LOW] <summary>
+file: path:line
+why: <one sentence>
+fix-hint: <one sentence>
+```
+
+2. Open as P9.1, P9.2, … in a new section in AGENT.md (after the
+   P8 table, before "Status tracking"). Keep P0–P8 intact.
+3. Propose Agent-2 vs Agent-3 ownership in the commit message —
+   default Agent-3 for anything in `lib/sapling/`.
+4. **Do NOT fix anything** — Rhett triages + assigns. Same rule as
+   the P8 audit you ran earlier.
+
+### Constraints
+
+- **Scope:** sapling/crypto only. Do not re-audit the rest of the repo.
+- **Skip rows already on P0–P8.** Grep AGENT.md first.
+- **Cap 10 findings.** Quality over quantity. Single-paragraph evidence.
+- Clean file → "sapling/<file>: none found." No padding.
+- Under 1000 words in the new AGENT.md section.
+
+### Deliverable
+
+One commit: `agents: open P9 wave — sapling-prover deep audit`.
+AGENT.md diff only (new P9 section + Progress block denominator
+bump if any new rows). No code. Ping Rhett for triage after push.
+
+If you find nothing of substance after a thorough pass: commit
+`agents: P9 sapling-prover audit — clean, no findings` with a
+short summary of what was checked and why each subsystem looked
+solid. That's still a valuable deliverable.
+
+---
+
+## (Below: archived NOW for P8.5 — landed `21da0531e`, reference only) — clamp `MAX_BLOOM_HASH_FUNCS`
 
 ---
 

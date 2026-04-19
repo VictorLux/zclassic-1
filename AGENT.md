@@ -20,7 +20,7 @@ Owner: Rhett (primary). Delegates: Agent-2 (see `AGENT-2.md`), Agent-3 (see `AGE
 
 **Open by owner (2026-04-19 late night, post-P8.5):**
 - **Agent-2 (5 MED rows + 1 CRIT hotfix):** **P8.10 (CRIT, NOW)** — P8.9 was incomplete: chain advanced 3,081,407→3,081,408 transiently, then regressed back to 3,081,407 within 3h while memory climbed to 5.9G via repeated `BLOCK_FAILED_CHILD` propagation (973+ descendants per retry). Then P8.4/P8.6/P8.7/P8.8 + P7.10 migration follow-up.
-- **Agent-3:** **queue empty** — P8.5 landed `21da0531e` (MAX_BLOOM_HASH_FUNCS clamp lifted out of the constrained branch; both public `bloom_filter_init` and internal `rolling_bloom_init` now bound hash-func count; 3 new tests in `test_bloom.c`). Ping Rhett — no further audit work pre-authorized.
+- **Agent-3 (1 audit task):** **Sapling-prover deep audit** → open the P9 wave (sapling-only, ≤10 findings, AGENT.md-only deliverable, ~90 min). The P1 wave touched the API surface; prover internals (`groth16_prover.c`, `sapling_circuit.c`, `circuit_gadgets.c`, `msm_parallel.c`, `pedersen_hash.c`, `incremental_merkle_tree.c`, Sprout PHGR13 corners) got light coverage. P8.5 landed `21da0531e` — Agent-3 lane fully drained otherwise.
 - **Rhett:** 0 (coordinator only).
 
 **LIVE-NODE STATUS (2026-04-19):** restarted at 23:22 UTC after memory hit 5.9G/6.0G. Chain at h=3,081,407 — P8.9 hotfix shipped + briefly worked but regressed; P8.10 captures the gap. **Hot path:** Agent-2's P8.10 must land + redeploy before next OOM (~3h cycle observed).
