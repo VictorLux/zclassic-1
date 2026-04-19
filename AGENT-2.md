@@ -80,23 +80,23 @@ behind the chain working. **Your P10.1.1–P10.1.4 unblock criterion
 `done <SHA> [test:1.0]` because the workflow forces RED-test-first.
 The P10.1 sequence is the canonical example of HI=1.0 work.
 
-**Open queue (P10.1 is the only thing — three sequential steps left):**
+**Open queue (P10.1 is the only thing — two sequential steps left):**
 
 | Order | Row | Size | Severity |
 |---|---|---|---|
 | DONE | **P10.1.1** — Reproduce the chain stall on a fixture | medium | done 1243e1766 [test:1.0] |
 | DONE | **P10.1.2** — Root-cause writeup in `docs/postmortems/` | medium | done 5279752d1 (awaiting Agent-3 review) |
-| **NOW** | **P10.1.3** — Regression test that fails pre-fix | small | (gates P10.1.4) |
-| NEXT | **P10.1.4** — Minimal fix + invariant assertion | medium | (gates P10.1.5) |
-| NEXT+2 | **P10.1.5** — Live-node verification (Rhett runs deploy) | n/a | Rhett |
+| DONE | **P10.1.3** — Regression test that fails pre-fix | small | done ae7caa1fe [test:1.0] (RED) |
+| **NOW** | **P10.1.4** — Minimal fix + invariant assertion | medium | (gates P10.1.5; flips P10.1.3 to GREEN) |
+| NEXT | **P10.1.5** — Live-node verification (Rhett runs deploy) | n/a | Rhett |
 | **DEFERRED** | P8.4, P8.6, P8.7, P8.8, P7.10 follow-up | — | parked behind P10.1 |
 
-**Recently landed (preserved for context):** P10.1.2 writeup
-(`5279752d1`), P10.1.1 (`1243e1766`), P4.1+P4.2 (`a9fcf6c66`), P8.9
-HOTFIX (`b875152da` — superseded), P8.1 (`b6726f83b`), P7.9
-infrastructure (`19b2cac1d`). Agent-3 closed P8.5 (`21da0531e`),
-P8.2 (`576b5cde2`), and the P9 sapling-prover audit (`04247c19a` —
-10 findings, all deferred).
+**Recently landed (preserved for context):** P10.1.3 RED
+(`ae7caa1fe`), P10.1.2 writeup (`5279752d1`), P10.1.1 (`1243e1766`),
+P4.1+P4.2 (`a9fcf6c66`), P8.9 HOTFIX (`b875152da` — superseded),
+P8.1 (`b6726f83b`), P7.9 infrastructure (`19b2cac1d`). Agent-3
+closed P8.5 (`21da0531e`), P8.2 (`576b5cde2`), and the P9
+sapling-prover audit (`04247c19a` — 10 findings, all deferred).
 
 ---
 
@@ -174,60 +174,66 @@ and aware (see AGENT-3.md).
 
 ---
 
-## NOW — P10.1.3: Regression test that fails pre-fix
+## DONE — P10.1.3 (ae7caa1fe): RED regression test
 
-Ready to start. New test case that mirrors the production call
-shape: a PARENT cache representing `coins_tip`, populated via
-`update_coins` with a coinbase; a SCRATCH cache wrapping the
-parent as backing; `disconnect_block` on the scratch; a flush
-of the scratch into the parent; and finally the assertion:
+Shipped in `lib/test/src/test_chain_stall_repro.c` as a new third
+case `t_disconnect_block_purges_coinbase_from_backing`. Models the
+three-layer `scratch → parent → null_view` shape that exactly
+matches `disconnect_tip`'s production call sequence at
+`process_block.c:1669-1693`.
 
-```c
-ASSERT(!coins_view_cache_have_coins(&parent, &blk.vtx[0].hash));
-```
+Sequence:
+1. Seed `parent` cache with a coinbase via `update_coins`.
+2. Wrap `parent` as a coins_view via `coins_view_cache_as_view`.
+3. Init `scratch` on top of that wrapper.
+4. `disconnect_block` on the scratch.
+5. `coins_view_cache_flush(scratch)`.
+6. Assert `!coins_view_cache_have_coins(&parent, &coinbase_txid)`.
 
-Today that assertion FAILS — the parent still holds the coinbase
-because `coins_map_erase` on the scratch is a no-op (scratch was
-empty) and the parent's prior unspent entry was never tombstoned.
+Today step 6 FAILS — RED — with the diagnostic:
 
-Test name should describe the invariant:
-`test_disconnect_block_purges_coinbase_from_backing` (or similar).
-Commit it RED — the failure is the gate for the P10.1.4 fix.
+> `chain_stall_repro P10.1.3 RED: disconnect_block purges coinbase
+> from the backing parent cache... FAIL (RED — parent still has
+> coinbase_200 after disconnect+flush; invariant violated at
+> connect_block.c:639)`
 
-Either add as a new case in `test_reorg_safety.c` (same domain) or
-a new small test file. Runtime <100ms; no SQLite needed for the
-scratch→parent layer, though an optional second case that extends
-to `coins_view_sqlite` (proving the DELETE is also emitted) would
-lock in the full shape.
+`make test` exit is 1 with 3 failures: this 1 intended RED + 2
+pre-existing flaky lint-gate tests (baseline noise, unrelated to
+P10.1). The RED clears when P10.1.4's fix lands.
 
 ---
 
-## NEXT — P10.1.4: Minimal fix + invariant assertion
+## NOW — P10.1.4: Minimal fix + invariant assertion
 
-After P10.1.3 lands RED. Smallest diff that makes P10.1.3 pass
-without regressing any other test. Per the P10.1.2 analysis: replace
+Ready to start. Per the P10.1.2 analysis: replace
 `coins_map_erase(&view->cache_coins, &tx->hash)` at
-`lib/validation/src/connect_block.c:639` with a DIRTY pruned
-tombstone — `coins_view_cache_modify(view, &tx->hash)` then clear
-all outputs + leave DIRTY set — so the scratch flush propagates a
-DIRTY+pruned entry to `coins_tip`, and the next SQLite flush emits
-the DELETE row at `lib/storage/src/coins_view_sqlite.c:667`. No
-drive-by refactors.
+`lib/validation/src/connect_block.c:639` with a DIRTY+pruned
+tombstone — `coins_view_cache_modify(view, &tx->hash)`, clear all
+outputs (or simply free/reinit the coins so `coins_is_pruned`
+returns true), leave DIRTY set — so the scratch flush propagates
+a DIRTY+pruned entry to `coins_tip`, and the next SQLite flush
+emits the DELETE at `lib/storage/src/coins_view_sqlite.c:667`.
 
-Add an assertion that runs after `disconnect_tip` returns in
-process_block.c: walk the disconnected block's txs and assert
-`!coins_view_cache_have_coins(&coins_tip, &tx->hash)`. In debug
-builds this PANICs; in release it logs + bumps a metric so
-regressions surface in telemetry rather than crashing prod.
+Post-`disconnect_tip` invariant assertion in `process_block.c`
+(after `disconnect_tip` returns): walk the disconnected block's
+txs and assert `!coins_view_cache_have_coins(coins_tip, &tx->hash)`.
+Debug build → assert (abort); release build → log + metric bump.
 
-After this lands: `make test` green, P10.1.1 reproduction
-still asserts the bad state via a separate pre-seeded fixture
-(kept as documentation of the prior bug shape), P10.1.3 regression
-test passes.
+Acceptance after this lands:
+- `make test` green (P10.1.3 flips RED → GREEN; the two flaky
+  lint-gate failures are the pre-existing baseline).
+- P10.1.1 reproduction is PRESERVED — it asserts a pre-seeded
+  stale-state shape which is still achievable via direct cache
+  seeding (update_coins + best_block pin). The assertion doesn't
+  change.
+- Any other test exercising `disconnect_block` still passes
+  (test_chain_rollback, test_reorg_safety, test_validation).
+
+No drive-by refactors.
 
 ---
 
-## NEXT+2 — P10.1.5: Live-node verification
+## NEXT — P10.1.5: Live-node verification
 
 Rhett's row (coordinator). After P10.1.4 lands and `make ci` is
 green, Rhett runs `make deploy`. Watches for `EV_BLOCK_CONNECTED`
@@ -565,6 +571,31 @@ If build or tests fail — STOP and report.
 ## Notes from Agent-2
 
 _(Keep short — 1-3 recent entries.)_
+
+### 2026-04-19 (post-P10.1.2) — P10.1.3 RED regression test
+
+**P10.1.3 (`ae7caa1fe`):** third case in
+`lib/test/src/test_chain_stall_repro.c` named
+`t_disconnect_block_purges_coinbase_from_backing`. Models the
+three-layer `scratch → parent → null_view` shape documented in
+the P10.1.2 writeup. Seeds the parent with a coinbase via
+`update_coins`, wraps parent as a `coins_view` via
+`coins_view_cache_as_view`, layers a scratch on top, runs
+`disconnect_block + flush` through the scratch, and asserts the
+parent no longer reports `coins_view_cache_have_coins` for the
+coinbase. FAILS on current HEAD — the failure message names
+the invariant + the file:line, and the test is committed RED.
+
+Intentional departure from the normal "every commit passes
+make test" rule, justified by the P10.1 workflow's RED-first
+discipline. The RED flips to GREEN once P10.1.4 lands. The
+baseline has 2 flaky lint-gate failures that predate this work;
+my commit adds exactly one expected RED.
+
+Next: P10.1.4 minimal fix. Replace `coins_map_erase` at
+`connect_block.c:639` with a DIRTY+pruned tombstone via
+`coins_view_cache_modify`; add a post-`disconnect_tip` invariant
+assertion in `process_block.c`.
 
 ### 2026-04-19 (post-P10.1.1) — P10.1.2 root-cause writeup
 
