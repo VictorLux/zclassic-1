@@ -85,14 +85,14 @@ The P10.1 sequence is the canonical example of HI=1.0 work.
 | Order | Row | Size | Severity |
 |---|---|---|---|
 | DONE | **P10.1.1** — Reproduce the chain stall on a fixture | medium | done 1243e1766 [test:1.0] |
-| DONE | **P10.1.2** — Root-cause writeup in `docs/postmortems/` | medium | done <SHA-TBD> (awaiting Agent-3 review) |
+| DONE | **P10.1.2** — Root-cause writeup in `docs/postmortems/` | medium | done 5279752d1 (awaiting Agent-3 review) |
 | **NOW** | **P10.1.3** — Regression test that fails pre-fix | small | (gates P10.1.4) |
 | NEXT | **P10.1.4** — Minimal fix + invariant assertion | medium | (gates P10.1.5) |
 | NEXT+2 | **P10.1.5** — Live-node verification (Rhett runs deploy) | n/a | Rhett |
 | **DEFERRED** | P8.4, P8.6, P8.7, P8.8, P7.10 follow-up | — | parked behind P10.1 |
 
 **Recently landed (preserved for context):** P10.1.2 writeup
-(`<SHA-TBD>`), P10.1.1 (`1243e1766`), P4.1+P4.2 (`a9fcf6c66`), P8.9
+(`5279752d1`), P10.1.1 (`1243e1766`), P4.1+P4.2 (`a9fcf6c66`), P8.9
 HOTFIX (`b875152da` — superseded), P8.1 (`b6726f83b`), P7.9
 infrastructure (`19b2cac1d`). Agent-3 closed P8.5 (`21da0531e`),
 P8.2 (`576b5cde2`), and the P9 sapling-prover audit (`04247c19a` —
@@ -133,7 +133,7 @@ the P10.1 definition of a RED-first row.
 
 ---
 
-## DONE — P10.1.2 (<SHA-TBD>): Root-cause writeup
+## DONE — P10.1.2 (5279752d1): Root-cause writeup
 
 Shipped as `docs/postmortems/2026-04-19-bip30-stall.md`. TL;DR:
 `disconnect_block`'s `coins_map_erase(&view->cache_coins, &tx->hash)`
@@ -568,7 +568,7 @@ _(Keep short — 1-3 recent entries.)_
 
 ### 2026-04-19 (post-P10.1.1) — P10.1.2 root-cause writeup
 
-**P10.1.2 (`<SHA-TBD>`):** `docs/postmortems/2026-04-19-bip30-stall.md`.
+**P10.1.2 (`5279752d1`):** `docs/postmortems/2026-04-19-bip30-stall.md`.
 The root cause is narrower than the P8.10 hotfix guess (which chased
 the sweep + BLOCK_FAILED_CHILD cap): `disconnect_block`'s
 `coins_map_erase(&view->cache_coins, &tx->hash)` at
