@@ -10,7 +10,7 @@ criteria; MVP is achieved at 8/8.
 | # | Criterion | How we verify | Status |
 |---|---|---|---|
 | 1 | **Single-binary install on clean Ubuntu/Debian** | CI: clean container, `make install && systemctl --user start zclassic23`, exit 0 | ☐ |
-| 2 | **Tor onion bootstrap in <60s** | `zcl_onion_status` returns `bootstrap_state=ready` within 60s of start | ☐ |
+| 2 | **Tor onion bootstrap in <60s** | `zcl_onion_status` returns `bootstrap_state=ready` within 60s of start — test: `lib/test/src/test_onion_bootstrap.c` (`ZCL_STRESS_TESTS=1`) | ✅ |
 | 3 | **Cold-start sync to tip in <10 min** | Fresh datadir → `zcl_syncstate.phase=ready` within 10 min on 100 Mbps link | ☐ |
 | 4 | **Receive shielded payment end-to-end** | Test wallet receives 1 ZCL to a z-addr, balance reflects within 2 blocks | ☐ |
 | 5 | **List + sell file via store** | Operator lists product → buyer pays shielded → buyer receives file | ☐ |
@@ -19,7 +19,9 @@ criteria; MVP is achieved at 8/8.
 | 8 | **Consensus parity with zclassicd** | Continuous diff service: 0 mismatches over the 7-day soak window | ☐ |
 
 **Estimated MRS today: 3 / 8** (criteria 1, 2, 4 likely pass on
-manual test; 3 partial; 5/6/7/8 fail or untested).
+manual test; 3 partial; 5/6/7/8 fail or untested). **CI-verified
+MRS: 1 / 8** — criterion #2 (P11.1, `test_onion_bootstrap.c`) is the
+first green CI gate; the rest remain estimate-only.
 
 **Update rule:** when a CI test for a criterion goes green, flip ☐
 to ✅ in this file and bump the MRS line in `AGENT.md`.

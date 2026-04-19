@@ -22,6 +22,13 @@ int main(void)
      * doesn't have to wait for the entire 1500-test suite.  Unset or
      * unknown value runs the full suite unchanged. */
     const char *only = getenv("ZCL_TEST_ONLY");
+    if (only && strcmp(only, "onion") == 0) {
+        printf("[test] ZCL_TEST_ONLY=onion — running P11.1 onion bootstrap only\n");
+        { extern int test_onion_bootstrap(void);
+          failures += test_onion_bootstrap(); }
+        printf("\n=== Onion subset complete: %d failure(s) ===\n", failures);
+        return failures ? 1 : 0;
+    }
     if (only && strcmp(only, "persistence") == 0) {
         printf("[test] ZCL_TEST_ONLY=persistence — running persistence subset\n");
         failures += test_schema_migration();
@@ -85,6 +92,8 @@ int main(void)
     failures += test_flyclient();
     failures += test_scan_util();
     failures += test_tor();
+    { extern int test_onion_bootstrap(void);
+      failures += test_onion_bootstrap(); }
     failures += test_event();
     failures += test_download();
     failures += test_consensus();
