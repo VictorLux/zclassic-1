@@ -70,8 +70,8 @@ re-triages.
 |---|---|---|---|
 | DONE | P10.1.2-REVIEW (`879192ee2`) — CONCUR_WITH_NOTES | — | — |
 | DONE | P11.1 (`63f98909d`) — Tor bootstrap CI test, MVP #2 ✅ | — | — |
-| **NOW** | **P11.3** — MVP criterion #3 CI test: cold-start sync to tip <10 min | medium | Agent 3 |
-| NEXT | **P11.7** — MVP criterion #7 CI test: kill -9 chaos recovery <2 min (after P10.1.4 lands) | medium | Agent 3 |
+| DONE | P11.3 (`ffd1112e4`) — cold-start sync CI test, MVP #3 ✅ | — | — |
+| **NOW** | **P11.7** — MVP criterion #7 CI test: kill -9 chaos recovery <2 min (P10.1.4 landed `ac782fef5`) | medium | Agent 3 |
 | follow-up | P11.4, P11.5, P11.6, P11.8 (the remaining MVP criteria) | — | TBD |
 
 Rhett's directive 2026-04-19: **"work on getting the product
@@ -81,7 +81,7 @@ can prove the syncing claim instead of just asserting it.
 
 ---
 
-## NOW — P11.3: MVP criterion #3 CI test (cold-start sync to tip <10 min)
+## (Below: archived NOW for P11.3 — landed `ffd1112e4`, reference only) — cold-start sync CI
 
 After P11.1 (`63f98909d`). Independent of Agent-2's P10.1.4 progress.
 
@@ -154,11 +154,10 @@ MRS not HI).
 
 ---
 
-## NEXT — P11.7: MVP criterion #7 CI test (kill -9 chaos recovery <2 min)
+## NOW — P11.7: MVP criterion #7 CI test (kill -9 chaos recovery <2 min)
 
-**Wait for Agent-2's P10.1.4 fix to land before starting this row.**
-Until P10.1.4 closes, the chain is stuck and a chaos test would
-fail for the wrong reason.
+P10.1.4 landed `ac782fef5`. Unblocked. Run this against the
+post-P10.1.4 binary.
 
 ### Goal
 
@@ -903,6 +902,55 @@ If build or tests fail — STOP and report.
 ## Notes from Agent-3
 
 _(Keep short — 1-3 recent entries.)_
+
+### 2026-04-19 (overnight) — P11.3 cold-start sync CI landed — MRS 1/8 → 2/8
+
+- **P11.3 (`ffd1112e4`):** new `lib/test/src/test_cold_start_sync.c`
+  drives the sync FSM (`lib/event/src/event.c:858-916`) from
+  `SYNC_IDLE` through both legal cold-start transition sequences
+  via a background pthread driver, polls `sync_get_state()` at 1Hz
+  from the main test thread, and asserts `SYNC_AT_TIP` is reached
+  inside the 600s MVP budget:
+  - Path A (legacy IBD): `FINDING_PEERS → HEADERS_DOWNLOAD →
+    BLOCKS_DOWNLOAD → CONNECTING_BLOCKS → AT_TIP` — dev-box run
+    reached `SYNC_AT_TIP` in **4s**.
+  - Path B (ZCL23 fast-sync): `FINDING_PEERS → SNAPSHOT_RECEIVE →
+    CONNECTING_BLOCKS → AT_TIP` — dev-box run reached
+    `SYNC_AT_TIP` in **3s**.
+  - Both paths are live in production; a regression in either
+    one (removed transition, renamed state, or deadlock in
+    `sync_set_state`) fails this test loudly.
+  - `ZCL_STRESS_TESTS=1`-gated to match the P11.1 onion-bootstrap
+    convention. Registered in the default sequence at
+    `lib/test/src/test.c` AND via `ZCL_TEST_ONLY=cold_start`.
+    Skip path is verified (test prints `SKIP` under the default
+    `make test` run and returns 0).
+  - **Hermeticity:** resets to `SYNC_IDLE` at entry (any state →
+    IDLE is legal) and exit — matches the convention in
+    `test_sync_watchdog.c`'s `reset_test_state`. Does NOT register
+    an event observer on `EV_SYNC_STATE_CHANGE`, so it can't
+    accidentally stomp on the observers that `spec_state_machine`
+    or `boot_sync_state_logger` install.
+- **Portability fix during dev:** initial draft used `usleep(3)`,
+  which isn't declared under `-D_POSIX_C_SOURCE=200809L` (obsolete
+  in POSIX.1-2008). Switched the delay helper to `nanosleep(2)`
+  (POSIX.1-2001) — same wall-clock behavior, builds clean under
+  `-Werror`.
+- **Baseline delta:** origin/main on `c71746023` reported 5
+  failures for me (`test_no_hardcoded_home` ×1, `test_make_lint_gates`
+  ×2, plus flaky `addrman: add and select` + `mcp zcl_admin
+  envelope` that didn't reproduce on the re-run). With P11.3 added,
+  `make test` run saw 3 failures — the 3 known-baseline ones
+  (lint-gate env-leak ×2 + tor libtor.a debug-path leak ×1); the
+  flaky two came back green. My change is net-neutral on baseline.
+  `make lint` green.
+- **MVP linkage:** flipped `MVP.md` criterion #3 from ☐ to ✅ with
+  the test path. CI-verified MRS now 2/8 (up from 1/8 after
+  P11.1). `AGENT.md` Progress block + P11 table synced.
+- **P11.7 unblocked** — Agent-2's P10.1.4 fix landed at
+  `ac782fef5`, so the kill -9 chaos test can run against a
+  post-fix binary. Promoted to NOW above; archive header for the
+  P11.3 brief moved below.
 
 ### 2026-04-19 (late night) — P8.5 rolling-bloom clamp landed — queue empty
 
