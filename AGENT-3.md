@@ -38,7 +38,7 @@ See `AGENT.md` for the cross-agent priority table.
 
 ---
 
-## Current status — 2026-04-19 (late night, P8.2 landed — queue empty)
+## Current status — 2026-04-19 (late night, P8.2 landed — P8.5 reassigned to you)
 
 **Done and on main (19 rows + audit):** P1.3, P1.4, P1.6 (`f6aa0b080`),
 P1.7 (`5ce252bb6`), P1.8, P1.9, P1.10, P1.11, P1.11b, P1.12, P1.13,
@@ -49,14 +49,114 @@ new rows).
 
 All crypto + consensus + vendor + net-backpressure + MMB-hardening
 + dandelion-RNG rows shipped. HIGH tier across the whole project
-now 100% (29/29). P8.2 + P8.3 closed.
+now 100% (29/29).
 
-**Open queue: empty.** Ping Rhett. The P8 triage pass already covered
-every lane — no further audit work pre-authorized.
+**P8.5 reassigned to you** — `rolling_bloom_init` missing
+`MAX_BLOOM_HASH_FUNCS` clamp. `lib/bloom/` is technically Agent-2's
+lane, but the bug is squarely about siphash iteration counts (the
+exact RNG/crypto-cost domain you've been hardening). Single-line
+fix + one regression test. Keeps you productive while Agent-2
+grinds through P8.10 (live-node hotfix follow-up) + remaining MEDs.
+
+**Open queue (1 row, then ping Rhett):**
 
 | Order | Row | Size | Severity |
 |---|---|---|---|
-| NOW | (queue empty — ping Rhett) | — | — |
+| **NOW** | **P8.5** — rolling_bloom missing MAX_BLOOM_HASH_FUNCS clamp | trivial | MED |
+| NEXT | (queue empty — ping Rhett) | — | — |
+
+---
+
+## NOW — P8.5: clamp `MAX_BLOOM_HASH_FUNCS` in the rolling-bloom path
+
+File: `lib/bloom/src/bloom.c:47-52` (the `bloom_filter_init_internal`
+helper) + the rolling_bloom call site.
+
+### Bug
+
+`bloom_filter_init_internal` only applies the `MAX_BLOOM_HASH_FUNCS`
+cap when `constrained=true` — the public `bloom_filter_init` path.
+The internal `rolling_bloom_init` path passes `constrained=false`
+and lets `num_hash_funcs = (data_size * 8 / num_elements * LN2)`
+grow without ceiling.
+
+Every subsequent `rolling_bloom_insert` / `rolling_bloom_contains`
+runs that many siphash iterations per call. Pathological tuning
+(small `num_elements`, large `data_size` from a tight `fp_rate`)
+produces hot-path CPU blow-up.
+
+### Fix
+
+Extract the `MIN(ideal, MAX_BLOOM_HASH_FUNCS)` clamp into both
+branches:
+
+```c
+/* before */
+size_t ideal = (size_t)((data_size * 8.0 / num_elements) * LN2);
+flt->num_hash_funcs = constrained ? MIN(ideal, MAX_BLOOM_HASH_FUNCS) : ideal;
+
+/* after */
+size_t ideal = (size_t)((data_size * 8.0 / num_elements) * LN2);
+flt->num_hash_funcs = MIN(ideal, MAX_BLOOM_HASH_FUNCS);
+(void)constrained;  /* both paths now clamp; keep arg for API stability */
+```
+
+If the `constrained` flag is no longer load-bearing after the change,
+you can delete it entirely — it's an internal helper. Match the
+style of whatever else you find in that file.
+
+### STOP + ping Rhett
+
+- Any change to the bloom filter's wire format (BIP37 `filterload`
+  message). The clamp is a CPU-cost guard, not a wire-level change.
+- Any change to MAX_BLOOM_HASH_FUNCS itself. Just enforce the
+  existing constant.
+
+### Acceptance
+
+1. Unit test in `lib/test/src/test_bloom.c` (or whichever covers
+   bloom): construct a `rolling_bloom_init` with parameters that
+   pre-fix would yield `num_hash_funcs > MAX_BLOOM_HASH_FUNCS`;
+   assert post-init the field is clamped to `MAX_BLOOM_HASH_FUNCS`.
+2. Verify the existing public-path `bloom_filter_init` test still
+   passes (regression — clamp behavior should be identical there).
+3. Full `./test_zcl` + `make ci` green.
+
+### Lane note
+
+You're touching `lib/bloom/src/bloom.c` — outside your usual lane
+but the bug is squarely RNG/crypto-cost. Match Agent-2's coding
+style (look at any of their net or storage commits — `LOG_FAIL`
+macros, header-vs-source split, error-return discipline).
+
+Trivial scope. One commit, ~5 lines of code + ~30 lines of test.
+
+### Commit template
+
+```
+bloom: clamp MAX_BLOOM_HASH_FUNCS in rolling_bloom path (P8.5)
+
+Fixes P8.5 (AGENT.md). bloom_filter_init_internal only enforced
+the MAX_BLOOM_HASH_FUNCS cap when constrained=true (the public
+bloom_filter_init path). The internal rolling_bloom_init path
+passed constrained=false and let num_hash_funcs grow without
+ceiling — every subsequent insert/contains paid the unbounded
+siphash iteration cost.
+
+Pathological tuning (small num_elements, large data_size from a
+tight fp_rate) produced hot-path CPU blow-up. Fix lifts the clamp
+out of the constrained branch so both call sites enforce it.
+
+Tests: rolling_bloom_init clamp assertion + regression on the
+public bloom_filter_init path.
+```
+
+---
+
+## NEXT — (queue empty after P8.5 lands)
+
+Ping Rhett. The triage pass already covered every lane — no further
+audit work pre-authorized.
 
 ---
 

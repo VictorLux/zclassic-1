@@ -57,23 +57,149 @@ regression downstream of your P7.2 rewind → filed as **P8.9 HOTFIX**.
 
 | Order | Row | Size | Severity |
 |---|---|---|---|
-| **NOW** | **P8.4** compact-block O(n·m) reconstruction → khash | medium | MED |
-| NEXT | **P8.5** rolling_bloom missing MAX_BLOOM_HASH_FUNCS clamp | trivial | MED |
+| **NOW** | **P8.10 HOTFIX-2** — P8.9 incomplete; live node regressed 3,081,408→3,081,407 + BLOCK_FAILED_CHILD memory growth (5.9G/6.0G in 3h) | medium | **CRIT** |
+| NEXT | **P8.4** compact-block O(n·m) reconstruction → khash | medium | MED |
 | NEXT+2 | **P8.6** zslp_service short-key ambiguity | small | MED |
 | NEXT+3 | **P8.7** zmarket_offer size_bytes overflow | trivial | MED |
 | NEXT+4 | **P8.8** ZNAM builder vs parser type gate divergence | trivial | MED |
 | follow-up | **P7.10** — migrate long-running loops onto `thread_registry_shutdown_requested()` (opportunistically as each subsystem is touched) | cross-cutting | MED |
 
-**P8.2 reassigned to Agent-3** — dandelion PRNG seed quality is a
-natural fit for their RNG/random_secret lane.
+**P8.2 + P8.5 reassigned to Agent-3** — P8.2 (dandelion PRNG, done
+`576b5cde2`) was a natural RNG fit. P8.5 (bloom hash-funcs clamp)
+moved to Agent-3 to keep them productive while you grind through
+P8.10 + remaining MEDs; siphash adjacency makes it in-lane enough.
 
 **Recently landed:** P4.1+P4.2 (`a9fcf6c66`), P8.9 HOTFIX
 (`b875152da`), P8.1 (`b6726f83b`), P7.9 infrastructure
-(`19b2cac1d`). P8.9 still needs Rhett to `make deploy` so the
-strengthened rewind can run against the live DB.
+(`19b2cac1d`). P8.9 + P8.1 + P7.9 all deployed at 23:22 UTC
+(coordinator restart). Live node briefly advanced past stall, then
+regressed → P8.10 captures the gap.
 
-Agent-3 just closed P8.3 (`c06515cbd`) — their queue is empty
-pending Rhett's next brief (P8.2 handoff).
+---
+
+## NOW — P8.10 (HOTFIX-2 CRIT): P8.9 incomplete + BLOCK_FAILED_CHILD memory leak
+
+Files: `lib/coins/src/coins_view_sqlite.c` (P8.9 sweep — needs
+disconnect→reconnect idempotency), `lib/validation/src/process_block.c`
+(BLOCK_FAILED_CHILD propagation — needs cap/GC),
+`lib/validation/src/chainstate.c` (the disconnect→reconnect path
+that bypasses the strengthened sweep).
+
+### Evidence (live node, 2026-04-19 23:22 deploy of `b875152da`)
+
+Boot-time evidence the strengthened sweep ran:
+```
+[coins] tip check OK: max_utxo_height=3081408 tip_height=3081408
+coins_best_block 00000dbc093976db1e16630778a97e526a2b1c118791f96fea0122fffa1afd59 found in block_index at h=3081408
+Restored chain tip from coins DB: height=3081408
+```
+
+Background watcher confirmed advance:
+```
+ADVANCED: height=3081408 (P8.9 fix WORKING — chain past pre-deploy stall point)
+```
+
+3 hours later (`systemctl status` showed uptime 2h51m, no restarts
+in journal):
+```
+$ ./tools/zcl-rpc getblockcount
+{"result":3081407}     ← regressed
+$ ./tools/zcl-rpc getbestblockhash
+{"result":"00000da3c02f737d53bbf585fa2f295831f3ff28e5ed20fef7aafa7cfbcbd165"}
+                       ← that's the h=3081407 hash, confirmed
+```
+
+Memory state when caught:
+```
+Memory: 5.9G (high: 6.0G available: 14.8M peak: 6.0G)
+        ↑ 14.8M free out of 6.0G — minutes from cgroup OOM
+```
+
+Log fragments showing the leak vector:
+```
+connect_tip: connect_block FAILED h=3081408: bad-txns-BIP30
+Propagated BLOCK_FAILED_CHILD to 973 descendants
+... (range 363–1467 across runs, every connect attempt)
+```
+
+**No reorg log line, no InvalidateBlock, no manual disconnect.** The
+chain went 3,081,407 → 3,081,408 → 3,081,407 entirely on its own.
+
+### Two distinct bugs in this row
+
+**Bug A — disconnect→reconnect bypasses the P8.9 strengthened sweep.**
+The P8.9 fix runs at boot when `max_utxo_height > tip_height`. Once
+the coins view is "clean" (max == tip), the sweep is dormant. But
+something in the chainstate path is causing block 3,081,408 to be
+disconnected after a successful connection — which restores the
+exact state the sweep is supposed to detect, but without the
+trigger condition. Investigation should focus on `chainstate.c`:
+look for any `disconnect_tip()` call that fires without going
+through `activate_best_chain`'s reorg path (e.g., a "block invalid
+after the fact" branch, a memory-pressure flush that wrote partial
+state then reverted, or a contextual check that re-runs after the
+fact and decides 3,081,408 is bad on retroactive grounds).
+
+**Bug B — BLOCK_FAILED_CHILD has no cap.** Every retry on the same
+stuck block re-marks 100s-1000s of descendant headers as
+BLOCK_FAILED_CHILD. The marks live in the block_index map. Headers
+keep arriving (header tip advances normally), so each retry has
+MORE descendants to mark. Memory grows monotonically until OOM.
+P7.4's backpressure watchdog only watches the download queue; it
+doesn't see this growth. Fix: either (a) cap how many descendants
+get marked per retry, (b) GC marks for headers that haven't been
+touched in N minutes, or (c) skip the propagation entirely if the
+parent is already marked failed (the most likely root cause — we're
+re-propagating from the same parent each retry).
+
+Option (c) is the cheapest fix and probably the right one. The
+re-propagation is wasteful work as well as a leak.
+
+### STOP + ping Rhett
+
+- Any change to consensus rules around BIP30 itself. The fix must
+  be on the storage / chainstate / book-keeping side.
+- Any change to the activate_best_chain reorg policy. Don't change
+  WHEN we disconnect blocks — only HOW the cleanup runs after.
+
+### Acceptance
+
+1. Unit test: pre-seed coins view with the post-P8.9 "clean" state,
+   then call the disconnect_tip path Bug A surfaces (whichever path
+   the investigation finds), then call activate_best_chain's
+   reconnect — assert no BIP30 trip.
+2. Unit test for Bug B: stress-test by calling
+   `block_failed_child_propagate(parent)` 1000 times in a row with
+   the same parent — assert memory delta is O(1), not O(N).
+3. Live-node canary: after `make deploy`, chain advances past
+   3,081,407 within 120s **and stays advanced** for at least 2h
+   (verify via cron-style memory snapshot — RSS should plateau, not
+   climb).
+4. Full `./test_zcl` + `make ci` + ASAN green.
+
+### Commit template
+
+```
+val/coins: idempotent strengthened-rewind on reconnect + cap BLOCK_FAILED_CHILD propagation (P8.10)
+
+Fixes P8.10 (AGENT.md). P8.9 (b875152da) only ran the strengthened
+sweep at boot when max_utxo_height > tip_height. The
+disconnect→reconnect path in chainstate.c was bypassing it, so the
+live node regressed from h=3,081,408 back to h=3,081,407 within 3h
+and resumed BIP30 looping.
+
+Also caps BLOCK_FAILED_CHILD propagation: skip when parent is
+already marked failed (the re-propagation was both an O(N) memory
+growth and wasted work). Live node hit 5.9G/6.0G cgroup high in
+2h51m before the coordinator restart.
+
+Tests: disconnect→reconnect cycle assertion + propagation idempotency
++ live canary (chain stays advanced for 2h with plateau RSS).
+```
+
+---
+
+## (Below: archived NOW for P8.4 — promoted only after P8.10 lands) — P8.4 compact-block O(n·m) reconstruction
 
 ---
 
