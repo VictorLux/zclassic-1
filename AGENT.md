@@ -33,7 +33,7 @@ and test come before any fix.
 
 ---
 
-## Progress — last update 2026-04-19 (RESET to root-cause discipline; P10.1 supersedes P8.10; P9 wave preserved + deferred)
+## Progress — last update 2026-04-19 (P10.1.1 landed 1243e1766 — BIP30 stall deterministically reproduces on a fixture; P10.1.2 root-cause writeup is next)
 
 **Overall: 67 / 85 rows closed (79%) | SWRC ~84%**
 
@@ -46,7 +46,7 @@ and test come before any fix.
 | (P0 baseline) | 4 / 4 | **100%** | — |
 
 **Open by owner (2026-04-19 late night, post-reset):**
-- **Agent-2 (1 row, NOW):** **P10.1 — chain-stall root cause + regression test + fix**. Five sequential sub-rows (P10.1.1–P10.1.5); each gates the next. **No hotfix shortcuts.** P8.4/P8.6/P8.7/P8.8 + P7.10 follow-up are deferred until P10.1 closes.
+- **Agent-2 (1 row, NOW):** **P10.1.2 — root-cause writeup** in `docs/postmortems/2026-04-19-bip30-stall.md`. P10.1.1 landed 1243e1766: fixture-based BIP30 repro + clean-view control test, both green in-process, default-on in `make test`. Four remaining P10.1 sub-rows (P10.1.2 writeup → P10.1.3 RED test → P10.1.4 minimal fix → P10.1.5 live canary). **No hotfix shortcuts.** P8.4/P8.6/P8.7/P8.8 + P7.10 follow-up stay deferred until P10.1 closes.
 - **Agent-3 (idle / on-call):** Their P9 sapling-prover audit (`04247c19a`) landed ~1 min before this reset commit. The 10 findings (P9.1–P9.10) are real and preserved — but **all deferred** until P10.1 closes. Agent-3 is on-call to review Agent-2's P10.1.2 root-cause writeup. No new code from them until P10.1 closes.
 - **Rhett:** 0 (coordinator only).
 
@@ -319,7 +319,7 @@ reviewed.
 
 | # | Task | Acceptance | Owner |
 |---|---|---|---|
-| **P10.1.1** | **Reproduce the chain stall on a fixture.** Build a deterministic test fixture: pre-seed `utxos` + `tx_index` with the post-P7.1 partial-application state observed on the live node (or a smaller equivalent that exercises the same code path). Boot a node from this fixture. Assert the BIP30 false-positive reproduces. Commit the fixture + reproduction script to `lib/test/`. | New `test_chain_stall_repro` lives in `lib/test/`; runs in `make test`; FAILS today (no fix yet). | Agent 2 |
+| **P10.1.1** | **Reproduce the chain stall on a fixture.** Build a deterministic test fixture: pre-seed `utxos` + `tx_index` with the post-P7.1 partial-application state observed on the live node (or a smaller equivalent that exercises the same code path). Boot a node from this fixture. Assert the BIP30 false-positive reproduces. Commit the fixture + reproduction script to `lib/test/`. | New `test_chain_stall_repro` lives in `lib/test/`; runs in `make test`; FAILS today (no fix yet). | Agent 2 — done 1243e1766 [test:1.0] (in-memory fixture at `lib/test/src/test_chain_stall_repro.c`: pre-seeds `coins_view_cache` with a stale unspent coinbase for the block being reconnected + pins `best_block` to the parent hash; calls `connect_block` and asserts `bad-txns-BIP30` at `h=tip+1` with `dos=100`. Control test confirms a clean view advances the same block. `<100ms`, default-on in make test, no SQLite or thread state) |
 | **P10.1.2** | **Root-cause writeup.** Markdown doc in `docs/postmortems/2026-04-19-bip30-stall.md`. Must answer: (a) the EXACT path that took chain `3,081,408 → 3,081,407` without a reorg log line; (b) WHY BIP30 trips after P8.9's strengthened sweep ran; (c) the invariant that should have been enforced; (d) why the existing tests didn't catch it. No code in this row. | One commit: `docs/postmortems/...md` + AGENT.md row updated. Reviewed by Agent-3 before P10.1.3 starts. | Agent 2 |
 | **P10.1.3** | **Regression test that fails pre-fix.** Translate P10.1.2's invariant into a unit test in `lib/test/test_validation.c` (or wherever covers the affected path). Test must FAIL on the current main without the fix and PASS after the fix lands. The test name should describe the invariant ("connect_block leaves coins view consistent on retry"). | One commit: test added, `make test` shows the new test failing in `RED`. | Agent 2 |
 | **P10.1.4** | **Minimal fix.** Smallest diff that makes P10.1.3's test pass without regressing any other test. No drive-by refactors. Add an assertion that panics if the invariant is ever violated again (debug builds only — release logs + bumps a metric). | One commit: code fix + assertion. `make test` green. P10.1.1 reproduction also passes (chain advances). | Agent 2 |

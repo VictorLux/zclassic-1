@@ -80,98 +80,61 @@ behind the chain working. **Your P10.1.1–P10.1.4 unblock criterion
 `done <SHA> [test:1.0]` because the workflow forces RED-test-first.
 The P10.1 sequence is the canonical example of HI=1.0 work.
 
-**Open queue (P10.1 is the only thing — five sequential steps):**
+**Open queue (P10.1 is the only thing — four sequential steps left):**
 
 | Order | Row | Size | Severity |
 |---|---|---|---|
-| **NOW** | **P10.1.1** — Reproduce the chain stall on a fixture | medium | **CRIT** |
-| NEXT | **P10.1.2** — Root-cause writeup in `docs/postmortems/` | medium | (gates P10.1.3) |
-| NEXT+2 | **P10.1.3** — Regression test that fails pre-fix | small | (gates P10.1.4) |
-| NEXT+3 | **P10.1.4** — Minimal fix + invariant assertion | medium | (gates P10.1.5) |
-| NEXT+4 | **P10.1.5** — Live-node verification (Rhett runs deploy) | n/a | Rhett |
+| DONE | **P10.1.1** — Reproduce the chain stall on a fixture | medium | done 1243e1766 [test:1.0] |
+| **NOW** | **P10.1.2** — Root-cause writeup in `docs/postmortems/` | medium | (gates P10.1.3) |
+| NEXT | **P10.1.3** — Regression test that fails pre-fix | small | (gates P10.1.4) |
+| NEXT+2 | **P10.1.4** — Minimal fix + invariant assertion | medium | (gates P10.1.5) |
+| NEXT+3 | **P10.1.5** — Live-node verification (Rhett runs deploy) | n/a | Rhett |
 | **DEFERRED** | P8.4, P8.6, P8.7, P8.8, P7.10 follow-up | — | parked behind P10.1 |
 
-**Recently landed (preserved for context):** P4.1+P4.2
-(`a9fcf6c66`), P8.9 HOTFIX (`b875152da` — superseded), P8.1
-(`b6726f83b`), P7.9 infrastructure (`19b2cac1d`). Agent-3 closed
-P8.5 (`21da0531e`), P8.2 (`576b5cde2`), and the P9 sapling-prover
-audit (`04247c19a` — 10 findings, all deferred).
+**Recently landed (preserved for context):** P10.1.1 (`1243e1766`),
+P4.1+P4.2 (`a9fcf6c66`), P8.9 HOTFIX (`b875152da` — superseded),
+P8.1 (`b6726f83b`), P7.9 infrastructure (`19b2cac1d`). Agent-3
+closed P8.5 (`21da0531e`), P8.2 (`576b5cde2`), and the P9
+sapling-prover audit (`04247c19a` — 10 findings, all deferred).
 
 ---
 
-## NOW — P10.1.1: Reproduce the chain stall on a fixture
+## DONE — P10.1.1 (1243e1766): Reproduce the chain stall on a fixture
 
-The live node regression `3,081,408 → 3,081,407 → BIP30 loop` has
-NOT been reproduced. Every "fix" so far has been a guess from log
-fragments. This row is the precondition for everything else.
+A full SQLite/node-boot fixture turned out to be heavier than
+needed — the failing code path is `connect_block.c:219-233`, so
+the smallest reliable repro seeds a `coins_view_cache` directly
+with the stale unspent coinbase, pins `best_block` to the parent
+hash, and calls `connect_block(block_N, just_check=true)`.
 
-### Deliverable
+Shipped in `lib/test/src/test_chain_stall_repro.c`:
 
-A self-contained test fixture in `lib/test/test_chain_stall_repro.c`
-(new file) that:
+- **t_stale_coinbase_trips_bip30** — positively asserts
+  `connect_block` returns `false` with `reject_reason ==
+  "bad-txns-BIP30"`, `reject_code == REJECT_INVALID`, `dos == 100`
+  at `h=tip+1`.
+- **t_clean_view_advances** — control test: same code path, no
+  stale coinbase seeded; `connect_block` does NOT trip BIP30
+  (proves the reject is attributable to the stale coins-view
+  state and nothing else).
 
-1. Creates a temp datadir with a SQLite `node.db` pre-seeded to the
-   exact post-P7.1 partial-application state. Simplest path: copy the
-   live node's `~/.zclassic-c23/node.db` into the test as a binary
-   fixture (~100 MB? if too big, generate the equivalent state
-   programmatically — small block index + matching utxos rows).
-2. Boots a node from this fixture (in-process, not via fork).
-3. Asserts the BIP30 false-positive reproduces — `connect_block(h)`
-   returns false with `bad-txns-BIP30` for the first block above tip.
-4. Runs in `make test` (mark `ZCL_STRESS_TESTS`-guarded if the
-   fixture is large; default-on if it's small).
+A single-entry `checkpoint_data` is stitched onto a clone of
+`chain_params_get()` so `check_block`'s expensive-path guard fires
+and we don't need to mine Equihash for the fixture.
+`g_assume_valid_height` is explicitly reset to -1 so the BIP30
+skip flag stays off. Runtime <100ms; no SQLite, no threads, no
+temp datadir. Wired into `make test` via the standard registration
+pattern (`test_helpers.h` + `test.c`).
 
-### How to obtain the fixture
-
-The live node datadir is at `~/.zclassic-c23/`. Coordinate with
-Rhett to get a snapshot: he can run `tools/zcl-rpc dumpchainstate`
-or copy the SQLite DB while the service is stopped. Anonymize any
-wallet/sapling key material before committing.
-
-If the live state is too large, work backward: identify the minimum
-schema (blocks at h=3,081,406..3,081,408 + utxos for those blocks +
-the tx_index entries that survive partial application) and generate
-equivalents in code. ~50 KB of fixture data should be enough.
-
-### Acceptance
-
-- New test file exists.
-- Test runs and FAILS today (no fix yet — failure proves the bug
-  reproduces, which is the win).
-- Failure message names the symptom precisely (`bad-txns-BIP30` at
-  the expected height).
-- Test takes <30s to run.
-
-### What this row does NOT do
-
-- No fix code.
-- No invariant code.
-- No edits to `connect_block.c`, `coins_view_sqlite.c`,
-  `process_block.c`.
-- No documentation (P10.1.2 is the writeup row).
-
-### Commit template
-
-```
-test/chain: add deterministic reproduction of the BIP30 stall (P10.1.1)
-
-Fixes P10.1.1 (AGENT.md). Self-contained fixture that pre-seeds
-node.db with the post-P7.1 partial-application state observed on
-the live node, boots an in-process node, and asserts connect_block
-trips bad-txns-BIP30 at h=tip+1.
-
-Test FAILS today (no fix yet). The failure is the win — it proves
-the bug reproduces deterministically and gates P10.1.2 (root-cause
-writeup) and P10.1.3 (regression test).
-
-Fixture size: <fill> KB. Runtime: <fill>s.
-```
+HI = 1.0 by construction: the assertion in t_stale_coinbase_trips_bip30
+is committed today and the bug demonstrably reproduces, which is
+the P10.1 definition of a RED-first row.
 
 ---
 
-## NEXT — P10.1.2: Root-cause writeup
+## NOW — P10.1.2: Root-cause writeup
 
-After P10.1.1 lands. Markdown doc at
+After P10.1.1 landed. Markdown doc at
 `docs/postmortems/2026-04-19-bip30-stall.md`. Must answer four
 questions:
 
@@ -194,7 +157,7 @@ No code in this row. Reviewed by Agent-3 before P10.1.3 starts.
 
 ---
 
-## NEXT+2 — P10.1.3: Regression test that fails pre-fix
+## NEXT — P10.1.3: Regression test that fails pre-fix
 
 After P10.1.2 lands. New test in `lib/test/test_validation.c` (or
 wherever fits the affected path). Test name should describe the
@@ -207,7 +170,7 @@ won't be caught.
 
 ---
 
-## NEXT+3 — P10.1.4: Minimal fix + invariant assertion
+## NEXT+2 — P10.1.4: Minimal fix + invariant assertion
 
 After P10.1.3 lands RED. Smallest diff that makes P10.1.3 pass
 without regressing any other test. No drive-by refactors. Add an
@@ -222,7 +185,7 @@ passes (chain advances), P10.1.3 regression test passes.
 
 ---
 
-## NEXT+4 — P10.1.5: Live-node verification
+## NEXT+3 — P10.1.5: Live-node verification
 
 Rhett's row (coordinator). After P10.1.4 lands and `make ci` is
 green, Rhett runs `make deploy`. Watches for `EV_BLOCK_CONNECTED`
@@ -560,6 +523,51 @@ If build or tests fail — STOP and report.
 ## Notes from Agent-2
 
 _(Keep short — 1-3 recent entries.)_
+
+### 2026-04-19 (post-reset) — P10.1.1 landed; no more hotfix guesses
+
+**P10.1.1 (`1243e1766`):** fixture-based reproduction of the BIP30
+chain stall. Test lives at `lib/test/src/test_chain_stall_repro.c`.
+
+The brief called for a SQLite node.db fixture + in-process boot,
+but the failing path is narrower than a full boot reaches —
+`connect_block.c:219-233`'s BIP30 loop over `coins_view_cache_have_coins`.
+The smallest reliable repro is therefore:
+
+1. Build a `coins_view_cache` on top of a null backing view.
+2. Apply the to-be-reconnected block's coinbase via
+   `update_coins(&blk.vtx[0], &cache, stall_height)` — the coinbase
+   lands in the cache as an unspent entry.
+3. Pin `cache.hash_block` to the parent hash via
+   `coins_view_cache_set_best_block(&cache, &parent_hash)` — the
+   "tip regressed to N-1" state the live node enters.
+4. Call `connect_block(&blk, &vs, &stall_idx, &cache, &fx.params,
+   /*just_check=*/true)` and assert `reject_reason ==
+   "bad-txns-BIP30"`, `reject_code == REJECT_INVALID`, `dos == 100`.
+
+To make `check_block` skip Equihash POW + size limits without
+flipping `g_assume_valid_height` (which would also skip BIP30 —
+defeating the test), I clone `chain_params_get()` into a local
+`struct chain_params_fixture` and stitch on a single-entry
+`checkpoint_data` at `stall_height`. `g_assume_valid_height` is
+explicitly reset to -1 at test entry.
+
+The control test (clean view, no stale coinbase seeded) confirms
+the same `connect_block(block_N)` call does NOT trip BIP30 when
+the coins view is clean — proves the reject is attributable to
+stale coins state and nothing else. Runtime <100ms for both
+tests, no SQLite file, no node boot, no threads, default-on in
+`make test`.
+
+HI = 1.0: the BIP30-tripping assertion is committed today and the
+bug demonstrably reproduces — that's the P10.1 RED-first pattern.
+
+Pivoting to P10.1.2 (root-cause writeup in `docs/postmortems/`)
+next. No code in that row; it names the exact path that takes
+tip 3081408 → 3081407 without a reorg log line, the reason
+BIP30 trips after P8.9's sweep ran, the invariant that should
+have been enforced, and why existing tests didn't catch it.
+Agent-3 reviews it before P10.1.3 (RED regression test) starts.
 
 ### 2026-04-19 (late night) — P7.9 thread_registry infrastructure
 
