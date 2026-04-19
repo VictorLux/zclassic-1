@@ -163,20 +163,30 @@ also recorded `BUG: sync illegal transition headers_download ->
 reorg (chain reorganization)` which is a separate already-
 instrumented warning from the sync FSM.
 
-**Files in scope:**
-- `lib/event/src/event.c` — the activation state machine (`ready`,
-  `connecting`, `behind_peers`, etc.). This is where the FSM
-  transitions live.
-- `app/services/src/chain_activation_controller.c` — the driver
-  that reacts to `new_block` events and decides `connecting →
-  ?`. Grep for `behind_peers` and `activate_best_chain`.
-- `lib/validation/src/process_block.c` — the block receipt path.
-  Confirm each received block IS being queued to the FSM's
-  `new_block` channel (not silently dropped one level earlier).
-- `app/services/src/sync_service.c` — look at why there are TWO
-  IBD reporters (grep `"IBD:"`). One may be the legacy sync
-  tracker, the other the new ZCL23 one. Reconcile or pick one
-  as source of truth.
+**Files + lines in scope (root-cause evidence from coordinator investigation):**
+
+1. **`lib/net/src/msg_blocks.c:244`** — `if (block_already_seen(&hash)) { block_free(&blk); return true; }`. The FIRST bug. A block that arrives, gets marked seen, fails to connect (because of the 2nd bug below), and is re-requested via the download manager → on re-arrival, this short-circuit drops it silently. Suspected fix: move the `block_already_seen` check AFTER `process_new_block` OR tie the "seen" marker to successful connect, not to receipt.
+
+2. **`lib/validation/src/process_block.c:2263-2272`** — `process_new_block` calls `activation_request_connect` and **silently drops** every skip result except `ACTIVATION_EXEC_FAILED`:
+
+   ```c
+   activation_request_connect(boot_activation_controller(),
+                              ACTIVATION_SRC_NEW_BLOCK, pblock, &ao);
+   if (ao.result == ACTIVATION_EXEC_FAILED) { ... return false; }
+   // ↑ SKIP_ALREADY_RUNNING, SKIP_ANCHOR_BLOCKS, SKIP_WRONG_STATE,
+   //   SKIP_AWAITING_UTXOS — all silently swallowed. Block lost.
+   ```
+
+   During parallel block arrival (6 peers each serving blocks), the activation-controller mutex (`chain_activation_controller.c:257`) serializes connects — so concurrent blocks hit `SKIP_ALREADY_RUNNING` at `chain_activation_controller.c:200-205`. The block goes into the index (accept_block ran) but never gets connected. Combined with (1) above, it never gets another chance.
+
+3. **`app/services/src/chain_activation_controller.c:303-309`** — the `behind_peers` transition is CORRECT once activate_best_chain returns `ok=true` — but `activate_best_chain` (`lib/validation/src/process_block.c:1911-1916`) early-returns when `find_most_work_chain` returns the current tip. Live log shows `nChainTx propagated for 680 blocks` — so 487 blocks past the tip HAVE nChainTx, but `find_most_work_chain` isn't returning any of them as the candidate. Suggests **nChainWork** is not being updated for these blocks (without nChainWork, find_most_work_chain won't consider them). Confirm by reading `accept_block` (`process_block.c:795-930`) and checking if nChainWork is set alongside nChainTx.
+
+4. **`app/services/src/sync_service.c`** (grep for `"IBD: h="`) — there are TWO IBD reporters emitting with different h= values simultaneously:
+   - `IBD: h=3081408/3081408 0.0 blk/s dl[flight=0 queue=0 timeout=0]`
+   - `IBD: h=3081601/3083629 2.6 blk/s dl[flight=16 queue=1810 timeout=0]`
+   One tracks anchor height, one tracks active-chain tip. Reconcile to a single reporter or clearly name them.
+
+5. **Orphan-pool dispatch** — find where orphans get processed after new blocks arrive. `lib/validation/src/orphan_pool.c`. If block N+1 arrived before N, it was orphaned; N now connected; N+1 should be promoted. Is the orphan-sweep firing after successful connect?
 
 **Discipline (P14 rule, same as P14.1/P14.2):**
 1. **Reproduce** on a fixture — the simplest is probably an
