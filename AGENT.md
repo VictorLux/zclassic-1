@@ -35,14 +35,14 @@ and test come before any fix.
 
 ## Progress — last update 2026-04-19 (P10.1.1 `1243e1766` + P10.1.2 `5279752d1` + P10.1.3 RED `ae7caa1fe` + P10.1.4 fix `ac782fef5` all land; `make test` back to green modulo pre-existing lint-gate flakes; only P10.1.5 live-node canary remains — coordinator row)
 
-**Overall: 68 / 95 rows closed (72%) | SWRC ~78%** (denominator bumped: +1 P11.1 closed; +3 P11.3/P11.7/P11.x open; +8 P12.1–P12.8 open after Rhett's "next things to improve" review)
+**Overall: 68 / 100 rows closed (68%) | SWRC ~74%** (denominator bumped: +5 P13.1–P13.5 from post-deploy live evidence — chain advancing but with sync UX issues)
 
 | Tier | Closed / Total | % | Open rows |
 |---|---|---|---|
-| **CRITICAL** | 12 / 16 | **75%** | **P10.1 (NOW)**, P8.10 (SUPERSEDED — frozen), P9.2 (deferred), **P12.1 (deferred — sapling tree checkpoint, highest-leverage)** |
-| **HIGH** | 29 / 35 | **83%** | P9.1, P9.3, P9.4, P9.5, **P12.2** (BLOCK_FAILED_CHILD GC), **P12.3** (parity diff service) — all deferred until P10.1 closes |
-| **MED** | 21 / 36 | **58%** | P7.10, P8.4, P8.6, P8.7, P8.8, P9.6, P9.7, P9.8, P9.9, **P12.4** (Makefile sqlite3 dep), **P12.5** (disconnect-path audit), **P12.6** (structured logging), **P12.7** (height-repair root cause), plus P11.3 (NOW), P11.7 (NEXT) — most deferred |
-| **LOW** | 2 / 4 | **50%** | P9.10, **P12.8** (operator visibility) — deferred |
+| **CRITICAL** | 12 / 17 | **71%** | **P10.1 (verifying)**, P8.10 (SUPERSEDED), P9.2 (deferred), **P12.1** (sapling tree checkpoint), **P13.1** (single-peer sync — only 1 of 9 addnode peers connected) |
+| **HIGH** | 29 / 37 | **78%** | P9.1, P9.3, P9.4, P9.5, **P12.2**, **P12.3**, **P13.2** (header tip oscillation), **P13.4** (IBD throughput 5-8× slower than zclassicd) — all deferred until P10.1 closes |
+| **MED** | 21 / 38 | **55%** | P7.10, P8.4, P8.6, P8.7, P8.8, P9.6–P9.9, P12.4–P12.7, **P13.3** (sync controller noise), **P13.5** (addrman lookup), plus P11.3 (NOW), P11.7 (NEXT) |
+| **LOW** | 2 / 4 | **50%** | P9.10, P12.8 |
 | (P0 baseline) | 4 / 4 | **100%** | — |
 
 **Open by owner (2026-04-19 late night, post-reset):**
@@ -392,6 +392,34 @@ verification) closes** — same root-cause discipline as P10.1.
 - P12.4 is a 1-line Makefile fix; ship in the next pull.
 - P12.6 + P12.7 + P12.8 are quality-of-life — batch when the
   blocking work clears.
+
+---
+
+## Priority 13 — Sync UX wave (2026-04-19, post-P10.1.4 deploy live evidence)
+
+After P10.1.4 deploy: chain IS advancing (3,081,408 → 3,081,601 in
+~6 min, ~32 blocks/min) but the live node shows five sync-quality
+issues that block MVP criterion #3 (cold-start sync <10 min) for
+the real 3M-block chain. Same root-cause discipline as P10.1: each
+needs reproduction + RED test + minimal fix.
+
+| # | Task | File:line | Severity | Owner |
+|---|---|---|---|---|
+| **P13.1** | **Peer connection regression — only 1 peer connected.** Live evidence: `getpeerinfo` returns single peer (the local zclassicd at 127.0.0.1:8034). External peers from `-addnode` list (140.174.189.17, 140.174.189.3, 37.187.76.79, 162.55.92.62, 157.90.223.151, 157.173.195.203, 85.239.232.93, 154.38.178.121, 51.178.179.75) all backing off: `Peer 157.173.195.203:8033: backing off 120s after failed connect`. Also seeing `find_node_by_service: node not found by service addr` — possible addrman lookup bug. Single-peer sync = single point of failure + bandwidth-bottlenecked. **Fix:** root-cause why connects fail (handshake, version mismatch, NAT, addrman corruption); ensure at least 4-of-9 addnode peers stay connected; expose the failure reason in the backoff log line. | `lib/net/src/connman.c` (connect path), `lib/net/src/addrman.c` (find_node_by_service), `lib/net/src/peer_strategy.c` (backoff policy) | **CRITICAL** | Agent 2 (net lane) |
+| **P13.2** | **Header tip oscillation — counter goes backwards.** Live log: `[headers] SLOW ADVANCE: peer 127.0.0.1:8034 sent 160 headers but tip only moved from 3081727 to 480`. Header tip went from 3,081,727 to 480 — a 3-million-entry regression that has to be a counter type confusion or a state-machine reset, not a real reorg. Already-instrumented as "SLOW ADVANCE" but no diagnosis. Likely cause: header tip variable being treated as relative-to-something-else (epoch start? batch start?) somewhere in the header path. **Fix:** find the integer that flipped to 480; compare against the absolute height; assert the header tip is monotonic-non-decreasing during normal sync (with explicit reorg path as the only allowed decrease). | `lib/net/src/msg_headers.c` (header processing), `app/services/src/header_sync_service.c`, the SLOW ADVANCE log line | HIGH | Agent 2 (net + sync lanes) |
+| **P13.3** | **`connect_block_local: failed at height N` spam in sync controller.** Live log: `[sync] app/controllers/src/sync_controller.c:695 node_db_sync_connect_block_local(): connect_block_local: failed at height 3081577` repeating per-block as the chain advances. The CHAIN IS ADVANCING via the main path, so these "failures" don't actually block sync — but every line is `LOG_FAIL` noise. Either dead code that should be removed, OR a real failure that's being silently masked by another path. **Fix:** read `node_db_sync_connect_block_local` at line 695; determine whether it's still load-bearing; either delete + remove the LOG_FAIL, or fix whatever's causing it to fail and validate the result is consistent with the main path. | `app/controllers/src/sync_controller.c:695` | MED | Agent 2 (app/controllers lane) |
+| **P13.4** | **IBD throughput too slow — 32 blocks/min vs zclassicd's ~250.** Live measurement: chain advanced 193 blocks in ~6 min (~32 blocks/min) during P10.1.4 catch-up. zclassicd does ~250 blocks/min in IBD on the same hardware. 5-8× slower means cold-start sync of the full 3M chain takes >24h instead of <2h, blowing MVP criterion #3. **Fix:** profile a 1000-block IBD slice; identify the bottleneck (script verification serial? sapling proof check? SQLite write amplification?); leverage `make` parallelism in the existing checkqueue; consider batching SQLite writes per block-batch. May land as multiple sub-rows. | `lib/validation/src/checkqueue.c`, `lib/validation/src/connect_block.c`, `lib/storage/src/coins_view_sqlite.c` | HIGH | Agent 2 (validation + storage lanes) |
+| **P13.5** | **Addrman lookup gap — `find_node_by_service: node not found by service addr`.** Live log: this LOG_FAIL fires repeatedly, suggesting connman is querying addrman for nodes by service-address that aren't there. Probable cause: race between addrman update and connman lookup, OR addrman entries missing the service-address key. Independent of P13.1 (which is about the failed connect itself); this is the lookup pathology that may be CONTRIBUTING to P13.1. **Fix:** audit `find_node_by_service`'s callers; either ensure the addrman entry exists at lookup time, or downgrade the LOG_FAIL to LOG_DEBUG if the absence is expected. | `lib/net/src/addrman.c:218` (`find_node_by_service`); callers in `lib/net/src/connman.c` | MED | Agent 2 (net lane) |
+
+**Triage notes for Rhett:**
+- **P13.1 is the highest priority in this wave.** Single-peer sync
+  is one network blip away from "no peers" → no sync. With
+  external peers connected, the gap should close 5-10× faster.
+- P13.2 + P13.5 are likely the same root cause as P13.1 (addrman
+  + header-sync state); investigate together.
+- P13.4 is the longest-tail row — full IBD profiling. Probably
+  multiple sub-rows. But unblocks MVP #3 in the real-chain case.
+- P13.3 is cosmetic but high-noise; quick win.
 
 ---
 
