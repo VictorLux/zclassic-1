@@ -15,14 +15,15 @@ criteria; MVP is achieved at 8/8.
 | 4 | **Receive shielded payment end-to-end** | Test wallet receives 1 ZCL to a z-addr, balance reflects within 2 blocks | ☐ |
 | 5 | **List + sell file via store** | Operator lists product → buyer pays shielded → buyer receives file | ☐ |
 | 6 | **7-day soak with zero operator intervention** | Live node + synthetic load for 168h: no manual restarts, RSS plateau | ☐ |
-| 7 | **Recover from `kill -9` in <2 min** | Chaos test: kill -9 mid-block, restart, caught up to peer-tip within 2 min | ☐ |
+| 7 | **Recover from `kill -9` in <2 min** | Chaos test: kill -9 mid-block, restart, caught up to peer-tip within 2 min — test: `lib/test/src/test_kill9_recovery.c` (`ZCL_STRESS_TESTS=1`) | ✅ |
 | 8 | **Consensus parity with zclassicd** | Continuous diff service: 0 mismatches over the 7-day soak window | ☐ |
 
 **Estimated MRS today: 3 / 8** (criteria 1, 2, 4 likely pass on
 manual test; 3 partial; 5/6/7/8 fail or untested). **CI-verified
-MRS: 2 / 8** — criteria #2 (P11.1, `test_onion_bootstrap.c`) and #3
-(P11.3, `test_cold_start_sync.c`) are green CI gates; the rest
-remain estimate-only.
+MRS: 3 / 8** — criteria #2 (P11.1, `test_onion_bootstrap.c`), #3
+(P11.3, `test_cold_start_sync.c`), and #7 (P11.7,
+`test_kill9_recovery.c`) are green CI gates; the rest remain
+estimate-only.
 
 **Update rule:** when a CI test for a criterion goes green, flip ☐
 to ✅ in this file and bump the MRS line in `AGENT.md`.

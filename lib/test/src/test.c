@@ -36,6 +36,13 @@ int main(void)
         printf("\n=== Cold-start subset complete: %d failure(s) ===\n", failures);
         return failures ? 1 : 0;
     }
+    if (only && strcmp(only, "kill9") == 0) {
+        printf("[test] ZCL_TEST_ONLY=kill9 — running P11.7 kill -9 recovery only\n");
+        { extern int test_kill9_recovery(void);
+          failures += test_kill9_recovery(); }
+        printf("\n=== kill9 subset complete: %d failure(s) ===\n", failures);
+        return failures ? 1 : 0;
+    }
     if (only && strcmp(only, "persistence") == 0) {
         printf("[test] ZCL_TEST_ONLY=persistence — running persistence subset\n");
         failures += test_schema_migration();
@@ -103,6 +110,8 @@ int main(void)
       failures += test_onion_bootstrap(); }
     { extern int test_cold_start_sync(void);
       failures += test_cold_start_sync(); }
+    { extern int test_kill9_recovery(void);
+      failures += test_kill9_recovery(); }
     failures += test_event();
     failures += test_download();
     failures += test_consensus();
