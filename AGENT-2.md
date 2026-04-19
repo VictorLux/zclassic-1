@@ -121,7 +121,106 @@ STOP triggers satisfied:
 - No `coins_view` API surface change — connection-ownership
   change only.
 
-### DONE (first-fix; canary pending) — P14.7 (b3f1903d4): chain pin at h=3,081,601 post-P14.1
+### NOW — P14.11 + P14.12 (CRITICAL, NEW from +90 min canary): block_index nBits=0 + active_chain has only tip
+
+Your `b3f1903d4` (P14.7 partial fix + STUCK diagnostic) has been
+deployed to the live node. Chain is still stuck at 3,081,601 —
+but post-deploy log surfaced a **deeper pair of bugs** the pre-fix
+binary masked. These are now the actual sync blockers:
+
+**P14.11 — `block_index` entries for 3,081,408-3,081,601 have
+`nBits = 0x00000000`.** Live log since boot:
+
+```
+bad-diffbits at height 3081602: header=0x1e14f400 expected=0x1f07ffff
+  prev_height=3081601 prev_bits=0x00000000
+HEADER REJECT[0]: hash=... prev=... reason=bad-diffbits
+WARNING: Peer 66.70.182.1:64789: all 160 headers rejected — sync stalled!
+```
+
+200+ rejects since boot; 400 HEADER REJECT lines; peers disconnect
+as `sync stalled`. `GetNextWorkRequired` reads `pprev->nBits`,
+gets zero, falls back to `nProofOfWorkLimit` (0x1f07ffff — the
+P1.7 incomplete-window fallback), then rejects every real-
+difficulty header. This is the actual sync blocker: headers for
+3,081,602+ can't even be accepted, so their blocks never get into
+the index, so find_most_work_chain has nothing above-tip to
+return. That's the "activate-returns-but-does-nothing" symptom
+your postmortem hypothesis (1) flagged (stale nChainWork) — the
+same root cause also leaves nBits zero.
+
+**P14.12 — `active_chain` has only the tip entry.** Companion
+finding from the same deploy: `getblockhash 3081600` → "Block
+height out of range" even though 3,081,600 is a connected
+ancestor. `getblock <tip_hash>` returns `null`. `getblockchaininfo`
+reports `blocks: 3081601, headers: 3081408` (chain AHEAD of header
+tip — reverse of normal). The anchor-restore path
+(`Restored anchor at h=3081408` + `Post-activation: fixed 63
+pprev heights from anchor`) populates `pindex` entries + the
+chain_tip pointer, but does NOT rebuild `active_chain.vtx[]`.
+Subsequent P14.1-canary block commits appended to `chain_active`
+correctly but pre-anchor ancestors were never walked in, leaving
+`chain_active` with only the tip entry.
+
+**Same origin:** both are post-conditions of the normal
+accept_block / connect_block pipeline that the anchor-restore
+shortcut skips. Fix both together.
+
+**Files + line anchors:**
+
+- `app/services/src/chain_restore_service.c` — the restore path.
+  After restoring the anchor, must walk `pindex_tip->pprev` back
+  and (a) populate chain_active.vtx[] in height-order, (b)
+  populate `nBits` on any index entry that has `nBits==0` by
+  reading the block header from disk.
+- `lib/storage/src/block_index_db.c` — flat-file serialization.
+  Verify nBits is written/read in `block_index.bin` format. If
+  so, the bug is in restore_service; if not, the format needs a
+  bump and a backfill pass (STOP + ping Rhett for any format
+  change).
+- `lib/validation/src/process_block.c:820-900` — accept_block
+  sets nBits for new headers; confirm this covers the anchor path.
+- `app/controllers/src/blockchain_controller.c:168` — the
+  out-of-range call site won't resolve until P14.12 populates
+  chain_active.vtx[].
+- `lib/chain/src/chain.c` — probably add
+  `active_chain_rebuild_from_pindex(tip)` as the post-anchor-
+  restore helper.
+
+**Discipline (unchanged P14 rule):**
+
+1. **Boot-time integrity assert FIRST.** New separate commit
+   before the fix — walks the block_index and asserts:
+   - Every pindex above genesis has `nBits != 0`.
+   - `chain_active.num_vtx == chain_active.tip_height + 1`.
+   Must PASS on a freshly-rebuilt index (cold boot without anchor)
+   and FAIL on the current anchor-restored live node. That's the
+   RED.
+2. **Fix:** walk pprev in `chain_restore_service.c`, populate
+   `chain_active.vtx[]`, re-read `nBits` for each entry with
+   nBits==0 from the on-disk block header file
+   (`disk_block_io_open_block_file` + header parse).
+3. **Canary acceptance:**
+   - `getblockhash 3081000` returns a valid hash.
+   - Zero `bad-diffbits` lines since boot.
+   - Chain advances past 3,081,601 within 10 min.
+   - Header tip catches up to peer tip within 30 min.
+
+**STOP + ping Rhett:**
+- Any change to `block_index.bin` on-disk format.
+- Any change to the anchor/snapshot wire protocol.
+
+After P14.11+P14.12 land, sync should flow again. P14.8/P14.10
+(block_already_seen / activation-SKIP-dropped) are then the next
+row in order, followed by P14.7's remaining-work (hypothesis (1)
+still open: nChainWork re-propagation disabled at
+`boot_index.c:1060` — if enabling that is the full fix, P14.7
+closes with one more commit; if nChainWork is fine and P14.11
+was the real bug, P14.7 closes with this deploy).
+
+---
+
+### DONE (first-fix; canary still pending — surfaced P14.11/P14.12) — P14.7 (b3f1903d4): chain pin at h=3,081,601 post-P14.1
 
 **Brief's hypothesis was incorrect.** It claimed the FSM transitions
 `ready → connecting → ready: behind_peers` "without ever calling
