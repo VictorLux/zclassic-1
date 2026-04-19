@@ -187,7 +187,10 @@ size_t znam_build_register(uint8_t *out, size_t out_len,
                            const char *target_value)
 {
     if (!znam_validate_name(name) || !target_value) return 0;
-    if (target_type < 1 || target_type > 3) return 0;
+    /* P8.8: lift the literal-3 cap to ZNAM_TYPE_CONTENT so REGISTER
+     * accepts the multi-coin types (BTC/LTC/DOGE) and CONTENT hash
+     * that the parser and znam_build_set_record already round-trip. */
+    if (target_type < 1 || target_type > ZNAM_TYPE_CONTENT) return 0;
     (void)out_len;
 
     size_t off = znam_build_header(out, ZNAM_CMD_REGISTER, name);
@@ -202,7 +205,8 @@ size_t znam_build_update(uint8_t *out, size_t out_len,
                          const char *target_value)
 {
     if (!znam_validate_name(name) || !target_value) return 0;
-    if (target_type < 1 || target_type > 3) return 0;
+    /* P8.8: lift the literal-3 cap to ZNAM_TYPE_CONTENT (parser parity). */
+    if (target_type < 1 || target_type > ZNAM_TYPE_CONTENT) return 0;
     (void)out_len;
 
     size_t off = znam_build_header(out, ZNAM_CMD_UPDATE, name);

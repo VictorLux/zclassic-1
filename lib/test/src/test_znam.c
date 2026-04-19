@@ -262,6 +262,94 @@ int test_znam(void)
         else { printf("FAIL\n"); failures++; }
     }
 
+    /* ── P8.8: REGISTER/UPDATE accept multi-coin types (parser parity) ── */
+
+    printf("P8.8 znam_build_register: accepts ZNAM_TYPE_BTC... ");
+    {
+        uint8_t buf[256];
+        size_t len = znam_build_register(buf, sizeof(buf),
+                                         "alice", ZNAM_TYPE_BTC,
+                                         "1BvBMSEYstWetqTFn5Au4m4GFg7xJaNVN2");
+        struct znam_message msg;
+        bool ok = len > 0 && znam_parse(buf, len, &msg) &&
+                  msg.command == ZNAM_CMD_REGISTER &&
+                  msg.target_type == ZNAM_TYPE_BTC;
+        if (ok) printf("OK\n");
+        else { printf("FAIL (len=%zu)\n", len); failures++; }
+    }
+
+    printf("P8.8 znam_build_register: accepts ZNAM_TYPE_LTC... ");
+    {
+        uint8_t buf[256];
+        size_t len = znam_build_register(buf, sizeof(buf),
+                                         "bob", ZNAM_TYPE_LTC,
+                                         "LcHKJaR1U8nzzcRhMqg9PbM9Nqv9UJbJKV");
+        struct znam_message msg;
+        bool ok = len > 0 && znam_parse(buf, len, &msg) &&
+                  msg.target_type == ZNAM_TYPE_LTC;
+        if (ok) printf("OK\n");
+        else { printf("FAIL (len=%zu)\n", len); failures++; }
+    }
+
+    printf("P8.8 znam_build_register: accepts ZNAM_TYPE_DOGE... ");
+    {
+        uint8_t buf[256];
+        size_t len = znam_build_register(buf, sizeof(buf),
+                                         "carol", ZNAM_TYPE_DOGE,
+                                         "DH5yaieqoZN36fDVciNyRueRGvGLR3mr7L");
+        struct znam_message msg;
+        bool ok = len > 0 && znam_parse(buf, len, &msg) &&
+                  msg.target_type == ZNAM_TYPE_DOGE;
+        if (ok) printf("OK\n");
+        else { printf("FAIL (len=%zu)\n", len); failures++; }
+    }
+
+    printf("P8.8 znam_build_register: accepts ZNAM_TYPE_CONTENT... ");
+    {
+        uint8_t buf[256];
+        size_t len = znam_build_register(buf, sizeof(buf),
+                                         "dave", ZNAM_TYPE_CONTENT,
+                                         "a1b2c3d4e5f6");
+        struct znam_message msg;
+        bool ok = len > 0 && znam_parse(buf, len, &msg) &&
+                  msg.target_type == ZNAM_TYPE_CONTENT;
+        if (ok) printf("OK\n");
+        else { printf("FAIL (len=%zu)\n", len); failures++; }
+    }
+
+    printf("P8.8 znam_build_update: accepts ZNAM_TYPE_BTC... ");
+    {
+        uint8_t buf[256];
+        size_t len = znam_build_update(buf, sizeof(buf),
+                                       "alice", ZNAM_TYPE_BTC,
+                                       "1NewAddress");
+        struct znam_message msg;
+        bool ok = len > 0 && znam_parse(buf, len, &msg) &&
+                  msg.command == ZNAM_CMD_UPDATE &&
+                  msg.target_type == ZNAM_TYPE_BTC;
+        if (ok) printf("OK\n");
+        else { printf("FAIL (len=%zu)\n", len); failures++; }
+    }
+
+    printf("P8.8 znam_build_register: rejects type > ZNAM_TYPE_CONTENT... ");
+    {
+        uint8_t buf[256];
+        /* 8 is above ZNAM_TYPE_CONTENT (7) — still out of spec. */
+        size_t len = znam_build_register(buf, sizeof(buf),
+                                         "eve", 8, "value");
+        if (len == 0) printf("OK\n");
+        else { printf("FAIL (accepted type=8)\n"); failures++; }
+    }
+
+    printf("P8.8 znam_build_update: rejects type > ZNAM_TYPE_CONTENT... ");
+    {
+        uint8_t buf[256];
+        size_t len = znam_build_update(buf, sizeof(buf),
+                                       "eve", 255, "value");
+        if (len == 0) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
     printf("znam_build_register: reject null value... ");
     {
         uint8_t buf[256];
