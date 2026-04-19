@@ -140,6 +140,16 @@ zclassic23: $(TMPL_GEN) main.c tools/mcp_server.c $(ALL_SRCS)
 zclassic-cli: cli.c $(CLI_SRCS)
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $^ -lm
 
+# In-tree WAL checkpoint tool used by `deploy`.  Replaces a dependency on
+# the sqlite3(1) CLI that isn't installed by default on stock Ubuntu/Debian
+# (only libsqlite3-0) — was P12.4 in AGENT.md.  Calls
+# sqlite3_wal_checkpoint_v2(TRUNCATE) on the open DB and exits non-zero on
+# failure so `make deploy` halts loudly instead of silently skipping the
+# checkpoint.
+tools/wal_checkpoint: tools/wal_checkpoint.c
+	$(CC) -std=c23 -O2 -Wall -Wextra -Werror -Ivendor/include -o $@ $< \
+	    -Lvendor/lib -l:libsqlite3.a -lpthread -ldl -lm
+
 wallet-wireframes: $(TMPL_GEN) tools/wallet_wireframes.c $(ALL_SRCS)
 	$(CC) $(CFLAGS) -Wno-deprecated-declarations $(LDFLAGS) -o $@ $(filter-out $(TMPL_GEN),$^) $(TOR_LIBS) $(LIBS) $(GTK_LIBS) $(WEBKIT_LIBS)
 
@@ -336,12 +346,14 @@ deploy-watchdog: zcl-watchdog
 #   3. `tools/deploy_verify.sh` — poll `zclassic-cli getblockcount` until the
 #      node answers or a 30s deadline elapses.
 #
-# The wal_checkpoint is the inline `PRAGMA wal_checkpoint(TRUNCATE)` form —
-# HARDENING_CHECKLIST §P4.1 flagged `tools/wal_checkpoint.c` as unsafe
-# (unguarded DELETE), so we skip the tool and talk to sqlite3 directly.
-deploy: lint zclassic23 zclassic-cli
+# The wal_checkpoint step calls the in-tree tools/wal_checkpoint binary
+# (P12.4 — was an inline `sqlite3(1)` CLI invocation before, which failed
+# on stock Ubuntu/Debian hosts where the CLI isn't installed).  The tool
+# issues `sqlite3_wal_checkpoint_v2(TRUNCATE)` via the library only — no
+# DELETE, no unguarded statements, and safe to re-run.
+deploy: lint zclassic23 zclassic-cli tools/wal_checkpoint
 	@if [ -f $(HOME)/.zclassic-c23/node.db ]; then \
-	    sqlite3 $(HOME)/.zclassic-c23/node.db "PRAGMA wal_checkpoint(TRUNCATE);" \
+	    ./tools/wal_checkpoint $(HOME)/.zclassic-c23/node.db \
 	        || { echo "WAL checkpoint failed"; exit 1; }; \
 	fi
 	@install -m 644 deploy/zclassic23.service $(HOME)/.config/systemd/user/zclassic23.service
