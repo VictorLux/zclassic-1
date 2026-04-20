@@ -38,7 +38,7 @@ gap analysis. See `AGENT.md` for the cross-agent priority table.
 
 ---
 
-## Current status — 2026-04-19 (P14.7 first-fix in b3f1903d4 + P14.8 in 0e4b6ca35 — canary pending; NEXT is P14.10)
+## Current status — 2026-04-20 (P14.11 + P14.12 landed 5f04aef62 as the real sync-blocker fix; NEXT is P14.10 deferred-activation queue)
 
 **P10.1.5 "canary green" was a misread.** Live-node MCP showed
 h=3,081,601 because `val.block_connected` fires on block RECEIPT,
@@ -121,7 +121,71 @@ STOP triggers satisfied:
 - No `coins_view` API surface change — connection-ownership
   change only.
 
-### NOW — P14.11 + P14.12 (CRITICAL, NEW from +90 min canary): block_index nBits=0 + active_chain has only tip
+### DONE — P14.11 + P14.12 (5f04aef62, coupled pair): block_index nBits=0 + active_chain has only tip
+
+`chain_restore_finalize(ms, datadir)` chains the two fixes plus the
+P14.11/P14.12 integrity report and logs the outcome. NULL datadir
+skips the disk limb for unit tests.
+
+**P14.11 fix:** `chain_restore_backfill_nbits_from_disk` walks
+block_map; for every pindex with `nBits==0 && nDataPos>0 &&
+(nStatus & BLOCK_HAVE_DATA)`, reads the block via
+`read_block_from_disk_index_pread` and assigns
+`pindex->nBits = header.nBits`. Synthetic anchors (nDataPos==0) stay
+flagged by the integrity check until the real block arrives via P2P —
+that's a legitimate state, not a fixable one.
+
+**P14.12 fix:** `chain_restore_rebuild_active_chain(ms, tip)` walks
+`tip->pprev` as far as it goes, setting `chain_active.chain[h] = p`
+for each link; residual holes below the deepest pprev-reachable
+height get filled via a block_map scan by height (prefer
+BLOCK_HAVE_DATA + highest nChainWork per height so stale forks
+don't win over real ancestors).
+
+**Wiring:**
+- `chain_restore_execute` calls `chain_restore_finalize(ms, NULL)`
+  before returning (unit-test path — disk limb is skipped).
+- `utxo_recovery_service.c:464,523` fires
+  `chain_restore_finalize(ctx->state, ctx->datadir)` after the
+  block_map-hit restore and after the fresh-anchor creation paths.
+- `config/src/boot.c` adds one final `chain_restore_finalize` after
+  `activation_request_connect(ACTIVATION_SRC_BOOT)` so the
+  block-file-scan + `Post-activation: fixed N pprev heights from
+  anchor` path in msg_headers gets rebuild + nBits backfill too.
+
+Pre-existing struct collision with chain_activation_controller.h was
+exposed when boot.c pulled both headers in; fixed by renaming the
+chain_restore_service local type `struct activation_decision` →
+`struct boot_activation_decision` (only boot_should_activate_chain and
+its 5 unit-test call sites touched).
+
+Tests: four new cases in `test_chain_restore_service.c`:
+- `chain_restore_rebuild: fills chain_active holes from block_map`
+  (GREEN counterpart of `synthetic anchor (pprev=NULL) FAILS`).
+- `chain_restore_backfill_nbits: reads header nBits from disk`
+  (writes a real block to a tempdir with known nBits, installs a
+  pindex with nBits=0, asserts backfill reads header and assigns
+  correct value + idempotent on second call).
+- `chain_restore_backfill_nbits: skips synthetic anchors
+  (nDataPos==0)` (synthetic anchors stay at nBits=0, by design).
+- `chain_restore_finalize: NULL datadir skips disk path` (clean
+  chain returns true; disk limb is skipped gracefully).
+
+All 7 chain_integrity / chain_restore tests pass. No regressions —
+the 2 failing tests in `./test_zcl` are the pre-existing `[lint-gate]`
+flakies already documented as baseline noise.
+
+STOP triggers satisfied:
+- No change to `block_index.bin` on-disk format.
+- No change to the anchor/snapshot wire protocol.
+- The nBits limb only READS existing block files via
+  `read_block_from_disk_index_pread` — no serialization change.
+
+Canary acceptance (Rhett's row, unchanged shape):
+- `getblockhash 3081000` returns a valid hash.
+- Zero `bad-diffbits` lines since boot.
+- Chain advances past 3,081,601 within 10 min.
+- Header tip catches up to peer tip within 30 min.
 
 Your `b3f1903d4` (P14.7 partial fix + STUCK diagnostic) has been
 deployed to the live node. Chain is still stuck at 3,081,601 —
@@ -1189,6 +1253,45 @@ If build or tests fail — STOP and report.
 ## Notes from Agent-2
 
 _(Keep short — 1-3 recent entries.)_
+
+### 2026-04-20 — P14.11 + P14.12 coupled GREEN (5f04aef62)
+
+**5f04aef62:** `chain_restore_finalize(ms, datadir)` composes
+`chain_restore_rebuild_active_chain` (P14.12 limb — walk pprev,
+backfill active_chain slots, fall back to block_map-by-height scan for
+residual holes) + `chain_restore_backfill_nbits_from_disk` (P14.11
+limb — read the on-disk block header via
+`read_block_from_disk_index_pread` for every pindex with `nBits==0 &&
+nDataPos>0 && BLOCK_HAVE_DATA` and assign `pindex->nBits =
+header.nBits`). Wired into `chain_restore_execute` (NULL datadir for
+unit tests), `utxo_recovery_service` at both restore paths
+(:464 for block_map hit, :523 for fresh anchor), and one final
+end-of-boot call after `activation_request_connect(...)` so the
+block-file-scan + `Post-activation: fixed N pprev heights from anchor`
+path in msg_headers also gets the fix applied.
+
+Four new tests in `test_chain_restore_service.c` cover both GREEN
+limbs plus the synthetic-anchor skip + NULL-datadir skip semantics.
+Test output: all 7 chain_integrity / chain_restore tests pass. Two
+pre-existing `[lint-gate]` baseline flakies remain (not caused by this
+change, documented upstream).
+
+Pre-existing struct-name collision surfaced: chain_restore_service.h
+and chain_activation_controller.h both defined `struct
+activation_decision` with different shapes. Boot.c pulling both
+triggered the redefinition error. Minimal fix: rename chain_restore's
+local type to `struct boot_activation_decision` (only
+`boot_should_activate_chain` + 5 test call sites touched). No
+functional change; eliminates a latent sharp edge.
+
+STOP triggers satisfied: no on-disk format change, no consensus
+constants changed, no P2P wire-format change. The nBits backfill only
+READS existing block files.
+
+Canary acceptance is Rhett's row: `getblockhash 3081000` returns valid
+hash, zero `bad-diffbits` lines since boot, chain advances past
+3,081,601 within 10 min. Agent-2 NOW queue advances to P14.10
+(deferred-activation queue for SKIP_ALREADY_RUNNING).
 
 ### 2026-04-19 (post-P8.6) — P8.8 ZNAM parser-parity one-liner
 
