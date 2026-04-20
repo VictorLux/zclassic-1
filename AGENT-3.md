@@ -38,31 +38,69 @@ See `AGENT.md` for the cross-agent priority table.
 
 ---
 
-## 2026-04-19 (late): P12.1 SHIPPED 8fb7cb623, NOW P9.5 unblocked
+## 2026-04-20: P9.5 SHIPPED ff25fc779 — NOW P9.3 (OOM silent-drop in cs_alloc_var / lc_add_term / cs_enforce)
 
-P12.1 landed as a 4-commit wave:
-- `bc4d92170` — timing probe on the replay loop (baseline measurement)
-- `afcca842e` — RED test (stubs return false; 3 of 4 checks fail)
-- `070b1b0a8` — GREEN: real checkpoint (SHA3 trailer + atomic
-  .tmp+rename + verified deserialize)
-- `8fb7cb623` — integration: boot-time load (before rebuild path
-  fires) + every-10K-block flush from connect_tip + sapling_tree_rebuild
-  delta-replay from the flat file
+P9.5 landed as a RED+GREEN pair (one coupled push; the "mark done" commit was dropped during rebase since the coordinator clone filed P14.11+P14.12 in parallel — coordinator has now updated AGENT.md + AGENT-3.md directly):
 
-Live verification is Rhett's: on the next `make deploy` the log
-should show `Sapling tree loaded from checkpoint: … (P12.1)`
-instead of `Sapling tree root MISMATCH … rebuilding from block
-files …`, and boot-to-ready should be in seconds.
+- `d978f0407` — RED: 16-thread barrier-raced first-caller test in `lib/test/src/test_sapling_lazy_init.c`; pre-fix body_runs=6 (pedersen) + 16 (empty_roots) vs invariant 1.
+- `ff25fc779` — GREEN: `pthread_once` guards on both `ensure_generators` + `ensure_sapling_empty_roots`; empty_roots init simplified to parameterless routine; post-fix body_runs=1 deterministically.
 
-### NOW — P9.5: pthread_once guard on lazy Sapling caches
+P12.1 (8fb7cb623) still awaits live verification on Rhett's next
+`make deploy` — should see `Sapling tree loaded from checkpoint
+...` instead of `Sapling tree root MISMATCH ... rebuilding ...`.
 
-Next row in the NEXT queue below (after P12.1). Both
-`pedersen_hash.c::ensure_generators` and
-`incremental_merkle_tree.c::ensure_sapling_empty_roots` are
-guarded by a plain `static bool`. Two concurrent first-callers
-can race and one gets a zero-generator. Replace with
-`pthread_once`. RED test first (two racing threads), then fix.
-Commit per the usual template. Mark `done <SHA> [test:1.0]`.
+### NOW — P9.3: OOM silent-drop in Groth16 CS builders
+
+Pre-authorized row #2 in the NEXT queue. `groth16_prover.c:38-44,
+91-103, 117-145` — three helpers return `void` and silently drop
+their input on `zcl_realloc` failure:
+
+- `lc_add_term` — drops term; linear combination becomes wrong.
+- `cs_alloc_var` — returns 0 = CS_ONE index, aliasing every
+  subsequent var to ONE. (Catastrophic.)
+- `cs_enforce` — drops a constraint; CS is syntactically valid
+  but semantically different from the verifier-expected circuit.
+
+On OOM mid-proof, the prover then emits a Groth16 proof for the
+wrong circuit. No log, no signal. Only surfaces under memory
+pressure — exactly when the node is struggling.
+
+**Fix shape:**
+1. Promote each helper's return type to `bool`.
+2. `LOG_FAIL` with the realloc size on failure.
+3. Every caller checks and propagates a consistent failure path
+   (`groth16_prove` returns false; downstream proof-building code
+   treats that as a hard error, same shape as a missing proving
+   key).
+
+**Discipline (every P9.x row is [test:1.0]):**
+1. **RED FIRST** — unit test in `test_sapling_crypto.c` that
+   installs a failing-realloc hook (there's already a realloc
+   injection pattern in `test_net.c::msgprocessor_test_set_mempool_alloc_hook`
+   — mirror that), calls `groth16_prove` on a minimal circuit,
+   asserts the return is false AND the emitted proof is zeroed
+   (not a valid-looking but wrong proof). Today this test FAILS
+   because the helpers silently drop and the proof looks "fine"
+   despite missing constraints. Commit RED.
+2. **GREEN** — flip the helpers to bool, propagate, LOG_FAIL.
+   Test passes. Commit GREEN.
+3. **Mark done** — update `AGENT.md` row for P9.3 + this NOW
+   section.
+
+**Files in scope:**
+- `lib/sapling/src/groth16_prover.c` — helpers + caller sites.
+- `lib/sapling/include/sapling/groth16_prover.h` — API signatures if any leak out.
+- `lib/test/src/test_sapling_crypto.c` — the RED test.
+
+**Acceptance:**
+- ./test_zcl green on sapling/crypto subsets.
+- The 3 existing environmental failures (binary /home/rhett
+  leak + lint-gate x2) remain unchanged — those are not your lane.
+
+**STOP + ping Rhett triggers:**
+- If fixing the OOM path requires a new consensus-level behaviour (e.g. refusing to start with constrained memory), flag before landing.
+
+After P9.3, drain the NEXT queue below (P9.4 → P9.1 → P9.2 careful-triage → P9.6 → P9.7 → P9.8 → P9.9 → P9.10). P11.4/5/6/8 MVP CI gates remain blocked on Agent-2's upstream work (parity diff service, shielded payment flow, store flow, 7-day soak harness).
 
 ### (ARCHIVED — P12.1 brief, now done)
 
@@ -174,17 +212,17 @@ following without pinging:
 
 | Order | Row | Size | Severity | Brief |
 |---|---|---|---|---|
-| 1 | **P9.5** — pthread_once guard on lazy Sapling caches | small | HIGH | `pedersen_hash.c::ensure_generators` + `incremental_merkle_tree.c::ensure_sapling_empty_roots` — both guarded by a plain `static bool`. Use `pthread_once`. RED: two concurrent first-callers, one gets a zero-generator. Trivial fix. |
-| 2 | **P9.3** — `lc_add_term` / `cs_alloc_var` / `cs_enforce` OOM silent-drop | small | HIGH | `groth16_prover.c:38-44, 91-103, 117-145` — return bool + propagate; LOG_FAIL on realloc failure. |
-| 3 | **P9.4** — `fr_fft` / `fr_fft_parallel` silent no-op on non-pow-2 | small | HIGH | `groth16_prover.c:222`, `msm_parallel.c:333,340` — promote to bool, LOG_FAIL on bad input. Currently unreachable via `groth16_prove` but the pattern waits for the next caller. |
-| 4 | **P9.1** — `g1_scalar_mul` constant-time | medium | HIGH | `lib/sapling/src/bls12_381.c:1708-1722` — mirror P1.12 / P1.16b pattern. Branches on secret blinding scalars (r_blind, s_blind, r·s); masked linear-scan table select + unconditional-add-with-mask. Hamming-weight timing regression test. |
-| 5 | **P9.2** — `sapling_circuit.c` placeholder UB paths | small-or-huge | CRITICAL | `:65, :161-162` — decide first whether these paths are shadowed by another prover impl (`grep -r sapling_create_spend_proof`). If shadowed: 3-line `LOG_FAIL`. If live: multi-day rewrite; STOP + ping Rhett before starting that. |
-| 6 | **P9.6** — `sapling_prover_c23.c` witness length arg | small | MED | Add `size_t witness_len` + LOG_FAIL on shortfall. |
-| 7 | **P9.7** — `sprout_verify_groth16` ic_len=0 underflow | small | MED | Snapshot pointer + LOG_FAIL on `ic_len < 1`. |
-| 8 | **P9.8** — `ensure_generators` exhaustion silent | small | MED | Mirror P1.10 pattern; track success + LOG_FAIL + abort on exhaustion. |
-| 9 | **P9.9** — printf/stdout leak in prover paths | small | MED | Replace with `LOG_INFO` or delete; stdout leak of wallet-activity timing. |
-| 10 | **P9.10** — MSM cache-side-channel on witness | medium | LOW | `msm_parallel.c:60-69, 181-190` + `groth16_prover.c:300-322, 362-381` — CT bucket access. Pairs naturally with P9.1 (shared Hamming-weight timing regression). |
-| 11 | **P11.4 / P11.5 / P11.6 / P11.8** MVP CI gates | medium each | — | TBD — need upstream service work (P12.3 parity service for #8, shielded payment path for #4, store flow for #5, soak harness for #6). Pick up after Agent-2 delivers each upstream row. |
+| ~~1~~ | ~~**P9.5** — pthread_once guard on lazy Sapling caches~~ | — | — | done ff25fc779 [test:1.0] |
+| **NOW** | **P9.3** — `lc_add_term` / `cs_alloc_var` / `cs_enforce` OOM silent-drop | small | HIGH | `groth16_prover.c:38-44, 91-103, 117-145` — return bool + propagate; LOG_FAIL on realloc failure. Brief in NOW section above. |
+| 2 | **P9.4** — `fr_fft` / `fr_fft_parallel` silent no-op on non-pow-2 | small | HIGH | `groth16_prover.c:222`, `msm_parallel.c:333,340` — promote to bool, LOG_FAIL on bad input. Currently unreachable via `groth16_prove` but the pattern waits for the next caller. |
+| 3 | **P9.1** — `g1_scalar_mul` constant-time | medium | HIGH | `lib/sapling/src/bls12_381.c:1708-1722` — mirror P1.12 / P1.16b pattern. Branches on secret blinding scalars (r_blind, s_blind, r·s); masked linear-scan table select + unconditional-add-with-mask. Hamming-weight timing regression test. |
+| 4 | **P9.2** — `sapling_circuit.c` placeholder UB paths | small-or-huge | CRITICAL | `:65, :161-162` — decide first whether these paths are shadowed by another prover impl (`grep -r sapling_create_spend_proof`). If shadowed: 3-line `LOG_FAIL`. If live: multi-day rewrite; STOP + ping Rhett before starting that. |
+| 5 | **P9.6** — `sapling_prover_c23.c` witness length arg | small | MED | Add `size_t witness_len` + LOG_FAIL on shortfall. |
+| 6 | **P9.7** — `sprout_verify_groth16` ic_len=0 underflow | small | MED | Snapshot pointer + LOG_FAIL on `ic_len < 1`. |
+| 7 | **P9.8** — `ensure_generators` exhaustion silent | small | MED | Mirror P1.10 pattern; track success + LOG_FAIL + abort on exhaustion. |
+| 8 | **P9.9** — printf/stdout leak in prover paths | small | MED | Replace with `LOG_INFO` or delete; stdout leak of wallet-activity timing. |
+| 9 | **P9.10** — MSM cache-side-channel on witness | medium | LOW | `msm_parallel.c:60-69, 181-190` + `groth16_prover.c:300-322, 362-381` — CT bucket access. Pairs naturally with P9.1 (shared Hamming-weight timing regression). |
+| 10 | **P11.4 / P11.5 / P11.6 / P11.8** MVP CI gates | medium each | — | TBD — need upstream service work (P12.3 parity service for #8, shielded payment path for #4, store flow for #5, soak harness for #6). Pick up after Agent-2 delivers each upstream row. |
 
 When the queue drains, ping Rhett for next triage.
 
