@@ -212,6 +212,28 @@ applied to the agent-onboarding surface itself.
 - [ ] **P22.5** HIGH — file-size budget lint (no file over 1,000 lines in `lib/` or `app/`). Grandfather existing oversized files via exemption file tracked by P21.* rows.
 - [ ] **P22.6** MED — `AGENTS.md` "fresh-session bootstrap" sequence documented.
 
+### Phase 13 — P23 Structural simplification + generative MCP
+
+**Can start P23.1 / P23.2 / P23.3 / P23.4 / P23.9 immediately** — they
+have no upstream dependencies inside this queue. P23.5/P23.6/P23.8
+block on upstream P16 / P22 rows as noted.
+
+This phase closes out the shining-example roadmap: once it lands, a
+new agent can scaffold a fully-compliant MCP tool, service, stage, or
+test from a single MCP call, and the repo's structural surface
+(`lib/*/` count, boot sequence, Makefile) is audited + right-sized.
+
+- [ ] **P23.1** HIGH — subsystem consolidation audit (28 `lib/*/` → target ≤20). Write `docs/ARCHITECTURE.md` with proposed merges + per-merge impact. Each actual merge lands later as its own row; P23.1 is audit-and-plan only.
+- [ ] **P23.2** HIGH — boot-registry (`config/src/boot.c` → `lib/core/src/boot_registry.c` + per-subsystem `*_boot_init.c`). `ZCL_BOOT_INIT(name, fn, deps)` link-time registration. **Close P21.9 when this lands.**
+- [ ] **P23.3** MED — Makefile audit + pattern-rule consolidation. Measure before/after clean-build wall-clock. Target ≤ 2 min on this host.
+- [ ] **P23.4** HIGH — `zcl_scaffold_mcp_tool(name, category, description)`. One-call generator for: MCP dispatch entry + controller stub + handler + AGENT.md row + `.ac.yaml` sidecar (P22.2) + RED test skeleton. Gateway row for the rest of P23.
+- [ ] **P23.5** MED — `zcl_scaffold_service(name, description)` — P16.4-shape `Cfg` struct + RED test skeleton. Blocks on P16.4.
+- [ ] **P23.6** MED — `zcl_scaffold_stage(name, forward_desc, unwind_desc)` — Forward/Unwind/Prune triad + P17.6 contract test skeleton. Blocks on P16.1.
+- [ ] **P23.8** MED — `zcl_explain(file, line)` — combines clangd AST (P22.3) with relevant `agents.md` + `docs/spec/` via RAG (P22.4). Blocks on P22.3 + P22.4.
+- [ ] **P23.9** MED — `zcl_commit_plan(intent)` — reads `git diff` + AGENT.md rows in-progress, returns structured commit message (row ID, attribution, test evidence). Enforces today's manual discipline.
+
+**Agent-3 owns P23.7** (`zcl_scaffold_test_from_row`) — see AGENT-3.md.
+
 ---
 
 ## Execution discipline (non-negotiable)
@@ -223,5 +245,5 @@ applied to the agent-onboarding surface itself.
 5. **Respect lane boundaries.** `lib/crypto/`, `lib/sapling/`, `lib/keys/`, `lib/validation/src/sigops.c`, `lib/validation/src/check_block.c`, `lib/core/src/random.c` are Agent-3. Do not edit.
 6. **Keep `make test` green.** Push every row; never amend pushed commits.
 
-Total rows in this queue: **~50** across 9 phases. Work in order;
+Total rows in this queue: **~58** across 13 phases. Work in order;
 parallel-safe rows within a phase can land concurrently.

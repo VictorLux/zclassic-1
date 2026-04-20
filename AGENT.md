@@ -43,8 +43,8 @@ new Priority groups P15-P19 (discipline + architecture + testing + perf
 | (P0 baseline) | 4 / 4 | — |
 
 **Owner state (2026-04-20, post-cleanup):**
-- **Agent-2 NOW:** **P14.13** — `chain_restore_rebuild_active_chain` O(N²) boot hang. Then P14 drain → P13/P12/P7/P8 drain → P15 discipline → P16 staged-sync port → P17.4/P17.5 support → P18 perf → P19.1 attribution → P20 dev-MCP → P21 oversized-file split → P22 AI-native scaffolding. Full checklist in [`AGENT-2.md`](AGENT-2.md).
-- **Agent-3 NOW:** **P9.4** — `fr_fft` / `fr_fft_parallel` silent no-op. Then P9 drain → P11.4/P11.5/P11.6/P11.8 MVP CI gates → P15.4/P15.5 discipline → P17 testing lead → P18.4 crypto perf → P20 dev-MCP (coverage + test-map) → P21 test oversized-file split. Full checklist in [`AGENT-3.md`](AGENT-3.md).
+- **Agent-2 NOW:** **P14.13** — `chain_restore_rebuild_active_chain` O(N²) boot hang. Then P14 drain → P13/P12/P7/P8 drain → P15 discipline → P16 staged-sync port → P17.4/P17.5 support → P18 perf → P19.1 attribution → P20 dev-MCP → P21 oversized-file split → P22 AI-native scaffolding → P23 simplification + generator MCP. Full checklist in [`AGENT-2.md`](AGENT-2.md).
+- **Agent-3 NOW:** **P9.4** — `fr_fft` / `fr_fft_parallel` silent no-op. Then P9 drain → P11.4/P11.5/P11.6/P11.8 MVP CI gates → P15.4/P15.5 discipline → P17 testing lead → P18.4 crypto perf → P20 dev-MCP (coverage + test-map) → P21 test oversized-file split → P22.4 spec corpus → P23.7 scaffold_test_from_row. Full checklist in [`AGENT-3.md`](AGENT-3.md).
 - **Coordinator (Rhett):** canary post-P14.13 deploy; review P15-P18 acceptance; own license decision (P19.2); monitor KPIS.
 
 **Live-node state:** chain pinned at h=3,081,601 (SQLite); legacy
@@ -388,6 +388,35 @@ See [`ATTRIBUTIONS.md`](ATTRIBUTIONS.md).
 | **P22.4** | `docs/spec/` — cold-memory RAG-retrievable spec docs per subsystem. One short spec per `lib/*/`: architecture, invariants, known gotchas, on-disk format. Not duplicate of `agents.md` (which is hot-memory operational); this is reference material a RAG retriever can pull into context. | `docs/spec/<subsystem>.md` (new) | MED | Agent-2 (net/validation/storage/wallet/script) + Agent-3 (crypto/sapling/keys) |
 | **P22.5** | File-size budget lint gate. No file in `lib/` or `app/` over 1,000 lines. `tools/scripts/check_file_size_budget.sh` wired into `make lint`. Exit-1 on violation. Existing oversized files grandfathered via `tools/scripts/file_size_budget_exemptions.txt` — each exemption listed with an AGENT.md row that closes it (P21.*). | `tools/scripts/check_file_size_budget.sh` (new), `Makefile:~543` | HIGH | Agent-2 |
 | **P22.6** | `AGENTS.md` specifies a "fresh-session bootstrap" — the canonical 3-step orientation sequence for a new AI agent: (1) call `zcl_roadmap` for your NOW, (2) call `zcl_codemap` for your lane, (3) read the relevant `agents.md` in your scope. No reading AGENT.md end-to-end. | `AGENTS.md` | MED | Agent-2 |
+
+## Priority 23 — Structural simplification + generative MCP (2026-04-20)
+
+**Completes the MCP triangle.** Today's 60+ MCP tools are
+**observational** (query node state). P20 adds **informational** (query
+repo + derived metadata). P23 adds **generative** (create scaffolded
+code from one call) — so an agent can file a new row, a new service, a
+new stage, or a new test from a single tool invocation with the
+boilerplate already correct.
+
+Plus two structural simplifications the post-purge architecture
+review surfaced: subsystem consolidation audit (28 `lib/*/` is a lot;
+several pairs likely fold) and a boot-registry pattern that
+supersedes P21.9.
+
+**Can start immediately** where not blocked. P23.5/P23.6/P23.7/P23.8
+have explicit predecessors.
+
+| # | Task | File:line | Severity | Owner |
+|---|---|---|---|---|
+| **P23.1** | Subsystem consolidation audit — 28 `lib/*/` → target ≤20. Candidates: `lib/consensus` ↔ `lib/validation`, `lib/primitives` ↔ `lib/chain` ↔ `lib/coins`, `lib/core` ↔ `lib/support`. Produces `docs/ARCHITECTURE.md` with proposed merges + per-merge impact. Each merge lands as its own follow-up row; P23.1 is the audit-and-plan row. | `docs/ARCHITECTURE.md` (new), repo-wide audit | HIGH | Agent-2 |
+| **P23.2** | Boot-registry — `config/src/boot.c` (2,460) → `lib/core/src/boot_registry.c` with per-subsystem self-registration (`ZCL_BOOT_INIT(name, fn, deps)`). Each subsystem owns its `*_boot_init.c` and registers at link time. Supersedes P21.9 (close P21.9 when P23.2 lands). | `lib/core/src/boot_registry.c` (new), per-subsystem `*_boot_init.c` (new), `config/src/boot.c` | HIGH | Agent-2 |
+| **P23.3** | Makefile audit + pattern-rule consolidation. Measure per-subsystem object-count + compile-time hotspots; fold redundant rules; target clean `make -j$(nproc)` ≤ 2 min on this host. Acceptance: before/after numbers in the commit message. | `Makefile` | MED | Agent-2 |
+| **P23.4** | `zcl_scaffold_mcp_tool(name, category, description)` — generator. One call creates: MCP dispatch entry, controller stub, handler scaffold, AGENT.md row, `.ac.yaml` sidecar (P22.2), RED test skeleton. The completeness of the triangle starts here. | `tools/mcp/controllers/scaffold_controller.c` (new), `tools/mcp/scaffolder/*.c` (new) | HIGH | Agent-2 |
+| **P23.5** | `zcl_scaffold_service(name, description)` — generates `app/services/<name>_service.{h,c}` with P16.4-shape `Cfg` struct + RED test skeleton. | `tools/mcp/scaffolder/service.c` (new) | MED | Agent-2 (blocks on P16.4) |
+| **P23.6** | `zcl_scaffold_stage(name, forward_desc, unwind_desc)` — generates `lib/sync/src/stages/<name>.c` with Forward/Unwind/Prune triad + P17.6 contract test skeleton. | `tools/mcp/scaffolder/stage.c` (new) | MED | Agent-2 (blocks on P16.1) |
+| **P23.7** | `zcl_scaffold_test_from_row(row_id)` — reads the `.ac.yaml` sidecar (P22.2), emits a RED test skeleton that matches the acceptance criteria. Biggest productivity multiplier for `[test:1.0]` discipline. | `tools/mcp/scaffolder/test.c` (new) | HIGH | Agent-3 (blocks on P22.2) |
+| **P23.8** | `zcl_explain(file, line)` — combines clangd AST (via P22.3 LSP bridge) with relevant `agents.md` + `docs/spec/` via RAG (P22.4). Answers "what is this function's contract and constraints" in one call. | `tools/mcp/controllers/explain_controller.c` (new) | MED | Agent-2 (blocks on P22.3 + P22.4) |
+| **P23.9** | `zcl_commit_plan(intent)` — reads `git diff` + AGENT.md rows in progress, returns a structured commit message (row ID, attribution line, RED-test evidence block). Enforces commit-message discipline that today is manual + easy to skip. | `tools/mcp/controllers/commit_plan_controller.c` (new) | MED | Agent-2 |
 
 ---
 

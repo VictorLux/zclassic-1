@@ -142,6 +142,17 @@ sapling + net test touch.
 
 - [ ] **P22.4 (A3 share)** MED — `docs/spec/{crypto,sapling,keys}.md` cold-memory RAG corpus. Each: architecture, invariants, known gotchas, constant-time guarantees, side-channel notes.
 
+### Phase 8 — P23 Generative MCP (Agent-3 share)
+
+Agent-2 owns the rest of P23 (see AGENT-2.md Phase 13). Agent-3's
+share is the test-scaffold generator — natural lane match because
+Agent-3 leads P17 testing discipline and P22.2 `.ac.yaml` sidecars
+encode the RED-first contract.
+
+- [ ] **P23.7** HIGH — `zcl_scaffold_test_from_row(row_id)`. Reads `docs/rows/P<id>.ac.yaml` (P22.2), emits a RED test skeleton that matches the acceptance criteria: fixture hooks, setup/teardown, expected-failure assertions. One MCP call → ready-to-fail test file committed into `lib/test/src/`. Biggest productivity multiplier for the `[test:1.0]` discipline because it removes the "copy another test and edit" step from every new row.
+
+**Blocks on:** P22.2 (sidecar format must exist first).
+
 ---
 
 ## Cross-cutting notes
@@ -161,6 +172,7 @@ sapling + net test touch.
 5. **STOP + ping Rhett** on any serialization / consensus constant / P2P wire format change.
 6. **Keep `make test` green.** Push every row; never amend pushed commits.
 
-Total rows in this queue: **~25** across 4 phases. P17.1 + P17.2 +
+Total rows in this queue: **~26** across 8 phases. P17.1 + P17.2 +
 P11.6 are the three highest-leverage rows — each unblocks measurement
-we don't have today.
+we don't have today. P23.7 ships late but compounds forever: every
+future row gets its RED test generated.
