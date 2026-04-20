@@ -15,6 +15,26 @@
 #include "util/safe_alloc.h"
 #include "util/log_macros.h"
 
+/* ── P9.3 test hook: failing-realloc injector ───────────────────── */
+
+/* When non-NULL, the three CS-building helpers call this instead of
+ * zcl_realloc. Returning NULL simulates OOM. File-scope so the hook
+ * influences only this translation unit (no effect on zcl_realloc
+ * calls elsewhere, nor on pk reads / MSM / FFT buffers). */
+static void *(*g_groth16_realloc_hook)(void *, size_t) = NULL;
+
+void groth16_prover_test_set_realloc_hook(void *(*hook)(void *, size_t))
+{
+    g_groth16_realloc_hook = hook;
+}
+
+static inline void *g_cs_realloc(void *ptr, size_t size, const char *label)
+{
+    if (g_groth16_realloc_hook)
+        return g_groth16_realloc_hook(ptr, size);
+    return zcl_realloc(ptr, size, label);
+}
+
 /* ── R1CS Constraint System ─────────────────────────────────────── */
 
 void lc_init(struct linear_combination *lc)
@@ -22,6 +42,7 @@ void lc_init(struct linear_combination *lc)
     lc->terms = NULL;
     lc->num_terms = 0;
     lc->cap = 0;
+    lc->oom_error = false;
 }
 
 void lc_free(struct linear_combination *lc)
@@ -32,20 +53,25 @@ void lc_free(struct linear_combination *lc)
     lc->cap = 0;
 }
 
-void lc_add_term(struct linear_combination *lc, size_t var,
+bool lc_add_term(struct linear_combination *lc, size_t var,
                    const struct fr *coeff)
 {
     if (lc->num_terms >= lc->cap) {
         size_t new_cap = lc->cap ? lc->cap * 2 : 8;
-        struct lc_term *new_terms = zcl_realloc(lc->terms,
+        struct lc_term *new_terms = g_cs_realloc(lc->terms,
                                              new_cap * sizeof(struct lc_term), "lc_terms");
-        if (!new_terms) return;
+        /* P9.3 RED: return false on realloc failure but STILL skip the flag
+         * + skip LOG_FAIL. Silent-drop bug preserved; GREEN will set
+         * lc->oom_error and LOG_FAIL here. Tests that assert oom_error
+         * FAIL at this point, demonstrating the silent-drop symptom. */
+        if (!new_terms) return false;
         lc->terms = new_terms;
         lc->cap = new_cap;
     }
     lc->terms[lc->num_terms].var = var;
     lc->terms[lc->num_terms].coeff = *coeff;
     lc->num_terms++;
+    return true;
 }
 
 void lc_evaluate(struct fr *result, const struct linear_combination *lc,
@@ -92,7 +118,10 @@ static size_t cs_alloc_var(struct constraint_system *cs, const struct fr *value)
 {
     if (cs->num_vars >= cs->cap_vars) {
         size_t new_cap = cs->cap_vars * 2;
-        struct fr *new_w = zcl_realloc(cs->witness, new_cap * sizeof(struct fr), "cs_witness");
+        struct fr *new_w = g_cs_realloc(cs->witness, new_cap * sizeof(struct fr), "cs_witness");
+        /* P9.3 RED: return 0 (which aliases CS_ONE!) on realloc failure
+         * without setting cs->oom_error or LOG_FAIL. Catastrophic silent
+         * aliasing bug preserved; GREEN will set the flag + LOG_FAIL. */
         if (!new_w) return 0;
         cs->witness = new_w;
         cs->cap_vars = new_cap;
@@ -114,16 +143,19 @@ size_t cs_alloc_aux(struct constraint_system *cs, const struct fr *value)
     return cs_alloc_var(cs, value);
 }
 
-void cs_enforce(struct constraint_system *cs,
+bool cs_enforce(struct constraint_system *cs,
                 const struct linear_combination *a,
                 const struct linear_combination *b,
                 const struct linear_combination *c)
 {
+    /* P9.3 RED: do not propagate a/b/c->oom_error into cs->oom_error,
+     * do not LOG_FAIL on realloc fail, do not check internal lc_add_term
+     * return. Silent-drop bug preserved end-to-end for the RED test. */
     if (cs->num_constraints >= cs->cap_constraints) {
         size_t new_cap = cs->cap_constraints * 2;
-        struct r1cs_constraint *new_c = zcl_realloc(cs->constraints,
+        struct r1cs_constraint *new_c = g_cs_realloc(cs->constraints,
             new_cap * sizeof(struct r1cs_constraint), "cs_constraints");
-        if (!new_c) return;
+        if (!new_c) return false;
         cs->constraints = new_c;
         cs->cap_constraints = new_cap;
     }
@@ -142,6 +174,7 @@ void cs_enforce(struct constraint_system *cs,
     lc_init(&con->c);
     for (size_t i = 0; i < c->num_terms; i++)
         lc_add_term(&con->c, c->terms[i].var, &c->terms[i].coeff);
+    return true;
 }
 
 /* ── Fr helpers ─────────────────────────────────────────────────── */

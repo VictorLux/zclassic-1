@@ -24,6 +24,9 @@ struct linear_combination {
     struct lc_term *terms;
     size_t num_terms;
     size_t cap;
+    /* P9.3: sticky flag set by lc_add_term when zcl_realloc fails.
+     * cs_enforce propagates into cs->oom_error. */
+    bool oom_error;
 };
 
 /* R1CS constraint: A * B = C (each is a linear combination) */
@@ -41,6 +44,13 @@ struct constraint_system {
     size_t num_vars;          /* total variables (including ONE at index 0) */
     size_t cap_vars;
     size_t num_inputs;        /* public inputs (indices 1..num_inputs) */
+
+    /* P9.3: sticky flag set by cs_alloc_var / cs_enforce when a realloc
+     * fails (or when an input LC arrives with oom_error already set).
+     * groth16_prove checks this at entry and refuses — otherwise the
+     * prover would emit a valid-looking proof for a silently-wrong
+     * circuit. */
+    bool oom_error;
 };
 
 void cs_init(struct constraint_system *cs);
@@ -50,17 +60,29 @@ void cs_free(struct constraint_system *cs);
 size_t cs_alloc_input(struct constraint_system *cs, const struct fr *value);
 size_t cs_alloc_aux(struct constraint_system *cs, const struct fr *value);
 
-/* Add linear combination term */
+/* Add linear combination term.
+ * Returns true on success. On zcl_realloc failure, sets lc->oom_error,
+ * emits LOG_FAIL, returns false. Callers that discard the return still
+ * propagate via cs_enforce picking up lc->oom_error. */
 void lc_init(struct linear_combination *lc);
 void lc_free(struct linear_combination *lc);
-void lc_add_term(struct linear_combination *lc, size_t var,
+bool lc_add_term(struct linear_combination *lc, size_t var,
                    const struct fr *coeff);
 
-/* Add constraint: A * B = C */
-void cs_enforce(struct constraint_system *cs,
+/* Add constraint: A * B = C.
+ * Returns true on success. On zcl_realloc failure, on internal
+ * lc_add_term failure, or when any of a/b/c has oom_error set,
+ * sets cs->oom_error, emits LOG_FAIL, returns false. */
+bool cs_enforce(struct constraint_system *cs,
                 const struct linear_combination *a,
                 const struct linear_combination *b,
                 const struct linear_combination *c);
+
+/* P9.3 test hook: when non-NULL, the three CS-building helpers
+ * (lc_add_term, cs_alloc_var, cs_enforce) call this instead of
+ * zcl_realloc. Returning NULL simulates OOM. File-scope so the
+ * hook influences only this translation unit. */
+void groth16_prover_test_set_realloc_hook(void *(*hook)(void *ptr, size_t size));
 
 /* Evaluate a linear combination with the current witness */
 void lc_evaluate(struct fr *result, const struct linear_combination *lc,

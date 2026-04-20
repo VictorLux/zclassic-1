@@ -2,7 +2,16 @@
  * Fr/Fs field arithmetic, Jubjub, BLS12-381, PRF, FF1 tests. */
 
 #include "test/test_helpers.h"
+#include "sapling/groth16_prover.h"
 #include <time.h>
+
+/* P9.3 test hook: unconditionally fails the allocation. Mirrors the
+ * `p22_force_null_alloc` pattern from test_mempool.c (P2.2). */
+static void *p93_force_null_realloc(void *ptr, size_t size)
+{
+    (void)ptr; (void)size;
+    return NULL;
+}
 
 /* Reference bit-by-bit double-and-add for Jubjub scalar multiplication.
  * Deliberately NOT constant-time — used only as a correctness oracle for
@@ -943,6 +952,118 @@ int test_sapling_crypto(void)
                (double)lo / 1e6, (double)hi / 1e6, ratio);
         if (ok) printf("OK\n");
         else { printf("FAIL\n"); failures++; }
+    }
+
+    /* ================================================================
+     * P9.3 — OOM silent-drop in groth16 CS builders
+     * ================================================================
+     * RED before fix, GREEN after fix. Every block below installs the
+     * test hook that forces the next realloc inside groth16_prover.c
+     * to return NULL, exercises one of the three helpers, and asserts
+     * the OOM signal reached the caller. Pre-fix the helpers silently
+     * drop so the flags stay false — tests FAIL. Post-fix the helpers
+     * set lc->oom_error / cs->oom_error + LOG_FAIL — tests PASS. */
+
+    printf("P9.3 lc_add_term signals OOM on realloc failure... ");
+    {
+        struct linear_combination lc;
+        lc_init(&lc);
+        struct fr one; fr_one(&one);
+        /* Fill to initial cap (8). These succeed before the hook is armed. */
+        for (size_t i = 0; i < 8; i++)
+            lc_add_term(&lc, i, &one);
+        bool ok = (lc.num_terms == 8) && (lc.cap == 8) && !lc.oom_error;
+
+        /* Arm hook; next lc_add_term must grow terms 8→16 and hit OOM. */
+        groth16_prover_test_set_realloc_hook(p93_force_null_realloc);
+        bool ret = lc_add_term(&lc, 99, &one);
+        groth16_prover_test_set_realloc_hook(NULL);
+
+        /* Silent-drop symptom: num_terms / cap unchanged — the add was
+         * dropped. That part is correct today. What's missing is the
+         * signal: the caller has no way to know the add was dropped. */
+        ok = ok && (lc.num_terms == 8) && (lc.cap == 8);
+        /* Post-fix signals (these are what pre-fix code fails): */
+        ok = ok && (ret == false);
+        ok = ok && lc.oom_error;
+
+        lc_free(&lc);
+        if (ok) printf("OK\n"); else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("P9.3 cs_alloc_aux signals OOM on realloc failure... ");
+    {
+        struct constraint_system cs;
+        cs_init(&cs);
+        /* Fill witness to initial cap (256). cs_init already placed ONE at
+         * index 0, so we add 255 aux vars to hit num_vars == cap_vars. */
+        struct fr zero; fr_zero(&zero);
+        for (size_t i = 1; i < 256; i++)
+            (void)cs_alloc_aux(&cs, &zero);
+        bool ok = (cs.num_vars == 256) && (cs.cap_vars == 256) && !cs.oom_error;
+
+        /* Arm hook; next cs_alloc_aux must grow witness 256→512 and hit OOM. */
+        groth16_prover_test_set_realloc_hook(p93_force_null_realloc);
+        size_t idx = cs_alloc_aux(&cs, &zero);
+        groth16_prover_test_set_realloc_hook(NULL);
+
+        /* Catastrophic pre-fix behaviour: idx == 0, which aliases CS_ONE.
+         * Any subsequent constraint referencing idx would silently use the
+         * constant 1 instead of a fresh aux variable. Post-fix: idx is
+         * still 0 (there IS no valid index to return), but cs->oom_error
+         * is set so groth16_prove can refuse. */
+        ok = ok && (idx == 0);
+        /* Post-fix signal: */
+        ok = ok && cs.oom_error;
+
+        cs_free(&cs);
+        if (ok) printf("OK\n"); else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("P9.3 cs_enforce propagates input-LC oom_error... ");
+    {
+        struct constraint_system cs;
+        cs_init(&cs);
+        struct linear_combination a, b, c;
+        lc_init(&a); lc_init(&b); lc_init(&c);
+        /* Simulate: a gadget called lc_add_term on `a`, realloc failed,
+         * a.oom_error was set, gadget ignored the void return, and then
+         * passed the truncated `a` to cs_enforce. cs_enforce must notice
+         * and propagate into cs->oom_error so groth16_prove can refuse. */
+        a.oom_error = true;
+
+        bool ret = cs_enforce(&cs, &a, &b, &c);
+
+        /* Post-fix: cs_enforce returns false and propagates the flag. */
+        bool ok = (ret == false);
+        ok = ok && cs.oom_error;
+
+        lc_free(&a); lc_free(&b); lc_free(&c);
+        cs_free(&cs);
+        if (ok) printf("OK\n"); else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("P9.3 groth16_prove refuses on cs.oom_error (zeroed proof)... ");
+    {
+        struct constraint_system cs;
+        cs_init(&cs);
+        cs.oom_error = true; /* as if set by an earlier CS build step */
+
+        /* pk is never dereferenced — the early-exit check fires first. */
+        struct groth16_pk pk;
+        memset(&pk, 0, sizeof(pk));
+        struct groth16_proof proof;
+        memset(&proof, 0xAB, sizeof(proof));
+
+        bool ret = groth16_prove(&pk, &cs, &proof);
+        bool ok = (ret == false);
+        /* Verify proof is zeroed — no valid-looking but wrong proof leaks. */
+        struct groth16_proof zero_proof;
+        memset(&zero_proof, 0, sizeof(zero_proof));
+        ok = ok && (memcmp(&proof, &zero_proof, sizeof(proof)) == 0);
+
+        cs_free(&cs);
+        if (ok) printf("OK\n"); else { printf("FAIL\n"); failures++; }
     }
 
     return failures;
