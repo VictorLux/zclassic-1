@@ -337,8 +337,8 @@ int chain_restore_rebuild_active_chain(struct main_state *ms,
 
     int populated = 0;
 
-    /* Walk pprev from tip as far as it goes; fill each slot with the
-     * walking pointer. Stops on pprev==NULL or out-of-range height. */
+    /* Fast path — walk pprev from tip and slot each ancestor. Covers
+     * the happy case (real chain, pprev intact) in O(tip_h). */
     int deepest = tip_h + 1;
     for (struct block_index *p = tip; p != NULL; p = p->pprev) {
         int h = p->nHeight;
@@ -348,46 +348,61 @@ int chain_restore_rebuild_active_chain(struct main_state *ms,
         populated++;
     }
 
-    /* Residual holes below `deepest` (pprev chain dead-ended before
-     * reaching genesis) — fill from block_map scan by height. Prefer
-     * BLOCK_HAVE_DATA + highest nChainWork per height so we don't
-     * slot a stale fork over a real ancestor. */
-    for (int h = 0; h <= tip_h; h++) {
+    /* If the pprev walk reached genesis, no residual work. */
+    if (deepest == 0)
+        return populated;
+
+    /* Residual holes below `deepest` — post-anchor-restore shape, where
+     * the synthetic tip has pprev=NULL so every slot 0..tip_h-1 is
+     * empty. The pre-P14.13 code did a fresh block_map scan per hole
+     * (tip_h × map_size ≈ 10 trillion ops at live scale — boot pinned
+     * >5 min at ~92% CPU). Single-pass bucketing restores O(N): scan
+     * the block_map ONCE into a height-indexed best-candidate array,
+     * then fill slots in one sweep. ~24 MB scratch at tip_h=3M; the
+     * system has ~95 GB RAM and the allocation is transient. */
+    struct block_index **by_height =
+        zcl_calloc((size_t)(tip_h + 1), sizeof(struct block_index *),
+                   "chain_restore/by_height");
+    if (!by_height) {
+        LOG_RETURN(populated, "chain_restore",
+                   "rebuild_active_chain: by_height calloc failed (tip_h=%d)",
+                   tip_h);
+    }
+
+    size_t it = 0;
+    struct block_index *cand;
+    while (block_map_next(&ms->map_block_index, &it, NULL, &cand)) {
+        if (!cand) continue;
+        int h = cand->nHeight;
+        if (h < 0 || h >= deepest) continue;
         if (c->chain[h] != NULL) continue;
+        if (cand->nStatus & BLOCK_FAILED_MASK) continue;
 
-        struct block_index *best = NULL;
-        size_t it = 0;
-        struct block_index *cand;
-        while (block_map_next(&ms->map_block_index, &it, NULL, &cand)) {
-            if (!cand || cand->nHeight != h) continue;
-            if (cand->nStatus & BLOCK_FAILED_MASK) continue;
+        struct block_index *best = by_height[h];
+        if (!best) { by_height[h] = cand; continue; }
 
-            if (!best) {
-                best = cand;
-                continue;
-            }
+        /* Prefer BLOCK_HAVE_DATA, then highest nChainWork — matches
+         * the pre-P14.13 tie-break rules so we don't slot a stale
+         * fork over a real ancestor. */
+        bool best_data = (best->nStatus & BLOCK_HAVE_DATA) != 0;
+        bool cand_data = (cand->nStatus & BLOCK_HAVE_DATA) != 0;
+        if (cand_data && !best_data) { by_height[h] = cand; continue; }
+        if (best_data && !cand_data) continue;
 
-            /* Prefer candidate with BLOCK_HAVE_DATA if best lacks it. */
-            bool best_data = (best->nStatus & BLOCK_HAVE_DATA) != 0;
-            bool cand_data = (cand->nStatus & BLOCK_HAVE_DATA) != 0;
-            if (cand_data && !best_data) {
-                best = cand;
-                continue;
-            }
-            if (best_data && !cand_data) continue;
+        if (arith_uint256_compare(&cand->nChainWork,
+                                  &best->nChainWork) > 0)
+            by_height[h] = cand;
+    }
 
-            /* Tie-break by nChainWork (higher wins). */
-            if (arith_uint256_compare(&cand->nChainWork,
-                                      &best->nChainWork) > 0)
-                best = cand;
-        }
-
-        if (best) {
-            c->chain[h] = best;
+    for (int h = 0; h < deepest; h++) {
+        if (c->chain[h] != NULL) continue;
+        if (by_height[h]) {
+            c->chain[h] = by_height[h];
             populated++;
         }
     }
 
+    free(by_height);
     return populated;
 }
 
