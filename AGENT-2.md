@@ -40,7 +40,15 @@ checklist plus the lane rules.
 
 ---
 
-## Current status — NOW = P14.13
+## Current status — NOW = P14.10
+
+**P14.13 done a62394130 [test:1.0 b07284439]** — single-pass bucketing
+replaces the O(N²) residual-holes branch. Coordinator canary pending.
+
+**P14.10 (CRITICAL): `SKIP_ALREADY_RUNNING` deferred-activation queue
+from `process_new_block`.** See AGENT.md for full description.
+
+(historical P14.13 description retained below for context)
 
 **P14.13 (CRITICAL): `chain_restore_rebuild_active_chain` is O(N²), boot hangs.**
 
@@ -89,7 +97,7 @@ section is the executable checklist.
 
 ### Phase 0 — Finish the P14 stall wave
 
-- [ ] **P14.13** CRITICAL — rebuild_active_chain O(N²) boot hang (above).
+- [x] **P14.13** CRITICAL — rebuild_active_chain O(N²) boot hang. **done a62394130 [test:1.0 b07284439]**.
 - [ ] **P14.10** CRITICAL — deferred-activation queue for `SKIP_ALREADY_RUNNING` from `process_new_block`.
 - [ ] **P14.3** CRITICAL — `zcl_syncdiag` SIGABRT via `json_free`. Coordinator touch-trap — fix unlocks MCP health checks.
 - [ ] **P14.6** CRITICAL — cap `BLOCK_FAILED_CHILD` propagation (OOM amplifier). Skip when parent already failed; cap per-retry.
