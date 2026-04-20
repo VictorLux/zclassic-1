@@ -35,6 +35,19 @@ static inline void *g_cs_realloc(void *ptr, size_t size, const char *label)
     return zcl_realloc(ptr, size, label);
 }
 
+/* ── P9.4 test hook: force non-pow-2 FFT domain in groth16_prove ── */
+
+/* When non-zero, overrides the computed domain size in groth16_prove
+ * so tests can exercise the fr_fft / fr_fft_parallel non-pow-2 branch
+ * through the real prover call path. File-scope; never set outside
+ * tests. */
+static size_t g_force_domain = 0;
+
+void groth16_prover_test_set_force_domain(size_t forced)
+{
+    g_force_domain = forced;
+}
+
 /* ── R1CS Constraint System ─────────────────────────────────────── */
 
 void lc_init(struct linear_combination *lc)
@@ -288,12 +301,12 @@ static void bit_reverse(struct fr *arr, size_t n, unsigned int log_n)
     }
 }
 
-void fr_fft(struct fr *coeffs, size_t n, bool inverse)
+bool fr_fft(struct fr *coeffs, size_t n, bool inverse)
 {
-    if (n <= 1) return;
+    if (n <= 1) return true;
 
     unsigned int log_n = log2_ceil(n);
-    if ((size_t)1 << log_n != n) return;
+    if ((size_t)1 << log_n != n) return false;
 
     bit_reverse(coeffs, n, log_n);
 
@@ -338,6 +351,7 @@ void fr_fft(struct fr *coeffs, size_t n, bool inverse)
         for (size_t i = 0; i < n; i++)
             fr_mul(&coeffs[i], &coeffs[i], &n_inv);
     }
+    return true;
 }
 
 /* ── Multi-scalar multiplication (Pippenger's) ──────────────────── */
@@ -734,6 +748,11 @@ bool groth16_prove(const struct groth16_pk *pk,
     size_t domain = 1;
     while (domain <= n_con)
         domain <<= 1;
+
+    /* P9.4 test hook: force a non-pow-2 domain to exercise the fr_fft
+     * failure-propagation path. Never set outside tests. */
+    if (g_force_domain)
+        domain = g_force_domain;
 
     /* Generate random blinding factors */
     struct fr r_blind, s_blind;

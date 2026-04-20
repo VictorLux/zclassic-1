@@ -326,18 +326,16 @@ static unsigned int par_log2_ceil(size_t n)
 }
 
 /* Forward declaration from groth16_prover.c */
-extern void fr_fft(struct fr *coeffs, size_t n, bool inverse);
+extern bool fr_fft(struct fr *coeffs, size_t n, bool inverse);
 
-void fr_fft_parallel(struct fr *coeffs, size_t n, bool inverse, int num_threads)
+bool fr_fft_parallel(struct fr *coeffs, size_t n, bool inverse, int num_threads)
 {
-    if (n <= 1) return;
-    if (num_threads <= 1 || n < 256) {
-        fr_fft(coeffs, n, inverse);
-        return;
-    }
+    if (n <= 1) return true;
+    if (num_threads <= 1 || n < 256)
+        return fr_fft(coeffs, n, inverse);
 
     unsigned int log_n = par_log2_ceil(n);
-    if ((size_t)1 << log_n != n) return;
+    if ((size_t)1 << log_n != n) return false;
 
     par_bit_reverse(coeffs, n, log_n);
 
@@ -436,6 +434,7 @@ void fr_fft_parallel(struct fr *coeffs, size_t n, bool inverse, int num_threads)
         for (size_t i = 0; i < n; i++)
             fr_mul(&coeffs[i], &coeffs[i], &n_inv);
     }
+    return true;
 }
 
 #pragma GCC diagnostic pop

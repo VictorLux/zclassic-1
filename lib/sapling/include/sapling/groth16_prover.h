@@ -84,6 +84,12 @@ bool cs_enforce(struct constraint_system *cs,
  * hook influences only this translation unit. */
 void groth16_prover_test_set_realloc_hook(void *(*hook)(void *ptr, size_t size));
 
+/* P9.4 test hook: when non-zero, overrides the computed FFT domain
+ * size in groth16_prove so tests can exercise the fr_fft /
+ * fr_fft_parallel non-pow-2 branch through the real prover call
+ * path. Pass 0 to disarm. */
+void groth16_prover_test_set_force_domain(size_t forced);
+
 /* Evaluate a linear combination with the current witness */
 void lc_evaluate(struct fr *result, const struct linear_combination *lc,
                    const struct fr *witness);
@@ -127,7 +133,13 @@ void groth16_pk_free(struct groth16_pk *pk);
 
 /* ── FFT ────────────────────────────────────────────────────────── */
 
-void fr_fft(struct fr *coeffs, size_t n, bool inverse);
+/* Iterative radix-2 FFT over Fr. Requires n to be a power of 2 (or
+ * n <= 1 for the trivial case). Returns true on success; returns
+ * false if n is not a power of 2 (data left unmodified). Callers
+ * MUST check the return — silent-dropping yields un-transformed
+ * evaluations and, in the Groth16 prover, mathematically invalid
+ * proofs. */
+bool fr_fft(struct fr *coeffs, size_t n, bool inverse);
 
 /* ── Multi-scalar multiplication ────────────────────────────────── */
 
@@ -151,7 +163,10 @@ void g2_msm_parallel(struct g2_point *result,
 
 /* ── Parallel FFT ───────────────────────────────────────────────── */
 
-void fr_fft_parallel(struct fr *coeffs, size_t n, bool inverse, int num_threads);
+/* Parallel radix-2 FFT over Fr. Dispatches to serial fr_fft when
+ * n < 256 or num_threads <= 1. Returns true on success; returns
+ * false if n is not a power of 2 (same contract as fr_fft). */
+bool fr_fft_parallel(struct fr *coeffs, size_t n, bool inverse, int num_threads);
 
 /* ── Groth16 Prover ─────────────────────────────────────────────── */
 

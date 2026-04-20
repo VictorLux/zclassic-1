@@ -1066,5 +1066,67 @@ int test_sapling_crypto(void)
         if (ok) printf("OK\n"); else { printf("FAIL\n"); failures++; }
     }
 
+    /* ── P9.4: fr_fft / fr_fft_parallel non-pow-2 silent no-op ───── */
+
+    printf("P9.4 fr_fft returns false on non-pow-2 n... ");
+    {
+        /* Bug pattern: fr_fft's `if ((size_t)1 << log_n != n) return;`
+         * used to silent-drop; callers kept executing with un-FFT'd
+         * coefficients. Post-fix the helper returns false. */
+        struct fr coeffs[7];
+        for (size_t i = 0; i < 7; i++)
+            fr_zero(&coeffs[i]);
+        bool ret = fr_fft(coeffs, 7, false);
+        bool ok = (ret == false);
+        if (ok) printf("OK\n"); else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("P9.4 fr_fft_parallel returns false on non-pow-2 n... ");
+    {
+        /* n=300 is >= 256 (parallel-dispatch threshold) and non-pow-2,
+         * so we hit the par_log2_ceil guard, not the serial dispatch. */
+        struct fr coeffs[300];
+        for (size_t i = 0; i < 300; i++)
+            fr_zero(&coeffs[i]);
+        bool ret = fr_fft_parallel(coeffs, 300, false, 4);
+        bool ok = (ret == false);
+        if (ok) printf("OK\n"); else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("P9.4 groth16_prove refuses on non-pow-2 forced domain (zeroed proof)... ");
+    {
+        /* Force a non-pow-2 FFT domain via the P9.4 test hook. Pre-fix
+         * groth16_prove ignores fr_fft's silent no-op and emits a
+         * "proof" built from un-transformed evaluations (returns true).
+         * Post-fix the prover checks fr_fft's bool return, zeroes
+         * proof_out, and returns false. */
+        struct constraint_system cs;
+        cs_init(&cs);
+        struct fr zero; fr_zero(&zero);
+        (void)cs_alloc_input(&cs, &zero); /* 1 public input; no constraints */
+
+        groth16_prover_test_set_force_domain(7);
+
+        /* pk is zeroed — all g1/g2 points are point-at-infinity (z=0)
+         * and all array lengths are 0 so g1_msm/g2_msm return identity.
+         * Prover traverses every path without crashing. */
+        struct groth16_pk pk;
+        memset(&pk, 0, sizeof(pk));
+        struct groth16_proof proof;
+        memset(&proof, 0xAB, sizeof(proof));
+
+        bool ret = groth16_prove(&pk, &cs, &proof);
+
+        groth16_prover_test_set_force_domain(0); /* disarm */
+
+        bool ok = (ret == false);
+        struct groth16_proof zero_proof;
+        memset(&zero_proof, 0, sizeof(zero_proof));
+        ok = ok && (memcmp(&proof, &zero_proof, sizeof(proof)) == 0);
+
+        cs_free(&cs);
+        if (ok) printf("OK\n"); else { printf("FAIL\n"); failures++; }
+    }
+
     return failures;
 }
