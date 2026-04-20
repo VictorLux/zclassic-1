@@ -15,6 +15,7 @@
 #include <sys/stat.h>
 #include <unistd.h>
 #include <stdlib.h>
+#include <time.h>
 #include "util/safe_alloc.h"
 
 /* ── Plan tests ────────────────────────────────────────────────── */
@@ -539,6 +540,87 @@ static int test_rebuild_active_chain_fills_holes_from_block_map(void) {
     return failures;
 }
 
+/* P14.13 RED — rebuild_active_chain must be O(N), not O(N²).
+ *
+ * Live shape: post-anchor restore installs a tip at ~h=3M with pprev=NULL.
+ * active_chain_set_tip writes NULL into every slot below the tip. The
+ * residual-hole fill then has tip_h NULL slots, and the pre-fix code did
+ * a fresh block_map scan per hole — tip_h × block_map_size ops. At live
+ * scale that's ~10 trillion ops and pins the node at ~92% CPU for >5min
+ * before RPC comes up, which is why the coordinator has to SIGTERM every
+ * boot. This test reproduces the shape at N=100k; pre-fix it takes many
+ * seconds-to-minutes, post-fix it completes in O(N). */
+static int test_rebuild_active_chain_scales_at_100k(void) {
+    int failures = 0;
+    TEST("chain_restore_rebuild: completes in <2s at realistic chain depth") {
+        struct main_state ms;
+        main_state_init(&ms);
+
+        const int H = 100000;
+        ASSERT(block_map_reserve(&ms.map_block_index, (size_t)(H + 16)));
+
+        struct uint256 *hashes = zcl_calloc(
+            (size_t)(H + 1), sizeof(struct uint256), "p14_13_hashes");
+        ASSERT(hashes != NULL);
+
+        for (int h = 0; h <= H; h++) {
+            memcpy(hashes[h].data, &h, sizeof(h));
+            hashes[h].data[16] = 0xAB;
+            hashes[h].data[17] = 0xCD;
+            struct block_index *pi = chainstate_insert_block_index(
+                (struct chainstate *)&ms, &hashes[h]);
+            ASSERT(pi != NULL);
+            pi->nHeight = h;
+            pi->nBits   = 0x1f07ffff;
+            pi->nStatus = BLOCK_VALID_SCRIPTS | BLOCK_HAVE_DATA;
+            pi->nTx     = 1;
+            /* pprev intentionally NULL — models post-anchor shape. */
+            arith_uint256_set_u64(&pi->nChainWork, (uint64_t)(h + 1));
+        }
+
+        struct block_index *tip = block_map_find(
+            &ms.map_block_index, &hashes[H]);
+        ASSERT(tip != NULL);
+        ASSERT(tip->pprev == NULL);
+        ASSERT(active_chain_set_tip(&ms.chain_active, tip));
+
+        /* Pre-rebuild sanity: every sub-tip slot is NULL. */
+        ASSERT(active_chain_at(&ms.chain_active, 0) == NULL);
+        ASSERT(active_chain_at(&ms.chain_active, H / 2) == NULL);
+        ASSERT(active_chain_at(&ms.chain_active, H - 1) == NULL);
+
+        struct timespec t0, t1;
+        clock_gettime(CLOCK_MONOTONIC, &t0);
+        int populated = chain_restore_rebuild_active_chain(&ms, tip);
+        clock_gettime(CLOCK_MONOTONIC, &t1);
+
+        double elapsed = (double)(t1.tv_sec - t0.tv_sec)
+                       + (double)(t1.tv_nsec - t0.tv_nsec) / 1e9;
+
+        /* Correctness at scale — every height slot must resolve. */
+        ASSERT(populated == H + 1);
+        for (int h = 0; h <= H; h += 1000) {
+            struct block_index *got = active_chain_at(&ms.chain_active, h);
+            ASSERT(got != NULL);
+            ASSERT(got->nHeight == h);
+        }
+
+        /* P14.13 target. Pre-fix the residual-hole loop is O(N²) and
+         * blows well past this budget even at N=100k. */
+        if (elapsed >= 2.0) {
+            printf("[P14.13] rebuild took %.3fs (>=2s) at H=%d — O(N^2) shape\n",
+                   elapsed, H);
+        }
+        ASSERT(elapsed < 2.0);
+
+        block_map_free(&ms.map_block_index);
+        active_chain_free(&ms.chain_active);
+        free(hashes);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 /* Write a minimal real block to disk; return its disk_block_pos. */
 static bool write_block_fixture(const char *datadir,
                                 struct disk_block_pos *pos,
@@ -720,6 +802,7 @@ int test_chain_restore_service(void) {
     failures += test_integrity_detects_isolated_nbits_zero();
     /* P14.11 + P14.12 GREEN — post-restore repair tests */
     failures += test_rebuild_active_chain_fills_holes_from_block_map();
+    failures += test_rebuild_active_chain_scales_at_100k();
     failures += test_backfill_nbits_reads_from_block_file();
     failures += test_backfill_nbits_skips_synthetic_anchor();
     failures += test_finalize_null_datadir_skips_disk();
