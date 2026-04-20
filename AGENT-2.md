@@ -185,7 +185,7 @@ shipping rows before P14.13 lands.
 - [ ] **P20.8** (post-P16) — `zcl_stages` MCP tool: staged-sync pipeline graph + last timings.
 - [ ] **P20.9** MED — `zcl_build_info` MCP tool: last-built binary SHA + delta-file warning.
 
-### Phase 11 — P21 God-object deconstruction
+### Phase 11 — P21 Oversized-file deconstruction
 
 **Dependency:** Agent-2's controller splits (P21.1-P21.5) benefit from
 P16.4 service-shape landing first. P21.6 pairs naturally with P12.6.1.
@@ -209,7 +209,7 @@ applied to the agent-onboarding surface itself.
 - [ ] **P22.2** HIGH — `.ac.yaml` sidecars per AGENT.md row at `docs/rows/P<id>.ac.yaml` + CI generator from tables. Feeds P20.2.
 - [ ] **P22.3** HIGH — **integrate clangd + LSP-MCP bridge** into zclassic23 binary. `zcl_lsp_{definition,references,hover,call_hierarchy,diagnostics}` tools. Spawns clangd subprocess; generates `compile_commands.json` from Makefile. **Do not hand-roll.** *Attribution: `mcp-language-server` (MIT — see ATTRIBUTIONS.md).*
 - [ ] **P22.4 (A2 share)** MED — `docs/spec/{net,validation,storage,wallet,script}.md` cold-memory RAG corpus.
-- [ ] **P22.5** HIGH — file-size budget lint (no file over 1,000 lines in `lib/` or `app/`). Grandfather existing god-objects via exemption file tracked by P21.* rows.
+- [ ] **P22.5** HIGH — file-size budget lint (no file over 1,000 lines in `lib/` or `app/`). Grandfather existing oversized files via exemption file tracked by P21.* rows.
 - [ ] **P22.6** MED — `AGENTS.md` "fresh-session bootstrap" sequence documented.
 
 ---

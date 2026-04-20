@@ -130,7 +130,7 @@ natively.
 - [ ] **P20.4** HIGH — `zcl_coverage` MCP tool: per-file line coverage + test-file mapping. Built from `gcov`/`llvm-cov` artifacts.
 - [ ] **P20.10** HIGH — `zcl_test_map` MCP tool: `test_file → [files_exercised]` + reverse. Answers "what test would catch this?"
 
-### Phase 6 — P21 Test god-object deconstruction
+### Phase 6 — P21 Test oversized-file deconstruction
 
 **No dependency** — can start anytime. Big quality-of-life for every
 sapling + net test touch.
