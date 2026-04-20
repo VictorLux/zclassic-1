@@ -40,36 +40,46 @@ checklist plus the lane rules.
 
 ---
 
-## Current status — NOW = P9.4
+## Current status — NOW = P9.1
 
-**P9.4 (HIGH): `fr_fft` / `fr_fft_parallel` silent no-op on non-pow-2.**
+**P9.1 (HIGH): `g1_scalar_mul` variable-time double-and-add leaks
+Groth16 blinding (side-channel).**
 
-Three sites share the same pattern — a `log2` check whose failure
-branch silently `return;`s, so the caller keeps working with
-un-FFT'd data.
+`lib/sapling/src/bls12_381.c:g1_scalar_mul` walks the scalar bit by
+bit and only runs `g1_add` on `(scalar[i] >> bit) & 1 == 1`. The
+measurable time difference between iterations leaks the Hamming
+weight of the scalar — and inside `groth16_prove` that scalar is
+`r_blind` (line 857 → `r * delta_g1`) / `s_blind` (line 872 →
+`s * delta_g2`, indirectly via `g2_msm(&pk->delta_g2, &s_blind, 1)`).
+An attacker measuring wall-time of the prover recovers partial
+information about the blinding factors, which degrades the
+zero-knowledge property.
 
 **Files + lines:**
-- `lib/sapling/src/groth16_prover.c:222` — `fr_fft` early-return.
-- `lib/sapling/src/msm_parallel.c:333, 340` — `fr_fft_parallel`
-  entry guard + worker-dispatch guard.
+- `lib/sapling/src/bls12_381.c:1708-1722` — `g1_scalar_mul` double-
+  and-add with variable branch.
+- Callers in `groth16_prover.c`: lines 857 (r*delta_g1), 885 (r*B_g1),
+  911 (s*A), 920 (r*B_g1 again), 931 (rs*delta_g1).
 
 **Fix shape:**
-1. Promote each to `bool` return.
-2. `LOG_FAIL` with the actual `n` (and `log_n` if reachable).
-3. Every caller checks. Propagate to `groth16_prove` returns false +
-   zeroed proof (same shape as P9.3 OOM entry check — failure path is
-   already exercised by P9.3's RED test infrastructure).
+1. Replace the variable branch with a constant-time conditional add:
+   always compute `tmp = g1_add(result, base)` and then a constant-
+   time select between `result` and `tmp` based on the bit.
+2. Mirror the change in `g2_scalar_mul` if the same pattern exists.
+3. RED test: statistically measure cycle counts for two scalars with
+   very different Hamming weights (e.g. all-zero vs all-one lower 64
+   bits). Pre-fix the means differ by >> one standard deviation;
+   post-fix they're indistinguishable.
 
 **Discipline (every P9.x row is [test:1.0]):**
-1. **RED FIRST** — unit test in `test_sapling_crypto.c` that forces a
-   non-pow-2 domain (either direct `fr_fft` call, or a test hook that
-   forces non-pow-2 domain size in the prover). FAILS today.
-2. **GREEN** — flip to bool, propagate, LOG_FAIL. Test passes.
+1. **RED FIRST** — timing-variance test in `test_sapling_crypto.c`
+   that fails today because the means diverge.
+2. **GREEN** — constant-time select. Test passes.
 3. **Mark done** — update `AGENT.md` row + current NOW.
 
-**Currently unreachable** via `groth16_prove` because domain is rounded
-to a power of 2 in `groth16_prover.c:648-650` — but the pattern sits
-in the prover waiting for the next caller / next refactor.
+**Cross-cutting check:** P9.10 is about cache-side-channel on the
+MSM witness — related but distinct. P9.1 is the timing channel on
+the blinding scalars. Don't conflate.
 
 ---
 
@@ -82,8 +92,8 @@ Every row has a full description in [`AGENT.md`](AGENT.md).
 
 ### Phase 0 — Finish P9 sapling audit (CURRENT)
 
-- [ ] **P9.4** HIGH — `fr_fft` / `fr_fft_parallel` silent no-op (above).
-- [ ] **P9.1** HIGH — `g1_scalar_mul` variable-time double-and-add leaks Groth16 blinding (side-channel).
+- [x] **P9.4** HIGH — `fr_fft` / `fr_fft_parallel` silent no-op. done 408c9f1fa [test:1.0].
+- [ ] **P9.1** HIGH — `g1_scalar_mul` variable-time double-and-add leaks Groth16 blinding (side-channel). **Agent-3 NOW.**
 - [ ] **P9.2** CRITICAL — `sapling_circuit.c:65 / 161-162` placeholder UB paths (if still live).
 - [ ] **P9.6** MED — `zclassic_sapling_spend_proof` witness length not bounded.
 - [ ] **P9.7** MED — `sprout_verify_groth16` size_t underflow + race on `sprout_set_vk(NULL)`.
