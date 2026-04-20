@@ -7,6 +7,7 @@
 #include "services/utxo_recovery_service.h"
 #include "services/recovery_policy.h"
 #include "services/chain_activation_controller.h"
+#include "services/chain_restore_service.h"
 #include "services/snapshot_sync_service.h"
 #include "config/boot_internal.h"
 #include "config/db_service.h"
@@ -467,6 +468,15 @@ struct chain_restore_result utxo_recovery_restore_chain_tip(
                    best->nHeight);
         }
 
+        /* P14.11 + P14.12: populate active_chain.chain[] from pprev +
+         * block_map, and backfill nBits from on-disk block headers for
+         * any pindex entry whose nBits is still zero. Without this, the
+         * anchor-restore path leaves `getblockhash <h>` broken for every
+         * h below the tip and GetNextWorkRequired trips `bad-diffbits`
+         * on the first real-difficulty header whose pprev window
+         * includes an nBits==0 entry. */
+        (void)chain_restore_finalize(ctx->state, ctx->datadir);
+
         return res;
     }
 
@@ -525,6 +535,9 @@ struct chain_restore_result utxo_recovery_restore_chain_tip(
 
             printf("Chain restore: anchor at h=%d hash=%s "
                    "— syncing forward.\n", utxo_max_height, hex);
+            /* P14.11 + P14.12: see the same call above; fire here too
+             * so the fresh-anchor path gets rebuild + nBits backfill. */
+            (void)chain_restore_finalize(ctx->state, ctx->datadir);
         }
         res.skip_activate = true;
         snprintf(res.anchor_reason, sizeof(res.anchor_reason),

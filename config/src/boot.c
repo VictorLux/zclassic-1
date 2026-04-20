@@ -8,6 +8,7 @@
 #include "config/file_ops.h"
 #include "services/snapshot_sync_service.h"
 #include "services/chain_activation_controller.h"
+#include "services/chain_restore_service.h"
 #include "services/chain_state_repository.h"
 #include "services/recovery_policy.h"
 #include "services/utxo_recovery_service.h"
@@ -2294,6 +2295,17 @@ bool app_init(struct app_context *ctx)
             fprintf(stderr, "Warning: Failed to activate best chain: %s\n",
                     outcome.reason);
     }
+
+    /* P14.11 + P14.12 final sweep. Post-activation is the last point at
+     * which block_map and active_chain could still carry the anchor-
+     * restore limp (nBits==0 entries, chain_active holes below tip); the
+     * finalize also covers the block-file-scan + `Post-activation: fixed
+     * N pprev heights from anchor` path in msg_headers that runs before
+     * activate_best_chain completes. No-op when the integrity check
+     * passes; logs a loud stderr line + fills what it can when it does
+     * not. Safe on every boot — O(block_map) + one disk read per nBits
+     * gap; the real live-node shape is ≤200 reads. */
+    (void)chain_restore_finalize(&g_state, ctx->datadir);
 
     /* Auto-scan wallet for transactions in connected blocks.
      * This ensures balance shows immediately after LDB import or

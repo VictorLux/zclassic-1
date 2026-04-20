@@ -7,7 +7,14 @@
 #include "services/chain_restore_service.h"
 #include "validation/main_state.h"
 #include "chain/chain.h"
+#include "primitives/block.h"
+#include "primitives/transaction.h"
+#include "storage/disk_block_io.h"
+#include "core/amount.h"
 #include <string.h>
+#include <sys/stat.h>
+#include <unistd.h>
+#include <stdlib.h>
 #include "util/safe_alloc.h"
 
 /* ── Plan tests ────────────────────────────────────────────────── */
@@ -260,7 +267,7 @@ static int test_validate_after_anchor(void) {
 static int test_activation_normal_boot(void) {
     int failures = 0;
     TEST("boot_should_activate: normal boot with UTXOs → activate") {
-        struct activation_decision dec;
+        struct boot_activation_decision dec;
         boot_should_activate_chain(&dec, 500000, 1000000, 600000,
                                    false, false);
         ASSERT(dec.should_activate == true);
@@ -273,7 +280,7 @@ static int test_activation_normal_boot(void) {
 static int test_activation_legacy_import(void) {
     int failures = 0;
     TEST("boot_should_activate: legacy import → skip") {
-        struct activation_decision dec;
+        struct boot_activation_decision dec;
         boot_should_activate_chain(&dec, 0, 0, 0, true, false);
         ASSERT(dec.should_activate == false);
         ASSERT(dec.reason == ACTIVATE_SKIP_LEGACY_IMPORT);
@@ -285,7 +292,7 @@ static int test_activation_legacy_import(void) {
 static int test_activation_anchor_created(void) {
     int failures = 0;
     TEST("boot_should_activate: anchor created → skip") {
-        struct activation_decision dec;
+        struct boot_activation_decision dec;
         boot_should_activate_chain(&dec, 3072280, 1000000, 600000,
                                    false, true);
         ASSERT(dec.should_activate == false);
@@ -298,7 +305,7 @@ static int test_activation_anchor_created(void) {
 static int test_activation_no_utxos_many_headers(void) {
     int failures = 0;
     TEST("boot_should_activate: no UTXOs, many headers → skip (awaiting snapshot)") {
-        struct activation_decision dec;
+        struct boot_activation_decision dec;
         boot_should_activate_chain(&dec, 0, 50, 100000,
                                    false, false);
         ASSERT(dec.should_activate == false);
@@ -311,7 +318,7 @@ static int test_activation_no_utxos_many_headers(void) {
 static int test_activation_few_utxos_few_headers(void) {
     int failures = 0;
     TEST("boot_should_activate: few UTXOs, few headers → activate (not awaiting)") {
-        struct activation_decision dec;
+        struct boot_activation_decision dec;
         boot_should_activate_chain(&dec, 0, 50, 10,
                                    false, false);
         ASSERT(dec.should_activate == true);
@@ -457,6 +464,234 @@ static int test_integrity_detects_isolated_nbits_zero(void) {
     return failures;
 }
 
+/* ── Post-restore repair (P14.11 + P14.12 GREEN) ──────────────────
+ *
+ * These exercise the GREEN limbs of the fix:
+ *   - chain_restore_rebuild_active_chain fills holes below the tip
+ *     via block_map when the pprev chain dead-ends at an anchor,
+ *   - chain_restore_backfill_nbits_from_disk reads the header from
+ *     the block file and assigns nBits when the pindex carries zero. */
+
+static int test_rebuild_active_chain_fills_holes_from_block_map(void) {
+    int failures = 0;
+    TEST("chain_restore_rebuild: fills chain_active holes from block_map") {
+        struct main_state ms;
+        main_state_init(&ms);
+
+        /* Scenario: LDB snapshot populated block_map with entries at
+         * h=0..H (pprev NOT linked — matches the live-node post-scan
+         * shape where heights have been patched but pprev is stale).
+         * Then an anchor-restore installed tip=anchor at h=H with
+         * anchor->pprev=NULL — active_chain_set_tip wrote NULL into
+         * slots 0..H-1. rebuild must fill them by height lookup. */
+        const int H = 10;
+        struct uint256 hashes[11];
+        for (int h = 0; h <= H; h++) {
+            memset(&hashes[h], 0, sizeof(hashes[h]));
+            hashes[h].data[0] = (uint8_t)(h & 0xFF);
+            hashes[h].data[3] = 0xEE;
+            struct block_index *pi = chainstate_insert_block_index(
+                (struct chainstate *)&ms, &hashes[h]);
+            ASSERT(pi != NULL);
+            pi->nHeight = h;
+            pi->nBits   = 0x1f07ffff;
+            pi->nStatus = BLOCK_VALID_SCRIPTS | BLOCK_HAVE_DATA;
+            pi->nTx     = 1;
+            /* IMPORTANT: pprev deliberately NOT linked — models the
+             * live-node state where the anchor-restore skipped the
+             * pprev backfill that accept_block / connect_block do. */
+            arith_uint256_set_u64(&pi->nChainWork, (uint64_t)(h + 1));
+        }
+        struct block_index *tip = block_map_find(
+            &ms.map_block_index, &hashes[H]);
+        ASSERT(tip != NULL);
+        ASSERT(active_chain_set_tip(&ms.chain_active, tip));
+
+        /* Pre-rebuild: integrity check reports H holes below the tip. */
+        struct chain_integrity_result r0;
+        chain_integrity_check_post_restore(&r0, &ms);
+        ASSERT(r0.active_chain_holes == H);
+        ASSERT(r0.first_hole_height == 0);
+        ASSERT(r0.ok == false);
+
+        /* Apply rebuild. Every slot 0..H must now resolve to the
+         * block_map entry of that height. */
+        int populated = chain_restore_rebuild_active_chain(&ms, tip);
+        ASSERT(populated >= H);
+
+        for (int h = 0; h <= H; h++) {
+            struct block_index *got = active_chain_at(&ms.chain_active, h);
+            ASSERT(got != NULL);
+            ASSERT(got->nHeight == h);
+        }
+
+        struct chain_integrity_result r1;
+        chain_integrity_check_post_restore(&r1, &ms);
+        ASSERT(r1.active_chain_holes == 0);
+        ASSERT(r1.first_hole_height == -1);
+        ASSERT(r1.zero_nbits_count == 0);
+        ASSERT(r1.ok == true);
+
+        block_map_free(&ms.map_block_index);
+        active_chain_free(&ms.chain_active);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+/* Write a minimal real block to disk; return its disk_block_pos. */
+static bool write_block_fixture(const char *datadir,
+                                struct disk_block_pos *pos,
+                                uint32_t nbits_value)
+{
+    struct block b;
+    block_init(&b);
+    b.header.nVersion = 4;
+    b.header.nTime    = 1700000000;
+    b.header.nBits    = nbits_value;
+    b.num_vtx = 1;
+    b.vtx = calloc(1, sizeof(struct transaction)); // raw-alloc-ok: test fixture
+    transaction_init(&b.vtx[0]);
+    transaction_alloc(&b.vtx[0], 1, 1);
+    b.vtx[0].vin[0].sequence = 0xffffffff;
+    b.vtx[0].vout[0].value   = 10 * COIN;
+
+    unsigned char msg_start[4] = {0x24, 0xe9, 0x27, 0x64};
+    bool ok = write_block_to_disk(&b, pos, datadir, msg_start);
+    block_free(&b);
+    return ok;
+}
+
+static int test_backfill_nbits_reads_from_block_file(void) {
+    int failures = 0;
+    TEST("chain_restore_backfill_nbits: reads header nBits from disk") {
+        char tmpdir[256];
+        snprintf(tmpdir, sizeof(tmpdir), "./test-tmp/%d_nbits_backfill",
+                 (int)getpid());
+        mkdir("./test-tmp", 0755);
+        mkdir(tmpdir, 0755);
+        char blocksdir[320];
+        snprintf(blocksdir, sizeof(blocksdir), "%s/blocks", tmpdir);
+        mkdir(blocksdir, 0755);
+
+        struct disk_block_pos pos = { .nFile = 0, .nPos = 0 };
+        const uint32_t expected_nbits = 0x1e14f400;
+        ASSERT(write_block_fixture(tmpdir, &pos, expected_nbits));
+        ASSERT(pos.nFile >= 0);
+        ASSERT(pos.nPos > 0);
+
+        /* Build an index entry that matches the on-disk block but carries
+         * nBits=0 — the live-node shape that `add_to_block_index` fails
+         * to restore during anchor-restore rehydration. */
+        struct main_state ms;
+        main_state_init(&ms);
+
+        struct block b_check;
+        ASSERT(read_block_from_disk_pread(&b_check, &pos, tmpdir));
+        struct uint256 blk_hash;
+        block_get_hash(&b_check, &blk_hash);
+        block_free(&b_check);
+
+        struct block_index *pi = chainstate_insert_block_index(
+            (struct chainstate *)&ms, &blk_hash);
+        ASSERT(pi != NULL);
+        pi->nHeight  = 500;
+        pi->nBits    = 0;            /* P14.11 shape */
+        pi->nStatus  = BLOCK_VALID_SCRIPTS | BLOCK_HAVE_DATA;
+        pi->nFile    = pos.nFile;
+        pi->nDataPos = pos.nPos;
+
+        int fixed = chain_restore_backfill_nbits_from_disk(&ms, tmpdir);
+        ASSERT(fixed == 1);
+        ASSERT(pi->nBits == expected_nbits);
+
+        /* Idempotent: second call should not touch anything. */
+        int fixed2 = chain_restore_backfill_nbits_from_disk(&ms, tmpdir);
+        ASSERT(fixed2 == 0);
+        ASSERT(pi->nBits == expected_nbits);
+
+        block_map_free(&ms.map_block_index);
+        active_chain_free(&ms.chain_active);
+
+        char rm_cmd[512];
+        snprintf(rm_cmd, sizeof(rm_cmd), "rm -rf %s", tmpdir);
+        (void)system(rm_cmd);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int test_backfill_nbits_skips_synthetic_anchor(void) {
+    int failures = 0;
+    TEST("chain_restore_backfill_nbits: skips synthetic anchors (nDataPos==0)") {
+        char tmpdir[256];
+        snprintf(tmpdir, sizeof(tmpdir), "./test-tmp/%d_nbits_skip",
+                 (int)getpid());
+        mkdir("./test-tmp", 0755);
+        mkdir(tmpdir, 0755);
+
+        struct main_state ms;
+        main_state_init(&ms);
+
+        struct uint256 anchor_hash;
+        uint256_set_hex(&anchor_hash, "00000000feedface");
+        struct block_index *anchor =
+            chain_restore_create_anchor(&ms, &anchor_hash, 3081408);
+        ASSERT(anchor != NULL);
+        ASSERT(anchor->nBits == 0);
+        ASSERT(anchor->nDataPos == 0);
+
+        /* Without disk data, backfill must be a no-op and leave nBits==0. */
+        int fixed = chain_restore_backfill_nbits_from_disk(&ms, tmpdir);
+        ASSERT(fixed == 0);
+        ASSERT(anchor->nBits == 0);
+
+        block_map_free(&ms.map_block_index);
+        active_chain_free(&ms.chain_active);
+
+        char rm_cmd[512];
+        snprintf(rm_cmd, sizeof(rm_cmd), "rm -rf %s", tmpdir);
+        (void)system(rm_cmd);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int test_finalize_null_datadir_skips_disk(void) {
+    int failures = 0;
+    TEST("chain_restore_finalize: NULL datadir skips disk path") {
+        struct main_state ms;
+        main_state_init(&ms);
+
+        const int N = 4;
+        struct uint256 hashes[4];
+        for (int h = 0; h < N; h++) {
+            memset(&hashes[h], 0, sizeof(hashes[h]));
+            hashes[h].data[0] = (uint8_t)(h & 0xFF);
+            hashes[h].data[3] = 0xDD;
+            struct block_index *pi = chainstate_insert_block_index(
+                (struct chainstate *)&ms, &hashes[h]);
+            pi->nHeight = h;
+            pi->nBits   = 0x1f07ffff;
+            pi->nStatus = BLOCK_VALID_SCRIPTS | BLOCK_HAVE_DATA;
+            if (h > 0)
+                pi->pprev = block_map_find(&ms.map_block_index, &hashes[h-1]);
+            arith_uint256_set_u64(&pi->nChainWork, (uint64_t)(h + 1));
+        }
+        struct block_index *tip = block_map_find(
+            &ms.map_block_index, &hashes[N-1]);
+        ASSERT(active_chain_set_tip(&ms.chain_active, tip));
+
+        /* Fully clean chain — finalize returns true. */
+        ASSERT(chain_restore_finalize(&ms, NULL) == true);
+
+        block_map_free(&ms.map_block_index);
+        active_chain_free(&ms.chain_active);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 /* ── Registration ──────────────────────────────────────────────── */
 
 int test_chain_restore_service(void) {
@@ -483,5 +718,10 @@ int test_chain_restore_service(void) {
     failures += test_integrity_passes_on_clean_chain();
     failures += test_integrity_fails_on_anchor_restore();
     failures += test_integrity_detects_isolated_nbits_zero();
+    /* P14.11 + P14.12 GREEN — post-restore repair tests */
+    failures += test_rebuild_active_chain_fills_holes_from_block_map();
+    failures += test_backfill_nbits_reads_from_block_file();
+    failures += test_backfill_nbits_skips_synthetic_anchor();
+    failures += test_finalize_null_datadir_skips_disk();
     return failures;
 }

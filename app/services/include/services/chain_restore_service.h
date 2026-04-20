@@ -134,6 +134,47 @@ struct chain_integrity_result {
 void chain_integrity_check_post_restore(struct chain_integrity_result *out,
                                         const struct main_state *ms);
 
+/* ── Post-restore repair (P14.11 + P14.12 GREEN) ──────────────────
+ *
+ * After an anchor-restore / snapshot-restore / block-file-scan path
+ * completes, the block_index map and active_chain can exhibit the
+ * two shapes that `chain_integrity_check_post_restore` flags:
+ *
+ *   P14.11: entries with `nBits==0` — created by the anchor path,
+ *           or loaded from a block_index_cache row that lost its
+ *           nBits column (e.g. a pre-P14.11 cache snapshot).
+ *
+ *   P14.12: `chain_active.chain[h]==NULL` for heights below the tip —
+ *           `active_chain_set_tip` walks pprev and writes NULL into
+ *           every slot where the walk dead-ends, leaving holes the
+ *           explorer / `getblockhash` / bg_validation all fall over on.
+ *
+ * `chain_restore_rebuild_active_chain` walks tip->pprev and fills
+ * slots; for any remaining holes below the deepest pprev-reachable
+ * entry it falls back to a block_map scan keyed by nHeight (preferring
+ * the BLOCK_HAVE_DATA + highest nChainWork candidate per height — the
+ * live-node LDB snapshot is linear so there's one entry per height).
+ *
+ * `chain_restore_backfill_nbits_from_disk` walks block_map and, for
+ * every pindex with `nBits==0 && nDataPos>0 && (nStatus &
+ * BLOCK_HAVE_DATA)`, reads the block via `read_block_from_disk_index_
+ * pread` and assigns `pindex->nBits = block.header.nBits`. Entries
+ * without on-disk data (synthetic anchors) are skipped and will remain
+ * flagged by the integrity check until the block arrives via P2P.
+ *
+ * `chain_restore_finalize` composes the two and runs the integrity
+ * check; returns true iff the post-finalize check is clean. Logs the
+ * result either way. `datadir == NULL` skips the disk-backfill limb
+ * (used by unit tests that don't wire a real data directory). */
+
+int chain_restore_rebuild_active_chain(struct main_state *ms,
+                                       struct block_index *tip);
+
+int chain_restore_backfill_nbits_from_disk(struct main_state *ms,
+                                           const char *datadir);
+
+bool chain_restore_finalize(struct main_state *ms, const char *datadir);
+
 /* ── Boot activation decision ──────────────────────────────────── */
 
 enum activation_skip_reason {
@@ -144,7 +185,7 @@ enum activation_skip_reason {
     ACTIVATE_SKIP_REINDEX,
 };
 
-struct activation_decision {
+struct boot_activation_decision {
     bool should_activate;
     enum activation_skip_reason reason;
     int  chain_height;
@@ -154,7 +195,7 @@ struct activation_decision {
 
 /* Single function replaces 5 scattered skip_activate mutations.
  * Called once at boot, right before activate_best_chain(). */
-void boot_should_activate_chain(struct activation_decision *out,
+void boot_should_activate_chain(struct boot_activation_decision *out,
                                 int chain_tip_height,
                                 int64_t utxo_count,
                                 size_t block_index_size,

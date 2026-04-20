@@ -9,6 +9,8 @@
 #include "validation/main_state.h"
 #include "validation/chainstate.h"
 #include "chain/chain.h"
+#include "primitives/block.h"
+#include "storage/disk_block_io.h"
 #include "services/snapshot_sync_service.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -236,6 +238,12 @@ struct block_index *chain_restore_execute(
     if (plan->should_set_snapshot_anchor)
         snapsync_set_anchor(target);
 
+    /* Post-restore finalize — rebuild active_chain from pprev + block_map
+     * and surface the P14.11/P14.12 integrity result. Unit tests pass
+     * datadir implicitly via the NULL path (skips disk-backfill); real
+     * boot paths call chain_restore_finalize directly with a datadir. */
+    (void)chain_restore_finalize(ms, NULL);
+
     return target;
 }
 
@@ -309,9 +317,148 @@ void chain_integrity_check_post_restore(struct chain_integrity_result *out,
     out->ok = (out->zero_nbits_count == 0 && out->active_chain_holes == 0);
 }
 
+/* ── Post-restore repair (P14.11 + P14.12 GREEN) ────────────────── */
+
+int chain_restore_rebuild_active_chain(struct main_state *ms,
+                                       struct block_index *tip)
+{
+    if (!ms || !tip || tip->nHeight < 0)
+        return 0;
+
+    struct active_chain *c = &ms->chain_active;
+    const int tip_h = tip->nHeight;
+
+    /* The tip must already be installed as the chain tip (so
+     * active_chain's capacity covers [0..tip_h]); if a caller hands us
+     * a tip that isn't installed, install it via the standard path
+     * first. Idempotent when already set. */
+    if (active_chain_tip(c) != tip || active_chain_height(c) != tip_h)
+        active_chain_set_tip(c, tip);
+
+    int populated = 0;
+
+    /* Walk pprev from tip as far as it goes; fill each slot with the
+     * walking pointer. Stops on pprev==NULL or out-of-range height. */
+    int deepest = tip_h + 1;
+    for (struct block_index *p = tip; p != NULL; p = p->pprev) {
+        int h = p->nHeight;
+        if (h < 0 || h > tip_h) break;
+        if (c->chain[h] != p) c->chain[h] = p;
+        if (h < deepest) deepest = h;
+        populated++;
+    }
+
+    /* Residual holes below `deepest` (pprev chain dead-ended before
+     * reaching genesis) — fill from block_map scan by height. Prefer
+     * BLOCK_HAVE_DATA + highest nChainWork per height so we don't
+     * slot a stale fork over a real ancestor. */
+    for (int h = 0; h <= tip_h; h++) {
+        if (c->chain[h] != NULL) continue;
+
+        struct block_index *best = NULL;
+        size_t it = 0;
+        struct block_index *cand;
+        while (block_map_next(&ms->map_block_index, &it, NULL, &cand)) {
+            if (!cand || cand->nHeight != h) continue;
+            if (cand->nStatus & BLOCK_FAILED_MASK) continue;
+
+            if (!best) {
+                best = cand;
+                continue;
+            }
+
+            /* Prefer candidate with BLOCK_HAVE_DATA if best lacks it. */
+            bool best_data = (best->nStatus & BLOCK_HAVE_DATA) != 0;
+            bool cand_data = (cand->nStatus & BLOCK_HAVE_DATA) != 0;
+            if (cand_data && !best_data) {
+                best = cand;
+                continue;
+            }
+            if (best_data && !cand_data) continue;
+
+            /* Tie-break by nChainWork (higher wins). */
+            if (arith_uint256_compare(&cand->nChainWork,
+                                      &best->nChainWork) > 0)
+                best = cand;
+        }
+
+        if (best) {
+            c->chain[h] = best;
+            populated++;
+        }
+    }
+
+    return populated;
+}
+
+int chain_restore_backfill_nbits_from_disk(struct main_state *ms,
+                                           const char *datadir)
+{
+    if (!ms || !datadir || !datadir[0])
+        return 0;
+
+    int fixed = 0, read_errors = 0;
+    size_t iter = 0;
+    struct block_index *p;
+    while (block_map_next(&ms->map_block_index, &iter, NULL, &p)) {
+        if (!p) continue;
+        if (p->nBits != 0) continue;
+        if (p->nHeight <= 0) continue;   /* genesis nBits is set elsewhere */
+        if (p->nDataPos == 0) continue;  /* synthetic anchor; no disk data */
+        if (!(p->nStatus & BLOCK_HAVE_DATA)) continue;
+
+        struct block blk;
+        if (!read_block_from_disk_index_pread(&blk, p, datadir)) {
+            read_errors++;
+            continue;
+        }
+
+        if (blk.header.nBits != 0) {
+            p->nBits = blk.header.nBits;
+            fixed++;
+        }
+        block_free(&blk);
+    }
+
+    if (fixed > 0 || read_errors > 0)
+        printf("[nbits-backfill] fixed %d pindex entries (%d read errors)\n",
+               fixed, read_errors);
+
+    return fixed;
+}
+
+bool chain_restore_finalize(struct main_state *ms, const char *datadir)
+{
+    if (!ms) return false;
+
+    struct block_index *tip = active_chain_tip(&ms->chain_active);
+    if (tip)
+        (void)chain_restore_rebuild_active_chain(ms, tip);
+
+    if (datadir && datadir[0])
+        (void)chain_restore_backfill_nbits_from_disk(ms, datadir);
+
+    struct chain_integrity_result r;
+    chain_integrity_check_post_restore(&r, ms);
+
+    if (!r.ok) {
+        fprintf(stderr,
+            "[chain-integrity] post-restore check FAILED: "
+            "zero_nbits=%d (first_h=%d) holes=%d (first_h=%d) tip_h=%d\n",
+            r.zero_nbits_count, r.first_nbits_zero_height,
+            r.active_chain_holes, r.first_hole_height, r.tip_height);
+    } else if (tip) {
+        printf("[chain-integrity] post-restore check OK: "
+               "tip_h=%d nbits clean, active_chain full\n",
+               r.tip_height);
+    }
+
+    return r.ok;
+}
+
 /* ── Boot activation decision ──────────────────────────────────── */
 
-void boot_should_activate_chain(struct activation_decision *out,
+void boot_should_activate_chain(struct boot_activation_decision *out,
                                 int chain_tip_height,
                                 int64_t utxo_count,
                                 size_t block_index_size,
