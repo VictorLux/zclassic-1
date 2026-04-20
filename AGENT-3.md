@@ -92,7 +92,7 @@ Every row has a full description in [`AGENT.md`](AGENT.md).
 
 ### Phase 0 — Finish P9 sapling audit (CURRENT)
 
-- [x] **P9.4** HIGH — `fr_fft` / `fr_fft_parallel` silent no-op. done 408c9f1fa [test:1.0].
+- [x] **P9.4** HIGH — `fr_fft` / `fr_fft_parallel` silent no-op. done f5a31b48d [test:1.0].
 - [ ] **P9.1** HIGH — `g1_scalar_mul` variable-time double-and-add leaks Groth16 blinding (side-channel). **Agent-3 NOW.**
 - [ ] **P9.2** CRITICAL — `sapling_circuit.c:65 / 161-162` placeholder UB paths (if still live).
 - [ ] **P9.6** MED — `zclassic_sapling_spend_proof` witness length not bounded.

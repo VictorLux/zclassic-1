@@ -175,7 +175,7 @@ OOM.
 | **P9.1** | `g1_scalar_mul` side-channel | **Agent-3 NOW** |
 | P9.2 | `sapling_circuit.c` placeholder UB | open |
 | P9.3 | Groth16 CS-builder OOM silent drop | done 86ebfc4b5 |
-| P9.4 | `fr_fft` non-pow-2 silent no-op | done 408c9f1fa (Agent-3) |
+| P9.4 | `fr_fft` non-pow-2 silent no-op | done f5a31b48d (Agent-3) |
 | P9.5 | Sapling cache race (pthread_once) | done ff25fc779 |
 | P9.6 | `spend_proof` witness length | open |
 | P9.7 | `sprout_verify_groth16` underflow + race | open |
