@@ -12,6 +12,7 @@
 #include <string.h>
 #include <pthread.h>
 #include "util/safe_alloc.h"
+#include "util/log_macros.h"
 
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wpedantic"
@@ -335,7 +336,13 @@ bool fr_fft_parallel(struct fr *coeffs, size_t n, bool inverse, int num_threads)
         return fr_fft(coeffs, n, inverse);
 
     unsigned int log_n = par_log2_ceil(n);
-    if ((size_t)1 << log_n != n) return false;
+    if ((size_t)1 << log_n != n)
+        LOG_FAIL("groth16",
+                 "fr_fft_parallel: n=%zu is not a power of 2 "
+                 "(par_log2_ceil=%u, 2^log_n=%zu, num_threads=%d); "
+                 "refusing to transform — caller would silently "
+                 "receive un-FFT'd data",
+                 n, log_n, (size_t)1 << log_n, num_threads);
 
     par_bit_reverse(coeffs, n, log_n);
 

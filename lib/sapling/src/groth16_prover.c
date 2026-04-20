@@ -306,7 +306,12 @@ bool fr_fft(struct fr *coeffs, size_t n, bool inverse)
     if (n <= 1) return true;
 
     unsigned int log_n = log2_ceil(n);
-    if ((size_t)1 << log_n != n) return false;
+    if ((size_t)1 << log_n != n)
+        LOG_FAIL("groth16",
+                 "fr_fft: n=%zu is not a power of 2 (log2_ceil=%u, "
+                 "2^log_n=%zu); refusing to transform — caller would "
+                 "silently receive un-FFT'd data",
+                 n, log_n, (size_t)1 << log_n);
 
     bit_reverse(coeffs, n, log_n);
 
@@ -810,10 +815,23 @@ bool groth16_prove(const struct groth16_pk *pk,
         }
     }
 
-    /* FFT → evaluations at coset points g*ω^i */
-    fr_fft(a_eval, domain, false);
-    fr_fft(b_eval, domain, false);
-    fr_fft(c_eval, domain, false);
+    /* FFT → evaluations at coset points g*ω^i.
+     * P9.4: fr_fft refuses non-pow-2 domains (returns false). Silent-
+     * dropping here would emit a mathematically invalid proof: A/B/C
+     * computed from un-transformed coefficients do not satisfy the
+     * Groth16 verifier's pairing check, and the prover would still
+     * return true. Bail immediately, free buffers, zero proof_out. */
+    if (!fr_fft(a_eval, domain, false) ||
+        !fr_fft(b_eval, domain, false) ||
+        !fr_fft(c_eval, domain, false)) {
+        free(a_eval); free(b_eval); free(c_eval);
+        memset(proof_out, 0, sizeof(*proof_out));
+        memory_cleanse(&r_blind, sizeof(r_blind));
+        memory_cleanse(&s_blind, sizeof(s_blind));
+        LOG_FAIL("groth16",
+                 "prove: forward fr_fft failed on a/b/c_eval "
+                 "(domain=%zu); proof_out zeroed", domain);
+    }
 
     /* Compute (a*b - c) pointwise on coset */
     struct fr *h_eval = zcl_calloc(domain, sizeof(struct fr), "groth16_h_eval");
@@ -843,8 +861,20 @@ bool groth16_prove(const struct groth16_pk *pk,
             fr_mul(&h_eval[i], &h_eval[i], &z_h_inv);
     }
 
-    /* IFFT back to coefficient form */
-    fr_fft(h_eval, domain, true);
+    /* IFFT back to coefficient form.
+     * P9.4: same refuse-on-non-pow-2 contract. If we reached here the
+     * three forward FFTs already succeeded, so a failure now is
+     * anomalous — but the guard is cheap and keeps the call sites
+     * symmetric. */
+    if (!fr_fft(h_eval, domain, true)) {
+        free(a_eval); free(b_eval); free(c_eval); free(h_eval);
+        memset(proof_out, 0, sizeof(*proof_out));
+        memory_cleanse(&r_blind, sizeof(r_blind));
+        memory_cleanse(&s_blind, sizeof(s_blind));
+        LOG_FAIL("groth16",
+                 "prove: inverse fr_fft failed on h_eval "
+                 "(domain=%zu); proof_out zeroed", domain);
+    }
 
     /* Undo coset shift: coeff[i] *= g^{-i} */
     {
