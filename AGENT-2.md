@@ -38,7 +38,77 @@ gap analysis. See `AGENT.md` for the cross-agent priority table.
 
 ---
 
-## Current status — 2026-04-20 (P14.11 + P14.12 landed 5f04aef62 as the real sync-blocker fix; NEXT is P14.10 deferred-activation queue)
+## Current status — 2026-04-20 (P14.13 FILED — P14.11+P14.12 canary FAILED: rebuild_active_chain is O(N²) at live scale → boot hangs; NOW is P14.13)
+
+### NOW — P14.13 (CRITICAL): `chain_restore_rebuild_active_chain` is O(N²), boot hangs
+
+**Reproduced deterministically 2026-04-20 19:35 UTC on coordinator's deploy of `5f04aef62`.** Fresh binary booted, reached `Chain restore: anchor at h=3081601 hash=00000a98... — syncing forward.`, then pinned at 100% single-thread CPU for >5 min with no further log output. Memory stable at 1.75 GB (no leak, just compute-bound). `ss -tln` showed no listener on 18232 → RPC never opened → `tools/deploy_verify.sh` timed out after 30s. I manually stopped the service at 19:40 UTC; the boot would not have completed in reasonable time.
+
+**Root cause (by code inspection of `app/services/src/chain_restore_service.c:322-391`):**
+
+```c
+/* Walk pprev from tip. */
+for (struct block_index *p = tip; p != NULL; p = p->pprev) {
+    ...
+    if (h < deepest) deepest = h;
+}
+
+/* Residual holes below `deepest` — fill from block_map scan by height. */
+for (int h = 0; h <= tip_h; h++) {
+    if (c->chain[h] != NULL) continue;
+    size_t it = 0;
+    struct block_index *cand;
+    while (block_map_next(&ms->map_block_index, &it, NULL, &cand)) { /* O(M) */
+        if (!cand || cand->nHeight != h) continue;
+        ...
+    }
+}
+```
+
+The anchor's `pprev` is NULL (it's synthesized at the UTXO layer — the `Coins DB best block NOT found in block_index` path). So the first loop fills **only slot `tip_h`** and leaves slots `0..tip_h-1` as holes. The second loop then iterates `tip_h = 3,081,601` times, each time doing a full `block_map_next` scan over `map_size = 3,337,146` entries. That's **~10 trillion ops** — at ~100 Mops/sec on cache-miss-bound hash-table iteration, roughly **28 hours** of compute.
+
+**Test coverage gap:** `test_rebuild_active_chain_fills_holes_from_block_map` in `lib/test/src/test_chain_restore_service.c:475-540` uses `H = 10`. H=10 × map_size=11 is trivially fast. The O(N²) pathology is invisible at this scale. Same gap for `test_chain_restore_service`'s chain_restore_finalize path — all fixture chains are tiny.
+
+**Why P14.12's GREEN didn't catch it:** the coupled P14.11 RED (`0f1e221b9`) asserted integrity-check semantics, not wall-clock. The RED passes, the GREEN passes, but the production path is O(N²) in the worst case. This is the P14.12 equivalent of a `[test:1.0]` that shipped without the "runs in <1s on real-scale input" acceptance criterion.
+
+**Fix shape (preferred):**
+
+1. **Single-pass bucketing.** Replace the `for (h) { block_map_next(); }` nested loop with ONE `block_map_next` pass that buckets pindex entries by height into a temporary array of `tip_h+1` slots (each slot tracks the best candidate by BLOCK_HAVE_DATA + nChainWork). O(M) time, O(tip_h) temp memory. Then a final O(tip_h) pass fills `c->chain[h]` from the buckets.
+
+   Cost: one `block_index*[tip_h+1]` temp allocation = 24 MB at tip_h=3,081,601. Freed at function return.
+
+2. **Alternative — reconnect pprev first.** Before rebuild, resolve the anchor's parent via `block_map_find(&ms->map_block_index, &anchor_header.hashPrevBlock)` and set `anchor->pprev = parent`. Then the existing pprev-walk completes in O(tip_h) without ever hitting the residual-holes branch. Needs the anchor's parent hash to be reachable (it should be, since block_index has 3,337,146 entries and the anchor is at the UTXO-layer tip).
+
+   Smaller diff than option 1, but only fixes the *specific* anchor-restore shape — if any other path produces a pprev-NULL tip with ancestors in block_map, the O(N²) returns.
+
+**Prefer option 1.** It's the robust fix; option 2 is load-bearing on a specific call-site assumption. Both together is ideal: option 2 saves the 24 MB alloc on the happy path, option 1 prevents pathology on any pprev-NULL variant.
+
+**Discipline (P14 rule):**
+
+1. **RED test first**, in `test_chain_restore_service.c`:
+   - New test `chain_restore_rebuild: completes in <1s at realistic chain depth`. Build a synthetic block_map with N = 100,000 entries (small enough for CI, big enough to surface O(N²)); seed the chain_active tip with `pprev=NULL`; assert `chain_restore_rebuild_active_chain` returns within a wall-clock budget (e.g. 2s, very loose).
+   - FAILS on today's main (wall-clock blows the budget).
+2. **Fix** per option 1 (or option 1+2 combined).
+3. **Unit test passes**, plus the existing H=10 test still passes (functional correctness preserved).
+4. **Canary acceptance** (coordinator's row):
+   - Boot reaches `[chain-integrity] post-restore check OK` within 30 seconds of the `Chain restore: anchor at h=...` line.
+   - RPC comes up within 60 seconds of service start.
+   - `getblockcount` returns 3,081,601+ within 90 seconds of start.
+   - `getblockhash 3081000` returns a valid hash (the P14.12 success signal).
+   - Zero `bad-diffbits` lines (the P14.11 success signal).
+
+**STOP + ping Rhett:**
+- No change to on-disk `block_index.bin` format.
+- No change to the anchor/snapshot wire protocol.
+- The 24 MB temp allocation in option 1 is safe — system has 95 GB RAM (`block_index_estimate=1057MB` already in play at boot).
+
+**Priority:** P14.13 blocks the entire P14.11+P14.12 deploy. Until this lands, the production node can't boot on the post-P14.11 binary. The prior binary (Apr 19 20:05, pre-`5f04aef62`) has the P14.11 `bad-diffbits` sync stall but at least boots. If fix takes >2h, coordinator may revert the finalize call temporarily (a one-line `#if 0` in `chain_restore_service.c:436-439`) to unblock live-node observability — please land the fix quickly.
+
+### Previous NEXT (now superseded) — P14.10 (CRITICAL, remaining P14.7 sub-cause)
+
+P14.10 stays in queue but deprioritised behind P14.13 (boot-hang is the acute blocker; P14.10 is a clean-up after P14.8 already closed the functional gap).
+
+### Previous status (context, pre-P14.13) — P14.11 + P14.12 landed 5f04aef62 as the real sync-blocker fix
 
 **P10.1.5 "canary green" was a misread.** Live-node MCP showed
 h=3,081,601 because `val.block_connected` fires on block RECEIPT,
