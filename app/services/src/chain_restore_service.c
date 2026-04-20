@@ -268,6 +268,47 @@ void chain_restore_validate(struct chain_restore_validation *out,
                && out->tip_matches_expected;
 }
 
+/* ── Post-restore integrity check (P14.11 + P14.12) ────────────── */
+
+void chain_integrity_check_post_restore(struct chain_integrity_result *out,
+                                        const struct main_state *ms)
+{
+    memset(out, 0, sizeof(*out));
+    out->first_nbits_zero_height = -1;
+    out->first_hole_height = -1;
+
+    if (!ms) {
+        out->ok = false;
+        return;
+    }
+
+    /* P14.11: every pindex above genesis must have nBits != 0. */
+    size_t iter = 0;
+    struct block_index *pi;
+    while (block_map_next(&ms->map_block_index, &iter, NULL, &pi)) {
+        if (!pi || pi->nHeight <= 0)
+            continue;
+        if (pi->nBits == 0) {
+            out->zero_nbits_count++;
+            if (out->first_nbits_zero_height < 0 ||
+                pi->nHeight < out->first_nbits_zero_height)
+                out->first_nbits_zero_height = pi->nHeight;
+        }
+    }
+
+    /* P14.12: chain_active.chain[h] non-NULL for h in [0, tip]. */
+    out->tip_height = active_chain_height(&ms->chain_active);
+    for (int h = 0; h <= out->tip_height; h++) {
+        if (active_chain_at(&ms->chain_active, h) == NULL) {
+            out->active_chain_holes++;
+            if (out->first_hole_height < 0 || h < out->first_hole_height)
+                out->first_hole_height = h;
+        }
+    }
+
+    out->ok = (out->zero_nbits_count == 0 && out->active_chain_holes == 0);
+}
+
 /* ── Boot activation decision ──────────────────────────────────── */
 
 void boot_should_activate_chain(struct activation_decision *out,

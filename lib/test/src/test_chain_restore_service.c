@@ -321,6 +321,142 @@ static int test_activation_few_utxos_few_headers(void) {
     return failures;
 }
 
+/* ── Integrity (P14.11 + P14.12) ───────────────────────────────── */
+
+/* Build a clean chain of N linked pindex entries (h=0..N-1) with real
+ * nBits and pprev, then set the tip. Integrity must hold. */
+static int test_integrity_passes_on_clean_chain(void) {
+    int failures = 0;
+    TEST("chain_integrity: clean pprev-linked chain passes") {
+        struct main_state ms;
+        main_state_init(&ms);
+
+        const int N = 20;
+        struct uint256 hashes[20];
+        for (int h = 0; h < N; h++) {
+            memset(&hashes[h], 0, sizeof(hashes[h]));
+            hashes[h].data[0] = (uint8_t)(h & 0xFF);
+            hashes[h].data[1] = (uint8_t)((h >> 8) & 0xFF);
+            hashes[h].data[3] = 0xAB;
+            struct block_index *pi = chainstate_insert_block_index(
+                (struct chainstate *)&ms, &hashes[h]);
+            ASSERT(pi != NULL);
+            pi->nHeight  = h;
+            pi->nBits    = 0x1f07ffff;
+            pi->nTime    = 1000000 + (uint32_t)h * 150;
+            pi->nVersion = 4;
+            pi->nStatus  = BLOCK_VALID_SCRIPTS | BLOCK_HAVE_DATA;
+            pi->nTx      = 1;
+            pi->nChainTx = (uint32_t)(h + 1);
+            arith_uint256_set_u64(&pi->nChainWork, (uint64_t)(h + 1));
+            if (h > 0) {
+                struct block_index *prev = block_map_find(
+                    &ms.map_block_index, &hashes[h - 1]);
+                if (prev) pi->pprev = prev;
+            }
+        }
+        struct block_index *tip = block_map_find(
+            &ms.map_block_index, &hashes[N - 1]);
+        ASSERT(active_chain_set_tip(&ms.chain_active, tip));
+
+        struct chain_integrity_result r;
+        chain_integrity_check_post_restore(&r, &ms);
+        ASSERT(r.zero_nbits_count == 0);
+        ASSERT(r.active_chain_holes == 0);
+        ASSERT(r.tip_height == N - 1);
+        ASSERT(r.first_nbits_zero_height == -1);
+        ASSERT(r.first_hole_height == -1);
+        ASSERT(r.ok == true);
+
+        block_map_free(&ms.map_block_index);
+        active_chain_free(&ms.chain_active);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+/* RED: simulate the P14.11 + P14.12 live-node state. A synthetic
+ * anchor at h=N with nBits==0 and pprev==NULL, set as tip. The
+ * integrity check must detect BOTH:
+ *   - anchor pindex with nBits=0 (P14.11 signature),
+ *   - active_chain holes from 0..N-1 because anchor->pprev is NULL
+ *     so active_chain_set_tip walks into NULL (P14.12 signature). */
+static int test_integrity_fails_on_anchor_restore(void) {
+    int failures = 0;
+    TEST("chain_integrity: synthetic anchor (pprev=NULL, nBits=0) FAILS") {
+        struct main_state ms;
+        main_state_init(&ms);
+
+        const int H = 1000;
+        struct uint256 anchor_hash;
+        uint256_set_hex(&anchor_hash, "00000000feedface");
+        struct block_index *anchor =
+            chain_restore_create_anchor(&ms, &anchor_hash, H);
+        ASSERT(anchor != NULL);
+        ASSERT(anchor->nHeight == H);
+        ASSERT(anchor->nBits == 0);      /* P14.11 shape: nBits unset */
+        ASSERT(anchor->pprev == NULL);   /* P14.12 shape: no ancestry */
+
+        ASSERT(active_chain_set_tip(&ms.chain_active, anchor));
+
+        struct chain_integrity_result r;
+        chain_integrity_check_post_restore(&r, &ms);
+        ASSERT(r.ok == false);
+        ASSERT(r.zero_nbits_count >= 1);
+        ASSERT(r.first_nbits_zero_height == H);
+        ASSERT(r.active_chain_holes == H);        /* slots 0..H-1 are NULL */
+        ASSERT(r.first_hole_height == 0);
+        ASSERT(r.tip_height == H);
+
+        block_map_free(&ms.map_block_index);
+        active_chain_free(&ms.chain_active);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+/* Isolate P14.12: a clean pprev-linked chain with ONE nBits=0 entry
+ * above genesis must trip the P14.11 limb independently. */
+static int test_integrity_detects_isolated_nbits_zero(void) {
+    int failures = 0;
+    TEST("chain_integrity: single nBits=0 above genesis is detected") {
+        struct main_state ms;
+        main_state_init(&ms);
+
+        const int N = 5;
+        struct uint256 hashes[5];
+        for (int h = 0; h < N; h++) {
+            memset(&hashes[h], 0, sizeof(hashes[h]));
+            hashes[h].data[0] = (uint8_t)(h & 0xFF);
+            hashes[h].data[3] = 0xCD;
+            struct block_index *pi = chainstate_insert_block_index(
+                (struct chainstate *)&ms, &hashes[h]);
+            pi->nHeight  = h;
+            pi->nBits    = (h == 3) ? 0u : 0x1f07ffffu;   /* poison h=3 */
+            pi->nTime    = 1000 + (uint32_t)h * 150;
+            pi->nStatus  = BLOCK_VALID_SCRIPTS | BLOCK_HAVE_DATA;
+            if (h > 0) pi->pprev = block_map_find(
+                &ms.map_block_index, &hashes[h - 1]);
+            arith_uint256_set_u64(&pi->nChainWork, (uint64_t)(h + 1));
+        }
+        struct block_index *tip = block_map_find(
+            &ms.map_block_index, &hashes[N - 1]);
+        ASSERT(active_chain_set_tip(&ms.chain_active, tip));
+
+        struct chain_integrity_result r;
+        chain_integrity_check_post_restore(&r, &ms);
+        ASSERT(r.zero_nbits_count == 1);
+        ASSERT(r.first_nbits_zero_height == 3);
+        ASSERT(r.active_chain_holes == 0);
+        ASSERT(r.ok == false);
+
+        block_map_free(&ms.map_block_index);
+        active_chain_free(&ms.chain_active);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 /* ── Registration ──────────────────────────────────────────────── */
 
 int test_chain_restore_service(void) {
@@ -343,5 +479,9 @@ int test_chain_restore_service(void) {
     failures += test_activation_anchor_created();
     failures += test_activation_no_utxos_many_headers();
     failures += test_activation_few_utxos_few_headers();
+    /* P14.11 + P14.12 integrity-check tests */
+    failures += test_integrity_passes_on_clean_chain();
+    failures += test_integrity_fails_on_anchor_restore();
+    failures += test_integrity_detects_isolated_nbits_zero();
     return failures;
 }

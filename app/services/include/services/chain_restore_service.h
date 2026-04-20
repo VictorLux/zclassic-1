@@ -102,6 +102,38 @@ void chain_restore_validate(struct chain_restore_validation *out,
                             const struct uint256 *expected_hash,
                             int expected_height);
 
+/* ── Post-restore integrity check (P14.11 + P14.12) ────────────────
+ *
+ * Walks the main_state after an anchor-restore / snapshot-restore path
+ * and surfaces the two invariants that `accept_block` / `connect_block`
+ * normally establish but the anchor shortcut skips:
+ *
+ *   P14.11: every pindex above genesis must have `nBits != 0`.
+ *           `GetNextWorkRequired` reads `pprev->nBits` and walks back
+ *           `nPowAveragingWindow` steps — a zero anywhere in the window
+ *           collapses the target to `nProofOfWorkLimit` and rejects
+ *           every real-difficulty header as `bad-diffbits`.
+ *
+ *   P14.12: for every h in [0, chain_active.height], the slot
+ *           `chain_active.chain[h]` must be non-NULL. Holes break
+ *           `getblockhash` and any consumer that walks the active
+ *           chain by height (explorer, bg_validation, etc.).
+ *
+ * Pure function — does NOT mutate state. Designed to be called at the
+ * end of the boot restore path (RED on pre-fix, GREEN after backfill)
+ * and from unit tests. Sets `out->ok` iff both counts are zero. */
+struct chain_integrity_result {
+    int  zero_nbits_count;
+    int  active_chain_holes;
+    int  tip_height;
+    int  first_nbits_zero_height;   /* -1 if none */
+    int  first_hole_height;         /* -1 if none */
+    bool ok;
+};
+
+void chain_integrity_check_post_restore(struct chain_integrity_result *out,
+                                        const struct main_state *ms);
+
 /* ── Boot activation decision ──────────────────────────────────── */
 
 enum activation_skip_reason {
