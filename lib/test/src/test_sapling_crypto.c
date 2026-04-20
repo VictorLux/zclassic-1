@@ -684,6 +684,66 @@ int test_sapling_crypto(void)
         else { printf("FAIL\n"); failures++; }
     }
 
+    /* P9.1: g1_scalar_mul must run identical work regardless of scalar
+     * Hamming weight. Pre-fix, the prover only executed `g1_add` on
+     * bits that were set — so an attacker measuring wall time of the
+     * prover recovered partial information about the Groth16 blinding
+     * factors `r_blind` / `s_blind` (`groth16_prover.c:906,934`).
+     *
+     * This test compares a Hamming-weight-1 scalar (one `g1_add`,
+     * 256 `g1_double`s) against a full-255-bit scalar (~255 adds + 255
+     * doubles). On the pre-fix code the ratio is ~1.5–2.0; on the
+     * constant-time implementation both sides always do 256 adds and
+     * 256 doubles so the ratio collapses to ~1.0. The tolerance is
+     * deliberately generous to tolerate CI-host noise — anything
+     * beyond 1.20 indicates a skipped-add branch. */
+    printf("BLS12-381 g1_scalar_mul timing vs scalar weight (P9.1)... ");
+    {
+        const uint8_t g1_gen[48] = {
+            0x97,0xf1,0xd3,0xa7,0x31,0x97,0xd7,0x94,
+            0x26,0x95,0x63,0x8c,0x4f,0xa9,0xac,0x0f,
+            0xc3,0x68,0x8c,0x4f,0x97,0x74,0xb9,0x05,
+            0xa1,0x4e,0x3a,0x3f,0x17,0x1b,0xac,0x58,
+            0x6c,0x55,0xe8,0x3f,0xf9,0x7a,0x1a,0xef,
+            0xfb,0x3a,0xf0,0x0a,0xdb,0x22,0xc6,0xbb
+        };
+        struct g1_point P;
+        g1_from_compressed(&P, g1_gen);
+
+        uint64_t lo_scalar[4] = {1, 0, 0, 0};              /* Hamming weight 1 */
+        uint64_t hi_scalar[4] = {~0ULL, ~0ULL, ~0ULL,
+                                 0x0fffffffffffffffULL};    /* weight ~252 */
+
+        struct g1_point R;
+        const int WARMUP = 4;
+        const int ITERS = 30;
+        for (int i = 0; i < WARMUP; i++) g1_scalar_mul(&R, &P, lo_scalar);
+
+        /* Median-of-five per side to dampen scheduler noise. */
+        uint64_t lo_meds[5], hi_meds[5];
+        for (int batch = 0; batch < 5; batch++) {
+            uint64_t t0 = monotonic_ns_now();
+            for (int i = 0; i < ITERS; i++) g1_scalar_mul(&R, &P, lo_scalar);
+            lo_meds[batch] = monotonic_ns_now() - t0;
+
+            t0 = monotonic_ns_now();
+            for (int i = 0; i < ITERS; i++) g1_scalar_mul(&R, &P, hi_scalar);
+            hi_meds[batch] = monotonic_ns_now() - t0;
+        }
+        for (int a = 0; a < 5; a++)
+            for (int b = a + 1; b < 5; b++) {
+                if (lo_meds[b] < lo_meds[a]) { uint64_t t = lo_meds[a]; lo_meds[a] = lo_meds[b]; lo_meds[b] = t; }
+                if (hi_meds[b] < hi_meds[a]) { uint64_t t = hi_meds[a]; hi_meds[a] = hi_meds[b]; hi_meds[b] = t; }
+            }
+        uint64_t lo = lo_meds[2], hi = hi_meds[2];
+        double ratio = (double)hi / (double)lo;
+        bool ok = (ratio <= 1.20) && (ratio >= 0.83);
+        printf("(lo=%.2fms hi=%.2fms ratio=%.3f) ",
+               (double)lo / 1e6, (double)hi / 1e6, ratio);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
     printf("multipack_bytes_to_fr... ");
     {
         uint8_t bytes[32];
