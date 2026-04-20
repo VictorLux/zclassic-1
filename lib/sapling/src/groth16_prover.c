@@ -58,13 +58,15 @@ bool lc_add_term(struct linear_combination *lc, size_t var,
 {
     if (lc->num_terms >= lc->cap) {
         size_t new_cap = lc->cap ? lc->cap * 2 : 8;
-        struct lc_term *new_terms = g_cs_realloc(lc->terms,
-                                             new_cap * sizeof(struct lc_term), "lc_terms");
-        /* P9.3 RED: return false on realloc failure but STILL skip the flag
-         * + skip LOG_FAIL. Silent-drop bug preserved; GREEN will set
-         * lc->oom_error and LOG_FAIL here. Tests that assert oom_error
-         * FAIL at this point, demonstrating the silent-drop symptom. */
-        if (!new_terms) return false;
+        size_t bytes = new_cap * sizeof(struct lc_term);
+        struct lc_term *new_terms = g_cs_realloc(lc->terms, bytes, "lc_terms");
+        if (!new_terms) {
+            lc->oom_error = true;
+            LOG_FAIL("groth16",
+                     "lc_add_term: realloc failed (new_cap=%zu bytes=%zu); "
+                     "term dropped, LC marked oom_error",
+                     new_cap, bytes);
+        }
         lc->terms = new_terms;
         lc->cap = new_cap;
     }
@@ -118,11 +120,15 @@ static size_t cs_alloc_var(struct constraint_system *cs, const struct fr *value)
 {
     if (cs->num_vars >= cs->cap_vars) {
         size_t new_cap = cs->cap_vars * 2;
-        struct fr *new_w = g_cs_realloc(cs->witness, new_cap * sizeof(struct fr), "cs_witness");
-        /* P9.3 RED: return 0 (which aliases CS_ONE!) on realloc failure
-         * without setting cs->oom_error or LOG_FAIL. Catastrophic silent
-         * aliasing bug preserved; GREEN will set the flag + LOG_FAIL. */
-        if (!new_w) return 0;
+        size_t bytes = new_cap * sizeof(struct fr);
+        struct fr *new_w = g_cs_realloc(cs->witness, bytes, "cs_witness");
+        if (!new_w) {
+            cs->oom_error = true;
+            LOG_RETURN(0, "groth16",
+                       "cs_alloc_var: realloc failed (new_cap=%zu bytes=%zu); "
+                       "returning 0 which aliases CS_ONE, CS marked oom_error",
+                       new_cap, bytes);
+        }
         cs->witness = new_w;
         cs->cap_vars = new_cap;
     }
@@ -148,32 +154,67 @@ bool cs_enforce(struct constraint_system *cs,
                 const struct linear_combination *b,
                 const struct linear_combination *c)
 {
-    /* P9.3 RED: do not propagate a/b/c->oom_error into cs->oom_error,
-     * do not LOG_FAIL on realloc fail, do not check internal lc_add_term
-     * return. Silent-drop bug preserved end-to-end for the RED test. */
+    /* Propagate any caller-local LC OOM: a gadget may have ignored a
+     * bool return from lc_add_term and handed us a truncated LC. */
+    if (a->oom_error || b->oom_error || c->oom_error) {
+        cs->oom_error = true;
+        LOG_FAIL("groth16",
+                 "cs_enforce: input LC has oom_error set "
+                 "(a=%d b=%d c=%d); constraint dropped, CS marked oom_error",
+                 (int)a->oom_error, (int)b->oom_error, (int)c->oom_error);
+    }
+
     if (cs->num_constraints >= cs->cap_constraints) {
         size_t new_cap = cs->cap_constraints * 2;
-        struct r1cs_constraint *new_c = g_cs_realloc(cs->constraints,
-            new_cap * sizeof(struct r1cs_constraint), "cs_constraints");
-        if (!new_c) return false;
+        size_t bytes = new_cap * sizeof(struct r1cs_constraint);
+        struct r1cs_constraint *new_c = g_cs_realloc(cs->constraints, bytes,
+                                                     "cs_constraints");
+        if (!new_c) {
+            cs->oom_error = true;
+            LOG_FAIL("groth16",
+                     "cs_enforce: realloc failed (new_cap=%zu bytes=%zu); "
+                     "constraint dropped, CS marked oom_error",
+                     new_cap, bytes);
+        }
         cs->constraints = new_c;
         cs->cap_constraints = new_cap;
     }
 
-    struct r1cs_constraint *con = &cs->constraints[cs->num_constraints++];
-
-    /* Deep copy the linear combinations */
+    /* Build the constraint into scratch LCs first; only bump
+     * num_constraints after every internal lc_add_term succeeds. */
+    struct r1cs_constraint *con = &cs->constraints[cs->num_constraints];
     lc_init(&con->a);
-    for (size_t i = 0; i < a->num_terms; i++)
-        lc_add_term(&con->a, a->terms[i].var, &a->terms[i].coeff);
-
     lc_init(&con->b);
-    for (size_t i = 0; i < b->num_terms; i++)
-        lc_add_term(&con->b, b->terms[i].var, &b->terms[i].coeff);
-
     lc_init(&con->c);
-    for (size_t i = 0; i < c->num_terms; i++)
-        lc_add_term(&con->c, c->terms[i].var, &c->terms[i].coeff);
+
+    for (size_t i = 0; i < a->num_terms; i++) {
+        if (!lc_add_term(&con->a, a->terms[i].var, &a->terms[i].coeff)) {
+            cs->oom_error = true;
+            lc_free(&con->a); lc_free(&con->b); lc_free(&con->c);
+            LOG_FAIL("groth16",
+                     "cs_enforce: deep-copy a[%zu/%zu] lc_add_term failed",
+                     i, a->num_terms);
+        }
+    }
+    for (size_t i = 0; i < b->num_terms; i++) {
+        if (!lc_add_term(&con->b, b->terms[i].var, &b->terms[i].coeff)) {
+            cs->oom_error = true;
+            lc_free(&con->a); lc_free(&con->b); lc_free(&con->c);
+            LOG_FAIL("groth16",
+                     "cs_enforce: deep-copy b[%zu/%zu] lc_add_term failed",
+                     i, b->num_terms);
+        }
+    }
+    for (size_t i = 0; i < c->num_terms; i++) {
+        if (!lc_add_term(&con->c, c->terms[i].var, &c->terms[i].coeff)) {
+            cs->oom_error = true;
+            lc_free(&con->a); lc_free(&con->b); lc_free(&con->c);
+            LOG_FAIL("groth16",
+                     "cs_enforce: deep-copy c[%zu/%zu] lc_add_term failed",
+                     i, c->num_terms);
+        }
+    }
+    cs->num_constraints++;
     return true;
 }
 
@@ -673,6 +714,18 @@ bool groth16_prove(const struct groth16_pk *pk,
                    const struct constraint_system *cs,
                    struct groth16_proof *proof_out)
 {
+    /* P9.3: refuse to prove if CS construction hit OOM. Otherwise the
+     * witness / constraints / public-input indices are silently wrong
+     * and we'd emit a valid-looking proof for the wrong circuit. */
+    if (cs->oom_error) {
+        memset(proof_out, 0, sizeof(*proof_out));
+        LOG_FAIL("groth16",
+                 "prove: refusing — cs->oom_error is set "
+                 "(realloc failed during CS construction; circuit is "
+                 "silently wrong, proof would not match verifier's "
+                 "expected circuit)");
+    }
+
     size_t m = cs->num_vars;
     size_t l = cs->num_inputs;
     size_t n_con = cs->num_constraints;
