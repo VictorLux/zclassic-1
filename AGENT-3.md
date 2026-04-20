@@ -38,69 +38,73 @@ See `AGENT.md` for the cross-agent priority table.
 
 ---
 
-## 2026-04-20: P9.5 SHIPPED ff25fc779 — NOW P9.3 (OOM silent-drop in cs_alloc_var / lc_add_term / cs_enforce)
+## 2026-04-20: P9.3 SHIPPED 86ebfc4b5 — NOW P9.4 (fr_fft / fr_fft_parallel non-pow-2 silent no-op)
 
-P9.5 landed as a RED+GREEN pair (one coupled push; the "mark done" commit was dropped during rebase since the coordinator clone filed P14.11+P14.12 in parallel — coordinator has now updated AGENT.md + AGENT-3.md directly):
+P9.3 landed as a RED+GREEN pair on top of Agent-2's P14.11+P14.12 RED (coordinator pushed the P9.3 pair after the P14 RED so the sync-blocker work stays on top):
 
-- `d978f0407` — RED: 16-thread barrier-raced first-caller test in `lib/test/src/test_sapling_lazy_init.c`; pre-fix body_runs=6 (pedersen) + 16 (empty_roots) vs invariant 1.
-- `ff25fc779` — GREEN: `pthread_once` guards on both `ensure_generators` + `ensure_sapling_empty_roots`; empty_roots init simplified to parameterless routine; post-fix body_runs=1 deterministically.
+- `a2f66f9db` — RED: four failing-realloc hook tests in `test_sapling_crypto.c` mirroring the P2.2 alloc-hook pattern; exercise `lc_add_term` (LC realloc at cap→2·cap), `cs_alloc_aux` (witness realloc at 256→512), `cs_enforce` (input-LC oom_error propagation from gadget-site), and `groth16_prove` (entry-check + zeroed proof output). Supporting infra added: `oom_error` field on `struct linear_combination` and `struct constraint_system`, `g_cs_realloc` wrapper + test-hook, and `bool` return types on `lc_add_term`/`cs_enforce` — helpers still silently dropped pre-GREEN.
+- `86ebfc4b5` — GREEN: `lc_add_term` / `cs_alloc_var` / `cs_enforce` now set the sticky `oom_error` flag + `LOG_FAIL` on realloc failure; `cs_enforce` also propagates `a/b/c->oom_error` from input LCs before doing work (gadgets that ignore the bool return are still caught); `groth16_prove` refuses at entry when `cs->oom_error` is set and zeroes `proof_out` so the prover never emits a valid-looking but wrong proof. No blast radius into the 180+ `lc_add_term` / 28 `cs_enforce` callers in `circuit_gadgets.c` / `sapling_circuit.c` — they return void and discard the bool return (safe under `-Wno-unused-result`), and the flag still propagates through the CS.
 
 P12.1 (8fb7cb623) still awaits live verification on Rhett's next
 `make deploy` — should see `Sapling tree loaded from checkpoint
 ...` instead of `Sapling tree root MISMATCH ... rebuilding ...`.
 
-### NOW — P9.3: OOM silent-drop in Groth16 CS builders
+### NOW — P9.4: `fr_fft` / `fr_fft_parallel` silent no-op on non-pow-2
 
-Pre-authorized row #2 in the NEXT queue. `groth16_prover.c:38-44,
-91-103, 117-145` — three helpers return `void` and silently drop
-their input on `zcl_realloc` failure:
+Pre-authorized row #2 in the NEXT queue (now #1 after P9.3). Three
+sites share the same pattern: a `log2` check whose failure branch
+silently `return;`s, so the caller keeps working with un-FFT'd
+data. Currently unreachable via `groth16_prove` because
+`groth16_prover.c:648-650` rounds the domain to a power of 2
+before calling the FFT, but the pattern sits in the prover waiting
+for the next caller (or the next refactor that shuffles the
+domain-rounding logic).
 
-- `lc_add_term` — drops term; linear combination becomes wrong.
-- `cs_alloc_var` — returns 0 = CS_ONE index, aliasing every
-  subsequent var to ONE. (Catastrophic.)
-- `cs_enforce` — drops a constraint; CS is syntactically valid
-  but semantically different from the verifier-expected circuit.
-
-On OOM mid-proof, the prover then emits a Groth16 proof for the
-wrong circuit. No log, no signal. Only surfaces under memory
-pressure — exactly when the node is struggling.
+**Files + lines:**
+- `lib/sapling/src/groth16_prover.c:222` — `fr_fft` early-return.
+- `lib/sapling/src/msm_parallel.c:333, 340` — `fr_fft_parallel`
+  entry guard + worker-dispatch guard (same bug class).
 
 **Fix shape:**
-1. Promote each helper's return type to `bool`.
-2. `LOG_FAIL` with the realloc size on failure.
-3. Every caller checks and propagates a consistent failure path
-   (`groth16_prove` returns false; downstream proof-building code
-   treats that as a hard error, same shape as a missing proving
-   key).
+1. Promote each to `bool` return.
+2. `LOG_FAIL` with the actual `n` (and `log_n` if reachable) on
+   bad input so a future caller sees it immediately.
+3. Every caller checks. The `groth16_prove` / QAP-evaluation path
+   is the reachable one — propagate to a `groth16_prove` returns
+   false + zeroed proof outcome (same shape as the P9.3 OOM entry
+   check, so the failure path is already exercised by the P9.3
+   RED test infrastructure).
 
 **Discipline (every P9.x row is [test:1.0]):**
 1. **RED FIRST** — unit test in `test_sapling_crypto.c` that
-   installs a failing-realloc hook (there's already a realloc
-   injection pattern in `test_net.c::msgprocessor_test_set_mempool_alloc_hook`
-   — mirror that), calls `groth16_prove` on a minimal circuit,
-   asserts the return is false AND the emitted proof is zeroed
-   (not a valid-looking but wrong proof). Today this test FAILS
-   because the helpers silently drop and the proof looks "fine"
-   despite missing constraints. Commit RED.
-2. **GREEN** — flip the helpers to bool, propagate, LOG_FAIL.
-   Test passes. Commit GREEN.
-3. **Mark done** — update `AGENT.md` row for P9.3 + this NOW
+   bypasses the domain-rounding in `groth16_prove` (either by
+   calling `fr_fft` directly with a non-pow-2 `n`, or by adding
+   a test hook that forces a non-pow-2 domain size) and asserts
+   `fr_fft` returns false + `LOG_FAIL` is hit. Today this test
+   FAILS because `fr_fft` returns `void` and silently no-ops on
+   bad input. Commit RED.
+2. **GREEN** — flip to bool, propagate, LOG_FAIL. Test passes.
+   Commit GREEN.
+3. **Mark done** — update `AGENT.md` row for P9.4 + this NOW
    section.
 
 **Files in scope:**
-- `lib/sapling/src/groth16_prover.c` — helpers + caller sites.
-- `lib/sapling/include/sapling/groth16_prover.h` — API signatures if any leak out.
+- `lib/sapling/src/groth16_prover.c` — `fr_fft` declaration + call-sites.
+- `lib/sapling/src/msm_parallel.c` — `fr_fft_parallel` declaration + call-sites.
+- `lib/sapling/include/sapling/*.h` — API signatures if any leak out.
 - `lib/test/src/test_sapling_crypto.c` — the RED test.
 
 **Acceptance:**
 - ./test_zcl green on sapling/crypto subsets.
-- The 3 existing environmental failures (binary /home/rhett
+- The 3 pre-existing environmental failures (binary /home/rhett
   leak + lint-gate x2) remain unchanged — those are not your lane.
 
 **STOP + ping Rhett triggers:**
-- If fixing the OOM path requires a new consensus-level behaviour (e.g. refusing to start with constrained memory), flag before landing.
+- If the fix requires the `fr_fft` path to panic (rather than
+  return false and let the prover zero its output), flag before
+  landing — that would be a policy decision.
 
-After P9.3, drain the NEXT queue below (P9.4 → P9.1 → P9.2 careful-triage → P9.6 → P9.7 → P9.8 → P9.9 → P9.10). P11.4/5/6/8 MVP CI gates remain blocked on Agent-2's upstream work (parity diff service, shielded payment flow, store flow, 7-day soak harness).
+After P9.4, drain the NEXT queue below (P9.1 → P9.2 careful-triage → P9.6 → P9.7 → P9.8 → P9.9 → P9.10). P11.4/5/6/8 MVP CI gates remain blocked on Agent-2's upstream work (parity diff service, shielded payment flow, store flow, 7-day soak harness).
 
 ### (ARCHIVED — P12.1 brief, now done)
 
@@ -213,8 +217,8 @@ following without pinging:
 | Order | Row | Size | Severity | Brief |
 |---|---|---|---|---|
 | ~~1~~ | ~~**P9.5** — pthread_once guard on lazy Sapling caches~~ | — | — | done ff25fc779 [test:1.0] |
-| **NOW** | **P9.3** — `lc_add_term` / `cs_alloc_var` / `cs_enforce` OOM silent-drop | small | HIGH | `groth16_prover.c:38-44, 91-103, 117-145` — return bool + propagate; LOG_FAIL on realloc failure. Brief in NOW section above. |
-| 2 | **P9.4** — `fr_fft` / `fr_fft_parallel` silent no-op on non-pow-2 | small | HIGH | `groth16_prover.c:222`, `msm_parallel.c:333,340` — promote to bool, LOG_FAIL on bad input. Currently unreachable via `groth16_prove` but the pattern waits for the next caller. |
+| ~~2~~ | ~~**P9.3** — `lc_add_term` / `cs_alloc_var` / `cs_enforce` OOM silent-drop~~ | — | — | done 86ebfc4b5 [test:1.0] (RED a2f66f9db) |
+| **NOW** | **P9.4** — `fr_fft` / `fr_fft_parallel` silent no-op on non-pow-2 | small | HIGH | `groth16_prover.c:222`, `msm_parallel.c:333,340` — promote to bool, LOG_FAIL on bad input. Currently unreachable via `groth16_prove` but the pattern waits for the next caller. Brief in NOW section above. |
 | 3 | **P9.1** — `g1_scalar_mul` constant-time | medium | HIGH | `lib/sapling/src/bls12_381.c:1708-1722` — mirror P1.12 / P1.16b pattern. Branches on secret blinding scalars (r_blind, s_blind, r·s); masked linear-scan table select + unconditional-add-with-mask. Hamming-weight timing regression test. |
 | 4 | **P9.2** — `sapling_circuit.c` placeholder UB paths | small-or-huge | CRITICAL | `:65, :161-162` — decide first whether these paths are shadowed by another prover impl (`grep -r sapling_create_spend_proof`). If shadowed: 3-line `LOG_FAIL`. If live: multi-day rewrite; STOP + ping Rhett before starting that. |
 | 5 | **P9.6** — `sapling_prover_c23.c` witness length arg | small | MED | Add `size_t witness_len` + LOG_FAIL on shortfall. |
