@@ -122,6 +122,26 @@ natively.
 
 - [ ] **P18.4** MED — validate AVX-512 IFMA isn't silently falling back. New `zcl_crypto_status` MCP tool reports active code path (`AVX-512 IFMA / AVX2 / scalar`) + cycles-per-op benchmark.
 
+### Phase 5 — P20 Developer MCP (Agent-3 share — START IMMEDIATELY)
+
+**Can run in parallel with P9 drain.** Lane match: test infrastructure
++ coverage tooling naturally overlaps with Agent-3's testing lead.
+
+- [ ] **P20.4** HIGH — `zcl_coverage` MCP tool: per-file line coverage + test-file mapping. Built from `gcov`/`llvm-cov` artifacts.
+- [ ] **P20.10** HIGH — `zcl_test_map` MCP tool: `test_file → [files_exercised]` + reverse. Answers "what test would catch this?"
+
+### Phase 6 — P21 Test god-object deconstruction
+
+**No dependency** — can start anytime. Big quality-of-life for every
+sapling + net test touch.
+
+- [ ] **P21.7** HIGH — `test_sapling.c` (4,677) → `test_sapling_{crypto,circuit,proof,note,tree,wallet}.c`. No file over 1,000 lines post-split.
+- [ ] **P21.8** HIGH — `test_net.c` (4,123) → `test_net_{msgprocessor,download,connman,dandelion,swarm}.c`. Preserves all current cases; rename-only diff.
+
+### Phase 7 — P22 AI-native scaffolding (Agent-3 share)
+
+- [ ] **P22.4 (A3 share)** MED — `docs/spec/{crypto,sapling,keys}.md` cold-memory RAG corpus. Each: architecture, invariants, known gotchas, constant-time guarantees, side-channel notes.
+
 ---
 
 ## Cross-cutting notes
@@ -141,6 +161,6 @@ natively.
 5. **STOP + ping Rhett** on any serialization / consensus constant / P2P wire format change.
 6. **Keep `make test` green.** Push every row; never amend pushed commits.
 
-Total rows in this queue: **~25**. At historical cadence this is
-~6-10 weeks. P17.1 + P17.2 + P11.6 are the three highest-leverage
-rows — each unblocks measurement we don't have today.
+Total rows in this queue: **~25** across 4 phases. P17.1 + P17.2 +
+P11.6 are the three highest-leverage rows — each unblocks measurement
+we don't have today.

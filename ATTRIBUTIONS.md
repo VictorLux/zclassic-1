@@ -80,6 +80,49 @@ contract). Used by ZCL atomic swap protocol (ZSWP).
 Embedded database for the canonical UTXO store, wallet keystore, block
 index (post-P14.16 CRC), and application state.
 
+## mcp-language-server (isaacphi) — MIT
+
+**Repository:** https://github.com/isaacphi/mcp-language-server
+**License:** MIT
+
+LSP-to-MCP bridge providing semantic code intelligence tools
+(`get_definition`, `find_references`, `rename`, `diagnostics`, `hover`,
+`call_hierarchy`). Referenced by **P22.3** — zclassic23 integrates
+this pattern directly (clangd subprocess + MCP-exposed LSP tools)
+rather than hand-rolling symbol lookup. Alternative LSP-MCP bridges
+also surveyed: `lsp-mcp` (jonrad), `multilspy`, `lsp-mcp-server`
+(ProfessioneIT) — all MIT / Apache-2.0.
+
+## AGENTS.md portable-standard (community convention) — no license
+
+**Reference:** https://www.augmentcode.com/guides/how-to-build-agents-md,
+https://github.com/0xdevalias/some-notes-on-ai-rule-files
+
+Emerging 2026 convention for AI coding agents: `AGENTS.md` at repo
+root is the portable successor to per-tool files (`.cursorrules`,
+`CLAUDE.md`, etc.). Referenced by **P22.1**. zclassic23 adopts the
+convention with a dual-link to `CLAUDE.md` for Claude Code
+compatibility.
+
+## Codified Context Infrastructure (arxiv 2602.20478)
+
+**Reference:** https://arxiv.org/abs/2602.20478
+
+Three-tier pattern for AI-native codebases: (1) hot-memory constitution
+(conventions + retrieval hooks), (2) specialized domain-expert agents,
+(3) cold-memory knowledge base of specification documents. Referenced
+by **P22** group as a whole, especially **P22.4** (cold-memory spec
+corpus in `docs/spec/`).
+
+## AC YAML Sidecar (Spec-Driven Development)
+
+**Reference:** https://github.com/AsiaOstrich/universal-dev-standards
+
+Machine-readable acceptance criteria format via `.ac.yaml` files.
+Referenced by **P22.2** — zclassic23's `docs/rows/P<id>.ac.yaml`
+sidecars keep AGENT.md row metadata parseable for the `zcl_roadmap`
+MCP tool (P20.2).
+
 ## Tor (modified fork with dynhost) — 3-clause BSD
 
 **Vendored path:** `vendor/tor`

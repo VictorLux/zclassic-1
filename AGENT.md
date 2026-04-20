@@ -43,8 +43,8 @@ new Priority groups P15-P19 (discipline + architecture + testing + perf
 | (P0 baseline) | 4 / 4 | — |
 
 **Owner state (2026-04-20, post-cleanup):**
-- **Agent-2 NOW:** **P14.13** — `chain_restore_rebuild_active_chain` O(N²) boot hang. Then P14 drain → P13/P12/P7/P8 drain → P15 discipline → P16 staged-sync port → P17.4/P17.5 support → P18 perf → P19.1 attribution. Full checklist in [`AGENT-2.md`](AGENT-2.md). ~50 rows, ~3-4 months.
-- **Agent-3 NOW:** **P9.4** — `fr_fft` / `fr_fft_parallel` silent no-op. Then P9 drain → P11.4/P11.5/P11.6/P11.8 MVP CI gates → P15.4/P15.5 discipline → P17 testing lead → P18.4 crypto perf. Full checklist in [`AGENT-3.md`](AGENT-3.md). ~25 rows, ~6-10 weeks.
+- **Agent-2 NOW:** **P14.13** — `chain_restore_rebuild_active_chain` O(N²) boot hang. Then P14 drain → P13/P12/P7/P8 drain → P15 discipline → P16 staged-sync port → P17.4/P17.5 support → P18 perf → P19.1 attribution → P20 dev-MCP → P21 god-object split → P22 AI-native scaffolding. Full checklist in [`AGENT-2.md`](AGENT-2.md).
+- **Agent-3 NOW:** **P9.4** — `fr_fft` / `fr_fft_parallel` silent no-op. Then P9 drain → P11.4/P11.5/P11.6/P11.8 MVP CI gates → P15.4/P15.5 discipline → P17 testing lead → P18.4 crypto perf → P20 dev-MCP (coverage + test-map) → P21 test god-object split. Full checklist in [`AGENT-3.md`](AGENT-3.md).
 - **Coordinator (Rhett):** canary post-P14.13 deploy; review P15-P18 acceptance; own license decision (P19.2); monitor KPIS.
 
 **Live-node state:** chain pinned at h=3,081,601 (SQLite); legacy
@@ -270,7 +270,7 @@ tightening semantics.
 
 ## Priority 16 — Architecture / Rails-way (Erigon-inspired)
 
-**Start gate:** P14 drains + P15.1/P15.2 land. ~6 weeks.
+**Start gate:** P14 drains + P15.1/P15.2 land.
 
 | # | Task | File | Severity | Owner | Attribution |
 |---|---|---|---|---|---|
@@ -314,6 +314,80 @@ architecture you're about to rewrite.
 |---|---|---|
 | P19.1 | `ATTRIBUTIONS.md` seed + per-row cross-refs | done 2026-04-20 (file created; rows append as they land) |
 | P19.2 | LICENSE audit; set zclassic23's own license | open — Coordinator |
+
+---
+
+## Priority 20 — Developer MCP (MCP-for-dev, 2026-04-20)
+
+**The goal:** fresh AI agent sessions orient in 3-5K tokens instead of
+15-20K. Today's 60+ MCP tools query the running **node**; P20 adds
+tools that query the **repo + its state**.
+
+Research grounding: the 2026 state-of-the-art for AI-native codebases
+is LSP-MCP bridges + structured project metadata + per-subsystem
+agents.md. See [`ATTRIBUTIONS.md`](ATTRIBUTIONS.md) for inspirations.
+
+**Can start immediately** — doesn't depend on P14/P15/P16. Parallel
+with everything else.
+
+| # | Tool | Purpose | Owner |
+|---|---|---|---|
+| **P20.1** | `zcl_codemap` | Returns `{subsystem: {files, public_symbols, deps}}` for `lib/*/` and `app/*/`. Fast orientation for fresh agents. | Agent-2 |
+| **P20.2** | `zcl_roadmap` | Generates from `.ac.yaml` sidecars (P22.2). Returns AGENT.md rows as JSON: `{id, tier, severity, owner, status, sha, acceptance, depends_on}`. Agents query "what's my NOW" programmatically. | Agent-2 |
+| **P20.3** | `zcl_lsp_*` family — superseded by P22.3 (integrate `mcp-language-server` via clangd; don't reinvent) | (filed here for dep tracking — implementation is P22.3) | Agent-2 |
+| **P20.4** | `zcl_coverage` | `file → {lines_covered, lines_total, test_files: [...]}`. Built from `gcov`/`llvm-cov`. | Agent-3 |
+| **P20.5** | `zcl_impact` | `file_or_symbol → transitive reverse-dependency graph`. Uses P22.3 LSP call-hierarchy + type-hierarchy under the hood. | Agent-2 |
+| **P20.6** | `zcl_lint_status` | Current `make lint` violations with file:line. Cached; refreshes on file-change mtime. | Agent-2 |
+| **P20.7** | `zcl_postmortems` | Structured index of `docs/postmortems/` — `{date, title, root_cause_tag, affected_rows, outcome}`. | Agent-2 |
+| **P20.8** | `zcl_stages` | (Post-P16) Staged-sync pipeline graph: `{stage_id, forward_file, unwind_file, prune_file, invariants, last_timings}`. | Agent-2 |
+| **P20.9** | `zcl_build_info` | Last-built binary SHA + delta files since. "The running binary doesn't match your tree" warning. | Agent-2 |
+| **P20.10** | `zcl_test_map` | `test_file → [files_exercised]` + reverse. Answers "what test would catch this regression?" | Agent-3 |
+
+## Priority 21 — God-object deconstruction
+
+**Research grounding:** 2026 LLM context studies show smaller focused
+modules + retrieval beat stuffing large files. File-size budget
+enforced by lint (see P22.5).
+
+10 files over 2,000 lines. 5 are controllers (Rails-way violation —
+"skinny controllers, fat services"). Rest are test god-objects + the
+boot coordinator + `process_block.c` (absorbs into P16.2 stages).
+
+| # | File | Lines | Target split | Owner |
+|---|---|---|---|---|
+| **P21.1** | `app/controllers/src/sync_controller.c` | 3,456 | Pure dispatch glue (~150 lines); move logic to new services | Agent-2 |
+| **P21.2** | `app/controllers/src/explorer_controller.c` | 3,376 | Split by view: `explorer_{blocks,tx,addr,stats,chart}_controller.c` | Agent-2 |
+| **P21.3** | `app/controllers/src/blockchain_controller.c` | 2,992 | Split query vs ops; move ops to services | Agent-2 |
+| **P21.4** | `app/controllers/src/wallet_diagnostic_controller.c` | 2,474 | Move diagnostics to services; controller becomes skinny | Agent-2 |
+| **P21.5** | `app/controllers/src/api_controller.c` | 2,362 | Split by resource: `api_{blocks,tx,wallet,...}_controller.c` | Agent-2 |
+| **P21.6** | `lib/net/src/msgprocessor.c` | 3,404 | Pull per-message handlers out of dispatch; land with P12.6.1 | Agent-2 |
+| **P21.7** | `lib/test/src/test_sapling.c` | 4,677 | `test_sapling_{crypto,circuit,proof,note,tree,wallet}.c` | Agent-3 |
+| **P21.8** | `lib/test/src/test_net.c` | 4,123 | `test_net_{msgprocessor,download,connman,dandelion,swarm}.c` | Agent-3 |
+| **P21.9** | `config/src/boot.c` | 2,460 | Per-subsystem boot hooks via boot-registry (like thread_registry); each subsystem owns `*_boot_init()` | Agent-2 |
+| **P21.10** | `lib/validation/src/process_block.c` | 2,375 | Absorbed into P16.2 stages — each stage gets its own file under `lib/sync/src/stages/` | Agent-2 (blocks on P16.2) |
+
+**Acceptance per row:** no file over 1,000 lines in the migrated path;
+`make test` green; symbol-count unchanged (no behavior change).
+
+## Priority 22 — AI-native scaffolding (2026-04-20)
+
+**Research-informed.** 2026 state of the art: (a) `AGENTS.md` is the
+emerging portable standard, (b) LSP-MCP bridges (clangd + MCP) give
+agents semantic code intelligence natively, (c) `.ac.yaml` sidecars
+give machine-readable acceptance criteria, (d) three-tier context
+(hot constitution / specialized sub-agents / cold retrieval corpus).
+See [`ATTRIBUTIONS.md`](ATTRIBUTIONS.md).
+
+**Can start immediately** — parallel with P14 drain.
+
+| # | Task | File:line | Severity | Owner |
+|---|---|---|---|---|
+| **P22.1** | `AGENTS.md` at repo root — portable-standard alias for `CLAUDE.md`. Either symlink or dual-maintain. Root file is the 50-line index into per-subsystem `agents.md` (P15.5). | `AGENTS.md` (new), `CLAUDE.md` | HIGH | Agent-2 |
+| **P22.2** | `.ac.yaml` sidecar per AGENT.md row. One `ROWS.yml` at repo root OR per-row `docs/rows/P<id>.ac.yaml`. Schema: `{id, tier, severity, owner, status, sha, files, acceptance: [...], depends_on: [...]}`. Generator keeps it in sync with AGENT.md tables (CI-enforced). Feeds `zcl_roadmap` (P20.2). | `docs/rows/*.ac.yaml` (new), `tools/scripts/gen_row_sidecars.py` (new) | HIGH | Agent-2 |
+| **P22.3** | **Integrate clangd + LSP-MCP bridge into zclassic23 binary.** Expose as `zcl_lsp_definition`, `zcl_lsp_references`, `zcl_lsp_hover`, `zcl_lsp_call_hierarchy`, `zcl_lsp_diagnostics`. Spawns a clangd subprocess bound to `compile_commands.json` (generated from `Makefile`). Replaces custom P20.3 + P20.5 work — use the production-tested LSP path. | `lib/devinfo/src/lsp_bridge.c` (new), `tools/mcp/controllers/dev_controller.c` (new) | HIGH | Agent-2 |
+| **P22.4** | `docs/spec/` — cold-memory RAG-retrievable spec docs per subsystem. One short spec per `lib/*/`: architecture, invariants, known gotchas, on-disk format. Not duplicate of `agents.md` (which is hot-memory operational); this is reference material a RAG retriever can pull into context. | `docs/spec/<subsystem>.md` (new) | MED | Agent-2 (net/validation/storage/wallet/script) + Agent-3 (crypto/sapling/keys) |
+| **P22.5** | File-size budget lint gate. No file in `lib/` or `app/` over 1,000 lines. `tools/scripts/check_file_size_budget.sh` wired into `make lint`. Exit-1 on violation. Existing god-objects grandfathered via `tools/scripts/file_size_budget_exemptions.txt` — each exemption listed with an AGENT.md row that closes it (P21.*). | `tools/scripts/check_file_size_budget.sh` (new), `Makefile:~543` | HIGH | Agent-2 |
+| **P22.6** | `AGENTS.md` specifies a "fresh-session bootstrap" — the canonical 3-step orientation sequence for a new AI agent: (1) call `zcl_roadmap` for your NOW, (2) call `zcl_codemap` for your lane, (3) read the relevant `agents.md` in your scope. No reading AGENT.md end-to-end. | `AGENTS.md` | MED | Agent-2 |
 
 ---
 
