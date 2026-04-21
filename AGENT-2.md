@@ -40,7 +40,18 @@ checklist plus the lane rules.
 
 ---
 
-## Current status — NOW = P14.3
+## Current status — NOW = P14.6
+
+**P14.3 done 5406beca3 [test:1.0 63016db95]** — `rpc_getsyncdiag` in
+`app/controllers/src/health_controller.c` declared `struct json_value
+wd;` and `hdr;` without initialization. `json_set_object()` calls
+`json_free()` on the struct before re-typing, reading uninitialized
+`type`/`num_children`/`children` and calling `free()` on garbage —
+deterministic SIGSEGV/SIGABRT on a live node whose stack is always
+dirty. Apply the `= {0}` + trailing `json_free(&X)` pattern the
+sibling RPCs already use (`chain`, `bgv`, `bgh`, `svc`). Local
+live-verify: 10× `getsyncdiag` calls, node alive, well-formed JSON.
+Coordinator canary pending — `zcl_syncdiag` now safe to call again.
 
 **P14.14 done 9d71841ba [test:1.0 9f114c251]** — after the bucket-fill,
 the rebuild pass walks chain bottom-up and (for every slot whose pprev
@@ -61,10 +72,10 @@ deep-copied — `accept_block` already persisted the block, and
 **P14.13 done a62394130 [test:1.0 b07284439]** — single-pass bucketing
 replaces the O(N²) residual-holes branch. Coordinator canary pending.
 
-**P14.3 (CRITICAL): `zcl_syncdiag` SIGABRT via `json_free`.**
-Coordinator touch-trap — fix unlocks MCP health checks. Follow P10.1
-workflow (reproduce on fixture first → writeup → RED → minimal fix →
-live verify). See AGENT.md for full description.
+**P14.6 (CRITICAL): cap `BLOCK_FAILED_CHILD` propagation (OOM
+amplifier).** Skip when parent already failed; cap per-retry. Follow
+P10.1 workflow (reproduce on fixture first → writeup → RED → minimal
+fix → live verify). See AGENT.md for full description.
 
 (historical P14.13 description retained below for context)
 
@@ -117,7 +128,7 @@ section is the executable checklist.
 
 - [x] **P14.13** CRITICAL — rebuild_active_chain O(N²) boot hang. **done a62394130 [test:1.0 b07284439]**.
 - [x] **P14.10** CRITICAL — deferred-activation queue for `SKIP_ALREADY_RUNNING` from `process_new_block`. **done 8b5443a8d [test:1.0 fd23f77a3]**.
-- [ ] **P14.3** CRITICAL — `zcl_syncdiag` SIGABRT via `json_free`. Coordinator touch-trap — fix unlocks MCP health checks.
+- [x] **P14.3** CRITICAL — `zcl_syncdiag` SIGABRT via `json_free`. **done 5406beca3 [test:1.0 63016db95]**.
 - [ ] **P14.6** CRITICAL — cap `BLOCK_FAILED_CHILD` propagation (OOM amplifier). Skip when parent already failed; cap per-retry.
 - [ ] **P14.4** HIGH — sync FSM flap debounce (279,135 events in hours on prior incident).
 - [ ] **P14.5** HIGH — `val.block_connected` must fire on commit, not receipt.
