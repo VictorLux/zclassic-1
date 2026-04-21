@@ -4,6 +4,8 @@
 
 #include "test/test_helpers.h"
 #include "services/chain_activation_controller.h"
+#include "services/snapshot_sync_service.h"
+#include "validation/main_state.h"
 #include <string.h>
 
 /* ── Planning tests (pure function, no global state) ───────────── */
@@ -249,6 +251,89 @@ static int test_state_name_unknown(void) {
     return failures;
 }
 
+/* ── P14.10 deferred-activation tests ──────────────────────────── */
+
+/* Drive a real controller into CONNECTING, issue a concurrent
+ * activation request, and assert that the skipped request was noted
+ * on the deferred-activation counter. Pre-fix the counter stays 0 —
+ * the skipped work is silently dropped and only retried when the next
+ * P2P block arrives. */
+static int test_deferred_increments_on_already_running(void) {
+    int failures = 0;
+    TEST("activation P14.10: SKIP_ALREADY_RUNNING increments deferred counter") {
+        /* Clear any snapshot anchor set by earlier tests — otherwise
+         * the planner returns SKIP_ANCHOR_BLOCKS before reaching the
+         * CONNECTING check. */
+        snapsync_set_anchor(NULL);
+
+        struct main_state ms;
+        main_state_init(&ms);
+
+        struct chain_activation_controller ctl;
+        activation_controller_init(&ctl, &ms, NULL, NULL, NULL);
+
+        /* Walk the transition table into CONNECTING. */
+        ASSERT(activation_set_state(&ctl, ACTIVATION_BOOT_PENDING, "test"));
+        ASSERT(activation_set_state(&ctl, ACTIVATION_READY, "test"));
+        ASSERT(activation_set_state(&ctl, ACTIVATION_CONNECTING, "test"));
+
+        /* Drain is 0 before the skipped request. */
+        ASSERT(activation_drain_deferred(&ctl) == 0);
+
+        /* Another thread would call activation_request_connect here.
+         * The planner returns SKIP_ALREADY_RUNNING pre-mutex, so no
+         * activate_best_chain runs — the call is safe in a unit test
+         * with a zero-initialized main_state. */
+        struct activation_exec_outcome out = {0};
+        activation_request_connect(&ctl, ACTIVATION_SRC_NEW_BLOCK,
+                                   NULL, &out);
+        ASSERT(out.result == ACTIVATION_EXEC_SKIPPED);
+        ASSERT(strstr(out.reason, "already running") != NULL);
+
+        /* P14.10: the skipped request must be noted so the active
+         * thread can rerun activate_best_chain before releasing the
+         * mutex. */
+        ASSERT(activation_drain_deferred(&ctl) == 1);
+
+        /* Drain is idempotent — second call returns 0. */
+        ASSERT(activation_drain_deferred(&ctl) == 0);
+
+        activation_controller_destroy(&ctl);
+        main_state_free(&ms);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int test_deferred_accumulates_across_skips(void) {
+    int failures = 0;
+    TEST("activation P14.10: deferred counter accumulates across concurrent skips") {
+        snapsync_set_anchor(NULL);
+
+        struct main_state ms;
+        main_state_init(&ms);
+
+        struct chain_activation_controller ctl;
+        activation_controller_init(&ctl, &ms, NULL, NULL, NULL);
+        ASSERT(activation_set_state(&ctl, ACTIVATION_BOOT_PENDING, "test"));
+        ASSERT(activation_set_state(&ctl, ACTIVATION_READY, "test"));
+        ASSERT(activation_set_state(&ctl, ACTIVATION_CONNECTING, "test"));
+
+        struct activation_exec_outcome out = {0};
+        for (int i = 0; i < 6; i++)
+            activation_request_connect(&ctl, ACTIVATION_SRC_NEW_BLOCK,
+                                       NULL, &out);
+
+        ASSERT(activation_drain_deferred(&ctl) == 6);
+        ASSERT(activation_drain_deferred(&ctl) == 0);
+
+        activation_controller_destroy(&ctl);
+        main_state_free(&ms);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 /* ── Registration ──────────────────────────────────────────────── */
 
 int test_chain_activation_controller(void) {
@@ -276,5 +361,8 @@ int test_chain_activation_controller(void) {
     /* State name tests */
     failures += test_state_names();
     failures += test_state_name_unknown();
+    /* P14.10 deferred-activation tests */
+    failures += test_deferred_increments_on_already_running();
+    failures += test_deferred_accumulates_across_skips();
     return failures;
 }

@@ -82,11 +82,18 @@ void activation_controller_init(struct chain_activation_controller *ctl,
 {
     memset(ctl, 0, sizeof(*ctl));
     atomic_store(&ctl->state, ACTIVATION_IDLE);
+    atomic_store(&ctl->deferred_pending, 0);
     zcl_mutex_init(&ctl->mutex);
     ctl->ms = ms;
     ctl->coins_tip = coins_tip;
     ctl->params = params;
     ctl->datadir = datadir;
+}
+
+int activation_drain_deferred(struct chain_activation_controller *ctl)
+{
+    if (!ctl) return 0;
+    return atomic_exchange(&ctl->deferred_pending, 0);
 }
 
 void activation_controller_destroy(struct chain_activation_controller *ctl)

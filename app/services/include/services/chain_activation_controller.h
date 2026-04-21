@@ -62,6 +62,14 @@ struct chain_activation_controller {
     int     last_tip_height;
     int     activation_count;
     int     skip_count;
+
+    /* P14.10: deferred-activation counter. A request that hits
+     * SKIP_ALREADY_RUNNING (another thread is inside activate_best_chain
+     * under the mutex) increments this atomically instead of dropping
+     * the work. The thread currently holding the mutex drains it before
+     * releasing so the newly-arrived-but-skipped block gets connected
+     * without waiting for the next P2P arrival. */
+    _Atomic int deferred_pending;
 };
 
 void activation_controller_init(struct chain_activation_controller *ctl,
@@ -145,6 +153,14 @@ void activation_request_connect(struct chain_activation_controller *ctl,
                                 enum activation_request_source source,
                                 struct block *pblock,
                                 struct activation_exec_outcome *out);
+
+/* P14.10: atomically read-and-reset the deferred-activation counter.
+ * Returns the number of SKIP_ALREADY_RUNNING requests that arrived
+ * while another thread held the activation mutex, since the last
+ * drain. Used by the activator (under mutex) to decide whether to
+ * rerun activate_best_chain before transitioning out of CONNECTING.
+ * Also exposed for diagnostics and tests. */
+int activation_drain_deferred(struct chain_activation_controller *ctl);
 
 /* ── UTXO Wipe Protection ──────────────────────────────────────── */
 
