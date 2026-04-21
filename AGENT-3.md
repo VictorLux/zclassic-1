@@ -40,46 +40,38 @@ checklist plus the lane rules.
 
 ---
 
-## Current status — NOW = P9.1
+## Current status — NOW = P9.2
 
-**P9.1 (HIGH): `g1_scalar_mul` variable-time double-and-add leaks
-Groth16 blinding (side-channel).**
+**P9.1 landed f10b39303 [test:1.0]** (RED: af8b5fe5b). `g1_scalar_mul`
+is now constant-time: every iteration runs exactly one `g1_add` and
+one `g1_double`, with the bit-dependent update applied via an
+unconditional `fp_cmov` masked on the scalar bit. Timing-variance
+test moved from ratio=2.98 (FAIL) to ratio=1.00 (OK). `g2_scalar_mul`
+does not exist — the prover already routes G2 through `g2_msm` with
+1 point, so there is no symmetric patch to land.
 
-`lib/sapling/src/bls12_381.c:g1_scalar_mul` walks the scalar bit by
-bit and only runs `g1_add` on `(scalar[i] >> bit) & 1 == 1`. The
-measurable time difference between iterations leaks the Hamming
-weight of the scalar — and inside `groth16_prove` that scalar is
-`r_blind` (line 857 → `r * delta_g1`) / `s_blind` (line 872 →
-`s * delta_g2`, indirectly via `g2_msm(&pk->delta_g2, &s_blind, 1)`).
-An attacker measuring wall-time of the prover recovers partial
-information about the blinding factors, which degrades the
-zero-knowledge property.
+**P9.2 (CRITICAL): `sapling_circuit.c:65 / 161-162` placeholder UB
+paths (if still live).**
 
-**Files + lines:**
-- `lib/sapling/src/bls12_381.c:1708-1722` — `g1_scalar_mul` double-
-  and-add with variable branch.
-- Callers in `groth16_prover.c`: lines 857 (r*delta_g1), 885 (r*B_g1),
-  911 (s*A), 920 (r*B_g1 again), 931 (rs*delta_g1).
+Re-audit the circuit file for the placeholder `/* placeholder */`
+call sites flagged in the original P9 review:
+- `sapling_circuit.c:65` — `jub_scalar_mul(&rcm_point, &hash_point, rcm); /* placeholder */`
+- `sapling_circuit.c:161-162` — `jub_scalar_mul(&nk_point, &nk_point, wit->nsk); /* placeholder */`
 
-**Fix shape:**
-1. Replace the variable branch with a constant-time conditional add:
-   always compute `tmp = g1_add(result, base)` and then a constant-
-   time select between `result` and `tmp` based on the bit.
-2. Mirror the change in `g2_scalar_mul` if the same pattern exists.
-3. RED test: statistically measure cycle counts for two scalars with
-   very different Hamming weights (e.g. all-zero vs all-one lower 64
-   bits). Pre-fix the means differ by >> one standard deviation;
-   post-fix they're indistinguishable.
+Decide whether these are live on any constraint-path or dead code.
+If live, replace the placeholders with witness-correct operations
+and add a RED test that exercises the path. If dead, delete the
+code.
 
 **Discipline (every P9.x row is [test:1.0]):**
-1. **RED FIRST** — timing-variance test in `test_sapling_crypto.c`
-   that fails today because the means diverge.
-2. **GREEN** — constant-time select. Test passes.
+1. **RED FIRST** — failing test that demonstrates the UB or the
+   missing constraint-path coverage.
+2. **GREEN** — real implementation or deletion.
 3. **Mark done** — update `AGENT.md` row + current NOW.
 
 **Cross-cutting check:** P9.10 is about cache-side-channel on the
-MSM witness — related but distinct. P9.1 is the timing channel on
-the blinding scalars. Don't conflate.
+MSM witness — related but distinct. P9.1 closed the timing channel
+on the blinding scalars; P9.2 is about circuit-side correctness.
 
 ---
 
@@ -93,8 +85,8 @@ Every row has a full description in [`AGENT.md`](AGENT.md).
 ### Phase 0 — Finish P9 sapling audit (CURRENT)
 
 - [x] **P9.4** HIGH — `fr_fft` / `fr_fft_parallel` silent no-op. done f5a31b48d [test:1.0].
-- [ ] **P9.1** HIGH — `g1_scalar_mul` variable-time double-and-add leaks Groth16 blinding (side-channel). **Agent-3 NOW.**
-- [ ] **P9.2** CRITICAL — `sapling_circuit.c:65 / 161-162` placeholder UB paths (if still live).
+- [x] **P9.1** HIGH — `g1_scalar_mul` variable-time double-and-add leaks Groth16 blinding. done f10b39303 [test:1.0].
+- [ ] **P9.2** CRITICAL — `sapling_circuit.c:65 / 161-162` placeholder UB paths (if still live). **Agent-3 NOW.**
 - [ ] **P9.6** MED — `zclassic_sapling_spend_proof` witness length not bounded.
 - [ ] **P9.7** MED — `sprout_verify_groth16` size_t underflow + race on `sprout_set_vk(NULL)`.
 - [ ] **P9.8** MED — `ensure_generators` 256-retry silent exhaustion.
