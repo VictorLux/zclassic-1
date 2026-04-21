@@ -403,6 +403,30 @@ int chain_restore_rebuild_active_chain(struct main_state *ms,
     }
 
     free(by_height);
+
+    /* P14.14: wire pprev + pskip across the rebuilt chain. The anchor
+     * path leaves tip->pprev=NULL and flat-file loads can leave pskip
+     * unpopulated, which forces block_index_get_ancestor to fall back
+     * to O(N) pprev walks (or NULL on the anchor). Walking bottom-up
+     * lets block_index_build_skip reuse each parent's already-built
+     * pskip, keeping this pass O(tip_h · log tip_h) — about 1.7M
+     * operations at live tip (3M), well under a second.
+     *
+     * Only wire pprev when it is currently NULL. Forked entries
+     * promoted into chain_active by the bucketing step may legitimately
+     * point at a different parent — but if we only fill NULLs we can't
+     * stomp on an existing ancestry relationship. Same rule for pskip. */
+    for (int h = 1; h <= tip_h; h++) {
+        struct block_index *cur = c->chain[h];
+        if (!cur) continue;
+        if (cur->pprev == NULL) {
+            struct block_index *prev = c->chain[h - 1];
+            if (prev) cur->pprev = prev;
+        }
+        if (cur->pskip == NULL && cur->pprev)
+            block_index_build_skip(cur);
+    }
+
     return populated;
 }
 
