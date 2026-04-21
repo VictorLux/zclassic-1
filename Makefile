@@ -56,7 +56,7 @@ LIBS = -Lvendor/lib -lsecp256k1 -lleveldb \
 	-levent -levent_openssl -levent_pthreads \
 	-lssl -lcrypto -lz
 
-.PHONY: all test test-e2e test-shielded-payment clean deploy check-restart-follow \
+.PHONY: all test test-e2e test-shielded-payment test-store-e2e clean deploy check-restart-follow \
         coverage coverage-clean docs-mcp docs-mcp-check ci audit release \
         lint check-malloc check-silent-errors check-raw-sqlite \
         check-coins-lookup-nullcheck \
@@ -246,6 +246,14 @@ test-shielded-payment: test_zcl
 		fi; \
 	done; \
 	ZCL_STRESS_TESTS=1 ZCL_TEST_ONLY=shielded_payment ./test_zcl
+
+# P11.5 store end-to-end gate.
+#
+# Runs the store order -> payment reconciliation -> token access path inside
+# test_zcl. This is deterministic and self-contained, but remains opt-in so
+# the default suite does not pay extra setup/runtime cost.
+test-store-e2e: test_zcl
+	ZCL_STRESS_TESTS=1 ZCL_TEST_ONLY=store_e2e ./test_zcl
 
 # ── libFuzzer harnesses ───────────────────────────────────────
 #

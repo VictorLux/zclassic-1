@@ -51,6 +51,14 @@ int main(void)
                failures);
         return failures ? 1 : 0;
     }
+    if (only && strcmp(only, "store_e2e") == 0) {
+        printf("[test] ZCL_TEST_ONLY=store_e2e — running P11.5 store e2e gate only\n");
+        { extern int test_store_e2e_gate(void);
+          failures += test_store_e2e_gate(); }
+        printf("\n=== store e2e subset complete: %d failure(s) ===\n",
+               failures);
+        return failures ? 1 : 0;
+    }
     if (only && strcmp(only, "persistence") == 0) {
         printf("[test] ZCL_TEST_ONLY=persistence — running persistence subset\n");
         failures += test_schema_migration();
@@ -133,6 +141,8 @@ int main(void)
       failures += test_kill9_recovery(); }
     { extern int test_shielded_payment_gate(void);
       failures += test_shielded_payment_gate(); }
+    { extern int test_store_e2e_gate(void);
+      failures += test_store_e2e_gate(); }
     { extern int test_soak_harness(void);
       failures += test_soak_harness(); }
     failures += test_event();
