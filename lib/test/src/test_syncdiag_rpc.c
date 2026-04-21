@@ -19,6 +19,7 @@
 
 #include "test/test_helpers.h"
 #include "controllers/health_controller.h"
+#include "rpc/httpserver.h"
 #include "rpc/server.h"
 #include "json/json.h"
 #include <string.h>
@@ -74,6 +75,37 @@ int test_syncdiag_rpc(void)
 
         json_free(&params);
         json_free(&result);
+
+        if (ok) printf("OK\n");
+        else    { printf("FAIL\n"); failures++; }
+    }
+
+    printf("rpc_http response envelope: dirty stack still builds JSON "
+           "(P24.11 RED)... ");
+    {
+        dirty_stack_region();
+
+        struct json_value result;
+        json_init(&result);
+        json_set_object(&result);
+        json_push_kv_str(&result, "watchdog", "ok");
+
+        struct json_value id;
+        json_init(&id);
+        json_set_int(&id, 1);
+
+        struct json_value response;
+        bool ok = rpc_http_test_build_response_envelope(
+            true, "getsyncdiag", &result, &id, &response);
+
+        ok = ok && response.type == JSON_OBJ;
+        ok = ok && json_get(&response, "result") != NULL;
+        ok = ok && json_get(&response, "error") != NULL;
+        ok = ok && json_get(&response, "id") != NULL;
+
+        json_free(&result);
+        json_free(&id);
+        json_free(&response);
 
         if (ok) printf("OK\n");
         else    { printf("FAIL\n"); failures++; }
