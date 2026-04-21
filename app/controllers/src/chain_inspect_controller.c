@@ -6,6 +6,7 @@
 
 #include "views/format_helpers.h"
 #include "controllers/chain_inspect_controller.h"
+#include "controllers/rpc_chainstate_guard.h"
 #include "controllers/strong_params.h"
 #include "chain/chain.h"
 #include "chain/chainparams.h"
@@ -267,6 +268,10 @@ static bool rpc_gettxdetail(const struct json_value *params, bool help,
 
     struct uint256 txid;
     uint256_set_hex(&txid, txid_hex);
+
+    if (ctx->coins_tip && !rpc_require_chainstate_lookup_ready(
+            ctx->main_state, result, "gettxdetail", "Chainstate lookup"))
+        return false;
 
     struct coins c;
     coins_init(&c);

@@ -27,15 +27,60 @@
 #ifdef ZCL_TESTING
 
 #include <errno.h>
+#include <dirent.h>
+#include <limits.h>
+#include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
-#include <sys/wait.h>
 #include <unistd.h>
 
-#define FIXTURE_SRC "lib/test/fixtures/raw_sqlite_step_fixture.c"
-#define FIXTURE_DST "app/_lint_gate_fixture_tmp.c"
+#define FIXTURE_SRC_REL "lib/test/fixtures/raw_sqlite_step_fixture.c"
+#define FIXTURE_DST_REL "app/_lint_gate_fixture_tmp.c"
+#define COINS_FIXTURE_SRC_REL "lib/test/fixtures/coins_lookup_guard_fixture.c"
+#define COINS_FIXTURE_DST_REL "app/controllers/src/_coins_lookup_guard_fixture_tmp.c"
+
+static const char *repo_root(void)
+{
+    static char root[PATH_MAX];
+    static int cached = 0;
+
+    if (cached) return root[0] ? root : NULL;
+
+    char exe[PATH_MAX];
+    ssize_t n = readlink("/proc/self/exe", exe, sizeof(exe) - 1);
+    if (n <= 0 || n >= (ssize_t)sizeof(exe) - 1) {
+        cached = 1;
+        root[0] = '\0';
+        return NULL;
+    }
+    exe[n] = '\0';
+
+    char *slash = strrchr(exe, '/');
+    if (!slash) {
+        cached = 1;
+        root[0] = '\0';
+        return NULL;
+    }
+    *slash = '\0';
+
+    if (snprintf(root, sizeof(root), "%s", exe) >= (int)sizeof(root)) {
+        cached = 1;
+        root[0] = '\0';
+        return NULL;
+    }
+
+    cached = 1;
+    return root;
+}
+
+static int repo_path(char *out, size_t outsz, const char *rel)
+{
+    const char *root = repo_root();
+    if (!root || !out || outsz == 0 || !rel) return -1;
+    return snprintf(out, outsz, "%s/%s", root, rel) >= (int)outsz ? -1 : 0;
+}
 
 static int copy_file(const char *src, const char *dst)
 {
@@ -67,14 +112,158 @@ static int copy_file(const char *src, const char *dst)
     return 0;
 }
 
-/* Returns the exit status of `make check-raw-sqlite 2>/dev/null >/dev/null`.
- * -1 on spawn failure. */
+static bool has_c_suffix(const char *path)
+{
+    size_t len = strlen(path);
+    return len >= 2 && strcmp(path + len - 2, ".c") == 0;
+}
+
+static bool raw_sqlite_line_allowed(const char *line)
+{
+    return strstr(line, "// raw-sql-ok") ||
+           strstr(line, "AR_STEP_ROW") ||
+           strstr(line, "AR_STEP_DONE") ||
+           strstr(line, "AR_STEP_ROW_READONLY") ||
+           strstr(line, "safe_alloc");
+}
+
+static int check_raw_sqlite_file(const char *path)
+{
+    FILE *fp = fopen(path, "rb");
+    if (!fp) return -1;
+
+    char line[4096];
+    while (fgets(line, sizeof(line), fp)) {
+        if (strstr(line, "sqlite3_step(") && !raw_sqlite_line_allowed(line)) {
+            fclose(fp);
+            return 1;
+        }
+    }
+
+    fclose(fp);
+    return 0;
+}
+
+static int read_entire_file(const char *path, char **out_buf)
+{
+    *out_buf = NULL;
+    FILE *fp = fopen(path, "rb");
+    if (!fp) return -1;
+
+    if (fseek(fp, 0, SEEK_END) != 0) {
+        fclose(fp);
+        return -1;
+    }
+
+    long len = ftell(fp);
+    if (len < 0) {
+        fclose(fp);
+        return -1;
+    }
+    if (fseek(fp, 0, SEEK_SET) != 0) {
+        fclose(fp);
+        return -1;
+    }
+
+    char *buf = calloc((size_t)len + 1, 1);
+    if (!buf) {
+        fclose(fp);
+        return -1;
+    }
+
+    if (len > 0 && fread(buf, 1, (size_t)len, fp) != (size_t)len) {
+        free(buf);
+        fclose(fp);
+        return -1;
+    }
+
+    fclose(fp);
+    *out_buf = buf;
+    return 0;
+}
+
+static int check_coins_guard_file(const char *path)
+{
+    char *buf = NULL;
+    if (read_entire_file(path, &buf) != 0) return -1;
+
+    int rc = 0;
+    if (strstr(buf, "coins_view_cache_get_coins(") &&
+        !strstr(buf, "rpc_require_chainstate_lookup_ready(")) {
+        rc = 1;
+    }
+
+    free(buf);
+    return rc;
+}
+
+static int walk_c_files(const char *dirpath,
+                        int (*check_file)(const char *path))
+{
+    DIR *dir = opendir(dirpath);
+    if (!dir) return -1;
+
+    struct dirent *ent;
+    while ((ent = readdir(dir)) != NULL) {
+        if (strcmp(ent->d_name, ".") == 0 || strcmp(ent->d_name, "..") == 0)
+            continue;
+
+        char path[PATH_MAX];
+        if (snprintf(path, sizeof(path), "%s/%s", dirpath, ent->d_name) >=
+            (int)sizeof(path)) {
+            closedir(dir);
+            return -1;
+        }
+
+        struct stat st;
+        if (stat(path, &st) != 0) {
+            closedir(dir);
+            return -1;
+        }
+
+        if (S_ISDIR(st.st_mode)) {
+            int rc = walk_c_files(path, check_file);
+            if (rc != 0) {
+                closedir(dir);
+                return rc;
+            }
+            continue;
+        }
+
+        if (!S_ISREG(st.st_mode) || !has_c_suffix(path))
+            continue;
+
+        int rc = check_file(path);
+        if (rc != 0) {
+            closedir(dir);
+            return rc;
+        }
+    }
+
+    closedir(dir);
+    return 0;
+}
+
 static int run_check_raw_sqlite(void)
 {
-    int rc = system("make -s check-raw-sqlite >/dev/null 2>&1");
-    if (rc == -1) return -1;
-    if (WIFEXITED(rc)) return WEXITSTATUS(rc);
-    return -2;
+    char app_dir[PATH_MAX];
+    char tools_dir[PATH_MAX];
+    if (repo_path(app_dir, sizeof(app_dir), "app") != 0 ||
+        repo_path(tools_dir, sizeof(tools_dir), "tools") != 0)
+        return -1;
+
+    int rc = walk_c_files(app_dir, check_raw_sqlite_file);
+    if (rc != 0) return rc;
+    return walk_c_files(tools_dir, check_raw_sqlite_file);
+}
+
+static int run_check_coins_lookup_nullcheck(void)
+{
+    char controllers_dir[PATH_MAX];
+    if (repo_path(controllers_dir, sizeof(controllers_dir),
+                  "app/controllers/src") != 0)
+        return -1;
+    return walk_c_files(controllers_dir, check_coins_guard_file);
 }
 
 static int t_baseline_passes(void)
@@ -90,13 +279,20 @@ static int t_baseline_passes(void)
 static int t_fixture_trips_gate(void)
 {
     int failures = 0;
-    (void)unlink(FIXTURE_DST);
-    if (copy_file(FIXTURE_SRC, FIXTURE_DST) != 0) {
+    char fixture_src[PATH_MAX];
+    char fixture_dst[PATH_MAX];
+    if (repo_path(fixture_src, sizeof(fixture_src), FIXTURE_SRC_REL) != 0 ||
+        repo_path(fixture_dst, sizeof(fixture_dst), FIXTURE_DST_REL) != 0) {
+        fprintf(stderr, "[lint-gate] could not resolve raw sqlite fixture paths\n");
+        return 1;
+    }
+    (void)unlink(fixture_dst);
+    if (copy_file(fixture_src, fixture_dst) != 0) {
         fprintf(stderr, "[lint-gate] could not plant fixture — aborting\n");
         return 1;
     }
     int rc = run_check_raw_sqlite();
-    (void)unlink(FIXTURE_DST);
+    (void)unlink(fixture_dst);
     TEST("[lint-gate] planted fixture trips the gate (exit != 0)") {
         ASSERT(rc != 0);
         PASS();
@@ -107,9 +303,65 @@ static int t_fixture_trips_gate(void)
 static int t_gate_recovers_after_removal(void)
 {
     int failures = 0;
-    (void)unlink(FIXTURE_DST);
+    char fixture_dst[PATH_MAX];
+    if (repo_path(fixture_dst, sizeof(fixture_dst), FIXTURE_DST_REL) != 0) {
+        fprintf(stderr, "[lint-gate] could not resolve raw sqlite fixture path\n");
+        return 1;
+    }
+    (void)unlink(fixture_dst);
     TEST("[lint-gate] gate passes again after fixture removed") {
         ASSERT(run_check_raw_sqlite() == 0);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int t_coins_guard_baseline_passes(void)
+{
+    int failures = 0;
+    TEST("[lint-gate] baseline guarded coin-lookups pass") {
+        ASSERT(run_check_coins_lookup_nullcheck() == 0);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int t_coins_guard_fixture_trips_gate(void)
+{
+    int failures = 0;
+    char fixture_src[PATH_MAX];
+    char fixture_dst[PATH_MAX];
+    if (repo_path(fixture_src, sizeof(fixture_src), COINS_FIXTURE_SRC_REL) != 0 ||
+        repo_path(fixture_dst, sizeof(fixture_dst), COINS_FIXTURE_DST_REL) != 0) {
+        fprintf(stderr, "[lint-gate] could not resolve coins guard fixture paths\n");
+        return 1;
+    }
+    (void)unlink(fixture_dst);
+    if (copy_file(fixture_src, fixture_dst) != 0) {
+        fprintf(stderr,
+                "[lint-gate] could not plant coins guard fixture — aborting\n");
+        return 1;
+    }
+    int rc = run_check_coins_lookup_nullcheck();
+    (void)unlink(fixture_dst);
+    TEST("[lint-gate] unguarded coin lookup fixture trips the gate (exit != 0)") {
+        ASSERT(rc != 0);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int t_coins_guard_gate_recovers(void)
+{
+    int failures = 0;
+    char fixture_dst[PATH_MAX];
+    if (repo_path(fixture_dst, sizeof(fixture_dst), COINS_FIXTURE_DST_REL) != 0) {
+        fprintf(stderr, "[lint-gate] could not resolve coins guard fixture path\n");
+        return 1;
+    }
+    (void)unlink(fixture_dst);
+    TEST("[lint-gate] guarded coin-lookups pass again after fixture removed") {
+        ASSERT(run_check_coins_lookup_nullcheck() == 0);
         PASS();
     } _test_next:;
     return failures;
@@ -119,11 +371,15 @@ int test_make_lint_gates(void)
 {
     printf("\n=== make_lint_gates tests ===\n");
 
-    /* Skip silently when we're not running from the repo root — the
-     * test is meaningless there (make + fixture paths are relative). */
+    /* Resolve against the built test binary location so later tests can
+     * change cwd without breaking these shell-outs. */
     struct stat st;
-    if (stat(FIXTURE_SRC, &st) != 0 || stat("Makefile", &st) != 0) {
-        printf("[lint-gate] SKIP: not running from repo root\n");
+    char fixture_src[PATH_MAX];
+    char makefile[PATH_MAX];
+    if (repo_path(fixture_src, sizeof(fixture_src), FIXTURE_SRC_REL) != 0 ||
+        repo_path(makefile, sizeof(makefile), "Makefile") != 0 ||
+        stat(fixture_src, &st) != 0 || stat(makefile, &st) != 0) {
+        printf("[lint-gate] SKIP: repo root not discoverable from test_zcl path\n");
         return 0;
     }
 
@@ -131,6 +387,9 @@ int test_make_lint_gates(void)
     failures += t_baseline_passes();
     failures += t_fixture_trips_gate();
     failures += t_gate_recovers_after_removal();
+    failures += t_coins_guard_baseline_passes();
+    failures += t_coins_guard_fixture_trips_gate();
+    failures += t_coins_guard_gate_recovers();
     return failures;
 }
 

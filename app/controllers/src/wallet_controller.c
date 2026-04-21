@@ -5,6 +5,7 @@
 
 #include "controllers/wallet_controller.h"
 #include "rpc/client.h"
+#include "controllers/rpc_chainstate_guard.h"
 #include "controllers/wallet_helpers.h"
 #include "controllers/wallet_shielded_controller.h"
 #include "controllers/wallet_diagnostic_controller.h"
@@ -252,6 +253,9 @@ static bool rpc_listunspent(const struct json_value *params, bool help,
     if (rpc_params_invalid(&p)) { rpc_params_error(&p, result); LOG_FAIL("wallet", "listunspent: invalid params"); }
 
     ENSURE_WALLET(result);
+    if (ctx->coins_tip && !rpc_require_chainstate_lookup_ready(
+            ctx->main_state, result, "listunspent", "Chainstate lookup"))
+        return false;
 
     const struct chain_params *cp = chain_params_get();
     size_t pk_pfx_len, sc_pfx_len;
@@ -1020,6 +1024,10 @@ static bool rpc_rescanblockchain(const struct json_value *params, bool help,
         json_set_str(result, "Chain state not initialized");
         LOG_FAIL("wallet", "rescanblockchain: chain state not initialized");
     }
+    if (ctx->coins_tip && !rpc_require_chainstate_lookup_ready(
+            ctx->main_state, result, "rescanblockchain",
+            "Chainstate lookup"))
+        return false;
 
     int tip = active_chain_height(&ctx->main_state->chain_active);
     if (stop_height < 0 || stop_height > tip)

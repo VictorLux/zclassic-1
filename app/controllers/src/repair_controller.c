@@ -5,6 +5,7 @@
  */
 
 #include "controllers/repair_controller.h"
+#include "controllers/rpc_chainstate_guard.h"
 #include "services/chain_activation_controller.h"
 #include "controllers/strong_params.h"
 #include "coins/coins.h"
@@ -299,6 +300,10 @@ static bool rpc_repairutxos(const struct json_value *params, bool help,
         json_set_str(result, "Database not available");
         return false;
     }
+    if (ctx->coins_tip && !rpc_require_chainstate_lookup_ready(
+            ctx->main_state, result, "repairutxos",
+            "Chainstate lookup"))
+        return false;
 
     struct rpc_params p;
     rpc_params_init(&p, params);

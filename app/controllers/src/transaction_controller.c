@@ -4,6 +4,7 @@
  * file COPYING or http://www.opensource.org/licenses/mit-license.php. */
 
 #include "views/format_helpers.h"
+#include "controllers/rpc_chainstate_guard.h"
 #include "controllers/transaction_controller.h"
 #include "controllers/strong_params.h"
 #include "controllers/wallet_helpers.h"
@@ -155,6 +156,9 @@ static bool rpc_getrawtransaction(const struct json_value *params, bool help,
 
     /* 3. Fallback: use coins DB to find block, then scan block */
     if (!found && ctx->coins_tip && ctx->main_state && ctx->datadir) {
+        if (!rpc_require_chainstate_lookup_ready(ctx->main_state, result,
+                "getrawtransaction", "Chainstate lookup"))
+            return false;
         struct coins entry;
         coins_init(&entry);
         if (coins_view_cache_get_coins(ctx->coins_tip, &hash, &entry)) {

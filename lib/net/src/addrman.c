@@ -421,31 +421,41 @@ bool addrman_add(struct addr_man *am, const struct net_address *addr,
         fNew = true;
     }
 
+    bool inserted = false;
     int nUBucket = addr_info_get_new_bucket(pinfo, &am->nKey, source);
-    int nUBucketPos = addr_info_get_bucket_position(pinfo, &am->nKey, true,
-                                                     nUBucket);
-    if (am->vvNew[nUBucket][nUBucketPos] != nId) {
-        bool fInsert = am->vvNew[nUBucket][nUBucketPos] == -1;
+    for (int attempt = 0; attempt < ADDRMAN_NEW_BUCKETS_PER_ADDRESS; attempt++) {
+        int bucket = (nUBucket + attempt * 97) % ADDRMAN_NEW_BUCKET_COUNT;
+        int pos = addr_info_get_bucket_position(pinfo, &am->nKey, true, bucket);
+        if (am->vvNew[bucket][pos] == nId) {
+            inserted = true;
+            break;
+        }
+
+        bool fInsert = am->vvNew[bucket][pos] == -1;
         if (!fInsert) {
-            int eId = am->vvNew[nUBucket][nUBucketPos];
+            int eId = am->vvNew[bucket][pos];
             if (eId < 0 || (size_t)eId >= am->entries_cap) {
-                am->vvNew[nUBucket][nUBucketPos] = -1;
+                am->vvNew[bucket][pos] = -1;
                 fInsert = true;
             } else {
                 struct addr_info *existing = &am->entries[eId];
-                if (addr_info_is_terrible(existing, GetAdjustedTime()) ||
+                if (!existing->used ||
+                    addr_info_is_terrible(existing, GetAdjustedTime()) ||
                     (existing->ref_count > 1 && pinfo->ref_count == 0))
                     fInsert = true;
             }
         }
-        if (fInsert) {
-            clear_new(am, nUBucket, nUBucketPos);
-            pinfo->ref_count++;
-            am->vvNew[nUBucket][nUBucketPos] = nId;
-        } else if (pinfo->ref_count == 0) {
-            delete_entry(am, nId);
-        }
+        if (!fInsert)
+            continue;
+
+        clear_new(am, bucket, pos);
+        pinfo->ref_count++;
+        am->vvNew[bucket][pos] = nId;
+        inserted = true;
+        break;
     }
+    if (!inserted && pinfo->ref_count == 0)
+        delete_entry(am, nId);
 
     zcl_mutex_unlock(&am->cs);
     return fNew;

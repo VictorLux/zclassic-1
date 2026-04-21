@@ -63,6 +63,14 @@ int main(void)
                failures);
         return failures ? 1 : 0;
     }
+    if (only && strcmp(only, "rpc_safety") == 0) {
+        printf("[test] ZCL_TEST_ONLY=rpc_safety — running RPC safety subset\n");
+        failures += test_rpc_safety();
+        failures += test_make_lint_gates();
+        printf("\n=== RPC safety subset complete: %d failure(s) ===\n",
+               failures);
+        return failures ? 1 : 0;
+    }
 
     failures += test_load_balancer();
     failures += test_game();
@@ -126,6 +134,7 @@ int main(void)
     failures += test_block_scan();
     failures += test_node_health_service();
     failures += test_syncdiag_rpc();
+    failures += test_rpc_safety();
     failures += test_chain_state_repo();
     failures += test_recovery_policy();
     failures += test_db_txn();

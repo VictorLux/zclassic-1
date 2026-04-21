@@ -59,6 +59,7 @@ LIBS = -Lvendor/lib -lsecp256k1 -lleveldb \
 .PHONY: all test test-e2e clean deploy check-restart-follow \
         coverage coverage-clean docs-mcp docs-mcp-check ci audit release \
         lint check-malloc check-silent-errors check-raw-sqlite \
+        check-coins-lookup-nullcheck \
         soak-smoke soak-7day
 
 CLI_SRCS = lib/rpc/src/client.c lib/json/src/json.c
@@ -451,10 +452,11 @@ clean:
 #    single-command build, but sound.
 COV_BUILD_DIR = build/cov
 COV_CFLAGS = $(filter-out -flto -O3 -march=native -Werror,$(CFLAGS)) \
-             --coverage -O1 -g -DCOVERAGE_BUILD
+             --coverage -O1 -g -DCOVERAGE_BUILD -DZCL_TESTING
 COV_LDFLAGS = $(filter-out -flto,$(LDFLAGS)) --coverage
 
-COV_OBJS := $(patsubst %.c,$(COV_BUILD_DIR)/%.o,$(TEST_SRCS) $(SPEC_SRCS) $(ALL_SRCS))
+COV_TEST_SRCS := $(filter-out lib/test/src/test_parallel.c, $(TEST_SRCS))
+COV_OBJS := $(patsubst %.c,$(COV_BUILD_DIR)/%.o,$(COV_TEST_SRCS) $(SPEC_SRCS) $(ALL_SRCS))
 
 $(COV_BUILD_DIR)/%.o: %.c $(TMPL_GEN)
 	@mkdir -p $(dir $@)
@@ -463,7 +465,7 @@ $(COV_BUILD_DIR)/%.o: %.c $(TMPL_GEN)
 test_zcl_cov: $(COV_OBJS)
 	$(CC) $(COV_CFLAGS) $(COV_LDFLAGS) -o $@ $(COV_OBJS) $(TOR_LIBS) $(LIBS) $(GTK_LIBS) $(WEBKIT_LIBS)
 
-coverage: test_zcl_cov
+coverage: coverage-clean test_zcl_cov
 	@echo "== Resetting gcov counters =="
 	@find $(COV_BUILD_DIR) -name '*.gcda' -delete 2>/dev/null || true
 	@echo "== Running test_zcl_cov =="
@@ -606,14 +608,11 @@ check-silent-errors:
 
 check-raw-sqlite:
 	@echo "══ LINT: raw sqlite3_step in app code ══"
-	@HITS=$$(grep -rn 'sqlite3_step\s*(' app/ tools/ --include='*.c' \
-	    | grep -v 'vendor/\|test/\|// raw-sql-ok\|AR_STEP_ROW\|AR_STEP_DONE\|AR_STEP_ROW_READONLY\|safe_alloc\|".*sqlite3_step'); \
-	if [ -n "$$HITS" ]; then \
-	    echo "$$HITS"; \
-	    echo "FAIL: raw sqlite3_step in app code (use AR_STEP_ROW/AR_STEP_DONE/AR_STEP_ROW_READONLY or mark // raw-sql-ok: <scope>)"; \
-	    exit 1; \
-	fi
-	@echo "  OK: no raw sqlite3_step"
+	@tools/scripts/check_raw_sqlite.sh
+
+check-coins-lookup-nullcheck:
+	@echo "══ LINT: guarded controller coin lookups ══"
+	@tools/scripts/check_coins_lookup_nullcheck.sh
 
 check-silent-errors-services:
 	@echo "══ LINT: silent error returns in services ══"
@@ -642,7 +641,7 @@ check-before-save-hooks:
 	done
 	@echo "  OK: critical models have before_save hooks"
 
-lint: check-malloc check-silent-errors check-raw-sqlite check-silent-errors-services check-before-save-hooks
+lint: check-malloc check-silent-errors check-raw-sqlite check-coins-lookup-nullcheck check-silent-errors-services check-before-save-hooks
 	@echo "══ LINT: all checks passed ══"
 
 ci: lint zclassic23 test_zcl

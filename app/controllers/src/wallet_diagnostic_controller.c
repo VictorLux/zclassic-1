@@ -4,6 +4,7 @@
  * file COPYING or http://www.opensource.org/licenses/mit-license.php. */
 
 #include "controllers/wallet_diagnostic_controller.h"
+#include "controllers/rpc_chainstate_guard.h"
 #include "controllers/wallet_helpers.h"
 #include "controllers/strong_params.h"
 #include "wallet/wallet.h"
@@ -619,6 +620,10 @@ static bool rpc_removestalletxs(const struct json_value *params,
         "spent set and verifies UTXOs against the chainstate.");
 
     ENSURE_WALLET(result);
+    if (ctx->coins_tip && !rpc_require_chainstate_lookup_ready(
+            ctx->main_state, result, "removestalletxs",
+            "Chainstate lookup"))
+        return false;
     json_set_object(result);
 
     /* Phase 1: Find unconfirmed txs whose inputs are spent on-chain */
@@ -732,6 +737,9 @@ static bool rpc_walletaudit(const struct json_value *params, bool help,
         json_set_str(result, "Chainstate (coins DB) not available");
         return false;
     }
+    if (!rpc_require_chainstate_lookup_ready(ctx->main_state, result,
+            "walletaudit", "Chainstate lookup"))
+        return false;
 
     const struct chain_params *cp = chain_params_get();
     size_t pk_pfx_len, sc_pfx_len;
@@ -964,6 +972,9 @@ static bool rpc_getchaincoins(const struct json_value *params, bool help,
         json_set_str(result, "Chainstate (coins DB) not available");
         return false;
     }
+    if (!rpc_require_chainstate_lookup_ready(ctx->main_state, result,
+            "getchaincoins", "Chainstate lookup"))
+        return false;
 
     struct uint256 txid;
     uint256_set_hex(&txid, txid_str);
@@ -1057,6 +1068,9 @@ static bool rpc_traceutxo(const struct json_value *params, bool help,
 
     struct uint256 txid;
     uint256_set_hex(&txid, txid_str);
+    if (ctx->coins_tip && !rpc_require_chainstate_lookup_ready(
+            ctx->main_state, result, "traceutxo", "Chainstate lookup"))
+        return false;
 
     bool in_wallet = false;
     bool in_chain = false;
@@ -1214,6 +1228,10 @@ static bool rpc_listwalletkeys(const struct json_value *params, bool help,
         json_set_str(result, "Wallet database not available");
         return false;
     }
+    if (ctx->coins_tip && !rpc_require_chainstate_lookup_ready(
+            ctx->main_state, result, "listwalletkeys",
+            "Chainstate lookup"))
+        return false;
 
     const struct chain_params *cp = chain_params_get();
     size_t pk_pfx_len, sc_pfx_len;
@@ -1485,6 +1503,10 @@ static bool rpc_getbalanceflow(const struct json_value *params, bool help,
         json_set_str(result, "Wallet database not available");
         return false;
     }
+    if (ctx->coins_tip && !rpc_require_chainstate_lookup_ready(
+            ctx->main_state, result, "getbalanceflow",
+            "Chainstate lookup"))
+        return false;
 
     const struct chain_params *cp = chain_params_get();
     size_t pk_pfx_len, sc_pfx_len;
@@ -1656,6 +1678,9 @@ static bool rpc_reconcilewalletutxos(const struct json_value *params,
         json_set_str(result, "Chainstate (coins DB) not available");
         return false;
     }
+    if (!rpc_require_chainstate_lookup_ready(ctx->main_state, result,
+            "reconcilewalletutxos", "Chainstate lookup"))
+        return false;
     if (!wallet_ctx_db_ready(ctx)) {
         json_set_str(result, "Node database not available");
         return false;
@@ -1774,6 +1799,9 @@ static bool rpc_purgephantomutxos(const struct json_value *params,
         json_set_str(result, "Chainstate (coins DB) not available");
         return false;
     }
+    if (!rpc_require_chainstate_lookup_ready(ctx->main_state, result,
+            "purgephantomutxos", "Chainstate lookup"))
+        return false;
     if (!wallet_ctx_db_ready(ctx)) {
         json_set_str(result, "Node database not available");
         return false;
@@ -1884,6 +1912,10 @@ static bool rpc_diagnoseutxos(const struct json_value *params, bool help,
         "presence. Identifies exactly why each UTXO can or cannot be spent.");
 
     ENSURE_WALLET(result);
+    if (ctx->coins_tip && !rpc_require_chainstate_lookup_ready(
+            ctx->main_state, result, "diagnoseutxos",
+            "Chainstate lookup"))
+        return false;
 
     const struct chain_params *cp = chain_params_get();
     size_t pk_pfx_len, sc_pfx_len;

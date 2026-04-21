@@ -6,6 +6,7 @@
  * Wallet rescan, legacy import, and witness management RPCs. */
 
 #include "controllers/wallet_rescan_controller.h"
+#include "controllers/rpc_chainstate_guard.h"
 #include "controllers/wallet_helpers.h"
 #include "controllers/strong_params.h"
 #include "wallet/wallet.h"
@@ -310,6 +311,9 @@ static bool rpc_syncwalletfromdb(const struct json_value *params, bool help,
         json_set_str(result, "Chainstate (coins DB) not available");
         return false;
     }
+    if (!rpc_require_chainstate_lookup_ready(ctx->main_state, result,
+            "syncwalletfromdb", "Chainstate lookup"))
+        return false;
     if (!wallet_ctx_db_ready(ctx)) {
         json_set_str(result, "Node database not available");
         return false;
@@ -373,6 +377,9 @@ static bool rpc_coinanalysis(const struct json_value *params, bool help,
         json_set_str(result, "Chainstate not available");
         return false;
     }
+    if (!rpc_require_chainstate_lookup_ready(ctx->main_state, result,
+            "coinanalysis", "Chainstate lookup"))
+        return false;
     if (!wallet_ctx_db_ready(ctx)) {
         json_set_str(result, "Node database not available");
         return false;
@@ -617,6 +624,9 @@ static bool rpc_rescanwallet(const struct json_value *params, bool help,
         json_set_str(result, "Chainstate not available");
         return false;
     }
+    if (!rpc_require_chainstate_lookup_ready(ctx->main_state, result,
+            "rescanwallet", "Chainstate lookup"))
+        return false;
 
     int64_t balance_before = db_wallet_utxo_balance(ctx->node_db);
     int utxos_before = 0;
