@@ -190,6 +190,15 @@ int test_core(void)
                 printf("FAIL (waitpid)\n"); failures++;
             } else if (WIFSIGNALED(status) && WTERMSIG(status) == SIGABRT) {
                 printf("OK\n");
+#ifdef COVERAGE_BUILD
+            } else if (WIFEXITED(status) &&
+                       WEXITSTATUS(status) == (128 + SIGABRT)) {
+                /* The coverage runtime may intercept an aborting child,
+                 * flush gcov state, and translate the fatal path into
+                 * the conventional 128+signal exit code. That's still
+                 * the intended "hard fail" behavior here. */
+                printf("OK\n");
+#endif
             } else if (WIFEXITED(status)) {
                 printf("FAIL (child exited cleanly with %d — "
                        "silent zero-fill regression)\n", WEXITSTATUS(status));
