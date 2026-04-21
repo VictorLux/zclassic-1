@@ -1704,7 +1704,39 @@ bool bls12_381_multi_pairing_check(const struct g1_point *a_pts, const struct g2
     return memcmp(&result, &one, sizeof(struct fp12)) == 0;
 }
 
-/* G1 scalar multiplication: r = scalar * p (double-and-add, 256 bits) */
+/* Constant-time conditional move for Fp.  If mask == all-ones,
+ * dst = src; if mask == 0, dst is unchanged.  No branches, no
+ * secret-dependent memory access. */
+static inline void fp_cmov(struct fp *dst, const struct fp *src, uint64_t mask)
+{
+    for (int i = 0; i < 6; i++)
+        dst->d[i] = (dst->d[i] & ~mask) | (src->d[i] & mask);
+}
+
+static inline void g1_cmov(struct g1_point *dst, const struct g1_point *src,
+                           uint64_t mask)
+{
+    fp_cmov(&dst->x, &src->x, mask);
+    fp_cmov(&dst->y, &src->y, mask);
+    fp_cmov(&dst->z, &src->z, mask);
+}
+
+/* G1 scalar multiplication: r = scalar * p (double-and-add, 256 bits).
+ *
+ * Threat model (P9.1): callers include Groth16 proving, where the scalar
+ * is a secret blinding factor (r_blind, s_blind — groth16_prover.c:906,
+ * 934).  An attacker measuring wall-time of the prover must not learn
+ * the Hamming weight of the scalar.
+ *
+ * CT properties:
+ *   - Every iteration unconditionally runs g1_add and g1_double, so the
+ *     total number of field-arithmetic ops is fixed (256 adds, 256
+ *     doubles) independent of scalar content.
+ *   - The bit-dependent update of `result` is done via `g1_cmov` masked
+ *     on the bit, not a branch.
+ *
+ * Any future reviewer: do not reintroduce `if (bit)` without revisiting
+ * the side-channel threat model. */
 void g1_scalar_mul(struct g1_point *r, const struct g1_point *p, const uint64_t scalar[4])
 {
     struct g1_point result;
@@ -1713,8 +1745,10 @@ void g1_scalar_mul(struct g1_point *r, const struct g1_point *p, const uint64_t 
 
     for (int i = 0; i < 4; i++) {
         for (int bit = 0; bit < 64; bit++) {
-            if ((scalar[i] >> bit) & 1)
-                g1_add(&result, &result, &base);
+            struct g1_point sum;
+            g1_add(&sum, &result, &base);
+            uint64_t mask = (uint64_t)0 - ((scalar[i] >> bit) & 1ULL);
+            g1_cmov(&result, &sum, mask);
             g1_double(&base, &base);
         }
     }
