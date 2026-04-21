@@ -4,6 +4,9 @@
 #include "controllers/explorer_internal.h"
 #include <unistd.h>
 #include "util/safe_alloc.h"
+#include "validation/process_block.h"
+#include "validation/main_state.h"
+#include "consensus/params.h"
 
 int test_chain(void)
 {
@@ -1778,6 +1781,121 @@ int test_chain(void)
         ok = ok && checkpoints_last_height(NULL) == -1;
         ok = ok && checkpoints_validate_header(NULL, 0, &h);
         if (ok) printf("OK\n"); else { printf("FAIL\n"); failures++; }
+    }
+
+    /* P24.13 RED — skip_contextual gate must fire when the PoW averaging
+     * window cannot be walked back contiguously from pindex_prev. Models
+     * the live mainnet 2026-04-21 case where FlyClient snapshot placed
+     * tip=3,081,601 but block_index only reaches 3,081,408, so the
+     * 17-block GetNextWorkRequired window returns weakest-allowed nBits
+     * and every inbound header gets bad-diffbits-rejected. */
+    printf("P24.13 skip_contextual: complete 17-block window, no skip... ");
+    {
+        struct consensus_params cp = { .nPowAveragingWindow = 17 };
+        struct main_state ms;
+        main_state_init(&ms);
+
+        /* Build a 20-block contiguous pprev chain (more than window). */
+        struct block_index bi[20];
+        for (int i = 0; i < 20; i++) {
+            block_index_init(&bi[i]);
+            bi[i].nHeight = i;
+            bi[i].pprev = (i == 0) ? NULL : &bi[i - 1];
+        }
+        active_chain_set_tip(&ms.chain_active, &bi[19]);
+
+        bool should_skip =
+            process_block_should_skip_contextual_header(&ms, &bi[19], &cp);
+        /* Contiguous chain, far from the "old-IBD" case, window walks
+         * cleanly → gate must NOT skip contextual check. */
+        if (!should_skip)
+            printf("OK\n");
+        else {
+            printf("FAIL (unexpected skip on contiguous chain)\n");
+            failures++;
+        }
+        active_chain_free(&ms.chain_active);
+    }
+
+    printf("P24.13 skip_contextual: broken pprev at tip, MUST skip... ");
+    {
+        struct consensus_params cp = { .nPowAveragingWindow = 17 };
+        struct main_state ms;
+        main_state_init(&ms);
+
+        /* Simulates the FlyClient-snapshot-tail case: tip is at a high
+         * height but its pprev chain breaks after only a few contiguous
+         * blocks (block_index is not populated for the tail region). */
+        struct block_index bi[5];
+        for (int i = 0; i < 5; i++) {
+            block_index_init(&bi[i]);
+            bi[i].nHeight = 100000 + i; /* past the "too-young" guard */
+            bi[i].pprev = (i == 0) ? NULL : &bi[i - 1];
+        }
+        active_chain_set_tip(&ms.chain_active, &bi[4]);
+
+        bool should_skip =
+            process_block_should_skip_contextual_header(&ms, &bi[4], &cp);
+        /* Only 5 blocks of history → can't walk a 17-block window →
+         * gate MUST return true to bypass contextual_check_block_header. */
+        if (should_skip)
+            printf("OK\n");
+        else {
+            printf("FAIL (gate failed to fire — this is the P24.13 bug)\n");
+            failures++;
+        }
+        active_chain_free(&ms.chain_active);
+    }
+
+    printf("P24.13 skip_contextual: height-inversion mid-window, MUST skip... ");
+    {
+        struct consensus_params cp = { .nPowAveragingWindow = 17 };
+        struct main_state ms;
+        main_state_init(&ms);
+
+        /* Build 20 blocks but deliberately break height continuity at
+         * position 10 (nHeight jumps, violating the pprev->nHeight + 1
+         * invariant). This is the on-disk-corruption / scrambled-import
+         * case. */
+        struct block_index bi[20];
+        for (int i = 0; i < 20; i++) {
+            block_index_init(&bi[i]);
+            bi[i].nHeight = 100000 + i;
+            bi[i].pprev = (i == 0) ? NULL : &bi[i - 1];
+        }
+        bi[10].nHeight = 100500; /* deliberate non-contiguous jump */
+        active_chain_set_tip(&ms.chain_active, &bi[19]);
+
+        bool should_skip =
+            process_block_should_skip_contextual_header(&ms, &bi[19], &cp);
+        if (should_skip)
+            printf("OK\n");
+        else {
+            printf("FAIL (gate did not detect height-inversion within window)\n");
+            failures++;
+        }
+        active_chain_free(&ms.chain_active);
+    }
+
+    printf("P24.13 skip_contextual: NULL pindex_prev → safe default... ");
+    {
+        struct consensus_params cp = { .nPowAveragingWindow = 17 };
+        struct main_state ms;
+        main_state_init(&ms);
+
+        /* NULL pindex_prev — the caller already short-circuits on this,
+         * but the gate must not SEGV either. Return value is "don't skip"
+         * because there's nothing to walk; the caller's existing NULL
+         * guard handles the real branch. */
+        bool should_skip =
+            process_block_should_skip_contextual_header(&ms, NULL, &cp);
+        if (!should_skip)
+            printf("OK\n");
+        else {
+            printf("FAIL (NULL pindex_prev returned skip=true)\n");
+            failures++;
+        }
+        active_chain_free(&ms.chain_active);
     }
 
     printf("block_index sizeof and memory audit... ");
