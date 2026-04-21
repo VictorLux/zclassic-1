@@ -40,7 +40,21 @@ checklist plus the lane rules.
 
 ---
 
-## Current status — NOW = P24.13 (REASSIGNED 2026-04-21 02:30 by coordinator — pre-empts P24.11)
+## Current status — NOW = P24.11 (P24.13 LANDED + DEPLOYED by coordinator 2026-04-21 05:54)
+
+**P24.13 done b466740d2 [test:1.0 7c540ddfb]** — landed by coordinator
+while Agent-2's independent in-progress implementation (local commit
+d6de2bb01) had been kickoff-reset. If your local clone still shows
+d6de2bb01 unpushed, do `git pull --rebase` — your commit will be
+dropped as a patch-identical duplicate of b466740d2, OR produce a
+small conflict you can resolve by taking the origin version. Then
+advance to P24.11 below.
+
+Live-canary post-deploy (2026-04-21 05:54-05:58):
+- header_gap closed from 3,862 → 0 in 81s
+- block height advanced 3,081,601 → 3,082,953+ (catching up ~3 blocks/sec)
+- zero `bad-diffbits` rejections in `zcl_events`
+- `chain.headers >= chain.blocks` invariant holds (closes P24.5 side-effect)
 
 **P14.6 done 5994bc3b1 [test:1.0 de30f389d]** — extract the inline
 `connect_tip` propagation into a testable helper
@@ -55,12 +69,34 @@ window on the full block_map walk). At the live tip each walk is
 flap can do is one walk per 10 s. Tests in
 `lib/test/src/test_p14_6_failed_child_cap.c` assert both guards
 against a 5-entry fixture block_map. **Side-effect: closes P12.2**
-(BLOCK_FAILED_CHILD GC). Canary: the OOM-amplifier path is guarded,
-but sync still doesn't advance — root cause is P24.13 below.
+(BLOCK_FAILED_CHILD GC).
 
-**P24.13 CRITICAL — `bad-diffbits` on every inbound header batch. Sync cannot advance past 3,081,601. This is the actual root cause of the sync stall.**
+**P24.11 CRITICAL — `rpc_getsyncdiag+0xCB` json_free UAF (NEW NOW). Agent-2, start here.**
 
-Evidence from live-node `zcl_events` scan 2026-04-21 02:25:
+Symbol-resolved via `nm` on live crash backtrace 2026-04-21 05:02: the
+real crash site is INSIDE `rpc_getsyncdiag` itself at offset +0xCB
+(second json_free callsite, not the one P14.3 5406beca3 patched) AND
++0xB (very early — likely a stack-local `json_t*` missing `= NULL`
+init that hits the error-path free before any successful assignment).
+
+Fix shape: audit `rpc_getsyncdiag` in `app/controllers/src/health_controller.c`
+for (a) every `json_t*` local declared without `= NULL`, (b) every
+goto-to-fail path that free-returns a possibly-double-freed handle,
+(c) order-of-free between `wd` / `hdr` / return object.
+
+RED test shape in `lib/test/src/test_syncdiag_rpc.c`: fault-inject an
+error path that the existing tests don't exercise, assert zero
+double-free + node still alive.
+
+**After P24.11 lands:** P24.14 (coins_view_cache_get_coins SEGV, 16
+callsites) → P14 drain (P14.4, P14.5, P14.15, P14.16) → P13/P12/P7/P8
+drain → P15-P23.
+
+---
+
+### Historical — P24.13 sync-stall evidence (FIXED by b466740d2)
+
+Evidence from live-node `zcl_events` scan 2026-04-21 02:25 (pre-fix):
 
 ```
 sync.headers_rejected  peer=0   header[0] 000009f9...  reason=bad-diffbits
@@ -210,8 +246,6 @@ Plug in the live P24.13 numbers:
 
 Recommended order: (1) tightest fix first to unblock live mainnet sync, (2) backfill fix as a hardening follow-up row (could be a new P24.15), (3) write the RED test against the WIDENED gate so regression is caught if someone narrows it back.
 
-**Previous NOW (P24.11 after P14.6 landed 5994bc3b1) deferred.** P24.11 is about the coordinator-diagnostics `zcl_syncdiag` crash (real site: `rpc_getsyncdiag+0xCB` json_free UAF, corrected 2026-04-21 05:02) — important but blocks only coordinator observability, not live-node sync. P24.13 blocks sync itself. Come back to P24.11 immediately after, then P24.14 (`rpc_getrawtransaction` → `coins_view_cache_get_coins` SEGV on inverted-tail — filed 2026-04-21 05:00).
-
 ---
 
 ## (historical) NOW = P14.6
@@ -319,8 +353,8 @@ section is the executable checklist.
 - [x] **P14.10** CRITICAL — deferred-activation queue for `SKIP_ALREADY_RUNNING` from `process_new_block`. **done 8b5443a8d [test:1.0 fd23f77a3]**.
 - [x] **P14.3** CRITICAL — `rpc_getsyncdiag` json_free on uninit stack. **done 5406beca3 [test:1.0 63016db95]** (partial — see P24.11).
 - [x] **P14.6** CRITICAL — cap `BLOCK_FAILED_CHILD` propagation (OOM amplifier). **done 5994bc3b1 [test:1.0 de30f389d]** (closes P12.2 side-effect).
-- [ ] **P24.13** CRITICAL — `bad-diffbits` on every post-snapshot header batch (sync stall root cause — diagnosed via live `zcl_events` 2026-04-21 02:25). **Agent-2 NOW — highest priority.**
-- [ ] **P24.11** CRITICAL — second `zcl_syncdiag` crash in `downloadstats` or `getpeerinfo` composite path (blocks coordinator diagnostics). Pick up immediately after P24.13 lands.
+- [x] **P24.13** CRITICAL — `bad-diffbits` on every post-snapshot header batch. done b466740d2 [test:1.0 7c540ddfb] (coordinator 2026-04-21 05:54; header gap closed 3,862 → 0 in 81s post-deploy).
+- [ ] **P24.11** CRITICAL — `rpc_getsyncdiag+0xCB` json_free UAF (real site, corrected from earlier rpc_downloadstats hypothesis via nm symbol resolution 2026-04-21 05:02). **Agent-2 NOW — highest priority.**
 - [ ] **P14.4** HIGH — sync FSM flap debounce (279,135 events in hours on prior incident).
 - [ ] **P14.5** HIGH — `val.block_connected` must fire on commit, not receipt.
 
