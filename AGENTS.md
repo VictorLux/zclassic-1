@@ -57,14 +57,14 @@ the full inventory. Most useful subset for diagnostic work:
 `zcl_peers`, `zcl_peer_report`, `zcl_events`, `zcl_logtail`, `zcl_health`,
 `zcl_validationstatus`.
 
-**⚠ UNSAFE — WILL CRASH THE LIVE NODE (filed 2026-04-21):**
-- `zcl_syncdiag` — composite RPC hits `rpc_downloadstats` abort path (P24.11 CRITICAL).
-- Any UTXO-cache RPC on inverted-tail heights (P24.14 CRITICAL): `gettxout`,
-  `getcoins`, `listunspent` against heights 3,081,408–3,081,601. Crashes via
-  `coins_view_cache_get_coins` SEGV.
-- Composite RPCs that propagate `json_t*` through error paths (P24.14 `json_free` UAF).
-- `zcl_rpc` escape hatch — only use for methods in the safe list; arbitrary methods
-  can hit P24.14 class.
+**⚠ UNSAFE — WILL CRASH THE LIVE NODE (confirmed via live backtrace symbol resolution 2026-04-21 05:02):**
+- `zcl_syncdiag` / `getsyncdiag` — `rpc_getsyncdiag+0xCB` json_free UAF (P24.11 CRITICAL).
+- `zcl_getrawtransaction` / `getrawtransaction` — `rpc_getrawtransaction+0x4AB` →
+  `coins_view_cache_get_coins` SEGV on inverted-tail heights 3,081,409–3,081,601 (P24.14 CRITICAL).
+- `zcl_rpc` escape hatch — only use for methods confirmed in the safe list above; arbitrary
+  methods against the current P24.13-inverted state can hit either class.
+
+If a tool prompts permission to run something not listed as safe, DENY and ask Rhett.
 
 Use `zcl_events` + `zcl_logtail` for diagnostics. If a tool prompts permission
 to run something not listed here, deny and ask Rhett.
