@@ -1270,5 +1270,61 @@ int test_sapling_crypto(void)
         if (ok) printf("OK\n"); else { printf("FAIL\n"); failures++; }
     }
 
+    /* ── P9.6: spend-witness parser must reject short buffers ──────── */
+
+    printf("P9.6 sapling_spend_parse_witness rejects short buffer (no OOB read)... ");
+    {
+        /* The merkle-witness wire format is
+         *     depth (1) || 32 × (sibling (32) || bit (1))  = 1057 bytes.
+         * Pre-fix, zclassic_sapling_spend_proof parsed this inline: it
+         * read witness[0] as depth, asserted depth == 32, then memcpy'd
+         * 32 × 32 bytes from fixed offsets up to witness[1024+31]
+         * without first verifying the caller passed a buffer that long.
+         * A short caller-supplied witness (a wallet blob corrupted on
+         * disk, an RPC payload, a fuzz input) walks off the end of the
+         * buffer into adjacent heap/stack/guard-page memory.
+         *
+         * The parser helper was extracted so this bounds guard can be
+         * tested without loading the 47MB sapling-spend.params file.
+         * A RED run (no length check in the helper) returns true for a
+         * 100-byte buffer because witness[0] == 32 passes the only
+         * check the buggy code performs; the loop then reads past the
+         * end of short_witness. A GREEN run returns false because
+         * witness_len < 1057 trips the bounds guard.
+         *
+         * Full-buffer case is exercised too so the fix does not
+         * accidentally reject valid callers. */
+
+        uint8_t short_witness[100];
+        memset(short_witness, 0xAA, sizeof short_witness);
+        short_witness[0] = 32;
+
+        struct sapling_spend_witness wit;
+        memset(&wit, 0, sizeof wit);
+
+        bool short_rejected =
+            !sapling_spend_parse_witness(short_witness,
+                                         sizeof short_witness, &wit);
+
+        uint8_t full_witness[1 + 32 * 33];
+        memset(full_witness, 0xBB, sizeof full_witness);
+        full_witness[0] = 32;
+        for (int i = 0; i < 32; i++)
+            full_witness[1 + i * 33 + 32] = (uint8_t)(i & 1);
+
+        bool full_accepted =
+            sapling_spend_parse_witness(full_witness,
+                                        sizeof full_witness, &wit);
+
+        /* Exercise one non-full short length right below the limit so a
+         * naive `witness_len > 0` guard cannot pass the test. */
+        bool near_full_rejected =
+            !sapling_spend_parse_witness(full_witness,
+                                         sizeof full_witness - 1, &wit);
+
+        bool ok = short_rejected && full_accepted && near_full_rejected;
+        if (ok) printf("OK\n"); else { printf("FAIL\n"); failures++; }
+    }
+
     return failures;
 }

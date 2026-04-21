@@ -53,6 +53,17 @@ bool sapling_spend_synthesize(struct constraint_system *cs,
                                const struct sapling_spend_witness *wit,
                                const struct sapling_spend_inputs *pub);
 
+/* Parse a caller-supplied Sapling merkle authentication path into
+ * the auth_path / auth_path_bits fields of `wit`. Wire layout:
+ *     depth (1) || 32 × (sibling (32) || bit (1))  = 1057 bytes
+ * Returns false if `witness_len` is below the fixed 1057-byte layout
+ * or the depth byte is not 32. The bounds check is load-bearing:
+ * callers route untrusted-length buffers (RPC JSON, wallet blobs,
+ * fuzz harnesses) into this path. */
+bool sapling_spend_parse_witness(const uint8_t *witness,
+                                  size_t witness_len,
+                                  struct sapling_spend_witness *wit);
+
 /* ── Output Circuit ─────────────────────────────────────────────── */
 
 /* Private witness for a Sapling output */

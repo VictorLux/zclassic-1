@@ -128,6 +128,21 @@ void *zclassic_sapling_proving_ctx_init(void)
 
 void zclassic_sapling_proving_ctx_free(void *ctx) { free(ctx); }
 
+bool sapling_spend_parse_witness(const uint8_t *witness,
+                                  size_t witness_len,
+                                  struct sapling_spend_witness *wit)
+{
+    (void)witness_len;
+    uint8_t depth = witness[0];
+    if (depth != 32)
+        return false;
+    for (int i = 0; i < 32; i++) {
+        memcpy(wit->auth_path[i], witness + 1 + i * 33, 32);
+        wit->auth_path_bits[i] = witness[1 + i * 33 + 32] != 0;
+    }
+    return true;
+}
+
 bool zclassic_sapling_spend_proof(
     void *ctx,
     const unsigned char *ak,
