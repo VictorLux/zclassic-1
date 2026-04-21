@@ -40,7 +40,7 @@ checklist plus the lane rules.
 
 ---
 
-## Current status — NOW = P24.11 (P24.13 LANDED + DEPLOYED by coordinator 2026-04-21 05:54)
+## Current status — NOW = P24.14 (P24.11 LANDED + PUSHED by coordinator 2026-04-21 19:42)
 
 **P24.13 done b466740d2 [test:1.0 7c540ddfb]** — landed by coordinator
 while Agent-2's independent in-progress implementation (local commit
@@ -71,26 +71,63 @@ flap can do is one walk per 10 s. Tests in
 against a 5-entry fixture block_map. **Side-effect: closes P12.2**
 (BLOCK_FAILED_CHILD GC).
 
-**P24.11 CRITICAL — `rpc_getsyncdiag+0xCB` json_free UAF (NEW NOW). Agent-2, start here.**
+**P24.11 done ffad7cf7d [test:1.0 ab1e88a1b]** — centralized JSON-RPC
+response envelope in `rpc_http_test_build_response_envelope`, routed
+`handle_client` through the same helper as the RED test. Agent-2 had
+these on a local branch when coordinator rotated your NOW; coordinator
+rebased onto origin/main (ab1e88a1b + ffad7cf7d) and pushed to preserve
+your work. If you kickoff-reset before pull, the same patches are now
+upstream — just `git pull` and move on to P24.14.
 
-Symbol-resolved via `nm` on live crash backtrace 2026-04-21 05:02: the
-real crash site is INSIDE `rpc_getsyncdiag` itself at offset +0xCB
-(second json_free callsite, not the one P14.3 5406beca3 patched) AND
-+0xB (very early — likely a stack-local `json_t*` missing `= NULL`
-init that hits the error-path free before any successful assignment).
+**P24.14 CRITICAL — `coins_view_cache_get_coins` RPC SEGV class — 16 callers across 5 controllers (NEW NOW). Agent-2, start here.**
 
-Fix shape: audit `rpc_getsyncdiag` in `app/controllers/src/health_controller.c`
-for (a) every `json_t*` local declared without `= NULL`, (b) every
-goto-to-fail path that free-returns a possibly-double-freed handle,
-(c) order-of-free between `wd` / `hdr` / return object.
+Symbol-resolved 2026-04-21 05:02 via `nm` on live crash backtrace:
+```
+rpc_getrawtransaction+0x4AB → coins_view_cache_get_coins+0x1B3 → SIGSEGV → SIGABRT
+```
 
-RED test shape in `lib/test/src/test_syncdiag_rpc.c`: fault-inject an
-error path that the existing tests don't exercise, assert zero
-double-free + node still alive.
+Broader audit 2026-04-21 05:15 found the same NULL-deref pattern affects
+16 RPC callsites spread across 5 controllers:
+- `transaction_controller.c` — 2 sites
+- `chain_inspect_controller.c` — 1 site
+- `wallet_diagnostic_controller.c` — **10 sites** (single largest blast radius)
+- `wallet_rescan_controller.c` — 2 sites
+- `repair_controller.c` — 1 site
 
-**After P24.11 lands:** P24.14 (coins_view_cache_get_coins SEGV, 16
-callsites) → P14 drain (P14.4, P14.5, P14.15, P14.16) → P13/P12/P7/P8
-drain → P15-P23.
+ALL can SIGABRT the live node if triggered against inverted-tail heights
+(3,081,409..3,081,601 — present in `chain.blocks` but NOT in `block_index`
+per P24.13 inversion). Evidence: `~/.zclassic-c23/node.log` offset 219298.
+
+MCP tools UNSAFE until this lands: `zcl_getrawtransaction`, `zcl_walletaudit`,
+`zcl_listunspent`, `zcl_z_listunspent`, `zcl_rescanblockchain`.
+
+**Fix shape (layered):**
+- (a) NULL-check + graceful RPC error in `coins_view_cache_get_coins` return
+  path — single chokepoint in `lib/storage/src/coins_view_cache.c` (or wherever
+  `coins_view_cache_get_coins` lives; grep to confirm).
+- (b) audit each of the 16 callers to confirm they propagate the error
+  instead of dereferencing the NULL they now will receive.
+- (c) new lint rule `tools/scripts/check_coins_lookup_nullcheck.sh` to catch
+  future regressions.
+
+**RED test shape** — new file `lib/test/src/test_rpc_safety.c` (adjacent
+to `test_syncdiag_rpc.c` pattern you just shipped):
+- Build main_state with an inverted-tail fixture: block_index populated
+  0..83, `chain.blocks` claims tip=100 → matches P24.13 geometry.
+- For each of the 16 callsites (or at least one per controller), invoke
+  the RPC handler (not the MCP tool) with a tx/utxo lookup that will
+  hit the missing range.
+- Assert zero SIGABRT, zero SIGSEGV, all return a structured RPC error.
+- Pre-fix: at least one call aborts the test process.
+
+**Acceptance:**
+- `make -j && ./test_zcl` passes with new test.
+- Live canary: invoke `zcl_getrawtransaction` + `zcl_walletaudit` +
+  `zcl_listunspent` against running node, no SIGABRT in `node.log`,
+  all return clean JSON-RPC error envelopes when the coin is missing.
+
+**After P24.14 lands:** P13.1 (last CRITICAL) → P14 drain (P14.4, P14.5,
+P14.15, P14.16) → P13/P12/P7/P8 drain → P15-P23.
 
 ---
 

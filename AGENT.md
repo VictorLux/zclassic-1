@@ -50,14 +50,14 @@ P12.3.1/P12.6.1/P12.6.2/P12.8.1/P12.8.2, P7.11 / P9.11, P15-P19
 
 | Tier | Closed / Total | Open rows |
 |---|---|---|
-| **CRITICAL** | 25 / 31 | **P24.14** (RPC SIGABRT class — 3 live crashes in session), P13.1, P24.11 |
+| **CRITICAL** | 26 / 31 | **P24.14** (RPC SIGABRT class — 3 live crashes in session), P13.1 |
 | **HIGH** | 32 / 57 | P12.3, P12.3.1, P13.2, P13.4, P13.6, P13.7, P14.4, P14.5, P14.15, P14.16, P15.1, P15.2, P15.4, P15.6, P16.1, P16.2, P17.1, P17.2, P17.4, P17.5, P17.6, P18.1, P19.1, P24.2, P24.3, P24.4, P24.5, P24.7, P24.8, P24.10, **P24.15** |
 | **MED** | 27 / 55 | P7.10, P7.11, P8.4, P9.7, P9.8, P9.9, P12.5-P12.8, P12.6.1, P12.6.2, P12.8.2, P13.3, P13.5, P15.3, P15.5, P16.3-P16.7, P17.3, P18.2, P18.4, P24.1, P24.6, P24.9, **P24.16** |
 | **LOW** | 2 / 8 | P9.10, P9.11, P12.8, P18.3, **P24.17** |
 | (P0 baseline) | 4 / 4 | — |
 
-**Owner state (2026-04-21 05:54 — P24.13 LANDED + DEPLOYED, sync unblocked):**
-- **Agent-2 NOW: P24.11 → P24.14** (RPC SIGABRT class). **P24.13 landed by coordinator** (b466740d2 GREEN + 7c540ddfb RED) since Agent-2 session was kickoff-reset mid-implementation; coordinator took over and shipped with the design Agent-2 had drafted. Headers caught up from 3,081,408 → 3,085,304 in 81s post-deploy, zero bad-diffbits events. Next: **P24.11** (rpc_getsyncdiag json_free UAF at +0xCB) → **P24.14** (coins_view_cache_get_coins SEGV, 16 callsites) → P14 drain (P14.4, P14.5, P14.15, P14.16) → P13/P12/P7/P8 drain → P15-P23 → rest of P24 wave. Full checklist in [`AGENT-2.md`](AGENT-2.md).
+**Owner state (2026-04-21 19:42 — P24.11 LANDED + PUSHED, sync caught up to ~580 blocks behind):**
+- **Agent-2 NOW: P24.14** (RPC SIGABRT class). **P24.11 landed** (ffad7cf7d GREEN + ab1e88a1b RED) — centralized JSON-RPC envelope build, routed handler and test through shared helper `rpc_http_test_build_response_envelope`. **P24.13 landed by coordinator** (b466740d2 GREEN + 7c540ddfb RED). Live height now 3,084,785 / peer max 3,085,365 (gap 580, was 2,316 at P24.13 deploy). Next: **P24.14** (coins_view_cache_get_coins SEGV, 16 callsites in 5 controllers — largest remaining blast radius) → **P13.1** (last CRITICAL) → P14 drain (P14.4, P14.5, P14.15, P14.16) → P13/P12/P7/P8 drain → P15-P23 → rest of P24 wave. Full checklist in [`AGENT-2.md`](AGENT-2.md).
 - **Agent-3 NOW:** **P11.4** HIGH — shielded-payment CI gate (MVP #4). Landings today: P9.1 f10b39303, P9.2 94532c87e, P9.6 2fe801a08, **P11.6 39bb904f3 [test:1.0 4ae4b09db]** (7-day soak harness MVP #6 + `make soak-7day` runner). P9.7–P9.11 deferred (MED/LOW, skip unless trivially adjacent). Then P11.5/P11.8 MVP gates → P15.4/P15.5 → P17 testing lead → P18.4 crypto perf → P20 dev-MCP (coverage + test-map) → P21.7/P21.8 test split → P22.4 spec corpus → P23.7 scaffold_test_from_row → **P24.2 / P24.4** (`((unused))` lint, `abort()` triage). Full checklist in [`AGENT-3.md`](AGENT-3.md).
 - **Coordinator (Rhett):** post-deploy canary for P14.10+P14.13+P14.14+P14.3+P9.1+P9.2+P9.6+P11.6+P14.6 bundle (deploy landed 2026-04-21 02:09 — fresh binary running, peers 3→18, chain-restore path clean); **P19.2 license decision landed 2026-04-21 — Apache-2.0** (LICENSE + NOTICE + ATTRIBUTIONS updated); review P15-P18 acceptance; ship P24.1 + P24.7 + P24.12 coordinator-lane rows; watch sync advance post-P14.6+P24.11+P13.1.
 
