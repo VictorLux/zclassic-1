@@ -108,6 +108,81 @@ The comment at `check_block.c:236-239` explicitly calls out this failure mode: *
 - `lib/test/src/test_chain_restore_service.c:757,816` — existing RED test pattern for backfill (copy this shape for P24.13 RED)
 - `app/services/src/utxo_recovery_service.c:475` — already has a comment acknowledging this class of bug
 
+**RESUME-HERE DESIGN (added 2026-04-21 05:30 — preserving Agent-2's in-flight fix shape after a kickoff reset wiped 161 lines of WIP):**
+
+Agent-2 had the right approach drafted before the reset. If you're
+reading this fresh, implement exactly this — it's Option (a) from
+the hints below, done cleanly as two functions:
+
+```c
+/* lib/validation/src/process_block.c — new helpers */
+
+/* Returns true iff the pprev chain from pindex_prev can be walked
+ * backward `pow_window` steps with contiguous nHeight values
+ * (each pprev->nHeight + 1 == cursor->nHeight).  Used to detect
+ * the post-FlyClient-snapshot tail where block_index entries
+ * 3,081,409..tip exist but have no pprev linkage.
+ */
+static bool process_block_pow_window_complete(
+    const struct block_index *pindex_prev,
+    int pow_window)
+{
+    const struct block_index *cursor = pindex_prev;
+    if (!cursor || pow_window <= 0) return true;
+    for (int i = 0; i < pow_window; i++) {
+        if (!cursor->pprev) return false;
+        if (cursor->nHeight != cursor->pprev->nHeight + 1) return false;
+        cursor = cursor->pprev;
+    }
+    return true;
+}
+
+/* Exported gate — replaces the inline bool skip_contextual expression
+ * at process_block.c:904-905.  Skips contextual_check_block_header when:
+ *   - tip > 100000 AND pindex_prev is >1000 behind tip (old IBD case), OR
+ *   - the 17-block GetNextWorkRequired window cannot be walked
+ *     contiguously back from pindex_prev (P24.13 inverted-tail case).
+ * consensus->pow_averaging_window is 17 for mainnet. */
+bool process_block_should_skip_contextual_header(
+    const struct main_state *ms,
+    const struct block_index *pindex_prev,
+    const struct consensus_params *consensus);
+```
+
+In `lib/validation/include/validation/process_block.h` add the extern
+declaration for `process_block_should_skip_contextual_header` (+10 lines).
+
+At `process_block.c:902-906` replace the inline boolean with a call to
+the new exported function.
+
+**RED test** (`lib/test/src/test_chain.c` new case, ~82 lines):
+Build an in-memory block_index tree where `tip` is at height 100,
+`pindex_prev` is at height 100 (tip itself), but `pindex_prev->pprev`
+chain only extends back 5 blocks contiguously before breaking
+(simulating the 193-block inversion in miniature). Call the gate:
+- With `pow_window = 17` → expect TRUE (skip contextual, can't walk window)
+- With `pow_window = 3` → expect FALSE (window fits inside contiguous region)
+- Also test: pindex_prev == NULL → FALSE (safety fallback)
+
+**Lint gate wiring** (`lib/test/src/test_make_lint_gates.c`, +18 lines):
+Make sure the new symbol `process_block_should_skip_contextual_header`
+passes the `check_nodiscard` + `check_raw_sqlite` lints (it's pure C,
+no sqlite, so this is just ensuring the symbol is declared properly).
+
+**Commit shape (2 commits):**
+1. RED: `test/chain: RED for P24.13 skip_contextual inverted-tail gate`
+   — just the new test case, imports from process_block.h that
+   don't exist yet, expect a link error (or FAIL compilation gate).
+2. GREEN: `validation/process_block: skip contextual when PoW window
+   can't walk (P24.13 GREEN)` — the two helpers + header + call-site swap.
+
+After push, coordinator will `make deploy`. Expected live-canary:
+- Tip advances from 3,081,601 toward 3,085,271+ within 5 min
+- `zcl_events` shows zero `sync.headers_rejected reason=bad-diffbits`
+- `chain.headers >= chain.blocks` holds (closes P24.5 side-effect)
+
+---
+
 **PROGRESS HINT (added 2026-04-21 05:08 by coordinator — if you were stuck, start here):**
 
 The exact gate that is failing to fire is at `process_block.c:902-906`:
