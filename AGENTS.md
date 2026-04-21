@@ -53,12 +53,21 @@ should read it first.
 The running node exposes 60+ tools — see [`CLAUDE.md`](CLAUDE.md) for
 the full inventory. Most useful subset for diagnostic work:
 
-`zcl_status`, `zcl_kpi`, `zcl_getblockcount`, `zcl_peers`, `zcl_events`,
-`zcl_logtail`, `zcl_health`, `zcl_validationstatus`, `zcl_peer_report`,
-`zcl_rpc` (escape hatch for any of 100+ RPC methods).
+**SAFE (use these freely):** `zcl_status`, `zcl_kpi`, `zcl_getblockcount`,
+`zcl_peers`, `zcl_peer_report`, `zcl_events`, `zcl_logtail`, `zcl_health`,
+`zcl_validationstatus`.
 
-**⚠ `zcl_syncdiag` crashes the live node (P24.11 CRITICAL).** Use
-`zcl_events` for sync diagnostics until that row lands.
+**⚠ UNSAFE — WILL CRASH THE LIVE NODE (filed 2026-04-21):**
+- `zcl_syncdiag` — composite RPC hits `rpc_downloadstats` abort path (P24.11 CRITICAL).
+- Any UTXO-cache RPC on inverted-tail heights (P24.14 CRITICAL): `gettxout`,
+  `getcoins`, `listunspent` against heights 3,081,408–3,081,601. Crashes via
+  `coins_view_cache_get_coins` SEGV.
+- Composite RPCs that propagate `json_t*` through error paths (P24.14 `json_free` UAF).
+- `zcl_rpc` escape hatch — only use for methods in the safe list; arbitrary methods
+  can hit P24.14 class.
+
+Use `zcl_events` + `zcl_logtail` for diagnostics. If a tool prompts permission
+to run something not listed here, deny and ask Rhett.
 
 ## Build
 

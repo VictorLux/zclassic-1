@@ -38,7 +38,7 @@ No hotfixes. Every row is `[test:1.0]` by construction going forward.
 
 ## Progress — last updated 2026-04-21
 
-**Overall: 89 / 141 rows closed (63%) | KPIS estimate: ~44/100 (honest post-audit — see rubric below)**
+**Overall: 89 / 142 rows closed (63%) | KPIS estimate: ~44/100 (honest post-audit — see rubric below)**
 
 Row count expanded 2026-04-21 with **P24 — coordinator-audit wave**:
 P24.1–P24.10 (datadir hygiene, lint rules, `abort()` triage, header/block
@@ -50,7 +50,7 @@ P12.3.1/P12.6.1/P12.6.2/P12.8.1/P12.8.2, P7.11 / P9.11, P15-P19
 
 | Tier | Closed / Total | Open rows |
 |---|---|---|
-| **CRITICAL** | 24 / 30 | **P24.13** (sync stall root cause — new top priority), P13.1, P24.11 |
+| **CRITICAL** | 24 / 31 | **P24.13** (sync stall root cause — new top priority), **P24.14** (RPC SIGABRT class — 3 live crashes in session), P13.1, P24.11 |
 | **HIGH** | 32 / 56 | P12.3, P12.3.1, P13.2, P13.4, P13.6, P13.7, P14.4, P14.5, P14.15, P14.16, P15.1, P15.2, P15.4, P15.6, P16.1, P16.2, P17.1, P17.2, P17.4, P17.5, P17.6, P18.1, P19.1, P24.2, P24.3, P24.4, P24.5, P24.7, P24.8, P24.10 |
 | **MED** | 27 / 54 | P7.10, P7.11, P8.4, P9.7, P9.8, P9.9, P12.5-P12.8, P12.6.1, P12.6.2, P12.8.2, P13.3, P13.5, P15.3, P15.5, P16.3-P16.7, P17.3, P18.2, P18.4, P24.1, P24.6, P24.9 |
 | **LOW** | 2 / 7 | P9.10, P9.11, P12.8, P18.3 |
@@ -75,11 +75,16 @@ zclassicd: ~3,540 blocks, will not close until P24.13 lands. Prior
 canary positive signals (peers 3→18, chain-restore clean) remain
 valid; they just don't move the tip until P24.13 is fixed.
 **`zcl_syncdiag` STILL crashes the node** (P24.11 CRITICAL).
+**NEW 2026-04-21 ~04:41 — node has crashed 3× via RPC paths** (2× `json_free` UAF,
+1× `coins_view_cache_get_coins` SEGV). Filed as **P24.14 CRITICAL**. Evidence in
+`~/.zclassic-c23/node.log` offsets 400 / 22458 / 219298.
 Orphaned `.corrupt.*` artifacts (6.7 GB) swept to
 `~/zcl-backups/corrupt-sweep-20260421/` as P24.1 groundwork.
-**SAFE MCP tools:** `zcl_status`, `zcl_getblockcount`, `zcl_kpi`,
-`zcl_peers`, `zcl_peer_report`, `zcl_events`, `zcl_logtail`.
-**UNSAFE:** `zcl_syncdiag` until P24.11 lands.
+**SAFE MCP tools (workers use only these):** `zcl_status`, `zcl_getblockcount`,
+`zcl_kpi`, `zcl_peers`, `zcl_peer_report`, `zcl_events`, `zcl_logtail`, `zcl_health`.
+**UNSAFE until P24.11 + P24.14 land:** `zcl_syncdiag`, any RPC touching
+`coins_view_cache` (`gettxout`, `getcoins`, `listunspent` on inverted-tail
+heights), any composite RPC that passes a `json_t*` through an error path.
 
 ---
 
@@ -472,6 +477,7 @@ P0–P23. None overlap P15/P17/P21 scope.
 | **P24.11** | `zcl_syncdiag` **still crashes the node** after P14.3 GREEN. The P14.3 fix (5406beca3) patched the `getsyncdiag` RPC's `json_free`-on-uninit-stack bug, but the MCP tool `h_zcl_syncdiag` in `tools/mcp/controllers/ops_controller.c:491` composites THREE internal RPCs: `getsyncdiag` + `downloadstats` + `getpeerinfo`. `rpc_downloadstats` (`app/controllers/src/misc_controller.c:194`) is the new crash point — observed 2026-04-21 02:11 post-deploy (fresh binary; returned truncated `,"peer_max_height":0,"download":}` then SIGABRT'd the node). Need RED-first repro + audit of the `dl_get_stats` / `dl_get_throughput` call paths under `msg_get_download_mgr()`. | `app/controllers/src/misc_controller.c`, `tools/mcp/controllers/ops_controller.c` | CRITICAL | Agent-2 |
 | **P24.12** | Per-file SPDX header sweep for Apache-2.0. After P19.2 landed the LICENSE + NOTICE files, every source file in `lib/`, `app/`, `tools/`, `config/` should carry `// SPDX-License-Identifier: Apache-2.0` (or `/* ... */` for `.c`). Mechanical pass — lint gate added afterward to fail-exit if a new file lands without an SPDX header. Vendored code under `vendor/` keeps its original license ID (`BSD-3-Clause`, `MIT`, etc.). | repo-wide source tree + `tools/scripts/check_spdx.sh` (new) | MED | Agent-2 or Rhett |
 | **P24.13** | **Sync stall root cause — `bad-diffbits` on every inbound header batch after FlyClient UTXO snapshot.** Observed live 2026-04-21 02:25 on fresh-binary post-deploy: 12 peers at h≈3,085,141, node at tip h=3,081,601, header_height=3,081,408 (193-block inversion). For every incoming `headers size=87041` batch, `check_block.c:249` rejects header[0] with `bad-diffbits`, subsequent headers cascade-fail with `bad-prevblk`. Mechanism: `GetNextWorkRequired` at `check_block.c:241` returns `nProofOfWorkLimit` (weakest allowed) when its 17-block averaging window cannot be fully walked (the comment at `:231-238` explicitly names this case: "fast-sync snapshot tail ... MUST bypass this function entirely"). But the `skip_contextual` gate in `process_block.c` is NOT active for post-snapshot headers_download — every valid header gets the full GetNextWorkRequired check, returns weakest-allowed, peer's actual nBits != weakest → reject. Entire network cannot feed us past the snapshot tail. **Overlaps P14.11 ("Zero `bad-diffbits` lines" was a P14.13 canary-success signal that has regressed) and P14.15 (nBits backfill).** Fix shape: either (a) extend `skip_contextual` to cover the 193-block post-snapshot tail until block_index contiguous with tip, OR (b) backfill block_index entries 3,081,409..3,081,601 during chain-restore so `GetNextWorkRequired`'s 17-block window can walk successfully, OR (c) gate in `connect_block_local` that triggers a header-backfill phase from legacy peer. Pair with a RED test in `test_chain.c` that boots a fake snapshot tip, feeds real mainnet headers, asserts tip advances without `bad-diffbits`. | `lib/validation/src/check_block.c:224-251`, `lib/validation/src/process_block.c` (skip_contextual), `app/services/src/chain_restore_service.c` (nBits backfill range) | **CRITICAL** | Agent-2 |
+| **P24.14** | **RPC-triggered SIGABRT class — `json_free` UAF + `coins_view_cache_get_coins` SEGV (P14.3 partial-fix regression).** Observed live 2026-04-21: node crashed 3× during active worker session, each via `rpc_table_execute` → SIGSEGV→SIGABRT. Two crashes share a `json_free+0x43` double-free/UAF signature IDENTICAL to P14.3 (which patched ONE callsite in `rpc_getsyncdiag`); class of bug exists in other RPC handlers. Third crash: `coins_view_cache_get_coins+0x1b3` SEGV when an RPC reads UTXO data through the cache path (likely triggered by `gettxout` / `getcoins` / `listunspent` probe against a height that's in `chain.blocks` but not `block_index` — the 193-block P24.13 inversion creates this inconsistent state). Evidence: `~/.zclassic-c23/node.log` lines 400 (crash 1), 22458 (crash 2 — json_free UAF), 219298 (crash 3 — coins_view_cache SEGV). Distinct from P24.11 (`zcl_syncdiag` composite RPC), though same root-cause pattern: RPC handlers assume a well-formed chain + uninit pointer hygiene; post-P24.13-inversion state violates both. Fix shape: sweep all `rpc_*` handlers for (a) `json_t*` locals declared without `= NULL` init, (b) unchecked return from `get_block_by_height()` / `GetCoins()` on the 193-block inverted tail. Add lint rule `check_rpc_handler_safety.sh` after fix. | `app/controllers/src/*_controller.c`, `lib/storage/src/coins_view_cache.c`, `tools/mcp/controllers/*_controller.c` | **CRITICAL** | Agent-2 (after P24.13) |
 
 **Parallelism:** P24.1 + P24.7 are coordinator-lane (Rhett ships).
 P24.2 + P24.4 are Agent-3 lane (crypto/sapling touches). P24.3 +
