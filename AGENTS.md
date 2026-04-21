@@ -4,9 +4,8 @@ This file is the **portable** orientation index. Both Claude Code and
 Gemini CLI read it; any AI coding agent with an `AGENTS.md` convention
 should read it first.
 
-> If you need tool-specific details: Claude Code reads [`CLAUDE.md`](CLAUDE.md),
-> Gemini CLI reads [`GEMINI.md`](GEMINI.md). The rules in this file apply
-> to both.
+> If you need tool-specific details: Claude Code reads [`CLAUDE.md`](CLAUDE.md).
+> Codex CLI + any other AGENTS.md-convention agents read this file.
 
 ## First 60 seconds — figure out your role
 
@@ -43,7 +42,6 @@ should read it first.
 | [`AGENT-2.md`](AGENT-2.md) | Agent-2 executable checklist (wallet/storage/net/validation) |
 | [`AGENT-3.md`](AGENT-3.md) | Agent-3 executable checklist (crypto/sapling/keys) |
 | [`CLAUDE.md`](CLAUDE.md) | Project overview, MCP tool surface, architecture |
-| [`GEMINI.md`](GEMINI.md) | Gemini CLI onboarding (session-start routine) |
 | [`DEFENSIVE_CODING.md`](DEFENSIVE_CODING.md) | Mandatory standards enforced by `make lint` |
 | [`ATTRIBUTIONS.md`](ATTRIBUTIONS.md) | Concept-borrow attributions (cite in commits) |
 | [`LICENSE`](LICENSE) + [`NOTICE`](NOTICE) | Apache-2.0 + upstream copyright preservation |
