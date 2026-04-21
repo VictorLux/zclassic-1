@@ -175,6 +175,14 @@ encode the RED-first contract.
 
 **Blocks on:** P22.2 (sidecar format must exist first).
 
+### Phase 9 — P24 Coordinator audit wave (2026-04-21, Agent-3 share)
+
+Filed after the coordinator's binary-drift session + landmine scan.
+Full descriptions in [`AGENT.md`](AGENT.md) Priority 24.
+
+- [ ] **P24.2** HIGH — lint rule: ban `__attribute__((unused))` on function parameters named `*_len`, `*_size`, `*_count`, `*_sz`. This is the exact landmine that hid P9.6 for months. Wire into `make lint`. **Highest-leverage Agent-3 post-P11.6 row** — one lint gate retroactively protects every Sapling/crypto parameter.
+- [ ] **P24.4** HIGH — `abort()` triage. Refactor `lib/keys/src/key.c:26,215`, `lib/sapling/src/sapling.c:107`, `lib/sapling/src/note_encryption.c:75` to return `zcl_result` instead of `abort()`. Void-return callers make propagation impossible → every site is an uptime landmine. **Depends on P15.2 landing first** (zcl_result type).
+
 ---
 
 ## Cross-cutting notes

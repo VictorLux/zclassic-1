@@ -24,36 +24,47 @@ No hotfixes. Every row is `[test:1.0]` by construction going forward.
 
 ---
 
-## Progress — last updated 2026-04-20
+## Progress — last updated 2026-04-21
 
-**Overall: 81 / 130 rows closed (62%) | KPIS estimate: ~42/100 (honest post-audit — see rubric below)**
+**Overall: 89 / 141 rows closed (63%) | KPIS estimate: ~44/100 (honest post-audit — see rubric below)**
 
-Row count expanded with the 2026-04-20 full-review wave: P14.14-P14.16
-(chain-restore extensions), P13.6/P13.7 (net + lint), P12.3.1/P12.6.1/
-P12.6.2/P12.8.1/P12.8.2 (MCP + log cleanup), P7.11 / P9.11, and the
-new Priority groups P15-P19 (discipline + architecture + testing + perf
-+ attribution — the "shining example" roadmap).
+Row count expanded 2026-04-21 with **P24 — coordinator-audit wave**:
+P24.1–P24.10 (datadir hygiene, lint rules, `abort()` triage, header/block
+invariant, `goto fail` refactor, deploy pre-flight, `zcl_binary_vs_head`
+MCP tool, oversized-file backlog, crash-recovery CI). Original
+2026-04-20 full-review wave: P14.14-P14.16, P13.6/P13.7,
+P12.3.1/P12.6.1/P12.6.2/P12.8.1/P12.8.2, P7.11 / P9.11, P15-P19
+(discipline + architecture + testing + perf + attribution).
 
 | Tier | Closed / Total | Open rows |
 |---|---|---|
-| **CRITICAL** | 22 / 28 | P14.6, P13.1 |
-| **HIGH** | 31 / 50+ | P12.2, P12.3, P12.3.1, P13.2, P13.4, P13.6, P13.7, P14.4, P14.5, P14.15, P14.16, P15.1, P15.2, P15.4, P15.6, P16.1, P16.2, P17.1, P17.2, P17.4, P17.5, P17.6, P18.1, P19.1 |
-| **MED** | 26 / 50+ | P7.10, P7.11, P8.4, P9.7-P9.9, P12.5-P12.8, P12.6.1, P12.6.2, P12.8.2, P13.3, P13.5, P15.3, P15.5, P16.3-P16.7, P17.3, P18.2, P18.4 |
+| **CRITICAL** | 23 / 29 | P14.6, P13.1, P24.11 |
+| **HIGH** | 31 / 56 | P12.2, P12.3, P12.3.1, P13.2, P13.4, P13.6, P13.7, P14.4, P14.5, P14.15, P14.16, P15.1, P15.2, P15.4, P15.6, P16.1, P16.2, P17.1, P17.2, P17.4, P17.5, P17.6, P18.1, P19.1, P24.2, P24.3, P24.4, P24.5, P24.7, P24.8, P24.10 |
+| **MED** | 27 / 54 | P7.10, P7.11, P8.4, P9.7, P9.8, P9.9, P12.5-P12.8, P12.6.1, P12.6.2, P12.8.2, P13.3, P13.5, P15.3, P15.5, P16.3-P16.7, P17.3, P18.2, P18.4, P24.1, P24.6, P24.9 |
 | **LOW** | 2 / 7 | P9.10, P9.11, P12.8, P18.3 |
 | (P0 baseline) | 4 / 4 | — |
 
-**Owner state (2026-04-20, post-cleanup):**
-- **Agent-2 NOW:** **P14.6** — cap `BLOCK_FAILED_CHILD` propagation (OOM amplifier) (P14.3 landed 5406beca3 [test:1.0 63016db95]; P14.14 landed 9d71841ba [test:1.0 9f114c251]; P14.13 landed a62394130; P14.10 landed 8b5443a8d). Then P14 drain → P13/P12/P7/P8 drain → P15 discipline → P16 staged-sync port → P17.4/P17.5 support → P18 perf → P19.1 attribution → P20 dev-MCP → P21 oversized-file split → P22 AI-native scaffolding → P23 simplification + generator MCP. Full checklist in [`AGENT-2.md`](AGENT-2.md).
-- **Agent-3 NOW:** **P11.6** — 7-day soak harness (MVP #6) per handoff in 7d63ca52d; skipping P9.7–P9.9 (lower-leverage MED) as coordinator directed (P9.6 landed 2fe801a08 [test:1.0 e392a62d3]). Then P11.4/P11.5/P11.8 MVP CI gates → P15.4/P15.5 discipline → P17 testing lead → P18.4 crypto perf → P20 dev-MCP (coverage + test-map) → P21 test oversized-file split → P22.4 spec corpus → P23.7 scaffold_test_from_row. Full checklist in [`AGENT-3.md`](AGENT-3.md).
-- **Coordinator (Rhett):** canary post-P14.13 deploy; review P15-P18 acceptance; own license decision (P19.2); monitor KPIS.
+**Owner state (2026-04-21, post-canary):**
+- **Agent-2 NOW:** **P14.6** CRITICAL — cap `BLOCK_FAILED_CHILD` propagation (OOM amplifier). Prior landings today: P14.3 5406beca3, P14.14 9d71841ba, P14.10 8b5443a8d. Then **P24.11** (second `zcl_syncdiag` crash path) → P14 drain → P13/P12/P7/P8 drain → P15 → P16 → P17.4/P17.5 → P18 → P19.1 → P20 dev-MCP → P21 split → P22 → P23 → **rest of P24 wave**. Full checklist in [`AGENT-2.md`](AGENT-2.md).
+- **Agent-3 NOW:** **P11.6** HIGH — 7-day soak harness (MVP #6) per RESUME-HERE handoff (7d63ca52d). Landings today: P9.1 f10b39303, P9.2 94532c87e, P9.6 2fe801a08. P9.7–P9.11 deferred (MED/LOW, skip unless trivially adjacent). Then P11.4/P11.5/P11.8 MVP gates → P15.4/P15.5 → P17 testing lead → P18.4 crypto perf → P20 dev-MCP (coverage + test-map) → P21.7/P21.8 test split → P22.4 spec corpus → P23.7 scaffold_test_from_row → **P24.2 / P24.4** (`((unused))` lint, `abort()` triage). Full checklist in [`AGENT-3.md`](AGENT-3.md).
+- **Coordinator (Rhett):** post-deploy canary for P14.10+P14.13+P14.14+P14.3+P9.1+P9.2+P9.6 bundle (deploy landed 2026-04-21 02:09 — fresh binary running, peers 3→18, chain-restore path clean); review P15-P18 acceptance; own license decision (P19.2); ship P24.1 + P24.7 coordinator-lane rows; watch sync advance post-P14.6+P13.1.
 
-**Live-node state:** chain pinned at h=3,081,601 (SQLite); legacy
-zclassicd at 3,084,847 (gap 3,246 blocks). Service stopped since
-2026-04-20 20:13 — P14.13 boot hang fixed a62394130; coordinator
-canary pending. P14.3 fixed 5406beca3 — `zcl_syncdiag` /
-`getsyncdiag` safe to call again (local-binary live-verify: 10×
-calls, no crash; node returns well-formed JSON). `zcl_status`
-remains safe as before.
+**Live-node state (2026-04-21 02:10, post-deploy):** mainnet running
+fresh binary (systemd linger-service restart at 02:09:49 after
+`make deploy`). Canary signal **partially positive**: peers jumped
+3→18 immediately, `max_peer_height` tracking correctly at 3,085,137,
+chain-restore path completes cleanly (P14.10 + P14.13 + P14.14 all
+validated). Tip still pinned at 3,081,601 in `headers_download`
+state with `header_height=3,081,408` (193-block inversion — filed
+as P24.5 invariant). Legacy zclassicd at h≈3,085,137 (gap
+~3,536 blocks). **`zcl_syncdiag` STILL crashes the node** —
+P14.3 fix patched `getsyncdiag` RPC only; the MCP tool composites
+`downloadstats` + `getpeerinfo` and one of those is the new crash
+(filed as P24.11 CRITICAL). Orphaned `.corrupt.*` artifacts (6.7 GB)
+swept to `~/zcl-backups/corrupt-sweep-20260421/` as P24.1 groundwork.
+**SAFE MCP tools post-deploy:** `zcl_status`, `zcl_getblockcount`,
+`zcl_kpi`, `zcl_peers`, `zcl_peer_report`. **UNSAFE:** `zcl_syncdiag`
+until P24.11 lands.
 
 ---
 
@@ -420,6 +431,37 @@ have explicit predecessors.
 | **P23.7** | `zcl_scaffold_test_from_row(row_id)` — reads the `.ac.yaml` sidecar (P22.2), emits a RED test skeleton that matches the acceptance criteria. Biggest productivity multiplier for `[test:1.0]` discipline. | `tools/mcp/scaffolder/test.c` (new) | HIGH | Agent-3 (blocks on P22.2) |
 | **P23.8** | `zcl_explain(file, line)` — combines clangd AST (via P22.3 LSP bridge) with relevant `agents.md` + `docs/spec/` via RAG (P22.4). Answers "what is this function's contract and constraints" in one call. | `tools/mcp/controllers/explain_controller.c` (new) | MED | Agent-2 (blocks on P22.3 + P22.4) |
 | **P23.9** | `zcl_commit_plan(intent)` — reads `git diff` + AGENT.md rows in progress, returns a structured commit message (row ID, attribution line, RED-test evidence block). Enforces commit-message discipline that today is manual + easy to skip. | `tools/mcp/controllers/commit_plan_controller.c` (new) | MED | Agent-2 |
+
+## Priority 24 — Coordinator audit wave (2026-04-21)
+
+**Filed 2026-04-21** after the coordinator burned a session diagnosing
+why the live node wouldn't sync past 3,081,601 — the root cause was
+the main-clone binary was a full day stale (pre-dated every CRITICAL
+that landed 2026-04-21). The binary-drift failure mode plus a pass
+over the 370 raw `malloc()` + 40 `((unused))` + 34 app-layer
+`goto fail;` sites surfaced ten NEW rows that are NOT covered by
+P0–P23. None overlap P15/P17/P21 scope.
+
+| # | Task | Files | Pri | Owner |
+|---|---|---|---|---|
+| **P24.1** | Datadir hygiene: sweep orphaned `block_index.bin.corrupt.*` + `.corrupt_*` dirs into `~/zcl-backups/corrupt-sweep-<ts>/` at boot. First sweep (6.7 GB) completed manually 2026-04-21; this row wires it into startup. | `app/services/src/chain_restore_service.c`, `app/services/src/datadir_sweep_service.c` (new) | MED | Rhett (coord) |
+| **P24.2** | Lint rule: ban `__attribute__((unused))` on function parameters named `*_len`, `*_size`, `*_count`, or `*_sz`. This is the exact landmine that hid P9.6 for months (sapling.c:912 had `witness_len __attribute__((unused))` — length available, never used). | `tools/scripts/check_unused_len.sh` (new) + `make lint` wiring | HIGH | Agent-3 |
+| **P24.3** | Lint rule: ban raw `malloc()` in `lib/` + `app/` outside an allowlist. CLAUDE.md mandates `zcl_malloc(size, "label")` but 370 raw sites across 80 files — no CI enforcement. Mirror P0.1 `check-raw-sqlite` pattern. | `tools/scripts/check_raw_malloc.sh` (new), allowlist in repo | HIGH | Agent-2 |
+| **P24.4** | `abort()` triage — refactor `lib/keys/src/key.c:26,215`, `lib/sapling/src/sapling.c:107`, `lib/sapling/src/note_encryption.c:75` to return `zcl_result` instead. Void-return signatures force `abort()` as the only error path — each one is an uptime landmine. Dep: P15.2 (`zcl_result` type lands first). | `lib/keys/src/key.c`, `lib/sapling/src/sapling.c`, `lib/sapling/src/note_encryption.c` | HIGH | Agent-3 |
+| **P24.5** | Header-count / block-count invariant: `chain.headers >= chain.blocks` must always hold. Observed violation live (headers 3,081,408 < blocks 3,081,601). Add invariant assert in sync state machine + RED test that forces inversion and asserts watchdog catches it. Distinct from P13.2 oscillation. | `app/services/src/sync_service.c`, `lib/test/src/test_sync_invariants.c` (new) | HIGH | Agent-2 |
+| **P24.6** | `goto fail;` refactor: 34 sites in `sync_controller.c` (22), `coins_view_sqlite.c` (8), `block_index_loader.c` (4). Same pattern P15.3 kills but P15.3 is scoped to wire parsers only. Extend `[[gnu::cleanup]]` adoption to these three files. | `app/controllers/src/sync_controller.c`, `lib/storage/src/coins_view_sqlite.c`, `app/services/src/block_index_loader.c` | MED | Agent-2 |
+| **P24.7** | `make deploy` pre-flight: fail-exit if `HEAD` commit time > binary mtime (binary older than source HEAD). Prevents the 2026-04-21 incident where coordinator clone ran a day-stale binary while 22 commits + 4 CRITICALs sat in source. | `Makefile` (`deploy` target), `tools/scripts/check_binary_fresh.sh` (new) | HIGH | Rhett (coord) or Agent-2 |
+| **P24.8** | `zcl_binary_vs_head` MCP tool: returns `{binary_mtime, binary_sha, head_sha, commits_behind, drift_seconds}`. Coordinator-facing version of P24.7 — surfaces binary drift in one MCP call. | `tools/mcp/controllers/meta_controller.c` | HIGH | Agent-2 |
+| **P24.9** | Oversized-file backlog beyond P21: `test_validation.c` (112 kB), `test_chain.c` (65 kB), `test_sapling_crypto.c` (49 kB), `bn254.c` (75 kB), `circuit_gadgets.c` (62 kB), `snapshot_sync_service.c` (74 kB), `database.c` (56 kB), `wallet.c` (53 kB), `net.c` (51 kB), `connman.c` (51 kB), `fast_sync.c` (50 kB). Expand P22.5 budget-lint exemption list OR split. | various | MED | Agent-2 |
+| **P24.10** | Crash-recovery CI gate: `make ci-crash` nightly target. Loop: start → send tx → `kill -9` → restart → assert balance non-zero. Four separate postmortem memories document this class (never_destroy_wallet, utxo_wipe_safety, crash_recovery, sqlite_flush_bug) but no CI asserts it. | `tools/scripts/ci_crash.sh` (new), `lib/test/src/test_crash_recovery_ci.c` (new) | HIGH | Agent-2 |
+| **P24.11** | `zcl_syncdiag` **still crashes the node** after P14.3 GREEN. The P14.3 fix (5406beca3) patched the `getsyncdiag` RPC's `json_free`-on-uninit-stack bug, but the MCP tool `h_zcl_syncdiag` in `tools/mcp/controllers/ops_controller.c:491` composites THREE internal RPCs: `getsyncdiag` + `downloadstats` + `getpeerinfo`. `rpc_downloadstats` (`app/controllers/src/misc_controller.c:194`) is the new crash point — observed 2026-04-21 02:11 post-deploy (fresh binary; returned truncated `,"peer_max_height":0,"download":}` then SIGABRT'd the node). Need RED-first repro + audit of the `dl_get_stats` / `dl_get_throughput` call paths under `msg_get_download_mgr()`. | `app/controllers/src/misc_controller.c`, `tools/mcp/controllers/ops_controller.c` | CRITICAL | Agent-2 |
+
+**Parallelism:** P24.1 + P24.7 are coordinator-lane (Rhett ships).
+P24.2 + P24.4 are Agent-3 lane (crypto/sapling touches). P24.3 +
+P24.5 + P24.6 + P24.8 + P24.10 are Agent-2 lane. P24.9 absorbed into
+P22.5 exemption list or split per Agent-2 during P21 wave. None
+block on P15–P23; the lint rows (P24.2, P24.3) ideally land first so
+they gate later commits.
 
 ---
 

@@ -46,36 +46,51 @@ checklist plus the lane rules.
 `app/controllers/src/health_controller.c` declared `struct json_value
 wd;` and `hdr;` without initialization. `json_set_object()` calls
 `json_free()` on the struct before re-typing, reading uninitialized
-`type`/`num_children`/`children` and calling `free()` on garbage —
-deterministic SIGSEGV/SIGABRT on a live node whose stack is always
-dirty. Apply the `= {0}` + trailing `json_free(&X)` pattern the
-sibling RPCs already use (`chain`, `bgv`, `bgh`, `svc`). Local
-live-verify: 10× `getsyncdiag` calls, node alive, well-formed JSON.
-Coordinator canary pending — `zcl_syncdiag` now safe to call again.
+`type`/`num_children`/`children` and calling `free()` on garbage.
+Applied `= {0}` + post-push `json_free(&wd)` / `json_free(&hdr)` —
+same pattern sibling RPCs use (`chain`, `bgv`, `bgh`, `svc`).
+Local live-verify: 10× `getsyncdiag` calls, node alive, well-formed
+JSON. **⚠ Only a PARTIAL fix of the MCP tool.** The coordinator
+canary on 2026-04-21 02:11 proved that `h_zcl_syncdiag` in
+`tools/mcp/controllers/ops_controller.c:491` composites THREE RPCs
+(`getsyncdiag` + `downloadstats` + `getpeerinfo`); one of the other
+two still SIGABRTs the node on the live path. Filed as **P24.11
+CRITICAL** — queued immediately after P14.6.
 
 **P14.14 done 9d71841ba [test:1.0 9f114c251]** — after the bucket-fill,
 the rebuild pass walks chain bottom-up and (for every slot whose pprev
 is NULL) wires it to chain[h-1], then calls `block_index_build_skip()`
 on any slot whose pskip is NULL. Bottom-up ordering lets build_skip
 reuse each parent's freshly-built pskip → O(tip_h · log tip_h) total
-(~1.7M ops at live tip). Only fills NULLs — preserves pprev/pskip on
-forked entries that the bucketing step may have promoted into
-active_chain.
+(~1.7M ops at live tip).
 
 **P14.10 done 8b5443a8d [test:1.0 fd23f77a3]** — atomic
 `deferred_pending` counter on the controller; SKIP_ALREADY_RUNNING
 increments it, the activator drain-loops (bounded 8 rounds) under the
-mutex before transitioning out of CONNECTING. Block pointer not
-deep-copied — `accept_block` already persisted the block, and
-`activate_best_chain(pblock=NULL)` picks it up via the disk-read path.
+mutex before transitioning out of CONNECTING.
 
 **P14.13 done a62394130 [test:1.0 b07284439]** — single-pass bucketing
-replaces the O(N²) residual-holes branch. Coordinator canary pending.
+replaces the O(N²) residual-holes branch.
+
+**Canary status (2026-04-21 02:10 post-`make deploy`):** fresh binary
+booted clean, peers 3→18 immediately, chain-restore path completes
+without hang, `getblockcount=3081601` within seconds. All four
+chain-restore CRITICALs (P14.10 + P14.13 + P14.14 + P14.3 RPC-side)
+validated on the live node. Tip not advancing yet — still
+`headers_download` state with `header_height (3,081,408) < height
+(3,081,601)` inversion (filed P24.5). Most likely P14.6 + P13.1 need
+to land before tip catches up to legacy (h≈3,085,137).
 
 **P14.6 (CRITICAL): cap `BLOCK_FAILED_CHILD` propagation (OOM
 amplifier).** Skip when parent already failed; cap per-retry. Follow
 P10.1 workflow (reproduce on fixture first → writeup → RED → minimal
-fix → live verify). See AGENT.md for full description.
+fix → live verify). See AGENT.md for full description. **Agent-2 NOW.**
+
+**Next row after P14.6 is P24.11** (not P14.4). P24.11 blocks
+coordinator MCP diagnostics — every `zcl_syncdiag` call SIGABRTs
+the live node. RED-first repro: instrument `rpc_downloadstats` +
+`mcp_node_rpc` paths; find which of the two remaining internal RPCs
+(`downloadstats` / `getpeerinfo`) is the crash site.
 
 (historical P14.13 description retained below for context)
 
@@ -128,8 +143,9 @@ section is the executable checklist.
 
 - [x] **P14.13** CRITICAL — rebuild_active_chain O(N²) boot hang. **done a62394130 [test:1.0 b07284439]**.
 - [x] **P14.10** CRITICAL — deferred-activation queue for `SKIP_ALREADY_RUNNING` from `process_new_block`. **done 8b5443a8d [test:1.0 fd23f77a3]**.
-- [x] **P14.3** CRITICAL — `zcl_syncdiag` SIGABRT via `json_free`. **done 5406beca3 [test:1.0 63016db95]**.
-- [ ] **P14.6** CRITICAL — cap `BLOCK_FAILED_CHILD` propagation (OOM amplifier). Skip when parent already failed; cap per-retry.
+- [x] **P14.3** CRITICAL — `rpc_getsyncdiag` json_free on uninit stack. **done 5406beca3 [test:1.0 63016db95]** (partial — see P24.11).
+- [ ] **P14.6** CRITICAL — cap `BLOCK_FAILED_CHILD` propagation (OOM amplifier). Skip when parent already failed; cap per-retry. **Agent-2 NOW.**
+- [ ] **P24.11** CRITICAL — second `zcl_syncdiag` crash in `downloadstats` or `getpeerinfo` composite path (blocks coordinator diagnostics).
 - [ ] **P14.4** HIGH — sync FSM flap debounce (279,135 events in hours on prior incident).
 - [ ] **P14.5** HIGH — `val.block_connected` must fire on commit, not receipt.
 
@@ -270,6 +286,22 @@ test from a single MCP call, and the repo's structural surface
 - [ ] **P23.9** MED — `zcl_commit_plan(intent)` — reads `git diff` + AGENT.md rows in-progress, returns structured commit message (row ID, attribution, test evidence). Enforces today's manual discipline.
 
 **Agent-3 owns P23.7** (`zcl_scaffold_test_from_row`) — see AGENT-3.md.
+
+### Phase 14 — P24 Coordinator audit wave (2026-04-21)
+
+Filed after the coordinator burned a session on the binary-drift
+incident (stale binary ran a full day behind source). Full descriptions
+in [`AGENT.md`](AGENT.md) Priority 24.
+
+- [ ] **P24.11** CRITICAL — second `zcl_syncdiag` crash path (composite of `downloadstats` + `getpeerinfo`). **Queued immediately after P14.6** — blocks coordinator diagnostics.
+- [ ] **P24.3** HIGH — lint rule banning raw `malloc()` in `lib/` + `app/` (370 sites today, no CI enforcement).
+- [ ] **P24.5** HIGH — `chain.headers >= chain.blocks` invariant assert + RED test. Observed violation live (h=3,081,408 vs blocks=3,081,601).
+- [ ] **P24.8** HIGH — `zcl_binary_vs_head` MCP tool: `{binary_mtime, head_sha, commits_behind, drift_seconds}`.
+- [ ] **P24.10** HIGH — `make ci-crash` nightly gate (start → send tx → kill-9 → restart → assert balance).
+- [ ] **P24.7** HIGH — `make deploy` pre-flight: fail if HEAD commit time > binary mtime. Coord-lane or Agent-2.
+- [ ] **P24.1** MED — datadir hygiene sweep `.corrupt.*` → `~/zcl-backups/corrupt-sweep-<ts>/` at boot. Coord-lane.
+- [ ] **P24.6** MED — `goto fail;` refactor (34 sites in 3 app-layer files). Extends P15.3 scope.
+- [ ] **P24.9** MED — oversized-file backlog (11 additional files >1000 lines beyond P21 list).
 
 ---
 
