@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "zcl23": {
+      "command": "zclassic23",
+      "args": [
+        "-mcp"
+      ]
+    }
+  }
+}

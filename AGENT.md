@@ -1,7 +1,19 @@
 # zclassic23 — Master Agent Checklist
 
-Owner: Rhett (coordinator). Delegates: Agent-2 (see
-[`AGENT-2.md`](AGENT-2.md)), Agent-3 (see [`AGENT-3.md`](AGENT-3.md)).
+Owner: Rhett (coordinator, runs Claude Code in `~/zclassic23`).
+Delegates: Agent-2 (see [`AGENT-2.md`](AGENT-2.md), worktree
+`~/zclassic23-2`), Agent-3 (see [`AGENT-3.md`](AGENT-3.md), worktree
+`~/zclassic23-3`).
+
+**Worker tooling (2026-04-21):** Agent-2 and Agent-3 run as Gemini CLI
+instances. Session-start bootstrap: `pwd` → identify lane → read
+[`GEMINI.md`](GEMINI.md) and [`AGENTS.md`](AGENTS.md) → open
+`AGENT-2.md` or `AGENT-3.md` → `git pull --rebase` → work the NOW row.
+The coordinator remains Claude Code. Cross-tool compatibility is
+handled by [`AGENTS.md`](AGENTS.md) (portable) and the lane-file
+structure being tool-agnostic. Gemini-specific config: policy file at
+`~/.gemini/policies/zclassic23.toml`, MCP config at
+`.gemini/settings.json` (committed).
 
 ---
 
@@ -399,12 +411,12 @@ See [`ATTRIBUTIONS.md`](ATTRIBUTIONS.md).
 
 | # | Task | File:line | Severity | Owner |
 |---|---|---|---|---|
-| **P22.1** | `AGENTS.md` at repo root — portable-standard alias for `CLAUDE.md`. Either symlink or dual-maintain. Root file is the 50-line index into per-subsystem `agents.md` (P15.5). | `AGENTS.md` (new), `CLAUDE.md` | HIGH | Agent-2 |
+| **P22.1** | `AGENTS.md` at repo root — portable-standard alias for `CLAUDE.md`. Either symlink or dual-maintain. Root file is the 50-line index into per-subsystem `agents.md` (P15.5). | `AGENTS.md` (new), `CLAUDE.md` | HIGH | **done 2026-04-21 (coord)** — `AGENTS.md` landed at repo root alongside `GEMINI.md`. Portable orientation index pointing at `AGENT.md` / `AGENT-2.md` / `AGENT-3.md` / `CLAUDE.md` / `GEMINI.md`. Drove the Agent-2/Agent-3 transition from Claude Code to Gemini CLI. |
 | **P22.2** | `.ac.yaml` sidecar per AGENT.md row. One `ROWS.yml` at repo root OR per-row `docs/rows/P<id>.ac.yaml`. Schema: `{id, tier, severity, owner, status, sha, files, acceptance: [...], depends_on: [...]}`. Generator keeps it in sync with AGENT.md tables (CI-enforced). Feeds `zcl_roadmap` (P20.2). | `docs/rows/*.ac.yaml` (new), `tools/scripts/gen_row_sidecars.py` (new) | HIGH | Agent-2 |
 | **P22.3** | **Integrate clangd + LSP-MCP bridge into zclassic23 binary.** Expose as `zcl_lsp_definition`, `zcl_lsp_references`, `zcl_lsp_hover`, `zcl_lsp_call_hierarchy`, `zcl_lsp_diagnostics`. Spawns a clangd subprocess bound to `compile_commands.json` (generated from `Makefile`). Replaces custom P20.3 + P20.5 work — use the production-tested LSP path. | `lib/devinfo/src/lsp_bridge.c` (new), `tools/mcp/controllers/dev_controller.c` (new) | HIGH | Agent-2 |
 | **P22.4** | `docs/spec/` — cold-memory RAG-retrievable spec docs per subsystem. One short spec per `lib/*/`: architecture, invariants, known gotchas, on-disk format. Not duplicate of `agents.md` (which is hot-memory operational); this is reference material a RAG retriever can pull into context. | `docs/spec/<subsystem>.md` (new) | MED | Agent-2 (net/validation/storage/wallet/script) + Agent-3 (crypto/sapling/keys) |
 | **P22.5** | File-size budget lint gate. No file in `lib/` or `app/` over 1,000 lines. `tools/scripts/check_file_size_budget.sh` wired into `make lint`. Exit-1 on violation. Existing oversized files grandfathered via `tools/scripts/file_size_budget_exemptions.txt` — each exemption listed with an AGENT.md row that closes it (P21.*). | `tools/scripts/check_file_size_budget.sh` (new), `Makefile:~543` | HIGH | Agent-2 |
-| **P22.6** | `AGENTS.md` specifies a "fresh-session bootstrap" — the canonical 3-step orientation sequence for a new AI agent: (1) call `zcl_roadmap` for your NOW, (2) call `zcl_codemap` for your lane, (3) read the relevant `agents.md` in your scope. No reading AGENT.md end-to-end. | `AGENTS.md` | MED | Agent-2 |
+| **P22.6** | `AGENTS.md` specifies a "fresh-session bootstrap" — the canonical orientation sequence for a new AI agent. | `AGENTS.md`, `GEMINI.md` | MED | **partial 2026-04-21** — `GEMINI.md` documents the `pwd` → lane-file → `git pull` → NOW-row routine. Completion (the original intent: `zcl_roadmap` / `zcl_codemap` / `agents.md` calls) blocks on P20.1 + P20.2 + P15.5 actually landing — those tools don't exist yet. Upgrade to HIGH when P20 rows ship. |
 
 ## Priority 23 — Structural simplification + generative MCP (2026-04-20)
 
