@@ -103,11 +103,39 @@ The comment at `check_block.c:236-239` explicitly calls out this failure mode: *
 
 **File path pointers:**
 - `lib/validation/src/check_block.c:224-251` — the reject site
-- `lib/validation/src/process_block.c` — search for `skip_contextual`
-- `app/services/src/chain_restore_service.c` — `chain_restore_backfill_nbits_from_disk`
+- **`lib/validation/src/process_block.c:902-911`** — the `skip_contextual` gate (see PROGRESS HINT below)
+- `app/services/src/chain_restore_service.c:433` — `chain_restore_backfill_nbits_from_disk` (existing backfill infra for option (b))
+- `lib/test/src/test_chain_restore_service.c:757,816` — existing RED test pattern for backfill (copy this shape for P24.13 RED)
 - `app/services/src/utxo_recovery_service.c:475` — already has a comment acknowledging this class of bug
 
-**Previous NOW (P24.11 after P14.6 landed 5994bc3b1) deferred.** P24.11 is about the coordinator-diagnostics `zcl_syncdiag` crash — important but blocks only coordinator observability, not live-node sync. P24.13 blocks sync itself. Come back to P24.11 immediately after.
+**PROGRESS HINT (added 2026-04-21 05:08 by coordinator — if you were stuck, start here):**
+
+The exact gate that is failing to fire is at `process_block.c:902-906`:
+```c
+int tip_h = active_chain_height(&ms->chain_active);
+bool skip_contextual = (tip_h > 100000 && pindex_prev &&
+                        pindex_prev->nHeight < tip_h - 1000);
+if (pindex_prev && !skip_contextual &&
+    !contextual_check_block_header(header, state, params, pindex_prev,
+                                    ms->fCheckpointsEnabled))
+    LOG_FAIL(...);
+```
+
+Plug in the live P24.13 numbers:
+- `tip_h = 3,081,601` → `tip_h > 100000` ✓
+- New incoming header is at h=3,081,602 → `pindex_prev->nHeight = 3,081,601` (the tip)
+- Gate: `3,081,601 < 3,081,601 - 1000 = 3,080,601` → **FALSE**
+- Therefore `skip_contextual = FALSE` → contextual_check runs → GetNextWorkRequired's 17-block window can't walk the 193-block inverted region → returns weakest-allowed → peer's real nBits mismatches → reject.
+
+**The `-1000` slack was designed for reorg/scrambled-height recovery, not for tail-append during post-snapshot header download.** Approach options (you choose — this is your lane):
+
+- Tightest fix: widen the gate to also skip_contextual when `pindex_prev->nHeight >= tip_h - 17` (the GetNextWorkRequired averaging window — if pindex_prev is inside or abutting the window and the window can't walk through the inverted tail, we already know contextual-check will spuriously fail). One-line change.
+- Phase-flag fix: add a bool `ms->in_post_snapshot_header_backfill` that sync service sets TRUE during the known-inverted phase; gate on it. Cleaner but touches sync service too.
+- Backfill fix (option (b) from above): extend `chain_restore_backfill_nbits_from_disk` to walk past the block_index end and populate entries 3,081,409..3,081,601 from `disk_block_io`. Correctness-complete but more code.
+
+Recommended order: (1) tightest fix first to unblock live mainnet sync, (2) backfill fix as a hardening follow-up row (could be a new P24.15), (3) write the RED test against the WIDENED gate so regression is caught if someone narrows it back.
+
+**Previous NOW (P24.11 after P14.6 landed 5994bc3b1) deferred.** P24.11 is about the coordinator-diagnostics `zcl_syncdiag` crash (real site: `rpc_getsyncdiag+0xCB` json_free UAF, corrected 2026-04-21 05:02) — important but blocks only coordinator observability, not live-node sync. P24.13 blocks sync itself. Come back to P24.11 immediately after, then P24.14 (`rpc_getrawtransaction` → `coins_view_cache_get_coins` SEGV on inverted-tail — filed 2026-04-21 05:00).
 
 ---
 

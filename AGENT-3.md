@@ -84,6 +84,25 @@ are P11.4 (shielded payment e2e), P11.5 (store e2e), and P11.8
 2. **GREEN** — real implementation.
 3. **Mark done** — update `AGENT.md` row + current NOW.
 
+**PROGRESS HINT (added 2026-04-21 05:08 by coordinator):** if you have
+a RED test file on disk but haven't pushed it yet, push the RED alone
+first — even if it's rough, even if GREEN isn't ready. That commit is
+the agreement with the coordinator that we understand the failure
+shape. It's OK for a RED test to be 506 lines or 20 lines; what
+matters is that it's the smallest thing that fails for the right reason.
+If the test file compiles and fails (any kind of failure), stage it
+and push as `test/P11.4: RED for shielded-payment CI gate`. Don't
+wait to polish it together with the GREEN.
+
+**⚠ Do not call `zcl_syncdiag` or `zcl_getrawtransaction`** (or the
+raw RPCs `getsyncdiag` / `getrawtransaction`) against the live node.
+Both crash the node right now — see AGENTS.md safe/unsafe list. Use
+only `zcl_status`, `zcl_kpi`, `zcl_events`, `zcl_peers`, `zcl_logtail`,
+`zcl_health`, `zcl_validationstatus`, `zcl_getblockcount`,
+`zcl_peer_report`. For shielded-tx inspection you can call
+`zcl_listtransactions` / `zcl_z_listaddresses` — those don't touch
+`coins_view_cache` and are safe.
+
 **Cross-cutting check:** P9.10 is about cache-side-channel on the
 MSM witness — related but distinct. P9.1 closed the timing channel
 on the blinding scalars; P9.2 closed the circuit-side nk-derivation
