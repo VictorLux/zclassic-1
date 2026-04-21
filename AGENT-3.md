@@ -40,89 +40,58 @@ checklist plus the lane rules.
 
 ---
 
-## Current status — NOW = P9.6
+## Current status — NOW = P11.6
 
-**P9.2 landed 94532c87e [test:1.0]** (RED: 8fdd7bdbc). Two
-placeholder sites resolved:
+**P9.6 landed 707d3632a [test:1.0]** (RED: 5aff868ed). Three
+coordinated changes closed the caller-supplied-buffer gap in the
+sapling prover:
 
-- `sapling_circuit.c:65` (`compute_note_commitment`) — `rcm_point`
-  was computed via `jub_scalar_mul` and never consumed; the helper
-  returned only `hash_point.x`. Dead; removed. The `rcm` parameter
-  is now explicitly marked unused, with a comment pointing at the
-  in-circuit randomization step (`sapling_output_synthesize` step 6)
-  that supersedes it.
-- `sapling_circuit.c:161-162` (`sapling_spend_synthesize`) — classic
-  C UB: `jub_scalar_mul(&nk_point, &nk_point, wit->nsk)` read
-  `nk_point` as the base-point input *before* initializing it. The
-  resulting `nk_x` / `nk_y` stored into CS aux witness slots 12 / 13
-  were garbage tied to leftover stack. Live path: reached from the
-  wallet prover via `zclassic_sapling_spend_proof →
-  sapling_create_spend_proof → sapling_spend_synthesize`. Fixed by
-  computing `nk_bytes = sapling_nsk_to_nk(nsk)` and decoding via
-  `jub_from_bytes`, so the witness equals the spec-documented
-  `nsk * G_proof`.
+- `sapling_prover_c23.c` — extracted the merkle-witness parse into
+  `sapling_spend_parse_witness(witness, witness_len, wit)` which
+  rejects `witness_len < 1 + 32*33` (1057 B) before any read. Old
+  inline parser (read `depth`, then memcpy 32×32 B from fixed
+  offsets up to `witness[1055]` without a length check) deleted.
+- `zclassic_sapling_spend_proof` grew a `size_t witness_len`
+  parameter and routes it to the helper. Header updated.
+- `sapling_build_spend_with_ctx` propagates its existing
+  `witness_len` (previously `__attribute__((unused))`) through to
+  the prover. The lone in-tree caller
+  (`wallet_shielded_controller.c:602-622`) already sets
+  `witness_path_len` via `incremental_witness_merkle_path`; the
+  guard now catches a short path without a call-site change.
 
-The RED test (`test_sapling_crypto.c` "P9.2 spend synth binds nk
-witness to nsk*G_proof") builds a minimal valid spend witness with a
-known nsk, stack-poisons leftover stack memory, then asserts
-`cs.witness[12]` / `[13]` equal the expected (x, y) — pre-fix FAIL,
-post-fix OK.
+The RED test (`test_sapling_crypto.c` "P9.6 sapling_spend_parse_witness
+rejects short buffer (no OOB read)") exercises three cases: 100-byte
+buffer → rejected; 1057-byte buffer → accepted; 1056-byte buffer →
+rejected (so a naive `witness_len > 0` guard wouldn't pass). Pre-fix
+FAIL, post-fix OK.
 
-**P9.6 (MED): `zclassic_sapling_spend_proof` witness length not
-bounded. Agent-3 NOW. RESUME-HERE ↓**
+**P11.6 (HIGH): 7-day soak harness (MVP #6). Agent-3 NOW.**
 
-**The bug (exact pointer):**
-- `lib/sapling/src/sapling_prover_c23.c:131-143` — `zclassic_sapling_spend_proof`
-  signature has `const unsigned char *witness` with **no length parameter**.
-- `lib/sapling/src/sapling_prover_c23.c:179-188` — reads `witness[0]` (depth)
-  then loops `memcpy(wit.auth_path[i], witness + 1 + i*33, 32)` for 32 iterations,
-  reading 1057 bytes total. No length guard — a short buffer reaches `memcpy`.
-- `lib/sapling/src/sapling.c:912` — caller `sapling_build_spend_with_ctx`
-  **already has `size_t witness_len`** but it is `__attribute__((unused))` and
-  never plumbed through. The length is right there; it just isn't passed down.
+Per the handoff in 7d63ca52d: skip P9.7–P9.9 (lower-leverage MED
+rows) and jump directly to P11.6, the biggest unfiled leverage row
+in the tree. Design as a separate process that polls `zcl_status`
+every 60s, records RSS / tip-advance / crash events, and asserts a
+7-day continuous run with no operator intervention. Land in
+`lib/test/src/soak_harness.c` + runner in `tools/soak/`. Gate it
+behind `make soak-7day` so it does not run on every CI; first goal
+is a working harness that exits 0 after 7 days on a healthy node and
+exits non-zero on any RSS walk, tip stall, or crash event.
 
-**The fix (3 edits, ~20 lines):**
-1. Add `size_t witness_len` parameter to `zclassic_sapling_spend_proof`
-   signature + forward decl + local `extern` at `sapling.c:932-937`.
-2. Guard at entry: `if (witness_len < 1 + 32 * 33)` → `LOG_FAIL("sapling_prover",
-   "spend_proof: witness_len=%zu < 1057 (malformed merkle path buffer)", witness_len)`.
-   Do this **before** touching `witness[0]`.
-3. Plumb through from `sapling_build_spend_with_ctx` (remove the `__attribute__((unused))`
-   on `witness_len` and pass it).
+The soak harness is the MVP gate that proves "someone we don't know
+can run zclassic23 for a week without intervention" — the MVP
+definition in MVP.md rests on it. Every other P11 gate is narrower.
 
-**RED test shape** (`lib/test/src/test_sapling_crypto.c`, new case
-"P9.6 spend_proof rejects short witness buffer"):
-- Build minimal valid spend-with-ctx inputs (ask/nsk/diversifier/rcm/value/anchor).
-- Call `sapling_build_spend_with_ctx` with `witness_path = short_buf[]` of
-  length 512 (well under 1057).
-- Assert the call returns false **and** ASan reports no out-of-bounds read
-  (compile the test with `-fsanitize=address`).
-- Pre-fix: ASan catches the OOB read inside the `memcpy` loop, OR the
-  random bytes parse as `depth != 32` and you get the existing LOG_FAIL
-  (unreliable — that's why the explicit guard is needed).
-- Post-fix: the new `witness_len < 1057` guard fires first, returns false,
-  no OOB read regardless of buffer contents.
-
-**Discipline:** `[test:1.0]` — RED commit on main before GREEN. One row, one commit each.
-
-**Discipline (every P9.x row is [test:1.0]):**
-1. **RED FIRST** — failing test that demonstrates the UB or the
-   missing constraint-path coverage.
-2. **GREEN** — real implementation or deletion.
+**Discipline (every P11+ row is [test:1.0]):**
+1. **RED FIRST** — failing test that demonstrates the gap.
+2. **GREEN** — real implementation.
 3. **Mark done** — update `AGENT.md` row + current NOW.
 
 **Cross-cutting check:** P9.10 is about cache-side-channel on the
 MSM witness — related but distinct. P9.1 closed the timing channel
 on the blinding scalars; P9.2 closed the circuit-side nk-derivation
-UB; P9.6 closes a prover-boundary input-validation gap.
-
-**After P9.6 lands — advance directly to P11.6 (do not wait for coordinator).**
-P11.6 is the biggest-leverage unfiled row in the tree: 7-day soak harness
-(MVP gate #6). Design as a separate process that polls `zcl_status` every
-60s, records RSS / tip-advance / crash events, asserts 7-day continuous
-run with no operator intervention. Start design in `lib/test/src/soak_harness.c`
-+ runner in `tools/soak/`. Skip P9.7–P9.9 unless trivially adjacent — the
-remaining P9 MED rows are lower leverage than P11.6 is HIGH.
+UB; P9.6 closed the prover-boundary input-validation gap. P9.7–P9.9
+are parked per coordinator direction — revisit only after P11.6.
 
 ---
 
@@ -138,8 +107,8 @@ Every row has a full description in [`AGENT.md`](AGENT.md).
 - [x] **P9.4** HIGH — `fr_fft` / `fr_fft_parallel` silent no-op. done f5a31b48d [test:1.0].
 - [x] **P9.1** HIGH — `g1_scalar_mul` variable-time double-and-add leaks Groth16 blinding. done f10b39303 [test:1.0].
 - [x] **P9.2** CRITICAL — `sapling_circuit.c:65 / 161-162` placeholder UB paths. done 94532c87e [test:1.0].
-- [ ] **P9.6** MED — `zclassic_sapling_spend_proof` witness length not bounded. **Agent-3 NOW.**
-- [ ] **P9.7** MED — `sprout_verify_groth16` size_t underflow + race on `sprout_set_vk(NULL)`.
+- [x] **P9.6** MED — `zclassic_sapling_spend_proof` witness length not bounded. done 707d3632a [test:1.0].
+- [ ] **P9.7** MED — `sprout_verify_groth16` size_t underflow + race on `sprout_set_vk(NULL)`. **Agent-3 NOW.**
 - [ ] **P9.8** MED — `ensure_generators` 256-retry silent exhaustion.
 - [ ] **P9.9** MED — prover printf leaks wallet-activity timing.
 - [ ] **P9.10** LOW — `msm_parallel` cache-side-channel on witness (after threat-model decision).
@@ -149,7 +118,7 @@ Every row has a full description in [`AGENT.md`](AGENT.md).
 
 - [ ] **P11.4** — shielded-payment CI gate (MVP #4).
 - [ ] **P11.5** — store e2e CI gate (MVP #5).
-- [ ] **P11.6** HIGH — **7-day soak harness (MVP #6).** Biggest-leverage unfiled row in the tree. Design as a separate process that polls `zcl_status` every 60s, records RSS / tip-advance / crash events, asserts 7-day continuous run with no operator intervention.
+- [ ] **P11.6** HIGH — **7-day soak harness (MVP #6).** Biggest-leverage unfiled row in the tree. Design as a separate process that polls `zcl_status` every 60s, records RSS / tip-advance / crash events, asserts 7-day continuous run with no operator intervention. **Agent-3 NOW.**
 - [ ] **P11.8** — parity-diff CI gate (MVP #8). Coupled with Agent-2's P12.3 + P12.3.1 and Agent-3's P17.5.
 
 ### Phase 2 — P15 Discipline (Agent-3 lanes)

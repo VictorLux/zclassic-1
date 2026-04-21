@@ -38,13 +38,13 @@ new Priority groups P15-P19 (discipline + architecture + testing + perf
 |---|---|---|
 | **CRITICAL** | 22 / 28 | P14.6, P13.1 |
 | **HIGH** | 31 / 50+ | P12.2, P12.3, P12.3.1, P13.2, P13.4, P13.6, P13.7, P14.4, P14.5, P14.15, P14.16, P15.1, P15.2, P15.4, P15.6, P16.1, P16.2, P17.1, P17.2, P17.4, P17.5, P17.6, P18.1, P19.1 |
-| **MED** | 26 / 50+ | P7.10, P7.11, P8.4, P9.6-P9.9, P12.5-P12.8, P12.6.1, P12.6.2, P12.8.2, P13.3, P13.5, P15.3, P15.5, P16.3-P16.7, P17.3, P18.2, P18.4 |
+| **MED** | 26 / 50+ | P7.10, P7.11, P8.4, P9.7-P9.9, P12.5-P12.8, P12.6.1, P12.6.2, P12.8.2, P13.3, P13.5, P15.3, P15.5, P16.3-P16.7, P17.3, P18.2, P18.4 |
 | **LOW** | 2 / 7 | P9.10, P9.11, P12.8, P18.3 |
 | (P0 baseline) | 4 / 4 | — |
 
 **Owner state (2026-04-20, post-cleanup):**
 - **Agent-2 NOW:** **P14.6** — cap `BLOCK_FAILED_CHILD` propagation (OOM amplifier) (P14.3 landed 5406beca3 [test:1.0 63016db95]; P14.14 landed 9d71841ba [test:1.0 9f114c251]; P14.13 landed a62394130; P14.10 landed 8b5443a8d). Then P14 drain → P13/P12/P7/P8 drain → P15 discipline → P16 staged-sync port → P17.4/P17.5 support → P18 perf → P19.1 attribution → P20 dev-MCP → P21 oversized-file split → P22 AI-native scaffolding → P23 simplification + generator MCP. Full checklist in [`AGENT-2.md`](AGENT-2.md).
-- **Agent-3 NOW:** **P9.6** — `zclassic_sapling_spend_proof` witness length not bounded (P9.2 landed 94532c87e). Then P9 drain → P11.4/P11.5/P11.6/P11.8 MVP CI gates → P15.4/P15.5 discipline → P17 testing lead → P18.4 crypto perf → P20 dev-MCP (coverage + test-map) → P21 test oversized-file split → P22.4 spec corpus → P23.7 scaffold_test_from_row. Full checklist in [`AGENT-3.md`](AGENT-3.md).
+- **Agent-3 NOW:** **P11.6** — 7-day soak harness (MVP #6) per handoff in 7d63ca52d; skipping P9.7–P9.9 (lower-leverage MED) as coordinator directed (P9.6 landed 707d3632a [test:1.0 5aff868ed]). Then P11.4/P11.5/P11.8 MVP CI gates → P15.4/P15.5 discipline → P17 testing lead → P18.4 crypto perf → P20 dev-MCP (coverage + test-map) → P21 test oversized-file split → P22.4 spec corpus → P23.7 scaffold_test_from_row. Full checklist in [`AGENT-3.md`](AGENT-3.md).
 - **Coordinator (Rhett):** canary post-P14.13 deploy; review P15-P18 acceptance; own license decision (P19.2); monitor KPIS.
 
 **Live-node state:** chain pinned at h=3,081,601 (SQLite); legacy
@@ -179,7 +179,7 @@ OOM.
 | P9.3 | Groth16 CS-builder OOM silent drop | done 86ebfc4b5 |
 | P9.4 | `fr_fft` non-pow-2 silent no-op | done f5a31b48d (Agent-3) |
 | P9.5 | Sapling cache race (pthread_once) | done ff25fc779 |
-| P9.6 | `spend_proof` witness length | open |
+| P9.6 | `spend_proof` witness length | done 707d3632a (Agent-3) [test:1.0] |
 | P9.7 | `sprout_verify_groth16` underflow + race | open |
 | P9.8 | `ensure_generators` exhaustion | open |
 | P9.9 | Prover printf cleanup | open |
