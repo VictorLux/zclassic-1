@@ -621,6 +621,116 @@ static int test_rebuild_active_chain_scales_at_100k(void) {
     return failures;
 }
 
+/* P14.14 RED — rebuild_active_chain must populate block_index.skipList[]
+ * (pskip pointers) so post-restore ancestor walks are O(log N) not O(N).
+ *
+ * Live shape: after chain_restore_create_anchor the tip's pprev is NULL
+ * and its pskip is NULL. Entries loaded from block_map may also have
+ * pskip=NULL when the flat-file load path didn't build skips for every
+ * height. Without pskip, block_index_get_ancestor falls back to pprev
+ * hops only — 3M hops at live tip. The rebuild pass is the natural
+ * place to wire pprev (from chain[h-1]) and BuildSkip() on every slot.
+ *
+ * Pre-fix: 1000 ancestor walks on a 100k-entry chain are either
+ *   (a) impossible (pprev NULL → get_ancestor returns NULL), or
+ *   (b) O(N) per walk (pprev wired, pskip NULL) which is multi-second.
+ * Post-fix: pskip is populated on every slot above h=1; ancestor walks
+ * complete in O(log N) ≈ ~20 hops per query. */
+static int test_rebuild_populates_skiplist_for_log_n_ancestor(void) {
+    int failures = 0;
+    TEST("chain_restore_rebuild: populates skipList for O(log N) ancestor walk") {
+        struct main_state ms;
+        main_state_init(&ms);
+
+        const int H = 100000;
+        ASSERT(block_map_reserve(&ms.map_block_index, (size_t)(H + 16)));
+
+        struct uint256 *hashes = zcl_calloc(
+            (size_t)(H + 1), sizeof(struct uint256), "p14_14_hashes");
+        ASSERT(hashes != NULL);
+
+        for (int h = 0; h <= H; h++) {
+            memcpy(hashes[h].data, &h, sizeof(h));
+            hashes[h].data[16] = 0x14;
+            hashes[h].data[17] = 0x14;
+            struct block_index *pi = chainstate_insert_block_index(
+                (struct chainstate *)&ms, &hashes[h]);
+            ASSERT(pi != NULL);
+            pi->nHeight = h;
+            pi->nBits   = 0x1f07ffff;
+            pi->nStatus = BLOCK_VALID_SCRIPTS | BLOCK_HAVE_DATA;
+            pi->nTx     = 1;
+            /* pprev + pskip deliberately NULL — worst-case post-anchor
+             * shape where only heights survived the restore. */
+            arith_uint256_set_u64(&pi->nChainWork, (uint64_t)(h + 1));
+        }
+
+        struct block_index *tip = block_map_find(
+            &ms.map_block_index, &hashes[H]);
+        ASSERT(tip != NULL);
+        ASSERT(tip->pprev == NULL);
+        ASSERT(tip->pskip == NULL);
+        ASSERT(active_chain_set_tip(&ms.chain_active, tip));
+
+        int populated = chain_restore_rebuild_active_chain(&ms, tip);
+        ASSERT(populated == H + 1);
+
+        /* P14.14 acceptance: every slot above h=1 must have pskip set.
+         * Pre-fix (P14.13 GREEN) this is 100% NULL → test goes RED. */
+        int missing_skip = 0;
+        int missing_prev = 0;
+        for (int h = 2; h <= H; h++) {
+            struct block_index *at = active_chain_at(&ms.chain_active, h);
+            if (!at) continue;
+            if (at->pskip == NULL) missing_skip++;
+            if (at->pprev == NULL) missing_prev++;
+        }
+        ASSERT(missing_skip == 0);
+        ASSERT(missing_prev == 0);
+
+        /* Ancestor walk correctness — tip → genesis must return the
+         * entry at h=0. Pre-fix, pprev=NULL → get_ancestor returns NULL. */
+        struct block_index *a0 = block_index_get_ancestor(tip, 0);
+        ASSERT(a0 != NULL);
+        ASSERT(a0->nHeight == 0);
+        ASSERT(a0 == active_chain_at(&ms.chain_active, 0));
+
+        struct block_index *amid = block_index_get_ancestor(tip, H / 2);
+        ASSERT(amid != NULL);
+        ASSERT(amid->nHeight == H / 2);
+
+        /* Performance budget: 1000 random-depth ancestor walks must
+         * complete in <1s. At H=100k a pprev-only walk averages ~50k
+         * hops, so 1000 walks ≈ 5×10^7 hops which measures in seconds
+         * on this host. With pskip, each walk is ~20 hops → <50ms
+         * total. The 1s budget leaves plenty of CI headroom. */
+        struct timespec t0, t1;
+        clock_gettime(CLOCK_MONOTONIC, &t0);
+        int queries = 1000;
+        for (int i = 0; i < queries; i++) {
+            int target = (i * 7919) % (H + 1);
+            struct block_index *r = block_index_get_ancestor(tip, target);
+            ASSERT(r != NULL);
+            ASSERT(r->nHeight == target);
+        }
+        clock_gettime(CLOCK_MONOTONIC, &t1);
+        double elapsed = (double)(t1.tv_sec - t0.tv_sec)
+                       + (double)(t1.tv_nsec - t0.tv_nsec) / 1e9;
+        if (elapsed >= 1.0) {
+            printf("[P14.14] %d ancestor walks took %.3fs at H=%d "
+                   "(pskip missing or ineffective)\n",
+                   queries, elapsed, H);
+        }
+        ASSERT(elapsed < 1.0);
+
+        block_map_free(&ms.map_block_index);
+        active_chain_free(&ms.chain_active);
+        free(hashes);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 /* Write a minimal real block to disk; return its disk_block_pos. */
 static bool write_block_fixture(const char *datadir,
                                 struct disk_block_pos *pos,
@@ -803,6 +913,7 @@ int test_chain_restore_service(void) {
     /* P14.11 + P14.12 GREEN — post-restore repair tests */
     failures += test_rebuild_active_chain_fills_holes_from_block_map();
     failures += test_rebuild_active_chain_scales_at_100k();
+    failures += test_rebuild_populates_skiplist_for_log_n_ancestor();
     failures += test_backfill_nbits_reads_from_block_file();
     failures += test_backfill_nbits_skips_synthetic_anchor();
     failures += test_finalize_null_datadir_skips_disk();
