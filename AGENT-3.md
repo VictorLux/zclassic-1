@@ -42,7 +42,7 @@ checklist plus the lane rules.
 
 ## Current status — NOW = P9.6
 
-**P9.2 landed c8f6bb7bc [test:1.0]** (RED: a2133eafc). Two
+**P9.2 landed 94532c87e [test:1.0]** (RED: 8fdd7bdbc). Two
 placeholder sites resolved:
 
 - `sapling_circuit.c:65` (`compute_note_commitment`) — `rcm_point`
@@ -102,7 +102,7 @@ Every row has a full description in [`AGENT.md`](AGENT.md).
 
 - [x] **P9.4** HIGH — `fr_fft` / `fr_fft_parallel` silent no-op. done f5a31b48d [test:1.0].
 - [x] **P9.1** HIGH — `g1_scalar_mul` variable-time double-and-add leaks Groth16 blinding. done f10b39303 [test:1.0].
-- [x] **P9.2** CRITICAL — `sapling_circuit.c:65 / 161-162` placeholder UB paths. done c8f6bb7bc [test:1.0].
+- [x] **P9.2** CRITICAL — `sapling_circuit.c:65 / 161-162` placeholder UB paths. done 94532c87e [test:1.0].
 - [ ] **P9.6** MED — `zclassic_sapling_spend_proof` witness length not bounded. **Agent-3 NOW.**
 - [ ] **P9.7** MED — `sprout_verify_groth16` size_t underflow + race on `sprout_set_vk(NULL)`.
 - [ ] **P9.8** MED — `ensure_generators` 256-retry silent exhaustion.

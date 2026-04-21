@@ -44,7 +44,7 @@ new Priority groups P15-P19 (discipline + architecture + testing + perf
 
 **Owner state (2026-04-20, post-cleanup):**
 - **Agent-2 NOW:** **P14.14** — populate `block_index.skipList[]` on chain-restore path (P14.10 landed 8b5443a8d [test:1.0 fd23f77a3]; P14.13 landed a62394130 — coordinator canary pending for both). Then P14 drain → P13/P12/P7/P8 drain → P15 discipline → P16 staged-sync port → P17.4/P17.5 support → P18 perf → P19.1 attribution → P20 dev-MCP → P21 oversized-file split → P22 AI-native scaffolding → P23 simplification + generator MCP. Full checklist in [`AGENT-2.md`](AGENT-2.md).
-- **Agent-3 NOW:** **P9.6** — `zclassic_sapling_spend_proof` witness length not bounded (P9.2 landed c8f6bb7bc). Then P9 drain → P11.4/P11.5/P11.6/P11.8 MVP CI gates → P15.4/P15.5 discipline → P17 testing lead → P18.4 crypto perf → P20 dev-MCP (coverage + test-map) → P21 test oversized-file split → P22.4 spec corpus → P23.7 scaffold_test_from_row. Full checklist in [`AGENT-3.md`](AGENT-3.md).
+- **Agent-3 NOW:** **P9.6** — `zclassic_sapling_spend_proof` witness length not bounded (P9.2 landed 94532c87e). Then P9 drain → P11.4/P11.5/P11.6/P11.8 MVP CI gates → P15.4/P15.5 discipline → P17 testing lead → P18.4 crypto perf → P20 dev-MCP (coverage + test-map) → P21 test oversized-file split → P22.4 spec corpus → P23.7 scaffold_test_from_row. Full checklist in [`AGENT-3.md`](AGENT-3.md).
 - **Coordinator (Rhett):** canary post-P14.13 deploy; review P15-P18 acceptance; own license decision (P19.2); monitor KPIS.
 
 **Live-node state:** chain pinned at h=3,081,601 (SQLite); legacy
@@ -173,7 +173,7 @@ OOM.
 | # | Task | Status |
 |---|---|---|
 | P9.1 | `g1_scalar_mul` side-channel | done f10b39303 (Agent-3) [test:1.0] |
-| P9.2 | `sapling_circuit.c` placeholder UB | done c8f6bb7bc (Agent-3) [test:1.0] |
+| P9.2 | `sapling_circuit.c` placeholder UB | done 94532c87e (Agent-3) [test:1.0] |
 | P9.3 | Groth16 CS-builder OOM silent drop | done 86ebfc4b5 |
 | P9.4 | `fr_fft` non-pow-2 silent no-op | done f5a31b48d (Agent-3) |
 | P9.5 | Sapling cache race (pthread_once) | done ff25fc779 |
