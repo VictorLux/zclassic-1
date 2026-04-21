@@ -216,4 +216,11 @@ DNS seeds.
 
 ## License
 
-Copyright 2026 Rhett Creighton — Apache License 2.0
+Copyright 2026 Rhett Creighton
+
+Licensed under the Apache License, Version 2.0 — see [`LICENSE`](LICENSE)
+for the full text. Upstream copyright notices from inherited code
+(Bitcoin Core, Zcash, zclassicd) and vendored dependencies (Tor,
+SQLite, secp256k1, LevelDB, dcrdex) are preserved in [`NOTICE`](NOTICE).
+Architectural concept attributions (Erigon, mcp-language-server, etc.)
+are tracked in [`ATTRIBUTIONS.md`](ATTRIBUTIONS.md).

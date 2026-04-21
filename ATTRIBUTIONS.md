@@ -1,10 +1,17 @@
 # Attributions
 
-zclassic23 borrows **concepts and architectural patterns** (not verbatim
-source code) from the projects listed below. We credit them here because
-it is the right thing to do, not because any license requires it — all
-ideas listed below are re-implemented in C from scratch and do not link
-against the original code.
+zclassic23 is licensed under the **Apache License, Version 2.0** (see
+[`LICENSE`](LICENSE)). Upstream copyright notices from inherited code
+and vendored dependencies are preserved in [`NOTICE`](NOTICE) as
+required by Apache 2.0 §4(d).
+
+This file documents **concepts and architectural patterns** (not
+verbatim source code) that zclassic23 has adopted from other
+projects. We credit them here because it is the right thing to do —
+all ideas listed below are re-implemented in C23 from scratch and do
+not link against the original code. Apache 2.0 is compatible with
+the licenses of every project listed here per the Free Software
+Foundation's compatibility matrix.
 
 If you are reading this and recognize a pattern we've ported without
 naming you here, open a PR or ping the maintainers and we'll add you.
@@ -133,4 +140,4 @@ hosting. Fork maintained at https://github.com/RhettCreighton/tor.
 
 ---
 
-*Last updated: 2026-04-20*
+*Last updated: 2026-04-21 (P19.2 license decision: Apache-2.0 adopted; LICENSE + NOTICE files installed).*
