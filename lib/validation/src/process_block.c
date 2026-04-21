@@ -49,6 +49,56 @@
 static int g_last_block_file = -1;
 static unsigned int g_last_block_file_size = 0;
 
+/* P24.13: returns true iff the pprev chain from pindex_prev can be
+ * walked back `pow_window` steps with each step satisfying
+ *   cursor->pprev != NULL && cursor->nHeight == cursor->pprev->nHeight + 1
+ * Used to detect the post-FlyClient-snapshot tail where block_index
+ * entries for the 193-block region between chain-restore backfill end
+ * and fast-sync tip exist on disk but have no valid pprev linkage. */
+static bool process_block_pow_window_complete(
+    const struct block_index *pindex_prev,
+    int pow_window)
+{
+    const struct block_index *cursor = pindex_prev;
+    if (!cursor || pow_window <= 0)
+        return true;
+    for (int i = 0; i < pow_window; i++) {
+        if (!cursor->pprev)
+            return false;
+        if (cursor->nHeight != cursor->pprev->nHeight + 1)
+            return false;
+        cursor = cursor->pprev;
+    }
+    return true;
+}
+
+bool process_block_should_skip_contextual_header(
+    const struct main_state *ms,
+    const struct block_index *pindex_prev,
+    const struct consensus_params *consensus)
+{
+    if (!pindex_prev)
+        return false;
+
+    int tip_h = active_chain_height(&ms->chain_active);
+
+    /* Case (a): pre-existing old-IBD / scrambled-height slack. */
+    if (tip_h > 100000 && pindex_prev->nHeight < tip_h - 1000)
+        return true;
+
+    /* Case (b) — P24.13: post-FlyClient-snapshot tail. If the PoW
+     * averaging window cannot be walked contiguously, GetNextWorkRequired
+     * would return nProofOfWorkLimit (weakest-allowed) and every honest
+     * peer's real nBits would mismatch. Skip contextual check in that
+     * case; full validation runs later in connect_block(). */
+    int pow_window = consensus ? (int)consensus->nPowAveragingWindow : 17;
+    if (pow_window > 0 &&
+        !process_block_pow_window_complete(pindex_prev, pow_window))
+        return true;
+
+    return false;
+}
+
 /* Externs from boot.c — global state accessed during block connection.
  * Declared once at file scope instead of scattered inside functions. */
 extern struct block_tree_db *g_active_block_tree;
@@ -893,22 +943,19 @@ bool accept_block_header(const struct block_header *header,
     }
 
     /* Skip contextual header check during IBD when the block index has
-     * scrambled heights from snapshot/LDB import.  The pprev chains may
-     * trace back to genesis with wrong heights, causing
-     * contextual_check_block_header to apply pre-Sapling rules (wrong
-     * equihash solution size) to post-Sapling blocks.  Full validation
-     * happens later in connect_block().  This mirrors Bitcoin Core's
-     * behavior: header-first sync trusts header chain structure. */
-    {
-        int tip_h = active_chain_height(&ms->chain_active);
-        bool skip_contextual = (tip_h > 100000 && pindex_prev &&
-                                pindex_prev->nHeight < tip_h - 1000);
-        if (pindex_prev && !skip_contextual &&
-            !contextual_check_block_header(header, state, params, pindex_prev,
-                                            ms->fCheckpointsEnabled))
-            LOG_FAIL("validation", "contextual_check_block_header failed for header at height %d",
-                     pindex_prev->nHeight + 1);
-    }
+     * scrambled heights from snapshot/LDB import, OR when the post-
+     * FlyClient-snapshot tail leaves the PoW averaging window unable to
+     * walk back contiguously (P24.13). In either case, the contextual
+     * check would spuriously fail; full validation happens later in
+     * connect_block(). This mirrors Bitcoin Core's behavior: header-
+     * first sync trusts header chain structure. */
+    if (pindex_prev &&
+        !process_block_should_skip_contextual_header(ms, pindex_prev,
+                                                     &params->consensus) &&
+        !contextual_check_block_header(header, state, params, pindex_prev,
+                                        ms->fCheckpointsEnabled))
+        LOG_FAIL("validation", "contextual_check_block_header failed for header at height %d",
+                 pindex_prev->nHeight + 1);
 
     pindex = add_to_block_index(ms, header);
     if (!pindex)

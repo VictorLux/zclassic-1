@@ -156,4 +156,26 @@ process_block_propagate_failed_child(struct block_map *map,
                                       time_t *last_propagate_sec,
                                       size_t *propagated_out);
 
+/* P24.13: decide whether to bypass contextual_check_block_header() for
+ * an incoming header. Returns true when the check would spuriously
+ * fail, i.e. one of:
+ *
+ *  (a) Old-IBD / scrambled-height case (pre-existing behavior):
+ *      tip > 100000 AND pindex_prev->nHeight < tip - 1000.
+ *
+ *  (b) Post-FlyClient-snapshot tail (new in P24.13):
+ *      the PoW averaging window cannot be walked back contiguously
+ *      from pindex_prev for `consensus->nPowAveragingWindow` steps.
+ *      Hit when the snapshot placed a tip_h whose pprev chain is
+ *      not populated for the tail region, causing
+ *      GetNextWorkRequired to return the weakest-allowed nBits and
+ *      every real peer's batch to reject with bad-diffbits.
+ *
+ * NULL pindex_prev returns false (the caller's existing NULL check
+ * handles that branch). NULL ms or consensus is undefined. */
+bool process_block_should_skip_contextual_header(
+    const struct main_state *ms,
+    const struct block_index *pindex_prev,
+    const struct consensus_params *consensus);
+
 #endif
