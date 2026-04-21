@@ -40,28 +40,43 @@ checklist plus the lane rules.
 
 ---
 
-## Current status — NOW = P9.2
+## Current status — NOW = P9.6
 
-**P9.1 landed f10b39303 [test:1.0]** (RED: af8b5fe5b). `g1_scalar_mul`
-is now constant-time: every iteration runs exactly one `g1_add` and
-one `g1_double`, with the bit-dependent update applied via an
-unconditional `fp_cmov` masked on the scalar bit. Timing-variance
-test moved from ratio=2.98 (FAIL) to ratio=1.00 (OK). `g2_scalar_mul`
-does not exist — the prover already routes G2 through `g2_msm` with
-1 point, so there is no symmetric patch to land.
+**P9.2 landed c8f6bb7bc [test:1.0]** (RED: a2133eafc). Two
+placeholder sites resolved:
 
-**P9.2 (CRITICAL): `sapling_circuit.c:65 / 161-162` placeholder UB
-paths (if still live).**
+- `sapling_circuit.c:65` (`compute_note_commitment`) — `rcm_point`
+  was computed via `jub_scalar_mul` and never consumed; the helper
+  returned only `hash_point.x`. Dead; removed. The `rcm` parameter
+  is now explicitly marked unused, with a comment pointing at the
+  in-circuit randomization step (`sapling_output_synthesize` step 6)
+  that supersedes it.
+- `sapling_circuit.c:161-162` (`sapling_spend_synthesize`) — classic
+  C UB: `jub_scalar_mul(&nk_point, &nk_point, wit->nsk)` read
+  `nk_point` as the base-point input *before* initializing it. The
+  resulting `nk_x` / `nk_y` stored into CS aux witness slots 12 / 13
+  were garbage tied to leftover stack. Live path: reached from the
+  wallet prover via `zclassic_sapling_spend_proof →
+  sapling_create_spend_proof → sapling_spend_synthesize`. Fixed by
+  computing `nk_bytes = sapling_nsk_to_nk(nsk)` and decoding via
+  `jub_from_bytes`, so the witness equals the spec-documented
+  `nsk * G_proof`.
 
-Re-audit the circuit file for the placeholder `/* placeholder */`
-call sites flagged in the original P9 review:
-- `sapling_circuit.c:65` — `jub_scalar_mul(&rcm_point, &hash_point, rcm); /* placeholder */`
-- `sapling_circuit.c:161-162` — `jub_scalar_mul(&nk_point, &nk_point, wit->nsk); /* placeholder */`
+The RED test (`test_sapling_crypto.c` "P9.2 spend synth binds nk
+witness to nsk*G_proof") builds a minimal valid spend witness with a
+known nsk, stack-poisons leftover stack memory, then asserts
+`cs.witness[12]` / `[13]` equal the expected (x, y) — pre-fix FAIL,
+post-fix OK.
 
-Decide whether these are live on any constraint-path or dead code.
-If live, replace the placeholders with witness-correct operations
-and add a RED test that exercises the path. If dead, delete the
-code.
+**P9.6 (MED): `zclassic_sapling_spend_proof` witness length not
+bounded. Agent-3 NOW.**
+
+Audit how the prover validates the caller-supplied `witness` byte
+buffer shape. The expected layout is `depth (1) + 32 × (sibling 32 +
+bit 1)` = 1057 bytes; the call site currently reads the fixed size
+without first checking that the caller passed a buffer of at least
+that size. Add length guards + a RED test that demonstrates a short
+buffer reaching `memcpy`.
 
 **Discipline (every P9.x row is [test:1.0]):**
 1. **RED FIRST** — failing test that demonstrates the UB or the
@@ -71,7 +86,8 @@ code.
 
 **Cross-cutting check:** P9.10 is about cache-side-channel on the
 MSM witness — related but distinct. P9.1 closed the timing channel
-on the blinding scalars; P9.2 is about circuit-side correctness.
+on the blinding scalars; P9.2 closed the circuit-side nk-derivation
+UB; P9.6 closes a prover-boundary input-validation gap.
 
 ---
 
@@ -86,8 +102,8 @@ Every row has a full description in [`AGENT.md`](AGENT.md).
 
 - [x] **P9.4** HIGH — `fr_fft` / `fr_fft_parallel` silent no-op. done f5a31b48d [test:1.0].
 - [x] **P9.1** HIGH — `g1_scalar_mul` variable-time double-and-add leaks Groth16 blinding. done f10b39303 [test:1.0].
-- [ ] **P9.2** CRITICAL — `sapling_circuit.c:65 / 161-162` placeholder UB paths (if still live). **Agent-3 NOW.**
-- [ ] **P9.6** MED — `zclassic_sapling_spend_proof` witness length not bounded.
+- [x] **P9.2** CRITICAL — `sapling_circuit.c:65 / 161-162` placeholder UB paths. done c8f6bb7bc [test:1.0].
+- [ ] **P9.6** MED — `zclassic_sapling_spend_proof` witness length not bounded. **Agent-3 NOW.**
 - [ ] **P9.7** MED — `sprout_verify_groth16` size_t underflow + race on `sprout_set_vk(NULL)`.
 - [ ] **P9.8** MED — `ensure_generators` 256-retry silent exhaustion.
 - [ ] **P9.9** MED — prover printf leaks wallet-activity timing.
