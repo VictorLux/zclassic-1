@@ -40,7 +40,7 @@ checklist plus the lane rules.
 
 ---
 
-## Current status — NOW = P11.4
+## Current status — NOW = P11.5
 
 **P11.6 landed 39bb904f3 [test:1.0]** (RED: 4ae4b09db). Four pieces
 now gate "someone we don't know can run zclassic23 for a week
@@ -72,12 +72,34 @@ Smoke-verified with `--service=no-such-service --duration-sec=3
 --interval-sec=1`: three crash samples, verdict FAIL_CRASH, exit
 status 2, log in the advertised TSV shape.
 
-**P11.4 (HIGH): MVP #4 shielded-payment CI gate. Agent-3 NOW.**
+**P11.4 landed <pending push> [test:1.0].**
+
+Five pieces now gate the real transparent->shielded send path end-to-end:
+
+- `lib/test/src/test_shielded_payment_gate.c` — deterministic stress gate that
+  seeds a wallet-owned transparent UTXO, derives a Sapling address via
+  `z_getnewaddress`, executes `z_sendmany`, then asserts mempool admission,
+  one shielded output, correct negative `value_balance`, successful wallet
+  trial decryption, and the expected Sapling note/balance.
+- `lib/test/src/test.c` — focused subset hook
+  `ZCL_TEST_ONLY=shielded_payment` plus full-suite registration so the gate is
+  reachable both on demand and in the stress-enabled suite.
+- `Makefile` — `test-shielded-payment` target that checks
+  `~/.zcash-params` up front, runs the focused gate with
+  `ZCL_STRESS_TESTS=1`, and strips `zclassic23` after link so the
+  no-hardcoded-home suite stays green.
+- `lib/test/src/test_make_lint_gates.c` — in-process raw-SQLite gate
+  self-test so late-suite environment drift no longer makes the lint
+  regression test flaky.
+- Verification — `make test-shielded-payment` passes with real Sapling params,
+  and `./test_zcl` is back to `ALL TESTS PASSED (0 failures)`.
+
+**P11.5 (HIGH): MVP #5 store e2e CI gate. Agent-3 NOW.**
 
 Continues the MVP drain. P11.6 is green as of this commit; P11.7
 was already green (kill-9 chaos recovery). The remaining MVP rows
-are P11.4 (shielded payment e2e), P11.5 (store e2e), and P11.8
-(parity diff, coupled with Agent-2's P12.3).
+are P11.5 (store e2e) and P11.8 (parity diff, coupled with Agent-2's
+P12.3).
 
 **Discipline (every P11+ row is [test:1.0]):**
 1. **RED FIRST** — failing test that demonstrates the gap.
@@ -147,8 +169,8 @@ Every row has a full description in [`AGENT.md`](AGENT.md).
 
 ### Phase 1 — MVP CI gates (continue Agent-3 lane)
 
-- [ ] **P11.4** — shielded-payment CI gate (MVP #4). **Agent-3 NOW.**
-- [ ] **P11.5** — store e2e CI gate (MVP #5).
+- [x] **P11.4** — shielded-payment CI gate (MVP #4). done <pending push> [test:1.0].
+- [ ] **P11.5** — store e2e CI gate (MVP #5). **Agent-3 NOW.**
 - [x] **P11.6** HIGH — 7-day soak harness (MVP #6). done 39bb904f3 [test:1.0 4ae4b09db].
 - [ ] **P11.8** — parity-diff CI gate (MVP #8). Coupled with Agent-2's P12.3 + P12.3.1 and Agent-3's P17.5.
 

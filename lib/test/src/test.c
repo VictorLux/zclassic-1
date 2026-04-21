@@ -43,6 +43,14 @@ int main(void)
         printf("\n=== kill9 subset complete: %d failure(s) ===\n", failures);
         return failures ? 1 : 0;
     }
+    if (only && strcmp(only, "shielded_payment") == 0) {
+        printf("[test] ZCL_TEST_ONLY=shielded_payment — running P11.4 shielded-payment gate only\n");
+        { extern int test_shielded_payment_gate(void);
+          failures += test_shielded_payment_gate(); }
+        printf("\n=== shielded-payment subset complete: %d failure(s) ===\n",
+               failures);
+        return failures ? 1 : 0;
+    }
     if (only && strcmp(only, "persistence") == 0) {
         printf("[test] ZCL_TEST_ONLY=persistence — running persistence subset\n");
         failures += test_schema_migration();
@@ -123,6 +131,8 @@ int main(void)
       failures += test_cold_start_sync(); }
     { extern int test_kill9_recovery(void);
       failures += test_kill9_recovery(); }
+    { extern int test_shielded_payment_gate(void);
+      failures += test_shielded_payment_gate(); }
     { extern int test_soak_harness(void);
       failures += test_soak_harness(); }
     failures += test_event();

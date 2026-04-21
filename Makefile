@@ -56,7 +56,7 @@ LIBS = -Lvendor/lib -lsecp256k1 -lleveldb \
 	-levent -levent_openssl -levent_pthreads \
 	-lssl -lcrypto -lz
 
-.PHONY: all test test-e2e clean deploy check-restart-follow \
+.PHONY: all test test-e2e test-shielded-payment clean deploy check-restart-follow \
         coverage coverage-clean docs-mcp docs-mcp-check ci audit release \
         lint check-malloc check-silent-errors check-raw-sqlite \
         check-coins-lookup-nullcheck \
@@ -138,6 +138,7 @@ spec: spec_zcl
 
 zclassic23: $(TMPL_GEN) main.c tools/mcp_server.c $(ALL_SRCS)
 	$(CC) $(CFLAGS) -Wno-deprecated-declarations $(LDFLAGS) -o $@ $(filter-out $(TMPL_GEN),$^) $(TOR_LIBS) $(LIBS) $(GTK_LIBS) $(WEBKIT_LIBS)
+	strip -s $@
 
 zclassic-cli: cli.c $(CLI_SRCS)
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $^ -lm
@@ -228,6 +229,23 @@ test-crash: crash_recovery_test zclassic23 zcl-rpc
 # current source.
 test-e2e: zclassic23 test_zcl
 	ulimit -s unlimited && ./test_zcl
+
+# P11.4 shielded-payment gate.
+#
+# Runs the real transparent->shielded wallet path inside test_zcl with
+# Sapling proving params loaded from ~/.zcash-params. The target skips on
+# hosts that do not have the proving/verifying params installed so CI can
+# call it unconditionally without creating false negatives on clean workers.
+test-shielded-payment: test_zcl
+	@set -eu; \
+	params_dir="$$HOME/.zcash-params"; \
+	for f in sapling-spend.params sapling-output.params sprout-groth16.params sprout-verifying.key; do \
+		if [ ! -r "$$params_dir/$$f" ]; then \
+			echo "test-shielded-payment: SKIP ($$params_dir/$$f missing)"; \
+			exit 0; \
+		fi; \
+	done; \
+	ZCL_STRESS_TESTS=1 ZCL_TEST_ONLY=shielded_payment ./test_zcl
 
 # ── libFuzzer harnesses ───────────────────────────────────────
 #
