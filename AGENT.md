@@ -38,16 +38,16 @@ P12.3.1/P12.6.1/P12.6.2/P12.8.1/P12.8.2, P7.11 / P9.11, P15-P19
 
 | Tier | Closed / Total | Open rows |
 |---|---|---|
-| **CRITICAL** | 23 / 29 | P14.6, P13.1, P24.11 |
-| **HIGH** | 31 / 56 | P12.2, P12.3, P12.3.1, P13.2, P13.4, P13.6, P13.7, P14.4, P14.5, P14.15, P14.16, P15.1, P15.2, P15.4, P15.6, P16.1, P16.2, P17.1, P17.2, P17.4, P17.5, P17.6, P18.1, P19.1, P24.2, P24.3, P24.4, P24.5, P24.7, P24.8, P24.10 |
+| **CRITICAL** | 24 / 29 | P13.1, P24.11 |
+| **HIGH** | 32 / 56 | P12.3, P12.3.1, P13.2, P13.4, P13.6, P13.7, P14.4, P14.5, P14.15, P14.16, P15.1, P15.2, P15.4, P15.6, P16.1, P16.2, P17.1, P17.2, P17.4, P17.5, P17.6, P18.1, P19.1, P24.2, P24.3, P24.4, P24.5, P24.7, P24.8, P24.10 |
 | **MED** | 27 / 54 | P7.10, P7.11, P8.4, P9.7, P9.8, P9.9, P12.5-P12.8, P12.6.1, P12.6.2, P12.8.2, P13.3, P13.5, P15.3, P15.5, P16.3-P16.7, P17.3, P18.2, P18.4, P24.1, P24.6, P24.9 |
 | **LOW** | 2 / 7 | P9.10, P9.11, P12.8, P18.3 |
 | (P0 baseline) | 4 / 4 | — |
 
-**Owner state (2026-04-21, post-canary + P11.6):**
-- **Agent-2 NOW:** **P14.6** CRITICAL — cap `BLOCK_FAILED_CHILD` propagation (OOM amplifier). Prior landings today: P14.3 5406beca3, P14.14 9d71841ba, P14.10 8b5443a8d. Then **P24.11** (second `zcl_syncdiag` crash path) → P14 drain → P13/P12/P7/P8 drain → P15 → P16 → P17.4/P17.5 → P18 → P19.1 → P20 dev-MCP → P21 split → P22 → P23 → **rest of P24 wave**. Full checklist in [`AGENT-2.md`](AGENT-2.md).
+**Owner state (2026-04-21, post-canary + P11.6 + P14.6):**
+- **Agent-2 NOW:** **P24.11** CRITICAL — second `zcl_syncdiag` crash path in `downloadstats`/`getpeerinfo` composite (blocks coordinator diagnostics). Landings today: **P14.6 5994bc3b1 [test:1.0 de30f389d]** (BLOCK_FAILED_CHILD propagation cap — closes P12.2 as well), P14.3 5406beca3 (partial — P24.11 finishes it), P14.14 9d71841ba, P14.10 8b5443a8d. Then P14 drain → P13/P12/P7/P8 drain → P15 → P16 → P17.4/P17.5 → P18 → P19.1 → P20 dev-MCP → P21 split → P22 → P23 → **rest of P24 wave**. Full checklist in [`AGENT-2.md`](AGENT-2.md).
 - **Agent-3 NOW:** **P11.4** HIGH — shielded-payment CI gate (MVP #4). Landings today: P9.1 f10b39303, P9.2 94532c87e, P9.6 2fe801a08, **P11.6 39bb904f3 [test:1.0 4ae4b09db]** (7-day soak harness MVP #6 + `make soak-7day` runner). P9.7–P9.11 deferred (MED/LOW, skip unless trivially adjacent). Then P11.5/P11.8 MVP gates → P15.4/P15.5 → P17 testing lead → P18.4 crypto perf → P20 dev-MCP (coverage + test-map) → P21.7/P21.8 test split → P22.4 spec corpus → P23.7 scaffold_test_from_row → **P24.2 / P24.4** (`((unused))` lint, `abort()` triage). Full checklist in [`AGENT-3.md`](AGENT-3.md).
-- **Coordinator (Rhett):** post-deploy canary for P14.10+P14.13+P14.14+P14.3+P9.1+P9.2+P9.6+P11.6 bundle (deploy landed 2026-04-21 02:09 — fresh binary running, peers 3→18, chain-restore path clean); **P19.2 license decision landed 2026-04-21 — Apache-2.0** (LICENSE + NOTICE + ATTRIBUTIONS updated); review P15-P18 acceptance; ship P24.1 + P24.7 + P24.12 coordinator-lane rows; watch sync advance post-P14.6+P13.1.
+- **Coordinator (Rhett):** post-deploy canary for P14.10+P14.13+P14.14+P14.3+P9.1+P9.2+P9.6+P11.6+P14.6 bundle (deploy landed 2026-04-21 02:09 — fresh binary running, peers 3→18, chain-restore path clean); **P19.2 license decision landed 2026-04-21 — Apache-2.0** (LICENSE + NOTICE + ATTRIBUTIONS updated); review P15-P18 acceptance; ship P24.1 + P24.7 + P24.12 coordinator-lane rows; watch sync advance post-P14.6+P24.11+P13.1.
 
 **Live-node state (2026-04-21 02:10, post-deploy):** mainnet running
 fresh binary (systemd linger-service restart at 02:09:49 after
@@ -219,7 +219,7 @@ P10.1.1 through P10.1.5 landed. See
 | # | Task | Status |
 |---|---|---|
 | P12.1 | Sapling tree checkpoint | done 8fb7cb623 (Agent-3) |
-| **P12.2** | BLOCK_FAILED_CHILD GC (= P14.6) | open — Agent-2 |
+| **P12.2** | BLOCK_FAILED_CHILD GC (= P14.6) | done via P14.6 5994bc3b1 |
 | **P12.3** | Continuous parity-diff service | open — Agent-2 |
 | **P12.3.1** | `zcl_parity_status` MCP tool | open — Agent-2 |
 | P12.4 | `sqlite3` CLI dep → in-tree wal_checkpoint | done d1fb2422e |
@@ -253,7 +253,7 @@ P10.1.1 through P10.1.5 landed. See
 | P14.3 | `zcl_syncdiag` SIGABRT via json_free | done 5406beca3 (Agent-2) [test:1.0 63016db95] |
 | **P14.4** | Sync FSM flap debounce | open — Agent-2 |
 | **P14.5** | `val.block_connected` on commit not receipt | open — Agent-2 |
-| **P14.6** | BLOCK_FAILED_CHILD propagation cap | open — Agent-2 CRITICAL |
+| P14.6 | BLOCK_FAILED_CHILD propagation cap | done 5994bc3b1 (Agent-2) [test:1.0 de30f389d] |
 | P14.7 | Chain stops at 3,081,601 (partial — b3f1903d4) | partial |
 | P14.8 | `block_already_seen` short-circuit retry | done 0e4b6ca35 |
 | P14.9 | Dual IBD reporter divergence | open (absorbs into P16.3) |

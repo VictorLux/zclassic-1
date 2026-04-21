@@ -40,7 +40,24 @@ checklist plus the lane rules.
 
 ---
 
-## Current status — NOW = P14.6
+## Current status — NOW = P24.11
+
+**P14.6 done 5994bc3b1 [test:1.0 de30f389d]** — extract the inline
+`connect_tip` propagation into a testable helper
+`process_block_propagate_failed_child` and gate it with two cheap
+early returns: SKIP_PARENT_FAILED (when `pindex_root->pprev` already
+carries `BLOCK_FAILED_MASK` — the prior propagation already covered
+this subtree) and SKIP_RATE_LIMITED (a static 10-second per-process
+window on the full block_map walk). At the live tip each walk is
+~24 MB scratch + O(N log N) qsort across ~3M entries; pre-fix the
+2026-04-19 BIP30 flap re-fired ~5×/s for hours, driving RSS from
+5.9 GB to the cgroup high-water in 2h51m (see
+`docs/postmortems/2026-04-19-bip30-stall.md`). Post-fix, the worst
+the flap can do is one walk per 10 s. Tests in
+`lib/test/src/test_p14_6_failed_child_cap.c` assert both guards
+against a 5-entry fixture block_map. Coordinator canary pending —
+`zcl_status`/`getblockcount` still report h=3,081,601 on the
+running node; the new binary builds clean, tests green.
 
 **P14.3 done 5406beca3 [test:1.0 63016db95]** — `rpc_getsyncdiag` in
 `app/controllers/src/health_controller.c` declared `struct json_value
@@ -81,16 +98,16 @@ validated on the live node. Tip not advancing yet — still
 (3,081,601)` inversion (filed P24.5). Most likely P14.6 + P13.1 need
 to land before tip catches up to legacy (h≈3,085,137).
 
-**P14.6 (CRITICAL): cap `BLOCK_FAILED_CHILD` propagation (OOM
-amplifier).** Skip when parent already failed; cap per-retry. Follow
-P10.1 workflow (reproduce on fixture first → writeup → RED → minimal
-fix → live verify). See AGENT.md for full description. **Agent-2 NOW.**
-
-**Next row after P14.6 is P24.11** (not P14.4). P24.11 blocks
-coordinator MCP diagnostics — every `zcl_syncdiag` call SIGABRTs
-the live node. RED-first repro: instrument `rpc_downloadstats` +
-`mcp_node_rpc` paths; find which of the two remaining internal RPCs
-(`downloadstats` / `getpeerinfo`) is the crash site.
+**P24.11 (CRITICAL): second `zcl_syncdiag` crash path.** P14.3 fixed
+`rpc_getsyncdiag` only; the MCP tool `h_zcl_syncdiag` in
+`tools/mcp/controllers/ops_controller.c:491` composites THREE RPCs
+(`getsyncdiag` + `downloadstats` + `getpeerinfo`), and one of the
+other two still SIGABRTs on the live path. Blocks coordinator MCP
+diagnostics. **Agent-2 NOW.** RED-first: instrument
+`rpc_downloadstats` + `mcp_node_rpc` to isolate which internal RPC
+is the crash site; reproduce on a fixture; minimal `= {0}` +
+`json_free(&X)` fix following P14.3's pattern; live-verify 10×
+`zcl_syncdiag` calls with no abort.
 
 (historical P14.13 description retained below for context)
 
@@ -144,8 +161,8 @@ section is the executable checklist.
 - [x] **P14.13** CRITICAL — rebuild_active_chain O(N²) boot hang. **done a62394130 [test:1.0 b07284439]**.
 - [x] **P14.10** CRITICAL — deferred-activation queue for `SKIP_ALREADY_RUNNING` from `process_new_block`. **done 8b5443a8d [test:1.0 fd23f77a3]**.
 - [x] **P14.3** CRITICAL — `rpc_getsyncdiag` json_free on uninit stack. **done 5406beca3 [test:1.0 63016db95]** (partial — see P24.11).
-- [ ] **P14.6** CRITICAL — cap `BLOCK_FAILED_CHILD` propagation (OOM amplifier). Skip when parent already failed; cap per-retry. **Agent-2 NOW.**
-- [ ] **P24.11** CRITICAL — second `zcl_syncdiag` crash in `downloadstats` or `getpeerinfo` composite path (blocks coordinator diagnostics).
+- [x] **P14.6** CRITICAL — cap `BLOCK_FAILED_CHILD` propagation (OOM amplifier). **done 5994bc3b1 [test:1.0 de30f389d]**.
+- [ ] **P24.11** CRITICAL — second `zcl_syncdiag` crash in `downloadstats` or `getpeerinfo` composite path (blocks coordinator diagnostics). **Agent-2 NOW.**
 - [ ] **P14.4** HIGH — sync FSM flap debounce (279,135 events in hours on prior incident).
 - [ ] **P14.5** HIGH — `val.block_connected` must fire on commit, not receipt.
 
@@ -166,7 +183,7 @@ section is the executable checklist.
 
 ### Phase 3 — Finish P12 hardening wave
 
-- [ ] **P12.2** HIGH — BLOCK_FAILED_CHILD GC (verify closed by P14.6).
+- [x] **P12.2** HIGH — BLOCK_FAILED_CHILD GC (closed by P14.6). **done via P14.6 5994bc3b1 [test:1.0 de30f389d]**.
 - [ ] **P12.3** HIGH — continuous parity-diff service vs zclassicd.
 - [ ] **P12.3.1** HIGH — `zcl_parity_status` MCP tool (gate for MVP #8).
 - [ ] **P12.5** MED — audit every `coins_map_erase` call site for P10.1.4-class gaps.
