@@ -259,7 +259,7 @@ static bool rpc_getsyncdiag(const struct json_value *params, bool help,
         struct sync_watchdog_status ws;
         sync_watchdog_get_status(&ws);
 
-        struct json_value wd;
+        struct json_value wd = {0};
         json_set_object(&wd);
         json_push_kv_bool(&wd, "enabled", ws.enabled);
         json_push_kv_int(&wd, "checks_run", (int64_t)ws.checks_run);
@@ -268,6 +268,7 @@ static bool rpc_getsyncdiag(const struct json_value *params, bool help,
         json_push_kv_str(&wd, "last_recovery_type",
                          watchdog_recovery_type_name(ws.last_recovery_type));
         json_push_kv(result, "watchdog", &wd);
+        json_free(&wd);
     }
 
     /* Header sync counters */
@@ -275,7 +276,7 @@ static bool rpc_getsyncdiag(const struct json_value *params, bool help,
         struct msg_headers_stats hs;
         msg_headers_get_stats(&hs);
 
-        struct json_value hdr;
+        struct json_value hdr = {0};
         json_set_object(&hdr);
         json_push_kv_int(&hdr, "batches_received", (int64_t)hs.batches_received);
         json_push_kv_int(&hdr, "total_accepted", (int64_t)hs.total_accepted);
@@ -283,6 +284,7 @@ static bool rpc_getsyncdiag(const struct json_value *params, bool help,
         json_push_kv_int(&hdr, "newly_added", (int64_t)hs.newly_added);
         json_push_kv_int(&hdr, "already_known", (int64_t)hs.already_known);
         json_push_kv(result, "headers", &hdr);
+        json_free(&hdr);
     }
 
     /* Sync state */
