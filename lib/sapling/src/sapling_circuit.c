@@ -60,11 +60,11 @@ static void compute_note_commitment(uint8_t cm_out[32],
     struct jub_point hash_point;
     pedersen_hash_bits(contents, 51 * 8, &hash_point);
 
-    /* Add randomness: cm_full = hash + rcm * G_rcm */
-    struct jub_point rcm_point;
-    jub_scalar_mul(&rcm_point, &hash_point, rcm); /* placeholder */
+    /* The randomized commitment cm_full = hash + rcm * G_rcm is applied
+     * in-circuit (see sapling_output_synthesize step 6). Here we expose
+     * only the hash x-coordinate to downstream witness computation. */
+    (void)rcm;
 
-    /* For now, just use hash x-coordinate */
     struct fr cm_x;
     jub_get_x(&cm_x, &hash_point);
     fr_to_bytes(cm_out, &cm_x);
@@ -157,9 +157,15 @@ bool sapling_spend_synthesize(struct constraint_system *cs,
     bytes_to_fr(&nsk_fr, wit->nsk);
     cs_alloc_aux(cs, &nsk_fr);
 
-    /* nk = nsk * G_proof (compute outside circuit) */
+    /* nk = nsk * G_proof (compute outside circuit).
+     * Derive via the exposed helper so nk_point is a documented function
+     * of nsk, not uninitialized stack. */
+    uint8_t nk_bytes[32];
+    sapling_nsk_to_nk(wit->nsk, nk_bytes);
     struct jub_point nk_point;
-    jub_scalar_mul(&nk_point, &nk_point, wit->nsk); /* placeholder */
+    if (!jub_from_bytes(&nk_point, nk_bytes))
+        LOG_FAIL("sapling_circuit",
+                 "spend: jub_from_bytes(nk) failed (nsk*G_proof off-curve)");
     struct fr nk_x, nk_y;
     jub_get_x(&nk_x, &nk_point);
     jub_get_y(&nk_y, &nk_point);
