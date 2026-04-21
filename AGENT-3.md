@@ -42,7 +42,7 @@ checklist plus the lane rules.
 
 ## Current status — NOW = P11.4
 
-**P11.6 landed a498379c3 [test:1.0]** (RED: f58dc8995). Four pieces
+**P11.6 landed 39bb904f3 [test:1.0]** (RED: 4ae4b09db). Four pieces
 now gate "someone we don't know can run zclassic23 for a week
 without intervention":
 
@@ -115,7 +115,7 @@ Every row has a full description in [`AGENT.md`](AGENT.md).
 
 - [ ] **P11.4** — shielded-payment CI gate (MVP #4). **Agent-3 NOW.**
 - [ ] **P11.5** — store e2e CI gate (MVP #5).
-- [x] **P11.6** HIGH — 7-day soak harness (MVP #6). done a498379c3 [test:1.0 f58dc8995].
+- [x] **P11.6** HIGH — 7-day soak harness (MVP #6). done 39bb904f3 [test:1.0 4ae4b09db].
 - [ ] **P11.8** — parity-diff CI gate (MVP #8). Coupled with Agent-2's P12.3 + P12.3.1 and Agent-3's P17.5.
 
 ### Phase 2 — P15 Discipline (Agent-3 lanes)
