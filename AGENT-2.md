@@ -40,7 +40,7 @@ checklist plus the lane rules.
 
 ---
 
-## Current status — NOW = P24.11
+## Current status — NOW = P24.13 (REASSIGNED 2026-04-21 02:30 by coordinator — pre-empts P24.11)
 
 **P14.6 done 5994bc3b1 [test:1.0 de30f389d]** — extract the inline
 `connect_tip` propagation into a testable helper
@@ -51,13 +51,67 @@ this subtree) and SKIP_RATE_LIMITED (a static 10-second per-process
 window on the full block_map walk). At the live tip each walk is
 ~24 MB scratch + O(N log N) qsort across ~3M entries; pre-fix the
 2026-04-19 BIP30 flap re-fired ~5×/s for hours, driving RSS from
-5.9 GB to the cgroup high-water in 2h51m (see
-`docs/postmortems/2026-04-19-bip30-stall.md`). Post-fix, the worst
-the flap can do is one walk per 10 s. Tests in
+5.9 GB to the cgroup high-water in 2h51m. Post-fix, the worst the
+flap can do is one walk per 10 s. Tests in
 `lib/test/src/test_p14_6_failed_child_cap.c` assert both guards
-against a 5-entry fixture block_map. Coordinator canary pending —
-`zcl_status`/`getblockcount` still report h=3,081,601 on the
-running node; the new binary builds clean, tests green.
+against a 5-entry fixture block_map. **Side-effect: closes P12.2**
+(BLOCK_FAILED_CHILD GC). Canary: the OOM-amplifier path is guarded,
+but sync still doesn't advance — root cause is P24.13 below.
+
+**P24.13 CRITICAL — `bad-diffbits` on every inbound header batch. Sync cannot advance past 3,081,601. This is the actual root cause of the sync stall.**
+
+Evidence from live-node `zcl_events` scan 2026-04-21 02:25:
+
+```
+sync.headers_rejected  peer=0   header[0] 000009f9...  reason=bad-diffbits
+sync.headers_rejected  peer=0   header[1] 0000126d...  reason=bad-prevblk
+sync.headers_rejected  peer=0   header[2] 000002f4...  reason=bad-prevblk
+sync.headers_rejected  peer=0   all 160 headers rejected
+```
+
+Every one of 12 peers sending the same 160-header batch (all at h=3,085,141), every few seconds, **all rejected**. The inverted `header_height (3,081,408) < height (3,081,601)` is not a cosmetic issue — it is the MECHANISM by which sync stalls:
+
+1. FlyClient UTXO snapshot placed us at h=3,081,601
+2. Chain-restore backfilled block_index up to h=3,081,408
+3. 193 blocks (3,081,409–3,081,601) have NO block_index entries, or have default/zero `nBits`
+4. Peer sends header at h=3,081,602
+5. `check_block.c:241` calls `GetNextWorkRequired(pindex_prev)` to compute expected nBits
+6. `GetNextWorkRequired`'s 17-block averaging window walks back from 3,081,601 → hits the 193-block gap → cannot complete → returns `nProofOfWorkLimit` (weakest allowed, per comment at `check_block.c:231-238`)
+7. Peer's actual nBits (the real network difficulty) ≠ `nProofOfWorkLimit` (weakest) → **`bad-diffbits` REJECT**
+8. Loop forever
+
+The comment at `check_block.c:236-239` explicitly calls out this failure mode: *"Callers that legitimately accept headers without local-window validation (fast-sync snapshot tail, MMB-proved headers) MUST bypass this function entirely — see process_block.c's `skip_contextual` gate."* **The `skip_contextual` gate is not firing for post-FlyClient-snapshot headers_download.** That's the bug.
+
+**Fix shape (3 options, pick one or combine):**
+
+- **(a)** Extend `skip_contextual` in `process_block.c` to cover headers whose prev-block height is within `tip_height - 17` to `tip_height` when block_index is non-contiguous. Cheapest fix.
+- **(b)** Backfill block_index entries 3,081,409..3,081,601 during chain-restore (expand `chain_restore_backfill_nbits_from_disk` to walk past the block_index end, using whatever source has the real nBits — likely `disk_block_io` or zclassicd parity). Correctness-complete but requires data source.
+- **(c)** Dedicated `header_backfill_phase` between fast-sync and headers_download that explicitly requests the 193-block range from a peer, verifies against FlyClient MMB roots, writes to block_index. Clean but more code.
+
+**Best is (a) short-term + (c) long-term.**
+
+**RED test first** (`lib/test/src/test_chain.c` new case "post-snapshot headers_download accepts valid mainnet headers"):
+- Build fake chain-restore state with tip_h=100, block_index populated 0..83, missing 84..100 (similar 17-block inversion).
+- Feed a batch of 10 headers starting at h=101 with real difficulty transitions.
+- Assert tip advances to 110 without any `bad-diffbits` reject.
+- Pre-fix: all 10 headers rejected.
+
+**Acceptance (live canary):**
+- Post-fix deploy, tip advances from 3,081,601 toward 3,085,141+ within 5 minutes.
+- `zcl_events` shows zero `sync.headers_rejected` with `reason=bad-diffbits`.
+- `chain.headers >= chain.blocks` invariant holds (closes P24.5 side-effect).
+
+**File path pointers:**
+- `lib/validation/src/check_block.c:224-251` — the reject site
+- `lib/validation/src/process_block.c` — search for `skip_contextual`
+- `app/services/src/chain_restore_service.c` — `chain_restore_backfill_nbits_from_disk`
+- `app/services/src/utxo_recovery_service.c:475` — already has a comment acknowledging this class of bug
+
+**Previous NOW (P24.11 after P14.6 landed 5994bc3b1) deferred.** P24.11 is about the coordinator-diagnostics `zcl_syncdiag` crash — important but blocks only coordinator observability, not live-node sync. P24.13 blocks sync itself. Come back to P24.11 immediately after.
+
+---
+
+## (historical) NOW = P14.6
 
 **P14.3 done 5406beca3 [test:1.0 63016db95]** — `rpc_getsyncdiag` in
 `app/controllers/src/health_controller.c` declared `struct json_value
@@ -161,8 +215,9 @@ section is the executable checklist.
 - [x] **P14.13** CRITICAL — rebuild_active_chain O(N²) boot hang. **done a62394130 [test:1.0 b07284439]**.
 - [x] **P14.10** CRITICAL — deferred-activation queue for `SKIP_ALREADY_RUNNING` from `process_new_block`. **done 8b5443a8d [test:1.0 fd23f77a3]**.
 - [x] **P14.3** CRITICAL — `rpc_getsyncdiag` json_free on uninit stack. **done 5406beca3 [test:1.0 63016db95]** (partial — see P24.11).
-- [x] **P14.6** CRITICAL — cap `BLOCK_FAILED_CHILD` propagation (OOM amplifier). **done 5994bc3b1 [test:1.0 de30f389d]**.
-- [ ] **P24.11** CRITICAL — second `zcl_syncdiag` crash in `downloadstats` or `getpeerinfo` composite path (blocks coordinator diagnostics). **Agent-2 NOW.**
+- [x] **P14.6** CRITICAL — cap `BLOCK_FAILED_CHILD` propagation (OOM amplifier). **done 5994bc3b1 [test:1.0 de30f389d]** (closes P12.2 side-effect).
+- [ ] **P24.13** CRITICAL — `bad-diffbits` on every post-snapshot header batch (sync stall root cause — diagnosed via live `zcl_events` 2026-04-21 02:25). **Agent-2 NOW — highest priority.**
+- [ ] **P24.11** CRITICAL — second `zcl_syncdiag` crash in `downloadstats` or `getpeerinfo` composite path (blocks coordinator diagnostics). Pick up immediately after P24.13 lands.
 - [ ] **P14.4** HIGH — sync FSM flap debounce (279,135 events in hours on prior incident).
 - [ ] **P14.5** HIGH — `val.block_connected` must fire on commit, not receipt.
 

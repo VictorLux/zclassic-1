@@ -38,33 +38,36 @@ P12.3.1/P12.6.1/P12.6.2/P12.8.1/P12.8.2, P7.11 / P9.11, P15-P19
 
 | Tier | Closed / Total | Open rows |
 |---|---|---|
-| **CRITICAL** | 24 / 29 | P13.1, P24.11 |
+| **CRITICAL** | 24 / 30 | **P24.13** (sync stall root cause — new top priority), P13.1, P24.11 |
 | **HIGH** | 32 / 56 | P12.3, P12.3.1, P13.2, P13.4, P13.6, P13.7, P14.4, P14.5, P14.15, P14.16, P15.1, P15.2, P15.4, P15.6, P16.1, P16.2, P17.1, P17.2, P17.4, P17.5, P17.6, P18.1, P19.1, P24.2, P24.3, P24.4, P24.5, P24.7, P24.8, P24.10 |
 | **MED** | 27 / 54 | P7.10, P7.11, P8.4, P9.7, P9.8, P9.9, P12.5-P12.8, P12.6.1, P12.6.2, P12.8.2, P13.3, P13.5, P15.3, P15.5, P16.3-P16.7, P17.3, P18.2, P18.4, P24.1, P24.6, P24.9 |
 | **LOW** | 2 / 7 | P9.10, P9.11, P12.8, P18.3 |
 | (P0 baseline) | 4 / 4 | — |
 
 **Owner state (2026-04-21, post-canary + P11.6 + P14.6):**
-- **Agent-2 NOW:** **P24.11** CRITICAL — second `zcl_syncdiag` crash path in `downloadstats`/`getpeerinfo` composite (blocks coordinator diagnostics). Landings today: **P14.6 5994bc3b1 [test:1.0 de30f389d]** (BLOCK_FAILED_CHILD propagation cap — closes P12.2 as well), P14.3 5406beca3 (partial — P24.11 finishes it), P14.14 9d71841ba, P14.10 8b5443a8d. Then P14 drain → P13/P12/P7/P8 drain → P15 → P16 → P17.4/P17.5 → P18 → P19.1 → P20 dev-MCP → P21 split → P22 → P23 → **rest of P24 wave**. Full checklist in [`AGENT-2.md`](AGENT-2.md).
+- **Agent-2 NOW (REASSIGNED 2026-04-21 02:30 by coordinator):** **P24.13** CRITICAL — `bad-diffbits` on every peer's header batch, sync cannot advance past 3,081,601. Pre-empts P24.11 (previous NOW after P14.6 landed). P24.13 is the diagnosed root cause of the sync stall — every post-snapshot header batch hits `check_block.c:249` because the 17-block `GetNextWorkRequired` window can't walk across the 193-block post-FlyClient-snapshot inversion. After P24.13: **P24.11** (zcl_syncdiag second crash) → P14 drain (P14.4, P14.5, P14.15, P14.16) → P13/P12/P7/P8 drain → P15 → P16 → P17.4/P17.5 → P18 → P19.1 → P20 dev-MCP → P21 split → P22 → P23 → **rest of P24 wave**. Landings today: **P14.6 5994bc3b1 [test:1.0 de30f389d]** (BLOCK_FAILED_CHILD propagation cap — closes P12.2 as side-effect), P14.3 5406beca3 (partial — P24.11 finishes), P14.14 9d71841ba, P14.10 8b5443a8d. Full checklist in [`AGENT-2.md`](AGENT-2.md).
 - **Agent-3 NOW:** **P11.4** HIGH — shielded-payment CI gate (MVP #4). Landings today: P9.1 f10b39303, P9.2 94532c87e, P9.6 2fe801a08, **P11.6 39bb904f3 [test:1.0 4ae4b09db]** (7-day soak harness MVP #6 + `make soak-7day` runner). P9.7–P9.11 deferred (MED/LOW, skip unless trivially adjacent). Then P11.5/P11.8 MVP gates → P15.4/P15.5 → P17 testing lead → P18.4 crypto perf → P20 dev-MCP (coverage + test-map) → P21.7/P21.8 test split → P22.4 spec corpus → P23.7 scaffold_test_from_row → **P24.2 / P24.4** (`((unused))` lint, `abort()` triage). Full checklist in [`AGENT-3.md`](AGENT-3.md).
 - **Coordinator (Rhett):** post-deploy canary for P14.10+P14.13+P14.14+P14.3+P9.1+P9.2+P9.6+P11.6+P14.6 bundle (deploy landed 2026-04-21 02:09 — fresh binary running, peers 3→18, chain-restore path clean); **P19.2 license decision landed 2026-04-21 — Apache-2.0** (LICENSE + NOTICE + ATTRIBUTIONS updated); review P15-P18 acceptance; ship P24.1 + P24.7 + P24.12 coordinator-lane rows; watch sync advance post-P14.6+P24.11+P13.1.
 
-**Live-node state (2026-04-21 02:10, post-deploy):** mainnet running
-fresh binary (systemd linger-service restart at 02:09:49 after
-`make deploy`). Canary signal **partially positive**: peers jumped
-3→18 immediately, `max_peer_height` tracking correctly at 3,085,137,
-chain-restore path completes cleanly (P14.10 + P14.13 + P14.14 all
-validated). Tip still pinned at 3,081,601 in `headers_download`
-state with `header_height=3,081,408` (193-block inversion — filed
-as P24.5 invariant). Legacy zclassicd at h≈3,085,137 (gap
-~3,536 blocks). **`zcl_syncdiag` STILL crashes the node** —
-P14.3 fix patched `getsyncdiag` RPC only; the MCP tool composites
-`downloadstats` + `getpeerinfo` and one of those is the new crash
-(filed as P24.11 CRITICAL). Orphaned `.corrupt.*` artifacts (6.7 GB)
-swept to `~/zcl-backups/corrupt-sweep-20260421/` as P24.1 groundwork.
-**SAFE MCP tools post-deploy:** `zcl_status`, `zcl_getblockcount`,
-`zcl_kpi`, `zcl_peers`, `zcl_peer_report`. **UNSAFE:** `zcl_syncdiag`
-until P24.11 lands.
+**Live-node state (2026-04-21 02:28, ~30 min post-deploy):** mainnet
+running fresh binary. 12 peers holding steady at h=3,085,141 (network
+tip). **Sync root cause identified via `zcl_events` log scan** —
+every inbound header batch fails at `check_block.c:249` with
+`bad-diffbits` on header[0]: `GetNextWorkRequired`'s 17-block window
+cannot walk across the 193-block post-snapshot inversion, returns
+`nProofOfWorkLimit` (weakest-allowed), mismatches peer's real nBits,
+rejects entire 160-header batch. `bans_total=0` because we discard
+silently rather than punish — good peers are being starved. Filed as
+**P24.13 CRITICAL** — Agent-2 reassigned from P14.6. Gap to legacy
+zclassicd: ~3,540 blocks, will not close until P24.13 lands. Prior
+canary positive signals (peers 3→18, chain-restore clean) remain
+valid; they just don't move the tip until P24.13 is fixed.
+**`zcl_syncdiag` STILL crashes the node** (P24.11 CRITICAL).
+Orphaned `.corrupt.*` artifacts (6.7 GB) swept to
+`~/zcl-backups/corrupt-sweep-20260421/` as P24.1 groundwork.
+**SAFE MCP tools:** `zcl_status`, `zcl_getblockcount`, `zcl_kpi`,
+`zcl_peers`, `zcl_peer_report`, `zcl_events`, `zcl_logtail`.
+**UNSAFE:** `zcl_syncdiag` until P24.11 lands.
 
 ---
 
@@ -456,6 +459,7 @@ P0–P23. None overlap P15/P17/P21 scope.
 | **P24.10** | Crash-recovery CI gate: `make ci-crash` nightly target. Loop: start → send tx → `kill -9` → restart → assert balance non-zero. Four separate postmortem memories document this class (never_destroy_wallet, utxo_wipe_safety, crash_recovery, sqlite_flush_bug) but no CI asserts it. | `tools/scripts/ci_crash.sh` (new), `lib/test/src/test_crash_recovery_ci.c` (new) | HIGH | Agent-2 |
 | **P24.11** | `zcl_syncdiag` **still crashes the node** after P14.3 GREEN. The P14.3 fix (5406beca3) patched the `getsyncdiag` RPC's `json_free`-on-uninit-stack bug, but the MCP tool `h_zcl_syncdiag` in `tools/mcp/controllers/ops_controller.c:491` composites THREE internal RPCs: `getsyncdiag` + `downloadstats` + `getpeerinfo`. `rpc_downloadstats` (`app/controllers/src/misc_controller.c:194`) is the new crash point — observed 2026-04-21 02:11 post-deploy (fresh binary; returned truncated `,"peer_max_height":0,"download":}` then SIGABRT'd the node). Need RED-first repro + audit of the `dl_get_stats` / `dl_get_throughput` call paths under `msg_get_download_mgr()`. | `app/controllers/src/misc_controller.c`, `tools/mcp/controllers/ops_controller.c` | CRITICAL | Agent-2 |
 | **P24.12** | Per-file SPDX header sweep for Apache-2.0. After P19.2 landed the LICENSE + NOTICE files, every source file in `lib/`, `app/`, `tools/`, `config/` should carry `// SPDX-License-Identifier: Apache-2.0` (or `/* ... */` for `.c`). Mechanical pass — lint gate added afterward to fail-exit if a new file lands without an SPDX header. Vendored code under `vendor/` keeps its original license ID (`BSD-3-Clause`, `MIT`, etc.). | repo-wide source tree + `tools/scripts/check_spdx.sh` (new) | MED | Agent-2 or Rhett |
+| **P24.13** | **Sync stall root cause — `bad-diffbits` on every inbound header batch after FlyClient UTXO snapshot.** Observed live 2026-04-21 02:25 on fresh-binary post-deploy: 12 peers at h≈3,085,141, node at tip h=3,081,601, header_height=3,081,408 (193-block inversion). For every incoming `headers size=87041` batch, `check_block.c:249` rejects header[0] with `bad-diffbits`, subsequent headers cascade-fail with `bad-prevblk`. Mechanism: `GetNextWorkRequired` at `check_block.c:241` returns `nProofOfWorkLimit` (weakest allowed) when its 17-block averaging window cannot be fully walked (the comment at `:231-238` explicitly names this case: "fast-sync snapshot tail ... MUST bypass this function entirely"). But the `skip_contextual` gate in `process_block.c` is NOT active for post-snapshot headers_download — every valid header gets the full GetNextWorkRequired check, returns weakest-allowed, peer's actual nBits != weakest → reject. Entire network cannot feed us past the snapshot tail. **Overlaps P14.11 ("Zero `bad-diffbits` lines" was a P14.13 canary-success signal that has regressed) and P14.15 (nBits backfill).** Fix shape: either (a) extend `skip_contextual` to cover the 193-block post-snapshot tail until block_index contiguous with tip, OR (b) backfill block_index entries 3,081,409..3,081,601 during chain-restore so `GetNextWorkRequired`'s 17-block window can walk successfully, OR (c) gate in `connect_block_local` that triggers a header-backfill phase from legacy peer. Pair with a RED test in `test_chain.c` that boots a fake snapshot tip, feeds real mainnet headers, asserts tip advances without `bad-diffbits`. | `lib/validation/src/check_block.c:224-251`, `lib/validation/src/process_block.c` (skip_contextual), `app/services/src/chain_restore_service.c` (nBits backfill range) | **CRITICAL** | Agent-2 |
 
 **Parallelism:** P24.1 + P24.7 are coordinator-lane (Rhett ships).
 P24.2 + P24.4 are Agent-3 lane (crypto/sapling touches). P24.3 +
