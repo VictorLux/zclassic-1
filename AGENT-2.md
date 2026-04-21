@@ -40,13 +40,21 @@ checklist plus the lane rules.
 
 ---
 
-## Current status — NOW = P14.10
+## Current status — NOW = P14.14
+
+**P14.10 done 8b5443a8d [test:1.0 fd23f77a3]** — atomic
+`deferred_pending` counter on the controller; SKIP_ALREADY_RUNNING
+increments it, the activator drain-loops (bounded 8 rounds) under the
+mutex before transitioning out of CONNECTING. Block pointer not
+deep-copied — `accept_block` already persisted the block, and
+`activate_best_chain(pblock=NULL)` picks it up via the disk-read path.
 
 **P14.13 done a62394130 [test:1.0 b07284439]** — single-pass bucketing
 replaces the O(N²) residual-holes branch. Coordinator canary pending.
 
-**P14.10 (CRITICAL): `SKIP_ALREADY_RUNNING` deferred-activation queue
-from `process_new_block`.** See AGENT.md for full description.
+**P14.14 (CRITICAL): populate `block_index.skipList[]` on chain-restore
+path; call `BuildSkip()` in the rebuild pass.** See AGENT.md for full
+description. Acceptance: O(log N) ancestor walk post-restore at N=100k.
 
 (historical P14.13 description retained below for context)
 
@@ -98,7 +106,7 @@ section is the executable checklist.
 ### Phase 0 — Finish the P14 stall wave
 
 - [x] **P14.13** CRITICAL — rebuild_active_chain O(N²) boot hang. **done a62394130 [test:1.0 b07284439]**.
-- [ ] **P14.10** CRITICAL — deferred-activation queue for `SKIP_ALREADY_RUNNING` from `process_new_block`.
+- [x] **P14.10** CRITICAL — deferred-activation queue for `SKIP_ALREADY_RUNNING` from `process_new_block`. **done 8b5443a8d [test:1.0 fd23f77a3]**.
 - [ ] **P14.3** CRITICAL — `zcl_syncdiag` SIGABRT via `json_free`. Coordinator touch-trap — fix unlocks MCP health checks.
 - [ ] **P14.6** CRITICAL — cap `BLOCK_FAILED_CHILD` propagation (OOM amplifier). Skip when parent already failed; cap per-retry.
 - [ ] **P14.4** HIGH — sync FSM flap debounce (279,135 events in hours on prior incident).
