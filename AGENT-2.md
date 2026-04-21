@@ -40,7 +40,16 @@ checklist plus the lane rules.
 
 ---
 
-## Current status — NOW = P14.14
+## Current status — NOW = P14.3
+
+**P14.14 done 9d71841ba [test:1.0 9f114c251]** — after the bucket-fill,
+the rebuild pass walks chain bottom-up and (for every slot whose pprev
+is NULL) wires it to chain[h-1], then calls `block_index_build_skip()`
+on any slot whose pskip is NULL. Bottom-up ordering lets build_skip
+reuse each parent's freshly-built pskip → O(tip_h · log tip_h) total
+(~1.7M ops at live tip). Only fills NULLs — preserves pprev/pskip on
+forked entries that the bucketing step may have promoted into
+active_chain.
 
 **P14.10 done 8b5443a8d [test:1.0 fd23f77a3]** — atomic
 `deferred_pending` counter on the controller; SKIP_ALREADY_RUNNING
@@ -52,9 +61,10 @@ deep-copied — `accept_block` already persisted the block, and
 **P14.13 done a62394130 [test:1.0 b07284439]** — single-pass bucketing
 replaces the O(N²) residual-holes branch. Coordinator canary pending.
 
-**P14.14 (CRITICAL): populate `block_index.skipList[]` on chain-restore
-path; call `BuildSkip()` in the rebuild pass.** See AGENT.md for full
-description. Acceptance: O(log N) ancestor walk post-restore at N=100k.
+**P14.3 (CRITICAL): `zcl_syncdiag` SIGABRT via `json_free`.**
+Coordinator touch-trap — fix unlocks MCP health checks. Follow P10.1
+workflow (reproduce on fixture first → writeup → RED → minimal fix →
+live verify). See AGENT.md for full description.
 
 (historical P14.13 description retained below for context)
 
@@ -114,7 +124,7 @@ section is the executable checklist.
 
 ### Phase 1 — Chain-restore extensions (the N1-N3 review findings)
 
-- [ ] **P14.14** CRITICAL — populate `block_index.skipList[]` on chain-restore path; `BuildSkip()` in the rebuild pass. Acceptance: O(log N) ancestor walk post-restore at N=100k.
+- [x] **P14.14** CRITICAL — populate `block_index.skipList[]` on chain-restore path; `BuildSkip()` in the rebuild pass. **done 9d71841ba [test:1.0 9f114c251]**.
 - [ ] **P14.15** HIGH — backfill `nChainTx` + `nSequenceId` alongside `nBits` in `chain_restore_backfill_nbits_from_disk`. Acceptance: every restored entry has `nChainTx != 0`.
 - [ ] **P14.16** HIGH — per-entry CRC32 footer on `block_index` flat file. Acceptance: `[height-repair] repaired N` drops to 0 on clean boots; corruption detected at load, not silently mid-sync.
 

@@ -36,14 +36,14 @@ new Priority groups P15-P19 (discipline + architecture + testing + perf
 
 | Tier | Closed / Total | Open rows |
 |---|---|---|
-| **CRITICAL** | 20 / 28 | P14.14, P14.3, P14.6, P13.1 |
+| **CRITICAL** | 21 / 28 | P14.3, P14.6, P13.1 |
 | **HIGH** | 31 / 50+ | P12.2, P12.3, P12.3.1, P13.2, P13.4, P13.6, P13.7, P14.4, P14.5, P14.15, P14.16, P15.1, P15.2, P15.4, P15.6, P16.1, P16.2, P17.1, P17.2, P17.4, P17.5, P17.6, P18.1, P19.1 |
 | **MED** | 26 / 50+ | P7.10, P7.11, P8.4, P9.6-P9.9, P12.5-P12.8, P12.6.1, P12.6.2, P12.8.2, P13.3, P13.5, P15.3, P15.5, P16.3-P16.7, P17.3, P18.2, P18.4 |
 | **LOW** | 2 / 7 | P9.10, P9.11, P12.8, P18.3 |
 | (P0 baseline) | 4 / 4 | — |
 
 **Owner state (2026-04-20, post-cleanup):**
-- **Agent-2 NOW:** **P14.14** — populate `block_index.skipList[]` on chain-restore path (P14.10 landed 8b5443a8d [test:1.0 fd23f77a3]; P14.13 landed a62394130 — coordinator canary pending for both). Then P14 drain → P13/P12/P7/P8 drain → P15 discipline → P16 staged-sync port → P17.4/P17.5 support → P18 perf → P19.1 attribution → P20 dev-MCP → P21 oversized-file split → P22 AI-native scaffolding → P23 simplification + generator MCP. Full checklist in [`AGENT-2.md`](AGENT-2.md).
+- **Agent-2 NOW:** **P14.3** — `zcl_syncdiag` SIGABRT via `json_free`, coordinator touch-trap (P14.14 landed 9d71841ba [test:1.0 9f114c251]; P14.13 landed a62394130; P14.10 landed 8b5443a8d). Then P14 drain → P13/P12/P7/P8 drain → P15 discipline → P16 staged-sync port → P17.4/P17.5 support → P18 perf → P19.1 attribution → P20 dev-MCP → P21 oversized-file split → P22 AI-native scaffolding → P23 simplification + generator MCP. Full checklist in [`AGENT-2.md`](AGENT-2.md).
 - **Agent-3 NOW:** **P9.6** — `zclassic_sapling_spend_proof` witness length not bounded (P9.2 landed 94532c87e). Then P9 drain → P11.4/P11.5/P11.6/P11.8 MVP CI gates → P15.4/P15.5 discipline → P17 testing lead → P18.4 crypto perf → P20 dev-MCP (coverage + test-map) → P21 test oversized-file split → P22.4 spec corpus → P23.7 scaffold_test_from_row. Full checklist in [`AGENT-3.md`](AGENT-3.md).
 - **Coordinator (Rhett):** canary post-P14.13 deploy; review P15-P18 acceptance; own license decision (P19.2); monitor KPIS.
 
@@ -248,7 +248,7 @@ P10.1.1 through P10.1.5 landed. See
 | P14.11 | `block_index` nBits=0 on restore path | done 5f04aef62 |
 | P14.12 | `active_chain` single-entry after restore | done 5f04aef62 |
 | P14.13 | `chain_restore_rebuild_active_chain` O(N²) | done a62394130 (Agent-2) [test:1.0 b07284439] |
-| **P14.14** | `block_index.skipList[]` on restore path | open — Agent-2 CRITICAL |
+| P14.14 | `block_index.skipList[]` on restore path | done 9d71841ba (Agent-2) [test:1.0 9f114c251] |
 | **P14.15** | `nChainTx` + `nSequenceId` backfill | open — Agent-2 |
 | **P14.16** | block_index flat-file per-entry CRC32 | open — Agent-2 |
 
