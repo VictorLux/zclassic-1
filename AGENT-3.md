@@ -94,6 +94,21 @@ If the test file compiles and fails (any kind of failure), stage it
 and push as `test/P11.4: RED for shielded-payment CI gate`. Don't
 wait to polish it together with the GREEN.
 
+**⚠ URGENT (coordinator 2026-04-21 21:00):** your worktree has an
+**untracked** `lib/test/src/test_shielded_payment_gate.c` at 360 lines
+that hasn't been touched since 06:01 (~15h). This is the 4th attempt
+at P11.4 — the previous three all died because `git reset --hard
+origin/main` wipes untracked files too. **Before you do anything else:**
+```
+cd ~/zclassic23-3
+git add lib/test/src/test_shielded_payment_gate.c
+git commit -m 'test/P11.4: RED for shielded-payment CI gate (WIP)'
+git push origin HEAD:refs/heads/wip/agent-3-p11.4
+```
+That pushes to a side branch so your work survives any kickoff reset.
+Then continue working on main. When GREEN is ready, rebase main onto
+wip/agent-3-p11.4 or cherry-pick, whichever is easier.
+
 **⚠ Do not call `zcl_syncdiag` or `zcl_getrawtransaction`** (or the
 raw RPCs `getsyncdiag` / `getrawtransaction`) against the live node.
 Both crash the node right now — see AGENTS.md safe/unsafe list. Use
