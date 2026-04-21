@@ -115,6 +115,8 @@ int main(void)
       failures += test_cold_start_sync(); }
     { extern int test_kill9_recovery(void);
       failures += test_kill9_recovery(); }
+    { extern int test_soak_harness(void);
+      failures += test_soak_harness(); }
     failures += test_event();
     failures += test_download();
     failures += test_consensus();
