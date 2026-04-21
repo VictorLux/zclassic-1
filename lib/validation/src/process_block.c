@@ -721,11 +721,26 @@ process_block_propagate_failed_child(struct block_map *map,
                                       time_t *last_propagate_sec,
                                       size_t *propagated_out)
 {
-    (void)now_sec;
-    (void)last_propagate_sec;
-    /* RED: no guards yet — the helper is a straight extraction of the
-     * pre-P14.6 inline code. The P14.6 GREEN commit adds the
-     * SKIP_PARENT_FAILED and SKIP_RATE_LIMITED early returns. */
+    /* Guard A (P14.6): parent already failed.  A prior propagation
+     * from the failed ancestor already covered this subtree, so the
+     * descendant CHILD marks are already in place; walking the map
+     * again is pure allocator + qsort amplification. */
+    if (pindex_root && pindex_root->pprev &&
+        (pindex_root->pprev->nStatus & BLOCK_FAILED_MASK))
+        return PROPAGATE_FAILED_CHILD_SKIP_PARENT_FAILED;
+
+    /* Guard B (P14.6): per-retry rate limit.  When the caller opts in
+     * with a persistent timestamp, refuse back-to-back walks inside
+     * PROPAGATE_FAILED_CHILD_MIN_INTERVAL_SEC.  The worst a flap can
+     * do under this guard is one 24 MB + O(N log N) walk per
+     * interval.  Callers that need an unconditional walk (tests,
+     * explicit flush paths) pass NULL. */
+    if (last_propagate_sec) {
+        if (now_sec - *last_propagate_sec <
+            PROPAGATE_FAILED_CHILD_MIN_INTERVAL_SEC)
+            return PROPAGATE_FAILED_CHILD_SKIP_RATE_LIMITED;
+        *last_propagate_sec = now_sec;
+    }
 
     size_t map_sz = block_map_count(map);
     struct block_index **all = zcl_malloc(
@@ -1296,29 +1311,42 @@ retry_connect:
                             "transient UTXO state issue)\n",
                             pindex_new->nHeight);
                 } else {
-                    /* P14.6: delegate to helper. RED commit passes
-                     * last_propagate_sec=NULL (no rate limit, matching
-                     * pre-P14.6 behavior); the GREEN commit flips this
-                     * to a static timestamp. */
+                    /* P14.6: delegate to helper with both OOM-amplifier
+                     * guards enabled.  Static timestamp gives a single
+                     * per-process rate-limit window — the flap amplifier
+                     * shape is global, not per-block, so one bucket for
+                     * the whole node is correct. */
+                    static time_t last_propagate_sec = 0;
                     size_t propagated = 0;
                     enum propagate_failed_child_result rv =
                         process_block_propagate_failed_child(
                             &ms->map_block_index, pindex_new,
-                            GetTime(), NULL, &propagated);
+                            GetTime(), &last_propagate_sec, &propagated);
                     switch (rv) {
                     case PROPAGATE_FAILED_CHILD_OK:
                         if (propagated > 0)
                             printf("Propagated BLOCK_FAILED_CHILD to %zu "
                                    "descendants\n", propagated);
                         break;
+                    case PROPAGATE_FAILED_CHILD_SKIP_PARENT_FAILED:
+                        fprintf(stderr, "connect_tip: NOT propagating "
+                                "BLOCK_FAILED_CHILD at h=%d (parent h=%d "
+                                "already in failed state — propagation "
+                                "already done)\n",
+                                pindex_new->nHeight,
+                                pindex_new->pprev->nHeight);
+                        break;
+                    case PROPAGATE_FAILED_CHILD_SKIP_RATE_LIMITED:
+                        fprintf(stderr, "connect_tip: BLOCK_FAILED_CHILD "
+                                "propagation rate-limited at h=%d "
+                                "(last walk %lds ago, min %ds)\n",
+                                pindex_new->nHeight,
+                                (long)(GetTime() - last_propagate_sec),
+                                PROPAGATE_FAILED_CHILD_MIN_INTERVAL_SEC);
+                        break;
                     case PROPAGATE_FAILED_CHILD_MALLOC_FAILED:
                         fprintf(stderr, "BLOCK_FAILED_CHILD: malloc failed "
                                 "— propagation skipped!\n");
-                        break;
-                    case PROPAGATE_FAILED_CHILD_SKIP_PARENT_FAILED:
-                    case PROPAGATE_FAILED_CHILD_SKIP_RATE_LIMITED:
-                        /* unreachable with last_propagate_sec=NULL and
-                         * pprev-failed guard not yet active (RED). */
                         break;
                     }
                 }
