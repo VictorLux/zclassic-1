@@ -40,7 +40,56 @@ checklist plus the lane rules.
 
 ---
 
-## Current status — NOW = P13.1 (P24.14 LANDED 2026-04-21 21:00, pending deploy)
+## Current status — NOW = P13.1 → P24.18 → P24.19 → P24.20 → P24.21 (sync-robustness wave)
+
+## 🎯 COORDINATOR MANDATE 2026-04-21 22:30 — "STICKY, STRONG, ROBUST"
+
+Rhett gave a direct mandate: **the node must be STICKY (never lose tip
+progress on restart), STRONG (never silently fail), ROBUST (cheap +
+safe to deploy).** Right now the live node is stuck at h=3,078,014
+(~8,100 blocks behind zclassicd) because of a cascade of six bugs.
+Coordinator filed five rows — P13.1 + P24.18 + P24.19 + P24.20 +
+P24.21 — that together eliminate the cascade. **Work them IN ORDER.**
+Each has evidence, a 3-part fix plan, file/line pointers, RED test
+shape, and live-canary acceptance in AGENT.md. This section is your
+sequencing cheat-sheet.
+
+### Why this order
+
+1. **P13.1 first** — you can't canary the sync fix without peers. Until addnode entries successfully connect, even a correct P24.18 fix won't show a live "tip advances" signal. Fix connectivity first.
+2. **P24.18 second** — this is the stall. Live node advances past h=3,078,014 only when this lands.
+3. **P24.19 third** — without clean-shutdown, every deploy re-triggers P24.18's cascade. Fixing P24.18 alone without P24.19 means we re-hit the stall on every deploy. P24.19 makes the fix durable.
+4. **P24.20 fourth** — observability. Without EV_SAPLING_PERSIST_FAIL and the KPI counter, a regression in this area goes silent again. Turn silent failures into loud failures.
+5. **P24.21 fifth** — prevents future regression classes where `coins_best_block` drifts from chain tip. Roll forward > roll backward.
+
+### Expected KPI lift (pillar-by-pillar)
+
+| Pillar | Before wave | After wave | Reason |
+|---|---|---|---|
+| Correctness | 2 | 8 | Tip advances past anchor reliably; UTXO set can't diverge silently. |
+| Robustness | 6 | 9 | No more 13-min unclean-boot rebuild; crash recovery observable. |
+| Operability | 5 | 9 | `make deploy` cost drops from ~14 min to <30s wall clock. |
+| Observability | 7 | 8 | Sapling/coins failures now fire events + KPI. |
+
+**Total expected jump: ~55 → ~75 points.** Bigger than any previous wave.
+
+### Operational notes
+
+- Do NOT try to bootstrap the live node manually to clear the stall. Coordinator is not doing that intentionally — running the legacy-bootstrap escape hatch would hide the bug and defer the fix. Your P24.18 fix must be the thing that unstucks the live node. Canary is "deploy → watch tip advance."
+- ~/zclassic23-2 (your worktree) already has P24.14 merged (9c1794086). `git pull` after kickoff-reset to pick up all coordinator changes.
+- Agent-3 is NOT on this wave — they're on the MVP drain (P11.5 store e2e, P11.8 parity diff). Don't coordinate with them on these rows.
+
+### Rotation instructions
+
+When you finish each row, BEFORE rotating NOW:
+1. Deploy via `make deploy` if the row affects the live node (P24.18+).
+2. Canary: confirm the row's acceptance criteria (listed per-row in AGENT.md).
+3. Update your `## Current status` header to `NOW = <next row>`.
+4. Commit the AGENT-2.md rotation along with the row's RED+GREEN commits.
+
+---
+
+## (historical) NOW = P13.1 (P24.14 LANDED 2026-04-21 21:00, pending deploy)
 
 **P24.13 done b466740d2 [test:1.0 7c540ddfb]** — landed by coordinator
 while Agent-2's independent in-progress implementation (local commit
