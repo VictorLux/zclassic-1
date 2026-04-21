@@ -702,6 +702,61 @@ bool process_block_try_clear_stale_failed(struct block_index *pindex,
     return false;
 }
 
+/* P14.6 — BLOCK_FAILED_CHILD propagation with OOM-amplifier guards.
+ *
+ * History: the original connect_tip inlined a full block_map scan +
+ * qsort on every failed connect_block. At a live tip of ~3M entries
+ * that is ~24 MB of scratch + O(N log N) work per call. In the
+ * 2026-04-19 BIP30 stall, a single stuck block was retried on every
+ * FSM flap; the repeated propagation walk is what drove RSS to the
+ * cgroup high-water mark in 2h51m (see
+ * docs/postmortems/2026-04-19-bip30-stall.md).
+ *
+ * Extracted verbatim first (RED), then gated by two cheap early
+ * returns (GREEN). See the header for the full guard description. */
+enum propagate_failed_child_result
+process_block_propagate_failed_child(struct block_map *map,
+                                      const struct block_index *pindex_root,
+                                      time_t now_sec,
+                                      time_t *last_propagate_sec,
+                                      size_t *propagated_out)
+{
+    (void)now_sec;
+    (void)last_propagate_sec;
+    /* RED: no guards yet — the helper is a straight extraction of the
+     * pre-P14.6 inline code. The P14.6 GREEN commit adds the
+     * SKIP_PARENT_FAILED and SKIP_RATE_LIMITED early returns. */
+
+    size_t map_sz = block_map_count(map);
+    struct block_index **all = zcl_malloc(
+        map_sz * sizeof(struct block_index *), "failed_child_all");
+    if (!all)
+        return PROPAGATE_FAILED_CHILD_MALLOC_FAILED;
+
+    size_t n = 0, iter = 0;
+    struct block_index *ch;
+    while (block_map_next(map, &iter, NULL, &ch)) {
+        if (ch && ch->nHeight > pindex_root->nHeight)
+            all[n++] = ch;
+    }
+    /* Sort by height ascending — parents before children. */
+    qsort(all, n, sizeof(struct block_index *),
+          block_index_cmp_height);
+    /* Single pass: if parent is failed, child is failed. */
+    size_t propagated = 0;
+    for (size_t i = 0; i < n; i++) {
+        if (!all[i]->pprev) continue;
+        if (all[i]->nStatus & BLOCK_FAILED_MASK) continue;
+        if (all[i]->pprev->nStatus & BLOCK_FAILED_MASK) {
+            all[i]->nStatus |= BLOCK_FAILED_CHILD;
+            propagated++;
+        }
+    }
+    free(all);
+    if (propagated_out) *propagated_out = propagated;
+    return PROPAGATE_FAILED_CHILD_OK;
+}
+
 bool accept_block_header(const struct block_header *header,
                          struct validation_state *state,
                          struct main_state *ms,
@@ -1240,45 +1295,32 @@ retry_connect:
                             "BLOCK_FAILED at h=%d (early block, likely "
                             "transient UTXO state issue)\n",
                             pindex_new->nHeight);
-                } else
-                /* Propagate BLOCK_FAILED_CHILD to all descendants.
-                 * Uses height-sorted single pass instead of repeated
-                 * full-map scans (O(n) vs O(n*depth) for 3M+ blocks). */
-                {
-                    size_t map_sz = ms->map_block_index.size;
-                    struct block_index **all = zcl_malloc(
-                        map_sz * sizeof(struct block_index *), "failed_child_all");
+                } else {
+                    /* P14.6: delegate to helper. RED commit passes
+                     * last_propagate_sec=NULL (no rate limit, matching
+                     * pre-P14.6 behavior); the GREEN commit flips this
+                     * to a static timestamp. */
                     size_t propagated = 0;
-                    if (!all) {
+                    enum propagate_failed_child_result rv =
+                        process_block_propagate_failed_child(
+                            &ms->map_block_index, pindex_new,
+                            GetTime(), NULL, &propagated);
+                    switch (rv) {
+                    case PROPAGATE_FAILED_CHILD_OK:
+                        if (propagated > 0)
+                            printf("Propagated BLOCK_FAILED_CHILD to %zu "
+                                   "descendants\n", propagated);
+                        break;
+                    case PROPAGATE_FAILED_CHILD_MALLOC_FAILED:
                         fprintf(stderr, "BLOCK_FAILED_CHILD: malloc failed "
-                                "for %zu entries — propagation skipped!\n",
-                                map_sz);
-                    } else {
-                        size_t n = 0, iter2 = 0;
-                        struct block_index *ch;
-                        while (block_map_next(&ms->map_block_index,
-                                               &iter2, NULL, &ch)) {
-                            if (ch && ch->nHeight > pindex_new->nHeight)
-                                all[n++] = ch;
-                        }
-                        /* Sort by height ascending — parents before children.
-                         * Use a simple comparator with qsort. */
-                        qsort(all, n, sizeof(struct block_index *),
-                              block_index_cmp_height);
-                        /* Single pass: if parent is failed, child is failed */
-                        for (size_t i = 0; i < n; i++) {
-                            if (!all[i]->pprev) continue;
-                            if (all[i]->nStatus & BLOCK_FAILED_MASK) continue;
-                            if (all[i]->pprev->nStatus & BLOCK_FAILED_MASK) {
-                                all[i]->nStatus |= BLOCK_FAILED_CHILD;
-                                propagated++;
-                            }
-                        }
-                        free(all);
+                                "— propagation skipped!\n");
+                        break;
+                    case PROPAGATE_FAILED_CHILD_SKIP_PARENT_FAILED:
+                    case PROPAGATE_FAILED_CHILD_SKIP_RATE_LIMITED:
+                        /* unreachable with last_propagate_sec=NULL and
+                         * pprev-failed guard not yet active (RED). */
+                        break;
                     }
-                    if (propagated > 0)
-                        printf("Propagated BLOCK_FAILED_CHILD to %zu "
-                               "descendants\n", propagated);
                 }
             }
             /* Clean up: free view first (may contain entries from update_coins),

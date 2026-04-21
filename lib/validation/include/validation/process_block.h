@@ -112,4 +112,48 @@ bool process_block_try_clear_stale_failed(struct block_index *pindex,
                                            time_t now,
                                            time_t *last_retry_clear);
 
+/* P14.6: result codes for process_block_propagate_failed_child. Values
+ * are stable and tested directly; add new codes at the end. */
+enum propagate_failed_child_result {
+    PROPAGATE_FAILED_CHILD_OK                 =  0, /* walk ran; propagated_out set */
+    PROPAGATE_FAILED_CHILD_SKIP_PARENT_FAILED =  1, /* OOM guard (see below) */
+    PROPAGATE_FAILED_CHILD_SKIP_RATE_LIMITED  =  2, /* OOM guard (see below) */
+    PROPAGATE_FAILED_CHILD_MALLOC_FAILED      = -1, /* allocator returned NULL */
+};
+
+/* P14.6: minimum wall-clock interval between full propagation walks
+ * when the caller opts into rate-limiting (non-NULL last_propagate_sec).
+ * At a live-tip block_map size of ~3M entries, each walk is ~24 MB of
+ * scratch + an O(N log N) qsort; firing once per FSM flap event can
+ * pin the node under sustained RSS + CPU pressure (see
+ * docs/postmortems/2026-04-19-bip30-stall.md). Ten seconds lets
+ * genuine back-to-back validation failures still propagate without
+ * amplifying a stall into resource exhaustion. */
+#define PROPAGATE_FAILED_CHILD_MIN_INTERVAL_SEC 10
+
+/* P14.6 test-only surface: propagate BLOCK_FAILED_CHILD from a failed
+ * `pindex_root` through all descendants recorded in `map`. Caller
+ * MUST have set a BLOCK_FAILED_MASK bit on pindex_root itself before
+ * invoking.
+ *
+ * Guards (prevent the 2026-04-19 OOM amplifier):
+ *   - SKIP_PARENT_FAILED when pindex_root->pprev is itself already in
+ *     BLOCK_FAILED_MASK. The prior propagation from the ancestor
+ *     already covered this subtree; re-walking the block_map would
+ *     burn ~24 MB + O(N log N) to accomplish nothing.
+ *   - SKIP_RATE_LIMITED when last_propagate_sec is non-NULL AND
+ *     now_sec - *last_propagate_sec < PROPAGATE_FAILED_CHILD_MIN_INTERVAL_SEC.
+ *     Callers that need an unconditional walk (tests, explicit flush
+ *     paths) pass last_propagate_sec=NULL. On OK return with a non-NULL
+ *     pointer, *last_propagate_sec is updated to now_sec.
+ *
+ * On OK return, *propagated_out (may be NULL) receives the count of
+ * descendants newly marked; unchanged on SKIP or MALLOC_FAILED. */
+enum propagate_failed_child_result
+process_block_propagate_failed_child(struct block_map *map,
+                                      const struct block_index *pindex_root,
+                                      time_t now_sec,
+                                      time_t *last_propagate_sec,
+                                      size_t *propagated_out);
+
 #endif

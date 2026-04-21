@@ -204,6 +204,7 @@ int main(void)
     failures += test_db_migration_idempotent();
     failures += test_coins_view_atomicity();
     failures += test_chain_stall_repro();
+    failures += test_p14_6_failed_child_cap();
     failures += test_make_lint_gates();
     failures += test_multisig();
     failures += test_mcp_fuzz();
