@@ -1,13 +1,41 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * P11.6 RED stub — see test/soak_harness.h.
+ * P11.6 GREEN — see test/soak_harness.h.
  *
- * This commit extracts the interface and a placeholder verdict
- * routine so the RED test in test_soak_harness.c has something
- * to link against. The stub unconditionally returns SOAK_OK,
- * which is wrong for every failure mode the harness claims to
- * detect — the RED test exercises all five and will fail until
- * the GREEN commit fills in the real logic.
+ * Offline verdict analyzer for the 7-day MVP soak run. The runner
+ * in tools/soak/ polls the live node every 60 s and feeds each
+ * sample through soak_record_sample(); after the planned window
+ * (default 7 days) it calls soak_compute_verdict() once and exits
+ * with the verdict as status. Nothing here touches the network
+ * or the filesystem — this keeps the rules testable from test_zcl
+ * against synthetic streams.
+ *
+ * Design notes:
+ *
+ *  - Tip tracking uses a high-water mark rather than "last seen
+ *    height" so a chain reorg doesn't reset the stall timer. Only
+ *    a new peak advances it; the stall trip reflects "the network
+ *    stopped building on us", not "we saw a tip change".
+ *
+ *  - RSS tracking uses a latched baseline — the min RSS observed
+ *    after the warmup window (default 30 min, matches how long the
+ *    UTXO cache takes to warm on a cold boot). Anything that grows
+ *    past baseline + threshold is a leak; bouncing above and below
+ *    baseline by less than the threshold isn't. Tracking "max RSS
+ *    over window" would flag a single spike; tracking "last RSS"
+ *    misses a slow creep that regressed once. A latched baseline
+ *    is simple and robust against both.
+ *
+ *  - crash_count accumulates across the whole run (one strike and
+ *    you're out) because the MVP criterion is "no operator
+ *    intervention" — if the harness ever had to observe a down
+ *    node, that's a failure regardless of whether systemd
+ *    restarted it cleanly.
+ *
+ *  - The verdict is priority-ordered: NO_SAMPLES > CRASH >
+ *    TOO_SHORT > TIP_STALL > RSS_WALK. This keeps the output
+ *    deterministic for CI and makes the soonest-actionable signal
+ *    land first (a crash is louder than an RSS walk).
  */
 
 #include "test/soak_harness.h"
@@ -34,20 +62,54 @@ void soak_record_sample(soak_state_t *s,
                         int64_t height,
                         uint64_t rss_bytes)
 {
-    (void)s;
-    (void)unix_ts;
-    (void)alive;
-    (void)height;
-    (void)rss_bytes;
-    /* RED stub: accumulate nothing. */
+    if (s->n_samples == 0) {
+        s->first_ts = unix_ts;
+        s->last_advance_ts = unix_ts;
+    }
+    s->last_ts = unix_ts;
+    s->n_samples++;
+
+    if (!alive) {
+        /* Stop the stall clock too — we can't measure tip progress
+         * when the node isn't answering. Crash is the dominant
+         * failure signal here; the verdict returns FAIL_CRASH
+         * regardless of whatever else would have tripped. */
+        s->crash_count++;
+        return;
+    }
+
+    /* Tip tracking — high-water mark advance. */
+    if (!s->tip_hwm_set || height > s->tip_hwm) {
+        s->tip_hwm = height;
+        s->tip_hwm_set = true;
+        s->last_advance_ts = unix_ts;
+    } else if (unix_ts - s->last_advance_ts > s->cfg.max_tip_stall_sec) {
+        s->stall_observed = true;
+    }
+
+    /* RSS tracking — update max, latch baseline after warmup. */
+    if (rss_bytes > s->rss_max_seen) s->rss_max_seen = rss_bytes;
+    uint64_t elapsed = unix_ts - s->first_ts;
+    if (elapsed >= s->cfg.rss_walk_warmup_sec) {
+        if (!s->rss_baseline_set || rss_bytes < s->rss_baseline) {
+            s->rss_baseline = rss_bytes;
+            s->rss_baseline_set = true;
+        }
+        if (s->rss_baseline_set &&
+            rss_bytes > s->rss_baseline + s->cfg.max_rss_growth_bytes) {
+            s->walk_observed = true;
+        }
+    }
 }
 
 soak_verdict_t soak_compute_verdict(const soak_state_t *s)
 {
-    (void)s;
-    /* RED stub: always claim the soak passed. The test exercises
-     * every failure mode, so every assertion except the healthy
-     * path will fail here. */
+    if (s->n_samples == 0) return SOAK_FAIL_NO_SAMPLES;
+    if (s->crash_count > 0) return SOAK_FAIL_CRASH;
+    if (s->last_ts - s->first_ts < s->cfg.min_duration_sec)
+        return SOAK_FAIL_TOO_SHORT;
+    if (s->stall_observed) return SOAK_FAIL_TIP_STALL;
+    if (s->walk_observed)  return SOAK_FAIL_RSS_WALK;
     return SOAK_OK;
 }
 

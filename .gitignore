@@ -49,6 +49,7 @@ crash_recovery_test
 fuzz_block
 fuzz_script
 fuzz_p2p
+tools/soak/soak_runner
 test-tmp/
 leak-*
 

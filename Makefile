@@ -58,7 +58,8 @@ LIBS = -Lvendor/lib -lsecp256k1 -lleveldb \
 
 .PHONY: all test test-e2e clean deploy check-restart-follow \
         coverage coverage-clean docs-mcp docs-mcp-check ci audit release \
-        lint check-malloc check-silent-errors check-raw-sqlite
+        lint check-malloc check-silent-errors check-raw-sqlite \
+        soak-smoke soak-7day
 
 CLI_SRCS = lib/rpc/src/client.c lib/json/src/json.c
 all: test_zcl zclassic23 zclassic-cli
@@ -315,6 +316,46 @@ fuzz-ci-leaks: $(FUZZ_TARGETS)
 			"$$work_dir" "$$seed_dir"; \
 		rm -rf "$$work_dir"; \
 	done
+
+# ── P11.6 — 7-day soak runner ─────────────────────────────────
+#
+# Separate binary that polls a running zclassic23 every 60 s
+# against the analyzer in lib/test/src/soak_harness.c. Verdict
+# failure (crash / tip-stall / RSS-walk / too-short / no-samples)
+# causes exit non-zero, so systemd / CI can gate on a 7-day run
+# without the operator having to read the log.
+#
+# `make soak-7day`   runs the full 604800 s gate against the
+#                    installed zclassic23 (MVP criterion #6).
+# `make soak-smoke`  runs a 5-minute smoke test of the same
+#                    binary so the runner itself doesn't rot
+#                    between 7-day gates — safe to hook into
+#                    CI on a machine that has the node up.
+#
+# Neither target is wired into the default `ci` pipeline: 7 days
+# is obviously out of band, and the smoke target needs a live
+# node on the same host, which most CI workers don't provide.
+tools/soak/soak_runner: tools/soak/main.c lib/test/src/soak_harness.c \
+                        lib/test/include/test/soak_harness.h
+	$(CC) -std=c23 -O2 -Wall -Wextra -Werror -pedantic \
+	    -Ilib/test/include -o $@ \
+	    tools/soak/main.c lib/test/src/soak_harness.c
+
+soak-7day: tools/soak/soak_runner zcl-rpc
+	./tools/soak/soak_runner \
+	    --duration-sec=604800 \
+	    --interval-sec=60 \
+	    --service=zclassic23 \
+	    --rpc=./zcl-rpc
+
+soak-smoke: tools/soak/soak_runner zcl-rpc
+	./tools/soak/soak_runner \
+	    --duration-sec=300 \
+	    --interval-sec=30 \
+	    --service=zclassic23 \
+	    --rpc=./zcl-rpc \
+	    --stall-sec=600 \
+	    --warmup-sec=60
 
 .PHONY: bench-sync
 bench-sync: zclassic23 bench_fresh_sync
