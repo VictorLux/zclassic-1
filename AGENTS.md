@@ -57,12 +57,18 @@ the full inventory. Most useful subset for diagnostic work:
 `zcl_peers`, `zcl_peer_report`, `zcl_events`, `zcl_logtail`, `zcl_health`,
 `zcl_validationstatus`.
 
-**⚠ UNSAFE — WILL CRASH THE LIVE NODE (confirmed via live backtrace symbol resolution 2026-04-21 05:02):**
-- `zcl_syncdiag` / `getsyncdiag` — `rpc_getsyncdiag+0xCB` json_free UAF (P24.11 CRITICAL).
-- `zcl_getrawtransaction` / `getrawtransaction` — `rpc_getrawtransaction+0x4AB` →
-  `coins_view_cache_get_coins` SEGV on inverted-tail heights 3,081,409–3,081,601 (P24.14 CRITICAL).
-- `zcl_rpc` escape hatch — only use for methods confirmed in the safe list above; arbitrary
-  methods against the current P24.13-inverted state can hit either class.
+**⚠ UNSAFE — WILL CRASH THE LIVE NODE (confirmed via live backtrace 2026-04-21):**
+
+Do NOT call these — SIGABRT the mainnet node:
+
+- **P24.11 (json_free UAF in rpc_getsyncdiag):** `zcl_syncdiag` / `getsyncdiag`.
+- **P24.14 (coins_view_cache_get_coins SEGV on inverted tail — 16 RPC callsites across 5 controllers):**
+  `zcl_getrawtransaction`, `zcl_walletaudit`, `zcl_listunspent`, `zcl_z_listunspent`,
+  `zcl_rescanblockchain`, and any raw RPC that reads the UTXO cache
+  (`gettxout`, `getrawtransaction`, `listunspent`, `z_listunspent`, `rescanblockchain`,
+  anything under `wallet_diagnostic_controller.c`).
+- `zcl_rpc` escape hatch — only use for methods confirmed safe; arbitrary methods
+  against the current P24.13-inverted state can hit either crash class.
 
 If a tool prompts permission to run something not listed as safe, DENY and ask Rhett.
 
