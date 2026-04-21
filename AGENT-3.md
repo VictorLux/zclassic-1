@@ -69,14 +69,41 @@ known nsk, stack-poisons leftover stack memory, then asserts
 post-fix OK.
 
 **P9.6 (MED): `zclassic_sapling_spend_proof` witness length not
-bounded. Agent-3 NOW.**
+bounded. Agent-3 NOW. RESUME-HERE ↓**
 
-Audit how the prover validates the caller-supplied `witness` byte
-buffer shape. The expected layout is `depth (1) + 32 × (sibling 32 +
-bit 1)` = 1057 bytes; the call site currently reads the fixed size
-without first checking that the caller passed a buffer of at least
-that size. Add length guards + a RED test that demonstrates a short
-buffer reaching `memcpy`.
+**The bug (exact pointer):**
+- `lib/sapling/src/sapling_prover_c23.c:131-143` — `zclassic_sapling_spend_proof`
+  signature has `const unsigned char *witness` with **no length parameter**.
+- `lib/sapling/src/sapling_prover_c23.c:179-188` — reads `witness[0]` (depth)
+  then loops `memcpy(wit.auth_path[i], witness + 1 + i*33, 32)` for 32 iterations,
+  reading 1057 bytes total. No length guard — a short buffer reaches `memcpy`.
+- `lib/sapling/src/sapling.c:912` — caller `sapling_build_spend_with_ctx`
+  **already has `size_t witness_len`** but it is `__attribute__((unused))` and
+  never plumbed through. The length is right there; it just isn't passed down.
+
+**The fix (3 edits, ~20 lines):**
+1. Add `size_t witness_len` parameter to `zclassic_sapling_spend_proof`
+   signature + forward decl + local `extern` at `sapling.c:932-937`.
+2. Guard at entry: `if (witness_len < 1 + 32 * 33)` → `LOG_FAIL("sapling_prover",
+   "spend_proof: witness_len=%zu < 1057 (malformed merkle path buffer)", witness_len)`.
+   Do this **before** touching `witness[0]`.
+3. Plumb through from `sapling_build_spend_with_ctx` (remove the `__attribute__((unused))`
+   on `witness_len` and pass it).
+
+**RED test shape** (`lib/test/src/test_sapling_crypto.c`, new case
+"P9.6 spend_proof rejects short witness buffer"):
+- Build minimal valid spend-with-ctx inputs (ask/nsk/diversifier/rcm/value/anchor).
+- Call `sapling_build_spend_with_ctx` with `witness_path = short_buf[]` of
+  length 512 (well under 1057).
+- Assert the call returns false **and** ASan reports no out-of-bounds read
+  (compile the test with `-fsanitize=address`).
+- Pre-fix: ASan catches the OOB read inside the `memcpy` loop, OR the
+  random bytes parse as `depth != 32` and you get the existing LOG_FAIL
+  (unreliable — that's why the explicit guard is needed).
+- Post-fix: the new `witness_len < 1057` guard fires first, returns false,
+  no OOB read regardless of buffer contents.
+
+**Discipline:** `[test:1.0]` — RED commit on main before GREEN. One row, one commit each.
 
 **Discipline (every P9.x row is [test:1.0]):**
 1. **RED FIRST** — failing test that demonstrates the UB or the
@@ -88,6 +115,14 @@ buffer reaching `memcpy`.
 MSM witness — related but distinct. P9.1 closed the timing channel
 on the blinding scalars; P9.2 closed the circuit-side nk-derivation
 UB; P9.6 closes a prover-boundary input-validation gap.
+
+**After P9.6 lands — advance directly to P11.6 (do not wait for coordinator).**
+P11.6 is the biggest-leverage unfiled row in the tree: 7-day soak harness
+(MVP gate #6). Design as a separate process that polls `zcl_status` every
+60s, records RSS / tip-advance / crash events, asserts 7-day continuous
+run with no operator intervention. Start design in `lib/test/src/soak_harness.c`
++ runner in `tools/soak/`. Skip P9.7–P9.9 unless trivially adjacent — the
+remaining P9 MED rows are lower leverage than P11.6 is HIGH.
 
 ---
 
