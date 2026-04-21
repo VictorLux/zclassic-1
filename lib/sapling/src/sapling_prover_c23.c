@@ -132,11 +132,16 @@ bool sapling_spend_parse_witness(const uint8_t *witness,
                                   size_t witness_len,
                                   struct sapling_spend_witness *wit)
 {
-    (void)witness_len;
-    uint8_t depth = witness[0];
-    if (depth != 32)
+    /* P9.6: enforce the fixed wire length before any read. A caller
+     * that hands us a buffer shorter than the 1057-byte layout used
+     * to walk off the end inside the loop below (memcpy + byte read
+     * up to witness[1055]). Reject early with a clean false. */
+    if (witness_len < (size_t)(1 + SAPLING_MERKLE_DEPTH * 33))
         return false;
-    for (int i = 0; i < 32; i++) {
+    uint8_t depth = witness[0];
+    if (depth != SAPLING_MERKLE_DEPTH)
+        return false;
+    for (int i = 0; i < SAPLING_MERKLE_DEPTH; i++) {
         memcpy(wit->auth_path[i], witness + 1 + i * 33, 32);
         wit->auth_path_bits[i] = witness[1 + i * 33 + 32] != 0;
     }
@@ -153,6 +158,7 @@ bool zclassic_sapling_spend_proof(
     const uint64_t value,
     const unsigned char *anchor,
     const unsigned char *witness,
+    size_t witness_len,
     unsigned char *cv,
     unsigned char *rk,
     unsigned char *zkproof)
@@ -174,7 +180,6 @@ bool zclassic_sapling_spend_proof(
     if (!sapling_compute_rk(ak, ar, rk))
         LOG_FAIL("sapling_prover", "spend_proof: sapling_compute_rk failed");
 
-    /* Parse Merkle path: depth(1) || 32×(sibling(32) || bit(1)) */
     struct sapling_spend_witness wit;
     memcpy(wit.ak, ak, 32);
     memcpy(wit.nsk, nsk, 32);
@@ -191,16 +196,15 @@ bool zclassic_sapling_spend_proof(
     memcpy(wit.rcm, rcm, 32);
     memcpy(wit.rcv, rcv, 32);
 
-    /* witness format: depth(1) || depth × (hash(32) || bit(1)) */
-    uint8_t depth = witness[0];
-    if (depth != 32)
+    /* Parse merkle path: depth(1) || 32 × (sibling(32) || bit(1)).
+     * The helper bounds-checks witness_len against the fixed 1057-byte
+     * layout before reading anything — see sapling_spend_parse_witness
+     * for the P9.6 rationale. */
+    if (!sapling_spend_parse_witness(witness, witness_len, &wit))
         LOG_FAIL("sapling_prover",
-                 "spend_proof: witness depth %u != 32 (malformed merkle path)",
-                 (unsigned)depth);
-    for (int i = 0; i < 32; i++) {
-        memcpy(wit.auth_path[i], witness + 1 + i * 33, 32);
-        wit.auth_path_bits[i] = witness[1 + i * 33 + 32] != 0;
-    }
+                 "spend_proof: malformed merkle path (witness_len=%zu, expected >= %zu)",
+                 witness_len,
+                 (size_t)(1 + SAPLING_MERKLE_DEPTH * 33));
 
     /* Compute nullifier */
     struct sapling_spend_inputs pub;

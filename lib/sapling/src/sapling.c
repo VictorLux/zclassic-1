@@ -909,7 +909,7 @@ bool sapling_build_spend_with_ctx(
     const uint8_t diversifier[11], const uint8_t pk_d[32],
     const uint8_t rcm[32], uint64_t value, uint64_t position,
     const uint8_t anchor[32],
-    const uint8_t *witness_path, size_t witness_len __attribute__((unused)),
+    const uint8_t *witness_path, size_t witness_len,
     uint8_t sd_cv[32], uint8_t sd_nullifier[32],
     uint8_t sd_rk[32], uint8_t sd_zkproof[192],
     uint8_t ar_out[32])
@@ -928,17 +928,21 @@ bool sapling_build_spend_with_ctx(
                              ak, nk, position, sd_nullifier))
         LOG_FAIL("sapling", "build_spend_with_ctx: sapling_compute_nf failed");
 
-    /* Call native C23 prover for spend proof (cv, rk, zkproof) */
+    /* Call native C23 prover for spend proof (cv, rk, zkproof). The
+     * `witness_len` passed through here gates the merkle-path parse
+     * in zclassic_sapling_spend_proof — see P9.6. */
     extern bool zclassic_sapling_spend_proof(
         void *ctx, const unsigned char *ak, const unsigned char *nsk,
         const unsigned char *diversifier, const unsigned char *rcm,
         const unsigned char *ar, const uint64_t value,
-        const unsigned char *anchor, const unsigned char *witness,
+        const unsigned char *anchor,
+        const unsigned char *witness, size_t witness_len,
         unsigned char *cv, unsigned char *rk, unsigned char *zkproof);
 
     if (!zclassic_sapling_spend_proof(
             proving_ctx, ak, nsk, diversifier, rcm, ar_out,
-            value, anchor, witness_path, sd_cv, sd_rk, sd_zkproof)) {
+            value, anchor, witness_path, witness_len,
+            sd_cv, sd_rk, sd_zkproof)) {
         memset(ar_out, 0, 32);
         LOG_FAIL("sapling",
                  "build_spend_with_ctx: zclassic_sapling_spend_proof failed (value=%" PRIu64 " position=%" PRIu64 ")",

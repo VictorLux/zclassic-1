@@ -52,6 +52,11 @@ bool zclassic_sapling_output_proof(
     unsigned char *cv,
     unsigned char *zkproof);
 
+/* P9.6: `witness` points to a caller-supplied merkle authentication
+ * path with the fixed wire layout
+ *     depth (1) || 32 × (sibling (32) || bit (1))  = 1057 bytes
+ * `witness_len` is the buffer length and must be >= 1057; shorter
+ * buffers are rejected without any read past the first byte. */
 bool zclassic_sapling_spend_proof(
     void *ctx,
     const unsigned char *ak,
@@ -62,6 +67,7 @@ bool zclassic_sapling_spend_proof(
     const uint64_t value,
     const unsigned char *anchor,
     const unsigned char *witness,
+    size_t witness_len,
     unsigned char *cv,
     unsigned char *rk,
     unsigned char *zkproof);
