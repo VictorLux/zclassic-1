@@ -3,6 +3,7 @@
 
 #include "test/test_helpers.h"
 #include "sapling/groth16_prover.h"
+#include "sapling/sapling_circuit.h"
 #include <time.h>
 
 /* P9.3 test hook: unconditionally fails the allocation. Mirrors the
@@ -1183,6 +1184,87 @@ int test_sapling_crypto(void)
         struct groth16_proof zero_proof;
         memset(&zero_proof, 0, sizeof(zero_proof));
         ok = ok && (memcmp(&proof, &zero_proof, sizeof(proof)) == 0);
+
+        cs_free(&cs);
+        if (ok) printf("OK\n"); else { printf("FAIL\n"); failures++; }
+    }
+
+    /* ── P9.2: sapling_spend_synthesize nk_point placeholder UB ──── */
+
+    printf("P9.2 spend synth binds nk witness to nsk*G_proof (not uninit stack)... ");
+    {
+        /* Pre-fix: `sapling_circuit.c:161-162` declared
+         *     struct jub_point nk_point;
+         *     jub_scalar_mul(&nk_point, &nk_point, wit->nsk);
+         * — reading nk_point as the base-point input before initializing
+         * it. Classic C UB: the read-before-write poisoned the whole
+         * scalar-mul. The resulting nk_x / nk_y (stored as aux witness
+         * variables 12 and 13) were garbage tied to leftover stack
+         * contents, not nsk * G_proof as the circuit's comment and the
+         * zcash spec require. Any downstream constraint that referenced
+         * those witness slots would have been wrong.
+         *
+         * Post-fix: nk_point = sapling_nsk_to_nk(nsk) decoded via
+         * jub_from_bytes, so the witness values equal the documented
+         * nsk * G_proof derivation. */
+
+        /* Pollute the stack so uninit leftover reads aren't coincidentally
+         * zero (or a known good value). A later sibling frame in this
+         * test file used volatile writes to force the stores to survive
+         * -O3; reuse the pattern here. */
+        volatile uint8_t stack_poison[4096];
+        for (size_t i = 0; i < sizeof stack_poison; i++)
+            stack_poison[i] = (uint8_t)(0xA5 ^ i);
+        (void)stack_poison;
+
+        /* Known nsk — pick a non-zero, low-Hamming-weight value so the
+         * scalar mul gives a stable, well-defined point. */
+        uint8_t nsk[32] = {0};
+        nsk[0] = 0x0B; nsk[1] = 0x5A; nsk[7] = 0x11;
+
+        /* Expected: nk = nsk * G_proof, then split into (x, y). */
+        uint8_t nk_bytes[32];
+        sapling_nsk_to_nk(nsk, nk_bytes);
+        struct jub_point nk_pt_expected;
+        bool decode_ok = jub_from_bytes(&nk_pt_expected, nk_bytes);
+        struct fr expected_nk_x, expected_nk_y;
+        jub_get_x(&expected_nk_x, &nk_pt_expected);
+        jub_get_y(&expected_nk_y, &nk_pt_expected);
+
+        /* Build a minimally-valid spend witness. Other fields can be
+         * zeros (bytes_to_fr accepts anything) or the valid point `ak`
+         * (jub_from_bytes requires a real Jubjub encoding). */
+        uint8_t ask[32] = {0};
+        ask[0] = 0x07; ask[1] = 0xCC;
+        uint8_t ak[32];
+        sapling_ask_to_ak(ask, ak);
+
+        struct sapling_spend_witness wit;
+        memset(&wit, 0, sizeof wit);
+        memcpy(wit.ak, ak, 32);
+        memcpy(wit.nsk, nsk, 32);
+        memcpy(wit.pk_d, ak, 32);       /* valid on-curve Jubjub point */
+
+        struct sapling_spend_inputs pub;
+        memset(&pub, 0, sizeof pub);
+        memcpy(pub.rk, ak, 32);         /* valid on-curve Jubjub point */
+        memcpy(pub.cv, ak, 32);         /* valid on-curve Jubjub point */
+
+        struct constraint_system cs;
+        cs_init(&cs);
+        bool synth_ok = sapling_spend_synthesize(&cs, &wit, &pub);
+
+        /* Witness layout: index 0 is CS_ONE; inputs 1..7 are
+         * rk.x, rk.y, cv.x, cv.y, anchor, nf[0], nf[1]. Then the first
+         * four aux (ak.x, ak.y, ar, nsk) occupy 8..11, so the two
+         * allocations for nk.x / nk.y land at 12 / 13 — these are the
+         * witness slots whose values the placeholder corrupted. */
+        bool nk_x_ok = cs.num_vars > 13
+                    && fr_eq(&cs.witness[12], &expected_nk_x);
+        bool nk_y_ok = cs.num_vars > 13
+                    && fr_eq(&cs.witness[13], &expected_nk_y);
+
+        bool ok = decode_ok && synth_ok && nk_x_ok && nk_y_ok;
 
         cs_free(&cs);
         if (ok) printf("OK\n"); else { printf("FAIL\n"); failures++; }
