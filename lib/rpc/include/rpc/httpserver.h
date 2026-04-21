@@ -6,6 +6,7 @@
 #define ZCL_RPC_HTTPSERVER_H
 
 #include "rpc/server.h"
+#include "json/json.h"
 #include <stdbool.h>
 #include <stdint.h>
 
@@ -20,5 +21,16 @@ bool rpc_http_tls_active(void);
  * automatically every ZCL_RPC_COOKIE_ROTATE_SEC seconds (default 24h). */
 void rpc_http_cookie_rotate(void);
 int  rpc_http_cookie_rotate_sec(void);
+
+/* P24.11 test surface: builds the standard JSON-RPC response envelope
+ * used by the HTTP server. Safe to call on stack-dirtied / previously
+ * uninitialized `response` storage. Production code also routes through
+ * this helper to avoid reintroducing stack-init regressions in the HTTP
+ * response path. */
+bool rpc_http_test_build_response_envelope(bool rpc_ok,
+                                           const char *method,
+                                           struct json_value *rpc_result,
+                                           const struct json_value *id,
+                                           struct json_value *response);
 
 #endif

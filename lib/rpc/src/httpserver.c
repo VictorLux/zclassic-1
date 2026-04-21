@@ -116,6 +116,41 @@ static size_t base64_decode(const char *in, size_t inlen,
     return olen;
 }
 
+bool rpc_http_test_build_response_envelope(bool rpc_ok,
+                                           const char *method,
+                                           struct json_value *rpc_result,
+                                           const struct json_value *id,
+                                           struct json_value *response)
+{
+    struct json_value null_err = {0};
+    struct json_value null_res = {0};
+    bool ok = true;
+
+    if (!rpc_result || !id || !response)
+        return false;
+
+    json_init(response);
+    json_set_object(response);
+
+    if (rpc_ok) {
+        ok = ok && json_push_kv(response, "result", rpc_result);
+        json_set_null(&null_err);
+        ok = ok && json_push_kv(response, "error", &null_err);
+        json_free(&null_err);
+    } else {
+        json_set_null(&null_res);
+        ok = ok && json_push_kv(response, "result", &null_res);
+        json_free(&null_res);
+        if (rpc_result->type == JSON_OBJ)
+            ok = ok && json_push_kv_str(rpc_result, "method",
+                                        method ? method : "");
+        ok = ok && json_push_kv(response, "error", rpc_result);
+    }
+
+    ok = ok && json_push_kv(response, "id", id);
+    return ok;
+}
+
 /* Constant-time comparison to prevent timing attacks on RPC credentials.
  * Always compares all bytes of the shorter string; returns 0 on match. */
 static int constant_time_strcmp(const char *a, size_t alen,
@@ -554,32 +589,15 @@ static void handle_client(struct rpc_conn conn)
     /* Build standard JSON-RPC response:
      *   success: {result: <data>, error: null, id: <id>}
      *   failure: {result: null, error: {code, message, method}, id: <id>}
-     * On failure, rpc_table_execute stores {code, message} in result —
-     * move it to the error field and inject the method name. */
+     * Route through the shared helper so the HTTP path and the
+     * regression test exercise the same stack-init discipline. */
     struct json_value response;
-    json_set_object(&response);
-
-    if (rpc_ok) {
-        json_push_kv(&response, "result", &result);
-        struct json_value null_err;
-        json_set_null(&null_err);
-        json_push_kv(&response, "error", &null_err);
-        json_free(&null_err);
-    } else {
-        struct json_value null_res;
-        json_set_null(&null_res);
-        json_push_kv(&response, "result", &null_res);
-        json_free(&null_res);
-        /* Inject method into the error object */
-        if (result.type == JSON_OBJ)
-            json_push_kv_str(&result, "method", req.method);
-        json_push_kv(&response, "error", &result);
-    }
-
-    json_push_kv(&response, "id", &req.id);
+    json_init(&response);
+    bool response_ok = rpc_http_test_build_response_envelope(
+        rpc_ok, req.method, &result, &req.id, &response);
 
     char *resp_buf = zcl_malloc(4 * 1024 * 1024, "http_resp_buf"); // raw-alloc-ok
-    if (resp_buf) {
+    if (resp_buf && response_ok) {
         size_t resp_len = json_write(&response, resp_buf, 4 * 1024 * 1024);
         send_response(&conn, 200, "OK", resp_buf, resp_len);
         free(resp_buf);
@@ -588,6 +606,7 @@ static void handle_client(struct rpc_conn conn)
         size_t elen = json_rpc_error_response(errbuf, sizeof(errbuf),
             RPC_OUT_OF_MEMORY, "Internal error: out of memory",
             req.method, NULL);
+        free(resp_buf);
         send_response(&conn, 500, "Internal Server Error",
                       errbuf, elen);
     }
