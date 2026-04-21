@@ -257,6 +257,13 @@ void activation_request_connect(struct chain_activation_controller *ctl,
         out->result = ACTIVATION_EXEC_SKIPPED;
         snprintf(out->reason, sizeof(out->reason), "%s", dec.reason);
         ctl->skip_count++;
+        /* P14.10: note the skipped request so the thread currently
+         * holding the mutex reruns activate_best_chain before
+         * transitioning out of CONNECTING. The block is already on
+         * disk via accept_block, so the rerun picks it up without the
+         * caller's pblock hint. */
+        if (dec.result == ACTIVATION_SKIP_ALREADY_RUNNING)
+            atomic_fetch_add(&ctl->deferred_pending, 1);
         return;
     }
 
@@ -286,6 +293,24 @@ void activation_request_connect(struct chain_activation_controller *ctl,
     validation_state_init(&vs);
     bool ok = activate_best_chain(&vs, ctl->ms, ctl->coins_tip,
                                   ctl->params, pblock, ctl->datadir);
+
+    /* P14.10: drain deferred activation requests that arrived while
+     * we were holding the mutex. Each pass is an activate_best_chain
+     * with pblock=NULL — the newly-accepted block is on disk, so the
+     * disk-read path in connect_tip picks it up. find_most_work_chain
+     * is idempotent when no new work has arrived, so the loop
+     * converges quickly. Cap iterations to bound mutex-held latency;
+     * any residual increment is picked up by the next request. */
+    const int max_drain_rounds = 8;
+    for (int r = 0; r < max_drain_rounds; r++) {
+        if (atomic_exchange(&ctl->deferred_pending, 0) == 0)
+            break;
+        struct validation_state vs_r;
+        validation_state_init(&vs_r);
+        bool ok_r = activate_best_chain(&vs_r, ctl->ms, ctl->coins_tip,
+                                         ctl->params, NULL, ctl->datadir);
+        if (!ok_r) ok = false;
+    }
 
     struct block_index *tip = active_chain_tip(&ctl->ms->chain_active);
     int tip_h = tip ? tip->nHeight : 0;
