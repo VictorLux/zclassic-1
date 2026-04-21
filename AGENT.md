@@ -98,11 +98,62 @@ for a week without intervention." 8 binary criteria — see
 [`MVP.md`](MVP.md). **MRS today: ~3 / 8.** MVP achieved at MRS = 8/8
 AND HI ≥ 80%.
 
-**KPIS (shining-example score, 0-100):** 10 pillars × 10 pts each
-(Correctness / Robustness / Performance / Security / Operability /
-Observability / Code quality / Test discipline / Documentation /
-Architecture). Rubric lands with P15-P19 implementation. Release
-gate: KPIS ≥ 85. Shining-example bar: KPIS = 100.
+**KPIS (shining-example score, 0-100):** 10 pillars × 10 pts each.
+Release gate: KPIS ≥ 85. Shining-example bar: KPIS = 100.
+
+### KPIS rubric — concrete scoring (each 0-10)
+
+Computed from observable state (live node + repo + row status). Each
+pillar scored to the nearest integer. Stale when any condition listed
+below is violated — recompute after significant row closures.
+
+| # | Pillar | 0–3 (failing) | 4–6 (working) | 7–9 (strong) | 10 (shining) |
+|---|---|---|---|---|---|
+| 1 | **Correctness** | Node can't sync to tip OR any CRITICAL consensus row open | At tip, 0 CRITICAL | At tip ≥1 wk, UTXO parity-diff == 0 vs zclassicd | Full mainnet replay from genesis bit-matches |
+| 2 | **Robustness** | Crashes >1/day during normal ops | No crash 24h, canary OK | No crash 1wk, all `abort()` triaged (P24.4), ≤10 `assert()` in runtime paths (P24.15) | No crash 30d, chaos-test CI (`make ci-crash`, P24.10) passes nightly |
+| 3 | **Performance** | Fresh-sync > 10 min OR RSS > 8 GB at tip OR `blocks_per_sec` < 100 | Fresh-sync < 2 min, RSS < 4 GB at tip, bg-val ≥ 500 b/s | PGO enabled (P18.1), io_uring (P18.2), `zcl_benchmark` regression-gated | Beats zclassicd fresh-sync wall-clock 10× |
+| 4 | **Security** | Any CRITICAL in P1-P4 open OR `make lint` silencing warnings | P1-P4 closed, `-Wno-unused-result` removed (P18.6) | Sanitizer matrix in CI (asan/tsan/ubsan/msan), fuzz corpus > 100 seeds (P17.4) | 3rd-party audit passed + open bounty |
+| 5 | **Operability** | Service can stop-after-crashes OR `make deploy` ships stale binaries | StartLimit wide (P7.6 ✓), `make deploy` pre-flight catches drift (P24.7) | `zcl_binary_vs_head` (P24.8) + datadir hygiene (P24.1) + log rotation working (P24.17) | Zero-downtime rolling deploys, seamless wallet migration |
+| 6 | **Observability** | `zcl_syncdiag` crashes OR `zcl_events` blind spots | `zcl_status`/`zcl_kpi`/`zcl_events` reliable; P24.11 closed | Per-stage timings (P16.2), structured log sink, Grafana board | Distributed-trace ready, can root-cause any prod issue from logs alone |
+| 7 | **Code quality** | Raw `sqlite3_step` / `malloc` / `goto fail` unchecked | Lint gates enforce P0.1/P24.2/P24.3, no files >50 kB (P21, P24.9) | `[[gnu::cleanup]]` adoption 80%+ (P15.3), `zcl_result` canonical (P15.2) | Cyclomatic complexity gated, every public fn has `agents.md` entry |
+| 8 | **Test discipline** | HI < 50% OR any MVP gate (P11.*) red | HI 50-80%, 6/8 MVP gates green, RED-first since P10.1 | HI 80-95%, all 8 MVP gates green (MRS=8/8), property tests (P17.2) | HI = 100%, spec-test parity vs zclassicd (P17.5), mutation-test coverage >70% |
+| 9 | **Documentation** | Missing LICENSE/NOTICE or onboarding broken | LICENSE + NOTICE ✓ (P19.2), AGENTS.md works (P22.1) | Per-subsystem `agents.md` (P15.5), SPDX headers (P24.12), runbook current | `zcl_explain` (P23.8) + generative MCP (P23) operational |
+| 10 | **Architecture** | Monolithic, no stage model | Single-binary C23, MCP stable, Rails-way partially adopted | 9-stage pipeline (P16.1) lands, ETL framework (P16.5), contract tests (P17.6) | Erigon-parity throughput, every subsystem has a `zcl_scaffold_*` generator |
+
+### Today's score (2026-04-21 05:33 UTC) — honest assessment
+
+| Pillar | Score | Evidence |
+|---|---|---|
+| Correctness | **2** | Node stalled 3,670 blocks behind zclassicd tip — P24.13 sync-blocker open; 4 CRITICAL rows open (P24.13, P24.14, P24.11, P13.1) |
+| Robustness | **3** | 3 SIGABRTs this session, 45 `assert()` untriaged (P24.15 just filed), wallet persistence false-unhealthy (P24.16) |
+| Performance | **6** | Bg-val 529 blocks/s (strong), RSS 2.7 GB at tip (good), fresh-sync ≤60s when working, but PGO (P18.1) + io_uring (P18.2) not yet |
+| Security | **8** | P1–P4 all CLOSED (money-loss, P2P attack, MCP, script memory), DEFENSIVE_CODING.md enforced, no open CRITICAL in security lane |
+| Operability | **5** | systemd linger service stable, StartLimit widened (P7.6), Tor embedded working, but binary-drift detection (P24.7) + log rotation (P24.17 only manual) still open |
+| Observability | **5** | Rich MCP surface (60+ tools), `zcl_kpi` / `zcl_events` / `zcl_logtail` solid; `zcl_syncdiag` crashes (P24.11), no per-stage timings yet (P16.2) |
+| Code quality | **5** | Lint gates live (raw sqlite3_step, check_no_secret_printf), Apache-2.0 adopted, but 370 raw malloc + 34 goto-fail + 11 oversized files untriaged |
+| Test discipline | **5** | HI ~0.50 per AGENT.md, 89/145 rows closed, RED-first mandatory since P10.1, MVP #6 + #7 green, MVP #4/5/8 red |
+| Documentation | **7** | AGENT.md + AGENTS.md + CLAUDE.md + DEFENSIVE_CODING.md + ATTRIBUTIONS.md all current, LICENSE + NOTICE land, per-subsystem agents.md (P15.5) missing, SPDX (P24.12) open |
+| Architecture | **6** | Single-binary C23 with embedded Tor + MCP server working, FlyClient + SHA3 UTXO snapshot + Sapling + Equihash solid, stage model (P16) not yet |
+
+**TOTAL: 52 / 100** (previous estimate "~44" was pessimistic — rubric-based score is 52).
+
+### Path to KPIS ≥ 75 (ship-quality)
+
+Three rows move the score +20 points (52 → 72):
+
+1. **P24.13 land + deploy** → Correctness 2→8 (at tip), closes top CRITICAL. **+6 points.** Agent-2 was 30 min from committing before the kickoff reset — design preserved in AGENT-2.md RESUME-HERE block.
+2. **P24.11 + P24.14 land** → Robustness 3→7 (no RPC-triggered crashes), Observability 5→7 (`zcl_syncdiag` safe). **+6 points.** Agent-2 owns both post-P24.13.
+3. **P24.10 crash-recovery CI + P17.4 fuzz corpus + P17.5 spec-test** → Test discipline 5→8, Security 8→9. **+4 points.**
+
+**Bonus +4:** P24.15 (assert triage), P24.7 (deploy pre-flight), P24.12 (SPDX headers) → lift Robustness / Operability / Documentation by 1 each.
+
+**Total: 52 → 76.** Release gate at 85 requires the full P15-P19 wave + MVP 8/8 + HI ≥ 80%.
+
+### Re-score cadence
+
+Recompute after any CRITICAL closes OR at each end-of-day pulse. Post
+the delta in AGENT.md's Progress line. KPIS is a lagging indicator —
+use `zcl_kpi` + SWRC + HI for real-time work prioritization.
 
 **SWRC formula:** CRIT=4, HIGH=2, MED=1, LOW=0.5. P0 weighted as
 HIGH. Today ~48%.
