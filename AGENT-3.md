@@ -40,47 +40,44 @@ checklist plus the lane rules.
 
 ---
 
-## Current status — NOW = P11.6
+## Current status — NOW = P11.4
 
-**P9.6 landed 2fe801a08 [test:1.0]** (RED: e392a62d3). Three
-coordinated changes closed the caller-supplied-buffer gap in the
-sapling prover:
+**P11.6 landed a498379c3 [test:1.0]** (RED: f58dc8995). Four pieces
+now gate "someone we don't know can run zclassic23 for a week
+without intervention":
 
-- `sapling_prover_c23.c` — extracted the merkle-witness parse into
-  `sapling_spend_parse_witness(witness, witness_len, wit)` which
-  rejects `witness_len < 1 + 32*33` (1057 B) before any read. Old
-  inline parser (read `depth`, then memcpy 32×32 B from fixed
-  offsets up to `witness[1055]` without a length check) deleted.
-- `zclassic_sapling_spend_proof` grew a `size_t witness_len`
-  parameter and routes it to the helper. Header updated.
-- `sapling_build_spend_with_ctx` propagates its existing
-  `witness_len` (previously `__attribute__((unused))`) through to
-  the prover. The lone in-tree caller
-  (`wallet_shielded_controller.c:602-622`) already sets
-  `witness_path_len` via `incremental_witness_merkle_path`; the
-  guard now catches a short path without a call-site change.
+- `lib/test/include/test/soak_harness.h` — analyzer interface with
+  five ordered verdict rules: NO_SAMPLES > CRASH > TOO_SHORT >
+  TIP_STALL > RSS_WALK. Priority-ordered so the soonest-actionable
+  signal lands first and the output stays deterministic for CI.
+- `lib/test/src/soak_harness.c` — high-water-mark tip tracking so
+  reorgs don't reset the stall timer (only a new peak does);
+  latched RSS baseline after a 30-min warmup (min-seen, not max
+  or last — robust against both slow creep and transient spikes);
+  one-strike crash_count because the MVP criterion is "no
+  operator intervention", not "cleanly restarted by systemd".
+- `lib/test/src/test_soak_harness.c` — six synthetic cases cover
+  every verdict path. Pre-GREEN stub always returned SOAK_OK, so
+  5/6 failed; post-GREEN all six pass.
+- `tools/soak/main.c` — standalone runner. Polls via `pidof -s`,
+  `/proc/<pid>/status` VmRSS, and `./zcl-rpc getblockcount`;
+  emits a TSV log per sample; exits with the verdict ordinal at
+  deadline. `make soak-7day` and `make soak-smoke` targets; neither
+  wired into `make ci` (7 d is out of band; smoke needs a live
+  node). Lint-clean; uses no `lib/` beyond `test/soak_harness.h`
+  so the runner builds in ~1 s without dragging the full node
+  compile graph in.
 
-The RED test (`test_sapling_crypto.c` "P9.6 sapling_spend_parse_witness
-rejects short buffer (no OOB read)") exercises three cases: 100-byte
-buffer → rejected; 1057-byte buffer → accepted; 1056-byte buffer →
-rejected (so a naive `witness_len > 0` guard wouldn't pass). Pre-fix
-FAIL, post-fix OK.
+Smoke-verified with `--service=no-such-service --duration-sec=3
+--interval-sec=1`: three crash samples, verdict FAIL_CRASH, exit
+status 2, log in the advertised TSV shape.
 
-**P11.6 (HIGH): 7-day soak harness (MVP #6). Agent-3 NOW.**
+**P11.4 (HIGH): MVP #4 shielded-payment CI gate. Agent-3 NOW.**
 
-Per the handoff in 7d63ca52d: skip P9.7–P9.9 (lower-leverage MED
-rows) and jump directly to P11.6, the biggest unfiled leverage row
-in the tree. Design as a separate process that polls `zcl_status`
-every 60s, records RSS / tip-advance / crash events, and asserts a
-7-day continuous run with no operator intervention. Land in
-`lib/test/src/soak_harness.c` + runner in `tools/soak/`. Gate it
-behind `make soak-7day` so it does not run on every CI; first goal
-is a working harness that exits 0 after 7 days on a healthy node and
-exits non-zero on any RSS walk, tip stall, or crash event.
-
-The soak harness is the MVP gate that proves "someone we don't know
-can run zclassic23 for a week without intervention" — the MVP
-definition in MVP.md rests on it. Every other P11 gate is narrower.
+Continues the MVP drain. P11.6 is green as of this commit; P11.7
+was already green (kill-9 chaos recovery). The remaining MVP rows
+are P11.4 (shielded payment e2e), P11.5 (store e2e), and P11.8
+(parity diff, coupled with Agent-2's P12.3).
 
 **Discipline (every P11+ row is [test:1.0]):**
 1. **RED FIRST** — failing test that demonstrates the gap.
@@ -91,7 +88,7 @@ definition in MVP.md rests on it. Every other P11 gate is narrower.
 MSM witness — related but distinct. P9.1 closed the timing channel
 on the blinding scalars; P9.2 closed the circuit-side nk-derivation
 UB; P9.6 closed the prover-boundary input-validation gap. P9.7–P9.9
-are parked per coordinator direction — revisit only after P11.6.
+are parked per coordinator direction.
 
 ---
 
@@ -108,17 +105,17 @@ Every row has a full description in [`AGENT.md`](AGENT.md).
 - [x] **P9.1** HIGH — `g1_scalar_mul` variable-time double-and-add leaks Groth16 blinding. done f10b39303 [test:1.0].
 - [x] **P9.2** CRITICAL — `sapling_circuit.c:65 / 161-162` placeholder UB paths. done 94532c87e [test:1.0].
 - [x] **P9.6** MED — `zclassic_sapling_spend_proof` witness length not bounded. done 2fe801a08 [test:1.0].
-- [ ] **P9.7** MED — `sprout_verify_groth16` size_t underflow + race on `sprout_set_vk(NULL)`. **Agent-3 NOW.**
-- [ ] **P9.8** MED — `ensure_generators` 256-retry silent exhaustion.
-- [ ] **P9.9** MED — prover printf leaks wallet-activity timing.
+- [ ] **P9.7** MED — `sprout_verify_groth16` size_t underflow + race on `sprout_set_vk(NULL)`. **Parked** per coordinator direction.
+- [ ] **P9.8** MED — `ensure_generators` 256-retry silent exhaustion. **Parked**.
+- [ ] **P9.9** MED — prover printf leaks wallet-activity timing. **Parked**.
 - [ ] **P9.10** LOW — `msm_parallel` cache-side-channel on witness (after threat-model decision).
 - [ ] **P9.11** LOW — `zip32_diversifier` `for(;;)` cap at 256 iterations.
 
 ### Phase 1 — MVP CI gates (continue Agent-3 lane)
 
-- [ ] **P11.4** — shielded-payment CI gate (MVP #4).
+- [ ] **P11.4** — shielded-payment CI gate (MVP #4). **Agent-3 NOW.**
 - [ ] **P11.5** — store e2e CI gate (MVP #5).
-- [ ] **P11.6** HIGH — **7-day soak harness (MVP #6).** Biggest-leverage unfiled row in the tree. Design as a separate process that polls `zcl_status` every 60s, records RSS / tip-advance / crash events, asserts 7-day continuous run with no operator intervention. **Agent-3 NOW.**
+- [x] **P11.6** HIGH — 7-day soak harness (MVP #6). done a498379c3 [test:1.0 f58dc8995].
 - [ ] **P11.8** — parity-diff CI gate (MVP #8). Coupled with Agent-2's P12.3 + P12.3.1 and Agent-3's P17.5.
 
 ### Phase 2 — P15 Discipline (Agent-3 lanes)

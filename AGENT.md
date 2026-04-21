@@ -44,10 +44,10 @@ P12.3.1/P12.6.1/P12.6.2/P12.8.1/P12.8.2, P7.11 / P9.11, P15-P19
 | **LOW** | 2 / 7 | P9.10, P9.11, P12.8, P18.3 |
 | (P0 baseline) | 4 / 4 | — |
 
-**Owner state (2026-04-21, post-canary):**
+**Owner state (2026-04-21, post-canary + P11.6):**
 - **Agent-2 NOW:** **P14.6** CRITICAL — cap `BLOCK_FAILED_CHILD` propagation (OOM amplifier). Prior landings today: P14.3 5406beca3, P14.14 9d71841ba, P14.10 8b5443a8d. Then **P24.11** (second `zcl_syncdiag` crash path) → P14 drain → P13/P12/P7/P8 drain → P15 → P16 → P17.4/P17.5 → P18 → P19.1 → P20 dev-MCP → P21 split → P22 → P23 → **rest of P24 wave**. Full checklist in [`AGENT-2.md`](AGENT-2.md).
-- **Agent-3 NOW:** **P11.6** HIGH — 7-day soak harness (MVP #6) per RESUME-HERE handoff (7d63ca52d). Landings today: P9.1 f10b39303, P9.2 94532c87e, P9.6 2fe801a08. P9.7–P9.11 deferred (MED/LOW, skip unless trivially adjacent). Then P11.4/P11.5/P11.8 MVP gates → P15.4/P15.5 → P17 testing lead → P18.4 crypto perf → P20 dev-MCP (coverage + test-map) → P21.7/P21.8 test split → P22.4 spec corpus → P23.7 scaffold_test_from_row → **P24.2 / P24.4** (`((unused))` lint, `abort()` triage). Full checklist in [`AGENT-3.md`](AGENT-3.md).
-- **Coordinator (Rhett):** post-deploy canary for P14.10+P14.13+P14.14+P14.3+P9.1+P9.2+P9.6 bundle (deploy landed 2026-04-21 02:09 — fresh binary running, peers 3→18, chain-restore path clean); review P15-P18 acceptance; own license decision (P19.2); ship P24.1 + P24.7 coordinator-lane rows; watch sync advance post-P14.6+P13.1.
+- **Agent-3 NOW:** **P11.4** HIGH — shielded-payment CI gate (MVP #4). Landings today: P9.1 f10b39303, P9.2 94532c87e, P9.6 2fe801a08, **P11.6 a498379c3 [test:1.0 f58dc8995]** (7-day soak harness MVP #6 + `make soak-7day` runner). P9.7–P9.11 deferred (MED/LOW, skip unless trivially adjacent). Then P11.5/P11.8 MVP gates → P15.4/P15.5 → P17 testing lead → P18.4 crypto perf → P20 dev-MCP (coverage + test-map) → P21.7/P21.8 test split → P22.4 spec corpus → P23.7 scaffold_test_from_row → **P24.2 / P24.4** (`((unused))` lint, `abort()` triage). Full checklist in [`AGENT-3.md`](AGENT-3.md).
+- **Coordinator (Rhett):** post-deploy canary for P14.10+P14.13+P14.14+P14.3+P9.1+P9.2+P9.6+P11.6 bundle (deploy landed 2026-04-21 02:09 — fresh binary running, peers 3→18, chain-restore path clean); review P15-P18 acceptance; own license decision (P19.2); ship P24.1 + P24.7 coordinator-lane rows; watch sync advance post-P14.6+P13.1.
 
 **Live-node state (2026-04-21 02:10, post-deploy):** mainnet running
 fresh binary (systemd linger-service restart at 02:09:49 after
@@ -208,9 +208,9 @@ P10.1.1 through P10.1.5 landed. See
 |---|---|---|
 | P11.1 | MVP #2 — Tor bootstrap <60s | done 63f98909d (Agent-3) |
 | P11.3 | MVP #3 — cold-start sync <10 min | done ffd1112e4 (Agent-3) |
-| P11.4 | MVP #4 — shielded payment | open — Agent-3 |
+| **P11.4** | MVP #4 — shielded payment | **open — Agent-3, NOW** |
 | P11.5 | MVP #5 — store e2e | open — Agent-3 |
-| **P11.6** | MVP #6 — 7-day soak harness | **open — Agent-3, highest-leverage** |
+| P11.6 | MVP #6 — 7-day soak harness | done a498379c3 [test:1.0 f58dc8995] (Agent-3) |
 | P11.7 | MVP #7 — kill-9 chaos recovery | done 8d3d3b23f (Agent-3) |
 | P11.8 | MVP #8 — parity diff (pairs with P12.3) | open — Agent-3 |
 
