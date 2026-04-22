@@ -20,6 +20,12 @@
  * the message handler holds references. 256 leaves ~125 slots of headroom. */
 #define CONNMAN_DEFERRED_FREE_CAP 256
 
+enum connman_outbound_target_source {
+    CONNMAN_TARGET_NONE = 0,
+    CONNMAN_TARGET_ADDNODE,
+    CONNMAN_TARGET_ADDRMAN,
+};
+
 struct connman {
     struct net_manager manager;
     const struct chain_params *params;
@@ -33,6 +39,9 @@ struct connman {
     /* Persistent addnode list — reconnected automatically on disconnect */
     struct net_address addnodes[MAX_ADDNODES];
     int num_addnodes;
+    size_t next_addnode_cursor;
+    int64_t addnode_last_attempt[MAX_ADDNODES];
+    int addnode_backoff_sec[MAX_ADDNODES];
     /* Data directory for persisting addrman (peers.dat) */
     const char *datadir;
 };
@@ -86,5 +95,16 @@ bool connman_run_message_cycle(struct connman *cm);
  * zero and re-parking any that are still held by an in-flight snapshot.
  * Caller must hold cm->manager.cs_nodes. Exposed for the stress test. */
 void connman_run_deferred_free_sweep(struct connman *cm);
+
+bool connman_pick_next_outbound_target(
+    struct connman *cm,
+    size_t *addnode_cursor,
+    struct addr_info *result,
+    enum connman_outbound_target_source *source,
+    size_t *addnode_index);
+
+void connman_record_addnode_attempt(struct connman *cm,
+                                    size_t addnode_index,
+                                    bool success);
 
 #endif

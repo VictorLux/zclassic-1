@@ -40,7 +40,7 @@ checklist plus the lane rules.
 
 ---
 
-## Current status — NOW = P13.1 → P24.18 → P24.19 → P24.20 → P24.21 (sync-robustness wave)
+## Current status — NOW = P24.18 → P24.19 → P24.20 → P24.21 (sync-robustness wave)
 
 ## 🎯 COORDINATOR MANDATE 2026-04-21 22:30 — "STICKY, STRONG, ROBUST"
 

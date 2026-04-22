@@ -96,6 +96,7 @@ int main(void)
     failures += test_keys();
     failures += test_script();
     failures += test_net();
+    failures += test_connman_addnode_fallback();
     failures += test_transaction();
     failures += test_mempool();
     failures += test_rpc();

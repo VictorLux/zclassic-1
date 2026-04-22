@@ -218,6 +218,7 @@ int test_scan_util(void);
 int test_event(void);
 int test_download(void);
 int test_consensus(void);
+int test_connman_addnode_fallback(void);
 int test_policy(void);
 int test_wallet_view(void);
 int test_fast_sync(void);

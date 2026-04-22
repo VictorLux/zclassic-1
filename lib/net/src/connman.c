@@ -294,6 +294,97 @@ static int count_outbound_in_group(const struct net_manager *nm, uint16_t group)
 
 #define MAX_OUTBOUND_PER_GROUP16 2
 
+static bool connman_addnode_is_connected(struct connman *cm, size_t addnode_index)
+{
+    bool connected = false;
+
+    if (!cm || addnode_index >= (size_t)cm->num_addnodes)
+        return false;
+
+    zcl_mutex_lock(&cm->manager.cs_nodes);
+    for (size_t ni = 0; ni < cm->manager.num_nodes; ni++) {
+        struct p2p_node *n = cm->manager.nodes[ni];
+        if (!n || n->disconnect)
+            continue;
+        if (net_addr_eq(&n->addr.svc.addr, &cm->addnodes[addnode_index].svc.addr)) {
+            connected = true;
+            break;
+        }
+    }
+    zcl_mutex_unlock(&cm->manager.cs_nodes);
+
+    return connected;
+}
+
+bool connman_pick_next_outbound_target(
+    struct connman *cm,
+    size_t *addnode_cursor,
+    struct addr_info *result,
+    enum connman_outbound_target_source *source,
+    size_t *addnode_index)
+{
+    if (!cm || !addnode_cursor || !result || !source)
+        return false;
+
+    *source = CONNMAN_TARGET_NONE;
+    if (addnode_index)
+        *addnode_index = SIZE_MAX;
+    memset(result, 0, sizeof(*result));
+
+    if (cm->num_addnodes > 0) {
+        const int64_t now = (int64_t)time(NULL);
+        const size_t start = *addnode_cursor % (size_t)cm->num_addnodes;
+
+        for (size_t offset = 0; offset < (size_t)cm->num_addnodes; offset++) {
+            const size_t ai = (start + offset) % (size_t)cm->num_addnodes;
+            const int cooldown = cm->addnode_backoff_sec[ai] > 0
+                               ? cm->addnode_backoff_sec[ai] : 30;
+
+            if (connman_addnode_is_connected(cm, ai)) {
+                cm->addnode_backoff_sec[ai] = 0;
+                continue;
+            }
+            if (now - cm->addnode_last_attempt[ai] < cooldown)
+                continue;
+
+            result->addr = cm->addnodes[ai];
+            *source = CONNMAN_TARGET_ADDNODE;
+            *addnode_cursor = (ai + 1) % (size_t)cm->num_addnodes;
+            if (addnode_index)
+                *addnode_index = ai;
+            return true;
+        }
+    }
+
+    if (!addrman_select(&cm->manager.addrman, false, result))
+        return false;
+
+    *source = CONNMAN_TARGET_ADDRMAN;
+    return true;
+}
+
+void connman_record_addnode_attempt(struct connman *cm,
+                                    size_t addnode_index,
+                                    bool success)
+{
+    if (!cm || addnode_index >= (size_t)cm->num_addnodes)
+        return;
+
+    cm->addnode_last_attempt[addnode_index] = (int64_t)time(NULL);
+    if (success) {
+        cm->addnode_backoff_sec[addnode_index] = 0;
+        return;
+    }
+
+    if (cm->addnode_backoff_sec[addnode_index] == 0)
+        cm->addnode_backoff_sec[addnode_index] = 120;
+    else if (cm->addnode_backoff_sec[addnode_index] < 1800)
+        cm->addnode_backoff_sec[addnode_index] *= 2;
+
+    if (cm->addnode_backoff_sec[addnode_index] > 1800)
+        cm->addnode_backoff_sec[addnode_index] = 1800;
+}
+
 static void *thread_open_connections(void *arg)
 {
     struct connman *cm = (struct connman *)arg;
@@ -372,28 +463,24 @@ static void *thread_open_connections(void *arg)
         }
         for (int a = 0; a < attempts && !g_stop; a++) {
             struct addr_info info;
+            enum connman_outbound_target_source source;
+            size_t addnode_index = SIZE_MAX;
             memset(&info, 0, sizeof(info));
-            if (!addrman_select(&cm->manager.addrman, false, &info))
+            if (!connman_pick_next_outbound_target(cm,
+                                                   &cm->next_addnode_cursor,
+                                                   &info,
+                                                   &source,
+                                                   &addnode_index))
                 continue;
 
-            /* Skip non-ZClassic ports (16125 etc from corrupted addrman).
-             * ZClassic mainnet uses port 8033. */
-            uint16_t port = info.addr.svc.port;
-            if (port != 8033 && port != 18033 && port != 8034 &&
-                port != 9033 && port != 20022)
-                continue;
-
-            /* Skip addnode addresses — handled by dedicated reconnect below */
-            bool is_addnode = false;
-            for (int ai = 0; ai < cm->num_addnodes; ai++) {
-                if (net_addr_eq(&info.addr.svc.addr, &cm->addnodes[ai].svc.addr) &&
-                    info.addr.svc.port == cm->addnodes[ai].svc.port) {
-                    is_addnode = true;
-                    break;
-                }
+            if (source == CONNMAN_TARGET_ADDRMAN) {
+                /* Skip non-ZClassic ports (16125 etc from corrupted addrman).
+                 * ZClassic mainnet uses port 8033. */
+                uint16_t port = info.addr.svc.port;
+                if (port != 8033 && port != 18033 && port != 8034 &&
+                    port != 9033 && port != 20022)
+                    continue;
             }
-            if (is_addnode)
-                continue;
 
             /* Skip already-connected peers (compare IP only, not port —
              * inbound peers connect from ephemeral ports) */
@@ -413,11 +500,15 @@ static void *thread_open_connections(void *arg)
                 }
             }
             zcl_mutex_unlock(&cm->manager.cs_nodes);
-            if (already_connected)
+            if (already_connected) {
+                if (source == CONNMAN_TARGET_ADDNODE)
+                    connman_record_addnode_attempt(cm, addnode_index, true);
                 continue;
+            }
 
             /* Eclipse attack defense: limit outbound peers per /16 subnet */
-            if (net_addr_is_ipv4(&info.addr.svc.addr)) {
+            if (source == CONNMAN_TARGET_ADDRMAN &&
+                net_addr_is_ipv4(&info.addr.svc.addr)) {
                 uint16_t group = ipv4_group16(info.addr.svc.addr.ip);
                 zcl_mutex_lock(&cm->manager.cs_nodes);
                 int in_group = count_outbound_in_group(&cm->manager, group);
@@ -427,77 +518,39 @@ static void *thread_open_connections(void *arg)
             }
 
             s_last_addrman_attempt = now_oc;
-            struct p2p_node *node = connect_node(&cm->manager, &info.addr, NULL);
+            char dest[64];
+            char ipbuf[64];
+            struct p2p_node *node = NULL;
+
+            net_addr_to_string(&info.addr.svc.addr, ipbuf, sizeof(ipbuf));
+            if (source == CONNMAN_TARGET_ADDNODE) {
+                net_service_to_string(&info.addr.svc, dest, sizeof(dest));
+                node = connect_node(&cm->manager, &info.addr, dest);
+            } else {
+                node = connect_node(&cm->manager, &info.addr, NULL);
+            }
+
             if (!node) {
-                addrman_attempt(&cm->manager.addrman, &info.addr.svc,
-                                 (int64_t)time(NULL));
-                char ipbuf[64];
-                net_addr_to_string(&info.addr.svc.addr, ipbuf, sizeof(ipbuf));
+                if (source == CONNMAN_TARGET_ADDRMAN) {
+                    addrman_attempt(&cm->manager.addrman, &info.addr.svc,
+                                    (int64_t)time(NULL));
+                } else {
+                    connman_record_addnode_attempt(cm, addnode_index, false);
+                }
                 event_emitf(EV_TCP_CONNECT_FAILED, 0,
                             "%s:%u", ipbuf, info.addr.svc.port);
             } else {
-                char ipbuf[64];
-                net_addr_to_string(&info.addr.svc.addr, ipbuf, sizeof(ipbuf));
+                if (source == CONNMAN_TARGET_ADDNODE)
+                    connman_record_addnode_attempt(cm, addnode_index, true);
                 printf("Outbound diversity: connected to %s:%u (%zu/%d outbound)\n",
                        ipbuf, info.addr.svc.port, outbound + 1,
                        MAX_OUTBOUND_CONNECTIONS);
             }
         }
 
-        /* Reconnect persistent addnodes that dropped.
-         * Exponential backoff per addnode: 120s → 240s → ... → 1800s max.
-         * Resets to 0 on successful connection. */
-        {
-            static int64_t s_addnode_last_attempt[MAX_ADDNODES] = {0};
-            static int     s_addnode_backoff_sec[MAX_ADDNODES]  = {0};
-            int64_t now_an = (int64_t)time(NULL);
-            for (int ai = 0; ai < cm->num_addnodes && !g_stop; ai++) {
-                int cooldown = s_addnode_backoff_sec[ai] > 0
-                             ? s_addnode_backoff_sec[ai] : 30;
-                if (now_an - s_addnode_last_attempt[ai] < cooldown)
-                    continue;
-                bool connected = false;
-                zcl_mutex_lock(&cm->manager.cs_nodes);
-                for (size_t ni = 0; ni < cm->manager.num_nodes; ni++) {
-                    struct p2p_node *n = cm->manager.nodes[ni];
-                    if (n->disconnect) continue;
-                    /* Compare IP only — inbound peers use ephemeral ports */
-                    if (net_addr_eq(&n->addr.svc.addr, &cm->addnodes[ai].svc.addr)) {
-                        connected = true;
-                        if (n->addr.svc.port != cm->addnodes[ai].svc.port) {
-                            char skip_buf[64];
-                            net_addr_to_string(&cm->addnodes[ai].svc.addr, skip_buf, sizeof(skip_buf));
-                            printf("Skipping %s — already connected inbound\n", skip_buf);
-                        }
-                        break;
-                    }
-                }
-                zcl_mutex_unlock(&cm->manager.cs_nodes);
-
-                if (connected) {
-                    /* Peer is up — reset backoff */
-                    s_addnode_backoff_sec[ai] = 0;
-                } else {
-                    s_addnode_last_attempt[ai] = now_an;
-                    char dest[64];
-                    net_service_to_string(&cm->addnodes[ai].svc, dest, sizeof(dest));
-                    connect_node(&cm->manager, &cm->addnodes[ai], dest);
-                    /* Exponential backoff: 120 → 240 → 480 → ... → 1800 max */
-                    if (s_addnode_backoff_sec[ai] == 0)
-                        s_addnode_backoff_sec[ai] = 120;
-                    else if (s_addnode_backoff_sec[ai] < 1800)
-                        s_addnode_backoff_sec[ai] *= 2;
-                    if (s_addnode_backoff_sec[ai] > 1800)
-                        s_addnode_backoff_sec[ai] = 1800;
-                    printf("Peer %s: backing off %ds after failed connect\n",
-                           dest, s_addnode_backoff_sec[ai]);
-                }
-            }
-        }
-
         /* Sleep based on outbound count:
          * 0 outbound: 200ms (desperate)
-         * below target: 1s (addnode checks still run each tick)
+         * below target: 1s
          * at target: 10s (just monitoring) */
         if (outbound == 0)
             usleep(200000); /* 200ms */
@@ -924,20 +977,18 @@ static void *thread_message_handler(void *arg)
 bool connman_init(struct connman *cm, const struct chain_params *params,
                    struct node_signals *signals)
 {
+    if (!cm || !params || !signals)
+        return false;
+
     /* Load peer-scoring config from environment. Safe to call multiple
      * times; late env-var changes don't matter since connman_init runs
      * once per process startup. Done here so every binary that spins up
      * a connman (node, test, tool) honours the operator's settings. */
     peer_scoring_init();
 
+    memset(cm, 0, sizeof(*cm));
     net_manager_init(&cm->manager);
     cm->params = params;
-    cm->started = false;
-    cm->dns_seed_thread_started = false;
-    cm->socket_thread_started = false;
-    cm->open_thread_started = false;
-    cm->message_thread_started = false;
-    cm->num_deferred_free = 0;
     cm->manager.signals = *signals;
 
     memcpy(cm->manager.message_start, params->pchMessageStart,

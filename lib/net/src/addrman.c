@@ -125,6 +125,31 @@ double addr_info_get_chance(const struct addr_info *info, int64_t nNow)
     return fChance;
 }
 
+static bool addrman_find_occupied_slot(const int *table,
+                                       int bucket_count,
+                                       int start_bucket,
+                                       int start_pos,
+                                       int *bucket_out,
+                                       int *pos_out)
+{
+    if (!table || bucket_count <= 0 || !bucket_out || !pos_out)
+        return false;
+
+    for (int bucket_offset = 0; bucket_offset < bucket_count; bucket_offset++) {
+        int bucket = (start_bucket + bucket_offset) % bucket_count;
+        for (int pos_offset = 0; pos_offset < ADDRMAN_BUCKET_SIZE; pos_offset++) {
+            int pos = (start_pos + pos_offset) % ADDRMAN_BUCKET_SIZE;
+            if (table[bucket * ADDRMAN_BUCKET_SIZE + pos] != -1) {
+                *bucket_out = bucket;
+                *pos_out = pos;
+                return true;
+            }
+        }
+    }
+
+    return false;
+}
+
 void addrman_init(struct addr_man *am)
 {
     zcl_mutex_init(&am->cs);
@@ -539,16 +564,16 @@ bool addrman_select(struct addr_man *am, bool new_only,
         for (int i = 0; i < 200000; i++) {
             int nKBucket = GetRandInt(ADDRMAN_TRIED_BUCKET_COUNT);
             int nKBucketPos = GetRandInt(ADDRMAN_BUCKET_SIZE);
-            while (am->vvTried[nKBucket][nKBucketPos] == -1) {
-                nKBucket = (nKBucket + GetRandInt(ADDRMAN_TRIED_BUCKET_COUNT)) %
-                           ADDRMAN_TRIED_BUCKET_COUNT;
-                nKBucketPos = (nKBucketPos + GetRandInt(ADDRMAN_BUCKET_SIZE)) %
-                              ADDRMAN_BUCKET_SIZE;
-                if (++i >= 200000) {
-                    zcl_mutex_unlock(&am->cs);
-                    LOG_FAIL("addrman", "select exhausted tried bucket search after 200k iterations");
-                    return false;
-                }
+            if (am->vvTried[nKBucket][nKBucketPos] == -1 &&
+                !addrman_find_occupied_slot(&am->vvTried[0][0],
+                                            ADDRMAN_TRIED_BUCKET_COUNT,
+                                            nKBucket,
+                                            nKBucketPos,
+                                            &nKBucket,
+                                            &nKBucketPos)) {
+                zcl_mutex_unlock(&am->cs);
+                LOG_FAIL("addrman", "select exhausted tried bucket search after full table scan");
+                return false;
             }
             int nId = am->vvTried[nKBucket][nKBucketPos];
             if (nId < 0 || (size_t)nId >= am->entries_cap) {
@@ -570,16 +595,16 @@ bool addrman_select(struct addr_man *am, bool new_only,
         for (int i = 0; i < 200000; i++) {
             int nUBucket = GetRandInt(ADDRMAN_NEW_BUCKET_COUNT);
             int nUBucketPos = GetRandInt(ADDRMAN_BUCKET_SIZE);
-            while (am->vvNew[nUBucket][nUBucketPos] == -1) {
-                nUBucket = (nUBucket + GetRandInt(ADDRMAN_NEW_BUCKET_COUNT)) %
-                           ADDRMAN_NEW_BUCKET_COUNT;
-                nUBucketPos = (nUBucketPos + GetRandInt(ADDRMAN_BUCKET_SIZE)) %
-                              ADDRMAN_BUCKET_SIZE;
-                if (++i >= 200000) {
-                    zcl_mutex_unlock(&am->cs);
-                    LOG_FAIL("addrman", "select exhausted new bucket search after 200k iterations");
-                    return false;
-                }
+            if (am->vvNew[nUBucket][nUBucketPos] == -1 &&
+                !addrman_find_occupied_slot(&am->vvNew[0][0],
+                                            ADDRMAN_NEW_BUCKET_COUNT,
+                                            nUBucket,
+                                            nUBucketPos,
+                                            &nUBucket,
+                                            &nUBucketPos)) {
+                zcl_mutex_unlock(&am->cs);
+                LOG_FAIL("addrman", "select exhausted new bucket search after full table scan");
+                return false;
             }
             int nId = am->vvNew[nUBucket][nUBucketPos];
             if (nId < 0 || (size_t)nId >= am->entries_cap) {
