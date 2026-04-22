@@ -40,7 +40,7 @@ checklist plus the lane rules.
 
 ---
 
-## Current status — NOW = P11.5
+## Current status — NOW = P11.8
 
 **P11.6 landed 39bb904f3 [test:1.0]** (RED: 4ae4b09db). Four pieces
 now gate "someone we don't know can run zclassic23 for a week
@@ -94,12 +94,31 @@ Five pieces now gate the real transparent->shielded send path end-to-end:
 - Verification — `make test-shielded-payment` passes with real Sapling params,
   and `./test_zcl` is back to `ALL TESTS PASSED (0 failures)`.
 
-**P11.5 (HIGH): MVP #5 store e2e CI gate. Agent-3 NOW.**
+**P11.5 landed <pending push> [test:1.0 c704fa0e2].**
+
+Three pieces now gate the shipped store flow across the persistence boundary:
+
+- `lib/test/src/test_store_e2e_gate.c` — deterministic stress gate that
+  seeds a store order through the HTTP controller path, persists a confirmed
+  Sapling note for the generated payment address, runs payment reconciliation,
+  reopens the DB/model layer, and asserts the order advances to `STORE_ORDER_SENT`,
+  credits `ZCL23ACCESS` exactly once, and unlocks token-gated access.
+- `lib/test/src/test.c` + `Makefile` — focused subset hook
+  `ZCL_TEST_ONLY=store_e2e` and `test-store-e2e` target so the gate is reachable
+  both on demand and in the stress-enabled suite.
+- `app/controllers/src/store_controller.c` — payment reconciliation now persists
+  the post-mint order status through a fresh one-shot DB reopen instead of trying
+  to reuse the pre-mint reader handle. The RED exposed a real split-handle
+  persistence bug: token credit landed, but `orders.status` stayed `PENDING`.
+
+Verification: `make test-store-e2e` passes, and `make test` is back to
+`ALL TESTS PASSED (0 failures)`.
+
+**P11.8 (HIGH): MVP #8 parity-diff CI gate. Agent-3 NOW.**
 
 Continues the MVP drain. P11.6 is green as of this commit; P11.7
-was already green (kill-9 chaos recovery). The remaining MVP rows
-are P11.5 (store e2e) and P11.8 (parity diff, coupled with Agent-2's
-P12.3).
+was already green (kill-9 chaos recovery). The remaining MVP row in
+this lane is P11.8 (parity diff, coupled with Agent-2's P12.3).
 
 **Discipline (every P11+ row is [test:1.0]):**
 1. **RED FIRST** — failing test that demonstrates the gap.
@@ -170,9 +189,9 @@ Every row has a full description in [`AGENT.md`](AGENT.md).
 ### Phase 1 — MVP CI gates (continue Agent-3 lane)
 
 - [x] **P11.4** — shielded-payment CI gate (MVP #4). done <pending push> [test:1.0].
-- [ ] **P11.5** — store e2e CI gate (MVP #5). **Agent-3 NOW.**
+- [x] **P11.5** — store e2e CI gate (MVP #5). done <pending push> [test:1.0 c704fa0e2].
 - [x] **P11.6** HIGH — 7-day soak harness (MVP #6). done 39bb904f3 [test:1.0 4ae4b09db].
-- [ ] **P11.8** — parity-diff CI gate (MVP #8). Coupled with Agent-2's P12.3 + P12.3.1 and Agent-3's P17.5.
+- [ ] **P11.8** — parity-diff CI gate (MVP #8). **Agent-3 NOW.** Coupled with Agent-2's P12.3 + P12.3.1 and Agent-3's P17.5.
 
 ### Phase 2 — P15 Discipline (Agent-3 lanes)
 

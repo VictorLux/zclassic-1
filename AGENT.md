@@ -64,7 +64,7 @@ P12.3.1/P12.6.1/P12.6.2/P12.8.1/P12.8.2, P7.11 / P9.11, P15-P19
   4. **P24.20** HIGH — connect_tip + flush_coins error propagation to `zcl_events` / `zcl_kpi`. Silent failures become observable failures.
   5. **P24.21** HIGH — UTXO anchor roll-FORWARD on boot (re-validate missing blocks) instead of roll-BACKWARD (drop tip to anchor). Deploy cost goes from "lose 6,800 blocks per restart" to "gain 0-12 blocks per restart."
   Post-wave: P14 drain (P14.4, P14.5, P14.15, P14.16) → P13.2/P13.3/P13.5-P13.7 → P12.3/P12.3.1/P12.5-8 → P7/P8 → P15-P23. Full details in [`AGENT-2.md`](AGENT-2.md); every row has: evidence, three-part fix plan with file/line pointers, RED test shape, acceptance criteria.
-- **Agent-3 NOW: P11.5 GREEN** (RED landed c704fa0e2 2026-04-21 23:40 + pushed side branch `wip/agent-3-p11.5-red`). Good RED-first discipline — pushed the RED alone without waiting for GREEN. P11.4 already landed (5bb110b18 RED + b2ea2e153 GREEN + 12a02db1b coverage fix). Post-P11.5/P11.8 lane: P15.4/P15.5 → P17 testing lead → P18.4 crypto perf → P20 dev-MCP → P21.7/P21.8 test split → P22.4 spec corpus → P23.7 scaffold_test_from_row → **P24.2 / P24.4**. Full checklist in [`AGENT-3.md`](AGENT-3.md). Not assigned any sync-robustness work — those live in Agent-2's lane.
+- **Agent-3 NOW: P11.8** (P11.5 GREEN landed locally; RED was c704fa0e2 on 2026-04-21 23:40 + pushed side branch `wip/agent-3-p11.5-red`). Good RED-first discipline — pushed the RED alone without waiting for GREEN. P11.4 already landed (5bb110b18 RED + b2ea2e153 GREEN + 12a02db1b coverage fix). Post-P11.8 lane: P15.4/P15.5 → P17 testing lead → P18.4 crypto perf → P20 dev-MCP → P21.7/P21.8 test split → P22.4 spec corpus → P23.7 scaffold_test_from_row → **P24.2 / P24.4**. Full checklist in [`AGENT-3.md`](AGENT-3.md). Not assigned any sync-robustness work — those live in Agent-2's lane.
 - **Agent-2 live state** (2026-04-21 23:50): mid-P13.1 — 130 lines added across `lib/net/src/connman.c` + `connman.h`, plus untracked `test_connman_addnode_fallback.c`. Codex-2 DB writing within last 5 min — actively implementing, not stalled. Don't kickoff-reset `~/zclassic23-2` until they push — tracked WIP stashable, untracked test file would die.
 - **Coordinator (Rhett):** **P24.14 deployed live 2026-04-21 21:20, canary PASSED** (all 5 previously-UNSAFE tools return clean responses, zero SIGABRT). Chain tip pinned at h=3,078,014 pending P24.18 fix (zclassicd at h=3,086,146, gap 8,132 and slowly widening as zclassicd advances). Not ramming through manual bootstrap — delegating to Agent-2 so every future deploy benefits from systemic fix. **CRITICAL now = 27/33, 3 open (P13.1, P24.18, P24.19).** If Agent-2 delivers the five-row wave, KPI expected rise: Correctness 2→8, Robustness 6→9, Operability 5→9 (+14 points — rubric jumps 55 → ~75).
 
@@ -289,8 +289,8 @@ P10.1.1 through P10.1.5 landed. See
 |---|---|---|
 | P11.1 | MVP #2 — Tor bootstrap <60s | done 63f98909d (Agent-3) |
 | P11.3 | MVP #3 — cold-start sync <10 min | done ffd1112e4 (Agent-3) |
-| **P11.4** | MVP #4 — shielded payment | **open — Agent-3, NOW** |
-| P11.5 | MVP #5 — store e2e | open — Agent-3 |
+| **P11.4** | MVP #4 — shielded payment | done b2ea2e153 (Agent-3) |
+| P11.5 | MVP #5 — store e2e | done <pending push> [test:1.0 c704fa0e2] (Agent-3) |
 | P11.6 | MVP #6 — 7-day soak harness | done 39bb904f3 [test:1.0 4ae4b09db] (Agent-3) |
 | P11.7 | MVP #7 — kill-9 chaos recovery | done 8d3d3b23f (Agent-3) |
 | P11.8 | MVP #8 — parity diff (pairs with P12.3) | open — Agent-3 |

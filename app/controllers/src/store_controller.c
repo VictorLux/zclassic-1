@@ -37,6 +37,9 @@ static bool store_parse_access_query(const char *path,
 static int64_t store_chain_tip_height(sqlite3 *db);
 static int64_t store_received_payment(sqlite3 *db, const char *pay_addr,
                                       int64_t min_height);
+static bool store_mark_order_paid(const char *datadir,
+                                  int64_t order_id,
+                                  int status);
 
 /* Format ZCL price: trim trailing zeros but keep at least 2 decimals. */
 static void format_zcl_price(char *out, size_t out_len, int64_t zatoshi)
@@ -804,6 +807,33 @@ static int64_t store_received_payment(sqlite3 *db, const char *pay_addr,
     return received;
 }
 
+static bool store_mark_order_paid(const char *datadir,
+                                  int64_t order_id,
+                                  int status)
+{
+    char db_path[1024];
+    struct node_db ndb;
+    bool ok;
+
+    if (!datadir || order_id <= 0)
+        return false;
+
+    snprintf(db_path, sizeof(db_path), "%s/node.db", datadir);
+    memset(&ndb, 0, sizeof(ndb));
+    if (!node_db_open(&ndb, db_path))
+        return false;
+
+    ok = db_store_order_mark_paid(&ndb, order_id, status);
+    if (!ok) {
+        fprintf(stderr,
+                "Store: failed to persist status=%d for order #%lld: %s\n",
+                status, (long long)order_id,
+                sqlite3_errmsg(ndb.db));
+    }
+    node_db_close(&ndb);
+    return ok;
+}
+
 static const char *store_order_status_text(int status)
 {
     switch (status) {
@@ -1123,9 +1153,12 @@ void store_process_payments(const char *datadir)
              * This ensures we never show "Tokens Sent" if mint failed. */
             bool mint_ok = zslp_mint(datadir, token_id, cust_addr,
                                       (uint64_t)tokens);
-
             int new_status = mint_ok ? STORE_ORDER_SENT : STORE_ORDER_FAILED;
-            (void)db_store_order_mark_paid(&ndb, order_id, new_status);
+            if (!store_mark_order_paid(datadir, order_id, new_status)) {
+                printf("Store: order #%lld payment processed but status "
+                       "persist failed\n", (long long)order_id);
+                fflush(stdout);
+            }
 
             if (mint_ok) {
                 printf("Store: order #%lld paid, minted %lld %s -> %s\n",
