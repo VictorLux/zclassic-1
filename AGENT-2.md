@@ -138,7 +138,9 @@ with a fixture-based harness. Lint gate `check_coins_lookup_nullcheck.sh`
 catches future regressions. `make -j && ./test_zcl` green. Side branch
 `codex/p24-14-chainstate-guard` also pushed.
 
-**P13.1 HIGH — single-peer sync regression (9 `-addnode` peers backing off). NEW NOW. Agent-2, start here.**
+**P13.1 done 96c8d32c6** — addnode-drain fallback. Prioritizes `-addnode` list over addrman when tried bucket exhausted; RED `test_connman_addnode_fallback.c` (preserved via side-branch 7140999a8) fully incorporated into GREEN merge. Coordinator deploying now. **Agent-2 rotate to P24.18 (next below).**
+
+**P13.1 HIGH — single-peer sync regression (HISTORICAL CONTEXT, kept for later rows referencing it).**
 
 Evidence (live canary post-P24.11 deploy 2026-04-21 20:25): node came back
 up with only **2 peers** (both inbound magicbean-legacy), zero outbound
