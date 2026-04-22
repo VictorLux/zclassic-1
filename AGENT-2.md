@@ -40,7 +40,7 @@ checklist plus the lane rules.
 
 ---
 
-## Current status — NOW = P24.29 → P24.30 → P24.31 → P24.18a → 18b → 18c → P24.19 → 20 → 21 → 22 → 23 → 24 → 25 → 26
+## Current status — NOW = P24.29 → P24.30 → P24.31 → P24.19 → P24.20 → P24.21 → P24.22 → P24.23 → P24.24 → P24.25 → P24.26
 
 **P24.28 LANDED 2026-04-22 05:35** (a940dd5ba RED + 0af03d99e GREEN).  Rotation
 done.  The STEP list below is for P24.29.
