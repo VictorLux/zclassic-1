@@ -40,94 +40,172 @@ checklist plus the lane rules.
 
 ---
 
-## Current status — NOW = P24.28 → P24.29 → P24.30 → P24.18a → 18b → 18c → P24.19 → 20 → 21 → 22 → 23 → 24 → 25 → 26 (stall root-cause RED test leads; sapling-persist wave dropped to SECONDARY)
+## Current status — NOW = P24.28 → P24.29 → P24.30 → P24.18a → 18b → 18c → P24.19 → 20 → 21 → 22 → 23 → 24 → 25 → 26 (stall root-cause RED-test first; sapling-persist wave dropped to SECONDARY)
 
-## 🚀 KICKOFF — 2026-04-22 04:53 (from Rhett / coordinator)
+## 🚀 KICKOFF — 2026-04-22 05:00 — ship P24.28 in one pass
 
-**Context:** the 2026-04-22 04:25 live-node stall was diagnosed (logs + code read).
-It is NOT the P24.18 sapling-persist bug. That's a cosmetic secondary warning.
-The real stall:
+**You (Agent-2 Codex) do not need to read the rest of this file first.  Run the
+steps below in order and ship P24.28 before coming back for P24.29.**  Each step
+is <15 min; total ≤1h.
 
-  - Block 3,078,015 spends a coinbase output from h=3,077,892.
-  - Our SQLite coins set is missing ~4,700 UTXOs (fast-sync LDB drift).
-  - Self-heal at `process_block.c:1277` calls `block_tree_db_read_tx_index`
-    and gets "not in tx index" because LDB-fast-synced blocks never get
-    indexed → dead recovery path → 4,700+ identical failures in a hot loop.
+### STEP 0 — sync + restore WIP (30 seconds)
 
-Coordinator landed two fire-drill commits on main (pay back the debt):
+```bash
+cd ~/zclassic23-2
+git fetch origin && git checkout main && git reset --hard origin/main
+# Your two RED WIPs are preserved on side branches.  Restore both
+# (P24.18 is SECONDARY now but preserve continuity for later):
+git show origin/wip/agent-2-p24.18-red:lib/test/src/test_unclean_shutdown_advance.c \
+  > lib/test/src/test_unclean_shutdown_advance.c
+```
 
-  1. **`ddd1fbeab` validation: hot-loop bail-out triggers needs_reimport
-     auto-recovery** — added `g_shutdown_requested=1` after 10 consecutive
-     UTXO failures at the same height, so systemd restart consumes the
-     `needs_reimport` flag.  Changed `Restart=on-failure`→`always` in
-     `deploy/zclassic23.service`.
+### STEP 1 — read the fix you're writing the test for (3 min)
 
-  2. **`7162ab1a7` validation: debounce hot-loop exit to prevent
-     bootloop** — discovered that zclassicd's on-disk LDB was memtable-stale
-     (h=3,078,003 vs zclassicd's tip h=3,086,367) and did NOT carry the
-     missing UTXO.  Reimport was a no-op; we bootlooped.  Debounce:
-     `utxo_recovery_import_ldb` now writes `<datadir>/last_reimport_attempted`
-     after success; `process_block.c`'s 10-fail exit checks that marker's
-     mtime and, if <10min old, emits `FATAL_HOT_LOOP_STUCK` and stays up
-     (visible-stuck instead of bootloop).
+Open and read:
+- `lib/validation/src/process_block.c` lines 2360-2425 (the `s_utxo_fail_count
+  >= 3 ... needs_reimport flag` block + the new `s_utxo_fail_count == 10 &&
+  datadir { stat(marker_path) ... }` debounced exit).
+- `app/services/src/utxo_recovery_service.c` lines 338-360 (where the
+  marker file `<datadir>/last_reimport_attempted` is written after a
+  successful import).
 
-**Your work, in order — NOW is P24.28:**
+Takeaway: two branches (FATAL_HOT_LOOP vs FATAL_HOT_LOOP_STUCK) + one
+idempotence rule (shutdown requested exactly once per process).
 
-### P24.28 (NOW) — RED test for the hot-loop exit + debounce
+### STEP 2 — write the RED test (20 min)
 
-Both branches of the debounce need a RED test.  `lib/test/src/test_connect_tip_hot_loop_exit.c`:
+New file `lib/test/src/test_connect_tip_hot_loop_exit.c`.  Skeleton:
 
-  - Expose the `s_utxo_fail_count` / `s_utxo_fail_height` statics via
-    `#ifdef ZCL_TESTING` (same pattern you planned for P24.18).
-  - Fixture 1 — no marker: inject 10 identical-height `bad-txns-inputs-
-    missingorspent` failures, assert (a) `needs_reimport` file present,
-    (b) `g_shutdown_requested == 1`, (c) event log contains
-    `FATAL_HOT_LOOP h=<H>` (NOT the `_STUCK` variant).
-  - Fixture 2 — fresh marker: write `<datadir>/last_reimport_attempted`
-    with mtime=now, then inject 10 failures, assert (a) `needs_reimport`
-    still written, (b) `g_shutdown_requested == 0`, (c) event log
-    contains `FATAL_HOT_LOOP_STUCK h=<H>`.
-  - Fixture 3 — stale marker (>10min): same as fixture 2 but with
-    mtime=now-700s; assert the ORIGINAL branch fires (shutdown requested).
-  - Idempotence: run the same fixture twice in one process; assert
-    shutdown is only requested once.
+```c
+/* Copyright 2026 Rhett Creighton - Apache License 2.0 */
+#include "test/test_helpers.h"
+#include "validation/process_block.h"
+/* Plus whatever headers expose g_shutdown_requested + EV_BOOT_ACTIVATE */
 
-Acceptance: RED fails before your test hooks exist, GREEN after you
-add the `#ifdef ZCL_TESTING` accessors.  ~150 lines of test, <1h of
-work.  Pushable as a single commit.
+int test_connect_tip_hot_loop_exit(void)
+{
+    /* Fixture 1: no marker, 10 identical-height UTXO fails ->
+     *   - needs_reimport flag file exists
+     *   - g_shutdown_requested == 1
+     *   - event log line matches "FATAL_HOT_LOOP h=<H>"  (NOT _STUCK)
+     */
 
-### P24.29 (next) — self-heal scan fallback + tx_index backfill
+    /* Fixture 2: write marker with mtime=now, 10 fails ->
+     *   - needs_reimport still written
+     *   - g_shutdown_requested == 0
+     *   - event log matches "FATAL_HOT_LOOP_STUCK h=<H>"
+     */
 
-This is what ACTUALLY unsticks the live node long-term.  Details in
-AGENT.md P24.29 row.  Key idea: when `block_tree_db_read_tx_index`
-misses, fall back to (a) BIP34 height decode if the missing tx is a
-coinbase (scriptSig encodes producer block height), or (b) bounded-
-depth block-file scan (last 1000 from tip) for non-coinbase; on
-success, backfill the tx_index entry.
+    /* Fixture 3: marker with mtime=now-700s, 10 fails ->
+     *   - original branch fires (shutdown requested)
+     */
 
-### P24.30 (then) — post-IBD UTXO commitment audit vs trusted peer
+    /* Fixture 4: idempotence — after Fixture 1, inject 10 more fails at
+     *   the same height in the same process; g_shutdown_requested
+     *   should remain 1 (not re-fire), and no second FATAL_HOT_LOOP
+     *   event should be emitted.
+     */
 
-Make the next drift visible at sync-completion, not at the next spend.
-Details in AGENT.md P24.30.
+    return 0;
+}
+```
 
-### Legacy P24.18 wave — still queued but SECONDARY
+You need a driver for "inject 10 identical-height UTXO failures".  The
+simplest driver is to directly increment + invoke the static path.
+Expose the two statics via `#ifdef ZCL_TESTING` accessors in
+`process_block.c` (near the declaration of `s_utxo_fail_count`) and
+in `lib/validation/include/validation/process_block.h`:
 
-Your RED at `wip/agent-2-p24.18-red` (93-line test_unclean_shutdown_advance.c)
-stays preserved.  After P24.30 lands, resume P24.18a/b/c → P24.19+ as
-originally planned.  The sapling-persist warning IS real; it's just
-not what was blocking the chain.
+```c
+#ifdef ZCL_TESTING
+void process_block_test_set_utxo_fail_state(int height, int count);
+int  process_block_test_get_utxo_fail_count(void);
+void process_block_test_trigger_hot_loop_check(int height,
+                                                const char *datadir);
+#endif
+```
+
+The third accessor runs the exact `if (s_utxo_fail_count == 10 &&
+datadir) { ... }` block against a caller-supplied datadir — reuse the
+same code, don't duplicate it (extract a static helper if clearer).
+
+### STEP 3 — register the test (2 min)
+
+- `lib/test/include/test/test_helpers.h` — forward decl:
+  `int test_connect_tip_hot_loop_exit(void);`
+- `lib/test/src/test.c` — add call site next to the existing
+  `test_unclean_shutdown_advance` slot (search for the closest
+  process_block-related test and put it there).
+
+### STEP 4 — commit RED first (2 min)
+
+```bash
+make -j$(nproc) test_zcl 2>&1 | tail -5
+./test_zcl 2>&1 | grep -E "hot_loop_exit|ALL TESTS|SOME TESTS"
+# RED shape: test should EXIST and COMPILE but FAIL without the
+# ZCL_TESTING accessors below — if your test uses the accessors
+# directly the RED is a compile-time one (unresolved symbols).
+git add lib/test/src/test_connect_tip_hot_loop_exit.c \
+        lib/test/include/test/test_helpers.h \
+        lib/test/src/test.c
+git commit -m "test/P24.28: RED for hot-loop exit + debounce (ddd1fbeab + 7162ab1a7)"
+git push origin main
+```
+
+### STEP 5 — commit GREEN (ZCL_TESTING accessors) (10 min)
+
+Add the three `#ifdef ZCL_TESTING` accessors in `process_block.c` +
+their declarations in the header.  Keep the accessor bodies trivial —
+they just read/write the statics or invoke the existing code path.
+
+```bash
+make -j$(nproc) test_zcl && ./test_zcl 2>&1 | grep -E "hot_loop_exit|ALL TESTS|SOME TESTS" | tail -5
+```
+
+If green:
+```bash
+git add lib/validation/src/process_block.c \
+        lib/validation/include/validation/process_block.h
+git commit -m "validation/process_block: ZCL_TESTING accessors for P24.28 hot-loop test (GREEN)"
+git push origin main
+```
+
+### STEP 6 — rotate NOW + announce (1 min)
+
+Update this file's `## Current status` header line to:
+```
+## Current status — NOW = P24.29 → P24.30 → P24.18a → ...
+```
+
+```bash
+git add AGENT-2.md
+git commit -m "agents: P24.28 landed <sha> — rotate Agent-2 NOW to P24.29"
+git push origin main
+```
+
+Then IMMEDIATELY start P24.29 (self-heal scan fallback + tx_index
+backfill) — details in AGENT.md P24.29 row.  Don't stop between rows.
+
+### After P24.28 → P24.29 → P24.30
+
+Then resume the legacy P24.18 wave (sapling-persist fix).  Your
+`test_unclean_shutdown_advance.c` (93 lines) is restored in Step 0 and
+ready to commit as P24.18's RED when you get there.
+
+---
 
 ### Preserved WIP pointers
 
-- `origin/wip/agent-2-p24.18-red` — 93-line test for sapling persist 3-fail threshold
+- `origin/wip/agent-2-p24.18-red` — 93-line RED for sapling persist (restore in Step 0)
 - `origin/wip/agent-2-p13.1-red` — older P13.1 test
 - Restore with: `git show <ref>:<path> > <path>`
 
-### MCP kickoff
+### Useful MCP tools during your work
 
-Run kickoff mcp for zclassic23.  `zcl_status`, `zcl_events`, `zcl_logtail`
-are the best ways to read live-node state instead of shell.  `zcl_rpc`
-for any RPC not wrapped.
+- `zcl_status` — is the live node up? height / peers
+- `zcl_events` — recent event log (look for FATAL_HOT_LOOP / _STUCK after your GREEN lands)
+- `zcl_logtail(lines=N)` — node.log tail without shell
+- `zcl_rpc(method=..., params=...)` — any unwrapped RPC
 
 ## 📡 MCP is live — use these tools instead of shell whenever possible (2026-04-22 04:30)
 

@@ -40,40 +40,75 @@ checklist plus the lane rules.
 
 ---
 
-## Current status — NOW = P11.8 → P24.27
+## Current status — NOW = P11.8 → P24.27 → P15.4 → P15.5 → P17 → P18.4 → P20 → P21.7/8 → P22.4 → P23.7 → P24.2/P24.4
 
-## 🚀 KICKOFF — 2026-04-22 04:53 (from Rhett / coordinator)
+## 🚀 KICKOFF — 2026-04-22 05:00 — ship P11.8 RED + GREEN in one pass
 
-**Run kickoff mcp for zclassic23.**
+**You (Agent-3 Codex) do not need to read the rest of this file first.  Run the
+steps below and ship P11.8 before moving to P24.27.**  Total ≤90 min.
 
-Your P11.8 RED (`lib/test/src/test_parity_diff_gate.c`, 632 lines) is preserved
-on `origin/wip/agent-3-p11.8-red` — no loss risk if kickoff resets the worktree.
-Restore after kickoff with:
-```
+### STEP 0 — sync + restore RED (30 seconds)
+
+```bash
+cd ~/zclassic23-3
+git fetch origin && git checkout main && git reset --hard origin/main
+# Your 632-line RED for the parity-diff gate is preserved:
 git show origin/wip/agent-3-p11.8-red:lib/test/src/test_parity_diff_gate.c \
   > lib/test/src/test_parity_diff_gate.c
+wc -l lib/test/src/test_parity_diff_gate.c   # expect 632
 ```
 
-**Context on the live node (not your lane, but FYI):** 2026-04-22 04:25 stall
-at h=3,078,014 was root-caused (missing coinbase UTXO from h=3,077,892,
-tx_index miss, hot loop).  Coordinator landed two commits on main that
-prevent bootloop — `ddd1fbeab` + `7162ab1a7`.  Agent-2 picks up the fallout
-(P24.28 RED test → P24.29 self-heal scan fallback → P24.30 UTXO audit).
-Your lane is untouched; stay on P11.8 → P24.27.
+### STEP 1 — wire + push RED (5 min)
 
-**Your sequence after P11.8:**
-1. **P11.8** (NOW) — parity diff CI gate.  RED preserved.  Commit RED first,
-   then GREEN.  The gate compares chain state (height, block hashes,
-   coins_best_block, value balances) against the paired production
-   parity service (Agent-2's P12.3).
-2. **P24.27** — observability lint.  `fprintf(stderr, ...)` in lib/ and app/
-   must pair with `event_emit(...)` OR `// obs-ok:<reason>` comment.  The
-   2026-04-22 stall included a silent `flush_coins: sapling_tree persist
-   failed` warning — exactly the class this lint catches.
-3. Then your post-MVP lane: P15.4 → P15.5 → P17 testing → P18.4 crypto
-   perf → P20 dev-MCP → P21.7/P21.8 → P22.4 → P23.7 → P24.2/P24.4.
+Follow the detailed ACTION LIST below (starts at `## ⚡ ACTION LIST`).
+**Steps 2–5 of that list are your checklist.**  Key acceptance:
+- RED shape: compiles with unresolved-symbol failure OR assertion failure
+  against the stub/contract.
+- Commit msg prefix: `test/P11.8: RED for parity-diff CI gate`.
 
-**Not pulled into sync-robustness wave** — all Agent-2's lane.
+### STEP 2 — write GREEN (60 min)
+
+Agent-2's P12.3 parity cluster is upstream of you.  Check whether P12.3's
+production service exists yet:
+```bash
+ls app/services/src/parity_*.c 2>/dev/null
+grep -rn "PARITY_GATE" lib/ app/ 2>/dev/null | head -5
+```
+If P12.3 isn't landed yet, your GREEN can be a STUB-returning
+`PARITY_GATE_OK` so the test passes deterministically; file a
+cross-agent handoff note in AGENT.md that P12.3 must replace the stub.
+
+If P12.3 IS landed, wire your gate against its service.
+
+### STEP 3 — push GREEN + rotate (2 min)
+
+```bash
+make -j$(nproc) test_zcl && ./test_zcl 2>&1 | grep -E "parity_diff_gate|ALL TESTS|SOME TESTS" | tail -5
+git add lib/test/src/test_parity_diff_gate.c <any new GREEN files>
+git commit -m "P11.8: parity-diff CI gate (GREEN) — completes MVP #8"
+git push origin main
+# rotate NOW header
+sed -i 's/NOW = P11.8/NOW = P24.27/' AGENT-3.md
+git add AGENT-3.md
+git commit -m "agents: P11.8 landed <sha> — rotate Agent-3 NOW to P24.27"
+git push origin main
+```
+
+### STEP 4 — start P24.27 (observability lint) immediately
+
+Details in AGENT.md P24.27 row.  **Do not stop between rows.**  The
+2026-04-22 stall included a silent `flush_coins: sapling_tree persist
+failed` warning — exactly the class this lint catches.
+
+---
+
+### Not your lane — FYI only
+
+The 2026-04-22 04:25 live-node stall (h=3,078,014) was diagnosed: missing
+coinbase UTXO from h=3,077,892 + tx_index miss + hot loop.  Coordinator
+landed `ddd1fbeab` + `7162ab1a7` to prevent bootloop.  Agent-2 owns the
+durable fix (P24.28 → P24.29 → P24.30).  **You stay on P11.8 → P24.27 —
+don't touch lib/validation/ / lib/storage/ / app/services/.**
 
 ## 📡 MCP is live — use these tools instead of shell whenever possible (2026-04-22 04:30)
 
