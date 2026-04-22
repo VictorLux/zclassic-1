@@ -40,7 +40,40 @@ checklist plus the lane rules.
 
 ---
 
-## Current status — NOW = P11.8
+## Current status — NOW = P11.8 → P24.27
+
+## 🚀 KICKOFF — 2026-04-22 04:53 (from Rhett / coordinator)
+
+**Run kickoff mcp for zclassic23.**
+
+Your P11.8 RED (`lib/test/src/test_parity_diff_gate.c`, 632 lines) is preserved
+on `origin/wip/agent-3-p11.8-red` — no loss risk if kickoff resets the worktree.
+Restore after kickoff with:
+```
+git show origin/wip/agent-3-p11.8-red:lib/test/src/test_parity_diff_gate.c \
+  > lib/test/src/test_parity_diff_gate.c
+```
+
+**Context on the live node (not your lane, but FYI):** 2026-04-22 04:25 stall
+at h=3,078,014 was root-caused (missing coinbase UTXO from h=3,077,892,
+tx_index miss, hot loop).  Coordinator landed two commits on main that
+prevent bootloop — `ddd1fbeab` + `7162ab1a7`.  Agent-2 picks up the fallout
+(P24.28 RED test → P24.29 self-heal scan fallback → P24.30 UTXO audit).
+Your lane is untouched; stay on P11.8 → P24.27.
+
+**Your sequence after P11.8:**
+1. **P11.8** (NOW) — parity diff CI gate.  RED preserved.  Commit RED first,
+   then GREEN.  The gate compares chain state (height, block hashes,
+   coins_best_block, value balances) against the paired production
+   parity service (Agent-2's P12.3).
+2. **P24.27** — observability lint.  `fprintf(stderr, ...)` in lib/ and app/
+   must pair with `event_emit(...)` OR `// obs-ok:<reason>` comment.  The
+   2026-04-22 stall included a silent `flush_coins: sapling_tree persist
+   failed` warning — exactly the class this lint catches.
+3. Then your post-MVP lane: P15.4 → P15.5 → P17 testing → P18.4 crypto
+   perf → P20 dev-MCP → P21.7/P21.8 → P22.4 → P23.7 → P24.2/P24.4.
+
+**Not pulled into sync-robustness wave** — all Agent-2's lane.
 
 ## 📡 MCP is live — use these tools instead of shell whenever possible (2026-04-22 04:30)
 

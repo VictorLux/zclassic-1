@@ -40,20 +40,94 @@ checklist plus the lane rules.
 
 ---
 
-## Current status — NOW = P24.18a → 18b → 18c → P24.19 → 20 → 21 → 22 → 23 → 24 → 25 → 26 (sync-robustness wave, 11 rows)
+## Current status — NOW = P24.28 → P24.29 → P24.30 → P24.18a → 18b → 18c → P24.19 → 20 → 21 → 22 → 23 → 24 → 25 → 26 (stall root-cause RED test leads; sapling-persist wave dropped to SECONDARY)
 
-## 🚀 KICKOFF — 2026-04-22 04:23 (from Rhett)
+## 🚀 KICKOFF — 2026-04-22 04:53 (from Rhett / coordinator)
 
-**Run kickoff mcp for zclassic23.**
+**Context:** the 2026-04-22 04:25 live-node stall was diagnosed (logs + code read).
+It is NOT the P24.18 sapling-persist bug. That's a cosmetic secondary warning.
+The real stall:
 
-Your P24.18 RED (`lib/test/src/test_unclean_shutdown_advance.c`, 93 lines) is
-preserved on `origin/wip/agent-2-p24.18-red` — no loss risk if kickoff resets
-the worktree. Restore after kickoff with:
-```
-git show origin/wip/agent-2-p24.18-red:lib/test/src/test_unclean_shutdown_advance.c \
-  > lib/test/src/test_unclean_shutdown_advance.c
-```
-Then resume from the ACTION LIST **Step 2** below.
+  - Block 3,078,015 spends a coinbase output from h=3,077,892.
+  - Our SQLite coins set is missing ~4,700 UTXOs (fast-sync LDB drift).
+  - Self-heal at `process_block.c:1277` calls `block_tree_db_read_tx_index`
+    and gets "not in tx index" because LDB-fast-synced blocks never get
+    indexed → dead recovery path → 4,700+ identical failures in a hot loop.
+
+Coordinator landed two fire-drill commits on main (pay back the debt):
+
+  1. **`ddd1fbeab` validation: hot-loop bail-out triggers needs_reimport
+     auto-recovery** — added `g_shutdown_requested=1` after 10 consecutive
+     UTXO failures at the same height, so systemd restart consumes the
+     `needs_reimport` flag.  Changed `Restart=on-failure`→`always` in
+     `deploy/zclassic23.service`.
+
+  2. **`7162ab1a7` validation: debounce hot-loop exit to prevent
+     bootloop** — discovered that zclassicd's on-disk LDB was memtable-stale
+     (h=3,078,003 vs zclassicd's tip h=3,086,367) and did NOT carry the
+     missing UTXO.  Reimport was a no-op; we bootlooped.  Debounce:
+     `utxo_recovery_import_ldb` now writes `<datadir>/last_reimport_attempted`
+     after success; `process_block.c`'s 10-fail exit checks that marker's
+     mtime and, if <10min old, emits `FATAL_HOT_LOOP_STUCK` and stays up
+     (visible-stuck instead of bootloop).
+
+**Your work, in order — NOW is P24.28:**
+
+### P24.28 (NOW) — RED test for the hot-loop exit + debounce
+
+Both branches of the debounce need a RED test.  `lib/test/src/test_connect_tip_hot_loop_exit.c`:
+
+  - Expose the `s_utxo_fail_count` / `s_utxo_fail_height` statics via
+    `#ifdef ZCL_TESTING` (same pattern you planned for P24.18).
+  - Fixture 1 — no marker: inject 10 identical-height `bad-txns-inputs-
+    missingorspent` failures, assert (a) `needs_reimport` file present,
+    (b) `g_shutdown_requested == 1`, (c) event log contains
+    `FATAL_HOT_LOOP h=<H>` (NOT the `_STUCK` variant).
+  - Fixture 2 — fresh marker: write `<datadir>/last_reimport_attempted`
+    with mtime=now, then inject 10 failures, assert (a) `needs_reimport`
+    still written, (b) `g_shutdown_requested == 0`, (c) event log
+    contains `FATAL_HOT_LOOP_STUCK h=<H>`.
+  - Fixture 3 — stale marker (>10min): same as fixture 2 but with
+    mtime=now-700s; assert the ORIGINAL branch fires (shutdown requested).
+  - Idempotence: run the same fixture twice in one process; assert
+    shutdown is only requested once.
+
+Acceptance: RED fails before your test hooks exist, GREEN after you
+add the `#ifdef ZCL_TESTING` accessors.  ~150 lines of test, <1h of
+work.  Pushable as a single commit.
+
+### P24.29 (next) — self-heal scan fallback + tx_index backfill
+
+This is what ACTUALLY unsticks the live node long-term.  Details in
+AGENT.md P24.29 row.  Key idea: when `block_tree_db_read_tx_index`
+misses, fall back to (a) BIP34 height decode if the missing tx is a
+coinbase (scriptSig encodes producer block height), or (b) bounded-
+depth block-file scan (last 1000 from tip) for non-coinbase; on
+success, backfill the tx_index entry.
+
+### P24.30 (then) — post-IBD UTXO commitment audit vs trusted peer
+
+Make the next drift visible at sync-completion, not at the next spend.
+Details in AGENT.md P24.30.
+
+### Legacy P24.18 wave — still queued but SECONDARY
+
+Your RED at `wip/agent-2-p24.18-red` (93-line test_unclean_shutdown_advance.c)
+stays preserved.  After P24.30 lands, resume P24.18a/b/c → P24.19+ as
+originally planned.  The sapling-persist warning IS real; it's just
+not what was blocking the chain.
+
+### Preserved WIP pointers
+
+- `origin/wip/agent-2-p24.18-red` — 93-line test for sapling persist 3-fail threshold
+- `origin/wip/agent-2-p13.1-red` — older P13.1 test
+- Restore with: `git show <ref>:<path> > <path>`
+
+### MCP kickoff
+
+Run kickoff mcp for zclassic23.  `zcl_status`, `zcl_events`, `zcl_logtail`
+are the best ways to read live-node state instead of shell.  `zcl_rpc`
+for any RPC not wrapped.
 
 ## 📡 MCP is live — use these tools instead of shell whenever possible (2026-04-22 04:30)
 
