@@ -54,68 +54,65 @@ through zclassic23 AND zclassicd, captures their validation decisions +
 mempool state + wallet events, and asserts parity (same accept/reject,
 same UTXO deltas, same fee totals).
 
-### Step 1 — pull + kickoff clean
+### Step 1 — pull + restore existing RED
+
+You already wrote a 632-line RED test for P11.8 in a prior session.
+Coordinator preserved it to side branch `wip/agent-3-p11.8-red`.
+Restore it untracked so you can continue:
 
 ```
 cd ~/zclassic23-3
 git fetch origin && git checkout main && git reset --hard origin/main
-cat AGENT.md | grep -A5 "P11.8"   # re-read the row description
+git show origin/wip/agent-3-p11.8-red:lib/test/src/test_parity_diff_gate.c \
+  > lib/test/src/test_parity_diff_gate.c
+wc -l lib/test/src/test_parity_diff_gate.c   # expect 632
 ```
 
-### Step 2 — write RED first
+Your existing RED already defines the comparison contract:
+`PARITY_GATE_OK`, `PARITY_GATE_FAIL_REMOTE_UNREACHABLE`,
+`PARITY_GATE_FAIL_HEIGHT_MISMATCH`, `PARITY_GATE_FAIL_HASH_MISMATCH`,
+`PARITY_GATE_FAIL_LOCAL_BEST_BLOCK_MISMATCH`. Don't redo this — pick
+it up from where you left off.
 
-New file `lib/test/src/test_parity_diff_gate.c`:
-- 20 mainnet block fixtures from heights spanning pre-Overwinter /
-  Overwinter / Sapling / post-Sapling (e.g. 419200, 419201, 419202,
-  653600, 653601, 3000000, 3001000, 3078013, 3078014, 3078015,
-  3081408, and 10 random others).
-- For each fixture: deserialize → check_block() → expect specific
-  accept/reject decision (recorded from zclassicd via fixture manifest).
-- Assert parity: if zclassicd accepted, zclassic23 must accept; if
-  zclassicd rejected with reason R, zclassic23 must reject with
-  matching reason category.
-- Pre-GREEN: the fixture manifest doesn't exist yet, so test FAILs
-  loading the fixture file. That's the valid RED.
+### Step 2 — push RED (your existing 632 lines)
 
-RED commit:
+Wire into test runner + commit:
 ```
+# lib/test/include/test/test_helpers.h — add:
+#   int test_parity_diff_gate(void);
+# lib/test/src/test.c — add call site in the test list
 git add lib/test/src/test_parity_diff_gate.c \
         lib/test/include/test/test_helpers.h \
         lib/test/src/test.c
-git commit -m "test/P11.8: RED for parity-diff CI gate (no fixture yet)"
+git commit -m "test/P11.8: RED for parity-diff CI gate"
 git push origin main
 ```
 
-### Step 3 — write GREEN (the fixture manifest)
+### Step 3 — write GREEN
 
-Create `lib/test/fixtures/parity_diff_manifest.tsv`:
-```
-# height  hash                                                              expected_decision  reject_reason
-419200    <hash>                                                            accept             -
-419201    <hash>                                                            accept             -
-...
-```
+Read your existing RED to see what needs to exist for the test to
+pass. Likely dependencies (grep your own 632-line file):
 
-Generate the manifest by calling zclassicd's getblock RPC for each
-height and recording its verdict. For the acceptance reason categories
-(bad-txns-*, bad-blk-*, etc.), use the legacy error strings from
-`lib/consensus/src/validation.cpp` in the zclassicd source.
+- An RPC client helper that calls `zclassicd-rhett` at 127.0.0.1:8232
+  (use existing `lib/rpc/src/client.c` or write a minimal one in
+  `lib/test/src/test_helpers.c`).
+- A deterministic way to get local `chain_height` and local block-hash
+  -by-height (use `zcl_rpc` or direct block_index lookup).
+- Socket-timeout + error-path handling so the test fails loudly
+  (not silently) when zclassicd isn't running.
 
-Wire the fixture load into `test_parity_diff_gate.c`; implement the
-block-fetch-from-disk path (use `disk_block_io.c` to find the block
-by height → read its bytes from blk*.dat → deserialize).
-
-Assert: for every fixture, the zclassic23 decision matches the
-manifest.
+Sketch of GREEN work:
+1. Add any helper function the RED test references but that doesn't exist.
+2. Run `make test_zcl && ./test_zcl` — expect your parity_diff test
+   to transition from FAIL-compile → FAIL-runtime → PASS.
+3. If legacy zclassicd isn't available in CI, gate the test behind
+   `ZCL_STRESS_TESTS=1` (same pattern as P11.4 shielded-payment gate).
 
 GREEN commit:
 ```
 make -j$(nproc) test_zcl && ./test_zcl 2>&1 | grep parity_diff
-# should show "OK" for all 20 fixtures
-
-git add lib/test/fixtures/parity_diff_manifest.tsv \
-        lib/test/src/test_parity_diff_gate.c
-git commit -m "test/P11.8: GREEN for parity-diff CI gate (20-fixture manifest)"
+git add <files you added>
+git commit -m "test/P11.8: GREEN for parity-diff CI gate"
 git push origin main
 ```
 
