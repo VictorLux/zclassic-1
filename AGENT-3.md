@@ -42,6 +42,38 @@ checklist plus the lane rules.
 
 ## Current status — NOW = P11.8
 
+## 📡 MCP is live — use these tools instead of shell whenever possible (2026-04-22 04:30)
+
+Coordinator registered `zcl23` as a Codex MCP (global, `~/.codex/config.toml`).
+`.mcp.json` is also in the repo root so Claude Code auto-discovers it.
+
+**To verify** in any Codex session: `codex mcp list` — you should see
+```
+zcl23  /home/rhett/zclassic23/zclassic23  -mcp  -  -  enabled  Unsupported
+```
+
+In Codex, the tools surface as `zcl23.<name>`. Useful for YOUR lane:
+
+| Task | MCP tool | Shell fallback |
+|---|---|---|
+| Check node state | `zcl_status` | `./tools/zcl-rpc getblockcount` |
+| List Sapling addresses | `zcl_z_listaddresses` | — |
+| Benchmark | `zcl_benchmark` | `./test_zcl benchmark_*` |
+| Self-test | `zcl_self_test` | `./test_zcl` |
+| Tail events | `zcl_events` | — |
+| Log tail | `zcl_logtail(lines=N)` | `tail -N ~/.zclassic-c23/node.log` |
+| Arbitrary RPC | `zcl_rpc(method, params)` | `./tools/zcl-rpc ...` |
+
+**⚠ UNSAFE against live node until P24.14 redeployed:** `zcl_syncdiag`,
+`zcl_walletaudit`, `zcl_listunspent`, `zcl_z_listunspent`, `zcl_rescanblockchain`.
+For shielded-tx inspection use `zcl_listtransactions` / `zcl_z_listaddresses` —
+those don't touch coins_view_cache and are always safe.
+
+**Coord tools (`zcl_coord_*`) are P25 scope — Agent-2 building them.** Once
+P25.3 lands, use `zcl_coord_mail_inbox` on kickoff instead of re-reading AGENT-3.md.
+
+---
+
 ## ⚡ ACTION LIST — Agent-3 — 2026-04-22 04:00
 
 **You are on MVP #8: parity-diff CI gate. This is a test-writing row.

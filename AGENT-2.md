@@ -42,6 +42,41 @@ checklist plus the lane rules.
 
 ## Current status — NOW = P24.18a → 18b → 18c → P24.19 → 20 → 21 → 22 → 23 → 24 → 25 → 26 (sync-robustness wave, 11 rows)
 
+## 📡 MCP is live — use these tools instead of shell whenever possible (2026-04-22 04:30)
+
+Coordinator registered `zcl23` as a Codex MCP (global, `~/.codex/config.toml`).
+`.mcp.json` is also in the repo root so Claude Code auto-discovers it.
+
+**To verify** in any Codex session: `codex mcp list` — you should see
+```
+zcl23  /home/rhett/zclassic23/zclassic23  -mcp  -  -  enabled  Unsupported
+```
+
+In Codex, the tools surface as `zcl23.<name>` (or `zcl23__<name>` in some clients).
+Full list via `zcl_tools_list`; most useful for YOUR work:
+
+| Task | MCP tool | Shell fallback |
+|---|---|---|
+| Check node state | `zcl_status` | `./tools/zcl-rpc getblockcount` |
+| Peer count + latency | `zcl_peers`, `zcl_peerlatency` | `./tools/zcl-rpc getpeerinfo` |
+| Tail events | `zcl_events` | `./tools/zcl-rpc listevents` |
+| Sync diagnosis | `zcl_syncstate`, `zcl_validationstatus` | grep node.log |
+| Run arbitrary RPC | `zcl_rpc(method=..., params=...)` | `./tools/zcl-rpc <method> <args>` |
+| Log tail | `zcl_logtail(lines=N)` | `tail -N ~/.zclassic-c23/node.log` |
+
+**⚠ UNSAFE against live node** (will be safe after P24.14 canary and P24.18
+land): `zcl_syncdiag` (was crashing the node — P24.11 fixed; verify before
+using), `zcl_walletaudit`, `zcl_listunspent`, `zcl_z_listunspent`,
+`zcl_rescanblockchain` (P24.14 fixed these on main but live node at
+h=3,078,014 still has pre-P24.14 binary if you haven't redeployed since
+coordinator's last deploy).
+
+**Coord tools (zcl_coord_*) are P25 scope — NOT built yet.** P25.1 is your
+row to build them. When P25 lands, you'll use `zcl_coord_mail_inbox` on
+kickoff instead of re-reading this file.
+
+---
+
 ## ⚡ ACTION LIST — Agent-2 — 2026-04-22 04:00
 
 **The live node is stalled at h=3,078,014. You unstick it by landing

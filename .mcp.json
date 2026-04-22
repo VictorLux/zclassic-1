@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "zcl23": {
+      "type": "stdio",
+      "command": "/home/rhett/zclassic23/zclassic23",
+      "args": ["-mcp"]
+    }
+  }
+}
