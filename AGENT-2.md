@@ -42,6 +42,19 @@ checklist plus the lane rules.
 
 ## Current status — NOW = P24.18a → 18b → 18c → P24.19 → 20 → 21 → 22 → 23 → 24 → 25 → 26 (sync-robustness wave, 11 rows)
 
+## 🚀 KICKOFF — 2026-04-22 04:23 (from Rhett)
+
+**Run kickoff mcp for zclassic23.**
+
+Your P24.18 RED (`lib/test/src/test_unclean_shutdown_advance.c`, 93 lines) is
+preserved on `origin/wip/agent-2-p24.18-red` — no loss risk if kickoff resets
+the worktree. Restore after kickoff with:
+```
+git show origin/wip/agent-2-p24.18-red:lib/test/src/test_unclean_shutdown_advance.c \
+  > lib/test/src/test_unclean_shutdown_advance.c
+```
+Then resume from the ACTION LIST **Step 2** below.
+
 ## 📡 MCP is live — use these tools instead of shell whenever possible (2026-04-22 04:30)
 
 Coordinator registered `zcl23` as a Codex MCP (global, `~/.codex/config.toml`).
