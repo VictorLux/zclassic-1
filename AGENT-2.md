@@ -42,7 +42,42 @@ checklist plus the lane rules.
 
 ## Current status — NOW = P24.18a → 18b → 18c → P24.19 → 20 → 21 → 22 → 23 → 24 → 25 → 26 (sync-robustness wave, 11 rows)
 
-## 🎯 IMPORTANT 2026-04-22 02:30 — P24.18 SPLIT into 3 narrower rows
+## ⚡ IMPORTANT 2026-04-22 03:30 — you're on P24.18c-shape; that's fine
+
+**Coordinator observation:** you've been writing
+`lib/test/src/test_unclean_shutdown_advance.c` (93-line RED, preserved
+in side-branch `wip/agent-2-p24.18-red` → 84595fa6a). This matches
+**P24.18c** scope (persist 3-fail threshold + rebuild trigger), NOT
+P24.18a (repro + diagnostic). That's fine — arguably better, because:
+
+  - If `flush_coins` fails 3× at h=N → your code sets
+    `g_sapling_tree_rebuilding=true` → sync_controller re-runs
+    sapling_tree_rebuild → tree rebuilds to **current** chain_tip
+    (which is now past the boot-time value).
+  - So your 18c approach **implicitly fixes 18b** (end-height) through
+    the sticky-recovery mechanism. No need for a separate loop-until-
+    stable change in sync_controller.c.
+
+Keep going. Your NOW is **effectively P24.18 monolith (via 18c path)**.
+After this lands, skip 18b (likely unnecessary) and go straight to
+P24.19.
+
+GREEN implementation still owed:
+  - `process_block_test_fail_next_sapling_persists(N)` — static counter
+    in process_block.c gated by `#ifdef ZCL_TESTING`.
+  - `process_block_test_persist_sapling_tree(bool force)` — test-only
+    entry point calling the same helper `flush_coins` uses.
+  - `EV_SAPLING_PERSIST_FAIL` enum value in `lib/event/include/event/event.h`.
+  - 3-fail counter + `g_sapling_tree_rebuilding=true` wiring in
+    `flush_coins` at process_block.c:293-304.
+
+Once the test is green, run `make deploy`. If the live node advances
+past h=3,078,014 within 5 min, you're done with P24.18. Rotate to
+P24.19.
+
+---
+
+## 🎯 IMPORTANT 2026-04-22 02:30 — P24.18 SPLIT into 3 narrower rows (SUPERSEDED by above note)
 
 **Your NOW is NOW P24.18a** — NOT the monolithic P24.18. Coordinator
 split it because the 3-part fix was too cross-cutting to land as one
