@@ -40,7 +40,36 @@ checklist plus the lane rules.
 
 ---
 
-## Current status — NOW = P24.18 → P24.19 → P24.20 → P24.21 → P24.22 → P24.23 → P24.24 (sync-robustness wave EXTENDED)
+## Current status — NOW = P24.18a → P24.18b → P24.18c → P24.19 → P24.20 → P24.21 → P24.22 → P24.23 → P24.24 (sync-robustness wave SPLIT + EXTENDED)
+
+## 🎯 IMPORTANT 2026-04-22 02:30 — P24.18 SPLIT into 3 narrower rows
+
+**Your NOW is NOW P24.18a** — NOT the monolithic P24.18. Coordinator
+split it because the 3-part fix was too cross-cutting to land as one
+commit. Work the split sequentially:
+
+- **P24.18a (NOW):** repro + diagnostic. Build a deterministic RED test
+  in `lib/test/src/test_stall_repro.c` that reproduces the live-node
+  stall on a fixture. ADD diagnostic printf in `flush_coins` to print
+  sqlite errmsg when `node_db_state_set("sapling_tree", ...)` fails.
+  Deploy THIS row alone. Read `node.log` to see the actual failure
+  mode. **Coordinator's hypothesis in P24.18b may be wrong — P24.18a
+  verifies first.**
+- **P24.18b:** end-height fix (loop until rebuild is stable). Land
+  only if P24.18a confirms the end-height is actually the bug.
+- **P24.18c:** error propagation + sticky recovery (event emit, 3-fail
+  threshold, rebuild-on-demand).
+
+**Why this split:** you've been on P24.18 for ~2 hours with nothing
+pushed. The row is too cross-module for one commit. P24.18a is ~100
+lines and pushable in <1 hour. It gives us EVIDENCE of what's actually
+broken, which may be different from coordinator's hypothesis. That
+evidence lets us land 18b with confidence, or redirect if the real
+bug is elsewhere.
+
+**Keep the RED-first discipline:** every row = RED commit + GREEN
+commit. Even P24.18a's diagnostic printf is a "GREEN" after the RED
+test harness.
 
 ## 🎯 COORDINATOR MANDATE 2026-04-22 02:00 — "STICKY, STRONG, ROBUST" (wave extended +3)
 
