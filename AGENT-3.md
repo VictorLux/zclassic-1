@@ -40,65 +40,108 @@ checklist plus the lane rules.
 
 ---
 
-## Current status — NOW = P11.8 → P24.27 → P15.4 → P15.5 → P17 → P18.4 → P20 → P21.7/8 → P22.4 → P23.7 → P24.2/P24.4
+## Current status — NOW = P11.8 → P20.12 → P24.27 → P20.10 → P15.4 → P15.5 → P17 → P18.4 → P21.7/8 → P22.4 → P23.7 → P24.2/P24.4
 
-## 🚀 KICKOFF — 2026-04-22 05:00 — ship P11.8 RED + GREEN in one pass
+**`zcl_kickoff` LANDED 2026-04-22 05:36** (`d8ed78dd7`, filed in AGENT.md as
+P20.11 — your commit-subject `mcp/P20.9` was a tag collision with the
+planned `zcl_build_info` P20.9 row; not a problem, just note the
+canonical ID is P20.11).  Good initiative.
 
-**You (Agent-3 Codex) do not need to read the rest of this file first.  Run the
-steps below and ship P11.8 before moving to P24.27.**  Total ≤90 min.
+## 🚀 KICKOFF — 2026-04-22 05:55 — finish P11.8, then ship P20.12 enrichment
 
-### STEP 0 — sync + restore RED (30 seconds)
+**You do not need to read the rest of this file first.  Run the steps below.**
+Total ≤120 min.
+
+### STEP 0 — sync + restore P11.8 RED (30 seconds)
 
 ```bash
 cd ~/zclassic23-3
-git fetch origin && git checkout main && git reset --hard origin/main
-# Your 632-line RED for the parity-diff gate is preserved:
-git show origin/wip/agent-3-p11.8-red:lib/test/src/test_parity_diff_gate.c \
-  > lib/test/src/test_parity_diff_gate.c
+git fetch origin
+git pull --rebase origin main
+# Your 632-line RED is preserved:
+[ -f lib/test/src/test_parity_diff_gate.c ] || \
+  git show origin/wip/agent-3-p11.8-red:lib/test/src/test_parity_diff_gate.c \
+    > lib/test/src/test_parity_diff_gate.c
 wc -l lib/test/src/test_parity_diff_gate.c   # expect 632
 ```
 
-### STEP 1 — wire + push RED (5 min)
+### STEP 1 — finish + push P11.8 RED (5 min)
 
-Follow the detailed ACTION LIST below (starts at `## ⚡ ACTION LIST`).
-**Steps 2–5 of that list are your checklist.**  Key acceptance:
-- RED shape: compiles with unresolved-symbol failure OR assertion failure
-  against the stub/contract.
-- Commit msg prefix: `test/P11.8: RED for parity-diff CI gate`.
+Wire into `lib/test/include/test/test_helpers.h` and `lib/test/src/test.c`
+(detailed ACTION LIST further down in this file, Steps 2–5).  Key acceptance:
+- RED shape: compiles with unresolved-symbol or contract-assertion failure.
+- Commit: `test/P11.8: RED for parity-diff CI gate`.
 
-### STEP 2 — write GREEN (60 min)
+### STEP 2 — P11.8 GREEN (60 min)
 
-Agent-2's P12.3 parity cluster is upstream of you.  Check whether P12.3's
-production service exists yet:
+Check whether Agent-2's P12.3 parity service landed yet:
 ```bash
 ls app/services/src/parity_*.c 2>/dev/null
 grep -rn "PARITY_GATE" lib/ app/ 2>/dev/null | head -5
 ```
-If P12.3 isn't landed yet, your GREEN can be a STUB-returning
-`PARITY_GATE_OK` so the test passes deterministically; file a
-cross-agent handoff note in AGENT.md that P12.3 must replace the stub.
+- If NO: your GREEN is a STUB that returns `PARITY_GATE_OK` deterministically
+  with a TODO comment tagging P12.3 as the replacement.  File a one-line
+  handoff note in AGENT.md P12.3 row.
+- If YES: wire the gate against the service.
 
-If P12.3 IS landed, wire your gate against its service.
-
-### STEP 3 — push GREEN + rotate (2 min)
-
+Commit + push:
 ```bash
 make -j$(nproc) test_zcl && ./test_zcl 2>&1 | grep -E "parity_diff_gate|ALL TESTS|SOME TESTS" | tail -5
-git add lib/test/src/test_parity_diff_gate.c <any new GREEN files>
+git add lib/test/src/test_parity_diff_gate.c <new GREEN files>
 git commit -m "P11.8: parity-diff CI gate (GREEN) — completes MVP #8"
-git push origin main
-# rotate NOW header
-sed -i 's/NOW = P11.8/NOW = P24.27/' AGENT-3.md
-git add AGENT-3.md
-git commit -m "agents: P11.8 landed <sha> — rotate Agent-3 NOW to P24.27"
 git push origin main
 ```
 
-### STEP 4 — start P24.27 (observability lint) immediately
+Rotate header:
+```bash
+sed -i 's/NOW = P11.8/NOW = P20.12/' AGENT-3.md
+git add AGENT-3.md
+git commit -m "agents: P11.8 landed <sha> — rotate Agent-3 NOW to P20.12"
+git push origin main
+```
 
-Details in AGENT.md P24.27 row.  **Do not stop between rows.**  The
-2026-04-22 stall included a silent `flush_coins: sapling_tree persist
-failed` warning — exactly the class this lint catches.
+### STEP 3 — P20.12 enrichment of `zcl_kickoff` (30 min)
+
+Your P20.11 `zcl_kickoff` returns `{cwd, repo_root, lane, role_file, now,
+git}` — useful, but kickoff should also answer "what's the NEXT concrete
+thing I ship?" without the agent having to read the whole AGENT-N.md file.
+
+**P20.12 fix plan** (inside `tools/mcp/controllers/ops_controller.c`, extend
+`h_zcl_kickoff`):
+
+1. After extracting `now`, parse the `## 🚀 KICKOFF` block that follows
+   and extract `next_ship` — the first `### STEP 1` (or first `### P<row>`)
+   description line.
+2. Add a `preserved_wip[]` array field by grepping `origin/wip/agent-<N>-*`
+   branches via `git_branch_list`; each entry: `{branch, file, lines}`.
+3. Add `queue[]` — the chevron-separated row list from the `## Current
+   status` header, split into `{row_id, tier}` entries.
+4. Add `pending_pushes` — `git log origin/main..HEAD --oneline` from
+   repo_root.
+
+So a single `zcl_kickoff` call returns enough for Codex to do:
+  `lane, now, next_ship, queue, preserved_wip, pending_pushes, git`.
+
+No more "read AGENT-N.md top-to-bottom" step in the kickoff flow.
+
+RED test: extend `test_mcp_controllers.c` fixture with a synthetic
+AGENT-N.md containing a known KICKOFF block + Current status header;
+assert the parsed fields match expected values.
+
+Commit:
+```bash
+git commit -m "P20.12: enrich zcl_kickoff with next_ship, queue, preserved_wip, pending_pushes"
+git push origin main
+sed -i 's/NOW = P20.12/NOW = P24.27/' AGENT-3.md
+git add AGENT-3.md && git commit -m "agents: P20.12 landed <sha> — rotate Agent-3 NOW to P24.27"
+git push origin main
+```
+
+### STEP 4 — P24.27 observability lint (then start)
+
+Details in AGENT.md P24.27 row.  The 2026-04-22 stall included a silent
+`flush_coins: sapling_tree persist failed` warning — exactly the class
+this lint catches.  Don't stop between rows.
 
 ---
 
@@ -106,9 +149,11 @@ failed` warning — exactly the class this lint catches.
 
 The 2026-04-22 04:25 live-node stall (h=3,078,014) was diagnosed: missing
 coinbase UTXO from h=3,077,892 + tx_index miss + hot loop.  Coordinator
-landed `ddd1fbeab` + `7162ab1a7` to prevent bootloop.  Agent-2 owns the
-durable fix (P24.28 → P24.29 → P24.30).  **You stay on P11.8 → P24.27 —
-don't touch lib/validation/ / lib/storage/ / app/services/.**
+landed `ddd1fbeab` + `7162ab1a7` (debounce) + `1a56e79e7` (scan fallback).
+Live node is mid-`-reindex-chainstate` one-shot as I write this.
+Agent-2 owns the durable fix wave (P24.29 RED/factoring → P24.30 → P24.31).
+**You stay on P11.8 → P20.10 → P24.27 — don't touch lib/validation/ /
+lib/storage/ / app/services/utxo_* / lib/net/.**
 
 ## 📡 MCP is live — use these tools instead of shell whenever possible (2026-04-22 04:30)
 

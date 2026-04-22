@@ -40,157 +40,170 @@ checklist plus the lane rules.
 
 ---
 
-## Current status — NOW = P24.28 → P24.29 → P24.30 → P24.18a → 18b → 18c → P24.19 → 20 → 21 → 22 → 23 → 24 → 25 → 26 (stall root-cause RED-test first; sapling-persist wave dropped to SECONDARY)
+## Current status — NOW = P24.29 → P24.30 → P24.31 → P24.18a → 18b → 18c → P24.19 → 20 → 21 → 22 → 23 → 24 → 25 → 26
 
-## 🚀 KICKOFF — 2026-04-22 05:00 — ship P24.28 in one pass
+**P24.28 LANDED 2026-04-22 05:35** (a940dd5ba RED + 0af03d99e GREEN).  Rotation
+done.  The STEP list below is for P24.29.
 
-**You (Agent-2 Codex) do not need to read the rest of this file first.  Run the
-steps below in order and ship P24.28 before coming back for P24.29.**  Each step
-is <15 min; total ≤1h.
+## 🚀 KICKOFF — 2026-04-22 05:55 — ship P24.29 RED + events + MCP tool
 
-### STEP 0 — sync + restore WIP (30 seconds)
+**You do not need to read the rest of this file first.  Run the steps below
+in order and ship P24.29 before coming back for P24.30.**  Total ≤90 min.
+
+### P24.29 CONTEXT
+
+Coordinator pre-landed the GREEN (scan fallback in `lib/validation/src/process_block.c:1375+`,
+commit `1a56e79e7`, live-node proven: 2026-04-22 05:17 deploy healed the stuck
+chain past h=3,078,015 within 2 minutes).  Your work is the **regression
+surface + proper events + operator visibility** on top of that.
+
+### STEP 0 — sync + rebase WIP onto main (30 s)
 
 ```bash
 cd ~/zclassic23-2
-git fetch origin && git checkout main && git reset --hard origin/main
-# Your two RED WIPs are preserved on side branches.  Restore both
-# (P24.18 is SECONDARY now but preserve continuity for later):
-git show origin/wip/agent-2-p24.18-red:lib/test/src/test_unclean_shutdown_advance.c \
-  > lib/test/src/test_unclean_shutdown_advance.c
+git fetch origin
+# Your P24.28 extension WIP (event.h/c, process_block.h/c, test.c) should
+# rebase cleanly — neither coordinator's 1a56e79e7 nor Agent-3's d8ed78dd7
+# touches the files you're modifying, except process_block.c (line
+# ~1375-1490 scan fallback block).  If rebase flags a conflict there,
+# KEEP the coordinator pre-land verbatim — your work below only adds
+# proper event enum values to replace the EV_BOOT_ACTIVATE stand-in.
+git pull --rebase origin main
 ```
 
-### STEP 1 — read the fix you're writing the test for (3 min)
+### STEP 1 — read the pre-land (3 min)
 
-Open and read:
-- `lib/validation/src/process_block.c` lines 2360-2425 (the `s_utxo_fail_count
-  >= 3 ... needs_reimport flag` block + the new `s_utxo_fail_count == 10 &&
-  datadir { stat(marker_path) ... }` debounced exit).
-- `app/services/src/utxo_recovery_service.c` lines 338-360 (where the
-  marker file `<datadir>/last_reimport_attempted` is written after a
-  successful import).
+- `lib/validation/src/process_block.c:1375-1490` — the scan fallback
+  block (starts at the `"falling back to bounded-depth chain scan"`
+  fprintf).  Note the two `event_emitf(EV_BOOT_ACTIVATE, 0,
+  "SELF_HEAL_SCAN_HIT ...")` and `"SELF_HEAL_SCAN_EXHAUSTED ..."`
+  tag strings — those are stand-ins that your RED + event work
+  upgrades to proper enum values.
+- `~/.zclassic-c23/reindex.log` if the live node is still reindexing
+  — recent entries show the scan fallback firing on real UTXOs
+  (useful RED fixture oracle).
 
-Takeaway: two branches (FATAL_HOT_LOOP vs FATAL_HOT_LOOP_STUCK) + one
-idempotence rule (shutdown requested exactly once per process).
+### STEP 2 — promote the stand-in events to real enum values (10 min)
 
-### STEP 2 — write the RED test (20 min)
+Currently the scan fallback emits via `EV_BOOT_ACTIVATE` with
+`"SELF_HEAL_SCAN_HIT ..."` / `"SELF_HEAL_SCAN_EXHAUSTED ..."` tags.
+That's a pragmatism from the coordinator hot-land.  Promote to proper
+enum values so grep + filter via `zcl_logtail(domain="VAL.SELF_HEAL")`
+works cleanly:
 
-New file `lib/test/src/test_connect_tip_hot_loop_exit.c`.  Skeleton:
+- `lib/event/include/event/event.h` — add enum values next to your
+  P24.28 additions: `EV_SELF_HEAL_SCAN_HIT`, `EV_SELF_HEAL_SCAN_EXHAUSTED`.
+- `lib/event/src/event.c` — add the two event name strings in the
+  same table P24.28 uses.
+- `lib/validation/src/process_block.c` — swap the two `event_emitf`
+  calls in the scan block to use the new enum values.  Data string
+  format stays the same.
+
+### STEP 3 — write the RED test (35 min)
+
+New file `lib/test/src/test_self_heal_scan_fallback.c`:
 
 ```c
 /* Copyright 2026 Rhett Creighton - Apache License 2.0 */
 #include "test/test_helpers.h"
-#include "validation/process_block.h"
-/* Plus whatever headers expose g_shutdown_requested + EV_BOOT_ACTIVATE */
+/* plus includes for main_state / block_index / coins_view */
 
-int test_connect_tip_hot_loop_exit(void)
+int test_self_heal_scan_fallback(void)
 {
-    /* Fixture 1: no marker, 10 identical-height UTXO fails ->
-     *   - needs_reimport flag file exists
-     *   - g_shutdown_requested == 1
-     *   - event log line matches "FATAL_HOT_LOOP h=<H>"  (NOT _STUCK)
+    /* Fixture 1 — reachable: construct a fixture chain with a tx
+     * planted at depth=50 from tip (well inside default 1000 cap);
+     * drive connect_tip on a block that spends it; assert
+     *   (a) recovered=true (tip advances),
+     *   (b) the EV_SELF_HEAL_SCAN_HIT event was emitted,
+     *   (c) block_tree_db_read_tx_index returns the entry AFTER
+     *       the recovery (backfill happened).
      */
 
-    /* Fixture 2: write marker with mtime=now, 10 fails ->
-     *   - needs_reimport still written
-     *   - g_shutdown_requested == 0
-     *   - event log matches "FATAL_HOT_LOOP_STUCK h=<H>"
+    /* Fixture 2 — depth-exceeded: same setup but plant the tx at
+     * depth=1200 with ZCL_SELF_HEAL_SCAN_DEPTH=500 (setenv for
+     * the test).  Assert recovered=false AND
+     * EV_SELF_HEAL_SCAN_EXHAUSTED fired.
      */
 
-    /* Fixture 3: marker with mtime=now-700s, 10 fails ->
-     *   - original branch fires (shutdown requested)
+    /* Fixture 3 — env override: set ZCL_SELF_HEAL_SCAN_DEPTH=2000,
+     * plant tx at depth=1500.  Assert recovered=true.  (Proves the
+     * env var is honored.)
      */
 
-    /* Fixture 4: idempotence — after Fixture 1, inject 10 more fails at
-     *   the same height in the same process; g_shutdown_requested
-     *   should remain 1 (not re-fire), and no second FATAL_HOT_LOOP
-     *   event should be emitted.
+    /* Fixture 4 — double-spend safety: plant tx, let scan recover
+     * it, then try to spend the SAME output again; assert second
+     * spend fails cleanly (not re-scanned) — proves coins cache
+     * state mutation is correct.
      */
-
     return 0;
 }
 ```
 
-You need a driver for "inject 10 identical-height UTXO failures".  The
-simplest driver is to directly increment + invoke the static path.
-Expose the two statics via `#ifdef ZCL_TESTING` accessors in
-`process_block.c` (near the declaration of `s_utxo_fail_count`) and
-in `lib/validation/include/validation/process_block.h`:
+Wire into `lib/test/include/test/test_helpers.h` and `lib/test/src/test.c`
+the same way you did for `test_connect_tip_hot_loop_exit`.
+
+### STEP 4 — `zcl_self_heal_stats` MCP tool (25 min)
+
+New handler in `tools/mcp/controllers/ops_controller.c` (keep it near
+your other ops handlers).  Counter state lives as file-scope
+`_Atomic uint64_t` in `process_block.c` (add):
 
 ```c
-#ifdef ZCL_TESTING
-void process_block_test_set_utxo_fail_state(int height, int count);
-int  process_block_test_get_utxo_fail_count(void);
-void process_block_test_trigger_hot_loop_check(int height,
-                                                const char *datadir);
-#endif
+static _Atomic uint64_t g_self_heal_tx_index_hits;
+static _Atomic uint64_t g_self_heal_scan_hits;
+static _Atomic uint64_t g_self_heal_scan_exhausted;
+static _Atomic uint64_t g_self_heal_scan_blocks_checked_total;
 ```
 
-The third accessor runs the exact `if (s_utxo_fail_count == 10 &&
-datadir) { ... }` block against a caller-supplied datadir — reuse the
-same code, don't duplicate it (extract a static helper if clearer).
+Increment each atomically in the right branches.  Expose three
+getters (under `#ifdef ZCL_TESTING` if you want them test-only,
+or always-on if you want them MCP-callable — always-on is fine;
+they're just counters).
 
-### STEP 3 — register the test (2 min)
+MCP handler returns JSON:
+```json
+{
+  "tx_index_hits": <n>,
+  "scan_hits": <n>,
+  "scan_exhausted": <n>,
+  "scan_blocks_checked_total": <n>,
+  "scan_depth_limit": <int from env or default>
+}
+```
 
-- `lib/test/include/test/test_helpers.h` — forward decl:
-  `int test_connect_tip_hot_loop_exit(void);`
-- `lib/test/src/test.c` — add call site next to the existing
-  `test_unclean_shutdown_advance` slot (search for the closest
-  process_block-related test and put it there).
+### STEP 5 — commit + push (3 min)
 
-### STEP 4 — commit RED first (2 min)
-
+Single commit (events + RED + GREEN counters + MCP tool):
 ```bash
-make -j$(nproc) test_zcl 2>&1 | tail -5
-./test_zcl 2>&1 | grep -E "hot_loop_exit|ALL TESTS|SOME TESTS"
-# RED shape: test should EXIST and COMPILE but FAIL without the
-# ZCL_TESTING accessors below — if your test uses the accessors
-# directly the RED is a compile-time one (unresolved symbols).
-git add lib/test/src/test_connect_tip_hot_loop_exit.c \
+make -j$(nproc) test_zcl && ./test_zcl 2>&1 | grep -E "self_heal_scan|ALL TESTS|SOME TESTS" | tail -5
+git add lib/event/include/event/event.h \
+        lib/event/src/event.c \
+        lib/validation/src/process_block.c \
+        lib/validation/include/validation/process_block.h \
+        lib/test/src/test_self_heal_scan_fallback.c \
         lib/test/include/test/test_helpers.h \
-        lib/test/src/test.c
-git commit -m "test/P24.28: RED for hot-loop exit + debounce (ddd1fbeab + 7162ab1a7)"
+        lib/test/src/test.c \
+        tools/mcp/controllers/ops_controller.c
+git commit -m "P24.29: self-heal scan fallback — RED + events + zcl_self_heal_stats (GREEN on coordinator pre-land 1a56e79e7)"
 git push origin main
 ```
 
-### STEP 5 — commit GREEN (ZCL_TESTING accessors) (10 min)
-
-Add the three `#ifdef ZCL_TESTING` accessors in `process_block.c` +
-their declarations in the header.  Keep the accessor bodies trivial —
-they just read/write the statics or invoke the existing code path.
+### STEP 6 — rotate NOW + start P24.30 (1 min)
 
 ```bash
-make -j$(nproc) test_zcl && ./test_zcl 2>&1 | grep -E "hot_loop_exit|ALL TESTS|SOME TESTS" | tail -5
-```
-
-If green:
-```bash
-git add lib/validation/src/process_block.c \
-        lib/validation/include/validation/process_block.h
-git commit -m "validation/process_block: ZCL_TESTING accessors for P24.28 hot-loop test (GREEN)"
-git push origin main
-```
-
-### STEP 6 — rotate NOW + announce (1 min)
-
-Update this file's `## Current status` header line to:
-```
-## Current status — NOW = P24.29 → P24.30 → P24.18a → ...
-```
-
-```bash
+sed -i 's/NOW = P24.29/NOW = P24.30/' AGENT-2.md
 git add AGENT-2.md
-git commit -m "agents: P24.28 landed <sha> — rotate Agent-2 NOW to P24.29"
+git commit -m "agents: P24.29 landed <sha> — rotate Agent-2 NOW to P24.30"
 git push origin main
 ```
 
-Then IMMEDIATELY start P24.29 (self-heal scan fallback + tx_index
-backfill) — details in AGENT.md P24.29 row.  Don't stop between rows.
+Then IMMEDIATELY read AGENT.md P24.30 row and start.  Don't stop between rows.
 
-### After P24.28 → P24.29 → P24.30
+### After P24.29 → P24.30 → P24.31
 
 Then resume the legacy P24.18 wave (sapling-persist fix).  Your
-`test_unclean_shutdown_advance.c` (93 lines) is restored in Step 0 and
-ready to commit as P24.18's RED when you get there.
+`test_unclean_shutdown_advance.c` (93 lines) is preserved on
+`origin/wip/agent-2-p24.18-red` — restore when you get there.
 
 ---
 

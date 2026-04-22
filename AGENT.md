@@ -435,6 +435,8 @@ with everything else.
 | **P20.8** | `zcl_stages` | (Post-P16) Staged-sync pipeline graph: `{stage_id, forward_file, unwind_file, prune_file, invariants, last_timings}`. | Agent-2 |
 | **P20.9** | `zcl_build_info` | Last-built binary SHA + delta files since. "The running binary doesn't match your tree" warning. | Agent-2 |
 | **P20.10** | `zcl_test_map` | `test_file → [files_exercised]` + reverse. Answers "what test would catch this regression?" | Agent-3 |
+| **P20.11** | `zcl_kickoff` | **LANDED 2026-04-22 05:36 `d8ed78dd7` (Agent-3, commit-subject tagged P20.9 by accident — this is the canonical row ID).** Local-kickoff MCP tool: reads cwd, deduces lane (AGENT-2 vs AGENT-3 from worktree path), reads role MD, extracts `Current status — NOW = ...` header, returns JSON with `{cwd, repo_root, lane, role_file, now, git: {branch, status_short, dirty}}`. Lets Codex do one MCP call at session start instead of re-reading AGENT-N.md every turn. | Agent-3 (landed) |
+| **P20.12** | **Enrich `zcl_kickoff` with next-ship signals.** Extend the P20.11 handler: parse the `## 🚀 KICKOFF` block following the `Current status` header and extract `next_ship` (first `### STEP 1` or `### P<row>` line).  Add `preserved_wip[]` by scanning `origin/wip/agent-<N>-*` branches (branch, file_path, lines).  Add `queue[]` parsed from the chevron-separated row list in the header.  Add `pending_pushes` = `git log origin/main..HEAD --oneline`.  Net result: one `zcl_kickoff` call returns everything Codex needs to start working — no AGENT-N.md read required.  RED: synthetic AGENT-N.md fixture + assert parsed fields match.  Event: `EV_MCP_KICKOFF` with agent + next_ship tag so usage shows in `zcl_events`. | Agent-3 (after P11.8) |
 
 ## Priority 21 — Oversized-file deconstruction
 
