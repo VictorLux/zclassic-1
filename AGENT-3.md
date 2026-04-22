@@ -42,6 +42,95 @@ checklist plus the lane rules.
 
 ## Current status — NOW = P11.8
 
+## ⚡ ACTION LIST — Agent-3 — 2026-04-22 04:00
+
+**You are on MVP #8: parity-diff CI gate. This is a test-writing row.
+It pairs with Agent-2's P12.3 parity cluster but you own the test.**
+
+### Goal
+
+Build a deterministic CI gate that walks a fixed set of mainnet blocks
+through zclassic23 AND zclassicd, captures their validation decisions +
+mempool state + wallet events, and asserts parity (same accept/reject,
+same UTXO deltas, same fee totals).
+
+### Step 1 — pull + kickoff clean
+
+```
+cd ~/zclassic23-3
+git fetch origin && git checkout main && git reset --hard origin/main
+cat AGENT.md | grep -A5 "P11.8"   # re-read the row description
+```
+
+### Step 2 — write RED first
+
+New file `lib/test/src/test_parity_diff_gate.c`:
+- 20 mainnet block fixtures from heights spanning pre-Overwinter /
+  Overwinter / Sapling / post-Sapling (e.g. 419200, 419201, 419202,
+  653600, 653601, 3000000, 3001000, 3078013, 3078014, 3078015,
+  3081408, and 10 random others).
+- For each fixture: deserialize → check_block() → expect specific
+  accept/reject decision (recorded from zclassicd via fixture manifest).
+- Assert parity: if zclassicd accepted, zclassic23 must accept; if
+  zclassicd rejected with reason R, zclassic23 must reject with
+  matching reason category.
+- Pre-GREEN: the fixture manifest doesn't exist yet, so test FAILs
+  loading the fixture file. That's the valid RED.
+
+RED commit:
+```
+git add lib/test/src/test_parity_diff_gate.c \
+        lib/test/include/test/test_helpers.h \
+        lib/test/src/test.c
+git commit -m "test/P11.8: RED for parity-diff CI gate (no fixture yet)"
+git push origin main
+```
+
+### Step 3 — write GREEN (the fixture manifest)
+
+Create `lib/test/fixtures/parity_diff_manifest.tsv`:
+```
+# height  hash                                                              expected_decision  reject_reason
+419200    <hash>                                                            accept             -
+419201    <hash>                                                            accept             -
+...
+```
+
+Generate the manifest by calling zclassicd's getblock RPC for each
+height and recording its verdict. For the acceptance reason categories
+(bad-txns-*, bad-blk-*, etc.), use the legacy error strings from
+`lib/consensus/src/validation.cpp` in the zclassicd source.
+
+Wire the fixture load into `test_parity_diff_gate.c`; implement the
+block-fetch-from-disk path (use `disk_block_io.c` to find the block
+by height → read its bytes from blk*.dat → deserialize).
+
+Assert: for every fixture, the zclassic23 decision matches the
+manifest.
+
+GREEN commit:
+```
+make -j$(nproc) test_zcl && ./test_zcl 2>&1 | grep parity_diff
+# should show "OK" for all 20 fixtures
+
+git add lib/test/fixtures/parity_diff_manifest.tsv \
+        lib/test/src/test_parity_diff_gate.c
+git commit -m "test/P11.8: GREEN for parity-diff CI gate (20-fixture manifest)"
+git push origin main
+```
+
+### Step 4 — rotate NOW
+
+Update this file's `## Current status` header to `NOW = P15.4` (per
+your post-MVP roadmap), commit, push.
+
+### Parallel note — P24.27 also assigned to you
+
+After P11.8 lands, your next row is **P24.27** (observability lint
+gate — `fprintf(stderr)` must pair with `event_emit` or `// obs-ok:`
+marker). See AGENT.md for the full description. This is a natural
+pair with your existing P24.2/P24.4 lint cluster.
+
 **P11.6 landed 39bb904f3 [test:1.0]** (RED: 4ae4b09db). Four pieces
 now gate "someone we don't know can run zclassic23 for a week
 without intervention":

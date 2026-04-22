@@ -42,38 +42,149 @@ checklist plus the lane rules.
 
 ## Current status — NOW = P24.18a → 18b → 18c → P24.19 → 20 → 21 → 22 → 23 → 24 → 25 → 26 (sync-robustness wave, 11 rows)
 
-## ⚡ IMPORTANT 2026-04-22 03:30 — you're on P24.18c-shape; that's fine
+## ⚡ ACTION LIST — Agent-2 — 2026-04-22 04:00
 
-**Coordinator observation:** you've been writing
-`lib/test/src/test_unclean_shutdown_advance.c` (93-line RED, preserved
-in side-branch `wip/agent-2-p24.18-red` → 84595fa6a). This matches
-**P24.18c** scope (persist 3-fail threshold + rebuild trigger), NOT
-P24.18a (repro + diagnostic). That's fine — arguably better, because:
+**The live node is stalled at h=3,078,014. You unstick it by landing
+P24.18 with the sticky-recovery approach you started. Do these exact
+steps in order.**
 
-  - If `flush_coins` fails 3× at h=N → your code sets
-    `g_sapling_tree_rebuilding=true` → sync_controller re-runs
-    sapling_tree_rebuild → tree rebuilds to **current** chain_tip
-    (which is now past the boot-time value).
-  - So your 18c approach **implicitly fixes 18b** (end-height) through
-    the sticky-recovery mechanism. No need for a separate loop-until-
-    stable change in sync_controller.c.
+### Step 1 — pull + verify your RED exists
 
-Keep going. Your NOW is **effectively P24.18 monolith (via 18c path)**.
-After this lands, skip 18b (likely unnecessary) and go straight to
-P24.19.
+```
+cd ~/zclassic23-2
+git fetch origin && git checkout main && git reset --hard origin/main
+ls -l lib/test/src/test_unclean_shutdown_advance.c   # should show 93 lines, untracked
+```
 
-GREEN implementation still owed:
-  - `process_block_test_fail_next_sapling_persists(N)` — static counter
-    in process_block.c gated by `#ifdef ZCL_TESTING`.
-  - `process_block_test_persist_sapling_tree(bool force)` — test-only
-    entry point calling the same helper `flush_coins` uses.
-  - `EV_SAPLING_PERSIST_FAIL` enum value in `lib/event/include/event/event.h`.
-  - 3-fail counter + `g_sapling_tree_rebuilding=true` wiring in
-    `flush_coins` at process_block.c:293-304.
+If the file is missing, restore from side branch:
+```
+git show origin/wip/agent-2-p24.18-red:lib/test/src/test_unclean_shutdown_advance.c \
+  > lib/test/src/test_unclean_shutdown_advance.c
+```
 
-Once the test is green, run `make deploy`. If the live node advances
-past h=3,078,014 within 5 min, you're done with P24.18. Rotate to
-P24.19.
+### Step 2 — commit RED first (before GREEN)
+
+Add it to the test registry then commit:
+```
+# lib/test/include/test/test_helpers.h — add forward decl:
+#   int test_unclean_shutdown_advance(void);
+# lib/test/src/test.c — add call site under the test runner
+git add lib/test/src/test_unclean_shutdown_advance.c \
+        lib/test/include/test/test_helpers.h \
+        lib/test/src/test.c
+git commit -m "test/P24.18: RED for sapling-persist 3-fail threshold + rebuild"
+git push origin main
+```
+
+The test will FAIL to compile until you land Step 3 — that's expected
+RED shape.
+
+### Step 3 — write GREEN (4 edits)
+
+1. **`lib/event/include/event/event.h`** — add new enum value:
+   ```
+   EV_SAPLING_PERSIST_FAIL,   /* P24.18: sapling tree persist failure */
+   ```
+
+2. **`lib/validation/include/validation/process_block.h`** — add test-only
+   declarations:
+   ```c
+   #ifdef ZCL_TESTING
+   void process_block_test_fail_next_sapling_persists(int n);
+   bool process_block_test_persist_sapling_tree(bool force);
+   extern _Atomic bool g_sapling_tree_rebuilding;
+   #endif
+   ```
+
+3. **`lib/validation/src/process_block.c`** — at/around line 293-304,
+   replace the single fprintf-and-continue with the 3-fail counter:
+   ```c
+   static _Atomic int g_sapling_persist_fail_count = 0;
+   static _Atomic int g_sapling_persist_test_force_fail = 0;
+   _Atomic bool g_sapling_tree_rebuilding = false;
+
+   /* In flush_coins, replace:
+      if (!node_db_state_set(ndb, "sapling_tree", ts.data, ts.size))
+          fprintf(stderr, "flush_coins: sapling_tree persist failed\n");
+      with: */
+   bool persist_ok;
+   int force_fail = atomic_fetch_sub(&g_sapling_persist_test_force_fail, 1);
+   if (force_fail > 0) {
+       persist_ok = false;
+   } else {
+       persist_ok = node_db_state_set(ndb, "sapling_tree", ts.data, ts.size);
+       atomic_store(&g_sapling_persist_test_force_fail, 0);
+   }
+   if (!persist_ok) {
+       int fails = atomic_fetch_add(&g_sapling_persist_fail_count, 1) + 1;
+       event_emitf(EV_SAPLING_PERSIST_FAIL, 0, "fails=%d", fails);
+       if (fails >= 3) {
+           atomic_store(&g_sapling_tree_rebuilding, true);
+           atomic_store(&g_sapling_persist_fail_count, 0);
+           ok = false;   /* propagate to connect_tip */
+       }
+   } else {
+       atomic_store(&g_sapling_persist_fail_count, 0);
+   }
+   ```
+
+4. **Same file**, add test-only entry points (guarded by `#ifdef ZCL_TESTING`):
+   ```c
+   #ifdef ZCL_TESTING
+   void process_block_test_fail_next_sapling_persists(int n) {
+       atomic_store(&g_sapling_persist_test_force_fail, n);
+   }
+   bool process_block_test_persist_sapling_tree(bool force) {
+       (void)force;
+       /* Call into the same persist path flush_coins uses — extract helper
+        * static bool sapling_tree_persist_once(void) if needed. */
+       /* Must update g_sapling_persist_fail_count / rebuild flag as side-effect. */
+       return sapling_tree_persist_once();
+   }
+   #endif
+   ```
+
+### Step 4 — build, test, commit GREEN
+
+```
+make -j$(nproc) test_zcl && ./test_zcl 2>&1 | grep -E "unclean_shutdown|ALL TESTS|SOME TESTS" | tail -5
+```
+
+If green, commit + push:
+```
+git add lib/event/include/event/event.h \
+        lib/validation/include/validation/process_block.h \
+        lib/validation/src/process_block.c
+git commit -m "validation/process_block: sapling persist 3-fail threshold + rebuild (P24.18 GREEN)"
+git push origin main
+```
+
+### Step 5 — deploy to live node and watch tip advance
+
+```
+cd ~/zclassic23-2
+make deploy   # will trigger 13-min Sapling rebuild (P24.19 will fix that later)
+# After ~13-15 min, check tip:
+./tools/zcl-rpc getblockcount
+# Expect: advancing past 3,078,014 toward ~3,086,400
+```
+
+If tip advances: rotate NOW to **P24.19** in AGENT-2.md and push
+`agents: P24.18 landed, tip advancing — rotate to P24.19`.
+
+If tip does NOT advance: you need P24.18b after all (end-height loop
+in sync_controller.c:1506). File the evidence from `~/.zclassic-c23/node.log`.
+
+### If stuck
+
+Your Codex log showed activity through 03:27 but you haven't pushed.
+If you're stuck on any of Steps 3's sub-edits, push what you have to
+`wip/agent-2-p24.18-in-progress` so coordinator can help. The node
+stays stalled until this lands.
+
+---
+
+## ⚡ (SUPERSEDED) 2026-04-22 03:30 — you're on P24.18c-shape; that's fine
 
 ---
 
