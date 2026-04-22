@@ -172,6 +172,18 @@ verified_height stuck at 3,079,470 for 10+ min).
 - Assert all 10 are dialed before any addrman lookup.
 - Pre-fix: addrman returns NULL, connman stalls.
 
+**⚠️ RESUME HINT (coordinator 2026-04-22 01:00):** You already wrote 76
+lines of this RED test in a prior session — it survives kickoff-reset
+(untracked files are preserved by `git reset --hard`). Check for
+`~/zclassic23-2/lib/test/src/test_connman_addnode_fallback.c` BEFORE
+starting from scratch. The file references:
+- 5-arg `connman_pick_next_outbound_target(cm, cursor, pick, source, addnode_index)`
+- `enum connman_outbound_target_source` with `CONNMAN_TARGET_NONE` and `CONNMAN_TARGET_ADDNODE`
+- `cm.addnodes[]`, `cm.num_addnodes`, `cm.next_addnode_cursor` fields
+- `connman_record_addnode_attempt(cm, index, ok)`
+
+These are all the GREEN APIs you must implement in `lib/net/include/net/connman.h` + `lib/net/src/connman.c`. If the file exists, push it first as `test/P13.1: RED for addnode-drain fallback` so it survives any future kickoff, THEN implement GREEN. The 5-arg signature is right; preserve it.
+
 **Acceptance (live canary):**
 - Post-deploy, node reaches **≥ 8 outbound peers** within 60s (each
   `-addnode` target should successfully connect).
