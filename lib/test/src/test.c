@@ -75,6 +75,7 @@ int main(void)
           failures += test_wallet_sqlite_open_errors(); }
         { extern int test_watch_only(void); failures += test_watch_only(); }
         { extern int test_wallet_canary(void); failures += test_wallet_canary(); }
+        failures += test_unclean_shutdown_advance();
         printf("\n=== Persistence subset complete: %d failure(s) ===\n",
                failures);
         return failures ? 1 : 0;
@@ -205,6 +206,7 @@ int main(void)
     failures += test_ws_events();
     failures += test_trace();
     failures += test_phgr13_fix();
+    failures += test_unclean_shutdown_advance();
     { extern int test_no_hardcoded_home(void);
       failures += test_no_hardcoded_home(); }
     failures += test_cookie_rotation();
