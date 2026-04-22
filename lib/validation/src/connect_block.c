@@ -254,14 +254,45 @@ bool connect_block(const struct block *block,
     /* ── Parallel script verification: collection arrays ─── *
      * Phase 1 (in the loop below): gather all script checks.
      * Phase 2 (after the loop): dispatch to workpool.
-     * txdatas[] holds precomputed tx data that outlives the loop. */
-    struct script_check *checks = NULL;
-    void **check_ptrs = NULL;
-    size_t num_checks = 0;
+     * txdatas[] holds precomputed tx data that outlives the loop.
+     *
+     * SAFETY: `check_ptrs[i]` points into `checks[]`, and each
+     * `sc->txdata` points into `txdatas[]`.  If either array is
+     * reallocated to a new base address while collection is still
+     * running, ALL previously recorded pointers become dangling.
+     * Worker threads later dereference them → SEGV.
+     *
+     * Live 2026-04-22 reproduction: block h=3,070,085 has two
+     * 200-input txs (+ one coinbase) = 400 checks total; starting
+     * cap 256 caused realloc to 512 mid-collection; every earlier
+     * check_ptrs[0..255] became stale; workpool_run → SIGSEGV
+     * (three restarts + one direct-gdb session to confirm).
+     *
+     * Fix: pre-scan the block once to get exact upper bounds on
+     * num_checks and num_txdatas, then allocate those sizes up
+     * front.  No realloc during collection, no dangling pointers. */
     size_t checks_cap = 0;
-    struct precomputed_tx_data *txdatas = NULL;
-    size_t num_txdatas = 0;
     size_t txdatas_cap = 0;
+    for (size_t pi = 0; pi < block->num_vtx; pi++) {
+        const struct transaction *ptx = &block->vtx[pi];
+        if (transaction_is_coinbase(ptx))
+            continue;
+        txdatas_cap++;
+        checks_cap += ptx->num_vin;
+    }
+    /* Defensive: at least one slot so NULL-alloc branches
+     * stay simple; bump cap if caller wants extra. */
+    if (checks_cap == 0) checks_cap = 1;
+    if (txdatas_cap == 0) txdatas_cap = 1;
+
+    struct script_check *checks =
+        zcl_malloc(checks_cap * sizeof(*checks), "connect_checks");
+    void **check_ptrs =
+        zcl_malloc(checks_cap * sizeof(*check_ptrs), "connect_check_ptrs");
+    struct precomputed_tx_data *txdatas =
+        zcl_malloc(txdatas_cap * sizeof(*txdatas), "connect_txdatas");
+    size_t num_checks = 0;
+    size_t num_txdatas = 0;
 
     for (size_t i = 0; i < block->num_vtx; i++) {
         const struct transaction *tx = &block->vtx[i];
