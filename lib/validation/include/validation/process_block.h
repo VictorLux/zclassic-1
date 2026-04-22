@@ -178,4 +178,11 @@ bool process_block_should_skip_contextual_header(
     const struct block_index *pindex_prev,
     const struct consensus_params *consensus);
 
+#ifdef ZCL_TESTING
+void process_block_test_set_utxo_fail_state(int height, int count);
+int  process_block_test_get_utxo_fail_count(void);
+void process_block_test_trigger_hot_loop_check(int height,
+                                               const char *datadir);
+#endif
+
 #endif

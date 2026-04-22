@@ -41,6 +41,7 @@
 #include <string.h>
 #include <stdlib.h>
 #include <sys/stat.h>
+#include <time.h>
 
 #include "validation/main_constants.h"
 #include "storage/coins_view_sqlite.h"
@@ -48,6 +49,8 @@
 
 static int g_last_block_file = -1;
 static unsigned int g_last_block_file_size = 0;
+static int s_utxo_fail_count = 0;
+static int s_utxo_fail_height = -1;
 
 /* P24.13: returns true iff the pprev chain from pindex_prev can be
  * walked back `pow_window` steps with each step satisfying
@@ -160,6 +163,101 @@ static void sapling_checkpoint_maybe_flush(int height)
                                         (int64_t)height,
                                         g_sapling_ckpt_path);
 }
+
+static void process_block_maybe_write_needs_reimport_flag(int height,
+                                                          const char *datadir)
+{
+    if (s_utxo_fail_count < 3 || !datadir)
+        return;
+
+    char flag_path[512];
+    snprintf(flag_path, sizeof(flag_path),
+             "%s/needs_reimport", datadir);
+    FILE *flag = fopen(flag_path, "w");
+    if (flag) {
+        fprintf(flag, "1\n");
+        fclose(flag);
+    }
+    fprintf(stderr,
+        "CRITICAL: %d UTXO failures at h=%d — "
+        "wrote needs_reimport flag.\n",
+        s_utxo_fail_count,
+        height);
+}
+
+static void process_block_maybe_trigger_hot_loop_exit(int height,
+                                                      const char *datadir)
+{
+    if (s_utxo_fail_count != 10 || !datadir)
+        return;
+
+    char marker_path[512];
+    snprintf(marker_path, sizeof(marker_path),
+             "%s/last_reimport_attempted", datadir);
+    struct stat mst;
+    time_t now_s = time(NULL);
+    bool reimport_recent =
+        (stat(marker_path, &mst) == 0 &&
+         now_s - mst.st_mtime < 600);
+
+    if (reimport_recent) {
+        event_emitf(EV_BOOT_ACTIVATE, 0,
+            "FATAL_HOT_LOOP_STUCK h=%d fails=%d "
+            "reimport_age_sec=%ld",
+            height,
+            s_utxo_fail_count,
+            (long)(now_s - mst.st_mtime));
+        fprintf(stderr,
+            "CRITICAL: %d UTXO failures at h=%d "
+            "but reimport was attempted %lds ago "
+            "and did NOT heal the UTXO set. NOT "
+            "auto-restarting (would bootloop). "
+            "Operator intervention required — "
+            "inspect `zcl_events`, `node.log`, "
+            "and consider rolling the tip back "
+            "to before the missing-input height "
+            "and resyncing from P2P.\n",
+            s_utxo_fail_count,
+            height,
+            (long)(now_s - mst.st_mtime));
+        fflush(stderr);
+    } else {
+        event_emitf(EV_BOOT_ACTIVATE, 0,
+            "FATAL_HOT_LOOP h=%d fails=%d "
+            "reimport=1",
+            height,
+            s_utxo_fail_count);
+        fprintf(stderr,
+            "CRITICAL: %d consecutive UTXO "
+            "failures at h=%d — requesting "
+            "clean shutdown so systemd restart "
+            "picks up needs_reimport flag.\n",
+            s_utxo_fail_count,
+            height);
+        fflush(stderr);
+        g_shutdown_requested = 1;
+    }
+}
+
+#ifdef ZCL_TESTING
+void process_block_test_set_utxo_fail_state(int height, int count)
+{
+    s_utxo_fail_height = height;
+    s_utxo_fail_count = count;
+}
+
+int process_block_test_get_utxo_fail_count(void)
+{
+    return s_utxo_fail_count;
+}
+
+void process_block_test_trigger_hot_loop_check(int height,
+                                               const char *datadir)
+{
+    process_block_maybe_write_needs_reimport_flag(height, datadir);
+    process_block_maybe_trigger_hot_loop_exit(height, datadir);
+}
+#endif
 
 /* ── Flush policy ────────────────────────────────────────────
  * Controls when the in-memory UTXO cache writes to LevelDB.
@@ -2312,8 +2410,6 @@ bool activate_best_chain(struct validation_state *state,
                 if (state->reject_reason[0] &&
                     strcmp(state->reject_reason,
                            "bad-txns-inputs-missingorspent") == 0) {
-                    static int s_utxo_fail_count = 0;
-                    static int s_utxo_fail_height = -1;
                     if (connect_path[i]->nHeight == s_utxo_fail_height)
                         s_utxo_fail_count++;
                     else {
@@ -2357,21 +2453,8 @@ bool activate_best_chain(struct validation_state *state,
                                 connect_path[i]->nHeight);
                         }
                     }
-                    if (s_utxo_fail_count >= 3 && datadir) {
-                        char flag_path[512];
-                        snprintf(flag_path, sizeof(flag_path),
-                                 "%s/needs_reimport", datadir);
-                        FILE *flag = fopen(flag_path, "w");
-                        if (flag) {
-                            fprintf(flag, "1\n");
-                            fclose(flag);
-                        }
-                        fprintf(stderr,
-                            "CRITICAL: %d UTXO failures at h=%d — "
-                            "wrote needs_reimport flag.\n",
-                            s_utxo_fail_count,
-                            connect_path[i]->nHeight);
-                    }
+                    process_block_maybe_write_needs_reimport_flag(
+                        connect_path[i]->nHeight, datadir);
                     /* After 10 consecutive UTXO failures at the same
                      * height, the in-memory recovery attempts are
                      * clearly exhausted — the flag file above is
@@ -2396,54 +2479,8 @@ bool activate_best_chain(struct validation_state *state,
                      * another 5-8min sapling rebuild.  Emit a FATAL
                      * event, keep running (visibly stuck), and wait
                      * for operator intervention. */
-                    if (s_utxo_fail_count == 10 && datadir) {
-                        char marker_path[512];
-                        snprintf(marker_path, sizeof(marker_path),
-                                 "%s/last_reimport_attempted", datadir);
-                        struct stat mst;
-                        time_t now_s = time(NULL);
-                        bool reimport_recent =
-                            (stat(marker_path, &mst) == 0 &&
-                             now_s - mst.st_mtime < 600);
-
-                        if (reimport_recent) {
-                            event_emitf(EV_BOOT_ACTIVATE, 0,
-                                "FATAL_HOT_LOOP_STUCK h=%d fails=%d "
-                                "reimport_age_sec=%ld",
-                                connect_path[i]->nHeight,
-                                s_utxo_fail_count,
-                                (long)(now_s - mst.st_mtime));
-                            fprintf(stderr,
-                                "CRITICAL: %d UTXO failures at h=%d "
-                                "but reimport was attempted %lds ago "
-                                "and did NOT heal the UTXO set. NOT "
-                                "auto-restarting (would bootloop). "
-                                "Operator intervention required — "
-                                "inspect `zcl_events`, `node.log`, "
-                                "and consider rolling the tip back "
-                                "to before the missing-input height "
-                                "and resyncing from P2P.\n",
-                                s_utxo_fail_count,
-                                connect_path[i]->nHeight,
-                                (long)(now_s - mst.st_mtime));
-                            fflush(stderr);
-                        } else {
-                            event_emitf(EV_BOOT_ACTIVATE, 0,
-                                "FATAL_HOT_LOOP h=%d fails=%d "
-                                "reimport=1",
-                                connect_path[i]->nHeight,
-                                s_utxo_fail_count);
-                            fprintf(stderr,
-                                "CRITICAL: %d consecutive UTXO "
-                                "failures at h=%d — requesting "
-                                "clean shutdown so systemd restart "
-                                "picks up needs_reimport flag.\n",
-                                s_utxo_fail_count,
-                                connect_path[i]->nHeight);
-                            fflush(stderr);
-                            g_shutdown_requested = 1;
-                        }
-                    }
+                    process_block_maybe_trigger_hot_loop_exit(
+                        connect_path[i]->nHeight, datadir);
                 }
                 if (validation_state_is_invalid(state)) {
                     /* Block failed validation — mark it and retry.
