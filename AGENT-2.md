@@ -40,38 +40,44 @@ checklist plus the lane rules.
 
 ---
 
-## Current status — NOW = P24.18 → P24.19 → P24.20 → P24.21 (sync-robustness wave)
+## Current status — NOW = P24.18 → P24.19 → P24.20 → P24.21 → P24.22 → P24.23 → P24.24 (sync-robustness wave EXTENDED)
 
-## 🎯 COORDINATOR MANDATE 2026-04-21 22:30 — "STICKY, STRONG, ROBUST"
+## 🎯 COORDINATOR MANDATE 2026-04-22 02:00 — "STICKY, STRONG, ROBUST" (wave extended +3)
 
-Rhett gave a direct mandate: **the node must be STICKY (never lose tip
-progress on restart), STRONG (never silently fail), ROBUST (cheap +
-safe to deploy).** Right now the live node is stuck at h=3,078,014
-(~8,100 blocks behind zclassicd) because of a cascade of six bugs.
-Coordinator filed five rows — P13.1 + P24.18 + P24.19 + P24.20 +
-P24.21 — that together eliminate the cascade. **Work them IN ORDER.**
-Each has evidence, a 3-part fix plan, file/line pointers, RED test
-shape, and live-canary acceptance in AGENT.md. This section is your
-sequencing cheat-sheet.
+Rhett re-affirmed the mandate after P13.1 landed. Wave is now 7 rows
+deep — the original cascade fixes PLUS three structural hardening rows
+that prevent the cascade class from recurring. **Work IN ORDER.**
+
+1. **~~P13.1~~ ✅** landed 96c8d32c6 — addnode-drain fallback (HIGH).
+2. **P24.18** CRIT — connect_tip silent-fail + Sapling rebuild end-height. **Live node stuck at h=3,078,014 right now because of this.** 3-part fix: rebuild to current tip, propagate persist errors, sticky recovery on mismatch.
+3. **P24.19** CRIT — clean-shutdown marker + WAL checkpoint on SIGTERM. Kills 13-min unclean-boot cycle so every deploy becomes cheap (≤30s restart).
+4. **P24.20** HIGH — connect_tip/flush_coins error propagation to `zcl_events` / `zcl_kpi`. Silent failures become observable failures.
+5. **P24.21** HIGH — UTXO anchor roll-FORWARD on boot (re-validate missing blocks) instead of roll-BACKWARD.
+6. **P24.22** HIGH (NEW 2026-04-22 02:00) — Boot-time chain-consistency invariant assertion. Four authoritative values (`A=active_chain, B=coins_best_block, C=max(blocks.height), D=sapling_rebuild_height`); assert `A==B && A<=C && D<=A` on boot. Violation → boot-readonly mode + `EV_BOOT_INVARIANT_VIOLATION`. Today's node boots with all four values wrong and tries to advance anyway.
+7. **P24.23** HIGH (NEW) — Validated state snapshots every 1K blocks. Boot becomes "mmap most recent snapshot + replay ≤1K-block delta." Eliminates 13-min Sapling rebuild. (P12.1's flat-file Sapling checkpoint is single-value every 10K; this is full-state, every 1K, SHA3-checksummed.)
+8. **P24.24** CRIT (NEW) — Transactional chain advance. Wrap `connect_tip` body in single SQLite transaction so block_index + coins + sapling_tree commits are atomic. P24.18 is one instance of this class; P24.24 is the structural fix so no future regression can slip the same mistake.
 
 ### Why this order
 
-1. **P13.1 first** — you can't canary the sync fix without peers. Until addnode entries successfully connect, even a correct P24.18 fix won't show a live "tip advances" signal. Fix connectivity first.
-2. **P24.18 second** — this is the stall. Live node advances past h=3,078,014 only when this lands.
-3. **P24.19 third** — without clean-shutdown, every deploy re-triggers P24.18's cascade. Fixing P24.18 alone without P24.19 means we re-hit the stall on every deploy. P24.19 makes the fix durable.
-4. **P24.20 fourth** — observability. Without EV_SAPLING_PERSIST_FAIL and the KPI counter, a regression in this area goes silent again. Turn silent failures into loud failures.
-5. **P24.21 fifth** — prevents future regression classes where `coins_best_block` drifts from chain tip. Roll forward > roll backward.
+1. **P24.18 first (NOW)** — THE stall. Live node advances past h=3,078,014 only when this lands. Every downstream row needs working foreground sync to canary.
+2. **P24.19 second** — without clean-shutdown, every deploy re-triggers P24.18's cascade. P24.19 makes the fix durable across deploys.
+3. **P24.20 third** — observability. Rows after this depend on SEEING sync-error signals in `zcl_events` / `zcl_kpi`.
+4. **P24.21 fourth** — roll-forward. Chain tip never moves backward on boot.
+5. **P24.22 fifth** — boot invariant. P24.21 moves tip correctly; P24.22 asserts tip-consistency is impossible to violate silently (booting refuses rather than silently-corrupting).
+6. **P24.23 sixth** — snapshots. Requires invariant check (P24.22) to trust snapshot contents. Deploy cost drops to seconds.
+7. **P24.24 seventh** — transactional advance. Generalization of P24.18; structural fix preventing a whole class of future regressions.
 
-### Expected KPI lift (pillar-by-pillar)
+### Expected KPI lift (pillar-by-pillar — full extended wave)
 
 | Pillar | Before wave | After wave | Reason |
 |---|---|---|---|
-| Correctness | 2 | 8 | Tip advances past anchor reliably; UTXO set can't diverge silently. |
-| Robustness | 6 | 9 | No more 13-min unclean-boot rebuild; crash recovery observable. |
-| Operability | 5 | 9 | `make deploy` cost drops from ~14 min to <30s wall clock. |
-| Observability | 7 | 8 | Sapling/coins failures now fire events + KPI. |
+| Correctness | 2 | 9 | Tip advances reliably; atomic commit prevents partial-advance corruption; boot invariant catches silent divergence. |
+| Robustness | 6 | 9 | No more unclean-boot rebuild; snapshot boot; transactional advance. |
+| Operability | 5 | 9 | `make deploy` cost drops from ~14 min to <30s. |
+| Observability | 7 | 9 | All sync errors fire events + KPI; boot invariant fires events. |
+| Test discipline | 7 | 9 | Crash-injection test (P24.24), boot-invariant test (P24.22), snapshot test (P24.23) add new test classes. |
 
-**Total expected jump: ~55 → ~75 points.** Bigger than any previous wave.
+**Total expected jump: ~55 → ~82 points.** This extended wave covers more than half the gap from current KPI to 100.
 
 ### Operational notes
 
