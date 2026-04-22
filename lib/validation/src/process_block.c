@@ -1215,10 +1215,32 @@ bool accept_block(struct block *block,
          * During IBD, blocks whose BLOCK_HAVE_DATA was cleared (e.g. from
          * snapshot cleanup) may still have nTx set from the index — we
          * must NOT skip those, they need to be re-written to disk. */
-        if (pindex->nTx != 0 && (pindex->nStatus & BLOCK_HAVE_DATA))
+        if (pindex->nTx != 0 && (pindex->nStatus & BLOCK_HAVE_DATA)) {
+            /* Visibility (2026-04-22 P24.34 trace): make this silent-skip
+             * path observable.  If blocks arrive over P2P and end up here,
+             * the UTXO/chain state can't advance and the stall is
+             * invisible without this event. */
+            event_emitf(EV_BLOCK_REJECTED, 0,
+                "ACCEPT_SKIP_NTX_AND_HAVE_DATA h=%d ntx=%u",
+                pindex->nHeight, pindex->nTx);
             return true;
-        if (!has_more_work)
+        }
+        if (!has_more_work) {
+            /* Visibility: block arrived but doesn't advance the chain
+             * from this node's perspective.  During healthy IBD this
+             * fires only for sidechain / fork blocks; during a stall
+             * it tells us the pindex's nChainWork wasn't populated
+             * correctly (e.g. block_index flat loader gap). */
+            char w_block[65], w_tip[65];
+            arith_uint256_get_hex(&pindex->nChainWork, w_block);
+            arith_uint256_get_hex(&tip->nChainWork, w_tip);
+            event_emitf(EV_BLOCK_REJECTED, 0,
+                "ACCEPT_SKIP_NO_MORE_WORK h=%d tip_h=%d "
+                "work=%.16s tip_work=%.16s",
+                pindex->nHeight, tip ? tip->nHeight : -1,
+                w_block, w_tip);
             return true;
+        }
     }
 
     if (!check_block(block, state, params, true, true, true) ||
