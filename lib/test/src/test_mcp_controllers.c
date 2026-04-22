@@ -38,8 +38,8 @@
 /* Expected tool counts.  If a future commit intentionally adds or
  * removes tools, bump these numbers in the same commit — they are the
  * contract for "how big is the MCP surface." */
-#define EXPECTED_TOTAL      80
-#define EXPECTED_OPS        25  /* status, health, kpi, mempool*, mininginfo,
+#define EXPECTED_TOTAL      81
+#define EXPECTED_OPS        26  /* kickoff + status, health, kpi, mempool*, mininginfo,
                                  * benchmark, dbstats, filemanifest, events,
                                  * rpc, tools_list, self_test, logtail,
                                  * openapi, metrics, metrics_reset,
@@ -286,7 +286,7 @@ static int test_specific_flagship_tools_registered(void)
         /* Canon set — documented in CLAUDE.md.  If any goes missing,
          * the compat contract is broken. */
         const char *k[] = {
-            "zcl_status", "zcl_kpi", "zcl_health",
+            "zcl_kickoff", "zcl_status", "zcl_kpi", "zcl_health",
             "zcl_getblockcount", "zcl_getblock", "zcl_getblockchaininfo",
             "zcl_peers", "zcl_networkinfo", "zcl_onion_status",
             "zcl_balance", "zcl_send", "zcl_getnewaddress",
@@ -336,6 +336,50 @@ static int test_zcl_status_no_params(void)
         ASSERT(r != NULL);
         ASSERT(r->num_params == 0);
         ASSERT(strcmp(r->domain, "ops") == 0);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int test_zcl_kickoff_shape(void)
+{
+    int failures = 0;
+    TEST("controllers: zcl_kickoff reports lane, NOW row, and git state") {
+        register_all();
+        const struct mcp_tool_route *r = mcp_router_find("zcl_kickoff");
+        ASSERT(r != NULL);
+        ASSERT(r->num_params == 0);
+        ASSERT(strcmp(r->domain, "ops") == 0);
+
+        char *body = mcp_router_dispatch("zcl_kickoff", NULL);
+        ASSERT(body != NULL);
+        ASSERT(strstr(body, "\"error\":{") == NULL);
+        ASSERT(contains(body, "\"lane\":"));
+        ASSERT(contains(body, "\"role_file\":"));
+        ASSERT(contains(body, "\"now\":"));
+        ASSERT(contains(body, "\"git\":"));
+        ASSERT(contains(body, "\"branch\":"));
+        ASSERT(contains(body, "\"dirty\":"));
+
+        struct json_value root = {0};
+        ASSERT(json_read(&root, body, strlen(body)));
+        ASSERT(root.type == JSON_OBJ);
+        ASSERT(json_get(&root, "cwd") != NULL);
+        ASSERT(json_get(&root, "repo_root") != NULL);
+        ASSERT(json_get(&root, "lane") != NULL);
+        ASSERT(json_get(&root, "role_file") != NULL);
+        ASSERT(json_get(&root, "now") != NULL);
+        ASSERT(json_get(&root, "git") != NULL);
+
+        const struct json_value *git = json_get(&root, "git");
+        ASSERT(git->type == JSON_OBJ);
+        ASSERT(json_get(git, "branch") != NULL);
+        ASSERT(json_get(git, "status_short") != NULL);
+        ASSERT(json_get(git, "dirty") != NULL);
+        ASSERT(json_get(git, "pull_rebase_blocked") != NULL);
+
+        json_free(&root);
+        free(body);
         PASS();
     } _test_next:;
     return failures;
@@ -894,6 +938,7 @@ int test_mcp_controllers(void)
     failures += test_specific_flagship_tools_registered();
     failures += test_zcl_getblock_param_shape();
     failures += test_zcl_status_no_params();
+    failures += test_zcl_kickoff_shape();
     failures += test_meta_tools_in_ops_domain();
     failures += test_tools_list_json_well_formed();
     failures += test_input_schema_for_zcl_getblock();

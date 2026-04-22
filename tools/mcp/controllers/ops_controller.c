@@ -15,6 +15,7 @@
 #include "util/safe_alloc.h"
 
 #include <dirent.h>
+#include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -41,6 +42,253 @@ DEFINE_PT(h_zcl_getrawmempool,  "getrawmempool")
 DEFINE_PT(h_zcl_getmininginfo,  "getmininginfo")
 DEFINE_PT(h_zcl_benchmark,      "benchmark")
 DEFINE_PT(h_zcl_dbstats,        "db_info")
+
+/* ── Local kickoff/orientation helpers ─────────────────────── */
+
+static bool kickoff_has_repo_markers(const char *path)
+{
+    char a[PATH_MAX];
+    char b[PATH_MAX];
+    if (!path || !path[0]) return false;
+    snprintf(a, sizeof(a), "%s/AGENTS.md", path);
+    snprintf(b, sizeof(b), "%s/AGENT.md", path);
+    return access(a, R_OK) == 0 && access(b, R_OK) == 0;
+}
+
+static bool kickoff_find_repo_root(char *out, size_t out_sz)
+{
+    char cwd[PATH_MAX];
+    if (!out || out_sz == 0) return false;
+    if (!getcwd(cwd, sizeof(cwd))) return false;
+
+    while (cwd[0]) {
+        if (kickoff_has_repo_markers(cwd)) {
+            snprintf(out, out_sz, "%s", cwd);
+            return true;
+        }
+        char *slash = strrchr(cwd, '/');
+        if (!slash) break;
+        if (slash == cwd) {
+            cwd[1] = '\0';
+        } else {
+            *slash = '\0';
+        }
+        if (strcmp(cwd, "/") == 0) {
+            if (kickoff_has_repo_markers(cwd)) {
+                snprintf(out, out_sz, "%s", cwd);
+                return true;
+            }
+            break;
+        }
+    }
+    return false;
+}
+
+static const char *kickoff_basename(const char *path)
+{
+    const char *slash = path ? strrchr(path, '/') : NULL;
+    return slash ? slash + 1 : path;
+}
+
+static const char *kickoff_lane_for_cwd(const char *cwd)
+{
+    const char *base = kickoff_basename(cwd);
+    if (!base) return "unknown";
+    if (strcmp(base, "zclassic23") == 0) return "coordinator";
+    if (strcmp(base, "zclassic23-2") == 0) return "agent-2";
+    if (strcmp(base, "zclassic23-3") == 0) return "agent-3";
+    return "unknown";
+}
+
+static const char *kickoff_role_file_for_lane(const char *lane)
+{
+    if (!lane) return "AGENT.md";
+    if (strcmp(lane, "agent-2") == 0) return "AGENT-2.md";
+    if (strcmp(lane, "agent-3") == 0) return "AGENT-3.md";
+    return "AGENT.md";
+}
+
+static char *kickoff_read_file(const char *path)
+{
+    FILE *f = NULL;
+    long len = 0;
+    size_t got = 0;
+    char *buf = NULL;
+
+    if (!path) return NULL;
+    f = fopen(path, "rb");
+    if (!f) return NULL;
+    if (fseek(f, 0, SEEK_END) != 0) goto done;
+    len = ftell(f);
+    if (len < 0) goto done;
+    if (fseek(f, 0, SEEK_SET) != 0) goto done;
+
+    buf = zcl_malloc((size_t)len + 1, "kickoff_read_file");
+    if (!buf) goto done;
+    got = fread(buf, 1, (size_t)len, f);
+    buf[got] = '\0';
+
+done:
+    if (f) fclose(f);
+    return buf;
+}
+
+static char *kickoff_extract_now(const char *markdown)
+{
+    static const char *needle = "## Current status";
+    const char *p = NULL;
+    const char *line_end = NULL;
+    const char *eq = NULL;
+    size_t len = 0;
+    char *out = NULL;
+
+    if (!markdown) return NULL;
+    p = strstr(markdown, needle);
+    if (!p) return NULL;
+    line_end = strchr(p, '\n');
+    if (!line_end) line_end = p + strlen(p);
+    eq = strstr(p, "NOW =");
+    if (!eq || eq > line_end) return NULL;
+    eq += strlen("NOW =");
+    while (eq < line_end && (*eq == ' ' || *eq == '\t')) eq++;
+    while (line_end > eq &&
+           (line_end[-1] == '\r' || line_end[-1] == ' ' || line_end[-1] == '\t'))
+        line_end--;
+    len = (size_t)(line_end - eq);
+    out = zcl_malloc(len + 1, "kickoff_now");
+    if (!out) return NULL;
+    memcpy(out, eq, len);
+    out[len] = '\0';
+    return out;
+}
+
+static char *kickoff_run_capture(const char *cmd, size_t cap_bytes)
+{
+    FILE *p = NULL;
+    char *buf = NULL;
+    size_t n = 0;
+
+    if (!cmd || cap_bytes == 0) return NULL;
+    p = popen(cmd, "r");
+    if (!p) return NULL;
+    buf = zcl_malloc(cap_bytes + 1, "kickoff_capture");
+    if (!buf) {
+        pclose(p);
+        return NULL;
+    }
+    while (n < cap_bytes) {
+        size_t got = fread(buf + n, 1, cap_bytes - n, p);
+        n += got;
+        if (got == 0) break;
+    }
+    buf[n] = '\0';
+    pclose(p);
+    return buf;
+}
+
+static char *kickoff_git_branch(const char *repo_root)
+{
+    char cmd[PATH_MAX + 64];
+    if (!repo_root) return NULL;
+    snprintf(cmd, sizeof(cmd),
+             "git -C '%s' rev-parse --abbrev-ref HEAD 2>/dev/null",
+             repo_root);
+    char *out = kickoff_run_capture(cmd, 128);
+    if (!out) return NULL;
+    size_t len = strlen(out);
+    while (len > 0 && (out[len - 1] == '\n' || out[len - 1] == '\r'))
+        out[--len] = '\0';
+    return out;
+}
+
+static char *kickoff_git_status_short(const char *repo_root)
+{
+    char cmd[PATH_MAX + 64];
+    if (!repo_root) return NULL;
+    snprintf(cmd, sizeof(cmd),
+             "git -C '%s' status --short 2>/dev/null",
+             repo_root);
+    return kickoff_run_capture(cmd, 4096);
+}
+
+static int h_zcl_kickoff(const struct mcp_request *req,
+                          struct mcp_response *res)
+{
+    char cwd[PATH_MAX];
+    char repo_root[PATH_MAX];
+    char role_path[PATH_MAX];
+    const char *lane = NULL;
+    const char *role_file = NULL;
+    char *role_md = NULL;
+    char *now = NULL;
+    char *branch = NULL;
+    char *status = NULL;
+    bool repo_found = false;
+    struct json_value root = {0};
+    struct json_value git = {0};
+
+    (void)req;
+
+    if (!getcwd(cwd, sizeof(cwd)))
+        snprintf(cwd, sizeof(cwd), ".");
+    repo_found = kickoff_find_repo_root(repo_root, sizeof(repo_root));
+    if (!repo_found)
+        snprintf(repo_root, sizeof(repo_root), "%s", cwd);
+
+    lane = kickoff_lane_for_cwd(cwd);
+    role_file = kickoff_role_file_for_lane(lane);
+    snprintf(role_path, sizeof(role_path), "%s/%s", repo_root, role_file);
+
+    role_md = kickoff_read_file(role_path);
+    now = kickoff_extract_now(role_md);
+    branch = kickoff_git_branch(repo_root);
+    status = kickoff_git_status_short(repo_root);
+
+    json_init(&root);
+    json_set_object(&root);
+    json_push_kv_str(&root, "cwd", cwd);
+    json_push_kv_str(&root, "repo_root", repo_root);
+    json_push_kv_bool(&root, "repo_found", repo_found);
+    json_push_kv_str(&root, "lane", lane);
+    json_push_kv_str(&root, "role_file", role_file);
+    json_push_kv_str(&root, "now", now ? now : "unknown");
+    json_push_kv_str(&root, "summary",
+                     "Local zclassic23 kickoff: lane, assignment, and git state.");
+
+    json_init(&git);
+    json_set_object(&git);
+    json_push_kv_str(&git, "branch", branch ? branch : "unknown");
+    json_push_kv_str(&git, "status_short", status ? status : "");
+    json_push_kv_bool(&git, "dirty", status && status[0] != '\0');
+    json_push_kv_bool(&git, "pull_rebase_blocked", status && status[0] != '\0');
+    json_push_kv(&root, "git", &git);
+
+    size_t need = json_write(&root, NULL, 0);
+    char *out = zcl_malloc(need + 1, "kickoff_body");
+    if (!out) {
+        json_free(&root);
+        json_free(&git);
+        free(role_md);
+        free(now);
+        free(branch);
+        free(status);
+        res->error = MCP_ERR_INTERNAL;
+        snprintf(res->error_message, sizeof(res->error_message),
+                 "malloc failed for kickoff response");
+        LOG_ERR("mcp.ops", "malloc failed for kickoff body (%zu bytes)", need + 1);
+        return 0;
+    }
+    json_write(&root, out, need + 1);
+    res->body = out;
+
+    json_free(&root);
+    json_free(&git);
+    free(role_md);
+    free(now);
+    free(branch);
+    free(status);
+    return 0;
+}
 
 /* ── Handlers ───────────────────────────────────────────────── */
 
@@ -669,6 +917,10 @@ static const struct mcp_param_spec p_profile[] = {
 };
 
 static const struct mcp_tool_route k_routes[] = {
+    { "zcl_kickoff", "ops",
+      "Local repo kickoff: detect lane from cwd, read the current NOW row "
+      "from AGENT*.md, and report git branch/dirty state for this checkout.",
+      NULL, 0, h_zcl_kickoff },
     { "zcl_status", "ops",
       "Node status: block height, peers, sync state, onion address, "
       "bg-validation progress, health checks. The single command to "
