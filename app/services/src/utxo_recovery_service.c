@@ -339,6 +339,27 @@ struct utxo_import_result utxo_recovery_import_ldb(
         if (imported_count > 100000)
             node_db_state_set(ctx->ndb, "leveldb_utxo_migrated", &one, 1);
 
+        /* Marker consumed by process_block.c's hot-loop exit
+         * debounce. If the reimport happens but the UTXO set
+         * is still incomplete (e.g. zclassicd's on-disk LDB
+         * is memtable-stale and doesn't carry the missing
+         * UTXO either), the hot-loop exit SHOULD NOT trigger
+         * a restart — that would bootloop. Writing this
+         * marker lets process_block.c detect "we just tried
+         * reimport and are STILL stuck" and stop requesting
+         * shutdown. The 10-min staleness window there gives
+         * operator time to intervene. */
+        if (ctx->datadir) {
+            char marker_path[512];
+            snprintf(marker_path, sizeof(marker_path),
+                     "%s/last_reimport_attempted", ctx->datadir);
+            FILE *mf = fopen(marker_path, "w");
+            if (mf) {
+                fputs("1\n", mf);
+                fclose(mf);
+            }
+        }
+
         coins_view_sqlite_open(ctx->coins_sqlite, ctx->ndb->db);
         /* Re-init coins cache after import */
         coins_view_cache_init(ctx->coins_tip, &ctx->coins_sqlite->view);

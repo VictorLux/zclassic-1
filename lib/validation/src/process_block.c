@@ -2383,21 +2383,66 @@ bool activate_best_chain(struct validation_state *state,
                      * consistent UTXO set.  Without this escape
                      * hatch, the node burns CPU in a hot retry loop
                      * forever (observed: 4700+ identical failures
-                     * over 2h 44m). */
-                    if (s_utxo_fail_count == 10) {
-                        event_emitf(EV_BOOT_ACTIVATE, 0,
-                            "FATAL_HOT_LOOP h=%d fails=%d reimport=1",
-                            connect_path[i]->nHeight,
-                            s_utxo_fail_count);
-                        fprintf(stderr,
-                            "CRITICAL: %d consecutive UTXO failures "
-                            "at h=%d — requesting clean shutdown so "
-                            "systemd restart picks up needs_reimport "
-                            "flag.\n",
-                            s_utxo_fail_count,
-                            connect_path[i]->nHeight);
-                        fflush(stderr);
-                        g_shutdown_requested = 1;
+                     * over 2h 44m).
+                     *
+                     * Bootloop debounce: if a reimport was already
+                     * attempted recently (mtime of the marker file
+                     * written by utxo_recovery_import_ldb) and we're
+                     * STILL hot-looping at the same height, the LDB
+                     * source didn't carry the missing UTXO either
+                     * (observed 2026-04-22 04:45 — zclassicd's
+                     * on-disk chainstate was memtable-stale at
+                     * h=3,078,003).  Auto-restarting just burns
+                     * another 5-8min sapling rebuild.  Emit a FATAL
+                     * event, keep running (visibly stuck), and wait
+                     * for operator intervention. */
+                    if (s_utxo_fail_count == 10 && datadir) {
+                        char marker_path[512];
+                        snprintf(marker_path, sizeof(marker_path),
+                                 "%s/last_reimport_attempted", datadir);
+                        struct stat mst;
+                        time_t now_s = time(NULL);
+                        bool reimport_recent =
+                            (stat(marker_path, &mst) == 0 &&
+                             now_s - mst.st_mtime < 600);
+
+                        if (reimport_recent) {
+                            event_emitf(EV_BOOT_ACTIVATE, 0,
+                                "FATAL_HOT_LOOP_STUCK h=%d fails=%d "
+                                "reimport_age_sec=%ld",
+                                connect_path[i]->nHeight,
+                                s_utxo_fail_count,
+                                (long)(now_s - mst.st_mtime));
+                            fprintf(stderr,
+                                "CRITICAL: %d UTXO failures at h=%d "
+                                "but reimport was attempted %lds ago "
+                                "and did NOT heal the UTXO set. NOT "
+                                "auto-restarting (would bootloop). "
+                                "Operator intervention required — "
+                                "inspect `zcl_events`, `node.log`, "
+                                "and consider rolling the tip back "
+                                "to before the missing-input height "
+                                "and resyncing from P2P.\n",
+                                s_utxo_fail_count,
+                                connect_path[i]->nHeight,
+                                (long)(now_s - mst.st_mtime));
+                            fflush(stderr);
+                        } else {
+                            event_emitf(EV_BOOT_ACTIVATE, 0,
+                                "FATAL_HOT_LOOP h=%d fails=%d "
+                                "reimport=1",
+                                connect_path[i]->nHeight,
+                                s_utxo_fail_count);
+                            fprintf(stderr,
+                                "CRITICAL: %d consecutive UTXO "
+                                "failures at h=%d — requesting "
+                                "clean shutdown so systemd restart "
+                                "picks up needs_reimport flag.\n",
+                                s_utxo_fail_count,
+                                connect_path[i]->nHeight);
+                            fflush(stderr);
+                            g_shutdown_requested = 1;
+                        }
                     }
                 }
                 if (validation_state_is_invalid(state)) {
