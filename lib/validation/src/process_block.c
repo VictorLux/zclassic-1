@@ -2372,6 +2372,33 @@ bool activate_best_chain(struct validation_state *state,
                             s_utxo_fail_count,
                             connect_path[i]->nHeight);
                     }
+                    /* After 10 consecutive UTXO failures at the same
+                     * height, the in-memory recovery attempts are
+                     * clearly exhausted — the flag file above is
+                     * already written, but boot.c only consumes it on
+                     * startup.  Requesting a clean shutdown lets
+                     * systemd restart the process; boot then reads
+                     * the flag and runs the LDB reimport in
+                     * utxo_recovery_import_ldb, which restores a
+                     * consistent UTXO set.  Without this escape
+                     * hatch, the node burns CPU in a hot retry loop
+                     * forever (observed: 4700+ identical failures
+                     * over 2h 44m). */
+                    if (s_utxo_fail_count == 10) {
+                        event_emitf(EV_BOOT_ACTIVATE, 0,
+                            "FATAL_HOT_LOOP h=%d fails=%d reimport=1",
+                            connect_path[i]->nHeight,
+                            s_utxo_fail_count);
+                        fprintf(stderr,
+                            "CRITICAL: %d consecutive UTXO failures "
+                            "at h=%d — requesting clean shutdown so "
+                            "systemd restart picks up needs_reimport "
+                            "flag.\n",
+                            s_utxo_fail_count,
+                            connect_path[i]->nHeight);
+                        fflush(stderr);
+                        g_shutdown_requested = 1;
+                    }
                 }
                 if (validation_state_is_invalid(state)) {
                     /* Block failed validation — mark it and retry.

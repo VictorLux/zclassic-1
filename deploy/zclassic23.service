@@ -32,7 +32,13 @@ ExecStart=%h/zclassic23/zclassic23 \
     $ZCL_EXTERNALIP_FLAG \
     $ZCL_ADDNODE_FLAGS \
     -showmetrics=0
-Restart=on-failure
+# Restart=always (not on-failure) so the self-recovery escape hatch in
+# process_block.c (g_shutdown_requested=1 after 10 consecutive UTXO
+# failures at the same height) causes a systemd restart.  That restart
+# is what consumes the needs_reimport flag in boot.c and runs the LDB
+# UTXO reimport.  StartLimitBurst still bounds crash-loops for operator
+# attention, and `systemctl stop` is still honored as an intentional stop.
+Restart=always
 RestartSec=10
 
 # P7.5: WAL drain + Tor teardown budget, trimmed.  The 300s ceiling
