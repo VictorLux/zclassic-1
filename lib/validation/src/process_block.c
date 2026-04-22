@@ -1375,8 +1375,122 @@ retry_connect:
                     if (!block_tree_db_read_tx_index(g_active_block_tree,
                                                      &state->missing_txid,
                                                      &txpos)) {
-                        fprintf(stderr, "[self-heal] tx %s not in tx index\n",
+                        fprintf(stderr, "[self-heal] tx %s not in tx index "
+                                "— falling back to bounded-depth chain scan\n",
                                 hex);
+                        /* ── Scan fallback (P24.29 surgical coordinator
+                         *    commit 2026-04-22 05:11, pre-landed ahead of
+                         *    Agent-2's RED/factoring row).
+                         *
+                         * The tx index can be empty for this tx because
+                         * LDB fast-sync imports UTXOs but doesn't
+                         * populate block_tree_db's tx-offset entries.
+                         * Before surrendering the block as
+                         * BLOCK_FAILED_VALID, walk the active chain
+                         * backward a bounded number of blocks and
+                         * search each for the missing txid.  If found,
+                         * inject its outputs into the coins cache AND
+                         * backfill the tx_index entry so the next
+                         * spend of the same tx is O(log N).
+                         *
+                         * 2026-04-22 stall: tip=3,078,014 needed a
+                         * coinbase UTXO from h=3,077,892 (depth=122).
+                         * Default depth cap 1000 covers typical
+                         * fast-sync drift; override via
+                         * ZCL_SELF_HEAL_SCAN_DEPTH for deeper heals.
+                         * Cost: ~50k uint256 compares, <100ms. */
+                        int tip_h = active_chain_height(
+                            &ms->chain_active);
+                        const char *depth_env = getenv(
+                            "ZCL_SELF_HEAL_SCAN_DEPTH");
+                        int depth_limit = depth_env ?
+                            atoi(depth_env) : 1000;
+                        if (depth_limit <= 0) depth_limit = 1000;
+                        int scan_stop =
+                            (tip_h - depth_limit < 0) ? 0
+                                                      : tip_h - depth_limit;
+
+                        bool scan_hit = false;
+                        int scan_blocks_checked = 0;
+                        int scan_hit_height = -1;
+                        for (int h = tip_h;
+                             h >= scan_stop && !scan_hit; h--) {
+                            struct block_index *bi = active_chain_at(
+                                &ms->chain_active, h);
+                            if (!bi || !(bi->nStatus & BLOCK_HAVE_DATA))
+                                continue;
+                            scan_blocks_checked++;
+                            struct block scan_b;
+                            block_init(&scan_b);
+                            if (!read_block_from_disk_index(
+                                    &scan_b, bi, datadir)) {
+                                block_free(&scan_b);
+                                continue;
+                            }
+                            for (size_t ti = 0;
+                                 ti < scan_b.num_vtx; ti++) {
+                                if (!uint256_eq(&scan_b.vtx[ti].hash,
+                                                 &state->missing_txid))
+                                    continue;
+                                struct coins_cache_entry *entry =
+                                    coins_view_cache_modify_new(
+                                        coins_tip,
+                                        &state->missing_txid);
+                                if (entry) {
+                                    coins_from_transaction(
+                                        &entry->coins,
+                                        &scan_b.vtx[ti], h);
+                                    entry->flags = COINS_CACHE_DIRTY;
+                                    scan_hit = true;
+                                    scan_hit_height = h;
+                                    /* Backfill tx_index — on the next
+                                     * spend of this tx we take the
+                                     * fast O(log N) path instead of
+                                     * re-scanning.  Not fatal if the
+                                     * write fails; the recovery still
+                                     * happened. */
+                                    struct disk_tx_pos tx_new;
+                                    disk_tx_pos_init(&tx_new);
+                                    tx_new.block_pos.nFile = bi->nFile;
+                                    tx_new.block_pos.nPos =
+                                        bi->nDataPos;
+                                    (void)block_tree_db_write_tx_index(
+                                        g_active_block_tree,
+                                        &state->missing_txid,
+                                        &tx_new, 1);
+                                }
+                                break;
+                            }
+                            block_free(&scan_b);
+                        }
+
+                        if (scan_hit) {
+                            printf("[self-heal] RECOVERED UTXO %s via "
+                                   "chain scan (hit_h=%d, depth=%d, "
+                                   "blocks_checked=%d) — retry %d\n",
+                                   hex, scan_hit_height,
+                                   tip_h - scan_hit_height,
+                                   scan_blocks_checked,
+                                   recovery_attempts + 1);
+                            fflush(stdout);
+                            event_emitf(EV_BOOT_ACTIVATE, 0,
+                                "SELF_HEAL_SCAN_HIT tx=%s h=%d "
+                                "depth=%d",
+                                hex, scan_hit_height,
+                                tip_h - scan_hit_height);
+                            recovered = true;
+                        } else {
+                            fprintf(stderr,
+                                "[self-heal] scan exhausted "
+                                "(tx=%s, tip_h=%d, depth_limit=%d, "
+                                "blocks_checked=%d) — no match\n",
+                                hex, tip_h, depth_limit,
+                                scan_blocks_checked);
+                            event_emitf(EV_BOOT_ACTIVATE, 0,
+                                "SELF_HEAL_SCAN_EXHAUSTED tx=%s "
+                                "tip_h=%d depth=%d",
+                                hex, tip_h, depth_limit);
+                        }
                     } else if (txpos.block_pos.nFile < 0) {
                         fprintf(stderr, "[self-heal] tx %s nFile=%d "
                                 "(tx index entry too small or corrupt)\n",
