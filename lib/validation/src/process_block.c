@@ -1207,6 +1207,51 @@ bool accept_block(struct block *block,
     }
 
     struct block_index *tip = active_chain_tip(&ms->chain_active);
+
+    /* Defensive nChainWork repair: flat-block-index load + partial
+     * reindex can leave pindex entries with stale/zero nChainWork
+     * even when the height is correct.  Symptom observed
+     * 2026-04-22: block at h=3,085,975 arriving with
+     * nChainWork=0000... while tip at h=3,084,369 had the real
+     * chain work, making has_more_work=false and silently
+     * skipping every incoming block at the wrong work.
+     *
+     * If this pindex is UPSTREAM of tip (nHeight > tip->nHeight)
+     * but its nChainWork compares as less-or-equal, recompute
+     * from pprev.  This is the same algorithm accept_block_header
+     * uses for wrong-height entries — just triggered on a
+     * different invariant (work vs height). */
+    if (tip && pindex->pprev && pindex->nHeight > tip->nHeight &&
+        arith_uint256_compare(&pindex->nChainWork, &tip->nChainWork) < 0) {
+        /* Walk up to find first ancestor with sane work */
+        struct block_index *stack[4096];
+        int depth = 0;
+        struct block_index *cur = pindex;
+        while (cur->pprev && depth < 4096 &&
+               arith_uint256_compare(&cur->nChainWork,
+                                     &tip->nChainWork) < 0 &&
+               cur->nHeight > tip->nHeight) {
+            stack[depth++] = cur;
+            cur = cur->pprev;
+        }
+        /* Propagate down with corrected work */
+        for (int i = depth - 1; i >= 0; i--) {
+            struct block_index *fix = stack[i];
+            if (fix->pprev) {
+                struct arith_uint256 proof = GetBlockProof(fix);
+                arith_uint256_add(&fix->nChainWork,
+                                  &fix->pprev->nChainWork, &proof);
+            }
+        }
+        if (depth > 0) {
+            char wh_fixed[65];
+            arith_uint256_get_hex(&pindex->nChainWork, wh_fixed);
+            event_emitf(EV_BLOCK_CHECK_PASSED, 0,
+                "NCHAINWORK_REPAIR h=%d depth=%d new_work=%.16s",
+                pindex->nHeight, depth, wh_fixed);
+        }
+    }
+
     bool has_more_work = tip ?
         arith_uint256_compare(&pindex->nChainWork, &tip->nChainWork) >= 0 :
         true;
