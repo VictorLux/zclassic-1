@@ -287,10 +287,52 @@ static _Atomic int64_t g_blocks_since_flush = 0;
  * full tree (5+ minutes). */
 #define SAPLING_TREE_CHECKPOINT_INTERVAL 1000
 static _Atomic int64_t g_blocks_since_sapling_save = 0;
+static _Atomic int g_sapling_persist_fail_count = 0;
+static _Atomic int g_sapling_persist_test_force_fail = 0;
 
 static struct node_db *process_block_node_db(void)
 {
     return app_runtime_node_db();
+}
+
+static bool sapling_tree_persist_once(void)
+{
+    struct node_db *ndb = process_block_node_db();
+    if (!ndb || !ndb->open || !g_sapling_tree_for_flush)
+        return false;
+
+    struct byte_stream ts;
+    stream_init(&ts, 4096);
+    bool serialized = incremental_tree_serialize(g_sapling_tree_for_flush, &ts);
+    if (!serialized) {
+        stream_free(&ts);
+        return false;
+    }
+
+    bool persist_ok;
+    int force_fail = atomic_fetch_sub(&g_sapling_persist_test_force_fail, 1);
+    if (force_fail > 0) {
+        persist_ok = false;
+    } else {
+        persist_ok = node_db_state_set(ndb, "sapling_tree", ts.data, ts.size);
+        atomic_store(&g_sapling_persist_test_force_fail, 0);
+    }
+    stream_free(&ts);
+
+    if (!persist_ok) {
+        int fails = atomic_fetch_add(&g_sapling_persist_fail_count, 1) + 1;
+        event_emitf(EV_SAPLING_PERSIST_FAIL, 0, "fails=%d", fails);
+        if (fails >= 3) {
+            atomic_store(&g_sapling_tree_rebuilding, true);
+            atomic_store(&g_sapling_persist_fail_count, 0);
+            return false;
+        }
+        return true;
+    }
+
+    atomic_store(&g_sapling_persist_fail_count, 0);
+    g_blocks_since_sapling_save = 0;
+    return true;
 }
 
 static struct wallet *process_block_wallet(void)
@@ -390,15 +432,7 @@ static bool flush_coins_if_needed(struct coins_view_cache *coins_tip,
         /* Persist Sapling commitment tree state */
         if (ndb && ndb->open &&
             g_sapling_tree_for_flush) {
-            struct byte_stream ts;
-            stream_init(&ts, 4096);
-            if (incremental_tree_serialize(g_sapling_tree_for_flush, &ts)) {
-                if (!node_db_state_set(ndb, "sapling_tree",
-                                       ts.data, ts.size))
-                    fprintf(stderr, "flush_coins: sapling_tree persist failed\n");
-            }
-            stream_free(&ts);
-            g_blocks_since_sapling_save = 0;
+            ok = sapling_tree_persist_once() && ok;
         }
 
         const char *trigger = force ? "forced" : time_flush ? "periodic" :
@@ -446,6 +480,19 @@ static bool flush_coins_if_needed(struct coins_view_cache *coins_tip,
     }
     return ok;
 }
+
+#ifdef ZCL_TESTING
+void process_block_test_fail_next_sapling_persists(int n)
+{
+    atomic_store(&g_sapling_persist_test_force_fail, n);
+}
+
+bool process_block_test_persist_sapling_tree(bool force)
+{
+    (void)force;
+    return sapling_tree_persist_once();
+}
+#endif
 
 static bool find_block_pos(struct disk_block_pos *pos, unsigned int block_size,
                             const char *datadir)

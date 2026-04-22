@@ -393,6 +393,7 @@ const char *event_type_name(enum event_type type)
         [EV_BACKPRESSURE_ACTIVE]     = "net.backpressure_active",
         [EV_BACKPRESSURE_REJECT]     = "net.backpressure_reject",
         [EV_BACKPRESSURE_CLEAR]      = "net.backpressure_clear",
+        [EV_SAPLING_PERSIST_FAIL]    = "val.sapling_persist_fail",
     };
     if (type >= 0 && type < EV_NUM_TYPES && names[type])
         return names[type];

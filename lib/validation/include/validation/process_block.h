@@ -14,6 +14,7 @@
 #include "primitives/block.h"
 #include "storage/disk_block_io.h"
 #include <stdbool.h>
+#include <stdatomic.h>
 
 #define MIN_BLOCKS_TO_KEEP 288
 
@@ -183,6 +184,9 @@ void process_block_test_set_utxo_fail_state(int height, int count);
 int  process_block_test_get_utxo_fail_count(void);
 void process_block_test_trigger_hot_loop_check(int height,
                                                const char *datadir);
+void process_block_test_fail_next_sapling_persists(int n);
+bool process_block_test_persist_sapling_tree(bool force);
+extern _Atomic bool g_sapling_tree_rebuilding;
 #endif
 
 #endif

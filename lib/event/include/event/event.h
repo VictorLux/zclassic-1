@@ -175,6 +175,7 @@ enum event_type {
     EV_BACKPRESSURE_ACTIVE,      /* payload: "tip_stalled drained=N" — once on entry */
     EV_BACKPRESSURE_REJECT,      /* payload: "cmd=inv|block" — per dropped message; peer_id set */
     EV_BACKPRESSURE_CLEAR,       /* payload: "reason=tip_advanced|cooldown_elapsed held_ms=N" */
+    EV_SAPLING_PERSIST_FAIL,     /* payload: "fails=N" */
 
     EV_NUM_TYPES                 /* sentinel — must be last */
 };
