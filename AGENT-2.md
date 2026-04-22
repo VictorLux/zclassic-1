@@ -40,7 +40,7 @@ checklist plus the lane rules.
 
 ---
 
-## Current status — NOW = P24.18a → P24.18b → P24.18c → P24.19 → P24.20 → P24.21 → P24.22 → P24.23 → P24.24 (sync-robustness wave SPLIT + EXTENDED)
+## Current status — NOW = P24.18a → 18b → 18c → P24.19 → 20 → 21 → 22 → 23 → 24 → 25 → 26 (sync-robustness wave, 11 rows)
 
 ## 🎯 IMPORTANT 2026-04-22 02:30 — P24.18 SPLIT into 3 narrower rows
 
