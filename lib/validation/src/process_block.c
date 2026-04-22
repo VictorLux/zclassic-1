@@ -1132,6 +1132,68 @@ bool accept_block(struct block *block,
 
     bool already_have = (pindex->nStatus & BLOCK_HAVE_DATA) != 0;
     if (already_have) {
+        /* Defensive verify: BLOCK_HAVE_DATA can be set on an index
+         * entry whose on-disk position is actually empty — observed
+         * 2026-04-22 post-reindex: block_index entries for heights
+         * above the reindex tip kept a stale BLOCK_HAVE_DATA flag
+         * (loaded from the flat block_index file), so accept_block
+         * skipped the write, find_most_work_chain picked them as
+         * candidates, connect_tip later failed to read them, chain
+         * stalled.  Verify the block can actually be read before
+         * trusting the flag.  If it can't, clear HAVE_DATA + nFile/
+         * nDataPos and fall through to the normal write path —
+         * which will persist the bytes we just received. */
+        if (pindex->nFile >= 0 && pindex->phashBlock) {
+            struct disk_block_pos verify_pos;
+            disk_block_pos_init(&verify_pos);
+            verify_pos.nFile = pindex->nFile;
+            verify_pos.nPos = pindex->nDataPos;
+            struct block verify_blk;
+            block_init(&verify_blk);
+            bool data_ok = read_block_from_disk(
+                &verify_blk, &verify_pos, datadir);
+            if (data_ok) {
+                /* Also verify the hash matches — if the file was
+                 * rewritten in place (blk file compaction, block
+                 * replacement), the bytes may be valid but for a
+                 * different block. */
+                struct uint256 disk_hash;
+                block_header_get_hash(&verify_blk.header, &disk_hash);
+                if (uint256_cmp(&disk_hash, pindex->phashBlock) != 0)
+                    data_ok = false;
+            }
+            block_free(&verify_blk);
+            if (!data_ok) {
+                fprintf(stderr,
+                    "accept_block: BLOCK_HAVE_DATA set at h=%d but "
+                    "disk data missing/mismatched — clearing flag "
+                    "and re-persisting from P2P (file=%d pos=%u)\n",
+                    pindex->nHeight, pindex->nFile,
+                    pindex->nDataPos);
+                event_emitf(EV_BLOCK_REJECTED, 0,
+                    "HAVE_DATA_STALE h=%d file=%d pos=%u",
+                    pindex->nHeight, pindex->nFile,
+                    pindex->nDataPos);
+                pindex->nStatus &= ~(unsigned)BLOCK_HAVE_DATA;
+                pindex->nFile = -1;
+                pindex->nDataPos = 0;
+                already_have = false;
+                /* fall through to the write path below */
+            }
+        } else {
+            /* Flag set but no file/hash — clearly bogus, clear it. */
+            fprintf(stderr,
+                "accept_block: BLOCK_HAVE_DATA set at h=%d with "
+                "nFile=%d / hash=%p — clearing as bogus\n",
+                pindex->nHeight, pindex->nFile,
+                (void *)pindex->phashBlock);
+            pindex->nStatus &= ~(unsigned)BLOCK_HAVE_DATA;
+            pindex->nFile = -1;
+            pindex->nDataPos = 0;
+            already_have = false;
+        }
+    }
+    if (already_have) {
         /* Blocks from LDB import may have BLOCK_HAVE_DATA but nChainTx==0.
          * Without nChainTx, find_most_work_chain skips them and the chain
          * never advances.  Fix: set nChainTx for already-have blocks that
