@@ -53,10 +53,21 @@ The MCP result is authoritative; this file is supporting context only.
 
 ---
 
-## Current status — NOW = P24.29 → P24.30 → P24.31 → P24.19 → P24.20 → P24.21 → P24.22 → P24.23 → P24.24 → P24.25 → P24.26
+## Current status — NOW = P24.31 → P24.32 → P24.33 → P24.34 → P24.19 → P24.20 → P24.21 → P24.22 → P24.23 → P24.24 → P24.25 → P24.26
 
-**P24.28 LANDED 2026-04-22 05:35** (a940dd5ba RED + 0af03d99e GREEN).  Rotation
-done.  The STEP list below is for P24.29.
+**Coordinator override 2026-04-24 05:10 UTC:** ignore the stale P24.29/P24.30
+kickoff block below and ignore any P26/service-registry mail unless Rhett adds
+matching P26 rows to `AGENT.md`. Vibepoint is currently returning mixed QEDC
+state. Local zclassic source, tracked mail, and `AGENT.md` are authoritative.
+
+Recent landed rows:
+- P24.28: a940dd5ba RED + 0af03d99e GREEN.
+- P24.29: ec1867c95 RED + 069f9b8bd GREEN; coordinator pre-land 1a56e79e7.
+- P24.30: 10a8a8fec RED + b3c98d6d0 GREEN.
+
+**Your next zclassic row is P24.31**: tx_index population during LDB fast-sync.
+Start from the P24.31 row in `AGENT.md`, ship RED first, then GREEN, and run
+`make test` before the GREEN commit.
 
 ## 🚀 KICKOFF — 2026-04-22 05:55 — ship P24.29 RED + events + MCP tool
 

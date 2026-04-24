@@ -55,6 +55,12 @@ The MCP result is authoritative; this file is supporting context only.
 
 ## Current status — NOW = P24.27 → P20.10 → P15.4 → P15.5 → P17 → P18.4 → P21.7/8 → P22.4 → P23.7 → P24.2/P24.4
 
+**Coordinator override 2026-04-24 05:10 UTC:** ignore stale kickoff text that
+starts with P11.8/P20.12. Those rows have already been worked in prior
+sessions. Your next zclassic row is **P24.27 observability lint**. Do not add a
+new shell script for it; the repo rule is still "No shell scripts. No Python.
+No Docker." Keep the lint implementation in C23 / existing compiled tooling.
+
 **`zcl_kickoff` LANDED 2026-04-22 05:36** (`d8ed78dd7`, filed in AGENT.md as
 P20.11 — your commit-subject `mcp/P20.9` was a tag collision with the
 planned `zcl_build_info` P20.9 row; not a problem, just note the
