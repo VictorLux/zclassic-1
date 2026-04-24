@@ -302,6 +302,7 @@ int test_msg_handlers(void);
 int test_syncdiag_rpc(void);
 int test_rpc_safety(void);
 int test_p14_6_failed_child_cap(void);
+int test_power_node_contract_spec(void);
 
 /* Spec-based user story tests (one per feature area) */
 int spec_wallet_dashboard(void);
