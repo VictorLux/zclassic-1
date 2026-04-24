@@ -5,6 +5,18 @@
       "args": [
         "-mcp"
       ]
+    },
+    "vibepoint": {
+      "command": "/home/rhett/.vibepoint/vibepoint",
+      "env": {
+        "VIBEPOINT_DEFAULT_PROJECT": "zclassic",
+        "VIBEPOINT_PM_REPO": "/home/rhett/zclassic23",
+        "VIBEPOINT_AGENT_REPO_ROOT": "/home/rhett/zclassic23-",
+        "VIBEPOINT_MIN_AGENT_NUM": "2",
+        "VIBEPOINT_MAX_AGENT_NUM": "3",
+        "VIBEPOINT_PM_AGENT_NUM": "1",
+        "VIBEPOINT_DB_PATH": "/home/rhett/.vibepoint/vibepoint.db"
+      }
     }
   }
 }
