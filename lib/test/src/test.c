@@ -231,6 +231,7 @@ int main(void)
     failures += test_chain_state_validator();
     failures += test_utxo_recovery_service();
     failures += test_connect_tip_hot_loop_exit();
+    failures += test_self_heal_scan_fallback();
     failures += test_rpc_error_envelope();
     failures += test_tx_property();
     failures += test_workpool();
