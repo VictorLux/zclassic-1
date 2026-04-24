@@ -8,6 +8,19 @@ See [`AGENT.md`](AGENT.md) for the cross-agent priority table and
 every row's full description. This file is Agent-3's executable
 checklist plus the lane rules.
 
+## Session start — mandatory
+
+Every new session starts from the zclassic QEDC MCP database:
+
+```text
+vibepoint:kickoff { "agent": 3 }
+```
+
+Then immediately follow the kickoff packet's required next call. If it
+says `task_claim_next`, call it before doing code work. If it says an
+active claim exists, fetch that task with `vibepoint:task_packet`.
+The MCP result is authoritative; this file is supporting context only.
+
 ---
 
 ## Lane — what you may edit
