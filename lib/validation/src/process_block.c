@@ -51,6 +51,47 @@ static int g_last_block_file = -1;
 static unsigned int g_last_block_file_size = 0;
 static int s_utxo_fail_count = 0;
 static int s_utxo_fail_height = -1;
+static _Atomic uint64_t g_self_heal_tx_index_hits;
+static _Atomic uint64_t g_self_heal_scan_hits;
+static _Atomic uint64_t g_self_heal_scan_exhausted;
+static _Atomic uint64_t g_self_heal_scan_blocks_checked_total;
+
+int process_block_self_heal_scan_depth_limit(void)
+{
+    const char *depth_env = getenv("ZCL_SELF_HEAL_SCAN_DEPTH");
+    int depth_limit = depth_env ? atoi(depth_env) : 1000;
+    return depth_limit > 0 ? depth_limit : 1000;
+}
+
+void process_block_self_heal_stats_snapshot(
+    struct self_heal_scan_stats *out)
+{
+    if (!out) return;
+    out->tx_index_hits =
+        atomic_load_explicit(&g_self_heal_tx_index_hits,
+                             memory_order_relaxed);
+    out->scan_hits =
+        atomic_load_explicit(&g_self_heal_scan_hits,
+                             memory_order_relaxed);
+    out->scan_exhausted =
+        atomic_load_explicit(&g_self_heal_scan_exhausted,
+                             memory_order_relaxed);
+    out->scan_blocks_checked_total =
+        atomic_load_explicit(&g_self_heal_scan_blocks_checked_total,
+                             memory_order_relaxed);
+}
+
+void process_block_self_heal_stats_reset(void)
+{
+    atomic_store_explicit(&g_self_heal_tx_index_hits, 0,
+                          memory_order_relaxed);
+    atomic_store_explicit(&g_self_heal_scan_hits, 0,
+                          memory_order_relaxed);
+    atomic_store_explicit(&g_self_heal_scan_exhausted, 0,
+                          memory_order_relaxed);
+    atomic_store_explicit(&g_self_heal_scan_blocks_checked_total, 0,
+                          memory_order_relaxed);
+}
 
 /* P24.13: returns true iff the pprev chain from pindex_prev can be
  * walked back `pow_window` steps with each step satisfying
@@ -1577,11 +1618,8 @@ retry_connect:
                          * Cost: ~50k uint256 compares, <100ms. */
                         int tip_h = active_chain_height(
                             &ms->chain_active);
-                        const char *depth_env = getenv(
-                            "ZCL_SELF_HEAL_SCAN_DEPTH");
-                        int depth_limit = depth_env ?
-                            atoi(depth_env) : 1000;
-                        if (depth_limit <= 0) depth_limit = 1000;
+                        int depth_limit =
+                            process_block_self_heal_scan_depth_limit();
                         int scan_stop =
                             (tip_h - depth_limit < 0) ? 0
                                                       : tip_h - depth_limit;
@@ -1641,6 +1679,13 @@ retry_connect:
                         }
 
                         if (scan_hit) {
+                            atomic_fetch_add_explicit(
+                                &g_self_heal_scan_hits, 1,
+                                memory_order_relaxed);
+                            atomic_fetch_add_explicit(
+                                &g_self_heal_scan_blocks_checked_total,
+                                (uint64_t)scan_blocks_checked,
+                                memory_order_relaxed);
                             printf("[self-heal] RECOVERED UTXO %s via "
                                    "chain scan (hit_h=%d, depth=%d, "
                                    "blocks_checked=%d) — retry %d\n",
@@ -1649,22 +1694,27 @@ retry_connect:
                                    scan_blocks_checked,
                                    recovery_attempts + 1);
                             fflush(stdout);
-                            event_emitf(EV_BOOT_ACTIVATE, 0,
-                                "SELF_HEAL_SCAN_HIT tx=%s h=%d "
-                                "depth=%d",
+                            event_emitf(EV_SELF_HEAL_SCAN_HIT, 0,
+                                "tx=%s h=%d depth=%d",
                                 hex, scan_hit_height,
                                 tip_h - scan_hit_height);
                             recovered = true;
                         } else {
+                            atomic_fetch_add_explicit(
+                                &g_self_heal_scan_exhausted, 1,
+                                memory_order_relaxed);
+                            atomic_fetch_add_explicit(
+                                &g_self_heal_scan_blocks_checked_total,
+                                (uint64_t)scan_blocks_checked,
+                                memory_order_relaxed);
                             fprintf(stderr,
                                 "[self-heal] scan exhausted "
                                 "(tx=%s, tip_h=%d, depth_limit=%d, "
                                 "blocks_checked=%d) — no match\n",
                                 hex, tip_h, depth_limit,
                                 scan_blocks_checked);
-                            event_emitf(EV_BOOT_ACTIVATE, 0,
-                                "SELF_HEAL_SCAN_EXHAUSTED tx=%s "
-                                "tip_h=%d depth=%d",
+                            event_emitf(EV_SELF_HEAL_SCAN_EXHAUSTED, 0,
+                                "tx=%s tip_h=%d depth=%d",
                                 hex, tip_h, depth_limit);
                         }
                     } else if (txpos.block_pos.nFile < 0) {
@@ -1672,6 +1722,9 @@ retry_connect:
                                 "(tx index entry too small or corrupt)\n",
                                 hex, txpos.block_pos.nFile);
                     } else {
+                        atomic_fetch_add_explicit(
+                            &g_self_heal_tx_index_hits, 1,
+                            memory_order_relaxed);
                         struct block src_block;
                         block_init(&src_block);
                         if (!read_block_from_disk(&src_block,

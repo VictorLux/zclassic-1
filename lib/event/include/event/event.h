@@ -43,6 +43,8 @@ enum event_type {
     /* ── Validation pipeline ────────────────────────── */
     EV_BLOCK_CONNECTED,          /* payload: height string */
     EV_BLOCK_REJECTED,           /* payload: dos + reason string */
+    EV_SELF_HEAL_SCAN_HIT,       /* payload: "tx=... h=N depth=N" */
+    EV_SELF_HEAL_SCAN_EXHAUSTED, /* payload: "tx=... tip_h=N depth=N" */
 
     /* ── Chain ──────────────────────────────────────── */
     EV_TIP_UPDATED,              /* payload: hash[32] + height(i32) */

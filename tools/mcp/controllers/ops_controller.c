@@ -13,6 +13,7 @@
 #include "json/json.h"
 #include "util/log_macros.h"
 #include "util/safe_alloc.h"
+#include "validation/process_block.h"
 
 #include <dirent.h>
 #include <limits.h>
@@ -840,6 +841,39 @@ static int h_zcl_kpi(const struct mcp_request *req, struct mcp_response *res)
     return 0;
 }
 
+static int h_zcl_self_heal_stats(const struct mcp_request *req,
+                                  struct mcp_response *res)
+{
+    (void)req;
+    struct self_heal_scan_stats stats;
+    process_block_self_heal_stats_snapshot(&stats);
+
+    char *out = zcl_malloc(512, "self_heal_stats_body");
+    if (!out) {
+        res->error = MCP_ERR_INTERNAL;
+        snprintf(res->error_message, sizeof(res->error_message),
+                 "malloc failed for self-heal stats response");
+        LOG_ERR("mcp.ops", "malloc failed for self-heal stats body");
+        return 0;
+    }
+
+    snprintf(out, 512,
+        "{"
+        "\"tx_index_hits\":%llu,"
+        "\"scan_hits\":%llu,"
+        "\"scan_exhausted\":%llu,"
+        "\"scan_blocks_checked_total\":%llu,"
+        "\"scan_depth_limit\":%d"
+        "}",
+        (unsigned long long)stats.tx_index_hits,
+        (unsigned long long)stats.scan_hits,
+        (unsigned long long)stats.scan_exhausted,
+        (unsigned long long)stats.scan_blocks_checked_total,
+        process_block_self_heal_scan_depth_limit());
+    res->body = out;
+    return 0;
+}
+
 /* ── zcl_profile (wave 6): per-thread CPU sampler ────────────
  *
  * Reads /proc/self/task/<tid>/stat for every live thread, sleeps
@@ -1247,6 +1281,10 @@ static const struct mcp_tool_route k_routes[] = {
       "health, mempool, wallet, chain, network — every subsystem in "
       "one response. The flagship operator tool for debugging.",
       NULL, 0, h_zcl_kpi },
+    { "zcl_self_heal_stats", "ops",
+      "Self-heal UTXO recovery counters: tx-index hits, bounded scan "
+      "hits/exhaustion, total scanned blocks, and active scan depth.",
+      NULL, 0, h_zcl_self_heal_stats },
     { "zcl_getmempoolinfo", "ops",
       "Mempool size, bytes, usage.",
       NULL, 0, h_zcl_getmempoolinfo },

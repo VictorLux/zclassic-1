@@ -309,6 +309,8 @@ const char *event_type_name(enum event_type type)
         [EV_BLOCK_REQUESTED]         = "sync.block_requested",
         [EV_BLOCK_CONNECTED]         = "val.block_connected",
         [EV_BLOCK_REJECTED]          = "val.block_rejected",
+        [EV_SELF_HEAL_SCAN_HIT]      = "val.self_heal_scan_hit",
+        [EV_SELF_HEAL_SCAN_EXHAUSTED]= "val.self_heal_scan_exhausted",
         [EV_TIP_UPDATED]             = "chain.tip_updated",
         [EV_REORG_START]             = "chain.reorg_start",
         [EV_REORG_DISCONNECT_FAILED] = "chain.reorg_disconnect_failed",

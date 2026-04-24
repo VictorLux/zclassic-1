@@ -102,6 +102,20 @@ int main(void)
                failures);
         return failures ? 1 : 0;
     }
+    if (only && strcmp(only, "self_heal_scan") == 0) {
+        printf("[test] ZCL_TEST_ONLY=self_heal_scan — running P24.29 only\n");
+        failures += test_self_heal_scan_fallback();
+        printf("\n=== self_heal_scan subset complete: %d failure(s) ===\n",
+               failures);
+        return failures ? 1 : 0;
+    }
+    if (only && strcmp(only, "mcp_controllers") == 0) {
+        printf("[test] ZCL_TEST_ONLY=mcp_controllers — running MCP controller subset\n");
+        failures += test_mcp_controllers();
+        printf("\n=== mcp_controllers subset complete: %d failure(s) ===\n",
+               failures);
+        return failures ? 1 : 0;
+    }
 
     failures += test_load_balancer();
     failures += test_game();

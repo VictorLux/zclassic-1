@@ -18,6 +18,13 @@
 
 #define MIN_BLOCKS_TO_KEEP 288
 
+struct self_heal_scan_stats {
+    uint64_t tx_index_hits;
+    uint64_t scan_hits;
+    uint64_t scan_exhausted;
+    uint64_t scan_blocks_checked_total;
+};
+
 bool accept_block_header(const struct block_header *header,
                          struct validation_state *state,
                          struct main_state *ms,
@@ -59,6 +66,11 @@ bool process_new_block(struct validation_state *state,
                        struct block *pblock,
                        bool force_processing,
                        const char *datadir);
+
+void process_block_self_heal_stats_snapshot(
+    struct self_heal_scan_stats *out);
+void process_block_self_heal_stats_reset(void);
+int process_block_self_heal_scan_depth_limit(void);
 
 /* Configure the coins flush policy (short-term → long-term layer bridge).
  * block_interval=0 disables block-based flushing (default).
