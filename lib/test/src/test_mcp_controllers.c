@@ -33,6 +33,9 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdbool.h>
+#include <limits.h>
+#include <sys/stat.h>
+#include <unistd.h>
 #include "util/safe_alloc.h"
 
 /* Expected tool counts.  If a future commit intentionally adds or
@@ -92,6 +95,16 @@ static bool is_known_domain(const char *d)
 static bool contains(const char *haystack, const char *needle)
 {
     return haystack && needle && strstr(haystack, needle) != NULL;
+}
+
+static bool write_text_file(const char *path, const char *text)
+{
+    FILE *f = fopen(path, "wb");
+    if (!f)
+        return false;
+    bool ok = fwrite(text, 1, strlen(text), f) == strlen(text);
+    fclose(f);
+    return ok;
 }
 
 /* ── Tests ──────────────────────────────────────────────────── */
@@ -357,6 +370,10 @@ static int test_zcl_kickoff_shape(void)
         ASSERT(contains(body, "\"lane\":"));
         ASSERT(contains(body, "\"role_file\":"));
         ASSERT(contains(body, "\"now\":"));
+        ASSERT(contains(body, "\"next_ship\":"));
+        ASSERT(contains(body, "\"queue\":"));
+        ASSERT(contains(body, "\"preserved_wip\":"));
+        ASSERT(contains(body, "\"pending_pushes\":"));
         ASSERT(contains(body, "\"git\":"));
         ASSERT(contains(body, "\"branch\":"));
         ASSERT(contains(body, "\"dirty\":"));
@@ -369,6 +386,10 @@ static int test_zcl_kickoff_shape(void)
         ASSERT(json_get(&root, "lane") != NULL);
         ASSERT(json_get(&root, "role_file") != NULL);
         ASSERT(json_get(&root, "now") != NULL);
+        ASSERT(json_get(&root, "next_ship") != NULL);
+        ASSERT(json_get(&root, "queue") != NULL);
+        ASSERT(json_get(&root, "preserved_wip") != NULL);
+        ASSERT(json_get(&root, "pending_pushes") != NULL);
         ASSERT(json_get(&root, "git") != NULL);
 
         const struct json_value *git = json_get(&root, "git");
@@ -382,6 +403,74 @@ static int test_zcl_kickoff_shape(void)
         free(body);
         PASS();
     } _test_next:;
+    return failures;
+}
+
+static int test_zcl_kickoff_enrichment_fixture(void)
+{
+    int failures = 0;
+    char oldcwd[PATH_MAX] = "";
+    char tmp_template[] = "/tmp/zcl-kickoff-fixture-XXXXXX";
+    char *tmp = NULL;
+    char repo[PATH_MAX] = "";
+    bool changed_dir = false;
+    struct json_value root = {0};
+    char *body = NULL;
+
+    TEST("controllers: zcl_kickoff parses queue and kickoff next ship") {
+        ASSERT(getcwd(oldcwd, sizeof(oldcwd)) != NULL);
+        tmp = mkdtemp(tmp_template);
+        ASSERT(tmp != NULL);
+        snprintf(repo, sizeof(repo), "%s/zclassic23-3", tmp);
+        ASSERT(mkdir(repo, 0700) == 0);
+
+        char path[PATH_MAX];
+        snprintf(path, sizeof(path), "%s/AGENTS.md", repo);
+        ASSERT(write_text_file(path, "# fixture\n"));
+        snprintf(path, sizeof(path), "%s/AGENT.md", repo);
+        ASSERT(write_text_file(path, "# fixture\n"));
+        snprintf(path, sizeof(path), "%s/AGENT-3.md", repo);
+        ASSERT(write_text_file(path,
+            "## Current status -- NOW = P20.12 -> P24.27 -> P15.4\n"
+            "\n"
+            "## KICKOFF -- fixture\n"
+            "\n"
+            "### STEP 1 -- stale P11.8 step\n"
+            "\n"
+            "### STEP 3 -- P20.12 enrichment of zcl_kickoff\n"
+            "\n"
+            "body\n"));
+
+        ASSERT(chdir(repo) == 0);
+        changed_dir = true;
+        register_all();
+        body = mcp_router_dispatch("zcl_kickoff", NULL);
+        ASSERT(body != NULL);
+        ASSERT(json_read(&root, body, strlen(body)));
+        ASSERT(root.type == JSON_OBJ);
+
+        const struct json_value *next = json_get(&root, "next_ship");
+        const struct json_value *queue = json_get(&root, "queue");
+        const struct json_value *wip = json_get(&root, "preserved_wip");
+        const struct json_value *pushes = json_get(&root, "pending_pushes");
+        ASSERT(next != NULL && next->type == JSON_STR);
+        ASSERT(contains(json_get_str(next), "P20.12"));
+        ASSERT(queue != NULL && queue->type == JSON_ARR);
+        ASSERT(queue->num_children == 3);
+        ASSERT(wip != NULL && wip->type == JSON_ARR);
+        ASSERT(pushes != NULL && pushes->type == JSON_ARR);
+
+        const struct json_value *first = json_at(queue, 0);
+        ASSERT(first != NULL && first->type == JSON_OBJ);
+        ASSERT_STR_EQ(json_get_str(json_get(first, "row_id")), "P20.12");
+        ASSERT_STR_EQ(json_get_str(json_get(first, "tier")), "P20");
+
+        PASS();
+    } _test_next:
+    json_free(&root);
+    free(body);
+    if (changed_dir)
+        (void)chdir(oldcwd);
     return failures;
 }
 
@@ -939,6 +1028,7 @@ int test_mcp_controllers(void)
     failures += test_zcl_getblock_param_shape();
     failures += test_zcl_status_no_params();
     failures += test_zcl_kickoff_shape();
+    failures += test_zcl_kickoff_enrichment_fixture();
     failures += test_meta_tools_in_ops_domain();
     failures += test_tools_list_json_well_formed();
     failures += test_input_schema_for_zcl_getblock();

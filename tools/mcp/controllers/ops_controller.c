@@ -162,6 +162,183 @@ static char *kickoff_extract_now(const char *markdown)
     return out;
 }
 
+static void kickoff_trim_slice(const char **start, const char **end)
+{
+    while (*start < *end && (**start == ' ' || **start == '\t'))
+        (*start)++;
+    while (*end > *start &&
+           ((*end)[-1] == '\r' || (*end)[-1] == '\n' ||
+            (*end)[-1] == ' ' || (*end)[-1] == '\t'))
+        (*end)--;
+}
+
+static char *kickoff_slice_dup(const char *start, const char *end,
+                               const char *tag)
+{
+    size_t len;
+    char *out;
+
+    if (!start || !end || end < start)
+        return NULL;
+    kickoff_trim_slice(&start, &end);
+    len = (size_t)(end - start);
+    out = zcl_malloc(len + 1, tag);
+    if (!out)
+        return NULL;
+    memcpy(out, start, len);
+    out[len] = '\0';
+    return out;
+}
+
+static bool kickoff_slice_contains(const char *start, const char *end,
+                                   const char *needle)
+{
+    size_t needle_len;
+
+    if (!start || !end || end < start || !needle || !needle[0])
+        return false;
+    needle_len = strlen(needle);
+    if (needle_len > (size_t)(end - start))
+        return false;
+    for (const char *p = start; p + needle_len <= end; p++) {
+        if (memcmp(p, needle, needle_len) == 0)
+            return true;
+    }
+    return false;
+}
+
+static void kickoff_first_row_id(const char *now, char out[32])
+{
+    const char *end;
+    size_t len;
+
+    if (!out)
+        return;
+    out[0] = '\0';
+    if (!now)
+        return;
+    end = now;
+    while (*end && *end != ' ' && *end != '\t')
+        end++;
+    len = (size_t)(end - now);
+    if (len >= 32)
+        len = 31;
+    memcpy(out, now, len);
+    out[len] = '\0';
+}
+
+static char *kickoff_extract_next_ship(const char *markdown, const char *now)
+{
+    static const char *kickoff = "## ";
+    static const char arrow[] = "\342\200\224";
+    const char *block;
+    const char *block_end;
+    const char *fallback = NULL;
+    const char *fallback_end = NULL;
+    char row_id[32];
+
+    if (!markdown)
+        return NULL;
+    block = strstr(markdown, kickoff);
+    while (block) {
+        const char *line_end = strchr(block, '\n');
+        if (!line_end)
+            line_end = block + strlen(block);
+        const char *hit = strstr(block, "KICKOFF");
+        if (hit && hit < line_end)
+            break;
+        block = strstr(block + 3, "\n## ");
+        if (block)
+            block++;
+    }
+    if (!block)
+        return NULL;
+    block_end = strstr(block + 3, "\n## ");
+    if (!block_end)
+        block_end = block + strlen(block);
+
+    kickoff_first_row_id(now, row_id);
+    for (const char *line = block; line && line < block_end; ) {
+        const char *line_end = strchr(line, '\n');
+        if (!line_end || line_end > block_end)
+            line_end = block_end;
+        if (strncmp(line, "### ", 4) != 0)
+            goto next_line;
+        if (!fallback) {
+            fallback = line + 4;
+            fallback_end = line_end;
+        }
+        if (row_id[0] && kickoff_slice_contains(line, line_end, row_id)) {
+            const char *desc = strstr(line, arrow);
+            if (desc && desc < line_end)
+                return kickoff_slice_dup(desc + strlen(arrow), line_end,
+                                         "kickoff_next_ship");
+            return kickoff_slice_dup(line + 4, line_end,
+                                     "kickoff_next_ship");
+        }
+next_line:
+        line = (*line_end == '\n') ? line_end + 1 : NULL;
+    }
+
+    if (fallback) {
+        const char *desc = strstr(fallback, arrow);
+        if (desc && desc < fallback_end)
+            return kickoff_slice_dup(desc + strlen(arrow), fallback_end,
+                                     "kickoff_next_ship");
+        return kickoff_slice_dup(fallback, fallback_end, "kickoff_next_ship");
+    }
+    return NULL;
+}
+
+static void kickoff_queue_json(const char *now, struct json_value *arr)
+{
+    static const char sep[] = "\342\206\222";
+    const char *p = now;
+
+    json_init(arr);
+    json_set_array(arr);
+    while (p && *p) {
+        const char *wide_end = strstr(p, sep);
+        const char *ascii_end = strstr(p, "->");
+        const char *end = wide_end;
+        size_t sep_len = strlen(sep);
+        const char *row_start = p;
+        if (ascii_end && (!end || ascii_end < end)) {
+            end = ascii_end;
+            sep_len = 2;
+        }
+        const char *row_end = end ? end : p + strlen(p);
+        char row_id[64] = "";
+        char tier[32] = "";
+        struct json_value entry;
+        const char *dot;
+        size_t len;
+
+        kickoff_trim_slice(&row_start, &row_end);
+        len = (size_t)(row_end - row_start);
+        if (len > 0) {
+            if (len >= sizeof(row_id))
+                len = sizeof(row_id) - 1;
+            memcpy(row_id, row_start, len);
+            row_id[len] = '\0';
+            dot = strchr(row_id, '.');
+            len = dot ? (size_t)(dot - row_id) : strlen(row_id);
+            if (len >= sizeof(tier))
+                len = sizeof(tier) - 1;
+            memcpy(tier, row_id, len);
+            tier[len] = '\0';
+
+            json_init(&entry);
+            json_set_object(&entry);
+            json_push_kv_str(&entry, "row_id", row_id);
+            json_push_kv_str(&entry, "tier", tier);
+            json_push_back(arr, &entry);
+            json_free(&entry);
+        }
+        p = end ? end + sep_len : NULL;
+    }
+}
+
 static char *kickoff_run_capture(const char *cmd, size_t cap_bytes)
 {
     FILE *p = NULL;
@@ -184,6 +361,121 @@ static char *kickoff_run_capture(const char *cmd, size_t cap_bytes)
     buf[n] = '\0';
     pclose(p);
     return buf;
+}
+
+static void kickoff_lines_json(const char *lines, struct json_value *arr)
+{
+    const char *p = lines;
+
+    json_init(arr);
+    json_set_array(arr);
+    while (p && *p) {
+        const char *end = strchr(p, '\n');
+        if (!end)
+            end = p + strlen(p);
+        char *line = kickoff_slice_dup(p, end, "kickoff_line");
+        if (line && line[0]) {
+            struct json_value v;
+            json_init(&v);
+            json_set_str(&v, line);
+            json_push_back(arr, &v);
+            json_free(&v);
+        }
+        free(line);
+        p = *end ? end + 1 : NULL;
+    }
+}
+
+static void kickoff_pending_pushes_json(const char *repo_root,
+                                        struct json_value *arr)
+{
+    char cmd[PATH_MAX + 96];
+    char *out;
+
+    json_init(arr);
+    json_set_array(arr);
+    if (!repo_root)
+        return;
+    snprintf(cmd, sizeof(cmd),
+             "git -C '%s' log origin/main..HEAD --oneline 2>/dev/null",
+             repo_root);
+    out = kickoff_run_capture(cmd, 8192);
+    kickoff_lines_json(out ? out : "", arr);
+    free(out);
+}
+
+static int kickoff_agent_num_for_lane(const char *lane)
+{
+    if (!lane)
+        return 0;
+    if (strcmp(lane, "agent-2") == 0)
+        return 2;
+    if (strcmp(lane, "agent-3") == 0)
+        return 3;
+    return 0;
+}
+
+static void kickoff_preserved_wip_json(const char *repo_root,
+                                       int agent_num,
+                                       struct json_value *arr)
+{
+    char cmd[PATH_MAX + 128];
+    char pattern[64];
+    char *branches;
+    const char *p;
+
+    json_init(arr);
+    json_set_array(arr);
+    if (!repo_root || agent_num <= 0)
+        return;
+
+    snprintf(pattern, sizeof(pattern), "origin/wip/agent-%d-*", agent_num);
+    snprintf(cmd, sizeof(cmd),
+             "git -C '%s' branch -r --list '%s' 2>/dev/null",
+             repo_root, pattern);
+    branches = kickoff_run_capture(cmd, 8192);
+    p = branches;
+    while (p && *p) {
+        const char *end = strchr(p, '\n');
+        const char *branch_start = p;
+        const char *branch_end = end ? end : p + strlen(p);
+        char *branch = kickoff_slice_dup(branch_start, branch_end,
+                                         "kickoff_wip_branch");
+        if (branch && branch[0]) {
+            char numstat_cmd[PATH_MAX + 256];
+            char *numstat;
+            const char *n;
+
+            snprintf(numstat_cmd, sizeof(numstat_cmd),
+                     "git -C '%s' diff --numstat origin/main...%s 2>/dev/null",
+                     repo_root, branch);
+            numstat = kickoff_run_capture(numstat_cmd, 16384);
+            n = numstat;
+            while (n && *n) {
+                const char *line_end = strchr(n, '\n');
+                int added = 0;
+                int deleted = 0;
+                char file[PATH_MAX] = "";
+                if (!line_end)
+                    line_end = n + strlen(n);
+                if (sscanf(n, "%d\t%d\t%1023[^\n]", &added, &deleted, file) == 3) {
+                    struct json_value entry;
+                    json_init(&entry);
+                    json_set_object(&entry);
+                    json_push_kv_str(&entry, "branch", branch);
+                    json_push_kv_str(&entry, "file", file);
+                    json_push_kv_int(&entry, "lines", added + deleted);
+                    json_push_back(arr, &entry);
+                    json_free(&entry);
+                }
+                n = *line_end ? line_end + 1 : NULL;
+            }
+            free(numstat);
+        }
+        free(branch);
+        p = end ? end + 1 : NULL;
+    }
+    free(branches);
 }
 
 static char *kickoff_git_branch(const char *repo_root)
@@ -221,11 +513,15 @@ static int h_zcl_kickoff(const struct mcp_request *req,
     const char *role_file = NULL;
     char *role_md = NULL;
     char *now = NULL;
+    char *next_ship = NULL;
     char *branch = NULL;
     char *status = NULL;
     bool repo_found = false;
     struct json_value root = {0};
     struct json_value git = {0};
+    struct json_value queue = {0};
+    struct json_value preserved_wip = {0};
+    struct json_value pending_pushes = {0};
 
     (void)req;
 
@@ -241,8 +537,13 @@ static int h_zcl_kickoff(const struct mcp_request *req,
 
     role_md = kickoff_read_file(role_path);
     now = kickoff_extract_now(role_md);
+    next_ship = kickoff_extract_next_ship(role_md, now);
     branch = kickoff_git_branch(repo_root);
     status = kickoff_git_status_short(repo_root);
+    kickoff_queue_json(now ? now : "", &queue);
+    kickoff_preserved_wip_json(repo_root, kickoff_agent_num_for_lane(lane),
+                               &preserved_wip);
+    kickoff_pending_pushes_json(repo_root, &pending_pushes);
 
     json_init(&root);
     json_set_object(&root);
@@ -252,6 +553,10 @@ static int h_zcl_kickoff(const struct mcp_request *req,
     json_push_kv_str(&root, "lane", lane);
     json_push_kv_str(&root, "role_file", role_file);
     json_push_kv_str(&root, "now", now ? now : "unknown");
+    json_push_kv_str(&root, "next_ship", next_ship ? next_ship : "unknown");
+    json_push_kv(&root, "queue", &queue);
+    json_push_kv(&root, "preserved_wip", &preserved_wip);
+    json_push_kv(&root, "pending_pushes", &pending_pushes);
     json_push_kv_str(&root, "summary",
                      "Local zclassic23 kickoff: lane, assignment, and git state.");
 
@@ -268,8 +573,12 @@ static int h_zcl_kickoff(const struct mcp_request *req,
     if (!out) {
         json_free(&root);
         json_free(&git);
+        json_free(&queue);
+        json_free(&preserved_wip);
+        json_free(&pending_pushes);
         free(role_md);
         free(now);
+        free(next_ship);
         free(branch);
         free(status);
         res->error = MCP_ERR_INTERNAL;
@@ -283,8 +592,12 @@ static int h_zcl_kickoff(const struct mcp_request *req,
 
     json_free(&root);
     json_free(&git);
+    json_free(&queue);
+    json_free(&preserved_wip);
+    json_free(&pending_pushes);
     free(role_md);
     free(now);
+    free(next_ship);
     free(branch);
     free(status);
     return 0;
