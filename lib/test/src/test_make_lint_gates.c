@@ -40,6 +40,8 @@
 #define FIXTURE_DST_REL "app/_lint_gate_fixture_tmp.c"
 #define COINS_FIXTURE_SRC_REL "lib/test/fixtures/coins_lookup_guard_fixture.c"
 #define COINS_FIXTURE_DST_REL "app/controllers/src/_coins_lookup_guard_fixture_tmp.c"
+#define OBS_FIXTURE_SRC_REL "lib/test/fixtures/observability_unpaired_stderr_fixture.c"
+#define OBS_FIXTURE_DST_REL "app/_observability_lint_fixture_tmp.c"
 
 static const char *repo_root(void)
 {
@@ -266,6 +268,31 @@ static int run_check_coins_lookup_nullcheck(void)
     return walk_c_files(controllers_dir, check_coins_guard_file);
 }
 
+static int t_observability_fixture_trips_gate(void)
+{
+    int failures = 0;
+    char fixture_src[PATH_MAX];
+    char fixture_dst[PATH_MAX];
+    if (repo_path(fixture_src, sizeof(fixture_src), OBS_FIXTURE_SRC_REL) != 0 ||
+        repo_path(fixture_dst, sizeof(fixture_dst), OBS_FIXTURE_DST_REL) != 0) {
+        fprintf(stderr, "[lint-gate] could not resolve observability fixture paths\n");
+        return 1;
+    }
+    (void)unlink(fixture_dst);
+    if (copy_file(fixture_src, fixture_dst) != 0) {
+        fprintf(stderr,
+                "[lint-gate] could not plant observability fixture -- aborting\n");
+        return 1;
+    }
+    int rc = 0;
+    (void)unlink(fixture_dst);
+    TEST("[lint-gate] unpaired stderr fixture trips observability gate") {
+        ASSERT(rc != 0);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 static int t_baseline_passes(void)
 {
     int failures = 0;
@@ -390,6 +417,7 @@ int test_make_lint_gates(void)
     failures += t_coins_guard_baseline_passes();
     failures += t_coins_guard_fixture_trips_gate();
     failures += t_coins_guard_gate_recovers();
+    failures += t_observability_fixture_trips_gate();
     return failures;
 }
 
