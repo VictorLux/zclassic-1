@@ -40,7 +40,7 @@ checklist plus the lane rules.
 
 ---
 
-## Current status — NOW = P11.8 → P20.12 → P24.27 → P20.10 → P15.4 → P15.5 → P17 → P18.4 → P21.7/8 → P22.4 → P23.7 → P24.2/P24.4
+## Current status — NOW = P20.12 → P24.27 → P20.10 → P15.4 → P15.5 → P17 → P18.4 → P21.7/8 → P22.4 → P23.7 → P24.2/P24.4
 
 **`zcl_kickoff` LANDED 2026-04-22 05:36** (`d8ed78dd7`, filed in AGENT.md as
 P20.11 — your commit-subject `mcp/P20.9` was a tag collision with the

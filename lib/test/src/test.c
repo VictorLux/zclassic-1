@@ -59,6 +59,13 @@ int main(void)
                failures);
         return failures ? 1 : 0;
     }
+    if (only && strcmp(only, "parity_diff") == 0) {
+        printf("[test] ZCL_TEST_ONLY=parity_diff — running P11.8 parity-diff gate only\n");
+        failures += test_parity_diff_gate();
+        printf("\n=== parity_diff subset complete: %d failure(s) ===\n",
+               failures);
+        return failures ? 1 : 0;
+    }
     if (only && strcmp(only, "persistence") == 0) {
         printf("[test] ZCL_TEST_ONLY=persistence — running persistence subset\n");
         failures += test_schema_migration();
@@ -147,6 +154,7 @@ int main(void)
       failures += test_store_e2e_gate(); }
     { extern int test_soak_harness(void);
       failures += test_soak_harness(); }
+    failures += test_parity_diff_gate();
     failures += test_event();
     failures += test_download();
     failures += test_consensus();
