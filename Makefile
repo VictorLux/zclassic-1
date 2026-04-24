@@ -640,6 +640,10 @@ check-coins-lookup-nullcheck:
 	@echo "══ LINT: guarded controller coin lookups ══"
 	@tools/scripts/check_coins_lookup_nullcheck.sh
 
+check-observability-pairing:
+	@echo "══ LINT: observable stderr diagnostics ══"
+	@tools/scripts/check_observability_pairing.sh
+
 check-silent-errors-services:
 	@echo "══ LINT: silent error returns in services ══"
 	@HITS=$$(grep -rn -B1 'return -1;' app/services/src/ --include='*.c' \
@@ -667,7 +671,7 @@ check-before-save-hooks:
 	done
 	@echo "  OK: critical models have before_save hooks"
 
-lint: check-malloc check-silent-errors check-raw-sqlite check-coins-lookup-nullcheck check-silent-errors-services check-before-save-hooks
+lint: check-malloc check-silent-errors check-raw-sqlite check-coins-lookup-nullcheck check-observability-pairing check-silent-errors-services check-before-save-hooks
 	@echo "══ LINT: all checks passed ══"
 
 ci: lint zclassic23 test_zcl

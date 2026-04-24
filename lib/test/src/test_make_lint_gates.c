@@ -42,6 +42,8 @@
 #define COINS_FIXTURE_DST_REL "app/controllers/src/_coins_lookup_guard_fixture_tmp.c"
 #define OBS_FIXTURE_SRC_REL "lib/test/fixtures/observability_unpaired_stderr_fixture.c"
 #define OBS_FIXTURE_DST_REL "app/_observability_lint_fixture_tmp.c"
+#define OBS_OK_FIXTURE_SRC_REL "lib/test/fixtures/observability_paired_stderr_fixture.c"
+#define OBS_OK_FIXTURE_DST_REL "app/_observability_ok_lint_fixture_tmp.c"
 
 static const char *repo_root(void)
 {
@@ -199,6 +201,63 @@ static int check_coins_guard_file(const char *path)
     return rc;
 }
 
+static bool line_has_obs_ok(const char *line)
+{
+    const char *tag = strstr(line, "// obs-ok:");
+    return tag && tag[10] != '\0' && tag[10] != '\n' && tag[10] != ' ';
+}
+
+static bool line_has_event_emit(const char *line)
+{
+    return strstr(line, "event_emit(") || strstr(line, "event_emitf(");
+}
+
+static bool line_has_terminal_propagation(const char *line)
+{
+    return strstr(line, "return false;") ||
+           strstr(line, "return -1;") ||
+           strstr(line, "return 1;") ||
+           strstr(line, "return NULL;") ||
+           strstr(line, "exit(") ||
+           strstr(line, "abort(");
+}
+
+static bool observability_line_allowed(char lines[][4096], size_t count,
+                                       size_t idx)
+{
+    if (line_has_obs_ok(lines[idx])) return true;
+
+    size_t start = idx > 3 ? idx - 3 : 0;
+    size_t end = idx + 3 < count ? idx + 3 : count - 1;
+    for (size_t i = start; i <= end; i++) {
+        if (line_has_event_emit(lines[i])) return true;
+        if (i >= idx && line_has_terminal_propagation(lines[i])) return true;
+    }
+    return false;
+}
+
+static int check_observability_file(const char *path)
+{
+    FILE *fp = fopen(path, "rb");
+    if (!fp) return -1;
+
+    char lines[512][4096];
+    size_t count = 0;
+    while (count < 512 && fgets(lines[count], sizeof(lines[count]), fp)) {
+        count++;
+    }
+    int read_error = ferror(fp) ? -1 : 0;
+    fclose(fp);
+    if (read_error != 0) return read_error;
+
+    for (size_t i = 0; i < count; i++) {
+        if (strstr(lines[i], "fprintf(stderr") &&
+            !observability_line_allowed(lines, count, i))
+            return 1;
+    }
+    return 0;
+}
+
 static int walk_c_files(const char *dirpath,
                         int (*check_file)(const char *path))
 {
@@ -284,10 +343,35 @@ static int t_observability_fixture_trips_gate(void)
                 "[lint-gate] could not plant observability fixture -- aborting\n");
         return 1;
     }
-    int rc = 0;
+    int rc = check_observability_file(fixture_dst);
     (void)unlink(fixture_dst);
     TEST("[lint-gate] unpaired stderr fixture trips observability gate") {
         ASSERT(rc != 0);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int t_observability_positive_controls_pass(void)
+{
+    int failures = 0;
+    char fixture_src[PATH_MAX];
+    char fixture_dst[PATH_MAX];
+    if (repo_path(fixture_src, sizeof(fixture_src), OBS_OK_FIXTURE_SRC_REL) != 0 ||
+        repo_path(fixture_dst, sizeof(fixture_dst), OBS_OK_FIXTURE_DST_REL) != 0) {
+        fprintf(stderr, "[lint-gate] could not resolve observability-ok fixture paths\n");
+        return 1;
+    }
+    (void)unlink(fixture_dst);
+    if (copy_file(fixture_src, fixture_dst) != 0) {
+        fprintf(stderr,
+                "[lint-gate] could not plant observability-ok fixture -- aborting\n");
+        return 1;
+    }
+    int rc = check_observability_file(fixture_dst);
+    (void)unlink(fixture_dst);
+    TEST("[lint-gate] observable stderr positive controls pass") {
+        ASSERT(rc == 0);
         PASS();
     } _test_next:;
     return failures;
@@ -418,6 +502,7 @@ int test_make_lint_gates(void)
     failures += t_coins_guard_fixture_trips_gate();
     failures += t_coins_guard_gate_recovers();
     failures += t_observability_fixture_trips_gate();
+    failures += t_observability_positive_controls_pass();
     return failures;
 }
 
