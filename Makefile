@@ -640,9 +640,12 @@ check-coins-lookup-nullcheck:
 	@echo "══ LINT: guarded controller coin lookups ══"
 	@tools/scripts/check_coins_lookup_nullcheck.sh
 
-check-observability-pairing:
+tools/check_observability_pairing: tools/check_observability_pairing.c
+	$(CC) -std=c23 -O2 -Wall -Wextra -Werror -o $@ $<
+
+check-observability-pairing: tools/check_observability_pairing
 	@echo "══ LINT: observable stderr diagnostics ══"
-	@tools/scripts/check_observability_pairing.sh
+	@./tools/check_observability_pairing
 
 check-silent-errors-services:
 	@echo "══ LINT: silent error returns in services ══"

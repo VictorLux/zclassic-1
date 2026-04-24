@@ -45,6 +45,7 @@ export_snapshot
 bench_fresh_sync
 zcl-watchdog
 tools/wal_checkpoint
+tools/check_observability_pairing
 crash_recovery_test
 fuzz_block
 fuzz_script
