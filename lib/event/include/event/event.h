@@ -53,6 +53,8 @@ enum event_type {
     EV_REORG_RECOVERY_COMPLETE,  /* payload: "fork_h=N cache_cleared=true" */
     EV_COINS_FLUSH,              /* payload: entries(u64) + blocks_batched(u32) */
     EV_COINS_FLUSH_FAILED,       /* payload: reason string */
+    EV_UTXO_AUDIT_OK,            /* payload: "sha3=... height=N source=..." */
+    EV_UTXO_DRIFT_DETECTED,      /* payload: "local_sha3=... remote_sha3=..." */
     EV_CHAIN_TIP_COMMIT,         /* payload: "from=H to=H reason=..." */
     EV_CHAIN_TIP_REJECTED,       /* payload: "code=... from=H to=H reason=..." */
     EV_RECOVERY_POLICY_ALLOW,    /* payload: "op=... amount=N reason=..." */

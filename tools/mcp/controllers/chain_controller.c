@@ -44,6 +44,35 @@ DEFINE_PT(h_zcl_mmb,               "getmmrroot")
 DEFINE_PT(h_zcl_utxocommitment,    "getutxocommitment")
 DEFINE_PT(h_zcl_hodlwave,          "gethodlwave")
 
+static int h_zcl_utxo_audit(const struct mcp_request *req,
+                            struct mcp_response *res)
+{
+    const struct json_value *remote_v = json_get(req->args, "remote_sha3");
+    const struct json_value *source_v = json_get(req->args, "source");
+    const struct json_value *height_v = json_get(req->args, "remote_height");
+    const char *remote = remote_v ? json_get_str(remote_v) : NULL;
+    const char *source = source_v ? json_get_str(source_v) : NULL;
+
+    struct mcp_params p;
+    mcp_params_init(&p);
+    if (remote && remote[0]) {
+        mcp_params_push_str(&p, remote);
+        mcp_params_push_int(&p, height_v ? json_get_int(height_v) : 0);
+        mcp_params_push_str(&p, source && source[0] ? source : "trusted-peer");
+    }
+    char *params = mcp_params_to_json(&p);
+    char *out = mcp_node_rpc("getutxoaudit", params);
+    free(params);
+    if (!out) {
+        res->error = MCP_ERR_HANDLER_FAILED;
+        snprintf(res->error_message, sizeof(res->error_message),
+                 "RPC getutxoaudit failed");
+        LOG_ERR("mcp.chain", "getutxoaudit failed");
+    }
+    res->body = out;
+    return 0;
+}
+
 static int h_zcl_getrawtransaction(const struct mcp_request *req,
                                     struct mcp_response *res)
 {
@@ -133,6 +162,18 @@ static const struct mcp_param_spec p_getrawtx[] = {
       0, 1, 0, 0, NULL, "1" },
 };
 
+static const struct mcp_param_spec p_utxo_audit[] = {
+    { "remote_sha3", MCP_PARAM_STR, false,
+      "Trusted peer SHA3 commitment to compare against.",
+      0, 0, 64, 64, NULL, NULL },
+    { "remote_height", MCP_PARAM_INT, false,
+      "Trusted peer height for the commitment.",
+      0, 100000000, 0, 0, NULL, "0" },
+    { "source", MCP_PARAM_STR, false,
+      "Trusted peer or operator label.",
+      0, 0, 0, 63, NULL, "\"trusted-peer\"" },
+};
+
 static const struct mcp_tool_route k_routes[] = {
     { "zcl_getblockcount", "chain",
       "Current block height.", NULL, 0, h_zcl_getblockcount },
@@ -161,6 +202,10 @@ static const struct mcp_tool_route k_routes[] = {
     { "zcl_utxocommitment", "chain",
       "SHA3-256 over entire UTXO set in canonical order.",
       NULL, 0, h_zcl_utxocommitment },
+    { "zcl_utxo_audit", "chain",
+      "Post-IBD UTXO drift audit. Computes local commitment and optionally compares a trusted peer SHA3.",
+      p_utxo_audit, sizeof(p_utxo_audit) / sizeof(p_utxo_audit[0]),
+      h_zcl_utxo_audit },
     { "zcl_hodlwave", "chain",
       "UTXO age distribution: 10 buckets from 24h to 5y+.",
       NULL, 0, h_zcl_hodlwave },

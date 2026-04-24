@@ -46,6 +46,7 @@
 #include "models/utxo.h"
 #include "controllers/sync_controller.h"
 #include "controllers/network_controller.h"
+#include "services/utxo_audit_service.h"
 #include "net/connman.h"
 #include <stdint.h>
 #include <string.h>
@@ -2651,6 +2652,71 @@ static bool rpc_getutxocommitment(const struct json_value *params, bool help,
     return true;
 }
 
+static void utxo_audit_result_to_json(const struct utxo_audit_result *audit,
+                                      struct json_value *result)
+{
+    json_set_object(result);
+    json_push_kv_str(result, "status", utxo_audit_status_name(audit->status));
+    json_push_kv_bool(result, "drift_detected", audit->drift_detected);
+    json_push_kv_str(result, "local_sha3", audit->local_sha3);
+    json_push_kv_int(result, "local_height", audit->local_height);
+    json_push_kv_int(result, "local_utxo_count",
+                     (int64_t)audit->local_utxo_count);
+    if (audit->remote_sha3[0])
+        json_push_kv_str(result, "remote_sha3", audit->remote_sha3);
+    if (audit->remote_height > 0)
+        json_push_kv_int(result, "remote_height", audit->remote_height);
+    if (audit->source[0])
+        json_push_kv_str(result, "source", audit->source);
+    if (audit->error[0])
+        json_push_kv_str(result, "error", audit->error);
+}
+
+static bool rpc_getutxoaudit(const struct json_value *params, bool help,
+                             struct json_value *result)
+{
+    struct blockchain_context *ctx = blockchain_ctx();
+    RPC_HELP(help, result,
+        "getutxoaudit [remote_sha3] [remote_height] [source]\n"
+        "\nComputes the local SHA3 UTXO commitment and optionally compares it\n"
+        "to a trusted peer commitment. A mismatch is advisory: it emits an\n"
+        "event and sets node_state['utxo_drift_detected']; it never wipes.\n");
+
+    if (!ctx->node_db || !ctx->node_db->open) {
+        json_set_str(result, "Database not available");
+        LOG_FAIL("blockchain", "getutxoaudit: database not available");
+    }
+
+    struct rpc_params p;
+    rpc_params_init(&p, params);
+    rpc_params_expect(&p, 0, 3);
+    const char *remote_sha3 = rpc_permit_str(&p, 0, "remote_sha3", NULL);
+    int64_t remote_height = rpc_permit_int(&p, 1, "remote_height", 0);
+    const char *source = rpc_permit_str(&p, 2, "source", "trusted-peer");
+    if (rpc_params_invalid(&p)) {
+        rpc_params_error(&p, result);
+        LOG_FAIL("blockchain", "getutxoaudit: invalid params");
+    }
+
+    int height = 0;
+    if (ctx->main_state)
+        height = active_chain_height(&ctx->main_state->chain_active);
+    if (remote_height <= 0)
+        remote_height = height;
+
+    struct utxo_audit_result audit;
+    bool ok = remote_sha3 && remote_sha3[0]
+        ? utxo_audit_compare_remote(ctx->node_db, remote_sha3,
+                                    (int32_t)remote_height, source, &audit)
+        : utxo_audit_local(ctx->node_db, height, &audit);
+    if (!ok) {
+        json_set_str(result, "UTXO audit failed");
+        LOG_FAIL("blockchain", "getutxoaudit: audit failed");
+    }
+    utxo_audit_result_to_json(&audit, result);
+    return audit.status != UTXO_AUDIT_ERROR;
+}
+
 /* ── SHA3 checkpoint verification RPC ──────────────────── */
 
 static bool rpc_verifycheckpoint(const struct json_value *params, bool help,
@@ -2979,6 +3045,7 @@ void register_blockchain_rpc_commands(struct rpc_table *t)
         { "blockchain", "importchainstate",     rpc_importchainstate,       false },
         { "blockchain", "indexlegacy",          rpc_indexlegacy,            false },
         { "blockchain", "getutxocommitment",   rpc_getutxocommitment,     true },
+        { "blockchain", "getutxoaudit",        rpc_getutxoaudit,          true },
         { "blockchain", "getmmrroot",          rpc_getmmrroot,            true },
         { "blockchain", "getcommitmentmmr",   rpc_getcommitmentmmr,     true },
         { "blockchain", "auditchain",          rpc_auditchain,            true },
