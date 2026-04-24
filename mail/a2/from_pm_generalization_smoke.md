@@ -6,4 +6,4 @@ subject: generalization-smoke
 urgency: P2
 ---
 
-Smoke test from qedc PM, verifying cross-project MCP service works.
+Smoke test from zclassic PM, verifying the Vibepoint MCP service works.
