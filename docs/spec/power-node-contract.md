@@ -206,6 +206,9 @@ Concrete files: `lib/event/include/event/event.h`,
 `lib/event/src/event.c`, `tools/mcp/router.c`, `tools/mcp/metrics.c`,
 `tools/mcp/controllers/ops_controller.c`.
 
+Detailed power-node event gap audit:
+`docs/spec/power-node-event-taxonomy-audit.md`.
+
 ## Change Control
 
 Changing serialized block/transaction formats, consensus constants, P2P wire
