@@ -273,6 +273,7 @@ int test_chain_state_validator(void);
 int test_utxo_recovery_service(void);
 int test_connect_tip_hot_loop_exit(void);
 int test_self_heal_scan_fallback(void);
+int test_utxo_audit(void);
 int test_rpc_error_envelope(void);
 int test_tx_property(void);
 int test_znam(void);
