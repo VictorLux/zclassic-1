@@ -2816,7 +2816,8 @@ bool msg_send_messages(void *ctx, struct p2p_node *node, bool send_trickle)
             zcl_mutex_lock(&mp->net_mgr->cs_nodes);
             for (size_t pi = 0; pi < mp->net_mgr->num_nodes; pi++) {
                 if (!mp->net_mgr->nodes[pi]->inbound &&
-                    !mp->net_mgr->nodes[pi]->disconnect) {
+                    !mp->net_mgr->nodes[pi]->disconnect &&
+                    mp->net_mgr->nodes[pi]->state >= PEER_ACTIVE) {
                     have_outbound = true;
                     break;
                 }
@@ -2850,6 +2851,30 @@ bool msg_send_messages(void *ctx, struct p2p_node *node, bool send_trickle)
         /* ── Header sync stall: disconnect worst outbound peer ─── */
         if (header_stall && !node->inbound &&
             node->state >= PEER_SYNCING_HEADERS) {
+            /* Round 5 follow-up: grace period for fresh peers.
+             *
+             * Without this, a header stall disconnects EVERY outbound
+             * peer with total_delivered=0 on the same tick (the old
+             * `<=` comparison plus a per-second reset of worst_delivered
+             * meant the first 5 peers in the loop all matched
+             * worst_delivered=0 and all got the disconnect flag). The
+             * peers reconnect immediately and the cycle repeats —
+             * net effect: outbound peers churn forever and never get
+             * to deliver headers. Live evidence: 5 ESTAB sockets to
+             * seed peers, all stuck at state=connecting after the
+             * disconnect/reconnect loop.
+             *
+             * Fix: give every newly-connected outbound peer 60s
+             * before they're eligible for stall-disconnect, and
+             * disconnect at most ONE peer per stall cycle (strict
+             * `<` + return after the first match). */
+            const int64_t GRACE_SECS = 60;
+            int64_t connected_for =
+                now_send - (node->time_connected ? node->time_connected
+                                                 : now_send);
+            if (connected_for < GRACE_SECS)
+                goto skip_stall_disconnect;
+
             /* Log stall once per detection cycle */
             static int64_t last_stall_log = 0;
             if (now_send - last_stall_log >= 30) {
@@ -2860,26 +2885,26 @@ bool msg_send_messages(void *ctx, struct p2p_node *node, bool send_trickle)
                        (long long)(now_send - g_header_stall_last_advance));
             }
             /* Find if this peer is the worst outbound by headers delivered.
-             * We disconnect the current peer only if it has the minimum
-             * total_headers_delivered. This is an approximation since we
-             * see one peer at a time in send_messages — the first worst
-             * peer we encounter gets disconnected. */
+             * Strict `<` so a single tick disconnects at most one peer
+             * even when many tie at total_headers_delivered=0. */
             static uint64_t worst_delivered = UINT64_MAX;
             static int64_t worst_check_time = 0;
             if (now_send != worst_check_time) {
                 worst_delivered = UINT64_MAX;
                 worst_check_time = now_send;
             }
-            if (node->total_headers_delivered <= worst_delivered) {
+            if (node->total_headers_delivered < worst_delivered) {
                 worst_delivered = node->total_headers_delivered;
                 printf("HEADER STALL: disconnecting %s "
-                       "(total_headers_delivered=%llu)\n",
+                       "(total_headers_delivered=%llu, connected_for=%llds)\n",
                        node->addr_name,
-                       (unsigned long long)node->total_headers_delivered);
+                       (unsigned long long)node->total_headers_delivered,
+                       (long long)connected_for);
                 node->disconnect = true;
                 return true;
             }
         }
+        skip_stall_disconnect:;
 
         /* Re-request headers aggressively during IBD (10s), slower at tip (60s).
          * This is critical: legacy zclassicd sends at most 2000 headers per
@@ -3078,14 +3103,11 @@ bool msg_send_messages(void *ctx, struct p2p_node *node, bool send_trickle)
                 }
             }
 
-            /* Sync watchdog: detect and recover from sync stalls.
-             * Runs once per 30s cycle on the progress peer only. */
-            if (is_progress_peer) {
-                struct connman *cm =
-                    (struct connman *)mp->net_mgr; /* manager is first field */
-                struct download_manager *dm_wd = get_download_mgr();
-                sync_watchdog_check(cm, dm_wd, mp->main_state);
-            }
+            /* Sync watchdog now runs on its own 30s thread
+             * (sync_watchdog_thread_start in boot_services.c). The old
+             * per-peer call here was gated on `node->id == 0`, which
+             * is never true once peer ids rotate past zero — the bug
+             * that left a node 22k blocks behind with checks_run=1. */
         }
     }
 
