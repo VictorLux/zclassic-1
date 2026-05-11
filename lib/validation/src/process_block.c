@@ -2008,6 +2008,27 @@ bool connect_tip(struct validation_state *state,
                  const struct chain_params *params,
                  const char *datadir)
 {
+    /* Round 5 follow-up: refuse to connect a placeholder block_index.
+     *
+     * A block_index entry with nBits==0 is a chain_restore anchor
+     * placeholder (created when coins_best_block hash wasn't yet
+     * resolvable from disk headers). Connecting it as tip leaves the
+     * chain at a header with version=0 time=0 bits=0, and the next
+     * difficulty check sees prev_bits=0 and rejects every incoming
+     * header with "bad-diffbits". Live evidence: 5 min of "bad-diffbits
+     * at height N+1: prev_bits=0x00000000" right before the chain
+     * stalled at h=3089926. */
+    if (pindex_new && pindex_new->nHeight > 0 && pindex_new->nBits == 0) {
+        fprintf(stderr,
+            "connect_tip: REFUSING placeholder h=%d (nBits=0, no header "
+            "data); chain remains at h=%d\n",
+            pindex_new->nHeight,
+            active_chain_height(&ms->chain_active));
+        event_emitf(EV_BLOCK_REJECTED, 0,
+                    "connect_tip placeholder h=%d nBits=0",
+                    pindex_new->nHeight);
+        return false;
+    }
     struct trace_span *ct_span = trace_start("chain.connect_tip");
     trace_attr_int(ct_span, "height", pindex_new ? pindex_new->nHeight : -1);
     const int live_height = pindex_new ? pindex_new->nHeight : -1;

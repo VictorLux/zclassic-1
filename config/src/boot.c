@@ -2413,6 +2413,57 @@ sapling_tree_boot_check_done:
      * framing — "be brutal, fail fast" — means we refuse to proceed
      * into a half-loaded state. Operators who want the legacy "log
      * loud, continue" behavior must opt in with -allow-degraded. */
+    /* Round 5 follow-up: rewind a placeholder tip.
+     *
+     * If a placeholder (nBits==0) ever became our active tip — e.g.,
+     * because a chain_restore anchor at h=N was promoted into the
+     * active chain before its real block data arrived — every
+     * subsequent header will be rejected with bad-diffbits since
+     * GetNextWorkRequired sees prev_bits=0. Walk pprev until we hit
+     * a real block, set THAT as the active tip, and let gap-fill
+     * resync from there. */
+    {
+        struct block_index *tip = active_chain_tip(&g_state.chain_active);
+        if (tip && tip->nBits == 0 && tip->nHeight > 0) {
+            struct block_index *walk = tip->pprev;
+            int last_h = tip->nHeight + 1;
+            int steps = 0;
+            while (walk && walk->nBits == 0 &&
+                   walk->pprev && walk->pprev->nHeight < walk->nHeight &&
+                   walk->nHeight < last_h && steps++ < 10000) {
+                last_h = walk->nHeight;
+                walk = walk->pprev;
+            }
+            if (walk && walk->nBits != 0) {
+                fprintf(stderr,
+                    "[boot] placeholder tip at h=%d (nBits=0); rewinding "
+                    "to last real block h=%d\n",
+                    tip->nHeight, walk->nHeight);
+                chain_set_active_tip(&g_state, walk, TIP_FROM_BOOT_REPAIR,
+                                     "rewind_placeholder_tip");
+                g_state.pindex_best_header = walk;
+                if (walk->phashBlock) {
+                    coins_view_cache_set_best_block(&g_coins_tip,
+                                                    walk->phashBlock);
+                    if (g_node_db.open) {
+                        node_db_state_set(&g_node_db, "coins_best_block",
+                                          walk->phashBlock->data, 32);
+                        char delsql[160];
+                        snprintf(delsql, sizeof(delsql),
+                            "DELETE FROM utxos WHERE height > %d",
+                            walk->nHeight);
+                        (void)node_db_exec(&g_node_db, delsql);
+                    }
+                }
+            } else {
+                fprintf(stderr,
+                    "[boot] placeholder tip at h=%d but no valid "
+                    "ancestor found within 10000 steps; chain stuck\n",
+                    tip->nHeight);
+            }
+        }
+    }
+
     {
         struct boot_phase bp_fin;
         boot_phase_begin(&bp_fin, "chain_restore_finalize");
