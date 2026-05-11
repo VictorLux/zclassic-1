@@ -274,11 +274,21 @@ void chain_integrity_check_post_restore(struct chain_integrity_result *out,
         return;
     }
 
-    /* P14.11: every pindex above genesis must have nBits != 0. */
+    /* P14.11: every pindex with on-disk data must have nBits != 0.
+     *
+     * Round 5: skip nBits=0 entries that have no BLOCK_HAVE_DATA bit.
+     * Those are metadata-anchor placeholders left by chain_restore when
+     * coins_best_block was unrecoverable from disk. They never enter
+     * validation walks (no header is loaded), so a zero nBits on them
+     * is harmless. Failing the integrity gate on such an entry —
+     * which is the only thing we ever WRITE during the anchor-recovery
+     * path — would crash-loop the node forever. */
     size_t iter = 0;
     struct block_index *pi;
     while (block_map_next(&ms->map_block_index, &iter, NULL, &pi)) {
         if (!pi || pi->nHeight <= 0)
+            continue;
+        if (!(pi->nStatus & BLOCK_HAVE_DATA))
             continue;
         if (pi->nBits == 0) {
             out->zero_nbits_count++;

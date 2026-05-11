@@ -19,6 +19,7 @@
 #include "services/ibd_throttle.h"
 #include "services/db_maintenance.h"
 #include "controllers/wallet_scan.h"
+#include "util/signal_handler.h"
 #include "util/sync.h"
 #include "util/boot_phase.h"
 #include "net/msgprocessor.h"
@@ -301,6 +302,14 @@ bool app_init(struct app_context *ctx)
 {
     int64_t t_boot_start = boot_clock_ms();
     int64_t t_phase;
+
+    /* Install fatal-signal handler BEFORE any thread is spawned so the
+     * handler is inherited process-wide. Any SIGABRT/SIGSEGV/SIGBUS/SIGFPE
+     * gets a logged backtrace before systemd sees the exit. */
+    if (signal_handler_install() != 0) {
+        fprintf(stderr, "WARNING: signal_handler_install failed; "
+                        "crashes will not log backtrace\n");
+    }
 
     db_service_init(&g_db_service);
 
@@ -2273,7 +2282,17 @@ sapling_tree_boot_check_done:
             }
         }
 
-        if (coins_bi && coins_bi->nHeight > chain_h + 100) {
+        /* Only promote coins_bi to tip if it's a real block (has data on
+         * disk). A metadata-anchor placeholder (BLOCK_VALID_UNKNOWN, no
+         * BLOCK_HAVE_DATA) has no real pprev chain — making it the tip
+         * leaves the active_chain with 10k+ holes and trips Part L's
+         * post-restore integrity gate (which then fail-fasts the boot).
+         * If coins_bi is a placeholder, fall through to the HAVE_DATA
+         * search below — that's the highest hash we can actually walk
+         * back from. The chain will re-derive forward via gap-fill. */
+        bool coins_bi_real = coins_bi &&
+                             (coins_bi->nStatus & BLOCK_HAVE_DATA);
+        if (coins_bi_real && coins_bi->nHeight > chain_h + 100) {
             printf("[boot] UTXO/chain mismatch: coins at h=%d, "
                    "chain tip at h=%d — correcting\n",
                    coins_bi->nHeight, chain_h);
@@ -2281,7 +2300,7 @@ sapling_tree_boot_check_done:
             g_state.pindex_best_header = coins_bi;
             printf("[boot] Chain tip corrected to h=%d\n",
                    coins_bi->nHeight);
-        } else if (!coins_bi && !uint256_is_null(&coins_hash)) {
+        } else if ((!coins_bi || !coins_bi_real) && !uint256_is_null(&coins_hash)) {
             /* coins_best_block hash not in block index. Find the highest
              * block with BLOCK_HAVE_DATA as our best anchor point. The
              * UTXO set should be valid somewhere near that height. */

@@ -12,6 +12,12 @@
 #include <string.h>
 
 #define MAX_SAMPLES 200
+/* Wide enough for IPv6 textual form (max 45 chars) and Tor v3 .onion
+ * names (62 chars). Callers pass node->addr_name, which may be a
+ * hostname rather than a packed IP. The previous 16-byte buffer caused
+ * a buffer-overflow abort (glibc FORTIFY) on any peer whose addr_name
+ * exceeded 16 bytes — e.g. every Tor peer. */
+#define ADDR_KEY_MAX 64
 
 static zcl_mutex_t cs_nTimeOffset;
 static int64_t nTimeOffset = 0;
@@ -52,13 +58,21 @@ void AddTimeData(const unsigned char *ip, int ip_len, int64_t nOffsetSample)
     LOCK(cs_nTimeOffset);
 
     /* Track known IPs to ignore duplicates */
-    static unsigned char known_ips[MAX_SAMPLES][16];
+    static unsigned char known_ips[MAX_SAMPLES][ADDR_KEY_MAX];
     static int known_ip_lens[MAX_SAMPLES];
     static int nKnown = 0;
 
+    /* Clamp to the dedup-key capacity. Two addresses sharing the same
+     * truncated prefix will dedupe; the worst case is rejecting a few
+     * legit samples, never a memory overflow. */
+    int key_len = ip_len;
+    if (key_len < 0) key_len = 0;
+    if (key_len > ADDR_KEY_MAX) key_len = ADDR_KEY_MAX;
+
     /* Check for duplicate */
     for (int i = 0; i < nKnown; i++) {
-        if (known_ip_lens[i] == ip_len && memcmp(known_ips[i], ip, (size_t)ip_len) == 0) {
+        if (known_ip_lens[i] == key_len &&
+            memcmp(known_ips[i], ip, (size_t)key_len) == 0) {
             UNLOCK(cs_nTimeOffset);
             return;
         }
@@ -67,8 +81,8 @@ void AddTimeData(const unsigned char *ip, int ip_len, int64_t nOffsetSample)
         UNLOCK(cs_nTimeOffset);
         return;
     }
-    memcpy(known_ips[nKnown], ip, (size_t)ip_len);
-    known_ip_lens[nKnown] = ip_len;
+    memcpy(known_ips[nKnown], ip, (size_t)key_len);
+    known_ip_lens[nKnown] = key_len;
     nKnown++;
 
     /* Circular buffer for offsets */
