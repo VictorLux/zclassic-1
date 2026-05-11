@@ -5,6 +5,7 @@
 
 #include "services/chain_restore_service.h"
 #include "services/chain_state_repository.h"
+#include "services/chain_tip.h"
 #include "models/db_txn.h"
 #include "validation/main_state.h"
 #include "validation/chainstate.h"
@@ -199,7 +200,8 @@ struct block_index *chain_restore_execute(
                      * the legacy raw-setter behaviour so the existing
                      * test_chain_restore_service suite continues to
                      * exercise the end-to-end flow. */
-                    active_chain_set_tip(&ms->chain_active, target);
+                    chain_set_active_tip(ms, target, TIP_FROM_RESTORE,
+                                          "csr_uninit_fallback");
                     if (plan->should_set_best_header)
                         ms->pindex_best_header = target;
                 } else {
@@ -364,7 +366,8 @@ int chain_restore_rebuild_active_chain(struct main_state *ms,
             printf("[chain-restore] installed live tip without full "
                    "active_chain walk: h=%d\n", tip_h);
         } else {
-            active_chain_set_tip(c, tip);
+            chain_set_active_tip(ms, tip, TIP_FROM_RESTORE,
+                                 "rebuild_active_chain_full");
         }
     }
 
@@ -687,7 +690,8 @@ static void chain_restore_quarantine_synthetic_tip(struct main_state *ms,
             (long long)tip->nChainTx, replacement->nHeight,
             new_hash[0] ? new_hash : "<null>");
 
-    active_chain_set_tip(&ms->chain_active, replacement);
+    chain_set_active_tip(ms, replacement, TIP_FROM_RESTORE,
+                         "quarantine_synthetic_tip");
     if (ms->pindex_best_header == tip)
         ms->pindex_best_header = replacement;
 

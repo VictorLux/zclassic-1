@@ -57,8 +57,8 @@ static int test_plan_hash_not_found_with_height(void) {
 
         ASSERT(plan.next_state == CHAIN_RESTORE_ANCHOR_CREATED);
         ASSERT(plan.should_create_anchor == true);
-        ASSERT(plan.should_set_chain_tip == true);
-        ASSERT(plan.should_set_best_header == true);
+        ASSERT(plan.should_set_chain_tip == false);
+        ASSERT(plan.should_set_best_header == false);
         ASSERT(plan.should_set_snapshot_anchor == true);
         ASSERT(plan.should_skip_activate == true);
         ASSERT(plan.anchor_height == 3072280);
@@ -139,19 +139,19 @@ static int test_execute_anchor_creation(void) {
 
         ASSERT(anchor != NULL);
         ASSERT(anchor->nHeight == 500000);
-        ASSERT(anchor->nStatus & BLOCK_VALID_TREE);
-        ASSERT(anchor->nStatus & BLOCK_HAVE_DATA);
-        ASSERT(anchor->nChainTx == 1);
+        ASSERT((anchor->nStatus & BLOCK_VALID_MASK) == BLOCK_VALID_UNKNOWN);
+        ASSERT((anchor->nStatus & BLOCK_HAVE_DATA) == 0);
+        ASSERT(anchor->nChainTx == 0);
+        ASSERT(anchor->nTx == 0);
         ASSERT(anchor->phashBlock != NULL);
 
         /* Verify findable in block_map */
         struct block_index *found = block_map_find(&ms.map_block_index, &hash);
         ASSERT(found == anchor);
 
-        /* Verify chain work > 0 */
         struct arith_uint256 zero;
-        arith_uint256_set_u64(&zero, 0);
-        ASSERT(arith_uint256_compare(&anchor->nChainWork, &zero) > 0);
+        arith_uint256_set_zero(&zero);
+        ASSERT(arith_uint256_compare(&anchor->nChainWork, &zero) == 0);
 
         block_map_free(&ms.map_block_index);
         active_chain_free(&ms.chain_active);
@@ -160,9 +160,9 @@ static int test_execute_anchor_creation(void) {
     return failures;
 }
 
-static int test_execute_sets_chain_tip(void) {
+static int test_execute_records_anchor_without_consensus_tip(void) {
     int failures = 0;
-    TEST("chain_restore_execute: sets chain tip from plan") {
+    TEST("chain_restore_execute: records anchor without consensus tip") {
         struct main_state ms;
         main_state_init(&ms);
 
@@ -179,9 +179,9 @@ static int test_execute_sets_chain_tip(void) {
         ASSERT(result != NULL);
 
         struct block_index *tip = active_chain_tip(&ms.chain_active);
-        ASSERT(tip == result);
-        ASSERT(tip->nHeight == 500000);
-        ASSERT(ms.pindex_best_header == result);
+        ASSERT(tip == NULL);
+        ASSERT(ms.pindex_best_header == NULL);
+        ASSERT((result->nStatus & BLOCK_HAVE_DATA) == 0);
 
         block_map_free(&ms.map_block_index);
         active_chain_free(&ms.chain_active);
@@ -229,9 +229,9 @@ static int test_execute_found_in_index(void) {
 
 /* ── Validation tests ──────────────────────────────────────────── */
 
-static int test_validate_after_anchor(void) {
+static int test_validate_after_metadata_anchor(void) {
     int failures = 0;
-    TEST("chain_restore_validate: all checks pass after anchor creation") {
+    TEST("chain_restore_validate: metadata anchor is not a chain tip") {
         struct main_state ms;
         main_state_init(&ms);
 
@@ -252,9 +252,9 @@ static int test_validate_after_anchor(void) {
 
         ASSERT(val.coins_hash_valid == true);
         ASSERT(val.anchor_in_map == true);
-        ASSERT(val.chain_tip_set == true);
-        ASSERT(val.tip_matches_expected == true);
-        ASSERT(val.all_ok == true);
+        ASSERT(val.chain_tip_set == false);
+        ASSERT(val.tip_matches_expected == false);
+        ASSERT(val.all_ok == false);
 
         block_map_free(&ms.map_block_index);
         active_chain_free(&ms.chain_active);
@@ -508,12 +508,15 @@ static int test_rebuild_active_chain_fills_holes_from_block_map(void) {
         ASSERT(tip != NULL);
         ASSERT(active_chain_set_tip(&ms.chain_active, tip));
 
-        /* Pre-rebuild: integrity check reports H holes below the tip. */
+        /* Pre-rebuild: integrity check reports H holes below the tip.
+         * Round 4 Part 1.5.1: `ok` no longer requires zero holes —
+         * only nBits clean + tip-slot populated. Tip IS populated
+         * via active_chain_set_tip above, so r0.ok may be true even
+         * with holes below. We still verify the hole counts. */
         struct chain_integrity_result r0;
         chain_integrity_check_post_restore(&r0, &ms);
         ASSERT(r0.active_chain_holes == H);
         ASSERT(r0.first_hole_height == 0);
-        ASSERT(r0.ok == false);
 
         /* Apply rebuild. Every slot 0..H must now resolve to the
          * block_map entry of that height. */
@@ -896,10 +899,10 @@ int test_chain_restore_service(void) {
     failures += test_plan_snapshot_source();
     /* Execution tests */
     failures += test_execute_anchor_creation();
-    failures += test_execute_sets_chain_tip();
+    failures += test_execute_records_anchor_without_consensus_tip();
     failures += test_execute_found_in_index();
     /* Validation tests */
-    failures += test_validate_after_anchor();
+    failures += test_validate_after_metadata_anchor();
     /* Activation decision tests */
     failures += test_activation_normal_boot();
     failures += test_activation_legacy_import();
