@@ -6,6 +6,8 @@
  * Extracted from config/src/boot_index.c (boot decomposition Phase A). */
 
 #include "services/block_index_loader.h"
+#include "services/block_index_integrity.h"
+#include "services/chain_tip.h"
 #include "chain/chain.h"
 #include "chain/chainparams.h"
 #include "chain/pow.h"
@@ -129,6 +131,12 @@ void save_block_index_flat(const char *datadir, struct main_state *ms)
     fflush(f);
     fclose(f);
     free(sorted);
+
+    if (!bii_write_sidecar(datadir)) {
+        fprintf(stderr,
+                "save_block_index_flat: sidecar write failed for %s\n", // obs-ok:block index save continues; subsequent verify quarantines stale sidecar
+                path);
+    }
 
     int64_t elapsed = (int64_t)time(NULL) - t0;
     printf("Block index flat file: %zu entries, %zuMB (%llds)\n",
@@ -560,7 +568,8 @@ bool load_block_index(struct main_state *ms,
             genesis->nChainTx = 1;
             genesis->nBits = 0x1f07ffff;
             genesis->nChainWork = GetBlockProof(genesis);
-            active_chain_set_tip(&ms->chain_active, genesis);
+            chain_set_active_tip(ms, genesis, TIP_FROM_RESTORE,
+                                  "loader_init_genesis");
             ms->pindex_best_header = genesis;
         }
         return true;

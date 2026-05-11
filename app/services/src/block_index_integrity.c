@@ -700,6 +700,7 @@ int block_index_repair_pprev(struct main_state *ms, const char *datadir)
  * handler no longer does structural block-index surgery. */
 
 #include "services/chain_restore_service.h"
+#include "services/chain_tip.h"
 #include "coins/coins_view.h"
 #include "validation/chainstate.h"
 
@@ -792,7 +793,8 @@ int bii_repair_post_activation_anchor(
             printf("[bii-anchor] restoring disk-backed coins tip "
                    "h=%d (activation picked h=%d)\n",
                    pre_scan_coins_h, post_act_h);
-            active_chain_set_tip(&ms->chain_active, coins_bi);
+            chain_set_active_tip(ms, coins_bi, TIP_FROM_P2P_REPAIR,
+                                  "bii_anchor_restore_disk_backed");
             ms->pindex_best_header = coins_bi;
             result->tip_restored = true;
         } else {

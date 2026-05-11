@@ -4,6 +4,7 @@
 
 #include "config/boot_internal.h"
 #include "services/chain_activation_controller.h"
+#include "services/chain_tip.h"
 #include "services/gap_fill_service.h"
 #include "storage/disk_block_io.h"
 #include "models/utxo.h"
@@ -369,7 +370,9 @@ static void *background_utxo_replay(void *arg)
                     /* Set in-memory coins view best block */
                     coins_view_cache_set_best_block(svc->coins_tip, &cb_hash);
                     /* Advance active chain tip to snapshot height */
-                    active_chain_set_tip(&svc->state->chain_active, snap_block);
+                    chain_set_active_tip(svc->state, snap_block,
+                                          TIP_FROM_SNAPSHOT,
+                                          "utxo_replay_snapshot_restore");
                     printf("UTXO replay: restored chain state from snapshot "
                            "at h=%d\n", snap_block->nHeight);
                 } else if (!snap_block) {

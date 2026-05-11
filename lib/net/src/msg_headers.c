@@ -27,6 +27,7 @@
 #include "util/safe_alloc.h"
 #include "services/sync_watchdog_service.h"
 #include "services/block_index_integrity.h"
+#include "services/chain_tip.h"
 #include "coins/coins_view.h"
 #include "chain/pow.h"
 #include "core/arith_uint256.h"
@@ -474,14 +475,16 @@ bool process_headers(struct msg_processor *mp, struct p2p_node *node,
                                 csr_result_name(rc), anc->nHeight);
                         }
                         if (rc == CSR_REJECTED_NOT_INITIALIZED) {
-                            /* Test harness path: preserve legacy
-                             * raw-setter behaviour. */
-                            active_chain_set_tip(
-                                &mp->main_state->chain_active, anc);
+                            /* Test harness path: use the canonical
+                             * helper so events still fire. */
+                            chain_set_active_tip(mp->main_state, anc,
+                                TIP_FROM_P2P_REPAIR,
+                                "anchor_recommit_csr_uninit");
                         }
                     } else {
-                        active_chain_set_tip(
-                            &mp->main_state->chain_active, anc);
+                        chain_set_active_tip(mp->main_state, anc,
+                            TIP_FROM_P2P_REPAIR,
+                            "headers_past_anchor");
                     }
                     snapsync_set_anchor(NULL);
                     activation_clear_anchor(boot_activation_controller(),

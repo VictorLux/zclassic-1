@@ -35,6 +35,7 @@
 #include "services/chain_activation_controller.h"
 #include "services/chain_state_repository.h"
 #include "services/gap_fill_service.h"
+#include "services/chain_tip.h"
 #include "validation/checkpoint.h"
 #include "models/tx_index.h"
 #include "chain/mmr.h"
@@ -1336,10 +1337,10 @@ static bool process_block_commit_tip(struct main_state *ms,
     }
 
     if (rc == CSR_REJECTED_NOT_INITIALIZED) {
-        /* Test harness path: the singleton was never wired. Fall
-         * back to the raw setters so existing test coverage still
-         * drives the active chain forward. */
-        active_chain_set_tip(&ms->chain_active, new_tip);
+        /* Test harness path: the singleton was never wired. Use the
+         * canonical helper so events still fire. */
+        chain_set_active_tip(ms, new_tip, TIP_FROM_CONNECT,
+                             reason ? reason : "csr_uninit_fallback");
         if (update_header_tip) ms->pindex_best_header = new_tip;
         if (coins_tip) coins_view_cache_set_best_block(coins_tip,
                                                         new_tip->phashBlock);
@@ -1386,7 +1387,8 @@ static bool update_tip(struct main_state *ms, struct block_index *pindex_new)
         /* Disconnect past genesis — empty the chain. No commit to
          * make; the active_chain primitive handles a NULL tip as
          * "height=-1". */
-        active_chain_set_tip(&ms->chain_active, NULL);
+        chain_set_active_tip(ms, NULL, TIP_FROM_DISCONNECT,
+                             "disconnect_past_genesis");
     }
 
     char hex[65];
