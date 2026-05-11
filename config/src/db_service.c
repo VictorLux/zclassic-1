@@ -5,6 +5,7 @@
 #include "config/db_service.h"
 #include "models/database.h"
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <time.h>
 
@@ -126,6 +127,7 @@ static void *db_service_worker_main(void *arg)
             svc->queue_head =
                 (svc->queue_head + 1) % DB_SERVICE_QUEUE_CAP;
             svc->queue_count--;
+            zcl_cond_broadcast(&svc->queue_cond);
         } else if (svc->stop_requested) {
             zcl_mutex_unlock(&svc->queue_mutex);
             break;
@@ -137,10 +139,16 @@ static void *db_service_worker_main(void *arg)
 
         job->success = db_service_perform_job(svc, job);
 
-        zcl_mutex_lock(&svc->queue_mutex);
-        job->done = true;
-        zcl_cond_signal(&job->done_cond);
-        zcl_mutex_unlock(&svc->queue_mutex);
+        if (job->async) {
+            if (job->free_ctx)
+                job->free_ctx(job->ctx);
+            free(job);
+        } else {
+            zcl_mutex_lock(&svc->queue_mutex);
+            job->done = true;
+            zcl_cond_signal(&job->done_cond);
+            zcl_mutex_unlock(&svc->queue_mutex);
+        }
 
         if (job->type == DB_SERVICE_JOB_STOP)
             break;
@@ -160,7 +168,8 @@ static bool db_service_submit_job(struct db_service *svc,
         return db_service_perform_job(svc, job);
 
     zcl_mutex_lock(&svc->queue_mutex);
-    while (svc->queue_count >= DB_SERVICE_QUEUE_CAP && !svc->stop_requested)
+    while (!job->async && svc->queue_count >= DB_SERVICE_QUEUE_CAP &&
+           !svc->stop_requested)
         zcl_cond_wait(&svc->queue_cond, &svc->queue_mutex);
 
     if (!svc->stop_requested && svc->queue_count < DB_SERVICE_QUEUE_CAP) {
@@ -172,14 +181,14 @@ static bool db_service_submit_job(struct db_service *svc,
         zcl_cond_signal(&svc->queue_cond);
     }
 
-    while (queued && !job->done)
+    while (queued && !job->async && !job->done)
         zcl_cond_wait(&job->done_cond, &svc->queue_mutex);
 
     if (queued && svc->queue_count < DB_SERVICE_QUEUE_CAP)
         zcl_cond_broadcast(&svc->queue_cond);
 
     zcl_mutex_unlock(&svc->queue_mutex);
-    return queued && job->success;
+    return job->async ? queued : (queued && job->success);
 }
 
 static bool db_service_submit_simple_job(struct db_service *svc,
@@ -258,6 +267,39 @@ bool db_service_attach(struct db_service *svc, struct node_db *node_db)
     return true;
 }
 
+/* Round 5 Part 5: WAL checkpoint thread.
+ *
+ * sqlite3 autocheckpoint can be silently deferred when a long-running
+ * reader holds the WAL open — observed in practice as multi-GB
+ * .db-wal files after a few hours of catch-up. The pthread below
+ * forces SQLITE_CHECKPOINT_TRUNCATE every 5 minutes regardless of
+ * autocheckpoint state. It uses the same node_db lock contract as
+ * every other writer so it won't race with the worker thread. */
+
+#define WAL_CHECKPOINT_INTERVAL_SECS 300
+
+static void *db_service_ckpt_main(void *arg)
+{
+    struct db_service *svc = arg;
+    while (true) {
+        for (int slept = 0;
+             slept < WAL_CHECKPOINT_INTERVAL_SECS && !svc->ckpt_stop_requested;
+             slept++) {
+            struct timespec ts = { .tv_sec = 1, .tv_nsec = 0 };
+            nanosleep(&ts, NULL);
+        }
+        if (svc->ckpt_stop_requested) break;
+
+        struct node_db *ndb = svc->node_db;
+        if (!ndb || !ndb->open) continue;
+        if (!node_db_wal_checkpoint(ndb)) {
+            fprintf(stderr,
+                "[wal-checkpoint] periodic checkpoint failed (db busy?)\n");
+        }
+    }
+    return NULL;
+}
+
 bool db_service_start(struct db_service *svc)
 {
     if (!svc || !svc->node_db)
@@ -274,6 +316,19 @@ bool db_service_start(struct db_service *svc)
         return false;
     }
     svc->worker_started = true;
+
+    /* Best-effort checkpointer; failure is non-fatal (autocheckpoint
+     * still works in steady state, and the explicit fsync barrier in
+     * chain_tip.c keeps tip durability independent). */
+    svc->ckpt_stop_requested = false;
+    if (pthread_create(&svc->ckpt_thread, NULL,
+                       db_service_ckpt_main, svc) == 0) {
+        svc->ckpt_started = true;
+    } else {
+        fprintf(stderr,
+            "[wal-checkpoint] failed to start periodic checkpoint thread\n");
+    }
+
     svc->started = true;
     svc->started_at = db_service_now();
     return true;
@@ -283,6 +338,11 @@ void db_service_stop(struct db_service *svc)
 {
     if (!svc)
         return;
+    if (svc->ckpt_started) {
+        svc->ckpt_stop_requested = true;
+        pthread_join(svc->ckpt_thread, NULL);
+        svc->ckpt_started = false;
+    }
     if (svc->worker_started) {
         zcl_mutex_lock(&svc->queue_mutex);
         svc->stop_requested = true;
@@ -431,6 +491,43 @@ bool db_service_run_write(struct db_service *svc,
     job.success = db_service_submit_job(svc, &job);
     zcl_cond_destroy(&job.done_cond);
     return job.success;
+}
+
+bool db_service_enqueue_write(struct db_service *svc,
+                              db_service_write_fn fn,
+                              void *ctx,
+                              db_service_free_fn free_ctx)
+{
+    struct db_service_job *job;
+    bool queued;
+
+    if (!fn)
+        return false;
+    if (!svc || !svc->started || !svc->worker_started)
+        return false;
+    if (db_service_is_worker_thread(svc)) {
+        bool ok = fn(svc->node_db, ctx);
+        if (free_ctx)
+            free_ctx(ctx);
+        return ok;
+    }
+
+    job = malloc(sizeof(*job)); /* raw-alloc-ok: db service owns heap job */
+    if (!job)
+        return false;
+    memset(job, 0, sizeof(*job));
+    job->type = DB_SERVICE_JOB_NONE;
+    job->fn = fn;
+    job->ctx = ctx;
+    job->free_ctx = free_ctx;
+    job->async = true;
+    queued = db_service_submit_job(svc, job);
+    if (!queued) {
+        if (free_ctx)
+            free_ctx(ctx);
+        free(job);
+    }
+    return queued;
 }
 
 bool db_service_is_worker_thread(const struct db_service *svc)

@@ -12,6 +12,7 @@
 
 struct node_db;
 typedef bool (*db_service_write_fn)(struct node_db *ndb, void *ctx);
+typedef void (*db_service_free_fn)(void *ctx);
 
 struct db_service_status {
     bool started;
@@ -39,6 +40,8 @@ struct db_service_job {
     const char *sql;
     db_service_write_fn fn;
     void *ctx;
+    db_service_free_fn free_ctx;
+    bool async;
     bool done;
     bool success;
     zcl_cond_t done_cond;
@@ -59,6 +62,15 @@ struct db_service {
     size_t queue_count;
     bool started;
     int64_t started_at;
+
+    /* Round 5 Part 5: periodic WAL checkpoint thread. Even with
+     * wal_autocheckpoint=1000 set, the autocheckpoint can be deferred
+     * indefinitely if a long-running reader holds the WAL open. The
+     * background thread forces SQLITE_CHECKPOINT_TRUNCATE every 5 min
+     * so the .db-wal file stays bounded regardless of reader pressure. */
+    pthread_t ckpt_thread;
+    bool ckpt_started;
+    bool ckpt_stop_requested;
 };
 
 void db_service_init(struct db_service *svc);
@@ -88,6 +100,10 @@ bool db_service_wal_checkpoint(struct db_service *svc);
 bool db_service_run_write(struct db_service *svc,
                           db_service_write_fn fn,
                           void *ctx);
+bool db_service_enqueue_write(struct db_service *svc,
+                              db_service_write_fn fn,
+                              void *ctx,
+                              db_service_free_fn free_ctx);
 bool db_service_is_worker_thread(const struct db_service *svc);
 
 #endif
