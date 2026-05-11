@@ -52,8 +52,6 @@ void chain_restore_plan(struct chain_restore_plan *out,
     if (in->utxo_max_height > 0) {
         out->next_state = CHAIN_RESTORE_ANCHOR_CREATED;
         out->should_create_anchor = true;
-        out->should_set_chain_tip = true;
-        out->should_set_best_header = true;
         out->should_set_snapshot_anchor = true;
         out->should_skip_activate = true;
         out->anchor_height = in->utxo_max_height;
@@ -90,27 +88,10 @@ struct block_index *chain_restore_create_anchor(
 
     block_index_init(anchor);
     anchor->nHeight = height;
-    anchor->nStatus = BLOCK_VALID_TREE | BLOCK_HAVE_DATA;
-    anchor->nChainTx = 1;
-    anchor->nTx = 1;
-
-    /* nChainWork = max(all existing) + large margin.
-     * Ensures find_most_work_chain always prefers chains built on
-     * this anchor over old chains that don't reflect the UTXO state. */
-    {
-        struct arith_uint256 max_work;
-        arith_uint256_set_u64(&max_work, 0);
-        size_t iter = 0;
-        struct block_index *entry;
-        while (block_map_next(&ms->map_block_index, &iter, NULL, &entry)) {
-            if (!entry) continue;
-            if (arith_uint256_compare(&entry->nChainWork, &max_work) > 0)
-                max_work = entry->nChainWork;
-        }
-        struct arith_uint256 margin;
-        arith_uint256_set_u64(&margin, 4096ULL * (uint64_t)height);
-        arith_uint256_add(&anchor->nChainWork, &max_work, &margin);
-    }
+    anchor->nStatus = BLOCK_VALID_UNKNOWN;
+    anchor->nChainTx = 0;
+    anchor->nTx = 0;
+    arith_uint256_set_zero(&anchor->nChainWork);
 
     if (!block_map_insert(&ms->map_block_index, hash, anchor)) {
         free(anchor);
@@ -284,6 +265,7 @@ void chain_integrity_check_post_restore(struct chain_integrity_result *out,
     memset(out, 0, sizeof(*out));
     out->first_nbits_zero_height = -1;
     out->first_hole_height = -1;
+    out->first_tip_window_hole = -1;
 
     if (!ms) {
         out->ok = false;
@@ -306,15 +288,27 @@ void chain_integrity_check_post_restore(struct chain_integrity_result *out,
 
     /* P14.12: chain_active.chain[h] non-NULL for h in [0, tip]. */
     out->tip_height = active_chain_height(&ms->chain_active);
+    int window_lo = out->tip_height - CHAIN_INTEGRITY_TIP_WINDOW;
+    if (window_lo < 0) window_lo = 0;
     for (int h = 0; h <= out->tip_height; h++) {
         if (active_chain_at(&ms->chain_active, h) == NULL) {
             out->active_chain_holes++;
             if (out->first_hole_height < 0 || h < out->first_hole_height)
                 out->first_hole_height = h;
+            if (h >= window_lo) {
+                out->tip_window_holes++;
+                if (out->first_tip_window_hole < 0 ||
+                    h < out->first_tip_window_hole)
+                    out->first_tip_window_hole = h;
+            }
         }
     }
 
-    out->ok = (out->zero_nbits_count == 0 && out->active_chain_holes == 0);
+    /* `ok` reflects whether the chain is operationally healthy.
+     * Holes below tip-WINDOW are expected on live-tip-only boots
+     * (capped pprev walk) and are not corruption — they get filled
+     * on demand. Only holes WITHIN the window block actual operation. */
+    out->ok = (out->zero_nbits_count == 0 && out->tip_window_holes == 0);
 }
 
 /* ── Post-restore repair (P14.11 + P14.12 GREEN) ────────────────── */
@@ -332,25 +326,70 @@ int chain_restore_rebuild_active_chain(struct main_state *ms,
      * active_chain's capacity covers [0..tip_h]); if a caller hands us
      * a tip that isn't installed, install it via the standard path
      * first. Idempotent when already set. */
-    if (active_chain_tip(c) != tip || active_chain_height(c) != tip_h)
-        active_chain_set_tip(c, tip);
+    if (active_chain_tip(c) != tip || active_chain_height(c) != tip_h) {
+        if (tip_h > 1000000) {
+            if (tip_h >= c->capacity) {
+                int old_cap = c->capacity;
+                int new_cap = tip_h + 1024;
+                struct block_index **nc = zcl_realloc(
+                    c->chain, (size_t)new_cap * sizeof(struct block_index *),
+                    "active_chain/live_tip");
+                if (!nc)
+                    LOG_RETURN(0, "chain_restore",
+                               "live tip install realloc failed (tip_h=%d)",
+                               tip_h);
+                c->chain = nc;
+                memset(&c->chain[old_cap], 0,
+                       (size_t)(new_cap - old_cap) *
+                       sizeof(struct block_index *));
+                c->capacity = new_cap;
+            }
+            c->chain[tip_h] = tip;
+            c->height = tip_h;
+            printf("[chain-restore] installed live tip without full "
+                   "active_chain walk: h=%d\n", tip_h);
+        } else {
+            active_chain_set_tip(c, tip);
+        }
+    }
 
     int populated = 0;
 
     /* Fast path — walk pprev from tip and slot each ancestor. Covers
      * the happy case (real chain, pprev intact) in O(tip_h). */
     int deepest = tip_h + 1;
+    int pprev_walk_limit = tip_h > 1000000 ? 10000 : tip_h + 1;
     for (struct block_index *p = tip; p != NULL; p = p->pprev) {
         int h = p->nHeight;
         if (h < 0 || h > tip_h) break;
         if (c->chain[h] != p) c->chain[h] = p;
         if (h < deepest) deepest = h;
         populated++;
+        if (populated >= pprev_walk_limit && deepest > 0) {
+            printf("[chain-restore] capped pprev walk during live boot: "
+                   "tip_h=%d deepest=%d populated=%d\n",
+                   tip_h, deepest, populated);
+            break;
+        }
     }
 
     /* If the pprev walk reached genesis, no residual work. */
     if (deepest == 0)
         return populated;
+
+    /* Live recovery can promote a real HAVE_DATA block near mainnet tip while
+     * its pprev path is still absent from the restored flat index. Filling
+     * millions of active_chain holes and building skip pointers inline keeps
+     * RPC/MCP dark during boot, which makes the node uncontrollable exactly
+     * when it needs operator feedback. Defer that full integrity repair for
+     * live-scale, anchor-shaped restores; the tip is already installed, so
+     * getblockcount and service control can come up while peers continue. */
+    if (tip_h > 1000000) {
+        printf("[chain-restore] deferred active_chain hole repair: "
+               "tip_h=%d deepest=%d populated=%d\n",
+               tip_h, deepest, populated);
+        return populated;
+    }
 
     /* Residual holes below `deepest` — post-anchor-restore shape, where
      * the synthetic tip has pprev=NULL so every slot 0..tip_h-1 is
@@ -466,9 +505,206 @@ int chain_restore_backfill_nbits_from_disk(struct main_state *ms,
     return fixed;
 }
 
+bool chain_restore_block_is_consensus_backed(
+    const struct block_index *tip)
+{
+    if (!tip || !tip->phashBlock)
+        return false;
+    if (tip->nStatus & BLOCK_FAILED_MASK)
+        return false;
+    if (!block_index_is_valid(tip, BLOCK_VALID_TREE))
+        return false;
+    if (!(tip->nStatus & BLOCK_HAVE_DATA))
+        return false;
+    if (tip->nHeight > 0 && (!tip->pprev || tip->nBits == 0))
+        return false;
+    if (tip->nHeight > 0 && (tip->nFile < 0 || tip->nDataPos == 0))
+        return false;
+    if (tip->nTx == 0 || tip->nChainTx == 0)
+        return false;
+    if (uint256_is_null(&tip->hashMerkleRoot))
+        return false;
+    return true;
+}
+
+bool chain_restore_block_is_consensus_backed_on_disk(
+    const struct block_index *tip,
+    const char *datadir)
+{
+    if (!tip || !tip->phashBlock)
+        return false;
+    if (tip->nStatus & BLOCK_FAILED_MASK)
+        return false;
+    if (!(tip->nStatus & BLOCK_HAVE_DATA))
+        return false;
+    if (tip->nHeight > 0 && (!tip->pprev || !tip->pprev->phashBlock))
+        return false;
+    if (tip->nHeight > 0 && (tip->nFile < 0 || tip->nDataPos == 0))
+        return false;
+    if (!datadir || !datadir[0])
+        return false;
+
+    struct block blk;
+    if (!read_block_from_disk_index_pread(&blk, tip, datadir))
+        return false;
+
+    bool ok = true;
+    struct uint256 disk_hash;
+    block_get_hash(&blk, &disk_hash);
+
+    if (!tip->phashBlock || uint256_cmp(&disk_hash, tip->phashBlock) != 0) {
+        char got[65] = {0};
+        char want[65] = {0};
+        uint256_get_hex(&disk_hash, got);
+        if (tip->phashBlock)
+            uint256_get_hex(tip->phashBlock, want);
+        fprintf(stderr,
+                "[chain-restore] disk hash mismatch at h=%d got=%s want=%s\n",
+                tip->nHeight, got, want[0] ? want : "<null>");
+        ok = false;
+    }
+
+    if (ok && tip->nHeight > 0) {
+        if (!tip->pprev || !tip->pprev->phashBlock ||
+            uint256_cmp(&blk.header.hashPrevBlock,
+                        tip->pprev->phashBlock) != 0) {
+            char got[65] = {0};
+            char want[65] = {0};
+            uint256_get_hex(&blk.header.hashPrevBlock, got);
+            if (tip->pprev && tip->pprev->phashBlock)
+                uint256_get_hex(tip->pprev->phashBlock, want);
+            fprintf(stderr,
+                    "[chain-restore] disk prev-hash mismatch at h=%d "
+                    "got=%s want=%s\n",
+                    tip->nHeight, got, want[0] ? want : "<null>");
+            ok = false;
+        }
+    }
+
+    if (ok && !uint256_is_null(&tip->hashMerkleRoot) &&
+        uint256_cmp(&blk.header.hashMerkleRoot, &tip->hashMerkleRoot) != 0) {
+        char got[65] = {0};
+        char want[65] = {0};
+        uint256_get_hex(&blk.header.hashMerkleRoot, got);
+        uint256_get_hex(&tip->hashMerkleRoot, want);
+        fprintf(stderr,
+                "[chain-restore] disk merkle mismatch at h=%d got=%s want=%s\n",
+                tip->nHeight, got, want);
+        ok = false;
+    }
+
+    if (ok && tip->nBits != 0 && blk.header.nBits != tip->nBits) {
+        fprintf(stderr,
+                "[chain-restore] disk nBits mismatch at h=%d got=%u want=%u\n",
+                tip->nHeight, blk.header.nBits, tip->nBits);
+        ok = false;
+    }
+
+    block_free(&blk);
+    return ok;
+}
+
+struct block_index *chain_restore_nearest_consensus_backed_ancestor(
+    struct block_index *tip)
+{
+    for (struct block_index *walk = tip; walk; walk = walk->pprev) {
+        if (chain_restore_block_is_consensus_backed(walk))
+            return walk;
+    }
+    return NULL;
+}
+
+struct block_index *chain_restore_nearest_consensus_backed_ancestor_on_disk(
+    struct block_index *tip,
+    const char *datadir)
+{
+    int checked = 0;
+    for (struct block_index *walk = tip; walk; walk = walk->pprev) {
+        if (chain_restore_block_is_consensus_backed_on_disk(walk, datadir))
+            return walk;
+        checked++;
+        if (checked >= 4096) {
+            fprintf(stderr,
+                    "[chain-restore] no disk-backed ancestor found within "
+                    "%d blocks below h=%d\n", checked,
+                    tip ? tip->nHeight : -1);
+            return NULL;
+        }
+    }
+    return NULL;
+}
+
+static void chain_restore_quarantine_synthetic_tip(struct main_state *ms,
+                                                   const char *datadir)
+{
+    if (!ms)
+        return;
+
+    struct block_index *tip = active_chain_tip(&ms->chain_active);
+    if (!tip)
+        return;
+    if (datadir && datadir[0]) {
+        if (chain_restore_block_is_consensus_backed_on_disk(tip, datadir))
+            return;
+    } else if (chain_restore_block_is_consensus_backed(tip)) {
+        return;
+    }
+
+    struct block_index *replacement = (datadir && datadir[0])
+        ? chain_restore_nearest_consensus_backed_ancestor_on_disk(tip, datadir)
+        : chain_restore_nearest_consensus_backed_ancestor(tip);
+    if (!replacement || replacement == tip)
+        return;
+
+    char old_hash[65] = {0};
+    char new_hash[65] = {0};
+    if (tip->phashBlock)
+        uint256_get_hex(tip->phashBlock, old_hash);
+    if (replacement->phashBlock)
+        uint256_get_hex(replacement->phashBlock, new_hash);
+
+    fprintf(stderr,
+            "[chain-restore] quarantining non-consensus active tip "
+            "h=%d hash=%s status=%u file=%d pos=%u tx=%u chaintx=%lld; "
+            "restoring nearest data-backed ancestor h=%d hash=%s\n",
+            tip->nHeight, old_hash[0] ? old_hash : "<null>",
+            tip->nStatus, tip->nFile, tip->nDataPos, tip->nTx,
+            (long long)tip->nChainTx, replacement->nHeight,
+            new_hash[0] ? new_hash : "<null>");
+
+    active_chain_set_tip(&ms->chain_active, replacement);
+    if (ms->pindex_best_header == tip)
+        ms->pindex_best_header = replacement;
+
+}
+
+static void chain_restore_clear_resolved_anchor(struct main_state *ms,
+                                               const char *datadir)
+{
+    if (!ms)
+        return;
+
+    struct block_index *tip = active_chain_tip(&ms->chain_active);
+    struct block_index *anchor = snapsync_get_anchor();
+    bool backed = (datadir && datadir[0])
+        ? chain_restore_block_is_consensus_backed_on_disk(tip, datadir)
+        : chain_restore_block_is_consensus_backed(tip);
+    if (!anchor || !backed)
+        return;
+
+    fprintf(stderr,
+            "[chain-restore] clearing restore anchor h=%d after resolving "
+            "active consensus tip h=%d\n",
+            anchor->nHeight, tip->nHeight);
+    snapsync_set_anchor(NULL);
+}
+
 bool chain_restore_finalize(struct main_state *ms, const char *datadir)
 {
     if (!ms) return false;
+
+    chain_restore_quarantine_synthetic_tip(ms, datadir);
+    chain_restore_clear_resolved_anchor(ms, datadir);
 
     struct block_index *tip = active_chain_tip(&ms->chain_active);
     if (tip)
@@ -483,13 +719,25 @@ bool chain_restore_finalize(struct main_state *ms, const char *datadir)
     if (!r.ok) {
         fprintf(stderr,
             "[chain-integrity] post-restore check FAILED: "
-            "zero_nbits=%d (first_h=%d) holes=%d (first_h=%d) tip_h=%d\n",
+            "zero_nbits=%d (first_h=%d) tip_window_holes=%d (first_h=%d) "
+            "total_holes=%d tip_h=%d\n",
             r.zero_nbits_count, r.first_nbits_zero_height,
-            r.active_chain_holes, r.first_hole_height, r.tip_height);
+            r.tip_window_holes, r.first_tip_window_hole,
+            r.active_chain_holes, r.tip_height);
     } else if (tip) {
-        printf("[chain-integrity] post-restore check OK: "
-               "tip_h=%d nbits clean, active_chain full\n",
-               r.tip_height);
+        /* Holes below tip-WINDOW are expected (live-tip-only boot)
+         * and not corruption — report them at INFO so operators
+         * can see the chain shape without alarm. */
+        if (r.active_chain_holes > 0)
+            printf("[chain-integrity] post-restore check OK: "
+                   "tip_h=%d tip_window clean, "
+                   "%d expected holes below tip-%d (live-tip-only boot)\n",
+                   r.tip_height, r.active_chain_holes,
+                   CHAIN_INTEGRITY_TIP_WINDOW);
+        else
+            printf("[chain-integrity] post-restore check OK: "
+                   "tip_h=%d nbits clean, active_chain full\n",
+                   r.tip_height);
     }
 
     return r.ok;

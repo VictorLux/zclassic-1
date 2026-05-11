@@ -3298,6 +3298,62 @@ bool activate_best_chain(struct validation_state *state,
                     missing_data);
             }
 
+            /* Round 4 Part 1.5: fork-tip rollback.
+             *
+             * If the peer's incoming block claims a parent hash that
+             * matches our tip's PARENT (not our tip), our local tip
+             * is on a 1-block fork the network rejected. A 1-block
+             * reorg is well within MAX_REORG_LENGTH, so we can
+             * safely disconnect our tip and re-extend with the peer's
+             * block. Without this, a single bad tip block strands
+             * the node forever even though gap-fill downloads the
+             * correct successors. */
+            if (near_tip_block && pblock && tip && tip->pprev &&
+                tip->pprev->phashBlock) {
+                bool extends_tip_parent = uint256_eq(
+                    &pblock->header.hashPrevBlock,
+                    tip->pprev->phashBlock);
+                if (extends_tip_parent) {
+                    fprintf(stderr,
+                        "activate_best_chain: fork-tip rollback "
+                        "h=%d (local tip on wrong 1-block fork; peer "
+                        "block extends from parent h=%d)\n",
+                        tip->nHeight, tip->pprev->nHeight);
+                    event_emitf(EV_REORG_START, 0,
+                                "fork_tip_rollback h=%d new_h=%d",
+                                tip->nHeight, pindex_new->nHeight);
+                    if (!disconnect_tip(state, ms, coins_tip, datadir)) {
+                        fprintf(stderr,
+                            "activate_best_chain: fork-tip rollback "
+                            "FAILED to disconnect tip h=%d; chain "
+                            "remains stuck\n", tip->nHeight);
+                        event_emitf(EV_REORG_DISCONNECT_FAILED, 0,
+                                    "fork_tip h=%d", tip->nHeight);
+                        return false;
+                    }
+                    struct block_index *new_tip =
+                        active_chain_tip(&ms->chain_active);
+                    if (new_tip && pindex_new->pprev != new_tip) {
+                        pindex_new->pprev = new_tip;
+                        block_index_build_skip(pindex_new);
+                    }
+                    if (!connect_tip(state, ms, coins_tip, pindex_new,
+                                     pblock, params, datadir)) {
+                        fprintf(stderr,
+                            "activate_best_chain: fork-tip rollback "
+                            "connect FAILED at h=%d (chain now at "
+                            "h=%d)\n",
+                            pindex_new->nHeight,
+                            new_tip ? new_tip->nHeight : -1);
+                        return false;
+                    }
+                    event_emitf(EV_REORG_RECOVERY_COMPLETE, 0,
+                                "fork_tip_rollback new_h=%d",
+                                pindex_new->nHeight);
+                    return true;
+                }
+            }
+
             fprintf(stderr,
                 "activate_best_chain: near-tip block h=%d was not a direct "
                 "extension of tip=%d; falling through to most-work reorg "

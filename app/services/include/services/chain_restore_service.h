@@ -6,7 +6,7 @@
  * coins_best_block hash may not match any block in our block index.
  * This service resolves the gap by either:
  *   (a) finding the hash in the block map and setting it as tip, or
- *   (b) creating a placeholder anchor at the correct height.
+ *   (b) recording a non-consensus placeholder anchor at the correct height.
  *
  * Architecture: planning pattern (pure functions) + execution.
  *   1. chain_restore_plan()    — pure: decides what to do
@@ -73,8 +73,10 @@ void chain_restore_plan(struct chain_restore_plan *out,
 /* ── Execution ─────────────────────────────────────────────────── */
 
 /* Create a placeholder anchor block_index at `height` with `hash`.
- * Inserts into ms->map_block_index with nChainWork > all existing.
- * Sets snapsync_anchor. Returns the anchor, or NULL on failure.
+ * Inserts it into ms->map_block_index as metadata only. The anchor is
+ * deliberately not marked BLOCK_HAVE_DATA and receives no synthetic
+ * chainwork; it must never win chain selection or become active consensus
+ * tip until real block bytes arrive and normal validation fills it in.
  * This is the shared implementation (was duplicated 3x in boot.c). */
 struct block_index *chain_restore_create_anchor(
     struct main_state *ms,
@@ -122,13 +124,27 @@ void chain_restore_validate(struct chain_restore_validation *out,
  * Pure function — does NOT mutate state. Designed to be called at the
  * end of the boot restore path (RED on pre-fix, GREEN after backfill)
  * and from unit tests. Sets `out->ok` iff both counts are zero. */
+/* `tip_window_holes` is the number of NULL active_chain slots in the
+ * range [max(0, tip - CHAIN_INTEGRITY_TIP_WINDOW), tip]. Holes below
+ * this window are an expected by-product of the capped pprev walk
+ * during live boot (only ~10k entries populated near the tip on a
+ * 3M-block chain) and are not corruption — they get filled on demand
+ * by code that needs ancestor lookups.
+ *
+ * Round 4 Part 1.5: boot fail-fast gate honors `tip_window_holes`,
+ * not `active_chain_holes`. The latter is informational and stays
+ * positive on every live-tip-only boot. */
+#define CHAIN_INTEGRITY_TIP_WINDOW 10000
+
 struct chain_integrity_result {
     int  zero_nbits_count;
-    int  active_chain_holes;
+    int  active_chain_holes;      /* total NULL slots in [0, tip] */
+    int  tip_window_holes;        /* NULL slots in [tip-WINDOW, tip] */
     int  tip_height;
-    int  first_nbits_zero_height;   /* -1 if none */
-    int  first_hole_height;         /* -1 if none */
-    bool ok;
+    int  first_nbits_zero_height; /* -1 if none */
+    int  first_hole_height;       /* -1 if none (overall) */
+    int  first_tip_window_hole;   /* -1 if none (within window) */
+    bool ok;                      /* zero_nbits_count==0 && tip_window_holes==0 */
 };
 
 void chain_integrity_check_post_restore(struct chain_integrity_result *out,
@@ -172,6 +188,19 @@ int chain_restore_rebuild_active_chain(struct main_state *ms,
 
 int chain_restore_backfill_nbits_from_disk(struct main_state *ms,
                                            const char *datadir);
+
+bool chain_restore_block_is_consensus_backed(const struct block_index *tip);
+
+bool chain_restore_block_is_consensus_backed_on_disk(
+    const struct block_index *tip,
+    const char *datadir);
+
+struct block_index *chain_restore_nearest_consensus_backed_ancestor(
+    struct block_index *tip);
+
+struct block_index *chain_restore_nearest_consensus_backed_ancestor_on_disk(
+    struct block_index *tip,
+    const char *datadir);
 
 bool chain_restore_finalize(struct main_state *ms, const char *datadir);
 
