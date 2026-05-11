@@ -8,6 +8,7 @@
 #include "services/recovery_policy.h"
 #include "services/chain_activation_controller.h"
 #include "services/chain_restore_service.h"
+#include "services/chain_tip.h"
 #include "services/snapshot_sync_service.h"
 #include "config/boot_internal.h"
 #include "config/db_service.h"
@@ -222,7 +223,7 @@ struct utxo_import_result utxo_recovery_import_ldb(
                     coins_view_cache_set_best_block(
                         ctx->coins_tip, found->phashBlock);
                 }
-                active_chain_set_tip(&ctx->state->chain_active, found);
+                chain_set_active_tip(ctx->state, found, TIP_FROM_UTXO_REPAIR, "ldb_import_found");
                 ctx->state->pindex_best_header = found;
                 printf("LDB import: chain tip at h=%d hash=%s\n",
                        found->nHeight, dbg_hex);
@@ -230,49 +231,16 @@ struct utxo_import_result utxo_recovery_import_ldb(
                 snprintf(res.anchor_reason, sizeof(res.anchor_reason),
                          "ldb_import_found");
             } else if (ldb_height > 0) {
-                /* LDB best block NOT in our index — create placeholder
-                 * anchor (same pattern as snapsync). */
-                struct block_index *anchor = zcl_calloc(1,
-                    sizeof(struct block_index), "utxo_recovery ldb anchor");
+                /* LDB best block NOT in our index — record metadata only.
+                 * The anchor must not masquerade as real block data. */
+                struct block_index *anchor = chain_restore_create_anchor(
+                    ctx->state, &ldb_best, ldb_height);
                 if (anchor) {
-                    block_index_init(anchor);
-                    anchor->nHeight = ldb_height;
-                    anchor->nStatus = BLOCK_VALID_TREE | BLOCK_HAVE_DATA;
-                    anchor->nChainTx = 1;
-                    anchor->nTx = 1;
-
-                    /* nChainWork must exceed all existing entries */
-                    {
-                        struct arith_uint256 max_work;
-                        arith_uint256_set_u64(&max_work, 0);
-                        size_t mwi = 0;
-                        struct block_index *mwp;
-                        while (block_map_next(
-                            &ctx->state->map_block_index,
-                            &mwi, NULL, &mwp)) {
-                            if (!mwp) continue;
-                            if (arith_uint256_compare(
-                                &mwp->nChainWork, &max_work) > 0)
-                                max_work = mwp->nChainWork;
-                        }
-                        struct arith_uint256 margin;
-                        arith_uint256_set_u64(&margin,
-                            4096ULL * (uint64_t)ldb_height);
-                        arith_uint256_add(&anchor->nChainWork,
-                                          &max_work, &margin);
-                    }
-
-                    block_map_insert(&ctx->state->map_block_index,
-                                      &ldb_best, anchor);
-                    anchor->phashBlock = block_map_find_hash(
-                        &ctx->state->map_block_index, &ldb_best);
-
                     snapsync_set_anchor(anchor);
-                    active_chain_set_tip(&ctx->state->chain_active, anchor);
-                    ctx->state->pindex_best_header = anchor;
 
-                    printf("LDB import: anchor at h=%d hash=%s "
-                           "— syncing forward.\n", ldb_height, dbg_hex);
+                    printf("LDB import: metadata anchor at h=%d hash=%s "
+                           "— waiting for real block data.\n",
+                           ldb_height, dbg_hex);
                 }
                 res.skip_activate = true;
                 snprintf(res.anchor_reason, sizeof(res.anchor_reason),
@@ -398,6 +366,32 @@ cleanup:
 
 /* ── Chain tip restoration ──────────────────────────────────── */
 
+static bool has_disk_backed_competing_sibling(
+    struct main_state *ms,
+    const struct block_index *candidate,
+    const char *datadir)
+{
+    if (!ms || !candidate || !candidate->pprev || !candidate->phashBlock)
+        return false;
+
+    size_t iter = 0;
+    struct block_index *alt;
+    while (block_map_next(&ms->map_block_index, &iter, NULL, &alt)) {
+        if (!alt || alt == candidate)
+            continue;
+        if (alt->nHeight != candidate->nHeight)
+            continue;
+        if (alt->pprev != candidate->pprev)
+            continue;
+        if (alt->phashBlock &&
+            uint256_eq(alt->phashBlock, candidate->phashBlock))
+            continue;
+        if (chain_restore_block_is_consensus_backed_on_disk(alt, datadir))
+            return true;
+    }
+    return false;
+}
+
 struct chain_restore_result utxo_recovery_restore_chain_tip(
     struct utxo_recovery_ctx *ctx,
     struct block_index *scan_fallback)
@@ -410,7 +404,7 @@ struct chain_restore_result utxo_recovery_restore_chain_tip(
     if (uint256_is_null(&best_hash)) {
         /* No best block — try fast rebuild if fallback available */
         if (scan_fallback) {
-            active_chain_set_tip(&ctx->state->chain_active, scan_fallback);
+            chain_set_active_tip(ctx->state, scan_fallback, TIP_FROM_UTXO_REPAIR, "scan_fallback");
             ctx->state->pindex_best_header = scan_fallback;
             printf("WARNING: Chain tip at height %d but coins DB is empty!\n",
                    scan_fallback->nHeight);
@@ -467,27 +461,83 @@ struct chain_restore_result utxo_recovery_restore_chain_tip(
     }
 
     if (best) {
-        active_chain_set_tip(&ctx->state->chain_active, best);
-        ctx->state->pindex_best_header = best;
-        printf("Restored chain tip from coins DB: height=%d\n",
-               best->nHeight);
-        event_emitf(EV_BOOT_CHAIN_RESTORED, 0, "height=%d", best->nHeight);
-        res.restored = true;
-
-        /* If the coins tip is at a high height (from LDB/snapshot import),
-         * set the anchor to prevent activate_best_chain from reorganizing
-         * below the UTXO set height.  Without this, second-boot scenarios
-         * lose the anchor that the first-boot import established, and
-         * activate_best_chain drops the tip to wherever block files exist
-         * (~2M), causing bad-txns-inputs-missingorspent failures. */
-        if (best->nHeight > 100000) {
-            snapsync_set_anchor(best);
-            res.skip_activate = true;
-            snprintf(res.anchor_reason, sizeof(res.anchor_reason),
-                     "restore_chain_tip_anchor");
-            printf("Restored anchor at h=%d to protect UTXO set\n",
-                   best->nHeight);
+        struct block_index *restore_tip = best;
+        bool best_backed =
+            chain_restore_block_is_consensus_backed_on_disk(best,
+                                                            ctx->datadir);
+        {
+            char best_hex[65] = {0};
+            char prev_hex[65] = {0};
+            bool merkle_null = uint256_is_null(&best->hashMerkleRoot);
+            if (best->phashBlock)
+                uint256_get_hex(best->phashBlock, best_hex);
+            if (best->pprev && best->pprev->phashBlock)
+                uint256_get_hex(best->pprev->phashBlock, prev_hex);
+            fprintf(stderr,
+                "[boot] coins_best_block validation h=%d hash=%s "
+                "status=%u file=%d pos=%u tx=%u chaintx=%lld bits=%u "
+                "pprev_h=%d pprev=%s merkle_null=%d disk_backed=%d\n",
+                best->nHeight, best_hex[0] ? best_hex : "<null>",
+                best->nStatus, best->nFile, best->nDataPos, best->nTx,
+                (long long)best->nChainTx, best->nBits,
+                best->pprev ? best->pprev->nHeight : -1,
+                prev_hex[0] ? prev_hex : "<null>",
+                merkle_null ? 1 : 0, best_backed ? 1 : 0);
         }
+        if (!best_backed) {
+            restore_tip = chain_restore_nearest_consensus_backed_ancestor_on_disk(
+                best, ctx->datadir);
+            if (restore_tip && restore_tip->phashBlock) {
+                char bad_hex[65], good_hex[65];
+                uint256_get_hex(&best_hash, bad_hex);
+                uint256_get_hex(restore_tip->phashBlock, good_hex);
+                fprintf(stderr,
+                    "[boot] coins_best_block %s at h=%d is not backed by "
+                    "real block data; using nearest consensus-backed "
+                    "ancestor h=%d hash=%s\n",
+                    bad_hex, best->nHeight, restore_tip->nHeight, good_hex);
+                coins_view_cache_set_best_block(ctx->coins_tip,
+                                                restore_tip->phashBlock);
+                if (ctx->ndb && ctx->ndb->open)
+                    node_db_state_set(ctx->ndb, "coins_best_block",
+                                      restore_tip->phashBlock->data, 32);
+            }
+        } else if (has_disk_backed_competing_sibling(ctx->state, best,
+                                                    ctx->datadir)) {
+            restore_tip = best->pprev;
+            if (restore_tip && restore_tip->phashBlock) {
+                char bad_hex[65], parent_hex[65];
+                uint256_get_hex(&best_hash, bad_hex);
+                uint256_get_hex(restore_tip->phashBlock, parent_hex);
+                fprintf(stderr,
+                    "[boot] coins_best_block %s at h=%d is a disk-backed "
+                    "fork leaf with a competing disk-backed sibling; "
+                    "restoring common ancestor h=%d hash=%s so normal "
+                    "validation can choose the best branch\n",
+                    bad_hex, best->nHeight, restore_tip->nHeight,
+                    parent_hex);
+                coins_view_cache_set_best_block(ctx->coins_tip,
+                                                restore_tip->phashBlock);
+                if (ctx->ndb && ctx->ndb->open)
+                    node_db_state_set(ctx->ndb, "coins_best_block",
+                                      restore_tip->phashBlock->data, 32);
+            }
+        }
+
+        if (!restore_tip) {
+            fprintf(stderr,
+                "[boot] coins_best_block found in index but no "
+                "consensus-backed ancestor is available; waiting for P2P\n");
+            return res;
+        }
+
+        (void)chain_restore_rebuild_active_chain(ctx->state, restore_tip);
+        ctx->state->pindex_best_header = restore_tip;
+        printf("Restored chain tip from coins DB: height=%d\n",
+               restore_tip->nHeight);
+        event_emitf(EV_BOOT_CHAIN_RESTORED, 0, "height=%d",
+                    restore_tip->nHeight);
+        res.restored = true;
 
         /* P14.11 + P14.12: populate active_chain.chain[] from pprev +
          * block_map, and backfill nBits from on-disk block headers for
@@ -496,6 +546,7 @@ struct chain_restore_result utxo_recovery_restore_chain_tip(
          * h below the tip and GetNextWorkRequired trips `bad-diffbits`
          * on the first real-difficulty header whose pprev window
          * includes an nBits==0 entry. */
+        snapsync_set_anchor(NULL);
         (void)chain_restore_finalize(ctx->state, ctx->datadir);
 
         return res;
@@ -518,44 +569,14 @@ struct chain_restore_result utxo_recovery_restore_chain_tip(
     }
 
     if (utxo_max_height > 0) {
-        struct block_index *anchor = zcl_calloc(1, sizeof(struct block_index), "utxo_recovery anchor");
+        struct block_index *anchor =
+            chain_restore_create_anchor(ctx->state, &best_hash,
+                                        utxo_max_height);
         if (anchor) {
-            block_index_init(anchor);
-            anchor->nHeight = utxo_max_height;
-            anchor->nStatus = BLOCK_VALID_TREE | BLOCK_HAVE_DATA;
-            anchor->nChainTx = 1;
-            anchor->nTx = 1;
-
-            /* nChainWork must exceed all existing entries */
-            {
-                struct arith_uint256 max_work;
-                arith_uint256_set_u64(&max_work, 0);
-                size_t mwi = 0;
-                struct block_index *mwp;
-                while (block_map_next(&ctx->state->map_block_index,
-                                      &mwi, NULL, &mwp)) {
-                    if (!mwp) continue;
-                    if (arith_uint256_compare(&mwp->nChainWork,
-                                              &max_work) > 0)
-                        max_work = mwp->nChainWork;
-                }
-                struct arith_uint256 margin;
-                arith_uint256_set_u64(&margin,
-                    4096ULL * (uint64_t)utxo_max_height);
-                arith_uint256_add(&anchor->nChainWork, &max_work, &margin);
-            }
-
-            block_map_insert(&ctx->state->map_block_index,
-                              &best_hash, anchor);
-            anchor->phashBlock = block_map_find_hash(
-                &ctx->state->map_block_index, &best_hash);
-
             snapsync_set_anchor(anchor);
-            active_chain_set_tip(&ctx->state->chain_active, anchor);
-            ctx->state->pindex_best_header = anchor;
 
-            printf("Chain restore: anchor at h=%d hash=%s "
-                   "— syncing forward.\n", utxo_max_height, hex);
+            printf("Chain restore: metadata anchor at h=%d hash=%s "
+                   "— waiting for real block data.\n", utxo_max_height, hex);
             /* P14.11 + P14.12: see the same call above; fire here too
              * so the fresh-anchor path gets rebuild + nBits backfill. */
             (void)chain_restore_finalize(ctx->state, ctx->datadir);
@@ -610,11 +631,16 @@ static bool recover_stale_metadata(struct utxo_recovery_ctx *ctx)
             coins_view_cache_flush(ctx->coins_tip);
             struct block_index *bi = block_map_find(
                 &ctx->state->map_block_index, &tip_hash);
-            if (bi) {
-                active_chain_set_tip(&ctx->state->chain_active, bi);
+            if (bi && chain_restore_block_is_consensus_backed_on_disk(
+                    bi, ctx->datadir)) {
+                chain_set_active_tip(ctx->state, bi, TIP_FROM_UTXO_REPAIR, "best_have_data");
                 ctx->state->pindex_best_header = bi;
                 printf("RECOVERY: restored chain tip from UTXO set: h=%d\n",
                        max_h);
+            } else if (bi) {
+                fprintf(stderr,
+                    "RECOVERY: UTXO-derived tip h=%d is not disk-backed; "
+                    "not setting active tip\n", max_h);
             }
         }
     }
@@ -634,7 +660,7 @@ static void reset_to_genesis(struct utxo_recovery_ctx *ctx)
         &ctx->state->map_block_index,
         &ctx->params->consensus.hashGenesisBlock);
     if (genesis) {
-        active_chain_set_tip(&ctx->state->chain_active, genesis);
+        chain_set_active_tip(ctx->state, genesis, TIP_FROM_UTXO_REPAIR, "fresh_genesis");
         ctx->state->pindex_best_header = genesis;
     }
 
@@ -760,12 +786,22 @@ struct recovery_exec_result utxo_recovery_execute(
         struct block_index *coins_block = block_map_find(
             &ctx->state->map_block_index, &vr->coins_hash);
         if (coins_block) {
-            printf("Chain tip/coins mismatch: chain=%d coins=%d\n"
-                   "  Resetting chain to coins tip — "
-                   "will replay %d blocks.\n",
-                   vr->chain_height, vr->coins_height,
-                   vr->chain_height - vr->coins_height);
-            active_chain_set_tip(&ctx->state->chain_active, coins_block);
+            if (chain_restore_block_is_consensus_backed_on_disk(
+                    coins_block, ctx->datadir)) {
+                printf("Chain tip/coins mismatch: chain=%d coins=%d\n"
+                       "  Resetting chain to disk-backed coins tip — "
+                       "will replay %d blocks.\n",
+                       vr->chain_height, vr->coins_height,
+                       vr->chain_height - vr->coins_height);
+                chain_set_active_tip(ctx->state, coins_block,
+                                      TIP_FROM_UTXO_REPAIR,
+                                      "chain_coins_mismatch_reset");
+            } else {
+                fprintf(stderr,
+                    "Chain tip/coins mismatch: coins tip h=%d is not "
+                    "disk-backed; refusing active-tip reset\n",
+                    vr->coins_height);
+            }
         }
         res.recovered = true;
         break;

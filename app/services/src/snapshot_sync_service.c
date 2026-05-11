@@ -15,6 +15,7 @@
 #include "services/snapshot_sync_service.h"
 #include "services/chain_restore_service.h"
 #include "services/chain_state_repository.h"
+#include "services/chain_tip.h"
 #include "services/recovery_policy.h"
 #include "models/db_txn.h"
 #include "chain/chain.h"
@@ -1405,9 +1406,10 @@ static bool snapsync_commit_tip(struct main_state *ms,
 
     if (rc == CSR_REJECTED_NOT_INITIALIZED) {
         /* Test harness path: singleton was never wired. Fall back to
-         * the raw setters so existing unit tests still exercise the
-         * snapshot activation logic end-to-end. */
-        active_chain_set_tip(&ms->chain_active, new_tip);
+         * the canonical chain_set_active_tip so existing unit tests
+         * still exercise the snapshot activation logic end-to-end. */
+        chain_set_active_tip(ms, new_tip, TIP_FROM_SNAPSHOT,
+                             reason ? reason : "csr_uninit_fallback");
         ms->pindex_best_header = new_tip;
         return true;
     }
