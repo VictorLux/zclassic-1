@@ -2321,6 +2321,45 @@ sapling_tree_boot_check_done:
                        best_have_data->nHeight);
                 chain_set_active_tip(&g_state, best_have_data, TIP_FROM_BOOT_REPAIR, "best_have_data");
                 g_state.pindex_best_header = best_have_data;
+
+                /* Round 5 Part 2 follow-up: chose best_have_data over
+                 * the orphan-coins anchor, so clear the anchor too —
+                 * otherwise activation stays in ANCHOR_ACTIVE waiting
+                 * for tip to climb above the anchor height, but we
+                 * intentionally chose a LOWER tip and want gap-fill
+                 * to drive us forward. */
+                snapsync_set_anchor(NULL);
+
+                /* Resync coins view + UTXO state to the new tip:
+                 *   1. coins_best_block must match the tip hash, or
+                 *      connect_block will FATAL on the next block
+                 *      with "view/prevblock mismatch".
+                 *   2. UTXO rows above the new tip height belong to
+                 *      the fork we're abandoning. Delete them so
+                 *      future blocks see a coherent set. */
+                if (best_have_data->phashBlock) {
+                    coins_view_cache_set_best_block(&g_coins_tip,
+                        best_have_data->phashBlock);
+                    if (g_node_db.open) {
+                        node_db_state_set(&g_node_db, "coins_best_block",
+                            best_have_data->phashBlock->data, 32);
+                        char delsql[160];
+                        snprintf(delsql, sizeof(delsql),
+                            "DELETE FROM utxos WHERE height > %d",
+                            best_have_data->nHeight);
+                        if (!node_db_exec(&g_node_db, delsql))
+                            fprintf(stderr,
+                                "[boot] WARN: failed to prune fork-side "
+                                "utxos above h=%d (continuing)\n",
+                                best_have_data->nHeight);
+                        else
+                            printf("[boot] pruned fork-side utxos above "
+                                   "h=%d\n", best_have_data->nHeight);
+                    }
+                }
+                printf("[boot] cleared orphan-coins restore anchor — "
+                       "gap-fill will resync above h=%d\n",
+                       best_have_data->nHeight);
             }
         }
     }
