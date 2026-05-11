@@ -559,6 +559,31 @@ static int t_height_repair_single(void)
     return failures;
 }
 
+/* ── Post-activation anchor repair — Round 4 Part 5 regression ─
+ *
+ * NULL-input-only test. Constructing a coins_view_cache fixture that
+ * survives bii_repair_post_activation_anchor's full path requires
+ * wiring a backing coins_view, a node_db, and an on-disk block file —
+ * that's a heavier integration setup than this regression deserves.
+ * The NULL paths exercise the input validation; the happy path is
+ * exercised live by the boot sequence. */
+
+static int t_anchor_repair_null_inputs(void)
+{
+    int failures = 0;
+
+    int rc_null_ms = bii_repair_post_activation_anchor(NULL,
+                                                        (void *)1,
+                                                        "/tmp", NULL);
+    int rc_null_coins = bii_repair_post_activation_anchor(
+        (void *)1, NULL, "/tmp", NULL);
+    int rc_null_dd = bii_repair_post_activation_anchor(
+        (void *)1, (void *)1, NULL, NULL);
+    BII_RUN("bii: anchor repair NULL inputs return -1",
+            rc_null_ms == -1 && rc_null_coins == -1 && rc_null_dd == -1);
+    return failures;
+}
+
 /* ── Aggregator ─────────────────────────────────────────────── */
 
 int test_block_index_integrity(void)
@@ -580,5 +605,6 @@ int test_block_index_integrity(void)
     failures += t_height_repair_empty();
     failures += t_height_repair_cycle();
     failures += t_height_repair_single();
+    failures += t_anchor_repair_null_inputs();
     return failures;
 }
