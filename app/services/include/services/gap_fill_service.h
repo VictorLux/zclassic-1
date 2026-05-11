@@ -32,9 +32,15 @@
 struct main_state;
 struct download_manager;
 
-#define GAPFILL_TICK_SECS    5      /* periodic refill cadence */
-#define GAPFILL_WINDOW       2048   /* max blocks per pass */
-#define GAPFILL_WALK_CAP     8192   /* hard pprev step cap, defense vs cycles */
+#define GAPFILL_TICK_SECS    5       /* periodic refill cadence */
+#define GAPFILL_WINDOW       65536   /* max blocks per pass — needs to be
+                                      * large enough to cover any plausible
+                                      * mining-rate gap. 65k = ~6 weeks of
+                                      * ZCL blocks (~75s/block); single
+                                      * pass can reach tip+1 even after a
+                                      * long disconnection. */
+#define GAPFILL_WALK_CAP     131072  /* hard pprev step cap, 2x window for
+                                      * defense against pprev cycles */
 
 struct gap_fill_stats {
     uint64_t passes;
