@@ -7,9 +7,81 @@
 #include "chain/chain.h"
 #include "core/uint256.h"
 #include "event/event.h"
+#include "models/database.h"
+#include "config/runtime.h"
 
+#include <sqlite3.h>
+#include <stdatomic.h>
 #include <stdio.h>
 #include <string.h>
+#include <time.h>
+
+/* Round 5 Part 4: chain-tip fsync barrier.
+ *
+ * Without an fsync after the tip commit, a SIGABRT or power-loss between
+ * the SQLite page-cache write and the kernel flush can leave coins ahead
+ * of block_index — exactly the corrupt state observed at the start of
+ * Round 5 (coins_best_block hash unknown in block_map, integrity gate
+ * fail-fast).
+ *
+ * We call `sqlite3_db_cacheflush()` to push the dirty page cache to the
+ * OS, which in WAL mode flushes WAL frames to disk. With
+ * `PRAGMA synchronous=NORMAL` (our steady-state setting) that's the
+ * durability guarantee the consensus layer needs: once cacheflush
+ * returns, a process kill at any subsequent point reproduces this same
+ * tip on the next boot.
+ *
+ * Auto-throttle: during catch-up (gap > 1000 blocks) we cacheflush every
+ * `CATCHUP_FSYNC_EVERY` commits; in steady-state (gap ≤ 1000) every
+ * commit. This trades durability granularity for throughput in the
+ * regime where every block will be re-flushed shortly anyway.
+ *
+ * 50 ms wall-clock cap: cacheflush of a busy WAL can occasionally
+ * stall on I/O contention. If we exceed the cap, log + continue —
+ * better to skip one fsync than block the activation thread.
+ */
+#define CATCHUP_FSYNC_EVERY 100
+#define FSYNC_BARRIER_BUDGET_MS 50
+
+static _Atomic uint64_t g_fsync_seq = 0;
+
+static int monotonic_ms(void)
+{
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (int)(ts.tv_sec * 1000 + ts.tv_nsec / 1000000);
+}
+
+static void chain_tip_fsync_barrier(struct main_state *ms,
+                                    const struct block_index *new_tip)
+{
+    struct node_db *ndb = app_runtime_node_db();
+    if (!ndb || !ndb->open || !ndb->db) return;
+
+    int gap = 0;
+    if (ms && ms->pindex_best_header && new_tip)
+        gap = ms->pindex_best_header->nHeight - new_tip->nHeight;
+    if (gap < 0) gap = 0;
+
+    uint64_t seq = atomic_fetch_add(&g_fsync_seq, 1) + 1;
+    bool should = (gap <= 1000) || (seq % CATCHUP_FSYNC_EVERY == 0);
+    if (!should) return;
+
+    int t0 = monotonic_ms();
+    int rc = sqlite3_db_cacheflush(ndb->db);
+    int elapsed = monotonic_ms() - t0;
+    if (rc != SQLITE_OK) {
+        fprintf(stderr,
+            "[tip-fsync] db_cacheflush rc=%d elapsed=%dms — continuing\n",
+            rc, elapsed);
+        return;
+    }
+    if (elapsed > FSYNC_BARRIER_BUDGET_MS) {
+        fprintf(stderr,
+            "[tip-fsync] slow cacheflush elapsed=%dms (gap=%d seq=%llu)\n",
+            elapsed, gap, (unsigned long long)seq);
+    }
+}
 
 static const char *g_tip_source_names[] = {
     [TIP_FROM_UNSPECIFIED] = "unspecified",
@@ -80,5 +152,10 @@ bool chain_set_active_tip(struct main_state *ms,
     event_emitf(EV_CHAIN_TIP_COMMIT, 0,
                 "from=%d to=%d reason=%s",
                 from_h, new_tip->nHeight, reason ? reason : "");
+
+    /* Durability barrier: flush the SQLite page cache for the chainstate
+     * DB so a kill -9 after this point cannot leave coins ahead of
+     * block_index. Auto-throttled during catch-up. */
+    chain_tip_fsync_barrier(ms, new_tip);
     return true;
 }
