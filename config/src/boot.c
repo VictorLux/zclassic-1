@@ -10,6 +10,7 @@
 #include "services/chain_activation_controller.h"
 #include "services/chain_restore_service.h"
 #include "services/chain_state_repository.h"
+#include "services/chain_tip.h"
 #include "services/recovery_policy.h"
 #include "services/utxo_recovery_service.h"
 #include "services/block_index_integrity.h"
@@ -1340,8 +1341,9 @@ bool app_init(struct app_context *ctx)
                                     printf("Chain tip from zclassicd: height=%d "
                                            "nChainTx=%u\n",
                                            best->nHeight, best->nChainTx);
-                                    active_chain_set_tip(&g_state.chain_active,
-                                                         best);
+                                    chain_set_active_tip(&g_state, best,
+                                        TIP_FROM_BOOT_REPAIR,
+                                        "zclassicd_import_best");
                                     g_state.pindex_best_header = best;
                                 }
                             }
@@ -1662,7 +1664,7 @@ bool app_init(struct app_context *ctx)
     /* Restore chain tip from coins DB best block hash */
     if (ctx->reindex_chainstate) {
         if (scan_reindex_best) {
-            active_chain_set_tip(&g_state.chain_active, scan_reindex_best);
+            chain_set_active_tip(&g_state, scan_reindex_best, TIP_FROM_BOOT_REPAIR, "scan_reindex_best");
             g_state.pindex_best_header = scan_reindex_best;
             printf("Reindex target: height=%d\n", scan_reindex_best->nHeight);
         } else {
@@ -1723,7 +1725,7 @@ bool app_init(struct app_context *ctx)
                 genesis->nChainWork = GetBlockProof(genesis);
             /* Set chain tip to genesis if no tip exists */
             if (!active_chain_tip(&g_state.chain_active)) {
-                active_chain_set_tip(&g_state.chain_active, genesis);
+                chain_set_active_tip(&g_state, genesis, TIP_FROM_BOOT_REPAIR, "genesis_init");
                 g_state.pindex_best_header = genesis;
                 printf("Chain tip: initialized to genesis (height 0)\n");
             }
@@ -1965,7 +1967,7 @@ bool app_init(struct app_context *ctx)
                         }
                         printf("Post-scan: setting chain tip to h=%d\n",
                                target_h);
-                        active_chain_set_tip(&g_state.chain_active, post_found);
+                        chain_set_active_tip(&g_state, post_found, TIP_FROM_BOOT_REPAIR, "post_found_promote");
                         g_state.pindex_best_header = post_found;
                     } else if (!post_found) {
                         /* coins_best_block hash not found in block index.
@@ -2010,8 +2012,9 @@ bool app_init(struct app_context *ctx)
                             }
 
                             if (best_have && best_have->nHeight > 0) {
-                                active_chain_set_tip(
-                                    &g_state.chain_active, best_have);
+                                chain_set_active_tip(&g_state, best_have,
+                                    TIP_FROM_BOOT_REPAIR,
+                                    "coins_hash_orphan_promote");
                                 g_state.pindex_best_header = best_have;
                                 /* Update coins_best_block to match */
                                 if (best_have->phashBlock) {
@@ -2053,8 +2056,9 @@ bool app_init(struct app_context *ctx)
                                 &g_state.map_block_index,
                                 &params->consensus.hashGenesisBlock);
                             if (genesis) {
-                                active_chain_set_tip(
-                                    &g_state.chain_active, genesis);
+                                chain_set_active_tip(&g_state, genesis,
+                                    TIP_FROM_BOOT_REPAIR,
+                                    "no_utxos_reset_genesis");
                                 g_state.pindex_best_header = genesis;
                             }
                         }
@@ -2257,7 +2261,7 @@ sapling_tree_boot_check_done:
                 printf("[boot] stale coins_best_block h=%d but UTXOs reach "
                        "h=%d — promoting anchor to HAVE_DATA h=%d\n",
                        coins_bi->nHeight, utxo_max_h, best_have->nHeight);
-                active_chain_set_tip(&g_state.chain_active, best_have);
+                chain_set_active_tip(&g_state, best_have, TIP_FROM_BOOT_REPAIR, "promote_have_data");
                 g_state.pindex_best_header = best_have;
                 coins_view_cache_set_best_block(&g_coins_tip,
                                                 best_have->phashBlock);
@@ -2273,7 +2277,7 @@ sapling_tree_boot_check_done:
             printf("[boot] UTXO/chain mismatch: coins at h=%d, "
                    "chain tip at h=%d — correcting\n",
                    coins_bi->nHeight, chain_h);
-            active_chain_set_tip(&g_state.chain_active, coins_bi);
+            chain_set_active_tip(&g_state, coins_bi, TIP_FROM_BOOT_REPAIR, "utxo_chain_mismatch");
             g_state.pindex_best_header = coins_bi;
             printf("[boot] Chain tip corrected to h=%d\n",
                    coins_bi->nHeight);
@@ -2296,7 +2300,7 @@ sapling_tree_boot_check_done:
                 printf("[boot] coins_best_block not in index — "
                        "using highest HAVE_DATA block at h=%d\n",
                        best_have_data->nHeight);
-                active_chain_set_tip(&g_state.chain_active, best_have_data);
+                chain_set_active_tip(&g_state, best_have_data, TIP_FROM_BOOT_REPAIR, "best_have_data");
                 g_state.pindex_best_header = best_have_data;
             }
         }
