@@ -145,6 +145,7 @@ int main(void)
     failures += test_chain();
     { extern int test_pprev_walk(void); failures += test_pprev_walk(); }
     { extern int test_chain_tip(void); failures += test_chain_tip(); }
+    { extern int test_checkpoint(void); failures += test_checkpoint(); }
     failures += test_keys();
     failures += test_script();
     failures += test_net();

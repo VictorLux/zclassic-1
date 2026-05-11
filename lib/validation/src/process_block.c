@@ -35,6 +35,7 @@
 #include "services/chain_activation_controller.h"
 #include "services/chain_state_repository.h"
 #include "services/gap_fill_service.h"
+#include "validation/checkpoint.h"
 #include "models/tx_index.h"
 #include "chain/mmr.h"
 #include "chain/mmb.h"
@@ -3518,6 +3519,44 @@ bool activate_best_chain(struct validation_state *state,
 
         /* Check reorg length */
         if (tip) {
+            /* Round 4 Part 4: hard checkpoint invariant.
+             *
+             * MAX_REORG_LENGTH (=99) blocks deep is the protocol
+             * promise — anything older is permanently immutable.
+             * Refuse to even start the fork-point walk if the
+             * candidate chain would reorg below that floor. Saves
+             * the wasted walk, removes a silent-CPU stall source,
+             * and gives the operator a clear log line.
+             *
+             * We don't know the fork-point yet (that's what the
+             * walk computes), but `pindex_most_work->nHeight` is
+             * a lower bound on the fork-point height: any walk
+             * must end at or below it. If most_work itself is
+             * below tip - MAX_REORG_LENGTH, the reorg is forbidden
+             * regardless of where the fork ends up. */
+            {
+                const char *reason = NULL;
+                if (!reorg_is_allowed(tip->nHeight,
+                                       pindex_most_work->nHeight,
+                                       &reason)) {
+                    fprintf(stderr,
+                        "activate_best_chain: refusing reorg below "
+                        "checkpoint tip=%d most_work=%d depth=%d "
+                        "reason=%s (MAX_REORG_LENGTH=%d)\n",
+                        tip->nHeight, pindex_most_work->nHeight,
+                        tip->nHeight - pindex_most_work->nHeight,
+                        reason ? reason : "(null)",
+                        MAX_REORG_LENGTH);
+                    event_emitf(EV_CHAIN_TIP_REJECTED, 0,
+                                "code=below_checkpoint tip=%d "
+                                "most_work=%d depth=%d",
+                                tip->nHeight,
+                                pindex_most_work->nHeight,
+                                tip->nHeight - pindex_most_work->nHeight);
+                    return true;
+                }
+            }
+
             /* Find fork point.
              * SAFETY: check pprev at every step — blocks loaded from
              * flat file may have dangling pprev if the file was saved
