@@ -13,6 +13,7 @@
  * State machine: IDLE → NEGOTIATING → RECEIVING → VERIFYING → COMPLETE */
 
 #include "services/snapshot_sync_service.h"
+#include "services/chain_restore_service.h"
 #include "services/chain_state_repository.h"
 #include "services/recovery_policy.h"
 #include "models/db_txn.h"
@@ -1431,50 +1432,16 @@ int snapsync_activate_verified_tip(const struct snapshot_sync_service *svc,
     if (!snap_bi) {
         /* Snapshot block hash not in local block index — expected for fresh
          * nodes that received a UTXO snapshot via fast sync. FlyClient has
-         * verified the chain of work (≥150-bit security) and SHA3 has verified
-         * the UTXO set integrity, so we trust this block hash.
+         * verified the chain of work and SHA3 has verified the UTXO set
+         * integrity, but this still is not local immutable block storage.
          *
-         * Insert a placeholder block_index at the snapshot height. This
-         * serves as the anchor for getheaders locator — header sync will
-         * resume from this height instead of from the local chain tip.
-         *
-         * We do NOT set this as the active chain tip because active_chain
-         * requires a full pprev chain. Instead, we store it as a snapshot
-         * anchor that push_getheaders uses as its locator starting point. */
-        snap_bi = zcl_calloc(1, sizeof(struct block_index), "snapsync anchor block_index");
+         * Insert metadata only for locator/recovery. It must not have
+         * BLOCK_HAVE_DATA, synthetic tx counts, synthetic chainwork, or
+         * active-chain status until real block bytes arrive. */
+        snap_bi = chain_restore_create_anchor(ms, &snap_hash,
+                                              svc->offered_height);
         if (!snap_bi)
-            LOG_ERR("snapshot_sync", "activate_verified_tip: calloc block_index failed (%zu bytes)", sizeof(struct block_index));
-        block_index_init(snap_bi);
-        snap_bi->nHeight = svc->offered_height;
-        snap_bi->nStatus = BLOCK_VALID_TREE | BLOCK_HAVE_DATA;
-
-        /* Set nChainTx non-zero so find_most_work_chain considers blocks
-         * building on this anchor. The UTXO set at this height is
-         * cryptographically verified — we don't need actual block data. */
-        snap_bi->nChainTx = 1;
-
-        /* Set chain work higher than any entry in the block index.
-         * The file-synced block_index.bin has real chain_work values —
-         * if our fake chain_work is too low, find_most_work_chain picks
-         * a locally-indexed block instead of the snapshot chain. */
-        {
-            struct arith_uint256 max_work;
-            arith_uint256_set_u64(&max_work, 0);
-            size_t iter = 0;
-            struct block_index *bi;
-            while (block_map_next(&ms->map_block_index, &iter, NULL, &bi)) {
-                if (bi && arith_uint256_compare(&bi->nChainWork, &max_work) > 0)
-                    max_work = bi->nChainWork;
-            }
-            /* Snapshot chain_work = max existing + generous margin */
-            struct arith_uint256 margin;
-            arith_uint256_set_u64(&margin, (uint64_t)svc->offered_height * 4096ULL);
-            arith_uint256_add(&snap_bi->nChainWork, &max_work, &margin);
-        }
-
-        block_map_insert(&ms->map_block_index, &snap_hash, snap_bi);
-        snap_bi->phashBlock = block_map_find_hash(&ms->map_block_index,
-                                                   &snap_hash);
+            LOG_ERR("snapshot_sync", "activate_verified_tip: metadata anchor failed");
         g_snapshot_anchor = snap_bi;
 
         /* Set assume-valid to snapshot height — all blocks at or below
@@ -1482,20 +1449,36 @@ int snapsync_activate_verified_tip(const struct snapshot_sync_service *svc,
          * UTXO set at this point is cryptographically verified. */
         g_assume_valid_height = svc->offered_height;
 
-        /* Set the active chain tip to the anchor. This allows
-         * activate_best_chain to find a fork point and connect delta
-         * blocks from snapshot+1 to tip. The pprev=NULL means the
-         * chain array below anchor height will be NULL, but we only
-         * need to connect blocks ABOVE the anchor. */
-        snapsync_commit_tip(ms, snap_bi,
-                            "snapshot.apply_synthetic_anchor");
-
-        printf("[snapshot] Anchor at height %d set as chain tip "
-               "(FlyClient+SHA3 verified)\n", svc->offered_height);
+        printf("[snapshot] Metadata anchor at height %d recorded "
+               "(FlyClient+SHA3 verified; awaiting block data)\n",
+               svc->offered_height);
         return svc->offered_height;
     }
 
-    snapsync_commit_tip(ms, snap_bi, "snapshot.apply_anchor");
+    /* g_snapshot_anchor is intentionally NOT set here: when snap_bi
+     * comes from block_map_find, ownership stays with the block map.
+     * The "not in map" path above already allocated and registered a
+     * heap-owned anchor — that is the only object reset/free is allowed
+     * to drop. */
+    g_assume_valid_height = snap_bi->nHeight;
+
+    if (!chain_restore_block_is_consensus_backed(snap_bi)) {
+        /* Block index entry exists but on-disk bytes are not present.
+         * After FlyClient PoW-sampling + SHA3 UTXO-commitment verification
+         * the snapshot tip is consensus-immutable at this height even
+         * without local block bytes; activating the tip lets headers and
+         * subsequent blocks build on it. The block-fetch path will
+         * back-fill the bytes later. */
+        printf("[snapshot] Activating verified tip at h=%d "
+               "(FlyClient+SHA3 verified; awaiting block bytes)\n",
+               snap_bi->nHeight);
+    }
+
+    if (!snapsync_commit_tip(ms, snap_bi, "snapshot.apply_anchor")) {
+        LOG_ERR("snapshot_sync",
+                "activate_verified_tip: commit_tip failed h=%d",
+                snap_bi->nHeight);
+    }
     return snap_bi->nHeight;
 }
 

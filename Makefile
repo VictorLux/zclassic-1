@@ -391,6 +391,24 @@ bench-sync: zclassic23 bench_fresh_sync
 bench_fresh_sync: tools/bench_fresh_sync.c
 	$(CC) -O2 -o $@ $<
 
+# CI guard: fresh datadir, must reach tip-10 in <600s against a local
+# peer. Fails the build if sync regresses to the 9-hour stall the
+# baked checkpoints + watchdog thread + peer-floor invariant are
+# meant to prevent. Skipped automatically if no local peer is up.
+.PHONY: ci-sync-smoke
+ci-sync-smoke: zclassic23
+	@if ! ss -tln 2>/dev/null | grep -q ':8033 '; then \
+	    echo "[ci-sync-smoke] no local peer on :8033 — skipping"; \
+	    exit 0; \
+	fi
+	@echo "[ci-sync-smoke] running bench_fresh_sync.sh (timeout 600s)..."
+	@bash tools/bench_fresh_sync.sh > /tmp/ci-sync-smoke.log 2>&1 || \
+	    { echo "FAIL — last 30 lines:"; tail -30 /tmp/ci-sync-smoke.log; exit 1; }
+	@echo "[ci-sync-smoke] running bench_running_lag.sh (10 min monotonic-gap probe)..."
+	@SAMPLES=20 INTERVAL_SECS=30 bash tools/bench_running_lag.sh > /tmp/ci-sync-smoke-lag.log 2>&1 || \
+	    { echo "FAIL — last 30 lines:"; tail -30 /tmp/ci-sync-smoke-lag.log; exit 1; }
+	@echo "[ci-sync-smoke] OK"
+
 zcl-watchdog: tools/zcl-watchdog.c
 	$(CC) -std=c23 -O2 -Wall -o $@ $<
 
