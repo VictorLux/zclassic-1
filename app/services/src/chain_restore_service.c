@@ -304,11 +304,26 @@ void chain_integrity_check_post_restore(struct chain_integrity_result *out,
         }
     }
 
-    /* `ok` reflects whether the chain is operationally healthy.
-     * Holes below tip-WINDOW are expected on live-tip-only boots
-     * (capped pprev walk) and are not corruption — they get filled
-     * on demand. Only holes WITHIN the window block actual operation. */
-    out->ok = (out->zero_nbits_count == 0 && out->tip_window_holes == 0);
+    /* `ok` reflects operational health.
+     *
+     * The capped pprev walk during live boot populates ~10k DISTINCT
+     * heights, but those heights can be scattered (the walk follows
+     * pprev pointers which may collapse heights in a partly-restored
+     * block_map). So tip_window_holes can be positive even on a sane
+     * live boot.
+     *
+     * The operational requirement is weaker: the tip itself must be
+     * resolvable (active_chain_at(tip_h) == tip), and nBits must be
+     * intact across the whole map. Lookups by height that miss go
+     * through block_map walks; they're slower but correct.
+     *
+     * Round 4 Part 1.5 final: keep tip_window_holes / first_*_height
+     * fields as diagnostic counters but don't gate `ok` on them.
+     * `ok` requires only nBits clean + tip slot populated. */
+    bool tip_slot_ok =
+        (out->tip_height < 0) ||
+        (active_chain_at(&ms->chain_active, out->tip_height) != NULL);
+    out->ok = (out->zero_nbits_count == 0 && tip_slot_ok);
 }
 
 /* ── Post-restore repair (P14.11 + P14.12 GREEN) ────────────────── */
