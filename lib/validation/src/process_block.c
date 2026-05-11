@@ -31,8 +31,10 @@
 #include "config/runtime.h"
 #include "util/log_macros.h"
 #include "services/snapshot_sync_service.h"
+#include "services/chain_restore_service.h"
 #include "services/chain_activation_controller.h"
 #include "services/chain_state_repository.h"
+#include "models/tx_index.h"
 #include "chain/mmr.h"
 #include "chain/mmb.h"
 #include "util/trace.h"
@@ -40,6 +42,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
+#include <limits.h>
 #include <sys/stat.h>
 #include <time.h>
 
@@ -51,16 +54,85 @@ static int g_last_block_file = -1;
 static unsigned int g_last_block_file_size = 0;
 static int s_utxo_fail_count = 0;
 static int s_utxo_fail_height = -1;
+static int s_utxo_hot_loop_reported_height = -1;
+static int s_utxo_activation_paused_height = -1;
+static struct node_db *g_process_block_node_db = NULL;
 static _Atomic uint64_t g_self_heal_tx_index_hits;
 static _Atomic uint64_t g_self_heal_scan_hits;
 static _Atomic uint64_t g_self_heal_scan_exhausted;
 static _Atomic uint64_t g_self_heal_scan_blocks_checked_total;
 
+#define SELF_HEAL_SCAN_DEFAULT_DEPTH 250000
+#define ACTIVE_TIP_CHILD_CONNECT_DEFAULT_LIMIT 128
+
+static struct node_db *process_block_node_db(void);
+
+void process_block_set_node_db(struct node_db *ndb)
+{
+    g_process_block_node_db = ndb;
+}
+
+static bool process_block_live_height(int height)
+{
+    return height > 1000000;
+}
+
+static void process_block_log_live_stage(int height,
+                                         const char *stage,
+                                         int64_t elapsed_us)
+{
+    if (!process_block_live_height(height))
+        return;
+    fprintf(stderr, "connect_tip: h=%d stage=%s elapsed_ms=%lld\n",
+            height, stage, (long long)(elapsed_us / 1000));
+    fflush(stderr);
+}
+
 int process_block_self_heal_scan_depth_limit(void)
 {
     const char *depth_env = getenv("ZCL_SELF_HEAL_SCAN_DEPTH");
-    int depth_limit = depth_env ? atoi(depth_env) : 1000;
-    return depth_limit > 0 ? depth_limit : 1000;
+    char *end = NULL;
+    long depth_limit;
+
+    if (!depth_env || depth_env[0] == '\0')
+        return SELF_HEAL_SCAN_DEFAULT_DEPTH;
+
+    depth_limit = strtol(depth_env, &end, 10);
+    if (end == depth_env || *end != '\0' ||
+        depth_limit <= 0 || depth_limit > INT_MAX)
+        return SELF_HEAL_SCAN_DEFAULT_DEPTH;
+
+    if (depth_limit < SELF_HEAL_SCAN_DEFAULT_DEPTH)
+        return SELF_HEAL_SCAN_DEFAULT_DEPTH;
+
+    return (int)depth_limit;
+}
+
+bool process_block_self_heal_scan_enabled(void)
+{
+    const char *scan_env = getenv("ZCL_SELF_HEAL_SCAN_ENABLE");
+    if (!scan_env || scan_env[0] == '\0')
+        return false;
+    return strcmp(scan_env, "1") == 0 ||
+           strcmp(scan_env, "true") == 0 ||
+           strcmp(scan_env, "yes") == 0;
+}
+
+static int active_tip_child_connect_limit(void)
+{
+    const char *limit_env = getenv("ZCL_ACTIVE_TIP_CHILD_CONNECT_LIMIT");
+    char *end = NULL;
+    long limit;
+
+    if (!limit_env || limit_env[0] == '\0')
+        return ACTIVE_TIP_CHILD_CONNECT_DEFAULT_LIMIT;
+
+    limit = strtol(limit_env, &end, 10);
+    if (end == limit_env || *end != '\0' ||
+        limit <= 0 || limit > INT_MAX)
+        return ACTIVE_TIP_CHILD_CONNECT_DEFAULT_LIMIT;
+
+    return (int)limit;
 }
 
 void process_block_self_heal_stats_snapshot(
@@ -91,6 +163,167 @@ void process_block_self_heal_stats_reset(void)
                           memory_order_relaxed);
     atomic_store_explicit(&g_self_heal_scan_blocks_checked_total, 0,
                           memory_order_relaxed);
+}
+
+static bool process_block_inject_missing_utxo(
+    struct coins_view_cache *coins_tip,
+    const struct uint256 *txid,
+    uint32_t missing_vout,
+    const struct transaction *tx,
+    int height,
+    const char *source,
+    int retry_no)
+{
+    if (!coins_tip || !txid || !tx || height < 0 || !source)
+        return false;
+    if (missing_vout >= tx->num_vout) {
+        char hex[65];
+        uint256_get_hex(txid, hex);
+        fprintf(stderr, "[self-heal] %s found tx %s at h=%d but vout=%u "
+                "is out of range (outputs=%zu)\n",
+                source, hex, height, missing_vout, tx->num_vout);
+        return false;
+    }
+
+    struct coins_cache_entry *entry =
+        coins_view_cache_modify_new(coins_tip, txid);
+    if (!entry)
+        return false;
+
+    coins_from_transaction(&entry->coins, tx, height);
+    entry->flags = COINS_CACHE_DIRTY;
+
+    char hex[65];
+    uint256_get_hex(txid, hex);
+    printf("[self-heal] Recovered UTXO %s:%u from %s h=%d — retry %d\n",
+           hex, missing_vout, source, height, retry_no);
+    fflush(stdout);
+    return true;
+}
+
+static void process_block_reverse_32(uint8_t out[32], const uint8_t in[32])
+{
+    if (!out || !in)
+        return;
+    for (size_t i = 0; i < 32; i++)
+        out[i] = in[31 - i];
+}
+
+static bool process_block_recover_missing_utxo_from_sqlite_tx_index(
+    struct main_state *ms,
+    struct coins_view_cache *coins_tip,
+    const struct uint256 *txid,
+    uint32_t missing_vout,
+    const char *datadir,
+    int retry_no)
+{
+    struct node_db *ndb = process_block_node_db();
+    if (!ms || !coins_tip || !txid || !datadir || !ndb)
+        return false;
+
+    struct db_tx_index dbtx;
+    memset(&dbtx, 0, sizeof(dbtx));
+    const char *lookup_order = "native";
+    if (!db_tx_find(ndb, txid->data, &dbtx)) {
+        uint8_t reversed[32];
+        process_block_reverse_32(reversed, txid->data);
+        if (!db_tx_find(ndb, reversed, &dbtx))
+            return false;
+        lookup_order = "reversed";
+    }
+
+    struct uint256 block_hash;
+    memcpy(block_hash.data, dbtx.block_hash, sizeof(block_hash.data));
+    struct block_index *src_idx =
+        block_map_find(&ms->map_block_index, &block_hash);
+    if (!src_idx) {
+        char txhex[65];
+        uint256_get_hex(txid, txhex);
+        fprintf(stderr, "[self-heal] SQLite tx index hit for %s but "
+                "source block is absent from block_map (height=%d)\n",
+                txhex, dbtx.block_height);
+        return false;
+    }
+
+    if (src_idx->nHeight != dbtx.block_height) {
+        char txhex[65];
+        uint256_get_hex(txid, txhex);
+        fprintf(stderr, "[self-heal] SQLite tx index height mismatch for %s: "
+                "db=%d index=%d; trusting hash-verified block index\n",
+                txhex, dbtx.block_height, src_idx->nHeight);
+    }
+
+    if (!chain_restore_block_is_consensus_backed_on_disk(src_idx, datadir)) {
+        char txhex[65];
+        uint256_get_hex(txid, txhex);
+        fprintf(stderr, "[self-heal] SQLite tx index hit for %s points to "
+                "non-verified disk block h=%d file=%d pos=%u\n",
+                txhex, src_idx->nHeight, src_idx->nFile, src_idx->nDataPos);
+        return false;
+    }
+
+    struct block src_block;
+    block_init(&src_block);
+    if (!read_block_from_disk_index(&src_block, src_idx, datadir)) {
+        block_free(&src_block);
+        return false;
+    }
+
+    bool recovered = false;
+    if (dbtx.tx_index >= 0 && (size_t)dbtx.tx_index < src_block.num_vtx &&
+        uint256_eq(&src_block.vtx[dbtx.tx_index].hash, txid)) {
+        recovered = process_block_inject_missing_utxo(
+            coins_tip, txid, missing_vout, &src_block.vtx[dbtx.tx_index],
+            src_idx->nHeight, "SQLite tx index", retry_no);
+    } else {
+        for (size_t ti = 0; ti < src_block.num_vtx; ti++) {
+            if (!uint256_eq(&src_block.vtx[ti].hash, txid))
+                continue;
+            recovered = process_block_inject_missing_utxo(
+                coins_tip, txid, missing_vout, &src_block.vtx[ti],
+                src_idx->nHeight, "SQLite tx index scan", retry_no);
+            break;
+        }
+    }
+
+    if (recovered && strcmp(lookup_order, "native") != 0) {
+        char txhex[65];
+        uint256_get_hex(txid, txhex);
+        fprintf(stderr,
+                "[self-heal] SQLite tx index recovered %s using %s lookup "
+                "after local block/tx hash verification\n",
+                txhex, lookup_order);
+    }
+
+    block_free(&src_block);
+    return recovered;
+}
+
+static bool process_block_verify_active_tip_child_on_disk(
+    const struct block_index *candidate,
+    const struct block_index *tip,
+    const char *datadir)
+{
+    if (!candidate || !tip || !tip->phashBlock || !candidate->phashBlock ||
+        !datadir || !datadir[0])
+        return false;
+    if (!(candidate->nStatus & BLOCK_HAVE_DATA) ||
+        candidate->nFile < 0 || candidate->nDataPos == 0)
+        return false;
+
+    struct block blk;
+    block_init(&blk);
+    if (!read_block_from_disk_index(&blk, candidate, datadir)) {
+        block_free(&blk);
+        return false;
+    }
+
+    struct uint256 disk_hash;
+    block_header_get_hash(&blk.header, &disk_hash);
+    bool ok = uint256_eq(&disk_hash, candidate->phashBlock) &&
+              uint256_eq(&blk.header.hashPrevBlock, tip->phashBlock);
+    block_free(&blk);
+    return ok;
 }
 
 /* P24.13: returns true iff the pprev chain from pindex_prev can be
@@ -229,7 +462,10 @@ static void process_block_maybe_write_needs_reimport_flag(int height,
 static void process_block_maybe_trigger_hot_loop_exit(int height,
                                                       const char *datadir)
 {
-    if (s_utxo_fail_count != 10 || !datadir)
+    if (s_utxo_fail_count < 10 || !datadir)
+        return;
+
+    if (s_utxo_hot_loop_reported_height == height)
         return;
 
     char marker_path[512];
@@ -262,6 +498,7 @@ static void process_block_maybe_trigger_hot_loop_exit(int height,
             height,
             (long)(now_s - mst.st_mtime));
         fflush(stderr);
+        s_utxo_activation_paused_height = height;
     } else {
         event_emitf(EV_BOOT_ACTIVATE, 0,
             "FATAL_HOT_LOOP h=%d fails=%d "
@@ -278,6 +515,86 @@ static void process_block_maybe_trigger_hot_loop_exit(int height,
         fflush(stderr);
         g_shutdown_requested = 1;
     }
+
+    s_utxo_hot_loop_reported_height = height;
+}
+
+void process_block_clear_utxo_activation_pause_range(int scan_start,
+                                                     int scan_end)
+{
+    if (scan_start <= 0 || scan_end < scan_start)
+        return;
+    if (s_utxo_activation_paused_height < scan_start ||
+        s_utxo_activation_paused_height > scan_end)
+        return;
+
+    fprintf(stderr,
+        "[recovery] clearing UTXO activation pause at h=%d after "
+        "successful repair scan [%d,%d]\n",
+        s_utxo_activation_paused_height, scan_start, scan_end);
+    s_utxo_activation_paused_height = -1;
+    s_utxo_hot_loop_reported_height = -1;
+    if (s_utxo_fail_height >= scan_start && s_utxo_fail_height <= scan_end) {
+        s_utxo_fail_height = -1;
+        s_utxo_fail_count = 0;
+    }
+}
+
+static bool process_block_is_missing_utxo_failure(
+    const struct validation_state *state)
+{
+    return state && state->reject_reason[0] &&
+           strcmp(state->reject_reason,
+                  "bad-txns-inputs-missingorspent") == 0;
+}
+
+static void process_block_note_utxo_failure(struct main_state *ms,
+                                            struct coins_view_cache *coins_tip,
+                                            int height,
+                                            const char *datadir)
+{
+    if (height == s_utxo_fail_height)
+        s_utxo_fail_count++;
+    else {
+        s_utxo_fail_height = height;
+        s_utxo_fail_count = 1;
+        s_utxo_hot_loop_reported_height = -1;
+        s_utxo_activation_paused_height = -1;
+    }
+
+    if (s_utxo_fail_count >= 5) {
+        /* After 5 failures at the same height, try disconnecting the tip
+         * to retry from the previous UTXO state.  This is best-effort:
+         * if undo data is unavailable the reimport flag path below is the
+         * durable recovery route. */
+        struct block_index *tip = ms ? active_chain_tip(&ms->chain_active)
+                                     : NULL;
+        if (tip && tip->pprev && tip->nUndoPos > 0) {
+            fprintf(stderr,
+                "[recovery] %d UTXO failures at h=%d — "
+                "disconnecting tip h=%d to retry\n",
+                s_utxo_fail_count, height, tip->nHeight);
+            struct validation_state ds;
+            validation_state_init(&ds);
+            if (disconnect_tip(&ds, ms, coins_tip, datadir)) {
+                s_utxo_fail_count = 0;
+                s_utxo_fail_height = -1;
+                fprintf(stderr,
+                    "[recovery] Disconnected tip — retrying from h=%d\n",
+                    active_chain_height(&ms->chain_active));
+            }
+        } else {
+            fprintf(stderr,
+                "[recovery] UTXO mismatch at h=%d: inputs missing. "
+                "Chain tip and UTXO set are out of sync.\n"
+                "[recovery] Restart with -reimport-utxos or delete "
+                "chainstate/ to force fresh import.\n",
+                height);
+        }
+    }
+
+    process_block_maybe_write_needs_reimport_flag(height, datadir);
+    process_block_maybe_trigger_hot_loop_exit(height, datadir);
 }
 
 #ifdef ZCL_TESTING
@@ -285,6 +602,8 @@ void process_block_test_set_utxo_fail_state(int height, int count)
 {
     s_utxo_fail_height = height;
     s_utxo_fail_count = count;
+    s_utxo_hot_loop_reported_height = -1;
+    s_utxo_activation_paused_height = -1;
 }
 
 int process_block_test_get_utxo_fail_count(void)
@@ -292,11 +611,21 @@ int process_block_test_get_utxo_fail_count(void)
     return s_utxo_fail_count;
 }
 
+int process_block_test_get_utxo_activation_paused_height(void)
+{
+    return s_utxo_activation_paused_height;
+}
+
 void process_block_test_trigger_hot_loop_check(int height,
                                                const char *datadir)
 {
     process_block_maybe_write_needs_reimport_flag(height, datadir);
     process_block_maybe_trigger_hot_loop_exit(height, datadir);
+}
+
+void process_block_test_note_utxo_failure(int height, const char *datadir)
+{
+    process_block_note_utxo_failure(NULL, NULL, height, datadir);
 }
 #endif
 
@@ -333,7 +662,12 @@ static _Atomic int g_sapling_persist_test_force_fail = 0;
 
 static struct node_db *process_block_node_db(void)
 {
-    return app_runtime_node_db();
+    struct node_db *ndb = app_runtime_node_db();
+    if (ndb && ndb->open)
+        return ndb;
+    return (g_process_block_node_db && g_process_block_node_db->open)
+         ? g_process_block_node_db
+         : NULL;
 }
 
 static bool sapling_tree_persist_once(void)
@@ -632,6 +966,35 @@ static struct block_index *add_to_block_index(struct main_state *ms,
     return pindex;
 }
 
+static void block_index_refresh_header(struct block_index *pindex,
+                                       const struct block_header *header)
+{
+    if (!pindex || !header)
+        return;
+
+    pindex->nVersion = header->nVersion;
+    pindex->hashMerkleRoot = header->hashMerkleRoot;
+    pindex->hashFinalSaplingRoot = header->hashFinalSaplingRoot;
+    pindex->nTime = header->nTime;
+    pindex->nBits = header->nBits;
+    pindex->nNonce = header->nNonce;
+
+    if (pindex->nSolution) {
+        free(pindex->nSolution);
+        pindex->nSolution = NULL;
+        pindex->nSolutionSize = 0;
+    }
+    if (header->nSolutionSize == 0)
+        return;
+
+    pindex->nSolution = zcl_malloc(header->nSolutionSize,
+                                   "block_solution_refresh");
+    if (!pindex->nSolution)
+        return;
+    memcpy(pindex->nSolution, header->nSolution, header->nSolutionSize);
+    pindex->nSolutionSize = header->nSolutionSize;
+}
+
 /* chain_has_all_data removed — find_most_work_chain no longer requires
  * BLOCK_HAVE_DATA. activate_best_chain checks data availability inline
  * before each connect_tip, queuing missing blocks for download. */
@@ -736,6 +1099,176 @@ static struct block_index *find_most_work_chain(struct main_state *ms)
         }
     }
 
+    return best;
+}
+
+static struct block_index *find_best_active_tip_child(struct main_state *ms,
+                                                      struct block_index *tip,
+                                                      const char *datadir)
+{
+    struct block_index *best = NULL;
+    bool best_has_continuation = false;
+    size_t iter = 0;
+    struct block_index *candidate;
+
+    if (!ms || !tip || !tip->phashBlock)
+        return NULL;
+
+    while (block_map_next(&ms->map_block_index, &iter, NULL, &candidate)) {
+        if (!candidate || candidate == tip)
+            continue;
+        if (!candidate->pprev || !candidate->pprev->phashBlock)
+            continue;
+        if (!uint256_eq(candidate->pprev->phashBlock, tip->phashBlock))
+            continue;
+        if (candidate->nStatus & BLOCK_FAILED_MASK)
+            continue;
+        if (!block_index_is_valid(candidate, BLOCK_VALID_TREE))
+            continue;
+        if (!(candidate->nStatus & BLOCK_HAVE_DATA))
+            continue;
+        if (candidate->nFile < 0 || candidate->nDataPos == 0)
+            continue;
+        if (!process_block_verify_active_tip_child_on_disk(
+                candidate, tip, datadir)) {
+            fprintf(stderr,
+                    "activate_best_chain: skipping stale active-tip child "
+                    "h=%d file=%d pos=%u; local block bytes do not verify "
+                    "against index hash and current tip\n",
+                    candidate->nHeight, candidate->nFile,
+                    candidate->nDataPos);
+            candidate->nStatus &= ~(unsigned)BLOCK_HAVE_DATA;
+            candidate->nFile = -1;
+            candidate->nDataPos = 0;
+            continue;
+        }
+
+        if (candidate->nHeight != tip->nHeight + 1) {
+            candidate->nHeight = tip->nHeight + 1;
+            block_index_build_skip(candidate);
+            struct arith_uint256 proof = GetBlockProof(candidate);
+            arith_uint256_add(&candidate->nChainWork,
+                              &tip->nChainWork, &proof);
+        }
+
+        /* Continuation scoring is a small-index tie breaker. On imported
+         * mainnet indexes it is O(candidates * block_map_size) before RPC
+         * starts, so keep large boots bounded and let the verified unlinked
+         * fallback repair any stale pprev edge after direct-child selection. */
+        bool has_continuation = false;
+        if (datadir && datadir[0] && candidate->phashBlock &&
+            ms->map_block_index.size < 500000) {
+            size_t ci = 0;
+            struct block_index *child;
+            while (block_map_next(&ms->map_block_index, &ci, NULL, &child)) {
+                if (!child || child == candidate)
+                    continue;
+                if (child->nHeight != candidate->nHeight + 1)
+                    continue;
+                if (!(child->nStatus & BLOCK_HAVE_DATA))
+                    continue;
+                if (child->nFile < 0 || child->nDataPos == 0)
+                    continue;
+
+                struct disk_block_pos pos;
+                disk_block_pos_init(&pos);
+                pos.nFile = child->nFile;
+                pos.nPos = child->nDataPos;
+
+                struct block blk;
+                block_init(&blk);
+                if (!read_block_from_disk_pread(&blk, &pos, datadir)) {
+                    block_free(&blk);
+                    continue;
+                }
+                has_continuation =
+                    uint256_eq(&blk.header.hashPrevBlock,
+                               candidate->phashBlock);
+                block_free(&blk);
+                if (has_continuation)
+                    break;
+            }
+        }
+
+        if (!best ||
+            (has_continuation && !best_has_continuation) ||
+            (has_continuation == best_has_continuation &&
+             arith_uint256_compare(&candidate->nChainWork,
+                                   &best->nChainWork) > 0)) {
+            best = candidate;
+            best_has_continuation = has_continuation;
+        }
+    }
+
+    return best;
+}
+
+static struct block_index *find_verified_unlinked_active_tip_child(
+    struct main_state *ms,
+    struct block_index *tip,
+    const char *datadir)
+{
+    struct block_index *best = NULL;
+    size_t iter = 0;
+    struct block_index *candidate;
+
+    if (!ms || !tip || !tip->phashBlock || !datadir)
+        return NULL;
+
+    while (block_map_next(&ms->map_block_index, &iter, NULL, &candidate)) {
+        if (!candidate || candidate == tip)
+            continue;
+        if (!candidate->phashBlock)
+            continue;
+        if (candidate->pprev == tip)
+            continue;
+        if (candidate->nHeight != tip->nHeight + 1)
+            continue;
+        if (candidate->nStatus & BLOCK_FAILED_MASK)
+            continue;
+        if (!(candidate->nStatus & BLOCK_HAVE_DATA))
+            continue;
+        if (candidate->nFile < 0 || candidate->nDataPos == 0)
+            continue;
+
+        struct block blk;
+        block_init(&blk);
+        if (!read_block_from_disk_index(&blk, candidate, datadir)) {
+            block_free(&blk);
+            continue;
+        }
+
+        struct uint256 disk_hash;
+        block_header_get_hash(&blk.header, &disk_hash);
+        bool matches_index =
+            uint256_eq(&disk_hash, candidate->phashBlock);
+        bool extends_tip =
+            uint256_eq(&blk.header.hashPrevBlock, tip->phashBlock);
+        block_free(&blk);
+
+        if (!matches_index || !extends_tip)
+            continue;
+
+        candidate->pprev = tip;
+        block_index_build_skip(candidate);
+        struct arith_uint256 proof = GetBlockProof(candidate);
+        arith_uint256_add(&candidate->nChainWork,
+                          &tip->nChainWork, &proof);
+        if (candidate->nChainTx == 0 && candidate->nTx > 0)
+            candidate->nChainTx = tip->nChainTx + candidate->nTx;
+
+        if (!best ||
+            arith_uint256_compare(&candidate->nChainWork,
+                                  &best->nChainWork) > 0)
+            best = candidate;
+    }
+
+    if (best) {
+        fprintf(stderr,
+            "activate_best_chain: repaired unlinked active-tip child "
+            "h=%d from disk-verified prev hash\n",
+            best->nHeight);
+    }
     return best;
 }
 
@@ -1168,6 +1701,19 @@ bool accept_block(struct block *block,
     struct block_index *pindex = NULL;
     if (!accept_block_header(&block->header, state, ms, params, &pindex))
         LOG_FAIL("validation", "accept_block_header failed in accept_block");
+    if (requested) {
+        block_index_refresh_header(pindex, &block->header);
+        if (pindex->pprev) {
+            pindex->nHeight = pindex->pprev->nHeight + 1;
+            block_index_build_skip(pindex);
+            struct arith_uint256 proof = GetBlockProof(pindex);
+            arith_uint256_add(&pindex->nChainWork,
+                              &pindex->pprev->nChainWork, &proof);
+            if ((pindex->nStatus & BLOCK_VALID_MASK) < BLOCK_VALID_TREE)
+                pindex->nStatus = (pindex->nStatus & ~BLOCK_VALID_MASK) |
+                                   BLOCK_VALID_TREE;
+        }
+    }
     if (ppindex)
         *ppindex = pindex;
 
@@ -1452,11 +1998,26 @@ bool connect_tip(struct validation_state *state,
 {
     struct trace_span *ct_span = trace_start("chain.connect_tip");
     trace_attr_int(ct_span, "height", pindex_new ? pindex_new->nHeight : -1);
+    const int live_height = pindex_new ? pindex_new->nHeight : -1;
+    const int64_t connect_tip_start_us = GetTimeMicros();
+    int64_t stage_start_us = connect_tip_start_us;
+
+    if (process_block_live_height(live_height)) {
+        fprintf(stderr,
+                "connect_tip: h=%d stage=start status=%u file=%d pos=%u "
+                "tx=%zu pblock=%s\n",
+                live_height, pindex_new ? pindex_new->nStatus : 0,
+                pindex_new ? pindex_new->nFile : -1,
+                pindex_new ? pindex_new->nDataPos : 0,
+                pblock ? pblock->num_vtx : 0, pblock ? "provided" : "disk");
+        fflush(stderr);
+    }
 
     struct block local_block;
     block_init(&local_block);
 
-    if (!pblock) {
+        if (!pblock) {
+        stage_start_us = GetTimeMicros();
         if (!read_block_from_disk_index(&local_block, pindex_new, datadir)) {
             /* Genesis block (height 0) may not be on disk (blk00000.dat
              * empty after legacy import). Genesis has only the unspendable
@@ -1502,6 +2063,8 @@ bool connect_tip(struct validation_state *state,
         }
         block_read_ok:
         pblock = &local_block;
+        process_block_log_live_stage(live_height, "read_block",
+                                     GetTimeMicros() - stage_start_us);
 
         /* Verify block read from disk matches expected hash */
         struct uint256 disk_hash;
@@ -1562,10 +2125,12 @@ bool connect_tip(struct validation_state *state,
         struct coins_view_cache view;
         struct coins_view backing;
         int recovery_attempts = 0;
+        bool missing_utxo_unrecovered = false;
 
-retry_connect:
+	retry_connect:
         coins_view_cache_as_view(&backing, coins_tip);
         coins_view_cache_init(&view, &backing);
+        stage_start_us = GetTimeMicros();
 
         /* Set Sapling tree for connect_block to update + verify root.
          * The tree persists in ms->sapling_tree across blocks. */
@@ -1573,15 +2138,21 @@ retry_connect:
 
         bool rv = connect_block(pblock, state, pindex_new, &view, params, false);
         connect_block_set_sapling_tree(NULL); /* clear after use */
+        process_block_log_live_stage(live_height, "connect_block",
+                                     GetTimeMicros() - stage_start_us);
         if (!rv) {
             /* ── Self-healing: recover missing UTXO from block data ── */
-            if (state->has_missing_utxo &&
+	            if (state->has_missing_utxo &&
                 strcmp(state->reject_reason, "bad-txns-inputs-missingorspent") == 0 &&
                 recovery_attempts < 100 &&
-                g_active_block_tree != NULL) {
-                bool recovered = false;
-                char hex[65];
-                uint256_get_hex(&state->missing_txid, hex);
+	                g_active_block_tree != NULL) {
+	                bool recovered = false;
+	                char hex[65];
+	                uint256_get_hex(&state->missing_txid, hex);
+	                process_block_log_live_stage(live_height,
+	                                             "self_heal_start",
+	                                             GetTimeMicros() -
+	                                                 connect_tip_start_us);
 
                 if (!g_active_block_tree) {
                     fprintf(stderr, "[self-heal] tx index not available "
@@ -1592,9 +2163,33 @@ retry_connect:
                     if (!block_tree_db_read_tx_index(g_active_block_tree,
                                                      &state->missing_txid,
                                                      &txpos)) {
-                        fprintf(stderr, "[self-heal] tx %s not in tx index "
-                                "— falling back to bounded-depth chain scan\n",
-                                hex);
+                        if (process_block_recover_missing_utxo_from_sqlite_tx_index(
+                                ms, coins_tip, &state->missing_txid,
+                                state->missing_vout, datadir,
+                                recovery_attempts + 1)) {
+                            recovered = true;
+                        }
+                    }
+
+                    if (!recovered && txpos.block_pos.nFile < 0 &&
+                        !process_block_self_heal_scan_enabled()) {
+                        fprintf(stderr, "[self-heal] tx %s is absent from "
+                                "LevelDB and SQLite tx indexes; broad disk "
+                                "scan is disabled by default "
+                                "(set ZCL_SELF_HEAL_SCAN_ENABLE=1 for "
+                                "operator-directed forensics). Requesting "
+                                "chainstate repair instead.\n", hex);
+                        atomic_fetch_add_explicit(
+                            &g_self_heal_scan_exhausted, 1,
+                            memory_order_relaxed);
+                        event_emitf(EV_SELF_HEAL_SCAN_EXHAUSTED, 0,
+                            "tx=%s tip_h=%d depth=0 disabled=true",
+                            hex, active_chain_height(&ms->chain_active));
+                    } else if (!recovered && txpos.block_pos.nFile < 0) {
+                        fprintf(stderr, "[self-heal] tx %s not in LevelDB tx "
+                                "index and SQLite index was unavailable or "
+                                "unverified — falling back to bounded-depth "
+                                "chain scan\n", hex);
                         /* ── Scan fallback (P24.29 surgical coordinator
                          *    commit 2026-04-22 05:11, pre-landed ahead of
                          *    Agent-2's RED/factoring row).
@@ -1610,12 +2205,15 @@ retry_connect:
                          * backfill the tx_index entry so the next
                          * spend of the same tx is O(log N).
                          *
-                         * 2026-04-22 stall: tip=3,078,014 needed a
-                         * coinbase UTXO from h=3,077,892 (depth=122).
-                         * Default depth cap 1000 covers typical
-                         * fast-sync drift; override via
-                         * ZCL_SELF_HEAL_SCAN_DEPTH for deeper heals.
-                         * Cost: ~50k uint256 compares, <100ms. */
+                         * 2026-05-10 stalls: live imports have needed
+                         * UTXOs 150k-200k blocks behind tip after
+                         * partial chainstate recovery.  Default to a
+                         * deep bounded scan and keep
+                         * ZCL_SELF_HEAL_SCAN_DEPTH as an operator
+                         * override for deeper exceptional repairs.
+                         * Lower values are ignored because they make
+                         * the live recovery path fail open into a
+                         * restart loop. */
                         int tip_h = active_chain_height(
                             &ms->chain_active);
                         int depth_limit =
@@ -1646,15 +2244,12 @@ retry_connect:
                                 if (!uint256_eq(&scan_b.vtx[ti].hash,
                                                  &state->missing_txid))
                                     continue;
-                                struct coins_cache_entry *entry =
-                                    coins_view_cache_modify_new(
-                                        coins_tip,
-                                        &state->missing_txid);
-                                if (entry) {
-                                    coins_from_transaction(
-                                        &entry->coins,
-                                        &scan_b.vtx[ti], h);
-                                    entry->flags = COINS_CACHE_DIRTY;
+                                if (process_block_inject_missing_utxo(
+                                        coins_tip, &state->missing_txid,
+                                        state->missing_vout,
+                                        &scan_b.vtx[ti], h,
+                                        "verified chain scan",
+                                        recovery_attempts + 1)) {
                                     scan_hit = true;
                                     scan_hit_height = h;
                                     /* Backfill tx_index — on the next
@@ -1717,11 +2312,11 @@ retry_connect:
                                 "tx=%s tip_h=%d depth=%d",
                                 hex, tip_h, depth_limit);
                         }
-                    } else if (txpos.block_pos.nFile < 0) {
+                    } else if (!recovered && txpos.block_pos.nFile < 0) {
                         fprintf(stderr, "[self-heal] tx %s nFile=%d "
                                 "(tx index entry too small or corrupt)\n",
                                 hex, txpos.block_pos.nFile);
-                    } else {
+                    } else if (!recovered) {
                         atomic_fetch_add_explicit(
                             &g_self_heal_tx_index_hits, 1,
                             memory_order_relaxed);
@@ -1746,19 +2341,13 @@ retry_connect:
                                     int src_height = src_idx ?
                                         src_idx->nHeight : 0;
 
-                                    struct coins_cache_entry *entry =
-                                        coins_view_cache_modify_new(coins_tip,
-                                            &state->missing_txid);
-                                    if (entry) {
-                                        coins_from_transaction(&entry->coins,
-                                            &src_block.vtx[ti], src_height);
-                                        entry->flags = COINS_CACHE_DIRTY;
-                                        printf("[self-heal] Recovered UTXO "
-                                               "%s (from h=%d) — retry %d\n",
-                                               hex, src_height,
-                                               recovery_attempts + 1);
-                                        recovered = true;
-                                    }
+                                    recovered =
+                                        process_block_inject_missing_utxo(
+                                            coins_tip, &state->missing_txid,
+                                            state->missing_vout,
+                                            &src_block.vtx[ti], src_height,
+                                            "LevelDB tx index",
+                                            recovery_attempts + 1);
                                     break;
                                 }
                             }
@@ -1767,16 +2356,25 @@ retry_connect:
                     }
                 }
 
-                if (recovered) {
-                    coins_view_cache_free(&view);
-                    memset(&view, 0, sizeof(view));
-                    recovery_attempts++;
-                    validation_state_init(state);
-                    goto retry_connect;
-                }
-                /* Recovery failed — fall through to BLOCK_FAILED path */
+	                if (recovered) {
+	                    coins_view_cache_free(&view);
+	                    memset(&view, 0, sizeof(view));
+	                    recovery_attempts++;
+	                    validation_state_init(state);
+	                    process_block_log_live_stage(live_height,
+	                                                 "self_heal_recovered",
+	                                                 GetTimeMicros() -
+	                                                     connect_tip_start_us);
+	                    goto retry_connect;
+	                }
+                /* Recovery failed. A missing UTXO at live height is local
+                 * chainstate/index corruption until proven otherwise, not
+                 * consensus evidence that the block is invalid. Do not poison
+                 * the block index with BLOCK_FAILED_VALID; leave the block
+                 * retriable after a deeper self-heal scan or UTXO repair. */
+                missing_utxo_unrecovered = true;
                 fprintf(stderr, "[self-heal] FAILED to recover tx %s:%u "
-                        "— marking block %d as failed\n",
+                        "— leaving block %d retriable\n",
                         hex, state->missing_vout, pindex_new->nHeight);
             }
 
@@ -1784,7 +2382,16 @@ retry_connect:
                     pindex_new->nHeight,
                     state->reject_reason[0] ? state->reject_reason : "unknown");
             if (validation_state_is_invalid(state)) {
-                pindex_new->nStatus |= BLOCK_FAILED_VALID;
+                if (missing_utxo_unrecovered) {
+                    pindex_new->nStatus &= ~BLOCK_FAILED_MASK;
+                    fprintf(stderr,
+                            "connect_tip: NOT marking h=%d failed after "
+                            "unrecovered missing UTXO; local chainstate "
+                            "repair can retry this block\n",
+                            pindex_new->nHeight);
+                } else {
+                    pindex_new->nStatus |= BLOCK_FAILED_VALID;
+                }
                 /* Don't propagate BLOCK_FAILED_CHILD for very early
                  * blocks (h<=10) during IBD. BIP30 failures at h=1 are
                  * typically caused by stale UTXO state (e.g. snapshot
@@ -1793,7 +2400,12 @@ retry_connect:
                  * prevents any further syncing. The outer do-while loop
                  * will retry find_most_work_chain, which skips this one
                  * failed block. */
-                if (pindex_new->nHeight <= 10) {
+                if (missing_utxo_unrecovered) {
+                    fprintf(stderr, "connect_tip: NOT propagating "
+                            "BLOCK_FAILED_CHILD at h=%d "
+                            "(missing UTXO unrecovered)\n",
+                            pindex_new->nHeight);
+                } else if (pindex_new->nHeight <= 10) {
                     fprintf(stderr, "connect_tip: NOT propagating "
                             "BLOCK_FAILED at h=%d (early block, likely "
                             "transient UTXO state issue)\n",
@@ -1850,18 +2462,21 @@ retry_connect:
             return false;
         }
 
-        if (!coins_view_cache_flush(&view)) {
-            fprintf(stderr, "connect_tip: FATAL coins flush failed h=%d\n",
-                    pindex_new->nHeight);
+	        stage_start_us = GetTimeMicros();
+	        if (!coins_view_cache_flush(&view)) {
+	            fprintf(stderr, "connect_tip: FATAL coins flush failed h=%d\n",
+	                    pindex_new->nHeight);
             coins_view_cache_free(&view);
             if (pblock == &local_block)
                 block_free(&local_block);
             trace_set_status(ct_span, TRACE_STATUS_ERROR);
             trace_end(ct_span);
-            return validation_state_error(state, "coins-flush-failed");
-        }
-        coins_view_cache_free(&view);
-    }
+	            return validation_state_error(state, "coins-flush-failed");
+	        }
+	        process_block_log_live_stage(live_height, "coins_flush",
+	                                     GetTimeMicros() - stage_start_us);
+	        coins_view_cache_free(&view);
+	    }
 
     /* ── Mandatory SHA3 UTXO checkpoint verification ──────────── */
     /* When we reach a hardcoded checkpoint height, flush all coins to
@@ -1922,8 +2537,9 @@ retry_connect:
      * which is the root cause of P7.1 (repeated `val.block_connected`
      * at the same height forever). Surface it as a system error so
      * activate_best_chain bubbles up to the caller. */
-    if (!update_tip(ms, pindex_new)) {
-        fprintf(stderr,
+	    stage_start_us = GetTimeMicros();
+	    if (!update_tip(ms, pindex_new)) {
+	        fprintf(stderr,
                 "connect_tip: update_tip rejected h=%d — csr refused "
                 "the commit (see `csr: REJECTED` above). Coins were "
                 "flushed to SQLite but the in-memory chain tip did "
@@ -1933,8 +2549,10 @@ retry_connect:
             block_free(&local_block);
         trace_set_status(ct_span, TRACE_STATUS_ERROR);
         trace_end(ct_span);
-        return validation_state_error(state, "csr-tip-commit-rejected");
-    }
+	        return validation_state_error(state, "csr-tip-commit-rejected");
+	    }
+	    process_block_log_live_stage(live_height, "update_tip",
+	                                 GetTimeMicros() - stage_start_us);
     pindex_new->nStatus = (pindex_new->nStatus & ~BLOCK_VALID_MASK) |
                            BLOCK_VALID_SCRIPTS;
 
@@ -2057,11 +2675,21 @@ retry_connect:
                 (unsigned int)pindex_new->nHeight);
     }
 
-    /* Sync block to SQLite database */
+    /* Queue derived SQLite projection after consensus/coins commit.
+     * Projection lag is allowed; the active chain and UTXO tip remain
+     * authoritative and repair can backfill from verified block bytes. */
     {
         struct node_db *ndb = process_block_node_db();
         if (ndb) {
-            node_db_sync_connect_block(ndb, pblock, pindex_new);
+            if (!node_db_sync_connect_block_async(ndb, pblock, pindex_new)) {
+                fprintf(stderr, // obs-ok:paired with projection enqueue event below
+                        "connect_tip: SQLite projection enqueue failed "
+                        "h=%d; consensus tip remains active\n",
+                        pindex_new->nHeight);
+                event_emitf(EV_BLOCK_REJECTED, 0,
+                            "projection-enqueue-failed h=%d",
+                            pindex_new->nHeight);
+            }
             /* Wallet tx scan deferred to tip — expensive per-tx SQLite
              * queries slow down IBD and can corrupt heap (db_wallet_utxo_find
              * allocates per-call). Use rescanblockchain RPC after sync. */
@@ -2526,9 +3154,226 @@ bool activate_best_chain(struct validation_state *state,
      * controller (activation_request_connect). This function should only
      * be called via the controller. */
 
-    struct block_index *pindex_most_work;
+    struct block_index *pindex_most_work = NULL;
+
+    if (pblock) {
+        struct uint256 block_hash;
+        block_get_hash(pblock, &block_hash);
+        struct block_index *pindex_new =
+            block_map_find(&ms->map_block_index, &block_hash);
+        struct block_index *tip =
+            active_chain_tip(&ms->chain_active);
+        if (pindex_new && tip && tip->phashBlock &&
+            pindex_new != tip &&
+            uint256_eq(&pblock->header.hashPrevBlock, tip->phashBlock)) {
+            if (pindex_new->pprev != tip ||
+                pindex_new->nHeight != tip->nHeight + 1) {
+                pindex_new->pprev = tip;
+                pindex_new->nHeight = tip->nHeight + 1;
+                block_index_build_skip(pindex_new);
+                struct arith_uint256 proof = GetBlockProof(pindex_new);
+                arith_uint256_add(&pindex_new->nChainWork,
+                                  &tip->nChainWork, &proof);
+                pindex_new->nStatus &= ~BLOCK_FAILED_MASK;
+                fprintf(stderr,
+                        "activate_best_chain: repaired provided near-tip "
+                        "index h=%d from header prev=tip\n",
+                        pindex_new->nHeight);
+            }
+            if (!connect_tip(state, ms, coins_tip, pindex_new,
+                             pblock, params, datadir)) {
+                fprintf(stderr,
+                    "activate_best_chain: provided near-tip connect FAILED "
+                    "at height %d reason=%s invalid=%d\n",
+                    pindex_new->nHeight,
+                    state->reject_reason[0] ? state->reject_reason
+                                            : "unknown",
+                    validation_state_is_invalid(state));
+                return false;
+            }
+            return true;
+        }
+        if (pindex_new && tip && tip->nHeight > 1000000 &&
+            pindex_new->nHeight > tip->nHeight + 512) {
+            if (pindex_new->phashBlock) {
+                struct download_manager *dm_abc = msg_get_download_mgr();
+                if (dm_abc)
+                    dl_queue_priority(dm_abc, pindex_new->phashBlock,
+                                      pindex_new->nHeight);
+            }
+            printf("activate_best_chain: defer far-ahead live block h=%d "
+                   "tip=%d\n", pindex_new->nHeight, tip->nHeight);
+            return true;
+        }
+
+        if (pindex_new && tip && pindex_new->nHeight > tip->nHeight &&
+            pindex_new->nHeight <= tip->nHeight + 512) {
+            struct block_index *path[512];
+            int path_len = 0;
+            struct block_index *walk = pindex_new;
+            bool missing_data = false;
+            bool near_tip_block = (pindex_new->nHeight == tip->nHeight + 1);
+
+            if (near_tip_block && pindex_new->pprev != tip &&
+                tip->phashBlock) {
+                bool prev_is_tip = uint256_eq(&pblock->header.hashPrevBlock,
+                                               tip->phashBlock);
+                if (!prev_is_tip && pindex_new->pprev &&
+                    pindex_new->pprev->phashBlock) {
+                    prev_is_tip = uint256_eq(pindex_new->pprev->phashBlock,
+                                             tip->phashBlock);
+                }
+                if (prev_is_tip) {
+                    pindex_new->pprev = tip;
+                    block_index_build_skip(pindex_new);
+                }
+            }
+
+            if (near_tip_block && pindex_new->pprev == tip) {
+                if (!connect_tip(state, ms, coins_tip, pindex_new,
+                                 pblock, params, datadir)) {
+                    fprintf(stderr,
+                        "activate_best_chain: direct near-tip connect FAILED "
+                        "at height %d reason=%s invalid=%d\n",
+                        pindex_new->nHeight,
+                        state->reject_reason[0] ? state->reject_reason
+                                                : "unknown",
+                        validation_state_is_invalid(state));
+                    return false;
+                }
+                return true;
+            }
+
+            while (walk && walk != tip && path_len < 512) {
+                if (!(walk->nStatus & BLOCK_HAVE_DATA)) {
+                    missing_data = true;
+                    break;
+                }
+                path[path_len++] = walk;
+                walk = walk->pprev;
+            }
+
+            if (walk == tip && !missing_data) {
+                for (int i = path_len - 1; i >= 0; i--) {
+                    struct block *use_block = (path[i] == pindex_new)
+                                            ? pblock : NULL;
+                    if (!connect_tip(state, ms, coins_tip, path[i],
+                                     use_block, params, datadir)) {
+                        fprintf(stderr,
+                            "activate_best_chain: fast connect_tip FAILED "
+                            "at height %d reason=%s invalid=%d\n",
+                            path[i]->nHeight,
+                            state->reject_reason[0] ? state->reject_reason
+                                                    : "unknown",
+                            validation_state_is_invalid(state));
+                        return false;
+                    }
+                }
+                return true;
+            }
+
+            if (missing_data && walk && walk->phashBlock) {
+                struct download_manager *dm_abc = msg_get_download_mgr();
+                if (dm_abc)
+                    dl_queue_priority(dm_abc, walk->phashBlock,
+                                      walk->nHeight);
+            }
+
+            if (near_tip_block) {
+                fprintf(stderr,
+                    "activate_best_chain: fast path could not connect "
+                    "near-tip block h=%d tip=%d pprev_h=%d "
+                    "have_data=%d missing_data=%d\n",
+                    pindex_new->nHeight, tip->nHeight,
+                    pindex_new->pprev ? pindex_new->pprev->nHeight : -1,
+                    (pindex_new->nStatus & BLOCK_HAVE_DATA) != 0,
+                    missing_data);
+            }
+
+            fprintf(stderr,
+                "activate_best_chain: near-tip block h=%d was not a direct "
+                "extension of tip=%d; falling through to most-work reorg "
+                "selection\n",
+                pindex_new->nHeight, tip ? tip->nHeight : -1);
+        }
+    }
+
+    int connected_tip_children = 0;
+    int tip_child_connect_limit = active_tip_child_connect_limit();
 
     do {
+        if (g_shutdown_requested) {
+            fprintf(stderr,
+                    "activate_best_chain: shutdown requested before "
+                    "activation pass, flushing coins at h=%d\n",
+                    active_chain_height(&ms->chain_active));
+            flush_coins_if_needed(coins_tip, true);
+            return true;
+        }
+
+        struct block_index *tip_child_base =
+            active_chain_tip(&ms->chain_active);
+        struct block_index *tip_child =
+            find_best_active_tip_child(ms, tip_child_base, datadir);
+        if (!tip_child)
+            tip_child = find_verified_unlinked_active_tip_child(
+                ms, tip_child_base, datadir);
+        if (tip_child) {
+            if (s_utxo_activation_paused_height == tip_child->nHeight) {
+                fprintf(stderr,
+                    "activate_best_chain: activation paused at h=%d "
+                    "after unrecovered UTXO mismatch and recent reimport\n",
+                    tip_child->nHeight);
+                return true;
+            }
+            fprintf(stderr,
+                    "activate_best_chain: connecting active-tip child "
+                    "h=%d from tip=%d have_data=%d chain_tx=%lld\n",
+                    tip_child->nHeight,
+                    tip_child_base ? tip_child_base->nHeight : -1,
+                    (tip_child->nStatus & BLOCK_HAVE_DATA) != 0,
+                    (long long)tip_child->nChainTx);
+            if (!connect_tip(state, ms, coins_tip, tip_child,
+                             NULL, params, datadir)) {
+                fprintf(stderr,
+                        "activate_best_chain: active-tip child connect "
+                        "FAILED h=%d reason=%s invalid=%d\n",
+                        tip_child->nHeight,
+                        state->reject_reason[0] ? state->reject_reason
+                                                : "unknown",
+                        validation_state_is_invalid(state));
+                if (process_block_is_missing_utxo_failure(state)) {
+                    process_block_note_utxo_failure(ms, coins_tip,
+                                                   tip_child->nHeight,
+                                                   datadir);
+                    validation_state_init(state);
+                    if (s_utxo_activation_paused_height ==
+                        tip_child->nHeight)
+                        return true;
+                    continue;
+                }
+                return false;
+            }
+            if (g_shutdown_requested) {
+                fprintf(stderr,
+                    "activate_best_chain: shutdown requested after "
+                    "connecting h=%d, flushing coins\n",
+                    tip_child->nHeight);
+                flush_coins_if_needed(coins_tip, true);
+                return true;
+            }
+            connected_tip_children++;
+            if (connected_tip_children >= tip_child_connect_limit) {
+                fprintf(stderr,
+                    "activate_best_chain: paused after connecting %d "
+                    "active-tip children (limit=%d) so service startup and "
+                    "RPC stay responsive\n",
+                    connected_tip_children, tip_child_connect_limit);
+                return true;
+            }
+            continue;
+        }
+
         pindex_most_work = find_most_work_chain(ms);
 
         struct block_index *tip = active_chain_tip(&ms->chain_active);
@@ -2552,21 +3397,78 @@ bool activate_best_chain(struct validation_state *state,
             /* Find fork point.
              * SAFETY: check pprev at every step — blocks loaded from
              * flat file may have dangling pprev if the file was saved
-             * before all P2P blocks were linked. */
+             * before all P2P blocks were linked.
+             * CYCLE SAFETY: cap step count and require strict
+             * monotonicity on nHeight. A corrupted block index from a
+             * half-completed chain restore can leave pprev ring-shaped;
+             * without these guards the walk loops forever and the boot
+             * stays silent at 100% CPU (observed: 14+ min stall before
+             * this guard was added). Mirrors the protection on the
+             * connect-path walk below. */
+            #define ACTIVATE_PPREV_WALK_MAX 200000
             struct block_index *fork = tip;
-            while (fork && fork->pprev &&
-                   fork->nHeight > pindex_most_work->nHeight)
-                fork = fork->pprev;
+            {
+                int steps = 0;
+                int last_h = INT_MAX;
+                while (fork && fork->pprev &&
+                       fork->nHeight > pindex_most_work->nHeight) {
+                    if (steps++ > ACTIVATE_PPREV_WALK_MAX ||
+                        fork->pprev->nHeight >= fork->nHeight) {
+                        fprintf(stderr,
+                            "activate_best_chain: aborting corrupt pprev "
+                            "walk (fork-down) at h=%d steps=%d tip=%d "
+                            "most_work=%d\n",
+                            fork->nHeight, steps,
+                            tip ? tip->nHeight : -1,
+                            pindex_most_work->nHeight);
+                        return true;
+                    }
+                    last_h = fork->nHeight;
+                    fork = fork->pprev;
+                }
+                (void)last_h;
+            }
             if (!fork) return true; /* chain broken, wait for P2P */
             struct block_index *walk = pindex_most_work;
-            while (walk && walk->pprev &&
-                   walk->nHeight > fork->nHeight)
-                walk = walk->pprev;
-            while (fork && walk && fork != walk &&
-                   fork->pprev && walk->pprev) {
-                fork = fork->pprev;
-                walk = walk->pprev;
+            {
+                int steps = 0;
+                while (walk && walk->pprev &&
+                       walk->nHeight > fork->nHeight) {
+                    if (steps++ > ACTIVATE_PPREV_WALK_MAX ||
+                        walk->pprev->nHeight >= walk->nHeight) {
+                        fprintf(stderr,
+                            "activate_best_chain: aborting corrupt pprev "
+                            "walk (most-work-down) at h=%d steps=%d "
+                            "tip=%d most_work=%d\n",
+                            walk->nHeight, steps,
+                            tip ? tip->nHeight : -1,
+                            pindex_most_work->nHeight);
+                        return true;
+                    }
+                    walk = walk->pprev;
+                }
             }
+            {
+                int steps = 0;
+                while (fork && walk && fork != walk &&
+                       fork->pprev && walk->pprev) {
+                    if (steps++ > ACTIVATE_PPREV_WALK_MAX ||
+                        fork->pprev->nHeight >= fork->nHeight ||
+                        walk->pprev->nHeight >= walk->nHeight) {
+                        fprintf(stderr,
+                            "activate_best_chain: aborting corrupt pprev "
+                            "walk (common-ancestor) at fork_h=%d walk_h=%d "
+                            "steps=%d tip=%d most_work=%d\n",
+                            fork->nHeight, walk->nHeight, steps,
+                            tip ? tip->nHeight : -1,
+                            pindex_most_work->nHeight);
+                        return true;
+                    }
+                    fork = fork->pprev;
+                    walk = walk->pprev;
+                }
+            }
+            #undef ACTIVATE_PPREV_WALK_MAX
             /* If pprev walk couldn't find a common ancestor (broken
              * links after LDB import), assume we're extending the
              * current chain — use tip as the fork point.  Do NOT
@@ -2648,9 +3550,23 @@ bool activate_best_chain(struct validation_state *state,
 
         struct block_index *current_tip = active_chain_tip(&ms->chain_active);
         int total_depth = 0;
+        int last_walk_height = INT_MAX;
         for (struct block_index *w = pindex_most_work;
-             w && w != current_tip; w = w->pprev)
+             w && w != current_tip; w = w->pprev) {
+            if (total_depth > 200000 ||
+                (last_walk_height != INT_MAX &&
+                 w->nHeight >= last_walk_height)) {
+                fprintf(stderr,
+                        "activate_best_chain: aborting corrupt pprev walk "
+                        "at h=%d last_h=%d depth=%d tip=%d most_work=%d\n",
+                        w->nHeight, last_walk_height, total_depth,
+                        current_tip ? current_tip->nHeight : -1,
+                        pindex_most_work ? pindex_most_work->nHeight : -1);
+                return true;
+            }
+            last_walk_height = w->nHeight;
             total_depth++;
+        }
 
         int batch_depth = total_depth > CONNECT_BATCH_MAX
                         ? CONNECT_BATCH_MAX : total_depth;
@@ -2750,54 +3666,16 @@ bool activate_best_chain(struct validation_state *state,
                 /* Auto-recovery: if UTXO mismatches keep failing at the
                  * same height, write a flag file so boot.c reimports
                  * UTXOs from LevelDB on next restart. */
-                if (state->reject_reason[0] &&
-                    strcmp(state->reject_reason,
-                           "bad-txns-inputs-missingorspent") == 0) {
-                    if (connect_path[i]->nHeight == s_utxo_fail_height)
-                        s_utxo_fail_count++;
-                    else {
-                        s_utxo_fail_height = connect_path[i]->nHeight;
-                        s_utxo_fail_count = 1;
+                if (process_block_is_missing_utxo_failure(state)) {
+                    process_block_note_utxo_failure(ms, coins_tip,
+                                                   connect_path[i]->nHeight,
+                                                   datadir);
+                    if (s_utxo_activation_paused_height ==
+                        connect_path[i]->nHeight) {
+                        validation_state_init(state);
+                        free(connect_path);
+                        return true;
                     }
-                    if (s_utxo_fail_count >= 5) {
-                        /* After 5 failures at the same height, try
-                         * disconnecting the tip to back up one block.
-                         * If undo data exists, this lets us retry from
-                         * a clean UTXO state one block earlier. */
-                        struct block_index *tip =
-                            active_chain_tip(&ms->chain_active);
-                        if (tip && tip->pprev && tip->nUndoPos > 0) {
-                            fprintf(stderr,
-                                "[recovery] %d UTXO failures at h=%d — "
-                                "disconnecting tip h=%d to retry\n",
-                                s_utxo_fail_count,
-                                connect_path[i]->nHeight,
-                                tip->nHeight);
-                            struct validation_state ds;
-                            validation_state_init(&ds);
-                            if (disconnect_tip(&ds, ms, coins_tip,
-                                               datadir)) {
-                                s_utxo_fail_count = 0;
-                                s_utxo_fail_height = -1;
-                                fprintf(stderr,
-                                    "[recovery] Disconnected tip — "
-                                    "retrying from h=%d\n",
-                                    active_chain_height(
-                                        &ms->chain_active));
-                            }
-                        } else {
-                            fprintf(stderr,
-                                "[recovery] UTXO mismatch at h=%d: "
-                                "inputs missing. Chain tip and UTXO set "
-                                "are out of sync.\n"
-                                "[recovery] Restart with -reimport-utxos "
-                                "or delete chainstate/ to force fresh "
-                                "import.\n",
-                                connect_path[i]->nHeight);
-                        }
-                    }
-                    process_block_maybe_write_needs_reimport_flag(
-                        connect_path[i]->nHeight, datadir);
                     /* After 10 consecutive UTXO failures at the same
                      * height, the in-memory recovery attempts are
                      * clearly exhausted — the flag file above is
@@ -2822,8 +3700,6 @@ bool activate_best_chain(struct validation_state *state,
                      * another 5-8min sapling rebuild.  Emit a FATAL
                      * event, keep running (visibly stuck), and wait
                      * for operator intervention. */
-                    process_block_maybe_trigger_hot_loop_exit(
-                        connect_path[i]->nHeight, datadir);
                 }
                 if (validation_state_is_invalid(state)) {
                     /* Block failed validation — mark it and retry.
