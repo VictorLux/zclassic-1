@@ -41,6 +41,8 @@ struct app_context {
     bool no_file_sync;         /* -nofilesync : skip file service download, use P2P only */
     bool no_bg_validation;     /* -nobgvalidation : skip background proof verification */
     const char *external_ip;   /* -externalip=IP : advertise this address to peers */
+    bool allow_degraded;       /* -allow-degraded : continue past failed post-restore integrity check
+                                 * (default false → boot FATALs on broken chain state). */
 };
 
 void app_context_defaults(struct app_context *ctx);

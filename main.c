@@ -793,6 +793,7 @@ int main(int argc, char **argv)
         else if (strcmp(argv[i], "-saplingscan") == 0) ctx.sapling_scan = true;
         else if (strcmp(argv[i], "-reindex-chainstate") == 0) ctx.reindex_chainstate = true;
         else if (strcmp(argv[i], "-reimport-utxos") == 0) ctx.reimport_utxos = true;
+        else if (strcmp(argv[i], "-allow-degraded") == 0) ctx.allow_degraded = true;
         else if (strncmp(argv[i], "-showmetrics=", 13) == 0) show_metrics = atoi(argv[i]+13) != 0;
         else if (strcmp(argv[i], "-tor") == 0) ctx.tor = true;
         else if (strncmp(argv[i], "-assumevalid=", 13) == 0) ctx.assume_valid = argv[i]+13;

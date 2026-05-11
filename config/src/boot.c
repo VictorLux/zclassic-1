@@ -116,6 +116,7 @@ static struct gen_context g_gen;
 static struct wallet_sqlite g_wallet_sqlite;
 static struct node_db g_node_db;
 static struct db_service g_db_service;
+static struct app_runtime_context g_boot_runtime;
 static const char *g_datadir = NULL;
 const char *g_blog_datadir = NULL;
 static _Atomic bool g_running = false;
@@ -757,6 +758,19 @@ bool app_init(struct app_context *ctx)
     t_phase = boot_clock_ms();
     if (node_db_sync_init(&g_node_db, ctx->datadir)) {
         node_db_migrate(&g_node_db, ctx->datadir);
+        process_block_set_node_db(&g_node_db);
+        if (!db_service_is_started(&g_db_service)) {
+            if (db_service_attach(&g_db_service, &g_node_db) &&
+                db_service_start(&g_db_service)) {
+                memset(&g_boot_runtime, 0, sizeof(g_boot_runtime));
+                g_boot_runtime.db_service = &g_db_service;
+                app_runtime_set_current(&g_boot_runtime);
+            } else {
+                fprintf(stderr,
+                    "Warning: DB service unavailable during boot; "
+                    "activation metadata writes will use direct SQLite\n");
+            }
+        }
         int db_tip = node_db_sync_get_tip_height(&g_node_db);
         if (db_tip >= 0) {
             printf("SQLite tip: height=%d\n", db_tip);
@@ -1987,6 +2001,8 @@ bool app_init(struct app_context *ctx)
                                 if (!bp) continue;
                                 if (bp->nHeight <= utxo_max_h &&
                                     (bp->nStatus & BLOCK_HAVE_DATA) &&
+                                    chain_restore_block_is_consensus_backed_on_disk(
+                                        bp, g_datadir) &&
                                     (!best_have ||
                                      bp->nHeight > best_have->nHeight))
                                     best_have = bp;
@@ -2010,52 +2026,18 @@ bool app_init(struct app_context *ctx)
                                        "HAVE_DATA block at h=%d\n",
                                        best_have->nHeight);
                             } else {
-                                /* No HAVE_DATA blocks — create anchor
-                                 * at UTXO height (same as import_ldb) */
-                                struct block_index *anchor = zcl_calloc(1,
-                                    sizeof(struct block_index),
-                                    "boot coins_best_block anchor");
+                                /* No verified disk-backed blocks — record
+                                 * metadata only at the UTXO height. */
+                                struct block_index *anchor =
+                                    chain_restore_create_anchor(
+                                        &g_state, &post_scan_best,
+                                        utxo_max_h);
                                 if (anchor) {
-                                    block_index_init(anchor);
-                                    anchor->nHeight = utxo_max_h;
-                                    anchor->nStatus = BLOCK_VALID_TREE
-                                        | BLOCK_HAVE_DATA;
-                                    anchor->nChainTx = 1;
-                                    anchor->nTx = 1;
-                                    struct arith_uint256 max_w;
-                                    arith_uint256_set_u64(&max_w, 0);
-                                    size_t wi = 0;
-                                    struct block_index *wp;
-                                    while (block_map_next(
-                                        &g_state.map_block_index,
-                                        &wi, NULL, &wp)) {
-                                        if (!wp) continue;
-                                        if (arith_uint256_compare(
-                                            &wp->nChainWork,
-                                            &max_w) > 0)
-                                            max_w = wp->nChainWork;
-                                    }
-                                    struct arith_uint256 margin;
-                                    arith_uint256_set_u64(&margin,
-                                        4096ULL * (uint64_t)utxo_max_h);
-                                    arith_uint256_add(&anchor->nChainWork,
-                                        &max_w, &margin);
-
-                                    block_map_insert(
-                                        &g_state.map_block_index,
-                                        &post_scan_best, anchor);
-                                    anchor->phashBlock = block_map_find_hash(
-                                        &g_state.map_block_index,
-                                        &post_scan_best);
-
                                     snapsync_set_anchor(anchor);
-                                    active_chain_set_tip(
-                                        &g_state.chain_active, anchor);
-                                    g_state.pindex_best_header = anchor;
 
                                     printf("[boot] coins_best_block hash "
-                                           "not in index — anchor at "
-                                           "h=%d\n", utxo_max_h);
+                                           "not in index — metadata anchor "
+                                           "at h=%d\n", utxo_max_h);
                                 }
                             }
                         } else {
@@ -2157,6 +2139,13 @@ bool app_init(struct app_context *ctx)
             if (memcmp(tree_root.data,
                        tip->hashFinalSaplingRoot.data, 32) != 0) {
                 size_t old_size = incremental_tree_size(&g_state.sapling_tree);
+                if (tip->nHeight > 1000000) {
+                    printf("Sapling tree root MISMATCH (size=%zu) - "
+                           "deferring live rebuild until after boot "
+                           "(tip_h=%d)\n", old_size, tip->nHeight);
+                    atomic_store(&g_sapling_tree_rebuilding, true);
+                    goto sapling_tree_boot_check_done;
+                }
                 printf("Sapling tree root MISMATCH (size=%zu) — "
                        "rebuilding from block files...\n", old_size);
                 fflush(stdout);
@@ -2190,6 +2179,8 @@ bool app_init(struct app_context *ctx)
                 save_block_index_flat(ctx->datadir, &g_state);
             }
         }
+sapling_tree_boot_check_done:
+        ;
     }
 
     printf("[boot] %-30s %lldms\n", "sapling_tree_load",
@@ -2236,6 +2227,47 @@ bool app_init(struct app_context *ctx)
         if (!uint256_is_null(&coins_hash))
             coins_bi = block_map_find(&g_state.map_block_index, &coins_hash);
 
+        int utxo_max_h = 0;
+        if (g_node_db.open) {
+            sqlite3_stmt *hst = NULL;
+            if (sqlite3_prepare_v2(g_node_db.db,
+                    "SELECT MAX(height) FROM utxos", -1,
+                    &hst, NULL) == SQLITE_OK && hst) {
+                if (sqlite3_step(hst) == SQLITE_ROW)
+                    utxo_max_h = sqlite3_column_int(hst, 0);
+                sqlite3_finalize(hst);
+            }
+        }
+
+        if (coins_bi && utxo_max_h > coins_bi->nHeight + 100) {
+            struct block_index *best_have = NULL;
+            size_t iter = 0;
+            struct block_index *bi;
+            while (block_map_next(&g_state.map_block_index, &iter,
+                                  NULL, &bi)) {
+                if (!bi) continue;
+                if (!(bi->nStatus & BLOCK_HAVE_DATA)) continue;
+                if (bi->nHeight > utxo_max_h) continue;
+                if (!best_have || bi->nHeight > best_have->nHeight)
+                    best_have = bi;
+            }
+            if (best_have && best_have->phashBlock &&
+                best_have->nHeight > coins_bi->nHeight) {
+                printf("[boot] stale coins_best_block h=%d but UTXOs reach "
+                       "h=%d — promoting anchor to HAVE_DATA h=%d\n",
+                       coins_bi->nHeight, utxo_max_h, best_have->nHeight);
+                active_chain_set_tip(&g_state.chain_active, best_have);
+                g_state.pindex_best_header = best_have;
+                coins_view_cache_set_best_block(&g_coins_tip,
+                                                best_have->phashBlock);
+                node_db_state_set(&g_node_db, "coins_best_block",
+                                  best_have->phashBlock->data, 32);
+                snapsync_set_anchor(best_have);
+                chain_h = best_have->nHeight;
+                coins_bi = best_have;
+            }
+        }
+
         if (coins_bi && coins_bi->nHeight > chain_h + 100) {
             printf("[boot] UTXO/chain mismatch: coins at h=%d, "
                    "chain tip at h=%d — correcting\n",
@@ -2280,7 +2312,10 @@ bool app_init(struct app_context *ctx)
     if (activation_get_state(&g_activation_ctl) == ACTIVATION_ANCHOR_ACTIVE) {
         struct block_index *tip = active_chain_tip(&g_state.chain_active);
         struct block_index *anc = snapsync_get_anchor();
-        if (tip && anc && tip->nHeight >= anc->nHeight) {
+        if (!anc) {
+            printf("Restore anchor cleared during boot finalize — enabling activation\n");
+            activation_clear_anchor(&g_activation_ctl, "restore_anchor_cleared");
+        } else if (tip && anc && tip->nHeight > anc->nHeight) {
             printf("Anchor at h=%d below chain tip h=%d — clearing\n",
                    anc->nHeight, tip->nHeight);
             snapsync_set_anchor(NULL);
@@ -2304,8 +2339,35 @@ bool app_init(struct app_context *ctx)
      * activate_best_chain completes. No-op when the integrity check
      * passes; logs a loud stderr line + fills what it can when it does
      * not. Safe on every boot — O(block_map) + one disk read per nBits
-     * gap; the real live-node shape is ≤200 reads. */
-    (void)chain_restore_finalize(&g_state, ctx->datadir);
+     * gap; the real live-node shape is ≤200 reads.
+     *
+     * Part L: honor the return value. A failed post-restore check at
+     * a non-trivial tip height means the on-disk state is corrupted
+     * past automatic repair (e.g. 3M holes in active_chain). The user
+     * framing — "be brutal, fail fast" — means we refuse to proceed
+     * into a half-loaded state. Operators who want the legacy "log
+     * loud, continue" behavior must opt in with -allow-degraded. */
+    {
+        bool finalize_ok = chain_restore_finalize(&g_state, ctx->datadir);
+        int  tip_h = active_chain_height(&g_state.chain_active);
+        bool fatal = !finalize_ok && tip_h > 1000;
+        if (fatal && !ctx->allow_degraded) {
+            fprintf(stderr,
+                "[boot] FATAL: post-restore integrity check failed at "
+                "tip_h=%d. Re-run with -allow-degraded to ignore, or "
+                "-reindex-chainstate to rebuild from disk.\n", tip_h);
+            event_emitf(EV_BOOT_ACTIVATE, 0,
+                        "FATAL post_restore_integrity_failed tip=%d",
+                        tip_h);
+            return false;
+        }
+        if (fatal) {
+            fprintf(stderr,
+                "[boot] WARNING: post-restore integrity check failed at "
+                "tip_h=%d; continuing because -allow-degraded was set.\n",
+                tip_h);
+        }
+    }
 
     /* Auto-scan wallet for transactions in connected blocks.
      * This ensures balance shows immediately after LDB import or
@@ -2407,7 +2469,7 @@ bool app_init(struct app_context *ctx)
         .block_tree_open = g_block_tree_open,
         .block_tree = &g_block_tree,
         .want_address_backfill = false,
-        .want_snapshot_tx_index = ctx->snapshot_dir != NULL,
+        .want_snapshot_tx_index = ctx->tx_index || ctx->snapshot_dir != NULL,
         .defer_payment_service = false,
         .defer_offer_service = false,
     };
