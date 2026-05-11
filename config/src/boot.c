@@ -19,6 +19,7 @@
 #include "services/db_maintenance.h"
 #include "controllers/wallet_scan.h"
 #include "util/sync.h"
+#include "util/boot_phase.h"
 #include "net/msgprocessor.h"
 #include "chain/chainparams.h"
 #include "keys/key.h"
@@ -2323,12 +2324,15 @@ sapling_tree_boot_check_done:
         }
     }
     {
+        struct boot_phase bp_act;
+        boot_phase_begin(&bp_act, "activate_best_chain");
         struct activation_exec_outcome outcome;
         activation_request_connect(&g_activation_ctl, ACTIVATION_SRC_BOOT,
                                    NULL, &outcome);
         if (outcome.result == ACTIVATION_EXEC_FAILED)
             fprintf(stderr, "Warning: Failed to activate best chain: %s\n",
                     outcome.reason);
+        boot_phase_end(&bp_act);
     }
 
     /* P14.11 + P14.12 final sweep. Post-activation is the last point at
@@ -2348,7 +2352,10 @@ sapling_tree_boot_check_done:
      * into a half-loaded state. Operators who want the legacy "log
      * loud, continue" behavior must opt in with -allow-degraded. */
     {
+        struct boot_phase bp_fin;
+        boot_phase_begin(&bp_fin, "chain_restore_finalize");
         bool finalize_ok = chain_restore_finalize(&g_state, ctx->datadir);
+        boot_phase_end(&bp_fin);
         int  tip_h = active_chain_height(&g_state.chain_active);
         bool fatal = !finalize_ok && tip_h > 1000;
         if (fatal && !ctx->allow_degraded) {
@@ -2376,9 +2383,12 @@ sapling_tree_boot_check_done:
     {
         int tip_h = active_chain_height(&g_state.chain_active);
         if (tip_h > 0 && g_node_db.open) {
+            struct boot_phase bp_ws;
+            boot_phase_begin(&bp_ws, "wallet_scan_blocks");
             int found = wallet_scan_blocks(&g_node_db,
                 &g_state.chain_active, &g_wallet, ctx->datadir,
                 0, tip_h);
+            boot_phase_end(&bp_ws);
             if (found > 0)
                 printf("Wallet: auto-discovered %d transactions "
                        "(blocks 0-%d)\n", found, tip_h);
