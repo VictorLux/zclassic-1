@@ -294,22 +294,35 @@ void activation_request_connect(struct chain_activation_controller *ctl,
     bool ok = activate_best_chain(&vs, ctl->ms, ctl->coins_tip,
                                   ctl->params, pblock, ctl->datadir);
 
-    /* P14.10: drain deferred activation requests that arrived while
-     * we were holding the mutex. Each pass is an activate_best_chain
-     * with pblock=NULL — the newly-accepted block is on disk, so the
-     * disk-read path in connect_tip picks it up. find_most_work_chain
-     * is idempotent when no new work has arrived, so the loop
-     * converges quickly. Cap iterations to bound mutex-held latency;
-     * any residual increment is picked up by the next request. */
-    const int max_drain_rounds = 8;
-    for (int r = 0; r < max_drain_rounds; r++) {
-        if (atomic_exchange(&ctl->deferred_pending, 0) == 0)
-            break;
-        struct validation_state vs_r;
-        validation_state_init(&vs_r);
-        bool ok_r = activate_best_chain(&vs_r, ctl->ms, ctl->coins_tip,
-                                         ctl->params, NULL, ctl->datadir);
-        if (!ok_r) ok = false;
+    /* Drain deferred activation requests that arrived while we were
+     * holding the mutex. Each pass is activate_best_chain(pblock=NULL)
+     * — the newly-accepted block is on disk, so the disk-read path
+     * picks it up. find_most_work_chain is idempotent when no new
+     * work arrived, so the loop converges quickly.
+     *
+     * Round 4 Part 1: replace the 8-round cap with a millisecond
+     * budget. A 2,500-block gap with one block arriving per drain
+     * cannot complete in 8 rounds; the ms budget lets the loop run
+     * to convergence within bounded mutex-held latency. Boot path
+     * still skips the drain (source==BOOT) — boot must return
+     * quickly to open the RPC port. */
+    if (source != ACTIVATION_SRC_BOOT) {
+        const int64_t drain_budget_us = 2000 * 1000; /* 2s */
+        const int     drain_hard_cap  = 4096;        /* belt + suspenders */
+        int64_t       drain_start_us  = GetTimeMicros();
+        int           drain_rounds    = 0;
+        while (drain_rounds < drain_hard_cap) {
+            if (atomic_exchange(&ctl->deferred_pending, 0) == 0)
+                break;
+            struct validation_state vs_r;
+            validation_state_init(&vs_r);
+            bool ok_r = activate_best_chain(&vs_r, ctl->ms, ctl->coins_tip,
+                                             ctl->params, NULL, ctl->datadir);
+            if (!ok_r) ok = false;
+            drain_rounds++;
+            if (GetTimeMicros() - drain_start_us > drain_budget_us)
+                break;
+        }
     }
 
     struct block_index *tip = active_chain_tip(&ctl->ms->chain_active);

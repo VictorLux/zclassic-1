@@ -4,6 +4,7 @@
 
 #include "config/boot_internal.h"
 #include "services/chain_activation_controller.h"
+#include "services/gap_fill_service.h"
 #include "storage/disk_block_io.h"
 #include "models/utxo.h"
 #include "models/mmb_leaf_store.h"
@@ -69,6 +70,7 @@ extern void msg_version_set_external_ip(const char *ip_str, uint16_t port);
 #include "services/disk_monitor.h"
 #include "services/ibd_throttle.h"
 #include "services/sync_watchdog_service.h"
+#include "net/download.h"
 #include "services/db_maintenance.h"
 #include "mcp/metrics.h"
 
@@ -1135,7 +1137,10 @@ bool app_init_services(struct app_context *ctx,
     rpc_game_set_connman(svc->connman);
     register_game_rpc_commands(svc->rpc_table);
 
-    /* Sync watchdog — automatic stall detection and recovery */
+    /* Sync watchdog — initialize state here, but defer thread start
+     * until after `atomic_store(svc->running, true)` below. Starting
+     * the thread now would read svc->running as false (still in boot)
+     * and the thread loop would exit on its very first iteration. */
     sync_watchdog_init();
 
     /* Service health and sync detail RPCs */
@@ -1190,8 +1195,17 @@ bool app_init_services(struct app_context *ctx,
 
     /* Pre-compute fast sync snapshot offer in background */
     {
+        int chain_tip_h = active_chain_height(&svc->state->chain_active);
+        int best_header = svc->state->pindex_best_header ?
+            svc->state->pindex_best_header->nHeight : chain_tip_h;
+        bool behind_ibd = (best_header - chain_tip_h) > 1000;
+
         if (svc->defer_offer_service) {
             printf("Fast sync offer build deferred during bootstrap receiver mode\n");
+        } else if (behind_ibd) {
+            printf("Fast sync offer build deferred during IBD "
+                   "(chain=%d, headers=%d, behind=%d)\n",
+                   chain_tip_h, best_header, best_header - chain_tip_h);
         } else if (!boot_start_offer_service(svc)) {
             fprintf(stderr,
                     "WARNING: failed to start tracked snapshot-offer thread\n");
@@ -1231,7 +1245,18 @@ bool app_init_services(struct app_context *ctx,
         }
     }
 
-    api_start_cache();
+    {
+        int chain_tip_h = active_chain_height(&svc->state->chain_active);
+        int best_header = svc->state->pindex_best_header ?
+            svc->state->pindex_best_header->nHeight : chain_tip_h;
+        if (best_header - chain_tip_h > 1000) {
+            printf("API cache refresh deferred during IBD "
+                   "(chain=%d, headers=%d, behind=%d)\n",
+                   chain_tip_h, best_header, best_header - chain_tip_h);
+        } else {
+            api_start_cache();
+        }
+    }
 
     /* Start HTTPS block explorer (deferred during IBD) */
     {
@@ -1402,6 +1427,30 @@ bool app_init_services(struct app_context *ctx,
     }
 
     atomic_store(svc->running, true);
+
+    /* Sync watchdog thread — must start AFTER atomic_store(running, true).
+     * Runs on its own 30s tick, independent of the msg loop (which was
+     * gated on peer id==0 and silently disabled once peer ids rotated
+     * past zero — left a node 22k blocks behind for >9h with
+     * checks_run=1). */
+    sync_watchdog_thread_start(&svc->watchdog_thread,
+                               &svc->watchdog_thread_started,
+                               svc->running,
+                               svc->connman,
+                               msg_get_download_mgr(),
+                               svc->state);
+
+    /* Gap-fill service — sequential block-gap filler. While tip <
+     * best_header, walks pprev from best_header and queues any
+     * blocks lacking BLOCK_HAVE_DATA. Fixes the "defer far-ahead
+     * live block" loop where only the far block was ever requested
+     * and the 2000+ intermediate blocks were never downloaded. */
+    if (gap_fill_start(svc->state, msg_get_download_mgr())) {
+        printf("[gap-fill] background gap-fill service started\n");
+    } else {
+        fprintf(stderr, "WARNING: gap_fill_start failed\n");
+    }
+
     {
         struct block_index *tip = active_chain_tip(&svc->state->chain_active);
         int h = tip ? tip->nHeight : 0;
@@ -1517,6 +1566,9 @@ static void shutdown_persist_runtime_state(struct boot_svc_ctx *svc)
     ibd_throttle_stop();
     db_maintenance_stop();
 
+    sync_watchdog_thread_stop(&svc->watchdog_thread,
+                              &svc->watchdog_thread_started);
+    gap_fill_stop();
     bg_validation_stop(&svc->bg_validation);
     bg_hash_verify_stop(&svc->bg_hash_verify);
     boot_join_address_backfill_service(svc);

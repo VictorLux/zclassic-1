@@ -34,6 +34,7 @@
 #include "services/chain_restore_service.h"
 #include "services/chain_activation_controller.h"
 #include "services/chain_state_repository.h"
+#include "services/gap_fill_service.h"
 #include "models/tx_index.h"
 #include "chain/mmr.h"
 #include "chain/mmb.h"
@@ -3201,8 +3202,15 @@ bool activate_best_chain(struct validation_state *state,
                     dl_queue_priority(dm_abc, pindex_new->phashBlock,
                                       pindex_new->nHeight);
             }
+            /* Wake the gap-fill service to enqueue the intermediate
+             * blocks [tip+1, pindex_new-1]. Without this kick the
+             * one priority download above is the ONLY request, the
+             * gap never closes, and the chain loops on this defer
+             * path indefinitely. */
+            gap_fill_kick();
             printf("activate_best_chain: defer far-ahead live block h=%d "
-                   "tip=%d\n", pindex_new->nHeight, tip->nHeight);
+                   "tip=%d (gap-fill kicked)\n",
+                   pindex_new->nHeight, tip->nHeight);
             return true;
         }
 
