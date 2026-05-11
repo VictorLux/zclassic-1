@@ -15,6 +15,8 @@
 #include "services/block_sync_service.h"
 #include "services/chain_state_repository.h"
 #include "services/chain_activation_controller.h"
+#include "services/chain_restore_service.h"
+#include "services/block_index_integrity.h"
 #include "services/snapshot_sync_service.h"
 #include "validation/process_block.h"
 #include "controllers/sync_controller.h"
@@ -26,6 +28,8 @@
 #include "services/sync_watchdog_service.h"
 #include "services/block_index_integrity.h"
 #include "coins/coins_view.h"
+#include "chain/pow.h"
+#include "core/arith_uint256.h"
 #include <signal.h>
 extern volatile sig_atomic_t g_shutdown_requested;
 #include <stdio.h>
@@ -48,6 +52,63 @@ static _Atomic uint64_t g_headers_already_known = 0;
 
 /* Per-peer header advancement tracking (simplified: tracks last peer). */
 static _Atomic int g_last_header_tip_height = 0;
+
+static size_t collect_active_tip_successors(struct main_state *ms,
+                                            struct uint256 *hashes,
+                                            int32_t *heights,
+                                            size_t max_collect,
+                                            bool *has_data_successor)
+{
+    struct block_index *parent;
+    size_t count = 0;
+
+    if (has_data_successor)
+        *has_data_successor = false;
+    if (!ms || !hashes || !heights || max_collect == 0)
+        return 0;
+
+    parent = active_chain_tip(&ms->chain_active);
+    while (parent && parent->phashBlock && count < max_collect) {
+        struct block_index *best_child = NULL;
+        size_t iter = 0;
+        struct block_index *candidate = NULL;
+
+        while (block_map_next(&ms->map_block_index, &iter, NULL,
+                              &candidate)) {
+            if (!candidate || candidate == parent)
+                continue;
+            if (!candidate->phashBlock || !candidate->pprev ||
+                !candidate->pprev->phashBlock)
+                continue;
+            if (!uint256_eq(candidate->pprev->phashBlock,
+                            parent->phashBlock))
+                continue;
+            if (candidate->nStatus & BLOCK_FAILED_MASK)
+                continue;
+            if (candidate->nHeight != parent->nHeight + 1)
+                continue;
+            if (!best_child ||
+                arith_uint256_compare(&candidate->nChainWork,
+                                      &best_child->nChainWork) > 0)
+                best_child = candidate;
+        }
+
+        if (!best_child)
+            break;
+
+        if (!(best_child->nStatus & BLOCK_HAVE_DATA)) {
+            hashes[count] = *best_child->phashBlock;
+            heights[count] = best_child->nHeight;
+            count++;
+        } else if (has_data_successor) {
+            *has_data_successor = true;
+        }
+
+        parent = best_child;
+    }
+
+    return count;
+}
 
 void msg_headers_get_stats(struct msg_headers_stats *out)
 {
@@ -189,6 +250,12 @@ bool process_headers(struct msg_processor *mp, struct p2p_node *node,
     struct sync_header_processing_plan header_plan = {0};
     size_t accepted = 0;
     size_t newly_added = 0;  /* headers that were NOT already in block index */
+    struct uint256 seq_hashes[512];
+    int32_t seq_heights[512];
+    size_t seq_count = 0;
+    int pre_tip_height = active_chain_height(&mp->main_state->chain_active);
+    struct block_index *sequence_prev =
+        active_chain_tip(&mp->main_state->chain_active);
 
     for (uint64_t i = 0; i < count; i++) {
         struct block_header hdr;
@@ -225,9 +292,32 @@ bool process_headers(struct msg_processor *mp, struct p2p_node *node,
             accepted++;
             if (!was_known)
                 newly_added++;
+            if (pindex && sequence_prev && sequence_prev->phashBlock &&
+                uint256_eq(&hdr.hashPrevBlock, sequence_prev->phashBlock)) {
+                if (pindex->pprev != sequence_prev ||
+                    pindex->nHeight != sequence_prev->nHeight + 1) {
+                    pindex->pprev = sequence_prev;
+                    pindex->nHeight = sequence_prev->nHeight + 1;
+                    block_index_build_skip(pindex);
+                    struct arith_uint256 proof = GetBlockProof(pindex);
+                    arith_uint256_add(&pindex->nChainWork,
+                                      &sequence_prev->nChainWork, &proof);
+                }
+                sequence_prev = pindex;
+            }
             pindex_last = pindex;
             if (pindex && pindex->phashBlock)
                 last_hash = *pindex->phashBlock;
+            if (pindex && pindex->phashBlock &&
+                pindex->nHeight > pre_tip_height &&
+                pindex->nHeight <= pre_tip_height + 512 &&
+                !(pindex->nStatus & BLOCK_HAVE_DATA) &&
+                !(pindex->nStatus & BLOCK_FAILED_MASK) &&
+                seq_count < 512) {
+                seq_hashes[seq_count] = *pindex->phashBlock;
+                seq_heights[seq_count] = pindex->nHeight;
+                seq_count++;
+            }
         } else {
             /* Record reject reason for watchdog escalation */
             if (state.reject_reason[0])
@@ -278,6 +368,20 @@ bool process_headers(struct msg_processor *mp, struct p2p_node *node,
                                        pindex_last, sync_get_state(),
                                        bi, tip, our_height,
                                        hashes, heights, max_collect);
+        if (seq_count > 0 && hashes && heights) {
+            memcpy(hashes, seq_hashes, seq_count * sizeof(struct uint256));
+            memcpy(heights, seq_heights, seq_count * sizeof(int32_t));
+            header_plan.should_queue_needed_blocks = true;
+            header_plan.queue_count = seq_count;
+            header_plan.should_activate_chain = false;
+            header_plan.download.needed_blocks.count = seq_count;
+            header_plan.download.needed_blocks.chains_from_tip = true;
+        }
+        if (our_height > 1000000 && header_plan.should_scan_block_files) {
+            printf("headers: skip inline block-file scan at live height h=%d\n",
+                   our_height);
+            header_plan.should_scan_block_files = false;
+        }
 
         if (header_plan.batch.should_warn_all_rejected) {
             /* All headers rejected — this stalls sync. Log prominently. */
@@ -421,83 +525,18 @@ bool process_headers(struct msg_processor *mp, struct p2p_node *node,
                         ACTIVATION_SRC_BLOCK_FILE_SCAN, NULL, &ao);
                 }
 
-                /* Fix block_map heights from the coins anchor.
-                 *
-                 * The scan assigns heights that are internally consistent
-                 * (each = pprev+1) but globally wrong — they trace back
-                 * to a genesis-area fork.  The coins tip (from LDB UTXO
-                 * import) is the source of truth for the anchor height.
-                 * Fix heights from that anchor down AND up so that
-                 * contextual_check_block sees correct Overwinter/Sapling
-                 * activation heights.
-                 *
-                 * Also restore the active chain tip if activation picked
-                 * a wrong short fork. */
-                int post_act_h = active_chain_height(
-                    &mp->main_state->chain_active);
-                if (pre_scan_coins_h > 100000) {
-                    struct block_index *coins_bi = block_map_find(
-                        &mp->main_state->map_block_index, &pre_scan_coins_hash);
-                    if (coins_bi) {
-                        /* Fix coins tip height from known UTXO import */
-                        if (coins_bi->nHeight != pre_scan_coins_h) {
-                            printf("Post-activation: fixing coins tip "
-                                   "%d→%d\n",
-                                   coins_bi->nHeight, pre_scan_coins_h);
-                            coins_bi->nHeight = pre_scan_coins_h;
-                        }
-                        /* Walk DOWN pprev chain fixing heights */
-                        {
-                            int fixed = 0;
-                            struct block_index *cur = coins_bi;
-                            while (cur && cur->pprev) {
-                                int expected = cur->nHeight - 1;
-                                if (cur->pprev->nHeight != expected) {
-                                    cur->pprev->nHeight = expected;
-                                    fixed++;
-                                }
-                                cur = cur->pprev;
-                                if (expected <= 0) break;
-                            }
-                            if (fixed > 0)
-                                printf("Post-activation: fixed %d pprev "
-                                       "heights from anchor\n", fixed);
-                        }
-                        /* Re-propagate ALL heights (multi-pass for hash
-                         * order iteration — fixes blocks ABOVE anchor) */
-                        {
-                            int total = 0;
-                            for (int pass = 0; pass < 20; pass++) {
-                                int pf = 0;
-                                size_t gi = 0;
-                                struct block_index *gb;
-                                while (block_map_next(
-                                    &mp->main_state->map_block_index,
-                                    &gi, NULL, &gb)) {
-                                    if (!gb || !gb->pprev) continue;
-                                    int exp = gb->pprev->nHeight + 1;
-                                    if (gb->nHeight != exp) {
-                                        gb->nHeight = exp;
-                                        pf++;
-                                    }
-                                }
-                                total += pf;
-                                if (pf == 0) break;
-                            }
-                            if (total > 0)
-                                printf("Post-activation: re-propagated "
-                                       "%d heights\n", total);
-                        }
-                        if (post_act_h < pre_scan_coins_h) {
-                            printf("Post-activation: restoring coins tip "
-                                   "h=%d (activation picked h=%d)\n",
-                                   pre_scan_coins_h, post_act_h);
-                            active_chain_set_tip(&mp->main_state->chain_active,
-                                                  coins_bi);
-                            mp->main_state->pindex_best_header = coins_bi;
-                        }
-                    }
-                }
+                /* Round 4 Part 5: structural repair moved out of the
+                 * P2P handler into block_index_integrity. The handler
+                 * is no longer the right layer to fix block_map
+                 * heights / restore active tip — that's repair-module
+                 * surgery. (pre_scan_coins_h is unused now; the new
+                 * helper reads coins_view's best block itself.) */
+                (void)pre_scan_coins_h;
+                (void)pre_scan_coins_hash;
+                struct bii_post_activation_result rr;
+                (void)bii_repair_post_activation_anchor(
+                    mp->main_state, mp->coins_tip,
+                    mp->datadir, &rr);
             }
         }
         if (header_plan.should_queue_needed_blocks) {
@@ -516,6 +555,36 @@ bool process_headers(struct msg_processor *mp, struct p2p_node *node,
                     event_emitf(EV_BLOCK_REQUESTED, (uint32_t)node->id,
                                 "queued=%zu total_needed=%zu",
                                 queued, header_plan.queue_count);
+            }
+        }
+
+        if (hashes && heights && pindex_last &&
+            pindex_last->nHeight > our_height &&
+            header_plan.queue_count == 0) {
+            bool has_data_successor = false;
+            size_t fallback_count = collect_active_tip_successors(
+                mp->main_state, hashes, heights, max_collect,
+                &has_data_successor);
+            if (fallback_count > 0) {
+                struct download_manager *dm = get_download_mgr();
+                size_t queued = dl_queue_blocks(dm, hashes, heights,
+                                                fallback_count);
+                if (queued > 0) {
+                    sync_set_state(SYNC_BLOCKS_DOWNLOAD,
+                                   "tip successor fallback");
+                    event_emitf(EV_BLOCK_REQUESTED, (uint32_t)node->id,
+                                "fallback_queued=%zu total_needed=%zu",
+                                queued, fallback_count);
+                    fprintf(stderr,
+                        "[headers] fallback queued %zu active-tip "
+                        "successor blocks after empty header plan "
+                        "(tip=%d header=%d)\n",
+                        queued, our_height, pindex_last->nHeight);
+                }
+            } else if (has_data_successor) {
+                struct activation_exec_outcome ao;
+                activation_request_connect(boot_activation_controller(),
+                    ACTIVATION_SRC_HEADERS_ALL_DATA, NULL, &ao);
             }
         }
 
@@ -564,10 +633,29 @@ bool process_headers(struct msg_processor *mp, struct p2p_node *node,
             atomic_store(&g_last_header_tip_height, cur_tip);
         }
 
-        /* Advance from pindex_last — the actual last header the peer
-         * sent.  Using pindex_best_header caused infinite loops after
-         * snapshot/LDB import when heights were scrambled. */
-        push_getheaders_from(mp, node, pindex_last);
+        if (syncsvc_should_restart_headers_from_tip(
+                accepted, pindex_last, active_chain_height(
+                    &mp->main_state->chain_active), node->starting_height)) {
+            fprintf(stderr,
+                    "[headers] low batch from %s ended at h=%d below "
+                    "chain tip h=%d; restarting getheaders from tip\n",
+                    node->addr_name,
+                    pindex_last ? pindex_last->nHeight : -1,
+                    active_chain_height(&mp->main_state->chain_active));
+            {
+                struct block_index *restart_tip = active_chain_tip(
+                    &mp->main_state->chain_active);
+                if (restart_tip && restart_tip->phashBlock)
+                    push_getheaders_from(mp, node, restart_tip);
+                else
+                    push_getheaders(mp, node);
+            }
+        } else {
+            /* Advance from pindex_last — the actual last header the peer
+             * sent.  Using pindex_best_header caused infinite loops after
+             * snapshot/LDB import when heights were scrambled. */
+            push_getheaders_from(mp, node, pindex_last);
+        }
     }
 
     return true;
@@ -589,7 +677,7 @@ void push_getheaders_from(struct msg_processor *mp,
      * Before repair, fall back to the safe 2-hash locator. */
     struct block_locator loc;
     block_locator_init(&loc);
-    if (from && from->phashBlock && block_index_heights_repaired()) {
+    if (from && from->phashBlock && false && block_index_heights_repaired()) {
         /* Exponential locator: tip, tip-1, tip-2, tip-4, tip-8, ... genesis.
          * Walk pprev chain with exponentially increasing steps. */
         int max_hashes = 32;
@@ -653,10 +741,11 @@ void push_getheaders_from(struct msg_processor *mp,
 
 void push_getheaders(struct msg_processor *mp, struct p2p_node *node)
 {
-    /* Use minimal locator: just tip hash + genesis.
+    /* Use minimal locator: just active tip hash + genesis.
      * After snapshot sync, pprev chains may be incomplete, causing the
-     * full locator to contain wrong hashes. A 2-hash locator (tip + genesis)
-     * always works correctly — peers respond with headers from our tip. */
+     * full locator to contain wrong hashes. The active tip is the point whose
+     * UTXO state we can extend; pindex_best_header may be speculative or have
+     * repaired local heights that peers cannot use as a locator. */
     {
         struct block_index *tip = active_chain_tip(&mp->main_state->chain_active);
         if (tip && tip->phashBlock) {
@@ -703,10 +792,16 @@ void exec_getheaders_action(struct msg_processor *mp,
     tip = active_chain_tip(&mp->main_state->chain_active);
     switch (action->anchor) {
     case SYNC_HEADER_REQUEST_TIP_PARENT:
-        if (tip && tip->pprev)
+        if (mp->main_state->pindex_best_header &&
+            mp->main_state->pindex_best_header->phashBlock &&
+            tip &&
+            mp->main_state->pindex_best_header->nHeight > tip->nHeight) {
+            push_getheaders_from(mp, node, mp->main_state->pindex_best_header);
+        } else if (tip && tip->pprev) {
             push_getheaders_from(mp, node, tip->pprev);
-        else
+        } else {
             push_getheaders(mp, node);
+        }
         break;
     case SYNC_HEADER_REQUEST_TIP:
     case SYNC_HEADER_REQUEST_EXPLICIT:

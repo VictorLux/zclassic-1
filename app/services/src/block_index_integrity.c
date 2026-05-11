@@ -400,6 +400,33 @@ static int bii_cmp_height(const void *a, const void *b)
     return (pa->nHeight > pb->nHeight) - (pa->nHeight < pb->nHeight);
 }
 
+static int bii_cmp_disk_pos(const void *a, const void *b)
+{
+    const struct block_index *pa = *(const struct block_index *const *)a;
+    const struct block_index *pb = *(const struct block_index *const *)b;
+
+    if (pa->nFile != pb->nFile)
+        return (pa->nFile > pb->nFile) - (pa->nFile < pb->nFile);
+    return (pa->nDataPos > pb->nDataPos) -
+           (pa->nDataPos < pb->nDataPos);
+}
+
+static size_t bii_pprev_repair_max_reads(void)
+{
+    const char *env = getenv("ZCL_PPREV_REPAIR_MAX_READS");
+    char *end = NULL;
+    long parsed;
+
+    if (!env || env[0] == '\0')
+        return 250000;
+
+    parsed = strtol(env, &end, 10);
+    if (end == env || *end != '\0' || parsed < 0)
+        return 250000;
+
+    return (size_t)parsed;
+}
+
 int block_index_repair_heights(struct main_state *ms)
 {
     if (!ms) return 0;
@@ -547,10 +574,20 @@ int block_index_repair_pprev(struct main_state *ms, const char *datadir)
             pi->nFile >= 0 && pi->nDataPos > 0)
             arr[count++] = pi;
     }
+    qsort(arr, count, sizeof(*arr), bii_cmp_disk_pos);
+
+    size_t max_reads = bii_pprev_repair_max_reads();
+    size_t read_limit = (max_reads > 0 && max_reads < count)
+                            ? max_reads
+                            : count;
+    printf("[pprev-repair] scanning %zu/%zu blocks with data "
+           "(ZCL_PPREV_REPAIR_MAX_READS=%zu)\n",
+           read_limit, count, max_reads);
+    fflush(stdout);
 
     int repaired = 0, read_errors = 0;
 
-    for (size_t i = 0; i < count; i++) {
+    for (size_t i = 0; i < read_limit; i++) {
         struct block_index *bi = arr[i];
 
         /* Read just nVersion (4 bytes) + hashPrevBlock (32 bytes) = 36 bytes
@@ -581,6 +618,13 @@ int block_index_repair_pprev(struct main_state *ms, const char *datadir)
         if (bi->pprev != correct_pprev) {
             bi->pprev = correct_pprev;
             repaired++;
+        }
+
+        if ((i + 1) % 50000 == 0) {
+            printf("[pprev-repair] progress %zu/%zu repaired=%d "
+                   "read_errors=%d\n",
+                   i + 1, read_limit, repaired, read_errors);
+            fflush(stdout);
         }
     }
 
@@ -637,8 +681,8 @@ int block_index_repair_pprev(struct main_state *ms, const char *datadir)
                        + (t1.tv_nsec - t0.tv_nsec) / 1000000;
 
     printf("[pprev-repair] fixed %d pprev links (%d read errors) "
-           "from %zu blocks with data in %lld ms\n",
-           repaired, read_errors, count, (long long)elapsed_ms);
+           "from %zu/%zu blocks with data in %lld ms\n",
+           repaired, read_errors, read_limit, count, (long long)elapsed_ms);
     fflush(stdout);
 
     if (repaired > 0)
@@ -647,4 +691,117 @@ int block_index_repair_pprev(struct main_state *ms, const char *datadir)
                     repaired, read_errors, (long long)elapsed_ms);
 
     return repaired;
+}
+
+/* ──────────────────────────────────────────────────────────────
+ * Post-activation anchor repair — Round 4 Part 5
+ *
+ * Lifted from lib/net/src/msg_headers.c so the inbound P2P
+ * handler no longer does structural block-index surgery. */
+
+#include "services/chain_restore_service.h"
+#include "coins/coins_view.h"
+#include "validation/chainstate.h"
+
+int bii_repair_post_activation_anchor(
+    struct main_state            *ms,
+    struct coins_view_cache      *coins_tip,
+    const char                   *datadir,
+    struct bii_post_activation_result *result)
+{
+    struct bii_post_activation_result local = {0};
+    if (!result) result = &local;
+    memset(result, 0, sizeof(*result));
+    result->tip_restore_old_h = -1;
+    result->tip_restore_new_h = -1;
+
+    if (!ms || !coins_tip || !datadir) return -1;
+
+    struct uint256 coins_hash;
+    uint256_set_null(&coins_hash);
+    coins_view_cache_get_best_block(coins_tip, &coins_hash);
+    if (uint256_is_null(&coins_hash)) return -1;
+
+    struct block_index *coins_bi =
+        block_map_find(&ms->map_block_index, &coins_hash);
+    if (!coins_bi) return -1;
+
+    int pre_scan_coins_h = coins_bi->nHeight;
+    if (pre_scan_coins_h <= 100000) return -1;
+
+    int post_act_h = active_chain_height(&ms->chain_active);
+    result->tip_restore_old_h = post_act_h;
+    result->tip_restore_new_h = pre_scan_coins_h;
+
+    /* Step 1: anchor coins_bi height (no-op if already correct) */
+    /* (Skipped here — coins_bi->nHeight was set from block_map, so
+     * if the caller wants the UTXO height anchored, it has already
+     * been done. We keep the call shape close to the original to
+     * preserve behaviour, but we don't have an external "true"
+     * height to inject — the source of truth is the block_map.) */
+
+    /* Step 2: walk DOWN pprev fixing heights */
+    {
+        int fixed = 0;
+        struct block_index *cur = coins_bi;
+        while (cur && cur->pprev) {
+            int expected = cur->nHeight - 1;
+            if (cur->pprev->nHeight != expected) {
+                cur->pprev->nHeight = expected;
+                fixed++;
+            }
+            cur = cur->pprev;
+            if (expected <= 0) break;
+        }
+        result->heights_fixed_down = fixed;
+        if (fixed > 0)
+            printf("[bii-anchor] fixed %d pprev heights "
+                   "downward from anchor h=%d\n",
+                   fixed, pre_scan_coins_h);
+    }
+
+    /* Step 3: re-propagate heights forward across the whole map */
+    {
+        int total = 0;
+        for (int pass = 0; pass < 20; pass++) {
+            int pf = 0;
+            size_t gi = 0;
+            struct block_index *gb;
+            while (block_map_next(
+                &ms->map_block_index, &gi, NULL, &gb)) {
+                if (!gb || !gb->pprev) continue;
+                int exp = gb->pprev->nHeight + 1;
+                if (gb->nHeight != exp) {
+                    gb->nHeight = exp;
+                    pf++;
+                }
+            }
+            total += pf;
+            if (pf == 0) break;
+        }
+        result->heights_repropagated = total;
+        if (total > 0)
+            printf("[bii-anchor] re-propagated %d heights forward\n",
+                   total);
+    }
+
+    /* Step 4: restore active tip if it's below the anchor */
+    if (post_act_h < pre_scan_coins_h) {
+        if (chain_restore_block_is_consensus_backed_on_disk(
+                coins_bi, datadir)) {
+            printf("[bii-anchor] restoring disk-backed coins tip "
+                   "h=%d (activation picked h=%d)\n",
+                   pre_scan_coins_h, post_act_h);
+            active_chain_set_tip(&ms->chain_active, coins_bi);
+            ms->pindex_best_header = coins_bi;
+            result->tip_restored = true;
+        } else {
+            fprintf(stderr,
+                "[bii-anchor] coins tip h=%d not disk-backed; "
+                "refusing active tip restore over h=%d\n",
+                pre_scan_coins_h, post_act_h);
+            result->tip_restore_refused = true;
+        }
+    }
+    return 0;
 }

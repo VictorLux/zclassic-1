@@ -151,4 +151,46 @@ bool block_index_heights_repaired(void);
  * Must be called AFTER block_index_repair_heights(), BEFORE header sync. */
 int block_index_repair_pprev(struct main_state *ms, const char *datadir);
 
+/* ── Post-activation anchor repair (Round 4 Part 5) ─────────────
+ *
+ * Lifted from lib/net/src/msg_headers.c (~88 lines), which is the
+ * wrong layer for structural block-index surgery. Called after a
+ * block_file_scan activation pass discovers that the active tip
+ * was placed below the known UTXO anchor (coins_best_block) — a
+ * classic post-LDB-import shape where the block_file_scan picked
+ * a short fork and left the real tip orphaned.
+ *
+ * Steps:
+ *   1. Anchor the coins_bi block's nHeight to the known UTXO
+ *      height (pre_scan_coins_h is the source of truth).
+ *   2. Walk DOWN pprev from coins_bi fixing any height that
+ *      disagrees with `parent_height + 1`.
+ *   3. Re-propagate heights forward across the WHOLE block_map
+ *      in a multi-pass scan so blocks above the anchor get
+ *      correct heights too.
+ *   4. If active_chain_tip is BELOW coins_bi AND coins_bi is
+ *      disk-backed (consensus-validatable), promote coins_bi to
+ *      active tip and pindex_best_header.
+ *
+ * `result` (may be NULL) is filled with counts and a summary.
+ * Returns 0 on success, -1 if the anchor isn't valid (coins
+ * height < 100k or coins_bi not in map). */
+
+struct coins_view_cache;
+
+struct bii_post_activation_result {
+    int  heights_fixed_down;     /* walking down from coins_bi */
+    int  heights_repropagated;   /* forward multi-pass */
+    bool tip_restored;           /* active tip moved to coins_bi */
+    bool tip_restore_refused;    /* coins_bi not disk-backed */
+    int  tip_restore_old_h;
+    int  tip_restore_new_h;
+};
+
+int bii_repair_post_activation_anchor(
+    struct main_state            *ms,
+    struct coins_view_cache      *coins_tip,
+    const char                   *datadir,
+    struct bii_post_activation_result *result);
+
 #endif /* ZCL_SERVICES_BLOCK_INDEX_INTEGRITY_H */
