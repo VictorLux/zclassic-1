@@ -37,7 +37,10 @@ struct block_index *pprev_walk_safe(struct block_index *start,
 
     struct block_index *cur = start;
     int steps = 0;
-    while (cur && keep_going && keep_going(cur, user)) {
+    /* NULL predicate = "always continue", walks to genesis or
+     * until the chain ends. Useful for callers that just want
+     * the cycle/cap guard without a stop condition. */
+    while (cur && (!keep_going || keep_going(cur, user))) {
         if (steps++ >= max_steps) {
             emit_violation(cur, NULL, steps, max_steps,
                            call_site, "step_cap");
@@ -91,6 +94,34 @@ struct block_index *pprev_walk_until_target(struct block_index *start,
     struct block_index *r = pprev_walk_safe(start, keep_until_target, &c,
                                             max_steps, call_site);
     return r == target ? r : NULL;
+}
+
+int pprev_walk_depth(struct block_index *start,
+                     int max_steps,
+                     const char *call_site,
+                     struct block_index **out_root)
+{
+    if (out_root) *out_root = NULL;
+    if (!start || max_steps <= 0) return 0;
+    struct block_index *cur = start;
+    int depth = 0;
+    while (cur && cur->pprev) {
+        if (depth >= max_steps) {
+            emit_violation(cur, NULL, depth, max_steps,
+                           call_site, "step_cap");
+            return -1;
+        }
+        struct block_index *prev = cur->pprev;
+        if (prev->nHeight >= cur->nHeight) {
+            emit_violation(cur, prev, depth, max_steps,
+                           call_site, "non_monotonic");
+            return -1;
+        }
+        cur = prev;
+        depth++;
+    }
+    if (out_root) *out_root = cur;
+    return depth;
 }
 
 uint64_t pprev_walk_violations(void)

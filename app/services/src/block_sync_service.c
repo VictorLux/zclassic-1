@@ -4,6 +4,7 @@
 
 #include "services/block_sync_service.h"
 #include "services/header_sync_service.h"
+#include "util/pprev_walk.h"
 #include "net/download.h"
 #include "net/net.h"
 #include "validation/main_state.h"
@@ -245,11 +246,27 @@ bool syncsvc_build_stall_recovery(struct sync_stall_recovery *recovery,
         if (alt->nStatus & BLOCK_HAVE_DATA) continue;
         if (!alt->phashBlock) continue;
 
-        struct block_index *walk = alt;
-        while (walk && walk->nHeight > our_h) walk = walk->pprev;
+        /* Round 4 Part 2 migration: cycle-safe descent to height our_h. */
+        struct block_index *walk = pprev_walk_until_height(
+            alt, our_h, 100000, "block_sync.alt_descent");
         if (walk == tip ||
             (walk && tip && walk->phashBlock && tip->phashBlock &&
              uint256_eq(walk->phashBlock, tip->phashBlock))) {
+            alt_hashes[alt_count] = *alt->phashBlock;
+            alt_heights[alt_count] = alt->nHeight;
+            alt_count++;
+        }
+    }
+
+    if (alt_count == 0) {
+        size_t iter3 = 0;
+        while (block_map_next(&ms->map_block_index, &iter3, NULL, &alt)) {
+            if (!alt || alt_count >= 64) continue;
+            if (alt->nHeight != recovery->next_height) continue;
+            if (alt->nStatus & BLOCK_FAILED_MASK) continue;
+            if (alt->nStatus & BLOCK_HAVE_DATA) continue;
+            if (!alt->phashBlock) continue;
+
             alt_hashes[alt_count] = *alt->phashBlock;
             alt_heights[alt_count] = alt->nHeight;
             alt_count++;

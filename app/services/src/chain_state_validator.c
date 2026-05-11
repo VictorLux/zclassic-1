@@ -16,6 +16,7 @@
 #include <sys/stat.h>
 
 #include "util/log_macros.h"
+#include "util/pprev_walk.h"
 
 /* ActiveRecord-style validation for coins/chain agreement at boot.
  * Detects mismatch between coins_best_block and active chain tip,
@@ -63,9 +64,10 @@ struct boot_validation_result validate_coins_chain_agreement(
                 /* Block exists in index but with nHeight=0 — this happens
                  * after LDB import when block index heights haven't been
                  * fully resolved yet. Walk pprev to find actual height. */
-                int walk_h = 0;
-                struct block_index *walk = coins_block;
-                while (walk && walk->pprev) { walk = walk->pprev; walk_h++; }
+                struct block_index *walk = NULL;
+                int walk_h = pprev_walk_depth(coins_block, 10000000,
+                    "chain_state_validator.coins_resolve", &walk);
+                if (walk_h < 0) walk_h = 0;
                 if (walk_h > 0) {
                     printf("Post-import: coins_best_block resolved to h=%d "
                            "via pprev walk — restoring chain tip\n", walk_h);

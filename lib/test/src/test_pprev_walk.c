@@ -144,5 +144,36 @@ int test_pprev_walk(void)
         free(a); free(b); free(off);
     }
 
+    printf("pprev_walk_depth: normal chain returns step count... ");
+    {
+        struct block_index *chain[5] = {0};
+        for (int i = 0; i < 5; i++) {
+            chain[i] = bi_new(i);
+            if (i > 0) chain[i]->pprev = chain[i - 1];
+        }
+        struct block_index *root = NULL;
+        int depth = pprev_walk_depth(chain[4], 100,
+                                      "test.depth", &root);
+        if (depth == 4 && root == chain[0])
+            printf("OK\n");
+        else { printf("FAIL (depth=%d root=%p expected_root=%p)\n",
+                      depth, (void*)root, (void*)chain[0]); failures++; }
+        for (int i = 0; i < 5; i++) free(chain[i]);
+    }
+
+    printf("pprev_walk_depth: cycle returns -1... ");
+    {
+        struct block_index *a = bi_new(0);
+        struct block_index *b = bi_new(1);
+        a->pprev = b; b->pprev = a;
+        struct block_index *root = NULL;
+        int depth = pprev_walk_depth(b, 100, "test.depth_cycle", &root);
+        if (depth == -1 && root == NULL)
+            printf("OK\n");
+        else { printf("FAIL (depth=%d root=%p)\n",
+                      depth, (void*)root); failures++; }
+        free(a); free(b);
+    }
+
     return failures;
 }

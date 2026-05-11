@@ -72,6 +72,15 @@ struct block_index *pprev_walk_until_target(struct block_index *start,
                                             int max_steps,
                                             const char *call_site);
 
+/* Walk pprev all the way to a node with no pprev (genesis) while
+ * counting steps. Returns the depth (number of pprev edges traversed)
+ * or -1 if a cycle/step-cap violation was detected. The final node
+ * is optionally returned via `out_root` (NULL on violation). */
+int pprev_walk_depth(struct block_index *start,
+                     int max_steps,
+                     const char *call_site,
+                     struct block_index **out_root);
+
 /* Number of cycle/cap violations observed since process start.
  * Monotonic counter. Useful for tests + RPC diagnostics. */
 uint64_t pprev_walk_violations(void);
