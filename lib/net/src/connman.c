@@ -392,15 +392,29 @@ static void *thread_open_connections(void *arg)
     static int64_t s_last_addrman_attempt = 0;
 
     while (!g_stop) {
-        /* Count non-disconnecting outbound peers */
-        size_t outbound = 0;
+        /* Count outbound peers in two buckets:
+         *   `outbound_slot` — all non-disconnecting outbound peers,
+         *     used as the upper bound on connection slots so we don't
+         *     overflow MAX_OUTBOUND_CONNECTIONS.
+         *   `outbound_healthy` — only outbound peers past handshake,
+         *     used to decide if we need aggressive backfill. Without
+         *     this distinction a node with 1 working peer + 4 stuck
+         *     in PEER_CONNECTING reads as "5 outbound" and never
+         *     hunts for replacements — the live failure mode that
+         *     left this node alone with one C++ peer for 9h. */
+        size_t outbound_slot = 0;
+        size_t outbound_healthy = 0;
         zcl_mutex_lock(&cm->manager.cs_nodes);
         for (size_t i = 0; i < cm->manager.num_nodes; i++) {
-            if (!cm->manager.nodes[i]->inbound &&
-                !cm->manager.nodes[i]->disconnect)
-                outbound++;
+            struct p2p_node *n = cm->manager.nodes[i];
+            if (n->inbound || n->disconnect) continue;
+            outbound_slot++;
+            if (n->state >= PEER_HANDSHAKE_COMPLETE)
+                outbound_healthy++;
         }
         zcl_mutex_unlock(&cm->manager.cs_nodes);
+
+        size_t outbound = outbound_slot;
 
         if (outbound >= MAX_OUTBOUND_CONNECTIONS ||
             cm->manager.num_nodes >= (size_t)cm->manager.max_connections) {
@@ -453,13 +467,24 @@ static void *thread_open_connections(void *arg)
             }
         }
 
-        /* Rate-limited addrman outbound: 1 attempt per 10s to avoid flooding.
-         * When we have 0 outbound, try up to 3 per tick more aggressively. */
+        /* Rate-limited addrman outbound: 1 attempt per 10s to avoid
+         * flooding. Below the healthy-peer floor (3 fully-handshaked
+         * outbound) we try harder — peers stuck in PEER_CONNECTING
+         * don't count, so a node with 1 working peer + 4 sockets
+         * stuck in connecting still gets aggressive backfill. */
         int64_t now_oc = (int64_t)time(NULL);
-        bool rate_ok = (outbound == 0) || (now_oc - s_last_addrman_attempt >= 10);
+        const size_t OUTBOUND_HEALTHY_FLOOR = 3;
+        bool below_floor = (outbound_healthy < OUTBOUND_HEALTHY_FLOOR);
+        bool rate_ok = below_floor ||
+                       (now_oc - s_last_addrman_attempt >= 10);
         int attempts = 0;
         if (rate_ok && !tried_zcl23) {
-            attempts = (outbound == 0) ? 3 : 1;
+            if (outbound_healthy == 0)
+                attempts = 3;
+            else if (below_floor)
+                attempts = 2;
+            else
+                attempts = 1;
         }
         for (int a = 0; a < attempts && !g_stop; a++) {
             struct addr_info info;
@@ -776,10 +801,40 @@ static void *thread_socket_handler(void *arg)
                            (long long)(now_check - n->last_recv));
                     n->disconnect = true;
                 }
-                /* Version handshake timeout: 30s */
+                /* TCP connect timeout: 10s for outbound peers stuck
+                 * in PEER_CONNECTING (TCP SYN sent, never reached
+                 * PEER_CONNECTED). time_connected is set at node
+                 * creation, so a peer still in PEER_CONNECTING after
+                 * 10s never finished the 3-way TCP handshake. Without
+                 * this fast cutoff those sockets sit forever, eat
+                 * outbound slots, and starve real peers — the live
+                 * failure mode that left this node with 1 working
+                 * outbound and 4 stuck in `connecting`. */
+                if (!n->inbound &&
+                    n->state == PEER_CONNECTING &&
+                    n->time_connected > 0 &&
+                    now_check - n->time_connected > 10) {
+                    event_emitf(EV_TCP_TIMEOUT, (uint32_t)n->id,
+                                "tcp_connect %llds state=connecting",
+                                (long long)(now_check - n->time_connected));
+                    n->disconnect = true;
+                    continue;
+                }
+
+                /* Version handshake timeout: 90s.
+                 *
+                 * Round 5 follow-up: the message-cycle loop processes
+                 * one peer at a time and shares the thread with chain
+                 * activation. While we're doing a multi-block reorg
+                 * recovery or a heavy connect_tip, peer handshakes can
+                 * wait several seconds. Live evidence: 6 inbound peers
+                 * timing out at exactly 30-45s because we hadn't read
+                 * their version message yet. Bumping to 90s keeps real
+                 * dead peers out (TCP keepalive trips first) while
+                 * giving slow ticks room. */
                 if (n->state < PEER_HANDSHAKE_COMPLETE &&
                     n->time_connected > 0 &&
-                    now_check - n->time_connected > 30) {
+                    now_check - n->time_connected > 90) {
                     event_emitf(EV_TCP_TIMEOUT, (uint32_t)n->id,
                                 "handshake %llds state=%s",
                                 (long long)(now_check - n->time_connected),
@@ -1347,6 +1402,21 @@ void connman_open_connection(struct connman *cm,
 size_t connman_get_node_count(const struct connman *cm)
 {
     return cm->manager.num_nodes;
+}
+
+size_t connman_outbound_healthy_count(struct connman *cm)
+{
+    if (!cm) return 0;
+    size_t healthy = 0;
+    zcl_mutex_lock(&cm->manager.cs_nodes);
+    for (size_t i = 0; i < cm->manager.num_nodes; i++) {
+        const struct p2p_node *n = cm->manager.nodes[i];
+        if (n && !n->inbound && !n->disconnect &&
+            n->state >= PEER_HANDSHAKE_COMPLETE)
+            healthy++;
+    }
+    zcl_mutex_unlock(&cm->manager.cs_nodes);
+    return healthy;
 }
 
 int connman_max_peer_height(struct connman *cm)
