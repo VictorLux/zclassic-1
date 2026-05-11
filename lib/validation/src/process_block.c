@@ -3354,6 +3354,66 @@ bool activate_best_chain(struct validation_state *state,
                 }
             }
 
+            /* Round 4 Part 1.5.2: sibling-fork rollback.
+             *
+             * Scenario: tip and pindex_new->pprev are SIBLING blocks
+             * at the same height (h=tip->nHeight), both extending
+             * the same grandparent. Live evidence:
+             *   pprev_h=3087032 tip=3087032 — pindex_new->pprev is
+             *   a different block_index at h=3087032 from our tip.
+             * Both forks share tip->pprev as common ancestor, so the
+             * reorg depth is 1 — well within MAX_REORG_LENGTH.
+             *
+             * Recovery: disconnect our tip, connect the peer's
+             * sibling as new h=tip->nHeight, then connect pblock as
+             * h=tip->nHeight+1. */
+            if (near_tip_block && pblock && tip && pindex_new->pprev &&
+                pindex_new->pprev != tip &&
+                pindex_new->pprev->nHeight == tip->nHeight &&
+                pindex_new->pprev->pprev == tip->pprev &&
+                (pindex_new->pprev->nStatus & BLOCK_HAVE_DATA)) {
+                struct block_index *peer_parent = pindex_new->pprev;
+                fprintf(stderr,
+                    "activate_best_chain: sibling-fork rollback h=%d "
+                    "(our tip and peer's parent are siblings at "
+                    "h=%d, both extending h=%d; switching to peer's "
+                    "fork)\n",
+                    tip->nHeight, tip->nHeight,
+                    tip->pprev ? tip->pprev->nHeight : -1);
+                event_emitf(EV_REORG_START, 0,
+                            "sibling_fork_rollback h=%d new_h=%d",
+                            tip->nHeight, pindex_new->nHeight);
+                if (!disconnect_tip(state, ms, coins_tip, datadir)) {
+                    fprintf(stderr,
+                        "activate_best_chain: sibling-fork rollback "
+                        "FAILED to disconnect tip h=%d\n",
+                        tip->nHeight);
+                    event_emitf(EV_REORG_DISCONNECT_FAILED, 0,
+                                "sibling_fork h=%d", tip->nHeight);
+                    return false;
+                }
+                if (!connect_tip(state, ms, coins_tip, peer_parent,
+                                 NULL, params, datadir)) {
+                    fprintf(stderr,
+                        "activate_best_chain: sibling-fork rollback "
+                        "could not connect peer_parent h=%d\n",
+                        peer_parent->nHeight);
+                    return false;
+                }
+                if (!connect_tip(state, ms, coins_tip, pindex_new,
+                                 pblock, params, datadir)) {
+                    fprintf(stderr,
+                        "activate_best_chain: sibling-fork rollback "
+                        "could not connect new tip h=%d\n",
+                        pindex_new->nHeight);
+                    return false;
+                }
+                event_emitf(EV_REORG_RECOVERY_COMPLETE, 0,
+                            "sibling_fork_rollback new_h=%d",
+                            pindex_new->nHeight);
+                return true;
+            }
+
             fprintf(stderr,
                 "activate_best_chain: near-tip block h=%d was not a direct "
                 "extension of tip=%d; falling through to most-work reorg "
