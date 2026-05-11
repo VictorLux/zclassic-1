@@ -777,10 +777,13 @@ static int resolve_orphan_pprev_from_disk(struct main_state *ms,
             if (!bi || !bi->pprev) continue;
             if (bi->nHeight == bi->pprev->nHeight + 1) continue;
 
-            /* Walk UP pprev chain to first correct ancestor */
+            /* Walk UP pprev chain to first correct ancestor.
+             * Round 5 Part 3: monotonicity guard prevents the realloc
+             * loop from running forever on a corrupt pprev cycle. */
             int depth = 0;
             struct block_index *cur = bi;
             while (cur->pprev &&
+                   cur->pprev->nHeight < cur->nHeight &&
                    cur->nHeight != cur->pprev->nHeight + 1) {
                 if ((size_t)depth >= stack_cap) {
                     stack_cap *= 2;

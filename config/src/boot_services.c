@@ -1089,7 +1089,17 @@ bool app_init_services(struct app_context *ctx,
             const struct block_index *tip =
                 active_chain_tip(&svc->state->chain_active);
             const struct block_index *bi = tip;
-            while (bi && bi->nHeight > commit_h) bi = bi->pprev;
+            /* Round 5 Part 3: monotonicity + step-cap guard. */
+            int bi_steps = 0;
+            while (bi && bi->nHeight > commit_h) {
+                const struct block_index *prev = bi->pprev;
+                if (!prev || prev->nHeight >= bi->nHeight ||
+                    bi_steps++ > 5000000) {
+                    bi = NULL; /* corrupt chain — bail */
+                    break;
+                }
+                bi = prev;
+            }
 
             if (bi && bi->phashBlock && bi->nHeight == commit_h) {
                 rpc_blockchain_maybe_commit(

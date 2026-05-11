@@ -1572,7 +1572,11 @@ bool accept_block_header(const struct block_header *header,
             struct block_index *stack[2048];
             int depth = 0;
             struct block_index *cur = pindex;
+            /* Round 5 Part 3: monotonicity guard. A corrupt pprev cycle
+             * would otherwise hold this thread until depth==2048, but
+             * also poison every block we push on the stack. Bail clean. */
             while (cur->pprev &&
+                   cur->pprev->nHeight < cur->nHeight &&
                    cur->nHeight != cur->pprev->nHeight + 1 &&
                    depth < 2048) {
                 stack[depth++] = cur;
@@ -1642,7 +1646,9 @@ bool accept_block_header(const struct block_header *header,
         struct block_index *stack[2048];
         int depth = 0;
         struct block_index *cur = pindex_prev;
+        /* Round 5 Part 3: monotonicity guard (see same site at L1575). */
         while (cur->pprev &&
+               cur->pprev->nHeight < cur->nHeight &&
                cur->nHeight != cur->pprev->nHeight + 1 &&
                depth < 2048) {
             stack[depth++] = cur;
@@ -1818,7 +1824,9 @@ bool accept_block(struct block *block,
         struct block_index *stack[4096];
         int depth = 0;
         struct block_index *cur = pindex;
+        /* Round 5 Part 3: monotonicity guard. */
         while (cur->pprev && depth < 4096 &&
+               cur->pprev->nHeight < cur->nHeight &&
                arith_uint256_compare(&cur->nChainWork,
                                      &tip->nChainWork) < 0 &&
                cur->nHeight > tip->nHeight) {
