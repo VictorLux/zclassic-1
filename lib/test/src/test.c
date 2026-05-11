@@ -109,6 +109,20 @@ int main(void)
                failures);
         return failures ? 1 : 0;
     }
+    if (only && strcmp(only, "hot_loop_exit") == 0) {
+        printf("[test] ZCL_TEST_ONLY=hot_loop_exit — running UTXO hot-loop exit only\n");
+        failures += test_connect_tip_hot_loop_exit();
+        printf("\n=== hot_loop_exit subset complete: %d failure(s) ===\n",
+               failures);
+        return failures ? 1 : 0;
+    }
+    if (only && strcmp(only, "chain_restore") == 0) {
+        printf("[test] ZCL_TEST_ONLY=chain_restore — running chain restore only\n");
+        failures += test_chain_restore_service();
+        printf("\n=== chain_restore subset complete: %d failure(s) ===\n",
+               failures);
+        return failures ? 1 : 0;
+    }
     if (only && strcmp(only, "utxo_audit") == 0) {
         printf("[test] ZCL_TEST_ONLY=utxo_audit — running P24.30 only\n");
         failures += test_utxo_audit();
@@ -129,6 +143,7 @@ int main(void)
     failures += test_crypto();
     failures += test_encoding();
     failures += test_chain();
+    { extern int test_pprev_walk(void); failures += test_pprev_walk(); }
     failures += test_keys();
     failures += test_script();
     failures += test_net();
