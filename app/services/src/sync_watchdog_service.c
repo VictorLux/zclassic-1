@@ -144,6 +144,7 @@ const char *watchdog_recovery_type_name(enum watchdog_recovery_type type)
     case WATCHDOG_PEER_FLOOR:       return "PEER_FLOOR";
     case WATCHDOG_SYNC_VIOLATION:   return "SYNC_VIOLATION";
     case WATCHDOG_UTXO_PAUSE:       return "UTXO_PAUSE";
+    case WATCHDOG_QUEUE_STARVED:    return "QUEUE_STARVED";
     }
     return "UNKNOWN";
 }
@@ -368,12 +369,15 @@ static int64_t g_sync_violation_first_seen = 0;
 /* Round 7 A1: non-static so tests can backdate via extern.
  * Follows the pattern of g_sync_state_entered_time. */
 int64_t g_utxo_pause_first_seen = 0;
+int64_t g_queue_starved_first_seen = 0;   /* Round 7 A7 */
 
 #define PEER_FLOOR_MIN_HEALTHY    3
 #define PEER_FLOOR_TRIGGER_SECS  60
 #define SYNC_VIOLATION_GAP      100   /* blocks behind peer max */
 #define SYNC_VIOLATION_SECS     600   /* sustained for 10 min */
 #define UTXO_PAUSE_TRIGGER_SECS 300   /* Round 7 A1: clear after 5 min */
+#define QUEUE_STARVED_TRIGGER_SECS 120 /* Round 7 A7: starved for >2 min */
+#define QUEUE_STARVED_RATIO_DEN    10  /* < 1/10th of IBD in-flight limit */
 
 enum watchdog_recovery_type sync_watchdog_check(
     struct connman *cm,
@@ -702,6 +706,50 @@ enum watchdog_recovery_type sync_watchdog_check(
         g_watchdog.last_chain_height = current_height;
     } else if (state != SYNC_BLOCKS_DOWNLOAD) {
         g_watchdog.last_chain_height = -1;
+    }
+
+    /* Round 7 A7: QUEUE_STARVED — in-flight slots < 10% of IBD cap for
+     * >120s while in BLOCKS_DOWNLOAD with peers connected. Means we
+     * have peers but they're not feeding the pipeline; BLOCK_STALL
+     * (5 min, zero-progress) fires later than we'd like. Recovery:
+     * disconnect outbound peers that haven't delivered a block
+     * recently so the outbound thread picks fresh ones.
+     * Gated on connman_get_node_count(cm) > 0 to avoid colliding with
+     * the PEER_FLOOR / STATE_STUCK paths when there are no peers. */
+    if (state == SYNC_BLOCKS_DOWNLOAD && dm &&
+        connman_get_node_count(cm) > 0) {
+        uint64_t inflight = 0, queued = 0;
+        dl_get_stats(dm, NULL, NULL, NULL, &inflight, &queued);
+        size_t starved_threshold =
+            DL_MAX_IN_FLIGHT_TOTAL_IBD / QUEUE_STARVED_RATIO_DEN;
+        bool starved = (inflight < starved_threshold);
+        if (starved) {
+            if (g_queue_starved_first_seen == 0)
+                g_queue_starved_first_seen = now;
+            if (now - g_queue_starved_first_seen >
+                    QUEUE_STARVED_TRIGGER_SECS) {
+                printf("[watchdog] QUEUE_STARVED: in_flight=%llu queued=%llu "
+                       "(threshold=%zu) for %llds — rotating slow peers + "
+                       "kicking refill\n",
+                       (unsigned long long)inflight,
+                       (unsigned long long)queued,
+                       starved_threshold,
+                       (long long)(now - g_queue_starved_first_seen));
+                event_emitf(EV_SYNC_STATE_CHANGE, 0,
+                            "watchdog QUEUE_STARVED in_flight=%llu queued=%llu",
+                            (unsigned long long)inflight,
+                            (unsigned long long)queued);
+                int dropped = disconnect_outbound_peers(cm);
+                (void)dropped;
+                g_queue_starved_first_seen = now;  /* re-arm */
+                record_recovery(now, WATCHDOG_QUEUE_STARVED);
+                return WATCHDOG_QUEUE_STARVED;
+            }
+        } else {
+            g_queue_starved_first_seen = 0;
+        }
+    } else {
+        g_queue_starved_first_seen = 0;
     }
 
     /* e. STALE_TIP: at_tip but peers are far ahead */

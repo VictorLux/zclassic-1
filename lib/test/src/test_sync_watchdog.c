@@ -11,7 +11,8 @@
 #include <time.h>
 
 extern _Atomic int64_t g_sync_state_entered_time;
-extern int64_t g_utxo_pause_first_seen;   /* Round 7 A1 */
+extern int64_t g_utxo_pause_first_seen;       /* Round 7 A1 */
+extern int64_t g_queue_starved_first_seen;    /* Round 7 A7 */
 
 /* ── Helpers ──────────────────────────────────────────────── */
 
@@ -29,6 +30,10 @@ static void reset_test_state(void)
 
     sync_watchdog_init();
     sync_set_state(SYNC_IDLE, "test reset");
+    /* Round 7 A1+A7: reset cross-test global timers so a backdated
+     * timestamp in one TEST() doesn't bleed into the next. */
+    g_utxo_pause_first_seen = 0;
+    g_queue_starved_first_seen = 0;
 }
 
 /* ── Test: header stall detection ────────────────────────── */
@@ -577,6 +582,47 @@ static int test_utxo_pause_inactive_resets_timer(void)
     return failures;
 }
 
+/* Round 7 A7: QUEUE_STARVED — empty in-flight slots for >120s with
+ * peers connected fires the recovery before BLOCK_STALL would. */
+static int test_queue_starved_fires_after_window(void)
+{
+    int failures = 0;
+
+    TEST("watchdog fires QUEUE_STARVED after 120s of empty in-flight") {
+        reset_test_state();
+        /* Transition idle → headers → blocks (direct idle→blocks is
+         * an illegal sync state transition). */
+        sync_set_state(SYNC_HEADERS_DOWNLOAD, "queue starved setup");
+        sync_set_state(SYNC_BLOCKS_DOWNLOAD, "queue starved test");
+
+        /* Fake a single connected peer so the > 0 gate passes. */
+        struct p2p_node fake_peer = {0};
+        struct p2p_node *peer_arr[1] = { &fake_peer };
+        g_test_cm.manager.nodes = peer_arr;
+        g_test_cm.manager.num_nodes = 1;
+
+        g_queue_starved_first_seen = 0;
+        /* First check: records baseline, no recovery yet. */
+        enum watchdog_recovery_type r = sync_watchdog_check(
+            &g_test_cm, &g_test_dm, &g_test_ms);
+        ASSERT(r != WATCHDOG_QUEUE_STARVED);
+        ASSERT(g_queue_starved_first_seen != 0);
+
+        /* Backdate >120s and check again — must fire. */
+        g_queue_starved_first_seen = (int64_t)time(NULL) - 150;
+        r = sync_watchdog_check(&g_test_cm, &g_test_dm, &g_test_ms);
+        ASSERT(r == WATCHDOG_QUEUE_STARVED);
+
+        /* Cleanup */
+        g_test_cm.manager.nodes = NULL;
+        g_test_cm.manager.num_nodes = 0;
+
+        PASS();
+    } _test_next:;
+
+    return failures;
+}
+
 /* ── Test runner ─────────────────────────────────────────── */
 
 int test_sync_watchdog(void)
@@ -602,5 +648,6 @@ int test_sync_watchdog(void)
     failures += test_progress_rate_tracking();
     failures += test_utxo_pause_fires_after_window();
     failures += test_utxo_pause_inactive_resets_timer();
+    failures += test_queue_starved_fires_after_window();
     return failures;
 }

@@ -30,6 +30,7 @@ enum watchdog_recovery_type {
     WATCHDOG_PEER_FLOOR,    /* < 3 healthy outbound for > 60s */
     WATCHDOG_SYNC_VIOLATION,/* peer_max - tip > 100 for > 600s (Part D) */
     WATCHDOG_UTXO_PAUSE,    /* Round 7 A1: activation paused > 300s */
+    WATCHDOG_QUEUE_STARVED, /* Round 7 A7: in-flight slots < 10% for > 120s */
 };
 
 /* Watchdog status snapshot (for RPC) */
