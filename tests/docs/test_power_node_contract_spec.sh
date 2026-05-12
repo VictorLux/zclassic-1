@@ -16,9 +16,9 @@ required=(
   "MCP surface"
   "permissions"
   "event expectations"
-  "app/include/app/services.h"
-  "tools/qedc_mcp/controllers/application_ctrl.h"
-  "tools/qedc_mcp/models/event.h"
+  "app/services/README.md"
+  "tools/mcp/controllers/app_controller.c"
+  "lib/event/include/event/event.h"
 )
 
 for token in "${required[@]}"; do
