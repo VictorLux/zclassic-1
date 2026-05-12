@@ -110,4 +110,13 @@ int health_snapshot_all(struct health_snapshot *out, int max);
 /* Reset the entire ring + stop the sweeper. Tests only. */
 void health_reset_for_test(void);
 
+/* State-dump convention (see CLAUDE.md "Adding state introspection").
+ * Writes the heartbeat ring's runtime state as a JSON object into
+ * `out`. `out` must already be initialized (json_set_object'd) by the
+ * caller. `key` is unused by this subsystem — pass NULL.
+ *
+ * Returns true on success, false if `out` is NULL. */
+struct json_value;
+bool health_dump_state_json(struct json_value *out, const char *key);
+
 #endif /* ZCL_HEALTH_HEARTBEAT_H */

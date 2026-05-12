@@ -33,6 +33,7 @@
 #include "controllers/strong_params.h"
 #include "services/sync_watchdog_service.h"
 #include "services/chain_restore_service.h"
+#include "health/heartbeat.h"
 #include "models/database.h"
 #include "config/runtime.h"
 #include "util/ar_step_readonly.h"
@@ -210,6 +211,8 @@ static const struct dump_entry g_dumpers[] = {
                      "last boot's integrity check + nbits-backfill counters" },
     { "block_index", block_index_dump_state_json,
                      "block_index entry by height or hash (in `key`)" },
+    { "health",      health_dump_state_json,
+                     "unified heartbeat ring: registered subsystems, ages, stall fires" },
 };
 
 static bool rpc_dumpstate(const struct json_value *params, bool help,

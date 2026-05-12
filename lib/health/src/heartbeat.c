@@ -6,6 +6,7 @@
 
 #include "health/heartbeat.h"
 #include "core/utiltime.h"
+#include "json/json.h"
 #include "util/thread_registry.h"
 
 #include <pthread.h>
@@ -275,4 +276,39 @@ void health_reset_for_test(void)
     memset(g_entries, 0, sizeof(g_entries));
     pthread_mutex_unlock(&g_mu);
     atomic_store(&g_check_interval_ms, 1000);
+}
+
+bool health_dump_state_json(struct json_value *out, const char *key)
+{
+    (void)key;
+    if (!out) return false;
+
+    struct health_snapshot snaps[HEALTH_REGISTRY_CAP];
+    int n = health_snapshot_all(snaps, HEALTH_REGISTRY_CAP);
+
+    json_push_kv_int(out, "registry_cap", HEALTH_REGISTRY_CAP);
+    json_push_kv_int(out, "entry_count", n);
+    json_push_kv_int(out, "check_interval_ms",
+                     atomic_load(&g_check_interval_ms));
+    json_push_kv_bool(out, "sweeper_running",
+                      atomic_load(&g_started));
+
+    struct json_value entries;
+    json_init(&entries);
+    json_set_array(&entries);
+    for (int i = 0; i < n; i++) {
+        struct json_value e;
+        json_init(&e);
+        json_set_object(&e);
+        json_push_kv_str(&e, "name", snaps[i].name);
+        json_push_kv_int(&e, "deadline_secs", snaps[i].deadline_secs);
+        json_push_kv_int(&e, "last_beat_age_secs",
+                         snaps[i].last_beat_age_secs);
+        json_push_kv_int(&e, "fires_total", snaps[i].on_stall_fired);
+        json_push_kv_bool(&e, "periodic", snaps[i].periodic);
+        json_push_kv_bool(&e, "currently_stalled", snaps[i].currently_stalled);
+        json_push_back(&entries, &e);
+    }
+    json_push_kv(out, "entries", &entries);
+    return true;
 }
