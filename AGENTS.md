@@ -17,23 +17,17 @@ should read it first.
 2. `git pull --rebase` before doing anything else.
 
 3. If you are in `~/zclassic23-2` or `~/zclassic23-3`, start from the
-   project Kanban, not from stale markdown:
+   project Kanban:
 
    ```text
    vibepoint:kickoff { "agent": 2 }
    vibepoint:kickoff { "agent": 3 }
    ```
 
-   **Codex CLI note:** `codex mcp` is global on this host, not
-   project-scoped. Before kickoff, `codex mcp list` must show
-   `vibepoint  stdio vibepoint (CWD-autodetect)` and must not show
-   `qedc  http://127.0.0.1:7777/`. If it shows `qedc`, stop and ping
-   Rhett; that is the QEDC compiler board, not zclassic.
-
    Use the matching agent number for your workspace, then immediately
    follow the tool's required next call (`task_claim_next`, `task_packet`,
-   or resume the active claim). The MCP database is authoritative for
-   current assignment and claim state.
+   or resume the active claim). The zclassic Vibepoint database is
+   authoritative for current assignment and claim state.
 
 4. Open your per-role file only as supporting context after kickoff.
    If it disagrees with `vibepoint:kickoff`, follow the MCP result

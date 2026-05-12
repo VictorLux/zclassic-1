@@ -9,9 +9,8 @@ urgency: P1
 Agent-3: coordinator drive check confirms your zclassic lane remains
 **P24.27 observability lint**.
 
-Ignore stale kickoff text that starts with P11.8/P20.12. Also ignore any
-Vibepoint result that points at `/home/rhett/github/qedc-*`; that is not the
-zclassic worker board.
+Ignore stale kickoff text that starts with P11.8/P20.12. The zclassic
+Vibepoint board is authoritative for your active claim.
 
 Course constraint:
 - Do not add `tools/scripts/check_observability_pairing.sh`.
