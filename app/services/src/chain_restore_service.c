@@ -503,7 +503,16 @@ int chain_restore_backfill_nbits_from_disk(struct main_state *ms,
     if (!ms || !datadir || !datadir[0])
         return 0;
 
-    int fixed = 0, read_errors = 0;
+    /* Round 6 Part 8: collect the active tip height once so we can
+     * cheaply identify entries that are "off-chain" — i.e. block-index
+     * entries not on the current active chain. If those entries have
+     * unrecoverable nBits, we can safely clear BLOCK_HAVE_DATA: the
+     * data will be re-fetched from a peer if the chain ever activates
+     * through them. Doing this lets the integrity gate pass without
+     * leaving 34 corrupt nBits=0 entries blocking healthy boots. */
+    int tip_h = active_chain_height(&ms->chain_active);
+
+    int fixed = 0, read_errors = 0, invalidated_off_chain = 0;
     size_t iter = 0;
     struct block_index *p;
     while (block_map_next(&ms->map_block_index, &iter, NULL, &p)) {
@@ -515,7 +524,24 @@ int chain_restore_backfill_nbits_from_disk(struct main_state *ms,
 
         struct block blk;
         if (!read_block_from_disk_index_pread(&blk, p, datadir)) {
-            read_errors++;
+            /* Disk read failed despite BLOCK_HAVE_DATA. The data file
+             * is missing or truncated. If this entry is not on the
+             * active chain, drop BLOCK_HAVE_DATA so the integrity gate
+             * stops flagging it and the download path can re-fetch.
+             * Never touch entries on the active chain — those are
+             * load-bearing for chainwork accounting. */
+            bool on_active = false;
+            if (tip_h >= 0 && p->nHeight <= tip_h) {
+                struct block_index *at = active_chain_at(
+                    &ms->chain_active, p->nHeight);
+                if (at == p) on_active = true;
+            }
+            if (!on_active) {
+                p->nStatus &= ~(unsigned)BLOCK_HAVE_DATA;
+                invalidated_off_chain++;
+            } else {
+                read_errors++;
+            }
             continue;
         }
 
@@ -526,9 +552,10 @@ int chain_restore_backfill_nbits_from_disk(struct main_state *ms,
         block_free(&blk);
     }
 
-    if (fixed > 0 || read_errors > 0)
-        printf("[nbits-backfill] fixed %d pindex entries (%d read errors)\n",
-               fixed, read_errors);
+    if (fixed > 0 || read_errors > 0 || invalidated_off_chain > 0)
+        printf("[nbits-backfill] fixed=%d pindex entries (read_errors=%d "
+               "off_chain_cleared=%d)\n",
+               fixed, read_errors, invalidated_off_chain);
 
     return fixed;
 }
