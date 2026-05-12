@@ -28,6 +28,7 @@
 #include <sys/stat.h>
 #include "util/safe_alloc.h"
 #include "util/log_macros.h"
+#include "util/thread_registry.h"
 
 /* ── Session management ────────────────────────────────────────── */
 
@@ -723,8 +724,8 @@ void fs_server_start(const char *datadir, uint16_t port)
     g_fs_client_queue_len = 0;
 
     for (unsigned i = 0; i < FS_SERVER_WORKERS; i++) {
-        if (pthread_create(&g_fs_worker_threads[i], NULL,
-                           fs_client_worker_thread, NULL) != 0) {
+        if (thread_registry_spawn_ex("zcl_fs_wkr", fs_client_worker_thread,
+                                      NULL, &g_fs_worker_threads[i]) != 0) {
             fprintf(stderr, "file_service: failed to start worker %u\n", i);
             break;
         }
@@ -732,7 +733,8 @@ void fs_server_start(const char *datadir, uint16_t port)
     }
     g_fs_worker_threads_started = started_workers;
 
-    if (pthread_create(&g_fs_thread, NULL, fs_server_thread, NULL) != 0) {
+    if (thread_registry_spawn_ex("zcl_fs_server", fs_server_thread, NULL,
+                                  &g_fs_thread) != 0) {
         atomic_store(&g_fs_running, false);
         pthread_cond_broadcast(&g_fs_client_queue_cv);
         pthread_mutex_unlock(&g_fs_state_mutex);
@@ -744,8 +746,8 @@ void fs_server_start(const char *datadir, uint16_t port)
     }
     g_fs_thread_started = true;
     if (g_fs_datadir) {
-        if (pthread_create(&g_fs_manifest_thread, NULL,
-                           fs_manifest_thread, NULL) == 0) {
+        if (thread_registry_spawn_ex("zcl_fs_manifest", fs_manifest_thread,
+                                      NULL, &g_fs_manifest_thread) == 0) {
             g_fs_manifest_thread_started = true;
         } else {
             fprintf(stderr, "file_service: failed to start manifest thread\n");

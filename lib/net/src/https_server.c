@@ -26,6 +26,7 @@
 #include <sys/time.h>
 #include "util/log_macros.h"
 #include "util/safe_alloc.h"
+#include "util/thread_registry.h"
 #include "mcp/metrics.h"
 
 static SSL_CTX *g_ssl_ctx = NULL;
@@ -531,8 +532,8 @@ bool https_server_start_on_port(const char *cert_path, const char *key_path,
     atomic_store(&g_active_connections, 0);
 
     for (unsigned i = 0; i < (sizeof(g_worker_threads) / sizeof(g_worker_threads[0])); i++) {
-        if (pthread_create(&g_worker_threads[i], NULL,
-                           https_worker_fn, NULL) != 0) {
+        if (thread_registry_spawn_ex("zcl_https_wkr", https_worker_fn,
+                                      NULL, &g_worker_threads[i]) != 0) {
             fprintf(stderr, "HTTPS: worker thread failed\n");
             break;
         }
@@ -555,7 +556,8 @@ bool https_server_start_on_port(const char *cert_path, const char *key_path,
         LOG_FAIL("https", "no worker threads could be started");
     }
 
-    if (pthread_create(&g_https_thread, NULL, https_listen_fn, NULL) != 0) {
+    if (thread_registry_spawn_ex("zcl_https_listen", https_listen_fn, NULL,
+                                  &g_https_thread) != 0) {
         close(g_https_fd);
         g_https_fd = -1;
         atomic_store(&g_running, false);
@@ -568,12 +570,13 @@ bool https_server_start_on_port(const char *cert_path, const char *key_path,
             SSL_CTX_free(g_ssl_ctx);
             g_ssl_ctx = NULL;
         }
-        LOG_FAIL("https", "pthread_create failed for HTTPS listen thread");
+        LOG_FAIL("https", "thread_registry_spawn_ex failed for HTTPS listen thread");
     }
     g_https_thread_started = true;
 
     if (g_http_fd >= 0) {
-        if (pthread_create(&g_http_thread, NULL, http_listen_fn, NULL) != 0) {
+        if (thread_registry_spawn_ex("zcl_http_listen", http_listen_fn, NULL,
+                                      &g_http_thread) != 0) {
             fprintf(stderr, "HTTPS: HTTP redirect thread failed\n");
             close(g_http_fd);
             g_http_fd = -1;
