@@ -407,6 +407,18 @@ void chain_restore_record_plan_result(const struct chain_restore_plan *p)
     g_boot_snapshot.plan_reason[n] = '\0';
 }
 
+void chain_restore_record_csr_consistency(bool consistent,
+                                          int tip_height,
+                                          int header_height)
+{
+    g_boot_snapshot.has_data = true;
+    g_boot_snapshot.boot_time = (int64_t)time(NULL);
+    g_boot_snapshot.csr_consistency_checked = true;
+    g_boot_snapshot.csr_consistent = consistent;
+    g_boot_snapshot.csr_tip_height = tip_height;
+    g_boot_snapshot.csr_header_height = header_height;
+}
+
 void chain_restore_get_boot_snapshot(struct chain_restore_boot_snapshot *out)
 {
     if (!out) return;
@@ -449,6 +461,13 @@ bool chain_restore_dump_state_json(struct json_value *out, const char *key)
     json_push_kv_bool(out, "plan_should_skip_activate",
                       g_boot_snapshot.plan_should_skip_activate);
     json_push_kv_str(out, "plan_reason", g_boot_snapshot.plan_reason);
+    /* Round 7 B1: CSR consistency snapshot at boot */
+    json_push_kv_bool(out, "csr_consistency_checked",
+                      g_boot_snapshot.csr_consistency_checked);
+    json_push_kv_bool(out, "csr_consistent", g_boot_snapshot.csr_consistent);
+    json_push_kv_int(out, "csr_tip_height", g_boot_snapshot.csr_tip_height);
+    json_push_kv_int(out, "csr_header_height",
+                     g_boot_snapshot.csr_header_height);
     return true;
 }
 
@@ -888,6 +907,27 @@ bool chain_restore_finalize(struct main_state *ms, const char *datadir)
 
     struct chain_integrity_result r;
     chain_integrity_check_post_restore(&r, ms);
+
+    /* Round 7 B1: also record csr-side tip ↔ coins_best_block
+     * consistency in the boot snapshot. csr_snapshot is idempotent
+     * and returns tip_height=-1 if csr isn't initialized (some test
+     * paths), in which case we leave csr_consistency_checked=false. */
+    {
+        struct chain_state_repository *csr = csr_instance();
+        if (csr && csr->initialized) {
+            struct chain_state_view view;
+            csr_snapshot(csr, &view);
+            chain_restore_record_csr_consistency(
+                view.consistent, view.tip_height, view.header_height);
+            if (!view.consistent) {
+                fprintf(stderr,
+                    "[chain-integrity] CSR tip/coins divergence at boot: "
+                    "tip_h=%d header_h=%d — first activate_best_chain "
+                    "pass should reconcile\n",
+                    view.tip_height, view.header_height);
+            }
+        }
+    }
 
     if (!r.ok) {
         fprintf(stderr,

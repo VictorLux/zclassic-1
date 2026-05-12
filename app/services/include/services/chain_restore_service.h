@@ -185,6 +185,15 @@ struct chain_restore_boot_snapshot {
     int    plan_anchor_height;
     bool   plan_should_skip_activate;
     char   plan_reason[160];
+    /* Round 7 B1: post-boot CSR consistency. csr_snapshot.consistent
+     * compares tip_hash == coins_best_block. Diverges only after a
+     * crash-window in the disconnect_tip path — boot reconstructs
+     * chain_tip from coins_best_block, but a stale block_index could
+     * still imply an inconsistency on the first activate pass. */
+    bool   csr_consistency_checked;
+    bool   csr_consistent;
+    int    csr_tip_height;
+    int    csr_header_height;
 };
 
 void chain_restore_get_boot_snapshot(struct chain_restore_boot_snapshot *out);
@@ -198,6 +207,10 @@ void chain_restore_record_backfill_result(int fixed,
                                           int off_chain_cleared);
 /* Round 7 A4: record the chain_restore_plan outcome. */
 void chain_restore_record_plan_result(const struct chain_restore_plan *p);
+/* Round 7 B1: snapshot CSR consistency into the boot snapshot. */
+void chain_restore_record_csr_consistency(bool consistent,
+                                          int tip_height,
+                                          int header_height);
 
 /* State-dump convention (see CLAUDE.md "Adding state introspection"). */
 struct json_value;
