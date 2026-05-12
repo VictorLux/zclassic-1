@@ -175,6 +175,39 @@ void sync_watchdog_get_stats(struct watchdog_stats *out)
     out->last_recovery = g_watchdog.last_recovery_type;
 }
 
+/* ── State-dump (see CLAUDE.md "Adding state introspection") ──── */
+
+#include "json/json.h"
+
+bool sync_watchdog_dump_state_json(struct json_value *out, const char *key)
+{
+    (void)key;
+    if (!out) return false;
+
+    struct sync_watchdog_status ws;
+    struct watchdog_stats st;
+    sync_watchdog_get_status(&ws);
+    sync_watchdog_get_stats(&st);
+
+    json_set_object(out);
+    json_push_kv_bool(out, "enabled", ws.enabled);
+    json_push_kv_int(out, "checks_run", (int64_t)ws.checks_run);
+    json_push_kv_int(out, "recoveries_triggered",
+                     (int64_t)ws.recoveries_triggered);
+    json_push_kv_int(out, "last_recovery_time", ws.last_recovery_time);
+    json_push_kv_str(out, "last_recovery_type",
+                     watchdog_recovery_type_name(ws.last_recovery_type));
+    json_push_kv_str(out, "current_state",
+                     sync_state_name(ws.current_state));
+    json_push_kv_int(out, "current_state_duration_secs",
+                     ws.current_state_duration_secs);
+    json_push_kv_int(out, "current_state_entry_height",
+                     (int64_t)ws.current_state_entry_height);
+    json_push_kv_int(out, "escalation_level", (int64_t)ws.escalation_level);
+    json_push_kv_real(out, "blocks_per_sec", st.blocks_per_sec);
+    return true;
+}
+
 /* Forward declarations */
 static int disconnect_outbound_peers(struct connman *cm);
 

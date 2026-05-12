@@ -13,9 +13,11 @@
 #include "primitives/block.h"
 #include "storage/disk_block_io.h"
 #include "services/snapshot_sync_service.h"
+#include "json/json.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #include "util/log_macros.h"
 #include "util/safe_alloc.h"
@@ -336,6 +338,77 @@ void chain_integrity_check_post_restore(struct chain_integrity_result *out,
         (out->tip_height < 0) ||
         (active_chain_at(&ms->chain_active, out->tip_height) != NULL);
     out->ok = (out->zero_nbits_count == 0 && tip_slot_ok);
+
+    /* Cache the result for `dumpstate subsystem=boot` / `zcl_state`. */
+    chain_restore_record_integrity_result(out);
+}
+
+/* ── Boot snapshot ─────────────────────────────────────────────── */
+
+static struct chain_restore_boot_snapshot g_boot_snapshot;
+
+void chain_restore_record_integrity_result(
+    const struct chain_integrity_result *r)
+{
+    if (!r) return;
+    g_boot_snapshot.has_data = true;
+    g_boot_snapshot.boot_time = (int64_t)time(NULL);
+    g_boot_snapshot.integrity_ok = r->ok;
+    g_boot_snapshot.zero_nbits_count = r->zero_nbits_count;
+    g_boot_snapshot.active_chain_holes = r->active_chain_holes;
+    g_boot_snapshot.tip_window_holes = r->tip_window_holes;
+    g_boot_snapshot.tip_height = r->tip_height;
+    g_boot_snapshot.first_nbits_zero_height = r->first_nbits_zero_height;
+    g_boot_snapshot.first_hole_height = r->first_hole_height;
+    g_boot_snapshot.first_tip_window_hole = r->first_tip_window_hole;
+}
+
+void chain_restore_record_backfill_result(int fixed,
+                                          int read_errors,
+                                          int off_chain_cleared)
+{
+    g_boot_snapshot.has_data = true;
+    g_boot_snapshot.boot_time = (int64_t)time(NULL);
+    g_boot_snapshot.backfill_ran = true;
+    g_boot_snapshot.backfill_fixed = fixed;
+    g_boot_snapshot.backfill_read_errors = read_errors;
+    g_boot_snapshot.backfill_off_chain_cleared = off_chain_cleared;
+}
+
+void chain_restore_get_boot_snapshot(struct chain_restore_boot_snapshot *out)
+{
+    if (!out) return;
+    *out = g_boot_snapshot;
+}
+
+bool chain_restore_dump_state_json(struct json_value *out, const char *key)
+{
+    (void)key;
+    if (!out) return false;
+    json_set_object(out);
+    json_push_kv_bool(out, "has_data", g_boot_snapshot.has_data);
+    json_push_kv_int(out, "boot_time", g_boot_snapshot.boot_time);
+    json_push_kv_bool(out, "integrity_ok", g_boot_snapshot.integrity_ok);
+    json_push_kv_int(out, "zero_nbits_count",
+                     g_boot_snapshot.zero_nbits_count);
+    json_push_kv_int(out, "active_chain_holes",
+                     g_boot_snapshot.active_chain_holes);
+    json_push_kv_int(out, "tip_window_holes",
+                     g_boot_snapshot.tip_window_holes);
+    json_push_kv_int(out, "tip_height", g_boot_snapshot.tip_height);
+    json_push_kv_int(out, "first_nbits_zero_height",
+                     g_boot_snapshot.first_nbits_zero_height);
+    json_push_kv_int(out, "first_hole_height",
+                     g_boot_snapshot.first_hole_height);
+    json_push_kv_int(out, "first_tip_window_hole",
+                     g_boot_snapshot.first_tip_window_hole);
+    json_push_kv_bool(out, "backfill_ran", g_boot_snapshot.backfill_ran);
+    json_push_kv_int(out, "backfill_fixed", g_boot_snapshot.backfill_fixed);
+    json_push_kv_int(out, "backfill_read_errors",
+                     g_boot_snapshot.backfill_read_errors);
+    json_push_kv_int(out, "backfill_off_chain_cleared",
+                     g_boot_snapshot.backfill_off_chain_cleared);
+    return true;
 }
 
 /* ── Post-restore repair (P14.11 + P14.12 GREEN) ────────────────── */
@@ -556,6 +629,9 @@ int chain_restore_backfill_nbits_from_disk(struct main_state *ms,
         printf("[nbits-backfill] fixed=%d pindex entries (read_errors=%d "
                "off_chain_cleared=%d)\n",
                fixed, read_errors, invalidated_off_chain);
+
+    chain_restore_record_backfill_result(fixed, read_errors,
+                                         invalidated_off_chain);
 
     return fixed;
 }

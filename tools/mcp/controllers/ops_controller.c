@@ -9,6 +9,7 @@
 #include "../router.h"
 #include "../rpc_client.h"
 #include "../replay.h"
+#include "../rpc_params.h"
 
 #include "json/json.h"
 #include "util/log_macros.h"
@@ -780,6 +781,40 @@ static int h_zcl_rpc(const struct mcp_request *req, struct mcp_response *res)
     return 0;
 }
 
+/* zcl_state — generic in-process state dump.
+ *
+ * Dispatches by `subsystem` to the owning module's `*_dump_state_json`
+ * function via the `dumpstate` RPC method. Adding a new subsystem is
+ * one dispatcher line in app/controllers/src/diagnostics_controller.c
+ * plus one dump function in the owning module — no further MCP
+ * plumbing required. See CLAUDE.md "Adding state introspection".
+ *
+ * Current subsystems: watchdog, boot, block_index. */
+static int h_zcl_state(const struct mcp_request *req, struct mcp_response *res)
+{
+    const char *sub = json_get_str(json_get(req->args, "subsystem"));
+    const struct json_value *key_val = json_get(req->args, "key");
+    const char *key = key_val ? json_get_str(key_val) : NULL;
+
+    struct mcp_params p;
+    mcp_params_init(&p);
+    mcp_params_push_str(&p, sub ? sub : "");
+    if (key && key[0])
+        mcp_params_push_str(&p, key);
+    char *pjson = mcp_params_to_json(&p);
+
+    char *out = pjson ? mcp_node_rpc("dumpstate", pjson) : NULL;
+    free(pjson);
+    if (!out) {
+        res->error = MCP_ERR_HANDLER_FAILED;
+        snprintf(res->error_message, sizeof(res->error_message),
+                 "dumpstate %s returned null", sub ? sub : "(null)");
+        LOG_ERR("mcp.ops", "dumpstate %s returned null", sub ? sub : "(null)");
+    }
+    res->body = out;
+    return 0;
+}
+
 /* zcl_kpi — single call that returns every subsystem KPI. Used by
  * operators to take the pulse of the node in one shot. Each nested
  * field is the raw result of the corresponding RPC, so field shapes
@@ -1262,6 +1297,14 @@ static const struct mcp_param_spec p_profile[] = {
       "Max threads returned, sorted by CPU (clamped to [1, 64])",
       1, 64, 0, 0, NULL, "10" },
 };
+static const struct mcp_param_spec p_state[] = {
+    { "subsystem", MCP_PARAM_STR, true,
+      "Subsystem name: watchdog, boot, block_index",
+      0, 0, 1, 64, "watchdog,boot,block_index", NULL },
+    { "key", MCP_PARAM_STR, false,
+      "Subsystem-specific key (block_index: height or hex hash)",
+      0, 0, 0, 128, NULL, NULL },
+};
 
 static const struct mcp_tool_route k_routes[] = {
     { "zcl_kickoff", "ops",
@@ -1310,6 +1353,11 @@ static const struct mcp_tool_route k_routes[] = {
     { "zcl_rpc", "ops",
       "Call any RPC method directly. 85+ commands available.",
       p_rpc, sizeof(p_rpc) / sizeof(p_rpc[0]), h_zcl_rpc },
+    { "zcl_state", "ops",
+      "Generic in-process state dump. subsystem=watchdog|boot|block_index. "
+      "For block_index, pass `key`=height or hex hash. New subsystems plug "
+      "in via *_dump_state_json (see CLAUDE.md).",
+      p_state, sizeof(p_state) / sizeof(p_state[0]), h_zcl_state },
     { "zcl_profile", "ops",
       "Per-thread CPU sampler: reads /proc/self/task/*/stat before "
       "and after `duration_ms`, returns top N threads by CPU delta "

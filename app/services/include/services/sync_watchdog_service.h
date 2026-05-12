@@ -104,4 +104,11 @@ bool sync_watchdog_thread_start(pthread_t *thread,
 
 void sync_watchdog_thread_stop(pthread_t *thread, bool *started);
 
+/* State-dump convention (see CLAUDE.md "Adding state introspection").
+ * Writes the watchdog's runtime state as a JSON object into `out`.
+ * `out` must already be initialized; this function fills it. `key` is
+ * unused by this subsystem. Reentrant-safe via atomic loads. */
+struct json_value;
+bool sync_watchdog_dump_state_json(struct json_value *out, const char *key);
+
 #endif /* ZCL_SERVICES_SYNC_WATCHDOG_H */

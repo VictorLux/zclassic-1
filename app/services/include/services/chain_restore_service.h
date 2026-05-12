@@ -150,6 +150,47 @@ struct chain_integrity_result {
 void chain_integrity_check_post_restore(struct chain_integrity_result *out,
                                         const struct main_state *ms);
 
+/* ── Boot snapshot ───────────────────────────────────────────────
+ *
+ * Captures the most recent post-restore integrity-check result plus
+ * the most recent backfill counters. Updated automatically by
+ * chain_integrity_check_post_restore and
+ * chain_restore_backfill_nbits_from_disk. Reads via
+ * chain_restore_get_boot_snapshot are atomic enough for diagnostic
+ * use (single struct copy; no locking). */
+struct chain_restore_boot_snapshot {
+    bool   has_data;            /* false until first integrity check */
+    int64_t boot_time;          /* time(NULL) when struct was last filled */
+    /* From the most recent chain_integrity_check_post_restore */
+    bool   integrity_ok;
+    int    zero_nbits_count;
+    int    active_chain_holes;
+    int    tip_window_holes;
+    int    tip_height;
+    int    first_nbits_zero_height;
+    int    first_hole_height;
+    int    first_tip_window_hole;
+    /* From the most recent chain_restore_backfill_nbits_from_disk */
+    bool   backfill_ran;
+    int    backfill_fixed;
+    int    backfill_read_errors;
+    int    backfill_off_chain_cleared;
+};
+
+void chain_restore_get_boot_snapshot(struct chain_restore_boot_snapshot *out);
+
+/* Internal — called from chain_restore_service.c. Updates the boot
+ * snapshot so the next dumpstate / zcl_state call sees fresh values. */
+void chain_restore_record_integrity_result(
+    const struct chain_integrity_result *r);
+void chain_restore_record_backfill_result(int fixed,
+                                          int read_errors,
+                                          int off_chain_cleared);
+
+/* State-dump convention (see CLAUDE.md "Adding state introspection"). */
+struct json_value;
+bool chain_restore_dump_state_json(struct json_value *out, const char *key);
+
 /* ── Post-restore repair (P14.11 + P14.12 GREEN) ──────────────────
  *
  * After an anchor-restore / snapshot-restore / block-file-scan path
