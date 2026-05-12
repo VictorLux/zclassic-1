@@ -213,26 +213,21 @@ static int cli_main(int argc, char **argv)
 
 volatile sig_atomic_t g_shutdown_requested = 0;
 
-static void *shutdown_watchdog(void *arg)
+/* Round 6 Part 3: alarm-based shutdown watchdog. Async-signal-safe.
+ * Previous implementation used pthread_create from the signal handler
+ * (not AS-safe) — under some kernel/glibc combinations the watchdog
+ * thread never got CPU time and systemd's TimeoutStopSec=90 s fired
+ * instead. Replaced with setitimer + SIGALRM handler: alarm() and
+ * signal() ARE async-signal-safe, and the kernel guarantees SIGALRM
+ * delivery at the scheduled time. */
+static void shutdown_alarm_handler(int sig)
 {
-    (void)arg;
-    /* Round 6 Part 3: reduced from 60 s → 25 s. systemd's TimeoutStopSec
-     * is 90 s; we want to be well under that with margin. After the
-     * Round 6 bounded P2P / gap-fill / bg-validation joins (5 s each),
-     * the only remaining slow path is coins_view_cache_flush, which
-     * normally completes in seconds. If shutdown is still not done at
-     * 25 s, something is genuinely wedged — raise SIGABRT so the Round 5
-     * fatal handler prints a backtrace to node.log before _exit, so the
-     * next session can fix the root cause instead of guessing. */
-    sleep(25);
-    fprintf(stderr, "Shutdown watchdog: 25s timeout — backtrace + exit\n");
-    fflush(stderr);
-    /* Trigger Round 5 fatal handler — backtrace_symbols_fd writes the
-     * caller stack (still useful) and re-raises with SIG_DFL. */
-    raise(SIGABRT);
-    sleep(2);
+    (void)sig;
+    static const char msg[] =
+        "Shutdown watchdog: 25s timeout — forcing exit\n";
+    /* write() is async-signal-safe; fprintf is not. */
+    (void)!write(STDERR_FILENO, msg, sizeof(msg) - 1);
     _exit(1);
-    return NULL;
 }
 
 static void signal_handler(int sig)
@@ -248,10 +243,10 @@ static void signal_handler(int sig)
      * legacy g_shutdown_requested readers. The setter is an atomic
      * store, safe to call from the signal handler. */
     thread_registry_request_shutdown();
-    /* Start watchdog thread to force exit if shutdown hangs */
-    pthread_t wd;
-    pthread_create(&wd, NULL, shutdown_watchdog, NULL);
-    pthread_detach(wd);
+    /* Schedule a forced exit in 25 s. signal() and alarm() are
+     * async-signal-safe (POSIX). */
+    signal(SIGALRM, shutdown_alarm_handler);
+    alarm(25);
 }
 
 static void print_usage(const char *prog)
