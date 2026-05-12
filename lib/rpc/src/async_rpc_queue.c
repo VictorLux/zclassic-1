@@ -4,6 +4,7 @@
  * file COPYING or http://www.opensource.org/licenses/mit-license.php. */
 
 #include "rpc/async_rpc_queue.h"
+#include "util/thread_registry.h"
 #include <string.h>
 #include <stdatomic.h>
 #include <stdio.h>
@@ -99,13 +100,13 @@ bool async_queue_add_worker(struct async_rpc_queue *q)
     zcl_mutex_lock(&q->lock);
     if (!async_queue_is_closed(q) && !async_queue_is_finishing(q) &&
         q->num_workers < MAX_ASYNC_WORKERS) {
-        rc = pthread_create(&q->workers[q->num_workers], NULL,
-                            worker_thread, q);
+        rc = thread_registry_spawn_ex("zcl_async_rpc", worker_thread, q,
+                                       &q->workers[q->num_workers]);
         if (rc == 0) {
             q->num_workers++;
             started = true;
         } else {
-            perror("async_queue_add_worker: pthread_create");
+            perror("async_queue_add_worker: thread_registry_spawn_ex");
         }
     }
     zcl_mutex_unlock(&q->lock);

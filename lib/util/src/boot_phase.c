@@ -1,6 +1,7 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0 */
 
 #include "util/boot_phase.h"
+#include "util/thread_registry.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -52,7 +53,8 @@ void boot_phase_begin(struct boot_phase *p, const char *name)
     fprintf(stderr, "[boot-phase] BEGIN %s\n", p->name);
     fflush(stderr);
 
-    if (pthread_create(&p->watchdog, NULL, boot_phase_watchdog, p) == 0)
+    if (thread_registry_spawn_ex("zcl_boot_phase", boot_phase_watchdog, p,
+                                  &p->watchdog) == 0)
         p->watchdog_started = true;
 }
 
