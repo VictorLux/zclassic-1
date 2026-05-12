@@ -383,15 +383,20 @@ static int test_integrity_passes_on_clean_chain(void) {
     return failures;
 }
 
-/* RED: simulate the P14.11 + P14.12 live-node state. A synthetic
- * anchor at h=N with nBits==0 and pprev==NULL, set as tip. The
- * integrity check must detect BOTH:
- *   - anchor pindex with nBits=0 (P14.11 signature),
- *   - active_chain holes from 0..N-1 because anchor->pprev is NULL
- *     so active_chain_set_tip walks into NULL (P14.12 signature). */
-static int test_integrity_fails_on_anchor_restore(void) {
+/* Round 5 design: a synthetic anchor (BLOCK_VALID_UNKNOWN, no
+ * BLOCK_HAVE_DATA) is a benign placeholder created by chain_restore
+ * when coins_best_block is unrecoverable. The integrity gate
+ * deliberately skips such entries (no header → no validation walk →
+ * nBits=0 is harmless) and treats below-tip holes as diagnostic
+ * counters that do not gate `ok`. Operational requirement: nBits
+ * clean across BLOCK_HAVE_DATA entries + tip slot populated.
+ *
+ * If this test asserts r.ok == false, the integrity gate has
+ * regressed to its pre-Round-5 behavior and will crash-loop nodes
+ * whose chain_restore had to fall back to anchor recovery. */
+static int test_integrity_anchor_restore_is_benign(void) {
     int failures = 0;
-    TEST("chain_integrity: synthetic anchor (pprev=NULL, nBits=0) FAILS") {
+    TEST("chain_integrity: synthetic anchor (no DATA, nBits=0) is benign") {
         struct main_state ms;
         main_state_init(&ms);
 
@@ -402,19 +407,24 @@ static int test_integrity_fails_on_anchor_restore(void) {
             chain_restore_create_anchor(&ms, &anchor_hash, H);
         ASSERT(anchor != NULL);
         ASSERT(anchor->nHeight == H);
-        ASSERT(anchor->nBits == 0);      /* P14.11 shape: nBits unset */
-        ASSERT(anchor->pprev == NULL);   /* P14.12 shape: no ancestry */
+        ASSERT(anchor->nBits == 0);
+        ASSERT(anchor->pprev == NULL);
+        ASSERT(!(anchor->nStatus & BLOCK_HAVE_DATA));
 
         ASSERT(active_chain_set_tip(&ms.chain_active, anchor));
 
         struct chain_integrity_result r;
         chain_integrity_check_post_restore(&r, &ms);
-        ASSERT(r.ok == false);
-        ASSERT(r.zero_nbits_count >= 1);
-        ASSERT(r.first_nbits_zero_height == H);
-        ASSERT(r.active_chain_holes == H);        /* slots 0..H-1 are NULL */
+        /* Anchor lacks BLOCK_HAVE_DATA → skipped by nBits scan. */
+        ASSERT(r.zero_nbits_count == 0);
+        ASSERT(r.first_nbits_zero_height == -1);
+        /* Below-tip holes are diagnostic but don't gate ok. */
+        ASSERT(r.active_chain_holes == H);
         ASSERT(r.first_hole_height == 0);
         ASSERT(r.tip_height == H);
+        /* Tip slot is populated by anchor itself. */
+        ASSERT(active_chain_at(&ms.chain_active, H) == anchor);
+        ASSERT(r.ok == true);
 
         block_map_free(&ms.map_block_index);
         active_chain_free(&ms.chain_active);
@@ -911,7 +921,7 @@ int test_chain_restore_service(void) {
     failures += test_activation_few_utxos_few_headers();
     /* P14.11 + P14.12 integrity-check tests */
     failures += test_integrity_passes_on_clean_chain();
-    failures += test_integrity_fails_on_anchor_restore();
+    failures += test_integrity_anchor_restore_is_benign();
     failures += test_integrity_detects_isolated_nbits_zero();
     /* P14.11 + P14.12 GREEN — post-restore repair tests */
     failures += test_rebuild_active_chain_fills_holes_from_block_map();

@@ -40,6 +40,7 @@ struct ar_callbacks *db_block_callbacks(void);
 bool db_block_validate(const struct db_block *b, struct ar_errors *errors);
 
 bool db_block_save(struct node_db *ndb, const struct db_block *b);
+bool db_block_save_canonical(struct node_db *ndb, const struct db_block *b);
 bool db_block_find_by_hash(struct node_db *ndb, const uint8_t hash[32],
                            struct db_block *out);
 bool db_block_find_by_height(struct node_db *ndb, int height,

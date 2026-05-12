@@ -197,6 +197,22 @@ void syncsvc_plan_header_processing(struct sync_header_processing_plan *plan,
         plan->download.needed_blocks.should_activate_chain;
 }
 
+bool syncsvc_should_restart_headers_from_tip(size_t accepted,
+                                             const struct block_index *last_header,
+                                             int our_height,
+                                             int peer_height)
+{
+    if (accepted == 0 || !last_header)
+        return false;
+    if (last_header->nHeight >= our_height)
+        return false;
+
+    /* A far-ahead peer that answers with headers below our active tip is not
+     * making sync progress. Continuing from that low header crawls the node
+     * around genesis and starves the real next block after the active tip. */
+    return peer_height > our_height + 100;
+}
+
 void syncsvc_build_block_file_scan_activation(
     struct sync_chain_activation *result,
     int scanned_blocks)

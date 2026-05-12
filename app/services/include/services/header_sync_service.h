@@ -97,6 +97,10 @@ void syncsvc_plan_header_processing(struct sync_header_processing_plan *plan,
                                     struct uint256 *hashes,
                                     int32_t *heights,
                                     size_t max_collect);
+bool syncsvc_should_restart_headers_from_tip(size_t accepted,
+                                             const struct block_index *last_header,
+                                             int our_height,
+                                             int peer_height);
 void syncsvc_build_block_file_scan_activation(
     struct sync_chain_activation *result,
     int scanned_blocks);

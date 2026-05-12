@@ -18,9 +18,14 @@
 #include "models/block.h"
 #include "models/tx_index.h"
 #include "models/utxo.h"
+#include "chain/chain.h"
 #include "event/event.h"
+#include "util/ar_step_readonly.h"
 #include <string.h>
 #include <stdio.h>
+
+#define DB_BLOCK_SAVE_MAX_ATTEMPTS 40
+#define DB_BLOCK_SAVE_RETRY_MS 25
 
 /* ── Callbacks ─────────────────────────────────────────────────── */
 
@@ -60,6 +65,141 @@ static void block_init_hooks(void)
     ar_register_before_save(cbs, block_before_save);
     ar_register_after_save(cbs, block_after_save);
     done = true;
+}
+
+static void db_block_bind_insert(sqlite3_stmt *s, const struct db_block *b)
+{
+    AR_BIND_BLOB(s, 1, b->hash, 32);
+    AR_BIND_INT(s, 2, b->height);
+    AR_BIND_BLOB(s, 3, b->prev_hash, 32);
+    AR_BIND_INT(s, 4, b->version);
+    AR_BIND_BLOB(s, 5, b->merkle_root, 32);
+    AR_BIND_INT(s, 6, b->time);
+    AR_BIND_INT(s, 7, b->bits);
+    AR_BIND_BLOB(s, 8, b->nonce, 32);
+    AR_BIND_BLOB(s, 9, b->solution, (int)b->solution_len);
+    AR_BIND_BLOB(s, 10, b->chain_work, 32);
+    AR_BIND_INT(s, 11, b->status);
+    AR_BIND_INT(s, 12, b->file_num);
+    AR_BIND_INT(s, 13, b->data_pos);
+    AR_BIND_INT(s, 14, b->undo_pos);
+    AR_BIND_INT(s, 15, b->num_tx);
+    AR_BIND_BLOB(s, 16, b->sapling_root, 32);
+    AR_BIND_BLOB(s, 17, b->sprout_root, 32);
+    AR_BIND_INT(s, 18, b->sapling_value);
+    AR_BIND_INT(s, 19, b->sprout_value);
+}
+
+static bool db_block_step_is_retryable(int rc)
+{
+    return rc == SQLITE_BUSY || rc == SQLITE_LOCKED;
+}
+
+static void db_block_hash_hex(const uint8_t hash[32], char out[65])
+{
+    static const char hex[] = "0123456789abcdef";
+
+    for (size_t i = 0; i < 32; i++) {
+        out[i * 2] = hex[(hash[i] >> 4) & 0x0f];
+        out[i * 2 + 1] = hex[hash[i] & 0x0f];
+    }
+    out[64] = '\0';
+}
+
+static bool db_block_step_done_retry(sqlite3 *db,
+                                     sqlite3_stmt *s,
+                                     const char *stmt_name,
+                                     int height,
+                                     const uint8_t hash[32],
+                                     int *rc_out,
+                                     int *attempts_out)
+{
+    int rc = SQLITE_OK;
+    int attempts = 0;
+
+    if (!db || !s || !stmt_name) {
+        if (rc_out)
+            *rc_out = SQLITE_MISUSE;
+        if (attempts_out)
+            *attempts_out = 0;
+        return false;
+    }
+
+    for (; attempts < DB_BLOCK_SAVE_MAX_ATTEMPTS; attempts++) {
+        rc = AR_STEP_ROW_READONLY(s);
+        if (rc == SQLITE_DONE)
+            break;
+        sqlite3_reset(s);
+        if (!db_block_step_is_retryable(rc))
+            break;
+        sqlite3_sleep(DB_BLOCK_SAVE_RETRY_MS);
+    }
+
+    if (rc != SQLITE_DONE) {
+        char hash_hex[65];
+        db_block_hash_hex(hash, hash_hex);
+        fprintf(stderr, "%s: failed height=%d hash=%s step_rc=%d " // obs-ok:model save returns false with exact sqlite rc
+                "step_msg=%s db_rc=%d db_msg=%s attempts=%d\n",
+                stmt_name, height, hash_hex, rc, sqlite3_errstr(rc),
+                sqlite3_errcode(db), sqlite3_errmsg(db), attempts);
+    }
+
+    if (rc_out)
+        *rc_out = rc;
+    if (attempts_out)
+        *attempts_out = attempts;
+    return rc == SQLITE_DONE;
+}
+
+static void db_block_reset_cached_readers(struct node_db *ndb)
+{
+    if (!ndb)
+        return;
+    if (ndb->stmt_block_by_hash)
+        sqlite3_reset(ndb->stmt_block_by_hash);
+    if (ndb->stmt_block_by_height)
+        sqlite3_reset(ndb->stmt_block_by_height);
+    if (ndb->stmt_state_get)
+        sqlite3_reset(ndb->stmt_state_get);
+}
+
+static bool db_block_has_canonical_conflict(struct node_db *ndb,
+                                            const struct db_block *b,
+                                            bool *conflict_out)
+{
+    sqlite3_stmt *s = NULL;
+    int rc;
+
+    if (conflict_out)
+        *conflict_out = false;
+    if (!ndb || !ndb->open || !b || !conflict_out)
+        return false;
+
+    rc = sqlite3_prepare_v2(ndb->db,
+        "SELECT 1 FROM blocks "
+        "WHERE height=? AND hash<>? AND status>=3 LIMIT 1",
+        -1, &s, NULL);
+    if (rc != SQLITE_OK || !s) {
+        ndb->last_sqlite_rc = rc;
+        snprintf(ndb->last_op, sizeof(ndb->last_op), "%s",
+                 "db_block_save_canonical.conflict_prepare");
+        return false;
+    }
+
+    AR_BIND_INT(s, 1, b->height);
+    AR_BIND_BLOB(s, 2, b->hash, 32);
+    rc = AR_STEP_ROW_READONLY(s);
+    *conflict_out = (rc == SQLITE_ROW);
+    sqlite3_finalize(s);
+
+    if (rc != SQLITE_ROW && rc != SQLITE_DONE) {
+        ndb->last_sqlite_rc = rc;
+        snprintf(ndb->last_op, sizeof(ndb->last_op), "%s",
+                 "db_block_save_canonical.conflict_select");
+        return false;
+    }
+
+    return true;
 }
 
 /* ── Validation ────────────────────────────────────────────────── */
@@ -104,48 +244,62 @@ bool db_block_validate(const struct db_block *b, struct ar_errors *errors)
 
 bool db_block_save(struct node_db *ndb, const struct db_block *b)
 {
-    if (!ndb->open) return false;
+    if (!ndb || !ndb->open || !ndb->stmt_block_insert) return false;
 
     block_init_hooks();
     struct ar_callbacks *cbs = db_block_callbacks();
     AR_BEGIN_SAVE(cbs, "block", b, db_block_validate);
 
     sqlite3_stmt *s = ndb->stmt_block_insert;
+    bool locked_stmt = false;
+    if (ndb->state_mutex_init) {
+        zcl_mutex_lock(&ndb->state_mutex);
+        locked_stmt = true;
+    }
+
+    int rc = SQLITE_OK;
+    int attempts = 0;
+    for (; attempts < DB_BLOCK_SAVE_MAX_ATTEMPTS; attempts++) {
+        sqlite3_reset(s);
+        sqlite3_clear_bindings(s);
+        db_block_bind_insert(s, b);
+        rc = AR_STEP_ROW_READONLY(s);
+        if (rc == SQLITE_DONE)
+            break;
+        sqlite3_reset(s);
+        if (!db_block_step_is_retryable(rc))
+            break;
+        sqlite3_sleep(DB_BLOCK_SAVE_RETRY_MS);
+    }
+
     sqlite3_reset(s);
-    AR_BIND_BLOB(s, 1, b->hash, 32);
-    AR_BIND_INT(s, 2, b->height);
-    AR_BIND_BLOB(s, 3, b->prev_hash, 32);
-    AR_BIND_INT(s, 4, b->version);
-    AR_BIND_BLOB(s, 5, b->merkle_root, 32);
-    AR_BIND_INT(s, 6, b->time);
-    AR_BIND_INT(s, 7, b->bits);
-    AR_BIND_BLOB(s, 8, b->nonce, 32);
-    AR_BIND_BLOB(s, 9, b->solution, (int)b->solution_len);
-    AR_BIND_BLOB(s, 10, b->chain_work, 32);
-    AR_BIND_INT(s, 11, b->status);
-    AR_BIND_INT(s, 12, b->file_num);
-    AR_BIND_INT(s, 13, b->data_pos);
-    AR_BIND_INT(s, 14, b->undo_pos);
-    AR_BIND_INT(s, 15, b->num_tx);
-    AR_BIND_BLOB(s, 16, b->sapling_root, 32);
-    AR_BIND_BLOB(s, 17, b->sprout_root, 32);
-    AR_BIND_INT(s, 18, b->sapling_value);
-    AR_BIND_INT(s, 19, b->sprout_value);
+    ndb->last_sqlite_rc = rc;
+    snprintf(ndb->last_op, sizeof(ndb->last_op), "%s", "db_block_save");
+    if (locked_stmt)
+        zcl_mutex_unlock(&ndb->state_mutex);
 
-    bool ok = AR_STEP_DONE(s);
-
+    bool ok = rc == SQLITE_DONE;
     if (!ok) {
         static int lock_err_count = 0;
-        int rc = sqlite3_errcode(ndb->db);
-        if (rc == SQLITE_BUSY || rc == SQLITE_LOCKED) {
+        char hash_hex[65];
+        db_block_hash_hex(b->hash, hash_hex);
+        if (db_block_step_is_retryable(rc)) {
             lock_err_count++;
-            if (lock_err_count <= 3 || (lock_err_count % 1000 == 0))
-                fprintf(stderr, "db_block_save: locked at height %d "
-                        "(%d total, transient during file sync)\n",
-                        b->height, lock_err_count);
+            if (lock_err_count <= 3 || (lock_err_count % 1000 == 0)) {
+                fprintf(stderr, "db_block_save: locked stmt=block_insert " // obs-ok:model save returns false after bounded retry
+                        "height=%d hash=%s attempts=%d total=%d "
+                        "step_rc=%d step_msg=%s db_rc=%d db_msg=%s\n",
+                        b->height, hash_hex, attempts, lock_err_count,
+                        rc, sqlite3_errstr(rc), sqlite3_errcode(ndb->db),
+                        sqlite3_errmsg(ndb->db));
+            }
         } else {
-            fprintf(stderr, "db_block_save: INSERT failed at height %d: "
-                    "%s (rc=%d)\n", b->height, sqlite3_errmsg(ndb->db), rc);
+            fprintf(stderr, "db_block_save: failed stmt=block_insert " // obs-ok:model save returns false with exact sqlite rc
+                    "height=%d hash=%s step_rc=%d step_msg=%s "
+                    "db_rc=%d db_msg=%s attempts=%d\n",
+                    b->height, hash_hex, rc, sqlite3_errstr(rc),
+                    sqlite3_errcode(ndb->db), sqlite3_errmsg(ndb->db),
+                    attempts);
         }
     }
 
@@ -155,6 +309,75 @@ bool db_block_save(struct node_db *ndb, const struct db_block *b)
                     b->height, b->num_tx);
     }
     return ok;
+}
+
+bool db_block_save_canonical(struct node_db *ndb, const struct db_block *b)
+{
+    if (!ndb || !ndb->open || !b)
+        return false;
+
+    bool has_conflict = false;
+    db_block_reset_cached_readers(ndb);
+    if (!db_block_has_canonical_conflict(ndb, b, &has_conflict))
+        return false;
+    if (!has_conflict)
+        return db_block_save(ndb, b);
+
+    sqlite3_stmt *s = NULL;
+    bool locked_stmt = false;
+    if (ndb->state_mutex_init) {
+        zcl_mutex_lock(&ndb->state_mutex);
+        locked_stmt = true;
+    }
+    db_block_reset_cached_readers(ndb);
+
+    int prep_rc = sqlite3_prepare_v2(ndb->db,
+        "UPDATE blocks SET status=? "
+        "WHERE height=? AND hash<>? AND status>=3",
+        -1, &s, NULL);
+    if (prep_rc != SQLITE_OK || !s) {
+        char hash_hex[65];
+        db_block_hash_hex(b->hash, hash_hex);
+        fprintf(stderr, "db_block_save_canonical: prepare failed " // obs-ok:canonical save returns false
+                "stmt=block_demote_same_height height=%d hash=%s "
+                "prep_rc=%d prep_msg=%s db_rc=%d db_msg=%s\n",
+                b->height, hash_hex, prep_rc, sqlite3_errstr(prep_rc),
+                sqlite3_errcode(ndb->db), sqlite3_errmsg(ndb->db));
+        if (s)
+            sqlite3_finalize(s);
+        if (locked_stmt)
+            zcl_mutex_unlock(&ndb->state_mutex);
+        return false;
+    }
+
+    AR_BIND_INT(s, 1, BLOCK_VALID_TREE);
+    AR_BIND_INT(s, 2, b->height);
+    AR_BIND_BLOB(s, 3, b->hash, 32);
+
+    int demote_rc = SQLITE_OK;
+    bool demoted = db_block_step_done_retry(ndb->db, s,
+        "db_block_save_canonical: block_demote_same_height",
+        b->height, b->hash, &demote_rc, NULL);
+    sqlite3_finalize(s);
+    ndb->last_sqlite_rc = demote_rc;
+    snprintf(ndb->last_op, sizeof(ndb->last_op), "%s",
+             "db_block_save_canonical.demote");
+    int changed = sqlite3_changes(ndb->db);
+    if (locked_stmt)
+        zcl_mutex_unlock(&ndb->state_mutex);
+    if (!demoted)
+        return false;
+
+    if (changed > 0) {
+        char hash_hex[65];
+        db_block_hash_hex(b->hash, hash_hex);
+        fprintf(stderr, "db_block_save_canonical: demoted %d stale " // obs-ok:operator diagnostic for projection repair
+                "same-height projection row(s) height=%d hash=%s\n",
+                changed, b->height, hash_hex);
+    }
+
+    db_block_reset_cached_readers(ndb);
+    return db_block_save(ndb, b);
 }
 
 /* ── Read helpers ──────────────────────────────────────────────── */
@@ -192,11 +415,15 @@ bool db_block_find_by_hash(struct node_db *ndb,
     sqlite3_stmt *s = ndb->stmt_block_by_hash;
     sqlite3_reset(s);
     AR_BIND_BLOB(s, 1, hash, 32);
-    if (!AR_STEP_ROW(s)) return false;
+    if (!AR_STEP_ROW(s)) {
+        sqlite3_reset(s);
+        return false;
+    }
     memset(out, 0, sizeof(*out));
     memcpy(out->hash, hash, 32);
     out->height = (int)AR_COL_INT(s, 0);
     read_block_cols(s, 1, out);
+    sqlite3_reset(s);
     return true;
 }
 
@@ -207,11 +434,15 @@ bool db_block_find_by_height(struct node_db *ndb, int height,
     sqlite3_stmt *s = ndb->stmt_block_by_height;
     sqlite3_reset(s);
     AR_BIND_INT(s, 1, height);
-    if (!AR_STEP_ROW(s)) return false;
+    if (!AR_STEP_ROW(s)) {
+        sqlite3_reset(s);
+        return false;
+    }
     memset(out, 0, sizeof(*out));
     out->height = height;
     AR_READ_BLOB(s, 0, out->hash, 32);
     read_block_cols(s, 1, out);
+    sqlite3_reset(s);
     return true;
 }
 

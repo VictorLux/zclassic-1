@@ -107,6 +107,8 @@ struct boot_svc_ctx {
     bool defer_offer_service;
     struct bg_validation_service bg_validation;
     struct bg_hash_verification_service bg_hash_verify;
+    pthread_t watchdog_thread;
+    bool watchdog_thread_started;
 };
 
 bool app_init_services(struct app_context *ctx,

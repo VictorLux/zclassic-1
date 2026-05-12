@@ -100,6 +100,9 @@ int sapling_tree_rebuild(struct node_db *ndb,
 bool node_db_sync_connect_block(struct node_db *ndb,
                                 const struct block *blk,
                                 const struct block_index *pindex);
+bool node_db_sync_connect_block_async(struct node_db *ndb,
+                                      const struct block *blk,
+                                      const struct block_index *pindex);
 
 /* Called when a block is disconnected during a reorg.
  * Removes the block's transaction index entries and

@@ -235,6 +235,13 @@ struct connect_block_sync_ctx {
     bool ok;
 };
 
+struct connect_block_async_ctx {
+    struct block blk;
+    struct block_index pindex;
+    struct uint256 hash;
+    bool copied;
+};
+
 struct disconnect_block_sync_ctx {
     const struct block *blk;
     const struct block_index *pindex;
@@ -489,6 +496,7 @@ static bool node_db_sync_connect_block_local(struct node_db *ndb,
                                              const struct block_index *pindex)
 {
     bool tx_active = false;
+    const char *fail_reason = "unknown";
 
     if (!ndb || !ndb->open || !blk || !pindex || !pindex->phashBlock)
         LOG_FAIL("sync", "connect_block_local: invalid args (ndb=%p, blk=%p, pindex=%p)",
@@ -536,8 +544,10 @@ static bool node_db_sync_connect_block_local(struct node_db *ndb,
         db_blk.sapling_value += tx->value_balance;
     }
 
-    if (!db_block_save(ndb, &db_blk))
+    if (!db_block_save_canonical(ndb, &db_blk)) {
+        fail_reason = "db_block_save_canonical";
         goto fail;
+    }
 
     /* 2. Index each transaction and update UTXOs */
     for (size_t i = 0; i < blk->num_vtx; i++) {
@@ -568,15 +578,21 @@ static bool node_db_sync_connect_block_local(struct node_db *ndb,
         /* Track Sapling nullifiers (spends) */
         for (size_t j = 0; j < tx->num_shielded_spend; j++) {
             sqlite3_stmt *ns = ndb->stmt_nullifier_insert;
-            if (!ns)
+            if (!ns) {
+                fail_reason = "stmt_nullifier_insert_missing";
                 goto fail;
+            }
             sqlite3_reset(ns);
             if (sqlite3_bind_blob(ns, 1,
                     tx->v_shielded_spend[j].nullifier.data,
-                    32, SQLITE_STATIC) != SQLITE_OK)
+                    32, SQLITE_STATIC) != SQLITE_OK) {
+                fail_reason = "nullifier_bind";
                 goto fail;
-            if (AR_STEP_ROW_READONLY(ns) != SQLITE_DONE)
+            }
+            if (AR_STEP_ROW_READONLY(ns) != SQLITE_DONE) {
+                fail_reason = "nullifier_insert";
                 goto fail;
+            }
         }
     }
 
@@ -594,8 +610,10 @@ static bool node_db_sync_connect_block_local(struct node_db *ndb,
             incremental_tree_deserialize(&tree, &ts);
         }
 
-        if (!advance_wallet_witnesses(ndb, blk, &tree, pindex->nHeight))
+        if (!advance_wallet_witnesses(ndb, blk, &tree, pindex->nHeight)) {
+            fail_reason = "advance_wallet_witnesses";
             goto fail;
+        }
 
         /* Verify tree root matches block header.
          * Smart mismatch policy:
@@ -656,12 +674,14 @@ static bool node_db_sync_connect_block_local(struct node_db *ndb,
         if (sqlite3_prepare_v2(ndb->db,
             "UPDATE blocks SET sapling_tree_data=? WHERE hash=?",
             -1, &upd, NULL) != SQLITE_OK || !upd) {
+            fail_reason = "sapling_tree_update_prepare";
             stream_free(&ts);
             goto fail;
         }
         if (sqlite3_bind_blob(upd, 1, ts.data, (int)ts.size, SQLITE_STATIC) != SQLITE_OK ||
             sqlite3_bind_blob(upd, 2, pindex->phashBlock->data, 32, SQLITE_STATIC) != SQLITE_OK ||
             AR_STEP_ROW_READONLY(upd) != SQLITE_DONE) {
+            fail_reason = "sapling_tree_update_step";
             sqlite3_finalize(upd);
             stream_free(&ts);
             goto fail;
@@ -673,6 +693,7 @@ static bool node_db_sync_connect_block_local(struct node_db *ndb,
     /* 4. Update chain tip in state table */
     if (!node_db_sync_set_tip(ndb,
             pindex->phashBlock->data, pindex->nHeight)) {
+        fail_reason = "set_tip";
         goto fail;
     }
 
@@ -680,8 +701,10 @@ static bool node_db_sync_connect_block_local(struct node_db *ndb,
     ndb->sync_pending_blocks++;
     int batch = ndb->sync_batch_size > 0 ? ndb->sync_batch_size : 1;
     if (ndb->sync_pending_blocks >= batch) {
-        if (!node_db_commit(ndb))
+        if (!node_db_commit(ndb)) {
+            fail_reason = "commit";
             goto fail;
+        }
         ndb->sync_in_batch = false;
         ndb->sync_pending_blocks = 0;
         tx_active = false;
@@ -689,11 +712,20 @@ static bool node_db_sync_connect_block_local(struct node_db *ndb,
     return true;
 
 fail:
+    int sqlite_rc = (ndb && ndb->last_sqlite_rc != SQLITE_OK)
+        ? ndb->last_sqlite_rc
+        : ((ndb && ndb->db) ? sqlite3_errcode(ndb->db) : SQLITE_MISUSE);
+    char last_op[64];
+    snprintf(last_op, sizeof(last_op), "%s",
+             (ndb && ndb->last_op[0]) ? ndb->last_op : "n/a");
     if (tx_active)
         node_db_rollback(ndb);
     ndb->sync_in_batch = false;
     ndb->sync_pending_blocks = 0;
-    LOG_FAIL("sync", "connect_block_local: failed at height %d", pindex->nHeight);
+    LOG_FAIL("sync", "connect_block_local: failed at height %d "
+             "reason=%s sqlite_rc=%d sqlite_msg=%s last_op=%s",
+             pindex->nHeight, fail_reason,
+             sqlite_rc, sqlite3_errstr(sqlite_rc), last_op);
 }
 
 static bool node_db_sync_connect_block_write(struct node_db *ndb, void *ctx)
@@ -704,6 +736,56 @@ static bool node_db_sync_connect_block_write(struct node_db *ndb, void *ctx)
         LOG_FAIL("sync", "connect_block_write: invalid ctx (sync=%p)", (void *)sync);
     sync->ok = node_db_sync_connect_block_local(ndb, sync->blk, sync->pindex);
     return sync->ok;
+}
+
+static bool node_db_sync_copy_block(struct block *dst, const struct block *src)
+{
+    if (!dst || !src)
+        return false;
+
+    block_init(dst);
+    dst->header = src->header;
+    dst->num_vtx = src->num_vtx;
+    if (src->num_vtx == 0)
+        return true;
+
+    dst->vtx = zcl_calloc(src->num_vtx, sizeof(*dst->vtx),
+                          "async projection block txs");
+    if (!dst->vtx) {
+        dst->num_vtx = 0;
+        return false;
+    }
+
+    for (size_t i = 0; i < src->num_vtx; i++) {
+        if (!transaction_copy(&dst->vtx[i], &src->vtx[i])) {
+            dst->num_vtx = i;
+            block_free(dst);
+            return false;
+        }
+    }
+    return true;
+}
+
+static bool node_db_sync_connect_block_async_write(struct node_db *ndb,
+                                                   void *ctx)
+{
+    struct connect_block_async_ctx *async = ctx;
+
+    if (!async || !async->copied)
+        LOG_FAIL("sync", "connect_block_async_write: invalid ctx");
+    return node_db_sync_connect_block_local(ndb, &async->blk,
+                                            &async->pindex);
+}
+
+static void node_db_sync_connect_block_async_free(void *ctx)
+{
+    struct connect_block_async_ctx *async = ctx;
+
+    if (!async)
+        return;
+    if (async->copied)
+        block_free(&async->blk);
+    free(async);
 }
 
 bool node_db_sync_connect_block(struct node_db *ndb,
@@ -718,6 +800,37 @@ bool node_db_sync_connect_block(struct node_db *ndb,
 
     return sync_run_write(ndb, node_db_sync_connect_block_write, &ctx) &&
            ctx.ok;
+}
+
+bool node_db_sync_connect_block_async(struct node_db *ndb,
+                                      const struct block *blk,
+                                      const struct block_index *pindex)
+{
+    struct db_service *dbsvc = sync_db_service_for(ndb);
+    struct connect_block_async_ctx *ctx;
+
+    if (!ndb || !ndb->open || !blk || !pindex || !pindex->phashBlock)
+        LOG_FAIL("sync", "connect_block_async: invalid args (ndb=%p, blk=%p, pindex=%p)",
+                 (void *)ndb, (void *)blk, (void *)pindex);
+    if (!dbsvc)
+        return node_db_sync_connect_block(ndb, blk, pindex);
+
+    ctx = zcl_calloc(1, sizeof(*ctx), "async projection ctx");
+    if (!ctx)
+        return false;
+    if (!node_db_sync_copy_block(&ctx->blk, blk)) {
+        free(ctx);
+        return false;
+    }
+    ctx->pindex = *pindex;
+    ctx->hash = *pindex->phashBlock;
+    ctx->pindex.phashBlock = &ctx->hash;
+    ctx->copied = true;
+
+    return db_service_enqueue_write(dbsvc,
+                                    node_db_sync_connect_block_async_write,
+                                    ctx,
+                                    node_db_sync_connect_block_async_free);
 }
 
 static bool node_db_sync_disconnect_block_local(struct node_db *ndb,

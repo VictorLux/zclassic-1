@@ -12,6 +12,7 @@
 #include "controllers/network_controller.h"
 #include "validation/chainstate.h"
 #include "net/download.h"
+#include <pthread.h>
 #include <stdio.h>
 #include <string.h>
 #include <time.h>
@@ -139,6 +140,8 @@ const char *watchdog_recovery_type_name(enum watchdog_recovery_type type)
     case WATCHDOG_STATE_STUCK:      return "STATE_STUCK";
     case WATCHDOG_HEADER_LAG:       return "HEADER_LAG";
     case WATCHDOG_REPEATED_RESTART: return "REPEATED_RESTART";
+    case WATCHDOG_PEER_FLOOR:       return "PEER_FLOOR";
+    case WATCHDOG_SYNC_VIOLATION:   return "SYNC_VIOLATION";
     }
     return "UNKNOWN";
 }
@@ -315,6 +318,22 @@ static int disconnect_outbound_peers(struct connman *cm)
 
 /* ── Main watchdog check ─────────────────────────────────── */
 
+/* ── Persistent counters for the floor / sync-violation invariants ──
+ *
+ * Each invariant has a "first observed" timestamp. Once a violation
+ * has been continuous for the required window we fire the recovery
+ * exactly once and reset the timestamp. The recovery is deliberately
+ * idempotent (rewalk seeds / force-rotate peers) so multiple firings
+ * during persistent network outages don't make things worse. */
+
+static int64_t g_peer_floor_first_violation = 0;
+static int64_t g_sync_violation_first_seen = 0;
+
+#define PEER_FLOOR_MIN_HEALTHY    3
+#define PEER_FLOOR_TRIGGER_SECS  60
+#define SYNC_VIOLATION_GAP      100   /* blocks behind peer max */
+#define SYNC_VIOLATION_SECS     600   /* sustained for 10 min */
+
 enum watchdog_recovery_type sync_watchdog_check(
     struct connman *cm,
     struct download_manager *dm,
@@ -328,6 +347,74 @@ enum watchdog_recovery_type sync_watchdog_check(
     int64_t now = (int64_t)time(NULL);
     enum sync_state state = sync_get_state();
     int64_t duration = sync_get_state_duration();
+
+    /* ── Part C: PEER_FLOOR — < 3 healthy outbound for > 60s ──
+     * Even with peers in the table, if none are past handshake we
+     * can't sync. Forces a fresh seed walk + drops any inbound peers
+     * blocking outbound slots. */
+    {
+        size_t healthy = connman_outbound_healthy_count(cm);
+        if (healthy < PEER_FLOOR_MIN_HEALTHY) {
+            if (g_peer_floor_first_violation == 0)
+                g_peer_floor_first_violation = now;
+            if (now - g_peer_floor_first_violation > PEER_FLOOR_TRIGGER_SECS) {
+                printf("[watchdog] PEER_FLOOR: only %zu/%d healthy "
+                       "outbound — forcing seed rewalk\n",
+                       healthy, PEER_FLOOR_MIN_HEALTHY);
+                event_emitf(EV_SYNC_STATE_CHANGE, 0,
+                            "watchdog PEER_FLOOR healthy=%zu", healthy);
+                /* Disconnect outbound peers stuck below handshake
+                 * (PEER_CONNECTING/PEER_CONNECTED) to free slots for
+                 * the outbound thread's aggressive backfill. */
+                if (cm) {
+                    zcl_mutex_lock(&cm->manager.cs_nodes);
+                    for (size_t i = 0; i < cm->manager.num_nodes; i++) {
+                        struct p2p_node *n = cm->manager.nodes[i];
+                        if (n && !n->inbound && !n->disconnect &&
+                            n->state < PEER_HANDSHAKE_COMPLETE)
+                            n->disconnect = true;
+                    }
+                    zcl_mutex_unlock(&cm->manager.cs_nodes);
+                }
+                g_peer_floor_first_violation = now;  /* re-arm */
+                record_recovery(now, WATCHDOG_PEER_FLOOR);
+                return WATCHDOG_PEER_FLOOR;
+            }
+        } else {
+            g_peer_floor_first_violation = 0;
+        }
+    }
+
+    /* ── Part D: SYNC_VIOLATION — peer_max - tip > 100 for > 600s ──
+     * Active-tense invariant: the node MUST stay within 100 blocks
+     * of its best-known peer. If it drifts further for 10 min,
+     * skip L1 peer rotation and go straight to L2 (drop outbound +
+     * rewalk seeds). */
+    if (cm && ms) {
+        int our_height = active_chain_height(&ms->chain_active);
+        int peer_max = connman_max_peer_height(cm);
+        bool violated = (peer_max > 0 && our_height >= 0 &&
+                         peer_max - our_height > SYNC_VIOLATION_GAP);
+        if (violated) {
+            if (g_sync_violation_first_seen == 0)
+                g_sync_violation_first_seen = now;
+            if (now - g_sync_violation_first_seen > SYNC_VIOLATION_SECS) {
+                printf("[watchdog] SYNC_VIOLATION: tip=%d, peer_max=%d, "
+                       "gap=%d for %llds — forcing L2 recovery\n",
+                       our_height, peer_max, peer_max - our_height,
+                       (long long)(now - g_sync_violation_first_seen));
+                event_emitf(EV_SYNC_STATE_CHANGE, 0,
+                            "watchdog SYNC_VIOLATION tip=%d peer=%d gap=%d",
+                            our_height, peer_max, peer_max - our_height);
+                escalation_l2(cm, dm);
+                g_sync_violation_first_seen = now;  /* re-arm */
+                record_recovery(now, WATCHDOG_SYNC_VIOLATION);
+                return WATCHDOG_SYNC_VIOLATION;
+            }
+        } else {
+            g_sync_violation_first_seen = 0;
+        }
+    }
 
     /* Progress rate tracking: record {height, timestamp} each cycle */
     {
@@ -577,4 +664,75 @@ enum watchdog_recovery_type sync_watchdog_check(
     }
 
     return WATCHDOG_NONE;
+}
+
+/* ── Independent watchdog thread ─────────────────────────────────
+ *
+ * Runs sync_watchdog_check on a fixed 30s cadence. Decoupled from the
+ * message-processing loop so peer-id churn, message starvation, or a
+ * stuck peer can never prevent the watchdog from firing. */
+
+#define WATCHDOG_TICK_SECS 30
+
+struct watchdog_thread_args {
+    _Atomic bool *running;
+    struct connman *cm;
+    struct download_manager *dm;
+    struct main_state *ms;
+};
+
+static struct watchdog_thread_args g_watchdog_args;
+
+static void *sync_watchdog_thread_entry(void *arg)
+{
+    struct watchdog_thread_args *a = arg;
+    if (!a || !a->running)
+        return NULL;
+
+    /* Sleep in 1-second slices so shutdown is responsive. */
+    int slept = 0;
+    while (atomic_load(a->running)) {
+        if (slept >= WATCHDOG_TICK_SECS) {
+            sync_watchdog_check(a->cm, a->dm, a->ms);
+            slept = 0;
+        }
+        struct timespec ts = { .tv_sec = 1, .tv_nsec = 0 };
+        nanosleep(&ts, NULL);
+        slept++;
+    }
+    return NULL;
+}
+
+bool sync_watchdog_thread_start(pthread_t *thread,
+                                bool *started,
+                                _Atomic bool *running,
+                                struct connman *cm,
+                                struct download_manager *dm,
+                                struct main_state *ms)
+{
+    if (!thread || !started || !running)
+        LOG_FAIL("watchdog", "thread_start: NULL argument "
+                 "(thread=%p, started=%p, running=%p)",
+                 (void *)thread, (void *)started, (void *)running);
+    if (*started)
+        return false;
+    g_watchdog_args.running = running;
+    g_watchdog_args.cm = cm;
+    g_watchdog_args.dm = dm;
+    g_watchdog_args.ms = ms;
+    if (pthread_create(thread, NULL, sync_watchdog_thread_entry,
+                       &g_watchdog_args) != 0) {
+        LOG_FAIL("watchdog", "pthread_create failed");
+        return false;
+    }
+    *started = true;
+    return true;
+}
+
+void sync_watchdog_thread_stop(pthread_t *thread, bool *started)
+{
+    if (!thread || !started || !*started)
+        return;
+    pthread_join(*thread, NULL);
+    *started = false;
 }

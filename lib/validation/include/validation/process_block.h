@@ -71,6 +71,10 @@ void process_block_self_heal_stats_snapshot(
     struct self_heal_scan_stats *out);
 void process_block_self_heal_stats_reset(void);
 int process_block_self_heal_scan_depth_limit(void);
+bool process_block_self_heal_scan_enabled(void);
+
+struct node_db;
+void process_block_set_node_db(struct node_db *ndb);
 
 /* Configure the coins flush policy (short-term → long-term layer bridge).
  * block_interval=0 disables block-based flushing (default).
@@ -191,11 +195,16 @@ bool process_block_should_skip_contextual_header(
     const struct block_index *pindex_prev,
     const struct consensus_params *consensus);
 
+void process_block_clear_utxo_activation_pause_range(int scan_start,
+                                                     int scan_end);
+
 #ifdef ZCL_TESTING
 void process_block_test_set_utxo_fail_state(int height, int count);
 int  process_block_test_get_utxo_fail_count(void);
+int  process_block_test_get_utxo_activation_paused_height(void);
 void process_block_test_trigger_hot_loop_check(int height,
                                                const char *datadir);
+void process_block_test_note_utxo_failure(int height, const char *datadir);
 void process_block_test_fail_next_sapling_persists(int n);
 bool process_block_test_persist_sapling_tree(bool force);
 extern _Atomic bool g_sapling_tree_rebuilding;

@@ -27,6 +27,8 @@ enum watchdog_recovery_type {
     WATCHDOG_BLOCK_STALL,
     WATCHDOG_STATE_STUCK,
     WATCHDOG_REPEATED_RESTART,
+    WATCHDOG_PEER_FLOOR,    /* < 3 healthy outbound for > 60s */
+    WATCHDOG_SYNC_VIOLATION,/* peer_max - tip > 100 for > 600s (Part D) */
 };
 
 /* Watchdog status snapshot (for RPC) */
@@ -84,5 +86,22 @@ void sync_watchdog_set_last_reject_reason(const char *reason);
 /* Called internally when sync state changes to update timestamps.
  * Registered as callback via sync_set_state_change_callback(). */
 void sync_watchdog_on_state_change(enum sync_state new_state, int height);
+
+/* Independent watchdog tick thread.
+ *
+ * The watchdog must fire on a fixed cadence regardless of message-loop
+ * activity. The previous design called sync_watchdog_check() from the
+ * msg loop only on the peer with id==0, which silently disabled the
+ * watchdog once peer ids rotated past zero (the live failure mode that
+ * left a node 22k blocks behind for >9h with checks_run=1). The thread
+ * here runs every 30s as long as `*running` is true. */
+bool sync_watchdog_thread_start(pthread_t *thread,
+                                bool *started,
+                                _Atomic bool *running,
+                                struct connman *cm,
+                                struct download_manager *dm,
+                                struct main_state *ms);
+
+void sync_watchdog_thread_stop(pthread_t *thread, bool *started);
 
 #endif /* ZCL_SERVICES_SYNC_WATCHDOG_H */
