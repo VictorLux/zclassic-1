@@ -11,6 +11,7 @@
 #include "services/sync_watchdog_service.h"
 #include "controllers/network_controller.h"
 #include "validation/chainstate.h"
+#include "validation/process_block.h"
 #include "net/download.h"
 #include <pthread.h>
 #include <stdio.h>
@@ -142,6 +143,7 @@ const char *watchdog_recovery_type_name(enum watchdog_recovery_type type)
     case WATCHDOG_REPEATED_RESTART: return "REPEATED_RESTART";
     case WATCHDOG_PEER_FLOOR:       return "PEER_FLOOR";
     case WATCHDOG_SYNC_VIOLATION:   return "SYNC_VIOLATION";
+    case WATCHDOG_UTXO_PAUSE:       return "UTXO_PAUSE";
     }
     return "UNKNOWN";
 }
@@ -205,6 +207,8 @@ bool sync_watchdog_dump_state_json(struct json_value *out, const char *key)
                      (int64_t)ws.current_state_entry_height);
     json_push_kv_int(out, "escalation_level", (int64_t)ws.escalation_level);
     json_push_kv_real(out, "blocks_per_sec", st.blocks_per_sec);
+    json_push_kv_int(out, "utxo_paused_height",
+                     (int64_t)process_block_get_utxo_activation_paused_height());
     return true;
 }
 
@@ -361,11 +365,15 @@ static int disconnect_outbound_peers(struct connman *cm)
 
 static int64_t g_peer_floor_first_violation = 0;
 static int64_t g_sync_violation_first_seen = 0;
+/* Round 7 A1: non-static so tests can backdate via extern.
+ * Follows the pattern of g_sync_state_entered_time. */
+int64_t g_utxo_pause_first_seen = 0;
 
 #define PEER_FLOOR_MIN_HEALTHY    3
 #define PEER_FLOOR_TRIGGER_SECS  60
 #define SYNC_VIOLATION_GAP      100   /* blocks behind peer max */
 #define SYNC_VIOLATION_SECS     600   /* sustained for 10 min */
+#define UTXO_PAUSE_TRIGGER_SECS 300   /* Round 7 A1: clear after 5 min */
 
 enum watchdog_recovery_type sync_watchdog_check(
     struct connman *cm,
@@ -415,6 +423,40 @@ enum watchdog_recovery_type sync_watchdog_check(
             }
         } else {
             g_peer_floor_first_violation = 0;
+        }
+    }
+
+    /* ── Round 7 A1: UTXO_PAUSE — activation paused > 300s ──
+     *
+     * process_block_note_utxo_failure() pauses activate_best_chain at
+     * a specific height when reimport has already been attempted and
+     * did NOT heal the chain (lib/validation/src/process_block.c:504).
+     * Pre-Round-7 this state was silent to the watchdog: sync state
+     * stayed BLOCKS_DOWNLOAD, no height progress event, BLOCK_STALL
+     * eventually fired but its recovery (re-queue download manager)
+     * didn't address the root cause. Now: detect the pause, clear it
+     * after 300s, let activate_best_chain re-try. If it re-pauses
+     * within the 30min escalation window, L1→L2→L3 picks up. */
+    {
+        int paused = process_block_get_utxo_activation_paused_height();
+        if (paused >= 0) {
+            if (g_utxo_pause_first_seen == 0)
+                g_utxo_pause_first_seen = now;
+            if (now - g_utxo_pause_first_seen > UTXO_PAUSE_TRIGGER_SECS) {
+                printf("[watchdog] UTXO_PAUSE: activation paused at h=%d "
+                       "for %llds — clearing pause and re-arming\n",
+                       paused,
+                       (long long)(now - g_utxo_pause_first_seen));
+                event_emitf(EV_SYNC_STATE_CHANGE, 0,
+                            "watchdog UTXO_PAUSE h=%d", paused);
+                process_block_clear_utxo_activation_pause_range(
+                    paused, paused);
+                g_utxo_pause_first_seen = now;  /* re-arm */
+                record_recovery(now, WATCHDOG_UTXO_PAUSE);
+                return WATCHDOG_UTXO_PAUSE;
+            }
+        } else {
+            g_utxo_pause_first_seen = 0;
         }
     }
 
@@ -550,8 +592,16 @@ enum watchdog_recovery_type sync_watchdog_check(
         g_watchdog.header_stall_escalated = false;
     }
 
-    /* a2. HEADER_LAG: in blocks_download but headers are far behind peers */
-    if (state == SYNC_BLOCKS_DOWNLOAD && duration > 60) {
+    /* a2. HEADER_LAG: headers far behind peers.
+     *
+     * Round 7 A6: also fires in HEADERS_DOWNLOAD when all peers are
+     * stale (peer_max <= our_height + 100 sustained). Pre-Round-7 this
+     * branch only ran in BLOCKS_DOWNLOAD — a node stuck in
+     * HEADERS_DOWNLOAD with stale peers would wait on the 30s
+     * getheaders interval indefinitely. Now we treat the lag as
+     * peers-needed and rotate via HEADER_STALL's existing handler. */
+    if ((state == SYNC_BLOCKS_DOWNLOAD && duration > 60) ||
+        (state == SYNC_HEADERS_DOWNLOAD && duration > 300)) {
         int current_header_height = -1;
         if (ms && ms->pindex_best_header)
             current_header_height = ms->pindex_best_header->nHeight;

@@ -29,6 +29,7 @@ enum watchdog_recovery_type {
     WATCHDOG_REPEATED_RESTART,
     WATCHDOG_PEER_FLOOR,    /* < 3 healthy outbound for > 60s */
     WATCHDOG_SYNC_VIOLATION,/* peer_max - tip > 100 for > 600s (Part D) */
+    WATCHDOG_UTXO_PAUSE,    /* Round 7 A1: activation paused > 300s */
 };
 
 /* Watchdog status snapshot (for RPC) */

@@ -312,7 +312,14 @@ void activation_request_connect(struct chain_activation_controller *ctl,
         int64_t       drain_start_us  = GetTimeMicros();
         int           drain_rounds    = 0;
         while (drain_rounds < drain_hard_cap) {
-            if (atomic_exchange(&ctl->deferred_pending, 0) == 0)
+            /* Round 7 A2: also drain when activate_best_chain returned
+             * early because of tip_child_connect_limit — otherwise we
+             * stall the chain until the next P2P block arrival.
+             * The OR is short-circuit, so the atomic_exchange on
+             * deferred_pending still resets it whenever it is set. */
+            bool deferred = atomic_exchange(&ctl->deferred_pending, 0) != 0;
+            bool more_pending = process_block_active_tip_has_pending();
+            if (!deferred && !more_pending)
                 break;
             struct validation_state vs_r;
             validation_state_init(&vs_r);

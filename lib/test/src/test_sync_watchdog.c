@@ -6,10 +6,12 @@
 #include "net/msgprocessor.h"
 #include "net/download.h"
 #include "validation/main_state.h"
+#include "validation/process_block.h"
 #include <string.h>
 #include <time.h>
 
 extern _Atomic int64_t g_sync_state_entered_time;
+extern int64_t g_utxo_pause_first_seen;   /* Round 7 A1 */
 
 /* ── Helpers ──────────────────────────────────────────────── */
 
@@ -519,6 +521,62 @@ static int test_progress_rate_tracking(void)
     return failures;
 }
 
+/* ── Round 7 A1: UTXO_PAUSE detection ────────────────────── */
+
+static int test_utxo_pause_fires_after_window(void)
+{
+    int failures = 0;
+
+    TEST("watchdog detects + clears UTXO_PAUSE after 300s") {
+        reset_test_state();
+        sync_set_state(SYNC_BLOCKS_DOWNLOAD, "utxo_pause test");
+
+        process_block_test_set_utxo_activation_paused_height(1500);
+        g_utxo_pause_first_seen = 0;
+
+        /* First check: records first_seen, no recovery yet. */
+        enum watchdog_recovery_type r = sync_watchdog_check(
+            &g_test_cm, &g_test_dm, &g_test_ms);
+        ASSERT(r != WATCHDOG_UTXO_PAUSE);
+        ASSERT(g_utxo_pause_first_seen != 0);
+        ASSERT(process_block_test_get_utxo_activation_paused_height() == 1500);
+
+        /* Backdate first_seen by 350s and check again — must fire. */
+        g_utxo_pause_first_seen = (int64_t)time(NULL) - 350;
+        r = sync_watchdog_check(&g_test_cm, &g_test_dm, &g_test_ms);
+        ASSERT(r == WATCHDOG_UTXO_PAUSE);
+        /* Pause must have been cleared by the recovery action. */
+        ASSERT(process_block_test_get_utxo_activation_paused_height() == -1);
+
+        PASS();
+    } _test_next:;
+
+    return failures;
+}
+
+static int test_utxo_pause_inactive_resets_timer(void)
+{
+    int failures = 0;
+
+    TEST("watchdog does not fire UTXO_PAUSE when no pause set") {
+        reset_test_state();
+        sync_set_state(SYNC_BLOCKS_DOWNLOAD, "no pause");
+
+        process_block_test_set_utxo_activation_paused_height(-1);
+        g_utxo_pause_first_seen = (int64_t)time(NULL) - 9999;
+
+        enum watchdog_recovery_type r = sync_watchdog_check(
+            &g_test_cm, &g_test_dm, &g_test_ms);
+        ASSERT(r != WATCHDOG_UTXO_PAUSE);
+        /* first_seen must be reset to 0 when no pause is active. */
+        ASSERT(g_utxo_pause_first_seen == 0);
+
+        PASS();
+    } _test_next:;
+
+    return failures;
+}
+
 /* ── Test runner ─────────────────────────────────────────── */
 
 int test_sync_watchdog(void)
@@ -542,5 +600,7 @@ int test_sync_watchdog(void)
     failures += test_zero_peers_stuck();
     failures += test_timeout_boundary_exact();
     failures += test_progress_rate_tracking();
+    failures += test_utxo_pause_fires_after_window();
+    failures += test_utxo_pause_inactive_resets_timer();
     return failures;
 }

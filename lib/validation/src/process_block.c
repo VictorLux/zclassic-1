@@ -59,6 +59,11 @@ static int s_utxo_fail_count = 0;
 static int s_utxo_fail_height = -1;
 static int s_utxo_hot_loop_reported_height = -1;
 static int s_utxo_activation_paused_height = -1;
+
+/* Round 7 A2: set when activate_best_chain returns early due to
+ * tip_child_connect_limit. Read by chain_activation_controller drain
+ * loop so we don't wait for the next P2P block to make progress. */
+static _Atomic bool s_active_tip_more_pending = false;
 static struct node_db *g_process_block_node_db = NULL;
 static _Atomic uint64_t g_self_heal_tx_index_hits;
 static _Atomic uint64_t g_self_heal_scan_hits;
@@ -522,6 +527,16 @@ static void process_block_maybe_trigger_hot_loop_exit(int height,
     s_utxo_hot_loop_reported_height = height;
 }
 
+int process_block_get_utxo_activation_paused_height(void)
+{
+    return s_utxo_activation_paused_height;
+}
+
+bool process_block_active_tip_has_pending(void)
+{
+    return atomic_load(&s_active_tip_more_pending);
+}
+
 void process_block_clear_utxo_activation_pause_range(int scan_start,
                                                      int scan_end)
 {
@@ -617,6 +632,11 @@ int process_block_test_get_utxo_fail_count(void)
 int process_block_test_get_utxo_activation_paused_height(void)
 {
     return s_utxo_activation_paused_height;
+}
+
+void process_block_test_set_utxo_activation_paused_height(int height)
+{
+    s_utxo_activation_paused_height = height;
 }
 
 void process_block_test_trigger_hot_loop_check(int height,
@@ -3220,6 +3240,11 @@ bool activate_best_chain(struct validation_state *state,
      * controller (activation_request_connect). This function should only
      * be called via the controller. */
 
+    /* Round 7 A2: clear the "more pending" signal — we are about to
+     * try to make progress. The loop below sets it again if it returns
+     * early because of the per-pass child-connect limit. */
+    atomic_store(&s_active_tip_more_pending, false);
+
     struct block_index *pindex_most_work = NULL;
 
     if (pblock) {
@@ -3558,6 +3583,11 @@ bool activate_best_chain(struct validation_state *state,
                     "active-tip children (limit=%d) so service startup and "
                     "RPC stay responsive\n",
                     connected_tip_children, tip_child_connect_limit);
+                /* Round 7 A2: tell the activation controller drain loop
+                 * that another pass will likely make more progress.
+                 * Without this we'd wait for the next P2P block to
+                 * trigger a fresh activation. */
+                atomic_store(&s_active_tip_more_pending, true);
                 return true;
             }
             continue;
