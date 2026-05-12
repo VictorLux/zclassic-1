@@ -781,6 +781,40 @@ static int h_zcl_rpc(const struct mcp_request *req, struct mcp_response *res)
     return 0;
 }
 
+/* zcl_node_log — reverse-scan node.log via getnodelog RPC.
+ *
+ * Server-side regex match + level filter. Bounded memory: chunks the
+ * 56 MB live log and stops at max_lines. The big win is that the
+ * client (Claude Code) doesn't have to download the whole file just
+ * to grep it. */
+static int h_zcl_node_log(const struct mcp_request *req,
+                          struct mcp_response *res)
+{
+    const char *pattern = json_get_str(json_get(req->args, "pattern"));
+    const struct json_value *since = json_get(req->args, "since_secs");
+    const struct json_value *maxl  = json_get(req->args, "max_lines");
+    const char *level = json_get_str(json_get(req->args, "level"));
+
+    struct mcp_params p;
+    mcp_params_init(&p);
+    mcp_params_push_str(&p, pattern ? pattern : "");
+    mcp_params_push_int(&p, since ? json_get_int(since) : 300);
+    mcp_params_push_int(&p, maxl  ? json_get_int(maxl)  : 50);
+    mcp_params_push_str(&p, level && level[0] ? level : "all");
+    char *pjson = mcp_params_to_json(&p);
+
+    char *out = pjson ? mcp_node_rpc("getnodelog", pjson) : NULL;
+    free(pjson);
+    if (!out) {
+        res->error = MCP_ERR_HANDLER_FAILED;
+        snprintf(res->error_message, sizeof(res->error_message),
+                 "getnodelog returned null");
+        LOG_ERR("mcp.ops", "getnodelog returned null");
+    }
+    res->body = out;
+    return 0;
+}
+
 /* zcl_state — generic in-process state dump.
  *
  * Dispatches by `subsystem` to the owning module's `*_dump_state_json`
@@ -1305,6 +1339,20 @@ static const struct mcp_param_spec p_state[] = {
       "Subsystem-specific key (block_index: height or hex hash)",
       0, 0, 0, 128, NULL, NULL },
 };
+static const struct mcp_param_spec p_node_log[] = {
+    { "pattern",    MCP_PARAM_STR, true,
+      "POSIX-extended regex matched against each log line",
+      0, 0, 1, 256, NULL, NULL },
+    { "since_secs", MCP_PARAM_INT, false,
+      "Only consider lines from the last N seconds (0..86400)",
+      0, 86400, 0, 0, NULL, "300" },
+    { "max_lines",  MCP_PARAM_INT, false,
+      "Cap on returned lines",
+      1, 500, 0, 0, NULL, "50" },
+    { "level",      MCP_PARAM_STR, false,
+      "Level filter",
+      0, 0, 0, 16, "all,info,warn,error,fatal", "\"all\"" },
+};
 
 static const struct mcp_tool_route k_routes[] = {
     { "zcl_kickoff", "ops",
@@ -1358,6 +1406,11 @@ static const struct mcp_tool_route k_routes[] = {
       "For block_index, pass `key`=height or hex hash. New subsystems plug "
       "in via *_dump_state_json (see CLAUDE.md).",
       p_state, sizeof(p_state) / sizeof(p_state[0]), h_zcl_state },
+    { "zcl_node_log", "ops",
+      "Reverse-scan node.log server-side with regex + level filter. Avoids "
+      "downloading the 56 MB log just to grep. Returns newest matches first.",
+      p_node_log, sizeof(p_node_log) / sizeof(p_node_log[0]),
+      h_zcl_node_log },
     { "zcl_profile", "ops",
       "Per-thread CPU sampler: reads /proc/self/task/*/stat before "
       "and after `duration_ms`, returns top N threads by CPU delta "
