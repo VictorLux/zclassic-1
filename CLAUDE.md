@@ -74,6 +74,9 @@ Restart Claude Code after adding. The tools appear automatically.
 | `zcl_swap_participate` | Join a swap with counter-HTLC |
 | `zcl_swap_list` | List swap contracts |
 | `zcl_rpc` | **Escape hatch.** Any of 100+ RPC methods directly |
+| `zcl_state` | **Primitive.** Generic state dump: `subsystem=watchdog,boot,block_index`. New subsystems plug in via `*_dump_state_json` |
+| `zcl_node_log` | **Primitive.** Server-side regex tail of node.log with level filter |
+| `zcl_sql` | **Primitive.** SELECT-only SQL passthrough to node.db (rate-gated) |
 
 ### Example: Check Everything
 
@@ -85,6 +88,50 @@ For commands without a dedicated tool, use `zcl_rpc`:
 - `zcl_rpc(method="getmempoolinfo")`
 - `zcl_rpc(method="z_listaddresses")`
 - `zcl_rpc(method="getblock", params="[\"hash\", 2]")`
+
+### Adding state introspection
+
+The MCP has three **primitives** (`zcl_state`, `zcl_node_log`, `zcl_sql`)
+that cover most diagnostic questions without needing a new bespoke
+tool per question. When adding a new subsystem that has interesting
+runtime state, follow the convention:
+
+1. Add an entry to the subsystem's public header:
+   ```c
+   /* See CLAUDE.md "Adding state introspection". Reentrant-safe. */
+   struct json_value;
+   bool <name>_dump_state_json(struct json_value *out, const char *key);
+   ```
+   `out` is initialized by the caller (`json_set_object(out)` first
+   thing). `key` is subsystem-specific or NULL.
+
+2. Implement it in the subsystem's .c file. Use `atomic_load` for any
+   fields touched by background threads; brief mutex acquires are OK
+   for snapshot consistency. Don't allocate (the caller's JSON value
+   owns the buffer).
+
+3. Register the dump function in the dispatcher table at
+   `app/controllers/src/diagnostics_controller.c:g_dumpers`. One line.
+
+4. Add the subsystem name to the MCP `zcl_state` enum at
+   `tools/mcp/controllers/ops_controller.c:p_state[].enum_csv` and to
+   the `enum_csv` in `lib/test/src/test_mcp_controllers.c` if it
+   asserts the list.
+
+That's it — no new RPC handler, no new MCP route, no new schema.
+Every future subsystem becomes introspectable via `zcl_state` with
+~30 lines of changes total. Currently wired: `watchdog`, `boot`,
+`block_index`.
+
+For raw SQL inspection of node tables (blocks, utxos, mempool, etc),
+use `zcl_sql`: SELECT-only, semicolon-rejected, auto-LIMIT, 2 s
+wall-clock budget, 100-row hard cap. Marked destructive in the MCP
+middleware (rate-gated at 1 RPS) because arbitrary scans can be
+expensive.
+
+For tailing node.log without downloading the whole file, use
+`zcl_node_log(pattern, since_secs, max_lines, level)` — server-side
+reverse scan in 64 KB chunks.
 
 ---
 
