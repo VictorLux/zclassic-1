@@ -1,12 +1,13 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0 */
 
 #include "util/boot_phase.h"
-#include "util/thread_registry.h"
+#include "health/heartbeat.h"
 
 #include <stdio.h>
 #include <string.h>
 #include <time.h>
-#include <unistd.h>
+
+#define BOOT_PHASE_STALL_SECS 30
 
 static int64_t mono_ms(void)
 {
@@ -15,24 +16,15 @@ static int64_t mono_ms(void)
     return (int64_t)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
 }
 
-static void *boot_phase_watchdog(void *arg)
+static void boot_phase_on_stall(void *ctx)
 {
-    struct boot_phase *p = (struct boot_phase *)arg;
-    int slept = 0;
-    while (atomic_load(&p->active)) {
-        struct timespec ts = { .tv_sec = 1, .tv_nsec = 0 };
-        nanosleep(&ts, NULL);
-        slept++;
-        if (slept >= 30) {
-            int64_t elapsed = mono_ms() - p->start_ms;
-            fprintf(stderr,
-                "[boot-phase] STALL %s %lldms (no progress reported)\n",
-                p->name, (long long)elapsed);
-            fflush(stderr);
-            slept = 0;
-        }
-    }
-    return NULL;
+    struct boot_phase *p = (struct boot_phase *)ctx;
+    if (!p) return;
+    int64_t elapsed = mono_ms() - p->start_ms;
+    fprintf(stderr,
+        "[boot-phase] STALL %s %lldms (no progress reported)\n",
+        p->name, (long long)elapsed);
+    fflush(stderr);
 }
 
 void boot_phase_begin(struct boot_phase *p, const char *name)
@@ -48,24 +40,31 @@ void boot_phase_begin(struct boot_phase *p, const char *name)
         snprintf(p->name, sizeof(p->name), "(unnamed)");
     }
     p->start_ms = mono_ms();
-    atomic_store(&p->active, true);
+    p->health_id = HEALTH_INVALID_ID;
 
     fprintf(stderr, "[boot-phase] BEGIN %s\n", p->name);
     fflush(stderr);
 
-    if (thread_registry_spawn_ex("zcl_boot_phase", boot_phase_watchdog, p,
-                                  &p->watchdog) == 0)
-        p->watchdog_started = true;
+    /* Lazy-start the heartbeat sweeper. health_start() is idempotent
+     * so multiple boot phases (or other subsystems) calling it is
+     * fine — only the first one spawns the thread. Production boot
+     * paths don't need a separate health_start() call. */
+    (void)health_start();
+
+    /* Register so that the heartbeat sweeper fires our stall callback
+     * if the phase hasn't ended within BOOT_PHASE_STALL_SECS. We do
+     * not heartbeat — the entry is unregistered on phase end. */
+    p->health_id = health_register(p->name, BOOT_PHASE_STALL_SECS,
+                                    boot_phase_on_stall, p);
 }
 
 void boot_phase_end(struct boot_phase *p)
 {
     if (!p) return;
     int64_t elapsed = mono_ms() - p->start_ms;
-    atomic_store(&p->active, false);
-    if (p->watchdog_started) {
-        pthread_join(p->watchdog, NULL);
-        p->watchdog_started = false;
+    if (p->health_id != HEALTH_INVALID_ID) {
+        health_unregister(p->health_id);
+        p->health_id = HEALTH_INVALID_ID;
     }
     fprintf(stderr, "[boot-phase] END %s %lldms\n",
             p->name, (long long)elapsed);
