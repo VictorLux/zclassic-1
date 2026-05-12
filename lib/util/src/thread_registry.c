@@ -49,8 +49,9 @@ static void *thread_registry_trampoline(void *raw)
     return ret;
 }
 
-int thread_registry_spawn(const char *name,
-                          void *(*entry)(void *), void *arg)
+int thread_registry_spawn_ex(const char *name,
+                             void *(*entry)(void *), void *arg,
+                             pthread_t *out_tid)
 {
     if (!entry) return EINVAL;
 
@@ -96,6 +97,8 @@ int thread_registry_spawn(const char *name,
     g_entries[slot].tid = tid;
     pthread_mutex_unlock(&g_mu);
 
+    if (out_tid) *out_tid = tid;
+
 #ifdef __linux__
     /* pthread_setname_np accepts up to 15 chars + NUL; silently
      * truncate without propagating failure — diagnostics only. */
@@ -106,6 +109,12 @@ int thread_registry_spawn(const char *name,
 #endif
 
     return 0;
+}
+
+int thread_registry_spawn(const char *name,
+                          void *(*entry)(void *), void *arg)
+{
+    return thread_registry_spawn_ex(name, entry, arg, NULL);
 }
 
 bool thread_registry_shutdown_requested(void)

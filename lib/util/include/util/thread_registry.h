@@ -57,6 +57,20 @@
 int thread_registry_spawn(const char *name,
                           void *(*entry)(void *), void *arg);
 
+/* Like thread_registry_spawn, but also writes the spawned thread's
+ * pthread_t into *out_tid so the caller can pthread_join it from its
+ * own subsystem stop() path. The registry's trampoline still self-
+ * unregisters on normal exit, so join_all's sweep will skip an
+ * already-exited entry — doing both subsystem-local pthread_join AND
+ * relying on join_all is safe in that order.
+ *
+ * Use this for bounded-lifetime services that already have their own
+ * stop() routine; use thread_registry_spawn for long-running daemons
+ * that exit via thread_registry_shutdown_requested polling alone. */
+int thread_registry_spawn_ex(const char *name,
+                             void *(*entry)(void *), void *arg,
+                             pthread_t *out_tid);
+
 /* True once thread_registry_request_shutdown has been called. Safe
  * to call from any thread. */
 bool thread_registry_shutdown_requested(void);
