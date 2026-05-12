@@ -1779,6 +1779,7 @@ static bool rpc_indexlegacy(const struct json_value *params, bool help,
         workers[t].locs = locs;
         workers[t].max_height = max_height;
         workers[t].legacy_dir = legacy_dir;
+        /* raw-pthread-ok: short-burst-joined-immediately */
         if (pthread_create(&threads[t], NULL, index_worker, &workers[t]) != 0) {
             fprintf(stderr,
                     "indexlegacy: Phase B failed to start extraction worker %d\n",

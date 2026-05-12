@@ -105,6 +105,7 @@ bool workpool_init(struct workpool *wp, int num_threads, size_t queue_cap,
     /* Spawn workers */
     wp->num_threads = 0;
     for (int i = 0; i < num_threads; i++) {
+        /* raw-pthread-ok: workpool-primitive (registry-equivalent) */
         if (pthread_create(&wp->threads[i], NULL, worker_thread, wp) != 0)
             break;
         wp->num_threads++;

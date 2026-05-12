@@ -178,6 +178,7 @@ static bool explorer_start_detached_thread(pthread_t *thread_out,
         goto cleanup;
     if (stack_size > 0 && pthread_attr_setstacksize(&attr, stack_size) != 0)
         goto cleanup;
+    /* raw-pthread-ok: detached-helper-wrapper (custom stack via pthread_attr) */
     if (pthread_create(thread_out, &attr, entry, arg) != 0)
         goto cleanup;
     ok = true;

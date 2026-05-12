@@ -1122,6 +1122,7 @@ bool fs_client_sync(const char *peer_addr, uint16_t port,
         atomic_store(&workers[nworkers].bytes, 0);
         atomic_store(&workers[nworkers].chunks_ok, 0);
         atomic_store(&workers[nworkers].chunks_fail, 0);
+        /* raw-pthread-ok: short-burst-joined-immediately (per-download workers) */
         if (pthread_create(&wthreads[nworkers], NULL,
                            range_worker_fn, &workers[nworkers]) != 0) {
             free(wp);

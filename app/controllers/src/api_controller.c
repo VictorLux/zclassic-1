@@ -1037,6 +1037,7 @@ static bool api_start_detached_thread(pthread_t *thread_out,
         goto cleanup;
     if (pthread_attr_setstacksize(&attr, 2 * 1024 * 1024) != 0)
         goto cleanup;
+    /* raw-pthread-ok: detached-helper-wrapper (custom stack via pthread_attr) */
     if (pthread_create(thread_out, &attr, entry, arg) != 0)
         goto cleanup;
     ok = true;

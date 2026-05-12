@@ -243,6 +243,7 @@ static char *dispatch_with_timeout(const char *tool_name,
     pthread_cond_init(&ctx.cv, NULL);
 
     pthread_t th;
+    /* raw-pthread-ok: per-dispatch helper, joined below within this fn */
     if (pthread_create(&th, NULL, run_dispatch, &ctx) != 0) {
         pthread_mutex_destroy(&ctx.m);
         pthread_cond_destroy(&ctx.cv);

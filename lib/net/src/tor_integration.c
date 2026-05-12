@@ -21,7 +21,7 @@ static pthread_t g_tor_thread;
 static pthread_t g_monitor_thread;
 static _Atomic bool g_tor_running = false;
 static _Atomic bool g_tor_ready = false;
-static _Atomic bool g_tor_started = false;   /* true once pthread_create succeeds */
+static _Atomic bool g_tor_started = false;   /* true once tor thread spawn succeeds */
 static _Atomic bool g_tor_thread_done = false; /* true once tor thread returns */
 static _Atomic bool g_monitor_started = false;
 static char g_onion_address[128];

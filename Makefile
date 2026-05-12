@@ -683,7 +683,36 @@ check-before-save-hooks:
 	done
 	@echo "  OK: critical models have before_save hooks"
 
-lint: check-malloc check-silent-errors check-raw-sqlite check-coins-lookup-nullcheck check-observability-pairing check-silent-errors-services check-before-save-hooks
+# Move 4: every long-running thread goes through thread_registry_spawn{,_ex}.
+# Short-burst workers joined within the same function, and pthread_attr-using
+# detached-helper wrappers, are explicitly opted out with a `raw-pthread-ok`
+# marker on the call line or the line immediately above. The registry's own
+# implementation in lib/util/src/thread_registry.c is implicitly skipped.
+check-pthread-create:
+	@echo "══ LINT: raw pthread_create outside thread_registry ══"
+	@HITS=$$(grep -rn 'pthread_create\s*(' lib/ app/ tools/ --include='*.c' \
+	    | grep -v 'lib/test/' \
+	    | grep -v 'lib/util/src/thread_registry.c' \
+	    | grep -v 'thread_registry_spawn\|thread_registry_trampoline' \
+	    | grep -v 'raw-pthread-ok' \
+	    | while read -r line; do \
+	        f=$$(echo "$$line" | cut -d: -f1); \
+	        n=$$(echo "$$line" | cut -d: -f2); \
+	        prev=$$((n - 1)); \
+	        if [ "$$prev" -gt 0 ] && \
+	           sed -n "$${prev}p" "$$f" | grep -q 'raw-pthread-ok'; then \
+	            continue; \
+	        fi; \
+	        echo "$$line"; \
+	    done); \
+	if [ -n "$$HITS" ]; then \
+	    echo "$$HITS"; \
+	    echo "FAIL: raw pthread_create in production code (use thread_registry_spawn{,_ex} or mark // raw-pthread-ok: <reason>)"; \
+	    exit 1; \
+	fi
+	@echo "  OK: all pthread_create call sites accounted for"
+
+lint: check-malloc check-silent-errors check-raw-sqlite check-coins-lookup-nullcheck check-observability-pairing check-silent-errors-services check-before-save-hooks check-pthread-create
 	@echo "══ LINT: all checks passed ══"
 
 ci: lint zclassic23 test_zcl

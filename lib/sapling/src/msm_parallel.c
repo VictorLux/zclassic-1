@@ -134,6 +134,7 @@ void g1_msm_parallel(struct g1_point *result,
         if (batch_end > num_windows) batch_end = num_windows;
 
         for (unsigned int w = batch_start; w < batch_end; w++)
+            /* raw-pthread-ok: short-burst-joined-immediately */
             pthread_create(&threads[w], NULL, g1_msm_window_thread, &args[w]);
 
         for (unsigned int w = batch_start; w < batch_end; w++)
@@ -249,6 +250,7 @@ void g2_msm_parallel(struct g2_point *result,
         if (batch_end > num_windows) batch_end = num_windows;
 
         for (unsigned int w = batch_start; w < batch_end; w++)
+            /* raw-pthread-ok: short-burst-joined-immediately */
             pthread_create(&threads[w], NULL, g2_msm_window_thread, &args[w]);
 
         for (unsigned int w = batch_start; w < batch_end; w++)
@@ -419,6 +421,7 @@ bool fr_fft_parallel(struct fr *coeffs, size_t n, bool inverse, int num_threads)
                 args[t].omega_m = &omega_m;
                 k_offset = args[t].end_k;
 
+                /* raw-pthread-ok: short-burst-joined-immediately */
                 pthread_create(&tids[t], NULL, fft_butterfly_thread, &args[t]);
             }
 

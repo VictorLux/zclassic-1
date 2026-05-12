@@ -270,6 +270,7 @@ pthread_t mock_rpc_start(int port, double transparent, double shielded) {
     }
 
     pthread_t t;
+    /* raw-pthread-ok: test-tool (mock RPC server, not production) */
     pthread_create(&t, NULL, server_thread, NULL);
     struct timespec ts = { .tv_sec = 0, .tv_nsec = 100000000 };
     nanosleep(&ts, NULL); /* let server bind */

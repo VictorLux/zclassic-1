@@ -162,6 +162,7 @@ static bool verify_scripts_parallel(struct script_check_item *items,
         workers[t].count = per_thread + (t < (int)remainder ? 1 : 0);
         workers[t].result = true;
         offset += workers[t].count;
+        /* raw-pthread-ok: short-burst-joined-immediately */
         pthread_create(&threads[t], NULL, worker_thread, &workers[t]);
     }
 

@@ -749,6 +749,7 @@ int legacy_import(const char *legacy_datadir,
             args[i].file_num = base + i;
             args[i].ht = &aht;
             args[i].result = false;
+            /* raw-pthread-ok: short-burst-joined-immediately */
             if (pthread_create(&threads[i], NULL,
                                scan_file_thread, &args[i]) != 0) {
                 fprintf(stderr,
@@ -931,6 +932,7 @@ pass2_db_done:
             for (int i = 0; i < n; i++) {
                 fctxs[base + i].datadir = legacy_datadir;
                 fctxs[base + i].file_num = base + i;
+                /* raw-pthread-ok: short-burst-joined-immediately */
                 if (pthread_create(&thr[i], NULL,
                                    sapling_filter_thread,
                                    &fctxs[base + i]) != 0) {
@@ -1002,6 +1004,7 @@ pass2_db_done:
             int launched = 0;
             for (int i = 0; i < n; i++) {
                 if (dctxs[base + i].count == 0) continue;
+                /* raw-pthread-ok: short-burst-joined-immediately */
                 if (pthread_create(&thr3[launched], NULL,
                                    decrypt_thread,
                                    &dctxs[base + i]) != 0) {

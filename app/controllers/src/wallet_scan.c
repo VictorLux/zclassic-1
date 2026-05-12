@@ -308,6 +308,7 @@ int wallet_scan_blocks(struct node_db *ndb,
             args[i].file_num = base + i;
             args[i].ht = &aht;
             args[i].result = false;
+            /* raw-pthread-ok: short-burst-joined-immediately */
             if (pthread_create(&threads[i], NULL,
                                scan_file_thread, &args[i]) != 0) {
                 fprintf(stderr,
