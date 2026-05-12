@@ -44,6 +44,7 @@
 #include "util/ar_step_readonly.h"
 #include "util/log_macros.h"
 #include "util/safe_alloc.h"
+#include "util/thread_registry.h"
 
 extern volatile sig_atomic_t g_shutdown_requested;
 
@@ -2282,9 +2283,10 @@ bool node_db_sync_catchup_job_start(struct node_db_sync_catchup_job *job,
     job->args.w = w;
     job->args.datadir = datadir;
     job->result = -1;
-    if (pthread_create(&job->thread, NULL,
-                       node_db_sync_catchup_job_thread, job) != 0)
-        LOG_FAIL("sync", "catchup_job_start: pthread_create failed");
+    if (thread_registry_spawn_ex("zcl_catchup",
+                                  node_db_sync_catchup_job_thread, job,
+                                  &job->thread) != 0)
+        LOG_FAIL("sync", "catchup_job_start: thread_registry_spawn_ex failed");
     job->started = true;
     return true;
 }
@@ -2343,9 +2345,10 @@ bool node_db_sync_import_job_start(struct node_db_sync_import_job *job,
     job->args.ndb = ndb;
     job->args.cvdb = cvdb;
     job->result = -1;
-    if (pthread_create(&job->thread, NULL,
-                       node_db_sync_import_job_thread, job) != 0)
-        LOG_FAIL("sync", "import_job_start: pthread_create failed");
+    if (thread_registry_spawn_ex("zcl_db_import",
+                                  node_db_sync_import_job_thread, job,
+                                  &job->thread) != 0)
+        LOG_FAIL("sync", "import_job_start: thread_registry_spawn_ex failed");
     job->started = true;
     return true;
 }
@@ -2791,11 +2794,12 @@ static bool import_job_start_decoders(struct import_job *job)
         LOG_FAIL("sync", "import_start_decoders: invalid args (job=%p)", (void *)job);
 
     for (int i = 0; i < job->num_decoders; i++) {
-        int rc = pthread_create(&job->decoders[i], NULL,
-                                import_decoder_thread, job->ctx);
+        int rc = thread_registry_spawn_ex("zcl_utxo_dec",
+                                           import_decoder_thread, job->ctx,
+                                           &job->decoders[i]);
         if (rc != 0) {
             fprintf(stderr,
-                    "UTXO import: pthread_create decoder[%d] failed: %d\n",
+                    "UTXO import: thread_registry_spawn_ex decoder[%d] failed: %d\n",
                     i, rc);
             import_ctx_request_stop(job->ctx);
             import_job_join_decoders(job);
@@ -2810,8 +2814,9 @@ static bool import_job_start_writer(struct import_job *job)
 {
     if (!job || !job->ctx)
         LOG_FAIL("sync", "import_start_writer: invalid args (job=%p)", (void *)job);
-    if (pthread_create(&job->writer_thread, NULL,
-                       import_writer_thread, job->ctx) != 0) {
+    if (thread_registry_spawn_ex("zcl_utxo_wr",
+                                  import_writer_thread, job->ctx,
+                                  &job->writer_thread) != 0) {
         fprintf(stderr, "UTXO import: FATAL — writer thread failed to start\n");
         import_ctx_request_stop(job->ctx);
         return false;

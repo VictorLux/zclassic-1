@@ -44,6 +44,7 @@
 #include <limits.h>
 #include "util/ar_step_readonly.h"
 #include "util/log_macros.h"
+#include "util/thread_registry.h"
 
 /* ZCL_MAGIC used in legacy_import.c, not needed here. */
 
@@ -565,18 +566,20 @@ static bool snapshot_import_job_start(struct snapshot_import_job *job)
     if (!job)
         return false;
 
-    if (pthread_create(&job->block_index_thread, NULL,
-                       import_block_index_thread,
-                       &job->block_index_args) != 0) {
+    if (thread_registry_spawn_ex("zcl_snap_idx",
+                                  import_block_index_thread,
+                                  &job->block_index_args,
+                                  &job->block_index_thread) != 0) {
         fprintf(stderr,
                 "snapshot_import: failed to start block-index import thread\n");
         return false;
     }
     job->block_index_started = true;
 
-    if (pthread_create(&job->utxo_thread, NULL,
-                       import_utxos_thread,
-                       &job->utxo_args) != 0) {
+    if (thread_registry_spawn_ex("zcl_snap_utxo",
+                                  import_utxos_thread,
+                                  &job->utxo_args,
+                                  &job->utxo_thread) != 0) {
         fprintf(stderr,
                 "snapshot_import: failed to start UTXO import thread\n");
         snapshot_import_job_join(job);
@@ -584,9 +587,10 @@ static bool snapshot_import_job_start(struct snapshot_import_job *job)
     }
     job->utxo_started = true;
 
-    if (pthread_create(&job->wallet_thread, NULL,
-                       import_wallet_thread,
-                       &job->wallet_args) != 0) {
+    if (thread_registry_spawn_ex("zcl_snap_wallet",
+                                  import_wallet_thread,
+                                  &job->wallet_args,
+                                  &job->wallet_thread) != 0) {
         fprintf(stderr,
                 "snapshot_import: failed to start wallet import thread\n");
         snapshot_import_job_join(job);
@@ -1319,8 +1323,10 @@ bool snapshot_tx_index_job_start(struct snapshot_tx_index_job *job,
     }
     job->args.datadir = c23_datadir;
     job->result = -1;
-    if (pthread_create(&job->thread, NULL, build_tx_index_thread, job) != 0) {
-        LOG_FAIL("snapshot", "tx_index_job_start: pthread_create failed for datadir %s", c23_datadir);
+    if (thread_registry_spawn_ex("zcl_snap_txidx",
+                                  build_tx_index_thread, job,
+                                  &job->thread) != 0) {
+        LOG_FAIL("snapshot", "tx_index_job_start: thread_registry_spawn_ex failed for datadir %s", c23_datadir);
     }
     job->started = true;
     return true;
