@@ -21,6 +21,7 @@
 
 #include "util/log_macros.h"
 #include "util/thread_registry.h"
+#include "health/heartbeat.h"
 
 /* ── Thresholds ──────────────────────────────────────────── */
 
@@ -798,74 +799,56 @@ enum watchdog_recovery_type sync_watchdog_check(
     return WATCHDOG_NONE;
 }
 
-/* ── Independent watchdog thread ─────────────────────────────────
+/* ── Periodic watchdog tick (Move 3 — unified heartbeat) ─────────
  *
- * Runs sync_watchdog_check on a fixed 30s cadence. Decoupled from the
- * message-processing loop so peer-id churn, message starvation, or a
- * stuck peer can never prevent the watchdog from firing. */
+ * Runs sync_watchdog_check on a fixed 30s cadence via the lib/health
+ * sweeper, decoupled from the message-processing loop. */
 
 #define WATCHDOG_TICK_SECS 30
 
-struct watchdog_thread_args {
-    _Atomic bool *running;
-    struct connman *cm;
+struct watchdog_periodic_args {
+    struct connman          *cm;
     struct download_manager *dm;
-    struct main_state *ms;
+    struct main_state       *ms;
 };
 
-static struct watchdog_thread_args g_watchdog_args;
+static struct watchdog_periodic_args g_watchdog_args;
+static health_subsystem_id g_watchdog_health_id = HEALTH_INVALID_ID;
 
-static void *sync_watchdog_thread_entry(void *arg)
+static void sync_watchdog_periodic_tick(void *arg)
 {
-    struct watchdog_thread_args *a = arg;
-    if (!a || !a->running)
-        return NULL;
-
-    /* Sleep in 1-second slices so shutdown is responsive. */
-    int slept = 0;
-    while (atomic_load(a->running)) {
-        if (slept >= WATCHDOG_TICK_SECS) {
-            sync_watchdog_check(a->cm, a->dm, a->ms);
-            slept = 0;
-        }
-        struct timespec ts = { .tv_sec = 1, .tv_nsec = 0 };
-        nanosleep(&ts, NULL);
-        slept++;
-    }
-    return NULL;
+    struct watchdog_periodic_args *a = arg;
+    if (!a) return;
+    sync_watchdog_check(a->cm, a->dm, a->ms);
 }
 
-bool sync_watchdog_thread_start(pthread_t *thread,
-                                bool *started,
-                                _Atomic bool *running,
-                                struct connman *cm,
-                                struct download_manager *dm,
-                                struct main_state *ms)
+bool sync_watchdog_start(struct connman *cm,
+                          struct download_manager *dm,
+                          struct main_state *ms)
 {
-    if (!thread || !started || !running)
-        LOG_FAIL("watchdog", "thread_start: NULL argument "
-                 "(thread=%p, started=%p, running=%p)",
-                 (void *)thread, (void *)started, (void *)running);
-    if (*started)
-        return false;
-    g_watchdog_args.running = running;
+    if (g_watchdog_health_id != HEALTH_INVALID_ID)
+        return false;  /* already started */
+
     g_watchdog_args.cm = cm;
     g_watchdog_args.dm = dm;
     g_watchdog_args.ms = ms;
-    if (thread_registry_spawn_ex("zcl_sync_watchdog",
-                                  sync_watchdog_thread_entry,
-                                  &g_watchdog_args, thread) != 0) {
-        LOG_FAIL("watchdog", "thread_registry_spawn_ex failed");
+
+    /* Lazy-start the heartbeat sweeper. Idempotent. */
+    (void)health_start();
+
+    g_watchdog_health_id = health_register_periodic(
+        "sync.watchdog", WATCHDOG_TICK_SECS,
+        sync_watchdog_periodic_tick, &g_watchdog_args);
+    if (g_watchdog_health_id == HEALTH_INVALID_ID) {
+        LOG_FAIL("watchdog", "health_register_periodic failed");
         return false;
     }
-    *started = true;
     return true;
 }
 
-void sync_watchdog_thread_stop(pthread_t *thread, bool *started)
+void sync_watchdog_stop(void)
 {
-    if (!thread || !started || !*started)
-        return;
-    pthread_join(*thread, NULL);
-    *started = false;
+    if (g_watchdog_health_id == HEALTH_INVALID_ID) return;
+    health_unregister(g_watchdog_health_id);
+    g_watchdog_health_id = HEALTH_INVALID_ID;
 }

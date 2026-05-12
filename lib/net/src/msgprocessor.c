@@ -3103,8 +3103,8 @@ bool msg_send_messages(void *ctx, struct p2p_node *node, bool send_trickle)
                 }
             }
 
-            /* Sync watchdog now runs on its own 30s thread
-             * (sync_watchdog_thread_start in boot_services.c). The old
+            /* Sync watchdog now runs on the lib/health periodic ring
+             * (sync_watchdog_start in boot_services.c). The old
              * per-peer call here was gated on `node->id == 0`, which
              * is never true once peer ids rotate past zero — the bug
              * that left a node 22k blocks behind with checks_run=1. */

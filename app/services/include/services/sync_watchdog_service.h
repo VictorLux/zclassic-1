@@ -89,22 +89,20 @@ void sync_watchdog_set_last_reject_reason(const char *reason);
  * Registered as callback via sync_set_state_change_callback(). */
 void sync_watchdog_on_state_change(enum sync_state new_state, int height);
 
-/* Independent watchdog tick thread.
- *
- * The watchdog must fire on a fixed cadence regardless of message-loop
- * activity. The previous design called sync_watchdog_check() from the
- * msg loop only on the peer with id==0, which silently disabled the
- * watchdog once peer ids rotated past zero (the live failure mode that
- * left a node 22k blocks behind for >9h with checks_run=1). The thread
- * here runs every 30s as long as `*running` is true. */
-bool sync_watchdog_thread_start(pthread_t *thread,
-                                bool *started,
-                                _Atomic bool *running,
-                                struct connman *cm,
-                                struct download_manager *dm,
-                                struct main_state *ms);
+/* Independent watchdog tick — runs on the unified heartbeat sweeper
+ * (lib/health) on a 30s cadence. Decoupled from the message-processing
+ * loop so peer-id churn, message starvation, or a stuck peer can never
+ * prevent the watchdog from firing. The previous design called
+ * sync_watchdog_check() from the msg loop only on the peer with id==0,
+ * which silently disabled the watchdog once peer ids rotated past zero
+ * (the live failure mode that left a node 22k blocks behind for >9h
+ * with checks_run=1). Before Move 3 this used a dedicated pthread;
+ * after Move 3 it's a periodic entry in the heartbeat ring. */
+bool sync_watchdog_start(struct connman *cm,
+                          struct download_manager *dm,
+                          struct main_state *ms);
 
-void sync_watchdog_thread_stop(pthread_t *thread, bool *started);
+void sync_watchdog_stop(void);
 
 /* State-dump convention (see CLAUDE.md "Adding state introspection").
  * Writes the watchdog's runtime state as a JSON object into `out`.

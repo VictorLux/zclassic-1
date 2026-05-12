@@ -1451,12 +1451,9 @@ bool app_init_services(struct app_context *ctx,
      * gated on peer id==0 and silently disabled once peer ids rotated
      * past zero — left a node 22k blocks behind for >9h with
      * checks_run=1). */
-    sync_watchdog_thread_start(&svc->watchdog_thread,
-                               &svc->watchdog_thread_started,
-                               svc->running,
-                               svc->connman,
-                               msg_get_download_mgr(),
-                               svc->state);
+    sync_watchdog_start(svc->connman,
+                        msg_get_download_mgr(),
+                        svc->state);
 
     /* Gap-fill service — sequential block-gap filler. While tip <
      * best_header, walks pprev from best_header and queues any
@@ -1584,8 +1581,7 @@ static void shutdown_persist_runtime_state(struct boot_svc_ctx *svc)
     ibd_throttle_stop();
     db_maintenance_stop();
 
-    sync_watchdog_thread_stop(&svc->watchdog_thread,
-                              &svc->watchdog_thread_started);
+    sync_watchdog_stop();
     gap_fill_stop();
     bg_validation_stop(&svc->bg_validation);
     bg_hash_verify_stop(&svc->bg_hash_verify);
