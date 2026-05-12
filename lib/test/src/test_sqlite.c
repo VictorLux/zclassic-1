@@ -101,6 +101,35 @@ static bool test_db_service_nested_write_callback(struct node_db *ndb, void *ctx
     return true;
 }
 
+struct test_db_service_async_ctx {
+    bool *ran;
+    bool *freed;
+};
+
+static bool test_db_service_async_write_callback(struct node_db *ndb, void *ctx)
+{
+    struct test_db_service_async_ctx *async = ctx;
+
+    if (!ndb || !async)
+        return false;
+    if (async->ran)
+        *async->ran = true;
+    return node_db_exec(ndb,
+        "INSERT OR REPLACE INTO node_state(key,value)"
+        " VALUES('db_service_async', X'04')");
+}
+
+static void test_db_service_async_free(void *ctx)
+{
+    struct test_db_service_async_ctx *async = ctx;
+
+    if (!async)
+        return;
+    if (async->freed)
+        *async->freed = true;
+    free(async);
+}
+
 int test_sqlite(void) {
     int failures = 0;
 
@@ -307,6 +336,46 @@ int test_sqlite(void) {
         ok = ok && got_len == 1 && got[0] == 0x03;
         db_service_stop(&svc);
         node_db_close(&ndb);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* DB service asynchronous writes */
+    {
+        printf("SQLite DB service async write drains before flush... ");
+        struct node_db ndb;
+        struct db_service svc;
+        struct test_db_service_async_ctx *ctx = NULL;
+        uint8_t got[8] = {0};
+        size_t got_len = 0;
+        bool ran = false;
+        bool freed = false;
+        bool ok = node_db_open(&ndb, ":memory:");
+
+        db_service_init(&svc);
+        ok = ok && db_service_attach(&svc, &ndb);
+        ok = ok && db_service_start(&svc);
+        if (ok) {
+            ctx = zcl_calloc(1, sizeof(*ctx), "test async db ctx");
+            ok = ctx != NULL;
+        }
+        if (ok) {
+            ctx->ran = &ran;
+            ctx->freed = &freed;
+            ok = db_service_enqueue_write(&svc,
+                test_db_service_async_write_callback, ctx,
+                test_db_service_async_free);
+            ctx = NULL;
+        }
+        ok = ok && db_service_flush_write(&svc);
+        ok = ok && ran && freed;
+        ok = ok && node_db_state_get(&ndb, "db_service_async",
+                                     got, sizeof(got), &got_len);
+        ok = ok && got_len == 1 && got[0] == 0x04;
+        db_service_stop(&svc);
+        node_db_close(&ndb);
+        if (ctx)
+            free(ctx);
         if (ok) printf("OK\n");
         else { printf("FAIL\n"); failures++; }
     }
@@ -584,6 +653,59 @@ int test_sqlite(void) {
 
         ok = ok && db_block_delete(&ndb, blk.hash);
         ok = ok && (db_block_count(&ndb) == 0);
+
+        node_db_close(&ndb);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* DB canonical block projection demotes stale same-height rows */
+    {
+        printf("SQLite canonical block save demotes stale height... ");
+        struct node_db ndb;
+        bool ok = node_db_open(&ndb, ":memory:");
+        uint8_t sol[] = {0x01, 0x02, 0x03};
+
+        struct db_block stale;
+        memset(&stale, 0, sizeof(stale));
+        memset(stale.hash, 0xA1, 32);
+        stale.height = 200;
+        memset(stale.prev_hash, 0xB1, 32);
+        stale.version = 4;
+        memset(stale.merkle_root, 0xC1, 32);
+        stale.time = 1700000200;
+        stale.bits = 0x1d00ffff;
+        memset(stale.nonce, 0xD1, 32);
+        stale.solution = sol;
+        stale.solution_len = sizeof(sol);
+        memset(stale.chain_work, 0xE1, 32);
+        stale.status = BLOCK_VALID_SCRIPTS | BLOCK_HAVE_DATA;
+        stale.file_num = 1;
+        stale.data_pos = 8192;
+        stale.num_tx = 2;
+        ok = ok && db_block_save(&ndb, &stale);
+
+        struct db_block canonical = stale;
+        memset(canonical.hash, 0xA2, 32);
+        memset(canonical.merkle_root, 0xC2, 32);
+        canonical.file_num = 2;
+        canonical.data_pos = 16384;
+
+        struct db_block open_cursor;
+        ok = ok && db_block_find_by_height(&ndb, 200, &open_cursor);
+        ok = ok && db_block_save_canonical(&ndb, &canonical);
+        ok = ok && (db_block_count(&ndb) == 2);
+
+        struct db_block found;
+        ok = ok && db_block_find_by_hash(&ndb, stale.hash, &found);
+        ok = ok && (found.height == 200);
+        ok = ok && (found.status == BLOCK_VALID_TREE);
+        ok = ok && (found.file_num == 1);
+
+        ok = ok && db_block_find_by_height(&ndb, 200, &found);
+        ok = ok && (memcmp(found.hash, canonical.hash, 32) == 0);
+        ok = ok && (found.status == canonical.status);
+        ok = ok && (found.file_num == 2);
 
         node_db_close(&ndb);
         if (ok) printf("OK\n");

@@ -10,14 +10,75 @@
 #include <assert.h>
 #include <string.h>
 
+/* Harvested by tools/harvest_checkpoints.sh from local zclassicd.
+ * tip=3108561 at harvest time, finalized through height 3108461.
+ * 63 entries, every 50,000 blocks from genesis to 3,100,000. Each
+ * entry locks 50,000 blocks of history because MAX_REORG_LENGTH < 10
+ * (lib/validation/include/validation/main_constants.h). */
 static struct checkpoint_entry mainnet_checkpoints[] = {
-    { 0,       {{0}} },
-    { 30000,   {{0}} },
-    { 160000,  {{0}} },
-    { 468200,  {{0}} },
-    { 2013514, {{0}} },
-    { 2879438, {{0}} },
-    { 3054000, {{0}} },
+    { 0, {{0}} },
+    { 50000, {{0}} },
+    { 100000, {{0}} },
+    { 150000, {{0}} },
+    { 200000, {{0}} },
+    { 250000, {{0}} },
+    { 300000, {{0}} },
+    { 350000, {{0}} },
+    { 400000, {{0}} },
+    { 450000, {{0}} },
+    { 500000, {{0}} },
+    { 550000, {{0}} },
+    { 600000, {{0}} },
+    { 650000, {{0}} },
+    { 700000, {{0}} },
+    { 750000, {{0}} },
+    { 800000, {{0}} },
+    { 850000, {{0}} },
+    { 900000, {{0}} },
+    { 950000, {{0}} },
+    { 1000000, {{0}} },
+    { 1050000, {{0}} },
+    { 1100000, {{0}} },
+    { 1150000, {{0}} },
+    { 1200000, {{0}} },
+    { 1250000, {{0}} },
+    { 1300000, {{0}} },
+    { 1350000, {{0}} },
+    { 1400000, {{0}} },
+    { 1450000, {{0}} },
+    { 1500000, {{0}} },
+    { 1550000, {{0}} },
+    { 1600000, {{0}} },
+    { 1650000, {{0}} },
+    { 1700000, {{0}} },
+    { 1750000, {{0}} },
+    { 1800000, {{0}} },
+    { 1850000, {{0}} },
+    { 1900000, {{0}} },
+    { 1950000, {{0}} },
+    { 2000000, {{0}} },
+    { 2050000, {{0}} },
+    { 2100000, {{0}} },
+    { 2150000, {{0}} },
+    { 2200000, {{0}} },
+    { 2250000, {{0}} },
+    { 2300000, {{0}} },
+    { 2350000, {{0}} },
+    { 2400000, {{0}} },
+    { 2450000, {{0}} },
+    { 2500000, {{0}} },
+    { 2550000, {{0}} },
+    { 2600000, {{0}} },
+    { 2650000, {{0}} },
+    { 2700000, {{0}} },
+    { 2750000, {{0}} },
+    { 2800000, {{0}} },
+    { 2850000, {{0}} },
+    { 2900000, {{0}} },
+    { 2950000, {{0}} },
+    { 3000000, {{0}} },
+    { 3050000, {{0}} },
+    { 3100000, {{0}} },
 };
 
 static struct checkpoint_entry testnet_checkpoints[] = {
@@ -185,23 +246,139 @@ static void init_main_params(void)
     p->fMineBlocksOnDemand = false;
     p->fTestnetToBeDeprecatedFieldRPC = false;
 
+    /* 63 checkpoints, harvested by tools/harvest_checkpoints.sh from
+     * local zclassicd. Source-of-truth at harvest time: tip=3108561,
+     * finalized through height 3108461 (100-block safety margin past
+     * MAX_REORG_LENGTH). */
     uint256_set_hex(&mainnet_checkpoints[0].hash,
         "0007104ccda289427919efc39dc9e4d499804b7bebc22df55f8b834301260602");
     uint256_set_hex(&mainnet_checkpoints[1].hash,
-        "000000005c2ad200c3c7c8e627f67b306659efca1268c9bb014335fdadc0c392");
+        "0000001192547cfec21ebcee32be84c85ee13151b9ad57dd1ab5b99660fdbba7");
     uint256_set_hex(&mainnet_checkpoints[2].hash,
-        "000000065093005a1a46ee95d6d66c2b07008220ca64dd3b3a93bbd1945480c0");
+        "000000016845a9f945079aa52680def9eafd5ea39c86dfdb5ef5630d18e3e74f");
     uint256_set_hex(&mainnet_checkpoints[3].hash,
-        "000000009bd5548c851c2b237894d6807a53bf1e2808402545e27a995ae4f3c3");
+        "000000086a7f385f4f3027f9a0615c6174739e479ca0470e1f35d610b04a66be");
     uint256_set_hex(&mainnet_checkpoints[4].hash,
-        "000019679aa2ea97a3f18bd9265bc91a09929ea0b1acc0fc5ef77cdf3cf906e7");
+        "00000003eae37fd7c03db6342f7bd79323e845bcf649c8f5dba7959221931903");
     uint256_set_hex(&mainnet_checkpoints[5].hash,
-        "000007e8fccb9e4831c7d7376a283b016ead6166491f951f4f083dbe366992b2");
+        "000000001e58184b4db769088543b3493c9006b6489715701d9a8100650b0b61");
     uint256_set_hex(&mainnet_checkpoints[6].hash,
-        "000005aa8e8c321cf364788e81b94619434b0dc1a85e658a022b44f23eb85662");
+        "00000000dd6925eecc752ef271ac731f9bde9a1c4bebeaea58cb18f17ac8fa37");
+    uint256_set_hex(&mainnet_checkpoints[7].hash,
+        "000000005c751c23e79877bf8cf5b34bd87307c71c336b6525e388168b1fc2df");
+    uint256_set_hex(&mainnet_checkpoints[8].hash,
+        "000000002e903f1fed722546464fb1c1e46712d1267cf8ec69b35d2730ea8779");
+    uint256_set_hex(&mainnet_checkpoints[9].hash,
+        "0000000072512aae1e83de04c14865ee91a20c91ed24a4b691ccdf33458a8316");
+    uint256_set_hex(&mainnet_checkpoints[10].hash,
+        "00000000068bb87ac6e5b52ad17360ffdaed1ff0161b20a73993ed4de0500756");
+    uint256_set_hex(&mainnet_checkpoints[11].hash,
+        "0000000006abda2bc6060a741a2757bcad66d0bc2d540175a718603b69382c75");
+    uint256_set_hex(&mainnet_checkpoints[12].hash,
+        "0000005d7286ac9c6f6776685d7132890215924c50c3f17bfb8812480832a6d9");
+    uint256_set_hex(&mainnet_checkpoints[13].hash,
+        "000000dacdca8bdbb7f06c78cae46c4a6202046cba99631589dc410d49a73b04");
+    uint256_set_hex(&mainnet_checkpoints[14].hash,
+        "0000006742849baa2fc3a14bca5d2de7624d2a1435de1198fcbfa86a499a4f89");
+    uint256_set_hex(&mainnet_checkpoints[15].hash,
+        "00000b84fc0a0bc9e55e6bc72d238548e828818f092b8ae84fafbec053ea766c");
+    uint256_set_hex(&mainnet_checkpoints[16].hash,
+        "000003260ca88e0c9d29def97f02b97841c2fbb351a09357f4e8d55cca63e683");
+    uint256_set_hex(&mainnet_checkpoints[17].hash,
+        "0000188da1cc7eb79ba5cff835a23f9d881c5b038aa8b17c8abbc8e5b8adbc12");
+    uint256_set_hex(&mainnet_checkpoints[18].hash,
+        "000000222501a004b13b4b3b12909bc29ed4040b2a9082b8e5986019bbfc8ff0");
+    uint256_set_hex(&mainnet_checkpoints[19].hash,
+        "00001d2c035853010cfcd28d4d6b9c399be76783bb6b2c22c6dd5f45448ef289");
+    uint256_set_hex(&mainnet_checkpoints[20].hash,
+        "00001e9a80eef39dd38e4280fd0e9fa6daba1ec1d2bcc26b4835a2991be21502");
+    uint256_set_hex(&mainnet_checkpoints[21].hash,
+        "000013bb2d4e0a99bbc485148b80d70a0d6d7a41a13853043f6ad8b4056b8e95");
+    uint256_set_hex(&mainnet_checkpoints[22].hash,
+        "00002067edad8f7c0a43d32fd141ed6b39f9ee3560c2541c7876b804a82417a2");
+    uint256_set_hex(&mainnet_checkpoints[23].hash,
+        "000018d81f71c9c5d6f23e3c6932b077c8e13ee77e14585106d92053b49a6ba9");
+    uint256_set_hex(&mainnet_checkpoints[24].hash,
+        "000027e9ef0d54c5ebc5fb1d7c47fb9afd799e5f026f794d8222da44481374ed");
+    uint256_set_hex(&mainnet_checkpoints[25].hash,
+        "000043402390faa334cec744c8e5bbe619616ee1744dd63f43b0f2f4624df5a8");
+    uint256_set_hex(&mainnet_checkpoints[26].hash,
+        "00000f742bad132ad7911fb0f28b2648d9cf2f2064968ebbb6497f4db3bdbbdd");
+    uint256_set_hex(&mainnet_checkpoints[27].hash,
+        "000006c858fdcc5b720969e0f7f89d026775daab568b673bd7ab9f64dd7ea663");
+    uint256_set_hex(&mainnet_checkpoints[28].hash,
+        "00003fcae06bad5503eb91d81b107af48ff0381137f550dfa133d57e848d8c68");
+    uint256_set_hex(&mainnet_checkpoints[29].hash,
+        "00003b2bc346234bdf7d6c8c2cc71329d8d3f6376d0a669b426baf5deb3fc84e");
+    uint256_set_hex(&mainnet_checkpoints[30].hash,
+        "00003026bfd01a2909ad66a43dd231f4ebfd869653fb0797be0f1e7607c5c825");
+    uint256_set_hex(&mainnet_checkpoints[31].hash,
+        "0000358964240c65f8f42b0eeb58a8736264af4659cb49c0445a0a89476a9100");
+    uint256_set_hex(&mainnet_checkpoints[32].hash,
+        "00001f9d63dd94c5832d7c7e98aa468e1032d6ee09b6e0c81b4509168fbaa360");
+    uint256_set_hex(&mainnet_checkpoints[33].hash,
+        "00004a98ed8b402b906952d6e588736921c668cebd82b2d131250356b1e9bfe6");
+    uint256_set_hex(&mainnet_checkpoints[34].hash,
+        "00005d09484a70d5fc6a1ebe619437d359e242864e6bec627e580cf6b68e5752");
+    uint256_set_hex(&mainnet_checkpoints[35].hash,
+        "00000e95b22113711d31047a18d80d464abd7cba17cb0c1f31b09c2a57558660");
+    uint256_set_hex(&mainnet_checkpoints[36].hash,
+        "00000644a340ff1644b1ec20675e35bee6e536205a958c9ebd7ec7ec4a2e28ae");
+    uint256_set_hex(&mainnet_checkpoints[37].hash,
+        "00000c3166c101054c2824d0346fb91f4b083186b014debbe98c08f0304f1aa5");
+    uint256_set_hex(&mainnet_checkpoints[38].hash,
+        "0000133682fdd979ec2cb5eef86f023203b632d47356f837d319a46548911bac");
+    uint256_set_hex(&mainnet_checkpoints[39].hash,
+        "00000ec287eb4a9f672dde3a3fb7abf2d46b88dacd08f0bb4f8a5e58da8abf44");
+    uint256_set_hex(&mainnet_checkpoints[40].hash,
+        "00000bfde9956d07350de33324802251c51b62a5b0df43d2fb7e240c75bd835b");
+    uint256_set_hex(&mainnet_checkpoints[41].hash,
+        "00001a3f1cdded96e801ab9a24d8729013afd339a8fcbfde8b9c581c4461c372");
+    uint256_set_hex(&mainnet_checkpoints[42].hash,
+        "000007cf57c30779f836c953a3b2cbe26d27e7bfb422231cb7d1a4724e3f6f7b");
+    uint256_set_hex(&mainnet_checkpoints[43].hash,
+        "0000021414f263cd394ba3fe5edbc7407d2c35c219ed532d81224a8f5cac266a");
+    uint256_set_hex(&mainnet_checkpoints[44].hash,
+        "000047475398f40c0f7d8e2820f100ff33f3e1534a4f9351eba5b0df512c6699");
+    uint256_set_hex(&mainnet_checkpoints[45].hash,
+        "0000096f21e3a317f08485ba48416ae83fcbe19758dcaa8d4482fff3b93f3765");
+    uint256_set_hex(&mainnet_checkpoints[46].hash,
+        "0000104a2796574b6d308e511f6eca0a3e0808df46fe74c13f255497a78c5287");
+    uint256_set_hex(&mainnet_checkpoints[47].hash,
+        "0000051085307b23e74fb281b632ad02568f6088d75580e3d4a172b2b1680689");
+    uint256_set_hex(&mainnet_checkpoints[48].hash,
+        "000010da75517d6a2e2ec505c9cde4538f6e3ab8d6567be418b0ea84feb18e62");
+    uint256_set_hex(&mainnet_checkpoints[49].hash,
+        "00006bc6a3bfbb3ddbc4093a21c66978f312274cbb2c560e1d468142deba0fbe");
+    uint256_set_hex(&mainnet_checkpoints[50].hash,
+        "000019f68479a8bf8b2f8824961a6e65a12c74c4225f0445c8155cfc99ab29b7");
+    uint256_set_hex(&mainnet_checkpoints[51].hash,
+        "000047ea79927d47625d3ced5a844b80629455f86a01c854c101d8cf587be726");
+    uint256_set_hex(&mainnet_checkpoints[52].hash,
+        "00001cf494ed090510920b516e778203848aff2cb9f4a3180ad36a2f98c12a8c");
+    uint256_set_hex(&mainnet_checkpoints[53].hash,
+        "000018d2bd23734894da5a1b7d643cb95cd8d507c9abfb54c84e261ede545755");
+    uint256_set_hex(&mainnet_checkpoints[54].hash,
+        "0000195b1d8b3abb52279d573b591b21ee2099057f46b50953cea2a7d77cb738");
+    uint256_set_hex(&mainnet_checkpoints[55].hash,
+        "000015796f1454a03d0ca328dcab4c4c9b19ca4be615e8b650b33bb149a6651a");
+    uint256_set_hex(&mainnet_checkpoints[56].hash,
+        "0001919c32ab5c65d4f34440306e5d9df5cd02081b712b636ef244e63b32f65c");
+    uint256_set_hex(&mainnet_checkpoints[57].hash,
+        "000034d1fcfa2c6567c715d8ae459bd9cc2b04d5b6f6a4d4391928d8349a16c4");
+    uint256_set_hex(&mainnet_checkpoints[58].hash,
+        "000000746aedab2734c87be0ea7c7337523ed14f3ee2cc212eee6b22a442c9af");
+    uint256_set_hex(&mainnet_checkpoints[59].hash,
+        "00000bcce5aa72a17a672931187c120bd5ab7dfd0a1c51ca513017901b3cebd6");
+    uint256_set_hex(&mainnet_checkpoints[60].hash,
+        "0000038aee939c8017f4ad353e3fd1313c6a0da565bbc1d3269bbe855fe33505");
+    uint256_set_hex(&mainnet_checkpoints[61].hash,
+        "0000013c767422c5e118ef7b2efe63a108c03c1dcc8b11f16abce14f4937d2ab");
+    uint256_set_hex(&mainnet_checkpoints[62].hash,
+        "00000ec39d18a564aea5232468ec07ac692ff39f0059551f8aed20a7911d0605");
 
     p->checkpointData.entries = mainnet_checkpoints;
-    p->checkpointData.nEntries = 7;
+    p->checkpointData.nEntries = 63;
     p->checkpointData.nTimeLastCheckpoint = 1774300000;
     p->checkpointData.nTransactionsLastCheckpoint = 5037600;
     p->checkpointData.fTransactionsPerDay = 1060;

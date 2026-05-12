@@ -561,6 +561,29 @@ static int test_sync_service_plans_header_processing_activation_from_disk(void)
     return failures;
 }
 
+static int test_sync_service_restarts_low_header_batches_from_tip(void)
+{
+    int failures = 0;
+
+    TEST("sync_service treats below-tip header batches from far-ahead peers as non-progress") {
+        struct block_index low;
+
+        memset(&low, 0, sizeof(low));
+        block_index_init(&low);
+        low.nHeight = 2757;
+
+        ASSERT(syncsvc_should_restart_headers_from_tip(
+            160, &low, 3087298, 3107754));
+        ASSERT(!syncsvc_should_restart_headers_from_tip(
+            160, &low, 3087298, 3087300));
+        ASSERT(!syncsvc_should_restart_headers_from_tip(
+            0, &low, 3087298, 3107754));
+        PASS();
+    } _test_next:;
+
+    return failures;
+}
+
 static int test_sync_service_builds_getheaders_locator_from_chain(void)
 {
     int failures = 0;
@@ -1229,6 +1252,7 @@ int test_sync_service(void)
     failures += test_sync_service_plans_header_download();
     failures += test_sync_service_plans_header_processing();
     failures += test_sync_service_plans_header_processing_activation_from_disk();
+    failures += test_sync_service_restarts_low_header_batches_from_tip();
     failures += test_sync_service_builds_getheaders_locator_from_chain();
     failures += test_sync_service_builds_getheaders_locator_empty_chain();
     failures += test_sync_service_header_log_policy();

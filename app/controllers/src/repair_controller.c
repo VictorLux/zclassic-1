@@ -16,7 +16,9 @@
 #include "rpc/client.h"
 #include "script/script.h"
 #include "validation/main_state.h"
+#include "validation/process_block.h"
 #include "config/boot_internal.h"
+#include <limits.h>
 #include <inttypes.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -40,6 +42,11 @@ static struct repair_context *repair_ctx(void)
 {
     return &g_repair_ctx;
 }
+
+#define REPAIRUTXOS_DEFAULT_PORT 8232
+#define REPAIRUTXOS_DEFAULT_SCAN_BLOCKS 10000
+#define REPAIRUTXOS_MAX_SCAN_BLOCKS 50000
+#define REPAIRUTXOS_MAX_CREDS_LEN 256
 
 void rpc_repair_set_state(struct main_state *ms,
                            struct coins_view_cache *coins_tip,
@@ -288,7 +295,7 @@ static bool rpc_repairutxos(const struct json_value *params, bool help,
         "\nArguments:\n"
         "1. zclassicd_port   (number, optional, default=8232)\n"
         "2. zclassicd_creds  (string, optional, default=\"zcluser:zclpass\")\n"
-        "3. num_blocks       (number, optional, default=10000)\n"
+        "3. num_blocks       (number, optional, default=10000, max=50000)\n"
         "\nRequires zclassicd running on localhost with RPC enabled.\n"
         "For spent UTXOs, zclassicd needs txindex=1.\n");
 
@@ -309,12 +316,33 @@ static bool rpc_repairutxos(const struct json_value *params, bool help,
     rpc_params_init(&p, params);
     rpc_params_expect(&p, 0, 3);
 
-    int port = (int)rpc_permit_int(&p, 0, "port", 8232);
+    int port = (int)rpc_permit_int(&p, 0, "port",
+                                   REPAIRUTXOS_DEFAULT_PORT);
     const char *creds = rpc_permit_str(&p, 1, "creds", "zcluser:zclpass");
-    int num_blocks = (int)rpc_permit_int(&p, 2, "num_blocks", 10000);
+    int num_blocks = (int)rpc_permit_int(&p, 2, "num_blocks",
+                                         REPAIRUTXOS_DEFAULT_SCAN_BLOCKS);
     if (rpc_params_invalid(&p)) { rpc_params_error(&p, result); return false; }
+    if (port <= 0 || port > 65535) {
+        json_set_str(result, "port must be between 1 and 65535");
+        return false;
+    }
+    if (!creds || creds[0] == '\0' ||
+        strlen(creds) > REPAIRUTXOS_MAX_CREDS_LEN) {
+        json_set_str(result,
+                     "creds must be a non-empty user:password string");
+        return false;
+    }
+    if (num_blocks <= 0 || num_blocks > REPAIRUTXOS_MAX_SCAN_BLOCKS) {
+        json_set_str(result,
+                     "num_blocks must be between 1 and 50000");
+        return false;
+    }
 
     int tip_height = active_chain_height(&ctx->main_state->chain_active);
+    if (tip_height < 0 || tip_height > INT_MAX - num_blocks) {
+        json_set_str(result, "active tip height is invalid for repair scan");
+        return false;
+    }
     int scan_end = tip_height + num_blocks;
 
     /* Get zclassicd's chain height as scan limit */
@@ -338,9 +366,11 @@ static bool rpc_repairutxos(const struct json_value *params, bool help,
         }
     }
 
-    printf("repairutxos: scanning blocks %d → %d (%d blocks)\n",
+    printf("repairutxos: scanning blocks %d -> %d (%d blocks)\n",
            tip_height + 1, scan_end, scan_end - tip_height);
-    printf("repairutxos: using zclassicd on port %d\n", port);
+    printf("repairutxos: using zclassicd on port %d "
+           "(max_scan=%d, current_tip=%d)\n",
+           port, REPAIRUTXOS_MAX_SCAN_BLOCKS, tip_height);
     fflush(stdout);
 
     int64_t t_start = (int64_t)time(NULL);
@@ -351,15 +381,26 @@ static bool rpc_repairutxos(const struct json_value *params, bool help,
     if (ctx->coins_tip)
         coins_view_cache_flush(ctx->coins_tip);
 
-    sqlite3_exec(ctx->node_db->db, "BEGIN", NULL, NULL, NULL);
+    char *sqlite_err = NULL;
+    if (sqlite3_exec(ctx->node_db->db, "BEGIN", NULL, NULL,
+                     &sqlite_err) != SQLITE_OK) {
+        fprintf(stderr, "repairutxos: sqlite BEGIN failed: %s\n",
+                sqlite_err ? sqlite_err : "unknown");
+        sqlite3_free(sqlite_err);
+        json_set_str(result, "Database transaction begin failed");
+        return false;
+    }
 
     size_t blk_buf_size = 4 * 1024 * 1024;
     char *blk_buf = zcl_malloc(blk_buf_size, "repair_blk_buf");
     if (!blk_buf) {
+        sqlite3_exec(ctx->node_db->db, "ROLLBACK", NULL, NULL, NULL);
         json_set_str(result, "Out of memory");
         return false;
     }
 
+    bool scan_complete = true;
+    char scan_error[160] = {0};
     for (int h = tip_height + 1; h <= scan_end; h++) {
         /* getblockhash */
         char hash_params[64];
@@ -367,26 +408,54 @@ static bool rpc_repairutxos(const struct json_value *params, bool help,
         char hash_resp[4096];
         int rc = rpc_call_local(port, creds, "getblockhash", hash_params,
                                  hash_resp, sizeof(hash_resp));
-        if (rc <= 0) { printf("repairutxos: getblockhash(%d) failed\n", h); break; }
+        if (rc <= 0) {
+            snprintf(scan_error, sizeof(scan_error),
+                     "getblockhash(%d) failed", h);
+            printf("repairutxos: %s\n", scan_error);
+            scan_complete = false;
+            break;
+        }
 
         const char *hbody = rpc_http_body(hash_resp);
         const char *hr = strstr(hbody, "\"result\"");
-        if (!hr) break;
+        if (!hr) {
+            snprintf(scan_error, sizeof(scan_error),
+                     "getblockhash(%d) missing result", h);
+            scan_complete = false;
+            break;
+        }
         hr += 8;
         while (*hr == ' ' || *hr == ':') hr++;
-        if (*hr != '"') break;
+        if (*hr != '"') {
+            snprintf(scan_error, sizeof(scan_error),
+                     "getblockhash(%d) result was not a string", h);
+            scan_complete = false;
+            break;
+        }
         hr++;
         char block_hash[65];
         size_t bhi = 0;
         while (*hr && *hr != '"' && bhi < 64) block_hash[bhi++] = *hr++;
         block_hash[bhi] = '\0';
+        if (bhi != 64 || *hr != '"') {
+            snprintf(scan_error, sizeof(scan_error),
+                     "getblockhash(%d) returned malformed hash", h);
+            scan_complete = false;
+            break;
+        }
 
         /* getblock hash 2 */
         char blk_params[256];
         snprintf(blk_params, sizeof(blk_params), "[\"%s\", 2]", block_hash);
         rc = rpc_call_local(port, creds, "getblock", blk_params,
                              blk_buf, blk_buf_size);
-        if (rc <= 0) { printf("repairutxos: getblock(%d) failed\n", h); break; }
+        if (rc <= 0) {
+            snprintf(scan_error, sizeof(scan_error),
+                     "getblock(%d) failed", h);
+            printf("repairutxos: %s\n", scan_error);
+            scan_complete = false;
+            break;
+        }
 
         const char *bbody = rpc_http_body(blk_buf);
 
@@ -512,18 +581,33 @@ static bool rpc_repairutxos(const struct json_value *params, bool help,
     }
 
     free(blk_buf);
-    sqlite3_exec(ctx->node_db->db, "COMMIT", NULL, NULL, NULL);
+    sqlite_err = NULL;
+    if (sqlite3_exec(ctx->node_db->db, "COMMIT", NULL, NULL,
+                     &sqlite_err) != SQLITE_OK) {
+        fprintf(stderr, "repairutxos: sqlite COMMIT failed: %s\n",
+                sqlite_err ? sqlite_err : "unknown");
+        sqlite3_free(sqlite_err);
+        json_set_str(result, "Database transaction commit failed");
+        return false;
+    }
 
     if (ctx->coins_tip)
         coins_view_cache_flush(ctx->coins_tip);
 
+    if (scan_complete && repair_failed == 0 &&
+        (repaired_gettxout + repaired_rawtx) > 0)
+        process_block_clear_utxo_activation_pause_range(tip_height + 1,
+                                                        scan_end);
+
     int64_t elapsed = (int64_t)time(NULL) - t_start;
 
     printf("repairutxos: done in %llds — %d blocks, %d inputs, "
-           "%d missing, %d repaired (%d gettxout, %d rawtx), %d failed\n",
+           "%d missing, %d repaired (%d gettxout, %d rawtx), %d failed, "
+           "complete=%s\n",
            (long long)elapsed, blocks_scanned, inputs_checked,
            missing_found, repaired_gettxout + repaired_rawtx,
-           repaired_gettxout, repaired_rawtx, repair_failed);
+           repaired_gettxout, repaired_rawtx, repair_failed,
+           scan_complete ? "true" : "false");
     fflush(stdout);
 
     json_set_object(result);
@@ -533,6 +617,9 @@ static bool rpc_repairutxos(const struct json_value *params, bool help,
     json_push_kv_int(result, "repaired_gettxout", repaired_gettxout);
     json_push_kv_int(result, "repaired_rawtx", repaired_rawtx);
     json_push_kv_int(result, "repair_failed", repair_failed);
+    json_push_kv_bool(result, "scan_complete", scan_complete);
+    if (!scan_complete)
+        json_push_kv_str(result, "scan_error", scan_error);
     json_push_kv_int(result, "scan_start", tip_height + 1);
     json_push_kv_int(result, "scan_end", scan_end);
     json_push_kv_int(result, "elapsed_seconds", elapsed);

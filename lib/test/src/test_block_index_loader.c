@@ -6,6 +6,7 @@
 
 #include "test/test_helpers.h"
 #include "services/block_index_loader.h"
+#include "services/block_index_integrity.h"
 #include "validation/main_state.h"
 #include "chain/chain.h"
 #include "chain/chainparams.h"
@@ -98,6 +99,11 @@ int test_block_index_loader(void)
         snprintf(path, sizeof(path), "%s/block_index.bin", tmpdir);
         struct stat st;
         bool file_ok = (stat(path, &st) == 0 && st.st_size > 8);
+        char sidecar_path[512];
+        snprintf(sidecar_path, sizeof(sidecar_path), "%s/block_index.bin.sha3",
+                 tmpdir);
+        bool sidecar_ok = (stat(sidecar_path, &st) == 0 &&
+                           st.st_size == BII_SIDECAR_BYTES);
 
         struct main_state ms2;
         memset(&ms2, 0, sizeof(ms2));
@@ -114,8 +120,11 @@ int test_block_index_loader(void)
             if (!pi || pi->nHeight != h) heights_ok = false;
         }
 
+        BIL_CHECK("bil: flat file save writes SHA3 sidecar",
+                  file_ok && sidecar_ok);
         BIL_CHECK("bil: flat file round-trip preserves 100 entries", heights_ok);
 
+        unlink(sidecar_path);
         unlink(path);
         rmdir(tmpdir);
         block_map_free(&ms.map_block_index);

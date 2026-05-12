@@ -41,6 +41,7 @@
 #include <fcntl.h>
 #include <unistd.h>
 #include <pthread.h>
+#include <limits.h>
 #include "util/ar_step_readonly.h"
 #include "util/log_macros.h"
 
@@ -749,131 +750,268 @@ int snapshot_import(const char *snapshot_dir,
 
 /* ---- Background transaction index builder ---- */
 
-/* Read CompactSize varint from raw bytes. */
-static int read_cs(const uint8_t *d, size_t avail, uint64_t *out)
+static bool snapshot_deserialize_index_block(const uint8_t *data,
+                                             size_t avail,
+                                             int height,
+                                             struct block *blk,
+                                             struct uint256 *hash_out)
 {
-    if (avail < 1) return 0;
-    if (d[0] < 0xfd) { *out = d[0]; return 1; }
-    if (d[0] == 0xfd && avail >= 3) {
-        *out = (uint64_t)d[1] | ((uint64_t)d[2] << 8); return 3;
+    if (!data || avail == 0 || !blk || !hash_out)
+        return false;
+
+    block_init(blk);
+    struct byte_stream bs;
+    stream_init_from_data(&bs, data, avail);
+    bool ok = block_deserialize(blk, &bs);
+    stream_free(&bs);
+    if (!ok) {
+        fprintf(stderr,
+                "tx_index: skipping block after full deserialize failure "
+                "height=%d\n",
+                height);
+        block_free(blk);
+        return false;
     }
-    if (d[0] == 0xfe && avail >= 5) {
-        uint32_t v; memcpy(&v, d + 1, 4); *out = v; return 5;
-    }
-    if (d[0] == 0xff && avail >= 9) { memcpy(out, d + 1, 8); return 9; }
-    return 0;
+
+    block_get_hash(blk, hash_out);
+    return true;
 }
 
-/* Skip a single serialized transaction, returning number of bytes consumed.
- * Also computes the txid (double-SHA256 of the serialized data). */
-static size_t skip_tx_and_hash(const uint8_t *data, size_t avail,
-                               uint8_t txid_out[32])
+static bool snapshot_block_file_magic_ok(const uint8_t *p)
 {
-    const uint8_t *start = data;
-    size_t pos = 0;
-    if (pos + 4 > avail) return 0;
+    if (!p)
+        return false;
+    return (p[0] == 0x24 && p[1] == 0xe9 &&
+            p[2] == 0x27 && p[3] == 0x64) ||
+           (p[0] == 0xfa && p[1] == 0x1a &&
+            p[2] == 0xf9 && p[3] == 0xbf) ||
+           (p[0] == 0xaa && p[1] == 0xe8 &&
+            p[2] == 0x3f && p[3] == 0x5f);
+}
 
-    int32_t ver;
-    memcpy(&ver, data + pos, 4);
-    pos += 4;
-    bool overwintered = (ver & (int32_t)0x80000000) != 0;
-    int32_t version = ver & 0x7FFFFFFF;
-    uint32_t vg_id = 0;
-    if (overwintered) {
-        if (pos + 4 > avail) return 0;
-        memcpy(&vg_id, data + pos, 4);
-        pos += 4;
+static bool snapshot_block_file_size_ok(uint32_t block_size,
+                                        size_t file_size,
+                                        size_t envelope_pos)
+{
+    return block_size > 0 &&
+           block_size <= MAX_BLOCK_SIZE &&
+           envelope_pos + 8 <= file_size &&
+           (size_t)block_size <= file_size - envelope_pos - 8;
+}
+
+static bool snapshot_locate_block_payload(const uint8_t *file_data,
+                                          size_t file_size,
+                                          size_t stored_pos,
+                                          int height,
+                                          const uint8_t **payload_out,
+                                          size_t *payload_len_out)
+{
+    if (!file_data || !payload_out || !payload_len_out ||
+        stored_pos >= file_size)
+        return false;
+
+    *payload_out = NULL;
+    *payload_len_out = 0;
+
+    uint32_t block_size = 0;
+    if (stored_pos + 8 <= file_size &&
+        snapshot_block_file_magic_ok(file_data + stored_pos)) {
+        memcpy(&block_size, file_data + stored_pos + 4, 4);
+        if (snapshot_block_file_size_ok(block_size, file_size, stored_pos)) {
+            *payload_out = file_data + stored_pos + 8;
+            *payload_len_out = block_size;
+            return true;
+        }
     }
 
-    /* vin */
-    uint64_t vin_count;
-    int n = read_cs(data + pos, avail - pos, &vin_count);
-    if (n == 0) return 0;
-    pos += (size_t)n;
-    for (uint64_t i = 0; i < vin_count; i++) {
-        pos += 36;
-        if (pos >= avail) return 0;
-        uint64_t script_len;
-        n = read_cs(data + pos, avail - pos, &script_len);
-        if (n == 0) return 0;
-        pos += (size_t)n + (size_t)script_len + 4;
+    if (stored_pos >= 8 &&
+        snapshot_block_file_magic_ok(file_data + stored_pos - 8)) {
+        memcpy(&block_size, file_data + stored_pos - 4, 4);
+        if (snapshot_block_file_size_ok(block_size, file_size,
+                                        stored_pos - 8)) {
+            *payload_out = file_data + stored_pos;
+            *payload_len_out = block_size;
+            return true;
+        }
     }
 
-    /* vout */
-    if (pos >= avail) return 0;
-    uint64_t vout_count;
-    n = read_cs(data + pos, avail - pos, &vout_count);
-    if (n == 0) return 0;
-    pos += (size_t)n;
-    for (uint64_t i = 0; i < vout_count; i++) {
-        pos += 8;
-        if (pos >= avail) return 0;
-        uint64_t script_len;
-        n = read_cs(data + pos, avail - pos, &script_len);
-        if (n == 0) return 0;
-        pos += (size_t)n + (size_t)script_len;
+    if (height >= 0)
+        fprintf(stderr,
+                "tx_index: cannot locate block payload height=%d pos=%zu "
+                "file_size=%zu\n",
+                height, stored_pos, file_size);
+    return false;
+}
+
+static int snapshot_extract_bip34_height_from_block(const struct block *blk)
+{
+    if (!blk || blk->num_vtx == 0 || blk->vtx[0].num_vin == 0)
+        return -1;
+
+    const struct script *sig = &blk->vtx[0].vin[0].script_sig;
+    if (sig->size == 0)
+        return -1;
+
+    uint8_t nbytes = sig->data[0];
+    if (nbytes == 0x00)
+        return 0;
+    if (nbytes >= 0x51 && nbytes <= 0x60)
+        return nbytes - 0x50;
+    if (nbytes > 8 || (size_t)nbytes + 1 > sig->size)
+        return -1;
+
+    int64_t h = 0;
+    for (uint8_t i = 0; i < nbytes; i++)
+        h |= (int64_t)sig->data[1 + i] << (8 * i);
+    if (sig->data[nbytes] & 0x80)
+        h = -(h & ~((int64_t)0x80 << (8 * (nbytes - 1))));
+    if (h < 0 || h > INT32_MAX)
+        return -1;
+    return (int)h;
+}
+
+static bool snapshot_tx_index_maybe_commit(struct node_db *ndb,
+                                           bool *tx_open,
+                                           int indexed,
+                                           int64_t t_start)
+{
+    if (!ndb || !tx_open)
+        return false;
+    if (indexed <= 0 || (indexed % 5000) != 0)
+        return true;
+
+    if (!snapshot_tx_commit_checked(ndb, "tx_index batch commit")) {
+        *tx_open = false;
+        return false;
     }
+    *tx_open = false;
+    int64_t elapsed = (int64_t)time(NULL) - t_start;
+    int rate = elapsed > 0 ? indexed / (int)elapsed : indexed;
+    printf("tx_index: %d transactions (%d/s)\n", indexed, rate);
+    fflush(stdout);
+    if (!snapshot_tx_begin_checked(ndb, "tx_index batch reopen"))
+        return false;
+    *tx_open = true;
+    return true;
+}
 
-    /* nLockTime */
-    if (pos + 4 > avail) return 0;
-    pos += 4;
+static bool snapshot_tx_index_save_block_txs(struct node_db *ndb,
+                                             struct block *blk,
+                                             const struct uint256 *block_hash,
+                                             int height,
+                                             int file_num,
+                                             int file_pos,
+                                             int *indexed,
+                                             int64_t t_start,
+                                             bool *tx_open)
+{
+    if (!ndb || !blk || !block_hash || !indexed || !tx_open)
+        return false;
+    if (height < 0)
+        return false;
 
-    if (overwintered) {
-        if (pos + 4 > avail) return 0;
-        pos += 4; /* nExpiryHeight */
+    for (size_t ti = 0; ti < blk->num_vtx; ti++) {
+        transaction_compute_hash(&blk->vtx[ti]);
 
-        /* Sapling v4 */
-        if (vg_id == 0x892F2085) {
-            if (pos + 8 > avail) return 0;
-            pos += 8; /* valueBalance */
+        struct db_tx_index dt;
+        memset(&dt, 0, sizeof(dt));
+        memcpy(dt.txid, blk->vtx[ti].hash.data, 32);
+        memcpy(dt.block_hash, block_hash->data, 32);
+        dt.block_height = height;
+        dt.tx_index = (int)ti;
+        dt.file_num = file_num;
+        dt.file_pos = file_pos;
+        dt.is_coinbase = (ti == 0);
+        if (!db_tx_save(ndb, &dt)) {
+            fprintf(stderr,
+                    "tx_index: failed to save tx index at height %d tx %zu\n",
+                    height, ti);
+            return false;
+        }
+        (*indexed)++;
+        if (!snapshot_tx_index_maybe_commit(ndb, tx_open, *indexed,
+                                            t_start))
+            return false;
+    }
+    return true;
+}
 
-            uint64_t nss;
-            n = read_cs(data + pos, avail - pos, &nss);
-            if (n == 0) return 0;
-            pos += (size_t)n + (size_t)nss * 384;
+static bool snapshot_tx_index_build_from_block_files(struct node_db *ndb,
+                                                     const char *datadir,
+                                                     int *indexed,
+                                                     int *skipped,
+                                                     int64_t t_start,
+                                                     bool *tx_open)
+{
+    if (!ndb || !datadir || !indexed || !skipped || !tx_open)
+        return false;
 
-            if (pos >= avail) return 0;
-            uint64_t nso;
-            n = read_cs(data + pos, avail - pos, &nso);
-            if (n == 0) return 0;
-            pos += (size_t)n + (size_t)nso * 948;
+    int files_seen = 0;
+    for (int file_num = 0; file_num < 100000; file_num++) {
+        char path[512];
+        snprintf(path, sizeof(path), "%s/blocks/blk%05d.dat",
+                 datadir, file_num);
+        int fd = open(path, O_RDONLY);
+        if (fd < 0)
+            return files_seen > 0;
 
-            if (nss > 0 || nso > 0) {
-                if (pos + 64 > avail) return 0;
-                pos += 64; /* bindingSig */
+        struct stat st;
+        if (fstat(fd, &st) != 0) {
+            close(fd);
+            return false;
+        }
+        size_t file_size = (size_t)st.st_size;
+        uint8_t *file_data = mmap(NULL, file_size, PROT_READ,
+                                  MAP_PRIVATE, fd, 0);
+        close(fd);
+        if (file_data == MAP_FAILED)
+            return false;
+        posix_madvise(file_data, file_size, POSIX_MADV_SEQUENTIAL);
+        files_seen++;
+
+        size_t pos = 0;
+        while (pos + 8 <= file_size) {
+            if (!snapshot_block_file_magic_ok(file_data + pos)) {
+                pos++;
+                continue;
             }
+            uint32_t block_size = 0;
+            memcpy(&block_size, file_data + pos + 4, 4);
+            if (!snapshot_block_file_size_ok(block_size, file_size, pos)) {
+                pos++;
+                continue;
+            }
+
+            struct block blk;
+            struct uint256 block_hash;
+            if (!snapshot_deserialize_index_block(file_data + pos + 8,
+                                                  block_size, -1,
+                                                  &blk, &block_hash)) {
+                (*skipped)++;
+                pos += 8 + block_size;
+                continue;
+            }
+            int height = snapshot_extract_bip34_height_from_block(&blk);
+            if (height < 0) {
+                (*skipped)++;
+                block_free(&blk);
+                pos += 8 + block_size;
+                continue;
+            }
+            bool saved = snapshot_tx_index_save_block_txs(
+                ndb, &blk, &block_hash, height, file_num, (int)(pos + 8),
+                indexed, t_start, tx_open);
+            block_free(&blk);
+            if (!saved) {
+                munmap(file_data, file_size);
+                return false;
+            }
+            pos += 8 + block_size;
         }
+        munmap(file_data, file_size);
     }
 
-    /* JoinSplits (v2+) */
-    if (version >= 2 && (!overwintered || version < 5)) {
-        if (pos >= avail) return 0;
-        uint64_t njs;
-        n = read_cs(data + pos, avail - pos, &njs);
-        if (n == 0) return 0;
-        pos += (size_t)n;
-        if (njs > 0) {
-            size_t js_size = (overwintered && vg_id == 0x892F2085)
-                             ? 1698 : 1802;
-            pos += (size_t)njs * js_size + 32 + 64;
-        }
-    }
-
-    if (pos > avail) return 0;
-
-    /* Compute txid = SHA256d(serialized tx) */
-    {
-        struct sha256_ctx ctx;
-        uint8_t tmp[32];
-        sha256_init(&ctx);
-        sha256_write(&ctx, start, pos);
-        sha256_finalize(&ctx, tmp);
-        sha256_init(&ctx);
-        sha256_write(&ctx, tmp, 32);
-        sha256_finalize(&ctx, txid_out);
-    }
-
-    return pos;
+    return files_seen > 0;
 }
 
 static void *build_tx_index_thread(void *arg)
@@ -884,6 +1022,7 @@ static void *build_tx_index_thread(void *arg)
     bool ok = false;
     bool tx_open = false;
     int rc;
+    sqlite3 *read_db = NULL;
 
     if (!job) {
         LOG_NULL("snapshot", "build_tx_index_thread called with NULL job");
@@ -899,41 +1038,61 @@ static void *build_tx_index_thread(void *arg)
         return NULL;
     }
 
-    /* Check how many transactions already indexed */
+    /* Check how many transactions already indexed. A nonzero count is not
+     * proof that the index is complete; older boots skipped after 100k rows,
+     * which left historical spends unrecoverable during replay. Only skip
+     * when a previous additive build explicitly marked completion. */
     int existing = db_tx_count(&ndb);
-    if (existing > 100000) {
-        printf("tx_index: %d transactions already indexed, skipping\n",
-               existing);
+    int64_t complete = 0;
+    node_db_state_get_int(&ndb, "tx_index_complete", &complete);
+    if (complete >= 3 && existing > 100000) {
+        printf("tx_index: complete marker v%lld present (%d transactions), skipping\n",
+               (long long)complete, existing);
         node_db_close(&ndb);
         job->result = 0;
         return NULL;
     }
 
-    printf("tx_index: building transaction index from block files...\n");
+    printf("tx_index: additive build from block files (existing=%d, marker=%lld)...\n",
+           existing, (long long)complete);
     fflush(stdout);
     int64_t t_start = (int64_t)time(NULL);
 
-    if (!db_tx_prepare_bulk_load(&ndb)) {
-        fprintf(stderr, "tx_index: failed to prepare bulk load\n");
+    sqlite3_busy_timeout(ndb.db, 30000);
+    sqlite3_exec(ndb.db, "PRAGMA synchronous=NORMAL", NULL, NULL, NULL);
+    sqlite3_exec(ndb.db, "PRAGMA wal_autocheckpoint=0", NULL, NULL, NULL);
+
+    if (sqlite3_open_v2(db_path, &read_db,
+                        SQLITE_OPEN_READONLY | SQLITE_OPEN_NOMUTEX,
+                        NULL) != SQLITE_OK || !read_db) {
+        fprintf(stderr, "tx_index: failed to open read-only SQLite: %s\n",
+                read_db ? sqlite3_errmsg(read_db) : "db unavailable");
+        if (read_db)
+            sqlite3_close(read_db);
         node_db_close(&ndb);
         return NULL;
     }
+    sqlite3_busy_timeout(read_db, 30000);
 
     /* Query blocks ordered by file_num, data_pos for sequential I/O */
     sqlite3_stmt *query = NULL;
-    int query_rc = sqlite3_prepare_v2(ndb.db,
+    int query_rc = sqlite3_prepare_v2(read_db,
         "SELECT hash, height, file_num, data_pos, num_tx"
         " FROM blocks WHERE file_num >= 0"
         " ORDER BY file_num, data_pos",
         -1, &query, NULL);
     if (query_rc != SQLITE_OK || !query) {
         fprintf(stderr, "tx_index: failed to prepare block query: %s\n",
-                sqlite3_errmsg(ndb.db));
+                sqlite3_errmsg(read_db));
+        if (query)
+            sqlite3_finalize(query);
+        sqlite3_close(read_db);
         node_db_close(&ndb);
         return NULL;
     }
 
     int indexed = 0;
+    int skipped = 0;
     int cached_file = -1;
     uint8_t *cached_data = NULL;
     size_t cached_size = 0;
@@ -992,109 +1151,71 @@ static void *build_tx_index_thread(void *arg)
         }
 
         if (!cached_data || (size_t)data_pos >= cached_size) {
-            fprintf(stderr, "tx_index: invalid block offset for file %d height %d\n",
-                    file_num, height);
-            ok = false;
-            break;
+            if (skipped < 20 || (skipped % 10000) == 0)
+                fprintf(stderr,
+                        "tx_index: skipping invalid block offset file=%d "
+                        "height=%d pos=%d size=%zu\n",
+                        file_num, height, data_pos, cached_size);
+            skipped++;
+            continue;
         }
 
-        /* Parse block header to find transaction data */
-        const uint8_t *bdata = cached_data + data_pos;
-        size_t bavail = cached_size - (size_t)data_pos;
-
-        /* Skip header: 140 fixed + varint(solution) + solution */
-        if (bavail < 141) {
-            fprintf(stderr, "tx_index: truncated block header at height %d\n",
-                    height);
-            ok = false;
-            break;
+        const uint8_t *bdata = NULL;
+        size_t bavail = 0;
+        if (!snapshot_locate_block_payload(cached_data, cached_size,
+                                           (size_t)data_pos, height,
+                                           &bdata, &bavail)) {
+            if (skipped < 20 || (skipped % 10000) == 0)
+                fprintf(stderr,
+                        "tx_index: skipping unlocatable block file=%d "
+                        "height=%d pos=%d size=%zu\n",
+                        file_num, height, data_pos, cached_size);
+            skipped++;
+            continue;
         }
-        size_t pos = 140;
-        uint64_t sol_size;
-        int n = read_cs(bdata + pos, bavail - pos, &sol_size);
-        if (n == 0) {
-            fprintf(stderr, "tx_index: failed to read solution size at height %d\n",
-                    height);
-            ok = false;
-            break;
+
+        struct block blk;
+        struct uint256 disk_hash;
+        if (!snapshot_deserialize_index_block(bdata, bavail, height,
+                                              &blk, &disk_hash)) {
+            skipped++;
+            continue;
         }
-        pos += (size_t)n + (size_t)sol_size;
-
-        /* num_tx */
-        if (pos >= bavail) {
-            fprintf(stderr, "tx_index: truncated tx-count header at height %d\n",
-                    height);
-            ok = false;
-            break;
+        struct uint256 expected_hash;
+        memcpy(expected_hash.data, block_hash, 32);
+        if (uint256_cmp(&disk_hash, &expected_hash) != 0) {
+            char got[65], want[65];
+            uint256_get_hex(&disk_hash, got);
+            uint256_get_hex(&expected_hash, want);
+            if (skipped < 20 || (skipped % 10000) == 0)
+                fprintf(stderr,
+                        "tx_index: skipping block hash mismatch height=%d "
+                        "got=%s want=%s\n",
+                        height, got, want);
+            block_free(&blk);
+            skipped++;
+            continue;
         }
-        uint64_t file_num_tx;
-        n = read_cs(bdata + pos, bavail - pos, &file_num_tx);
-        if (n == 0) {
-            fprintf(stderr, "tx_index: failed to read tx count at height %d\n",
-                    height);
-            ok = false;
-            break;
-        }
-        pos += (size_t)n;
 
-        /* Parse each transaction for its txid */
-        int tx_limit = num_tx > 0 ? num_tx : (int)file_num_tx;
-        if (tx_limit > 50000) tx_limit = 50000;
+        size_t tx_limit = blk.num_vtx;
+        if (num_tx > 0 && (size_t)num_tx < tx_limit)
+            tx_limit = (size_t)num_tx;
 
-        for (int ti = 0; ti < tx_limit && pos < bavail; ti++) {
-            uint8_t txid[32];
-            size_t tx_size = skip_tx_and_hash(bdata + pos, bavail - pos, txid);
-            if (tx_size == 0) {
-                fprintf(stderr, "tx_index: failed to parse tx %d at height %d\n",
-                        ti, height);
-                ok = false;
-                break;
-            }
-
-            struct db_tx_index dt;
-            memset(&dt, 0, sizeof(dt));
-            memcpy(dt.txid, txid, 32);
-            memcpy(dt.block_hash, block_hash, 32);
-            dt.block_height = height;
-            dt.tx_index = ti;
-            dt.file_num = file_num;
-            dt.file_pos = data_pos;
-            dt.is_coinbase = (ti == 0);
-            if (!db_tx_save(&ndb, &dt)) {
-                fprintf(stderr, "tx_index: failed to save tx index at height %d tx %d\n",
-                        height, ti);
-                ok = false;
-                break;
-            }
-            indexed++;
-
-            pos += tx_size;
-        }
+        size_t saved_num_vtx = blk.num_vtx;
+        blk.num_vtx = tx_limit;
+        ok = snapshot_tx_index_save_block_txs(
+            &ndb, &blk, &expected_hash, height, file_num, data_pos,
+            &indexed, t_start, &tx_open);
+        blk.num_vtx = saved_num_vtx;
+        block_free(&blk);
         if (!ok)
             break;
 
-        if (indexed % 500000 == 0 && indexed > 0) {
-            if (!snapshot_tx_commit_checked(&ndb, "tx_index batch commit")) {
-                ok = false;
-                tx_open = false;
-                break;
-            }
-            tx_open = false;
-            int64_t elapsed = (int64_t)time(NULL) - t_start;
-            int rate = elapsed > 0 ? indexed / (int)elapsed : indexed;
-            printf("tx_index: %d transactions (%d/s)\n", indexed, rate);
-            fflush(stdout);
-            if (!snapshot_tx_begin_checked(&ndb, "tx_index batch reopen")) {
-                ok = false;
-                break;
-            }
-            tx_open = true;
-        }
     }
 
     if (rc != SQLITE_DONE && ok) {
         fprintf(stderr, "tx_index: block query failed: %s\n",
-                sqlite3_errmsg(ndb.db));
+                sqlite3_errmsg(read_db));
         ok = false;
     }
 
@@ -1107,21 +1228,65 @@ static void *build_tx_index_thread(void *arg)
 
     if (cached_data) munmap(cached_data, cached_size);
     sqlite3_finalize(query);
+    sqlite3_close(read_db);
     query = NULL;
+    read_db = NULL;
     cached_data = NULL;
     tx_open = false;
+
+    if (ok && skipped > 0) {
+        fprintf(stderr,
+                "tx_index: SQLite block rows skipped %d blocks; falling "
+                "back to raw blk*.dat walk\n",
+                skipped);
+        skipped = 0;
+        if (!snapshot_tx_begin_checked(&ndb,
+                "tx_index raw fallback begin")) {
+            ok = false;
+        } else {
+            tx_open = true;
+        }
+        if (ok)
+            ok = snapshot_tx_index_build_from_block_files(
+                &ndb, datadir, &indexed, &skipped, t_start, &tx_open);
+    }
+
+    if (ok && skipped > 0) {
+        fprintf(stderr,
+                "tx_index: incomplete — raw block-file walk skipped %d "
+                "blocks; leaving marker unset so a safer builder can retry\n",
+                skipped);
+        ok = false;
+    }
+
+    if (tx_open && !ok) {
+        snapshot_tx_rollback_best_effort(&ndb,
+            "tx_index raw fallback rollback after failure");
+        tx_open = false;
+    } else if (tx_open && !snapshot_tx_commit_checked(&ndb,
+                   "tx_index raw fallback final commit")) {
+        ok = false;
+        snapshot_tx_rollback_best_effort(&ndb,
+            "tx_index raw fallback rollback after final commit failure");
+        tx_open = false;
+    } else {
+        tx_open = false;
+    }
 
     if (ok && !db_tx_finalize_bulk_load(&ndb)) {
         fprintf(stderr, "tx_index: failed to finalize bulk load indexes\n");
         ok = false;
     }
+    if (ok)
+        node_db_state_set_int(&ndb, "tx_index_complete", 3);
 
     node_db_close(&ndb);
 
     int64_t elapsed = (int64_t)time(NULL) - t_start;
     if (ok) {
-        printf("tx_index: complete — %d transactions in %llds\n",
-               indexed, (long long)elapsed);
+        printf("tx_index: complete — %d transactions indexed, %d blocks "
+               "skipped in %llds\n",
+               indexed, skipped, (long long)elapsed);
         fflush(stdout);
         job->result = 0;
     } else {

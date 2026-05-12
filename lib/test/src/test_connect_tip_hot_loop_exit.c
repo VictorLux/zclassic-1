@@ -15,6 +15,13 @@ extern int process_block_test_get_utxo_fail_count(void);
 extern void process_block_test_trigger_hot_loop_check(int height,
                                                       const char *datadir);
 
+enum {
+    HOT_LOOP_TEST_HEIGHT = 3078015,
+    HOT_LOOP_OVER_LIMIT_HEIGHT = 3078016,
+    HOT_LOOP_NOTE_HEIGHT = 3087380,
+    HOT_LOOP_REPAIR_PAUSE_HEIGHT = 3079000,
+};
+
 static int hot_loop_event_count(const char *needle)
 {
     char buf[4096];
@@ -28,6 +35,13 @@ static int hot_loop_event_count(const char *needle)
         p += strlen(needle);
     }
     return count;
+}
+
+static int hot_loop_event_count_for_height(const char *prefix, int height)
+{
+    char needle[96];
+    snprintf(needle, sizeof(needle), "%s h=%d", prefix, height);
+    return hot_loop_event_count(needle);
 }
 
 static void remove_if_exists(const char *path)
@@ -62,15 +76,18 @@ int test_connect_tip_hot_loop_exit(void)
         remove_if_exists(marker_path);
         event_log_init();
         g_shutdown_requested = 0;
-        process_block_test_set_utxo_fail_state(3078015, 10);
-        process_block_test_trigger_hot_loop_check(3078015, datadir);
+        process_block_test_set_utxo_fail_state(HOT_LOOP_TEST_HEIGHT, 10);
+        process_block_test_trigger_hot_loop_check(HOT_LOOP_TEST_HEIGHT,
+                                                  datadir);
 
         struct stat st;
         bool ok = stat(flag_path, &st) == 0 &&
                   g_shutdown_requested == 1 &&
                   process_block_test_get_utxo_fail_count() == 10 &&
-                  hot_loop_event_count("FATAL_HOT_LOOP h=3078015") == 1 &&
-                  hot_loop_event_count("FATAL_HOT_LOOP_STUCK h=3078015") == 0;
+                  hot_loop_event_count_for_height(
+                      "FATAL_HOT_LOOP", HOT_LOOP_TEST_HEIGHT) == 1 &&
+                  hot_loop_event_count_for_height(
+                      "FATAL_HOT_LOOP_STUCK", HOT_LOOP_TEST_HEIGHT) == 0;
         if (ok) printf("OK\n");
         else { printf("FAIL\n"); failures++; }
     }
@@ -88,14 +105,19 @@ int test_connect_tip_hot_loop_exit(void)
         if (ok) {
             event_log_init();
             g_shutdown_requested = 0;
-            process_block_test_set_utxo_fail_state(3078015, 10);
-            process_block_test_trigger_hot_loop_check(3078015, datadir);
+            process_block_test_set_utxo_fail_state(HOT_LOOP_TEST_HEIGHT, 10);
+            process_block_test_trigger_hot_loop_check(HOT_LOOP_TEST_HEIGHT,
+                                                      datadir);
 
             struct stat st;
             ok = stat(flag_path, &st) == 0 &&
                  g_shutdown_requested == 0 &&
-                 hot_loop_event_count("FATAL_HOT_LOOP h=3078015") == 0 &&
-                 hot_loop_event_count("FATAL_HOT_LOOP_STUCK h=3078015") == 1;
+                 process_block_test_get_utxo_activation_paused_height() ==
+                     HOT_LOOP_TEST_HEIGHT &&
+                 hot_loop_event_count_for_height(
+                     "FATAL_HOT_LOOP", HOT_LOOP_TEST_HEIGHT) == 0 &&
+                 hot_loop_event_count_for_height(
+                     "FATAL_HOT_LOOP_STUCK", HOT_LOOP_TEST_HEIGHT) == 1;
         }
         if (ok) printf("OK\n");
         else { printf("FAIL\n"); failures++; }
@@ -111,33 +133,133 @@ int test_connect_tip_hot_loop_exit(void)
         if (ok) {
             event_log_init();
             g_shutdown_requested = 0;
-            process_block_test_set_utxo_fail_state(3078015, 10);
-            process_block_test_trigger_hot_loop_check(3078015, datadir);
+            process_block_test_set_utxo_fail_state(HOT_LOOP_TEST_HEIGHT, 10);
+            process_block_test_trigger_hot_loop_check(HOT_LOOP_TEST_HEIGHT,
+                                                      datadir);
 
             ok = g_shutdown_requested == 1 &&
-                 hot_loop_event_count("FATAL_HOT_LOOP h=3078015") == 1 &&
-                 hot_loop_event_count("FATAL_HOT_LOOP_STUCK h=3078015") == 0;
+                 hot_loop_event_count_for_height(
+                     "FATAL_HOT_LOOP", HOT_LOOP_TEST_HEIGHT) == 1 &&
+                 hot_loop_event_count_for_height(
+                     "FATAL_HOT_LOOP_STUCK", HOT_LOOP_TEST_HEIGHT) == 0;
         }
         if (ok) printf("OK\n");
         else { printf("FAIL\n"); failures++; }
     }
 
-    printf("hot_loop_exit: 11th same-height failure is idempotent... ");
+    printf("hot_loop_exit: repeated same-height trigger is idempotent... ");
     {
         remove_if_exists(marker_path);
         event_log_init();
         g_shutdown_requested = 0;
-        process_block_test_set_utxo_fail_state(3078015, 10);
-        process_block_test_trigger_hot_loop_check(3078015, datadir);
+        process_block_test_set_utxo_fail_state(HOT_LOOP_TEST_HEIGHT, 10);
+        process_block_test_trigger_hot_loop_check(HOT_LOOP_TEST_HEIGHT,
+                                                  datadir);
         bool ok = g_shutdown_requested == 1 &&
-                  hot_loop_event_count("FATAL_HOT_LOOP h=3078015") == 1;
+                  hot_loop_event_count_for_height(
+                      "FATAL_HOT_LOOP", HOT_LOOP_TEST_HEIGHT) == 1;
 
         if (ok) {
-            process_block_test_set_utxo_fail_state(3078015, 11);
-            process_block_test_trigger_hot_loop_check(3078015, datadir);
+            process_block_test_trigger_hot_loop_check(HOT_LOOP_TEST_HEIGHT,
+                                                      datadir);
             ok = g_shutdown_requested == 1 &&
-                 hot_loop_event_count("FATAL_HOT_LOOP h=3078015") == 1;
+                 hot_loop_event_count_for_height(
+                     "FATAL_HOT_LOOP", HOT_LOOP_TEST_HEIGHT) == 1;
         }
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("hot_loop_exit: already-over-limit failure still exits... ");
+    {
+        remove_if_exists(marker_path);
+        event_log_init();
+        g_shutdown_requested = 0;
+        process_block_test_set_utxo_fail_state(HOT_LOOP_OVER_LIMIT_HEIGHT,
+                                               120);
+        process_block_test_trigger_hot_loop_check(HOT_LOOP_OVER_LIMIT_HEIGHT,
+                                                  datadir);
+
+        bool ok = g_shutdown_requested == 1 &&
+                  hot_loop_event_count_for_height(
+                      "FATAL_HOT_LOOP", HOT_LOOP_OVER_LIMIT_HEIGHT) == 1 &&
+                  hot_loop_event_count_for_height(
+                      "FATAL_HOT_LOOP_STUCK",
+                      HOT_LOOP_OVER_LIMIT_HEIGHT) == 0;
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("hot_loop_exit: note_utxo_failure counts and exits... ");
+    {
+        remove_if_exists(flag_path);
+        remove_if_exists(marker_path);
+        event_log_init();
+        g_shutdown_requested = 0;
+        process_block_test_set_utxo_fail_state(-1, 0);
+
+        for (int i = 0; i < 10; i++)
+            process_block_test_note_utxo_failure(HOT_LOOP_NOTE_HEIGHT,
+                                                 datadir);
+
+        struct stat st;
+        bool ok = stat(flag_path, &st) == 0 &&
+                  g_shutdown_requested == 1 &&
+                  process_block_test_get_utxo_fail_count() == 10 &&
+                  hot_loop_event_count_for_height(
+                      "FATAL_HOT_LOOP", HOT_LOOP_NOTE_HEIGHT) == 1 &&
+                  hot_loop_event_count_for_height(
+                      "FATAL_HOT_LOOP_STUCK", HOT_LOOP_NOTE_HEIGHT) == 0;
+
+        if (ok) {
+            process_block_test_note_utxo_failure(HOT_LOOP_NOTE_HEIGHT,
+                                                 datadir);
+            ok = g_shutdown_requested == 1 &&
+                 process_block_test_get_utxo_fail_count() == 11 &&
+                 hot_loop_event_count_for_height(
+                     "FATAL_HOT_LOOP", HOT_LOOP_NOTE_HEIGHT) == 1;
+        }
+
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("hot_loop_exit: successful repair clears matching pause... ");
+    {
+        remove_if_exists(flag_path);
+        FILE *marker = fopen(marker_path, "w");
+        bool ok = marker != NULL;
+        if (marker) {
+            fputs("1\n", marker);
+            fclose(marker);
+        }
+
+        if (ok) {
+            event_log_init();
+            g_shutdown_requested = 0;
+            process_block_test_set_utxo_fail_state(
+                HOT_LOOP_REPAIR_PAUSE_HEIGHT, 10);
+            process_block_test_trigger_hot_loop_check(
+                HOT_LOOP_REPAIR_PAUSE_HEIGHT, datadir);
+            ok = process_block_test_get_utxo_activation_paused_height() ==
+                 HOT_LOOP_REPAIR_PAUSE_HEIGHT;
+        }
+        if (ok) {
+            process_block_clear_utxo_activation_pause_range(
+                HOT_LOOP_REPAIR_PAUSE_HEIGHT + 1,
+                HOT_LOOP_REPAIR_PAUSE_HEIGHT + 10);
+            ok = process_block_test_get_utxo_activation_paused_height() ==
+                 HOT_LOOP_REPAIR_PAUSE_HEIGHT;
+        }
+        if (ok) {
+            process_block_clear_utxo_activation_pause_range(
+                HOT_LOOP_REPAIR_PAUSE_HEIGHT - 1,
+                HOT_LOOP_REPAIR_PAUSE_HEIGHT);
+            ok = process_block_test_get_utxo_activation_paused_height() ==
+                     -1 &&
+                 process_block_test_get_utxo_fail_count() == 0;
+        }
+
         if (ok) printf("OK\n");
         else { printf("FAIL\n"); failures++; }
     }

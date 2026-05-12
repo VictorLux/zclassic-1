@@ -360,9 +360,6 @@ bool read_block_from_disk_index_pread(struct block *b,
     block_get_hash(b, &block_hash);
     if (pindex->phashBlock &&
         uint256_cmp(&block_hash, pindex->phashBlock) != 0) {
-        bool disk_has_pow = (block_hash.data[31] == 0 && block_hash.data[30] == 0);
-        if (disk_has_pow)
-            return true;
         char got[65], want[65];
         uint256_get_hex(&block_hash, got);
         uint256_get_hex(pindex->phashBlock, want);

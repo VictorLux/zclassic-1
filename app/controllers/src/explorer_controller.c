@@ -253,6 +253,15 @@ void explorer_set_state(struct main_state *ms, struct tx_mempool *mp,
     init_default_templates();
 
     /* Pre-warm caches in background after startup */
+    int chain_tip_h = ms ? active_chain_height(&ms->chain_active) : 0;
+    int best_header = (ms && ms->pindex_best_header) ?
+        ms->pindex_best_header->nHeight : chain_tip_h;
+    if (best_header - chain_tip_h > 1000) {
+        printf("Explorer prewarm deferred during IBD "
+               "(chain=%d, headers=%d, behind=%d)\n",
+               chain_tip_h, best_header, best_header - chain_tip_h);
+        return;
+    }
     explorer_start_once(&g_prewarm_started, prewarm_thread, "prewarm");
 }
 

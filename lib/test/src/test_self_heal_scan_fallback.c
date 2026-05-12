@@ -31,14 +31,37 @@ int test_self_heal_scan_fallback(void)
               stats.scan_hits == 0 &&
               stats.scan_exhausted == 0 &&
               stats.scan_blocks_checked_total == 0 &&
-              process_block_self_heal_scan_depth_limit() == 1000;
+              process_block_self_heal_scan_depth_limit() == 250000;
 
     setenv("ZCL_SELF_HEAL_SCAN_DEPTH", "2000", 1);
-    ok = ok && process_block_self_heal_scan_depth_limit() == 2000;
+    ok = ok && process_block_self_heal_scan_depth_limit() == 250000;
+
+    setenv("ZCL_SELF_HEAL_SCAN_DEPTH", "300000", 1);
+    ok = ok && process_block_self_heal_scan_depth_limit() == 300000;
 
     setenv("ZCL_SELF_HEAL_SCAN_DEPTH", "0", 1);
-    ok = ok && process_block_self_heal_scan_depth_limit() == 1000;
+    ok = ok && process_block_self_heal_scan_depth_limit() == 250000;
+
+    setenv("ZCL_SELF_HEAL_SCAN_DEPTH", "not-a-number", 1);
+    ok = ok && process_block_self_heal_scan_depth_limit() == 250000;
     unsetenv("ZCL_SELF_HEAL_SCAN_DEPTH");
+    if (ok) {
+        printf("OK\n");
+    } else {
+        printf("FAIL\n");
+        failures++;
+    }
+
+    printf("self_heal_scan: broad disk scan is opt-in... ");
+    unsetenv("ZCL_SELF_HEAL_SCAN_ENABLE");
+    ok = !process_block_self_heal_scan_enabled();
+    setenv("ZCL_SELF_HEAL_SCAN_ENABLE", "1", 1);
+    ok = ok && process_block_self_heal_scan_enabled();
+    setenv("ZCL_SELF_HEAL_SCAN_ENABLE", "true", 1);
+    ok = ok && process_block_self_heal_scan_enabled();
+    setenv("ZCL_SELF_HEAL_SCAN_ENABLE", "0", 1);
+    ok = ok && !process_block_self_heal_scan_enabled();
+    unsetenv("ZCL_SELF_HEAL_SCAN_ENABLE");
     if (ok) {
         printf("OK\n");
     } else {
