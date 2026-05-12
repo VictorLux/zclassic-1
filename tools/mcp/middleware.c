@@ -37,6 +37,9 @@ static const char *k_default_destructive[] = {
     "zcl_msg_send",
     "zcl_msg_send_named",
     "zcl_name_register",
+    /* Not a mutation, but unbounded scans can be expensive — gate
+     * at the destructive rate (1 RPS) to prevent abuse. */
+    "zcl_sql",
 };
 
 static int64_t now_us(void)

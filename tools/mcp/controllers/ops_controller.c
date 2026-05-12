@@ -781,6 +781,33 @@ static int h_zcl_rpc(const struct mcp_request *req, struct mcp_response *res)
     return 0;
 }
 
+/* zcl_sql — SELECT-only SQL passthrough to node.db. Marked destructive
+ * in middleware not because it mutates (it can't) but because arbitrary
+ * scans against a 100M-row table can be expensive. */
+static int h_zcl_sql(const struct mcp_request *req,
+                     struct mcp_response *res)
+{
+    const char *sql = json_get_str(json_get(req->args, "sql"));
+    const struct json_value *limit = json_get(req->args, "limit");
+
+    struct mcp_params p;
+    mcp_params_init(&p);
+    mcp_params_push_str(&p, sql ? sql : "");
+    mcp_params_push_int(&p, limit ? json_get_int(limit) : 10);
+    char *pjson = mcp_params_to_json(&p);
+
+    char *out = pjson ? mcp_node_rpc("dbquery", pjson) : NULL;
+    free(pjson);
+    if (!out) {
+        res->error = MCP_ERR_HANDLER_FAILED;
+        snprintf(res->error_message, sizeof(res->error_message),
+                 "dbquery returned null");
+        LOG_ERR("mcp.ops", "dbquery returned null");
+    }
+    res->body = out;
+    return 0;
+}
+
 /* zcl_node_log — reverse-scan node.log via getnodelog RPC.
  *
  * Server-side regex match + level filter. Bounded memory: chunks the
@@ -1339,6 +1366,14 @@ static const struct mcp_param_spec p_state[] = {
       "Subsystem-specific key (block_index: height or hex hash)",
       0, 0, 0, 128, NULL, NULL },
 };
+static const struct mcp_param_spec p_sql[] = {
+    { "sql",   MCP_PARAM_STR, true,
+      "SELECT-only query (no DDL, no semicolons, auto-LIMIT)",
+      0, 0, 1, 1024, NULL, NULL },
+    { "limit", MCP_PARAM_INT, false,
+      "Row cap (1..100; auto-appended if SQL lacks LIMIT)",
+      1, 100, 0, 0, NULL, "10" },
+};
 static const struct mcp_param_spec p_node_log[] = {
     { "pattern",    MCP_PARAM_STR, true,
       "POSIX-extended regex matched against each log line",
@@ -1411,6 +1446,10 @@ static const struct mcp_tool_route k_routes[] = {
       "downloading the 56 MB log just to grep. Returns newest matches first.",
       p_node_log, sizeof(p_node_log) / sizeof(p_node_log[0]),
       h_zcl_node_log },
+    { "zcl_sql", "ops",
+      "SELECT-only SQL passthrough to node.db. Hard validation + 2s timeout. "
+      "Marked destructive (rate-gated) because arbitrary scans can be costly.",
+      p_sql, sizeof(p_sql) / sizeof(p_sql[0]), h_zcl_sql },
     { "zcl_profile", "ops",
       "Per-thread CPU sampler: reads /proc/self/task/*/stat before "
       "and after `duration_ms`, returns top N threads by CPU delta "
