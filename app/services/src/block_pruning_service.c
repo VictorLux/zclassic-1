@@ -25,6 +25,7 @@
 #include "storage/disk_block_io.h"
 #include "util/log_macros.h"
 #include "util/safe_alloc.h"
+#include "util/thread_registry.h"
 
 #include <errno.h>
 #include <stdio.h>
@@ -304,7 +305,8 @@ bool block_pruning_start(struct block_pruning_service *svc)
 
     atomic_store(&svc->stop_requested, false);
     svc->ready = false;
-    if (pthread_create(&svc->thread, NULL, block_pruning_thread, svc) != 0) {
+    if (thread_registry_spawn_ex("zcl_block_prune", block_pruning_thread, svc,
+                                  &svc->thread) != 0) {
         fprintf(stderr, "[prune] failed to create thread: %s\n", strerror(errno));
         return false;
     }

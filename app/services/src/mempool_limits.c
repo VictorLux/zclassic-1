@@ -35,6 +35,7 @@
 
 #include "util/log_macros.h"
 #include "util/safe_alloc.h"
+#include "util/thread_registry.h"
 
 /* ── Module state ───────────────────────────────────────────── */
 
@@ -409,7 +410,8 @@ bool mempool_limits_start(struct tx_mempool *pool,
      * any concurrent add is already subject to enforcement. */
     tx_mempool_set_post_add_hook(ml_post_add_hook);
 
-    int rc = pthread_create(&g_ml.thread, NULL, ml_thread_fn, NULL);
+    int rc = thread_registry_spawn_ex("zcl_mempool_lim", ml_thread_fn, NULL,
+                                       &g_ml.thread);
     if (rc != 0) {
         tx_mempool_set_post_add_hook(NULL);
         pthread_mutex_lock(&g_ml.lock);

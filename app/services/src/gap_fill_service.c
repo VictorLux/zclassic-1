@@ -10,6 +10,7 @@
 #include "net/download.h"
 #include "util/log_macros.h"
 #include "util/safe_alloc.h"
+#include "util/thread_registry.h"
 #include "event/event.h"
 
 #include <pthread.h>
@@ -204,8 +205,9 @@ bool gap_fill_start(struct main_state *ms, struct download_manager *dm)
     g_gf.dm = dm;
     memset(&g_gf.stats, 0, sizeof(g_gf.stats));
     atomic_store(&g_gf.stop_requested, false);
-    if (pthread_create(&g_gf.thread, NULL, gap_fill_thread_main, NULL) != 0) {
-        LOG_FAIL("gap-fill", "pthread_create failed: errno=%d", errno);
+    if (thread_registry_spawn_ex("zcl_gap_fill", gap_fill_thread_main, NULL,
+                                  &g_gf.thread) != 0) {
+        LOG_FAIL("gap-fill", "thread_registry_spawn_ex failed: errno=%d", errno);
     }
     g_gf.thread_started = true;
     atomic_store(&g_gf.running, true);

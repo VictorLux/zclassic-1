@@ -57,6 +57,7 @@
 #include "util/ar_step_readonly.h"
 #include "util/log_macros.h"
 #include "util/safe_alloc.h"
+#include "util/thread_registry.h"
 
 /* ── Wallet table list ──────────────────────────────────────── */
 
@@ -926,11 +927,12 @@ bool wallet_backup_start(const struct wallet_backup_config *cfg,
     g_wbs.stop_requested = false;
     g_wbs.thread_running = true;
 
-    int rc = pthread_create(&g_wbs.thread, NULL, wbs_thread_fn, NULL);
+    int rc = thread_registry_spawn_ex("zcl_wallet_bk", wbs_thread_fn, NULL,
+                                       &g_wbs.thread);
     if (rc != 0) {
         g_wbs.thread_running = false;
         pthread_mutex_unlock(&g_wbs.lock);
-        fprintf(stderr, "wallet_backup: pthread_create failed (%d)\n", rc);
+        fprintf(stderr, "wallet_backup: thread_registry_spawn_ex failed (%d)\n", rc);
         return false;
     }
     pthread_mutex_unlock(&g_wbs.lock);

@@ -53,6 +53,7 @@
 #include <sqlite3.h>
 
 #include "util/log_macros.h"
+#include "util/thread_registry.h"
 
 /* ── Module state ───────────────────────────────────────────── */
 
@@ -333,11 +334,12 @@ bool db_maintenance_start(struct node_db *db,
     g_dbm.stop_requested = false;
     g_dbm.thread_running = true;
 
-    int rc = pthread_create(&g_dbm.thread, NULL, dbm_thread_fn, NULL);
+    int rc = thread_registry_spawn_ex("zcl_db_maint", dbm_thread_fn, NULL,
+                                       &g_dbm.thread);
     if (rc != 0) {
         g_dbm.thread_running = false;
         pthread_mutex_unlock(&g_dbm.lock);
-        fprintf(stderr, "db_maintenance: pthread_create failed (%d)\n", rc);
+        fprintf(stderr, "db_maintenance: thread_registry_spawn_ex failed (%d)\n", rc);
         return false;
     }
     pthread_mutex_unlock(&g_dbm.lock);
