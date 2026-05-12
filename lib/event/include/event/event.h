@@ -204,37 +204,11 @@ enum peer_state {
     PEER_NUM_STATES            /* sentinel */
 };
 
-/* ── Sync state machine ─────────────────────────────────── */
-
-enum sync_state {
-    SYNC_IDLE = 0,
-    SYNC_FINDING_PEERS,
-    SYNC_HEADERS_DOWNLOAD,     /* IBD phase 1: accumulating headers */
-    SYNC_BLOCKS_DOWNLOAD,      /* IBD phase 2: downloading block data */
-    SYNC_CONNECTING_BLOCKS,    /* IBD phase 3: validating + connecting */
-    SYNC_AT_TIP,               /* caught up, normal relay */
-    SYNC_REORG,                /* processing a chain reorganization */
-    SYNC_REORG_RECOVERY,       /* recovering from disconnect failure */
-    SYNC_SNAPSHOT_RECEIVE,     /* fast sync from ZCL23 peer */
-    SYNC_FAILED,               /* unrecoverable error */
-    SYNC_NUM_STATES            /* sentinel */
-};
-
-/* ── Snapshot sync state machine ───────────────────────── */
-
-enum snapshot_sync_state {
-    SNAPSYNC_IDLE = 0,
-    SNAPSYNC_NEGOTIATING,      /* received offer, solving PoW */
-    SNAPSYNC_RECEIVING,        /* streaming chunks from peer */
-    SNAPSYNC_VERIFYING,        /* SHA3 + MMB root verification */
-    SNAPSYNC_COMPLETE,         /* verified, coins_best_block set */
-    SNAPSYNC_FAILED,           /* verification failed, UTXOs wiped */
-    SNAPSYNC_NUM_STATES
-};
-
-enum snapshot_sync_state snapsync_get_state(void);
-bool snapsync_set_state(enum snapshot_sync_state new_state, const char *reason);
-const char *snapsync_state_name(enum snapshot_sync_state state);
+/* The sync state machines now live in lib/sync/. event.h re-exports
+ * the type names + setters/getters for backward compatibility — the
+ * ~28 existing consumers continue to compile unchanged. New code
+ * should `#include "sync/sync_state.h"` directly. */
+#include "sync/sync_state.h"
 
 /* ── Event structure ────────────────────────────────────── */
 
@@ -378,16 +352,8 @@ size_t error_ring_dump_json(const struct error_ring *r, char *buf, size_t sz);
 /* Global error ring (initialized in event_log_init). */
 struct error_ring *error_ring_global(void);
 
-/* ── Sync state machine API ─────────────────────────────── */
-
-/* Global sync state — atomic read/write. */
-enum sync_state sync_get_state(void);
-bool sync_set_state(enum sync_state new_state, const char *reason);
-const char *sync_state_name(enum sync_state state);
-
-/* Optional callback invoked on successful sync state change.
- * Set by sync_watchdog_init() to track state timestamps. */
-typedef void (*sync_state_change_cb)(enum sync_state new_state, int height);
-void sync_set_state_change_callback(sync_state_change_cb cb);
+/* Sync state machine API moved to lib/sync/include/sync/sync_state.h.
+ * The re-export at the top of this file keeps the declarations
+ * visible to existing consumers. */
 
 #endif /* ZCL_EVENT_H */
