@@ -230,6 +230,7 @@ int test_recovery_policy(void);
 int test_db_txn(void);
 int test_sync_service(void);
 int test_sync_state_fsm(void);
+int test_heartbeat(void);
 int test_snapshot_sync_service(void);
 int test_file_controller(void);
 int test_file_ops(void);

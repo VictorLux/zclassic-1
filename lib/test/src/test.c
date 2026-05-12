@@ -215,6 +215,7 @@ int main(void)
     failures += test_db_txn();
     failures += test_sync_service();
     failures += test_sync_state_fsm();
+    failures += test_heartbeat();
     failures += test_snapshot_sync_service();
     failures += test_file_controller();
     failures += test_file_ops();
