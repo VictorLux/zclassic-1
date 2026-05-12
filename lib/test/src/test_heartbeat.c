@@ -183,6 +183,48 @@ static int test_heartbeat_invalid_inputs(void)
     return failures;
 }
 
+static int test_heartbeat_periodic_tick(void)
+{
+    int failures = 0;
+    TEST("heartbeat: periodic tick fires repeatedly on cadence (NOT edge-triggered)") {
+        health_reset_for_test();
+        atomic_store(&g_stall_count, 0);
+        health_set_check_interval_ms(20);
+        ASSERT(health_start());
+
+        /* period = 1s. Over 3.3s we expect ~3 fires. The test gives a
+         * generous tolerance (2..5) because sweeper jitter is real. */
+        health_subsystem_id id = health_register_periodic("test.tick", 1,
+                                                           stall_cb, NULL);
+        ASSERT(id >= 0);
+        sleep_ms(3300);
+
+        int n = atomic_load(&g_stall_count);
+        if (n < 2 || n > 5) {
+            printf("FAIL (expected 2..5 periodic fires, got %d)\n", n);
+            failures++; goto _cleanup;
+        }
+
+        /* Snapshot should mark it periodic. */
+        struct health_snapshot snap[4];
+        int got = health_snapshot_all(snap, 4);
+        if (got != 1 || !snap[0].periodic || snap[0].currently_stalled) {
+            printf("FAIL (snapshot wrong: got=%d periodic=%d stalled=%d)\n",
+                   got, snap[0].periodic, snap[0].currently_stalled);
+            failures++; goto _cleanup;
+        }
+
+        /* Heartbeat is a no-op for periodic entries — the fire count
+         * should keep climbing on cadence regardless. */
+        for (int i = 0; i < 5; i++) health_heartbeat(id);
+        PASS();
+_cleanup:
+        health_unregister(id);
+        health_stop();
+    } _test_next:;
+    return failures;
+}
+
 int test_heartbeat(void)
 {
     int failures = 0;
@@ -191,5 +233,6 @@ int test_heartbeat(void)
     failures += test_heartbeat_registry_full();
     failures += test_heartbeat_resets_freshness();
     failures += test_heartbeat_edge_triggered_stall();
+    failures += test_heartbeat_periodic_tick();
     return failures;
 }

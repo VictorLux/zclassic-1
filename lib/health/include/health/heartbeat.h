@@ -56,8 +56,23 @@ health_subsystem_id health_register(const char *name,
                                      void (*on_stall)(void *ctx),
                                      void *ctx);
 
+/* Register a periodic tick. `cb` fires from the sweeper thread every
+ * `period_secs` regardless of heartbeats — the heartbeat field is
+ * ignored for periodic entries. This is what replaces the per-
+ * subsystem watchdog threads that just wake on a fixed cadence to
+ * run a check (sync_watchdog_check, tip_watchdog drain, etc.).
+ *
+ * The first fire happens `period_secs` after registration, not
+ * immediately. Successive fires target `period_secs` cadence; the
+ * actual interval is rounded up to the sweep interval. */
+health_subsystem_id health_register_periodic(const char *name,
+                                              int64_t period_secs,
+                                              void (*cb)(void *ctx),
+                                              void *ctx);
+
 /* Note that the subsystem is alive. O(1) — one atomic store. Safe
- * to call from any thread. No-op if id is invalid. */
+ * to call from any thread. No-op if id is invalid or the entry is
+ * a periodic tick (heartbeats are meaningless there). */
 void health_heartbeat(health_subsystem_id id);
 
 /* Free the slot. Subsequent heartbeats with the same id are no-ops.
@@ -81,10 +96,11 @@ void health_set_check_interval_ms(int ms);
  * edge-triggered firings since registration. */
 struct health_snapshot {
     char    name[HEALTH_NAME_MAX];
-    int64_t deadline_secs;
-    int64_t last_beat_age_secs;
-    int     on_stall_fired;
-    bool    currently_stalled;
+    int64_t deadline_secs;        /* for stall entries; period_secs for periodic */
+    int64_t last_beat_age_secs;   /* for stall entries; last-fire age for periodic */
+    int     on_stall_fired;       /* total fires (stall edges or periodic ticks) */
+    bool    currently_stalled;    /* always false for periodic entries */
+    bool    periodic;             /* true if registered via health_register_periodic */
 };
 
 /* Fill `out` with up to `max` active entries. Returns the number

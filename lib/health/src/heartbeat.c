@@ -16,16 +16,18 @@
 
 struct entry {
     bool             active;
+    bool             periodic;            /* true → tick on cadence, ignore heartbeats */
     char             name[HEALTH_NAME_MAX];
-    int64_t          deadline_secs;
-    void           (*on_stall)(void *);
+    int64_t          deadline_secs;       /* stall: max gap. periodic: tick period. */
+    void           (*on_stall)(void *);   /* also used as the periodic tick cb */
     void            *ctx;
-    _Atomic int64_t  last_beat_us;
+    _Atomic int64_t  last_beat_us;        /* stall: last heartbeat. periodic: last fire. */
     int64_t          last_stall_beat_us;  /* beat-timestamp the last
                                             * stall fired against; used to
                                             * edge-trigger (don't refire
                                             * unless a fresh heartbeat
-                                            * arrived since) */
+                                            * arrived since). Unused for
+                                            * periodic. */
     int              on_stall_fired;
 };
 
@@ -66,6 +68,7 @@ health_subsystem_id health_register(const char *name,
     }
 
     g_entries[slot].active = true;
+    g_entries[slot].periodic = false;
     strncpy(g_entries[slot].name, name, HEALTH_NAME_MAX - 1);
     g_entries[slot].name[HEALTH_NAME_MAX - 1] = '\0';
     g_entries[slot].deadline_secs = deadline_secs;
@@ -83,10 +86,50 @@ health_subsystem_id health_register(const char *name,
     return slot;
 }
 
+health_subsystem_id health_register_periodic(const char *name,
+                                              int64_t period_secs,
+                                              void (*cb)(void *),
+                                              void *ctx)
+{
+    if (!name || !cb || period_secs <= 0)
+        return HEALTH_INVALID_ID;
+
+    int64_t now_us = GetTimeMicros();
+
+    pthread_mutex_lock(&g_mu);
+    int slot = -1;
+    for (int i = 0; i < HEALTH_REGISTRY_CAP; i++) {
+        if (!g_entries[i].active) { slot = i; break; }
+    }
+    if (slot < 0) {
+        pthread_mutex_unlock(&g_mu);
+        fprintf(stderr, "[health] registry full (cap=%d), cannot register periodic '%s'\n",
+                HEALTH_REGISTRY_CAP, name);
+        return HEALTH_INVALID_ID;
+    }
+    g_entries[slot].active = true;
+    g_entries[slot].periodic = true;
+    strncpy(g_entries[slot].name, name, HEALTH_NAME_MAX - 1);
+    g_entries[slot].name[HEALTH_NAME_MAX - 1] = '\0';
+    g_entries[slot].deadline_secs = period_secs;
+    g_entries[slot].on_stall = cb;
+    g_entries[slot].ctx = ctx;
+    /* For periodic, last_beat_us tracks "last fire". Seeding to now
+     * means the first fire happens `period_secs` from registration,
+     * not immediately. */
+    atomic_store(&g_entries[slot].last_beat_us, now_us);
+    g_entries[slot].last_stall_beat_us = 0;
+    g_entries[slot].on_stall_fired = 0;
+    pthread_mutex_unlock(&g_mu);
+
+    return slot;
+}
+
 void health_heartbeat(health_subsystem_id id)
 {
     if (id < 0 || id >= HEALTH_REGISTRY_CAP) return;
     if (!g_entries[id].active) return;
+    if (g_entries[id].periodic) return;  /* no-op for periodic ticks */
     atomic_store(&g_entries[id].last_beat_us, GetTimeMicros());
 }
 
@@ -114,7 +157,9 @@ int health_snapshot_all(struct health_snapshot *out, int max)
         out[n].deadline_secs = g_entries[i].deadline_secs;
         out[n].last_beat_age_secs = age_us / 1000000;
         out[n].on_stall_fired = g_entries[i].on_stall_fired;
-        out[n].currently_stalled = (age_us / 1000000) > g_entries[i].deadline_secs;
+        out[n].periodic = g_entries[i].periodic;
+        out[n].currently_stalled = !g_entries[i].periodic &&
+            ((age_us / 1000000) > g_entries[i].deadline_secs);
         n++;
     }
     pthread_mutex_unlock(&g_mu);
@@ -143,23 +188,36 @@ static void sweep_once(void)
         if (!g_entries[i].active) continue;
         int64_t beat_us = atomic_load(&g_entries[i].last_beat_us);
         int64_t age_us  = now_us - beat_us;
-        int64_t deadline_us = g_entries[i].deadline_secs * (int64_t)1000000;
-        if (age_us <= deadline_us) continue;
+        int64_t threshold_us = g_entries[i].deadline_secs * (int64_t)1000000;
+        if (age_us < threshold_us) continue;
 
-        /* Edge trigger: only fire if beat_us has advanced since the
-         * last firing, OR this is the first stall ever for this entry
-         * (last_stall_beat_us is its initial registration timestamp). */
-        if (beat_us == g_entries[i].last_stall_beat_us) {
-            /* Already fired against this beat-timestamp. Skip. */
-            continue;
+        if (g_entries[i].periodic) {
+            /* Periodic tick: fire on every sweep where age >= period.
+             * Advance last_beat_us to now so the next fire is
+             * period_secs from this moment. */
+            atomic_store(&g_entries[i].last_beat_us, now_us);
+            g_entries[i].on_stall_fired++;
+            fires[nfires].fn = g_entries[i].on_stall;
+            fires[nfires].ctx = g_entries[i].ctx;
+            fires[nfires].slot = i;
+            fires[nfires].beat_us = now_us;
+            nfires++;
+        } else {
+            /* Stall edge-trigger: only fire if beat_us has advanced
+             * since the last firing, OR this is the first stall ever
+             * for this entry (last_stall_beat_us == 0). */
+            if (beat_us == g_entries[i].last_stall_beat_us) {
+                /* Already fired against this beat-timestamp. Skip. */
+                continue;
+            }
+            g_entries[i].last_stall_beat_us = beat_us;
+            g_entries[i].on_stall_fired++;
+            fires[nfires].fn = g_entries[i].on_stall;
+            fires[nfires].ctx = g_entries[i].ctx;
+            fires[nfires].slot = i;
+            fires[nfires].beat_us = beat_us;
+            nfires++;
         }
-        g_entries[i].last_stall_beat_us = beat_us;
-        g_entries[i].on_stall_fired++;
-        fires[nfires].fn = g_entries[i].on_stall;
-        fires[nfires].ctx = g_entries[i].ctx;
-        fires[nfires].slot = i;
-        fires[nfires].beat_us = beat_us;
-        nfires++;
     }
     pthread_mutex_unlock(&g_mu);
 
