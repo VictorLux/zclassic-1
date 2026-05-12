@@ -20,6 +20,7 @@
 #include <stdatomic.h>
 
 #include "util/log_macros.h"
+#include "util/thread_registry.h"
 
 /* ── Thresholds ──────────────────────────────────────────── */
 
@@ -851,9 +852,10 @@ bool sync_watchdog_thread_start(pthread_t *thread,
     g_watchdog_args.cm = cm;
     g_watchdog_args.dm = dm;
     g_watchdog_args.ms = ms;
-    if (pthread_create(thread, NULL, sync_watchdog_thread_entry,
-                       &g_watchdog_args) != 0) {
-        LOG_FAIL("watchdog", "pthread_create failed");
+    if (thread_registry_spawn_ex("zcl_sync_watchdog",
+                                  sync_watchdog_thread_entry,
+                                  &g_watchdog_args, thread) != 0) {
+        LOG_FAIL("watchdog", "thread_registry_spawn_ex failed");
         return false;
     }
     *started = true;

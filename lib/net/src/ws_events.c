@@ -21,6 +21,7 @@
 #include <string.h>
 #include <unistd.h>
 #include "util/log_macros.h"
+#include "util/thread_registry.h"
 
 /* ── WebSocket frame helpers (RFC 6455 minimal) ──────────────── */
 
@@ -362,9 +363,10 @@ bool ws_events_start(void)
     for (int t = 0; t < EV_NUM_TYPES; t++)
         event_observe((enum event_type)t, ws_event_observer, NULL);
 
-    if (pthread_create(&g_pump_thread, NULL, pump_thread_fn, NULL) != 0) {
+    if (thread_registry_spawn_ex("zcl_ws_pump", pump_thread_fn, NULL,
+                                  &g_pump_thread) != 0) {
         atomic_store(&g_started, false);
-        LOG_FAIL("ws", "pthread_create failed for event pump thread");
+        LOG_FAIL("ws", "thread_registry_spawn_ex failed for event pump thread");
     }
     return true;
 }
