@@ -37,6 +37,7 @@
 #include "config/runtime.h"
 #include "util/ar_step_readonly.h"
 #include "util/log_macros.h"
+#include "util/safe_alloc.h"
 
 #include <sqlite3.h>
 #include <ctype.h>
@@ -423,7 +424,7 @@ static bool rpc_getnodelog(const struct json_value *params, bool help,
          * the previous-newer chunk). Process newline-separated lines
          * from the end. */
         size_t combined_cap = (size_t)got + carry_len + 1;
-        char *combined = malloc(combined_cap);
+        char *combined = zcl_malloc(combined_cap, "diagnostics.node_log.combined");
         if (!combined) break;
         memcpy(combined, buf, got);
         memcpy(combined + got, carry, carry_len);
@@ -448,7 +449,7 @@ static bool rpc_getnodelog(const struct json_value *params, bool help,
                         carry_len = llen;
                         carry[llen] = '\0';
                     } else {
-                        char *line = malloc(llen + 1);
+                        char *line = zcl_malloc(llen + 1, "diagnostics.node_log.line");
                         if (line) {
                             memcpy(line, combined + start_off, llen);
                             line[llen] = '\0';
