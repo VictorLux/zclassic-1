@@ -741,11 +741,19 @@ int bii_repair_post_activation_anchor(
      * preserve behaviour, but we don't have an external "true"
      * height to inject — the source of truth is the block_map.) */
 
-    /* Step 2: walk DOWN pprev fixing heights */
+    /* Step 2: walk DOWN pprev fixing heights.
+     *
+     * Defensive step cap: pprev cycles in corrupt block_map state
+     * could otherwise drive the loop forever. The height assignment
+     * below forces monotonicity, which inherently breaks cycles on
+     * the first pass, but if a future caller drops that semantic the
+     * cap keeps the repair bounded. */
     {
         int fixed = 0;
+        int steps = 0;
         struct block_index *cur = coins_bi;
-        while (cur && cur->pprev) {
+        const int max_steps = pre_scan_coins_h + 1024;
+        while (cur && cur->pprev && steps++ < max_steps) {
             int expected = cur->nHeight - 1;
             if (cur->pprev->nHeight != expected) {
                 cur->pprev->nHeight = expected;
