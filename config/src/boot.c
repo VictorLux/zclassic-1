@@ -414,6 +414,73 @@ static void boot_step_detect_unclean_shutdown(const char *datadir)
     unlink(marker_path);
 }
 
+static bool boot_step_init_crypto_and_state(struct app_context *ctx,
+                                             const struct chain_params *params)
+{
+    /* Assumevalid is set after block index loads (see below — first the
+     * default-from-checkpoint case fires here, the user-provided-hash
+     * case is deferred). The implementation in contextual_check_tx.c
+     * handles both script verification (connect_block.c) and Sapling
+     * proof verification (contextual_check_tx.c) via
+     * g_assume_valid_height. */
+
+    ecc_start();
+    ecc_verify_init();
+
+    /* SHA-256 hardware self-test */
+    if (!sha256_selftest())
+        printf("WARNING: SHA-256 SHA-NI self-test FAILED — using portable fallback\n");
+    printf("SHA-256: %s\n", sha256_implementation());
+
+    /* Report field arithmetic acceleration */
+    extern const char *fr_accel_implementation(void);
+    printf("Field arithmetic: %s\n", fr_accel_implementation());
+
+    main_state_init(&g_state);
+    g_state.fTxIndex = ctx->tx_index;
+    g_state.fCheckpointsEnabled = ctx->checkpoints_enabled;
+
+    /* Initialize chain activation controller — single authority for
+     * when activate_best_chain can run. Must be before any chain work. */
+    activation_controller_init(&g_activation_ctl, &g_state, &g_coins_tip,
+                               params, ctx->datadir);
+    activation_set_state(&g_activation_ctl, ACTIVATION_BOOT_PENDING,
+                         "boot_start");
+
+    /* -assumevalid: skip Groth16/Sapling proof verification for blocks
+     * at or below the specified hash's height. Default: latest checkpoint.
+     * Pass -assumevalid=0 to disable (verify everything). */
+    if (ctx->assume_valid && strcmp(ctx->assume_valid, "0") == 0) {
+        g_assume_valid_height = -1;
+        printf("Assume-valid: disabled (verifying all proofs)\n");
+    } else if (ctx->assume_valid) {
+        /* Resolve user-provided hash after block index loads (deferred) */
+    } else {
+        /* Default: latest checkpoint height */
+        if (params->checkpointData.nEntries > 0) {
+            g_assume_valid_height =
+                params->checkpointData.entries[params->checkpointData.nEntries - 1].height;
+            printf("Assume-valid: height %d (latest checkpoint)\n",
+                   g_assume_valid_height);
+        }
+    }
+
+    /* Defer ZK key loading to background thread — not needed for RPC startup.
+     * Keys load in parallel while block index + wallet initialize. */
+    g_params_thread_started = false;
+    if (ctx->params_dir) {
+        snprintf(g_params_dir_buf, sizeof(g_params_dir_buf), "%s", ctx->params_dir);
+        /* raw-pthread-ok: one-shot ZK params loader, joined at shutdown
+         * via app_shutdown's params_thread field */
+        if (pthread_create(&g_params_thread, NULL, load_params_thread, NULL) == 0)
+            g_params_thread_started = true;
+        else
+            fprintf(stderr,
+                    "WARNING: failed to start ZK params loader thread\n");
+    }
+    return true;
+}
+
 static void boot_step_start_disk_and_ibd_guards(const char *datadir)
 {
     /* Disk monitor — armed before first SQLite open so the
@@ -453,66 +520,8 @@ bool app_init(struct app_context *ctx)
     boot_step_detect_unclean_shutdown(ctx->datadir);
     boot_step_start_disk_and_ibd_guards(ctx->datadir);
 
-    /* Assumevalid is set after block index loads (see ~line 1275).
-     * The remote dev's implementation in contextual_check_tx.c handles
-     * both script verification (connect_block.c) and Sapling proof
-     * verification (contextual_check_tx.c) via g_assume_valid_height. */
-
-    ecc_start();
-    ecc_verify_init();
-
-    /* SHA-256 hardware self-test */
-    if (!sha256_selftest())
-        printf("WARNING: SHA-256 SHA-NI self-test FAILED — using portable fallback\n");
-    printf("SHA-256: %s\n", sha256_implementation());
-
-    /* Report field arithmetic acceleration */
-    extern const char *fr_accel_implementation(void);
-    printf("Field arithmetic: %s\n", fr_accel_implementation());
-
-    main_state_init(&g_state);
-    g_state.fTxIndex = ctx->tx_index;
-    g_state.fCheckpointsEnabled = ctx->checkpoints_enabled;
-
-    /* Initialize chain activation controller — single authority for
-     * when activate_best_chain can run. Must be before any chain work. */
-    activation_controller_init(&g_activation_ctl, &g_state, &g_coins_tip,
-                               params, ctx->datadir);
-    activation_set_state(&g_activation_ctl, ACTIVATION_BOOT_PENDING,
-                         "boot_start");
-
-    /* -assumevalid: skip Groth16/Sapling proof verification for blocks
-     * at or below the specified hash's height. Default: latest checkpoint.
-     * Pass -assumevalid=0 to disable (verify everything). */
-    {
-        const struct chain_params *cp = chain_params_get();
-        if (ctx->assume_valid && strcmp(ctx->assume_valid, "0") == 0) {
-            g_assume_valid_height = -1;
-            printf("Assume-valid: disabled (verifying all proofs)\n");
-        } else if (ctx->assume_valid) {
-            /* Resolve user-provided hash after block index loads (deferred) */
-        } else {
-            /* Default: latest checkpoint height */
-            if (cp->checkpointData.nEntries > 0) {
-                g_assume_valid_height =
-                    cp->checkpointData.entries[cp->checkpointData.nEntries - 1].height;
-                printf("Assume-valid: height %d (latest checkpoint)\n",
-                       g_assume_valid_height);
-            }
-        }
-    }
-
-    /* Defer ZK key loading to background thread — not needed for RPC startup.
-     * Keys load in parallel while block index + wallet initialize. */
-    g_params_thread_started = false;
-    if (ctx->params_dir) {
-        snprintf(g_params_dir_buf, sizeof(g_params_dir_buf), "%s", ctx->params_dir);
-        if (pthread_create(&g_params_thread, NULL, load_params_thread, NULL) == 0)
-            g_params_thread_started = true;
-        else
-            fprintf(stderr,
-                    "WARNING: failed to start ZK params loader thread\n");
-    }
+    if (!boot_step_init_crypto_and_state(ctx, params))
+        return false;
 
     /* Initialize wallet (before block index — needed for -importlegacy).
      *
