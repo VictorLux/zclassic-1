@@ -1075,16 +1075,49 @@ static struct block_index *find_most_work_chain(struct main_state *ms)
                "(no data, nChainTx==0)\n", skipped_no_chaintx);
     }
 
+    /* Round 6 Part 1: refuse to return a candidate BELOW the current tip.
+     * The tip is canonical. A "fork tip" at a lower height with higher
+     * nChainWork can appear from old import data with incorrect work
+     * accounting, but reorging backwards 17 k blocks because of it is
+     * never the right answer — activate_best_chain would hit the
+     * checkpoint guard anyway, log "below_checkpoint" every second, and
+     * the chain would never advance. Treat below-tip best as "no work
+     * pending" and let gap-fill close the headers-vs-bodies window. */
+    {
+        struct block_index *tip = active_chain_tip(&ms->chain_active);
+        if (tip && best && best != tip && best->nHeight < tip->nHeight) {
+            static time_t g_last_stale_log = 0;
+            time_t now_log = time(NULL);
+            if (now_log - g_last_stale_log >= 60) {
+                g_last_stale_log = now_log;
+                printf("find_most_work_chain: ignoring stale fork tip "
+                       "h=%d (tip h=%d, depth=%d) — returning tip\n",
+                       best->nHeight, tip->nHeight,
+                       tip->nHeight - best->nHeight);
+            }
+            best = tip;
+        }
+    }
+
     /* P14.7 diagnostic: when activate_best_chain will silent-return
      * (because we picked the current tip as best), emit a
      * rate-limited log line naming the filter counters. This is how
      * the canary identifies which shortlisted cause is keeping
-     * production stuck without another investigative round-trip. */
+     * production stuck without another investigative round-trip.
+     *
+     * Round 6 Part 1: also kick the gap-fill service so it requests the
+     * missing bodies for headers above the tip. Without this kick,
+     * gap_fill only wakes every GAPFILL_TICK_SECS=5s and the headers
+     * gap closes slowly; an explicit kick from chain selection
+     * accelerates convergence whenever activation runs. */
     {
         struct block_index *tip = active_chain_tip(&ms->chain_active);
         if (tip && best == tip) {
             int header_h = ms->pindex_best_header
                          ? ms->pindex_best_header->nHeight : 0;
+            if (header_h > tip->nHeight + 1) {
+                gap_fill_kick();
+            }
             if (header_h > tip->nHeight + 100) {
                 static time_t g_last_stuck_log = 0;
                 time_t now_log = time(NULL);
