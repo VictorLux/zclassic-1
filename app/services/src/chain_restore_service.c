@@ -35,6 +35,7 @@ void chain_restore_plan(struct chain_restore_plan *out,
         out->should_skip_activate = true;
         snprintf(out->reason, sizeof(out->reason),
                  "coins_best_block is null — no UTXO state");
+        chain_restore_record_plan_result(out);
         return;
     }
 
@@ -48,6 +49,7 @@ void chain_restore_plan(struct chain_restore_plan *out,
         out->anchor_hash = in->coins_best_hash;
         snprintf(out->reason, sizeof(out->reason),
                  "found in block index at h=%d", in->found_height);
+        chain_restore_record_plan_result(out);
         return;
     }
 
@@ -65,6 +67,7 @@ void chain_restore_plan(struct chain_restore_plan *out,
                  in->source == CHAIN_RESTORE_SRC_LDB_IMPORT ? "LDB import"
                  : in->source == CHAIN_RESTORE_SRC_SNAPSHOT ? "snapshot"
                  : "boot");
+        chain_restore_record_plan_result(out);
         return;
     }
 
@@ -73,6 +76,19 @@ void chain_restore_plan(struct chain_restore_plan *out,
     out->should_skip_activate = true;
     snprintf(out->reason, sizeof(out->reason),
              "coins_best_block set but height unknown — awaiting P2P");
+    chain_restore_record_plan_result(out);
+}
+
+static const char *chain_restore_state_name(int s)
+{
+    switch ((enum chain_restore_state)s) {
+    case CHAIN_RESTORE_UNRESOLVED:      return "UNRESOLVED";
+    case CHAIN_RESTORE_FOUND_IN_INDEX:  return "FOUND_IN_INDEX";
+    case CHAIN_RESTORE_ANCHOR_CREATED:  return "ANCHOR_CREATED";
+    case CHAIN_RESTORE_RESOLVED:        return "RESOLVED";
+    case CHAIN_RESTORE_FAILED:          return "FAILED";
+    }
+    return "UNKNOWN";
 }
 
 /* ── Anchor creation (shared implementation) ───────────────────── */
@@ -375,6 +391,22 @@ void chain_restore_record_backfill_result(int fixed,
     g_boot_snapshot.backfill_off_chain_cleared = off_chain_cleared;
 }
 
+void chain_restore_record_plan_result(const struct chain_restore_plan *p)
+{
+    if (!p) return;
+    g_boot_snapshot.has_data = true;
+    g_boot_snapshot.boot_time = (int64_t)time(NULL);
+    g_boot_snapshot.plan_recorded = true;
+    g_boot_snapshot.plan_next_state = (int)p->next_state;
+    g_boot_snapshot.plan_anchor_height = p->anchor_height;
+    g_boot_snapshot.plan_should_skip_activate = p->should_skip_activate;
+    size_t n = strnlen(p->reason, sizeof(p->reason));
+    if (n >= sizeof(g_boot_snapshot.plan_reason))
+        n = sizeof(g_boot_snapshot.plan_reason) - 1;
+    memcpy(g_boot_snapshot.plan_reason, p->reason, n);
+    g_boot_snapshot.plan_reason[n] = '\0';
+}
+
 void chain_restore_get_boot_snapshot(struct chain_restore_boot_snapshot *out)
 {
     if (!out) return;
@@ -408,6 +440,15 @@ bool chain_restore_dump_state_json(struct json_value *out, const char *key)
                      g_boot_snapshot.backfill_read_errors);
     json_push_kv_int(out, "backfill_off_chain_cleared",
                      g_boot_snapshot.backfill_off_chain_cleared);
+    /* Round 7 A4: chain_restore_plan result */
+    json_push_kv_bool(out, "plan_recorded", g_boot_snapshot.plan_recorded);
+    json_push_kv_str(out, "plan_next_state",
+                     chain_restore_state_name(g_boot_snapshot.plan_next_state));
+    json_push_kv_int(out, "plan_anchor_height",
+                     g_boot_snapshot.plan_anchor_height);
+    json_push_kv_bool(out, "plan_should_skip_activate",
+                      g_boot_snapshot.plan_should_skip_activate);
+    json_push_kv_str(out, "plan_reason", g_boot_snapshot.plan_reason);
     return true;
 }
 

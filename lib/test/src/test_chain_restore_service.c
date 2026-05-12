@@ -102,6 +102,30 @@ static int test_plan_no_utxos(void) {
     return failures;
 }
 
+/* Round 7 A4: plan result must land in the boot snapshot so
+ * zcl_state(subsystem="boot") shows WHY chain_restore failed. */
+static int test_plan_records_failed_state_in_boot_snapshot(void) {
+    int failures = 0;
+    TEST("chain_restore_plan: FAILED case records reason in boot snapshot") {
+        struct chain_restore_input in = {0};
+        uint256_set_hex(&in.coins_best_hash, "0000abcd");
+        in.hash_found_in_map = false;
+        in.utxo_max_height = 0;
+
+        struct chain_restore_plan plan;
+        chain_restore_plan(&plan, &in);
+
+        struct chain_restore_boot_snapshot snap;
+        chain_restore_get_boot_snapshot(&snap);
+        ASSERT(snap.plan_recorded == true);
+        ASSERT(snap.plan_next_state == (int)CHAIN_RESTORE_FAILED);
+        ASSERT(snap.plan_should_skip_activate == true);
+        ASSERT(strstr(snap.plan_reason, "height unknown") != NULL);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 static int test_plan_snapshot_source(void) {
     int failures = 0;
     TEST("chain_restore_plan: snapshot source creates anchor with reason") {
@@ -906,6 +930,7 @@ int test_chain_restore_service(void) {
     failures += test_plan_hash_not_found_with_height();
     failures += test_plan_null_hash();
     failures += test_plan_no_utxos();
+    failures += test_plan_records_failed_state_in_boot_snapshot();
     failures += test_plan_snapshot_source();
     /* Execution tests */
     failures += test_execute_anchor_creation();

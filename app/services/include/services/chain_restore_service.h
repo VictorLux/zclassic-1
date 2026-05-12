@@ -175,6 +175,16 @@ struct chain_restore_boot_snapshot {
     int    backfill_fixed;
     int    backfill_read_errors;
     int    backfill_off_chain_cleared;
+    /* Round 7 A4: capture the most recent chain_restore_plan result so
+     * `zcl_state(boot)` can show WHY boot reached the FAILED state
+     * (e.g. "coins_best_block set but height unknown — awaiting P2P").
+     * Without this, a stuck-at-IDLE boot is invisible until STATE_STUCK
+     * fires 300s later via the live watchdog. */
+    bool   plan_recorded;
+    int    plan_next_state;     /* enum chain_restore_state encoded as int */
+    int    plan_anchor_height;
+    bool   plan_should_skip_activate;
+    char   plan_reason[160];
 };
 
 void chain_restore_get_boot_snapshot(struct chain_restore_boot_snapshot *out);
@@ -186,6 +196,8 @@ void chain_restore_record_integrity_result(
 void chain_restore_record_backfill_result(int fixed,
                                           int read_errors,
                                           int off_chain_cleared);
+/* Round 7 A4: record the chain_restore_plan outcome. */
+void chain_restore_record_plan_result(const struct chain_restore_plan *p);
 
 /* State-dump convention (see CLAUDE.md "Adding state introspection"). */
 struct json_value;
