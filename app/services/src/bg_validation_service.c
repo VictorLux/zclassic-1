@@ -3,6 +3,11 @@
  * Copyright 2026 Rhett Creighton - Apache License 2.0
  * Distributed under the MIT software license, see the accompanying
  * file COPYING or http://www.opensource.org/licenses/mit-license.php.
+ */
+
+#define _GNU_SOURCE  /* pthread_timedjoin_np */
+
+/*
  *
  * Background Full Validation Service
  * -----------------------------------
@@ -749,7 +754,22 @@ void bg_validation_stop(struct bg_validation_service *svc)
     if (!svc || !svc->thread_started)
         return;
     atomic_store(&svc->stop_requested, true);
-    pthread_join(svc->thread, NULL);
+    /* Round 6 Part 3: cap join at 5 s. bg-validation can be in the
+     * middle of a slow signature/proof batch — better to detach than
+     * to overrun TimeoutStopSec and earn a SIGKILL. */
+    struct timespec ts;
+    if (clock_gettime(CLOCK_REALTIME, &ts) == 0) {
+        ts.tv_sec += 5;
+        int rc = pthread_timedjoin_np(svc->thread, NULL, &ts);
+        if (rc != 0) {
+            fprintf(stderr,
+                    "bg_validation_stop: thread join timed out (rc=%d) "
+                    "— detaching\n", rc);
+            pthread_detach(svc->thread);
+        }
+    } else {
+        pthread_join(svc->thread, NULL);
+    }
     svc->thread_started = false;
 }
 

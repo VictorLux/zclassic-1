@@ -1,5 +1,7 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0 */
 
+#define _GNU_SOURCE  /* pthread_timedjoin_np */
+
 #include "services/gap_fill_service.h"
 
 #include "validation/main_state.h"
@@ -218,7 +220,22 @@ void gap_fill_stop(void)
     pthread_cond_broadcast(&g_gf.cv);
     pthread_mutex_unlock(&g_gf.mu);
     if (g_gf.thread_started) {
-        pthread_join(g_gf.thread, NULL);
+        /* Round 6 Part 3: cap join at 5 s. If the worker is stuck
+         * (eg holding cs_main on a long pprev walk), detach rather
+         * than block systemd shutdown past TimeoutStopSec. */
+        struct timespec ts;
+        if (clock_gettime(CLOCK_REALTIME, &ts) == 0) {
+            ts.tv_sec += 5;
+            int rc = pthread_timedjoin_np(g_gf.thread, NULL, &ts);
+            if (rc != 0) {
+                fprintf(stderr,
+                        "gap_fill_stop: thread join timed out (rc=%d) — "
+                        "detaching\n", rc);
+                pthread_detach(g_gf.thread);
+            }
+        } else {
+            pthread_join(g_gf.thread, NULL);
+        }
         g_gf.thread_started = false;
     }
     atomic_store(&g_gf.running, false);

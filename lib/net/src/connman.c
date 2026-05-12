@@ -4,6 +4,8 @@
  * Distributed under the MIT software license, see the accompanying
  * file COPYING or http://www.opensource.org/licenses/mit-license.php. */
 
+#define _GNU_SOURCE  /* pthread_timedjoin_np */
+
 #define _DEFAULT_SOURCE
 #include "net/connman.h"
 #include "net/addrman.h"
@@ -894,17 +896,42 @@ static void *thread_socket_handler(void *arg)
                 cm->manager.nodes[i] =
                     cm->manager.nodes[cm->manager.num_nodes - 1];
                 cm->manager.num_nodes--;
-                if (cm->num_deferred_free < CONNMAN_DEFERRED_FREE_CAP) {
+                if (cm->num_deferred_free < cm->deferred_free_cap) {
                     cm->deferred_free[cm->num_deferred_free++] = node;
+                } else if (cm->deferred_free_cap <
+                           CONNMAN_DEFERRED_FREE_HARD_CAP) {
+                    /* Round 6 Part 2: grow the buffer rather than leak.
+                     * Double until hitting the hard cap. */
+                    size_t new_cap = cm->deferred_free_cap * 2;
+                    if (new_cap > CONNMAN_DEFERRED_FREE_HARD_CAP)
+                        new_cap = CONNMAN_DEFERRED_FREE_HARD_CAP;
+                    struct p2p_node **grown = realloc(
+                        cm->deferred_free,
+                        new_cap * sizeof(*cm->deferred_free));
+                    if (grown) {
+                        cm->deferred_free = grown;
+                        cm->deferred_free_cap = new_cap;
+                        cm->deferred_free[cm->num_deferred_free++] = node;
+                    } else if (p2p_node_get_ref(node) > 0) {
+                        fprintf(stderr, "[connman] %s:%d %s(): "
+                                "deferred_free realloc failed and ref "
+                                "on node %s — leaking to avoid UAF\n",
+                                __FILE__, __LINE__, __func__,
+                                node->addr_name);
+                    } else {
+                        p2p_node_free(node);
+                    }
                 } else if (p2p_node_get_ref(node) > 0) {
-                    /* P2.5 safety belt: with cap=256 and
-                     * max_connections=125 this branch should never fire,
-                     * but if deferred_free overflows while another thread
-                     * still holds a snapshot ref, freeing now would be
-                     * UAF. Leak rather than crash — log for diagnosis. */
+                    /* Hard ceiling reached with a live ref. This is a
+                     * genuine leak (likely refs never being released by
+                     * a stuck message-cycle snapshot). Log loudly — the
+                     * Round 5 signal handler will be invoked if we ever
+                     * abort from this path. */
                     fprintf(stderr, "[connman] %s:%d %s(): deferred_free "
-                            "overflow with ref on node %s — leaking to "
-                            "avoid UAF\n", __FILE__, __LINE__, __func__,
+                            "HARD CAP %d reached with ref on node %s — "
+                            "leaking to avoid UAF (investigate refs)\n",
+                            __FILE__, __LINE__, __func__,
+                            CONNMAN_DEFERRED_FREE_HARD_CAP,
                             node->addr_name);
                 } else {
                     p2p_node_free(node);
@@ -988,10 +1015,18 @@ bool connman_run_message_cycle(struct connman *cm)
         }
     }
 
-    /* Phase 3: release refs under cs_nodes. */
+    /* Phase 3: release refs under cs_nodes.
+     *
+     * Round 6 Part 2: also drain deferred_free here. The socket thread's
+     * sweep runs only once per outer loop (potentially many ms); when
+     * we've just dropped refs we are exactly the right moment to free
+     * any deferred nodes whose refs went to zero. Without this drain the
+     * buffer grows under churn until it hits the hard cap and starts
+     * leaking. */
     zcl_mutex_lock(&cm->manager.cs_nodes);
     for (size_t i = 0; i < snap_count; i++)
         p2p_node_release(snap[i]);
+    connman_run_deferred_free_sweep(cm);
     zcl_mutex_unlock(&cm->manager.cs_nodes);
 
     free(snap);
@@ -1045,6 +1080,17 @@ bool connman_init(struct connman *cm, const struct chain_params *params,
     net_manager_init(&cm->manager);
     cm->params = params;
     cm->manager.signals = *signals;
+
+    /* Round 6 Part 2: dynamic deferred_free buffer. */
+    cm->deferred_free_cap = CONNMAN_DEFERRED_FREE_INIT_CAP;
+    cm->deferred_free = zcl_malloc(
+        cm->deferred_free_cap * sizeof(*cm->deferred_free),
+        "connman.deferred_free");
+    if (!cm->deferred_free) {
+        cm->deferred_free_cap = 0;
+        return false;
+    }
+    cm->num_deferred_free = 0;
 
     memcpy(cm->manager.message_start, params->pchMessageStart,
            MESSAGE_START_SIZE);
@@ -1126,42 +1172,25 @@ void connman_signal_stop(struct connman *cm)
     g_stop = true;
 }
 
-/* Join a thread with a timeout using a cancel-based approach.
- * Spawns a helper that joins the target; if it takes too long,
- * we detach and move on. */
-static volatile bool g_join_done = false;
-static pthread_t g_join_target;
-
-static void *join_helper(void *arg)
-{
-    (void)arg;
-    pthread_join(g_join_target, NULL);
-    g_join_done = true;
-    return NULL;
-}
-
+/* Round 6 Part 3: pthread_timedjoin_np-based bounded join.
+ *
+ * Old implementation spawned a helper thread per join and polled a flag;
+ * the global g_join_target / g_join_done state meant joins serialised,
+ * timed_join leaked the helper on timeout, and 30 s per thread × 4
+ * threads breached systemd's 90 s TimeoutStopSec. Linux's
+ * pthread_timedjoin_np is the right tool. */
 static bool timed_join(pthread_t thread, int timeout_sec)
 {
-    g_join_done = false;
-    g_join_target = thread;
-
-    pthread_t helper;
-    if (pthread_create(&helper, NULL, join_helper, NULL) != 0) {
-        /* Fallback: blocking join */
+    struct timespec ts;
+    if (clock_gettime(CLOCK_REALTIME, &ts) != 0) {
         pthread_join(thread, NULL);
         return true;
     }
-
-    for (int i = 0; i < timeout_sec * 10; i++) {
-        if (g_join_done) {
-            pthread_join(helper, NULL);
-            return true;
-        }
-        usleep(100000); /* 100ms */
-    }
-
-    /* Timeout — detach both threads */
-    pthread_detach(helper);
+    ts.tv_sec += timeout_sec;
+    int rc = pthread_timedjoin_np(thread, NULL, &ts);
+    if (rc == 0)
+        return true;
+    /* Timeout (ETIMEDOUT) or other error — detach and move on. */
     pthread_detach(thread);
     return false;
 }
@@ -1177,22 +1206,22 @@ void connman_join(struct connman *cm)
     if (cm->started || cm->dns_seed_thread_started || cm->socket_thread_started ||
         cm->open_thread_started || cm->message_thread_started) {
         if (cm->dns_seed_thread_started) {
-            if (!timed_join(g_thread_dns_seed, 30))
+            if (!timed_join(g_thread_dns_seed, 5))
                 fprintf(stderr, "connman: dns_seed thread join timed out\n");
             cm->dns_seed_thread_started = false;
         }
         if (cm->socket_thread_started) {
-            if (!timed_join(g_thread_socket, 30))
+            if (!timed_join(g_thread_socket, 5))
                 fprintf(stderr, "connman: socket thread join timed out\n");
             cm->socket_thread_started = false;
         }
         if (cm->open_thread_started) {
-            if (!timed_join(g_thread_open, 30))
+            if (!timed_join(g_thread_open, 5))
                 fprintf(stderr, "connman: open thread join timed out\n");
             cm->open_thread_started = false;
         }
         if (cm->message_thread_started) {
-            if (!timed_join(g_thread_message, 30))
+            if (!timed_join(g_thread_message, 5))
                 fprintf(stderr, "connman: message thread join timed out\n");
             cm->message_thread_started = false;
         }
@@ -1320,6 +1349,19 @@ void connman_free(struct connman *cm)
         connman_stop(cm);
     connman_save_addrman(cm);
     net_manager_free(&cm->manager);
+
+    /* Round 6 Part 2: free any deferred entries still pending. After
+     * connman_stop returns, no other thread should hold node refs. */
+    if (cm->deferred_free) {
+        for (size_t i = 0; i < cm->num_deferred_free; i++) {
+            if (cm->deferred_free[i])
+                p2p_node_free(cm->deferred_free[i]);
+        }
+        free(cm->deferred_free);
+        cm->deferred_free = NULL;
+        cm->num_deferred_free = 0;
+        cm->deferred_free_cap = 0;
+    }
 }
 
 void connman_relay_transaction(struct connman *cm,

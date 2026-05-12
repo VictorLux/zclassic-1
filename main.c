@@ -216,9 +216,21 @@ volatile sig_atomic_t g_shutdown_requested = 0;
 static void *shutdown_watchdog(void *arg)
 {
     (void)arg;
-    sleep(60);
-    fprintf(stderr, "Shutdown watchdog: 60s timeout — forcing exit\n");
+    /* Round 6 Part 3: reduced from 60 s → 25 s. systemd's TimeoutStopSec
+     * is 90 s; we want to be well under that with margin. After the
+     * Round 6 bounded P2P / gap-fill / bg-validation joins (5 s each),
+     * the only remaining slow path is coins_view_cache_flush, which
+     * normally completes in seconds. If shutdown is still not done at
+     * 25 s, something is genuinely wedged — raise SIGABRT so the Round 5
+     * fatal handler prints a backtrace to node.log before _exit, so the
+     * next session can fix the root cause instead of guessing. */
+    sleep(25);
+    fprintf(stderr, "Shutdown watchdog: 25s timeout — backtrace + exit\n");
     fflush(stderr);
+    /* Trigger Round 5 fatal handler — backtrace_symbols_fd writes the
+     * caller stack (still useful) and re-raises with SIG_DFL. */
+    raise(SIGABRT);
+    sleep(2);
     _exit(1);
     return NULL;
 }

@@ -160,7 +160,7 @@ static void *p25_socket_worker(void *arg)
         for (size_t i = 0; i < c->cm->manager.num_nodes; ) {
             struct p2p_node *n = c->cm->manager.nodes[i];
             if (n->disconnect &&
-                c->cm->num_deferred_free < CONNMAN_DEFERRED_FREE_CAP) {
+                c->cm->num_deferred_free < c->cm->deferred_free_cap) {
                 /* Match production thread_socket_handler's discipline:
                  * drop recv_msg_count before parking for free so
                  * p2p_node_free doesn't dereference the sentinel value

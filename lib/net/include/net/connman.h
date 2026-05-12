@@ -13,12 +13,16 @@
 
 #define MAX_ADDNODES 16
 
-/* Capacity of the deferred-free list: max # of nodes that can be awaiting
- * free in one socket cycle. Must exceed DEFAULT_MAX_PEER_CONNECTIONS (125)
- * with headroom, since the P2.5 fix can also re-defer a node whose ref_count
- * is still non-zero — that means the list can accumulate across cycles when
- * the message handler holds references. 256 leaves ~125 slots of headroom. */
-#define CONNMAN_DEFERRED_FREE_CAP 256
+/* Initial capacity of the deferred-free list: starts at 256, grows
+ * dynamically on overflow up to CONNMAN_DEFERRED_FREE_HARD_CAP. The fixed
+ * cap-256 used to overflow under Tor-driven churn while the message
+ * handler held snapshot refs, triggering the deliberate-leak fallback in
+ * thread_socket_handler. Round 6: grow the array instead. The hard
+ * ceiling is 8× DEFAULT_MAX_PEER_CONNECTIONS = 1000, large enough that
+ * hitting it indicates a genuine leak (and tripping the SIGABRT handler
+ * is the right outcome). */
+#define CONNMAN_DEFERRED_FREE_INIT_CAP 256
+#define CONNMAN_DEFERRED_FREE_HARD_CAP 1000
 
 enum connman_outbound_target_source {
     CONNMAN_TARGET_NONE = 0,
@@ -34,8 +38,9 @@ struct connman {
     bool socket_thread_started;
     bool open_thread_started;
     bool message_thread_started;
-    struct p2p_node *deferred_free[CONNMAN_DEFERRED_FREE_CAP];
+    struct p2p_node **deferred_free;
     size_t num_deferred_free;
+    size_t deferred_free_cap;
     /* Persistent addnode list — reconnected automatically on disconnect */
     struct net_address addnodes[MAX_ADDNODES];
     int num_addnodes;
@@ -66,6 +71,11 @@ void connman_open_connection(struct connman *cm,
                               const struct net_address *addr);
 
 size_t connman_get_node_count(const struct connman *cm);
+
+/* Count of outbound peers in PEER_HANDSHAKE_COMPLETE or later. Used by
+ * the sync watchdog to distinguish slot-burning peers stuck in
+ * PEER_CONNECTING from peers actually able to serve us blocks. */
+size_t connman_outbound_healthy_count(struct connman *cm);
 
 /* Return the highest starting_height among all connected peers, or -1. */
 int connman_max_peer_height(struct connman *cm);
