@@ -16,6 +16,7 @@
 #include <string.h>
 #include <unistd.h>
 #include "util/safe_alloc.h"
+#include "util/thread_registry.h"
 
 static pthread_t *g_miner_threads = NULL;
 static int g_num_miner_threads = 0;
@@ -179,7 +180,8 @@ void gen_start(struct gen_context *ctx)
     atomic_store(&ctx->running, true);
 
     for (int i = 0; i < g_num_miner_threads; i++) {
-        if (pthread_create(&g_miner_threads[i], NULL, miner_thread, ctx) != 0) {
+        if (thread_registry_spawn_ex("zcl_miner", miner_thread, ctx,
+                                      &g_miner_threads[i]) != 0) {
             fprintf(stderr, "gen_start: failed to start miner thread %d\n", i);
             atomic_store(&ctx->running, false);
             for (int j = 0; j < started; j++)
