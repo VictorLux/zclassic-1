@@ -13,6 +13,7 @@
 #include "util/timedata.h"
 #include "event/event.h"
 #include "config/runtime.h"
+#include "util/thread_registry.h"
 #include "models/database.h"
 #include <pthread.h>
 #include <stdio.h>
@@ -389,8 +390,9 @@ bool metrics_start(struct metrics_context *ctx)
         return true;
 
     atomic_store(&ctx->running, true);
-    if (pthread_create(&g_metrics_thread, NULL, metrics_thread_fn, ctx) != 0) {
-        perror("metrics_start: pthread_create");
+    if (thread_registry_spawn_ex("zcl_metrics", metrics_thread_fn, ctx,
+                                  &g_metrics_thread) != 0) {
+        perror("metrics_start: thread_registry_spawn_ex");
         atomic_store(&ctx->running, false);
         return false;
     }

@@ -14,6 +14,7 @@
 #include "services/disk_monitor.h"
 
 #include "event/event.h"
+#include "util/thread_registry.h"
 
 #include <errno.h>
 #include <inttypes.h>
@@ -239,11 +240,12 @@ bool disk_monitor_start(const struct disk_monitor_config *cfg)
 
     g_dm.stop_requested = false;
     g_dm.thread_running = true;
-    int rc = pthread_create(&g_dm.thread, NULL, dm_thread_fn, NULL);
+    int rc = thread_registry_spawn_ex("zcl_disk_monitor", dm_thread_fn, NULL,
+                                       &g_dm.thread);
     if (rc != 0) {
         g_dm.thread_running = false;
         pthread_mutex_unlock(&g_dm.lock);
-        fprintf(stderr, "disk_monitor: pthread_create failed (%d)\n", rc);
+        fprintf(stderr, "disk_monitor: thread_registry_spawn_ex failed (%d)\n", rc);
         return false;
     }
     pthread_mutex_unlock(&g_dm.lock);

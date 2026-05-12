@@ -1,6 +1,7 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0 */
 
 #include "event/event.h"
+#include "util/thread_registry.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -182,7 +183,8 @@ bool event_async_start(void)
     }
     g_async.wake_initialized = true;
     atomic_store(&g_async.running, true);
-    if (pthread_create(&g_async.thread, NULL, async_dispatch_thread, NULL) != 0) {
+    if (thread_registry_spawn_ex("zcl_event_async", async_dispatch_thread,
+                                  NULL, &g_async.thread) != 0) {
         atomic_store(&g_async.running, false);
         pthread_cond_destroy(&g_async.wake_cond);
         pthread_mutex_destroy(&g_async.wake_mutex);
