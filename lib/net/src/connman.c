@@ -35,6 +35,7 @@
 #include "core/utiltime.h"
 #include "util/safe_alloc.h"
 #include "util/log_macros.h"
+#include "util/thread_registry.h"
 
 /* -connect mode: only connect to specified peers, no seeds */
 bool g_connect_only = false;
@@ -1121,35 +1122,39 @@ bool connman_start(struct connman *cm)
 
     g_stop = false;
 
-    if (pthread_create(&g_thread_dns_seed, NULL, thread_dns_seed, cm) != 0) {
-        perror("connman: pthread_create dns_seed");
+    if (thread_registry_spawn_ex("zcl_dns_seed", thread_dns_seed, cm,
+                                  &g_thread_dns_seed) != 0) {
+        perror("connman: thread_registry_spawn dns_seed");
         g_stop = true;
-        LOG_FAIL("net", "pthread_create failed for dns_seed thread");
+        LOG_FAIL("net", "thread_registry_spawn_ex failed for dns_seed thread");
     }
     cm->dns_seed_thread_started = true;
 
-    if (pthread_create(&g_thread_socket, NULL, thread_socket_handler, cm) != 0) {
-        perror("connman: pthread_create socket");
+    if (thread_registry_spawn_ex("zcl_connman_sock", thread_socket_handler,
+                                  cm, &g_thread_socket) != 0) {
+        perror("connman: thread_registry_spawn socket");
         g_stop = true;
         pthread_join(g_thread_dns_seed, NULL);
         cm->dns_seed_thread_started = false;
-        LOG_FAIL("net", "pthread_create failed for socket_handler thread");
+        LOG_FAIL("net", "thread_registry_spawn_ex failed for socket_handler thread");
     }
     cm->socket_thread_started = true;
 
-    if (pthread_create(&g_thread_open, NULL, thread_open_connections, cm) != 0) {
-        perror("connman: pthread_create open");
+    if (thread_registry_spawn_ex("zcl_connman_open", thread_open_connections,
+                                  cm, &g_thread_open) != 0) {
+        perror("connman: thread_registry_spawn open");
         g_stop = true;
         pthread_join(g_thread_socket, NULL);
         pthread_join(g_thread_dns_seed, NULL);
         cm->socket_thread_started = false;
         cm->dns_seed_thread_started = false;
-        LOG_FAIL("net", "pthread_create failed for open_connections thread");
+        LOG_FAIL("net", "thread_registry_spawn_ex failed for open_connections thread");
     }
     cm->open_thread_started = true;
 
-    if (pthread_create(&g_thread_message, NULL, thread_message_handler, cm) != 0) {
-        perror("connman: pthread_create message");
+    if (thread_registry_spawn_ex("zcl_connman_msg", thread_message_handler,
+                                  cm, &g_thread_message) != 0) {
+        perror("connman: thread_registry_spawn message");
         g_stop = true;
         pthread_join(g_thread_open, NULL);
         pthread_join(g_thread_socket, NULL);
@@ -1157,7 +1162,7 @@ bool connman_start(struct connman *cm)
         cm->open_thread_started = false;
         cm->socket_thread_started = false;
         cm->dns_seed_thread_started = false;
-        LOG_FAIL("net", "pthread_create failed for message_handler thread");
+        LOG_FAIL("net", "thread_registry_spawn_ex failed for message_handler thread");
     }
     cm->message_thread_started = true;
 

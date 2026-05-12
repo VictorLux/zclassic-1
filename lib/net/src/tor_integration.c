@@ -15,6 +15,7 @@
 #include <unistd.h>
 #include "util/safe_alloc.h"
 #include "util/log_macros.h"
+#include "util/thread_registry.h"
 
 static pthread_t g_tor_thread;
 static pthread_t g_monitor_thread;
@@ -199,10 +200,11 @@ static void *tor_thread_fn(void *arg)
     fflush(stdout);
 
     /* Monitor for .onion address in parallel when the helper thread starts. */
-    if (pthread_create(&g_monitor_thread, NULL, tor_onion_monitor, NULL) == 0) {
+    if (thread_registry_spawn_ex("zcl_tor_monitor", tor_onion_monitor, NULL,
+                                  &g_monitor_thread) == 0) {
         atomic_store(&g_monitor_started, true);
     } else {
-        perror("Tor: pthread_create onion monitor");
+        perror("Tor: thread_registry_spawn_ex onion monitor");
         atomic_store(&g_monitor_started, false);
     }
 
@@ -278,9 +280,10 @@ bool tor_integration_start(const char *datadir, uint16_t p2p_port)
     atomic_store(&g_tor_thread_done, false);
     atomic_store(&g_monitor_started, false);
 
-    if (pthread_create(&g_tor_thread, NULL, tor_thread_fn, NULL) != 0) {
+    if (thread_registry_spawn_ex("zcl_tor", tor_thread_fn, NULL,
+                                  &g_tor_thread) != 0) {
         atomic_store(&g_tor_running, false);
-        LOG_FAIL("tor", "pthread_create failed for tor thread");
+        LOG_FAIL("tor", "thread_registry_spawn_ex failed for tor thread");
     }
     atomic_store(&g_tor_started, true);
     return true;
