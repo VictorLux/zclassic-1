@@ -409,15 +409,6 @@ ci-sync-smoke: zclassic23
 	    { echo "FAIL — last 30 lines:"; tail -30 /tmp/ci-sync-smoke-lag.log; exit 1; }
 	@echo "[ci-sync-smoke] OK"
 
-zcl-watchdog: tools/zcl-watchdog.c
-	$(CC) -std=c23 -O2 -Wall -o $@ $<
-
-deploy-watchdog: zcl-watchdog
-	@install -m 644 deploy/zcl-watchdog.service $(HOME)/.config/systemd/user/zcl-watchdog.service
-	@systemctl --user daemon-reload
-	systemctl --user restart zcl-watchdog
-	@sleep 2 && systemctl --user is-active zcl-watchdog && echo "Watchdog deployed."
-
 %.o: %.c
 	$(CC) $(CFLAGS) -c -o $@ $<
 
