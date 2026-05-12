@@ -298,11 +298,33 @@ static int64_t boot_clock_ms(void)
     return ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
 }
 
-bool app_init(struct app_context *ctx)
-{
-    int64_t t_boot_start = boot_clock_ms();
-    int64_t t_phase;
+/* ── Move 5: boot.c decomposition ─────────────────────────────────
+ *
+ * app_init was a 2,300-line monolith. We are decomposing it into
+ * named, single-responsibility `boot_step_*` static functions, one
+ * commit at a time. Each step takes the app_context (or a smaller
+ * subset of its fields) and returns bool — true to continue, false
+ * to bail. The contract is "either the precondition holds and the
+ * step succeeds, or the process exits non-zero before any other
+ * subsystem can observe partial state."
+ *
+ * Steps already extracted:
+ *   - boot_step_init_observability       (signal handler + event log + async)
+ *   - boot_step_select_chain_and_datadir (chain params, mkdir, datadir lock)
+ *   - boot_step_detect_unclean_shutdown  (.shutdown_clean marker check)
+ *   - boot_step_start_disk_and_ibd_guards (disk_monitor + ibd_throttle)
+ *
+ * Pending future commits (in app_init order):
+ *   - boot_step_init_crypto_and_state (ecc_start, sha256 selftest, main_state_init)
+ *   - boot_step_load_block_index
+ *   - boot_step_verify_csr_invariants
+ *   - boot_step_init_coins_view + boot_step_init_sapling_tree
+ *   - boot_step_resolve_chain_tip
+ *   - boot_step_init_subsystems + boot_step_start_listeners
+ */
 
+static bool boot_step_init_observability(void)
+{
     /* Install fatal-signal handler BEFORE any thread is spawned so the
      * handler is inherited process-wide. Any SIGABRT/SIGSEGV/SIGBUS/SIGFPE
      * gets a logged backtrace before systemd sees the exit. */
@@ -332,7 +354,11 @@ bool app_init(struct app_context *ctx)
     event_observe_async(EV_MODEL_VALIDATION_FAILED, error_ring_observer, er);
 
     event_emitf(EV_NODE_STARTING, 0, "zclassic23 1.0.0");
+    return true;
+}
 
+static bool boot_step_select_chain_and_datadir(struct app_context *ctx)
+{
     if (ctx->regtest)
         chain_params_select(CHAIN_REGTEST);
     else if (ctx->testnet)
@@ -340,60 +366,60 @@ bool app_init(struct app_context *ctx)
     else
         chain_params_select(CHAIN_MAIN);
 
-    const struct chain_params *params = chain_params_get();
     g_datadir = ctx->datadir;
     g_blog_datadir = ctx->datadir;
 
     /* Auto-create datadir if it doesn't exist */
-    {
-        struct stat st;
-        if (stat(ctx->datadir, &st) != 0) {
-            mkdir(ctx->datadir, 0700);
-            printf("Created data directory: %s\n", ctx->datadir);
-        }
+    struct stat st;
+    if (stat(ctx->datadir, &st) != 0) {
+        mkdir(ctx->datadir, 0700);
+        printf("Created data directory: %s\n", ctx->datadir);
     }
 
     /* Acquire data directory lock — prevents two instances from
      * corrupting SQLite / LevelDB by writing concurrently. */
     if (!acquire_datadir_lock(ctx->datadir))
         return false;
+    return true;
+}
 
-    /* Crash recovery detection: check for unclean shutdown.
-     * A clean shutdown writes .shutdown_clean marker. If it's missing
-     * and a WAL file exists, the previous run crashed. */
-    {
-        char marker_path[1024], wal_path[1024];
-        snprintf(marker_path, sizeof(marker_path), "%s/.shutdown_clean",
-                 ctx->datadir);
-        snprintf(wal_path, sizeof(wal_path), "%s/node.db-wal",
-                 ctx->datadir);
+static void boot_step_detect_unclean_shutdown(const char *datadir)
+{
+    /* A clean shutdown writes .shutdown_clean marker. If it's missing
+     * and a WAL file exists, the previous run crashed. We don't fail
+     * boot here — we surface the condition as an event for ops, then
+     * unlink the marker so the next clean shutdown can rewrite it. */
+    char marker_path[1024], wal_path[1024];
+    snprintf(marker_path, sizeof(marker_path), "%s/.shutdown_clean", datadir);
+    snprintf(wal_path, sizeof(wal_path), "%s/node.db-wal", datadir);
 
-        struct stat wal_st;
-        bool wal_exists = (stat(wal_path, &wal_st) == 0 && wal_st.st_size > 0);
-        bool marker_exists = (access(marker_path, F_OK) == 0);
+    struct stat wal_st;
+    bool wal_exists = (stat(wal_path, &wal_st) == 0 && wal_st.st_size > 0);
+    bool marker_exists = (access(marker_path, F_OK) == 0);
 
-        if (!marker_exists && wal_exists) {
-            printf("[boot] Unclean shutdown detected (WAL=%lldB, "
-                   "clean marker missing)\n",
-                   (long long)wal_st.st_size);
-            event_emitf(EV_CRASH_RECOVERY_START, 0,
-                "wal_size=%lld clean_marker=missing",
-                (long long)wal_st.st_size);
-        } else if (!marker_exists) {
-            /* First boot or marker was never written — not a crash */
-            printf("[boot] First boot or marker absent (no WAL)\n");
-        } else {
-            printf("[boot] Clean shutdown marker present\n");
-        }
-
-        /* Remove marker at boot — will be re-created on clean shutdown */
-        unlink(marker_path);
+    if (!marker_exists && wal_exists) {
+        printf("[boot] Unclean shutdown detected (WAL=%lldB, "
+               "clean marker missing)\n",
+               (long long)wal_st.st_size);
+        event_emitf(EV_CRASH_RECOVERY_START, 0,
+            "wal_size=%lld clean_marker=missing",
+            (long long)wal_st.st_size);
+    } else if (!marker_exists) {
+        printf("[boot] First boot or marker absent (no WAL)\n");
+    } else {
+        printf("[boot] Clean shutdown marker present\n");
     }
 
+    /* Remove marker at boot — will be re-created on clean shutdown */
+    unlink(marker_path);
+}
+
+static void boot_step_start_disk_and_ibd_guards(const char *datadir)
+{
     /* Disk monitor — armed before first SQLite open so the
      * refuse-when-critical flag blocks writes before damage. */
     disk_monitor_config_defaults(&g_disk_monitor_cfg);
-    g_disk_monitor_cfg.datadir = ctx->datadir;
+    g_disk_monitor_cfg.datadir = datadir;
     if (disk_monitor_start(&g_disk_monitor_cfg))
         printf("Disk monitor started (warn=%lldGB refuse=%lldGB)\n",
                (long long)(g_disk_monitor_cfg.warn_free_bytes >> 30),
@@ -408,6 +434,24 @@ bool app_init(struct app_context *ctx)
         printf("IBD throttle started (rate=%lld/s burst=%lld)\n",
                (long long)g_ibd_throttle_cfg.blocks_per_sec,
                (long long)g_ibd_throttle_cfg.burst);
+}
+
+bool app_init(struct app_context *ctx)
+{
+    int64_t t_boot_start = boot_clock_ms();
+    int64_t t_phase;
+
+    /* ── Move 5 boot checklist: prologue steps ───────────────────
+     * Each step is a named static above. Failing steps return false
+     * and the process exits non-zero — never partial-init state. */
+    if (!boot_step_init_observability())
+        return false;
+    if (!boot_step_select_chain_and_datadir(ctx))
+        return false;
+    const struct chain_params *params = chain_params_get();
+
+    boot_step_detect_unclean_shutdown(ctx->datadir);
+    boot_step_start_disk_and_ibd_guards(ctx->datadir);
 
     /* Assumevalid is set after block index loads (see ~line 1275).
      * The remote dev's implementation in contextual_check_tx.c handles
