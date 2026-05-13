@@ -185,6 +185,11 @@ enum event_type {
     EV_ORACLE_AGREE,             /* payload: "h=N hash=<64hex>" */
     EV_ORACLE_DISAGREE,          /* payload: "h=N our=<hex> their=<hex>" */
 
+    /* ── Oracle policy escalations (T2.1) ──────────────────────── */
+    EV_FORK_SUSPECTED,           /* payload: "distinct_heights=N within_secs=N first_h=N last_h=N" */
+    EV_ANCHOR_PANIC,             /* payload: "h=N our=<hex> their=<hex>" — trust prefix violated */
+    EV_CHAIN_HALTED,             /* payload: "reason=... distinct_heights=N" — chain_advance refusing */
+
     EV_NUM_TYPES                 /* sentinel — must be last */
 };
 

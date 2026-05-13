@@ -47,6 +47,7 @@
 #include "consensus/validation.h"
 #include "primitives/block.h"
 #include "chain/chainparams.h"
+#include "services/oracle_policy.h"
 #include "storage/coins_view_sqlite.h"
 #include "storage/block_index_db.h"
 #include "models/database.h"
@@ -61,6 +62,7 @@ const char *chain_advance_result_name(enum chain_advance_result r)
         [CA_REJECTED_CSR]        = "rejected_csr",
         [CA_FAILED_DISK_WRITE]   = "failed_disk_write",
         [CA_FAILED_ROLLBACK]     = "failed_rollback",
+        [CA_HALTED_BY_POLICY]    = "halted_by_policy",
     };
     if (r >= 0 && r < CA_NUM_RESULTS)
         return names[r];
@@ -109,6 +111,19 @@ chain_advance(struct validation_state *state,
     if (!state || !ms || !coins_tip || !new_tip || !pblock ||
         !params || !datadir || !reason)
         return CA_REJECTED_VALIDATION;
+
+    /* T2.1: refuse to extend the tip when oracle_policy has flagged
+     * a fork or trust-prefix violation. No state mutation here — we
+     * return before opening any transaction. */
+    if (!oracle_policy_chain_extension_allowed()) {
+        fprintf(stderr,
+                "chain_advance: REFUSED at h=%d (oracle_policy state "
+                "= %s; clear via MCP after investigation)\n",
+                new_tip->nHeight,
+                oracle_policy_get_state() == OP_PANIC
+                    ? "PANIC" : "HALTED");
+        return CA_HALTED_BY_POLICY;
+    }
 
     struct trace_span *ca_span = trace_start("chain.advance");
     trace_attr_int(ca_span, "height", new_tip->nHeight);

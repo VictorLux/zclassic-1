@@ -26,19 +26,25 @@
 #include "core/uint256.h"
 #include "consensus/validation.h"
 #include "crypto/sha3.h"
+#include "event/event.h"
 #include "health/heartbeat.h"
 #include "json/json.h"
 #include "primitives/block.h"
 #include "script/script.h"
 #include "services/chain_advance.h"
+#include "services/header_probe_service.h"
 #include "storage/chainstate_legacy_reader.h"
+#include "storage/coins_view_sqlite.h"
 #include "storage/disk_block_io.h"
 #include "util/log_macros.h"
 #include "util/safe_alloc.h"
 #include "util/thread_registry.h"
+#include "util/workpool.h"
+#include "util/util.h"  /* GetNumCores */
 #include "validation/chainstate.h"
 #include "validation/main_logic.h"
 #include "validation/main_state.h"
+#include "validation/process_block_internals.h"
 
 #include <errno.h>
 #include <inttypes.h>
@@ -65,6 +71,7 @@ static struct {
     _Atomic int64_t blocks_total;
     _Atomic int64_t utxos_imported;
     _Atomic int64_t windows_verified;
+    _Atomic bool trust_prefix_verified;  /* T3.3: full prefix verified this boot */
     _Atomic int64_t started_at;    /* unix seconds; 0 → never run */
     _Atomic int64_t finished_at;   /* unix seconds; 0 → in progress */
     int           health_id;
@@ -78,6 +85,7 @@ static struct {
     .blocks_total = 0,
     .utxos_imported = 0,
     .windows_verified = 0,
+    .trust_prefix_verified = false,
     .started_at = 0,
     .finished_at = 0,
     .health_id = HEALTH_INVALID_ID,
@@ -176,6 +184,558 @@ static int count_legacy_block_files(const char *legacy_datadir)
     return n;
 }
 
+/* ── T1.3: Trust-mark cookie ─────────────────────────────────────
+ *
+ * After a successful phase-1 SHA3 window scan, persist a fingerprint
+ * of every blk file (mtime + size) and the verified window count to
+ * <our_datadir>/legacy_trust.cookie.  Next boot: if every blk file's
+ * (mtime,size) is unchanged AND windows_count covers the full static
+ * trust prefix, skip phase 1 entirely.
+ *
+ * Mismatch falls back to a full scan — the cookie never weakens
+ * verification, only short-circuits it when the on-disk evidence
+ * proves no work needs redoing. */
+
+#define LCI_COOKIE_SCHEMA 1
+#define LCI_COOKIE_NAME   "legacy_trust.cookie"
+#define LCI_FINGERPRINT_NAME "chainstate_fingerprint.dat"
+#define LCI_FINGERPRINT_SCHEMA 1
+
+/* ── T3.2: chainstate fingerprint ────────────────────────────────
+ *
+ * After phase 2 produces a verifiable UTXO set, persist its SHA3
+ * digest + count + total to <our_datadir>/chainstate_fingerprint.dat.
+ * Next boot: if coins.db already contains a UTXO set whose SHA3
+ * matches the stored digest, skip phase 2 entirely. */
+struct chainstate_fingerprint {
+    int     schema;
+    int     anchor_height;
+    uint8_t anchor_block_hash[32];
+    uint8_t sha3_utxo_hash[32];
+    uint64_t utxos_count;
+    int64_t total_supply_sat;
+};
+
+static void hex_to_bytes_32(const char *hex, uint8_t out[32])
+{
+    for (int i = 0; i < 32; i++) {
+        unsigned v = 0;
+        sscanf(hex + 2 * i, "%2x", &v);
+        out[i] = (uint8_t)v;
+    }
+}
+
+static void bytes_to_hex_32(const uint8_t in[32], char hex[65])
+{
+    for (int i = 0; i < 32; i++)
+        snprintf(hex + 2 * i, 3, "%02x", in[i]);
+    hex[64] = '\0';
+}
+
+static bool chainstate_fingerprint_path(char *out, size_t out_sz,
+                                         const char *our_datadir)
+{
+    if (!our_datadir || !our_datadir[0]) return false;
+    int n = snprintf(out, out_sz, "%s/%s", our_datadir,
+                     LCI_FINGERPRINT_NAME);
+    return n > 0 && (size_t)n < out_sz;
+}
+
+static bool chainstate_fingerprint_load(const char *our_datadir,
+                                         struct chainstate_fingerprint *out)
+{
+    char path[1024];
+    if (!chainstate_fingerprint_path(path, sizeof(path), our_datadir))
+        return false;
+    FILE *f = fopen(path, "r");
+    if (!f) return false;
+    memset(out, 0, sizeof(*out));
+    char line[1024];
+    bool got_sha3 = false, got_anchor = false;
+    while (fgets(line, sizeof(line), f)) {
+        char *eq = strchr(line, '=');
+        if (!eq) continue;
+        *eq = '\0';
+        char *key = line;
+        char *val = eq + 1;
+        char *e = val + strlen(val);
+        while (e > val && (e[-1] == '\n' || e[-1] == '\r')) *--e = '\0';
+        if (strcmp(key, "schema") == 0)
+            out->schema = atoi(val);
+        else if (strcmp(key, "anchor_height") == 0)
+            out->anchor_height = atoi(val);
+        else if (strcmp(key, "anchor_block_hash") == 0) {
+            if (strlen(val) != 64) continue;
+            hex_to_bytes_32(val, out->anchor_block_hash);
+            got_anchor = true;
+        } else if (strcmp(key, "sha3_utxo_hash") == 0) {
+            if (strlen(val) != 64) continue;
+            hex_to_bytes_32(val, out->sha3_utxo_hash);
+            got_sha3 = true;
+        } else if (strcmp(key, "utxos_count") == 0)
+            out->utxos_count = strtoull(val, NULL, 10);
+        else if (strcmp(key, "total_supply_sat") == 0)
+            out->total_supply_sat = strtoll(val, NULL, 10);
+    }
+    fclose(f);
+    return out->schema == LCI_FINGERPRINT_SCHEMA && got_sha3 && got_anchor;
+}
+
+static void chainstate_fingerprint_write(const char *our_datadir,
+                                          const struct chainstate_fingerprint *fp)
+{
+    char path[1024], tmp[1024];
+    if (!chainstate_fingerprint_path(path, sizeof(path), our_datadir)) return;
+    if (snprintf(tmp, sizeof(tmp), "%s.tmp", path) >= (int)sizeof(tmp))
+        return;
+    FILE *f = fopen(tmp, "w");
+    if (!f) {
+        fprintf(stderr,
+                "[local_ingest] fingerprint: fopen(%s) failed: %s\n",
+                tmp, strerror(errno));
+        return;
+    }
+    char anchor_hex[65], sha3_hex[65];
+    bytes_to_hex_32(fp->anchor_block_hash, anchor_hex);
+    bytes_to_hex_32(fp->sha3_utxo_hash, sha3_hex);
+    fprintf(f, "schema=%d\n", fp->schema);
+    fprintf(f, "anchor_height=%d\n", fp->anchor_height);
+    fprintf(f, "anchor_block_hash=%s\n", anchor_hex);
+    fprintf(f, "sha3_utxo_hash=%s\n", sha3_hex);
+    fprintf(f, "utxos_count=%" PRIu64 "\n", fp->utxos_count);
+    fprintf(f, "total_supply_sat=%" PRId64 "\n", fp->total_supply_sat);
+    if (fflush(f) != 0 || fsync(fileno(f)) != 0) {
+        fprintf(stderr,
+                "[local_ingest] fingerprint: fflush/fsync failed: %s\n",
+                strerror(errno));
+        fclose(f);
+        unlink(tmp);
+        return;
+    }
+    fclose(f);
+    if (rename(tmp, path) != 0) {
+        fprintf(stderr,
+                "[local_ingest] fingerprint: rename failed: %s\n",
+                strerror(errno));
+        unlink(tmp);
+        return;
+    }
+    fprintf(stderr,
+            "[local_ingest] fingerprint: persisted (anchor_h=%d "
+            "count=%" PRIu64 " sha3=%s)\n",
+            fp->anchor_height, fp->utxos_count, sha3_hex);
+}
+
+static bool legacy_trust_cookie_path(char *out, size_t out_sz,
+                                      const char *our_datadir)
+{
+    if (!our_datadir || !our_datadir[0]) return false;
+    int n = snprintf(out, out_sz, "%s/%s", our_datadir, LCI_COOKIE_NAME);
+    return n > 0 && (size_t)n < out_sz;
+}
+
+/* Returns true iff the cookie at <our_datadir>/legacy_trust.cookie
+ * proves a previous run already verified `g_sha3_windows_count` windows
+ * of `legacy_datadir`'s blk files in their current on-disk state. */
+static bool legacy_trust_cookie_valid(const char *our_datadir,
+                                       const char *legacy_datadir)
+{
+    char path[1024];
+    if (!legacy_trust_cookie_path(path, sizeof(path), our_datadir))
+        return false;
+    FILE *f = fopen(path, "r");
+    if (!f) return false;
+
+    int schema = 0, cookie_file_count = -1;
+    size_t cookie_windows = 0;
+    char cookie_legacy[512] = {0};
+    bool fields_ok = true;
+
+    /* First pass: header fields. */
+    char line[1024];
+    long body_start = -1;
+    while (fgets(line, sizeof(line), f)) {
+        char *eq = strchr(line, '=');
+        if (!eq) continue;
+        *eq = '\0';
+        char *key = line;
+        char *val = eq + 1;
+        char *e = val + strlen(val);
+        while (e > val && (e[-1] == '\n' || e[-1] == '\r')) *--e = '\0';
+
+        if (strcmp(key, "schema") == 0) schema = atoi(val);
+        else if (strcmp(key, "legacy_datadir") == 0)
+            snprintf(cookie_legacy, sizeof(cookie_legacy), "%s", val);
+        else if (strcmp(key, "windows_count") == 0)
+            cookie_windows = (size_t)strtoull(val, NULL, 10);
+        else if (strcmp(key, "file_count") == 0)
+            cookie_file_count = atoi(val);
+        else if (strncmp(key, "blk", 3) == 0) {
+            /* Reached the per-file section. Restore the '=' and rewind. */
+            *eq = '=';
+            body_start = ftell(f) - (long)strlen(line) - 1;
+            break;
+        }
+    }
+
+    if (schema != LCI_COOKIE_SCHEMA ||
+        strcmp(cookie_legacy, legacy_datadir) != 0 ||
+        cookie_windows != g_sha3_windows_count ||
+        cookie_file_count < 1) {
+        fclose(f);
+        return false;
+    }
+
+    int observed_file_count = count_legacy_block_files(legacy_datadir);
+    if (observed_file_count != cookie_file_count) {
+        fclose(f);
+        return false;
+    }
+
+    /* Second pass: per-file mtime+size match. We require every file
+     * named in the cookie to be present on disk with the same
+     * (mtime,size); a strict equality check is enough since blk files
+     * are append-only and resizing or rotation changes mtime. */
+    if (body_start >= 0) fseek(f, body_start, SEEK_SET);
+    int matched = 0;
+    while (fgets(line, sizeof(line), f)) {
+        char *eq = strchr(line, '=');
+        if (!eq) continue;
+        *eq = '\0';
+        char *key = line;
+        char *val = eq + 1;
+        char *e = val + strlen(val);
+        while (e > val && (e[-1] == '\n' || e[-1] == '\r')) *--e = '\0';
+        if (strncmp(key, "blk", 3) != 0) continue;
+        long long want_mtime = -1, want_size = -1;
+        if (sscanf(val, "%lld:%lld", &want_mtime, &want_size) != 2) {
+            fields_ok = false;
+            break;
+        }
+        char blk_path[1024];
+        snprintf(blk_path, sizeof(blk_path), "%s/blocks/%s",
+                 legacy_datadir, key);
+        struct stat st;
+        if (stat(blk_path, &st) != 0 ||
+            (long long)st.st_mtime != want_mtime ||
+            (long long)st.st_size != want_size) {
+            fields_ok = false;
+            break;
+        }
+        matched++;
+    }
+    fclose(f);
+    return fields_ok && matched == cookie_file_count;
+}
+
+/* Persist the cookie. Best-effort: a write failure logs a warning
+ * but does not fail the ingest run (the data is already verified). */
+static void legacy_trust_cookie_write(const char *our_datadir,
+                                       const char *legacy_datadir,
+                                       int file_count)
+{
+    char path[1024], tmp[1024];
+    if (!legacy_trust_cookie_path(path, sizeof(path), our_datadir)) return;
+    if (snprintf(tmp, sizeof(tmp), "%s.tmp", path) >= (int)sizeof(tmp))
+        return;
+
+    FILE *f = fopen(tmp, "w");
+    if (!f) {
+        fprintf(stderr,
+                "[local_ingest] cookie: fopen(%s) failed: %s\n",
+                tmp, strerror(errno));
+        return;
+    }
+    fprintf(f, "schema=%d\n", LCI_COOKIE_SCHEMA);
+    fprintf(f, "legacy_datadir=%s\n", legacy_datadir);
+    fprintf(f, "windows_count=%zu\n", g_sha3_windows_count);
+    fprintf(f, "file_count=%d\n", file_count);
+    for (int i = 0; i < file_count; i++) {
+        char blk_name[32];
+        char blk_path[1024];
+        snprintf(blk_name, sizeof(blk_name), "blk%05d.dat", i);
+        snprintf(blk_path, sizeof(blk_path), "%s/blocks/%s",
+                 legacy_datadir, blk_name);
+        struct stat st;
+        if (stat(blk_path, &st) != 0) {
+            fprintf(stderr,
+                    "[local_ingest] cookie: stat(%s) failed at write\n",
+                    blk_path);
+            fclose(f);
+            unlink(tmp);
+            return;
+        }
+        fprintf(f, "%s=%lld:%lld\n", blk_name,
+                (long long)st.st_mtime, (long long)st.st_size);
+    }
+    if (fflush(f) != 0 || fsync(fileno(f)) != 0) {
+        fprintf(stderr,
+                "[local_ingest] cookie: fflush/fsync failed: %s\n",
+                strerror(errno));
+        fclose(f);
+        unlink(tmp);
+        return;
+    }
+    fclose(f);
+    if (rename(tmp, path) != 0) {
+        fprintf(stderr,
+                "[local_ingest] cookie: rename(%s,%s) failed: %s\n",
+                tmp, path, strerror(errno));
+        unlink(tmp);
+        return;
+    }
+    fprintf(stderr,
+            "[local_ingest] cookie: persisted %s (file_count=%d "
+            "windows_count=%zu)\n",
+            path, file_count, g_sha3_windows_count);
+}
+
+/* ── T1.2: Parallel Phase-1 SHA3 helpers ────────────────────────
+ *
+ * Two-pass strategy:
+ *   1. Index pass (single-threaded, cheap) — walk blk*.dat files and
+ *      record (file_idx, payload_offset, payload_len) per block,
+ *      seeking past payloads without reading them.
+ *   2. Hash pass (parallel) — submit one task per 1000-block window
+ *      to a workpool. Each worker opens the needed blk files,
+ *      pread()s payloads, streams into a per-window SHA3 context,
+ *      compares to g_sha3_windows[].
+ *
+ * Workers may share files via pread() which is thread-safe; we open
+ * a small per-worker file handle cache to avoid re-opening on every
+ * block. */
+
+struct phase1_block_loc {
+    int       file_idx;        /* blk%05d.dat index */
+    uint64_t  payload_offset;  /* offset of payload bytes within the file */
+    uint32_t  plen;
+};
+
+struct phase1_window_task {
+    int                            window_idx;
+    const struct phase1_block_loc *blocks;
+    int                            num_blocks;   /* always SHA3_WINDOW_SIZE for verified windows */
+    const char                    *legacy_datadir;
+    _Atomic bool                   mismatch;
+    _Atomic bool                   io_error;
+    _Atomic int64_t               *windows_verified_counter;
+};
+
+/* Walk blk files once, recording every block's payload location.
+ * Returns NULL on I/O failure; *out_count receives the number of
+ * blocks indexed. */
+static struct phase1_block_loc *phase1_index_blocks(const char *legacy_datadir,
+                                                     int num_files,
+                                                     int64_t *out_count)
+{
+    *out_count = 0;
+    /* Reserve generously; we'll realloc if needed. */
+    int64_t cap = 4 * 1024 * 1024;
+    struct phase1_block_loc *arr =
+        zcl_malloc((size_t)cap * sizeof(*arr), "phase1.index.arr");
+    if (!arr) return NULL;
+    int64_t n = 0;
+
+    for (int f = 0; f < num_files; f++) {
+        if (thread_registry_shutdown_requested()) {
+            free(arr);
+            return NULL;
+        }
+        char path[1024];
+        snprintf(path, sizeof(path), "%s/blocks/blk%05d.dat",
+                 legacy_datadir, f);
+        FILE *fp = fopen(path, "rb");
+        if (!fp) {
+            fprintf(stderr,
+                    "[local_ingest] index: fopen(%s) failed: %s\n",
+                    path, strerror(errno));
+            free(arr);
+            return NULL;
+        }
+        for (;;) {
+            unsigned char hdr[8];
+            size_t rd = fread(hdr, 1, 8, fp);
+            if (rd < 8) break;
+            if (hdr[0] == 0 && hdr[1] == 0 && hdr[2] == 0 && hdr[3] == 0)
+                break;
+            uint32_t plen = (uint32_t)hdr[4]        |
+                            ((uint32_t)hdr[5] << 8) |
+                            ((uint32_t)hdr[6] << 16)|
+                            ((uint32_t)hdr[7] << 24);
+            if (plen == 0 || plen > 32 * 1024 * 1024) break;
+            long here = ftell(fp);
+            if (here < 0) {
+                fclose(fp);
+                free(arr);
+                return NULL;
+            }
+            if (n == cap) {
+                cap *= 2;
+                struct phase1_block_loc *narr =
+                    zcl_realloc(arr,
+                                (size_t)cap * sizeof(*arr),
+                                "phase1.index.arr");
+                if (!narr) {
+                    fclose(fp);
+                    free(arr);
+                    return NULL;
+                }
+                arr = narr;
+            }
+            arr[n].file_idx = f;
+            arr[n].payload_offset = (uint64_t)here;
+            arr[n].plen = plen;
+            n++;
+            if (fseek(fp, (long)plen, SEEK_CUR) != 0) break;
+        }
+        fclose(fp);
+    }
+    *out_count = n;
+    return arr;
+}
+
+/* Worker — hash one window's blocks and compare. */
+static bool phase1_window_worker(void *vtask)
+{
+    struct phase1_window_task *t = vtask;
+    if (thread_registry_shutdown_requested()) {
+        atomic_store(&t->io_error, true);
+        return false;
+    }
+
+    /* Each worker uses its own FILE* cache, indexed by file_idx mod
+     * cache size, with last-used semantics. blk files are large
+     * (~134 MB) so we typically span 1–2 files per window. */
+    enum { CACHE = 4 };
+    FILE *fps[CACHE] = {NULL};
+    int   ks  [CACHE] = {-1, -1, -1, -1};
+    int   nxt        = 0;
+
+    struct sha3_256_ctx ctx;
+    sha3_256_init(&ctx);
+
+    for (int b = 0; b < t->num_blocks; b++) {
+        int fk = t->blocks[b].file_idx;
+        FILE *fp = NULL;
+        for (int c = 0; c < CACHE; c++) {
+            if (ks[c] == fk && fps[c]) { fp = fps[c]; break; }
+        }
+        if (!fp) {
+            char path[1024];
+            snprintf(path, sizeof(path),
+                     "%s/blocks/blk%05d.dat",
+                     t->legacy_datadir, fk);
+            fp = fopen(path, "rb");
+            if (!fp) {
+                atomic_store(&t->io_error, true);
+                fprintf(stderr,
+                        "[local_ingest] window %d: fopen(%s) failed: %s\n",
+                        t->window_idx, path, strerror(errno));
+                goto out_fail;
+            }
+            if (fps[nxt]) fclose(fps[nxt]);
+            fps[nxt] = fp; ks[nxt] = fk; nxt = (nxt + 1) % CACHE;
+        }
+        uint32_t plen = t->blocks[b].plen;
+        if (fseek(fp, (long)t->blocks[b].payload_offset, SEEK_SET) != 0) {
+            atomic_store(&t->io_error, true);
+            goto out_fail;
+        }
+        uint8_t *buf = zcl_malloc(plen, "phase1.parallel.buf");
+        if (!buf) {
+            atomic_store(&t->io_error, true);
+            goto out_fail;
+        }
+        if (fread(buf, 1, plen, fp) != plen) {
+            free(buf);
+            atomic_store(&t->io_error, true);
+            goto out_fail;
+        }
+        sha3_256_write(&ctx, buf, plen);
+        free(buf);
+    }
+
+    uint8_t digest[32];
+    sha3_256_finalize(&ctx, digest);
+    if (memcmp(digest, g_sha3_windows[t->window_idx].hash, 32) != 0) {
+        atomic_store(&t->mismatch, true);
+        goto out_fail;
+    }
+    if (t->windows_verified_counter)
+        atomic_fetch_add(t->windows_verified_counter, 1);
+
+    for (int c = 0; c < CACHE; c++) if (fps[c]) fclose(fps[c]);
+    return true;
+
+out_fail:
+    for (int c = 0; c < CACHE; c++) if (fps[c]) fclose(fps[c]);
+    return false;
+}
+
+/* Returns LCI_OK on full success or the appropriate error code. */
+static enum local_ingest_result phase1_parallel_verify(
+    const struct phase1_block_loc *locs, int64_t num_blocks,
+    const char *legacy_datadir, int worker_count)
+{
+    int64_t verifiable_windows = (int64_t)g_sha3_windows_count;
+    int64_t max_windows = num_blocks / (int64_t)SHA3_WINDOW_SIZE;
+    if (max_windows < verifiable_windows) verifiable_windows = max_windows;
+    if (verifiable_windows <= 0) return LCI_OK;
+
+    struct workpool wp;
+    if (!workpool_init(&wp, worker_count,
+                       (size_t)verifiable_windows, phase1_window_worker)) {
+        return LCI_INTERNAL_ERROR;
+    }
+
+    struct phase1_window_task *tasks =
+        zcl_calloc((size_t)verifiable_windows, sizeof(*tasks),
+                   "phase1.parallel.tasks");
+    void **items = zcl_calloc((size_t)verifiable_windows, sizeof(*items),
+                               "phase1.parallel.items");
+    if (!tasks || !items) {
+        free(tasks);
+        free(items);
+        workpool_destroy(&wp);
+        return LCI_INTERNAL_ERROR;
+    }
+    for (int64_t w = 0; w < verifiable_windows; w++) {
+        tasks[w].window_idx = (int)w;
+        tasks[w].blocks = locs + (int64_t)w * SHA3_WINDOW_SIZE;
+        tasks[w].num_blocks = (int)SHA3_WINDOW_SIZE;
+        tasks[w].legacy_datadir = legacy_datadir;
+        tasks[w].mismatch = false;
+        tasks[w].io_error = false;
+        tasks[w].windows_verified_counter = &g_state.windows_verified;
+        items[w] = &tasks[w];
+    }
+
+    bool all_ok = workpool_run(&wp, items, (size_t)verifiable_windows);
+
+    enum local_ingest_result r = LCI_OK;
+    if (!all_ok) {
+        for (int64_t w = 0; w < verifiable_windows; w++) {
+            if (atomic_load(&tasks[w].mismatch)) {
+                state_set_error("phase1: window hash mismatch (parallel)");
+                fprintf(stderr,
+                        "[local_ingest] phase1 parallel: window %" PRId64
+                        " mismatch\n", w);
+                r = LCI_SHA3_WINDOW_MISMATCH;
+                break;
+            }
+        }
+        if (r == LCI_OK) {
+            r = thread_registry_shutdown_requested()
+                ? LCI_ABORTED : LCI_INTERNAL_ERROR;
+            state_set_error("phase1: parallel verifier I/O failure");
+        }
+    }
+    free(tasks);
+    free(items);
+    workpool_destroy(&wp);
+    return r;
+}
+
 /* ── Phase 1: SHA3 window verify ─────────────────────────────────── */
 
 /* Walks the legacy datadir's blk files block-by-block and accumulates
@@ -188,7 +748,8 @@ static int count_legacy_block_files(const char *legacy_datadir)
  * the raw payload of `len` bytes.  This matches Bitcoin Core /
  * zclassicd's blk*.dat serialization. */
 static enum local_ingest_result phase1_sha3_window_verify(
-    const struct local_chain_ingest_config *cfg)
+    const struct local_chain_ingest_config *cfg,
+    const char *our_datadir)
 {
     atomic_store(&g_state.phase, 1);
     atomic_store(&g_state.windows_verified, 0);
@@ -206,12 +767,73 @@ static enum local_ingest_result phase1_sha3_window_verify(
         return LCI_OK;
     }
 
+    /* T1.3: skip the SHA3 scan if a prior boot already verified the
+     * current on-disk state. The cookie is mtime+size keyed per blk
+     * file; any change forces a re-scan. */
+    if (!cfg->ignore_trust_cookie &&
+        legacy_trust_cookie_valid(our_datadir, cfg->legacy_datadir)) {
+        atomic_store(&g_state.windows_verified,
+                     (int64_t)g_sha3_windows_count);
+        atomic_store(&g_state.trust_prefix_verified, true);
+        fprintf(stderr,
+                "[local_ingest] phase 1 SHA3 window verify SKIPPED "
+                "(trust cookie valid; %zu windows previously verified)\n",
+                g_sha3_windows_count);
+        return LCI_OK;
+    }
+
     int num_files = count_legacy_block_files(cfg->legacy_datadir);
     if (num_files == 0) {
         state_set_error("phase1: no blk*.dat files found");
         LOG_RETURN(LCI_SOURCE_MISSING, "local_ingest",
                    "phase1: zero blk files in %s/blocks/",
                    cfg->legacy_datadir);
+    }
+
+    /* T1.2: parallel path — index blocks once, hash windows in
+     * parallel via workpool. Fall back to the streaming serial path
+     * on indexing failure. */
+    if (!cfg->force_sequential_phase1) {
+        int workers = cfg->phase1_workers;
+        if (workers <= 0) {
+            int cores = GetNumCores();
+            workers = cores > 1 ? cores / 2 : 1;
+            if (workers > WORKPOOL_MAX_THREADS) workers = WORKPOOL_MAX_THREADS;
+        }
+        if (workers > 1) {
+            int64_t idx_count = 0;
+            struct phase1_block_loc *locs =
+                phase1_index_blocks(cfg->legacy_datadir, num_files,
+                                     &idx_count);
+            if (locs && idx_count > 0) {
+                fprintf(stderr,
+                        "[local_ingest] phase1 parallel: indexed %" PRId64
+                        " blocks across %d files, hashing with %d workers\n",
+                        idx_count, num_files, workers);
+                enum local_ingest_result r =
+                    phase1_parallel_verify(locs, idx_count,
+                                            cfg->legacy_datadir, workers);
+                free(locs);
+                if (r == LCI_OK) {
+                    int64_t verified_now =
+                        atomic_load(&g_state.windows_verified);
+                    if ((size_t)verified_now >= g_sha3_windows_count) {
+                        atomic_store(&g_state.trust_prefix_verified, true);
+                        legacy_trust_cookie_write(our_datadir,
+                                                  cfg->legacy_datadir,
+                                                  num_files);
+                    }
+                    fprintf(stderr,
+                            "[local_ingest] phase1 parallel: complete "
+                            "(verified=%" PRId64 ")\n", verified_now);
+                }
+                return r;
+            }
+            free(locs);
+            fprintf(stderr,
+                    "[local_ingest] phase1: parallel indexing failed, "
+                    "falling back to sequential scan\n");
+        }
     }
 
     /* Streaming SHA3 over each window.  We don't try to identify the
@@ -299,6 +921,10 @@ static enum local_ingest_result phase1_sha3_window_verify(
                             "[local_ingest] phase1: all %zu windows verified "
                             "(blocks scanned=%" PRId64 ")\n",
                             g_sha3_windows_count, total_blocks);
+                    atomic_store(&g_state.trust_prefix_verified, true);
+                    legacy_trust_cookie_write(our_datadir,
+                                              cfg->legacy_datadir,
+                                              num_files);
                     return LCI_OK;
                 }
             }
@@ -310,7 +936,26 @@ static enum local_ingest_result phase1_sha3_window_verify(
             "[local_ingest] phase1: scan done — windows verified=%" PRId64
             " (table size=%zu) total blocks scanned=%" PRId64 "\n",
             verified, g_sha3_windows_count, total_blocks);
+    if ((size_t)verified == g_sha3_windows_count) {
+        atomic_store(&g_state.trust_prefix_verified, true);
+        legacy_trust_cookie_write(our_datadir, cfg->legacy_datadir,
+                                   num_files);
+    }
     return LCI_OK;
+}
+
+/* T3.3 accessors — exposed via services/local_chain_ingest.h so the
+ * bg-validation service can skip historical heights covered by the
+ * verified static SHA3 prefix. */
+bool local_chain_ingest_trust_prefix_verified(void)
+{
+    return atomic_load(&g_state.trust_prefix_verified);
+}
+
+int local_chain_ingest_trust_prefix_end_height(void)
+{
+    if (g_sha3_windows_count == 0) return -1;
+    return (int)(g_sha3_windows_count * SHA3_WINDOW_SIZE) - 1;
 }
 
 /* ── Phase 2: chainstate import ──────────────────────────────────── */
@@ -385,7 +1030,8 @@ static bool phase2_iter_cb(const struct uint256 *txid,
 
 static enum local_ingest_result phase2_chainstate_import(
     const struct local_chain_ingest_config *cfg,
-    struct coins_view_cache *coins_tip)
+    struct coins_view_cache *coins_tip,
+    const char *our_datadir)
 {
     atomic_store(&g_state.phase, 2);
     atomic_store(&g_state.utxos_imported, 0);
@@ -394,6 +1040,44 @@ static enum local_ingest_result phase2_chainstate_import(
         state_set_error("phase2: NULL coins_tip");
         LOG_RETURN(LCI_INTERNAL_ERROR, "local_ingest",
                    "phase2: coins_tip is NULL");
+    }
+
+    /* T3.2: skip phase 2 entirely if coins.db already contains a UTXO
+     * set whose SHA3 matches the persisted fingerprint. */
+    if (!cfg->ignore_trust_cookie) {
+        struct chainstate_fingerprint fp;
+        if (chainstate_fingerprint_load(our_datadir, &fp)) {
+            struct coins_view_sqlite *cvs =
+                process_block_get_coins_sqlite();
+            if (cvs && cvs->db) {
+                uint8_t computed[32];
+                uint64_t count = 0;
+                utxo_commitment_sha3_compute(cvs->db, computed, &count);
+                if (count == fp.utxos_count &&
+                    memcmp(computed, fp.sha3_utxo_hash, 32) == 0) {
+                    atomic_store(&g_state.utxos_imported,
+                                 (int64_t)count);
+                    /* Make sure the cache's best_block reflects the
+                     * stored anchor so subsequent phase 3 sees the
+                     * right tip. */
+                    struct uint256 anchor_hash;
+                    memcpy(anchor_hash.data, fp.anchor_block_hash, 32);
+                    coins_view_cache_set_best_block(coins_tip,
+                                                     &anchor_hash);
+                    fprintf(stderr,
+                            "[local_ingest] phase 2 chainstate import "
+                            "SKIPPED (fingerprint match: anchor_h=%d "
+                            "count=%" PRIu64 ")\n",
+                            fp.anchor_height, count);
+                    return LCI_OK;
+                }
+                fprintf(stderr,
+                        "[local_ingest] phase 2: fingerprint present "
+                        "but coins.db SHA3 differs (count=%" PRIu64
+                        " fp.count=%" PRIu64 ") — full import will run\n",
+                        count, fp.utxos_count);
+            }
+        }
     }
 
     char cs_path[1024];
@@ -473,6 +1157,84 @@ static enum local_ingest_result phase2_chainstate_import(
             anchor->utxo_count,
             (double)anchor->total_supply / 1e8);
 
+    /* ── T1.5: post-import SHA3 cross-check ─────────────────────
+     * Flush the cache to coins.db (the import is durable now —
+     * a crash during phase 3 cannot lose the UTXO set), then
+     * stream-hash the SQLite UTXO table in canonical order.
+     *
+     * If shape (count + total supply) matches the static anchor's,
+     * the import is verifiably at h=3,056,758 and we can hard-fail
+     * on SHA3 mismatch. When the legacy node is past the anchor
+     * height the shape differs — we still log the digest so an
+     * operator can verify out-of-band and so the future T3.2
+     * fingerprint can be built on this primitive. */
+    if (!coins_view_cache_flush(coins_tip)) {
+        state_set_error("phase2: post-import cache flush failed");
+        LOG_RETURN(LCI_INTERNAL_ERROR, "local_ingest",
+                   "phase2: coins_view_cache_flush failed after import");
+    }
+
+    struct coins_view_sqlite *cvs = process_block_get_coins_sqlite();
+    if (!cvs || !cvs->db) {
+        state_set_error("phase2: coins_view_sqlite unavailable");
+        LOG_RETURN(LCI_INTERNAL_ERROR, "local_ingest",
+                   "phase2: process_block_get_coins_sqlite returned NULL handle");
+    }
+
+    uint8_t computed_sha3[32];
+    uint64_t computed_count = 0;
+    utxo_commitment_sha3_compute(cvs->db, computed_sha3, &computed_count);
+
+    char sha3_hex[65];
+    for (int i = 0; i < 32; i++)
+        snprintf(sha3_hex + 2 * i, 3, "%02x", computed_sha3[i]);
+    sha3_hex[64] = '\0';
+
+    fprintf(stderr,
+            "[local_ingest] phase2: imported UTXO SHA3=%s count=%" PRIu64 "\n",
+            sha3_hex, computed_count);
+
+    bool shape_matches_anchor =
+        (computed_count == anchor->utxo_count) &&
+        ((int64_t)ctx.total_value_sat == anchor->total_supply);
+
+    if (shape_matches_anchor) {
+        if (memcmp(computed_sha3, anchor->sha3_hash, 32) == 0) {
+            event_emitf(EV_UTXO_CHECKPOINT_PASS, 0,
+                        "height=%d count=%" PRIu64,
+                        anchor->height, computed_count);
+            fprintf(stderr,
+                    "[local_ingest] phase2: SHA3 anchor verified at h=%d\n",
+                    anchor->height);
+        } else {
+            char expected_hex[65];
+            for (int i = 0; i < 32; i++)
+                snprintf(expected_hex + 2 * i, 3, "%02x",
+                         anchor->sha3_hash[i]);
+            expected_hex[64] = '\0';
+            event_emitf(EV_UTXO_CHECKPOINT_FAIL, 0,
+                        "height=%d expected=%s got=%s",
+                        anchor->height, expected_hex, sha3_hex);
+            state_set_error("phase2: SHA3 anchor mismatch");
+            LOG_RETURN(LCI_CHAINSTATE_MISMATCH, "local_ingest",
+                       "phase2: SHA3 anchor mismatch at h=%d "
+                       "expected=%s got=%s",
+                       anchor->height, expected_hex, sha3_hex);
+        }
+    }
+
+    /* T3.2: persist fingerprint so next boot can skip phase 2.  Best-
+     * effort — write failure is non-fatal. */
+    struct chainstate_fingerprint fp = {
+        .schema           = LCI_FINGERPRINT_SCHEMA,
+        .anchor_height    = anchor->height,
+        .utxos_count      = computed_count,
+        .total_supply_sat = ctx.total_value_sat,
+    };
+    memcpy(fp.anchor_block_hash, anchor->block_hash, 32);
+    memcpy(fp.sha3_utxo_hash, computed_sha3, 32);
+    chainstate_fingerprint_write(our_datadir, &fp);
+
     return LCI_OK;
 }
 
@@ -511,6 +1273,48 @@ static enum local_ingest_result phase3_block_ingest(
 
     const struct sha3_utxo_checkpoint *anchor = get_sha3_utxo_checkpoint();
     int anchor_h = anchor ? anchor->height : 0;
+
+    /* ── T1.1: pre-populate block_index from zclassicd ───────────
+     * Headers go into block_map + pindex_best_header so the rest of
+     * the system (block_sync_service, MMB, FlyClient) has the full
+     * header chain without waiting on P2P header sync. This does NOT
+     * activate the headers into chain_active — that requires block
+     * data, which P2P still provides. The win: by the time phase 3
+     * begins the per-block walk, every header anchor+1..remote_tip is
+     * known locally and PoW-verified.
+     *
+     * Each header is validated locally via accept_block_header
+     * (Equihash + nBits lineage + checkpoints), so a malicious
+     * zclassicd cannot inject a forged header. If zclassicd is
+     * unreachable, this is a no-op and P2P fills the gap. */
+    {
+        struct header_probe_config hp_cfg = {0};
+        if (header_probe_init(&hp_cfg, ms, params)) {
+            int hp_added = 0, remote_tip = -1;
+            int local_header_tip = ms->pindex_best_header
+                ? ms->pindex_best_header->nHeight
+                : active_chain_height(&ms->chain_active);
+            int from = (local_header_tip > anchor_h
+                        ? local_header_tip : anchor_h) + 1;
+            if (from < 1) from = 1;
+            fprintf(stderr,
+                    "[local_ingest] phase3-pre: header_probe pull "
+                    "from h=%d ...\n", from);
+            bool reached_tip = header_probe_pull_range_blocking(
+                from, &hp_added, &remote_tip);
+            fprintf(stderr,
+                    "[local_ingest] phase3-pre: pulled %d headers "
+                    "(remote_tip=%d, reached_tip=%s)\n",
+                    hp_added, remote_tip,
+                    reached_tip ? "yes" : "no");
+        } else {
+            fprintf(stderr,
+                    "[local_ingest] phase3-pre: header_probe_init "
+                    "unavailable; skipping bulk header pull (P2P will "
+                    "fill the gap)\n");
+        }
+    }
+
     int tip_h = active_chain_height(&ms->chain_active);
     int final_h = (cfg->max_height > 0 && cfg->max_height < tip_h)
                   ? cfg->max_height : tip_h;
@@ -593,14 +1397,14 @@ enum local_ingest_result local_chain_ingest_run(
     atomic_store(&g_state.finished_at, 0);
     atomic_store(&g_state.result, LCI_OK);
 
-    enum local_ingest_result r = phase1_sha3_window_verify(cfg);
+    enum local_ingest_result r = phase1_sha3_window_verify(cfg, our_datadir);
     if (r != LCI_OK) {
         atomic_store(&g_state.result, (int)r);
         atomic_store(&g_state.finished_at, (int64_t)time(NULL));
         return r;
     }
 
-    r = phase2_chainstate_import(cfg, coins_tip);
+    r = phase2_chainstate_import(cfg, coins_tip, our_datadir);
     if (r != LCI_OK) {
         atomic_store(&g_state.result, (int)r);
         atomic_store(&g_state.finished_at, (int64_t)time(NULL));

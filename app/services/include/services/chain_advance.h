@@ -86,6 +86,10 @@ enum chain_advance_result {
     CA_FAILED_ROLLBACK,        /* unrecoverable: ROLLBACK itself failed.
                                 * Caller should treat this as fatal and
                                 * exit so the node can boot fresh */
+    CA_HALTED_BY_POLICY,       /* oracle_policy state is HALTED or PANIC.
+                                * Tip extension is paused; operator must
+                                * investigate and clear via MCP. No state
+                                * mutation took place. */
     CA_NUM_RESULTS             /* sentinel */
 };
 

@@ -36,6 +36,9 @@
 #include "services/local_chain_ingest.h"
 #include "services/zclassicd_oracle_service.h"
 #include "services/header_probe_service.h"
+#include "services/oracle_policy.h"
+#include "services/quorum_oracle_service.h"
+#include "services/rolling_anchor_service.h"
 #include "health/heartbeat.h"
 #include "models/database.h"
 #include "config/runtime.h"
@@ -222,6 +225,12 @@ static const struct dump_entry g_dumpers[] = {
                      "local chain ingest: phase/result/blocks/UTXOs from co-located zclassicd" },
     { "header_probe", header_probe_dump_state_json,
                      "header probe: bulk header pull from co-located zclassicd via JSON-RPC" },
+    { "oracle_policy", oracle_policy_dump_state_json,
+                     "oracle policy: disagreement state machine (NORMAL / HALTED / PANIC)" },
+    { "rolling_anchor", rolling_anchor_dump_state_json,
+                     "rolling SHA3 anchor extension: runtime windows past compile-time prefix" },
+    { "quorum_oracle", quorum_oracle_dump_state_json,
+                     "multi-source quorum oracle: per-source vote stats + last verdict" },
 };
 
 static bool rpc_dumpstate(const struct json_value *params, bool help,

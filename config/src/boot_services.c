@@ -6,6 +6,8 @@
 #include "services/chain_activation_controller.h"
 #include "services/chain_tip.h"
 #include "services/gap_fill_service.h"
+#include "services/rolling_anchor_service.h"
+#include "services/zclassicd_oracle_service.h"
 #include "storage/disk_block_io.h"
 #include "models/utxo.h"
 #include "models/mmb_leaf_store.h"
@@ -1471,6 +1473,21 @@ bool app_init_services(struct app_context *ctx,
         fprintf(stderr, "WARNING: gap_fill_start failed\n");
     }
 
+    /* Zclassicd oracle — continuous height/hash spot-checks against
+     * the co-located legacy node when available. Pulls oracle_policy
+     * + quorum_oracle into the periodic loop via the on_tick
+     * callback. No-op when no zclassicd is reachable. */
+    if (zclassicd_oracle_start()) {
+        printf("[oracle] zclassicd oracle service started\n");
+    }
+
+    /* Rolling SHA3 anchor extension — every 60s, commit any new
+     * 1000-block windows past the compile-time prefix that have
+     * reached confirmation depth. Persists to <datadir>/sha3_windows_runtime.dat. */
+    if (rolling_anchor_start(svc->state, ctx->datadir)) {
+        printf("[rolling-anchor] periodic tick registered\n");
+    }
+
     {
         struct block_index *tip = active_chain_tip(&svc->state->chain_active);
         int h = tip ? tip->nHeight : 0;
@@ -1588,6 +1605,8 @@ static void shutdown_persist_runtime_state(struct boot_svc_ctx *svc)
 
     sync_watchdog_stop();
     gap_fill_stop();
+    zclassicd_oracle_stop();
+    rolling_anchor_stop();
     bg_validation_stop(&svc->bg_validation);
     bg_hash_verify_stop(&svc->bg_hash_verify);
     boot_join_address_backfill_service(svc);

@@ -14,6 +14,7 @@
  */
 
 #include "services/zclassicd_oracle_service.h"
+#include "services/oracle_policy.h"
 
 #include "validation/main_state.h"
 #include "validation/chainstate.h"
@@ -409,6 +410,11 @@ bool zclassicd_oracle_probe(int height,
             event_emitf(EV_ORACLE_DISAGREE, 0,
                         "h=%d our=%s their=%s",
                         height, out->our_hash, out->their_hash);
+            /* T2.1: feed the policy state machine. It decides whether
+             * to halt new block acceptance or panic. */
+            oracle_policy_record_disagreement(height,
+                                              out->our_hash,
+                                              out->their_hash);
         }
     }
     /* If we don't have the block locally, neither agree nor disagree;
@@ -493,6 +499,11 @@ bool zclassicd_oracle_init(const struct zclassicd_oracle_config *cfg)
 
     g_oracle.initialized = true;
     pthread_mutex_unlock(&g_oracle.lock);
+
+    /* T2.1: ensure the policy module is ready before any disagreement
+     * can be recorded. Idempotent — safe even if init runs multiple
+     * times. */
+    oracle_policy_init(NULL);
     return true;
 }
 
