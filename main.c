@@ -888,6 +888,55 @@ int main(int argc, char **argv)
             app_add_node(argv[i] + 9, 0);
     }
 
+    /* Auto-addnode the co-located zclassicd peer (Option F from the
+     * fast-sync plan). Local loopback bypasses external network
+     * latency entirely; zclassicd is a fully-validated reference node
+     * sharing the same chain. Connecting to it gives us tip-tracking
+     * resilience even if all internet peers go away.
+     *
+     * Conservative — only auto-add when:
+     *   - $HOME/.zclassic/zclassic.conf is present (zclassicd is set up)
+     *   - we haven't been told -connect=… (which means "ONLY these peers")
+     *   - no explicit -addnode=127.0.0.1:8034 already on the command line
+     *
+     * Reads the P2P port out of zclassic.conf (default 8034). */
+    if (!ctx.connect_only) {
+        const char *home = getenv("HOME");
+        if (home && *home) {
+            char conf_path[1024];
+            snprintf(conf_path, sizeof(conf_path),
+                     "%s/.zclassic/zclassic.conf", home);
+            FILE *cf = fopen(conf_path, "r");
+            if (cf) {
+                int p2p_port = 8034;
+                char line[256];
+                while (fgets(line, sizeof(line), cf)) {
+                    int v;
+                    if (sscanf(line, " port = %d", &v) == 1 ||
+                        sscanf(line, "port=%d", &v) == 1) {
+                        if (v > 0 && v < 65536) p2p_port = v;
+                    }
+                }
+                fclose(cf);
+                bool already_listed = false;
+                char hostport[64];
+                snprintf(hostport, sizeof(hostport),
+                         "127.0.0.1:%d", p2p_port);
+                for (int i = 1; i < argc; i++) {
+                    if (strstr(argv[i], hostport) != NULL) {
+                        already_listed = true;
+                        break;
+                    }
+                }
+                if (!already_listed) {
+                    printf("auto-addnode: local zclassicd at %s "
+                           "(zclassic.conf detected)\n", hostport);
+                    app_add_node("127.0.0.1", p2p_port);
+                }
+            }
+        }
+    }
+
     if (show_metrics) app_start_metrics(ctx.gen);
 
     while (!g_shutdown_requested && app_is_running())
