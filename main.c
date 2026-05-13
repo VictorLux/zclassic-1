@@ -1034,6 +1034,24 @@ int main(int argc, char **argv)
                 return 1;
             }
         }
+        else if (strncmp(argv[i], "-fastimport=", 12) == 0) {
+            ctx.fastimport_from = argv[i]+12;
+        }
+        else if (strcmp(argv[i], "-fastimport") == 0) {
+            const char *home = getenv("HOME");
+            static char default_fastimport_path[1024];
+            if (home && *home) {
+                snprintf(default_fastimport_path,
+                         sizeof(default_fastimport_path),
+                         "%s/.zclassic", home);
+                ctx.fastimport_from = default_fastimport_path;
+            } else {
+                fprintf(stderr,
+                    "-fastimport with no path requires $HOME; "
+                    "use -fastimport=PATH\n");
+                return 1;
+            }
+        }
         else if (strncmp(argv[i], "-fastsync=", 10) == 0) {
             fprintf(stderr, "Warning: -fastsync is deprecated, use -import-from=\n");
             ctx.legacy_import_dir = argv[i]+10;

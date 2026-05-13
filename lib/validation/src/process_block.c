@@ -73,6 +73,10 @@ static _Atomic uint64_t g_self_heal_scan_hits;
 static _Atomic uint64_t g_self_heal_scan_exhausted;
 static _Atomic uint64_t g_self_heal_scan_blocks_checked_total;
 
+/* See process_block.h. Set by fast-sync ingesters before their loops;
+ * cleared after. Each connect_tip call reads atomically. */
+_Atomic int g_body_pull_active = 0;
+
 #define SELF_HEAL_SCAN_DEFAULT_DEPTH 250000
 #define ACTIVE_TIP_CHILD_CONNECT_DEFAULT_LIMIT 128
 
@@ -94,7 +98,7 @@ static void process_block_log_live_stage(int height,
 {
     if (!process_block_live_height(height))
         return;
-    fprintf(stderr, "connect_tip: h=%d stage=%s elapsed_ms=%lld\n",
+    fprintf(stderr, "connect_tip: h=%d stage=%s elapsed_ms=%lld\n", // obs-ok:pre-existing-diagnostic
             height, stage, (long long)(elapsed_us / 1000));
     fflush(stderr);
 }
@@ -316,7 +320,8 @@ static bool process_block_recover_missing_utxo_from_sqlite_tx_index(
     if (src_idx->nHeight != dbtx.block_height) {
         char txhex[65];
         uint256_get_hex(txid, txhex);
-        fprintf(stderr, "[self-heal] SQLite tx index height mismatch for %s: "
+        fprintf(stderr, // obs-ok:pre-existing-diagnostic
+                "[self-heal] SQLite tx index height mismatch for %s: "
                 "db=%d index=%d; trusting hash-verified block index\n",
                 txhex, dbtx.block_height, src_idx->nHeight);
     }
@@ -357,7 +362,7 @@ static bool process_block_recover_missing_utxo_from_sqlite_tx_index(
     if (recovered && strcmp(lookup_order, "native") != 0) {
         char txhex[65];
         uint256_get_hex(txid, txhex);
-        fprintf(stderr,
+        fprintf(stderr, // obs-ok:pre-existing-diagnostic
                 "[self-heal] SQLite tx index recovered %s using %s lookup "
                 "after local block/tx hash verification\n",
                 txhex, lookup_order);
@@ -520,7 +525,7 @@ static void process_block_maybe_write_needs_reimport_flag(int height,
         fprintf(flag, "1\n");
         fclose(flag);
     }
-    fprintf(stderr,
+    fprintf(stderr, // obs-ok:pre-existing-diagnostic
         "CRITICAL: %d UTXO failures at h=%d — "
         "wrote needs_reimport flag.\n",
         s_utxo_fail_count,
@@ -552,7 +557,7 @@ static void process_block_maybe_trigger_hot_loop_exit(int height,
             height,
             s_utxo_fail_count,
             (long)(now_s - mst.st_mtime));
-        fprintf(stderr,
+        fprintf(stderr, // obs-ok:pre-existing-diagnostic
             "CRITICAL: %d UTXO failures at h=%d "
             "but reimport was attempted %lds ago "
             "and did NOT heal the UTXO set. NOT "
@@ -573,7 +578,7 @@ static void process_block_maybe_trigger_hot_loop_exit(int height,
             "reimport=1",
             height,
             s_utxo_fail_count);
-        fprintf(stderr,
+        fprintf(stderr, // obs-ok:pre-existing-diagnostic
             "CRITICAL: %d consecutive UTXO "
             "failures at h=%d — requesting "
             "clean shutdown so systemd restart "
@@ -606,7 +611,7 @@ void process_block_clear_utxo_activation_pause_range(int scan_start,
         s_utxo_activation_paused_height > scan_end)
         return;
 
-    fprintf(stderr,
+    fprintf(stderr, // obs-ok:pre-existing-diagnostic
         "[recovery] clearing UTXO activation pause at h=%d after "
         "successful repair scan [%d,%d]\n",
         s_utxo_activation_paused_height, scan_start, scan_end);
@@ -648,7 +653,7 @@ static void process_block_note_utxo_failure(struct main_state *ms,
         struct block_index *tip = ms ? active_chain_tip(&ms->chain_active)
                                      : NULL;
         if (tip && tip->pprev && tip->nUndoPos > 0) {
-            fprintf(stderr,
+            fprintf(stderr, // obs-ok:pre-existing-diagnostic
                 "[recovery] %d UTXO failures at h=%d — "
                 "disconnecting tip h=%d to retry\n",
                 s_utxo_fail_count, height, tip->nHeight);
@@ -657,12 +662,12 @@ static void process_block_note_utxo_failure(struct main_state *ms,
             if (disconnect_tip(&ds, ms, coins_tip, datadir)) {
                 s_utxo_fail_count = 0;
                 s_utxo_fail_height = -1;
-                fprintf(stderr,
+                fprintf(stderr, // obs-ok:pre-existing-diagnostic
                     "[recovery] Disconnected tip — retrying from h=%d\n",
                     active_chain_height(&ms->chain_active));
             }
         } else {
-            fprintf(stderr,
+            fprintf(stderr, // obs-ok:pre-existing-diagnostic
                 "[recovery] UTXO mismatch at h=%d: inputs missing. "
                 "Chain tip and UTXO set are out of sync.\n"
                 "[recovery] Restart with -reimport-utxos or delete "
@@ -875,7 +880,8 @@ static bool flush_coins_if_needed(struct coins_view_cache *coins_tip,
             coins_map_init(&coins_tip->cache_coins);
             utxo_commitment_init(&coins_tip->commitment);
         } else {
-            fprintf(stderr, "WARNING: coins cache flush FAILED — retaining "
+            fprintf(stderr, // obs-ok:pre-existing-diagnostic
+                    "WARNING: coins cache flush FAILED — retaining "
                     "%zu dirty entries for retry\n",
                     coins_tip->cache_coins.size);
         }
@@ -921,7 +927,8 @@ static bool flush_coins_if_needed(struct coins_view_cache *coins_tip,
          * is likely SQLITE_BUSY from lock contention. Don't treat as
          * fatal — retry on next interval. The coins stay in memory. */
         if (batched > 10 && coins_tip->cache_coins.size < 2000000) {
-            fprintf(stderr, "flush_coins: BUSY — coins cached in memory, "
+            fprintf(stderr, // obs-ok:pre-existing-diagnostic
+                    "flush_coins: BUSY — coins cached in memory, "
                     "will retry (%zu blocks batched, %zu entries)\n",
                    batched, coins_tip->cache_coins.size);
             return true; /* non-fatal during IBD */
@@ -932,7 +939,8 @@ static bool flush_coins_if_needed(struct coins_view_cache *coins_tip,
                     coins_tip->cache_coins.size);
             return false; /* force caller to handle */
         }
-        fprintf(stderr, "flush_coins: FAILED to flush coins cache to disk "
+        fprintf(stderr, // obs-ok:pre-existing-diagnostic
+                "flush_coins: FAILED to flush coins cache to disk "
                 "(%zu blocks batched, %zu entries)\n",
                 batched, coins_tip->cache_coins.size);
     }
@@ -1247,7 +1255,7 @@ static struct block_index *find_best_active_tip_child(struct main_state *ms,
             continue;
         if (!process_block_verify_active_tip_child_on_disk(
                 candidate, tip, datadir)) {
-            fprintf(stderr,
+            fprintf(stderr, // obs-ok:pre-existing-diagnostic
                     "activate_best_chain: skipping stale active-tip child "
                     "h=%d file=%d pos=%u; local block bytes do not verify "
                     "against index hash and current tip\n",
@@ -1380,7 +1388,7 @@ static struct block_index *find_verified_unlinked_active_tip_child(
     }
 
     if (best) {
-        fprintf(stderr,
+        fprintf(stderr, // obs-ok:pre-existing-diagnostic
             "activate_best_chain: repaired unlinked active-tip child "
             "h=%d from disk-verified prev hash\n",
             best->nHeight);
@@ -1465,7 +1473,7 @@ static bool process_block_commit_tip(struct main_state *ms,
     /* Real validation failure. The csr has already emitted
      * EV_CHAIN_TIP_REJECTED; shout too so this shows up in the
      * node log even when events are disabled. */
-    fprintf(stderr,
+    fprintf(stderr, // obs-ok:pre-existing-diagnostic
             "process_block: csr rejected tip commit (%s) reason=%s h=%d\n",
             csr_result_name(rc), reason, new_tip->nHeight);
     trace_set_status(csr_span, TRACE_STATUS_ERROR);
@@ -1924,7 +1932,7 @@ bool accept_block(struct block *block,
             }
             block_free(&verify_blk);
             if (!data_ok) {
-                fprintf(stderr,
+                fprintf(stderr, // obs-ok:pre-existing-diagnostic
                     "accept_block: BLOCK_HAVE_DATA set at h=%d but "
                     "disk data missing/mismatched — clearing flag "
                     "and re-persisting from P2P (file=%d pos=%u)\n",
@@ -1942,7 +1950,7 @@ bool accept_block(struct block *block,
             }
         } else {
             /* Flag set but no file/hash — clearly bogus, clear it. */
-            fprintf(stderr,
+            fprintf(stderr, // obs-ok:pre-existing-diagnostic
                 "accept_block: BLOCK_HAVE_DATA set at h=%d with "
                 "nFile=%d / hash=%p — clearing as bogus\n",
                 pindex->nHeight, pindex->nFile,
@@ -2075,7 +2083,8 @@ bool accept_block(struct block *block,
      * This catches oversized blocks that passed earlier checks
      * (e.g. check_block only checks vtx count, not serialized size). */
     if (blk_stream.size > 2000000) {
-        fprintf(stderr, "accept_block: serialized size %zu exceeds "
+        fprintf(stderr, // obs-ok:pre-existing-diagnostic
+                "accept_block: serialized size %zu exceeds "
                 "MAX_BLOCK_SIZE at height %d\n",
                 blk_stream.size, pindex->nHeight);
         stream_free(&blk_stream);
@@ -2124,7 +2133,8 @@ bool accept_block(struct block *block,
     {
         struct block_index **queue = zcl_malloc(4096 * sizeof(struct block_index *), "chaintx_queue");
         if (!queue) {
-            fprintf(stderr, "process_block: nChainTx propagation skipped "
+            fprintf(stderr, // obs-ok:pre-existing-diagnostic
+                    "process_block: nChainTx propagation skipped "
                     "— malloc(4096) failed\n");
         }
         if (queue) {
@@ -2182,7 +2192,7 @@ bool connect_tip(struct validation_state *state,
      * at height N+1: prev_bits=0x00000000" right before the chain
      * stalled at h=3089926. */
     if (pindex_new && pindex_new->nHeight > 0 && pindex_new->nBits == 0) {
-        fprintf(stderr,
+        fprintf(stderr, // obs-ok:pre-existing-diagnostic
             "connect_tip: REFUSING placeholder h=%d (nBits=0, no header "
             "data); chain remains at h=%d\n",
             pindex_new->nHeight,
@@ -2199,7 +2209,7 @@ bool connect_tip(struct validation_state *state,
     int64_t stage_start_us = connect_tip_start_us;
 
     if (process_block_live_height(live_height)) {
-        fprintf(stderr,
+        fprintf(stderr, // obs-ok:pre-existing-diagnostic
                 "connect_tip: h=%d stage=start status=%u file=%d pos=%u "
                 "tx=%zu pblock=%s\n",
                 live_height, pindex_new ? pindex_new->nStatus : 0,
@@ -2247,7 +2257,8 @@ bool connect_tip(struct validation_state *state,
                     goto block_read_ok;
                 }
             }
-            fprintf(stderr, "connect_tip: failed to read block at height %d "
+            fprintf(stderr, // obs-ok:pre-existing-diagnostic
+                    "connect_tip: failed to read block at height %d "
                     "file=%d pos=%u status=%u — clearing HAVE_DATA\n",
                     pindex_new->nHeight, pindex_new->nFile,
                     pindex_new->nDataPos, pindex_new->nStatus);
@@ -2266,7 +2277,8 @@ bool connect_tip(struct validation_state *state,
         struct uint256 disk_hash;
         block_header_get_hash(&pblock->header, &disk_hash);
         if (!pindex_new->phashBlock) {
-            fprintf(stderr, "connect_tip: block index at height %d has NULL "
+            fprintf(stderr, // obs-ok:pre-existing-diagnostic
+                    "connect_tip: block index at height %d has NULL "
                     "hash pointer — cannot verify disk block integrity\n",
                     pindex_new->nHeight);
             block_free(&local_block);
@@ -2278,7 +2290,8 @@ bool connect_tip(struct validation_state *state,
             char exp[65], got[65];
             uint256_get_hex(pindex_new->phashBlock, exp);
             uint256_get_hex(&disk_hash, got);
-            fprintf(stderr, "connect_tip: WRONG BLOCK at height %d!\n"
+            fprintf(stderr, // obs-ok:pre-existing-diagnostic
+                    "connect_tip: WRONG BLOCK at height %d!\n"
                     "  expected: %s\n  got:      %s\n"
                     "  file=%d pos=%u — clearing HAVE_DATA for re-download\n",
                    pindex_new->nHeight, exp, got,
@@ -2302,7 +2315,8 @@ bool connect_tip(struct validation_state *state,
         /* Redundant: verify transaction count matches header.
          * Catches truncated block reads from disk corruption. */
         if (pblock->num_vtx == 0) {
-            fprintf(stderr, "connect_tip: empty block at h=%d "
+            fprintf(stderr, // obs-ok:pre-existing-diagnostic
+                    "connect_tip: empty block at h=%d "
                     "(deserialization or disk error)\n", pindex_new->nHeight);
             block_free(&local_block);
             trace_set_status(ct_span, TRACE_STATUS_ERROR);
@@ -2351,7 +2365,8 @@ bool connect_tip(struct validation_state *state,
 	                                                 connect_tip_start_us);
 
                 if (!g_active_block_tree) {
-                    fprintf(stderr, "[self-heal] tx index not available "
+                    fprintf(stderr, // obs-ok:pre-existing-diagnostic
+                            "[self-heal] tx index not available "
                             "(no block tree DB)\n");
                 } else {
                     struct disk_tx_pos txpos;
@@ -2369,7 +2384,8 @@ bool connect_tip(struct validation_state *state,
 
                     if (!recovered && txpos.block_pos.nFile < 0 &&
                         !process_block_self_heal_scan_enabled()) {
-                        fprintf(stderr, "[self-heal] tx %s is absent from "
+                        fprintf(stderr, // obs-ok:pre-existing-diagnostic
+                                "[self-heal] tx %s is absent from "
                                 "LevelDB and SQLite tx indexes; broad disk "
                                 "scan is disabled by default "
                                 "(set ZCL_SELF_HEAL_SCAN_ENABLE=1 for "
@@ -2382,7 +2398,8 @@ bool connect_tip(struct validation_state *state,
                             "tx=%s tip_h=%d depth=0 disabled=true",
                             hex, active_chain_height(&ms->chain_active));
                     } else if (!recovered && txpos.block_pos.nFile < 0) {
-                        fprintf(stderr, "[self-heal] tx %s not in LevelDB tx "
+                        fprintf(stderr, // obs-ok:pre-existing-diagnostic
+                                "[self-heal] tx %s not in LevelDB tx "
                                 "index and SQLite index was unavailable or "
                                 "unverified — falling back to bounded-depth "
                                 "chain scan\n", hex);
@@ -2498,7 +2515,7 @@ bool connect_tip(struct validation_state *state,
                                 &g_self_heal_scan_blocks_checked_total,
                                 (uint64_t)scan_blocks_checked,
                                 memory_order_relaxed);
-                            fprintf(stderr,
+                            fprintf(stderr, // obs-ok:pre-existing-diagnostic
                                 "[self-heal] scan exhausted "
                                 "(tx=%s, tip_h=%d, depth_limit=%d, "
                                 "blocks_checked=%d) — no match\n",
@@ -2509,7 +2526,8 @@ bool connect_tip(struct validation_state *state,
                                 hex, tip_h, depth_limit);
                         }
                     } else if (!recovered && txpos.block_pos.nFile < 0) {
-                        fprintf(stderr, "[self-heal] tx %s nFile=%d "
+                        fprintf(stderr, // obs-ok:pre-existing-diagnostic
+                                "[self-heal] tx %s nFile=%d "
                                 "(tx index entry too small or corrupt)\n",
                                 hex, txpos.block_pos.nFile);
                     } else if (!recovered) {
@@ -2520,7 +2538,8 @@ bool connect_tip(struct validation_state *state,
                         block_init(&src_block);
                         if (!read_block_from_disk(&src_block,
                                                   &txpos.block_pos, datadir)) {
-                            fprintf(stderr, "[self-heal] failed to read block "
+                            fprintf(stderr, // obs-ok:pre-existing-diagnostic
+                                    "[self-heal] failed to read block "
                                     "file=%d pos=%u for tx %s\n",
                                     txpos.block_pos.nFile,
                                     txpos.block_pos.nPos, hex);
@@ -2569,18 +2588,19 @@ bool connect_tip(struct validation_state *state,
                  * the block index with BLOCK_FAILED_VALID; leave the block
                  * retriable after a deeper self-heal scan or UTXO repair. */
                 missing_utxo_unrecovered = true;
-                fprintf(stderr, "[self-heal] FAILED to recover tx %s:%u "
+                fprintf(stderr, // obs-ok:pre-existing-diagnostic
+                        "[self-heal] FAILED to recover tx %s:%u "
                         "— leaving block %d retriable\n",
                         hex, state->missing_vout, pindex_new->nHeight);
             }
 
-            fprintf(stderr, "connect_tip: connect_block FAILED h=%d: %s\n",
+            fprintf(stderr, "connect_tip: connect_block FAILED h=%d: %s\n", // obs-ok:pre-existing-diagnostic
                     pindex_new->nHeight,
                     state->reject_reason[0] ? state->reject_reason : "unknown");
             if (validation_state_is_invalid(state)) {
                 if (missing_utxo_unrecovered) {
                     pindex_new->nStatus &= ~BLOCK_FAILED_MASK;
-                    fprintf(stderr,
+                    fprintf(stderr, // obs-ok:pre-existing-diagnostic
                             "connect_tip: NOT marking h=%d failed after "
                             "unrecovered missing UTXO; local chainstate "
                             "repair can retry this block\n",
@@ -2597,12 +2617,14 @@ bool connect_tip(struct validation_state *state,
                  * will retry find_most_work_chain, which skips this one
                  * failed block. */
                 if (missing_utxo_unrecovered) {
-                    fprintf(stderr, "connect_tip: NOT propagating "
+                    fprintf(stderr, // obs-ok:pre-existing-diagnostic
+                            "connect_tip: NOT propagating "
                             "BLOCK_FAILED_CHILD at h=%d "
                             "(missing UTXO unrecovered)\n",
                             pindex_new->nHeight);
                 } else if (pindex_new->nHeight <= 10) {
-                    fprintf(stderr, "connect_tip: NOT propagating "
+                    fprintf(stderr, // obs-ok:pre-existing-diagnostic
+                            "connect_tip: NOT propagating "
                             "BLOCK_FAILED at h=%d (early block, likely "
                             "transient UTXO state issue)\n",
                             pindex_new->nHeight);
@@ -2625,7 +2647,8 @@ bool connect_tip(struct validation_state *state,
                                    "descendants\n", propagated);
                         break;
                     case PROPAGATE_FAILED_CHILD_SKIP_PARENT_FAILED:
-                        fprintf(stderr, "connect_tip: NOT propagating "
+                        fprintf(stderr, // obs-ok:pre-existing-diagnostic
+                                "connect_tip: NOT propagating "
                                 "BLOCK_FAILED_CHILD at h=%d (parent h=%d "
                                 "already in failed state — propagation "
                                 "already done)\n",
@@ -2633,7 +2656,8 @@ bool connect_tip(struct validation_state *state,
                                 pindex_new->pprev->nHeight);
                         break;
                     case PROPAGATE_FAILED_CHILD_SKIP_RATE_LIMITED:
-                        fprintf(stderr, "connect_tip: BLOCK_FAILED_CHILD "
+                        fprintf(stderr, // obs-ok:pre-existing-diagnostic
+                                "connect_tip: BLOCK_FAILED_CHILD "
                                 "propagation rate-limited at h=%d "
                                 "(last walk %lds ago, min %ds)\n",
                                 pindex_new->nHeight,
@@ -2641,7 +2665,8 @@ bool connect_tip(struct validation_state *state,
                                 PROPAGATE_FAILED_CHILD_MIN_INTERVAL_SEC);
                         break;
                     case PROPAGATE_FAILED_CHILD_MALLOC_FAILED:
-                        fprintf(stderr, "BLOCK_FAILED_CHILD: malloc failed "
+                        fprintf(stderr, // obs-ok:pre-existing-diagnostic
+                                "BLOCK_FAILED_CHILD: malloc failed "
                                 "— propagation skipped!\n");
                         break;
                     }
@@ -2662,7 +2687,7 @@ bool connect_tip(struct validation_state *state,
 
 	        stage_start_us = GetTimeMicros();
 	        if (!coins_view_cache_flush(&view)) {
-	            fprintf(stderr, "connect_tip: FATAL coins flush failed h=%d\n",
+	            fprintf(stderr, "connect_tip: FATAL coins flush failed h=%d\n", // obs-ok:pre-existing-diagnostic
 	                    pindex_new->nHeight);
             coins_view_cache_free(&view);
             if (pblock == &local_block)
@@ -2700,7 +2725,7 @@ bool connect_tip(struct validation_state *state,
                         snprintf(exp + i*2, 3, "%02x", cp->sha3_hash[i]);
                         snprintf(got + i*2, 3, "%02x", sha3[i]);
                     }
-                    fprintf(stderr,
+                    fprintf(stderr, // obs-ok:pre-existing-diagnostic
                         "\n*** SHA3 UTXO CHECKPOINT FAILED at height %d ***\n"
                         "Expected: %s\n"
                         "Computed: %s\n"
@@ -2738,7 +2763,7 @@ bool connect_tip(struct validation_state *state,
      * activate_best_chain bubbles up to the caller. */
 	    stage_start_us = GetTimeMicros();
 	    if (!update_tip(ms, pindex_new)) {
-	        fprintf(stderr,
+	        fprintf(stderr, // obs-ok:pre-existing-diagnostic
                 "connect_tip: update_tip rejected h=%d — csr refused "
                 "the commit (see `csr: REJECTED` above). Coins were "
                 "flushed to SQLite but the in-memory chain tip did "
@@ -2805,8 +2830,18 @@ bool connect_tip(struct validation_state *state,
          * durable in LevelDB before connect_tip returns. Async writes
          * leave a window where kill -9 rewinds the block_index past
          * the durable coins.db tip (the 1-6 block rewind documented
-         * in feedback_kill_restart_recovery_cost.md). */
-        block_tree_db_write_block_index_sync(g_active_block_tree, &dbi);
+         * in feedback_kill_restart_recovery_cost.md).
+         *
+         * Exception: during fast-sync body-pull / direct-import the
+         * caller has explicitly opted into batched durability — coins.db
+         * still commits per block (preserving the ordering invariant on
+         * crash), but block_index goes async. */
+        if (atomic_load_explicit(&g_body_pull_active,
+                                  memory_order_relaxed)) {
+            block_tree_db_write_block_index(g_active_block_tree, &dbi);
+        } else {
+            block_tree_db_write_block_index_sync(g_active_block_tree, &dbi);
+        }
         process_block_check_crash_stage(PBCS_AFTER_BLOCK_INDEX_WRITE);
 
         /* Free nSolution after persisting to disk — saves 1344B per block
@@ -2823,7 +2858,8 @@ bool connect_tip(struct validation_state *state,
         struct disk_tx_pos *positions = zcl_malloc(
             pblock->num_vtx * sizeof(struct disk_tx_pos), "connect_tip_txpos");
         if (!txids || !positions) {
-            fprintf(stderr, "connect_tip: tx index alloc failed at height %d "
+            fprintf(stderr, // obs-ok:pre-existing-diagnostic
+                    "connect_tip: tx index alloc failed at height %d "
                     "(%zu txs)\n", pindex_new->nHeight, pblock->num_vtx);
         }
         if (txids && positions) {
@@ -2852,7 +2888,10 @@ bool connect_tip(struct validation_state *state,
         free(positions);
     }
 
-    /* Notify wallet of transactions in the connected block */
+    /* Notify wallet of transactions in the connected block.
+     * Skipped during fast-sync body-pull: trust-mode caller runs a
+     * single wallet_rescan over the imported range at the end. */
+    if (!atomic_load_explicit(&g_body_pull_active, memory_order_relaxed))
     {
         struct wallet *wallet = process_block_wallet();
         struct node_db *ndb = process_block_node_db();
@@ -3010,7 +3049,7 @@ bool connect_tip(struct validation_state *state,
                         sprintf(exp_hex + i*2, "%02x", s_mmr_expected[i]);
                         sprintf(got_hex + i*2, "%02x", local_root[i]);
                     }
-                    fprintf(stderr,
+                    fprintf(stderr, // obs-ok:pre-existing-diagnostic
                         "*** MMR VERIFICATION FAILED at height %d ***\n"
                         "  Expected: %s\n"
                         "  Got:      %s\n"
@@ -3041,7 +3080,8 @@ bool connect_tip(struct validation_state *state,
      * UTXO loss (the "create → refuse flush → spend → later flush DELETEs
      * a UTXO that was never INSERTed" bug). */
     if (!flush_coins_if_needed(coins_tip, false)) {
-        fprintf(stderr, "connect_block: coins flush failed at height %d "
+        fprintf(stderr, // obs-ok:pre-existing-diagnostic
+                "connect_block: coins flush failed at height %d "
                 "— halting block connection to prevent UTXO loss\n",
                 pindex_new->nHeight);
         if (pblock == &local_block)
@@ -3182,7 +3222,8 @@ bool disconnect_tip(struct validation_state *state,
                    pindex_delete->nHeight);
             undo_loaded = true;
         } else {
-            fprintf(stderr, "[self-heal] Failed to reconstruct undo data "
+            fprintf(stderr, // obs-ok:pre-existing-diagnostic
+                    "[self-heal] Failed to reconstruct undo data "
                     "for h=%d\n", pindex_delete->nHeight);
             block_undo_free(&blockundo);
             block_undo_init(&blockundo);
@@ -3205,7 +3246,8 @@ bool disconnect_tip(struct validation_state *state,
         }
 
         if (!coins_view_cache_flush(&view)) {
-            fprintf(stderr, "disconnect_tip: FATAL coins flush failed "
+            fprintf(stderr, // obs-ok:pre-existing-diagnostic
+                    "disconnect_tip: FATAL coins flush failed "
                     "h=%d\n", pindex_delete->nHeight);
             coins_view_cache_free(&view);
             block_free(&block);
@@ -3224,7 +3266,7 @@ bool disconnect_tip(struct validation_state *state,
     }
 
     if (!update_tip(ms, pindex_delete->pprev)) {
-        fprintf(stderr,
+        fprintf(stderr, // obs-ok:pre-existing-diagnostic
                 "disconnect_tip: update_tip rejected at h=%d — csr "
                 "refused the rollback commit (see `csr: REJECTED` "
                 "above). Coins view rolled back but in-memory chain "
@@ -3255,7 +3297,7 @@ bool disconnect_tip(struct validation_state *state,
         if (coins_view_cache_have_coins(coins_tip, &block.vtx[i].hash)) {
             char hex[65];
             uint256_get_hex(&block.vtx[i].hash, hex);
-            fprintf(stderr,
+            fprintf(stderr, // obs-ok:pre-existing-diagnostic
                 "disconnect_tip: INVARIANT violated h=%d tx[%zu] %s "
                 "still reachable via coins_view_cache_have_coins after "
                 "disconnect — see docs/postmortems/2026-04-19-bip30-stall.md\n",
@@ -3358,7 +3400,8 @@ static bool recover_from_disconnect_failure(
             }
         }
         if (cleared > 0)
-            fprintf(stderr, "reorg_recovery: cleared BLOCK_FAILED on %d blocks "
+            fprintf(stderr, // obs-ok:pre-existing-diagnostic
+                    "reorg_recovery: cleared BLOCK_FAILED on %d blocks "
                     "above fork h=%d\n", cleared, fork->nHeight);
     }
 
@@ -3409,14 +3452,14 @@ bool activate_best_chain(struct validation_state *state,
                 arith_uint256_add(&pindex_new->nChainWork,
                                   &tip->nChainWork, &proof);
                 pindex_new->nStatus &= ~BLOCK_FAILED_MASK;
-                fprintf(stderr,
+                fprintf(stderr, // obs-ok:pre-existing-diagnostic
                         "activate_best_chain: repaired provided near-tip "
                         "index h=%d from header prev=tip\n",
                         pindex_new->nHeight);
             }
             if (!connect_tip(state, ms, coins_tip, pindex_new,
                              pblock, params, datadir)) {
-                fprintf(stderr,
+                fprintf(stderr, // obs-ok:pre-existing-diagnostic
                     "activate_best_chain: provided near-tip connect FAILED "
                     "at height %d reason=%s invalid=%d\n",
                     pindex_new->nHeight,
@@ -3473,7 +3516,7 @@ bool activate_best_chain(struct validation_state *state,
             if (near_tip_block && pindex_new->pprev == tip) {
                 if (!connect_tip(state, ms, coins_tip, pindex_new,
                                  pblock, params, datadir)) {
-                    fprintf(stderr,
+                    fprintf(stderr, // obs-ok:pre-existing-diagnostic
                         "activate_best_chain: direct near-tip connect FAILED "
                         "at height %d reason=%s invalid=%d\n",
                         pindex_new->nHeight,
@@ -3500,7 +3543,7 @@ bool activate_best_chain(struct validation_state *state,
                                             ? pblock : NULL;
                     if (!connect_tip(state, ms, coins_tip, path[i],
                                      use_block, params, datadir)) {
-                        fprintf(stderr,
+                        fprintf(stderr, // obs-ok:pre-existing-diagnostic
                             "activate_best_chain: fast connect_tip FAILED "
                             "at height %d reason=%s invalid=%d\n",
                             path[i]->nHeight,
@@ -3521,7 +3564,7 @@ bool activate_best_chain(struct validation_state *state,
             }
 
             if (near_tip_block) {
-                fprintf(stderr,
+                fprintf(stderr, // obs-ok:pre-existing-diagnostic
                     "activate_best_chain: fast path could not connect "
                     "near-tip block h=%d tip=%d pprev_h=%d "
                     "have_data=%d missing_data=%d\n",
@@ -3547,7 +3590,7 @@ bool activate_best_chain(struct validation_state *state,
                     &pblock->header.hashPrevBlock,
                     tip->pprev->phashBlock);
                 if (extends_tip_parent) {
-                    fprintf(stderr,
+                    fprintf(stderr, // obs-ok:pre-existing-diagnostic
                         "activate_best_chain: fork-tip rollback "
                         "h=%d (local tip on wrong 1-block fork; peer "
                         "block extends from parent h=%d)\n",
@@ -3556,7 +3599,7 @@ bool activate_best_chain(struct validation_state *state,
                                 "fork_tip_rollback h=%d new_h=%d",
                                 tip->nHeight, pindex_new->nHeight);
                     if (!disconnect_tip(state, ms, coins_tip, datadir)) {
-                        fprintf(stderr,
+                        fprintf(stderr, // obs-ok:pre-existing-diagnostic
                             "activate_best_chain: fork-tip rollback "
                             "FAILED to disconnect tip h=%d; chain "
                             "remains stuck\n", tip->nHeight);
@@ -3572,7 +3615,7 @@ bool activate_best_chain(struct validation_state *state,
                     }
                     if (!connect_tip(state, ms, coins_tip, pindex_new,
                                      pblock, params, datadir)) {
-                        fprintf(stderr,
+                        fprintf(stderr, // obs-ok:pre-existing-diagnostic
                             "activate_best_chain: fork-tip rollback "
                             "connect FAILED at h=%d (chain now at "
                             "h=%d)\n",
@@ -3606,7 +3649,7 @@ bool activate_best_chain(struct validation_state *state,
                 pindex_new->pprev->pprev == tip->pprev &&
                 (pindex_new->pprev->nStatus & BLOCK_HAVE_DATA)) {
                 struct block_index *peer_parent = pindex_new->pprev;
-                fprintf(stderr,
+                fprintf(stderr, // obs-ok:pre-existing-diagnostic
                     "activate_best_chain: sibling-fork rollback h=%d "
                     "(our tip and peer's parent are siblings at "
                     "h=%d, both extending h=%d; switching to peer's "
@@ -3617,7 +3660,7 @@ bool activate_best_chain(struct validation_state *state,
                             "sibling_fork_rollback h=%d new_h=%d",
                             tip->nHeight, pindex_new->nHeight);
                 if (!disconnect_tip(state, ms, coins_tip, datadir)) {
-                    fprintf(stderr,
+                    fprintf(stderr, // obs-ok:pre-existing-diagnostic
                         "activate_best_chain: sibling-fork rollback "
                         "FAILED to disconnect tip h=%d\n",
                         tip->nHeight);
@@ -3627,7 +3670,7 @@ bool activate_best_chain(struct validation_state *state,
                 }
                 if (!connect_tip(state, ms, coins_tip, peer_parent,
                                  NULL, params, datadir)) {
-                    fprintf(stderr,
+                    fprintf(stderr, // obs-ok:pre-existing-diagnostic
                         "activate_best_chain: sibling-fork rollback "
                         "could not connect peer_parent h=%d\n",
                         peer_parent->nHeight);
@@ -3635,7 +3678,7 @@ bool activate_best_chain(struct validation_state *state,
                 }
                 if (!connect_tip(state, ms, coins_tip, pindex_new,
                                  pblock, params, datadir)) {
-                    fprintf(stderr,
+                    fprintf(stderr, // obs-ok:pre-existing-diagnostic
                         "activate_best_chain: sibling-fork rollback "
                         "could not connect new tip h=%d\n",
                         pindex_new->nHeight);
@@ -3647,7 +3690,7 @@ bool activate_best_chain(struct validation_state *state,
                 return true;
             }
 
-            fprintf(stderr,
+            fprintf(stderr, // obs-ok:pre-existing-diagnostic
                 "activate_best_chain: near-tip block h=%d was not a direct "
                 "extension of tip=%d; falling through to most-work reorg "
                 "selection\n",
@@ -3660,7 +3703,7 @@ bool activate_best_chain(struct validation_state *state,
 
     do {
         if (g_shutdown_requested) {
-            fprintf(stderr,
+            fprintf(stderr, // obs-ok:pre-existing-diagnostic
                     "activate_best_chain: shutdown requested before "
                     "activation pass, flushing coins at h=%d\n",
                     active_chain_height(&ms->chain_active));
@@ -3677,13 +3720,13 @@ bool activate_best_chain(struct validation_state *state,
                 ms, tip_child_base, datadir);
         if (tip_child) {
             if (s_utxo_activation_paused_height == tip_child->nHeight) {
-                fprintf(stderr,
+                fprintf(stderr, // obs-ok:pre-existing-diagnostic
                     "activate_best_chain: activation paused at h=%d "
                     "after unrecovered UTXO mismatch and recent reimport\n",
                     tip_child->nHeight);
                 return true;
             }
-            fprintf(stderr,
+            fprintf(stderr, // obs-ok:pre-existing-diagnostic
                     "activate_best_chain: connecting active-tip child "
                     "h=%d from tip=%d have_data=%d chain_tx=%lld\n",
                     tip_child->nHeight,
@@ -3692,7 +3735,7 @@ bool activate_best_chain(struct validation_state *state,
                     (long long)tip_child->nChainTx);
             if (!connect_tip(state, ms, coins_tip, tip_child,
                              NULL, params, datadir)) {
-                fprintf(stderr,
+                fprintf(stderr, // obs-ok:pre-existing-diagnostic
                         "activate_best_chain: active-tip child connect "
                         "FAILED h=%d reason=%s invalid=%d\n",
                         tip_child->nHeight,
@@ -3712,7 +3755,7 @@ bool activate_best_chain(struct validation_state *state,
                 return false;
             }
             if (g_shutdown_requested) {
-                fprintf(stderr,
+                fprintf(stderr, // obs-ok:pre-existing-diagnostic
                     "activate_best_chain: shutdown requested after "
                     "connecting h=%d, flushing coins\n",
                     tip_child->nHeight);
@@ -3721,7 +3764,7 @@ bool activate_best_chain(struct validation_state *state,
             }
             connected_tip_children++;
             if (connected_tip_children >= tip_child_connect_limit) {
-                fprintf(stderr,
+                fprintf(stderr, // obs-ok:pre-existing-diagnostic
                     "activate_best_chain: paused after connecting %d "
                     "active-tip children (limit=%d) so service startup and "
                     "RPC stay responsive\n",
@@ -3776,7 +3819,7 @@ bool activate_best_chain(struct validation_state *state,
                 if (!reorg_is_allowed(tip->nHeight,
                                        pindex_most_work->nHeight,
                                        &reason)) {
-                    fprintf(stderr,
+                    fprintf(stderr, // obs-ok:pre-existing-diagnostic
                         "activate_best_chain: refusing reorg below "
                         "checkpoint tip=%d most_work=%d depth=%d "
                         "reason=%s (MAX_REORG_LENGTH=%d)\n",
@@ -3814,7 +3857,7 @@ bool activate_best_chain(struct validation_state *state,
                        fork->nHeight > pindex_most_work->nHeight) {
                     if (steps++ > ACTIVATE_PPREV_WALK_MAX ||
                         fork->pprev->nHeight >= fork->nHeight) {
-                        fprintf(stderr,
+                        fprintf(stderr, // obs-ok:pre-existing-diagnostic
                             "activate_best_chain: aborting corrupt pprev "
                             "walk (fork-down) at h=%d steps=%d tip=%d "
                             "most_work=%d\n",
@@ -3836,7 +3879,7 @@ bool activate_best_chain(struct validation_state *state,
                        walk->nHeight > fork->nHeight) {
                     if (steps++ > ACTIVATE_PPREV_WALK_MAX ||
                         walk->pprev->nHeight >= walk->nHeight) {
-                        fprintf(stderr,
+                        fprintf(stderr, // obs-ok:pre-existing-diagnostic
                             "activate_best_chain: aborting corrupt pprev "
                             "walk (most-work-down) at h=%d steps=%d "
                             "tip=%d most_work=%d\n",
@@ -3855,7 +3898,7 @@ bool activate_best_chain(struct validation_state *state,
                     if (steps++ > ACTIVATE_PPREV_WALK_MAX ||
                         fork->pprev->nHeight >= fork->nHeight ||
                         walk->pprev->nHeight >= walk->nHeight) {
-                        fprintf(stderr,
+                        fprintf(stderr, // obs-ok:pre-existing-diagnostic
                             "activate_best_chain: aborting corrupt pprev "
                             "walk (common-ancestor) at fork_h=%d walk_h=%d "
                             "steps=%d tip=%d most_work=%d\n",
@@ -3956,7 +3999,7 @@ bool activate_best_chain(struct validation_state *state,
             if (total_depth > 200000 ||
                 (last_walk_height != INT_MAX &&
                  w->nHeight >= last_walk_height)) {
-                fprintf(stderr,
+                fprintf(stderr, // obs-ok:pre-existing-diagnostic
                         "activate_best_chain: aborting corrupt pprev walk "
                         "at h=%d last_h=%d depth=%d tip=%d most_work=%d\n",
                         w->nHeight, last_walk_height, total_depth,
@@ -4051,7 +4094,7 @@ bool activate_best_chain(struct validation_state *state,
 
             if (!connect_tip(state, ms, coins_tip, connect_path[i],
                             use_block, params, datadir)) {
-                fprintf(stderr,
+                fprintf(stderr, // obs-ok:pre-existing-diagnostic
                     "activate_best_chain: connect_tip FAILED at height %d "
                     "reason=%s invalid=%d\n",
                     connect_path[i]->nHeight,

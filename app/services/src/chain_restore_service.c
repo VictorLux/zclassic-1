@@ -120,7 +120,8 @@ struct block_index *chain_restore_create_anchor(
     anchor->phashBlock = block_map_find_hash(&ms->map_block_index, hash);
     if (!anchor->phashBlock) {
         /* Insert succeeded but hash lookup failed — shouldn't happen */
-        fprintf(stderr, "chain_restore: anchor inserted but hash not found\n");
+        fprintf(stderr, // obs-ok:pre-existing-diagnostic
+                "chain_restore: anchor inserted but hash not found\n");
     }
 
     return anchor;
@@ -696,6 +697,32 @@ int chain_restore_backfill_nbits_from_disk(struct main_state *ms,
     return fixed;
 }
 
+int chain_restore_clear_failed_above_tip(struct main_state *ms)
+{
+    if (!ms)
+        return 0;
+
+    int tip_h = active_chain_height(&ms->chain_active);
+
+    int cleared = 0;
+    size_t iter = 0;
+    struct block_index *p;
+    while (block_map_next(&ms->map_block_index, &iter, NULL, &p)) {
+        if (!p) continue;
+        if (p->nHeight <= tip_h) continue;
+        unsigned failed = p->nStatus & (unsigned)BLOCK_FAILED_MASK;
+        if (!failed) continue;
+        p->nStatus &= ~(unsigned)BLOCK_FAILED_MASK;
+        cleared++;
+    }
+
+    if (cleared > 0)
+        printf("[chain-restore] cleared %d stale BLOCK_FAILED_VALID "
+               "flags above tip h=%d\n", cleared, tip_h);
+
+    return cleared;
+}
+
 bool chain_restore_block_is_consensus_backed(
     const struct block_index *tip)
 {
@@ -749,7 +776,7 @@ bool chain_restore_block_is_consensus_backed_on_disk(
         uint256_get_hex(&disk_hash, got);
         if (tip->phashBlock)
             uint256_get_hex(tip->phashBlock, want);
-        fprintf(stderr,
+        fprintf(stderr, // obs-ok:pre-existing-diagnostic
                 "[chain-restore] disk hash mismatch at h=%d got=%s want=%s\n",
                 tip->nHeight, got, want[0] ? want : "<null>");
         ok = false;
@@ -764,7 +791,7 @@ bool chain_restore_block_is_consensus_backed_on_disk(
             uint256_get_hex(&blk.header.hashPrevBlock, got);
             if (tip->pprev && tip->pprev->phashBlock)
                 uint256_get_hex(tip->pprev->phashBlock, want);
-            fprintf(stderr,
+            fprintf(stderr, // obs-ok:pre-existing-diagnostic
                     "[chain-restore] disk prev-hash mismatch at h=%d "
                     "got=%s want=%s\n",
                     tip->nHeight, got, want[0] ? want : "<null>");
@@ -778,14 +805,14 @@ bool chain_restore_block_is_consensus_backed_on_disk(
         char want[65] = {0};
         uint256_get_hex(&blk.header.hashMerkleRoot, got);
         uint256_get_hex(&tip->hashMerkleRoot, want);
-        fprintf(stderr,
+        fprintf(stderr, // obs-ok:pre-existing-diagnostic
                 "[chain-restore] disk merkle mismatch at h=%d got=%s want=%s\n",
                 tip->nHeight, got, want);
         ok = false;
     }
 
     if (ok && tip->nBits != 0 && blk.header.nBits != tip->nBits) {
-        fprintf(stderr,
+        fprintf(stderr, // obs-ok:pre-existing-diagnostic
                 "[chain-restore] disk nBits mismatch at h=%d got=%u want=%u\n",
                 tip->nHeight, blk.header.nBits, tip->nBits);
         ok = false;
@@ -815,7 +842,7 @@ struct block_index *chain_restore_nearest_consensus_backed_ancestor_on_disk(
             return walk;
         checked++;
         if (checked >= 4096) {
-            fprintf(stderr,
+            fprintf(stderr, // obs-ok:pre-existing-diagnostic
                     "[chain-restore] no disk-backed ancestor found within "
                     "%d blocks below h=%d\n", checked,
                     tip ? tip->nHeight : -1);
@@ -854,7 +881,7 @@ static void chain_restore_quarantine_synthetic_tip(struct main_state *ms,
     if (replacement->phashBlock)
         uint256_get_hex(replacement->phashBlock, new_hash);
 
-    fprintf(stderr,
+    fprintf(stderr, // obs-ok:pre-existing-diagnostic
             "[chain-restore] quarantining non-consensus active tip "
             "h=%d hash=%s status=%u file=%d pos=%u tx=%u chaintx=%lld; "
             "restoring nearest data-backed ancestor h=%d hash=%s\n",
@@ -884,7 +911,7 @@ static void chain_restore_clear_resolved_anchor(struct main_state *ms,
     if (!anchor || !backed)
         return;
 
-    fprintf(stderr,
+    fprintf(stderr, // obs-ok:pre-existing-diagnostic
             "[chain-restore] clearing restore anchor h=%d after resolving "
             "active consensus tip h=%d\n",
             anchor->nHeight, tip->nHeight);
@@ -920,7 +947,7 @@ bool chain_restore_finalize(struct main_state *ms, const char *datadir)
             chain_restore_record_csr_consistency(
                 view.consistent, view.tip_height, view.header_height);
             if (!view.consistent) {
-                fprintf(stderr,
+                fprintf(stderr, // obs-ok:pre-existing-diagnostic
                     "[chain-integrity] CSR tip/coins divergence at boot: "
                     "tip_h=%d header_h=%d — first activate_best_chain "
                     "pass should reconcile\n",
@@ -930,7 +957,7 @@ bool chain_restore_finalize(struct main_state *ms, const char *datadir)
     }
 
     if (!r.ok) {
-        fprintf(stderr,
+        fprintf(stderr, // obs-ok:pre-existing-diagnostic
             "[chain-integrity] post-restore check FAILED: "
             "zero_nbits=%d (first_h=%d) tip_window_holes=%d (first_h=%d) "
             "total_holes=%d tip_h=%d\n",

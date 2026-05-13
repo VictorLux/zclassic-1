@@ -15,6 +15,7 @@
 #include "services/utxo_recovery_service.h"
 #include "services/local_chain_ingest.h"
 #include "services/legacy_body_pull.h"
+#include "services/legacy_direct_import.h"
 #include "services/header_probe_service.h"
 #include "services/block_index_integrity.h"
 #include "services/wallet_backup_service.h"
@@ -644,6 +645,66 @@ static bool boot_step_local_chain_ingest(struct app_context *ctx,
     printf("Local chain ingest OK. Tip h=%d. Elapsed %.1fs.\n",
            active_chain_height(&g_state.chain_active),
            (double)t_ingest_ms / 1000.0);
+    return true;
+}
+
+/* Direct LevelDB+mmap fast-import from a sibling zclassicd.
+ *
+ * Bypasses JSON-RPC entirely — reads the legacy node's blocks/index/
+ * LevelDB to build a height-ordered map, mmap()'s the blk*.dat files,
+ * and feeds payloads to process_new_block.
+ *
+ * Requires the legacy LevelDB to be unlocked (stop zclassicd first;
+ * the operator pays a brief downtime to gain a >10x cold-catchup
+ * speedup). On open failure (LOCK held, dir missing), logs and falls
+ * through — `boot_step_bodypull_from_legacy` is the RPC-based
+ * fallback. */
+static bool boot_step_fastimport(struct app_context *ctx,
+                                  const struct chain_params *params)
+{
+    if (!ctx || !ctx->fastimport_from) return true;
+
+    printf("\n═══ Fast Import (direct LevelDB+mmap) from %s ═══\n",
+           ctx->fastimport_from);
+    fflush(stdout);
+
+    if (!local_chain_ingest_detect_legacy_datadir(ctx->fastimport_from)) {
+        fprintf(stderr,
+            "fastimport: %s does not contain blocks/blk00000.dat — "
+            "is this a zclassic datadir? Skipping.\n",
+            ctx->fastimport_from);
+        return true;
+    }
+
+    int64_t t_start = boot_clock_ms();
+
+    bool turbo_on = boot_db_enter_turbo_mode();
+    if (turbo_on) {
+        printf("Fast import: node.db turbo mode ON "
+               "(synchronous=OFF, indexes dropped)\n");
+    }
+
+    struct ldi_result r = (struct ldi_result){0};
+    bool ok = legacy_direct_import_range_blocking(
+        &g_state, &g_coins_tip, params, &g_wallet,
+        ctx->datadir, ctx->fastimport_from,
+        -1 /* start from active_chain_height */, &r);
+
+    if (turbo_on) {
+        if (!boot_db_restore_normal_mode()) {
+            fprintf(stderr,
+                    "Fast import: failed to restore normal mode — "
+                    "node.db left in turbo state; investigate before "
+                    "next boot\n");
+        }
+    }
+
+    int64_t t_ms = boot_clock_ms() - t_start;
+    printf("Fast import: applied=%d ok=%s final_tip=%d legacy_tip=%d "
+           "elapsed=%.1fs\n",
+           r.applied, ok ? "yes" : "no",
+           r.final_tip, r.legacy_tip,
+           (double)t_ms / 1000.0);
     return true;
 }
 
@@ -2114,6 +2175,12 @@ bool app_init(struct app_context *ctx)
     if (!boot_step_local_chain_ingest(ctx, params))
         return false;
 
+    /* Direct LevelDB+mmap fast-import path (no JSON-RPC). Preferred
+     * when the legacy datadir is local and zclassicd is stopped.
+     * No-op when ctx->fastimport_from is NULL. */
+    if (!boot_step_fastimport(ctx, params))
+        return false;
+
     /* P0.7: optional standalone body-pull from a sibling zclassicd.
      * Surgical catch-up that skips local_chain_ingest's phase 1/2 —
      * useful when active_tip lags pindex_best_header and P2P bodies
@@ -2587,24 +2654,7 @@ sapling_tree_boot_check_done:
      * the UTXO set was incomplete. With the UTXO set now repaired,
      * these blocks should be re-validated. Without this, activate_best_chain
      * skips them and the node is permanently stuck. */
-    {
-        struct block_index *tip = active_chain_tip(&g_state.chain_active);
-        int tip_h = tip ? tip->nHeight : 0;
-        size_t iter_f = 0;
-        struct block_index *bi_f;
-        int cleared_failed = 0;
-        while (block_map_next(&g_state.map_block_index, &iter_f, NULL, &bi_f)) {
-            if (!bi_f) continue;
-            if (bi_f->nHeight > tip_h &&
-                (bi_f->nStatus & BLOCK_FAILED_MASK)) {
-                bi_f->nStatus &= ~BLOCK_FAILED_MASK;
-                cleared_failed++;
-            }
-        }
-        if (cleared_failed > 0)
-            printf("Boot: cleared BLOCK_FAILED on %d blocks above tip h=%d\n",
-                   cleared_failed, tip_h);
-    }
+    chain_restore_clear_failed_above_tip(&g_state);
 
     /* Clean up UTXOs above chain tip (utxo_recovery_service) */
     utxo_recovery_clean_above_tip(&g_node_db, &g_state);

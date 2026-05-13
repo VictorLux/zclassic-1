@@ -46,6 +46,13 @@ struct app_context {
      * only used to confirm the legacy datadir exists; RPC creds come
      * from ~/.zclassic/zclassic.conf in either case. */
     const char *bodypull_from_legacy;
+    /* -fastimport[=PATH] : direct LevelDB+mmap import from a sibling
+     * zclassicd's blocks/. Bypasses JSON-RPC entirely — reads the
+     * legacy node's blocks/index/ LevelDB to build a height-ordered
+     * map, then mmap()s the blk*.dat files and feeds payloads to
+     * process_new_block. Requires the legacy LevelDB to be unlocked
+     * (stop zclassicd first). Bare form defaults to ~/.zclassic. */
+    const char *fastimport_from;
     const char *snapshot_dir;
     bool reindex_chainstate;
     bool reimport_utxos;

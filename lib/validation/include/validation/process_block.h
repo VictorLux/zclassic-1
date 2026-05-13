@@ -67,6 +67,24 @@ bool process_new_block(struct validation_state *state,
                        bool force_processing,
                        const char *datadir);
 
+/* Fast-sync body-pull / direct-import mode flag.
+ *
+ * When set to 1 by legacy_body_pull / legacy_direct_import before its
+ * ingest loop, `connect_tip` defers per-block durability writes:
+ *
+ *   - block_tree_db_write_block_index_sync → async (no fsync per block).
+ *   - block_tree_db_write_tx_index         → async (LevelDB memtable).
+ *   - wallet_sync_transaction / Sapling trial-decrypt → skipped (a
+ *     single wallet_rescan runs at the end of the import).
+ *
+ * Caller MUST clear back to 0 after the loop. Crash safety is still
+ * provided by coins.db's per-block commit (at-tip kill-9 invariant).
+ *
+ * This is the dominant per-block cost after assume_valid trust-mode
+ * strips ECDSA + Groth16 + Ed25519. Phase 1 of fast-sync stalled
+ * here; Phase 3 unblocks the throughput. */
+extern _Atomic int g_body_pull_active;
+
 void process_block_self_heal_stats_snapshot(
     struct self_heal_scan_stats *out);
 void process_block_self_heal_stats_reset(void);
