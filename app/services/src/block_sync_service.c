@@ -44,10 +44,23 @@ void syncsvc_plan_block_assignment(struct sync_block_assignment *plan,
     if (!node || node->state < PEER_HANDSHAKE_COMPLETE)
         return;
 
+    /* K2: loopback peers have a wider request window. The WAN-fairness
+     * cap exists to spread block-body load across strangers — neither
+     * fairness nor RTT scaling applies to a co-located zclassicd. The
+     * download manager's matching per-peer cap is
+     * DL_MAX_IN_FLIGHT_PER_LOOPBACK; we plan up to half of that per
+     * batch so a single call doesn't saturate the window. */
+    bool peer_is_loopback = net_addr_is_local(&node->addr.svc.addr);
     plan->should_assign = true;
-    plan->max_assign = 64;
-    if (in_flight > DL_MAX_IN_FLIGHT_PER_PEER / 2)
-        plan->max_assign = 16;
+    if (peer_is_loopback) {
+        plan->max_assign = 256;
+        if (in_flight > DL_MAX_IN_FLIGHT_PER_LOOPBACK / 2)
+            plan->max_assign = 64;
+    } else {
+        plan->max_assign = 64;
+        if (in_flight > DL_MAX_IN_FLIGHT_PER_PEER / 2)
+            plan->max_assign = 16;
+    }
 }
 
 void syncsvc_assign_peer_blocks(struct sync_block_batch *batch,
@@ -73,6 +86,11 @@ void syncsvc_assign_peer_blocks(struct sync_block_batch *batch,
 
     if (plan.max_assign > out_cap)
         plan.max_assign = out_cap;
+    /* K2: keep the download manager's per-peer state in sync with the
+     * peer's network class so dl_assign_to_peer picks the right cap.
+     * Idempotent; cheap; no harm in calling on every assignment. */
+    dl_set_peer_loopback(dm, (uint32_t)node->id,
+                         net_addr_is_local(&node->addr.svc.addr));
     batch->assigned = dl_assign_to_peer(dm, (uint32_t)node->id,
                                         out_hashes, plan.max_assign);
 }

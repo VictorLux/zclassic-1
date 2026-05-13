@@ -471,7 +471,13 @@ size_t dl_assign_to_peer(struct download_manager *dm,
     }
     struct dl_peer_stats *ps_assign = dl_find_peer(dm, peer_id, false);
     size_t peer_limit = DL_MAX_IN_FLIGHT_PER_PEER; /* default for new peers */
-    if (ps_assign && ps_assign->bandwidth_score > 0) {
+    if (ps_assign && ps_assign->is_loopback) {
+        /* K2: loopback has no WAN-fairness constraint and effectively
+         * unlimited bandwidth. Use the elevated cap; the global limit
+         * (DL_MAX_IN_FLIGHT_TOTAL_IBD=4096) and the consumer-side
+         * connect_tip pipeline are the real backpressure. */
+        peer_limit = DL_MAX_IN_FLIGHT_PER_LOOPBACK;
+    } else if (ps_assign && ps_assign->bandwidth_score > 0) {
         /* Scale: score/128 * MAX, clamped to [16, MAX] */
         peer_limit = (size_t)ps_assign->bandwidth_score
                      * DL_MAX_IN_FLIGHT_PER_PEER / 128;
@@ -562,13 +568,25 @@ size_t dl_peer_adaptive_window(struct download_manager *dm, uint32_t peer_id)
     zcl_mutex_lock(&dm->cs);
     struct dl_peer_stats *ps = dl_find_peer(dm, peer_id, false);
     size_t window = DL_MAX_IN_FLIGHT_PER_PEER;
-    if (ps && ps->bandwidth_score > 0) {
+    if (ps && ps->is_loopback) {
+        window = DL_MAX_IN_FLIGHT_PER_LOOPBACK;
+    } else if (ps && ps->bandwidth_score > 0) {
         window = (size_t)ps->bandwidth_score * DL_MAX_IN_FLIGHT_PER_PEER / 128;
         if (window < 16) window = 16;
         if (window > DL_MAX_IN_FLIGHT_PER_PEER) window = DL_MAX_IN_FLIGHT_PER_PEER;
     }
     zcl_mutex_unlock(&dm->cs);
     return window;
+}
+
+void dl_set_peer_loopback(struct download_manager *dm,
+                          uint32_t peer_id, bool is_loopback)
+{
+    if (!dm) return;
+    zcl_mutex_lock(&dm->cs);
+    struct dl_peer_stats *ps = dl_find_peer(dm, peer_id, true);
+    if (ps) ps->is_loopback = is_loopback;
+    zcl_mutex_unlock(&dm->cs);
 }
 
 void dl_add_bytes_received(struct download_manager *dm, uint64_t bytes)

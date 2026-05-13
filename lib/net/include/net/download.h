@@ -24,6 +24,7 @@
 /* Tuning constants — conservative (at-tip) defaults.
  * During IBD, use dl_get_*() functions which return aggressive values. */
 #define DL_MAX_IN_FLIGHT_PER_PEER 128    /* max concurrent block requests per peer */
+#define DL_MAX_IN_FLIGHT_PER_LOOPBACK 512 /* loopback bypasses WAN-fairness ceiling */
 #define DL_MAX_IN_FLIGHT_TOTAL    1024   /* max total in-flight blocks (at tip) */
 #define DL_MAX_IN_FLIGHT_TOTAL_IBD 4096  /* max total in-flight blocks (during IBD) */
 #define DL_REQUEST_TIMEOUT_SECS   30     /* reassign after this many seconds (at tip) */
@@ -55,6 +56,9 @@ struct dl_peer_stats {
     int64_t  avg_delivery_us;       /* rolling average delivery time (EWMA) */
     uint32_t bandwidth_score;       /* adaptive score: higher = faster peer */
     bool     active;
+    bool     is_loopback;           /* K2: peer at 127.0.0.0/8 or ::1; gets
+                                     * DL_MAX_IN_FLIGHT_PER_LOOPBACK window
+                                     * and bypasses bandwidth-score scaling */
 };
 
 /* Download manager — global singleton */
@@ -132,12 +136,19 @@ void dl_queue_priority(struct download_manager *dm,
                        const struct uint256 *hash, int32_t height);
 
 /* Assign queued blocks to a peer. Returns number assigned.
- * Respects DL_MAX_IN_FLIGHT_PER_PEER and DL_MAX_IN_FLIGHT_TOTAL.
+ * Respects DL_MAX_IN_FLIGHT_PER_PEER (or DL_MAX_IN_FLIGHT_PER_LOOPBACK
+ * for peers flagged via dl_set_peer_loopback) and DL_MAX_IN_FLIGHT_TOTAL.
  * Fills `out_hashes` with the assigned block hashes. */
 size_t dl_assign_to_peer(struct download_manager *dm,
                          uint32_t peer_id,
                          struct uint256 *out_hashes,
                          size_t max_assign);
+
+/* K2: mark a peer as loopback so dl_assign_to_peer uses
+ * DL_MAX_IN_FLIGHT_PER_LOOPBACK and bypasses bandwidth-score scaling.
+ * Caller-set (the download manager doesn't see net addresses). Idempotent. */
+void dl_set_peer_loopback(struct download_manager *dm,
+                          uint32_t peer_id, bool is_loopback);
 
 /* Update peer stats when a block is received from them. */
 void dl_peer_block_received(struct download_manager *dm,
