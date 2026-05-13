@@ -43,6 +43,14 @@ int main(void)
         printf("\n=== kill9 subset complete: %d failure(s) ===\n", failures);
         return failures ? 1 : 0;
     }
+    if (only && strcmp(only, "chain_advance_atomicity") == 0) {
+        printf("[test] ZCL_TEST_ONLY=chain_advance_atomicity — running Move 2 / A5 only\n");
+        { extern int test_chain_advance_atomicity(void);
+          failures += test_chain_advance_atomicity(); }
+        printf("\n=== chain_advance_atomicity subset complete: %d failure(s) ===\n",
+               failures);
+        return failures ? 1 : 0;
+    }
     if (only && strcmp(only, "shielded_payment") == 0) {
         printf("[test] ZCL_TEST_ONLY=shielded_payment — running P11.4 shielded-payment gate only\n");
         { extern int test_shielded_payment_gate(void);
@@ -227,6 +235,8 @@ int main(void)
     failures += test_sync_state_fsm();
     failures += test_heartbeat();
     failures += test_chain_advance();
+    { extern int test_chain_advance_atomicity(void);
+      failures += test_chain_advance_atomicity(); }
     failures += test_local_chain_ingest();
     failures += test_snapshot_sync_service();
     failures += test_file_controller();
@@ -316,6 +326,7 @@ int main(void)
     failures += test_disk_block_io();
     failures += test_msg_handlers();
     failures += test_zclassicd_oracle();
+    failures += test_header_probe_service();
 
     /* Spec-based user story tests */
     failures += spec_wallet_dashboard();

@@ -35,6 +35,7 @@
 #include "services/chain_restore_service.h"
 #include "services/local_chain_ingest.h"
 #include "services/zclassicd_oracle_service.h"
+#include "services/header_probe_service.h"
 #include "health/heartbeat.h"
 #include "models/database.h"
 #include "config/runtime.h"
@@ -219,6 +220,8 @@ static const struct dump_entry g_dumpers[] = {
                      "zclassicd oracle: drift-probe stats + RPC config" },
     { "local_ingest", local_chain_ingest_dump_state_json,
                      "local chain ingest: phase/result/blocks/UTXOs from co-located zclassicd" },
+    { "header_probe", header_probe_dump_state_json,
+                     "header probe: bulk header pull from co-located zclassicd via JSON-RPC" },
 };
 
 static bool rpc_dumpstate(const struct json_value *params, bool help,
