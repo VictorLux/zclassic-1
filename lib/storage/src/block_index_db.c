@@ -183,8 +183,10 @@ void disk_block_index_get_hash(const struct disk_block_index *d,
     block_header_get_hash(&h, out);
 }
 
-bool block_tree_db_write_block_index(struct block_tree_db *btdb,
-                                     const struct disk_block_index *d)
+static bool block_tree_db_write_block_index_internal(
+    struct block_tree_db *btdb,
+    const struct disk_block_index *d,
+    bool sync)
 {
     struct uint256 hash;
     disk_block_index_get_hash(d, &hash);
@@ -201,9 +203,21 @@ bool block_tree_db_write_block_index(struct block_tree_db *btdb,
         LOG_FAIL("block_index_db", "write_block_index: serialization failed for h=%d", d->nHeight);
     }
 
-    bool ok = db_write(&btdb->db, key, keylen, (char *)s.data, s.size, false);
+    bool ok = db_write(&btdb->db, key, keylen, (char *)s.data, s.size, sync);
     stream_free(&s);
     return ok;
+}
+
+bool block_tree_db_write_block_index(struct block_tree_db *btdb,
+                                     const struct disk_block_index *d)
+{
+    return block_tree_db_write_block_index_internal(btdb, d, false);
+}
+
+bool block_tree_db_write_block_index_sync(struct block_tree_db *btdb,
+                                          const struct disk_block_index *d)
+{
+    return block_tree_db_write_block_index_internal(btdb, d, true);
 }
 
 bool block_tree_db_load_block_index_guts(struct block_tree_db *btdb,

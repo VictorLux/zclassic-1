@@ -2664,7 +2664,12 @@ bool connect_tip(struct validation_state *state,
         if (pindex_new->nSolution && pindex_new->nSolutionSize > 0)
             memcpy(dbi.nSolution, pindex_new->nSolution, pindex_new->nSolutionSize);
         dbi.nSolutionSize = pindex_new->nSolutionSize;
-        block_tree_db_write_block_index(g_active_block_tree, &dbi);
+        /* Use the synchronous write so this block_index entry is
+         * durable in LevelDB before connect_tip returns. Async writes
+         * leave a window where kill -9 rewinds the block_index past
+         * the durable coins.db tip (the 1-6 block rewind documented
+         * in feedback_kill_restart_recovery_cost.md). */
+        block_tree_db_write_block_index_sync(g_active_block_tree, &dbi);
 
         /* Free nSolution after persisting to disk — saves 1344B per block
          * (4GB total for 3M entries). Serving code in msg_headers.c and

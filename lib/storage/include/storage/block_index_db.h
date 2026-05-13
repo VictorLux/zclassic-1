@@ -55,6 +55,17 @@ void disk_block_index_get_hash(const struct disk_block_index *d,
 bool block_tree_db_write_block_index(struct block_tree_db *btdb,
                                      const struct disk_block_index *d);
 
+/* Same as block_tree_db_write_block_index, but issues the underlying
+ * LevelDB write with WriteOptions{.sync=true} so the write is durable
+ * before this call returns.
+ *
+ * Used by the connect_tip path so kill -9 cannot leave the LevelDB
+ * block_index lagging coins.db / node.db. Per-block fsync costs
+ * ~1-2 ms on a warm disk; only call this from the tip-advance path,
+ * not from snapshot/legacy-import bulk loaders. */
+bool block_tree_db_write_block_index_sync(struct block_tree_db *btdb,
+                                          const struct disk_block_index *d);
+
 typedef struct block_index *(*insert_block_index_fn)(void *ctx,
                                                       const struct uint256 *hash);
 
