@@ -1,149 +1,151 @@
-# Next-session handoff — Phase 1 done (modest gain), real bottleneck identified
+# Next-session handoff — Phase 3 shipped, live test deferred
 
-**Last session ended 2026-05-13 ~23:10.** Plan file:
+**Last session ended 2026-05-13 ~23:55.** Plan file:
 `~/.claude/plans/look-i-need-you-velvet-mist.md`.
 
-## What shipped (3 new commits on origin/main)
+## What shipped
 
 ```
-3c84e4f0c fast-sync: wrap body-pull in node.db IBD turbo mode
-?         fast-sync: SHA3 spotcheck + assume_valid trust-mode for body-pull  (021a41da4-chain)
-60b317794 session-end: handoff doc post P0.7/P0.8
-42c014806 fast-sync: standalone -bodypull-from-legacy + height-based traversal
-021a41da4 fast-sync: P0 durable body-pull + P1 loopback connect-timeout
+e639f1b4e fast-sync: direct LevelDB+mmap import (-fastimport)
 ```
 
-The Phase 1 plan (`look-i-need-you-velvet-mist.md`) targeted **100+
-blocks/sec** body-pull. Live test result: **~4 blocks/sec sustained**,
-vs 3 bps baseline. ~30% improvement, not 30x. Mechanism is correct
-(SHA3 spotcheck passes, trust-mode armed, IBD turbo engaged), but
-the bottleneck has shifted.
+Pushed to `origin/main`. Build clean, `make lint` clean, all 1500+ tests
+pass.
 
-## Where the time actually goes (NEW finding)
+## What the change does
 
-`legacy_body_pull` calls `process_new_block` → `activation_request_connect` →
-`activate_best_chain` → `connect_tip` (NOT `chain_advance`, which is
-only used by `local_chain_ingest.c` phase 3). The per-block hot path
-in `connect_tip` (`lib/validation/src/process_block.c:2166+`) does:
+A new CLI flag `-fastimport[=PATH]` (default `$HOME/.zclassic`) that
+bypasses JSON-RPC entirely:
 
-1. **`block_tree_db_write_block_index_sync`** — LevelDB sync write per block (~10-30ms on SSD).
-2. **`block_tree_db_write_tx_index`** — per-tx LevelDB writes when
-   `-txindex` is on (production unit has it).
-3. **`wallet_sync_transaction`** — per-tx trial-decryption of Sapling
-   outputs (BLS12-381 ops).
-4. **Sapling commitment tree updates** — Pedersen hashes per output.
-   NOT gated by `g_assume_valid_height`.
+1. Opens zclassicd's `blocks/index/` LevelDB read-only and walks the
+   `b`-prefixed keyspace, producing a height-ordered array of `(hash,
+   nFile, nDataPos, nUndoPos, nStatus)`.
+2. Maintains an 8-deep LRU of `mmap()`'d `blk*.dat` files; serves
+   zero-copy payload pointers given `(nFile, nDataPos)`.
+3. SHA3-spot-checks K=3 random anchor windows directly from mmap.
+   Pass → arm `g_assume_valid_height = legacy_tip`. Fail → abort.
+4. Sets `g_body_pull_active = 1`. In `connect_tip`, this gate:
+   - swaps `block_tree_db_write_block_index_sync` for the async
+     variant (no per-block fsync; LevelDB memtable batches the writes).
+   - skips `wallet_sync_transaction` + Sapling trial-decrypt entirely.
+5. Walks heights `[active_tip+1 .. legacy_tip]`, feeds payloads to
+   `process_new_block`.
+6. Runs `wallet_rescan` over the imported range when the loop
+   completes — picks up any wallet hits that were skipped during the
+   trust-mode walk.
 
-The trust-mode work (1a) skips ECDSA, Groth16, JoinSplit Ed25519,
-BIP-30 — but those are tiny compared to the I/O + wallet sync above.
+Crash safety: coins.db still commits per block (at-tip kill-9
+ordering preserved). On crash, block_index may be a handful of blocks
+ahead in RAM but not durable; recovery rewinds to coins.db tip and
+re-imports the gap.
 
-Also: `node_db_ibd_turbo_mode`'s DROP INDEX *failed* (table locked by
-the coins_view_sqlite dedicated connection), so node.db indexes stayed
-on. synchronous=OFF succeeded but the savings are smaller without the
-index drops.
+## Constraint and why the live test is deferred
 
-## Secondary finding: activate_best_chain stalls on stale failed flags
+LevelDB acquires an exclusive LOCK file when opened. zclassicd holds
+that LOCK while running, so a concurrent `-fastimport` open fails
+with `LOCK held? stop zclassicd or snapshot the dir first`.
 
-Live: `applied=856 ok=no final_tip=3,100,643` despite 856 blocks
-written to disk. The active tip did NOT advance.
+The plan's verification sequence stops both `zclassic23` and
+`zclassicd-rhett` services, runs the import, then restarts. The user
+chose `Commit + push, defer live test` rather than disturb the
+running services. Phase 3 is ready to live-test whenever convenient.
 
-Hypothesis: stale `BLOCK_FAILED_VALID` flags upstream in the chain
-prevent `find_most_work_chain` from selecting the path through the
-body-pulled blocks. Body-pull writes them to disk, but
-`activate_best_chain` refuses to extend through invalid markers.
-This is exactly the P0.5 task from the original handoff doc, never
-shipped.
-
-## Next-session priorities
-
-### P1-NEW: Clear stale BLOCK_FAILED_VALID on boot (was P0.5, now load-bearing)
-
-**File:** `app/services/src/chain_restore_service.c` (around line 648,
-the `invalidated_off_chain` counter pattern).
-
-When the tip is detected as stuck (active_tip < pindex_best_header by
-≥ N for ≥ M seconds), boot-time policy clears `BLOCK_FAILED_VALID`
-from any block whose `nHeight > active_tip`. This unblocks
-`find_most_work_chain` from selecting paths through those blocks; the
-next `connect_tip` re-validates them (cheap under assume_valid trust
-mode) — if they're spuriously-flagged they now connect; if they're
-genuinely invalid they get re-flagged.
-
-Without this, Phase 1's body-pull writes blocks to disk that never
-connect. ETA: ~30-60 min.
-
-### P2-NEW: Defer LevelDB block_index_sync during body-pull
-
-The dominant per-block cost. `connect_tip` line ~2809 hard-codes
-`block_tree_db_write_block_index_sync`. Replace with a body-pull-aware
-buffered writer: accumulate `disk_block_index` entries in memory,
-flush + fsync the whole batch at the end of body-pull (or every N
-blocks for crash safety). One fsync amortized over thousands of
-writes.
-
-Combined with P1-NEW, this should plausibly hit the 100+ bps target.
-ETA: ~2-3 hr.
-
-### P3-NEW: Defer tx_index + wallet sync during body-pull
-
-`-txindex` writes one LevelDB key per transaction. With ~250 txs/block
-average this is the secondary bottleneck. Defer to end-of-body-pull
-batch.
-
-`wallet_sync_transaction` does Sapling trial-decryption. During
-body-pull-trust-mode, skip wallet sync entirely; user runs
-`rescanblockchain` afterward to populate the wallet at leisure.
-
-ETA: ~1-2 hr each.
-
-### Deferred from Phase 1
-
-- **1b (batched chain_advance commits):** the existing chain_advance
-  isn't on the body-pull hot path (see above). DELETE this idea;
-  the equivalent for body-pull is P2/P3-NEW above.
-
-## What's still broken / open issues
-
-- **node.db DROP INDEX fails during turbo enter** — locked by
-  coins_view_sqlite dedicated connection. Either drop the indexes
-  before opening the dedicated coins connection, or accept reduced
-  turbo benefit.
-- **active_chain stuck at 3,100,643** despite body-pull writing 856
-  blocks to disk. P1-NEW unblocks this.
-- **Phase 1 SHA3 window 0 mismatch** still unresolved (`-importfromlegacy`
-  can't reach phase 3). Documented in plan as Phase 2.
-- **Rolling anchor regeneration** still not built. Plan Phase 3.
-
-## Verification commands
+## Live test sequence (copy-paste when ready)
 
 ```bash
-# After P1-NEW lands:
+# Current state snapshot (pre-test):
+./tools/zcl-rpc getblockcount   # note zclassic23 tip
+curl -s --data-binary '{"method":"getblockcount"}' \
+     -u $(grep -E '^rpc(user|password)=' ~/.zclassic/zclassic.conf | \
+          tr '\n' ':' | sed 's/rpcuser=//; s/rpcpassword=//; s/::*$//') \
+     http://127.0.0.1:8232/                                # note zclassicd tip
+
+# Stop both services
 systemctl --user stop zclassic23
+systemctl --user stop zclassicd-rhett
+
+# Run fastimport (foreground, watch output)
 ./zclassic23 -datadir=$HOME/.zclassic-c23 \
-  -bodypull-from-legacy -nobgvalidation \
+  -fastimport=$HOME/.zclassic -nobgvalidation \
   -port=8033 -rpcport=18232 \
-  > /tmp/fast-sync.log 2>&1 &
+  > /tmp/fastimport.log 2>&1 &
+PID=$!
 
-# Should see:
-#   [chain-restore] cleared N stale BLOCK_FAILED_VALID flags above tip ...
-#   [legacy_body_pull] SHA3 spotcheck: K=3 ... 3/3 windows match
-#   [legacy_body_pull] trust-mode armed: assume_valid X -> Y
-#   Body pull: node.db turbo mode ON
-#   [legacy_body_pull] applied=N h=H at increasing rate
-#   Body pull: applied=10500 ok=yes final_tip=3,111,198  (← key: final_tip moves!)
+# Look for in /tmp/fastimport.log:
+#   [bilr] scanned=N usable=M max_height=...
+#   [legacy_direct_import] legacy tip h=3,111,xxx
+#   [legacy_direct_import] SHA3 spotcheck: K=3 ... 3/3 windows match
+#   [legacy_direct_import] trust-mode armed
+#   [legacy_direct_import] applied=N rate=>=100 bps
+#   [legacy_direct_import] walk complete: ... final_tip=3,111,xxx
+#   [legacy_direct_import] wallet rescan complete
 
-# After P2/P3-NEW lands:
-#   Rate should sustain ≥100 blocks/sec
-#   Total catch-up of 10K-block gap should be < 2 min
+# Wait for shutdown cleanup, then restart services
+until ! kill -0 $PID 2>/dev/null; do sleep 1; done
+systemctl --user start zclassicd-rhett
+systemctl --user start zclassic23
+
+# Verify
+./tools/zcl-rpc getblockcount   # should match zclassicd tip
 ```
 
-## Files touched in Phase 1
+Expected outcome: sustained ≥100 bps; 10K-block catch-up in <90 s.
 
-- `app/services/src/legacy_body_pull.c` — SHA3 spotcheck + assume_valid bump (committed)
-- `config/src/boot.c` — wrap body-pull in IBD turbo enter/exit (committed)
+## What to look for in the log
+
+- `[bilr] scanned=...` — confirms zclassicd's LevelDB opened.
+- `[bilr] max_height=...` — should be the live zclassicd tip.
+- `SHA3 spotcheck: K=3 ... 3/3 windows match` — anchor table agrees.
+- `trust-mode armed: assume_valid X -> Y` — the bump.
+- `rate=...` lines — must be > 30 bps to validate the unlock; > 100
+  to validate the throughput target.
+- Final `walk complete: applied=N` — N should equal `legacy_tip -
+  active_tip`.
+
+## Failure modes to expect
+
+- `[bilr] open failed: ... LOCK held?` — zclassicd not fully stopped.
+  Wait 5s and retry.
+- `spotcheck FAILED at window K` — zclassicd's blocks don't match the
+  compile-time anchor table. Likely zclassicd is on a different fork
+  (testnet?) or the anchor table is stale. Sanity-check chain params.
+- `process_new_block FAILED: ...` — a block failed validation. Check
+  reject_reason. With trust-mode armed, only Merkle root / coinbase
+  / ZIP-209 / UTXO-have-inputs checks remain — a failure here is
+  meaningful.
+- DROP INDEX failure log — known pre-existing issue;
+  synchronous=OFF still engages, just without the index-drop benefit.
+
+## If the rate is below 30 bps
+
+The block_index sync-write deferral didn't engage. Check
+`g_body_pull_active` is 1 by adding a debug log in `connect_tip`'s
+gate, or run with `strace -c -e trace=fsync` to count fsyncs.
+
+If wallet rescan dominates the runtime (large wallet), consider
+adding `-norescan` flag or making it async.
+
+## Open issues / next-pass priorities
+
+- **Shallow-snapshot helper** for zero-downtime use: hardlink `.ldb`
+  files + cp MANIFEST/CURRENT/LOG to a tempdir, open that. Unblocks
+  fastimport while zclassicd keeps running. ETA ~1-2 hr.
+- **Phase 4 rolling anchor**: `tools/gen_sha3_windows --max-height=tip`
+  against zclassicd to refresh the compile-time anchor table; commit
+  + ship per release. ETA ~1 hr operator step + ~5 min compile-time
+  generation.
+- **Phase 5 heartbeat auto-recovery**: when `active_tip < remote_tip
+  - 100` for >60s and `~/.zclassic` exists, auto-trigger fastimport
+  (or bodypull-from-legacy if LOCK held). Removes the manual ritual
+  entirely. ETA ~2 hr.
+- **node.db DROP INDEX during turbo enter** still fails (coins_view_sqlite
+  table lock). Either reorder or accept reduced turbo benefit. Not
+  blocking Phase 3.
 
 ## Memory entries to consult next session
 
-- `feedback_fast_sync_phase1_findings.md` — full bottleneck-shift analysis
-- `feedback_at_tip_kill9_ordering_invariant.md` — preserve when batching commits
+- `project_fast_sync_phase3_2026-05-13.md` — what shipped this session
+- `feedback_fast_sync_phase1_findings.md` — why Phase 1 didn't suffice
+- `feedback_at_tip_kill9_ordering_invariant.md` — preserve when adding
+  more I/O deferral
 - `reference_zclassicd_local_fast_sync.md` — datadir layout
