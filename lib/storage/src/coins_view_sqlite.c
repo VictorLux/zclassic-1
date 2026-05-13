@@ -741,7 +741,7 @@ bool coins_view_sqlite_batch_write_ex(struct coins_view_sqlite *cvs,
                               e->txid.data, 32, SQLITE_STATIC);
             int rc = sqlite3_step(cvs->stmt_delete_tx); // raw-sql-ok: see top-of-file ZCL_AR_RAW_SQL rationale
             if (rc != SQLITE_DONE && rc != SQLITE_ROW) {
-                fprintf(stderr, "coins_flush: pre-DELETE failed rc=%d: %s\n",
+                fprintf(stderr, "coins_flush: pre-DELETE failed rc=%d: %s\n",  // obs-ok:write_errors-counted-and-rolled-back-below
                         rc, sqlite3_errmsg(cvs->db));
                 write_errors++;
             }
@@ -776,7 +776,7 @@ bool coins_view_sqlite_batch_write_ex(struct coins_view_sqlite *cvs,
                 sqlite3_bind_int(ins, 8, cc->is_coinbase ? 1 : 0);
                 rc = sqlite3_step(ins); // raw-sql-ok: see top-of-file ZCL_AR_RAW_SQL rationale
                 if (rc != SQLITE_DONE && rc != SQLITE_ROW) {
-                    fprintf(stderr, "coins_flush: INSERT failed rc=%d "
+                    fprintf(stderr, "coins_flush: INSERT failed rc=%d "  // obs-ok:write_errors-counted-and-rolled-back-below
                             "h=%d vout=%zu: %s\n",
                             rc, cc->height, vi, sqlite3_errmsg(cvs->db));
                     write_errors++;
@@ -788,7 +788,7 @@ bool coins_view_sqlite_batch_write_ex(struct coins_view_sqlite *cvs,
     }
 
     if (write_errors > 0) {
-        fprintf(stderr, "coins_flush: %d write errors! "
+        fprintf(stderr, "coins_flush: %d write errors! "  // obs-ok:paired-with-event_emitf-below
                 "Rolling back to prevent UTXO loss "
                 "(wrote=%zu deleted=%zu)\n",
                 write_errors, entries_written, entries_deleted);
@@ -811,7 +811,7 @@ bool coins_view_sqlite_batch_write_ex(struct coins_view_sqlite *cvs,
                 dirty_count++;
         }
         if (dirty_count > 0) {
-            fprintf(stderr, "coins_flush: WARNING zero operations with "
+            fprintf(stderr, "coins_flush: WARNING zero operations with "  // obs-ok:warning-only-on-best-effort-path
                     "%zu dirty entries (total=%zu) — possible silent failure\n",
                     dirty_count, map_coins->size);
         }
@@ -824,7 +824,7 @@ bool coins_view_sqlite_batch_write_ex(struct coins_view_sqlite *cvs,
                           hash_block->data, 32, SQLITE_STATIC);
         int rc = sqlite3_step(cvs->stmt_best_set); // raw-sql-ok: see top-of-file ZCL_AR_RAW_SQL rationale
         if (rc != SQLITE_DONE && rc != SQLITE_ROW) {
-            fprintf(stderr, "coins_flush: best_block UPDATE failed rc=%d: "
+            fprintf(stderr, "coins_flush: best_block UPDATE failed rc=%d: "  // obs-ok:paired-with-return-false-below
                     "%s\n", rc, sqlite3_errmsg(cvs->db));
             sqlite3_exec(cvs->db, txn_rollback, NULL, NULL, NULL);
             pthread_mutex_unlock(&cvs->mutex);
@@ -844,7 +844,7 @@ bool coins_view_sqlite_batch_write_ex(struct coins_view_sqlite *cvs,
                           buf, UTXO_COMMITMENT_SERIALIZED_SIZE, SQLITE_STATIC);
         int rc = sqlite3_step(cvs->stmt_commit_set);
         if (rc != SQLITE_DONE && rc != SQLITE_ROW) {
-            fprintf(stderr, "coins_flush: commitment UPDATE failed rc=%d: "
+            fprintf(stderr, "coins_flush: commitment UPDATE failed rc=%d: "  // obs-ok:non-fatal-commitment-is-optional
                     "%s\n", rc, sqlite3_errmsg(cvs->db));
             /* Non-fatal: commitment is optional, don't rollback coins */
         }
@@ -865,7 +865,7 @@ bool coins_view_sqlite_batch_write_ex(struct coins_view_sqlite *cvs,
         char *errmsg = NULL;
         int rc = sqlite3_exec(cvs->db, txn_commit, NULL, NULL, &errmsg);
         if (rc != SQLITE_OK) {
-            fprintf(stderr, "coins_flush: %s failed: %s\n",
+            fprintf(stderr, "coins_flush: %s failed: %s\n",  // obs-ok:paired-with-return-false-below
                     txn_commit, errmsg ? errmsg : "unknown");
             if (errmsg) sqlite3_free(errmsg);
             sqlite3_exec(cvs->db, txn_rollback, NULL, NULL, NULL);
@@ -925,7 +925,7 @@ static bool coins_view_sqlite_exec_one(struct coins_view_sqlite *cvs,
     int rc = sqlite3_exec(cvs->db, sql, NULL, NULL, &err);
     pthread_mutex_unlock(&cvs->mutex);
     if (rc != SQLITE_OK) {
-        fprintf(stderr,
+        fprintf(stderr,  // obs-ok:paired-with-return-false-below
                 "coins_view_sqlite_%s: %s failed rc=%d err=%s\n",
                 label, sql, rc, err ? err : "?");
         sqlite3_free(err);
@@ -996,7 +996,7 @@ int64_t coins_view_sqlite_bulk_insert(struct coins_view_sqlite *cvs,
     char *txn_err = NULL;
     int rc = sqlite3_exec(cvs->db, txn_begin, NULL, NULL, &txn_err);
     if (rc != SQLITE_OK) {
-        fprintf(stderr, "bulk_insert: %s failed rc=%d: %s\n",
+        fprintf(stderr, "bulk_insert: %s failed rc=%d: %s\n",  // obs-ok:paired-with-return-minus-one-below
                 txn_begin, rc, txn_err ? txn_err : "?");
         if (txn_err) sqlite3_free(txn_err);
         sqlite3_busy_timeout(cvs->db, 10000);
@@ -1031,7 +1031,7 @@ int64_t coins_view_sqlite_bulk_insert(struct coins_view_sqlite *cvs,
 
         int rs = sqlite3_step(ins); // raw-sql-ok: see top-of-file ZCL_AR_RAW_SQL rationale
         if (rs != SQLITE_DONE && rs != SQLITE_ROW) {
-            fprintf(stderr,
+            fprintf(stderr,  // obs-ok:fatal-true-triggers-rollback-and-partial-write-return
                     "bulk_insert: step failed rc=%d at i=%zu: %s\n",
                     rs, i, sqlite3_errmsg(cvs->db));
             fatal = true;
@@ -1051,7 +1051,7 @@ int64_t coins_view_sqlite_bulk_insert(struct coins_view_sqlite *cvs,
     rc = sqlite3_exec(cvs->db, txn_commit, NULL, NULL, &txn_err);
     sqlite3_busy_timeout(cvs->db, 10000);
     if (rc != SQLITE_OK) {
-        fprintf(stderr, "bulk_insert: %s failed rc=%d: %s\n",
+        fprintf(stderr, "bulk_insert: %s failed rc=%d: %s\n",  // obs-ok:paired-with-return-minus-one-below
                 txn_commit, rc, txn_err ? txn_err : "?");
         if (txn_err) sqlite3_free(txn_err);
         sqlite3_exec(cvs->db, txn_rollback, NULL, NULL, NULL);

@@ -143,7 +143,7 @@ static bool rpc_init(struct rpc_ctx *r, const char *host, int port,
     snprintf(raw, sizeof(raw), "%s:%s", user, pass);
     base64_encode((const unsigned char *)raw, strlen(raw),
                   r->auth_b64, sizeof(r->auth_b64));
-    r->resp = malloc(RPC_RESP_CAP);
+    r->resp = malloc(RPC_RESP_CAP);  // raw-alloc-ok: build-time tool, not linked into zclassic23
     if (!r->resp) {
         fprintf(stderr, "[gen_sha3_windows] malloc(%u) failed\n",
                 (unsigned)RPC_RESP_CAP);
