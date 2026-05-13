@@ -13,6 +13,7 @@
 #include "services/chain_tip.h"
 #include "services/recovery_policy.h"
 #include "services/utxo_recovery_service.h"
+#include "services/local_chain_ingest.h"
 #include "services/block_index_integrity.h"
 #include "services/wallet_backup_service.h"
 #include "services/disk_monitor.h"
@@ -578,6 +579,68 @@ static bool boot_step_init_crypto_and_state(struct app_context *ctx,
             fprintf(stderr,
                     "WARNING: failed to start ZK params loader thread\n");
     }
+    return true;
+}
+
+/* FS5: optional fast-sync from a co-located zclassicd.
+ *
+ * When -importfromlegacy=PATH (or bare -importfromlegacy → ~/.zclassic)
+ * is given, runs local_chain_ingest_run() to:
+ *   1. SHA3-window verify <legacy>/blocks/blk*.dat against the static
+ *      anchor table compiled into the binary.
+ *   2. Atomic UTXO snapshot import from <legacy>/chainstate/ with
+ *      SHA3 reverify against the hardcoded h=3,056,758 checkpoint.
+ *   3. Block-by-block ingest [anchor+1 .. tip] through chain_advance()
+ *      so the at-tip ordering invariant applies to every imported
+ *      block (kill -9 mid-ingest is recoverable).
+ *
+ * Called AFTER block_index has been loaded + genesis init completed —
+ * we need the in-memory block_index alive for phase 3 to attach
+ * imported blocks to a chain.
+ *
+ * Non-fatal on failure: logs the result and continues to normal boot
+ * (P2P sync). Callers wanting halt-on-fail can wrap the call. */
+static bool boot_step_local_chain_ingest(struct app_context *ctx,
+                                          const struct chain_params *params)
+{
+    if (!ctx || !ctx->ingest_from_legacy)
+        return true; /* nothing to do */
+
+    printf("\n═══ Local Chain Ingest from %s ═══\n",
+           ctx->ingest_from_legacy);
+    fflush(stdout);
+
+    if (!local_chain_ingest_detect_legacy_datadir(ctx->ingest_from_legacy)) {
+        fprintf(stderr,
+            "local_chain_ingest: %s does not contain blocks/blk00000.dat "
+            "— is this a zclassic datadir? Falling back to P2P sync.\n",
+            ctx->ingest_from_legacy);
+        return true;
+    }
+
+    struct local_chain_ingest_config cfg = {
+        .legacy_datadir  = ctx->ingest_from_legacy,
+        .skip_blk_verify = false,
+        .skip_pow_verify = true,  /* SHA3 anchors are the trust source */
+        .max_height      = 0,     /* ingest to peer-claimed tip */
+    };
+
+    int64_t t_ingest_start = boot_clock_ms();
+    enum local_ingest_result r = local_chain_ingest_run(
+        &cfg, &g_state, &g_coins_tip, params, ctx->datadir);
+    int64_t t_ingest_ms = boot_clock_ms() - t_ingest_start;
+
+    if (r != LCI_OK) {
+        fprintf(stderr,
+            "local_chain_ingest: result=%s elapsed_ms=%lld — "
+            "falling back to P2P sync\n",
+            local_ingest_result_name(r), (long long)t_ingest_ms);
+        return true;
+    }
+
+    printf("Local chain ingest OK. Tip h=%d. Elapsed %.1fs.\n",
+           active_chain_height(&g_state.chain_active),
+           (double)t_ingest_ms / 1000.0);
     return true;
 }
 
@@ -1893,6 +1956,13 @@ bool app_init(struct app_context *ctx)
             }
         }
     }
+
+    /* FS5: optional fast-sync from a co-located zclassicd. Runs after
+     * block_index is loaded + genesis init completed (we need block
+     * map entries for the post-anchor [anchor+1..tip] block ingest in
+     * phase 3). No-op when ctx->ingest_from_legacy is NULL. */
+    if (!boot_step_local_chain_ingest(ctx, params))
+        return false;
 
     /* Repair block index from SQLite.
      * After legacy import, blocks in the LevelDB index may lack BLOCK_VALID_SCRIPTS
