@@ -716,11 +716,44 @@ static bool boot_step_bodypull_from_legacy(struct app_context *ctx,
     /* Step 2: pull bodies for [active_tip+1 .. remote_tip].
      * legacy_body_pull's process_new_block path triggers
      * activate_best_chain per block, so the active tip extends as
-     * we go. */
+     * we go.
+     *
+     * We wrap the pull in node.db IBD turbo mode (synchronous=OFF +
+     * indexes dropped) so each per-block node_db_commit is a memcpy
+     * into the SQLite WAL instead of a fsync. Body-pull is restartable
+     * — if power cuts mid-pull, the next boot just re-runs body-pull
+     * for whatever didn't make it to disk. Coins.db is already at
+     * synchronous=NORMAL (its open-time default) and stays there.
+     *
+     * boot_db_restore_normal_mode runs unconditionally on exit (success
+     * OR failure) so subsequent boot phases see indexes + synchronous
+     * back at safe defaults. */
+    bool turbo_on = boot_db_enter_turbo_mode();
+    if (turbo_on) {
+        printf("Body pull: node.db turbo mode ON "
+               "(synchronous=OFF, indexes dropped)\n");
+    } else {
+        fprintf(stderr,
+                "Body pull: turbo mode failed to engage — continuing "
+                "at safe defaults (slower)\n");
+    }
+
     int bp_applied = 0;
     bool bp_ok = legacy_body_pull_range_blocking(
         &g_state, &g_coins_tip, params, ctx->datadir,
         active_tip + 1, remote_tip, &bp_applied);
+
+    if (turbo_on) {
+        if (boot_db_restore_normal_mode()) {
+            printf("Body pull: node.db normal mode restored "
+                   "(synchronous=NORMAL, indexes rebuilt)\n");
+        } else {
+            fprintf(stderr,
+                    "Body pull: failed to restore normal mode — "
+                    "node.db left in turbo state; investigate before "
+                    "next boot\n");
+        }
+    }
 
     int final_tip = active_chain_height(&g_state.chain_active);
     int64_t t_ms = boot_clock_ms() - t_start;
