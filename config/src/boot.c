@@ -414,6 +414,44 @@ static void boot_step_detect_unclean_shutdown(const char *datadir)
     unlink(marker_path);
 }
 
+static void boot_step_finalize_chain_state(void)
+{
+    /* Restore normal SQLite settings after any IBD replay */
+    if (g_node_db.open) {
+        if (!boot_db_restore_normal_mode())
+            fprintf(stderr, "boot: failed to restore normal mode\n");
+        if (!boot_db_set_sync_batch_size(1))
+            fprintf(stderr, "boot: failed to reset sync batch size\n");
+    }
+    /* Flush every 500 blocks during normal sync so crash/kill never
+     * loses more than ~500 blocks of connected coins state. */
+    set_flush_policy(3600, 500000, 500);
+
+    struct block_index *tip = active_chain_tip(&g_state.chain_active);
+    if (tip && tip->phashBlock) {
+        if (g_node_db.open &&
+            !node_db_sync_set_tip(&g_node_db, tip->phashBlock->data,
+                                  tip->nHeight)) {
+            fprintf(stderr, "boot: failed to persist final chain tip\n");
+        }
+        char hex[65];
+        uint256_get_hex(tip->phashBlock, hex);
+        printf("Chain tip: height=%d hash=%s\n", tip->nHeight, hex);
+        event_emitf(EV_BOOT_ACTIVATE, 0, "done tip=%d", tip->nHeight);
+
+        /* Auto-extend assumevalid to cover the startup chain tip.
+         * Everything already in the chainstate was validated by either:
+         * - zclassicd (via legacy import)
+         * - a previous run of zclassic23
+         * - the coins DB (trusted LevelDB state)
+         * Only blocks received via P2P AFTER startup need new validation.
+         * With Groth16 pairing fix deployed, all proofs above the checkpoint
+         * are now verified correctly — no need to extend assume-valid. */
+    } else {
+        printf("Chain tip: genesis\n");
+    }
+}
+
 static bool boot_step_init_crypto_and_state(struct app_context *ctx,
                                              const struct chain_params *params)
 {
@@ -2561,40 +2599,8 @@ sapling_tree_boot_check_done:
         }
     }
 
-    /* Restore normal SQLite settings after any IBD replay */
-    if (g_node_db.open) {
-        if (!boot_db_restore_normal_mode())
-            fprintf(stderr, "boot: failed to restore normal mode\n");
-        if (!boot_db_set_sync_batch_size(1))
-            fprintf(stderr, "boot: failed to reset sync batch size\n");
-    }
-    /* Flush every 500 blocks during normal sync so crash/kill never
-     * loses more than ~500 blocks of connected coins state. */
-    set_flush_policy(3600, 500000, 500);
-
+    boot_step_finalize_chain_state();
     struct block_index *tip = active_chain_tip(&g_state.chain_active);
-    if (tip && tip->phashBlock) {
-        if (g_node_db.open &&
-            !node_db_sync_set_tip(&g_node_db, tip->phashBlock->data,
-                                  tip->nHeight)) {
-            fprintf(stderr, "boot: failed to persist final chain tip\n");
-        }
-        char hex[65];
-        uint256_get_hex(tip->phashBlock, hex);
-        printf("Chain tip: height=%d hash=%s\n", tip->nHeight, hex);
-        event_emitf(EV_BOOT_ACTIVATE, 0, "done tip=%d", tip->nHeight);
-
-        /* Auto-extend assumevalid to cover the startup chain tip.
-         * Everything already in the chainstate was validated by either:
-         * - zclassicd (via legacy import)
-         * - a previous run of zclassic23
-         * - the coins DB (trusted LevelDB state)
-         * Only blocks received via P2P AFTER startup need new validation.
-         * With Groth16 pairing fix deployed, all proofs above the checkpoint
-         * are now verified correctly — no need to extend assume-valid. */
-    } else {
-        printf("Chain tip: genesis\n");
-    }
 
     /* Backfill shielded values (utxo_recovery_service) */
     if (g_node_db.open && tip && tip->nHeight > 1000 && !ctx->no_services) {
