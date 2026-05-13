@@ -33,6 +33,7 @@
 #include "controllers/strong_params.h"
 #include "services/sync_watchdog_service.h"
 #include "services/chain_restore_service.h"
+#include "services/local_chain_ingest.h"
 #include "services/zclassicd_oracle_service.h"
 #include "health/heartbeat.h"
 #include "models/database.h"
@@ -216,6 +217,8 @@ static const struct dump_entry g_dumpers[] = {
                      "unified heartbeat ring: registered subsystems, ages, stall fires" },
     { "oracle",      zclassicd_oracle_dump_state_json,
                      "zclassicd oracle: drift-probe stats + RPC config" },
+    { "local_ingest", local_chain_ingest_dump_state_json,
+                     "local chain ingest: phase/result/blocks/UTXOs from co-located zclassicd" },
 };
 
 static bool rpc_dumpstate(const struct json_value *params, bool help,
