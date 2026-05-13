@@ -7,6 +7,7 @@
 #include <assert.h>
 #include <sqlite3.h>
 #include "validation/process_block.h"
+#include "validation/main_logic.h"
 #include "validation/check_block.h"
 #include "validation/connect_block.h"
 #include "controllers/blockchain_controller.h"
@@ -2641,6 +2642,28 @@ bool connect_tip(struct validation_state *state,
 	                                 GetTimeMicros() - stage_start_us);
     pindex_new->nStatus = (pindex_new->nStatus & ~BLOCK_VALID_MASK) |
                            BLOCK_VALID_SCRIPTS;
+
+    /* Ordering invariant for crash-safe tip advance:
+     *   coins.db (UTXOs + coins_best_block) COMMITted BEFORE
+     *   LevelDB block_index is fsynced.
+     *
+     * If kill -9 fires between the two writes, the next boot sees
+     * coins.db at N+1 but block_index at N. utxo_recovery_service's
+     * forward-roll re-derives the block_index entry deterministically
+     * from disk_block_io and the block payload — there's no UTXO
+     * delta to recover, only the index row.
+     *
+     * The reverse direction (block_index ahead of coins.db) requires
+     * re-running connect_block to recover UTXO state, which is the
+     * 250k-block backward self_heal scan today. Eliminating that
+     * direction by ordering eliminates the scan's load-bearing role.
+     *
+     * Skipped during IBD: bulk sync amortizes per-block fsync over
+     * the lazy flush_coins_if_needed policy. At-tip ops force a
+     * per-block coins flush so kill -9 at the tip never rewinds. */
+    if (!is_initial_block_download(ms)) {
+        flush_coins_if_needed(coins_tip, true);
+    }
 
     /* Persist block_index entry to LevelDB */
     if (g_active_block_tree) {
