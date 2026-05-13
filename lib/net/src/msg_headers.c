@@ -10,6 +10,7 @@
 #include "net/msg_internal.h"
 #include "net/p2p_message.h"
 #include "net/peer_scoring.h"
+#include "net/fast_sync.h"
 #include "storage/disk_block_io.h"
 #include "services/header_sync_service.h"
 #include "services/block_sync_service.h"
@@ -160,13 +161,24 @@ bool process_getheaders(struct msg_processor *mp, struct p2p_node *node,
     }
     block_locator_free(&locator);
 
-    /* Count headers to send */
+    /* Count headers to send.
+     *
+     * Legacy ZClassic peers (MagicBean / pre-ZCL23) cap inbound headers
+     * at MAX_HEADERS_RESULTS=160 and ban senders that exceed it
+     * (Misbehaving +20 → disconnect). When we serve a legacy peer with a
+     * larger batch, we get banned mid-handshake. The bug was visible on
+     * the loopback peer at 127.0.0.1:8034: zclassicd's debug.log shows
+     * "ProcessMessages(headers, 1088003 bytes) FAILED" followed by
+     * "Misbehaving: 127.0.0.1:<port> (0 -> 20)" right after our version.
+     * ZCL23 peers carry NODE_ZCL23 and accept up to 2000 per our own
+     * limit at line :237. */
+    const int max_headers = peer_supports_fast_sync(node->services) ? 2000 : 160;
     int count = 0;
     struct block_index *iter = pindex ?
         active_chain_at(chain, pindex->nHeight + 1) :
         active_chain_at(chain, 0);
 
-    while (iter && count < 2000) {
+    while (iter && count < max_headers) {
         count++;
         if (!uint256_is_null(&hash_stop) && iter->phashBlock &&
             uint256_eq(iter->phashBlock, &hash_stop))
