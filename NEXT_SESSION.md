@@ -1,155 +1,149 @@
-# Next-session handoff — body-pull operational, performance + auto-recovery left
+# Next-session handoff — Phase 1 done (modest gain), real bottleneck identified
 
-**Last session ended 2026-05-13 ~22:00.**
+**Last session ended 2026-05-13 ~23:10.** Plan file:
+`~/.claude/plans/look-i-need-you-velvet-mist.md`.
 
-## State at handoff
+## What shipped (3 new commits on origin/main)
 
-### Running node
-- Latest binary deployed via systemd unit (auto-picks up the build at
-  `/home/rhett/github/zclassic23/zclassic23` via the `~/zclassic23`
-  symlink).
-- Active tip: ~**3,102,778** (live e2e test advanced 2,199 blocks from
-  3,100,515 before SIGTERM landed cleanly).
-- zclassicd tip: **3,111,137+**. Remaining gap: ~8,400 blocks.
-- The four production fixes from this and last session — K2 loopback
-  fast lane, P1 connman loopback exemption, P0 body-pull, P0.7
-  standalone entry point — are all live in the running binary.
-
-### What works
-- `./zclassic23 -datadir=$HOME/.zclassic-c23 -bodypull-from-legacy` is
-  the unsticker. Skips local_chain_ingest phase 1 (SHA3 verify) and
-  phase 2 (chainstate import), pulls headers via header_probe, then
-  height-iterates over `[active_tip+1 .. remote_tip]` calling
-  `process_new_block` per block. Each block is durable on disk.
-- Live test result: **applied=2199 skipped_have=63 rpc_errors=0** —
-  no orphan accumulation, no validation failures, no RPC errors.
-  Active tip extended from 3,100,515 to ~3,102,778.
-
-### Commits shipped this session (all on origin/main)
 ```
+3c84e4f0c fast-sync: wrap body-pull in node.db IBD turbo mode
+?         fast-sync: SHA3 spotcheck + assume_valid trust-mode for body-pull  (021a41da4-chain)
+60b317794 session-end: handoff doc post P0.7/P0.8
 42c014806 fast-sync: standalone -bodypull-from-legacy + height-based traversal
 021a41da4 fast-sync: P0 durable body-pull + P1 loopback connect-timeout
 ```
 
-## Immediate priorities (next session)
+The Phase 1 plan (`look-i-need-you-velvet-mist.md`) targeted **100+
+blocks/sec** body-pull. Live test result: **~4 blocks/sec sustained**,
+vs 3 bps baseline. ~30% improvement, not 30x. Mechanism is correct
+(SHA3 spotcheck passes, trust-mode armed, IBD turbo engaged), but
+the bottleneck has shifted.
 
-### P0.9 — Per-block performance (~3-6 hr)
+## Where the time actually goes (NEW finding)
 
-Per-block rate during the live test was **~3 blocks/sec**, far below
-the handoff doc's "3-5 min for 10 K-block gap" target. At this rate
-the full catch-up takes ~50 minutes per restart. Suspect path:
+`legacy_body_pull` calls `process_new_block` → `activation_request_connect` →
+`activate_best_chain` → `connect_tip` (NOT `chain_advance`, which is
+only used by `local_chain_ingest.c` phase 3). The per-block hot path
+in `connect_tip` (`lib/validation/src/process_block.c:2166+`) does:
 
-1. `process_new_block` → `connect_tip` runs full check_inputs +
-   sapling verify on every block. With `-nobgvalidation` set, the
-   live tip path shouldn't be re-verifying historical Groth16
-   proofs, but check_inputs (ECDSA per input) is unavoidable on the
-   first connect.
-2. Sapling tree warm-up: boot logs say
-   `Sapling tree root MISMATCH (size=714331) - deferring live
-   rebuild until after boot (tip_h=3100430)` — the first
-   connect_tip may rebuild the entire incremental Merkle tree from
-   a 714k-commitment cold state. One-time cost but expensive.
-3. `process_new_block` triggers
-   `activation_request_connect(ACTIVATION_SRC_NEW_BLOCK)` — find
-   out whether the activation controller is serial (one block per
-   queued request) and whether each request does its own coins
-   commit + node_db commit (the chain_advance per-block latency
-   floor).
+1. **`block_tree_db_write_block_index_sync`** — LevelDB sync write per block (~10-30ms on SSD).
+2. **`block_tree_db_write_tx_index`** — per-tx LevelDB writes when
+   `-txindex` is on (production unit has it).
+3. **`wallet_sync_transaction`** — per-tx trial-decryption of Sapling
+   outputs (BLS12-381 ops).
+4. **Sapling commitment tree updates** — Pedersen hashes per output.
+   NOT gated by `g_assume_valid_height`.
 
-Where to look:
-- `app/services/src/chain_advance.c` — the atomic per-block
-  commit. Look at the I/O footprint per call.
-- `lib/validation/src/process_block.c:4137-4182` `process_new_block`
-  — order of check/accept/activate.
-- `app/services/src/chain_activation_controller.c` — whether
-  there's a batching path or only one-at-a-time.
+The trust-mode work (1a) skips ECDSA, Groth16, JoinSplit Ed25519,
+BIP-30 — but those are tiny compared to the I/O + wallet sync above.
 
-Possible quick wins:
-- Defer coins.db `BEGIN IMMEDIATE` / fsync to batches of N blocks
-  during body-pull. The at-tip kill-9 ordering invariant
-  ([[feedback_at_tip_kill9_ordering_invariant]]) still has to
-  hold, so consider only batching up to the second-to-last block.
-- Skip script signature verification during catch-up when caller
-  is body-pull (consenting trust of the legacy node — same trust
-  model that local_chain_ingest already declares via
-  `cfg.skip_pow_verify = true`).
+Also: `node_db_ibd_turbo_mode`'s DROP INDEX *failed* (table locked by
+the coins_view_sqlite dedicated connection), so node.db indexes stayed
+on. synchronous=OFF succeeded but the savings are smaller without the
+index drops.
 
-### P0.5 — clear spurious BLOCK_FAILED_VALID (~30 min, still pending)
+## Secondary finding: activate_best_chain stalls on stale failed flags
 
-The original handoff doc called for this. Still relevant: if some
-blocks in the catch-up window carry stale `BLOCK_FAILED_VALID` from
-prior runs, body-pull silently skips them
-(`legacy_body_pull.c:235` `skipped_failed++`). Pattern to copy is
-`chain_restore_service.c:648` `invalidated_off_chain` counter.
+Live: `applied=856 ok=no final_tip=3,100,643` despite 856 blocks
+written to disk. The active tip did NOT advance.
 
-Trigger condition: when `active_tip < pindex_best_header` by ≥ N
-(or `active_tip < known_remote_tip` from oracle), clear
-`BLOCK_FAILED_VALID` from entries with `nHeight > active_tip` so
-the next body-pull / activate_best_chain can re-validate them.
+Hypothesis: stale `BLOCK_FAILED_VALID` flags upstream in the chain
+prevent `find_most_work_chain` from selecting the path through the
+body-pulled blocks. Body-pull writes them to disk, but
+`activate_best_chain` refuses to extend through invalid markers.
+This is exactly the P0.5 task from the original handoff doc, never
+shipped.
 
-### P0.10 — Heartbeat-triggered body-pull (~2-3 hr)
+## Next-session priorities
 
-So the operator never has to run `-bodypull-from-legacy` manually.
-A heartbeat tick in the existing health subsystem checks:
-- `active_tip < remote_tip - N` (configurable threshold)
-- zclassicd reachable on loopback
-- last automatic pull ≥ M seconds ago
+### P1-NEW: Clear stale BLOCK_FAILED_VALID on boot (was P0.5, now load-bearing)
 
-…and if all true, calls `legacy_body_pull_range_blocking` for a
-bounded window. Combine with P0.5 and the node self-heals from
-any tip-lag condition.
+**File:** `app/services/src/chain_restore_service.c` (around line 648,
+the `invalidated_off_chain` counter pattern).
 
-### P0.6 — `tools/zcl-resync-from-legacy.sh` wrapper (still pending)
+When the tip is detected as stuck (active_tip < pindex_best_header by
+≥ N for ≥ M seconds), boot-time policy clears `BLOCK_FAILED_VALID`
+from any block whose `nHeight > active_tip`. This unblocks
+`find_most_work_chain` from selecting paths through those blocks; the
+next `connect_tip` re-validates them (cheap under assume_valid trust
+mode) — if they're spuriously-flagged they now connect; if they're
+genuinely invalid they get re-flagged.
 
-Operator one-liner: stop service → run
-`./zclassic23 -bodypull-from-legacy=...` → wait for completion →
-restart service. Defer until per-block performance is fixed; today
-the foreground binary leaves a long-running process the operator
-has to watch.
+Without this, Phase 1's body-pull writes blocks to disk that never
+connect. ETA: ~30-60 min.
 
-## Lessons learned this session
+### P2-NEW: Defer LevelDB block_index_sync during body-pull
 
-1. **pindex_best_header is not the header tip.** `accept_block_header`
-   creates block_index entries but does **not** promote
-   `pindex_best_header`. Only `csr_commit_tip` (called when a block
-   is connected as the new active tip) updates it
-   (`lib/validation/src/process_block.c:1457`). For any height-based
-   traversal that "knows" the remote tip, prefer the value returned
-   by `header_probe_pull_range_blocking(out_remote_tip)`.
+The dominant per-block cost. `connect_tip` line ~2809 hard-codes
+`block_tree_db_write_block_index_sync`. Replace with a body-pull-aware
+buffered writer: accumulate `disk_block_index` entries in memory,
+flush + fsync the whole batch at the end of body-pull (or every N
+blocks for crash safety). One fsync amortized over thousands of
+writes.
 
-2. **Phase 1 SHA3 anchors are out of sync with the legacy datadir.**
-   `local_chain_ingest_run` aborts at "window 0 mismatch" before
-   reaching phase 3 — that's why the original `-importfromlegacy`
-   flow couldn't unstick. The standalone `-bodypull-from-legacy`
-   sidesteps it entirely. Re-regenerating `g_sha3_windows[]` via
-   `tools/gen_sha3_windows` may be worth doing for completeness,
-   but is no longer load-bearing for the unstick path.
+Combined with P1-NEW, this should plausibly hit the 100+ bps target.
+ETA: ~2-3 hr.
 
-3. **Foreground binary teardown is slow.** SIGTERM → "shutdown
-   watchdog: 25s timeout — forcing exit" via SIGALRM. While
-   teardown is in flight, the systemd service can't claim the
-   datadir lock and fast-fails. Always wait for the foreground PID
-   to actually exit before issuing `systemctl restart`.
+### P3-NEW: Defer tx_index + wallet sync during body-pull
 
-## Files of interest
+`-txindex` writes one LevelDB key per transaction. With ~250 txs/block
+average this is the secondary bottleneck. Defer to end-of-body-pull
+batch.
 
-- `app/services/src/legacy_body_pull.c` — height-based pull, the
-  heart of this session.
-- `lib/rpc/src/legacy_rpc_client.c` — shared JSON-RPC transport.
-- `config/src/boot.c:646-728` — `boot_step_bodypull_from_legacy`
-  hook that runs the standalone path.
-- `app/services/src/local_chain_ingest.c:1473-1532` — phase3-pre
-  body-pull wired through the import path (still useful once
-  phase 1/2 anchors are refreshed).
+`wallet_sync_transaction` does Sapling trial-decryption. During
+body-pull-trust-mode, skip wallet sync entirely; user runs
+`rescanblockchain` afterward to populate the wallet at leisure.
 
-## Diagnostic check sequence
+ETA: ~1-2 hr each.
 
+### Deferred from Phase 1
+
+- **1b (batched chain_advance commits):** the existing chain_advance
+  isn't on the body-pull hot path (see above). DELETE this idea;
+  the equivalent for body-pull is P2/P3-NEW above.
+
+## What's still broken / open issues
+
+- **node.db DROP INDEX fails during turbo enter** — locked by
+  coins_view_sqlite dedicated connection. Either drop the indexes
+  before opening the dedicated coins connection, or accept reduced
+  turbo benefit.
+- **active_chain stuck at 3,100,643** despite body-pull writing 856
+  blocks to disk. P1-NEW unblocks this.
+- **Phase 1 SHA3 window 0 mismatch** still unresolved (`-importfromlegacy`
+  can't reach phase 3). Documented in plan as Phase 2.
+- **Rolling anchor regeneration** still not built. Plan Phase 3.
+
+## Verification commands
+
+```bash
+# After P1-NEW lands:
+systemctl --user stop zclassic23
+./zclassic23 -datadir=$HOME/.zclassic-c23 \
+  -bodypull-from-legacy -nobgvalidation \
+  -port=8033 -rpcport=18232 \
+  > /tmp/fast-sync.log 2>&1 &
+
+# Should see:
+#   [chain-restore] cleared N stale BLOCK_FAILED_VALID flags above tip ...
+#   [legacy_body_pull] SHA3 spotcheck: K=3 ... 3/3 windows match
+#   [legacy_body_pull] trust-mode armed: assume_valid X -> Y
+#   Body pull: node.db turbo mode ON
+#   [legacy_body_pull] applied=N h=H at increasing rate
+#   Body pull: applied=10500 ok=yes final_tip=3,111,198  (← key: final_tip moves!)
+
+# After P2/P3-NEW lands:
+#   Rate should sustain ≥100 blocks/sec
+#   Total catch-up of 10K-block gap should be < 2 min
 ```
-# 1. Is body-pull working?
-grep "legacy_body_pull\] applied" ~/.zclassic-c23/node.log | tail
-# 2. What's the active tip vs zclassicd?
-mcp__zcl23__zcl_status         # local
-zclassic-cli getblockcount     # legacy (via ~/.zclassic conf)
-# 3. Sapling tree status (perf diag)
-grep -E "Sapling tree.*MISMATCH|rebuild" ~/.zclassic-c23/node.log | tail
-```
+
+## Files touched in Phase 1
+
+- `app/services/src/legacy_body_pull.c` — SHA3 spotcheck + assume_valid bump (committed)
+- `config/src/boot.c` — wrap body-pull in IBD turbo enter/exit (committed)
+
+## Memory entries to consult next session
+
+- `feedback_fast_sync_phase1_findings.md` — full bottleneck-shift analysis
+- `feedback_at_tip_kill9_ordering_invariant.md` — preserve when batching commits
+- `reference_zclassicd_local_fast_sync.md` — datadir layout
