@@ -414,6 +414,42 @@ static void boot_step_detect_unclean_shutdown(const char *datadir)
     unlink(marker_path);
 }
 
+static void boot_step_build_svc_ctx(struct app_context *ctx,
+                                     struct boot_svc_ctx *svc)
+{
+    *svc = (struct boot_svc_ctx){
+        .state = &g_state,
+        .coins_sqlite = &g_coins_sqlite,
+        .coins_tip = &g_coins_tip,
+        .mempool = &g_mempool,
+        .rpc_table = &g_rpc_table,
+        .msg_processor = &g_msg_processor,
+        .connman = &g_connman,
+        .wallet = &g_wallet,
+        .gen = &g_gen,
+        .wallet_sqlite = &g_wallet_sqlite,
+        .node_db = &g_node_db,
+        .db_service = &g_db_service,
+        .metrics = &g_metrics,
+        .running = &g_running,
+        .datadir = g_datadir,
+        .params_thread = g_params_thread,
+        .params_thread_started = g_params_thread_started,
+        .params_loaded = &g_params_loaded,
+        .block_tree_open = g_block_tree_open,
+        .block_tree = &g_block_tree,
+        .want_address_backfill = false,
+        .want_snapshot_tx_index = ctx->tx_index || ctx->snapshot_dir != NULL,
+        .defer_payment_service = false,
+        .defer_offer_service = false,
+    };
+    if (g_node_db.open) {
+        int64_t addr_done = 0;
+        node_db_state_get_int(&g_node_db, "addresses_backfilled", &addr_done);
+        svc->want_address_backfill = (addr_done == 0);
+    }
+}
+
 static void boot_step_finalize_chain_state(void)
 {
     /* Restore normal SQLite settings after any IBD replay */
@@ -2629,37 +2665,8 @@ sapling_tree_boot_check_done:
     }
 
     /* Runtime services: mempool, P2P, RPC, Tor, wallet sync (boot_services.c) */
-    struct boot_svc_ctx svc = {
-        .state = &g_state,
-        .coins_sqlite = &g_coins_sqlite,
-        .coins_tip = &g_coins_tip,
-        .mempool = &g_mempool,
-        .rpc_table = &g_rpc_table,
-        .msg_processor = &g_msg_processor,
-        .connman = &g_connman,
-        .wallet = &g_wallet,
-        .gen = &g_gen,
-        .wallet_sqlite = &g_wallet_sqlite,
-        .node_db = &g_node_db,
-        .db_service = &g_db_service,
-        .metrics = &g_metrics,
-        .running = &g_running,
-        .datadir = g_datadir,
-        .params_thread = g_params_thread,
-        .params_thread_started = g_params_thread_started,
-        .params_loaded = &g_params_loaded,
-        .block_tree_open = g_block_tree_open,
-        .block_tree = &g_block_tree,
-        .want_address_backfill = false,
-        .want_snapshot_tx_index = ctx->tx_index || ctx->snapshot_dir != NULL,
-        .defer_payment_service = false,
-        .defer_offer_service = false,
-    };
-    if (g_node_db.open) {
-        int64_t addr_done = 0;
-        node_db_state_get_int(&g_node_db, "addresses_backfilled", &addr_done);
-        svc.want_address_backfill = (addr_done == 0);
-    }
+    struct boot_svc_ctx svc;
+    boot_step_build_svc_ctx(ctx, &svc);
     /* g_svc is stored so app_shutdown can access it */
     g_svc = svc;
 
