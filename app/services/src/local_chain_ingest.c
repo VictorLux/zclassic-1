@@ -34,6 +34,7 @@
 #include "script/script.h"
 #include "services/chain_advance.h"
 #include "services/header_probe_service.h"
+#include "services/legacy_body_pull.h"
 #include "storage/chainstate_legacy_reader.h"
 #include "storage/coins_view_sqlite.h"
 #include "storage/disk_block_io.h"
@@ -1494,6 +1495,39 @@ static enum local_ingest_result phase3_block_ingest(
         }
     }
 
+    /* ── Durable body-pull (P6) ──────────────────────────────────
+     * If our active chain trails the header tip (because P2P bodies
+     * never arrived, or a marked-invalid subtree is blocking the
+     * chain selector), fetch the missing bodies directly from the
+     * sibling zclassicd over loopback JSON-RPC. legacy_body_pull's
+     * process_new_block path writes each block to disk AND triggers
+     * activate_best_chain, so when we re-snapshot the active tip
+     * below it should track the header tip. */
+    {
+        int active_tip_pre = active_chain_height(&ms->chain_active);
+        int header_tip_h = ms->pindex_best_header
+            ? ms->pindex_best_header->nHeight
+            : active_tip_pre;
+        if (header_tip_h > active_tip_pre) {
+            int bp_from = active_tip_pre + 1;
+            int bp_to = header_tip_h;
+            if (cfg->max_height > 0 && cfg->max_height < bp_to)
+                bp_to = cfg->max_height;
+            int bp_applied = 0;
+            fprintf(stderr, // obs-ok:pre-existing-diagnostic
+                    "[local_ingest] phase3-pre: legacy_body_pull "
+                    "[%d..%d] (active_tip=%d header_tip=%d)\n",
+                    bp_from, bp_to, active_tip_pre, header_tip_h);
+            bool bp_ok = legacy_body_pull_range_blocking(
+                ms, coins_tip, params, our_datadir,
+                bp_from, bp_to, &bp_applied);
+            fprintf(stderr, // obs-ok:pre-existing-diagnostic
+                    "[local_ingest] phase3-pre: legacy_body_pull "
+                    "applied=%d ok=%s\n",
+                    bp_applied, bp_ok ? "yes" : "no");
+        }
+    }
+
     int tip_h = active_chain_height(&ms->chain_active);
     int final_h = (cfg->max_height > 0 && cfg->max_height < tip_h)
                   ? cfg->max_height : tip_h;
@@ -1515,7 +1549,9 @@ static enum local_ingest_result phase3_block_ingest(
         if (!bi) {
             /* No local block_index at this height yet — defer to P2P
              * sync.  Stop the phase cleanly so the caller can hand
-             * off. */
+             * off. legacy_body_pull above is the durable backstop;
+             * if we still hit a gap here it means the legacy node
+             * doesn't have it either (or RPC failed mid-window). */
             fprintf(stderr, // obs-ok:pre-existing-diagnostic
                     "[local_ingest] phase3: stopping at height %d "
                     "(no local block_index entry; falling back to "

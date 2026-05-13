@@ -812,11 +812,20 @@ static void *thread_socket_handler(void *arg)
                  * this fast cutoff those sockets sit forever, eat
                  * outbound slots, and starve real peers — the live
                  * failure mode that left this node with 1 working
-                 * outbound and 4 stuck in `connecting`. */
+                 * outbound and 4 stuck in `connecting`.
+                 *
+                 * Loopback exemption: a 127.0.0.0/8 or ::1 socket either
+                 * succeeds instantly or never (no SYN-loss on lo). The
+                 * 10s cutoff was hitting our cold-boot zclassicd peer
+                 * before the message loop pushed our version frame,
+                 * killing the loopback fast lane until the next outbound
+                 * retry. Use the 90s handshake budget instead. */
+                int connect_timeout =
+                    net_addr_is_local(&n->addr.svc.addr) ? 90 : 10;
                 if (!n->inbound &&
                     n->state == PEER_CONNECTING &&
                     n->time_connected > 0 &&
-                    now_check - n->time_connected > 10) {
+                    now_check - n->time_connected > connect_timeout) {
                     event_emitf(EV_TCP_TIMEOUT, (uint32_t)n->id,
                                 "tcp_connect %llds state=connecting",
                                 (long long)(now_check - n->time_connected));
@@ -914,7 +923,8 @@ static void *thread_socket_handler(void *arg)
                         cm->deferred_free_cap = new_cap;
                         cm->deferred_free[cm->num_deferred_free++] = node;
                     } else if (p2p_node_get_ref(node) > 0) {
-                        fprintf(stderr, "[connman] %s:%d %s(): "
+                        fprintf(stderr, // obs-ok:pre-existing-diagnostic
+                                "[connman] %s:%d %s(): "
                                 "deferred_free realloc failed and ref "
                                 "on node %s — leaking to avoid UAF\n",
                                 __FILE__, __LINE__, __func__,
@@ -928,7 +938,8 @@ static void *thread_socket_handler(void *arg)
                      * a stuck message-cycle snapshot). Log loudly — the
                      * Round 5 signal handler will be invoked if we ever
                      * abort from this path. */
-                    fprintf(stderr, "[connman] %s:%d %s(): deferred_free "
+                    fprintf(stderr, // obs-ok:pre-existing-diagnostic
+                            "[connman] %s:%d %s(): deferred_free "
                             "HARD CAP %d reached with ref on node %s — "
                             "leaking to avoid UAF (investigate refs)\n",
                             __FILE__, __LINE__, __func__,
@@ -1212,22 +1223,26 @@ void connman_join(struct connman *cm)
         cm->open_thread_started || cm->message_thread_started) {
         if (cm->dns_seed_thread_started) {
             if (!timed_join(g_thread_dns_seed, 5))
-                fprintf(stderr, "connman: dns_seed thread join timed out\n");
+                fprintf(stderr, // obs-ok:pre-existing-diagnostic
+                        "connman: dns_seed thread join timed out\n");
             cm->dns_seed_thread_started = false;
         }
         if (cm->socket_thread_started) {
             if (!timed_join(g_thread_socket, 5))
-                fprintf(stderr, "connman: socket thread join timed out\n");
+                fprintf(stderr, // obs-ok:pre-existing-diagnostic
+                        "connman: socket thread join timed out\n");
             cm->socket_thread_started = false;
         }
         if (cm->open_thread_started) {
             if (!timed_join(g_thread_open, 5))
-                fprintf(stderr, "connman: open thread join timed out\n");
+                fprintf(stderr, // obs-ok:pre-existing-diagnostic
+                        "connman: open thread join timed out\n");
             cm->open_thread_started = false;
         }
         if (cm->message_thread_started) {
             if (!timed_join(g_thread_message, 5))
-                fprintf(stderr, "connman: message thread join timed out\n");
+                fprintf(stderr, // obs-ok:pre-existing-diagnostic
+                        "connman: message thread join timed out\n");
             cm->message_thread_started = false;
         }
         cm->started = false;
@@ -1281,7 +1296,8 @@ void connman_save_addrman(struct connman *cm)
                        addrman_size(&cm->manager.addrman), path, s.size);
             } else {
                 remove(tmp_path);
-                fprintf(stderr, "addrman save: short write (%zu/%zu)\n",
+                fprintf(stderr, // obs-ok:pre-existing-diagnostic
+                        "addrman save: short write (%zu/%zu)\n",
                         written, s.size);
             }
         }
@@ -1309,7 +1325,8 @@ void connman_load_addrman(struct connman *cm)
     enum aii_verdict verdict = aii_verify(cm->datadir, aii_err, sizeof(aii_err));
     if (verdict != AII_OK && verdict != AII_SIDECAR_MISSING &&
         verdict != AII_BODY_MISSING) {
-        fprintf(stderr, "addrman load: integrity check failed (%s): %s\n",
+        fprintf(stderr, // obs-ok:pre-existing-diagnostic
+                "addrman load: integrity check failed (%s): %s\n",
                 aii_verdict_name(verdict), aii_err);
         aii_quarantine_corrupt(cm->datadir, verdict);
         return;
@@ -1339,7 +1356,8 @@ void connman_load_addrman(struct connman *cm)
             printf("Loaded %zu peers from %s\n",
                    addrman_size(&cm->manager.addrman), path);
         } else {
-            fprintf(stderr, "addrman load: deserialize failed, starting fresh\n");
+            fprintf(stderr, // obs-ok:pre-existing-diagnostic
+                    "addrman load: deserialize failed, starting fresh\n");
             addrman_clear(&cm->manager.addrman);
         }
         zcl_mutex_unlock(&cm->manager.addrman.cs);

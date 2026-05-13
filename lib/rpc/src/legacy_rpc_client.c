@@ -1,0 +1,236 @@
+/* Copyright 2026 Rhett Creighton - Apache License 2.0
+ *
+ * Legacy-node JSON-RPC client. See header for the contract.
+ *
+ * The implementation mirrors the private helpers that lived in
+ * header_probe_service.c (hp_parse_zclassic_conf,
+ * hp_http_rpc_call_dyn, hp_base64_encode). Centralizing them here
+ * lets legacy_body_pull share the wire path without forking. */
+
+#include "rpc/legacy_rpc_client.h"
+
+#include "util/safe_alloc.h"
+
+#include <arpa/inet.h>
+#include <errno.h>
+#include <netinet/in.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/socket.h>
+#include <sys/time.h>
+#include <unistd.h>
+
+#define LRC_TIMEOUT_SECS    5
+#define LRC_RESP_MAX        (1u << 20) /* 1 MB hard cap */
+
+/* ── zclassic.conf parser ──────────────────────────────────────── */
+
+bool legacy_rpc_parse_conf(char *out_user, size_t user_sz,
+                           char *out_pass, size_t pass_sz,
+                           int *out_port)
+{
+    const char *home = getenv("HOME");
+    if (!home || !home[0]) return false;
+
+    char path[512];
+    snprintf(path, sizeof(path), "%s/.zclassic/zclassic.conf", home);
+    FILE *f = fopen(path, "r");
+    if (!f) return false;
+
+    char line[512];
+    bool got_user = false, got_pass = false;
+    while (fgets(line, sizeof(line), f)) {
+        char *p = line;
+        while (*p == ' ' || *p == '\t') p++;
+        if (*p == '#' || *p == ';' || *p == '\n' || *p == '\0') continue;
+
+        char *eq = strchr(p, '=');
+        if (!eq) continue;
+        *eq = '\0';
+        char *key = p;
+        char *val = eq + 1;
+        char *kend = eq - 1;
+        while (kend > key && (*kend == ' ' || *kend == '\t')) *kend-- = '\0';
+        while (*val == ' ' || *val == '\t') val++;
+        char *vend = val + strlen(val);
+        while (vend > val && (vend[-1] == '\n' || vend[-1] == '\r' ||
+                              vend[-1] == ' '  || vend[-1] == '\t'))
+            *--vend = '\0';
+
+        if (strcmp(key, "rpcuser") == 0) {
+            snprintf(out_user, user_sz, "%s", val);
+            got_user = true;
+        } else if (strcmp(key, "rpcpassword") == 0) {
+            snprintf(out_pass, pass_sz, "%s", val);
+            got_pass = true;
+        } else if (strcmp(key, "rpcport") == 0 && out_port) {
+            int n = atoi(val);
+            if (n > 0 && n < 65536) *out_port = n;
+        }
+    }
+    fclose(f);
+    return got_user && got_pass;
+}
+
+/* ── Base64 ─────────────────────────────────────────────────────── */
+
+static const char lrc_b64_chars[] =
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+static void lrc_base64_encode(const unsigned char *in, size_t inlen,
+                              char *out, size_t outsz)
+{
+    size_t i = 0, o = 0;
+    while (i + 3 <= inlen && o + 4 < outsz) {
+        unsigned v = (unsigned)((in[i] << 16) | (in[i+1] << 8) | in[i+2]);
+        out[o++] = lrc_b64_chars[(v >> 18) & 0x3f];
+        out[o++] = lrc_b64_chars[(v >> 12) & 0x3f];
+        out[o++] = lrc_b64_chars[(v >>  6) & 0x3f];
+        out[o++] = lrc_b64_chars[ v        & 0x3f];
+        i += 3;
+    }
+    if (i < inlen && o + 4 < outsz) {
+        unsigned v = (unsigned)(in[i] << 16);
+        if (i + 1 < inlen) v |= (unsigned)(in[i+1] << 8);
+        out[o++] = lrc_b64_chars[(v >> 18) & 0x3f];
+        out[o++] = lrc_b64_chars[(v >> 12) & 0x3f];
+        out[o++] = (i + 1 < inlen) ? lrc_b64_chars[(v >> 6) & 0x3f] : '=';
+        out[o++] = '=';
+    }
+    if (o < outsz) out[o] = '\0';
+    else if (outsz > 0) out[outsz - 1] = '\0';
+}
+
+/* ── HTTP/1.1 JSON-RPC call ────────────────────────────────────── */
+
+bool legacy_rpc_call(const char *host, int port,
+                     const char *user, const char *pass,
+                     const char *body_json,
+                     char **out_resp,
+                     char *err, size_t err_sz)
+{
+    if (out_resp) *out_resp = NULL;
+    if (!host || !body_json || !out_resp) {
+        if (err && err_sz) snprintf(err, err_sz, "bad args");
+        return false;
+    }
+
+    int fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (fd < 0) {
+        snprintf(err, err_sz, "socket: %s", strerror(errno));
+        return false;
+    }
+    struct timeval tv = { .tv_sec = LRC_TIMEOUT_SECS, .tv_usec = 0 };
+    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+    setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
+
+    struct sockaddr_in sa = {0};
+    sa.sin_family = AF_INET;
+    sa.sin_port   = htons((uint16_t)port);
+    if (inet_pton(AF_INET, host, &sa.sin_addr) != 1) {
+        close(fd);
+        snprintf(err, err_sz, "bad host: %s", host);
+        return false;
+    }
+    if (connect(fd, (struct sockaddr *)&sa, sizeof(sa)) != 0) {
+        snprintf(err, err_sz, "connect %s:%d: %s",
+                 host, port, strerror(errno));
+        close(fd);
+        return false;
+    }
+
+    char userpass[256];
+    snprintf(userpass, sizeof(userpass), "%s:%s",
+             user ? user : "", pass ? pass : "");
+    char b64[384];
+    lrc_base64_encode((const unsigned char *)userpass, strlen(userpass),
+                      b64, sizeof(b64));
+
+    size_t body_len = strlen(body_json);
+    size_t req_cap  = 768 + body_len;
+    char *req = zcl_malloc(req_cap, "lrc_req");
+    if (!req) {
+        close(fd);
+        snprintf(err, err_sz, "oom req");
+        return false;
+    }
+    int reqlen = snprintf(req, req_cap,
+        "POST / HTTP/1.1\r\n"
+        "Host: %s:%d\r\n"
+        "Authorization: Basic %s\r\n"
+        "Content-Type: application/json\r\n"
+        "Content-Length: %zu\r\n"
+        "Connection: close\r\n"
+        "\r\n"
+        "%s",
+        host, port, b64, body_len, body_json);
+    if (reqlen < 0 || (size_t)reqlen >= req_cap) {
+        free(req); close(fd);
+        snprintf(err, err_sz, "request buffer overflow");
+        return false;
+    }
+    size_t sent = 0;
+    while (sent < (size_t)reqlen) {
+        ssize_t n = send(fd, req + sent, (size_t)reqlen - sent, 0);
+        if (n <= 0) {
+            snprintf(err, err_sz, "send: %s", strerror(errno));
+            free(req); close(fd); return false;
+        }
+        sent += (size_t)n;
+    }
+    free(req);
+
+    size_t cap = 64 << 10;
+    size_t total = 0;
+    char *buf = zcl_malloc(cap, "lrc_resp");
+    if (!buf) {
+        close(fd);
+        snprintf(err, err_sz, "oom resp");
+        return false;
+    }
+    for (;;) {
+        if (total + 1 >= cap) {
+            if (cap >= LRC_RESP_MAX) {
+                snprintf(err, err_sz, "response > %u byte cap", LRC_RESP_MAX);
+                free(buf); close(fd); return false;
+            }
+            size_t ncap = cap * 2;
+            if (ncap > LRC_RESP_MAX) ncap = LRC_RESP_MAX;
+            char *nbuf = zcl_realloc(buf, ncap, "lrc_resp");
+            if (!nbuf) {
+                snprintf(err, err_sz, "oom resp grow");
+                free(buf); close(fd); return false;
+            }
+            buf = nbuf;
+            cap = ncap;
+        }
+        ssize_t n = recv(fd, buf + total, cap - total - 1, 0);
+        if (n < 0) {
+            snprintf(err, err_sz, "recv: %s", strerror(errno));
+            free(buf); close(fd); return false;
+        }
+        if (n == 0) break;
+        total += (size_t)n;
+    }
+    buf[total] = '\0';
+    close(fd);
+
+    if (total == 0) {
+        snprintf(err, err_sz, "empty response");
+        free(buf);
+        return false;
+    }
+
+    *out_resp = buf;
+    return true;
+}
+
+/* ── HTTP body locator ─────────────────────────────────────────── */
+
+const char *legacy_rpc_http_body(const char *raw)
+{
+    if (!raw) return NULL;
+    const char *p = strstr(raw, "\r\n\r\n");
+    return p ? p + 4 : NULL;
+}
