@@ -37,6 +37,15 @@ struct app_context {
      * Different from -import-from= (legacy_import_dir above) which byte-
      * copies the entire datadir and needs zclassicd offline. */
     const char *ingest_from_legacy;
+    /* -bodypull-from-legacy=PATH : run JUST the legacy body-pull post-
+     * boot, skipping local_chain_ingest's phase 1 (SHA3 verify) and
+     * phase 2 (chainstate import — would clobber our UTXOs). Useful
+     * when the local tip lags the sibling zclassicd and you want a
+     * one-shot catch-up without touching SHA3 anchors. Bare form
+     * (-bodypull-from-legacy) defaults to ~/.zclassic. The path is
+     * only used to confirm the legacy datadir exists; RPC creds come
+     * from ~/.zclassic/zclassic.conf in either case. */
+    const char *bodypull_from_legacy;
     const char *snapshot_dir;
     bool reindex_chainstate;
     bool reimport_utxos;

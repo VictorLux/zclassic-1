@@ -1467,25 +1467,23 @@ static enum local_ingest_result phase3_block_ingest(
      * (Equihash + nBits lineage + checkpoints), so a malicious
      * zclassicd cannot inject a forged header. If zclassicd is
      * unreachable, this is a no-op and P2P fills the gap. */
+    int phase3_remote_tip = -1;
     {
         struct header_probe_config hp_cfg = {0};
         if (header_probe_init(&hp_cfg, ms, params)) {
-            int hp_added = 0, remote_tip = -1;
-            int local_header_tip = ms->pindex_best_header
-                ? ms->pindex_best_header->nHeight
-                : active_chain_height(&ms->chain_active);
-            int from = (local_header_tip > anchor_h
-                        ? local_header_tip : anchor_h) + 1;
+            int hp_added = 0;
+            int active_tip = active_chain_height(&ms->chain_active);
+            int from = (active_tip > anchor_h ? active_tip : anchor_h) + 1;
             if (from < 1) from = 1;
             fprintf(stderr, // obs-ok:pre-existing-diagnostic
                     "[local_ingest] phase3-pre: header_probe pull "
                     "from h=%d ...\n", from);
             bool reached_tip = header_probe_pull_range_blocking(
-                from, &hp_added, &remote_tip);
+                from, &hp_added, &phase3_remote_tip);
             fprintf(stderr, // obs-ok:pre-existing-diagnostic
                     "[local_ingest] phase3-pre: pulled %d headers "
                     "(remote_tip=%d, reached_tip=%s)\n",
-                    hp_added, remote_tip,
+                    hp_added, phase3_remote_tip,
                     reached_tip ? "yes" : "no");
         } else {
             fprintf(stderr, // obs-ok:pre-existing-diagnostic
@@ -1496,28 +1494,27 @@ static enum local_ingest_result phase3_block_ingest(
     }
 
     /* ── Durable body-pull (P6) ──────────────────────────────────
-     * If our active chain trails the header tip (because P2P bodies
-     * never arrived, or a marked-invalid subtree is blocking the
-     * chain selector), fetch the missing bodies directly from the
-     * sibling zclassicd over loopback JSON-RPC. legacy_body_pull's
-     * process_new_block path writes each block to disk AND triggers
-     * activate_best_chain, so when we re-snapshot the active tip
-     * below it should track the header tip. */
+     * If our active chain trails the legacy node's tip, fetch the
+     * missing bodies directly over loopback JSON-RPC.
+     * legacy_body_pull's process_new_block path writes each block
+     * to disk AND triggers activate_best_chain, so the active tip
+     * extends as we go.
+     *
+     * Upper bound is the remote_tip returned by header_probe — NOT
+     * pindex_best_header, which doesn't move on accept_block_header
+     * (only csr_commit_tip promotes it). */
     {
         int active_tip_pre = active_chain_height(&ms->chain_active);
-        int header_tip_h = ms->pindex_best_header
-            ? ms->pindex_best_header->nHeight
-            : active_tip_pre;
-        if (header_tip_h > active_tip_pre) {
+        if (phase3_remote_tip > active_tip_pre) {
             int bp_from = active_tip_pre + 1;
-            int bp_to = header_tip_h;
+            int bp_to = phase3_remote_tip;
             if (cfg->max_height > 0 && cfg->max_height < bp_to)
                 bp_to = cfg->max_height;
             int bp_applied = 0;
             fprintf(stderr, // obs-ok:pre-existing-diagnostic
                     "[local_ingest] phase3-pre: legacy_body_pull "
-                    "[%d..%d] (active_tip=%d header_tip=%d)\n",
-                    bp_from, bp_to, active_tip_pre, header_tip_h);
+                    "[%d..%d] (active_tip=%d remote_tip=%d)\n",
+                    bp_from, bp_to, active_tip_pre, phase3_remote_tip);
             bool bp_ok = legacy_body_pull_range_blocking(
                 ms, coins_tip, params, our_datadir,
                 bp_from, bp_to, &bp_applied);

@@ -3,17 +3,27 @@
  * Legacy body pull — fetch missing block bodies from a sibling
  * zclassicd via JSON-RPC.
  *
- * Plumbed into phase3_block_ingest as the durable fallback when the
- * local block_index has headers (via header_probe) but not bodies in
- * a height range past our active tip. Without this, phase3 used to
- * fall back to P2P sync — which works when peers are healthy but
- * stalls when (a) peers don't serve far-tip bodies, (b) some blocks
- * in the window carry a stale BLOCK_FAILED_VALID flag and the chain
- * selector skips paths through them.
+ * Plumbed into local_chain_ingest's phase3 prelude AND boot's
+ * stand-alone -bodypull-from-legacy path as the durable backstop
+ * for "tip behind zclassicd" conditions. Each fetched block is
+ * handed to process_new_block(), so accept_block writes it to disk
+ * and the activation controller's connect_tip path extends the
+ * active chain.
  *
- * The pull is strictly forward, blocking, single-threaded. It uses
- * the shared lib/rpc/legacy_rpc_client transport (also used by the
- * header probe).
+ * Traversal is height-based, not pprev-based:
+ *   - pindex_best_header doesn't follow accept_block_header (only
+ *     csr_commit_tip moves it), so a pprev walk from "best_header"
+ *     misses the just-pulled headers entirely. Live evidence:
+ *     header_probe pulled 10704 headers reaching remote_tip but
+ *     pindex_best_header was still pointing at a stale fork ~28k
+ *     blocks below the active tip.
+ *   - The legacy node serves getblockhash(h) for every height we
+ *     care about, so we don't need a local block_index walk at
+ *     all. accept_block (inside process_new_block) creates the
+ *     block_index entry on the fly if it doesn't exist yet.
+ *
+ * Strictly forward, blocking, single-threaded. Shares the
+ * lib/rpc/legacy_rpc_client transport with the header probe.
  */
 
 #include "services/legacy_body_pull.h"
@@ -39,13 +49,12 @@
 #include <stdlib.h>
 #include <string.h>
 
-#define LBP_DEFAULT_HOST       "127.0.0.1"
-#define LBP_DEFAULT_PORT       8232
-#define LBP_MAX_WINDOW         50000   /* hard cap on per-call collection */
+#define LBP_DEFAULT_HOST    "127.0.0.1"
+#define LBP_DEFAULT_PORT    8232
 
-/* Parse a getblock(..., 0) response → result string (the raw hex
- * block). Returns malloc'd NUL-terminated string on success; NULL on
- * failure. Caller frees. */
+/* Parse a JSON-RPC `.result` string from a raw HTTP response.
+ * Returns malloc'd NUL-terminated string on success; NULL on
+ * failure with err populated. Caller frees. */
 static char *lbp_parse_result_str(const char *raw, char *err, size_t err_sz)
 {
     const char *body = legacy_rpc_http_body(raw);
@@ -73,7 +82,7 @@ static char *lbp_parse_result_str(const char *raw, char *err, size_t err_sz)
     }
     const char *s = json_get_str(r);
     size_t slen = s ? strlen(s) : 0;
-    char *out = zcl_malloc(slen + 1, "lbp_hex");
+    char *out = zcl_malloc(slen + 1, "lbp_str");
     if (!out) {
         snprintf(err, err_sz, "oom result");
         json_free(&v);
@@ -83,6 +92,37 @@ static char *lbp_parse_result_str(const char *raw, char *err, size_t err_sz)
     out[slen] = '\0';
     json_free(&v);
     return out;
+}
+
+/* RPC: getblockhash(height) -> hash hex (64 chars). */
+static char *lbp_rpc_getblockhash(const char *host, int port,
+                                  const char *user, const char *pass,
+                                  int height,
+                                  char *err, size_t err_sz)
+{
+    char body[160];
+    int n = snprintf(body, sizeof(body),
+        "{\"jsonrpc\":\"1.0\",\"id\":\"zcl-lbp\","
+        "\"method\":\"getblockhash\",\"params\":[%d]}",
+        height);
+    if (n < 0 || (size_t)n >= sizeof(body)) {
+        snprintf(err, err_sz, "rpc body overflow");
+        return NULL;
+    }
+    char *resp = NULL;
+    if (!legacy_rpc_call(host, port, user, pass, body, &resp,
+                         err, err_sz)) {
+        return NULL;
+    }
+    char *hex = lbp_parse_result_str(resp, err, err_sz);
+    free(resp);
+    if (hex && strlen(hex) != 64) {
+        snprintf(err, err_sz, "hash not 64 hex chars (got %zu)",
+                 strlen(hex));
+        free(hex);
+        return NULL;
+    }
+    return hex;
 }
 
 /* RPC: getblock(hash_hex, 0) -> raw block hex. */
@@ -110,41 +150,6 @@ static char *lbp_rpc_getblock_hex(const char *host, int port,
     return hex;
 }
 
-/* Walk pprev from `start` collecting block_index pointers with
- * nHeight in [from_h .. to_h] into `out` (ascending order). Returns
- * collected count, or -1 on corrupt walk / out_cap overflow.
- *
- * Caller must hold ms->cs_main. */
-static int lbp_collect_window(struct block_index *start,
-                              int from_h, int to_h,
-                              struct block_index **out, int out_cap)
-{
-    if (!start || out_cap <= 0 || from_h > to_h) return 0;
-
-    /* Collect descending first, then reverse. */
-    int count = 0;
-    struct block_index *cur = start;
-    int last_h = cur->nHeight + 1;  /* sentinel */
-    int steps = 0;
-    while (cur && cur->nHeight >= from_h) {
-        if (steps++ > LBP_MAX_WINDOW * 2) return -1; // raw-return-ok: corrupt-walk-caller-logs
-        if (cur->nHeight >= last_h) return -1; // raw-return-ok: corrupt-walk-non-monotonic
-        last_h = cur->nHeight;
-        if (cur->nHeight <= to_h) {
-            if (count >= out_cap) return -1; // raw-return-ok: walk-window-overflow-caller-logs
-            out[count++] = cur;
-        }
-        cur = cur->pprev;
-    }
-    /* Reverse to ascending. */
-    for (int i = 0, j = count - 1; i < j; i++, j--) {
-        struct block_index *t = out[i];
-        out[i] = out[j];
-        out[j] = t;
-    }
-    return count;
-}
-
 bool legacy_body_pull_range_blocking(struct main_state *ms,
                                      struct coins_view_cache *coins_tip,
                                      const struct chain_params *params,
@@ -160,11 +165,17 @@ bool legacy_body_pull_range_blocking(struct main_state *ms,
                  (void *)ms, (const void *)params,
                  (const void *)our_datadir);
     }
-    if (from_height < 0) {
+    if (from_height < 1) {
         LOG_FAIL("legacy_body_pull", "bad from_height=%d", from_height);
     }
+    if (to_height < from_height) {
+        fprintf(stderr,  // obs-ok:pre-existing-diagnostic
+                "[legacy_body_pull] nothing to do (from=%d to=%d)\n",
+                from_height, to_height);
+        return true;
+    }
 
-    /* Resolve credentials. */
+    /* Resolve credentials from ~/.zclassic/zclassic.conf. */
     char host[64];
     snprintf(host, sizeof(host), "%s", LBP_DEFAULT_HOST);
     int port = LBP_DEFAULT_PORT;
@@ -177,62 +188,11 @@ bool legacy_body_pull_range_blocking(struct main_state *ms,
         return false;
     }
 
-    /* Snapshot best_header under cs_main; resolve to_height. */
-    zcl_mutex_lock(&ms->cs_main);
-    struct block_index *best = ms->pindex_best_header;
-    int best_h = best ? best->nHeight : -1;
-    zcl_mutex_unlock(&ms->cs_main);
-
-    if (!best) {
-        fprintf(stderr,  // obs-ok:pre-existing-diagnostic
-                "[legacy_body_pull] pindex_best_header NULL; "
-                "header_probe must run first\n");
-        return false;
-    }
-    if (to_height < 0 || to_height > best_h) to_height = best_h;
-    if (from_height > to_height) {
-        fprintf(stderr,  // obs-ok:pre-existing-diagnostic
-                "[legacy_body_pull] nothing to do (from=%d to=%d)\n",
-                from_height, to_height);
-        return true;
-    }
-    if (to_height - from_height + 1 > LBP_MAX_WINDOW) {
-        /* Bound per-call window so we can resume across calls without
-         * pinning RAM for the full pointer array. */
-        to_height = from_height + LBP_MAX_WINDOW - 1;
-    }
-
-    int window = to_height - from_height + 1;
-    struct block_index **bis =
-        zcl_malloc((size_t)window * sizeof(*bis), "lbp_window");
-    if (!bis) {
-        LOG_FAIL("legacy_body_pull", "oom window=%d", window);
-    }
-
-    zcl_mutex_lock(&ms->cs_main);
-    int collected = lbp_collect_window(best, from_height, to_height,
-                                       bis, window);
-    zcl_mutex_unlock(&ms->cs_main);
-    if (collected < 0) {
-        free(bis);
-        fprintf(stderr,  // obs-ok:pre-existing-diagnostic
-                "[legacy_body_pull] corrupt pprev walk in [%d..%d]\n",
-                from_height, to_height);
-        return false;
-    }
-    if (collected == 0) {
-        free(bis);
-        fprintf(stderr,  // obs-ok:pre-existing-diagnostic
-                "[legacy_body_pull] no block_index entries in "
-                "[%d..%d] from best_header h=%d\n",
-                from_height, to_height, best_h);
-        return false;
-    }
-
     fprintf(stderr,  // obs-ok:pre-existing-diagnostic
-            "[legacy_body_pull] starting: window=[%d..%d] entries=%d "
-            "best_header=%d\n",
-            from_height, to_height, collected, best_h);
+            "[legacy_body_pull] starting: window=[%d..%d] "
+            "(%d blocks)\n",
+            from_height, to_height,
+            to_height - from_height + 1);
 
     int applied = 0;
     int rpc_errors = 0;
@@ -241,66 +201,85 @@ bool legacy_body_pull_range_blocking(struct main_state *ms,
     int last_log_h = -1;
     bool ok = true;
 
-    for (int i = 0; i < collected; i++) {
+    for (int h = from_height; h <= to_height; h++) {
         if (thread_registry_shutdown_requested()) {
             fprintf(stderr,  // obs-ok:pre-existing-diagnostic
-                    "[legacy_body_pull] shutdown requested at h=%d\n",
-                    bis[i] ? bis[i]->nHeight : -1);
+                    "[legacy_body_pull] shutdown requested at h=%d\n", h);
             ok = false;
             break;
         }
-
-        struct block_index *bi = bis[i];
-        if (!bi || !bi->phashBlock) continue;
-        if (bi->nStatus & BLOCK_HAVE_DATA) {
-            skipped_have_data++;
-            continue;
-        }
-        if (bi->nStatus & BLOCK_FAILED_MASK) {
-            /* Leave for P0.5 (chain_restore_service) to clear when
-             * appropriate. */
-            skipped_failed++;
-            continue;
-        }
-
-        char hash_hex[65];
-        uint256_get_hex(bi->phashBlock, hash_hex);
 
         char err[160] = {0};
-        char *hex = lbp_rpc_getblock_hex(host, port, user, pass,
-                                          hash_hex, err, sizeof(err));
-        if (!hex) {
+        char *hash_hex = lbp_rpc_getblockhash(host, port, user, pass,
+                                              h, err, sizeof(err));
+        if (!hash_hex) {
             rpc_errors++;
             fprintf(stderr,  // obs-ok:pre-existing-diagnostic
-                    "[legacy_body_pull] getblock h=%d hash=%.16s... "
-                    "rpc failed: %s\n",
-                    bi->nHeight, hash_hex, err);
+                    "[legacy_body_pull] getblockhash h=%d failed: %s\n",
+                    h, err);
             ok = false;
             break;
         }
 
-        /* Decode hex → bytes. */
-        size_t hex_len = strlen(hex);
-        if (hex_len < 280 || (hex_len % 2) != 0) {
-            free(hex);
+        /* Skip if the block is already on disk (from prior P2P sync or
+         * earlier body-pull). block_map lookup is cheap. */
+        struct uint256 hash;
+        memset(&hash, 0, sizeof(hash));
+        uint256_set_hex(&hash, hash_hex);
+
+        zcl_mutex_lock(&ms->cs_main);
+        struct block_index *bi = block_map_find(&ms->map_block_index,
+                                                 &hash);
+        bool have_data = bi && (bi->nStatus & BLOCK_HAVE_DATA);
+        bool failed = bi && (bi->nStatus & BLOCK_FAILED_MASK);
+        zcl_mutex_unlock(&ms->cs_main);
+
+        if (have_data) {
+            skipped_have_data++;
+            free(hash_hex);
+            continue;
+        }
+        if (failed) {
+            /* Stale BLOCK_FAILED_VALID — P0.5's job to clear. */
+            skipped_failed++;
+            free(hash_hex);
+            continue;
+        }
+
+        char *block_hex = lbp_rpc_getblock_hex(host, port, user, pass,
+                                                hash_hex, err, sizeof(err));
+        free(hash_hex);
+        if (!block_hex) {
+            rpc_errors++;
             fprintf(stderr,  // obs-ok:pre-existing-diagnostic
-                    "[legacy_body_pull] h=%d bad hex length %zu\n",
-                    bi->nHeight, hex_len);
+                    "[legacy_body_pull] getblock h=%d failed: %s\n",
+                    h, err);
             ok = false;
             break;
         }
+
+        size_t hex_len = strlen(block_hex);
+        if (hex_len < 280 || (hex_len % 2) != 0) {
+            free(block_hex);
+            fprintf(stderr,  // obs-ok:pre-existing-diagnostic
+                    "[legacy_body_pull] h=%d bad hex length %zu\n",
+                    h, hex_len);
+            ok = false;
+            break;
+        }
+
         unsigned char *bytes = zcl_malloc(hex_len / 2, "lbp_block_bytes");
         if (!bytes) {
-            free(hex);
-            LOG_FAIL("legacy_body_pull", "oom decode h=%d", bi->nHeight);
+            free(block_hex);
+            LOG_FAIL("legacy_body_pull", "oom decode h=%d", h);
         }
-        size_t nbytes = ParseHex(hex, bytes, hex_len / 2);
-        free(hex);
+        size_t nbytes = ParseHex(block_hex, bytes, hex_len / 2);
+        free(block_hex);
         if (nbytes < 80) {
             free(bytes);
             fprintf(stderr,  // obs-ok:pre-existing-diagnostic
                     "[legacy_body_pull] h=%d ParseHex short (%zu)\n",
-                    bi->nHeight, nbytes);
+                    h, nbytes);
             ok = false;
             break;
         }
@@ -316,7 +295,7 @@ bool legacy_body_pull_range_blocking(struct main_state *ms,
             block_free(&block);
             fprintf(stderr,  // obs-ok:pre-existing-diagnostic
                     "[legacy_body_pull] h=%d block_deserialize failed\n",
-                    bi->nHeight);
+                    h);
             ok = false;
             break;
         }
@@ -330,23 +309,20 @@ bool legacy_body_pull_range_blocking(struct main_state *ms,
             fprintf(stderr,  // obs-ok:pre-existing-diagnostic
                     "[legacy_body_pull] h=%d process_new_block FAILED: "
                     "%s\n",
-                    bi->nHeight,
+                    h,
                     vs.reject_reason[0] ? vs.reject_reason : "(unknown)");
             ok = false;
             break;
         }
         applied++;
-        /* Periodic heartbeat every 200 blocks. */
-        if (last_log_h < 0 || bi->nHeight - last_log_h >= 200) {
+        /* Heartbeat every 200 blocks. */
+        if (last_log_h < 0 || h - last_log_h >= 200) {
             fprintf(stderr,  // obs-ok:pre-existing-diagnostic
-                    "[legacy_body_pull] applied=%d h=%d "
-                    "(target=%d)\n",
-                    applied, bi->nHeight, to_height);
-            last_log_h = bi->nHeight;
+                    "[legacy_body_pull] applied=%d h=%d (target=%d)\n",
+                    applied, h, to_height);
+            last_log_h = h;
         }
     }
-
-    free(bis);
 
     fprintf(stderr,  // obs-ok:pre-existing-diagnostic
             "[legacy_body_pull] done: applied=%d skipped_have=%d "

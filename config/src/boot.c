@@ -14,6 +14,8 @@
 #include "services/recovery_policy.h"
 #include "services/utxo_recovery_service.h"
 #include "services/local_chain_ingest.h"
+#include "services/legacy_body_pull.h"
+#include "services/header_probe_service.h"
 #include "services/block_index_integrity.h"
 #include "services/wallet_backup_service.h"
 #include "services/disk_monitor.h"
@@ -642,6 +644,89 @@ static bool boot_step_local_chain_ingest(struct app_context *ctx,
     printf("Local chain ingest OK. Tip h=%d. Elapsed %.1fs.\n",
            active_chain_height(&g_state.chain_active),
            (double)t_ingest_ms / 1000.0);
+    return true;
+}
+
+/* Standalone body-pull from a sibling zclassicd.
+ *
+ * When -bodypull-from-legacy[=PATH] is given, runs JUST the legacy
+ * body-pull post-boot. Unlike -importfromlegacy this skips:
+ *   - phase 1 (SHA3 window verify): irrelevant for catching up
+ *     bodies, and the compiled anchor table may not match the legacy
+ *     blk file ordering — a stall here blocks the whole pipeline.
+ *   - phase 2 (chainstate import): would clobber our local UTXO set
+ *     with the legacy node's, potentially rewinding our tip.
+ *
+ * Pulls headers from zclassicd first (via header_probe), then walks
+ * the missing-body range and feeds each block through
+ * process_new_block. Non-fatal on failure — logs and continues. */
+static bool boot_step_bodypull_from_legacy(struct app_context *ctx,
+                                            const struct chain_params *params)
+{
+    if (!ctx || !ctx->bodypull_from_legacy) return true;
+
+    printf("\n═══ Body Pull from %s ═══\n", ctx->bodypull_from_legacy);
+    fflush(stdout);
+
+    if (!local_chain_ingest_detect_legacy_datadir(ctx->bodypull_from_legacy)) {
+        fprintf(stderr,
+            "bodypull_from_legacy: %s does not contain "
+            "blocks/blk00000.dat — is this a zclassic datadir? "
+            "Skipping.\n",
+            ctx->bodypull_from_legacy);
+        return true;
+    }
+
+    int64_t t_start = boot_clock_ms();
+
+    /* Step 1: pull headers from zclassicd. header_probe also tells us
+     * remote_tip, which is the authoritative upper bound. We do NOT
+     * rely on pindex_best_header after this — accept_block_header
+     * does not promote pindex_best_header, only csr_commit_tip does
+     * (see lib/validation/src/process_block.c:1457), so the header
+     * tip stays at whatever was loaded from disk until a block is
+     * actually connected as tip. */
+    struct header_probe_config hp_cfg = {0};
+    if (!header_probe_init(&hp_cfg, &g_state, params)) {
+        fprintf(stderr,
+            "bodypull_from_legacy: header_probe_init failed — cannot "
+            "reach legacy node. Skipping.\n");
+        return true;
+    }
+
+    int active_tip = active_chain_height(&g_state.chain_active);
+    int hp_from = active_tip + 1;
+    if (hp_from < 1) hp_from = 1;
+    int hp_added = 0, remote_tip = -1;
+    bool reached = header_probe_pull_range_blocking(hp_from, &hp_added,
+                                                     &remote_tip);
+    printf("Body pull: header_probe pulled %d headers "
+           "(active=%d remote_tip=%d reached=%s)\n",
+           hp_added, active_tip, remote_tip,
+           reached ? "yes" : "no");
+
+    if (remote_tip <= active_tip) {
+        printf("Body pull: nothing to pull (active=%d remote_tip=%d). "
+               "Done in %.1fs.\n",
+               active_tip, remote_tip,
+               (double)(boot_clock_ms() - t_start) / 1000.0);
+        return true;
+    }
+
+    /* Step 2: pull bodies for [active_tip+1 .. remote_tip].
+     * legacy_body_pull's process_new_block path triggers
+     * activate_best_chain per block, so the active tip extends as
+     * we go. */
+    int bp_applied = 0;
+    bool bp_ok = legacy_body_pull_range_blocking(
+        &g_state, &g_coins_tip, params, ctx->datadir,
+        active_tip + 1, remote_tip, &bp_applied);
+
+    int final_tip = active_chain_height(&g_state.chain_active);
+    int64_t t_ms = boot_clock_ms() - t_start;
+    printf("Body pull: applied=%d ok=%s final_tip=%d elapsed=%.1fs\n",
+           bp_applied, bp_ok ? "yes" : "no", final_tip,
+           (double)t_ms / 1000.0);
     return true;
 }
 
@@ -1994,6 +2079,14 @@ bool app_init(struct app_context *ctx)
      * map entries for the post-anchor [anchor+1..tip] block ingest in
      * phase 3). No-op when ctx->ingest_from_legacy is NULL. */
     if (!boot_step_local_chain_ingest(ctx, params))
+        return false;
+
+    /* P0.7: optional standalone body-pull from a sibling zclassicd.
+     * Surgical catch-up that skips local_chain_ingest's phase 1/2 —
+     * useful when active_tip lags pindex_best_header and P2P bodies
+     * aren't filling the gap. No-op when ctx->bodypull_from_legacy
+     * is NULL. */
+    if (!boot_step_bodypull_from_legacy(ctx, params))
         return false;
 
     /* Repair block index from SQLite.

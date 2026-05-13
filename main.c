@@ -1016,6 +1016,24 @@ int main(int argc, char **argv)
                 return 1;
             }
         }
+        else if (strncmp(argv[i], "-bodypull-from-legacy=", 22) == 0) {
+            ctx.bodypull_from_legacy = argv[i]+22;
+        }
+        else if (strcmp(argv[i], "-bodypull-from-legacy") == 0) {
+            const char *home = getenv("HOME");
+            static char default_bodypull_path[1024];
+            if (home && *home) {
+                snprintf(default_bodypull_path,
+                         sizeof(default_bodypull_path),
+                         "%s/.zclassic", home);
+                ctx.bodypull_from_legacy = default_bodypull_path;
+            } else {
+                fprintf(stderr,
+                    "-bodypull-from-legacy with no path requires $HOME; "
+                    "use -bodypull-from-legacy=PATH\n");
+                return 1;
+            }
+        }
         else if (strncmp(argv[i], "-fastsync=", 10) == 0) {
             fprintf(stderr, "Warning: -fastsync is deprecated, use -import-from=\n");
             ctx.legacy_import_dir = argv[i]+10;
