@@ -52,6 +52,7 @@
 #include <time.h>
 
 #include "validation/main_constants.h"
+#include "validation/process_block_internals.h"
 #include "storage/coins_view_sqlite.h"
 #include "util/safe_alloc.h"
 
@@ -146,6 +147,13 @@ static inline void process_block_check_crash_stage(
         fflush(stderr);
         _exit(137);
     }
+}
+
+/* Out-of-line variant for chain_advance.c (which lives in a different
+ * translation unit and can't reach the static inline). */
+void process_block_check_crash_stage_ext(enum process_block_crash_stage here)
+{
+    process_block_check_crash_stage(here);
 }
 
 int process_block_self_heal_scan_depth_limit(void)
@@ -1520,6 +1528,56 @@ static bool update_tip(struct main_state *ms, struct block_index *pindex_new)
     }
 
     return true;
+}
+
+/* ── Public accessors for chain_advance (Move 2) ─────────────
+ *
+ * chain_advance lives in app/services/src/chain_advance.c and needs
+ * the same file-static handles connect_tip used internally. Exporting
+ * them via process_block_internals.h keeps the surface intentional
+ * and grep-discoverable; callers outside chain_advance should not
+ * use these. */
+
+struct coins_view_sqlite *process_block_get_coins_sqlite(void)
+{
+    return g_coins_sqlite_ptr;
+}
+
+struct block_tree_db *process_block_get_block_tree(void)
+{
+    return g_active_block_tree;
+}
+
+struct node_db *process_block_get_node_db(void)
+{
+    return process_block_node_db();
+}
+
+bool process_block_commit_tip_ext(struct main_state *ms,
+                                  struct coins_view_cache *coins_tip,
+                                  struct block_index *new_tip,
+                                  const char *reason,
+                                  bool update_header_tip)
+{
+    return process_block_commit_tip(ms, coins_tip, new_tip, reason,
+                                    update_header_tip);
+}
+
+bool process_block_flush_coins(struct coins_view_cache *coins_tip,
+                               bool force)
+{
+    return flush_coins_if_needed(coins_tip, force);
+}
+
+bool process_block_persist_sapling_tree(void)
+{
+    return sapling_tree_persist_once();
+}
+
+void process_block_log_live_stage_ext(int height, const char *stage,
+                                      long long elapsed_us)
+{
+    process_block_log_live_stage(height, stage, (int64_t)elapsed_us);
 }
 
 /* P7.1 regression surface: exposes the post-refactor update_tip so a
