@@ -137,6 +137,13 @@ int main(void)
                failures);
         return failures ? 1 : 0;
     }
+    if (only && strcmp(only, "zclassicd_oracle") == 0) {
+        printf("[test] ZCL_TEST_ONLY=zclassicd_oracle — running oracle subset\n");
+        failures += test_zclassicd_oracle();
+        printf("\n=== zclassicd_oracle subset complete: %d failure(s) ===\n",
+               failures);
+        return failures ? 1 : 0;
+    }
 
     failures += test_load_balancer();
     failures += test_game();
@@ -307,6 +314,7 @@ int main(void)
     failures += test_sync_watchdog();
     failures += test_disk_block_io();
     failures += test_msg_handlers();
+    failures += test_zclassicd_oracle();
 
     /* Spec-based user story tests */
     failures += spec_wallet_dashboard();

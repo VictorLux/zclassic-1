@@ -317,6 +317,57 @@ static int h_zcl_state(const struct mcp_request *req, struct mcp_response *res)
     return 0;
 }
 
+/* zcl_probe_zclassicd — drift detection against the local zclassicd
+ * (legacy C++ ZClassic impl). Picks a random height if none supplied,
+ * fans through to the `probezclassicd` RPC, returns the raw RPC body
+ * (height, our_hash, their_hash, match, ...). */
+static int h_zcl_probe_zclassicd(const struct mcp_request *req,
+                                 struct mcp_response *res)
+{
+    const struct json_value *h_val = json_get(req->args, "height");
+    int height = -1;
+    if (h_val) {
+        if (h_val->type == JSON_INT)
+            height = (int)json_get_int(h_val);
+        else if (h_val->type == JSON_STR)
+            height = atoi(json_get_str(h_val));
+    }
+
+    /* If height not supplied, ask the node for getblockcount and pick
+     * a random height in [0, tip-100]. */
+    if (height < 0) {
+        char *tip_s = mcp_node_rpc("getblockcount", NULL);
+        int tip = tip_s ? atoi(tip_s) : 0;
+        free(tip_s);
+        int max_h = tip - 100;
+        if (max_h <= 0) {
+            res->error = MCP_ERR_HANDLER_FAILED;
+            snprintf(res->error_message, sizeof(res->error_message),
+                     "node not synced: tip=%d", tip);
+            LOG_ERR("mcp.ops", "probe_zclassicd: tip too low (%d)", tip);
+        }
+        /* Cheap random: time-based. Deterministic-test code paths
+         * pass an explicit height anyway. */
+        unsigned seed = (unsigned)time(NULL) ^ (unsigned)getpid();
+        height = (int)(rand_r(&seed) % (unsigned)max_h);
+    }
+
+    struct mcp_params p;
+    mcp_params_init(&p);
+    mcp_params_push_int(&p, height);
+    char *pjson = mcp_params_to_json(&p);
+    char *out = pjson ? mcp_node_rpc("probezclassicd", pjson) : NULL;
+    free(pjson);
+    if (!out) {
+        res->error = MCP_ERR_HANDLER_FAILED;
+        snprintf(res->error_message, sizeof(res->error_message),
+                 "probezclassicd h=%d returned null", height);
+        LOG_ERR("mcp.ops", "probezclassicd h=%d returned null", height);
+    }
+    res->body = out;
+    return 0;
+}
+
 /* zcl_kpi — single call that returns every subsystem KPI. Used by
  * operators to take the pulse of the node in one shot. Each nested
  * field is the raw result of the corresponding RPC, so field shapes
@@ -801,11 +852,16 @@ static const struct mcp_param_spec p_profile[] = {
 };
 static const struct mcp_param_spec p_state[] = {
     { "subsystem", MCP_PARAM_STR, true,
-      "Subsystem name: watchdog, boot, block_index, health",
-      0, 0, 1, 64, "watchdog,boot,block_index,health", NULL },
+      "Subsystem name: watchdog, boot, block_index, health, oracle",
+      0, 0, 1, 64, "watchdog,boot,block_index,health,oracle", NULL },
     { "key", MCP_PARAM_STR, false,
       "Subsystem-specific key (block_index: height or hex hash)",
       0, 0, 0, 128, NULL, NULL },
+};
+static const struct mcp_param_spec p_probe_zclassicd[] = {
+    { "height", MCP_PARAM_INT, false,
+      "Block height to probe (omit for random in [0, tip-100])",
+      0, 0x7fffffff, 0, 0, NULL, NULL },
 };
 static const struct mcp_param_spec p_sql[] = {
     { "sql",   MCP_PARAM_STR, true,
@@ -874,10 +930,18 @@ static const struct mcp_tool_route k_routes[] = {
       "Call any RPC method directly. 85+ commands available.",
       p_rpc, sizeof(p_rpc) / sizeof(p_rpc[0]), h_zcl_rpc },
     { "zcl_state", "ops",
-      "Generic in-process state dump. subsystem=watchdog|boot|block_index. "
-      "For block_index, pass `key`=height or hex hash. New subsystems plug "
-      "in via *_dump_state_json (see CLAUDE.md).",
+      "Generic in-process state dump. subsystem=watchdog|boot|block_index|"
+      "health|oracle. For block_index, pass `key`=height or hex hash. New "
+      "subsystems plug in via *_dump_state_json (see CLAUDE.md).",
       p_state, sizeof(p_state) / sizeof(p_state[0]), h_zcl_state },
+    { "zcl_probe_zclassicd", "ops",
+      "Drift detection: ask the local zclassicd (independent ZClassic "
+      "impl) for getblockhash(H) and compare to our block_index. Picks a "
+      "random height if `height` is omitted. Returns {height, our_hash, "
+      "their_hash, match}.",
+      p_probe_zclassicd,
+      sizeof(p_probe_zclassicd) / sizeof(p_probe_zclassicd[0]),
+      h_zcl_probe_zclassicd },
     { "zcl_node_log", "ops",
       "Reverse-scan node.log server-side with regex + level filter. Avoids "
       "downloading the 56 MB log just to grep. Returns newest matches first.",

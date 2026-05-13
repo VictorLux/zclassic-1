@@ -400,6 +400,8 @@ const char *event_type_name(enum event_type type)
         [EV_BACKPRESSURE_REJECT]     = "net.backpressure_reject",
         [EV_BACKPRESSURE_CLEAR]      = "net.backpressure_clear",
         [EV_SAPLING_PERSIST_FAIL]    = "val.sapling_persist_fail",
+        [EV_ORACLE_AGREE]            = "oracle.agree",
+        [EV_ORACLE_DISAGREE]         = "oracle.disagree",
     };
     if (type >= 0 && type < EV_NUM_TYPES && names[type])
         return names[type];

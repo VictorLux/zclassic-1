@@ -305,6 +305,7 @@ int test_rpc_auth_hardening(void);
 int test_sync_watchdog(void);
 int test_disk_block_io(void);
 int test_msg_handlers(void);
+int test_zclassicd_oracle(void);
 int test_syncdiag_rpc(void);
 int test_rpc_safety(void);
 int test_p14_6_failed_child_cap(void);

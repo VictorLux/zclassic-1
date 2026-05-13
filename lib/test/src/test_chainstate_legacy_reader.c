@@ -166,11 +166,17 @@ int test_chainstate_legacy_reader(void)
                n, st.total_vouts,
                (double)st.total_value_sat / 1e8,
                st.min_height, st.max_height, st.bad_records);
-        /* Sanity floor: expect roughly 1.3M records on mainnet.  Be
-         * generous (1.0M..3.0M) so the test stays green as the chain
-         * advances. */
-        if (n < 1000000 || n > 3000000) {
-            printf("    FAIL: record count outside [1M..3M] sanity band\n");
+        /* Records here are CCoins rows (one per transaction with any
+         * unspent output), not individual vouts.  Live zclassicd
+         * `gettxoutsetinfo` reports ~500k transactions / ~1.35M
+         * txouts on ZCL mainnet — track the tx count for `records`
+         * and the vout count for `total_vouts`.  Generous bands. */
+        if (n < 400000 || n > 2000000) {
+            printf("    FAIL: record count outside [400k..2M] sanity band\n");
+            failures++;
+        }
+        if (st.total_vouts < 1000000 || st.total_vouts > 5000000) {
+            printf("    FAIL: vout count outside [1M..5M] sanity band\n");
             failures++;
         }
         if (st.bad_records > 0) {

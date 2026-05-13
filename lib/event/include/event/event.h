@@ -181,6 +181,10 @@ enum event_type {
     EV_BACKPRESSURE_CLEAR,       /* payload: "reason=tip_advanced|cooldown_elapsed held_ms=N" */
     EV_SAPLING_PERSIST_FAIL,     /* payload: "fails=N" */
 
+    /* ── zclassicd oracle (independent-impl drift detection) ─ */
+    EV_ORACLE_AGREE,             /* payload: "h=N hash=<64hex>" */
+    EV_ORACLE_DISAGREE,          /* payload: "h=N our=<hex> their=<hex>" */
+
     EV_NUM_TYPES                 /* sentinel — must be last */
 };
 

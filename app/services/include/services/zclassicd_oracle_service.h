@@ -1,0 +1,90 @@
+/* Copyright 2026 Rhett Creighton - Apache License 2.0
+ *
+ * zclassicd Oracle Service — continuous independent-implementation drift
+ * detection. Periodically asks the local zclassicd (the legacy C++ ZClassic
+ * node, running at RPC port 8232) for getblockhash(H) at random heights
+ * and verifies that the answer matches our own block_index.
+ *
+ * Why this exists:
+ *   We treat zclassicd as a high-quality oracle for the same chain. Any
+ *   disagreement is a strong signal of a consensus bug in either node.
+ *   Emitting EV_ORACLE_AGREE / EV_ORACLE_DISAGREE makes drift visible to
+ *   operators without manual comparison.
+ *
+ * Architecture:
+ *   - One periodic tick registered with the unified heartbeat ring
+ *     (lib/health/heartbeat.h). No dedicated pthread.
+ *   - Each tick: pick `heights_per_tick` random heights in [0, tip-100]
+ *     and probe each.
+ *   - zclassicd_oracle_probe() is also exposed synchronously for the
+ *     `zcl_probe_zclassicd` MCP tool and unit tests.
+ *
+ * See CLAUDE.md "Adding state introspection" — this module follows the
+ * *_dump_state_json convention and is wired into the generic zcl_state
+ * dispatcher.
+ */
+
+#ifndef ZCL_SERVICES_ZCLASSICD_ORACLE_SERVICE_H
+#define ZCL_SERVICES_ZCLASSICD_ORACLE_SERVICE_H
+
+#include <stdbool.h>
+#include <stdint.h>
+
+struct json_value;
+
+struct zclassicd_oracle_config {
+    const char *rpc_host;        /* default "127.0.0.1" */
+    int         rpc_port;        /* default 8232 */
+    const char *rpc_user;        /* read from zclassic.conf if NULL */
+    const char *rpc_password;    /* read from zclassic.conf if NULL */
+    int         cadence_secs;    /* default 60 */
+    int         heights_per_tick;/* default 3 */
+};
+
+/* Apply config + load credentials. Safe to call before start to override
+ * the defaults. Idempotent. Returns false only on a missing zclassic.conf
+ * when no user/password were supplied. */
+bool zclassicd_oracle_init(const struct zclassicd_oracle_config *cfg);
+
+/* Register the periodic tick with the heartbeat ring. Idempotent. */
+bool zclassicd_oracle_start(void);
+
+/* Unregister the periodic tick. Idempotent. */
+void zclassicd_oracle_stop(void);
+
+struct zclassicd_oracle_probe_result {
+    int    height;
+    char   our_hash[65];     /* hex, 64 chars + NUL; "" if we have no block */
+    char   their_hash[65];   /* hex, 64 chars + NUL; "" on RPC error */
+    bool   match;
+    bool   our_have_block;
+    bool   error;            /* RPC unreachable / parse fail */
+    char   error_msg[128];
+};
+
+/* Synchronous probe. Returns true if the call completed (regardless of
+ * agreement); returns false only on a logic-level failure (NULL out,
+ * out-of-range height, etc.). RPC unreachability sets `error=true` and
+ * still returns true. */
+bool zclassicd_oracle_probe(int height,
+                            struct zclassicd_oracle_probe_result *out);
+
+/* zcl_state subsystem=oracle dispatcher entry. See CLAUDE.md
+ * "Adding state introspection". Reentrant-safe. */
+bool zclassicd_oracle_dump_state_json(struct json_value *out, const char *key);
+
+struct zclassicd_oracle_stats {
+    int64_t probes_total;
+    int64_t probes_agree;
+    int64_t probes_disagree;
+    int64_t rpc_errors;
+    int64_t last_probe_unix_us;
+    int     last_probed_height;
+};
+
+void zclassicd_oracle_stats_snapshot(struct zclassicd_oracle_stats *out);
+
+/* Test hooks — reset state between unit tests. */
+void zclassicd_oracle_reset_for_test(void);
+
+#endif /* ZCL_SERVICES_ZCLASSICD_ORACLE_SERVICE_H */

@@ -33,6 +33,7 @@
 #include "controllers/strong_params.h"
 #include "services/sync_watchdog_service.h"
 #include "services/chain_restore_service.h"
+#include "services/zclassicd_oracle_service.h"
 #include "health/heartbeat.h"
 #include "models/database.h"
 #include "config/runtime.h"
@@ -213,6 +214,8 @@ static const struct dump_entry g_dumpers[] = {
                      "block_index entry by height or hash (in `key`)" },
     { "health",      health_dump_state_json,
                      "unified heartbeat ring: registered subsystems, ages, stall fires" },
+    { "oracle",      zclassicd_oracle_dump_state_json,
+                     "zclassicd oracle: drift-probe stats + RPC config" },
 };
 
 static bool rpc_dumpstate(const struct json_value *params, bool help,
@@ -741,14 +744,56 @@ static bool rpc_dbquery(const struct json_value *params, bool help,
     return true;
 }
 
+/* ── RPC: probezclassicd <height> ──────────────────────────────────
+ *
+ * Synchronously probe the local zclassicd at a given height and
+ * compare its getblockhash result against our block_index. */
+
+static bool rpc_probezclassicd(const struct json_value *params, bool help,
+                               struct json_value *result)
+{
+    RPC_HELP(help, result,
+        "probezclassicd <height>\n"
+        "\nProbe the local zclassicd (independent ZClassic impl) for the\n"
+        "block hash at <height> and compare to our block_index.\n"
+        "\nResult: { height, our_hash, their_hash, match, our_have_block,\n"
+        "         error, error_msg }");
+
+    const struct json_value *h_val = json_at(params, 0);
+    int height = -1;
+    if (h_val) {
+        if (h_val->type == JSON_INT)
+            height = (int)json_get_int(h_val);
+        else if (h_val->type == JSON_STR)
+            height = atoi(json_get_str(h_val));
+    }
+    if (height < 0) {
+        LOG_FAIL("diag", "probezclassicd: bad/missing height");
+    }
+
+    struct zclassicd_oracle_probe_result r;
+    bool ok = zclassicd_oracle_probe(height, &r);
+
+    json_set_object(result);
+    json_push_kv_int (result, "height",         r.height);
+    json_push_kv_str (result, "our_hash",       r.our_hash);
+    json_push_kv_str (result, "their_hash",     r.their_hash);
+    json_push_kv_bool(result, "match",          r.match);
+    json_push_kv_bool(result, "our_have_block", r.our_have_block);
+    json_push_kv_bool(result, "error",          r.error);
+    json_push_kv_str (result, "error_msg",      r.error_msg);
+    return ok;
+}
+
 /* ── Registration ────────────────────────────────────────────────── */
 
 void register_diagnostics_rpc_commands(struct rpc_table *t)
 {
     struct rpc_command cmds[] = {
-        { "control", "dumpstate",  rpc_dumpstate,  true },
-        { "control", "getnodelog", rpc_getnodelog, true },
-        { "control", "dbquery",    rpc_dbquery,    true },
+        { "control", "dumpstate",     rpc_dumpstate,     true },
+        { "control", "getnodelog",    rpc_getnodelog,    true },
+        { "control", "dbquery",       rpc_dbquery,       true },
+        { "control", "probezclassicd", rpc_probezclassicd, true },
     };
     for (size_t i = 0; i < sizeof(cmds) / sizeof(cmds[0]); i++)
         rpc_table_append(t, &cmds[i]);
