@@ -30,6 +30,13 @@ struct app_context {
     const char *import_legacy_dir;
     bool sapling_scan;
     const char *legacy_import_dir;
+    /* -importfromlegacy=PATH : read-only ingest of a co-located zclassicd
+     * datadir via local_chain_ingest (FS4). Validates every block against
+     * the hardcoded SHA3 windows + UTXO checkpoint instead of trusting
+     * the source. Doesn't require zclassicd to be stopped (read-only).
+     * Different from -import-from= (legacy_import_dir above) which byte-
+     * copies the entire datadir and needs zclassicd offline. */
+    const char *ingest_from_legacy;
     const char *snapshot_dir;
     bool reindex_chainstate;
     bool reimport_utxos;

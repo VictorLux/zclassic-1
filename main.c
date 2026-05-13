@@ -792,6 +792,22 @@ int main(int argc, char **argv)
         else if (strncmp(argv[i], "-genproclimit=", 14) == 0) ctx.gen_threads = atoi(argv[i]+14);
         else if (strncmp(argv[i], "-importlegacy=", 14) == 0) ctx.import_legacy_dir = argv[i]+14;
         else if (strncmp(argv[i], "-import-from=", 13) == 0) ctx.legacy_import_dir = argv[i]+13;
+        else if (strncmp(argv[i], "-importfromlegacy=", 18) == 0) ctx.ingest_from_legacy = argv[i]+18;
+        else if (strcmp(argv[i], "-importfromlegacy") == 0) {
+            /* bare form: defaults to ~/.zclassic */
+            const char *home = getenv("HOME");
+            static char default_legacy_path[1024];
+            if (home && *home) {
+                snprintf(default_legacy_path, sizeof(default_legacy_path),
+                         "%s/.zclassic", home);
+                ctx.ingest_from_legacy = default_legacy_path;
+            } else {
+                fprintf(stderr,
+                    "-importfromlegacy with no path requires $HOME; "
+                    "use -importfromlegacy=PATH\n");
+                return 1;
+            }
+        }
         else if (strncmp(argv[i], "-fastsync=", 10) == 0) {
             fprintf(stderr, "Warning: -fastsync is deprecated, use -import-from=\n");
             ctx.legacy_import_dir = argv[i]+10;
