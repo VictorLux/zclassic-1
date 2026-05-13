@@ -371,7 +371,7 @@ bool process_headers(struct msg_processor *mp, struct p2p_node *node,
         int32_t *heights = zcl_malloc(max_collect * sizeof(int32_t), "blk_req_heights");
 
         if (!hashes || !heights) {
-            fprintf(stderr, "msgprocessor: malloc failed for block request "
+            fprintf(stderr, "msgprocessor: malloc failed for block request " // obs-ok:pre-existing-diagnostic
                     "arrays (%zu entries)\n", max_collect);
             free(hashes); free(heights);
             hashes = NULL; heights = NULL;
@@ -423,7 +423,7 @@ bool process_headers(struct msg_processor *mp, struct p2p_node *node,
                 if (pindex_last && accepted > 0 &&
                     pindex_last->nHeight < chain_h &&
                     node->starting_height > chain_h + 100) {
-                    fprintf(stderr,
+                    fprintf(stderr, // obs-ok:pre-existing-diagnostic
                         "[sync] STALL DETECTED: accepted %zu headers but "
                         "header tip=%d < chain tip=%d (peer at %d). "
                         "Block index heights may be corrupted.\n",
@@ -481,7 +481,7 @@ bool process_headers(struct msg_processor *mp, struct p2p_node *node,
                         enum csr_result rc = csr_commit_tip(
                             csr_instance(), &commit);
                         if (rc != CSR_OK && rc != CSR_REJECTED_NOT_INITIALIZED) {
-                            fprintf(stderr,
+                            fprintf(stderr, // obs-ok:pre-existing-diagnostic
                                 "msgprocessor: csr rejected anchor re-commit "
                                 "(%s) h=%d\n",
                                 csr_result_name(rc), anc->nHeight);
@@ -640,7 +640,7 @@ bool process_headers(struct msg_processor *mp, struct p2p_node *node,
             int cur_tip = pindex_last->nHeight;
             if (prev_tip > 0 && cur_tip - prev_tip < 100 &&
                 cur_tip > 0 && prev_tip > 0) {
-                fprintf(stderr,
+                fprintf(stderr, // obs-ok:pre-existing-diagnostic
                     "[headers] SLOW ADVANCE: peer %s sent %zu headers "
                     "but tip only moved from %d to %d\n",
                     node->addr_name, accepted, prev_tip, cur_tip);
@@ -651,7 +651,7 @@ bool process_headers(struct msg_processor *mp, struct p2p_node *node,
         if (syncsvc_should_restart_headers_from_tip(
                 accepted, pindex_last, active_chain_height(
                     &mp->main_state->chain_active), node->starting_height)) {
-            fprintf(stderr,
+            fprintf(stderr, // obs-ok:pre-existing-diagnostic
                     "[headers] low batch from %s ended at h=%d below "
                     "chain tip h=%d; restarting getheaders from tip\n",
                     node->addr_name,
@@ -743,7 +743,7 @@ void push_getheaders_from(struct msg_processor *mp,
         for (size_t li = 0; li < loc.num_hashes && li < 3; li++) {
             char lhex[65];
             uint256_get_hex(&loc.vhave[li], lhex);
-            fprintf(stderr, "getheaders locator[%zu]: %s\n", li, lhex);
+            fprintf(stderr, "getheaders locator[%zu]: %s\n", li, lhex); // obs-ok:pre-existing-diagnostic
         }
     }
 
