@@ -160,7 +160,7 @@ bool bii_write_sidecar(const char *datadir)
      * something is truncating the file concurrently, which is a
      * bigger problem than this function can solve. */
     if (hashed_size != hdr.body_size) {
-        fprintf(stderr,
+        fprintf(stderr, // obs-ok:pre-existing-diagnostic
                 "bii_write_sidecar: size drift stat=%llu hashed=%llu\n",
                 (unsigned long long)hdr.body_size,
                 (unsigned long long)hashed_size);
@@ -357,7 +357,7 @@ static void bii_rename_if_present(const char *src, int64_t ts,
     char dst[1200];
     snprintf(dst, sizeof(dst), "%s.corrupt.%lld", src, (long long)ts);
     if (rename(src, dst) != 0) {
-        fprintf(stderr,
+        fprintf(stderr, // obs-ok:pre-existing-diagnostic
                 "bii_quarantine: rename %s -> %s failed: %s\n",
                 src, dst, strerror(errno));
         return;
@@ -468,7 +468,7 @@ int block_index_repair_heights(struct main_state *ms)
     /* Collect all entries into an array for sorting. */
     struct block_index **arr = zcl_malloc(n * sizeof(*arr), "height_repair_arr");
     if (!arr) {
-        fprintf(stderr, "[height-repair] malloc failed for %zu entries\n", n);
+        fprintf(stderr, "[height-repair] malloc failed for %zu entries\n", n); // obs-ok:pre-existing-diagnostic
         return 0;
     }
 
@@ -563,7 +563,7 @@ int block_index_repair_pprev(struct main_state *ms, const char *datadir)
      * (nFile, nDataPos) so we read each block file sequentially. */
     struct block_index **arr = zcl_malloc(n * sizeof(*arr), "pprev_repair_arr");
     if (!arr) {
-        fprintf(stderr, "[pprev-repair] malloc failed for %zu entries\n", n);
+        fprintf(stderr, "[pprev-repair] malloc failed for %zu entries\n", n); // obs-ok:pre-existing-diagnostic
         return 0;
     }
 
@@ -716,19 +716,18 @@ int bii_repair_post_activation_anchor(
     result->tip_restore_old_h = -1;
     result->tip_restore_new_h = -1;
 
-    if (!ms || !coins_tip || !datadir) return -1;
-
+    if (!ms || !coins_tip || !datadir) return -1; // raw-return-ok: null-args-precondition
     struct uint256 coins_hash;
     uint256_set_null(&coins_hash);
     coins_view_cache_get_best_block(coins_tip, &coins_hash);
-    if (uint256_is_null(&coins_hash)) return -1;
+    if (uint256_is_null(&coins_hash)) return -1; // raw-return-ok: sentinel-no-coins-tip-yet
 
     struct block_index *coins_bi =
         block_map_find(&ms->map_block_index, &coins_hash);
-    if (!coins_bi) return -1;
+    if (!coins_bi) return -1; // raw-return-ok: sentinel-coins-tip-orphan
 
     int pre_scan_coins_h = coins_bi->nHeight;
-    if (pre_scan_coins_h <= 100000) return -1;
+    if (pre_scan_coins_h <= 100000) return -1; // raw-return-ok: sentinel-pre-checkpoint-skip
 
     int post_act_h = active_chain_height(&ms->chain_active);
     result->tip_restore_old_h = post_act_h;
@@ -806,7 +805,7 @@ int bii_repair_post_activation_anchor(
             ms->pindex_best_header = coins_bi;
             result->tip_restored = true;
         } else {
-            fprintf(stderr,
+            fprintf(stderr, // obs-ok:pre-existing-diagnostic
                 "[bii-anchor] coins tip h=%d not disk-backed; "
                 "refusing active tip restore over h=%d\n",
                 pre_scan_coins_h, post_act_h);

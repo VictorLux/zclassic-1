@@ -127,7 +127,7 @@ static void local_chain_ingest_tick(void *ctx)
     int64_t btotal = atomic_load(&g_state.blocks_total);
     int64_t utxos  = atomic_load(&g_state.utxos_imported);
     int64_t wins   = atomic_load(&g_state.windows_verified);
-    fprintf(stderr,
+    fprintf(stderr, // obs-ok:pre-existing-diagnostic
             "[local_ingest] phase=%d blocks=%" PRId64 "/%" PRId64
             " utxos=%" PRId64 " sha3_windows_verified=%" PRId64 "\n",
             phase, bdone, btotal, utxos, wins);
@@ -293,7 +293,7 @@ static void chainstate_fingerprint_write(const char *our_datadir,
         return;
     FILE *f = fopen(tmp, "w");
     if (!f) {
-        fprintf(stderr,
+        fprintf(stderr, // obs-ok:pre-existing-diagnostic
                 "[local_ingest] fingerprint: fopen(%s) failed: %s\n",
                 tmp, strerror(errno));
         return;
@@ -308,7 +308,7 @@ static void chainstate_fingerprint_write(const char *our_datadir,
     fprintf(f, "utxos_count=%" PRIu64 "\n", fp->utxos_count);
     fprintf(f, "total_supply_sat=%" PRId64 "\n", fp->total_supply_sat);
     if (fflush(f) != 0 || fsync(fileno(f)) != 0) {
-        fprintf(stderr,
+        fprintf(stderr, // obs-ok:pre-existing-diagnostic
                 "[local_ingest] fingerprint: fflush/fsync failed: %s\n",
                 strerror(errno));
         fclose(f);
@@ -317,13 +317,13 @@ static void chainstate_fingerprint_write(const char *our_datadir,
     }
     fclose(f);
     if (rename(tmp, path) != 0) {
-        fprintf(stderr,
+        fprintf(stderr, // obs-ok:pre-existing-diagnostic
                 "[local_ingest] fingerprint: rename failed: %s\n",
                 strerror(errno));
         unlink(tmp);
         return;
     }
-    fprintf(stderr,
+    fprintf(stderr, // obs-ok:pre-existing-diagnostic
             "[local_ingest] fingerprint: persisted (anchor_h=%d "
             "count=%" PRIu64 " sha3=%s)\n",
             fp->anchor_height, fp->utxos_count, sha3_hex);
@@ -444,7 +444,7 @@ static void legacy_trust_cookie_write(const char *our_datadir,
 
     FILE *f = fopen(tmp, "w");
     if (!f) {
-        fprintf(stderr,
+        fprintf(stderr, // obs-ok:pre-existing-diagnostic
                 "[local_ingest] cookie: fopen(%s) failed: %s\n",
                 tmp, strerror(errno));
         return;
@@ -461,7 +461,7 @@ static void legacy_trust_cookie_write(const char *our_datadir,
                  legacy_datadir, blk_name);
         struct stat st;
         if (stat(blk_path, &st) != 0) {
-            fprintf(stderr,
+            fprintf(stderr, // obs-ok:pre-existing-diagnostic
                     "[local_ingest] cookie: stat(%s) failed at write\n",
                     blk_path);
             fclose(f);
@@ -472,7 +472,7 @@ static void legacy_trust_cookie_write(const char *our_datadir,
                 (long long)st.st_mtime, (long long)st.st_size);
     }
     if (fflush(f) != 0 || fsync(fileno(f)) != 0) {
-        fprintf(stderr,
+        fprintf(stderr, // obs-ok:pre-existing-diagnostic
                 "[local_ingest] cookie: fflush/fsync failed: %s\n",
                 strerror(errno));
         fclose(f);
@@ -481,13 +481,13 @@ static void legacy_trust_cookie_write(const char *our_datadir,
     }
     fclose(f);
     if (rename(tmp, path) != 0) {
-        fprintf(stderr,
+        fprintf(stderr, // obs-ok:pre-existing-diagnostic
                 "[local_ingest] cookie: rename(%s,%s) failed: %s\n",
                 tmp, path, strerror(errno));
         unlink(tmp);
         return;
     }
-    fprintf(stderr,
+    fprintf(stderr, // obs-ok:pre-existing-diagnostic
             "[local_ingest] cookie: persisted %s (file_count=%d "
             "windows_count=%zu)\n",
             path, file_count, g_sha3_windows_count);
@@ -549,7 +549,7 @@ static struct phase1_block_loc *phase1_index_blocks(const char *legacy_datadir,
                  legacy_datadir, f);
         FILE *fp = fopen(path, "rb");
         if (!fp) {
-            fprintf(stderr,
+            fprintf(stderr, // obs-ok:pre-existing-diagnostic
                     "[local_ingest] index: fopen(%s) failed: %s\n",
                     path, strerror(errno));
             free(arr);
@@ -643,7 +643,7 @@ static bool phase1_window_worker(void *vtask)
             int fd = open(path, O_RDONLY);
             if (fd < 0) {
                 atomic_store(&t->io_error, true);
-                fprintf(stderr,
+                fprintf(stderr, // obs-ok:pre-existing-diagnostic
                         "[local_ingest] window %d: open(%s) failed: %s\n",
                         t->window_idx, path, strerror(errno));
                 goto out_fail;
@@ -659,7 +659,7 @@ static bool phase1_window_worker(void *vtask)
             close(fd);  /* fd no longer needed after mmap */
             if (mp == MAP_FAILED) {
                 atomic_store(&t->io_error, true);
-                fprintf(stderr,
+                fprintf(stderr, // obs-ok:pre-existing-diagnostic
                         "[local_ingest] window %d: mmap(%s) failed: %s\n",
                         t->window_idx, path, strerror(errno));
                 goto out_fail;
@@ -680,7 +680,7 @@ static bool phase1_window_worker(void *vtask)
         size_t   off  = (size_t)t->blocks[b].payload_offset;
         if (off + plen > base_len) {
             atomic_store(&t->io_error, true);
-            fprintf(stderr,
+            fprintf(stderr, // obs-ok:pre-existing-diagnostic
                     "[local_ingest] window %d: block %d: offset+plen "
                     "(%zu) > file size (%zu) in blk%05d.dat\n",
                     t->window_idx, b, off + plen, base_len, fk);
@@ -753,7 +753,7 @@ static enum local_ingest_result phase1_parallel_verify(
         for (int64_t w = 0; w < verifiable_windows; w++) {
             if (atomic_load(&tasks[w].mismatch)) {
                 state_set_error("phase1: window hash mismatch (parallel)");
-                fprintf(stderr,
+                fprintf(stderr, // obs-ok:pre-existing-diagnostic
                         "[local_ingest] phase1 parallel: window %" PRId64
                         " mismatch\n", w);
                 r = LCI_SHA3_WINDOW_MISMATCH;
@@ -791,13 +791,13 @@ static enum local_ingest_result phase1_sha3_window_verify(
     atomic_store(&g_state.windows_verified, 0);
 
     if (cfg->skip_blk_verify) {
-        fprintf(stderr,
+        fprintf(stderr, // obs-ok:pre-existing-diagnostic
                 "[local_ingest] phase 1 SHA3 window verify SKIPPED "
                 "(cfg.skip_blk_verify=true)\n");
         return LCI_OK;
     }
     if (g_sha3_windows_count == 0) {
-        fprintf(stderr,
+        fprintf(stderr, // obs-ok:pre-existing-diagnostic
                 "[local_ingest] phase 1 SHA3 window verify SKIPPED "
                 "(g_sha3_windows_count == 0; table is placeholder)\n");
         return LCI_OK;
@@ -811,7 +811,7 @@ static enum local_ingest_result phase1_sha3_window_verify(
         atomic_store(&g_state.windows_verified,
                      (int64_t)g_sha3_windows_count);
         atomic_store(&g_state.trust_prefix_verified, true);
-        fprintf(stderr,
+        fprintf(stderr, // obs-ok:pre-existing-diagnostic
                 "[local_ingest] phase 1 SHA3 window verify SKIPPED "
                 "(trust cookie valid; %zu windows previously verified)\n",
                 g_sha3_windows_count);
@@ -842,7 +842,7 @@ static enum local_ingest_result phase1_sha3_window_verify(
                 phase1_index_blocks(cfg->legacy_datadir, num_files,
                                      &idx_count);
             if (locs && idx_count > 0) {
-                fprintf(stderr,
+                fprintf(stderr, // obs-ok:pre-existing-diagnostic
                         "[local_ingest] phase1 parallel: indexed %" PRId64
                         " blocks across %d files, hashing with %d workers\n",
                         idx_count, num_files, workers);
@@ -859,14 +859,14 @@ static enum local_ingest_result phase1_sha3_window_verify(
                                                   cfg->legacy_datadir,
                                                   num_files);
                     }
-                    fprintf(stderr,
+                    fprintf(stderr, // obs-ok:pre-existing-diagnostic
                             "[local_ingest] phase1 parallel: complete "
                             "(verified=%" PRId64 ")\n", verified_now);
                 }
                 return r;
             }
             free(locs);
-            fprintf(stderr,
+            fprintf(stderr, // obs-ok:pre-existing-diagnostic
                     "[local_ingest] phase1: parallel indexing failed, "
                     "falling back to sequential scan\n");
         }
@@ -941,7 +941,7 @@ static enum local_ingest_result phase1_sha3_window_verify(
                     verified++;
                     atomic_store(&g_state.windows_verified, verified);
                     if (verified % 10 == 0) {
-                        fprintf(stderr,
+                        fprintf(stderr, // obs-ok:pre-existing-diagnostic
                                 "[local_ingest] phase1: verified %" PRId64
                                 " / %zu windows\n",
                                 verified, g_sha3_windows_count);
@@ -953,7 +953,7 @@ static enum local_ingest_result phase1_sha3_window_verify(
                 if (current_window >= (int64_t)g_sha3_windows_count) {
                     /* No more entries to verify against; stop early. */
                     fclose(fp);
-                    fprintf(stderr,
+                    fprintf(stderr, // obs-ok:pre-existing-diagnostic
                             "[local_ingest] phase1: all %zu windows verified "
                             "(blocks scanned=%" PRId64 ")\n",
                             g_sha3_windows_count, total_blocks);
@@ -968,7 +968,7 @@ static enum local_ingest_result phase1_sha3_window_verify(
         fclose(fp);
     }
 
-    fprintf(stderr,
+    fprintf(stderr, // obs-ok:pre-existing-diagnostic
             "[local_ingest] phase1: scan done — windows verified=%" PRId64
             " (table size=%zu) total blocks scanned=%" PRId64 "\n",
             verified, g_sha3_windows_count, total_blocks);
@@ -990,7 +990,7 @@ bool local_chain_ingest_trust_prefix_verified(void)
 
 int local_chain_ingest_trust_prefix_end_height(void)
 {
-    if (g_sha3_windows_count == 0) return -1;
+    if (g_sha3_windows_count == 0) return -1; // raw-return-ok: sentinel-no-compile-time-windows
     return (int)(g_sha3_windows_count * SHA3_WINDOW_SIZE) - 1;
 }
 
@@ -1134,14 +1134,14 @@ static enum local_ingest_result phase2_chainstate_import(
                     memcpy(anchor_hash.data, fp.anchor_block_hash, 32);
                     coins_view_cache_set_best_block(coins_tip,
                                                      &anchor_hash);
-                    fprintf(stderr,
+                    fprintf(stderr, // obs-ok:pre-existing-diagnostic
                             "[local_ingest] phase 2 chainstate import "
                             "SKIPPED (fingerprint match: anchor_h=%d "
                             "count=%" PRIu64 ")\n",
                             fp.anchor_height, count);
                     return LCI_OK;
                 }
-                fprintf(stderr,
+                fprintf(stderr, // obs-ok:pre-existing-diagnostic
                         "[local_ingest] phase 2: fingerprint present "
                         "but coins.db SHA3 differs (count=%" PRIu64
                         " fp.count=%" PRIu64 ") — full import will run\n",
@@ -1178,7 +1178,7 @@ static enum local_ingest_result phase2_chainstate_import(
                     uss_path, true, anchor_pre->sha3_hash, &hdr,
                     err, sizeof(err));
                 if (uh) {
-                    fprintf(stderr,
+                    fprintf(stderr, // obs-ok:pre-existing-diagnostic
                             "[local_ingest] phase 2 fast path: sidecar "
                             "%s SHA3 matches anchor (count=%" PRIu64
                             " total=%.4f ZCL)\n",
@@ -1242,7 +1242,7 @@ static enum local_ingest_result phase2_chainstate_import(
                            anchor_pre->block_hash, 32);
                     coins_view_cache_set_best_block(coins_tip,
                                                     &anchor_hash);
-                    fprintf(stderr,
+                    fprintf(stderr, // obs-ok:pre-existing-diagnostic
                             "[local_ingest] phase 2 FAST PATH complete: "
                             "%" PRId64 " UTXOs from sidecar (~1 s "
                             "vs ~30-60 s iteration)\n", inserted);
@@ -1251,7 +1251,7 @@ static enum local_ingest_result phase2_chainstate_import(
                 /* Sidecar present but didn't verify against anchor —
                  * may be a non-anchor-height build. Fall through to
                  * chainstate iter path. */
-                fprintf(stderr,
+                fprintf(stderr, // obs-ok:pre-existing-diagnostic
                         "[local_ingest] phase 2: sidecar %s present "
                         "but uss_open failed (%s); falling back to "
                         "chainstate iter\n", uss_path, err);
@@ -1316,7 +1316,7 @@ static enum local_ingest_result phase2_chainstate_import(
      * (which requires the data to be in the SQLite UTXO table — that
      * happens on the next batch flush in chain_advance). */
     if ((uint64_t)ctx.vouts != anchor->utxo_count) {
-        fprintf(stderr,
+        fprintf(stderr, // obs-ok:pre-existing-diagnostic
                 "[local_ingest] phase2: WARNING vout count mismatch "
                 "imported=%" PRId64 " anchor=%" PRIu64
                 " (legacy chainstate is at a different height than the static "
@@ -1327,7 +1327,7 @@ static enum local_ingest_result phase2_chainstate_import(
          * differ if the legacy node has advanced past h=3,056,758. */
     }
 
-    fprintf(stderr,
+    fprintf(stderr, // obs-ok:pre-existing-diagnostic
             "[local_ingest] phase2: imported records=%" PRId64
             " vouts=%" PRId64 " total=%.4f ZCL (anchor expects %" PRIu64
             " UTXOs, %.4f ZCL)\n",
@@ -1369,7 +1369,7 @@ static enum local_ingest_result phase2_chainstate_import(
         snprintf(sha3_hex + 2 * i, 3, "%02x", computed_sha3[i]);
     sha3_hex[64] = '\0';
 
-    fprintf(stderr,
+    fprintf(stderr, // obs-ok:pre-existing-diagnostic
             "[local_ingest] phase2: imported UTXO SHA3=%s count=%" PRIu64 "\n",
             sha3_hex, computed_count);
 
@@ -1476,18 +1476,18 @@ static enum local_ingest_result phase3_block_ingest(
             int from = (local_header_tip > anchor_h
                         ? local_header_tip : anchor_h) + 1;
             if (from < 1) from = 1;
-            fprintf(stderr,
+            fprintf(stderr, // obs-ok:pre-existing-diagnostic
                     "[local_ingest] phase3-pre: header_probe pull "
                     "from h=%d ...\n", from);
             bool reached_tip = header_probe_pull_range_blocking(
                 from, &hp_added, &remote_tip);
-            fprintf(stderr,
+            fprintf(stderr, // obs-ok:pre-existing-diagnostic
                     "[local_ingest] phase3-pre: pulled %d headers "
                     "(remote_tip=%d, reached_tip=%s)\n",
                     hp_added, remote_tip,
                     reached_tip ? "yes" : "no");
         } else {
-            fprintf(stderr,
+            fprintf(stderr, // obs-ok:pre-existing-diagnostic
                     "[local_ingest] phase3-pre: header_probe_init "
                     "unavailable; skipping bulk header pull (P2P will "
                     "fill the gap)\n");
@@ -1498,7 +1498,7 @@ static enum local_ingest_result phase3_block_ingest(
     int final_h = (cfg->max_height > 0 && cfg->max_height < tip_h)
                   ? cfg->max_height : tip_h;
     if (final_h <= anchor_h) {
-        fprintf(stderr,
+        fprintf(stderr, // obs-ok:pre-existing-diagnostic
                 "[local_ingest] phase3: nothing to apply "
                 "(anchor=%d local_tip=%d final=%d)\n",
                 anchor_h, tip_h, final_h);
@@ -1516,7 +1516,7 @@ static enum local_ingest_result phase3_block_ingest(
             /* No local block_index at this height yet — defer to P2P
              * sync.  Stop the phase cleanly so the caller can hand
              * off. */
-            fprintf(stderr,
+            fprintf(stderr, // obs-ok:pre-existing-diagnostic
                     "[local_ingest] phase3: stopping at height %d "
                     "(no local block_index entry; falling back to "
                     "P2P sync from here)\n", h);
@@ -1541,7 +1541,7 @@ static enum local_ingest_result phase3_block_ingest(
         atomic_store(&g_state.blocks_done, applied);
     }
 
-    fprintf(stderr,
+    fprintf(stderr, // obs-ok:pre-existing-diagnostic
             "[local_ingest] phase3: applied=%" PRId64 " blocks "
             "(anchor=%d → tip=%d)\n",
             applied, anchor_h, anchor_h + (int)applied);

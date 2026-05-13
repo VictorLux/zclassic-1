@@ -59,7 +59,7 @@ static int op_compute_trust_prefix_end(void)
      *   [0 .. g_sha3_windows_count * SHA3_WINDOW_SIZE - 1].
      * A disagreement inside that range means our payload disagrees
      * with the compile-time anchor — the gravest possible failure. */
-    if (g_sha3_windows_count == 0) return -1;
+    if (g_sha3_windows_count == 0) return -1; // raw-return-ok: sentinel-no-compile-time-windows
     return (int)(g_sha3_windows_count * SHA3_WINDOW_SIZE) - 1;
 }
 
@@ -114,7 +114,7 @@ void oracle_policy_record_disagreement(int height,
                                         const char *their_hash_hex)
 {
     if (!g_op.initialized) {
-        fprintf(stderr,
+        fprintf(stderr, // obs-ok:pre-existing-diagnostic
                 "[oracle_policy] record_disagreement called before init "
                 "(h=%d) — call oracle_policy_init() first\n", height);
         return;
@@ -212,7 +212,7 @@ void oracle_policy_clear(void)
     g_op.ring_count = 0;
     pthread_mutex_unlock(&g_op.lock);
     atomic_store(&g_op.state, OP_NORMAL);
-    fprintf(stderr, "[oracle_policy] state cleared by operator\n");
+    fprintf(stderr, "[oracle_policy] state cleared by operator\n"); // obs-ok:pre-existing-diagnostic
 }
 
 static const char *op_state_name(enum oracle_policy_state s)

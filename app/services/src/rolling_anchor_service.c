@@ -76,7 +76,7 @@ static struct {
 
 static int ra_compile_time_end(void)
 {
-    if (g_sha3_windows_count == 0) return -1;
+    if (g_sha3_windows_count == 0) return -1; // raw-return-ok: sentinel-no-compile-time-windows
     return (int)(g_sha3_windows_count * SHA3_WINDOW_SIZE) - 1;
 }
 
@@ -197,7 +197,7 @@ static bool ra_load_locked(void)
     uint8_t computed[32];
     ra_file_digest(buf, body_len, computed);
     if (memcmp(expected, computed, 32) != 0) {
-        fprintf(stderr,
+        fprintf(stderr, // obs-ok:pre-existing-diagnostic
                 "[rolling_anchor] load: file SHA3 mismatch — "
                 "discarding runtime anchors\n");
         free(buf);
@@ -213,7 +213,7 @@ static bool ra_load_locked(void)
     uint32_t schema = 0;
     memcpy(&schema, buf + RA_MAGIC_LEN, 4);
     if (schema != RA_SCHEMA) {
-        fprintf(stderr,
+        fprintf(stderr, // obs-ok:pre-existing-diagnostic
                 "[rolling_anchor] load: schema %u != %u — discarding\n",
                 schema, RA_SCHEMA);
         free(buf);
@@ -224,7 +224,7 @@ static bool ra_load_locked(void)
     size_t expected_size = (size_t)RA_MAGIC_LEN + 4 + 4 +
                            (size_t)count * RA_RECORD_SIZE;
     if (expected_size != body_len) {
-        fprintf(stderr,
+        fprintf(stderr, // obs-ok:pre-existing-diagnostic
                 "[rolling_anchor] load: size mismatch (count=%u body=%zu) "
                 "— discarding\n", count, body_len);
         free(buf);
@@ -248,7 +248,7 @@ static bool ra_load_locked(void)
         int32_t h = 0;
         memcpy(&h, p, 4);
         if (h != expected_start || h % SHA3_WINDOW_SIZE != 0) {
-            fprintf(stderr,
+            fprintf(stderr, // obs-ok:pre-existing-diagnostic
                     "[rolling_anchor] load: bad start_height at idx %u "
                     "(got %d expected %d) — discarding\n",
                     i, h, expected_start);
@@ -268,7 +268,7 @@ static bool ra_load_locked(void)
     g_ra.count    = (int)count;
     g_ra.capacity = (int)count;
     if (count > 0) {
-        fprintf(stderr,
+        fprintf(stderr, // obs-ok:pre-existing-diagnostic
                 "[rolling_anchor] load: %u windows loaded "
                 "(coverage h=%d..%d)\n",
                 count, recs[0].start_height,
@@ -328,7 +328,7 @@ void rolling_anchor_discard(const char *datadir)
     if (g_ra.file_path[0])
         unlink(g_ra.file_path);
     pthread_mutex_unlock(&g_ra.lock);
-    fprintf(stderr, "[rolling_anchor] discarded\n");
+    fprintf(stderr, "[rolling_anchor] discarded\n"); // obs-ok:pre-existing-diagnostic
 }
 
 int rolling_anchor_effective_prefix_end_height(void)
@@ -435,7 +435,7 @@ int rolling_anchor_extend_if_due(struct main_state *ms,
         int fail_h = -1;
         if (!ra_compute_window_hash(ms, next_start, hash, &fail_h)) {
             atomic_fetch_add(&g_ra.total_read_failures, 1);
-            fprintf(stderr,
+            fprintf(stderr, // obs-ok:pre-existing-diagnostic
                     "[rolling_anchor] extend: read failed at h=%d "
                     "(window start=%d) — stopping\n",
                     fail_h, next_start);
@@ -468,7 +468,7 @@ int rolling_anchor_extend_if_due(struct main_state *ms,
             pthread_mutex_lock(&g_ra.lock);
             if (g_ra.count > 0) g_ra.count--;
             pthread_mutex_unlock(&g_ra.lock);
-            fprintf(stderr,
+            fprintf(stderr, // obs-ok:pre-existing-diagnostic
                     "[rolling_anchor] extend: persist failed at start=%d "
                     "— in-memory rollback\n", next_start);
             break;
@@ -478,7 +478,7 @@ int rolling_anchor_extend_if_due(struct main_state *ms,
         for (int i = 0; i < 32; i++)
             snprintf(hex + 2 * i, 3, "%02x", hash[i]);
         hex[64] = '\0';
-        fprintf(stderr,
+        fprintf(stderr, // obs-ok:pre-existing-diagnostic
                 "[rolling_anchor] extended: start=%d end=%d sha3=%s\n",
                 next_start, last_h_in_win, hex);
         atomic_fetch_add(&g_ra.total_extended, 1);

@@ -56,8 +56,8 @@ static int collect_pprev_window(struct block_index *start,
     int steps = 0;
     while (cur && count < out_cap &&
            cur->nHeight > stop_height_exclusive) {
-        if (steps++ > GAPFILL_WALK_CAP) return -1;
-        if (cur->nHeight >= last_h) return -1; /* non-monotonic */
+        if (steps++ > GAPFILL_WALK_CAP) return -1; // raw-return-ok: corrupt-walk-caller-logs
+        if (cur->nHeight >= last_h) return -1; // raw-return-ok: corrupt-walk-non-monotonic
         last_h = cur->nHeight;
         out[count++] = cur;
         cur = cur->pprev;
@@ -103,7 +103,7 @@ static int gap_fill_pass(void)
     if (collected < 0) {
         zcl_mutex_unlock(&ms->cs_main);
         free(bis);
-        return -1;
+        return -1; // raw-return-ok: propagate-corrupt-walk-thread-logs
     }
 
     /* Filter: needs data AND not in-flight. Build parallel arrays for
@@ -171,7 +171,7 @@ static void *gap_fill_thread_main(void *arg)
             g_gf.stats.passes_idle++;
         } else {
             g_gf.stats.passes_corrupt_walk++;
-            fprintf(stderr,
+            fprintf(stderr, // obs-ok:pre-existing-diagnostic
                 "[gap-fill] %s:%d %s(): corrupt pprev walk detected, "
                 "skipping pass\n", __FILE__, __LINE__, __func__);
         }
@@ -230,7 +230,7 @@ void gap_fill_stop(void)
             ts.tv_sec += 5;
             int rc = pthread_timedjoin_np(g_gf.thread, NULL, &ts);
             if (rc != 0) {
-                fprintf(stderr,
+                fprintf(stderr, // obs-ok:pre-existing-diagnostic
                         "gap_fill_stop: thread join timed out (rc=%d) — "
                         "detaching\n", rc);
                 pthread_detach(g_gf.thread);
