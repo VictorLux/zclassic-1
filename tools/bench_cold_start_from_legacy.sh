@@ -114,6 +114,21 @@ echo "  local_chain_ingest dump:"
 ./tools/zcl-rpc -rpcport="$RPC_PORT" dumpstate '"local_ingest"' 2>/dev/null \
     | head -20 | sed 's/^/    /' || true
 
+echo
+echo "  header_probe dump:"
+./tools/zcl-rpc -rpcport="$RPC_PORT" dumpstate '"header_probe"' 2>/dev/null \
+    | head -20 | sed 's/^/    /' || true
+
+echo
+echo "  rolling_anchor dump:"
+./tools/zcl-rpc -rpcport="$RPC_PORT" dumpstate '"rolling_anchor"' 2>/dev/null \
+    | head -20 | sed 's/^/    /' || true
+
+echo
+echo "  oracle_policy dump:"
+./tools/zcl-rpc -rpcport="$RPC_PORT" dumpstate '"oracle_policy"' 2>/dev/null \
+    | head -20 | sed 's/^/    /' || true
+
 kill -TERM "$NODE_PID" 2>/dev/null || true
 wait "$NODE_PID" 2>/dev/null || true
 trap - EXIT
