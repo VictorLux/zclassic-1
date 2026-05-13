@@ -414,6 +414,32 @@ static void boot_step_detect_unclean_shutdown(const char *datadir)
     unlink(marker_path);
 }
 
+static void boot_step_backfill_shielded_if_needed(struct app_context *ctx,
+                                                   struct block_index *tip)
+{
+    /* When the node has been running long enough to have a non-trivial
+     * chain (tip > 100k blocks) but the blocks table is missing
+     * sprout/sapling totals (< 1k rows with non-zero shielded value),
+     * backfill via utxo_recovery_service. This catches the case where
+     * an LDB import populated UTXOs but not the per-block shielded
+     * column. Skipped in no_services mode (speedrun / benchmarking). */
+    if (!(g_node_db.open && tip && tip->nHeight > 1000 && !ctx->no_services))
+        return;
+
+    int64_t shielded_count = 0;
+    sqlite3_stmt *s = NULL;
+    if (sqlite3_prepare_v2(g_node_db.db,
+            "SELECT COUNT(*) FROM blocks WHERE sprout_value != 0 OR sapling_value != 0",
+            -1, &s, NULL) == SQLITE_OK) {
+        if (sqlite3_step(s) == SQLITE_ROW)
+            shielded_count = sqlite3_column_int64(s, 0);
+        sqlite3_finalize(s);
+    }
+    if (shielded_count < 1000 && tip->nHeight > 100000)
+        utxo_recovery_backfill_shielded(&g_node_db,
+            boot_runtime_db_service(), &g_state, g_datadir);
+}
+
 static void boot_step_build_svc_ctx(struct app_context *ctx,
                                      struct boot_svc_ctx *svc)
 {
@@ -2638,23 +2664,7 @@ sapling_tree_boot_check_done:
     boot_step_finalize_chain_state();
     struct block_index *tip = active_chain_tip(&g_state.chain_active);
 
-    /* Backfill shielded values (utxo_recovery_service) */
-    if (g_node_db.open && tip && tip->nHeight > 1000 && !ctx->no_services) {
-        int64_t shielded_count = 0;
-        {
-            sqlite3_stmt *s = NULL;
-            if (sqlite3_prepare_v2(g_node_db.db,
-                    "SELECT COUNT(*) FROM blocks WHERE sprout_value != 0 OR sapling_value != 0",
-                    -1, &s, NULL) == SQLITE_OK) {
-                if (sqlite3_step(s) == SQLITE_ROW)
-                    shielded_count = sqlite3_column_int64(s, 0);
-                sqlite3_finalize(s);
-            }
-        }
-        if (shielded_count < 1000 && tip->nHeight > 100000)
-            utxo_recovery_backfill_shielded(&g_node_db,
-                boot_runtime_db_service(), &g_state, g_datadir);
-    }
+    boot_step_backfill_shielded_if_needed(ctx, tip);
 
     /* Skip services if no_services flag is set (speedrun / benchmarking) */
     if (ctx->no_services) {
