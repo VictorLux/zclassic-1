@@ -201,6 +201,7 @@ int test_compact_blocks(void);
 int test_dandelion(void);
 int test_addrman_rebalance(void);
 int test_coins(void);
+int test_chainstate_legacy_reader(void);
 int test_tor(void);
 int test_load_balancer(void);
 int test_game(void);

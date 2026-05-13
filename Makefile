@@ -162,6 +162,20 @@ speedrun: $(TMPL_GEN) tools/speedrun.c $(ALL_SRCS)
 zcl-rpc: tools/zcl-rpc.c
 	$(CC) -std=c23 -O2 -Wall -o $@ $<
 
+# gen_sha3_windows: one-shot tool that queries a fully-synced reference
+# node and overwrites lib/chain/{include/chain,src}/sha3_windows.{h,c}
+# with SHA3-256 commitments over 1000-block windows. Standalone build:
+# only the libs it directly uses, no DB, no Tor.
+tools/gen_sha3_windows: tools/gen_sha3_windows.c \
+		lib/crypto/src/sha3.c lib/encoding/src/utilstrencodings.c \
+		lib/json/src/json.c
+	$(CC) -std=c23 -O3 -march=native -Wall -Wextra -Werror -pedantic \
+	    -Wno-stringop-overflow -Wno-unused-result \
+	    -Ilib/chain/include -Ilib/crypto/include -Ilib/encoding/include \
+	    -Ilib/json/include -Ilib/util/include \
+	    -D_POSIX_C_SOURCE=200809L \
+	    -o $@ $^ -pthread
+
 zcl-nodectl: tools/zcl-nodectl.c lib/util/include/util/rpc_paths.h
 	$(CC) -std=c23 -O2 -Wall -Wextra -Werror -Ilib/util/include -o $@ $<
 

@@ -176,6 +176,7 @@ int main(void)
     failures += test_primitives();
     failures += test_bloom();
     failures += test_coins();
+    failures += test_chainstate_legacy_reader();
     failures += test_store();
     failures += test_blog();
     failures += test_api();
@@ -184,6 +185,8 @@ int main(void)
     failures += test_utxo_commitment();
     failures += test_mmr();
     failures += test_mmb();
+    { extern int test_sha3_windows(void);
+      failures += test_sha3_windows(); }
     failures += test_flyclient();
     failures += test_scan_util();
     failures += test_tor();
