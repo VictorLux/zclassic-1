@@ -58,6 +58,18 @@
 #define HP_RESPONSE_MAX          16384    /* a full hex-header is ~3 KB */
 #define HP_MAX_HEADER_BYTES      (BLOCK_HEADER_SIZE + MAX_SOLUTION_SIZE + 8)
 
+/* JSON-RPC batch size — number of {getblockhash,...} or {getblockheader,...}
+ * items posted in a single HTTP request. zclassicd accepts JSON-RPC array
+ * bodies and replies with one result per element in order. With N=128 we
+ * cut N×2 round-trips (today: 27 500 RTTs for 13 750 blocks) down to
+ * 2*ceil(N/128) (today: 215 RTTs). Cap chosen to keep response < ~600 KB
+ * (each verbose=false header hex is ~3 KB on this chain). */
+#define HP_RPC_BATCH             128
+
+/* Per-batch dynamic-response cap: 1 MB is generous for a 128-item batch
+ * of getblockheader responses. */
+#define HP_DYN_RESP_MAX          (1u << 20)
+
 /* ── Global state ──────────────────────────────────────────────── */
 
 static struct {
@@ -458,6 +470,386 @@ static bool hp_fetch_one_header(const char *host, int port,
     return true;
 }
 
+/* ── Batched JSON-RPC: dynamic-buffer HTTP call ───────────────────
+ *
+ * Like hp_http_rpc_call but malloc-grows the response buffer up to
+ * HP_DYN_RESP_MAX. On success returns true and *out_resp = the
+ * malloc'd response (caller must free). On failure returns false
+ * with *out_resp = NULL. */
+static bool hp_http_rpc_call_dyn(const char *host, int port,
+                                  const char *user, const char *pass,
+                                  const char *body_json,
+                                  char **out_resp,
+                                  char *err, size_t err_sz)
+{
+    *out_resp = NULL;
+    int fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (fd < 0) {
+        snprintf(err, err_sz, "socket: %s", strerror(errno));
+        return false;
+    }
+    struct timeval tv = { .tv_sec = HP_RPC_TIMEOUT_SECS, .tv_usec = 0 };
+    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+    setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
+
+    struct sockaddr_in sa = {0};
+    sa.sin_family = AF_INET;
+    sa.sin_port   = htons((uint16_t)port);
+    if (inet_pton(AF_INET, host, &sa.sin_addr) != 1) {
+        close(fd);
+        snprintf(err, err_sz, "bad host: %s", host);
+        return false;
+    }
+    if (connect(fd, (struct sockaddr *)&sa, sizeof(sa)) != 0) {
+        snprintf(err, err_sz, "connect %s:%d: %s",
+                 host, port, strerror(errno));
+        close(fd);
+        return false;
+    }
+
+    char userpass[256];
+    snprintf(userpass, sizeof(userpass), "%s:%s",
+             user ? user : "", pass ? pass : "");
+    char b64[384];
+    hp_base64_encode((const unsigned char *)userpass, strlen(userpass),
+                     b64, sizeof(b64));
+    /* Assemble the full request (header + body) into one malloc'd
+     * buffer and send in a single loop. Single contiguous send keeps
+     * tiny test servers happy (their recv loop may break at the
+     * \r\n\r\n separator before the body arrives in a separate
+     * packet). */
+    size_t body_len = strlen(body_json);
+    size_t req_cap  = 768 + body_len;
+    char *req = zcl_malloc(req_cap, "hp_dyn_req");
+    if (!req) {
+        close(fd);
+        snprintf(err, err_sz, "oom req");
+        return false;
+    }
+    int reqlen = snprintf(req, req_cap,
+        "POST / HTTP/1.1\r\n"
+        "Host: %s:%d\r\n"
+        "Authorization: Basic %s\r\n"
+        "Content-Type: application/json\r\n"
+        "Content-Length: %zu\r\n"
+        "Connection: close\r\n"
+        "\r\n"
+        "%s",
+        host, port, b64, body_len, body_json);
+    if (reqlen < 0 || (size_t)reqlen >= req_cap) {
+        free(req);
+        close(fd);
+        snprintf(err, err_sz, "request too large for buffer");
+        return false;
+    }
+    size_t sent = 0;
+    while (sent < (size_t)reqlen) {
+        ssize_t n = send(fd, req + sent, (size_t)reqlen - sent, 0);
+        if (n <= 0) {
+            snprintf(err, err_sz, "send: %s", strerror(errno));
+            free(req);
+            close(fd);
+            return false;
+        }
+        sent += (size_t)n;
+    }
+    free(req);
+
+    /* Grow buffer as needed up to cap. */
+    size_t cap = 64 << 10;
+    size_t total = 0;
+    char *buf = zcl_malloc(cap, "hp_dyn_resp");
+    if (!buf) {
+        close(fd);
+        snprintf(err, err_sz, "oom resp");
+        return false;
+    }
+    for (;;) {
+        if (total + 1 >= cap) {
+            if (cap >= HP_DYN_RESP_MAX) {
+                snprintf(err, err_sz, "response > cap %u", HP_DYN_RESP_MAX);
+                free(buf); close(fd); return false;
+            }
+            size_t ncap = cap * 2;
+            if (ncap > HP_DYN_RESP_MAX) ncap = HP_DYN_RESP_MAX;
+            char *nbuf = zcl_realloc(buf, ncap, "hp_dyn_resp");
+            if (!nbuf) {
+                snprintf(err, err_sz, "oom resp grow");
+                free(buf); close(fd); return false;
+            }
+            buf = nbuf;
+            cap = ncap;
+        }
+        ssize_t n = recv(fd, buf + total, cap - total - 1, 0);
+        if (n < 0) {
+            snprintf(err, err_sz, "recv: %s", strerror(errno));
+            free(buf); close(fd); return false;
+        }
+        if (n == 0) break;
+        total += (size_t)n;
+    }
+    buf[total] = '\0';
+    close(fd);
+    if (total == 0) {
+        snprintf(err, err_sz, "empty response");
+        free(buf);
+        return false;
+    }
+    *out_resp = buf;
+    return true;
+}
+
+/* Parse a JSON-RPC array response. Each element must have a string
+ * `.result` field. Fills out_strs[i] with the result string (truncated
+ * to slot_sz-1 chars). On any element error returns false. */
+static bool hp_parse_rpc_array_strs(const char *raw,
+                                     int expected,
+                                     char *out_strs, size_t slot_sz,
+                                     char *err, size_t err_sz)
+{
+    const char *body = strstr(raw, "\r\n\r\n");
+    if (!body) {
+        snprintf(err, err_sz, "no http body separator");
+        return false;
+    }
+    body += 4;
+
+    struct json_value v = {0};
+    if (!json_read(&v, body, strlen(body))) {
+        snprintf(err, err_sz, "json parse failed");
+        json_free(&v);
+        return false;
+    }
+    if (v.type != JSON_ARR) {
+        snprintf(err, err_sz, "response not a JSON array");
+        json_free(&v);
+        return false;
+    }
+    if ((int)v.num_children != expected) {
+        snprintf(err, err_sz,
+                 "array len %zu != expected %d",
+                 v.num_children, expected);
+        json_free(&v);
+        return false;
+    }
+    for (int i = 0; i < expected; i++) {
+        const struct json_value *item = json_at(&v, (size_t)i);
+        if (!item || item->type != JSON_OBJ) {
+            snprintf(err, err_sz, "item[%d] not an object", i);
+            json_free(&v);
+            return false;
+        }
+        const struct json_value *r = json_get(item, "result");
+        if (!r || r->type != JSON_STR) {
+            const struct json_value *jerr = json_get(item, "error");
+            const char *msg = "no string result";
+            if (jerr && jerr->type == JSON_OBJ) {
+                const struct json_value *m = json_get(jerr, "message");
+                if (m && m->type == JSON_STR) msg = json_get_str(m);
+            }
+            snprintf(err, err_sz, "item[%d] rpc error: %s", i, msg);
+            json_free(&v);
+            return false;
+        }
+        const char *s = json_get_str(r);
+        size_t slen = s ? strlen(s) : 0;
+        if (slen + 1 > slot_sz) {
+            snprintf(err, err_sz,
+                     "item[%d] string too long (%zu > %zu)",
+                     i, slen, slot_sz);
+            json_free(&v);
+            return false;
+        }
+        char *dst = out_strs + (size_t)i * slot_sz;
+        memcpy(dst, s ? s : "", slen);
+        dst[slen] = '\0';
+    }
+    json_free(&v);
+    return true;
+}
+
+/* Fetch N consecutive headers starting at from_h using 2 batched
+ * JSON-RPC arrays: getblockhash × N, then getblockheader × N. Returns
+ * the count of successfully-deserialized headers in *out_count. On
+ * RPC or parse failure returns false; on per-header deserialize
+ * failure populates whatever headers parsed successfully and returns
+ * true with *out_count < n. */
+static bool hp_fetch_headers_batch(const char *host, int port,
+                                    const char *user, const char *pass,
+                                    int from_h, int n,
+                                    struct block_header *out,
+                                    int *out_count,
+                                    char *err, size_t err_sz)
+{
+    *out_count = 0;
+    if (n <= 0 || n > HP_RPC_BATCH) {
+        snprintf(err, err_sz, "bad batch size %d", n);
+        return false;
+    }
+
+    /* ── Batch 1: getblockhash([h..h+n-1]) ───────────────────────── */
+    /* Body cap: each item ~95 chars; +brackets +commas. */
+    size_t body1_cap = (size_t)n * 96 + 16;
+    char *body1 = zcl_malloc(body1_cap, "hp_batch_body1");
+    if (!body1) {
+        snprintf(err, err_sz, "oom body1");
+        return false;
+    }
+    size_t off = 0;
+    body1[off++] = '[';
+    for (int i = 0; i < n; i++) {
+        int w = snprintf(body1 + off, body1_cap - off,
+            "%s{\"jsonrpc\":\"1.0\",\"id\":%d,\"method\":\"getblockhash\","
+            "\"params\":[%d]}",
+            i ? "," : "", i, from_h + i);
+        if (w < 0 || (size_t)w >= body1_cap - off) {
+            free(body1);
+            snprintf(err, err_sz, "body1 overflow at i=%d", i);
+            return false;
+        }
+        off += (size_t)w;
+    }
+    if (off + 2 >= body1_cap) {
+        free(body1);
+        snprintf(err, err_sz, "body1 trailer overflow");
+        return false;
+    }
+    body1[off++] = ']';
+    body1[off]   = '\0';
+
+    char *resp1 = NULL;
+    if (!hp_http_rpc_call_dyn(host, port, user, pass, body1,
+                               &resp1, err, err_sz)) {
+        free(body1);
+        return false;
+    }
+    free(body1);
+
+    /* Each hash hex is 64 chars + NUL. Reserve 80 per slot for slack. */
+    enum { HP_HASH_SLOT = 80 };
+    char *hashes = zcl_calloc((size_t)n, HP_HASH_SLOT, "hp_batch_hashes");
+    if (!hashes) {
+        free(resp1);
+        snprintf(err, err_sz, "oom hashes");
+        return false;
+    }
+    bool ok = hp_parse_rpc_array_strs(resp1, n, hashes, HP_HASH_SLOT,
+                                       err, err_sz);
+    free(resp1);
+    if (!ok) {
+        free(hashes);
+        return false;
+    }
+    for (int i = 0; i < n; i++) {
+        const char *h_str = hashes + (size_t)i * HP_HASH_SLOT;
+        if (strlen(h_str) != 64) {
+            snprintf(err, err_sz,
+                     "hash[%d] not 64 hex chars (got %zu)",
+                     i, strlen(h_str));
+            free(hashes);
+            return false;
+        }
+    }
+
+    /* ── Batch 2: getblockheader(hash[i], false) ─────────────────── */
+    /* Per-item template body grows by hash length (64) + method name
+     * (15) + JSON-RPC envelope (~40) + id digits + slack. 200 chars
+     * per item is a safe upper bound for batch sizes up to 1024. */
+    size_t body2_cap = (size_t)n * 200 + 16;
+    char *body2 = zcl_malloc(body2_cap, "hp_batch_body2");
+    if (!body2) {
+        free(hashes);
+        snprintf(err, err_sz, "oom body2");
+        return false;
+    }
+    off = 0;
+    body2[off++] = '[';
+    for (int i = 0; i < n; i++) {
+        const char *h_str = hashes + (size_t)i * HP_HASH_SLOT;
+        int w = snprintf(body2 + off, body2_cap - off,
+            "%s{\"jsonrpc\":\"1.0\",\"id\":%d,"
+            "\"method\":\"getblockheader\","
+            "\"params\":[\"%s\",false]}",
+            i ? "," : "", i, h_str);
+        if (w < 0 || (size_t)w >= body2_cap - off) {
+            free(hashes); free(body2);
+            snprintf(err, err_sz, "body2 overflow at i=%d", i);
+            return false;
+        }
+        off += (size_t)w;
+    }
+    free(hashes);
+    if (off + 2 >= body2_cap) {
+        free(body2);
+        snprintf(err, err_sz, "body2 trailer overflow");
+        return false;
+    }
+    body2[off++] = ']';
+    body2[off]   = '\0';
+
+    char *resp2 = NULL;
+    if (!hp_http_rpc_call_dyn(host, port, user, pass, body2,
+                               &resp2, err, err_sz)) {
+        free(body2);
+        return false;
+    }
+    free(body2);
+
+    /* Each header hex is up to 2 * HP_MAX_HEADER_BYTES + slack. */
+    const size_t hex_slot = (size_t)HP_MAX_HEADER_BYTES * 2 + 16;
+    char *hexes = zcl_calloc((size_t)n, hex_slot, "hp_batch_hexes");
+    if (!hexes) {
+        free(resp2);
+        snprintf(err, err_sz, "oom hexes");
+        return false;
+    }
+    ok = hp_parse_rpc_array_strs(resp2, n, hexes, hex_slot,
+                                  err, err_sz);
+    free(resp2);
+    if (!ok) {
+        free(hexes);
+        return false;
+    }
+
+    /* ── Per-item: hex decode + deserialize. ────────────────────── */
+    int parsed = 0;
+    for (int i = 0; i < n; i++) {
+        const char *hex = hexes + (size_t)i * hex_slot;
+        size_t hex_len = strlen(hex);
+        if (hex_len < 280 || (hex_len % 2) != 0) {
+            snprintf(err, err_sz, "header[%d]: bad hex length %zu",
+                     i, hex_len);
+            break;
+        }
+        unsigned char *bytes = zcl_malloc(hex_len / 2, "hp_batch_bytes");
+        if (!bytes) {
+            snprintf(err, err_sz, "header[%d]: oom decode", i);
+            break;
+        }
+        size_t nbytes = ParseHex(hex, bytes, hex_len / 2);
+        if (nbytes < BLOCK_HEADER_SIZE) {
+            free(bytes);
+            snprintf(err, err_sz, "header[%d]: short decoded len %zu",
+                     i, nbytes);
+            break;
+        }
+        struct byte_stream s;
+        stream_init_from_data(&s, bytes, nbytes);
+        block_header_init(&out[i]);
+        bool deser_ok = block_header_deserialize(&out[i], &s);
+        stream_free(&s);
+        free(bytes);
+        if (!deser_ok) {
+            snprintf(err, err_sz, "header[%d]: deserialize failed", i);
+            break;
+        }
+        parsed++;
+    }
+    free(hexes);
+    *out_count = parsed;
+    return true;
+}
+
 /* ── Public pull-range ─────────────────────────────────────────── */
 
 bool header_probe_pull_range(int start_height, int max_headers,
@@ -518,29 +910,79 @@ bool header_probe_pull_range(int start_height, int max_headers,
     if (end_height < start_height) return true;  /* nothing to do */
 
     int added = 0;
-    for (int h = start_height; h <= end_height; h++) {
-        struct block_header hdr;
-        if (!hp_fetch_one_header(host, port, user, pass, h,
-                                 &hdr, err, sizeof(err))) {
-            atomic_fetch_add(&g_hp.rpc_errors, 1);
-            /* Stop on first RPC error — likely a transient outage. */
-            break;
-        }
-        struct validation_state vs;
-        validation_state_init(&vs);
-        struct block_index *pindex = NULL;
-        if (accept_block_header(&hdr, &vs, ms, params, &pindex)) {
-            atomic_fetch_add(&g_hp.headers_added, 1);
-            added++;
-            if (pindex && pindex->nHeight > 0)
-                atomic_store(&g_hp.last_local_height, pindex->nHeight);
-        } else {
-            atomic_fetch_add(&g_hp.headers_rejected, 1);
-            /* Stop the batch on a reject — the parent of subsequent
-             * headers would be unknown anyway. */
-            break;
-        }
+    int h = start_height;
+    /* Batched fast path: fetch HP_RPC_BATCH headers per pair of RPCs
+     * via JSON-RPC array. ~100× fewer round-trips than the single-call
+     * path when zclassicd is on the same host. Per-item deserialize +
+     * accept still validates PoW + chain link locally. */
+    struct block_header *hbuf =
+        zcl_malloc(sizeof(*hbuf) * HP_RPC_BATCH, "hp_pullrange_hbuf");
+    if (!hbuf) {
+        LOG_FAIL("header_probe", "pull_range: oom hbuf");
     }
+
+    while (h <= end_height) {
+        int n = end_height - h + 1;
+        if (n > HP_RPC_BATCH) n = HP_RPC_BATCH;
+
+        int parsed = 0;
+        if (!hp_fetch_headers_batch(host, port, user, pass,
+                                     h, n, hbuf, &parsed,
+                                     err, sizeof(err))) {
+            atomic_fetch_add(&g_hp.rpc_errors, 1);
+            /* Batch failed — fall back to single-call for this one
+             * header so we still make some progress and surface a
+             * precise error message. */
+            struct block_header hdr;
+            if (!hp_fetch_one_header(host, port, user, pass, h,
+                                      &hdr, err, sizeof(err))) {
+                atomic_fetch_add(&g_hp.rpc_errors, 1);
+                break;
+            }
+            struct validation_state vs;
+            validation_state_init(&vs);
+            struct block_index *pindex = NULL;
+            if (accept_block_header(&hdr, &vs, ms, params, &pindex)) {
+                atomic_fetch_add(&g_hp.headers_added, 1);
+                added++;
+                if (pindex && pindex->nHeight > 0)
+                    atomic_store(&g_hp.last_local_height,
+                                 pindex->nHeight);
+                h++;
+                continue;
+            }
+            atomic_fetch_add(&g_hp.headers_rejected, 1);
+            break;
+        }
+
+        bool reject = false;
+        for (int i = 0; i < parsed; i++) {
+            struct validation_state vs;
+            validation_state_init(&vs);
+            struct block_index *pindex = NULL;
+            if (accept_block_header(&hbuf[i], &vs, ms, params, &pindex)) {
+                atomic_fetch_add(&g_hp.headers_added, 1);
+                added++;
+                if (pindex && pindex->nHeight > 0)
+                    atomic_store(&g_hp.last_local_height,
+                                 pindex->nHeight);
+            } else {
+                atomic_fetch_add(&g_hp.headers_rejected, 1);
+                reject = true;
+                break;
+            }
+        }
+        if (reject) break;
+        if (parsed < n) {
+            /* Partial batch — surface per-item decode/deserialize
+             * failures as RPC errors so callers see the same
+             * "something went wrong" signal as the single-call path. */
+            atomic_fetch_add(&g_hp.rpc_errors, (int64_t)(n - parsed));
+            break;
+        }
+        h += parsed;
+    }
+    free(hbuf);
 
     if (out_added) *out_added = added;
     return true;

@@ -118,34 +118,71 @@ static void *hp_mock_loop(void *arg)  /* raw-pthread-ok: test-local */
         else if (strstr(buf, "\"getblockhash\""))  method = "getblockhash";
         else if (strstr(buf, "\"getblockheader\""))method = "getblockheader";
 
-        char body[8192];
-        int bl = 0;
+        /* Detect JSON-RPC array body (batched). Count items by
+         * counting top-level "{" inside the JSON body. */
+        const char *body_sep = strstr(buf, "\r\n\r\n");
+        const char *json_body = body_sep ? body_sep + 4 : buf;
+        bool is_batch = (json_body[0] == '[');
+        int batch_n = 0;
+        if (is_batch) {
+            int depth = 0;
+            for (const char *p = json_body; *p; p++) {
+                if (*p == '[') depth++;
+                else if (*p == ']') depth--;
+                else if (*p == '{' && depth == 1) batch_n++;
+            }
+            if (batch_n < 1) batch_n = 1;
+        }
+
+        /* Build one element body for the response. is_batch wraps it
+         * in [] with batch_n copies. */
+        char elem[8192];
+        int el = 0;
         if (method && strcmp(method, "getblockcount") == 0) {
-            bl = snprintf(body, sizeof(body),
-                "{\"result\":%d,\"error\":null,\"id\":\"zcl-hp\"}\n",
+            el = snprintf(elem, sizeof(elem),
+                "{\"result\":%d,\"error\":null,\"id\":\"zcl-hp\"}",
                 m->remote_tip);
         } else if (method && strcmp(method, "getblockhash") == 0) {
-            /* Return a synthetic 64-char hash, distinguishable across
-             * heights via a counter. Doesn't matter for the test. */
             int seq = atomic_fetch_add(&m->requests_served, 1) + 1;
             char hash_hex[65];
-            for (int i = 0; i < 64; i++) hash_hex[i] = "0123456789abcdef"[seq & 0xf];
+            for (int i = 0; i < 64; i++)
+                hash_hex[i] = "0123456789abcdef"[seq & 0xf];
             hash_hex[64] = '\0';
             (void)seq;
-            bl = snprintf(body, sizeof(body),
-                "{\"result\":\"%s\",\"error\":null,\"id\":\"zcl-hp\"}\n",
+            el = snprintf(elem, sizeof(elem),
+                "{\"result\":\"%s\",\"error\":null,\"id\":\"zcl-hp\"}",
                 hash_hex);
         } else if (method && strcmp(method, "getblockheader") == 0) {
             const char *hex = m->malformed_header
                                   ? HP_MALFORMED_HEX
                                   : HP_VALID_HDR_HEX;
-            bl = snprintf(body, sizeof(body),
-                "{\"result\":\"%s\",\"error\":null,\"id\":\"zcl-hp\"}\n",
+            el = snprintf(elem, sizeof(elem),
+                "{\"result\":\"%s\",\"error\":null,\"id\":\"zcl-hp\"}",
                 hex);
         } else {
-            bl = snprintf(body, sizeof(body),
+            el = snprintf(elem, sizeof(elem),
                 "{\"result\":null,\"error\":{\"code\":-1,"
-                "\"message\":\"unknown method\"},\"id\":\"zcl-hp\"}\n");
+                "\"message\":\"unknown method\"},\"id\":\"zcl-hp\"}");
+        }
+
+        /* Assemble final body — either single object or array. */
+        char body[65536];
+        int bl = 0;
+        if (!is_batch) {
+            bl = snprintf(body, sizeof(body), "%s\n", elem);
+        } else {
+            int off = 0;
+            body[off++] = '[';
+            for (int i = 0; i < batch_n && off + el + 2 < (int)sizeof(body); i++) {
+                if (i) body[off++] = ',';
+                memcpy(body + off, elem, (size_t)el);
+                off += el;
+            }
+            if (off + 2 < (int)sizeof(body)) {
+                body[off++] = ']';
+                body[off++] = '\n';
+            }
+            bl = off;
         }
 
         char hdr[256];
