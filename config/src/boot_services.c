@@ -129,6 +129,11 @@ static bool boot_start_thread_service(pthread_t *thread,
 {
     if (!thread || !started || !entry || *started)
         return false;
+    /* Generic boot service starter wrapper used by a single call site
+     * (boot_start_address_backfill_service); caller owns the pthread_t
+     * and joins it via boot_join_thread_service. A thread_registry_
+     * spawn_ex equivalent here would require a name-from-caller param;
+     * deferred to a focused follow-up. raw-pthread-ok */
     if (pthread_create(thread, NULL, entry, arg) != 0)
         return false;
     *started = true;

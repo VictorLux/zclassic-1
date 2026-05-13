@@ -508,8 +508,8 @@ static bool boot_step_init_crypto_and_state(struct app_context *ctx,
     g_params_thread_started = false;
     if (ctx->params_dir) {
         snprintf(g_params_dir_buf, sizeof(g_params_dir_buf), "%s", ctx->params_dir);
-        /* raw-pthread-ok: one-shot ZK params loader, joined at shutdown
-         * via app_shutdown's params_thread field */
+        /* One-shot ZK params loader; joined at shutdown via
+         * app_shutdown's params_thread field. raw-pthread-ok */
         if (pthread_create(&g_params_thread, NULL, load_params_thread, NULL) == 0)
             g_params_thread_started = true;
         else

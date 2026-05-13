@@ -690,7 +690,7 @@ check-before-save-hooks:
 # implementation in lib/util/src/thread_registry.c is implicitly skipped.
 check-pthread-create:
 	@echo "══ LINT: raw pthread_create outside thread_registry ══"
-	@HITS=$$(grep -rn 'pthread_create\s*(' lib/ app/ tools/ --include='*.c' \
+	@HITS=$$(grep -rn 'pthread_create\s*(' lib/ app/ tools/ config/ --include='*.c' \
 	    | grep -v 'lib/test/' \
 	    | grep -v 'lib/util/src/thread_registry.c' \
 	    | grep -v 'thread_registry_spawn\|thread_registry_trampoline' \
