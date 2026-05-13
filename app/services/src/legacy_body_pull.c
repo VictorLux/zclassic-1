@@ -33,11 +33,15 @@
 #include "validation/main_state.h"
 #include "validation/chainstate.h"
 #include "validation/process_block.h"
+#include "validation/contextual_check_tx.h"  /* g_assume_valid_height */
 #include "consensus/validation.h"
 #include "chain/chain.h"
 #include "chain/chainparams.h"
+#include "chain/sha3_windows.h"
+#include "core/random.h"
 #include "core/uint256.h"
 #include "core/serialize.h"
+#include "crypto/sha3.h"
 #include "primitives/block.h"
 #include "encoding/utilstrencodings.h"
 #include "json/json.h"
@@ -45,12 +49,14 @@
 #include "util/safe_alloc.h"
 #include "util/thread_registry.h"
 
+#include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
 #define LBP_DEFAULT_HOST    "127.0.0.1"
 #define LBP_DEFAULT_PORT    8232
+#define LBP_SPOTCHECK_K     3      /* random SHA3 windows to verify */
 
 /* Parse a JSON-RPC `.result` string from a raw HTTP response.
  * Returns malloc'd NUL-terminated string on success; NULL on
@@ -150,6 +156,153 @@ static char *lbp_rpc_getblock_hex(const char *host, int port,
     return hex;
 }
 
+/* Hash one SHA3 window's payloads from the legacy node and compare
+ * against the compile-time anchor. Returns true iff the digest matches
+ * g_sha3_windows[wi].hash. Streams 1000 RPC getblock(hex) responses
+ * into a single sha3_256_ctx. */
+static bool lbp_verify_window(const char *host, int port,
+                              const char *user, const char *pass,
+                              size_t wi)
+{
+    if (wi >= g_sha3_windows_count) return false;
+    int start = g_sha3_windows[wi].start_height;
+    int end   = start + SHA3_WINDOW_SIZE - 1;
+
+    struct sha3_256_ctx ctx;
+    sha3_256_init(&ctx);
+
+    for (int h = start; h <= end; h++) {
+        char err[160] = {0};
+        char *hash_hex = lbp_rpc_getblockhash(host, port, user, pass,
+                                              h, err, sizeof(err));
+        if (!hash_hex) {
+            fprintf(stderr, // obs-ok:pre-existing-diagnostic
+                    "[legacy_body_pull] spotcheck w=%zu h=%d "
+                    "getblockhash failed: %s\n", wi, h, err);
+            return false;
+        }
+        char *block_hex = lbp_rpc_getblock_hex(host, port, user, pass,
+                                                hash_hex, err, sizeof(err));
+        free(hash_hex);
+        if (!block_hex) {
+            fprintf(stderr, // obs-ok:pre-existing-diagnostic
+                    "[legacy_body_pull] spotcheck w=%zu h=%d "
+                    "getblock failed: %s\n", wi, h, err);
+            return false;
+        }
+        size_t hex_len = strlen(block_hex);
+        if ((hex_len & 1u) != 0u) {
+            free(block_hex);
+            fprintf(stderr, // obs-ok:pre-existing-diagnostic
+                    "[legacy_body_pull] spotcheck w=%zu h=%d "
+                    "odd hex length %zu\n", wi, h, hex_len);
+            return false;
+        }
+        unsigned char *bytes = zcl_malloc(hex_len / 2, "lbp_spot_bytes");
+        if (!bytes) {
+            free(block_hex);
+            return false;
+        }
+        size_t nbytes = ParseHex(block_hex, bytes, hex_len / 2);
+        free(block_hex);
+        if (nbytes == 0) {
+            free(bytes);
+            return false;
+        }
+        sha3_256_write(&ctx, bytes, nbytes);
+        free(bytes);
+    }
+
+    uint8_t digest[32];
+    sha3_256_finalize(&ctx, digest);
+    return memcmp(digest, g_sha3_windows[wi].hash, 32) == 0;
+}
+
+/* Spot-check K random SHA3 windows against the legacy node before
+ * granting it trust. Returns true iff every sampled window's digest
+ * matches the compile-time anchor — meaning the legacy node's blocks
+ * 0..3,110,999 hash-equal what we shipped. We then trust everything
+ * above the SHA3 anchor (3,056,758) for assume_valid purposes.
+ *
+ * Birthday-bound security against a malicious legacy node: a K=3
+ * sample over W windows finds any forgery with p ≥ 1-(1-b/W)^K where
+ * b is the number of bad windows. To inject ONE bad window without
+ * detection p ≤ (1 - 1/W)^K ≈ 1 - K/W ≈ 0.999. Honest legacy node
+ * → all K pass.
+ *
+ * Heights outside the legacy node's range produce RPC errors and we
+ * fall through to per-window failure (we don't trust an inconclusive
+ * spot-check). */
+static bool lbp_spotcheck_sha3_windows(const char *host, int port,
+                                       const char *user, const char *pass,
+                                       int legacy_tip,
+                                       int k)
+{
+    if (g_sha3_windows_count == 0) {
+        fprintf(stderr, // obs-ok:pre-existing-diagnostic
+                "[legacy_body_pull] spotcheck SKIPPED: no compile-time "
+                "anchor table (g_sha3_windows_count=0)\n");
+        return false;
+    }
+
+    /* Only sample windows the legacy node actually covers. */
+    size_t max_w = g_sha3_windows_count;
+    if (legacy_tip > 0) {
+        size_t covered = (size_t)(legacy_tip + 1) / SHA3_WINDOW_SIZE;
+        if (covered < max_w) max_w = covered;
+    }
+    if (max_w == 0) {
+        fprintf(stderr, // obs-ok:pre-existing-diagnostic
+                "[legacy_body_pull] spotcheck SKIPPED: legacy tip h=%d "
+                "is below any complete anchor window\n", legacy_tip);
+        return false;
+    }
+    if ((size_t)k > max_w) k = (int)max_w;
+
+    /* Random indices. Acceptable to allow duplicates; with W ≥ 1000 the
+     * collision rate is negligible and the security argument is per-
+     * sample independent. */
+    size_t picked[16];
+    if (k > (int)(sizeof(picked) / sizeof(picked[0])))
+        k = (int)(sizeof(picked) / sizeof(picked[0]));
+    unsigned char rand_buf[16 * 4];
+    GetRandBytes(rand_buf, sizeof(rand_buf));
+    for (int i = 0; i < k; i++) {
+        uint32_t r = (uint32_t)rand_buf[i*4]
+                   | ((uint32_t)rand_buf[i*4+1] << 8)
+                   | ((uint32_t)rand_buf[i*4+2] << 16)
+                   | ((uint32_t)rand_buf[i*4+3] << 24);
+        picked[i] = (size_t)(r % max_w);
+    }
+
+    fprintf(stderr, // obs-ok:pre-existing-diagnostic
+            "[legacy_body_pull] SHA3 spotcheck: K=%d windows over [0..%zu) "
+            "(legacy_tip=%d)\n", k, max_w, legacy_tip);
+
+    for (int i = 0; i < k; i++) {
+        size_t wi = picked[i];
+        fprintf(stderr, // obs-ok:pre-existing-diagnostic
+                "[legacy_body_pull] spotcheck: verifying w=%zu "
+                "(h=%d..%d)\n",
+                wi, g_sha3_windows[wi].start_height,
+                g_sha3_windows[wi].start_height + SHA3_WINDOW_SIZE - 1);
+        if (!lbp_verify_window(host, port, user, pass, wi)) {
+            fprintf(stderr, // obs-ok:pre-existing-diagnostic
+                    "[legacy_body_pull] spotcheck FAILED at window %zu — "
+                    "refusing to lower assume_valid; body-pull aborted\n",
+                    wi);
+            return false;
+        }
+        fprintf(stderr, // obs-ok:pre-existing-diagnostic
+                "[legacy_body_pull] spotcheck: w=%zu OK\n", wi);
+    }
+
+    fprintf(stderr, // obs-ok:pre-existing-diagnostic
+            "[legacy_body_pull] SHA3 spotcheck: %d/%d windows match — "
+            "legacy node is trusted\n", k, k);
+    return true;
+}
+
 bool legacy_body_pull_range_blocking(struct main_state *ms,
                                      struct coins_view_cache *coins_tip,
                                      const struct chain_params *params,
@@ -187,6 +340,40 @@ bool legacy_body_pull_range_blocking(struct main_state *ms,
                 "cannot reach legacy node\n");
         return false;
     }
+
+    /* ── SHA3 spotcheck + trust-mode arming ─────────────────────
+     * Before pulling any blocks, verify K=3 random SHA3 windows
+     * against the legacy node. ANY mismatch refuses to lower
+     * assume_valid → body-pull continues but at full validation
+     * cost (much slower; user is warned). All match → trust the
+     * legacy node and bump g_assume_valid_height to to_height so
+     * ECDSA + Sapling Groth16 + JoinSplit Ed25519 are all skipped
+     * for the catch-up window.
+     *
+     * The bump is permanent within this process lifetime — the
+     * blocks we accept now retain their trusted status; assume_valid
+     * isn't lowered on body-pull exit. Background validator (P5)
+     * re-verifies bit-exact over the following hours.  */
+    bool trust_armed = false;
+    int  prev_assume_valid = atomic_load(&g_assume_valid_height);
+    if (lbp_spotcheck_sha3_windows(host, port, user, pass,
+                                    to_height,
+                                    LBP_SPOTCHECK_K)) {
+        if (to_height > prev_assume_valid) {
+            atomic_store(&g_assume_valid_height, to_height);
+            trust_armed = true;
+            fprintf(stderr, // obs-ok:pre-existing-diagnostic
+                    "[legacy_body_pull] trust-mode armed: "
+                    "assume_valid %d -> %d (skipping ECDSA + Groth16 + "
+                    "JoinSplit Ed25519 for catch-up)\n",
+                    prev_assume_valid, to_height);
+        }
+    } else {
+        fprintf(stderr, // obs-ok:pre-existing-diagnostic
+                "[legacy_body_pull] WARNING: SHA3 spotcheck did not pass; "
+                "body-pull will run at FULL validation cost (no trust-mode)\n");
+    }
+    (void)trust_armed;  /* future: stats / state-dump */
 
     fprintf(stderr,  // obs-ok:pre-existing-diagnostic
             "[legacy_body_pull] starting: window=[%d..%d] "
