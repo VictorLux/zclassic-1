@@ -1,96 +1,175 @@
-# Next-session handoff — fast-sync continuation
+# Next-session handoff — durable fast-sync (P6 body-pull)
 
-**Last session ended 2026-05-13 ~18:55.**
-Plan file: `~/.claude/plans/look-i-need-you-hazy-lemur.md`.
+**Last session ended 2026-05-13 ~20:55.**
+Plan file: `~/.claude/plans/look-i-need-you-delegated-forest.md`.
 
 ## State at handoff
 
 ### Running node
-- **zclassic23 PID is the post-deploy binary** (`make deploy` ran at 18:47, `systemctl --user restart zclassic23` succeeded, `deploy_verify.sh` returned `Deployed + RPC live at block 3099373`).
-- **Node tip is STUCK at h=3,099,501.** zclassicd is at h=3,111,011 → **lag = 11,510** and not closing.
-- Watchdog reports `SLOW_PROGRESS: 0.26 blocks/sec`.
+- Tip: **3,100,205** (stuck, see below).
+- zclassicd tip: **3,111,099**. Gap: 10,894 blocks.
+- Loopback peer 127.0.0.1:8034: P2P handshake works after the P1 cap-fix
+  (zero `Misbehaving +20` events since the new binary deployed). Sometimes
+  takes ~5 min to come up after restart due to the connman 10 s PEER_CONNECTING
+  reaper racing the message loop — see "Known: loopback handshake race" below.
+- K2 (loopback block-body fast lane) is **shipped** in the running binary —
+  `dl_peer_stats.is_loopback`, `DL_MAX_IN_FLIGHT_PER_LOOPBACK=512`,
+  bumped `max_assign=256` for loopback.
 
-### Why it's stuck (from `~/.zclassic-c23/node.log`)
+### Why the tip is stuck
 ```
-[gap-fill] queued 1 blocks (window [3099502..3099853] tip=3099501 best=3099853)
-activate_best_chain: near-tip block h=3099603 was not a direct extension of tip=3099501; falling through to most-work reorg selection
-activation: connecting->ready (behind_peers)
+find_most_work_chain: STUCK at tip h=3100205 (best_header h=3100557, gap=352)
+  skipped[failed=0 invalid=7 no_data=217]
 ```
-A block in the 3,099,502 prefix is missing; gap-fill queues but never delivers it. We have h=3,099,603..3,099,853 sitting as orphans, blocked by the missing prefix. Reorg-selection refuses to bridge.
+- **7 blocks** in the 352-block forward window carry `BLOCK_FAILED_VALID`
+  from an earlier validation rejection. The current chain selector won't
+  use any path that passes through them.
+- **217 blocks** have no body data — these are the prefix gap that K2 was
+  supposed to close. K2 *is* closing the gap from the loopback peer
+  (`blocks_received` keeps climbing on peer id 47/127.0.0.1) but the
+  bodies arriving are all *past* the 7-invalid roadblock, so they pile
+  up as orphans.
 
-### Loopback peer never connects
-`127.0.0.1:8034` (zclassicd) shows `state=connecting` and never finishes handshake. Whole point of K1 (loopback fast lane) is lost while this peer isn't `active`. This is the most-likely root cause of the gap-fill stall: zclassicd is the only peer that has the missing block 3,099,502, but we can't ask it.
+zclassicd accepts every block in this range, so the 7 marked-invalid blocks
+are almost certainly **spurious-fail** (transient validator bug, malformed
+peer delivery, or stale flag from before the K1/P1 fix). They are NOT
+consensus-level invalid.
 
-## Unpushed commits on `main` (4)
+### Commits ahead of last handoff — all pushed to origin/main
 ```
-48e036501 fast-sync: LDB snapshot trick, embedded UTXO sidecar, loopback fast lane
-4a7445851 bench: surface new subsystem state dumps in cold-start benchmark
-c282b31d8 fast-sync: JSON-RPC batching + mmap phase-1 reads
-d37a426e4 fast-sync: oracle policy + rolling anchor + LevelDB pre-pop scaffolding
+51517c07d net: K2 — loopback fast lane for block bodies
+09d1aae80 lint: annotate pre-existing stderr diagnostics in msg_headers.c
+834ae419f net: clamp outbound getheaders response to 160 for legacy peers
+de3c395eb lint: annotate pre-existing sentinels and stderr diagnostics
++ the 5 commits from the previous handoff (already pushed)
 ```
 
 ## Immediate priorities (next session)
 
-### P0 — diagnose loopback handshake failure
-`127.0.0.1:8034` stays in `connecting` after the post-deploy restart. Possible causes:
-1. **Version mismatch** — zclassicd's P2P protocol version may not match what `msg_version.c` accepts. Inspect `lib/net/src/msg_version.c handle_version()` flow vs zclassicd's getnetworkinfo `protocolversion`.
-2. **Self-loop guard** — we set `-externalip=205.209.104.118` and `-port=8033`; zclassicd uses port 8034. If our addr_local equals the peer's claimed addr we may be rejecting as self.
-3. **Inbound nonce collision** — both nodes generate `nonce` for ping-of-self detection.
+### P0 — durable body-pull (the big one, ~3-4 hr)
 
-Probe: `./tools/zcl-rpc node_log "127.0.0.1:8034" 300 200` (server-side regex tail). Look for VERACK ↔ VERSION exchanges and any disconnect reason.
+Goal: make `-importfromlegacy=$HOME/.zclassic` a one-command unsticker for
+any future "tip behind zclassicd" condition, regardless of cause.
 
-### P0 — unstick the tip
-If loopback fix doesn't free the gap on its own, fetch h=3,099,502..3,099,602 from zclassicd via RPC + insert directly:
+Today's `phase3_block_ingest` at `app/services/src/local_chain_ingest.c:1435`
+pulls **headers** past our tip via `header_probe_pull_range_blocking` but
+*stops* at line 1523 with a `break` when `active_chain_at(h)` returns NULL
+(meaning the height is past our active tip — body never arrived). The
+durable fix:
+
+1. **New file `app/services/src/legacy_body_pull.c`**, mirroring the structure
+   of `app/services/src/header_probe_service.c`. Single public entry:
+   ```c
+   bool legacy_body_pull_range_blocking(struct main_state *ms,
+                                        struct coins_view_cache *coins_tip,
+                                        const struct chain_params *params,
+                                        const char *our_datadir,
+                                        int from_height,
+                                        int to_height,
+                                        int *out_applied);
+   ```
+   For each height in [from..to]:
+   - Walk pprev from `pindex_best_header` collecting block_index pointers
+     down to height = from (reuse the `collect_pprev_window` pattern from
+     `app/services/src/gap_fill_service.c:47`).
+   - For each entry in ascending order:
+     - If `bi->nStatus & BLOCK_HAVE_DATA`, skip (we already have it).
+     - Else: RPC `getblock <hash> 0` against zclassicd → hex string.
+     - Decode hex to `struct block` (use `core_io.c parse_hex` + `block_deserialize`).
+     - `write_block_to_disk(&block, &pos, our_datadir, params->pchMessageStart)`
+       (signature at `lib/storage/include/storage/disk_block_io.h:38`).
+     - Set `bi->nStatus |= BLOCK_HAVE_DATA`; persist via `block_tree_db_write_block_index`.
+     - `chain_advance(&vs, ms, coins_tip, bi, NULL, params, our_datadir, "legacy_body_pull")`
+       → tip advances by one.
+   - Reuse the RPC helpers (`hp_http_rpc_call_dyn`, `hp_parse_zclassic_conf`,
+     `hp_base64_encode`) — lift them into `lib/rpc/src/legacy_rpc_client.c`
+     so both `header_probe` and `body_pull` share them.
+
+2. **Wire into `phase3_block_ingest`** at `app/services/src/local_chain_ingest.c:1523`:
+   replace the `break` on missing block_index with a call to
+   `legacy_body_pull_range_blocking(ms, coins_tip, params, our_datadir,
+                                    h, anchor_h_plus_header_tip, &applied)`.
+   This makes phase3 robust to partial-state datadirs.
+
+3. **Test**: stop the service, run
+   `./zclassic23 -datadir=$HOME/.zclassic-c23 -importfromlegacy=$HOME/.zclassic`,
+   wait for ingest to complete, observe tip reaches 3,111,099+, restart
+   service normally. Expected ~3-5 min for 11 K-block gap on loopback RPC.
+
+4. **Operator runbook**: add a top-level `tools/zcl-resync-from-legacy.sh`
+   wrapper that does stop → import → start. One command for the operator.
+
+### P0.5 — flag-clearing fallback (~30 min)
+
+For the 7 currently-marked-invalid blocks: add a boot-time policy that
+clears `BLOCK_FAILED_VALID` from any block whose `nHeight > active_tip`
+when the chain is detected as stuck (tip < pindex_best_header by ≥ N).
+Source: `app/services/src/chain_restore_service.c:648` already has an
+`invalidated_off_chain` counter pattern — extend it.
+
+Combined with P0, this auto-recovers from any "spuriously-marked-invalid"
+stall without operator intervention.
+
+### P1 — fix the loopback handshake startup race (~1 hr)
+
+Symptom: on cold boot, the loopback peer sometimes takes ~5 min to reach
+PEER_HANDSHAKE_COMPLETE because the connman 10 s PEER_CONNECTING reaper
+at `lib/net/src/connman.c:817` fires before `msg_send_messages` pushes
+our version. Other times it completes in seconds.
+
+Fix: in connman.c:817 add `net_addr_is_local(&n->addr.svc.addr)` exemption:
+```c
+int connect_timeout = net_addr_is_local(&n->addr.svc.addr) ? 90 : 10;
+if (!n->inbound && n->state == PEER_CONNECTING &&
+    n->time_connected > 0 && now_check - n->time_connected > connect_timeout) {
+    ...
+}
 ```
-./tools/zcl-rpc node_log "gap-fill" 60 50
-./tools/zcl-rpc --repair 2000 8232 zclrhett:zclrhettpass2026
-```
-The `--repair` mode in `main.c` fetches missing UTXOs via zclassicd RPC. May need a similar `--repair-blocks` if the gap is in block-data not utxo state.
+Loopback TCP either succeeds instantly or never; the 10 s cutoff was
+designed for remote dead SYN sockets and doesn't apply.
 
-### P1 — pre-existing lint cleanup
-`make deploy` fails on pre-existing fprintf observability-pairing violations in `lib/storage/src/coins_view_sqlite.c` (commit `df0f929fce`, lines 171, 179, 186, 267, 293, 320, 335, 344, 416, 706, 731). Add `// obs-ok:reason-without-spaces` (note: tag must have no space after colon — that's the lint quirk that bit us). Surgical, one-commit task.
+### P2 — onward (already in the plan file)
+- K2 measurement: with P0+P0.5 unsticking the chain, benchmark loopback
+  block throughput. Expected ≥ 50 blocks/sec sustained, possibly bound
+  by `connect_tip` validation pipeline (then P3 batched ECDSA + Groth16).
+- P3 batched verify if needed.
 
-### P1 — push branch
-`git push origin main` — branch is 4 commits ahead, unpushed.
+## Files of interest (P0 implementation)
 
-### P2 — K2: loopback fast lane for block-body `getdata`
-K1 (shipped in `48e036501`) handles headers only. Once loopback peer connects, block bodies still queue against the same throttle. Mirror the `peer_is_loopback` short-circuit into:
-- `app/services/src/block_sync_service.c` — bump `MAX_BLOCKS_IN_TRANSIT` for loopback peers
-- `lib/net/src/msgprocessor.c` — `handle_getdata`/`handle_block` paths
-Expected: closes 12K-block lag in **minutes** instead of the ~2 hours current rate.
-
-### P2 — bench the Round-3 work
-Run `tools/bench_cold_start_from_legacy.sh` with the deployed binary and clean datadir to measure phase-1 mmap + phase-2 sidecar (if present) wins. Compare to pre-Round-3 baseline.
-
-To exercise J3 fast path: generate the sidecar once, place at `~/.zclassic-c23/utxo_snapshot.dat`, and rerun cold-start. SHA3 only matches the compile-time anchor when generated against a zclassicd at exactly h=3,056,758, so for a live diagnostic test the sidecar SHA3 won't match — code falls back to chainstate iter cleanly.
-
-## Deferred (out of scope this session, plan still tracks)
-- **A2** — 4-way SHA3-256 AVX-512 absorber (~6 hr crypto work; phase-1 CPU win)
-- **D1/D2** — io_uring phase 1 (needs `sudo apt install liburing-dev`)
-- **E2** — P2P quorum source (depends on K1 in prod; loopback peer must actually connect first)
-- **T2.3** — tip-zone shadow validate (semantics unresolved)
-- **N6** — per-block SHA3 tip-zone (finer granularity than 1000-block windows)
-- **N7** — `-trust-mode=pure|hybrid|full` CLI flag
+- `app/services/src/header_probe_service.c` — RPC client to copy from
+- `app/services/src/local_chain_ingest.c:1435` `phase3_block_ingest` — insertion point
+- `app/services/src/gap_fill_service.c:47` `collect_pprev_window` — pprev walk pattern
+- `lib/storage/include/storage/disk_block_io.h:38` `write_block_to_disk`
+- `lib/storage/src/block_index_db.c` — persist updated nStatus after setting BLOCK_HAVE_DATA
+- `app/services/src/chain_advance.c` — final apply per block
 
 ## What was shipped this session
-| Commit | Stage | Files |
-|---|---|---|
-| `48e036501` | I (LDB snapshot), J (embedded UTXO + sidecar), B1 (bulk INSERT), K1 (loopback fast lane) | 14 files, +1,406 lines |
+| Commit | Stage |
+|---|---|
+| `de3c395eb` | P8 lint cleanup (raw-return-ok + obs-ok sentinels) |
+| `834ae419f` | **P1: legacy-peer getheaders cap 160** (loopback handshake fix) |
+| `09d1aae80` | P1 lint follow-on (msg_headers.c obs-ok) |
+| `51517c07d` | **K2: loopback fast lane for block bodies** |
 
-Tests added: `test_ldb_snapshot` (live snapshot of running zclassicd LDB), `test_utxo_snapshot_loader` (round-trip + corruption detection). All pass.
+All pushed to `origin/main`.
 
-Subcommand added: `zclassic23 --gen-utxo-snapshot <legacy_datadir> <out_sidecar>` — validated against live zclassicd: 501,513 records / 1,344,705 vouts / 104 MB output.
+## Diagnostic findings (won't repeat next session)
 
-## Cruft purged at handoff
-- `/tmp/test_ldb_snapshot` (410 KB build-time tool binary — superseded by `lib/test/src/test_ldb_snapshot.c`)
-- `/tmp/utxo_snapshot_test.dat` (104 MB sidecar test output)
-- `./tools/gen_sha3_windows` (stale build artifact)
+- zclassicd's `~/.zclassic/debug.log` is the authoritative source for "why is
+  the loopback peer rejecting us." Look for `Misbehaving: 127.0.0.1` events.
+- `~/.zclassic-c23/node.log`'s `find_most_work_chain: STUCK at tip ...
+  skipped[failed=N invalid=N no_data=N]` summary line is the chain-selection
+  diagnosis. `invalid > 0` always means "spurious or real BLOCK_FAILED_VALID
+  blocks need attention."
+- The `gap-fill queued 1 blocks (window [..])` pattern repeating with no tip
+  movement always means: "we asked, peers didn't deliver" — and 90% of the
+  time the cause is downstream of the queue (invalid flag, missing parent,
+  or peer not actually serving). Investigate via the STUCK line first.
 
-## Files of interest
-- `lib/storage/src/ldb_snapshot.c` — the unblock that made Stage C viable
-- `lib/chain/src/utxo_snapshot_loader.c` — runtime mmap+verify+iter
-- `main.c` `gen_utxo_snapshot_mode()` — build-time sidecar emitter
-- `app/services/src/local_chain_ingest.c` `phase2_chainstate_import` — fast path before chainstate iter
-- `app/services/src/header_sync_service.c` `syncsvc_getheaders_interval` — K1 loopback fast lane
-- `config/src/boot.c` near line 1488 — snapshot-based LDB read (replaces dangerous `unlink(LOCK)`)
-- `lib/storage/src/coins_view_sqlite.c` `coins_view_sqlite_bulk_insert` — B1 helper
+## Deferred (still in plan file, lower priority)
+
+- A2 — 4-way SHA3-256 AVX-512 absorber (~6 hr crypto work)
+- D1/D2 — io_uring phase 1 (needs `sudo apt install liburing-dev`)
+- T2.3 — tip-zone shadow validate
+- N6 — per-block SHA3 tip-zone
+- N7 — `-trust-mode=pure|hybrid|full` CLI flag
