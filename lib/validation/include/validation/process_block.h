@@ -111,6 +111,37 @@ bool test_block_validity(struct validation_state *state,
 bool process_block_test_update_tip(struct main_state *ms,
                                     struct block_index *pindex_new);
 
+/* Test-only crash-injection hook for the connect_tip ordering protocol.
+ *
+ * The atomicity test (test_chain_advance_atomicity.c) forks a child,
+ * arms a crash stage with `process_block_test_set_crash_stage(...)`,
+ * runs one block through connect_tip, and the child `_exit(137)`s at
+ * the named protocol point. The parent reboots the datadir, asserts
+ * tip ≥ pre-kill tip.
+ *
+ * Stages fire in order:
+ *   PBCS_AFTER_CONNECT_BLOCK     in-mem coins view mutated, nothing on disk
+ *   PBCS_AFTER_COINS_VIEW_FLUSH  coins cache → coins_tip (RAM), still no disk
+ *   PBCS_AFTER_UPDATE_TIP        csr_commit_tip done; coins_best_block on disk
+ *   PBCS_AFTER_COINS_DISK_FLUSH  coins.db UTXOs durable (the new invariant)
+ *   PBCS_AFTER_BLOCK_INDEX_WRITE LevelDB block_index entry durable
+ *
+ * Default PBCS_NONE: hook is a no-op (one atomic_load + branch per
+ * stage; negligible). Production never sets a stage. */
+enum process_block_crash_stage {
+    PBCS_NONE = 0,
+    PBCS_AFTER_CONNECT_BLOCK,
+    PBCS_AFTER_COINS_VIEW_FLUSH,
+    PBCS_AFTER_UPDATE_TIP,
+    PBCS_AFTER_COINS_DISK_FLUSH,
+    PBCS_AFTER_BLOCK_INDEX_WRITE,
+    PBCS_NUM_STAGES
+};
+
+void process_block_test_set_crash_stage(enum process_block_crash_stage s);
+enum process_block_crash_stage process_block_test_get_crash_stage(void);
+const char *process_block_crash_stage_name(enum process_block_crash_stage s);
+
 /* P14.7 test-only surface: drives the stale-FAILED-mark clear logic
  * that accept_block_header uses when a header re-arrives for an
  * existing pindex. Caller owns last_retry_clear — passing 0 forces

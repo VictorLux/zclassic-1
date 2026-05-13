@@ -6,6 +6,7 @@
 
 #include <assert.h>
 #include <sqlite3.h>
+#include <unistd.h>
 #include "validation/process_block.h"
 #include "validation/main_logic.h"
 #include "validation/check_block.h"
@@ -95,6 +96,56 @@ static void process_block_log_live_stage(int height,
     fprintf(stderr, "connect_tip: h=%d stage=%s elapsed_ms=%lld\n",
             height, stage, (long long)(elapsed_us / 1000));
     fflush(stderr);
+}
+
+/* Test-only crash-injection hook. Production never sets the stage; the
+ * atomic_load + branch per check site is the only cost (negligible).
+ * See process_block.h for the stage semantics. */
+static _Atomic int g_test_crash_stage = PBCS_NONE;
+
+void process_block_test_set_crash_stage(enum process_block_crash_stage s)
+{
+    if (s < PBCS_NONE || s >= PBCS_NUM_STAGES) s = PBCS_NONE;
+    atomic_store_explicit(&g_test_crash_stage, (int)s,
+                          memory_order_relaxed);
+}
+
+enum process_block_crash_stage process_block_test_get_crash_stage(void)
+{
+    return (enum process_block_crash_stage)
+        atomic_load_explicit(&g_test_crash_stage, memory_order_relaxed);
+}
+
+const char *process_block_crash_stage_name(enum process_block_crash_stage s)
+{
+    switch (s) {
+    case PBCS_NONE:                    return "none";
+    case PBCS_AFTER_CONNECT_BLOCK:     return "after_connect_block";
+    case PBCS_AFTER_COINS_VIEW_FLUSH:  return "after_coins_view_flush";
+    case PBCS_AFTER_UPDATE_TIP:        return "after_update_tip";
+    case PBCS_AFTER_COINS_DISK_FLUSH:  return "after_coins_disk_flush";
+    case PBCS_AFTER_BLOCK_INDEX_WRITE: return "after_block_index_write";
+    default:                           return "unknown";
+    }
+}
+
+/* Called at each named protocol point inside connect_tip. When the
+ * armed stage matches, _exit(137) — same code SIGKILL would produce.
+ * No flushing, no destructors, no shutdown handlers; the test harness
+ * gets the same on-disk state as a kill -9. */
+static inline void process_block_check_crash_stage(
+    enum process_block_crash_stage here)
+{
+    enum process_block_crash_stage armed =
+        (enum process_block_crash_stage)atomic_load_explicit(
+            &g_test_crash_stage, memory_order_relaxed);
+    if (__builtin_expect(armed == here, 0)) {
+        fprintf(stderr,
+                "[crash-test] connect_tip: _exit(137) at stage=%s\n",
+                process_block_crash_stage_name(here));
+        fflush(stderr);
+        _exit(137);
+    }
 }
 
 int process_block_self_heal_scan_depth_limit(void)
@@ -2549,6 +2600,8 @@ bool connect_tip(struct validation_state *state,
             return false;
         }
 
+	        process_block_check_crash_stage(PBCS_AFTER_CONNECT_BLOCK);
+
 	        stage_start_us = GetTimeMicros();
 	        if (!coins_view_cache_flush(&view)) {
 	            fprintf(stderr, "connect_tip: FATAL coins flush failed h=%d\n",
@@ -2563,6 +2616,7 @@ bool connect_tip(struct validation_state *state,
 	        process_block_log_live_stage(live_height, "coins_flush",
 	                                     GetTimeMicros() - stage_start_us);
 	        coins_view_cache_free(&view);
+	        process_block_check_crash_stage(PBCS_AFTER_COINS_VIEW_FLUSH);
 	    }
 
     /* ── Mandatory SHA3 UTXO checkpoint verification ──────────── */
@@ -2640,6 +2694,7 @@ bool connect_tip(struct validation_state *state,
 	    }
 	    process_block_log_live_stage(live_height, "update_tip",
 	                                 GetTimeMicros() - stage_start_us);
+	    process_block_check_crash_stage(PBCS_AFTER_UPDATE_TIP);
     pindex_new->nStatus = (pindex_new->nStatus & ~BLOCK_VALID_MASK) |
                            BLOCK_VALID_SCRIPTS;
 
@@ -2664,6 +2719,7 @@ bool connect_tip(struct validation_state *state,
     if (!is_initial_block_download(ms)) {
         flush_coins_if_needed(coins_tip, true);
     }
+    process_block_check_crash_stage(PBCS_AFTER_COINS_DISK_FLUSH);
 
     /* Persist block_index entry to LevelDB */
     if (g_active_block_tree) {
@@ -2693,6 +2749,7 @@ bool connect_tip(struct validation_state *state,
          * the durable coins.db tip (the 1-6 block rewind documented
          * in feedback_kill_restart_recovery_cost.md). */
         block_tree_db_write_block_index_sync(g_active_block_tree, &dbi);
+        process_block_check_crash_stage(PBCS_AFTER_BLOCK_INDEX_WRITE);
 
         /* Free nSolution after persisting to disk — saves 1344B per block
          * (4GB total for 3M entries). Serving code in msg_headers.c and
