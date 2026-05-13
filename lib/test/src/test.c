@@ -192,6 +192,10 @@ int main(void)
     failures += test_bloom();
     failures += test_coins();
     failures += test_chainstate_legacy_reader();
+    { extern int test_ldb_snapshot(void);
+      failures += test_ldb_snapshot(); }
+    { extern int test_utxo_snapshot_loader(void);
+      failures += test_utxo_snapshot_loader(); }
     failures += test_store();
     failures += test_blog();
     failures += test_api();

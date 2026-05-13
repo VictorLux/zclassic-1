@@ -15,8 +15,12 @@
 #include "models/database.h"
 #include "controllers/sync_controller.h"
 #include "storage/coins_db.h"
+#include "storage/chainstate_legacy_reader.h"
+#include "storage/ldb_snapshot.h"
 #include "chain/checkpoints.h"
 #include "coins/utxo_commitment.h"
+#include "crypto/sha3.h"
+#include "core/uint256.h"
 #include "controllers/explorer_internal.h"
 #include <signal.h>
 #include <stdio.h>
@@ -287,11 +291,215 @@ static bool is_cli_mode(int argc, char **argv)
     return false;
 }
 
+/* ── --gen-utxo-snapshot mode ──────────────────────────────────
+ *
+ * Build-time tool: walks a legacy zclassicd chainstate LevelDB
+ * (read via ldb_snapshot to avoid LOCK contention) and emits a
+ * canonical UTXO sidecar ready for runtime mmap+SHA3-verify+
+ * bulk-INSERT in phase 2.
+ *
+ * Usage: zclassic23 --gen-utxo-snapshot <legacy_datadir> <out_path>
+ *
+ * Output format (104-byte header + records, all little-endian):
+ *   magic[8]="ZCLUTXO\0", version u32=1, reserved u32, height u32,
+ *   reserved u32, count u64, total_supply i64,
+ *   anchor_block_hash[32], sha3_hash[32]
+ * Per record:
+ *   txid[32], vout u32, value i64, script_len u32, script[*],
+ *   height u32, is_coinbase u8
+ *
+ * Per-record encoding intentionally matches
+ * lib/coins/src/utxo_commitment.c:utxo_commitment_sha3_compute()
+ * so the computed SHA3 equals the compile-time checkpoint at
+ * lib/chain/src/checkpoints.c (when run at the anchor height).
+ */
+struct gen_snap_ctx {
+    FILE *out;
+    struct sha3_256_ctx hasher;
+    uint64_t records;
+    uint64_t vouts;
+    int64_t  total_supply;
+    int      min_height;
+    int      max_height;
+    bool     fatal;
+};
+
+static void gen_snap_le32(uint8_t b[4], uint32_t v)
+{ b[0]=(uint8_t)v; b[1]=(uint8_t)(v>>8); b[2]=(uint8_t)(v>>16); b[3]=(uint8_t)(v>>24); }
+static void gen_snap_le64(uint8_t b[8], uint64_t v)
+{ for (int i = 0; i < 8; i++) b[i] = (uint8_t)(v >> (8*i)); }
+
+static bool gen_snap_write(struct gen_snap_ctx *g, const void *p, size_t n)
+{
+    if (fwrite(p, 1, n, g->out) != n) {
+        fprintf(stderr, "gen_utxo_snapshot: fwrite failed\n");
+        g->fatal = true;
+        return false;
+    }
+    sha3_256_write(&g->hasher, (const unsigned char *)p, n);
+    return true;
+}
+
+static bool gen_snap_cb(const struct uint256 *txid,
+                        const struct legacy_coins *coins,
+                        void *ctx)
+{
+    struct gen_snap_ctx *g = ctx;
+    if (g->fatal) return false;
+    g->records++;
+    if (g->min_height == 0 || coins->height < g->min_height)
+        g->min_height = coins->height;
+    if (coins->height > g->max_height)
+        g->max_height = coins->height;
+
+    for (size_t i = 0; i < coins->num_vouts; i++) {
+        const struct legacy_coins_vout *o = &coins->vouts[i];
+        uint8_t b[8];
+        if (!gen_snap_write(g, txid->data, 32)) return false;
+        gen_snap_le32(b, o->n);          if (!gen_snap_write(g, b, 4)) return false;
+        gen_snap_le64(b, (uint64_t)o->value); if (!gen_snap_write(g, b, 8)) return false;
+        gen_snap_le32(b, (uint32_t)o->script_len);
+        if (!gen_snap_write(g, b, 4)) return false;
+        if (o->script_len > 0 &&
+            !gen_snap_write(g, o->script, o->script_len)) return false;
+        gen_snap_le32(b, (uint32_t)coins->height);
+        if (!gen_snap_write(g, b, 4)) return false;
+        uint8_t cb = (uint8_t)(coins->coinbase ? 1 : 0);
+        if (!gen_snap_write(g, &cb, 1)) return false;
+        g->total_supply += o->value;
+        g->vouts++;
+    }
+    return true;
+}
+
+static int gen_utxo_snapshot_mode(int argc, char **argv)
+{
+    if (argc < 4) {
+        fprintf(stderr,
+                "usage: %s --gen-utxo-snapshot <legacy_datadir> "
+                "<out_sidecar_path>\n", argv[0]);
+        return 2;
+    }
+    const char *legacy = argv[2];
+    const char *out_path = argv[3];
+
+    char chainstate_path[1024];
+    snprintf(chainstate_path, sizeof(chainstate_path),
+             "%s/chainstate", legacy);
+    struct stat st;
+    if (stat(chainstate_path, &st) != 0 || !S_ISDIR(st.st_mode)) {
+        fprintf(stderr, "missing chainstate at %s\n", chainstate_path);
+        return 2;
+    }
+
+    char snap_path[1200];
+    snprintf(snap_path, sizeof(snap_path),
+             "%s.snap_for_utxo_gen", chainstate_path);
+    char snap_err[256] = {0};
+    bool snap_ok = false;
+    for (int t = 0; t < 3 && !snap_ok; t++) {
+        snap_ok = ldb_snapshot_make(chainstate_path, snap_path,
+                                    snap_err, sizeof(snap_err));
+        if (!snap_ok && strcmp(snap_err, "manifest_changed") != 0) break;
+    }
+    if (!snap_ok) {
+        fprintf(stderr, "ldb_snapshot_make(%s) failed: %s\n",
+                chainstate_path, snap_err);
+        return 1;
+    }
+    fprintf(stderr, "[gen_utxo] snapshot built at %s\n", snap_path);
+
+    void *h = NULL;
+    if (!chainstate_legacy_open(snap_path, &h) || !h) {
+        fprintf(stderr, "chainstate_legacy_open failed\n");
+        ldb_snapshot_destroy(snap_path);
+        return 1;
+    }
+
+    struct uint256 best;
+    uint256_set_null(&best);
+    if (!chainstate_legacy_get_best_block(h, &best)) {
+        fprintf(stderr, "no best block\n");
+        chainstate_legacy_close(h);
+        ldb_snapshot_destroy(snap_path);
+        return 1;
+    }
+    char hex[65];
+    uint256_get_hex(&best, hex);
+    fprintf(stderr, "[gen_utxo] chainstate best block: %s\n", hex);
+
+    FILE *out = fopen(out_path, "wb");
+    if (!out) {
+        fprintf(stderr, "fopen(%s) failed\n", out_path);
+        chainstate_legacy_close(h);
+        ldb_snapshot_destroy(snap_path);
+        return 1;
+    }
+    uint8_t header[104] = {0};
+    if (fwrite(header, 1, sizeof(header), out) != sizeof(header)) {
+        fclose(out); chainstate_legacy_close(h);
+        ldb_snapshot_destroy(snap_path); return 1;
+    }
+
+    struct gen_snap_ctx g = { .out = out };
+    sha3_256_init(&g.hasher);
+
+    fprintf(stderr, "[gen_utxo] streaming UTXOs ...\n");
+    int64_t n = chainstate_legacy_iter(h, gen_snap_cb, &g);
+    if (n < 0 || g.fatal) {
+        fprintf(stderr, "iter failed (n=%lld fatal=%d)\n",
+                (long long)n, g.fatal);
+        fclose(out); chainstate_legacy_close(h);
+        ldb_snapshot_destroy(snap_path); return 1;
+    }
+
+    uint8_t body_sha3[32];
+    sha3_256_finalize(&g.hasher, body_sha3);
+    char shex[65];
+    for (int i = 0; i < 32; i++)
+        snprintf(shex + 2*i, 3, "%02x", body_sha3[i]);
+    shex[64] = '\0';
+    fprintf(stderr,
+            "[gen_utxo] records=%llu vouts=%llu total=%.4f ZCL "
+            "heights=[%d..%d]\n[gen_utxo] sha3=%s\n",
+            (unsigned long long)g.records,
+            (unsigned long long)g.vouts,
+            (double)g.total_supply / 1e8,
+            g.min_height, g.max_height, shex);
+
+    memcpy(header, "ZCLUTXO\x00", 8);
+    gen_snap_le32(header + 8, 1);
+    gen_snap_le32(header + 16, (uint32_t)g.max_height);
+    gen_snap_le64(header + 24, g.vouts);
+    gen_snap_le64(header + 32, (uint64_t)g.total_supply);
+    memcpy(header + 40, best.data, 32);
+    memcpy(header + 72, body_sha3, 32);
+
+    if (fseek(out, 0, SEEK_SET) != 0 ||
+        fwrite(header, 1, sizeof(header), out) != sizeof(header)) {
+        fprintf(stderr, "header rewrite failed\n");
+        fclose(out); chainstate_legacy_close(h);
+        ldb_snapshot_destroy(snap_path); return 1;
+    }
+    fclose(out);
+    chainstate_legacy_close(h);
+    ldb_snapshot_destroy(snap_path);
+
+    fprintf(stderr, "[gen_utxo] wrote %s (%llu records, %llu vouts)\n",
+            out_path, (unsigned long long)g.records,
+            (unsigned long long)g.vouts);
+    return 0;
+}
+
 int main(int argc, char **argv)
 {
     /* CLI mode: zclassic23 getblockcount */
     if (argc > 1 && is_cli_mode(argc, argv))
         return cli_main(argc, argv);
+
+    /* --gen-utxo-snapshot: build sidecar UTXO file from legacy datadir */
+    if (argc >= 2 && strcmp(argv[1], "--gen-utxo-snapshot") == 0)
+        return gen_utxo_snapshot_mode(argc, argv);
 
     /* UTXO repair mode — fetch missing UTXOs from zclassicd, no full node.
      * Usage: zclassic23 --repair [num_blocks] [port] [creds]

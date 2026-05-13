@@ -83,4 +83,30 @@ bool coins_view_sqlite_begin(struct coins_view_sqlite *cvs);
 bool coins_view_sqlite_commit(struct coins_view_sqlite *cvs);
 bool coins_view_sqlite_rollback(struct coins_view_sqlite *cvs);
 
+/* Bulk-insert UTXOs in one transaction. Skips the in-memory coins
+ * cache entirely (caller is responsible for invalidating cached
+ * state when this is used for a phase-2-style bulk import). Each
+ * record is a flattened UTXO row matching the `utxos` table.
+ *
+ * Steps internally:
+ *   BEGIN IMMEDIATE
+ *   for each rec: reset+bind+step the prepared INSERT OR REPLACE stmt
+ *   COMMIT (or ROLLBACK on any step error)
+ *
+ * Returns the number of rows successfully inserted (== n on success;
+ * less on failure — caller should treat <n as a hard error).
+ * On COMMIT failure returns -1; mutex still released. */
+struct utxo_bulk_rec {
+    const uint8_t *txid;        /* 32 bytes */
+    uint32_t       vout;
+    int64_t        value;
+    const uint8_t *script;
+    uint32_t       script_len;
+    uint32_t       height;
+    uint8_t        is_coinbase;
+};
+int64_t coins_view_sqlite_bulk_insert(struct coins_view_sqlite *cvs,
+                                      const struct utxo_bulk_rec *recs,
+                                      size_t n);
+
 #endif

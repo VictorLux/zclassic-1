@@ -32,6 +32,7 @@
 #include "chain/checkpoints.h"
 #include "storage/coins_view_sqlite.h"
 #include "storage/coins_db.h"
+#include "storage/ldb_snapshot.h"
 #include "consensus/validation.h"
 #include "controllers/blockchain_controller.h"
 #include "controllers/repair_controller.h"
@@ -1490,14 +1491,42 @@ bool app_init(struct app_context *ctx)
                        zcd_idx_path);
                 fflush(stdout);
 
-                /* Remove stale LOCK from crashed zclassicd */
-                char lock_path[1100];
-                snprintf(lock_path, sizeof(lock_path), "%s/LOCK", zcd_idx_path);
-                unlink(lock_path);
+                /* Build a snapshot dir so we can open the LevelDB even
+                 * while a live zclassicd holds the source LOCK.
+                 * Hardlinks the immutable .ldb SST files + copies the
+                 * small MANIFEST/CURRENT/LOG metadata + gives the
+                 * snapshot a fresh empty LOCK (distinct fcntl context).
+                 * See lib/storage/src/ldb_snapshot.c for the rationale. */
+                char snap_path[1200];
+                snprintf(snap_path, sizeof(snap_path),
+                         "%s/.legacy_ldb_snap", ctx->datadir);
+                char snap_err[256] = {0};
+                bool snap_ok = false;
+                for (int snap_try = 0; snap_try < 3 && !snap_ok; snap_try++) {
+                    snap_ok = ldb_snapshot_make(zcd_idx_path, snap_path,
+                                                snap_err, sizeof(snap_err));
+                    if (!snap_ok &&
+                        strcmp(snap_err, "manifest_changed") != 0)
+                        break;
+                }
+                const char *open_path = snap_ok ? snap_path : zcd_idx_path;
+                if (!snap_ok) {
+                    fprintf(stderr,
+                            "[boot] ldb_snapshot_make(%s) failed: %s; "
+                            "falling back to direct open (may unlink "
+                            "stale LOCK)\n", zcd_idx_path, snap_err);
+                    /* Fallback path for a crashed zclassicd whose LOCK
+                     * is stale: unlink it and open directly. Only used
+                     * when the snapshot path itself fails. */
+                    char lock_path[1300];
+                    snprintf(lock_path, sizeof(lock_path),
+                             "%s/LOCK", zcd_idx_path);
+                    unlink(lock_path);
+                }
 
                 struct block_tree_db zcd_btdb;
                 int64_t t0 = (int64_t)time(NULL);
-                if (block_tree_db_open(&zcd_btdb, zcd_idx_path,
+                if (block_tree_db_open(&zcd_btdb, open_path,
                                        450 << 20, false, false)) {
                     if (block_tree_db_load_block_index_guts(
                             &zcd_btdb, boot_insert_block_index_cb, &g_state)) {
@@ -1580,8 +1609,11 @@ bool app_init(struct app_context *ctx)
                     block_tree_db_close(&zcd_btdb);
                 } else {
                     fprintf(stderr, "Could not open zclassicd block index "
-                            "at %s\n", zcd_idx_path);
+                            "at %s\n", open_path);
                 }
+                /* Tear down the snapshot (hardlinks free cheaply). */
+                if (snap_ok)
+                    ldb_snapshot_destroy(snap_path);
 
                 /* Copy block files from zclassicd if we don't have them */
                 if (g_state.map_block_index.size > 1000) {

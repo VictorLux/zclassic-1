@@ -5,6 +5,7 @@
 #include "services/header_sync_service.h"
 #include "services/snapshot_sync_service.h"
 #include "net/net.h"
+#include "net/netaddr.h"
 #include "validation/chainstate.h"
 #include "core/arith_uint256.h"
 #include "chain/chain.h"
@@ -263,7 +264,17 @@ bool syncsvc_is_initial_block_download(const struct p2p_node *node,
 
 /* Compute getheaders interval with exponential backoff for stale peers.
  * Base interval depends on sync phase; each consecutive empty header
- * response doubles the interval up to a cap of 600s. */
+ * response doubles the interval up to a cap of 600s.
+ *
+ * Stage K1: loopback peers (127.0.0.0/8, ::1) bypass the stale-backoff
+ * entirely. A co-located zclassicd on the same machine is unspoofable
+ * by definition — the throttle exists to protect against remote peers
+ * that return short header batches as a slow-loris vector. There's no
+ * trust delta vs the existing model. With ZClassic's MAX_HEADERS_RESULTS
+ * of 160, a 14K-block catch-up via P2P getheaders takes ~88 rounds —
+ * keeping the loopback peer at base interval (1-5 s) lets that finish
+ * in ~minutes instead of stalling on the 32× cap.
+ */
 static int64_t syncsvc_getheaders_interval(const struct p2p_node *node,
                                            int our_height)
 {
@@ -275,12 +286,19 @@ static int64_t syncsvc_getheaders_interval(const struct p2p_node *node,
     else
         base = 120;
 
+    bool peer_is_loopback = net_addr_is_local(&node->addr.svc.addr);
+
     /* Exponential backoff based on consecutive stale responses */
     int stale = node->getheaders_stale_count;
-    if (stale > 0) {
+    if (stale > 0 && !peer_is_loopback) {
         int shift = stale > 5 ? 5 : stale;  /* cap at 2^5 = 32x */
         base <<= shift;
     }
+
+    /* Loopback peers get a tighter base interval to close any IBD lag
+     * quickly. Remote peers stay at the phase-appropriate base. */
+    if (peer_is_loopback && base > 5)
+        base = 5;
 
     /* Hard cap: never wait more than 600s */
     if (base > 600)

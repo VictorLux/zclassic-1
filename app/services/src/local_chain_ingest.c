@@ -20,6 +20,7 @@
 #include "chain/chain.h"
 #include "chain/checkpoints.h"
 #include "chain/sha3_windows.h"
+#include "chain/utxo_snapshot_loader.h"
 #include "coins/coins.h"
 #include "coins/coins_view.h"
 #include "coins/utxo_commitment.h"
@@ -1063,6 +1064,40 @@ static bool phase2_iter_cb(const struct uint256 *txid,
     return true;
 }
 
+/* Stage J3 fast-path bulk-insert helper. Top-level because ISO C
+ * forbids nested functions. The callback collects records into a
+ * batch buffer and flushes via coins_view_sqlite_bulk_insert on
+ * batch_cap or stop signal. */
+struct fast_phase2_ctx {
+    struct utxo_bulk_rec *batch;
+    size_t fill;
+    size_t batch_cap;
+    struct coins_view_sqlite *cvs;
+    int64_t inserted;
+    int errors;
+};
+static bool phase2_fast_bulk_cb(const struct uss_record *r, void *vctx)
+{
+    struct fast_phase2_ctx *c = vctx;
+    c->batch[c->fill++] = (struct utxo_bulk_rec){
+        .txid = r->txid,
+        .vout = r->vout,
+        .value = r->value,
+        .script = r->script,
+        .script_len = r->script_len,
+        .height = r->height,
+        .is_coinbase = r->is_coinbase,
+    };
+    if (c->fill == c->batch_cap) {
+        int64_t w = coins_view_sqlite_bulk_insert(
+            c->cvs, c->batch, c->fill);
+        if (w != (int64_t)c->fill) c->errors++;
+        c->inserted += (w > 0 ? w : 0);
+        c->fill = 0;
+    }
+    return c->errors == 0;
+}
+
 static enum local_ingest_result phase2_chainstate_import(
     const struct local_chain_ingest_config *cfg,
     struct coins_view_cache *coins_tip,
@@ -1111,6 +1146,115 @@ static enum local_ingest_result phase2_chainstate_import(
                         "but coins.db SHA3 differs (count=%" PRIu64
                         " fp.count=%" PRIu64 ") — full import will run\n",
                         count, fp.utxos_count);
+            }
+        }
+    }
+
+    /* ── Stage J3 fast path: embedded UTXO sidecar ────────────────
+     *
+     * If <our_datadir>/utxo_snapshot.dat exists AND its SHA3-256
+     * matches the compile-time checkpoint at h=3,056,758, mmap it,
+     * bulk-INSERT into coins.db, and skip the chainstate iteration
+     * entirely. The full-body SHA3 verify happens inside uss_open()
+     * — the bind to the compile-time anchor proves the bytes match
+     * what was committed to at build time, so trust is preserved.
+     *
+     * The chainstate path remains as fallback when no sidecar is
+     * present or its hash doesn't match (e.g. user generated the
+     * sidecar at a different height for experimentation).
+     */
+    {
+        char uss_path[1100];
+        snprintf(uss_path, sizeof(uss_path),
+                 "%s/utxo_snapshot.dat", our_datadir);
+        struct stat ust;
+        if (stat(uss_path, &ust) == 0 && S_ISREG(ust.st_mode)) {
+            const struct sha3_utxo_checkpoint *anchor_pre =
+                get_sha3_utxo_checkpoint();
+            if (anchor_pre) {
+                char err[256] = {0};
+                struct uss_header hdr;
+                struct uss_handle *uh = uss_open(
+                    uss_path, true, anchor_pre->sha3_hash, &hdr,
+                    err, sizeof(err));
+                if (uh) {
+                    fprintf(stderr,
+                            "[local_ingest] phase 2 fast path: sidecar "
+                            "%s SHA3 matches anchor (count=%" PRIu64
+                            " total=%.4f ZCL)\n",
+                            uss_path, hdr.count,
+                            (double)hdr.total_supply / 1e8);
+                    struct coins_view_sqlite *cvs2 =
+                        process_block_get_coins_sqlite();
+                    if (!cvs2 || !cvs2->db) {
+                        uss_close(uh);
+                        state_set_error("phase2 fast-path: "
+                                        "coins_view_sqlite unavailable");
+                        LOG_RETURN(LCI_INTERNAL_ERROR, "local_ingest",
+                                   "phase2 fast-path: coins_view_sqlite "
+                                   "handle missing");
+                    }
+                    /* Batched bulk insert — 5000 records per
+                     * transaction keeps memory bounded and gives the
+                     * WAL a chance to checkpoint between batches. */
+                    enum { BATCH = 5000 };
+                    struct utxo_bulk_rec *batch =
+                        zcl_malloc(sizeof(*batch) * BATCH,
+                                   "phase2.fast.batch");
+                    if (!batch) {
+                        uss_close(uh);
+                        state_set_error("phase2 fast-path: oom batch");
+                        LOG_RETURN(LCI_INTERNAL_ERROR, "local_ingest",
+                                   "phase2 fast-path: oom");
+                    }
+                    int64_t inserted = 0;
+                    int errors = 0;
+                    /* Iterate records, flushing each BATCH. */
+                    struct fast_phase2_ctx fc = {
+                        .batch = batch,
+                        .cvs = cvs2,
+                        .batch_cap = BATCH,
+                    };
+                    (void)uss_iter(uh, phase2_fast_bulk_cb, &fc);
+                    if (fc.fill > 0 && fc.errors == 0) {
+                        int64_t w = coins_view_sqlite_bulk_insert(
+                            fc.cvs, fc.batch, fc.fill);
+                        if (w != (int64_t)fc.fill) fc.errors++;
+                        fc.inserted += (w > 0 ? w : 0);
+                    }
+                    inserted = fc.inserted;
+                    errors = fc.errors;
+                    /* batch buffer was allocated above as part of the
+                     * BATCH path; free it before exiting this scope. */
+                    free(batch);
+                    uss_close(uh);
+                    if (errors || (uint64_t)inserted != hdr.count) {
+                        state_set_error("phase2 fast-path: bulk insert "
+                                        "errors");
+                        LOG_RETURN(LCI_INTERNAL_ERROR, "local_ingest",
+                                   "phase2 fast-path: inserted=%" PRId64
+                                   " expected=%" PRIu64 " errors=%d",
+                                   inserted, hdr.count, errors);
+                    }
+                    atomic_store(&g_state.utxos_imported, inserted);
+                    struct uint256 anchor_hash;
+                    memcpy(anchor_hash.data,
+                           anchor_pre->block_hash, 32);
+                    coins_view_cache_set_best_block(coins_tip,
+                                                    &anchor_hash);
+                    fprintf(stderr,
+                            "[local_ingest] phase 2 FAST PATH complete: "
+                            "%" PRId64 " UTXOs from sidecar (~1 s "
+                            "vs ~30-60 s iteration)\n", inserted);
+                    return LCI_OK;
+                }
+                /* Sidecar present but didn't verify against anchor —
+                 * may be a non-anchor-height build. Fall through to
+                 * chainstate iter path. */
+                fprintf(stderr,
+                        "[local_ingest] phase 2: sidecar %s present "
+                        "but uss_open failed (%s); falling back to "
+                        "chainstate iter\n", uss_path, err);
             }
         }
     }

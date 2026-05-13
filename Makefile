@@ -176,6 +176,13 @@ tools/gen_sha3_windows: tools/gen_sha3_windows.c \
 	    -D_POSIX_C_SOURCE=200809L \
 	    -o $@ $^ -pthread
 
+# gen_utxo_snapshot: build-time tool that walks a legacy zclassicd
+# chainstate LevelDB and emits a canonical UTXO sidecar file ready
+# for runtime mmap+SHA3-verify+bulk-INSERT (Stage J of fast-sync
+# plan). Implemented as a `--gen-utxo-snapshot` mode of zclassic23
+# itself (avoids duplicating the dep tree); invoke via:
+#   zclassic23 --gen-utxo-snapshot <legacy_datadir> <out_path>
+
 zcl-nodectl: tools/zcl-nodectl.c lib/util/include/util/rpc_paths.h
 	$(CC) -std=c23 -O2 -Wall -Wextra -Werror -Ilib/util/include -o $@ $<
 
