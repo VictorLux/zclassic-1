@@ -1,86 +1,119 @@
-# Next-session handoff — Phase 3 shipped, live test deferred
+# Next-session handoff — Phases 3 + 7 shipped, live tests deferred
 
-**Last session ended 2026-05-13 ~23:55.** Plan file:
+**Last session ended 2026-05-14 ~00:15.** Plan file:
 `~/.claude/plans/look-i-need-you-velvet-mist.md`.
 
-## What shipped
+## What shipped this session (3 commits)
 
 ```
 e639f1b4e fast-sync: direct LevelDB+mmap import (-fastimport)
+c63837ad1 session-end: Phase 3 handoff doc
+db8b880cd fast-sync: -cold-import for state-only sync in ~60s
 ```
 
-Pushed to `origin/main`. Build clean, `make lint` clean, all 1500+ tests
-pass.
+All on `origin/main`. Build clean, `make lint` clean, all tests pass.
 
-## What the change does
+## Two new CLI flags
 
-A new CLI flag `-fastimport[=PATH]` (default `$HOME/.zclassic`) that
-bypasses JSON-RPC entirely:
+### `-fastimport[=PATH]` — warm catch-up
 
-1. Opens zclassicd's `blocks/index/` LevelDB read-only and walks the
-   `b`-prefixed keyspace, producing a height-ordered array of `(hash,
-   nFile, nDataPos, nUndoPos, nStatus)`.
-2. Maintains an 8-deep LRU of `mmap()`'d `blk*.dat` files; serves
-   zero-copy payload pointers given `(nFile, nDataPos)`.
-3. SHA3-spot-checks K=3 random anchor windows directly from mmap.
-   Pass → arm `g_assume_valid_height = legacy_tip`. Fail → abort.
-4. Sets `g_body_pull_active = 1`. In `connect_tip`, this gate:
-   - swaps `block_tree_db_write_block_index_sync` for the async
-     variant (no per-block fsync; LevelDB memtable batches the writes).
-   - skips `wallet_sync_transaction` + Sapling trial-decrypt entirely.
-5. Walks heights `[active_tip+1 .. legacy_tip]`, feeds payloads to
-   `process_new_block`.
-6. Runs `wallet_rescan` over the imported range when the loop
-   completes — picks up any wallet hits that were skipped during the
-   trust-mode walk.
+Direct LevelDB+mmap path that replaces JSON-RPC for the body-pull
+loop. Walks heights ascending feeding mmap'd payloads to
+`process_new_block`. Per-block I/O deferral via `g_body_pull_active`
+(block_index sync write → async; wallet trial-decrypt skipped). Auto
+`wallet_rescan` over imported range at end. Target: ≥100 bps; 10K
+blocks in <90 s.
 
-Crash safety: coins.db still commits per block (at-tip kill-9
-ordering preserved). On crash, block_index may be a handful of blocks
-ahead in RAM but not durable; recovery rewinds to coins.db tip and
-re-imports the gap.
+### `-cold-import[=PATH]` — state-only sync (NEW, Phase 7)
 
-## Constraint and why the live test is deferred
+The breakthrough. Refuses to run if `active_tip > 1000`. Bypasses
+`process_new_block` entirely:
 
-LevelDB acquires an exclusive LOCK file when opened. zclassicd holds
-that LOCK while running, so a concurrent `-fastimport` open fails
-with `LOCK held? stop zclassicd or snapshot the dir first`.
+1. SHA3 spot-check K=5 anchor windows.
+2. Hardlink legacy `blk*.dat` into our `blocks/`.
+3. Bulk-copy legacy `blocks/index/` LevelDB → our LevelDB (5000-record
+   batches, transparent obfuscation).
+4. Bulk-import legacy `chainstate/` UTXOs → our `coins.db` (5000-record
+   batches).
+5. Set `coins_tip` best_block to legacy chainstate's 'B' key.
 
-The plan's verification sequence stops both `zclassic23` and
-`zclassicd-rhett` services, runs the import, then restarts. The user
-chose `Commit + push, defer live test` rather than disturb the
-running services. Phase 3 is ready to live-test whenever convenient.
+After it runs, normal boot continues:
+- `block_index_loader` populates the in-memory block_map.
+- `chain_restore_service` walks pprev from best_block, rebuilds active_chain.
+- `bg_validation_service` re-verifies every block bit-exact over hours
+  ("process every bit" guarantee).
 
-## Live test sequence (copy-paste when ready)
+Target: empty datadir → tip in ~30-60s.
+
+## Constraint shared by both new paths
+
+Opening zclassicd's `blocks/index/` LevelDB acquires an exclusive
+LOCK. zclassicd must be stopped briefly. The existing
+`-bodypull-from-legacy` (JSON-RPC) tolerates a running zclassicd and
+is still available as the live-zclassicd-tolerant fallback.
+
+## Live test sequence (copy-paste)
+
+### Test 1: -cold-import (empty datadir)
 
 ```bash
-# Current state snapshot (pre-test):
-./tools/zcl-rpc getblockcount   # note zclassic23 tip
-curl -s --data-binary '{"method":"getblockcount"}' \
-     -u $(grep -E '^rpc(user|password)=' ~/.zclassic/zclassic.conf | \
-          tr '\n' ':' | sed 's/rpcuser=//; s/rpcpassword=//; s/::*$//') \
-     http://127.0.0.1:8232/                                # note zclassicd tip
+# Save current state, prep a fresh empty datadir
+mkdir -p $HOME/.zclassic-c23-cold-test
 
-# Stop both services
+# Stop services
 systemctl --user stop zclassic23
 systemctl --user stop zclassicd-rhett
 
-# Run fastimport (foreground, watch output)
+# Run cold-import (foreground, no_services for clean shutdown)
+./zclassic23 -datadir=$HOME/.zclassic-c23-cold-test \
+  -cold-import=$HOME/.zclassic -nobgvalidation \
+  -port=18033 -rpcport=18233 \
+  > /tmp/cold-import.log 2>&1 &
+PID=$!
+
+# Watch /tmp/cold-import.log for:
+#   [bilr] scanned=N usable=M max_height=3,111,xxx
+#   [cold_import] SHA3 spotcheck: K=5 ... 5 OKs
+#   [cold_import] blk files: linked=101 copied=0 skipped=0 errors=0
+#   [cold_import] block_index copy: ~3,111,000 entries in ~15000 ms
+#   [cold_import] chainstate: ~1,300,000 UTXOs ... in ~15000 ms
+#   [cold_import] coins best_block set to <hash>
+#   [cold_import] DONE in ~30-60s
+
+# Cleanup
+until ! kill -0 $PID 2>/dev/null; do sleep 1; done
+systemctl --user start zclassicd-rhett
+
+# Verify: re-run zclassic23 on the test datadir as a foreground
+# binary, query the tip
+./zclassic23 -datadir=$HOME/.zclassic-c23-cold-test \
+  -nobgvalidation -port=18033 -rpcport=18233 \
+  > /tmp/cold-boot.log 2>&1 &
+sleep 10
+curl -s --data-binary '{"method":"getblockcount"}' \
+  -u <rpcuser>:<rpcpass> http://127.0.0.1:18233/
+
+# Expected: getblockcount returns the legacy tip
+```
+
+### Test 2: -fastimport (warm catch-up against production datadir)
+
+```bash
+systemctl --user stop zclassic23
+systemctl --user stop zclassicd-rhett
+
 ./zclassic23 -datadir=$HOME/.zclassic-c23 \
   -fastimport=$HOME/.zclassic -nobgvalidation \
   -port=8033 -rpcport=18232 \
   > /tmp/fastimport.log 2>&1 &
 PID=$!
 
-# Look for in /tmp/fastimport.log:
-#   [bilr] scanned=N usable=M max_height=...
-#   [legacy_direct_import] legacy tip h=3,111,xxx
-#   [legacy_direct_import] SHA3 spotcheck: K=3 ... 3/3 windows match
-#   [legacy_direct_import] trust-mode armed
-#   [legacy_direct_import] applied=N rate=>=100 bps
-#   [legacy_direct_import] walk complete: ... final_tip=3,111,xxx
-#   [legacy_direct_import] wallet rescan complete
+# Watch for:
+#   [legacy_direct_import] SHA3 spotcheck: K=3 ... 3 OKs
+#   [legacy_direct_import] trust-mode armed (assume_valid=...)
+#   [legacy_direct_import] applied=... rate=>=100 bps
+#   [legacy_direct_import] wallet rescan complete: ... in ...
 
-# Wait for shutdown cleanup, then restart services
 until ! kill -0 $PID 2>/dev/null; do sleep 1; done
 systemctl --user start zclassicd-rhett
 systemctl --user start zclassic23
@@ -89,63 +122,77 @@ systemctl --user start zclassic23
 ./tools/zcl-rpc getblockcount   # should match zclassicd tip
 ```
 
-Expected outcome: sustained ≥100 bps; 10K-block catch-up in <90 s.
+## What to look for / failure modes
 
-## What to look for in the log
+- `[bilr] cannot open ...` — zclassicd LOCK held; stop it and wait 5s.
+- `[cold_import] REFUSING: our active_tip=X > 1000` — not for warm
+  catchup; use `-fastimport` instead.
+- `spotcheck FAILED at window K` — anchor table doesn't match
+  zclassicd's blocks. Either wrong chain (testnet?) or compile-time
+  anchor is stale (Phase 4 rolling anchor refresh).
+- `link() failed: Invalid cross-device link` — legacy and our datadir
+  on different filesystems. Falls through to copy; expect +5-10s.
+- DROP INDEX failure log — pre-existing issue, unrelated.
 
-- `[bilr] scanned=...` — confirms zclassicd's LevelDB opened.
-- `[bilr] max_height=...` — should be the live zclassicd tip.
-- `SHA3 spotcheck: K=3 ... 3/3 windows match` — anchor table agrees.
-- `trust-mode armed: assume_valid X -> Y` — the bump.
-- `rate=...` lines — must be > 30 bps to validate the unlock; > 100
-  to validate the throughput target.
-- Final `walk complete: applied=N` — N should equal `legacy_tip -
-  active_tip`.
+## What to do if the rate / throughput target isn't hit
 
-## Failure modes to expect
-
-- `[bilr] open failed: ... LOCK held?` — zclassicd not fully stopped.
-  Wait 5s and retry.
-- `spotcheck FAILED at window K` — zclassicd's blocks don't match the
-  compile-time anchor table. Likely zclassicd is on a different fork
-  (testnet?) or the anchor table is stale. Sanity-check chain params.
-- `process_new_block FAILED: ...` — a block failed validation. Check
-  reject_reason. With trust-mode armed, only Merkle root / coinbase
-  / ZIP-209 / UTXO-have-inputs checks remain — a failure here is
-  meaningful.
-- DROP INDEX failure log — known pre-existing issue;
-  synchronous=OFF still engages, just without the index-drop benefit.
-
-## If the rate is below 30 bps
-
-The block_index sync-write deferral didn't engage. Check
-`g_body_pull_active` is 1 by adding a debug log in `connect_tip`'s
-gate, or run with `strace -c -e trace=fsync` to count fsyncs.
-
-If wallet rescan dominates the runtime (large wallet), consider
-adding `-norescan` flag or making it async.
+- **fastimport <30 bps**: `g_body_pull_active` may not be engaging.
+  Add a debug log in `connect_tip` at `process_block.c:2820` showing
+  the flag value. Run `strace -c -e trace=fsync` to count fsyncs.
+- **cold-import takes >2 min**: chainstate import is dominated by
+  per-batch SQLite COMMIT fsyncs. Currently batches are 5000 records;
+  could try 10K or 20K. Or wrap the whole import in
+  `node.db_ibd_turbo_mode()` (synchronous=OFF).
+- **block_index copy slow**: increase BATCH_LIMIT from 5000.
 
 ## Open issues / next-pass priorities
 
-- **Shallow-snapshot helper** for zero-downtime use: hardlink `.ldb`
-  files + cp MANIFEST/CURRENT/LOG to a tempdir, open that. Unblocks
-  fastimport while zclassicd keeps running. ETA ~1-2 hr.
-- **Phase 4 rolling anchor**: `tools/gen_sha3_windows --max-height=tip`
-  against zclassicd to refresh the compile-time anchor table; commit
-  + ship per release. ETA ~1 hr operator step + ~5 min compile-time
-  generation.
-- **Phase 5 heartbeat auto-recovery**: when `active_tip < remote_tip
-  - 100` for >60s and `~/.zclassic` exists, auto-trigger fastimport
-  (or bodypull-from-legacy if LOCK held). Removes the manual ritual
-  entirely. ETA ~2 hr.
-- **node.db DROP INDEX during turbo enter** still fails (coins_view_sqlite
-  table lock). Either reorder or accept reduced turbo benefit. Not
-  blocking Phase 3.
+- **Phase 8: shallow-snapshot helper** — hardlink `.ldb` files
+  (immutable in LevelDB) + cp MANIFEST + CURRENT + `.log` to a temp
+  dir. Open the snapshot dir. Unblocks both fastimport and
+  cold-import while zclassicd keeps running. ETA ~1-2 hr.
+- **Phase 9: heartbeat auto-recovery** — when watchdog observes lag,
+  escalate through P2P → loopback → fastimport → cold-import. ETA
+  ~3-4 hr.
+- **Phase 10: operator tooling** — `tools/zcl-resync-from-legacy.sh`
+  one-shot wrapper that stops services, runs `-fastimport` (or
+  `-cold-import` on empty datadir), restarts.
+- **Phase 4: rolling anchor refresh** — run
+  `gen_sha3_windows --max-height=$(getblockcount)` against zclassicd
+  per release; commit the refreshed compile-time anchor.
+- **Sapling tree warmup**: after cold-import the tree is empty; users
+  who want immediate shielded ops must wait for bg_validation to
+  reach Sapling-active heights (~10-30 min). Phase 11 could ship a
+  compile-time Sapling tree blob (~30MB at anchor height) for an
+  instant working shielded wallet.
+- **bg_validation default-on**: in the production unit, `-nobgvalidation`
+  is currently set. After cold-import we depend on bg_validation
+  re-verifying every block; ensure it's ON in production.
+- **node.db DROP INDEX during turbo enter** still fails
+  (coins_view_sqlite holds the table lock); synchronous=OFF still
+  engages, indexes stay on.
 
-## Memory entries to consult next session
+## Files touched
 
-- `project_fast_sync_phase3_2026-05-13.md` — what shipped this session
-- `feedback_fast_sync_phase1_findings.md` — why Phase 1 didn't suffice
-- `feedback_at_tip_kill9_ordering_invariant.md` — preserve when adding
-  more I/O deferral
+### Phase 3 (already merged)
+- `app/services/{include/services,src}/legacy_direct_import.{h,c}` (NEW)
+- `lib/storage/{include/storage,src}/blocks_index_legacy_reader.{h,c}` (NEW)
+- `lib/storage/{include/storage,src}/blocks_mmap_reader.{h,c}` (NEW)
+- `lib/validation/{include/validation,src}/process_block.{h,c}` — `g_body_pull_active`
+- `app/services/{include/services,src}/chain_restore_service.{h,c}` —
+  `chain_restore_clear_failed_above_tip`
+- `config/include/config/boot.h`, `config/src/boot.c`, `main.c` — wiring
+
+### Phase 7 (this session)
+- `app/services/{include/services,src}/legacy_cold_import.{h,c}` (NEW)
+- `config/include/config/boot.h`, `config/src/boot.c`, `main.c` —
+  `-cold-import` flag + boot step
+
+## Memory entries to consult
+
+- `project_fast_sync_phase7_2026-05-14.md` — Phase 7 (this session)
+- `project_fast_sync_phase3_2026-05-13.md` — Phase 3
+- `feedback_fast_sync_phase1_findings.md` — bottleneck-shift lesson
+- `feedback_at_tip_kill9_ordering_invariant.md` — preserve when
+  batching commits
 - `reference_zclassicd_local_fast_sync.md` — datadir layout
