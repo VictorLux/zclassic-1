@@ -53,6 +53,13 @@ struct app_context {
      * process_new_block. Requires the legacy LevelDB to be unlocked
      * (stop zclassicd first). Bare form defaults to ~/.zclassic. */
     const char *fastimport_from;
+    /* -cold-import[=PATH] : full state-only import from a sibling
+     * zclassicd's data directory. Hardlinks blk*.dat, bulk-copies
+     * blocks/index/ LevelDB, bulk-imports chainstate UTXOs, sets
+     * coins best_block to legacy chain tip. Never walks blocks.
+     * Designed for empty datadirs — refuses if active_tip > 1000.
+     * Requires zclassicd stopped (LOCK on blocks/index/). */
+    const char *cold_import_from;
     const char *snapshot_dir;
     bool reindex_chainstate;
     bool reimport_utxos;

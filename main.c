@@ -1034,6 +1034,24 @@ int main(int argc, char **argv)
                 return 1;
             }
         }
+        else if (strncmp(argv[i], "-cold-import=", 13) == 0) {
+            ctx.cold_import_from = argv[i]+13;
+        }
+        else if (strcmp(argv[i], "-cold-import") == 0) {
+            const char *home = getenv("HOME");
+            static char default_cold_import_path[1024];
+            if (home && *home) {
+                snprintf(default_cold_import_path,
+                         sizeof(default_cold_import_path),
+                         "%s/.zclassic", home);
+                ctx.cold_import_from = default_cold_import_path;
+            } else {
+                fprintf(stderr,
+                    "-cold-import with no path requires $HOME; "
+                    "use -cold-import=PATH\n");
+                return 1;
+            }
+        }
         else if (strncmp(argv[i], "-fastimport=", 12) == 0) {
             ctx.fastimport_from = argv[i]+12;
         }

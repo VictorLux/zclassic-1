@@ -15,6 +15,7 @@
 #include "services/utxo_recovery_service.h"
 #include "services/local_chain_ingest.h"
 #include "services/legacy_body_pull.h"
+#include "services/legacy_cold_import.h"
 #include "services/legacy_direct_import.h"
 #include "services/header_probe_service.h"
 #include "services/block_index_integrity.h"
@@ -1568,6 +1569,34 @@ bool app_init(struct app_context *ctx)
                    "(%lld entries)\n",
                    sys_ram / (1024 * 1024), est_mem / (1024 * 1024),
                    (long long)est_count);
+        }
+    }
+
+    /* -cold-import: bulk state import from a sibling zclassicd. Runs
+     * AFTER block_tree_db + coins_view_sqlite open but BEFORE block
+     * index load (so the freshly-written LevelDB entries get picked
+     * up). No-op when ctx->cold_import_from is NULL. */
+    if (ctx->cold_import_from && g_block_tree_open && g_coins_sqlite.db) {
+        if (!local_chain_ingest_detect_legacy_datadir(ctx->cold_import_from)) {
+            fprintf(stderr,
+                "cold-import: %s does not look like a zclassic datadir; "
+                "skipping.\n", ctx->cold_import_from);
+        } else {
+            printf("\n═══ Cold Import from %s ═══\n",
+                   ctx->cold_import_from);
+            fflush(stdout);
+            struct lci_cold_result cr = {0};
+            bool ci_ok = legacy_cold_import_blocking(
+                &g_state, &g_coins_tip, &g_coins_sqlite,
+                &g_block_tree, ctx->datadir,
+                ctx->cold_import_from, &cr);
+            printf("Cold import: ok=%s legacy_tip=%d block_index=%lld "
+                   "utxos=%lld blk_files=%lld elapsed=%.1fs\n",
+                   ci_ok ? "yes" : "no", cr.legacy_tip,
+                   (long long)cr.block_index_writes,
+                   (long long)cr.utxos_imported,
+                   (long long)cr.blk_files_linked,
+                   cr.total_secs);
         }
     }
 
