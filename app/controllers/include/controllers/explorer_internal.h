@@ -16,6 +16,24 @@
 #include <sqlite3.h>
 #include "views/format_helpers.h"
 
+#define ZCL_EXPLORER_GENESIS_TIME 1478403829LL
+#define ZCL_EXPLORER_GENESIS_HASH_INTERNAL_HEX \
+    "020626013483f855df2dc2ebb7eb8098d4e4c99dc3efc3197942a2cd4c100700"
+#define ZCL_EXPLORER_GENESIS_HASH_DISPLAY_HEX \
+    "0007104ccda289427919efc39dc9e4d499804b7bebc22df55f8b834301260602"
+
+struct explorer_history_validation {
+    bool usable;
+    int64_t chain_height;
+    int64_t block_rows;
+    int64_t max_height;
+    int64_t duplicate_heights;
+    int64_t tx_rows;
+    int64_t tx_output_rows;
+    int64_t integrity_rows;
+    char reason[128];
+};
+
 /* ── Append helper ─────────────────────────────────────────── */
 #define APPEND(off, buf, max, ...) do { \
     if ((off) < (max)) { \
@@ -106,7 +124,7 @@ static inline int64_t sql_query_i64(sqlite3 *db, const char *sql)
         return -1;
     }
     if (s) {
-        rc = sqlite3_step(s);
+        rc = sqlite3_step(s);  // raw-sql-ok: explorer shared scalar query helper
         if (rc == SQLITE_ROW)
             val = sqlite3_column_int64(s, 0);
         else if (rc != SQLITE_DONE)
@@ -192,7 +210,7 @@ static inline bool sql_query_row_i64_2(sqlite3 *db, const char *sql,
         return false;
 
     if (sqlite3_prepare_v2(db, sql, -1, &s, NULL) == SQLITE_OK && s) {
-        if (sqlite3_step(s) == SQLITE_ROW) {
+        if (sqlite3_step(s) == SQLITE_ROW) {  // raw-sql-ok: explorer shared two-column query helper
             out->v0 = sqlite3_column_int64(s, 0);
             out->v1 = sqlite3_column_int64(s, 1);
             sqlite3_finalize(s);
@@ -217,7 +235,7 @@ static inline bool sql_query_row_i64_3(sqlite3 *db, const char *sql,
         return false;
 
     if (sqlite3_prepare_v2(db, sql, -1, &s, NULL) == SQLITE_OK && s) {
-        if (sqlite3_step(s) == SQLITE_ROW) {
+        if (sqlite3_step(s) == SQLITE_ROW) {  // raw-sql-ok: explorer shared three-column query helper
             out->v0 = sqlite3_column_int64(s, 0);
             out->v1 = sqlite3_column_int64(s, 1);
             out->v2 = sqlite3_column_int64(s, 2);
@@ -346,7 +364,7 @@ static inline bool sql_query_text(sqlite3 *db, const char *sql,
 {
     sqlite3_stmt *s = NULL;
     if (sqlite3_prepare_v2(db, sql, -1, &s, NULL) == SQLITE_OK && s) {
-        if (sqlite3_step(s) == SQLITE_ROW) {
+        if (sqlite3_step(s) == SQLITE_ROW) {  // raw-sql-ok: explorer shared text query helper
             const char *t = (const char *)sqlite3_column_text(s, 0);
             if (t) { snprintf(out, max, "%s", t); sqlite3_finalize(s); return true; }
         }
@@ -354,6 +372,77 @@ static inline bool sql_query_text(sqlite3 *db, const char *sql,
     }
     if (max > 0) out[0] = '\0';
     return false;
+}
+
+static inline void explorer_validate_block_history(
+    sqlite3 *db, int64_t chain_height, struct explorer_history_validation *out)
+{
+    if (!out)
+        return;
+    memset(out, 0, sizeof(*out));
+    out->chain_height = chain_height;
+
+    #define EXPLORER_HISTORY_BAD(msg) do { \
+        snprintf(out->reason, sizeof(out->reason), "%s", (msg)); \
+        out->usable = false; \
+        return; \
+    } while (0)
+
+    if (!db)
+        EXPLORER_HISTORY_BAD("sqlite database unavailable");
+
+    out->max_height = sql_query_i64(db,
+        "SELECT COALESCE(MAX(height),-1) FROM blocks");
+    out->block_rows = sql_query_i64(db, "SELECT count(*) FROM blocks");
+    if (out->max_height <= 0 || out->block_rows <= 0)
+        EXPLORER_HISTORY_BAD("blocks projection is empty");
+    if (out->block_rows != out->max_height + 1)
+        EXPLORER_HISTORY_BAD("blocks projection has missing heights");
+    if (chain_height > 0 && out->max_height + 1 < chain_height)
+        EXPLORER_HISTORY_BAD("blocks projection lags active chain");
+
+    out->duplicate_heights = sql_query_i64(db,
+        "SELECT count(*) FROM ("
+        "SELECT height FROM blocks GROUP BY height HAVING count(*) > 1)");
+    if (out->duplicate_heights > 0)
+        EXPLORER_HISTORY_BAD("blocks projection has duplicate heights");
+
+    int64_t genesis_time = sql_query_i64(db, "SELECT time FROM blocks WHERE height = 0");
+    if (genesis_time != ZCL_EXPLORER_GENESIS_TIME)
+        EXPLORER_HISTORY_BAD("genesis timestamp mismatch");
+
+    char genesis_hash[128] = "";
+    sql_query_text(db, "SELECT lower(hex(hash)) FROM blocks WHERE height = 0",
+                   genesis_hash, sizeof(genesis_hash));
+    if (strcmp(genesis_hash, ZCL_EXPLORER_GENESIS_HASH_INTERNAL_HEX) != 0)
+        EXPLORER_HISTORY_BAD("genesis hash byte order/value mismatch");
+
+    out->tx_rows = sql_query_i64(db, "SELECT count(*) FROM transactions");
+    out->tx_output_rows = sql_query_i64(db, "SELECT count(*) FROM tx_outputs");
+    out->integrity_rows = sql_query_i64(db, "SELECT count(*) FROM view_integrity");
+    if (out->max_height > 10 && out->tx_rows <= 0)
+        EXPLORER_HISTORY_BAD("transactions projection is empty");
+    if (out->max_height > 10 && out->tx_output_rows <= 0)
+        EXPLORER_HISTORY_BAD("tx_outputs projection is empty");
+    if (out->integrity_rows != out->max_height + 1)
+        EXPLORER_HISTORY_BAD("integrity receipts are incomplete");
+
+    out->usable = true;
+    snprintf(out->reason, sizeof(out->reason), "ok");
+    #undef EXPLORER_HISTORY_BAD
+}
+
+static inline bool explorer_block_history_usable_for_height(sqlite3 *db,
+                                                            int64_t chain_height)
+{
+    struct explorer_history_validation v;
+    explorer_validate_block_history(db, chain_height, &v);
+    return v.usable;
+}
+
+static inline bool explorer_block_history_usable(sqlite3 *db)
+{
+    return explorer_block_history_usable_for_height(db, -1);
 }
 
 /* ── Number formatting with comma separators ─────────────── */

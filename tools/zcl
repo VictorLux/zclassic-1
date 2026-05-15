@@ -465,57 +465,6 @@ print()
 "
 }
 
-cmd_timeline() {
-    local granularity="${1:-month}"
-    rpc gethodlwavetimeline "\"$granularity\"" | python3 -c "
-import json,sys
-d=json.load(sys.stdin)
-r=d['result']
-
-print()
-print(f'  ZClassic HODL Wave Timeline ({r[\"granularity\"]})')
-print('  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━')
-print(f'  Tip: {r[\"tip_height\"]:,}  |  UTXOs: {r[\"total_utxos\"]:,}  |  Supply: {r[\"total_supply_zcl\"]} ZCL')
-print(f'  Chart: {r[\"chart_file\"]}')
-print()
-print(f'  {\"Date\":>10}  {\"Surviving ZCL\":>18}  {\"UTXOs\":>8}  {\"Cumul%\":>8}  {\"\":40}')
-print('  ' + '─' * 88)
-
-for p in r['periods']:
-    cpct = p['cumulative_pct']
-    bar_len = int(cpct / 2.5)
-    if bar_len > 40: bar_len = 40
-    bar = '█' * bar_len + '░' * (40 - bar_len)
-    print(f'  {p[\"date\"]:>10}  {p[\"zcl\"]:>18} ZCL  {p[\"utxos\"]:>8,}  {cpct:7.2f}%  {bar}')
-
-print()
-"
-}
-
-cmd_wavechart() {
-    printf "\n  Generating stacked-area HODL wave chart...\n"
-    printf "  (Scanning ~1.5M UTXOs x 108 months — may take a minute)\n\n"
-    rpc gethodlwavechart | python3 -c "
-import json,sys
-d=json.load(sys.stdin)
-r=d['result']
-
-print(f'  Chart saved: {r[\"chart_file\"]}')
-print(f'  UTXOs: {r[\"total_utxos\"]:,}  |  Months: {r[\"num_months\"]}  |  Supply: {r[\"total_supply_zcl\"]} ZCL')
-print()
-print('  Legend (bottom=oldest, top=youngest):')
-for item in r['legend']:
-    print(f'    {item[\"color\"]}  {item[\"label\"]}')
-print()
-print('  Current Age Distribution:')
-for b in r['current_distribution']:
-    print(f'    {b[\"age\"]:>8}  {b[\"zcl\"]:>18} ZCL  (cumul: {b[\"cumulative_pct\"]:6.2f}%)')
-print()
-print(f'  Open the chart:  xdg-open {r[\"chart_file\"]}')
-print()
-"
-}
-
 cmd_audit() {
     rpc walletaudit | python3 -c "
 import json,sys
@@ -558,8 +507,6 @@ cmd_help() {
 
   ANALYTICS
     zcl hodlwave              UTXO age distribution (cumulative)
-    zcl timeline [day|month]  HODL wave plotted over time + PPM chart
-    zcl wavechart             9-year stacked-area HODL wave PPM chart
     zcl status                Node sync status
     zcl peers                 Connected peers
 
@@ -584,8 +531,6 @@ case "${1:-help}" in
     peers)     cmd_peers ;;
     status)    cmd_status ;;
     hodlwave)  cmd_hodlwave ;;
-    timeline)  cmd_timeline "$2" ;;
-    wavechart) cmd_wavechart ;;
     audit)     cmd_audit ;;
     # Chain introspection
     view)      rpc chainview "$2, ${3:-1}" | python3 -m json.tool ;;

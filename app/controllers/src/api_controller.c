@@ -32,6 +32,7 @@
 #include "models/database.h"
 #include "models/block.h"
 #include "models/file_service.h"
+#include "models/hodl_wave.h"
 #include "models/onion_announcement.h"
 #include "models/peer.h"
 #include "models/zslp.h"
@@ -75,7 +76,7 @@ static struct api_context g_api_ctx = {0};
 static struct api_rpc_backend g_api_rpc = {
     .user = "zcluser",
     .pass = "zclpass",
-    .port = 8023,
+    .port = 18232,
 };
 
 static struct snapshot_sync_service *api_snapshot_sync(bool *initialized)
@@ -117,6 +118,8 @@ static size_t g_api_deep_stats_cache_len = 0;
 
 static _Atomic int g_api_cache_thread_running = 0;
 static pthread_mutex_t g_api_cache_mutex = PTHREAD_MUTEX_INITIALIZER;
+
+static bool api_response_cacheable(const uint8_t *buf, size_t len);
 
 void api_set_state(struct main_state *ms, struct tx_mempool *mp,
                     struct coins_view_cache *coins_tip,
@@ -450,42 +453,67 @@ static size_t compute_supply(uint8_t *r, size_t max)
         "%s%.8f", JSON_HEADERS, supply);
 }
 
-/* Compute /api/hodl — HODL wave data via gethodlwave RPC */
+/* Compute /api/hodl — current transparent UTXO age distribution. */
 static size_t compute_hodl(uint8_t *r, size_t max)
 {
-    char *buf = zcl_malloc(262144, "api_hodl_buf");
-    if (!buf) return json_error(r, max, JSON_500_HEADERS, "Out of memory");
+    if (!g_api_ctx.datadir)
+        return json_error(r, max, JSON_503_HEADERS, "Data loading, please retry in a few seconds");
 
-    if (rpc_call("gethodlwave", "[]", buf, 262144) <= 0) {
-        free(buf);
-        return json_error(r, max, JSON_500_HEADERS, "RPC unavailable");
+    char db_path[1024];
+    snprintf(db_path, sizeof(db_path), "%s/node.db", g_api_ctx.datadir);
+    sqlite3 *db = NULL;
+    if (sqlite3_open_v2(db_path, &db, SQLITE_OPEN_READONLY, NULL) != SQLITE_OK) {
+        if (db)
+            sqlite3_close(db);
+        return json_error(r, max, JSON_500_HEADERS, "Database unavailable");
     }
 
-    /* Extract the "result" JSON object from the RPC response */
-    const char *result_start = strstr(buf, "\"result\"");
-    if (!result_start) {
-        free(buf);
-        return json_error(r, max, JSON_500_HEADERS, "No result");
+    int64_t tip = sql_query_i64(db, "SELECT COALESCE(MAX(height),0) FROM utxos");
+    int64_t block_tip = sql_query_i64(db, "SELECT MAX(height) FROM blocks");
+    if (block_tip > tip)
+        tip = block_tip;
+
+    struct hodl_wave_snapshot hodl;
+    if (!hodl_wave_scan_current_utxos(db, tip, &hodl)) {
+        sqlite3_close(db);
+        return json_error(r, max, JSON_503_HEADERS, hodl.status);
     }
-    result_start += 8;
-    while (*result_start == ' ' || *result_start == ':') result_start++;
+    sqlite3_close(db);
 
-    /* Find the end of the result object (before ,"error") */
-    const char *result_end = strstr(result_start, ",\"error\"");
-    if (!result_end) result_end = result_start + strlen(result_start);
+    double over_1y_pct = hodl_wave_older_than_1y_percent(&hodl);
 
-    size_t result_len = (size_t)(result_end - result_start);
-    size_t hdr_len = strlen(JSON_HEADERS);
+    size_t off = 0;
+    off += (size_t)snprintf((char *)r + off, max - off,
+        "%s{"
+        "\"source\":\"%s\""
+        ",\"metric\":\"%s\""
+        ",\"status\":\"%s\""
+        ",\"height\":%" PRId64
+        ",\"total_utxos\":%" PRId64
+        ",\"total_value\":%.8f"
+        ",\"older_than_1y\":{\"value\":%.8f,\"percent\":%.6f}"
+        ",\"skipped_rows\":%" PRId64
+        ",\"buckets\":[",
+        JSON_HEADERS, hodl.source, hodl.metric, hodl.status,
+        hodl.tip_height, hodl.total_count,
+        (double)hodl.total_value / (double)ZATOSHI_PER_ZCL,
+        (double)hodl.older_than_1y_value / (double)ZATOSHI_PER_ZCL,
+        over_1y_pct, hodl.skipped_rows);
 
-    if (hdr_len + result_len >= max) {
-        free(buf);
-        return json_error(r, max, JSON_500_HEADERS, "Response too large");
+    for (int i = 0; i < HODL_WAVE_BUCKETS && off + 256 < max; i++) {
+        double value_zcl = (double)hodl.buckets[i].value / (double)ZATOSHI_PER_ZCL;
+        double pct = hodl.total_value > 0
+            ? (double)hodl.buckets[i].value / (double)hodl.total_value * 100.0 : 0.0;
+        if (i > 0)
+            off += (size_t)snprintf((char *)r + off, max - off, ",");
+        off += (size_t)snprintf((char *)r + off, max - off,
+            "{\"label\":\"%s\",\"utxos\":%" PRId64
+            ",\"value\":%.8f,\"percent\":%.6f}",
+            hodl.buckets[i].label, hodl.buckets[i].count, value_zcl, pct);
     }
 
-    memcpy(r, JSON_HEADERS, hdr_len);
-    memcpy(r + hdr_len, result_start, result_len);
-    free(buf);
-    return hdr_len + result_len;
+    off += (size_t)snprintf((char *)r + off, max - off, "]}");
+    return off;
 }
 
 /* Compute /api/block/:id — block detail (called from bg thread) */
@@ -853,6 +881,37 @@ static size_t compute_deep_stats(uint8_t *r, size_t max)
 
     struct explorer_chain_stats chain_stats = {0};
     explorer_query_chain_stats(db, &chain_stats);
+    int64_t current_height = sql_query_i64(db,
+        "SELECT COALESCE(MAX(height),0) FROM utxos");
+    if (current_height < chain_stats.height)
+        current_height = chain_stats.height;
+    struct explorer_history_validation history;
+    explorer_validate_block_history(db, current_height, &history);
+    if (!history.usable) {
+        int64_t block_rows = sql_query_i64(db, "SELECT count(*) FROM blocks");
+        int64_t tx_rows = sql_query_i64(db, "SELECT count(*) FROM transactions");
+        int64_t utxo_count = sql_query_i64(db, "SELECT count(*) FROM utxos");
+        int64_t utxo_value = sql_query_i64(db,
+            "SELECT COALESCE(SUM(value),0) FROM utxos");
+        int64_t supply_sat = zcl_total_supply_zatoshi(current_height);
+        sqlite3_close(db);
+        return (size_t)snprintf((char *)r, max,
+            "%s{"
+            "\"history_index_usable\":false,"
+            "\"unsafe_sections_suppressed\":true,"
+            "\"reason\":\"%s\","
+            "\"height\":%" PRId64 ","
+            "\"supply\":%.8f,"
+            "\"utxo\":{\"count\":%" PRId64 ",\"value\":%.8f},"
+            "\"index\":{\"blocks\":%" PRId64 ",\"transactions\":%" PRId64 "}"
+            "}",
+            JSON_HEADERS,
+            history.reason,
+            current_height,
+            (double)supply_sat / (double)ZATOSHI_PER_ZCL,
+            utxo_count, (double)utxo_value / (double)ZATOSHI_PER_ZCL,
+            block_rows, tx_rows);
+    }
     struct explorer_transaction_stats transaction_stats = {0};
     explorer_query_transaction_stats(db, &transaction_stats);
     struct explorer_utxo_stats utxo_stats = {0};
@@ -935,7 +994,8 @@ static void *api_cache_refresh_thread(void *arg)
             uint8_t *tmp = zcl_malloc(API_BLOCKS_CACHE_SIZE, "api_blocks_tmp");
             if (tmp) {
                 size_t len = compute_blocks(tmp, API_BLOCKS_CACHE_SIZE);
-                if (len > 0 && len < API_BLOCKS_CACHE_SIZE) {
+                if (len > 0 && len < API_BLOCKS_CACHE_SIZE &&
+                    api_response_cacheable(tmp, len)) {
                     pthread_mutex_lock(&g_api_cache_mutex);
                     memcpy(g_api_blocks_cache, tmp, len);
                     g_api_blocks_cache_len = len;
@@ -950,7 +1010,8 @@ static void *api_cache_refresh_thread(void *arg)
             uint8_t *tmp = zcl_malloc(API_STATS_CACHE_SIZE, "api_stats_tmp");
             if (tmp) {
                 size_t len = compute_stats(tmp, API_STATS_CACHE_SIZE);
-                if (len > 0 && len < API_STATS_CACHE_SIZE) {
+                if (len > 0 && len < API_STATS_CACHE_SIZE &&
+                    api_response_cacheable(tmp, len)) {
                     pthread_mutex_lock(&g_api_cache_mutex);
                     memcpy(g_api_stats_cache, tmp, len);
                     g_api_stats_cache_len = len;
@@ -965,7 +1026,8 @@ static void *api_cache_refresh_thread(void *arg)
             uint8_t *tmp = zcl_malloc(API_SUPPLY_CACHE_SIZE, "api_supply_tmp");
             if (tmp) {
                 size_t len = compute_supply(tmp, API_SUPPLY_CACHE_SIZE);
-                if (len > 0 && len < API_SUPPLY_CACHE_SIZE) {
+                if (len > 0 && len < API_SUPPLY_CACHE_SIZE &&
+                    api_response_cacheable(tmp, len)) {
                     pthread_mutex_lock(&g_api_cache_mutex);
                     memcpy(g_api_supply_cache, tmp, len);
                     g_api_supply_cache_len = len;
@@ -980,7 +1042,8 @@ static void *api_cache_refresh_thread(void *arg)
             uint8_t *tmp = zcl_malloc(API_HODL_CACHE_SIZE, "api_hodl_tmp");
             if (tmp) {
                 size_t len = compute_hodl(tmp, API_HODL_CACHE_SIZE);
-                if (len > 0 && len < API_HODL_CACHE_SIZE) {
+                if (len > 0 && len < API_HODL_CACHE_SIZE &&
+                    api_response_cacheable(tmp, len)) {
                     pthread_mutex_lock(&g_api_cache_mutex);
                     memcpy(g_api_hodl_cache, tmp, len);
                     g_api_hodl_cache_len = len;
@@ -995,7 +1058,8 @@ static void *api_cache_refresh_thread(void *arg)
             uint8_t *tmp = zcl_malloc(API_DEEP_STATS_CACHE_SIZE, "api_deep_stats_tmp");
             if (tmp) {
                 size_t len = compute_deep_stats(tmp, API_DEEP_STATS_CACHE_SIZE);
-                if (len > 0 && len < API_DEEP_STATS_CACHE_SIZE) {
+                if (len > 0 && len < API_DEEP_STATS_CACHE_SIZE &&
+                    api_response_cacheable(tmp, len)) {
                     pthread_mutex_lock(&g_api_cache_mutex);
                     memcpy(g_api_deep_stats_cache, tmp, len);
                     g_api_deep_stats_cache_len = len;
@@ -1062,10 +1126,27 @@ static bool ensure_cache_thread(void)
     return true;
 }
 
+static bool api_response_cacheable(const uint8_t *buf, size_t len)
+{
+    if (!buf || len == 0)
+        return false;
+    const char *s = (const char *)buf;
+    if (strstr(s, "HTTP/1.1 200 OK") != s)
+        return false;
+    if (strstr(s, "{\"error\":") || strstr(s, "\"error\":\""))
+        return false;
+    return true;
+}
+
 void api_start_cache(void)
 {
     if (!ensure_cache_thread())
         fprintf(stderr, "API cache: failed to start background thread\n");
+}
+
+void api_stop_cache(void)
+{
+    atomic_store(&g_api_cache_thread_running, 0);
 }
 
 /* ── Serve from cache helpers ────────────────────────────── */
@@ -1746,11 +1827,11 @@ size_t api_handle_request(const char *method, const char *path,
             "{\"sync_state\":\"%s\","
             "\"requested\":%llu,\"received\":%llu,"
             "\"timed_out\":%llu,\"in_flight\":%llu,"
-            "\"queued\":%llu,\"assume_valid_height\":%d}",
+            "\"queued\":%llu,\"defer_proof_validation_below_height\":%d}",
             sync_state_name(sync_get_state()),
             (unsigned long long)req, (unsigned long long)recv,
             (unsigned long long)tout, (unsigned long long)inflight,
-            (unsigned long long)queued, g_assume_valid_height);
+            (unsigned long long)queued, g_deferred_proof_validation_below_height);
     }
 
     /* Health check — lightweight, machine-readable */
@@ -1868,7 +1949,8 @@ size_t api_handle_request(const char *method, const char *path,
     if (strcmp(clean_path, "/api/node/snapshot") == 0) {
         bool init = false;
         struct snapshot_sync_service *svc = api_snapshot_sync(&init);
-        struct snapsync_status snap_status = {SNAPSYNC_IDLE, 0, 0, 0, false};
+        struct snapsync_status snap_status = {0};
+        snap_status.state = SNAPSYNC_IDLE;
         uint64_t received = 0, total = 0;
         double rate = 0;
         if (init) snapsync_get_status_snapshot(svc, &snap_status);
@@ -1921,7 +2003,8 @@ size_t api_handle_request(const char *method, const char *path,
         enum sync_state ss = sync_get_state();
         bool snap_init = false;
         struct snapshot_sync_service *svc = api_snapshot_sync(&snap_init);
-        struct snapsync_status snap_status = {SNAPSYNC_IDLE, 0, 0, 0, false};
+        struct snapsync_status snap_status = {0};
+        snap_status.state = SNAPSYNC_IDLE;
         struct mmb *mb = rpc_blockchain_get_mmb();
         struct error_ring *er = error_ring_global();
         uint64_t snap_received = 0, snap_total = 0;
@@ -2045,7 +2128,7 @@ size_t api_handle_request(const char *method, const char *path,
               "\"utxo_count\":%lld"
             "},"
             "\"errors\":{\"total\":%d,\"recent\":%s},"
-            "\"assume_valid_height\":%d,"
+            "\"defer_proof_validation_below_height\":%d,"
             "\"uptime_seconds\":%lld"
             "}",
             sync_state_name(ss),
@@ -2081,7 +2164,7 @@ size_t api_handle_request(const char *method, const char *path,
             (long long)health.wal_size_bytes,
             (long long)health.utxo_count,
             error_ring_total(er), errors_json,
-            g_assume_valid_height,
+            g_deferred_proof_validation_below_height,
             (long long)health.uptime_seconds);
 
         size_t n = (size_t)snprintf((char *)response, response_max,

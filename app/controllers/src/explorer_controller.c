@@ -17,6 +17,7 @@
 #include "core/serialize.h"
 #include "keys/key_io.h"
 #include "models/database.h"
+#include "models/hodl_wave.h"
 #include "models/tx_index.h"
 #include "models/utxo.h"
 #include "primitives/block.h"
@@ -153,12 +154,10 @@ static void init_default_templates(void)
 
 /* Forward declarations for cache warming */
 static void *stats_compute_thread(void *arg);
-static void *hodl_compute_thread(void *arg);
 static void *tokens_compute_thread(void *arg);
 static void *factoids_compute_thread(void *arg);
 static _Atomic int g_stats_computing;
 static _Atomic int g_tokens_computing;
-static _Atomic int g_hodl_computing;
 static _Atomic int g_factoids_computing;
 static _Atomic int g_prewarm_started;
 
@@ -217,11 +216,6 @@ static void prewarm_caches(void)
     fflush(stdout);
     explorer_start_once(&g_stats_computing, stats_compute_thread,
                         "stats_compute");
-
-    printf("Explorer: pre-warming HODL wave cache...\n");
-    fflush(stdout);
-    explorer_start_once(&g_hodl_computing, hodl_compute_thread,
-                        "hodl_compute");
 
     printf("Explorer: pre-warming tokens cache...\n");
     fflush(stdout);
@@ -2386,416 +2380,145 @@ static size_t serve_token_detail(const char *token_id_hex, uint8_t *r, size_t ma
     return off;
 }
 
-/* ── 9-Year HODL Wave Chart ───────────────────────────────── */
-
-/* Cache — computed in background, served instantly */
-static char g_hodl_cache[65536] = "";
-static size_t g_hodl_cache_len = 0;
-
-
 static size_t serve_hodl(uint8_t *r, size_t max)
 {
-    /* Return cached version if available (cache built by background thread) */
-    if (g_hodl_cache_len > 0) {
-        size_t copy = g_hodl_cache_len < max ? g_hodl_cache_len : max;
-        memcpy(r, g_hodl_cache, copy);
-        return copy;
-    }
-
-    /* If not cached and not computing, start background computation */
-    if (!g_hodl_computing) {
-        g_hodl_computing = 1;
-        explorer_start_once(&g_hodl_computing, hodl_compute_thread,
-                            "hodl_compute");
-    }
-
-    /* Return a "computing" placeholder page */
+    struct explorer_context *ctx = explorer_ctx();
+    sqlite3 *db = NULL;
     size_t off = 0;
+
+    if (!ctx->datadir || !explorer_open_readonly_db(ctx->datadir, &db)) {
+        APPEND(off, r, max, EXPLORER_HEADER("HODL Wave"));
+        off += explorer_emit_nav((char *)r + off, max - off, "hodl");
+        APPEND(off, r, max,
+            "<div style='max-width:900px;margin:40px auto;color:#ccc'>"
+            "<h1>HODL Wave</h1>"
+            "<p>Database unavailable. This page will not publish cached HODL data.</p>"
+            "</div>" EXPLORER_FOOTER);
+        return off;
+    }
+
+    int64_t tip = sql_query_i64(db, "SELECT COALESCE(MAX(height),0) FROM utxos");
+    int64_t block_tip = sql_query_i64(db, "SELECT COALESCE(MAX(height),0) FROM blocks");
+    if (block_tip > tip)
+        tip = block_tip;
+
+    struct hodl_wave_snapshot hodl;
+    bool ok = hodl_wave_scan_current_utxos(db, tip, &hodl);
+    sqlite3_close(db);
+
     APPEND(off, r, max,
         "HTTP/1.1 200 OK\r\n"
         "Content-Type: text/html; charset=utf-8\r\n"
+        "Cache-Control: no-store\r\n"
         "Connection: close\r\n\r\n"
         "<!DOCTYPE html><html><head><meta charset='utf-8'>"
-        "<meta http-equiv='refresh' content='5'>"
+        "<meta name='viewport' content='width=device-width,initial-scale=1'>"
+        "<title>HODL Wave</title>"
         "<link rel='stylesheet' href='/explorer/style.css'>"
-        "</head><body>" EXPLORER_NAV
-        "<div style='text-align:center;margin:80px 0'>"
-        "<h1 style='font-size:36px;color:#aa66ff;font-family:Georgia,serif'>"
-        "Computing HODL Wave...</h1>"
-        "<p style='font-size:20px;color:#888'>Scanning UTXO set from SQLite.</p>"
-        "<p style='font-size:16px;color:#555'>Auto-refreshing...</p>"
-        "</div>" EXPLORER_FOOTER);
-    return off;
-}
-
-static void *hodl_compute_thread(void *arg)
-{
-    (void)arg;
-    struct explorer_context *ctx = explorer_ctx();
-    printf("HODL background: starting computation...\n");
-    fflush(stdout);
-
-    /* We need our own SQLite connection for the background thread */
-    char db_path[1024];
-    snprintf(db_path, sizeof(db_path), "%s/node.db", ctx->datadir);
-    sqlite3 *db = NULL;
-    if (sqlite3_open_v2(db_path, &db, SQLITE_OPEN_READONLY, NULL) != SQLITE_OK) {
-        printf("HODL background: failed to open db\n");
-        g_hodl_computing = 0;
-        return NULL;
-    }
-    sqlite3_exec(db, "PRAGMA mmap_size=268435456", NULL, NULL, NULL);
-
-    size_t off = 0;
-    uint8_t *r = (uint8_t *)zcl_malloc(65536, "hodl_html_buf");
-    size_t max = 65536;
-    if (!r) { sqlite3_close(db); g_hodl_computing = 0; LOG_NULL("explorer", "hodl_compute_thread: malloc(65536) failed"); }
-    char buf[65536];
-
-    /* Get current tip from SQLite (our indexed data) */
-    int tip = 0;
-    {
-        sqlite3_stmt *stmt = NULL;
-        if (sqlite3_prepare_v2(db,
-                "SELECT MAX(height) FROM blocks", -1, &stmt, NULL) == SQLITE_OK) {
-            if (AR_STEP_ROW_READONLY(stmt) == SQLITE_ROW)  
-                tip = sqlite3_column_int(stmt, 0);
-            sqlite3_finalize(stmt);
-        }
-    }
-    if (tip < 1) {
-        rpc_call("getblockcount", "[]", buf, sizeof(buf));
-        tip = (int)json_extract_int(buf, "result");
-    }
-    if (tip < 1) tip = 3047000;
-
-    printf("HODL chart: tip height = %d\n", tip);
-
-    /* HODL Wave computation using REAL UTC timestamps.
-     * Sample monthly from genesis (Nov 2016) to now.
-     * For each month: find height at that time, find height at time-1yr,
-     * compute ratio of UTXO value older than 1yr. */
-
-    /* Genesis: Nov 6, 2016 = 1478403829 */
-    int64_t genesis_ts = 1478403829;
-    int64_t now_ts = (int64_t)time(NULL);
-    int64_t one_year = 365 * 86400;
-    int64_t one_month = 30 * 86400;
-
-    /* Start from genesis — show the full history including the first year at 0% */
-    int64_t start_ts = genesis_ts;
-    int npts_raw = (int)((now_ts - start_ts) / one_month) + 1;
-    if (npts_raw < 2) npts_raw = 2;
-    if (npts_raw > 120) npts_raw = 120;
-    int npts = npts_raw;
-
-    double pct_over_1yr[120];
-    char labels[120][20];
-    memset(pct_over_1yr, 0, sizeof(pct_over_1yr));
-
-    printf("HODL chart: computing %d monthly points from %"PRId64" to %"PRId64"...\n",
-           npts, start_ts, now_ts);
-    fflush(stdout);
-    int64_t t_hodl = (int64_t)time(NULL);
-
-    /* Height-based HODL wave computation.
-     * Uses fixed block spacing (150s pre-Buttercup, 75s post) to convert
-     * between heights and time. No dependency on blocks.time column.
-     * Same approach as the working gethodlwave RPC. */
-
-    #define BUTTERCUP_HEIGHT  707000
-    #define PRE_SPACING       150
-    #define POST_SPACING      75
-
-    /* Convert a timestamp to approximate block height */
-    #define TS_TO_HEIGHT(ts) ( \
-        ((ts) <= genesis_ts) ? 0 : \
-        ((int64_t)((ts) - genesis_ts) < (int64_t)BUTTERCUP_HEIGHT * PRE_SPACING) \
-            ? (int)(((ts) - genesis_ts) / PRE_SPACING) \
-            : (int)(BUTTERCUP_HEIGHT + (((ts) - genesis_ts) - \
-                    (int64_t)BUTTERCUP_HEIGHT * PRE_SPACING) / POST_SPACING))
-
-    /* Build checkpoint list: for each monthly sample, compute the height
-     * at that time and the height 1 year earlier. */
-    int64_t cp_time[120];
-    int cp_height[120];
-    int cp_old_height[120];
-
-    for (int i = 0; i < npts; i++) {
-        cp_time[i] = start_ts + (int64_t)i * (now_ts - start_ts) / (npts - 1);
-        cp_height[i] = TS_TO_HEIGHT(cp_time[i]);
-        if (cp_height[i] > tip) cp_height[i] = tip;
-        int64_t old_time = cp_time[i] - one_year;
-        if (old_time <= genesis_ts)
-            cp_old_height[i] = -1; /* no coins exist 1yr before this point */
-        else
-            cp_old_height[i] = TS_TO_HEIGHT(old_time);
-
-        /* Generate label — year for January */
-        time_t t = (time_t)cp_time[i];
-        struct tm tm;
-        gmtime_r(&t, &tm);
-        snprintf(labels[i], sizeof(labels[i]), "%d", tm.tm_year + 1900);
-        if (tm.tm_mon != 0 && i != 0) labels[i][0] = '\0';
-    }
-
-    /* Aggregate UTXOs into height buckets, build cumulative sum.
-     * Filter out garbage heights (> tip + 1000). */
-    {
-        #define BUCKET_SIZE 10000
-        #define MAX_BUCKETS 400
-        int64_t bucket_vals[MAX_BUCKETS];
-        int bucket_count = 0;
-        memset(bucket_vals, 0, sizeof(bucket_vals));
-
-        sqlite3_stmt *stmt = NULL;
-        char sql_buf[256];
-        snprintf(sql_buf, sizeof(sql_buf),
-            "SELECT (height/%d)*%d, SUM(value) FROM utxos "
-            "WHERE height <= %d "
-            "GROUP BY height/%d ORDER BY 1",
-            BUCKET_SIZE, BUCKET_SIZE, tip + 1000, BUCKET_SIZE);
-
-        if (sqlite3_prepare_v2(db, sql_buf, -1, &stmt, NULL) == SQLITE_OK) {
-            while (AR_STEP_ROW_READONLY(stmt) == SQLITE_ROW) {
-                int bh = sqlite3_column_int(stmt, 0);
-                int64_t bv = sqlite3_column_int64(stmt, 1);
-                int idx = bh / BUCKET_SIZE;
-                if (idx >= 0 && idx < MAX_BUCKETS) {
-                    bucket_vals[idx] = bv;
-                    if (idx >= bucket_count) bucket_count = idx + 1;
-                }
-            }
-            sqlite3_finalize(stmt);
-        }
-
-        /* Build cumulative sum: cumsum[i] = sum of buckets 0..(i-1) */
-        int64_t cumsum[MAX_BUCKETS + 1];
-        cumsum[0] = 0;
-        for (int i = 0; i < bucket_count; i++)
-            cumsum[i + 1] = cumsum[i] + bucket_vals[i];
-
-        /* For each checkpoint, compute % of value older than 1 year */
-        for (int i = 0; i < npts; i++) {
-            int at_idx = cp_height[i] >= 0 ? cp_height[i] / BUCKET_SIZE + 1 : 0;
-            int old_idx = cp_old_height[i] >= 0 ? cp_old_height[i] / BUCKET_SIZE + 1 : 0;
-            if (at_idx > bucket_count) at_idx = bucket_count;
-            if (old_idx > bucket_count) old_idx = bucket_count;
-            if (at_idx < 0) at_idx = 0;
-            if (old_idx < 0) old_idx = 0;
-
-            int64_t total_val = cumsum[at_idx];
-            int64_t old_val = cumsum[old_idx];
-
-            pct_over_1yr[i] = total_val > 0
-                ? (double)old_val / (double)total_val * 100.0 : 0;
-            if (pct_over_1yr[i] > 100) pct_over_1yr[i] = 100;
-            if (pct_over_1yr[i] < 0) pct_over_1yr[i] = 0;
-        }
-    }
-
-    int64_t hodl_elapsed = (int64_t)time(NULL) - t_hodl;
-    printf("HODL chart: computed %d points in %" PRId64 "s\n", npts, hodl_elapsed);
-    fflush(stdout);
-
-    /* Get current >1yr percentage for the headline */
-    double current_pct = pct_over_1yr[npts - 1];
-
-    APPEND(off, r, max, EXPLORER_HEADER("HODL Wave"));
+        "</head><body>");
     off += explorer_emit_nav((char *)r + off, max - off, "hodl");
 
-    /* Newspaper-style headline */
+    if (!ok) {
+        APPEND(off, r, max,
+            "<div style='max-width:900px;margin:40px auto;color:#ccc'>"
+            "<h1>HODL Wave</h1>"
+            "<p>Degraded: %s.</p>"
+            "</div>" EXPLORER_FOOTER,
+            hodl.status);
+        return off;
+    }
+
+    double older_pct = hodl_wave_older_than_1y_percent(&hodl);
+    char total_fmt[64], older_fmt[64];
+    zcl_format_zcl(total_fmt, sizeof(total_fmt), hodl.total_value);
+    zcl_format_zcl(older_fmt, sizeof(older_fmt), hodl.older_than_1y_value);
+
     APPEND(off, r, max,
         "<div style='text-align:center;margin:30px 0 10px'>"
-        "<h1 style='font-size:48px;color:#fff;font-weight:800;margin:0;"
+        "<h1 style='font-size:42px;color:#fff;font-weight:800;margin:0;"
         "font-family:Georgia,\"Times New Roman\",serif'>"
-        "%.1f%% of ZCL Hasn't Moved in Over 1 Year</h1>"
-        "<p style='font-size:20px;color:#888;margin:8px 0 0;"
-        "font-family:Georgia,serif'>"
-        "9-Year HODL Wave &mdash; ZClassic Blockchain Analysis</p>"
+        "%.3f%% of Current Transparent UTXO Value Is Older Than 1 Year</h1>"
+        "<p style='font-size:19px;color:#888;margin:8px 0 0;"
+        "font-family:Georgia,serif'>Current UTXO age distribution at block %" PRId64 "</p>"
         "</div>",
-        current_pct);
-
-    /* Large SVG chart — newspaper-quality */
-    int w = 1000, h = 500;
-    int pad_l = 70, pad_r = 30, pad_t = 30, pad_b = 60;
-    int plot_w = w - pad_l - pad_r;
-    int plot_h = h - pad_t - pad_b;
+        older_pct, hodl.tip_height);
 
     APPEND(off, r, max,
-        "<svg viewBox='0 0 %d %d' style='width:100%%;max-width:%dpx;height:auto;"
-        "background:#0c0c0c;border-radius:12px;margin:20px auto;display:block;"
-        "border:1px solid #1a1a1a'>",
-        w, h, w);
+        "<div style='max-width:1000px;margin:20px auto'>"
+        "<svg viewBox='0 0 1000 360' style='width:100%%;height:auto;"
+        "background:#0c0c0c;border:1px solid #1a1a1a;border-radius:8px;"
+        "display:block'>"
+        "<text x='30' y='35' fill='#bbb' font-size='18' "
+        "font-family='Georgia,serif'>Unspent transparent value by age</text>");
 
-    /* Y-axis grid + labels (0%, 25%, 50%, 75%, 100%) */
+    int x0 = 70, y0 = 285, chart_w = 860, chart_h = 220;
     for (int g = 0; g <= 4; g++) {
-        int y = pad_t + plot_h - (plot_h * g / 4);
+        int y = y0 - chart_h * g / 4;
         APPEND(off, r, max,
-            "<line x1='%d' y1='%d' x2='%d' y2='%d' stroke='#1a1a1a' stroke-width='1'/>",
-            pad_l, y, w - pad_r, y);
+            "<line x1='%d' y1='%d' x2='%d' y2='%d' stroke='#1a1a1a'/>"
+            "<text x='%d' y='%d' fill='#777' font-size='12' "
+            "text-anchor='end'>%d%%</text>",
+            x0, y, x0 + chart_w, y, x0 - 8, y + 4, g * 25);
+    }
+
+    int bar_gap = 10;
+    int bar_w = (chart_w - bar_gap * (HODL_WAVE_BUCKETS - 1)) /
+                HODL_WAVE_BUCKETS;
+    for (int b = 0; b < HODL_WAVE_BUCKETS; b++) {
+        double pct = hodl.total_value > 0
+            ? (double)hodl.buckets[b].value / (double)hodl.total_value * 100.0 : 0.0;
+        int bh = (int)(pct / 100.0 * chart_h);
+        int x = x0 + b * (bar_w + bar_gap);
+        int y = y0 - bh;
         APPEND(off, r, max,
-            "<text x='%d' y='%d' fill='#888' font-size='14' "
-            "font-family='Georgia,serif' text-anchor='end'>%d%%</text>",
-            pad_l - 10, y + 5, g * 25);
+            "<rect x='%d' y='%d' width='%d' height='%d' fill='%s' rx='3'>"
+            "<title>%s: %.3f%%, %" PRId64 " UTXOs</title></rect>"
+            "<text x='%d' y='%d' fill='#aaa' font-size='11' "
+            "text-anchor='middle' transform='rotate(-35,%d,%d)'>%s</text>"
+            "<text x='%d' y='%d' fill='#eee' font-size='12' "
+            "text-anchor='middle'>%.2f%%</text>",
+            x, y, bar_w, bh > 1 ? bh : 1, hodl.buckets[b].color,
+            hodl.buckets[b].html_label, pct, hodl.buckets[b].count,
+            x + bar_w / 2, y0 + 26, x + bar_w / 2, y0 + 26,
+            hodl.buckets[b].html_label,
+            x + bar_w / 2, y - 6, pct);
     }
-
-    /* Y-axis title */
     APPEND(off, r, max,
-        "<text x='16' y='%d' fill='#aaa' font-size='13' "
-        "font-family='Georgia,serif' "
-        "transform='rotate(-90,16,%d)' text-anchor='middle'>"
-        "Coins Unmoved &gt;1 Year</text>",
-        pad_t + plot_h / 2, pad_t + plot_h / 2);
-
-    /* Gradient fill */
-    APPEND(off, r, max,
-        "<defs><linearGradient id='hodlGrad' x1='0' y1='0' x2='0' y2='1'>"
-        "<stop offset='0%%' stop-color='#8844ff' stop-opacity='0.6'/>"
-        "<stop offset='100%%' stop-color='#8844ff' stop-opacity='0.05'/>"
-        "</linearGradient></defs>");
-
-    /* Filled area */
-    APPEND(off, r, max,
-        "<polygon fill='url(#hodlGrad)' points='%d,%d ",
-        pad_l, pad_t + plot_h);
-    for (int i = 0; i < npts; i++) {
-        int x = pad_l + plot_w * i / (npts - 1);
-        int y = pad_t + plot_h - (int)(pct_over_1yr[i] / 100.0 * plot_h);
-        APPEND(off, r, max, "%d,%d ", x, y);
-    }
-    APPEND(off, r, max, "%d,%d '/>", w - pad_r, pad_t + plot_h);
-
-    /* Line on top */
-    APPEND(off, r, max,
-        "<polyline fill='none' stroke='#aa66ff' stroke-width='2.5' "
-        "stroke-linejoin='round' points='");
-    for (int i = 0; i < npts; i++) {
-        int x = pad_l + plot_w * i / (npts - 1);
-        int y = pad_t + plot_h - (int)(pct_over_1yr[i] / 100.0 * plot_h);
-        APPEND(off, r, max, "%d,%d ", x, y);
-    }
-    APPEND(off, r, max, "'/>");
-
-    /* Data points with hover circles + invisible hit areas for tooltip */
-    for (int i = 0; i < npts; i++) {
-        int x = pad_l + plot_w * i / (npts - 1);
-        int y = pad_t + plot_h - (int)(pct_over_1yr[i] / 100.0 * plot_h);
-        time_t t = (time_t)cp_time[i];
-        struct tm tm;
-        gmtime_r(&t, &tm);
-        char date_str[32];
-        snprintf(date_str, sizeof(date_str), "%04d-%02d",
-                 tm.tm_year + 1900, tm.tm_mon + 1);
-        /* Small dot at each data point */
-        APPEND(off, r, max,
-            "<circle cx='%d' cy='%d' r='2' fill='#aa66ff' opacity='0.5'/>",
-            x, y);
-        /* Invisible wider hit area with SVG <title> tooltip */
-        int hit_w = plot_w / npts;
-        if (hit_w < 8) hit_w = 8;
-        APPEND(off, r, max,
-            "<rect x='%d' y='%d' width='%d' height='%d' fill='transparent' "
-            "class='hodl-pt' data-x='%d' data-y='%d' data-pct='%.1f' data-date='%s'>"
-            "<title>%s: %.1f%% unmoved &gt;1yr (h=%d)</title></rect>",
-            x - hit_w/2, pad_t, hit_w, plot_h,
-            x, y, pct_over_1yr[i], date_str,
-            date_str, pct_over_1yr[i], cp_height[i]);
-    }
-
-    /* Current value dot + label */
-    {
-        int x = pad_l + plot_w;
-        int y = pad_t + plot_h - (int)(current_pct / 100.0 * plot_h);
-        APPEND(off, r, max,
-            "<circle cx='%d' cy='%d' r='5' fill='#aa66ff'/>"
-            "<text x='%d' y='%d' fill='#fff' font-size='16' "
-            "font-family='Georgia,serif' font-weight='700' text-anchor='end'>"
-            "%.1f%%</text>",
-            x, y, x - 10, y - 10, current_pct);
-    }
-
-    /* X-axis: show year labels at January, plus quarter ticks */
-    for (int i = 0; i < npts; i++) {
-        time_t t = (time_t)cp_time[i];
-        struct tm tm;
-        gmtime_r(&t, &tm);
-        int x = pad_l + plot_w * i / (npts - 1);
-
-        if (tm.tm_mon == 0) {
-            /* January — show year label + tick */
-            APPEND(off, r, max,
-                "<line x1='%d' y1='%d' x2='%d' y2='%d' stroke='#333' stroke-width='1'/>"
-                "<text x='%d' y='%d' fill='#aaa' font-size='14' "
-                "font-family='Georgia,serif' text-anchor='middle' font-weight='600'>"
-                "%d</text>",
-                x, pad_t + plot_h, x, pad_t + plot_h + 6,
-                x, pad_t + plot_h + 24, tm.tm_year + 1900);
-        } else if (tm.tm_mon % 3 == 0) {
-            /* Quarter boundary — small tick only */
-            APPEND(off, r, max,
-                "<line x1='%d' y1='%d' x2='%d' y2='%d' stroke='#222' stroke-width='1'/>",
-                x, pad_t + plot_h, x, pad_t + plot_h + 4);
-        }
-    }
-
-    /* Source attribution */
-    APPEND(off, r, max,
-        "<text x='%d' y='%d' fill='#444' font-size='11' "
+        "<text x='970' y='345' fill='#444' font-size='11' "
         "font-family='Georgia,serif' text-anchor='end'>"
-        "Source: ZClassic23 UTXO Index &mdash; zclnet.net</text>",
-        w - pad_r, h - 6);
+        "Source: current transparent UTXO set</text></svg>");
 
-    APPEND(off, r, max, "</svg>");
-
-    /* JavaScript tooltip: shows crosshair + value on hover */
     APPEND(off, r, max,
-        "<div id='hodl-tip' style='display:none;position:fixed;background:#1a1a2a;"
-        "border:1px solid #aa66ff;border-radius:6px;padding:8px 12px;"
-        "color:#fff;font-family:Georgia,serif;font-size:14px;"
-        "pointer-events:none;z-index:999;box-shadow:0 4px 12px rgba(0,0,0,0.5)'></div>"
-        "<script>"
-        "document.querySelectorAll('.hodl-pt').forEach(function(el){"
-        "el.addEventListener('mouseenter',function(e){"
-        "var tip=document.getElementById('hodl-tip');"
-        "tip.innerHTML='<b>'+el.dataset.date+'</b><br>'+el.dataset.pct+'%% unmoved &gt;1yr';"
-        "tip.style.display='block';"
-        "tip.style.left=(e.clientX+12)+'px';tip.style.top=(e.clientY-40)+'px'});"
-        "el.addEventListener('mousemove',function(e){"
-        "var tip=document.getElementById('hodl-tip');"
-        "tip.style.left=(e.clientX+12)+'px';tip.style.top=(e.clientY-40)+'px'});"
-        "el.addEventListener('mouseleave',function(){"
-        "document.getElementById('hodl-tip').style.display='none'})});"
-        "</script>");
-
-    /* Description */
-    APPEND(off, r, max,
-        "<div style='max-width:800px;margin:20px auto;font-family:Georgia,serif;"
-        "font-size:18px;line-height:1.8;color:#ccc'>"
-        "<p>This chart shows the percentage of the ZClassic coin supply that has "
-        "remained unmoved for more than one year, computed monthly over the past "
-        "9 years from the live UTXO set indexed in SQLite.</p>"
-        "<p style='color:#888'>A high percentage indicates strong holder conviction "
-        "&mdash; coins sitting in cold storage rather than being traded. "
-        "Currently <b style='color:#aa66ff'>%.1f%%</b> of all ZCL has not moved "
-        "in over a year.</p>"
+        "<div class='stats-row' style='margin-top:18px'>"
+        "<div class='stat'><div class='num'>%s</div><div class='lbl'>Current transparent UTXO value</div></div>"
+        "<div class='stat'><div class='num'>%s</div><div class='lbl'>Older than 1 year</div></div>"
+        "<div class='stat'><div class='num'>%" PRId64 "</div><div class='lbl'>UTXOs counted</div></div>"
+        "<div class='stat'><div class='num'>%" PRId64 "</div><div class='lbl'>Rows skipped</div></div>"
         "</div>",
-        current_pct);
+        total_fmt, older_fmt, hodl.total_count, hodl.skipped_rows);
 
-    APPEND(off, r, max, EXPLORER_FOOTER);
-
-    /* Store in global cache */
-    if (off > 0 && off < sizeof(g_hodl_cache)) {
-        memcpy(g_hodl_cache, r, off);
-        g_hodl_cache_len = off;
+    APPEND(off, r, max,
+        "<table class='txlist' style='max-width:1000px;margin:18px auto'>"
+        "<tr><th>Age</th><th>UTXOs</th><th>Value</th><th>Share</th></tr>");
+    for (int b = 0; b < HODL_WAVE_BUCKETS; b++) {
+        char val_fmt[64];
+        zcl_format_zcl(val_fmt, sizeof(val_fmt), hodl.buckets[b].value);
+        double pct = hodl.total_value > 0
+            ? (double)hodl.buckets[b].value / (double)hodl.total_value * 100.0 : 0.0;
+        APPEND(off, r, max,
+            "<tr><td><span style='display:inline-block;width:11px;height:11px;"
+            "background:%s;border-radius:2px;margin-right:8px'></span>%s</td>"
+            "<td>%" PRId64 "</td><td>%s ZCL</td><td>%.3f%%</td></tr>",
+            hodl.buckets[b].color, hodl.buckets[b].html_label,
+            hodl.buckets[b].count, val_fmt, pct);
     }
-
-    free(r);
-    sqlite3_close(db);
-    g_hodl_computing = 0;
-    printf("HODL background: cached %zu bytes\n", g_hodl_cache_len);
-    fflush(stdout);
-    return NULL;
+    APPEND(off, r, max, "</table>");
+    APPEND(off, r, max,
+        "<p style='max-width:900px;margin:18px auto;color:#888;"
+        "font-family:Georgia,serif;font-size:16px;line-height:1.7'>"
+        "Source: current transparent UTXO set. Metric: UTXO age distribution."
+        "</p></div>" EXPLORER_FOOTER);
+    return off;
 }
 
 /* ── CSS Stylesheet ───────────────────────────────────────── */
