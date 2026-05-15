@@ -11,6 +11,7 @@
 #include "controllers/explorer_internal.h"
 #include "chain/chainparams.h"
 #include "keys/key_io.h"
+#include "models/hodl_wave.h"
 #include "script/standard.h"
 #include <sqlite3.h>
 #include <stdlib.h>
@@ -327,6 +328,62 @@ static void render_tabbed_chart(char *r, size_t max, size_t *off,
     APPEND(*off, r, max, "</div>");
 }
 
+static size_t explorer_stats_build_verified_summary(uint8_t *r, size_t max,
+                                                    sqlite3 *db)
+{
+    size_t off = 0;
+    int64_t chain_height = stats_q_i64(db, "SELECT COALESCE(MAX(height),0) FROM utxos");
+    int64_t block_rows = stats_q_i64(db, "SELECT count(*) FROM blocks");
+    int64_t tx_rows = stats_q_i64(db, "SELECT count(*) FROM transactions");
+    int64_t utxo_count = stats_q_i64(db, "SELECT count(*) FROM utxos");
+    int64_t utxo_value = stats_q_i64(db, "SELECT COALESCE(SUM(value),0) FROM utxos");
+    int64_t dust = stats_q_i64(db, "SELECT count(*) FROM utxos WHERE value < 100000");
+    int64_t addresses = stats_q_i64(db, "SELECT count(*) FROM addresses");
+    int64_t nonzero_addresses = stats_q_i64(db,
+        "SELECT count(*) FROM addresses WHERE balance > 0");
+    int64_t supply = zcl_total_supply_zatoshi(chain_height);
+
+    char supply_str[64], utxo_str[64];
+    explorer_format_zcl(supply_str, sizeof(supply_str), supply);
+    explorer_format_zcl(utxo_str, sizeof(utxo_str), utxo_value);
+
+    APPEND(off, (char *)r, max, EXPLORER_HEADER("ZClassic Verified Stats"));
+    off += explorer_emit_nav((char *)r + off, max - off, "stats");
+    APPEND(off, (char *)r, max,
+        "<h1>ZClassic Verified Stats</h1>"
+        "<div class='card' style='border-color:#775522'>"
+        "<h2>Explorer history index rebuilding</h2>"
+        "<p style='color:#bbb'>Full-history statistics are temporarily "
+        "suppressed because the explorer block-history table failed sanity "
+        "checks. This page only shows current-state values that do not depend "
+        "on that bad history table.</p>"
+        "</div>"
+        "<h2>Verified Current State</h2>"
+        "<div class='stats-row'>"
+        "<div class='stat'><div class='num'>%" PRId64 "</div><div class='lbl'>Current Height</div></div>"
+        "<div class='stat'><div class='num'>%s ZCL</div><div class='lbl'>Consensus Supply</div></div>"
+        "<div class='stat'><div class='num'>%" PRId64 "</div><div class='lbl'>UTXOs</div></div>"
+        "</div>"
+        "<div class='stats-row'>"
+        "<div class='stat'><div class='num'>%s ZCL</div><div class='lbl'>Transparent UTXO Value</div></div>"
+        "<div class='stat'><div class='num'>%" PRId64 "</div><div class='lbl'>Dust UTXOs</div></div>"
+        "<div class='stat'><div class='num'>%" PRId64 "</div><div class='lbl'>Nonzero Addresses</div></div>"
+        "</div>"
+        "<h2>Index Status</h2>"
+        "<table class='txlist'>"
+        "<tr><th>Table</th><th>Rows</th><th>Status</th></tr>"
+        "<tr><td>blocks</td><td>%" PRId64 "</td><td style='color:#ffcc66'>history unsafe</td></tr>"
+        "<tr><td>transactions</td><td>%" PRId64 "</td><td>indexed, history-dependent</td></tr>"
+        "<tr><td>utxos</td><td>%" PRId64 "</td><td style='color:#33ff99'>current-state usable</td></tr>"
+        "<tr><td>addresses</td><td>%" PRId64 "</td><td>current-state usable</td></tr>"
+        "</table>"
+        EXPLORER_FOOTER,
+        chain_height, supply_str, utxo_count,
+        utxo_str, dust, nonzero_addresses,
+        block_rows, tx_rows, utxo_count, addresses);
+    return off;
+}
+
 /* ── Main stats builder ──────────────────────────────────── */
 
 size_t explorer_stats_build(uint8_t *r, size_t buf_max, const char *datadir)
@@ -391,6 +448,11 @@ size_t explorer_stats_build(uint8_t *r, size_t buf_max, const char *datadir)
         fflush(stdout);
         sqlite3_close(db);
         return 0;
+    }
+    if (!explorer_block_history_usable_for_height(db, tip)) {
+        size_t len = explorer_stats_build_verified_summary(r, max, db);
+        sqlite3_close(db);
+        return len;
     }
 
     /* ── 1b: Single-pass block aggregates ── */
@@ -1268,7 +1330,7 @@ size_t explorer_stats_build(uint8_t *r, size_t buf_max, const char *datadir)
                 explorer_format_zcl(vs, sizeof(vs), val);
                 int64_t band_end = band + 100000;
                 int mid = (int)((band + (band_end < tip ? band_end : tip)) / 2);
-                int days = (tip - mid) * 150 / 86400;
+                int days = (int)(hodl_wave_age_seconds(mid, tip) / 86400);
                 char age[32];
                 if (days > 365) snprintf(age, sizeof(age), "~%.1fy", (double)days/365.25);
                 else if (days > 30) snprintf(age, sizeof(age), "~%dmo", days/30);
@@ -1290,9 +1352,9 @@ size_t explorer_stats_build(uint8_t *r, size_t buf_max, const char *datadir)
     APPEND(off, r, max,
         "<div class='card' style='text-align:center'>"
         "<a href='/explorer/hodl' style='font-size:20px;font-weight:700'>"
-        "View Full HODL Wave Chart &rarr;</a>"
+        "View HODL Wave &rarr;</a>"
         "<p style='color:#888;margin:4px 0 0;font-size:14px'>"
-        "9-year UTXO age distribution from genesis</p></div>");
+        "Current transparent UTXO age distribution</p></div>");
 
     /* Tab CSS */
     APPEND(off, r, max,
