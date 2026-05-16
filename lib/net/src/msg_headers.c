@@ -623,19 +623,6 @@ bool process_headers(struct msg_processor *mp, struct p2p_node *node,
             struct stat bfst;
             if (stat(bfp, &bfst) == 0 && bfst.st_size > 0) {
                 printf("P2P trigger: scanning block files for HAVE_DATA...\n");
-                /* Remember coins tip before scan — the scan may pick a wrong
-                 * "most work" chain due to incomplete nChainTx propagation. */
-                int pre_scan_coins_h = 0;
-                struct uint256 pre_scan_coins_hash;
-                uint256_set_null(&pre_scan_coins_hash);
-                if (mp->coins_tip) {
-                    coins_view_cache_get_best_block(mp->coins_tip,
-                                                     &pre_scan_coins_hash);
-                    struct block_index *coins_bi = block_map_find(
-                        &mp->main_state->map_block_index, &pre_scan_coins_hash);
-                    if (coins_bi) pre_scan_coins_h = coins_bi->nHeight;
-                }
-
                 int scan_m = scan_block_files_mark_data(
                     mp->main_state, mp->datadir, mp->params);
 
@@ -652,10 +639,7 @@ bool process_headers(struct msg_processor *mp, struct p2p_node *node,
                  * P2P handler into block_index_integrity. The handler
                  * is no longer the right layer to fix block_map
                  * heights / restore active tip — that's repair-module
-                 * surgery. (pre_scan_coins_h is unused now; the new
-                 * helper reads coins_view's best block itself.) */
-                (void)pre_scan_coins_h;
-                (void)pre_scan_coins_hash;
+                 * surgery. */
                 struct bii_post_activation_result rr;
                 (void)bii_repair_post_activation_anchor(
                     mp->main_state, mp->coins_tip,
