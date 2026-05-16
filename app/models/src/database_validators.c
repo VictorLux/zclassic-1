@@ -30,6 +30,7 @@
 #include "models/utxo.h"
 #include "models/wallet_key.h"
 #include "models/wallet_tx.h"
+#include "models/zmsg.h"
 #include "models/zslp.h"
 #include "event/event.h"
 
@@ -264,6 +265,13 @@ static bool val_sapling_note(const void *row, char *err, size_t cap)
     return finish(&e, err, cap);
 }
 
+static bool val_zmsg(const void *row, char *err, size_t cap)
+{
+    struct ar_errors e; ar_errors_clear(&e);
+    db_zmsg_validate((const struct zmsg_message *)row, &e);
+    return finish(&e, err, cap);
+}
+
 static bool val_zslp_balance(const void *row, char *err, size_t cap)
 {
     struct ar_errors e; ar_errors_clear(&e);
@@ -323,6 +331,7 @@ void db_register_all_validators(void)
     db_register_validator("wallet_transactions", val_wallet_tx);
     db_register_validator("wallet_utxos",       val_wallet_utxo);
     db_register_validator("wallet_sapling_notes", val_sapling_note);
+    db_register_validator("zmsg_messages",      val_zmsg);
     db_register_validator("zslp_balances",      val_zslp_balance);
     db_register_validator("zslp_tokens",        val_zslp_token);
     db_register_validator("database",           val_database);

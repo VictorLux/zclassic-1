@@ -5,7 +5,9 @@
 #include "net/zmsg.h"
 #include "core/serialize.h"
 #include "crypto/sha3.h"
+#include "models/activerecord.h"
 #include "models/database.h"
+#include "models/zmsg.h"
 #include "util/ar_step_readonly.h"
 #include "util/log_macros.h"
 #include <string.h>
@@ -166,6 +168,12 @@ int zmsg_store_count(void)
 bool db_zmsg_save(struct node_db *ndb, const struct zmsg_message *msg)
 {
     if (!ndb || !ndb->open) LOG_FAIL("zmsg", "db_zmsg_save: db not open");
+    if (!msg) LOG_FAIL("zmsg", "db_zmsg_save: msg is NULL");
+
+    struct ar_callbacks *cbs = db_zmsg_callbacks();
+    AR_VALIDATE_RECORD(cbs, "zmsg", msg, db_zmsg_validate);
+    if (!ar_run_before_save(cbs, (void *)msg))
+        return false;
 
     const char *sql =
         "INSERT OR IGNORE INTO zmsg_messages"
@@ -194,8 +202,9 @@ bool db_zmsg_save(struct node_db *ndb, const struct zmsg_message *msg)
 
     sqlite3_bind_int(s, 9, msg->read ? 1 : 0);
 
-    bool ok = sqlite3_step(s) == SQLITE_DONE;
+    bool ok = AR_STEP_DONE(s);
     sqlite3_finalize(s);
+    if (ok) ar_run_after_save(cbs, (void *)msg);
     return ok;
 }
 
@@ -262,7 +271,7 @@ bool db_zmsg_mark_read(struct node_db *ndb, const uint8_t msg_id[32])
     if (rc != SQLITE_OK) LOG_FAIL("zmsg", "db_zmsg_mark_read: prepare failed: %s", sqlite3_errmsg(ndb->db));
 
     sqlite3_bind_blob(s, 1, msg_id, 32, SQLITE_STATIC);
-    bool ok = sqlite3_step(s) == SQLITE_DONE;
+    bool ok = AR_STEP_WRITE(s) == SQLITE_DONE;
     sqlite3_finalize(s);
     return ok;
 }
