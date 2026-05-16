@@ -1289,7 +1289,7 @@ static int test_apply_chunk_rollback_on_mid_chunk_failure(void)
         ASSERT(sqlite3_prepare_v2(db, "SELECT COUNT(*) FROM utxos",
                                   -1, &s, NULL) == SQLITE_OK);
         int count = -1;
-        if (sqlite3_step(s) == SQLITE_ROW) // raw-sql-ok: test fixture verify
+        if (sqlite3_step(s) == SQLITE_ROW) // raw-sql-ok:test-fixture-verify
             count = sqlite3_column_int(s, 0);
         sqlite3_finalize(s);
         sqlite3_close(db);
@@ -1369,7 +1369,7 @@ static int test_chunk_roundtrip_preserves_canonical_utxo_fields(void)
         sqlite3_bind_blob(ins, 4, script1, (int)sizeof(script1), SQLITE_STATIC);
         sqlite3_bind_int(ins, 5, 100);
         sqlite3_bind_int(ins, 6, 1);
-        ASSERT(sqlite3_step(ins) == SQLITE_DONE); // raw-sql-ok: test fixture setup
+        ASSERT(sqlite3_step(ins) == SQLITE_DONE); // raw-sql-ok:test-fixture-setup
         sqlite3_reset(ins);
         sqlite3_clear_bindings(ins);
 
@@ -1379,7 +1379,7 @@ static int test_chunk_roundtrip_preserves_canonical_utxo_fields(void)
         sqlite3_bind_blob(ins, 4, script2, (int)sizeof(script2), SQLITE_STATIC);
         sqlite3_bind_int(ins, 5, 101);
         sqlite3_bind_int(ins, 6, 0);
-        ASSERT(sqlite3_step(ins) == SQLITE_DONE); // raw-sql-ok: test fixture setup
+        ASSERT(sqlite3_step(ins) == SQLITE_DONE); // raw-sql-ok:test-fixture-setup
         sqlite3_finalize(ins);
 
         uint8_t src_root[32], dst_root[32];
@@ -1411,7 +1411,7 @@ static int test_chunk_roundtrip_preserves_canonical_utxo_fields(void)
             -1, &q, NULL) == SQLITE_OK);
         sqlite3_bind_blob(q, 1, txid1, 32, SQLITE_STATIC);
         int script_len = -1, is_coinbase = -1;
-        if (sqlite3_step(q) == SQLITE_ROW) { // raw-sql-ok: test fixture verify
+        if (sqlite3_step(q) == SQLITE_ROW) { // raw-sql-ok:test-fixture-verify
             script_len = sqlite3_column_int(q, 0);
             is_coinbase = sqlite3_column_int(q, 1);
         }

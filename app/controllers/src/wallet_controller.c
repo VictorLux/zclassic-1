@@ -824,7 +824,7 @@ static bool rpc_importprivkey(const struct json_value *params, bool help,
                  * we just wrote when the keystore-add failed.  rc is
                  * intentionally discarded — the canary self-test on
                  * next boot detects a lingering row. */
-                (void)sqlite3_step(st);  // raw-sql-ok: best-effort write-rollback path
+                (void)sqlite3_step(st);  // raw-sql-ok:best-effort-write-rollback
                 sqlite3_finalize(st);
             }
         }

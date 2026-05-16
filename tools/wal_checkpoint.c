@@ -17,17 +17,17 @@ int main(int argc, char **argv) {
 
     sqlite3_stmt *s;
     sqlite3_prepare_v2(db, "SELECT COUNT(*) FROM utxos", -1, &s, NULL);
-    if (sqlite3_step(s) == SQLITE_ROW) // raw-sql-ok: standalone wal_checkpoint dev tool
+    if (sqlite3_step(s) == SQLITE_ROW) // raw-sql-ok:standalone-dev-tool
         printf("UTXOs: %lld\n", sqlite3_column_int64(s, 0));
     sqlite3_finalize(s);
 
     sqlite3_prepare_v2(db, "SELECT COUNT(*) FROM blocks", -1, &s, NULL);
-    if (sqlite3_step(s) == SQLITE_ROW) // raw-sql-ok: standalone wal_checkpoint dev tool
+    if (sqlite3_step(s) == SQLITE_ROW) // raw-sql-ok:standalone-dev-tool
         printf("Blocks: %lld\n", sqlite3_column_int64(s, 0));
     sqlite3_finalize(s);
 
     sqlite3_prepare_v2(db, "SELECT MAX(height) FROM blocks", -1, &s, NULL);
-    if (sqlite3_step(s) == SQLITE_ROW) // raw-sql-ok: standalone wal_checkpoint dev tool
+    if (sqlite3_step(s) == SQLITE_ROW) // raw-sql-ok:standalone-dev-tool
         printf("Max block height: %lld\n", sqlite3_column_int64(s, 0));
     sqlite3_finalize(s);
 

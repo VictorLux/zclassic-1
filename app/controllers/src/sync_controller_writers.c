@@ -402,7 +402,7 @@ static bool node_db_sync_sapling_spend_write(struct node_db *ndb, void *ctx)
                       spend->nullifier,
                       sizeof(spend->nullifier),
                       SQLITE_STATIC);
-    sqlite3_step(s);  // raw-sql-ok: state-kv write (rc intentionally discarded, error path handled by caller)
+    sqlite3_step(s);  // raw-sql-ok:state-kv-write-caller-handles-rc
 
     spend->ok = db_sapling_note_mark_spent(ndb,
                                            spend->nullifier,

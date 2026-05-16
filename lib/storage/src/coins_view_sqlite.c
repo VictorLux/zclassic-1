@@ -736,7 +736,7 @@ bool coins_view_sqlite_batch_write_ex(struct coins_view_sqlite *cvs,
             sqlite3_reset(cvs->stmt_delete_tx);
             sqlite3_bind_blob(cvs->stmt_delete_tx, 1,
                               e->txid.data, 32, SQLITE_STATIC);
-            int rc = sqlite3_step(cvs->stmt_delete_tx); // raw-sql-ok: see top-of-file ZCL_AR_RAW_SQL rationale
+            int rc = sqlite3_step(cvs->stmt_delete_tx); // raw-sql-ok:cvs-zcl-ar-raw-sql-rationale
             if (rc != SQLITE_DONE && rc != SQLITE_ROW) {
                 fprintf(stderr, "coins_flush: DELETE failed rc=%d: %s\n",  // obs-ok:helper-context-logged
                         rc, sqlite3_errmsg(cvs->db));
@@ -749,7 +749,7 @@ bool coins_view_sqlite_batch_write_ex(struct coins_view_sqlite *cvs,
             sqlite3_reset(cvs->stmt_delete_tx);
             sqlite3_bind_blob(cvs->stmt_delete_tx, 1,
                               e->txid.data, 32, SQLITE_STATIC);
-            int rc = sqlite3_step(cvs->stmt_delete_tx); // raw-sql-ok: see top-of-file ZCL_AR_RAW_SQL rationale
+            int rc = sqlite3_step(cvs->stmt_delete_tx); // raw-sql-ok:cvs-zcl-ar-raw-sql-rationale
             if (rc != SQLITE_DONE && rc != SQLITE_ROW) {
                 fprintf(stderr, "coins_flush: pre-DELETE failed rc=%d: %s\n",  // obs-ok:write_errors-counted-and-rolled-back-below
                         rc, sqlite3_errmsg(cvs->db));
@@ -784,7 +784,7 @@ bool coins_view_sqlite_batch_write_ex(struct coins_view_sqlite *cvs,
                     sqlite3_bind_null(ins, 6);
                 sqlite3_bind_int(ins, 7, cc->height);
                 sqlite3_bind_int(ins, 8, cc->is_coinbase ? 1 : 0);
-                rc = sqlite3_step(ins); // raw-sql-ok: see top-of-file ZCL_AR_RAW_SQL rationale
+                rc = sqlite3_step(ins); // raw-sql-ok:cvs-zcl-ar-raw-sql-rationale
                 if (rc != SQLITE_DONE && rc != SQLITE_ROW) {
                     fprintf(stderr, "coins_flush: INSERT failed rc=%d "  // obs-ok:write_errors-counted-and-rolled-back-below
                             "h=%d vout=%zu: %s\n",
@@ -832,7 +832,7 @@ bool coins_view_sqlite_batch_write_ex(struct coins_view_sqlite *cvs,
         sqlite3_reset(cvs->stmt_best_set);
         sqlite3_bind_blob(cvs->stmt_best_set, 1,
                           hash_block->data, 32, SQLITE_STATIC);
-        int rc = sqlite3_step(cvs->stmt_best_set); // raw-sql-ok: see top-of-file ZCL_AR_RAW_SQL rationale
+        int rc = sqlite3_step(cvs->stmt_best_set); // raw-sql-ok:cvs-zcl-ar-raw-sql-rationale
         if (rc != SQLITE_DONE && rc != SQLITE_ROW) {
             fprintf(stderr, "coins_flush: best_block UPDATE failed rc=%d: "  // obs-ok:paired-with-return-false-below
                     "%s\n", rc, sqlite3_errmsg(cvs->db));
@@ -1039,7 +1039,7 @@ int64_t coins_view_sqlite_bulk_insert(struct coins_view_sqlite *cvs,
         sqlite3_bind_int(ins, 7, (int)r->height);
         sqlite3_bind_int(ins, 8, r->is_coinbase ? 1 : 0);
 
-        int rs = sqlite3_step(ins); // raw-sql-ok: see top-of-file ZCL_AR_RAW_SQL rationale
+        int rs = sqlite3_step(ins); // raw-sql-ok:cvs-zcl-ar-raw-sql-rationale
         if (rs != SQLITE_DONE && rs != SQLITE_ROW) {
             fprintf(stderr,  // obs-ok:fatal-true-triggers-rollback-and-partial-write-return
                     "bulk_insert: step failed rc=%d at i=%zu: %s\n",

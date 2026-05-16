@@ -132,7 +132,7 @@ void rpc_blockchain_mmr_save(struct node_db *ndb)
             "VALUES('mmr_state',?)", -1, &s, NULL) != SQLITE_OK)
         return;
     sqlite3_bind_blob(s, 1, buf, (int)len, SQLITE_STATIC);
-    sqlite3_step(s);  // raw-sql-ok: state-kv write (rc intentionally discarded, error path handled by caller)
+    sqlite3_step(s);  // raw-sql-ok:state-kv-write-caller-handles-rc
     sqlite3_finalize(s);
 }
 
@@ -215,7 +215,7 @@ void rpc_blockchain_mmb_save(struct node_db *ndb)
             "VALUES('mmb_state',?)", -1, &s, NULL) != SQLITE_OK)
         return;
     sqlite3_bind_blob(s, 1, buf, (int)len, SQLITE_STATIC);
-    sqlite3_step(s);  // raw-sql-ok: state-kv write (rc intentionally discarded, error path handled by caller)
+    sqlite3_step(s);  // raw-sql-ok:state-kv-write-caller-handles-rc
     sqlite3_finalize(s);
 }
 
@@ -270,7 +270,7 @@ void rpc_blockchain_commitment_mmr_save(struct node_db *ndb)
             "VALUES('commitment_mmr_state',?)", -1, &s, NULL) != SQLITE_OK)
         return;
     sqlite3_bind_blob(s, 1, buf, (int)len, SQLITE_STATIC);
-    sqlite3_step(s);  // raw-sql-ok: state-kv write (rc intentionally discarded, error path handled by caller)
+    sqlite3_step(s);  // raw-sql-ok:state-kv-write-caller-handles-rc
     sqlite3_finalize(s);
 }
 

@@ -541,7 +541,7 @@ static bool db_quick_check_ok(sqlite3 *db)
                 sqlite3_errmsg(db));
         return false;
     }
-    rc = sqlite3_step(stmt);  // raw-sql-ok: a3
+    rc = sqlite3_step(stmt);  // raw-sql-ok:pragma-quick-check-introspection
     if (rc == SQLITE_ROW) {
         const unsigned char *txt = sqlite3_column_text(stmt, 0);
         ok = txt && strcmp((const char *)txt, "ok") == 0;
@@ -788,7 +788,7 @@ bool node_db_state_set(struct node_db *ndb, const char *key,
     sqlite3_clear_bindings(s);
     sqlite3_bind_text(s, 1, key, -1, SQLITE_STATIC);
     sqlite3_bind_blob(s, 2, value, (int)len, SQLITE_STATIC);
-    int rc = sqlite3_step(s);  // raw-sql-ok: a3
+    int rc = sqlite3_step(s);  // raw-sql-ok:kv-state-primitive
     sqlite3_reset(s);
     sqlite3_clear_bindings(s);
     node_db_note_activity(ndb, "state_set", rc);
@@ -803,7 +803,7 @@ bool node_db_state_get(struct node_db *ndb, const char *key,
     sqlite3_reset(s);
     sqlite3_clear_bindings(s);
     sqlite3_bind_text(s, 1, key, -1, SQLITE_STATIC);
-    int rc = sqlite3_step(s);  // raw-sql-ok: a3
+    int rc = sqlite3_step(s);  // raw-sql-ok:kv-state-primitive
     if (rc != SQLITE_ROW) {
         sqlite3_reset(s);
         sqlite3_clear_bindings(s);
@@ -1513,7 +1513,7 @@ int64_t node_db_utxo_count(struct node_db *ndb)
     int64_t count = 0;
     if (sqlite3_prepare_v2(ndb->db, "SELECT count(*) FROM utxos",
                            -1, &stmt, NULL) == SQLITE_OK) {
-        if (sqlite3_step(stmt) == SQLITE_ROW)  // raw-sql-ok: a3
+        if (sqlite3_step(stmt) == SQLITE_ROW)  // raw-sql-ok:read-only-introspection
             count = sqlite3_column_int64(stmt, 0);
         sqlite3_finalize(stmt);
     }
@@ -1638,7 +1638,7 @@ bool node_db_wal_checkpoint(struct node_db *ndb)
 
     if (!ndb || !ndb->open) return false;
     if (sqlite3_prepare_v2(ndb->db, "PRAGMA journal_mode", -1, &stmt, NULL) == SQLITE_OK &&
-        stmt && sqlite3_step(stmt) == SQLITE_ROW) {  // raw-sql-ok: a3
+        stmt && sqlite3_step(stmt) == SQLITE_ROW) {  // raw-sql-ok:read-only-introspection
         mode = (const char *)sqlite3_column_text(stmt, 0);
     }
     if (stmt)

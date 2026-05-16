@@ -1419,7 +1419,7 @@ int test_sqlite(void) {
                 sqlite3_bind_blob(ins, 3, script, sizeof(script), SQLITE_STATIC);
                 sqlite3_bind_blob(ins, 4, addr, sizeof(addr), SQLITE_STATIC);
                 sqlite3_bind_int(ins, 5, i);
-                ok = sqlite3_step(ins) == SQLITE_DONE;  // raw-sql-ok: seed loop
+                ok = sqlite3_step(ins) == SQLITE_DONE;  // raw-sql-ok:test-fixture-seed
             }
             sqlite3_finalize(ins);
             sqlite3_exec(ndb.db, "COMMIT", NULL, NULL, NULL);
@@ -1444,7 +1444,7 @@ int test_sqlite(void) {
                 txid[2] = (uint8_t)((idx >> 16) & 0xFF);
                 sqlite3_reset(q);
                 sqlite3_bind_blob(q, 1, txid, 32, SQLITE_TRANSIENT);
-                int rc = sqlite3_step(q);  // raw-sql-ok: smoke test
+                int rc = sqlite3_step(q);  // raw-sql-ok:test-smoke
                 if (rc == SQLITE_ROW) {
                     int64_t val = sqlite3_column_int64(q, 0);
                     int64_t h   = sqlite3_column_int64(q, 1);
