@@ -20,7 +20,7 @@ static struct jub_point cached_generators[PEDERSEN_NUM_GENERATORS];
 static pthread_once_t generators_once = PTHREAD_ONCE_INIT;
 
 #ifdef ZCL_TESTING
-/* Observability for P9.5 concurrent-first-caller race. Post-fix the
+/* Observability for concurrent-first-caller race. Post-fix the
  * pthread_once guarantees exactly one execution of the init body. */
 _Atomic int zcl_pedersen_generators_body_runs_for_test = 0;
 

@@ -38,7 +38,7 @@
  *   - Build a node.db with `blocks` + `node_state` tables seeded at
  *     genesis (mirrors test_kill9_recovery's scaffolding).
  *   - Build a coins.db (separate file, separate handle — matches the
- *     post-P14.1 production layout).
+ * production layout).
  *   - In the child: BEGIN IMMEDIATE on coins.db, BEGIN on node.db,
  *     INSERT block_index N+1 / utxos / coins_best_block at N+1,
  *     fire the armed crash stage, then COMMIT coins → write LevelDB

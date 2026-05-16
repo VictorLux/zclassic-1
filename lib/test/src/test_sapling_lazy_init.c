@@ -1,6 +1,6 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * P9.5 — pthread_once guard on lazy Sapling caches.
+ * pthread_once guard on lazy Sapling caches.
  *
  * pedersen_hash.c::ensure_generators and
  * incremental_merkle_tree.c::ensure_sapling_empty_roots were guarded
@@ -75,7 +75,7 @@ int test_sapling_lazy_init(void)
 {
     int failures = 0;
 
-    printf("P9.5 pedersen_hash concurrent first-caller race... ");
+    printf("pedersen_hash concurrent first-caller race... ");
     {
         zcl_pedersen_generators_reset_for_test();
 
@@ -110,7 +110,7 @@ int test_sapling_lazy_init(void)
         }
     }
 
-    printf("P9.5 sapling_empty_roots concurrent first-caller race... ");
+    printf("sapling_empty_roots concurrent first-caller race... ");
     {
         zcl_sapling_empty_roots_reset_for_test();
 

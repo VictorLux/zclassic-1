@@ -203,7 +203,7 @@ int test_store(void)
         else { printf("FAIL\n"); failures++; }
     }
 
-    /* P3.4: reject t-addr with bad Base58Check. */
+    /* reject t-addr with bad Base58Check. */
     printf("store: POST /store/buy rejects t-addr with bad checksum... ");
     {
         char body[256];
@@ -238,7 +238,7 @@ int test_store(void)
         else { printf("FAIL\n"); failures++; }
     }
 
-    /* P3.6 CSRF: POST without any csrf_token must be rejected. */
+    /* CSRF: POST without any csrf_token must be rejected. */
     printf("store: POST /store/orders without csrf_token returns 400... ");
     {
         const char *body =
@@ -253,7 +253,7 @@ int test_store(void)
         else { printf("FAIL\n"); failures++; }
     }
 
-    /* P3.6 CSRF: token bound to product-id; replaying product 1's token
+    /* CSRF: token bound to product-id; replaying product 1's token
      * when POSTing for a different id must fail. */
     printf("store: CSRF token for one product_id rejected for another... ");
     {
@@ -270,7 +270,7 @@ int test_store(void)
         else { printf("FAIL\n"); failures++; }
     }
 
-    /* P3.6 URL-decode: percent-encoded address must decode to the raw
+    /* URL-decode: percent-encoded address must decode to the raw
      * string before validation.  Before the fix, `%74` was kept as the
      * three literal bytes and the address failed length/shape checks
      * (now it fails checksum instead — so we encode a VALID t-addr

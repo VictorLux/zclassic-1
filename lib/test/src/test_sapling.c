@@ -21,7 +21,7 @@ int test_sapling(void)
      * that sapling_spend_vk / sapling_output_vk are still NULL and so
      * that params_loaded is still false. */
 
-    printf("sapling_check_spend rejects NULL spend_vk (AGENT-3 P1.3)... ");
+    printf("sapling_check_spend rejects NULL spend_vk (AGENT-3)... ");
     {
         /* VKs must be NULL at this point (no init has run yet). Any valid-
          * looking spend payload would otherwise flow through and return
@@ -48,7 +48,7 @@ int test_sapling(void)
         else { printf("FAIL (accepted spend with NULL vk)\n"); failures++; }
     }
 
-    printf("sapling_check_output rejects NULL output_vk (AGENT-3 P1.3)... ");
+    printf("sapling_check_output rejects NULL output_vk (AGENT-3)... ");
     {
         /* Same reasoning: output VK still NULL. */
         struct sapling_verification_ctx ctx;
@@ -65,7 +65,7 @@ int test_sapling(void)
         else { printf("FAIL (accepted output with NULL vk)\n"); failures++; }
     }
 
-    printf("sapling_init_params rejects tampered params (AGENT-3 P1.4)... ");
+    printf("sapling_init_params rejects tampered params (AGENT-3)... ");
     {
         /* Build a temp dir with bogus params files; each file exists but
          * its content hashes to a different SHA-512 than the baked-in
@@ -2229,12 +2229,12 @@ int test_sapling(void)
         if (ok && !bad_ok) printf("OK\n");
         else { printf("FAIL (valid=%d, tampered=%d)\n", ok, bad_ok); failures++; }
 
-        /* AGENT-3 P1.9: non-canonical S (S >= Fs order) must be rejected.
+        /* AGENT-3 non-canonical S (S >= Fs order) must be rejected.
          * Take the valid signature, overwrite S with the Fs order bytes
          * themselves — numerically valid as 32 LE bytes, but not a
          * canonical scalar. Old code would feed this into the point math
          * and might accept it; new code rejects via fs_from_bytes. */
-        printf("redjubjub rejects non-canonical S >= Fs (P1.9)... ");
+        printf("redjubjub rejects non-canonical S >= Fs ... ");
         {
             /* Fs = 0x0e7db4ea6533afa906673b0101343b00a6682093ccc81082d0970e5ed6f72cb7
              * LE bytes = above byte sequence reversed. */

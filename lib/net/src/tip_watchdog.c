@@ -1,6 +1,6 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * P7.4 backpressure watchdog implementation. See net/tip_watchdog.h
+ * backpressure watchdog implementation. See net/tip_watchdog.h
  * for the rationale and state machine. */
 
 #include "net/tip_watchdog.h"

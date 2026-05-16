@@ -101,7 +101,7 @@ uint64_t msg_processor_block_manifest_cache_version(void);
 #include "core/uint256.h"
 void msgprocessor_block_clear_seen(const struct uint256 *hash);
 
-/* P2.7: per-peer FlyClient challenge rate-limit tuning. See
+/* per-peer FlyClient challenge rate-limit tuning. See
  * msgprocessor.c for the full rationale — short version: each
  * zfcchallenge is expensive (50 MMB proofs), so we cap per-peer
  * consumption at BURST on first use and refill at RATE_PER_SEC. A
@@ -110,7 +110,7 @@ void msgprocessor_block_clear_seen(const struct uint256 *hash);
 #define FC_CHALLENGE_RATE_PER_SEC 10u
 #define FC_CHALLENGE_BURST        30u
 
-/* P2.7 test hooks: drive the FlyClient challenge rate limiter with an
+/* test hooks: drive the FlyClient challenge rate limiter with an
  * explicit clock, read dropped-challenge telemetry, and reset the table
  * between cases. Not intended for production call-sites. */
 bool msgprocessor_test_fc_rate_acquire(node_id_t peer_id, int64_t now_ms);
@@ -118,14 +118,14 @@ uint32_t msgprocessor_test_fc_rate_dropped(node_id_t peer_id);
 bool msgprocessor_test_fc_rate_should_score(node_id_t peer_id);
 void msgprocessor_test_fc_rate_reset(void);
 
-/* P2.6 test hooks: drive the g_swarm_active atomic CAS used by the
+/* test hooks: drive the g_swarm_active atomic CAS used by the
  * zmanifest handler. try_claim returns true exactly once until
  * release() is called; concurrent callers see at most one success. */
 bool msgprocessor_test_swarm_try_claim(void);
 void msgprocessor_test_swarm_release(void);
 bool msgprocessor_test_swarm_is_active(void);
 
-/* P2.2 test hook: swap the allocator process_mempool uses for its
+/* test hook: swap the allocator process_mempool uses for its
  * scratch hash buffer. Pass NULL to restore the default zcl_malloc
  * path; pass a function that returns NULL to simulate OOM. Only
  * influences process_mempool — no global malloc override. */

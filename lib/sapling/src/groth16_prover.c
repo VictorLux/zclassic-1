@@ -15,7 +15,7 @@
 #include "util/safe_alloc.h"
 #include "util/log_macros.h"
 
-/* ── P9.3 test hook: failing-realloc injector ───────────────────── */
+/* ── test hook: failing-realloc injector ───────────────────── */
 
 /* When non-NULL, the three CS-building helpers call this instead of
  * zcl_realloc. Returning NULL simulates OOM. File-scope so the hook
@@ -35,7 +35,7 @@ static inline void *g_cs_realloc(void *ptr, size_t size, const char *label)
     return zcl_realloc(ptr, size, label);
 }
 
-/* ── P9.4 test hook: force non-pow-2 FFT domain in groth16_prove ── */
+/* ── test hook: force non-pow-2 FFT domain in groth16_prove ── */
 
 /* When non-zero, overrides the computed domain size in groth16_prove
  * so tests can exercise the fr_fft / fr_fft_parallel non-pow-2 branch
@@ -733,7 +733,7 @@ bool groth16_prove(const struct groth16_pk *pk,
                    const struct constraint_system *cs,
                    struct groth16_proof *proof_out)
 {
-    /* P9.3: refuse to prove if CS construction hit OOM. Otherwise the
+    /* refuse to prove if CS construction hit OOM. Otherwise the
      * witness / constraints / public-input indices are silently wrong
      * and we'd emit a valid-looking proof for the wrong circuit. */
     if (cs->oom_error) {
@@ -754,7 +754,7 @@ bool groth16_prove(const struct groth16_pk *pk,
     while (domain <= n_con)
         domain <<= 1;
 
-    /* P9.4 test hook: force a non-pow-2 domain to exercise the fr_fft
+    /* test hook: force a non-pow-2 domain to exercise the fr_fft
      * failure-propagation path. Never set outside tests. */
     if (g_force_domain)
         domain = g_force_domain;
@@ -816,7 +816,7 @@ bool groth16_prove(const struct groth16_pk *pk,
     }
 
     /* FFT → evaluations at coset points g*ω^i.
-     * P9.4: fr_fft refuses non-pow-2 domains (returns false). Silent-
+     * fr_fft refuses non-pow-2 domains (returns false). Silent-
      * dropping here would emit a mathematically invalid proof: A/B/C
      * computed from un-transformed coefficients do not satisfy the
      * Groth16 verifier's pairing check, and the prover would still
@@ -862,7 +862,7 @@ bool groth16_prove(const struct groth16_pk *pk,
     }
 
     /* IFFT back to coefficient form.
-     * P9.4: same refuse-on-non-pow-2 contract. If we reached here the
+     * same refuse-on-non-pow-2 contract. If we reached here the
      * three forward FFTs already succeeded, so a failure now is
      * anomalous — but the guard is cheap and keeps the call sites
      * symmetric. */

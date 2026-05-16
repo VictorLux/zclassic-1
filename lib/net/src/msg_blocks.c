@@ -190,7 +190,7 @@ bool process_getdata(struct msg_processor *mp, struct p2p_node *node,
                         char exp[65], got[65];
                         uint256_get_hex(&inv.hash, exp);
                         uint256_get_hex(&disk_hash, got);
-                        fprintf(stderr, "SAFETY: refusing to serve block "
+                        fprintf(stderr, "SAFETY: refusing to serve block "  // obs-ok:helper-context-logged
                                 "h=%d — hash mismatch!\n"
                                 "  requested: %s\n  disk:      %s\n",
                                 bi->nHeight, exp, got);
@@ -309,7 +309,7 @@ bool process_block_msg(struct msg_processor *mp, struct p2p_node *node,
         block_free(&blk);
         return true;
     }
-    /* P14.8: do NOT mark seen here. We previously called
+    /* do NOT mark seen here. We previously called
      * block_mark_seen() before process_new_block, so a block that
      * was received + indexed but failed to activate (e.g.
      * ACTIVATION_SKIP_ALREADY_RUNNING from controller mutex
@@ -329,7 +329,7 @@ bool process_block_msg(struct msg_processor *mp, struct p2p_node *node,
                     "hash=%s reason=%s", hex,
                     state.reject_reason[0] ? state.reject_reason : "unknown");
 
-        /* P14.8 — rejected blocks: mark seen so the dedup ring
+        /* rejected blocks: mark seen so the dedup ring
          * short-circuits subsequent deliveries of the same bad block
          * from other peers. Only the "received but skipped connect"
          * case (SKIP_ALREADY_RUNNING, etc.) must stay UN-marked so
@@ -354,7 +354,7 @@ bool process_block_msg(struct msg_processor *mp, struct p2p_node *node,
          * blocks stay at score 0 forever. Safe on trusted peers. */
         peer_scoring_on_good_interaction(node, peer_scoring_now_ms());
 
-        /* P14.8 — mark seen only after successful activation. If the
+        /* mark seen only after successful activation. If the
          * block is in block_index but NOT in active chain (e.g.
          * activation was skipped), leave it out of the dedup ring so
          * the next arrival retries and the controller has another

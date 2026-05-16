@@ -194,7 +194,7 @@ int test_chain_rollback(void)
 
     /* After disconnecting all blocks, no tx may be reachable via
      * have_coins.  The cache itself may retain DIRTY+pruned
-     * tombstones pending a parent flush — that is the post-P10.1.4
+     * tombstones pending a parent flush — that is the 
      * semantics of disconnect_block (connect_block.c:639) replacing
      * a bare erase with a pruned-entry write so the DELETE signal
      * propagates to the DIRTY-driven backing store.  The invariant

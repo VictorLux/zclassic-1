@@ -6,8 +6,8 @@
 #include "sapling/sapling_circuit.h"
 #include <time.h>
 
-/* P9.3 test hook: unconditionally fails the allocation. Mirrors the
- * `p22_force_null_alloc` pattern from test_mempool.c (P2.2). */
+/* test hook: unconditionally fails the allocation. Mirrors the
+ * `p22_force_null_alloc` pattern from test_mempool.c. */
 static void *p93_force_null_realloc(void *ptr, size_t size)
 {
     (void)ptr; (void)size;
@@ -16,7 +16,7 @@ static void *p93_force_null_realloc(void *ptr, size_t size)
 
 /* Reference bit-by-bit double-and-add for Jubjub scalar multiplication.
  * Deliberately NOT constant-time — used only as a correctness oracle for
- * the P1.12 constant-time jub_scalar_mul implementation. */
+ * the constant-time jub_scalar_mul implementation. */
 static void jub_scalar_mul_naive(struct jub_point *r,
                                  const struct jub_point *p,
                                  const uint8_t scalar[32])
@@ -297,10 +297,10 @@ int test_sapling_crypto(void)
         else { printf("FAIL\n"); failures++; }
     }
 
-    /* P1.12 correctness: windowed CT jub_scalar_mul vs bit-by-bit oracle.
+    /* correctness: windowed CT jub_scalar_mul vs bit-by-bit oracle.
      * Covers corner cases (zero scalar, small/large scalars, nibble
      * transitions) plus random vectors across the scalar range. */
-    printf("Jubjub scalar mul matches naive double-and-add (P1.12)... ");
+    printf("Jubjub scalar mul matches naive double-and-add ... ");
     {
         uint8_t seed[32] = {17};
         uint8_t pt_bytes[32];
@@ -336,7 +336,7 @@ int test_sapling_crypto(void)
         else { printf("FAIL\n"); failures++; }
     }
 
-    /* P1.12 timing sanity: low-Hamming-weight vs high-Hamming-weight
+    /* timing sanity: low-Hamming-weight vs high-Hamming-weight
      * scalars should not differ materially in runtime. Pre-fix, the
      * `if (nibble)` branch skipped adds for zero nibbles, so zero-heavy
      * scalars ran ~25% faster. The new CT implementation always runs
@@ -346,7 +346,7 @@ int test_sapling_crypto(void)
      * and the twisted-Edwards field math still has minor value-dependent
      * timing inside fr_add/fr_sub. A regression that reintroduces the
      * branch would push the ratio well past 1.15 and trip this test. */
-    printf("Jubjub scalar mul timing vs scalar weight (P1.12)... ");
+    printf("Jubjub scalar mul timing vs scalar weight ... ");
     {
         uint8_t seed[32] = {23};
         uint8_t pt_bytes[32];
@@ -685,7 +685,7 @@ int test_sapling_crypto(void)
         else { printf("FAIL\n"); failures++; }
     }
 
-    /* P9.1: g1_scalar_mul must run identical work regardless of scalar
+    /* g1_scalar_mul must run identical work regardless of scalar
      * Hamming weight. Pre-fix, the prover only executed `g1_add` on
      * bits that were set — so an attacker measuring wall time of the
      * prover recovered partial information about the Groth16 blinding
@@ -698,7 +698,7 @@ int test_sapling_crypto(void)
      * 256 doubles so the ratio collapses to ~1.0. The tolerance is
      * deliberately generous to tolerate CI-host noise — anything
      * beyond 1.20 indicates a skipped-add branch. */
-    printf("BLS12-381 g1_scalar_mul timing vs scalar weight (P9.1)... ");
+    printf("BLS12-381 g1_scalar_mul timing vs scalar weight ... ");
     {
         const uint8_t g1_gen[48] = {
             0x97,0xf1,0xd3,0xa7,0x31,0x97,0xd7,0x94,
@@ -877,7 +877,7 @@ int test_sapling_crypto(void)
     }
 
     /* ================================================================ */
-    /* jubjub_to_scalar constant-time regressions (P1.16b)              */
+    /* jubjub_to_scalar constant-time regressions */
     /*                                                                  */
     /* `jubjub_to_scalar` reduces a 64-byte blake2b digest modulo the   */
     /* Jubjub scalar field order r.  It sits on the Sapling nullifier   */
@@ -887,9 +887,9 @@ int test_sapling_crypto(void)
     /* many spends, so the reduction must be CT.                        */
     /* ================================================================ */
 
-    printf("jubjub_to_scalar vs arbitrary-precision reference (P1.16b)... ");
+    printf("jubjub_to_scalar vs arbitrary-precision reference ... ");
     {
-        /* Reference reduction that mirrors the pre-P1.16b implementation:
+        /* Reference reduction that mirrors the implementation:
          * schoolbook shift-and-subtract with ordinary branches.  Used
          * ONLY as a correctness oracle; the shipping implementation is
          * the branchless one in lib/sapling/src/jubjub.c. */
@@ -969,17 +969,17 @@ int test_sapling_crypto(void)
         else { printf("FAIL\n"); failures++; }
     }
 
-    /* Timing regression: the pre-P1.16b implementation had two
+    /* Timing regression: the implementation had two
      * secret-dependent branches — `if (input bit set)` and
      * `if (acc >= r) subtract r` — so an all-ones input ran materially
      * longer than an all-zero input (~8% on measured hosts, and the
      * gap widened with cache pressure).  The new branchless path
      * performs identical work regardless of input Hamming weight.
      *
-     * Tolerance 0.85..1.15 mirrors the P1.12 ratio gate and absorbs
+     * Tolerance 0.85..1.15 mirrors the ratio gate and absorbs
      * normal CI jitter while still tripping on any branch
      * reintroduction. */
-    printf("jubjub_to_scalar timing vs input weight (P1.16b)... ");
+    printf("jubjub_to_scalar timing vs input weight ... ");
     {
         uint8_t lo_in[64] = {0};                    /* Hamming weight 0 */
         lo_in[0] = 0x01;                            /* nudge to weight 1 to avoid trivial path */
@@ -1016,7 +1016,7 @@ int test_sapling_crypto(void)
     }
 
     /* ================================================================
-     * P9.3 — OOM silent-drop in groth16 CS builders
+     * OOM silent-drop in groth16 CS builders
      * ================================================================
      * RED before fix, GREEN after fix. Every block below installs the
      * test hook that forces the next realloc inside groth16_prover.c
@@ -1025,7 +1025,7 @@ int test_sapling_crypto(void)
      * drop so the flags stay false — tests FAIL. Post-fix the helpers
      * set lc->oom_error / cs->oom_error + LOG_FAIL — tests PASS. */
 
-    printf("P9.3 lc_add_term signals OOM on realloc failure... ");
+    printf("lc_add_term signals OOM on realloc failure... ");
     {
         struct linear_combination lc;
         lc_init(&lc);
@@ -1052,7 +1052,7 @@ int test_sapling_crypto(void)
         if (ok) printf("OK\n"); else { printf("FAIL\n"); failures++; }
     }
 
-    printf("P9.3 cs_alloc_aux signals OOM on realloc failure... ");
+    printf("cs_alloc_aux signals OOM on realloc failure... ");
     {
         struct constraint_system cs;
         cs_init(&cs);
@@ -1081,7 +1081,7 @@ int test_sapling_crypto(void)
         if (ok) printf("OK\n"); else { printf("FAIL\n"); failures++; }
     }
 
-    printf("P9.3 cs_enforce propagates input-LC oom_error... ");
+    printf("cs_enforce propagates input-LC oom_error... ");
     {
         struct constraint_system cs;
         cs_init(&cs);
@@ -1104,7 +1104,7 @@ int test_sapling_crypto(void)
         if (ok) printf("OK\n"); else { printf("FAIL\n"); failures++; }
     }
 
-    printf("P9.3 groth16_prove refuses on cs.oom_error (zeroed proof)... ");
+    printf("groth16_prove refuses on cs.oom_error (zeroed proof)... ");
     {
         struct constraint_system cs;
         cs_init(&cs);
@@ -1127,9 +1127,9 @@ int test_sapling_crypto(void)
         if (ok) printf("OK\n"); else { printf("FAIL\n"); failures++; }
     }
 
-    /* ── P9.4: fr_fft / fr_fft_parallel non-pow-2 silent no-op ───── */
+    /* ── fr_fft fr_fft_parallel non-pow-2 silent no-op ───── */
 
-    printf("P9.4 fr_fft returns false on non-pow-2 n... ");
+    printf("fr_fft returns false on non-pow-2 n... ");
     {
         /* Bug pattern: fr_fft's `if ((size_t)1 << log_n != n) return;`
          * used to silent-drop; callers kept executing with un-FFT'd
@@ -1142,7 +1142,7 @@ int test_sapling_crypto(void)
         if (ok) printf("OK\n"); else { printf("FAIL\n"); failures++; }
     }
 
-    printf("P9.4 fr_fft_parallel returns false on non-pow-2 n... ");
+    printf("fr_fft_parallel returns false on non-pow-2 n... ");
     {
         /* n=300 is >= 256 (parallel-dispatch threshold) and non-pow-2,
          * so we hit the par_log2_ceil guard, not the serial dispatch. */
@@ -1154,9 +1154,9 @@ int test_sapling_crypto(void)
         if (ok) printf("OK\n"); else { printf("FAIL\n"); failures++; }
     }
 
-    printf("P9.4 groth16_prove refuses on non-pow-2 forced domain (zeroed proof)... ");
+    printf("groth16_prove refuses on non-pow-2 forced domain (zeroed proof)... ");
     {
-        /* Force a non-pow-2 FFT domain via the P9.4 test hook. Pre-fix
+        /* Force a non-pow-2 FFT domain via the test hook. Pre-fix
          * groth16_prove ignores fr_fft's silent no-op and emits a
          * "proof" built from un-transformed evaluations (returns true).
          * Post-fix the prover checks fr_fft's bool return, zeroes
@@ -1189,9 +1189,9 @@ int test_sapling_crypto(void)
         if (ok) printf("OK\n"); else { printf("FAIL\n"); failures++; }
     }
 
-    /* ── P9.2: sapling_spend_synthesize nk_point placeholder UB ──── */
+    /* ── sapling_spend_synthesize nk_point placeholder UB ──── */
 
-    printf("P9.2 spend synth binds nk witness to nsk*G_proof (not uninit stack)... ");
+    printf("spend synth binds nk witness to nsk*G_proof (not uninit stack)... ");
     {
         /* Pre-fix: `sapling_circuit.c:161-162` declared
          *     struct jub_point nk_point;
@@ -1270,9 +1270,9 @@ int test_sapling_crypto(void)
         if (ok) printf("OK\n"); else { printf("FAIL\n"); failures++; }
     }
 
-    /* ── P9.6: spend-witness parser must reject short buffers ──────── */
+    /* ── spend-witness parser must reject short buffers ──────── */
 
-    printf("P9.6 sapling_spend_parse_witness rejects short buffer (no OOB read)... ");
+    printf("sapling_spend_parse_witness rejects short buffer (no OOB read)... ");
     {
         /* The merkle-witness wire format is
          *     depth (1) || 32 × (sibling (32) || bit (1))  = 1057 bytes.

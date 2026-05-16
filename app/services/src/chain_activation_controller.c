@@ -121,7 +121,7 @@ bool activation_set_state(struct chain_activation_controller *ctl,
         return true;
 
     if (!activation_transition_valid(old, new_state)) {
-        fprintf(stderr, "BUG: activation ILLEGAL transition %s->%s (%s)\n",
+        fprintf(stderr, "BUG: activation ILLEGAL transition %s->%s (%s)\n",  // obs-ok:helper-context-logged
                 activation_state_name(old),
                 activation_state_name(new_state),
                 reason ? reason : "");
@@ -257,7 +257,7 @@ void activation_request_connect(struct chain_activation_controller *ctl,
         out->result = ACTIVATION_EXEC_SKIPPED;
         snprintf(out->reason, sizeof(out->reason), "%s", dec.reason);
         ctl->skip_count++;
-        /* P14.10: note the skipped request so the thread currently
+        /* note the skipped request so the thread currently
          * holding the mutex reruns activate_best_chain before
          * transitioning out of CONNECTING. The block is already on
          * disk via accept_block, so the rerun picks it up without the

@@ -797,7 +797,7 @@ static bool store_mark_order_paid(const char *datadir,
 
     ok = db_store_order_mark_paid(&ndb, order_id, status);
     if (!ok) {
-        fprintf(stderr,
+        fprintf(stderr,  // obs-ok:helper-context-logged
                 "Store: failed to persist status=%d for order #%lld: %s\n",
                 status, (long long)order_id,
                 sqlite3_errmsg(ndb.db));
@@ -826,7 +826,7 @@ static const char *store_order_status_class(int status)
     }
 }
 
-/* ── CSRF form token (P3.6) ─────────────────────────────────────
+/* ── CSRF form token ─────────────────────────────────────
  *
  * Without a token, a malicious third-party page can `<form action=
  * 'http://<onion>/store/orders'>` and trick any visiting browser into
@@ -889,7 +889,7 @@ static void store_csrf_context(char *out, size_t outmax, int64_t product_id)
 }
 
 /* Decode `%XX` and `+` escapes in an x-www-form-urlencoded value.
- * Ported from app/controllers/src/wallet_view_helpers.c (P3.6).  Without
+ * Ported from app/controllers/src/wallet_view_helpers.c. Without
  * this, "a%20b" in a form field is stored literally as the four bytes
  * '%','2','0','b' in the DB and rendered back to the user unchanged —
  * breaking display, search, and anything downstream that interprets

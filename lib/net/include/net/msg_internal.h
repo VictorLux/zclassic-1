@@ -52,7 +52,7 @@ bool process_inv(struct msg_processor *mp, struct p2p_node *node,
                  struct byte_stream *s);
 bool process_mempool(struct msg_processor *mp, struct p2p_node *node);
 
-/* P2.1: classification outcome for an incoming `tx` message. The
+/* classification outcome for an incoming `tx` message. The
  * handler needs to differentiate malicious rejections (apply peer
  * ban-score) from non-malicious rejections (orphan, duplicate,
  * rate-limit) and success. Exposed to tests so regression cases can
@@ -105,8 +105,8 @@ void block_clear_seen(const struct uint256 *hash);
 bool tx_already_seen(const struct uint256 *hash);
 void tx_mark_seen(const struct uint256 *hash);
 
-/* P14.8 — decide whether a freshly processed block may safely be
- * added to the dedup ring. Pre-P14.8, every received block was
+/* decide whether a freshly processed block may safely be
+ * added to the dedup ring., every received block was
  * marked seen BEFORE process_new_block; if process_new_block
  * SKIP'd (e.g. ACTIVATION_SKIP_ALREADY_RUNNING from controller
  * mutex contention), the block was indexed-but-not-connected AND

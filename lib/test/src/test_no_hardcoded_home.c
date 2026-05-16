@@ -1,6 +1,6 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * Regression test for P5.3 — no hardcoded `/home/rhett` in deployed
+ * Regression test for no hardcoded `/home/rhett` in deployed
  * binaries, and the path helpers respect $HOME.
  *
  * Part 1: scan every built binary in the repo root (test_zcl itself,

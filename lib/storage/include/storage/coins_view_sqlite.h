@@ -11,7 +11,7 @@
 
 struct coins_view_sqlite {
     struct coins_view view;          /* vtable-based polymorphism */
-    sqlite3 *db;                     /* coins handle — dedicated for file DBs (P14.1), shared for :memory: */
+    sqlite3 *db; /* coins handle — dedicated for file DBs, shared for :memory: */
     bool owns_db;                    /* true when db was opened here (file DB); false when shared */
     pthread_mutex_t mutex;           /* serialize all statement access */
 
@@ -31,7 +31,7 @@ struct coins_view_sqlite {
  * so the flush's BEGIN IMMEDIATE runs on an independent `nVdbeWrite`
  * counter — avoids the live-node stall where SAVEPOINT on a shared
  * handle failed with "SQL statements in progress" whenever any other
- * subsystem had a writer VDBE mid-execution (P14.1, 2026-04-19).
+ * subsystem had a writer VDBE mid-execution (, 2026-04-19).
  * `:memory:` handles fall back to the shared connection with SAVEPOINT
  * nesting (used by a handful of unit tests that pass a throwaway DB). */
 bool coins_view_sqlite_open(struct coins_view_sqlite *cvs, sqlite3 *db);
@@ -63,7 +63,7 @@ bool coins_view_sqlite_read_commitment(struct coins_view_sqlite *cvs,
 
 /* Explicit cross-handle transaction control. Used by the chain_advance
  * body to coordinate atomicity across coins.db + node.db (the two
- * separate SQLite handles after P14.1). On the dedicated file handle
+ * separate SQLite handles ). On the dedicated file handle
  * these issue BEGIN IMMEDIATE / COMMIT / ROLLBACK on cvs->db; on the
  * shared :memory: fallback they fall back to SAVEPOINT semantics so
  * unit tests still work.

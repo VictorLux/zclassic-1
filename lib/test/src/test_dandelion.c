@@ -7,7 +7,7 @@
 #include <stdio.h>
 #include <time.h>
 
-/* P8.2 test hooks — defined under ZCL_TESTING in lib/net/src/dandelion.c.
+/* test hooks — defined under ZCL_TESTING in lib/net/src/dandelion.c.
  * Exercise the RNG-driven shuffle and coin-flip without needing a full
  * net_manager fixture. */
 bool dandelion_test_shuffle(node_id_t *inout, int n);
@@ -310,7 +310,7 @@ int test_dandelion(void)
         dandelion_free(&ds);
     }
 
-    /* ── P8.2: stem shuffle is non-deterministic across calls ─────
+    /* ── stem shuffle is non-deterministic across calls ─────
      *
      * Pre-fix: xorshift64 seeded from time(NULL) ^ const → two boots
      * inside the same wall-clock second produced identical shuffles.
@@ -318,7 +318,7 @@ int test_dandelion(void)
      * RNG, so back-to-back shuffles of the same input differ with
      * probability 1 - 1/8! ≈ 99.9975%. We retry a few times to drive
      * the false-FAIL probability below 1e-20 (8! ^ -5 ≈ 9.5e-23). */
-    printf("P8.2: dandelion stem shuffle non-deterministic... ");
+    printf("dandelion stem shuffle non-deterministic... ");
     {
         bool any_diff = false;
         bool rng_ok = true;
@@ -340,7 +340,7 @@ int test_dandelion(void)
         }
     }
 
-    /* ── P8.2: per-tx fluff coin-flip is statistically uniform ────
+    /* ── per-tx fluff coin-flip is statistically uniform ────
      *
      * Asserts the new RNG path doesn't bias the 90/10 stem/fluff
      * decision. With p_stem = 0.9, n = 10000 the expected stem count
@@ -348,7 +348,7 @@ int test_dandelion(void)
      * for ±2σ; we use ±3σ (8910..9090) to keep CI flake probability
      * ~0.27% rather than ~5%. A bias outside this band would be a
      * real RNG defect. */
-    printf("P8.2: dandelion fluff coin-flip ±3σ uniformity (10k)... ");
+    printf("dandelion fluff coin-flip ±3σ uniformity (10k)... ");
     {
         int stem_count = 0;
         int trials = 10000;

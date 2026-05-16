@@ -31,9 +31,9 @@
 struct dandelion_state g_dandelion;
 bool g_dandelion_init = false;
 
-/* ── P2.1: incoming `tx` classification + scoring ──────────────
+/* ── incoming `tx` classification + scoring ──────────────
  *
- * Before P2.1 this helper silently upserted every deserialised tx
+ * this helper silently upserted every deserialised tx
  * into the mempool. check_transaction was called but its failure
  * collapsed into a generic bool; fee policy was ignored (fee hard-
  * coded to 0); double-spends were detected only inside
@@ -372,7 +372,7 @@ bool process_tx_msg(struct msg_processor *mp, struct p2p_node *node,
     return true;
 }
 
-/* P2.2 test hook: when non-NULL, process_mempool calls this instead
+/* test hook: when non-NULL, process_mempool calls this instead
  * of zcl_malloc for the scratch buffer. Returning NULL simulates OOM.
  * File-scope so the hook can only influence this one call site. */
 static void *(*g_process_mempool_alloc_hook)(size_t) = NULL;

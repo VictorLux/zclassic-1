@@ -104,19 +104,19 @@ void chain_restore_validate(struct chain_restore_validation *out,
                             const struct uint256 *expected_hash,
                             int expected_height);
 
-/* ── Post-restore integrity check (P14.11 + P14.12) ────────────────
+/* ── Post-restore integrity check ────────────────
  *
  * Walks the main_state after an anchor-restore / snapshot-restore path
  * and surfaces the two invariants that `accept_block` / `connect_block`
  * normally establish but the anchor shortcut skips:
  *
- *   P14.11: every pindex above genesis must have `nBits != 0`.
+ * every pindex above genesis must have `nBits != 0`.
  *           `GetNextWorkRequired` reads `pprev->nBits` and walks back
  *           `nPowAveragingWindow` steps — a zero anywhere in the window
  *           collapses the target to `nProofOfWorkLimit` and rejects
  *           every real-difficulty header as `bad-diffbits`.
  *
- *   P14.12: for every h in [0, chain_active.height], the slot
+ * for every h in [0, chain_active.height], the slot
  *           `chain_active.chain[h]` must be non-NULL. Holes break
  *           `getblockhash` and any consumer that walks the active
  *           chain by height (explorer, bg_validation, etc.).
@@ -216,17 +216,17 @@ void chain_restore_record_csr_consistency(bool consistent,
 struct json_value;
 bool chain_restore_dump_state_json(struct json_value *out, const char *key);
 
-/* ── Post-restore repair (P14.11 + P14.12 GREEN) ──────────────────
+/* ── Post-restore repair ──────────────────
  *
  * After an anchor-restore / snapshot-restore / block-file-scan path
  * completes, the block_index map and active_chain can exhibit the
  * two shapes that `chain_integrity_check_post_restore` flags:
  *
- *   P14.11: entries with `nBits==0` — created by the anchor path,
+ * entries with `nBits==0` — created by the anchor path,
  *           or loaded from a block_index_cache row that lost its
- *           nBits column (e.g. a pre-P14.11 cache snapshot).
+ * nBits column (e.g. a cache snapshot).
  *
- *   P14.12: `chain_active.chain[h]==NULL` for heights below the tip —
+ * `chain_active.chain[h]==NULL` for heights below the tip —
  *           `active_chain_set_tip` walks pprev and writes NULL into
  *           every slot where the walk dead-ends, leaving holes the
  *           explorer / `getblockhash` / bg_validation all fall over on.

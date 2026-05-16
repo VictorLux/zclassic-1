@@ -153,7 +153,7 @@ bool connect_block(const struct block *block,
             char vhex[65], phex[65];
             uint256_get_hex(&view_best, vhex);
             uint256_get_hex(&block->header.hashPrevBlock, phex);
-            fprintf(stderr, "connect_block: FATAL view/prevblock mismatch "
+            fprintf(stderr, "connect_block: FATAL view/prevblock mismatch "  // obs-ok:helper-context-logged
                     "h=%d view=%s prev=%s\n", pindex->nHeight, vhex, phex);
             REJECT_FATAL(state, "connect_block-view-mismatch");
         }
@@ -357,7 +357,7 @@ bool connect_block(const struct block *block,
                     "bad-txns-joinsplit-requirements-not-met", false, NULL);
             }
 
-            /* ── P2SH sigops (P1.6) ────────────────────── *
+            /* ── P2SH sigops ────────────────────── *
              * Add sigops done by pay-to-script-hash inputs; prevents a
              * rogue miner from hiding an expensive-to-validate block
              * inside a small scriptSig.  Mirrors zclassicd
@@ -549,7 +549,7 @@ bool connect_block(const struct block *block,
         if (sapling_active) {
             static const uint8_t zeros[32] = {0};
             if (memcmp(block->header.hashFinalSaplingRoot.data, zeros, 32) == 0) {
-                fprintf(stderr, "connect_block: hashFinalSaplingRoot is "
+                fprintf(stderr, "connect_block: hashFinalSaplingRoot is "  // obs-ok:helper-context-logged
                         "all-zeros at Sapling height %d\n", pindex->nHeight);
                 block_undo_free(&blockundo);
                 return validation_state_dos(state, 100, false, REJECT_INVALID,

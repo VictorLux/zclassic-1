@@ -146,7 +146,7 @@ static bool rpc_zmarket_offer(const struct json_value *params, bool help,
     offer.size_bytes = (uint64_t)st.st_size;
     if (!file_market_num_chunks_for_size(offer.size_bytes,
                                          &offer.num_chunks)) {
-        /* P8.7: guard u32 num_chunks overflow (225 PB+ files). */
+        /* guard u32 num_chunks overflow (225 PB+ files). */
         json_set_str(result, "File too large to offer");
         return false;
     }

@@ -279,7 +279,7 @@ int sapling_tree_rebuild(struct node_db *ndb,
      * 2.6M blocks on every crash recovery. Two candidates, most
      * authoritative first:
      *   (1) Flat-file checkpoint at <datadir>/sapling_tree_ckpt.dat
-     *       (P12.1) — flushed every 10K blocks, SHA3-verified.
+     * flushed every 10K blocks, SHA3-verified.
      *   (2) node_state["sapling_tree"] — flushed every 100K blocks,
      *       SQLite-backed, legacy path.
      * The flat-file path short-circuits the node_state path on a hit;
@@ -321,7 +321,7 @@ int sapling_tree_rebuild(struct node_db *ndb,
                     ckpt_h = flat_h; /* skip the SQLite fallback below */
                     fprintf(stderr, "sapling_tree_rebuild: resuming "  // obs-ok:helper-context-logged
                         "from flat-file checkpoint h=%lld "
-                        "(%d commitments, P12.1)\n",
+                        "(%d commitments,)\n",
                         (long long)flat_h, total_commitments);
                     fflush(stderr);
                 }

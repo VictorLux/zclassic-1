@@ -1,9 +1,9 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * P11.8 — MVP criterion #8 CI gate: parity diff.
+ * MVP criterion #8 CI gate: parity diff.
  *
- * The production parity service/MCP surface is Agent-2 scope (P12.3 /
- * P12.3.1). This gate pins the comparison contract now so CI can fail
+ * The production parity service/MCP surface is Agent-2 scope ( /
+ * ). This gate pins the comparison contract now so CI can fail
  * loudly on the same mismatch classes the service must report:
  *   1. local chain height must match the remote zclassicd peer
  *   2. sampled block hashes must match at every compared height
@@ -980,25 +980,25 @@ int test_parity_diff_gate(void)
 {
     int failures = 0;
 
-    printf("\n=== P11.8 parity diff (MVP #8) ===\n");
+    printf("\n=== parity diff (MVP #8) ===\n");
 
-    printf("parity_diff P11.8: matching local/remote chain is OK... ");
+    printf("parity_diff matching local/remote chain is OK... ");
     if (t_p11_8_match_is_ok()) { printf("FAIL\n"); failures++; }
     else printf("OK\n");
 
-    printf("parity_diff P11.8: blockhash divergence fails loudly... ");
+    printf("parity_diff blockhash divergence fails loudly... ");
     if (t_p11_8_hash_mismatch_fails()) { printf("FAIL\n"); failures++; }
     else printf("OK\n");
 
-    printf("parity_diff P11.8: remote outage fails gate... ");
+    printf("parity_diff remote outage fails gate... ");
     if (t_p11_8_remote_outage_fails()) { printf("FAIL\n"); failures++; }
     else printf("OK\n");
 
-    printf("parity_diff P11.8: local coins_best_block drift fails gate... ");
+    printf("parity_diff local coins_best_block drift fails gate... ");
     if (t_p11_8_local_best_block_drift_fails()) { printf("FAIL\n"); failures++; }
     else printf("OK\n");
 
-    printf("parity_diff P11.8: live C23 vs zclassicd sampled block parity... ");
+    printf("parity_diff live C23 vs zclassicd sampled block parity... ");
     failures += t_p11_8_live_rpc_parity();
 
     return failures;

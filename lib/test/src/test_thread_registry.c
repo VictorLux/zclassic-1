@@ -1,6 +1,6 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * P7.9 — thread_registry stress test. */
+ * thread_registry stress test. */
 
 #include "test/test_helpers.h"
 #include "util/thread_registry.h"

@@ -88,18 +88,18 @@ void connman_relay_transaction(struct connman *cm,
 struct peer_bandwidth;
 struct peer_bandwidth *connman_peer_bandwidth(void);
 
-/* P2.5: one pass of the message-handler loop body.
+/* one pass of the message-handler loop body.
  *
  * Snapshots cm->manager.nodes[] under cs_nodes + bumps ref_count on each
  * non-disconnected entry, releases cs_nodes, calls the process_messages
  * and send_messages signals against the local copy, then re-acquires
  * cs_nodes to decrement refs. Returns true if any peer saw work.
  *
- * Exposed outside the message thread so the P2.5 stress test can drive
+ * Exposed outside the message thread so the stress test can drive
  * the cycle directly without needing to stand up a full connman_start(). */
 bool connman_run_message_cycle(struct connman *cm);
 
-/* P2.5: one pass of the socket-handler deferred-free sweep.
+/* one pass of the socket-handler deferred-free sweep.
  *
  * Walks cm->deferred_free[], freeing entries whose ref_count has reached
  * zero and re-parking any that are still held by an in-flight snapshot.

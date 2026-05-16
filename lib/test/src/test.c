@@ -23,21 +23,21 @@ int main(void)
      * unknown value runs the full suite unchanged. */
     const char *only = getenv("ZCL_TEST_ONLY");
     if (only && strcmp(only, "onion") == 0) {
-        printf("[test] ZCL_TEST_ONLY=onion — running P11.1 onion bootstrap only\n");
+        printf("[test] ZCL_TEST_ONLY=onion — running onion bootstrap only\n");
         { extern int test_onion_bootstrap(void);
           failures += test_onion_bootstrap(); }
         printf("\n=== Onion subset complete: %d failure(s) ===\n", failures);
         return failures ? 1 : 0;
     }
     if (only && strcmp(only, "cold_start") == 0) {
-        printf("[test] ZCL_TEST_ONLY=cold_start — running P11.3 cold-start sync only\n");
+        printf("[test] ZCL_TEST_ONLY=cold_start — running cold-start sync only\n");
         { extern int test_cold_start_sync(void);
           failures += test_cold_start_sync(); }
         printf("\n=== Cold-start subset complete: %d failure(s) ===\n", failures);
         return failures ? 1 : 0;
     }
     if (only && strcmp(only, "kill9") == 0) {
-        printf("[test] ZCL_TEST_ONLY=kill9 — running P11.7 kill -9 recovery only\n");
+        printf("[test] ZCL_TEST_ONLY=kill9 — running kill -9 recovery only\n");
         { extern int test_kill9_recovery(void);
           failures += test_kill9_recovery(); }
         printf("\n=== kill9 subset complete: %d failure(s) ===\n", failures);
@@ -52,7 +52,7 @@ int main(void)
         return failures ? 1 : 0;
     }
     if (only && strcmp(only, "shielded_payment") == 0) {
-        printf("[test] ZCL_TEST_ONLY=shielded_payment — running P11.4 shielded-payment gate only\n");
+        printf("[test] ZCL_TEST_ONLY=shielded_payment — running shielded-payment gate only\n");
         { extern int test_shielded_payment_gate(void);
           failures += test_shielded_payment_gate(); }
         printf("\n=== shielded-payment subset complete: %d failure(s) ===\n",
@@ -60,7 +60,7 @@ int main(void)
         return failures ? 1 : 0;
     }
     if (only && strcmp(only, "store_e2e") == 0) {
-        printf("[test] ZCL_TEST_ONLY=store_e2e — running P11.5 store e2e gate only\n");
+        printf("[test] ZCL_TEST_ONLY=store_e2e — running store e2e gate only\n");
         { extern int test_store_e2e_gate(void);
           failures += test_store_e2e_gate(); }
         printf("\n=== store e2e subset complete: %d failure(s) ===\n",
@@ -68,7 +68,7 @@ int main(void)
         return failures ? 1 : 0;
     }
     if (only && strcmp(only, "parity_diff") == 0) {
-        printf("[test] ZCL_TEST_ONLY=parity_diff — running P11.8 parity-diff gate only\n");
+        printf("[test] ZCL_TEST_ONLY=parity_diff — running parity-diff gate only\n");
         failures += test_parity_diff_gate();
         printf("\n=== parity_diff subset complete: %d failure(s) ===\n",
                failures);
@@ -104,14 +104,14 @@ int main(void)
         return failures ? 1 : 0;
     }
     if (only && strcmp(only, "power_node_contract") == 0) {
-        printf("[test] ZCL_TEST_ONLY=power_node_contract — running P26.7 doc contract only\n");
+        printf("[test] ZCL_TEST_ONLY=power_node_contract — running doc contract only\n");
         failures += test_power_node_contract_spec();
         printf("\n=== power_node_contract subset complete: %d failure(s) ===\n",
                failures);
         return failures ? 1 : 0;
     }
     if (only && strcmp(only, "self_heal_scan") == 0) {
-        printf("[test] ZCL_TEST_ONLY=self_heal_scan — running P24.29 only\n");
+        printf("[test] ZCL_TEST_ONLY=self_heal_scan — running only\n");
         failures += test_self_heal_scan_fallback();
         printf("\n=== self_heal_scan subset complete: %d failure(s) ===\n",
                failures);
@@ -167,7 +167,7 @@ int main(void)
         return failures ? 1 : 0;
     }
     if (only && strcmp(only, "utxo_audit") == 0) {
-        printf("[test] ZCL_TEST_ONLY=utxo_audit — running P24.30 only\n");
+        printf("[test] ZCL_TEST_ONLY=utxo_audit — running only\n");
         failures += test_utxo_audit();
         printf("\n=== utxo_audit subset complete: %d failure(s) ===\n",
                failures);
@@ -428,7 +428,7 @@ int main(void)
     failures += test_db_migration_idempotent();
     failures += test_coins_view_atomicity();
     failures += test_chain_stall_repro();
-    failures += test_p14_6_failed_child_cap();
+    failures += test_failed_child_cap();
     failures += test_power_node_contract_spec();
     failures += test_make_lint_gates();
     failures += test_multisig();

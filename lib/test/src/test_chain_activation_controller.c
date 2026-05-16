@@ -251,7 +251,7 @@ static int test_state_name_unknown(void) {
     return failures;
 }
 
-/* ── P14.10 deferred-activation tests ──────────────────────────── */
+/* ── deferred-activation tests ──────────────────────────── */
 
 /* Drive a real controller into CONNECTING, issue a concurrent
  * activation request, and assert that the skipped request was noted
@@ -260,7 +260,7 @@ static int test_state_name_unknown(void) {
  * P2P block arrives. */
 static int test_deferred_increments_on_already_running(void) {
     int failures = 0;
-    TEST("activation P14.10: SKIP_ALREADY_RUNNING increments deferred counter") {
+    TEST("activation SKIP_ALREADY_RUNNING increments deferred counter") {
         /* Clear any snapshot anchor set by earlier tests — otherwise
          * the planner returns SKIP_ANCHOR_BLOCKS before reaching the
          * CONNECTING check. */
@@ -290,7 +290,7 @@ static int test_deferred_increments_on_already_running(void) {
         ASSERT(out.result == ACTIVATION_EXEC_SKIPPED);
         ASSERT(strstr(out.reason, "already running") != NULL);
 
-        /* P14.10: the skipped request must be noted so the active
+        /* the skipped request must be noted so the active
          * thread can rerun activate_best_chain before releasing the
          * mutex. */
         ASSERT(activation_drain_deferred(&ctl) == 1);
@@ -307,7 +307,7 @@ static int test_deferred_increments_on_already_running(void) {
 
 static int test_deferred_accumulates_across_skips(void) {
     int failures = 0;
-    TEST("activation P14.10: deferred counter accumulates across concurrent skips") {
+    TEST("activation deferred counter accumulates across concurrent skips") {
         snapsync_set_anchor(NULL);
 
         struct main_state ms;
@@ -361,7 +361,7 @@ int test_chain_activation_controller(void) {
     /* State name tests */
     failures += test_state_names();
     failures += test_state_name_unknown();
-    /* P14.10 deferred-activation tests */
+    /* deferred-activation tests */
     failures += test_deferred_increments_on_already_running();
     failures += test_deferred_accumulates_across_skips();
     return failures;

@@ -190,7 +190,7 @@ static int t_utxos_above_tip_rejected(void)
     return failures;
 }
 
-/* P7.2: single-block overshoot with ≤ COINS_AUTO_REWIND_MAX_ROWS rows
+/* single-block overshoot with ≤ COINS_AUTO_REWIND_MAX_ROWS rows
  * above tip is the crash-mid-flush shape.  Auto-rewind deletes the
  * overshoot UTXOs + clears the stored commitment, and open() succeeds.
  * Verify the high rows are gone, the tip-height row survives, and the
@@ -263,7 +263,7 @@ static int t_utxos_one_ahead_auto_rewound(void)
     return failures;
 }
 
-/* P7.2: single-block overshoot but with > COINS_AUTO_REWIND_MAX_ROWS
+/* single-block overshoot but with > COINS_AUTO_REWIND_MAX_ROWS
  * (32) rows above tip.  The auto-rewind guard must refuse to auto-heal
  * — the brief's count-first check.  UTXO set MUST remain untouched so
  * the operator can investigate. */
@@ -303,7 +303,7 @@ static int t_utxos_one_ahead_too_many_rejected(void)
     return failures;
 }
 
-/* P7.2: multi-block overshoot (>1 block ahead).  Even with very few
+/* multi-block overshoot (>1 block ahead). Even with very few
  * rows, this is never auto-healable — memory rule: never wipe above
  * tip when the overshoot spans a block boundary we didn't crash
  * mid-flush on.  Must refuse + leave the data alone. */
@@ -340,7 +340,7 @@ static int t_utxos_two_ahead_rejected(void)
     return failures;
 }
 
-/* P8.9: seed a coinbase txid (seed_byte repeated 32x) as a utxos row
+/* seed a coinbase txid (seed_byte repeated 32x) as a utxos row
  * at `utxo_height` AND a transactions row at `tx_height`. The live-node
  * failure had utxo_height == tip_height, tx_height == tip_height + 1 —
  * so the basic height>tip rewind missed the utxos row but BIP30 still
@@ -393,7 +393,7 @@ static bool build_full_db(sqlite3 **out, const char *dbpath)
     return true;
 }
 
-/* P8.9: live-node BIP30 stall repro — block 3081408's coinbase left
+/* live-node BIP30 stall repro — block 3081408's coinbase left
  * behind as a stale utxos row at height <= tip AND a transactions row
  * at height = tip+1, so the basic height>tip rewind missed the utxos
  * row and a re-apply of block 3081408 tripped BIP30 on have_coins of
@@ -406,7 +406,7 @@ static int t_p89_orphan_coinbase_swept_by_txid(void)
     char dir[256]; cva_path(dir, sizeof(dir), "p89_bytxid"); mkdir_p(dir);
     char dbpath[512]; snprintf(dbpath, sizeof(dbpath), "%s/node.db", dir);
 
-    TEST("cva P8.9: orphan coinbase at tip height swept via tx_index") {
+    TEST("cva orphan coinbase at tip height swept via tx_index") {
         sqlite3 *db = NULL;
         ASSERT(build_full_db(&db, dbpath));
 
@@ -465,15 +465,15 @@ static int t_p89_orphan_coinbase_swept_by_txid(void)
     return failures;
 }
 
-/* P8.9: pure height>tip rows still rewound correctly when the
- * transactions table is present — no regression on the P7.2 path. */
+/* pure height>tip rows still rewound correctly when the
+ * transactions table is present — no regression on the path. */
 static int t_p89_basic_rewind_with_tx_table(void)
 {
     int failures = 0;
     char dir[256]; cva_path(dir, sizeof(dir), "p89_basic"); mkdir_p(dir);
     char dbpath[512]; snprintf(dbpath, sizeof(dbpath), "%s/node.db", dir);
 
-    TEST("cva P8.9: basic height>tip rewind unchanged when transactions present") {
+    TEST("cva basic height>tip rewind unchanged when transactions present") {
         sqlite3 *db = NULL;
         ASSERT(build_full_db(&db, dbpath));
 

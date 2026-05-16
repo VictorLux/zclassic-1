@@ -1,6 +1,6 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * P7.9 — Central registry for spawned threads, plus a single-source-of-
+ * Central registry for spawned threads, plus a single-source-of-
  * truth shutdown flag. Before this module landed, the node spawned ~50
  * threads from 40-plus call sites and each subsystem rolled its own
  * stop flag: `g_shutdown_requested` (signal handler), `svc->stop_requested`

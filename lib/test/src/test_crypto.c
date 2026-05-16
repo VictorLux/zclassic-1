@@ -167,12 +167,12 @@ int test_crypto(void)
         else { printf("FAIL\n"); failures++; }
     }
 
-    /* AGENT-3 P1.8: non-canonical S (S >= L) must be rejected per
+    /* AGENT-3 non-canonical S (S >= L) must be rejected per
      * RFC 8032 §5.1.7 and Zcash consensus. Take a valid RFC 8032 vector
      * and overwrite S with the Ed25519 group order L itself — numerically
      * valid 32-byte LE but out of canonical range. Old code skipped this
      * and could split consensus with zcashd on malleable sigs. */
-    printf("Ed25519 verify rejects non-canonical S >= L (P1.8)... ");
+    printf("Ed25519 verify rejects non-canonical S >= L ... ");
     {
         uint8_t pk[32], sig[64];
         test_hex_to_bytes("d75a980182b10ab7d54bfed3c964073a"

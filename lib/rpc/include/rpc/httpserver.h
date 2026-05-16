@@ -22,7 +22,7 @@ bool rpc_http_tls_active(void);
 void rpc_http_cookie_rotate(void);
 int  rpc_http_cookie_rotate_sec(void);
 
-/* P24.11 test surface: builds the standard JSON-RPC response envelope
+/* test surface: builds the standard JSON-RPC response envelope
  * used by the HTTP server. Safe to call on stack-dirtied / previously
  * uninitialized `response` storage. Production code also routes through
  * this helper to avoid reintroducing stack-init regressions in the HTTP

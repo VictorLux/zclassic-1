@@ -132,7 +132,7 @@ bool tx_mempool_has_no_inputs_of(const struct tx_mempool *pool,
 
 /* Returns true iff any input of `tx` is already spent by another
  * transaction in the mempool. Read-only probe — does not mutate the
- * pool. Used by the `tx` message handler (P2.1) to reject
+ * pool. Used by the `tx` message handler to reject
  * double-spends with a typed peer offence before attempting the
  * add-unchecked path, where double-spends are also detected but fold
  * into a generic "add failed" return. */

@@ -1,6 +1,6 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * P26.7 doc-contract test for the power-node architecture spec.
+ * doc-contract test for the power-node architecture spec.
  * The spec is the contract; this test keeps the required surfaces
  * discoverable for RAG and future MCP/tooling work. */
 

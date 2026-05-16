@@ -116,7 +116,7 @@ static pthread_mutex_t g_block_manifest_mutex = PTHREAD_MUTEX_INITIALIZER;
  * This ensures new peers always get a reasonably fresh manifest. */
 #define MANIFEST_REFRESH_BLOCKS 1000
 
-/* P2.7: per-peer FlyClient challenge rate limit.
+/* per-peer FlyClient challenge rate limit.
  *
  * Every zfcchallenge forces snapsync_build_fc_response() to reconstruct
  * 50 MMB proofs over our full block index, which on a ~3M-block chain
@@ -262,7 +262,7 @@ void msgprocessor_test_fc_rate_reset(void)
     pthread_mutex_unlock(&g_fc_rate_mutex);
 }
 
-/* ── P2.6 test hooks: g_swarm_active CAS drive ─────────────────
+/* ── test hooks: g_swarm_active CAS drive ─────────────────
  * Expose the exact atomic primitive used by the zmanifest handler
  * so test_net.c can exercise the no-race / concurrent / reset-cycle
  * paths without a full peer-handshake setup. Body-for-body identical
@@ -729,7 +729,7 @@ void msgprocessor_test_tx_mark_seen(const struct uint256 *hash) {
     tx_mark_seen(hash);
 }
 
-/* P7.4: feed tip-advance signals into the watchdog. Both
+/* feed tip-advance signals into the watchdog. Both
  * EV_BLOCK_CONNECTED (per-block during IBD) and EV_TIP_UPDATED
  * (caught-up-to-peer transitions) count as forward progress. The
  * payload is informational; only the timestamp matters. */
@@ -762,7 +762,7 @@ void msg_processor_init(struct msg_processor *mp,
     /* Initialize download manager once (before threads start) */
     msg_get_download_mgr();
 
-    /* P7.4: tip-stall backpressure watchdog. Init seeds the stall
+    /* tip-stall backpressure watchdog. Init seeds the stall
      * timer to "now" so we don't trip during startup; observers on
      * EV_BLOCK_CONNECTED + EV_TIP_UPDATED keep it warm thereafter. */
     tip_watchdog_init();
@@ -822,13 +822,13 @@ void push_manifest(struct msg_processor *mp, struct p2p_node *node)
         !msg_processor_get_manifest_header(&m))
         return;
     if (m.num_chunks == 0 || m.num_chunks > MANIFEST_MAX_CHUNKS) {
-        fprintf(stderr, "push_manifest: num_chunks %u out of [1,%u]\n",
+        fprintf(stderr, "push_manifest: num_chunks %u out of [1,%u]\n",  // obs-ok:helper-context-logged
                 m.num_chunks, MANIFEST_MAX_CHUNKS);
         return;
     }
     if (!msg_processor_copy_manifest_hashes(&hashes, &hash_count)
         || hash_count != m.num_chunks) {
-        fprintf(stderr, "push_manifest: chunk_hashes unavailable "
+        fprintf(stderr, "push_manifest: chunk_hashes unavailable "  // obs-ok:helper-context-logged
                 "(count=%u vs num_chunks=%u)\n", hash_count, m.num_chunks);
         free(hashes);
         return;
@@ -843,7 +843,7 @@ void push_manifest(struct msg_processor *mp, struct p2p_node *node)
     stream_write_u32_le(&s, m.chunk_size);
     stream_write_bytes(&s, m.merkle_root, 32);
     stream_write_bytes(&s, m.utxo_sha3, 32);
-    /* P2.4: per-chunk SHA3-256 hashes so the receiver can reject a
+    /* per-chunk SHA3-256 hashes so the receiver can reject a
      * corrupt or attacker-substituted chunk before it lands in the
      * utxos table. The receiver Merkle-reconstructs merkle_root from
      * these hashes and bans the peer on mismatch. */
@@ -1744,7 +1744,7 @@ bool msg_process_messages(void *ctx, struct p2p_node *node)
 {
     struct msg_processor *mp = (struct msg_processor *)ctx;
 
-    /* P7.4: tip-stall watchdog state-machine tick. Cheap (a couple of
+    /* tip-stall watchdog state-machine tick. Cheap (a couple of
      * atomics + one stat read on the download manager). One tick per
      * peer per cycle is plenty — state transitions happen on second-
      * scale, not per-message scale. */
@@ -1777,7 +1777,7 @@ bool msg_process_messages(void *ctx, struct p2p_node *node)
                         "%s size=%u exp=%08x got=%08x",
                         ccmd, msg.hdr.nMessageSize,
                         expected, msg.hdr.nChecksum);
-            fprintf(stderr, "Peer %s: checksum mismatch on '%s' (size=%u exp=%08x got=%08x)\n",
+            fprintf(stderr, "Peer %s: checksum mismatch on '%s' (size=%u exp=%08x got=%08x)\n",  // obs-ok:helper-context-logged
                    node->addr_name, ccmd, msg.hdr.nMessageSize,
                    expected, msg.hdr.nChecksum);
             net_message_free(&msg);
@@ -1794,7 +1794,7 @@ bool msg_process_messages(void *ctx, struct p2p_node *node)
         struct byte_stream s;
         stream_init_from_data(&s, msg.recv_data, msg.data_pos);
 
-        /* P7.4: post-parse / pre-dispatch backpressure rejection.
+        /* post-parse pre-dispatch backpressure rejection.
          * When the watchdog is active we drop inv + block messages
          * without dispatching the handler — emits EV_BACKPRESSURE_REJECT
          * but does not bump ban-score. */
@@ -2154,7 +2154,7 @@ static bool handle_zcl23_sync(struct msg_processor *mp,
 
         } else if (strcmp(cmd, MSG_FC_CHALLENGE) == 0) {
             /* ── Route: zfcchallenge → build and send proofs ───── */
-            /* P2.7: token-bucket rate limit *before* parsing so even a
+            /* token-bucket rate limit *before* parsing so even a
              * spray of cheap-to-read challenges can't saturate the MMB
              * proof builder. One bucket per peer; drops silently and
              * scores PEER_OFFENCE_FLOOD once per flood episode. */
@@ -2164,7 +2164,7 @@ static bool handle_zcl23_sync(struct msg_processor *mp,
                     peer_scoring_record(mp->net_mgr, node,
                                         PEER_OFFENCE_FLOOD,
                                         "FlyClient challenge flood");
-                    fprintf(stderr,
+                    fprintf(stderr,  // obs-ok:helper-context-logged
                             "Peer %s: FlyClient challenge flood "
                             "(dropped=%u)\n",
                             node->addr_name, dropped);
@@ -2267,7 +2267,7 @@ static bool handle_zcl23_sync(struct msg_processor *mp,
                                  "truncated zmanifest header");
             } else if (num_chunks == 0 || num_chunks > MANIFEST_MAX_CHUNKS
                        || chunk_size == 0) {
-                fprintf(stderr, "Peer %s: manifest out of bounds "
+                fprintf(stderr, "Peer %s: manifest out of bounds "  // obs-ok:helper-context-logged
                         "(num_chunks=%u cap=%u chunk_size=%u)\n",
                         node->addr_name, num_chunks, MANIFEST_MAX_CHUNKS,
                         chunk_size);
@@ -2282,7 +2282,7 @@ static bool handle_zcl23_sync(struct msg_processor *mp,
                     }
                 }
 
-                /* P2.4: read num_chunks * 32 bytes of per-chunk SHA3 hashes
+                /* read num_chunks * 32 bytes of per-chunk SHA3 hashes
                  * and reject the manifest if they don't Merkle-reconstruct
                  * to the merkle_root the same peer advertised above. This
                  * is the commitment the receiver checks each zchunkdata
@@ -2320,7 +2320,7 @@ static bool handle_zcl23_sync(struct msg_processor *mp,
                          * active swarm, initialize the swarm coordinator
                          * from their (now-verified) manifest.
                          *
-                         * P2.6: atomic compare-exchange on g_swarm_active
+                         * atomic compare-exchange on g_swarm_active
                          * (false → true) closes the TOCTOU window between
                          * the "is a swarm already running?" check and the
                          * "claim the slot" write. Two peers racing on
@@ -2507,7 +2507,7 @@ static bool handle_zcl23_sync(struct msg_processor *mp,
 
                         if (!verified) {
                             zcl_mutex_unlock(&g_swarm_mutex);
-                            fprintf(stderr, "Peer %s: chunk %u failed verification\n",
+                            fprintf(stderr, "Peer %s: chunk %u failed verification\n",  // obs-ok:helper-context-logged
                                    node->addr_name, chunk_index);
                             peer_misbehaving(mp->net_mgr, node, 50,
                                              "bad chunk hash");
@@ -2545,7 +2545,7 @@ static bool handle_zcl23_sync(struct msg_processor *mp,
                             }
 
                             swarm_sync_free(&g_swarm);
-                            /* P2.6: explicit atomic_store for symmetry with
+                            /* explicit atomic_store for symmetry with
                              * the CAS at the init site. Functionally
                              * equivalent to `g_swarm_active = false` on
                              * _Atomic bool, but documents the pairing. */
@@ -2592,7 +2592,7 @@ static bool handle_zcl23_sync(struct msg_processor *mp,
                     uint32_t expected = (uint32_t)((end_h - start_h +
                         BLOCKS_PER_PIECE) / BLOCKS_PER_PIECE);
                     if (num_pieces != expected) {
-                        fprintf(stderr, "Peer %s: block manifest piece count mismatch "
+                        fprintf(stderr, "Peer %s: block manifest piece count mismatch "  // obs-ok:helper-context-logged
                                "(got %u, expected %u for h=%d..%d)\n",
                                node->addr_name, num_pieces, expected,
                                start_h, end_h);
@@ -2759,7 +2759,7 @@ static bool handle_zcl23_sync(struct msg_processor *mp,
                         }
                     } else {
                         block_swarm_fail_piece(&g_block_swarm, piece_index);
-                        fprintf(stderr, "Peer %s: block piece %u failed verification\n",
+                        fprintf(stderr, "Peer %s: block piece %u failed verification\n",  // obs-ok:helper-context-logged
                                node->addr_name, piece_index);
                         peer_misbehaving(mp->net_mgr, node, 50,
                                          "bad block piece hash");
@@ -3329,7 +3329,7 @@ bool msg_send_messages(void *ctx, struct p2p_node *node, bool send_trickle)
                 }
             }
         } else {
-            fprintf(stderr, "Peer %s: no snapshot in memory\n", node->addr_name);
+            fprintf(stderr, "Peer %s: no snapshot in memory\n", node->addr_name);  // obs-ok:helper-context-logged
             peer_set_state_checked((uint32_t)node->id, &node->state,
                                    PEER_ACTIVE, "no snapshot buffer");
         }

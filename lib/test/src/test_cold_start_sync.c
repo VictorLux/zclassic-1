@@ -1,6 +1,6 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * P11.3 — MVP criterion #3 CI gate: cold-start sync to tip in <10 min.
+ * MVP criterion #3 CI gate: cold-start sync to tip in <10 min.
  *
  * Drives the sync state machine from SYNC_IDLE through every legal
  * cold-start transition path to SYNC_AT_TIP ("ready"), measures the
@@ -34,7 +34,7 @@
  *
  * Gating
  * ------
- * Skipped unless ZCL_STRESS_TESTS=1.  Matches the P11.1 onion bootstrap
+ * Skipped unless ZCL_STRESS_TESTS=1. Matches the onion bootstrap
  * pattern: the MVP CI gates run in an opt-in "stress" bucket because
  * they sleep and poll (seconds, not microseconds).  Default
  * `make test` stays fast.
@@ -53,10 +53,10 @@
  * -----------------------------
  *   - Real 3M-block cold sync against the live network: that's MVP
  *     criterion #6 (7-day soak), not a unit test.
- *   - Real Tor bootstrap: covered separately by P11.1
+ * - Real Tor bootstrap: covered separately by 
  *     (`test_onion_bootstrap`).
- *   - kill -9 mid-sync recovery: MVP criterion #7 / P11.7, gated on
- *     P10.1.4 landing (it has — `ac782fef5`).
+ * - kill -9 mid-sync recovery: MVP criterion #7 /, gated on
+ * landing (it has — `ac782fef5`).
  *
  * This test proves only that the sync FSM itself can reach
  * SYNC_AT_TIP through the legal cold-start sequences.  If a future
@@ -132,7 +132,7 @@ static int p11_3_run_path(const char *label,
     /* Reset to cold baseline.  Any state → SYNC_IDLE is a legal
      * transition (event.c:858+).  If the state is already IDLE this
      * is a no-op inside sync_set_state. */
-    if (!sync_set_state(SYNC_IDLE, "P11.3 cold baseline")) {
+    if (!sync_set_state(SYNC_IDLE, "cold baseline")) {
         printf("FAIL (%s: could not reset to SYNC_IDLE; state=%s)\n",
                label, sync_state_name(sync_get_state()));
         return 1;
@@ -187,8 +187,8 @@ static int p11_3_run_path(const char *label,
 int test_cold_start_sync(void)
 {
     int failures = 0;
-    printf("\n=== P11.3 cold-start sync (MVP #3, <10 min) ===\n");
-    printf("cold_start_sync P11.3: SYNC_AT_TIP via IBD + fast-sync paths... ");
+    printf("\n=== cold-start sync (MVP #3, <10 min) ===\n");
+    printf("cold_start_sync SYNC_AT_TIP via IBD + fast-sync paths... ");
 
     if (!getenv("ZCL_STRESS_TESTS")) {
         printf("SKIP (set ZCL_STRESS_TESTS=1 to run — sleep-driven 1Hz polling)\n");
@@ -201,11 +201,11 @@ int test_cold_start_sync(void)
      * simulated time ~3.5s; 1Hz polling observes tip within 4s.
      * (Real 3M-block cold sync lives in MVP criterion #6's soak.) */
     static const struct p11_3_leg ibd_legs[] = {
-        { .delay_ms =  500, .target = SYNC_FINDING_PEERS,     .reason = "P11.3 IBD: peers up"      },
-        { .delay_ms = 1000, .target = SYNC_HEADERS_DOWNLOAD,  .reason = "P11.3 IBD: headers start" },
-        { .delay_ms = 1000, .target = SYNC_BLOCKS_DOWNLOAD,   .reason = "P11.3 IBD: blocks start"  },
-        { .delay_ms =  500, .target = SYNC_CONNECTING_BLOCKS, .reason = "P11.3 IBD: connecting"    },
-        { .delay_ms =   50, .target = SYNC_AT_TIP,            .reason = "P11.3 IBD: caught up"     },
+        { .delay_ms =  500, .target = SYNC_FINDING_PEERS,     .reason = "IBD: peers up"      },
+        { .delay_ms = 1000, .target = SYNC_HEADERS_DOWNLOAD,  .reason = "IBD: headers start" },
+        { .delay_ms = 1000, .target = SYNC_BLOCKS_DOWNLOAD,   .reason = "IBD: blocks start"  },
+        { .delay_ms =  500, .target = SYNC_CONNECTING_BLOCKS, .reason = "IBD: connecting"    },
+        { .delay_ms =   50, .target = SYNC_AT_TIP,            .reason = "IBD: caught up"     },
     };
     failures += p11_3_run_path("IBD path",
                                 ibd_legs,
@@ -214,10 +214,10 @@ int test_cold_start_sync(void)
     /* Path B — ZCL23 fast-sync via snapshot.  Delays approximate the
      * <60s MVP-target shape (snapshot receive dominates). */
     static const struct p11_3_leg fastsync_legs[] = {
-        { .delay_ms =  500, .target = SYNC_FINDING_PEERS,     .reason = "P11.3 fast-sync: peers up"    },
-        { .delay_ms = 1500, .target = SYNC_SNAPSHOT_RECEIVE,  .reason = "P11.3 fast-sync: snapshot"    },
-        { .delay_ms =  500, .target = SYNC_CONNECTING_BLOCKS, .reason = "P11.3 fast-sync: connecting"  },
-        { .delay_ms =   50, .target = SYNC_AT_TIP,            .reason = "P11.3 fast-sync: caught up"   },
+        { .delay_ms =  500, .target = SYNC_FINDING_PEERS,     .reason = "fast-sync: peers up"    },
+        { .delay_ms = 1500, .target = SYNC_SNAPSHOT_RECEIVE,  .reason = "fast-sync: snapshot"    },
+        { .delay_ms =  500, .target = SYNC_CONNECTING_BLOCKS, .reason = "fast-sync: connecting"  },
+        { .delay_ms =   50, .target = SYNC_AT_TIP,            .reason = "fast-sync: caught up"   },
     };
     failures += p11_3_run_path("fast-sync path",
                                 fastsync_legs,
@@ -225,9 +225,9 @@ int test_cold_start_sync(void)
 
     /* Cleanup: leave SYNC_IDLE so neighbor tests (test_sync_watchdog,
      * etc.) start from a clean state machine. */
-    sync_set_state(SYNC_IDLE, "P11.3 cleanup");
+    sync_set_state(SYNC_IDLE, "cleanup");
 
     if (failures == 0)
-        printf("cold_start_sync P11.3: OK (both cold-start paths reach SYNC_AT_TIP within MVP budget)\n");
+        printf("cold_start_sync OK (both cold-start paths reach SYNC_AT_TIP within MVP budget)\n");
     return failures;
 }

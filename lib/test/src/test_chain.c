@@ -958,13 +958,13 @@ int test_chain(void)
         }
     }
 
-    /* P1.7: removing the skip_diffbits escape hatch must cause a header
+    /* removing the skip_diffbits escape hatch must cause a header
      * whose nBits disagrees with GetNextWorkRequired to be rejected, even
      * when the 28-ancestor window is incomplete (previously silently
      * skipped).  Trivial pass-through value 0x1d00ffff (Bitcoin's mainnet
      * limit) does NOT match Zcash's much tighter powLimit, so the header
      * must fail with "bad-diffbits". */
-    printf("contextual_check_block_header rejects trivial-low nBits (P1.7)... ");
+    printf("contextual_check_block_header rejects trivial-low nBits ... ");
     {
         const struct chain_params *p = chain_params_get();
         struct validation_state state;
@@ -1783,13 +1783,13 @@ int test_chain(void)
         if (ok) printf("OK\n"); else { printf("FAIL\n"); failures++; }
     }
 
-    /* P24.13 RED — skip_contextual gate must fire when the PoW averaging
+    /* Regression test: skip_contextual gate must fire when the PoW averaging
      * window cannot be walked back contiguously from pindex_prev. Models
      * the live mainnet 2026-04-21 case where FlyClient snapshot placed
      * tip=3,081,601 but block_index only reaches 3,081,408, so the
      * 17-block GetNextWorkRequired window returns weakest-allowed nBits
      * and every inbound header gets bad-diffbits-rejected. */
-    printf("P24.13 skip_contextual: complete retarget+MTP window, no skip... ");
+    printf("skip_contextual: complete retarget+MTP window, no skip... ");
     {
         struct consensus_params cp = { .nPowAveragingWindow = 17 };
         struct main_state ms;
@@ -1819,7 +1819,7 @@ int test_chain(void)
         active_chain_free(&ms.chain_active);
     }
 
-    printf("P24.13 skip_contextual: sparse import anchor, MUST skip... ");
+    printf("skip_contextual: sparse import anchor, MUST skip... ");
     {
         struct consensus_params cp = { .nPowAveragingWindow = 17 };
         struct main_state ms;
@@ -1849,7 +1849,7 @@ int test_chain(void)
         active_chain_free(&ms.chain_active);
     }
 
-    printf("P24.13 skip_contextual: broken pprev at tip, MUST skip... ");
+    printf("skip_contextual: broken pprev at tip, MUST skip... ");
     {
         struct consensus_params cp = { .nPowAveragingWindow = 17 };
         struct main_state ms;
@@ -1873,13 +1873,13 @@ int test_chain(void)
         if (should_skip)
             printf("OK\n");
         else {
-            printf("FAIL (gate failed to fire — this is the P24.13 bug)\n");
+            printf("FAIL (gate failed to fire — this is the bug)\n");
             failures++;
         }
         active_chain_free(&ms.chain_active);
     }
 
-    printf("P24.13 skip_contextual: height-inversion mid-window, MUST skip... ");
+    printf("skip_contextual: height-inversion mid-window, MUST skip... ");
     {
         struct consensus_params cp = { .nPowAveragingWindow = 17 };
         struct main_state ms;
@@ -1909,7 +1909,7 @@ int test_chain(void)
         active_chain_free(&ms.chain_active);
     }
 
-    printf("P24.13 skip_contextual: NULL pindex_prev → safe default... ");
+    printf("skip_contextual: NULL pindex_prev → safe default... ");
     {
         struct consensus_params cp = { .nPowAveragingWindow = 17 };
         struct main_state ms;

@@ -652,7 +652,7 @@ static int test_async_dispatch_lifecycle(void)
     return failures;
 }
 
-/* P7.3: regression for the SIGABRT-on-live-node incident where
+/* regression for the SIGABRT-on-live-node incident where
  * node.log preserved only `sys.crash signal 6` — the FATAL SIGNAL
  * header and the backtrace_symbols_fd frame addresses never made it
  * because stderr was fully-buffered under systemd's StandardError

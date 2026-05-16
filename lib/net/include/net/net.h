@@ -93,7 +93,7 @@ int net_message_read_header(struct net_message *msg,
 int net_message_read_data(struct net_message *msg,
                           const char *pch, unsigned int nbytes);
 
-/* P2.8 — process-wide recv queue byte budget. net_recv_total_bytes()
+/* process-wide recv queue byte budget. net_recv_total_bytes
  * returns the current sum of outstanding msg->recv_alloc across every
  * net_message. net_recv_total_bytes_cap() returns the configured
  * ceiling (env ZCL_MAX_RECVBUFFER_TOTAL_BYTES, default 256 MiB). When

@@ -41,7 +41,7 @@
 
 /* --- net_message --- */
 /*
- * Process-wide recv-queue byte budget (P2.8).
+ * Process-wide recv-queue byte budget.
  *
  * Per-message size is capped at 2 MB in net_message_read_data below,
  * but nothing prevented 1000 peers each feeding a 2 MB message into
@@ -152,7 +152,7 @@ int net_message_read_data(struct net_message *msg,
     size_t needed = msg->data_pos + copy;
     if (msg->recv_alloc < needed) {
         size_t alloc = msg->hdr.nMessageSize;
-        /* P2.8: charge the delta against the process-wide recv budget
+        /* charge the delta against the process-wide recv budget
          * BEFORE reallocating. A swarm of peers each trying to stage a
          * 2 MB message must not be able to push our resident set past
          * the configured ceiling. */

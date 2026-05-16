@@ -5,8 +5,8 @@
  * file COPYING or http://www.opensource.org/licenses/mit-license.php.
  *
  * ─────────────────────────────────────────────────────────────────
- * P1.16 — root-cause fix for the GetRandBytes fail-open that was
- * flagged during P1.15 (see AGENT-3.md note at end for the original
+ * root-cause fix for the GetRandBytes fail-open that was
+ * flagged during (see AGENT-3.md note at end for the original
  * writeup).
  *
  * The prior implementation opened /dev/urandom and silently
@@ -124,7 +124,7 @@ void GetRandBytes(unsigned char *buf, size_t num)
 
 #ifdef ZCL_TESTING
     if (atomic_load_explicit(&g_rng_force_fail, memory_order_acquire)) {
-        fprintf(stderr,
+        fprintf(stderr,  // obs-ok:helper-context-logged
             "[fatal] %s:%d GetRandBytes(): ZCL_TEST_FORCE_RNG_FAIL active "
             "— aborting to avoid zero-fill (num=%zu)\n",
             __FILE__, __LINE__, num);
@@ -137,7 +137,7 @@ void GetRandBytes(unsigned char *buf, size_t num)
     if (fill_from_urandom(buf, num))   return;
 
     int saved = errno;
-    fprintf(stderr,
+    fprintf(stderr,  // obs-ok:helper-context-logged
         "[fatal] %s:%d GetRandBytes(): no entropy source available "
         "(getrandom + /dev/urandom both failed, errno=%d %s) for %zu bytes "
         "— aborting to avoid silent zero-fill\n",

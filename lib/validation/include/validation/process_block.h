@@ -106,7 +106,7 @@ struct coins_view_sqlite;
 void set_coins_sqlite_for_commitment(struct coins_view_sqlite *cvs);
 void set_sapling_tree_for_flush(struct incremental_merkle_tree *tree);
 
-/* Configure the flat-file sapling checkpoint path (P12.1). Call once
+/* Configure the flat-file sapling checkpoint path. Call once
  * from boot.c with the node's datadir; the helper derives
  * `<datadir>/sapling_tree_ckpt.dat`. After this is set, the commit
  * path flushes the checkpoint every `SAPLING_CHECKPOINT_BLOCK_INTERVAL`
@@ -121,7 +121,7 @@ bool test_block_validity(struct validation_state *state,
                          const struct block *block,
                          struct block_index *pindex_prev);
 
-/* P7.1 test-only surface: drives update_tip directly so a unit test
+/* test-only surface: drives update_tip directly so a unit test
  * can verify csr_commit_tip rejection propagates to the caller.
  * Returns false if the csr refused the commit; returns true if the
  * tip was advanced (or cleared, when pindex_new == NULL). Do NOT
@@ -160,7 +160,7 @@ void process_block_test_set_crash_stage(enum process_block_crash_stage s);
 enum process_block_crash_stage process_block_test_get_crash_stage(void);
 const char *process_block_crash_stage_name(enum process_block_crash_stage s);
 
-/* P14.7 test-only surface: drives the stale-FAILED-mark clear logic
+/* test-only surface: drives the stale-FAILED-mark clear logic
  * that accept_block_header uses when a header re-arrives for an
  * existing pindex. Caller owns last_retry_clear — passing 0 forces
  * a fresh rate-limit window. Returns true if nStatus was modified.
@@ -178,7 +178,7 @@ bool process_block_try_clear_stale_failed(struct block_index *pindex,
                                            time_t now,
                                            time_t *last_retry_clear);
 
-/* P14.6: result codes for process_block_propagate_failed_child. Values
+/* result codes for process_block_propagate_failed_child. Values
  * are stable and tested directly; add new codes at the end. */
 enum propagate_failed_child_result {
     PROPAGATE_FAILED_CHILD_OK                 =  0, /* walk ran; propagated_out set */
@@ -187,7 +187,7 @@ enum propagate_failed_child_result {
     PROPAGATE_FAILED_CHILD_MALLOC_FAILED      = -1, /* allocator returned NULL */
 };
 
-/* P14.6: minimum wall-clock interval between full propagation walks
+/* minimum wall-clock interval between full propagation walks
  * when the caller opts into rate-limiting (non-NULL last_propagate_sec).
  * At a live-tip block_map size of ~3M entries, each walk is ~24 MB of
  * scratch + an O(N log N) qsort; firing once per FSM flap event can
@@ -197,7 +197,7 @@ enum propagate_failed_child_result {
  * amplifying a stall into resource exhaustion. */
 #define PROPAGATE_FAILED_CHILD_MIN_INTERVAL_SEC 10
 
-/* P14.6 test-only surface: propagate BLOCK_FAILED_CHILD from a failed
+/* test-only surface: propagate BLOCK_FAILED_CHILD from a failed
  * `pindex_root` through all descendants recorded in `map`. Caller
  * MUST have set a BLOCK_FAILED_MASK bit on pindex_root itself before
  * invoking.
@@ -222,14 +222,14 @@ process_block_propagate_failed_child(struct block_map *map,
                                       time_t *last_propagate_sec,
                                       size_t *propagated_out);
 
-/* P24.13: decide whether to bypass contextual_check_block_header() for
+/* decide whether to bypass contextual_check_block_header for
  * an incoming header. Returns true when the check would spuriously
  * fail, i.e. one of:
  *
  *  (a) Old-IBD / scrambled-height case (pre-existing behavior):
  *      tip > 100000 AND pindex_prev->nHeight < tip - 1000.
  *
- *  (b) Post-FlyClient-snapshot tail (new in P24.13):
+ * (b) Post-FlyClient-snapshot tail (new ):
  *      the PoW averaging window cannot be walked back contiguously
  *      from pindex_prev for `consensus->nPowAveragingWindow` steps.
  *      Hit when the snapshot placed a tip_h whose pprev chain is

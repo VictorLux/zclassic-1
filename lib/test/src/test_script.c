@@ -254,7 +254,7 @@ int test_script(void)
         else { printf("FAIL\n"); failures++; }
     }
 
-    /* P4.3 — script_num_serialize rejects short buffers instead of
+    /* script_num_serialize rejects short buffers instead of
      * silently truncating. Max output for any valid int64 magnitude is
      * SCRIPT_NUM_MAX_SIZE (8 bytes). */
     printf("script_num_serialize outsize bounds... ");
@@ -394,7 +394,7 @@ int test_script(void)
         else { printf("FAIL\n"); failures++; }
     }
 
-    /* P4.5 — strict-DER parity with canonical Zcash / Bitcoin encoding.
+    /* strict-DER parity with canonical Zcash Bitcoin encoding.
      *
      * The is_valid_signature_encoding routine is BIP66 consensus-critical:
      * any divergence from the upstream rules forks the network. These
@@ -1044,7 +1044,7 @@ int test_script(void)
     }
 
     /* ================================================================
-     * P4.1 + P4.2 — script_stack on the heap, push failures propagate.
+     * script_stack on the heap, push failures propagate.
      *
      * Before the refactor, eval_script had a ~520 KB altstack on its C
      * stack frame and verify_script added two more (~1 MB), so parallel
@@ -1054,7 +1054,7 @@ int test_script(void)
      * failures also used to be silently dropped, leaving the stack
      * shape inconsistent for subsequent OP_PICK / OP_ROLL reads.
      * ================================================================ */
-    printf("deep nested OP_IF — 100 frames succeed (P4.1)... ");
+    printf("deep nested OP_IF — 100 frames succeed ... ");
     {
         struct rusage before, after;
         getrusage(RUSAGE_SELF, &before);
@@ -1085,7 +1085,7 @@ int test_script(void)
                       ok, stk.count, (int)err, ru_delta_kb); failures++; }
     }
 
-    printf("stack_push overflow returns STACK_SIZE (P4.2)... ");
+    printf("stack_push overflow returns STACK_SIZE ... ");
     {
         /* Fill the stack to MAX_STACK_ITEMS via OP_1 pushes, then OP_DUP
          * must refuse with SCRIPT_ERR_STACK_SIZE. Pre-refactor the

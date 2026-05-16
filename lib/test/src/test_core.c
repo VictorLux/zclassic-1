@@ -9,7 +9,7 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
-/* Forward-declared here rather than in core/random.h: the P1.16 scope
+/* Forward-declared here rather than in core/random.h: the scope
  * boundary keeps lib/core/include/ off-limits, so random.c exposes
  * this test-only hook via weak linkage instead of a header. */
 extern void zcl_random_test_force_fail(bool on);
@@ -159,10 +159,10 @@ int test_core(void)
         else { printf("FAIL\n"); failures++; }
     }
 
-    /* P1.16 regression: when every entropy source is unavailable,
+    /* regression: when every entropy source is unavailable,
      * GetRandBytes must abort() rather than silently zero-fill the
      * output. The prior implementation (lib/core/src/random.c pre-
-     * P1.16) fell back to memset(buf, 0, num) on open("/dev/urandom")
+     * ) fell back to memset(buf, 0, num) on open("/dev/urandom")
      * failure, so any caller seeding a private key in a chroot would
      * silently derive an all-zero secret. We fork a child, force the
      * test-only failure injection, and assert the child dies with

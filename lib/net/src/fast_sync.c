@@ -508,7 +508,7 @@ int64_t fast_sync_prebuild_snapshot(struct node_db *ndb, const char *datadir)
                    (long long)count, (double)sz / (1024.0 * 1024.0), hex);
         }
     } else {
-        fprintf(stderr, "[snapshot] Pre-serialization failed\n");
+        fprintf(stderr, "[snapshot] Pre-serialization failed\n");  // obs-ok:helper-context-logged
     }
     return count;
 }
@@ -698,7 +698,7 @@ bool fast_sync_rate_check(struct fast_sync_rate_limiter *rl,
 bool fast_sync_apply_chunk(const char *datadir,
                             const struct utxo_chunk *chunk)
 {
-    /* P2.3: bulk UTXO insert must either land as a whole chunk or
+    /* bulk UTXO insert must either land as a whole chunk or
      * roll back entirely. BEGIN + row-at-a-time INSERT + COMMIT gives
      * SQLite the atomicity guarantee; the loop below routes every
      * step through AR_STEP_DONE instead of raw sqlite3_step so the
@@ -742,7 +742,7 @@ bool fast_sync_apply_chunk(const char *datadir,
         AR_BIND_INT(ins, 5, chunk->entries[i].height);
         AR_BIND_INT(ins, 6, chunk->entries[i].is_coinbase ? 1 : 0);
         if (!AR_STEP_DONE(ins)) {
-            fprintf(stderr, "fast_sync_apply_chunk: insert %u/%u failed: %s\n",
+            fprintf(stderr, "fast_sync_apply_chunk: insert %u/%u failed: %s\n",  // obs-ok:helper-context-logged
                     i, chunk->num_entries, sqlite3_errmsg(db));
             insert_ok = false;
             break;
@@ -1142,7 +1142,7 @@ void sync_manifest_free(struct sync_manifest *m)
 bool swarm_sync_init(struct swarm_sync *ss, const struct sync_manifest *manifest,
                       const char *datadir)
 {
-    /* P2.4: chunk_hashes is REQUIRED. Without it, swarm_sync_receive_chunk
+    /* chunk_hashes is REQUIRED. Without it, swarm_sync_receive_chunk
      * would be unable to verify per-chunk integrity against the manifest
      * and a malicious peer's chunks would land in chainstate unchecked.
      * Callers that received an untrusted manifest over the wire MUST
@@ -1228,7 +1228,7 @@ bool swarm_sync_receive_chunk(struct swarm_sync *ss,
         LOG_FAIL("sync", "receive_chunk: chunk_index %u >= num_chunks %u",
                  idx, ss->manifest.num_chunks);
 
-    /* P2.4: verify SHA3-256 of the received chunk against the per-chunk
+    /* verify SHA3-256 of the received chunk against the per-chunk
      * hash the peer advertised in the swarm manifest BEFORE handing any
      * bytes to fast_sync_apply_chunk — otherwise the AR_STEP_DONE writer
      * would commit attacker-controlled rows into the utxos table and the

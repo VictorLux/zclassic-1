@@ -1046,7 +1046,7 @@ int test_validation(void)
     }
 
     /* ================================================================
-     * P4.4 — disconnect_block: rejects pathological prevout.n
+     * disconnect_block: rejects pathological prevout.n
      *
      * Without the clamp, prevout.n = UINT32_MAX triggers a realloc of
      * (2^32) * sizeof(tx_out) ≈ 128 GB. The clamp rejects any
@@ -1503,7 +1503,7 @@ int test_validation(void)
     }
 
     /* ================================================================
-     * P1.6: script_get_sig_op_count_p2sh — redeem-script sigop counter
+     * script_get_sig_op_count_p2sh — redeem-script sigop counter
      *                                                                  *
      * Byte-for-byte mirror of zclassicd
      * src/script/script.cpp::CScript::GetSigOpCount(flags, scriptSig).

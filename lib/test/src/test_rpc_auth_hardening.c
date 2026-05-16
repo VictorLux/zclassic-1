@@ -356,7 +356,7 @@ static int test_loopback_subnet_exemption(void)
     return failures;
 }
 
-/* ── P3.7: /metrics endpoint is gated by Basic auth ─────────────
+/* ── /metrics endpoint is gated by Basic auth ─────────────
  *
  * Before the fix, `GET /metrics` on the TLS listener returned a full
  * Prometheus body to any unauthenticated client — usable for
@@ -510,7 +510,7 @@ static int metrics_get(uint16_t port, const char *auth_b64,
 static int test_metrics_auth_required(void)
 {
     int failures = 0;
-    TEST("auth_hardening: /metrics requires Basic auth (P3.7)") {
+    TEST("auth_hardening: /metrics requires Basic auth ") {
         char tmpdir[64];
         snprintf(tmpdir, sizeof(tmpdir),
                  "./test-tmp/zcl_metrics_auth_%d_XXXXXX", (int)getpid());

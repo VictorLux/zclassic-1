@@ -27,7 +27,7 @@
 /* Per-mountain height cap. For any plausible chain,
  * mountain height ≤ ⌈log2(num_leaves)⌉ ≤ 64. The cap bounds the
  * deserialize input (defence in depth for fast-sync/swarm paths
- * before P2.4 hash-binds the blob) and bounds in-memory merges so
+ * hash-binds the blob) and bounds in-memory merges so
  * an unsigned wraparound can never silently corrupt the trust root. */
 #define MMB_MAX_HEIGHT    64
 

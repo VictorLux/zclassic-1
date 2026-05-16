@@ -1,6 +1,6 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * Regression test for P1.1 + P1.2: the wallet flusher used
+ * Regression test for the wallet flusher used
  * to ignore per-writer rc and COMMIT even when a mid-flush write had
  * failed, silently persisting partial state.  That is the bug class
  * that lost 0.4 ZCL on 2026-04-12.

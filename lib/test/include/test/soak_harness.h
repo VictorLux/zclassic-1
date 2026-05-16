@@ -1,6 +1,6 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * P11.6 — 7-day soak harness (MVP criterion #6).
+ * 7-day soak harness (MVP criterion #6).
  *
  * Offline analyzer for the sample stream emitted by `tools/soak/`
  * while it polls a running node every 60 s for 7 days. Split from

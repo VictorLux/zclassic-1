@@ -1,6 +1,6 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * P11.6 — 7-day soak runner (MVP criterion #6).
+ * 7-day soak runner (MVP criterion #6).
  *
  * Separate binary that polls a running zclassic23 every 60 s for
  * a configured duration (default 7 days), feeds each sample
@@ -221,7 +221,7 @@ int main(int argc, char **argv)
 
     time_t started = time(NULL);
     fprintf(log,
-        "# P11.6 soak runner\n"
+        "# soak runner\n"
         "# duration_sec=%" PRIu64 " interval_sec=%" PRIu64 "\n"
         "# stall_sec=%" PRIu64 " warmup_sec=%" PRIu64 " rss_growth_bytes=%" PRIu64 "\n"
         "# service=%s rpc=%s\n"

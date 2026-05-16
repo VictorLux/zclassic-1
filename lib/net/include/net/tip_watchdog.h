@@ -1,12 +1,12 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * P7.4 backpressure watchdog — caps RAM blow-up under a tip-stall.
+ * backpressure watchdog — caps RAM blow-up under a tip-stall.
  *
  * Live-outage context (2026-04-18): a regression in update_tip
- * (P7.1) trapped the chain at h=3,081,601; new blocks kept arriving
+ * trapped the chain at h=3,081,601; new blocks kept arriving
  * but never advanced chain_tip, so download buffers + connect-block
  * scratch climbed to 6.0 GB RSS before the cgroup OOM path fired.
- * P7.1 fixed the root cause; this watchdog is the diagnostic
+ * fixed the root cause; this watchdog is the diagnostic
  * backstop that turns the next tip-stall regression into a bounded
  * EV_BACKPRESSURE_* event stream instead of an OOM.
  *
@@ -77,7 +77,7 @@ bool tip_watchdog_should_reject(uint32_t peer_id, const char *cmd);
 
 /* ── Test hooks ──────────────────────────────────────────────
  * Drive the watchdog with an explicit clock and queue size.  Not
- * intended for production callers — used by test_net.c P7.4 cases. */
+ * intended for production callers — used by test_net.c cases. */
 
 void tip_watchdog_test_reset(void);
 void tip_watchdog_test_set_now_ns(int64_t now_ns);

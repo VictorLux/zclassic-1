@@ -391,9 +391,9 @@ int test_bloom(void)
         else { printf("FAIL\n"); failures++; }
     }
 
-    /* ── P8.5: rolling_bloom must clamp MAX_BLOOM_HASH_FUNCS ────────── */
+    /* ── rolling_bloom must clamp MAX_BLOOM_HASH_FUNCS ────────── */
 
-    printf("P8.5: rolling_bloom_init clamps num_hash_funcs... ");
+    printf("rolling_bloom_init clamps num_hash_funcs... ");
     {
         /* Pathological tuning: num_elements=1 (doubled to 2 internally)
          * with fp_rate=1e-30 produces ideal ≈ 97 hash funcs pre-fix.
@@ -413,7 +413,7 @@ int test_bloom(void)
         rolling_bloom_free(&rf);
     }
 
-    printf("P8.5: rolling_bloom_init sane params not over-clamped... ");
+    printf("rolling_bloom_init sane params not over-clamped... ");
     {
         /* Normal tuning: ideal << MAX_BLOOM_HASH_FUNCS. Assert the clamp
          * doesn't regress everyday rolling-bloom behavior. */
@@ -431,7 +431,7 @@ int test_bloom(void)
         rolling_bloom_free(&rf);
     }
 
-    printf("P8.5: bloom_filter_init regression (public path still clamps)... ");
+    printf("bloom_filter_init regression (public path still clamps)... ");
     {
         /* Same pathological tuning via the public constrained path.
          * Pre- and post-fix must both clamp; this asserts we didn't

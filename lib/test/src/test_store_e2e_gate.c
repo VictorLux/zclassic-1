@@ -1,6 +1,6 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * P11.5 — MVP criterion #5 CI gate: store end-to-end.
+ * MVP criterion #5 CI gate: store end-to-end.
  *
  * This gate proves the shipped store flow survives the persistence boundary:
  *   1. browse the seeded store catalog and fetch a CSRF token
@@ -120,8 +120,8 @@ int test_store_e2e_gate(void)
 {
     int failures = 0;
 
-    printf("\n=== P11.5 store e2e (MVP #5) ===\n");
-    printf("store_e2e P11.5: order -> confirmed payment -> token access... ");
+    printf("\n=== store e2e (MVP #5) ===\n");
+    printf("store_e2e order -> confirmed payment -> token access... ");
 
     if (!getenv("ZCL_STRESS_TESTS")) {
         printf("SKIP (set ZCL_STRESS_TESTS=1 to run deterministic gate)\n");

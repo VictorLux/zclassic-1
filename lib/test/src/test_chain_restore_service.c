@@ -356,7 +356,7 @@ static int test_activation_few_utxos_few_headers(void) {
     return failures;
 }
 
-/* ── Integrity (P14.11 + P14.12) ───────────────────────────────── */
+/* ── Integrity ───────────────────────────────── */
 
 /* Build a clean chain of N linked pindex entries (h=0..N-1) with real
  * nBits and pprev, then set the tip. Integrity must hold. */
@@ -460,8 +460,8 @@ static int test_integrity_anchor_restore_is_benign(void) {
     return failures;
 }
 
-/* Isolate P14.12: a clean pprev-linked chain with ONE nBits=0 entry
- * above genesis must trip the P14.11 limb independently. */
+/* Isolate a clean pprev-linked chain with ONE nBits=0 entry
+ * above genesis must trip the limb independently. */
 static int test_integrity_detects_isolated_nbits_zero(void) {
     int failures = 0;
     TEST("chain_integrity: single nBits=0 above genesis is detected") {
@@ -502,7 +502,7 @@ static int test_integrity_detects_isolated_nbits_zero(void) {
     return failures;
 }
 
-/* ── Post-restore repair (P14.11 + P14.12 GREEN) ──────────────────
+/* ── Post-restore repair ──────────────────
  *
  * These exercise the GREEN limbs of the fix:
  *   - chain_restore_rebuild_active_chain fills holes below the tip
@@ -580,7 +580,7 @@ static int test_rebuild_active_chain_fills_holes_from_block_map(void) {
     return failures;
 }
 
-/* P14.13 RED — rebuild_active_chain must be O(N), not O(N²).
+/* Regression test: rebuild_active_chain must be O(N), not O(N²).
  *
  * Live shape: post-anchor restore installs a tip at ~h=3M with pprev=NULL.
  * active_chain_set_tip writes NULL into every slot below the tip. The
@@ -645,10 +645,10 @@ static int test_rebuild_active_chain_scales_at_100k(void) {
             ASSERT(got->nHeight == h);
         }
 
-        /* P14.13 target. Pre-fix the residual-hole loop is O(N²) and
+        /* target. Pre-fix the residual-hole loop is O(N²) and
          * blows well past this budget even at N=100k. */
         if (elapsed >= 2.0) {
-            printf("[P14.13] rebuild took %.3fs (>=2s) at H=%d — O(N^2) shape\n",
+            printf("[] rebuild took %.3fs (>=2s) at H=%d — O(N^2) shape\n",
                    elapsed, H);
         }
         ASSERT(elapsed < 2.0);
@@ -661,7 +661,7 @@ static int test_rebuild_active_chain_scales_at_100k(void) {
     return failures;
 }
 
-/* P14.14 RED — rebuild_active_chain must populate block_index.skipList[]
+/* Regression test: rebuild_active_chain must populate block_index.skipList
  * (pskip pointers) so post-restore ancestor walks are O(log N) not O(N).
  *
  * Live shape: after chain_restore_create_anchor the tip's pprev is NULL
@@ -715,8 +715,8 @@ static int test_rebuild_populates_skiplist_for_log_n_ancestor(void) {
         int populated = chain_restore_rebuild_active_chain(&ms, tip);
         ASSERT(populated == H + 1);
 
-        /* P14.14 acceptance: every slot above h=1 must have pskip set.
-         * Pre-fix (P14.13 GREEN) this is 100% NULL → test goes RED. */
+        /* acceptance: every slot above h=1 must have pskip set.
+         * Pre-fix this is 100% NULL → test goes RED. */
         int missing_skip = 0;
         int missing_prev = 0;
         for (int h = 2; h <= H; h++) {
@@ -757,7 +757,7 @@ static int test_rebuild_populates_skiplist_for_log_n_ancestor(void) {
         double elapsed = (double)(t1.tv_sec - t0.tv_sec)
                        + (double)(t1.tv_nsec - t0.tv_nsec) / 1e9;
         if (elapsed >= 1.0) {
-            printf("[P14.14] %d ancestor walks took %.3fs at H=%d "
+            printf("[] %d ancestor walks took %.3fs at H=%d "
                    "(pskip missing or ineffective)\n",
                    queries, elapsed, H);
         }
@@ -828,7 +828,7 @@ static int test_backfill_nbits_reads_from_block_file(void) {
             (struct chainstate *)&ms, &blk_hash);
         ASSERT(pi != NULL);
         pi->nHeight  = 500;
-        pi->nBits    = 0;            /* P14.11 shape */
+        pi->nBits = 0; /* shape */
         pi->nStatus  = BLOCK_VALID_SCRIPTS | BLOCK_HAVE_DATA;
         pi->nFile    = pos.nFile;
         pi->nDataPos = pos.nPos;
@@ -997,11 +997,11 @@ int test_chain_restore_service(void) {
     failures += test_activation_anchor_created();
     failures += test_activation_no_utxos_many_headers();
     failures += test_activation_few_utxos_few_headers();
-    /* P14.11 + P14.12 integrity-check tests */
+    /* integrity-check tests */
     failures += test_integrity_passes_on_clean_chain();
     failures += test_integrity_anchor_restore_is_benign();
     failures += test_integrity_detects_isolated_nbits_zero();
-    /* P14.11 + P14.12 GREEN — post-restore repair tests */
+    /* — post-restore repair tests */
     failures += test_rebuild_active_chain_fills_holes_from_block_map();
     failures += test_rebuild_active_chain_scales_at_100k();
     failures += test_rebuild_populates_skiplist_for_log_n_ancestor();

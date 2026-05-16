@@ -8,14 +8,14 @@
 #include "util/sync.h"
 #include <stdatomic.h>
 
-/* P2.2 OOM hook: unconditionally fails the allocation. */
+/* OOM hook: unconditionally fails the allocation. */
 static void *p22_force_null_alloc(size_t bytes)
 {
     (void)bytes;
     return NULL;
 }
 
-/* ── P2.1 fixture helpers ──────────────────────────────────────
+/* ── fixture helpers ──────────────────────────────────────
  *
  * Minimal mp + coins_view + net_mgr + p2p_node scaffolding so the
  * msg_tx_accept classifier can be driven end-to-end without
@@ -625,7 +625,7 @@ int test_mempool(void)
     }
 
     /* ================================================================
-     * P2.2: process_mempool happy path — all tx hashes flow into
+     * process_mempool happy path — all tx hashes flow into
      * node->inventory_to_send via p2p_node_push_inventory, proving
      * the heap-allocated scratch buffer carries the full result set
      * end to end (previously a 1.6 MB stack alloc).
@@ -672,7 +672,7 @@ int test_mempool(void)
     }
 
     /* ================================================================
-     * P2.2: process_mempool returns false on OOM and pushes no inv.
+     * process_mempool returns false on OOM and pushes no inv.
      * Test hook forces the scratch allocation to fail; the caller
      * observes false and node->inventory_to_send is never touched.
      * ================================================================ */
@@ -717,15 +717,15 @@ int test_mempool(void)
     }
 
     /* ================================================================
-     * P2.1: invalid tx (out-of-range vout value) is rejected with
+     * invalid tx (out-of-range vout value) is rejected with
      * TX_ACCEPT_INVALID, the mempool stays empty, and the sending
      * peer's ban-score is incremented by PEER_OFFENCE_INVALID_MESSAGE.
      * Exercises the check_transaction → peer scoring wiring that was
-     * missing before P2.1. Prior to the fix, the same tx would have
+     * missing. Prior to the fix, the same tx would have
      * entered the mempool with fee=0 and the peer would have kept
      * their reputation intact.
      * ================================================================ */
-    printf("P2.1: invalid tx → INVALID + peer ban-score... ");
+    printf("invalid tx → INVALID + peer ban-score... ");
     {
         /* Baseline scoring config — clean env so defaults apply. */
         unsetenv("ZCL_PEER_BAN_THRESHOLD");
@@ -778,16 +778,16 @@ int test_mempool(void)
     }
 
     /* ================================================================
-     * P2.1: double-spend vs current mempool. First tx accepted,
+     * double-spend vs current mempool. First tx accepted,
      * second tx spending the same UTXO rejected with TX_ACCEPT_CONFLICT,
      * second peer's ban-score incremented. Mempool size stays at 1.
      *
-     * Before P2.1, the conflict was detected only inside
+     *, the conflict was detected only inside
      * tx_mempool_add_unchecked where it collapsed into a generic bool
      * — and the peer who submitted the conflicting tx was never
      * penalised, so nothing stopped a flood of colliding txs.
      * ================================================================ */
-    printf("P2.1: double-spend → CONFLICT + peer ban-score... ");
+    printf("double-spend → CONFLICT + peer ban-score... ");
     {
         unsetenv("ZCL_PEER_BAN_THRESHOLD");
         unsetenv("ZCL_PEER_BAN_HOURS");
@@ -847,13 +847,13 @@ int test_mempool(void)
     }
 
     /* ================================================================
-     * P2.1: below-relay-fee tx is silently dropped. Returns
+     * below-relay-fee tx is silently dropped. Returns
      * TX_ACCEPT_BELOW_FEE, mempool stays empty, and the peer's
      * ban-score is UNCHANGED — zero-fee floods are a rate-limit
      * problem, not peer misbehaviour, and penalising would blowback
      * on honest peers forwarding a CPFP-only transaction.
      * ================================================================ */
-    printf("P2.1: below-relay-fee → BELOW_FEE, no ban-score... ");
+    printf("below-relay-fee → BELOW_FEE, no ban-score... ");
     {
         unsetenv("ZCL_PEER_BAN_THRESHOLD");
         unsetenv("ZCL_PEER_BAN_HOURS");

@@ -132,7 +132,7 @@ bool sapling_spend_parse_witness(const uint8_t *witness,
                                   size_t witness_len,
                                   struct sapling_spend_witness *wit)
 {
-    /* P9.6: enforce the fixed wire length before any read. A caller
+    /* enforce the fixed wire length before any read. A caller
      * that hands us a buffer shorter than the 1057-byte layout used
      * to walk off the end inside the loop below (memcpy + byte read
      * up to witness[1055]). Reject early with a clean false. */
@@ -199,7 +199,7 @@ bool zclassic_sapling_spend_proof(
     /* Parse merkle path: depth(1) || 32 × (sibling(32) || bit(1)).
      * The helper bounds-checks witness_len against the fixed 1057-byte
      * layout before reading anything — see sapling_spend_parse_witness
-     * for the P9.6 rationale. */
+     * for the rationale. */
     if (!sapling_spend_parse_witness(witness, witness_len, &wit))
         LOG_FAIL("sapling_prover",
                  "spend_proof: malformed merkle path (witness_len=%zu, expected >= %zu)",

@@ -372,13 +372,13 @@ int test_protocols(void)
         if (ok) printf("OK\n"); else { printf("FAIL\n"); failures++; }
     }
 
-    /* ── ZMSG P8.1: deserialize rejects peer-controlled overflows ───
+    /* ── ZMSG deserialize rejects peer-controlled overflows ───
      * A malicious peer picks slen/rlen = 255 (or blen = ZMSG_MAX_BODY)
      * so that `stream_read(s, msg->sender, slen)` + the trailing NUL
      * store would write past the fixed-size fields. Pre-fix, the
      * deserializer accepted the oversized length and corrupted the
      * next field in the heap-resident `struct zmsg_message`. */
-    printf("zmsg P8.1: deserialize rejects oversized sender/recipient/body... ");
+    printf("zmsg deserialize rejects oversized sender/recipient/body... ");
     {
         bool ok = true;
 

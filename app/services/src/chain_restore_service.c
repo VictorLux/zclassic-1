@@ -286,7 +286,7 @@ struct block_index *chain_restore_execute(
         snapsync_set_anchor(target);
 
     /* Post-restore finalize — rebuild active_chain from pprev + block_map
-     * and surface the P14.11/P14.12 integrity result. Unit tests pass
+     * and surface the integrity result. Unit tests pass
      * datadir implicitly via the NULL path (skips disk-backfill); real
      * boot paths call chain_restore_finalize directly with a datadir. */
     (void)chain_restore_finalize(ms, NULL);
@@ -323,7 +323,7 @@ void chain_restore_validate(struct chain_restore_validation *out,
                && out->tip_matches_expected;
 }
 
-/* ── Post-restore integrity check (P14.11 + P14.12) ────────────── */
+/* ── Post-restore integrity check ────────────── */
 
 void chain_integrity_check_post_restore(struct chain_integrity_result *out,
                                         const struct main_state *ms)
@@ -338,7 +338,7 @@ void chain_integrity_check_post_restore(struct chain_integrity_result *out,
         return;
     }
 
-    /* P14.11: every pindex with on-disk data must have nBits != 0.
+    /* every pindex with on-disk data must have nBits != 0.
      *
      * Round 5: skip nBits=0 entries that have no BLOCK_HAVE_DATA bit.
      * Those are metadata-anchor placeholders left by chain_restore when
@@ -362,7 +362,7 @@ void chain_integrity_check_post_restore(struct chain_integrity_result *out,
         }
     }
 
-    /* P14.12: chain_active.chain[h] non-NULL for h in [0, tip]. */
+    /* chain_active.chain[h] non-NULL for h in [0, tip]. */
     out->tip_height = active_chain_height(&ms->chain_active);
     int window_lo = out->tip_height - CHAIN_INTEGRITY_TIP_WINDOW;
     if (window_lo < 0) window_lo = 0;
@@ -517,7 +517,7 @@ bool chain_restore_dump_state_json(struct json_value *out, const char *key)
     return true;
 }
 
-/* ── Post-restore repair (P14.11 + P14.12 GREEN) ────────────────── */
+/* ── Post-restore repair ────────────────── */
 
 int chain_restore_rebuild_active_chain(struct main_state *ms,
                                        struct block_index *tip)
@@ -587,7 +587,7 @@ int chain_restore_rebuild_active_chain(struct main_state *ms,
 
     /* Residual holes below `deepest` — post-anchor-restore shape, where
      * the synthetic tip has pprev=NULL so every slot 0..tip_h-1 is
-     * empty. The pre-P14.13 code did a fresh block_map scan per hole
+     * empty. The code did a fresh block_map scan per hole
      * (tip_h × map_size ≈ 10 trillion ops at live scale — boot pinned
      * >5 min at ~92% CPU). Single-pass bucketing restores O(N): scan
      * the block_map ONCE into a height-indexed best-candidate array,
@@ -615,7 +615,7 @@ int chain_restore_rebuild_active_chain(struct main_state *ms,
         if (!best) { by_height[h] = cand; continue; }
 
         /* Prefer BLOCK_HAVE_DATA, then highest nChainWork — matches
-         * the pre-P14.13 tie-break rules so we don't slot a stale
+         * the tie-break rules so we don't slot a stale
          * fork over a real ancestor. */
         bool best_data = (best->nStatus & BLOCK_HAVE_DATA) != 0;
         bool cand_data = (cand->nStatus & BLOCK_HAVE_DATA) != 0;
@@ -637,7 +637,7 @@ int chain_restore_rebuild_active_chain(struct main_state *ms,
 
     free(by_height);
 
-    /* P14.14: wire pprev + pskip across the rebuilt chain. The anchor
+    /* wire pprev + pskip across the rebuilt chain. The anchor
      * path leaves tip->pprev=NULL and flat-file loads can leave pskip
      * unpopulated, which forces block_index_get_ancestor to fall back
      * to O(N) pprev walks (or NULL on the anchor). Walking bottom-up

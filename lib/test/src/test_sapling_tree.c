@@ -1,6 +1,6 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * Sapling incremental-merkle-tree checkpoint round-trip (P12.1).
+ * Sapling incremental-merkle-tree checkpoint round-trip.
  *
  * Covers the new sapling_tree_flush_checkpoint / sapling_tree_load_checkpoint
  * flat-file path that replaces the 2.6M-block replay on crash recovery.
@@ -43,7 +43,7 @@ int test_sapling_tree(void)
      * we only need uniqueness within a single test run. Use mkstemp
      * for a proper fd then close+unlink so we can own the filename. */
 
-    printf("sapling_tree checkpoint round-trip (flush then load) (P12.1)... ");
+    printf("sapling_tree checkpoint round-trip (flush then load) ... ");
     {
         strcpy(path, "/tmp/zcl_sapling_ckpt_XXXXXX");
         int fd = mkstemp(path);
@@ -99,7 +99,7 @@ int test_sapling_tree(void)
 done_round_trip:;
     }
 
-    printf("sapling_tree checkpoint + delta-replay root equivalence (P12.1)... ");
+    printf("sapling_tree checkpoint + delta-replay root equivalence ... ");
     {
         /* Build a 200-leaf chain. Checkpoint at 100, then replay 101..200
          * against the loaded checkpoint. Full-replay from 0..200 must
@@ -178,7 +178,7 @@ done_round_trip:;
 done_delta:;
     }
 
-    printf("sapling_tree checkpoint corruption detected on load (P12.1)... ");
+    printf("sapling_tree checkpoint corruption detected on load ... ");
     {
         strcpy(path, "/tmp/zcl_sapling_corrupt_XXXXXX");
         int fd = mkstemp(path);
@@ -237,7 +237,7 @@ done_delta:;
 done_corrupt:;
     }
 
-    printf("sapling_tree checkpoint missing file returns false (P12.1)... ");
+    printf("sapling_tree checkpoint missing file returns false ... ");
     {
         struct incremental_merkle_tree dst;
         sapling_tree_init(&dst);
@@ -252,10 +252,10 @@ done_corrupt:;
         }
     }
 
-    printf("sapling_tree checkpoint load is <1s for 10k leaves (P12.1)... ");
+    printf("sapling_tree checkpoint load is <1s for 10k leaves ... ");
     {
         /* The load path has to stay cheap enough that boot-to-ready
-         * hits the P12.1 target. Build a 10K-leaf tree (larger than
+         * hits the target. Build a 10K-leaf tree (larger than
          * the real Sapling working set typically observed at the
          * commit boundary), flush, and assert load returns in <1s.
          * Full-replay takes minutes; 1s is a comfortable upper bound. */

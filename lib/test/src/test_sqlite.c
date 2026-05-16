@@ -1330,7 +1330,7 @@ int test_sqlite(void) {
         else { printf("FAIL\n"); failures++; }
     }
 
-    /* P7.8: PRAGMA tuning values are effective at node_db_open time.
+    /* PRAGMA tuning values are effective at node_db_open time.
      * Locking the chainstate cache_size and mmap_size with a test so
      * that future edits to db_set_pragmas that accidentally revert to
      * SQLite defaults (~2 MB cache, no mmap) get caught at CI time.
@@ -1377,11 +1377,11 @@ int test_sqlite(void) {
                failures++; }
     }
 
-    /* P7.8: 100k-row UTXO open + random-read smoke test.  Guards the
+    /* 100k-row UTXO open + random-read smoke test. Guards the
      * class of bug the brief worries about: a cache-size tweak that
      * interacts badly with SQLite's page cache or shared-connection
      * statement handling and either SIGSEGVs or silently returns
-     * stale rows (the P6.2 "flusher resets shared-conn statements →
+     * stale rows (the "flusher resets shared-conn statements →
      * reader rewound" shape).  100k rows seeded into a fresh
      * :memory: DB, then 100 random reads validated against an
      * in-memory reference.  Any mismatch fails the test; any SIGSEGV

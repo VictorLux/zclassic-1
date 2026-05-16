@@ -402,7 +402,7 @@ bool legacy_body_pull_range_blocking(struct main_state *ms,
             continue;
         }
         if (failed) {
-            /* Stale BLOCK_FAILED_VALID — P0.5's job to clear. */
+            /* Stale BLOCK_FAILED_VALID — job to clear. */
             skipped_failed++;
             free(hash_hex);
             continue;

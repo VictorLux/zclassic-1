@@ -16,7 +16,7 @@
  *
  * Today's flow (lib/validation/src/process_block.c:connect_tip) does
  * each of these steps in implicit autocommit transactions on two
- * separate SQLite connections (coins.db dedicated handle from P14.1,
+ * separate SQLite connections (coins.db dedicated handle,
  * node.db main handle). The coins write is already atomic within
  * itself (BEGIN IMMEDIATE / COMMIT in coins_view_sqlite.c:667), but
  * the node_db side runs three or four loose writes with no enclosing

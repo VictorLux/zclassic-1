@@ -262,9 +262,9 @@ int test_znam(void)
         else { printf("FAIL\n"); failures++; }
     }
 
-    /* ── P8.8: REGISTER/UPDATE accept multi-coin types (parser parity) ── */
+    /* ── REGISTER/UPDATE accept multi-coin types (parser parity) ── */
 
-    printf("P8.8 znam_build_register: accepts ZNAM_TYPE_BTC... ");
+    printf("znam_build_register: accepts ZNAM_TYPE_BTC... ");
     {
         uint8_t buf[256];
         size_t len = znam_build_register(buf, sizeof(buf),
@@ -278,7 +278,7 @@ int test_znam(void)
         else { printf("FAIL (len=%zu)\n", len); failures++; }
     }
 
-    printf("P8.8 znam_build_register: accepts ZNAM_TYPE_LTC... ");
+    printf("znam_build_register: accepts ZNAM_TYPE_LTC... ");
     {
         uint8_t buf[256];
         size_t len = znam_build_register(buf, sizeof(buf),
@@ -291,7 +291,7 @@ int test_znam(void)
         else { printf("FAIL (len=%zu)\n", len); failures++; }
     }
 
-    printf("P8.8 znam_build_register: accepts ZNAM_TYPE_DOGE... ");
+    printf("znam_build_register: accepts ZNAM_TYPE_DOGE... ");
     {
         uint8_t buf[256];
         size_t len = znam_build_register(buf, sizeof(buf),
@@ -304,7 +304,7 @@ int test_znam(void)
         else { printf("FAIL (len=%zu)\n", len); failures++; }
     }
 
-    printf("P8.8 znam_build_register: accepts ZNAM_TYPE_CONTENT... ");
+    printf("znam_build_register: accepts ZNAM_TYPE_CONTENT... ");
     {
         uint8_t buf[256];
         size_t len = znam_build_register(buf, sizeof(buf),
@@ -317,7 +317,7 @@ int test_znam(void)
         else { printf("FAIL (len=%zu)\n", len); failures++; }
     }
 
-    printf("P8.8 znam_build_update: accepts ZNAM_TYPE_BTC... ");
+    printf("znam_build_update: accepts ZNAM_TYPE_BTC... ");
     {
         uint8_t buf[256];
         size_t len = znam_build_update(buf, sizeof(buf),
@@ -331,7 +331,7 @@ int test_znam(void)
         else { printf("FAIL (len=%zu)\n", len); failures++; }
     }
 
-    printf("P8.8 znam_build_register: rejects type > ZNAM_TYPE_CONTENT... ");
+    printf("znam_build_register: rejects type > ZNAM_TYPE_CONTENT... ");
     {
         uint8_t buf[256];
         /* 8 is above ZNAM_TYPE_CONTENT (7) — still out of spec. */
@@ -341,7 +341,7 @@ int test_znam(void)
         else { printf("FAIL (accepted type=8)\n"); failures++; }
     }
 
-    printf("P8.8 znam_build_update: rejects type > ZNAM_TYPE_CONTENT... ");
+    printf("znam_build_update: rejects type > ZNAM_TYPE_CONTENT... ");
     {
         uint8_t buf[256];
         size_t len = znam_build_update(buf, sizeof(buf),

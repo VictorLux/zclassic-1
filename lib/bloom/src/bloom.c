@@ -44,7 +44,7 @@ static bool bloom_filter_init_internal(struct bloom_filter *f, unsigned int num_
     f->is_full = false;
     f->is_empty = true;
 
-    /* P8.5: clamp to MAX_BLOOM_HASH_FUNCS on BOTH paths. The internal
+    /* clamp to MAX_BLOOM_HASH_FUNCS on BOTH paths. The internal
      * rolling_bloom_init caller passes constrained=false for the
      * filter_bits sizing cap, but the per-insert/contains siphash
      * iteration count must still be bounded — otherwise pathological

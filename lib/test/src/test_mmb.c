@@ -566,7 +566,7 @@ static int test_mmb_lazy_never_cascades(void)
     return failures;
 }
 
-/* ── P8.3: MMB_MAX_HEIGHT deserialize + merge-guard tests ────── */
+/* ── MMB_MAX_HEIGHT deserialize + merge-guard tests ────── */
 
 /* Helper: craft a serialized MMB blob with one mountain at a chosen height */
 static size_t craft_mmb_blob(uint8_t *buf, size_t buflen,
@@ -591,7 +591,7 @@ static size_t craft_mmb_blob(uint8_t *buf, size_t buflen,
 static int test_mmb_deserialize_rejects_oversize_height(void)
 {
     int failures = 0;
-    TEST("mmb (P8.3): deserialize rejects mountain height > MMB_MAX_HEIGHT") {
+    TEST("mmb : deserialize rejects mountain height > MMB_MAX_HEIGHT") {
         uint8_t buf[64];
         size_t sz = craft_mmb_blob(buf, sizeof(buf), 1, MMB_MAX_HEIGHT + 1);
         ASSERT(sz > 0);
@@ -620,7 +620,7 @@ static int test_mmb_deserialize_rejects_oversize_height(void)
 static int test_mmb_deserialize_real_chain_under_cap(void)
 {
     int failures = 0;
-    TEST("mmb (P8.3): real-chain round-trip stays well below MMB_MAX_HEIGHT") {
+    TEST("mmb : real-chain round-trip stays well below MMB_MAX_HEIGHT") {
         /* Build a realistic MMB — 8192 leaves exercises the same merge
          * logic mainnet runs at 3M+ blocks (log2 scales identically). */
         struct mmb m1;
@@ -654,9 +654,9 @@ static int test_mmb_deserialize_real_chain_under_cap(void)
 static int test_mmb_merge_guard_blocks_wraparound(void)
 {
     int failures = 0;
-    TEST("mmb (P8.3): merge guard fires before height wraparound") {
+    TEST("mmb : merge guard fires before height wraparound") {
         /* Construct a corrupt in-memory MMB with two height=UINT32_MAX-1
-         * mountains (bypassing mmb_deserialize's cap). A pre-P8.3
+         * mountains (bypassing mmb_deserialize's cap). A 
          * mmb_append would have wrapped height to UINT32_MAX then 0,
          * silently destroying the trust root on the next merge. */
         struct mmb m;
@@ -779,7 +779,7 @@ int test_mmb(void)
     failures += test_mmb_root_changes();
     failures += test_mmb_lazy_never_cascades();
 
-    /* P8.3: height cap on deserialize + merge */
+    /* height cap on deserialize + merge */
     failures += test_mmb_deserialize_rejects_oversize_height();
     failures += test_mmb_deserialize_real_chain_under_cap();
     failures += test_mmb_merge_guard_blocks_wraparound();

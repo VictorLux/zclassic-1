@@ -100,7 +100,7 @@ static void derive_fixed_generator(int idx, const char *name,
                                     const uint8_t personalization[8])
 {
     if (!find_group_hash(&fixed_generators[idx], m, m_len, personalization)) {
-        fprintf(stderr, "[sapling] %s:%d %s(): "
+        fprintf(stderr, "[sapling] %s:%d %s(): "  // obs-ok:helper-context-logged
                 "find_group_hash failed for fixed generator '%s' — "
                 "refusing to run with zero-initialized generator\n",
                 __FILE__, __LINE__, __func__, name);
@@ -930,7 +930,7 @@ bool sapling_build_spend_with_ctx(
 
     /* Call native C23 prover for spend proof (cv, rk, zkproof). The
      * `witness_len` passed through here gates the merkle-path parse
-     * in zclassic_sapling_spend_proof — see P9.6. */
+     * in zclassic_sapling_spend_proof —. */
     extern bool zclassic_sapling_spend_proof(
         void *ctx, const unsigned char *ak, const unsigned char *nsk,
         const unsigned char *diversifier, const unsigned char *rcm,

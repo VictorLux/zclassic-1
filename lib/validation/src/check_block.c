@@ -221,7 +221,7 @@ bool contextual_check_block_header(const struct block_header *header,
                   state, 100, "bad-equihash-solution-size");
     }
 
-    /* Difficulty check — always verify (P1.7).  The pre-P1.7 code had a
+    /* Difficulty check — always verify. The code had a
      * `skip_diffbits` goto that silently bypassed this check whenever the
      * 28-ancestor window was incomplete.  That was a real consensus hole:
      * a peer could ship a header whose nBits claimed trivial difficulty,

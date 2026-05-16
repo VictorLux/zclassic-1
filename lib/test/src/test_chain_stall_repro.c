@@ -1,11 +1,11 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * P10.1.1 — Deterministic reproduction of the 2026-04-19 chain stall.
+ * Deterministic reproduction of the 2026-04-19 chain stall.
  *
  * Context
  * -------
  * On 2026-04-19 the live node stalled at h=3,081,407 with every
- * connect_tip(3,081,408) returning `bad-txns-BIP30`.  P8.9 shipped a
+ * connect_tip(3,081,408) returning `bad-txns-BIP30`. shipped a
  * boot-time sweep that ran once and cleaned the orphan coinbase row;
  * the chain advanced to 3,081,408.  Three hours later the tip had
  * regressed to 3,081,407 on its own (no operator restart, no reorg
@@ -16,7 +16,7 @@
  * The coins view holds an unspent coinbase entry for txid X belonging
  * to block N, but the chain tip has dropped back to N-1 (either from
  * a partial-application rollback or from a disconnect→reconnect path
- * that bypasses the P8.9 sweep).  connect_block(block_N) then reads
+ * that bypasses the sweep). connect_block(block_N) then reads
  * the stale coinbase, finds it still unspent, and trips BIP30 at
  * lib/validation/src/connect_block.c:219-233:
  *
@@ -38,16 +38,16 @@
  *
  * Scope — what this test is AND is NOT
  * ------------------------------------
- * This row (P10.1.1) ships the REPRODUCTION, not the fix.  The test
+ * This row ships the REPRODUCTION, not the fix. The test
  * asserts positively that connect_block trips `bad-txns-BIP30` when
  * the coins view carries a stale unspent coinbase entry for the block
  * being reconnected.  The assertion PASSES today because the bug
  * reproduces deterministically — that passing assertion is the win.
  *
  * The matching negative assertion (invariant: "reconnect after rewind
- * succeeds") lives in P10.1.3 as the RED regression test.  P10.1.2
+ * succeeds") lives as the RED regression test. 
  * produces the root-cause writeup that names the exact code path and
- * invariant.  P10.1.4 is the minimal fix; P10.1.5 is the live-node
+ * invariant. is the minimal fix; is the live-node
  * canary.
  *
  * Environment
@@ -257,10 +257,10 @@ static int t_stale_coinbase_trips_bip30(void)
         /* The assertion is the REPRODUCTION: bug is live iff
          * connect_block returns false with reject_reason == "bad-txns-BIP30".
          *
-         * When P10.1.4 lands the fix (or the invariant from P10.1.2 is
+         * When lands the fix (or the invariant is
          * enforced at a higher layer), connect_block should NOT see the
          * stale entry and this assertion will need to flip — at that
-         * point the row's repro has served its purpose and the P10.1.3
+         * point the row's repro has served its purpose and the 
          * regression test becomes the forward-looking gate. */
         printf("connect_block ok=%d reject=\"%s\" dos=%d at h=%d... ",
                (int)ok, vs.reject_reason, vs.dos, stall_height);
@@ -326,7 +326,7 @@ static int t_clean_view_advances(void)
         coins_view_cache_init(&cache, &null_view);
 
         /* NO pre-seed of the coinbase — this is the "clean" state
-         * that P10.1.4's fix must restore. */
+         * that fix must restore. */
         coins_view_cache_set_best_block(&cache, &parent_hash);
 
         ASSERT(!coins_view_cache_have_coins(&cache, &blk.vtx[0].hash));
@@ -354,7 +354,7 @@ static int t_clean_view_advances(void)
     return failures;
 }
 
-/* ── Test 3 — P10.1.3 RED regression: disconnect_block purges coinbase ──
+/* ── Test 3 — Regression test: disconnect_block purges coinbase ──
  *
  * The invariant (from `docs/postmortems/2026-04-19-bip30-stall.md`,
  * Q3): for every txid T in the coins view, the block that created
@@ -386,7 +386,7 @@ static int t_clean_view_advances(void)
  * disconnected block is still reachable via `coins_view_cache_have_coins`
  * on the parent.
  *
- * This is the P10.1.3 RED regression row. P10.1.4's minimal fix
+ * This is the RED regression row. minimal fix
  * (emit a DIRTY+pruned tombstone from disconnect_block instead of
  * a bare erase) flips this assertion from RED to GREEN. After the
  * fix lands, the test stands as the permanent gate against
@@ -396,7 +396,7 @@ static int t_disconnect_block_purges_coinbase_from_backing(void)
 {
     int failures = 0;
 
-    TEST("chain_stall_repro P10.1.3 RED: disconnect_block purges coinbase from the backing parent cache") {
+    TEST("chain_stall_repro RED: disconnect_block purges coinbase from the backing parent cache") {
         atomic_store(&g_deferred_proof_validation_below_height, -1);
 
         const int coinbase_height = 200;
@@ -475,7 +475,7 @@ static int t_disconnect_block_purges_coinbase_from_backing(void)
          * ran on the (empty) scratch map and never emitted a DELETE
          * signal into the parent.
          *
-         * P10.1.4 minimal fix: emit a DIRTY+pruned tombstone from
+         * minimal fix: emit a DIRTY+pruned tombstone from
          * disconnect_block so cvc_batch_write propagates a PRUNED
          * entry into the parent, and coins_view_cache_have_coins
          * returns false. When the fix lands this assertion flips
@@ -500,12 +500,12 @@ static int t_disconnect_block_purges_coinbase_from_backing(void)
     return failures;
 }
 
-/* ── Test 4 — P14.2 RED: disconnect-flush lands in SQLite under shared-handle writer contention ──
+/* ── Test 4 — Regression test: disconnect-flush lands in SQLite under shared-handle writer contention ──
  *
- * P10.1's three-layer test uses a null_view backing, so the SQLite
+ * three-layer test uses a null_view backing, so the SQLite
  * persistence path is never exercised. The live-node stall at
  * h=3,081,408 showed the tombstone's DIRTY+pruned entry is correctly
- * produced in memory (P10.1.4's invariant assertion has never tripped),
+ * produced in memory ( invariant assertion has never tripped),
  * but the `SAVEPOINT coins_flush failed rc=5: cannot open savepoint -
  * SQL statements in progress` line fires 3,478 times in node.log — the
  * DELETE never reaches disk, every cache eviction/rebuild re-reads the
@@ -524,14 +524,14 @@ static int t_disconnect_block_purges_coinbase_from_backing(void)
  * the shared handle. `INSERT ... RETURNING` pauses mid-execution with
  * `nVdbeWrite>0` on the first step — exact same shape as production's
  * contention. Then drive the full three-layer flush path. Pre-fix, the
- * flush fails and the tombstone DELETE never lands. Post-fix (P14.1:
+ * flush fails and the tombstone DELETE never lands. Post-fix (:
  * dedicated connection for coins_view_sqlite), the shared-handle
  * writer no longer blocks the flush, and the DELETE is observable.
  *
- * Scope: this is the "coupled with P14.2" test called out in
+ * Scope: this is the "coupled with" test called out in
  * AGENT-2.md — cache + backing three-layer GREEN after the fix. The
  * `disconnect_block + cvc_batch_write + sqlite_batch_write` sequence
- * under contention is the end-to-end path P10.1.3's null-backing
+ * under contention is the end-to-end path null-backing
  * variant couldn't surface. */
 
 static int mkdir_p_p14(const char *p)
@@ -596,7 +596,7 @@ static int t_p14_flush_under_shared_cursor_lands_tombstone(void)
     mkdir_p_p14(dir);
     char dbpath[512]; snprintf(dbpath, sizeof(dbpath), "%s/node.db", dir);
 
-    TEST("chain_stall_repro P14.2 RED: file-backed coins_view_sqlite opens a dedicated connection AND three-layer disconnect+flush lands DELETE in SQLite") {
+    TEST("chain_stall_repro RED: file-backed coins_view_sqlite opens a dedicated connection AND three-layer disconnect+flush lands DELETE in SQLite") {
         atomic_store(&g_deferred_proof_validation_below_height, -1);
 
         sqlite3 *db = NULL;
@@ -605,7 +605,7 @@ static int t_p14_flush_under_shared_cursor_lands_tombstone(void)
         struct coins_view_sqlite cvs;
         ASSERT(coins_view_sqlite_open(&cvs, db));
 
-        /* ── P14.1 structural invariant — the RED/GREEN gate ──
+        /* ── structural invariant — the RED/GREEN gate ──
          *
          * For a file-backed input handle, `coins_view_sqlite_open`
          * MUST open its own sqlite3 handle so the flush's BEGIN
@@ -664,9 +664,9 @@ static int t_p14_flush_under_shared_cursor_lands_tombstone(void)
 
         /* ── Three-layer end-to-end flush → SQLite ──
          *
-         * This is the path P10.1.3's null-backing variant could not
-         * surface: cache + cache + coins_view_sqlite.  After P14.1
-         * it is GREEN in one commit (per AGENT-2.md P14.1+P14.2
+         * This is the path null-backing variant could not
+         * surface: cache + cache + coins_view_sqlite. 
+         * it is GREEN in one commit (per AGENT-2.md 
          * coupling). */
         struct coins_view_cache parent;
         coins_view_cache_init(&parent, &cvs.view);
@@ -731,7 +731,7 @@ static int t_p14_flush_under_shared_cursor_lands_tombstone(void)
         /* Tombstone DELETE landed — the coinbase row is gone from
          * SQLite, not just from the in-memory tombstone map.  The
          * live-node stall at h=3,081,408 persisted because this
-         * DELETE never reached disk; after P14.1 it does. */
+         * DELETE never reached disk; it does. */
         ASSERT_EQ(p14_count_utxos_by_txid(cvs.db, cb_txid), 0);
 
         block_undo_free(&empty_undo);
@@ -748,17 +748,17 @@ static int t_p14_flush_under_shared_cursor_lands_tombstone(void)
     return failures;
 }
 
-/* ── Test 5 — P14.7 stale FAILED_CHILD mass-clear ──────────────────
+/* ── Test 5 — stale FAILED_CHILD mass-clear ──────────────────
  *
  * Scenario modelled: after a prior run propagated BLOCK_FAILED_CHILD
  * to many descendants and the root FAILED_VALID was later cleared
  * (retry near tip, reorg recovery, boot sweep), the descendant
  * CHILD-only marks must drain when headers re-arrive.
  *
- * Pre-P14.7, accept_block_header rate-limited ALL FAILED-clears of
+ *, accept_block_header rate-limited ALL FAILED-clears of
  * blocks below tip-100 to one per 300s globally. With ~2,000 stale
  * CHILD marks above a stuck tip, draining took 166 hours — the shape
- * that looked like a permanent chain pin after the P14.1 canary.
+ * that looked like a permanent chain pin after the canary.
  *
  * This test exercises process_block_try_clear_stale_failed (the
  * extracted helper) directly to keep the assertion narrow and
@@ -773,7 +773,7 @@ static int t_p147_stale_failed_child_drains_without_rate_limit(void)
 {
     int failures = 0;
 
-    TEST("P14.7: consecutive CHILD-only clears drain without rate-limit") {
+    TEST("consecutive CHILD-only clears drain without rate-limit") {
         const int tip_h = 1000;
         const time_t now = 1776600000; /* fixed, matches live-node epoch */
 
@@ -805,7 +805,7 @@ static int t_p147_stale_failed_child_drains_without_rate_limit(void)
     return failures;
 }
 
-/* ── Test 6 — P14.7 FAILED_VALID retains rate-limit ────────────────
+/* ── Test 6 — FAILED_VALID retains rate-limit ────────────────
  *
  * Guardrail: the fix must NOT accidentally lift the rate-limit for
  * real validation failures. Two blocks with FAILED_VALID set, far
@@ -816,7 +816,7 @@ static int t_p147_failed_valid_keeps_rate_limit(void)
 {
     int failures = 0;
 
-    TEST("P14.7: FAILED_VALID retains 300s rate-limit") {
+    TEST("FAILED_VALID retains 300s rate-limit") {
         const int tip_h = 1000;
         const time_t now = 1776600000;
 
@@ -853,7 +853,7 @@ static int t_p147_failed_valid_keeps_rate_limit(void)
     return failures;
 }
 
-/* ── Test 7 — P14.7 near-tip always clears (all modes) ─────────────
+/* ── Test 7 — near-tip always clears (all modes) ─────────────
  *
  * Ensures the near-tip shortcut is preserved regardless of which
  * FAILED bits are set. */
@@ -861,7 +861,7 @@ static int t_p147_near_tip_clears_both_modes(void)
 {
     int failures = 0;
 
-    TEST("P14.7: near-tip always clears FAILED_MASK (CHILD and VALID)") {
+    TEST("near-tip always clears FAILED_MASK (CHILD and VALID)") {
         const int tip_h = 1000;
         const time_t now = 1776600000;
         time_t last_retry_clear = now; /* force rate-limit active */
@@ -891,7 +891,7 @@ int test_chain_stall_repro(void);
 
 int test_chain_stall_repro(void)
 {
-    printf("\n=== P10.1.1 chain stall repro ===\n");
+    printf("\n=== chain stall repro ===\n");
     int failures = 0;
     failures += t_stale_coinbase_trips_bip30();
     failures += t_clean_view_advances();

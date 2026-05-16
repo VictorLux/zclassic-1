@@ -1,6 +1,6 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * P14.3 RED: `getsyncdiag` RPC crashes via `json_free` on uninitialized
+ * Regression test: `getsyncdiag` RPC crashes via `json_free` on uninitialized
  * stack memory.
  *
  * The bug: `rpc_getsyncdiag` in `app/controllers/src/health_controller.c`
@@ -43,7 +43,7 @@ int test_syncdiag_rpc(void)
     int failures = 0;
 
     printf("rpc_getsyncdiag: returns valid JSON without abort "
-           "(P14.3 RED)... ");
+           "(RED)... ");
     {
         dirty_stack_region();
 
@@ -81,7 +81,7 @@ int test_syncdiag_rpc(void)
     }
 
     printf("rpc_http response envelope: dirty stack still builds JSON "
-           "(P24.11 RED)... ");
+           "(RED)... ");
     {
         dirty_stack_region();
 

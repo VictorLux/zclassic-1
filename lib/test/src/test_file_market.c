@@ -293,9 +293,9 @@ int test_file_market(void)
         else { printf("FAIL\n"); failures++; }
     }
 
-    /* ── P8.7: num_chunks overflow guard ──────────────────────── */
+    /* ── num_chunks overflow guard ──────────────────────── */
 
-    printf("P8.7 num_chunks: 0 bytes -> 0 chunks... ");
+    printf("num_chunks: 0 bytes -> 0 chunks... ");
     {
         uint32_t n = 99;
         bool ok = file_market_num_chunks_for_size(0, &n);
@@ -303,7 +303,7 @@ int test_file_market(void)
         else { printf("FAIL (ok=%d n=%u)\n", ok, n); failures++; }
     }
 
-    printf("P8.7 num_chunks: 1 byte -> 1 chunk... ");
+    printf("num_chunks: 1 byte -> 1 chunk... ");
     {
         uint32_t n = 0;
         bool ok = file_market_num_chunks_for_size(1, &n);
@@ -311,7 +311,7 @@ int test_file_market(void)
         else { printf("FAIL (ok=%d n=%u)\n", ok, n); failures++; }
     }
 
-    printf("P8.7 num_chunks: exactly CHUNK_SIZE -> 1 chunk... ");
+    printf("num_chunks: exactly CHUNK_SIZE -> 1 chunk... ");
     {
         uint32_t n = 0;
         bool ok = file_market_num_chunks_for_size(
@@ -320,7 +320,7 @@ int test_file_market(void)
         else { printf("FAIL (ok=%d n=%u)\n", ok, n); failures++; }
     }
 
-    printf("P8.7 num_chunks: CHUNK_SIZE + 1 -> 2 chunks... ");
+    printf("num_chunks: CHUNK_SIZE + 1 -> 2 chunks... ");
     {
         uint32_t n = 0;
         bool ok = file_market_num_chunks_for_size(
@@ -329,7 +329,7 @@ int test_file_market(void)
         else { printf("FAIL (ok=%d n=%u)\n", ok, n); failures++; }
     }
 
-    printf("P8.7 num_chunks: UINT32_MAX * CHUNK_SIZE accepted (at cap)... ");
+    printf("num_chunks: UINT32_MAX * CHUNK_SIZE accepted (at cap)... ");
     {
         uint32_t n = 0;
         uint64_t max_ok =
@@ -339,7 +339,7 @@ int test_file_market(void)
         else { printf("FAIL (ok=%d n=%u)\n", ok, n); failures++; }
     }
 
-    printf("P8.7 num_chunks: UINT32_MAX * CHUNK_SIZE + 1 rejected "
+    printf("num_chunks: UINT32_MAX * CHUNK_SIZE + 1 rejected "
            "(pre-fix wrapped to 0)... ");
     {
         uint32_t n = 99;
@@ -350,7 +350,7 @@ int test_file_market(void)
         else { printf("FAIL (accepted n=%u for 225 PB file)\n", n); failures++; }
     }
 
-    printf("P8.7 num_chunks: silent-truncation shape rejected "
+    printf("num_chunks: silent-truncation shape rejected "
            "(225 PB + 5*CHUNK -> would report 4)... ");
     {
         /* The pre-fix expression wraps UINT32_MAX + 5 to 4 — the
@@ -366,7 +366,7 @@ int test_file_market(void)
         else { printf("FAIL (accepted n=%u for truncation shape)\n", n); failures++; }
     }
 
-    printf("P8.7 num_chunks: UINT64_MAX rejected... ");
+    printf("num_chunks: UINT64_MAX rejected... ");
     {
         uint32_t n = 99;
         bool ok = file_market_num_chunks_for_size(UINT64_MAX, &n);
@@ -374,7 +374,7 @@ int test_file_market(void)
         else { printf("FAIL (accepted UINT64_MAX)\n"); failures++; }
     }
 
-    printf("P8.7 num_chunks: NULL out_chunks rejected... ");
+    printf("num_chunks: NULL out_chunks rejected... ");
     {
         bool ok = file_market_num_chunks_for_size(1000, NULL);
         if (!ok) printf("OK\n");

@@ -1,6 +1,6 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * P24.14: chainstate-backed RPCs must fail cleanly when the active
+ * chainstate-backed RPCs must fail cleanly when the active
  * chain height points at a missing block-index entry. */
 
 #include "test/test_helpers.h"

@@ -1,6 +1,6 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * P11.4 — MVP criterion #4 CI gate: transparent -> shielded payment.
+ * MVP criterion #4 CI gate: transparent -> shielded payment.
  *
  * The gate exercises the shipped RPC/controller path end-to-end inside
  * `test_zcl`:
@@ -25,10 +25,10 @@
 
 #include <errno.h>
 
-/* origin/main currently sits on Agent-2's P24.13 RED commit, which adds
+/* origin/main currently sits on Agent-2's RED commit, which adds
  * tests that reference this symbol before the production implementation has
  * landed. Provide a test-only weak shim so this worker can still build and
- * run P11.4 without touching Agent-2-owned validation files. When the real
+ * run without touching Agent-2-owned validation files. When the real
  * implementation lands, the strong production symbol overrides this one. */
 bool __attribute__((weak)) process_block_should_skip_contextual_header(
     const struct main_state *ms,
@@ -182,8 +182,8 @@ int test_shielded_payment_gate(void)
 {
     int failures = 0;
 
-    printf("\n=== P11.4 shielded payment (MVP #4) ===\n");
-    printf("shielded_payment P11.4: wallet shield + private send e2e... ");
+    printf("\n=== shielded payment (MVP #4) ===\n");
+    printf("shielded_payment wallet shield + private send e2e... ");
 
     if (!getenv("ZCL_STRESS_TESTS")) {
         printf("SKIP (set ZCL_STRESS_TESTS=1 to run deterministic gate)\n");

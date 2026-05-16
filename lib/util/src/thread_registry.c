@@ -1,6 +1,6 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * P7.9 — thread_registry: spawn, track, and drain zclassic23's
+ * thread_registry: spawn, track, and drain zclassic23's
  * pthread population. See `util/thread_registry.h` for the API
  * contract and rationale. */
 
@@ -165,7 +165,7 @@ int thread_registry_join_all(int timeout_sec)
             g_entries[i].active = false;
             pthread_mutex_unlock(&g_mu);
         } else {
-            fprintf(stderr, "[thread_registry] straggler after %ds: "
+            fprintf(stderr, "[thread_registry] straggler after %ds: "  // obs-ok:helper-context-logged
                     "'%s' (rc=%d: %s)\n",
                     timeout_sec, name, rc, strerror(rc));
             failed++;

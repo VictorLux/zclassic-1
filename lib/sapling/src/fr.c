@@ -16,7 +16,7 @@
  *
  * Wrapping these with LOG_FAIL would flood stderr hundreds of times per
  * block verification. Do NOT add logging here without understanding
- * each call site's retry behavior. See P1.11 commit
+ * each call site's retry behavior. commit
  * ca139a5ad for the crypto-side close-out of the logging audit. */
 
 #include "sapling/fr.h"

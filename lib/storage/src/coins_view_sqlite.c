@@ -63,14 +63,14 @@ static struct coins_view_vtable cvs_vtable = {
     .get_stats     = NULL,
 };
 
-/* P7.2: max UTXO rows above tip that auto-rewind will touch. A single
+/* max UTXO rows above tip that auto-rewind will touch. A single
  * block in practice commits on the order of 1-20 new UTXOs; 32 is a
  * generous cap that still refuses anything resembling a multi-block
  * drift (which should NEVER be auto-healed — memory rule: never wipe
  * above tip without operator consent). */
 #define COINS_AUTO_REWIND_MAX_ROWS 32
 
-/* P8.9: existence probe. Production schema has `transactions` but the
+/* existence probe. Production schema has `transactions` but the
  * test harness builds a minimal DB with only utxos/node_state/blocks,
  * so the belt-and-suspenders sweep must tolerate the table's absence. */
 static bool coins_view_sqlite_table_exists(sqlite3 *db, const char *name)
@@ -105,7 +105,7 @@ static int coins_view_sqlite_delete_bind_height(sqlite3 *db,
     sqlite3_bind_int64(s, 1, tip_height);
     int rc = AR_STEP_WRITE(s);
     if (rc != SQLITE_DONE) {
-        fprintf(stderr,
+        fprintf(stderr,  // obs-ok:helper-context-logged
             "[coins] auto-rewind: %s step failed: %s\n",
             label, sqlite3_errmsg(db));
         sqlite3_finalize(s);
@@ -116,13 +116,13 @@ static int coins_view_sqlite_delete_bind_height(sqlite3 *db,
     return changed;
 }
 
-/* P7.2 + P8.9: crash-recovery auto-rewind for a single-block UTXO
+/* crash-recovery auto-rewind for a single-block UTXO
  * overshoot.
  *
- * Original P7.2 behavior (still performed): DELETE utxos where
+ * Original behavior (still performed): DELETE utxos where
  * height > tip_height, clear the stored `utxo_commitment` row.
  *
- * P8.9 strengthening (added 2026-04-19 after live-node BIP30 stall):
+ * strengthening (added 2026-04-19 after live-node BIP30 stall):
  *   - Sweep any utxos row whose txid appears in `transactions` with
  *     block_height > tip_height, regardless of the utxos.height column
  *     value. Covers the wrong-height failure mode where a partially-
@@ -169,7 +169,7 @@ static bool coins_view_sqlite_rewind_above_tip(sqlite3 *db,
     if (sqlite3_exec(db,
             "DELETE FROM node_state WHERE key='utxo_commitment'",
             NULL, NULL, &err) != SQLITE_OK) {
-        fprintf(stderr,
+        fprintf(stderr,  // obs-ok:helper-context-logged
             "[coins] auto-rewind: commitment purge failed: %s\n",
             err ? err : "?");
         sqlite3_free(err);
@@ -177,14 +177,14 @@ static bool coins_view_sqlite_rewind_above_tip(sqlite3 *db,
     }
 
     if (sqlite3_exec(db, "COMMIT", NULL, NULL, &err) != SQLITE_OK) {
-        fprintf(stderr,
+        fprintf(stderr,  // obs-ok:helper-context-logged
             "[coins] auto-rewind: COMMIT failed: %s\n", err ? err : "?");
         sqlite3_free(err);
         goto rollback;
     }
 
     int deleted_total = deleted_high + deleted_bytxid;
-    fprintf(stderr,
+    fprintf(stderr,  // obs-ok:helper-context-logged
         "[coins] auto-rewind: removed %d UTXO row(s) above "
         "tip_height=%lld (high=%d, by-txid=%d, tx_index=%d) "
         "and cleared utxo_commitment — continuing boot\n",
@@ -265,7 +265,7 @@ static bool coins_view_sqlite_check_tip_consistency(sqlite3 *db)
         return true;
     }
     if (have_utxos && !tip_set) {
-        fprintf(stderr,
+        fprintf(stderr,  // obs-ok:helper-context-logged
             "[coins] DB_ERR_TIP_MISMATCH: utxos present "
             "(max_height=%lld) but coins_best_block is unset — "
             "probable crash between UTXO flush and tip update. "
@@ -291,7 +291,7 @@ static bool coins_view_sqlite_check_tip_consistency(sqlite3 *db)
     }
 
     if (tip_height < 0) {
-        fprintf(stderr,
+        fprintf(stderr,  // obs-ok:helper-context-logged
             "[coins] tip check WARN: utxos max_height=%lld, "
             "coins_best_block hash not resolvable in blocks table "
             "(status>=3) — block index load may reconcile, continuing\n",
@@ -299,7 +299,7 @@ static bool coins_view_sqlite_check_tip_consistency(sqlite3 *db)
         return true;
     }
     if (max_height > tip_height) {
-        /* P7.2: single-block overshoot with a bounded row count is the
+        /* single-block overshoot with a bounded row count is the
          * shape of a SIGKILL between the UTXO flush and the tip
          * update.  Auto-rewind deletes the overshoot rows and clears
          * the (possibly stale) utxo_commitment; the next connect_block
@@ -318,7 +318,7 @@ static bool coins_view_sqlite_check_tip_consistency(sqlite3 *db)
                 sqlite3_finalize(cs);
             }
             if (above > 0 && above <= COINS_AUTO_REWIND_MAX_ROWS) {
-                fprintf(stderr,
+                fprintf(stderr,  // obs-ok:helper-context-logged
                     "[coins] DB_ERR_TIP_MISMATCH: utxos "
                     "max_height=%lld = tip_height+1 "
                     "(%lld rows above tip, ≤ %d guard) — "
@@ -333,7 +333,7 @@ static bool coins_view_sqlite_check_tip_consistency(sqlite3 *db)
                     "transaction failed — halt and investigate.\n");
                 return false;
             }
-            fprintf(stderr,
+            fprintf(stderr,  // obs-ok:helper-context-logged
                 "[coins] DB_ERR_TIP_MISMATCH: utxos "
                 "max_height=%lld = tip_height+1 but %lld rows "
                 "above tip exceed the auto-rewind guard (%d) — "
@@ -343,7 +343,7 @@ static bool coins_view_sqlite_check_tip_consistency(sqlite3 *db)
             return false;
         }
         if (tip_height > 1000000 && max_height - tip_height > 1000) {
-            fprintf(stderr,
+            fprintf(stderr,  // obs-ok:helper-context-logged
                 "[coins] tip check WARN: utxos max_height=%lld > "
                 "tip_height=%lld by %lld historical blocks — deferring "
                 "to block-index/coins anchor reconciliation\n",
@@ -351,7 +351,7 @@ static bool coins_view_sqlite_check_tip_consistency(sqlite3 *db)
                 (long long)(max_height - tip_height));
             return true;
         }
-        fprintf(stderr,
+        fprintf(stderr,  // obs-ok:helper-context-logged
             "[coins] DB_ERR_TIP_MISMATCH: utxos max_height=%lld > "
             "tip_height=%lld (UTXOs ahead of tip by %lld blocks) — "
             "halt and investigate; do not auto-heal.\n",
@@ -375,7 +375,7 @@ bool coins_view_sqlite_open(struct coins_view_sqlite *cvs, sqlite3 *db)
     cvs->view.impl = cvs;
     pthread_mutex_init(&cvs->mutex, NULL);
 
-    /* P14.1: prefer a dedicated sqlite3 handle on the same file.
+    /* prefer a dedicated sqlite3 handle on the same file.
      *
      * Live-node stall 2026-04-19 at h=3,081,408 was caused by
      * SAVEPOINT on the SHARED handle returning SQLITE_BUSY
@@ -423,7 +423,7 @@ bool coins_view_sqlite_open(struct coins_view_sqlite *cvs, sqlite3 *db)
             printf("coins_view_sqlite: dedicated connection "
                    "(path=%s, BEGIN IMMEDIATE mode)\n", fname);
         } else {
-            fprintf(stderr,
+            fprintf(stderr,  // obs-ok:helper-context-logged
                 "coins_view_sqlite: dedicated open failed (%s): "
                 "%s — falling back to shared handle + SAVEPOINT\n",
                 fname, sqlite3_errstr(rc));
@@ -713,7 +713,7 @@ bool coins_view_sqlite_batch_write_ex(struct coins_view_sqlite *cvs,
         int txn_rc = sqlite3_exec(cvs->db, txn_begin,
                                    NULL, NULL, &txn_err);
         if (txn_rc != SQLITE_OK) {
-            fprintf(stderr, "coins_flush: %s failed rc=%d: %s\n",
+            fprintf(stderr, "coins_flush: %s failed rc=%d: %s\n",  // obs-ok:helper-context-logged
                     txn_begin, txn_rc, txn_err ? txn_err : "unknown");
             if (txn_err) sqlite3_free(txn_err);
             sqlite3_busy_timeout(cvs->db, 10000); /* restore */
@@ -738,7 +738,7 @@ bool coins_view_sqlite_batch_write_ex(struct coins_view_sqlite *cvs,
                               e->txid.data, 32, SQLITE_STATIC);
             int rc = sqlite3_step(cvs->stmt_delete_tx); // raw-sql-ok: see top-of-file ZCL_AR_RAW_SQL rationale
             if (rc != SQLITE_DONE && rc != SQLITE_ROW) {
-                fprintf(stderr, "coins_flush: DELETE failed rc=%d: %s\n",
+                fprintf(stderr, "coins_flush: DELETE failed rc=%d: %s\n",  // obs-ok:helper-context-logged
                         rc, sqlite3_errmsg(cvs->db));
                 write_errors++;
             } else {
@@ -915,7 +915,7 @@ bool coins_view_sqlite_batch_write_ex(struct coins_view_sqlite *cvs,
 /* ── Explicit cross-handle transaction control ──────────────────
  *
  * Used by the chain_advance atomicity protocol (Move 2). When the
- * coins handle owns its own sqlite3 (file DB, post-P14.1), these
+ * coins handle owns its own sqlite3 (file DB, ), these
  * issue BEGIN IMMEDIATE / COMMIT / ROLLBACK. On the shared
  * :memory: fallback they use SAVEPOINT semantics so unit-test
  * fixtures still work without changes. */

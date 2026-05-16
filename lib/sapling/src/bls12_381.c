@@ -1723,7 +1723,7 @@ static inline void g1_cmov(struct g1_point *dst, const struct g1_point *src,
 
 /* G1 scalar multiplication: r = scalar * p (double-and-add, 256 bits).
  *
- * Threat model (P9.1): callers include Groth16 proving, where the scalar
+ * Threat model: callers include Groth16 proving, where the scalar
  * is a secret blinding factor (r_blind, s_blind — groth16_prover.c:906,
  * 934).  An attacker measuring wall-time of the prover must not learn
  * the Hamming weight of the scalar.

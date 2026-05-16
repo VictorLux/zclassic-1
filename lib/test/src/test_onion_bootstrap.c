@@ -1,6 +1,6 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * P11.1 — MVP criterion #2 CI gate: Tor onion bootstrap in <60s.
+ * MVP criterion #2 CI gate: Tor onion bootstrap in <60s.
  *
  * Boots the same tor_integration path the main node uses
  * (config/src/boot_services.c:1303-1316) into a temp datadir, polls
@@ -105,8 +105,8 @@ int test_onion_bootstrap(void);
 int test_onion_bootstrap(void)
 {
     int failures = 0;
-    printf("\n=== P11.1 Tor onion bootstrap (MVP #2, <60s) ===\n");
-    printf("onion_bootstrap P11.1: MVP #2 bootstrap_state=ready in <60s... ");
+    printf("\n=== Tor onion bootstrap (MVP #2, <60s) ===\n");
+    printf("onion_bootstrap MVP #2 bootstrap_state=ready in <60s... ");
 
     if (!getenv("ZCL_STRESS_TESTS")) {
         printf("SKIP (set ZCL_STRESS_TESTS=1 to run — ~30s + Tor network)\n");

@@ -1,6 +1,6 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * P11.6 GREEN — see test/soak_harness.h.
+ * Fix: see test/soak_harness.h.
  *
  * Offline verdict analyzer for the 7-day MVP soak run. The runner
  * in tools/soak/ polls the live node every 60 s and feeds each

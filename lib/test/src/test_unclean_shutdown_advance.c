@@ -29,7 +29,7 @@ int test_unclean_shutdown_advance(void)
 {
     int failures = 0;
 
-    printf("P24.18: sapling persist escalates after 3 consecutive failures... ");
+    printf("sapling persist escalates after 3 consecutive failures... ");
 
     event_log_init();
     atomic_store(&g_sapling_persist_events, 0);

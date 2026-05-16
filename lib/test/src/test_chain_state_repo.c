@@ -1064,7 +1064,7 @@ static int t_singleton_init_wires_fixture(void)
     return failures;
 }
 
-/* P7.1 live-outage regression — pre-patch, update_tip() was `static
+/* live-outage regression — pre-patch, update_tip was `static
  * void` and silently discarded the bool return from
  * process_block_commit_tip. When the csr refused a commit (any of
  * CSR_REJECTED_COINS_MISMATCH / _TIP_NOT_IN_INDEX / _STALE_INDEX /

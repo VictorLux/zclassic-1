@@ -50,7 +50,7 @@ bool zmsg_deserialize(struct zmsg_message *msg, struct byte_stream *s)
     ok &= stream_read(s, msg->msg_id, 32);
     ok &= stream_read_i64_le(s, &msg->timestamp);
 
-    /* P8.1 — all three length prefixes are peer-controlled. Reject any
+    /* all three length prefixes are peer-controlled. Reject any
      * value that would let stream_read overflow the fixed-size field OR
      * push the trailing NUL write past the buffer. Serialize caps
      * sender/recipient at 127 and body at ZMSG_MAX_BODY (4096), so a

@@ -1,8 +1,8 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * P11.7 — MVP criterion #7 CI gate: recover from `kill -9` in <2 min.
+ * MVP criterion #7 CI gate: recover from `kill -9` in <2 min.
  *
- * Exercises the SIGKILL-mid-block-apply recovery surface that P10.1.4
+ * Exercises the SIGKILL-mid-block-apply recovery surface that 
  * (`ac782fef5`) protects.  For each of 10 cycles:
  *   1. Parent `fork()`s a child.
  *   2. Child opens the shared datadir, walks a connect-block-style write
@@ -44,7 +44,7 @@
  *   - Full-binary cold restart recovery (that's MVP criterion #6's
  *     soak test — `deploy/zclassic23.service` under systemd).
  *   - Protocol-level resync after restart (covered by MVP criterion
- *     #3, P11.3 `test_cold_start_sync`).
+ * #3, `test_cold_start_sync`).
  *   - Block validation correctness (covered by
  *     `test_chain_stall_repro`, `test_chain_rollback`,
  *     `test_consensus_reject_events`).
@@ -359,8 +359,8 @@ static int p11_7_one_cycle(const char *dbpath, int cycle_idx,
 int test_kill9_recovery(void)
 {
     int failures = 0;
-    printf("\n=== P11.7 kill -9 recovery (MVP #7, <2 min) ===\n");
-    printf("kill9_recovery P11.7: SIGKILL-mid-apply × 10 cycles... ");
+    printf("\n=== kill -9 recovery (MVP #7, <2 min) ===\n");
+    printf("kill9_recovery SIGKILL-mid-apply × 10 cycles... ");
 
     if (!getenv("ZCL_STRESS_TESTS")) {
         printf("SKIP (set ZCL_STRESS_TESTS=1 to run — spawns 10 child procs)\n");
@@ -464,7 +464,7 @@ int test_kill9_recovery(void)
         failures++;
     }
     if (!failures) {
-        printf("  kill9_recovery P11.7: OK "
+        printf(" kill9_recovery OK "
                "(10 cycles in %ds; %d advanced tip, %d killed mid-apply "
                "— all recovered cleanly, no UTXO overshoot)\n",
                elapsed, n_clean, n_killed);

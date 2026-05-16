@@ -415,7 +415,7 @@ static bool process_block_recover_missing_utxo_from_legacy_rpc(
     transaction_init(&tx);
     bool decoded = decode_hex_tx(&tx, rawtx_hex);
     if (!decoded) {
-        fprintf(stderr, "[self-heal] legacy RPC raw tx decode failed "
+        fprintf(stderr, "[self-heal] legacy RPC raw tx decode failed "  // obs-ok:helper-context-logged
                 "for %s\n", txhex);
         transaction_free(&tx);
         free(raw);
@@ -569,7 +569,7 @@ static bool process_block_verify_active_tip_child_on_disk(
     return ok;
 }
 
-/* P24.13: returns true iff the pprev chain from pindex_prev can be
+/* returns true iff the pprev chain from pindex_prev can be
  * walked back through the retarget window and the median-time context
  * used at the far edge of that window. Each step must satisfy
  *   cursor->pprev != NULL && cursor->nHeight == cursor->pprev->nHeight + 1
@@ -626,7 +626,7 @@ bool process_block_should_skip_contextual_header(
     if (tip_h > 100000 && pindex_prev->nHeight < tip_h - 1000)
         return true;
 
-    /* Case (b) — P24.13: post-FlyClient-snapshot tail. If the PoW
+    /* Case (b) — post-FlyClient-snapshot tail. If the PoW
      * averaging window cannot be walked contiguously, GetNextWorkRequired
      * would return nProofOfWorkLimit (weakest-allowed) and every honest
      * peer's real nBits would mismatch. Skip contextual check in that
@@ -662,7 +662,7 @@ void set_sapling_tree_for_flush(struct incremental_merkle_tree *tree)
     g_sapling_tree_for_flush = tree;
 }
 
-/* ── Flat-file sapling checkpoint (P12.1) ───────────────────────
+/* ── Flat-file sapling checkpoint ───────────────────────
  *
  * Optional path set by boot.c once datadir is known. When populated
  * and the sapling tree pointer above is also set, every
@@ -1504,7 +1504,7 @@ static struct block_index *find_most_work_chain(struct main_state *ms)
         }
     }
 
-    /* P14.7 diagnostic: when activate_best_chain will silent-return
+    /* Diagnostic: when activate_best_chain will silent-return
      * (because we picked the current tip as best), emit a
      * rate-limited log line naming the filter counters. This is how
      * the canary identifies which shortlisted cause is keeping
@@ -1840,7 +1840,7 @@ static bool process_block_commit_tip(struct main_state *ms,
     return false;
 }
 
-/* P7.1: propagate csr rejection to caller. Previously this function
+/* propagate csr rejection to caller. Previously this function
  * was void — if process_block_commit_tip returned false (csr refused
  * the commit for coins_mismatch / tip_not_in_index / stale_index /
  * etc.), the failure was silently discarded. connect_tip kept
@@ -1973,7 +1973,7 @@ void process_block_log_live_stage_ext(int height, const char *stage,
     process_block_log_live_stage(height, stage, (int64_t)elapsed_us);
 }
 
-/* P7.1 regression surface: exposes the post-refactor update_tip so a
+/* Regression surface: exposes the post-refactor update_tip so a
  * unit test can drive a real csr_instance through a rejecting input
  * and assert the caller observes false. Production callers go through
  * connect_tip / disconnect_tip; this wrapper must not grow any new
@@ -1984,7 +1984,7 @@ bool process_block_test_update_tip(struct main_state *ms,
     return update_tip(ms, pindex_new);
 }
 
-/* P14.7 — stale-FAILED-mark clear.
+/* stale-FAILED-mark clear.
  *
  * Previous logic rate-limited ALL clears of blocks below tip-100 to
  * one per 300s globally. For BLOCK_FAILED_CHILD (propagation-only)
@@ -2031,7 +2031,7 @@ bool process_block_try_clear_stale_failed(struct block_index *pindex,
     return false;
 }
 
-/* P14.6 — BLOCK_FAILED_CHILD propagation with OOM-amplifier guards.
+/* BLOCK_FAILED_CHILD propagation with OOM-amplifier guards.
  *
  * History: the original connect_tip inlined a full block_map scan +
  * qsort on every failed connect_block. At a live tip of ~3M entries
@@ -2050,7 +2050,7 @@ process_block_propagate_failed_child(struct block_map *map,
                                       time_t *last_propagate_sec,
                                       size_t *propagated_out)
 {
-    /* Guard A (P14.6): parent already failed.  A prior propagation
+    /* Guard A: parent already failed. A prior propagation
      * from the failed ancestor already covered this subtree, so the
      * descendant CHILD marks are already in place; walking the map
      * again is pure allocator + qsort amplification. */
@@ -2058,7 +2058,7 @@ process_block_propagate_failed_child(struct block_map *map,
         (pindex_root->pprev->nStatus & BLOCK_FAILED_MASK))
         return PROPAGATE_FAILED_CHILD_SKIP_PARENT_FAILED;
 
-    /* Guard B (P14.6): per-retry rate limit.  When the caller opts in
+    /* Guard B: per-retry rate limit. When the caller opts in
      * with a persistent timestamp, refuse back-to-back walks inside
      * PROPAGATE_FAILED_CHILD_MIN_INTERVAL_SEC.  The worst a flap can
      * do under this guard is one 24 MB + O(N log N) walk per
@@ -2265,7 +2265,7 @@ bool accept_block_header(const struct block_header *header,
     /* Skip contextual header check during IBD when the block index has
      * scrambled heights from snapshot/LDB import, OR when the post-
      * FlyClient-snapshot tail leaves the PoW averaging window unable to
-     * walk back contiguously (P24.13). In either case, the contextual
+     * walk back contiguously. In either case, the contextual
      * check would spuriously fail; full validation happens later in
      * connect_block(). This mirrors Bitcoin Core's header-first sync
      * model, where header structure is checked before block connection. */
@@ -2457,7 +2457,7 @@ bool accept_block(struct block *block,
          * snapshot cleanup) may still have nTx set from the index — we
          * must NOT skip those, they need to be re-written to disk. */
         if (pindex->nTx != 0 && (pindex->nStatus & BLOCK_HAVE_DATA)) {
-            /* Visibility (2026-04-22 P24.34 trace): make this silent-skip
+            /* Visibility (2026-04-22 trace): make this silent-skip
              * path observable.  If blocks arrive over P2P and end up here,
              * the UTXO/chain state can't advance and the stall is
              * invisible without this event. */
@@ -2846,7 +2846,7 @@ bool connect_tip(struct validation_state *state,
                                 "index and SQLite index was unavailable or "
                                 "unverified — falling back to bounded-depth "
                                 "chain scan\n", hex);
-                        /* ── Scan fallback (P24.29 surgical coordinator
+                        /* ── Scan fallback ( surgical coordinator
                          *    commit 2026-04-22 05:11, pre-landed ahead of
                          *    Agent-2's RED/factoring row).
                          *
@@ -3084,7 +3084,7 @@ bool connect_tip(struct validation_state *state,
                             "transient UTXO state issue)\n",
                             pindex_new->nHeight);
                 } else {
-                    /* P14.6: delegate to helper with both OOM-amplifier
+                    /* delegate to helper with both OOM-amplifier
                      * guards enabled.  Static timestamp gives a single
                      * per-process rate-limit window — the flap amplifier
                      * shape is global, not per-block, so one bucket for
@@ -3213,7 +3213,7 @@ bool connect_tip(struct validation_state *state,
      * tip_not_in_index, stale_index, ...) we MUST NOT keep going —
      * continuing would leave pindex_new marked BLOCK_VALID_SCRIPTS
      * while active_chain_tip still points at the previous tip,
-     * which is the root cause of P7.1 (repeated `val.block_connected`
+     * which is the root cause (repeated `val.block_connected`
      * at the same height forever). Surface it as a system error so
      * activate_best_chain bubbles up to the caller. */
 	    stage_start_us = GetTimeMicros();
@@ -3546,7 +3546,7 @@ bool connect_tip(struct validation_state *state,
         return false;
     }
 
-    /* Flat-file sapling checkpoint (P12.1). Runs after a successful
+    /* Flat-file sapling checkpoint. Runs after a successful
      * coins flush so any state we write here is consistent with what
      * just landed on disk. Every 10K blocks; no-op if the checkpoint
      * path isn't configured. */
@@ -3734,7 +3734,7 @@ bool disconnect_tip(struct validation_state *state,
         return validation_state_error(state, "csr-tip-rollback-rejected");
     }
 
-    /* P10.1.4 invariant assertion — the coins view must no longer
+    /* Invariant assertion — the coins view must no longer
      * report any tx from the disconnected block.
      *
      * This catches the 2026-04-19 BIP30 stall shape at the boundary

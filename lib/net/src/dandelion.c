@@ -38,10 +38,10 @@ void dandelion_free(struct dandelion_state *ds)
     memset(ds, 0, sizeof(*ds));
 }
 
-/* ── Cryptographic RNG for stem decisions (P8.2) ───────────────────
+/* ── Cryptographic RNG for stem decisions ───────────────────
  *
  * Dandelion's stem-peer selection (Fisher-Yates) and per-tx fluff
- * coin-flip MUST be unpredictable to the network. Pre-P8.2 these ran
+ * coin-flip MUST be unpredictable to the network. these ran
  * on an xorshift64 PRNG seeded from `time(NULL) ^ const` — ~31 bits
  * of effective entropy. An attacker who knows rough boot time and
  * epoch cadence could replay the stream and predict (a) which
@@ -133,7 +133,7 @@ void dandelion_maybe_rotate_epoch(struct dandelion_state *ds,
     }
 
     if (!rng_ok) {
-        fprintf(stderr, "[dandelion] stem-peer RNG failed; deferring "
+        fprintf(stderr, "[dandelion] stem-peer RNG failed; deferring "  // obs-ok:helper-context-logged
                         "selection (txs will fluff this epoch)\n");
         ds->num_stem_peers = 0;
         ds->stem_rr_index = 0;
@@ -151,7 +151,7 @@ void dandelion_maybe_rotate_epoch(struct dandelion_state *ds,
     ds->stem_rr_index = 0;
 
     if (pick > 0) {
-        fprintf(stderr, "[dandelion] new epoch: %d stem peer(s) selected\n", pick);
+        fprintf(stderr, "[dandelion] new epoch: %d stem peer(s) selected\n", pick);  // obs-ok:helper-context-logged
     }
 
     zcl_mutex_unlock(&ds->cs);
@@ -335,7 +335,7 @@ bool dandelion_stempool_contains(struct dandelion_state *ds,
 }
 
 #ifdef ZCL_TESTING
-/* P8.2 acceptance hooks. These exercise the same RNG-driven shuffle
+/* acceptance hooks. These exercise the same RNG-driven shuffle
  * and coin-flip used by dandelion_maybe_rotate_epoch and
  * dandelion_should_stem, in a form that doesn't require a populated
  * net_manager. NOT for production callers. */

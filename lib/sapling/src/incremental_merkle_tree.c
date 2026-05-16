@@ -107,7 +107,7 @@ static struct uint256 s_sapling_empty_roots[MAX_TREE_DEPTH + 1];
 static pthread_once_t s_sapling_empty_roots_once = PTHREAD_ONCE_INIT;
 
 #ifdef ZCL_TESTING
-/* See comment in pedersen_hash.c — P9.5 race observability. */
+/* See comment in pedersen_hash.c — race observability. */
 _Atomic int zcl_sapling_empty_roots_body_runs_for_test = 0;
 
 void zcl_sapling_empty_roots_reset_for_test(void)
@@ -385,7 +385,7 @@ bool incremental_tree_deserialize(struct incremental_merkle_tree *t,
     return wfcheck(t);
 }
 
-/* --- Flat-file checkpoint (P12.1) ───────────────────────────
+/* --- Flat-file checkpoint ───────────────────────────
  *
  * Replaces the 2.6M-block sapling tree replay on crash recovery
  * with a sub-second load from a dedicated on-disk checkpoint.
@@ -491,7 +491,7 @@ bool sapling_tree_flush_checkpoint(const struct incremental_merkle_tree *t,
     int fd = open(tmp_path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
     if (fd < 0) {
         int saved_errno = errno;
-        fprintf(stderr,
+        fprintf(stderr,  // obs-ok:helper-context-logged
                 "[sapling_tree] %s:%d %s(): flush_checkpoint: "
                 "open(%s) failed: %s\n",
                 __FILE__, __LINE__, __func__, tmp_path,
@@ -521,7 +521,7 @@ bool sapling_tree_flush_checkpoint(const struct incremental_merkle_tree *t,
     free(tmp_path);
 
     if (!ok) {
-        fprintf(stderr,
+        fprintf(stderr,  // obs-ok:helper-context-logged
                 "[sapling_tree] %s:%d %s(): flush_checkpoint: "
                 "write/rename to %s failed: %s\n",
                 __FILE__, __LINE__, __func__, path,

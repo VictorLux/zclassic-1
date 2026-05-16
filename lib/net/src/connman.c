@@ -746,7 +746,7 @@ static void *thread_socket_handler(void *arg)
             if (rev & (POLLHUP | POLLERR))
                 node->disconnect = true;
         }
-        /* Free deferred nodes (still under cs_nodes lock). P2.5: refs
+        /* Free deferred nodes (still under cs_nodes lock). refs
          * held by a parallel message-handler snapshot re-park the node
          * in deferred_free for the next cycle instead of being freed. */
         connman_run_deferred_free_sweep(cm);
@@ -966,7 +966,7 @@ static void *thread_socket_handler(void *arg)
 
 bool connman_run_message_cycle(struct connman *cm)
 {
-    /* P2.5: snapshot-then-iterate breaks the "cs_nodes held across
+    /* snapshot-then-iterate breaks the "cs_nodes held across
      * callback" anti-pattern. Pre-fix, the message thread held
      * cs_nodes for the duration of process_messages + send_messages
      * across every peer — which meant any other thread trying to

@@ -467,7 +467,7 @@ void event_dump_recent(size_t count)
         format_event(stderr, ev);
     }
     fprintf(stderr, "═══ END EVENT LOG ═══\n\n");  // obs-ok:crash-dump-banner
-    /* P7.3: the crash handler invokes us on SIGABRT just before
+    /* the crash handler invokes us on SIGABRT just before
      * _exit(); stderr is fully-buffered under systemd's file-
      * redirected StandardError, so any fprintf we did above sits in
      * the FILE* buffer and gets dropped by _exit (which bypasses
@@ -630,7 +630,7 @@ size_t event_dump_json_filtered(char *buf, size_t buf_size, size_t count,
 
 /* ── Crash handler ───────────────────────────────────────── */
 
-/* P7.3: async-signal-safe stderr write.  When systemd has StandardError
+/* async-signal-safe stderr write. When systemd has StandardError
  * redirected to node.log (fully-buffered FILE*), fprintf() output
  * silently dies on _exit because libc's atexit handlers don't run.
  * backtrace_symbols_fd() writes straight to STDERR_FILENO via write(2)

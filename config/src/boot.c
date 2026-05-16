@@ -1887,7 +1887,7 @@ bool app_init(struct app_context *ctx)
      * its own BEGIN/COMMIT. One connection = no WAL lock contention. */
     if (g_node_db.open) {
         if (!coins_view_sqlite_open(&g_coins_sqlite, g_node_db.db)) {
-            /* P7.2: the old "Warning" + keep-going path is how the
+            /* the old "Warning" + keep-going path is how the
              * live node was still serving RPC against a corrupted
              * chain-state.  A boot-time tip mismatch that the check
              * didn't auto-rewind is an operator-intervention event:
@@ -2718,7 +2718,7 @@ bool app_init(struct app_context *ctx)
     if (!boot_step_fastimport(ctx, params))
         return false;
 
-    /* P0.7: optional standalone body-pull from a sibling zclassicd.
+    /* optional standalone body-pull from a sibling zclassicd.
      * Surgical catch-up that skips local_chain_ingest's phase 1/2 —
      * useful when active_tip lags pindex_best_header and P2P bodies
      * aren't filling the gap. No-op when ctx->bodypull_from_legacy
@@ -3082,7 +3082,7 @@ bool app_init(struct app_context *ctx)
     }
 
     t_phase = boot_clock_ms();
-    /* Wire the flat-file sapling checkpoint (P12.1). Tells
+    /* Wire the flat-file sapling checkpoint. Tells
      * process_block.c where to flush every 10K blocks; separate from
      * the node_state-backed path because the flat file is immune to
      * the P14 savepoint contention class. */
@@ -3092,7 +3092,7 @@ bool app_init(struct app_context *ctx)
      *
      * Three-tier fall-back, most-authoritative first:
      *   (1) Flat-file checkpoint at <datadir>/sapling_tree_ckpt.dat
-     *       (P12.1) — SHA3-verified, atomic, ≤10K blocks stale.
+     * SHA3-verified, atomic, ≤10K blocks stale.
      *   (2) node_state["sapling_tree"] — SQLite-backed, legacy path,
      *       kept as a secondary belt.
      *   (3) Fresh empty tree + replay during the mismatch-check pass.
@@ -3110,7 +3110,7 @@ bool app_init(struct app_context *ctx)
             g_state.sapling_tree_loaded = true;
             set_sapling_tree_for_flush(&g_state.sapling_tree);
             printf("Sapling tree loaded from checkpoint: "
-                   "%zu commitments, height=%lld (P12.1)\n",
+                   "%zu commitments, height=%lld\n",
                    incremental_tree_size(&g_state.sapling_tree),
                    (long long)ckpt_height);
         }
@@ -3390,7 +3390,7 @@ sapling_tree_boot_check_done:
         boot_phase_end(&bp_act);
     }
 
-    /* P14.11 + P14.12 final sweep. Post-activation is the last point at
+    /* final sweep. Post-activation is the last point at
      * which block_map and active_chain could still carry the anchor-
      * restore limp (nBits==0 entries, chain_active holes below tip); the
      * finalize also covers the block-file-scan + `Post-activation: fixed

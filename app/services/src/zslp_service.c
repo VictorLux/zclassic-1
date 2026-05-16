@@ -76,7 +76,7 @@ bool zslp_service_validate_token_key(const char *token_key)
     if (!zslp_service_is_alphanumeric(token_key, len))
         return false;
 
-    /* P8.6: disambiguate ticker-style token IDs from truncated hex txid
+    /* disambiguate ticker-style token IDs from truncated hex txid
      * prefixes. A string that is ALL hex digits ([0-9a-fA-F]) at any
      * length < 64 is indistinguishable from the first `len` chars of a
      * real txid, and both canonicalize (upper-cased) to the same key —

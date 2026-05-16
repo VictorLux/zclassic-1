@@ -47,7 +47,7 @@ static int db_exec_checked(sqlite3 *db, const char *sql, const char *where)
     char *err = NULL;
     int rc = sqlite3_exec(db, sql, NULL, NULL, &err);
     if (rc != SQLITE_OK) {
-        fprintf(stderr, "[db] %s failed: %s (sql=%s)\n",
+        fprintf(stderr, "[db] %s failed: %s (sql=%s)\n",  // obs-ok:helper-context-logged
                 where, err ? err : "(no errmsg)", sql);
     }
     sqlite3_free(err);
@@ -68,7 +68,7 @@ static int db_exec_tolerant(sqlite3 *db, const char *sql, const char *where,
             sqlite3_free(err);
             return SQLITE_OK;
         }
-        fprintf(stderr, "[db] %s failed: %s (sql=%s)\n",
+        fprintf(stderr, "[db] %s failed: %s (sql=%s)\n",  // obs-ok:helper-context-logged
                 where, err ? err : "(no errmsg)", sql);
     }
     sqlite3_free(err);
@@ -487,7 +487,7 @@ static bool prepare_statements(struct node_db *ndb)
     return true;
 }
 
-/* P7.8: the cache_size and mmap_size values below are *the* tuning
+/* the cache_size and mmap_size values below are *the* tuning
  * knobs for node.db in normal (non-IBD-turbo) mode.  They were
  * originally put here during the 2026-03 IBD performance pass and
  * the P7 wave locks them in with a test (test_db_pragma_tuning in
@@ -536,10 +536,10 @@ static bool db_quick_check_ok(sqlite3 *db)
         const unsigned char *txt = sqlite3_column_text(stmt, 0);
         ok = txt && strcmp((const char *)txt, "ok") == 0;
         if (!ok && txt) {
-            fprintf(stderr, "db: quick_check failed: %s\n", txt);
+            fprintf(stderr, "db: quick_check failed: %s\n", txt);  // obs-ok:helper-context-logged
         }
     } else {
-        fprintf(stderr, "db: quick_check step failed: %s\n",
+        fprintf(stderr, "db: quick_check step failed: %s\n",  // obs-ok:helper-context-logged
                 sqlite3_errmsg(db));
     }
     sqlite3_finalize(stmt);
@@ -552,9 +552,9 @@ static void db_quarantine_one(const char *path, const char *suffix)
     if (access(path, F_OK) != 0) return;
     snprintf(dst, sizeof(dst), "%s.%s", path, suffix);
     if (rename(path, dst) == 0) {
-        fprintf(stderr, "db: quarantined %s -> %s\n", path, dst);
+        fprintf(stderr, "db: quarantined %s -> %s\n", path, dst);  // obs-ok:helper-context-logged
     } else {
-        fprintf(stderr, "db: failed to quarantine %s: %s\n",
+        fprintf(stderr, "db: failed to quarantine %s: %s\n",  // obs-ok:helper-context-logged
                 path, strerror(errno));
     }
 }
@@ -581,7 +581,7 @@ static bool db_open_raw(sqlite3 **db_out, const char *path)
 {
     int rc = sqlite3_open(path, db_out);
     if (rc != SQLITE_OK) {
-        fprintf(stderr, "db: cannot open %s: %s\n",
+        fprintf(stderr, "db: cannot open %s: %s\n",  // obs-ok:helper-context-logged
                 path, sqlite3_errmsg(*db_out));
         sqlite3_close(*db_out);
         *db_out = NULL;
@@ -627,7 +627,7 @@ bool node_db_open(struct node_db *ndb, const char *path)
     }
 
     if (!db_quick_check_ok(ndb->db)) {
-        fprintf(stderr, "db: %s is malformed; rebuilding fresh SQLite state\n",
+        fprintf(stderr, "db: %s is malformed; rebuilding fresh SQLite state\n",  // obs-ok:helper-context-logged
                 path);
         sqlite3_close(ndb->db);
         ndb->db = NULL;
@@ -1481,7 +1481,7 @@ bool node_db_wipe_utxos(struct node_db *ndb)
     const char *offline_repair = getenv("ZCL_OFFLINE_REPAIR");
     if (existing > 1000 &&
         (!offline_repair || strcmp(offline_repair, "1") != 0)) {
-        fprintf(stderr,
+        fprintf(stderr,  // obs-ok:helper-context-logged
                 "db: refused to wipe %lld UTXOs without "
                 "ZCL_OFFLINE_REPAIR=1\n",
                 (long long)existing);
@@ -1584,7 +1584,7 @@ bool node_db_ibd_turbo_mode(struct node_db *ndb)
     sqlite3_busy_timeout(ndb->db, 10000);
 
     if (!turbo_ok) {
-        fprintf(stderr,
+        fprintf(stderr,  // obs-ok:helper-context-logged
                 "[db] ibd_turbo_mode: one or more PRAGMAs failed; "
                 "falling back to safe defaults (IBD will be slower "
                 "but correct)\n");

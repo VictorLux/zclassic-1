@@ -29,7 +29,7 @@ static void test_updated_block_tip(void *ctx, int height)
     test_tip_height = height;
 }
 
-/* ── P7.4 backpressure-watchdog event observers ──────────── */
+/* ── backpressure-watchdog event observers ──────────── */
 
 static _Atomic uint64_t g_p74_active_emits   = 0;
 static _Atomic uint64_t g_p74_reject_emits   = 0;
@@ -79,7 +79,7 @@ static void p74_register_observers(void)
     event_observe(EV_BACKPRESSURE_CLEAR,  p74_clear_observer,  NULL);
 }
 
-/* P2.6 concurrent-racer worker: each thread attempts to claim the
+/* concurrent-racer worker: each thread attempts to claim the
  * swarm slot. Exactly one must win. The thread writes 1 into the
  * `won` slot on success, 0 on failure. A shared start barrier makes
  * both pthreads hit the CAS in the same window. */
@@ -97,7 +97,7 @@ static void *p26_race_worker(void *arg)
     return NULL;
 }
 
-/* ── P2.5 connman snapshot-iterate stress scaffolding ─────────── */
+/* ── connman snapshot-iterate stress scaffolding ─────────── */
 
 struct p25_ctx {
     struct connman *cm;
@@ -1255,12 +1255,12 @@ int test_net(void)
         else { printf("FAIL\n"); failures++; }
     }
 
-    /* P2.8 — process-wide recv queue budget caps total bytes across
+    /* process-wide recv queue budget caps total bytes across
      * all net_messages, not just per-message. A swarm of peers
      * staging 2 MB messages must not be able to push our resident
      * set above the configured ceiling. */
     {
-        printf("net_message: recv budget rejects over-cap alloc (P2.8)... ");
+        printf("net_message: recv budget rejects over-cap alloc ... ");
         unsigned char magic[MESSAGE_START_SIZE] = {0x24, 0xe9, 0x27, 0x64};
 
         /* 16 KB cap — smaller than any single real message. */
@@ -3145,8 +3145,8 @@ int test_net(void)
         free(m.chunk_hashes);
     }
 
-    /* ── P2.4: per-chunk SHA3 verification gates chainstate writes ── */
-    printf("swarm_sync: P2.4 corrupted chunk rejected and not applied... ");
+    /* ── per-chunk SHA3 verification gates chainstate writes ── */
+    printf("swarm_sync: corrupted chunk rejected and not applied... ");
     {
         const char *p24_dir = "test_sync_p24";
         test_cleanup_tmpdir(p24_dir);
@@ -3209,7 +3209,7 @@ int test_net(void)
         ok = ok && (swarm_sync_assign_chunk(&ss, 42) == 0);
 
         /* Single-bit flip → chunk hash diverges from manifest. This is
-         * exactly the P2.4 acceptance scenario from AGENT-2.md. */
+         * exactly the acceptance scenario from AGENT-2.md. */
         struct utxo_chunk *bad = zcl_calloc(1, sizeof(*bad), "p24_bad");
         ok = ok && bad != NULL;
         if (good && bad) {
@@ -3282,10 +3282,10 @@ int test_net(void)
         test_cleanup_tmpdir(p24_dir);
     }
 
-    /* P2.4 guard: swarm_sync_init must reject a manifest that omits
+    /* guard: swarm_sync_init must reject a manifest that omits
      * chunk_hashes. Otherwise verify-before-apply silently degrades to
      * verify-against-zeros (pre-fix behavior). */
-    printf("swarm_sync: P2.4 init rejects NULL chunk_hashes... ");
+    printf("swarm_sync: init rejects NULL chunk_hashes... ");
     {
         struct sync_manifest m;
         memset(&m, 0, sizeof(m));
@@ -3304,10 +3304,10 @@ int test_net(void)
         }
     }
 
-    /* P2.4 guard: swarm_sync_init must reject num_chunks > MANIFEST_MAX_CHUNKS
+    /* guard: swarm_sync_init must reject num_chunks > MANIFEST_MAX_CHUNKS
      * so a malicious peer can't force a multi-gigabyte calloc via the
      * wire manifest. */
-    printf("swarm_sync: P2.4 init rejects oversized num_chunks... ");
+    printf("swarm_sync: init rejects oversized num_chunks... ");
     {
         uint8_t (*hashes)[32] = zcl_calloc(1, 32, "p24_oversize_hashes");
         struct sync_manifest m;
@@ -3329,7 +3329,7 @@ int test_net(void)
         free(hashes);
     }
 
-    /* ── P2.7: FlyClient challenge rate limit ─────────────────── */
+    /* ── FlyClient challenge rate limit ─────────────────── */
     /* A flood of zfcchallenge forces snapsync_build_fc_response() to
      * reconstruct 50 MMB proofs per message, pinning a CPU. The token-
      * bucket guard (burst 30, refill 10/sec) must cap what a single
@@ -3436,7 +3436,7 @@ int test_net(void)
         msgprocessor_test_fc_rate_reset();
     }
 
-    /* ── P2.6: g_swarm_active TOCTOU (atomic CAS gate) ──────────── */
+    /* ── g_swarm_active TOCTOU (atomic CAS gate) ──────────── */
     /* The zmanifest handler previously did a plain read/write pair
      * on g_swarm_active: check `!g_swarm_active`, then later set
      * `g_swarm_active = true` under g_swarm_mutex. Two peers racing
@@ -3869,7 +3869,7 @@ skip_parallel_tests:
         else { printf("FAIL\n"); failures++; }
     }
 
-    /* ── P7.4 tip-stall backpressure watchdog ─────────────────────
+    /* ── tip-stall backpressure watchdog ─────────────────────
      * Drive the watchdog with an explicit clock + queue size to
      * verify (a) it enters BACKPRESSURE_ACTIVE on the documented
      * (stall_time AND queue_bytes) condition, (b) it rejects new
@@ -3984,7 +3984,7 @@ skip_parallel_tests:
                failures++; }
     }
 
-    /* P7.4 RSS-cap stress (opt-in via ZCL_STRESS_TESTS).
+    /* RSS-cap stress (opt-in via ZCL_STRESS_TESTS).
      *
      * Live incident reproducer: simulate a synthetic peer pushing
      * 1000 "block" messages into the should_reject path while the
@@ -4040,7 +4040,7 @@ skip_parallel_tests:
     event_clear_observers(EV_BACKPRESSURE_REJECT);
     event_clear_observers(EV_BACKPRESSURE_CLEAR);
 
-    /* ── P2.5 connman snapshot-iterate stress (opt-in) ──────────
+    /* ── connman snapshot-iterate stress (opt-in) ──────────
      * Exercise the refactored message-cycle + deferred-free-sweep
      * contract under concurrent disconnect pressure. Opt-in via
      * ZCL_STRESS_TESTS=1 so the default ./test_zcl doesn't pay the

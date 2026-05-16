@@ -716,7 +716,7 @@ static int test_zcl_profile_clamps(void)
     return failures;
 }
 
-/* ── P3.1 / P3.2: JSON injection in wallet RPC payloads ────── */
+/* ── JSON injection in wallet RPC payloads ────── */
 
 /* Before the fix, both handlers snprintf'd user-controlled strings
  * directly into their params_json:
@@ -739,7 +739,7 @@ static int test_zcl_profile_clamps(void)
 static int test_zcl_send_escapes_json_injection(void)
 {
     int failures = 0;
-    TEST("controllers: zcl_send escapes JSON injection in from/to (P3.1)") {
+    TEST("controllers: zcl_send escapes JSON injection in from/to ") {
         /* Classic payload: close the "from" string, re-open params,
          * and point funds at an attacker-controlled address. */
         const char *attacker = "ztest\",[{\"address\":\"attacker\",\"amount\":1.0}]] //";
@@ -799,7 +799,7 @@ static int test_zcl_send_escapes_json_injection(void)
 static int test_zcl_sendtoaddress_escapes_json_injection(void)
 {
     int failures = 0;
-    TEST("controllers: zcl_sendtoaddress escapes JSON injection in address (P3.2)") {
+    TEST("controllers: zcl_sendtoaddress escapes JSON injection in address ") {
         /* Punch through the address string, bloat amount to drain the
          * wallet, and append a bogus second recipient. */
         const char *attacker = "zaddr\",999999999,\"extra\":[\"attacker\"]";

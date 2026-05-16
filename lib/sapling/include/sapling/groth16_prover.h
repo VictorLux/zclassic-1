@@ -24,7 +24,7 @@ struct linear_combination {
     struct lc_term *terms;
     size_t num_terms;
     size_t cap;
-    /* P9.3: sticky flag set by lc_add_term when zcl_realloc fails.
+    /* sticky flag set by lc_add_term when zcl_realloc fails.
      * cs_enforce propagates into cs->oom_error. */
     bool oom_error;
 };
@@ -45,7 +45,7 @@ struct constraint_system {
     size_t cap_vars;
     size_t num_inputs;        /* public inputs (indices 1..num_inputs) */
 
-    /* P9.3: sticky flag set by cs_alloc_var / cs_enforce when a realloc
+    /* sticky flag set by cs_alloc_var cs_enforce when a realloc
      * fails (or when an input LC arrives with oom_error already set).
      * groth16_prove checks this at entry and refuses — otherwise the
      * prover would emit a valid-looking proof for a silently-wrong
@@ -78,13 +78,13 @@ bool cs_enforce(struct constraint_system *cs,
                 const struct linear_combination *b,
                 const struct linear_combination *c);
 
-/* P9.3 test hook: when non-NULL, the three CS-building helpers
+/* test hook: when non-NULL, the three CS-building helpers
  * (lc_add_term, cs_alloc_var, cs_enforce) call this instead of
  * zcl_realloc. Returning NULL simulates OOM. File-scope so the
  * hook influences only this translation unit. */
 void groth16_prover_test_set_realloc_hook(void *(*hook)(void *ptr, size_t size));
 
-/* P9.4 test hook: when non-zero, overrides the computed FFT domain
+/* test hook: when non-zero, overrides the computed FFT domain
  * size in groth16_prove so tests can exercise the fr_fft /
  * fr_fft_parallel non-pow-2 branch through the real prover call
  * path. Pass 0 to disarm. */

@@ -1211,7 +1211,7 @@ static int test_snapshot_offer_mmr_field(void)
     return failures;
 }
 
-/* ── P2.3 — fast_sync_apply_chunk atomicity ─────────────────
+/* ── fast_sync_apply_chunk atomicity ─────────────────
  *
  * A chunk that mixes a valid UTXO with an invalid one must leave no
  * trace in the database. The CHECK(height >= 0) constraint on the
@@ -1223,7 +1223,7 @@ static int test_snapshot_offer_mmr_field(void)
 static int test_apply_chunk_rollback_on_mid_chunk_failure(void)
 {
     int failures = 0;
-    TEST("fast_sync_apply_chunk: rolls back whole chunk on mid-chunk failure (P2.3)") {
+    TEST("fast_sync_apply_chunk: rolls back whole chunk on mid-chunk failure ") {
         char dir[128];
         snprintf(dir, sizeof(dir),
                  "./test-tmp/fast_sync_apply_%d_XXXXXX", (int)getpid());
@@ -1495,7 +1495,7 @@ int test_fast_sync(void)
     /* MMR-secured snapshot */
     failures += test_snapshot_offer_mmr_field();
 
-    /* P2.3: chunk apply atomicity */
+    /* chunk apply atomicity */
     failures += test_apply_chunk_rollback_on_mid_chunk_failure();
     failures += test_chunk_roundtrip_preserves_canonical_utxo_fields();
 

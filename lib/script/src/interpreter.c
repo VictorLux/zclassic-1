@@ -79,7 +79,7 @@ static bool sn_serialize_push(struct script_stack *stack,
         stack_top(stk, idx)->size, minimal, maxsz)) \
         return set_script_error(serror, SCRIPT_ERR_UNKNOWN_ERROR)
 
-/* P4.2 — every stack mutation that can overflow MAX_STACK_ITEMS must be
+/* every stack mutation that can overflow MAX_STACK_ITEMS must be
  * propagated as SCRIPT_ERR_STACK_SIZE. Without this, OP_PICK/OP_ROLL and
  * other post-push reads could operate on an inconsistent stack shape. */
 #define PUSH_OR_FAIL(stk, data, len) \
@@ -110,7 +110,7 @@ bool eval_script(struct script_stack *stack,
     static const unsigned char vch_true[] = {1};
     bool vf_exec[MAX_STACK_ITEMS];
     size_t vf_exec_count = 0;
-    /* P4.1 — altstack backing buffer on the heap (~520 KB). The cleanup
+    /* altstack backing buffer on the heap (~520 KB). The cleanup
      * attribute frees it on every return path, including early errors. */
     struct script_stack altstack __attribute__((cleanup(stack_free))) = {0};
     if (!stack_init(&altstack))
@@ -693,7 +693,7 @@ bool verify_script(const struct script *script_sig,
         !script_is_push_only(script_sig))
         return set_script_error(serror, SCRIPT_ERR_SIG_PUSHONLY);
 
-    /* P4.1 — both stacks have their ~520 KB item buffer on the heap.
+    /* both stacks have their ~520 KB item buffer on the heap.
      * cleanup(stack_free) frees them on every return path. */
     struct script_stack stack __attribute__((cleanup(stack_free))) = {0};
     struct script_stack stack_copy __attribute__((cleanup(stack_free))) = {0};

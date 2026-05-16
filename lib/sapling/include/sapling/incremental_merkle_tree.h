@@ -65,7 +65,7 @@ bool incremental_tree_serialize(const struct incremental_merkle_tree *t,
 bool incremental_tree_deserialize(struct incremental_merkle_tree *t,
                                    struct byte_stream *s);
 
-/* ── Flat-file checkpoint (P12.1) ───────────────────────────────
+/* ── Flat-file checkpoint ───────────────────────────────
  *
  * Dedicated on-disk checkpoint that lives independently of the
  * SQLite-backed `node_state` table. Used by boot to skip the

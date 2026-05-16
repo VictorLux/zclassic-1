@@ -20,7 +20,7 @@
  *     conditional adds keyed on bits
  *   - Final compare: `diff |= t[i] ^ sig[i]` (XOR-OR accumulator), NOT
  *     a memcmp early-exit
- *   - S<L canonical-S check (P1.8): byte-walked accumulator with mask
+ * - S<L canonical-S check: byte-walked accumulator with mask
  *     selection; rejects malleable signatures pre-scalarmult
  *
  * Branches on data (acceptable, public values only):

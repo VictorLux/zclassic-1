@@ -148,14 +148,14 @@ static int test_dandelion_initial_state(void)
     return failures;
 }
 
-/* ── P14.8 msg_blocks_should_mark_seen tests ───────────────────────
+/* ── msg_blocks_should_mark_seen tests ───────────────────────
  *
- * Pre-P14.8 bug: block_mark_seen was called BEFORE process_new_block.
+ * bug: block_mark_seen was called BEFORE process_new_block.
  * If the block was received + indexed but not activated (e.g.
  * ACTIVATION_SKIP_ALREADY_RUNNING under 6-peer concurrent arrival),
  * it was permanently dedup'd and never retried.
  *
- * Post-P14.8: mark_seen is gated on "block reached active chain"
+ * mark_seen is gated on "block reached active chain"
  * via msg_blocks_should_mark_seen(). The helper is a pure function
  * so it can be exercised without full P2P plumbing.
  */
@@ -163,7 +163,7 @@ static int test_dandelion_initial_state(void)
 static int test_p148_should_mark_seen_rejects_null(void)
 {
     int failures = 0;
-    TEST("P14.8: should_mark_seen rejects NULL chain or pindex") {
+    TEST("should_mark_seen rejects NULL chain or pindex") {
         struct active_chain ac;
         active_chain_init(&ac);
         struct block_index bi;
@@ -182,7 +182,7 @@ static int test_p148_should_mark_seen_rejects_null(void)
 static int test_p148_should_mark_seen_rejects_orphan(void)
 {
     int failures = 0;
-    TEST("P14.8: should_mark_seen rejects block NOT in active chain") {
+    TEST("should_mark_seen rejects block NOT in active chain") {
         /* Mirrors the bug shape: block was indexed (has a pindex)
          * but activation SKIP'd, so it's not in the active chain.
          * Pre-fix, block_mark_seen was unconditional. Post-fix, we
@@ -211,7 +211,7 @@ static int test_p148_should_mark_seen_rejects_orphan(void)
 static int test_p148_should_mark_seen_accepts_active(void)
 {
     int failures = 0;
-    TEST("P14.8: should_mark_seen accepts block that IS in active chain") {
+    TEST("should_mark_seen accepts block that IS in active chain") {
         struct active_chain ac;
         active_chain_init(&ac);
 

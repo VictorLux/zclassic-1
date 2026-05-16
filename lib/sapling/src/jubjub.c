@@ -5,7 +5,7 @@
  * Jubjub scalar field arithmetic for Sapling.
  * Implements 512-bit reduction modulo the Jubjub scalar field order.
  *
- * P1.16b (constant-time): `jubjub_to_scalar` is on the Sapling
+ * (constant-time): `jubjub_to_scalar` is on the Sapling
  * nullifier-derivation path (via `prf_nsk`) where `nsk` is a
  * long-lived secret reused across all spends from the same key.
  * Any per-bit timing or cache leak here correlates across many

@@ -63,7 +63,7 @@ struct chain_activation_controller {
     int     activation_count;
     int     skip_count;
 
-    /* P14.10: deferred-activation counter. A request that hits
+    /* deferred-activation counter. A request that hits
      * SKIP_ALREADY_RUNNING (another thread is inside activate_best_chain
      * under the mutex) increments this atomically instead of dropping
      * the work. The thread currently holding the mutex drains it before
@@ -154,7 +154,7 @@ void activation_request_connect(struct chain_activation_controller *ctl,
                                 struct block *pblock,
                                 struct activation_exec_outcome *out);
 
-/* P14.10: atomically read-and-reset the deferred-activation counter.
+/* atomically read-and-reset the deferred-activation counter.
  * Returns the number of SKIP_ALREADY_RUNNING requests that arrived
  * while another thread held the activation mutex, since the last
  * drain. Used by the activator (under mutex) to decide whether to

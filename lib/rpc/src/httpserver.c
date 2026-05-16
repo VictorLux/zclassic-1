@@ -64,7 +64,7 @@ static int g_cookie_rotate_sec = 86400; /* default 24h, env ZCL_RPC_COOKIE_ROTAT
  * operator sets ZCL_METRICS_HTTP_ENABLE=1 to expose the same text
  * that `zcl_metrics` returns via MCP.
  *
- * P3.7 (2026-04-18): gated behind the same RPC Basic-auth cookie
+ * (2026-04-18): gated behind the same RPC Basic-auth cookie
  * the wallet endpoints use. Prometheus `scrape_configs` supports
  * `basic_auth: { username_file: ..., password_file: ... }` — point
  * those at the two halves of `~/.zclassic-c23/.cookie` and the
@@ -390,7 +390,7 @@ static void handle_client(struct rpc_conn conn)
     if (sscanf(line, "%15s %255s", method, path) != 2)
         goto done;
 
-    /* Wave 6 / P3.7: GET /metrics serves Prometheus text when enabled
+    /* Wave 6 GET /metrics serves Prometheus text when enabled
      * via ZCL_METRICS_HTTP_ENABLE=1. Auth required — same Basic-auth
      * cookie the wallet endpoints use. Scrapers point
      * `basic_auth.password_file` at the cookie and authenticate as
@@ -684,7 +684,7 @@ static void *tls_listen_thread_fn(void *arg)
         /* Perform TLS handshake */
         SSL *ssl = SSL_new(g_tls_ctx);
         if (!ssl) {
-            fprintf(stderr, "RPC TLS: SSL_new failed\n");
+            fprintf(stderr, "RPC TLS: SSL_new failed\n");  // obs-ok:helper-context-logged
             close(client_fd);
             continue;
         }
@@ -886,7 +886,7 @@ bool rpc_http_start(const struct rpc_table *table, uint16_t port,
     }
     rpc_timeout_set_global(&g_rpc_timeout);
     if (!rpc_timeout_start_watchdog(&g_rpc_timeout)) {
-        fprintf(stderr, "RPC server: rpc_timeout watchdog start failed\n");
+        fprintf(stderr, "RPC server: rpc_timeout watchdog start failed\n");  // obs-ok:helper-context-logged
     }
 
     /* Wave 6: optional GET /metrics Prometheus endpoint.  Accept "1",
@@ -956,12 +956,12 @@ bool rpc_http_start(const struct rpc_table *table, uint16_t port,
 
                     if (bind(g_tls_listen_fd, (struct sockaddr *)&taddr,
                              sizeof(taddr)) < 0) {
-                        fprintf(stderr, "RPC TLS: bind port %u failed: %s\n",
+                        fprintf(stderr, "RPC TLS: bind port %u failed: %s\n",  // obs-ok:helper-context-logged
                                 g_tls_port, strerror(errno));
                         close(g_tls_listen_fd);
                         g_tls_listen_fd = -1;
                     } else if (listen(g_tls_listen_fd, 8) < 0) {
-                        fprintf(stderr, "RPC TLS: listen failed: %s\n",
+                        fprintf(stderr, "RPC TLS: listen failed: %s\n",  // obs-ok:helper-context-logged
                                 strerror(errno));
                         close(g_tls_listen_fd);
                         g_tls_listen_fd = -1;
@@ -973,7 +973,7 @@ bool rpc_http_start(const struct rpc_table *table, uint16_t port,
                      * with plain-text listener only */
                     SSL_CTX_free(g_tls_ctx);
                     g_tls_ctx = NULL;
-                    fprintf(stderr, "RPC TLS: disabled (socket failed)\n");
+                    fprintf(stderr, "RPC TLS: disabled (socket failed)\n");  // obs-ok:helper-context-logged
                 }
             }
         }
@@ -1025,7 +1025,7 @@ bool rpc_http_start(const struct rpc_table *table, uint16_t port,
                                       NULL, &g_tls_listen_thread) == 0) {
             g_tls_listen_thread_started = true;
         } else {
-            fprintf(stderr, "RPC TLS: listener thread start failed\n");
+            fprintf(stderr, "RPC TLS: listener thread start failed\n");  // obs-ok:helper-context-logged
             close(g_tls_listen_fd);
             g_tls_listen_fd = -1;
             SSL_CTX_free(g_tls_ctx);

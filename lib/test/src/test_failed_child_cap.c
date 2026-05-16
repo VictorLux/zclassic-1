@@ -1,6 +1,6 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * P14.6 RED — cap BLOCK_FAILED_CHILD propagation (OOM amplifier).
+ * Regression test: cap BLOCK_FAILED_CHILD propagation (OOM amplifier).
  *
  * The live 2026-04-19 BIP30 stall re-walked the full block_map (~3M
  * entries, ~24 MB scratch + O(N log N) qsort) on every retry, pinning
@@ -8,7 +8,7 @@
  * docs/postmortems/2026-04-19-bip30-stall.md.
  *
  * This test exercises process_block_propagate_failed_child directly
- * against a small fixture block_map. The P14.6 GREEN commit must add
+ * against a small fixture block_map. The GREEN commit must add
  * two cheap early returns; these cases assert the new shape.
  *
  * Scope: guards only. Correctness of the underlying propagation is
@@ -72,7 +72,7 @@ static int t_p146_parent_failed_skip(void)
 {
     int failures = 0;
 
-    TEST("P14.6: propagate_failed_child SKIP when pindex_root->pprev already failed") {
+    TEST("propagate_failed_child SKIP when pindex_root->pprev already failed") {
         struct p146_fixture fx;
         p146_fixture_init(&fx);
 
@@ -112,7 +112,7 @@ static int t_p146_rate_limit_second_call(void)
 {
     int failures = 0;
 
-    TEST("P14.6: propagate_failed_child rate-limits rapid re-calls") {
+    TEST("propagate_failed_child rate-limits rapid re-calls") {
         struct p146_fixture fx;
         p146_fixture_init(&fx);
 
@@ -161,7 +161,7 @@ static int t_p146_fresh_failure_propagates(void)
 {
     int failures = 0;
 
-    TEST("P14.6: propagate_failed_child walks map when pprev is clean") {
+    TEST("propagate_failed_child walks map when pprev is clean") {
         struct p146_fixture fx;
         p146_fixture_init(&fx);
 
@@ -195,7 +195,7 @@ static int t_p146_null_rate_limit_bypasses(void)
 {
     int failures = 0;
 
-    TEST("P14.6: propagate_failed_child with NULL last_propagate_sec always walks") {
+    TEST("propagate_failed_child with NULL last_propagate_sec always walks") {
         struct p146_fixture fx;
         p146_fixture_init(&fx);
 
@@ -224,11 +224,11 @@ static int t_p146_null_rate_limit_bypasses(void)
     return failures;
 }
 
-int test_p14_6_failed_child_cap(void);
+int test_failed_child_cap(void);
 
-int test_p14_6_failed_child_cap(void)
+int test_failed_child_cap(void)
 {
-    printf("\n=== P14.6 BLOCK_FAILED_CHILD propagation cap ===\n");
+    printf("\n=== BLOCK_FAILED_CHILD propagation cap ===\n");
     int failures = 0;
     failures += t_p146_parent_failed_skip();
     failures += t_p146_rate_limit_second_call();

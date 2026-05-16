@@ -1,6 +1,6 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * P11.6 RED — 7-day soak harness (MVP criterion #6).
+ * Regression test: 7-day soak harness (MVP criterion #6).
  *
  * Exercises soak_compute_verdict() against synthetic sample
  * streams. The runner in tools/soak/ is the I/O shell that
@@ -187,29 +187,29 @@ static int t_rss_walk_is_fail_walk(void)
 int test_soak_harness(void)
 {
     int failures = 0;
-    printf("\n=== P11.6 soak harness (MVP #6) ===\n");
+    printf("\n=== soak harness (MVP #6) ===\n");
 
-    printf("soak_harness P11.6: empty → FAIL_NO_SAMPLES... ");
+    printf("soak_harness empty → FAIL_NO_SAMPLES... ");
     if (t_empty_state_is_no_samples()) failures++;
     else printf("OK\n");
 
-    printf("soak_harness P11.6: 1 h run → FAIL_TOO_SHORT... ");
+    printf("soak_harness 1 h run → FAIL_TOO_SHORT... ");
     if (t_one_hour_run_is_too_short()) failures++;
     else printf("OK\n");
 
-    printf("soak_harness P11.6: 7 d healthy → OK... ");
+    printf("soak_harness 7 d healthy → OK... ");
     if (t_seven_day_healthy_is_ok()) failures++;
     else printf("OK\n");
 
-    printf("soak_harness P11.6: crash sample → FAIL_CRASH... ");
+    printf("soak_harness crash sample → FAIL_CRASH... ");
     if (t_crash_sample_is_fail_crash()) failures++;
     else printf("OK\n");
 
-    printf("soak_harness P11.6: tip stall → FAIL_TIP_STALL... ");
+    printf("soak_harness tip stall → FAIL_TIP_STALL... ");
     if (t_tip_stall_is_fail_stall()) failures++;
     else printf("OK\n");
 
-    printf("soak_harness P11.6: rss walk → FAIL_RSS_WALK... ");
+    printf("soak_harness rss walk → FAIL_RSS_WALK... ");
     if (t_rss_walk_is_fail_walk()) failures++;
     else printf("OK\n");
 
