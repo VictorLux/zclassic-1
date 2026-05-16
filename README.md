@@ -10,7 +10,7 @@ One binary. Zero dependencies. 26MB.
 git clone https://github.com/ArcadiaOS/zclassic23.git
 cd zclassic23
 make zclassic23    # build (requires only gcc/clang with C23 support)
-make test          # run 2131+ tests
+make test          # run 200+ tests
 ```
 
 ## Run
@@ -18,7 +18,7 @@ make test          # run 2131+ tests
 ```bash
 ./zclassic23                              # start node
 ./zclassic23 -tor                         # start with .onion hidden service
-./zclassic23 -fastsync ~/.zclassic        # instant sync from legacy data
+./zclassic23 -cold-import=~/.zclassic     # instant sync from legacy data
 ./zclassic23 -addnode=74.50.74.102        # connect to seed node
 ```
 
@@ -43,11 +43,13 @@ ZClassic23 is a complete rewrite of zclassicd in pure C23. Every node is simulta
 ## Docs
 
 - [README.md](README.md): quick start and operator overview
-- [SYNC.md](SYNC.md): sync methods, verification layers, self-healing, operator runbook
-- [ARCHITECTURE.md](ARCHITECTURE.md): target runtime shape and boundaries
-- [API.md](API.md): RPC and HTTP interfaces
-- [AGENT.md](AGENT.md): active engineering work and current blockers
-- [VISION.md](VISION.md): longer-term product direction
+- [CLAUDE.md](CLAUDE.md): MCP tool reference, architecture overview, build/test/deploy
+- [DEFENSIVE_CODING.md](DEFENSIVE_CODING.md): mandatory coding standards (enforced by `make lint`)
+- [docs/SYNC.md](docs/SYNC.md): sync methods, verification layers, self-healing, operator runbook
+- [docs/RUNBOOK.md](docs/RUNBOOK.md): symptom-driven troubleshooting
+- [docs/ARCHITECTURE_DIAGRAMS.md](docs/ARCHITECTURE_DIAGRAMS.md): boot, services, P2P, wallet diagrams
+- [docs/MVP.md](docs/MVP.md): MVP acceptance criteria and readiness score
+- [docs/spec/power-node-contract.md](docs/spec/power-node-contract.md): power-node contract surface
 
 ```
 zclassic23 binary (26MB, statically linked)
@@ -65,7 +67,7 @@ zclassic23 binary (26MB, statically linked)
 | Target | Description |
 |--------|-------------|
 | `make zclassic23` | Main binary (26MB, zero system deps) |
-| `make test` | Run 1066+ tests |
+| `make test` | Run 200+ tests |
 | `make zcl-rpc` | Lightweight CLI RPC client |
 | `make zcl-nodectl` | Compiled node lifecycle + follow verifier |
 | `make zcl-browser` | GTK Tor-only browser |
@@ -92,7 +94,7 @@ lib/
   script/             Script interpreter, standard scripts, sigcache
   rpc/                HTTP server, RPC protocol
   coins/              UTXO set, coin commitment tracking
-  test/               1066+ automated tests
+  test/               200+ automated tests
   [+ 13 more modules]
 vendor/               Static libs (secp256k1, leveldb, sqlite3, openssl, tor)
 tools/                zcl-browser, zcl-rpc, zcl-nodectl, hodl wave tools, utilities
@@ -116,7 +118,7 @@ All endpoints return JSON with CORS headers.
 | `GET /api/events?count=N` | Event log (lock-free ring buffer) |
 | `GET /api/health` | Health check (HTTP 200/503) |
 
-See [API.md](API.md) for complete documentation including 83 RPC commands.
+See the RPC tool table in [CLAUDE.md](CLAUDE.md#mcp-server-model-context-protocol) for the full surface (100+ RPC methods exposed via MCP plus the raw `zcl_rpc` escape hatch).
 
 ## Block Explorer
 

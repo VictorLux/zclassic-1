@@ -26,4 +26,4 @@ Current services in progress:
 - `sync_service` (compatibility umbrella)
 - `snapshot_sync_service`
 
-Primary architecture reference: [ARCHITECTURE.md](../../ARCHITECTURE.md)
+Primary architecture reference: [docs/ARCHITECTURE_DIAGRAMS.md](../../docs/ARCHITECTURE_DIAGRAMS.md)

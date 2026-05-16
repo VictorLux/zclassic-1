@@ -40,8 +40,8 @@ Concepts we've adopted:
 | Ruleguard-style antipattern lint | Erigon `CLAUDE.md` ("defer tx.Rollback after error check") | Pattern-level grep gates per recurring issue |
 | Consensus spectest harness | [`cl/spectest/`](https://github.com/erigontech/erigon/tree/main/cl/spectest) | Reference corpus → replay → diff state |
 
-These patterns are cited inline in relevant AGENT.md rows (P15.*, P16.*,
-P17.5, P17.6) and in the per-subsystem `agents.md` files as they land.
+These patterns are cited inline in the per-subsystem `agents.md`
+files as they land.
 
 ---
 
@@ -127,7 +127,7 @@ corpus in `docs/spec/`).
 
 Machine-readable acceptance criteria format via `.ac.yaml` files.
 Referenced by **P22.2** — zclassic23's `docs/rows/P<id>.ac.yaml`
-sidecars keep AGENT.md row metadata parseable for the `zcl_roadmap`
+sidecars keep roadmap row metadata parseable for the `zcl_roadmap`
 MCP tool (P20.2).
 
 ## Tor (modified fork with dynhost) — 3-clause BSD

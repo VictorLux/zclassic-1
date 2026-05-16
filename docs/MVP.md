@@ -26,11 +26,11 @@ MRS: 3 / 8** — criteria #2 (P11.1, `test_onion_bootstrap.c`), #3
 estimate-only.
 
 **Update rule:** when a CI test for a criterion goes green, flip ☐
-to ✅ in this file and bump the MRS line in `AGENT.md`.
+to ✅ in this file.
 
 ## Hardening Index (HI) — measures test-first discipline
 
-For each closed AGENT.md row, multiply severity by test quality:
+For each closed roadmap row, multiply severity by test quality:
 
 | Quality | Multiplier | Definition |
 |---|---|---|
@@ -48,11 +48,11 @@ construction (the workflow forces it).
 
 ## What this means for the agent workflow
 
-- Every row's `done` marker in AGENT.md must include `[test:N.N]`
+- Every row's `done` marker in the roadmap must include `[test:N.N]`
   (e.g., `done abc1234 [test:1.0]`). Missing = 0.0 by default.
 - The MVP criteria are first-class: file each one as a CI test row
   (P11.x) once P10.1 closes.
-- HI + MRS update weekly in AGENT.md Progress block.
+- HI + MRS update weekly.
 
 ## Why these and not others
 
