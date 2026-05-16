@@ -13,6 +13,7 @@
 
 #include "validation/update_coins.h"
 #include "coins/utxo_commitment.h"
+#include "util/log_macros.h"
 #include <assert.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -25,20 +26,17 @@ bool update_coins_with_undo(const struct transaction *tx,
                             int nHeight)
 {
     if (!transaction_is_coinbase(tx)) {
-        if (!tx_undo_alloc(txundo, tx->num_vin)) {
-            fprintf(stderr, "update_coins: tx_undo_alloc FAILED "
-                    "num_vin=%zu h=%d\n", tx->num_vin, nHeight);
-            return false;
-        }
+        if (!tx_undo_alloc(txundo, tx->num_vin))
+            LOG_FAIL("update_coins", "tx_undo_alloc failed num_vin=%zu h=%d",
+                     tx->num_vin, nHeight);
         for (size_t i = 0; i < tx->num_vin; i++) {
             struct coins_cache_entry *entry =
                 coins_view_cache_modify(inputs, &tx->vin[i].prevout.hash);
             if (!entry) {
                 char hex[65];
                 uint256_get_hex(&tx->vin[i].prevout.hash, hex);
-                fprintf(stderr, "update_coins: coins_modify FAILED "
-                        "input[%zu]=%s h=%d\n", i, hex, nHeight);
-                return false;
+                LOG_FAIL("update_coins", "coins_modify failed input[%zu]=%s h=%d",
+                         i, hex, nHeight);
             }
             unsigned int nPos = tx->vin[i].prevout.n;
 
@@ -47,11 +45,9 @@ bool update_coins_with_undo(const struct transaction *tx,
                 size_t new_size = nPos + 1;
                 struct tx_out *nv = zcl_realloc(entry->coins.vout,
                     new_size * sizeof(struct tx_out), "coins_vout_grow");
-                if (!nv) {
-                    fprintf(stderr, "update_coins: realloc FAILED "
-                            "new_size=%zu h=%d\n", new_size, nHeight);
-                    return false;
-                }
+                if (!nv)
+                    LOG_FAIL("update_coins", "realloc failed new_size=%zu h=%d",
+                             new_size, nHeight);
                 for (size_t k = entry->coins.num_vout; k < new_size; k++)
                     tx_out_set_null(&nv[k]);
                 entry->coins.vout = nv;
@@ -60,20 +56,16 @@ bool update_coins_with_undo(const struct transaction *tx,
             if (tx_out_is_null(&entry->coins.vout[nPos])) {
                 char hex[65];
                 uint256_get_hex(&tx->vin[i].prevout.hash, hex);
-                fprintf(stderr, "update_coins: spending NULL output "
-                        "%s:%u at h=%d (double-spend or missing UTXO)\n",
-                        hex, nPos, nHeight);
-                return false;
+                LOG_FAIL("update_coins",
+                         "spending NULL output %s:%u at h=%d (double-spend or missing UTXO)",
+                         hex, nPos, nHeight);
             }
 
             /* Validate output value before spending */
             if (entry->coins.vout[nPos].value < 0 ||
-                entry->coins.vout[nPos].value > 2100000000000000LL) {
-                fprintf(stderr, "update_coins: CORRUPT output value %lld "
-                        "at h=%d\n",
-                        (long long)entry->coins.vout[nPos].value, nHeight);
-                return false;
-            }
+                entry->coins.vout[nPos].value > 2100000000000000LL)
+                LOG_FAIL("update_coins", "corrupt output value %lld at h=%d",
+                         (long long)entry->coins.vout[nPos].value, nHeight);
 
             /* Remove spent UTXO from commitment */
             utxo_commitment_remove(&inputs->commitment,
@@ -95,22 +87,18 @@ bool update_coins_with_undo(const struct transaction *tx,
     /* Create new outputs */
     struct coins_cache_entry *new_entry =
         coins_view_cache_modify_new(inputs, &tx->hash);
-    if (!new_entry) {
-        fprintf(stderr, "update_coins: modify_new FAILED at h=%d\n", nHeight);
-        return false;
-    }
+    if (!new_entry)
+        LOG_FAIL("update_coins", "modify_new failed at h=%d", nHeight);
     coins_from_transaction(&new_entry->coins, tx, nHeight);
 
     /* Validate new output values before adding to commitment */
     for (size_t vi = 0; vi < new_entry->coins.num_vout; vi++) {
         if (!tx_out_is_null(&new_entry->coins.vout[vi])) {
             if (new_entry->coins.vout[vi].value < 0 ||
-                new_entry->coins.vout[vi].value > 2100000000000000LL) {
-                fprintf(stderr, "update_coins: new output[%zu] value %lld "
-                        "out of range at h=%d\n", vi,
-                        (long long)new_entry->coins.vout[vi].value, nHeight);
-                return false;
-            }
+                new_entry->coins.vout[vi].value > 2100000000000000LL)
+                LOG_FAIL("update_coins",
+                         "new output[%zu] value %lld out of range at h=%d",
+                         vi, (long long)new_entry->coins.vout[vi].value, nHeight);
             utxo_commitment_add(&inputs->commitment,
                                  tx->hash.data, (uint32_t)vi,
                                  new_entry->coins.vout[vi].value,

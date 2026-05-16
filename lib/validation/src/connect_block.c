@@ -238,10 +238,9 @@ bool connect_block(const struct block *block,
     block_undo_init(&blockundo);
     if (block->num_vtx > 1) {
         if (!block_undo_alloc(&blockundo, block->num_vtx - 1)) {
-            fprintf(stderr, "connect_block: block_undo_alloc failed h=%d "
-                    "ntx=%zu\n", pindex->nHeight, block->num_vtx);
             block_undo_free(&blockundo);
-            return false;
+            LOG_FAIL("connect", "block_undo_alloc failed at height %d ntx=%zu",
+                     pindex->nHeight, block->num_vtx);
         }
     }
 

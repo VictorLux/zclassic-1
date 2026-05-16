@@ -1213,12 +1213,11 @@ static bool flush_coins_if_needed(struct coins_view_cache *coins_tip,
                    batched, coins_tip->cache_coins.size);
             return true; /* non-fatal during IBD */
         }
-        if (coins_tip->cache_coins.size >= 2000000) {
-            fprintf(stderr, "flush_coins: CRITICAL — cache has %zu entries "
-                    "and flush keeps failing. Halting to prevent OOM.\n",
-                    coins_tip->cache_coins.size);
-            return false; /* force caller to handle */
-        }
+        if (coins_tip->cache_coins.size >= 2000000)
+            LOG_FAIL("flush",
+                     "CRITICAL — cache has %zu entries and flush keeps failing; "
+                     "halting to prevent OOM",
+                     coins_tip->cache_coins.size);
         fprintf(stderr, // obs-ok:pre-existing-diagnostic
                 "flush_coins: FAILED to flush coins cache to disk "
                 "(%zu blocks batched, %zu entries)\n",
@@ -1407,10 +1406,6 @@ bool process_block_test_hydrate_index_from_disk(struct block_index *pindex,
     return block_index_hydrate_from_disk(pindex, datadir);
 }
 #endif
-
-/* chain_has_all_data removed — find_most_work_chain no longer requires
- * BLOCK_HAVE_DATA. activate_best_chain checks data availability inline
- * before each connect_tip, queuing missing blocks for download. */
 
 static struct block_index *find_most_work_chain(struct main_state *ms)
 {
@@ -4640,20 +4635,16 @@ bool process_new_block(struct validation_state *state,
     (void)coins_tip;  /* activation controller owns coins_tip reference */
 
     bool checked = check_block(pblock, state, params, true, true, true);
-    if (!checked) {
-        fprintf(stderr, "process_new_block: check_block FAILED: %s\n",
-                state->reject_reason[0] ? state->reject_reason : "unknown");
-        return false;
-    }
+    if (!checked)
+        LOG_FAIL("validation", "check_block failed: %s",
+                 state->reject_reason[0] ? state->reject_reason : "unknown");
 
     struct block_index *pindex = NULL;
     bool requested = force_processing;
 
-    if (!accept_block(pblock, state, ms, params, &pindex, requested, datadir)) {
-        fprintf(stderr, "process_new_block: accept_block FAILED: %s\n",
-                state->reject_reason[0] ? state->reject_reason : "unknown");
-        return false;
-    }
+    if (!accept_block(pblock, state, ms, params, &pindex, requested, datadir))
+        LOG_FAIL("validation", "accept_block failed: %s",
+                 state->reject_reason[0] ? state->reject_reason : "unknown");
 
     /* Do NOT connect blocks if we're waiting for a UTXO snapshot.
      * Connecting blocks from genesis with an empty UTXO set permanently
@@ -4666,11 +4657,8 @@ bool process_new_block(struct validation_state *state,
         struct activation_exec_outcome ao;
         activation_request_connect(boot_activation_controller(),
                                    ACTIVATION_SRC_NEW_BLOCK, pblock, &ao);
-        if (ao.result == ACTIVATION_EXEC_FAILED) {
-            fprintf(stderr, "process_new_block: activation FAILED: %s\n",
-                    ao.reason);
-            return false;
-        }
+        if (ao.result == ACTIVATION_EXEC_FAILED)
+            LOG_FAIL("validation", "activation FAILED: %s", ao.reason);
     }
 
     return true;
