@@ -104,10 +104,8 @@ const char *zslp_create_token(const char *datadir,
                  (const void *)effective_datadir, (const void *)ticker, (const void *)name);
 
     validation_error = zslp_service_validate_create_request(&req);
-    if (validation_error) {
-        fprintf(stderr, "zslp: %s\n", validation_error);
-        return NULL;
-    }
+    if (validation_error)
+        LOG_NULL("zslp", "create_token: %s", validation_error);
 
     /* Build the GENESIS OP_RETURN script */
     uint8_t script[256];
@@ -115,10 +113,8 @@ const char *zslp_create_token(const char *datadir,
         ticker, name, "", NULL, decimals, 2, /* mint baton at vout 2 */
         initial_supply);
 
-    if (slen == 0) {
-        fprintf(stderr, "zslp: failed to build GENESIS script\n");
-        return NULL;
-    }
+    if (slen == 0)
+        LOG_NULL("zslp", "create_token: failed to build GENESIS script");
 
     printf("ZSLP GENESIS: ticker=%s name=%s decimals=%d supply=%llu "
            "script=%zu bytes\n",
@@ -143,11 +139,9 @@ const char *zslp_create_token(const char *datadir,
     int64_t fee_paid = 0;
     const char *tx_error = NULL;
     if (!zslp_command_build_genesis_base_tx(wallet, &wtx,
-                                            &fee_paid, &tx_error)) {
-        fprintf(stderr, "zslp: tx build failed: %s\n",
-                tx_error ? tx_error : "unknown");
-        return NULL;
-    }
+                                            &fee_paid, &tx_error))
+        LOG_NULL("zslp", "create_token: tx build failed: %s",
+                 tx_error ? tx_error : "unknown");
 
     if (!zslp_command_commit_with_op_return(wallet, mempool, &wtx,
                                             script, slen)) {
@@ -236,14 +230,11 @@ bool zslp_mint(const char *datadir,
                  (const void *)token_id_hex, (const void *)recipient_addr);
 
     validation_error = zslp_service_validate_transfer_request(&req);
-    if (validation_error) {
-        fprintf(stderr, "zslp: %s\n", validation_error);
-        return false;
-    }
-    if (!zslp_command_credit_transfer(zslp_effective_datadir(datadir), &req)) {
-        fprintf(stderr, "zslp: mint balance update failed\n");
-        return false;
-    }
+    if (validation_error)
+        LOG_FAIL("zslp", "mint: %s", validation_error);
+    if (!zslp_command_credit_transfer(zslp_effective_datadir(datadir), &req))
+        LOG_FAIL("zslp", "mint: balance update failed for token=%s",
+                 token_id_hex ? token_id_hex : "?");
 
     /* Build and broadcast ZSLP MINT transaction on-chain */
     struct wallet *wallet = zslp_wallet();
@@ -255,28 +246,23 @@ bool zslp_mint(const char *datadir,
 
     struct uint256 token_id;
     uint256_set_hex(&token_id, token_id_hex);
-    if (uint256_is_null(&token_id)) {
-        fprintf(stderr, "zslp: invalid token_id for mint broadcast\n");
-        return false;
-    }
+    if (uint256_is_null(&token_id))
+        LOG_FAIL("zslp", "mint: invalid token_id for broadcast: %s",
+                 token_id_hex ? token_id_hex : "(null)");
 
     uint8_t op_script[256];
     size_t slen = slp_build_mint(op_script, sizeof(op_script),
         &token_id, 0, amount);
-    if (slen == 0) {
-        fprintf(stderr, "zslp: failed to build MINT script\n");
-        return false;
-    }
+    if (slen == 0)
+        LOG_FAIL("zslp", "mint: failed to build MINT script");
 
     struct wallet_tx wtx;
     int64_t fee_paid = 0;
     const char *tx_error = NULL;
     if (!zslp_command_build_send_base_tx(wallet, recipient_addr, &wtx,
-                                         &fee_paid, &tx_error)) {
-        fprintf(stderr, "zslp: mint tx build failed: %s\n",
-                tx_error ? tx_error : "unknown");
-        return false;
-    }
+                                         &fee_paid, &tx_error))
+        LOG_FAIL("zslp", "mint: tx build failed: %s",
+                 tx_error ? tx_error : "unknown");
 
     if (!zslp_command_commit_with_op_return(wallet, mempool, &wtx,
                                             op_script, slen)) {
@@ -315,10 +301,8 @@ bool zslp_send(const char *datadir,
                  (const void *)zslp_effective_datadir(datadir),
                  (const void *)token_id_hex, (const void *)to_addr);
     validation_error = zslp_service_validate_transfer_request(&req);
-    if (validation_error) {
-        fprintf(stderr, "zslp: %s\n", validation_error);
-        return false;
-    }
+    if (validation_error)
+        LOG_FAIL("zslp", "send: %s", validation_error);
 
     if (!wallet || !mempool) {
         /* No wallet (test mode) — just update SQLite balances */
@@ -328,29 +312,24 @@ bool zslp_send(const char *datadir,
     /* Build SEND OP_RETURN script */
     struct uint256 token_id;
     uint256_set_hex(&token_id, token_id_hex);
-    if (uint256_is_null(&token_id)) {
-        fprintf(stderr, "zslp: invalid token_id\n");
-        return false;
-    }
+    if (uint256_is_null(&token_id))
+        LOG_FAIL("zslp", "send: invalid token_id: %s",
+                 token_id_hex ? token_id_hex : "(null)");
 
     uint64_t quantities[1] = { amount };
     uint8_t op_script[256];
     size_t slen = slp_build_send(op_script, sizeof(op_script),
         &token_id, quantities, 1);
-    if (slen == 0) {
-        fprintf(stderr, "zslp: failed to build SEND script\n");
-        return false;
-    }
+    if (slen == 0)
+        LOG_FAIL("zslp", "send: failed to build SEND script");
 
     struct wallet_tx wtx;
     int64_t fee_paid = 0;
     const char *tx_error = NULL;
     if (!zslp_command_build_send_base_tx(wallet, to_addr, &wtx,
-                                         &fee_paid, &tx_error)) {
-        fprintf(stderr, "zslp: tx build failed: %s\n",
-                tx_error ? tx_error : "unknown");
-        return false;
-    }
+                                         &fee_paid, &tx_error))
+        LOG_FAIL("zslp", "send: tx build failed: %s",
+                 tx_error ? tx_error : "unknown");
 
     if (!zslp_command_commit_with_op_return(wallet, mempool, &wtx,
                                             op_script, slen)) {
@@ -360,10 +339,9 @@ bool zslp_send(const char *datadir,
     }
 
     /* Update balances in SQLite */
-    if (!zslp_command_credit_transfer(zslp_effective_datadir(datadir), &req)) {
-        fprintf(stderr, "zslp: send balance update failed\n");
-        return false;
-    }
+    if (!zslp_command_credit_transfer(zslp_effective_datadir(datadir), &req))
+        LOG_FAIL("zslp", "send: balance update failed for token=%s",
+                 token_id_hex ? token_id_hex : "?");
 
     char txid[65];
     uint256_get_hex(&wtx.tx.hash, txid);

@@ -72,24 +72,18 @@ static bool wallet_ctx_db_ready(const struct wallet_rpc_context *ctx)
 static bool wallet_reset_begin_checked(struct node_db *ndb,
                                        const char *label)
 {
-    if (!ndb || !ndb->open || !node_db_begin(ndb)) {
-        fprintf(stderr, "wallet_rescan: %s failed: %s\n",
-                label, (ndb && ndb->db) ? sqlite3_errmsg(ndb->db)
-                                        : "db unavailable");
-        return false;
-    }
+    if (!ndb || !ndb->open || !node_db_begin(ndb))
+        LOG_FAIL("wallet_rescan", "%s failed: %s", label,
+                 (ndb && ndb->db) ? sqlite3_errmsg(ndb->db) : "db unavailable");
     return true;
 }
 
 static bool wallet_reset_commit_checked(struct node_db *ndb,
                                         const char *label)
 {
-    if (!ndb || !ndb->open || !node_db_commit(ndb)) {
-        fprintf(stderr, "wallet_rescan: %s failed: %s\n",
-                label, (ndb && ndb->db) ? sqlite3_errmsg(ndb->db)
-                                        : "db unavailable");
-        return false;
-    }
+    if (!ndb || !ndb->open || !node_db_commit(ndb))
+        LOG_FAIL("wallet_rescan", "%s failed: %s", label,
+                 (ndb && ndb->db) ? sqlite3_errmsg(ndb->db) : "db unavailable");
     return true;
 }
 
@@ -99,7 +93,7 @@ static void wallet_reset_rollback_best_effort(struct node_db *ndb,
     if (!ndb || !ndb->open)
         return;
     if (!node_db_rollback(ndb)) {
-        fprintf(stderr, "wallet_rescan: %s failed: %s\n",
+        fprintf(stderr, "[wallet_rescan] %s: rollback failed: %s\n",
                 label, ndb->db ? sqlite3_errmsg(ndb->db) : "db unavailable");
     }
 }

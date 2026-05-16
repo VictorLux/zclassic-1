@@ -9,6 +9,7 @@
 #include "models/shared_validators.h"
 #include "models/wallet_tx.h"
 #include "crypto/sha256.h"
+#include "encoding/utilstrencodings.h"
 #include "util/log_macros.h"
 #include "util/safe_alloc.h"
 #include <sys/time.h>
@@ -333,26 +334,6 @@ int wv_recent_contacts(struct db_contact *out, size_t max)
     return count;
 }
 
-/* ── Hex conversion (internal) ─────────────────────────────── */
-
-static int hex_nibble(char c) {
-    if (c >= '0' && c <= '9') return c - '0';
-    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
-    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
-    return -1;
-}
-
-static size_t hex_to_bin(const char *hex, size_t hexlen,
-                          uint8_t *out, size_t outmax) {
-    if (hexlen % 2 != 0 || hexlen / 2 > outmax) return 0;
-    for (size_t i = 0; i < hexlen; i += 2) {
-        int hi = hex_nibble(hex[i]), lo = hex_nibble(hex[i+1]);
-        if (hi < 0 || lo < 0) return 0;
-        out[i/2] = (uint8_t)((hi << 4) | lo);
-    }
-    return hexlen / 2;
-}
-
 /* ── JSON mini-parser (internal) ───────────────────────────── */
 
 static bool json_next_str(const char **pos, const char *key,
@@ -493,7 +474,7 @@ void wv_sync_wallet_from_zclassicd(void) {
             if (txid_l != 64)
                 continue;
             memset(&row, 0, sizeof(row));
-            if (hex_to_bin(txid_s, 64, row.txid, 32) != 32)
+            if (ParseHex(txid_s, row.txid, 32) != 32)
                 continue;
             json_next_int(&scan, "vout", &vout);
             scan = p;
@@ -509,8 +490,8 @@ void wv_sync_wallet_from_zclassicd(void) {
 
             scan = p;
             if (json_next_str(&scan, "scriptPubKey", &script_s, &script_l)) {
-                script_bin_len = hex_to_bin(script_s, script_l,
-                                            script_bin, sizeof(script_bin));
+                script_bin_len = ParseHex(script_s, script_bin,
+                                          sizeof(script_bin));
                 if (script_bin_len == 25 && script_bin[0] == 0x76 &&
                     script_bin[1] == 0xa9 && script_bin[2] == 0x14) {
                     memcpy(row.address_hash, script_bin + 3, 20);
@@ -560,7 +541,7 @@ void wv_sync_wallet_from_zclassicd(void) {
             if (txid_l != 64)
                 continue;
             memset(&row, 0, sizeof(row));
-            if (hex_to_bin(txid_s, 64, row.txid, 32) != 32)
+            if (ParseHex(txid_s, row.txid, 32) != 32)
                 continue;
             json_next_int(&scan, "outindex", &outindex);
             scan = p;

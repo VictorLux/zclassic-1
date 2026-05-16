@@ -14,6 +14,7 @@
 #include "wallet/wallet.h"
 #include "validation/txmempool.h"
 #include "services/zslp_command_service.h"
+#include "encoding/utilstrencodings.h"
 #include <string.h>
 #include <stdio.h>
 #include <inttypes.h>
@@ -37,13 +38,6 @@ void rpc_name_set_wallet(struct wallet *w, struct tx_mempool *mp)
 }
 
 /* ── Helper ─────────────────────────────────────────────────────── */
-
-static void hash_to_hex(const uint8_t hash[32], char out[65])
-{
-    for (int i = 0; i < 32; i++)
-        sprintf(out + i * 2, "%02x", hash[i]);
-    out[64] = '\0';
-}
 
 static const char *type_name(uint8_t t)
 {
@@ -75,7 +69,7 @@ static void entry_to_json(const struct znam_entry *e, struct json_value *obj)
     json_push_kv_str(obj, "value", e->target_value);
     json_push_kv_int(obj, "reg_height", e->reg_height);
     char hex[65];
-    hash_to_hex(e->reg_txid, hex);
+    HexStr(e->reg_txid, 32, false, hex, sizeof(hex));
     json_push_kv_str(obj, "reg_txid", hex);
 }
 
@@ -230,9 +224,7 @@ static bool rpc_name_register(const struct json_value *params, bool help,
         json_push_kv_str(result, "value", value);
 
         char txid_hex[65];
-        for (int i = 0; i < 32; i++)
-            sprintf(txid_hex + i * 2, "%02x", wtx.tx.hash.data[31 - i]);
-        txid_hex[64] = '\0';
+        uint256_get_hex(&wtx.tx.hash, txid_hex);
         json_push_kv_str(result, "txid", txid_hex);
         json_push_kv_int(result, "fee", fee_paid);
         json_push_kv_str(result, "status", "broadcast");
@@ -249,9 +241,8 @@ static bool rpc_name_register(const struct json_value *params, bool help,
     json_push_kv_str(result, "value", value);
 
     char hex[1025];
-    for (size_t i = 0; i < script_len && i < 512; i++)
-        sprintf(hex + i * 2, "%02x", script[i]);
-    hex[script_len * 2] = '\0';
+    size_t hex_bytes = script_len < 512 ? script_len : 512;
+    HexStr(script, hex_bytes, false, hex, sizeof(hex));
     json_push_kv_str(result, "op_return_hex", hex);
     json_push_kv_int(result, "op_return_size", (int64_t)script_len);
     json_push_kv_str(result, "status", "ready");
