@@ -20,4 +20,3 @@ lib/storage/src/coins_view_sqlite.c
 lib/znam/src/znam.c
 lib/script/src/htlc.c
 lib/net/src/zmsg.c
-lib/net/src/file_market.c

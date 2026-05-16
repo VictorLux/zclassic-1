@@ -7,7 +7,9 @@
 
 #include "net/file_market.h"
 #include "core/serialize.h"
+#include "models/activerecord.h"
 #include "models/database.h"
+#include "models/file_offer.h"
 #include "util/ar_step_readonly.h"
 #include "util/log_macros.h"
 #include <stdint.h>
@@ -356,6 +358,12 @@ bool db_file_offer_save(struct node_db *ndb,
                         const struct file_offer *offer)
 {
     if (!ndb || !ndb->open) LOG_FAIL("market", "db_file_offer_save: db not open");
+    if (!offer) LOG_FAIL("market", "db_file_offer_save: offer is NULL");
+
+    struct ar_callbacks *cbs = db_file_offer_callbacks();
+    AR_VALIDATE_RECORD(cbs, "file_offer", offer, db_file_offer_validate);
+    if (!ar_run_before_save(cbs, (void *)offer))
+        return false;
 
     const char *sql =
         "INSERT OR REPLACE INTO file_offers"
@@ -378,8 +386,9 @@ bool db_file_offer_save(struct node_db *ndb,
     sqlite3_bind_int64(s, 9, offer->last_seen ? offer->last_seen : (int64_t)time(NULL));
     sqlite3_bind_int(s, 10, offer->ttl);
 
-    bool ok = sqlite3_step(s) == SQLITE_DONE;
+    bool ok = AR_STEP_DONE(s);
     sqlite3_finalize(s);
+    if (ok) ar_run_after_save(cbs, (void *)offer);
     return ok;
 }
 

@@ -20,6 +20,7 @@
 #include "models/activerecord.h"
 #include "models/block.h"
 #include "models/contact.h"
+#include "models/file_offer.h"
 #include "models/file_service.h"
 #include "models/mempool_entry.h"
 #include "models/onion_announcement.h"
@@ -165,6 +166,13 @@ static bool val_file_service(const void *row, char *err, size_t cap)
     return finish(&e, err, cap);
 }
 
+static bool val_file_offer(const void *row, char *err, size_t cap)
+{
+    struct ar_errors e; ar_errors_clear(&e);
+    db_file_offer_validate((const struct file_offer *)row, &e);
+    return finish(&e, err, cap);
+}
+
 static bool val_mempool(const void *row, char *err, size_t cap)
 {
     struct ar_errors e; ar_errors_clear(&e);
@@ -300,6 +308,7 @@ void db_register_all_validators(void)
     /* Idempotent — re-registering replaces in-place. */
     db_register_validator("blocks",             val_block);
     db_register_validator("contacts",           val_contact);
+    db_register_validator("file_offers",        val_file_offer);
     db_register_validator("file_services",      val_file_service);
     db_register_validator("mempool",            val_mempool);
     db_register_validator("onion_announcements", val_onion_announcement);
