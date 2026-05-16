@@ -15,4 +15,5 @@
 # e.g., schema bootstrap before AR macros are available): annotate the line
 # with `// raw-sql-ok: <one-line justification>`.
 
-lib/wallet/src/wallet_sqlite.c
+# Wave 3 complete: all production raw sqlite3_step calls now route through
+# AR_STEP_ROW_READONLY / AR_STEP_WRITE / AR_BEGIN_SAVE. This list is empty.

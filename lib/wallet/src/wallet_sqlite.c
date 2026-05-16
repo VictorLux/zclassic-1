@@ -454,7 +454,7 @@ struct zcl_result wallet_sqlite_write_key_r(struct wallet_sqlite *ws,
         sqlite3_bind_blob(s, 3, key->vch, 32, SQLITE_STATIC);
     sqlite3_bind_int(s, 4, key->fCompressed ? 1 : 0);
 
-    int rc = sqlite3_step(s);
+    int rc = AR_STEP_WRITE(s);
     if (enc_blob) { memory_cleanse(enc_blob, enc_len); free(enc_blob); }
 
     if (rc != SQLITE_DONE)
@@ -650,7 +650,7 @@ bool wallet_sqlite_write_tx(struct wallet_sqlite *ws,
     sqlite3_bind_int64(s, 5, wtx->time_received);
     sqlite3_bind_int(s, 6, wtx->from_me ? 1 : 0);
 
-    bool ok = sqlite3_step(s) == SQLITE_DONE;
+    bool ok = AR_STEP_WRITE(s) == SQLITE_DONE;
     stream_free(&bs);
     if (!ok)
         LOG_FAIL("wallet_sqlite", "write_tx: step failed: %s",
@@ -854,7 +854,7 @@ bool wallet_sqlite_write_sapling_key(struct wallet_sqlite *ws,
     sqlite3_bind_blob(s, 5, entry->pk_d, 32, SQLITE_STATIC);
     sqlite3_bind_int(s, 6, (int)child_index);
 
-    bool ok = sqlite3_step(s) == SQLITE_DONE;
+    bool ok = AR_STEP_WRITE(s) == SQLITE_DONE;
     if (enc_xsk) { memory_cleanse(enc_xsk, enc_xsk_len); free(enc_xsk); }
 
     if (!ok)
@@ -995,7 +995,7 @@ bool wallet_sqlite_write_script(struct wallet_sqlite *ws,
     sqlite3_bind_blob(s, 1, script_id->data, 20, SQLITE_STATIC);
     sqlite3_bind_blob(s, 2, redeem_script->data, (int)redeem_script->size,
                       SQLITE_STATIC);
-    bool ok = sqlite3_step(s) == SQLITE_DONE;
+    bool ok = AR_STEP_WRITE(s) == SQLITE_DONE;
     if (!ok)
         LOG_FAIL("wallet_sqlite", "write_script: step failed: %s",
                  sqlite3_errmsg(ws->db));
@@ -1041,7 +1041,7 @@ bool wallet_sqlite_write_watch_only(struct wallet_sqlite *ws,
     sqlite3_bind_blob(s, 1, address_hash, 20, SQLITE_STATIC);
     sqlite3_bind_text(s, 2, address, -1, SQLITE_STATIC);
     sqlite3_bind_int64(s, 3, (int64_t)time(NULL));
-    bool ok = sqlite3_step(s) == SQLITE_DONE;
+    bool ok = AR_STEP_WRITE(s) == SQLITE_DONE;
     if (!ok)
         LOG_FAIL("wallet_sqlite", "write_watch_only: step failed: %s",
                  sqlite3_errmsg(ws->db));
