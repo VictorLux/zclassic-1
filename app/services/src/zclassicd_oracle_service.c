@@ -138,7 +138,7 @@ static bool our_hash_at_height(int height, char out_hex[65])
 static int our_tip_height(void)
 {
     struct main_state *ms = wallet_rpc_main_state();
-    if (!ms) return -1; /* raw-return-ok:pre-boot-sentinel */
+    if (!ms) return -1; /* raw-return-ok:sentinel */
     return active_chain_height(&ms->chain_active);
 }
 

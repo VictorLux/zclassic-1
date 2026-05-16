@@ -3405,7 +3405,7 @@ bool connect_tip(struct validation_state *state,
         struct node_db *ndb = process_block_node_db();
         if (ndb) {
             if (!node_db_sync_connect_block_async(ndb, pblock, pindex_new)) {
-                fprintf(stderr, // obs-ok:paired with projection enqueue event below
+                fprintf(stderr, // obs-ok:paired-with-event_emitf-below
                         "connect_tip: SQLite projection enqueue failed "
                         "h=%d; consensus tip remains active\n",
                         pindex_new->nHeight);

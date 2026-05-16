@@ -366,19 +366,29 @@ If neither holds, the marker is a bug. Delete it, fix the underlying
 issue (route through `AR_BEGIN_SAVE`, add `LOG_FAIL`, switch to
 `zcl_malloc`), and let the lint go green naturally.
 
-**Concrete tag taxonomy (existing usage at wave-6e):**
+**Prefer reusable tags that name a structural property over one-off
+labels.** `:debug` and `:operator` say nothing about why the call is
+safe; `:helper-context-logged` and `:bin-parser-bounds` describe a
+class of safe call sites that a future reader can recognize. When the
+override pattern at hand matches one already in use (see taxonomy
+below), reuse that tag rather than coining a fresh one. Singleton tags
+should only survive when they name a genuinely unique structural
+property (e.g. `fatal-true-triggers-rollback-and-partial-write-return`)
+— ad-hoc labels get folded back into the shared vocabulary.
+
+**Concrete tag taxonomy (existing usage at wave-7c):**
 
 - `obs-ok:` — `pre-existing-diagnostic`, `helper-context-logged`,
-  `helper-return-path`, `paired-with-return-false-below`.
+  `helper-return-path`, `paired-with-return-false-below`,
+  `paired-with-event_emitf-below`, `warning-only-on-best-effort-path`,
+  `crash-dump-banner`.
 - `raw-sql-ok:` — `kv-state-primitive`, `read-only-introspection`,
   `state-kv-write-caller-handles-rc`, `cvs-zcl-ar-raw-sql-rationale`,
-  `explorer-shared-scalar-helper`, `test-fixture-seed`,
-  `standalone-dev-tool`.
+  `test-fixture-setup`, `test-fixture-verify`, `standalone-dev-tool`.
 - `raw-return-ok:` — `qsort-comparator`, `logged-above`, `sentinel`,
-  `null-args-precondition`, `pre-boot-sentinel`,
-  `sentinel-no-compile-time-windows`.
-- `raw-alloc-ok:` — `test-fixture`, `build-time-tool`,
-  `db-service-owns-heap-job`, `macro-grow-per-thread-array`.
+  `bin-parser-bounds`, `sentinel-no-compile-time-windows`.
+- `raw-alloc-ok:` — `test-fixture`, `standalone-dev-tool`,
+  `db-service-owns-heap-job`.
 
 Implementation: `tools/check_observability_pairing.c`,
 `tools/scripts/check_raw_sqlite.sh`,

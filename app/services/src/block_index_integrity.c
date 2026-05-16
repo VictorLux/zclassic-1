@@ -770,18 +770,18 @@ int bii_repair_post_activation_anchor(
     result->tip_restore_old_h = -1;
     result->tip_restore_new_h = -1;
 
-    if (!ms || !coins_tip || !datadir) return -1; // raw-return-ok:null-args-precondition
+    if (!ms || !coins_tip || !datadir) return -1; // raw-return-ok:sentinel
     struct uint256 coins_hash;
     uint256_set_null(&coins_hash);
     coins_view_cache_get_best_block(coins_tip, &coins_hash);
-    if (uint256_is_null(&coins_hash)) return -1; // raw-return-ok:sentinel-no-coins-tip-yet
+    if (uint256_is_null(&coins_hash)) return -1; // raw-return-ok:sentinel
 
     struct block_index *coins_bi =
         block_map_find(&ms->map_block_index, &coins_hash);
-    if (!coins_bi) return -1; // raw-return-ok:sentinel-coins-tip-orphan
+    if (!coins_bi) return -1; // raw-return-ok:sentinel
 
     int pre_scan_coins_h = coins_bi->nHeight;
-    if (pre_scan_coins_h <= 100000) return -1; // raw-return-ok:sentinel-pre-checkpoint-skip
+    if (pre_scan_coins_h <= 100000) return -1; // raw-return-ok:sentinel
 
     int post_act_h = active_chain_height(&ms->chain_active);
     result->tip_restore_old_h = post_act_h;

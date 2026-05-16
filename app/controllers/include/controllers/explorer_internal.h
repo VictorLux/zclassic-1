@@ -124,7 +124,7 @@ static inline int64_t sql_query_i64(sqlite3 *db, const char *sql)
         return -1;
     }
     if (s) {
-        rc = sqlite3_step(s);  // raw-sql-ok:explorer-shared-scalar-helper
+        rc = sqlite3_step(s);  // raw-sql-ok:read-only-introspection
         if (rc == SQLITE_ROW)
             val = sqlite3_column_int64(s, 0);
         else if (rc != SQLITE_DONE)
@@ -210,7 +210,7 @@ static inline bool sql_query_row_i64_2(sqlite3 *db, const char *sql,
         return false;
 
     if (sqlite3_prepare_v2(db, sql, -1, &s, NULL) == SQLITE_OK && s) {
-        if (sqlite3_step(s) == SQLITE_ROW) {  // raw-sql-ok:explorer-shared-two-col-helper
+        if (sqlite3_step(s) == SQLITE_ROW) {  // raw-sql-ok:read-only-introspection
             out->v0 = sqlite3_column_int64(s, 0);
             out->v1 = sqlite3_column_int64(s, 1);
             sqlite3_finalize(s);
@@ -235,7 +235,7 @@ static inline bool sql_query_row_i64_3(sqlite3 *db, const char *sql,
         return false;
 
     if (sqlite3_prepare_v2(db, sql, -1, &s, NULL) == SQLITE_OK && s) {
-        if (sqlite3_step(s) == SQLITE_ROW) {  // raw-sql-ok:explorer-shared-three-col-helper
+        if (sqlite3_step(s) == SQLITE_ROW) {  // raw-sql-ok:read-only-introspection
             out->v0 = sqlite3_column_int64(s, 0);
             out->v1 = sqlite3_column_int64(s, 1);
             out->v2 = sqlite3_column_int64(s, 2);
@@ -364,7 +364,7 @@ static inline bool sql_query_text(sqlite3 *db, const char *sql,
 {
     sqlite3_stmt *s = NULL;
     if (sqlite3_prepare_v2(db, sql, -1, &s, NULL) == SQLITE_OK && s) {
-        if (sqlite3_step(s) == SQLITE_ROW) {  // raw-sql-ok:explorer-shared-text-helper
+        if (sqlite3_step(s) == SQLITE_ROW) {  // raw-sql-ok:read-only-introspection
             const char *t = (const char *)sqlite3_column_text(s, 0);
             if (t) { snprintf(out, max, "%s", t); sqlite3_finalize(s); return true; }
         }

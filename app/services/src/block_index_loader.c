@@ -136,7 +136,7 @@ void save_block_index_flat(const char *datadir, struct main_state *ms)
 
     if (!bii_write_sidecar(datadir)) {
         fprintf(stderr,
-                "save_block_index_flat: sidecar write failed for %s\n", // obs-ok:block index save continues; subsequent verify quarantines stale sidecar
+                "save_block_index_flat: sidecar write failed for %s\n", // obs-ok:warning-only-on-best-effort-path
                 path);
     }
 

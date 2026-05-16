@@ -461,7 +461,7 @@ void event_dump_recent(size_t count)
         uint64_t seq = atomic_load_explicit(&ev->sequence,
                                              memory_order_acquire);
         if (seq != i + 1) {
-            fprintf(stderr, "[%llu] <overwritten>\n", (unsigned long long)i);  // obs-ok:crash-dump-entry
+            fprintf(stderr, "[%llu] <overwritten>\n", (unsigned long long)i);  // obs-ok:crash-dump-banner
             continue;
         }
         format_event(stderr, ev);

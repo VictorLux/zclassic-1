@@ -277,7 +277,7 @@ static bool snapsync_insert_staging_raw(struct node_db *ndb,
         sqlite3_bind_null(s, 6);
     sqlite3_bind_int(s, 7, u->height);
     sqlite3_bind_int(s, 8, u->is_coinbase ? 1 : 0);
-    return sqlite3_step(s) == SQLITE_DONE;  // raw-sql-ok:snapshot-staging-prepared-insert
+    return sqlite3_step(s) == SQLITE_DONE;  // raw-sql-ok:state-kv-write-caller-handles-rc
 }
 
 static int64_t snapsync_staging_count(struct node_db *ndb)

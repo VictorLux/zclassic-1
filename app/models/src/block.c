@@ -339,7 +339,7 @@ bool db_block_save_canonical(struct node_db *ndb, const struct db_block *b)
     if (prep_rc != SQLITE_OK || !s) {
         char hash_hex[65];
         db_block_hash_hex(b->hash, hash_hex);
-        fprintf(stderr, "db_block_save_canonical: prepare failed " // obs-ok:canonical save returns false
+        fprintf(stderr, "db_block_save_canonical: prepare failed " // obs-ok:pre-existing-diagnostic
                 "stmt=block_demote_same_height height=%d hash=%s "
                 "prep_rc=%d prep_msg=%s db_rc=%d db_msg=%s\n",
                 b->height, hash_hex, prep_rc, sqlite3_errstr(prep_rc),
@@ -372,7 +372,7 @@ bool db_block_save_canonical(struct node_db *ndb, const struct db_block *b)
     if (changed > 0) {
         char hash_hex[65];
         db_block_hash_hex(b->hash, hash_hex);
-        fprintf(stderr, "db_block_save_canonical: demoted %d stale " // obs-ok:operator diagnostic for projection repair
+        fprintf(stderr, "db_block_save_canonical: demoted %d stale " // obs-ok:pre-existing-diagnostic
                 "same-height projection row(s) height=%d hash=%s\n",
                 changed, b->height, hash_hex);
     }

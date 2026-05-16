@@ -870,7 +870,7 @@ static int snapshot_extract_bip34_height_from_block(const struct block *blk)
     if (sig->data[nbytes] & 0x80)
         h = -(h & ~((int64_t)0x80 << (8 * (nbytes - 1))));
     if (h < 0 || h > INT32_MAX)
-        return -1; // raw-return-ok:bin-parser-overflow
+        return -1; // raw-return-ok:bin-parser-bounds
     return (int)h;
 }
 

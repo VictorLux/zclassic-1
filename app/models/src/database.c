@@ -541,7 +541,7 @@ static bool db_quick_check_ok(sqlite3 *db)
                 sqlite3_errmsg(db));
         return false;
     }
-    rc = sqlite3_step(stmt);  // raw-sql-ok:pragma-quick-check-introspection
+    rc = sqlite3_step(stmt);  // raw-sql-ok:read-only-introspection
     if (rc == SQLITE_ROW) {
         const unsigned char *txt = sqlite3_column_text(stmt, 0);
         ok = txt && strcmp((const char *)txt, "ok") == 0;

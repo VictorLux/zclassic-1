@@ -17,7 +17,7 @@ int observability_event_paired_fixture(void)
 
 int observability_obs_ok_fixture(void)
 {
-    fprintf(stderr, "fixture debug note\n"); // obs-ok:debug fixture
+    fprintf(stderr, "fixture debug note\n"); // obs-ok:test-fixture
     return 0;
 }
 

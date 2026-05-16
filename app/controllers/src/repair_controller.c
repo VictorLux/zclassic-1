@@ -69,7 +69,7 @@ static int64_t repair_json_int(const char *json, const char *key)
     char pat[128];
     snprintf(pat, sizeof(pat), "\"%s\"", key);
     const char *p = strstr(json, pat);
-    if (!p) return -1; // raw-return-ok:json-parser-key-not-found
+    if (!p) return -1; // raw-return-ok:sentinel
     p += strlen(pat);
     while (*p == ' ' || *p == ':' || *p == '\t') p++;
     return strtoll(p, NULL, 10);

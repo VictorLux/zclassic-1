@@ -56,8 +56,8 @@ static int collect_pprev_window(struct block_index *start,
     int steps = 0;
     while (cur && count < out_cap &&
            cur->nHeight > stop_height_exclusive) {
-        if (steps++ > GAPFILL_WALK_CAP) return -1; // raw-return-ok:corrupt-walk-caller-logs
-        if (cur->nHeight >= last_h) return -1; // raw-return-ok:corrupt-walk-non-monotonic
+        if (steps++ > GAPFILL_WALK_CAP) return -1; // raw-return-ok:sentinel
+        if (cur->nHeight >= last_h) return -1; // raw-return-ok:sentinel
         last_h = cur->nHeight;
         out[count++] = cur;
         cur = cur->pprev;
@@ -103,7 +103,7 @@ static int gap_fill_pass(void)
     if (collected < 0) {
         zcl_mutex_unlock(&ms->cs_main);
         free(bis);
-        return -1; // raw-return-ok:propagate-corrupt-walk-thread-logs
+        return -1; // raw-return-ok:sentinel
     }
 
     /* Filter: needs data AND not in-flight. Build parallel arrays for

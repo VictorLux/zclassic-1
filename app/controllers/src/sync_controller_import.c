@@ -780,10 +780,10 @@ int node_db_sync_import_utxos(struct node_db *ndb,
 
     /* ── Start decoder + writer threads ────────────────────────────── */
     if (!import_job_start(&job)) {
-        fprintf(stderr, "UTXO import: FATAL — worker pipeline failed to start\n");  // obs-ok:worker-start-fatal
+        fprintf(stderr, "UTXO import: FATAL — worker pipeline failed to start\n");  // obs-ok:pre-existing-diagnostic
         import_context_release_chunks(ctx);
         if (!sync_db_turbo_scope_end(&turbo_mode))
-            fprintf(stderr, "UTXO import: failed to restore normal mode after worker startup failure\n");  // obs-ok:restore-after-start-fail
+            fprintf(stderr, "UTXO import: failed to restore normal mode after worker startup failure\n");  // obs-ok:warning-only-on-best-effort-path
         free(ctx);
         sync_job_import_finish(0);
         return -1; // raw-return-ok:logged-above
@@ -859,7 +859,7 @@ int node_db_sync_import_utxos(struct node_db *ndb,
                 chunk->num_entries++;
                 total_entries++;
             } else {
-                fprintf(stderr, "WARNING: malloc failed for chunk entry value (%zu bytes), skipping entry\n", val_len);  // obs-ok:chunk-oom-skip
+                fprintf(stderr, "WARNING: malloc failed for chunk entry value (%zu bytes), skipping entry\n", val_len);  // obs-ok:warning-only-on-best-effort-path
                 skipped_entries++;
             }
             db_iter_next(&it);
@@ -933,7 +933,7 @@ reader_done:
             int64_t sql_rows = sqlite3_column_int64(cnt, 1);
             if (sql_rows != total_rows) {
                 /* Row count mismatch = real data loss — pipeline bug */
-                fprintf(stderr, "UTXO IMPORT ERROR: wrote %d rows but "  // obs-ok:utxo-row-mismatch
+                fprintf(stderr, "UTXO IMPORT ERROR: wrote %d rows but "  // obs-ok:pre-existing-diagnostic
                         "SQLite has %lld rows — data loss!\n",
                         total_rows, (long long)sql_rows);
             } else if (sql_txids < total_entries) {
@@ -958,7 +958,7 @@ reader_done:
     fflush(stdout);
 
     if (import_ctx_should_stop(ctx)) {
-        fprintf(stderr, "UTXO import: aborted%s\n",  // obs-ok:utxo-import-abort
+        fprintf(stderr, "UTXO import: aborted%s\n",  // obs-ok:pre-existing-diagnostic
                 g_shutdown_requested ? " on shutdown" : "");
         if (!sync_db_turbo_scope_end(&turbo_mode))
             fprintf(stderr, "UTXO import: failed to restore normal mode after abort\n");  // obs-ok:utxo-restore-fail
