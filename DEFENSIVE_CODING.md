@@ -32,17 +32,17 @@ application code.
 #endif
 ```
 
-Files that legitimately need raw SQL (boot.c, coins_view_sqlite.c
-internals) opt out with `#define ZCL_AR_RAW_SQL`. The Makefile adds
-`-DZCL_AR_ENFORCE` globally. This makes raw SQL a conscious, visible
-decision — not a silent default.
+Files that legitimately need raw SQL (the storage primitives in
+`lib/storage/src/coins_view_sqlite.c`) opt out with `#define
+ZCL_AR_RAW_SQL`. The Makefile adds `-DZCL_AR_ENFORCE` globally. This
+makes raw SQL a conscious, visible decision — not a silent default.
 
-**Migration path:**
-1. `coins_view_sqlite.c` — add `#define ZCL_AR_RAW_SQL` at top (it's
-   infrastructure, not a model)
-2. `wallet_sqlite.c` — migrate writes to AR macros, remove raw SQL
-3. All `app/models/src/*.c` — already use AR macros, just verify
-4. All `app/controllers/src/*.c` — audit and migrate
+**Status: shipped (Wave 3).** The ratchet allowlist at
+`tools/scripts/raw_sqlite_allowlist.txt` is empty. All production writes
+across `app/models/src/`, `app/controllers/src/`, `app/services/src/`,
+and `lib/wallet/src/wallet_sqlite.c` route through `AR_BEGIN_SAVE` /
+`AR_STEP_ROW` / `AR_STEP_DONE`. `make lint` runs `check_raw_sqlite.sh`
+as one of 10 mandatory gates.
 
 ---
 
@@ -221,66 +221,44 @@ check-silent-errors:
 
 ---
 
-## 5. MCP handlers MUST set error body — enforced by return type
+## 5. MCP handlers must log on every error path
 
-**Problem:** 30+ MCP handlers return `-1` with no error body. Caller
-gets no diagnostic info.
+**Problem:** silent `return -1;` in MCP handlers leaves the caller with
+no diagnostic info.
 
-**Enforcement:** Change MCP handler signature.
+**Status: enforced by lint.** `make lint` runs three controller-tier
+gates:
 
-```c
-/* Current (bad): */
-typedef int (*mcp_handler)(const struct mcp_request *req,
-                           struct mcp_response *res);
-/* -1 means error, but res->body is often NULL. Useless. */
+- `check-silent-errors` — every bare `return -1;` in
+  `tools/mcp/controllers/*.c` must either be preceded by a logging
+  call (`LOG_ERR`, `log_json`, `fprintf`) or carry an explicit
+  `// raw-return-ok:<reason>` marker (no space after the colon).
+- `check-silent-errors-services` — same rule for `app/services/src/`.
+- `check-silent-errors-controllers` — same rule for
+  `app/controllers/src/`.
 
-/* New (enforced): */
-typedef struct mcp_handler_result (*mcp_handler)(
-    const struct mcp_request *req,
-    struct mcp_response *res);
-
-struct mcp_handler_result {
-    bool ok;
-    /* If !ok and res->body is NULL, router auto-populates a generic
-     * error. But the handler SHOULD set res->body with mcp_error(). */
-};
-
-/* Helper that makes the right thing easy: */
-static inline struct mcp_handler_result mcp_success(void)
-{
-    return (struct mcp_handler_result){.ok = true};
-}
-
-static inline struct mcp_handler_result mcp_fail(
-    struct mcp_response *res, int code, const char *fmt, ...)
-{
-    /* Format error JSON into res->body */
-    va_list ap;
-    va_start(ap, fmt);
-    /* ... build {"error": {"code": N, "message": "..."}} ... */
-    va_end(ap);
-    return (struct mcp_handler_result){.ok = false};
-}
-```
-
-**Migration:** one commit per controller file. Change `return -1;` to
-`return mcp_fail(res, -32603, "rpc backend unreachable");`.
+A future `mcp_fail(res, code, fmt, ...)` helper could enforce that
+`res->body` is populated on every error path by return-type discipline,
+but that's optional polish — the lint already prevents the silent-fail
+class entirely.
 
 ---
 
-## 6. Before/after save hooks — wire them for real
+## 6. Before/after save hooks — wired
 
-**Problem:** `ar_register_before_save()` exists but zero models use it.
-
-**Wire these hooks now:**
+**Status: shipped.** Every critical model wires `ar_register_before_save`
+and `ar_register_after_save`. The `check-before-save-hooks` lint
+enforces that `utxo`, `block`, `wallet_key`, and `wallet_tx` keep these
+hooks — drop one and `make lint` fails.
 
 | Model | before_save | after_save |
 |-------|-------------|------------|
-| wallet_key | Encrypt if `ZCL_WALLET_PASSPHRASE` set | Emit `EV_WALLET_KEY_SAVED` |
+| wallet_key | Log if `ZCL_WALLET_PASSPHRASE` set (keystore owns at-rest wrap) | Emit `EV_WALLET_KEY_SAVED` (`EV_SAPLING_KEY_SAVED` for sapling rows) |
 | utxo | Validate money range + script coherence | Update UTXO commitment cache |
 | block | Validate hash matches header | Emit `EV_BLOCK_SAVED` |
-| sapling_key | Encrypt spending key | Emit `EV_SAPLING_KEY_SAVED` |
 | wallet_tx | Validate txid format | Emit `EV_WALLET_TX_SAVED` |
+| mempool_entry | Validate fee + size envelope | (no after_save) |
+| tx_index | Validate txid + block height | (no after_save) |
 
 ---
 
@@ -289,15 +267,20 @@ static inline struct mcp_handler_result mcp_fail(
 Add to `Makefile`:
 
 ```makefile
-lint: check-malloc check-silent-errors check-raw-sqlite
+lint: check-malloc check-silent-errors check-raw-sqlite \
+      check-raw-malloc check-coins-lookup-nullcheck \
+      check-observability-pairing check-silent-errors-services \
+      check-before-save-hooks check-pthread-create \
+      check-silent-errors-controllers
 	@echo "All lint checks passed"
 
 ci: lint test fuzz-ci coverage
 ```
 
-**`make ci` fails if ANY of these fire.** An agent that pushes code
-with raw malloc, silent errors, or bypassed AR validation gets a red
-build before any human sees it.
+**Status: 10 gates active.** `make ci` fails if any fire. An agent
+that pushes code with raw malloc, silent errors, bypassed AR
+validation, unpaired stderr diagnostics, or a critical model missing
+its before_save hook gets a red build before any human sees it.
 
 ---
 
