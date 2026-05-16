@@ -309,6 +309,8 @@ const char *event_type_name(enum event_type type)
         [EV_HEADERS_RECEIVED]        = "sync.headers_received",
         [EV_HEADERS_REJECTED]        = "sync.headers_rejected",
         [EV_BLOCK_REQUESTED]         = "sync.block_requested",
+        [EV_TIP_STALE]               = "sync.tip_stale",
+        [EV_SYNC_HEARTBEAT]          = "sync.heartbeat",
         [EV_BLOCK_CONNECTED]         = "val.block_connected",
         [EV_BLOCK_REJECTED]          = "val.block_rejected",
         [EV_SELF_HEAL_SCAN_HIT]      = "val.self_heal_scan_hit",

@@ -51,11 +51,51 @@ static int64_t state_stuck_timeout(enum sync_state state)
 _Atomic int64_t g_sync_state_entered_time = 0;
 _Atomic int     g_sync_state_entry_height = 0;
 
+/* Wave 8: tip-advance tracking — last successful block connect timestamp.
+ * Updated by sync_watchdog_on_block_connected() from the EV_BLOCK_CONNECTED
+ * emit site in lib/net/src/msg_blocks.c. Read by
+ * sync_watchdog_get_tip_advance_age() and exposed via zcl_status JSON +
+ * Prometheus zcl_tip_advance_age_seconds. Independent of state-entered
+ * time because state changes (e.g. AT_TIP→HEADERS_DOWNLOAD on a recovery
+ * toggle) should NOT zero the tip-advance age. */
+_Atomic int64_t g_last_block_connected_ts = 0;
+_Atomic int     g_last_block_connected_height = 0;
+
+/* Wave 8: once-per-stall-episode emit throttle for EV_TIP_STALE.
+ * Set when the STATE_STUCK path emits; cleared on any state change OR
+ * any block connect (sync_watchdog_on_state_change /
+ * sync_watchdog_on_block_connected). Atomic so the watchdog tick thread
+ * and the message-processing thread don't race. */
+_Atomic int     g_stall_event_emitted = 0;
+
 void sync_watchdog_on_state_change(enum sync_state new_state, int height)
 {
     (void)new_state;
     atomic_store(&g_sync_state_entered_time, (int64_t)time(NULL));
     atomic_store(&g_sync_state_entry_height, height);
+    /* State changed → if a stall just ended, allow a fresh EV_TIP_STALE
+     * the next time we get stuck. Don't clear g_last_block_connected_ts:
+     * forced state toggles (the STATE_STUCK recovery path) shouldn't
+     * mask real tip staleness. */
+    atomic_store(&g_stall_event_emitted, 0);
+}
+
+void sync_watchdog_on_block_connected(int height)
+{
+    atomic_store(&g_last_block_connected_ts, (int64_t)time(NULL));
+    atomic_store(&g_last_block_connected_height, height);
+    /* Block actually arrived → previous stall (if any) is over. */
+    atomic_store(&g_stall_event_emitted, 0);
+}
+
+int64_t sync_watchdog_get_tip_advance_age(void)
+{
+    int64_t last = atomic_load(&g_last_block_connected_ts);
+    /* Bootstrap: if we have not seen a connect yet, age is meaningless;
+     * report -1 so consumers (zcl_health, Prometheus) can skip the gate. */
+    if (last == 0) return -1; // raw-return-ok:sentinel
+    int64_t now = (int64_t)time(NULL);
+    return (now > last) ? (now - last) : 0;
 }
 
 int64_t sync_get_state_duration(void)
@@ -780,6 +820,26 @@ enum watchdog_recovery_type sync_watchdog_check(
 
     /* c. STATE_STUCK: any state (except at_tip) exceeded per-state timeout */
     if (state != SYNC_AT_TIP && duration > state_stuck_timeout(state)) {
+        /* Wave 8: surface this through node.log + event stream, not just
+         * the systemd journal. The 2026-05-15 25-hour stall went unseen
+         * because printf goes to stdout (journal) while operators grep
+         * node.log via zcl_node_log. Throttle to once per stall episode
+         * (cleared on state change or block-connect). */
+        int our_h_log = ms ? active_chain_height(&ms->chain_active) : -1;
+        int peer_max_log = cm ? connman_max_peer_height(cm) : -1;
+        int peer_count_log = cm ? (int)connman_outbound_healthy_count(cm) : 0;
+        if (!atomic_exchange(&g_stall_event_emitted, 1)) {
+            LOG_FAIL("watchdog",
+                     "STATE_STUCK state=%s duration_s=%lld timeout_s=%lld "
+                     "our_h=%d peer_max=%d peers=%d — forcing header re-sync",
+                     sync_state_name(state), (long long)duration,
+                     (long long)state_stuck_timeout(state),
+                     our_h_log, peer_max_log, peer_count_log);
+            event_emitf(EV_TIP_STALE, 0,
+                        "state=%s since=%lld peers=%d max_peer=%d our_h=%d",
+                        sync_state_name(state), (long long)duration,
+                        peer_count_log, peer_max_log, our_h_log);
+        }
         printf("[watchdog] STATE_STUCK: %s for %llds (timeout %llds), "
                "forcing header re-sync\n",
                sync_state_name(state), (long long)duration,
@@ -820,6 +880,22 @@ static void sync_watchdog_periodic_tick(void *arg)
     struct watchdog_periodic_args *a = arg;
     if (!a) return;
     sync_watchdog_check(a->cm, a->dm, a->ms);
+
+    /* Wave 8: emit a structured heartbeat every other tick (60s).
+     * Absence of EV_SYNC_HEARTBEAT for >120s implies the watchdog
+     * thread itself wedged — a different failure shape than a sync
+     * stall and worth distinguishing in monitoring. */
+    static _Atomic int s_heartbeat_skip = 0;
+    if ((atomic_fetch_add(&s_heartbeat_skip, 1) & 1) == 0) {
+        enum sync_state state = sync_get_state();
+        int our_h = a->ms ? active_chain_height(&a->ms->chain_active) : -1;
+        int peer_max = a->cm ? connman_max_peer_height(a->cm) : -1;
+        int64_t tip_age = sync_watchdog_get_tip_advance_age();
+        event_emitf(EV_SYNC_HEARTBEAT, 0,
+                    "state=%s h=%d max_peer=%d tip_age=%lld",
+                    sync_state_name(state), our_h, peer_max,
+                    (long long)tip_age);
+    }
 }
 
 bool sync_watchdog_start(struct connman *cm,

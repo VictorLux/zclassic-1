@@ -39,6 +39,8 @@ enum event_type {
     EV_HEADERS_RECEIVED,         /* payload: count(u32) + from_h(i32) + to_h(i32) */
     EV_HEADERS_REJECTED,         /* payload: count(u32) + reason string */
     EV_BLOCK_REQUESTED,          /* payload: queued/assigned/timeout string */
+    EV_TIP_STALE,                /* payload: "state=... since=N peers=N max_peer=N" — sync state has not advanced for STALL_DEADLINE_SECS in any non-tip state; emitted once per stall episode (reset on state change or block-connect). Pairs with the existing STATE_STUCK watchdog so absence-of-progress is a first-class structured signal, not just stdout. */
+    EV_SYNC_HEARTBEAT,           /* payload: "state=... h=N max_peer=N tip_age=N" — periodic (60s) liveness emit from sync_watchdog_periodic_tick; silence > 2 ticks implies process wedge separate from sync wedge */
 
     /* ── Validation pipeline ────────────────────────── */
     EV_BLOCK_CONNECTED,          /* payload: height string */
