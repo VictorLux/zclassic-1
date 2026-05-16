@@ -715,29 +715,22 @@ static void *tls_listen_thread_fn(void *arg)
 static SSL_CTX *tls_init(const char *cert_path, const char *key_path)
 {
     SSL_CTX *ctx = SSL_CTX_new(TLS_server_method());
-    if (!ctx) {
-        fprintf(stderr, "RPC TLS: SSL_CTX_new failed\n");
-        return NULL;
-    }
+    if (!ctx)
+        LOG_NULL("rpc", "TLS: SSL_CTX_new failed");
 
     SSL_CTX_set_min_proto_version(ctx, TLS1_2_VERSION);
 
     if (SSL_CTX_use_certificate_chain_file(ctx, cert_path) != 1) {
-        fprintf(stderr, "RPC TLS: failed to load certificate: %s\n",
-                cert_path);
         SSL_CTX_free(ctx);
-        return NULL;
+        LOG_NULL("rpc", "TLS: failed to load certificate: %s", cert_path);
     }
     if (SSL_CTX_use_PrivateKey_file(ctx, key_path, SSL_FILETYPE_PEM) != 1) {
-        fprintf(stderr, "RPC TLS: failed to load private key: %s\n",
-                key_path);
         SSL_CTX_free(ctx);
-        return NULL;
+        LOG_NULL("rpc", "TLS: failed to load private key: %s", key_path);
     }
     if (SSL_CTX_check_private_key(ctx) != 1) {
-        fprintf(stderr, "RPC TLS: cert/key mismatch\n");
         SSL_CTX_free(ctx);
-        return NULL;
+        LOG_NULL("rpc", "TLS: cert/key mismatch");
     }
 
     return ctx;

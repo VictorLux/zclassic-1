@@ -8,8 +8,9 @@
 #include "primitives/transaction.h"
 #include "core/hash.h"
 #include "core/serialize.h"
-#include <stdlib.h>
+#include "util/log_macros.h"
 #include "util/safe_alloc.h"
+#include <stdlib.h>
 
 bool block_header_serialize(const struct block_header *h, struct byte_stream *s)
 {
@@ -47,7 +48,9 @@ bool block_header_deserialize(struct block_header *h, struct byte_stream *s)
     if (!stream_read_bytes(s, h->nNonce.data, 32)) return false;
     uint64_t sol_size;
     if (!stream_read_compact_size(s, &sol_size)) return false;
-    if (sol_size > MAX_SOLUTION_SIZE) return false;
+    if (sol_size > MAX_SOLUTION_SIZE)
+        LOG_FAIL("block", "Equihash solution size %llu exceeds MAX_SOLUTION_SIZE %d",
+                 (unsigned long long)sol_size, MAX_SOLUTION_SIZE);
     h->nSolutionSize = (size_t)sol_size;
     if (h->nSolutionSize > 0) {
         if (!stream_read_bytes(s, h->nSolution, h->nSolutionSize)) return false;
@@ -70,10 +73,13 @@ bool block_deserialize(struct block *b, struct byte_stream *s)
     if (!block_header_deserialize(&b->header, s)) return false;
     uint64_t count;
     if (!stream_read_compact_size(s, &count)) return false;
-    if (count > MAX_BLOCK_TRANSACTIONS) return false;
+    if (count > MAX_BLOCK_TRANSACTIONS)
+        LOG_FAIL("block", "tx count %llu exceeds MAX_BLOCK_TRANSACTIONS %d",
+                 (unsigned long long)count, MAX_BLOCK_TRANSACTIONS);
     b->num_vtx = (size_t)count;
     b->vtx = zcl_calloc(b->num_vtx, sizeof(struct transaction), "block_vtx");
-    if (!b->vtx && b->num_vtx > 0) return false;
+    if (!b->vtx && b->num_vtx > 0)
+        LOG_FAIL("block", "alloc failed for %zu tx slots", b->num_vtx);
     for (size_t i = 0; i < b->num_vtx; i++) {
         transaction_init(&b->vtx[i]);
         if (!transaction_deserialize(&b->vtx[i], s)) return false;
@@ -106,10 +112,13 @@ bool block_locator_deserialize(struct block_locator *loc,
     (void)nVersion;
     uint64_t count;
     if (!stream_read_compact_size(s, &count)) return false;
-    if (count > MAX_LOCATOR_HASHES) return false;
+    if (count > MAX_LOCATOR_HASHES)
+        LOG_FAIL("block", "locator hash count %llu exceeds MAX_LOCATOR_HASHES %d",
+                 (unsigned long long)count, MAX_LOCATOR_HASHES);
     loc->num_hashes = (size_t)count;
     loc->vhave = zcl_calloc(loc->num_hashes, sizeof(struct uint256), "locator_hashes");
-    if (!loc->vhave && loc->num_hashes > 0) return false;
+    if (!loc->vhave && loc->num_hashes > 0)
+        LOG_FAIL("block", "alloc failed for %zu locator hashes", loc->num_hashes);
     for (size_t i = 0; i < loc->num_hashes; i++) {
         if (!stream_read_bytes(s, loc->vhave[i].data, 32)) return false;
     }
