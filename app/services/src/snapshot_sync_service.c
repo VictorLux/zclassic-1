@@ -16,7 +16,7 @@
 #include "services/chain_restore_service.h"
 #include "services/chain_state_repository.h"
 #include "services/chain_tip.h"
-#include "services/snapshot_manifest_v2.h"
+#include "services/snapshot_manifest.h"
 #include "services/chain_evidence_controller.h"
 #include "models/db_txn.h"
 #include "chain/chain.h"
@@ -106,33 +106,33 @@ static bool snapsync_run_write(struct snapshot_sync_service *svc,
                                void *ctx);
 
 static enum snapsync_offer_result snapsync_offer_result_from_manifest(
-    enum snapshot_manifest_v2_result result)
+    enum snapshot_manifest_result result)
 {
     switch (result) {
-    case SNAPSHOT_MANIFEST_V2_OK:
+    case SNAPSHOT_MANIFEST_OK:
         return SNAPSYNC_OFFER_ACCEPTED;
-    case SNAPSHOT_MANIFEST_V2_RANGE:
+    case SNAPSHOT_MANIFEST_RANGE:
         return SNAPSYNC_OFFER_REJECTED_RANGE;
-    case SNAPSHOT_MANIFEST_V2_STALE_SCHEMA:
+    case SNAPSHOT_MANIFEST_STALE_SCHEMA:
         return SNAPSYNC_OFFER_REJECTED_STALE_SCHEMA;
-    case SNAPSHOT_MANIFEST_V2_UNFINAL:
+    case SNAPSHOT_MANIFEST_UNFINAL:
         return SNAPSYNC_OFFER_REJECTED_UNFINAL;
-    case SNAPSHOT_MANIFEST_V2_WEAK_WORK:
+    case SNAPSHOT_MANIFEST_WEAK_WORK:
         return SNAPSYNC_OFFER_REJECTED_WEAK_WORK;
-    case SNAPSHOT_MANIFEST_V2_NO_MMR:
-    case SNAPSHOT_MANIFEST_V2_NO_MMB:
+    case SNAPSHOT_MANIFEST_NO_MMR:
+    case SNAPSHOT_MANIFEST_NO_MMB:
         return SNAPSYNC_OFFER_REJECTED_NO_MMR;
-    case SNAPSHOT_MANIFEST_V2_NOT_AHEAD:
+    case SNAPSHOT_MANIFEST_NOT_AHEAD:
         return SNAPSYNC_OFFER_REJECTED_NOT_AHEAD;
-    case SNAPSHOT_MANIFEST_V2_NULL_ARG:
-    case SNAPSHOT_MANIFEST_V2_TRUNCATED:
-    case SNAPSHOT_MANIFEST_V2_TRAILING_BYTES:
+    case SNAPSHOT_MANIFEST_NULL_ARG:
+    case SNAPSHOT_MANIFEST_TRUNCATED:
+    case SNAPSHOT_MANIFEST_TRAILING_BYTES:
     default:
         return SNAPSYNC_OFFER_REJECTED_PARSE;
     }
 }
 
-static void snapsync_manifest_from_params(struct snapshot_manifest_v2 *m,
+static void snapsync_manifest_from_params(struct snapshot_manifest *m,
                                           const struct snapshot_offer_params *p)
 {
     memset(m, 0, sizeof(*m));
@@ -150,7 +150,7 @@ static void snapsync_manifest_from_params(struct snapshot_manifest_v2 *m,
 }
 
 static void snapsync_params_from_manifest(struct snapshot_offer_params *p,
-                                          const struct snapshot_manifest_v2 *m)
+                                          const struct snapshot_manifest *m)
 {
     p->height = m->height;
     memcpy(p->block_hash, m->block_hash, 32);
@@ -1418,18 +1418,18 @@ bool snapsync_build_request_pow(const uint8_t peer_ip[16],
 bool snapsync_parse_offer_params(struct snapshot_offer_params *params,
                                  struct byte_stream *s)
 {
-    struct snapshot_manifest_v2 manifest;
-    enum snapshot_manifest_v2_result parse_result =
-        SNAPSHOT_MANIFEST_V2_OK;
+    struct snapshot_manifest manifest;
+    enum snapshot_manifest_result parse_result =
+        SNAPSHOT_MANIFEST_OK;
 
     if (!params || !s)
         LOG_FAIL("snapshot_sync", "parse_offer_params: params=%p stream=%p", (void*)params, (void*)s);
 
     memset(params, 0, sizeof(*params));
-    if (!snapshot_manifest_v2_parse(&manifest, s, &parse_result))
+    if (!snapshot_manifest_parse(&manifest, s, &parse_result))
         LOG_FAIL("snapshot_sync",
                  "parse_offer_params: invalid v2 manifest reason=%s pos=%zu/%zu",
-                 snapshot_manifest_v2_result_name(parse_result),
+                 snapshot_manifest_result_name(parse_result),
                  s->read_pos, s->size);
     snapsync_params_from_manifest(params, &manifest);
     return true;
@@ -2030,9 +2030,9 @@ enum snapsync_offer_result snapsync_handle_offer(
     struct snapshot_sync_service *svc,
     const struct snapshot_offer_params *params)
 {
-    struct snapshot_manifest_v2 manifest;
-    enum snapshot_manifest_v2_result manifest_result =
-        SNAPSHOT_MANIFEST_V2_OK;
+    struct snapshot_manifest manifest;
+    enum snapshot_manifest_result manifest_result =
+        SNAPSHOT_MANIFEST_OK;
     bool reconnect = false;
     enum snapshot_sync_state current_state = SNAPSYNC_IDLE;
     uint32_t prior_peer_id = 0;
@@ -2043,11 +2043,11 @@ enum snapsync_offer_result snapsync_handle_offer(
 
     snapsync_manifest_from_params(&manifest, params);
     manifest_result =
-        snapshot_manifest_v2_validate_offer(&manifest, params->our_height);
-    if (manifest_result != SNAPSHOT_MANIFEST_V2_OK) {
+        snapshot_manifest_validate_offer(&manifest, params->our_height);
+    if (manifest_result != SNAPSHOT_MANIFEST_OK) {
         event_emitf(EV_SNAPSHOT_OFFER_RECEIVED, params->peer_id,
                     "accepted=false reason=%s h=%d peer_tip=%d our_h=%d",
-                    snapshot_manifest_v2_result_name(manifest_result),
+                    snapshot_manifest_result_name(manifest_result),
                     params->height, params->peer_tip_height,
                     params->our_height);
         return snapsync_offer_result_from_manifest(manifest_result);

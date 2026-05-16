@@ -3,7 +3,7 @@
 
 #include "test/test_helpers.h"
 #include "services/snapshot_sync_service.h"
-#include "services/snapshot_manifest_v2.h"
+#include "services/snapshot_manifest.h"
 #include "config/db_service.h"
 #include "config/runtime.h"
 #include "coins/utxo_commitment.h"
@@ -394,7 +394,7 @@ static int test_snapshot_sync_service_stream_helpers(void)
     return failures;
 }
 
-static void write_valid_snapshot_manifest_v2(struct byte_stream *offer,
+static void write_valid_snapshot_manifest(struct byte_stream *offer,
                                              int32_t height,
                                              int32_t peer_tip_height)
 {
@@ -411,45 +411,45 @@ static void write_valid_snapshot_manifest_v2(struct byte_stream *offer,
     for (int i = 0; i < 32; i++) stream_write_u8(offer, (uint8_t)(i + 4));
 }
 
-static int test_snapshot_manifest_v2_contract(void)
+static int test_snapshot_manifest_contract(void)
 {
     int failures = 0;
 
     TEST("snapshot manifest v2 rejects malformed or incomplete contracts") {
         struct byte_stream offer;
-        struct snapshot_manifest_v2 manifest;
-        enum snapshot_manifest_v2_result result;
+        struct snapshot_manifest manifest;
+        enum snapshot_manifest_result result;
 
         stream_init(&offer, 192);
-        write_valid_snapshot_manifest_v2(&offer, 10000, 10010);
+        write_valid_snapshot_manifest(&offer, 10000, 10010);
 
-        ASSERT(snapshot_manifest_v2_parse(&manifest, &offer, &result));
-        ASSERT(result == SNAPSHOT_MANIFEST_V2_OK);
+        ASSERT(snapshot_manifest_parse(&manifest, &offer, &result));
+        ASSERT(result == SNAPSHOT_MANIFEST_OK);
         ASSERT(manifest.height == 10000);
         ASSERT(manifest.peer_tip_height == 10010);
-        ASSERT(snapshot_manifest_v2_validate_offer(&manifest, 0) ==
-               SNAPSHOT_MANIFEST_V2_OK);
+        ASSERT(snapshot_manifest_validate_offer(&manifest, 0) ==
+               SNAPSHOT_MANIFEST_OK);
 
         offer.read_pos = 0;
         stream_write_u8(&offer, 0xff);
-        ASSERT(!snapshot_manifest_v2_parse(&manifest, &offer, &result));
-        ASSERT(result == SNAPSHOT_MANIFEST_V2_TRAILING_BYTES);
+        ASSERT(!snapshot_manifest_parse(&manifest, &offer, &result));
+        ASSERT(result == SNAPSHOT_MANIFEST_TRAILING_BYTES);
         stream_free(&offer);
 
         stream_init(&offer, 192);
-        write_valid_snapshot_manifest_v2(&offer, 10000, 10009);
-        ASSERT(snapshot_manifest_v2_parse(&manifest, &offer, &result));
-        ASSERT(snapshot_manifest_v2_validate_offer(&manifest, 0) ==
-               SNAPSHOT_MANIFEST_V2_UNFINAL);
+        write_valid_snapshot_manifest(&offer, 10000, 10009);
+        ASSERT(snapshot_manifest_parse(&manifest, &offer, &result));
+        ASSERT(snapshot_manifest_validate_offer(&manifest, 0) ==
+               SNAPSHOT_MANIFEST_UNFINAL);
 
         manifest.peer_tip_height = manifest.height;
-        ASSERT(snapshot_manifest_v2_validate_offer(&manifest, 0) ==
-               SNAPSHOT_MANIFEST_V2_OK);
+        ASSERT(snapshot_manifest_validate_offer(&manifest, 0) ==
+               SNAPSHOT_MANIFEST_OK);
 
         manifest.peer_tip_height = manifest.height + 10;
         memset(manifest.chain_work, 0, sizeof(manifest.chain_work));
-        ASSERT(snapshot_manifest_v2_validate_offer(&manifest, 0) ==
-               SNAPSHOT_MANIFEST_V2_WEAK_WORK);
+        ASSERT(snapshot_manifest_validate_offer(&manifest, 0) ==
+               SNAPSHOT_MANIFEST_WEAK_WORK);
         stream_free(&offer);
         PASS();
     } _test_next:;
@@ -1326,7 +1326,7 @@ int test_snapshot_sync_service(void)
     failures += test_snapshot_sync_service_followups();
     failures += test_snapshot_sync_service_builds_pow();
     failures += test_snapshot_sync_service_stream_helpers();
-    failures += test_snapshot_manifest_v2_contract();
+    failures += test_snapshot_manifest_contract();
     failures += test_snapshot_sync_service_fc_roundtrip();
     failures += test_snapshot_sync_service_activates_tip();
     failures += test_snapshot_sync_service_activates_fallback_tip();
