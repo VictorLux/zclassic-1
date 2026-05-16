@@ -179,7 +179,7 @@ struct worker_ctx {
 #define IDX_GROW(arr, num, cap, type) do {            \
     if ((num) >= (cap)) {                             \
         (cap) = (cap) < 1024 ? 1024 : (cap) * 2;     \
-        void *_tmp = realloc((arr), (size_t)(cap) * sizeof(type)); /* raw-alloc-ok */ \
+        void *_tmp = realloc((arr), (size_t)(cap) * sizeof(type)); /* raw-alloc-ok:indexlegacy-grow-macro-fallback-to-free */ \
         if (!_tmp) { free(arr); (arr) = NULL; (cap) = 0; break; } \
         (arr) = _tmp;                                 \
     }                                                 \
