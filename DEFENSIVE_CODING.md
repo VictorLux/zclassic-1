@@ -304,6 +304,58 @@ exemption in code rather than by silent omission. Implementation:
 
 ---
 
+## 8. Lint-override discipline — every escape hatch is named
+
+Four lint gates accept an inline override marker when the underlying
+rule cannot mechanically hold. The four marker classes:
+
+| Marker | Where allowed | Lint gate |
+|--------|---------------|-----------|
+| `// obs-ok:<tag>` | line with `fprintf(stderr, ...)` whose nearby code does not emit an event or terminally propagate | `check-observability-pairing` |
+| `// raw-sql-ok:<tag>` | line with `sqlite3_step(...)` outside the `AR_STEP_*` wrappers | `check-raw-sqlite` |
+| `// raw-return-ok:<tag>` | bare `return -1;` in MCP / service / controller code with no preceding log line | `check-silent-errors`, `-services`, `-controllers` |
+| `// raw-alloc-ok:<tag>` | line with `malloc/calloc/realloc` outside the `zcl_*` wrappers | `check-raw-malloc` |
+
+**Syntax (machine-enforced).** Every marker requires a non-empty
+single-token tag matching `[A-Za-z][A-Za-z0-9_-]+` immediately after
+the colon. The space-after-colon form (`// raw-sql-ok: state-kv …`)
+and the bare form (`// raw-alloc-ok`) are rejected by the lint —
+hyphen-join multi-word tags instead.
+
+**Pairing rule.** A marker is not a free pass; it is a promise that
+the override is either:
+
+1. **Logged at this site or one nearby** — the diagnostic is already
+   observable (LOG_FAIL above, fprintf on the previous line, the
+   caller logs on receiving the propagated failure).
+2. **Structurally safe by design** — qsort comparator, void-returning
+   helper, pre-boot sentinel, build-time tool, test fixture.
+
+If neither holds, the marker is a bug. Delete it, fix the underlying
+issue (route through `AR_BEGIN_SAVE`, add `LOG_FAIL`, switch to
+`zcl_malloc`), and let the lint go green naturally.
+
+**Concrete tag taxonomy (existing usage at wave-6e):**
+
+- `obs-ok:` — `pre-existing-diagnostic`, `helper-context-logged`,
+  `helper-return-path`, `paired-with-return-false-below`.
+- `raw-sql-ok:` — `kv-state-primitive`, `read-only-introspection`,
+  `state-kv-write-caller-handles-rc`, `cvs-zcl-ar-raw-sql-rationale`,
+  `explorer-shared-scalar-helper`, `test-fixture-seed`,
+  `standalone-dev-tool`.
+- `raw-return-ok:` — `qsort-comparator`, `logged-above`, `sentinel`,
+  `null-args-precondition`, `pre-boot-sentinel`,
+  `sentinel-no-compile-time-windows`.
+- `raw-alloc-ok:` — `test-fixture`, `build-time-tool`,
+  `db-service-owns-heap-job`, `macro-grow-per-thread-array`.
+
+Implementation: `tools/check_observability_pairing.c`,
+`tools/scripts/check_raw_sqlite.sh`,
+`tools/scripts/check_raw_malloc.sh`, and the inline `check-silent-
+errors*` recipes in `Makefile:654+`.
+
+---
+
 ## Summary: How agents learn to follow the Rails way
 
 1. **Compiler errors** for raw `sqlite3_step` (unless opted out)
@@ -314,4 +366,4 @@ exemption in code rather than by silent omission. Implementation:
 6. **This document** in the repo root — agents read it on `cat DEFENSIVE_CODING.md`
 
 The Rails philosophy isn't "write good code." It's "make it harder
-to write bad code than good code." These 7 patterns achieve that in C23.
+to write bad code than good code." These 8 patterns achieve that in C23.
