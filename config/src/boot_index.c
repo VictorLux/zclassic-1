@@ -19,6 +19,7 @@
 #include "crypto/sha256.h"
 #include "primitives/block.h"
 #include "core/serialize.h"
+#include "util/safe_alloc.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -402,7 +403,7 @@ static struct block_index *create_block_index_fast(
     struct main_state *ms, const struct block_header *hdr,
     const struct uint256 *hash)
 {
-    struct block_index *pindex = calloc(1, sizeof(struct block_index));
+    struct block_index *pindex = zcl_calloc(1, sizeof(struct block_index), "boot.index.block_index");
     if (!pindex) return NULL;
     block_index_init(pindex);
 
@@ -495,7 +496,7 @@ static int recompute_index_from_genesis(struct main_state *ms,
 
     size_t cap = ms->map_block_index.size;
     struct boot_index_recompute_entry *entries =
-        calloc(cap, sizeof(*entries));
+        zcl_calloc(cap, sizeof(*entries), "boot.index.recompute_entries");
     if (!entries)
         return 0;
 
@@ -529,7 +530,7 @@ static int recompute_index_from_genesis(struct main_state *ms,
 
     size_t stack_cap = 4096;
     struct boot_index_recompute_entry **stack =
-        malloc(stack_cap * sizeof(*stack));
+        zcl_malloc(stack_cap * sizeof(*stack), "boot.index.recompute_stack");
     if (!stack) {
         free(entries);
         return 0;
@@ -560,7 +561,7 @@ static int recompute_index_from_genesis(struct main_state *ms,
             if (depth >= stack_cap) {
                 size_t new_cap = stack_cap * 2;
                 struct boot_index_recompute_entry **tmp =
-                    realloc(stack, new_cap * sizeof(*stack));
+                    zcl_realloc(stack, new_cap * sizeof(*stack), "boot.index.recompute_stack");
                 if (!tmp)
                     break;
                 stack = tmp;
@@ -912,7 +913,7 @@ static int resolve_orphan_pprev_from_disk(struct main_state *ms,
          * 3M entries × 8 bytes = 24 MB — fine on any machine running a
          * full node (9+ GB RSS typical). */
         size_t stack_cap = 4096;
-        struct block_index **stack = malloc(stack_cap * sizeof(*stack));
+        struct block_index **stack = zcl_malloc(stack_cap * sizeof(*stack), "boot.index.orphan_stack");
         if (!stack) {
             fprintf(stderr, "resolve_orphan_pprev: stack alloc failed\n");
             goto skip_height;
@@ -934,8 +935,8 @@ static int resolve_orphan_pprev_from_disk(struct main_state *ms,
                    cur->nHeight != cur->pprev->nHeight + 1) {
                 if ((size_t)depth >= stack_cap) {
                     stack_cap *= 2;
-                    struct block_index **tmp = realloc(
-                        stack, stack_cap * sizeof(*stack));
+                    struct block_index **tmp = zcl_realloc(
+                        stack, stack_cap * sizeof(*stack), "boot.index.orphan_stack");
                     if (!tmp) break;
                     stack = tmp;
                 }
@@ -1076,7 +1077,7 @@ int scan_block_files_mark_data(struct main_state *ms, const char *datadir,
      * whose pprev was missing in earlier passes). */
     if (marked > 0) {
         size_t total = ms->map_block_index.size;
-        struct block_index **sorted = malloc(total * sizeof(struct block_index *));
+        struct block_index **sorted = zcl_malloc(total * sizeof(struct block_index *), "boot.index.sorted");
         if (sorted) {
             size_t n = 0, iter = 0;
             struct block_index *bi;
@@ -1259,7 +1260,7 @@ int propagate_nchaintx(struct main_state *ms)
     if (!ms) return 0;
 
     size_t total = ms->map_block_index.size;
-    struct block_index **sorted = malloc(total * sizeof(struct block_index *)); // raw-alloc-ok
+    struct block_index **sorted = zcl_malloc(total * sizeof(struct block_index *), "boot.index.propagate_sorted");
     if (!sorted) return 0;
 
     size_t n = 0;

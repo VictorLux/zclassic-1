@@ -26,6 +26,7 @@
 #include "controllers/wallet_scan.h"
 #include "util/signal_handler.h"
 #include "util/sync.h"
+#include "util/safe_alloc.h"
 #include "util/boot_phase.h"
 #include "net/msgprocessor.h"
 #include "chain/chainparams.h"
@@ -2219,8 +2220,8 @@ bool app_init(struct app_context *ctx)
                          * which is catastrophically slow with 3M entries. */
                         {
                             size_t n = g_state.map_block_index.size;
-                            struct block_index **sorted = malloc(
-                                n * sizeof(struct block_index *));
+                            struct block_index **sorted = zcl_malloc(
+                                n * sizeof(struct block_index *), "boot.chainwork_sorted");
                             if (sorted) {
                                 size_t si = 0, idx2 = 0;
                                 struct block_index *sp;
@@ -2393,7 +2394,7 @@ bool app_init(struct app_context *ctx)
          * nChainTx=0, causing "tip=X most_work=Y" with Y << X. */
         if (g_state.map_block_index.size > 100) {
             size_t n = g_state.map_block_index.size;
-            struct block_index **sorted = malloc(n * sizeof(*sorted));
+            struct block_index **sorted = zcl_malloc(n * sizeof(*sorted), "boot.nchaintx_sorted");
             if (sorted) {
                 size_t si = 0, idx = 0;
                 struct block_index *sp;

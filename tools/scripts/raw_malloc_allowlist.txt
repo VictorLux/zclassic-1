@@ -1,0 +1,25 @@
+# tools/scripts/raw_malloc_allowlist.txt
+#
+# Files allowed to contain raw malloc/calloc/realloc() calls outside the
+# zcl_malloc / zcl_calloc / zcl_realloc wrappers (lib/util/include/util/safe_alloc.h).
+# Each entry is a path relative to the repo root.
+#
+# This is a *ratchet* list. Files are removed as each subsystem completes the
+# Sub-wave C migration (raw alloc -> zcl_*). Once empty, the allowlist itself
+# is removed and the lint becomes unconditional.
+#
+# Adding a file here requires a clear migration follow-up. Do NOT add new
+# entries to dodge the lint — the goal is to drive this list to zero.
+#
+# Convention for individual call sites that must remain raw (very rare —
+# e.g., build-time tools, db_service heap job ownership): annotate the line
+# with `// raw-alloc-ok: <one-line justification>`.
+
+# Sub-wave C: raw malloc/calloc/realloc in app/, lib/, config/, and tools/
+# production code is being migrated to zcl_* wrappers. The list below covers
+# the remaining call sites — each is tracked for follow-up sub-waves.
+
+# config/src/boot_services.c: db_path string buffer; thread arg ownership.
+config/src/boot_services.c
+# lib/net/src/connman.c: deferred-free ring growth, hot networking path.
+lib/net/src/connman.c

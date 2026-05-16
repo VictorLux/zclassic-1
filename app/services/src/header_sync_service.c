@@ -112,8 +112,9 @@ static void syncsvc_build_locator_from_chain(struct block_locator *loc,
     walk = (struct block_index *)tip;
     while (walk && walk->phashBlock) {
         if (idx == alloc) {
-            struct uint256 *nv = realloc(loc->vhave, // raw-alloc-ok
-                                         alloc * 2 * sizeof(struct uint256));
+            struct uint256 *nv = zcl_realloc(loc->vhave,
+                                         alloc * 2 * sizeof(struct uint256),
+                                         "header_sync.locator_chain");
             if (!nv)
                 break;
             loc->vhave = nv;
@@ -152,8 +153,9 @@ static void syncsvc_build_locator_from_index(struct block_locator *loc,
 
     while (walk && walk->phashBlock) {
         if (idx == alloc) {
-            struct uint256 *nv = realloc(loc->vhave, // raw-alloc-ok
-                                         alloc * 2 * sizeof(struct uint256));
+            struct uint256 *nv = zcl_realloc(loc->vhave,
+                                         alloc * 2 * sizeof(struct uint256),
+                                         "header_sync.locator_index");
             if (!nv)
                 break;
             loc->vhave = nv;
@@ -472,8 +474,9 @@ bool syncsvc_build_getheaders_locator(struct block_locator *loc,
     }
 
     if (!has_genesis) {
-        struct uint256 *new_vhave = realloc(loc->vhave, // raw-alloc-ok
-            (loc->num_hashes + 1) * sizeof(struct uint256));
+        struct uint256 *new_vhave = zcl_realloc(loc->vhave,
+            (loc->num_hashes + 1) * sizeof(struct uint256),
+            "header_sync.getheaders_locator");
         if (!new_vhave) {
             block_locator_free(loc);
             LOG_FAIL("header_sync", "build_getheaders_locator: realloc failed for %zu hashes",

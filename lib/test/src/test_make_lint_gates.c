@@ -34,6 +34,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <sys/wait.h>
 #include <unistd.h>
 
 #define FIXTURE_SRC_REL "lib/test/fixtures/raw_sqlite_step_fixture.c"
@@ -44,6 +45,9 @@
 #define OBS_FIXTURE_DST_REL "app/_observability_lint_fixture_tmp.c"
 #define OBS_OK_FIXTURE_SRC_REL "lib/test/fixtures/observability_paired_stderr_fixture.c"
 #define OBS_OK_FIXTURE_DST_REL "app/_observability_ok_lint_fixture_tmp.c"
+#define RAW_MALLOC_FIXTURE_DST_REL "app/_raw_malloc_lint_fixture_tmp.c"
+#define RAW_MALLOC_OK_FIXTURE_DST_REL "app/_raw_malloc_ok_lint_fixture_tmp.c"
+#define RAW_MALLOC_SCRIPT_REL "tools/scripts/check_raw_malloc.sh"
 
 static const char *repo_root(void)
 {
@@ -462,6 +466,99 @@ static int t_coins_guard_fixture_trips_gate(void)
     return failures;
 }
 
+static int write_file(const char *path, const char *contents)
+{
+    FILE *fp = fopen(path, "wb");
+    if (!fp) return -1;
+    size_t n = strlen(contents);
+    int ok = fwrite(contents, 1, n, fp) == n;
+    fclose(fp);
+    return ok ? 0 : -1;
+}
+
+/* Invokes tools/scripts/check_raw_malloc.sh and returns the script's
+ * exit status (0 = clean, non-zero = violations). */
+static int run_check_raw_malloc_script(void)
+{
+    char script[PATH_MAX];
+    if (repo_path(script, sizeof(script), RAW_MALLOC_SCRIPT_REL) != 0)
+        return -1;
+    char cmd[PATH_MAX + 32];
+    snprintf(cmd, sizeof(cmd), "%s >/dev/null 2>&1", script);
+    int rc = system(cmd);
+    if (rc == -1) return -1;
+    if (WIFEXITED(rc)) return WEXITSTATUS(rc);
+    return -1;
+}
+
+static int t_raw_malloc_fixture_trips_gate(void)
+{
+    int failures = 0;
+    char fixture_dst[PATH_MAX];
+    if (repo_path(fixture_dst, sizeof(fixture_dst), RAW_MALLOC_FIXTURE_DST_REL) != 0) {
+        fprintf(stderr, "[lint-gate] could not resolve raw_malloc fixture path\n");
+        return 1;
+    }
+    (void)unlink(fixture_dst);
+    const char *bad = "/* fixture */\n#include <stdlib.h>\nvoid *f(void){return malloc(16);}\n";
+    if (write_file(fixture_dst, bad) != 0) {
+        fprintf(stderr, "[lint-gate] could not plant raw_malloc fixture — aborting\n");
+        return 1;
+    }
+    int rc = run_check_raw_malloc_script();
+    (void)unlink(fixture_dst);
+    TEST("[lint-gate] raw malloc fixture trips the gate (exit != 0)") {
+        ASSERT(rc != 0);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int t_raw_malloc_zcl_fixture_passes(void)
+{
+    int failures = 0;
+    char fixture_dst[PATH_MAX];
+    if (repo_path(fixture_dst, sizeof(fixture_dst), RAW_MALLOC_OK_FIXTURE_DST_REL) != 0) {
+        fprintf(stderr, "[lint-gate] could not resolve raw_malloc-ok fixture path\n");
+        return 1;
+    }
+    (void)unlink(fixture_dst);
+    const char *good =
+        "/* fixture */\n"
+        "#include \"util/safe_alloc.h\"\n"
+        "void *f(void){return zcl_malloc(16, \"fixture\");}\n";
+    if (write_file(fixture_dst, good) != 0) {
+        fprintf(stderr, "[lint-gate] could not plant raw_malloc-ok fixture — aborting\n");
+        return 1;
+    }
+    int rc = run_check_raw_malloc_script();
+    (void)unlink(fixture_dst);
+    TEST("[lint-gate] zcl_malloc-only fixture passes the gate (exit == 0)") {
+        ASSERT(rc == 0);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int t_raw_malloc_gate_recovers(void)
+{
+    int failures = 0;
+    char fixture_dst1[PATH_MAX];
+    char fixture_dst2[PATH_MAX];
+    if (repo_path(fixture_dst1, sizeof(fixture_dst1), RAW_MALLOC_FIXTURE_DST_REL) != 0 ||
+        repo_path(fixture_dst2, sizeof(fixture_dst2), RAW_MALLOC_OK_FIXTURE_DST_REL) != 0) {
+        fprintf(stderr, "[lint-gate] could not resolve raw_malloc fixture paths\n");
+        return 1;
+    }
+    (void)unlink(fixture_dst1);
+    (void)unlink(fixture_dst2);
+    TEST("[lint-gate] raw_malloc gate passes after fixtures removed") {
+        ASSERT(run_check_raw_malloc_script() == 0);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 static int t_coins_guard_gate_recovers(void)
 {
     int failures = 0;
@@ -503,6 +600,9 @@ int test_make_lint_gates(void)
     failures += t_coins_guard_gate_recovers();
     failures += t_observability_fixture_trips_gate();
     failures += t_observability_positive_controls_pass();
+    failures += t_raw_malloc_fixture_trips_gate();
+    failures += t_raw_malloc_zcl_fixture_passes();
+    failures += t_raw_malloc_gate_recovers();
     return failures;
 }
 

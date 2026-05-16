@@ -58,7 +58,7 @@ LIBS = -Lvendor/lib -lsecp256k1 -lleveldb \
 
 .PHONY: all test test-e2e test-shielded-payment test-store-e2e clean deploy check-restart-follow \
         coverage coverage-clean docs-mcp docs-mcp-check ci audit release \
-        lint check-malloc check-silent-errors check-raw-sqlite \
+        lint check-malloc check-silent-errors check-raw-sqlite check-raw-malloc \
         check-coins-lookup-nullcheck \
         soak-smoke soak-7day
 
@@ -666,6 +666,10 @@ check-raw-sqlite:
 	@echo "══ LINT: raw sqlite3_step in app code ══"
 	@tools/scripts/check_raw_sqlite.sh
 
+check-raw-malloc:
+	@echo "══ LINT: raw malloc/calloc/realloc in production code ══"
+	@tools/scripts/check_raw_malloc.sh
+
 check-coins-lookup-nullcheck:
 	@echo "══ LINT: guarded controller coin lookups ══"
 	@tools/scripts/check_coins_lookup_nullcheck.sh
@@ -733,7 +737,7 @@ check-pthread-create:
 	fi
 	@echo "  OK: all pthread_create call sites accounted for"
 
-lint: check-malloc check-silent-errors check-raw-sqlite check-coins-lookup-nullcheck check-observability-pairing check-silent-errors-services check-before-save-hooks check-pthread-create
+lint: check-malloc check-silent-errors check-raw-sqlite check-raw-malloc check-coins-lookup-nullcheck check-observability-pairing check-silent-errors-services check-before-save-hooks check-pthread-create
 	@echo "══ LINT: all checks passed ══"
 
 ci: lint zclassic23 test_zcl
