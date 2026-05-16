@@ -103,7 +103,7 @@ static int coins_view_sqlite_delete_bind_height(sqlite3 *db,
         return -1;
     }
     sqlite3_bind_int64(s, 1, tip_height);
-    int rc = sqlite3_step(s);
+    int rc = AR_STEP_WRITE(s);
     if (rc != SQLITE_DONE) {
         fprintf(stderr,
             "[coins] auto-rewind: %s step failed: %s\n",
@@ -852,7 +852,7 @@ bool coins_view_sqlite_batch_write_ex(struct coins_view_sqlite *cvs,
         sqlite3_reset(cvs->stmt_commit_set);
         sqlite3_bind_blob(cvs->stmt_commit_set, 1,
                           buf, UTXO_COMMITMENT_SERIALIZED_SIZE, SQLITE_STATIC);
-        int rc = sqlite3_step(cvs->stmt_commit_set);
+        int rc = AR_STEP_WRITE(cvs->stmt_commit_set);
         if (rc != SQLITE_DONE && rc != SQLITE_ROW) {
             fprintf(stderr, "coins_flush: commitment UPDATE failed rc=%d: "  // obs-ok:non-fatal-commitment-is-optional
                     "%s\n", rc, sqlite3_errmsg(cvs->db));
@@ -1087,7 +1087,7 @@ bool coins_view_sqlite_write_commitment(struct coins_view_sqlite *cvs,
     sqlite3_reset(cvs->stmt_commit_set);
     sqlite3_bind_blob(cvs->stmt_commit_set, 1,
                       buf, UTXO_COMMITMENT_SERIALIZED_SIZE, SQLITE_STATIC);
-    bool ok = sqlite3_step(cvs->stmt_commit_set) == SQLITE_DONE;
+    bool ok = AR_STEP_WRITE(cvs->stmt_commit_set) == SQLITE_DONE;
     sqlite3_reset(cvs->stmt_commit_set);
     pthread_mutex_unlock(&cvs->mutex);
     return ok;
