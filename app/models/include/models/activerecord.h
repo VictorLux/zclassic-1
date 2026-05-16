@@ -34,6 +34,15 @@
  *   db_utxo_transaction()    — UTXO belongs_to Transaction
  *   db_wallet_utxo_key()     — WalletUTXO belongs_to WalletKey
  *   db_sapling_note_key()    — SaplingNote belongs_to SaplingKey
+ *
+ * Database-handle genericity:
+ *   The AR_PREPARE / AR_EXEC / AR_ADHOC_* / AR_CACHED_* macros below
+ *   accept any struct pointer with a `sqlite3 *db` member, not only
+ *   `struct node_db *`. Subsystems whose handle wraps the same `node.db`
+ *   (e.g. `struct wallet_sqlite` — borrowed handle) plug into the same
+ *   validate → before_save → SQL → after_save lifecycle without growing
+ *   a parallel framework. See the `ndb` entry in "Parameter conventions"
+ *   below for the contract this depends on.
  */
 
 #ifndef ZCL_DB_ACTIVERECORD_H
@@ -415,7 +424,15 @@ static inline void ar_errors_full_messages(const struct ar_errors *e,
  *
  * Parameter conventions:
  *   ndb
- *     `struct node_db *` owning the SQLite handle used by the statement.
+ *     Any struct pointer that exposes a `sqlite3 *db` member.
+ *     Canonically `struct node_db *` (app/models/include/models/database.h).
+ *     The macros below only do `(ndb)->db` to extract the SQLite handle,
+ *     so any aliased handle struct works — for example
+ *     `struct wallet_sqlite *` (lib/wallet/include/wallet/wallet_sqlite.h),
+ *     which holds a *borrowed* handle to the same `node.db` file.
+ *     This is the architectural pin for Wave 3 of the deep-refactor sweep:
+ *     all subsystems sharing node.db converge on this one macro family
+ *     rather than each growing parallel `XXX_BEGIN_SAVE` machinery.
  *   stmt
  *     local `sqlite3_stmt *` variable for ad hoc statements, or a cached stmt
  *     field like `ndb->stmt_peer_delete` for cached paths.
