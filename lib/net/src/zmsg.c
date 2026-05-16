@@ -6,6 +6,7 @@
 #include "core/serialize.h"
 #include "crypto/sha3.h"
 #include "models/database.h"
+#include "util/ar_step_readonly.h"
 #include "util/log_macros.h"
 #include <string.h>
 #include <stdio.h>
@@ -243,7 +244,7 @@ int db_zmsg_list(struct node_db *ndb, struct zmsg_message *out,
 
     sqlite3_bind_int(s, 1, (int)max);
     int count = 0;
-    while (sqlite3_step(s) == SQLITE_ROW && (size_t)count < max) {
+    while (AR_STEP_ROW_READONLY(s) == SQLITE_ROW && (size_t)count < max) {
         row_to_zmsg(s, &out[count]);
         count++;
     }

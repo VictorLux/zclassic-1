@@ -6,6 +6,7 @@
 #include "wallet/wallet_sqlite.h"
 
 #include "core/random.h"
+#include "util/ar_step_readonly.h"
 #include "util/log_macros.h"
 
 #include <pthread.h>
@@ -105,7 +106,7 @@ int wallet_canary_run(sqlite3 *db, struct wallet_canary_status *out_status)
         return fail(WALLET_CANARY_ERR_PREPARE, out_status,
                     "prepare SELECT: rc=%d err=%s", rc, sqlite3_errmsg(db));
 
-    rc = sqlite3_step(sel);
+    rc = AR_STEP_ROW_READONLY(sel);
     if (rc != SQLITE_ROW) {
         sqlite3_finalize(sel);
         return fail(WALLET_CANARY_ERR_READ, out_status,
@@ -178,7 +179,7 @@ wallet_persistence_get_health(sqlite3 *db, int keystore_count)
                  "prepare count: rc=%d err=%s", rc, sqlite3_errmsg(db));
         return h;
     }
-    rc = sqlite3_step(st);
+    rc = AR_STEP_ROW_READONLY(st);
     if (rc == SQLITE_ROW) {
         h.row_count = sqlite3_column_int(st, 0);
         if (h.row_count != keystore_count) {

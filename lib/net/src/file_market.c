@@ -8,6 +8,7 @@
 #include "net/file_market.h"
 #include "core/serialize.h"
 #include "models/database.h"
+#include "util/ar_step_readonly.h"
 #include "util/log_macros.h"
 #include <stdint.h>
 #include <string.h>
@@ -422,7 +423,7 @@ int db_file_offer_list(struct node_db *ndb,
 
     sqlite3_bind_int(s, 1, (int)max);
     int count = 0;
-    while (sqlite3_step(s) == SQLITE_ROW && (size_t)count < max) {
+    while (AR_STEP_ROW_READONLY(s) == SQLITE_ROW && (size_t)count < max) {
         row_to_file_offer(s, &out[count]);
         count++;
     }
@@ -447,7 +448,7 @@ bool db_file_offer_find(struct node_db *ndb,
 
     sqlite3_bind_blob(s, 1, root_hash, 32, SQLITE_STATIC);
     bool found = false;
-    if (sqlite3_step(s) == SQLITE_ROW) {
+    if (AR_STEP_ROW_READONLY(s) == SQLITE_ROW) {
         row_to_file_offer(s, out);
         found = true;
     }

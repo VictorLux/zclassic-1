@@ -18,6 +18,7 @@
 #include <stdio.h>
 #include <stdatomic.h>
 #include <sqlite3.h>
+#include "util/ar_step_readonly.h"
 
 /* Log helper for non-bool paths in this file.  `return false` /
  * `return` paths already use LOG_FAIL / bare logging; these void
@@ -143,7 +144,7 @@ void utxo_commitment_compute_db(sqlite3 *db, struct utxo_commitment *out)
         return;
     }
 
-    while (sqlite3_step(s) == SQLITE_ROW) {
+    while (AR_STEP_ROW_READONLY(s) == SQLITE_ROW) {
         const uint8_t *txid = (const uint8_t *)sqlite3_column_blob(s, 0);
         if (!txid || sqlite3_column_bytes(s, 0) < 32) continue;
         uint32_t vout = (uint32_t)sqlite3_column_int(s, 1);
@@ -228,7 +229,7 @@ bool utxo_commitment_load_checkpoint(sqlite3 *db,
                  sql_load, sqlite3_errmsg(db));
 
     bool ok = false;
-    if (sqlite3_step(s) == SQLITE_ROW) {
+    if (AR_STEP_ROW_READONLY(s) == SQLITE_ROW) {
         const void *blob = sqlite3_column_blob(s, 0);
         int len = sqlite3_column_bytes(s, 0);
         if (blob && len >= UTXO_COMMITMENT_SERIALIZED_SIZE)
@@ -269,7 +270,7 @@ void utxo_commitment_sha3_compute_table(sqlite3 *db, const char *table,
     sha3_256_init(&ctx);
     uint64_t count = 0;
 
-    while (sqlite3_step(s) == SQLITE_ROW) {
+    while (AR_STEP_ROW_READONLY(s) == SQLITE_ROW) {
         const uint8_t *txid = (const uint8_t *)sqlite3_column_blob(s, 0);
         if (!txid || sqlite3_column_bytes(s, 0) < 32) continue;
 
@@ -362,7 +363,7 @@ bool utxo_commitment_sha3_load(sqlite3 *db, uint8_t hash[32],
                  sql_sha3_load, sqlite3_errmsg(db));
 
     bool ok = false;
-    if (sqlite3_step(st) == SQLITE_ROW) {
+    if (AR_STEP_ROW_READONLY(st) == SQLITE_ROW) {
         const uint8_t *blob = (const uint8_t *)sqlite3_column_blob(st, 0);
         int len = sqlite3_column_bytes(st, 0);
         if (blob && len >= 44) {
@@ -399,7 +400,7 @@ static void hash_table(sqlite3 *db, const char *sql, uint8_t out[32])
     }
 
     int ncols = sqlite3_column_count(s);
-    while (sqlite3_step(s) == SQLITE_ROW) {
+    while (AR_STEP_ROW_READONLY(s) == SQLITE_ROW) {
         for (int c = 0; c < ncols; c++) {
             int type = sqlite3_column_type(s, c);
             if (type == SQLITE_BLOB || type == SQLITE_TEXT) {

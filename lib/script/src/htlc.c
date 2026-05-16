@@ -20,6 +20,7 @@
 #include "core/random.h"
 #include "encoding/base58.h"
 #include "models/database.h"
+#include "util/ar_step_readonly.h"
 #include <string.h>
 #include <stdio.h>
 #include <time.h>
@@ -428,7 +429,7 @@ bool db_swap_find(struct node_db *ndb, const char *swap_id,
 
     sqlite3_bind_text(s, 1, swap_id, -1, SQLITE_STATIC);
     bool found = false;
-    if (sqlite3_step(s) == SQLITE_ROW) {
+    if (AR_STEP_ROW_READONLY(s) == SQLITE_ROW) {
         row_to_swap(s, out);
         found = true;
     }
@@ -465,7 +466,7 @@ int db_swap_list(struct node_db *ndb, struct swap_contract *out,
     }
 
     int count = 0;
-    while (sqlite3_step(s) == SQLITE_ROW && (size_t)count < max) {
+    while (AR_STEP_ROW_READONLY(s) == SQLITE_ROW && (size_t)count < max) {
         row_to_swap(s, &out[count]);
         count++;
     }

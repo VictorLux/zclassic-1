@@ -17,6 +17,7 @@
 #include "core/serialize.h"
 #include "crypto/sha256.h"
 #include "support/cleanse.h"
+#include "util/ar_step_readonly.h"
 #include "util/log_macros.h"
 #include "util/result.h"
 #include "util/safe_alloc.h"
@@ -373,7 +374,7 @@ struct zcl_result wallet_sqlite_self_test(struct wallet_sqlite *ws)
     sqlite3_bind_text(sel, 1, WSQL_CANARY_KEY, -1, SQLITE_STATIC);
 
     bool match = false;
-    if (sqlite3_step(sel) == SQLITE_ROW) {
+    if (AR_STEP_ROW_READONLY(sel) == SQLITE_ROW) {
         const void *data = sqlite3_column_blob(sel, 0);
         int dlen = sqlite3_column_bytes(sel, 0);
         match = (data && dlen == (int)sizeof(probe) &&
@@ -553,7 +554,7 @@ struct zcl_result wallet_sqlite_read_keys_r(struct wallet_sqlite *ws,
      * keystore.  Every drop now increments a counter surfaced via
      * getwalletinfo.persistence so operators see drift instead of
      * discovering it when funds fail to spend. */
-    while ((rc = sqlite3_step(s)) == SQLITE_ROW) {
+    while ((rc = AR_STEP_ROW_READONLY(s)) == SQLITE_ROW) {
         int pk_len = sqlite3_column_bytes(s, 1);
         const void *pk_data = sqlite3_column_blob(s, 1);
         int priv_len = sqlite3_column_bytes(s, 2);
@@ -665,7 +666,7 @@ bool wallet_sqlite_read_txs(struct wallet_sqlite *ws, struct wallet *w)
     sqlite3_stmt *s = ws->stmt_tx_read;
     sqlite3_reset(s);
 
-    while (sqlite3_step(s) == SQLITE_ROW) {
+    while (AR_STEP_ROW_READONLY(s) == SQLITE_ROW) {
         int raw_len = sqlite3_column_bytes(s, 1);
         const void *raw_data = sqlite3_column_blob(s, 1);
         if (!raw_data || raw_len < 10) continue;
@@ -718,7 +719,7 @@ bool wallet_sqlite_read_best_block(struct wallet_sqlite *ws,
     sqlite3_stmt *s = ws->stmt_best_block_read;
     sqlite3_reset(s);
     bool ok = false;
-    if (sqlite3_step(s) == SQLITE_ROW) {
+    if (AR_STEP_ROW_READONLY(s) == SQLITE_ROW) {
         const void *data = sqlite3_column_blob(s, 0);
         if (data && sqlite3_column_bytes(s, 0) >= 32) {
             memcpy(hash->data, data, 32);
@@ -750,7 +751,7 @@ bool wallet_sqlite_read_scan_height(struct wallet_sqlite *ws, int *height)
     sqlite3_stmt *s = ws->stmt_scan_height_read;
     sqlite3_reset(s);
     bool ok = false;
-    if (sqlite3_step(s) == SQLITE_ROW) {
+    if (AR_STEP_ROW_READONLY(s) == SQLITE_ROW) {
         const void *data = sqlite3_column_blob(s, 0);
         if (data && sqlite3_column_bytes(s, 0) >= 4) {
             int32_t h;
@@ -773,7 +774,7 @@ bool wallet_sqlite_write_sapling_seed(struct wallet_sqlite *ws,
 
     int next_child = 0;
     sqlite3_reset(ws->stmt_seed_read);
-    if (sqlite3_step(ws->stmt_seed_read) == SQLITE_ROW)
+    if (AR_STEP_ROW_READONLY(ws->stmt_seed_read) == SQLITE_ROW)
         next_child = sqlite3_column_int(ws->stmt_seed_read, 1);
 
     uint8_t *enc_blob = NULL;
@@ -801,7 +802,7 @@ bool wallet_sqlite_read_sapling_seed(struct wallet_sqlite *ws,
 {
     if (!ws || !ws->open) return false;
     sqlite3_reset(ws->stmt_seed_read);
-    if (sqlite3_step(ws->stmt_seed_read) == SQLITE_ROW) {
+    if (AR_STEP_ROW_READONLY(ws->stmt_seed_read) == SQLITE_ROW) {
         const void *data = sqlite3_column_blob(ws->stmt_seed_read, 0);
         int data_len = sqlite3_column_bytes(ws->stmt_seed_read, 0);
         if (!data || data_len < 32) return false;
@@ -914,7 +915,7 @@ bool wallet_sqlite_read_sapling_keys(struct wallet_sqlite *ws,
 
     struct sapling_keystore *sks = &w->sapling_keys;
 
-    while (sqlite3_step(s) == SQLITE_ROW) {
+    while (AR_STEP_ROW_READONLY(s) == SQLITE_ROW) {
         if (sks->num_keys >= MAX_SAPLING_KEYS) break;
 
         const void *ivk = sqlite3_column_blob(s, 0);
@@ -1008,7 +1009,7 @@ bool wallet_sqlite_read_scripts(struct wallet_sqlite *ws, struct wallet *w)
     sqlite3_stmt *s = ws->stmt_script_read;
     sqlite3_reset(s);
 
-    while (sqlite3_step(s) == SQLITE_ROW) {
+    while (AR_STEP_ROW_READONLY(s) == SQLITE_ROW) {
         const void *hash = sqlite3_column_blob(s, 0);
         const void *data = sqlite3_column_blob(s, 1);
         int data_len = sqlite3_column_bytes(s, 1);
@@ -1054,7 +1055,7 @@ bool wallet_sqlite_read_watch_only(struct wallet_sqlite *ws, struct wallet *w)
     sqlite3_stmt *s = ws->stmt_watch_read;
     sqlite3_reset(s);
 
-    while (sqlite3_step(s) == SQLITE_ROW) {
+    while (AR_STEP_ROW_READONLY(s) == SQLITE_ROW) {
         const void *hash = sqlite3_column_blob(s, 0);
         if (!hash || sqlite3_column_bytes(s, 0) != 20)
             continue;
@@ -1253,7 +1254,7 @@ wallet_sqlite_get_health(struct wallet_sqlite *ws, int keystore_count)
         if (sqlite3_prepare_v2(ws->db,
                 "SELECT COUNT(*) FROM wallet_keys", -1, &s, NULL) == SQLITE_OK
             && s) {
-            if (sqlite3_step(s) == SQLITE_ROW)
+            if (AR_STEP_ROW_READONLY(s) == SQLITE_ROW)
                 h.row_count = sqlite3_column_int(s, 0);
             sqlite3_finalize(s);
         }

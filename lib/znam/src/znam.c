@@ -5,6 +5,7 @@
 
 #include "znam/znam.h"
 #include "models/database.h"
+#include "util/ar_step_readonly.h"
 #include <string.h>
 #include <stdio.h>
 #include <ctype.h>
@@ -340,7 +341,7 @@ bool db_znam_find(struct node_db *ndb, const char *name,
 
     sqlite3_bind_text(s, 1, name, -1, SQLITE_STATIC);
     bool found = false;
-    if (sqlite3_step(s) == SQLITE_ROW) {
+    if (AR_STEP_ROW_READONLY(s) == SQLITE_ROW) {
         row_to_znam(s, out);
         found = true;
     }
@@ -363,7 +364,7 @@ int db_znam_list(struct node_db *ndb, struct znam_entry *out, size_t max)
 
     sqlite3_bind_int(s, 1, (int)max);
     int count = 0;
-    while (sqlite3_step(s) == SQLITE_ROW && (size_t)count < max) {
+    while (AR_STEP_ROW_READONLY(s) == SQLITE_ROW && (size_t)count < max) {
         row_to_znam(s, &out[count]);
         count++;
     }
@@ -388,7 +389,7 @@ int db_znam_list_by_owner(struct node_db *ndb, const char *owner,
     sqlite3_bind_text(s, 1, owner, -1, SQLITE_STATIC);
     sqlite3_bind_int(s, 2, (int)max);
     int count = 0;
-    while (sqlite3_step(s) == SQLITE_ROW && (size_t)count < max) {
+    while (AR_STEP_ROW_READONLY(s) == SQLITE_ROW && (size_t)count < max) {
         row_to_znam(s, &out[count]);
         count++;
     }
@@ -427,7 +428,7 @@ bool db_znam_text_get(struct node_db *ndb, const char *name,
     sqlite3_bind_text(s, 1, name, -1, SQLITE_STATIC);
     sqlite3_bind_text(s, 2, key, -1, SQLITE_STATIC);
     bool found = false;
-    if (sqlite3_step(s) == SQLITE_ROW) {
+    if (AR_STEP_ROW_READONLY(s) == SQLITE_ROW) {
         const char *v = (const char *)sqlite3_column_text(s, 0);
         if (v) snprintf(value_out, max, "%s", v);
         found = true;
@@ -448,7 +449,7 @@ int db_znam_text_list(struct node_db *ndb, const char *name,
     sqlite3_bind_text(s, 1, name, -1, SQLITE_STATIC);
     sqlite3_bind_int(s, 2, (int)max);
     int count = 0;
-    while (sqlite3_step(s) == SQLITE_ROW && (size_t)count < max) {
+    while (AR_STEP_ROW_READONLY(s) == SQLITE_ROW && (size_t)count < max) {
         memset(&out[count], 0, sizeof(out[count]));
         const char *n = (const char *)sqlite3_column_text(s, 0);
         if (n) snprintf(out[count].name, sizeof(out[count].name), "%s", n);
@@ -493,7 +494,7 @@ bool db_znam_addr_get(struct node_db *ndb, const char *name,
     sqlite3_bind_text(s, 1, name, -1, SQLITE_STATIC);
     sqlite3_bind_int(s, 2, coin_type);
     bool found = false;
-    if (sqlite3_step(s) == SQLITE_ROW) {
+    if (AR_STEP_ROW_READONLY(s) == SQLITE_ROW) {
         const char *a = (const char *)sqlite3_column_text(s, 0);
         if (a) snprintf(addr_out, max, "%s", a);
         found = true;

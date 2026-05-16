@@ -16,6 +16,7 @@
 #include <time.h>
 #include <stdatomic.h>
 #include <sqlite3.h>
+#include "util/ar_step_readonly.h"
 
 struct onion_context {
     char address[128];
@@ -67,7 +68,7 @@ static void query_node_stats(int *out_height, int *out_peers)
     sqlite3_stmt *s = NULL;
     if (sqlite3_prepare_v2(db,
             "SELECT MAX(height) FROM blocks", -1, &s, NULL) == SQLITE_OK && s) {
-        if (sqlite3_step(s) == SQLITE_ROW)
+        if (AR_STEP_ROW_READONLY(s) == SQLITE_ROW)
             *out_height = sqlite3_column_int(s, 0);
         sqlite3_finalize(s);
     }
@@ -75,7 +76,7 @@ static void query_node_stats(int *out_height, int *out_peers)
     if (sqlite3_prepare_v2(db,
             "SELECT COUNT(*) FROM peers WHERE last_seen > strftime('%s','now') - 3600",
             -1, &s, NULL) == SQLITE_OK && s) {
-        if (sqlite3_step(s) == SQLITE_ROW)
+        if (AR_STEP_ROW_READONLY(s) == SQLITE_ROW)
             *out_peers = sqlite3_column_int(s, 0);
         sqlite3_finalize(s);
     }
@@ -469,7 +470,7 @@ static size_t serve_directory_json(uint8_t *response, size_t max)
         -1, &s, NULL);
 
     int count = 0;
-    while (sqlite3_step(s) == SQLITE_ROW && off + 512 < sizeof(body)) {
+    while (AR_STEP_ROW_READONLY(s) == SQLITE_ROW && off + 512 < sizeof(body)) {
         const char *addr = (const char *)sqlite3_column_text(s, 0);
         int port = sqlite3_column_int(s, 1);
         int svc = sqlite3_column_int(s, 2);
@@ -565,7 +566,7 @@ static size_t serve_directory_html(uint8_t *response, size_t max)
         -1, &s, NULL);
 
     int count = 0;
-    while (sqlite3_step(s) == SQLITE_ROW && off + 512 < sizeof(body)) {
+    while (AR_STEP_ROW_READONLY(s) == SQLITE_ROW && off + 512 < sizeof(body)) {
         const char *addr = (const char *)sqlite3_column_text(s, 0);
         int port = sqlite3_column_int(s, 1);
         int h = sqlite3_column_int(s, 2);
@@ -633,7 +634,7 @@ static size_t serve_status(uint8_t *response, size_t max)
             if (sqlite3_prepare_v2(db,
                     "SELECT time FROM blocks ORDER BY height DESC LIMIT 1",
                     -1, &s, NULL) == SQLITE_OK && s) {
-                if (sqlite3_step(s) == SQLITE_ROW)
+                if (AR_STEP_ROW_READONLY(s) == SQLITE_ROW)
                     last_block_time = sqlite3_column_int64(s, 0);
                 sqlite3_finalize(s);
             }
@@ -641,7 +642,7 @@ static size_t serve_status(uint8_t *response, size_t max)
             if (sqlite3_prepare_v2(db,
                     "SELECT count(*) FROM transactions",
                     -1, &s, NULL) == SQLITE_OK && s) {
-                if (sqlite3_step(s) == SQLITE_ROW)
+                if (AR_STEP_ROW_READONLY(s) == SQLITE_ROW)
                     tx_count = sqlite3_column_int64(s, 0);
                 sqlite3_finalize(s);
             }

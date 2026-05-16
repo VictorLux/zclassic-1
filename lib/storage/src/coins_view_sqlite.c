@@ -21,6 +21,7 @@
 #include "event/event.h"
 #include "models/utxo.h"
 #include "script/standard.h"
+#include "util/ar_step_readonly.h"
 #include "util/log_macros.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -80,7 +81,7 @@ static bool coins_view_sqlite_table_exists(sqlite3 *db, const char *name)
             "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
             -1, &s, NULL) == SQLITE_OK) {
         sqlite3_bind_text(s, 1, name, -1, SQLITE_STATIC);
-        exists = (sqlite3_step(s) == SQLITE_ROW);
+        exists = (AR_STEP_ROW_READONLY(s) == SQLITE_ROW);
         sqlite3_finalize(s);
     }
     return exists;
@@ -234,7 +235,7 @@ static bool coins_view_sqlite_check_tip_consistency(sqlite3 *db)
     if (sqlite3_prepare_v2(db,
             "SELECT MAX(height), COUNT(*) FROM utxos",
             -1, &s, NULL) == SQLITE_OK) {
-        if (sqlite3_step(s) == SQLITE_ROW) {
+        if (AR_STEP_ROW_READONLY(s) == SQLITE_ROW) {
             if (sqlite3_column_type(s, 0) == SQLITE_INTEGER)
                 max_height = sqlite3_column_int64(s, 0);
             have_utxos = sqlite3_column_int64(s, 1) > 0;
@@ -248,7 +249,7 @@ static bool coins_view_sqlite_check_tip_consistency(sqlite3 *db)
     if (sqlite3_prepare_v2(db,
             "SELECT value FROM node_state WHERE key='coins_best_block'",
             -1, &s, NULL) == SQLITE_OK) {
-        if (sqlite3_step(s) == SQLITE_ROW) {
+        if (AR_STEP_ROW_READONLY(s) == SQLITE_ROW) {
             int len = sqlite3_column_bytes(s, 0);
             const void *data = sqlite3_column_blob(s, 0);
             if (data && len == 32) {
@@ -284,7 +285,7 @@ static bool coins_view_sqlite_check_tip_consistency(sqlite3 *db)
             "SELECT height FROM blocks WHERE hash=? AND status>=3",
             -1, &s, NULL) == SQLITE_OK) {
         sqlite3_bind_blob(s, 1, tip_hash, 32, SQLITE_STATIC);
-        if (sqlite3_step(s) == SQLITE_ROW)
+        if (AR_STEP_ROW_READONLY(s) == SQLITE_ROW)
             tip_height = sqlite3_column_int64(s, 0);
         sqlite3_finalize(s);
     }
@@ -312,7 +313,7 @@ static bool coins_view_sqlite_check_tip_consistency(sqlite3 *db)
                     "SELECT COUNT(*) FROM utxos WHERE height>?",
                     -1, &cs, NULL) == SQLITE_OK) {
                 sqlite3_bind_int64(cs, 1, tip_height);
-                if (sqlite3_step(cs) == SQLITE_ROW)
+                if (AR_STEP_ROW_READONLY(cs) == SQLITE_ROW)
                     above = sqlite3_column_int64(cs, 0);
                 sqlite3_finalize(cs);
             }
@@ -554,7 +555,7 @@ bool coins_view_sqlite_get_coins(struct coins_view_sqlite *cvs,
     int is_coinbase = 0;
 
     /* Pass 1: find max vout and metadata */
-    while (sqlite3_step(s) == SQLITE_ROW) {
+    while (AR_STEP_ROW_READONLY(s) == SQLITE_ROW) {
         uint32_t vi = (uint32_t)sqlite3_column_int(s, 0);
         if (nrows == 0) {
             height = sqlite3_column_int(s, 3);
@@ -585,7 +586,7 @@ bool coins_view_sqlite_get_coins(struct coins_view_sqlite *cvs,
     sqlite3_reset(s);
     sqlite3_bind_blob(s, 1, txid->data, 32, SQLITE_STATIC);
 
-    while (sqlite3_step(s) == SQLITE_ROW) {
+    while (AR_STEP_ROW_READONLY(s) == SQLITE_ROW) {
         uint32_t vi = (uint32_t)sqlite3_column_int(s, 0);
         if (vi >= out->num_vout) continue;
 
@@ -617,7 +618,7 @@ bool coins_view_sqlite_have_coins(struct coins_view_sqlite *cvs,
     sqlite3_stmt *s = cvs->stmt_have;
     sqlite3_reset(s);
     sqlite3_bind_blob(s, 1, txid->data, 32, SQLITE_STATIC);
-    bool found = sqlite3_step(s) == SQLITE_ROW;
+    bool found = AR_STEP_ROW_READONLY(s) == SQLITE_ROW;
     sqlite3_reset(s);
     pthread_mutex_unlock(&cvs->mutex);
     return found;
@@ -637,7 +638,7 @@ bool coins_view_sqlite_get_best_block(struct coins_view_sqlite *cvs,
     pthread_mutex_lock(&cvs->mutex);
     sqlite3_stmt *s = cvs->stmt_best_get;
     sqlite3_reset(s);
-    if (sqlite3_step(s) == SQLITE_ROW) {
+    if (AR_STEP_ROW_READONLY(s) == SQLITE_ROW) {
         int len = sqlite3_column_bytes(s, 0);
         const void *data = sqlite3_column_blob(s, 0);
         if (data && len >= 32) {
@@ -893,7 +894,7 @@ bool coins_view_sqlite_batch_write_ex(struct coins_view_sqlite *cvs,
         if (sqlite3_prepare_v2(cvs->db,
                 "SELECT IFNULL(MAX(height), -1), COUNT(*) FROM utxos",
                 -1, &s, NULL) == SQLITE_OK) {
-            if (sqlite3_step(s) == SQLITE_ROW) {
+            if (AR_STEP_ROW_READONLY(s) == SQLITE_ROW) {
                 int64_t max_h = sqlite3_column_int64(s, 0);
                 int64_t count = sqlite3_column_int64(s, 1);
                 int tip_h = (hash_block && !uint256_is_null(hash_block))
@@ -1101,7 +1102,7 @@ bool coins_view_sqlite_read_commitment(struct coins_view_sqlite *cvs,
         LOG_FAIL("coins_view", "read_commitment: stmt_commit_get not prepared"); }
     pthread_mutex_lock(&cvs->mutex);
     sqlite3_reset(cvs->stmt_commit_get);
-    if (sqlite3_step(cvs->stmt_commit_get) == SQLITE_ROW) {
+    if (AR_STEP_ROW_READONLY(cvs->stmt_commit_get) == SQLITE_ROW) {
         int len = sqlite3_column_bytes(cvs->stmt_commit_get, 0);
         const void *data = sqlite3_column_blob(cvs->stmt_commit_get, 0);
         sqlite3_reset(cvs->stmt_commit_get);
