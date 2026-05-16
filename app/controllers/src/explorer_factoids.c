@@ -263,53 +263,20 @@ static size_t explorer_factoids_build_verified_summary(uint8_t *buf,
     return off;
 }
 
-/* ── Build the factoids page (HTML) ──────────────────────── */
+/* ── Section emit helpers (extracted from explorer_factoids_build) ──
+ *
+ * Each helper appends one logical section of the factoids HTML page
+ * starting at `off` and returns the new offset.  All output is
+ * byte-for-byte identical to the inline version that lived inside
+ * explorer_factoids_build before wave 7d.
+ */
 
-size_t explorer_factoids_build(uint8_t *buf, size_t buf_max, const char *datadir)
+static size_t emit_section_1_genesis(uint8_t *buf, size_t cap, size_t off,
+                                     sqlite3 *db)
 {
-    if (!buf || buf_max < 1024 || !datadir) return 0;
-
-    sqlite3 *db = NULL;
-    if (!explorer_open_readonly_db(datadir, &db)) {
-        return 0;
-    }
-
-    struct explorer_chain_stats chain_stats = {0};
-    explorer_query_chain_stats(db, &chain_stats);
-    int64_t chain_height = chain_stats.height;
-    int64_t utxo_tip = fq_i64(db, "SELECT COALESCE(MAX(height),0) FROM utxos");
-    if (utxo_tip > chain_height)
-        chain_height = utxo_tip;
-
-    struct explorer_history_validation history;
-    explorer_validate_block_history(db, chain_height, &history);
-    if (!history.usable) {
-        size_t len = explorer_factoids_build_verified_summary(
-            buf, buf_max, db, chain_height, history.reason);
-        sqlite3_close(db);
-        return len;
-    }
-
-    size_t off = 0;
     char *r = (char *)buf;
-    size_t max = buf_max;
+    size_t max = cap;
 
-    /* ── HTTP header + HTML head ──────────────────────────── */
-    APPEND(off, r, max, EXPLORER_HEADER("ZClassic Historian Factoids"));
-    off += explorer_emit_nav((char *)r + off, max - off, "factoids");
-    APPEND(off, r, max,
-        "<div class='content'>"
-        "<h1>ZClassic Historian Factoids</h1>"
-        "<p style='color:#888'>Deep chain archaeology with SHA3-256 data receipts. "
-        "Every fact hashed: <code>SHA3(height_le64 || block_hash || fact_name)</code>. "
-        "First 16 hex chars shown. Independently verifiable from raw chain data.</p>"
-        "<p style='color:#555;font-size:0.85em'>Chain height: %" PRId64
-        " | All timestamps UTC | All hashes big-endian display order</p>",
-        chain_height);
-
-    /* ================================================================
-     * Section 1: Genesis Story
-     * ================================================================ */
     APPEND(off, r, max,
         "<h2 id='genesis'>1. Genesis Story</h2>");
 
@@ -398,10 +365,15 @@ size_t explorer_factoids_build(uint8_t *buf, size_t buf_max, const char *datadir
         }
     }
     APPEND(off, r, max, "</table>");
+    return off;
+}
 
-    /* ================================================================
-     * Section 2: Network Upgrade History
-     * ================================================================ */
+static size_t emit_section_2_upgrades(uint8_t *buf, size_t cap, size_t off,
+                                      sqlite3 *db)
+{
+    char *r = (char *)buf;
+    size_t max = cap;
+
     APPEND(off, r, max,
         "<h2 id='upgrades'>2. Network Upgrade History</h2>"
         "<p style='color:#888'>Every consensus upgrade with activation height, "
@@ -463,10 +435,15 @@ size_t explorer_factoids_build(uint8_t *buf, size_t buf_max, const char *datadir
         }
     }
     APPEND(off, r, max, "</table>");
+    return off;
+}
 
-    /* ================================================================
-     * Section 3: Mining Era Analysis
-     * ================================================================ */
+static size_t emit_section_3_mining_eras(uint8_t *buf, size_t cap, size_t off,
+                                         int64_t chain_height)
+{
+    char *r = (char *)buf;
+    size_t max = cap;
+
     APPEND(off, r, max,
         "<h2 id='mining-eras'>3. Mining Era Analysis</h2>"
         "<p style='color:#888'>Block reward schedule showing the Buttercup transition "
@@ -571,10 +548,15 @@ size_t explorer_factoids_build(uint8_t *buf, size_t buf_max, const char *datadir
             total_str, rcpt);
     }
     APPEND(off, r, max, "</table>");
+    return off;
+}
 
-    /* ================================================================
-     * Section 4: Network Milestones
-     * ================================================================ */
+static size_t emit_section_4_milestones(uint8_t *buf, size_t cap, size_t off,
+                                        sqlite3 *db, int64_t chain_height)
+{
+    char *r = (char *)buf;
+    size_t max = cap;
+
     APPEND(off, r, max,
         "<h2 id='milestones'>4. Network Milestones</h2>"
         "<p style='color:#888'>Key firsts in the chain's history.</p>"
@@ -664,10 +646,15 @@ size_t explorer_factoids_build(uint8_t *buf, size_t buf_max, const char *datadir
             milestones[i].name, height, height, ts, receipt);
     }
     APPEND(off, r, max, "</table>");
+    return off;
+}
 
-    /* ================================================================
-     * Section 5: All-Time Records
-     * ================================================================ */
+static size_t emit_section_5_records(uint8_t *buf, size_t cap, size_t off,
+                                     sqlite3 *db)
+{
+    char *r = (char *)buf;
+    size_t max = cap;
+
     APPEND(off, r, max, "<h2 id='records'>5. All-Time Records</h2>"
         "<table class='txlist'>"
         "<tr><th>Record</th><th>Value</th><th>Block</th><th>Time</th><th>SHA3</th></tr>");
@@ -808,10 +795,15 @@ size_t explorer_factoids_build(uint8_t *buf, size_t buf_max, const char *datadir
 
     #undef RECORD_ROW
     APPEND(off, r, max, "</table>");
+    return off;
+}
 
-    /* ================================================================
-     * Section 6: Supply Milestones (Buttercup-aware)
-     * ================================================================ */
+static size_t emit_section_6_supply(uint8_t *buf, size_t cap, size_t off,
+                                    sqlite3 *db, int64_t chain_height)
+{
+    char *r = (char *)buf;
+    size_t max = cap;
+
     APPEND(off, r, max,
         "<h2 id='supply'>6. Supply Milestones</h2>"
         "<p style='color:#888'>Buttercup-aware calculation: pre-707000 at 12.5 ZCL/block, "
@@ -881,10 +873,15 @@ size_t explorer_factoids_build(uint8_t *buf, size_t buf_max, const char *datadir
         }
     }
     APPEND(off, r, max, "</table>");
+    return off;
+}
 
-    /* ================================================================
-     * Section 7: Address Statistics
-     * ================================================================ */
+static size_t emit_section_7_addresses(uint8_t *buf, size_t cap, size_t off,
+                                       sqlite3 *db)
+{
+    char *r = (char *)buf;
+    size_t max = cap;
+
     APPEND(off, r, max,
         "<h2 id='addresses'>7. Address Statistics</h2>");
 
@@ -947,10 +944,15 @@ size_t explorer_factoids_build(uint8_t *buf, size_t buf_max, const char *datadir
         }
     }
     APPEND(off, r, max, "</table>");
+    return off;
+}
 
-    /* ================================================================
-     * Section 8: Privacy Usage Over Time
-     * ================================================================ */
+static size_t emit_section_8_privacy(uint8_t *buf, size_t cap, size_t off,
+                                     sqlite3 *db)
+{
+    char *r = (char *)buf;
+    size_t max = cap;
+
     APPEND(off, r, max,
         "<h2 id='privacy'>8. Privacy Usage Over Time</h2>"
         "<p style='color:#888'>Shielded operations by calendar year "
@@ -1057,10 +1059,15 @@ size_t explorer_factoids_build(uint8_t *buf, size_t buf_max, const char *datadir
         }
     }
     APPEND(off, r, max, "</table>");
+    return off;
+}
 
-    /* ================================================================
-     * Section 9: ZSLP Token History
-     * ================================================================ */
+static size_t emit_section_9_zslp(uint8_t *buf, size_t cap, size_t off,
+                                  sqlite3 *db)
+{
+    char *r = (char *)buf;
+    size_t max = cap;
+
     APPEND(off, r, max,
         "<h2 id='zslp'>9. ZSLP Token History</h2>");
 
@@ -1138,10 +1145,15 @@ size_t explorer_factoids_build(uint8_t *buf, size_t buf_max, const char *datadir
         }
     }
     APPEND(off, r, max, "</table>");
+    return off;
+}
 
-    /* ================================================================
-     * Section 10: OP_RETURN Archaeology
-     * ================================================================ */
+static size_t emit_section_10_opreturn(uint8_t *buf, size_t cap, size_t off,
+                                       sqlite3 *db)
+{
+    char *r = (char *)buf;
+    size_t max = cap;
+
     APPEND(off, r, max,
         "<h2 id='opreturn'>10. OP_RETURN Archaeology</h2>");
 
@@ -1180,10 +1192,15 @@ size_t explorer_factoids_build(uint8_t *buf, size_t buf_max, const char *datadir
             "<p><b>SHA3 Receipt:</b> <code>%s</code></p>"
             "</div>", rcpt);
     }
+    return off;
+}
 
-    /* ================================================================
-     * Section 11: Dust & UTXO Analysis
-     * ================================================================ */
+static size_t emit_section_11_dust(uint8_t *buf, size_t cap, size_t off,
+                                   sqlite3 *db)
+{
+    char *r = (char *)buf;
+    size_t max = cap;
+
     APPEND(off, r, max,
         "<h2 id='dust'>11. Dust &amp; UTXO Analysis</h2>");
 
@@ -1219,10 +1236,15 @@ size_t explorer_factoids_build(uint8_t *buf, size_t buf_max, const char *datadir
             "</div>",
             u_str, val_str, d1_str, dust_pct, d2_str, cb_str, rcpt);
     }
+    return off;
+}
 
-    /* ================================================================
-     * Section 12: Checkpoint History
-     * ================================================================ */
+static size_t emit_section_12_checkpoints(uint8_t *buf, size_t cap, size_t off,
+                                          sqlite3 *db, int64_t chain_height)
+{
+    char *r = (char *)buf;
+    size_t max = cap;
+
     APPEND(off, r, max,
         "<h2 id='checkpoints'>12. Checkpoint History</h2>"
         "<p style='color:#888'>Hardcoded consensus checkpoints — "
@@ -1268,10 +1290,15 @@ size_t explorer_factoids_build(uint8_t *buf, size_t buf_max, const char *datadir
         }
     }
     APPEND(off, r, max, "</table>");
+    return off;
+}
 
-    /* ================================================================
-     * Section 13: Block Time Analysis
-     * ================================================================ */
+static size_t emit_section_13_blocktimes(uint8_t *buf, size_t cap, size_t off,
+                                         sqlite3 *db, int64_t chain_height)
+{
+    char *r = (char *)buf;
+    size_t max = cap;
+
     APPEND(off, r, max,
         "<h2 id='blocktimes'>13. Block Time Analysis</h2>"
         "<p style='color:#888'>Pre-Buttercup target: 150s. "
@@ -1346,16 +1373,23 @@ size_t explorer_factoids_build(uint8_t *buf, size_t buf_max, const char *datadir
             sqlite3_finalize(s);
         }
     }
+    return off;
+}
 
-    /* ================================================================
-     * Section 14: Transaction Archaeology
-     * ================================================================ */
+static size_t emit_section_14_transactions(uint8_t *buf, size_t cap, size_t off,
+                                           sqlite3 *db)
+{
+    char *r = (char *)buf;
+    size_t max = cap;
+
     APPEND(off, r, max,
         "<h2 id='transactions'>14. Transaction Archaeology</h2>");
 
     {
         struct explorer_transaction_stats transaction_stats = {0};
         explorer_query_transaction_stats(db, &transaction_stats);
+        struct explorer_op_return_stats op_return_stats = {0};
+        explorer_query_op_return_stats(db, &op_return_stats);
         int64_t total_txs = transaction_stats.total;
         int64_t coinbase_txs = transaction_stats.coinbase;
         int64_t non_coinbase = total_txs - coinbase_txs;
@@ -1423,10 +1457,15 @@ size_t explorer_factoids_build(uint8_t *buf, size_t buf_max, const char *datadir
         }
     }
     APPEND(off, r, max, "</table>");
+    return off;
+}
 
-    /* ================================================================
-     * Section 15: Empty Blocks Analysis
-     * ================================================================ */
+static size_t emit_section_15_empty_blocks(uint8_t *buf, size_t cap, size_t off,
+                                           sqlite3 *db)
+{
+    char *r = (char *)buf;
+    size_t max = cap;
+
     APPEND(off, r, max,
         "<h2 id='empty'>15. Empty Blocks Analysis</h2>"
         "<p style='color:#888'>Blocks with only a coinbase transaction "
@@ -1480,10 +1519,15 @@ size_t explorer_factoids_build(uint8_t *buf, size_t buf_max, const char *datadir
         }
     }
     APPEND(off, r, max, "</table>");
+    return off;
+}
 
-    /* ================================================================
-     * Section 16: Difficulty History
-     * ================================================================ */
+static size_t emit_section_16_difficulty(uint8_t *buf, size_t cap, size_t off,
+                                         sqlite3 *db)
+{
+    char *r = (char *)buf;
+    size_t max = cap;
+
     APPEND(off, r, max,
         "<h2 id='difficulty'>16. Difficulty History</h2>"
         "<p style='color:#888'>Peak difficulty per calendar year.</p>"
@@ -1522,14 +1566,19 @@ size_t explorer_factoids_build(uint8_t *buf, size_t buf_max, const char *datadir
         }
     }
     APPEND(off, r, max, "</table>");
+    return off;
+}
 
-    /* ================================================================
-     * Section 17: Data Integrity
-     * ================================================================ */
+static size_t emit_section_17_integrity(uint8_t *buf, size_t cap, size_t off,
+                                        sqlite3 *db, int64_t chain_height,
+                                        int64_t block_count)
+{
+    char *r = (char *)buf;
+    size_t max = cap;
+
     APPEND(off, r, max,
         "<h2 id='integrity'>17. Data Integrity</h2>");
 
-    int64_t block_count = chain_stats.blocks;
     struct explorer_transaction_stats integrity_tx_stats = {0};
     explorer_query_transaction_stats(db, &integrity_tx_stats);
     int64_t tx_count = integrity_tx_stats.total;
@@ -1621,6 +1670,71 @@ size_t explorer_factoids_build(uint8_t *buf, size_t buf_max, const char *datadir
         "<code>SHA3(val1_le64 || val2_le64 || label_ascii)</code> "
         "\xe2\x80\x94 first 16 hex chars.</p>"
         "</div>");
+    return off;
+}
+
+/* ── Build the factoids page (HTML) ──────────────────────── */
+
+size_t explorer_factoids_build(uint8_t *buf, size_t buf_max, const char *datadir)
+{
+    if (!buf || buf_max < 1024 || !datadir) return 0;
+
+    sqlite3 *db = NULL;
+    if (!explorer_open_readonly_db(datadir, &db)) {
+        return 0;
+    }
+
+    struct explorer_chain_stats chain_stats = {0};
+    explorer_query_chain_stats(db, &chain_stats);
+    int64_t chain_height = chain_stats.height;
+    int64_t utxo_tip = fq_i64(db, "SELECT COALESCE(MAX(height),0) FROM utxos");
+    if (utxo_tip > chain_height)
+        chain_height = utxo_tip;
+
+    struct explorer_history_validation history;
+    explorer_validate_block_history(db, chain_height, &history);
+    if (!history.usable) {
+        size_t len = explorer_factoids_build_verified_summary(
+            buf, buf_max, db, chain_height, history.reason);
+        sqlite3_close(db);
+        return len;
+    }
+
+    size_t off = 0;
+    char *r = (char *)buf;
+    size_t max = buf_max;
+
+    /* ── HTTP header + HTML head ──────────────────────────── */
+    APPEND(off, r, max, EXPLORER_HEADER("ZClassic Historian Factoids"));
+    off += explorer_emit_nav((char *)r + off, max - off, "factoids");
+    APPEND(off, r, max,
+        "<div class='content'>"
+        "<h1>ZClassic Historian Factoids</h1>"
+        "<p style='color:#888'>Deep chain archaeology with SHA3-256 data receipts. "
+        "Every fact hashed: <code>SHA3(height_le64 || block_hash || fact_name)</code>. "
+        "First 16 hex chars shown. Independently verifiable from raw chain data.</p>"
+        "<p style='color:#555;font-size:0.85em'>Chain height: %" PRId64
+        " | All timestamps UTC | All hashes big-endian display order</p>",
+        chain_height);
+
+    off = emit_section_1_genesis(buf, buf_max, off, db);
+    off = emit_section_2_upgrades(buf, buf_max, off, db);
+    off = emit_section_3_mining_eras(buf, buf_max, off, chain_height);
+    off = emit_section_4_milestones(buf, buf_max, off, db, chain_height);
+    off = emit_section_5_records(buf, buf_max, off, db);
+    off = emit_section_6_supply(buf, buf_max, off, db, chain_height);
+    off = emit_section_7_addresses(buf, buf_max, off, db);
+    off = emit_section_8_privacy(buf, buf_max, off, db);
+    off = emit_section_9_zslp(buf, buf_max, off, db);
+    off = emit_section_10_opreturn(buf, buf_max, off, db);
+    off = emit_section_11_dust(buf, buf_max, off, db);
+    off = emit_section_12_checkpoints(buf, buf_max, off, db, chain_height);
+    off = emit_section_13_blocktimes(buf, buf_max, off, db, chain_height);
+    off = emit_section_14_transactions(buf, buf_max, off, db);
+    off = emit_section_15_empty_blocks(buf, buf_max, off, db);
+    off = emit_section_16_difficulty(buf, buf_max, off, db);
+    off = emit_section_17_integrity(buf, buf_max, off, db, chain_height,
+                                    chain_stats.blocks);
 
     /* ── Table of Contents (anchor links) ────────────────────── */
     APPEND(off, r, max,
