@@ -13,15 +13,6 @@
 #define CLIENT_VERSION_REVISION 0
 #define CLIENT_VERSION_BUILD 50
 
-#define CLIENT_VERSION_IS_RELEASE 1
-
-#define COPYRIGHT_YEAR 2026
-
-#define STRINGIZE(X) DO_STRINGIZE(X)
-#define DO_STRINGIZE(X) #X
-
-#define COPYRIGHT_STR "2026 Rhett Creighton (Apache 2.0). Based on Bitcoin/Zcash."
-
 #if !defined(WINDRES_PREPROC)
 
 #include <stddef.h>
@@ -31,14 +22,8 @@
      100 * CLIENT_VERSION_REVISION + CLIENT_VERSION_BUILD)
 
 extern const char CLIENT_NAME[];
-extern const char CLIENT_BUILD[];
-extern const char CLIENT_DATE[];
 
 void FormatVersion(int nVersion, char *out, size_t out_size);
-void FormatFullVersion(char *out, size_t out_size);
-void FormatSubVersion(const char *name, int nClientVersion,
-                      const char *const *comments, int ncomments,
-                      char *out, size_t out_size);
 
 #endif /* WINDRES_PREPROC */
 #endif

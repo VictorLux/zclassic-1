@@ -36,21 +36,11 @@ int g_nargs = 0;
 bool fDebug = false;
 bool fPrintToConsole = false;
 bool fPrintToDebugLog = false;
-bool fServer = false;
 bool fLogTimestamps = true;
-bool fLogIPs = false;
 
-static int64_t nStartupTime = 0;
 static FILE *fileout = NULL;
 static char cachedDataDir[4096] = "";
 static char cachedDataDirNet[4096] = "";
-
-int64_t GetStartupTime(void)
-{
-    if (nStartupTime == 0)
-        nStartupTime = GetTime();
-    return nStartupTime;
-}
 
 static int find_arg(const char *key)
 {
@@ -151,11 +141,6 @@ bool SoftSetArg(const char *arg, const char *value)
     return true;
 }
 
-bool SoftSetBoolArg(const char *arg, bool value)
-{
-    return SoftSetArg(arg, value ? "1" : "0");
-}
-
 bool LogAcceptCategory(const char *category)
 {
     if (category != NULL) {
@@ -253,58 +238,6 @@ void GetDataDir(bool fNetSpecific, char *out, size_t out_size)
     snprintf(cached, 4096, "%s", out);
 }
 
-void ClearDatadirCache(void)
-{
-    cachedDataDir[0] = '\0';
-    cachedDataDirNet[0] = '\0';
-}
-
-void OpenDebugLog(void)
-{
-    char datadir[4096];
-    GetDataDir(true, datadir, sizeof(datadir));
-    char path[4116];
-#ifdef _WIN32
-    snprintf(path, sizeof(path), "%s\\debug.log", datadir);
-#else
-    snprintf(path, sizeof(path), "%s/debug.log", datadir);
-#endif
-    fileout = fopen(path, "a");
-    if (fileout)
-        setbuf(fileout, NULL);
-}
-
-void ShrinkDebugFile(void)
-{
-    char datadir[4096];
-    GetDataDir(true, datadir, sizeof(datadir));
-    char path[4116];
-#ifdef _WIN32
-    snprintf(path, sizeof(path), "%s\\debug.log", datadir);
-#else
-    snprintf(path, sizeof(path), "%s/debug.log", datadir);
-#endif
-
-    FILE *file = fopen(path, "r");
-    if (!file) return;
-
-    fseek(file, 0, SEEK_END);
-    long size = ftell(file);
-    if (size > 10 * 1000000) {
-        char buf[200000];
-        fseek(file, -((long)sizeof(buf)), SEEK_END);
-        int nBytes = (int)fread(buf, 1, sizeof(buf), file);
-        fclose(file);
-        file = fopen(path, "w");
-        if (file) {
-            fwrite(buf, 1, (size_t)nBytes, file);
-            fclose(file);
-        }
-    } else {
-        fclose(file);
-    }
-}
-
 void FileCommit(FILE *fp)
 {
     fflush(fp);
@@ -320,108 +253,11 @@ void FileCommit(FILE *fp)
 #endif
 }
 
-bool TruncateFile(FILE *file, unsigned int length)
-{
-#ifdef _WIN32
-    return _chsize(_fileno(file), length) == 0;
-#else
-    return ftruncate(fileno(file), length) == 0;
-#endif
-}
-
-int RaiseFileDescriptorLimit(int nMinFD)
-{
-#ifdef _WIN32
-    return 2048;
-#else
-    struct rlimit limitFD;
-    if (getrlimit(RLIMIT_NOFILE, &limitFD) != -1) {
-        if (limitFD.rlim_cur < (rlim_t)nMinFD) {
-            limitFD.rlim_cur = nMinFD;
-            if (limitFD.rlim_cur > limitFD.rlim_max)
-                limitFD.rlim_cur = limitFD.rlim_max;
-            setrlimit(RLIMIT_NOFILE, &limitFD);
-            getrlimit(RLIMIT_NOFILE, &limitFD);
-        }
-        return (int)limitFD.rlim_cur;
-    }
-    return nMinFD;
-#endif
-}
-
-void AllocateFileRange(FILE *file, unsigned int offset, unsigned int length)
-{
-#ifdef _WIN32
-    HANDLE h = (HANDLE)_get_osfhandle(_fileno(file));
-    LARGE_INTEGER nFileSize;
-    int64_t nEndPos = (int64_t)offset + length;
-    nFileSize.u.LowPart = (DWORD)(nEndPos & 0xFFFFFFFF);
-    nFileSize.u.HighPart = (LONG)(nEndPos >> 32);
-    SetFilePointerEx(h, nFileSize, 0, FILE_BEGIN);
-    SetEndOfFile(h);
-#elif defined(__APPLE__)
-    fstore_t fst;
-    fst.fst_flags = F_ALLOCATECONTIG;
-    fst.fst_posmode = F_PEOFPOSMODE;
-    fst.fst_offset = 0;
-    fst.fst_length = (off_t)offset + length;
-    fst.fst_bytesalloc = 0;
-    if (fcntl(fileno(file), F_PREALLOCATE, &fst) == -1) {
-        fst.fst_flags = F_ALLOCATEALL;
-        fcntl(fileno(file), F_PREALLOCATE, &fst);
-    }
-    ftruncate(fileno(file), fst.fst_length);
-#elif defined(__linux__)
-    off_t nEndPos = (off_t)offset + length;
-    posix_fallocate(fileno(file), 0, nEndPos);
-#else
-    static const char buf[65536] = {0};
-    fseek(file, (long)offset, SEEK_SET);
-    while (length > 0) {
-        unsigned int now = 65536;
-        if (length < now) now = length;
-        fwrite(buf, 1, now, file);
-        length -= now;
-    }
-#endif
-}
-
-bool RenameOver(const char *src, const char *dest)
-{
-#ifdef _WIN32
-    return MoveFileExA(src, dest, MOVEFILE_REPLACE_EXISTING) != 0;
-#else
-    return rename(src, dest) == 0;
-#endif
-}
-
-bool TryCreateDirectory(const char *path)
-{
-#ifdef _WIN32
-    return CreateDirectoryA(path, NULL) != 0;
-#else
-    struct stat st;
-    if (stat(path, &st) == 0 && S_ISDIR(st.st_mode))
-        return false;
-    return mkdir(path, 0700) == 0;
-#endif
-}
-
 void SetupEnvironment(void)
 {
 #if !defined(_WIN32) && !defined(__APPLE__) && !defined(__FreeBSD__) && !defined(__OpenBSD__)
     setenv("LC_ALL", "C", 0);
 #endif
-}
-
-bool SetupNetworking(void)
-{
-#ifdef _WIN32
-    WSADATA wsadata;
-    int ret = WSAStartup(MAKEWORD(2, 2), &wsadata);
-    if (ret != 0) return false;
-#endif
-    return true;
 }
 
 void RenameThread(const char *name)
@@ -449,14 +285,4 @@ int GetNumCores(void)
 #else
     return 1;
 #endif
-}
-
-void HelpMessageGroup(const char *message, char *out, size_t out_size)
-{
-    snprintf(out, out_size, "%s\n\n", message);
-}
-
-void HelpMessageOpt(const char *option, const char *message, char *out, size_t out_size)
-{
-    snprintf(out, out_size, "  %s\n       %s\n\n", option, message);
 }

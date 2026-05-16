@@ -11,18 +11,12 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#define ARRAYLEN(array) (sizeof(array) / sizeof((array)[0]))
-
 enum safe_chars {
     SAFE_CHARS_DEFAULT,
     SAFE_CHARS_UA_COMMENT
 };
 
 void SanitizeString(const char *str, int rule, char *out, size_t out_size);
-void SanitizeFilename(const char *str, char *out, size_t out_size);
-
-void HexInt(uint32_t val, char *out, size_t out_size);
-uint32_t ParseHexToUInt32(const char *str);
 
 extern const signed char p_util_hexdigit[256];
 signed char HexDigit(char c);
@@ -33,22 +27,10 @@ size_t EncodeBase64(const unsigned char *data, size_t len, char *out, size_t out
 size_t DecodeBase64(const char *p, unsigned char *out, size_t out_size, bool *invalid);
 
 size_t EncodeBase32(const unsigned char *data, size_t len, char *out, size_t out_size);
-size_t DecodeBase32(const char *p, unsigned char *out, size_t out_size, bool *invalid);
 
 void HexStr(const unsigned char *data, size_t len, bool spaces, char *out, size_t out_size);
 
-bool TimingResistantEqual(const unsigned char *a, size_t alen, const unsigned char *b, size_t blen);
-
-void i64tostr(int64_t n, char *out, size_t out_size);
-void itostr(int n, char *out, size_t out_size);
-int64_t str_atoi64(const char *psz);
-int str_atoi(const char *psz);
-
 bool ParseInt32(const char *str, int32_t *out);
-bool ParseInt64(const char *str, int64_t *out);
-bool ParseDouble(const char *str, double *out);
-
-void FormatParagraph(const char *in, size_t width, size_t indent, char *out, size_t out_size);
 
 bool ParseFixedPoint(const char *val, int decimals, int64_t *amount_out);
 

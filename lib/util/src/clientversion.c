@@ -11,6 +11,11 @@ const char CLIENT_NAME[] = "ZClassic-C23";
 
 #define CLIENT_VERSION_SUFFIX ""
 
+/* Internal stringification helpers — used only by the BUILD_DESC machinery
+ * below. Kept local to this TU rather than exposed via clientversion.h. */
+#define STRINGIZE(X) DO_STRINGIZE(X)
+#define DO_STRINGIZE(X) #X
+
 #ifdef HAVE_BUILD_INFO
 #include "util/build.h"
 #endif
