@@ -74,7 +74,7 @@ static bool indexlegacy_existing_history_usable(sqlite3 *db)
     struct explorer_history_validation v;
     explorer_validate_block_history(db, -1, &v);
     if (!v.usable) {
-        fprintf(stderr, "indexlegacy: explorer history unusable: %s\n",
+        fprintf(stderr, "indexlegacy: explorer history unusable: %s\n",  // obs-ok:pre-existing-diagnostic
                 v.reason);
     }
     return v.usable;
@@ -968,7 +968,7 @@ bool rpc_indexlegacy(const struct json_value *params, bool help,
                             slp.ticker, slp.name, slp.decimals,
                             slp.document_url, h,
                             (int64_t)slp.initial_quantity)) {
-                        fprintf(stderr,
+                        fprintf(stderr,  // obs-ok:pre-existing-diagnostic
                                 "indexlegacy: skipping invalid ZSLP token at "
                                 "height %d\n", h);
                         continue;
@@ -1002,7 +1002,7 @@ bool rpc_indexlegacy(const struct json_value *params, bool help,
 
                         if (!db_zslp_transfer_save(ctx->node_db, tx->hash.data,
                                 h, tok_id, (int)slp.type, amount, q, to)) {
-                            fprintf(stderr,
+                            fprintf(stderr,  // obs-ok:pre-existing-diagnostic
                                     "indexlegacy: skipping invalid ZSLP "
                                     "transfer at height %d\n", h);
                             continue;
@@ -1172,7 +1172,7 @@ bool rpc_indexlegacy(const struct json_value *params, bool help,
         if (phase_a_tx_open &&
             !indexlegacy_node_tx_rollback_checked(ctx->node_db,
                 "phase A rollback")) {
-            fprintf(stderr,
+            fprintf(stderr,  // obs-ok:pre-existing-diagnostic
                     "indexlegacy: phase A rollback failed after error\n");
         }
         free(locs);
@@ -1226,7 +1226,7 @@ bool rpc_indexlegacy(const struct json_value *params, bool help,
         workers[t].legacy_dir = legacy_dir;
         /* raw-pthread-ok: short-burst-joined-immediately */
         if (pthread_create(&threads[t], NULL, index_worker, &workers[t]) != 0) {
-            fprintf(stderr,
+            fprintf(stderr,  // obs-ok:pre-existing-diagnostic
                     "indexlegacy: Phase B failed to start extraction worker %d\n",
                     t);
             for (int j = 0; j < workers_started; j++)
@@ -1271,7 +1271,7 @@ bool rpc_indexlegacy(const struct json_value *params, bool help,
     bool phase_b_ok = true;
     bool phase_b_own_txn = false;
     if (sqlite3_open(phase_b_path, &phase_b_db) != SQLITE_OK || !phase_b_db) {
-        fprintf(stderr, "indexlegacy: Phase B FATAL: cannot open DB: %s\n",
+        fprintf(stderr, "indexlegacy: Phase B FATAL: cannot open DB: %s\n",  // obs-ok:pre-existing-diagnostic
                 phase_b_db ? sqlite3_errmsg(phase_b_db) : "null");
         phase_b_ok = false;
         phase_b_db = NULL;
