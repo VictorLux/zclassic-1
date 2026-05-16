@@ -14,6 +14,7 @@
 #include "coins/coins.h"
 #include "coins/coins_view.h"
 #include "core/uint256.h"
+#include "encoding/utilstrencodings.h"
 #include "core/serialize.h"
 #include "keys/key_io.h"
 #include "models/database.h"
@@ -2188,15 +2189,12 @@ static size_t serve_token_detail(const char *token_id_hex, uint8_t *r, size_t ma
     /* Parse hex token ID — try direct first, then reversed byte order */
     uint8_t token_id[32];
     uint8_t token_id_rev[32];
-    for (int i = 0; i < 32; i++) {
-        unsigned int b;
-        if (sscanf(token_id_hex + i * 2, "%2x", &b) != 1) {
-            sqlite3_close(db);
-            return 0;
-        }
-        token_id[i] = (uint8_t)b;
-        token_id_rev[31 - i] = (uint8_t)b;
+    if (ParseHex(token_id_hex, token_id, 32) != 32) {
+        sqlite3_close(db);
+        return 0;
     }
+    for (int i = 0; i < 32; i++)
+        token_id_rev[31 - i] = token_id[i];
 
     /* Look up token — try both byte orders */
     char ticker[64] = "", name[128] = "", doc_url[256] = "";

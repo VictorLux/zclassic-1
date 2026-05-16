@@ -7,6 +7,7 @@
 
 #include "controllers/api_controller.h"
 #include "controllers/explorer_internal.h"
+#include "encoding/utilstrencodings.h"
 #include "controllers/explorer_factoids.h"
 #include "controllers/file_controller.h"
 #include "services/snapshot_sync_service.h"
@@ -2341,13 +2342,9 @@ size_t api_handle_request(const char *method, const char *path,
         struct file_manifest manifest;
         const char *hex = clean_path + 11;
         uint8_t sha3[32];
-        for (int i = 0; i < 32; i++) {
-            unsigned int byte;
-            if (sscanf(hex + i * 2, "%2x", &byte) != 1)
-                return json_error(response, response_max,
-                    JSON_404_HEADERS, "Invalid SHA3 hash");
-            sha3[i] = (uint8_t)byte;
-        }
+        if (ParseHex(hex, sha3, 32) != 32)
+            return json_error(response, response_max,
+                JSON_404_HEADERS, "Invalid SHA3 hash");
         if (!file_controller_get_manifest_copy(&manifest))
             return json_error(response, response_max,
                 JSON_404_HEADERS, "No manifest");

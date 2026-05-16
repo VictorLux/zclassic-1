@@ -9,6 +9,7 @@
  *   zmarket_status  — show active downloads/uploads */
 
 #include "net/file_market.h"
+#include "encoding/utilstrencodings.h"
 #include "util/log_macros.h"
 #include "json/json.h"
 #include "rpc/server.h"
@@ -221,13 +222,11 @@ static bool rpc_zmarket_buy(const struct json_value *params, bool help,
         return false;
     }
 
-    /* Parse hex hash */
+    /* Parse hex hash (length already validated above) */
     uint8_t root_hash[32];
-    const char *hex = hash_hex;
-    for (int i = 0; i < 32; i++) {
-        unsigned int byte;
-        sscanf(hex + i * 2, "%02x", &byte);
-        root_hash[i] = (uint8_t)byte;
+    if (ParseHex(hash_hex, root_hash, 32) != 32) {
+        json_set_str(result, "Invalid root_hash (must be 64 hex chars)");
+        return false;
     }
 
     /* Find the offer */

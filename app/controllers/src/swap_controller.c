@@ -5,6 +5,7 @@
 
 #include "script/htlc.h"
 #include "znam/znam.h"
+#include "encoding/utilstrencodings.h"
 #include "json/json.h"
 #include "views/format_helpers.h"
 #include "rpc/server.h"
@@ -258,10 +259,9 @@ static bool rpc_swap_participate(const struct json_value *params, bool help,
 
     /* Parse secret hash */
     uint8_t secret_hash[32];
-    for (int i = 0; i < 32; i++) {
-        unsigned int byte;
-        sscanf(hash_hex + i * 2, "%02x", &byte);
-        secret_hash[i] = (uint8_t)byte;
+    if (ParseHex(hash_hex, secret_hash, 32) != 32) {
+        json_set_str(result, "Invalid secret_hash (64-char hex)");
+        return false;
     }
 
     struct htlc_params hp;

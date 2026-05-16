@@ -12,6 +12,7 @@
 #include "net/connman.h"
 #include "chain/chainparams.h"
 #include "znam/znam.h"
+#include "encoding/utilstrencodings.h"
 #include "json/json.h"
 #include "rpc/server.h"
 #include "models/database.h"
@@ -213,11 +214,7 @@ static bool rpc_msg_read(const struct json_value *params, bool help,
     }
 
     uint8_t msg_id[32];
-    for (int i = 0; i < 32; i++) {
-        unsigned int byte;
-        sscanf(hex + i * 2, "%02x", &byte);
-        msg_id[i] = (uint8_t)byte;
-    }
+    (void)ParseHex(hex, msg_id, 32);  /* hex already validated by zcl_is_hex_string */
 
     zmsg_store_mark_read(msg_id);
     if (g_msg_ndb)

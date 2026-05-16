@@ -9,6 +9,7 @@
 #include "views/format_helpers.h"
 #include "chain/mmr.h"
 #include "crypto/sha3.h"
+#include "encoding/utilstrencodings.h"
 #include "json/json.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -898,13 +899,9 @@ static bool rpc_getfilechunk(const struct json_value *params, bool help,
 
     /* Parse hex → bytes */
     uint8_t sha3[32];
-    for (int i = 0; i < 32; i++) {
-        unsigned int byte;
-        if (sscanf(hex + i * 2, "%2x", &byte) != 1) {
-            json_set_str(result, "error: invalid hex");
-            return true;
-        }
-        sha3[i] = (uint8_t)byte;
+    if (ParseHex(hex, sha3, 32) != 32) {
+        json_set_str(result, "error: invalid hex");
+        return true;
     }
 
     const struct file_chunk *chunk = file_manifest_find(&manifest, sha3);
