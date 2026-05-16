@@ -27,6 +27,7 @@
 #include "core/uint256.h"
 #include "consensus/validation.h"
 #include "crypto/sha3.h"
+#include "encoding/utilstrencodings.h"
 #include "event/event.h"
 #include "health/heartbeat.h"
 #include "json/json.h"
@@ -221,22 +222,6 @@ struct chainstate_fingerprint {
     int64_t total_supply_sat;
 };
 
-static void hex_to_bytes_32(const char *hex, uint8_t out[32])
-{
-    for (int i = 0; i < 32; i++) {
-        unsigned v = 0;
-        sscanf(hex + 2 * i, "%2x", &v);
-        out[i] = (uint8_t)v;
-    }
-}
-
-static void bytes_to_hex_32(const uint8_t in[32], char hex[65])
-{
-    for (int i = 0; i < 32; i++)
-        snprintf(hex + 2 * i, 3, "%02x", in[i]);
-    hex[64] = '\0';
-}
-
 static bool chainstate_fingerprint_path(char *out, size_t out_sz,
                                          const char *our_datadir)
 {
@@ -270,12 +255,10 @@ static bool chainstate_fingerprint_load(const char *our_datadir,
         else if (strcmp(key, "anchor_height") == 0)
             out->anchor_height = atoi(val);
         else if (strcmp(key, "anchor_block_hash") == 0) {
-            if (strlen(val) != 64) continue;
-            hex_to_bytes_32(val, out->anchor_block_hash);
+            if (ParseHex(val, out->anchor_block_hash, 32) != 32) continue;
             got_anchor = true;
         } else if (strcmp(key, "sha3_utxo_hash") == 0) {
-            if (strlen(val) != 64) continue;
-            hex_to_bytes_32(val, out->sha3_utxo_hash);
+            if (ParseHex(val, out->sha3_utxo_hash, 32) != 32) continue;
             got_sha3 = true;
         } else if (strcmp(key, "utxos_count") == 0)
             out->utxos_count = strtoull(val, NULL, 10);
@@ -301,8 +284,8 @@ static void chainstate_fingerprint_write(const char *our_datadir,
         return;
     }
     char anchor_hex[65], sha3_hex[65];
-    bytes_to_hex_32(fp->anchor_block_hash, anchor_hex);
-    bytes_to_hex_32(fp->sha3_utxo_hash, sha3_hex);
+    HexStr(fp->anchor_block_hash, 32, false, anchor_hex, sizeof(anchor_hex));
+    HexStr(fp->sha3_utxo_hash,    32, false, sha3_hex,   sizeof(sha3_hex));
     fprintf(f, "schema=%d\n", fp->schema);
     fprintf(f, "anchor_height=%d\n", fp->anchor_height);
     fprintf(f, "anchor_block_hash=%s\n", anchor_hex);

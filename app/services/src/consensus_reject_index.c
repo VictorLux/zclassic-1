@@ -21,6 +21,7 @@
 
 #include "services/consensus_reject_index.h"
 
+#include "encoding/utilstrencodings.h"
 #include "event/event.h"
 
 #include <pthread.h>
@@ -58,14 +59,6 @@ static int64_t cri_now_us(void)
     return (int64_t)tv.tv_sec * 1000000 + (int64_t)tv.tv_usec;
 }
 
-static int hex_nibble(char c)
-{
-    if (c >= '0' && c <= '9') return c - '0';
-    if (c >= 'a' && c <= 'f') return 10 + (c - 'a');
-    if (c >= 'A' && c <= 'F') return 10 + (c - 'A');
-    return -1; // raw-return-ok (hex parser sentinel)
-}
-
 /* Parse exactly 64 hex chars into out[32]. Matches the encoding
  * direction of `uint256_get_hex`, which writes bytes in reverse
  * (Bitcoin display order) so that the left-most hex character is
@@ -74,10 +67,10 @@ static bool parse_hex256(const char *s, size_t len, struct uint256 *out)
 {
     if (len < 64) return false;
     for (int i = 0; i < 32; i++) {
-        int hi = hex_nibble(s[2 * i]);
-        int lo = hex_nibble(s[2 * i + 1]);
+        signed char hi = HexDigit(s[2 * i]);
+        signed char lo = HexDigit(s[2 * i + 1]);
         if (hi < 0 || lo < 0) return false;
-        out->data[31 - i] = (uint8_t)((hi << 4) | lo);
+        out->data[31 - i] = (uint8_t)(((unsigned)hi << 4) | (unsigned)lo);
     }
     return true;
 }

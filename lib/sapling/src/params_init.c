@@ -9,6 +9,7 @@
 #include "sapling/sprout.h"
 #include "chain/chainparams.h"
 #include "crypto/sha512.h"
+#include "encoding/utilstrencodings.h"
 #include "util/log_macros.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -32,28 +33,6 @@
     "20bc1f6bd89d0321b90a3f1b7e2050a7dafb427e86e7ef33b0b7a5c06077f5bf"       \
     "5695846952eac2b6231222df633e258682e9b6e2545f732c30fd76ae230ac65d"
 
-/* Parse a 128-char lowercase hex string into 64 bytes. Returns false on
- * any malformed input. Only used at startup on static strings, so no
- * constant-time requirement. */
-static bool hex_to_bytes64(const char *hex, uint8_t out[64])
-{
-    for (size_t i = 0; i < 64; i++) {
-        int hi = hex[2 * i];
-        int lo = hex[2 * i + 1];
-        int hv = (hi >= '0' && hi <= '9') ? hi - '0'
-               : (hi >= 'a' && hi <= 'f') ? hi - 'a' + 10
-               : (hi >= 'A' && hi <= 'F') ? hi - 'A' + 10 : -1;
-        int lv = (lo >= '0' && lo <= '9') ? lo - '0'
-               : (lo >= 'a' && lo <= 'f') ? lo - 'a' + 10
-               : (lo >= 'A' && lo <= 'F') ? lo - 'A' + 10 : -1;
-        if (hv < 0 || lv < 0)
-            LOG_FAIL("sapling_params",
-                     "hex_to_bytes64: non-hex char at offset %zu", 2 * i);
-        out[i] = (uint8_t)((hv << 4) | lv);
-    }
-    return true;
-}
-
 /* Compute SHA-512 of a buffer and compare against the expected hex digest
  * in constant time. On mismatch, print expected/actual and return false so
  * startup fails loud — parameter-file tampering is consensus-critical. */
@@ -68,7 +47,7 @@ static bool params_sha512_matches(const uint8_t *data, size_t len,
     sha512_finalize(&ctx, got);
 
     uint8_t want[64];
-    if (!hex_to_bytes64(expected_hex, want)) {
+    if (ParseHex(expected_hex, want, 64) != 64) {
         fprintf(stderr, "[sapling] %s:%d %s(): "
                 "internal: malformed expected SHA-512 literal for %s\n",
                 __FILE__, __LINE__, __func__, path);

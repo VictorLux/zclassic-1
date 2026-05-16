@@ -7,6 +7,7 @@
  */
 
 #include "util/trace.h"
+#include "encoding/utilstrencodings.h"
 #include "util/log_json.h"
 #include "util/safe_alloc.h"
 
@@ -44,16 +45,6 @@ static void trace_random_bytes(uint8_t *buf, size_t len)
         seed = seed * 6364136223846793005ULL + 1442695040888963407ULL;
         buf[i] = (uint8_t)(seed >> 33);
     }
-}
-
-static void trace_hex_encode(char *out, const uint8_t *data, size_t len)
-{
-    static const char hex[] = "0123456789abcdef";
-    for (size_t i = 0; i < len; i++) {
-        out[i * 2]     = hex[data[i] >> 4];
-        out[i * 2 + 1] = hex[data[i] & 0x0f];
-    }
-    out[len * 2] = '\0';
 }
 
 /* ── Global enable/disable ─────────────────────────────────── */
@@ -99,7 +90,7 @@ struct trace_span *trace_start(const char *operation)
     /* Generate span_id (8 random bytes → 16 hex chars) */
     uint8_t span_bytes[8];
     trace_random_bytes(span_bytes, sizeof(span_bytes));
-    trace_hex_encode(s->span_id, span_bytes, sizeof(span_bytes));
+    HexStr(span_bytes, sizeof(span_bytes), false, s->span_id, sizeof(s->span_id));
 
     /* Inherit or generate trace_id */
     struct trace_tls *t = &tls_trace;
@@ -112,7 +103,7 @@ struct trace_span *trace_start(const char *operation)
         /* Root span — generate new trace_id (16 random bytes → 32 hex) */
         uint8_t trace_bytes[16];
         trace_random_bytes(trace_bytes, sizeof(trace_bytes));
-        trace_hex_encode(s->trace_id, trace_bytes, sizeof(trace_bytes));
+        HexStr(trace_bytes, sizeof(trace_bytes), false, s->trace_id, sizeof(s->trace_id));
         s->parent_span_id[0] = '\0';
     }
 

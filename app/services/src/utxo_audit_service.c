@@ -3,29 +3,16 @@
 #include "services/utxo_audit_service.h"
 
 #include "coins/utxo_commitment.h"
+#include "encoding/utilstrencodings.h"
 #include "event/event.h"
 #include "util/log_macros.h"
 
-#include <ctype.h>
 #include <stdio.h>
 #include <string.h>
 
-static void bytes_to_hex(const uint8_t in[32], char out[65])
-{
-    for (int i = 0; i < 32; i++)
-        snprintf(out + i * 2, 3, "%02x", in[i]);
-    out[64] = '\0';
-}
-
 static bool is_sha3_hex(const char *hex)
 {
-    if (!hex || strlen(hex) != 64)
-        return false;
-    for (size_t i = 0; i < 64; i++) {
-        if (!isxdigit((unsigned char)hex[i]))
-            return false;
-    }
-    return true;
+    return hex && strlen(hex) == 64 && IsHex(hex);
 }
 
 const char *utxo_audit_status_name(enum utxo_audit_status status)
@@ -55,7 +42,7 @@ bool utxo_audit_local(struct node_db *ndb, int32_t height,
     uint8_t local_hash[32];
     uint64_t count = 0;
     utxo_commitment_sha3_compute(ndb->db, local_hash, &count);
-    bytes_to_hex(local_hash, out->local_sha3);
+    HexStr(local_hash, 32, false, out->local_sha3, sizeof(out->local_sha3));
     out->local_utxo_count = count;
     out->local_height = height;
     out->status = UTXO_AUDIT_LOCAL_ONLY;
