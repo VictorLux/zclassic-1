@@ -1133,8 +1133,13 @@ shielded_cleanup:
     if (ctx->connman)
         connman_relay_transaction(ctx->connman, &wtx.tx.hash);
 
-    if (ctx->wallet_db)
-        wallet_sqlite_flush(ctx->wallet_db, ctx->wallet);
+    if (ctx->wallet_db) {
+        struct zcl_result fr = wallet_sqlite_flush_r(ctx->wallet_db, ctx->wallet);
+        if (!fr.ok) {
+            LOG_FAIL("wallet", "z_sendmany: post-broadcast flush failed "
+                                "(code=%d): %s", fr.code, fr.message);
+        }
+    }
 
     char txid[65];
     uint256_get_hex(&wtx.tx.hash, txid);

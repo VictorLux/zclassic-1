@@ -75,8 +75,13 @@ bool rpc_scanblockfiles(const struct json_value *params, bool help,
     int found = wallet_scan_blockfiles(ctx->wallet, dir);
 
     /* Also persist wallet updates */
-    if (ctx->wallet_db)
-        wallet_sqlite_flush(ctx->wallet_db, ctx->wallet);
+    if (ctx->wallet_db) {
+        struct zcl_result fr = wallet_sqlite_flush_r(ctx->wallet_db, ctx->wallet);
+        if (!fr.ok) {
+            LOG_FAIL("wallet", "scanblocksindex: post-scan flush failed "
+                                "(code=%d): %s", fr.code, fr.message);
+        }
+    }
 
     json_set_object(result);
     json_push_kv_int(result, "wallet_outputs_found", found);

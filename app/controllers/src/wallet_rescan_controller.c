@@ -93,7 +93,7 @@ static void wallet_reset_rollback_best_effort(struct node_db *ndb,
     if (!ndb || !ndb->open)
         return;
     if (!node_db_rollback(ndb)) {
-        fprintf(stderr, "[wallet_rescan] %s: rollback failed: %s\n",
+        fprintf(stderr, "[wallet_rescan] %s: rollback failed: %s\n", // obs-ok:best-effort-rollback-after-failed-write
                 label, ndb->db ? sqlite3_errmsg(ndb->db) : "db unavailable");
     }
 }
@@ -228,7 +228,11 @@ static bool rpc_import_from(const struct json_value *params, bool help,
     json_push_kv_bool(&phase1, "repair_success", repaired);
 
     if (ctx->wallet_db && ctx->wallet_db->open) {
-        wallet_sqlite_read_keys(ctx->wallet_db, ctx->wallet);
+        struct zcl_result rk = wallet_sqlite_read_keys_r(ctx->wallet_db, ctx->wallet);
+        if (!rk.ok) {
+            LOG_FAIL("wallet", "wallet_repair: read_keys_r failed "
+                                "(code=%d): %s", rk.code, rk.message);
+        }
         wallet_sqlite_read_txs(ctx->wallet_db, ctx->wallet);
         wallet_sqlite_read_sapling_keys(ctx->wallet_db, ctx->wallet);
         wallet_sqlite_read_scripts(ctx->wallet_db, ctx->wallet);

@@ -121,15 +121,17 @@ static bool rpc_getnewaddress(const struct json_value *params, bool help,
         struct key_id new_kid;
         bool have_kid = wallet_last_key_id(ctx->wallet, &new_kid);
 
-        if (!wallet_sqlite_flush(ctx->wallet_db, ctx->wallet)) {
+        struct zcl_result fr = wallet_sqlite_flush_r(ctx->wallet_db, ctx->wallet);
+        if (!fr.ok) {
             if (have_kid) {
                 (void)wallet_remove_key(ctx->wallet, &new_kid);
             }
             json_set_str(result,
                 "Error: wallet persistence failed. New address NOT saved. "
                 "Check getwalletinfo.persistence and node.log.");
-            LOG_FAIL("wallet", "getnewaddress: wallet_sqlite_flush failed — "
-                                "rolled back keystore (had_kid=%d)", (int)have_kid);
+            LOG_FAIL("wallet", "getnewaddress: wallet_sqlite_flush_r failed "
+                                "(had_kid=%d, code=%d): %s",
+                                (int)have_kid, fr.code, fr.message);
         }
 
         /* Success: kick the JSON backup writer so the mirror follows. */
@@ -429,9 +431,16 @@ static bool rpc_sendtoaddress(const struct json_value *params, bool help,
     if (ctx->connman)
         connman_relay_transaction(ctx->connman, &wtx.tx.hash);
 
-    /* Persist wallet state after sending */
-    if (ctx->wallet_db)
-        wallet_sqlite_flush(ctx->wallet_db, ctx->wallet);
+    /* Persist wallet state after sending. The transaction is already
+     * broadcast; flush failure is non-fatal but operationally important
+     * — log it so getwalletinfo.persistence surfaces the drift. */
+    if (ctx->wallet_db) {
+        struct zcl_result fr = wallet_sqlite_flush_r(ctx->wallet_db, ctx->wallet);
+        if (!fr.ok) {
+            LOG_FAIL("wallet", "sendtoaddress: post-broadcast flush failed "
+                                "(code=%d): %s", fr.code, fr.message);
+        }
+    }
 
     char txid[65];
     uint256_get_hex(&wtx.tx.hash, txid);
@@ -485,8 +494,13 @@ bool wallet_direct_sendtoaddress(const char *address, int64_t amount_sat,
         node_db_sync_wallet_tx(ctx->node_db, &wtx.tx, ctx->wallet, 0);
     if (ctx->connman)
         connman_relay_transaction(ctx->connman, &wtx.tx.hash);
-    if (ctx->wallet_db)
-        wallet_sqlite_flush(ctx->wallet_db, ctx->wallet);
+    if (ctx->wallet_db) {
+        struct zcl_result fr = wallet_sqlite_flush_r(ctx->wallet_db, ctx->wallet);
+        if (!fr.ok) {
+            LOG_FAIL("wallet", "direct_sendtoaddress: post-broadcast flush "
+                                "failed (code=%d): %s", fr.code, fr.message);
+        }
+    }
 
     uint256_get_hex(&wtx.tx.hash, txid_out);
     return true;
@@ -786,12 +800,14 @@ static bool rpc_importprivkey(const struct json_value *params, bool help,
     /* Plan §5.4: persist BEFORE mutating the keystore. If the write
      * fails we have not touched wallet state — simply error out. */
     if (ctx->wallet_db) {
-        if (!wallet_sqlite_write_key(ctx->wallet_db, &pk, &key)) {
+        struct zcl_result wr = wallet_sqlite_write_key_r(ctx->wallet_db, &pk, &key);
+        if (!wr.ok) {
             memory_cleanse(key.vch, 32);
             json_set_str(result,
                 "Error: wallet persistence failed. Key NOT imported. "
                 "Check getwalletinfo.persistence and node.log.");
-            LOG_FAIL("wallet", "importprivkey: wallet_sqlite_write_key failed");
+            LOG_FAIL("wallet", "importprivkey: wallet_sqlite_write_key_r "
+                                "failed (code=%d): %s", wr.code, wr.message);
         }
 
         /* Readback: prove the write hit disk with the bytes we asked
@@ -1074,12 +1090,14 @@ static bool rpc_keypoolrefill(const struct json_value *params, bool help,
      * pre-existing address twice. Log and error; canary will flag
      * the daemon as unhealthy and operator can intervene. */
     if (ctx->wallet_db) {
-        if (!wallet_sqlite_flush(ctx->wallet_db, ctx->wallet)) {
+        struct zcl_result fr = wallet_sqlite_flush_r(ctx->wallet_db, ctx->wallet);
+        if (!fr.ok) {
             json_set_str(result,
                 "Error: keypool refilled in memory but persistence flush failed. "
                 "Check getwalletinfo.persistence and node.log.");
-            LOG_FAIL("wallet", "keypoolrefill: wallet_sqlite_flush failed "
-                                "(new_size=%u)", new_size);
+            LOG_FAIL("wallet", "keypoolrefill: wallet_sqlite_flush_r failed "
+                                "(new_size=%u, code=%d): %s",
+                                new_size, fr.code, fr.message);
         }
         wallet_backup_service_on_keypool_topup();
     }
@@ -1435,8 +1453,13 @@ static bool rpc_sendmany(const struct json_value *params, bool help,
     if (ctx->connman)
         connman_relay_transaction(ctx->connman, &wtx.tx.hash);
 
-    if (ctx->wallet_db)
-        wallet_sqlite_flush(ctx->wallet_db, ctx->wallet);
+    if (ctx->wallet_db) {
+        struct zcl_result fr = wallet_sqlite_flush_r(ctx->wallet_db, ctx->wallet);
+        if (!fr.ok) {
+            LOG_FAIL("wallet", "send: post-broadcast flush failed "
+                                "(code=%d): %s", fr.code, fr.message);
+        }
+    }
 
     char txid[65];
     uint256_get_hex(&wtx.tx.hash, txid);
