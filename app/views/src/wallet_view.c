@@ -11,6 +11,7 @@
 #include "json/json.h"
 #include "script/standard.h"
 #include "models/wallet_key.h"
+#include "encoding/utilstrencodings.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -123,8 +124,7 @@ void wallet_view_key_entry(struct json_value *out,
     json_push_kv_str(out, "address", address);
 
     char pkh[41];
-    for (int i = 0; i < 20; i++)
-        snprintf(pkh + i * 2, 3, "%02x", key->pubkey_hash[i]);
+    HexStr(key->pubkey_hash, 20, false, pkh, sizeof(pkh));
     json_push_kv_str(out, "pubkey_hash", pkh);
     json_push_kv_int(out, "unspent_count", unspent_count);
 
