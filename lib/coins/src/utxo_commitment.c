@@ -152,26 +152,7 @@ void utxo_commitment_compute_db(sqlite3 *db, struct utxo_commitment *out)
         int32_t height = sqlite3_column_int(s, 3);
 
         uint8_t h[32];
-        /* Inline hash_utxo to avoid static function scope issue */
-        uint8_t buf[48];
-        memcpy(buf, txid, 32);
-        buf[32] = (uint8_t)(vout & 0xFF);
-        buf[33] = (uint8_t)((vout >> 8) & 0xFF);
-        buf[34] = (uint8_t)((vout >> 16) & 0xFF);
-        buf[35] = (uint8_t)((vout >> 24) & 0xFF);
-        uint64_t v = (uint64_t)value;
-        for (int i = 0; i < 8; i++)
-            buf[36 + i] = (uint8_t)((v >> (8 * i)) & 0xFF);
-        uint32_t ht = (uint32_t)height;
-        buf[44] = (uint8_t)(ht & 0xFF);
-        buf[45] = (uint8_t)((ht >> 8) & 0xFF);
-        buf[46] = (uint8_t)((ht >> 16) & 0xFF);
-        buf[47] = (uint8_t)((ht >> 24) & 0xFF);
-        struct sha256_ctx ctx;
-        sha256_init(&ctx);
-        sha256_write(&ctx, buf, 48);
-        sha256_finalize(&ctx, h);
-
+        hash_utxo(h, txid, vout, value, height);
         xor32(out->accumulator, h);
         out->count++;
     }

@@ -7,6 +7,7 @@
 #include "coins/coins_view.h"
 #include <stdio.h>
 #include <string.h>
+#include "util/log_macros.h"
 #include "util/safe_alloc.h"
 
 #define COINS_MAP_INITIAL_BUCKETS 4096
@@ -266,11 +267,8 @@ static bool cvc_batch_write(void *self, struct coins_map *map_coins,
             if (coins_is_pruned(&e->entry.coins)) {
                 struct coins_cache_entry *dest =
                     coins_map_insert(&parent->cache_coins, &e->txid);
-                if (!dest) {
-                    fprintf(stderr, "cvc_batch_write: FATAL hash table full "
-                            "(pruned entry)\n");
-                    return false;
-                }
+                if (!dest)
+                    LOG_FAIL("coins_view", "cvc_batch_write: FATAL hash table full (pruned entry)");
                 coins_free(&dest->coins);
                 dest->coins = e->entry.coins;
                 coins_init(&e->entry.coins);
@@ -279,11 +277,8 @@ static bool cvc_batch_write(void *self, struct coins_map *map_coins,
             } else {
                 struct coins_cache_entry *dest =
                     coins_map_insert(&parent->cache_coins, &e->txid);
-                if (!dest) {
-                    fprintf(stderr, "cvc_batch_write: FATAL hash table full "
-                            "(write entry)\n");
-                    return false;
-                }
+                if (!dest)
+                    LOG_FAIL("coins_view", "cvc_batch_write: FATAL hash table full (write entry)");
                 coins_free(&dest->coins);
                 dest->coins = e->entry.coins;
                 coins_init(&e->entry.coins);
@@ -421,11 +416,10 @@ int64_t coins_view_cache_get_value_in(struct coins_view_cache *c,
         }
         /* Per-input MoneyRange: each input must be in [0, MAX_MONEY].
          * Catches corrupted coins with invalid values before summing. */
-        if (out->value < 0 || out->value > 2100000000000000LL) {
-            fprintf(stderr, "get_value_in: input[%zu] value %lld out of range\n",
-                    i, (long long)out->value);
-            return -1;
-        }
+        if (out->value < 0 || out->value > 2100000000000000LL)
+            LOG_RETURN((int64_t)-1, "coins_view",
+                       "get_value_in: input[%zu] value %lld out of range",
+                       i, (long long)out->value);
         value += out->value;
         /* Overflow check: cumulative transparent inputs can't exceed MAX_MONEY */
         if (value < 0 || value > 2100000000000000LL)

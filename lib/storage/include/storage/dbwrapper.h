@@ -43,8 +43,6 @@ struct db_iterator {
 bool db_wrapper_open(struct db_wrapper *w, const char *path,
                      size_t cache_size, bool memory, bool wipe);
 void db_wrapper_close(struct db_wrapper *w);
-bool db_wrapper_repair(const char *path);
-size_t db_wrapper_count(struct db_wrapper *w);
 
 /* Snapshot support: creates a frozen point-in-time view of the database.
  * All iterators created after snapshot_begin see a consistent state,

@@ -196,34 +196,6 @@ void db_wrapper_snapshot_end(struct db_wrapper *w)
     w->snapshot = NULL;
 }
 
-bool db_wrapper_repair(const char *path)
-{
-    leveldb_options_t *opts = leveldb_options_create();
-    char *err = NULL;
-    leveldb_repair_db(opts, path, &err);
-    leveldb_options_destroy(opts);
-    if (err) {
-        printf("LevelDB repair failed at %s: %s\n", path, err);
-        leveldb_free(err);
-        return false;
-    }
-    printf("LevelDB repaired: %s\n", path);
-    return true;
-}
-
-size_t db_wrapper_count(struct db_wrapper *w)
-{
-    if (!w->db) return 0;
-    size_t count = 0;
-    leveldb_iterator_t *it = leveldb_create_iterator(w->db, w->read_options);
-    for (leveldb_iter_seek_to_first(it);
-         leveldb_iter_valid(it);
-         leveldb_iter_next(it))
-        count++;
-    leveldb_iter_destroy(it);
-    return count;
-}
-
 void db_wrapper_close(struct db_wrapper *w)
 {
     if (w->snapshot && w->db) {

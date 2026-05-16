@@ -8,6 +8,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "util/log_macros.h"
 #include "util/safe_alloc.h"
 
 void coins_init(struct coins *c)
@@ -32,10 +33,8 @@ bool coins_alloc(struct coins *c, size_t num_outputs)
     if (num_outputs && !c->vout) {
         /* Leave num_vout=0 so the caller can distinguish the zero-
          * request case from the OOM case via the return value. */
-        fprintf(stderr, "[coins] %s:%d %s(): zcl_calloc failed for "
-                "num_outputs=%zu\n",
-                __FILE__, __LINE__, __func__, num_outputs);
-        return false;
+        LOG_FAIL("coins", "zcl_calloc failed for num_outputs=%zu",
+                 num_outputs);
     }
     c->num_vout = num_outputs;
     for (size_t i = 0; i < num_outputs; i++)
