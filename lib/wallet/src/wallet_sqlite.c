@@ -354,7 +354,7 @@ struct zcl_result wallet_sqlite_self_test(struct wallet_sqlite *ws)
 
     sqlite3_bind_text(ins, 1, WSQL_CANARY_KEY, -1, SQLITE_STATIC);
     sqlite3_bind_blob(ins, 2, probe, (int)sizeof(probe), SQLITE_STATIC);
-    if (sqlite3_step(ins) != SQLITE_DONE) {
+    if (AR_STEP_WRITE(ins) != SQLITE_DONE) {
         struct zcl_result r = ZCL_ERR(WSQL_CANARY_WRITE_FAIL,
             "self_test: canary INSERT failed: %s", sqlite3_errmsg(ws->db));
         sqlite3_finalize(ins);
@@ -393,7 +393,7 @@ struct zcl_result wallet_sqlite_self_test(struct wallet_sqlite *ws)
         "DELETE FROM node_state WHERE key=?", -1, &del, NULL);
     if (rc == SQLITE_OK) {
         sqlite3_bind_text(del, 1, WSQL_CANARY_KEY, -1, SQLITE_STATIC);
-        sqlite3_step(del);
+        (void)AR_STEP_WRITE(del);
         sqlite3_finalize(del);
     }
 
@@ -495,7 +495,7 @@ struct zcl_result wallet_sqlite_read_single_key(struct wallet_sqlite *ws,
     sqlite3_reset(s);
     sqlite3_bind_blob(s, 1, kid.id.data, 20, SQLITE_STATIC);
 
-    int rc = sqlite3_step(s);
+    int rc = AR_STEP_ROW_READONLY(s);
     if (rc == SQLITE_DONE)
         return wsql_fail(ws, ZCL_ERR(WSQL_READ_FAIL,
             "read_single_key: pubkey_hash not found in wallet_keys"));
@@ -705,7 +705,7 @@ bool wallet_sqlite_write_best_block(struct wallet_sqlite *ws,
     sqlite3_stmt *s = ws->stmt_best_block_write;
     sqlite3_reset(s);
     sqlite3_bind_blob(s, 1, hash->data, 32, SQLITE_STATIC);
-    bool ok = sqlite3_step(s) == SQLITE_DONE;
+    bool ok = AR_STEP_WRITE(s) == SQLITE_DONE;
     if (!ok)
         LOG_FAIL("wallet_sqlite", "write_best_block: step failed: %s",
                  sqlite3_errmsg(ws->db));
@@ -738,7 +738,7 @@ bool wallet_sqlite_write_scan_height(struct wallet_sqlite *ws, int height)
     sqlite3_reset(s);
     int32_t h = (int32_t)height;
     sqlite3_bind_blob(s, 1, &h, 4, SQLITE_TRANSIENT);
-    bool ok = sqlite3_step(s) == SQLITE_DONE;
+    bool ok = AR_STEP_WRITE(s) == SQLITE_DONE;
     if (!ok)
         LOG_FAIL("wallet_sqlite", "write_scan_height: step failed: %s",
                  sqlite3_errmsg(ws->db));
@@ -789,7 +789,7 @@ bool wallet_sqlite_write_sapling_seed(struct wallet_sqlite *ws,
         sqlite3_bind_blob(ws->stmt_seed_write, 1, seed, 32, SQLITE_STATIC);
     sqlite3_bind_int(ws->stmt_seed_write, 2, next_child);
 
-    bool ok = sqlite3_step(ws->stmt_seed_write) == SQLITE_DONE;
+    bool ok = AR_STEP_WRITE(ws->stmt_seed_write) == SQLITE_DONE;
     if (enc_blob) { memory_cleanse(enc_blob, enc_len); free(enc_blob); }
     if (!ok)
         LOG_FAIL("wallet_sqlite", "write_sapling_seed: step failed: %s",
@@ -885,7 +885,7 @@ bool wallet_sqlite_write_sapling_key(struct wallet_sqlite *ws,
                  "write_sapling_key: bind next_child=%u failed: %s",
                  child_index, sqlite3_errmsg(ws->db));
     }
-    int step_rc = sqlite3_step(upd);
+    int step_rc = AR_STEP_WRITE(upd);
     sqlite3_finalize(upd);
     if (step_rc != SQLITE_DONE) {
         /* SQLITE_BUSY, SQLITE_IOERR, etc. — the row either didn't
