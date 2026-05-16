@@ -11,7 +11,6 @@
 
 #include "zslp/slp.h"
 #include <string.h>
-#include <stdio.h>
 
 /* Read a Bitcoin script PUSH data field.
  * Returns pointer past the field, or NULL on error.
