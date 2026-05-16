@@ -91,7 +91,7 @@ int wallet_canary_run(sqlite3 *db, struct wallet_canary_status *out_status)
     }
     sqlite3_bind_blob(ins, 1, probe, (int)sizeof(probe), SQLITE_STATIC);
     sqlite3_bind_int64(ins, 2, now_unix());
-    rc = sqlite3_step(ins);
+    rc = AR_STEP_WRITE(ins);
     sqlite3_finalize(ins);
     if (rc != SQLITE_DONE)
         return fail(WALLET_CANARY_ERR_WRITE, out_status,

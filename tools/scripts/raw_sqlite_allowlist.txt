@@ -18,9 +18,6 @@
 lib/wallet/src/wallet_sqlite.c
 lib/storage/src/coins_view_sqlite.c
 lib/znam/src/znam.c
-lib/net/src/onion_service.c
-lib/coins/src/utxo_commitment.c
 lib/script/src/htlc.c
-lib/wallet/src/wallet_canary.c
 lib/net/src/zmsg.c
 lib/net/src/file_market.c

@@ -209,7 +209,7 @@ bool utxo_commitment_save_checkpoint(sqlite3 *db,
         LOG_FAIL("utxo_cmt", "prepare %s: %s",
                  sql_save, sqlite3_errmsg(db));
     sqlite3_bind_blob(s, 1, buf, UTXO_COMMITMENT_SERIALIZED_SIZE, SQLITE_STATIC);
-    int rc = sqlite3_step(s);
+    int rc = AR_STEP_WRITE(s);
     sqlite3_finalize(s);
     if (rc != SQLITE_DONE)
         LOG_FAIL("utxo_cmt", "step utxo_commitment save rc=%d: %s",
@@ -343,7 +343,7 @@ bool utxo_commitment_sha3_save(sqlite3 *db, const uint8_t hash[32],
         LOG_FAIL("utxo_cmt", "prepare %s: %s",
                  sql_sha3_save, sqlite3_errmsg(db));
     sqlite3_bind_blob(st, 1, buf, 44, SQLITE_STATIC);
-    int rc = sqlite3_step(st);
+    int rc = AR_STEP_WRITE(st);
     sqlite3_finalize(st);
     if (rc != SQLITE_DONE)
         LOG_FAIL("utxo_cmt", "step utxo_sha3 save rc=%d: %s",

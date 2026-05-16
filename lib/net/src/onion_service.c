@@ -395,7 +395,7 @@ static void populate_directory_from_chain(sqlite3 *db)
         sqlite3_reset(ins);
         sqlite3_bind_text(ins, 1, peers[i].hostname, -1, SQLITE_STATIC);
         sqlite3_bind_int(ins, 2, peers[i].height);
-        sqlite3_step(ins);
+        (void)AR_STEP_WRITE(ins);
     }
     sqlite3_finalize(ins);
 
@@ -437,7 +437,7 @@ static void register_self(sqlite3 *db)
     sqlite3_bind_text(ins, 1, ctx->address, -1, SQLITE_STATIC);
     sqlite3_bind_text(ins, 2, ip_str[0] ? ip_str : "", -1, SQLITE_STATIC);
     sqlite3_bind_int(ins, 3, ip_str[0] ? 8033 : 0);
-    sqlite3_step(ins);
+    (void)AR_STEP_WRITE(ins);
     sqlite3_finalize(ins);
 }
 
