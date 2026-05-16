@@ -24,8 +24,8 @@
  *   ZCL_STRESS_TESTS=1 ZCL_TEST_ONLY=onion ./test_zcl  (focused run)
  *
  * MVP linkage: flips `MVP.md` criterion #2 from ☐ to ✅.  Forward-
- * looking CI gate — not RED-first (no failing branch existed when it
- * was written).  [test:0.5] in AGENT.md convention.
+ * looking CI gate — not RED-first (no failing branch existed when
+ * it was written).
  *
  * Isolation
  * ---------

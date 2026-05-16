@@ -11,8 +11,8 @@
  * .c file in isolation, so an external .c dependency would require
  * extra plumbing just to share six lines of snprintf.
  *
- * P5.3 / AGENT.md row: replaces the previous hardcoded `/home/rhett`
- * defaults with $HOME-derived paths.
+ * Replaces the previous hardcoded `/home/rhett` defaults with
+ * $HOME-derived paths.
  */
 #ifndef ZCL_UTIL_RPC_PATHS_H
 #define ZCL_UTIL_RPC_PATHS_H

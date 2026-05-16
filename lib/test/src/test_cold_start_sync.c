@@ -47,7 +47,7 @@
  * MVP linkage
  * -----------
  * Flips MVP.md criterion #3 from ☐ to ✅.  Forward-looking CI gate
- * (no RED-first branch existed when written): [test:0.5] in AGENT.md.
+ * (no RED-first branch existed when written).
  *
  * What this test does NOT prove
  * -----------------------------

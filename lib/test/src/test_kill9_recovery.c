@@ -67,8 +67,8 @@
  *
  * MVP linkage
  * -----------
- * Flips `MVP.md` criterion #7 from ☐ to ✅.  [test:0.5] in AGENT.md —
- * forward-looking CI gate, not RED-first.
+ * Flips `MVP.md` criterion #7 from ☐ to ✅.  Forward-looking CI
+ * gate, not RED-first.
  */
 
 #include "test/test_helpers.h"
