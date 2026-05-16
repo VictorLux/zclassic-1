@@ -1,0 +1,29 @@
+# tools/scripts/raw_sqlite_allowlist.txt
+#
+# Files allowed to contain raw sqlite3_step() calls outside AR_STEP macros.
+# Each entry is a path relative to the repo root.
+#
+# This is a *ratchet* list. Files are removed from it as Wave 3 of the deep
+# refactor (CLAUDE.md / plan: sqlite3_step → AR_BEGIN_SAVE migration) lands
+# the per-subsystem conversion. Once empty, the allowlist itself is removed
+# and the lint becomes unconditional.
+#
+# Adding a file here requires a clear migration follow-up. Do NOT add new
+# entries to dodge the lint — the goal is to drive this list to zero.
+#
+# Convention for individual call sites that must remain raw (very rare —
+# e.g., schema bootstrap before AR macros are available): annotate the line
+# with `// raw-sql-ok: <one-line justification>`.
+
+lib/wallet/src/wallet_sqlite.c
+lib/storage/src/coins_view_sqlite.c
+lib/net/src/fast_sync.c
+lib/znam/src/znam.c
+lib/net/src/onion_service.c
+lib/coins/src/utxo_commitment.c
+lib/script/src/htlc.c
+lib/wallet/src/wallet_canary.c
+lib/validation/src/process_block.c
+lib/net/src/zmsg.c
+lib/net/src/file_market.c
+lib/net/src/load_balancer.c
