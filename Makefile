@@ -702,7 +702,7 @@ check-silent-errors-services:
 
 check-before-save-hooks:
 	@echo "══ LINT: critical models wire before_save hooks ══"
-	@for model in utxo block; do \
+	@for model in utxo block wallet_key wallet_tx; do \
 	    grep -q 'before_save' app/models/src/$$model.c \
 	    || (echo "FAIL: app/models/src/$$model.c missing before_save hook" && exit 1); \
 	done
