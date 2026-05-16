@@ -10,7 +10,7 @@ One binary. Zero dependencies. 26MB.
 git clone https://github.com/ArcadiaOS/zclassic23.git
 cd zclassic23
 make zclassic23    # build (requires only gcc/clang with C23 support)
-make test          # run 200+ tests
+make test          # run 1500+ tests
 ```
 
 ## Run
@@ -67,7 +67,7 @@ zclassic23 binary (26MB, statically linked)
 | Target | Description |
 |--------|-------------|
 | `make zclassic23` | Main binary (26MB, zero system deps) |
-| `make test` | Run 200+ tests |
+| `make test` | Run 1500+ tests |
 | `make zcl-rpc` | Lightweight CLI RPC client |
 | `make zcl-nodectl` | Compiled node lifecycle + follow verifier |
 | `make zcl-browser` | GTK Tor-only browser |
@@ -94,7 +94,7 @@ lib/
   script/             Script interpreter, standard scripts, sigcache
   rpc/                HTTP server, RPC protocol
   coins/              UTXO set, coin commitment tracking
-  test/               200+ automated tests
+  test/               1500+ automated tests across 198 files
   [+ 13 more modules]
 vendor/               Static libs (secp256k1, leveldb, sqlite3, openssl, tor)
 tools/                zcl-browser, zcl-rpc, zcl-nodectl, hodl wave tools, utilities

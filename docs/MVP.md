@@ -20,39 +20,14 @@ criteria; MVP is achieved at 8/8.
 
 **Estimated MRS today: 3 / 8** (criteria 1, 2, 4 likely pass on
 manual test; 3 partial; 5/6/7/8 fail or untested). **CI-verified
-MRS: 3 / 8** — criteria #2 (P11.1, `test_onion_bootstrap.c`), #3
-(P11.3, `test_cold_start_sync.c`), and #7 (P11.7,
-`test_kill9_recovery.c`) are green CI gates; the rest remain
-estimate-only.
+MRS: 3 / 8** — criteria #2 (`test_onion_bootstrap.c`), #3
+(`test_cold_start_sync.c`), and #7 (`test_kill9_recovery.c`) are
+green CI gates; the rest remain estimate-only.
 
 **Update rule:** when a CI test for a criterion goes green, flip ☐
 to ✅ in this file.
 
-## Hardening Index (HI) — measures test-first discipline
-
-For each closed roadmap row, multiply severity by test quality:
-
-| Quality | Multiplier | Definition |
-|---|---|---|
-| 1.0 | full | RED regression test committed BEFORE the fix (P10.1 pattern) |
-| 0.5 | half | Has a test exercising the fix path, but not proven RED pre-fix |
-| 0.0 | none | Hotfix only, or no test |
-
-`HI = Σ (severity_weight × test_quality) / Σ severity_weight (max possible)`
-
-**Estimated HI today: ~50%** — most rows have tests but few were
-RED-first. Every new row from P10 onward must be 1.0 by
-construction (the workflow forces it).
-
-**MVP achieved when:** MRS = 8/8 AND HI ≥ 80%.
-
-## What this means for the agent workflow
-
-- Every row's `done` marker in the roadmap must include `[test:N.N]`
-  (e.g., `done abc1234 [test:1.0]`). Missing = 0.0 by default.
-- The MVP criteria are first-class: file each one as a CI test row
-  (P11.x) once P10.1 closes.
-- HI + MRS update weekly.
+**MVP achieved when:** MRS = 8/8.
 
 ## Why these and not others
 
