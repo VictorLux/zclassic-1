@@ -7,6 +7,7 @@
 #include <assert.h>
 #include <sqlite3.h>
 #include <unistd.h>
+#include "util/ar_step_readonly.h"
 #include "validation/process_block.h"
 #include "validation/main_logic.h"
 #include "validation/check_block.h"
@@ -840,7 +841,7 @@ static void process_block_note_utxo_failure(struct main_state *ms,
         sqlite3_stmt *st = NULL;
         if (sqlite3_prepare_v2(ndb->db, "SELECT MAX(height) FROM utxos",
                                -1, &st, NULL) == SQLITE_OK && st) {
-            if (sqlite3_step(st) == SQLITE_ROW)
+            if (AR_STEP_ROW_READONLY(st) == SQLITE_ROW)
                 durable_utxo_max_h = sqlite3_column_int(st, 0);
             sqlite3_finalize(st);
         }
@@ -3460,7 +3461,7 @@ bool connect_tip(struct validation_state *state,
             sqlite3_prepare_v2(g_coins_sqlite_ptr->db,
                 "SELECT value FROM node_state WHERE key='snapshot_mmr_height'",
                 -1, &qs, NULL);
-            if (qs && sqlite3_step(qs) == SQLITE_ROW) {
+            if (qs && AR_STEP_ROW_READONLY(qs) == SQLITE_ROW) {
                 const void *blob = sqlite3_column_blob(qs, 0);
                 if (blob && sqlite3_column_bytes(qs, 0) >= 4)
                     memcpy(&s_mmr_check_height, blob, 4);
@@ -3471,7 +3472,7 @@ bool connect_tip(struct validation_state *state,
                 sqlite3_prepare_v2(g_coins_sqlite_ptr->db,
                     "SELECT value FROM node_state WHERE key='snapshot_mmr_root'",
                     -1, &qs, NULL);
-                if (qs && sqlite3_step(qs) == SQLITE_ROW) {
+                if (qs && AR_STEP_ROW_READONLY(qs) == SQLITE_ROW) {
                     const void *blob = sqlite3_column_blob(qs, 0);
                     if (blob && sqlite3_column_bytes(qs, 0) >= 32)
                         memcpy(s_mmr_expected, blob, 32);

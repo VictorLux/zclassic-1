@@ -23,6 +23,5 @@ lib/net/src/onion_service.c
 lib/coins/src/utxo_commitment.c
 lib/script/src/htlc.c
 lib/wallet/src/wallet_canary.c
-lib/validation/src/process_block.c
 lib/net/src/zmsg.c
 lib/net/src/file_market.c
