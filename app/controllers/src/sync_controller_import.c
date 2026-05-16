@@ -696,7 +696,7 @@ int node_db_sync_import_utxos(struct node_db *ndb,
     if (!sync_db_turbo_scope_begin(&turbo_mode, ndb, true)) {
         fprintf(stderr, "UTXO import: failed to enter turbo mode\n");
         sync_job_import_finish(0);
-        return -1;
+        return -1; // raw-return-ok:logged-above
     }
 
     /* ── Recovery policy gate + scoped wipe ────────────────────────
@@ -731,7 +731,7 @@ int node_db_sync_import_utxos(struct node_db *ndb,
             if (!sync_db_turbo_scope_end(&turbo_mode))
                 fprintf(stderr, "UTXO import: failed to restore normal mode after policy refusal\n");
             sync_job_import_finish(0);
-            return -1;
+            return -1; // raw-return-ok:logged-above
         }
 
         {
@@ -741,7 +741,7 @@ int node_db_sync_import_utxos(struct node_db *ndb,
                 if (!sync_db_turbo_scope_end(&turbo_mode))
                     fprintf(stderr, "UTXO import: failed to restore normal mode after db_txn failure\n");
                 sync_job_import_finish(0);
-                return -1;
+                return -1; // raw-return-ok:logged-above
             }
             if (!node_db_wipe_utxos(ndb)) {
                 fprintf(stderr, "UTXO import: failed to wipe utxos table\n");
@@ -749,14 +749,14 @@ int node_db_sync_import_utxos(struct node_db *ndb,
                 if (!sync_db_turbo_scope_end(&turbo_mode))
                     fprintf(stderr, "UTXO import: failed to restore normal mode after wipe failure\n");
                 sync_job_import_finish(0);
-                return -1;
+                return -1; // raw-return-ok:logged-above
             }
             if (!db_txn_commit(txn)) {
                 fprintf(stderr, "UTXO import: commit of wipe failed\n");
                 if (!sync_db_turbo_scope_end(&turbo_mode))
                     fprintf(stderr, "UTXO import: failed to restore normal mode after commit failure\n");
                 sync_job_import_finish(0);
-                return -1;
+                return -1; // raw-return-ok:logged-above
             }
         }
     }
@@ -767,7 +767,7 @@ int node_db_sync_import_utxos(struct node_db *ndb,
         if (!sync_db_turbo_scope_end(&turbo_mode))
             fprintf(stderr, "UTXO import: failed to restore normal mode after alloc failure\n");
         sync_job_import_finish(0);
-        return -1;
+        return -1; // raw-return-ok:logged-above
     }
     ctx->cvdb = cvdb;
     ctx->ndb = ndb;
@@ -786,7 +786,7 @@ int node_db_sync_import_utxos(struct node_db *ndb,
             fprintf(stderr, "UTXO import: failed to restore normal mode after worker startup failure\n");
         free(ctx);
         sync_job_import_finish(0);
-        return -1;
+        return -1; // raw-return-ok:logged-above
     }
 
     /* ── Reader (main thread): iterate LevelDB, fill chunks ────────── */
@@ -966,7 +966,7 @@ reader_done:
         import_context_release_chunks(ctx);
         free(ctx);
         sync_job_import_finish(total_rows);
-        return -1;
+        return -1; // raw-return-ok:logged-above
     }
 
     /* ── Rebuild all indexes for power-node queries ────────────────── */
@@ -985,7 +985,7 @@ reader_done:
         import_context_release_chunks(ctx);
         free(ctx);
         sync_job_import_finish(total_rows);
-        return -1;
+        return -1; // raw-return-ok:logged-above
     }
 
     struct timespec ts_idx_done;

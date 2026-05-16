@@ -700,6 +700,25 @@ check-silent-errors-services:
 	fi
 	@echo "  OK: all service error returns logged"
 
+check-silent-errors-controllers:
+	@echo "══ LINT: silent error returns in controllers ══"
+	@HITS=$$(grep -rn -B1 'return -1;' app/controllers/src/ --include='*.c' \
+	    | grep 'return -1;' \
+	    | grep -v 'LOG_ERR\|LOG_FAIL\|log_json\|fprintf\|printf\|raw-return-ok' \
+	    | while read -r line; do \
+	        file=$$(echo "$$line" | cut -d: -f1); \
+	        lnum=$$(echo "$$line" | cut -d: -f2); \
+	        prev=$$((lnum - 1)); \
+	        prev_line=$$(sed -n "$${prev}p" "$$file"); \
+	        echo "$$prev_line" | grep -qE 'fprintf|LOG_ERR|LOG_FAIL|log_json|printf' || echo "$$line"; \
+	    done); \
+	if [ -n "$$HITS" ]; then \
+	    echo "$$HITS"; \
+	    echo "FAIL: silent error returns found in controllers (use LOG_ERR/LOG_RETURN, prev-line fprintf, or mark // raw-return-ok:<reason>)"; \
+	    exit 1; \
+	fi
+	@echo "  OK: all controller error returns logged"
+
 check-before-save-hooks:
 	@echo "══ LINT: critical models wire before_save hooks ══"
 	@for model in utxo block wallet_key wallet_tx; do \
@@ -737,7 +756,7 @@ check-pthread-create:
 	fi
 	@echo "  OK: all pthread_create call sites accounted for"
 
-lint: check-malloc check-silent-errors check-raw-sqlite check-raw-malloc check-coins-lookup-nullcheck check-observability-pairing check-silent-errors-services check-before-save-hooks check-pthread-create
+lint: check-malloc check-silent-errors check-raw-sqlite check-raw-malloc check-coins-lookup-nullcheck check-observability-pairing check-silent-errors-services check-silent-errors-controllers check-before-save-hooks check-pthread-create
 	@echo "══ LINT: all checks passed ══"
 
 ci: lint zclassic23 test_zcl

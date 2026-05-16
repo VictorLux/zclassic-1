@@ -547,7 +547,7 @@ int node_db_sync_catchup(struct node_db *ndb,
     if (!sync_db_turbo_scope_begin(&turbo_mode, ndb, bulk_mode)) {
         fprintf(stderr, "catchup: failed to enter turbo mode\n");
         sync_job_catchup_finish();
-        return -1;
+        return -1; // raw-return-ok:logged-above
     }
 
     /* Verify connection works before starting */
@@ -557,7 +557,7 @@ int node_db_sync_catchup(struct node_db *ndb,
             fprintf(stderr, "catchup: failed to restore normal mode after BEGIN failure\n");
         restore_ok = false;
         sync_job_catchup_finish();
-        return -1;
+        return -1; // raw-return-ok:logged-above
     }
     tx_open = true;
     if (!node_db_commit(ndb)) {
@@ -567,7 +567,7 @@ int node_db_sync_catchup(struct node_db *ndb,
             fprintf(stderr, "catchup: failed to restore normal mode after initial COMMIT failure\n");
         restore_ok = false;
         sync_job_catchup_finish();
-        return -1;
+        return -1; // raw-return-ok:logged-above
     }
     tx_open = false;
 
@@ -602,7 +602,7 @@ int node_db_sync_catchup(struct node_db *ndb,
             fprintf(stderr, "catchup: failed to restore normal mode after tx open failure\n");
         restore_ok = false;
         sync_job_catchup_finish();
-        return -1;
+        return -1; // raw-return-ok:logged-above
     }
     tx_open = true;
 

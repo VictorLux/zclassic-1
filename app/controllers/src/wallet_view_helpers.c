@@ -834,7 +834,7 @@ int wv_shield_check_status(void) {
         g_shield_opid[0] = '\0';
         g_shield_pending_since = 0;
         g_shield_pending_amount = 0;
-        return -1;
+        return -1; // raw-return-ok:state-machine-shield-failed
     }
     return 1;
 }

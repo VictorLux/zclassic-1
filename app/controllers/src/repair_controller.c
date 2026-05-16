@@ -69,7 +69,7 @@ static int64_t repair_json_int(const char *json, const char *key)
     char pat[128];
     snprintf(pat, sizeof(pat), "\"%s\"", key);
     const char *p = strstr(json, pat);
-    if (!p) return -1;
+    if (!p) return -1; // raw-return-ok:json-parser-key-not-found
     p += strlen(pat);
     while (*p == ' ' || *p == ':' || *p == '\t') p++;
     return strtoll(p, NULL, 10);
@@ -384,7 +384,7 @@ static bool rpc_repairutxos(const struct json_value *params, bool help,
     char *sqlite_err = NULL;
     if (sqlite3_exec(ctx->node_db->db, "BEGIN", NULL, NULL,
                      &sqlite_err) != SQLITE_OK) {
-        fprintf(stderr, "repairutxos: sqlite BEGIN failed: %s\n",
+        fprintf(stderr, "repairutxos: sqlite BEGIN failed: %s\n", // obs-ok:helper-return-path
                 sqlite_err ? sqlite_err : "unknown");
         sqlite3_free(sqlite_err);
         json_set_str(result, "Database transaction begin failed");
@@ -584,7 +584,7 @@ static bool rpc_repairutxos(const struct json_value *params, bool help,
     sqlite_err = NULL;
     if (sqlite3_exec(ctx->node_db->db, "COMMIT", NULL, NULL,
                      &sqlite_err) != SQLITE_OK) {
-        fprintf(stderr, "repairutxos: sqlite COMMIT failed: %s\n",
+        fprintf(stderr, "repairutxos: sqlite COMMIT failed: %s\n", // obs-ok:helper-return-path
                 sqlite_err ? sqlite_err : "unknown");
         sqlite3_free(sqlite_err);
         json_set_str(result, "Database transaction commit failed");

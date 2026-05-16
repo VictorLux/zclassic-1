@@ -92,7 +92,7 @@ static void snapshot_tx_rollback_best_effort(struct node_db *ndb,
     if (!ndb || !ndb->open)
         return;
     if (!node_db_rollback(ndb)) {
-        fprintf(stderr, "snapshot: %s failed: %s\n",
+        fprintf(stderr, "snapshot: %s failed: %s\n", // obs-ok:helper-return-path
                 label, ndb->db ? sqlite3_errmsg(ndb->db) : "db unavailable");
     }
 }
@@ -171,14 +171,14 @@ const char *snapshot_create(const char *legacy_datadir,
     snprintf(dst, sizeof(dst), "%s/blocks", snap_dir);
     int copied = block_files_copy(src, dst);
     if (copied < 0) {
-        fprintf(stderr,
+        fprintf(stderr, // obs-ok:helper-return-path
                 "snapshot: block file copy failed from %s to %s\n",
                 src, dst);
         dir_remove_tree(snap_dir);
         return NULL;
     }
     if (copied == 0) {
-        fprintf(stderr,
+        fprintf(stderr, // obs-ok:helper-return-path
                 "snapshot: failed to copy block files from %s to %s\n",
                 src, dst);
         dir_remove_tree(snap_dir);
@@ -192,7 +192,7 @@ const char *snapshot_create(const char *legacy_datadir,
     snprintf(src, sizeof(src), "%s/blocks/index", legacy_datadir);
     snprintf(dst, sizeof(dst), "%s/blocks/index", snap_dir);
     if (!dir_copy(src, dst)) {
-        fprintf(stderr,
+        fprintf(stderr, // obs-ok:helper-return-path
                 "snapshot: failed to copy block index from %s to %s\n",
                 src, dst);
         dir_remove_tree(snap_dir);
@@ -206,7 +206,7 @@ const char *snapshot_create(const char *legacy_datadir,
     snprintf(src, sizeof(src), "%s/chainstate", legacy_datadir);
     snprintf(dst, sizeof(dst), "%s/chainstate", snap_dir);
     if (!dir_copy(src, dst)) {
-        fprintf(stderr,
+        fprintf(stderr, // obs-ok:helper-return-path
                 "snapshot: failed to copy chainstate from %s to %s\n",
                 src, dst);
         dir_remove_tree(snap_dir);
@@ -363,7 +363,7 @@ static void *import_block_index_thread(void *arg)
         db_blk.num_tx = (int)dbi.nTx;
 
         if (!db_block_save(&ndb, &db_blk)) {
-            fprintf(stderr, "T1: block save failed at height %d\n",
+            fprintf(stderr, "T1: block save failed at height %d\n", // obs-ok:helper-return-path
                     db_blk.height);
             ok = false;
             break;
@@ -682,13 +682,13 @@ int snapshot_import(const char *snapshot_dir,
     fflush(stdout);
 
     if (!snapshot_import_job_succeeded(&job)) {
-        fprintf(stderr,
+        fprintf(stderr, // obs-ok:helper-return-path
                 "snapshot_import: import workers failed "
                 "(blocks=%d utxos=%d wallet=%d); refusing to sync files\n",
                 job.block_index_args.result,
                 job.utxo_args.result,
                 job.wallet_args.result);
-        return -1;
+        return -1; // raw-return-ok:logged-above
     }
 
     /* Copy block files + LevelDB to C23 data dir for consensus engine */
@@ -707,13 +707,13 @@ int snapshot_import(const char *snapshot_dir,
         fprintf(stderr,
                 "snapshot_import: block file copy failed from %s to %s\n",
                 src, dst);
-        return -1;
+        return -1; // raw-return-ok:logged-above
     }
     if (copied == 0) {
         fprintf(stderr,
                 "snapshot_import: failed to sync block files from %s to %s\n",
                 src, dst);
-        return -1;
+        return -1; // raw-return-ok:logged-above
     }
 
     /* Block index: clean copy */
@@ -725,7 +725,7 @@ int snapshot_import(const char *snapshot_dir,
         fprintf(stderr,
                 "snapshot_import: failed to sync block index from %s to %s\n",
                 src, dst);
-        return -1;
+        return -1; // raw-return-ok:logged-above
     }
 
     /* Chainstate: clean copy */
@@ -737,7 +737,7 @@ int snapshot_import(const char *snapshot_dir,
         fprintf(stderr,
                 "snapshot_import: failed to sync chainstate from %s to %s\n",
                 src, dst);
-        return -1;
+        return -1; // raw-return-ok:logged-above
     }
 
     struct timespec t2_end;
@@ -769,7 +769,7 @@ static bool snapshot_deserialize_index_block(const uint8_t *data,
     bool ok = block_deserialize(blk, &bs);
     stream_free(&bs);
     if (!ok) {
-        fprintf(stderr,
+        fprintf(stderr, // obs-ok:helper-return-path
                 "tx_index: skipping block after full deserialize failure "
                 "height=%d\n",
                 height);
@@ -840,7 +840,7 @@ static bool snapshot_locate_block_payload(const uint8_t *file_data,
     }
 
     if (height >= 0)
-        fprintf(stderr,
+        fprintf(stderr, // obs-ok:helper-return-path
                 "tx_index: cannot locate block payload height=%d pos=%zu "
                 "file_size=%zu\n",
                 height, stored_pos, file_size);
@@ -850,11 +850,11 @@ static bool snapshot_locate_block_payload(const uint8_t *file_data,
 static int snapshot_extract_bip34_height_from_block(const struct block *blk)
 {
     if (!blk || blk->num_vtx == 0 || blk->vtx[0].num_vin == 0)
-        return -1;
+        return -1; // raw-return-ok:bin-parser-empty-vin
 
     const struct script *sig = &blk->vtx[0].vin[0].script_sig;
     if (sig->size == 0)
-        return -1;
+        return -1; // raw-return-ok:bin-parser-bounds
 
     uint8_t nbytes = sig->data[0];
     if (nbytes == 0x00)
@@ -862,7 +862,7 @@ static int snapshot_extract_bip34_height_from_block(const struct block *blk)
     if (nbytes >= 0x51 && nbytes <= 0x60)
         return nbytes - 0x50;
     if (nbytes > 8 || (size_t)nbytes + 1 > sig->size)
-        return -1;
+        return -1; // raw-return-ok:bin-parser-bounds
 
     int64_t h = 0;
     for (uint8_t i = 0; i < nbytes; i++)
@@ -870,7 +870,7 @@ static int snapshot_extract_bip34_height_from_block(const struct block *blk)
     if (sig->data[nbytes] & 0x80)
         h = -(h & ~((int64_t)0x80 << (8 * (nbytes - 1))));
     if (h < 0 || h > INT32_MAX)
-        return -1;
+        return -1; // raw-return-ok:bin-parser-overflow
     return (int)h;
 }
 
@@ -1069,7 +1069,7 @@ static void *build_tx_index_thread(void *arg)
     if (sqlite3_open_v2(db_path, &read_db,
                         SQLITE_OPEN_READONLY | SQLITE_OPEN_NOMUTEX,
                         NULL) != SQLITE_OK || !read_db) {
-        fprintf(stderr, "tx_index: failed to open read-only SQLite: %s\n",
+        fprintf(stderr, "tx_index: failed to open read-only SQLite: %s\n", // obs-ok:helper-return-path
                 read_db ? sqlite3_errmsg(read_db) : "db unavailable");
         if (read_db)
             sqlite3_close(read_db);
@@ -1086,7 +1086,7 @@ static void *build_tx_index_thread(void *arg)
         " ORDER BY file_num, data_pos",
         -1, &query, NULL);
     if (query_rc != SQLITE_OK || !query) {
-        fprintf(stderr, "tx_index: failed to prepare block query: %s\n",
+        fprintf(stderr, "tx_index: failed to prepare block query: %s\n", // obs-ok:helper-return-path
                 sqlite3_errmsg(read_db));
         if (query)
             sqlite3_finalize(query);
@@ -1129,13 +1129,13 @@ static void *build_tx_index_thread(void *arg)
                      datadir, file_num);
             int fd = open(path, O_RDONLY);
             if (fd < 0) {
-                fprintf(stderr, "tx_index: failed to open %s\n", path);
+                fprintf(stderr, "tx_index: failed to open %s\n", path); // obs-ok:helper-return-path
                 ok = false;
                 break;
             }
             struct stat st;
             if (fstat(fd, &st) != 0) {
-                fprintf(stderr, "tx_index: failed to stat %s\n", path);
+                fprintf(stderr, "tx_index: failed to stat %s\n", path); // obs-ok:helper-return-path
                 close(fd);
                 ok = false;
                 break;
@@ -1145,7 +1145,7 @@ static void *build_tx_index_thread(void *arg)
                                MAP_PRIVATE, fd, 0);
             close(fd);
             if (cached_data == MAP_FAILED) {
-                fprintf(stderr, "tx_index: failed to mmap %s\n", path);
+                fprintf(stderr, "tx_index: failed to mmap %s\n", path); // obs-ok:helper-return-path
                 cached_data = NULL;
                 ok = false;
                 break;
@@ -1156,7 +1156,7 @@ static void *build_tx_index_thread(void *arg)
 
         if (!cached_data || (size_t)data_pos >= cached_size) {
             if (skipped < 20 || (skipped % 10000) == 0)
-                fprintf(stderr,
+                fprintf(stderr, // obs-ok:helper-return-path
                         "tx_index: skipping invalid block offset file=%d "
                         "height=%d pos=%d size=%zu\n",
                         file_num, height, data_pos, cached_size);
@@ -1170,7 +1170,7 @@ static void *build_tx_index_thread(void *arg)
                                            (size_t)data_pos, height,
                                            &bdata, &bavail)) {
             if (skipped < 20 || (skipped % 10000) == 0)
-                fprintf(stderr,
+                fprintf(stderr, // obs-ok:helper-return-path
                         "tx_index: skipping unlocatable block file=%d "
                         "height=%d pos=%d size=%zu\n",
                         file_num, height, data_pos, cached_size);
@@ -1192,7 +1192,7 @@ static void *build_tx_index_thread(void *arg)
             uint256_get_hex(&disk_hash, got);
             uint256_get_hex(&expected_hash, want);
             if (skipped < 20 || (skipped % 10000) == 0)
-                fprintf(stderr,
+                fprintf(stderr, // obs-ok:helper-return-path
                         "tx_index: skipping block hash mismatch height=%d "
                         "got=%s want=%s\n",
                         height, got, want);
@@ -1218,7 +1218,7 @@ static void *build_tx_index_thread(void *arg)
     }
 
     if (rc != SQLITE_DONE && ok) {
-        fprintf(stderr, "tx_index: block query failed: %s\n",
+        fprintf(stderr, "tx_index: block query failed: %s\n", // obs-ok:helper-return-path
                 sqlite3_errmsg(read_db));
         ok = false;
     }
@@ -1239,7 +1239,7 @@ static void *build_tx_index_thread(void *arg)
     tx_open = false;
 
     if (ok && skipped > 0) {
-        fprintf(stderr,
+        fprintf(stderr, // obs-ok:helper-return-path
                 "tx_index: SQLite block rows skipped %d blocks; falling "
                 "back to raw blk*.dat walk\n",
                 skipped);
@@ -1256,7 +1256,7 @@ static void *build_tx_index_thread(void *arg)
     }
 
     if (ok && skipped > 0) {
-        fprintf(stderr,
+        fprintf(stderr, // obs-ok:helper-return-path
                 "tx_index: incomplete — raw block-file walk skipped %d "
                 "blocks; leaving marker unset so a safer builder can retry\n",
                 skipped);
@@ -1278,7 +1278,7 @@ static void *build_tx_index_thread(void *arg)
     }
 
     if (ok && !db_tx_finalize_bulk_load(&ndb)) {
-        fprintf(stderr, "tx_index: failed to finalize bulk load indexes\n");
+        fprintf(stderr, "tx_index: failed to finalize bulk load indexes\n"); // obs-ok:helper-return-path
         ok = false;
     }
     if (ok)

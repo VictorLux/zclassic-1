@@ -96,10 +96,10 @@ static uint8_t *ser_tx(const struct transaction *tx, size_t *len)
 /* Extract BIP34 block height from coinbase scriptSig. */
 static int extract_bip34_height(const struct transaction *coinbase)
 {
-    if (coinbase->num_vin == 0) return -1;
+    if (coinbase->num_vin == 0) return -1; // raw-return-ok:bin-parser-empty-vin
     const uint8_t *sig = coinbase->vin[0].script_sig.data;
     size_t sig_len = coinbase->vin[0].script_sig.size;
-    if (sig_len < 1) return -1;
+    if (sig_len < 1) return -1; // raw-return-ok:bin-parser-bounds
 
     uint8_t nbytes = sig[0];
 
@@ -110,7 +110,7 @@ static int extract_bip34_height(const struct transaction *coinbase)
         return nbytes - 0x50;
 
     /* CScriptNum: nbytes = number of following bytes encoding height */
-    if (nbytes > 8 || (size_t)nbytes + 1 > sig_len) return -1;
+    if (nbytes > 8 || (size_t)nbytes + 1 > sig_len) return -1; // raw-return-ok:bin-parser-bounds
     int64_t h = 0;
     for (uint8_t i = 0; i < nbytes; i++)
         h |= (int64_t)sig[1 + i] << (8 * i);
@@ -337,49 +337,50 @@ static int extract_height_raw(const uint8_t *bdata, size_t bsize)
 {
     /* Header: version(4)+hashPrev(32)+hashMerkle(32)+hashReserved(32)+
      *         nTime(4)+nBits(4)+nNonce(32) = 140, then solution */
-    if (bsize < 141) return -1;
+    if (bsize < 141) return -1; // raw-return-ok:bin-parser-bounds
     size_t pos = 140;
     uint64_t sol_size;
     int n = read_compact_size_raw(bdata + pos, bsize - pos, &sol_size);
-    if (n == 0 || sol_size > 4096) return -1;
+    if (n == 0 || sol_size > 4096) return -1; // raw-return-ok:bin-parser-bounds
     pos += (size_t)n + (size_t)sol_size;
 
     /* num_tx */
-    if (pos >= bsize) return -1;
+    if (pos >= bsize) return -1; // raw-return-ok:bin-parser-bounds
     uint64_t num_tx;
     n = read_compact_size_raw(bdata + pos, bsize - pos, &num_tx);
-    if (n == 0 || num_tx == 0) return -1;
+    if (n == 0 || num_tx == 0) return -1; // raw-return-ok:bin-parser-bounds
+
     pos += (size_t)n;
 
     /* Coinbase tx version (with optional fOverwintered bit) */
-    if (pos + 4 > bsize) return -1;
+    if (pos + 4 > bsize) return -1; // raw-return-ok:bin-parser-bounds
     int32_t tx_ver;
     memcpy(&tx_ver, bdata + pos, 4);
     pos += 4;
     if (tx_ver & (int32_t)0x80000000) pos += 4; /* skip versionGroupId */
 
     /* vin_count */
-    if (pos >= bsize) return -1;
+    if (pos >= bsize) return -1; // raw-return-ok:bin-parser-bounds
     uint64_t vin_count;
     n = read_compact_size_raw(bdata + pos, bsize - pos, &vin_count);
-    if (n == 0 || vin_count == 0) return -1;
+    if (n == 0 || vin_count == 0) return -1; // raw-return-ok:bin-parser-empty-vin
     pos += (size_t)n;
 
     /* First vin prevout (36 bytes) + scriptSig */
     pos += 36;
-    if (pos >= bsize) return -1;
+    if (pos >= bsize) return -1; // raw-return-ok:bin-parser-bounds
     uint64_t script_len;
     n = read_compact_size_raw(bdata + pos, bsize - pos, &script_len);
-    if (n == 0) return -1;
+    if (n == 0) return -1; // raw-return-ok:bin-parser-bounds
     pos += (size_t)n;
-    if (pos + script_len > bsize || script_len == 0) return -1;
+    if (pos + script_len > bsize || script_len == 0) return -1; // raw-return-ok:bin-parser-bounds
 
     /* BIP34 height from scriptSig */
     const uint8_t *sig = bdata + pos;
     uint8_t nbytes = sig[0];
     if (nbytes == 0x00) return 0;
     if (nbytes >= 0x51 && nbytes <= 0x60) return nbytes - 0x50;
-    if (nbytes > 8 || (size_t)nbytes + 1 > script_len) return -1;
+    if (nbytes > 8 || (size_t)nbytes + 1 > script_len) return -1; // raw-return-ok:bin-parser-bounds
     int64_t h = 0;
     for (uint8_t i = 0; i < nbytes; i++)
         h |= (int64_t)sig[1 + i] << (8 * i);
@@ -752,7 +753,7 @@ int legacy_import(const char *legacy_datadir,
             /* raw-pthread-ok: short-burst-joined-immediately */
             if (pthread_create(&threads[i], NULL,
                                scan_file_thread, &args[i]) != 0) {
-                fprintf(stderr,
+                fprintf(stderr, // obs-ok:helper-return-path
                         "legacy_import: failed to start pass-1 scan thread\n");
                 for (int j = 0; j < started; j++)
                     pthread_join(threads[j], NULL);
@@ -859,14 +860,14 @@ int legacy_import(const char *legacy_datadir,
             du.height = u->height;
             du.is_coinbase = u->is_coinbase;
             if (!db_wallet_utxo_save(ndb, &du)) {
-                fprintf(stderr,
+                fprintf(stderr, // obs-ok:helper-return-path
                         "legacy_import: pass 2 wallet_utxo save failed\n");
                 goto pass2_db_fail;
             }
             if (u->spent &&
                 !db_wallet_utxo_mark_spent(ndb, u->txid, u->vout,
                                            u->spent_txid, u->spent_vin)) {
-                fprintf(stderr,
+                fprintf(stderr, // obs-ok:helper-return-path
                         "legacy_import: pass 2 wallet_utxo mark_spent failed\n");
                 goto pass2_db_fail;
             }
@@ -885,7 +886,7 @@ int legacy_import(const char *legacy_datadir,
             dt.from_me = t->from_me;
             dt.fee = t->fee;
             if (!db_wallet_tx_save(ndb, &dt)) {
-                fprintf(stderr,
+                fprintf(stderr, // obs-ok:helper-return-path
                         "legacy_import: pass 2 wallet_tx save failed\n");
                 goto pass2_db_fail;
             }
@@ -900,7 +901,7 @@ int legacy_import(const char *legacy_datadir,
 pass2_db_fail:
         if (import_tx_open &&
             !legacy_import_rollback_checked(ndb, "pass 2 rollback")) {
-            fprintf(stderr,
+            fprintf(stderr, // obs-ok:helper-return-path
                     "legacy_import: pass 2 rollback failed after DB error\n");
         }
         goto cleanup;
@@ -920,7 +921,7 @@ pass2_db_done:
 
         fctxs = zcl_calloc((size_t)num_files, sizeof(struct filter_file_ctx), "sapling filter contexts");
         if (!fctxs) {
-            fprintf(stderr,
+            fprintf(stderr, // obs-ok:helper-return-path
                     "legacy_import: failed to allocate sapling filter contexts\n");
             goto cleanup;
         }
@@ -936,7 +937,7 @@ pass2_db_done:
                 if (pthread_create(&thr[i], NULL,
                                    sapling_filter_thread,
                                    &fctxs[base + i]) != 0) {
-                    fprintf(stderr,
+                    fprintf(stderr, // obs-ok:helper-return-path
                             "legacy_import: failed to start sapling filter thread\n");
                     for (int j = 0; j < started; j++)
                         pthread_join(thr[j], NULL);
@@ -977,7 +978,7 @@ pass2_db_done:
 
         dctxs = zcl_calloc((size_t)num_files, sizeof(struct decrypt_file_ctx), "sapling decrypt contexts");
         if (!dctxs) {
-            fprintf(stderr,
+            fprintf(stderr, // obs-ok:helper-return-path
                     "legacy_import: failed to allocate sapling decrypt contexts\n");
             goto cleanup;
         }
@@ -991,7 +992,7 @@ pass2_db_done:
             dctxs[f].result_cap = 64;
             dctxs[f].results = zcl_malloc(64 * sizeof(struct db_sapling_note), "sapling decrypt results");
             if (!dctxs[f].results) {
-                fprintf(stderr,
+                fprintf(stderr, // obs-ok:helper-return-path
                         "legacy_import: failed to allocate sapling decrypt results\n");
                 goto cleanup;
             }
@@ -1008,7 +1009,7 @@ pass2_db_done:
                 if (pthread_create(&thr3[launched], NULL,
                                    decrypt_thread,
                                    &dctxs[base + i]) != 0) {
-                    fprintf(stderr,
+                    fprintf(stderr, // obs-ok:helper-return-path
                             "legacy_import: failed to start sapling decrypt thread\n");
                     for (int j = 0; j < launched; j++)
                         pthread_join(thr3[j], NULL);
@@ -1034,12 +1035,12 @@ pass2_db_done:
                 sapling_notes += dctxs[f].notes_found;
                 for (int i = 0; i < dctxs[f].result_count; i++) {
                     if (!db_sapling_note_save(ndb, &dctxs[f].results[i])) {
-                        fprintf(stderr,
+                        fprintf(stderr, // obs-ok:helper-return-path
                                 "legacy_import: pass 3 sapling note save failed\n");
                         if (sapling_tx_open &&
                             !legacy_import_rollback_checked(ndb,
                                 "pass 3 rollback")) {
-                            fprintf(stderr,
+                            fprintf(stderr, // obs-ok:helper-return-path
                                     "legacy_import: pass 3 rollback failed after DB error\n");
                         }
                         goto cleanup;
