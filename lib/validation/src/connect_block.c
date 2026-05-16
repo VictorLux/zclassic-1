@@ -687,7 +687,7 @@ bool disconnect_block(const struct block *block,
          * Matches Bitcoin Core's CCoinsViewCache semantics (erase
          * semantics propagate through LevelDB's CDBBatch::Erase),
          * while staying compatible with our DIRTY-driven SQLite
-         * flush path. See docs/postmortems/2026-04-19-bip30-stall.md.
+         * flush path. See docs/archive/2026-04/2026-04-19-bip30-stall.md.
          *
          * `coins_view_cache_modify` fetches the backing entry into
          * the scratch on miss; freeing the coins + re-init'ing makes

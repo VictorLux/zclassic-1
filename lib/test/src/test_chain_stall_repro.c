@@ -356,7 +356,7 @@ static int t_clean_view_advances(void)
 
 /* ── Test 3 — Regression test: disconnect_block purges coinbase ──
  *
- * The invariant (from `docs/postmortems/2026-04-19-bip30-stall.md`,
+ * The invariant (from `docs/archive/2026-04/2026-04-19-bip30-stall.md`,
  * Q3): for every txid T in the coins view, the block that created
  * T's outputs must be on the active chain. Concretely: after
  * `disconnect_block(B)` runs on a scratch view wrapping a parent

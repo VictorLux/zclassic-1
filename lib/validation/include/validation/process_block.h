@@ -192,7 +192,7 @@ enum propagate_failed_child_result {
  * At a live-tip block_map size of ~3M entries, each walk is ~24 MB of
  * scratch + an O(N log N) qsort; firing once per FSM flap event can
  * pin the node under sustained RSS + CPU pressure (see
- * docs/postmortems/2026-04-19-bip30-stall.md). Ten seconds lets
+ * docs/archive/2026-04/2026-04-19-bip30-stall.md). Ten seconds lets
  * genuine back-to-back validation failures still propagate without
  * amplifying a stall into resource exhaustion. */
 #define PROPAGATE_FAILED_CHILD_MIN_INTERVAL_SEC 10

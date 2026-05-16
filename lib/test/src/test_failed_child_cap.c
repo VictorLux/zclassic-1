@@ -5,7 +5,7 @@
  * The live 2026-04-19 BIP30 stall re-walked the full block_map (~3M
  * entries, ~24 MB scratch + O(N log N) qsort) on every retry, pinning
  * the node under sustained RSS + CPU. See
- * docs/postmortems/2026-04-19-bip30-stall.md.
+ * docs/archive/2026-04/2026-04-19-bip30-stall.md.
  *
  * This test exercises process_block_propagate_failed_child directly
  * against a small fixture block_map. The GREEN commit must add

@@ -2039,7 +2039,7 @@ bool process_block_try_clear_stale_failed(struct block_index *pindex,
  * 2026-04-19 BIP30 stall, a single stuck block was retried on every
  * FSM flap; the repeated propagation walk is what drove RSS to the
  * cgroup high-water mark in 2h51m (see
- * docs/postmortems/2026-04-19-bip30-stall.md).
+ * docs/archive/2026-04/2026-04-19-bip30-stall.md).
  *
  * Extracted verbatim first (RED), then gated by two cheap early
  * returns (GREEN). See the header for the full guard description. */
@@ -3755,7 +3755,7 @@ bool disconnect_tip(struct validation_state *state,
             fprintf(stderr, // obs-ok:pre-existing-diagnostic
                 "disconnect_tip: INVARIANT violated h=%d tx[%zu] %s "
                 "still reachable via coins_view_cache_have_coins after "
-                "disconnect — see docs/postmortems/2026-04-19-bip30-stall.md\n",
+                "disconnect — see docs/archive/2026-04/2026-04-19-bip30-stall.md\n",
                 pindex_delete->nHeight, i, hex);
             event_emitf(EV_UTXO_CHECKPOINT_FAIL, 0,
                 "disconnect_tip_invariant h=%d txid=%s",
