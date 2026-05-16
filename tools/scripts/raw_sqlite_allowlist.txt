@@ -26,4 +26,3 @@ lib/wallet/src/wallet_canary.c
 lib/validation/src/process_block.c
 lib/net/src/zmsg.c
 lib/net/src/file_market.c
-lib/net/src/load_balancer.c

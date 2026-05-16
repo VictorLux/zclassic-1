@@ -7,6 +7,7 @@
 #include "core/uint256.h"
 #include "core/serialize.h"
 #include "primitives/transaction.h"
+#include "util/ar_step_readonly.h"
 #include "util/log_macros.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -37,7 +38,7 @@ int site_discover_replicas(const char *datadir, const char *token_id,
     if (rc != SQLITE_OK) { sqlite3_close(db); return 0; }
 
     int found = 0;
-    while (sqlite3_step(stmt) == SQLITE_ROW && found < (int)max) {
+    while (AR_STEP_ROW_READONLY(stmt) == SQLITE_ROW && found < (int)max) {
         const void *raw = sqlite3_column_blob(stmt, 0);
         int raw_len = sqlite3_column_bytes(stmt, 0);
         int height = sqlite3_column_int(stmt, 1);
