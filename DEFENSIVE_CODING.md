@@ -302,18 +302,20 @@ lint: check-malloc check-silent-errors check-raw-sqlite \
       check-raw-malloc check-coins-lookup-nullcheck \
       check-observability-pairing check-silent-errors-services \
       check-before-save-hooks check-pthread-create \
-      check-silent-errors-controllers check-model-validation
+      check-silent-errors-controllers check-model-validation \
+      check-long-functions
 	@echo "All lint checks passed"
 
 ci: lint test fuzz-ci coverage
 ```
 
-**Status: 11 gates active.** `make ci` fails if any fire. An agent
+**Status: 12 gates active.** `make ci` fails if any fire. An agent
 that pushes code with raw malloc, silent errors, bypassed AR
 validation, unpaired stderr diagnostics, a critical model missing
-its before_save hook, or a model file with no `validates_*` call and
-no `ar-validate-skip:<tag>` marker gets a red build before any human
-sees it.
+its before_save hook, a model file with no `validates_*` call and
+no `ar-validate-skip:<tag>` marker, or a controller/service function
+over 500 lines without a `long-function-ok:<tag>` override, gets a
+red build before any human sees it.
 
 ### Gate #11: every model is either validated or explicitly skipped
 
@@ -333,12 +335,37 @@ model, and infrastructure / registry / helper files declare their
 exemption in code rather than by silent omission. Implementation:
 `tools/scripts/check_model_validation.sh`.
 
+### Gate #12: controller / service functions stay under 500 lines
+
+`check-long-functions` walks every `app/controllers/src/*.c` and
+`app/services/src/*.c` and flags any top-level function whose body
+spans more than 500 lines from signature to closing `}` on column 0.
+
+Long functions are hard to test in isolation, hard to read in one
+sitting, and almost always conceal two or more concerns waiting to
+be split.  The two report builders that broke this cap before wave
+7d — `explorer_factoids_build` (1389L, 17 archaeology sections) and
+`explorer_stats_build` (1011L, 10 statistics sections) — have been
+refactored into per-section emit helpers, each under ~120 lines.
+
+**Override marker.** A single state machine that genuinely belongs
+as one function may carry `// long-function-ok:<tag>` on its
+signature line.  The tag must be a non-empty single token matching
+`[A-Za-z][A-Za-z0-9_-]+` (same syntax as the other lint overrides)
+and describe WHY the rule does not apply.  At wave 7d the only
+tagged survivor is `rpc_indexlegacy`
+(`blockchain_controller_indexlegacy.c:516`), 1316L, tagged
+`legacy-import-state-machine` — a single deterministic state
+machine for legacy datadir import.
+
+Implementation: `tools/scripts/check_long_functions.sh`.
+
 ---
 
 ## 8. Lint-override discipline — every escape hatch is named
 
-Four lint gates accept an inline override marker when the underlying
-rule cannot mechanically hold. The four marker classes:
+Five lint gates accept an inline override marker when the underlying
+rule cannot mechanically hold. The five marker classes:
 
 | Marker | Where allowed | Lint gate |
 |--------|---------------|-----------|
@@ -346,6 +373,7 @@ rule cannot mechanically hold. The four marker classes:
 | `// raw-sql-ok:<tag>` | line with `sqlite3_step(...)` outside the `AR_STEP_*` wrappers | `check-raw-sqlite` |
 | `// raw-return-ok:<tag>` | bare `return -1;` in MCP / service / controller code with no preceding log line | `check-silent-errors`, `-services`, `-controllers` |
 | `// raw-alloc-ok:<tag>` | line with `malloc/calloc/realloc` outside the `zcl_*` wrappers | `check-raw-malloc` |
+| `// long-function-ok:<tag>` | signature line of a top-level controller/service function whose body spans >500 lines | `check-long-functions` |
 
 **Syntax (machine-enforced).** Every marker requires a non-empty
 single-token tag matching `[A-Za-z][A-Za-z0-9_-]+` immediately after
@@ -389,11 +417,13 @@ property (e.g. `fatal-true-triggers-rollback-and-partial-write-return`)
   `bin-parser-bounds`, `sentinel-no-compile-time-windows`.
 - `raw-alloc-ok:` — `test-fixture`, `standalone-dev-tool`,
   `db-service-owns-heap-job`.
+- `long-function-ok:` — `legacy-import-state-machine`.
 
 Implementation: `tools/check_observability_pairing.c`,
 `tools/scripts/check_raw_sqlite.sh`,
-`tools/scripts/check_raw_malloc.sh`, and the inline `check-silent-
-errors*` recipes in `Makefile:654+`.
+`tools/scripts/check_raw_malloc.sh`,
+`tools/scripts/check_long_functions.sh`, and the inline
+`check-silent-errors*` recipes in `Makefile:654+`.
 
 ---
 
@@ -401,7 +431,8 @@ errors*` recipes in `Makefile:654+`.
 
 1. **Compiler errors** for raw `sqlite3_step` (unless opted out)
 2. **Type system** forces `struct zcl_result` with message on failure
-3. **CI lint** catches raw malloc, silent returns, missing error bodies
+3. **CI lint** catches raw malloc, silent returns, missing error bodies,
+   long-function bloat
 4. **Macros** make the right thing easier than the wrong thing
 5. **Before/after hooks** wired by default — agents see the pattern and follow it
 6. **This document** in the repo root — agents read it on `cat DEFENSIVE_CODING.md`

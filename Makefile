@@ -767,7 +767,17 @@ check-model-validation:
 	@echo "══ LINT: model validation coverage ══"
 	@./tools/scripts/check_model_validation.sh
 
-lint: check-malloc check-silent-errors check-raw-sqlite check-raw-malloc check-coins-lookup-nullcheck check-observability-pairing check-silent-errors-services check-silent-errors-controllers check-before-save-hooks check-pthread-create check-model-validation
+# Move 12: keep top-level functions in app/controllers + app/services
+# under 500 lines.  Two report builders that pre-wave-7d crossed this
+# (explorer_factoids_build = 1389L, explorer_stats_build = 1011L) have
+# been split into per-section emit helpers.  The one survivor by
+# design — rpc_indexlegacy — carries the
+# `// long-function-ok:legacy-import-state-machine` override marker.
+check-long-functions:
+	@echo "══ LINT: long function cap (500 lines) ══"
+	@./tools/scripts/check_long_functions.sh
+
+lint: check-malloc check-silent-errors check-raw-sqlite check-raw-malloc check-coins-lookup-nullcheck check-observability-pairing check-silent-errors-services check-silent-errors-controllers check-before-save-hooks check-pthread-create check-model-validation check-long-functions
 	@echo "══ LINT: all checks passed ══"
 
 ci: lint zclassic23 test_zcl
