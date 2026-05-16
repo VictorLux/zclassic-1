@@ -23,6 +23,7 @@
 
 #include "controllers/diagnostics_controller.h"
 
+#include "views/format_helpers.h"
 #include "validation/main_state.h"
 #include "validation/chainstate.h"
 #include "validation/contextual_check_tx.h"
@@ -134,12 +135,7 @@ static struct block_index *find_block_index_by_key(struct main_state *ms,
     }
 
     /* Hex → hash lookup via block_map. */
-    if (strlen(key) != 64) return NULL;
-    for (const char *c = key; *c; c++) {
-        if (!((*c >= '0' && *c <= '9') ||
-              (*c >= 'a' && *c <= 'f') ||
-              (*c >= 'A' && *c <= 'F'))) return NULL;
-    }
+    if (!zcl_is_hex_string(key, 64)) return NULL;
     struct uint256 h;
     uint256_set_hex(&h, key);
     return block_map_find(&ms->map_block_index, &h);

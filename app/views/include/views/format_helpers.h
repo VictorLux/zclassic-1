@@ -27,6 +27,11 @@ void zcl_format_zcl_short(char *buf, size_t max, int64_t zatoshi);
 /* Check if string is all hex digits of given length. */
 bool zcl_is_all_hex(const char *s, size_t len);
 
+/* Combined check: s is non-NULL, strlen(s) == expected_len, and every
+ * byte is [0-9a-fA-F]. Use for txid / blockhash / sha3-256 controller
+ * inputs where the canonical hash is exactly `expected_len` hex chars. */
+bool zcl_is_hex_string(const char *s, size_t expected_len);
+
 /* Check if non-empty string contains only decimal digits. */
 bool zcl_is_all_digits(const char *s);
 

@@ -17,6 +17,7 @@
 #include "models/database.h"
 #include "crypto/sha3.h"
 #include "core/serialize.h"
+#include "views/format_helpers.h"
 #include <string.h>
 #include <stdio.h>
 #include <time.h>
@@ -206,7 +207,7 @@ static bool rpc_msg_read(const struct json_value *params, bool help,
     }
 
     const char *hex = json_get_str(json_at(params, 0));
-    if (!hex || strlen(hex) != 64) {
+    if (!zcl_is_hex_string(hex, 64)) {
         json_set_str(result, "Invalid msg_id (64-char hex)");
         return false;
     }

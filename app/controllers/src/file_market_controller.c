@@ -15,6 +15,7 @@
 #include "models/database.h"
 #include "config/runtime.h"
 #include "crypto/sha3.h"
+#include "views/format_helpers.h"
 #include <string.h>
 #include <stdio.h>
 #include <time.h>
@@ -215,7 +216,7 @@ static bool rpc_zmarket_buy(const struct json_value *params, bool help,
 
     const struct json_value *arg0 = json_at(params, 0);
     const char *hash_hex = arg0 ? json_get_str(arg0) : NULL;
-    if (!hash_hex || strlen(hash_hex) != 64) {
+    if (!zcl_is_hex_string(hash_hex, 64)) {
         json_set_str(result, "Invalid root_hash (expected 64-char hex)");
         return false;
     }

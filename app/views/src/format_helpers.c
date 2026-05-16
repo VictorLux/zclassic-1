@@ -61,6 +61,11 @@ bool zcl_is_all_hex(const char *s, size_t len)
     return true;
 }
 
+bool zcl_is_hex_string(const char *s, size_t expected_len)
+{
+    return s && strlen(s) == expected_len && zcl_is_all_hex(s, expected_len);
+}
+
 bool zcl_is_all_digits(const char *s)
 {
     if (!s || !*s) return false;

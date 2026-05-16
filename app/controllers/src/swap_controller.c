@@ -6,6 +6,7 @@
 #include "script/htlc.h"
 #include "znam/znam.h"
 #include "json/json.h"
+#include "views/format_helpers.h"
 #include "rpc/server.h"
 #include "models/database.h"
 #include <string.h>
@@ -250,7 +251,7 @@ static bool rpc_swap_participate(const struct json_value *params, bool help,
         if (c >= 0) chain = (enum swap_chain)c;
     }
 
-    if (!my_addr || !counter_addr || !hash_hex || strlen(hash_hex) != 64) {
+    if (!my_addr || !counter_addr || !zcl_is_hex_string(hash_hex, 64)) {
         json_set_str(result, "Invalid arguments");
         return false;
     }

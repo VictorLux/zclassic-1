@@ -46,6 +46,13 @@
 #include <string.h>
 #include <stdio.h>
 
+/* Forward declarations for validators referenced by validates_* macros.
+ * Implementations live in app/views/src/format_helpers.c (string utility)
+ * and app/models/src/shared_validators.c. Declared here so model files
+ * don't have to include those headers explicitly. */
+bool zcl_is_hex_string(const char *s, size_t expected_len);
+bool zcl_validate_zcl_address(const char *addr);
+
 /* Maximum error message length */
 #define AR_ERROR_MAX 256
 
@@ -171,6 +178,32 @@ static inline void ar_errors_full_messages(const struct ar_errors *e,
 #define validates_custom(errors, cond, field, msg) do { \
     if (!(cond)) \
         ar_errors_add(errors, field, msg); \
+} while (0)
+
+/* Validates a C-string field has exactly `expected` characters
+ * (excluding the terminating NUL). Use for fixed-width keys, hashes,
+ * fingerprints. */
+#define validates_length_eq(errors, record, field, expected) do { \
+    if (!(record)->field || strlen((record)->field) != (size_t)(expected)) \
+        ar_errors_add(errors, #field, "has wrong length"); \
+} while (0)
+
+/* Validates a C-string field is exactly `expected_len` characters AND
+ * every character is [0-9a-fA-F]. Delegates to zcl_is_hex_string in
+ * views/format_helpers.h. Use for txid / blockhash / sha3-256 fields. */
+#define validates_hex_string(errors, record, field, expected_len) do { \
+    if (!zcl_is_hex_string((record)->field, (size_t)(expected_len))) \
+        ar_errors_add(errors, #field, "is not a hex string of the expected length"); \
+} while (0)
+
+/* Validates a C-string field is a syntactically and cryptographically
+ * valid ZCL address (transparent t1/t3 with Base58Check, or Sapling zs1
+ * with bech32). Delegates to zcl_validate_zcl_address in
+ * models/shared_validators.h. Does NOT accept cross-chain addresses;
+ * use a service-layer validator for ZSLP cross-chain recipients. */
+#define validates_zcl_address(errors, record, field) do { \
+    if (!zcl_validate_zcl_address((record)->field)) \
+        ar_errors_add(errors, #field, "is not a valid ZCL address"); \
 } while (0)
 
 /* ── DRY Macros ────────────────────────────────────────────────── */

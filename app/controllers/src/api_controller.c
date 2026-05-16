@@ -246,11 +246,6 @@ static double json_extract_real(const char *json, const char *key)
     return v;
 }
 
-static bool is_all_hex(const char *s, size_t len)
-{
-    return zcl_is_all_hex(s, len);
-}
-
 static bool is_all_digits(const char *s)
 {
     return zcl_is_all_digits(s);
@@ -532,7 +527,7 @@ static size_t compute_block(const char *param, uint8_t *r, size_t max)
         if (rpc_call("getblockhash", params, buf, sizeof(buf)) <= 0)
             return json_error(r, max, JSON_500_HEADERS, "RPC unavailable");
         json_extract_str(buf, "result", hash, sizeof(hash));
-    } else if (strlen(param) == 64 && is_all_hex(param, 64)) {
+    } else if (zcl_is_hex_string(param, 64)) {
         snprintf(hash, sizeof(hash), "%s", param);
     }
 
@@ -626,7 +621,7 @@ static size_t compute_block(const char *param, uint8_t *r, size_t max)
 /* Compute /api/tx/:txid — transaction detail (called from bg thread) */
 static size_t compute_tx(const char *param, uint8_t *r, size_t max)
 {
-    if (!param || strlen(param) != 64 || !is_all_hex(param, 64))
+    if (!zcl_is_hex_string(param, 64))
         return json_error(r, max, JSON_404_HEADERS, "Invalid transaction ID");
 
     char buf[262144];

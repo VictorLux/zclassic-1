@@ -6,6 +6,7 @@
 #include "controllers/store_controller.h"
 #include "controllers/zslp_controller.h"
 #include "models/database.h"
+#include "models/shared_validators.h"
 #include "models/store.h"
 #include "services/zslp_service.h"
 #include "script/standard.h"
@@ -680,38 +681,9 @@ static bool route_is_order_create(const char *method, const char *path)
  * syntactically-plausible prefix.  A one-character typo in a t-addr
  * passes the old shape check but decodes to a random 20-byte hash
  * whose payments are unspendable: funds sent to such an order are
- * burned.  Also prevents XSS via customer_addr in HTML output. */
-static bool validate_address(const char *addr)
-{
-    if (!addr || !addr[0]) return false;
-    size_t len = strlen(addr);
-
-    /* Alphanumeric gate (XSS + cheap reject before decode). */
-    for (size_t i = 0; addr[i]; i++) {
-        char c = addr[i];
-        if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
-            (c >= '0' && c <= '9') || c == '_') continue;
-        return false;
-    }
-
-    /* t-address: route through Base58Check via the shared service
-     * helper — fails on bad checksum or unknown prefix. */
-    if (addr[0] == 't' && (addr[1] == '1' || addr[1] == '3') &&
-        len >= 34 && len <= 36) {
-        struct tx_destination dest;
-        return zslp_service_decode_transparent_destination(addr, &dest);
-    }
-
-    /* z-address (Sapling): Bech32 with HRP "zs" — checksum is part of
-     * bech32_decode inside sapling_decode_payment_address. */
-    if (len >= 78 && addr[0] == 'z' && addr[1] == 's' && addr[2] == '1') {
-        uint8_t d[ZC_DIVERSIFIER_SIZE];
-        uint8_t pk_d[32];
-        return sapling_decode_payment_address(addr, d, pk_d);
-    }
-
-    return false;
-}
+ * burned.  Also prevents XSS via customer_addr in HTML output.
+ *
+ * Implementation: zcl_validate_zcl_address in app/models/src/shared_validators.c. */
 
 static bool store_validate_access_addr(const char *addr)
 {
@@ -1060,7 +1032,7 @@ size_t store_handle_request(const char *method, const char *path,
             node_db_close(&ndb);
             return result;
         }
-        if (!validate_address(addr)) {
+        if (!zcl_validate_zcl_address(addr)) {
             const char *err_body = "<h1>Invalid address</h1>"
                 "<p>Must be a ZClassic t-address (t1.../t3...) or "
                 "z-address (zs1...).</p>"

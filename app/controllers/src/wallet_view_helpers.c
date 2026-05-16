@@ -6,6 +6,7 @@
 #include "controllers/wallet_view_internal.h"
 /* CSS is now in app/views/css/wallet.ccss, compiled as CSS_WALLET */
 #include "models/contact.h"
+#include "models/shared_validators.h"
 #include "models/wallet_tx.h"
 #include "crypto/sha256.h"
 #include "util/log_macros.h"
@@ -1231,29 +1232,5 @@ bool wv_parse_form_field(const uint8_t *body, size_t body_len,
 /* ── Address validation ────────────────────────────────────── */
 
 bool wv_validate_zcl_address(const char *addr) {
-    if (!addr || !addr[0])
-        LOG_FAIL("wallet_view", "validate_zcl_address: NULL or empty address");
-    size_t alen = strlen(addr);
-
-    /* t1 or t3: Base58Check with 2-byte version prefix */
-    if ((addr[0] == 't' && (addr[1] == '1' || addr[1] == '3')) &&
-        alen >= 26 && alen <= 36) {
-        unsigned char decoded[64];
-        size_t decoded_len = 0;
-        return base58check_decode(addr, decoded, sizeof(decoded), &decoded_len);
-    }
-
-    /* zs1: Bech32 with "zs" human-readable part */
-    if (alen >= 3 && addr[0] == 'z' && addr[1] == 's' && addr[2] == '1' &&
-        alen >= 70) {
-        char hrp[8];
-        uint8_t data[128];
-        size_t data_len = 0;
-        if (!bech32_decode(hrp, sizeof(hrp), data, sizeof(data),
-                           &data_len, addr))
-            LOG_FAIL("wallet_view", "validate_zcl_address: bech32 decode failed for '%s'", addr);
-        return (strcmp(hrp, "zs") == 0 && data_len > 0);
-    }
-
-    LOG_FAIL("wallet_view", "validate_zcl_address: unrecognized format (len=%zu)", alen);
+    return zcl_validate_zcl_address(addr);
 }

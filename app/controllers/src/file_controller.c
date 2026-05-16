@@ -6,6 +6,7 @@
 
 #include "controllers/file_controller.h"
 #include "controllers/strong_params.h"
+#include "views/format_helpers.h"
 #include "chain/mmr.h"
 #include "crypto/sha3.h"
 #include "json/json.h"
@@ -890,7 +891,7 @@ static bool rpc_getfilechunk(const struct json_value *params, bool help,
 
     const struct json_value *arg0 = json_at(params, 0);
     const char *hex = arg0 ? json_get_str(arg0) : NULL;
-    if (!hex || strlen(hex) != 64) {
+    if (!zcl_is_hex_string(hex, 64)) {
         json_set_str(result, "error: sha3hash must be 64 hex chars");
         return true;
     }

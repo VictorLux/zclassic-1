@@ -449,11 +449,6 @@ static void format_zcl(char *buf, size_t max, int64_t zatoshi)
     zcl_format_zcl(buf, max, zatoshi);
 }
 
-static bool is_all_hex(const char *s, size_t len)
-{
-    return zcl_is_all_hex(s, len);
-}
-
 static bool is_all_digits(const char *s)
 {
     return zcl_is_all_digits(s);
@@ -703,7 +698,7 @@ static size_t serve_block_rpc(const char *param, uint8_t *r, size_t max)
         snprintf(params, sizeof(params), "[%s]", param);
         rpc_call("getblockhash", params, buf, sizeof(buf));
         json_extract_str(buf, "result", hash, sizeof(hash));
-    } else if (strlen(param) == 64 && is_all_hex(param, 64)) {
+    } else if (zcl_is_hex_string(param, 64)) {
         snprintf(hash, sizeof(hash), "%s", param);
     }
 
@@ -833,7 +828,7 @@ static size_t serve_block(const char *param, uint8_t *r, size_t max)
         int tip = active_chain_height(&ctx->main_state->chain_active);
         if (h >= 0 && h <= tip)
             bi = active_chain_at(&ctx->main_state->chain_active, h);
-    } else if (strlen(param) == 64 && is_all_hex(param, 64)) {
+    } else if (zcl_is_hex_string(param, 64)) {
         struct uint256 hash;
         uint256_set_hex(&hash, param);
         bi = (const struct block_index *)block_map_find(
@@ -1012,7 +1007,7 @@ static size_t serve_block(const char *param, uint8_t *r, size_t max)
 
 static size_t serve_tx_rpc(const char *param, uint8_t *r, size_t max)
 {
-    if (!param || strlen(param) != 64 || !is_all_hex(param, 64))
+    if (!zcl_is_hex_string(param, 64))
         return 0;
 
     size_t off = 0;
@@ -1180,8 +1175,8 @@ static size_t serve_tx(const char *param, uint8_t *r, size_t max)
     struct explorer_context *ctx = explorer_ctx();
     if (use_rpc_proxy())
         return serve_tx_rpc(param, r, max);
-    if (!ctx->main_state || !param || strlen(param) != 64 ||
-        !is_all_hex(param, 64) || !explorer_param_is_printable_ascii(param))
+    if (!ctx->main_state || !zcl_is_hex_string(param, 64) ||
+        !explorer_param_is_printable_ascii(param))
         return (size_t)snprintf((char *)r, max,
             "HTTP/1.1 400 Bad Request\r\nContent-Type: text/html\r\nConnection: close\r\n\r\n"
             "<!DOCTYPE html><html><head><link rel='stylesheet' href='/explorer/style.css'></head><body>"
@@ -1667,7 +1662,7 @@ static size_t serve_search(const char *query, uint8_t *r, size_t max)
     }
 
     /* 64-hex: try as block hash first, then txid */
-    if (qlen == 64 && is_all_hex(q, 64)) {
+    if (qlen == 64 && zcl_is_all_hex(q, 64)) {
         /* Try block hash via native index */
         if (ctx->main_state) {
             struct uint256 hash;
@@ -2178,8 +2173,8 @@ static size_t serve_tokens(uint8_t *r, size_t max)
 static size_t serve_token_detail(const char *token_id_hex, uint8_t *r, size_t max)
 {
     struct explorer_context *ctx = explorer_ctx();
-    if (!token_id_hex || strlen(token_id_hex) != 64 || !ctx->datadir ||
-        !is_all_hex(token_id_hex, 64) || !explorer_param_is_printable_ascii(token_id_hex))
+    if (!zcl_is_hex_string(token_id_hex, 64) || !ctx->datadir ||
+        !explorer_param_is_printable_ascii(token_id_hex))
         return 0;
 
     /* Open our own SQLite connection (called from HTTPS thread) */

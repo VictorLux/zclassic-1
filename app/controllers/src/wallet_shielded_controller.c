@@ -6,6 +6,7 @@
 #include "controllers/wallet_shielded_controller.h"
 #include "controllers/wallet_helpers.h"
 #include "controllers/strong_params.h"
+#include "views/format_helpers.h"
 #include "wallet/wallet.h"
 #include "wallet/sapling_keys.h"
 #include "chain/chainparams.h"
@@ -1485,9 +1486,10 @@ static bool rpc_z_getmemo(const struct json_value *params, bool help,
     }
 
     uint8_t txid[32];
-    if (strlen(txid_str) != 64) {
-        json_set_str(result, "Invalid txid length");
-        LOG_FAIL("wallet_shielded", "z_getmemo: txid length %zu != 64", strlen(txid_str));
+    if (!zcl_is_hex_string(txid_str, 64)) {
+        json_set_str(result, "Invalid txid (expected 64-char hex)");
+        LOG_FAIL("wallet_shielded", "z_getmemo: txid not 64 hex chars: '%s'",
+                 txid_str ? txid_str : "(null)");
     }
     for (int i = 0; i < 32; i++) {
         unsigned int b;
