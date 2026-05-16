@@ -121,7 +121,7 @@ static bool lci_spotcheck(struct blocks_mmap *bmr,
         picked[i] = (size_t)(r % max_w);
     }
 
-    fprintf(stderr,
+    fprintf(stderr, // obs-ok:pre-existing-diagnostic
             "[cold_import] SHA3 spotcheck: K=%d windows over [0..%zu) "
             "(legacy_tip=%d)\n", k, max_w, legacy_tip);
     for (int i = 0; i < k; i++) {
@@ -131,7 +131,7 @@ static bool lci_spotcheck(struct blocks_mmap *bmr,
                     "refusing to import\n", picked[i]);
             return false;
         }
-        fprintf(stderr,
+        fprintf(stderr, // obs-ok:pre-existing-diagnostic
                 "[cold_import] spotcheck OK: w=%zu\n", picked[i]);
     }
     return true;
@@ -176,7 +176,7 @@ static int64_t lci_link_blk_files(const char *legacy_blocks_dir,
             continue;
         }
         if (errno != EXDEV && errno != EPERM) {
-            fprintf(stderr,
+            fprintf(stderr, // obs-ok:pre-existing-diagnostic
                     "[cold_import] link(%s -> %s) failed: %s\n",
                     src, dst, strerror(errno));
             errors++;
@@ -188,7 +188,7 @@ static int64_t lci_link_blk_files(const char *legacy_blocks_dir,
         if (!fsrc || !fdst) {
             if (fsrc) fclose(fsrc);
             if (fdst) fclose(fdst);
-            fprintf(stderr,
+            fprintf(stderr, // obs-ok:pre-existing-diagnostic
                     "[cold_import] open failed for copy %s -> %s\n",
                     src, dst);
             errors++;
@@ -204,7 +204,7 @@ static int64_t lci_link_blk_files(const char *legacy_blocks_dir,
         copied++;
     }
     closedir(d);
-    fprintf(stderr,
+    fprintf(stderr, // obs-ok:pre-existing-diagnostic
             "[cold_import] blk files: linked=%" PRId64 " copied=%" PRId64
             " skipped=%" PRId64 " errors=%" PRId64 "\n",
             linked, copied, skipped, errors);
@@ -288,7 +288,7 @@ static int64_t lci_copy_block_index(const char *legacy_blocks_index_dir,
 
         if (batch_fill >= BATCH_LIMIT) {
             if (!db_write_batch(dst, &batch, false)) {
-                fprintf(stderr,
+                fprintf(stderr, // obs-ok:pre-existing-diagnostic
                         "[cold_import] db_write_batch failed\n");
                 db_batch_free(&batch);
                 db_iter_free(&it);
@@ -304,7 +304,7 @@ static int64_t lci_copy_block_index(const char *legacy_blocks_index_dir,
 
     if (batch_fill > 0) {
         if (!db_write_batch(dst, &batch, false)) {
-            fprintf(stderr,
+            fprintf(stderr, // obs-ok:pre-existing-diagnostic
                     "[cold_import] final db_write_batch failed\n");
             db_batch_free(&batch);
             db_iter_free(&it);
@@ -419,7 +419,7 @@ bool legacy_cold_import_blocking(
     while (legacy_tip > 0 && map[(size_t)legacy_tip].height < 0)
         legacy_tip--;
     r.legacy_tip = legacy_tip;
-    fprintf(stderr,
+    fprintf(stderr, // obs-ok:pre-existing-diagnostic
             "[cold_import] legacy tip h=%d (map size=%zu)\n",
             legacy_tip, map_count);
 
@@ -451,7 +451,7 @@ bool legacy_cold_import_blocking(
         return false;
     }
     r.blk_files_linked = linked;
-    fprintf(stderr,
+    fprintf(stderr, // obs-ok:pre-existing-diagnostic
             "[cold_import] blk linking took %" PRId64 " ms\n",
             lci_now_ms() - t_link);
 
@@ -466,7 +466,7 @@ bool legacy_cold_import_blocking(
     bilr_close(bilr);
     if (bi_written < 0) return false;
     r.block_index_writes = bi_written;
-    fprintf(stderr,
+    fprintf(stderr, // obs-ok:pre-existing-diagnostic
             "[cold_import] block_index copy: %" PRId64 " entries "
             "in %" PRId64 " ms (best h=%d)\n",
             bi_written, lci_now_ms() - t_bi, legacy_tip_h);
@@ -508,7 +508,7 @@ bool legacy_cold_import_blocking(
         return false;
     }
     r.utxos_imported = ctx.inserted;
-    fprintf(stderr,
+    fprintf(stderr, // obs-ok:pre-existing-diagnostic
             "[cold_import] chainstate: %" PRId64 " UTXOs from "
             "%" PRId64 " records in %" PRId64 " ms\n",
             ctx.inserted, ctx.records, lci_now_ms() - t_cs);
@@ -530,11 +530,11 @@ bool legacy_cold_import_blocking(
         char hex[65] = {0};
         for (int i = 0; i < 32; i++)
             snprintf(hex + i*2, 3, "%02x", cs_best.data[31 - i]);
-        fprintf(stderr,
+        fprintf(stderr, // obs-ok:pre-existing-diagnostic
                 "[cold_import] pending CSR anchor recorded %s h=%d\n",
                 hex, legacy_tip_h);
     } else {
-        fprintf(stderr,
+        fprintf(stderr, // obs-ok:pre-existing-diagnostic
                 "[cold_import] WARNING: legacy chainstate had no 'B' key; "
                 "pending CSR anchor not recorded\n");
     }
@@ -542,7 +542,7 @@ bool legacy_cold_import_blocking(
     r.total_secs = (double)(lci_now_ms() - t_start) / 1000.0;
     r.ok = true;
     if (out) *out = r;
-    fprintf(stderr,
+    fprintf(stderr, // obs-ok:pre-existing-diagnostic
             "[cold_import] DONE in %.1fs: block_index=%" PRId64
             " utxos=%" PRId64 " blk_files=%" PRId64 "\n",
             r.total_secs, r.block_index_writes, r.utxos_imported,

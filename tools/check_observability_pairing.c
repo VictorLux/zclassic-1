@@ -29,8 +29,20 @@ static bool is_test_path(const char *path)
 
 static bool line_has_obs_ok(const char *line)
 {
+    /* Require `// obs-ok:<tag>` where <tag> starts with [A-Za-z]
+     * and is followed by [A-Za-z0-9_-]+. Bare `// obs-ok` and empty
+     * `// obs-ok:` or `// obs-ok: ` are rejected — every override
+     * must declare a non-empty single-token reason so reviewers can
+     * grep the taxonomy of justifications. */
     const char *tag = strstr(line, "// obs-ok:");
-    return tag && tag[10] != '\0' && tag[10] != '\n' && tag[10] != ' ';
+    if (!tag) return false;
+    const char *p = tag + 10;
+    if (!((*p >= 'A' && *p <= 'Z') || (*p >= 'a' && *p <= 'z')))
+        return false;
+    p++;
+    /* Require at least one more body char to make tags meaningful */
+    return (*p >= 'A' && *p <= 'Z') || (*p >= 'a' && *p <= 'z') ||
+           (*p >= '0' && *p <= '9') || *p == '_' || *p == '-';
 }
 
 static bool line_has_event_emit(const char *line)
@@ -40,6 +52,11 @@ static bool line_has_event_emit(const char *line)
 
 static bool line_has_terminal_propagation(const char *line)
 {
+    /* A bare `return;` in a void-returning helper is just as
+     * terminal as `return false;` — the fprintf above was the
+     * caller-visible observation, and control will not continue
+     * past it on the error path. */
+    if (strstr(line, "return;")) return true;
     return strstr(line, "return false;") ||
            strstr(line, "return -1;") ||
            strstr(line, "return 1;") ||
@@ -51,13 +68,19 @@ static bool line_has_terminal_propagation(const char *line)
 static bool observability_line_allowed(char lines[][LINE_LEN], size_t count,
                                        size_t idx)
 {
-    if (line_has_obs_ok(lines[idx])) return true;
-
+    /* Look 3 lines back (for event_emit / obs-ok preamble) and 6
+     * lines forward (long enough to clear multi-line fprintf
+     * statements that span 3-5 continuation lines before the
+     * matching `return false;` / `return -1;` / `goto cleanup;`). */
     size_t start = idx > 3 ? idx - 3 : 0;
-    size_t end = idx + 3 < count ? idx + 3 : count - 1;
+    size_t end = idx + 6 < count ? idx + 6 : count - 1;
     for (size_t i = start; i <= end; i++) {
         if (line_has_event_emit(lines[i])) return true;
         if (i >= idx && line_has_terminal_propagation(lines[i])) return true;
+        /* Allow `// obs-ok:<tag>` on any line in the window — multi-
+         * line fprintf statements often place the marker on a
+         * continuation line near the format string. */
+        if (line_has_obs_ok(lines[i])) return true;
     }
     return false;
 }

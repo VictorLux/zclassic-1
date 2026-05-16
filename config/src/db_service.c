@@ -513,7 +513,7 @@ bool db_service_enqueue_write(struct db_service *svc,
         return ok;
     }
 
-    job = malloc(sizeof(*job)); /* raw-alloc-ok: db service owns heap job */
+    job = malloc(sizeof(*job)); /* raw-alloc-ok:db-service-owns-heap-job */
     if (!job)
         return false;
     memset(job, 0, sizeof(*job));

@@ -654,10 +654,11 @@ check-malloc:
 check-silent-errors:
 	@echo "══ LINT: bare return -1 in MCP handlers ══"
 	@HITS=$$(grep -rn 'return -1;' tools/mcp/controllers/ --include='*.c' \
-	    | grep -v 'LOG_ERR\|log_json\|fprintf\|// silent-ok\|// raw-return-ok'); \
+	    | grep -v 'LOG_ERR\|log_json\|fprintf\|// silent-ok' \
+	    | grep -vE '// raw-return-ok:[A-Za-z][A-Za-z0-9_-]+'); \
 	if [ -n "$$HITS" ]; then \
 	    echo "$$HITS"; \
-	    echo "FAIL: bare return -1 in MCP handlers (use LOG_ERR or mark // raw-return-ok)"; \
+	    echo "FAIL: bare return -1 in MCP handlers (use LOG_ERR or mark // raw-return-ok:<tag>)"; \
 	    exit 1; \
 	fi
 	@echo "  OK: all MCP error returns logged"
@@ -685,7 +686,8 @@ check-silent-errors-services:
 	@echo "══ LINT: silent error returns in services ══"
 	@HITS=$$(grep -rn -B1 'return -1;' app/services/src/ --include='*.c' \
 	    | grep 'return -1;' \
-	    | grep -v 'LOG_ERR\|LOG_FAIL\|log_json\|fprintf\|printf\|raw-return-ok' \
+	    | grep -v 'LOG_ERR\|LOG_FAIL\|log_json\|fprintf\|printf' \
+	    | grep -vE '(//|/\*) raw-return-ok:[A-Za-z][A-Za-z0-9_-]+' \
 	    | while read -r line; do \
 	        file=$$(echo "$$line" | cut -d: -f1); \
 	        lnum=$$(echo "$$line" | cut -d: -f2); \
@@ -704,7 +706,8 @@ check-silent-errors-controllers:
 	@echo "══ LINT: silent error returns in controllers ══"
 	@HITS=$$(grep -rn -B1 'return -1;' app/controllers/src/ --include='*.c' \
 	    | grep 'return -1;' \
-	    | grep -v 'LOG_ERR\|LOG_FAIL\|log_json\|fprintf\|printf\|raw-return-ok' \
+	    | grep -v 'LOG_ERR\|LOG_FAIL\|log_json\|fprintf\|printf' \
+	    | grep -vE '(//|/\*) raw-return-ok:[A-Za-z][A-Za-z0-9_-]+' \
 	    | while read -r line; do \
 	        file=$$(echo "$$line" | cut -d: -f1); \
 	        lnum=$$(echo "$$line" | cut -d: -f2); \

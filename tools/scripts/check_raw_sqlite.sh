@@ -37,7 +37,8 @@ if [[ -f "$ALLOWLIST" ]]; then
 fi
 
 raw_hits=$(grep -rn 'sqlite3_step\s*(' app/ tools/ lib/ --include='*.c' 2>/dev/null \
-    | grep -v 'vendor/\|/test/\|// raw-sql-ok\|AR_STEP_ROW\|AR_STEP_DONE\|AR_STEP_ROW_READONLY\|AR_STEP_WRITE\|safe_alloc\|".*sqlite3_step' \
+    | grep -v 'vendor/\|/test/\|AR_STEP_ROW\|AR_STEP_DONE\|AR_STEP_ROW_READONLY\|AR_STEP_WRITE\|safe_alloc\|".*sqlite3_step' \
+    | grep -vE '// raw-sql-ok:[A-Za-z][A-Za-z0-9_-]+' \
     || true)
 
 violations=""

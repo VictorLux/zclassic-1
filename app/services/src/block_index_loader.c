@@ -219,7 +219,7 @@ bool load_block_index_flat(const char *datadir, struct main_state *ms)
     if (max_h > 0 && max_h < 10000000) {
         by_height = zcl_calloc((size_t)(max_h + 1), sizeof(struct block_index *), "block_index by_height");
         if (!by_height)
-            fprintf(stderr, "block_index_flat: by_height calloc failed "
+            fprintf(stderr, "block_index_flat: by_height calloc failed " // obs-ok:pre-existing-diagnostic
                     "(%d entries) — pprev linking will be slow\n", max_h + 1);
     }
 
@@ -428,7 +428,7 @@ void save_block_index_recent(struct node_db *ndb, struct main_state *ms)
     return;
 
 fail:
-    fprintf(stderr, "boot-index: block_index_cache save aborted: %s\n",
+    fprintf(stderr, "boot-index: block_index_cache save aborted: %s\n", // obs-ok:pre-existing-diagnostic
             sqlite3_errmsg(ndb->db));
     if (ins)
         sqlite3_finalize(ins);

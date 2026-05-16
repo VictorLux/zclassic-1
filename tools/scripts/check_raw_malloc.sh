@@ -41,7 +41,7 @@ raw_hits=$(grep -rnE '\b(malloc|calloc|realloc)[[:space:]]*\(' \
     app/ lib/ tools/ config/ --include='*.c' 2>/dev/null \
     | grep -v 'vendor/\|/test/\|test_.*\.c:\|safe_alloc' \
     | grep -v 'zcl_malloc\|zcl_calloc\|zcl_realloc' \
-    | grep -v 'raw-alloc-ok' \
+    | grep -vE '(//|/\*) raw-alloc-ok:[A-Za-z][A-Za-z0-9_-]+' \
     | grep -vE '".*(malloc|calloc|realloc)' \
     | grep -vE '(^|[^*])(/\*|\*[[:space:]]).*(malloc|calloc|realloc)' \
     || true)
