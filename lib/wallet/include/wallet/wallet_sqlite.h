@@ -12,11 +12,10 @@
  *     LOG_FAIL on non-ok. Marked ZCL_DEPRECATED; migrate callers
  *     incrementally.
  *
- * Plan reference: WALLET_PERSISTENCE_PLAN.md §5. Current deviation from
- * the plan's §5.2 signatures (bare names returning zcl_result) is
- * transitional — Agent 3's controller work will migrate its callers,
- * after which the bool wrappers can be dropped and the *_r suffix
- * removed. */
+ * Current deviation from the canonical §5.2 signatures (bare names
+ * returning zcl_result) is transitional — controller work will migrate
+ * callers, after which the bool wrappers can be dropped and the *_r
+ * suffix removed. */
 
 #ifndef ZCL_WALLET_SQLITE_H
 #define ZCL_WALLET_SQLITE_H

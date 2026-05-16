@@ -281,12 +281,9 @@ bool wallet_sqlite_open(struct wallet_sqlite *ws, sqlite3 *db)
 {
     struct zcl_result r = wallet_sqlite_open_r(ws, db);
     if (r.ok) return true;
-    fprintf(stderr, "[wallet_sqlite] %s:%d %s(): "
-            "code=%d (%s:%d) %s\n",
-            __FILE__, __LINE__, __func__,
-            r.code,
-            r.source_file ? r.source_file : "?", r.source_line, r.message);
-    return false;
+    LOG_FAIL("wallet_sqlite", "code=%d (%s:%d) %s",
+             r.code,
+             r.source_file ? r.source_file : "?", r.source_line, r.message);
 }
 
 void wallet_sqlite_close(struct wallet_sqlite *ws)
@@ -468,12 +465,9 @@ bool wallet_sqlite_write_key(struct wallet_sqlite *ws, const struct pubkey *pk,
 {
     struct zcl_result r = wallet_sqlite_write_key_r(ws, pk, key);
     if (r.ok) return true;
-    fprintf(stderr, "[wallet_sqlite] %s:%d %s(): "
-            "code=%d (%s:%d) %s\n",
-            __FILE__, __LINE__, __func__,
-            r.code,
-            r.source_file ? r.source_file : "?", r.source_line, r.message);
-    return false;
+    LOG_FAIL("wallet_sqlite", "code=%d (%s:%d) %s",
+             r.code,
+             r.source_file ? r.source_file : "?", r.source_line, r.message);
 }
 
 struct zcl_result wallet_sqlite_read_single_key(struct wallet_sqlite *ws,
@@ -621,12 +615,9 @@ bool wallet_sqlite_read_keys(struct wallet_sqlite *ws, struct wallet *w)
 {
     struct zcl_result r = wallet_sqlite_read_keys_r(ws, w);
     if (r.ok) return true;
-    fprintf(stderr, "[wallet_sqlite] %s:%d %s(): "
-            "code=%d (%s:%d) %s\n",
-            __FILE__, __LINE__, __func__,
-            r.code,
-            r.source_file ? r.source_file : "?", r.source_line, r.message);
-    return false;
+    LOG_FAIL("wallet_sqlite", "code=%d (%s:%d) %s",
+             r.code,
+             r.source_file ? r.source_file : "?", r.source_line, r.message);
 }
 
 /* ── Transactions ──────────────────────────────────────────────── */
@@ -1219,12 +1210,9 @@ bool wallet_sqlite_flush(struct wallet_sqlite *ws, struct wallet *w)
 {
     struct zcl_result r = wallet_sqlite_flush_r(ws, w);
     if (r.ok) return true;
-    fprintf(stderr, "[wallet_sqlite] %s:%d %s(): "
-            "code=%d (%s:%d) %s\n",
-            __FILE__, __LINE__, __func__,
-            r.code,
-            r.source_file ? r.source_file : "?", r.source_line, r.message);
-    return false;
+    LOG_FAIL("wallet_sqlite", "code=%d (%s:%d) %s",
+             r.code,
+             r.source_file ? r.source_file : "?", r.source_line, r.message);
 }
 
 /* ── Health snapshot ───────────────────────────────────────────── */

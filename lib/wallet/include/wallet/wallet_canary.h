@@ -12,7 +12,7 @@
  * failure mode made 0.4 ZCL unspendable in rhett's 2026-04-10
  * incident. The canary runs BEFORE any RPC handler accepts a
  * request, so if the write path is broken the daemon aborts instead
- * of silently regenerating. See WALLET_PERSISTENCE_PLAN.md §7.
+ * of silently regenerating.
  *
  * Schema:
  *
