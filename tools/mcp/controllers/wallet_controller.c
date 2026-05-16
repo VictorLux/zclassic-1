@@ -15,31 +15,14 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* ── Helpers ─────────────────────────────────────────────────── */
-
-#define DEFINE_PT(name, rpc)                                                   \
-    static int name(const struct mcp_request *req, struct mcp_response *res)  \
-    {                                                                          \
-        (void)req;                                                             \
-        char *out = mcp_node_rpc(rpc, NULL);                                   \
-        if (!out) {                                                            \
-            res->error = MCP_ERR_HANDLER_FAILED;                               \
-            snprintf(res->error_message, sizeof(res->error_message),           \
-                     "RPC %s returned null", rpc);                             \
-            LOG_ERR("mcp.wallet", "RPC %s returned null", rpc);                \
-        }                                                                      \
-        res->body = out;                                                       \
-        return 0;                                                              \
-    }
-
 /* ── Simple passthroughs (no params) ─────────────────────────── */
 
-DEFINE_PT(h_zcl_balance,               "z_gettotalbalance")
-DEFINE_PT(h_zcl_getnewaddress,         "getnewaddress")
-DEFINE_PT(h_zcl_z_getnewaddress,       "z_getnewaddress")
-DEFINE_PT(h_zcl_getwalletinfo,         "getwalletinfo")
-DEFINE_PT(h_zcl_z_listaddresses,       "z_listaddresses")
-DEFINE_PT(h_zcl_walletaudit,           "walletaudit")
+DEFINE_PT(h_zcl_balance,               "z_gettotalbalance", "mcp.wallet")
+DEFINE_PT(h_zcl_getnewaddress,         "getnewaddress",     "mcp.wallet")
+DEFINE_PT(h_zcl_z_getnewaddress,       "z_getnewaddress",   "mcp.wallet")
+DEFINE_PT(h_zcl_getwalletinfo,         "getwalletinfo",     "mcp.wallet")
+DEFINE_PT(h_zcl_z_listaddresses,       "z_listaddresses",   "mcp.wallet")
+DEFINE_PT(h_zcl_walletaudit,           "walletaudit",       "mcp.wallet")
 
 /* ── Parameterized handlers ──────────────────────────────────── */
 

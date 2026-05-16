@@ -16,33 +16,16 @@
 #include <string.h>
 #include <stdbool.h>
 
-/* ── Helpers ───────────────────────────────────────────────── */
-
-#define DEFINE_PT(name, rpc)                                                   \
-    static int name(const struct mcp_request *req, struct mcp_response *res)  \
-    {                                                                          \
-        (void)req;                                                             \
-        char *out = mcp_node_rpc(rpc, NULL);                                   \
-        if (!out) {                                                            \
-            res->error = MCP_ERR_HANDLER_FAILED;                               \
-            snprintf(res->error_message, sizeof(res->error_message),           \
-                     "RPC %s returned null", rpc);                             \
-            LOG_ERR("mcp.chain", "RPC %s returned null", rpc);                 \
-        }                                                                      \
-        res->body = out;                                                       \
-        return 0;                                                              \
-    }
-
 /* ── Handlers ───────────────────────────────────────────────── */
 
-DEFINE_PT(h_zcl_getblockcount,     "getblockcount")
-DEFINE_PT(h_zcl_getblockchaininfo, "getblockchaininfo")
-DEFINE_PT(h_zcl_syncstate,         "syncstate")
-DEFINE_PT(h_zcl_validationstatus,  "validationstatus")
-DEFINE_PT(h_zcl_dataintegrity,     "getdataintegrity")
-DEFINE_PT(h_zcl_mmb,               "getmmrroot")
-DEFINE_PT(h_zcl_utxocommitment,    "getutxocommitment")
-DEFINE_PT(h_zcl_hodlwave,          "gethodlwave")
+DEFINE_PT(h_zcl_getblockcount,     "getblockcount",     "mcp.chain")
+DEFINE_PT(h_zcl_getblockchaininfo, "getblockchaininfo", "mcp.chain")
+DEFINE_PT(h_zcl_syncstate,         "syncstate",         "mcp.chain")
+DEFINE_PT(h_zcl_validationstatus,  "validationstatus",  "mcp.chain")
+DEFINE_PT(h_zcl_dataintegrity,     "getdataintegrity",  "mcp.chain")
+DEFINE_PT(h_zcl_mmb,               "getmmrroot",        "mcp.chain")
+DEFINE_PT(h_zcl_utxocommitment,    "getutxocommitment", "mcp.chain")
+DEFINE_PT(h_zcl_hodlwave,          "gethodlwave",       "mcp.chain")
 
 static int h_zcl_utxo_audit(const struct mcp_request *req,
                             struct mcp_response *res)

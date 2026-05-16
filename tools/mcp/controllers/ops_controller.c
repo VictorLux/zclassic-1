@@ -24,26 +24,11 @@
 #include <time.h>
 #include <unistd.h>
 
-#define DEFINE_PT(name, rpc)                                                   \
-    static int name(const struct mcp_request *req, struct mcp_response *res)  \
-    {                                                                          \
-        (void)req;                                                             \
-        char *out = mcp_node_rpc(rpc, NULL);                                   \
-        if (!out) {                                                            \
-            res->error = MCP_ERR_HANDLER_FAILED;                               \
-            snprintf(res->error_message, sizeof(res->error_message),           \
-                     "RPC %s returned null", rpc);                             \
-            LOG_ERR("mcp.ops", "RPC %s returned null", rpc);                   \
-        }                                                                      \
-        res->body = out;                                                       \
-        return 0;                                                              \
-    }
-
-DEFINE_PT(h_zcl_getmempoolinfo, "getmempoolinfo")
-DEFINE_PT(h_zcl_getrawmempool,  "getrawmempool")
-DEFINE_PT(h_zcl_getmininginfo,  "getmininginfo")
-DEFINE_PT(h_zcl_benchmark,      "benchmark")
-DEFINE_PT(h_zcl_dbstats,        "db_info")
+DEFINE_PT(h_zcl_getmempoolinfo, "getmempoolinfo", "mcp.ops")
+DEFINE_PT(h_zcl_getrawmempool,  "getrawmempool",  "mcp.ops")
+DEFINE_PT(h_zcl_getmininginfo,  "getmininginfo",  "mcp.ops")
+DEFINE_PT(h_zcl_benchmark,      "benchmark",      "mcp.ops")
+DEFINE_PT(h_zcl_dbstats,        "db_info",        "mcp.ops")
 
 
 /* ── Handlers ───────────────────────────────────────────────── */

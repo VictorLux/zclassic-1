@@ -15,28 +15,13 @@
 #include <stdlib.h>
 #include <string.h>
 
-#define DEFINE_PT(name, rpc)                                                   \
-    static int name(const struct mcp_request *req, struct mcp_response *res)  \
-    {                                                                          \
-        (void)req;                                                             \
-        char *out = mcp_node_rpc(rpc, NULL);                                   \
-        if (!out) {                                                            \
-            res->error = MCP_ERR_HANDLER_FAILED;                               \
-            snprintf(res->error_message, sizeof(res->error_message),           \
-                     "RPC %s returned null", rpc);                             \
-            LOG_ERR("mcp.app", "RPC %s returned null", rpc);                   \
-        }                                                                      \
-        res->body = out;                                                       \
-        return 0;                                                              \
-    }
-
 /* ── ZSLP tokens ────────────────────────────────────────────── */
 
-DEFINE_PT(h_zcl_tokens, "zslp_listtokens")
+DEFINE_PT(h_zcl_tokens, "zslp_listtokens", "mcp.app")
 
 /* ── Names (ZNAM) ───────────────────────────────────────────── */
 
-DEFINE_PT(h_zcl_name_list, "name_list")
+DEFINE_PT(h_zcl_name_list, "name_list", "mcp.app")
 
 static int h_zcl_name_resolve(const struct mcp_request *req, struct mcp_response *res)
 {
@@ -161,8 +146,8 @@ static int h_zcl_msg_read(const struct mcp_request *req, struct mcp_response *re
 
 /* ── File market ────────────────────────────────────────────── */
 
-DEFINE_PT(h_zcl_market_list,   "zmarket_list")
-DEFINE_PT(h_zcl_market_status, "zmarket_status")
+DEFINE_PT(h_zcl_market_list,   "zmarket_list",   "mcp.app")
+DEFINE_PT(h_zcl_market_status, "zmarket_status", "mcp.app")
 
 static int h_zcl_market_offer(const struct mcp_request *req, struct mcp_response *res)
 {
@@ -206,7 +191,7 @@ static int h_zcl_market_buy(const struct mcp_request *req, struct mcp_response *
 
 /* ── Atomic swaps (ZSWP) ────────────────────────────────────── */
 
-DEFINE_PT(h_zcl_swap_chains, "swap_chains")
+DEFINE_PT(h_zcl_swap_chains, "swap_chains", "mcp.app")
 
 static int h_zcl_swap_initiate(const struct mcp_request *req, struct mcp_response *res)
 {

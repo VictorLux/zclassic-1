@@ -18,26 +18,11 @@
 #include <string.h>
 #include <time.h>
 
-#define DEFINE_PT(name, rpc)                                                   \
-    static int name(const struct mcp_request *req, struct mcp_response *res)  \
-    {                                                                          \
-        (void)req;                                                             \
-        char *out = mcp_node_rpc(rpc, NULL);                                   \
-        if (!out) {                                                            \
-            res->error = MCP_ERR_HANDLER_FAILED;                               \
-            snprintf(res->error_message, sizeof(res->error_message),           \
-                     "RPC %s returned null", rpc);                             \
-            LOG_ERR("mcp.net", "RPC %s returned null", rpc);                   \
-        }                                                                      \
-        res->body = out;                                                       \
-        return 0;                                                              \
-    }
-
-DEFINE_PT(h_zcl_peers,        "getpeerinfo")
-DEFINE_PT(h_zcl_networkinfo,  "getnetworkinfo")
-DEFINE_PT(h_zcl_onion_status, "healthcheck")
-DEFINE_PT(h_zcl_gametypes,    "gametypes")
-DEFINE_PT(h_zcl_peerlatency,  "getpeerlatency")
+DEFINE_PT(h_zcl_peers,        "getpeerinfo",    "mcp.net")
+DEFINE_PT(h_zcl_networkinfo,  "getnetworkinfo", "mcp.net")
+DEFINE_PT(h_zcl_onion_status, "healthcheck",    "mcp.net")
+DEFINE_PT(h_zcl_gametypes,    "gametypes",      "mcp.net")
+DEFINE_PT(h_zcl_peerlatency,  "getpeerlatency", "mcp.net")
 
 static int h_zcl_addnode(const struct mcp_request *req, struct mcp_response *res)
 {
