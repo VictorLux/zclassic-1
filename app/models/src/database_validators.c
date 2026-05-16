@@ -26,6 +26,7 @@
 #include "models/onion_announcement.h"
 #include "models/peer.h"
 #include "models/store.h"
+#include "models/swap_contract.h"
 #include "models/tx_index.h"
 #include "models/utxo.h"
 #include "models/wallet_key.h"
@@ -202,6 +203,13 @@ static bool val_store_product(const void *row, char *err, size_t cap)
     return finish(&e, err, cap);
 }
 
+static bool val_swap_contract(const void *row, char *err, size_t cap)
+{
+    struct ar_errors e; ar_errors_clear(&e);
+    db_swap_contract_validate((const struct swap_contract *)row, &e);
+    return finish(&e, err, cap);
+}
+
 static bool val_store_order(const void *row, char *err, size_t cap)
 {
     struct ar_errors e; ar_errors_clear(&e);
@@ -323,6 +331,7 @@ void db_register_all_validators(void)
     db_register_validator("peers",              val_peer);
     db_register_validator("store_products",     val_store_product);
     db_register_validator("store_orders",       val_store_order);
+    db_register_validator("zswp_contracts",     val_swap_contract);
     db_register_validator("tx_index",           val_tx_index);
     db_register_validator("utxos",              val_utxo);
     db_register_validator("wallet_keys",        val_wallet_key);

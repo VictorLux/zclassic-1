@@ -19,8 +19,11 @@
 #include "core/hash.h"
 #include "core/random.h"
 #include "encoding/base58.h"
+#include "models/activerecord.h"
 #include "models/database.h"
+#include "models/swap_contract.h"
 #include "util/ar_step_readonly.h"
+#include "util/log_macros.h"
 #include <string.h>
 #include <stdio.h>
 #include <time.h>
@@ -327,7 +330,13 @@ void swap_compute_id(const char *my_addr, const char *counter_addr,
 
 bool db_swap_save(struct node_db *ndb, const struct swap_contract *swap)
 {
-    if (!ndb || !ndb->open) return false;
+    if (!ndb || !ndb->open) LOG_FAIL("htlc", "db_swap_save: db not open");
+    if (!swap) LOG_FAIL("htlc", "db_swap_save: swap is NULL");
+
+    struct ar_callbacks *cbs = db_swap_contract_callbacks();
+    AR_VALIDATE_RECORD(cbs, "swap_contract", swap, db_swap_contract_validate);
+    if (!ar_run_before_save(cbs, (void *)swap))
+        return false;
 
     const char *sql =
         "INSERT OR REPLACE INTO zswp_contracts"
@@ -339,7 +348,7 @@ bool db_swap_save(struct node_db *ndb, const struct swap_contract *swap)
 
     sqlite3_stmt *s = NULL;
     int rc = sqlite3_prepare_v2(ndb->db, sql, -1, &s, NULL);
-    if (rc != SQLITE_OK) return false;
+    if (rc != SQLITE_OK) LOG_FAIL("htlc", "db_swap_save: prepare failed: %s", sqlite3_errmsg(ndb->db));
 
     sqlite3_bind_text(s, 1, swap->swap_id, -1, SQLITE_STATIC);
     sqlite3_bind_int(s, 2, swap->role);
@@ -362,8 +371,9 @@ bool db_swap_save(struct node_db *ndb, const struct swap_contract *swap)
     sqlite3_bind_text(s, 15, swap->p2sh_address, -1, SQLITE_STATIC);
     sqlite3_bind_int64(s, 16, swap->created_at);
 
-    bool ok = sqlite3_step(s) == SQLITE_DONE;
+    bool ok = AR_STEP_DONE(s);
     sqlite3_finalize(s);
+    if (ok) ar_run_after_save(cbs, (void *)swap);
     return ok;
 }
 
@@ -495,7 +505,7 @@ bool db_swap_update_state(struct node_db *ndb, const char *swap_id,
         sqlite3_bind_text(s, 2, swap_id, -1, SQLITE_STATIC);
     }
 
-    bool ok = sqlite3_step(s) == SQLITE_DONE;
+    bool ok = AR_STEP_WRITE(s) == SQLITE_DONE;
     sqlite3_finalize(s);
     return ok;
 }
