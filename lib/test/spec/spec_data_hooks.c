@@ -7,8 +7,35 @@
 #include "test/test_helpers.h"
 #include "models/activerecord.h"
 #include "models/block.h"
+#include "models/wallet_key.h"
+#include "models/database.h"
+#include "event/event.h"
 #include <string.h>
 #include <stdio.h>
+
+static int g_wk_saved_fired;
+static int g_sk_saved_fired;
+static char g_wk_payload[EVENT_PAYLOAD_SIZE];
+
+static void on_wallet_key_saved(enum event_type type, uint32_t peer_id,
+                                 const void *payload, uint32_t payload_len,
+                                 void *ctx)
+{
+    (void)type; (void)peer_id; (void)ctx;
+    g_wk_saved_fired++;
+    if (payload && payload_len > 0 && payload_len < EVENT_PAYLOAD_SIZE) {
+        memcpy(g_wk_payload, payload, payload_len);
+        g_wk_payload[payload_len] = '\0';
+    }
+}
+
+static void on_sapling_key_saved(enum event_type type, uint32_t peer_id,
+                                  const void *payload, uint32_t payload_len,
+                                  void *ctx)
+{
+    (void)type; (void)peer_id; (void)payload; (void)payload_len; (void)ctx;
+    g_sk_saved_fired++;
+}
 
 /* ── Test state ─────────────────────────────────────────── */
 
@@ -133,6 +160,62 @@ int spec_data_hooks(void)
         int ctx_val = 42;
         ar_callbacks_set_ctx(&cb, &ctx_val);
         bool ok = cb.ctx == &ctx_val;
+        if (ok) printf("OK\n"); else { printf("FAIL\n"); failures++; }
+    }
+
+    {   printf("wallet_key after_save emits model.wallet_key_saved... ");
+        event_log_init();
+        event_clear_all_observers();
+        g_wk_saved_fired = 0;
+        g_sk_saved_fired = 0;
+        memset(g_wk_payload, 0, sizeof(g_wk_payload));
+        event_observe(EV_WALLET_KEY_SAVED, on_wallet_key_saved, NULL);
+        event_observe(EV_SAPLING_KEY_SAVED, on_sapling_key_saved, NULL);
+
+        struct node_db ndb;
+        bool ok = node_db_open(&ndb, ":memory:");
+        struct db_wallet_key k;
+        memset(&k, 0, sizeof(k));
+        memset(k.pubkey_hash, 0xA1, 20);
+        memset(k.pubkey, 0xB2, 33);
+        k.pubkey_len = 33;
+        memset(k.privkey, 0xC3, 32);
+        k.compressed = true;
+        k.created_at = 1700000000;
+        ok = ok && db_wallet_key_save(&ndb, &k);
+        ok = ok && g_wk_saved_fired == 1;
+        ok = ok && strstr(g_wk_payload, "kind=transparent") != NULL;
+        ok = ok && g_sk_saved_fired == 0;
+        node_db_close(&ndb);
+        event_clear_all_observers();
+        if (ok) printf("OK\n"); else { printf("FAIL\n"); failures++; }
+    }
+
+    {   printf("sapling_key after_save emits both events... ");
+        event_log_init();
+        event_clear_all_observers();
+        g_wk_saved_fired = 0;
+        g_sk_saved_fired = 0;
+        memset(g_wk_payload, 0, sizeof(g_wk_payload));
+        event_observe(EV_WALLET_KEY_SAVED, on_wallet_key_saved, NULL);
+        event_observe(EV_SAPLING_KEY_SAVED, on_sapling_key_saved, NULL);
+
+        struct node_db ndb;
+        bool ok = node_db_open(&ndb, ":memory:");
+        struct db_sapling_key sk;
+        memset(&sk, 0, sizeof(sk));
+        memset(sk.ivk, 0xA1, 32);
+        memset(sk.xsk, 0xB2, 169);
+        memset(sk.xfvk, 0xC3, 169);
+        memset(sk.diversifier, 0xD4, 11);
+        memset(sk.pk_d, 0xE5, 32);
+        snprintf(sk.address, sizeof(sk.address), "zs1test");
+        ok = ok && db_sapling_key_save(&ndb, &sk);
+        ok = ok && g_wk_saved_fired == 1;
+        ok = ok && strstr(g_wk_payload, "kind=sapling") != NULL;
+        ok = ok && g_sk_saved_fired == 1;
+        node_db_close(&ndb);
+        event_clear_all_observers();
         if (ok) printf("OK\n"); else { printf("FAIL\n"); failures++; }
     }
 

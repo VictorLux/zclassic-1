@@ -18,6 +18,8 @@
 #include "keys/pubkey.h"
 #include "support/cleanse.h"
 #include "util/result.h"
+#include "event/event.h"
+#include "util/log_json.h"
 #include <string.h>
 #include <stdlib.h>
 #include <time.h>
@@ -31,6 +33,89 @@
 DEFINE_MODEL_CALLBACKS(wallet_key)
 DEFINE_MODEL_CALLBACKS(sapling_key)
 DEFINE_MODEL_CALLBACKS(wallet_script)
+
+static void wk_hash_hex_short(const uint8_t *bytes, size_t nbytes,
+                              char *out, size_t out_cap)
+{
+    static const char hex[] = "0123456789abcdef";
+    size_t cap = out_cap == 0 ? 0 : out_cap - 1;
+    size_t max = nbytes * 2;
+    if (max > cap) max = cap;
+    for (size_t i = 0; i < max / 2; i++) {
+        out[i * 2]     = hex[(bytes[i] >> 4) & 0x0f];
+        out[i * 2 + 1] = hex[bytes[i] & 0x0f];
+    }
+    out[max] = '\0';
+}
+
+static bool wallet_key_before_save(void *record, void *ctx)
+{
+    (void)record;
+    (void)ctx;
+    /* If the operator set a passphrase, the keystore-at-rest path is
+     * the right place to wrap the privkey before persistence.  This
+     * model does not own that crypto; signal that wrapping is pending
+     * via a structured log line and let the save proceed unencrypted
+     * (legacy behaviour) until the keystore wiring lands. */
+    if (getenv("ZCL_WALLET_PASSPHRASE"))
+        log_jsonf(LOG_JSON_WARN, "wallet_key.passphrase_set_pending_encryption",
+                  "\"model\":\"wallet_key\"");
+    return true;
+}
+
+static void wallet_key_after_save(void *record, void *ctx)
+{
+    (void)ctx;
+    const struct db_wallet_key *k = record;
+    char addr_hex[41];
+    wk_hash_hex_short(k->pubkey_hash, sizeof(k->pubkey_hash),
+                      addr_hex, sizeof(addr_hex));
+    event_emitf(EV_WALLET_KEY_SAVED, 0,
+                "kind=transparent addr_hash=%s", addr_hex);
+}
+
+static void wallet_key_init_hooks(void)
+{
+    static bool done = false;
+    if (done) return;
+    struct ar_callbacks *cbs = db_wallet_key_callbacks();
+    ar_register_before_save(cbs, wallet_key_before_save);
+    ar_register_after_save(cbs, wallet_key_after_save);
+    done = true;
+}
+
+static bool sapling_key_before_save(void *record, void *ctx)
+{
+    (void)record;
+    (void)ctx;
+    if (getenv("ZCL_WALLET_PASSPHRASE"))
+        log_jsonf(LOG_JSON_WARN, "wallet_key.passphrase_set_pending_encryption",
+                  "\"model\":\"sapling_key\"");
+    return true;
+}
+
+static void sapling_key_after_save(void *record, void *ctx)
+{
+    (void)ctx;
+    const struct db_sapling_key *k = record;
+    char fvk_hex[33];
+    wk_hash_hex_short(k->xfvk, 16, fvk_hex, sizeof(fvk_hex));
+    char addr_hex[33];
+    wk_hash_hex_short(k->ivk, 16, addr_hex, sizeof(addr_hex));
+    event_emitf(EV_WALLET_KEY_SAVED, 0,
+                "kind=sapling addr_hash=%s", addr_hex);
+    event_emitf(EV_SAPLING_KEY_SAVED, 0, "fvk_hash=%s", fvk_hex);
+}
+
+static void sapling_key_init_hooks(void)
+{
+    static bool done = false;
+    if (done) return;
+    struct ar_callbacks *cbs = db_sapling_key_callbacks();
+    ar_register_before_save(cbs, sapling_key_before_save);
+    ar_register_after_save(cbs, sapling_key_after_save);
+    done = true;
+}
 
 /* ── Validation ────────────────────────────────────────────────── */
 
@@ -86,6 +171,7 @@ bool db_wallet_key_save(struct node_db *ndb, const struct db_wallet_key *k)
     if (k->created_at == 0)
         ((struct db_wallet_key *)k)->created_at = (int64_t)time(NULL);
 
+    wallet_key_init_hooks();
     struct ar_callbacks *cbs = db_wallet_key_callbacks();
     sqlite3_stmt *s = NULL;
     AR_ADHOC_SAVE(ndb, s,
@@ -240,6 +326,7 @@ int db_wallet_key_each(struct node_db *ndb, wallet_key_cb cb, void *ctx)
 bool db_sapling_key_save(struct node_db *ndb, const struct db_sapling_key *k)
 {
     if (!ndb->open) return false;
+    sapling_key_init_hooks();
     struct ar_callbacks *cbs = db_sapling_key_callbacks();
     sqlite3_stmt *s = NULL;
     AR_ADHOC_SAVE(ndb, s,

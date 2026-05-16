@@ -360,6 +360,9 @@ const char *event_type_name(enum event_type type)
         [EV_MODEL_VALIDATION_FAILED] = "model.validation_failed",
         [EV_UTXO_SAVED]              = "model.utxo_saved",
         [EV_BLOCK_SAVED]             = "model.block_saved",
+        [EV_WALLET_KEY_SAVED]        = "model.wallet_key_saved",
+        [EV_SAPLING_KEY_SAVED]       = "model.sapling_key_saved",
+        [EV_WALLET_TX_SAVED]         = "model.wallet_tx_saved",
         [EV_WALLET_UTXO_SAVED]       = "model.wallet_utxo_saved",
         [EV_RECOVERY_ACTION]         = "recovery.action",
         /* System */

@@ -96,12 +96,29 @@ static bool wallet_tx_before_save(void *record, void *ctx)
     return true;
 }
 
+static void wallet_tx_after_save(void *record, void *ctx)
+{
+    (void)ctx;
+    const struct db_wallet_tx *t = record;
+    static const char hex[] = "0123456789abcdef";
+    char txid_hex[65];
+    for (size_t i = 0; i < 32; i++) {
+        txid_hex[i * 2]     = hex[(t->txid[i] >> 4) & 0x0f];
+        txid_hex[i * 2 + 1] = hex[t->txid[i] & 0x0f];
+    }
+    txid_hex[64] = '\0';
+    const char *category = t->from_me ? "send" : "receive";
+    event_emitf(EV_WALLET_TX_SAVED, 0,
+                "txid=%s category=%s", txid_hex, category);
+}
+
 static void wallet_tx_init_hooks(void)
 {
     static bool done = false;
     if (done) return;
     struct ar_callbacks *cbs = db_wallet_tx_callbacks();
     ar_register_before_save(cbs, wallet_tx_before_save);
+    ar_register_after_save(cbs, wallet_tx_after_save);
     done = true;
 }
 
