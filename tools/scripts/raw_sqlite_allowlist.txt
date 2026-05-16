@@ -17,4 +17,3 @@
 
 lib/wallet/src/wallet_sqlite.c
 lib/storage/src/coins_view_sqlite.c
-lib/znam/src/znam.c

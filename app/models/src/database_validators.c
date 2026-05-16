@@ -32,6 +32,7 @@
 #include "models/wallet_key.h"
 #include "models/wallet_tx.h"
 #include "models/zmsg.h"
+#include "models/znam.h"
 #include "models/zslp.h"
 #include "event/event.h"
 
@@ -280,6 +281,27 @@ static bool val_zmsg(const void *row, char *err, size_t cap)
     return finish(&e, err, cap);
 }
 
+static bool val_znam_entry(const void *row, char *err, size_t cap)
+{
+    struct ar_errors e; ar_errors_clear(&e);
+    db_znam_entry_validate((const struct znam_entry *)row, &e);
+    return finish(&e, err, cap);
+}
+
+static bool val_znam_text(const void *row, char *err, size_t cap)
+{
+    struct ar_errors e; ar_errors_clear(&e);
+    db_znam_text_validate((const struct znam_text_record *)row, &e);
+    return finish(&e, err, cap);
+}
+
+static bool val_znam_addr(const void *row, char *err, size_t cap)
+{
+    struct ar_errors e; ar_errors_clear(&e);
+    db_znam_addr_validate((const struct znam_addr_record *)row, &e);
+    return finish(&e, err, cap);
+}
+
 static bool val_zslp_balance(const void *row, char *err, size_t cap)
 {
     struct ar_errors e; ar_errors_clear(&e);
@@ -341,6 +363,9 @@ void db_register_all_validators(void)
     db_register_validator("wallet_utxos",       val_wallet_utxo);
     db_register_validator("wallet_sapling_notes", val_sapling_note);
     db_register_validator("zmsg_messages",      val_zmsg);
+    db_register_validator("znam_names",         val_znam_entry);
+    db_register_validator("znam_text_records",  val_znam_text);
+    db_register_validator("znam_addr_records",  val_znam_addr);
     db_register_validator("zslp_balances",      val_zslp_balance);
     db_register_validator("zslp_tokens",        val_zslp_token);
     db_register_validator("database",           val_database);

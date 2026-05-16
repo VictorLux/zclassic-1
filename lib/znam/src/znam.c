@@ -4,8 +4,11 @@
  * Follows the same OP_RETURN encoding pattern as ZSLP. */
 
 #include "znam/znam.h"
+#include "models/activerecord.h"
 #include "models/database.h"
+#include "models/znam.h"
 #include "util/ar_step_readonly.h"
+#include "util/log_macros.h"
 #include <string.h>
 #include <stdio.h>
 #include <ctype.h>
@@ -275,7 +278,13 @@ size_t znam_build_set_text(uint8_t *out, size_t out_len,
 
 bool db_znam_save(struct node_db *ndb, const struct znam_entry *entry)
 {
-    if (!ndb || !ndb->open) return false;
+    if (!ndb || !ndb->open) LOG_FAIL("znam", "db_znam_save: db not open");
+    if (!entry) LOG_FAIL("znam", "db_znam_save: entry is NULL");
+
+    struct ar_callbacks *cbs = db_znam_entry_callbacks();
+    AR_VALIDATE_RECORD(cbs, "znam_entry", entry, db_znam_entry_validate);
+    if (!ar_run_before_save(cbs, (void *)entry))
+        return false;
 
     const char *sql =
         "INSERT OR REPLACE INTO znam_names"
@@ -285,7 +294,7 @@ bool db_znam_save(struct node_db *ndb, const struct znam_entry *entry)
 
     sqlite3_stmt *s = NULL;
     int rc = sqlite3_prepare_v2(ndb->db, sql, -1, &s, NULL);
-    if (rc != SQLITE_OK) return false;
+    if (rc != SQLITE_OK) LOG_FAIL("znam", "db_znam_save: prepare failed: %s", sqlite3_errmsg(ndb->db));
 
     sqlite3_bind_text(s, 1, entry->name, -1, SQLITE_STATIC);
     sqlite3_bind_text(s, 2, entry->owner_address, -1, SQLITE_STATIC);
@@ -295,8 +304,9 @@ bool db_znam_save(struct node_db *ndb, const struct znam_entry *entry)
     sqlite3_bind_int(s, 6, entry->reg_height);
     sqlite3_bind_blob(s, 7, entry->last_update_txid, 32, SQLITE_STATIC);
 
-    bool ok = sqlite3_step(s) == SQLITE_DONE;
+    bool ok = AR_STEP_DONE(s);
     sqlite3_finalize(s);
+    if (ok) ar_run_after_save(cbs, (void *)entry);
     return ok;
 }
 
@@ -402,17 +412,31 @@ int db_znam_list_by_owner(struct node_db *ndb, const char *owner,
 bool db_znam_text_save(struct node_db *ndb, const char *name,
                        const char *key, const char *value)
 {
-    if (!ndb || !ndb->open) return false;
+    if (!ndb || !ndb->open) LOG_FAIL("znam", "db_znam_text_save: db not open");
+    if (!name || !key) LOG_FAIL("znam", "db_znam_text_save: name/key NULL");
+
+    struct znam_text_record rec;
+    memset(&rec, 0, sizeof(rec));
+    snprintf(rec.name,  sizeof(rec.name),  "%s", name);
+    snprintf(rec.key,   sizeof(rec.key),   "%s", key);
+    if (value) snprintf(rec.value, sizeof(rec.value), "%s", value);
+
+    struct ar_callbacks *cbs = db_znam_text_callbacks();
+    AR_VALIDATE_RECORD(cbs, "znam_text", &rec, db_znam_text_validate);
+    if (!ar_run_before_save(cbs, &rec))
+        return false;
+
     const char *sql =
         "INSERT OR REPLACE INTO znam_text_records(name,key,value) VALUES(?,?,?)";
     sqlite3_stmt *s = NULL;
     int rc = sqlite3_prepare_v2(ndb->db, sql, -1, &s, NULL);
-    if (rc != SQLITE_OK) return false;
+    if (rc != SQLITE_OK) LOG_FAIL("znam", "db_znam_text_save: prepare failed: %s", sqlite3_errmsg(ndb->db));
     sqlite3_bind_text(s, 1, name, -1, SQLITE_STATIC);
     sqlite3_bind_text(s, 2, key, -1, SQLITE_STATIC);
     sqlite3_bind_text(s, 3, value, -1, SQLITE_STATIC);
-    bool ok = sqlite3_step(s) == SQLITE_DONE;
+    bool ok = AR_STEP_DONE(s);
     sqlite3_finalize(s);
+    if (ok) ar_run_after_save(cbs, &rec);
     return ok;
 }
 
@@ -468,17 +492,31 @@ int db_znam_text_list(struct node_db *ndb, const char *name,
 bool db_znam_addr_save(struct node_db *ndb, const char *name,
                        uint8_t coin_type, const char *address)
 {
-    if (!ndb || !ndb->open) return false;
+    if (!ndb || !ndb->open) LOG_FAIL("znam", "db_znam_addr_save: db not open");
+    if (!name || !address) LOG_FAIL("znam", "db_znam_addr_save: name/address NULL");
+
+    struct znam_addr_record rec;
+    memset(&rec, 0, sizeof(rec));
+    snprintf(rec.name,    sizeof(rec.name),    "%s", name);
+    rec.coin_type = coin_type;
+    snprintf(rec.address, sizeof(rec.address), "%s", address);
+
+    struct ar_callbacks *cbs = db_znam_addr_callbacks();
+    AR_VALIDATE_RECORD(cbs, "znam_addr", &rec, db_znam_addr_validate);
+    if (!ar_run_before_save(cbs, &rec))
+        return false;
+
     const char *sql =
         "INSERT OR REPLACE INTO znam_addr_records(name,coin_type,address) VALUES(?,?,?)";
     sqlite3_stmt *s = NULL;
     int rc = sqlite3_prepare_v2(ndb->db, sql, -1, &s, NULL);
-    if (rc != SQLITE_OK) return false;
+    if (rc != SQLITE_OK) LOG_FAIL("znam", "db_znam_addr_save: prepare failed: %s", sqlite3_errmsg(ndb->db));
     sqlite3_bind_text(s, 1, name, -1, SQLITE_STATIC);
     sqlite3_bind_int(s, 2, coin_type);
     sqlite3_bind_text(s, 3, address, -1, SQLITE_STATIC);
-    bool ok = sqlite3_step(s) == SQLITE_DONE;
+    bool ok = AR_STEP_DONE(s);
     sqlite3_finalize(s);
+    if (ok) ar_run_after_save(cbs, &rec);
     return ok;
 }
 
