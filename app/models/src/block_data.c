@@ -41,24 +41,22 @@ bool block_data_validate(struct block_data *bd, struct ar_errors *errors)
     bd->copy_blk_ok = false;
     bd->copy_rev_ok = false;
 
-    if (!bd->src_dir)
-        ar_errors_add(errors, "src_dir", "can't be blank");
-    if (!bd->dst_dir)
-        ar_errors_add(errors, "dst_dir", "can't be blank");
+    validates_string_present(errors, bd->src_dir, "src_dir");
+    validates_string_present(errors, bd->dst_dir, "dst_dir");
     if (ar_errors_any(errors))
         return false;
 
     struct stat st;
-    if (stat(bd->src_dir, &st) != 0 || !S_ISDIR(st.st_mode)) {
-        ar_errors_add(errors, "src_dir", "is not a directory");
+    validates_custom(errors,
+                     stat(bd->src_dir, &st) == 0 && S_ISDIR(st.st_mode),
+                     "src_dir", "is not a directory");
+    if (ar_errors_any(errors))
         return false;
-    }
 
     count_dat_files(bd->src_dir, "blk", &bd->num_blk_files, &bd->blk_bytes);
     count_dat_files(bd->src_dir, "rev", &bd->num_rev_files, &bd->rev_bytes);
 
-    if (bd->num_blk_files == 0)
-        ar_errors_add(errors, "num_blk_files", "must be positive");
+    validates_positive(errors, bd, num_blk_files);
 
     return !ar_errors_any(errors);
 }

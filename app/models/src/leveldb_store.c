@@ -17,29 +17,29 @@ bool leveldb_store_validate(struct leveldb_store *store,
     store->has_current = false;
     store->copy_ok = false;
 
-    if (!store->src_dir)
-        ar_errors_add(errors, "src_dir", "can't be blank");
-    if (!store->dst_dir)
-        ar_errors_add(errors, "dst_dir", "can't be blank");
+    validates_string_present(errors, store->src_dir, "src_dir");
+    validates_string_present(errors, store->dst_dir, "dst_dir");
     if (ar_errors_any(errors))
         return false;
 
     struct stat st;
-    if (stat(store->src_dir, &st) != 0 || !S_ISDIR(st.st_mode)) {
-        ar_errors_add(errors, "src_dir", "is not a directory");
+    validates_custom(errors,
+                     stat(store->src_dir, &st) == 0 && S_ISDIR(st.st_mode),
+                     "src_dir", "is not a directory");
+    if (ar_errors_any(errors))
         return false;
-    }
 
     scan_leveldb_dir(store->src_dir, &store->num_sst_files,
                      &store->total_bytes, &store->has_manifest,
                      &store->has_current);
 
-    if (!store->has_manifest)
-        ar_errors_add(errors, "has_manifest", "MANIFEST file required");
-    if (!store->has_current)
-        ar_errors_add(errors, "has_current", "CURRENT file required");
-    if (store->num_sst_files == 0 && store->total_bytes == 0)
-        ar_errors_add(errors, "total_bytes", "must be positive");
+    validates_custom(errors, store->has_manifest,
+                     "has_manifest", "MANIFEST file required");
+    validates_custom(errors, store->has_current,
+                     "has_current", "CURRENT file required");
+    validates_custom(errors,
+                     store->num_sst_files > 0 || store->total_bytes > 0,
+                     "total_bytes", "must be positive");
 
     return !ar_errors_any(errors);
 }

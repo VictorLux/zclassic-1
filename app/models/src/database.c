@@ -1,6 +1,16 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  * Distributed under the MIT software license, see the accompanying
- * file COPYING or http://www.opensource.org/licenses/mit-license.php. */
+ * file COPYING or http://www.opensource.org/licenses/mit-license.php.
+ *
+ * ar-validate-skip:connection-handle-not-a-row
+ *   struct node_db wraps the SQLite connection plus a registry of
+ *   cached prepared statements. It is not a row record, so the
+ *   validates_* / AR_BEGIN_SAVE lifecycle does not apply. Row-level
+ *   validation lives on the models that *use* this handle.
+ *
+ *   models/database_validators.{c,h} holds the shared field validators
+ *   (range checks, address syntax, …) that row models invoke from
+ *   their own validates_* paths. */
 
 #include "models/database.h"
 #include "models/database_validators.h"

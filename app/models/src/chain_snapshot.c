@@ -11,8 +11,16 @@ bool chain_snapshot_validate(struct chain_snapshot *snap)
     memset(&snap->index, 0, sizeof(snap->index));
     memset(&snap->chainstate, 0, sizeof(snap->chainstate));
 
-    if (!snap->src_dir || !snap->dst_dir)
+    struct ar_errors errors;
+    ar_errors_clear(&errors);
+    validates_string_present(&errors, snap->src_dir, "src_dir");
+    validates_string_present(&errors, snap->dst_dir, "dst_dir");
+    if (ar_errors_any(&errors)) {
+        char msg[512];
+        ar_errors_full_messages(&errors, msg, sizeof(msg));
+        printf("chain_snapshot: invalid: %s\n", msg);
         return false;
+    }
 
     /* Build owned path buffers */
     snprintf(snap->blocks_src, sizeof(snap->blocks_src),
@@ -37,7 +45,6 @@ bool chain_snapshot_validate(struct chain_snapshot *snap)
     snap->chainstate.dst_dir = snap->cs_dst;
 
     /* ── Validate BlockData ── */
-    struct ar_errors errors;
     if (!block_data_validate(&snap->blocks, &errors)) {
         char msg[512];
         ar_errors_full_messages(&errors, msg, sizeof(msg));

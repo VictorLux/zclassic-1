@@ -16,6 +16,7 @@
 #define ZCL_DB_MODEL_MMB_LEAF_STORE_H
 
 #include "chain/mmb.h"
+#include "models/activerecord.h"
 #include <stdint.h>
 #include <stdbool.h>
 
@@ -27,6 +28,12 @@ struct mmb_leaf_store {
     uint64_t capacity;     /* file size / 32 */
     bool     open;
 };
+
+/* Validate the store record — path must be present and file size
+ * (if any) must be a clean multiple of 32 bytes. Used at open time
+ * and exposed so the AR-style model contract is satisfied. */
+bool mmb_leaf_store_validate(struct mmb_leaf_store *store,
+                             struct ar_errors *errors);
 
 /* Open or create the leaf store at the given path.
  * If file exists, validates size and mmap's it.

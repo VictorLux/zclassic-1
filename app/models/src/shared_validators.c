@@ -1,4 +1,8 @@
-/* Copyright 2026 Rhett Creighton - Apache License 2.0 */
+/* Copyright 2026 Rhett Creighton - Apache License 2.0
+ *
+ * ar-validate-skip:shared-helpers-not-a-row
+ *   Pure helper module defining zcl_validate_zcl_address and friends
+ *   used by validates_zcl_address. Has no record of its own. */
 
 #include "models/shared_validators.h"
 

@@ -756,7 +756,15 @@ check-pthread-create:
 	fi
 	@echo "  OK: all pthread_create call sites accounted for"
 
-lint: check-malloc check-silent-errors check-raw-sqlite check-raw-malloc check-coins-lookup-nullcheck check-observability-pairing check-silent-errors-services check-silent-errors-controllers check-before-save-hooks check-pthread-create
+# Move 11: every app/models/src/*.c either invokes validates_* macros
+# from app/models/include/models/activerecord.h, or carries an
+# ar-validate-skip:<tag> marker explaining why the AR validation
+# lifecycle does not apply (infrastructure wrapper, registry, etc.).
+check-model-validation:
+	@echo "══ LINT: model validation coverage ══"
+	@./tools/scripts/check_model_validation.sh
+
+lint: check-malloc check-silent-errors check-raw-sqlite check-raw-malloc check-coins-lookup-nullcheck check-observability-pairing check-silent-errors-services check-silent-errors-controllers check-before-save-hooks check-pthread-create check-model-validation
 	@echo "══ LINT: all checks passed ══"
 
 ci: lint zclassic23 test_zcl

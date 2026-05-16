@@ -1,5 +1,9 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
+ * ar-validate-skip:registry-module-not-a-row
+ *   This file IS the model-validator registry; it has no record type
+ *   of its own. Lint marker keeps check-model-validation honest.
+ *
  * Database Validator Registry — Implementation
  * -------------------------------------------
  * Thin wrappers around every model's existing `_validate()` function,

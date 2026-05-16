@@ -2,6 +2,11 @@
  *
  * db_txn — scoped database transactions. See header for rationale.
  *
+ * ar-validate-skip:txn-wrapper-not-a-row
+ *   struct db_txn is a RAII wrapper around BEGIN/COMMIT/ROLLBACK, not
+ *   a row record. Validation belongs to the models whose writes the
+ *   transaction is scoping.
+ *
  * Ownership model
  * ---------------
  * Every handle returned by db_txn_begin is freed by exactly one

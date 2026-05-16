@@ -271,16 +271,36 @@ lint: check-malloc check-silent-errors check-raw-sqlite \
       check-raw-malloc check-coins-lookup-nullcheck \
       check-observability-pairing check-silent-errors-services \
       check-before-save-hooks check-pthread-create \
-      check-silent-errors-controllers
+      check-silent-errors-controllers check-model-validation
 	@echo "All lint checks passed"
 
 ci: lint test fuzz-ci coverage
 ```
 
-**Status: 10 gates active.** `make ci` fails if any fire. An agent
+**Status: 11 gates active.** `make ci` fails if any fire. An agent
 that pushes code with raw malloc, silent errors, bypassed AR
-validation, unpaired stderr diagnostics, or a critical model missing
-its before_save hook gets a red build before any human sees it.
+validation, unpaired stderr diagnostics, a critical model missing
+its before_save hook, or a model file with no `validates_*` call and
+no `ar-validate-skip:<tag>` marker gets a red build before any human
+sees it.
+
+### Gate #11: every model is either validated or explicitly skipped
+
+`check-model-validation` walks every `app/models/src/*.c` and
+requires one of:
+
+1. At least one `validates_*` call (the macros from
+   `app/models/include/models/activerecord.h` — `validates_presence_of`,
+   `validates_range`, `validates_zcl_address`, etc.).
+2. A top-of-file marker `ar-validate-skip:<tag>` (no space after the
+   colon, non-empty tag) explaining why the AR validation lifecycle
+   does not apply — e.g. `connection-handle-not-a-row`,
+   `registry-module-not-a-row`, `shared-helpers-not-a-row`.
+
+This pins the wave-6 result: validations are required for every row
+model, and infrastructure / registry / helper files declare their
+exemption in code rather than by silent omission. Implementation:
+`tools/scripts/check_model_validation.sh`.
 
 ---
 

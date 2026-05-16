@@ -16,10 +16,36 @@
 #include <sys/time.h>
 #include <time.h>
 
+bool mmb_leaf_store_validate(struct mmb_leaf_store *store,
+                             struct ar_errors *errors)
+{
+    ar_errors_clear(errors);
+    validates_string_present(errors, store->path, "path");
+    if (ar_errors_any(errors))
+        return false;
+
+    struct stat st;
+    if (stat(store->path, &st) == 0 && st.st_size > 0) {
+        validates_custom(errors,
+                         (st.st_size % 32) == 0,
+                         "file_size",
+                         "must be a multiple of 32 bytes (leaf hash size)");
+    }
+    return !ar_errors_any(errors);
+}
+
 bool mmb_leaf_store_open(struct mmb_leaf_store *store, const char *path)
 {
     memset(store, 0, sizeof(*store));
     snprintf(store->path, sizeof(store->path), "%s", path);
+
+    struct ar_errors errors;
+    if (!mmb_leaf_store_validate(store, &errors)) {
+        char msg[512];
+        ar_errors_full_messages(&errors, msg, sizeof(msg));
+        fprintf(stderr, "mmb_leaf_store: invalid: %s\n", msg);
+        return false;
+    }
 
     store->fd = open(path, O_RDWR | O_CREAT, 0644);
     if (store->fd < 0) {
@@ -35,7 +61,7 @@ bool mmb_leaf_store_open(struct mmb_leaf_store *store, const char *path)
                           MAP_PRIVATE, store->fd, 0);
         if (store->map == MAP_FAILED) {
             store->map = NULL;
-            fprintf(stderr, "mmb_leaf_store: mmap failed for %s\n", path);
+            fprintf(stderr, "mmb_leaf_store: mmap failed for %s\n", path); // obs-ok:warning-only-on-best-effort-path
         }
     }
 
