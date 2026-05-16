@@ -700,7 +700,7 @@ static int wbs_cmp_mtime_desc(const void *a, const void *b)
 {
     const struct wbs_file *fa = a;
     const struct wbs_file *fb = b;
-    if (fa->mtime > fb->mtime) return -1; // raw-return-ok (qsort comparator)
+    if (fa->mtime > fb->mtime) return -1; // raw-return-ok:qsort-comparator
     if (fa->mtime < fb->mtime) return 1;
     return 0;
 }

@@ -60,7 +60,7 @@ static int cmp_height(const void *a, const void *b)
 {
     const struct block_index *pa = *(const struct block_index *const *)a;
     const struct block_index *pb = *(const struct block_index *const *)b;
-    if (pa->nHeight < pb->nHeight) return -1; // raw-return-ok (qsort comparator)
+    if (pa->nHeight < pb->nHeight) return -1; // raw-return-ok:qsort-comparator
     if (pa->nHeight > pb->nHeight) return 1;
     return 0;
 }

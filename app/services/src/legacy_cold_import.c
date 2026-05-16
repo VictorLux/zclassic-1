@@ -147,7 +147,7 @@ static int64_t lci_link_blk_files(const char *legacy_blocks_dir,
     if (!d) {
         fprintf(stderr, "[cold_import] cannot opendir %s: %s\n",
                 legacy_blocks_dir, strerror(errno));
-        return -1;  // raw-return-ok: error logged on previous line
+        return -1;  // raw-return-ok:logged-above
     }
     /* Ensure our blocks dir exists. */
     mkdir(our_blocks_dir, 0755);
@@ -231,7 +231,7 @@ static int64_t lci_copy_block_index(const char *legacy_blocks_index_dir,
         fprintf(stderr,
                 "[cold_import] cannot open %s — zclassicd still "
                 "running? Stop it first.\n", legacy_blocks_index_dir);
-        return -1;  // raw-return-ok: error logged on previous line
+        return -1;  // raw-return-ok:logged-above
     }
 
     struct db_wrapper *dst = &our_btdb->db;
@@ -293,7 +293,7 @@ static int64_t lci_copy_block_index(const char *legacy_blocks_index_dir,
                 db_batch_free(&batch);
                 db_iter_free(&it);
                 db_wrapper_close(&src);
-                return -1;  // raw-return-ok: error logged above
+                return -1;  // raw-return-ok:logged-above
             }
             db_batch_clear(&batch);
             batch_fill = 0;
@@ -309,7 +309,7 @@ static int64_t lci_copy_block_index(const char *legacy_blocks_index_dir,
             db_batch_free(&batch);
             db_iter_free(&it);
             db_wrapper_close(&src);
-            return -1;  // raw-return-ok: error logged above
+            return -1;  // raw-return-ok:logged-above
         }
     }
     db_batch_free(&batch);

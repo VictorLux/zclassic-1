@@ -80,7 +80,7 @@ int64_t disk_monitor_free_bytes(const char *path)
     if (statvfs(path, &st) != 0) {
         fprintf(stderr, "[disk] %s: statvfs failed for '%s': %s\n",
                 __func__, path, strerror(errno));
-        return -1; // raw-return-ok (logged above)
+        return -1; // raw-return-ok:logged-above
     }
     /* `f_bavail` is the blocks available to unprivileged users —
      * the right number to compare against a "should I keep

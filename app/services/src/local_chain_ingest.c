@@ -975,7 +975,7 @@ bool local_chain_ingest_evidence_prefix_verified(void)
 
 int local_chain_ingest_evidence_prefix_end_height(void)
 {
-    if (g_sha3_windows_count == 0) return -1; // raw-return-ok: sentinel-no-compile-time-windows
+    if (g_sha3_windows_count == 0) return -1; // raw-return-ok:sentinel-no-compile-time-windows
     return (int)(g_sha3_windows_count * SHA3_WINDOW_SIZE) - 1;
 }
 

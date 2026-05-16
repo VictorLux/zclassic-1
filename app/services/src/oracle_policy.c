@@ -59,7 +59,7 @@ static int op_compute_evidence_prefix_end(void)
      *   [0 .. g_sha3_windows_count * SHA3_WINDOW_SIZE - 1].
      * A disagreement inside that range means our payload disagrees
      * with the compile-time anchor — the gravest possible failure. */
-    if (g_sha3_windows_count == 0) return -1; // raw-return-ok: sentinel-no-compile-time-windows
+    if (g_sha3_windows_count == 0) return -1; // raw-return-ok:sentinel-no-compile-time-windows
     return (int)(g_sha3_windows_count * SHA3_WINDOW_SIZE) - 1;
 }
 

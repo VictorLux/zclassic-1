@@ -79,7 +79,7 @@ static struct {
 
 static int ra_compile_time_end(void)
 {
-    if (g_sha3_windows_count == 0) return -1; // raw-return-ok: sentinel-no-compile-time-windows
+    if (g_sha3_windows_count == 0) return -1; // raw-return-ok:sentinel-no-compile-time-windows
     return (int)(g_sha3_windows_count * SHA3_WINDOW_SIZE) - 1;
 }
 
