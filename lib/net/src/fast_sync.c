@@ -20,6 +20,7 @@
 #include <time.h>
 #include <sqlite3.h>
 #include <pthread.h>
+#include "util/ar_step_readonly.h"
 #include "util/safe_alloc.h"
 #include "util/log_macros.h"
 
@@ -117,7 +118,7 @@ bool fast_sync_build_offer(const char *datadir,
     sqlite3_stmt *s = NULL;
     sqlite3_prepare_v2(db, "SELECT value FROM node_state WHERE key='tip_height'",
                         -1, &s, NULL);
-    if (sqlite3_step(s) == SQLITE_ROW) {
+    if (AR_STEP_ROW_READONLY(s) == SQLITE_ROW) {
         int len = sqlite3_column_bytes(s, 0);
         if (len == (int)sizeof(int64_t)) {
             int64_t h;
@@ -135,7 +136,7 @@ bool fast_sync_build_offer(const char *datadir,
     sqlite3_prepare_v2(db,
         "SELECT value FROM node_state WHERE key='tip_hash'",
         -1, &s, NULL);
-    if (sqlite3_step(s) == SQLITE_ROW) {
+    if (AR_STEP_ROW_READONLY(s) == SQLITE_ROW) {
         const void *h = sqlite3_column_blob(s, 0);
         if (h && sqlite3_column_bytes(s, 0) >= 32)
             memcpy(offer->block_hash, h, 32);
@@ -146,7 +147,7 @@ bool fast_sync_build_offer(const char *datadir,
         "SELECT chain_work FROM blocks WHERE hash=?",
         -1, &s, NULL);
     sqlite3_bind_blob(s, 1, offer->block_hash, 32, SQLITE_STATIC);
-    if (sqlite3_step(s) == SQLITE_ROW) {
+    if (AR_STEP_ROW_READONLY(s) == SQLITE_ROW) {
         const void *cw = sqlite3_column_blob(s, 0);
         if (cw && sqlite3_column_bytes(s, 0) >= 32)
             memcpy(offer->chain_work, cw, 32);
@@ -158,7 +159,7 @@ bool fast_sync_build_offer(const char *datadir,
 
     /* Count UTXOs */
     sqlite3_prepare_v2(db, "SELECT count(*) FROM utxos", -1, &s, NULL);
-    if (sqlite3_step(s) == SQLITE_ROW)
+    if (AR_STEP_ROW_READONLY(s) == SQLITE_ROW)
         offer->num_utxos = (uint64_t)sqlite3_column_int64(s, 0);
     sqlite3_finalize(s);
 
@@ -556,7 +557,7 @@ bool fast_sync_serve_snapshot(const char *datadir,
     if (!chunk) { sqlite3_finalize(s); sqlite3_close(db); LOG_FAIL("sync", "serve_snapshot: alloc utxo_chunk failed"); }
 
     (void)from_height;
-    while (sqlite3_step(s) == SQLITE_ROW) {
+    while (AR_STEP_ROW_READONLY(s) == SQLITE_ROW) {
         uint32_t idx = chunk->num_entries;
         const void *txid = sqlite3_column_blob(s, 0);
         if (txid) memcpy(chunk->entries[idx].txid, txid, 32);
@@ -963,7 +964,7 @@ bool fast_sync_serve_chunk_db(sqlite3 *db, uint32_t chunk_index,
     sqlite3_bind_int64(s, 2, (sqlite3_int64)chunk_index * chunk_size);
 
     int rc = SQLITE_OK;
-    while ((rc = sqlite3_step(s)) == SQLITE_ROW &&
+    while ((rc = AR_STEP_ROW_READONLY(s)) == SQLITE_ROW &&
            out->num_entries < chunk_size) {
         uint32_t i = out->num_entries;
         const void *txid = sqlite3_column_blob(s, 0);
@@ -1030,7 +1031,7 @@ bool fast_sync_build_manifest_db(sqlite3 *db, struct sync_manifest *out)
     sqlite3_prepare_v2(db,
         "SELECT value FROM node_state WHERE key='tip_height'",
         -1, &s, NULL);
-    if (sqlite3_step(s) == SQLITE_ROW) {
+    if (AR_STEP_ROW_READONLY(s) == SQLITE_ROW) {
         int len = sqlite3_column_bytes(s, 0);
         if (len == (int)sizeof(int64_t)) {
             int64_t h;
@@ -1051,7 +1052,7 @@ bool fast_sync_build_manifest_db(sqlite3 *db, struct sync_manifest *out)
     sqlite3_prepare_v2(db,
         "SELECT value FROM node_state WHERE key='tip_hash'",
         -1, &s, NULL);
-    if (sqlite3_step(s) == SQLITE_ROW) {
+    if (AR_STEP_ROW_READONLY(s) == SQLITE_ROW) {
         const void *h = sqlite3_column_blob(s, 0);
         if (h && sqlite3_column_bytes(s, 0) >= 32) {
             memcpy(out->block_hash, h, 32);
@@ -1064,7 +1065,7 @@ bool fast_sync_build_manifest_db(sqlite3 *db, struct sync_manifest *out)
         "SELECT chain_work FROM blocks WHERE hash=?",
         -1, &s, NULL);
     sqlite3_bind_blob(s, 1, out->block_hash, 32, SQLITE_STATIC);
-    if (sqlite3_step(s) == SQLITE_ROW) {
+    if (AR_STEP_ROW_READONLY(s) == SQLITE_ROW) {
         const void *cw = sqlite3_column_blob(s, 0);
         if (cw && sqlite3_column_bytes(s, 0) >= 32)
             memcpy(out->chain_work, cw, 32);
@@ -1076,7 +1077,7 @@ bool fast_sync_build_manifest_db(sqlite3 *db, struct sync_manifest *out)
 
     /* Count UTXOs */
     sqlite3_prepare_v2(db, "SELECT count(*) FROM utxos", -1, &s, NULL);
-    if (sqlite3_step(s) == SQLITE_ROW)
+    if (AR_STEP_ROW_READONLY(s) == SQLITE_ROW)
         out->num_utxos = (uint64_t)sqlite3_column_int64(s, 0);
     sqlite3_finalize(s);
     out->total_bytes = out->num_utxos * 80;
@@ -1352,7 +1353,7 @@ bool block_piece_manifest_build(const char *datadir,
         sqlite3_bind_int(cnt, 1, start_height);
         sqlite3_bind_int(cnt, 2, end_height);
         int64_t block_count = 0;
-        if (sqlite3_step(cnt) == SQLITE_ROW)
+        if (AR_STEP_ROW_READONLY(cnt) == SQLITE_ROW)
             block_count = sqlite3_column_int64(cnt, 0);
         sqlite3_finalize(cnt);
 
@@ -1377,7 +1378,7 @@ bool block_piece_manifest_build(const char *datadir,
         "SELECT hash FROM blocks WHERE height = ?", -1, &s, NULL);
     if (rc != SQLITE_OK || !s) { sqlite3_close(db); LOG_FAIL("sync", "piece_manifest_build: tip hash query prepare failed"); }
     sqlite3_bind_int(s, 1, end_height);
-    if (sqlite3_step(s) == SQLITE_ROW) {
+    if (AR_STEP_ROW_READONLY(s) == SQLITE_ROW) {
         const void *h = sqlite3_column_blob(s, 0);
         if (h && sqlite3_column_bytes(s, 0) >= 32)
             memcpy(out->tip_hash, h, 32);
@@ -1414,7 +1415,7 @@ bool block_piece_manifest_build(const char *datadir,
     uint32_t piece_idx = 0;
     uint32_t block_in_piece = 0;
 
-    while (sqlite3_step(s) == SQLITE_ROW) {
+    while (AR_STEP_ROW_READONLY(s) == SQLITE_ROW) {
         const void *h = sqlite3_column_blob(s, 0);
         if (h && sqlite3_column_bytes(s, 0) >= 32)
             memcpy(piece_block_hashes[block_in_piece], h, 32);

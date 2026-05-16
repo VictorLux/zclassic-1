@@ -17,7 +17,6 @@
 
 lib/wallet/src/wallet_sqlite.c
 lib/storage/src/coins_view_sqlite.c
-lib/net/src/fast_sync.c
 lib/znam/src/znam.c
 lib/net/src/onion_service.c
 lib/coins/src/utxo_commitment.c
