@@ -4,9 +4,9 @@
  * application code should use these instead of raw libc calls.
  *
  * Why: raw malloc returns NULL silently. These log the failure with
- * context (size, label, file, line) and emit an EV_OOM event so
- * the alert system can fire. An agent writing `malloc(n)` instead
- * of `zcl_malloc(n, "label")` will be caught by `make lint`.
+ * context (size, label, file, line) to stderr (and thus node.log via
+ * the redirect) so OOM is observable. An agent writing `malloc(n)`
+ * instead of `zcl_malloc(n, "label")` will be caught by `make lint`.
  */
 
 #ifndef ZCL_SAFE_ALLOC_H
