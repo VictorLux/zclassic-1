@@ -10,6 +10,22 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include "util/safe_alloc.h"
+#include "util/log_macros.h"
+
+/* Logging policy for this file (Wave 4a):
+ *
+ *   Stream read/write failures inside (de)serializers propagate as plain
+ *   `return false;` — they fire on every truncated peer message during
+ *   IBD, and logging at every site would flood node.log. Callers
+ *   (lib/net/src/msg_tx.c, lib/net/src/compact_blocks.c,
+ *   lib/primitives/src/block.c) emit a single LOG_FAIL / event at the
+ *   parser boundary instead.
+ *
+ *   Real errors — consensus bound violations (MAX_TX_INPUTS,
+ *   MAX_SCRIPT_SIZE, MAX_SHIELDED_*, MAX_JOINSPLITS), version sanity,
+ *   alloc failure, MoneyRange — DO use LOG_FAIL / LOG_RETURN with
+ *   specific context. These indicate either a DoS-bound attack or an
+ *   out-of-memory condition; both are interesting in node.log. */
 
 void transaction_init(struct transaction *tx)
 {
@@ -57,7 +73,8 @@ void transaction_free(struct transaction *tx)
 bool transaction_alloc(struct transaction *tx, size_t num_vin, size_t num_vout)
 {
     if (num_vin > MAX_TX_INPUTS || num_vout > MAX_TX_OUTPUTS)
-        return false;
+        LOG_FAIL("tx", "alloc out of range: vin=%zu (max %d) vout=%zu (max %d)",
+                 num_vin, MAX_TX_INPUTS, num_vout, MAX_TX_OUTPUTS);
 
     /* Zero-size calls must not allocate. glibc's calloc(0, n) returns a
      * unique 1-byte pointer that must be freed; callers that later replace
@@ -67,13 +84,12 @@ bool transaction_alloc(struct transaction *tx, size_t num_vin, size_t num_vout)
     tx->vin  = num_vin  ? zcl_calloc(num_vin,  sizeof(struct tx_in),  "tx_vin")  : NULL;
     tx->vout = num_vout ? zcl_calloc(num_vout, sizeof(struct tx_out), "tx_vout") : NULL;
     if ((num_vin && !tx->vin) || (num_vout && !tx->vout)) {
-        fprintf(stderr, "transaction_alloc FAILED: vin=%zu (need %zu MB) vout=%zu\n",
-                num_vin, num_vin * sizeof(struct tx_in) / (1024*1024), num_vout);
         free(tx->vin);
         free(tx->vout);
         tx->vin = NULL;
         tx->vout = NULL;
-        return false;
+        LOG_FAIL("tx", "calloc failed: vin=%zu (%zu MB) vout=%zu",
+                 num_vin, num_vin * sizeof(struct tx_in) / (1024*1024), num_vout);
     }
     tx->num_vin = num_vin;
     tx->num_vout = num_vout;
@@ -121,7 +137,11 @@ bool transaction_copy(struct transaction *dst, const struct transaction *src)
     if (src->num_shielded_spend > 0) {
         dst->v_shielded_spend = zcl_calloc(src->num_shielded_spend,
                                         sizeof(struct spend_description), "tx_shielded_spend");
-        if (!dst->v_shielded_spend) { transaction_free(dst); return false; }
+        if (!dst->v_shielded_spend) {
+            transaction_free(dst);
+            LOG_FAIL("tx", "calloc failed for %zu shielded_spend descs",
+                     src->num_shielded_spend);
+        }
         dst->num_shielded_spend = src->num_shielded_spend;
         memcpy(dst->v_shielded_spend, src->v_shielded_spend,
                src->num_shielded_spend * sizeof(struct spend_description));
@@ -130,7 +150,11 @@ bool transaction_copy(struct transaction *dst, const struct transaction *src)
     if (src->num_shielded_output > 0) {
         dst->v_shielded_output = zcl_calloc(src->num_shielded_output,
                                          sizeof(struct output_description), "tx_shielded_output");
-        if (!dst->v_shielded_output) { transaction_free(dst); return false; }
+        if (!dst->v_shielded_output) {
+            transaction_free(dst);
+            LOG_FAIL("tx", "calloc failed for %zu shielded_output descs",
+                     src->num_shielded_output);
+        }
         dst->num_shielded_output = src->num_shielded_output;
         memcpy(dst->v_shielded_output, src->v_shielded_output,
                src->num_shielded_output * sizeof(struct output_description));
@@ -139,7 +163,11 @@ bool transaction_copy(struct transaction *dst, const struct transaction *src)
     if (src->num_joinsplit > 0) {
         dst->v_joinsplit = zcl_calloc(src->num_joinsplit,
                                    sizeof(struct js_description), "tx_joinsplit");
-        if (!dst->v_joinsplit) { transaction_free(dst); return false; }
+        if (!dst->v_joinsplit) {
+            transaction_free(dst);
+            LOG_FAIL("tx", "calloc failed for %zu joinsplit descs",
+                     src->num_joinsplit);
+        }
         dst->num_joinsplit = src->num_joinsplit;
         memcpy(dst->v_joinsplit, src->v_joinsplit,
                src->num_joinsplit * sizeof(struct js_description));
@@ -158,20 +186,23 @@ int64_t transaction_get_value_out(const struct transaction *tx)
     for (size_t i = 0; i < tx->num_vout; i++) {
         total += tx->vout[i].value;
         if (!MoneyRange(tx->vout[i].value) || !MoneyRange(total))
-            return -1;
+            LOG_RETURN(-1, "tx", "vout[%zu] MoneyRange violation: value=%lld total=%lld",
+                       i, (long long)tx->vout[i].value, (long long)total);
     }
 
     if (tx->value_balance <= 0) {
         int64_t neg = -tx->value_balance;
         total += neg;
         if (!MoneyRange(neg) || !MoneyRange(total))
-            return -1;
+            LOG_RETURN(-1, "tx", "value_balance MoneyRange violation: neg=%lld total=%lld",
+                       (long long)neg, (long long)total);
     }
 
     for (size_t i = 0; i < tx->num_joinsplit; i++) {
         total += tx->v_joinsplit[i].vpub_old;
         if (!MoneyRange(tx->v_joinsplit[i].vpub_old) || !MoneyRange(total))
-            return -1;
+            LOG_RETURN(-1, "tx", "joinsplit[%zu].vpub_old MoneyRange violation: vpub=%lld total=%lld",
+                       i, (long long)tx->v_joinsplit[i].vpub_old, (long long)total);
     }
     return total;
 }
@@ -182,12 +213,14 @@ int64_t transaction_get_shielded_value_in(const struct transaction *tx)
     if (tx->value_balance >= 0) {
         total += tx->value_balance;
         if (!MoneyRange(tx->value_balance) || !MoneyRange(total))
-            return -1;
+            LOG_RETURN(-1, "tx", "value_balance(in) MoneyRange violation: vb=%lld total=%lld",
+                       (long long)tx->value_balance, (long long)total);
     }
     for (size_t i = 0; i < tx->num_joinsplit; i++) {
         total += tx->v_joinsplit[i].vpub_new;
         if (!MoneyRange(tx->v_joinsplit[i].vpub_new) || !MoneyRange(total))
-            return -1;
+            LOG_RETURN(-1, "tx", "joinsplit[%zu].vpub_new MoneyRange violation: vpub=%lld total=%lld",
+                       i, (long long)tx->v_joinsplit[i].vpub_new, (long long)total);
     }
     return total;
 }
@@ -226,7 +259,9 @@ bool tx_in_deserialize(struct tx_in *in, struct byte_stream *s)
     if (!outpoint_deserialize(&in->prevout, s)) return false;
     uint64_t script_len;
     if (!stream_read_compact_size(s, &script_len)) return false;
-    if (script_len > MAX_SCRIPT_SIZE) return false;
+    if (script_len > MAX_SCRIPT_SIZE)
+        LOG_FAIL("tx", "input script_sig too large: %llu > MAX_SCRIPT_SIZE(%d)",
+                 (unsigned long long)script_len, MAX_SCRIPT_SIZE);
     in->script_sig.size = (size_t)script_len;
     if (in->script_sig.size > 0 &&
         !stream_read_bytes(s, in->script_sig.data, in->script_sig.size))
@@ -249,7 +284,9 @@ bool tx_out_deserialize(struct tx_out *out, struct byte_stream *s)
     if (!stream_read_i64_le(s, &out->value)) return false;
     uint64_t script_len;
     if (!stream_read_compact_size(s, &script_len)) return false;
-    if (script_len > MAX_SCRIPT_SIZE) return false;
+    if (script_len > MAX_SCRIPT_SIZE)
+        LOG_FAIL("tx", "output script_pub_key too large: %llu > MAX_SCRIPT_SIZE(%d)",
+                 (unsigned long long)script_len, MAX_SCRIPT_SIZE);
     out->script_pub_key.size = (size_t)script_len;
     if (out->script_pub_key.size > 0)
         return stream_read_bytes(s, out->script_pub_key.data,
@@ -449,11 +486,14 @@ bool transaction_deserialize(struct transaction *tx, struct byte_stream *s)
         tx->version == SAPLING_TX_VERSION;
 
     if (tx->overwintered && !(is_overwinter_v3 || is_sapling_v4))
-        return false;
+        LOG_FAIL("tx", "unrecognized overwintered version: version=%d group_id=0x%08x",
+                 tx->version, tx->version_group_id);
 
     uint64_t num_vin;
     if (!stream_read_compact_size(s, &num_vin)) return false;
-    if (num_vin > MAX_TX_INPUTS) return false;
+    if (num_vin > MAX_TX_INPUTS)
+        LOG_FAIL("tx", "num_vin out of range: %llu > MAX_TX_INPUTS(%d)",
+                 (unsigned long long)num_vin, MAX_TX_INPUTS);
     if (!transaction_alloc(tx, (size_t)num_vin, 0)) return false;
 
     for (size_t i = 0; i < tx->num_vin; i++)
@@ -461,9 +501,13 @@ bool transaction_deserialize(struct transaction *tx, struct byte_stream *s)
 
     uint64_t num_vout;
     if (!stream_read_compact_size(s, &num_vout)) return false;
-    if (num_vout > MAX_TX_OUTPUTS) return false;
+    if (num_vout > MAX_TX_OUTPUTS)
+        LOG_FAIL("tx", "num_vout out of range: %llu > MAX_TX_OUTPUTS(%d)",
+                 (unsigned long long)num_vout, MAX_TX_OUTPUTS);
     tx->vout = zcl_calloc((size_t)num_vout, sizeof(struct tx_out), "tx_vout");
-    if (num_vout > 0 && !tx->vout) return false;
+    if (num_vout > 0 && !tx->vout)
+        LOG_FAIL("tx", "calloc failed for %llu tx_vout entries",
+                 (unsigned long long)num_vout);
     tx->num_vout = (size_t)num_vout;
     for (size_t i = 0; i < tx->num_vout; i++) {
         tx_out_set_null(&tx->vout[i]);
@@ -481,11 +525,15 @@ bool transaction_deserialize(struct transaction *tx, struct byte_stream *s)
 
         uint64_t num_spend;
         if (!stream_read_compact_size(s, &num_spend)) return false;
-        if (num_spend > MAX_SHIELDED_SPENDS) return false;
+        if (num_spend > MAX_SHIELDED_SPENDS)
+            LOG_FAIL("tx", "num_shielded_spend out of range: %llu > MAX_SHIELDED_SPENDS(%d)",
+                     (unsigned long long)num_spend, MAX_SHIELDED_SPENDS);
         if (num_spend > 0) {
             tx->v_shielded_spend = zcl_calloc((size_t)num_spend,
                                            sizeof(struct spend_description), "tx_shielded_spend");
-            if (!tx->v_shielded_spend) return false;
+            if (!tx->v_shielded_spend)
+                LOG_FAIL("tx", "calloc failed for %llu shielded_spend entries",
+                         (unsigned long long)num_spend);
             tx->num_shielded_spend = (size_t)num_spend;
             for (size_t i = 0; i < tx->num_shielded_spend; i++)
                 if (!spend_description_deserialize(&tx->v_shielded_spend[i], s))
@@ -494,11 +542,15 @@ bool transaction_deserialize(struct transaction *tx, struct byte_stream *s)
 
         uint64_t num_output;
         if (!stream_read_compact_size(s, &num_output)) return false;
-        if (num_output > MAX_SHIELDED_OUTPUTS) return false;
+        if (num_output > MAX_SHIELDED_OUTPUTS)
+            LOG_FAIL("tx", "num_shielded_output out of range: %llu > MAX_SHIELDED_OUTPUTS(%d)",
+                     (unsigned long long)num_output, MAX_SHIELDED_OUTPUTS);
         if (num_output > 0) {
             tx->v_shielded_output = zcl_calloc((size_t)num_output,
                                             sizeof(struct output_description), "tx_shielded_output");
-            if (!tx->v_shielded_output) return false;
+            if (!tx->v_shielded_output)
+                LOG_FAIL("tx", "calloc failed for %llu shielded_output entries",
+                         (unsigned long long)num_output);
             tx->num_shielded_output = (size_t)num_output;
             for (size_t i = 0; i < tx->num_shielded_output; i++)
                 if (!output_description_deserialize(&tx->v_shielded_output[i], s))
@@ -510,11 +562,15 @@ bool transaction_deserialize(struct transaction *tx, struct byte_stream *s)
         bool use_groth = tx->overwintered && tx->version >= SAPLING_TX_VERSION;
         uint64_t num_js;
         if (!stream_read_compact_size(s, &num_js)) return false;
-        if (num_js > MAX_JOINSPLITS) return false;
+        if (num_js > MAX_JOINSPLITS)
+            LOG_FAIL("tx", "num_joinsplit out of range: %llu > MAX_JOINSPLITS(%d)",
+                     (unsigned long long)num_js, MAX_JOINSPLITS);
         if (num_js > 0) {
             tx->v_joinsplit = zcl_calloc((size_t)num_js,
                                       sizeof(struct js_description), "tx_joinsplit");
-            if (!tx->v_joinsplit) return false;
+            if (!tx->v_joinsplit)
+                LOG_FAIL("tx", "calloc failed for %llu joinsplit entries",
+                         (unsigned long long)num_js);
             tx->num_joinsplit = (size_t)num_js;
             for (size_t i = 0; i < tx->num_joinsplit; i++)
                 if (!js_description_deserialize(&tx->v_joinsplit[i],
