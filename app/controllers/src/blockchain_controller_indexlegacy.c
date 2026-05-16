@@ -514,7 +514,7 @@ static void *index_worker(void *arg) {
 /* ── importchainstate: read UTXO set from external LevelDB chainstate ── */
 
 bool rpc_indexlegacy(const struct json_value *params, bool help,
-                             struct json_value *result)
+                             struct json_value *result) // long-function-ok:legacy-import-state-machine
 {
     struct blockchain_context *ctx = blockchain_ctx();
     RPC_HELP(help, result,
