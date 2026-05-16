@@ -81,6 +81,10 @@ bool utxo_commitment_load_checkpoint(struct sqlite3 *db,
  * More secure than XOR accumulator but O(n). */
 void utxo_commitment_sha3_compute(struct sqlite3 *db, uint8_t out[32],
                                    uint64_t *utxo_count);
+void utxo_commitment_sha3_compute_table(struct sqlite3 *db,
+                                        const char *table,
+                                        uint8_t out[32],
+                                        uint64_t *utxo_count);
 
 /* Save/load SHA3 commitment to node_state (key='utxo_sha3'). */
 bool utxo_commitment_sha3_save(struct sqlite3 *db, const uint8_t hash[32],

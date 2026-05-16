@@ -5,13 +5,6 @@
       "args": [
         "-mcp"
       ]
-    },
-    "vibepoint": {
-      "command": "/home/rhett/.vibepoint/vibepoint",
-      "env": {
-        "VIBEPOINT_PROJECT": "zclassic",
-        "VIBEPOINT_DB_PATH": "/home/rhett/.vibepoint/vibepoint.db"
-      }
     }
   }
 }

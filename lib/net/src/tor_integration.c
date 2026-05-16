@@ -1,8 +1,9 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * Tor is compiled INTO zclassic23. No external binary. No ports.
- * No SOCKS proxy. Tor runs as a thread inside our process.
- * Dynhost handles .onion connections via direct C function calls. */
+ * Tor is compiled INTO zclassic23. No external binary. zclassic23 does not
+ * proxy application traffic through SOCKS; dynhost handles .onion requests
+ * via direct C callbacks. A localhost-only SocksPort remains as a temporary
+ * Tor bootstrap workaround in tor_write_torrc(). */
 
 #define _DEFAULT_SOURCE
 #include "net/tor_integration.h"

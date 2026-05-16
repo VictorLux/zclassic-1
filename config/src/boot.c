@@ -101,6 +101,7 @@
 #include <pthread.h>
 #include <malloc.h>
 #include <errno.h>
+#include <limits.h>
 #include <sys/sysinfo.h>
 #include <sqlite3.h>
 
@@ -132,6 +133,9 @@ static _Atomic bool g_running = false;
 static struct wallet_backup_config g_wallet_backup_cfg;
 static struct disk_monitor_config g_disk_monitor_cfg;
 static struct ibd_throttle_config g_ibd_throttle_cfg;
+static struct zcl_service_kernel g_guard_kernel;
+static struct zcl_service_kernel g_maintenance_kernel;
+static struct zcl_service_kernel g_boot_db_kernel;
 
 /* ── System RAM query ────────────────────────────────────────── */
 
@@ -293,6 +297,84 @@ void app_context_defaults(struct app_context *ctx)
     ctx->fs_port = 18034;
     ctx->listen = true;   /* accept inbound by default — be a good peer */
     ctx->checkpoints_enabled = true;
+    ctx->runtime_profile = ZCL_RUNTIME_FULL;
+}
+
+const char *app_runtime_profile_name(enum zcl_runtime_profile profile)
+{
+    switch (profile) {
+    case ZCL_RUNTIME_FULL:
+        return "full";
+    case ZCL_RUNTIME_ZCLASSIC_ONLY:
+        return "zclassic-only";
+    case ZCL_RUNTIME_EXPLORER:
+        return "explorer";
+    case ZCL_RUNTIME_ONION_NODE:
+        return "onion-node";
+    case ZCL_RUNTIME_LEGACY_COMPAT:
+        return "legacy-compat";
+    default:
+        return "unknown";
+    }
+}
+
+bool app_runtime_profile_parse(const char *name,
+                               enum zcl_runtime_profile *out)
+{
+    if (!name || !out)
+        return false;
+    if (strcmp(name, "full") == 0) {
+        *out = ZCL_RUNTIME_FULL;
+        return true;
+    }
+    if (strcmp(name, "zclassic-only") == 0 ||
+        strcmp(name, "zclassic") == 0) {
+        *out = ZCL_RUNTIME_ZCLASSIC_ONLY;
+        return true;
+    }
+    if (strcmp(name, "explorer") == 0) {
+        *out = ZCL_RUNTIME_EXPLORER;
+        return true;
+    }
+    if (strcmp(name, "onion-node") == 0 ||
+        strcmp(name, "onion") == 0) {
+        *out = ZCL_RUNTIME_ONION_NODE;
+        return true;
+    }
+    if (strcmp(name, "legacy-compat") == 0 ||
+        strcmp(name, "legacy") == 0) {
+        *out = ZCL_RUNTIME_LEGACY_COMPAT;
+        return true;
+    }
+    return false;
+}
+
+bool app_runtime_profile_has_explorer(enum zcl_runtime_profile profile)
+{
+    return profile == ZCL_RUNTIME_FULL ||
+           profile == ZCL_RUNTIME_EXPLORER ||
+           profile == ZCL_RUNTIME_ONION_NODE ||
+           profile == ZCL_RUNTIME_LEGACY_COMPAT;
+}
+
+bool app_runtime_profile_has_store(enum zcl_runtime_profile profile)
+{
+    return profile == ZCL_RUNTIME_FULL ||
+           profile == ZCL_RUNTIME_ONION_NODE ||
+           profile == ZCL_RUNTIME_LEGACY_COMPAT;
+}
+
+bool app_runtime_profile_has_onion(enum zcl_runtime_profile profile,
+                                   bool tor_flag)
+{
+    return tor_flag || profile == ZCL_RUNTIME_ONION_NODE;
+}
+
+bool app_runtime_profile_has_file_service(enum zcl_runtime_profile profile)
+{
+    return profile == ZCL_RUNTIME_FULL ||
+           profile == ZCL_RUNTIME_ONION_NODE ||
+           profile == ZCL_RUNTIME_LEGACY_COMPAT;
 }
 
 
@@ -507,17 +589,200 @@ static void boot_step_finalize_chain_state(void)
         printf("Chain tip: height=%d hash=%s\n", tip->nHeight, hex);
         event_emitf(EV_BOOT_ACTIVATE, 0, "done tip=%d", tip->nHeight);
 
-        /* Auto-extend assumevalid to cover the startup chain tip.
-         * Everything already in the chainstate was validated by either:
+        /* Do not auto-extend deferred proof validation at startup.
+         * Everything already in the chainstate was observed from either:
          * - zclassicd (via legacy import)
          * - a previous run of zclassic23
-         * - the coins DB (trusted LevelDB state)
+         * - the coins DB (hash-checked LevelDB state)
          * Only blocks received via P2P AFTER startup need new validation.
          * With Groth16 pairing fix deployed, all proofs above the checkpoint
-         * are now verified correctly — no need to extend assume-valid. */
+         * are now verified correctly — no need to extend deferred proof validation. */
     } else {
         printf("Chain tip: genesis\n");
     }
+}
+
+static bool boot_promote_tip_via_csr(struct block_index *tip,
+                                     const char *reason,
+                                     bool persist_coins_best)
+{
+    if (!tip || !tip->phashBlock)
+        return false;
+
+    struct chain_state_rollback_authorization rollback_auth = {
+        .source = CSR_ROLLBACK_SOURCE_BOOT_REPAIR,
+        .decision = POLICY_ALLOW,
+        .from_height = active_chain_height(&g_state.chain_active),
+        .to_height = tip->nHeight,
+        .max_depth = INT64_MAX,
+        .evidence_class = "boot_repair_verified",
+        .reason = reason ? reason : "boot_repair",
+    };
+    struct chain_state_commit commit = {
+        .new_tip = tip,
+        .new_coins_best = *tip->phashBlock,
+        .expected_utxo_count = 0,
+        .update_header_tip = true,
+        .persist_coins_best = persist_coins_best,
+        .rollback_auth = &rollback_auth,
+        .wallet_scan_height = -1,
+        .reason = reason ? reason : "boot_repair",
+    };
+
+    enum csr_result rc = csr_commit_tip(csr_instance(), &commit);
+    if (rc != CSR_OK) {
+        fprintf(stderr, // obs-ok:pre-existing-diagnostic
+                "[boot] csr rejected boot repair promotion (%s) "
+                "reason=%s h=%d\n",
+                csr_result_name(rc), reason ? reason : "", tip->nHeight);
+        return false;
+    }
+
+    return true;
+}
+
+static bool boot_promote_header_via_csr(struct block_index *header,
+                                        const char *reason)
+{
+    if (!header || !header->phashBlock)
+        return false;
+
+    struct chain_state_rollback_authorization rollback_auth = {
+        .source = CSR_ROLLBACK_SOURCE_BOOT_REPAIR,
+        .decision = POLICY_ALLOW,
+        .from_height = g_state.pindex_best_header
+            ? g_state.pindex_best_header->nHeight : -1,
+        .to_height = header->nHeight,
+        .max_depth = INT64_MAX,
+        .evidence_class = "boot_header_verified",
+        .reason = reason ? reason : "boot_header",
+    };
+    struct chain_state_header_commit commit = {
+        .new_header_tip = header,
+        .rollback_auth = &rollback_auth,
+        .reason = reason ? reason : "boot_header",
+    };
+    enum csr_result rc = csr_commit_header_tip(csr_instance(), &commit);
+    if (rc != CSR_OK) {
+        fprintf(stderr, // obs-ok:pre-existing-diagnostic
+                "[boot] csr rejected header promotion (%s) "
+                "reason=%s h=%d\n",
+                csr_result_name(rc), reason ? reason : "", header->nHeight);
+        return false;
+    }
+    return true;
+}
+
+static bool boot_resolve_cold_import_pending_anchor(void)
+{
+    if (!g_node_db.open)
+        return true;
+
+    uint8_t hash_raw[32];
+    size_t hash_len = 0;
+    if (!node_db_state_get(&g_node_db,
+                           "cold_import_pending_coins_best_block",
+                           hash_raw, sizeof(hash_raw), &hash_len)) {
+        return true;
+    }
+    if (hash_len != sizeof(hash_raw)) {
+        fprintf(stderr,
+                "[boot] cold-import pending anchor has invalid hash length "
+                "%zu\n", hash_len);
+        return false;
+    }
+
+    int pending_height = -1;
+    size_t height_len = 0;
+    if (!node_db_state_get(&g_node_db,
+                           "cold_import_pending_coins_best_height",
+                           &pending_height, sizeof(pending_height),
+                           &height_len) ||
+        height_len != sizeof(pending_height)) {
+        fprintf(stderr,
+                "[boot] cold-import pending anchor missing height\n");
+        return false;
+    }
+
+    int64_t pending_utxos = -1;
+    size_t utxo_len = 0;
+    if (!node_db_state_get(&g_node_db,
+                           "cold_import_pending_utxo_count",
+                           &pending_utxos, sizeof(pending_utxos),
+                           &utxo_len) ||
+        utxo_len != sizeof(pending_utxos)) {
+        fprintf(stderr,
+                "[boot] cold-import pending anchor missing UTXO count\n");
+        return false;
+    }
+
+    int64_t actual_utxos = node_db_utxo_count(&g_node_db);
+    if (pending_utxos < 0 || actual_utxos != pending_utxos) {
+        fprintf(stderr,
+                "[boot] cold-import pending anchor UTXO count mismatch "
+                "(pending=%lld actual=%lld)\n",
+                (long long)pending_utxos, (long long)actual_utxos);
+        return false;
+    }
+
+    struct uint256 hash;
+    memcpy(hash.data, hash_raw, sizeof(hash.data));
+    struct block_index *tip = block_map_find(&g_state.map_block_index, &hash);
+    if (!tip || !tip->phashBlock) {
+        char hex[65];
+        uint256_get_hex(&hash, hex);
+        fprintf(stderr,
+                "[boot] cold-import pending anchor %s not found in "
+                "loaded block index\n", hex);
+        return false;
+    }
+    if (tip->nHeight != pending_height) {
+        fprintf(stderr,
+                "[boot] cold-import pending anchor height label differs "
+                "(pending=%d block_index=%d); using block-index height\n",
+                pending_height, tip->nHeight);
+    }
+
+    struct chain_state_rollback_authorization rollback_auth = {
+        .source = CSR_ROLLBACK_SOURCE_BOOT_REPAIR,
+        .decision = POLICY_ALLOW,
+        .from_height = active_chain_height(&g_state.chain_active),
+        .to_height = tip->nHeight,
+        .max_depth = INT64_MAX,
+        .evidence_class = "cold_import_pending_anchor_resolved",
+        .reason = "cold_import_pending_anchor",
+    };
+    struct chain_state_commit commit = {
+        .new_tip = tip,
+        .new_coins_best = *tip->phashBlock,
+        .expected_utxo_count = pending_utxos,
+        .update_header_tip = true,
+        .persist_coins_best = true,
+        .rollback_auth = &rollback_auth,
+        .wallet_scan_height = -1,
+        .reason = "cold_import_pending_anchor",
+    };
+    enum csr_result rc = csr_commit_tip(csr_instance(), &commit);
+    if (rc != CSR_OK) {
+        fprintf(stderr,
+                "[boot] csr rejected cold-import pending anchor (%s) h=%d\n",
+                csr_result_name(rc), tip->nHeight);
+        return false;
+    }
+
+    if (!node_db_exec(&g_node_db,
+            "DELETE FROM node_state WHERE key IN ("
+            "'cold_import_pending_coins_best_block',"
+            "'cold_import_pending_coins_best_height',"
+            "'cold_import_pending_utxo_count')")) {
+        fprintf(stderr,
+                "[boot] failed to clear cold-import pending anchor metadata\n");
+        return false;
+    }
+
+    printf("[boot] cold-import pending anchor published via CSR h=%d\n",
+           tip->nHeight);
+    return true;
 }
 
 static bool boot_step_init_crypto_and_state(struct app_context *ctx,
@@ -528,7 +793,7 @@ static bool boot_step_init_crypto_and_state(struct app_context *ctx,
      * case is deferred). The implementation in contextual_check_tx.c
      * handles both script verification (connect_block.c) and Sapling
      * proof verification (contextual_check_tx.c) via
-     * g_assume_valid_height. */
+     * g_deferred_proof_validation_below_height. */
 
     ecc_start();
     ecc_verify_init();
@@ -553,21 +818,21 @@ static bool boot_step_init_crypto_and_state(struct app_context *ctx,
     activation_set_state(&g_activation_ctl, ACTIVATION_BOOT_PENDING,
                          "boot_start");
 
-    /* -assumevalid: skip Groth16/Sapling proof verification for blocks
+    /* -deferproofvalidationbelow: skip Groth16/Sapling proof verification for blocks
      * at or below the specified hash's height. Default: latest checkpoint.
-     * Pass -assumevalid=0 to disable (verify everything). */
-    if (ctx->assume_valid && strcmp(ctx->assume_valid, "0") == 0) {
-        g_assume_valid_height = -1;
-        printf("Assume-valid: disabled (verifying all proofs)\n");
-    } else if (ctx->assume_valid) {
+     * Pass -deferproofvalidationbelow=0 to disable (verify everything). */
+    if (ctx->defer_proof_validation_below && strcmp(ctx->defer_proof_validation_below, "0") == 0) {
+        g_deferred_proof_validation_below_height = -1;
+        printf("Deferred proof validation: disabled (verifying all proofs)\n");
+    } else if (ctx->defer_proof_validation_below) {
         /* Resolve user-provided hash after block index loads (deferred) */
     } else {
         /* Default: latest checkpoint height */
         if (params->checkpointData.nEntries > 0) {
-            g_assume_valid_height =
+            g_deferred_proof_validation_below_height =
                 params->checkpointData.entries[params->checkpointData.nEntries - 1].height;
-            printf("Assume-valid: height %d (latest checkpoint)\n",
-                   g_assume_valid_height);
+            printf("Deferred proof validation: height %d (latest checkpoint)\n",
+                   g_deferred_proof_validation_below_height);
         }
     }
 
@@ -626,7 +891,7 @@ static bool boot_step_local_chain_ingest(struct app_context *ctx,
     struct local_chain_ingest_config cfg = {
         .legacy_datadir  = ctx->ingest_from_legacy,
         .skip_blk_verify = false,
-        .skip_pow_verify = true,  /* SHA3 anchors are the trust source */
+        .skip_pow_verify = true,  /* SHA3 anchors are the evidence source */
         .max_height      = 0,     /* ingest to peer-claimed tip */
     };
 
@@ -757,6 +1022,20 @@ static bool boot_step_bodypull_from_legacy(struct app_context *ctx,
     }
 
     int active_tip = active_chain_height(&g_state.chain_active);
+    {
+        struct uint256 coins_hash;
+        coins_view_cache_get_best_block(&g_coins_tip, &coins_hash);
+        if (!uint256_is_null(&coins_hash)) {
+            struct block_index *coins_bi =
+                block_map_find(&g_state.map_block_index, &coins_hash);
+            if (coins_bi && coins_bi->nHeight > active_tip) {
+                printf("Body pull: using coins_best_block anchor h=%d "
+                       "ahead of active_chain h=%d\n",
+                       coins_bi->nHeight, active_tip);
+                active_tip = coins_bi->nHeight;
+            }
+        }
+    }
     int hp_from = active_tip + 1;
     if (hp_from < 1) hp_from = 1;
     int hp_added = 0, remote_tip = -1;
@@ -825,26 +1104,217 @@ static bool boot_step_bodypull_from_legacy(struct app_context *ctx,
     return true;
 }
 
-static void boot_step_start_disk_and_ibd_guards(const char *datadir)
+static bool boot_disk_monitor_service_start(void *ctx)
 {
-    /* Disk monitor — armed before first SQLite open so the
-     * refuse-when-critical flag blocks writes before damage. */
+    const char *datadir = ctx;
+    if (!datadir)
+        return false;
     disk_monitor_config_defaults(&g_disk_monitor_cfg);
     g_disk_monitor_cfg.datadir = datadir;
-    if (disk_monitor_start(&g_disk_monitor_cfg))
+    if (disk_monitor_start(&g_disk_monitor_cfg)) {
         printf("Disk monitor started (warn=%lldGB refuse=%lldGB)\n",
                (long long)(g_disk_monitor_cfg.warn_free_bytes >> 30),
                (long long)(g_disk_monitor_cfg.refuse_free_bytes >> 30));
+        return true;
+    }
+    return false;
+}
 
-    /* IBD throttle — rate-limits block processing during initial sync.
-     * NULL config reads ZCL_IBD_BLOCKS_PER_SEC / ZCL_IBD_BURST from env
-     * with defaults 500/50. Pass-through when not running. */
+static void boot_disk_monitor_service_stop(void *ctx)
+{
+    (void)ctx;
+    disk_monitor_stop();
+}
+
+static bool boot_ibd_throttle_service_start(void *ctx)
+{
+    (void)ctx;
     ibd_throttle_config_defaults(&g_ibd_throttle_cfg);
     ibd_throttle_config_from_env(&g_ibd_throttle_cfg);
-    if (ibd_throttle_start(&g_ibd_throttle_cfg))
+    if (ibd_throttle_start(&g_ibd_throttle_cfg)) {
         printf("IBD throttle started (rate=%lld/s burst=%lld)\n",
                (long long)g_ibd_throttle_cfg.blocks_per_sec,
                (long long)g_ibd_throttle_cfg.burst);
+        return true;
+    }
+    return false;
+}
+
+static void boot_ibd_throttle_service_stop(void *ctx)
+{
+    (void)ctx;
+    ibd_throttle_stop();
+}
+
+static bool boot_wallet_backup_service_start(void *ctx)
+{
+    struct node_db *db = ctx;
+    static char backup_dir[1024];
+
+    if (!db || !db->open || !db->db) {
+        printf("Wallet backup deferred until node DB is open\n");
+        return true;
+    }
+
+    wallet_backup_config_defaults(&g_wallet_backup_cfg);
+    if (!g_wallet_backup_cfg.backup_dir) {
+        const char *home = getenv("HOME");
+        if (home && home[0])
+            snprintf(backup_dir, sizeof(backup_dir), "%s/wallet_backups", home);
+        else
+            snprintf(backup_dir, sizeof(backup_dir), "wallet_backups");
+        g_wallet_backup_cfg.backup_dir = backup_dir;
+    }
+    if (wallet_backup_start(&g_wallet_backup_cfg, db)) {
+        printf("Wallet backup started (interval=%ds max=%d)\n",
+               g_wallet_backup_cfg.interval_seconds,
+               g_wallet_backup_cfg.max_versions);
+        return true;
+    }
+    return false;
+}
+
+static void boot_wallet_backup_service_stop(void *ctx)
+{
+    (void)ctx;
+    wallet_backup_stop();
+}
+
+static bool boot_db_maintenance_service_start(void *ctx)
+{
+    struct node_db *db = ctx;
+    if (!db || !db->open)
+        return true;
+
+    struct db_maintenance_schedule dbm_sched;
+    db_maintenance_schedule_defaults(&dbm_sched);
+    dbm_sched.wal_checkpoint_minutes = 5;
+    if (db_maintenance_start(db, &dbm_sched)) {
+        printf("DB maintenance started (wal=%dmin analyze=%dh)\n",
+               dbm_sched.wal_checkpoint_minutes,
+               dbm_sched.analyze_hours);
+        return true;
+    }
+    return false;
+}
+
+static void boot_db_maintenance_service_stop(void *ctx)
+{
+    (void)ctx;
+    db_maintenance_stop();
+}
+
+static bool boot_register_guard_services(const char *datadir)
+{
+    const struct zcl_service_spec disk_spec = {
+        .name = "disk_monitor",
+        .start = boot_disk_monitor_service_start,
+        .stop = boot_disk_monitor_service_stop,
+        .ctx = (void *)datadir,
+        .flags = ZCL_SERVICE_OPTIONAL,
+    };
+    const struct zcl_service_spec ibd_spec = {
+        .name = "ibd_throttle",
+        .start = boot_ibd_throttle_service_start,
+        .stop = boot_ibd_throttle_service_stop,
+        .flags = ZCL_SERVICE_OPTIONAL,
+    };
+    return zcl_service_kernel_register(&g_guard_kernel, &disk_spec) &&
+           zcl_service_kernel_register(&g_guard_kernel, &ibd_spec);
+}
+
+static bool boot_register_maintenance_services(void)
+{
+    const struct zcl_service_spec wallet_backup_spec = {
+        .name = "wallet_backup",
+        .start = boot_wallet_backup_service_start,
+        .stop = boot_wallet_backup_service_stop,
+        .ctx = &g_node_db,
+        .flags = ZCL_SERVICE_OPTIONAL,
+    };
+    const struct zcl_service_spec db_maintenance_spec = {
+        .name = "db_maintenance",
+        .start = boot_db_maintenance_service_start,
+        .stop = boot_db_maintenance_service_stop,
+        .ctx = &g_node_db,
+        .flags = ZCL_SERVICE_OPTIONAL,
+    };
+    return zcl_service_kernel_register(&g_maintenance_kernel,
+                                       &wallet_backup_spec) &&
+           zcl_service_kernel_register(&g_maintenance_kernel,
+                                       &db_maintenance_spec);
+}
+
+static void boot_step_start_disk_and_ibd_guards(const char *datadir)
+{
+    zcl_service_kernel_init(&g_guard_kernel);
+    if (!boot_register_guard_services(datadir) ||
+        !zcl_service_kernel_start_all(&g_guard_kernel)) {
+        fprintf(stderr, "WARNING: failed to start boot guard services\n");
+    }
+}
+
+static void boot_step_start_maintenance_services(void)
+{
+    zcl_service_kernel_init(&g_maintenance_kernel);
+    if (!boot_register_maintenance_services() ||
+        !zcl_service_kernel_start_all(&g_maintenance_kernel)) {
+        fprintf(stderr, "WARNING: failed to start maintenance services\n");
+    }
+}
+
+static void boot_stop_platform_services(void)
+{
+    zcl_service_kernel_stop_all(&g_maintenance_kernel);
+    zcl_service_kernel_stop_all(&g_guard_kernel);
+    zcl_service_kernel_reset(&g_maintenance_kernel);
+    zcl_service_kernel_reset(&g_guard_kernel);
+}
+
+static bool boot_db_worker_service_init(struct zcl_service_kernel *kernel,
+                                        void *ctx)
+{
+    (void)kernel;
+    (void)ctx;
+    return db_service_attach(&g_db_service, &g_node_db);
+}
+
+static bool boot_db_worker_service_start(void *ctx)
+{
+    (void)ctx;
+    if (db_service_start(&g_db_service)) {
+        memset(&g_boot_runtime, 0, sizeof(g_boot_runtime));
+        g_boot_runtime.db_service = &g_db_service;
+        app_runtime_set_current(&g_boot_runtime);
+        return true;
+    }
+    return false;
+}
+
+static void boot_db_worker_service_stop(void *ctx)
+{
+    (void)ctx;
+    db_service_stop(&g_db_service);
+}
+
+static bool boot_step_start_db_service(void)
+{
+    const struct zcl_service_spec db_spec = {
+        .name = "db_service",
+        .init = boot_db_worker_service_init,
+        .start = boot_db_worker_service_start,
+        .stop = boot_db_worker_service_stop,
+    };
+
+    zcl_service_kernel_init(&g_boot_db_kernel);
+    return zcl_service_kernel_register(&g_boot_db_kernel, &db_spec) &&
+           zcl_service_kernel_start_all(&g_boot_db_kernel);
+}
+
+void boot_stop_db_service_kernel(void)
+{
+    zcl_service_kernel_stop_all(&g_boot_db_kernel);
+    zcl_service_kernel_reset(&g_boot_db_kernel);
 }
 
 bool app_init(struct app_context *ctx)
@@ -1086,25 +1556,7 @@ bool app_init(struct app_context *ctx)
     printf("[boot] %-30s %lldms\n", "wallet_load",
            (long long)(boot_clock_ms() - t_phase));
 
-    /* Wallet backup service — hourly backup rotation after wallet is loaded.
-     * Default: ~/wallet_backups, interval=3600s, max_versions=168. */
-    wallet_backup_config_defaults(&g_wallet_backup_cfg);
-    if (wallet_backup_start(&g_wallet_backup_cfg, &g_node_db))
-        printf("Wallet backup started (interval=%ds max=%d)\n",
-               g_wallet_backup_cfg.interval_seconds,
-               g_wallet_backup_cfg.max_versions);
-
-    /* DB maintenance — periodic WAL checkpoint, ANALYZE, VACUUM.
-     * Keeps WAL file bounded and query plans fresh. */
-    if (g_node_db.open) {
-        struct db_maintenance_schedule dbm_sched;
-        db_maintenance_schedule_defaults(&dbm_sched);
-        dbm_sched.wal_checkpoint_minutes = 5; /* checkpoint every 5 min */
-        if (db_maintenance_start(&g_node_db, &dbm_sched))
-            printf("DB maintenance started (wal=%dmin analyze=%dh)\n",
-                   dbm_sched.wal_checkpoint_minutes,
-                   dbm_sched.analyze_hours);
-    }
+    boot_step_start_maintenance_services();
 
     /* Pre-flight: check for stale lock files from crashed processes */
     {
@@ -1168,12 +1620,7 @@ bool app_init(struct app_context *ctx)
         node_db_migrate(&g_node_db, ctx->datadir);
         process_block_set_node_db(&g_node_db);
         if (!db_service_is_started(&g_db_service)) {
-            if (db_service_attach(&g_db_service, &g_node_db) &&
-                db_service_start(&g_db_service)) {
-                memset(&g_boot_runtime, 0, sizeof(g_boot_runtime));
-                g_boot_runtime.db_service = &g_db_service;
-                app_runtime_set_current(&g_boot_runtime);
-            } else {
+            if (!boot_step_start_db_service()) {
                 fprintf(stderr,
                     "Warning: DB service unavailable during boot; "
                     "activation metadata writes will use direct SQLite\n");
@@ -1462,10 +1909,10 @@ bool app_init(struct app_context *ctx)
      * The old LevelDB had the authoritative UTXO set; SQLite's utxos table
      * may be incomplete. Check for migration flag in node_state. */
     if (g_node_db.open && g_coins_sqlite.db) {
-        /* Seed coins_best_block from tip_hash if not yet set.
+        /* Do not seed coins_best_block from the sync projection cursor.
          * Only do this if UTXOs exist AND no LDB chainstate is available.
          * If chainstate/ exists, the LDB import will set coins_best_block
-         * correctly — seeding from tip_hash would create a mismatch
+         * correctly — seeding from a projection cursor would create a mismatch
          * (UTXO data from LDB height ~3M labeled as chain tip ~2M). */
         struct uint256 coins_check;
         memset(&coins_check, 0, sizeof(coins_check));
@@ -1484,16 +1931,9 @@ bool app_init(struct app_context *ctx)
             } else {
                 int64_t utxo_count = node_db_utxo_count(&g_node_db);
                 if (utxo_count > 0) {
-                    uint8_t tip_buf[32];
-                    size_t tip_len = 0;
-                    if (node_db_state_get(&g_node_db, "tip_hash",
-                                           tip_buf, 32, &tip_len) &&
-                        tip_len == 32) {
-                        node_db_state_set(&g_node_db, "coins_best_block",
-                                          tip_buf, 32);
-                        printf("Migrated coins_best_block from tip_hash "
-                               "(%lld UTXOs)\n", (long long)utxo_count);
-                    }
+                    printf("[boot] coins_best_block is unset with %lld "
+                           "UTXOs; refusing to seed it from sync projection\n",
+                           (long long)utxo_count);
                 }
             }
         }
@@ -1587,7 +2027,7 @@ bool app_init(struct app_context *ctx)
             fflush(stdout);
             struct lci_cold_result cr = {0};
             bool ci_ok = legacy_cold_import_blocking(
-                &g_state, &g_coins_tip, &g_coins_sqlite,
+                &g_state, &g_coins_sqlite, &g_node_db,
                 &g_block_tree, ctx->datadir,
                 ctx->cold_import_from, &cr);
             printf("Cold import: ok=%s legacy_tip=%d block_index=%lld "
@@ -1614,7 +2054,9 @@ bool app_init(struct app_context *ctx)
          * This fixes the case where an old flat file with 6K entries
          * prevents loading the full 3M+ entry index. */
         if (loaded && g_node_db.open) {
-            int64_t db_height = db_block_max_height(&g_node_db);
+            int64_t db_height = node_db_sync_get_tip_height(&g_node_db);
+            if (db_height < 0)
+                db_height = db_block_max_height(&g_node_db);
             size_t flat_count = g_state.map_block_index.size;
             if (db_height > 0 && (int64_t)flat_count < db_height - 1000) {
                 printf("Block index flat: stale (%zu entries vs chain height %lld)"
@@ -1624,16 +2066,17 @@ bool app_init(struct app_context *ctx)
                 loaded = false;  /* fall through to LevelDB */
             }
 
-            /* Consistency check: the SQLite tip block must exist in
-             * the loaded flat block index AT THE CORRECT HEIGHT.
-             * If not, the flat file is corrupted (e.g., a stale h=60
-             * placeholder for the current tip hash). Reload from SQLite. */
+            /* Consistency check: the persisted sync projection cursor must exist in
+             * the loaded flat block index AT THE CORRECT HEIGHT. Use
+             * node_state sync_projection_tip_hash/height first: the blocks table can
+             * lag by a block after crash recovery or catchup flushing. */
             if (loaded && db_height > 0) {
-                struct db_block tip_blk;
-                if (db_block_find_by_height(&g_node_db, (int)db_height,
-                                             &tip_blk)) {
+                uint8_t tip_hash_raw[32];
+                bool have_tip_hash =
+                    node_db_sync_get_tip_hash(&g_node_db, tip_hash_raw);
+                if (have_tip_hash) {
                     struct uint256 tip_hash;
-                    memcpy(tip_hash.data, tip_blk.hash, 32);
+                    memcpy(tip_hash.data, tip_hash_raw, 32);
                     struct block_index *flat_tip = block_map_find(
                         &g_state.map_block_index, &tip_hash);
                     if (!flat_tip ||
@@ -1645,6 +2088,25 @@ bool app_init(struct app_context *ctx)
                             flat_tip ? flat_tip->nHeight : -1,
                             (long long)db_height);
                         loaded = false;
+                    }
+                } else {
+                    struct db_block tip_blk;
+                    if (db_block_find_by_height(&g_node_db, (int)db_height,
+                                                 &tip_blk)) {
+                        struct uint256 tip_hash;
+                        memcpy(tip_hash.data, tip_blk.hash, 32);
+                        struct block_index *flat_tip = block_map_find(
+                            &g_state.map_block_index, &tip_hash);
+                        if (!flat_tip ||
+                            (int64_t)flat_tip->nHeight != db_height) {
+                            fprintf(stderr,
+                                "Block index flat: tip hash maps to wrong "
+                                "height (%d vs SQLite %lld). Corrupt flat "
+                                "file — reloading from SQLite.\n",
+                                flat_tip ? flat_tip->nHeight : -1,
+                                (long long)db_height);
+                            loaded = false;
+                        }
                     }
                 }
             }
@@ -1671,7 +2133,7 @@ bool app_init(struct app_context *ctx)
          * from zclassicd's LevelDB. This gives us 3M+ entries with
          * correct heights and pprev chains in seconds. Triggers when
          * we have <10% of expected entries (e.g., 3K vs 3M chain). */
-        {
+        if (!ctx->no_legacy_auto_import) {
             int chain_h = active_chain_height(&g_state.chain_active);
             if (chain_h < 1000) {
                 /* Estimate expected height from SQLite or coins */
@@ -1799,14 +2261,13 @@ bool app_init(struct app_context *ctx)
                                 }
                                 free(sorted);
 
-                                if (best && best->nHeight > 0) {
+                                if (best && best->nHeight > 0 &&
+                                    boot_promote_tip_via_csr(
+                                        best, "zclassicd_import_best",
+                                        false)) {
                                     printf("Chain tip from zclassicd: height=%d "
                                            "nChainTx=%u\n",
                                            best->nHeight, best->nChainTx);
-                                    chain_set_active_tip(&g_state, best,
-                                        TIP_FROM_BOOT_REPAIR,
-                                        "zclassicd_import_best");
-                                    g_state.pindex_best_header = best;
                                 }
                             }
                         }
@@ -1897,7 +2358,8 @@ bool app_init(struct app_context *ctx)
          * Hard-link (instant, same FS) or skip (cross-FS handled above).
          * This runs every boot to catch the case where block_index.bin
          * was loaded from a previous session but blocks/ was wiped. */
-        if (g_state.map_block_index.size > 1000) {
+        if (!ctx->no_legacy_auto_import &&
+            g_state.map_block_index.size > 1000) {
             const char *home = getenv("HOME");
             char zcd_blk[1024], c23_blk[1024];
             if (home)
@@ -1998,39 +2460,71 @@ bool app_init(struct app_context *ctx)
     /* pprev chain repair: fix corrupted pprev pointers from LDB import.
      * Reads hashPrevBlock from block data on disk and corrects pprev.
      * Must run after height repair (needs correct heights for sort). */
-    if (g_state.map_block_index.size > 100)
-        block_index_repair_pprev(&g_state, ctx->datadir);
+    if (g_state.map_block_index.size > 100) {
+        int pprev_fixed = block_index_repair_pprev(&g_state, ctx->datadir);
+        if (pprev_fixed > 0)
+            block_index_repair_heights(&g_state);
+    }
 
     /* Block index integrity — verify sidecar SHA3 after all loads.
-     * Refuse to boot on mismatch unless ZCL_ALLOW_CORRUPT_INDEX=1. */
+     *
+     * File integrity failures are still quarantined before boot can
+     * continue. SQLite cross-check mismatches are different: the loaded
+     * block index may be ahead of the SQL metadata during legacy/body-pull
+     * recovery, and refusing boot there forces operators into the unsafe
+     * ZCL_ALLOW_CORRUPT_INDEX path. Record the mismatch as degraded
+     * reconciliation state and let the guarded boot pipeline repair or
+     * fill SQL without publishing evidence by fiat. */
     {
         struct block_index *tip = active_chain_tip(&g_state.chain_active);
-        if (tip) {
-            char err[256] = "";
-            enum bii_verdict v = bii_verify(ctx->datadir, &g_node_db,
-                                             tip, err, sizeof(err));
-            if (v == BII_OK) {
-                /* sidecar matches — good */
-            } else if (v == BII_SIDECAR_MISSING || v == BII_BODY_MISSING) {
-                /* first run or index will be rebuilt — acceptable */
+        char err[256] = "";
+        enum bii_verdict v = bii_verify(ctx->datadir, &g_node_db,
+                                         tip, err, sizeof(err));
+        if (v == BII_OK) {
+            bii_record_recovery_status(v, BII_RECOVERY_ACCEPTED,
+                                       tip ? "block index sidecar and SQL tip match"
+                                           : "block index sidecar valid; no active tip yet",
+                                       false, false);
+        } else if (v == BII_SIDECAR_MISSING || v == BII_BODY_MISSING) {
+            bii_record_recovery_status(v, BII_RECOVERY_ACCEPTED,
+                                       err[0] ? err : "first run or index will be rebuilt",
+                                       false, false);
+        } else if (tip &&
+                   (v == BII_TIP_MISSING_IN_SQL ||
+                    v == BII_TIP_HEIGHT_MISMATCH)) {
+            bii_record_recovery_status(v, BII_RECOVERY_RECONCILE_REQUIRED,
+                                       err[0] ? err : bii_verdict_name(v),
+                                       true, false);
+            fprintf(stderr,
+                    "WARNING: block index integrity: %s "
+                    "(continuing in degraded reconcile mode)\n",
+                    err[0] ? err : bii_verdict_name(v));
+        } else {
+            const char *allow = getenv("ZCL_ALLOW_CORRUPT_INDEX");
+            if (allow && allow[0] == '1') {
+                bii_record_recovery_status(v, BII_RECOVERY_OVERRIDE,
+                                           err[0] ? err : bii_verdict_name(v),
+                                           true, true);
+                fprintf(stderr, "WARNING: block index integrity: %s "
+                        "(continuing — ZCL_ALLOW_CORRUPT_INDEX=1)\n", err);
             } else {
-                const char *allow = getenv("ZCL_ALLOW_CORRUPT_INDEX");
-                if (allow && allow[0] == '1') {
-                    fprintf(stderr, "WARNING: block index integrity: %s "
-                            "(continuing — ZCL_ALLOW_CORRUPT_INDEX=1)\n", err);
-                } else {
-                    fprintf(stderr, "FATAL: block index integrity: %s\n"
-                            "Set ZCL_ALLOW_CORRUPT_INDEX=1 to override.\n", err);
-                    bii_quarantine_corrupt(ctx->datadir, v);
-                    return false;
-                }
+                bii_record_recovery_status(v, BII_RECOVERY_QUARANTINED,
+                                           err[0] ? err : bii_verdict_name(v),
+                                           true, false);
+                fprintf(stderr, "FATAL: block index integrity: %s\n"
+                        "Set ZCL_ALLOW_CORRUPT_INDEX=1 to override.\n", err);
+                bii_quarantine_corrupt(ctx->datadir, v);
+                return false;
             }
         }
     }
 
+    if (!boot_resolve_cold_import_pending_anchor())
+        return false;
+
     /* ── LDB UTXO import (runs AFTER block index load) ── */
     t_phase = boot_clock_ms();
-    {
+    if (!ctx->no_legacy_auto_import) {
         struct utxo_recovery_ctx uctx = {
             .state = &g_state,
             .coins_sqlite = &g_coins_sqlite,
@@ -2052,28 +2546,28 @@ bool app_init(struct app_context *ctx)
     printf("[boot] %-30s %lldms\n", "utxo_import",
            (long long)(boot_clock_ms() - t_phase));
 
-    /* Resolve -assumevalid=<hash> now that block index is loaded */
-    if (ctx->assume_valid && strcmp(ctx->assume_valid, "0") != 0) {
+    /* Resolve -deferproofvalidationbelow=<hash> now that block index is loaded */
+    if (ctx->defer_proof_validation_below && strcmp(ctx->defer_proof_validation_below, "0") != 0) {
         struct uint256 av_hash;
-        if (strlen(ctx->assume_valid) == 64) {
+        if (strlen(ctx->defer_proof_validation_below) == 64) {
             /* Parse hex hash (reversed byte order like block explorer) */
             for (int bi = 0; bi < 32; bi++) {
                 unsigned int byte;
-                sscanf(ctx->assume_valid + bi * 2, "%02x", &byte);
+                sscanf(ctx->defer_proof_validation_below + bi * 2, "%02x", &byte);
                 av_hash.data[31 - bi] = (uint8_t)byte;
             }
             struct block_index *pav = block_map_find(&g_state.map_block_index,
                                                       &av_hash);
             if (pav) {
-                g_assume_valid_height = pav->nHeight;
-                printf("Assume-valid: height %d (from hash)\n",
-                       g_assume_valid_height);
+                g_deferred_proof_validation_below_height = pav->nHeight;
+                printf("Deferred proof validation: height %d (from hash)\n",
+                       g_deferred_proof_validation_below_height);
             } else {
-                printf("Assume-valid: hash not found in block index, "
+                printf("Deferred proof validation: hash not found in block index, "
                        "using checkpoint default\n");
             }
         } else {
-            fprintf(stderr, "Warning: -assumevalid hash must be 64 hex chars\n");
+            fprintf(stderr, "Warning: -deferproofvalidationbelow hash must be 64 hex chars\n");
         }
     }
 
@@ -2087,6 +2581,7 @@ bool app_init(struct app_context *ctx)
     struct block_index *scan_reindex_best = NULL;  /* highest w/ pprev+nChainTx */
     int scan_cleared_failed = 0;
     int scan_max_have_data_h = 0;
+    int scan_missing_header_data = 0;
 
     {
         size_t si = 0;
@@ -2120,18 +2615,28 @@ bool app_init(struct app_context *ctx)
             if ((sp->nStatus & BLOCK_HAVE_DATA) &&
                 sp->nHeight > scan_max_have_data_h)
                 scan_max_have_data_h = sp->nHeight;
+            if ((sp->nStatus & BLOCK_HAVE_DATA) && sp->nDataPos > 0 &&
+                sp->nHeight > 0 &&
+                (sp->nVersion == 0 || sp->nTime == 0 || sp->nBits == 0))
+                scan_missing_header_data++;
         }
     }
     if (scan_cleared_failed > 0)
         printf("Cleared BLOCK_FAILED from %d block index entries\n",
                scan_cleared_failed);
+    if (scan_missing_header_data > 0)
+        printf("Block index has %d HAVE_DATA entries with missing headers; "
+               "will hydrate from block files\n",
+               scan_missing_header_data);
 
     /* Restore chain tip from coins DB best block hash */
     if (ctx->reindex_chainstate) {
         if (scan_reindex_best) {
-            chain_set_active_tip(&g_state, scan_reindex_best, TIP_FROM_BOOT_REPAIR, "scan_reindex_best");
-            g_state.pindex_best_header = scan_reindex_best;
-            printf("Reindex target: height=%d\n", scan_reindex_best->nHeight);
+            if (boot_promote_tip_via_csr(scan_reindex_best,
+                                         "scan_reindex_best", false)) {
+                printf("Reindex target: height=%d\n",
+                       scan_reindex_best->nHeight);
+            }
         } else {
             printf("Reindex: no best found (total=%zu)\n",
                    g_state.map_block_index.size);
@@ -2160,7 +2665,8 @@ bool app_init(struct app_context *ctx)
                                               cr.anchor_reason);
         }
         if (scan_best_header)
-            g_state.pindex_best_header = scan_best_header;
+            (void)boot_promote_header_via_csr(scan_best_header,
+                                              "scan_best_header");
     }
 
     /* Ensure genesis block is always properly initialized.
@@ -2190,9 +2696,10 @@ bool app_init(struct app_context *ctx)
                 genesis->nChainWork = GetBlockProof(genesis);
             /* Set chain tip to genesis if no tip exists */
             if (!active_chain_tip(&g_state.chain_active)) {
-                chain_set_active_tip(&g_state, genesis, TIP_FROM_BOOT_REPAIR, "genesis_init");
-                g_state.pindex_best_header = genesis;
-                printf("Chain tip: initialized to genesis (height 0)\n");
+                if (boot_promote_tip_via_csr(genesis, "genesis_init",
+                                             false)) {
+                    printf("Chain tip: initialized to genesis (height 0)\n");
+                }
             }
         }
     }
@@ -2328,8 +2835,10 @@ bool app_init(struct app_context *ctx)
         (void)rr.skip_activate; /* activation controller handles state */
 
         /* Enter turbo mode if genesis reset happened */
-        if (rr.recovered && vr.action != BOOT_RECOVER_RESET_CHAIN &&
-            vr.action != BOOT_OK && g_node_db.open) {
+        if (rr.recovered &&
+            (vr.action == BOOT_RECOVER_REIMPORT ||
+             vr.action == BOOT_RECOVER_WIPE_WAIT) &&
+            g_node_db.open) {
             if (!boot_db_enter_turbo_mode())
                 fprintf(stderr, "boot: failed to enter turbo mode\n");
             if (!boot_db_set_sync_batch_size(1000))
@@ -2363,13 +2872,16 @@ bool app_init(struct app_context *ctx)
         }
     }
 
-    /* Scan block files on disk if HAVE_DATA is missing.
+    /* Scan block files on disk if HAVE_DATA is missing or if entries claim
+     * HAVE_DATA but still have placeholder header fields. The latter blocks
+     * activation because connect_tip must reject nBits=0 placeholders.
      * Uses scan_max_have_data_h from the single-pass scan above
      * instead of another partial iteration. */
     {
         bool need_scan = (scan_max_have_data_h < 100 &&
                           g_state.map_block_index.size > 1000) ||
-                         g_state.map_block_index.size < 100;
+                         g_state.map_block_index.size < 100 ||
+                         scan_missing_header_data > 0;
         if (need_scan) {
             bool have_block_files = false;
             for (int ci = 0; ci < 3 && !have_block_files; ci++) {
@@ -2383,6 +2895,8 @@ bool app_init(struct app_context *ctx)
             if (have_block_files) {
                 scan_block_files_mark_data(&g_state, ctx->datadir, params);
                 fflush(stdout);
+                if (g_state.map_block_index.size > 1000)
+                    save_block_index_flat(ctx->datadir, &g_state);
 
                 /* After block file scan, try to resolve coins_best_block.
                  * The scan may have assigned wrong heights (blocks in random
@@ -2444,17 +2958,45 @@ bool app_init(struct app_context *ctx)
                     struct block_index *post_found = block_map_find(
                         &g_state.map_block_index, &post_scan_best);
                     if (post_found && target_h > 0) {
-                        /* Fix the block's height from SQLite truth */
-                        if (post_found->nHeight != target_h) {
-                            printf("Post-scan: correcting block nHeight "
-                                   "%d→%d from SQLite\n",
-                                   post_found->nHeight, target_h);
-                            post_found->nHeight = target_h;
+                        struct block_index *best_scanned = NULL;
+                        size_t scan_iter = 0;
+                        struct block_index *scan_bi;
+                        while (block_map_next(&g_state.map_block_index,
+                                              &scan_iter, NULL, &scan_bi)) {
+                            if (!scan_bi) continue;
+                            if (!(scan_bi->nStatus & BLOCK_HAVE_DATA)) continue;
+                            if (scan_bi->nChainTx == 0) continue;
+                            if (!best_scanned ||
+                                arith_uint256_compare(&scan_bi->nChainWork,
+                                                      &best_scanned->nChainWork) > 0)
+                                best_scanned = scan_bi;
                         }
-                        printf("Post-scan: setting chain tip to h=%d\n",
-                               target_h);
-                        chain_set_active_tip(&g_state, post_found, TIP_FROM_BOOT_REPAIR, "post_found_promote");
-                        g_state.pindex_best_header = post_found;
+                        if (best_scanned &&
+                            best_scanned->nHeight > post_found->nHeight + 1000) {
+                            printf("Post-scan: promoting best scanned chain "
+                                   "h=%d over stale coins anchor h=%d\n",
+                                   best_scanned->nHeight, post_found->nHeight);
+                            post_found = best_scanned;
+                            target_h = best_scanned->nHeight;
+                        }
+                        /* SQLite block metadata is a cache and can lag or
+                         * carry stale labels after recovery.  The pprev chain
+                         * is the authority for block heights here; never
+                         * mutate a block_index height from SQLite metadata.
+                         * A one-block downlabel is enough to make the active
+                         * tip silently disagree with peers and can prune live
+                         * UTXOs above the false tip. */
+                        if (post_found->nHeight != target_h) {
+                            printf("Post-scan: ignoring SQLite height %d for "
+                                   "pprev-derived h=%d\n",
+                                   target_h, post_found->nHeight);
+                            target_h = post_found->nHeight;
+                        }
+                        if (boot_promote_tip_via_csr(
+                                post_found, "post_found_promote", true)) {
+                            printf("Post-scan: setting chain tip to h=%d\n",
+                                   target_h);
+                        }
                     } else if (!post_found) {
                         /* coins_best_block hash not found in block index.
                          * Instead of wiping UTXOs, find the highest UTXO
@@ -2497,20 +3039,10 @@ bool app_init(struct app_context *ctx)
                                     best_have = bp;
                             }
 
-                            if (best_have && best_have->nHeight > 0) {
-                                chain_set_active_tip(&g_state, best_have,
-                                    TIP_FROM_BOOT_REPAIR,
-                                    "coins_hash_orphan_promote");
-                                g_state.pindex_best_header = best_have;
-                                /* Update coins_best_block to match */
-                                if (best_have->phashBlock) {
-                                    coins_view_cache_set_best_block(
-                                        &g_coins_tip,
-                                        best_have->phashBlock);
-                                    node_db_state_set(&g_node_db,
-                                        "coins_best_block",
-                                        best_have->phashBlock->data, 32);
-                                }
+                            if (best_have && best_have->nHeight > 0 &&
+                                boot_promote_tip_via_csr(
+                                    best_have, "coins_hash_orphan_promote",
+                                    true)) {
                                 printf("[boot] coins_best_block hash not "
                                        "in index — setting tip to highest "
                                        "HAVE_DATA block at h=%d\n",
@@ -2534,18 +3066,12 @@ bool app_init(struct app_context *ctx)
                             /* No UTXOs at all — safe to reset to genesis */
                             printf("[boot] No UTXOs found — resetting to "
                                    "genesis\n");
-                            coins_view_cache_set_best_block(&g_coins_tip,
-                                &params->consensus.hashGenesisBlock);
-                            node_db_state_set(&g_node_db, "coins_best_block",
-                                params->consensus.hashGenesisBlock.data, 32);
                             struct block_index *genesis = block_map_find(
                                 &g_state.map_block_index,
                                 &params->consensus.hashGenesisBlock);
                             if (genesis) {
-                                chain_set_active_tip(&g_state, genesis,
-                                    TIP_FROM_BOOT_REPAIR,
-                                    "no_utxos_reset_genesis");
-                                g_state.pindex_best_header = genesis;
+                                (void)boot_promote_tip_via_csr(
+                                    genesis, "no_utxos_reset_genesis", true);
                             }
                         }
                     }
@@ -2685,9 +3211,6 @@ sapling_tree_boot_check_done:
      * skips them and the node is permanently stuck. */
     chain_restore_clear_failed_above_tip(&g_state);
 
-    /* Clean up UTXOs above chain tip (utxo_recovery_service) */
-    utxo_recovery_clean_above_tip(&g_node_db, &g_state);
-
     /* Safety: verify chain tip matches UTXO set height.
      * After LDB import, the UTXO set is at ~3M but the chain tip may be
      * lower (~2M) if previous boots failed to set the anchor.  If the
@@ -2713,32 +3236,41 @@ sapling_tree_boot_check_done:
             }
         }
 
-        if (coins_bi && utxo_max_h > coins_bi->nHeight + 100) {
+        if (coins_bi && utxo_max_h > 100000 &&
+            utxo_max_h > coins_bi->nHeight + 100) {
+            /* The block index can carry stale height labels after recovery
+             * from flat-index damage.  When coins_best_block resolves to a
+             * hash and the durable UTXO table proves a much higher snapshot
+             * height, preserve that immutable high-water state.  The stale
+             * label can also be too high after a legacy import from a running
+             * node whose chainstate is behind its block tip; in both cases
+             * replay must start from the durable UTXO anchor height. */
+            struct block_index *best_anchor = NULL;
             struct block_index *best_have = NULL;
             size_t iter = 0;
             struct block_index *bi;
             while (block_map_next(&g_state.map_block_index, &iter,
                                   NULL, &bi)) {
                 if (!bi) continue;
-                if (!(bi->nStatus & BLOCK_HAVE_DATA)) continue;
                 if (bi->nHeight > utxo_max_h) continue;
+                if (!best_anchor || bi->nHeight > best_anchor->nHeight)
+                    best_anchor = bi;
+                if (!(bi->nStatus & BLOCK_HAVE_DATA)) continue;
                 if (!best_have || bi->nHeight > best_have->nHeight)
                     best_have = bi;
             }
-            if (best_have && best_have->phashBlock &&
-                best_have->nHeight > coins_bi->nHeight) {
+            struct block_index *promote_bi = best_anchor ? best_anchor : best_have;
+            if (promote_bi && promote_bi->phashBlock) {
                 printf("[boot] stale coins_best_block h=%d but UTXOs reach "
-                       "h=%d — promoting anchor to HAVE_DATA h=%d\n",
-                       coins_bi->nHeight, utxo_max_h, best_have->nHeight);
-                chain_set_active_tip(&g_state, best_have, TIP_FROM_BOOT_REPAIR, "promote_have_data");
-                g_state.pindex_best_header = best_have;
-                coins_view_cache_set_best_block(&g_coins_tip,
-                                                best_have->phashBlock);
-                node_db_state_set(&g_node_db, "coins_best_block",
-                                  best_have->phashBlock->data, 32);
-                snapsync_set_anchor(best_have);
-                chain_h = best_have->nHeight;
-                coins_bi = best_have;
+                       "h=%d — promoting anchor to h=%d%s\n",
+                       coins_bi->nHeight, utxo_max_h, promote_bi->nHeight,
+                       (promote_bi->nStatus & BLOCK_HAVE_DATA) ? " HAVE_DATA" : "");
+                if (boot_promote_tip_via_csr(
+                        promote_bi, "promote_utxo_height_anchor", true)) {
+                    snapsync_set_anchor(promote_bi);
+                    chain_h = promote_bi->nHeight;
+                    coins_bi = promote_bi;
+                }
             }
         }
 
@@ -2752,14 +3284,15 @@ sapling_tree_boot_check_done:
          * back from. The chain will re-derive forward via gap-fill. */
         bool coins_bi_real = coins_bi &&
                              (coins_bi->nStatus & BLOCK_HAVE_DATA);
-        if (coins_bi_real && coins_bi->nHeight > chain_h + 100) {
+        if (coins_bi_real && coins_bi->nHeight > chain_h) {
             printf("[boot] UTXO/chain mismatch: coins at h=%d, "
                    "chain tip at h=%d — correcting\n",
                    coins_bi->nHeight, chain_h);
-            chain_set_active_tip(&g_state, coins_bi, TIP_FROM_BOOT_REPAIR, "utxo_chain_mismatch");
-            g_state.pindex_best_header = coins_bi;
-            printf("[boot] Chain tip corrected to h=%d\n",
-                   coins_bi->nHeight);
+            if (boot_promote_tip_via_csr(
+                    coins_bi, "utxo_chain_mismatch", false)) {
+                printf("[boot] Chain tip corrected to h=%d\n",
+                       coins_bi->nHeight);
+            }
         } else if ((!coins_bi || !coins_bi_real) && !uint256_is_null(&coins_hash)) {
             /* coins_best_block hash not in block index. Find the highest
              * block with BLOCK_HAVE_DATA as our best anchor point. The
@@ -2779,17 +3312,6 @@ sapling_tree_boot_check_done:
                 printf("[boot] coins_best_block not in index — "
                        "using highest HAVE_DATA block at h=%d\n",
                        best_have_data->nHeight);
-                chain_set_active_tip(&g_state, best_have_data, TIP_FROM_BOOT_REPAIR, "best_have_data");
-                g_state.pindex_best_header = best_have_data;
-
-                /* Round 5 Part 2 follow-up: chose best_have_data over
-                 * the orphan-coins anchor, so clear the anchor too —
-                 * otherwise activation stays in ANCHOR_ACTIVE waiting
-                 * for tip to climb above the anchor height, but we
-                 * intentionally chose a LOWER tip and want gap-fill
-                 * to drive us forward. */
-                snapsync_set_anchor(NULL);
-
                 /* Resync coins view + UTXO state to the new tip:
                  *   1. coins_best_block must match the tip hash, or
                  *      connect_block will FATAL on the next block
@@ -2797,12 +3319,16 @@ sapling_tree_boot_check_done:
                  *   2. UTXO rows above the new tip height belong to
                  *      the fork we're abandoning. Delete them so
                  *      future blocks see a coherent set. */
-                if (best_have_data->phashBlock) {
-                    coins_view_cache_set_best_block(&g_coins_tip,
-                        best_have_data->phashBlock);
+                if (boot_promote_tip_via_csr(
+                        best_have_data, "best_have_data", true)) {
+                    /* Round 5 Part 2 follow-up: chose best_have_data over
+                     * the orphan-coins anchor, so clear the anchor too —
+                     * otherwise activation stays in ANCHOR_ACTIVE waiting
+                     * for tip to climb above the anchor height, but we
+                     * intentionally chose a LOWER tip and want gap-fill
+                     * to drive us forward. */
+                    snapsync_set_anchor(NULL);
                     if (g_node_db.open) {
-                        node_db_state_set(&g_node_db, "coins_best_block",
-                            best_have_data->phashBlock->data, 32);
                         char delsql[160];
                         snprintf(delsql, sizeof(delsql),
                             "DELETE FROM utxos WHERE height > %d",
@@ -2816,13 +3342,19 @@ sapling_tree_boot_check_done:
                             printf("[boot] pruned fork-side utxos above "
                                    "h=%d\n", best_have_data->nHeight);
                     }
+                    printf("[boot] cleared orphan-coins restore anchor — "
+                           "gap-fill will resync above h=%d\n",
+                           best_have_data->nHeight);
                 }
-                printf("[boot] cleared orphan-coins restore anchor — "
-                       "gap-fill will resync above h=%d\n",
-                       best_have_data->nHeight);
             }
         }
     }
+
+    /* Clean up UTXOs above chain tip only after the mismatch repair above
+     * has had a chance to promote a durable snapshot/coins anchor. Running
+     * this earlier can delete the high-water UTXO rows that prove where an
+     * immutable historical snapshot actually lands. */
+    utxo_recovery_clean_above_tip(&g_node_db, &g_state);
 
     /* Activate best chain via controller (single authority).
      * The controller checks: anchor state, shutdown, UTXO availability.
@@ -2899,15 +3431,10 @@ sapling_tree_boot_check_done:
                     "[boot] placeholder tip at h=%d (nBits=0); rewinding "
                     "to last real block h=%d\n",
                     tip->nHeight, walk->nHeight);
-                chain_set_active_tip(&g_state, walk, TIP_FROM_BOOT_REPAIR,
-                                     "rewind_placeholder_tip");
-                g_state.pindex_best_header = walk;
-                if (walk->phashBlock) {
-                    coins_view_cache_set_best_block(&g_coins_tip,
-                                                    walk->phashBlock);
+                if (boot_promote_tip_via_csr(
+                        walk, "rewind_placeholder_tip", true) &&
+                    walk->phashBlock) {
                     if (g_node_db.open) {
-                        node_db_state_set(&g_node_db, "coins_best_block",
-                                          walk->phashBlock->data, 32);
                         char delsql[160];
                         snprintf(delsql, sizeof(delsql),
                             "DELETE FROM utxos WHERE height > %d",
@@ -3020,6 +3547,7 @@ static void write_clean_shutdown_marker(void)
 void app_shutdown(void)
 {
     write_clean_shutdown_marker();
+    boot_stop_platform_services();
     app_shutdown_svc(&g_svc);
     release_datadir_lock();
 }

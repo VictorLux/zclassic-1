@@ -21,8 +21,8 @@
 #include "core/serialize.h"
 #include "sapling/sapling_prover.h"
 
-/* Default: -1 (verify everything). Set by boot.c from -assumevalid flag. */
-_Atomic int g_assume_valid_height = -1;
+/* Default: -1 (verify everything). Set by boot.c from -deferproofvalidationbelow flag. */
+_Atomic int g_deferred_proof_validation_below_height = -1;
 
 /* Convenience: REJECT_IF with variable DoS level (many checks use dosLevel) */
 #define REJECT_IF_DOS(cond, state, dos, reason) \
@@ -87,9 +87,9 @@ bool contextual_check_transaction(const struct transaction *tx,
                   state, 100, "bad-txns-oversize");
     }
 
-    /* ── Skip expensive shielded proofs for assumed-valid blocks ── */
-    bool skip_proofs = (g_assume_valid_height >= 0 &&
-                        nHeight <= g_assume_valid_height);
+    /* ── Defer expensive shielded proofs below the local policy height ── */
+    bool skip_proofs = (g_deferred_proof_validation_below_height >= 0 &&
+                        nHeight <= g_deferred_proof_validation_below_height);
 
     /* Compute sighash for shielded verification */
     struct uint256 data_to_be_signed;

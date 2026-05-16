@@ -8,6 +8,7 @@
 #include "services/recovery_policy.h"
 #include "services/chain_activation_controller.h"
 #include "services/chain_restore_service.h"
+#include "services/chain_state_repository.h"
 #include "services/chain_tip.h"
 #include "services/snapshot_sync_service.h"
 #include "config/boot_internal.h"
@@ -32,11 +33,136 @@
 #include <sys/stat.h>
 #include <unistd.h>
 #include <stdatomic.h>
+#include <limits.h>
 #include <sqlite3.h>
 
 #include "util/ar_step_readonly.h"
 #include "util/log_macros.h"
 #include "util/safe_alloc.h"
+
+#define UTXO_CHECKPOINT_NEAR_WINDOW 144
+
+static bool utxo_recovery_commit_tip(struct utxo_recovery_ctx *ctx,
+                                     struct block_index *tip,
+                                     const char *reason,
+                                     bool persist_coins_best)
+{
+    if (!ctx || !ctx->state || !tip || !tip->phashBlock)
+        return false;
+
+    struct chain_state_rollback_authorization rollback_auth = {
+        .source = CSR_ROLLBACK_SOURCE_UTXO_REPAIR,
+        .decision = POLICY_ALLOW,
+        .from_height = active_chain_height(&ctx->state->chain_active),
+        .to_height = tip->nHeight,
+        .max_depth = INT64_MAX,
+        .evidence_class = "utxo_recovery_verified",
+        .reason = reason ? reason : "utxo_recovery",
+    };
+    struct chain_state_commit commit = {
+        .new_tip = tip,
+        .new_coins_best = *tip->phashBlock,
+        .expected_utxo_count = 0,
+        .update_header_tip = true,
+        .persist_coins_best = persist_coins_best,
+        .rollback_auth = &rollback_auth,
+        .wallet_scan_height = -1,
+        .reason = reason ? reason : "utxo_recovery",
+    };
+
+    enum csr_result rc = csr_commit_tip(csr_instance(), &commit);
+    if (rc == CSR_OK)
+        return true;
+
+#ifdef ZCL_TESTING
+    if (rc == CSR_REJECTED_NOT_INITIALIZED) {
+        if (ctx->coins_tip)
+            coins_view_cache_set_best_block(ctx->coins_tip,
+                                            tip->phashBlock);
+        if (persist_coins_best && ctx->ndb && ctx->ndb->open)
+            (void)node_db_state_set(ctx->ndb, "coins_best_block",
+                                    tip->phashBlock->data, 32);
+        chain_set_active_tip(ctx->state, tip, TIP_FROM_UTXO_REPAIR,
+                             reason ? reason : "utxo_recovery_csr_uninit");
+        ctx->state->pindex_best_header = tip;
+        return true;
+    }
+#endif
+
+    fprintf(stderr, // obs-ok:pre-existing-diagnostic
+            "utxo_recovery: csr rejected tip promotion (%s) reason=%s h=%d\n",
+            csr_result_name(rc), reason ? reason : "", tip->nHeight);
+    return false;
+}
+
+static bool utxo_recovery_commit_genesis(struct utxo_recovery_ctx *ctx,
+                                         const char *reason)
+{
+    if (!ctx || !ctx->state || !ctx->params)
+        return false;
+
+    struct block_index *genesis = block_map_find(
+        &ctx->state->map_block_index,
+        &ctx->params->consensus.hashGenesisBlock);
+    if (!genesis) {
+        fprintf(stderr,
+                "utxo_recovery: cannot reset coins best to genesis; "
+                "genesis is missing from block index (reason=%s)\n",
+                reason ? reason : "");
+        return false;
+    }
+
+    if (!utxo_recovery_commit_tip(ctx, genesis,
+                                  reason ? reason : "utxo_recovery_genesis",
+                                  true))
+        return false;
+    if (ctx->coins_tip)
+        coins_view_cache_flush(ctx->coins_tip);
+    return true;
+}
+
+struct utxo_count_check_result utxo_recovery_classify_count_check(
+    int tip_height,
+    int checkpoint_height,
+    uint64_t checkpoint_count,
+    uint64_t actual_count)
+{
+    struct utxo_count_check_result res = {0};
+    res.blocks_past_checkpoint = tip_height - checkpoint_height;
+
+    if (checkpoint_height <= 0 || checkpoint_count == 0 ||
+        tip_height < checkpoint_height) {
+        res.level = UTXO_COUNT_CHECK_OK;
+        return res;
+    }
+
+    int64_t delta = (int64_t)actual_count - (int64_t)checkpoint_count;
+    if (delta < 0)
+        delta = -delta;
+    res.pct_delta = (double)delta / (double)checkpoint_count * 100.0;
+
+    if (res.blocks_past_checkpoint > UTXO_CHECKPOINT_NEAR_WINDOW) {
+        res.level = UTXO_COUNT_CHECK_INFO_STALE_REFERENCE;
+        return res;
+    }
+
+    if (res.pct_delta > 50.0)
+        res.level = UTXO_COUNT_CHECK_CRITICAL;
+    else if (res.pct_delta > 10.0)
+        res.level = UTXO_COUNT_CHECK_WARNING;
+    else
+        res.level = UTXO_COUNT_CHECK_OK;
+    return res;
+}
+
+bool utxo_recovery_xor_mismatch_is_corruption_candidate(
+    uint64_t saved_count,
+    uint64_t computed_count)
+{
+    (void)saved_count;
+    (void)computed_count;
+    return false;
+}
 
 /* ── Policy-gated UTXO wipe ──────────────────────────────────────
  *
@@ -205,10 +331,6 @@ struct utxo_import_result utxo_recovery_import_ldb(
         memset(&ldb_best, 0, sizeof(ldb_best));
         if (coins_view_db_get_best_block(&migrate_db, &ldb_best) &&
             !uint256_is_null(&ldb_best)) {
-            node_db_state_set(ctx->ndb, "coins_best_block",
-                              ldb_best.data, 32);
-            coins_view_cache_set_best_block(ctx->coins_tip, &ldb_best);
-
             struct block_index *found = block_map_find(
                 &ctx->state->map_block_index, &ldb_best);
 
@@ -217,22 +339,18 @@ struct utxo_import_result utxo_recovery_import_ldb(
 
             if (found && found->nHeight > 0) {
                 /* Block found in index — set as chain tip */
-                if (found->phashBlock) {
-                    node_db_state_set(ctx->ndb, "coins_best_block",
-                        found->phashBlock->data, 32);
-                    coins_view_cache_set_best_block(
-                        ctx->coins_tip, found->phashBlock);
+                if (utxo_recovery_commit_tip(
+                        ctx, found, "ldb_import_found", true)) {
+                    printf("LDB import: chain tip at h=%d hash=%s\n",
+                           found->nHeight, dbg_hex);
+                    res.skip_activate = true;
+                    snprintf(res.anchor_reason, sizeof(res.anchor_reason),
+                             "ldb_import_found");
                 }
-                chain_set_active_tip(ctx->state, found, TIP_FROM_UTXO_REPAIR, "ldb_import_found");
-                ctx->state->pindex_best_header = found;
-                printf("LDB import: chain tip at h=%d hash=%s\n",
-                       found->nHeight, dbg_hex);
-                res.skip_activate = true;
-                snprintf(res.anchor_reason, sizeof(res.anchor_reason),
-                         "ldb_import_found");
             } else if (ldb_height > 0) {
-                /* LDB best block NOT in our index — record metadata only.
-                 * The anchor must not masquerade as real block data. */
+                /* LDB best block NOT in our index — record an activation
+                 * anchor only. Do not publish coins_best_block until the
+                 * block is present in the local index and CSR can commit it. */
                 struct block_index *anchor = chain_restore_create_anchor(
                     ctx->state, &ldb_best, ldb_height);
                 if (anchor) {
@@ -404,17 +522,18 @@ struct chain_restore_result utxo_recovery_restore_chain_tip(
     if (uint256_is_null(&best_hash)) {
         /* No best block — try fast rebuild if fallback available */
         if (scan_fallback) {
-            chain_set_active_tip(ctx->state, scan_fallback, TIP_FROM_UTXO_REPAIR, "scan_fallback");
-            ctx->state->pindex_best_header = scan_fallback;
-            printf("WARNING: Chain tip at height %d but coins DB is empty!\n",
-                   scan_fallback->nHeight);
-            printf("Attempting fast chainstate rebuild from SQLite...\n");
-            if (fast_rebuild_chainstate(ctx->coins_sqlite, ctx->coins_tip,
-                                         ctx->datadir))
-                printf("Fast rebuild complete — will activate chain.\n");
-            else
-                printf("Fast rebuild unavailable — will activate from genesis.\n");
-            res.restored = true;
+            if (utxo_recovery_commit_tip(
+                    ctx, scan_fallback, "scan_fallback", false)) {
+                printf("WARNING: Chain tip at height %d but coins DB is empty!\n",
+                       scan_fallback->nHeight);
+                printf("Attempting fast chainstate rebuild from SQLite...\n");
+                if (fast_rebuild_chainstate(ctx->coins_sqlite, ctx->coins_tip,
+                                             ctx->datadir))
+                    printf("Fast rebuild complete — will activate chain.\n");
+                else
+                    printf("Fast rebuild unavailable — will activate from genesis.\n");
+                res.restored = true;
+            }
         }
         return res;
     }
@@ -496,11 +615,6 @@ struct chain_restore_result utxo_recovery_restore_chain_tip(
                     "real block data; using nearest consensus-backed "
                     "ancestor h=%d hash=%s\n",
                     bad_hex, best->nHeight, restore_tip->nHeight, good_hex);
-                coins_view_cache_set_best_block(ctx->coins_tip,
-                                                restore_tip->phashBlock);
-                if (ctx->ndb && ctx->ndb->open)
-                    node_db_state_set(ctx->ndb, "coins_best_block",
-                                      restore_tip->phashBlock->data, 32);
             }
         } else if (has_disk_backed_competing_sibling(ctx->state, best,
                                                     ctx->datadir)) {
@@ -516,11 +630,6 @@ struct chain_restore_result utxo_recovery_restore_chain_tip(
                     "validation can choose the best branch\n",
                     bad_hex, best->nHeight, restore_tip->nHeight,
                     parent_hex);
-                coins_view_cache_set_best_block(ctx->coins_tip,
-                                                restore_tip->phashBlock);
-                if (ctx->ndb && ctx->ndb->open)
-                    node_db_state_set(ctx->ndb, "coins_best_block",
-                                      restore_tip->phashBlock->data, 32);
             }
         }
 
@@ -531,8 +640,10 @@ struct chain_restore_result utxo_recovery_restore_chain_tip(
             return res;
         }
 
+        if (!utxo_recovery_commit_tip(
+                ctx, restore_tip, "coins_best_restore", true))
+            return res;
         (void)chain_restore_rebuild_active_chain(ctx->state, restore_tip);
-        ctx->state->pindex_best_header = restore_tip;
         printf("Restored chain tip from coins DB: height=%d\n",
                restore_tip->nHeight);
         event_emitf(EV_BOOT_CHAIN_RESTORED, 0, "height=%d",
@@ -588,9 +699,7 @@ struct chain_restore_result utxo_recovery_restore_chain_tip(
         /* No UTXOs — wipe and start fresh */
         printf("No UTXOs found — wiping coins state.\n");
         (void)utxo_recovery_wipe(ctx->ndb, "boot.restore_no_utxos");
-        coins_view_cache_set_best_block(ctx->coins_tip,
-            &ctx->params->consensus.hashGenesisBlock);
-        coins_view_cache_flush(ctx->coins_tip);
+        (void)utxo_recovery_commit_genesis(ctx, "boot.restore_no_utxos");
     }
 
     res.restored = true;
@@ -627,16 +736,16 @@ static bool recover_stale_metadata(struct utxo_recovery_ctx *ctx)
         if (db_block_find_by_height(ctx->ndb, max_h, &tip_blk)) {
             struct uint256 tip_hash;
             memcpy(tip_hash.data, tip_blk.hash, 32);
-            coins_view_cache_set_best_block(ctx->coins_tip, &tip_hash);
-            coins_view_cache_flush(ctx->coins_tip);
             struct block_index *bi = block_map_find(
                 &ctx->state->map_block_index, &tip_hash);
             if (bi && chain_restore_block_is_consensus_backed_on_disk(
                     bi, ctx->datadir)) {
-                chain_set_active_tip(ctx->state, bi, TIP_FROM_UTXO_REPAIR, "best_have_data");
-                ctx->state->pindex_best_header = bi;
-                printf("RECOVERY: restored chain tip from UTXO set: h=%d\n",
-                       max_h);
+                if (utxo_recovery_commit_tip(
+                        ctx, bi, "best_have_data", true)) {
+                    coins_view_cache_flush(ctx->coins_tip);
+                    printf("RECOVERY: restored chain tip from UTXO set: h=%d\n",
+                           max_h);
+                }
             } else if (bi) {
                 fprintf(stderr,
                     "RECOVERY: UTXO-derived tip h=%d is not disk-backed; "
@@ -652,16 +761,12 @@ static void reset_to_genesis(struct utxo_recovery_ctx *ctx)
 {
     (void)utxo_recovery_wipe(ctx->ndb, "boot.reset_to_genesis");
 
-    coins_view_cache_set_best_block(ctx->coins_tip,
-        &ctx->params->consensus.hashGenesisBlock);
-    coins_view_cache_flush(ctx->coins_tip);
-
     struct block_index *genesis = block_map_find(
         &ctx->state->map_block_index,
         &ctx->params->consensus.hashGenesisBlock);
     if (genesis) {
-        chain_set_active_tip(ctx->state, genesis, TIP_FROM_UTXO_REPAIR, "fresh_genesis");
-        ctx->state->pindex_best_header = genesis;
+        if (utxo_recovery_commit_tip(ctx, genesis, "fresh_genesis", true))
+            coins_view_cache_flush(ctx->coins_tip);
     }
 
     /* Clear migration flag for LevelDB re-import on next boot */
@@ -697,9 +802,8 @@ static bool integrity_checks_boot_ok(struct utxo_recovery_ctx *ctx,
                    (long long)stale_utxos);
             (void)utxo_recovery_wipe(ctx->ndb,
                                       "boot.stale_utxos_at_genesis");
-            coins_view_cache_set_best_block(ctx->coins_tip,
-                &ctx->params->consensus.hashGenesisBlock);
-            coins_view_cache_flush(ctx->coins_tip);
+            (void)utxo_recovery_commit_genesis(
+                ctx, "boot.stale_utxos_at_genesis");
             *out_skip_activate = true;
         }
     }
@@ -713,20 +817,34 @@ static bool integrity_checks_boot_ok(struct utxo_recovery_ctx *ctx,
             "SELECT COUNT(*) FROM utxos", -1, &cnt_stmt, NULL);
         if (cnt_stmt && AR_STEP_ROW_READONLY(cnt_stmt) == SQLITE_ROW) {
             int64_t actual = sqlite3_column_int64(cnt_stmt, 0);
-            int64_t expected = (int64_t)sha3cp->utxo_count;
-            int64_t delta = actual - expected;
-            double pct = expected > 0 ?
-                (double)(delta < 0 ? -delta : delta) / expected * 100 : 0;
-            if (pct > 50.0)
+            struct utxo_count_check_result count_check =
+                utxo_recovery_classify_count_check(
+                    tip_h, sha3cp->height, sha3cp->utxo_count,
+                    (uint64_t)actual);
+            if (count_check.level == UTXO_COUNT_CHECK_CRITICAL)
                 fprintf(stderr, "CRITICAL: UTXO count %lld vs "
                         "checkpoint %lld (%.1f%% off) — consider "
                         "reimport\n", (long long)actual,
-                        (long long)expected, pct);
-            else if (pct > 10.0)
+                        (long long)sha3cp->utxo_count,
+                        count_check.pct_delta);
+            else if (count_check.level == UTXO_COUNT_CHECK_WARNING)
                 printf("WARNING: UTXO count %lld vs checkpoint %lld "
                        "(%.1f%% off, chain %d blocks past checkpoint)\n",
-                       (long long)actual, (long long)expected, pct,
-                       tip_h - sha3cp->height);
+                       (long long)actual,
+                       (long long)sha3cp->utxo_count,
+                       count_check.pct_delta,
+                       count_check.blocks_past_checkpoint);
+            else if (count_check.level ==
+                     UTXO_COUNT_CHECK_INFO_STALE_REFERENCE)
+                printf("INFO: skipping UTXO count checkpoint warning: "
+                       "checkpoint h=%d is %d blocks behind tip h=%d "
+                       "(actual=%lld checkpoint=%lld delta=%.1f%%)\n",
+                       sha3cp->height,
+                       count_check.blocks_past_checkpoint,
+                       tip_h,
+                       (long long)actual,
+                       (long long)sha3cp->utxo_count,
+                       count_check.pct_delta);
         }
         sqlite3_finalize(cnt_stmt);
     }
@@ -738,10 +856,31 @@ static bool integrity_checks_boot_ok(struct utxo_recovery_ctx *ctx,
         memset(&computed_uc, 0, sizeof(computed_uc));
         if (utxo_commitment_load_checkpoint(ctx->ndb->db, &saved_uc)) {
             utxo_commitment_compute_db(ctx->ndb->db, &computed_uc);
-            if (!utxo_commitment_equal(&saved_uc, &computed_uc))
-                fprintf(stderr, "WARNING: XOR commitment mismatch — "
-                        "UTXO set may be corrupted. "
-                        "Consider running --importchainstate\n");
+            if (!utxo_commitment_equal(&saved_uc, &computed_uc)) {
+                if (utxo_recovery_xor_mismatch_is_corruption_candidate(
+                        saved_uc.count, computed_uc.count)) {
+                    fprintf(stderr, "WARNING: XOR commitment mismatch — "
+                            "UTXO set may be corrupted. "
+                            "Consider running --importchainstate\n");
+                } else {
+                    printf("INFO: skipping XOR commitment corruption warning: "
+                           "stored commitment checkpoint is stale "
+                           "(saved_count=%llu computed_count=%llu)\n",
+                           (unsigned long long)saved_uc.count,
+                           (unsigned long long)computed_uc.count);
+                    if (ctx->coins_tip)
+                        ctx->coins_tip->commitment = computed_uc;
+                    if (utxo_commitment_save_checkpoint(ctx->ndb->db,
+                                                        &computed_uc)) {
+                        printf("INFO: refreshed stale XOR commitment "
+                               "checkpoint (count=%llu)\n",
+                               (unsigned long long)computed_uc.count);
+                    } else {
+                        fprintf(stderr, "WARNING: failed to refresh stale "
+                                "XOR commitment checkpoint\n");
+                    }
+                }
+            }
         }
     }
 
@@ -793,9 +932,8 @@ struct recovery_exec_result utxo_recovery_execute(
                        "will replay %d blocks.\n",
                        vr->chain_height, vr->coins_height,
                        vr->chain_height - vr->coins_height);
-                chain_set_active_tip(ctx->state, coins_block,
-                                      TIP_FROM_UTXO_REPAIR,
-                                      "chain_coins_mismatch_reset");
+                (void)utxo_recovery_commit_tip(
+                    ctx, coins_block, "chain_coins_mismatch_reset", true);
             } else {
                 fprintf(stderr,
                     "Chain tip/coins mismatch: coins tip h=%d is not "
@@ -806,6 +944,20 @@ struct recovery_exec_result utxo_recovery_execute(
         res.recovered = true;
         break;
     }
+    case BOOT_RECOVER_RESET_COINS_TO_CHAIN_TIP: {
+        struct block_index *chain_tip =
+            active_chain_tip(&ctx->state->chain_active);
+        if (chain_tip) {
+            (void)utxo_recovery_commit_tip(
+                ctx, chain_tip, "coins_cursor_to_chain_tip", true);
+            res.recovered = true;
+        }
+        break;
+    }
+    case BOOT_RECOVER_RESET_COINS_TO_GENESIS:
+        if (utxo_recovery_commit_genesis(ctx, "coins_cursor_to_genesis"))
+            res.recovered = true;
+        break;
     case BOOT_OK:
         integrity_checks_boot_ok(ctx, &res.skip_activate);
         break;

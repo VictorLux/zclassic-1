@@ -1,0 +1,147 @@
+/* Copyright 2026 Rhett Creighton - Apache License 2.0
+ *
+ * Chain Evidence Controller — native-first chain-state state machine.
+ *
+ * This service sits above chain_state_repository.  The repository is
+ * the single writer for concrete tip pointers; this controller is the
+ * evidence gate that decides whether a transition is allowed and
+ * persists the publishable chain-state evidence that explains why.
+ */
+
+#ifndef ZCL_SERVICES_CHAIN_EVIDENCE_CONTROLLER_H
+#define ZCL_SERVICES_CHAIN_EVIDENCE_CONTROLLER_H
+
+#include "core/uint256.h"
+#include "chain/chain.h"
+#include "services/chain_state_repository.h"
+
+#include <stdbool.h>
+#include <stdint.h>
+
+struct node_db;
+
+enum chain_evidence_controller_state {
+    CEC_EMPTY = 0,
+    CEC_HEADERS_WORK_VALIDATED,
+    CEC_SNAPSHOT_UTXO_HASH_VERIFIED,
+    CEC_TIP_FOLLOWING,
+    CEC_BACKGROUND_VALIDATING,
+    CEC_FULLY_VALIDATED,
+    CEC_CONTRADICTION_FROZEN,
+    CEC_NUM_STATES
+};
+
+enum chain_evidence_controller_result {
+    CEC_OK = 0,
+    CEC_REJECTED_NULL_ARG,
+    CEC_REJECTED_FROZEN,
+    CEC_REJECTED_BAD_STATE,
+    CEC_REJECTED_BAD_PROOF,
+    CEC_REJECTED_INCOMPLETE_INDEX_EVIDENCE,
+    CEC_REJECTED_UTXO_AHEAD_OF_INDEX,
+    CEC_REJECTED_CSR,
+    CEC_REJECTED_PERSIST,
+};
+
+struct chain_evidence_controller {
+    struct node_db *ndb;                 /* non-owning */
+    struct chain_state_repository *csr;  /* non-owning */
+    enum chain_evidence_controller_state state;
+    char contradiction_reason[192];
+};
+
+struct chain_evidence_record {
+    bool header_ancestry_linked;
+    bool chainwork_recomputed;
+    bool nakamoto_selected_best_work;
+    bool block_bytes_hash_checked;
+    bool utxo_sha3_verified;
+    bool mmb_flyclient_proof_verified;
+    bool chunk_hash_coverage_verified;
+    bool full_validation_complete;
+};
+
+struct chain_evidence_controller_snapshot_meta {
+    int32_t anchor_height;
+    struct uint256 anchor_hash;
+    struct uint256 utxo_sha3;
+    uint64_t utxo_count;
+    uint8_t chainwork[32];
+    uint8_t mmb_root[32];
+    uint32_t finality_depth;
+    uint32_t schema_version;
+    const char *producer;
+    struct chain_evidence_record verified;
+};
+
+struct chain_evidence_controller_tip_request {
+    struct block_index *new_tip;
+    int utxo_max_height;
+    bool update_header_tip;
+    const char *reason;
+    struct chain_evidence_record verified;
+};
+
+struct chain_evidence_controller_view {
+    enum chain_evidence_controller_state state;
+    int active_tip_height;
+    int header_tip_height;
+    int snapshot_anchor_height;
+    int background_validation_height;
+    int utxo_max_height;
+    int coins_best_block_height;
+    struct chain_evidence_record block_index_evidence_state;
+    struct chain_evidence_record active_tip_evidence;
+    struct chain_evidence_record snapshot_evidence;
+    struct chain_evidence_record header_chain_evidence;
+    char contradiction_reason[192];
+};
+
+const char *chain_evidence_controller_state_name(enum chain_evidence_controller_state state);
+const char *chain_evidence_controller_result_name(enum chain_evidence_controller_result result);
+
+void chain_evidence_controller_init(struct chain_evidence_controller *authority,
+                         struct node_db *ndb,
+                         struct chain_state_repository *csr);
+
+enum chain_evidence_controller_state chain_evidence_controller_load_state(
+    struct chain_evidence_controller *authority);
+
+enum chain_evidence_controller_result chain_evidence_controller_import_snapshot_evidence(
+    struct chain_evidence_controller *authority,
+    const struct chain_evidence_controller_snapshot_meta *snapshot);
+
+enum chain_evidence_controller_result chain_evidence_controller_promote_tip(
+    struct chain_evidence_controller *authority,
+    const struct chain_evidence_controller_tip_request *request);
+
+enum chain_evidence_controller_result chain_evidence_controller_mark_background_progress(
+    struct chain_evidence_controller *authority,
+    int height);
+
+enum chain_evidence_controller_result chain_evidence_controller_mark_fully_validated(
+    struct chain_evidence_controller *authority,
+    const struct uint256 *utxo_sha3);
+
+void chain_evidence_controller_freeze(struct chain_evidence_controller *authority,
+                           const char *reason);
+
+void chain_evidence_controller_snapshot(struct chain_evidence_controller *authority,
+                             struct chain_evidence_controller_view *out);
+
+bool chain_evidence_controller_mark_block_evidence(
+    struct chain_evidence_controller *authority,
+    const struct uint256 *block_hash,
+    const struct chain_evidence_record *evidence);
+
+bool chain_evidence_record_has_block_index_required(
+    const struct chain_evidence_record *evidence);
+
+bool chain_evidence_record_has_snapshot_required(
+    const struct chain_evidence_record *evidence);
+
+#ifdef ZCL_TESTING
+void chain_evidence_controller_test_fail_commit_after_csr(bool fail);
+#endif
+
+#endif /* ZCL_SERVICES_CHAIN_EVIDENCE_CONTROLLER_H */

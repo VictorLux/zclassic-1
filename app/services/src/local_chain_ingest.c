@@ -33,6 +33,7 @@
 #include "primitives/block.h"
 #include "script/script.h"
 #include "services/chain_advance.h"
+#include "services/chain_state_repository.h"
 #include "services/header_probe_service.h"
 #include "services/legacy_body_pull.h"
 #include "storage/chainstate_legacy_reader.h"
@@ -75,7 +76,7 @@ static struct {
     _Atomic int64_t blocks_total;
     _Atomic int64_t utxos_imported;
     _Atomic int64_t windows_verified;
-    _Atomic bool trust_prefix_verified;  /* T3.3: full prefix verified this boot */
+    _Atomic bool evidence_prefix_verified;  /* T3.3: full prefix verified this boot */
     _Atomic int64_t started_at;    /* unix seconds; 0 → never run */
     _Atomic int64_t finished_at;   /* unix seconds; 0 → in progress */
     int           health_id;
@@ -89,7 +90,7 @@ static struct {
     .blocks_total = 0,
     .utxos_imported = 0,
     .windows_verified = 0,
-    .trust_prefix_verified = false,
+    .evidence_prefix_verified = false,
     .started_at = 0,
     .finished_at = 0,
     .health_id = HEALTH_INVALID_ID,
@@ -188,20 +189,20 @@ static int count_legacy_block_files(const char *legacy_datadir)
     return n;
 }
 
-/* ── T1.3: Trust-mark cookie ─────────────────────────────────────
+/* ── T1.3: Evidence-cache cookie ─────────────────────────────────────
  *
  * After a successful phase-1 SHA3 window scan, persist a fingerprint
  * of every blk file (mtime + size) and the verified window count to
- * <our_datadir>/legacy_trust.cookie.  Next boot: if every blk file's
+ * <our_datadir>/legacy_evidence.cookie.  Next boot: if every blk file's
  * (mtime,size) is unchanged AND windows_count covers the full static
- * trust prefix, skip phase 1 entirely.
+ * evidence prefix, skip phase 1 entirely.
  *
  * Mismatch falls back to a full scan — the cookie never weakens
  * verification, only short-circuits it when the on-disk evidence
  * proves no work needs redoing. */
 
 #define LCI_COOKIE_SCHEMA 1
-#define LCI_COOKIE_NAME   "legacy_trust.cookie"
+#define LCI_COOKIE_NAME   "legacy_evidence.cookie"
 #define LCI_FINGERPRINT_NAME "chainstate_fingerprint.dat"
 #define LCI_FINGERPRINT_SCHEMA 1
 
@@ -330,7 +331,7 @@ static void chainstate_fingerprint_write(const char *our_datadir,
             fp->anchor_height, fp->utxos_count, sha3_hex);
 }
 
-static bool legacy_trust_cookie_path(char *out, size_t out_sz,
+static bool legacy_evidence_cookie_path(char *out, size_t out_sz,
                                       const char *our_datadir)
 {
     if (!our_datadir || !our_datadir[0]) return false;
@@ -338,14 +339,14 @@ static bool legacy_trust_cookie_path(char *out, size_t out_sz,
     return n > 0 && (size_t)n < out_sz;
 }
 
-/* Returns true iff the cookie at <our_datadir>/legacy_trust.cookie
+/* Returns true iff the cookie at <our_datadir>/legacy_evidence.cookie
  * proves a previous run already verified `g_sha3_windows_count` windows
  * of `legacy_datadir`'s blk files in their current on-disk state. */
-static bool legacy_trust_cookie_valid(const char *our_datadir,
+static bool legacy_evidence_cookie_valid(const char *our_datadir,
                                        const char *legacy_datadir)
 {
     char path[1024];
-    if (!legacy_trust_cookie_path(path, sizeof(path), our_datadir))
+    if (!legacy_evidence_cookie_path(path, sizeof(path), our_datadir))
         return false;
     FILE *f = fopen(path, "r");
     if (!f) return false;
@@ -434,12 +435,12 @@ static bool legacy_trust_cookie_valid(const char *our_datadir,
 
 /* Persist the cookie. Best-effort: a write failure logs a warning
  * but does not fail the ingest run (the data is already verified). */
-static void legacy_trust_cookie_write(const char *our_datadir,
+static void legacy_evidence_cookie_write(const char *our_datadir,
                                        const char *legacy_datadir,
                                        int file_count)
 {
     char path[1024], tmp[1024];
-    if (!legacy_trust_cookie_path(path, sizeof(path), our_datadir)) return;
+    if (!legacy_evidence_cookie_path(path, sizeof(path), our_datadir)) return;
     if (snprintf(tmp, sizeof(tmp), "%s.tmp", path) >= (int)sizeof(tmp))
         return;
 
@@ -777,8 +778,8 @@ static enum local_ingest_result phase1_parallel_verify(
 
 /* Walks the legacy datadir's blk files block-by-block and accumulates
  * SHA3 over each 1000-block window, comparing against g_sha3_windows[].
- * When g_sha3_windows_count == 0 (current placeholder), this is a
- * no-op trust-but-skip and returns LCI_OK.
+ * When g_sha3_windows_count == 0 (current placeholder), this verifier
+ * has no static window evidence to check and returns LCI_OK.
  *
  * The walk treats the on-disk layout as: each block is preceded by
  * 4 bytes network-magic + 4 bytes little-endian payload length, then
@@ -807,14 +808,14 @@ static enum local_ingest_result phase1_sha3_window_verify(
     /* T1.3: skip the SHA3 scan if a prior boot already verified the
      * current on-disk state. The cookie is mtime+size keyed per blk
      * file; any change forces a re-scan. */
-    if (!cfg->ignore_trust_cookie &&
-        legacy_trust_cookie_valid(our_datadir, cfg->legacy_datadir)) {
+    if (!cfg->ignore_evidence_cookie &&
+        legacy_evidence_cookie_valid(our_datadir, cfg->legacy_datadir)) {
         atomic_store(&g_state.windows_verified,
                      (int64_t)g_sha3_windows_count);
-        atomic_store(&g_state.trust_prefix_verified, true);
+        atomic_store(&g_state.evidence_prefix_verified, true);
         fprintf(stderr, // obs-ok:pre-existing-diagnostic
                 "[local_ingest] phase 1 SHA3 window verify SKIPPED "
-                "(trust cookie valid; %zu windows previously verified)\n",
+                "(evidence cookie valid; %zu windows previously verified)\n",
                 g_sha3_windows_count);
         return LCI_OK;
     }
@@ -855,8 +856,8 @@ static enum local_ingest_result phase1_sha3_window_verify(
                     int64_t verified_now =
                         atomic_load(&g_state.windows_verified);
                     if ((size_t)verified_now >= g_sha3_windows_count) {
-                        atomic_store(&g_state.trust_prefix_verified, true);
-                        legacy_trust_cookie_write(our_datadir,
+                        atomic_store(&g_state.evidence_prefix_verified, true);
+                        legacy_evidence_cookie_write(our_datadir,
                                                   cfg->legacy_datadir,
                                                   num_files);
                     }
@@ -958,8 +959,8 @@ static enum local_ingest_result phase1_sha3_window_verify(
                             "[local_ingest] phase1: all %zu windows verified "
                             "(blocks scanned=%" PRId64 ")\n",
                             g_sha3_windows_count, total_blocks);
-                    atomic_store(&g_state.trust_prefix_verified, true);
-                    legacy_trust_cookie_write(our_datadir,
+                    atomic_store(&g_state.evidence_prefix_verified, true);
+                    legacy_evidence_cookie_write(our_datadir,
                                               cfg->legacy_datadir,
                                               num_files);
                     return LCI_OK;
@@ -974,8 +975,8 @@ static enum local_ingest_result phase1_sha3_window_verify(
             " (table size=%zu) total blocks scanned=%" PRId64 "\n",
             verified, g_sha3_windows_count, total_blocks);
     if ((size_t)verified == g_sha3_windows_count) {
-        atomic_store(&g_state.trust_prefix_verified, true);
-        legacy_trust_cookie_write(our_datadir, cfg->legacy_datadir,
+        atomic_store(&g_state.evidence_prefix_verified, true);
+        legacy_evidence_cookie_write(our_datadir, cfg->legacy_datadir,
                                    num_files);
     }
     return LCI_OK;
@@ -984,12 +985,12 @@ static enum local_ingest_result phase1_sha3_window_verify(
 /* T3.3 accessors — exposed via services/local_chain_ingest.h so the
  * bg-validation service can skip historical heights covered by the
  * verified static SHA3 prefix. */
-bool local_chain_ingest_trust_prefix_verified(void)
+bool local_chain_ingest_evidence_prefix_verified(void)
 {
-    return atomic_load(&g_state.trust_prefix_verified);
+    return atomic_load(&g_state.evidence_prefix_verified);
 }
 
-int local_chain_ingest_trust_prefix_end_height(void)
+int local_chain_ingest_evidence_prefix_end_height(void)
 {
     if (g_sha3_windows_count == 0) return -1; // raw-return-ok: sentinel-no-compile-time-windows
     return (int)(g_sha3_windows_count * SHA3_WINDOW_SIZE) - 1;
@@ -1077,6 +1078,67 @@ struct fast_phase2_ctx {
     int64_t inserted;
     int errors;
 };
+
+static enum local_ingest_result phase2_commit_anchor_via_csr(
+    struct main_state *ms,
+    const struct uint256 *anchor_hash,
+    int anchor_height,
+    int64_t expected_utxos,
+    const char *reason)
+{
+    if (!ms || !anchor_hash) {
+        state_set_error("phase2: missing CSR anchor context");
+        LOG_RETURN(LCI_INTERNAL_ERROR, "local_ingest",
+                   "phase2: missing CSR anchor context");
+    }
+
+    struct block_index *anchor_bi =
+        block_map_find(&ms->map_block_index, anchor_hash);
+    if (!anchor_bi || !anchor_bi->phashBlock) {
+        state_set_error("phase2: verified anchor missing from block index");
+        LOG_RETURN(LCI_INTERNAL_ERROR, "local_ingest",
+                   "phase2: verified anchor h=%d missing from block index",
+                   anchor_height);
+    }
+    if (anchor_bi->nHeight != anchor_height) {
+        state_set_error("phase2: verified anchor height mismatch");
+        LOG_RETURN(LCI_INTERNAL_ERROR, "local_ingest",
+                   "phase2: verified anchor height mismatch index=%d expected=%d",
+                   anchor_bi->nHeight, anchor_height);
+    }
+
+    struct chain_state_rollback_authorization rollback_auth = {
+        .source = CSR_ROLLBACK_SOURCE_RESTORE,
+        .decision = POLICY_ALLOW,
+        .from_height = active_chain_height(&ms->chain_active),
+        .to_height = anchor_bi->nHeight,
+        .max_depth = INT64_MAX,
+        .evidence_class = "local_ingest_utxo_sha3_verified",
+        .reason = reason ? reason : "local_ingest.phase2_anchor",
+    };
+    struct chain_state_commit commit = {
+        .new_tip = anchor_bi,
+        .new_coins_best = *anchor_bi->phashBlock,
+        .expected_utxo_count = expected_utxos,
+        .update_header_tip = true,
+        .persist_coins_best = true,
+        .rollback_auth = &rollback_auth,
+        .wallet_scan_height = -1,
+        .reason = reason ? reason : "local_ingest.phase2_anchor",
+    };
+    enum csr_result rc = csr_commit_tip(csr_instance(), &commit);
+    if (rc != CSR_OK) {
+        char err[192];
+        snprintf(err, sizeof(err),
+                 "phase2: CSR anchor commit failed: %s",
+                 csr_result_name(rc));
+        state_set_error(err);
+        LOG_RETURN(LCI_INTERNAL_ERROR, "local_ingest", "%s", err);
+    }
+
+    return LCI_OK;
+}
+
 static bool phase2_fast_bulk_cb(const struct uss_record *r, void *vctx)
 {
     struct fast_phase2_ctx *c = vctx;
@@ -1101,6 +1163,7 @@ static bool phase2_fast_bulk_cb(const struct uss_record *r, void *vctx)
 
 static enum local_ingest_result phase2_chainstate_import(
     const struct local_chain_ingest_config *cfg,
+    struct main_state *ms,
     struct coins_view_cache *coins_tip,
     const char *our_datadir)
 {
@@ -1112,10 +1175,15 @@ static enum local_ingest_result phase2_chainstate_import(
         LOG_RETURN(LCI_INTERNAL_ERROR, "local_ingest",
                    "phase2: coins_tip is NULL");
     }
+    if (!ms) {
+        state_set_error("phase2: NULL main_state");
+        LOG_RETURN(LCI_INTERNAL_ERROR, "local_ingest",
+                   "phase2: main_state is NULL");
+    }
 
     /* T3.2: skip phase 2 entirely if coins.db already contains a UTXO
      * set whose SHA3 matches the persisted fingerprint. */
-    if (!cfg->ignore_trust_cookie) {
+    if (!cfg->ignore_evidence_cookie) {
         struct chainstate_fingerprint fp;
         if (chainstate_fingerprint_load(our_datadir, &fp)) {
             struct coins_view_sqlite *cvs =
@@ -1128,13 +1196,15 @@ static enum local_ingest_result phase2_chainstate_import(
                     memcmp(computed, fp.sha3_utxo_hash, 32) == 0) {
                     atomic_store(&g_state.utxos_imported,
                                  (int64_t)count);
-                    /* Make sure the cache's best_block reflects the
-                     * stored anchor so subsequent phase 3 sees the
-                     * right tip. */
                     struct uint256 anchor_hash;
                     memcpy(anchor_hash.data, fp.anchor_block_hash, 32);
-                    coins_view_cache_set_best_block(coins_tip,
-                                                     &anchor_hash);
+                    enum local_ingest_result cr =
+                        phase2_commit_anchor_via_csr(
+                            ms, &anchor_hash, fp.anchor_height,
+                            (int64_t)count,
+                            "local_ingest.fingerprint_anchor");
+                    if (cr != LCI_OK)
+                        return cr;
                     fprintf(stderr, // obs-ok:pre-existing-diagnostic
                             "[local_ingest] phase 2 chainstate import "
                             "SKIPPED (fingerprint match: anchor_h=%d "
@@ -1158,7 +1228,7 @@ static enum local_ingest_result phase2_chainstate_import(
      * bulk-INSERT into coins.db, and skip the chainstate iteration
      * entirely. The full-body SHA3 verify happens inside uss_open()
      * — the bind to the compile-time anchor proves the bytes match
-     * what was committed to at build time, so trust is preserved.
+     * what was committed to at build time, so evidence is preserved.
      *
      * The chainstate path remains as fallback when no sidecar is
      * present or its hash doesn't match (e.g. user generated the
@@ -1241,8 +1311,13 @@ static enum local_ingest_result phase2_chainstate_import(
                     struct uint256 anchor_hash;
                     memcpy(anchor_hash.data,
                            anchor_pre->block_hash, 32);
-                    coins_view_cache_set_best_block(coins_tip,
-                                                    &anchor_hash);
+                    enum local_ingest_result cr =
+                        phase2_commit_anchor_via_csr(
+                            ms, &anchor_hash, anchor_pre->height,
+                            inserted,
+                            "local_ingest.sidecar_anchor");
+                    if (cr != LCI_OK)
+                        return cr;
                     fprintf(stderr, // obs-ok:pre-existing-diagnostic
                             "[local_ingest] phase 2 FAST PATH complete: "
                             "%" PRId64 " UTXOs from sidecar (~1 s "
@@ -1306,11 +1381,8 @@ static enum local_ingest_result phase2_chainstate_import(
     }
     atomic_store(&g_state.utxos_imported, ctx.vouts);
 
-    /* Bookkeeping: tag the coins cache's best block to the anchor hash
-     * so the next chain_advance treats this state as "tip at anchor". */
     struct uint256 anchor_hash;
     memcpy(anchor_hash.data, anchor->block_hash, 32);
-    coins_view_cache_set_best_block(coins_tip, &anchor_hash);
 
     /* Verify imported counts against the anchor.  This is a cheap
      * sanity check before we attempt the expensive SHA3-set verify
@@ -1378,30 +1450,44 @@ static enum local_ingest_result phase2_chainstate_import(
         (computed_count == anchor->utxo_count) &&
         ((int64_t)ctx.total_value_sat == anchor->total_supply);
 
-    if (shape_matches_anchor) {
-        if (memcmp(computed_sha3, anchor->sha3_hash, 32) == 0) {
-            event_emitf(EV_UTXO_CHECKPOINT_PASS, 0,
-                        "height=%d count=%" PRIu64,
-                        anchor->height, computed_count);
-            fprintf(stderr,
-                    "[local_ingest] phase2: SHA3 anchor verified at h=%d\n",
-                    anchor->height);
-        } else {
-            char expected_hex[65];
-            for (int i = 0; i < 32; i++)
-                snprintf(expected_hex + 2 * i, 3, "%02x",
-                         anchor->sha3_hash[i]);
-            expected_hex[64] = '\0';
-            event_emitf(EV_UTXO_CHECKPOINT_FAIL, 0,
-                        "height=%d expected=%s got=%s",
-                        anchor->height, expected_hex, sha3_hex);
-            state_set_error("phase2: SHA3 anchor mismatch");
-            LOG_RETURN(LCI_CHAINSTATE_MISMATCH, "local_ingest",
-                       "phase2: SHA3 anchor mismatch at h=%d "
-                       "expected=%s got=%s",
-                       anchor->height, expected_hex, sha3_hex);
-        }
+    if (!shape_matches_anchor) {
+        state_set_error("phase2: imported chainstate shape does not match anchor");
+        LOG_RETURN(LCI_CHAINSTATE_MISMATCH, "local_ingest",
+                   "phase2: imported chainstate shape does not match anchor "
+                   "(count=%" PRIu64 "/%" PRIu64 " total=%" PRId64 "/%" PRId64 ")",
+                   computed_count, anchor->utxo_count,
+                   ctx.total_value_sat, anchor->total_supply);
     }
+
+    if (memcmp(computed_sha3, anchor->sha3_hash, 32) == 0) {
+        event_emitf(EV_UTXO_CHECKPOINT_PASS, 0,
+                    "height=%d count=%" PRIu64,
+                    anchor->height, computed_count);
+        fprintf(stderr,
+                "[local_ingest] phase2: SHA3 anchor verified at h=%d\n",
+                anchor->height);
+    } else {
+        char expected_hex[65];
+        for (int i = 0; i < 32; i++)
+            snprintf(expected_hex + 2 * i, 3, "%02x",
+                     anchor->sha3_hash[i]);
+        expected_hex[64] = '\0';
+        event_emitf(EV_UTXO_CHECKPOINT_FAIL, 0,
+                    "height=%d expected=%s got=%s",
+                    anchor->height, expected_hex, sha3_hex);
+        state_set_error("phase2: SHA3 anchor mismatch");
+        LOG_RETURN(LCI_CHAINSTATE_MISMATCH, "local_ingest",
+                   "phase2: SHA3 anchor mismatch at h=%d "
+                   "expected=%s got=%s",
+                   anchor->height, expected_hex, sha3_hex);
+    }
+
+    enum local_ingest_result cr =
+        phase2_commit_anchor_via_csr(ms, &anchor_hash, anchor->height,
+                                     (int64_t)computed_count,
+                                     "local_ingest.chainstate_anchor");
+    if (cr != LCI_OK)
+        return cr;
 
     /* T3.2: persist fingerprint so next boot can skip phase 2.  Best-
      * effort — write failure is non-fatal. */
@@ -1616,7 +1702,7 @@ enum local_ingest_result local_chain_ingest_run(
         return r;
     }
 
-    r = phase2_chainstate_import(cfg, coins_tip, our_datadir);
+    r = phase2_chainstate_import(cfg, ms, coins_tip, our_datadir);
     if (r != LCI_OK) {
         atomic_store(&g_state.result, (int)r);
         atomic_store(&g_state.finished_at, (int64_t)time(NULL));

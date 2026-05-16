@@ -34,6 +34,8 @@ enum boot_recovery_action {
     BOOT_RECOVER_REIMPORT,     /* LevelDB chainstate exists, reimport */
     BOOT_RECOVER_WIPE_WAIT,    /* wipe UTXOs, wait for P2P snapshot */
     BOOT_RECOVER_RESET_CHAIN,  /* coins behind chain, reset chain tip */
+    BOOT_RECOVER_RESET_COINS_TO_CHAIN_TIP,
+    BOOT_RECOVER_RESET_COINS_TO_GENESIS,
 };
 
 struct boot_validation_result {

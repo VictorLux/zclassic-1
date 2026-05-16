@@ -66,6 +66,8 @@ start_ns=$(date +%s%N)
 ./zclassic23 \
     -datadir="$TMP" \
     -importfromlegacy="$LEGACY" \
+    -bodypull-from-legacy="$LEGACY" \
+    -nofilesync \
     -rpcport="$RPC_PORT" \
     -port="$P2P_PORT" \
     -nobgvalidation \
@@ -88,9 +90,17 @@ while :; do
         tail -20 "$TMP/node.stderr" | sed 's/^/        /'
         exit 1
     fi
-    H_raw=$(./tools/zcl-rpc -rpcport="$RPC_PORT" getblockcount 2>/dev/null || echo "")
-    # zcl-rpc returns the raw integer (not JSON-wrapped). Tolerate both.
-    H=$(echo "$H_raw" | tr -dc '0-9' | head -c 12)
+    H_raw=$(ZCL_RPCPORT="$RPC_PORT" ZCL_DATADIR="$TMP" ./tools/zcl-rpc getblockcount 2>/dev/null || echo "")
+    H=$(printf '%s\n' "$H_raw" | python3 -c '
+import json, sys
+s = sys.stdin.read().strip()
+try:
+    v = json.loads(s)
+    r = v.get("result")
+    print(int(r) if isinstance(r, int) else 0)
+except Exception:
+    print(int(s) if s.isdigit() else 0)
+')
     : "${H:=0}"
     printf "\r  elapsed=%5.1fs  height=%d  " "$(awk "BEGIN{print $elapsed_ms/1000}")" "$H"
     if [ "$H" -ge "$MIN_HEIGHT" ]; then
@@ -107,26 +117,26 @@ echo "PASS: height=$H >= $MIN_HEIGHT in $(awk "BEGIN{print $elapsed_ms/1000}") s
 # Surface a few diagnostic bits for the operator.
 echo
 echo "  zcl_status snapshot:"
-./tools/zcl-rpc -rpcport="$RPC_PORT" status 2>/dev/null | head -40 | sed 's/^/    /' || true
+ZCL_RPCPORT="$RPC_PORT" ZCL_DATADIR="$TMP" ./tools/zcl-rpc status 2>/dev/null | head -40 | sed 's/^/    /' || true
 
 echo
 echo "  local_chain_ingest dump:"
-./tools/zcl-rpc -rpcport="$RPC_PORT" dumpstate '"local_ingest"' 2>/dev/null \
+ZCL_RPCPORT="$RPC_PORT" ZCL_DATADIR="$TMP" ./tools/zcl-rpc dumpstate '"local_ingest"' 2>/dev/null \
     | head -20 | sed 's/^/    /' || true
 
 echo
 echo "  header_probe dump:"
-./tools/zcl-rpc -rpcport="$RPC_PORT" dumpstate '"header_probe"' 2>/dev/null \
+ZCL_RPCPORT="$RPC_PORT" ZCL_DATADIR="$TMP" ./tools/zcl-rpc dumpstate '"header_probe"' 2>/dev/null \
     | head -20 | sed 's/^/    /' || true
 
 echo
 echo "  rolling_anchor dump:"
-./tools/zcl-rpc -rpcport="$RPC_PORT" dumpstate '"rolling_anchor"' 2>/dev/null \
+ZCL_RPCPORT="$RPC_PORT" ZCL_DATADIR="$TMP" ./tools/zcl-rpc dumpstate '"rolling_anchor"' 2>/dev/null \
     | head -20 | sed 's/^/    /' || true
 
 echo
 echo "  oracle_policy dump:"
-./tools/zcl-rpc -rpcport="$RPC_PORT" dumpstate '"oracle_policy"' 2>/dev/null \
+ZCL_RPCPORT="$RPC_PORT" ZCL_DATADIR="$TMP" ./tools/zcl-rpc dumpstate '"oracle_policy"' 2>/dev/null \
     | head -20 | sed 's/^/    /' || true
 
 kill -TERM "$NODE_PID" 2>/dev/null || true

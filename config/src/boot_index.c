@@ -96,6 +96,7 @@ bool fast_rebuild_chainstate(struct coins_view_sqlite *cvs,
                               struct coins_view_cache *cvtip,
                               const char *datadir)
 {
+    (void)cvtip;
     (void)datadir;
     if (!cvs->db) return false;
 
@@ -116,49 +117,12 @@ bool fast_rebuild_chainstate(struct coins_view_sqlite *cvs,
     printf("SQLite UTXO set: %lld UTXOs (canonical)\n", (long long)total);
 
     struct uint256 best;
-    if (!coins_view_sqlite_get_best_block(cvs, &best) || uint256_is_null(&best)) {
-        sqlite3_stmt *th = NULL;
-        if (sqlite3_prepare_v2(cvs->db,
-            "SELECT value FROM node_state WHERE key='tip_hash'",
-            -1, &th, NULL) != SQLITE_OK || !th) {
-            fprintf(stderr, "fast_rebuild_chainstate: tip_hash prepare failed: %s\n",
-                    sqlite3_errmsg(cvs->db));
-            return false;
-        }
-        int th_rc = sqlite3_step(th);
-        if (th_rc == SQLITE_ROW) {
-            const void *h = sqlite3_column_blob(th, 0);
-            if (h && sqlite3_column_bytes(th, 0) >= 32) {
-                memcpy(best.data, h, 32);
-                sqlite3_stmt *set = NULL;
-                if (sqlite3_prepare_v2(cvs->db,
-                    "INSERT OR REPLACE INTO node_state(key,value)"
-                    " VALUES('coins_best_block',?)", -1, &set, NULL) != SQLITE_OK || !set) {
-                    sqlite3_finalize(th);
-                    fprintf(stderr, "fast_rebuild_chainstate: coins_best_block prepare failed: %s\n",
-                            sqlite3_errmsg(cvs->db));
-                    return false;
-                }
-                if (sqlite3_bind_blob(set, 1, best.data, 32, SQLITE_STATIC) != SQLITE_OK ||
-                    sqlite3_step(set) != SQLITE_DONE) {
-                    sqlite3_finalize(set);
-                    sqlite3_finalize(th);
-                    fprintf(stderr, "fast_rebuild_chainstate: coins_best_block write failed: %s\n",
-                            sqlite3_errmsg(cvs->db));
-                    return false;
-                }
-                sqlite3_finalize(set);
-            }
-        } else if (th_rc != SQLITE_DONE) {
-            sqlite3_finalize(th);
-            fprintf(stderr, "fast_rebuild_chainstate: tip_hash read failed: %s\n",
-                    sqlite3_errmsg(cvs->db));
-            return false;
-        }
-        sqlite3_finalize(th);
-        if (uint256_is_null(&best))
-            return false;
-        coins_view_cache_set_best_block(cvtip, &best);
+    if (!coins_view_sqlite_get_best_block(cvs, &best) ||
+        uint256_is_null(&best)) {
+        fprintf(stderr,
+                "fast_rebuild_chainstate: coins_best_block missing; "
+                "refusing legacy tip_hash fallback\n");
+        return false;
     }
 
     return true;
@@ -430,10 +394,10 @@ void *backfill_addresses_thread(void *arg)
  * nChainTx > 0 to connect blocks). Without this, downloaded
  * blocks sit unused on disk while P2P re-downloads them. */
 
-/* Helper: create a block_index entry directly from a parsed header.
- * Skips PoW/equihash validation — blocks from disk are trusted
- * and verified later via SHA3 UTXO checkpoint. This is 1000x
- * faster than accept_block_header (no equihash solve check). */
+    /* Helper: create a block_index entry directly from a parsed header.
+     * Skips PoW/equihash validation here; local disk blocks are checked
+     * later against the SHA3 UTXO checkpoint. This is 1000x faster than
+     * accept_block_header (no equihash solve check). */
 static struct block_index *create_block_index_fast(
     struct main_state *ms, const struct block_header *hdr,
     const struct uint256 *hash)
@@ -488,6 +452,177 @@ static struct block_index *create_block_index_fast(
     return pindex;
 }
 
+struct boot_index_recompute_entry {
+    struct block_index *bi;
+    unsigned char state; /* 0 unknown, 1 visiting, 2 fixed, 3 unreachable */
+};
+
+static int boot_index_cmp_entry_ptr(const void *a, const void *b)
+{
+    const struct boot_index_recompute_entry *ea = a;
+    const struct boot_index_recompute_entry *eb = b;
+    if (ea->bi < eb->bi) return -1;
+    if (ea->bi > eb->bi) return 1;
+    return 0;
+}
+
+static struct boot_index_recompute_entry *boot_index_find_entry(
+    struct boot_index_recompute_entry *entries, size_t n,
+    const struct block_index *bi)
+{
+    size_t lo = 0, hi = n;
+    while (lo < hi) {
+        size_t mid = lo + (hi - lo) / 2;
+        if (entries[mid].bi < bi)
+            lo = mid + 1;
+        else
+            hi = mid;
+    }
+    if (lo < n && entries[lo].bi == bi)
+        return &entries[lo];
+    return NULL;
+}
+
+/* Recompute every reachable block's height and cumulative metadata from the
+ * genesis pprev chain.  This deliberately ignores existing height labels:
+ * after stale flat-cache or SQLite recovery a block can have a locally
+ * consistent but globally wrong height, which keeps header sync stuck. */
+static int recompute_index_from_genesis(struct main_state *ms,
+                                        const struct chain_params *params)
+{
+    if (!ms || !params || ms->map_block_index.size == 0)
+        return 0;
+
+    size_t cap = ms->map_block_index.size;
+    struct boot_index_recompute_entry *entries =
+        calloc(cap, sizeof(*entries));
+    if (!entries)
+        return 0;
+
+    size_t n = 0, iter = 0;
+    struct block_index *bi;
+    while (block_map_next(&ms->map_block_index, &iter, NULL, &bi)) {
+        if (bi && bi->phashBlock && n < cap)
+            entries[n++].bi = bi;
+    }
+    qsort(entries, n, sizeof(*entries), boot_index_cmp_entry_ptr);
+
+    struct boot_index_recompute_entry *genesis = NULL;
+    for (size_t i = 0; i < n; i++) {
+        if (uint256_eq(entries[i].bi->phashBlock,
+                       &params->consensus.hashGenesisBlock)) {
+            genesis = &entries[i];
+            break;
+        }
+    }
+    if (!genesis) {
+        free(entries);
+        return 0;
+    }
+
+    genesis->state = 2;
+    genesis->bi->nHeight = 0;
+    genesis->bi->nChainWork = GetBlockProof(genesis->bi);
+    if (genesis->bi->nChainTx == 0)
+        genesis->bi->nChainTx = genesis->bi->nTx > 0 ? genesis->bi->nTx : 1;
+    block_index_build_skip(genesis->bi);
+
+    size_t stack_cap = 4096;
+    struct boot_index_recompute_entry **stack =
+        malloc(stack_cap * sizeof(*stack));
+    if (!stack) {
+        free(entries);
+        return 0;
+    }
+
+    int heights_fixed = 0, work_fixed = 0, tx_fixed = 0;
+    int reachable = 1, unresolved = 0, cycles = 0;
+
+    for (size_t i = 0; i < n; i++) {
+        struct boot_index_recompute_entry *cur = &entries[i];
+        if (cur->state == 2)
+            continue;
+
+        size_t depth = 0;
+        bool ok = false;
+        while (cur) {
+            if (cur->state == 2) {
+                ok = true;
+                break;
+            }
+            if (cur->state == 3)
+                break;
+            if (cur->state == 1) {
+                cycles++;
+                break;
+            }
+            cur->state = 1;
+            if (depth >= stack_cap) {
+                size_t new_cap = stack_cap * 2;
+                struct boot_index_recompute_entry **tmp =
+                    realloc(stack, new_cap * sizeof(*stack));
+                if (!tmp)
+                    break;
+                stack = tmp;
+                stack_cap = new_cap;
+            }
+            stack[depth++] = cur;
+            if (!cur->bi->pprev)
+                break;
+            cur = boot_index_find_entry(entries, n, cur->bi->pprev);
+        }
+
+        if (ok) {
+            for (size_t ri = depth; ri > 0; ri--) {
+                struct block_index *fix = stack[ri - 1]->bi;
+                struct block_index *prev = fix->pprev;
+                int expected_h = prev ? prev->nHeight + 1 : 0;
+                if (fix->nHeight != expected_h) {
+                    fix->nHeight = expected_h;
+                    heights_fixed++;
+                }
+                block_index_build_skip(fix);
+
+                struct arith_uint256 proof = GetBlockProof(fix);
+                struct arith_uint256 expected_work;
+                if (prev)
+                    arith_uint256_add(&expected_work,
+                                      &prev->nChainWork, &proof);
+                else
+                    expected_work = proof;
+                if (arith_uint256_compare(&fix->nChainWork,
+                                          &expected_work) != 0) {
+                    fix->nChainWork = expected_work;
+                    work_fixed++;
+                }
+
+                unsigned int ntx = fix->nTx > 0 ? fix->nTx : 1;
+                unsigned int expected_tx =
+                    prev ? prev->nChainTx + ntx : ntx;
+                if (fix->nChainTx != expected_tx) {
+                    fix->nChainTx = expected_tx;
+                    tx_fixed++;
+                }
+                stack[ri - 1]->state = 2;
+                reachable++;
+            }
+        } else {
+            unresolved += (int)depth;
+            for (size_t ri = 0; ri < depth; ri++)
+                stack[ri]->state = 3;
+        }
+    }
+
+    printf("  ancestry recompute: reachable=%d heights=%d chain_work=%d "
+           "chain_tx=%d unresolved=%d cycles=%d\n",
+           reachable, heights_fixed, work_fixed, tx_fixed,
+           unresolved, cycles);
+
+    free(stack);
+    free(entries);
+    return heights_fixed + work_fixed + tx_fixed;
+}
+
 /* Helper: scan one block file, return number of blocks marked.
  * If params != NULL, creates block_index entries for unknown blocks
  * using fast path (no equihash verification — SHA3 checkpoint
@@ -498,6 +633,7 @@ static int scan_one_block_file(struct main_state *ms,
                                 int *created_out)
 {
     int marked = 0, created = 0, consec_errors = 0, skipped = 0;
+    int header_fixed = 0;
     disk_block_io_lock();
     FILE *f = fopen(filepath, "rb");
     if (!f) {
@@ -612,15 +748,25 @@ static int scan_one_block_file(struct main_state *ms,
         struct block_index *bi = block_map_find(&ms->map_block_index, &hash);
 
         if (!bi && params) {
-            /* Block not in index — create directly (no equihash check).
-             * Blocks from disk are trusted; SHA3 UTXO checkpoint at
-             * height 3,056,758 validates the entire chain integrity.
+            /* Block not in index - create directly (no equihash check).
+             * Local disk blocks are reconciled by the SHA3 UTXO checkpoint
+             * at height 3,056,758.
              * This is ~1000x faster than accept_block_header. */
             bi = create_block_index_fast(ms, &bhdr, &hash);
             if (bi) created++;
         }
 
         if (bi) {
+            if (bi->nVersion == 0 || bi->nTime == 0 || bi->nBits == 0) {
+                bi->nVersion = bhdr.nVersion;
+                bi->hashMerkleRoot = bhdr.hashMerkleRoot;
+                bi->hashFinalSaplingRoot = bhdr.hashFinalSaplingRoot;
+                bi->nTime = bhdr.nTime;
+                bi->nBits = bhdr.nBits;
+                bi->nNonce = bhdr.nNonce;
+                header_fixed++;
+            }
+
             /* Fix missing pprev link (block was created out of order
              * in a previous pass — its pprev is now in the map) */
             if (!bi->pprev && bi->nHeight == 0 && params) {
@@ -667,11 +813,12 @@ static int scan_one_block_file(struct main_state *ms,
     fclose(f);
     disk_block_io_unlock();
     if (created_out) *created_out += created;
-    if (marked > 0 || created > 0)
-        printf("  blk%05d.dat: %d marked, %d created, %d skipped (%ld MB)\n",
-               file_idx, marked, created, skipped,
+    if (marked > 0 || created > 0 || header_fixed > 0)
+        printf("  blk%05d.dat: %d marked, %d created, %d headers fixed, "
+               "%d skipped (%ld MB)\n",
+               file_idx, marked, created, header_fixed, skipped,
                file_size / (1024 * 1024));
-    return marked;
+    return marked + header_fixed;
 }
 
 /* ── Post-scan pprev resolution from disk ────────────────────── */
@@ -917,6 +1064,9 @@ int scan_block_files_mark_data(struct main_state *ms, const char *datadir,
             fflush(stdout);
         }
     }
+
+    if (marked > 0 && params)
+        recompute_index_from_genesis(ms, params);
 
     /* Propagate nChainTx along the chain. This is REQUIRED for
      * find_most_work_chain to consider these blocks as candidates.
@@ -1175,4 +1325,3 @@ int propagate_nchaintx(struct main_state *ms)
     free(sorted);
     return total_propagated;
 }
-

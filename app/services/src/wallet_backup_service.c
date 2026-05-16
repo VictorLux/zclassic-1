@@ -333,7 +333,7 @@ bool wallet_backup_run_once(const char *backup_dir,
     /* Round-trip verification: reopen the backup file read-only,
      * count the wallet_keys rows, and compare against the source.
      * If the counts differ the file is left on disk but we return
-     * false so the caller knows not to trust it. */
+     * false so the caller knows the output is not usable. */
     int64_t src_key_count = wbs_count_rows(db->db, "wallet_keys");
     int64_t dst_key_count = -1;
     {

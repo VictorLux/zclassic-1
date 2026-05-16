@@ -80,7 +80,7 @@ bool process_new_block(struct validation_state *state,
  * Caller MUST clear back to 0 after the loop. Crash safety is still
  * provided by coins.db's per-block commit (at-tip kill-9 invariant).
  *
- * This is the dominant per-block cost after assume_valid trust-mode
+ * This is the dominant per-block cost after defer_proof_validation_below evidence-mode
  * strips ECDSA + Groth16 + Ed25519. Phase 1 of fast-sync stalled
  * here; Phase 3 unblocks the throughput. */
 extern _Atomic int g_body_pull_active;

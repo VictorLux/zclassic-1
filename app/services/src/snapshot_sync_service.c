@@ -8,7 +8,7 @@
  *   Phase 2: SHA3-256 over all UTXOs in canonical order
  *
  * Uses ActiveRecord models, shared node_db connection with turbo
- * mode, batch COMMIT every 100K rows.
+ * mode, batch COMMIT every SNAPSYNC_BATCH_COMMIT_ROWS rows.
  *
  * State machine: IDLE → NEGOTIATING → RECEIVING → VERIFYING → COMPLETE */
 
@@ -16,7 +16,8 @@
 #include "services/chain_restore_service.h"
 #include "services/chain_state_repository.h"
 #include "services/chain_tip.h"
-#include "services/recovery_policy.h"
+#include "services/snapshot_manifest_v2.h"
+#include "services/chain_evidence_controller.h"
 #include "models/db_txn.h"
 #include "chain/chain.h"
 #include "core/serialize.h"
@@ -31,17 +32,23 @@
 #include "net/flyclient.h"
 #include "net/net.h"
 #include "core/random.h"
+#include "core/uint256.h"
 #include "crypto/sha3.h"
 #include "event/event.h"
 #include "config/runtime.h"
+#include "rpc/legacy_chain_oracle.h"
 #include "util/trace.h"
 #include "util/ar_step_readonly.h"
 #include "util/log_macros.h"
 #include "util/safe_alloc.h"
 #include "validation/main_state.h"
 #include "validation/contextual_check_tx.h"
+#include "validation/main_constants.h"
+#include "validation/sync_evidence_policy.h"
 #include <string.h>
+#include <strings.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <sys/time.h>
 #include <pthread.h>
 
@@ -84,11 +91,78 @@ void snapsync_global_ensure_init(struct node_db *ndb)
  * but snapshot sync is I/O-bound anyway. */
 #define SNAPSYNC_BATCH_COMMIT_ROWS 25000
 
+#define SNAPSYNC_STAGING_TABLE "snapshot_staging_utxos"
+#define SNAPSYNC_STAGING_PHASE_KEY "snapshot_staging_phase"
+#define SNAPSYNC_STAGING_LAST_DISCARD_KEY "snapshot_staging_last_discard"
+#define SNAPSYNC_PHASE_CHUNK_RECEIVE "chunk_receive"
+#define SNAPSYNC_PHASE_SNAPSHOT_VERIFY "snapshot_verify"
+#define SNAPSYNC_PHASE_ATOMIC_ACTIVATE "atomic_activate"
+
 static struct db_service *snapsync_db_service(
     const struct snapshot_sync_service *svc);
 static bool snapsync_run_write(struct snapshot_sync_service *svc,
                                db_service_write_fn fn,
                                void *ctx);
+
+static enum snapsync_offer_result snapsync_offer_result_from_manifest(
+    enum snapshot_manifest_v2_result result)
+{
+    switch (result) {
+    case SNAPSHOT_MANIFEST_V2_OK:
+        return SNAPSYNC_OFFER_ACCEPTED;
+    case SNAPSHOT_MANIFEST_V2_RANGE:
+        return SNAPSYNC_OFFER_REJECTED_RANGE;
+    case SNAPSHOT_MANIFEST_V2_STALE_SCHEMA:
+        return SNAPSYNC_OFFER_REJECTED_STALE_SCHEMA;
+    case SNAPSHOT_MANIFEST_V2_UNFINAL:
+        return SNAPSYNC_OFFER_REJECTED_UNFINAL;
+    case SNAPSHOT_MANIFEST_V2_WEAK_WORK:
+        return SNAPSYNC_OFFER_REJECTED_WEAK_WORK;
+    case SNAPSHOT_MANIFEST_V2_NO_MMR:
+    case SNAPSHOT_MANIFEST_V2_NO_MMB:
+        return SNAPSYNC_OFFER_REJECTED_NO_MMR;
+    case SNAPSHOT_MANIFEST_V2_NOT_AHEAD:
+        return SNAPSYNC_OFFER_REJECTED_NOT_AHEAD;
+    case SNAPSHOT_MANIFEST_V2_NULL_ARG:
+    case SNAPSHOT_MANIFEST_V2_TRUNCATED:
+    case SNAPSHOT_MANIFEST_V2_TRAILING_BYTES:
+    default:
+        return SNAPSYNC_OFFER_REJECTED_PARSE;
+    }
+}
+
+static void snapsync_manifest_from_params(struct snapshot_manifest_v2 *m,
+                                          const struct snapshot_offer_params *p)
+{
+    memset(m, 0, sizeof(*m));
+    m->height = p->height;
+    memcpy(m->block_hash, p->block_hash, 32);
+    memcpy(m->utxo_root, p->utxo_root, 32);
+    memcpy(m->mmr_root, p->mmr_root, 32);
+    memcpy(m->mmb_root, p->mmb_root, 32);
+    memcpy(m->chain_work, p->chain_work, 32);
+    m->num_utxos = p->num_utxos;
+    m->total_bytes = p->total_bytes;
+    m->protocol_version = p->protocol_version;
+    m->snapshot_schema_version = p->snapshot_schema_version;
+    m->peer_tip_height = p->peer_tip_height;
+}
+
+static void snapsync_params_from_manifest(struct snapshot_offer_params *p,
+                                          const struct snapshot_manifest_v2 *m)
+{
+    p->height = m->height;
+    memcpy(p->block_hash, m->block_hash, 32);
+    memcpy(p->utxo_root, m->utxo_root, 32);
+    memcpy(p->mmr_root, m->mmr_root, 32);
+    memcpy(p->mmb_root, m->mmb_root, 32);
+    memcpy(p->chain_work, m->chain_work, 32);
+    p->num_utxos = m->num_utxos;
+    p->total_bytes = m->total_bytes;
+    p->protocol_version = m->protocol_version;
+    p->snapshot_schema_version = m->snapshot_schema_version;
+    p->peer_tip_height = m->peer_tip_height;
+}
 
 struct snapsync_apply_chunk_ctx {
     struct snapshot_sync_service *svc;
@@ -101,6 +175,212 @@ struct snapsync_finalize_ctx {
     struct snapshot_sync_service *svc;
     bool ok;
 };
+
+static void snapsync_mark_failed(struct snapshot_sync_service *svc,
+                                 const char *state_reason)
+{
+    if (!svc)
+        return;
+    snapsync_service_lock();
+    svc->state = SNAPSYNC_FAILED;
+    snapsync_set_state(SNAPSYNC_FAILED,
+                       state_reason ? state_reason : "snapshot failed");
+    snapsync_service_unlock();
+}
+
+static bool snapsync_discard_staging(struct node_db *ndb, const char *reason)
+{
+    if (!ndb || !ndb->open)
+        return false;
+    bool ok = node_db_exec(ndb, "DELETE FROM " SNAPSYNC_STAGING_TABLE);
+    ok &= node_db_exec(ndb,
+                       "DELETE FROM node_state WHERE key LIKE 'snapshot_staging_%'");
+    if (reason && *reason) {
+        ok &= node_db_state_set(ndb, SNAPSYNC_STAGING_LAST_DISCARD_KEY,
+                                reason, strlen(reason));
+    }
+    return ok;
+}
+
+static bool snapsync_discard_staging_txn(struct node_db *ndb,
+                                         const char *label,
+                                         const char *reason)
+{
+    if (!ndb || !ndb->open)
+        return false;
+    DB_TXN_SCOPE(txn, ndb, label ? label : "snapsync.discard_staging");
+    if (!txn)
+        return false;
+    if (!snapsync_discard_staging(ndb, reason))
+        return false;
+    return db_txn_commit(txn);
+}
+
+static bool snapsync_finalize_fail(struct snapsync_finalize_ctx *finalize,
+                                   struct node_db *ndb,
+                                   struct snapshot_sync_service *svc,
+                                   uint32_t peer_id,
+                                   const char *reason,
+                                   const char *state_reason)
+{
+    const char *r = reason ? reason : "unknown";
+
+    if (ndb && ndb->open) {
+        bool discarded =
+            snapsync_discard_staging_txn(ndb, "snapsync.finalize_fail", r);
+        event_emitf(EV_SNAPSYNC_VERIFIED, peer_id,
+                    "snapshot=FAILED reason=%s staging_discarded=%s",
+                    r, discarded ? "true" : "false");
+    } else {
+        event_emitf(EV_SNAPSYNC_VERIFIED, peer_id,
+                    "snapshot=FAILED reason=%s staging_discarded=false",
+                    r);
+    }
+    snapsync_mark_failed(svc, state_reason);
+    if (finalize)
+        finalize->ok = false;
+    return false;
+}
+
+static bool snapsync_set_staging_phase(struct node_db *ndb, const char *phase)
+{
+    if (!ndb || !ndb->open || !phase || !*phase)
+        return false;
+    return node_db_state_set(ndb, SNAPSYNC_STAGING_PHASE_KEY,
+                             phase, strlen(phase));
+}
+
+static bool snapsync_discard_staging_write(struct node_db *ndb, void *ctx)
+{
+    return snapsync_discard_staging(ndb, (const char *)ctx);
+}
+
+static bool snapsync_insert_staging_raw(struct node_db *ndb,
+                                        const struct db_utxo *u)
+{
+    sqlite3_stmt *s;
+
+    if (!ndb || !ndb->stmt_snapshot_staging_insert || !u)
+        return false;
+    s = ndb->stmt_snapshot_staging_insert;
+    sqlite3_reset(s);
+    sqlite3_clear_bindings(s);
+    sqlite3_bind_blob(s, 1, u->txid, 32, SQLITE_STATIC);
+    sqlite3_bind_int(s, 2, (int)u->vout);
+    sqlite3_bind_int64(s, 3, u->value);
+    sqlite3_bind_blob(s, 4, u->script, (int)u->script_len, SQLITE_STATIC);
+    sqlite3_bind_int(s, 5, (int)u->script_type);
+    if (u->has_address)
+        sqlite3_bind_blob(s, 6, u->address_hash, 20, SQLITE_STATIC);
+    else
+        sqlite3_bind_null(s, 6);
+    sqlite3_bind_int(s, 7, u->height);
+    sqlite3_bind_int(s, 8, u->is_coinbase ? 1 : 0);
+    return sqlite3_step(s) == SQLITE_DONE;  // raw-sql-ok: snapshot-staging-prepared-insert
+}
+
+static int64_t snapsync_staging_count(struct node_db *ndb)
+{
+    sqlite3_stmt *st = NULL;
+    int64_t result = -1;
+
+    if (!ndb || !ndb->open || !ndb->db)
+        return -1;
+    if (sqlite3_prepare_v2(ndb->db,
+            "SELECT COUNT(*) FROM " SNAPSYNC_STAGING_TABLE,
+            -1, &st, NULL) != SQLITE_OK)
+        return -1;
+    if (AR_STEP_ROW_READONLY(st) == SQLITE_ROW)
+        result = sqlite3_column_int64(st, 0);
+    sqlite3_finalize(st);
+    return result;
+}
+
+static void snapsync_hash_staging(struct node_db *ndb, uint8_t out[32],
+                                  uint64_t *utxo_count)
+{
+    utxo_commitment_sha3_compute_table(ndb ? ndb->db : NULL,
+                                       SNAPSYNC_STAGING_TABLE,
+                                       out, utxo_count);
+}
+
+static bool snapsync_stage_promote_active(struct node_db *ndb,
+                                          const struct snapshot_sync_service *svc,
+                                          const uint8_t local_root[32],
+                                          uint64_t local_count,
+                                          const struct chain_evidence_record *verified)
+{
+    bool has_mmb = false;
+
+    if (!ndb || !svc || !local_root)
+        return false;
+    if (!snapsync_set_staging_phase(ndb, SNAPSYNC_PHASE_ATOMIC_ACTIVATE))
+        LOG_FAIL("snapshot_sync", "activate: failed to set staging phase");
+    if (!node_db_exec(ndb, "DELETE FROM utxos"))
+        LOG_FAIL("snapshot_sync", "activate: failed to clear active utxos");
+    if (!node_db_exec(ndb,
+            "INSERT OR REPLACE INTO utxos"
+            "(txid,vout,value,script,script_type,address_hash,height,is_coinbase)"
+            " SELECT txid,vout,value,script,script_type,address_hash,height,is_coinbase"
+            " FROM " SNAPSYNC_STAGING_TABLE))
+        LOG_FAIL("snapshot_sync", "activate: failed to promote staged utxos");
+    if (node_db_utxo_count(ndb) != (int64_t)local_count)
+        LOG_FAIL("snapshot_sync", "activate: active/staged UTXO count mismatch");
+    /* Record the verified snapshot anchor as pending recovery metadata.
+     * The publishable coins_best_block cursor is written only by
+     * chain_state_repository during evidenced tip activation. */
+    if (!node_db_state_set(ndb, "snapshot_pending_coins_best_block",
+                           svc->offered_block_hash, 32) ||
+        !node_db_state_set_int(ndb, "snapshot_pending_coins_best_height",
+                               svc->offered_height))
+        LOG_FAIL("snapshot_sync", "activate: failed to set pending coins anchor");
+
+    for (int i = 0; i < 32; i++) {
+        if (svc->offered_mmb_root[i]) {
+            has_mmb = true;
+            break;
+        }
+    }
+    if (has_mmb) {
+        if (!node_db_state_set(ndb, "snapshot_mmb_root",
+                               svc->offered_mmb_root, 32) ||
+            !node_db_state_set(ndb, "snapshot_mmr_height",
+                               &svc->offered_height, 4))
+            LOG_FAIL("snapshot_sync", "activate: failed to set snapshot MMB metadata");
+    }
+    if (!utxo_commitment_sha3_save(ndb->db, local_root,
+                                   svc->offered_height, local_count))
+        LOG_FAIL("snapshot_sync", "activate: failed to save utxo_sha3");
+    if (!zcl_chainwork_is_zero(svc->offered_chain_work) &&
+        !zcl_chainwork_is_zero(svc->offered_mmb_root) &&
+        verified && chain_evidence_record_has_snapshot_required(verified)) {
+        struct chain_evidence_controller authority;
+        struct chain_evidence_controller_snapshot_meta meta;
+        memset(&meta, 0, sizeof(meta));
+        meta.anchor_height = svc->offered_height;
+        memcpy(meta.anchor_hash.data, svc->offered_block_hash, 32);
+        memcpy(meta.utxo_sha3.data, local_root, 32);
+        memcpy(meta.chainwork, svc->offered_chain_work, 32);
+        memcpy(meta.mmb_root, svc->offered_mmb_root, 32);
+        meta.utxo_count = local_count;
+        meta.finality_depth = (uint32_t)zcl_finality_depth();
+        meta.schema_version = svc->offered_schema_version;
+        meta.producer = "p2p_snapshot";
+        meta.verified = *verified;
+        chain_evidence_controller_init(&authority, ndb, csr_instance());
+        if (chain_evidence_controller_import_snapshot_evidence(&authority, &meta)
+            != CEC_OK)
+            LOG_FAIL("snapshot_sync",
+                     "activate: failed to persist snapshot evidence metadata");
+    } else if (!zcl_chainwork_is_zero(svc->offered_chain_work) &&
+               !zcl_chainwork_is_zero(svc->offered_mmb_root)) {
+        event_emitf(EV_SNAPSYNC_VERIFIED, svc->serving_peer_id,
+                    "snapshot_evidence=SKIPPED reason=incomplete_verified_inputs");
+    }
+    if (!snapsync_discard_staging(ndb, "activated"))
+        LOG_FAIL("snapshot_sync", "activate: failed to clear staging after promotion");
+    return true;
+}
 
 static int64_t now_us(void)
 {
@@ -247,38 +527,21 @@ static bool snapsync_begin_receive_write(struct node_db *ndb, void *ctx)
             }
         }
     }
-    /* ── Scoped destructive transaction ───────────────────────────
-     * This is THE call site from the 2026-04-10 incident. A bad boot
-     * path offered a synthetic anchor, triggered snapsync_begin_receive,
-     * and the raw primitive below wiped 1.3M UTXOs. Two things now
-     * guard it: (1) recovery_policy caps the wipe size so an operator
-     * must explicitly opt in, and (2) db_txn's RAII scope rolls back
-     * automatically on any early return so a crash or unexpected
-     * failure mid-sequence cannot leave a half-wiped UTXO table. */
+    /* Reset the isolated staging namespace only. Active utxos remain
+     * untouched until snapshot_verify passes and atomic_activate promotes
+     * the staged rows in one transaction. */
     {
         DB_TXN_SCOPE(txn, ndb, "snapsync.begin_receive");
         if (!txn)
             LOG_FAIL("snapshot_sync", "begin_receive_write: failed to open db_txn scope");
 
-        struct recovery_policy rp;
-        policy_load_from_env(&rp);
-        int64_t existing = node_db_utxo_count(ndb);
-        if (existing < 0) existing = 0;
-        enum policy_decision pd = policy_check_utxo_wipe(
-            &rp, existing, "snapsync.begin_receive");
-        if (pd != POLICY_ALLOW) {
-            fprintf(stderr,
-                    "[snapsync] begin_receive: recovery_policy refused wipe "
-                    "(code=%s rows=%lld) — snapshot rejected\n",
-                    policy_decision_name(pd), (long long)existing);
-            return false;  /* scope auto-rollback */
-        }
-
-        if (!node_db_wipe_utxos(ndb))
-            LOG_FAIL("snapshot_sync", "begin_receive_write: node_db_wipe_utxos failed");
+        if (!snapsync_discard_staging(ndb, "begin_receive"))
+            LOG_FAIL("snapshot_sync", "begin_receive_write: staging cleanup failed");
+        if (!snapsync_set_staging_phase(ndb, SNAPSYNC_PHASE_CHUNK_RECEIVE))
+            LOG_FAIL("snapshot_sync", "begin_receive_write: failed to set staging phase");
 
         if (!db_txn_commit(txn))
-            LOG_FAIL("snapshot_sync", "begin_receive_write: db_txn_commit failed after wipe");
+            LOG_FAIL("snapshot_sync", "begin_receive_write: db_txn_commit failed after staging reset");
     }
 
     /* Reopen a plain transaction for the chunk receive loop. The
@@ -372,8 +635,8 @@ static int snapsync_apply_chunk_local(struct snapshot_sync_service *svc,
         u.script_type = utxo_classify_script(u.script, u.script_len,
                                              u.address_hash, &u.has_address);
 
-        if (!db_utxo_insert_raw(svc->ndb, &u))
-            LOG_ERR("snapshot_sync", "apply_chunk: db_utxo_insert_raw failed at entry %u vout=%u", i, u.vout);
+        if (!snapsync_insert_staging_raw(svc->ndb, &u))
+            LOG_ERR("snapshot_sync", "apply_chunk: staging insert failed at entry %u vout=%u", i, u.vout);
         applied++;
     }
 
@@ -449,50 +712,58 @@ static bool snapsync_finalize_write(struct node_db *ndb, void *ctx)
     fc_verified = svc->fc_verified;
     snapsync_service_unlock();
 
-    elapsed_s = (double)(now_us() - svc->start_time_us) / 1000000.0;
-    printf("[snapsync] %llu UTXOs in %.1fs (%.0f/s), verifying SHA3...\n",
-           (unsigned long long)svc->received_utxos, elapsed_s,
-           elapsed_s > 0 ? (double)svc->received_utxos / elapsed_s : 0);
+    if (!fc_verified)
+        return snapsync_finalize_fail(finalize, ndb, svc, serving_peer_id,
+                                      "proof_missing",
+                                      "snapshot proof missing");
 
-    utxo_commitment_sha3_compute(ndb->db, local_root, &local_count);
+    if (svc->offered_count == 0 ||
+        svc->received_utxos != svc->offered_count) {
+        event_emitf(EV_SNAPSYNC_VERIFIED, serving_peer_id,
+                    "snapshot=FAILED reason=count_mismatch received=%llu offered=%llu",
+                    (unsigned long long)svc->received_utxos,
+                    (unsigned long long)svc->offered_count);
+        return snapsync_finalize_fail(finalize, ndb, svc, serving_peer_id,
+                                      "count_mismatch",
+                                      "snapshot count mismatch");
+    }
+
+    elapsed_s = (double)(now_us() - svc->start_time_us) / 1000000.0;
+    event_emitf(EV_SNAPSYNC_PROGRESS, serving_peer_id,
+                "phase=snapshot_verify received=%llu/%llu rate=%.0f/s",
+                (unsigned long long)svc->received_utxos,
+                (unsigned long long)svc->offered_count,
+                elapsed_s > 0 ? (double)svc->received_utxos / elapsed_s : 0);
+
+    if (!snapsync_set_staging_phase(ndb, SNAPSYNC_PHASE_SNAPSHOT_VERIFY))
+        LOG_FAIL("snapshot_sync", "finalize_write: failed to set verify phase");
+    snapsync_hash_staging(ndb, local_root, &local_count);
     sha3_ok = (memcmp(local_root, svc->offered_utxo_root, 32) == 0);
+    if (local_count != svc->offered_count)
+        sha3_ok = false;
 
     if (sha3_ok) {
-        bool has_mmb = false;
+        const struct chain_evidence_record snapshot_verified = {
+            .utxo_sha3_verified = sha3_ok,
+            .mmb_flyclient_proof_verified = fc_verified,
+        };
 
-        /* ── Scoped commitment update ──────────────────────────
-         * The coins_best_block / snapshot MMB / MMR height writes
-         * must land as a single atomic unit: a partially-written
-         * set of these three rows would point coins_best_block at
-         * a height whose MMB root never landed, making the next
-         * boot think UTXO state is authoritative without a valid
-         * FlyClient anchor. DB_TXN_SCOPE auto-rolls-back any
-         * partial writes on early return or db_txn_commit
-         * failure. */
+        /* Atomic activation: replace active UTXOs and update all snapshot
+         * metadata together. A crash before commit leaves active UTXOs
+         * unchanged and boot cleanup discards staging; a crash after commit
+         * leaves a complete promoted set. */
         {
-            DB_TXN_SCOPE(txn, ndb, "snapsync.finalize");
+            DB_TXN_SCOPE(txn, ndb, "snapsync.atomic_activate");
             if (!txn)
-                LOG_FAIL("snapshot_sync", "finalize_write: failed to open db_txn for commitment update");
+                LOG_FAIL("snapshot_sync", "finalize_write: failed to open db_txn for atomic activation");
 
-            if (!node_db_state_set(ndb, "coins_best_block",
-                                   svc->offered_block_hash, 32))
-                LOG_FAIL("snapshot_sync", "finalize_write: failed to set coins_best_block");
-            for (int i = 0; i < 32; i++) {
-                if (svc->offered_mmb_root[i]) {
-                    has_mmb = true;
-                    break;
-                }
-            }
-            if (has_mmb) {
-                if (!node_db_state_set(ndb, "snapshot_mmb_root",
-                                       svc->offered_mmb_root, 32) ||
-                    !node_db_state_set(ndb, "snapshot_mmr_height",
-                                       &svc->offered_height, 4))
-                    LOG_FAIL("snapshot_sync", "finalize_write: failed to set snapshot_mmb_root/mmr_height");
-            }
+            if (!snapsync_stage_promote_active(ndb, svc, local_root,
+                                               local_count,
+                                               &snapshot_verified))
+                LOG_FAIL("snapshot_sync", "finalize_write: atomic activation failed");
 
             if (!db_txn_commit(txn))
-                LOG_FAIL("snapshot_sync", "finalize_write: db_txn_commit failed for commitment update");
+                LOG_FAIL("snapshot_sync", "finalize_write: db_txn_commit failed for atomic activation");
         }
         if (!snapsync_exit_turbo_mode(svc))
             LOG_FAIL("snapshot_sync", "finalize_write: exit_turbo_mode failed after SHA3 pass");
@@ -508,8 +779,6 @@ static bool snapsync_finalize_write(struct node_db *ndb, void *ctx)
         event_emitf(EV_UTXO_CHECKPOINT_PASS, 0,
                     "snapshot SHA3 PASSED count=%llu",
                     (unsigned long long)local_count);
-        printf("*** SNAPSHOT VERIFIED: %llu UTXOs, SHA3 PASSED, %.1fs ***\n",
-               (unsigned long long)local_count, elapsed_s);
         finalize->ok = true;
         return true;
     } else {
@@ -519,58 +788,17 @@ static bool snapsync_finalize_write(struct node_db *ndb, void *ctx)
             sprintf(exp + i*2, "%02x", svc->offered_utxo_root[i]);
             sprintf(got + i*2, "%02x", local_root[i]);
         }
-        fprintf(stderr, "[snapsync] SHA3 FAILED!\n  Expected: %s\n  Got:      %s\n",
-                exp, got);
-
-        /* ── Recovery policy gate ──────────────────────────────────
-         * The rows about to be wiped are the partial receive buffer
-         * — data we just loaded from a peer that failed SHA3. Amount
-         * is received_utxos (what this receive session wrote). If
-         * the policy refuses we leave the bad data in place and log
-         * loudly: the state machine is already SNAPSYNC_FAILED so
-         * nothing will serve it, and an operator can raise the cap
-         * to force cleanup. */
-        int64_t partial = (int64_t)svc->received_utxos;
-        struct recovery_policy rp;
-        policy_load_from_env(&rp);
-        enum policy_decision pd = policy_check_utxo_wipe(
-            &rp, partial, "snapsync.finalize_sha3_fail");
-        if (pd != POLICY_ALLOW) {
-            fprintf(stderr,
-                    "snapshot finalize: recovery_policy refused cleanup wipe "
-                    "(code=%s rows=%lld) — corrupt partial state retained "
-                    "until operator raises cap\n",
-                    policy_decision_name(pd), (long long)partial);
-        } else {
-            /* Cleanup wipe runs inside its own scoped transaction:
-             * if the DELETE cannot complete cleanly we'd rather
-             * leave the partial UTXOs in place (SNAPSYNC_FAILED
-             * already blocks them from being served) than hand
-             * back control with a half-wiped table. */
-            DB_TXN_SCOPE(txn, ndb, "snapsync.finalize_sha3_fail");
-            if (!txn) {
-                fprintf(stderr,
-                        "snapshot finalize: failed to open db_txn for cleanup wipe\n");
-            } else if (!node_db_wipe_utxos(ndb)) {
-                fprintf(stderr,
-                        "snapshot finalize: failed to wipe UTXOs after SHA3 mismatch\n");
-                /* leave scope → auto-rollback */
-            } else if (!db_txn_commit(txn)) {
-                fprintf(stderr,
-                        "snapshot finalize: commit of cleanup wipe failed\n");
-            }
-        }
         if (!snapsync_exit_turbo_mode(svc))
-            fprintf(stderr,
-                    "snapshot finalize: failed to restore normal mode after SHA3 mismatch\n");
-        snapsync_service_lock();
-        svc->state = SNAPSYNC_FAILED;
-        snapsync_set_state(SNAPSYNC_FAILED, "SHA3 verification failed");
-        snapsync_service_unlock();
+            event_emitf(EV_SNAPSYNC_VERIFIED, serving_peer_id,
+                        "snapshot=FAILED reason=turbo_exit_failed");
         event_emitf(EV_UTXO_CHECKPOINT_FAIL, 0,
-                    "snapshot SHA3 FAILED expected=%s got=%s", exp, got);
-        finalize->ok = false;
-        return false;
+                    "snapshot SHA3 FAILED expected=%s got=%s count=%llu offered=%llu",
+                    exp, got,
+                    (unsigned long long)local_count,
+                    (unsigned long long)svc->offered_count);
+        return snapsync_finalize_fail(finalize, ndb, svc, serving_peer_id,
+                                      "sha3_failed",
+                                      "SHA3 verification failed");
     }
 }
 
@@ -643,15 +871,18 @@ void snapsync_init(struct snapshot_sync_service *svc, struct node_db *ndb)
 void snapsync_reset(struct snapshot_sync_service *svc)
 {
     bool rollback_ok = true;
+    bool has_db = false;
 
     if (!svc) {
         return;
     }
     snapsync_service_lock();
     bool turbo_active = svc->turbo_active;
+    has_db = svc->ndb && svc->ndb->open;
     snapsync_service_unlock();
-    rollback_ok = snapsync_run_write(svc, snapsync_rollback_receive_write, NULL);
-    if (!rollback_ok) {
+    if (has_db)
+        rollback_ok = snapsync_run_write(svc, snapsync_rollback_receive_write, NULL);
+    if (has_db && !rollback_ok) {
         struct node_db_status status = {0};
         if (svc->ndb)
             node_db_get_status(svc->ndb, &status);
@@ -669,6 +900,8 @@ void snapsync_reset(struct snapshot_sync_service *svc)
             snapsync_service_unlock();
         }
     }
+    if (has_db)
+        snapsync_run_write(svc, snapsync_discard_staging_write, "reset");
 
     snapsync_service_lock();
     svc->turbo_active = false;
@@ -680,10 +913,14 @@ void snapsync_reset(struct snapshot_sync_service *svc)
     memset(svc->offered_utxo_root, 0, 32);
     memset(svc->offered_mmb_root, 0, 32);
     memset(svc->offered_block_hash, 0, 32);
+    memset(svc->offered_chain_work, 0, 32);
     memset(&svc->fc_challenge, 0, sizeof(svc->fc_challenge));
     svc->fc_verified = false;
     svc->offered_height = 0;
+    svc->offered_peer_tip_height = 0;
     svc->offered_count = 0;
+    svc->offered_protocol_version = 0;
+    svc->offered_schema_version = 0;
     svc->last_progress_time_us = 0;
     svc->last_progress_utxos = 0;
     /* Clear snapshot anchor — its pprev=NULL blocks backward chain
@@ -768,8 +1005,9 @@ bool snapsync_begin_receive(struct snapshot_sync_service *svc)
 
     snapsync_service_lock();
     if (svc->state != SNAPSYNC_NEGOTIATING) {
-        fprintf(stderr, "[snapsync] begin_receive: wrong state %s\n",
-                snapsync_state_name(svc->state));
+        event_emitf(EV_SNAPSYNC_VERIFIED, svc->serving_peer_id,
+                    "snapshot=FAILED reason=begin_receive_wrong_state state=%s",
+                    snapsync_state_name(svc->state));
         snapsync_service_unlock();
         trace_set_status(ss_span, TRACE_STATUS_ERROR);
         trace_attr_str(ss_span, "error", "wrong_state");
@@ -777,14 +1015,16 @@ bool snapsync_begin_receive(struct snapshot_sync_service *svc)
         return false;
     }
     if (!svc->ndb) {
-        fprintf(stderr, "[snapsync] begin_receive: ndb is NULL\n");
+        event_emitf(EV_SNAPSYNC_VERIFIED, svc->serving_peer_id,
+                    "snapshot=FAILED reason=begin_receive_no_db");
         snapsync_service_unlock();
         trace_set_status(ss_span, TRACE_STATUS_ERROR);
         trace_end(ss_span);
         return false;
     }
     if (!svc->ndb->open) {
-        fprintf(stderr, "[snapsync] begin_receive: ndb not open\n");
+        event_emitf(EV_SNAPSYNC_VERIFIED, svc->serving_peer_id,
+                    "snapshot=FAILED reason=begin_receive_db_closed");
         snapsync_service_unlock();
         trace_set_status(ss_span, TRACE_STATUS_ERROR);
         trace_end(ss_span);
@@ -878,7 +1118,8 @@ int snapsync_apply_chunk(struct snapshot_sync_service *svc,
         snapsync_set_state(SNAPSYNC_FAILED, "snapshot chunk apply failed");
         snapsync_service_unlock();
         if (restore_turbo && !snapsync_exit_turbo_mode(svc))
-            fprintf(stderr, "[snapsync] %s: failed to restore normal mode\n", __func__);
+            event_emitf(EV_SNAPSYNC_VERIFIED, 0,
+                        "snapshot=FAILED reason=turbo_exit_failed path=chunk_apply");
         LOG_ERR("snapsync", "chunk apply failed");
     }
     free(ctx.chunk_data);
@@ -920,10 +1161,12 @@ bool snapsync_finalize(struct snapshot_sync_service *svc)
         if (!keep_failed_state) {
             snapsync_set_state(SNAPSYNC_FAILED, "finalize write path failed");
             if (!snapsync_exit_turbo_mode(svc))
-                fprintf(stderr, "snapshot finalize: failed to restore normal mode\n");
+                event_emitf(EV_SNAPSYNC_VERIFIED, 0,
+                            "snapshot=FAILED reason=turbo_exit_failed path=finalize");
         } else if (turbo_active) {
             if (!snapsync_exit_turbo_mode(svc))
-                fprintf(stderr, "snapshot finalize: failed to restore normal mode\n");
+                event_emitf(EV_SNAPSYNC_VERIFIED, 0,
+                            "snapshot=FAILED reason=turbo_exit_failed path=finalize_failed_state");
         }
         return false;
     }
@@ -941,6 +1184,16 @@ bool snapsync_is_active(void)
 {
     struct snapshot_sync_service *svc = app_runtime_snapshot_sync();
     struct snapsync_status st;
+
+    switch (snapsync_get_state()) {
+    case SNAPSYNC_NEGOTIATING:
+    case SNAPSYNC_RECEIVING:
+    case SNAPSYNC_VERIFYING:
+        return true;
+    default:
+        break;
+    }
+
     if (!svc) {
         if (!snapsync_global_initialized())
             return false;
@@ -1061,39 +1314,23 @@ bool snapsync_check_stall(void)
 
     snapsync_service_unlock();
 
-    fprintf(stderr, "[snapsync] STALL DETECTED: no chunk for %llds "
-            "(%llu/%llu UTXOs from peer %u) — blacklisting peer, resetting\n",
-            (long long)(elapsed_us / 1000000),
-            (unsigned long long)received,
-            (unsigned long long)offered, peer_id);
+    event_emitf(EV_SNAPSYNC_VERIFIED, peer_id,
+                "snapshot=FAILED reason=stall elapsed_s=%lld received=%llu offered=%llu action=blacklist_reset",
+                (long long)(elapsed_us / 1000000),
+                (unsigned long long)received,
+                (unsigned long long)offered);
 
     /* Blacklist the stalling peer before reset (reset clears serving_peer_id) */
     snapsync_blacklist_peer(svc, peer_id);
 
     snapsync_reset(svc);
 
-    /* Wipe partial UTXOs so the next offer isn't rejected.
-     * Committed batches (every 100K) survive the rollback in reset.
-     *
-     * Same gating as the SHA3-fail path — the rows here are the
-     * partial receive buffer from the stalling peer. Amount is
-     * received_utxos (at the time of stall). If the policy refuses,
-     * the partial data stays and the operator can raise the cap. */
+    /* Discard committed staging rows so the next offer starts clean.
+     * Active UTXOs were never touched by the stalled receive. */
     if (svc->ndb && svc->ndb->open) {
-        int64_t partial = (int64_t)received;
-        struct recovery_policy rp;
-        policy_load_from_env(&rp);
-        enum policy_decision pd = policy_check_utxo_wipe(
-            &rp, partial, "snapsync.stall_cleanup");
-        if (pd != POLICY_ALLOW) {
-            fprintf(stderr,
-                    "[snapsync] stall cleanup: recovery_policy refused wipe "
-                    "(code=%s rows=%lld) — partial data retained\n",
-                    policy_decision_name(pd), (long long)partial);
-        } else {
-            node_db_wipe_utxos(svc->ndb);
-            printf("[snapsync] Wiped partial UTXOs after stall reset\n");
-        }
+        if (snapsync_discard_staging(svc->ndb, "stall_cleanup"))
+            event_emitf(EV_SNAPSYNC_VERIFIED, peer_id,
+                        "snapshot=FAILED reason=stall staging_discarded=true");
     }
 
     /* Reset sync state so the node can accept a new snapshot offer.
@@ -1143,6 +1380,7 @@ void snapsync_get_status_snapshot(const struct snapshot_sync_service *svc,
     out->serving_peer_id = svc->serving_peer_id;
     out->offered_height = svc->offered_height;
     out->turbo_active = svc->turbo_active;
+    out->staged_row_count = snapsync_staging_count(svc->ndb);
     snapsync_service_unlock();
 }
 
@@ -1183,22 +1421,20 @@ bool snapsync_build_request_pow(const uint8_t peer_ip[16],
 bool snapsync_parse_offer_params(struct snapshot_offer_params *params,
                                  struct byte_stream *s)
 {
+    struct snapshot_manifest_v2 manifest;
+    enum snapshot_manifest_v2_result parse_result =
+        SNAPSHOT_MANIFEST_V2_OK;
+
     if (!params || !s)
         LOG_FAIL("snapshot_sync", "parse_offer_params: params=%p stream=%p", (void*)params, (void*)s);
 
     memset(params, 0, sizeof(*params));
-    if (!stream_read_i32_le(s, &params->height) ||
-        !stream_read_bytes(s, params->block_hash, 32) ||
-        !stream_read_bytes(s, params->utxo_root, 32) ||
-        !stream_read_bytes(s, params->mmr_root, 32) ||
-        !stream_read_u64_le(s, &params->num_utxos) ||
-        !stream_read_u64_le(s, &params->total_bytes)) {
-        LOG_FAIL("snapshot_sync", "parse_offer_params: truncated stream at pos %zu/%zu",
+    if (!snapshot_manifest_v2_parse(&manifest, s, &parse_result))
+        LOG_FAIL("snapshot_sync",
+                 "parse_offer_params: invalid v2 manifest reason=%s pos=%zu/%zu",
+                 snapshot_manifest_v2_result_name(parse_result),
                  s->read_pos, s->size);
-    }
-
-    if (s->size - s->read_pos >= 32)
-        stream_read_bytes(s, params->mmb_root, 32);
+    snapsync_params_from_manifest(params, &manifest);
     return true;
 }
 
@@ -1319,20 +1555,50 @@ bool snapsync_build_fc_response(struct fc_response *resp,
         uint64_t prove_len = challenge->chain_length;
         const struct block_index *bi = active_chain_at(chain_active, h);
         struct fc_sample *sample = &resp->samples[i];
+        bool have_leaf = false;
 
-        if (!bi || !bi->phashBlock)
-            LOG_FAIL("snapshot_sync", "build_fc_response: no block_index at height %d for sample %u", h, i);
-
-        mmb_leaf_from_block(&sample->leaf,
-                            bi->phashBlock->data,
-                            bi->nHeight, bi->nTime, bi->nBits,
-                            bi->hashFinalSaplingRoot.data,
-                            (const uint8_t *)bi->nChainWork.pn);
+        if (bi && bi->phashBlock) {
+            mmb_leaf_from_block(&sample->leaf,
+                                bi->phashBlock->data,
+                                bi->nHeight, bi->nTime, bi->nBits,
+                                bi->hashFinalSaplingRoot.data,
+                                (const uint8_t *)bi->nChainWork.pn);
+            have_leaf = true;
+        }
+        if (!have_leaf && legacy_chain_rpc_get_mmb_leaf(h, &sample->leaf))
+            have_leaf = true;
+        if (!have_leaf) {
+            LOG_FAIL("snapshot_sync",
+                     "build_fc_response: no block metadata at height %d for sample %u",
+                     h, i);
+        }
 
         if (prove_len > leaf_store->num_leaves)
             prove_len = leaf_store->num_leaves;
         if (!mmb_prove(all_hashes, prove_len, (uint64_t)h, &sample->proof))
             LOG_FAIL("snapshot_sync", "build_fc_response: mmb_prove failed for height %d sample %u", h, i);
+
+        uint8_t sample_leaf_hash[32];
+        mmb_hash_leaf(&sample->leaf, sample_leaf_hash);
+        if (memcmp(sample_leaf_hash, sample->proof.leaf_hash, 32) != 0) {
+            struct mmb_leaf oracle_leaf;
+            uint8_t oracle_leaf_hash[32];
+
+            if (legacy_chain_rpc_get_mmb_leaf(h, &oracle_leaf)) {
+                mmb_hash_leaf(&oracle_leaf, oracle_leaf_hash);
+                if (memcmp(oracle_leaf_hash, sample->proof.leaf_hash, 32) == 0) {
+                    sample->leaf = oracle_leaf;
+                } else {
+                    LOG_FAIL("snapshot_sync",
+                             "build_fc_response: leaf/proof hash mismatch at height %d sample %u",
+                             h, i);
+                }
+            } else {
+                LOG_FAIL("snapshot_sync",
+                         "build_fc_response: cannot reconcile leaf/proof hash mismatch at height %d sample %u",
+                         h, i);
+            }
+        }
     }
 
     for (uint32_t i = 0; i < count; i++) {
@@ -1375,6 +1641,53 @@ bool snapsync_write_fc_response(struct byte_stream *s,
     return true;
 }
 
+static bool snapsync_header_ancestry_linked(const struct block_index *tip)
+{
+    if (!tip || !tip->phashBlock)
+        return false;
+    if (tip->nHeight == 0)
+        return true;
+    return tip->pprev && tip->pprev->phashBlock &&
+           tip->pprev->nHeight == tip->nHeight - 1;
+}
+
+static bool snapsync_chainwork_recomputed(const struct block_index *tip)
+{
+    struct arith_uint256 expected;
+    struct arith_uint256 proof;
+
+    if (!tip)
+        return false;
+    proof = GetBlockProof(tip);
+    expected = proof;
+    if (tip->pprev)
+        arith_uint256_add(&expected, &tip->pprev->nChainWork, &proof);
+    return arith_uint256_compare(&expected, &tip->nChainWork) == 0 &&
+           !zcl_chainwork_is_zero((const uint8_t *)tip->nChainWork.pn);
+}
+
+static bool snapsync_tip_is_best_work(const struct main_state *ms,
+                                      const struct block_index *tip)
+{
+    size_t iter = 0;
+    struct block_index *candidate = NULL;
+
+    if (!ms || !tip)
+        return false;
+    if (zcl_chainwork_is_zero((const uint8_t *)tip->nChainWork.pn))
+        return false;
+    while (block_map_next(&ms->map_block_index, &iter, NULL, &candidate)) {
+        if (!candidate || (candidate->nStatus & BLOCK_FAILED_MASK))
+            continue;
+        if (arith_uint256_compare(&candidate->nChainWork,
+                                  &tip->nChainWork) <= 0)
+            continue;
+        if (block_index_get_ancestor(candidate, tip->nHeight) != tip)
+            return false;
+    }
+    return true;
+}
+
 /* Single-writer tip commit for snapshot activation. Routes through
  * the chain_state_repository so block_map, active_chain, coins_tip,
  * and pindex_best_header move together — the exact failure mode that
@@ -1387,16 +1700,55 @@ static bool snapsync_commit_tip(struct main_state *ms,
 {
     if (!new_tip || !new_tip->phashBlock) LOG_FAIL("snapshot_sync", "commit_tip: new_tip=%p phashBlock=%p", (void*)new_tip, new_tip ? (void*)new_tip->phashBlock : NULL);
 
+    {
+        struct chain_evidence_controller authority;
+        struct chain_evidence_controller_tip_request req = {
+            .new_tip = new_tip,
+            .utxo_max_height = new_tip->nHeight,
+            .update_header_tip = true,
+            .reason = reason ? reason : "snapshot.apply_anchor",
+        };
+        req.verified.header_ancestry_linked =
+            snapsync_header_ancestry_linked(new_tip);
+        req.verified.chainwork_recomputed =
+            snapsync_chainwork_recomputed(new_tip);
+        req.verified.nakamoto_selected_best_work =
+            snapsync_tip_is_best_work(ms, new_tip);
+        req.verified.block_bytes_hash_checked =
+            chain_restore_block_is_consensus_backed(new_tip);
+        chain_evidence_controller_init(&authority, app_runtime_node_db(),
+                            csr_instance());
+        if (authority.state == CEC_SNAPSHOT_UTXO_HASH_VERIFIED ||
+            authority.state == CEC_TIP_FOLLOWING ||
+            authority.state == CEC_BACKGROUND_VALIDATING ||
+            authority.state == CEC_FULLY_VALIDATED) {
+            enum chain_evidence_controller_result ar =
+                chain_evidence_controller_promote_tip(&authority, &req);
+            if (ar == CEC_OK)
+                return true;
+            event_emitf(EV_CHAIN_TIP_REJECTED, 0,
+                        "source=snapshot authority=%s reason=%s h=%d",
+                        chain_evidence_controller_result_name(ar),
+                        reason ? reason : "", new_tip->nHeight);
+            return false;
+        }
+    }
+
+    struct chain_state_rollback_authorization rollback_auth = {
+        .source = CSR_ROLLBACK_SOURCE_SNAPSHOT,
+        .decision = POLICY_ALLOW,
+        .from_height = ms ? active_chain_height(&ms->chain_active) : -1,
+        .to_height = new_tip->nHeight,
+        .max_depth = INT64_MAX,
+        .evidence_class = "snapshot_utxo_sha3_verified",
+        .reason = reason ? reason : "snapshot.apply_anchor",
+    };
     struct chain_state_commit commit = {
         .new_tip             = new_tip,
         .new_coins_best      = *new_tip->phashBlock,
         .expected_utxo_count = 0,
         .update_header_tip   = true,
-        /* Snapshot sync legitimately installs a tip at a different
-         * height (a synthetic anchor on the fast-sync path). Bypass
-         * the orphan-rows guard; Phase 2 recovery_policy will gate
-         * this kind of move explicitly. */
-        .allow_rollback      = true,
+        .rollback_auth       = &rollback_auth,
         .wallet_scan_height  = -1,
         .reason              = reason,
     };
@@ -1404,6 +1756,7 @@ static bool snapsync_commit_tip(struct main_state *ms,
     enum csr_result rc = csr_commit_tip(csr_instance(), &commit);
     if (rc == CSR_OK) return true;
 
+#ifdef ZCL_TESTING
     if (rc == CSR_REJECTED_NOT_INITIALIZED) {
         /* Test harness path: singleton was never wired. Fall back to
          * the canonical chain_set_active_tip so existing unit tests
@@ -1413,10 +1766,11 @@ static bool snapsync_commit_tip(struct main_state *ms,
         ms->pindex_best_header = new_tip;
         return true;
     }
+#endif
 
-    fprintf(stderr,
-            "snapsync: csr rejected tip commit (%s) reason=%s h=%d\n",
-            csr_result_name(rc), reason, new_tip->nHeight);
+    event_emitf(EV_CHAIN_TIP_REJECTED, 0,
+                "source=snapshot csr=%s reason=%s h=%d",
+                csr_result_name(rc), reason, new_tip->nHeight);
     return false;
 }
 
@@ -1428,6 +1782,14 @@ int snapsync_activate_verified_tip(const struct snapshot_sync_service *svc,
 
     if (!svc || !ms)
         LOG_ERR("snapshot_sync", "activate_verified_tip: svc=%p ms=%p", (void*)svc, (void*)ms);
+
+    if (!zcl_is_snapshot_anchor_acceptable(svc->offered_height,
+                                           svc->offered_peer_tip_height)) {
+        LOG_ERR("snapshot_sync",
+                "activate_verified_tip: refusing unacceptable snapshot anchor h=%d peer_tip=%d finality=%d",
+                svc->offered_height, svc->offered_peer_tip_height,
+                zcl_finality_depth());
+    }
 
     memcpy(snap_hash.data, svc->offered_block_hash, 32);
     snap_bi = block_map_find(&ms->map_block_index, &snap_hash);
@@ -1446,10 +1808,10 @@ int snapsync_activate_verified_tip(const struct snapshot_sync_service *svc,
             LOG_ERR("snapshot_sync", "activate_verified_tip: metadata anchor failed");
         g_snapshot_anchor = snap_bi;
 
-        /* Set assume-valid to snapshot height — all blocks at or below
+        /* Set deferred proof validation to snapshot height — all blocks at or below
          * this height skip expensive script/proof verification since the
          * UTXO set at this point is cryptographically verified. */
-        g_assume_valid_height = svc->offered_height;
+        g_deferred_proof_validation_below_height = svc->offered_height;
 
         printf("[snapshot] Metadata anchor at height %d recorded "
                "(FlyClient+SHA3 verified; awaiting block data)\n",
@@ -1462,7 +1824,7 @@ int snapsync_activate_verified_tip(const struct snapshot_sync_service *svc,
      * The "not in map" path above already allocated and registered a
      * heap-owned anchor — that is the only object reset/free is allowed
      * to drop. */
-    g_assume_valid_height = snap_bi->nHeight;
+    g_deferred_proof_validation_below_height = snap_bi->nHeight;
 
     if (!chain_restore_block_is_consensus_backed(snap_bi)) {
         /* Block index entry exists but on-disk bytes are not present.
@@ -1496,8 +1858,8 @@ void snapsync_build_offer_acceptance(struct snapsync_offer_acceptance *result)
     result->should_reset_offset = true;
     result->should_update_peer_state = true;
     result->peer_state = PEER_SNAPSHOT_RECEIVING;
-    result->should_set_sync_state = false;
-    result->sync_state = SYNC_IDLE;
+    result->should_set_sync_state = true;
+    result->sync_state = SYNC_SNAPSHOT_RECEIVE;
 }
 
 void snapsync_build_end_result(struct snapsync_end_result *result,
@@ -1671,6 +2033,9 @@ enum snapsync_offer_result snapsync_handle_offer(
     struct snapshot_sync_service *svc,
     const struct snapshot_offer_params *params)
 {
+    struct snapshot_manifest_v2 manifest;
+    enum snapshot_manifest_v2_result manifest_result =
+        SNAPSHOT_MANIFEST_V2_OK;
     bool reconnect = false;
     enum snapshot_sync_state current_state = SNAPSYNC_IDLE;
     uint32_t prior_peer_id = 0;
@@ -1679,26 +2044,25 @@ enum snapsync_offer_result snapsync_handle_offer(
     if (!svc || !params)
         return SNAPSYNC_OFFER_REJECTED_PARSE;
 
-    /* Range validation */
-    if (params->num_utxos > 100000000ULL ||
-        params->total_bytes > 100ULL * 1024 * 1024 * 1024) {
-        return SNAPSYNC_OFFER_REJECTED_RANGE;
+    snapsync_manifest_from_params(&manifest, params);
+    manifest_result =
+        snapshot_manifest_v2_validate_offer(&manifest, params->our_height);
+    if (manifest_result != SNAPSHOT_MANIFEST_V2_OK) {
+        event_emitf(EV_SNAPSHOT_OFFER_RECEIVED, params->peer_id,
+                    "accepted=false reason=%s h=%d peer_tip=%d our_h=%d",
+                    snapshot_manifest_v2_result_name(manifest_result),
+                    params->height, params->peer_tip_height,
+                    params->our_height);
+        return snapsync_offer_result_from_manifest(manifest_result);
     }
 
-    /* MMR proof required — can't verify PoW chain without it */
-    bool has_mmr = false;
-    for (int i = 0; i < 32; i++)
-        if (params->mmr_root[i]) { has_mmr = true; break; }
-    if (!has_mmr)
-        return SNAPSYNC_OFFER_REJECTED_NO_MMR;
-
-    /* Must be significantly ahead */
-    if (params->height <= params->our_height + 5000)
-        return SNAPSYNC_OFFER_REJECTED_NOT_AHEAD;
-
     /* Reject peers that previously stalled during snapshot transfer */
-    if (snapsync_is_peer_blacklisted(svc, params->peer_id))
+    if (snapsync_is_peer_blacklisted(svc, params->peer_id)) {
+        event_emitf(EV_SNAPSHOT_OFFER_RECEIVED, params->peer_id,
+                    "accepted=false reason=blacklisted h=%d peer_tip=%d",
+                    params->height, params->peer_tip_height);
         return SNAPSYNC_OFFER_REJECTED_BLACKLISTED;
+    }
 
     /* If we're already receiving from a different peer (reconnect scenario),
      * reset and re-accept from the new peer. This handles the case where
@@ -1727,51 +2091,36 @@ enum snapsync_offer_result snapsync_handle_offer(
                                params->utxo_root, params->mmb_root,
                                params->block_hash, params->peer_id))
         return SNAPSYNC_OFFER_REJECTED_BUSY;
+    snapsync_service_lock();
+    memcpy(svc->offered_chain_work, params->chain_work, 32);
+    svc->offered_peer_tip_height = params->peer_tip_height;
+    svc->offered_protocol_version = params->protocol_version;
+    svc->offered_schema_version = params->snapshot_schema_version;
+    snapsync_service_unlock();
 
     printf("[snapsync] Accepted offer: h=%d, %llu UTXOs from peer %u\n",
            params->height, (unsigned long long)params->num_utxos,
            params->peer_id);
+    event_emitf(EV_SNAPSHOT_OFFER_RECEIVED, params->peer_id,
+                "accepted=true h=%d peer_tip=%d utxos=%llu",
+                params->height, params->peer_tip_height,
+                (unsigned long long)params->num_utxos);
 
     /* Generate FlyClient challenge for MMB chain verification.
      * The router sends zfcchallenge to the peer, who must respond
      * with zfcproofs before we send zsnapreq. */
-    bool has_mmb = false;
-    bool begin_after_offer = false;
-    for (int i = 0; i < 32; i++)
-        if (params->mmb_root[i]) { has_mmb = true; break; }
+    uint8_t fc_seed[32];
 
-    if (has_mmb) {
-        uint8_t fc_seed[32];
-
-        GetRandBytes(fc_seed, sizeof(fc_seed));
-        snapsync_service_lock();
-        memcpy(svc->fc_challenge.seed, fc_seed, 32);
-        svc->fc_challenge.chain_length = (uint64_t)params->height;
-        memcpy(svc->fc_challenge.mmb_root, params->mmb_root, 32);
-        svc->fc_verified = false;
-        begin_after_offer = false;
-        snapsync_service_unlock();
-        printf("[snapsync] FlyClient challenge generated (%u samples, "
-               "chain_length=%d)\n", FC_NUM_SAMPLES, params->height);
-    } else {
-        /* No MMB root — skip FlyClient, accept on SHA3 only.
-         * This is weaker security but backward compatible. */
-        snapsync_service_lock();
-        svc->fc_verified = true;
-        begin_after_offer = true;
-        snapsync_service_unlock();
-        printf("[snapsync] WARNING: no MMB root — skipping FlyClient "
-               "chain verification\n");
-    }
-
-    /* Don't begin receive yet — wait for FlyClient verification
-     * (or immediate begin if no MMB). Router handles the flow. */
-    if (begin_after_offer) {
-        if (!snapsync_begin_receive(svc)) {
-            snapsync_reset(svc);
-            return SNAPSYNC_OFFER_REJECTED_BUSY;
-        }
-    }
+    GetRandBytes(fc_seed, sizeof(fc_seed));
+    snapsync_service_lock();
+    memcpy(svc->fc_challenge.seed, fc_seed, 32);
+    svc->fc_challenge.chain_length = (uint64_t)params->height + 1;
+    memcpy(svc->fc_challenge.mmb_root, params->mmb_root, 32);
+    svc->fc_verified = false;
+    snapsync_service_unlock();
+    printf("[snapsync] FlyClient challenge generated (%u samples, "
+           "chain_length=%llu)\n", FC_NUM_SAMPLES,
+           (unsigned long long)((uint64_t)params->height + 1));
 
     return SNAPSYNC_OFFER_ACCEPTED;
 }
@@ -1808,6 +2157,17 @@ bool snapsync_verify_flyclient(struct snapshot_sync_service *svc,
         return false;
     }
 
+    uint8_t offered_chain_work[32];
+    snapsync_service_lock();
+    memcpy(offered_chain_work, svc->offered_chain_work, 32);
+    snapsync_service_unlock();
+    if (zcl_chainwork_is_zero(offered_chain_work)) {
+        printf("[snapsync] FlyClient: missing offered chainwork\n");
+        event_emitf(EV_FC_CHAIN_VERIFIED, serving_peer_id,
+                    "flyclient=FAILED chainwork=missing");
+        return false;
+    }
+
     /* Additional check: verify PoW targets for each sample.
      * The MMB leaf contains block_hash and nBits — verify that
      * block_hash actually meets the difficulty target. */
@@ -1818,9 +2178,17 @@ bool snapsync_verify_flyclient(struct snapshot_sync_service *svc,
         return false;
     }
     uint32_t pow_failures = 0;
+    uint32_t work_failures = 0;
     for (uint32_t i = 0; i < resp->num_samples; i++) {
         const struct mmb_leaf *leaf = &resp->samples[i].leaf;
         struct uint256 hash;
+        if (zcl_chainwork_is_zero(leaf->chain_work) ||
+            zcl_chainwork_compare_le(leaf->chain_work,
+                                     offered_chain_work) > 0) {
+            printf("[snapsync] FlyClient: chainwork check FAILED for "
+                   "sample %u (h=%u)\n", i, leaf->height);
+            work_failures++;
+        }
         memcpy(hash.data, leaf->block_hash, 32);
         if (!CheckProofOfWork(hash, leaf->nBits, consensus)) {
             printf("[snapsync] FlyClient: PoW check FAILED for sample %u "
@@ -1835,6 +2203,14 @@ bool snapsync_verify_flyclient(struct snapshot_sync_service *svc,
         event_emitf(EV_FC_CHAIN_VERIFIED, serving_peer_id,
                     "flyclient=FAILED pow_failures=%u/%u",
                     pow_failures, resp->num_samples);
+        return false;
+    }
+    if (work_failures > 0) {
+        printf("[snapsync] FlyClient: %u/%u chainwork checks FAILED\n",
+               work_failures, resp->num_samples);
+        event_emitf(EV_FC_CHAIN_VERIFIED, serving_peer_id,
+                    "flyclient=FAILED work_failures=%u/%u",
+                    work_failures, resp->num_samples);
         return false;
     }
 

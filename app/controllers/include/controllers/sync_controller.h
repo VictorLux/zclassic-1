@@ -165,7 +165,8 @@ bool node_db_sync_peer_score(struct node_db *ndb,
 int node_db_sync_get_tip_height(struct node_db *ndb);
 bool node_db_sync_get_tip_hash(struct node_db *ndb, uint8_t hash_out[32]);
 
-/* Store the current chain tip. */
+/* Store the SQLite sync projection cursor. This is not publishable
+ * active-chain evidence; CSR owns concrete chain-tip promotion. */
 bool node_db_sync_set_tip(struct node_db *ndb,
                           const uint8_t hash[32], int height);
 

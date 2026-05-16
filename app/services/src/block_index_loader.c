@@ -7,6 +7,7 @@
 
 #include "services/block_index_loader.h"
 #include "services/block_index_integrity.h"
+#include "services/chain_state_repository.h"
 #include "services/chain_tip.h"
 #include "chain/chain.h"
 #include "chain/chainparams.h"
@@ -21,6 +22,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <limits.h>
 #include <sys/stat.h>
 #include <sys/mman.h>
 #include <fcntl.h>
@@ -568,9 +570,40 @@ bool load_block_index(struct main_state *ms,
             genesis->nChainTx = 1;
             genesis->nBits = 0x1f07ffff;
             genesis->nChainWork = GetBlockProof(genesis);
-            chain_set_active_tip(ms, genesis, TIP_FROM_RESTORE,
-                                  "loader_init_genesis");
-            ms->pindex_best_header = genesis;
+            struct chain_state_rollback_authorization rollback_auth = {
+                .source = CSR_ROLLBACK_SOURCE_RESTORE,
+                .decision = POLICY_ALLOW,
+                .from_height = active_chain_height(&ms->chain_active),
+                .to_height = genesis->nHeight,
+                .max_depth = INT64_MAX,
+                .evidence_class = "block_index_loader_genesis_verified",
+                .reason = "loader_init_genesis",
+            };
+            struct chain_state_commit commit = {
+                .new_tip = genesis,
+                .new_coins_best = *genesis->phashBlock,
+                .expected_utxo_count = 0,
+                .update_header_tip = true,
+                .rollback_auth = &rollback_auth,
+                .wallet_scan_height = -1,
+                .reason = "loader_init_genesis",
+            };
+            enum csr_result rc = csr_commit_tip(csr_instance(), &commit);
+            if (rc == CSR_OK) {
+                return true;
+            }
+#ifdef ZCL_TESTING
+            if (rc == CSR_REJECTED_NOT_INITIALIZED) {
+                chain_set_active_tip(ms, genesis, TIP_FROM_RESTORE,
+                                      "loader_init_genesis_csr_uninit");
+                ms->pindex_best_header = genesis;
+                return true;
+            }
+#endif
+            fprintf(stderr, // obs-ok:pre-existing-diagnostic
+                    "block_index_loader: csr rejected genesis init (%s)\n",
+                    csr_result_name(rc));
+            return false;
         }
         return true;
     }

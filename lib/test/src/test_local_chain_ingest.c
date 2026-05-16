@@ -139,7 +139,7 @@ int test_local_chain_ingest(void)
         json_free(&v);
     }
 
-    /* ── 4. phase1 trust-but-skip when table is placeholder ─────── */
+    /* ── 4. phase1 placeholder behavior when table is empty ─────── */
     printf("local_chain_ingest: phase1 placeholder skip... ");
     {
         /* When g_sha3_windows_count == 0, a full run against a fake

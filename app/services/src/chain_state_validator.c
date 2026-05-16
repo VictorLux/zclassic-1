@@ -85,21 +85,16 @@ struct boot_validation_result validate_coins_chain_agreement(
                     r.action = BOOT_OK;
                 }
             } else {
-                /* coins_best_block not in block map. Reset it to null so
-                 * connect_block at h=1 doesn't get a view/prevblock mismatch.
-                 * This happens after SIGKILL or restart when the coins DB
-                 * has a stale best_block that's not in the current index. */
+                /* coins_best_block not in block map. Ask the recovery
+                 * executor to move the cursor through CSR instead of
+                 * mutating the coins view in the validator. */
                 printf("Chain at genesis, coins_best_block not in index "
-                       "— resetting to null for clean sync\n");
+                       "— requesting genesis cursor reset\n");
                 event_emitf(EV_RECOVERY_ACTION, 0,
-                    "action=reset_coins_best_to_null reason=coins_not_in_index chain_h=%d",
+                    "action=reset_coins_to_genesis reason=coins_not_in_index chain_h=%d",
                     chain_tip ? chain_tip->nHeight : 0);
-                struct uint256 null_hash;
-                uint256_set_null(&null_hash);
-                coins_view_cache_set_best_block(cvtip, &null_hash);
-                /* Flush the null best_block to SQLite so it persists */
-                coins_view_cache_flush(cvtip);
-                r.action = BOOT_OK;
+                r.action = BOOT_RECOVER_RESET_COINS_TO_GENESIS;
+                r.coins_height = 0;
             }
             return r;
         }
@@ -163,9 +158,7 @@ struct boot_validation_result validate_coins_chain_agreement(
             printf("Coins DB best block not in index — resetting "
                    "coins_best_block to chain tip h=%d (crash "
                    "recovery)\n", chain_tip->nHeight);
-            coins_view_cache_set_best_block(cvtip, chain_tip->phashBlock);
-            coins_view_cache_flush(cvtip);
-            r.action = BOOT_RECOVER_RESET_CHAIN;
+            r.action = BOOT_RECOVER_RESET_COINS_TO_CHAIN_TIP;
             r.coins_height = chain_tip->nHeight;
             memcpy(&r.coins_hash, chain_tip->phashBlock,
                    sizeof(r.coins_hash));
@@ -179,6 +172,8 @@ struct boot_validation_result validate_coins_chain_agreement(
         "coins_chain_mismatch chain_h=%d coins_h=%d action=%s",
         r.chain_height, r.coins_height,
         r.action == BOOT_RECOVER_RESET_CHAIN ? "reset_chain" :
+        r.action == BOOT_RECOVER_RESET_COINS_TO_CHAIN_TIP ? "reset_coins_to_chain_tip" :
+        r.action == BOOT_RECOVER_RESET_COINS_TO_GENESIS ? "reset_coins_to_genesis" :
         r.action == BOOT_RECOVER_REIMPORT ? "reimport" : "wipe_wait");
 
     return r;

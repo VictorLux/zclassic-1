@@ -21,9 +21,10 @@ static int test_sync_service_begin_sync(void)
         node.id = 7;
         node.state = PEER_ACTIVE;
         node.inbound = false;
+        node.starting_height = 1000;
 
         sync_set_state(SYNC_IDLE, "reset");
-        ASSERT(syncsvc_begin_peer_sync(&node));
+        ASSERT(syncsvc_begin_peer_sync(&node, 0, 0));
         ASSERT(node.state == PEER_SYNCING_HEADERS);
         ASSERT(sync_get_state() == SYNC_HEADERS_DOWNLOAD);
         PASS();
@@ -44,9 +45,72 @@ static int test_sync_service_rejects_inbound_sync(void)
         node.inbound = true;
 
         sync_set_state(SYNC_IDLE, "reset");
-        ASSERT(!syncsvc_begin_peer_sync(&node));
+        ASSERT(!syncsvc_begin_peer_sync(&node, 0, 0));
         ASSERT(node.state == PEER_ACTIVE);
         ASSERT(sync_get_state() == SYNC_IDLE);
+        PASS();
+    } _test_next:;
+
+    return failures;
+}
+
+static int test_sync_service_keeps_caught_up_peers_active(void)
+{
+    int failures = 0;
+
+    TEST("sync_service keeps caught-up outbound peers active") {
+        struct p2p_node node;
+        memset(&node, 0, sizeof(node));
+        node.id = 11;
+        node.state = PEER_ACTIVE;
+        node.inbound = false;
+        node.starting_height = 1000;
+
+        ASSERT(!syncsvc_should_begin_peer_sync(&node, 1000, 1000,
+                                               SYNC_AT_TIP));
+        ASSERT(!syncsvc_begin_peer_sync(&node, 1000, 1000));
+        ASSERT(node.state == PEER_ACTIVE);
+        PASS();
+    } _test_next:;
+
+    return failures;
+}
+
+static int test_sync_service_begins_when_peer_one_block_ahead(void)
+{
+    int failures = 0;
+
+    TEST("sync_service begins when active peer is one block ahead") {
+        struct p2p_node node;
+        memset(&node, 0, sizeof(node));
+        node.id = 13;
+        node.state = PEER_ACTIVE;
+        node.inbound = false;
+        node.starting_height = 1001;
+
+        ASSERT(syncsvc_should_begin_peer_sync(&node, 1000, 1000,
+                                              SYNC_AT_TIP));
+        ASSERT(!syncsvc_should_mark_peer_caught_up(&node, 1000, 1000));
+        PASS();
+    } _test_next:;
+
+    return failures;
+}
+
+static int test_sync_service_marks_caught_up_syncing_peers_active(void)
+{
+    int failures = 0;
+
+    TEST("sync_service marks caught-up syncing peers active") {
+        struct p2p_node node;
+        memset(&node, 0, sizeof(node));
+        node.id = 12;
+        node.state = PEER_SYNCING_HEADERS;
+        node.inbound = false;
+        node.starting_height = 1000;
+
+        ASSERT(syncsvc_should_mark_peer_caught_up(&node, 1000, 1000));
+        ASSERT(!syncsvc_should_mark_peer_caught_up(&node, 999, 1000));
         PASS();
     } _test_next:;
 
@@ -612,6 +676,7 @@ static int test_sync_service_builds_getheaders_locator_from_chain(void)
         ASSERT(syncsvc_build_getheaders_locator(&loc, &chain, NULL, &hg));
         ASSERT(loc.num_hashes >= 2);
         ASSERT(uint256_eq(&loc.vhave[0], &h2));
+        ASSERT(uint256_eq(&loc.vhave[1], &h1));
         ASSERT(uint256_eq(&loc.vhave[loc.num_hashes - 1], &hg));
         block_locator_free(&loc);
 
@@ -1238,6 +1303,9 @@ int test_sync_service(void)
     int failures = 0;
     failures += test_sync_service_begin_sync();
     failures += test_sync_service_rejects_inbound_sync();
+    failures += test_sync_service_keeps_caught_up_peers_active();
+    failures += test_sync_service_begins_when_peer_one_block_ahead();
+    failures += test_sync_service_marks_caught_up_syncing_peers_active();
     failures += test_sync_service_request_policy();
     failures += test_sync_service_periodic_getheaders_action();
     failures += test_sync_service_invalid_block_getheaders_action();

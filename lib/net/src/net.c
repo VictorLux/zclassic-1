@@ -404,11 +404,6 @@ bool p2p_node_receive_bytes(struct p2p_node *node, const char *data,
         msg_idx++;
 
         if (net_message_complete(msg)) {
-            char dcmd[COMMAND_SIZE + 1];
-            msg_header_get_command(&msg->hdr, dcmd, sizeof(dcmd));
-            printf("  completed msg '%s' size=%u at offset=%u/%u\n",
-                   dcmd, msg->hdr.nMessageSize,
-                   orig_nbytes - nbytes, orig_nbytes);
             msg->time_usec = GetTimeMicros();
         }
     }
@@ -730,7 +725,7 @@ struct p2p_node *find_node_by_addr(struct net_manager *nm,
         }
     }
     zcl_mutex_unlock(&nm->cs_nodes);
-    LOG_NULL("net", "node not found by addr");
+    return NULL;
 }
 
 struct p2p_node *find_node_by_service(struct net_manager *nm,
@@ -745,7 +740,7 @@ struct p2p_node *find_node_by_service(struct net_manager *nm,
         }
     }
     zcl_mutex_unlock(&nm->cs_nodes);
-    LOG_NULL("net", "node not found by service addr");
+    return NULL;
 }
 
 /* --- add node to manager --- */
@@ -792,7 +787,7 @@ struct p2p_node *connect_node(struct net_manager *nm,
         log_json_escape(addr_safe, sizeof(addr_safe), addr_str);
         log_jsonf(LOG_JSON_WARN, "peer_connect_failed",
                   "\"addr\":\"%s\"", addr_safe);
-        LOG_NULL("net", "socket connect failed to %s", addr_safe);
+        return NULL;
     }
 
     struct p2p_node *node = p2p_node_create(nm, sock, addr_connect,
@@ -952,7 +947,7 @@ static int find_local_host(struct net_manager *nm, const struct net_addr *addr)
     for (size_t i = 0; i < nm->num_local_hosts; i++)
         if (net_addr_eq(&nm->local_hosts[i], addr))
             return (int)i;
-    LOG_ERR("net", "local host not found");
+    return -1;
 }
 
 bool add_local(struct net_manager *nm, const struct net_service *addr, int score)
@@ -1429,7 +1424,11 @@ bool addr_db_read(struct net_manager *nm, const char *datadir)
     snprintf(path, sizeof(path), "%s/peers.dat", datadir);
 
     FILE *f = fopen(path, "rb");
-    if (!f) LOG_FAIL("net", "fopen failed for peers.dat read: %s", path);
+    if (!f) {
+        if (errno == ENOENT)
+            return false; /* clean first-run/cold-start path */
+        LOG_FAIL("net", "fopen failed for peers.dat read: %s", path);
+    }
 
     fseek(f, 0, SEEK_END);
     long file_size = ftell(f);

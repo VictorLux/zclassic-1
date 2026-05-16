@@ -18,6 +18,9 @@
 #include <time.h>
 #include "util/safe_alloc.h"
 
+extern bool process_block_test_hydrate_index_from_disk(
+    struct block_index *pindex, const char *datadir);
+
 /* ── Plan tests ────────────────────────────────────────────────── */
 
 static int test_plan_hash_found_in_map(void) {
@@ -850,6 +853,56 @@ static int test_backfill_nbits_reads_from_block_file(void) {
     return failures;
 }
 
+static int test_connect_tip_hydrates_placeholder_from_disk(void) {
+    int failures = 0;
+    TEST("connect_tip hydration: verified disk block repairs nBits=0 HAVE_DATA entry") {
+        char tmpdir[256];
+        snprintf(tmpdir, sizeof(tmpdir), "./test-tmp/%d_connect_tip_hydrate",
+                 (int)getpid());
+        mkdir("./test-tmp", 0755);
+        mkdir(tmpdir, 0755);
+        char blocksdir[320];
+        snprintf(blocksdir, sizeof(blocksdir), "%s/blocks", tmpdir);
+        mkdir(blocksdir, 0755);
+
+        struct disk_block_pos pos = { .nFile = 0, .nPos = 0 };
+        const uint32_t expected_nbits = 0x1e14f400;
+        ASSERT(write_block_fixture(tmpdir, &pos, expected_nbits));
+        ASSERT(pos.nFile >= 0);
+        ASSERT(pos.nPos > 0);
+
+        struct block b_check;
+        ASSERT(read_block_from_disk_pread(&b_check, &pos, tmpdir));
+        struct uint256 blk_hash;
+        block_get_hash(&b_check, &blk_hash);
+        uint32_t expected_time = b_check.header.nTime;
+        int32_t expected_version = b_check.header.nVersion;
+        block_free(&b_check);
+
+        struct block_index pi;
+        block_index_init(&pi);
+        pi.phashBlock = &blk_hash;
+        pi.nHeight = 500;
+        pi.nVersion = 0;
+        pi.nTime = 0;
+        pi.nBits = 0;
+        pi.nStatus = BLOCK_VALID_SCRIPTS | BLOCK_HAVE_DATA;
+        pi.nFile = pos.nFile;
+        pi.nDataPos = pos.nPos;
+
+        ASSERT(process_block_test_hydrate_index_from_disk(&pi, tmpdir));
+        ASSERT(pi.nBits == expected_nbits);
+        ASSERT(pi.nTime == expected_time);
+        ASSERT(pi.nVersion == expected_version);
+
+        char rm_cmd[512];
+        snprintf(rm_cmd, sizeof(rm_cmd), "rm -rf %s", tmpdir);
+        (void)system(rm_cmd);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 static int test_backfill_nbits_skips_synthetic_anchor(void) {
     int failures = 0;
     TEST("chain_restore_backfill_nbits: skips synthetic anchors (nDataPos==0)") {
@@ -953,6 +1006,7 @@ int test_chain_restore_service(void) {
     failures += test_rebuild_active_chain_scales_at_100k();
     failures += test_rebuild_populates_skiplist_for_log_n_ancestor();
     failures += test_backfill_nbits_reads_from_block_file();
+    failures += test_connect_tip_hydrates_placeholder_from_disk();
     failures += test_backfill_nbits_skips_synthetic_anchor();
     failures += test_finalize_null_datadir_skips_disk();
     return failures;

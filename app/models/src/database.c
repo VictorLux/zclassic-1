@@ -6,6 +6,7 @@
 #include "models/database_validators.h"
 #include <errno.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <time.h>
 #include <unistd.h>
@@ -172,6 +173,22 @@ static const char *SCHEMA[] = {
 
     "CREATE INDEX IF NOT EXISTS idx_utxo_height"
     " ON utxos(height)",
+
+    /* Snapshot receive staging.
+     * P2P snapshot sync must never write directly to active utxos before
+     * FlyClient and SHA3 verification pass. This table is cleared at boot
+     * and on every receive begin/failure, then atomically promoted. */
+    "CREATE TABLE IF NOT EXISTS snapshot_staging_utxos ("
+    "txid BLOB NOT NULL,vout INTEGER NOT NULL,"
+    "value INTEGER NOT NULL CHECK(value >= 0 AND value <= 2100000000000000),"
+    "script BLOB NOT NULL,"
+    "script_type INTEGER NOT NULL DEFAULT 0,"
+    "address_hash BLOB,height INTEGER NOT NULL CHECK(height >= 0),"
+    "is_coinbase INTEGER NOT NULL DEFAULT 0,"
+    "PRIMARY KEY (txid,vout))",
+
+    "CREATE INDEX IF NOT EXISTS idx_snapshot_staging_height"
+    " ON snapshot_staging_utxos(height)",
 
     /* Sapling nullifiers & anchors */
     "CREATE TABLE IF NOT EXISTS sapling_nullifiers ("
@@ -350,6 +367,12 @@ static bool prepare_statements(struct node_db *ndb)
 
     PREP(stmt_utxo_insert,
          "INSERT OR REPLACE INTO utxos"
+         "(txid,vout,value,script,script_type,"
+         "address_hash,height,is_coinbase)"
+         " VALUES(?,?,?,?,?,?,?,?)");
+
+    PREP(stmt_snapshot_staging_insert,
+         "INSERT OR REPLACE INTO snapshot_staging_utxos"
          "(txid,vout,value,script,script_type,"
          "address_hash,height,is_coinbase)"
          " VALUES(?,?,?,?,?,?,?,?)");
@@ -571,6 +594,7 @@ static bool db_open_raw(sqlite3 **db_out, const char *path)
 static void finalize_statements(struct node_db *ndb)
 {
     sqlite3_finalize(ndb->stmt_utxo_insert);
+    sqlite3_finalize(ndb->stmt_snapshot_staging_insert);
     sqlite3_finalize(ndb->stmt_utxo_delete);
     sqlite3_finalize(ndb->stmt_utxo_find);
     sqlite3_finalize(ndb->stmt_block_insert);
@@ -615,6 +639,20 @@ bool node_db_open(struct node_db *ndb, const char *path)
     }
 
     if (!create_schema(ndb)) {
+        sqlite3_close(ndb->db);
+        node_db_state_destroy(ndb);
+        return false;
+    }
+
+    /* Crash recovery: staged snapshot rows are never authoritative across
+     * process lifetimes. If the node died mid-receive or mid-verify, discard
+     * the incomplete staging namespace before normal boot continues. */
+    if (db_exec_checked(ndb->db,
+            "DELETE FROM snapshot_staging_utxos",
+            "snapshot_staging_boot_cleanup") != SQLITE_OK ||
+        db_exec_checked(ndb->db,
+            "DELETE FROM node_state WHERE key LIKE 'snapshot_staging_%'",
+            "snapshot_staging_state_boot_cleanup") != SQLITE_OK) {
         sqlite3_close(ndb->db);
         node_db_state_destroy(ndb);
         return false;
@@ -737,9 +775,14 @@ bool node_db_state_set(struct node_db *ndb, const char *key,
     if (!ndb->open) return false;
     sqlite3_stmt *s = ndb->stmt_state_set;
     sqlite3_reset(s);
+    sqlite3_clear_bindings(s);
     sqlite3_bind_text(s, 1, key, -1, SQLITE_STATIC);
     sqlite3_bind_blob(s, 2, value, (int)len, SQLITE_STATIC);
-    return sqlite3_step(s) == SQLITE_DONE;  // raw-sql-ok: a3
+    int rc = sqlite3_step(s);  // raw-sql-ok: a3
+    sqlite3_reset(s);
+    sqlite3_clear_bindings(s);
+    node_db_note_activity(ndb, "state_set", rc);
+    return rc == SQLITE_DONE;
 }
 
 bool node_db_state_get(struct node_db *ndb, const char *key,
@@ -748,14 +791,29 @@ bool node_db_state_get(struct node_db *ndb, const char *key,
     if (!ndb->open) return false;
     sqlite3_stmt *s = ndb->stmt_state_get;
     sqlite3_reset(s);
+    sqlite3_clear_bindings(s);
     sqlite3_bind_text(s, 1, key, -1, SQLITE_STATIC);
-    if (sqlite3_step(s) != SQLITE_ROW) return false;  // raw-sql-ok: a3
+    int rc = sqlite3_step(s);  // raw-sql-ok: a3
+    if (rc != SQLITE_ROW) {
+        sqlite3_reset(s);
+        sqlite3_clear_bindings(s);
+        node_db_note_activity(ndb, "state_get", rc);
+        return false;
+    }
     int blob_len = sqlite3_column_bytes(s, 0);
-    if (blob_len <= 0) return false;
+    if (blob_len <= 0) {
+        sqlite3_reset(s);
+        sqlite3_clear_bindings(s);
+        node_db_note_activity(ndb, "state_get", SQLITE_DONE);
+        return false;
+    }
     size_t copy = (size_t)blob_len < max_len
                   ? (size_t)blob_len : max_len;
     memcpy(value, sqlite3_column_blob(s, 0), copy);
     if (out_len) *out_len = copy;
+    sqlite3_reset(s);
+    sqlite3_clear_bindings(s);
+    node_db_note_activity(ndb, "state_get", rc);
     return true;
 }
 
@@ -1419,6 +1477,16 @@ int node_db_migrate(struct node_db *ndb, const char *datadir)
 bool node_db_wipe_utxos(struct node_db *ndb)
 {
     if (!ndb || !ndb->open) return false;
+    int64_t existing = node_db_utxo_count(ndb);
+    const char *offline_repair = getenv("ZCL_OFFLINE_REPAIR");
+    if (existing > 1000 &&
+        (!offline_repair || strcmp(offline_repair, "1") != 0)) {
+        fprintf(stderr,
+                "db: refused to wipe %lld UTXOs without "
+                "ZCL_OFFLINE_REPAIR=1\n",
+                (long long)existing);
+        return false;
+    }
     bool ok = true;
     ok &= node_db_exec(ndb, "DELETE FROM utxos");
     ok &= node_db_exec(ndb, "DELETE FROM node_state WHERE key='coins_best_block'");

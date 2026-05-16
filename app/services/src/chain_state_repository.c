@@ -30,6 +30,9 @@ const char *csr_result_name(enum csr_result r)
     case CSR_REJECTED_STALE_INDEX:        return "stale_index";
     case CSR_REJECTED_UTXO_DELTA_TOO_BIG: return "utxo_delta_too_big";
     case CSR_REJECTED_COINS_MISMATCH:     return "coins_mismatch";
+    case CSR_REJECTED_HEADER_REGRESSION:  return "header_regression";
+    case CSR_REJECTED_ROLLBACK_AUTH:      return "rollback_auth";
+    case CSR_REJECTED_PERSIST:            return "persist";
     case CSR_REJECTED_OOM:                return "oom";
     case CSR_NUM_RESULTS:                 break;
     }
@@ -97,6 +100,35 @@ static int64_t csr_sqlite_utxo_count(struct node_db *ndb)
 
 /* ── Validation (caller holds csr->lock) ─────────────────────── */
 
+static bool csr_rollback_authorization_valid(
+    const struct chain_state_rollback_authorization *auth)
+{
+    if (!auth)
+        return false;
+    if (auth->source == CSR_ROLLBACK_SOURCE_NONE)
+        return false;
+    if (auth->decision != POLICY_ALLOW)
+        return false;
+    if (!auth->evidence_class || !*auth->evidence_class)
+        return false;
+    if (!auth->reason || !*auth->reason)
+        return false;
+    if (auth->from_height >= 0 && auth->to_height >= 0 &&
+        auth->from_height > auth->to_height && auth->max_depth >= 0) {
+        int64_t depth = auth->from_height - auth->to_height;
+        if (depth > auth->max_depth)
+            return false;
+    }
+    return true;
+}
+
+static bool csr_commit_has_rollback_authorization(
+    const struct chain_state_commit *commit)
+{
+    return csr_rollback_authorization_valid(
+        commit ? commit->rollback_auth : NULL);
+}
+
 static enum csr_result csr_validate_locked(
     struct chain_state_repository *csr,
     const struct chain_state_commit *commit)
@@ -155,7 +187,8 @@ static enum csr_result csr_validate_locked(
     if (sql_max >= 0 &&
         sql_max - (int64_t)new_tip->nHeight > csr->stale_index_height_gap) {
         int64_t cur_utxos = csr_sqlite_utxo_count(csr->ndb);
-        if (cur_utxos > csr->max_utxo_orphan_rows && !commit->allow_rollback) {
+        if (cur_utxos > csr->max_utxo_orphan_rows &&
+            !csr_commit_has_rollback_authorization(commit)) {
             return CSR_REJECTED_STALE_INDEX;
         }
     }
@@ -179,8 +212,8 @@ static enum csr_result csr_validate_locked(
     /* Step 7: orphan-rows guard for backward moves. Even without an
      * obviously stale block_index, we refuse to silently orphan a
      * large UTXO set unless the caller explicitly opted into a
-     * rollback (which Phase 2 will gate behind recovery_policy). */
-    if (csr->chain_active && !commit->allow_rollback) {
+     * rollback with a typed policy authorization. */
+    if (csr->chain_active && !csr_commit_has_rollback_authorization(commit)) {
         int cur_h = active_chain_height(csr->chain_active);
         if (cur_h >= 0 && new_tip->nHeight < cur_h) {
             int64_t cur_utxos = csr_sqlite_utxo_count(csr->ndb);
@@ -188,6 +221,48 @@ static enum csr_result csr_validate_locked(
                 return CSR_REJECTED_UTXO_DELTA_TOO_BIG;
             }
         }
+    }
+
+    return CSR_OK;
+}
+
+static enum csr_result csr_validate_header_locked(
+    struct chain_state_repository *csr,
+    const struct chain_state_header_commit *commit)
+{
+    if (!commit || !commit->new_header_tip)
+        return CSR_REJECTED_NULL_INPUT;
+    if (!commit->reason || !*commit->reason)
+        return CSR_REJECTED_NULL_INPUT;
+
+    struct block_index *new_tip = commit->new_header_tip;
+    if (!new_tip->phashBlock)
+        return CSR_REJECTED_NULL_INPUT;
+    if (new_tip->nHeight < 0)
+        return CSR_REJECTED_NULL_INPUT;
+
+    if (csr->block_map) {
+        struct block_index *found =
+            block_map_find(csr->block_map, new_tip->phashBlock);
+        if (!found)
+            return CSR_REJECTED_TIP_NOT_IN_INDEX;
+        if (found != new_tip)
+            return CSR_REJECTED_HASH_MISMATCH;
+    }
+
+    if (csr->block_map && new_tip->pprev) {
+        if (!new_tip->pprev->phashBlock)
+            return CSR_REJECTED_MISSING_PREV;
+        struct block_index *prev =
+            block_map_find(csr->block_map, new_tip->pprev->phashBlock);
+        if (prev != new_tip->pprev)
+            return CSR_REJECTED_MISSING_PREV;
+    }
+
+    if (csr->pindex_best_hdr && *csr->pindex_best_hdr &&
+        new_tip->nHeight < (*csr->pindex_best_hdr)->nHeight &&
+        !csr_rollback_authorization_valid(commit->rollback_auth)) {
+        return CSR_REJECTED_HEADER_REGRESSION;
     }
 
     return CSR_OK;
@@ -309,6 +384,99 @@ void csr_set_stale_index_gap(struct chain_state_repository *csr, int gap)
     pthread_mutex_unlock(&csr->lock);
 }
 
+enum csr_result csr_commit_header_tip(
+    struct chain_state_repository *csr,
+    const struct chain_state_header_commit *commit)
+{
+    if (!csr)
+        return CSR_REJECTED_NULL_INPUT;
+    if (!csr->initialized)
+        return CSR_REJECTED_NOT_INITIALIZED;
+
+    pthread_mutex_lock(&csr->lock);
+    enum csr_result rc = csr_validate_header_locked(csr, commit);
+    if (rc != CSR_OK) {
+        csr->commits_rejected[rc]++;
+        pthread_mutex_unlock(&csr->lock);
+        fprintf(stderr,
+                "csr: HEADER_REJECTED code=%s to=%d reason=%s\n",
+                csr_result_name(rc),
+                (commit && commit->new_header_tip)
+                    ? commit->new_header_tip->nHeight : -1,
+                (commit && commit->reason) ? commit->reason : "");
+        return rc;
+    }
+
+    if (csr->pindex_best_hdr)
+        *csr->pindex_best_hdr = commit->new_header_tip;
+    pthread_mutex_unlock(&csr->lock);
+
+    printf("csr: header tip committed to=%d reason=%s\n",
+           commit->new_header_tip->nHeight, commit->reason);
+    return CSR_OK;
+}
+
+enum csr_result csr_clear_active_tip(
+    struct chain_state_repository *csr,
+    const struct chain_state_clear_commit *commit)
+{
+    if (!csr || !commit || !commit->reason)
+        return CSR_REJECTED_NULL_INPUT;
+    if (!csr->initialized)
+        return CSR_REJECTED_NOT_INITIALIZED;
+    if (!csr_rollback_authorization_valid(commit->rollback_auth))
+        return CSR_REJECTED_ROLLBACK_AUTH;
+
+    pthread_mutex_lock(&csr->lock);
+
+    int from_height = csr->chain_active
+        ? active_chain_height(csr->chain_active) : -1;
+    if (csr->chain_active) {
+        if (!active_chain_set_tip(csr->chain_active, NULL)) {
+            csr->commits_rejected[CSR_REJECTED_OOM]++;
+            pthread_mutex_unlock(&csr->lock);
+            return CSR_REJECTED_OOM;
+        }
+    }
+
+    csr->commits_ok++;
+    event_emitf(EV_CHAIN_TIP_COMMIT, 0,
+                "from=%d to=-1 reason=%s", from_height, commit->reason);
+    pthread_mutex_unlock(&csr->lock);
+
+    printf("csr: active tip cleared from=%d reason=%s\n",
+           from_height, commit->reason);
+    return CSR_OK;
+}
+
+enum csr_result csr_repair_set_coins_best(
+    struct chain_state_repository *csr,
+    const struct chain_state_coins_best_repair *repair)
+{
+    if (!csr || !repair || !repair->reason || !*repair->reason)
+        return CSR_REJECTED_NULL_INPUT;
+    if (!csr->initialized)
+        return CSR_REJECTED_NOT_INITIALIZED;
+    if (!csr->coins_tip)
+        return CSR_REJECTED_NULL_INPUT;
+    if (!csr_rollback_authorization_valid(repair->repair_auth))
+        return CSR_REJECTED_ROLLBACK_AUTH;
+
+    pthread_mutex_lock(&csr->lock);
+    int from_height = csr->chain_active
+        ? active_chain_height(csr->chain_active) : -1;
+    coins_view_cache_set_best_block(csr->coins_tip, &repair->new_coins_best);
+    csr->commits_ok++;
+    event_emitf(EV_CHAIN_TIP_COMMIT, 0,
+                "from=%d to=%d reason=%s coins_best_repair=1",
+                from_height, from_height, repair->reason);
+    pthread_mutex_unlock(&csr->lock);
+
+    printf("csr: coins best repaired active_height=%d reason=%s\n",
+           from_height, repair->reason);
+    return CSR_OK;
+}
+
 enum csr_result csr_commit_tip(struct chain_state_repository *csr,
                                 const struct chain_state_commit *commit)
 {
@@ -336,9 +504,27 @@ enum csr_result csr_commit_tip(struct chain_state_repository *csr,
     printf("[csr] commit_tip h=%d reason=%s\n",
            commit->new_tip->nHeight, commit->reason);
 
-    /* Atomic update sequence. The only call that can fail is
-     * active_chain_set_tip (realloc OOM); we attempt it first so a
-     * failure aborts before any other source has been touched. */
+    if (commit->persist_coins_best) {
+        if (!csr->ndb || !csr->ndb->open ||
+            !node_db_state_set(csr->ndb, "coins_best_block",
+                               commit->new_coins_best.data, 32)) {
+            csr->commits_rejected[CSR_REJECTED_PERSIST]++;
+            csr_emit_rejected_event(csr, from_height, commit,
+                                    CSR_REJECTED_PERSIST);
+            pthread_mutex_unlock(&csr->lock);
+            fprintf(stderr,
+                    "csr: REJECTED code=%s from=%d to=%d reason=%s\n",
+                    csr_result_name(CSR_REJECTED_PERSIST), from_height,
+                    commit->new_tip ? commit->new_tip->nHeight : -1,
+                    commit->reason ? commit->reason : "");
+            return CSR_REJECTED_PERSIST;
+        }
+    }
+
+    /* Publish the concrete in-memory view only after optional durable
+     * cursor persistence succeeds. The remaining failure point is
+     * active_chain_set_tip realloc/OOM, which aborts before the other
+     * in-memory sources are touched. */
     if (csr->chain_active) {
         if (!active_chain_set_tip(csr->chain_active, commit->new_tip)) {
             csr->commits_rejected[CSR_REJECTED_OOM]++;
@@ -353,7 +539,8 @@ enum csr_result csr_commit_tip(struct chain_state_repository *csr,
     }
     if (csr->pindex_best_hdr && commit->update_header_tip) {
         struct block_index *cur_hdr = *csr->pindex_best_hdr;
-        if (!cur_hdr || commit->new_tip->nHeight >= cur_hdr->nHeight) {
+        if (!cur_hdr || commit->new_tip->nHeight >= cur_hdr->nHeight ||
+            csr_commit_has_rollback_authorization(commit)) {
             *csr->pindex_best_hdr = commit->new_tip;
         }
     }

@@ -8,9 +8,8 @@
  *   QO_SRC_LOCAL       — our own active_chain at the probed height
  *   QO_SRC_ZCLASSICD   — RPC getblockhash against the local zclassicd
  *
- * A future P2P-peer source (QO_SRC_PEER) will hash a peer's header
- * chain at the probed height. The probe API is shaped so that source
- * is purely additive — no caller changes required.
+ * QO_SRC_PEER is populated from recently accepted zclassic23 peer
+ * headers via quorum_oracle_record_peer_header_vote().
  *
  * Verdict logic:
  *   - If at least `min_agree` non-error sources return the same hash,
@@ -32,7 +31,7 @@ struct json_value;
 enum quorum_oracle_source {
     QO_SRC_LOCAL     = 0,
     QO_SRC_ZCLASSICD = 1,
-    QO_SRC_PEER      = 2,        /* reserved — not yet implemented */
+    QO_SRC_PEER      = 2,
     QO_SRC_NUM       = 3,
 };
 
@@ -40,6 +39,7 @@ struct quorum_oracle_source_result {
     bool present;                /* did this source contribute a hash? */
     bool error;                  /* present && error → RPC/IO failure */
     char hash_hex[65];           /* lowercased, NUL-terminated */
+    int peer_count;              /* QO_SRC_PEER: unique live peers in vote */
 };
 
 enum quorum_oracle_verdict {
@@ -66,6 +66,11 @@ void quorum_oracle_init(const struct quorum_oracle_config *cfg);
  * verdict + per-source fields populated in *out. On QO_VERDICT_QUORUM_SPLIT
  * the disagreement is forwarded to oracle_policy. */
 bool quorum_oracle_probe(int height, struct quorum_oracle_result *out);
+
+void quorum_oracle_record_peer_header_vote(uint32_t peer_id,
+                                           int height,
+                                           const char hash_hex[65]);
+void quorum_oracle_forget_peer(uint32_t peer_id);
 
 bool quorum_oracle_dump_state_json(struct json_value *out, const char *key);
 

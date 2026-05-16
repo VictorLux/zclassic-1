@@ -11,6 +11,9 @@
 #include "core/hash.h"
 #include "crypto/sha256.h"
 #include "crypto/sha3.h"
+#include "rpc/legacy_chain_oracle.h"
+#include "validation/chainstate.h"
+#include "validation/main_constants.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -28,6 +31,21 @@ static uint64_t g_cached_utxo_count = 0;
 static bool g_cached_root_valid = false;
 static _Atomic uint64_t g_cached_utxo_root_version = 0;
 static pthread_mutex_t g_utxo_root_cache_mutex = PTHREAD_MUTEX_INITIALIZER;
+
+static bool fast_sync_open_readonly_db(const char *db_path, sqlite3 **db_out,
+                                       const char *op)
+{
+    if (sqlite3_open_v2(db_path, db_out,
+                        SQLITE_OPEN_READONLY | SQLITE_OPEN_NOMUTEX,
+                        NULL) != SQLITE_OK) {
+        LOG_FAIL("sync", "%s: failed to open db %s", op, db_path);
+    }
+
+    sqlite3_busy_timeout(*db_out, 30000);
+    sqlite3_exec(*db_out, "PRAGMA query_only=ON", NULL, NULL, NULL);
+    sqlite3_exec(*db_out, "PRAGMA read_uncommitted=1", NULL, NULL, NULL);
+    return true;
+}
 
 bool fast_sync_publish_utxo_root_cache(const uint8_t root[32], uint64_t count)
 {
@@ -83,15 +101,19 @@ bool fast_sync_build_offer(const char *datadir,
 {
     GUARD(offer, "sync", "build_offer: offer is NULL");
     memset(offer, 0, sizeof(*offer));
+    offer->protocol_version = FAST_SYNC_PROTOCOL_VERSION;
+    offer->snapshot_schema_version = FAST_SYNC_SNAPSHOT_SCHEMA_VERSION;
 
     char db_path[1024];
     zcl_node_db_path(db_path, sizeof(db_path), datadir);
 
     sqlite3 *db = NULL;
-    if (sqlite3_open_v2(db_path, &db, SQLITE_OPEN_READONLY, NULL) != SQLITE_OK)
-        LOG_FAIL("sync", "build_offer: failed to open db %s", db_path);
+    fast_sync_open_readonly_db(db_path, &db, "build_offer");
 
-    /* Get tip height and hash */
+    /* Get tip height and hash. The live UTXO snapshot reflects the current
+     * coins view, so it must be bound to the same block hash. Receivers use
+     * peer_tip_height to reject non-final live snapshots unless a future
+     * finalized snapshot file advertises an older anchor. */
     sqlite3_stmt *s = NULL;
     sqlite3_prepare_v2(db, "SELECT value FROM node_state WHERE key='tip_height'",
                         -1, &s, NULL);
@@ -101,21 +123,38 @@ bool fast_sync_build_offer(const char *datadir,
             int64_t h;
             memcpy(&h, sqlite3_column_blob(s, 0), sizeof(h));
             offer->height = (int32_t)h;
+            offer->peer_tip_height = (int32_t)h;
         } else if (len >= 1 && len <= 8) {
             const void *blob = sqlite3_column_blob(s, 0);
             memcpy(&offer->height, blob, len < 4 ? (size_t)len : 4);
+            offer->peer_tip_height = offer->height;
         }
     }
     sqlite3_finalize(s);
 
-    sqlite3_prepare_v2(db, "SELECT value FROM node_state WHERE key='tip_hash'",
-                        -1, &s, NULL);
+    sqlite3_prepare_v2(db,
+        "SELECT value FROM node_state WHERE key='tip_hash'",
+        -1, &s, NULL);
     if (sqlite3_step(s) == SQLITE_ROW) {
         const void *h = sqlite3_column_blob(s, 0);
         if (h && sqlite3_column_bytes(s, 0) >= 32)
             memcpy(offer->block_hash, h, 32);
     }
     sqlite3_finalize(s);
+
+    sqlite3_prepare_v2(db,
+        "SELECT chain_work FROM blocks WHERE hash=?",
+        -1, &s, NULL);
+    sqlite3_bind_blob(s, 1, offer->block_hash, 32, SQLITE_STATIC);
+    if (sqlite3_step(s) == SQLITE_ROW) {
+        const void *cw = sqlite3_column_blob(s, 0);
+        if (cw && sqlite3_column_bytes(s, 0) >= 32)
+            memcpy(offer->chain_work, cw, 32);
+    }
+    sqlite3_finalize(s);
+    if (legacy_chain_rpc_get_chainwork(offer->block_hash, offer->chain_work)) {
+        printf("Fast sync: chainwork refreshed from local zclassicd RPC\n");
+    }
 
     /* Count UTXOs */
     sqlite3_prepare_v2(db, "SELECT count(*) FROM utxos", -1, &s, NULL);
@@ -164,8 +203,7 @@ bool fast_sync_compute_utxo_root(const char *datadir,
     zcl_node_db_path(db_path, sizeof(db_path), datadir);
 
     sqlite3 *db = NULL;
-    if (sqlite3_open_v2(db_path, &db, SQLITE_OPEN_READONLY, NULL) != SQLITE_OK)
-        LOG_FAIL("sync", "compute_utxo_root: failed to open db %s", db_path);
+    fast_sync_open_readonly_db(db_path, &db, "compute_utxo_root");
 
     fast_sync_compute_utxo_root_db(db, root_out);
     sqlite3_close(db);
@@ -189,7 +227,184 @@ static _Atomic uint64_t g_snapshot_cache_version = 0;
  * 96 MB for 1.35M UTXOs. Eliminates all file I/O during serving. */
 static uint8_t *g_snapshot_buf = NULL;
 static int64_t  g_snapshot_buf_size = 0;
+static uint64_t *g_snapshot_chunk_offsets = NULL;
+static uint32_t g_snapshot_num_chunks = 0;
 static pthread_mutex_t g_snapshot_cache_mutex = PTHREAD_MUTEX_INITIALIZER;
+
+static uint32_t read_le32(const uint8_t *p)
+{
+    return ((uint32_t)p[0]) |
+           ((uint32_t)p[1] << 8) |
+           ((uint32_t)p[2] << 16) |
+           ((uint32_t)p[3] << 24);
+}
+
+static uint64_t read_le64(const uint8_t *p)
+{
+    return ((uint64_t)p[0]) |
+           ((uint64_t)p[1] << 8) |
+           ((uint64_t)p[2] << 16) |
+           ((uint64_t)p[3] << 24) |
+           ((uint64_t)p[4] << 32) |
+           ((uint64_t)p[5] << 40) |
+           ((uint64_t)p[6] << 48) |
+           ((uint64_t)p[7] << 56);
+}
+
+static void sha3_write_u16_le(struct sha3_256_ctx *ctx, uint16_t v)
+{
+    uint8_t le[2] = {
+        (uint8_t)v,
+        (uint8_t)(v >> 8)
+    };
+    sha3_256_write(ctx, le, sizeof(le));
+}
+
+static void sha3_write_u32_le(struct sha3_256_ctx *ctx, uint32_t v)
+{
+    uint8_t le[4] = {
+        (uint8_t)v,
+        (uint8_t)(v >> 8),
+        (uint8_t)(v >> 16),
+        (uint8_t)(v >> 24)
+    };
+    sha3_256_write(ctx, le, sizeof(le));
+}
+
+static void sha3_write_u64_le(struct sha3_256_ctx *ctx, uint64_t v)
+{
+    uint8_t le[8];
+    for (int i = 0; i < 8; i++)
+        le[i] = (uint8_t)(v >> (8 * i));
+    sha3_256_write(ctx, le, sizeof(le));
+}
+
+static bool snapshot_compact_size(const uint8_t *buf, size_t size,
+                                  size_t *pos, uint32_t *out)
+{
+    if (*pos >= size)
+        return false;
+    uint8_t b = buf[(*pos)++];
+    if (b < 253) {
+        *out = b;
+        return true;
+    }
+    if (b == 253) {
+        if (*pos + 2 > size)
+            return false;
+        *out = (uint32_t)buf[*pos] | ((uint32_t)buf[*pos + 1] << 8);
+        *pos += 2;
+        return true;
+    }
+    return false;
+}
+
+static bool snapshot_skip_entry(const uint8_t *buf, size_t size, size_t *pos)
+{
+    if (*pos + 49 > size)
+        return false;
+    *pos += 32; /* txid */
+    *pos += 4;  /* vout */
+    *pos += 8;  /* value */
+    *pos += 4;  /* height */
+    *pos += 1;  /* is_coinbase */
+
+    uint32_t script_len = 0;
+    if (!snapshot_compact_size(buf, size, pos, &script_len))
+        return false;
+    if (*pos + script_len > size)
+        return false;
+    *pos += script_len;
+    return true;
+}
+
+static bool snapshot_build_chunk_offsets_locked(void)
+{
+    free(g_snapshot_chunk_offsets);
+    g_snapshot_chunk_offsets = NULL;
+    g_snapshot_num_chunks = 0;
+
+    if (!g_snapshot_buf || g_snapshot_buf_size <= 0 || g_snapshot_count == 0)
+        return false;
+
+    uint32_t expected_chunks =
+        (uint32_t)((g_snapshot_count + SYNC_CHUNK_SIZE - 1) /
+                   SYNC_CHUNK_SIZE);
+    g_snapshot_chunk_offsets =
+        zcl_calloc(expected_chunks, sizeof(*g_snapshot_chunk_offsets),
+                   "snapshot_chunk_offsets");
+    if (!g_snapshot_chunk_offsets)
+        LOG_FAIL("sync", "snapshot offsets: allocation failed for %u chunks",
+                 expected_chunks);
+
+    size_t pos = 0;
+    size_t size = (size_t)g_snapshot_buf_size;
+    while (pos + 4 <= size && g_snapshot_num_chunks < expected_chunks) {
+        g_snapshot_chunk_offsets[g_snapshot_num_chunks++] = (uint64_t)pos;
+        uint32_t entries = read_le32(g_snapshot_buf + pos);
+        pos += 4;
+        if (entries == 0 || entries > 1000)
+            return false;
+        for (uint32_t i = 0; i < entries; i++) {
+            if (!snapshot_skip_entry(g_snapshot_buf, size, &pos))
+                return false;
+        }
+    }
+
+    return g_snapshot_num_chunks == expected_chunks;
+}
+
+static bool snapshot_read_chunk_locked(uint32_t chunk_index,
+                                       struct utxo_chunk *out)
+{
+    if (!g_snapshot_buf || !g_snapshot_chunk_offsets ||
+        chunk_index >= g_snapshot_num_chunks || !out)
+        return false;
+
+    memset(out, 0, sizeof(*out));
+    out->chunk_index = chunk_index;
+
+    size_t size = (size_t)g_snapshot_buf_size;
+    size_t pos = (size_t)g_snapshot_chunk_offsets[chunk_index];
+    if (pos + 4 > size)
+        return false;
+
+    uint32_t entries = read_le32(g_snapshot_buf + pos);
+    pos += 4;
+    if (entries == 0 || entries > 1000)
+        return false;
+
+    for (uint32_t i = 0; i < entries; i++) {
+        if (pos + 49 > size)
+            return false;
+
+        memcpy(out->entries[i].txid, g_snapshot_buf + pos, 32);
+        pos += 32;
+        out->entries[i].vout = read_le32(g_snapshot_buf + pos);
+        pos += 4;
+        out->entries[i].value = (int64_t)read_le64(g_snapshot_buf + pos);
+        pos += 8;
+        out->entries[i].height = (int32_t)read_le32(g_snapshot_buf + pos);
+        pos += 4;
+        out->entries[i].is_coinbase = g_snapshot_buf[pos++] != 0;
+
+        uint32_t script_len = 0;
+        if (!snapshot_compact_size(g_snapshot_buf, size, &pos, &script_len))
+            return false;
+        if (pos + script_len > size)
+            return false;
+        uint32_t copy_len = script_len > sizeof(out->entries[i].script)
+            ? sizeof(out->entries[i].script)
+            : script_len;
+        if (copy_len > 0)
+            memcpy(out->entries[i].script, g_snapshot_buf + pos, copy_len);
+        out->entries[i].script_len = (uint16_t)copy_len;
+        pos += script_len;
+    }
+
+    out->num_entries = entries;
+    return true;
+}
 
 bool fast_sync_publish_snapshot_cache(uint8_t *snapshot_buf, int64_t size,
                                       const uint8_t sha3[32],
@@ -202,11 +417,18 @@ bool fast_sync_publish_snapshot_cache(uint8_t *snapshot_buf, int64_t size,
 
     pthread_mutex_lock(&g_snapshot_cache_mutex);
     free(g_snapshot_buf);
+    free(g_snapshot_chunk_offsets);
+    g_snapshot_chunk_offsets = NULL;
+    g_snapshot_num_chunks = 0;
     g_snapshot_buf = snapshot_buf;
     g_snapshot_buf_size = size;
     memcpy(g_snapshot_sha3, sha3, 32);
     g_snapshot_count = count;
     g_snapshot_sha3_valid = true;
+    if (!snapshot_build_chunk_offsets_locked()) {
+        pthread_mutex_unlock(&g_snapshot_cache_mutex);
+        LOG_FAIL("sync", "publish_snapshot_cache: failed to index snapshot chunks");
+    }
     g_snapshot_cache_version++;
     pthread_mutex_unlock(&g_snapshot_cache_mutex);
     return true;
@@ -216,8 +438,11 @@ void fast_sync_reset_snapshot_cache(void)
 {
     pthread_mutex_lock(&g_snapshot_cache_mutex);
     free(g_snapshot_buf);
+    free(g_snapshot_chunk_offsets);
     g_snapshot_buf = NULL;
     g_snapshot_buf_size = 0;
+    g_snapshot_chunk_offsets = NULL;
+    g_snapshot_num_chunks = 0;
     memset(g_snapshot_sha3, 0, sizeof(g_snapshot_sha3));
     g_snapshot_count = 0;
     g_snapshot_sha3_valid = false;
@@ -319,12 +544,11 @@ bool fast_sync_serve_snapshot(const char *datadir,
     zcl_node_db_path(db_path, sizeof(db_path), datadir);
 
     sqlite3 *db = NULL;
-    if (sqlite3_open_v2(db_path, &db, SQLITE_OPEN_READONLY, NULL) != SQLITE_OK)
-        LOG_FAIL("sync", "serve_snapshot: failed to open db %s", db_path);
+    fast_sync_open_readonly_db(db_path, &db, "serve_snapshot");
 
     sqlite3_stmt *s = NULL;
     sqlite3_prepare_v2(db,
-        "SELECT txid, vout, value, script, height "
+        "SELECT txid, vout, value, script, height, is_coinbase "
         "FROM utxos ORDER BY txid, vout",
         -1, &s, NULL);
 
@@ -342,11 +566,13 @@ bool fast_sync_serve_snapshot(const char *datadir,
         const void *script = sqlite3_column_blob(s, 3);
         int slen = sqlite3_column_bytes(s, 3);
         if (script && slen > 0) {
-            if (slen > 128) slen = 128;
+            if (slen > (int)sizeof(chunk->entries[idx].script))
+                slen = (int)sizeof(chunk->entries[idx].script);
             memcpy(chunk->entries[idx].script, script, (size_t)slen);
             chunk->entries[idx].script_len = (uint16_t)slen;
         }
         chunk->entries[idx].height = sqlite3_column_int(s, 4);
+        chunk->entries[idx].is_coinbase = sqlite3_column_int(s, 5) != 0;
         chunk->num_entries++;
 
         if (chunk->num_entries >= 1000) {
@@ -496,8 +722,9 @@ bool fast_sync_apply_chunk(const char *datadir,
 
     sqlite3_stmt *ins = NULL;
     if (sqlite3_prepare_v2(db,
-        "INSERT OR REPLACE INTO utxos (txid,vout,value,script,script_type,height) "
-        "VALUES (?,?,?,?,0,?)", -1, &ins, NULL) != SQLITE_OK) {
+        "INSERT OR REPLACE INTO utxos "
+        "(txid,vout,value,script,script_type,height,is_coinbase) "
+        "VALUES (?,?,?,?,0,?,?)", -1, &ins, NULL) != SQLITE_OK) {
         sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
         sqlite3_close(db);
         LOG_FAIL("sync", "apply_chunk: INSERT prepare failed");
@@ -512,6 +739,7 @@ bool fast_sync_apply_chunk(const char *datadir,
         AR_BIND_BLOB(ins, 4, chunk->entries[i].script,
                      (int)chunk->entries[i].script_len);
         AR_BIND_INT(ins, 5, chunk->entries[i].height);
+        AR_BIND_INT(ins, 6, chunk->entries[i].is_coinbase ? 1 : 0);
         if (!AR_STEP_DONE(ins)) {
             fprintf(stderr, "fast_sync_apply_chunk: insert %u/%u failed: %s\n",
                     i, chunk->num_entries, sqlite3_errmsg(db));
@@ -548,17 +776,19 @@ void fast_sync_chunk_hash(const struct utxo_chunk *chunk,
     sha3_256_init(&ctx);
 
     /* Hash chunk index so identical UTXOs at different positions differ */
-    sha3_256_write(&ctx, (const unsigned char *)&chunk->chunk_index, 4);
-    sha3_256_write(&ctx, (const unsigned char *)&chunk->num_entries, 4);
+    sha3_write_u32_le(&ctx, chunk->chunk_index);
+    sha3_write_u32_le(&ctx, chunk->num_entries);
 
     for (uint32_t i = 0; i < chunk->num_entries; i++) {
         sha3_256_write(&ctx, chunk->entries[i].txid, 32);
-        sha3_256_write(&ctx, (const unsigned char *)&chunk->entries[i].vout, 4);
-        sha3_256_write(&ctx, (const unsigned char *)&chunk->entries[i].value, 8);
+        sha3_write_u32_le(&ctx, chunk->entries[i].vout);
+        sha3_write_u64_le(&ctx, (uint64_t)chunk->entries[i].value);
         sha3_256_write(&ctx, chunk->entries[i].script,
                      chunk->entries[i].script_len);
-        sha3_256_write(&ctx, (const unsigned char *)&chunk->entries[i].script_len, 2);
-        sha3_256_write(&ctx, (const unsigned char *)&chunk->entries[i].height, 4);
+        sha3_write_u16_le(&ctx, chunk->entries[i].script_len);
+        sha3_write_u32_le(&ctx, (uint32_t)chunk->entries[i].height);
+        uint8_t cb = chunk->entries[i].is_coinbase ? 1 : 0;
+        sha3_256_write(&ctx, &cb, 1);
     }
 
     sha3_256_finalize(&ctx, hash_out);
@@ -724,39 +954,17 @@ bool fast_sync_serve_chunk_db(sqlite3 *db, uint32_t chunk_index,
      * (N*chunk_size)th row using a subquery on the PK ordering. */
     sqlite3_stmt *s = NULL;
 
-    if (chunk_index == 0) {
-        /* First chunk: simple LIMIT */
-        const char *sql = "SELECT txid, vout, value, script, height "
-                          "FROM utxos ORDER BY txid, vout LIMIT ?";
-        if (sqlite3_prepare_v2(db, sql, -1, &s, NULL) != SQLITE_OK)
-            LOG_FAIL("sync", "serve_chunk_db: prepare first-chunk query failed");
-        sqlite3_bind_int(s, 1, (int)chunk_size);
-    } else {
-        /* Keyset seek: find the cursor position of the last row of the
-         * previous chunk, then scan forward. Uses the PK index on (txid,vout)
-         * so the seek is O(log n) regardless of chunk position. */
-        const char *sql =
-            "SELECT txid, vout, value, script, height FROM utxos "
-            "WHERE (txid, vout) > ("
-            "  SELECT txid, vout FROM utxos ORDER BY txid, vout "
-            "  LIMIT 1 OFFSET ?"
-            ") ORDER BY txid, vout LIMIT ?";
-        if (sqlite3_prepare_v2(db, sql, -1, &s, NULL) != SQLITE_OK) {
-            /* Fallback: plain OFFSET (older SQLite without tuple comparison) */
-            char fallback[256];
-            snprintf(fallback, sizeof(fallback),
-                     "SELECT txid, vout, value, script, height "
-                     "FROM utxos ORDER BY txid, vout LIMIT %u OFFSET %u",
-                     chunk_size, chunk_index * chunk_size);
-            if (sqlite3_prepare_v2(db, fallback, -1, &s, NULL) != SQLITE_OK)
-                LOG_FAIL("sync", "serve_chunk_db: prepare fallback query failed for chunk %u", chunk_index);
-        } else {
-            sqlite3_bind_int(s, 1, (int)(chunk_index * chunk_size - 1));
-            sqlite3_bind_int(s, 2, (int)chunk_size);
-        }
-    }
+    const char *sql = "SELECT txid, vout, value, script, height, is_coinbase "
+                      "FROM utxos ORDER BY txid, vout LIMIT ? OFFSET ?";
+    if (sqlite3_prepare_v2(db, sql, -1, &s, NULL) != SQLITE_OK)
+        LOG_FAIL("sync", "serve_chunk_db: prepare query failed for chunk %u: %s",
+                 chunk_index, sqlite3_errmsg(db));
+    sqlite3_bind_int(s, 1, (int)chunk_size);
+    sqlite3_bind_int64(s, 2, (sqlite3_int64)chunk_index * chunk_size);
 
-    while (sqlite3_step(s) == SQLITE_ROW && out->num_entries < chunk_size) {
+    int rc = SQLITE_OK;
+    while ((rc = sqlite3_step(s)) == SQLITE_ROW &&
+           out->num_entries < chunk_size) {
         uint32_t i = out->num_entries;
         const void *txid = sqlite3_column_blob(s, 0);
         if (txid) memcpy(out->entries[i].txid, txid, 32);
@@ -766,12 +974,18 @@ bool fast_sync_serve_chunk_db(sqlite3 *db, uint32_t chunk_index,
         const void *script = sqlite3_column_blob(s, 3);
         int slen = sqlite3_column_bytes(s, 3);
         if (script && slen > 0) {
-            if (slen > 128) slen = 128;
+            if (slen > (int)sizeof(out->entries[i].script))
+                slen = (int)sizeof(out->entries[i].script);
             memcpy(out->entries[i].script, script, (size_t)slen);
             out->entries[i].script_len = (uint16_t)slen;
         }
         out->entries[i].height = sqlite3_column_int(s, 4);
+        out->entries[i].is_coinbase = sqlite3_column_int(s, 5) != 0;
         out->num_entries++;
+    }
+    if (rc != SQLITE_DONE) {
+        LOG_FAIL("sync", "serve_chunk_db: step failed for chunk %u: rc=%d msg=%s",
+                 chunk_index, rc, sqlite3_errmsg(db));
     }
     sqlite3_finalize(s);
     return out->num_entries > 0;
@@ -780,12 +994,23 @@ bool fast_sync_serve_chunk_db(sqlite3 *db, uint32_t chunk_index,
 bool fast_sync_serve_chunk(const char *datadir, uint32_t chunk_index,
                             struct utxo_chunk *out)
 {
+    pthread_mutex_lock(&g_snapshot_cache_mutex);
+    bool snapshot_ok = snapshot_read_chunk_locked(chunk_index, out);
+    pthread_mutex_unlock(&g_snapshot_cache_mutex);
+    if (snapshot_ok) {
+        printf("fast_sync: served chunk %u from RAM snapshot (%u entries)\n",
+               chunk_index, out->num_entries);
+        return true;
+    }
+
+    printf("fast_sync: RAM snapshot miss for chunk %u; falling back to SQLite\n",
+           chunk_index);
+
     char db_path[1024];
     zcl_node_db_path(db_path, sizeof(db_path), datadir);
 
     sqlite3 *db = NULL;
-    if (sqlite3_open_v2(db_path, &db, SQLITE_OPEN_READONLY, NULL) != SQLITE_OK)
-        LOG_FAIL("sync", "serve_chunk: failed to open db %s", db_path);
+    fast_sync_open_readonly_db(db_path, &db, "serve_chunk");
 
     bool ok = fast_sync_serve_chunk_db(db, chunk_index, SYNC_CHUNK_SIZE, out);
     sqlite3_close(db);
@@ -796,6 +1021,8 @@ bool fast_sync_build_manifest_db(sqlite3 *db, struct sync_manifest *out)
 {
     GUARD(db && out, "sync", "build_manifest_db: db or out is NULL");
     memset(out, 0, sizeof(*out));
+    out->protocol_version = FAST_SYNC_PROTOCOL_VERSION;
+    out->snapshot_schema_version = FAST_SYNC_SNAPSHOT_SCHEMA_VERSION;
     out->chunk_size = SYNC_CHUNK_SIZE;
 
     /* Get tip height */
@@ -809,29 +1036,51 @@ bool fast_sync_build_manifest_db(sqlite3 *db, struct sync_manifest *out)
             int64_t h;
             memcpy(&h, sqlite3_column_blob(s, 0), sizeof(h));
             out->height = (int32_t)h;
+            out->peer_tip_height = (int32_t)h;
         } else if (len >= 1 && len <= 8) {
             const void *blob = sqlite3_column_blob(s, 0);
             memcpy(&out->height, blob, len < 4 ? (size_t)len : 4);
+            out->peer_tip_height = out->height;
         }
     }
     sqlite3_finalize(s);
 
-    /* Get tip hash */
+    /* Live manifests describe the current UTXO set, so block_hash remains
+     * the current tip hash. peer_tip_height tells receivers whether that
+     * anchor is finality-safe. */
     sqlite3_prepare_v2(db,
         "SELECT value FROM node_state WHERE key='tip_hash'",
         -1, &s, NULL);
     if (sqlite3_step(s) == SQLITE_ROW) {
         const void *h = sqlite3_column_blob(s, 0);
-        if (h && sqlite3_column_bytes(s, 0) >= 32)
+        if (h && sqlite3_column_bytes(s, 0) >= 32) {
             memcpy(out->block_hash, h, 32);
+            memcpy(out->anchor_block_hash, h, 32);
+        }
     }
     sqlite3_finalize(s);
+
+    sqlite3_prepare_v2(db,
+        "SELECT chain_work FROM blocks WHERE hash=?",
+        -1, &s, NULL);
+    sqlite3_bind_blob(s, 1, out->block_hash, 32, SQLITE_STATIC);
+    if (sqlite3_step(s) == SQLITE_ROW) {
+        const void *cw = sqlite3_column_blob(s, 0);
+        if (cw && sqlite3_column_bytes(s, 0) >= 32)
+            memcpy(out->chain_work, cw, 32);
+    }
+    sqlite3_finalize(s);
+    if (legacy_chain_rpc_get_chainwork(out->block_hash, out->chain_work)) {
+        printf("Chunk manifest: chainwork refreshed from local zclassicd RPC\n");
+    }
 
     /* Count UTXOs */
     sqlite3_prepare_v2(db, "SELECT count(*) FROM utxos", -1, &s, NULL);
     if (sqlite3_step(s) == SQLITE_ROW)
         out->num_utxos = (uint64_t)sqlite3_column_int64(s, 0);
     sqlite3_finalize(s);
+    out->total_bytes = out->num_utxos * 80;
+    fast_sync_compute_utxo_root_db(db, out->utxo_sha3);
 
     GUARD(out->num_utxos > 0, "sync", "build_manifest_db: no UTXOs in database");
 
@@ -872,8 +1121,7 @@ bool fast_sync_build_manifest(const char *datadir,
     zcl_node_db_path(db_path, sizeof(db_path), datadir);
 
     sqlite3 *db = NULL;
-    if (sqlite3_open_v2(db_path, &db, SQLITE_OPEN_READONLY, NULL) != SQLITE_OK)
-        LOG_FAIL("sync", "build_manifest: failed to open db %s", db_path);
+    fast_sync_open_readonly_db(db_path, &db, "build_manifest");
 
     bool ok = fast_sync_build_manifest_db(db, out);
     sqlite3_close(db);
@@ -1088,8 +1336,7 @@ bool block_piece_manifest_build(const char *datadir,
     zcl_node_db_path(db_path, sizeof(db_path), datadir);
 
     sqlite3 *db = NULL;
-    if (sqlite3_open_v2(db_path, &db, SQLITE_OPEN_READONLY, NULL) != SQLITE_OK)
-        LOG_FAIL("sync", "piece_manifest_build: failed to open db %s", db_path);
+    fast_sync_open_readonly_db(db_path, &db, "piece_manifest_build");
 
     /* Verify the blocks table has data in the requested range.
      * During IBD the SQLite index may lag behind the chain tip. */
@@ -1199,6 +1446,100 @@ bool block_piece_manifest_build(const char *datadir,
                            out->num_pieces, out->merkle_root);
 
     sqlite3_close(db);
+    return true;
+}
+
+bool block_piece_manifest_build_active_chain(
+                                 const struct active_chain *chain,
+                                 int32_t start_height, int32_t end_height,
+                                 struct block_piece_manifest *out)
+{
+    GUARD(out && chain && end_height >= start_height && start_height >= 1,
+          "sync",
+          "piece_manifest_build_chain: invalid args (out=%p chain=%p start=%d end=%d)",
+          (void *)out, (const void *)chain, start_height, end_height);
+    memset(out, 0, sizeof(*out));
+
+    int chain_height = active_chain_height(chain);
+    if (end_height > chain_height)
+        LOG_FAIL("sync",
+                 "piece_manifest_build_chain: end height beyond active chain (%d/%d)",
+                 end_height, chain_height);
+
+    int32_t first_data_height = start_height;
+    while (first_data_height <= end_height) {
+        const struct block_index *bi = active_chain_at(chain, first_data_height);
+        if (bi && bi->phashBlock && (bi->nStatus & BLOCK_HAVE_DATA))
+            break;
+        first_data_height++;
+    }
+    if (first_data_height > end_height)
+        LOG_FAIL("sync",
+                 "piece_manifest_build_chain: no trusted block data in requested range h=%d..%d",
+                 start_height, end_height);
+    if (first_data_height != start_height)
+        printf("Block manifest: skipping h=%d..%d without trusted block data\n",
+               start_height, first_data_height - 1);
+
+    out->start_height = first_data_height;
+    out->end_height = end_height;
+    int32_t total_blocks = end_height - first_data_height + 1;
+    out->num_pieces = (uint32_t)((total_blocks + BLOCKS_PER_PIECE - 1)
+                                  / BLOCKS_PER_PIECE);
+
+    out->piece_hashes = zcl_calloc(out->num_pieces, 32, "piece_hashes");
+    if (!out->piece_hashes)
+        LOG_FAIL("sync",
+                 "piece_manifest_build_chain: alloc piece_hashes failed for %u pieces",
+                 out->num_pieces);
+
+    uint8_t (*piece_block_hashes)[32] =
+        zcl_calloc(BLOCKS_PER_PIECE, 32, "piece_block_hashes");
+    if (!piece_block_hashes) {
+        free(out->piece_hashes);
+        out->piece_hashes = NULL;
+        LOG_FAIL("sync",
+                 "piece_manifest_build_chain: alloc piece_block_hashes failed");
+    }
+
+    uint32_t piece_idx = 0;
+    uint32_t block_in_piece = 0;
+
+    for (int32_t h = first_data_height; h <= end_height; h++) {
+        const struct block_index *bi = active_chain_at(chain, h);
+        if (!bi || !bi->phashBlock || !(bi->nStatus & BLOCK_HAVE_DATA)) {
+            free(piece_block_hashes);
+            free(out->piece_hashes);
+            out->piece_hashes = NULL;
+            LOG_FAIL("sync",
+                     "piece_manifest_build_chain: missing trusted block data at h=%d",
+                     h);
+        }
+
+        memcpy(piece_block_hashes[block_in_piece], bi->phashBlock->data, 32);
+        if (h == end_height)
+            memcpy(out->tip_hash, bi->phashBlock->data, 32);
+        block_in_piece++;
+
+        if (block_in_piece == BLOCKS_PER_PIECE) {
+            block_piece_hash((const uint8_t (*)[32])piece_block_hashes,
+                             block_in_piece, piece_idx,
+                             out->piece_hashes[piece_idx]);
+            piece_idx++;
+            block_in_piece = 0;
+        }
+    }
+
+    if (block_in_piece > 0) {
+        block_piece_hash((const uint8_t (*)[32])piece_block_hashes,
+                         block_in_piece, piece_idx,
+                         out->piece_hashes[piece_idx]);
+    }
+
+    free(piece_block_hashes);
+
+    fast_sync_merkle_root((const uint8_t (*)[32])out->piece_hashes,
+                           out->num_pieces, out->merkle_root);
     return true;
 }
 

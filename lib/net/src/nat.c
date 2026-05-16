@@ -112,7 +112,7 @@ static bool natpmp_send_recv(const uint8_t gw[4], const void *req, size_t req_le
     ssize_t n = recvfrom(sock, resp, resp_max, 0, NULL, NULL);
     close(sock);
 
-    if (n < 8) LOG_FAIL("nat", "NAT-PMP response too short: %zd bytes", n);
+    if (n < 8) return false;
     *resp_len = (size_t)n;
 
     struct natpmp_response *r = resp;
@@ -126,7 +126,7 @@ static bool natpmp_get_public_ip(const uint8_t gw[4], uint8_t ip_out[4])
     size_t resp_len;
 
     if (!natpmp_send_recv(gw, req, 2, &resp, sizeof(resp), &resp_len))
-        LOG_FAIL("nat", "NAT-PMP get-public-ip request failed");
+        return false;
 
     if (resp.opcode != 128) LOG_FAIL("nat", "NAT-PMP unexpected opcode: %u (expected 128)", resp.opcode);
     memcpy(ip_out, resp.external_ip, 4);
@@ -151,8 +151,7 @@ static bool natpmp_map_port(const uint8_t gw[4], uint16_t internal, uint16_t ext
     size_t resp_len;
 
     if (!natpmp_send_recv(gw, &req, sizeof(req), &resp, sizeof(resp), &resp_len))
-        LOG_FAIL("nat", "NAT-PMP port mapping request failed: internal=%u external=%u",
-                 (unsigned)internal, (unsigned)external);
+        return false;
 
     uint16_t mapped = ntohs(resp.mapping.mapped_port);
     uint32_t granted = ntohl(resp.mapping.lifetime);
@@ -467,7 +466,6 @@ bool nat_add_port_mapping(uint16_t external_port, uint16_t internal_port,
     }
 
     /* Fall back to UPnP */
-    printf("NAT-PMP failed, trying UPnP...\n");
     if (upnp_discover_and_map(external_port, internal_port, lifetime, protocol)) {
         if (public_ip_out) {
             /* UPnP doesn't directly give us public IP, try NAT-PMP for that */
@@ -476,8 +474,7 @@ bool nat_add_port_mapping(uint16_t external_port, uint16_t internal_port,
         return true;
     }
 
-    LOG_FAIL("nat", "all traversal methods failed: ext=%u int=%u proto=%s",
-             (unsigned)external_port, (unsigned)internal_port, protocol);
+    return false;
 }
 
 bool nat_remove_port_mapping(uint16_t external_port, const char *protocol)

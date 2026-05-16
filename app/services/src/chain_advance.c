@@ -113,7 +113,7 @@ chain_advance(struct validation_state *state,
         return CA_REJECTED_VALIDATION;
 
     /* T2.1: refuse to extend the tip when oracle_policy has flagged
-     * a fork or trust-prefix violation. No state mutation here — we
+     * a fork or evidence-prefix violation. No state mutation here — we
      * return before opening any transaction. */
     if (!oracle_policy_chain_extension_allowed()) {
         fprintf(stderr,

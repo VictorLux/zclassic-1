@@ -166,7 +166,7 @@ static enum policy_decision decide(const struct recovery_policy *p,
                                      int64_t cap,
                                      const char *reason)
 {
-    /* Structural guard rails. Everything else assumes the inputs are
+    /* Structural guard rails. Everything else expects the inputs to be
      * meaningful; enforce that first so later branches can't be
      * accidentally tricked by negatives / NULLs. */
     if (!p || !reason || !*reason) {

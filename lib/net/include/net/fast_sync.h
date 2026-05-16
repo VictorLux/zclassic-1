@@ -47,6 +47,8 @@
  * force us to perform. At SYNC_CHUNK_SIZE=500 it still covers 32.5M
  * UTXOs — many decades of ZCL mainnet growth. */
 #define MANIFEST_MAX_CHUNKS 65000u
+#define FAST_SYNC_PROTOCOL_VERSION 2u
+#define FAST_SYNC_SNAPSHOT_SCHEMA_VERSION 1u
 
 /* ── Rate limiting + PoW defense ─────────────────────────── */
 
@@ -102,19 +104,24 @@ struct utxo_chunk {
         uint8_t  txid[32];
         uint32_t vout;
         int64_t  value;
-        uint8_t  script[128]; /* most scripts < 128 bytes */
+        uint8_t  script[520]; /* matches snapshot writer script cap */
         uint16_t script_len;
         int32_t  height;
+        bool     is_coinbase;
     } entries[1000]; /* 1000 max; parallel sync uses 500 */
 };
 
 /* Snapshot offer message */
 struct snapshot_offer {
     int32_t  height;         /* snapshot height */
+    uint32_t protocol_version;
+    uint32_t snapshot_schema_version;
+    int32_t  peer_tip_height; /* serving peer chain tip; height must be finality-safe */
     uint8_t  block_hash[32]; /* block hash at height */
     uint8_t  utxo_root[32]; /* SHA3 Merkle root of UTXO set */
     uint8_t  mmr_root[32];  /* MMR root over all block hashes (legacy) */
     uint8_t  mmb_root[32];  /* MMB root — FlyClient O(log k) proofs */
+    uint8_t  chain_work[32]; /* cumulative work at anchor height */
     uint64_t num_utxos;      /* total UTXO count */
     uint64_t total_bytes;    /* estimated transfer size */
 };
@@ -195,7 +202,14 @@ void fast_sync_compute_utxo_root_db(struct sqlite3 *db,
  * A Merkle tree of chunk hashes enables independent verification. */
 struct sync_manifest {
     int32_t  height;
+    uint32_t protocol_version;
+    uint32_t snapshot_schema_version;
+    int32_t  peer_tip_height;
     uint8_t  block_hash[32];
+    uint8_t  anchor_block_hash[32];
+    uint8_t  chain_work[32];
+    uint8_t  utxo_sha3[32];
+    uint64_t total_bytes;
     uint64_t num_utxos;
     uint32_t num_chunks;
     uint32_t chunk_size;      /* UTXOs per chunk (default 500) */
@@ -402,8 +416,19 @@ void block_swarm_update_availability(struct block_swarm *bs,
 uint32_t block_swarm_endgame_pieces(const struct block_swarm *bs,
                                      uint32_t *out_indices, uint32_t max);
 
-/* Build a block piece manifest from local chain data.
- * Reads block headers from the chain to compute piece hashes.
+struct active_chain;
+
+/* Build a block piece manifest from the trusted active chain.
+ * Skips leading heights without BLOCK_HAVE_DATA, then requires every
+ * remaining height through end_height to be present and marked.
+ * Allocates piece_hashes; caller must call block_piece_manifest_free(). */
+bool block_piece_manifest_build_active_chain(
+                                 const struct active_chain *chain,
+                                 int32_t start_height, int32_t end_height,
+                                 struct block_piece_manifest *out);
+
+/* Build a block piece manifest from SQLite block metadata.
+ * Legacy fallback for tests or boot paths that do not have an active chain.
  * Allocates piece_hashes; caller must call block_piece_manifest_free(). */
 bool block_piece_manifest_build(const char *datadir,
                                  int32_t start_height, int32_t end_height,

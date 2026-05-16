@@ -19,7 +19,9 @@
 #include "chain/pow.h"
 #include "consensus/upgrades.h"
 #include "coins/undo.h"
+#include "core/core_io.h"
 #include "core/serialize.h"
+#include "rpc/legacy_rpc_client.h"
 #include "storage/disk_block_io.h"
 #include "storage/txdb.h"
 #include "storage/block_index_db.h"
@@ -35,6 +37,7 @@
 #include "services/snapshot_sync_service.h"
 #include "services/chain_restore_service.h"
 #include "services/chain_activation_controller.h"
+#include "services/chain_evidence_controller.h"
 #include "services/chain_state_repository.h"
 #include "services/gap_fill_service.h"
 #include "services/chain_tip.h"
@@ -273,6 +276,172 @@ static bool process_block_inject_missing_utxo(
     return true;
 }
 
+static bool process_block_json_string(const char *json, const char *key,
+                                      char *out, size_t out_sz)
+{
+    if (!json || !key || !out || out_sz == 0)
+        return false;
+    char pat[96];
+    snprintf(pat, sizeof(pat), "\"%s\"", key);
+    const char *p = strstr(json, pat);
+    if (!p) return false;
+    p += strlen(pat);
+    while (*p == ' ' || *p == ':') p++;
+    if (*p != '"') return false;
+    p++;
+    size_t n = 0;
+    while (p[n] && p[n] != '"' && n + 1 < out_sz) {
+        out[n] = p[n];
+        n++;
+    }
+    if (p[n] != '"') return false;
+    out[n] = '\0';
+    return true;
+}
+
+static bool process_block_json_i64(const char *json, const char *key,
+                                   int64_t *out)
+{
+    if (!json || !key || !out)
+        return false;
+    char pat[96];
+    snprintf(pat, sizeof(pat), "\"%s\"", key);
+    const char *p = strstr(json, pat);
+    if (!p) return false;
+    p += strlen(pat);
+    while (*p == ' ' || *p == ':') p++;
+    char *end = NULL;
+    long long v = strtoll(p, &end, 10);
+    if (end == p)
+        return false;
+    *out = (int64_t)v;
+    return true;
+}
+
+static bool process_block_legacy_rpc_body(const char *method,
+                                          const char *params,
+                                          char **out_raw,
+                                          const char **out_body)
+{
+    if (out_raw) *out_raw = NULL;
+    if (out_body) *out_body = NULL;
+    if (!method || !params || !out_raw || !out_body)
+        return false;
+
+    char user[128], pass[128];
+    int port = 8232;
+    if (!legacy_rpc_parse_conf(user, sizeof(user), pass, sizeof(pass),
+                               &port))
+        return false;
+
+    char req[512];
+    int n = snprintf(req, sizeof(req),
+        "{\"jsonrpc\":\"1.0\",\"id\":\"selfheal\","
+        "\"method\":\"%s\",\"params\":%s}",
+        method, params);
+    if (n <= 0 || (size_t)n >= sizeof(req))
+        return false;
+
+    char err[256];
+    char *raw = NULL;
+    if (!legacy_rpc_call("127.0.0.1", port, user, pass, req, &raw,
+                         err, sizeof(err))) {
+        fprintf(stderr, "[self-heal] legacy RPC %s failed: %s\n",
+                method, err);
+        return false;
+    }
+    const char *body = legacy_rpc_http_body(raw);
+    if (!body) {
+        free(raw);
+        return false;
+    }
+    *out_raw = raw;
+    *out_body = body;
+    return true;
+}
+
+static bool process_block_recover_missing_utxo_from_legacy_rpc(
+    struct coins_view_cache *coins_tip,
+    const struct uint256 *txid,
+    uint32_t missing_vout,
+    int retry_no)
+{
+    if (!coins_tip || !txid)
+        return false;
+
+    char txhex[65];
+    uint256_get_hex(txid, txhex);
+
+    char *tip_raw = NULL;
+    const char *tip_body = NULL;
+    if (!process_block_legacy_rpc_body("getblockcount", "[]",
+                                       &tip_raw, &tip_body))
+        return false;
+    int64_t remote_tip = 0;
+    bool got_tip = process_block_json_i64(tip_body, "result", &remote_tip);
+    free(tip_raw);
+    if (!got_tip || remote_tip <= 0)
+        return false;
+
+    char params[96];
+    snprintf(params, sizeof(params), "[\"%s\",1]", txhex);
+    char *raw = NULL;
+    const char *body = NULL;
+    if (!process_block_legacy_rpc_body("getrawtransaction", params,
+                                       &raw, &body)) {
+        fprintf(stderr, "[self-heal] legacy RPC getrawtransaction failed "
+                "for %s\n", txhex);
+        return false;
+    }
+    if (strstr(body, "\"result\":null")) {
+        free(raw);
+        return false;
+    }
+
+    char rawtx_hex[200000];
+    int64_t confirmations = 0;
+    if (!process_block_json_string(body, "hex", rawtx_hex,
+                                   sizeof(rawtx_hex)) ||
+        !process_block_json_i64(body, "confirmations", &confirmations) ||
+        confirmations <= 0) {
+        fprintf(stderr, "[self-heal] legacy RPC response missing hex/"
+                "confirmations for %s\n", txhex);
+        free(raw);
+        return false;
+    }
+
+    struct transaction tx;
+    transaction_init(&tx);
+    bool decoded = decode_hex_tx(&tx, rawtx_hex);
+    if (!decoded) {
+        fprintf(stderr, "[self-heal] legacy RPC raw tx decode failed "
+                "for %s\n", txhex);
+        transaction_free(&tx);
+        free(raw);
+        return false;
+    }
+    transaction_compute_hash(&tx);
+    if (!uint256_eq(&tx.hash, txid)) {
+        transaction_free(&tx);
+        free(raw);
+        fprintf(stderr, "[self-heal] legacy RPC txid mismatch for %s\n",
+                txhex);
+        return false;
+    }
+
+    int height = (int)(remote_tip - confirmations + 1);
+    bool recovered = process_block_inject_missing_utxo(
+        coins_tip, txid, missing_vout, &tx, height,
+        "verified legacy zclassicd RPC", retry_no);
+    if (recovered) {
+        event_emitf(EV_SELF_HEAL_SCAN_HIT, 0,
+                    "tx=%s h=%d source=legacy_rpc", txhex, height);
+    }
+    transaction_free(&tx);
+    free(raw);
+    return recovered;
+}
+
 static void process_block_reverse_32(uint8_t out[32], const uint8_t in[32])
 {
     if (!out || !in)
@@ -322,7 +491,7 @@ static bool process_block_recover_missing_utxo_from_sqlite_tx_index(
         uint256_get_hex(txid, txhex);
         fprintf(stderr, // obs-ok:pre-existing-diagnostic
                 "[self-heal] SQLite tx index height mismatch for %s: "
-                "db=%d index=%d; trusting hash-verified block index\n",
+                "db=%d index=%d; using hash-verified block index\n",
                 txhex, dbtx.block_height, src_idx->nHeight);
     }
 
@@ -400,7 +569,8 @@ static bool process_block_verify_active_tip_child_on_disk(
 }
 
 /* P24.13: returns true iff the pprev chain from pindex_prev can be
- * walked back `pow_window` steps with each step satisfying
+ * walked back through the retarget window and the median-time context
+ * used at the far edge of that window. Each step must satisfy
  *   cursor->pprev != NULL && cursor->nHeight == cursor->pprev->nHeight + 1
  * Used to detect the post-FlyClient-snapshot tail where block_index
  * entries for the 193-block region between chain-restore backfill end
@@ -415,8 +585,27 @@ static bool process_block_pow_window_complete(
     for (int i = 0; i < pow_window; i++) {
         if (!cursor->pprev)
             return false;
+        if (cursor->nTime == 0)
+            return false;
         if (cursor->nHeight != cursor->pprev->nHeight + 1)
             return false;
+        cursor = cursor->pprev;
+    }
+
+    /* GetNextWorkRequired() walks `pow_window` entries, then calls
+     * block_index_get_median_time_past() on the cursor left just before
+     * that window. A metadata-only import anchor often has pprev=NULL
+     * and nTime=0; letting the retarget code use that sparse anchor makes
+     * honest headers fail with bad-diffbits. */
+    for (int i = 0; i < MEDIAN_TIME_SPAN; i++) {
+        if (!cursor || cursor->nTime == 0)
+            return false;
+        if (i + 1 < MEDIAN_TIME_SPAN) {
+            if (!cursor->pprev)
+                return false;
+            if (cursor->nHeight != cursor->pprev->nHeight + 1)
+                return false;
+        }
         cursor = cursor->pprev;
     }
     return true;
@@ -645,6 +834,34 @@ static void process_block_note_utxo_failure(struct main_state *ms,
         s_utxo_activation_paused_height = -1;
     }
 
+    int durable_utxo_max_h = 0;
+    struct node_db *ndb = process_block_node_db();
+    if (ndb && ndb->open && ndb->db) {
+        sqlite3_stmt *st = NULL;
+        if (sqlite3_prepare_v2(ndb->db, "SELECT MAX(height) FROM utxos",
+                               -1, &st, NULL) == SQLITE_OK && st) {
+            if (sqlite3_step(st) == SQLITE_ROW)
+                durable_utxo_max_h = sqlite3_column_int(st, 0);
+            sqlite3_finalize(st);
+        }
+    }
+
+    if (durable_utxo_max_h > height + 10) {
+        if (s_utxo_fail_count == 1 || s_utxo_fail_count == 5) {
+            event_emitf(EV_BOOT_ACTIVATE, 0,
+                "HISTORIC_UTXO_REPLAY_REFUSED h=%d utxo_max=%d fails=%d",
+                height, durable_utxo_max_h, s_utxo_fail_count);
+            fprintf(stderr,
+                "[recovery] refusing destructive reimport loop: missing input "
+                "at h=%d but durable UTXOs reach h=%d; activation should use "
+                "the snapshot/coins anchor instead of replaying history.\n",
+                height, durable_utxo_max_h);
+        }
+        if (s_utxo_fail_count >= 5)
+            s_utxo_activation_paused_height = height;
+        return;
+    }
+
     if (s_utxo_fail_count >= 5) {
         /* After 5 failures at the same height, try disconnecting the tip
          * to retry from the previous UTXO state.  This is best-effort:
@@ -756,6 +973,69 @@ static struct node_db *process_block_node_db(void)
     return (g_process_block_node_db && g_process_block_node_db->open)
          ? g_process_block_node_db
          : NULL;
+}
+
+static bool process_block_header_ancestry_linked(const struct block_index *tip)
+{
+    if (!tip || !tip->phashBlock)
+        return false;
+    if (tip->nHeight == 0)
+        return true;
+    return tip->pprev && tip->pprev->phashBlock &&
+           tip->pprev->nHeight == tip->nHeight - 1;
+}
+
+static bool process_block_chainwork_recomputed(const struct block_index *tip)
+{
+    struct arith_uint256 expected;
+    struct arith_uint256 proof;
+
+    if (!tip)
+        return false;
+    proof = GetBlockProof(tip);
+    if (arith_uint256_is_zero(&proof))
+        return false;
+    expected = proof;
+    if (tip->pprev)
+        arith_uint256_add(&expected, &tip->pprev->nChainWork, &proof);
+    return arith_uint256_compare(&expected, &tip->nChainWork) == 0 &&
+           !arith_uint256_is_zero(&tip->nChainWork);
+}
+
+static bool process_block_tip_is_best_work(const struct main_state *ms,
+                                           const struct block_index *tip)
+{
+    size_t iter = 0;
+    struct block_index *candidate = NULL;
+
+    if (!ms || !tip)
+        return false;
+    while (block_map_next(&ms->map_block_index, &iter, NULL, &candidate)) {
+        if (!candidate || (candidate->nStatus & BLOCK_FAILED_MASK))
+            continue;
+        if (arith_uint256_compare(&candidate->nChainWork,
+                                  &tip->nChainWork) <= 0)
+            continue;
+        if (block_index_get_ancestor(candidate, tip->nHeight) != tip)
+            return false;
+    }
+    return true;
+}
+
+static struct chain_evidence_record process_block_verified_tip_evidence(
+    const struct main_state *ms,
+    const struct block_index *tip,
+    bool block_bytes_hash_checked)
+{
+    struct chain_evidence_record evidence = {0};
+    evidence.header_ancestry_linked =
+        process_block_header_ancestry_linked(tip);
+    evidence.chainwork_recomputed =
+        process_block_chainwork_recomputed(tip);
+    evidence.nakamoto_selected_best_work =
+        process_block_tip_is_best_work(ms, tip);
+    evidence.block_bytes_hash_checked = block_bytes_hash_checked;
+    return evidence;
 }
 
 static bool sapling_tree_persist_once(void)
@@ -878,7 +1158,6 @@ static bool flush_coins_if_needed(struct coins_view_cache *coins_tip,
         if (ok) {
             coins_map_free(&coins_tip->cache_coins);
             coins_map_init(&coins_tip->cache_coins);
-            utxo_commitment_init(&coins_tip->commitment);
         } else {
             fprintf(stderr, // obs-ok:pre-existing-diagnostic
                     "WARNING: coins cache flush FAILED — retaining "
@@ -1086,6 +1365,48 @@ static void block_index_refresh_header(struct block_index *pindex,
     pindex->nSolutionSize = header->nSolutionSize;
 }
 
+static bool block_index_hydrate_from_disk(struct block_index *pindex,
+                                          const char *datadir)
+{
+    if (!pindex || !datadir || !pindex->phashBlock ||
+        !(pindex->nStatus & BLOCK_HAVE_DATA) ||
+        pindex->nFile < 0 || pindex->nDataPos == 0)
+        return false;
+
+    struct block disk_block;
+    block_init(&disk_block);
+    if (!read_block_from_disk_index(&disk_block, pindex, datadir)) {
+        block_free(&disk_block);
+        return false;
+    }
+
+    struct uint256 disk_hash;
+    block_header_get_hash(&disk_block.header, &disk_hash);
+    if (uint256_cmp(&disk_hash, pindex->phashBlock) != 0) {
+        block_free(&disk_block);
+        return false;
+    }
+
+    block_index_refresh_header(pindex, &disk_block.header);
+    if (pindex->pprev) {
+        pindex->nHeight = pindex->pprev->nHeight + 1;
+        block_index_build_skip(pindex);
+        struct arith_uint256 proof = GetBlockProof(pindex);
+        arith_uint256_add(&pindex->nChainWork,
+                          &pindex->pprev->nChainWork, &proof);
+    }
+    block_free(&disk_block);
+    return pindex->nBits != 0;
+}
+
+#ifdef ZCL_TESTING
+bool process_block_test_hydrate_index_from_disk(struct block_index *pindex,
+                                                const char *datadir)
+{
+    return block_index_hydrate_from_disk(pindex, datadir);
+}
+#endif
+
 /* chain_has_all_data removed — find_most_work_chain no longer requires
  * BLOCK_HAVE_DATA. activate_best_chain checks data availability inline
  * before each connect_tip, queuing missing blocks for download. */
@@ -1168,8 +1489,8 @@ static struct block_index *find_most_work_chain(struct main_state *ms)
      * nChainWork can appear from old import data with incorrect work
      * accounting, but reorging backwards 17 k blocks because of it is
      * never the right answer — activate_best_chain would hit the
-     * checkpoint guard anyway, log "below_checkpoint" every second, and
-     * the chain would never advance. Treat below-tip best as "no work
+     * finality guard anyway, log "below_finality_depth" every second,
+     * and the chain would never advance. Treat below-tip best as "no work
      * pending" and let gap-fill close the headers-vs-bodies window. */
     {
         struct block_index *tip = active_chain_tip(&ms->chain_active);
@@ -1423,8 +1744,13 @@ static bool process_block_commit_tip(struct main_state *ms,
                                       struct coins_view_cache *coins_tip,
                                       struct block_index *new_tip,
                                       const char *reason,
-                                      bool update_header_tip)
+                                      bool update_header_tip,
+                                      bool persist_coins_best,
+                                      const struct chain_evidence_record *verified)
 {
+#ifndef ZCL_TESTING
+    (void)coins_tip;
+#endif
     struct trace_span *csr_span = trace_start("csr.commit_tip");
     trace_attr_int(csr_span, "height", new_tip ? new_tip->nHeight : -1);
     trace_attr_str(csr_span, "reason", reason ? reason : "");
@@ -1436,17 +1762,51 @@ static bool process_block_commit_tip(struct main_state *ms,
         LOG_FAIL("validation", "commit_chain_state_tip called with null tip or null phashBlock");
     }
 
+    if (verified && process_block_node_db() && csr_instance()->initialized) {
+        struct chain_evidence_controller authority;
+        struct chain_evidence_controller_tip_request req = {
+            .new_tip = new_tip,
+            .utxo_max_height = new_tip->nHeight,
+            .update_header_tip = update_header_tip,
+            .reason = reason ? reason : "process_block.commit_tip",
+            .verified = *verified,
+        };
+        chain_evidence_controller_init(&authority, process_block_node_db(),
+                                       csr_instance());
+        enum chain_evidence_controller_result ar =
+            chain_evidence_controller_promote_tip(&authority, &req);
+        if (ar == CEC_OK) {
+            trace_end(csr_span);
+            return true;
+        }
+        fprintf(stderr, // obs-ok:pre-existing-diagnostic
+                "process_block: evidence controller rejected tip "
+                "promotion (%s) reason=%s h=%d\n",
+                chain_evidence_controller_result_name(ar),
+                reason ? reason : "", new_tip->nHeight);
+        trace_set_status(csr_span, TRACE_STATUS_ERROR);
+        trace_attr_str(csr_span, "error",
+                       chain_evidence_controller_result_name(ar));
+        trace_end(csr_span);
+        return false;
+    }
+
+    struct chain_state_rollback_authorization rollback_auth = {
+        .source = CSR_ROLLBACK_SOURCE_VALIDATION,
+        .decision = POLICY_ALLOW,
+        .from_height = ms ? active_chain_height(&ms->chain_active) : -1,
+        .to_height = new_tip->nHeight,
+        .max_depth = INT64_MAX,
+        .evidence_class = "validation_path_vetted",
+        .reason = reason ? reason : "process_block.commit_tip",
+    };
     struct chain_state_commit commit = {
         .new_tip             = new_tip,
         .new_coins_best      = *new_tip->phashBlock,
         .expected_utxo_count = 0,
         .update_header_tip   = update_header_tip,
-        /* Reorg disconnects, forks and fast-sync roll-forwards can
-         * all look like backward or sideways moves from the csr's
-         * perspective. The validation machinery in process_block.c
-         * has already vetted the move, so we bypass the orphan-rows
-         * guard here. Recovery policy gating is Phase 2 territory. */
-        .allow_rollback      = true,
+        .persist_coins_best  = persist_coins_best,
+        .rollback_auth       = &rollback_auth,
         .wallet_scan_height  = -1,
         .reason              = reason,
     };
@@ -1457,6 +1817,7 @@ static bool process_block_commit_tip(struct main_state *ms,
         return true;
     }
 
+#ifdef ZCL_TESTING
     if (rc == CSR_REJECTED_NOT_INITIALIZED) {
         /* Test harness path: the singleton was never wired. Use the
          * canonical helper so events still fire. */
@@ -1469,6 +1830,7 @@ static bool process_block_commit_tip(struct main_state *ms,
         trace_end(csr_span);
         return true;
     }
+#endif
 
     /* Real validation failure. The csr has already emitted
      * EV_CHAIN_TIP_REJECTED; shout too so this shows up in the
@@ -1497,19 +1859,46 @@ static bool process_block_commit_tip(struct main_state *ms,
 static bool update_tip(struct main_state *ms, struct block_index *pindex_new)
 {
     if (pindex_new) {
+        struct chain_evidence_record evidence =
+            process_block_verified_tip_evidence(ms, pindex_new, true);
         /* coins_tip is NULL here on purpose: the pre-migration
          * update_tip never set coins_best_block (connect_block had
          * already done it while building the new tip), and the
          * fallback path should preserve that behaviour. */
         if (!process_block_commit_tip(ms, NULL, pindex_new,
-                                      "process_block.update_tip", true))
+                                      "process_block.update_tip", true,
+                                      false, &evidence))
             return false;
     } else {
         /* Disconnect past genesis — empty the chain. No commit to
-         * make; the active_chain primitive handles a NULL tip as
-         * "height=-1". */
-        chain_set_active_tip(ms, NULL, TIP_FROM_DISCONNECT,
-                             "disconnect_past_genesis");
+         * make, but still route the concrete publication through CSR
+         * so active-tip clears use the same promotion boundary. */
+        struct chain_state_rollback_authorization rollback_auth = {
+            .source = CSR_ROLLBACK_SOURCE_VALIDATION,
+            .decision = POLICY_ALLOW,
+            .from_height = ms ? active_chain_height(&ms->chain_active) : -1,
+            .to_height = -1,
+            .max_depth = INT64_MAX,
+            .evidence_class = "validation_disconnect_complete",
+            .reason = "disconnect_past_genesis",
+        };
+        struct chain_state_clear_commit clear = {
+            .rollback_auth = &rollback_auth,
+            .reason = "disconnect_past_genesis",
+        };
+        enum csr_result rc = csr_clear_active_tip(csr_instance(), &clear);
+#ifdef ZCL_TESTING
+        if (rc == CSR_REJECTED_NOT_INITIALIZED) {
+            chain_set_active_tip(ms, NULL, TIP_FROM_DISCONNECT,
+                                 "disconnect_past_genesis");
+        } else
+#endif
+        if (rc != CSR_OK) {
+            fprintf(stderr,
+                    "validation: csr rejected active-tip clear (%s)\n",
+                    csr_result_name(rc));
+            return false;
+        }
     }
 
     char hex[65];
@@ -1568,7 +1957,7 @@ bool process_block_commit_tip_ext(struct main_state *ms,
                                   bool update_header_tip)
 {
     return process_block_commit_tip(ms, coins_tip, new_tip, reason,
-                                    update_header_tip);
+                                    update_header_tip, false, NULL);
 }
 
 bool process_block_flush_coins(struct coins_view_cache *coins_tip,
@@ -1729,6 +2118,41 @@ bool accept_block_header(const struct block_header *header,
     if (pindex) {
         if (ppindex)
             *ppindex = pindex;
+        if (uint256_cmp(&hash, &params->consensus.hashGenesisBlock) != 0) {
+            struct block_index *header_prev = block_map_find(
+                &ms->map_block_index, &header->hashPrevBlock);
+            if (!header_prev) {
+                return validation_state_invalid(state, false, 0,
+                                                "bad-prevblk", NULL);
+            }
+            int expected_height = header_prev->nHeight + 1;
+            int active_h = active_chain_height(&ms->chain_active);
+            struct block_index *active_tip =
+                active_chain_tip(&ms->chain_active);
+            if (active_h > 0 && pindex == active_tip) {
+                expected_height = active_h;
+                if (header_prev->nHeight != active_h - 1) {
+                    header_prev->nHeight = active_h - 1;
+                    struct arith_uint256 proof = GetBlockProof(header_prev);
+                    if (header_prev->pprev) {
+                        arith_uint256_add(&header_prev->nChainWork,
+                                          &header_prev->pprev->nChainWork,
+                                          &proof);
+                    }
+                }
+            } else if (active_tip && header_prev == active_tip) {
+                expected_height = active_h + 1;
+            }
+            if (pindex->pprev != header_prev ||
+                pindex->nHeight != expected_height) {
+                pindex->pprev = header_prev;
+                pindex->nHeight = expected_height;
+                block_index_build_skip(pindex);
+                struct arith_uint256 proof = GetBlockProof(pindex);
+                arith_uint256_add(&pindex->nChainWork,
+                                  &header_prev->nChainWork, &proof);
+            }
+        }
         /* Fix scrambled heights from LDB import.  After snapshot sync,
          * block_map entries above the coins tip may have nHeight=0 or
          * wrong values because the flat-file/LDB import didn't walk
@@ -1847,8 +2271,8 @@ bool accept_block_header(const struct block_header *header,
      * FlyClient-snapshot tail leaves the PoW averaging window unable to
      * walk back contiguously (P24.13). In either case, the contextual
      * check would spuriously fail; full validation happens later in
-     * connect_block(). This mirrors Bitcoin Core's behavior: header-
-     * first sync trusts header chain structure. */
+     * connect_block(). This mirrors Bitcoin Core's header-first sync
+     * model, where header structure is checked before block connection. */
     if (pindex_prev &&
         !process_block_should_skip_contextual_header(ms, pindex_prev,
                                                      &params->consensus) &&
@@ -1882,18 +2306,24 @@ bool accept_block(struct block *block,
     struct block_index *pindex = NULL;
     if (!accept_block_header(&block->header, state, ms, params, &pindex))
         LOG_FAIL("validation", "accept_block_header failed in accept_block");
-    if (requested) {
-        block_index_refresh_header(pindex, &block->header);
-        if (pindex->pprev) {
-            pindex->nHeight = pindex->pprev->nHeight + 1;
-            block_index_build_skip(pindex);
-            struct arith_uint256 proof = GetBlockProof(pindex);
-            arith_uint256_add(&pindex->nChainWork,
-                              &pindex->pprev->nChainWork, &proof);
-            if ((pindex->nStatus & BLOCK_VALID_MASK) < BLOCK_VALID_TREE)
-                pindex->nStatus = (pindex->nStatus & ~BLOCK_VALID_MASK) |
-                                   BLOCK_VALID_TREE;
-        }
+
+    /* A full block carries the authoritative header for its own hash.
+     * Refresh even when the block was not explicitly requested and even
+     * when BLOCK_HAVE_DATA is already set. Otherwise a placeholder
+     * imported from stale metadata can keep nBits/time/version at zero,
+     * accept the body as "already have", and later block connect_tip()
+     * forever. The block hash was just matched by accept_block_header(),
+     * so these fields are bound by PoW/hash, not by external metadata. */
+    block_index_refresh_header(pindex, &block->header);
+    if (pindex->pprev) {
+        pindex->nHeight = pindex->pprev->nHeight + 1;
+        block_index_build_skip(pindex);
+        struct arith_uint256 proof = GetBlockProof(pindex);
+        arith_uint256_add(&pindex->nChainWork,
+                          &pindex->pprev->nChainWork, &proof);
+        if ((pindex->nStatus & BLOCK_VALID_MASK) < BLOCK_VALID_TREE)
+            pindex->nStatus = (pindex->nStatus & ~BLOCK_VALID_MASK) |
+                               BLOCK_VALID_TREE;
     }
     if (ppindex)
         *ppindex = pindex;
@@ -1908,7 +2338,7 @@ bool accept_block(struct block *block,
          * skipped the write, find_most_work_chain picked them as
          * candidates, connect_tip later failed to read them, chain
          * stalled.  Verify the block can actually be read before
-         * trusting the flag.  If it can't, clear HAVE_DATA + nFile/
+         * accepting the flag.  If it can't, clear HAVE_DATA + nFile/
          * nDataPos and fall through to the normal write path —
          * which will persist the bytes we just received. */
         if (pindex->nFile >= 0 && pindex->phashBlock) {
@@ -2191,6 +2621,15 @@ bool connect_tip(struct validation_state *state,
      * header with "bad-diffbits". Live evidence: 5 min of "bad-diffbits
      * at height N+1: prev_bits=0x00000000" right before the chain
      * stalled at h=3089926. */
+    if (pindex_new && pindex_new->nHeight > 0 && pindex_new->nBits == 0 &&
+        block_index_hydrate_from_disk(pindex_new, datadir)) {
+        fprintf(stderr, // obs-ok:pre-existing-diagnostic
+            "connect_tip: hydrated placeholder h=%d from verified disk "
+            "block before connect\n", pindex_new->nHeight);
+        event_emitf(EV_BLOCK_CHECK_PASSED, 0,
+                    "connect_tip hydrated placeholder h=%d",
+                    pindex_new->nHeight);
+    }
     if (pindex_new && pindex_new->nHeight > 0 && pindex_new->nBits == 0) {
         fprintf(stderr, // obs-ok:pre-existing-diagnostic
             "connect_tip: REFUSING placeholder h=%d (nBits=0, no header "
@@ -2236,7 +2675,8 @@ bool connect_tip(struct validation_state *state,
                 pindex_new->nTx = 1;
                 pindex_new->nChainTx = 1;
                 process_block_commit_tip(ms, coins_tip, pindex_new,
-                    "process_block.connect_tip.genesis_no_disk", true);
+                    "process_block.connect_tip.genesis_no_disk", true,
+                    false, NULL);
                 printf("Genesis block: connected (no disk data needed)\n");
                 trace_end(ct_span);
                 return true;
@@ -2380,6 +2820,13 @@ bool connect_tip(struct validation_state *state,
                                 recovery_attempts + 1)) {
                             recovered = true;
                         }
+                    }
+
+                    if (!recovered && txpos.block_pos.nFile < 0 &&
+                        process_block_recover_missing_utxo_from_legacy_rpc(
+                            coins_tip, &state->missing_txid,
+                            state->missing_vout, recovery_attempts + 1)) {
+                        recovered = true;
                     }
 
                     if (!recovered && txpos.block_pos.nFile < 0 &&
@@ -2543,6 +2990,11 @@ bool connect_tip(struct validation_state *state,
                                     "file=%d pos=%u for tx %s\n",
                                     txpos.block_pos.nFile,
                                     txpos.block_pos.nPos, hex);
+                            recovered =
+                                process_block_recover_missing_utxo_from_legacy_rpc(
+                                    coins_tip, &state->missing_txid,
+                                    state->missing_vout,
+                                    recovery_attempts + 1);
                             block_free(&src_block);
                         } else {
                             for (size_t ti = 0; ti < src_block.num_vtx; ti++) {
@@ -2565,6 +3017,13 @@ bool connect_tip(struct validation_state *state,
                                             recovery_attempts + 1);
                                     break;
                                 }
+                            }
+                            if (!recovered) {
+                                recovered =
+                                    process_block_recover_missing_utxo_from_legacy_rpc(
+                                        coins_tip, &state->missing_txid,
+                                        state->missing_vout,
+                                        recovery_attempts + 1);
                             }
                             block_free(&src_block);
                         }
@@ -2889,7 +3348,7 @@ bool connect_tip(struct validation_state *state,
     }
 
     /* Notify wallet of transactions in the connected block.
-     * Skipped during fast-sync body-pull: trust-mode caller runs a
+     * Skipped during fast-sync body-pull: evidence-mode caller runs a
      * single wallet_rescan over the imported range at the end. */
     if (!atomic_load_explicit(&g_body_pull_active, memory_order_relaxed))
     {
@@ -3367,15 +3826,7 @@ static bool recover_from_disconnect_failure(
      * We do NOT reimport from LevelDB here because LevelDB's UTXO
      * set is at a different (later) height than the fork point. */
     process_block_commit_tip(ms, coins_tip, fork,
-        "process_block.recover_from_disconnect_failure", false);
-
-    {
-        struct node_db *ndb = process_block_node_db();
-        if (ndb && ndb->open) {
-            node_db_state_set(ndb, "coins_best_block",
-                          fork->phashBlock->data, 32);
-        }
-    }
+        "process_block.recover_from_disconnect_failure", false, true, NULL);
 
     /* Step 4: Flush any pending SQLite batch. */
     {
@@ -3801,7 +4252,7 @@ bool activate_best_chain(struct validation_state *state,
         if (tip) {
             /* Round 4 Part 4: hard checkpoint invariant.
              *
-             * MAX_REORG_LENGTH (=99) blocks deep is the protocol
+             * ZCL_FINALITY_DEPTH (=10) blocks deep is the protocol
              * promise — anything older is permanently immutable.
              * Refuse to even start the fork-point walk if the
              * candidate chain would reorg below that floor. Saves
@@ -3812,7 +4263,7 @@ bool activate_best_chain(struct validation_state *state,
              * walk computes), but `pindex_most_work->nHeight` is
              * a lower bound on the fork-point height: any walk
              * must end at or below it. If most_work itself is
-             * below tip - MAX_REORG_LENGTH, the reorg is forbidden
+             * below tip - ZCL_FINALITY_DEPTH, the reorg is forbidden
              * regardless of where the fork ends up. */
             {
                 const char *reason = NULL;
@@ -3821,14 +4272,14 @@ bool activate_best_chain(struct validation_state *state,
                                        &reason)) {
                     fprintf(stderr, // obs-ok:pre-existing-diagnostic
                         "activate_best_chain: refusing reorg below "
-                        "checkpoint tip=%d most_work=%d depth=%d "
-                        "reason=%s (MAX_REORG_LENGTH=%d)\n",
+                        "finality floor tip=%d most_work=%d depth=%d "
+                        "reason=%s (ZCL_FINALITY_DEPTH=%d)\n",
                         tip->nHeight, pindex_most_work->nHeight,
                         tip->nHeight - pindex_most_work->nHeight,
                         reason ? reason : "(null)",
-                        MAX_REORG_LENGTH);
+                        ZCL_FINALITY_DEPTH);
                     event_emitf(EV_CHAIN_TIP_REJECTED, 0,
-                                "code=below_checkpoint tip=%d "
+                                "code=below_finality_depth tip=%d "
                                 "most_work=%d depth=%d",
                                 tip->nHeight,
                                 pindex_most_work->nHeight,
@@ -3913,7 +4364,7 @@ bool activate_best_chain(struct validation_state *state,
             }
             #undef ACTIVATE_PPREV_WALK_MAX
             /* If pprev walk couldn't find a common ancestor (broken
-             * links after LDB import), assume we're extending the
+             * links after LDB import), treat this as extending the
              * current chain — use tip as the fork point.  Do NOT
              * set fork=NULL which triggers a destructive genesis reset. */
             if (fork != walk)
@@ -3934,9 +4385,9 @@ bool activate_best_chain(struct validation_state *state,
              * when pprev pointers aren't fully resolved. */
             bool extending = (!fork && pindex_most_work->nHeight > tip->nHeight &&
                               pindex_most_work->nHeight <= tip->nHeight + 200);
-            if (!extending && !in_ibd && reorg_depth > MAX_REORG_LENGTH) {
-                printf("activate_best_chain: reorg depth %d exceeds max %d\n",
-                       reorg_depth, MAX_REORG_LENGTH);
+            if (!extending && !in_ibd && reorg_depth > ZCL_FINALITY_DEPTH) {
+                printf("activate_best_chain: reorg depth %d exceeds finality depth %d\n",
+                       reorg_depth, ZCL_FINALITY_DEPTH);
                 return false;
             }
             if (!extending && in_ibd && reorg_depth > MAX_IBD_REORG_LENGTH) {
@@ -3950,7 +4401,7 @@ bool activate_best_chain(struct validation_state *state,
                 /* No common ancestor found — chains are completely
                  * divergent (broken pprev links). Reset to genesis.
                  * This is a clear rollback, so the csr commit uses
-                 * allow_rollback (via the helper) and does not move
+                 * typed rollback authorization (via the helper) and does not move
                  * pindex_best_header — the header tip stays put so
                  * accept_block_header's retry logic can rebuild the
                  * chain upward. */
@@ -3959,7 +4410,7 @@ bool activate_best_chain(struct validation_state *state,
                 if (genesis) {
                     process_block_commit_tip(ms, coins_tip, genesis,
                         "process_block.activate_best_chain.no_fork_reset",
-                        false);
+                        false, false, NULL);
                     printf("activate_best_chain: no fork point, "
                            "reset to genesis\n");
                 }

@@ -28,6 +28,7 @@
 #include "services/bg_hash_verification_service.h"
 #include "services/block_index_loader.h"
 #include "services/chain_state_validator.h"
+#include "kernel/service_kernel.h"
 #include <stdatomic.h>
 #include <stdbool.h>
 #include <sqlite3.h>
@@ -83,11 +84,17 @@ struct boot_svc_ctx {
     struct metrics_context *metrics;
     _Atomic bool *running;
     const char *datadir;
+    const struct app_context *app_ctx;
+    const struct chain_params *params;
     pthread_t params_thread;
     bool params_thread_started;
     _Atomic bool *params_loaded;
     bool block_tree_open;
     struct block_tree_db *block_tree;
+    struct zcl_service_kernel service_kernel;
+    struct zcl_service_kernel network_kernel;
+    struct zcl_service_kernel runtime_kernel;
+    struct zcl_service_kernel frontend_kernel;
     /* Composition-owned runtime passed into long-lived services. */
     struct app_runtime_context runtime;
     struct snapshot_sync_service snapshot_sync;
@@ -114,6 +121,7 @@ struct boot_svc_ctx {
 bool app_init_services(struct app_context *ctx,
                         const struct chain_params *params,
                         struct boot_svc_ctx *svc);
+void boot_stop_db_service_kernel(void);
 
 /* Shutdown phase order:
  * 1. stop externally visible services

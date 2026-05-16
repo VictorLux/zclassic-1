@@ -55,7 +55,7 @@
  * All state is in-process and in-memory — no SQLite file, no node
  * boot, no threads.  We build a chain_params copy with a checkpoint
  * covering the test height so check_block's POW + size checks are
- * skipped; g_assume_valid_height is left at -1 so the BIP30 skip flag
+ * skipped; g_deferred_proof_validation_below_height is left at -1 so the BIP30 skip flag
  * stays false.  Runtime: <100ms.
  */
 
@@ -63,7 +63,7 @@
 #include "validation/connect_block.h"
 #include "validation/process_block.h"
 #include "validation/update_coins.h"
-#include "validation/contextual_check_tx.h"  /* g_assume_valid_height */
+#include "validation/contextual_check_tx.h"  /* g_deferred_proof_validation_below_height */
 #include "coins/coins_view.h"
 #include "coins/coins.h"
 #include "primitives/block.h"
@@ -172,9 +172,9 @@ static int t_stale_coinbase_trips_bip30(void)
     int failures = 0;
 
     TEST("chain_stall_repro: stale unspent coinbase at tip+1 → bad-txns-BIP30") {
-        /* g_assume_valid_height guards the BIP30 skip flag — confirm
+        /* g_deferred_proof_validation_below_height guards the BIP30 skip flag — confirm
          * it is NOT set so the check runs. */
-        atomic_store(&g_assume_valid_height, -1);
+        atomic_store(&g_deferred_proof_validation_below_height, -1);
 
         /* Heights chosen to match the live-node shape (tip+1 after
          * a partial-application rollback).  Any pair works; using
@@ -287,7 +287,7 @@ static int t_clean_view_advances(void)
     int failures = 0;
 
     TEST("chain_stall_repro: clean view (no stale coinbase) does NOT trip BIP30") {
-        atomic_store(&g_assume_valid_height, -1);
+        atomic_store(&g_deferred_proof_validation_below_height, -1);
 
         const int parent_height = 199;
         const int stall_height = parent_height + 1;
@@ -397,7 +397,7 @@ static int t_disconnect_block_purges_coinbase_from_backing(void)
     int failures = 0;
 
     TEST("chain_stall_repro P10.1.3 RED: disconnect_block purges coinbase from the backing parent cache") {
-        atomic_store(&g_assume_valid_height, -1);
+        atomic_store(&g_deferred_proof_validation_below_height, -1);
 
         const int coinbase_height = 200;
 
@@ -597,7 +597,7 @@ static int t_p14_flush_under_shared_cursor_lands_tombstone(void)
     char dbpath[512]; snprintf(dbpath, sizeof(dbpath), "%s/node.db", dir);
 
     TEST("chain_stall_repro P14.2 RED: file-backed coins_view_sqlite opens a dedicated connection AND three-layer disconnect+flush lands DELETE in SQLite") {
-        atomic_store(&g_assume_valid_height, -1);
+        atomic_store(&g_deferred_proof_validation_below_height, -1);
 
         sqlite3 *db = NULL;
         ASSERT(p14_build_db(&db, dbpath));

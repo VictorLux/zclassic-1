@@ -198,5 +198,23 @@ int test_header_sync(void)
         if (ok) printf("OK\n"); else { printf("FAIL\n"); failures++; }
     }
 
+    /* ── 17. Snapshot anchors release at finality depth ───── */
+    printf("header_sync: snapshot anchor releases at finality depth... ");
+    {
+        struct block_index anchor, h9, h10;
+        memset(&anchor, 0, sizeof(anchor));
+        memset(&h9, 0, sizeof(h9));
+        memset(&h10, 0, sizeof(h10));
+
+        anchor.nHeight = 2000;
+        h9.nHeight = 2009;
+        h10.nHeight = 2010;
+
+        bool too_early = syncsvc_should_release_snapshot_anchor(&anchor, &h9);
+        bool at_finality = syncsvc_should_release_snapshot_anchor(&anchor, &h10);
+        bool ok = !too_early && at_finality;
+        if (ok) printf("OK\n"); else { printf("FAIL\n"); failures++; }
+    }
+
     return failures;
 }

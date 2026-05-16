@@ -31,19 +31,19 @@ struct ldi_result {
     int  skipped_failed;    /* BLOCK_FAILED_MASK set (rare after 3.0 clear) */
     int  final_tip;         /* active_chain_height at exit */
     int  legacy_tip;        /* max_height observed in legacy blocks/index */
-    bool trust_armed;       /* SHA3 spot-check passed; g_assume_valid_height bumped */
+    bool source_checked;       /* SHA3 spot-check passed; proofs still validate normally */
     bool ok;                /* true iff loop finished without abort */
 };
 
 /* Walk `[from_height+1 .. legacy_tip]` reading payloads directly from
  * `<legacy_datadir>/blocks/blk*.dat`, ingesting via process_new_block.
- * Spot-checks K=3 SHA3 windows before arming trust-mode.
+ * Spot-checks K=3 SHA3 windows before import. Proof validation is not
+ * deferred by this path.
  *
  * `from_height == -1` means "start from active_chain_height + 1".
  *
  * `wallet` may be NULL — if non-NULL, a single-pass wallet_rescan over
- * the imported range runs at the end (since wallet sync was deferred
- * during the trust-mode pull).
+ * the imported range runs at the end.
  *
  * Returns true on success (ok). Always populates *out if non-NULL. */
 bool legacy_direct_import_range_blocking(

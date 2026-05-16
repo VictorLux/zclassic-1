@@ -4,9 +4,9 @@
 #   /tmp/checkpoints_decl.c  — the array declaration (heights only)
 #   /tmp/checkpoints_init.c  — the uint256_set_hex initializers
 #
-# Trust model: zclassicd at /home/rhett/.zclassic is the canonical
-# reference implementation. Its (height,hash) sequence below
-# (tip - 100) is treated as final because MAX_REORG_LENGTH < 10.
+# Trust model: local zclassicd is an advisory reference. Its
+# (height,hash) sequence below the explicit 10-block finality floor is
+# useful only when it also matches zclassic23 anchors/quorum.
 #
 # Usage: tools/harvest_checkpoints.sh
 set -euo pipefail
@@ -36,7 +36,7 @@ def rpc(method, params=None):
         return json.loads(r.read())["result"]
 
 tip = rpc("getblockcount")
-finalized = tip - 100   # 10-block reorg limit + 90-block safety margin
+finalized = tip - 10
 heights = [0] + list(range(STEP, finalized + 1, STEP))
 hashes = []
 for h in heights:

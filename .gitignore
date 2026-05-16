@@ -74,3 +74,6 @@ TAGS
 .zcl_test_render/
 tools/gen_templates
 tools/inspect_html
+
+# Claude Code agent worktrees (runtime)
+.claude/worktrees/

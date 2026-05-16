@@ -3,9 +3,11 @@
 
 #include "test/test_helpers.h"
 #include "chain/mmb.h"
+#include "models/mmb_leaf_store.h"
 #include "crypto/sha3.h"
 #include <string.h>
 #include <stdio.h>
+#include <unistd.h>
 
 /* Helper: create a test leaf with predictable data */
 static void make_test_leaf(struct mmb_leaf *leaf, uint32_t height)
@@ -209,6 +211,42 @@ static int test_mmb_serialize_roundtrip(void)
         mmb_root(&m1, r1);
         mmb_root(&m2, r2);
         ASSERT(memcmp(r1, r2, 32) == 0);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int test_mmb_leaf_store_append_extends_mapped_file(void)
+{
+    int failures = 0;
+    TEST("mmb leaf store: append after reopen extends file") {
+        char path[128];
+        snprintf(path, sizeof(path), "/tmp/zcl_mmb_leaf_store_%d.dat",
+                 (int)getpid());
+        unlink(path);
+
+        uint8_t first[32], second[32];
+        memset(first, 0x11, sizeof(first));
+        memset(second, 0x22, sizeof(second));
+
+        struct mmb_leaf_store store;
+        ASSERT(mmb_leaf_store_open(&store, path));
+        ASSERT(mmb_leaf_store_append(&store, first));
+        mmb_leaf_store_close(&store);
+
+        ASSERT(mmb_leaf_store_open(&store, path));
+        ASSERT(store.num_leaves == 1);
+        ASSERT(mmb_leaf_store_get(&store, 0) != NULL);
+        ASSERT(memcmp(mmb_leaf_store_get(&store, 0), first, 32) == 0);
+
+        ASSERT(mmb_leaf_store_append(&store, second));
+        ASSERT(mmb_leaf_store_remap(&store));
+        ASSERT(store.num_leaves == 2);
+        ASSERT(memcmp(mmb_leaf_store_get(&store, 0), first, 32) == 0);
+        ASSERT(memcmp(mmb_leaf_store_get(&store, 1), second, 32) == 0);
+
+        mmb_leaf_store_close(&store);
+        unlink(path);
         PASS();
     } _test_next:;
     return failures;
@@ -718,6 +756,7 @@ int test_mmb(void)
     failures += test_mmb_o1_append();
     failures += test_mmb_deterministic();
     failures += test_mmb_serialize_roundtrip();
+    failures += test_mmb_leaf_store_append_extends_mapped_file();
 
     /* Rich leaf */
     failures += test_mmb_leaf_deterministic();

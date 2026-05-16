@@ -136,7 +136,39 @@ int test_chain_state_validator(void)
         block_map_free(&ms.map_block_index);
     }
 
-    /* ── 4. Coins behind chain → RESET_CHAIN ─────────── */
+    /* ── 4. Chain at genesis, coins unknown → reset cursor via executor ── */
+
+    {
+        struct main_state ms;
+        memset(&ms, 0, sizeof(ms));
+        block_map_init(&ms.map_block_index);
+        active_chain_init(&ms.chain_active);
+        csv_build_chain(&ms, 1);
+
+        struct coins_view_cache cache;
+        struct coins_view nv;
+        memset(&nv, 0, sizeof(nv));
+        coins_view_cache_init(&cache, &nv);
+
+        struct uint256 unknown;
+        memset(&unknown, 0xAB, sizeof(unknown));
+        coins_view_cache_set_best_block(&cache, &unknown);
+
+        struct boot_validation_result r =
+            validate_coins_chain_agreement(&ms, &cache, "/tmp");
+
+        struct uint256 after;
+        coins_view_cache_get_best_block(&cache, &after);
+
+        CSV_CHECK("csv: genesis + unknown coins → RESET_COINS_TO_GENESIS",
+                  r.action == BOOT_RECOVER_RESET_COINS_TO_GENESIS &&
+                  uint256_eq(&after, &unknown));
+
+        coins_view_cache_free(&cache);
+        block_map_free(&ms.map_block_index);
+    }
+
+    /* ── 5. Coins behind chain → RESET_CHAIN ─────────── */
 
     {
         struct main_state ms;
@@ -168,7 +200,7 @@ int test_chain_state_validator(void)
         block_map_free(&ms.map_block_index);
     }
 
-    /* ── 5. Coins not in index, chain > 1000 → RESET_CHAIN ── */
+    /* ── 6. Coins not in index, chain > 1000 → reset coins cursor ── */
 
     {
         struct main_state ms;
@@ -217,14 +249,18 @@ int test_chain_state_validator(void)
         struct boot_validation_result r =
             validate_coins_chain_agreement(&ms, &cache, "/tmp");
 
-        CSV_CHECK("csv: coins hash not in index, chain > 1000 → RESET_CHAIN",
-                  r.action == BOOT_RECOVER_RESET_CHAIN);
+        struct uint256 after;
+        coins_view_cache_get_best_block(&cache, &after);
+
+        CSV_CHECK("csv: coins hash not in index, chain > 1000 → reset cursor",
+                  r.action == BOOT_RECOVER_RESET_COINS_TO_CHAIN_TIP &&
+                  uint256_eq(&after, &unknown));
 
         coins_view_cache_free(&cache);
         block_map_free(&ms.map_block_index);
     }
 
-    /* ── 6. Chain at genesis, coins set to known block → RESET ── */
+    /* ── 7. Chain at genesis, coins set to known block → RESET ── */
 
     {
         struct main_state ms;

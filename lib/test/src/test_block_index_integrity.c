@@ -412,6 +412,31 @@ static int t_verdict_names(void)
     return failures;
 }
 
+static int t_recovery_status(void)
+{
+    int failures = 0;
+
+    bii_record_recovery_status(BII_TIP_MISSING_IN_SQL,
+                               BII_RECOVERY_RECONCILE_REQUIRED,
+                               "tip h=123: tip_missing_in_sql",
+                               true, false);
+
+    struct bii_recovery_status st;
+    memset(&st, 0, sizeof(st));
+    bii_get_recovery_status(&st);
+
+    bool ok = st.verdict == BII_TIP_MISSING_IN_SQL &&
+              st.action == BII_RECOVERY_RECONCILE_REQUIRED &&
+              st.degraded &&
+              !st.unsafe_override &&
+              st.unix_time > 0 &&
+              strcmp(st.reason, "tip h=123: tip_missing_in_sql") == 0 &&
+              strcmp(bii_recovery_action_name(BII_RECOVERY_RECONCILE_REQUIRED),
+                     "reconcile_required") == 0;
+    BII_RUN("bii: recovery status records degraded reconciliation", ok);
+    return failures;
+}
+
 /* ── 12. Bulk height repair fixes scrambled heights ──────────── */
 
 static int t_height_repair(void)
@@ -601,6 +626,7 @@ int test_block_index_integrity(void)
     failures += t_quarantine_renames();
     failures += t_quarantine_missing_is_noop();
     failures += t_verdict_names();
+    failures += t_recovery_status();
     failures += t_height_repair();
     failures += t_height_repair_empty();
     failures += t_height_repair_cycle();

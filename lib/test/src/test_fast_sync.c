@@ -8,6 +8,7 @@
 #include "net/download.h"
 #include "coins/utxo_commitment.h"
 #include "crypto/sha3.h"
+#include "validation/chainstate.h"
 #include <sqlite3.h>
 #include <string.h>
 #include <stdio.h>
@@ -16,6 +17,69 @@
 #include <time.h>
 #include <unistd.h>
 #include "util/safe_alloc.h"
+
+static uint8_t *test_snapshot_one_entry(size_t *size_out,
+                                        const char *tag,
+                                        uint8_t script_byte)
+{
+    const size_t size = 4 + 32 + 4 + 8 + 4 + 1 + 1 + 1;
+    uint8_t *buf = zcl_malloc(size, tag);
+    if (!buf) return NULL;
+
+    size_t pos = 0;
+    buf[pos++] = 1; buf[pos++] = 0; buf[pos++] = 0; buf[pos++] = 0;
+    memset(buf + pos, 0x42, 32); pos += 32;
+    buf[pos++] = 0; buf[pos++] = 0; buf[pos++] = 0; buf[pos++] = 0;
+    uint64_t value = 5000;
+    for (int i = 0; i < 8; i++)
+        buf[pos++] = (uint8_t)(value >> (8 * i));
+    uint32_t height = 100;
+    for (int i = 0; i < 4; i++)
+        buf[pos++] = (uint8_t)(height >> (8 * i));
+    buf[pos++] = 1; /* is_coinbase */
+    buf[pos++] = 1; /* compact script length */
+    buf[pos++] = script_byte;
+
+    if (size_out) *size_out = size;
+    return buf;
+}
+
+static uint8_t *test_snapshot_entries(size_t *size_out,
+                                      const char *tag,
+                                      uint32_t entries)
+{
+    if (entries == 0 || entries > SYNC_CHUNK_SIZE)
+        return NULL;
+    const size_t entry_size = 32 + 4 + 8 + 4 + 1 + 1 + 1;
+    const size_t size = 4 + (size_t)entries * entry_size;
+    uint8_t *buf = zcl_malloc(size, tag);
+    if (!buf) return NULL;
+
+    size_t pos = 0;
+    buf[pos++] = (uint8_t)entries;
+    buf[pos++] = (uint8_t)(entries >> 8);
+    buf[pos++] = (uint8_t)(entries >> 16);
+    buf[pos++] = (uint8_t)(entries >> 24);
+
+    for (uint32_t e = 0; e < entries; e++) {
+        memset(buf + pos, (int)(0x40 + (e & 0x3F)), 32);
+        pos += 32;
+        for (int i = 0; i < 4; i++)
+            buf[pos++] = (uint8_t)(e >> (8 * i));
+        uint64_t value = 5000 + e;
+        for (int i = 0; i < 8; i++)
+            buf[pos++] = (uint8_t)(value >> (8 * i));
+        uint32_t height = 100 + e;
+        for (int i = 0; i < 4; i++)
+            buf[pos++] = (uint8_t)(height >> (8 * i));
+        buf[pos++] = (uint8_t)(e == 0);
+        buf[pos++] = 1;
+        buf[pos++] = (uint8_t)(0x51 + (e & 0x0F));
+    }
+
+    if (size_out) *size_out = size;
+    return buf;
+}
 
 /* ── Merkle tree tests ─────────────────────────────────────── */
 
@@ -292,7 +356,10 @@ static int test_snapshot_cache_publish_reset(void)
 {
     int failures = 0;
     TEST("fast_sync snapshot cache publish/get/reset") {
-        uint8_t *buf = zcl_malloc(8, "test_snapshot_buf");
+        size_t buf_size = 0;
+        uint8_t *buf = test_snapshot_entries(&buf_size,
+                                             "test_snapshot_buf",
+                                             SYNC_CHUNK_SIZE);
         uint8_t sha3[32];
         uint8_t out[32];
         uint64_t count = 0;
@@ -300,21 +367,18 @@ static int test_snapshot_cache_publish_reset(void)
         const uint8_t *cached = NULL;
 
         ASSERT(buf != NULL);
-        memcpy(buf, "snapshot", 8);
         memset(sha3, 0x5a, sizeof(sha3));
 
         fast_sync_reset_snapshot_cache();
-        ASSERT(!fast_sync_get_snapshot_sha3(out, &count));
-        ASSERT(fast_sync_get_snapshot_buf(&size) == NULL);
-        ASSERT(size == 0);
 
-        ASSERT(fast_sync_publish_snapshot_cache(buf, 8, sha3, 123));
+        ASSERT(fast_sync_publish_snapshot_cache(buf, (int64_t)buf_size,
+                                                sha3, SYNC_CHUNK_SIZE));
         cached = fast_sync_get_snapshot_buf(&size);
         ASSERT(cached != NULL);
-        ASSERT(size == 8);
-        ASSERT(memcmp(cached, "snapshot", 8) == 0);
+        ASSERT(size == (int64_t)buf_size);
+        ASSERT(cached[0] == (uint8_t)SYNC_CHUNK_SIZE);
         ASSERT(fast_sync_get_snapshot_sha3(out, &count));
-        ASSERT(count == 123);
+        ASSERT(count == SYNC_CHUNK_SIZE);
         ASSERT(memcmp(out, sha3, 32) == 0);
 
         fast_sync_reset_snapshot_cache();
@@ -334,22 +398,25 @@ static int test_snapshot_cache_versioning(void)
         memset(sha1, 0x5a, sizeof(sha1));
         memset(sha2, 0x5b, sizeof(sha2));
 
-        uint8_t *buf1 = zcl_malloc(8, "test_snapshot_buf");
-        uint8_t *buf2 = zcl_malloc(9, "test_snapshot_buf");
+        size_t buf1_size = 0, buf2_size = 0;
+        uint8_t *buf1 = test_snapshot_one_entry(&buf1_size,
+                                                "test_snapshot_buf", 0x51);
+        uint8_t *buf2 = test_snapshot_one_entry(&buf2_size,
+                                                "test_snapshot_buf", 0x52);
         uint8_t *invalid = zcl_malloc(1, "test_snapshot_buf");
         ASSERT(buf1 != NULL);
         ASSERT(buf2 != NULL);
         ASSERT(invalid != NULL);
-        memcpy(buf1, "snapshot", 8);
-        memcpy(buf2, "snapshot2", 9);
 
         fast_sync_reset_snapshot_cache();
         uint64_t v0 = fast_sync_snapshot_cache_version();
-        ASSERT(fast_sync_publish_snapshot_cache(buf1, 8, sha1, 123));
+        ASSERT(fast_sync_publish_snapshot_cache(buf1, (int64_t)buf1_size,
+                                                sha1, 1));
         uint64_t v1 = fast_sync_snapshot_cache_version();
         ASSERT(v1 > v0);
 
-        ASSERT(fast_sync_publish_snapshot_cache(buf2, 9, sha2, 124));
+        ASSERT(fast_sync_publish_snapshot_cache(buf2, (int64_t)buf2_size,
+                                                sha2, 1));
         uint64_t v2 = fast_sync_snapshot_cache_version();
         ASSERT(v2 > v1);
 
@@ -637,6 +704,93 @@ static int test_block_piece_hash_deterministic(void)
         /* Different piece index → different hash */
         block_piece_hash((const uint8_t (*)[32])hashes, 4, 1, h3);
         ASSERT(memcmp(h1, h3, 32) != 0);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int test_block_piece_manifest_active_chain(void)
+{
+    int failures = 0;
+    TEST("block_piece_manifest_build_active_chain uses trusted active chain") {
+        struct active_chain chain;
+        active_chain_init(&chain);
+
+        struct block_index idx[4];
+        struct uint256 hashes[4];
+        memset(idx, 0, sizeof(idx));
+        memset(hashes, 0, sizeof(hashes));
+
+        for (int i = 0; i < 4; i++) {
+            memset(hashes[i].data, (uint8_t)(0x70 + i), 32);
+            block_index_init(&idx[i]);
+            idx[i].phashBlock = &hashes[i];
+            idx[i].nHeight = i;
+            idx[i].nStatus = BLOCK_VALID_SCRIPTS | BLOCK_HAVE_DATA;
+            idx[i].pprev = (i > 0) ? &idx[i - 1] : NULL;
+        }
+
+        ASSERT(active_chain_set_tip(&chain, &idx[3]));
+
+        struct block_piece_manifest m;
+        memset(&m, 0, sizeof(m));
+        ASSERT(block_piece_manifest_build_active_chain(&chain, 1, 3, &m));
+        ASSERT(m.start_height == 1);
+        ASSERT(m.end_height == 3);
+        ASSERT(m.num_pieces == 1);
+        ASSERT(m.piece_hashes != NULL);
+        ASSERT(memcmp(m.tip_hash, hashes[3].data, 32) == 0);
+
+        uint8_t expected[1][32];
+        uint8_t block_hashes[3][32];
+        for (int i = 0; i < 3; i++)
+            memcpy(block_hashes[i], hashes[i + 1].data, 32);
+        block_piece_hash((const uint8_t (*)[32])block_hashes, 3, 0,
+                         expected[0]);
+        ASSERT(memcmp(m.piece_hashes[0], expected[0], 32) == 0);
+
+        block_piece_manifest_free(&m);
+
+        idx[2].nStatus &= ~BLOCK_HAVE_DATA;
+        ASSERT(!block_piece_manifest_build_active_chain(&chain, 1, 3, &m));
+        active_chain_free(&chain);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int test_block_piece_manifest_active_chain_skips_leading_gap(void)
+{
+    int failures = 0;
+    TEST("block_piece_manifest_build_active_chain skips leading missing data") {
+        struct active_chain chain;
+        active_chain_init(&chain);
+
+        struct block_index idx[4];
+        struct uint256 hashes[4];
+        memset(idx, 0, sizeof(idx));
+        memset(hashes, 0, sizeof(hashes));
+
+        for (int i = 0; i < 4; i++) {
+            memset(hashes[i].data, (uint8_t)(0x90 + i), 32);
+            block_index_init(&idx[i]);
+            idx[i].phashBlock = &hashes[i];
+            idx[i].nHeight = i;
+            idx[i].nStatus = BLOCK_VALID_SCRIPTS | BLOCK_HAVE_DATA;
+            idx[i].pprev = (i > 0) ? &idx[i - 1] : NULL;
+        }
+        idx[1].nStatus &= ~BLOCK_HAVE_DATA;
+        ASSERT(active_chain_set_tip(&chain, &idx[3]));
+
+        struct block_piece_manifest m;
+        memset(&m, 0, sizeof(m));
+        ASSERT(block_piece_manifest_build_active_chain(&chain, 1, 3, &m));
+        ASSERT(m.start_height == 2);
+        ASSERT(m.end_height == 3);
+        ASSERT(m.num_pieces == 1);
+        ASSERT(memcmp(m.tip_hash, hashes[3].data, 32) == 0);
+        block_piece_manifest_free(&m);
+        active_chain_free(&chain);
         PASS();
     } _test_next:;
     return failures;
@@ -1155,6 +1309,129 @@ static int test_apply_chunk_rollback_on_mid_chunk_failure(void)
     return failures;
 }
 
+static int test_chunk_roundtrip_preserves_canonical_utxo_fields(void)
+{
+    int failures = 0;
+    TEST("fast_sync chunk roundtrip preserves SHA3 UTXO fields") {
+        char src_dir[128], dst_dir[128];
+        snprintf(src_dir, sizeof(src_dir),
+                 "./test-tmp/fast_sync_src_%d_XXXXXX", (int)getpid());
+        snprintf(dst_dir, sizeof(dst_dir),
+                 "./test-tmp/fast_sync_dst_%d_XXXXXX", (int)getpid());
+        mkdir("./test-tmp", 0755);
+        char *src_datadir = mkdtemp(src_dir);
+        char *dst_datadir = mkdtemp(dst_dir);
+        ASSERT(src_datadir != NULL);
+        ASSERT(dst_datadir != NULL);
+
+        char src_db_path[256], dst_db_path[256];
+        snprintf(src_db_path, sizeof(src_db_path), "%s/node.db", src_datadir);
+        snprintf(dst_db_path, sizeof(dst_db_path), "%s/node.db", dst_datadir);
+
+        const char *schema =
+            "CREATE TABLE utxos ("
+            "txid BLOB NOT NULL,vout INTEGER NOT NULL,"
+            "value INTEGER NOT NULL CHECK(value >= 0 AND value <= 2100000000000000),"
+            "script BLOB NOT NULL,"
+            "script_type INTEGER NOT NULL DEFAULT 0,"
+            "address_hash BLOB,height INTEGER NOT NULL CHECK(height >= 0),"
+            "is_coinbase INTEGER NOT NULL DEFAULT 0,"
+            "PRIMARY KEY (txid,vout))";
+
+        sqlite3 *src = NULL;
+        sqlite3 *dst = NULL;
+        ASSERT(sqlite3_open_v2(src_db_path, &src,
+                               SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE,
+                               NULL) == SQLITE_OK);
+        ASSERT(sqlite3_open_v2(dst_db_path, &dst,
+                               SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE,
+                               NULL) == SQLITE_OK);
+        char *err = NULL;
+        ASSERT(sqlite3_exec(src, schema, NULL, NULL, &err) == SQLITE_OK);
+        ASSERT(sqlite3_exec(dst, schema, NULL, NULL, &err) == SQLITE_OK);
+
+        sqlite3_stmt *ins = NULL;
+        ASSERT(sqlite3_prepare_v2(src,
+            "INSERT INTO utxos"
+            "(txid,vout,value,script,script_type,height,is_coinbase)"
+            " VALUES(?,?,?,?,0,?,?)",
+            -1, &ins, NULL) == SQLITE_OK);
+
+        uint8_t txid1[32], txid2[32], script1[300], script2[1] = {0x51};
+        memset(txid1, 0xA1, sizeof(txid1));
+        memset(txid2, 0xB2, sizeof(txid2));
+        for (size_t i = 0; i < sizeof(script1); i++)
+            script1[i] = (uint8_t)(i & 0xFF);
+
+        sqlite3_bind_blob(ins, 1, txid1, 32, SQLITE_STATIC);
+        sqlite3_bind_int(ins, 2, 0);
+        sqlite3_bind_int64(ins, 3, 5000000000LL);
+        sqlite3_bind_blob(ins, 4, script1, (int)sizeof(script1), SQLITE_STATIC);
+        sqlite3_bind_int(ins, 5, 100);
+        sqlite3_bind_int(ins, 6, 1);
+        ASSERT(sqlite3_step(ins) == SQLITE_DONE); // raw-sql-ok: test fixture setup
+        sqlite3_reset(ins);
+        sqlite3_clear_bindings(ins);
+
+        sqlite3_bind_blob(ins, 1, txid2, 32, SQLITE_STATIC);
+        sqlite3_bind_int(ins, 2, 2);
+        sqlite3_bind_int64(ins, 3, 7000);
+        sqlite3_bind_blob(ins, 4, script2, (int)sizeof(script2), SQLITE_STATIC);
+        sqlite3_bind_int(ins, 5, 101);
+        sqlite3_bind_int(ins, 6, 0);
+        ASSERT(sqlite3_step(ins) == SQLITE_DONE); // raw-sql-ok: test fixture setup
+        sqlite3_finalize(ins);
+
+        uint8_t src_root[32], dst_root[32];
+        uint64_t src_count = 0, dst_count = 0;
+        utxo_commitment_sha3_compute(src, src_root, &src_count);
+
+        struct utxo_chunk *chunk =
+            zcl_calloc(1, sizeof(struct utxo_chunk), "roundtrip_chunk");
+        ASSERT(chunk != NULL);
+        ASSERT(fast_sync_serve_chunk_db(src, 0, SYNC_CHUNK_SIZE, chunk));
+        ASSERT(chunk->num_entries == 2);
+        ASSERT(chunk->entries[0].script_len == sizeof(script1));
+        ASSERT(chunk->entries[0].is_coinbase);
+        ASSERT(!chunk->entries[1].is_coinbase);
+
+        sqlite3_close(dst);
+        dst = NULL;
+        ASSERT(fast_sync_apply_chunk(dst_datadir, chunk));
+        ASSERT(sqlite3_open_v2(dst_db_path, &dst, SQLITE_OPEN_READONLY,
+                               NULL) == SQLITE_OK);
+        utxo_commitment_sha3_compute(dst, dst_root, &dst_count);
+        ASSERT(src_count == 2 && dst_count == 2);
+        ASSERT(memcmp(src_root, dst_root, 32) == 0);
+
+        sqlite3_stmt *q = NULL;
+        ASSERT(sqlite3_prepare_v2(dst,
+            "SELECT length(script), is_coinbase FROM utxos "
+            "WHERE txid=? AND vout=0",
+            -1, &q, NULL) == SQLITE_OK);
+        sqlite3_bind_blob(q, 1, txid1, 32, SQLITE_STATIC);
+        int script_len = -1, is_coinbase = -1;
+        if (sqlite3_step(q) == SQLITE_ROW) { // raw-sql-ok: test fixture verify
+            script_len = sqlite3_column_int(q, 0);
+            is_coinbase = sqlite3_column_int(q, 1);
+        }
+        sqlite3_finalize(q);
+        ASSERT(script_len == (int)sizeof(script1));
+        ASSERT(is_coinbase == 1);
+
+        free(chunk);
+        sqlite3_close(src);
+        sqlite3_close(dst);
+        unlink(src_db_path);
+        unlink(dst_db_path);
+        rmdir(src_datadir);
+        rmdir(dst_datadir);
+
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 /* ── Entry point ─────────────────────────────────────────── */
 
 int test_fast_sync(void)
@@ -1197,6 +1474,8 @@ int test_fast_sync(void)
     failures += test_block_swarm_endgame();
     failures += test_block_swarm_bitmap();
     failures += test_block_piece_hash_deterministic();
+    failures += test_block_piece_manifest_active_chain();
+    failures += test_block_piece_manifest_active_chain_skips_leading_gap();
     failures += test_block_swarm_lifecycle();
     failures += test_block_swarm_fail_retry();
 
@@ -1218,6 +1497,7 @@ int test_fast_sync(void)
 
     /* P2.3: chunk apply atomicity */
     failures += test_apply_chunk_rollback_on_mid_chunk_failure();
+    failures += test_chunk_roundtrip_preserves_canonical_utxo_fields();
 
     return failures;
 }

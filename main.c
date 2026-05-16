@@ -267,6 +267,8 @@ static void print_usage(const char *prog)
     printf("  -gen                Enable mining\n");
     printf("  -txindex            Transaction index\n");
     printf("  -tor                Start Tor hidden service (dynhost blog)\n");
+    printf("  -profile=<name>     Service profile: full, zclassic-only, explorer, onion-node, legacy-compat\n");
+    printf("  -nolegacyimport     Do not auto-read/link ~/.zclassic during boot\n");
     printf("  -help               This help\n\n");
     printf("RPC examples:\n");
     printf("  %s getblockcount\n", prog);
@@ -1081,11 +1083,29 @@ int main(int argc, char **argv)
         else if (strcmp(argv[i], "-allow-degraded") == 0) ctx.allow_degraded = true;
         else if (strncmp(argv[i], "-showmetrics=", 13) == 0) show_metrics = atoi(argv[i]+13) != 0;
         else if (strcmp(argv[i], "-tor") == 0) ctx.tor = true;
-        else if (strncmp(argv[i], "-assumevalid=", 13) == 0) ctx.assume_valid = argv[i]+13;
+        else if (strncmp(argv[i], "-profile=", 9) == 0) {
+            if (!app_runtime_profile_parse(argv[i] + 9,
+                                           &ctx.runtime_profile)) {
+                fprintf(stderr, "Unknown runtime profile: %s\n", argv[i] + 9);
+                return 1;
+            }
+        }
+        else if (strncmp(argv[i], "-assumevalid", 12) == 0) {
+            fprintf(stderr,
+                    "-assumevalid has been removed; use "
+                    "-deferproofvalidationbelow=<blockhash|0>\n");
+            return 1;
+        }
+        else if (strncmp(argv[i], "-deferproofvalidationbelow=",
+                         sizeof("-deferproofvalidationbelow=") - 1) == 0) {
+            ctx.defer_proof_validation_below =
+                argv[i] + sizeof("-deferproofvalidationbelow=") - 1;
+        }
         else if (strncmp(argv[i], "-filesync=", 10) == 0) { /* handled above */ }
         else if (strncmp(argv[i], "-fileservice=", 13) == 0) ctx.file_service_peer = argv[i]+13;
         else if (strcmp(argv[i], "-nofilesync") == 0) ctx.no_file_sync = true;
         else if (strcmp(argv[i], "-nobgvalidation") == 0) ctx.no_bg_validation = true;
+        else if (strcmp(argv[i], "-nolegacyimport") == 0) ctx.no_legacy_auto_import = true;
         else if (strcmp(argv[i], "-leveldb-no-verify-checksums") == 0) {
             /* Turns off LevelDB checksum verification for both point
              * reads and iteration.  Use only when chasing a suspected

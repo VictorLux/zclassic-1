@@ -24,6 +24,7 @@
 #include "core/random.h"
 #include "validation/main_state.h"
 #include "validation/sighash.h"
+#include "validation/sync_evidence_policy.h"
 #include "validation/txmempool.h"
 #include "wallet/wallet_sqlite.h"
 #include "net/connman.h"
@@ -765,10 +766,10 @@ static bool rpc_rescanwitnesses(const struct json_value *params, bool help,
     int blocks_scanned = 0;
     size_t total_commitments = 0;
 
-    /* Stop 10 blocks before tip to avoid reading blocks the C++ node
+    /* Stop at the immutable height to avoid reading blocks the C++ node
      * may still be writing to shared blk*.dat files. The remaining
      * blocks will be handled by normal connect_block processing. */
-    int safe_tip = chain_tip - 10;
+    int safe_tip = zcl_immutable_height(chain_tip);
     if (safe_tip < sapling_start) safe_tip = chain_tip;
 
     for (int h = sapling_start; h <= safe_tip; h++) {

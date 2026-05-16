@@ -233,6 +233,9 @@ static void swap_random(struct addr_man *am, unsigned int p1, unsigned int p2)
 static struct addr_info *find_addr(struct addr_man *am,
                                     const struct net_addr *addr, int *pnId)
 {
+    if (!am || !addr || !am->entries)
+        LOG_NULL("addrman", "find_addr: bad args");
+
     for (int i = 0; i < am->id_count; i++) {
         if (am->entries[i].used &&
             net_addr_eq(&am->entries[i].addr.svc.addr, addr)) {
@@ -240,7 +243,7 @@ static struct addr_info *find_addr(struct addr_man *am,
             return &am->entries[i];
         }
     }
-    LOG_NULL("addrman", "address not found in table");
+    return NULL;
 }
 
 static struct addr_info *create_entry(struct addr_man *am,
@@ -392,7 +395,7 @@ bool addrman_add(struct addr_man *am, const struct net_address *addr,
                  const struct net_addr *source, int64_t time_penalty)
 {
     if (!net_addr_is_routable(&addr->svc.addr))
-        LOG_FAIL("addrman", "address not routable");
+        return false;
 
     zcl_mutex_lock(&am->cs);
 
@@ -416,15 +419,15 @@ bool addrman_add(struct addr_man *am, const struct net_address *addr,
 
         if (!addr->nTime || (pinfo->addr.nTime && addr->nTime <= pinfo->addr.nTime)) {
             zcl_mutex_unlock(&am->cs);
-            LOG_FAIL("addrman", "add skipped: stale timestamp for existing entry");
+            return false;
         }
         if (pinfo->in_tried) {
             zcl_mutex_unlock(&am->cs);
-            LOG_FAIL("addrman", "add skipped: address already in tried table");
+            return false;
         }
         if (pinfo->ref_count == ADDRMAN_NEW_BUCKETS_PER_ADDRESS) {
             zcl_mutex_unlock(&am->cs);
-            LOG_FAIL("addrman", "add skipped: ref_count at max=%d", ADDRMAN_NEW_BUCKETS_PER_ADDRESS);
+            return false;
         }
 
         int nFactor = 1;
@@ -432,7 +435,7 @@ bool addrman_add(struct addr_man *am, const struct net_address *addr,
             nFactor *= 2;
         if (nFactor > 1 && (GetRandInt(nFactor) != 0)) {
             zcl_mutex_unlock(&am->cs);
-            LOG_FAIL("addrman", "add skipped: random rejection factor=%d", nFactor);
+            return false;
         }
     } else {
         pinfo = create_entry(am, addr, source, &nId);

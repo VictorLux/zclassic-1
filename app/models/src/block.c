@@ -210,7 +210,8 @@ bool db_block_validate(const struct db_block *b, struct ar_errors *errors)
 
     /* Required fields */
     validates_presence_of(errors, b, hash);
-    validates_presence_of(errors, b, prev_hash);
+    if (b->height != 0)
+        validates_presence_of(errors, b, prev_hash);
     validates_presence_of(errors, b, merkle_root);
 
     /* Range checks */

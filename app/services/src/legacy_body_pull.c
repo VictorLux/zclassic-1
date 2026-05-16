@@ -33,7 +33,6 @@
 #include "validation/main_state.h"
 #include "validation/chainstate.h"
 #include "validation/process_block.h"
-#include "validation/contextual_check_tx.h"  /* g_assume_valid_height */
 #include "consensus/validation.h"
 #include "chain/chain.h"
 #include "chain/chainparams.h"
@@ -49,7 +48,6 @@
 #include "util/safe_alloc.h"
 #include "util/thread_registry.h"
 
-#include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -219,10 +217,10 @@ static bool lbp_verify_window(const char *host, int port,
 }
 
 /* Spot-check K random SHA3 windows against the legacy node before
- * granting it trust. Returns true iff every sampled window's digest
- * matches the compile-time anchor — meaning the legacy node's blocks
- * 0..3,110,999 hash-equal what we shipped. We then trust everything
- * above the SHA3 anchor (3,056,758) for assume_valid purposes.
+ * using it as a source. Returns true iff every sampled window's digest
+ * matches the compile-time anchor — meaning the sampled legacy block
+ * payloads hash-equal what we shipped. This does not justify proof
+ * validation deferral.
  *
  * Birthday-bound security against a malicious legacy node: a K=3
  * sample over W windows finds any forgery with p ≥ 1-(1-b/W)^K where
@@ -231,8 +229,7 @@ static bool lbp_verify_window(const char *host, int port,
  * → all K pass.
  *
  * Heights outside the legacy node's range produce RPC errors and we
- * fall through to per-window failure (we don't trust an inconclusive
- * spot-check). */
+ * fall through to per-window failure. */
 static bool lbp_spotcheck_sha3_windows(const char *host, int port,
                                        const char *user, const char *pass,
                                        int legacy_tip,
@@ -289,7 +286,7 @@ static bool lbp_spotcheck_sha3_windows(const char *host, int port,
         if (!lbp_verify_window(host, port, user, pass, wi)) {
             fprintf(stderr, // obs-ok:pre-existing-diagnostic
                     "[legacy_body_pull] spotcheck FAILED at window %zu — "
-                    "refusing to lower assume_valid; body-pull aborted\n",
+                    "body-pull will continue with full validation\n",
                     wi);
             return false;
         }
@@ -298,8 +295,8 @@ static bool lbp_spotcheck_sha3_windows(const char *host, int port,
     }
 
     fprintf(stderr, // obs-ok:pre-existing-diagnostic
-            "[legacy_body_pull] SHA3 spotcheck: %d/%d windows match — "
-            "legacy node is trusted\n", k, k);
+            "[legacy_body_pull] SHA3 spotcheck: %d/%d windows match; "
+            "proof validation remains enabled\n", k, k);
     return true;
 }
 
@@ -341,39 +338,17 @@ bool legacy_body_pull_range_blocking(struct main_state *ms,
         return false;
     }
 
-    /* ── SHA3 spotcheck + trust-mode arming ─────────────────────
+    /* ── SHA3 spotcheck source blocks ───────────────────────────────
      * Before pulling any blocks, verify K=3 random SHA3 windows
-     * against the legacy node. ANY mismatch refuses to lower
-     * assume_valid → body-pull continues but at full validation
-     * cost (much slower; user is warned). All match → trust the
-     * legacy node and bump g_assume_valid_height to to_height so
-     * ECDSA + Sapling Groth16 + JoinSplit Ed25519 are all skipped
-     * for the catch-up window.
-     *
-     * The bump is permanent within this process lifetime — the
-     * blocks we accept now retain their trusted status; assume_valid
-     * isn't lowered on body-pull exit. Background validator (P5)
-     * re-verifies bit-exact over the following hours.  */
-    bool trust_armed = false;
-    int  prev_assume_valid = atomic_load(&g_assume_valid_height);
-    if (lbp_spotcheck_sha3_windows(host, port, user, pass,
+     * against the legacy node. This is source-integrity telemetry only;
+     * proof/script validation remains enabled. */
+    if (!lbp_spotcheck_sha3_windows(host, port, user, pass,
                                     to_height,
                                     LBP_SPOTCHECK_K)) {
-        if (to_height > prev_assume_valid) {
-            atomic_store(&g_assume_valid_height, to_height);
-            trust_armed = true;
-            fprintf(stderr, // obs-ok:pre-existing-diagnostic
-                    "[legacy_body_pull] trust-mode armed: "
-                    "assume_valid %d -> %d (skipping ECDSA + Groth16 + "
-                    "JoinSplit Ed25519 for catch-up)\n",
-                    prev_assume_valid, to_height);
-        }
-    } else {
         fprintf(stderr, // obs-ok:pre-existing-diagnostic
                 "[legacy_body_pull] WARNING: SHA3 spotcheck did not pass; "
-                "body-pull will run at FULL validation cost (no trust-mode)\n");
+                "continuing with full validation\n");
     }
-    (void)trust_armed;  /* future: stats / state-dump */
 
     fprintf(stderr,  // obs-ok:pre-existing-diagnostic
             "[legacy_body_pull] starting: window=[%d..%d] "

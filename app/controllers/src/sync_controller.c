@@ -48,6 +48,9 @@
 
 extern volatile sig_atomic_t g_shutdown_requested;
 
+#define SYNC_PROJECTION_TIP_HASH_KEY   "sync_projection_tip_hash"
+#define SYNC_PROJECTION_TIP_HEIGHT_KEY "sync_projection_tip_height"
+
 _Atomic bool g_sapling_rescan_active = false;
 _Atomic bool g_sapling_tree_rebuilding = false;
 static _Atomic bool g_catchup_active = false;
@@ -1384,7 +1387,7 @@ int node_db_sync_get_tip_height(struct node_db *ndb)
     if (!ndb || !ndb->open)
         LOG_ERR("sync", "get_tip_height: ndb invalid (ndb=%p)", (void *)ndb);
 
-    node_db_state_get_int(ndb, "tip_height", &h);
+    node_db_state_get_int(ndb, SYNC_PROJECTION_TIP_HEIGHT_KEY, &h);
     return (int)h;
 }
 
@@ -1395,8 +1398,9 @@ bool node_db_sync_get_tip_hash(struct node_db *ndb, uint8_t hash_out[32])
     if (!ndb || !hash_out || !ndb->open)
         LOG_FAIL("sync", "get_tip_hash: invalid args (ndb=%p, hash_out=%p)",
                  (void *)ndb, (void *)hash_out);
-    if (!node_db_state_get(ndb, "tip_hash", hash_out, 32, &len))
-        LOG_FAIL("sync", "get_tip_hash: node_db_state_get failed for tip_hash");
+    if (!node_db_state_get(ndb, SYNC_PROJECTION_TIP_HASH_KEY,
+                           hash_out, 32, &len))
+        LOG_FAIL("sync", "get_tip_hash: node_db_state_get failed for projection tip hash");
     return len == 32;
 }
 
@@ -1406,8 +1410,10 @@ static bool node_db_sync_set_tip_write(struct node_db *ndb, void *ctx)
 
     if (!tip)
         LOG_FAIL("sync", "set_tip_write: ctx is NULL");
-    tip->ok = node_db_state_set(ndb, "tip_hash", tip->hash, sizeof(tip->hash)) &&
-              node_db_state_set_int(ndb, "tip_height", (int64_t)tip->height);
+    tip->ok = node_db_state_set(ndb, SYNC_PROJECTION_TIP_HASH_KEY,
+                                tip->hash, sizeof(tip->hash)) &&
+              node_db_state_set_int(ndb, SYNC_PROJECTION_TIP_HEIGHT_KEY,
+                                    (int64_t)tip->height);
     return tip->ok;
 }
 
@@ -1714,8 +1720,8 @@ int sapling_tree_rebuild(struct node_db *ndb,
                         sapling_tree_init(&tree);
                     }
                 } else {
-                    /* Can't verify — trust the checkpoint if height
-                     * is on a 100K boundary (our checkpoint interval) */
+                    /* Can't verify against a local root; accept the
+                     * checkpoint only on a 100K boundary (our interval). */
                     if ((ckpt_h - sapling_height) % 100000 == 0) {
                         start_height = (int)ckpt_h + 1;
                         total_commitments =

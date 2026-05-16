@@ -26,6 +26,7 @@ void api_set_rpc_backend(const char *rpc_user, const char *rpc_pass,
 /* Start the background API cache refresh thread.
  * Call after api_set_rpc_backend so caches warm immediately. */
 void api_start_cache(void);
+void api_stop_cache(void);
 
 /* Handle an API request. Returns bytes written to response, or 0 if not handled.
  * Response includes HTTP headers + JSON body. */

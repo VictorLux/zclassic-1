@@ -41,6 +41,9 @@ void mmb_leaf_store_close(struct mmb_leaf_store *store);
 bool mmb_leaf_store_append(struct mmb_leaf_store *store,
                            const uint8_t hash[32]);
 
+/* Refresh mmap after appends have extended the backing file. */
+bool mmb_leaf_store_remap(struct mmb_leaf_store *store);
+
 /* Get pointer to leaf hash at index (O(1) via mmap). */
 const uint8_t *mmb_leaf_store_get(const struct mmb_leaf_store *store,
                                   uint64_t index);

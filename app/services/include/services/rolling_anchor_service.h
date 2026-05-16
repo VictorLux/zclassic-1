@@ -4,7 +4,7 @@
  *
  * The compile-time `g_sha3_windows[]` table covers a fixed prefix
  * (genesis..3,110,205 at time of writing). This service extends the
- * trust prefix at runtime by hashing 1000-block windows of blocks
+ * evidence prefix at runtime by hashing 1000-block windows of blocks
  * past the prefix and persisting the digests to
  * <datadir>/sha3_windows_runtime.dat.
  *

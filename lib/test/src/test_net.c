@@ -611,6 +611,10 @@ int test_net(void)
         ok = ok && added;
         ok = ok && addrman_size(&am) == 1;
 
+        bool duplicate_added = addrman_add(&am, &addr, &source, 0);
+        ok = ok && !duplicate_added;
+        ok = ok && addrman_size(&am) == 1;
+
         if (ok) printf("OK\n");
         else { printf("FAIL (added=%d size=%zu)\n", added, addrman_size(&am)); failures++; }
         addrman_free(&am);
@@ -1518,6 +1522,24 @@ int test_net(void)
         ok = ok && !is_banned(&nm, &b);
 
         net_manager_free(&nm);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* addr_db_read: missing peers.dat is a clean cold-start miss */
+    {
+        printf("addr_db_read: missing peers.dat is cold-start miss... ");
+        char tmpdir[] = "/tmp/zcl_peers_missing_XXXXXX";
+        bool ok = false;
+        if (mkdtemp(tmpdir)) {
+            struct net_manager nm;
+            net_manager_init(&nm);
+            ok = !addr_db_read(&nm, tmpdir);
+            net_manager_free(&nm);
+            char cmd[256];
+            snprintf(cmd, sizeof(cmd), "rm -rf %s", tmpdir);
+            (void)system(cmd);
+        }
         if (ok) printf("OK\n");
         else { printf("FAIL\n"); failures++; }
     }

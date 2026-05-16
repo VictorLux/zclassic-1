@@ -18,7 +18,6 @@
 #include "consensus/validation.h"
 #include "controllers/sync_controller.h"
 #include "net/download.h"
-#include "net/connman.h"
 #include "event/event.h"
 #include "wallet/wallet.h"
 #include "models/database.h"
@@ -32,6 +31,51 @@
 
 /* Rebuild manifest when chain grows this many blocks beyond the cached one. */
 #define MANIFEST_REFRESH_BLOCKS 1000
+
+static struct block_index *best_known_successor(struct main_state *ms,
+                                                struct block_index *parent)
+{
+    struct block_index *best = NULL;
+    size_t iter = 0;
+    struct block_index *candidate = NULL;
+
+    if (!ms || !parent || !parent->phashBlock)
+        return NULL;
+
+    while (block_map_next(&ms->map_block_index, &iter, NULL, &candidate)) {
+        if (!candidate || !candidate->phashBlock || !candidate->pprev)
+            continue;
+        if (candidate->pprev != parent)
+            continue;
+        if (candidate->nHeight != parent->nHeight + 1)
+            continue;
+        if (candidate->nStatus & BLOCK_FAILED_MASK)
+            continue;
+        if (!best ||
+            arith_uint256_compare(&candidate->nChainWork,
+                                  &best->nChainWork) > 0 ||
+            (arith_uint256_compare(&candidate->nChainWork,
+                                   &best->nChainWork) == 0 &&
+             (candidate->nStatus & BLOCK_HAVE_DATA) &&
+             !(best->nStatus & BLOCK_HAVE_DATA))) {
+            best = candidate;
+        }
+    }
+
+    return best;
+}
+
+static int msg_blocks_acceptance_peer_height(const struct p2p_node *node,
+                                             int header_height,
+                                             int tip_height)
+{
+    int max_height = tip_height;
+    if (header_height > max_height)
+        max_height = header_height;
+    if (node && node->starting_height > max_height)
+        max_height = node->starting_height;
+    return max_height;
+}
 
 bool process_getblocks(struct msg_processor *mp, struct p2p_node *node,
                        struct byte_stream *s)
@@ -57,7 +101,10 @@ bool process_getblocks(struct msg_processor *mp, struct p2p_node *node,
     for (size_t i = 0; i < locator.num_hashes; i++) {
         struct block_index *found = block_map_find(
             &mp->main_state->map_block_index, &locator.vhave[i]);
-        if (found && active_chain_contains(chain, found)) {
+        if (found && (active_chain_contains(chain, found) ||
+                      (found->phashBlock &&
+                       uint256_eq(found->phashBlock,
+                                  &mp->params->consensus.hashGenesisBlock)))) {
             pindex = found;
             break;
         }
@@ -65,15 +112,19 @@ bool process_getblocks(struct msg_processor *mp, struct p2p_node *node,
     block_locator_free(&locator);
 
     if (!pindex)
+        pindex = block_map_find(&mp->main_state->map_block_index,
+                                &mp->params->consensus.hashGenesisBlock);
+    if (!pindex)
         pindex = active_chain_at(chain, 0);
 
     int limit = 500;
     struct block_index *tip = active_chain_tip(chain);
 
     if (pindex)
-        pindex = active_chain_at(chain, pindex->nHeight + 1);
+        pindex = best_known_successor(mp->main_state, pindex);
 
-    for (; pindex && limit > 0; pindex = active_chain_at(chain, pindex->nHeight + 1)) {
+    for (; pindex && limit > 0;
+         pindex = best_known_successor(mp->main_state, pindex)) {
         if (!pindex || !pindex->phashBlock)
             break;
 
@@ -96,6 +147,12 @@ bool process_getblocks(struct msg_processor *mp, struct p2p_node *node,
 bool process_getdata(struct msg_processor *mp, struct p2p_node *node,
                      struct byte_stream *s)
 {
+    if (node->swarm_manifest_sent) {
+        printf("Peer %s: deferring getdata while serving snapshot\n",
+               node->addr_name);
+        return true;
+    }
+
     uint64_t count;
     if (!stream_read_compact_size(s, &count))
         LOG_FAIL("net", "failed to read getdata count from %s",
@@ -316,15 +373,16 @@ bool process_block_msg(struct msg_processor *mp, struct p2p_node *node,
             struct sync_block_acceptance acceptance;
             node->last_block_time = (int64_t)time(NULL);
             node->blocks_received++;
-            /* manager is first field of connman */
-            struct connman *cm = (struct connman *)mp->net_mgr;
+            int header_height = mp->main_state->pindex_best_header
+                                    ? mp->main_state->pindex_best_header->nHeight
+                                    : new_tip->nHeight;
             syncsvc_note_valid_block(&acceptance, node, sync_get_state(),
                                      new_tip->nHeight,
-                                     mp->main_state->pindex_best_header
-                                         ? mp->main_state->pindex_best_header->nHeight
-                                         : new_tip->nHeight,
+                                     header_height,
                                      new_tip->nTime,
-                                     connman_max_peer_height(cm));
+                                     msg_blocks_acceptance_peer_height(
+                                         node, header_height,
+                                         new_tip->nHeight));
             event_emitf(EV_BLOCK_CONNECTED, (uint32_t)node->id,
                         "h=%d", new_tip->nHeight);
 
@@ -372,7 +430,10 @@ bool process_block_msg(struct msg_processor *mp, struct p2p_node *node,
                 if (!atomic_exchange(&g_manifest_rebuilding, true)) {
                     struct block_piece_manifest new_m;
                     memset(&new_m, 0, sizeof(new_m));
-                    if (block_piece_manifest_build(mp->datadir, 1,
+                    if (block_piece_manifest_build_active_chain(
+                            &mp->main_state->chain_active, 1,
+                            new_tip->nHeight, &new_m) ||
+                        block_piece_manifest_build(mp->datadir, 1,
                             new_tip->nHeight, &new_m)) {
                         uint32_t num_pieces = new_m.num_pieces;
                         msg_processor_publish_block_manifest(

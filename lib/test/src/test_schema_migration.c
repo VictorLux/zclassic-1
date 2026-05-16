@@ -19,6 +19,15 @@
     else { printf("FAIL\n"); failures++; } \
 } while (0)
 
+enum {
+    SM_TEST_V1 = NODE_DB_SCHEMA_LATEST + 1,
+    SM_TEST_V2 = NODE_DB_SCHEMA_LATEST + 2,
+    SM_TEST_V3 = NODE_DB_SCHEMA_LATEST + 3,
+    SM_TEST_V4 = NODE_DB_SCHEMA_LATEST + 4,
+    SM_TEST_V5 = NODE_DB_SCHEMA_LATEST + 5,
+    SM_TEST_V6 = NODE_DB_SCHEMA_LATEST + 6,
+};
+
 /* ── Test migrations ───────────────────────────────────────── */
 
 static bool test_up_add_table(struct node_db *ndb)
@@ -85,18 +94,18 @@ int test_schema_migration(void)
     {
         schema_migration_clear();
 
-        bool r1 = schema_migration_register(19, "add_test_table",
+        bool r1 = schema_migration_register(SM_TEST_V1, "add_test_table",
                                             test_up_add_table, test_down_drop_table);
-        SM_CHECK("sm: register v19 succeeds", r1);
+        SM_CHECK("sm: register first post-built-in migration succeeds", r1);
         SM_CHECK("sm: count is 1", schema_migration_count() == 1);
 
-        bool r2 = schema_migration_register(20, "add_column",
+        bool r2 = schema_migration_register(SM_TEST_V2, "add_column",
                                             test_up_add_column, NULL);
-        SM_CHECK("sm: register v20 succeeds", r2);
+        SM_CHECK("sm: register second post-built-in migration succeeds", r2);
         SM_CHECK("sm: count is 2", schema_migration_count() == 2);
 
         /* Duplicate version rejected */
-        bool r3 = schema_migration_register(19, "duplicate",
+        bool r3 = schema_migration_register(SM_TEST_V1, "duplicate",
                                             test_up_add_table, NULL);
         SM_CHECK("sm: duplicate version rejected", !r3);
         SM_CHECK("sm: count still 2 after reject", schema_migration_count() == 2);
@@ -111,7 +120,7 @@ int test_schema_migration(void)
         SM_CHECK("sm: negative version rejected", !r5);
 
         /* NULL up rejected */
-        bool r6 = schema_migration_register(21, "null_up", NULL, NULL);
+        bool r6 = schema_migration_register(SM_TEST_V3, "null_up", NULL, NULL);
         SM_CHECK("sm: NULL up function rejected", !r6);
 
         schema_migration_clear();
@@ -123,16 +132,17 @@ int test_schema_migration(void)
         SM_CHECK("sm: latest_version is 0 when empty",
                  schema_migration_latest_version() == 0);
 
-        schema_migration_register(25, "v25", test_up_add_table, NULL);
-        schema_migration_register(19, "v19", test_up_add_table, NULL);
-        schema_migration_register(22, "v22", test_up_add_table, NULL);
+        schema_migration_register(SM_TEST_V6, "vmax", test_up_add_table, NULL);
+        schema_migration_register(SM_TEST_V1, "vfirst", test_up_add_table, NULL);
+        schema_migration_register(SM_TEST_V3, "vthird", test_up_add_table, NULL);
 
-        SM_CHECK("sm: latest_version is 25",
-                 schema_migration_latest_version() == 25);
+        SM_CHECK("sm: latest_version is highest registered",
+                 schema_migration_latest_version() == SM_TEST_V6);
 
-        const struct schema_migration *m = schema_migration_get(22);
-        SM_CHECK("sm: get(22) returns correct migration",
-                 m && m->version == 22 && strcmp(m->name, "v22") == 0);
+        const struct schema_migration *m = schema_migration_get(SM_TEST_V3);
+        SM_CHECK("sm: get(third) returns correct migration",
+                 m && m->version == SM_TEST_V3 &&
+                 strcmp(m->name, "vthird") == 0);
 
         SM_CHECK("sm: get(99) returns NULL",
                  schema_migration_get(99) == NULL);
@@ -146,17 +156,15 @@ int test_schema_migration(void)
         bool ok = sm_fixture_init(&f);
         SM_CHECK("sm: fixture opens", ok);
 
-        /* The DB is at v18 from node_db_open's built-in migrations.
-         * Register v19 and v20. */
-        schema_migration_register(19, "add_test_table",
+        schema_migration_register(SM_TEST_V1, "add_test_table",
                                   test_up_add_table, test_down_drop_table);
-        schema_migration_register(20, "add_column",
+        schema_migration_register(SM_TEST_V2, "add_column",
                                   test_up_add_column, NULL);
 
         int applied = schema_migration_run_pending(&f.ndb);
         SM_CHECK("sm: run_pending applies 2 migrations", applied == 2);
-        SM_CHECK("sm: version is now 20",
-                 schema_migration_current_version(&f.ndb) == 20);
+        SM_CHECK("sm: version is now second test migration",
+                 schema_migration_current_version(&f.ndb) == SM_TEST_V2);
 
         /* Verify the table was actually created */
         bool table_ok = node_db_exec(&f.ndb,
@@ -175,7 +183,7 @@ int test_schema_migration(void)
         struct sm_fixture f;
         sm_fixture_init(&f);
 
-        /* Register migrations below v18 — they should be skipped */
+        /* Register migrations below the built-in latest — they should be skipped */
         schema_migration_register(5, "old_migration",
                                   test_up_add_table, NULL);
         schema_migration_register(10, "another_old",
@@ -192,16 +200,16 @@ int test_schema_migration(void)
         struct sm_fixture f;
         sm_fixture_init(&f);
 
-        schema_migration_register(19, "good_migration",
+        schema_migration_register(SM_TEST_V1, "good_migration",
                                   test_up_add_table, test_down_drop_table);
-        schema_migration_register(20, "bad_migration",
+        schema_migration_register(SM_TEST_V2, "bad_migration",
                                   test_up_fail, NULL);
 
         int applied = schema_migration_run_pending(&f.ndb);
-        /* v19 should succeed, v20 should fail and stop */
+        /* first test migration should succeed, second should fail and stop */
         SM_CHECK("sm: partial apply (1 of 2)", applied == 1);
-        SM_CHECK("sm: version stuck at 19",
-                 schema_migration_current_version(&f.ndb) == 19);
+        SM_CHECK("sm: version stuck at first test migration",
+                 schema_migration_current_version(&f.ndb) == SM_TEST_V1);
 
         sm_fixture_destroy(&f);
     }
@@ -211,17 +219,17 @@ int test_schema_migration(void)
         struct sm_fixture f;
         sm_fixture_init(&f);
 
-        schema_migration_register(19, "add_test_table",
+        schema_migration_register(SM_TEST_V1, "add_test_table",
                                   test_up_add_table, test_down_drop_table);
 
         schema_migration_run_pending(&f.ndb);
-        SM_CHECK("sm: at v19 before rollback",
-                 schema_migration_current_version(&f.ndb) == 19);
+        SM_CHECK("sm: at first test migration before rollback",
+                 schema_migration_current_version(&f.ndb) == SM_TEST_V1);
 
         bool rb = schema_migration_rollback_last(&f.ndb);
         SM_CHECK("sm: rollback succeeds", rb);
-        SM_CHECK("sm: version back to 18 after rollback",
-                 schema_migration_current_version(&f.ndb) == 18);
+        SM_CHECK("sm: version back to built-in latest after rollback",
+                 schema_migration_current_version(&f.ndb) == NODE_DB_SCHEMA_LATEST);
 
         /* Down function should have cleared the table */
         SM_CHECK("sm: down() ran (table emptied by rollback)", rb);
@@ -234,14 +242,14 @@ int test_schema_migration(void)
         struct sm_fixture f;
         sm_fixture_init(&f);
 
-        schema_migration_register(19, "irreversible",
+        schema_migration_register(SM_TEST_V1, "irreversible",
                                   test_up_add_table, NULL);
         schema_migration_run_pending(&f.ndb);
 
         bool rb = schema_migration_rollback_last(&f.ndb);
         SM_CHECK("sm: rollback fails when no down function", !rb);
-        SM_CHECK("sm: version unchanged at 19",
-                 schema_migration_current_version(&f.ndb) == 19);
+        SM_CHECK("sm: version unchanged at first test migration",
+                 schema_migration_current_version(&f.ndb) == SM_TEST_V1);
 
         sm_fixture_destroy(&f);
     }
@@ -251,18 +259,17 @@ int test_schema_migration(void)
         struct sm_fixture f;
         sm_fixture_init(&f);
 
-        /* Register out of order: 21 first, then 19, then 20 */
-        schema_migration_register(21, "insert_row",
+        schema_migration_register(SM_TEST_V3, "insert_row",
                                   test_up_insert_row, NULL);
-        schema_migration_register(19, "create_table",
+        schema_migration_register(SM_TEST_V1, "create_table",
                                   test_up_add_table, NULL);
-        schema_migration_register(20, "add_column",
+        schema_migration_register(SM_TEST_V2, "add_column",
                                   test_up_add_column, NULL);
 
         int applied = schema_migration_run_pending(&f.ndb);
         SM_CHECK("sm: all 3 applied in order", applied == 3);
-        SM_CHECK("sm: version is 21",
-                 schema_migration_current_version(&f.ndb) == 21);
+        SM_CHECK("sm: version is third test migration",
+                 schema_migration_current_version(&f.ndb) == SM_TEST_V3);
 
         /* If order was wrong, insert_row would fail (table doesn't exist yet) */
         SM_CHECK("sm: migrations ran in version order (table exists with row)", true);
@@ -275,16 +282,16 @@ int test_schema_migration(void)
         struct sm_fixture f;
         sm_fixture_init(&f);
 
-        SM_CHECK("sm: v18 is applied (from old system)",
-                 schema_migration_is_applied(&f.ndb, 18));
-        SM_CHECK("sm: v19 is not applied yet",
-                 !schema_migration_is_applied(&f.ndb, 19));
+        SM_CHECK("sm: built-in latest is applied",
+                 schema_migration_is_applied(&f.ndb, NODE_DB_SCHEMA_LATEST));
+        SM_CHECK("sm: first test migration is not applied yet",
+                 !schema_migration_is_applied(&f.ndb, SM_TEST_V1));
 
-        schema_migration_register(19, "test", test_up_add_table, NULL);
+        schema_migration_register(SM_TEST_V1, "test", test_up_add_table, NULL);
         schema_migration_run_pending(&f.ndb);
 
-        SM_CHECK("sm: v19 is applied after run",
-                 schema_migration_is_applied(&f.ndb, 19));
+        SM_CHECK("sm: first test migration is applied after run",
+                 schema_migration_is_applied(&f.ndb, SM_TEST_V1));
 
         sm_fixture_destroy(&f);
     }
@@ -294,7 +301,7 @@ int test_schema_migration(void)
         schema_migration_clear();
 
         struct schema_migration m = {
-            .version = 42,
+            .version = SM_TEST_V6,
             .name = "from_struct",
             .up = test_up_add_table,
             .down = NULL,
@@ -302,7 +309,7 @@ int test_schema_migration(void)
         bool r = schema_migration_register_entry(&m);
         SM_CHECK("sm: register_entry succeeds", r);
         SM_CHECK("sm: registered migration accessible",
-                 schema_migration_get(42) != NULL);
+                 schema_migration_get(SM_TEST_V6) != NULL);
 
         bool r_null = schema_migration_register_entry(NULL);
         SM_CHECK("sm: register_entry(NULL) rejected", !r_null);
@@ -320,7 +327,7 @@ int test_schema_migration(void)
 
     /* ── 12. Clear resets everything ──────────────────── */
     {
-        schema_migration_register(19, "test", test_up_add_table, NULL);
+        schema_migration_register(SM_TEST_V1, "test", test_up_add_table, NULL);
         SM_CHECK("sm: count is 1 before clear", schema_migration_count() == 1);
 
         schema_migration_clear();

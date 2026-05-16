@@ -62,10 +62,46 @@ bool mmb_leaf_store_append(struct mmb_leaf_store *store,
 {
     if (!store->open || store->fd < 0) return false;
 
+    if (store->map && store->map != MAP_FAILED) {
+        munmap(store->map, (size_t)(store->num_leaves * 32));
+        store->map = NULL;
+        store->capacity = 0;
+    }
+
+    if (lseek(store->fd, 0, SEEK_END) < 0)
+        return false;
+
     ssize_t w = write(store->fd, hash, 32);
     if (w != 32) return false;
 
     store->num_leaves++;
+    return true;
+}
+
+bool mmb_leaf_store_remap(struct mmb_leaf_store *store)
+{
+    if (!store || !store->open || store->fd < 0)
+        return false;
+
+    if (store->map && store->map != MAP_FAILED) {
+        munmap(store->map, (size_t)(store->capacity * 32));
+        store->map = NULL;
+    }
+
+    struct stat st;
+    if (fstat(store->fd, &st) != 0 || st.st_size <= 0)
+        return false;
+    if ((st.st_size % 32) != 0)
+        return false;
+
+    store->num_leaves = (uint64_t)st.st_size / 32;
+    store->capacity = store->num_leaves;
+    store->map = mmap(NULL, (size_t)st.st_size, PROT_READ,
+                      MAP_PRIVATE, store->fd, 0);
+    if (store->map == MAP_FAILED) {
+        store->map = NULL;
+        return false;
+    }
     return true;
 }
 

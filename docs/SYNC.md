@@ -19,14 +19,32 @@ from another zclassic23 peer, then catches up the tail via standard P2P.
 
 What happens:
 1. Find a peer advertising `NODE_ZCL23`.
-2. Receive the UTXO snapshot manifest (chunk hashes).
-3. Download chunks in parallel, verify each chunk hash.
-4. Verify FlyClient MMR proof binding the UTXOs to the PoW chain.
-5. Write to SQLite, then connect remaining blocks to tip.
+2. Receive a strict v2 UTXO snapshot manifest (protocol/schema version,
+   anchor height/hash, serving peer tip, chainwork, UTXO SHA3, byte length,
+   UTXO count, chunk size/count, and per-chunk hashes).
+3. Download chunks in parallel, verify each chunk hash before import.
+4. Verify FlyClient MMR/MMB proof binding the UTXOs to the PoW chain and
+   reject missing or non-competitive chainwork.
+5. Verify the imported UTXO set SHA3 exactly matches the manifest.
+6. Activate only an anchor at least 10 blocks behind the serving peer's tip,
+   then delta-sync the finality window to tip by normal block validation.
 
 **Use this for any fresh zclassic23 deployment where at least one other
 zclassic23 peer exists.** Once the network is established this becomes the
 default and only user-facing path.
+
+### zclassic-only serving profile
+
+Use `-profile=zclassic-only` for power nodes whose job is to sync other
+zclassic23 nodes quickly. This profile keeps consensus state, P2P, RPC,
+snapshot offer construction, FlyClient/MMB proof serving, and normal block
+relay. It intentionally does not start explorer cache prewarming, store/market
+services, onion hosting unless `-tor` is explicitly set, or file-service
+snapshot export and chunk/block-piece manifests.
+
+Full, onion-node, and legacy-compat profiles keep the broader app surfaces.
+The explorer profile keeps explorer APIs and cache prewarming but still avoids
+store and file-service serving.
 
 ---
 
@@ -38,7 +56,7 @@ Trustless sync from genesis over the standard P2P protocol. No snapshot.
 ./zclassic23 -addnode=<any_peer>
 ```
 
-Headers → blocks → connect. Scripts/signatures below assume-valid height
+Headers → blocks → connect. Scripts/signatures below deferred proof validation height
 (h=3,054,000) are accepted; full validation runs above that. Background
 services then re-verify every hash, signature, and proof end to end.
 
@@ -50,9 +68,12 @@ scratch).
 ## Method 3 (legacy bootstrap, development only): LevelDB Import from zclassicd (~20 s)
 
 **This path exists because the zclassic23 peer network is still small on
-mainnet.** We temporarily pull the UTXO set out of a running legacy `zclassicd`
-(C++) node, which is widely deployed, to get developer workstations to tip
-fast. Once the zclassic23 peer network is healthy, this path goes away.
+mainnet.** We temporarily pull data from a running legacy `zclassicd` (C++)
+node, which is widely deployed, to get developer workstations to tip fast.
+`zclassicd` is advisory only: its block files, UTXO snapshots, and height/hash
+answers are accepted only when they also match compiled SHA3 anchors, runtime
+window commitments, local consensus state, or quorum with zclassic23 peers.
+Once the zclassic23 peer network is healthy, this path goes away.
 
 Requirements: a local synced legacy `zclassicd` with `~/.zclassic/chainstate/`.
 
@@ -73,10 +94,27 @@ checked against a hardcoded commitment before the node starts serving.
 Rules:
 - Always **copy**, never symlink — zclassicd writes to its block files.
 - Never copy LevelDB from `~/.zclassic-c23/` into zclassicd — different formats.
+- Legacy data is acceleration only. It must match compiled SHA3 windows,
+  runtime windows, local consensus checks, or zclassic23 quorum before it
+  elevates trust.
 - To force reimport after it's been run once:
   `./zclassic23 -reimport-utxos -datadir=~/.zclassic-c23`
 
 See `memory/reference_zclassicd_service.md` for managing the legacy peer service.
+
+### Legacy chain oracle boundary
+
+All direct reads from local legacy `zclassicd` RPC go through
+`rpc/legacy_rpc_client.h` for transport and `rpc/legacy_chain_oracle.h` for
+typed chain data such as block hashes, MMB leaves, and chainwork. Boot-time MMB
+catchup, fast-sync offer construction, FlyClient proof fallback, and the
+zclassicd drift oracle share that transport instead of parsing JSON-RPC in
+their own service code.
+
+This boundary keeps legacy compatibility behind a small adapter: zclassic23
+services may use legacy responses as bridge/oracle inputs, but snapshot
+acceptance still requires the native v2 manifest contract, FlyClient MMB/MMR
+proofs, PoW/chainwork checks, finality policy, and UTXO SHA3 verification.
 
 ---
 
@@ -125,6 +163,35 @@ See `lib/validation/include/validation/validation_audit.h` for the full matrix.
 Key `node_state` keys: `coins_best_block`, `tip_height`, `leveldb_utxo_migrated`,
 `bg_validation_height`, `bg_hash_verification_height`.
 
+Finality policy: `ZCL_FINALITY_DEPTH=10`. Heights `<= tip - 10` are treated as
+immutable for reorg refusal, snapshot eligibility, rolling SHA3 anchors,
+block-window reuse, and diagnostics. Steady-state reorgs of 10 blocks or less
+are allowed; 11-block reorgs are refused. IBD can still resolve deeper
+competition before a verified immutable anchor is installed.
+
+The code path for these decisions is centralized in
+`validation/sync_evidence_policy.h`. `COINBASE_MATURITY=100` remains a consensus
+spend-maturity rule and does not control reorg depth or immutable-prefix
+policy.
+
+Snapshot protocol: zclassic23 peers must speak
+`FAST_SYNC_PROTOCOL_VERSION=2` and `FAST_SYNC_SNAPSHOT_SCHEMA_VERSION=1`.
+Missing v2 fields, zero chainwork, non-final anchors, missing MMR/MMB roots,
+or stale schemas are rejected. Legacy/non-v2 data may still be used locally
+for bootstrap acceleration, but it is not trusted P2P snapshot sync.
+
+Quorum model: votes are grouped by source class: local zclassic23,
+local zclassicd, and remote zclassic23 peers. Remote votes are keyed by
+unique peer and expire by TTL; rolling-anchor commits require a matching
+source-class quorum when multiple source classes are available. Splits halt
+anchor extension and are visible through the quorum/oracle dumpstate surface.
+
+Rolling anchors: runtime SHA3 windows are only persisted for fully immutable
+windows with local block bytes present, normal oracle policy, and quorum
+approval. On load, runtime anchor files are checksum-, schema-, alignment-,
+and continuity-checked against compiled anchors; failures discard the runtime
+file.
+
 ---
 
 ## Operator Runbook
@@ -132,6 +199,9 @@ Key `node_state` keys: `coins_best_block`, `tip_height`, `leveldb_utxo_migrated`
 ### Check sync status
 Use MCP: `zcl_status`, `zcl_kpi`, `zcl_syncstate`, `zcl_validationstatus`.
 (Or the `zcl-rpc` escape hatch if MCP is unavailable: `zcl-rpc getblockchaininfo`.)
+Status/dumpstate surfaces include sync phase, local/header/peer heights,
+immutable height, snapshot anchor, UTXO root, chainwork/quorum verdict,
+watchdog state, last recovery, and active acceleration source where available.
 
 ### Recovery from OOM kill
 Just restart — the node detects stale state and resets to a consistent point.

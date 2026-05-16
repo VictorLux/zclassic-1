@@ -27,6 +27,7 @@
 #include "util/log_macros.h"
 #include "util/safe_alloc.h"
 #include "services/sync_watchdog_service.h"
+#include "services/quorum_oracle_service.h"
 #include "services/block_index_integrity.h"
 #include "services/chain_tip.h"
 #include "coins/coins_view.h"
@@ -112,6 +113,80 @@ static size_t collect_active_tip_successors(struct main_state *ms,
     return count;
 }
 
+static struct block_index *best_known_successor(struct main_state *ms,
+                                                struct block_index *parent)
+{
+    struct block_index *best = NULL;
+    size_t iter = 0;
+    struct block_index *candidate = NULL;
+
+    if (!ms || !parent || !parent->phashBlock)
+        return NULL;
+
+    while (block_map_next(&ms->map_block_index, &iter, NULL, &candidate)) {
+        if (!candidate || !candidate->phashBlock || !candidate->pprev)
+            continue;
+        if (candidate->pprev != parent)
+            continue;
+        if (candidate->nHeight != parent->nHeight + 1)
+            continue;
+        if (candidate->nStatus & BLOCK_FAILED_MASK)
+            continue;
+        if (!best ||
+            arith_uint256_compare(&candidate->nChainWork,
+                                  &best->nChainWork) > 0 ||
+            (arith_uint256_compare(&candidate->nChainWork,
+                                   &best->nChainWork) == 0 &&
+             (candidate->nStatus & BLOCK_HAVE_DATA) &&
+             !(best->nStatus & BLOCK_HAVE_DATA))) {
+            best = candidate;
+        }
+    }
+
+    return best;
+}
+
+static struct block_index *headers_start_from_locator(
+    struct main_state *ms,
+    struct active_chain *chain,
+    const struct block_locator *locator,
+    const struct uint256 *hash_stop,
+    const struct chain_params *params)
+{
+    struct block_index *pindex = NULL;
+
+    if (!ms || !chain || !params)
+        return NULL;
+
+    if (locator && locator->num_hashes == 0 && hash_stop) {
+        pindex = block_map_find(&ms->map_block_index, hash_stop);
+    } else if (locator) {
+        for (size_t i = 0; i < locator->num_hashes; i++) {
+            struct block_index *found = block_map_find(
+                &ms->map_block_index, &locator->vhave[i]);
+            if (!found || !found->phashBlock)
+                continue;
+
+            if (active_chain_contains(chain, found) ||
+                uint256_eq(found->phashBlock,
+                           &params->consensus.hashGenesisBlock)) {
+                pindex = found;
+                break;
+            }
+        }
+    }
+
+    if (pindex)
+        return best_known_successor(ms, pindex);
+
+    pindex = block_map_find(&ms->map_block_index,
+                            &params->consensus.hashGenesisBlock);
+    if (pindex)
+        return pindex;
+
+    return active_chain_at(chain, 0);
+}
+
 void msg_headers_get_stats(struct msg_headers_stats *out)
 {
     if (!out) return;
@@ -125,6 +200,12 @@ void msg_headers_get_stats(struct msg_headers_stats *out)
 bool process_getheaders(struct msg_processor *mp, struct p2p_node *node,
                         struct byte_stream *s)
 {
+    if (node->state == PEER_SNAPSHOT_SERVING || node->swarm_manifest_sent) {
+        printf("Peer %s: deferring getheaders while serving snapshot\n",
+               node->addr_name);
+        return true;
+    }
+
     struct block_locator locator;
     block_locator_init(&locator);
     if (!block_locator_deserialize(&locator, s)) {
@@ -141,24 +222,10 @@ bool process_getheaders(struct msg_processor *mp, struct p2p_node *node,
     }
 
     struct active_chain *chain = &mp->main_state->chain_active;
-    struct block_index *pindex = NULL;
+    struct block_index *iter = NULL;
 
-    if (locator.num_hashes == 0) {
-        pindex = block_map_find(&mp->main_state->map_block_index, &hash_stop);
-        if (!pindex) {
-            block_locator_free(&locator);
-            return true;
-        }
-    } else {
-        for (size_t i = 0; i < locator.num_hashes; i++) {
-            struct block_index *found = block_map_find(
-                &mp->main_state->map_block_index, &locator.vhave[i]);
-            if (found && active_chain_contains(chain, found)) {
-                pindex = found;
-                break;
-            }
-        }
-    }
+    iter = headers_start_from_locator(mp->main_state, chain, &locator,
+                                      &hash_stop, mp->params);
     block_locator_free(&locator);
 
     /* Count headers to send.
@@ -174,24 +241,20 @@ bool process_getheaders(struct msg_processor *mp, struct p2p_node *node,
      * limit at line :237. */
     const int max_headers = peer_supports_fast_sync(node->services) ? 2000 : 160;
     int count = 0;
-    struct block_index *iter = pindex ?
-        active_chain_at(chain, pindex->nHeight + 1) :
-        active_chain_at(chain, 0);
+    struct block_index *count_iter = iter;
 
-    while (iter && count < max_headers) {
+    while (count_iter && count < max_headers) {
         count++;
-        if (!uint256_is_null(&hash_stop) && iter->phashBlock &&
-            uint256_eq(iter->phashBlock, &hash_stop))
+        if (!uint256_is_null(&hash_stop) && count_iter->phashBlock &&
+            uint256_eq(count_iter->phashBlock, &hash_stop))
             break;
-        iter = active_chain_at(chain, iter->nHeight + 1);
+        count_iter = best_known_successor(mp->main_state, count_iter);
     }
 
     struct byte_stream headers;
     stream_init(&headers, 4096);
     stream_write_compact_size(&headers, (uint64_t)count);
 
-    iter = pindex ? active_chain_at(chain, pindex->nHeight + 1) :
-                    active_chain_at(chain, 0);
     for (int i = 0; i < count && iter; i++) {
         struct block_header hdr;
         block_header_init(&hdr);
@@ -222,7 +285,7 @@ bool process_getheaders(struct msg_processor *mp, struct p2p_node *node,
 
         block_header_serialize(&hdr, &headers);
         stream_write_compact_size(&headers, 0);
-        iter = active_chain_at(chain, iter->nHeight + 1);
+        iter = best_known_successor(mp->main_state, iter);
     }
 
     p2p_node_begin_message(node, "headers", mp->params->pchMessageStart);
@@ -439,18 +502,45 @@ bool process_headers(struct msg_processor *mp, struct p2p_node *node,
          * and periodic getheaders decisions. */
         if (pindex_last &&
             (!mp->main_state->pindex_best_header ||
-             pindex_last->nHeight > mp->main_state->pindex_best_header->nHeight))
-            mp->main_state->pindex_best_header = pindex_last;
+             pindex_last->nHeight > mp->main_state->pindex_best_header->nHeight)) {
+            struct chain_state_header_commit header_commit = {
+                .new_header_tip = pindex_last,
+                .rollback_auth = NULL,
+                .reason = "msg_headers.best_header",
+            };
+            enum csr_result hrc = csr_commit_header_tip(csr_instance(),
+                                                        &header_commit);
+#ifdef ZCL_TESTING
+            if (hrc == CSR_REJECTED_NOT_INITIALIZED)
+                mp->main_state->pindex_best_header = pindex_last;
+            else
+#endif
+            if (hrc != CSR_OK) {
+                fprintf(stderr, // obs-ok:pre-existing-diagnostic
+                        "msg_headers: csr rejected best-header promotion "
+                        "(%s) h=%d\n",
+                        csr_result_name(hrc), pindex_last->nHeight);
+            }
+        }
 
-        /* Clear snapshot anchor once headers extend 28+ blocks past it.
+        if (pindex_last && pindex_last->phashBlock &&
+            peer_supports_fast_sync(node->services)) {
+            char peer_hash_hex[65];
+            uint256_get_hex(pindex_last->phashBlock, peer_hash_hex);
+            quorum_oracle_record_peer_header_vote((uint32_t)node->id,
+                                                  pindex_last->nHeight,
+                                                  peer_hash_hex);
+        }
+
+        /* Clear snapshot anchor once headers extend past the configured
+         * immutable/finality window.
          * The anchor blocks activate_best_chain. Once the header chain
-         * has enough depth for difficulty validation, clear it so blocks
-         * can be connected. Set chain tip to the anchor so connect_tip
-         * starts from the right UTXO state. */
+         * has enough depth for the snapshot policy that accepted it,
+         * clear it so blocks can be connected. Set chain tip to the
+         * anchor so connect_tip starts from the right UTXO state. */
         {
             struct block_index *anc = snapsync_get_anchor();
-            if (anc && pindex_last &&
-                pindex_last->nHeight >= anc->nHeight + 28) {
+            if (syncsvc_should_release_snapshot_anchor(anc, pindex_last)) {
                 /* Verify the header chain reaches the anchor via pprev */
                 struct block_index *walk = pindex_last;
                 while (walk && walk->nHeight > anc->nHeight)
@@ -468,39 +558,57 @@ bool process_headers(struct msg_processor *mp, struct p2p_node *node,
                      * structured event and guards against any drift
                      * that snuck in since snapsync_activate_verified_tip
                      * ran. */
+                    bool anchor_recommitted = false;
                     if (anc->phashBlock) {
+                        struct chain_state_rollback_authorization rollback_auth = {
+                            .source = CSR_ROLLBACK_SOURCE_HEADER_SYNC,
+                            .decision = POLICY_ALLOW,
+                            .from_height = mp->main_state
+                                ? active_chain_height(&mp->main_state->chain_active) : -1,
+                            .to_height = anc->nHeight,
+                            .max_depth = INT64_MAX,
+                            .evidence_class = "header_chain_extends_snapshot_anchor",
+                            .reason = "msgprocessor.headers_past_anchor",
+                        };
                         struct chain_state_commit commit = {
                             .new_tip             = anc,
                             .new_coins_best      = *anc->phashBlock,
                             .expected_utxo_count = 0,
                             .update_header_tip   = false,
-                            .allow_rollback      = true,
+                            .rollback_auth       = &rollback_auth,
                             .wallet_scan_height  = -1,
                             .reason              = "msgprocessor.headers_past_anchor",
                         };
                         enum csr_result rc = csr_commit_tip(
                             csr_instance(), &commit);
-                        if (rc != CSR_OK && rc != CSR_REJECTED_NOT_INITIALIZED) {
+                        if (rc == CSR_OK) {
+                            anchor_recommitted = true;
+                        } else if (rc != CSR_REJECTED_NOT_INITIALIZED) {
                             fprintf(stderr, // obs-ok:pre-existing-diagnostic
                                 "msgprocessor: csr rejected anchor re-commit "
                                 "(%s) h=%d\n",
                                 csr_result_name(rc), anc->nHeight);
                         }
+#ifdef ZCL_TESTING
                         if (rc == CSR_REJECTED_NOT_INITIALIZED) {
                             /* Test harness path: use the canonical
                              * helper so events still fire. */
                             chain_set_active_tip(mp->main_state, anc,
                                 TIP_FROM_P2P_REPAIR,
                                 "anchor_recommit_csr_uninit");
+                            anchor_recommitted = true;
                         }
+#endif
                     } else {
-                        chain_set_active_tip(mp->main_state, anc,
-                            TIP_FROM_P2P_REPAIR,
-                            "headers_past_anchor");
+                        fprintf(stderr, // obs-ok:pre-existing-diagnostic
+                            "msgprocessor: refusing to clear snapshot anchor "
+                            "without block hash h=%d\n", anc->nHeight);
                     }
-                    snapsync_set_anchor(NULL);
-                    activation_clear_anchor(boot_activation_controller(),
-                                            "headers_past_anchor");
+                    if (anchor_recommitted) {
+                        snapsync_set_anchor(NULL);
+                        activation_clear_anchor(boot_activation_controller(),
+                                                "headers_past_anchor");
+                    }
                 }
             }
         }
@@ -692,7 +800,7 @@ void push_getheaders_from(struct msg_processor *mp,
      * Before repair, fall back to the safe 2-hash locator. */
     struct block_locator loc;
     block_locator_init(&loc);
-    if (from && from->phashBlock && false && block_index_heights_repaired()) {
+    if (from && from->phashBlock && block_index_heights_repaired()) {
         /* Exponential locator: tip, tip-1, tip-2, tip-4, tip-8, ... genesis.
          * Walk pprev chain with exponentially increasing steps. */
         int max_hashes = 32;
@@ -718,12 +826,11 @@ void push_getheaders_from(struct msg_processor *mp,
         loc.vhave = tmp;
         loc.num_hashes = (size_t)nh;
     } else if (from && from->phashBlock) {
-        /* Pre-repair: safe 2-hash locator */
-        loc.vhave = zcl_malloc(2 * sizeof(struct uint256), "block_locator");
-        if (!loc.vhave) return;
-        loc.vhave[0] = *from->phashBlock;
-        loc.vhave[1] = mp->params->consensus.hashGenesisBlock;
-        loc.num_hashes = 2;
+        if (!syncsvc_build_getheaders_locator(&loc,
+                                              &mp->main_state->chain_active,
+                                              from,
+                                              &mp->params->consensus.hashGenesisBlock))
+            return;
     } else if (!syncsvc_build_getheaders_locator(&loc, &mp->main_state->chain_active,
                                                   NULL,
                                                   &mp->params->consensus.hashGenesisBlock)) {
@@ -756,34 +863,30 @@ void push_getheaders_from(struct msg_processor *mp,
 
 void push_getheaders(struct msg_processor *mp, struct p2p_node *node)
 {
-    /* Use minimal locator: just active tip hash + genesis.
-     * After snapshot sync, pprev chains may be incomplete, causing the
-     * full locator to contain wrong hashes. The active tip is the point whose
-     * UTXO state we can extend; pindex_best_header may be speculative or have
-     * repaired local heights that peers cannot use as a locator. */
-    {
-        struct block_index *tip = active_chain_tip(&mp->main_state->chain_active);
-        if (tip && tip->phashBlock) {
-            struct block_locator loc;
-            block_locator_init(&loc);
-            loc.vhave = zcl_malloc(2 * sizeof(struct uint256), "block_locator");
-            if (loc.vhave) {
-                loc.vhave[0] = *tip->phashBlock;
-                loc.vhave[1] = mp->params->consensus.hashGenesisBlock;
-                loc.num_hashes = 2;
+    if (snapsync_is_active())
+        return;
 
-                struct byte_stream s;
-                stream_init(&s, 256);
-                if (getheaders_serialize(&s, &loc, NULL)) {
-                    p2p_node_begin_message(node, "getheaders",
-                                           mp->params->pchMessageStart);
-                    p2p_node_write_message_data(node, s.data, s.size);
-                    p2p_node_end_message(node);
-                }
-                stream_free(&s);
-                block_locator_free(&loc);
-                return;
+    /* Use the active-chain locator, including recent ancestors. A locator
+     * containing only tip+genesis makes a one-block local fork invisible to
+     * peers: they do not know our tip and fall back to genesis, sending old
+     * headers instead of the sibling that reorgs us back to the best chain. */
+    {
+        struct block_locator loc;
+        block_locator_init(&loc);
+        if (syncsvc_build_getheaders_locator(
+                &loc, &mp->main_state->chain_active, NULL,
+                &mp->params->consensus.hashGenesisBlock)) {
+            struct byte_stream s;
+            stream_init(&s, 512);
+            if (getheaders_serialize(&s, &loc, NULL)) {
+                p2p_node_begin_message(node, "getheaders",
+                                       mp->params->pchMessageStart);
+                p2p_node_write_message_data(node, s.data, s.size);
+                p2p_node_end_message(node);
             }
+            stream_free(&s);
+            block_locator_free(&loc);
+            return;
         }
     }
 

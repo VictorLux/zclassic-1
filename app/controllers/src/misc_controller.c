@@ -227,8 +227,8 @@ static bool rpc_downloadstats(const struct json_value *params, bool help,
     json_push_kv_str(result, "gb_downloaded", gb_str);
 
     json_push_kv_str(result, "sync_state", sync_state_name(sync_get_state()));
-    json_push_kv_int(result, "assume_valid_height",
-                      (int64_t)g_assume_valid_height);
+    json_push_kv_int(result, "defer_proof_validation_below_height",
+                      (int64_t)g_deferred_proof_validation_below_height);
     return true;
 }
 

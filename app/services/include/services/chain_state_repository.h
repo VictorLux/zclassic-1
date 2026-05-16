@@ -39,6 +39,7 @@
 #include "coins/coins_view.h"
 #include "models/database.h"
 #include "core/uint256.h"
+#include "services/recovery_policy.h"
 #include <pthread.h>
 #include <stdbool.h>
 #include <stdint.h>
@@ -57,6 +58,9 @@ enum csr_result {
     CSR_REJECTED_STALE_INDEX,        /* block_map disagrees with SQLite blocks */
     CSR_REJECTED_UTXO_DELTA_TOO_BIG, /* would orphan more UTXOs than allowed */
     CSR_REJECTED_COINS_MISMATCH,     /* commit->new_coins_best != new_tip hash */
+    CSR_REJECTED_HEADER_REGRESSION,  /* header tip would move backward without auth */
+    CSR_REJECTED_ROLLBACK_AUTH,      /* rollback/clear auth is absent or invalid */
+    CSR_REJECTED_PERSIST,            /* durable metadata persistence failed */
     CSR_REJECTED_OOM,                /* active_chain realloc failure */
     CSR_NUM_RESULTS                  /* sentinel */
 };
@@ -104,6 +108,28 @@ struct chain_state_view {
     uint64_t        commits_rejected_total;
 };
 
+enum chain_state_rollback_source {
+    CSR_ROLLBACK_SOURCE_NONE = 0,
+    CSR_ROLLBACK_SOURCE_VALIDATION,
+    CSR_ROLLBACK_SOURCE_HEADER_SYNC,
+    CSR_ROLLBACK_SOURCE_SNAPSHOT,
+    CSR_ROLLBACK_SOURCE_RESTORE,
+    CSR_ROLLBACK_SOURCE_BOOT_REPAIR,
+    CSR_ROLLBACK_SOURCE_UTXO_REPAIR,
+    CSR_ROLLBACK_SOURCE_REINDEX,
+    CSR_ROLLBACK_SOURCE_TEST,
+};
+
+struct chain_state_rollback_authorization {
+    enum chain_state_rollback_source source;
+    enum policy_decision             decision;
+    int64_t                          from_height;
+    int64_t                          to_height;
+    int64_t                          max_depth;
+    const char                      *evidence_class;
+    const char                      *reason;
+};
+
 /* ── Commit description ─────────────────────────────────────────
  * The caller fills this in and passes it to csr_commit_tip. */
 struct chain_state_commit {
@@ -111,9 +137,31 @@ struct chain_state_commit {
     struct uint256      new_coins_best;     /* required, must equal new_tip hash */
     int64_t             expected_utxo_count;/* >0 = check actual matches within 50% */
     bool                update_header_tip;  /* also bump *pindex_best_hdr */
-    bool                allow_rollback;     /* skip the orphan-rows safety guard */
+    bool                persist_coins_best; /* write coins_best_block before publishing */
+    const struct chain_state_rollback_authorization
+                       *rollback_auth;      /* required to bypass rollback guards */
     int64_t             wallet_scan_height; /* applied if >=0 and wallet_scan_h is set */
     const char         *reason;             /* logged & shown in events; required */
+};
+
+struct chain_state_header_commit {
+    struct block_index *new_header_tip;     /* required, must be in block_map */
+    const struct chain_state_rollback_authorization
+                       *rollback_auth;      /* required for header regression */
+    const char         *reason;             /* logged; required */
+};
+
+struct chain_state_clear_commit {
+    const struct chain_state_rollback_authorization
+                       *rollback_auth;      /* required to clear active tip */
+    const char         *reason;             /* logged; required */
+};
+
+struct chain_state_coins_best_repair {
+    struct uint256      new_coins_best;      /* required concrete coins cursor */
+    const struct chain_state_rollback_authorization
+                       *repair_auth;        /* required typed repair auth */
+    const char         *reason;             /* logged; required */
 };
 
 /* ── Lifecycle ─────────────────────────────────────────────────
@@ -147,6 +195,15 @@ struct chain_state_repository *csr_instance(void);
 /* ── Mutation entry point ─────────────────────────────────────── */
 enum csr_result csr_commit_tip(struct chain_state_repository *csr,
                                 const struct chain_state_commit *commit);
+enum csr_result csr_commit_header_tip(
+    struct chain_state_repository *csr,
+    const struct chain_state_header_commit *commit);
+enum csr_result csr_clear_active_tip(
+    struct chain_state_repository *csr,
+    const struct chain_state_clear_commit *commit);
+enum csr_result csr_repair_set_coins_best(
+    struct chain_state_repository *csr,
+    const struct chain_state_coins_best_repair *repair);
 
 /* ── Read-only introspection ──────────────────────────────────── */
 void csr_snapshot(struct chain_state_repository *csr,
@@ -157,7 +214,8 @@ void csr_snapshot(struct chain_state_repository *csr,
 /* Reject a tip commit that would orphan more than this many UTXO rows
  * (i.e. when SQLite already holds significantly more UTXOs than the
  * proposed tip implies). Defaults to 1000. Set to INT64_MAX to disable.
- * The orphan check can also be bypassed per-commit with allow_rollback. */
+ * The orphan check can also be bypassed per-commit with a typed
+ * rollback_auth whose policy decision is POLICY_ALLOW. */
 void csr_set_max_utxo_orphan_rows(struct chain_state_repository *csr,
                                    int64_t max_rows);
 

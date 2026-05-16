@@ -90,6 +90,33 @@ enum bii_verdict {
 
 const char *bii_verdict_name(enum bii_verdict v);
 
+enum bii_recovery_action {
+    BII_RECOVERY_NONE = 0,
+    BII_RECOVERY_ACCEPTED,
+    BII_RECOVERY_RECONCILE_REQUIRED,
+    BII_RECOVERY_QUARANTINED,
+    BII_RECOVERY_OVERRIDE,
+};
+
+const char *bii_recovery_action_name(enum bii_recovery_action a);
+
+struct bii_recovery_status {
+    enum bii_verdict verdict;
+    enum bii_recovery_action action;
+    int64_t unix_time;
+    bool degraded;
+    bool unsafe_override;
+    char reason[256];
+};
+
+void bii_record_recovery_status(enum bii_verdict verdict,
+                                enum bii_recovery_action action,
+                                const char *reason,
+                                bool degraded,
+                                bool unsafe_override);
+
+void bii_get_recovery_status(struct bii_recovery_status *out);
+
 /* ── Verification entry point ─────────────────────────────────
  * Reads `<datadir>/block_index.bin.sha3` and re-hashes
  * `<datadir>/block_index.bin`, then optionally cross-checks the

@@ -30,6 +30,7 @@ struct node_db {
 
     /* Prepared statements cached for hot paths */
     sqlite3_stmt *stmt_utxo_insert;
+    sqlite3_stmt *stmt_snapshot_staging_insert;
     sqlite3_stmt *stmt_utxo_delete;
     sqlite3_stmt *stmt_utxo_find;
     sqlite3_stmt *stmt_block_insert;
@@ -106,7 +107,8 @@ bool node_db_state_get_int(struct node_db *ndb, const char *key, int64_t *val);
 /* ── UTXO Lifecycle ─────────────────────────────────────────────── */
 
 /* Wipe all UTXOs and related state (coins_best_block, utxo_commitment).
- * Used when resetting to genesis for clean replay. */
+ * Refuses to wipe more than 1,000 rows unless the process is running
+ * an explicit offline repair path (ZCL_OFFLINE_REPAIR=1). */
 bool node_db_wipe_utxos(struct node_db *ndb);
 
 /* Count UTXOs in the database. */

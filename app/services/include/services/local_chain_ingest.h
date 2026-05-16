@@ -20,7 +20,7 @@
  *              populated) before any state mutation, so a tampered
  *              local source is rejected up front.
  *
- * Security model: the only trust roots are the hardcoded SHA3 UTXO
+ * Security model: the only local evidence roots are the hardcoded SHA3 UTXO
  * checkpoint in lib/chain/src/checkpoints.c and (when populated) the
  * SHA3 window table in lib/chain/src/sha3_windows.c.  zclassicd is
  * treated as a content store, not as a consensus authority.
@@ -40,8 +40,8 @@ struct json_value;
 struct local_chain_ingest_config {
     const char *legacy_datadir;   /* e.g. "/home/rhett/.zclassic" */
     bool        skip_blk_verify;  /* if true, skip SHA3 window check (testing) */
-    bool        skip_pow_verify;  /* trust PoW up to checkpoint; default true */
-    bool        ignore_trust_cookie; /* force re-scan even if cookie says clean */
+    bool        skip_pow_verify;  /* skip PoW up to checkpoint; default true */
+    bool        ignore_evidence_cookie; /* force re-scan even if cookie says clean */
     bool        force_sequential_phase1; /* T1.2: disable parallel SHA3 (testing) */
     int         phase1_workers;   /* T1.2: parallel SHA3 worker count; 0 = auto */
     int         max_height;       /* 0 = ingest to peer-claimed tip */
@@ -95,15 +95,15 @@ bool local_chain_ingest_dump_state_json(struct json_value *out,
 /* Lightweight detector — does <path>/blocks/blk00000.dat exist? */
 bool local_chain_ingest_detect_legacy_datadir(const char *path);
 
-/* T3.3: true iff the SHA3 window trust prefix was fully verified this
- * boot — either by a fresh phase-1 scan or via a valid trust-mark
- * cookie. Heights ≤ trust_prefix_end_height are then known to bit-
+/* T3.3: true iff the SHA3 window evidence prefix was fully verified this
+ * boot — either by a fresh phase-1 scan or via a valid evidence
+ * cookie. Heights ≤ evidence_prefix_end_height are then known to bit-
  * for-bit match the compile-time anchor and don't need expensive
  * Equihash/Sapling/sig reverify in bg-validation. */
-bool local_chain_ingest_trust_prefix_verified(void);
+bool local_chain_ingest_evidence_prefix_verified(void);
 
 /* T3.3: max height covered by the compile-time SHA3 window table.
  * Returns -1 when no static windows are compiled in. */
-int  local_chain_ingest_trust_prefix_end_height(void);
+int  local_chain_ingest_evidence_prefix_end_height(void);
 
 #endif /* ZCL_SERVICES_LOCAL_CHAIN_INGEST_H */

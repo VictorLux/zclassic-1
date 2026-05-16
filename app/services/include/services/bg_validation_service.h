@@ -15,7 +15,7 @@
  *   - Runs in a dedicated background thread, low priority
  *   - Uses a thread pool (checkqueue) for parallel script verification
  *   - Saves progress to SQLite every 1000 blocks for crash-resume
- *   - Resets g_assume_valid_height to -1 when complete (full verification)
+ *   - Resets g_deferred_proof_validation_below_height to -1 when complete (full verification)
  *   - Does NOT modify the UTXO set — read-only validation pass
  *   - Emits events for observability (EV_BG_VALIDATION_PROGRESS)
  */

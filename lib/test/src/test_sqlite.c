@@ -528,13 +528,21 @@ int test_sqlite(void) {
         ok = ok && (db_mempool_count(&ndb) == 0);
 
         memset(tip_hash, 0xAB, sizeof(tip_hash));
+        ok = ok && node_db_state_set_int(&ndb, "tip_height", 99999);
+        ok = ok && node_db_state_set(&ndb, "tip_hash",
+                                     (const uint8_t[32]){0}, 32);
         ok = ok && node_db_sync_set_tip(&ndb, tip_hash, 12345);
-        ok = ok && node_db_state_get_int(&ndb, "tip_height", &tip_height);
+        ok = ok && node_db_state_get_int(&ndb,
+                "sync_projection_tip_height", &tip_height);
         ok = ok && (tip_height == 12345);
-        ok = ok && node_db_state_get(&ndb, "tip_hash",
-                                     got_tip_hash, sizeof(got_tip_hash),
-                                     &got_tip_len);
+        ok = ok && node_db_state_get(&ndb, "sync_projection_tip_hash",
+                got_tip_hash, sizeof(got_tip_hash), &got_tip_len);
         ok = ok && got_tip_len == sizeof(got_tip_hash);
+        ok = ok && memcmp(got_tip_hash, tip_hash, sizeof(tip_hash)) == 0;
+        memset(got_tip_hash, 0, sizeof(got_tip_hash));
+        got_tip_len = 0;
+        ok = ok && node_db_sync_get_tip_height(&ndb) == 12345;
+        ok = ok && node_db_sync_get_tip_hash(&ndb, got_tip_hash);
         ok = ok && memcmp(got_tip_hash, tip_hash, sizeof(tip_hash)) == 0;
 
         memset(peer.ip, 0, sizeof(peer.ip));

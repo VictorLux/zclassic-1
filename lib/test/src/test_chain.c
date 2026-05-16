@@ -1789,29 +1789,61 @@ int test_chain(void)
      * tip=3,081,601 but block_index only reaches 3,081,408, so the
      * 17-block GetNextWorkRequired window returns weakest-allowed nBits
      * and every inbound header gets bad-diffbits-rejected. */
-    printf("P24.13 skip_contextual: complete 17-block window, no skip... ");
+    printf("P24.13 skip_contextual: complete retarget+MTP window, no skip... ");
     {
         struct consensus_params cp = { .nPowAveragingWindow = 17 };
         struct main_state ms;
         main_state_init(&ms);
 
-        /* Build a 20-block contiguous pprev chain (more than window). */
-        struct block_index bi[20];
-        for (int i = 0; i < 20; i++) {
+        /* Build enough contiguous history for both the 17-block retarget
+         * window and the median-time-past call on the far-edge block. */
+        struct block_index bi[32];
+        for (int i = 0; i < 32; i++) {
             block_index_init(&bi[i]);
             bi[i].nHeight = i;
+            bi[i].nTime = 1000 + i;
             bi[i].pprev = (i == 0) ? NULL : &bi[i - 1];
         }
-        active_chain_set_tip(&ms.chain_active, &bi[19]);
+        active_chain_set_tip(&ms.chain_active, &bi[31]);
 
         bool should_skip =
-            process_block_should_skip_contextual_header(&ms, &bi[19], &cp);
-        /* Contiguous chain, far from the "old-IBD" case, window walks
-         * cleanly → gate must NOT skip contextual check. */
+            process_block_should_skip_contextual_header(&ms, &bi[31], &cp);
+        /* Contiguous chain, far from the "old-IBD" case, retarget and
+         * MTP windows walk cleanly → gate must NOT skip contextual check. */
         if (!should_skip)
             printf("OK\n");
         else {
             printf("FAIL (unexpected skip on contiguous chain)\n");
+            failures++;
+        }
+        active_chain_free(&ms.chain_active);
+    }
+
+    printf("P24.13 skip_contextual: sparse import anchor, MUST skip... ");
+    {
+        struct consensus_params cp = { .nPowAveragingWindow = 17 };
+        struct main_state ms;
+        main_state_init(&ms);
+
+        /* Models legacy chainstate import: 17 real headers exist above a
+         * metadata-only anchor whose nTime is zero and whose pprev is NULL.
+         * Retarget would otherwise compute MTP from the sparse anchor and
+         * reject honest legacy headers with bad-diffbits. */
+        struct block_index bi[18];
+        for (int i = 0; i < 18; i++) {
+            block_index_init(&bi[i]);
+            bi[i].nHeight = 3110157 + i;
+            bi[i].nTime = (i == 0) ? 0 : (1778635105 + i);
+            bi[i].pprev = (i == 0) ? NULL : &bi[i - 1];
+        }
+        active_chain_set_tip(&ms.chain_active, &bi[17]);
+
+        bool should_skip =
+            process_block_should_skip_contextual_header(&ms, &bi[17], &cp);
+        if (should_skip)
+            printf("OK\n");
+        else {
+            printf("FAIL (sparse retarget anchor was treated as complete)\n");
             failures++;
         }
         active_chain_free(&ms.chain_active);

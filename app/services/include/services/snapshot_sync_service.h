@@ -110,8 +110,12 @@ struct snapshot_sync_service {
     uint8_t  offered_utxo_root[32];
     uint8_t  offered_mmb_root[32];
     uint8_t  offered_block_hash[32];
+    uint8_t  offered_chain_work[32];
     int32_t  offered_height;
+    int32_t  offered_peer_tip_height;
     uint64_t offered_count;
+    uint32_t offered_protocol_version;
+    uint32_t offered_schema_version;
 
     /* FlyClient challenge (generated on offer accept) */
     struct fc_challenge fc_challenge;
@@ -148,6 +152,7 @@ struct snapsync_status {
     uint32_t serving_peer_id;
     int32_t offered_height;
     bool turbo_active;
+    int64_t staged_row_count;
 };
 
 /* ── Lifecycle ─────────────────────────────────────────────────── */
@@ -174,6 +179,9 @@ enum snapsync_offer_result {
     SNAPSYNC_OFFER_REJECTED_BUSY,      /* already receiving a snapshot */
     SNAPSYNC_OFFER_REJECTED_BLACKLISTED, /* peer stalled before */
     SNAPSYNC_OFFER_REJECTED_PARSE,     /* malformed wire data */
+    SNAPSYNC_OFFER_REJECTED_STALE_SCHEMA, /* unsupported protocol/schema */
+    SNAPSYNC_OFFER_REJECTED_UNFINAL,   /* anchor inside peer finality window */
+    SNAPSYNC_OFFER_REJECTED_WEAK_WORK, /* missing or non-competitive chainwork */
 };
 
 /* Parsed snapshot offer params (wire → struct by router) */
@@ -183,8 +191,12 @@ struct snapshot_offer_params {
     uint8_t  utxo_root[32];
     uint8_t  mmr_root[32];
     uint8_t  mmb_root[32];
+    uint8_t  chain_work[32];
     uint64_t num_utxos;
     uint64_t total_bytes;
+    uint32_t protocol_version;
+    uint32_t snapshot_schema_version;
+    int32_t  peer_tip_height;
     uint32_t peer_id;
     int32_t  our_height;  /* receiver's current chain height */
 };

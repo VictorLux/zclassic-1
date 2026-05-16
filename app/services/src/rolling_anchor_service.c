@@ -11,6 +11,7 @@
 
 #include "services/rolling_anchor_service.h"
 #include "services/oracle_policy.h"
+#include "services/quorum_oracle_service.h"
 
 #include "chain/chain.h"
 #include "chain/sha3_windows.h"
@@ -25,6 +26,8 @@
 #include "util/safe_alloc.h"
 #include "validation/chainstate.h"
 #include "validation/main_state.h"
+#include "validation/main_constants.h"
+#include "validation/sync_evidence_policy.h"
 
 #include <errno.h>
 #include <inttypes.h>
@@ -40,7 +43,7 @@
 #define RA_MAGIC           "ZCLRAW1"     /* 7 bytes + NUL = 8 */
 #define RA_MAGIC_LEN       8
 #define RA_SCHEMA          1u
-#define RA_DEFAULT_DEPTH   100
+#define RA_DEFAULT_DEPTH   ZCL_FINALITY_DEPTH
 #define RA_DEFAULT_CAP     10
 #define RA_FILE_NAME       "sha3_windows_runtime.dat"
 #define RA_RECORD_SIZE     36u            /* i32 + 32 bytes hash */
@@ -343,11 +346,15 @@ int rolling_anchor_effective_prefix_end_height(void)
  * by reading each block from disk via active_chain. Returns true if
  * every block was read; false on any I/O failure. */
 static bool ra_compute_window_hash(struct main_state *ms,
+                                    const char *datadir,
                                     int start_h,
                                     uint8_t out_hash[32],
                                     int *out_failure_height)
 {
     *out_failure_height = -1;
+    if (!ms || !datadir || !datadir[0])
+        return false;
+
     struct sha3_256_ctx ctx;
     sha3_256_init(&ctx);
 
@@ -365,7 +372,7 @@ static bool ra_compute_window_hash(struct main_state *ms,
         }
         struct block blk;
         block_init(&blk);
-        if (!read_block_from_disk_index_pread(&blk, bi, NULL)) {
+        if (!read_block_from_disk_index_pread(&blk, bi, datadir)) {
             block_free(&blk);
             *out_failure_height = h;
             ok = false;
@@ -388,11 +395,28 @@ static bool ra_compute_window_hash(struct main_state *ms,
     return ok;
 }
 
+static bool ra_quorum_allows_commit(int height)
+{
+    struct quorum_oracle_result qr;
+    int present = 0;
+
+    if (!quorum_oracle_probe(height, &qr))
+        return true;
+    for (int i = 0; i < QO_SRC_NUM; i++) {
+        if (qr.by_source[i].present && !qr.by_source[i].error &&
+            qr.by_source[i].hash_hex[0] != '\0')
+            present++;
+    }
+    if (present <= 1)
+        return true;
+    return qr.verdict == QO_VERDICT_QUORUM_MATCH &&
+           qr.agreeing_sources >= 2;
+}
+
 int rolling_anchor_extend_if_due(struct main_state *ms,
                                   const char *datadir)
 {
-    (void)datadir;
-    if (!ms) return 0;
+    if (!ms || !datadir || !datadir[0]) return 0;
     if (!g_ra.initialized) return 0;
 
     if (!oracle_policy_chain_extension_allowed()) {
@@ -405,7 +429,6 @@ int rolling_anchor_extend_if_due(struct main_state *ms,
 
     pthread_mutex_lock(&g_ra.lock);
     int current_end = ra_runtime_end_locked();
-    int depth = g_ra.confirmation_depth;
     int cap = g_ra.max_extend_per_call;
     pthread_mutex_unlock(&g_ra.lock);
 
@@ -422,7 +445,7 @@ int rolling_anchor_extend_if_due(struct main_state *ms,
     int extended = 0;
     while (extended < cap) {
         int last_h_in_win = next_start + (int)SHA3_WINDOW_SIZE - 1;
-        if (last_h_in_win + depth > tip) {
+        if (last_h_in_win > zcl_immutable_height(tip)) {
             atomic_fetch_add(&g_ra.total_skipped_depth, 1);
             break;
         }
@@ -430,10 +453,19 @@ int rolling_anchor_extend_if_due(struct main_state *ms,
             atomic_fetch_add(&g_ra.total_skipped_policy, 1);
             break;
         }
+        if (!ra_quorum_allows_commit(last_h_in_win)) {
+            atomic_fetch_add(&g_ra.total_skipped_policy, 1);
+            event_emitf(EV_SYNC_STATE_CHANGE, 0,
+                        "rolling_anchor quorum split h=%d", last_h_in_win);
+            fprintf(stderr,
+                    "[rolling_anchor] extend: quorum refused window "
+                    "start=%d end=%d\n", next_start, last_h_in_win);
+            break;
+        }
 
         uint8_t hash[32];
         int fail_h = -1;
-        if (!ra_compute_window_hash(ms, next_start, hash, &fail_h)) {
+        if (!ra_compute_window_hash(ms, datadir, next_start, hash, &fail_h)) {
             atomic_fetch_add(&g_ra.total_read_failures, 1);
             fprintf(stderr, // obs-ok:pre-existing-diagnostic
                     "[rolling_anchor] extend: read failed at h=%d "
@@ -463,8 +495,8 @@ int rolling_anchor_extend_if_due(struct main_state *ms,
         pthread_mutex_unlock(&g_ra.lock);
 
         if (!persisted) {
-            /* Disk write failure — roll back the in-memory entry so
-             * we don't claim to trust something not on disk. */
+            /* Disk write failure - roll back the in-memory entry so
+             * we don't claim evidence that is not on disk. */
             pthread_mutex_lock(&g_ra.lock);
             if (g_ra.count > 0) g_ra.count--;
             pthread_mutex_unlock(&g_ra.lock);

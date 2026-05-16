@@ -11,6 +11,7 @@
 #include "chain/checkpoints.h"
 #include "services/bg_hash_verification_service.h"
 #include "services/block_sync_service.h"
+#include "services/utxo_recovery_service.h"
 #include "validation/main_state.h"
 #include <string.h>
 #include <stdlib.h>
@@ -257,12 +258,41 @@ static int test_integrity_utxo_count_check(void)
         uint64_t warn_count = (uint64_t)(cp->utxo_count * 0.8);
         ratio = (double)warn_count / (double)cp->utxo_count;
         ASSERT(ratio < 0.9);
+        struct utxo_count_check_result warn =
+            utxo_recovery_classify_count_check(
+                cp->height, cp->height, cp->utxo_count, warn_count);
+        ASSERT(warn.level == UTXO_COUNT_CHECK_WARNING);
 
         /* Count off by 60% — should trigger critical */
         uint64_t crit_count = (uint64_t)(cp->utxo_count * 0.4);
         ratio = (double)crit_count / (double)cp->utxo_count;
         ASSERT(ratio < 0.5);
+        struct utxo_count_check_result crit =
+            utxo_recovery_classify_count_check(
+                cp->height, cp->height, cp->utxo_count, crit_count);
+        ASSERT(crit.level == UTXO_COUNT_CHECK_CRITICAL);
 
+        /* Far past the checkpoint, current UTXO count can legitimately
+         * drift; the operator needs a stale-reference diagnostic, not a
+         * corruption warning. */
+        struct utxo_count_check_result stale =
+            utxo_recovery_classify_count_check(
+                cp->height + 10000, cp->height, cp->utxo_count, warn_count);
+        ASSERT(stale.level == UTXO_COUNT_CHECK_INFO_STALE_REFERENCE);
+
+        PASS();
+    } _test_next:;
+
+    return failures;
+}
+
+static int test_integrity_xor_mismatch_policy(void)
+{
+    int failures = 0;
+
+    TEST("integrity: XOR mismatch is refreshed as stale metadata") {
+        ASSERT(!utxo_recovery_xor_mismatch_is_corruption_candidate(42, 42));
+        ASSERT(!utxo_recovery_xor_mismatch_is_corruption_candidate(42, 43));
         PASS();
     } _test_next:;
 
@@ -474,6 +504,7 @@ int test_integrity(void)
 
     /* UTXO count sanity check */
     failures += test_integrity_utxo_count_check();
+    failures += test_integrity_xor_mismatch_policy();
 
     /* bg_hash_verification_service */
     failures += test_integrity_bg_hash_verify_init();

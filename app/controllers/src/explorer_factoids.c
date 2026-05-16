@@ -135,7 +135,7 @@ static void fmt_comma(char *buf, size_t max, int64_t val)
  * Used as fallback when block isn't in the SQLite index. */
 static int64_t estimate_block_time(int64_t height)
 {
-    const int64_t genesis_time = 1478403829; /* 2016-11-06 03:43:49 UTC */
+    const int64_t genesis_time = ZCL_EXPLORER_GENESIS_TIME;
     const int64_t buttercup_height = 707000;
     const int64_t pre_spacing = 150;
     const int64_t post_spacing = 75;
@@ -157,8 +157,8 @@ static void get_block_at(sqlite3 *db, int64_t height,
     /* Genesis block (height 0) is not in the SQLite index — use constants */
     if (height == 0) {
         snprintf(hash_out, hmax,
-            "0007104CCDA289427919EFC39DC9E4D499804B7BEBC22DF55F8B834301260602");
-        *time_out = 1478403829; /* 2016-11-06 03:43:49 UTC */
+            ZCL_EXPLORER_GENESIS_HASH_DISPLAY_HEX);
+        *time_out = ZCL_EXPLORER_GENESIS_TIME;
         return;
     }
 
@@ -192,6 +192,77 @@ static int64_t get_block_time(sqlite3 *db, int64_t height)
     return t;
 }
 
+static size_t explorer_factoids_build_verified_summary(uint8_t *buf,
+                                                       size_t buf_max,
+                                                       sqlite3 *db,
+                                                       int64_t chain_height,
+                                                       const char *degraded_reason)
+{
+    size_t off = 0;
+    char *r = (char *)buf;
+    size_t max = buf_max;
+
+    int64_t utxo_count = fq_i64(db, "SELECT count(*) FROM utxos");
+    int64_t utxo_value = fq_i64(db, "SELECT COALESCE(SUM(value),0) FROM utxos");
+    int64_t utxo_max_height = fq_i64(db, "SELECT COALESCE(MAX(height),0) FROM utxos");
+    int64_t block_rows = fq_i64(db, "SELECT count(*) FROM blocks");
+    int64_t tx_rows = fq_i64(db, "SELECT count(*) FROM transactions");
+    int64_t supply = compute_supply_at_height(chain_height);
+
+    char supply_fmt[64], utxo_fmt[64], rcpt[32] = "";
+    fmt_zcl(supply_fmt, sizeof(supply_fmt), supply);
+    fmt_zcl(utxo_fmt, sizeof(utxo_fmt), utxo_value);
+    compute_receipt_i64(rcpt, sizeof(rcpt), chain_height, supply,
+                        "verified_factoids_summary");
+
+    APPEND(off, r, max, EXPLORER_HEADER("ZClassic Factoids"));
+    off += explorer_emit_nav((char *)r + off, max - off, "factoids");
+    APPEND(off, r, max,
+        "<div class='content'>"
+        "<h1>ZClassic Factoids</h1>"
+        "<div class='card' style='border-color:#775522'>"
+        "<h2>Explorer history index rebuilding</h2>"
+        "<p style='color:#bbb'>The block-history table failed sanity checks, "
+        "so this page is intentionally not serving archaeology facts derived "
+        "from that table. This prevents impossible timestamps, bogus records, "
+        "and misleading receipts from being published as verified data.</p>"
+        "<p style='color:#888'>Reason: <code>%s</code></p>"
+        "<p style='color:#888'>Verified live explorer data is shown below. "
+        "Block-history sections will return after the explorer block index is "
+        "rebuilt from canonical block data.</p>"
+        "</div>"
+        "<h2>Verified Current State</h2>"
+        "<table class='txlist'>"
+        "<tr><th>Field</th><th>Value</th></tr>"
+        "<tr><td>Current chain height</td><td>%" PRId64 "</td></tr>"
+        "<tr><td>Highest UTXO height</td><td>%" PRId64 "</td></tr>"
+        "<tr><td>Consensus supply at height</td><td>%s ZCL</td></tr>"
+        "<tr><td>Transparent UTXOs</td><td>%" PRId64 "</td></tr>"
+        "<tr><td>Transparent UTXO value</td><td>%s ZCL</td></tr>"
+        "<tr><td>Block rows in explorer index</td><td>%" PRId64 "</td></tr>"
+        "<tr><td>Transaction rows in explorer index</td><td>%" PRId64 "</td></tr>"
+        "<tr><td>SHA3 receipt</td><td><code>%s</code></td></tr>"
+        "</table>",
+        degraded_reason ? degraded_reason : "unknown",
+        chain_height, utxo_max_height, supply_fmt, utxo_count, utxo_fmt,
+        block_rows, tx_rows, rcpt);
+
+    APPEND(off, r, max,
+        "<h2>Consensus Constants</h2>"
+        "<table class='txlist'>"
+        "<tr><th>Fact</th><th>Value</th></tr>"
+        "<tr><td>Genesis hash</td><td><code style='word-break:break-all'>"
+        ZCL_EXPLORER_GENESIS_HASH_DISPLAY_HEX
+        "</code></td></tr>"
+        "<tr><td>Genesis timestamp</td><td>2016-11-06 03:43:49 UTC</td></tr>"
+        "<tr><td>Mainnet P2P port</td><td>8033</td></tr>"
+        "<tr><td>Equihash parameters</td><td>N=200, K=9</td></tr>"
+        "<tr><td>Buttercup activation height</td><td>707000</td></tr>"
+        "</table>"
+        "</div>" EXPLORER_FOOTER);
+    return off;
+}
+
 /* ── Build the factoids page (HTML) ──────────────────────── */
 
 size_t explorer_factoids_build(uint8_t *buf, size_t buf_max, const char *datadir)
@@ -206,6 +277,18 @@ size_t explorer_factoids_build(uint8_t *buf, size_t buf_max, const char *datadir
     struct explorer_chain_stats chain_stats = {0};
     explorer_query_chain_stats(db, &chain_stats);
     int64_t chain_height = chain_stats.height;
+    int64_t utxo_tip = fq_i64(db, "SELECT COALESCE(MAX(height),0) FROM utxos");
+    if (utxo_tip > chain_height)
+        chain_height = utxo_tip;
+
+    struct explorer_history_validation history;
+    explorer_validate_block_history(db, chain_height, &history);
+    if (!history.usable) {
+        size_t len = explorer_factoids_build_verified_summary(
+            buf, buf_max, db, chain_height, history.reason);
+        sqlite3_close(db);
+        return len;
+    }
 
     size_t off = 0;
     char *r = (char *)buf;
@@ -230,18 +313,18 @@ size_t explorer_factoids_build(uint8_t *buf, size_t buf_max, const char *datadir
     APPEND(off, r, max,
         "<h2 id='genesis'>1. Genesis Story</h2>");
 
-    int64_t genesis_time = 1478403829; /* Nov 6, 2016 03:43:49 UTC */
+    int64_t genesis_time = ZCL_EXPLORER_GENESIS_TIME;
 
     /* Genesis (height 0) is not in the SQLite index — use known constants */
     char genesis_hash[128] =
-        "0007104CCDA289427919EFC39DC9E4D499804B7BEBC22DF55F8B834301260602";
+        ZCL_EXPLORER_GENESIS_HASH_DISPLAY_HEX;
     char genesis_coinbase[128] = "";
     /* Try DB first, fall back to constant */
     fq_text(db, "SELECT hex(hash) FROM blocks WHERE height = 0",
             genesis_hash, sizeof(genesis_hash));
     if (!genesis_hash[0])
         snprintf(genesis_hash, sizeof(genesis_hash),
-            "0007104CCDA289427919EFC39DC9E4D499804B7BEBC22DF55F8B834301260602");
+            ZCL_EXPLORER_GENESIS_HASH_DISPLAY_HEX);
     fq_text(db, "SELECT hex(txid) FROM transactions WHERE block_height = 0 AND is_coinbase = 1 LIMIT 1",
             genesis_coinbase, sizeof(genesis_coinbase));
     if (!genesis_coinbase[0])
@@ -1590,6 +1673,9 @@ size_t explorer_factoids_build_json(uint8_t *buf, size_t buf_max,
     struct explorer_chain_stats chain_stats = {0};
     explorer_query_chain_stats(db, &chain_stats);
     int64_t chain_height = chain_stats.height;
+    int64_t utxo_tip = fq_i64(db, "SELECT COALESCE(MAX(height),0) FROM utxos");
+    if (utxo_tip > chain_height)
+        chain_height = utxo_tip;
 
     size_t off = 0;
     char *r = (char *)buf;
@@ -1599,8 +1685,35 @@ size_t explorer_factoids_build_json(uint8_t *buf, size_t buf_max,
         "HTTP/1.1 200 OK\r\n"
         "Content-Type: application/json; charset=utf-8\r\n"
         "Access-Control-Allow-Origin: *\r\n"
-        "Cache-Control: public, max-age=300\r\n"
+        "Cache-Control: no-store\r\n"
         "Connection: close\r\n\r\n");
+
+    struct explorer_history_validation history;
+    explorer_validate_block_history(db, chain_height, &history);
+    if (!history.usable) {
+        int64_t block_rows = fq_i64(db, "SELECT count(*) FROM blocks");
+        int64_t tx_rows = fq_i64(db, "SELECT count(*) FROM transactions");
+        int64_t utxo_count = fq_i64(db, "SELECT count(*) FROM utxos");
+        int64_t utxo_value = fq_i64(db, "SELECT COALESCE(SUM(value),0) FROM utxos");
+        int64_t supply = compute_supply_at_height(chain_height);
+        APPEND(off, r, max,
+            "{\"history_index_usable\":false,"
+            "\"unsafe_sections_suppressed\":true,"
+            "\"reason\":\"%s\","
+            "\"chain_height\":%" PRId64 ","
+            "\"supply\":{\"total_sat\":%" PRId64 ",\"total_zcl\":%.8f},"
+            "\"utxo\":{\"count\":%" PRId64 ",\"value_sat\":%" PRId64 ",\"value_zcl\":%.8f},"
+            "\"index\":{\"blocks\":%" PRId64 ",\"transactions\":%" PRId64 "},"
+            "\"consensus\":{\"genesis_hash\":\"%s\","
+            "\"genesis_time\":%" PRId64 ",\"mainnet_port\":8033,\"buttercup_height\":707000}}",
+            history.reason, chain_height,
+            supply, (double)supply / (double)ZATOSHI_PER_ZCL,
+            utxo_count, utxo_value, (double)utxo_value / (double)ZATOSHI_PER_ZCL,
+            block_rows, tx_rows, ZCL_EXPLORER_GENESIS_HASH_DISPLAY_HEX,
+            (int64_t)ZCL_EXPLORER_GENESIS_TIME);
+        sqlite3_close(db);
+        return off;
+    }
 
     struct explorer_token_stats token_stats = {0};
     explorer_query_token_stats(db, &token_stats);
@@ -1609,10 +1722,7 @@ size_t explorer_factoids_build_json(uint8_t *buf, size_t buf_max,
 
     /* Genesis — height 0 may not be in SQLite, use constants as fallback */
     {
-        char gh[128] = "", gc[128] = "";
-        fq_text(db, "SELECT hex(hash) FROM blocks WHERE height = 0", gh, sizeof(gh));
-        if (!gh[0]) snprintf(gh, sizeof(gh),
-            "0007104CCDA289427919EFC39DC9E4D499804B7BEBC22DF55F8B834301260602");
+        char gh[128] = ZCL_EXPLORER_GENESIS_HASH_DISPLAY_HEX, gc[128] = "";
         fq_text(db, "SELECT hex(txid) FROM transactions WHERE block_height = 0 AND is_coinbase = 1 LIMIT 1",
                 gc, sizeof(gc));
         if (!gc[0]) snprintf(gc, sizeof(gc),
@@ -1620,9 +1730,9 @@ size_t explorer_factoids_build_json(uint8_t *buf, size_t buf_max,
         char rcpt[32] = "";
         compute_receipt(rcpt, sizeof(rcpt), 0, gh, "Genesis");
         APPEND(off, r, max,
-            ",\"genesis\":{\"hash\":\"%.64s\",\"timestamp\":1478403829,"
+            ",\"genesis\":{\"hash\":\"%.64s\",\"timestamp\":%" PRId64 ","
             "\"coinbase_txid\":\"%.64s\",\"sha3\":\"%s\"}",
-            gh, gc, rcpt);
+            gh, (int64_t)ZCL_EXPLORER_GENESIS_TIME, gc, rcpt);
     }
 
     /* Network upgrades */

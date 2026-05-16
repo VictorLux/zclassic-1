@@ -90,9 +90,9 @@ flowchart TD
         HEADERS --> FLYCLIENT{FlyClient<br/>available?}
         FLYCLIENT -->|yes| FC_VERIFY[50 random samples<br/>MMB inclusion proofs<br/>PoW verify]
         FLYCLIENT -->|no| FULL_HEADERS[Full header chain]
-        FC_VERIFY --> SNAPSHOT{Snapshot peer<br/>available?}
+        FC_VERIFY --> SNAPSHOT{Strict v2 snapshot peer<br/>available?}
         FULL_HEADERS --> GETBLOCKS
-        SNAPSHOT -->|yes| SNAP_RECV[Receive UTXO snapshot<br/>SHA3-256 verify<br/>EV_SNAPSHOT_COMPLETE]
+        SNAPSHOT -->|yes| SNAP_RECV[Validate v2 manifest<br/>chunk SHA3 + UTXO SHA3<br/>finality + chainwork]
         SNAPSHOT -->|no| GETBLOCKS
         SNAP_RECV --> DELTA[Delta sync<br/>blocks from snapshot to tip]
         GETBLOCKS[getdata blocks] --> DELTA

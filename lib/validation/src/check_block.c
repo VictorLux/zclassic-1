@@ -232,7 +232,7 @@ bool contextual_check_block_header(const struct block_header *header,
      * `nProofOfWorkLimit` (the weakest permissible difficulty) when its
      * own 17-block averaging window cannot be fully walked, so
      * incomplete-window nodes compare against the weakest-allowed
-     * difficulty instead of blindly trusting the header.  Callers that
+     * difficulty instead of blindly accepting the header.  Callers that
      * legitimately accept headers without local-window validation (fast-
      * sync snapshot tail, MMB-proved headers) MUST bypass this function
      * entirely — see process_block.c's `skip_contextual` gate.  Genesis

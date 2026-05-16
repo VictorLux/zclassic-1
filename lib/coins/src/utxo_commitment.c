@@ -240,17 +240,26 @@ bool utxo_commitment_load_checkpoint(sqlite3 *db,
 
 /* ── SHA3-256 full-set commitment ────────────────────────── */
 
-void utxo_commitment_sha3_compute(sqlite3 *db, uint8_t out[32],
-                                   uint64_t *utxo_count)
+void utxo_commitment_sha3_compute_table(sqlite3 *db, const char *table,
+                                        uint8_t out[32],
+                                        uint64_t *utxo_count)
 {
     memset(out, 0, 32);
     if (utxo_count) *utxo_count = 0;
     if (!db) return;
+    if (!table ||
+        (strcmp(table, "utxos") != 0 &&
+         strcmp(table, "snapshot_staging_utxos") != 0)) {
+        fprintf(stderr, "[utxo_cmt] refused SHA3 for invalid table '%s'\n",
+                table ? table : "(null)");
+        return;
+    }
 
     sqlite3_stmt *s = NULL;
-    const char *sql_sha3 =
-        "SELECT txid, vout, value, script, height, is_coinbase"
-        " FROM utxos ORDER BY txid, vout";
+    char sql_sha3[192];
+    snprintf(sql_sha3, sizeof(sql_sha3),
+             "SELECT txid, vout, value, script, height, is_coinbase"
+             " FROM %s ORDER BY txid, vout", table);
     if (sqlite3_prepare_v2(db, sql_sha3, -1, &s, NULL) != SQLITE_OK) {
         UTXO_CMT_LOG_PREPARE(db, sql_sha3);
         return;
@@ -307,6 +316,12 @@ void utxo_commitment_sha3_compute(sqlite3 *db, uint8_t out[32],
 
     sha3_256_finalize(&ctx, out);
     if (utxo_count) *utxo_count = count;
+}
+
+void utxo_commitment_sha3_compute(sqlite3 *db, uint8_t out[32],
+                                   uint64_t *utxo_count)
+{
+    utxo_commitment_sha3_compute_table(db, "utxos", out, utxo_count);
 }
 
 bool utxo_commitment_sha3_save(sqlite3 *db, const uint8_t hash[32],

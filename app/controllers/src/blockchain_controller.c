@@ -5,6 +5,7 @@
 
 #include "views/format_helpers.h"
 #include "controllers/blockchain_controller.h"
+#include "controllers/explorer_internal.h"
 #include "config/runtime.h"
 #include "controllers/strong_params.h"
 #include "chain/chain.h"
@@ -47,9 +48,11 @@
 #include "controllers/sync_controller.h"
 #include "controllers/network_controller.h"
 #include "services/utxo_audit_service.h"
+#include "services/chain_state_repository.h"
 #include "net/connman.h"
 #include <stdint.h>
 #include <string.h>
+#include <limits.h>
 #include <math.h>
 #include <time.h>
 #include <inttypes.h>
@@ -70,9 +73,91 @@ struct blockchain_context {
 
 static struct blockchain_context g_blockchain_ctx = {0};
 
+static bool indexlegacy_existing_history_usable(sqlite3 *db)
+{
+    struct explorer_history_validation v;
+    explorer_validate_block_history(db, -1, &v);
+    if (!v.usable) {
+        fprintf(stderr, "indexlegacy: explorer history unusable: %s\n",
+                v.reason);
+    }
+    return v.usable;
+}
+
+static void indexlegacy_reset_derived_history(sqlite3 *db)
+{
+    static const char *tables[] = {
+        "blocks",
+        "transactions",
+        "tx_inputs",
+        "tx_outputs",
+        "joinsplits",
+        "sapling_spends",
+        "sapling_outputs",
+        "sprout_nullifiers",
+        "op_returns",
+        "zslp_tokens",
+        "zslp_transfers",
+        "zslp_balances",
+        "addresses",
+        "view_integrity",
+    };
+
+    if (!db)
+        return;
+    printf("indexlegacy: existing explorer history failed sanity checks; "
+           "resetting derived history tables before rebuild\n");
+    fflush(stdout);
+    sqlite3_exec(db, "BEGIN IMMEDIATE", NULL, NULL, NULL);
+    for (size_t i = 0; i < sizeof(tables) / sizeof(tables[0]); i++) {
+        char sql[128];
+        snprintf(sql, sizeof(sql), "DELETE FROM %s", tables[i]);
+        sqlite3_exec(db, sql, NULL, NULL, NULL);
+    }
+    sqlite3_exec(db, "COMMIT", NULL, NULL, NULL);
+}
+
 static struct blockchain_context *blockchain_ctx(void)
 {
     return &g_blockchain_ctx;
+}
+
+static bool reindex_set_coins_best(struct blockchain_context *ctx,
+                                   const struct uint256 *block_hash,
+                                   const char *reason)
+{
+    if (!ctx || !block_hash)
+        return false;
+    struct chain_state_rollback_authorization auth = {
+        .source = CSR_ROLLBACK_SOURCE_REINDEX,
+        .decision = POLICY_ALLOW,
+        .from_height = ctx->main_state
+            ? active_chain_height(&ctx->main_state->chain_active) : -1,
+        .to_height = ctx->main_state
+            ? active_chain_height(&ctx->main_state->chain_active) : -1,
+        .max_depth = 0,
+        .evidence_class = "operator_reindex_replay",
+        .reason = reason ? reason : "reindexchainstate.replay",
+    };
+    struct chain_state_coins_best_repair repair = {
+        .new_coins_best = *block_hash,
+        .repair_auth = &auth,
+        .reason = reason ? reason : "reindexchainstate.replay",
+    };
+    enum csr_result rc = csr_repair_set_coins_best(csr_instance(), &repair);
+    if (rc == CSR_OK)
+        return true;
+
+#ifdef ZCL_TESTING
+    if (rc == CSR_REJECTED_NOT_INITIALIZED && ctx->coins_tip) {
+        coins_view_cache_set_best_block(ctx->coins_tip, block_hash);
+        return true;
+    }
+#endif
+
+    fprintf(stderr, "reindexchainstate: csr rejected coins-best repair: %s\n",
+            csr_result_name(rc));
+    return false;
 }
 
 void rpc_blockchain_set_state(struct main_state *ms, struct tx_mempool *mp,
@@ -481,14 +566,12 @@ static bool rpc_reindexchainstate(const struct json_value *params, bool help,
         if (h == 0) {
             struct uint256 block_hash;
             block_header_get_hash(&blk.header, &block_hash);
-            /* Low-level: bypasses csr — reindexchainstate is an
-             * operator-invoked UTXO replay across every block from
-             * genesis to the current tip. active_chain never moves
-             * during the replay; only coins_tip's hash_block is being
-             * resynced one block at a time. Routing each iteration
-             * through csr_commit_tip would require O(N) full
-             * cross-checks and would report spurious backward moves. */
-            coins_view_cache_set_best_block(ctx->coins_tip, &block_hash);
+            if (!reindex_set_coins_best(ctx, &block_hash,
+                                        "reindexchainstate.genesis")) {
+                block_free(&blk);
+                errors++;
+                continue;
+            }
             block_free(&blk);
             if (h % 10000 == 0) {
                 printf("  height %d/%d\n", h, tip_height);
@@ -502,13 +585,17 @@ static bool rpc_reindexchainstate(const struct json_value *params, bool help,
             update_coins(&blk.vtx[i], ctx->coins_tip, pindex->nHeight);
         }
 
-        /* Set best block hash.
-         * Low-level: bypasses csr (see genesis branch above for the
-         * rationale) — this is inside the reindexchainstate replay
-         * loop, not a tip-commit operation. */
+        /* Set best block hash for this operator-invoked replay step.
+         * active_chain does not move here; CSR gates the repair as a
+         * typed coins-best-only mutation. */
         struct uint256 block_hash;
         block_header_get_hash(&blk.header, &block_hash);
-        coins_view_cache_set_best_block(ctx->coins_tip, &block_hash);
+        if (!reindex_set_coins_best(ctx, &block_hash,
+                                    "reindexchainstate.replay")) {
+            block_free(&blk);
+            errors++;
+            continue;
+        }
 
         block_free(&blk);
 
@@ -660,6 +747,34 @@ static bool indexlegacy_step_checked(sqlite3_stmt *stmt, sqlite3 *db,
                 label, rc, sqlite3_errmsg(db));
         return false;
     }
+    return true;
+}
+
+#define INDEXLEGACY_PHASE_B_BATCH_ROWS 500000
+
+static bool indexlegacy_phase_b_row_written(sqlite3 *db, bool own_txn,
+                                            int64_t *batch_rows,
+                                            const char *label)
+{
+    if (!batch_rows)
+        return false;
+
+    (*batch_rows)++;
+    if (*batch_rows % INDEXLEGACY_PHASE_B_BATCH_ROWS != 0)
+        return true;
+
+    if (own_txn) {
+        if (!indexlegacy_exec_checked(db, "COMMIT",
+                                      "phase B commit batch"))
+            return false;
+        if (!indexlegacy_exec_checked(db, "BEGIN IMMEDIATE",
+                                      "phase B begin batch"))
+            return false;
+    }
+
+    printf("  Phase B write: %lld rows (%s)...\n",
+           (long long)*batch_rows, label ? label : "bulk");
+    fflush(stdout);
     return true;
 }
 
@@ -954,6 +1069,25 @@ static bool rpc_importchainstate(const struct json_value *params, bool help,
     struct uint256 ldb_best_block;
     memset(&ldb_best_block, 0, sizeof(ldb_best_block));
     coins_view_db_get_best_block(&ext_db, &ldb_best_block);
+    if (uint256_is_null(&ldb_best_block)) {
+        coins_view_db_close(&ext_db);
+        json_set_str(result, "LevelDB chainstate best block is unset");
+        LOG_FAIL("blockchain", "importchainstate: best block is unset");
+    }
+    if (!ctx->main_state) {
+        coins_view_db_close(&ext_db);
+        json_set_str(result, "Main chain state not available");
+        LOG_FAIL("blockchain", "importchainstate: main state not available");
+    }
+    struct block_index *ldb_tip = block_map_find(
+        &ctx->main_state->map_block_index, &ldb_best_block);
+    if (!ldb_tip || !ldb_tip->phashBlock) {
+        coins_view_db_close(&ext_db);
+        json_set_str(result,
+                     "LevelDB best block is not verified in the block index");
+        LOG_FAIL("blockchain",
+                 "importchainstate: best block missing from block index");
+    }
 
     struct node_db import_db;
     struct node_db *import_target = ctx->node_db;
@@ -1022,19 +1156,37 @@ static bool rpc_importchainstate(const struct json_value *params, bool help,
         NULL, NULL, NULL);
     sqlite3_exec(ctx->node_db->db, "COMMIT", NULL, NULL, NULL);
 
-    /* Set coins_best_block from the LevelDB source.
-     * This ensures connect_block's view/prevblock check passes
-     * when resuming from the imported UTXO set. */
-    {
-        static const uint8_t zero_hash[32] = {0};
-        if (memcmp(ldb_best_block.data, zero_hash, 32) != 0) {
-            node_db_state_set(ctx->node_db, "coins_best_block",
-                              ldb_best_block.data, 32);
-            char hex[65];
-            for (int i = 0; i < 32; i++)
-                sprintf(hex + i*2, "%02x", ldb_best_block.data[i]);
-            printf("importchainstate: set coins_best_block=%s\n", hex);
-        }
+    struct chain_state_rollback_authorization rollback_auth = {
+        .source = CSR_ROLLBACK_SOURCE_UTXO_REPAIR,
+        .decision = POLICY_ALLOW,
+        .from_height = active_chain_height(&ctx->main_state->chain_active),
+        .to_height = ldb_tip->nHeight,
+        .max_depth = INT64_MAX,
+        .evidence_class = "leveldb_chainstate_best_block_indexed",
+        .reason = "rpc.importchainstate",
+    };
+    struct chain_state_commit commit = {
+        .new_tip = ldb_tip,
+        .new_coins_best = *ldb_tip->phashBlock,
+        .expected_utxo_count = 0,
+        .update_header_tip = true,
+        .persist_coins_best = true,
+        .rollback_auth = &rollback_auth,
+        .wallet_scan_height = -1,
+        .reason = "rpc.importchainstate",
+    };
+    enum csr_result csr_rc = csr_commit_tip(csr_instance(), &commit);
+#ifdef ZCL_TESTING
+    if (csr_rc == CSR_REJECTED_NOT_INITIALIZED) {
+        coins_view_cache_set_best_block(ctx->coins_tip, ldb_tip->phashBlock);
+        csr_rc = CSR_OK;
+    }
+#endif
+    if (csr_rc != CSR_OK) {
+        json_set_str(result, "CSR rejected imported chainstate tip");
+        LOG_FAIL("blockchain",
+                 "importchainstate: csr rejected imported tip (%s)",
+                 csr_result_name(csr_rc));
     }
 
     json_set_object(result);
@@ -1166,10 +1318,13 @@ static bool rpc_indexlegacy(const struct json_value *params, bool help,
     sqlite3_exec(ctx->node_db->db, "DROP INDEX IF EXISTS idx_zslp_xfer_addr", NULL, NULL, NULL);
     sqlite3_exec(ctx->node_db->db, "DROP INDEX IF EXISTS idx_zslp_ticker", NULL, NULL, NULL);
 
+    if (!indexlegacy_existing_history_usable(ctx->node_db->db))
+        indexlegacy_reset_derived_history(ctx->node_db->db);
+
     /* Additive index: INSERT OR IGNORE for blocks/transactions (immutable chain
-     * data that never changes). Phase B uses INSERT OR IGNORE for tx_outputs,
-     * tx_inputs, joinsplits, etc. We DO NOT wipe — this makes indexlegacy
-     * idempotent and crash-safe. Only addresses are recomputed from UTXOs. */
+     * data that never changes). If the existing history fails sanity checks we
+     * reset only derived explorer-history tables first; canonical UTXOs stay
+     * owned by coins_view_sqlite. Only addresses are recomputed from UTXOs. */
     printf("indexlegacy: Additive index mode (no wipe, INSERT OR IGNORE)...\n");
     fflush(stdout);
     node_db_exec(ctx->node_db, "DELETE FROM addresses");
@@ -1523,10 +1678,10 @@ static bool rpc_indexlegacy(const struct json_value *params, bool help,
                             slp.ticker, slp.name, slp.decimals,
                             slp.document_url, h,
                             (int64_t)slp.initial_quantity)) {
-                        phase_a_error = "Phase A ZSLP token save failed";
-                        block_free(&blk);
-                        phase_a_ok = false;
-                        break;
+                        fprintf(stderr,
+                                "indexlegacy: skipping invalid ZSLP token at "
+                                "height %d\n", h);
+                        continue;
                     }
 
                     int num_outputs_slp = (slp.type == SLP_TX_SEND)
@@ -1557,10 +1712,10 @@ static bool rpc_indexlegacy(const struct json_value *params, bool help,
 
                         if (!db_zslp_transfer_save(ctx->node_db, tx->hash.data,
                                 h, tok_id, (int)slp.type, amount, q, to)) {
-                            phase_a_error = "Phase A ZSLP transfer save failed";
-                            block_free(&blk);
-                            phase_a_ok = false;
-                            break;
+                            fprintf(stderr,
+                                    "indexlegacy: skipping invalid ZSLP "
+                                    "transfer at height %d\n", h);
+                            continue;
                         }
                     }
                 }
@@ -1959,21 +2114,10 @@ static bool rpc_indexlegacy(const struct json_value *params, bool help,
             }
             sqlite3_reset(stmt_txi);
             total_inputs++;
-            if (++batch_rows % 500000 == 0) {
-                if (phase_b_own_txn) {
-                    if (!indexlegacy_exec_checked(phase_b_db, "COMMIT",
-                        "phase B commit batch")) {
-                        phase_b_ok = false;
-                        goto phase_b_cleanup;
-                    }
-                    if (!indexlegacy_exec_checked(phase_b_db, "BEGIN",
-                        "phase B begin batch")) {
-                        phase_b_ok = false;
-                        goto phase_b_cleanup;
-                    }
-                }
-                printf("  Phase B write: %lld rows...\n", (long long)batch_rows);
-                fflush(stdout);
+            if (!indexlegacy_phase_b_row_written(phase_b_db,
+                    phase_b_own_txn, &batch_rows, "tx_inputs")) {
+                phase_b_ok = false;
+                goto phase_b_cleanup;
             }
         }
     }
@@ -1997,6 +2141,11 @@ static bool rpc_indexlegacy(const struct json_value *params, bool help,
             }
             sqlite3_reset(stmt_txo);
             total_outputs++;
+            if (!indexlegacy_phase_b_row_written(phase_b_db,
+                    phase_b_own_txn, &batch_rows, "tx_outputs")) {
+                phase_b_ok = false;
+                goto phase_b_cleanup;
+            }
         }
     }
 
@@ -2016,6 +2165,11 @@ static bool rpc_indexlegacy(const struct json_value *params, bool help,
                 goto phase_b_cleanup;
             }
             joinsplits_indexed++;
+            if (!indexlegacy_phase_b_row_written(phase_b_db,
+                    phase_b_own_txn, &batch_rows, "joinsplits")) {
+                phase_b_ok = false;
+                goto phase_b_cleanup;
+            }
 
             /* Write both sprout nullifiers */
             for (int nf = 0; nf < 2; nf++) {
@@ -2029,6 +2183,12 @@ static bool rpc_indexlegacy(const struct json_value *params, bool help,
                     goto phase_b_cleanup;
                 }
                 sprout_nullifiers_indexed++;
+                if (!indexlegacy_phase_b_row_written(phase_b_db,
+                        phase_b_own_txn, &batch_rows,
+                        "sprout_nullifiers")) {
+                    phase_b_ok = false;
+                    goto phase_b_cleanup;
+                }
             }
         }
     }
@@ -2051,6 +2211,11 @@ static bool rpc_indexlegacy(const struct json_value *params, bool help,
                 goto phase_b_cleanup;
             }
             sapling_spends_indexed++;
+            if (!indexlegacy_phase_b_row_written(phase_b_db,
+                    phase_b_own_txn, &batch_rows, "sapling_spends")) {
+                phase_b_ok = false;
+                goto phase_b_cleanup;
+            }
         }
     }
 
@@ -2071,6 +2236,11 @@ static bool rpc_indexlegacy(const struct json_value *params, bool help,
                 goto phase_b_cleanup;
             }
             sapling_outputs_indexed++;
+            if (!indexlegacy_phase_b_row_written(phase_b_db,
+                    phase_b_own_txn, &batch_rows, "sapling_outputs")) {
+                phase_b_ok = false;
+                goto phase_b_cleanup;
+            }
         }
     }
 
@@ -2090,6 +2260,11 @@ static bool rpc_indexlegacy(const struct json_value *params, bool help,
                 goto phase_b_cleanup;
             }
             op_returns_indexed++;
+            if (!indexlegacy_phase_b_row_written(phase_b_db,
+                    phase_b_own_txn, &batch_rows, "op_returns")) {
+                phase_b_ok = false;
+                goto phase_b_cleanup;
+            }
         }
     }
 
@@ -2179,6 +2354,11 @@ static bool rpc_indexlegacy(const struct json_value *params, bool help,
             phase_b_ok = false;
             goto phase_b_cleanup;
         }
+        if (!indexlegacy_phase_b_row_written(phase_b_db, phase_b_own_txn,
+                &batch_rows, "view_integrity")) {
+            phase_b_ok = false;
+            goto phase_b_cleanup;
+        }
     }
 
     if (phase_b_own_txn &&
@@ -2230,6 +2410,8 @@ phase_b_cleanup:
     }
     if (!phase_b_ok) {
         LOG_FAIL("blockchain", "indexlegacy: Phase B failed and rolled back");
+        free(locs);
+        return true;
     }
 
     int64_t write_time = (int64_t)time(NULL) - t_write;
@@ -2574,10 +2756,10 @@ void rpc_blockchain_maybe_commit(int32_t height,
     if (height <= 0 || height % MMR_COMMITMENT_INTERVAL != 0)
         return;
 
-    /* Skip commitment during assume-valid IBD — the MMR will be built
-     * from scratch once we pass assume-valid height. */
-    extern int g_assume_valid_height;
-    if (g_assume_valid_height >= 0 && height <= g_assume_valid_height)
+    /* Skip commitment during deferred proof validation IBD — the MMR will be built
+     * from scratch once we pass deferred proof validation height. */
+    extern int g_deferred_proof_validation_below_height;
+    if (g_deferred_proof_validation_below_height >= 0 && height <= g_deferred_proof_validation_below_height)
         return;
 
     if (!g_commitment_mmr_initialized) {
@@ -2680,7 +2862,7 @@ static bool rpc_getutxoaudit(const struct json_value *params, bool help,
     RPC_HELP(help, result,
         "getutxoaudit [remote_sha3] [remote_height] [source]\n"
         "\nComputes the local SHA3 UTXO commitment and optionally compares it\n"
-        "to a trusted peer commitment. A mismatch is advisory: it emits an\n"
+        "to a peer-supplied commitment. A mismatch is advisory: it emits an\n"
         "event and sets node_state['utxo_drift_detected']; it never wipes.\n");
 
     if (!ctx->node_db || !ctx->node_db->open) {
@@ -2693,7 +2875,7 @@ static bool rpc_getutxoaudit(const struct json_value *params, bool help,
     rpc_params_expect(&p, 0, 3);
     const char *remote_sha3 = rpc_permit_str(&p, 0, "remote_sha3", NULL);
     int64_t remote_height = rpc_permit_int(&p, 1, "remote_height", 0);
-    const char *source = rpc_permit_str(&p, 2, "source", "trusted-peer");
+    const char *source = rpc_permit_str(&p, 2, "source", "peer-commitment");
     if (rpc_params_invalid(&p)) {
         rpc_params_error(&p, result);
         LOG_FAIL("blockchain", "getutxoaudit: invalid params");

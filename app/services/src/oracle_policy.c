@@ -37,7 +37,7 @@ static struct {
 
     int    window_secs;
     int    halt_distinct_heights;
-    int    trust_prefix_end_height;
+    int    evidence_prefix_end_height;
 
     struct op_record ring[OP_RING_SIZE];
     int    ring_head;                /* next slot to write */
@@ -53,7 +53,7 @@ static struct {
     .lock = PTHREAD_MUTEX_INITIALIZER,
 };
 
-static int op_compute_trust_prefix_end(void)
+static int op_compute_evidence_prefix_end(void)
 {
     /* The compile-time SHA3 windows cover heights
      *   [0 .. g_sha3_windows_count * SHA3_WINDOW_SIZE - 1].
@@ -75,10 +75,10 @@ void oracle_policy_init(const struct oracle_policy_config *cfg)
     g_op.halt_distinct_heights =
         (cfg && cfg->halt_distinct_heights > 0)
             ? cfg->halt_distinct_heights : 3;
-    g_op.trust_prefix_end_height =
-        (cfg && cfg->trust_prefix_end_height > 0)
-            ? cfg->trust_prefix_end_height
-            : op_compute_trust_prefix_end();
+    g_op.evidence_prefix_end_height =
+        (cfg && cfg->evidence_prefix_end_height > 0)
+            ? cfg->evidence_prefix_end_height
+            : op_compute_evidence_prefix_end();
     g_op.ring_head = 0;
     g_op.ring_count = 0;
     g_op.initialized = true;
@@ -136,7 +136,7 @@ void oracle_policy_record_disagreement(int height,
     g_op.ring_head = (g_op.ring_head + 1) % OP_RING_SIZE;
     if (g_op.ring_count < OP_RING_SIZE) g_op.ring_count++;
 
-    prefix_end = g_op.trust_prefix_end_height;
+    prefix_end = g_op.evidence_prefix_end_height;
     distinct = op_count_distinct_live(now);
 
     /* Find first/last height in live window for the event payload. */
@@ -239,7 +239,7 @@ bool oracle_policy_dump_state_json(struct json_value *out, const char *key)
     int ring_count = g_op.ring_count;
     int window_secs = g_op.window_secs;
     int halt_thresh = g_op.halt_distinct_heights;
-    int prefix_end  = g_op.trust_prefix_end_height;
+    int prefix_end  = g_op.evidence_prefix_end_height;
     pthread_mutex_unlock(&g_op.lock);
 
     json_push_kv_str(out, "state", op_state_name(s));
@@ -248,7 +248,7 @@ bool oracle_policy_dump_state_json(struct json_value *out, const char *key)
     json_push_kv_int(out, "distinct_heights_in_window", distinct);
     json_push_kv_int(out, "window_secs", window_secs);
     json_push_kv_int(out, "halt_threshold", halt_thresh);
-    json_push_kv_int(out, "trust_prefix_end_height", prefix_end);
+    json_push_kv_int(out, "evidence_prefix_end_height", prefix_end);
     json_push_kv_int(out, "total_disagree",
                      atomic_load(&g_op.total_disagree));
     json_push_kv_int(out, "total_halts",

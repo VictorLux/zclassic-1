@@ -14,8 +14,9 @@
  *      LevelDB via WriteBatch (one fsync at end).
  *   5. Bulk-import legacy chainstate UTXOs into our coins.db using
  *      coins_view_sqlite_bulk_insert (5000-record batches).
- *   6. Read legacy chainstate's 'B' key → set coins_tip best_block =
- *      that hash. Save fingerprint so subsequent boots skip phase 2.
+ *   6. Read legacy chainstate's 'B' key and persist it as a pending
+ *      cold-import anchor. Boot resolves that anchor through CSR after
+ *      the block index is loaded; this function never publishes a tip.
  *
  * After this runs, the normal boot path takes over:
  *   - block_index_loader reads our LevelDB into the in-memory block_map.
@@ -42,9 +43,9 @@
 #include <stdint.h>
 
 struct main_state;
-struct coins_view_cache;
 struct coins_view_sqlite;
 struct block_tree_db;
+struct node_db;
 
 struct lci_cold_result {
     int      legacy_tip;        /* max height observed in legacy blocks/index */
@@ -52,7 +53,7 @@ struct lci_cold_result {
     int64_t  utxos_imported;
     int64_t  blk_files_linked;
     double   total_secs;
-    bool     trust_armed;       /* SHA3 spot-check passed */
+    bool     evidence_armed;       /* SHA3 spot-check passed */
     bool     ok;
 };
 
@@ -62,8 +63,8 @@ struct lci_cold_result {
  * threshold) — designed for empty-or-near-empty datadirs. */
 bool legacy_cold_import_blocking(
     struct main_state *ms,
-    struct coins_view_cache *coins_tip,
     struct coins_view_sqlite *cvs,
+    struct node_db *ndb,
     struct block_tree_db *btdb,
     const char *our_datadir,
     const char *legacy_datadir,

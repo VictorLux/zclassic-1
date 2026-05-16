@@ -7,6 +7,7 @@
 #include "net/net.h"
 #include "net/netaddr.h"
 #include "validation/chainstate.h"
+#include "validation/sync_evidence_policy.h"
 #include "core/arith_uint256.h"
 #include "chain/chain.h"
 #include <stdlib.h>
@@ -17,7 +18,10 @@
 static int g_getheaders_log_count = 0;
 static bool g_block_file_scan_triggered = false;
 
-bool syncsvc_begin_peer_sync(struct p2p_node *node)
+bool syncsvc_should_begin_peer_sync(const struct p2p_node *node,
+                                    int our_height,
+                                    int best_header_height,
+                                    enum sync_state sync_state)
 {
     if (!node)
         LOG_FAIL("header_sync", "begin_peer_sync: null node");
@@ -25,6 +29,54 @@ bool syncsvc_begin_peer_sync(struct p2p_node *node)
      * return false silently. This is expected on every tick for every
      * inbound peer, not an error worth logging. */
     if (node->inbound || node->state != PEER_ACTIVE)
+        return false;
+
+    if (node->starting_height > our_height)
+        return true;
+    if (best_header_height > our_height + 1)
+        return true;
+    if (node->starting_height >= 0)
+        return false;
+
+    if (sync_state == SYNC_AT_TIP)
+        return false;
+
+    if (sync_state == SYNC_HEADERS_DOWNLOAD ||
+        sync_state == SYNC_BLOCKS_DOWNLOAD ||
+        sync_state == SYNC_CONNECTING_BLOCKS ||
+        sync_state == SYNC_REORG ||
+        sync_state == SYNC_REORG_RECOVERY)
+        return true;
+
+    if ((sync_state == SYNC_IDLE || sync_state == SYNC_FINDING_PEERS) &&
+        (our_height <= 0 || node->starting_height < 0))
+        return true;
+
+    return false;
+}
+
+bool syncsvc_should_mark_peer_caught_up(const struct p2p_node *node,
+                                        int our_height,
+                                        int best_header_height)
+{
+    if (!node)
+        return false;
+    if (node->state != PEER_SYNCING_HEADERS &&
+        node->state != PEER_SYNCING_BLOCKS)
+        return false;
+    if (best_header_height > our_height + 1)
+        return false;
+    if (node->starting_height > our_height)
+        return false;
+    return true;
+}
+
+bool syncsvc_begin_peer_sync(struct p2p_node *node,
+                             int our_height,
+                             int best_header_height)
+{
+    if (!syncsvc_should_begin_peer_sync(node, our_height, best_header_height,
+                                       sync_get_state()))
         return false;
 
     peer_set_state_checked((uint32_t)node->id, &node->state,
@@ -270,7 +322,7 @@ bool syncsvc_is_initial_block_download(const struct p2p_node *node,
  * entirely. A co-located zclassicd on the same machine is unspoofable
  * by definition — the throttle exists to protect against remote peers
  * that return short header batches as a slow-loris vector. There's no
- * trust delta vs the existing model. With ZClassic's MAX_HEADERS_RESULTS
+     * evidence downgrade vs the existing model. With ZClassic's MAX_HEADERS_RESULTS
  * of 160, a 14K-block catch-up via P2P getheaders takes ~88 rounds —
  * keeping the loopback peer at base interval (1-5 s) lets that finish
  * in ~minutes instead of stalling on the 32× cap.
@@ -466,6 +518,14 @@ bool syncsvc_should_activate_after_header_processing(
     return plan->should_activate_chain;
 }
 
+bool syncsvc_should_release_snapshot_anchor(
+    const struct block_index *anchor,
+    const struct block_index *header_tip)
+{
+    return anchor && header_tip &&
+           header_tip->nHeight >= anchor->nHeight + zcl_finality_depth();
+}
+
 bool syncsvc_should_begin_blocks_download(enum sync_state sync_state,
                                           const struct block_index *candidate,
                                           int our_height)
@@ -500,8 +560,8 @@ bool syncsvc_headers_chain_from_tip(const struct block_index *candidate,
     /* After snapshot sync, the chain walks back to the snapshot anchor
      * (pprev=NULL at high height). If the walk stopped at a verified
      * anchor (non-null last_valid with NULL pprev above our_height),
-     * accept this as a valid chain root. The anchor was verified by
-     * FlyClient + SHA3 and represents a trusted chain point. */
+     * accept this as a valid chain root. The anchor has FlyClient + SHA3
+     * evidence and represents a verified chain point. */
     struct block_index *anchor = snapsync_get_anchor();
     if (!verify && anchor && last_valid) {
         const struct block_index *check = last_valid;

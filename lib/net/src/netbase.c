@@ -210,18 +210,18 @@ bool connect_socket_directly(const struct net_service *addr,
             int nRet = select(sock + 1, NULL, &fdset, NULL, &tv);
             if (nRet <= 0) {
                 close_socket(&sock);
-                LOG_FAIL("net", "connect_socket_directly: select timeout/error (ret=%d, timeout=%dms)", nRet, timeout_ms);
+                return false;
             }
             int so_err = 0;
             socklen_t so_len = sizeof(so_err);
             if (getsockopt(sock, SOL_SOCKET, SO_ERROR, &so_err, &so_len) < 0 ||
                 so_err != 0) {
                 close_socket(&sock);
-                LOG_FAIL("net", "connect_socket_directly: connect failed after select (so_err=%d)", so_err);
+                return false;
             }
         } else {
             close_socket(&sock);
-            LOG_FAIL("net", "connect_socket_directly: connect failed (errno=%d)", err);
+            return false;
         }
     }
 

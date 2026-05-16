@@ -8,6 +8,7 @@
 #include "config/boot.h"
 #include "services/node_health_service.h"
 #include "services/bg_validation_service.h"
+#include "services/block_index_integrity.h"
 #include "event/event.h"
 #include "json/json.h"
 #include "rpc/server.h"
@@ -75,6 +76,20 @@ static bool rpc_syncstate(const struct json_value *params, bool help,
                       atomic_load(&g_utxo_replay_active));
     json_push_kv_int(result, "utxo_replay_height",
                      (int64_t)atomic_load(&g_utxo_replay_height));
+
+    struct bii_recovery_status bii;
+    bii_get_recovery_status(&bii);
+    struct json_value bi = {0};
+    json_set_object(&bi);
+    json_push_kv_str(&bi, "verdict", bii_verdict_name(bii.verdict));
+    json_push_kv_str(&bi, "action", bii_recovery_action_name(bii.action));
+    json_push_kv_bool(&bi, "degraded", bii.degraded);
+    json_push_kv_bool(&bi, "unsafe_override", bii.unsafe_override);
+    json_push_kv_int(&bi, "last_check_unix", bii.unix_time);
+    if (bii.reason[0])
+        json_push_kv_str(&bi, "reason", bii.reason);
+    json_push_kv(result, "block_index_integrity", &bi);
+    json_free(&bi);
     return true;
 }
 
@@ -113,6 +128,11 @@ static bool rpc_healthcheck(const struct json_value *params, bool help,
         json_push_kv_str(&checks, "onion_address", health.onion_address);
     if (health.degraded_reason[0])
         json_push_kv_str(&checks, "degraded_reason", health.degraded_reason);
+    struct bii_recovery_status bii;
+    bii_get_recovery_status(&bii);
+    if (bii.degraded)
+        json_push_kv_str(&checks, "block_index_integrity",
+                         bii_recovery_action_name(bii.action));
     json_push_kv_int(&checks, "memory_rss_mb", health.memory_rss_mb);
     json_push_kv_int(&checks, "uptime_seconds", health.uptime_seconds);
 

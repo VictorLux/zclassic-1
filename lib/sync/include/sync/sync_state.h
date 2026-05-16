@@ -56,7 +56,7 @@ enum snapshot_sync_state {
     SNAPSYNC_NEGOTIATING,      /* received offer, solving PoW */
     SNAPSYNC_RECEIVING,        /* streaming chunks from peer */
     SNAPSYNC_VERIFYING,        /* SHA3 + MMB root verification */
-    SNAPSYNC_COMPLETE,         /* verified, coins_best_block set */
+    SNAPSYNC_COMPLETE,         /* verified UTXOs; tip publication is CSR-gated */
     SNAPSYNC_FAILED,           /* verification failed, UTXOs wiped */
     SNAPSYNC_NUM_STATES
 };

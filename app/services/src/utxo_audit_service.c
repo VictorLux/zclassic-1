@@ -86,7 +86,7 @@ bool utxo_audit_compare_remote(struct node_db *ndb,
 
     snprintf(out->remote_sha3, sizeof(out->remote_sha3), "%s", remote_sha3);
     snprintf(out->source, sizeof(out->source), "%s",
-             source && source[0] ? source : "trusted-peer");
+             source && source[0] ? source : "peer-commitment");
     out->remote_height = remote_height;
 
     out->drift_detected = strcmp(out->local_sha3, out->remote_sha3) != 0;

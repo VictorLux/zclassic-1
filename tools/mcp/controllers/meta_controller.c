@@ -531,7 +531,8 @@ static int h_zcl_consensus_report(const struct mcp_request *req,
 static size_t embed_or_null(const char *body, char *dst, size_t cap)
 {
     if (cap == 0) return 0;
-    if (!body || strncmp(body, "{\"error\":", 9) == 0) {
+    if (!body || strncmp(body, "{\"error\":", 9) == 0 ||
+        strstr(body, "\"error\":{") != NULL) {
         if (cap < 5) return 0;
         memcpy(dst, "null", 4);
         return 4;

@@ -4,6 +4,7 @@
 
 #include "config/boot_internal.h"
 #include "services/chain_activation_controller.h"
+#include "services/chain_state_repository.h"
 #include "services/chain_tip.h"
 #include "services/gap_fill_service.h"
 #include "services/rolling_anchor_service.h"
@@ -15,6 +16,7 @@
 #include "chain/mmr.h"
 #include "chain/mmb.h"
 #include "chain/subsidy.h"
+#include "core/uint256.h"
 #include "coins/coins_view.h"
 #include "controllers/blockchain_controller.h"
 #include "controllers/diagnostics_controller.h"
@@ -42,9 +44,13 @@
 #include "controllers/messaging_controller.h"
 #include "controllers/swap_controller.h"
 #include "rpc/httpserver.h"
+#include "rpc/legacy_chain_oracle.h"
 #include "rpc/server.h"
+#include "json/json.h"
 #include "net/https_server.h"
 #include "net/fast_sync.h"
+#include <limits.h>
+#include "net/onion_service.h"
 #include "net/peer_strategy.h"
 #include "net/tor_integration.h"
 #include "validation/process_block.h"
@@ -78,7 +84,7 @@ extern void msg_version_set_external_ip(const char *ip_str, uint16_t port);
 #include "services/db_maintenance.h"
 #include "mcp/metrics.h"
 
-extern int g_assume_valid_height;
+extern int g_deferred_proof_validation_below_height;
 
 /* Module-local pointer to boot context (set once by app_init_services) */
 static struct boot_svc_ctx *S;
@@ -114,10 +120,569 @@ static struct wallet *boot_wallet(void)
     return runtime->wallet;
 }
 
+static bool boot_profile_has_explorer(const struct app_context *ctx)
+{
+    if (!ctx)
+        return true;
+    return app_runtime_profile_has_explorer(ctx->runtime_profile);
+}
+
+static bool boot_profile_has_store(const struct app_context *ctx)
+{
+    if (!ctx)
+        return true;
+    return app_runtime_profile_has_store(ctx->runtime_profile);
+}
+
+static bool boot_profile_has_onion(const struct app_context *ctx)
+{
+    return ctx && app_runtime_profile_has_onion(ctx->runtime_profile,
+                                                ctx->tor);
+}
+
+static bool boot_profile_has_file_service(const struct app_context *ctx)
+{
+    if (!ctx)
+        return true;
+    return app_runtime_profile_has_file_service(ctx->runtime_profile);
+}
+
 static void *payment_processor_thread(void *arg);
 static void *background_utxo_replay(void *arg);
 static void *build_snapshot_offer_thread(void *arg);
 static void *address_backfill_service_thread(void *arg);
+static size_t onion_request_adapter(const char *method, const char *path,
+                                    const uint8_t *body, size_t body_len,
+                                    uint8_t *response, size_t response_max,
+                                    void *user_data);
+static bool boot_start_payment_service(struct boot_svc_ctx *svc);
+static void boot_join_payment_service(struct boot_svc_ctx *svc);
+
+static bool boot_mempool_limits_start(void *ctx)
+{
+    struct boot_svc_ctx *svc = ctx;
+    if (!svc || !svc->mempool)
+        return false;
+
+    struct mempool_limits_config ml_cfg;
+    mempool_limits_config_defaults(&ml_cfg);
+    if (!mempool_limits_start(svc->mempool, &ml_cfg))
+        return false;
+
+    printf("Mempool limits started (max=%lldMB max_tx=%lld)\n",
+           (long long)(ml_cfg.max_bytes >> 20),
+           (long long)ml_cfg.max_tx_count);
+    return true;
+}
+
+static void boot_mempool_limits_stop(void *ctx)
+{
+    (void)ctx;
+    mempool_limits_stop();
+}
+
+static bool boot_connman_start(void *ctx)
+{
+    struct boot_svc_ctx *svc = ctx;
+    return svc && svc->connman && connman_start(svc->connman);
+}
+
+static void boot_connman_stop(void *ctx)
+{
+    struct boot_svc_ctx *svc = ctx;
+    if (svc && svc->connman)
+        connman_signal_stop(svc->connman);
+}
+
+static bool boot_bg_validation_start(void *ctx)
+{
+    struct boot_svc_ctx *svc = ctx;
+    if (!svc || !svc->app_ctx)
+        return false;
+    bg_validation_init(&svc->bg_validation, svc->state, svc->node_db,
+                       svc->datadir, svc->params);
+    g_bg_validation = &svc->bg_validation;
+    if (svc->app_ctx->no_bg_validation) {
+        printf("[bg-valid] Disabled via -nobgvalidation\n");
+        return true;
+    }
+    if (bg_validation_start(&svc->bg_validation)) {
+        printf("[bg-valid] Started background full validation\n");
+    } else {
+        printf("[bg-valid] Deferred - already complete or chain not ready\n");
+    }
+    return true;
+}
+
+static void boot_bg_validation_stop(void *ctx)
+{
+    struct boot_svc_ctx *svc = ctx;
+    if (svc)
+        bg_validation_stop(&svc->bg_validation);
+}
+
+static bool boot_bg_hash_verify_start(void *ctx)
+{
+    struct boot_svc_ctx *svc = ctx;
+    if (!svc || !svc->app_ctx)
+        return false;
+    bg_hash_verify_init(&svc->bg_hash_verify, svc->state, svc->node_db,
+                        svc->datadir, svc->params);
+    if (svc->app_ctx->no_bg_validation) {
+        printf("[bg-hash] Disabled via -nobgvalidation\n");
+        return true;
+    }
+    if (bg_hash_verify_start(&svc->bg_hash_verify)) {
+        printf("[bg-hash] Started background hash verification\n");
+    } else {
+        printf("[bg-hash] Deferred - already complete or chain not ready\n");
+    }
+    return true;
+}
+
+static void boot_bg_hash_verify_stop(void *ctx)
+{
+    struct boot_svc_ctx *svc = ctx;
+    if (svc)
+        bg_hash_verify_stop(&svc->bg_hash_verify);
+}
+
+static bool boot_sync_watchdog_start(void *ctx)
+{
+    struct boot_svc_ctx *svc = ctx;
+    if (!svc)
+        return false;
+    return sync_watchdog_start(svc->connman, msg_get_download_mgr(),
+                               svc->state);
+}
+
+static void boot_sync_watchdog_stop(void *ctx)
+{
+    (void)ctx;
+    sync_watchdog_stop();
+}
+
+static bool boot_gap_fill_start(void *ctx)
+{
+    struct boot_svc_ctx *svc = ctx;
+    if (!svc)
+        return false;
+    if (gap_fill_start(svc->state, msg_get_download_mgr())) {
+        printf("[gap-fill] background gap-fill service started\n");
+        return true;
+    }
+    fprintf(stderr, "WARNING: gap_fill_start failed\n");
+    return false;
+}
+
+static void boot_gap_fill_stop(void *ctx)
+{
+    (void)ctx;
+    gap_fill_stop();
+}
+
+static bool boot_zclassicd_oracle_start(void *ctx)
+{
+    (void)ctx;
+    if (zclassicd_oracle_start())
+        printf("[oracle] zclassicd oracle service started\n");
+    return true;
+}
+
+static void boot_zclassicd_oracle_stop(void *ctx)
+{
+    (void)ctx;
+    zclassicd_oracle_stop();
+}
+
+static bool boot_rolling_anchor_start(void *ctx)
+{
+    struct boot_svc_ctx *svc = ctx;
+    if (!svc)
+        return false;
+    if (rolling_anchor_start(svc->state, svc->datadir))
+        printf("[rolling-anchor] periodic tick registered\n");
+    return true;
+}
+
+static void boot_rolling_anchor_stop(void *ctx)
+{
+    (void)ctx;
+    rolling_anchor_stop();
+}
+
+static bool boot_file_service_start(void *ctx)
+{
+    struct boot_svc_ctx *svc = ctx;
+    if (!svc || !svc->app_ctx || !boot_profile_has_file_service(svc->app_ctx))
+        return true;
+    if (svc->defer_offer_service) {
+        printf("File service server deferred during fresh bootstrap receiver mode\n");
+        return true;
+    }
+    fs_server_start(svc->datadir, (uint16_t)svc->app_ctx->fs_port);
+    return true;
+}
+
+static void boot_file_service_stop(void *ctx)
+{
+    (void)ctx;
+    fs_server_stop();
+}
+
+static bool boot_rpc_http_start(void *ctx)
+{
+    struct boot_svc_ctx *svc = ctx;
+    if (!svc || !svc->app_ctx)
+        return false;
+    set_rpc_warmup_finished();
+    rpc_http_start(svc->rpc_table, (uint16_t)svc->app_ctx->rpc_port,
+                   svc->app_ctx->rpc_user, svc->app_ctx->rpc_password,
+                   svc->datadir);
+    return true;
+}
+
+static void boot_rpc_http_stop(void *ctx)
+{
+    (void)ctx;
+    rpc_http_stop();
+}
+
+static void boot_configure_frontend_rpc(struct boot_svc_ctx *svc)
+{
+    if (!svc || !svc->app_ctx)
+        return;
+
+    char cookie_path[1024], cookie[256] = "";
+    snprintf(cookie_path, sizeof(cookie_path), "%s/.cookie", svc->datadir);
+    FILE *cf = fopen(cookie_path, "r");
+    if (cf) {
+        size_t n = fread(cookie, 1, sizeof(cookie) - 1, cf);
+        fclose(cf);
+        cookie[n] = '\0';
+        char *nl = strchr(cookie, '\n');
+        if (nl)
+            *nl = '\0';
+        char *colon = strchr(cookie, ':');
+        if (colon) {
+            *colon = '\0';
+            api_set_rpc_backend(cookie, colon + 1, svc->app_ctx->rpc_port);
+            explorer_set_rpc(cookie, colon + 1, svc->app_ctx->rpc_port);
+            return;
+        }
+    }
+
+    if (svc->app_ctx->rpc_user && svc->app_ctx->rpc_password) {
+        api_set_rpc_backend(svc->app_ctx->rpc_user,
+                            svc->app_ctx->rpc_password,
+                            svc->app_ctx->rpc_port);
+        explorer_set_rpc(svc->app_ctx->rpc_user,
+                         svc->app_ctx->rpc_password,
+                         svc->app_ctx->rpc_port);
+        return;
+    }
+
+    api_set_rpc_backend(NULL, NULL, svc->app_ctx->rpc_port);
+    explorer_set_rpc(NULL, NULL, svc->app_ctx->rpc_port);
+}
+
+static bool boot_api_cache_start(void *ctx)
+{
+    struct boot_svc_ctx *svc = ctx;
+    if (!svc || !svc->app_ctx || !boot_profile_has_explorer(svc->app_ctx))
+        return true;
+
+    int chain_tip_h = active_chain_height(&svc->state->chain_active);
+    int best_header = svc->state->pindex_best_header ?
+        svc->state->pindex_best_header->nHeight : chain_tip_h;
+    if (best_header - chain_tip_h > 1000) {
+        printf("API cache refresh deferred during IBD "
+               "(chain=%d, headers=%d, behind=%d)\n",
+               chain_tip_h, best_header, best_header - chain_tip_h);
+        return true;
+    }
+
+    boot_configure_frontend_rpc(svc);
+    api_start_cache();
+    return true;
+}
+
+static void boot_api_cache_stop(void *ctx)
+{
+    (void)ctx;
+    api_stop_cache();
+}
+
+static bool boot_https_explorer_start(void *ctx)
+{
+    struct boot_svc_ctx *svc = ctx;
+    if (!svc || !svc->app_ctx || !boot_profile_has_explorer(svc->app_ctx))
+        return true;
+
+    char cert_path[1024], key_path[1024];
+    snprintf(cert_path, sizeof(cert_path), "%s/ssl/fullchain.pem",
+             svc->datadir);
+    snprintf(key_path, sizeof(key_path), "%s/ssl/privkey.pem",
+             svc->datadir);
+    if (access(cert_path, R_OK) != 0 || access(key_path, R_OK) != 0) {
+        printf("HTTPS: no cert at %s - block explorer not on clearnet\n",
+               cert_path);
+        return true;
+    }
+
+    boot_configure_frontend_rpc(svc);
+
+    int chain_tip_h = active_chain_height(&svc->state->chain_active);
+    int best_header = svc->state->pindex_best_header ?
+        svc->state->pindex_best_header->nHeight : chain_tip_h;
+    bool near_tip = (best_header - chain_tip_h < 1000) &&
+                    (chain_tip_h > g_deferred_proof_validation_below_height - 10000);
+    if (near_tip) {
+        https_server_start_on_port(cert_path, key_path, "zclnet.net",
+                                   svc->app_ctx->https_port,
+                                   svc->app_ctx->https_port - 363);
+    } else {
+        printf("HTTPS: deferred during IBD (chain=%d, headers=%d, "
+               "behind=%d). Will start when near tip.\n",
+               chain_tip_h, best_header, best_header - chain_tip_h);
+        static char s_cert[1024], s_key[1024];
+        strncpy(s_cert, cert_path, sizeof(s_cert) - 1);
+        strncpy(s_key, key_path, sizeof(s_key) - 1);
+        extern void https_deferred_set(const char *cert, const char *key);
+        https_deferred_set(s_cert, s_key);
+    }
+    return true;
+}
+
+static void boot_https_explorer_stop(void *ctx)
+{
+    (void)ctx;
+    https_server_stop();
+}
+
+static bool boot_miner_start(void *ctx)
+{
+    struct boot_svc_ctx *svc = ctx;
+    const struct app_context *app = svc ? svc->app_ctx : NULL;
+    if (!svc || !app || !app->gen)
+        return true;
+
+    svc->gen->ms = svc->state;
+    svc->gen->coins_tip = svc->coins_tip;
+    svc->gen->mempool = svc->mempool;
+    svc->gen->params = svc->params;
+    svc->gen->datadir = svc->datadir;
+    svc->gen->num_threads = app->gen_threads > 0 ? app->gen_threads : 1;
+    svc->gen->coinbase_script.size = 0;
+
+    if (app->miner_address) {
+        size_t pk_pfx_len, sc_pfx_len;
+        const unsigned char *pk_pfx = chain_params_base58_prefix(
+            svc->params, B58_PUBKEY_ADDRESS, &pk_pfx_len);
+        const unsigned char *sc_pfx = chain_params_base58_prefix(
+            svc->params, B58_SCRIPT_ADDRESS, &sc_pfx_len);
+        struct tx_destination dest;
+        if (decode_destination(app->miner_address, pk_pfx, pk_pfx_len,
+                               sc_pfx, sc_pfx_len, &dest))
+            script_for_destination(&svc->gen->coinbase_script, &dest);
+    }
+
+    gen_start(svc->gen);
+    return true;
+}
+
+static void boot_miner_stop(void *ctx)
+{
+    struct boot_svc_ctx *svc = ctx;
+    if (svc && svc->gen && svc->gen->running)
+        gen_stop(svc->gen);
+}
+
+static bool boot_onion_tor_start(void *ctx)
+{
+    struct boot_svc_ctx *svc = ctx;
+    if (!svc || !svc->app_ctx)
+        return false;
+
+    char onion_dir[512];
+    snprintf(onion_dir, sizeof(onion_dir), "%s/onion-keys", svc->datadir);
+    struct stat onion_st;
+    bool has_onion_keys = (stat(onion_dir, &onion_st) == 0);
+
+    if (!boot_profile_has_onion(svc->app_ctx) && !has_onion_keys) {
+        printf("Tor: skipped (use -tor or -profile=onion-node to enable)\n");
+        return true;
+    }
+
+    onion_service_start(svc->datadir);
+    tor_integration_set_handler(onion_request_adapter, NULL);
+    printf("Starting embedded Tor...\n");
+    if (!tor_integration_start(svc->datadir,
+                               (uint16_t)svc->app_ctx->p2p_port)) {
+        fprintf(stderr, "Warning: Tor failed to start\n");
+    } else {
+        const char *onion = tor_integration_get_onion_address();
+        if (onion)
+            printf("Tor .onion address: %s\n", onion);
+        else
+            printf("Tor: bootstrapping...\n");
+    }
+    return true;
+}
+
+static void boot_onion_tor_stop(void *ctx)
+{
+    (void)ctx;
+    tor_integration_stop();
+    onion_service_stop();
+}
+
+static bool boot_store_payment_start(void *ctx)
+{
+    struct boot_svc_ctx *svc = ctx;
+    if (!svc || !svc->app_ctx || !boot_profile_has_store(svc->app_ctx))
+        return true;
+    if (svc->defer_payment_service) {
+        printf("Store payment processor deferred during bootstrap receiver mode\n");
+        return true;
+    }
+    if (!boot_start_payment_service(svc)) {
+        fprintf(stderr,
+                "WARNING: failed to start tracked payment processor thread\n");
+    }
+    return true;
+}
+
+static void boot_store_payment_stop(void *ctx)
+{
+    struct boot_svc_ctx *svc = ctx;
+    if (svc)
+        boot_join_payment_service(svc);
+}
+
+static bool boot_register_frontend_services(struct boot_svc_ctx *svc)
+{
+    const struct zcl_service_spec specs[] = {
+        {
+            .name = "file_service",
+            .start = boot_file_service_start,
+            .stop = boot_file_service_stop,
+            .ctx = svc,
+            .flags = ZCL_SERVICE_OPTIONAL,
+        },
+        {
+            .name = "rpc_http",
+            .start = boot_rpc_http_start,
+            .stop = boot_rpc_http_stop,
+            .ctx = svc,
+        },
+        {
+            .name = "api_cache",
+            .start = boot_api_cache_start,
+            .stop = boot_api_cache_stop,
+            .ctx = svc,
+            .flags = ZCL_SERVICE_OPTIONAL,
+        },
+        {
+            .name = "https_explorer",
+            .start = boot_https_explorer_start,
+            .stop = boot_https_explorer_stop,
+            .ctx = svc,
+            .flags = ZCL_SERVICE_OPTIONAL,
+        },
+        {
+            .name = "miner",
+            .start = boot_miner_start,
+            .stop = boot_miner_stop,
+            .ctx = svc,
+            .flags = ZCL_SERVICE_OPTIONAL,
+        },
+        {
+            .name = "onion_tor",
+            .start = boot_onion_tor_start,
+            .stop = boot_onion_tor_stop,
+            .ctx = svc,
+            .flags = ZCL_SERVICE_OPTIONAL,
+        },
+        {
+            .name = "store_payment",
+            .start = boot_store_payment_start,
+            .stop = boot_store_payment_stop,
+            .ctx = svc,
+            .flags = ZCL_SERVICE_OPTIONAL,
+        },
+    };
+
+    for (size_t i = 0; i < sizeof(specs) / sizeof(specs[0]); i++) {
+        if (!zcl_service_kernel_register(&svc->frontend_kernel, &specs[i]))
+            return false;
+    }
+    return true;
+}
+
+static bool boot_register_network_services(struct boot_svc_ctx *svc)
+{
+    const struct zcl_service_spec connman_spec = {
+        .name = "connman",
+        .start = boot_connman_start,
+        .stop = boot_connman_stop,
+        .ctx = svc,
+    };
+    return zcl_service_kernel_register(&svc->network_kernel, &connman_spec);
+}
+
+static bool boot_register_runtime_services(struct boot_svc_ctx *svc)
+{
+    const struct zcl_service_spec specs[] = {
+        {
+            .name = "bg_validation",
+            .start = boot_bg_validation_start,
+            .stop = boot_bg_validation_stop,
+            .ctx = svc,
+            .flags = ZCL_SERVICE_OPTIONAL,
+        },
+        {
+            .name = "bg_hash_verify",
+            .start = boot_bg_hash_verify_start,
+            .stop = boot_bg_hash_verify_stop,
+            .ctx = svc,
+            .flags = ZCL_SERVICE_OPTIONAL,
+        },
+        {
+            .name = "sync_watchdog",
+            .start = boot_sync_watchdog_start,
+            .stop = boot_sync_watchdog_stop,
+            .ctx = svc,
+        },
+        {
+            .name = "gap_fill",
+            .start = boot_gap_fill_start,
+            .stop = boot_gap_fill_stop,
+            .ctx = svc,
+            .flags = ZCL_SERVICE_OPTIONAL,
+        },
+        {
+            .name = "zclassicd_oracle",
+            .start = boot_zclassicd_oracle_start,
+            .stop = boot_zclassicd_oracle_stop,
+            .ctx = svc,
+            .flags = ZCL_SERVICE_OPTIONAL,
+        },
+        {
+            .name = "rolling_anchor",
+            .start = boot_rolling_anchor_start,
+            .stop = boot_rolling_anchor_stop,
+            .ctx = svc,
+            .flags = ZCL_SERVICE_OPTIONAL,
+        },
+    };
+
+    for (size_t i = 0; i < sizeof(specs) / sizeof(specs[0]); i++) {
+        if (!zcl_service_kernel_register(&svc->runtime_kernel, &specs[i]))
+            return false;
+    }
+    return true;
+}
 
 static bool boot_running(const struct boot_svc_ctx *svc)
 {
@@ -335,6 +900,82 @@ static void *address_backfill_service_thread(void *arg)
 /* ── Global MMB leaf store for FlyClient proofs ─────────────── */
 struct mmb_leaf_store g_mmb_leaf_store = {0};
 
+static bool boot_mmb_leaf_store_catchup_legacy(struct mmb_leaf_store *store,
+                                               int tip_height)
+{
+    if (!store || !store->open || tip_height < 0)
+        return false;
+
+    uint64_t target = (uint64_t)tip_height + 1;
+    if (store->num_leaves >= target)
+        return true;
+
+    uint64_t start = store->num_leaves;
+    for (uint64_t i = start; i < target; i++) {
+        struct mmb_leaf leaf;
+        uint8_t hash[32];
+
+        if (!legacy_chain_rpc_get_mmb_leaf((int)i, &leaf)) {
+            printf("[FlyClient] MMB leaf legacy catchup stopped at h=%llu\n",
+                   (unsigned long long)i);
+            break;
+        }
+        mmb_hash_leaf(&leaf, hash);
+        if (!mmb_leaf_store_append(store, hash)) {
+            printf("[FlyClient] MMB leaf append failed at h=%llu\n",
+                   (unsigned long long)i);
+            break;
+        }
+    }
+
+    if (!mmb_leaf_store_remap(store)) {
+        printf("[FlyClient] MMB leaf remap failed after legacy catchup\n");
+        return false;
+    }
+
+    printf("[FlyClient] MMB leaf store legacy catchup: %llu -> %llu/%llu\n",
+           (unsigned long long)start,
+           (unsigned long long)store->num_leaves,
+           (unsigned long long)target);
+    return store->num_leaves >= target;
+}
+
+static bool boot_mmb_leaf_store_repair_prefix_legacy(
+    struct mmb_leaf_store *store, uint64_t count)
+{
+    if (!store || !store->open || store->fd < 0 || count == 0)
+        return false;
+    if (count > store->num_leaves)
+        count = store->num_leaves;
+
+    for (uint64_t i = 0; i < count; i++) {
+        struct mmb_leaf leaf;
+        uint8_t hash[32];
+
+        if (!legacy_chain_rpc_get_mmb_leaf((int)i, &leaf)) {
+            printf("[FlyClient] MMB leaf prefix repair stopped at h=%llu\n",
+                   (unsigned long long)i);
+            return false;
+        }
+        mmb_hash_leaf(&leaf, hash);
+        ssize_t w = pwrite(store->fd, hash, sizeof(hash), (off_t)(i * 32));
+        if (w != (ssize_t)sizeof(hash)) {
+            printf("[FlyClient] MMB leaf prefix repair write failed at h=%llu\n",
+                   (unsigned long long)i);
+            return false;
+        }
+    }
+
+    if (!mmb_leaf_store_remap(store)) {
+        printf("[FlyClient] MMB leaf remap failed after prefix repair\n");
+        return false;
+    }
+
+    printf("[FlyClient] MMB leaf store prefix repaired: %llu leaves\n",
+           (unsigned long long)count);
+    return true;
+}
+
 /* ── Background UTXO replay ───────────────────────────────── */
 /* After file sync, replay blocks to build UTXO set in background.
  * Node serves data immediately; UTXO set builds while running. */
@@ -375,14 +1016,36 @@ static void *background_utxo_replay(void *arg)
                 struct block_index *snap_block = block_map_find(
                     &svc->state->map_block_index, &cb_hash);
                 if (snap_block && snap_block->nHeight > 0) {
-                    /* Set in-memory coins view best block */
-                    coins_view_cache_set_best_block(svc->coins_tip, &cb_hash);
-                    /* Advance active chain tip to snapshot height */
-                    chain_set_active_tip(svc->state, snap_block,
-                                          TIP_FROM_SNAPSHOT,
-                                          "utxo_replay_snapshot_restore");
-                    printf("UTXO replay: restored chain state from snapshot "
-                           "at h=%d\n", snap_block->nHeight);
+                    struct chain_state_rollback_authorization rollback_auth = {
+                        .source = CSR_ROLLBACK_SOURCE_SNAPSHOT,
+                        .decision = POLICY_ALLOW,
+                        .from_height = active_chain_height(
+                            &svc->state->chain_active),
+                        .to_height = snap_block->nHeight,
+                        .max_depth = INT64_MAX,
+                        .evidence_class = "snapshot_coins_best_block",
+                        .reason = "utxo_replay_snapshot_restore",
+                    };
+                    struct chain_state_commit commit = {
+                        .new_tip = snap_block,
+                        .new_coins_best = cb_hash,
+                        .expected_utxo_count = 0,
+                        .update_header_tip = false,
+                        .rollback_auth = &rollback_auth,
+                        .wallet_scan_height = -1,
+                        .reason = "utxo_replay_snapshot_restore",
+                    };
+                    enum csr_result rc = csr_commit_tip(csr_instance(),
+                                                        &commit);
+                    if (rc == CSR_OK) {
+                        printf("UTXO replay: restored chain state from snapshot "
+                               "at h=%d\n", snap_block->nHeight);
+                    } else {
+                        fprintf(stderr, // obs-ok:pre-existing-diagnostic
+                                "UTXO replay: csr rejected snapshot restore "
+                                "(%s) h=%d\n", csr_result_name(rc),
+                                snap_block->nHeight);
+                    }
                 } else if (!snap_block) {
                     printf("UTXO replay: coins_best_block not in index "
                            "(waiting for P2P headers)\n");
@@ -465,11 +1128,15 @@ static void *build_snapshot_offer_thread(void *arg)
 
     /* Export consensus snapshot for file service (no wallet data).
      * This runs first so new peers can get it immediately. */
-    printf("Exporting consensus snapshot (no wallet data)...\n");
-    if (file_export_consensus_snapshot(datadir)) {
-        file_controller_refresh_manifest();
-        fs_server_refresh_manifest();
-        printf("Consensus snapshot ready for file service\n");
+    bool file_service_enabled =
+        svc && boot_profile_has_file_service(svc->app_ctx);
+    if (file_service_enabled) {
+        printf("Exporting consensus snapshot (no wallet data)...\n");
+        if (file_export_consensus_snapshot(datadir)) {
+            file_controller_refresh_manifest();
+            fs_server_refresh_manifest();
+            printf("Consensus snapshot ready for file service\n");
+        }
     }
 
     printf("Building fast sync snapshot offer...\n");
@@ -489,13 +1156,17 @@ static void *build_snapshot_offer_thread(void *arg)
          * as mmb_prove() uses internally. */
         if (g_mmb_leaf_store.open && g_mmb_leaf_store.num_leaves > 0) {
             const uint8_t (*lh)[32] = mmb_leaf_store_all(&g_mmb_leaf_store);
-            /* Replay only up to snapshot height — the FlyClient
-             * challenge uses offer.height as chain_length, so the
-             * MMB root must match that exact leaf count. */
-            uint64_t replay_count = (uint64_t)offer.height;
-            if (replay_count > g_mmb_leaf_store.num_leaves)
-                replay_count = g_mmb_leaf_store.num_leaves;
-            if (lh && replay_count > 0) {
+            /* Replay through the snapshot anchor.  Heights are zero-based,
+             * so a snapshot at height H needs H+1 MMB leaves and a
+             * FlyClient chain_length of H+1. */
+            uint64_t replay_count = (uint64_t)offer.height + 1;
+            if (g_mmb_leaf_store.num_leaves < replay_count) {
+                printf("Fast sync: MMB leaf store short (%llu/%llu); "
+                       "snapshot offer unavailable\n",
+                       (unsigned long long)g_mmb_leaf_store.num_leaves,
+                       (unsigned long long)replay_count);
+                memset(offer.mmb_root, 0, 32);
+            } else if (lh && replay_count > 0) {
                 struct mmb replay;
                 mmb_init(&replay);
                 for (uint64_t i = 0; i < replay_count; i++)
@@ -533,35 +1204,52 @@ static void *build_snapshot_offer_thread(void *arg)
             }
         }
 
-        msg_processor_update_offer(&offer);
-        printf("Fast sync ready: h=%d, %llu UTXOs, MMB+MMR secured\n",
-               offer.height, (unsigned long long)offer.num_utxos);
+        bool have_mmb_root = false;
+        for (size_t i = 0; i < sizeof(offer.mmb_root); i++) {
+            if (offer.mmb_root[i] != 0) {
+                have_mmb_root = true;
+                break;
+            }
+        }
+        if (have_mmb_root) {
+            msg_processor_update_offer(&offer);
+            printf("Fast sync ready: h=%d, %llu UTXOs, MMB+MMR secured\n",
+                   offer.height, (unsigned long long)offer.num_utxos);
+        } else {
+            printf("Fast sync: snapshot offer withheld (MMB root unavailable)\n");
+        }
     } else {
         printf("Fast sync: no snapshot available yet\n");
     }
 
-    printf("Building chunk sync manifest...\n");
-    struct sync_manifest chunk_manifest;
-    memset(&chunk_manifest, 0, sizeof(chunk_manifest));
-    if (fast_sync_build_manifest(datadir, &chunk_manifest)) {
-        int32_t manifest_height = chunk_manifest.height;
-        uint32_t num_chunks = chunk_manifest.num_chunks;
-        uint64_t num_utxos = chunk_manifest.num_utxos;
-        msg_processor_publish_manifest(&chunk_manifest);
-        printf("Chunk manifest ready: h=%d, %u chunks (%llu UTXOs)\n",
-               manifest_height, num_chunks, (unsigned long long)num_utxos);
-    } else {
-        printf("Chunk manifest: not available yet\n");
+    if (file_service_enabled) {
+        printf("Building chunk sync manifest...\n");
+        struct sync_manifest chunk_manifest;
+        memset(&chunk_manifest, 0, sizeof(chunk_manifest));
+        if (fast_sync_build_manifest(datadir, &chunk_manifest)) {
+            int32_t manifest_height = chunk_manifest.height;
+            uint32_t num_chunks = chunk_manifest.num_chunks;
+            uint64_t num_utxos = chunk_manifest.num_utxos;
+            msg_processor_publish_manifest(&chunk_manifest);
+            printf("Chunk manifest ready: h=%d, %u chunks (%llu UTXOs)\n",
+                   manifest_height, num_chunks,
+                   (unsigned long long)num_utxos);
+        } else {
+            printf("Chunk manifest: not available yet\n");
+        }
     }
 
     int32_t tip_h = offer.height;
 
-    if (tip_h > BLOCKS_PER_PIECE) {
+    if (file_service_enabled && tip_h > BLOCKS_PER_PIECE) {
         printf("Building block piece manifest...\n");
         struct block_piece_manifest block_manifest;
         memset(&block_manifest, 0, sizeof(block_manifest));
-        if (block_piece_manifest_build(datadir, 1, tip_h,
-                                        &block_manifest)) {
+        if (block_piece_manifest_build_active_chain(&svc->state->chain_active,
+                                                    1, tip_h,
+                                                    &block_manifest) ||
+            block_piece_manifest_build(datadir, 1, tip_h,
+                                       &block_manifest)) {
             int32_t start_height = block_manifest.start_height;
             int32_t end_height = block_manifest.end_height;
             uint32_t num_pieces = block_manifest.num_pieces;
@@ -586,9 +1274,30 @@ bool app_init_services(struct app_context *ctx,
     node_db_sync_catchup_job_init(&svc->catchup_job);
     snapshot_tx_index_job_init(&svc->tx_index_job);
     snapsync_init(&svc->snapshot_sync, svc->node_db);
+    svc->app_ctx = ctx;
+    svc->params = params;
+    tx_mempool_init(svc->mempool, 1000);
+    zcl_service_kernel_init(&svc->service_kernel);
+    zcl_service_kernel_init(&svc->network_kernel);
+    zcl_service_kernel_init(&svc->runtime_kernel);
+    zcl_service_kernel_init(&svc->frontend_kernel);
     if (svc->db_service) {
-        db_service_attach(svc->db_service, svc->node_db);
-        db_service_start(svc->db_service);
+        const struct zcl_service_spec mempool_limits_spec = {
+            .name = "mempool_limits",
+            .start = boot_mempool_limits_start,
+            .stop = boot_mempool_limits_stop,
+            .ctx = svc,
+            .flags = ZCL_SERVICE_OPTIONAL,
+        };
+        if (!zcl_service_kernel_register(&svc->service_kernel,
+                                         &mempool_limits_spec)) {
+            fprintf(stderr, "FATAL: failed to register boot services\n");
+            return false;
+        }
+        if (!zcl_service_kernel_start_all(&svc->service_kernel)) {
+            fprintf(stderr, "FATAL: failed to start required boot services\n");
+            return false;
+        }
     }
     svc->runtime.db_service = svc->db_service;
     svc->runtime.snapshot_sync = &svc->snapshot_sync;
@@ -605,21 +1314,6 @@ bool app_init_services(struct app_context *ctx,
     event_observe_async(EV_TIP_UPDATED, boot_sync_state_logger, NULL);
     event_observe_async(EV_BLOCK_CONNECTED, boot_sync_state_logger, NULL);
     event_observe_async(EV_REORG_START, boot_sync_state_logger, NULL);
-
-    /* Initialize mempool */
-    tx_mempool_init(svc->mempool, 1000);
-
-    /* Mempool limits — enforce size caps, fee floors, expiry.
-     * Registers a post-add hook on tx_mempool so enforcement
-     * happens automatically — no call sites to change. */
-    {
-        struct mempool_limits_config ml_cfg;
-        mempool_limits_config_defaults(&ml_cfg);
-        if (mempool_limits_start(svc->mempool, &ml_cfg))
-            printf("Mempool limits started (max=%lldMB max_tx=%lld)\n",
-                   (long long)(ml_cfg.max_bytes >> 20),
-                   (long long)ml_cfg.max_tx_count);
-    }
 
     if (boot_node_db())
         node_db_sync_mempool_load(boot_node_db(), svc->mempool);
@@ -815,16 +1509,20 @@ bool app_init_services(struct app_context *ctx,
                 }
             }
 
-            /* Fall back to hardcoded seeds (skip in connect-only mode) */
+            /* Fall back to hardcoded seeds unless the operator requested
+             * connect-only mode. In connect-only mode, all bootstrap data
+             * must come from the explicit peer set; otherwise a local-only
+             * zclassic23-to-zclassic23 sync silently downloads from public
+             * file-service seeds before P2P snapshot has a chance to run. */
             const char *file_seeds[] = {
                 "74.50.74.102",
                 "205.209.104.118",
                 "140.174.189.3",
                 NULL
             };
-            /* File service seeds always active — even in connect-only mode,
-             * block data comes from file service, not P2P */
-            for (int round = 0; round < 3 && !file_sync_ok; round++) {
+            for (int round = 0;
+                 !ctx->connect_only && round < 3 && !file_sync_ok;
+                 round++) {
                 if (round > 0) {
                     printf("File sync: retrying in 10s (round %d/3)...\n",
                            round + 1);
@@ -932,7 +1630,7 @@ bool app_init_services(struct app_context *ctx,
                  * the snapshot height to tip. No full replay needed.
                  *
                  * If node.db was NOT received, fall back to full replay
-                 * in background (still fast with assumevalid). */
+                 * in background (still fast with deferproofvalidationbelow). */
                 bool has_utxo_snapshot = false;
                 if (svc->state->map_block_index.size > 1000) {
                     char db_check[576];
@@ -1033,7 +1731,8 @@ bool app_init_services(struct app_context *ctx,
     }
     skip_file_sync: ;
 
-    if (!connman_start(svc->connman)) {
+    if (!boot_register_network_services(svc) ||
+        !zcl_service_kernel_start_all(&svc->network_kernel)) {
         fprintf(stderr, "FATAL: failed to start P2P threads\n");
         return false;
     }
@@ -1068,10 +1767,18 @@ bool app_init_services(struct app_context *ctx,
                    (unsigned long long)mmb->num_leaves);
             mmb_leaf_store_rebuild(&g_mmb_leaf_store,
                                   &svc->state->chain_active);
-        } else {
-            printf("[FlyClient] MMB leaf store: %llu hashes ready\n",
-                   (unsigned long long)g_mmb_leaf_store.num_leaves);
         }
+        int tip_h = active_chain_height(&svc->state->chain_active);
+        if (tip_h >= 0 && g_mmb_leaf_store.num_leaves < (uint64_t)tip_h + 1) {
+            uint64_t repair_count = g_mmb_leaf_store.num_leaves < 2048
+                                        ? g_mmb_leaf_store.num_leaves
+                                        : 2048;
+            boot_mmb_leaf_store_repair_prefix_legacy(&g_mmb_leaf_store,
+                                                      repair_count);
+            boot_mmb_leaf_store_catchup_legacy(&g_mmb_leaf_store, tip_h);
+        }
+        printf("[FlyClient] MMB leaf store: %llu hashes ready\n",
+               (unsigned long long)g_mmb_leaf_store.num_leaves);
     }
 
     rpc_blockchain_commitment_mmr_init_from_state(boot_node_db());
@@ -1079,7 +1786,7 @@ bool app_init_services(struct app_context *ctx,
     /* Bootstrap commitment MMR if empty but chain is at height.
      * After legacy import, we have the UTXO set at tip but no
      * commitment history. Compute one commitment at current height
-     * as the starting trust anchor. Full history gets built during
+     * as the starting evidence anchor. Full history gets built during
      * reindexchainstate (full block replay). */
     {
         struct mmr *cm = rpc_blockchain_get_commitment_mmr();
@@ -1134,8 +1841,10 @@ bool app_init_services(struct app_context *ctx,
                                  NULL, svc->coins_tip, boot_node_db());
     register_chain_inspect_rpc_commands(svc->rpc_table);
 
-    explorer_set_state(svc->state, svc->mempool, svc->coins_tip,
-                        boot_node_db(), ctx->datadir);
+    if (boot_profile_has_explorer(ctx)) {
+        explorer_set_state(svc->state, svc->mempool, svc->coins_tip,
+                            boot_node_db(), ctx->datadir);
+    }
 
     api_set_state(svc->state, svc->mempool, svc->coins_tip,
                    boot_node_db(), ctx->datadir);
@@ -1174,12 +1883,16 @@ bool app_init_services(struct app_context *ctx,
     register_diagnostics_rpc_commands(svc->rpc_table);
 
     /* File transfer service — SHA3-verified chunk serving */
-    file_controller_init(ctx->datadir);
-    register_file_rpc_commands(svc->rpc_table);
+    if (boot_profile_has_file_service(ctx)) {
+        file_controller_init(ctx->datadir);
+        register_file_rpc_commands(svc->rpc_table);
+    }
 
     /* ZCL Market — crypto-incentivized file sharing */
-    rpc_market_set_state(boot_node_db());
-    register_market_rpc_commands(svc->rpc_table);
+    if (boot_profile_has_store(ctx)) {
+        rpc_market_set_state(boot_node_db());
+        register_market_rpc_commands(svc->rpc_table);
+    }
 
     /* ZCL Names — on-chain name registry */
     rpc_name_set_state(boot_node_db());
@@ -1199,14 +1912,6 @@ bool app_init_services(struct app_context *ctx,
      * data is already in memory from the recent file sync download.
      * The deferred scanner was causing crashes (SIGABRT from concurrent
      * block_index access) and isn't worth the complexity. */
-
-    /* Start file service server only once we have meaningful local chain data.
-     * Fresh bootstrap receivers are consumers first; serving can wait. */
-    if (svc->defer_offer_service) {
-        printf("File service server deferred during fresh bootstrap receiver mode\n");
-    } else {
-        fs_server_start(ctx->datadir, (uint16_t)ctx->fs_port);
-    }
 
     rpc_wallet_set_state(svc->wallet, svc->state, ctx->datadir, svc->wallet_sqlite,
                          svc->mempool, svc->connman);
@@ -1240,133 +1945,12 @@ bool app_init_services(struct app_context *ctx,
     /* Wave 26b: initialize metrics observers for Prometheus /metrics */
     mcp_metrics_init();
 
-    /* Start RPC HTTP server */
-    set_rpc_warmup_finished();
-    rpc_http_start(svc->rpc_table, (uint16_t)ctx->rpc_port,
-                    ctx->rpc_user, ctx->rpc_password, ctx->datadir);
+    boot_configure_frontend_rpc(svc);
 
-    /* Configure API + explorer RPC backends */
-    {
-        char cookie_path[1024], cookie[256] = "";
-        snprintf(cookie_path, sizeof(cookie_path), "%s/.cookie", ctx->datadir);
-        FILE *cf = fopen(cookie_path, "r");
-        if (cf) {
-            size_t n = fread(cookie, 1, sizeof(cookie) - 1, cf);
-            fclose(cf);
-            cookie[n] = '\0';
-            char *nl = strchr(cookie, '\n');
-            if (nl) *nl = '\0';
-            char *colon = strchr(cookie, ':');
-            if (colon) {
-                *colon = '\0';
-                api_set_rpc_backend(cookie, colon + 1, ctx->rpc_port);
-                explorer_set_rpc(cookie, colon + 1, ctx->rpc_port);
-            }
-        } else if (ctx->rpc_user && ctx->rpc_password) {
-            api_set_rpc_backend(ctx->rpc_user, ctx->rpc_password,
-                                ctx->rpc_port);
-            explorer_set_rpc(ctx->rpc_user, ctx->rpc_password,
-                             ctx->rpc_port);
-        }
-    }
-
-    {
-        int chain_tip_h = active_chain_height(&svc->state->chain_active);
-        int best_header = svc->state->pindex_best_header ?
-            svc->state->pindex_best_header->nHeight : chain_tip_h;
-        if (best_header - chain_tip_h > 1000) {
-            printf("API cache refresh deferred during IBD "
-                   "(chain=%d, headers=%d, behind=%d)\n",
-                   chain_tip_h, best_header, best_header - chain_tip_h);
-        } else {
-            api_start_cache();
-        }
-    }
-
-    /* Start HTTPS block explorer (deferred during IBD) */
-    {
-        char cert_path[1024], key_path[1024];
-        snprintf(cert_path, sizeof(cert_path), "%s/ssl/fullchain.pem",
-                 ctx->datadir);
-        snprintf(key_path, sizeof(key_path), "%s/ssl/privkey.pem",
-                 ctx->datadir);
-        if (access(cert_path, R_OK) == 0 && access(key_path, R_OK) == 0) {
-            int chain_tip_h = active_chain_height(&svc->state->chain_active);
-            int best_header = svc->state->pindex_best_header ?
-                svc->state->pindex_best_header->nHeight : chain_tip_h;
-            bool near_tip = (best_header - chain_tip_h < 1000) &&
-                            (chain_tip_h > g_assume_valid_height - 10000);
-            if (near_tip) {
-                https_server_start_on_port(cert_path, key_path, "zclnet.net",
-                                            ctx->https_port, ctx->https_port - 363);
-            } else {
-                printf("HTTPS: deferred during IBD (chain=%d, headers=%d, "
-                       "behind=%d). Will start when near tip.\n",
-                       chain_tip_h, best_header, best_header - chain_tip_h);
-                static char s_cert[1024], s_key[1024];
-                strncpy(s_cert, cert_path, sizeof(s_cert) - 1);
-                strncpy(s_key, key_path, sizeof(s_key) - 1);
-                extern void https_deferred_set(const char *cert, const char *key);
-                https_deferred_set(s_cert, s_key);
-            }
-        } else {
-            printf("HTTPS: no cert at %s — block explorer not on clearnet\n",
-                   cert_path);
-        }
-    }
-
-    /* Start miner if -gen */
-    if (ctx->gen) {
-        svc->gen->ms = svc->state;
-        svc->gen->coins_tip = svc->coins_tip;
-        svc->gen->mempool = svc->mempool;
-        svc->gen->params = params;
-        svc->gen->datadir = ctx->datadir;
-        svc->gen->num_threads = ctx->gen_threads > 0 ? ctx->gen_threads : 1;
-        svc->gen->coinbase_script.size = 0;
-
-        if (ctx->miner_address) {
-            size_t pk_pfx_len, sc_pfx_len;
-            const unsigned char *pk_pfx = chain_params_base58_prefix(
-                params, B58_PUBKEY_ADDRESS, &pk_pfx_len);
-            const unsigned char *sc_pfx = chain_params_base58_prefix(
-                params, B58_SCRIPT_ADDRESS, &sc_pfx_len);
-            struct tx_destination dest;
-            if (decode_destination(ctx->miner_address, pk_pfx, pk_pfx_len,
-                                   sc_pfx, sc_pfx_len, &dest))
-                script_for_destination(&svc->gen->coinbase_script, &dest);
-        }
-
-        gen_start(svc->gen);
-    }
-
-    /* Start embedded Tor only if explicitly requested (-tor flag)
-     * or if the node has a previous .onion key (returning node).
-     * Fresh nodes skip Tor to avoid SIGABRT from bad torrc configs.
-     * Clearnet P2P + file service works fine without Tor. */
-    {
-        char onion_dir[512];
-        snprintf(onion_dir, sizeof(onion_dir), "%s/onion-keys", ctx->datadir);
-        struct stat onion_st;
-        bool has_onion_keys = (stat(onion_dir, &onion_st) == 0);
-
-        if (ctx->tor || has_onion_keys) {
-            extern const char *onion_service_start(const char *);
-            onion_service_start(ctx->datadir);
-            tor_integration_set_handler(onion_request_adapter, NULL);
-            printf("Starting embedded Tor...\n");
-            if (!tor_integration_start(ctx->datadir, (uint16_t)ctx->p2p_port))
-                fprintf(stderr, "Warning: Tor failed to start\n");
-            else {
-                const char *onion = tor_integration_get_onion_address();
-                if (onion)
-                    printf("Tor .onion address: %s\n", onion);
-                else
-                    printf("Tor: bootstrapping...\n");
-            }
-        } else {
-            printf("Tor: skipped (use -tor to enable)\n");
-        }
+    if (!boot_register_frontend_services(svc) ||
+        !zcl_service_kernel_start_all(&svc->frontend_kernel)) {
+        fprintf(stderr, "FATAL: failed to start frontend services\n");
+        return false;
     }
 
     /* Discover peer reachability */
@@ -1394,16 +1978,6 @@ bool app_init_services(struct app_context *ctx,
         }
     }
 
-    /* Start store payment processor */
-    {
-        if (svc->defer_payment_service) {
-            printf("Store payment processor deferred during bootstrap receiver mode\n");
-        } else if (!boot_start_payment_service(svc)) {
-            fprintf(stderr,
-                    "WARNING: failed to start tracked payment processor thread\n");
-        }
-    }
-
     if (svc->want_address_backfill) {
         /* Re-enabled: SIGSEGV was caused by SQLite memory pressure from
          * a single massive GROUP BY over 1.3M UTXOs with 256MB mmap.
@@ -1424,68 +1998,12 @@ bool app_init_services(struct app_context *ctx,
         }
     }
 
-    /* Background full validation — verify every historical signature/proof
-     * in a low-priority thread after fast sync. Resumes across restarts.
-     * Skip with -nobgvalidation (FlyClient+SHA3 already provides ≥150-bit
-     * security for the chain binding; this is belt-and-suspenders). */
-    bg_validation_init(&svc->bg_validation, svc->state, svc->node_db,
-                       ctx->datadir, params);
-    g_bg_validation = &svc->bg_validation;
-    if (ctx->no_bg_validation) {
-        printf("[bg-valid] Disabled via -nobgvalidation\n");
-    } else if (bg_validation_start(&svc->bg_validation)) {
-        printf("[bg-valid] Started background full validation\n");
-    } else {
-        printf("[bg-valid] Deferred — already complete or chain not ready\n");
-    }
-
-    /* Background block hash verification — recomputes SHA256d from disk
-     * and compares against stored hashes. */
-    bg_hash_verify_init(&svc->bg_hash_verify, svc->state, svc->node_db,
-                        ctx->datadir, params);
-    if (ctx->no_bg_validation) {
-        printf("[bg-hash] Disabled via -nobgvalidation\n");
-    } else if (bg_hash_verify_start(&svc->bg_hash_verify)) {
-        printf("[bg-hash] Started background hash verification\n");
-    } else {
-        printf("[bg-hash] Deferred — already complete or chain not ready\n");
-    }
-
     atomic_store(svc->running, true);
 
-    /* Sync watchdog thread — must start AFTER atomic_store(running, true).
-     * Runs on its own 30s tick, independent of the msg loop (which was
-     * gated on peer id==0 and silently disabled once peer ids rotated
-     * past zero — left a node 22k blocks behind for >9h with
-     * checks_run=1). */
-    sync_watchdog_start(svc->connman,
-                        msg_get_download_mgr(),
-                        svc->state);
-
-    /* Gap-fill service — sequential block-gap filler. While tip <
-     * best_header, walks pprev from best_header and queues any
-     * blocks lacking BLOCK_HAVE_DATA. Fixes the "defer far-ahead
-     * live block" loop where only the far block was ever requested
-     * and the 2000+ intermediate blocks were never downloaded. */
-    if (gap_fill_start(svc->state, msg_get_download_mgr())) {
-        printf("[gap-fill] background gap-fill service started\n");
-    } else {
-        fprintf(stderr, "WARNING: gap_fill_start failed\n");
-    }
-
-    /* Zclassicd oracle — continuous height/hash spot-checks against
-     * the co-located legacy node when available. Pulls oracle_policy
-     * + quorum_oracle into the periodic loop via the on_tick
-     * callback. No-op when no zclassicd is reachable. */
-    if (zclassicd_oracle_start()) {
-        printf("[oracle] zclassicd oracle service started\n");
-    }
-
-    /* Rolling SHA3 anchor extension — every 60s, commit any new
-     * 1000-block windows past the compile-time prefix that have
-     * reached confirmation depth. Persists to <datadir>/sha3_windows_runtime.dat. */
-    if (rolling_anchor_start(svc->state, ctx->datadir)) {
-        printf("[rolling-anchor] periodic tick registered\n");
+    if (!boot_register_runtime_services(svc) ||
+        !zcl_service_kernel_start_all(&svc->runtime_kernel)) {
+        fprintf(stderr, "FATAL: failed to start runtime services\n");
+        return false;
     }
 
     {
@@ -1538,20 +2056,11 @@ bool app_init_services(struct app_context *ctx,
 
 static void shutdown_stop_frontend_services(struct boot_svc_ctx *svc)
 {
-    (void)svc;
-    tor_integration_stop();
-
-    if (svc->gen->running)
-        gen_stop(svc->gen);
-
-    rpc_http_stop();
-    fs_server_stop();
+    zcl_service_kernel_stop_all(&svc->frontend_kernel);
 }
 
 static void shutdown_persist_fast_restart_state(struct boot_svc_ctx *svc)
 {
-    boot_join_payment_service(svc);
-
     if (svc->state->map_block_index.size > 1000) {
         printf("Saving block index flat file (%zu entries)...\n",
                svc->state->map_block_index.size);
@@ -1567,7 +2076,7 @@ static void shutdown_quiesce_network_and_flush_coins(struct boot_svc_ctx *svc)
      * The message thread checks g_stop each iteration (~100ms). Any
      * in-flight activate_best_chain sees g_shutdown_requested and returns.
      * After signal_stop, no new block processing starts. */
-    connman_signal_stop(svc->connman);
+    zcl_service_kernel_stop_all(&svc->network_kernel);
     boot_join_replay_service(svc);
 
     /* Flush coins to SQLite. The message thread is finishing its current
@@ -1596,19 +2105,7 @@ static void shutdown_quiesce_network_and_flush_coins(struct boot_svc_ctx *svc)
 
 static void shutdown_persist_runtime_state(struct boot_svc_ctx *svc)
 {
-    /* Stop services wired from BOOT_QUEUE */
-    mempool_limits_stop();
-    wallet_backup_stop();
-    disk_monitor_stop();
-    ibd_throttle_stop();
-    db_maintenance_stop();
-
-    sync_watchdog_stop();
-    gap_fill_stop();
-    zclassicd_oracle_stop();
-    rolling_anchor_stop();
-    bg_validation_stop(&svc->bg_validation);
-    bg_hash_verify_stop(&svc->bg_hash_verify);
+    zcl_service_kernel_stop_all(&svc->runtime_kernel);
     boot_join_address_backfill_service(svc);
     boot_join_tx_index_service(svc);
     boot_join_offer_service(svc);
@@ -1638,13 +2135,17 @@ static void shutdown_persist_runtime_state(struct boot_svc_ctx *svc)
             fprintf(stderr, "[shutdown] WAL checkpoint failed\n");
         db_service_close_write(svc->db_service);
     }
-    if (svc->db_service)
-        db_service_stop(svc->db_service);
+    boot_stop_db_service_kernel();
+    zcl_service_kernel_stop_all(&svc->service_kernel);
 }
 
 static void shutdown_release_owned_resources(struct boot_svc_ctx *svc)
 {
     app_runtime_set_current(NULL);
+    zcl_service_kernel_reset(&svc->frontend_kernel);
+    zcl_service_kernel_reset(&svc->runtime_kernel);
+    zcl_service_kernel_reset(&svc->network_kernel);
+    zcl_service_kernel_reset(&svc->service_kernel);
     wallet_free(svc->wallet);
     tx_mempool_free(svc->mempool);
     main_state_free(svc->state);

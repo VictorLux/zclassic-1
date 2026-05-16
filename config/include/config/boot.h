@@ -9,6 +9,14 @@
 
 #include <stdbool.h>
 
+enum zcl_runtime_profile {
+    ZCL_RUNTIME_FULL = 0,
+    ZCL_RUNTIME_ZCLASSIC_ONLY,
+    ZCL_RUNTIME_EXPLORER,
+    ZCL_RUNTIME_ONION_NODE,
+    ZCL_RUNTIME_LEGACY_COMPAT
+};
+
 struct app_context {
     const char *datadir;
     const char *params_dir;
@@ -27,12 +35,13 @@ struct app_context {
     bool listen;
     bool tx_index;
     bool checkpoints_enabled;
+    enum zcl_runtime_profile runtime_profile;
     const char *import_legacy_dir;
     bool sapling_scan;
     const char *legacy_import_dir;
     /* -importfromlegacy=PATH : read-only ingest of a co-located zclassicd
      * datadir via local_chain_ingest (FS4). Validates every block against
-     * the hardcoded SHA3 windows + UTXO checkpoint instead of trusting
+     * the hardcoded SHA3 windows + UTXO checkpoint instead of accepting
      * the source. Doesn't require zclassicd to be stopped (read-only).
      * Different from -import-from= (legacy_import_dir above) which byte-
      * copies the entire datadir and needs zclassicd offline. */
@@ -64,18 +73,27 @@ struct app_context {
     bool reindex_chainstate;
     bool reimport_utxos;
     bool tor;
-    const char *assume_valid;  /* block hash: skip Groth16 at/below this height */
+    const char *defer_proof_validation_below;  /* block hash: defer Groth16 at/below this height */
     bool no_services;          /* skip P2P, RPC, Tor — boot only (speedrun) */
     const char *file_service_peer; /* -fileservice=addr : download from this peer */
     bool connect_only;         /* -connect= mode: only connect to addnodes, no seeds */
     bool no_file_sync;         /* -nofilesync : skip file service download, use P2P only */
     bool no_bg_validation;     /* -nobgvalidation : skip background proof verification */
+    bool no_legacy_auto_import;/* -nolegacyimport : do not auto-read ~/.zclassic */
     const char *external_ip;   /* -externalip=IP : advertise this address to peers */
     bool allow_degraded;       /* -allow-degraded : continue past failed post-restore integrity check
                                  * (default false → boot FATALs on broken chain state). */
 };
 
 void app_context_defaults(struct app_context *ctx);
+const char *app_runtime_profile_name(enum zcl_runtime_profile profile);
+bool app_runtime_profile_parse(const char *name,
+                               enum zcl_runtime_profile *out);
+bool app_runtime_profile_has_explorer(enum zcl_runtime_profile profile);
+bool app_runtime_profile_has_store(enum zcl_runtime_profile profile);
+bool app_runtime_profile_has_onion(enum zcl_runtime_profile profile,
+                                   bool tor_flag);
+bool app_runtime_profile_has_file_service(enum zcl_runtime_profile profile);
 
 bool app_init(struct app_context *ctx);
 void app_shutdown(void);

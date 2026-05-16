@@ -10,6 +10,7 @@
 #include "validation/main_state.h"
 #include "validation/chainstate.h"
 #include "chain/chain.h"
+#include "chain/pow.h"
 #include "primitives/block.h"
 #include "storage/disk_block_io.h"
 #include "services/snapshot_sync_service.h"
@@ -91,6 +92,94 @@ static const char *chain_restore_state_name(int s)
     return "UNKNOWN";
 }
 
+static bool chain_restore_commit_tip_via_csr(struct main_state *ms,
+                                             struct block_index *target,
+                                             bool update_header_tip,
+                                             const char *reason)
+{
+    if (!ms || !target || !target->phashBlock)
+        return false;
+
+    struct chain_state_rollback_authorization rollback_auth = {
+        .source = CSR_ROLLBACK_SOURCE_RESTORE,
+        .decision = POLICY_ALLOW,
+        .from_height = active_chain_height(&ms->chain_active),
+        .to_height = target->nHeight,
+        .max_depth = INT64_MAX,
+        .evidence_class = "restore_plan_verified",
+        .reason = reason ? reason : "chain_restore",
+    };
+    struct chain_state_commit commit = {
+        .new_tip             = target,
+        .new_coins_best      = *target->phashBlock,
+        .expected_utxo_count = 0,
+        .update_header_tip   = update_header_tip,
+        .rollback_auth       = &rollback_auth,
+        .wallet_scan_height  = -1,
+        .reason              = reason ? reason : "chain_restore",
+    };
+
+    struct chain_state_repository *csr = csr_instance();
+    enum csr_result rc = csr_commit_tip(csr, &commit);
+    if (rc == CSR_OK)
+        return true;
+
+#ifdef ZCL_TESTING
+    if (rc == CSR_REJECTED_NOT_INITIALIZED) {
+        chain_set_active_tip(ms, target, TIP_FROM_RESTORE,
+                             reason ? reason : "csr_uninit_fallback");
+        if (update_header_tip)
+            ms->pindex_best_header = target;
+        return true;
+    }
+#endif
+
+    fprintf(stderr, // obs-ok:pre-existing-diagnostic
+            "chain_restore: csr rejected tip commit (%s) reason=%s h=%d\n",
+            csr_result_name(rc), reason ? reason : "", target->nHeight);
+    return false;
+}
+
+static bool chain_restore_commit_header_via_csr(struct main_state *ms,
+                                                struct block_index *target,
+                                                const char *reason)
+{
+    if (!ms || !target || !target->phashBlock)
+        return false;
+
+    struct chain_state_rollback_authorization rollback_auth = {
+        .source = CSR_ROLLBACK_SOURCE_RESTORE,
+        .decision = POLICY_ALLOW,
+        .from_height = ms->pindex_best_header
+            ? ms->pindex_best_header->nHeight : -1,
+        .to_height = target->nHeight,
+        .max_depth = INT64_MAX,
+        .evidence_class = "restore_header_verified",
+        .reason = reason ? reason : "chain_restore.header",
+    };
+    struct chain_state_header_commit commit = {
+        .new_header_tip = target,
+        .rollback_auth = &rollback_auth,
+        .reason = reason ? reason : "chain_restore.header",
+    };
+
+    enum csr_result rc = csr_commit_header_tip(csr_instance(), &commit);
+    if (rc == CSR_OK)
+        return true;
+
+#ifdef ZCL_TESTING
+    if (rc == CSR_REJECTED_NOT_INITIALIZED) {
+        ms->pindex_best_header = target;
+        return true;
+    }
+#endif
+
+    fprintf(stderr, // obs-ok:pre-existing-diagnostic
+            "chain_restore: csr rejected header commit (%s) reason=%s h=%d\n",
+            csr_result_name(rc), reason ? reason : "", target->nHeight);
+    return false;
+}
+
 /* ── Anchor creation (shared implementation) ───────────────────── */
 
 struct block_index *chain_restore_create_anchor(
@@ -162,37 +251,10 @@ struct block_index *chain_restore_execute(
 
     /* Route the tip/header mutations through the chain_state_repository
      * so block_map, active_chain, coins_tip and pindex_best_header
-     * move atomically. The chain restore path is exactly the scenario
-     * that caused 2026-04-10: boot detected a "best hash" and shoved
-     * it into active_chain without cross-checking SQLite state. */
+     * move through the single concrete-state boundary. */
     if (plan->should_set_chain_tip && target->phashBlock) {
-        struct chain_state_commit commit = {
-            .new_tip             = target,
-            .new_coins_best      = *target->phashBlock,
-            .expected_utxo_count = 0,
-            .update_header_tip   = plan->should_set_best_header,
-            /* Chain restore is explicitly a "snap to where UTXOs
-             * actually live" operation, which can legitimately look
-             * like a backward move from csr's perspective. Bypass the
-             * orphan-rows guard; Phase 2 recovery_policy will gate
-             * this class of move via the operator-visible policy. */
-            .allow_rollback      = true,
-            .wallet_scan_height  = -1,
-            .reason              = "chain_restore.execute",
-        };
-
-        /* Wrap the CSR commit in a scoped db transaction when the
-         * singleton is wired to a real node_db. csr_commit_tip itself
-         * only mutates in-memory state today, but csr_validate_locked
-         * issues SQLite reads and any future write path here would be
-         * silently leak-prone without the scope. The scope also gives
-         * operators a BEGIN/COMMIT event pair bracketing the tip move,
-         * which is the single highest-signal event from the 2026-04-10
-         * incident. Unit-test paths that stub csr with a NULL ndb fall
-         * through to the legacy raw-setter branch below. */
         struct chain_state_repository *csr = csr_instance();
         struct node_db *cr_ndb = (csr && csr->initialized) ? csr->ndb : NULL;
-        enum csr_result rc;
 
         if (cr_ndb && cr_ndb->open) {
             DB_TXN_SCOPE(txn, cr_ndb, "chain_restore.execute");
@@ -201,40 +263,26 @@ struct block_index *chain_restore_execute(
                     "chain_restore: failed to open db_txn scope\n");
                 return NULL;
             }
-            rc = csr_commit_tip(csr, &commit);
-            if (rc != CSR_OK) {
+            if (!chain_restore_commit_tip_via_csr(
+                    ms, target, plan->should_set_best_header,
+                    "chain_restore.execute")) {
                 /* Scope auto-rollback fires on return. */
-                fprintf(stderr,
-                    "chain_restore: csr rejected tip commit (%s) h=%d\n",
-                    csr_result_name(rc), target->nHeight);
                 return NULL;
             }
             if (!db_txn_commit(txn))
                 return NULL;
-        } else {
-            rc = csr_commit_tip(csr, &commit);
-            if (rc != CSR_OK) {
-                if (rc == CSR_REJECTED_NOT_INITIALIZED) {
-                    /* Unit-test path: singleton was never wired. Keep
-                     * the legacy raw-setter behaviour so the existing
-                     * test_chain_restore_service suite continues to
-                     * exercise the end-to-end flow. */
-                    chain_set_active_tip(ms, target, TIP_FROM_RESTORE,
-                                          "csr_uninit_fallback");
-                    if (plan->should_set_best_header)
-                        ms->pindex_best_header = target;
-                } else {
-                    fprintf(stderr,
-                        "chain_restore: csr rejected tip commit (%s) h=%d\n",
-                        csr_result_name(rc), target->nHeight);
-                    return NULL;
-                }
-            }
+        } else if (!chain_restore_commit_tip_via_csr(
+                       ms, target, plan->should_set_best_header,
+                       "chain_restore.execute")) {
+            return NULL;
         }
     } else if (plan->should_set_best_header) {
         /* Extremely rare: plan asked for header-only update with no
          * chain tip change. Preserve legacy behaviour. */
-        ms->pindex_best_header = target;
+        if (!chain_restore_commit_header_via_csr(
+                ms, target, "chain_restore.header_only")) {
+            return NULL;
+        }
     }
 
     if (plan->should_set_snapshot_anchor)
@@ -510,8 +558,9 @@ int chain_restore_rebuild_active_chain(struct main_state *ms,
             printf("[chain-restore] installed live tip without full "
                    "active_chain walk: h=%d\n", tip_h);
         } else {
-            chain_set_active_tip(ms, tip, TIP_FROM_RESTORE,
-                                 "rebuild_active_chain_full");
+            if (!chain_restore_commit_tip_via_csr(
+                    ms, tip, false, "rebuild_active_chain_full"))
+                return 0;
         }
     }
 
@@ -538,20 +587,6 @@ int chain_restore_rebuild_active_chain(struct main_state *ms,
     /* If the pprev walk reached genesis, no residual work. */
     if (deepest == 0)
         return populated;
-
-    /* Live recovery can promote a real HAVE_DATA block near mainnet tip while
-     * its pprev path is still absent from the restored flat index. Filling
-     * millions of active_chain holes and building skip pointers inline keeps
-     * RPC/MCP dark during boot, which makes the node uncontrollable exactly
-     * when it needs operator feedback. Defer that full integrity repair for
-     * live-scale, anchor-shaped restores; the tip is already installed, so
-     * getblockcount and service control can come up while peers continue. */
-    if (tip_h > 1000000) {
-        printf("[chain-restore] deferred active_chain hole repair: "
-               "tip_h=%d deepest=%d populated=%d\n",
-               tip_h, deepest, populated);
-        return populated;
-    }
 
     /* Residual holes below `deepest` — post-anchor-restore shape, where
      * the synthetic tip has pprev=NULL so every slot 0..tip_h-1 is
@@ -680,7 +715,20 @@ int chain_restore_backfill_nbits_from_disk(struct main_state *ms,
         }
 
         if (blk.header.nBits != 0) {
+            p->nVersion = blk.header.nVersion;
+            p->hashMerkleRoot = blk.header.hashMerkleRoot;
+            p->hashFinalSaplingRoot = blk.header.hashFinalSaplingRoot;
+            p->nTime = blk.header.nTime;
             p->nBits = blk.header.nBits;
+            p->nNonce = blk.header.nNonce;
+            if (p->pprev) {
+                block_index_build_skip(p);
+                struct arith_uint256 proof = GetBlockProof(p);
+                arith_uint256_add(&p->nChainWork,
+                                  &p->pprev->nChainWork, &proof);
+            } else {
+                p->nChainWork = GetBlockProof(p);
+            }
             fixed++;
         }
         block_free(&blk);
@@ -890,11 +938,12 @@ static void chain_restore_quarantine_synthetic_tip(struct main_state *ms,
             (long long)tip->nChainTx, replacement->nHeight,
             new_hash[0] ? new_hash : "<null>");
 
-    chain_set_active_tip(ms, replacement, TIP_FROM_RESTORE,
-                         "quarantine_synthetic_tip");
-    if (ms->pindex_best_header == tip)
-        ms->pindex_best_header = replacement;
-
+    if (!chain_restore_commit_tip_via_csr(
+            ms, replacement, ms->pindex_best_header == tip,
+            "quarantine_synthetic_tip")) {
+        fprintf(stderr, // obs-ok:pre-existing-diagnostic
+                "[chain-restore] failed to quarantine synthetic tip via csr\n");
+    }
 }
 
 static void chain_restore_clear_resolved_anchor(struct main_state *ms,

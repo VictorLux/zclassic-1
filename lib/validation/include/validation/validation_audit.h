@@ -22,7 +22,7 @@
  * Post-import check   | no    | no    | no     | no      | SHA3  | no
  * ============================================================================
  *
- * * = skipped below g_assume_valid_height (set after fast sync, cleared
+ * * = skipped below g_deferred_proof_validation_below_height (set after fast sync, cleared
  *     when bg_validation completes full chain verification)
  *
  * ── HASH ALGORITHMS USED ──────────────────────────────────────────────
@@ -96,8 +96,8 @@
  *
  * Method 3 — Full P2P Sync (~7 hours):
  *   Headers → blocks → connect_block (sequential UTXO build)
- *   Scripts/sigs skipped below assume-valid (h=3,054,000)
- *   Full validation above assume-valid
+ *   Scripts/sigs skipped below deferred proof validation (h=3,054,000)
+ *   Full validation above deferred proof validation
  *   File: app/services/src/block_sync_service.c
  *   File: lib/validation/src/process_block.c
  *

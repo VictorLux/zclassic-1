@@ -359,6 +359,9 @@ bool connman_pick_next_outbound_target(
         }
     }
 
+    if (g_connect_only)
+        return false;
+
     if (!addrman_select(&cm->manager.addrman, false, result))
         return false;
 
@@ -438,7 +441,7 @@ static void *thread_open_connections(void *arg)
          * a tight mesh of power nodes that find each other quickly. */
         bool tried_zcl23 = false;
         struct node_db *ndb = app_runtime_node_db();
-        if (ndb && (GetRand(2) == 0)) {
+        if (!g_connect_only && ndb && (GetRand(2) == 0)) {
             struct db_peer zcl_peers[8];
             int nzcl = db_peer_fast_zcl23(ndb, zcl_peers, 8);
             if (nzcl > 0) {
@@ -751,7 +754,10 @@ static void *thread_socket_handler(void *arg)
         /* Periodic peer stats (every 60s) */
         {
             static int64_t last_peer_log = 0;
+            static int64_t first_peer_log = 0;
             int64_t now_log = GetTime();
+            if (first_peer_log == 0)
+                first_peer_log = now_log;
             if (now_log - last_peer_log >= 60) {
                 last_peer_log = now_log;
                 size_t in = 0, out = 0, connected = 0;
@@ -761,7 +767,8 @@ static void *thread_socket_handler(void *arg)
                     if (p->inbound) in++; else out++;
                     if (p->state >= PEER_HANDSHAKE_COMPLETE) connected++;
                 }
-                if (out == 0 && cm->manager.num_nodes > 0)
+                if (out == 0 && cm->manager.num_nodes > 0 &&
+                    now_log - first_peer_log >= 60)
                     printf("WARNING: 0 outbound peers (%zu inbound) "
                            "— cannot sync\n", in);
                 else if (cm->manager.num_nodes > 0)
@@ -1008,8 +1015,12 @@ bool connman_run_message_cycle(struct connman *cm)
          * dead socket. */
         if (node->disconnect) continue;
 
-        if (node->recv_msg_count > 0 &&
-            cm->manager.signals.process_messages) {
+        bool has_recv_messages = false;
+        zcl_mutex_lock(&node->cs_recv);
+        has_recv_messages = node->recv_msg_count > 0;
+        zcl_mutex_unlock(&node->cs_recv);
+
+        if (has_recv_messages && cm->manager.signals.process_messages) {
             cm->manager.signals.process_messages(
                 cm->manager.signals.ctx, node);
             did_work = true;

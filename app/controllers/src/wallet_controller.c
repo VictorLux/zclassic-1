@@ -208,7 +208,7 @@ static bool rpc_getwalletinfo(const struct json_value *params, bool help,
 
     /* Persistence health block (plan §6). Aggregates the canary
      * status + a live count query so operators and tooling can see
-     * at a glance whether the wallet storage is trustworthy.
+     * at a glance whether the wallet storage is healthy.
      *
      *   healthy = open && canary_ok && !mismatch
      *

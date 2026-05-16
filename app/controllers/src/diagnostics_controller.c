@@ -25,11 +25,13 @@
 
 #include "validation/main_state.h"
 #include "validation/chainstate.h"
+#include "validation/contextual_check_tx.h"
 #include "chain/chain.h"
 #include "core/uint256.h"
 #include "core/arith_uint256.h"
 #include "json/json.h"
 #include "rpc/server.h"
+#include "controllers/explorer_internal.h"
 #include "controllers/strong_params.h"
 #include "services/sync_watchdog_service.h"
 #include "services/chain_restore_service.h"
@@ -39,6 +41,8 @@
 #include "services/oracle_policy.h"
 #include "services/quorum_oracle_service.h"
 #include "services/rolling_anchor_service.h"
+#include "services/block_index_integrity.h"
+#include "services/chain_evidence_controller.h"
 #include "health/heartbeat.h"
 #include "models/database.h"
 #include "config/runtime.h"
@@ -146,6 +150,24 @@ static bool block_index_dump_state_json(struct json_value *out, const char *key)
     if (!out) return false;
     struct block_index *bi = find_block_index_by_key(g_diag.main_state, key);
     json_set_object(out);
+    {
+        struct bii_recovery_status status;
+        struct json_value integrity = {0};
+        bii_get_recovery_status(&status);
+        json_set_object(&integrity);
+        json_push_kv_str(&integrity, "verdict",
+                         bii_verdict_name(status.verdict));
+        json_push_kv_str(&integrity, "action",
+                         bii_recovery_action_name(status.action));
+        json_push_kv_bool(&integrity, "degraded", status.degraded);
+        json_push_kv_bool(&integrity, "unsafe_override",
+                          status.unsafe_override);
+        json_push_kv_int(&integrity, "last_check_unix", status.unix_time);
+        if (status.reason[0])
+            json_push_kv_str(&integrity, "reason", status.reason);
+        json_push_kv(out, "integrity", &integrity);
+        json_free(&integrity);
+    }
     if (!bi) {
         json_push_kv_bool(out, "found", false);
         json_push_kv_str(out, "key", key ? key : "");
@@ -200,6 +222,100 @@ static bool block_index_dump_state_json(struct json_value *out, const char *key)
     return true;
 }
 
+static void push_evidence_record_json(struct json_value *out, const char *key,
+                                      const struct chain_evidence_record *e)
+{
+    struct json_value obj = {0};
+    json_set_object(&obj);
+    json_push_kv_bool(&obj, "header_ancestry_linked",
+                      e && e->header_ancestry_linked);
+    json_push_kv_bool(&obj, "chainwork_recomputed",
+                      e && e->chainwork_recomputed);
+    json_push_kv_bool(&obj, "nakamoto_selected_best_work",
+                      e && e->nakamoto_selected_best_work);
+    json_push_kv_bool(&obj, "block_bytes_hash_checked",
+                      e && e->block_bytes_hash_checked);
+    json_push_kv_bool(&obj, "utxo_sha3_verified",
+                      e && e->utxo_sha3_verified);
+    json_push_kv_bool(&obj, "mmb_flyclient_proof_verified",
+                      e && e->mmb_flyclient_proof_verified);
+    json_push_kv_bool(&obj, "chunk_hash_coverage_verified",
+                      e && e->chunk_hash_coverage_verified);
+    json_push_kv_bool(&obj, "full_validation_complete",
+                      e && e->full_validation_complete);
+    json_push_kv(out, key, &obj);
+    json_free(&obj);
+}
+
+static void push_explorer_index_state_json(struct json_value *out,
+                                           struct node_db *ndb)
+{
+    struct json_value obj = {0};
+
+    json_set_object(&obj);
+    if (!ndb || !ndb->open || !ndb->db) {
+        json_push_kv_str(&obj, "state", "unknown");
+        json_push_kv_str(&obj, "reason", "database unavailable");
+        json_push_kv(out, "explorer_index_state", &obj);
+        json_free(&obj);
+        return;
+    }
+
+    struct explorer_history_validation v;
+    int64_t height = sql_query_i64(ndb->db,
+        "SELECT COALESCE(MAX(height),0) FROM blocks");
+    explorer_validate_block_history(ndb->db, height, &v);
+    json_push_kv_str(&obj, "state", v.usable ? "complete" : "degraded");
+    json_push_kv_str(&obj, "reason", v.reason);
+    json_push_kv_int(&obj, "height", v.max_height);
+    json_push_kv_int(&obj, "blocks", v.block_rows);
+    json_push_kv_int(&obj, "transactions", v.tx_rows);
+    json_push_kv_int(&obj, "tx_outputs", v.tx_output_rows);
+    json_push_kv_int(&obj, "integrity_receipts", v.integrity_rows);
+    json_push_kv(out, "explorer_index_state", &obj);
+    json_free(&obj);
+}
+
+static bool chain_evidence_controller_dump_state_json(struct json_value *out,
+                                           const char *key)
+{
+    (void)key;
+    struct chain_evidence_controller authority;
+    struct chain_evidence_controller_view view;
+
+    chain_evidence_controller_init(&authority, app_runtime_node_db(), csr_instance());
+    chain_evidence_controller_snapshot(&authority, &view);
+
+    json_push_kv_str(out, "sync_state",
+                     chain_evidence_controller_state_name(view.state));
+    json_push_kv_int(out, "active_tip",
+                     (int64_t)view.active_tip_height);
+    json_push_kv_int(out, "header_tip",
+                     (int64_t)view.header_tip_height);
+    json_push_kv_int(out, "snapshot_anchor",
+                     (int64_t)view.snapshot_anchor_height);
+    json_push_kv_int(out, "utxo_max_height",
+                     (int64_t)view.utxo_max_height);
+    json_push_kv_int(out, "coins_best_block_height",
+                     (int64_t)view.coins_best_block_height);
+    push_evidence_record_json(out, "block_index_evidence_state",
+                              &view.block_index_evidence_state);
+    push_evidence_record_json(out, "active_tip_evidence",
+                              &view.active_tip_evidence);
+    push_evidence_record_json(out, "snapshot_evidence",
+                              &view.snapshot_evidence);
+    push_evidence_record_json(out, "header_chain_evidence",
+                              &view.header_chain_evidence);
+    json_push_kv_int(out, "deferred_proof_validation_below",
+                     (int64_t)g_deferred_proof_validation_below_height);
+    json_push_kv_int(out, "background_validation_height",
+                     (int64_t)view.background_validation_height);
+    json_push_kv_str(out, "contradiction_reason",
+                     view.contradiction_reason);
+    push_explorer_index_state_json(out, app_runtime_node_db());
+    return true;
+}
+
 /* ── RPC: dumpstate <subsystem> [key] ────────────────────────────── */
 
 typedef bool (*dump_fn)(struct json_value *out, const char *key);
@@ -213,6 +329,8 @@ struct dump_entry {
 static const struct dump_entry g_dumpers[] = {
     { "watchdog",    sync_watchdog_dump_state_json,
                      "sync watchdog status + stats" },
+    { "chain_evidence_controller", chain_evidence_controller_dump_state_json,
+                     "native chain evidence controller: tips, snapshot anchor, evidence, contradiction reason" },
     { "boot",        chain_restore_dump_state_json,
                      "last boot's integrity check + nbits-backfill counters" },
     { "block_index", block_index_dump_state_json,

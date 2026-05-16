@@ -110,7 +110,7 @@ PID=$!
 
 # Watch for:
 #   [legacy_direct_import] SHA3 spotcheck: K=3 ... 3 OKs
-#   [legacy_direct_import] trust-mode armed (assume_valid=...)
+#   [legacy_direct_import] evidence-mode armed (defer_proof_validation_below=...)
 #   [legacy_direct_import] applied=... rate=>=100 bps
 #   [legacy_direct_import] wallet rescan complete: ... in ...
 

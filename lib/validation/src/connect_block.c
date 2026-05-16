@@ -108,11 +108,11 @@ bool connect_block(const struct block *block,
     bool expensive_checks = true;
     if (checkpoint_covers(&params->checkpointData, pindex->nHeight))
         expensive_checks = false;
-    if (g_assume_valid_height >= 0 && pindex->nHeight <= g_assume_valid_height)
+    if (g_deferred_proof_validation_below_height >= 0 && pindex->nHeight <= g_deferred_proof_validation_below_height)
         expensive_checks = false;
 
     /* Re-validate block. Merkle root is always checked (cheap SHA256d
-     * over txids — catches data corruption even below assume-valid).
+     * over txids — catches data corruption even below deferred proof validation).
      * PoW and size limits gated by expensive_checks. */
     if (!check_block(block, state, params, expensive_checks,
                      !just_check, true))
@@ -210,12 +210,12 @@ bool connect_block(const struct block *block,
     }
 
     /* ── BIP30: no overwriting unspent transactions ─────────── *
-     * Skip below assume-valid: when re-connecting blocks on top of an
+     * Skip below deferred proof validation: when re-connecting blocks on top of an
      * imported UTXO snapshot, the coinbase outputs already exist in the
      * UTXO set. These blocks were validated by zclassicd — BIP30 is
      * redundant and would false-positive on the imported coinbases. */
-    bool skip_bip30 = (g_assume_valid_height >= 0 &&
-                       pindex->nHeight <= g_assume_valid_height);
+    bool skip_bip30 = (g_deferred_proof_validation_below_height >= 0 &&
+                       pindex->nHeight <= g_deferred_proof_validation_below_height);
     for (size_t i = 0; !skip_bip30 && i < block->num_vtx; i++) {
         if (coins_view_cache_have_coins(view, &block->vtx[i].hash)) {
             struct coins existing;

@@ -6,9 +6,13 @@
  * binary). Our forked Tor (RhettCreighton/tor, dynhost branch) routes
  * .onion requests directly into our process via C function calls.
  *
- * NO SOCKS. NO EXTRA PORTS. NO TCP LISTENERS.
- * Dynhost replaces SOCKS entirely. Requests arrive as C callbacks,
- * not TCP connections. The torrc always contains "SocksPort 0".
+ * Dynhost replaces SOCKS for zclassic23 traffic. Requests arrive as C
+ * callbacks, not through a SOCKS proxy or app-owned TCP listener.
+ *
+ * Current Tor bootstrap workaround: torrc opens a localhost-only SocksPort
+ * that nothing in zclassic23 connects to. It exists only because the embedded
+ * Tor fork currently refuses to bootstrap with no listener. Once dynhost can
+ * satisfy that bootstrap check directly, torrc should move to SocksPort 0.
  *
  * Usage:
  *   tor_integration_set_handler(my_handler, my_ctx);
@@ -43,7 +47,8 @@ typedef size_t (*tor_request_handler_fn)(const char *method,
 void tor_integration_set_handler(tor_request_handler_fn handler, void *ctx);
 
 /* Start embedded Tor with dynhost. Creates .onion address.
- * No ports are opened — dynhost handles everything via C calls. */
+ * zclassic23 traffic is handled via C callbacks; see tor_write_torrc() for
+ * the temporary localhost-only Tor bootstrap listener. */
 bool tor_integration_start(const char *datadir, uint16_t p2p_port);
 
 /* Stop Tor. */

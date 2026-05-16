@@ -22,7 +22,7 @@
  *
  * Uses a thread pool for parallel script verification within each block.
  * Saves progress to SQLite every 1000 blocks for crash-resume.
- * Resets g_assume_valid_height = -1 when complete.
+ * Resets g_deferred_proof_validation_below_height = -1 when complete.
  */
 
 #include "services/bg_validation_service.h"
@@ -557,7 +557,7 @@ static void *bg_validation_thread(void *arg)
     int64_t total_sigs = 0;
     int64_t total_proofs = 0;
 
-    /* T3.3: precompute trust-prefix bounds. Inside the prefix, the
+    /* T3.3: precompute evidence-prefix bounds. Inside the prefix, the
      * compile-time SHA3 windows bind the block bytes (which include
      * the Equihash solution + Merkle root + every tx). A bit-flip
      * anywhere in those heights would have failed phase 1's window
@@ -565,20 +565,20 @@ static void *bg_validation_thread(void *arg)
      * redundant work. We still do everything for heights past the
      * prefix. */
     const bool prefix_verified =
-        local_chain_ingest_trust_prefix_verified();
+        local_chain_ingest_evidence_prefix_verified();
     /* The effective prefix end is the union of compile-time + runtime
      * (T3.1) windows. Falls back to the compile-time end when no
      * runtime anchors are loaded. */
     int prefix_end_h = rolling_anchor_effective_prefix_end_height();
     if (prefix_end_h < 0)
-        prefix_end_h = local_chain_ingest_trust_prefix_end_height();
+        prefix_end_h = local_chain_ingest_evidence_prefix_end_height();
     if (prefix_verified && prefix_end_h > 0) {
         fprintf(stderr,
-                "[bg-valid] T3.3: trust prefix verified up to h=%d — "
+                "[bg-valid] T3.3: evidence prefix verified up to h=%d — "
                 "skipping crypto reverify for those heights\n",
                 prefix_end_h);
     }
-    int64_t skipped_by_trust_prefix = 0;
+    int64_t skipped_by_evidence_prefix = 0;
 
     for (int h = start_height; h <= chain_height; h++) {
         if (atomic_load(&svc->stop_requested))
@@ -603,11 +603,11 @@ static void *bg_validation_thread(void *arg)
             continue;
         }
 
-        /* T3.3: heights inside the verified trust prefix don't need
+        /* T3.3: heights inside the verified evidence prefix don't need
          * proof reverification. Still update progress so the operator
          * can see we're walking the prefix. */
         if (prefix_verified && h <= prefix_end_h) {
-            skipped_by_trust_prefix++;
+            skipped_by_evidence_prefix++;
             atomic_store(&svc->progress.verified_height, h);
             if (h % SAVE_INTERVAL == 0)
                 save_progress(svc->ndb, h);
@@ -675,16 +675,16 @@ static void *bg_validation_thread(void *arg)
         atomic_store(&svc->progress.verified_height, chain_height);
         atomic_store(&svc->progress.state, BG_VALIDATION_COMPLETE);
 
-        /* Reset assume_valid — node has now fully verified everything */
-        g_assume_valid_height = -1;
+        /* Reset defer_proof_validation_below — node has now fully verified everything */
+        g_deferred_proof_validation_below_height = -1;
 
         int64_t total_time = (int64_t)time(NULL) - t_start;
         printf("[bg-valid] COMPLETE: %d blocks, %lld sigs, %lld proofs "
-               "in %lldm%llds (trust-prefix-skipped=%lld)\n",
+               "in %lldm%llds (evidence-prefix-skipped=%lld)\n",
                chain_height - start_height + 1,
                (long long)total_sigs, (long long)total_proofs,
                (long long)(total_time / 60), (long long)(total_time % 60),
-               (long long)skipped_by_trust_prefix);
+               (long long)skipped_by_evidence_prefix);
         event_emitf(EV_SYNC_STATE_CHANGE, 0,
                     "bg_validation complete height=%d sigs=%lld proofs=%lld "
                     "time=%llds",
@@ -761,7 +761,7 @@ bool bg_validation_start(struct bg_validation_service *svc)
         atomic_store(&svc->progress.state, BG_VALIDATION_COMPLETE);
         atomic_store(&svc->progress.verified_height, saved);
         atomic_store(&svc->progress.chain_height, chain_h);
-        g_assume_valid_height = -1;
+        g_deferred_proof_validation_below_height = -1;
         return true;
     }
 

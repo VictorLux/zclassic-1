@@ -163,6 +163,7 @@ static void csr_test_observer(enum event_type type, uint32_t peer_id,
 
 static void csr_test_install_observer(void)
 {
+    event_log_init();
     event_clear_observers(EV_CHAIN_TIP_COMMIT);
     event_clear_observers(EV_CHAIN_TIP_REJECTED);
     atomic_store(&g_commit_events, 0);
@@ -437,9 +438,188 @@ static int t_header_no_regress(void)
 
     struct chain_state_commit c2 = csr_make_commit(b1, "rewind");
     c2.update_header_tip = true;
-    c2.allow_rollback = true;
     ok = ok && csr_commit_tip(&csr, &c2) == CSR_OK && f.header_tip == b2;
     CSR_RUN("csr: header tip never regresses", ok);
+    csr_free(&csr);
+    csr_fix_free(&f);
+    return failures;
+}
+
+static int t_header_regress_requires_typed_auth(void)
+{
+    int failures = 0;
+    struct chain_state_repository csr;
+    struct csr_fixture f; csr_fix_init(&f);
+    csr_init(&csr, &f.bm, &f.chain, &f.header_tip, &f.coins_tip, NULL, NULL);
+    struct block_index *g  = csr_fix_add(&f, 0x23);
+    struct block_index *b1 = csr_fix_add(&f, 0x24);
+    struct block_index *b2 = csr_fix_add(&f, 0x25);
+    (void)g;
+
+    struct chain_state_commit c = csr_make_commit(b2, "boot");
+    c.update_header_tip = true;
+    bool ok = csr_commit_tip(&csr, &c) == CSR_OK && f.header_tip == b2;
+
+    struct chain_state_commit c2 = csr_make_commit(b1, "rewind");
+    c2.update_header_tip = true;
+    ok = ok && csr_commit_tip(&csr, &c2) == CSR_OK && f.header_tip == b2;
+
+    struct chain_state_rollback_authorization auth = {
+        .source = CSR_ROLLBACK_SOURCE_TEST,
+        .decision = POLICY_ALLOW,
+        .from_height = 2,
+        .to_height = 1,
+        .max_depth = 10,
+        .evidence_class = "unit_test",
+        .reason = "authorized_header_rewind",
+    };
+    c2.reason = "authorized_rewind";
+    c2.rollback_auth = &auth;
+    ok = ok && csr_commit_tip(&csr, &c2) == CSR_OK && f.header_tip == b1;
+
+    CSR_RUN("csr: typed rollback authorization gates header regression", ok);
+    csr_free(&csr);
+    csr_fix_free(&f);
+    return failures;
+}
+
+static int t_header_commit_api_gates_regression(void)
+{
+    int failures = 0;
+    struct chain_state_repository csr;
+    struct csr_fixture f; csr_fix_init(&f);
+    csr_init(&csr, &f.bm, &f.chain, &f.header_tip, &f.coins_tip, NULL, NULL);
+    struct block_index *g  = csr_fix_add(&f, 0x26);
+    struct block_index *b1 = csr_fix_add(&f, 0x27);
+    struct block_index *b2 = csr_fix_add(&f, 0x28);
+    (void)g;
+
+    struct chain_state_header_commit h2 = {
+        .new_header_tip = b2,
+        .rollback_auth = NULL,
+        .reason = "unit.header_advance",
+    };
+    bool ok = csr_commit_header_tip(&csr, &h2) == CSR_OK &&
+              f.header_tip == b2 &&
+              active_chain_height(&f.chain) == -1;
+
+    struct chain_state_header_commit h1 = {
+        .new_header_tip = b1,
+        .rollback_auth = NULL,
+        .reason = "unit.header_regress",
+    };
+    ok = ok && csr_commit_header_tip(&csr, &h1) ==
+         CSR_REJECTED_HEADER_REGRESSION &&
+         f.header_tip == b2;
+
+    struct chain_state_rollback_authorization auth = {
+        .source = CSR_ROLLBACK_SOURCE_TEST,
+        .decision = POLICY_ALLOW,
+        .from_height = 2,
+        .to_height = 1,
+        .max_depth = 10,
+        .evidence_class = "unit_test_header",
+        .reason = "authorized_header_api_rewind",
+    };
+    h1.rollback_auth = &auth;
+    h1.reason = "unit.header_regress_authorized";
+    ok = ok && csr_commit_header_tip(&csr, &h1) == CSR_OK &&
+         f.header_tip == b1;
+
+    CSR_RUN("csr: header commit API gates regression with typed auth", ok);
+    csr_free(&csr);
+    csr_fix_free(&f);
+    return failures;
+}
+
+static int t_clear_active_tip_requires_typed_auth(void)
+{
+    int failures = 0;
+    struct chain_state_repository csr;
+    struct csr_fixture f; csr_fix_init(&f);
+    csr_init(&csr, &f.bm, &f.chain, &f.header_tip, &f.coins_tip, NULL, NULL);
+    struct block_index *tip = csr_fix_add(&f, 0x29);
+
+    struct chain_state_commit c = csr_make_commit(tip, "unit.set_tip");
+    bool ok = csr_commit_tip(&csr, &c) == CSR_OK &&
+              active_chain_height(&f.chain) == 0;
+
+    struct chain_state_clear_commit no_auth = {
+        .rollback_auth = NULL,
+        .reason = "unit.clear_without_auth",
+    };
+    ok = ok && csr_clear_active_tip(&csr, &no_auth) ==
+         CSR_REJECTED_ROLLBACK_AUTH &&
+         active_chain_height(&f.chain) == 0;
+
+    struct chain_state_rollback_authorization auth = {
+        .source = CSR_ROLLBACK_SOURCE_TEST,
+        .decision = POLICY_ALLOW,
+        .from_height = 0,
+        .to_height = -1,
+        .max_depth = 10,
+        .evidence_class = "unit_test_clear",
+        .reason = "authorized_clear",
+    };
+    struct chain_state_clear_commit clear = {
+        .rollback_auth = &auth,
+        .reason = "unit.clear_authorized",
+    };
+    ok = ok && csr_clear_active_tip(&csr, &clear) == CSR_OK &&
+         active_chain_height(&f.chain) == -1;
+
+    CSR_RUN("csr: active-tip clear requires typed auth", ok);
+    csr_free(&csr);
+    csr_fix_free(&f);
+    return failures;
+}
+
+static int t_coins_best_repair_requires_typed_auth(void)
+{
+    int failures = 0;
+    struct chain_state_repository csr;
+    struct csr_fixture f; csr_fix_init(&f);
+    csr_init(&csr, &f.bm, &f.chain, &f.header_tip, &f.coins_tip, NULL, NULL);
+    struct block_index *tip = csr_fix_add(&f, 0x2a);
+    struct uint256 before;
+    struct uint256 after;
+    struct uint256 repair_hash;
+
+    struct chain_state_commit c = csr_make_commit(tip, "unit.set_tip");
+    bool ok = csr_commit_tip(&csr, &c) == CSR_OK;
+    coins_view_cache_get_best_block(&f.coins_tip, &before);
+    memset(&repair_hash, 0x7a, sizeof(repair_hash));
+
+    struct chain_state_coins_best_repair no_auth = {
+        .new_coins_best = repair_hash,
+        .repair_auth = NULL,
+        .reason = "unit.repair_without_auth",
+    };
+    ok = ok && csr_repair_set_coins_best(&csr, &no_auth) ==
+         CSR_REJECTED_ROLLBACK_AUTH;
+    coins_view_cache_get_best_block(&f.coins_tip, &after);
+    ok = ok && memcmp(before.data, after.data, 32) == 0;
+
+    struct chain_state_rollback_authorization auth = {
+        .source = CSR_ROLLBACK_SOURCE_REINDEX,
+        .decision = POLICY_ALLOW,
+        .from_height = 0,
+        .to_height = 0,
+        .max_depth = 0,
+        .evidence_class = "unit_reindex_replay",
+        .reason = "authorized_coins_best_repair",
+    };
+    struct chain_state_coins_best_repair repair = {
+        .new_coins_best = repair_hash,
+        .repair_auth = &auth,
+        .reason = "unit.repair_authorized",
+    };
+    ok = ok && csr_repair_set_coins_best(&csr, &repair) == CSR_OK;
+    coins_view_cache_get_best_block(&f.coins_tip, &after);
+    ok = ok && memcmp(repair_hash.data, after.data, 32) == 0;
+    ok = ok && active_chain_height(&f.chain) == 0;
+
+    CSR_RUN("csr: coins-best repair requires typed auth", ok);
     csr_free(&csr);
     csr_fix_free(&f);
     return failures;
@@ -521,13 +701,13 @@ static int t_sql_hash_height_conflict(void)
     return failures;
 }
 
-static int t_allow_rollback(void)
+static int t_typed_rollback_authorization(void)
 {
     int failures = 0;
     struct node_db ndb;
     bool dbok = node_db_open(&ndb, ":memory:");
     if (!dbok) {
-        CSR_RUN("csr: allow_rollback bypasses orphan guard (skipped)", false);
+        CSR_RUN("csr: typed rollback authorization bypasses orphan guard (skipped)", false);
         return failures;
     }
     struct chain_state_repository csr;
@@ -543,17 +723,25 @@ static int t_allow_rollback(void)
            && csr_sql_insert_utxos(&ndb, 2000);
 
     struct chain_state_commit c2 = csr_make_commit(b2, "advance");
-    c2.allow_rollback = true;
     ok = ok && csr_commit_tip(&csr, &c2) == CSR_OK;
     ok = ok && active_chain_height(&f.chain) == 2;
 
     struct chain_state_commit cback = csr_make_commit(g, "rollback");
     ok = ok && csr_commit_tip(&csr, &cback) == CSR_REJECTED_UTXO_DELTA_TOO_BIG;
 
-    cback.allow_rollback = true;
+    struct chain_state_rollback_authorization auth = {
+        .source = CSR_ROLLBACK_SOURCE_TEST,
+        .decision = POLICY_ALLOW,
+        .from_height = 2,
+        .to_height = 0,
+        .max_depth = 10,
+        .evidence_class = "unit_test",
+        .reason = "rollback",
+    };
+    cback.rollback_auth = &auth;
     ok = ok && csr_commit_tip(&csr, &cback) == CSR_OK;
     ok = ok && active_chain_height(&f.chain) == 0;
-    CSR_RUN("csr: allow_rollback bypasses orphan guard", ok);
+    CSR_RUN("csr: typed rollback authorization bypasses orphan guard", ok);
 
     csr_free(&csr);
     csr_fix_free(&f);
@@ -614,6 +802,28 @@ static int t_expected_utxo_close(void)
     csr_free(&csr);
     csr_fix_free(&f);
     node_db_close(&ndb);
+    return failures;
+}
+
+static int t_persist_coins_best_rejects_before_publish(void)
+{
+    int failures = 0;
+    struct chain_state_repository csr;
+    struct csr_fixture f; csr_fix_init(&f);
+    csr_init(&csr, &f.bm, &f.chain, &f.header_tip, &f.coins_tip, NULL, NULL);
+    struct block_index *g = csr_fix_add(&f, 0x6d);
+    struct chain_state_commit c = csr_make_commit(g, "persist.required");
+    c.persist_coins_best = true;
+    c.update_header_tip = true;
+
+    bool ok = csr_commit_tip(&csr, &c) == CSR_REJECTED_PERSIST;
+    ok = ok && active_chain_height(&f.chain) == -1;
+    ok = ok && f.header_tip == NULL;
+    ok = ok && uint256_is_null(&f.coins_tip.hash_block);
+    CSR_RUN("csr: persist_coins_best rejects before publishing tip", ok);
+
+    csr_free(&csr);
+    csr_fix_free(&f);
     return failures;
 }
 
@@ -941,12 +1151,17 @@ int test_chain_state_repo(void)
     failures += t_update_header();
     failures += t_no_update_header();
     failures += t_header_no_regress();
+    failures += t_header_regress_requires_typed_auth();
+    failures += t_header_commit_api_gates_regression();
+    failures += t_clear_active_tip_requires_typed_auth();
+    failures += t_coins_best_repair_requires_typed_auth();
     failures += t_extend_chain();
     failures += t_sql_stale_index();
     failures += t_sql_hash_height_conflict();
-    failures += t_allow_rollback();
+    failures += t_typed_rollback_authorization();
     failures += t_expected_utxo_drift();
     failures += t_expected_utxo_close();
+    failures += t_persist_coins_best_rejects_before_publish();
     failures += t_snapshot_after_commit();
     failures += t_snapshot_uninitialised();
     failures += t_counters_increment();

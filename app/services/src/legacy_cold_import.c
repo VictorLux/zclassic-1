@@ -8,10 +8,11 @@
  *   - blk*.dat hardlinks (or copy fallback on EXDEV)
  *   - block-index records into our LevelDB
  *   - chainstate UTXOs into our coins.db
- *   - coins_tip best_block = legacy chain tip hash
+ *   - pending cold-import anchor metadata for CSR publication after
+ *     boot has loaded the imported block index
  *
  * The normal boot then loads our LevelDB and chain_restore picks up
- * the best-block, populating active_chain by walking pprev.
+ * the pending anchor through CSR, populating active_chain by walking pprev.
  * bg_validation re-verifies every block bit-exact over the next hours.
  */
 
@@ -29,6 +30,7 @@
 #include "storage/chainstate_legacy_reader.h"
 #include "storage/coins_view_sqlite.h"
 #include "storage/dbwrapper.h"
+#include "models/database.h"
 #include "util/log_macros.h"
 #include "util/safe_alloc.h"
 #include "util/thread_registry.h"
@@ -366,8 +368,8 @@ static bool lci_chainstate_cb(const struct uint256 *txid,
 
 bool legacy_cold_import_blocking(
     struct main_state *ms,
-    struct coins_view_cache *coins_tip,
     struct coins_view_sqlite *cvs,
+    struct node_db *ndb,
     struct block_tree_db *btdb,
     const char *our_datadir,
     const char *legacy_datadir,
@@ -377,7 +379,7 @@ bool legacy_cold_import_blocking(
     r.legacy_tip = -1;
     if (out) *out = r;
 
-    if (!ms || !coins_tip || !cvs || !btdb ||
+    if (!ms || !cvs || !ndb || !ndb->open || !btdb ||
         !our_datadir || !legacy_datadir) {
         LOG_FAIL("legacy_cold_import", "bad args");
     }
@@ -428,17 +430,17 @@ bool legacy_cold_import_blocking(
         bilr_close(bilr);
         return false;
     }
-    bool trust_ok = lci_spotcheck(bmr, map, map_count,
+    bool evidence_ok = lci_spotcheck(bmr, map, map_count,
                                    legacy_tip, LCI_SPOTCHECK_K);
     bmr_close(bmr);
-    if (!trust_ok) {
+    if (!evidence_ok) {
         bilr_free_height_map(map);
         bilr_close(bilr);
         fprintf(stderr,
                 "[cold_import] aborting due to spotcheck failure\n");
         return false;
     }
-    r.trust_armed = true;
+    r.evidence_armed = true;
 
     /* ── Hardlink blk*.dat files ─────────────────────────── */
     int64_t t_link = lci_now_ms();
@@ -511,18 +513,30 @@ bool legacy_cold_import_blocking(
             "%" PRId64 " records in %" PRId64 " ms\n",
             ctx.inserted, ctx.records, lci_now_ms() - t_cs);
 
-    /* ── Set coins_tip best_block to legacy chainstate's anchor ── */
+    /* ── Record an unpublished anchor for post-index CSR publication ── */
     if (got_best) {
-        coins_view_cache_set_best_block(coins_tip, &cs_best);
+        bool pending_ok =
+            node_db_state_set(ndb, "cold_import_pending_coins_best_block",
+                              cs_best.data, 32) &&
+            node_db_state_set(ndb, "cold_import_pending_coins_best_height",
+                              &legacy_tip_h, sizeof(legacy_tip_h)) &&
+            node_db_state_set(ndb, "cold_import_pending_utxo_count",
+                              &ctx.inserted, sizeof(ctx.inserted));
+        if (!pending_ok) {
+            fprintf(stderr,
+                    "[cold_import] failed to persist pending CSR anchor\n");
+            return false;
+        }
         char hex[65] = {0};
         for (int i = 0; i < 32; i++)
             snprintf(hex + i*2, 3, "%02x", cs_best.data[31 - i]);
         fprintf(stderr,
-                "[cold_import] coins best_block set to %s\n", hex);
+                "[cold_import] pending CSR anchor recorded %s h=%d\n",
+                hex, legacy_tip_h);
     } else {
         fprintf(stderr,
                 "[cold_import] WARNING: legacy chainstate had no 'B' key; "
-                "coins best_block not set\n");
+                "pending CSR anchor not recorded\n");
     }
 
     r.total_secs = (double)(lci_now_ms() - t_start) / 1000.0;
@@ -530,7 +544,7 @@ bool legacy_cold_import_blocking(
     if (out) *out = r;
     fprintf(stderr,
             "[cold_import] DONE in %.1fs: block_index=%" PRId64
-            " utxos=%" PRId64 " blk_files=%" PRId64 " trust=yes\n",
+            " utxos=%" PRId64 " blk_files=%" PRId64 "\n",
             r.total_secs, r.block_index_writes, r.utxos_imported,
             r.blk_files_linked);
     return true;

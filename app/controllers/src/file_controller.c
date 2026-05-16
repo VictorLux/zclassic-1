@@ -497,7 +497,7 @@ bool file_manifest_build(struct file_manifest *fm, const char *datadir)
         sha3_256_write(&ctx, fm->chunks[i].sha3, 32);
     sha3_256_finalize(&ctx, fm->root_hash);
 
-    /* Embed current MMR root as trust anchor.
+    /* Embed current MMR root as evidence anchor.
      * Receivers verify: MMR root matches expected value for this chain.
      * This binds the file data to the PoW-secured block hash chain. */
     {

@@ -2,11 +2,10 @@
  *
  * checkpoint — hard reorg-depth invariant.
  *
- * MAX_REORG_LENGTH (= COINBASE_MATURITY - 1 = 99) is the protocol
- * promise: any block more than 99 deep from the tip is permanently
- * immutable. The chain's economics depend on this — coinbase outputs
- * can be spent after 100 confirmations precisely because reorgs past
- * that depth are considered impossible.
+ * ZCL_FINALITY_DEPTH (=10) is the sync trust boundary. Blocks at or
+ * below tip - 10 are immutable for steady-state reorg refusal,
+ * snapshot activation, and rolling-anchor policy. COINBASE_MATURITY is
+ * an economic spend rule and must not drive sync finality decisions.
  *
  * Before this module, the invariant was checked only at one point
  * (`process_block.c:3494`, in the extending-reorg branch). The
@@ -14,11 +13,8 @@
  * walk past it, then the cycle guards (Round 3 Part O) would abort
  * the walk after the damage was done.
  *
- * `reorg_is_allowed` is the single helper that callers query BEFORE
- * starting any walk. If the target fork is below
- * `tip - MAX_REORG_LENGTH`, the answer is no and the caller refuses
- * the operation — saving the wasted walk, removing one cause of
- * silent CPU stalls, and giving the operator a clear log line. */
+ * `reorg_is_allowed` remains the compatibility wrapper for callers
+ * that predate validation/sync_evidence_policy.h. */
 
 #ifndef ZCL_VALIDATION_CHECKPOINT_H
 #define ZCL_VALIDATION_CHECKPOINT_H
@@ -35,17 +31,16 @@
  * be freed by the caller.
  *
  * Semantics:
- *   tip_h - target_fork_h <= MAX_REORG_LENGTH → allowed
- *   tip_h - target_fork_h >  MAX_REORG_LENGTH → refused
+ *   tip_h - target_fork_h <= ZCL_FINALITY_DEPTH → allowed
+ *   tip_h - target_fork_h >  ZCL_FINALITY_DEPTH → refused
  *
  * The function does not log — callers decide whether to emit a
  * stderr line or an event when refusing. */
 bool reorg_is_allowed(int tip_h, int target_fork_h,
                       const char **reason_out);
 
-/* Convenience: returns true iff `h` is below the "immutable floor"
- * tip_h - MAX_REORG_LENGTH. Useful for background validators that
- * want to skip re-verifying historic blocks. */
+/* Convenience: returns true iff `h` is at or below the immutable
+ * height, tip_h - ZCL_FINALITY_DEPTH. */
 bool height_is_immutable(int tip_h, int h);
 
 #endif /* ZCL_VALIDATION_CHECKPOINT_H */

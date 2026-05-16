@@ -66,7 +66,16 @@ struct sync_getheaders_action {
     bool should_log;
 };
 
-bool syncsvc_begin_peer_sync(struct p2p_node *node);
+bool syncsvc_should_begin_peer_sync(const struct p2p_node *node,
+                                    int our_height,
+                                    int best_header_height,
+                                    enum sync_state sync_state);
+bool syncsvc_should_mark_peer_caught_up(const struct p2p_node *node,
+                                        int our_height,
+                                        int best_header_height);
+bool syncsvc_begin_peer_sync(struct p2p_node *node,
+                             int our_height,
+                             int best_header_height);
 void syncsvc_collect_needed_blocks(struct sync_needed_blocks *result,
                                    const struct block_index *candidate,
                                    const struct block_index *tip,
@@ -133,6 +142,9 @@ enum sync_header_log_mode syncsvc_header_log_mode(
 bool syncsvc_should_activate_after_block_file_scan(int scanned_blocks);
 bool syncsvc_should_activate_after_header_processing(
     const struct sync_header_processing_plan *plan);
+bool syncsvc_should_release_snapshot_anchor(
+    const struct block_index *anchor,
+    const struct block_index *header_tip);
 bool syncsvc_should_begin_blocks_download(enum sync_state sync_state,
                                           const struct block_index *candidate,
                                           int our_height);

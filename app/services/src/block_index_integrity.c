@@ -27,6 +27,7 @@
 
 #include "services/block_index_integrity.h"
 
+#include "services/chain_state_repository.h"
 #include "crypto/sha3.h"
 #include "util/safe_alloc.h"
 #include "event/event.h"
@@ -37,6 +38,8 @@
 
 #include <errno.h>
 #include <fcntl.h>
+#include <limits.h>
+#include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -79,6 +82,56 @@ const char *bii_verdict_name(enum bii_verdict v)
     case BII_SIDECAR_UNSUPPORTED:  return "sidecar_unsupported";
     default:                       return "unknown";
     }
+}
+
+const char *bii_recovery_action_name(enum bii_recovery_action a)
+{
+    switch (a) {
+    case BII_RECOVERY_NONE:               return "none";
+    case BII_RECOVERY_ACCEPTED:           return "accepted";
+    case BII_RECOVERY_RECONCILE_REQUIRED: return "reconcile_required";
+    case BII_RECOVERY_QUARANTINED:        return "quarantined";
+    case BII_RECOVERY_OVERRIDE:           return "override";
+    default:                              return "unknown";
+    }
+}
+
+static pthread_mutex_t g_bii_status_lock = PTHREAD_MUTEX_INITIALIZER;
+static struct bii_recovery_status g_bii_status;
+
+void bii_record_recovery_status(enum bii_verdict verdict,
+                                enum bii_recovery_action action,
+                                const char *reason,
+                                bool degraded,
+                                bool unsafe_override)
+{
+    pthread_mutex_lock(&g_bii_status_lock);
+    memset(&g_bii_status, 0, sizeof(g_bii_status));
+    g_bii_status.verdict = verdict;
+    g_bii_status.action = action;
+    g_bii_status.unix_time = (int64_t)time(NULL);
+    g_bii_status.degraded = degraded;
+    g_bii_status.unsafe_override = unsafe_override;
+    if (reason)
+        snprintf(g_bii_status.reason, sizeof(g_bii_status.reason),
+                 "%s", reason);
+    pthread_mutex_unlock(&g_bii_status_lock);
+
+    event_emitf(EV_BLOCK_INDEX_REPAIR, 0,
+                "verdict=%s action=%s degraded=%s unsafe_override=%s reason=%s",
+                bii_verdict_name(verdict),
+                bii_recovery_action_name(action),
+                degraded ? "true" : "false",
+                unsafe_override ? "true" : "false",
+                reason ? reason : "");
+}
+
+void bii_get_recovery_status(struct bii_recovery_status *out)
+{
+    if (!out) return;
+    pthread_mutex_lock(&g_bii_status_lock);
+    *out = g_bii_status;
+    pthread_mutex_unlock(&g_bii_status_lock);
 }
 
 /* ── Path helpers ───────────────────────────────────────────── */
@@ -418,11 +471,11 @@ static size_t bii_pprev_repair_max_reads(void)
     long parsed;
 
     if (!env || env[0] == '\0')
-        return 250000;
+        return 0;
 
     parsed = strtol(env, &end, 10);
     if (end == env || *end != '\0' || parsed < 0)
-        return 250000;
+        return 0;
 
     return (size_t)parsed;
 }
@@ -585,7 +638,7 @@ int block_index_repair_pprev(struct main_state *ms, const char *datadir)
            read_limit, count, max_reads);
     fflush(stdout);
 
-    int repaired = 0, read_errors = 0;
+    int repaired = 0, heights_fixed = 0, read_errors = 0;
 
     for (size_t i = 0; i < read_limit; i++) {
         struct block_index *bi = arr[i];
@@ -619,18 +672,23 @@ int block_index_repair_pprev(struct main_state *ms, const char *datadir)
             bi->pprev = correct_pprev;
             repaired++;
         }
+        if (bi->nHeight != correct_pprev->nHeight + 1) {
+            bi->nHeight = correct_pprev->nHeight + 1;
+            heights_fixed++;
+            block_index_build_skip(bi);
+        }
 
         if ((i + 1) % 50000 == 0) {
             printf("[pprev-repair] progress %zu/%zu repaired=%d "
-                   "read_errors=%d\n",
-                   i + 1, read_limit, repaired, read_errors);
+                   "heights=%d read_errors=%d\n",
+                   i + 1, read_limit, repaired, heights_fixed, read_errors);
             fflush(stdout);
         }
     }
 
     /* After fixing pprev, recompute nChainWork and nChainTx.
      * Sort all entries by height for forward propagation. */
-    if (repaired > 0) {
+    if (repaired > 0 || heights_fixed > 0) {
         /* Re-collect ALL entries (not just HAVE_DATA) for chain recomputation */
         size_t all_count = 0;
         struct block_index **all = zcl_malloc(n * sizeof(*all), "pprev_repair_all");
@@ -680,17 +738,19 @@ int block_index_repair_pprev(struct main_state *ms, const char *datadir)
     int64_t elapsed_ms = (t1.tv_sec - t0.tv_sec) * 1000
                        + (t1.tv_nsec - t0.tv_nsec) / 1000000;
 
-    printf("[pprev-repair] fixed %d pprev links (%d read errors) "
+    printf("[pprev-repair] fixed %d pprev links, %d heights (%d read errors) "
            "from %zu/%zu blocks with data in %lld ms\n",
-           repaired, read_errors, read_limit, count, (long long)elapsed_ms);
+           repaired, heights_fixed, read_errors, read_limit, count,
+           (long long)elapsed_ms);
     fflush(stdout);
 
-    if (repaired > 0)
+    if (repaired > 0 || heights_fixed > 0)
         event_emitf(EV_BLOCK_INDEX_REPAIR, 0,
-                    "pprev_repaired=%d read_errors=%d elapsed_ms=%lld",
-                    repaired, read_errors, (long long)elapsed_ms);
+                    "pprev_repaired=%d heights_fixed=%d read_errors=%d elapsed_ms=%lld",
+                    repaired, heights_fixed, read_errors,
+                    (long long)elapsed_ms);
 
-    return repaired;
+    return repaired + heights_fixed;
 }
 
 /* ──────────────────────────────────────────────────────────────
@@ -800,10 +860,40 @@ int bii_repair_post_activation_anchor(
             printf("[bii-anchor] restoring disk-backed coins tip "
                    "h=%d (activation picked h=%d)\n",
                    pre_scan_coins_h, post_act_h);
-            chain_set_active_tip(ms, coins_bi, TIP_FROM_P2P_REPAIR,
-                                  "bii_anchor_restore_disk_backed");
-            ms->pindex_best_header = coins_bi;
-            result->tip_restored = true;
+            struct chain_state_rollback_authorization rollback_auth = {
+                .source = CSR_ROLLBACK_SOURCE_RESTORE,
+                .decision = POLICY_ALLOW,
+                .from_height = active_chain_height(&ms->chain_active),
+                .to_height = coins_bi->nHeight,
+                .max_depth = INT64_MAX,
+                .evidence_class = "block_index_integrity_disk_backed",
+                .reason = "bii_anchor_restore_disk_backed",
+            };
+            struct chain_state_commit commit = {
+                .new_tip = coins_bi,
+                .new_coins_best = *coins_bi->phashBlock,
+                .expected_utxo_count = 0,
+                .update_header_tip = true,
+                .rollback_auth = &rollback_auth,
+                .wallet_scan_height = -1,
+                .reason = "bii_anchor_restore_disk_backed",
+            };
+            enum csr_result rc = csr_commit_tip(csr_instance(), &commit);
+            if (rc == CSR_OK) {
+                result->tip_restored = true;
+#ifdef ZCL_TESTING
+            } else if (rc == CSR_REJECTED_NOT_INITIALIZED) {
+                chain_set_active_tip(ms, coins_bi, TIP_FROM_P2P_REPAIR,
+                                      "bii_anchor_restore_csr_uninit");
+                ms->pindex_best_header = coins_bi;
+                result->tip_restored = true;
+#endif
+            } else {
+                fprintf(stderr, // obs-ok:pre-existing-diagnostic
+                    "[bii-anchor] csr rejected disk-backed tip restore "
+                    "(%s) h=%d\n", csr_result_name(rc), pre_scan_coins_h);
+                result->tip_restore_refused = true;
+            }
         } else {
             fprintf(stderr, // obs-ok:pre-existing-diagnostic
                 "[bii-anchor] coins tip h=%d not disk-backed; "

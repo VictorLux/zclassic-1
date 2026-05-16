@@ -102,6 +102,29 @@ struct recovery_exec_result {
     bool recovered;         /* a recovery action was taken */
 };
 
+enum utxo_count_check_level {
+    UTXO_COUNT_CHECK_OK = 0,
+    UTXO_COUNT_CHECK_INFO_STALE_REFERENCE,
+    UTXO_COUNT_CHECK_WARNING,
+    UTXO_COUNT_CHECK_CRITICAL
+};
+
+struct utxo_count_check_result {
+    enum utxo_count_check_level level;
+    int blocks_past_checkpoint;
+    double pct_delta;
+};
+
+struct utxo_count_check_result utxo_recovery_classify_count_check(
+    int tip_height,
+    int checkpoint_height,
+    uint64_t checkpoint_count,
+    uint64_t actual_count);
+
+bool utxo_recovery_xor_mismatch_is_corruption_candidate(
+    uint64_t saved_count,
+    uint64_t computed_count);
+
 /* Execute recovery based on validate_coins_chain_agreement result.
  * Handles REIMPORT, WIPE_WAIT, RESET_CHAIN, and BOOT_OK integrity
  * checks (stale genesis wipe, UTXO count sanity, XOR commitment). */

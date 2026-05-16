@@ -7,7 +7,9 @@
 #include "test/test_helpers.h"
 #include "services/utxo_recovery_service.h"
 #include "services/recovery_policy.h"
+#include "services/chain_state_repository.h"
 #include "validation/main_state.h"
+#include "chain/chainparams.h"
 #include "models/database.h"
 #include <stdio.h>
 #include <string.h>
@@ -382,7 +384,94 @@ int test_utxo_recovery_service(void)
         unlink(db_path);
     }
 
-    /* ── 10. Clean above tip: no-op when tip=0 ── */
+    /* ── 10. Restore with no UTXOs publishes genesis through CSR ── */
+
+    {
+        char db_path[256];
+        snprintf(db_path, sizeof(db_path),
+                 "./test-tmp/%d_urs_restore_genesis.db", getpid());
+
+        struct node_db ndb;
+        memset(&ndb, 0, sizeof(ndb));
+        if (node_db_open(&ndb, db_path)) {
+            chain_params_select(CHAIN_MAIN);
+            const struct chain_params *params = chain_params_get();
+
+            struct main_state ms;
+            memset(&ms, 0, sizeof(ms));
+            block_map_init(&ms.map_block_index);
+            active_chain_init(&ms.chain_active);
+
+            struct block_index *genesis = chainstate_insert_block_index(
+                (struct chainstate *)&ms,
+                &params->consensus.hashGenesisBlock);
+            if (genesis) {
+                genesis->nHeight = 0;
+                genesis->nStatus = BLOCK_VALID_SCRIPTS | BLOCK_HAVE_DATA;
+                genesis->nTx = 1;
+                genesis->nChainTx = 1;
+            }
+
+            struct coins_view_cache cache;
+            struct coins_view nv;
+            memset(&nv, 0, sizeof(nv));
+            coins_view_cache_init(&cache, &nv);
+
+            struct uint256 unknown_best;
+            memset(&unknown_best, 0x42, sizeof(unknown_best));
+            coins_view_cache_set_best_block(&cache, &unknown_best);
+
+            struct chain_state_repository *csr = csr_instance();
+            csr_init(csr, &ms.map_block_index, &ms.chain_active,
+                     &ms.pindex_best_header, &cache, &ndb, NULL);
+
+            struct utxo_recovery_ctx uctx = {
+                .state = &ms,
+                .coins_sqlite = NULL,
+                .coins_tip = &cache,
+                .ndb = &ndb,
+                .datadir = "/nonexistent",
+                .params = params,
+                .activation_ctl = NULL,
+                .db_service = NULL,
+            };
+
+            struct chain_restore_result rr =
+                utxo_recovery_restore_chain_tip(&uctx, NULL);
+
+            struct uint256 got_best;
+            memset(&got_best, 0, sizeof(got_best));
+            coins_view_cache_get_best_block(&cache, &got_best);
+
+            uint8_t persisted[32];
+            size_t persisted_len = 0;
+            bool got_persisted = node_db_state_get(
+                &ndb, "coins_best_block", persisted, sizeof(persisted),
+                &persisted_len);
+
+            URS_CHECK("urs: no-UTXO restore commits genesis through CSR",
+                      rr.restored &&
+                      active_chain_tip(&ms.chain_active) == genesis &&
+                      uint256_eq(&got_best,
+                                  &params->consensus.hashGenesisBlock) &&
+                      got_persisted && persisted_len == 32 &&
+                      memcmp(persisted,
+                             params->consensus.hashGenesisBlock.data,
+                             32) == 0);
+
+            csr_free(csr);
+            coins_view_cache_free(&cache);
+            active_chain_free(&ms.chain_active);
+            block_map_free(&ms.map_block_index);
+            node_db_close(&ndb);
+        } else {
+            URS_CHECK("urs: no-UTXO restore commits genesis through CSR "
+                      "(db open failed)", false);
+        }
+        unlink(db_path);
+    }
+
+    /* ── 11. Clean above tip: no-op when tip=0 ── */
 
     {
         struct main_state ms;

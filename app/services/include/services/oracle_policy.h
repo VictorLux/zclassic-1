@@ -2,7 +2,7 @@
  *
  * Oracle policy — turns EV_ORACLE_DISAGREE events from the
  * zclassicd_oracle_service into a state machine that can pause new
- * block acceptance and panic on trust-prefix violations.
+ * block acceptance and panic on evidence-prefix violations.
  *
  * State machine:
  *   NORMAL  → on disagree at h ≤ TRUST_PREFIX_END     → PANIC
@@ -14,9 +14,9 @@
  * RPC stay readable; we just stop committing forward until the
  * disagreement is investigated.
  *
- * PANIC effect: same as HALT, but the trust prefix is now provably
+ * PANIC effect: same as HALT, but the evidence prefix is now provably
  * disagreeing with our local data — the coins.db / blk*.dat is
- * corrupted. Refuse all writes; do not write the trust-mark cookie.
+ * corrupted. Refuse all writes; do not write the evidence cache cookie.
  *
  * See CLAUDE.md "Adding state introspection" — dump_state_json
  * follows that convention. */
@@ -38,7 +38,7 @@ enum oracle_policy_state {
 struct oracle_policy_config {
     int     window_secs;             /* default 300 — sliding observation window */
     int     halt_distinct_heights;   /* default 3 — trigger HALT at this many */
-    int     trust_prefix_end_height; /* heights ≤ this trigger PANIC */
+    int     evidence_prefix_end_height; /* heights ≤ this trigger PANIC */
 };
 
 /* Initialize once. Idempotent. */

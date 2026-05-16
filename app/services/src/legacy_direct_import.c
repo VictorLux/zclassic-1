@@ -6,8 +6,7 @@
  *   1. bilr_open(legacy/blocks/index) + bilr_load_height_map.
  *   2. bmr_open(legacy/blocks).
  *   3. SHA3 spot-check K=3 random windows from mmap'd payloads.
- *      Pass → arm g_assume_valid_height = legacy_tip.
- *      Fail → abort (refuse to lower trust).
+ *      Fail → continue with full validation and no elevated evidence.
  *   4. Set g_body_pull_active = 1 (per-block I/O deferrals kick in).
  *   5. For h in [from_h+1 .. legacy_tip]:
  *        a. payload = bmr_get_payload(map[h].nFile, map[h].nDataPos).
@@ -36,7 +35,6 @@
 #include "util/safe_alloc.h"
 #include "util/thread_registry.h"
 #include "validation/chainstate.h"
-#include "validation/contextual_check_tx.h"  /* g_assume_valid_height */
 #include "validation/main_state.h"
 #include "validation/process_block.h"        /* g_body_pull_active */
 #include "wallet/wallet.h"
@@ -99,7 +97,7 @@ static bool ldi_verify_window(struct blocks_mmap *bmr,
     return memcmp(digest, g_sha3_windows[wi].hash, 32) == 0;
 }
 
-/* K=3 random SHA3 windows verified before trust-mode is armed. */
+/* K=3 random SHA3 windows verified before evidence-mode is armed. */
 static bool ldi_spotcheck_sha3_windows(struct blocks_mmap *bmr,
                                        const struct legacy_block_loc *map,
                                        size_t map_count,
@@ -153,7 +151,7 @@ static bool ldi_spotcheck_sha3_windows(struct blocks_mmap *bmr,
         if (!ldi_verify_window(bmr, map, map_count, wi)) {
             fprintf(stderr,
                     "[legacy_direct_import] spotcheck FAILED at window "
-                    "%zu — refusing to lower assume_valid\n", wi);
+                    "%zu; continuing with full validation\n", wi);
             return false;
         }
         fprintf(stderr,
@@ -249,22 +247,17 @@ bool legacy_direct_import_range_blocking(
         return false;
     }
 
-    /* ── SHA3 spot-check + trust-mode arm ─────────────────── */
-    int prev_assume_valid = atomic_load(&g_assume_valid_height);
+    /* ── SHA3 spot-check source blocks; proofs still validate normally ── */
     if (ldi_spotcheck_sha3_windows(bmr, map, map_count,
                                     legacy_tip, LDI_SPOTCHECK_K)) {
-        if (legacy_tip > prev_assume_valid) {
-            atomic_store(&g_assume_valid_height, legacy_tip);
-            r.trust_armed = true;
-            fprintf(stderr,
-                    "[legacy_direct_import] trust-mode armed: "
-                    "assume_valid %d -> %d\n",
-                    prev_assume_valid, legacy_tip);
-        }
+        r.source_checked = true;
+        fprintf(stderr,
+                "[legacy_direct_import] SHA3 source spotcheck passed; "
+                "proof validation remains enabled\n");
     } else {
         fprintf(stderr,
                 "[legacy_direct_import] WARNING: SHA3 spotcheck did not "
-                "pass; falling back to FULL validation\n");
+                "pass; continuing with full validation\n");
     }
 
     /* ── Arm body-pull I/O deferral ───────────────────────── */
@@ -397,7 +390,7 @@ bool legacy_direct_import_range_blocking(
             total_secs, avg_rate, r.final_tip);
 
     /* ── Auto-rescan wallet ───────────────────────────────── */
-    if (ok && wallet && r.applied > 0 && r.trust_armed) {
+    if (ok && wallet && r.applied > 0) {
         fprintf(stderr,
                 "[legacy_direct_import] starting wallet rescan "
                 "[%d..%d]...\n", from_height + 1, r.final_tip);

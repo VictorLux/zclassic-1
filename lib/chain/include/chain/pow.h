@@ -37,15 +37,20 @@ int64_t GetBlockProofEquivalentTime(const struct block_index *to,
                                     const struct block_index *tip,
                                     const struct consensus_params *params);
 
-/* Human-readable difficulty from compact nBits representation.
- * Used by RPC getdifficulty, explorer, and factoids. */
+/* Human-readable ZClassic difficulty from compact nBits representation.
+ *
+ * ZClassic inherited Zcash's Equihash difficulty baseline: the reference
+ * target mantissa is 0x07ffff, not Bitcoin's 0x00ffff.  Keeping this
+ * centralized avoids RPC/explorer surfaces silently drifting from
+ * legacy zclassicd for the same nBits value.
+ */
 static inline double difficulty_from_bits(uint32_t bits)
 {
     if (bits == 0) return 1.0;
     int shift = (int)((bits >> 24) & 0xff) - 29;
-    double diff = (double)0x0000ffff / (double)(bits & 0x00ffffff);
-    while (shift < 0) { diff *= 256.0; shift++; }
-    while (shift > 0) { diff /= 256.0; shift--; }
+    double diff = (double)0x0007ffff / (double)(bits & 0x00ffffff);
+    while (shift < 0) { diff /= 256.0; shift++; }
+    while (shift > 0) { diff *= 256.0; shift--; }
     return diff;
 }
 

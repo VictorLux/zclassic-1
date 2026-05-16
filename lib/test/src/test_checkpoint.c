@@ -3,6 +3,7 @@
 #include "test/test_helpers.h"
 #include "validation/checkpoint.h"
 #include "validation/main_constants.h"
+#include "validation/sync_evidence_policy.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -42,7 +43,7 @@ int test_checkpoint(void)
     {
         const char *r = NULL;
         bool ok = reorg_is_allowed(100, 99, &r);
-        if (ok && r && strcmp(r, "within_max_reorg") == 0)
+        if (ok && r && strcmp(r, "within_finality_depth") == 0)
             printf("OK\n");
         else { printf("FAIL (ok=%d r=%s)\n", ok, r ? r : "(null)"); failures++; }
     }
@@ -51,7 +52,7 @@ int test_checkpoint(void)
     {
         const char *r = NULL;
         bool ok = reorg_is_allowed(1000, 1000 - MAX_REORG_LENGTH, &r);
-        if (ok && r && strcmp(r, "within_max_reorg") == 0)
+        if (ok && r && strcmp(r, "within_finality_depth") == 0)
             printf("OK\n");
         else { printf("FAIL (ok=%d r=%s)\n", ok, r ? r : "(null)"); failures++; }
     }
@@ -60,7 +61,7 @@ int test_checkpoint(void)
     {
         const char *r = NULL;
         bool ok = reorg_is_allowed(1000, 1000 - MAX_REORG_LENGTH - 1, &r);
-        if (!ok && r && strcmp(r, "below_checkpoint") == 0)
+        if (!ok && r && strcmp(r, "below_finality_depth") == 0)
             printf("OK\n");
         else { printf("FAIL (ok=%d r=%s)\n", ok, r ? r : "(null)"); failures++; }
     }
@@ -69,7 +70,7 @@ int test_checkpoint(void)
     {
         const char *r = NULL;
         bool ok = reorg_is_allowed(3000000, 1000, &r);
-        if (!ok && r && strcmp(r, "below_checkpoint") == 0)
+        if (!ok && r && strcmp(r, "below_finality_depth") == 0)
             printf("OK\n");
         else { printf("FAIL (ok=%d r=%s)\n", ok, r ? r : "(null)"); failures++; }
     }
@@ -91,6 +92,26 @@ int test_checkpoint(void)
     printf("height_is_immutable: tip - MAX_REORG_LENGTH boundary mutable... ");
     {
         if (!height_is_immutable(1000, 1000 - MAX_REORG_LENGTH + 1))
+            printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("sync_evidence_policy: immutable height is tip minus finality... ");
+    {
+        if (zcl_finality_depth() == 10 &&
+            zcl_immutable_height(1000) == 990 &&
+            zcl_is_finality_safe_anchor(990, 1000) &&
+            !zcl_is_finality_safe_anchor(991, 1000))
+            printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("sync_evidence_policy: IBD reorg exception is bounded... ");
+    {
+        const char *r = NULL;
+        bool ok = zcl_reorg_allowed(2000, 1500, true, &r);
+        bool bad = zcl_reorg_allowed(2000, 999, true, NULL);
+        if (ok && r && strcmp(r, "ibd_reorg_allowed") == 0 && !bad)
             printf("OK\n");
         else { printf("FAIL\n"); failures++; }
     }

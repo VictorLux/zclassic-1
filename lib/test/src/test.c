@@ -131,6 +131,41 @@ int main(void)
                failures);
         return failures ? 1 : 0;
     }
+    if (only && strcmp(only, "block_index_loader") == 0) {
+        printf("[test] ZCL_TEST_ONLY=block_index_loader — running block index loader only\n");
+        failures += test_block_index_loader();
+        printf("\n=== block_index_loader subset complete: %d failure(s) ===\n",
+               failures);
+        return failures ? 1 : 0;
+    }
+    if (only && strcmp(only, "utxo_recovery") == 0) {
+        printf("[test] ZCL_TEST_ONLY=utxo_recovery — running UTXO recovery only\n");
+        failures += test_utxo_recovery_service();
+        printf("\n=== utxo_recovery subset complete: %d failure(s) ===\n",
+               failures);
+        return failures ? 1 : 0;
+    }
+    if (only && strcmp(only, "chain_evidence_controller") == 0) {
+        printf("[test] ZCL_TEST_ONLY=chain_evidence_controller — running chain evidence controller only\n");
+        failures += test_chain_evidence_controller();
+        printf("\n=== chain_evidence_controller subset complete: %d failure(s) ===\n",
+               failures);
+        return failures ? 1 : 0;
+    }
+    if (only && strcmp(only, "chain_state_repo") == 0) {
+        printf("[test] ZCL_TEST_ONLY=chain_state_repo — running chain state repository only\n");
+        failures += test_chain_state_repo();
+        printf("\n=== chain_state_repo subset complete: %d failure(s) ===\n",
+               failures);
+        return failures ? 1 : 0;
+    }
+    if (only && strcmp(only, "sync_service") == 0) {
+        printf("[test] ZCL_TEST_ONLY=sync_service — running sync service only\n");
+        failures += test_sync_service();
+        printf("\n=== sync_service subset complete: %d failure(s) ===\n",
+               failures);
+        return failures ? 1 : 0;
+    }
     if (only && strcmp(only, "utxo_audit") == 0) {
         printf("[test] ZCL_TEST_ONLY=utxo_audit — running P24.30 only\n");
         failures += test_utxo_audit();
@@ -149,6 +184,77 @@ int main(void)
         printf("[test] ZCL_TEST_ONLY=zclassicd_oracle — running oracle subset\n");
         failures += test_zclassicd_oracle();
         printf("\n=== zclassicd_oracle subset complete: %d failure(s) ===\n",
+               failures);
+        return failures ? 1 : 0;
+    }
+    if (only && strcmp(only, "service_kernel") == 0) {
+        printf("[test] ZCL_TEST_ONLY=service_kernel - running service kernel subset\n");
+        failures += test_service_kernel();
+        printf("\n=== service_kernel subset complete: %d failure(s) ===\n",
+               failures);
+        return failures ? 1 : 0;
+    }
+    if (only && strcmp(only, "tor") == 0) {
+        printf("[test] ZCL_TEST_ONLY=tor - running Tor integration subset\n");
+        failures += test_tor();
+        printf("\n=== tor subset complete: %d failure(s) ===\n",
+               failures);
+        return failures ? 1 : 0;
+    }
+    if (only && strcmp(only, "fast_sync") == 0) {
+        printf("[test] ZCL_TEST_ONLY=fast_sync — running fast sync subset\n");
+        failures += test_fast_sync();
+        printf("\n=== fast_sync subset complete: %d failure(s) ===\n",
+               failures);
+        return failures ? 1 : 0;
+    }
+    if (only && strcmp(only, "explorer") == 0) {
+        printf("[test] ZCL_TEST_ONLY=explorer — running explorer subset\n");
+        failures += test_explorer();
+        printf("\n=== explorer subset complete: %d failure(s) ===\n",
+               failures);
+        return failures ? 1 : 0;
+    }
+    if (only && strcmp(only, "mmb") == 0) {
+        printf("[test] ZCL_TEST_ONLY=mmb - running MMB subset\n");
+        failures += test_mmb();
+        printf("\n=== mmb subset complete: %d failure(s) ===\n",
+               failures);
+        return failures ? 1 : 0;
+    }
+    if (only && strcmp(only, "addrman") == 0) {
+        printf("[test] ZCL_TEST_ONLY=addrman — running addrman subset\n");
+        failures += test_addrman_rebalance();
+        printf("\n=== addrman subset complete: %d failure(s) ===\n",
+               failures);
+        return failures ? 1 : 0;
+    }
+    if (only && strcmp(only, "integrity") == 0) {
+        printf("[test] ZCL_TEST_ONLY=integrity — running integrity subset\n");
+        failures += test_integrity();
+        printf("\n=== integrity subset complete: %d failure(s) ===\n",
+               failures);
+        return failures ? 1 : 0;
+    }
+    if (only && strcmp(only, "net") == 0) {
+        printf("[test] ZCL_TEST_ONLY=net — running net subset\n");
+        failures += test_net();
+        printf("\n=== net subset complete: %d failure(s) ===\n",
+               failures);
+        return failures ? 1 : 0;
+    }
+    if (only && strcmp(only, "header_sync") == 0) {
+        printf("[test] ZCL_TEST_ONLY=header_sync — running header sync subset\n");
+        failures += test_header_sync();
+        failures += test_header_sync_stall();
+        printf("\n=== header_sync subset complete: %d failure(s) ===\n",
+               failures);
+        return failures ? 1 : 0;
+    }
+    if (only && strcmp(only, "snapshot_sync") == 0) {
+        printf("[test] ZCL_TEST_ONLY=snapshot_sync - running snapshot sync subset\n");
+        failures += test_snapshot_sync_service();
+        printf("\n=== snapshot_sync subset complete: %d failure(s) ===\n",
                failures);
         return failures ? 1 : 0;
     }
@@ -233,6 +339,7 @@ int main(void)
     failures += test_syncdiag_rpc();
     failures += test_rpc_safety();
     failures += test_chain_state_repo();
+    failures += test_chain_evidence_controller();
     failures += test_recovery_policy();
     failures += test_db_txn();
     failures += test_sync_service();
@@ -302,6 +409,7 @@ int main(void)
     failures += test_rpc_error_envelope();
     failures += test_tx_property();
     failures += test_workpool();
+    failures += test_service_kernel();
     { extern int test_thread_registry(void);
       failures += test_thread_registry(); }
     failures += test_bip113_bip65();

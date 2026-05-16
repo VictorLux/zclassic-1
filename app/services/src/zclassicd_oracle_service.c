@@ -4,10 +4,9 @@
  *
  * Layout:
  *   1. Config + creds (parse zclassic.conf)
- *   2. POSIX-sockets HTTP/1.1 JSON-RPC client (Basic auth)
- *   3. zclassicd_oracle_probe() — synchronous probe of one height
- *   4. on_tick() — periodic heartbeat callback (random-height fan-out)
- *   5. init/start/stop + stats snapshot + dump_state_json
+ *   2. zclassicd_oracle_probe() — synchronous probe of one height
+ *   3. on_tick() — periodic heartbeat callback (random-height fan-out)
+ *   4. init/start/stop + stats snapshot + dump_state_json
  *
  * Threading: the only background work is the heartbeat sweeper, which
  * is owned by lib/health/heartbeat.c. No new pthreads are created here.
@@ -25,24 +24,17 @@
 #include "json/json.h"
 #include "event/event.h"
 #include "health/heartbeat.h"
+#include "rpc/legacy_rpc_client.h"
 #include "util/log_macros.h"
-#include "util/safe_alloc.h"
 
-#include <arpa/inet.h>
-#include <errno.h>
-#include <fcntl.h>
-#include <netinet/in.h>
 #include <pthread.h>
 #include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
-#include <sys/socket.h>
 #include <sys/time.h>
-#include <sys/types.h>
 #include <time.h>
-#include <unistd.h>
 
 /* ── Constants ─────────────────────────────────────────────────── */
 
@@ -50,8 +42,6 @@
 #define ORACLE_DEFAULT_PORT          8232
 #define ORACLE_DEFAULT_CADENCE       60
 #define ORACLE_DEFAULT_HEIGHTS_TICK  3
-#define ORACLE_RPC_TIMEOUT_SECS      5
-#define ORACLE_RESPONSE_MAX          8192
 #define ORACLE_TIP_SAFETY_MARGIN     100  /* avoid races at the tip */
 
 /* ── Global state ──────────────────────────────────────────────── */
@@ -78,188 +68,6 @@ static struct {
     .lock = PTHREAD_MUTEX_INITIALIZER,
     .health_id = HEALTH_INVALID_ID,
 };
-
-/* ── zclassic.conf parser ──────────────────────────────────────────
- *
- * Bitcoin-style ~/.zclassic/zclassic.conf is a plain key=value INI.
- * We only need rpcuser, rpcpassword, optionally rpcport. */
-
-static bool parse_zclassic_conf(char *out_user, size_t user_sz,
-                                char *out_pass, size_t pass_sz,
-                                int *out_port)
-{
-    const char *home = getenv("HOME");
-    if (!home || !home[0]) return false;
-
-    char path[512];
-    snprintf(path, sizeof(path), "%s/.zclassic/zclassic.conf", home);
-    FILE *f = fopen(path, "r");
-    if (!f) return false;
-
-    char line[512];
-    bool got_user = false, got_pass = false;
-    while (fgets(line, sizeof(line), f)) {
-        /* trim leading whitespace + comments */
-        char *p = line;
-        while (*p == ' ' || *p == '\t') p++;
-        if (*p == '#' || *p == ';' || *p == '\n' || *p == '\0') continue;
-
-        char *eq = strchr(p, '=');
-        if (!eq) continue;
-        *eq = '\0';
-        char *key = p;
-        char *val = eq + 1;
-        /* strip trailing whitespace from key */
-        char *kend = eq - 1;
-        while (kend > key && (*kend == ' ' || *kend == '\t')) *kend-- = '\0';
-        /* strip surrounding whitespace + newline from val */
-        while (*val == ' ' || *val == '\t') val++;
-        char *vend = val + strlen(val);
-        while (vend > val && (vend[-1] == '\n' || vend[-1] == '\r' ||
-                              vend[-1] == ' '  || vend[-1] == '\t'))
-            *--vend = '\0';
-
-        if (strcmp(key, "rpcuser") == 0) {
-            snprintf(out_user, user_sz, "%s", val);
-            got_user = true;
-        } else if (strcmp(key, "rpcpassword") == 0) {
-            snprintf(out_pass, pass_sz, "%s", val);
-            got_pass = true;
-        } else if (strcmp(key, "rpcport") == 0 && out_port) {
-            int n = atoi(val);
-            if (n > 0 && n < 65536) *out_port = n;
-        }
-    }
-    fclose(f);
-    return got_user && got_pass;
-}
-
-/* ── Base64 encoder (Basic auth) ────────────────────────────────── */
-
-static const char b64_chars[] =
-    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-
-static void base64_encode(const unsigned char *in, size_t inlen,
-                          char *out, size_t outsz)
-{
-    size_t i = 0, o = 0;
-    while (i + 3 <= inlen && o + 4 < outsz) {
-        unsigned v = (in[i] << 16) | (in[i+1] << 8) | in[i+2];
-        out[o++] = b64_chars[(v >> 18) & 0x3f];
-        out[o++] = b64_chars[(v >> 12) & 0x3f];
-        out[o++] = b64_chars[(v >>  6) & 0x3f];
-        out[o++] = b64_chars[ v        & 0x3f];
-        i += 3;
-    }
-    if (i < inlen && o + 4 < outsz) {
-        unsigned v = in[i] << 16;
-        if (i + 1 < inlen) v |= in[i+1] << 8;
-        out[o++] = b64_chars[(v >> 18) & 0x3f];
-        out[o++] = b64_chars[(v >> 12) & 0x3f];
-        out[o++] = (i + 1 < inlen) ? b64_chars[(v >> 6) & 0x3f] : '=';
-        out[o++] = '=';
-    }
-    if (o < outsz) out[o] = '\0';
-    else if (outsz > 0) out[outsz - 1] = '\0';
-}
-
-/* ── Minimal HTTP/1.1 JSON-RPC client ──────────────────────────────
- *
- * No libcurl, no allocations beyond the response buffer. Times out
- * via SO_RCVTIMEO / SO_SNDTIMEO. Returns the response body in `body`
- * (caller-provided) or false on any I/O error. */
-
-static bool http_rpc_call(const char *host, int port,
-                          const char *user, const char *pass,
-                          const char *body_json,
-                          char *resp, size_t resp_cap,
-                          char *err, size_t err_sz)
-{
-    int fd = socket(AF_INET, SOCK_STREAM, 0);
-    if (fd < 0) {
-        snprintf(err, err_sz, "socket: %s", strerror(errno));
-        return false;
-    }
-
-    struct timeval tv = { .tv_sec = ORACLE_RPC_TIMEOUT_SECS, .tv_usec = 0 };
-    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
-    setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
-
-    struct sockaddr_in sa = {0};
-    sa.sin_family = AF_INET;
-    sa.sin_port = htons((uint16_t)port);
-    if (inet_pton(AF_INET, host, &sa.sin_addr) != 1) {
-        close(fd);
-        snprintf(err, err_sz, "bad host: %s", host);
-        return false;
-    }
-
-    if (connect(fd, (struct sockaddr *)&sa, sizeof(sa)) != 0) {
-        snprintf(err, err_sz, "connect %s:%d: %s",
-                 host, port, strerror(errno));
-        close(fd);
-        return false;
-    }
-
-    /* Build Basic auth header */
-    char userpass[256];
-    snprintf(userpass, sizeof(userpass), "%s:%s",
-             user ? user : "", pass ? pass : "");
-    char b64[384];
-    base64_encode((const unsigned char *)userpass, strlen(userpass),
-                  b64, sizeof(b64));
-
-    /* Build full request */
-    char req[1024];
-    int reqlen = snprintf(req, sizeof(req),
-        "POST / HTTP/1.1\r\n"
-        "Host: %s:%d\r\n"
-        "Authorization: Basic %s\r\n"
-        "Content-Type: application/json\r\n"
-        "Content-Length: %zu\r\n"
-        "Connection: close\r\n"
-        "\r\n"
-        "%s",
-        host, port, b64, strlen(body_json), body_json);
-    if (reqlen < 0 || (size_t)reqlen >= sizeof(req)) {
-        close(fd);
-        snprintf(err, err_sz, "request too large");
-        return false;
-    }
-
-    /* Send */
-    ssize_t sent = 0;
-    while (sent < reqlen) {
-        ssize_t n = send(fd, req + sent, (size_t)(reqlen - sent), 0);
-        if (n <= 0) {
-            snprintf(err, err_sz, "send: %s", strerror(errno));
-            close(fd);
-            return false;
-        }
-        sent += n;
-    }
-
-    /* Receive into resp buffer */
-    size_t total = 0;
-    while (total + 1 < resp_cap) {
-        ssize_t n = recv(fd, resp + total, resp_cap - total - 1, 0);
-        if (n < 0) {
-            snprintf(err, err_sz, "recv: %s", strerror(errno));
-            close(fd);
-            return false;
-        }
-        if (n == 0) break;
-        total += (size_t)n;
-    }
-    resp[total] = '\0';
-    close(fd);
-
-    if (total == 0) {
-        snprintf(err, err_sz, "empty response");
-        return false;
-    }
-    return true;
-}
 
 /* Split HTTP head/body and parse JSON-RPC result. Returns the hex
  * string from .result on success. On error, writes a message to err.
@@ -367,10 +175,9 @@ bool zclassicd_oracle_probe(int height,
         "{\"jsonrpc\":\"1.0\",\"id\":\"zcl-oracle\","
         "\"method\":\"getblockhash\",\"params\":[%d]}", height);
 
-    char resp[ORACLE_RESPONSE_MAX];
-    if (!http_rpc_call(host, port, user, pass, body,
-                       resp, sizeof(resp),
-                       out->error_msg, sizeof(out->error_msg))) {
+    char *resp = NULL;
+    if (!legacy_rpc_call(host, port, user, pass, body, &resp,
+                         out->error_msg, sizeof(out->error_msg))) {
         out->error = true;
         atomic_fetch_add(&g_oracle.rpc_errors, 1);
         atomic_store(&g_oracle.last_probed_height, height);
@@ -383,10 +190,12 @@ bool zclassicd_oracle_probe(int height,
 
     if (!parse_rpc_hex_result(resp, out->their_hash,
                               out->error_msg, sizeof(out->error_msg))) {
+        free(resp);
         out->error = true;
         atomic_fetch_add(&g_oracle.rpc_errors, 1);
         return true;
     }
+    free(resp);
 
     /* Our-side lookup */
     out->our_have_block = our_hash_at_height(height, out->our_hash);
@@ -479,8 +288,8 @@ bool zclassicd_oracle_init(const struct zclassicd_oracle_config *cfg)
     if (need_user || need_pass) {
         int port_from_conf = g_oracle.rpc_port;
         char u[64] = {0}, p[128] = {0};
-        if (parse_zclassic_conf(u, sizeof(u), p, sizeof(p),
-                                &port_from_conf)) {
+        if (legacy_rpc_parse_conf(u, sizeof(u), p, sizeof(p),
+                                  &port_from_conf)) {
             if (need_user)
                 snprintf(g_oracle.rpc_user, sizeof(g_oracle.rpc_user),
                          "%s", u);
