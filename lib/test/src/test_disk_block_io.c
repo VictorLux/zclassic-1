@@ -38,7 +38,7 @@ static bool write_test_block(const char *datadir, struct disk_block_pos *pos,
     b.header.nTime = ntime;
     b.header.nBits = 0x2000ffff;
     b.num_vtx = 1;
-    b.vtx = calloc(1, sizeof(struct transaction)); // raw-alloc-ok
+    b.vtx = calloc(1, sizeof(struct transaction)); // raw-alloc-ok:test-fixture
     transaction_init(&b.vtx[0]);
     transaction_alloc(&b.vtx[0], 1, 1);
     b.vtx[0].vin[0].sequence = 0xffffffff;

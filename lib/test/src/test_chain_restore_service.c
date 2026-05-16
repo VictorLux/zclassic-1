@@ -782,7 +782,7 @@ static bool write_block_fixture(const char *datadir,
     b.header.nTime    = 1700000000;
     b.header.nBits    = nbits_value;
     b.num_vtx = 1;
-    b.vtx = calloc(1, sizeof(struct transaction)); // raw-alloc-ok: test fixture
+    b.vtx = calloc(1, sizeof(struct transaction)); // raw-alloc-ok:test-fixture
     transaction_init(&b.vtx[0]);
     transaction_alloc(&b.vtx[0], 1, 1);
     b.vtx[0].vin[0].sequence = 0xffffffff;

@@ -431,7 +431,7 @@ static void handle_client(struct rpc_conn conn)
             rpc_http_middleware_record_success(&g_middleware, client_ip_be);
 
         size_t cap = 131072;
-        char *buf = zcl_malloc(cap, "http_read_buf"); // raw-alloc-ok
+        char *buf = zcl_malloc(cap, "http_read_buf");
         if (!buf) {
             const char *oom = "out of memory";
             send_response_with_type(&conn, 500, "Internal Server Error",
@@ -540,7 +540,7 @@ static void handle_client(struct rpc_conn conn)
         goto done;
     }
 
-    char *body = zcl_malloc(content_length + 1, "http_body"); // raw-alloc-ok
+    char *body = zcl_malloc(content_length + 1, "http_body");
     if (!body) goto done;
 
     if (!read_exact(&conn, body, content_length)) {
@@ -597,7 +597,7 @@ static void handle_client(struct rpc_conn conn)
     bool response_ok = rpc_http_test_build_response_envelope(
         rpc_ok, req.method, &result, &req.id, &response);
 
-    char *resp_buf = zcl_malloc(4 * 1024 * 1024, "http_resp_buf"); // raw-alloc-ok
+    char *resp_buf = zcl_malloc(4 * 1024 * 1024, "http_resp_buf");
     if (resp_buf && response_ok) {
         size_t resp_len = json_write(&response, resp_buf, 4 * 1024 * 1024);
         send_response(&conn, 200, "OK", resp_buf, resp_len);
