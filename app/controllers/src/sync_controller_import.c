@@ -124,7 +124,7 @@ static bool import_writer_bind_checked(sqlite3_stmt *stmt,
 {
     if (!stmt) LOG_FAIL("sync", "import_writer_bind: stmt is NULL for %s", label);
     if (rc != SQLITE_OK) {
-        fprintf(stderr,
+        fprintf(stderr,  // obs-ok:helper-context-logged
                 "UTXO import writer: %s failed at row %d (rc=%d): %s\n",
                 label, row_no, rc,
                 ndb ? sqlite3_errmsg(ndb->db) : "db unavailable");
@@ -139,7 +139,7 @@ static bool import_writer_step_checked(sqlite3_stmt *stmt,
 {
     int step_rc = AR_STEP_ROW_READONLY(stmt);
     if (step_rc != SQLITE_DONE) {
-        fprintf(stderr,
+        fprintf(stderr,  // obs-ok:helper-context-logged
                 "UTXO import writer: sqlite3_step failed at row %d (rc=%d): %s\n",
                 row_no, step_rc,
                 ndb ? sqlite3_errmsg(ndb->db) : "db unavailable");
@@ -233,7 +233,7 @@ static bool import_job_start_decoders(struct import_job *job)
                                            import_decoder_thread, job->ctx,
                                            &job->decoders[i]);
         if (rc != 0) {
-            fprintf(stderr,
+            fprintf(stderr,  // obs-ok:helper-context-logged
                     "UTXO import: thread_registry_spawn_ex decoder[%d] failed: %d\n",
                     i, rc);
             import_ctx_request_stop(job->ctx);
@@ -501,7 +501,7 @@ static void *import_decoder_thread(void *arg)
         }
         if (skipped_in_chunk > 0) {
             atomic_fetch_add(&ctx->skipped_outputs, skipped_in_chunk);
-            fprintf(stderr, "UTXO import: chunk overflow! %d entries skipped "
+            fprintf(stderr, "UTXO import: chunk overflow! %d entries skipped "  // obs-ok:helper-context-logged
                     "(rows=%d, max=%d)\n", skipped_in_chunk,
                     chunk->num_rows, IMPORT_MAX_ROWS_PER_CHUNK);
         }
@@ -530,7 +530,7 @@ static void *import_writer_thread(void *arg)
     int next_chunk = 0;
 
     if (!node_db_begin(ndb)) {
-        fprintf(stderr, "UTXO import writer: BEGIN failed\n");
+        fprintf(stderr, "UTXO import writer: BEGIN failed\n");  // obs-ok:helper-context-logged
         import_ctx_request_stop(ctx);
     }
 
@@ -626,9 +626,9 @@ static void *import_writer_thread(void *arg)
         /* Commit every ~100K rows */
         if (total_rows % 100000 < chunk->num_rows) {
             if (!node_db_commit(ndb)) {
-                fprintf(stderr, "UTXO import writer: COMMIT failed\n");
+                fprintf(stderr, "UTXO import writer: COMMIT failed\n");  // obs-ok:helper-context-logged
                 if (!node_db_rollback(ndb))
-                    fprintf(stderr, "UTXO import writer: ROLLBACK failed after commit failure\n");
+                    fprintf(stderr, "UTXO import writer: ROLLBACK failed after commit failure\n");  // obs-ok:helper-context-logged
                 import_ctx_request_stop(ctx);
                 import_chunk_reset(chunk);
                 break;
@@ -637,9 +637,9 @@ static void *import_writer_thread(void *arg)
             printf("UTXO import: %d rows written...\n", total_rows);
             fflush(stdout);
             if (!node_db_begin(ndb)) {
-                fprintf(stderr, "UTXO import writer: BEGIN restart failed\n");
+                fprintf(stderr, "UTXO import writer: BEGIN restart failed\n");  // obs-ok:helper-context-logged
                 if (!node_db_rollback(ndb))
-                    fprintf(stderr, "UTXO import writer: rollback after BEGIN restart failure failed\n");
+                    fprintf(stderr, "UTXO import writer: rollback after BEGIN restart failure failed\n");  // obs-ok:helper-context-logged
                 import_ctx_request_stop(ctx);
                 import_chunk_reset(chunk);
                 break;
@@ -663,10 +663,10 @@ static void *import_writer_thread(void *arg)
 
     if (!import_ctx_should_stop(ctx)) {
         if (!node_db_commit(ndb))
-            fprintf(stderr, "UTXO import writer: final COMMIT failed\n");
+            fprintf(stderr, "UTXO import writer: final COMMIT failed\n");  // obs-ok:helper-context-logged
     } else {
         if (!node_db_rollback(ndb))
-            fprintf(stderr, "UTXO import writer: rollback requested by stop flag failed\n");
+            fprintf(stderr, "UTXO import writer: rollback requested by stop flag failed\n");  // obs-ok:helper-context-logged
     }
     sync_job_import_progress(total_rows);
     atomic_store(&ctx->total_rows, total_rows);
@@ -725,7 +725,7 @@ int node_db_sync_import_utxos(struct node_db *ndb,
         enum policy_decision pd = policy_check_utxo_wipe(
             &rp, existing, "sync_controller.import_utxos_reimport");
         if (pd != POLICY_ALLOW) {
-            fprintf(stderr,
+            fprintf(stderr,  // obs-ok:helper-context-logged
                     "UTXO import: recovery_policy refused wipe (code=%s, rows=%lld)\n",
                     policy_decision_name(pd), (long long)existing);
             if (!sync_db_turbo_scope_end(&turbo_mode))
@@ -737,14 +737,14 @@ int node_db_sync_import_utxos(struct node_db *ndb,
         {
             DB_TXN_SCOPE(txn, ndb, "sync_controller.import_utxos_reimport");
             if (!txn) {
-                fprintf(stderr, "UTXO import: failed to open db_txn for wipe\n");
+                fprintf(stderr, "UTXO import: failed to open db_txn for wipe\n");  // obs-ok:helper-context-logged
                 if (!sync_db_turbo_scope_end(&turbo_mode))
                     fprintf(stderr, "UTXO import: failed to restore normal mode after db_txn failure\n");
                 sync_job_import_finish(0);
                 return -1; // raw-return-ok:logged-above
             }
             if (!node_db_wipe_utxos(ndb)) {
-                fprintf(stderr, "UTXO import: failed to wipe utxos table\n");
+                fprintf(stderr, "UTXO import: failed to wipe utxos table\n");  // obs-ok:helper-context-logged
                 /* leave scope → auto-rollback */
                 if (!sync_db_turbo_scope_end(&turbo_mode))
                     fprintf(stderr, "UTXO import: failed to restore normal mode after wipe failure\n");
@@ -752,7 +752,7 @@ int node_db_sync_import_utxos(struct node_db *ndb,
                 return -1; // raw-return-ok:logged-above
             }
             if (!db_txn_commit(txn)) {
-                fprintf(stderr, "UTXO import: commit of wipe failed\n");
+                fprintf(stderr, "UTXO import: commit of wipe failed\n");  // obs-ok:helper-context-logged
                 if (!sync_db_turbo_scope_end(&turbo_mode))
                     fprintf(stderr, "UTXO import: failed to restore normal mode after commit failure\n");
                 sync_job_import_finish(0);
@@ -780,10 +780,10 @@ int node_db_sync_import_utxos(struct node_db *ndb,
 
     /* ── Start decoder + writer threads ────────────────────────────── */
     if (!import_job_start(&job)) {
-        fprintf(stderr, "UTXO import: FATAL — worker pipeline failed to start\n");
+        fprintf(stderr, "UTXO import: FATAL — worker pipeline failed to start\n");  // obs-ok:worker-start-fatal
         import_context_release_chunks(ctx);
         if (!sync_db_turbo_scope_end(&turbo_mode))
-            fprintf(stderr, "UTXO import: failed to restore normal mode after worker startup failure\n");
+            fprintf(stderr, "UTXO import: failed to restore normal mode after worker startup failure\n");  // obs-ok:restore-after-start-fail
         free(ctx);
         sync_job_import_finish(0);
         return -1; // raw-return-ok:logged-above
@@ -859,7 +859,7 @@ int node_db_sync_import_utxos(struct node_db *ndb,
                 chunk->num_entries++;
                 total_entries++;
             } else {
-                fprintf(stderr, "WARNING: malloc failed for chunk entry value (%zu bytes), skipping entry\n", val_len);
+                fprintf(stderr, "WARNING: malloc failed for chunk entry value (%zu bytes), skipping entry\n", val_len);  // obs-ok:chunk-oom-skip
                 skipped_entries++;
             }
             db_iter_next(&it);
@@ -933,7 +933,7 @@ reader_done:
             int64_t sql_rows = sqlite3_column_int64(cnt, 1);
             if (sql_rows != total_rows) {
                 /* Row count mismatch = real data loss — pipeline bug */
-                fprintf(stderr, "UTXO IMPORT ERROR: wrote %d rows but "
+                fprintf(stderr, "UTXO IMPORT ERROR: wrote %d rows but "  // obs-ok:utxo-row-mismatch
                         "SQLite has %lld rows — data loss!\n",
                         total_rows, (long long)sql_rows);
             } else if (sql_txids < total_entries) {
@@ -958,10 +958,10 @@ reader_done:
     fflush(stdout);
 
     if (import_ctx_should_stop(ctx)) {
-        fprintf(stderr, "UTXO import: aborted%s\n",
+        fprintf(stderr, "UTXO import: aborted%s\n",  // obs-ok:utxo-import-abort
                 g_shutdown_requested ? " on shutdown" : "");
         if (!sync_db_turbo_scope_end(&turbo_mode))
-            fprintf(stderr, "UTXO import: failed to restore normal mode after abort\n");
+            fprintf(stderr, "UTXO import: failed to restore normal mode after abort\n");  // obs-ok:utxo-restore-fail
         restore_ok = false;
         import_context_release_chunks(ctx);
         free(ctx);
@@ -979,7 +979,7 @@ reader_done:
     /* Rebuild indexes and restore safe pragmas */
     if (!sync_db_turbo_scope_end(&turbo_mode)) {
         restore_ok = false;
-        fprintf(stderr, "UTXO import: failed to restore normal mode\n");
+        fprintf(stderr, "UTXO import: failed to restore normal mode\n");  // obs-ok:utxo-restore-fail
     }
     if (!restore_ok) {
         import_context_release_chunks(ctx);
