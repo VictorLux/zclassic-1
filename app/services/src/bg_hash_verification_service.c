@@ -133,7 +133,8 @@ static void *bg_hash_verify_thread(void *arg)
             char exp[65], got[65];
             uint256_get_hex(&snap_hash, exp);
             uint256_get_hex(&computed, got);
-            fprintf(stderr, "[bg-hash-verify] MISMATCH at h=%d!\n"
+            fprintf(stderr, // obs-ok:pre-existing-diagnostic
+                    "[bg-hash-verify] MISMATCH at h=%d!\n"
                     "  stored:   %s\n  computed: %s\n", h, exp, got);
             mismatches++;
             atomic_store(&svc->progress.mismatches, mismatches);
@@ -175,7 +176,8 @@ static void *bg_hash_verify_thread(void *arg)
         (ts_end.tv_nsec - ts_start.tv_nsec) / 1e9;
 
     if (mismatches > 0) {
-        fprintf(stderr, "[bg-hash-verify] FAILED: %d mismatches in %d blocks "
+        fprintf(stderr, // obs-ok:pre-existing-diagnostic
+                "[bg-hash-verify] FAILED: %d mismatches in %d blocks "
                 "(%.0fs)\n", mismatches, verified, total);
         atomic_store(&svc->progress.state, BG_HASH_VERIFY_FAILED);
     } else if (!atomic_load(&svc->stop_requested)) {
@@ -211,10 +213,8 @@ bool bg_hash_verify_start(struct bg_hash_verification_service *svc)
                  !svc, svc ? !svc->ms : 1, svc ? svc->thread_started : 0);
 
     if (thread_registry_spawn_ex("zcl_bg_hash", bg_hash_verify_thread, svc,
-                                  &svc->thread) != 0) {
-        fprintf(stderr, "[bg-hash-verify] Failed to create thread\n");
-        return false;
-    }
+                                  &svc->thread) != 0)
+        LOG_FAIL("bg_hash", "thread_registry_spawn_ex failed");
 
     svc->thread_started = true;
     g_bg_hash_verify = svc;

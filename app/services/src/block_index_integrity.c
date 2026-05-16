@@ -29,6 +29,7 @@
 
 #include "services/chain_state_repository.h"
 #include "crypto/sha3.h"
+#include "encoding/utilstrencodings.h"
 #include "util/safe_alloc.h"
 #include "event/event.h"
 #include "core/uint256.h"
@@ -192,11 +193,8 @@ bool bii_write_sidecar(const char *datadir)
     snprintf(tmp_path, sizeof(tmp_path), "%s.tmp", side_path);
 
     struct stat st;
-    if (stat(body_path, &st) != 0) {
-        fprintf(stderr, "bii_write_sidecar: stat %s: %s\n",
-                body_path, strerror(errno));
-        return false;
-    }
+    if (stat(body_path, &st) != 0)
+        LOG_FAIL("bii", "stat %s: %s", body_path, strerror(errno));
 
     struct bii_sidecar_header hdr;
     memset(&hdr, 0, sizeof(hdr));
@@ -205,10 +203,8 @@ bool bii_write_sidecar(const char *datadir)
     hdr.body_size = (uint64_t)st.st_size;
 
     uint64_t hashed_size = 0;
-    if (!bii_hash_body(body_path, hdr.body_sha3, &hashed_size)) {
-        fprintf(stderr, "bii_write_sidecar: hash body failed\n");
-        return false;
-    }
+    if (!bii_hash_body(body_path, hdr.body_sha3, &hashed_size))
+        LOG_FAIL("bii", "hash body failed");
     /* stat size and streamed size must agree — disagreement means
      * something is truncating the file concurrently, which is a
      * bigger problem than this function can solve. */
@@ -376,10 +372,8 @@ enum bii_verdict bii_verify(const char *datadir,
     if (memcmp(actual_hash, hdr.body_sha3, 32) != 0) {
         if (err_out) {
             char exp[65], got[65];
-            for (int i = 0; i < 32; i++) {
-                sprintf(exp + i*2, "%02x", hdr.body_sha3[i]);
-                sprintf(got + i*2, "%02x", actual_hash[i]);
-            }
+            HexStr(hdr.body_sha3, 32, false, exp, sizeof(exp));
+            HexStr(actual_hash, 32, false, got, sizeof(got));
             snprintf(err_out, err_cap,
                     "body sha3 mismatch expected=%s actual=%s",
                     exp, got);

@@ -34,6 +34,7 @@
 #include "core/random.h"
 #include "core/uint256.h"
 #include "crypto/sha3.h"
+#include "encoding/utilstrencodings.h"
 #include "event/event.h"
 #include "config/runtime.h"
 #include "rpc/legacy_chain_oracle.h"
@@ -285,11 +286,14 @@ static int64_t snapsync_staging_count(struct node_db *ndb)
     int64_t result = -1;
 
     if (!ndb || !ndb->open || !ndb->db)
-        return -1;
+        LOG_ERR("snapshot_sync", "staging_count: ndb=%p open=%d db=%p",
+                (void*)ndb, ndb ? ndb->open : 0,
+                ndb ? (void*)ndb->db : NULL);
     if (sqlite3_prepare_v2(ndb->db,
             "SELECT COUNT(*) FROM " SNAPSYNC_STAGING_TABLE,
             -1, &st, NULL) != SQLITE_OK)
-        return -1;
+        LOG_ERR("snapshot_sync", "staging_count: prepare failed: %s",
+                sqlite3_errmsg(ndb->db));
     if (AR_STEP_ROW_READONLY(st) == SQLITE_ROW)
         result = sqlite3_column_int64(st, 0);
     sqlite3_finalize(st);
@@ -515,16 +519,12 @@ static bool snapsync_begin_receive_write(struct node_db *ndb, void *ctx)
 
     node_db_get_status(ndb, &status);
     if (status.tx_open) {
-        if (!node_db_sync_flush(ndb)) {
-            fprintf(stderr, "[snapsync] begin_receive: failed to flush stale transaction\n");
-            return false;
-        }
+        if (!node_db_sync_flush(ndb))
+            LOG_FAIL("snapshot_sync", "begin_receive: failed to flush stale transaction");
         node_db_get_status(ndb, &status);
         if (status.tx_open) {
-            if (!node_db_commit(ndb)) {
-                fprintf(stderr, "[snapsync] begin_receive: failed to close stale transaction\n");
-                return false;
-            }
+            if (!node_db_commit(ndb))
+                LOG_FAIL("snapshot_sync", "begin_receive: failed to close stale transaction");
         }
     }
     /* Reset the isolated staging namespace only. Active utxos remain
@@ -783,11 +783,8 @@ static bool snapsync_finalize_write(struct node_db *ndb, void *ctx)
         return true;
     } else {
         char exp[65], got[65];
-
-        for (int i = 0; i < 32; i++) {
-            sprintf(exp + i*2, "%02x", svc->offered_utxo_root[i]);
-            sprintf(got + i*2, "%02x", local_root[i]);
-        }
+        HexStr(svc->offered_utxo_root, 32, false, exp, sizeof(exp));
+        HexStr(local_root, 32, false, got, sizeof(got));
         if (!snapsync_exit_turbo_mode(svc))
             event_emitf(EV_SNAPSYNC_VERIFIED, serving_peer_id,
                         "snapshot=FAILED reason=turbo_exit_failed");

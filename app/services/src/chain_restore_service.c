@@ -233,17 +233,14 @@ struct block_index *chain_restore_execute(
     if (plan->should_create_anchor) {
         target = chain_restore_create_anchor(
             ms, &plan->anchor_hash, plan->anchor_height);
-        if (!target) {
-            fprintf(stderr, "chain_restore: anchor creation failed\n");
-            return NULL;
-        }
+        if (!target)
+            LOG_NULL("chain_restore", "anchor creation failed at h=%d",
+                     plan->anchor_height);
         printf("Chain restore: anchor at h=%d\n", plan->anchor_height);
     } else if (plan->next_state == CHAIN_RESTORE_FOUND_IN_INDEX) {
         target = block_map_find(&ms->map_block_index, &plan->anchor_hash);
-        if (!target) {
-            fprintf(stderr, "chain_restore: hash in plan but not in map\n");
-            return NULL;
-        }
+        if (!target)
+            LOG_NULL("chain_restore", "hash in plan but not in block_map");
     }
 
     if (!target)

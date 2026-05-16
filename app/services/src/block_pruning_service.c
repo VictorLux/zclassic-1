@@ -169,7 +169,8 @@ int block_pruning_run_once(struct block_pruning_service *svc)
         disk_block_io_unlock();
 
         if (!blk_ok) {
-            fprintf(stderr, "[prune] %s:%d %s(): failed to delete %s: %s\n",
+            fprintf(stderr, // obs-ok:pre-existing-diagnostic
+                    "[prune] %s:%d %s(): failed to delete %s: %s\n",
                     __FILE__, __LINE__, __func__, blk_path, strerror(errno));
             continue;
         }
@@ -285,7 +286,8 @@ void block_pruning_init(struct block_pruning_service *svc,
         if (v >= BLOCK_PRUNING_MIN_KEEP_BLOCKS)
             keep = v;
         else
-            fprintf(stderr, "[prune] ZCL_PRUNE_KEEP_BLOCKS=%s too low "
+            fprintf(stderr, // obs-ok:pre-existing-diagnostic
+                    "[prune] ZCL_PRUNE_KEEP_BLOCKS=%s too low "
                     "(min %d), using default %d\n",
                     env, BLOCK_PRUNING_MIN_KEEP_BLOCKS,
                     BLOCK_PRUNING_DEFAULT_KEEP_BLOCKS);
@@ -306,10 +308,8 @@ bool block_pruning_start(struct block_pruning_service *svc)
     atomic_store(&svc->stop_requested, false);
     svc->ready = false;
     if (thread_registry_spawn_ex("zcl_block_prune", block_pruning_thread, svc,
-                                  &svc->thread) != 0) {
-        fprintf(stderr, "[prune] failed to create thread: %s\n", strerror(errno));
-        return false;
-    }
+                                  &svc->thread) != 0)
+        LOG_FAIL("block_pruning", "failed to create thread: %s", strerror(errno));
     svc->thread_started = true;
 
     /* Wait for thread to confirm it's running — no sleeps, no races. */

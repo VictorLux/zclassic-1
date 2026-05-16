@@ -18,6 +18,7 @@
 #include "services/addrman_integrity.h"
 
 #include "crypto/sha3.h"
+#include "encoding/utilstrencodings.h"
 #include "event/event.h"
 
 #include <errno.h>
@@ -120,11 +121,8 @@ bool aii_write_sidecar(const char *datadir)
     snprintf(tmp_path, sizeof(tmp_path), "%s.tmp", side_path);
 
     struct stat st;
-    if (stat(body_path, &st) != 0) {
-        fprintf(stderr, "aii_write_sidecar: stat %s: %s\n",
-                body_path, strerror(errno));
-        return false;
-    }
+    if (stat(body_path, &st) != 0)
+        LOG_FAIL("aii", "stat %s: %s", body_path, strerror(errno));
 
     struct aii_sidecar_header hdr;
     memset(&hdr, 0, sizeof(hdr));
@@ -133,24 +131,16 @@ bool aii_write_sidecar(const char *datadir)
     hdr.body_size = (uint64_t)st.st_size;
 
     uint64_t hashed_size = 0;
-    if (!aii_hash_body(body_path, hdr.body_sha3, &hashed_size)) {
-        fprintf(stderr, "aii_write_sidecar: hash body failed\n");
-        return false;
-    }
-    if (hashed_size != hdr.body_size) {
-        fprintf(stderr,
-                "aii_write_sidecar: size drift stat=%llu hashed=%llu\n",
-                (unsigned long long)hdr.body_size,
-                (unsigned long long)hashed_size);
-        return false;
-    }
+    if (!aii_hash_body(body_path, hdr.body_sha3, &hashed_size))
+        LOG_FAIL("aii", "hash body failed");
+    if (hashed_size != hdr.body_size)
+        LOG_FAIL("aii", "size drift stat=%llu hashed=%llu",
+                 (unsigned long long)hdr.body_size,
+                 (unsigned long long)hashed_size);
 
     FILE *f = fopen(tmp_path, "wb");
-    if (!f) {
-        fprintf(stderr, "aii_write_sidecar: fopen %s: %s\n",
-                tmp_path, strerror(errno));
-        return false;
-    }
+    if (!f)
+        LOG_FAIL("aii", "fopen %s: %s", tmp_path, strerror(errno));
     if (fwrite(&hdr, sizeof(hdr), 1, f) != 1) {
         fprintf(stderr, "aii_write_sidecar: fwrite failed\n");
         fclose(f);
@@ -254,10 +244,8 @@ enum aii_verdict aii_verify(const char *datadir,
     if (memcmp(actual_hash, hdr.body_sha3, 32) != 0) {
         if (err_out) {
             char exp[65], got[65];
-            for (int i = 0; i < 32; i++) {
-                sprintf(exp + i*2, "%02x", hdr.body_sha3[i]);
-                sprintf(got + i*2, "%02x", actual_hash[i]);
-            }
+            HexStr(hdr.body_sha3, 32, false, exp, sizeof(exp));
+            HexStr(actual_hash, 32, false, got, sizeof(got));
             snprintf(err_out, err_cap,
                     "body sha3 mismatch expected=%s actual=%s",
                     exp, got);
@@ -279,7 +267,7 @@ static void aii_rename_if_present(const char *src, int64_t ts,
     char dst[1200];
     snprintf(dst, sizeof(dst), "%s.corrupt.%lld", src, (long long)ts);
     if (rename(src, dst) != 0) {
-        fprintf(stderr,
+        fprintf(stderr, // obs-ok:pre-existing-diagnostic
                 "aii_quarantine: rename %s -> %s failed: %s\n",
                 src, dst, strerror(errno));
         return;
