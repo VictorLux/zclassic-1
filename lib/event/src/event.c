@@ -453,7 +453,7 @@ void event_dump_recent(size_t count)
     if (count > EVENT_LOG_SIZE) count = EVENT_LOG_SIZE;
     uint64_t start = end > count ? end - count : 0;
 
-    fprintf(stderr, "\n═══ EVENT LOG (last %zu of %llu total) ═══\n",
+    fprintf(stderr, "\n═══ EVENT LOG (last %zu of %llu total) ═══\n",  // obs-ok:crash-dump-banner
             count, (unsigned long long)end);
 
     for (uint64_t i = start; i < end; i++) {
@@ -461,12 +461,12 @@ void event_dump_recent(size_t count)
         uint64_t seq = atomic_load_explicit(&ev->sequence,
                                              memory_order_acquire);
         if (seq != i + 1) {
-            fprintf(stderr, "[%llu] <overwritten>\n", (unsigned long long)i);
+            fprintf(stderr, "[%llu] <overwritten>\n", (unsigned long long)i);  // obs-ok:crash-dump-entry
             continue;
         }
         format_event(stderr, ev);
     }
-    fprintf(stderr, "═══ END EVENT LOG ═══\n\n");
+    fprintf(stderr, "═══ END EVENT LOG ═══\n\n");  // obs-ok:crash-dump-banner
     /* P7.3: the crash handler invokes us on SIGABRT just before
      * _exit(); stderr is fully-buffered under systemd's file-
      * redirected StandardError, so any fprintf we did above sits in
