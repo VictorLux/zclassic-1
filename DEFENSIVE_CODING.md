@@ -9,40 +9,71 @@ any new code.
 
 ---
 
-## 1. Every write goes through AR_BEGIN_SAVE — no exceptions
+## 1. Every write goes through the AR lifecycle — no exceptions
 
-**Problem:** `coins_view_sqlite.c` and `wallet_sqlite.c` call
-`sqlite3_step()` directly with no validation. This is how we lost 1.3M
-UTXOs on 2026-04-10.
+**Problem:** `coins_view_sqlite.c` and `wallet_sqlite.c` historically
+called `sqlite3_step()` directly with no validation. This is how we lost
+1.3M UTXOs on 2026-04-10.
 
-**Enforcement:** Add a compile-time ban on raw `sqlite3_step` in
-application code.
+**Enforcement:** Compile-time ban on raw `sqlite3_step` in application
+code, plus a CI lint that re-checks the same surface.
 
 ```c
 /* In activerecord.h — poison raw sqlite3_step in app code */
 #ifdef ZCL_AR_ENFORCE
   /* Any file that includes activerecord.h cannot call sqlite3_step directly.
-   * Use AR_STEP_ROW() or AR_STEP_DONE() which go through the AR macros.
-   * To opt out (e.g. in lib/storage internals), #define ZCL_AR_RAW_SQL
-   * before including activerecord.h. */
+   * Use the AR lifecycle macros instead. To opt out (e.g. in
+   * lib/storage internals), #define ZCL_AR_RAW_SQL before include. */
   #ifndef ZCL_AR_RAW_SQL
     #define sqlite3_step(x) \
-      _Pragma("GCC error \"Use AR_STEP_ROW/AR_STEP_DONE, not raw sqlite3_step\"")
+      _Pragma("GCC error \"Use the AR lifecycle macros, not raw sqlite3_step\"")
   #endif
 #endif
 ```
 
-Files that legitimately need raw SQL (the storage primitives in
-`lib/storage/src/coins_view_sqlite.c`) opt out with `#define
-ZCL_AR_RAW_SQL`. The Makefile adds `-DZCL_AR_ENFORCE` globally. This
-makes raw SQL a conscious, visible decision — not a silent default.
+**The three lifecycle entry points (all defined in `activerecord.h`):**
 
-**Status: shipped (Wave 3).** The ratchet allowlist at
-`tools/scripts/raw_sqlite_allowlist.txt` is empty. All production writes
-across `app/models/src/`, `app/controllers/src/`, `app/services/src/`,
-and `lib/wallet/src/wallet_sqlite.c` route through `AR_BEGIN_SAVE` /
-`AR_STEP_ROW` / `AR_STEP_DONE`. `make lint` runs `check_raw_sqlite.sh`
-as one of 10 mandatory gates.
+| Macro | When to use | What it does |
+|-------|-------------|--------------|
+| `AR_BEGIN_SAVE(cbs, name, rec, validate_fn)` + `AR_FINISH_SAVE(cbs, rec, ok)` | You build the statement yourself between the two macros (e.g. multi-statement transactions, conditional binds) | `AR_VALIDATE_RECORD` → `before_save` hook → your code → `after_save` hook → `return ok` |
+| `AR_ADHOC_SAVE(ndb, stmt, sql, cbs, name, rec, validate_fn, bind_code)` | Single locally-prepared INSERT/UPDATE statement (the common case) | Wraps `AR_BEGIN_SAVE` + `AR_PREPARE_BOOL` + your bind block + `AR_FINALIZE_STEP_DONE` + `AR_FINISH_SAVE` |
+| `AR_CACHED_SAVE(stmt, cbs, name, rec, validate_fn, bind_code)` | Hot path with a cached prepared statement already owned by `node_db` | Same lifecycle, skips the prepare — call `AR_RESET(stmt)` and bind |
+
+All three invoke the same `validate_*` + `before_save` + `after_save`
+chain, so model hooks fire identically regardless of which one the
+caller picked. Pick the one that fits the call site.
+
+**Minimal call-site (the common case — `AR_ADHOC_SAVE`):**
+
+```c
+bool db_wallet_key_save(struct node_db *ndb, const struct db_wallet_key *k) {
+    if (!ndb->open) return false;
+    wallet_key_init_hooks();
+    struct ar_callbacks *cbs = db_wallet_key_callbacks();
+    sqlite3_stmt *s = NULL;
+    AR_ADHOC_SAVE(ndb, s,
+        "INSERT OR REPLACE INTO wallet_keys(pubkey_hash,pubkey,privkey,"
+        "compressed,created_at) VALUES(?,?,?,?,?)",
+        cbs, "wallet_key", k, db_wallet_key_validate,
+        AR_BIND_BLOB(s, 1, k->pubkey_hash, 20);
+        AR_BIND_BLOB(s, 2, k->pubkey, (int)k->pubkey_len);
+        AR_BIND_BLOB(s, 3, k->privkey, 32);
+        AR_BIND_INT(s, 4, k->compressed ? 1 : 0);
+        AR_BIND_INT(s, 5, k->created_at));
+}
+```
+
+Files that legitimately need raw SQL (storage primitives in
+`lib/storage/src/coins_view_sqlite.c`) opt out with `#define
+ZCL_AR_RAW_SQL`. The Makefile adds `-DZCL_AR_ENFORCE` globally. Raw SQL
+becomes a conscious, visible decision.
+
+**Status: shipped (Wave 3, extended through Wave 6).** The ratchet
+allowlist at `tools/scripts/raw_sqlite_allowlist.txt` is empty. All
+production writes across `app/models/src/`, `app/controllers/src/`,
+`app/services/src/`, and `lib/wallet/src/wallet_sqlite.c` route through
+the AR lifecycle (one of the three macros above). `make lint` runs
+`check_raw_sqlite.sh` as gate #3 of 11.
 
 ---
 

@@ -5,7 +5,7 @@
 **Read [`DEFENSIVE_CODING.md`](./DEFENSIVE_CODING.md) before writing any code.**
 
 Key rules enforced by the compiler and CI:
-- **Every write goes through `AR_BEGIN_SAVE`** — no raw `sqlite3_step()` in app code
+- **Every write goes through the AR lifecycle** — `AR_BEGIN_SAVE` + `AR_FINISH_SAVE`, or the combined `AR_ADHOC_SAVE` (locally-prepared stmt) / `AR_CACHED_SAVE` (cached stmt). No raw `sqlite3_step()` in app code. See `app/models/include/models/activerecord.h`.
 - **Every error return must log context** — use `LOG_FAIL()`, `LOG_ERR()`, `LOG_NULL()` from `util/log_macros.h`
 - **Every malloc must be checked** — use `zcl_malloc(size, "label")` from `util/safe_alloc.h`
 - **Every MCP handler must set an error body** — never `return -1;` without explaining why
