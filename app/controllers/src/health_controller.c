@@ -332,5 +332,5 @@ void register_health_rpc_commands(struct rpc_table *t)
         { "control", "getsyncdiag",       rpc_getsyncdiag,       true },
     };
     for (size_t i = 0; i < sizeof(cmds) / sizeof(cmds[0]); i++)
-        rpc_table_append(t, &cmds[i]);
+        rpc_table_must_append(t, &cmds[i]);
 }

@@ -312,5 +312,5 @@ void register_market_rpc_commands(struct rpc_table *t)
         { "market", "zmarket_status", rpc_zmarket_status, true },
     };
     for (size_t i = 0; i < sizeof(cmds) / sizeof(cmds[0]); i++)
-        rpc_table_append(t, &cmds[i]);
+        rpc_table_must_append(t, &cmds[i]);
 }

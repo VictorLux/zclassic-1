@@ -89,6 +89,43 @@ bool rpc_table_append(struct rpc_table *t, const struct rpc_command *cmd)
     return true;
 }
 
+void rpc_table_must_append(struct rpc_table *t, const struct rpc_command *cmd)
+{
+    if (rpc_table_append(t, cmd))
+        return;
+
+    /* Determine why the append failed so the abort message names the
+     * exact pathology. Boot-time invariant: every registrar registers
+     * cleanly OR the operator gets a precise diagnosis. */
+    const char *reason;
+    if (t->running)
+        reason = "table_already_running";
+    else if (rpc_table_find(t, cmd->name))
+        reason = "duplicate_name";
+    else if (t->num_commands >= MAX_RPC_COMMANDS)
+        reason = "table_full_cap_256";
+    else
+        reason = "unknown";
+
+    /* Emit one node.log line so the failure is greppable via zcl_node_log,
+     * then a louder FATAL on stderr so systemd journal captures it too.
+     * We can't use LOG_FAIL here — that macro `return false`s, but this
+     * function is void: the only acceptable outcome is abort(). The
+     * abort() below is the terminal observable; pairing it with an
+     * event would be lost in the noise of unwinding. */
+    fprintf(stderr, "[rpc] %s:%d %s(): "  // obs-ok:abort-follows-this-line
+            "registration_failed name=%s category=%s reason=%s count=%zu\n",
+            __FILE__, __LINE__, __func__,
+            cmd->name ? cmd->name : "(null)",
+            cmd->category ? cmd->category : "(null)",
+            reason, t->num_commands);
+    fprintf(stderr,  // obs-ok:abort-follows-this-line
+            "FATAL: rpc_table_must_append(\"%s\") failed: %s (count=%zu/%d)\n",
+            cmd->name ? cmd->name : "(null)", reason,
+            t->num_commands, MAX_RPC_COMMANDS);
+    abort();
+}
+
 const struct rpc_command *rpc_table_find(const struct rpc_table *t,
                                          const char *name)
 {

@@ -777,7 +777,16 @@ check-long-functions:
 	@echo "══ LINT: long function cap (500 lines) ══"
 	@./tools/scripts/check_long_functions.sh
 
-lint: check-malloc check-silent-errors check-raw-sqlite check-raw-malloc check-coins-lookup-nullcheck check-observability-pairing check-silent-errors-services check-silent-errors-controllers check-before-save-hooks check-pthread-create check-model-validation check-long-functions
+# Wave 9a: every register_*_rpc_commands callsite uses rpc_table_must_append.
+# rpc_table_append returns false silently on registration failure (duplicate
+# name / MAX_RPC_COMMANDS cap / table running) — that silent failure mode
+# left the control-group RPCs unreachable for a release cycle. The
+# must_append variant aborts at boot with a precise reason.
+check-rpc-registrar:
+	@echo "══ LINT: rpc_table_must_append in registrars ══"
+	@./tools/scripts/check_rpc_registrar.sh
+
+lint: check-malloc check-silent-errors check-raw-sqlite check-raw-malloc check-coins-lookup-nullcheck check-observability-pairing check-silent-errors-services check-silent-errors-controllers check-before-save-hooks check-pthread-create check-model-validation check-long-functions check-rpc-registrar
 	@echo "══ LINT: all checks passed ══"
 
 ci: lint zclassic23 test_zcl

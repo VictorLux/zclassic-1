@@ -867,5 +867,5 @@ void register_repair_rpc_commands(struct rpc_table *t)
         { "blockchain", "rescanblockfiles", rpc_rescanblockfiles, false },
     };
     for (size_t i = 0; i < sizeof(cmds) / sizeof(cmds[0]); i++)
-        rpc_table_append(t, &cmds[i]);
+        rpc_table_must_append(t, &cmds[i]);
 }

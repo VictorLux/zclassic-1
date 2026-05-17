@@ -455,5 +455,5 @@ void register_hodl_rpc_commands(struct rpc_table *t)
         { "blockchain", "gethodlwaveimage", rpc_gethodlwaveimage, true },
     };
     for (size_t i = 0; i < sizeof(cmds) / sizeof(cmds[0]); i++)
-        rpc_table_append(t, &cmds[i]);
+        rpc_table_must_append(t, &cmds[i]);
 }

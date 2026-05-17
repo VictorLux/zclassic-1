@@ -43,6 +43,12 @@ struct rpc_table {
 
 void rpc_table_init(struct rpc_table *t);
 bool rpc_table_append(struct rpc_table *t, const struct rpc_command *cmd);
+/* Boot-time variant: aborts (with a precise reason in node.log + stderr)
+ * if the registration fails. Failed registration during boot is a
+ * programmer error (duplicate name, MAX_RPC_COMMANDS cap, or table
+ * already running) — not a recoverable runtime fault. Use this in
+ * every register_*_rpc_commands() callsite. */
+void rpc_table_must_append(struct rpc_table *t, const struct rpc_command *cmd);
 const struct rpc_command *rpc_table_find(const struct rpc_table *t,
                                          const char *name);
 bool rpc_table_execute(const struct rpc_table *t, const char *method,
