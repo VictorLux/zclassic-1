@@ -4,6 +4,7 @@
 
 #include "models/database.h"
 #include "models/db_txn.h"
+#include "event/event.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -441,8 +442,25 @@ enum chain_evidence_controller_result chain_evidence_controller_promote_tip(
                                  name, strlen(name) + 1);
     }
     if (!persisted) {
-        chain_evidence_controller_freeze(authority,
-            "tip promotion evidence persistence failed before csr commit");
+        /* Wave 9o: persistence failure is transient (SQLite contention,
+         * mid-write commit clash, etc.) — NOT a chain-state contradiction.
+         * Pre-9o this called chain_evidence_controller_freeze() which
+         * sets state=CEC_CONTRADICTION_FROZEN permanently, rejecting
+         * EVERY subsequent commit with "(frozen)" and wedging the node
+         * on the first sqlite hiccup. The wedge was reproducible on
+         * fresh-datadir genesis-up sync at h=3 where the first persist
+         * failed once and the chain never advanced again. Freeze is
+         * reserved for true contradictions (evidence integrity
+         * violations, snapshot/index disagreement). Caller retries on
+         * REJECTED_PERSIST. */
+        fprintf(stderr,  // obs-ok:transient-persist-failure-emits-event-below
+                "[cec] tip promotion persist failure (transient) h=%d — "
+                "controller stays in state=%s for retry\n",
+                request->new_tip->nHeight,
+                chain_evidence_controller_state_name(old_state));
+        event_emitf(EV_CHAIN_TIP_REJECTED, 0,
+                    "code=cec_persist_transient h=%d",
+                    request->new_tip->nHeight);
         authority->state = old_state;
         return CEC_REJECTED_PERSIST;
     }
