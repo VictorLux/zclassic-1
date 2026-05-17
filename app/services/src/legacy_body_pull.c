@@ -33,6 +33,7 @@
 #include "validation/main_state.h"
 #include "validation/chainstate.h"
 #include "validation/process_block.h"
+#include "models/database.h"
 #include "consensus/validation.h"
 #include "chain/chain.h"
 #include "chain/chainparams.h"
@@ -361,7 +362,18 @@ bool legacy_body_pull_range_blocking(struct main_state *ms,
     int skipped_have_data = 0;
     int skipped_failed = 0;
     int last_log_h = -1;
+    int last_checkpoint_h = from_height;
     bool ok = true;
+
+    /* Wave 9f: WAL checkpoint cadence. Body-pull runs node.db in IBD
+     * turbo mode (synchronous=OFF), so each applied block lands in the
+     * WAL without an fsync. Without periodic checkpointing the WAL grows
+     * unbounded for the full pull duration — 2026-05-17 observed 11 GB
+     * WAL when SIGTERM landed mid-pull, which then took 73 s of
+     * sqlite_open_migrate to recover on the next boot. A passive
+     * checkpoint every 200 blocks bounds rewind to ~200 blocks on
+     * SIGKILL and keeps next-boot WAL recovery sub-second. */
+    const int LBP_CHECKPOINT_INTERVAL_BLOCKS = 200;
 
     for (int h = from_height; h <= to_height; h++) {
         if (thread_registry_shutdown_requested()) {
@@ -484,6 +496,31 @@ bool legacy_body_pull_range_blocking(struct main_state *ms,
                     applied, h, to_height);
             last_log_h = h;
         }
+
+        /* Wave 9f: periodic PASSIVE wal checkpoint to bound WAL growth
+         * and rewind cost on SIGKILL. PASSIVE never blocks writers; it
+         * just truncates the part of the WAL that's already been
+         * committed into the main DB. node_db_wal_checkpoint() runs
+         * (TRUNCATE) which is stronger but still cheap when called
+         * frequently. */
+        if (h - last_checkpoint_h >= LBP_CHECKPOINT_INTERVAL_BLOCKS) {
+            struct node_db *ndb = process_block_get_node_db();
+            if (ndb) {
+                /* Best-effort: failures here aren't fatal — they only
+                 * mean the next checkpoint will catch up. Body-pull
+                 * continues. */
+                (void)node_db_wal_checkpoint(ndb);
+            }
+            last_checkpoint_h = h;
+        }
+    }
+
+    /* Final flush before returning so the next boot doesn't have to
+     * recover an uncheckpointed tail. */
+    {
+        struct node_db *ndb = process_block_get_node_db();
+        if (ndb)
+            (void)node_db_wal_checkpoint(ndb);
     }
 
     fprintf(stderr,  // obs-ok:pre-existing-diagnostic
