@@ -1207,23 +1207,17 @@ bool snapsync_awaiting_utxos(void)
     struct snapshot_sync_service *svc = app_runtime_snapshot_sync();
     if (!svc) {
         if (!snapsync_global_initialized()) {
-            /* Service not yet initialized.  Check UTXO count directly
-             * via the global node_db.  If UTXOs are low, we're likely
-             * awaiting a P2P snapshot — do NOT connect blocks. */
-            struct node_db *ndb = app_runtime_node_db();
-            if (ndb && ndb->open) {
-                int64_t utxo_count = 0;
-                sqlite3_stmt *sc = NULL;
-                if (sqlite3_prepare_v2(ndb->db,
-                        "SELECT COUNT(*) FROM utxos", -1, &sc, NULL)
-                    == SQLITE_OK && sc) {
-                    if (AR_STEP_ROW_READONLY(sc) == SQLITE_ROW)
-                        utxo_count = sqlite3_column_int64(sc, 0);
-                    sqlite3_finalize(sc);
-                }
-                if (utxo_count < 100000)
-                    return true;
-            }
+            /* Wave 9m: previously returned true if utxo_count < 100000,
+             * which on a fresh-datadir genesis-up sync wedged
+             * activation_should_connect at SKIP_AWAITING_UTXOS — no
+             * snapshot service ever initializes for a node that's
+             * doing P2P sync from scratch, so the check stayed true
+             * forever and no block could ever connect.
+             *
+             * If the snapsync service isn't even initialized, this
+             * is by definition not an active snapshot exchange.
+             * Return false so the chain can sync via standard P2P
+             * block-by-block connection. */
             return false;
         }
         svc = snapsync_global();
@@ -1268,9 +1262,20 @@ bool snapsync_awaiting_utxos(void)
 
     /* If we get here, UTXO count is low (<100K) — check if snapshot
      * sync is still a possibility (not yet completed or permanently failed
-     * with no hope of recovery). */
-    if (st.state != SNAPSYNC_FAILED)
-        return true;  /* still waiting for snapshot */
+     * with no hope of recovery).
+     *
+     * Wave 9m: SNAPSYNC_IDLE is not the same as "actively waiting".
+     * On a fresh-datadir node where no peer is offering a snapshot,
+     * snapsync stays in IDLE indefinitely — but treating IDLE as
+     * "awaiting" wedges genesis-up P2P sync (activation_should_connect
+     * returns SKIP_AWAITING_UTXOS, no block ever connects, the chain
+     * stays at h=0 forever even as block bodies arrive). Only treat
+     * NEGOTIATING / RECEIVING / VERIFYING as "actively waiting".
+     * In IDLE state, fall back to genesis-up sync. */
+    if (st.state == SNAPSYNC_NEGOTIATING ||
+        st.state == SNAPSYNC_RECEIVING ||
+        st.state == SNAPSYNC_VERIFYING)
+        return true;  /* actively in a snapshot exchange */
 
     return false;
 }
