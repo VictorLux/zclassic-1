@@ -2,7 +2,7 @@
 
 Pure C23 full node + decentralized web platform for ZClassic.
 
-One binary. Zero dependencies. 26MB.
+One binary. Zero dependencies. 15MB.
 
 ## Quick Start
 
@@ -52,7 +52,7 @@ ZClassic23 is a complete rewrite of zclassicd in pure C23. Every node is simulta
 - [docs/spec/power-node-contract.md](docs/spec/power-node-contract.md): power-node contract surface
 
 ```
-zclassic23 binary (26MB, statically linked)
+zclassic23 binary (15MB, statically linked)
 ├── Full node         P2P port 8033, RPC port 18232
 ├── Tor (embedded)    .onion hosting via dynhost (in-process, no SOCKS)
 ├── MVC framework     Models (SQLite), Controllers (C23), Views (HTML/JSON)
@@ -66,7 +66,7 @@ zclassic23 binary (26MB, statically linked)
 
 | Target | Description |
 |--------|-------------|
-| `make zclassic23` | Main binary (26MB, zero system deps) |
+| `make zclassic23` | Main binary (15MB, zero system deps) |
 | `make test` | Run 1500+ tests |
 | `make zcl-rpc` | Lightweight CLI RPC client |
 | `make zcl-nodectl` | Compiled node lifecycle + follow verifier |
@@ -80,7 +80,7 @@ zclassic23 binary (26MB, statically linked)
 main.c               Entry point (server + CLI dual mode)
 app/
   models/             SQLite persistence (ActiveRecord pattern)
-  controllers/        RPC handlers (27), HTTP routes, sync, blog, store
+  controllers/        RPC handlers (142), HTTP routes, sync, blog, store
   views/              JSON + HTML serializers
 config/               Boot, shutdown, global state
 lib/
@@ -118,7 +118,7 @@ All endpoints return JSON with CORS headers.
 | `GET /api/events?count=N` | Event log (lock-free ring buffer) |
 | `GET /api/health` | Health check (HTTP 200/503) |
 
-See the RPC tool table in [CLAUDE.md](CLAUDE.md#mcp-server-model-context-protocol) for the full surface (100+ RPC methods exposed via MCP plus the raw `zcl_rpc` escape hatch).
+See the RPC tool table in [CLAUDE.md](CLAUDE.md#mcp-server-model-context-protocol) for the full surface (142 RPC methods exposed via MCP plus the raw `zcl_rpc` escape hatch).
 
 ## Block Explorer
 
