@@ -94,8 +94,4 @@ bool rpc_reindexchainstate(const struct json_value *params, bool help,
 bool rpc_importchainstate(const struct json_value *params, bool help,
                           struct json_value *result);
 
-/* blockchain_controller_indexlegacy.c */
-bool rpc_indexlegacy(const struct json_value *params, bool help,
-                     struct json_value *result);
-
 #endif

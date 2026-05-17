@@ -10,7 +10,6 @@
  *   blockchain_controller_blocks.c       — block accessor RPCs
  *   blockchain_controller_chain.c        — chain info + commitments
  *   blockchain_controller_admin.c        — reindex / import
- *   blockchain_controller_indexlegacy.c  — legacy zclassicd import
  *
  * See blockchain_controller_internal.h for cross-sibling declarations. */
 
@@ -332,7 +331,6 @@ void register_blockchain_rpc_commands(struct rpc_table *t)
         /* HODL wave commands in hodl_controller.c */
         { "blockchain", "reindexchainstate",    rpc_reindexchainstate,     false },
         { "blockchain", "importchainstate",     rpc_importchainstate,       false },
-        { "blockchain", "indexlegacy",          rpc_indexlegacy,            false },
         { "blockchain", "getutxocommitment",   rpc_getutxocommitment,     true },
         { "blockchain", "getutxoaudit",        rpc_getutxoaudit,          true },
         { "blockchain", "getmmrroot",          rpc_getmmrroot,            true },

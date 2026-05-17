@@ -2375,9 +2375,10 @@ bool app_init(struct app_context *ctx)
                     }
                 }
 
-                /* Promote validation status from SQLite (indexlegacy
-                 * sets BLOCK_HAVE_DATA|BLOCK_HAVE_UNDO|BLOCK_VALID_SCRIPTS
-                 * for all blocks it successfully indexes) */
+                /* Promote validation status from SQLite. A prior import
+                 * (e.g. -cold-import) may have persisted BLOCK_HAVE_DATA,
+                 * BLOCK_HAVE_UNDO, and BLOCK_VALID_SCRIPTS into the
+                 * SQLite block_index ahead of this in-memory load. */
                 if (status > 0 && (bi->nStatus & BLOCK_VALID_MASK) <
                     (unsigned)(status & BLOCK_VALID_MASK)) {
                     bi->nStatus = (bi->nStatus & ~(unsigned)BLOCK_VALID_MASK) |

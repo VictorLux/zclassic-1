@@ -403,6 +403,3 @@ bool rpc_importchainstate(const struct json_value *params, bool help,
     fflush(stdout);
     return true;
 }
-
-/* ── indexlegacy: import full chain from zclassicd LevelDB → our SQLite ── */
-

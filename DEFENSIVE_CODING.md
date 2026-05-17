@@ -352,10 +352,7 @@ refactored into per-section emit helpers, each under ~120 lines.
 as one function may carry `// long-function-ok:<tag>` on its
 signature line.  The tag must be a non-empty single token matching
 `[A-Za-z][A-Za-z0-9_-]+` (same syntax as the other lint overrides)
-and describe WHY the rule does not apply. The only tagged survivor
-is `rpc_indexlegacy` (`blockchain_controller_indexlegacy.c:516`),
-1316L, tagged `legacy-import-state-machine` — a single deterministic
-state machine for legacy datadir import.
+and describe WHY the rule does not apply.
 
 Implementation: `tools/scripts/check_long_functions.sh`.
 

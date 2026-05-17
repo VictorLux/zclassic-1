@@ -8,8 +8,7 @@
 #
 # Override: add `// long-function-ok:<tag>` to the function's signature
 # line if a single state-machine truly belongs as one function.  The
-# tag must explain WHY (e.g. legacy-import-state-machine).  Currently
-# tagged: rpc_indexlegacy (blockchain_controller_indexlegacy.c).
+# tag must explain WHY.
 set -euo pipefail
 LIMIT=500
 fail=0

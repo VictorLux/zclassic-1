@@ -767,12 +767,9 @@ check-model-validation:
 	@echo "══ LINT: model validation coverage ══"
 	@./tools/scripts/check_model_validation.sh
 
-# Move 12: keep top-level functions in app/controllers + app/services
-# under 500 lines.  Two report builders that pre-wave-7d crossed this
-# (explorer_factoids_build = 1389L, explorer_stats_build = 1011L) have
-# been split into per-section emit helpers.  The one survivor by
-# design — rpc_indexlegacy — carries the
-# `// long-function-ok:legacy-import-state-machine` override marker.
+# Keep top-level functions in app/controllers + app/services under 500
+# lines. Single state-machines that truly belong as one function can carry
+# a `// long-function-ok:<tag>` override marker explaining WHY.
 check-long-functions:
 	@echo "══ LINT: long function cap (500 lines) ══"
 	@./tools/scripts/check_long_functions.sh
