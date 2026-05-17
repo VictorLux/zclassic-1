@@ -3231,21 +3231,48 @@ bool connect_tip(struct validation_state *state,
      * while active_chain_tip still points at the previous tip,
      * which is the root cause (repeated `val.block_connected`
      * at the same height forever). Surface it as a system error so
-     * activate_best_chain bubbles up to the caller. */
+     * activate_best_chain bubbles up to the caller.
+     *
+     * Wave 9n: save coins_tip's pre-update hash so we can roll back on
+     * csr rejection. Otherwise coins_view_cache_flush above has already
+     * advanced coins_tip's hash_block to pindex_new's hash, but the csr
+     * commit failed — leaving coins ahead of active_chain. The next
+     * incoming block extending our REAL tip then trips the connect_block
+     * view/prev-block invariant (view=rejected-block-hash !=
+     * incoming-block.prev=our-real-tip-hash) and the chain wedges.
+     * Observed live 2026-05-17 at h=1: active_chain at h=1 hash 0004b3...
+     * but coins_view.hash_block stuck at 0007e5c9... (a rejected
+     * sibling-fork h=2's pre-flush hash). */
+        struct uint256 coins_hash_pre_commit;
+        if (coins_tip) {
+            coins_view_cache_get_best_block(coins_tip, &coins_hash_pre_commit);
+        } else {
+            memset(&coins_hash_pre_commit, 0, sizeof(coins_hash_pre_commit));
+        }
+
 	    stage_start_us = GetTimeMicros();
 	    if (!update_tip(ms, pindex_new)) {
 	        fprintf(stderr, // obs-ok:pre-existing-diagnostic
                 "connect_tip: update_tip rejected h=%d — csr refused "
-                "the commit (see `csr: REJECTED` above). Coins were "
-                "flushed to SQLite but the in-memory chain tip did "
-                "NOT advance; treating as system error.\n",
+                "the commit (see `csr: REJECTED` above). Rolling back "
+                "coins_tip.hash_block to the pre-commit value to keep "
+                "the next view/prev-block check honest. UTXO map "
+                "entries from the rejected block remain in the cache "
+                "but their hash anchor is correct.\n",
                 pindex_new->nHeight);
+        if (coins_tip && pindex_new->pprev && pindex_new->pprev->phashBlock) {
+            /* Restore coins_tip's anchor to the previous tip's hash —
+             * matches active_chain's tip pointer (which did NOT advance). */
+            coins_view_cache_set_best_block(coins_tip,
+                                             pindex_new->pprev->phashBlock);
+        }
         if (pblock == &local_block)
             block_free(&local_block);
         trace_set_status(ct_span, TRACE_STATUS_ERROR);
         trace_end(ct_span);
 	        return validation_state_error(state, "csr-tip-commit-rejected");
 	    }
+        (void)coins_hash_pre_commit;  /* held for future structured rollback */
 	    process_block_log_live_stage(live_height, "update_tip",
 	                                 GetTimeMicros() - stage_start_us);
 	    process_block_check_crash_stage(PBCS_AFTER_UPDATE_TIP);
