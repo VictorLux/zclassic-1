@@ -90,16 +90,47 @@ static int gap_fill_pass(void)
     }
 
     /* Window: collect at most GAPFILL_WINDOW indices from pprev,
-     * stopping at tip_h (exclusive). */
+     * stopping at tip_h (exclusive).
+     *
+     * Wave 9s: when the gap (best_h - tip_h) exceeds GAPFILL_WINDOW,
+     * walking back from `best` for GAPFILL_WINDOW steps gives us the
+     * TOP of the gap (e.g. h=76094..141629 with tip=8911) — but
+     * activate_best_chain needs the BOTTOM of the gap (h=8912..)
+     * to extend the active chain. The far-ahead blocks are useless
+     * until intermediates connect, and they saturate dl_queue
+     * (capacity 65536), preventing the immediate successors from
+     * even being queued. Result: chain wedges at the current tip.
+     *
+     * Walk pprev from `best` down to height `tip_h + window` FIRST
+     * (discarding those entries), then collect the next `window`
+     * entries which end at tip_h+1. That gives the bottom window
+     * of the gap, which is what the active chain needs next. */
     int window = GAPFILL_WINDOW;
     if (best_h - tip_h < window) window = best_h - tip_h;
+
+    struct block_index *walk_start = best;
+    if (best_h - tip_h > window) {
+        /* Step pprev until walk_start->nHeight == tip_h + window. */
+        int target_h = tip_h + window;
+        int steps = 0;
+        while (walk_start && walk_start->nHeight > target_h &&
+               steps++ < GAPFILL_WALK_CAP) {
+            walk_start = walk_start->pprev;
+        }
+        /* If the descent failed (pprev chain broken or step cap),
+         * fall back to original behavior — walk from `best`. */
+        if (!walk_start || walk_start->nHeight != target_h) {
+            walk_start = best;
+        }
+    }
+
     struct block_index **bis = zcl_malloc((size_t)window * sizeof(*bis),
                                           "gap_fill_window");
     if (!bis) {
         zcl_mutex_unlock(&ms->cs_main);
         return 0;
     }
-    int collected = collect_pprev_window(best, tip_h, bis, window);
+    int collected = collect_pprev_window(walk_start, tip_h, bis, window);
     if (collected < 0) {
         zcl_mutex_unlock(&ms->cs_main);
         free(bis);
