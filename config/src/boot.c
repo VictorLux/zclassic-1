@@ -993,6 +993,52 @@ static bool boot_step_bodypull_from_legacy(struct app_context *ctx,
 {
     if (!ctx || !ctx->bodypull_from_legacy) return true;
 
+    /* Wave 9: body-pull is disabled.
+     *
+     * The per-block RPC roundtrip to legacy zclassicd pre-populates
+     * block_index entries with BLOCK_HAVE_DATA but does NOT connect
+     * them into active_chain — process_new_block stores them without
+     * advancing activate_best_chain. The result: a post-bodypull boot
+     * has the active tip stranded at the pre-pull height while the
+     * block_index claims a much higher set of "have_data" entries.
+     * Boot's promote_utxo_height_anchor then commits a CSR tip
+     * through unlinked pprev pointers, leaving active_chain in a
+     * phantom state where c->chain[c->height] is NULL. From there
+     * find_most_work_chain bails in 4 ms (no candidates), reorg
+     * recovery loops with CSR rejections, and the node never
+     * advances. See feedback_bodypull_pathology_2026-05-17.md.
+     *
+     * Cold start: use -cold-import=PATH (bulk-copy LevelDB +
+     * chainstate, empty datadir to legacy tip in ~60 s).
+     * Warm catch-up: P2P sync through normal peers (~2 s/block,
+     * sub-minute for ≤2 k blocks behind tip).
+     *
+     * The flag is accepted to keep existing systemd drop-ins valid;
+     * its presence now triggers this log line and falls through to
+     * the standard P2P sync path. */
+    (void)params;
+    fprintf(stderr,  // obs-ok:deprecation-warning-pre-fallthrough
+        "WARNING: -bodypull-from-legacy=%s is DISABLED in this build.\n"
+        "         The body-pull path stranded active_chain behind the\n"
+        "         pre-populated block_index, causing reorg loops. Use\n"
+        "         -cold-import=PATH for cold start (~60s), or remove\n"
+        "         the flag entirely for warm catch-up via P2P.\n"
+        "         Falling through to standard P2P sync.\n",
+        ctx->bodypull_from_legacy);
+    return true;
+}
+
+/* The original boot_step_bodypull_from_legacy body (header_probe +
+ * legacy_body_pull_range_blocking + node.db turbo-mode toggle) is
+ * deleted in wave 9. The flag is accepted at parse time but the
+ * boot step is a no-op fallthrough above. legacy_body_pull_range_blocking
+ * itself remains as a private helper for local_chain_ingest's phase3-pre
+ * path, which has the same pathology and will be eliminated in a
+ * follow-up wave alongside -importfromlegacy. */
+#if 0
+{
+    if (!ctx || !ctx->bodypull_from_legacy) return true;
+
     printf("\n═══ Body Pull from %s ═══\n", ctx->bodypull_from_legacy);
     fflush(stdout);
 
@@ -1104,6 +1150,7 @@ static bool boot_step_bodypull_from_legacy(struct app_context *ctx,
            (double)t_ms / 1000.0);
     return true;
 }
+#endif /* wave 9: original body-pull boot step disabled */
 
 static bool boot_disk_monitor_service_start(void *ctx)
 {
