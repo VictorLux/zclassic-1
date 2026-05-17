@@ -416,8 +416,13 @@ enum chain_evidence_controller_result chain_evidence_controller_promote_tip(
 
     DB_TXN_SCOPE(txn, authority->ndb, "cec.promote_tip");
     if (!txn) {
-        chain_evidence_controller_freeze(authority,
-            "tip promotion evidence transaction failed");
+        /* Wave 9o: DB_TXN_SCOPE failure is transient (SQLite busy,
+         * nested-txn contention) — same justification as the persist
+         * branch below. Don't freeze the controller; let the caller
+         * retry. */
+        fprintf(stderr,  // obs-ok:transient-txn-failure
+                "[cec] tip promotion txn open failed (transient) h=%d\n",
+                request->new_tip->nHeight);
         return CEC_REJECTED_PERSIST;
     }
 
@@ -509,10 +514,20 @@ enum chain_evidence_controller_result chain_evidence_controller_promote_tip(
     };
     enum csr_result csr = csr_commit_tip(authority->csr, &commit);
     if (csr != CSR_OK) {
-        char msg[160];
-        snprintf(msg, sizeof(msg), "chain_state_repository rejected promotion: %s",
-                 csr_result_name(csr));
-        chain_evidence_controller_freeze(authority, msg);
+        /* Wave 9o: CSR rejections are typically transient or recoverable
+         * (stale_index when block_index races ahead of active_chain,
+         * utxo_delta_too_big when rollback auth missing). Wave 9d/9e
+         * fixed the legitimate cases at the CSR layer. Freezing the
+         * controller on any remaining CSR rejection wedges the node for
+         * the rest of the process lifetime even though the underlying
+         * issue might clear in the next pass. Restore old_state and
+         * return CEC_REJECTED_CSR; the caller retries. */
+        fprintf(stderr,  // obs-ok:csr-rejection-pre-existing-emit
+                "[cec] csr rejected tip promotion h=%d reason=%s — "
+                "controller stays in state=%s for retry\n",
+                request->new_tip->nHeight,
+                csr_result_name(csr),
+                chain_evidence_controller_state_name(old_state));
         authority->state = old_state;
         return CEC_REJECTED_CSR;
     }
