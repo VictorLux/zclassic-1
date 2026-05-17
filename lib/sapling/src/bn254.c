@@ -1790,8 +1790,6 @@ bool ppzksnark_proof_read(struct ppzksnark_proof *proof, const uint8_t data[296]
  *
  * Total for ZCash PHGR13 (ic_len=10): 1449 bytes.
  *
- * Reference: PHGR13_INVESTIGATION.md (wave 7), sections "Reproduction" and
- * "Why the VK parser assumed the wrong format".
  */
 
 /* Read one Fp value from libsnark BINARY_OUTPUT format.

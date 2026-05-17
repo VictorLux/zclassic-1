@@ -393,9 +393,9 @@ void chain_integrity_check_post_restore(struct chain_integrity_result *out,
      * intact across the whole map. Lookups by height that miss go
      * through block_map walks; they're slower but correct.
      *
-     * Round 4 Part 1.5 final: keep tip_window_holes / first_*_height
-     * fields as diagnostic counters but don't gate `ok` on them.
-     * `ok` requires only nBits clean + tip slot populated. */
+     * Keep tip_window_holes / first_*_height fields as diagnostic
+     * counters but don't gate `ok` on them. `ok` requires only nBits
+     * clean + tip slot populated. */
     bool tip_slot_ok =
         (out->tip_height < 0) ||
         (active_chain_at(&ms->chain_active, out->tip_height) != NULL);

@@ -18,11 +18,10 @@
 
 /* chain-tip fsync barrier.
  *
- * Without an fsync after the tip commit, a SIGABRT or power-loss between
- * the SQLite page-cache write and the kernel flush can leave coins ahead
- * of block_index — exactly the corrupt state observed at the start of
- * Round 5 (coins_best_block hash unknown in block_map, integrity gate
- * fail-fast).
+ * Without an fsync after the tip commit, a SIGABRT or power-loss
+ * between the SQLite page-cache write and the kernel flush can leave
+ * coins ahead of block_index — coins_best_block hash unknown in
+ * block_map, integrity gate fail-fast.
  *
  * We call `sqlite3_db_cacheflush()` to push the dirty page cache to the
  * OS, which in WAL mode flushes WAL frames to disk. With

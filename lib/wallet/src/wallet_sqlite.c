@@ -135,9 +135,9 @@ static bool wallet_decrypt_blob(const uint8_t *envelope, size_t env_len,
  * Root cause of the silent-open bug (found while migrating to
  * zcl_result): lib/wallet/src/wallet_sqlite.c prepares statements
  * against six wallet tables, one of which is `wallet_watch_only`.
- * That table was added by commit db6cda4e5 (wave 10, watch-only
- * addresses) — but only to `db/schema.sql`, which is a reference
- * dump and never executed.  The production schema runner in
+ * That table was added (watch-only addresses) but only to
+ * `db/schema.sql`, which is a reference dump and never executed.
+ * The production schema runner in
  * `app/models/src/database.c:SCHEMA[]` never learned about the new
  * table.  On any pre-existing node.db, prepare_v2 returned
  * SQLITE_ERROR for the watch_only statements, the old code fell

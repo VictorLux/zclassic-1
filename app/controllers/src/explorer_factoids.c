@@ -263,12 +263,10 @@ static size_t explorer_factoids_build_verified_summary(uint8_t *buf,
     return off;
 }
 
-/* ── Section emit helpers (extracted from explorer_factoids_build) ──
+/* ── Section emit helpers ──────────────────────────────────────────
  *
  * Each helper appends one logical section of the factoids HTML page
- * starting at `off` and returns the new offset.  All output is
- * byte-for-byte identical to the inline version that lived inside
- * explorer_factoids_build before wave 7d.
+ * starting at `off` and returns the new offset.
  */
 
 static size_t emit_section_1_genesis(uint8_t *buf, size_t cap, size_t off,

@@ -1,7 +1,7 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
  * Defense-in-depth wrapper around `core/random.GetRandBytes` for
- * secret material. Wave 2 / Step J (RNG hygiene).
+ * secret material (RNG hygiene).
  *
  * Why this exists:
  *   `GetRandBytes` in `lib/core/src/random.c` opens /dev/urandom and

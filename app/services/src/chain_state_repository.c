@@ -184,10 +184,10 @@ static enum csr_result csr_validate_locked(
      * set. Combined with a non-trivial UTXO row count it is the
      * exact disaster shape from 2026-04-10.
      *
-     * Wave 9d carve-out: a forward step relative to the CURRENT
-     * active chain tip cannot be a rollback, regardless of what
-     * other blocks the block_index has cached above the active
-     * chain. This shape arises legitimately during body-pull →
+     * Carve-out: a forward step relative to the CURRENT active chain
+     * tip cannot be a rollback, regardless of what other blocks the
+     * block_index has cached above the active chain. This shape arises
+     * legitimately during body-pull →
      * activate_best_chain: body-pull pre-populates the block_index
      * (and SQLite) for hundreds of blocks above the active tip, then
      * activate_best_chain advances the active tip one block at a

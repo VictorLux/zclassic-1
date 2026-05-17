@@ -1,6 +1,6 @@
 # Power-Node Event Taxonomy Audit
 
-P26.8 audit result for service registry, onion gateway, ZClassicDNS, and
+Audit result for service registry, onion gateway, ZClassicDNS, and
 hosted-service health visibility. This is a proposed event contract only; it
 does not change consensus, P2P wire format, wallet behavior, or storage
 behavior.

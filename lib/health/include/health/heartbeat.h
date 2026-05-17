@@ -6,9 +6,8 @@
  * mechanisms (sync_watchdog_service, tip_watchdog, node_health_service,
  * boot_phase, rpc_timeout, plus an out-of-process zcl-watchdog ELF).
  * Each had its own definition of "stuck" and its own thread, and they
- * oscillated between pthread- and alarm-based implementations across
- * the Round 5/6/6.5/7 patches because nobody owned the watchdog
- * layer.
+ * oscillated between pthread- and alarm-based implementations because
+ * nobody owned the watchdog layer.
  *
  * After: every long-running subsystem registers itself once with a
  * declared deadline and an `on_stall` callback. The subsystem calls

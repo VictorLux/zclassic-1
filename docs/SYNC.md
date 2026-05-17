@@ -106,7 +106,7 @@ Rules:
 - To force reimport after it's been run once:
   `./zclassic23 -reimport-utxos -datadir=~/.zclassic-c23`
 
-See `memory/reference_zclassicd_service.md` for managing the legacy peer service.
+The legacy peer ships as the `zclassicd-rhett` systemd user service (see CLAUDE.md "Services").
 
 ### Legacy chain oracle boundary
 

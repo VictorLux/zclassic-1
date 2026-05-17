@@ -4,7 +4,7 @@
  * Montgomery ladder on y^2 = x^3 + 486662*x^2 + x over GF(2^255-19).
  * Based on the TweetNaCl pattern: 16 limbs of ~16 bits each.
  *
- * ── Constant-time properties (Wave 2 / Step H audit, 2026-04-17) ──
+ * ── Constant-time properties ───────────────────────────────────
  *
  * The Montgomery ladder below is constant-time **by construction**, and
  * the rest of this file preserves that property. Three callers feed

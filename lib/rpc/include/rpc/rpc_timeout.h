@@ -1,6 +1,6 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * HTTP RPC request timeout — wave 6 #1.
+ * HTTP RPC request timeout.
  *
  * The RPC server already applies a 5-second `SO_RCVTIMEO` so a client
  * can't sit on the socket reading bytes one-at-a-time.  What it does

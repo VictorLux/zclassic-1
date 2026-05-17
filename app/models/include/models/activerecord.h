@@ -430,9 +430,9 @@ static inline void ar_errors_full_messages(const struct ar_errors *e,
  *     so any aliased handle struct works — for example
  *     `struct wallet_sqlite *` (lib/wallet/include/wallet/wallet_sqlite.h),
  *     which holds a *borrowed* handle to the same `node.db` file.
- *     This is the architectural pin for Wave 3 of the deep-refactor sweep:
- *     all subsystems sharing node.db converge on this one macro family
- *     rather than each growing parallel `XXX_BEGIN_SAVE` machinery.
+ *     All subsystems sharing node.db converge on this one macro
+ *     family rather than each growing parallel `XXX_BEGIN_SAVE`
+ *     machinery.
  *   stmt
  *     local `sqlite3_stmt *` variable for ad hoc statements, or a cached stmt
  *     field like `ndb->stmt_peer_delete` for cached paths.

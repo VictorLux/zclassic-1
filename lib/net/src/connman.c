@@ -943,8 +943,8 @@ static void *thread_socket_handler(void *arg)
                     /* Hard ceiling reached with a live ref. This is a
                      * genuine leak (likely refs never being released by
                      * a stuck message-cycle snapshot). Log loudly — the
-                     * Round 5 signal handler will be invoked if we ever
-                     * abort from this path. */
+                     * signal handler will be invoked if we ever abort
+                     * from this path. */
                     fprintf(stderr, // obs-ok:pre-existing-diagnostic
                             "[connman] %s:%d %s(): deferred_free "
                             "HARD CAP %d reached with ref on node %s — "

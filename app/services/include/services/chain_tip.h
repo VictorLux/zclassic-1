@@ -18,11 +18,7 @@
  * This module exposes a single function that all of those sites
  * SHOULD call. The bare `active_chain_set_tip` survives as a low-level
  * primitive used by this module itself; new callers must use
- * `chain_set_active_tip`.
- *
- * Round 4 Part 3 lands the helper and migrates the 5 most-traveled
- * call sites. Follow-up commits migrate the remaining sites by source
- * file (boot.c is the largest cluster). */
+ * `chain_set_active_tip`. */
 
 #ifndef ZCL_CHAIN_TIP_H
 #define ZCL_CHAIN_TIP_H

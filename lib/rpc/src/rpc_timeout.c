@@ -1,6 +1,6 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * HTTP RPC request timeout watchdog — wave 6 #1.
+ * HTTP RPC request timeout watchdog.
  *
  * See rpc/rpc_timeout.h for the design sketch.  This TU owns the
  * slot table + watchdog thread + global handle.  event_emit() is

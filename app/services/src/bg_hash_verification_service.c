@@ -92,7 +92,7 @@ static void *bg_hash_verify_thread(void *arg)
         /* Take cs_main briefly to snapshot block_index fields.
          * Without this lock, active_chain_set_tip() can realloc the
          * chain array or swap entries during reorgs, causing SIGSEGV
-         * when we read stale/freed pointers. See wave 22b task 3. */
+         * when we read stale/freed pointers. */
         struct disk_block_pos snap_pos;
         struct uint256 snap_hash;
         bool have_data = false;

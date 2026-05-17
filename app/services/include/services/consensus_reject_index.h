@@ -6,11 +6,10 @@
  * ----------
  * When a block or transaction is rejected by `check_block` /
  * `check_transaction`, the emitters fire `EV_CONSENSUS_REJECT_BLOCK`
- * and `EV_CONSENSUS_REJECT_TX` events (wave 7) whose payloads
- * include the rejected hash (wave 8). Those events feed
- * AGENT3's `zcl_consensus_report` metrics endpoint, but metrics
- * alone can't answer the single most important diagnostic
- * question operators ask:
+ * and `EV_CONSENSUS_REJECT_TX` events whose payloads include the
+ * rejected hash. Those events feed the `zcl_consensus_report` metrics
+ * endpoint, but metrics alone can't answer the single most important
+ * diagnostic question operators ask:
  *
  *     "Why was block / tx <HASH> rejected?"
  *

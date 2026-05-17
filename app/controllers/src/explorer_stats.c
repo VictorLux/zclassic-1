@@ -644,12 +644,9 @@ static void gather_chart_data(sqlite3 *db, int tip, double diff,
     }
 }
 
-/* ── Section emit helpers (extracted from explorer_stats_build) ──
+/* ── Section emit helpers ──────────────────────────────────────────
  *
  * Each helper appends one logical section of the stats HTML page.
- * All output is byte-for-byte identical to the inline version that
- * lived inside explorer_stats_build before wave 7d.
- *
  * The stats_ctx struct (defined at top of file) bundles every value
  * gathered during phase 1 so the render helpers don't need a fat
  * parameter list.

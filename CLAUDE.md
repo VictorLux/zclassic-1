@@ -244,7 +244,7 @@ When `-tor` is enabled, zclassic23 embeds a modified Tor (RhettCreighton/tor for
 
 The .onion address is visible via `zcl_status` → `health.checks.onion_address`.
 
-Architecture: `Client → Tor network → dynhost_webserver.c → onion_service_handle_request() → same controllers as HTTPS`
+Architecture: `Client → Tor network → onion_service.c → onion_service_handle_request() → same controllers as HTTPS`
 
 ### Peer Discovery via Onion Directory
 

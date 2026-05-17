@@ -29,7 +29,7 @@
 #include "util/safe_alloc.h"
 
 /* Emit EV_CONSENSUS_REJECT_BLOCK with block hash in the payload.
- * Payload format (wave 8): "hash=<64hex> reason=<name> dos=<n>".
+ * Payload format: "hash=<64hex> reason=<name> dos=<n>".
  * The hash is computed from the supplied header (must be non-NULL).
  * Hash lets consensus_reject_index key rejections by block hash so
  * zcl_explain_reject can answer "why was this block rejected?". */

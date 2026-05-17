@@ -5,10 +5,9 @@
  * The block_index pprev linked list is the most-walked data structure
  * in the node. There are 16+ places in the codebase that traverse it,
  * each with its own (or no) protection against the failure mode
- * "pprev forms a ring after a partial chain restore". The Round 3
- * Part O guards in activate_best_chain showed that a 14-minute silent
- * boot stall came from exactly this — an unbounded walk over a
- * non-monotonic pprev sequence.
+ * "pprev forms a ring after a partial chain restore". A 14-minute
+ * silent boot stall in activate_best_chain came from exactly this —
+ * an unbounded walk over a non-monotonic pprev sequence.
  *
  * pprev_walk_safe is the single helper everyone should use. It
  * enforces three invariants on every step:

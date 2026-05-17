@@ -3,8 +3,8 @@
  * Consensus Reject Index — see header for rationale.
  *
  * Subscribes to EV_CONSENSUS_REJECT_TX and EV_CONSENSUS_REJECT_BLOCK
- * (wave 7 events with wave-8 hash-in-payload extension) and stores
- * the last N entries in a fixed-size ring. Parsing strategy: the
+ * and stores the last N entries in a fixed-size ring. Parsing
+ * strategy: the
  * event payload is a printf'd C string of the shape
  *
  *     "hash=<64hex> reason=<name> dos=<N>"

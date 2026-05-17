@@ -1029,12 +1029,11 @@ static bool boot_step_bodypull_from_legacy(struct app_context *ctx,
 }
 
 /* The original boot_step_bodypull_from_legacy body (header_probe +
- * legacy_body_pull_range_blocking + node.db turbo-mode toggle) is
- * deleted in wave 9. The flag is accepted at parse time but the
- * boot step is a no-op fallthrough above. legacy_body_pull_range_blocking
- * itself remains as a private helper for local_chain_ingest's phase3-pre
- * path, which has the same pathology and will be eliminated in a
- * follow-up wave alongside -importfromlegacy. */
+ * legacy_body_pull_range_blocking + node.db turbo-mode toggle) was
+ * deleted. The flag is accepted at parse time but the boot step is a
+ * no-op fallthrough above. legacy_body_pull_range_blocking itself
+ * remains as a private helper for local_chain_ingest's phase3-pre
+ * path. */
 #if 0
 {
     if (!ctx || !ctx->bodypull_from_legacy) return true;

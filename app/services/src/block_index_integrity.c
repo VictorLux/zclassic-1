@@ -748,10 +748,10 @@ int block_index_repair_pprev(struct main_state *ms, const char *datadir)
 }
 
 /* ──────────────────────────────────────────────────────────────
- * Post-activation anchor repair — Round 4 Part 5
+ * Post-activation anchor repair.
  *
- * Lifted from lib/net/src/msg_headers.c so the inbound P2P
- * handler no longer does structural block-index surgery. */
+ * Lives here (not in lib/net/src/msg_headers.c) so the inbound P2P
+ * handler does not do structural block-index surgery. */
 
 #include "services/chain_restore_service.h"
 #include "services/chain_tip.h"

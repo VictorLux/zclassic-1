@@ -26,7 +26,7 @@ bool check_transaction(const struct transaction *tx,
     bool ok = check_transaction_impl(tx, state);
     /* Emit on invalid (DoS-able) rejections. Skip MODE_ERROR (fatal,
      * internal failures unrelated to consensus) and successful runs.
-     * Payload format (wave 8): "hash=<64hex> reason=<name> dos=<n>".
+     * Payload format: "hash=<64hex> reason=<name> dos=<n>".
      * Hash lets consensus_reject_index key rejections by txid so
      * zcl_explain_reject can answer "why was this txid rejected?". */
     if (!ok && state && state->mode == MODE_INVALID &&

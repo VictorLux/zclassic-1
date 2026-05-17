@@ -2,10 +2,10 @@
  * Distributed under the MIT software license, see the accompanying
  * file COPYING or http://www.opensource.org/licenses/mit-license.php. */
 
-/* Explorer block page: /explorer/block/{hash|height}. Split from
- * explorer_controller.c per wave 6c. See explorer_controller_internal.h
- * for shared declarations and controllers/explorer_internal.h for the
- * EXPLORER_HEADER / APPEND macros. */
+/* Explorer block page: /explorer/block/{hash|height}.
+ * See explorer_controller_internal.h for shared declarations and
+ * controllers/explorer_internal.h for the EXPLORER_HEADER / APPEND
+ * macros. */
 
 #include "controllers/explorer_controller.h"
 #include "controllers/explorer_internal.h"

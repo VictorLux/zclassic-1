@@ -4,8 +4,8 @@
  * ===========================
  *
  * Starts `./zclassic23` with an isolated datadir, drives it for a
- * random interval, SIGKILLs it, restarts it, and asserts that the
- * recovery invariants from wave 3 all still hold:
+ * random interval, SIGKILLs it, restarts it, and asserts the
+ * recovery invariants all still hold:
  *
  *   - UTXO count never decreases across a kill+restart cycle
  *   - Chain tip height never regresses

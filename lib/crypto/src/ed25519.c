@@ -4,7 +4,7 @@
  * Twisted Edwards curve: -x^2 + y^2 = 1 + d*x^2*y^2
  * Field: GF(2^255-19), TweetNaCl-style 16-limb representation.
  *
- * ── Constant-time audit (Wave 2 / Step I, 2026-04-17) ──
+ * ── Constant-time audit ────────────────────────────────────
  *
  * This file is **verify-only**. There is no `ed25519_sign` in the tree
  * (consensus paths only need verify; JoinSplit/Sapling signing happens

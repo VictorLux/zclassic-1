@@ -92,14 +92,14 @@ static int gap_fill_pass(void)
     /* Window: collect at most GAPFILL_WINDOW indices from pprev,
      * stopping at tip_h (exclusive).
      *
-     * Wave 9s: when the gap (best_h - tip_h) exceeds GAPFILL_WINDOW,
-     * walking back from `best` for GAPFILL_WINDOW steps gives us the
-     * TOP of the gap (e.g. h=76094..141629 with tip=8911) — but
-     * activate_best_chain needs the BOTTOM of the gap (h=8912..)
-     * to extend the active chain. The far-ahead blocks are useless
-     * until intermediates connect, and they saturate dl_queue
-     * (capacity 65536), preventing the immediate successors from
-     * even being queued. Result: chain wedges at the current tip.
+     * When the gap (best_h - tip_h) exceeds GAPFILL_WINDOW, walking
+     * back from `best` for GAPFILL_WINDOW steps gives us the TOP of
+     * the gap (e.g. h=76094..141629 with tip=8911) — but
+     * activate_best_chain needs the BOTTOM of the gap (h=8912..) to
+     * extend the active chain. The far-ahead blocks are useless until
+     * intermediates connect, and they saturate dl_queue (capacity
+     * 65536), preventing the immediate successors from even being
+     * queued. Result: chain wedges at the current tip.
      *
      * Walk pprev from `best` down to height `tip_h + window` FIRST
      * (discarding those entries), then collect the next `window`
