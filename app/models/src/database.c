@@ -800,15 +800,13 @@ bool node_db_state_get(struct node_db *ndb, const char *key,
 {
     if (!ndb->open) return false;
 
-    /* Wave 9t: prepare a fresh statement per call rather than reusing
-     * the cached ndb->stmt_state_get. SQLite statements are not
+    /* Prepare a fresh statement per call rather than reusing the
+     * cached ndb->stmt_state_get. SQLite statements are not
      * thread-safe — concurrent calls from chain_advance's worker
      * thread + the wallet/Sapling witness thread + the boot-state
-     * logger thread were racing on the shared statement object,
-     * corrupting internal buffers and triggering SIGABRT (FATAL
-     * SIGNAL 6 in libc memcpy → stack-canary check). Live evidence
-     * 2026-05-17: two crashes in 10 minutes, both with
-     * node_db_state_get on the stack from a worker thread.
+     * logger thread race on the shared statement object, corrupting
+     * internal buffers and triggering SIGABRT (FATAL SIGNAL 6 in libc
+     * memcpy → stack-canary check).
      *
      * Per-call prepare adds a sub-millisecond cost per lookup; that's
      * fine because state_get is not a hot path (called once per

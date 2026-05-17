@@ -365,12 +365,12 @@ bool legacy_body_pull_range_blocking(struct main_state *ms,
     int last_checkpoint_h = from_height;
     bool ok = true;
 
-    /* Wave 9f: WAL checkpoint cadence. Body-pull runs node.db in IBD
-     * turbo mode (synchronous=OFF), so each applied block lands in the
-     * WAL without an fsync. Without periodic checkpointing the WAL grows
-     * unbounded for the full pull duration — 2026-05-17 observed 11 GB
-     * WAL when SIGTERM landed mid-pull, which then took 73 s of
-     * sqlite_open_migrate to recover on the next boot. A passive
+    /* WAL checkpoint cadence. Body-pull runs node.db in IBD turbo mode
+     * (synchronous=OFF), so each applied block lands in the WAL
+     * without an fsync. Without periodic checkpointing the WAL grows
+     * unbounded for the full pull duration (observed 11 GB WAL when
+     * SIGTERM landed mid-pull, which then took 73 s of
+     * sqlite_open_migrate to recover on the next boot). A passive
      * checkpoint every 200 blocks bounds rewind to ~200 blocks on
      * SIGKILL and keeps next-boot WAL recovery sub-second. */
     const int LBP_CHECKPOINT_INTERVAL_BLOCKS = 200;
@@ -497,8 +497,8 @@ bool legacy_body_pull_range_blocking(struct main_state *ms,
             last_log_h = h;
         }
 
-        /* Wave 9f: periodic PASSIVE wal checkpoint to bound WAL growth
-         * and rewind cost on SIGKILL. PASSIVE never blocks writers; it
+        /* Periodic PASSIVE wal checkpoint to bound WAL growth and
+         * rewind cost on SIGKILL. PASSIVE never blocks writers; it
          * just truncates the part of the WAL that's already been
          * committed into the main DB. node_db_wal_checkpoint() runs
          * (TRUNCATE) which is stronger but still cheap when called

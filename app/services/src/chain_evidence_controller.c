@@ -378,16 +378,16 @@ enum chain_evidence_controller_result chain_evidence_controller_promote_tip(
     if (!state_allows_tip_promotion(authority->state))
         return CEC_REJECTED_BAD_STATE;
     if (!chain_evidence_record_has_block_index_required(&request->verified)) {
-        /* Wave 9r: this used to call freeze(), permanently wedging the
-         * controller. But during genesis-up sync the evidence flags
-         * (header_ancestry_linked, chainwork_recomputed, nakamoto_
-         * selected_best_work, block_bytes_hash_checked) can be
-         * temporarily missing on a re-arrival of a block whose
-         * evidence record was constructed before all the flags were
-         * stamped — e.g. a stale cached record from a prior reorg
-         * disconnect, or a worker-thread race that constructs the
-         * record before block_index_integrity has finished marking it.
-         * Permanent freeze on this transient shape blocks the chain
+        /* Don't freeze the controller on a missing-flag record: during
+         * genesis-up sync the evidence flags (header_ancestry_linked,
+         * chainwork_recomputed, nakamoto_selected_best_work,
+         * block_bytes_hash_checked) can be temporarily missing on a
+         * re-arrival of a block whose evidence record was constructed
+         * before all the flags were stamped — e.g. a stale cached
+         * record from a prior reorg disconnect, or a worker-thread
+         * race that constructs the record before block_index_integrity
+         * has finished marking it. Permanent freeze on this transient
+         * shape blocks the chain
          * forever. The actual integrity of new_tip is checked further
          * down by csr_validate_locked (tip-in-index, hash-match,
          * sql-cross-check) before the commit lands. Returning
@@ -437,14 +437,13 @@ enum chain_evidence_controller_result chain_evidence_controller_promote_tip(
         old_state == CEC_HEADERS_WORK_VALIDATED)
         next_state = CEC_TIP_FOLLOWING;
 
-    /* Wave 9p: chain_advance opens a node.db transaction at its step 3
-     * (line ~158 of chain_advance.c) BEFORE calling process_block_commit_tip
-     * which routes here. db_txn_begin correctly refuses nesting and
-     * returns NULL — that wedged the chain at h=N with one retry per
-     * block. Detect the outer transaction and skip our own DB_TXN_SCOPE:
-     * the persist calls below will join the existing transaction, and
-     * the caller's commit/rollback will atomically close both our
-     * evidence persistence AND the block-index write.
+    /* chain_advance opens a node.db transaction at its step 3 BEFORE
+     * calling process_block_commit_tip which routes here. db_txn_begin
+     * correctly refuses nesting and returns NULL. Detect the outer
+     * transaction and skip our own DB_TXN_SCOPE: the persist calls
+     * below will join the existing transaction, and the caller's
+     * commit/rollback will atomically close both our evidence
+     * persistence AND the block-index write.
      *
      * When no outer txn exists (e.g. standalone csr_commit_tip from a
      * test or boot anchor promote), open our own and commit at end.
@@ -488,12 +487,12 @@ enum chain_evidence_controller_result chain_evidence_controller_promote_tip(
                                  name, strlen(name) + 1);
     }
     if (!persisted) {
-        /* Wave 9o: persistence failure is transient (SQLite contention,
-         * mid-write commit clash, etc.) — NOT a chain-state contradiction.
-         * Pre-9o this called chain_evidence_controller_freeze() which
-         * sets state=CEC_CONTRADICTION_FROZEN permanently, rejecting
-         * EVERY subsequent commit with "(frozen)" and wedging the node
-         * on the first sqlite hiccup. The wedge was reproducible on
+        /* Persistence failure is transient (SQLite contention,
+         * mid-write commit clash, etc.) — NOT a chain-state
+         * contradiction. Do not freeze: that sets
+         * state=CEC_CONTRADICTION_FROZEN permanently, rejecting EVERY
+         * subsequent commit with "(frozen)" and wedging the node on
+         * the first sqlite hiccup. The wedge was reproducible on
          * fresh-datadir genesis-up sync at h=3 where the first persist
          * failed once and the chain never advanced again. Freeze is
          * reserved for true contradictions (evidence integrity
@@ -511,7 +510,7 @@ enum chain_evidence_controller_result chain_evidence_controller_promote_tip(
         return CEC_REJECTED_PERSIST;
     }
 
-    /* Wave 9e: when the new tip is below the current active tip, this
+    /* When the new tip is below the current active tip, this
      * "promotion" is in fact a disconnect — used by disconnect_tip
      * during sibling-fork reorg recovery. The evidence controller has
      * already vetted the new tip via chain_evidence_record; pass that
@@ -520,13 +519,14 @@ enum chain_evidence_controller_result chain_evidence_controller_promote_tip(
      * rollback. Without this, sibling_fork_rollback wedges at the
      * disconnect step with utxo_delta_too_big.
      *
-     * Wave 9e-fix: use active_chain_height() rather than old_tip pointer
-     * for the comparison. After a body-pull anchor promotion that walked
-     * back through unlinked pprev pointers, c->chain[c->height] can be
-     * NULL while c->height is non-negative — `active_chain_tip()`
-     * returns NULL in that phantom state, but CSR step 7 still computes
-     * from_height from `active_chain_height()` and fires the orphan-rows
-     * guard. Comparing against the height field directly closes the gap. */
+     * Use active_chain_height() rather than old_tip pointer for the
+     * comparison. After a body-pull anchor promotion that walked back
+     * through unlinked pprev pointers, c->chain[c->height] can be NULL
+     * while c->height is non-negative — `active_chain_tip()` returns
+     * NULL in that phantom state, but CSR step 7 still computes
+     * from_height from `active_chain_height()` and fires the
+     * orphan-rows guard. Comparing against the height field directly
+     * closes the gap. */
     int old_active_height = (authority->csr && authority->csr->chain_active)
         ? active_chain_height(authority->csr->chain_active)
         : -1;
@@ -555,14 +555,14 @@ enum chain_evidence_controller_result chain_evidence_controller_promote_tip(
     };
     enum csr_result csr = csr_commit_tip(authority->csr, &commit);
     if (csr != CSR_OK) {
-        /* Wave 9o: CSR rejections are typically transient or recoverable
+        /* CSR rejections are typically transient or recoverable
          * (stale_index when block_index races ahead of active_chain,
-         * utxo_delta_too_big when rollback auth missing). Wave 9d/9e
-         * fixed the legitimate cases at the CSR layer. Freezing the
-         * controller on any remaining CSR rejection wedges the node for
-         * the rest of the process lifetime even though the underlying
-         * issue might clear in the next pass. Restore old_state and
-         * return CEC_REJECTED_CSR; the caller retries. */
+         * utxo_delta_too_big when rollback auth missing — those
+         * legitimate cases are fixed at the CSR layer). Freezing the
+         * controller on any remaining CSR rejection wedges the node
+         * for the rest of the process lifetime even though the
+         * underlying issue might clear in the next pass. Restore
+         * old_state and return CEC_REJECTED_CSR; the caller retries. */
         fprintf(stderr,  // obs-ok:csr-rejection-pre-existing-emit
                 "[cec] csr rejected tip promotion h=%d reason=%s — "
                 "controller stays in state=%s for retry\n",
@@ -585,9 +585,9 @@ enum chain_evidence_controller_result chain_evidence_controller_promote_tip(
     }
 #endif
 
-    /* Wave 9p: commit our txn only if we opened it ourselves. The outer
-     * caller (chain_advance) is responsible for committing its own txn
-     * after our writes land in it. */
+    /* Commit our txn only if we opened it ourselves. The outer caller
+     * (chain_advance) is responsible for committing its own txn after
+     * our writes land in it. */
     if (txn && !db_txn_commit(txn)) {
         chain_evidence_controller_freeze(authority,
             "tip promotion evidence transaction commit failed after csr commit");

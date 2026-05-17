@@ -355,9 +355,9 @@ void node_health_collect(struct node_health_snapshot *snapshot,
                         !snapshot->tip_stale &&
                         snapshot->tip_lag <= 1;
 
-    /* Wave 8: surface tip-advance age + flip healthy when the watchdog
-     * deadman threshold is crossed in any non-tip state with peers.
-     * Threshold matches sync_watchdog_service.c state_stuck_timeout for
+    /* Surface tip-advance age + flip healthy when the watchdog deadman
+     * threshold is crossed in any non-tip state with peers. Threshold
+     * matches sync_watchdog_service.c state_stuck_timeout for
      * HEADERS_DOWNLOAD / BLOCKS_DOWNLOAD (600s). */
     snapshot->tip_advance_age_seconds = sync_watchdog_get_tip_advance_age();
     if (snapshot->tip_advance_age_seconds > 600 &&

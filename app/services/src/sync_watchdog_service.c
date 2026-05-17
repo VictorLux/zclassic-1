@@ -9,7 +9,6 @@
  *   REPEATED_RESTART: circuit breaker after >3 recoveries in 30 minutes */
 
 #include "services/sync_watchdog_service.h"
-/* Wave 9b: was controllers/network_controller.h — sync_watchdog uses connman_* only (no rpc_net_*), so the controller dep was vestigial. */
 #include "net/connman.h"
 #include "validation/chainstate.h"
 #include "validation/process_block.h"
@@ -52,7 +51,7 @@ static int64_t state_stuck_timeout(enum sync_state state)
 _Atomic int64_t g_sync_state_entered_time = 0;
 _Atomic int     g_sync_state_entry_height = 0;
 
-/* Wave 8: tip-advance tracking — last successful block connect timestamp.
+/* Tip-advance tracking — last successful block connect timestamp.
  * Updated by sync_watchdog_on_block_connected() from the EV_BLOCK_CONNECTED
  * emit site in lib/net/src/msg_blocks.c. Read by
  * sync_watchdog_get_tip_advance_age() and exposed via zcl_status JSON +
@@ -62,7 +61,7 @@ _Atomic int     g_sync_state_entry_height = 0;
 _Atomic int64_t g_last_block_connected_ts = 0;
 _Atomic int     g_last_block_connected_height = 0;
 
-/* Wave 8: once-per-stall-episode emit throttle for EV_TIP_STALE.
+/* Once-per-stall-episode emit throttle for EV_TIP_STALE.
  * Set when the STATE_STUCK path emits; cleared on any state change OR
  * any block connect (sync_watchdog_on_state_change /
  * sync_watchdog_on_block_connected). Atomic so the watchdog tick thread
@@ -412,7 +411,7 @@ static int64_t g_sync_violation_first_seen = 0;
 /* non-static so tests can backdate via extern.
  * Follows the pattern of g_sync_state_entered_time. */
 int64_t g_utxo_pause_first_seen = 0;
-int64_t g_queue_starved_first_seen = 0;   /* Round 7 A7 */
+int64_t g_queue_starved_first_seen = 0;
 
 #define PEER_FLOOR_MIN_HEALTHY    3
 #define PEER_FLOOR_TRIGGER_SECS  60
@@ -581,13 +580,10 @@ enum watchdog_recovery_type sync_watchdog_check(
 
     /* d. Escalation: instead of giving up, escalate recovery.
      *
-     * Wave 9q: gate escalation on actual progress. If blocks are
-     * being connected (blocks_per_sec >= 1.0), the chain IS
-     * advancing — no escalation is warranted regardless of L1/L2
-     * failure-count accumulation from transient hiccups. Without
-     * this gate, the live node climbed cleanly to h=9491 (~50 bps
-     * sustained) then L3 fired anyway, wiping in-memory state and
-     * resetting the active chain to h=897. Each L3 fires
+     * Gate escalation on actual progress. If blocks are being
+     * connected (blocks_per_sec >= 1.0), the chain IS advancing —
+     * no escalation is warranted regardless of L1/L2 failure-count
+     * accumulation from transient hiccups. Each L3 fires
      * `disconnect_outbound_peers` + `sync_set_state(SYNC_IDLE)`,
      * triggering a full re-bootstrap that costs minutes. */
     {
@@ -659,17 +655,12 @@ enum watchdog_recovery_type sync_watchdog_check(
 
     /* a2. HEADER_LAG: headers far behind peers AND not advancing.
      *
-     * Wave 9l: this branch is only meaningful when headers are STUCK
-     * relative to peers — not when we're just far behind doing a
-     * genesis-up sync. Pre-9l the check fired purely on gap > 500,
-     * which for a 3 M-block-behind cold sync stays true for HOURS,
-     * triggering L1/L2/L3 escalation every cycle and resetting the
-     * sync state machine before any block can connect.
-     *
-     * The header_stall path above (a) already covers "headers not
-     * advancing for >300 s" with a tip-comparison check. This branch
-     * adds the additional condition that headers must ALSO be far
-     * behind peers and ALSO stuck — i.e. the lag is sustained, not
+     * Only meaningful when headers are STUCK relative to peers — not
+     * when we're just far behind doing a genesis-up sync. The
+     * header_stall path above (a) covers "headers not advancing for
+     * >300 s" with a tip-comparison check. This branch adds the
+     * additional condition that headers must ALSO be far behind
+     * peers and ALSO stuck — i.e. the lag is sustained, not
      * progress-driven. Use the same last_header_height comparison
      * pattern as HEADER_STALL.
      *
@@ -867,11 +858,10 @@ enum watchdog_recovery_type sync_watchdog_check(
 
     /* c. STATE_STUCK: any state (except at_tip) exceeded per-state timeout */
     if (state != SYNC_AT_TIP && duration > state_stuck_timeout(state)) {
-        /* Wave 8: surface this through node.log + event stream, not just
-         * the systemd journal. The 2026-05-15 25-hour stall went unseen
-         * because printf goes to stdout (journal) while operators grep
-         * node.log via zcl_node_log. Throttle to once per stall episode
-         * (cleared on state change or block-connect). */
+        /* Surface through node.log + event stream, not just the systemd
+         * journal — operators grep node.log via zcl_node_log, and printf
+         * goes to stdout (journal) only. Throttle to once per stall
+         * episode (cleared on state change or block-connect). */
         int our_h_log = ms ? active_chain_height(&ms->chain_active) : -1;
         int peer_max_log = cm ? connman_max_peer_height(cm) : -1;
         int peer_count_log = cm ? (int)connman_outbound_healthy_count(cm) : 0;
@@ -928,10 +918,10 @@ static void sync_watchdog_periodic_tick(void *arg)
     if (!a) return;
     sync_watchdog_check(a->cm, a->dm, a->ms);
 
-    /* Wave 8: emit a structured heartbeat every other tick (60s).
-     * Absence of EV_SYNC_HEARTBEAT for >120s implies the watchdog
-     * thread itself wedged — a different failure shape than a sync
-     * stall and worth distinguishing in monitoring. */
+    /* Emit a structured heartbeat every other tick (60s). Absence of
+     * EV_SYNC_HEARTBEAT for >120s implies the watchdog thread itself
+     * wedged — a different failure shape than a sync stall and worth
+     * distinguishing in monitoring. */
     static _Atomic int s_heartbeat_skip = 0;
     if ((atomic_fetch_add(&s_heartbeat_skip, 1) & 1) == 0) {
         enum sync_state state = sync_get_state();

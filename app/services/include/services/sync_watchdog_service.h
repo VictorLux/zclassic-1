@@ -89,16 +89,16 @@ void sync_watchdog_set_last_reject_reason(const char *reason);
  * Registered as callback via sync_set_state_change_callback(). */
 void sync_watchdog_on_state_change(enum sync_state new_state, int height);
 
-/* Wave 8 — tip-advance tracking. Called from the EV_BLOCK_CONNECTED
- * emit site (lib/net/src/msg_blocks.c) on every successful block
- * connect. Updates the timestamp the watchdog uses to compute
- * tip_advance_age and clears the once-per-stall-episode emit throttle
- * so a future stall can emit EV_TIP_STALE again. */
+/* Tip-advance tracking. Called from the EV_BLOCK_CONNECTED emit site
+ * (lib/net/src/msg_blocks.c) on every successful block connect.
+ * Updates the timestamp the watchdog uses to compute tip_advance_age
+ * and clears the once-per-stall-episode emit throttle so a future
+ * stall can emit EV_TIP_STALE again. */
 void sync_watchdog_on_block_connected(int height);
 
-/* Wave 8 — seconds since the most recent block-connect, or -1 if
- * we have not seen a connect yet (cold boot). Consumers: zcl_health
- * gate, zcl_status JSON, Prometheus zcl_tip_advance_age_seconds. */
+/* Seconds since the most recent block-connect, or -1 if we have not
+ * seen a connect yet (cold boot). Consumers: zcl_health gate,
+ * zcl_status JSON, Prometheus zcl_tip_advance_age_seconds. */
 int64_t sync_watchdog_get_tip_advance_age(void);
 
 /* Independent watchdog tick — runs on the unified heartbeat sweeper

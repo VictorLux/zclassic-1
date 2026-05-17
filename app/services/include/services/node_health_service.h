@@ -74,11 +74,10 @@ struct node_health_snapshot {
     int      wd_last_recovery_type;       /* enum watchdog_recovery_type */
     char     wd_last_recovery_name[32];
 
-    /* Wave 8: seconds since the most recent block-connect, or -1 if we
-     * have not seen one yet (cold boot). Decoupled from sync_state so
-     * a stall in HEADERS_DOWNLOAD with header_gap=0 surfaces as a real
-     * staleness signal — the failure shape that caused the 2026-05-15
-     * 25-hour silent stall. Healthy gate flips false when this exceeds
+    /* Seconds since the most recent block-connect, or -1 if we have
+     * not seen one yet (cold boot). Decoupled from sync_state so a
+     * stall in HEADERS_DOWNLOAD with header_gap=0 surfaces as a real
+     * staleness signal. Healthy gate flips false when this exceeds
      * TIP_ADVANCE_AGE_DEGRADED_SECS (600) AND peers>0 AND
      * sync_state!=SYNC_AT_TIP. */
     int64_t  tip_advance_age_seconds;

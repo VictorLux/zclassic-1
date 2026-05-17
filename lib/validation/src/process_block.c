@@ -2198,17 +2198,17 @@ bool accept_block_header(const struct block_header *header,
                                                   time(NULL),
                                                   &last_retry_clear);
         }
-        /* Wave 9h: re-arriving headers must promote nStatus from
+        /* Re-arriving headers must promote nStatus from
          * BLOCK_VALID_HEADER to BLOCK_VALID_TREE. Without this, blocks
-         * stored to block_map by body-pull / direct-import (which leave
-         * status at BLOCK_VALID_HEADER + BLOCK_HAVE_DATA) stay invisible
-         * to find_most_work_chain forever — that filter at
-         * process_block.c:1431 requires VALID_TREE. The new-pindex path
-         * below at line ~2284 does this promotion correctly; the
-         * existing-pindex path was silently skipping it, leaving the
-         * node wedged with on-disk bodies the chain refuses to connect.
-         * pprev_valid here means we've already gone through the
-         * "Fix scrambled heights" pass above, so ancestry is linked. */
+         * stored to block_map by body-pull / direct-import (which
+         * leave status at BLOCK_VALID_HEADER + BLOCK_HAVE_DATA) stay
+         * invisible to find_most_work_chain forever — that filter
+         * requires VALID_TREE. The new-pindex path below does this
+         * promotion correctly; the existing-pindex path was silently
+         * skipping it, leaving the node wedged with on-disk bodies the
+         * chain refuses to connect. pprev_valid here means we've
+         * already gone through the "Fix scrambled heights" pass above,
+         * so ancestry is linked. */
         if ((pindex->nStatus & BLOCK_VALID_MASK) < BLOCK_VALID_TREE &&
             !(pindex->nStatus & BLOCK_FAILED_MASK)) {
             pindex->nStatus = (pindex->nStatus & ~BLOCK_VALID_MASK) |
@@ -3233,15 +3233,16 @@ bool connect_tip(struct validation_state *state,
      * at the same height forever). Surface it as a system error so
      * activate_best_chain bubbles up to the caller.
      *
-     * Wave 9n: save coins_tip's pre-update hash so we can roll back on
-     * csr rejection. Otherwise coins_view_cache_flush above has already
-     * advanced coins_tip's hash_block to pindex_new's hash, but the csr
-     * commit failed — leaving coins ahead of active_chain. The next
-     * incoming block extending our REAL tip then trips the connect_block
-     * view/prev-block invariant (view=rejected-block-hash !=
-     * incoming-block.prev=our-real-tip-hash) and the chain wedges.
-     * Observed live 2026-05-17 at h=1: active_chain at h=1 hash 0004b3...
-     * but coins_view.hash_block stuck at 0007e5c9... (a rejected
+     * Save coins_tip's pre-update hash so we can roll back on csr
+     * rejection. Otherwise coins_view_cache_flush above has already
+     * advanced coins_tip's hash_block to pindex_new's hash, but the
+     * csr commit failed — leaving coins ahead of active_chain. The
+     * next incoming block extending our REAL tip then trips the
+     * connect_block view/prev-block invariant
+     * (view=rejected-block-hash != incoming-block.prev=our-real-tip-hash)
+     * and the chain wedges. Observed live at h=1: active_chain at h=1
+     * hash 0004b3... but coins_view.hash_block stuck at 0007e5c9...
+     * (a rejected
      * sibling-fork h=2's pre-flush hash). */
         struct uint256 coins_hash_pre_commit;
         if (coins_tip) {
