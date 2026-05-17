@@ -394,14 +394,16 @@ static bool validate_block_proofs(const struct block *block,
 
     /* 1. Block header: Equihash + PoW + timestamp */
     if (!check_block_header(&block->header, &state, params, true)) {
-        fprintf(stderr,  // obs-ok:bg-validation-diagnostic "[bg-valid] check_block_header FAILED h=%d: %s\n",
+        // obs-ok:bg-validation-diagnostic
+        fprintf(stderr, "[bg-valid] check_block_header FAILED h=%d: %s\n",
                 pindex->nHeight, state.reject_reason);
         goto out;
     }
 
     /* 2. Block structure: Merkle root + size limits + tx structure */
     if (!check_block(block, &state, params, true, true, false)) {
-        fprintf(stderr,  // obs-ok:bg-validation-diagnostic "[bg-valid] check_block FAILED h=%d: %s\n",
+        // obs-ok:bg-validation-diagnostic
+        fprintf(stderr, "[bg-valid] check_block FAILED h=%d: %s\n",
                 pindex->nHeight, state.reject_reason);
         goto out;
     }
@@ -410,7 +412,8 @@ static bool validate_block_proofs(const struct block *block,
     if (pindex->pprev) {
         if (!contextual_check_block_header(&block->header, &state, params,
                                             pindex->pprev, true)) {
-            fprintf(stderr,  // obs-ok:bg-validation-diagnostic "[bg-valid] contextual_check_header FAILED h=%d: %s\n",
+            // obs-ok:bg-validation-diagnostic
+        fprintf(stderr, "[bg-valid] contextual_check_header FAILED h=%d: %s\n",
                     pindex->nHeight, state.reject_reason);
             goto out;
         }
@@ -488,7 +491,8 @@ static bool validate_block_proofs(const struct block *block,
 
     /* 5. Final script verification flush */
     if (!verify_scripts_parallel(check_items, check_count, num_workers)) {
-        fprintf(stderr,  // obs-ok:bg-validation-diagnostic "[bg-valid] script verification FAILED h=%d\n",
+        // obs-ok:bg-validation-diagnostic
+        fprintf(stderr, "[bg-valid] script verification FAILED h=%d\n",
                 pindex->nHeight);
         goto out;
     }
