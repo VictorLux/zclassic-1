@@ -40,7 +40,6 @@
 #include "util/util.h"
 #include "util/ui_interface.h"
 #include "util/noui.h"
-#include "util/deprecation.h"
 #include "util/timedata.h"
 #include "net/netaddr.h"
 #include "net/protocol.h"

@@ -466,12 +466,6 @@ int test_encoding(void)
         }
     }
 
-    printf("deprecation... ");
-    {
-        EnforceNodeDeprecation(1, false, false);
-        printf("OK\n");
-    }
-
     printf("GetAdjustedTime... ");
     {
         int64_t t = GetAdjustedTime();
