@@ -454,19 +454,30 @@ enum chain_evidence_controller_result chain_evidence_controller_promote_tip(
      * authority through to CSR as a rollback authorization so the
      * UTXO-orphan-rows guard (csr step 7) doesn't reject the legitimate
      * rollback. Without this, sibling_fork_rollback wedges at the
-     * disconnect step with utxo_delta_too_big. */
+     * disconnect step with utxo_delta_too_big.
+     *
+     * Wave 9e-fix: use active_chain_height() rather than old_tip pointer
+     * for the comparison. After a body-pull anchor promotion that walked
+     * back through unlinked pprev pointers, c->chain[c->height] can be
+     * NULL while c->height is non-negative — `active_chain_tip()`
+     * returns NULL in that phantom state, but CSR step 7 still computes
+     * from_height from `active_chain_height()` and fires the orphan-rows
+     * guard. Comparing against the height field directly closes the gap. */
+    int old_active_height = (authority->csr && authority->csr->chain_active)
+        ? active_chain_height(authority->csr->chain_active)
+        : -1;
     struct chain_state_rollback_authorization rollback_auth = {
         .source = CSR_ROLLBACK_SOURCE_VALIDATION,
         .decision = POLICY_ALLOW,
-        .from_height = old_tip ? old_tip->nHeight : -1,
+        .from_height = (int64_t)old_active_height,
         .to_height = request->new_tip->nHeight,
         .max_depth = INT64_MAX,
         .evidence_class = "evidence_controller_vouched_rollback",
         .reason = request->reason ? request->reason
                                   : "chain_evidence_controller.promote_tip",
     };
-    bool is_rollback = (old_tip != NULL &&
-                        request->new_tip->nHeight < old_tip->nHeight);
+    bool is_rollback = (old_active_height >= 0 &&
+                        request->new_tip->nHeight < old_active_height);
 
     struct chain_state_commit commit = {
         .new_tip = request->new_tip,
