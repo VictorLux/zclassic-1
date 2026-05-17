@@ -799,21 +799,39 @@ bool node_db_state_get(struct node_db *ndb, const char *key,
                        void *value, size_t max_len, size_t *out_len)
 {
     if (!ndb->open) return false;
-    sqlite3_stmt *s = ndb->stmt_state_get;
-    sqlite3_reset(s);
-    sqlite3_clear_bindings(s);
+
+    /* Wave 9t: prepare a fresh statement per call rather than reusing
+     * the cached ndb->stmt_state_get. SQLite statements are not
+     * thread-safe — concurrent calls from chain_advance's worker
+     * thread + the wallet/Sapling witness thread + the boot-state
+     * logger thread were racing on the shared statement object,
+     * corrupting internal buffers and triggering SIGABRT (FATAL
+     * SIGNAL 6 in libc memcpy → stack-canary check). Live evidence
+     * 2026-05-17: two crashes in 10 minutes, both with
+     * node_db_state_get on the stack from a worker thread.
+     *
+     * Per-call prepare adds a sub-millisecond cost per lookup; that's
+     * fine because state_get is not a hot path (called once per
+     * background task, not per block). The cached stmt_state_get
+     * field is kept for source compatibility but no longer used. */
+    sqlite3_stmt *s = NULL;
+    if (sqlite3_prepare_v2(ndb->db,
+            "SELECT value FROM node_state WHERE key=?",
+            -1, &s, NULL) != SQLITE_OK || !s) {
+        node_db_note_activity(ndb, "state_get",
+                              s ? SQLITE_OK : SQLITE_ERROR);
+        return false;
+    }
     sqlite3_bind_text(s, 1, key, -1, SQLITE_STATIC);
     int rc = sqlite3_step(s);  // raw-sql-ok:kv-state-primitive
     if (rc != SQLITE_ROW) {
-        sqlite3_reset(s);
-        sqlite3_clear_bindings(s);
+        sqlite3_finalize(s);
         node_db_note_activity(ndb, "state_get", rc);
         return false;
     }
     int blob_len = sqlite3_column_bytes(s, 0);
     if (blob_len <= 0) {
-        sqlite3_reset(s);
-        sqlite3_clear_bindings(s);
+        sqlite3_finalize(s);
         node_db_note_activity(ndb, "state_get", SQLITE_DONE);
         return false;
     }
@@ -821,8 +839,7 @@ bool node_db_state_get(struct node_db *ndb, const char *key,
                   ? (size_t)blob_len : max_len;
     memcpy(value, sqlite3_column_blob(s, 0), copy);
     if (out_len) *out_len = copy;
-    sqlite3_reset(s);
-    sqlite3_clear_bindings(s);
+    sqlite3_finalize(s);
     node_db_note_activity(ndb, "state_get", rc);
     return true;
 }
