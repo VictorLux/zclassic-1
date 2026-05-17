@@ -414,16 +414,34 @@ enum chain_evidence_controller_result chain_evidence_controller_promote_tip(
         old_state == CEC_HEADERS_WORK_VALIDATED)
         next_state = CEC_TIP_FOLLOWING;
 
-    DB_TXN_SCOPE(txn, authority->ndb, "cec.promote_tip");
-    if (!txn) {
-        /* Wave 9o: DB_TXN_SCOPE failure is transient (SQLite busy,
-         * nested-txn contention) — same justification as the persist
-         * branch below. Don't freeze the controller; let the caller
-         * retry. */
-        fprintf(stderr,  // obs-ok:transient-txn-failure
-                "[cec] tip promotion txn open failed (transient) h=%d\n",
-                request->new_tip->nHeight);
-        return CEC_REJECTED_PERSIST;
+    /* Wave 9p: chain_advance opens a node.db transaction at its step 3
+     * (line ~158 of chain_advance.c) BEFORE calling process_block_commit_tip
+     * which routes here. db_txn_begin correctly refuses nesting and
+     * returns NULL — that wedged the chain at h=N with one retry per
+     * block. Detect the outer transaction and skip our own DB_TXN_SCOPE:
+     * the persist calls below will join the existing transaction, and
+     * the caller's commit/rollback will atomically close both our
+     * evidence persistence AND the block-index write.
+     *
+     * When no outer txn exists (e.g. standalone csr_commit_tip from a
+     * test or boot anchor promote), open our own and commit at end.
+     * The cleanup attribute auto-rollbacks our owned txn if we early-
+     * return without calling db_txn_commit. db_txn_auto_rollback is a
+     * no-op on NULL handles, so the outer-txn case is safe. */
+    struct node_db_status _ndb_status = {0};
+    if (authority->ndb)
+        node_db_get_status(authority->ndb, &_ndb_status);
+    bool outer_txn_present = _ndb_status.tx_open;
+    __attribute__((cleanup(db_txn_auto_rollback)))
+    struct db_txn *txn = NULL;
+    if (!outer_txn_present) {
+        txn = db_txn_begin(authority->ndb, "cec.promote_tip");
+        if (!txn) {
+            fprintf(stderr,  // obs-ok:transient-txn-failure
+                    "[cec] tip promotion txn open failed (transient) h=%d\n",
+                    request->new_tip->nHeight);
+            return CEC_REJECTED_PERSIST;
+        }
     }
 
     bool persisted =
@@ -544,7 +562,10 @@ enum chain_evidence_controller_result chain_evidence_controller_promote_tip(
     }
 #endif
 
-    if (!db_txn_commit(txn)) {
+    /* Wave 9p: commit our txn only if we opened it ourselves. The outer
+     * caller (chain_advance) is responsible for committing its own txn
+     * after our writes land in it. */
+    if (txn && !db_txn_commit(txn)) {
         chain_evidence_controller_freeze(authority,
             "tip promotion evidence transaction commit failed after csr commit");
         cec_restore_csr_view(authority->csr, old_tip, old_header,
