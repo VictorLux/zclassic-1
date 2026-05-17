@@ -447,13 +447,34 @@ enum chain_evidence_controller_result chain_evidence_controller_promote_tip(
         return CEC_REJECTED_PERSIST;
     }
 
+    /* Wave 9e: when the new tip is below the current active tip, this
+     * "promotion" is in fact a disconnect — used by disconnect_tip
+     * during sibling-fork reorg recovery. The evidence controller has
+     * already vetted the new tip via chain_evidence_record; pass that
+     * authority through to CSR as a rollback authorization so the
+     * UTXO-orphan-rows guard (csr step 7) doesn't reject the legitimate
+     * rollback. Without this, sibling_fork_rollback wedges at the
+     * disconnect step with utxo_delta_too_big. */
+    struct chain_state_rollback_authorization rollback_auth = {
+        .source = CSR_ROLLBACK_SOURCE_VALIDATION,
+        .decision = POLICY_ALLOW,
+        .from_height = old_tip ? old_tip->nHeight : -1,
+        .to_height = request->new_tip->nHeight,
+        .max_depth = INT64_MAX,
+        .evidence_class = "evidence_controller_vouched_rollback",
+        .reason = request->reason ? request->reason
+                                  : "chain_evidence_controller.promote_tip",
+    };
+    bool is_rollback = (old_tip != NULL &&
+                        request->new_tip->nHeight < old_tip->nHeight);
+
     struct chain_state_commit commit = {
         .new_tip = request->new_tip,
         .new_coins_best = *request->new_tip->phashBlock,
         .expected_utxo_count = 0,
         .update_header_tip = request->update_header_tip,
         .persist_coins_best = true,
-        .rollback_auth = NULL,
+        .rollback_auth = is_rollback ? &rollback_auth : NULL,
         .wallet_scan_height = -1,
         .reason = request->reason ? request->reason : "chain_evidence_controller.promote_tip",
     };

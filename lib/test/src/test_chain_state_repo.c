@@ -675,6 +675,69 @@ static int t_sql_stale_index(void)
     return failures;
 }
 
+/* Wave 9d regression: a forward step from the active tip into a
+ * SQLite block_index range that has been pre-populated by body-pull
+ * must NOT be rejected as stale_index. Before the carve-out, every
+ * forward step from h=N → h=N+1 was rejected when sql_max was at
+ * h=N+1000+ because body-pull writes block-index entries ahead of
+ * the active chain advance. */
+static int t_sql_stale_index_forward_step_bypass(void)
+{
+    int failures = 0;
+    struct node_db ndb;
+    bool dbok = node_db_open(&ndb, ":memory:");
+    if (!dbok) {
+        CSR_RUN("csr: forward step bypasses stale_index (skipped: db open failed)",
+                false);
+        return failures;
+    }
+    struct chain_state_repository csr;
+    struct csr_fixture f; csr_fix_init(&f);
+    csr_init(&csr, &f.bm, &f.chain, &f.header_tip, &f.coins_tip, &ndb, NULL);
+
+    /* Build a 2-block fixture: g at h=0, b1 at h=1 with pprev=g. */
+    struct block_index *g  = csr_fix_add(&f, 0x90);
+    struct block_index *b1 = csr_fix_add(&f, 0x91);
+
+    /* Seed SQLite with the active-chain ancestors plus a body-pull-
+     * style pre-population of 5000+ heights ahead. UTXO row count
+     * exceeds max_utxo_orphan_rows (default 1000). */
+    struct uint256 far_hash; memset(&far_hash, 0x92, sizeof(far_hash));
+    bool ok = csr_sql_insert_block(&ndb, g->phashBlock, 0)
+           && csr_sql_insert_block(&ndb, b1->phashBlock, 1)
+           && csr_sql_insert_block(&ndb, &far_hash, 5000)
+           && csr_sql_insert_utxos(&ndb, 2000);
+
+    /* Step 1: make g the active tip. With cur_h == -1 entering this
+     * commit, sql_max=5000 - new_tip(0)=5000 > 100 fires the original
+     * guard, but cur_utxos > orphan_rows requires the auth check —
+     * we have no auth, so this should ALSO have failed before the
+     * carve-out. Workaround for the seed: drop UTXOs to 0 first,
+     * insert them after seeding g as active. */
+    sqlite3_exec(ndb.db, "DELETE FROM utxos", NULL, NULL, NULL);
+    struct chain_state_commit cg = csr_make_commit(g, "seed-active-tip");
+    ok = ok && csr_commit_tip(&csr, &cg) == CSR_OK
+            && active_chain_height(&f.chain) == 0;
+
+    /* Re-insert the heavy UTXO set now that the active tip is seeded. */
+    ok = ok && csr_sql_insert_utxos(&ndb, 2000);
+
+    /* Step 2: forward step from active tip h=0 → h=1. sql_max is
+     * still 5000 (body-pull style), gap=4999 > 100, UTXOs > 1000,
+     * no rollback auth. Without the wave-9d carve-out this would
+     * return CSR_REJECTED_STALE_INDEX; with it the commit succeeds. */
+    struct chain_state_commit c1 = csr_make_commit(b1, "forward-step");
+    ok = ok && csr_commit_tip(&csr, &c1) == CSR_OK
+            && active_chain_height(&f.chain) == 1;
+
+    CSR_RUN("csr: forward step bypasses stale_index (wave 9d)", ok);
+
+    csr_free(&csr);
+    csr_fix_free(&f);
+    node_db_close(&ndb);
+    return failures;
+}
+
 static int t_sql_hash_height_conflict(void)
 {
     int failures = 0;
@@ -1157,6 +1220,7 @@ int test_chain_state_repo(void)
     failures += t_coins_best_repair_requires_typed_auth();
     failures += t_extend_chain();
     failures += t_sql_stale_index();
+    failures += t_sql_stale_index_forward_step_bypass();
     failures += t_sql_hash_height_conflict();
     failures += t_typed_rollback_authorization();
     failures += t_expected_utxo_drift();

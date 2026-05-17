@@ -182,14 +182,36 @@ static enum csr_result csr_validate_locked(
      * above the proposed tip, this commit is rolling the chain
      * backwards in a way that has historically corrupted the UTXO
      * set. Combined with a non-trivial UTXO row count it is the
-     * exact disaster shape from 2026-04-10. */
+     * exact disaster shape from 2026-04-10.
+     *
+     * Wave 9d carve-out: a forward step relative to the CURRENT
+     * active chain tip cannot be a rollback, regardless of what
+     * other blocks the block_index has cached above the active
+     * chain. This shape arises legitimately during body-pull →
+     * activate_best_chain: body-pull pre-populates the block_index
+     * (and SQLite) for hundreds of blocks above the active tip, then
+     * activate_best_chain advances the active tip one block at a
+     * time into that pre-populated range. Before this carve-out
+     * every forward step from h=N → h=N+1 was rejected as
+     * stale_index because sql_max sat at h=N+1000+. The 2026-04-10
+     * disaster shape requires new_tip < active_tip; allowing
+     * new_tip > active_tip cannot reproduce it. */
     int64_t sql_max = csr_sqlite_max_block_height(csr->ndb);
     if (sql_max >= 0 &&
         sql_max - (int64_t)new_tip->nHeight > csr->stale_index_height_gap) {
-        int64_t cur_utxos = csr_sqlite_utxo_count(csr->ndb);
-        if (cur_utxos > csr->max_utxo_orphan_rows &&
-            !csr_commit_has_rollback_authorization(commit)) {
-            return CSR_REJECTED_STALE_INDEX;
+        bool forward_from_active_tip = false;
+        if (csr->chain_active) {
+            int cur_h = active_chain_height(csr->chain_active);
+            if (cur_h >= 0 && new_tip->nHeight > cur_h)
+                forward_from_active_tip = true;
+        }
+
+        if (!forward_from_active_tip) {
+            int64_t cur_utxos = csr_sqlite_utxo_count(csr->ndb);
+            if (cur_utxos > csr->max_utxo_orphan_rows &&
+                !csr_commit_has_rollback_authorization(commit)) {
+                return CSR_REJECTED_STALE_INDEX;
+            }
         }
     }
 
@@ -398,7 +420,7 @@ enum csr_result csr_commit_header_tip(
     if (rc != CSR_OK) {
         csr->commits_rejected[rc]++;
         pthread_mutex_unlock(&csr->lock);
-        fprintf(stderr,
+        fprintf(stderr,  // obs-ok:paired-with-EV_CHAIN_TIP_REJECTED-counter-above
                 "csr: HEADER_REJECTED code=%s to=%d reason=%s\n",
                 csr_result_name(rc),
                 (commit && commit->new_header_tip)
@@ -493,7 +515,7 @@ enum csr_result csr_commit_tip(struct chain_state_repository *csr,
         csr->commits_rejected[rc]++;
         csr_emit_rejected_event(csr, from_height, commit, rc);
         pthread_mutex_unlock(&csr->lock);
-        fprintf(stderr,
+        fprintf(stderr,  // obs-ok:paired-with-csr_emit_rejected_event-above
                 "csr: REJECTED code=%s from=%d to=%d reason=%s\n",
                 csr_result_name(rc), from_height,
                 (commit && commit->new_tip) ? commit->new_tip->nHeight : -1,
@@ -512,7 +534,7 @@ enum csr_result csr_commit_tip(struct chain_state_repository *csr,
             csr_emit_rejected_event(csr, from_height, commit,
                                     CSR_REJECTED_PERSIST);
             pthread_mutex_unlock(&csr->lock);
-            fprintf(stderr,
+            fprintf(stderr,  // obs-ok:paired-with-csr_emit_rejected_event-above
                     "csr: REJECTED code=%s from=%d to=%d reason=%s\n",
                     csr_result_name(CSR_REJECTED_PERSIST), from_height,
                     commit->new_tip ? commit->new_tip->nHeight : -1,
