@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# Wave 9a CI gate: call every registered RPC method against the live node
-# and report any that return -32601 ("Method not found"). This is the
-# end-to-end pair to the boot-time `rpc_table_must_append` abort: even
-# if registration succeeds, this confirms the method is genuinely
+# Call every registered RPC method against the live node and report
+# any that return -32601 ("Method not found"). This is the end-to-end
+# pair to the boot-time `rpc_table_must_append` abort: even if
+# registration succeeds, this confirms the method is genuinely
 # dispatchable from a CLI client.
 #
 # Method names are extracted from the source — every entry like

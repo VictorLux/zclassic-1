@@ -11,10 +11,11 @@
 #     (which textually contain `sqlite3_step` inside their #define bodies)
 #   - lines annotated with `// raw-sql-ok: <reason>`
 #
-# Files listed in tools/scripts/raw_sqlite_allowlist.txt are grandfathered
-# during the Wave 3 migration (sqlite3_step → AR_BEGIN_SAVE). The list is a
-# ratchet: entries come off as each subsystem completes migration. Once
-# empty, the allowlist is removed and the lint becomes unconditional.
+# Files listed in tools/scripts/raw_sqlite_allowlist.txt are
+# grandfathered through the sqlite3_step → AR_BEGIN_SAVE migration.
+# The list is a ratchet: entries come off as each subsystem completes
+# migration. Once empty, the allowlist is removed and the lint becomes
+# unconditional.
 
 set -uo pipefail
 
@@ -60,7 +61,7 @@ if [[ -n "${violations//[[:space:]]/}" ]]; then
     echo "  app/models/include/models/activerecord.h), wrap in AR_BEGIN_SAVE /"
     echo "  AR_EXEC_BOOL, or — for unavoidable cases like schema bootstrap —"
     echo "  add a // raw-sql-ok: <reason> comment on the line."
-    echo "  Allowlisted files (still pending Wave 3 migration) accounted for:"
+    echo "  Allowlisted files (still pending sqlite3_step → AR migration) accounted for:"
     echo "    $allowed_total raw call sites across $(wc -l < <(grep -v '^[[:space:]]*#\|^[[:space:]]*$' "$ALLOWLIST" 2>/dev/null || true)) files"
     exit 1
 fi
@@ -69,7 +70,7 @@ if (( allowed_total > 0 )); then
     file_count=$(grep -cv '^[[:space:]]*#\|^[[:space:]]*$' "$ALLOWLIST" 2>/dev/null || echo 0)
     echo "check_raw_sqlite: clean outside allowlist"
     echo "  Allowlisted: $allowed_total raw call sites across $file_count files"
-    echo "  (drives to zero as Wave 3 sqlite3_step → AR_BEGIN_SAVE migration lands)"
+    echo "  (drives to zero as sqlite3_step → AR_BEGIN_SAVE migration lands)"
 else
     echo "check_raw_sqlite: clean - no raw sqlite3_step in production code"
 fi

@@ -68,9 +68,9 @@ Files that legitimately need raw SQL (storage primitives in
 ZCL_AR_RAW_SQL`. The Makefile adds `-DZCL_AR_ENFORCE` globally. Raw SQL
 becomes a conscious, visible decision.
 
-**Status: shipped (Wave 3, extended through Wave 6).** The ratchet
-allowlist at `tools/scripts/raw_sqlite_allowlist.txt` is empty. All
-production writes across `app/models/src/`, `app/controllers/src/`,
+**Status: shipped.** The ratchet allowlist at
+`tools/scripts/raw_sqlite_allowlist.txt` is empty. All production
+writes across `app/models/src/`, `app/controllers/src/`,
 `app/services/src/`, and `lib/wallet/src/wallet_sqlite.c` route through
 the AR lifecycle (one of the three macros above). `make lint` runs
 `check_raw_sqlite.sh` as gate #3 of 11.
@@ -352,11 +352,10 @@ refactored into per-section emit helpers, each under ~120 lines.
 as one function may carry `// long-function-ok:<tag>` on its
 signature line.  The tag must be a non-empty single token matching
 `[A-Za-z][A-Za-z0-9_-]+` (same syntax as the other lint overrides)
-and describe WHY the rule does not apply.  At wave 7d the only
-tagged survivor is `rpc_indexlegacy`
-(`blockchain_controller_indexlegacy.c:516`), 1316L, tagged
-`legacy-import-state-machine` — a single deterministic state
-machine for legacy datadir import.
+and describe WHY the rule does not apply. The only tagged survivor
+is `rpc_indexlegacy` (`blockchain_controller_indexlegacy.c:516`),
+1316L, tagged `legacy-import-state-machine` — a single deterministic
+state machine for legacy datadir import.
 
 Implementation: `tools/scripts/check_long_functions.sh`.
 

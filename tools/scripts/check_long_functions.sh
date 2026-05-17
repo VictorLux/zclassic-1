@@ -2,10 +2,9 @@
 # Lint gate #12 — controllers/services functions over 500 lines.
 #
 # Long functions are hard to reason about, hard to test, and a sign
-# that a single C function is doing too many things.  Wave 7d extracted
-# the two report builders (explorer_factoids_build, explorer_stats_build)
-# into per-section emit helpers.  This script keeps the regression door
-# closed by flagging any new function that crosses the 500-line cap.
+# that a single C function is doing too many things. This script keeps
+# the regression door closed by flagging any new function that crosses
+# the 500-line cap.
 #
 # Override: add `// long-function-ok:<tag>` to the function's signature
 # line if a single state-machine truly belongs as one function.  The

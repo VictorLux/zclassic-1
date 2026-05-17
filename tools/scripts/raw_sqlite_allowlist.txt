@@ -3,10 +3,10 @@
 # Files allowed to contain raw sqlite3_step() calls outside AR_STEP macros.
 # Each entry is a path relative to the repo root.
 #
-# This is a *ratchet* list. Files are removed from it as Wave 3 of the deep
-# refactor (CLAUDE.md / plan: sqlite3_step → AR_BEGIN_SAVE migration) lands
-# the per-subsystem conversion. Once empty, the allowlist itself is removed
-# and the lint becomes unconditional.
+# This is a *ratchet* list. Files are removed from it as the
+# sqlite3_step → AR_BEGIN_SAVE migration lands per-subsystem. Once
+# empty, the allowlist itself is removed and the lint becomes
+# unconditional.
 #
 # Adding a file here requires a clear migration follow-up. Do NOT add new
 # entries to dodge the lint — the goal is to drive this list to zero.
@@ -15,5 +15,6 @@
 # e.g., schema bootstrap before AR macros are available): annotate the line
 # with `// raw-sql-ok: <one-line justification>`.
 
-# Wave 3 complete: all production raw sqlite3_step calls now route through
-# AR_STEP_ROW_READONLY / AR_STEP_WRITE / AR_BEGIN_SAVE. This list is empty.
+# Migration complete: all production raw sqlite3_step calls now route
+# through AR_STEP_ROW_READONLY / AR_STEP_WRITE / AR_BEGIN_SAVE. This
+# list is empty.
