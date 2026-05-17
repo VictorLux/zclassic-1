@@ -81,6 +81,11 @@ static _Atomic int64_t  g_node_peer_count;
 static _Atomic int64_t  g_node_rss_mb_x100;   /* fixed-point: RSS_MB * 100 */
 static _Atomic int64_t  g_node_utxo_count;
 static _Atomic int64_t  g_node_uptime_seconds;
+/* Wave 8: seconds since last EV_BLOCK_CONNECTED, fed by
+ * sync_watchdog_get_tip_advance_age() via the lib/metrics tick. Negative
+ * means "not yet observed" (cold boot); emitted as -1 so PromQL queries
+ * can distinguish bootstrap from a real stall via `> 0` guards. */
+static _Atomic int64_t  g_node_tip_advance_age = -1;
 
 /* Consensus reject registry — bounded (kind, reason) → count table.
  * `kind` is "tx" or "block"; reason is a kebab-case string emitted by
@@ -245,6 +250,11 @@ void mcp_metrics_set_node_gauges(int64_t block_height, int64_t peer_count,
     atomic_store(&g_node_rss_mb_x100, (int64_t)(rss_mb * 100.0));
     atomic_store(&g_node_utxo_count, utxo_count);
     atomic_store(&g_node_uptime_seconds, uptime_seconds);
+}
+
+void mcp_metrics_set_tip_advance_age(int64_t seconds)
+{
+    atomic_store(&g_node_tip_advance_age, seconds);
 }
 
 /* ── Peer scoring counters ──────────────────────────────────── */
@@ -707,6 +717,13 @@ size_t mcp_metrics_render_prometheus(char *buf, size_t cap)
         "# TYPE zcl_uptime_seconds gauge\n"
         "zcl_uptime_seconds %lld\n",
         (long long)up);
+
+    int64_t tage = atomic_load(&g_node_tip_advance_age);
+    pos = append(buf, cap, pos,
+        "# HELP zcl_tip_advance_age_seconds Seconds since last EV_BLOCK_CONNECTED (-1 pre-bootstrap)\n"
+        "# TYPE zcl_tip_advance_age_seconds gauge\n"
+        "zcl_tip_advance_age_seconds %lld\n",
+        (long long)tage);
 
     if (pos < cap) buf[pos] = '\0';
     pthread_mutex_unlock(&g_lock);

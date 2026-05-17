@@ -135,6 +135,8 @@ static bool rpc_healthcheck(const struct json_value *params, bool help,
                          bii_recovery_action_name(bii.action));
     json_push_kv_int(&checks, "memory_rss_mb", health.memory_rss_mb);
     json_push_kv_int(&checks, "uptime_seconds", health.uptime_seconds);
+    json_push_kv_int(&checks, "tip_advance_age_seconds",
+                     health.tip_advance_age_seconds);
 
     json_push_kv_bool(result, "healthy", health.healthy);
     json_push_kv(result, "checks", &checks);

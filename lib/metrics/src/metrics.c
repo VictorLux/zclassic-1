@@ -15,6 +15,7 @@
 #include "config/runtime.h"
 #include "util/thread_registry.h"
 #include "models/database.h"
+#include "services/sync_watchdog_service.h"
 #include <pthread.h>
 #include <stdio.h>
 #include <string.h>
@@ -364,6 +365,10 @@ static void *metrics_thread_fn(void *arg)
             /* Sync state */
             enum sync_state gss = sync_get_state();
             mcp_metrics_set_sync_state((int)gss, sync_state_name(gss));
+
+            /* Wave 8: seconds since last block-connect; alert hinge for
+             * the silent-stall failure shape (HEADERS_DOWNLOAD wedge). */
+            mcp_metrics_set_tip_advance_age(sync_watchdog_get_tip_advance_age());
         }
 
         if (is_tty) {
