@@ -12,9 +12,11 @@ Primary = zclassic23-native. Legacy = pulling data from the old C++ `zclassicd`.
 
 The zclassic23-native path. A fresh node downloads a verified UTXO snapshot
 from another zclassic23 peer, then catches up the tail via standard P2P.
+Activation is automatic — any peer advertising service bit `NODE_ZCL23`
+(`lib/net/include/net/fast_sync.h`) becomes a snapshot candidate.
 
 ```bash
-./zclassic23 -fastsync -addnode=<zclassic23_peer>
+./zclassic23 -addnode=<zclassic23_peer>
 ```
 
 What happens:
@@ -65,35 +67,39 @@ scratch).
 
 ---
 
-## Method 3 (legacy bootstrap, development only): LevelDB Import from zclassicd (~20 s)
+## Method 3 (legacy bootstrap, development only): Import from zclassicd
 
 **This path exists because the zclassic23 peer network is still small on
-mainnet.** We temporarily pull data from a running legacy `zclassicd` (C++)
-node, which is widely deployed, to get developer workstations to tip fast.
+mainnet.** We temporarily read data from a synced legacy `zclassicd` (C++)
+node on the same machine to get developer workstations to tip fast.
 `zclassicd` is advisory only: its block files, UTXO snapshots, and height/hash
 answers are accepted only when they also match compiled SHA3 anchors, runtime
 window commitments, local consensus state, or quorum with zclassic23 peers.
 Once the zclassic23 peer network is healthy, this path goes away.
 
-Requirements: a local synced legacy `zclassicd` with `~/.zclassic/chainstate/`.
+Requirements: a local synced legacy `zclassicd` with `~/.zclassic/`.
+
+Two one-liners, both safe on an empty datadir:
 
 ```bash
-systemctl --user stop zclassic23
-cp -r ~/.zclassic/chainstate ~/.zclassic-c23/chainstate
-for f in ~/.zclassic/blocks/blk*.dat; do cp "$f" ~/.zclassic-c23/blocks/; done
-sqlite3 ~/.zclassic-c23/node.db \
-  "DELETE FROM node_state WHERE key='leveldb_utxo_migrated'"
-systemctl --user start zclassic23
+# Preferred: empty-datadir → tip in ~60 s. Hardlinks blk*.dat, bulk-copies
+# block_index LevelDB, bulk-imports chainstate at legacy current tip,
+# skips per-block process_new_block entirely.
+./zclassic23 -cold-import=~/.zclassic
+
+# Alternate: streaming legacy reader. Reads block_index LevelDB + mmaps
+# blk*.dat directly (no zclassicd RPC), per-block I/O deferred via
+# g_body_pull_active. Auto wallet rescan at end.
+./zclassic23 -fastimport=~/.zclassic
 ```
 
-On boot, zclassic23 reads `'c'+txid` LevelDB keys, decodes compressed CCoins,
-and writes 1.35M UTXOs into its SQLite UTXO store in ~9.7 s (30 decoder threads
-→ single SQLite writer). Post-import SHA3-256 over the full UTXO set is
-checked against a hardcoded commitment before the node starts serving.
+Implementation: `app/services/src/legacy_cold_import.c` (cold-import);
+the deprecated `-importfromlegacy`, `-bodypull-from-legacy`, and
+`-fastsync=` flags all print a warning steering you to `-cold-import`.
 
 Rules:
-- Always **copy**, never symlink — zclassicd writes to its block files.
-- Never copy LevelDB from `~/.zclassic-c23/` into zclassicd — different formats.
+- The import flags **only run on an empty datadir** (or a datadir below the
+  legacy tip). They refuse if our active tip already meets/exceeds legacy.
 - Legacy data is acceleration only. It must match compiled SHA3 windows,
   runtime windows, local consensus checks, or zclassic23 quorum before it
   elevates trust.
