@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-spec="docs/specs/POWER_NODE_CONTRACT.md"
+spec="docs/spec/power-node-contract.md"
 
 if [[ ! -f "$spec" ]]; then
   echo "missing $spec" >&2

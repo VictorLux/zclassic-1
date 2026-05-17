@@ -2473,10 +2473,9 @@ bool accept_block(struct block *block,
          * snapshot cleanup) may still have nTx set from the index — we
          * must NOT skip those, they need to be re-written to disk. */
         if (pindex->nTx != 0 && (pindex->nStatus & BLOCK_HAVE_DATA)) {
-            /* Visibility (2026-04-22 trace): make this silent-skip
-             * path observable.  If blocks arrive over P2P and end up here,
-             * the UTXO/chain state can't advance and the stall is
-             * invisible without this event. */
+            /* Make this silent-skip path observable. If blocks arrive
+             * over P2P and end up here, the UTXO/chain state can't
+             * advance and the stall is invisible without this event. */
             event_emitf(EV_BLOCK_REJECTED, 0,
                 "ACCEPT_SKIP_NTX_AND_HAVE_DATA h=%d ntx=%u",
                 pindex->nHeight, pindex->nTx);
