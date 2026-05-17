@@ -9,7 +9,8 @@
  *   REPEATED_RESTART: circuit breaker after >3 recoveries in 30 minutes */
 
 #include "services/sync_watchdog_service.h"
-#include "controllers/network_controller.h"
+/* Wave 9b: was controllers/network_controller.h — sync_watchdog uses connman_* only (no rpc_net_*), so the controller dep was vestigial. */
+#include "net/connman.h"
 #include "validation/chainstate.h"
 #include "validation/process_block.h"
 #include "net/download.h"
