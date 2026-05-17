@@ -3,10 +3,9 @@
  * Legacy body pull — fetch missing block bodies from a sibling
  * zclassicd via JSON-RPC.
  *
- * Plumbed into local_chain_ingest's phase3 prelude AND boot's
- * stand-alone -bodypull-from-legacy path as the durable backstop
- * for "tip behind zclassicd" conditions. Each fetched block is
- * handed to process_new_block(), so accept_block writes it to disk
+ * Plumbed into local_chain_ingest's phase3 prelude as the durable
+ * backstop for "tip behind zclassicd" conditions. Each fetched block
+ * is handed to process_new_block(), so accept_block writes it to disk
  * and the activation controller's connect_tip path extends the
  * active chain.
  *

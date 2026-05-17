@@ -4,7 +4,7 @@
 # bench_cold_start_from_legacy.sh — FS8 acceptance benchmark.
 #
 # Measures the wall-clock time from a fresh empty datadir to a fully-
-# synced zclassic23 node when -importfromlegacy=~/.zclassic is used.
+# synced zclassic23 node when -cold-import=~/.zclassic is used.
 # Pass criterion: tip >= MIN_HEIGHT within MAX_SECS.
 #
 # Run from the zclassic23 repo root after a clean `make`.
@@ -65,8 +65,7 @@ start_ns=$(date +%s%N)
 # to a background pass; the at-tip ordering invariant still applies.
 ./zclassic23 \
     -datadir="$TMP" \
-    -importfromlegacy="$LEGACY" \
-    -bodypull-from-legacy="$LEGACY" \
+    -cold-import="$LEGACY" \
     -nofilesync \
     -rpcport="$RPC_PORT" \
     -port="$P2P_PORT" \

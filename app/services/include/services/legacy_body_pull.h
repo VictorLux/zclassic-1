@@ -11,9 +11,6 @@
  * block_index entry missing BLOCK_HAVE_DATA, RPC-fetches the block
  * from the legacy node and submits it via process_new_block(). The
  * accept_block + activate_best_chain pipeline does the rest.
- *
- * This makes -importfromlegacy a one-command unsticker independent
- * of the P2P fast lane.
  */
 
 #ifndef ZCL_SERVICES_LEGACY_BODY_PULL_H

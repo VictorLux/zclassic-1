@@ -36,25 +36,7 @@ struct app_context {
     bool tx_index;
     bool checkpoints_enabled;
     enum zcl_runtime_profile runtime_profile;
-    const char *import_legacy_dir;
     bool sapling_scan;
-    const char *legacy_import_dir;
-    /* -importfromlegacy=PATH : read-only ingest of a co-located zclassicd
-     * datadir via local_chain_ingest (FS4). Validates every block against
-     * the hardcoded SHA3 windows + UTXO checkpoint instead of accepting
-     * the source. Doesn't require zclassicd to be stopped (read-only).
-     * Different from -import-from= (legacy_import_dir above) which byte-
-     * copies the entire datadir and needs zclassicd offline. */
-    const char *ingest_from_legacy;
-    /* -bodypull-from-legacy=PATH : run JUST the legacy body-pull post-
-     * boot, skipping local_chain_ingest's phase 1 (SHA3 verify) and
-     * phase 2 (chainstate import — would clobber our UTXOs). Useful
-     * when the local tip lags the sibling zclassicd and you want a
-     * one-shot catch-up without touching SHA3 anchors. Bare form
-     * (-bodypull-from-legacy) defaults to ~/.zclassic. The path is
-     * only used to confirm the legacy datadir exists; RPC creds come
-     * from ~/.zclassic/zclassic.conf in either case. */
-    const char *bodypull_from_legacy;
     /* -fastimport[=PATH] : direct LevelDB+mmap import from a sibling
      * zclassicd's blocks/. Bypasses JSON-RPC entirely — reads the
      * legacy node's blocks/index/ LevelDB to build a height-ordered

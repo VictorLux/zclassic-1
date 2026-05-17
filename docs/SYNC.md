@@ -93,9 +93,7 @@ Two one-liners, both safe on an empty datadir:
 ./zclassic23 -fastimport=~/.zclassic
 ```
 
-Implementation: `app/services/src/legacy_cold_import.c` (cold-import);
-the deprecated `-importfromlegacy`, `-bodypull-from-legacy`, and
-`-fastsync=` flags all print a warning steering you to `-cold-import`.
+Implementation: `app/services/src/legacy_cold_import.c` (cold-import).
 
 Rules:
 - The import flags **only run on an empty datadir** (or a datadir below the

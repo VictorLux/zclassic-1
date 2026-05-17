@@ -2019,28 +2019,8 @@ bool app_init_services(struct app_context *ctx,
      * that stalls the snapshot data flow. */
     if (boot_node_db()) {
         int64_t utxo_count = db_utxo_count(boot_node_db());
-        if (utxo_count == 0 && !ctx->legacy_import_dir) {
+        if (utxo_count == 0) {
             printf("SQLite catchup: skipped (no UTXOs, waiting for P2P snapshot)\n");
-        } else if (ctx->legacy_import_dir) {
-            struct block_index *fs_tip = active_chain_tip(&svc->state->chain_active);
-            struct node_db catchup_db;
-            printf("=== SQLite Indexing (%d blocks) ===\n",
-                   fs_tip ? fs_tip->nHeight : 0);
-            int64_t t_import = (int64_t)time(NULL);
-            if (node_db_sync_open_private_db_like(boot_node_db(), &catchup_db)) {
-                node_db_sync_catchup(&catchup_db,
-                                     &svc->state->chain_active,
-                                     svc->wallet, ctx->datadir);
-                node_db_close(&catchup_db);
-            } else {
-                node_db_sync_catchup(boot_node_db(),
-                                     &svc->state->chain_active,
-                                     svc->wallet, ctx->datadir);
-            }
-            int64_t t_idx_done = (int64_t)time(NULL);
-            printf("Block index: %llds\n", (long long)(t_idx_done - t_import));
-            printf("=== SQLite complete in %llds ===\n",
-                   (long long)(t_idx_done - t_import));
         } else {
             if (!boot_start_catchup_service(svc, ctx->datadir)) {
                 fprintf(stderr,

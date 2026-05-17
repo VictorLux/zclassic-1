@@ -1000,54 +1000,6 @@ int main(int argc, char **argv)
         else if (strncmp(argv[i], "-connect=", 9) == 0) { ctx.connect_only = true; /* after init */ }
         else if (strncmp(argv[i], "-mineraddress=", 14) == 0) ctx.miner_address = argv[i]+14;
         else if (strncmp(argv[i], "-genproclimit=", 14) == 0) ctx.gen_threads = atoi(argv[i]+14);
-        else if (strncmp(argv[i], "-importlegacy=", 14) == 0) {
-            fprintf(stderr, "Warning: -importlegacy is deprecated, use -cold-import= for fast (~60s) state-only sync\n");
-            ctx.import_legacy_dir = argv[i]+14;
-        }
-        else if (strncmp(argv[i], "-import-from=", 13) == 0) {
-            fprintf(stderr, "Warning: -import-from is deprecated, use -cold-import= for fast (~60s) state-only sync\n");
-            ctx.legacy_import_dir = argv[i]+13;
-        }
-        else if (strncmp(argv[i], "-importfromlegacy=", 18) == 0) {
-            fprintf(stderr, "Warning: -importfromlegacy is deprecated, use -cold-import= for fast (~60s) state-only sync\n");
-            ctx.ingest_from_legacy = argv[i]+18;
-        }
-        else if (strcmp(argv[i], "-importfromlegacy") == 0) {
-            fprintf(stderr, "Warning: -importfromlegacy is deprecated, use -cold-import for fast (~60s) state-only sync\n");
-            /* bare form: defaults to ~/.zclassic */
-            const char *home = getenv("HOME");
-            static char default_legacy_path[1024];
-            if (home && *home) {
-                snprintf(default_legacy_path, sizeof(default_legacy_path),
-                         "%s/.zclassic", home);
-                ctx.ingest_from_legacy = default_legacy_path;
-            } else {
-                fprintf(stderr,
-                    "-importfromlegacy with no path requires $HOME; "
-                    "use -importfromlegacy=PATH\n");
-                return 1;
-            }
-        }
-        else if (strncmp(argv[i], "-bodypull-from-legacy=", 22) == 0) {
-            fprintf(stderr, "Warning: -bodypull-from-legacy is deprecated, use -cold-import= for fast (~60s) state-only sync\n");
-            ctx.bodypull_from_legacy = argv[i]+22;
-        }
-        else if (strcmp(argv[i], "-bodypull-from-legacy") == 0) {
-            fprintf(stderr, "Warning: -bodypull-from-legacy is deprecated, use -cold-import for fast (~60s) state-only sync\n");
-            const char *home = getenv("HOME");
-            static char default_bodypull_path[1024];
-            if (home && *home) {
-                snprintf(default_bodypull_path,
-                         sizeof(default_bodypull_path),
-                         "%s/.zclassic", home);
-                ctx.bodypull_from_legacy = default_bodypull_path;
-            } else {
-                fprintf(stderr,
-                    "-bodypull-from-legacy with no path requires $HOME; "
-                    "use -bodypull-from-legacy=PATH\n");
-                return 1;
-            }
-        }
         else if (strncmp(argv[i], "-cold-import=", 13) == 0) {
             ctx.cold_import_from = argv[i]+13;
         }
@@ -1083,10 +1035,6 @@ int main(int argc, char **argv)
                     "use -fastimport=PATH\n");
                 return 1;
             }
-        }
-        else if (strncmp(argv[i], "-fastsync=", 10) == 0) {
-            fprintf(stderr, "Warning: -fastsync is deprecated, use -import-from=\n");
-            ctx.legacy_import_dir = argv[i]+10;
         }
         else if (strncmp(argv[i], "-snapshot=", 10) == 0) ctx.snapshot_dir = argv[i]+10;
         else if (strcmp(argv[i], "-saplingscan") == 0) ctx.sapling_scan = true;
@@ -1170,7 +1118,6 @@ int main(int argc, char **argv)
     printf("zclassic23 starting (datadir=%s)...\n", ctx.datadir);
 
     if (!app_init(&ctx)) {
-        if (ctx.import_legacy_dir) return 0;
         fprintf(stderr, "Initialization failed.\n");
         return 1;
     }

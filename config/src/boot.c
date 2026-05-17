@@ -853,67 +853,6 @@ static bool boot_step_init_crypto_and_state(struct app_context *ctx,
     return true;
 }
 
-/* FS5: optional fast-sync from a co-located zclassicd.
- *
- * When -importfromlegacy=PATH (or bare -importfromlegacy → ~/.zclassic)
- * is given, runs local_chain_ingest_run() to:
- *   1. SHA3-window verify <legacy>/blocks/blk*.dat against the static
- *      anchor table compiled into the binary.
- *   2. Atomic UTXO snapshot import from <legacy>/chainstate/ with
- *      SHA3 reverify against the hardcoded h=3,056,758 checkpoint.
- *   3. Block-by-block ingest [anchor+1 .. tip] through chain_advance()
- *      so the at-tip ordering invariant applies to every imported
- *      block (kill -9 mid-ingest is recoverable).
- *
- * Called AFTER block_index has been loaded + genesis init completed —
- * we need the in-memory block_index alive for phase 3 to attach
- * imported blocks to a chain.
- *
- * Non-fatal on failure: logs the result and continues to normal boot
- * (P2P sync). Callers wanting halt-on-fail can wrap the call. */
-static bool boot_step_local_chain_ingest(struct app_context *ctx,
-                                          const struct chain_params *params)
-{
-    if (!ctx || !ctx->ingest_from_legacy)
-        return true; /* nothing to do */
-
-    printf("\n═══ Local Chain Ingest from %s ═══\n",
-           ctx->ingest_from_legacy);
-    fflush(stdout);
-
-    if (!local_chain_ingest_detect_legacy_datadir(ctx->ingest_from_legacy)) {
-        fprintf(stderr,
-            "local_chain_ingest: %s does not contain blocks/blk00000.dat "
-            "— is this a zclassic datadir? Falling back to P2P sync.\n",
-            ctx->ingest_from_legacy);
-        return true;
-    }
-
-    struct local_chain_ingest_config cfg = {
-        .legacy_datadir  = ctx->ingest_from_legacy,
-        .skip_blk_verify = false,
-        .skip_pow_verify = true,  /* SHA3 anchors are the evidence source */
-        .max_height      = 0,     /* ingest to peer-claimed tip */
-    };
-
-    int64_t t_ingest_start = boot_clock_ms();
-    enum local_ingest_result r = local_chain_ingest_run(
-        &cfg, &g_state, &g_coins_tip, params, ctx->datadir);
-    int64_t t_ingest_ms = boot_clock_ms() - t_ingest_start;
-
-    if (r != LCI_OK) {
-        fprintf(stderr,
-            "local_chain_ingest: result=%s elapsed_ms=%lld — "
-            "falling back to P2P sync\n",
-            local_ingest_result_name(r), (long long)t_ingest_ms);
-        return true;
-    }
-
-    printf("Local chain ingest OK. Tip h=%d. Elapsed %.1fs.\n",
-           active_chain_height(&g_state.chain_active),
-           (double)t_ingest_ms / 1000.0);
-    return true;
-}
 
 /* Direct LevelDB+mmap fast-import from a sibling zclassicd.
  *
@@ -924,8 +863,7 @@ static bool boot_step_local_chain_ingest(struct app_context *ctx,
  * Requires the legacy LevelDB to be unlocked (stop zclassicd first;
  * the operator pays a brief downtime to gain a >10x cold-catchup
  * speedup). On open failure (LOCK held, dir missing), logs and falls
- * through — `boot_step_bodypull_from_legacy` is the RPC-based
- * fallback. */
+ * through to standard P2P sync. */
 static bool boot_step_fastimport(struct app_context *ctx,
                                   const struct chain_params *params)
 {
@@ -972,59 +910,6 @@ static bool boot_step_fastimport(struct app_context *ctx,
            r.applied, ok ? "yes" : "no",
            r.final_tip, r.legacy_tip,
            (double)t_ms / 1000.0);
-    return true;
-}
-
-/* Standalone body-pull from a sibling zclassicd.
- *
- * When -bodypull-from-legacy[=PATH] is given, runs JUST the legacy
- * body-pull post-boot. Unlike -importfromlegacy this skips:
- *   - phase 1 (SHA3 window verify): irrelevant for catching up
- *     bodies, and the compiled anchor table may not match the legacy
- *     blk file ordering — a stall here blocks the whole pipeline.
- *   - phase 2 (chainstate import): would clobber our local UTXO set
- *     with the legacy node's, potentially rewinding our tip.
- *
- * Pulls headers from zclassicd first (via header_probe), then walks
- * the missing-body range and feeds each block through
- * process_new_block. Non-fatal on failure — logs and continues. */
-static bool boot_step_bodypull_from_legacy(struct app_context *ctx,
-                                            const struct chain_params *params)
-{
-    if (!ctx || !ctx->bodypull_from_legacy) return true;
-
-    /* Body-pull is disabled.
-     *
-     * The per-block RPC roundtrip to legacy zclassicd pre-populates
-     * block_index entries with BLOCK_HAVE_DATA but does NOT connect
-     * them into active_chain — process_new_block stores them without
-     * advancing activate_best_chain. The result: a post-bodypull boot
-     * has the active tip stranded at the pre-pull height while the
-     * block_index claims a much higher set of "have_data" entries.
-     * Boot's promote_utxo_height_anchor then commits a CSR tip
-     * through unlinked pprev pointers, leaving active_chain in a
-     * phantom state where c->chain[c->height] is NULL. From there
-     * find_most_work_chain bails in 4 ms (no candidates), reorg
-     * recovery loops with CSR rejections, and the node never
-     * advances. See feedback_bodypull_pathology_2026-05-17.md.
-     *
-     * Cold start: use -cold-import=PATH (bulk-copy LevelDB +
-     * chainstate, empty datadir to legacy tip in ~60 s).
-     * Warm catch-up: P2P sync through normal peers (~2 s/block,
-     * sub-minute for ≤2 k blocks behind tip).
-     *
-     * The flag is accepted to keep existing systemd drop-ins valid;
-     * its presence now triggers this log line and falls through to
-     * the standard P2P sync path. */
-    (void)params;
-    fprintf(stderr,  // obs-ok:deprecation-warning-pre-fallthrough
-        "WARNING: -bodypull-from-legacy=%s is DISABLED in this build.\n"
-        "         The body-pull path stranded active_chain behind the\n"
-        "         pre-populated block_index, causing reorg loops. Use\n"
-        "         -cold-import=PATH for cold start (~60s), or remove\n"
-        "         the flag entirely for warm catch-up via P2P.\n"
-        "         Falling through to standard P2P sync.\n",
-        ctx->bodypull_from_legacy);
     return true;
 }
 
@@ -1564,23 +1449,6 @@ bool app_init(struct app_context *ctx)
     printf("[boot] %-30s %lldms\n", "sqlite_open_migrate",
            (long long)(boot_clock_ms() - t_phase));
 
-    /* Fast path: -importlegacy imports wallet data from legacy block files
-     * and exits. No block index, no P2P, no RPC needed. */
-    if (ctx->import_legacy_dir) {
-        if (!g_node_db.open) {
-            fprintf(stderr, "Error: SQLite database required for import\n");
-            return false;
-        }
-        int result = legacy_import(ctx->import_legacy_dir,
-                                    &g_node_db, &g_wallet,
-                                    ctx->sapling_scan);
-        if (result >= 0)
-            printf("Import complete: %d wallet transactions found.\n", result);
-        else
-            fprintf(stderr, "Import failed.\n");
-        return false; /* triggers exit in main() */
-    }
-
     /* -snapshot: Create snapshot of legacy data dir, import in parallel,
      * then start normally with P2P sync to catch up any delta. */
     if (ctx->snapshot_dir) {
@@ -1607,182 +1475,6 @@ bool app_init(struct app_context *ctx)
          * ownership of background jobs, so shutdown can join it cleanly. */
     }
 
-    /* -import-from: copy zclassicd's data and start immediately.
-     *
-     * Usage: ./zclassic23 -import-from=~/.zclassic
-     *
-     * Strategy (fastest to slowest, tried in order):
-     * 1. Symlink LevelDB dirs + hardlink block files (instant, same FS)
-     * 2. Hardlink everything (instant, same FS)
-     * 3. Copy (minutes, cross FS)
-     *
-     * IMPORTANT: zclassicd MUST be stopped first. LevelDB cannot be
-     * shared between processes. The block files are read-only so
-     * hardlinks/symlinks are safe even if zclassicd restarts later.
-     *
-     * The LevelDB formats are wire-compatible — same CDiskBlockIndex
-     * and CCoins serialization. No conversion needed. */
-    if (ctx->legacy_import_dir) {
-        struct timespec _fs_ts;
-        clock_gettime(CLOCK_MONOTONIC, &_fs_ts);
-        int64_t t_fs_start_ms = _fs_ts.tv_sec * 1000 + _fs_ts.tv_nsec / 1000000;
-        printf("═══ Fast Sync from Legacy Node ═══\n");
-        printf("Source: %s\n", ctx->legacy_import_dir);
-        printf("Target: %s\n\n", ctx->datadir);
-
-        char src_test[1024];
-        snprintf(src_test, sizeof(src_test), "%s/blocks", ctx->legacy_import_dir);
-        struct stat st_check;
-        if (stat(src_test, &st_check) != 0) {
-            fprintf(stderr, "ERROR: Source not found: %s\n"
-                    "  Stop zclassicd first, then:\n"
-                    "  ./zclassic23 -import-from=~/.zclassic\n", src_test);
-            return false;
-        }
-
-        /* Check if zclassicd is still running (LevelDB lock check) */
-        {
-            char lock_path[1024];
-            snprintf(lock_path, sizeof(lock_path),
-                     "%s/blocks/index/LOCK", ctx->legacy_import_dir);
-            FILE *lf = fopen(lock_path, "r");
-            if (lf) {
-                char pidbuf[32] = {0};
-                size_t nr = fread(pidbuf, 1, sizeof(pidbuf) - 1, lf);
-                fclose(lf);
-                if (nr > 0) {
-                    long pid = strtol(pidbuf, NULL, 10);
-                    if (pid > 0 && kill((pid_t)pid, 0) == 0) {
-                        fprintf(stderr,
-                            "ERROR: zclassicd is still running (pid %ld)!\n"
-                            "  Stop it first: zcl-rpc stop\n", pid);
-                        return false;
-                    }
-                }
-            }
-        }
-
-        char src[1024], dst[1024];
-
-        /* Count source block files */
-        int num_blk = 0;
-        int64_t total_bytes = 0;
-        {
-            snprintf(src, sizeof(src), "%s/blocks", ctx->legacy_import_dir);
-            for (int f = 0; f < 9999; f++) {
-                char path[1024];
-                snprintf(path, sizeof(path), "%s/blk%05d.dat", src, f);
-                struct stat fst;
-                if (stat(path, &fst) != 0) break;
-                total_bytes += fst.st_size;
-                num_blk++;
-            }
-        }
-        printf("  Source: %d block files, %.1f GB\n\n",
-               num_blk, (double)total_bytes / (1024.0*1024.0*1024.0));
-
-        /* Block files: remove stale, then hardlink (or copy cross-device).
-         * Stale blk/rev files from old P2P sync cause "failed to read block"
-         * because they have different sizes than the source originals. */
-        snprintf(dst, sizeof(dst), "%s/blocks", ctx->datadir);
-        mkdir(dst, 0700);
-        snprintf(src, sizeof(src), "%s/blocks", ctx->legacy_import_dir);
-        printf("  [1/3] Block files...");
-        fflush(stdout);
-        block_files_clean(dst);
-        int copied = block_files_copy(src, dst);
-        if (copied < 0) {
-            fprintf(stderr, " failed\n");
-            fprintf(stderr, "legacy import: block file copy failed from %s to %s\n",
-                    src, dst);
-            return false;
-        }
-        if (copied == 0) {
-            fprintf(stderr, " failed\n");
-            fprintf(stderr, "legacy import: failed to copy block files from %s to %s\n",
-                    src, dst);
-            return false;
-        }
-        printf(" %d files copied\n", copied);
-
-        /* Block index: byte copy (each node needs its own LevelDB lock) */
-        snprintf(dst, sizeof(dst), "%s/blocks/index", ctx->datadir);
-        snprintf(src, sizeof(src), "%s/blocks/index", ctx->legacy_import_dir);
-        printf("  [2/3] Block index...");
-        fflush(stdout);
-        if (!dir_copy(src, dst)) {
-            fprintf(stderr, " failed\n");
-            fprintf(stderr, "legacy import: failed to copy block index from %s to %s\n",
-                    src, dst);
-            return false;
-        }
-        printf(" done\n");
-
-        /* Chainstate: byte copy (each node needs its own LevelDB lock) */
-        snprintf(dst, sizeof(dst), "%s/chainstate", ctx->datadir);
-        snprintf(src, sizeof(src), "%s/chainstate", ctx->legacy_import_dir);
-        printf("  [3/3] Chainstate...");
-        fflush(stdout);
-        if (!dir_copy(src, dst)) {
-            fprintf(stderr, " failed\n");
-            fprintf(stderr, "legacy import: failed to copy chainstate from %s to %s\n",
-                    src, dst);
-            return false;
-        }
-        printf(" done\n");
-
-        /* Copy block_index.bin flat file if available.
-         * This avoids the 116s LevelDB scan on first boot.
-         * Check: 1) our own data dir (prior run), 2) default c23 dir. */
-        {
-            char flat_src[1024], flat_dst[1024];
-            snprintf(flat_dst, sizeof(flat_dst), "%s/block_index.bin",
-                     ctx->datadir);
-            struct stat flat_st;
-            bool have_flat = false;
-
-            /* Check our own datadir (for re-legacy import) */
-            if (!have_flat && stat(flat_dst, &flat_st) == 0 &&
-                flat_st.st_size > 1000000) {
-                have_flat = true; /* already there */
-            }
-            /* Check default C23 data dir */
-            if (!have_flat) {
-                const char *home = getenv("HOME");
-                if (home) {
-                    snprintf(flat_src, sizeof(flat_src),
-                             "%s/.zclassic-c23/block_index.bin", home);
-                    if (stat(flat_src, &flat_st) == 0 &&
-                        flat_st.st_size > 1000000) {
-                        printf("  [+] block_index.bin...");
-                        fflush(stdout);
-                        if (file_copy(flat_src, flat_dst))
-                            printf(" copied (%.0f MB)\n",
-                                   (double)flat_st.st_size / (1024.0*1024.0));
-                        else
-                            printf(" failed (will rebuild from LevelDB)\n");
-                    }
-                }
-            }
-        }
-
-        clock_gettime(CLOCK_MONOTONIC, &_fs_ts);
-        int64_t t_fs_elapsed_ms = _fs_ts.tv_sec * 1000 +
-            _fs_ts.tv_nsec / 1000000 - t_fs_start_ms;
-        printf("\n═══ Fast sync file copy: %lldms ═══\n\n",
-               (long long)t_fs_elapsed_ms);
-
-        /* Delete stale flat file — force fresh LevelDB load.
-         * The flat file from a prior run may have wrong chain_work=0,
-         * causing activate_best_chain to see most_work=0 and get stuck. */
-        {
-            char stale_flat[1024];
-            snprintf(stale_flat, sizeof(stale_flat), "%s/block_index.bin",
-                     ctx->datadir);
-            if (unlink(stale_flat) == 0)
-                printf("Deleted stale block_index.bin (will rebuild from LevelDB)\n");
-        }
-    }
 
     /* Open block index database.
      * Remove stale LOCK files — left behind by unclean legacy import exit. */
@@ -2628,25 +2320,10 @@ bool app_init(struct app_context *ctx)
         }
     }
 
-    /* FS5: optional fast-sync from a co-located zclassicd. Runs after
-     * block_index is loaded + genesis init completed (we need block
-     * map entries for the post-anchor [anchor+1..tip] block ingest in
-     * phase 3). No-op when ctx->ingest_from_legacy is NULL. */
-    if (!boot_step_local_chain_ingest(ctx, params))
-        return false;
-
     /* Direct LevelDB+mmap fast-import path (no JSON-RPC). Preferred
      * when the legacy datadir is local and zclassicd is stopped.
      * No-op when ctx->fastimport_from is NULL. */
     if (!boot_step_fastimport(ctx, params))
-        return false;
-
-    /* optional standalone body-pull from a sibling zclassicd.
-     * Surgical catch-up that skips local_chain_ingest's phase 1/2 —
-     * useful when active_tip lags pindex_best_header and P2P bodies
-     * aren't filling the gap. No-op when ctx->bodypull_from_legacy
-     * is NULL. */
-    if (!boot_step_bodypull_from_legacy(ctx, params))
         return false;
 
     /* Repair block index from SQLite.
