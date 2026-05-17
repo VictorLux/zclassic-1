@@ -2198,6 +2198,22 @@ bool accept_block_header(const struct block_header *header,
                                                   time(NULL),
                                                   &last_retry_clear);
         }
+        /* Wave 9h: re-arriving headers must promote nStatus from
+         * BLOCK_VALID_HEADER to BLOCK_VALID_TREE. Without this, blocks
+         * stored to block_map by body-pull / direct-import (which leave
+         * status at BLOCK_VALID_HEADER + BLOCK_HAVE_DATA) stay invisible
+         * to find_most_work_chain forever — that filter at
+         * process_block.c:1431 requires VALID_TREE. The new-pindex path
+         * below at line ~2284 does this promotion correctly; the
+         * existing-pindex path was silently skipping it, leaving the
+         * node wedged with on-disk bodies the chain refuses to connect.
+         * pprev_valid here means we've already gone through the
+         * "Fix scrambled heights" pass above, so ancestry is linked. */
+        if ((pindex->nStatus & BLOCK_VALID_MASK) < BLOCK_VALID_TREE &&
+            !(pindex->nStatus & BLOCK_FAILED_MASK)) {
+            pindex->nStatus = (pindex->nStatus & ~BLOCK_VALID_MASK) |
+                              BLOCK_VALID_TREE;
+        }
         return true;
     }
 
