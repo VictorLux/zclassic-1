@@ -378,8 +378,31 @@ enum chain_evidence_controller_result chain_evidence_controller_promote_tip(
     if (!state_allows_tip_promotion(authority->state))
         return CEC_REJECTED_BAD_STATE;
     if (!chain_evidence_record_has_block_index_required(&request->verified)) {
-        chain_evidence_controller_freeze(authority,
-            "tip promotion missing block-index evidence: header_ancestry_linked,chainwork_recomputed,nakamoto_selected_best_work,block_bytes_hash_checked");
+        /* Wave 9r: this used to call freeze(), permanently wedging the
+         * controller. But during genesis-up sync the evidence flags
+         * (header_ancestry_linked, chainwork_recomputed, nakamoto_
+         * selected_best_work, block_bytes_hash_checked) can be
+         * temporarily missing on a re-arrival of a block whose
+         * evidence record was constructed before all the flags were
+         * stamped — e.g. a stale cached record from a prior reorg
+         * disconnect, or a worker-thread race that constructs the
+         * record before block_index_integrity has finished marking it.
+         * Permanent freeze on this transient shape blocks the chain
+         * forever. The actual integrity of new_tip is checked further
+         * down by csr_validate_locked (tip-in-index, hash-match,
+         * sql-cross-check) before the commit lands. Returning
+         * INCOMPLETE_INDEX_EVIDENCE without freeze lets the caller
+         * retry on the next pass once the evidence record is rebuilt. */
+        fprintf(stderr,  // obs-ok:incomplete-evidence-transient
+                "[cec] tip promotion missing block-index evidence "
+                "(transient) h=%d ancestry=%d work=%d nakamoto=%d "
+                "bytes=%d — controller stays in state=%s for retry\n",
+                request->new_tip->nHeight,
+                request->verified.header_ancestry_linked,
+                request->verified.chainwork_recomputed,
+                request->verified.nakamoto_selected_best_work,
+                request->verified.block_bytes_hash_checked,
+                chain_evidence_controller_state_name(authority->state));
         return CEC_REJECTED_INCOMPLETE_INDEX_EVIDENCE;
     }
     if (request->utxo_max_height > request->new_tip->nHeight) {
