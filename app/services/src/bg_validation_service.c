@@ -679,8 +679,13 @@ static void *bg_validation_thread(void *arg)
         atomic_store(&svc->progress.verified_height, chain_height);
         atomic_store(&svc->progress.state, BG_VALIDATION_COMPLETE);
 
-        /* Reset defer_proof_validation_below — node has now fully verified everything */
-        g_deferred_proof_validation_below_height = -1;
+        /* Wave 9k: only reset if we crossed the deferred-validation floor.
+         * Otherwise an empty-chain run (chain_height==0) trivially "completes"
+         * and clears the boot-time deferred=3,100,000 setting, which then
+         * makes incoming peer blocks at low heights (h=737 etc.) fail
+         * phgr13 verify before the PHGR13 verifying key is ready. */
+        if (chain_height >= g_deferred_proof_validation_below_height)
+            g_deferred_proof_validation_below_height = -1;
 
         int64_t total_time = (int64_t)time(NULL) - t_start;
         printf("[bg-valid] COMPLETE: %d blocks, %lld sigs, %lld proofs "
@@ -765,7 +770,17 @@ bool bg_validation_start(struct bg_validation_service *svc)
         atomic_store(&svc->progress.state, BG_VALIDATION_COMPLETE);
         atomic_store(&svc->progress.verified_height, saved);
         atomic_store(&svc->progress.chain_height, chain_h);
-        g_deferred_proof_validation_below_height = -1;
+        /* Wave 9k: only reset deferred-proof-validation if we've actually
+         * validated PAST the checkpoint. Without this check, a fresh
+         * datadir at chain_h=0 trivially satisfies saved>=chain_h, marks
+         * bg-validation "complete", clears the deferred flag, and then
+         * the very first peer block (e.g. h=737) fails phgr13 verify
+         * because the chain hasn't caught up to where proofs are expected
+         * to verify cleanly (and PHGR13 keys may not even be loaded).
+         * Keep the boot-time deferred floor in place until we actually
+         * cross it. */
+        if (chain_h >= g_deferred_proof_validation_below_height)
+            g_deferred_proof_validation_below_height = -1;
         return true;
     }
 
