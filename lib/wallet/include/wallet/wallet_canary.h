@@ -29,11 +29,7 @@
  *   4. memcmp: if equal, success; otherwise CANARY_MISMATCH.
  *
  * The canary table is distinct from wallet_keys and is not
- * included in wallet_backup_service's table set.
- *
- * TODO(agent2): when struct zcl_result lands via util/result.h,
- * wallet_canary_run can return zcl_result directly. Today it
- * returns a small status struct of its own. */
+ * included in wallet_backup_service's table set. */
 
 #ifndef ZCL_WALLET_CANARY_H
 #define ZCL_WALLET_CANARY_H

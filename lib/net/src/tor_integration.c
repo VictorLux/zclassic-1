@@ -57,10 +57,7 @@ void tor_integration_set_handler(tor_request_handler_fn handler, void *ctx)
  * can't satisfy this requirement. We open a localhost-only SocksPort
  * that nothing ever connects to, purely to make Tor's startup check
  * happy. The port is derived from p2p_port so multiple instances
- * don't collide.
- *
- * TODO: patch the Tor fork to bootstrap when dynhost is configured,
- * even with SocksPort 0. Then delete this workaround. */
+ * don't collide. */
 bool tor_write_torrc(const char *datadir, uint16_t p2p_port)
 {
     char torrc_path[1024];

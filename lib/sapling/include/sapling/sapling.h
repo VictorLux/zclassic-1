@@ -162,7 +162,7 @@ bool sapling_check_spend(struct sapling_verification_ctx *ctx,
                           const uint8_t spend_auth_sig[64],
                           const uint8_t sighash[32]);
 
-/* Check output: accumulate -cv. Groth16 proof TODO. */
+/* Check output: subtract cv from bvk, verify the Groth16 output proof. */
 bool sapling_check_output(struct sapling_verification_ctx *ctx,
                            const uint8_t cv[32],
                            const uint8_t cm[32],
