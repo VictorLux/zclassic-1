@@ -11,7 +11,7 @@ flowchart TD
     START([zclassic23 start]) --> PARSE[Parse CLI flags<br/>-datadir, -port, -tor, etc.]
     PARSE --> ACTIVATION[Activation Controller<br/>state = BOOT_PENDING]
 
-    ACTIVATION --> DB_OPEN[Open SQLite databases<br/>blocks.db, coins.db, wallet.db]
+    ACTIVATION --> DB_OPEN[Open SQLite databases<br/>node.db, consensus_snapshot.db]
     DB_OPEN -->|EV_BOOT_DB_OPEN| COINS[Initialize coins layer<br/>coins_view_sqlite + cache]
     COINS -->|EV_BOOT_COINS_OPEN| UTXO_CHECK{UTXO snapshot<br/>available?}
 
@@ -216,7 +216,7 @@ flowchart TD
         BLOCK_CONNECT --> WALLET_NOTIFY[Wallet notified<br/>of new block]
         WALLET_NOTIFY --> SCAN_T[Scan transparent<br/>outputs for our addresses]
         WALLET_NOTIFY --> SCAN_S[Trial-decrypt Sapling<br/>outputs with IVK]
-        SCAN_T --> UPDATE[Update wallet.db<br/>mark tx confirmed]
+        SCAN_T --> UPDATE[Update wallet rows in node.db<br/>mark tx confirmed]
         SCAN_S --> UPDATE
         UPDATE --> CONF_1[1 confirmation]
         CONF_1 --> CONF_N[N confirmations<br/>maturity depends on type]

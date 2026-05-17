@@ -156,14 +156,20 @@ See `lib/validation/include/validation/validation_audit.h` for the full matrix.
 
 ```
 ~/.zclassic-c23/
-├── node.db              SQLite (UTXOs, block index cache, node state, wallet)
+├── node.db                  SQLite (UTXOs, block index, node state, wallet)
+├── node.db-{wal,shm}        WAL companion files
+├── consensus_snapshot.db    SQLite (snapshot under construction or applied)
 ├── blocks/
-│   ├── blk*.dat         Block data (4B magic + 4B size + block)
-│   ├── rev*.dat         Undo data for reorgs
-│   └── index/           LevelDB block index
-├── chainstate/          LevelDB UTXO set (only used during legacy import)
-├── block_index.bin      Flat file cache (instant block index load on restart)
-└── wallet.dat           Encrypted wallet keys
+│   ├── blk*.dat             Block data (4B magic + 4B size + block)
+│   ├── rev*.dat             Undo data for reorgs
+│   └── index/               LevelDB block index (legacy / cold-import only)
+├── block_index.bin          Optional flat file cache (instant restart load)
+├── mmb_leaves.bin           Merkle Mountain Belt leaf cache
+├── file_manifest.bin        File-service chunk manifest
+├── explorer/                Block-explorer cache (factoids, CSS)
+├── tor_data/                Embedded Tor state (when -tor is set)
+├── .cookie                  RPC auth cookie
+└── node.log                 Structured event log
 ```
 
 Key `node_state` keys: `coins_best_block`, `tip_height`, `leveldb_utxo_migrated`,

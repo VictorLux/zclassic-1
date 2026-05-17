@@ -18,12 +18,4 @@ Do not use it for:
 - direct HTML/JSON rendering
 - route dispatch
 
-Current services in progress:
-
-- `block_sync_service`
-- `header_sync_service`
-- `node_health_service`
-- `sync_service` (compatibility umbrella)
-- `snapshot_sync_service`
-
 Primary architecture reference: [docs/ARCHITECTURE_DIAGRAMS.md](../../docs/ARCHITECTURE_DIAGRAMS.md)

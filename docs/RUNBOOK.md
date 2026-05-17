@@ -20,10 +20,9 @@ du -sh ~/.zclassic-c23/*
 2. Remove stale peer data: `rm -f ~/.zclassic-c23/peers.dat.bak`
 3. If WAL is bloated (>100MB), force checkpoint:
    ```bash
-   sqlite3 ~/.zclassic-c23/blocks.db 'PRAGMA wal_checkpoint(TRUNCATE);'
-   sqlite3 ~/.zclassic-c23/coins.db 'PRAGMA wal_checkpoint(TRUNCATE);'
+   sqlite3 ~/.zclassic-c23/node.db 'PRAGMA wal_checkpoint(TRUNCATE);'
    ```
-4. If block files are consuming >5GB and you don't need full history, consider block pruning (stretch feature — not yet available).
+4. If block files are consuming >5GB and you don't need full history, enable block pruning (`app/services/src/block_pruning_service.c`).
 5. Move datadir to larger volume: stop node, `mv ~/.zclassic-c23 /mnt/bigger/`, symlink or use `-datadir=`.
 
 **Prevention:** Set `ZCL_WAL_MAX_BYTES=104857600` (100MB cap, auto-checkpoint). Monitor `zcl_disk_free_bytes` in Grafana with alert at 1GB.
@@ -66,7 +65,7 @@ du -sh ~/.zclassic-c23/*
 **Diagnose:**
 ```bash
 ./tools/zcl-rpc healthcheck | jq '.wallet'
-ls -la ~/.zclassic-c23/wallet.db*
+ls -la ~/.zclassic-c23/node.db
 # Check if backup destination is writable
 ls -la ~/.zclassic-c23/backups/
 ```
@@ -77,7 +76,7 @@ ls -la ~/.zclassic-c23/backups/
 3. If disk full: see **Disk > 99% Full** above.
 4. Manual backup while node is running (SQLite online backup is safe):
    ```bash
-   sqlite3 ~/.zclassic-c23/wallet.db ".backup '~/.zclassic-c23/backups/wallet-$(date +%Y%m%d).db'"
+   sqlite3 ~/.zclassic-c23/node.db ".backup '~/.zclassic-c23/backups/node-$(date +%Y%m%d).db'"
    ```
 
 **Prevention:** The node's built-in backup service runs automatically. Verify it works after first boot by checking for `EV_WALLET_BACKUP` events.
@@ -104,21 +103,16 @@ ls -la ~/.zclassic-c23/backups/
      ```bash
      ./tools/zcl-rpc getpeerinfo | jq '.[] | {addr, startingheight}'
      ```
-3. If node is stuck on a dead fork (no peers agree):
-   - Invalidate the bad block:
-     ```bash
-     ./tools/zcl-rpc invalidateblock "BADBLOCKHASH"
-     ```
-   - Reconsider a previously-invalidated good block:
-     ```bash
-     ./tools/zcl-rpc reconsiderblock "GOODBLOCKHASH"
-     ```
-4. Nuclear option (last resort): stop node, delete chainstate, resync:
+3. If node is stuck on a dead fork (no peers agree), see the
+   nuclear option below — invalidateblock / reconsiderblock RPCs are
+   not currently exposed.
+4. Nuclear option (last resort): stop node, delete state, resync:
    ```bash
    systemctl --user stop zclassic23
-   rm -rf ~/.zclassic-c23/coins.db*
+   rm -f ~/.zclassic-c23/node.db ~/.zclassic-c23/node.db-{wal,shm}
+   rm -f ~/.zclassic-c23/block_index.bin{,.sha3}
    systemctl --user start zclassic23
-   # Node will rebuild chainstate from block files or snapshot sync
+   # Node will rebuild from block files, snapshot sync, or -cold-import.
    ```
 
 **Prevention:** Run background validation (`-nobgvalidation` NOT set). Monitor `zcl_chain_height` derivative — alert if zero for >10 minutes while peers show higher heights.
@@ -262,8 +256,8 @@ journalctl --user -u zclassic23 --since "5 min ago" --no-pager
 | Error | Fix |
 |-------|-----|
 | `database is locked` | Another instance is running. `pgrep zclassic23`. Kill stale process. |
-| `block index corrupt` | `EV_BLOCK_INDEX_CORRUPT`. Delete and rebuild: `rm ~/.zclassic-c23/blocks_index.flat; restart` |
-| `coins db corrupt` | Delete `coins.db*`, restart — will rebuild from blocks or snapshot. |
+| `block index corrupt` | `EV_BLOCK_INDEX_CORRUPT`. Delete and rebuild: `rm ~/.zclassic-c23/block_index.bin{,.sha3}; restart` |
+| `node.db corrupt` | Delete `node.db*`, restart — will rebuild from block files or snapshot. |
 | `schema version mismatch` | Node was downgraded. Use the matching binary version or delete+resync. |
 | `permission denied` | `chmod 700 ~/.zclassic-c23; chown -R $USER ~/.zclassic-c23` |
 | `address already in use` | Port conflict. `ss -tlnp | grep 8033`. Change with `-port=` or stop conflicting service. |
