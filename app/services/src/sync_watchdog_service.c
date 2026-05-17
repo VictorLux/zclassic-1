@@ -579,18 +579,36 @@ enum watchdog_recovery_type sync_watchdog_check(
         }
     }
 
-    /* d. Escalation: instead of giving up, escalate recovery */
+    /* d. Escalation: instead of giving up, escalate recovery.
+     *
+     * Wave 9q: gate escalation on actual progress. If blocks are
+     * being connected (blocks_per_sec >= 1.0), the chain IS
+     * advancing — no escalation is warranted regardless of L1/L2
+     * failure-count accumulation from transient hiccups. Without
+     * this gate, the live node climbed cleanly to h=9491 (~50 bps
+     * sustained) then L3 fired anyway, wiping in-memory state and
+     * resetting the active chain to h=897. Each L3 fires
+     * `disconnect_outbound_peers` + `sync_set_state(SYNC_IDLE)`,
+     * triggering a full re-bootstrap that costs minutes. */
     {
         int level = check_escalation_level(now);
-        if (level >= 3 && g_watchdog.escalation_level < 3) {
+        bool chain_advancing = (g_watchdog.blocks_per_sec >= 1.0);
+        if (level >= 3 && g_watchdog.escalation_level < 3 && !chain_advancing) {
             escalation_l3(cm, dm);
             record_recovery(now, WATCHDOG_REPEATED_RESTART);
             return WATCHDOG_REPEATED_RESTART;
         }
-        if (level >= 2 && g_watchdog.escalation_level < 2) {
+        if (level >= 2 && g_watchdog.escalation_level < 2 && !chain_advancing) {
             escalation_l2(cm, dm);
             record_recovery(now, WATCHDOG_REPEATED_RESTART);
             return WATCHDOG_REPEATED_RESTART;
+        }
+        /* If we WERE escalated but the chain has resumed advancing,
+         * decay the level back so the next recovery has a clean slate. */
+        if (chain_advancing && g_watchdog.escalation_level > 0) {
+            g_watchdog.escalation_level = 0;
+            g_watchdog.l1_failures = 0;
+            g_watchdog.l2_failures = 0;
         }
     }
 
