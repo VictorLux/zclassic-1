@@ -639,14 +639,26 @@ enum watchdog_recovery_type sync_watchdog_check(
         g_watchdog.header_stall_escalated = false;
     }
 
-    /* a2. HEADER_LAG: headers far behind peers.
+    /* a2. HEADER_LAG: headers far behind peers AND not advancing.
      *
-     * also fires in HEADERS_DOWNLOAD when all peers are
-     * stale (peer_max <= our_height + 100 sustained). Pre-Round-7 this
-     * branch only ran in BLOCKS_DOWNLOAD — a node stuck in
-     * HEADERS_DOWNLOAD with stale peers would wait on the 30s
-     * getheaders interval indefinitely. Now we treat the lag as
-     * peers-needed and rotate via HEADER_STALL's existing handler. */
+     * Wave 9l: this branch is only meaningful when headers are STUCK
+     * relative to peers — not when we're just far behind doing a
+     * genesis-up sync. Pre-9l the check fired purely on gap > 500,
+     * which for a 3 M-block-behind cold sync stays true for HOURS,
+     * triggering L1/L2/L3 escalation every cycle and resetting the
+     * sync state machine before any block can connect.
+     *
+     * The header_stall path above (a) already covers "headers not
+     * advancing for >300 s" with a tip-comparison check. This branch
+     * adds the additional condition that headers must ALSO be far
+     * behind peers and ALSO stuck — i.e. the lag is sustained, not
+     * progress-driven. Use the same last_header_height comparison
+     * pattern as HEADER_STALL.
+     *
+     * Originally written to handle "all peers stale" in HEADERS_DOWNLOAD
+     * — that case is now also covered by HEADER_STALL's existing peer
+     * rotation, so this branch reduces to a redundant safety net that
+     * only fires when both conditions hold. */
     if ((state == SYNC_BLOCKS_DOWNLOAD && duration > 60) ||
         (state == SYNC_HEADERS_DOWNLOAD && duration > 300)) {
         int current_header_height = -1;
@@ -655,10 +667,18 @@ enum watchdog_recovery_type sync_watchdog_check(
 
         int max_peer_height = connman_max_peer_height(cm);
 
-        if (current_header_height >= 0 && max_peer_height >= 0 &&
+        /* Progress check: only fire if header tip has NOT advanced
+         * since the last cycle. Headers advancing → genuine progress,
+         * no recovery needed. */
+        bool header_stuck = (current_header_height >= 0 &&
+                             current_header_height <= g_watchdog.last_header_height);
+
+        if (header_stuck &&
+            current_header_height >= 0 && max_peer_height >= 0 &&
             current_header_height < (max_peer_height - 500)) {
-            printf("[watchdog] HEADER_LAG: headers at %d, peers at %d "
-                   "(gap %d), transitioning to SYNC_HEADERS_DOWNLOAD\n",
+            printf("[watchdog] HEADER_LAG: headers at %d (no advance "
+                   "since last cycle), peers at %d (gap %d), "
+                   "transitioning to SYNC_HEADERS_DOWNLOAD\n",
                    current_header_height, max_peer_height,
                    max_peer_height - current_header_height);
             event_emitf(EV_SYNC_STATE_CHANGE, 0,
@@ -674,6 +694,14 @@ enum watchdog_recovery_type sync_watchdog_check(
             }
             record_recovery(now, WATCHDOG_HEADER_LAG);
             return WATCHDOG_HEADER_LAG;
+        }
+
+        /* Headers ARE advancing — update the watermark so the next
+         * cycle compares against current progress. This is the same
+         * pattern HEADER_STALL uses below. */
+        if (current_header_height >= 0 &&
+            current_header_height > g_watchdog.last_header_height) {
+            g_watchdog.last_header_height = current_header_height;
         }
     }
 
