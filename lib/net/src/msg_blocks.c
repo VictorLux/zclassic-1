@@ -386,7 +386,7 @@ bool process_block_msg(struct msg_processor *mp, struct p2p_node *node,
                                          new_tip->nHeight));
             event_emitf(EV_BLOCK_CONNECTED, (uint32_t)node->id,
                         "h=%d", new_tip->nHeight);
-            /* Wave 8: refresh the watchdog's tip-advance timestamp so
+            /* Refresh the watchdog's tip-advance timestamp so
              * sync_watchdog_get_tip_advance_age() reflects reality and
              * a stuck-at-headers stall doesn't go undetected. */
             sync_watchdog_on_block_connected(new_tip->nHeight);

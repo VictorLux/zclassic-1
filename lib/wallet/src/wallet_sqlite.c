@@ -61,7 +61,7 @@ static struct zcl_result wsql_fail(struct wallet_sqlite *ws,
     return r;
 }
 
-/* ── Encryption helpers (wave 8 wallet-at-rest) ──────────────── */
+/* ── Wallet-at-rest encryption helpers ────────────────────────── */
 
 /* Returns the wallet passphrase if set, NULL otherwise.  When the
  * env var is empty we treat it as "no encryption" — a conscious
@@ -557,7 +557,7 @@ struct zcl_result wallet_sqlite_read_keys_r(struct wallet_sqlite *ws,
         int64_t rowid = sqlite3_column_int64(s, 4);
 
         if (!pk_data || pk_len < 33 || !priv_data || priv_len < 32) {
-            fprintf(stderr,
+            fprintf(stderr,  // obs-ok:corrupt-row-counted-via-g_read_keys_corrupt_rows
                 "[wallet_sqlite] %s:%d %s(): read_keys: dropping "
                 "malformed row rowid=%lld "
                 "(pubkey col bytes=%d data=%s, privkey col bytes=%d data=%s)\n",
@@ -582,7 +582,7 @@ struct zcl_result wallet_sqlite_read_keys_r(struct wallet_sqlite *ws,
                                      &plain, &plain_len) ||
                 plain_len < 32) {
                 if (plain) { memory_cleanse(plain, plain_len); free(plain); }
-                fprintf(stderr,
+                fprintf(stderr,  // obs-ok:corrupt-row-counted-via-g_read_keys_corrupt_rows
                     "[wallet_sqlite] %s:%d %s(): read_keys: dropping "
                     "row rowid=%lld — WKS1 decrypt failed "
                     "(wrong passphrase or tampered envelope?)\n",
@@ -1109,7 +1109,7 @@ struct zcl_result wallet_sqlite_flush_r(struct wallet_sqlite *ws,
         struct zcl_result kr = wallet_sqlite_write_key_r(ws, &pk,
                                     &w->keystore.keys[i].key);
         if (!kr.ok) {
-            fprintf(stderr,
+            fprintf(stderr,  // obs-ok:flush-failure-propagated-via-first_fail
                 "[wallet_sqlite] flush: key slot %zu write failed: "
                 "code=%d (%s:%d) %s\n",
                 i, kr.code, kr.source_file, kr.source_line, kr.message);
@@ -1190,7 +1190,7 @@ rollback:
         char *rb_err = NULL;
         int rb_rc = sqlite3_exec(ws->db, "ROLLBACK", NULL, NULL, &rb_err);
         if (rb_rc != SQLITE_OK) {
-            fprintf(stderr,
+            fprintf(stderr,  // obs-ok:rollback-fallback-error-propagated
                 "[wallet_sqlite] flush: ROLLBACK after write failure "
                 "also failed rc=%d: %s\n",
                 rb_rc, rb_err ? rb_err : "(unknown)");

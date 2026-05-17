@@ -264,7 +264,7 @@ bool syncsvc_build_stall_recovery(struct sync_stall_recovery *recovery,
         if (alt->nStatus & BLOCK_HAVE_DATA) continue;
         if (!alt->phashBlock) continue;
 
-        /* Round 4 Part 2 migration: cycle-safe descent to height our_h. */
+        /* Cycle-safe descent to height our_h. */
         struct block_index *walk = pprev_walk_until_height(
             alt, our_h, 100000, "block_sync.alt_descent");
         if (walk == tip ||

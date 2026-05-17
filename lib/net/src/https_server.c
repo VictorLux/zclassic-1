@@ -185,7 +185,7 @@ static void handle_https_client(SSL *ssl)
         return;
     }
 
-    /* Wave 26b: Prometheus /metrics endpoint on HTTPS */
+    /* Prometheus /metrics endpoint on HTTPS */
     if (strcmp(path, "/metrics") == 0) {
         size_t cap = 131072;
         char *mbuf = zcl_malloc(cap, "https_metrics_buf");
@@ -520,7 +520,7 @@ bool https_server_start_on_port(const char *cert_path, const char *key_path,
     /* Bind HTTP port for redirect */
     g_http_fd = bind_port(http_port, true);
     if (g_http_fd < 0) {
-        fprintf(stderr, "HTTPS: cannot bind port %d, HTTP redirect won't work\n",
+        fprintf(stderr, "HTTPS: cannot bind port %d, HTTP redirect won't work\n",  // obs-ok:bind-failure-non-fatal
                 http_port);
         /* Non-fatal — continue with HTTPS only */
     }
@@ -534,7 +534,7 @@ bool https_server_start_on_port(const char *cert_path, const char *key_path,
     for (unsigned i = 0; i < (sizeof(g_worker_threads) / sizeof(g_worker_threads[0])); i++) {
         if (thread_registry_spawn_ex("zcl_https_wkr", https_worker_fn,
                                       NULL, &g_worker_threads[i]) != 0) {
-            fprintf(stderr, "HTTPS: worker thread failed\n");
+            fprintf(stderr, "HTTPS: worker thread failed\n");  // obs-ok:thread-spawn-fallback-logged
             break;
         }
         started_workers++;
@@ -577,7 +577,7 @@ bool https_server_start_on_port(const char *cert_path, const char *key_path,
     if (g_http_fd >= 0) {
         if (thread_registry_spawn_ex("zcl_http_listen", http_listen_fn, NULL,
                                       &g_http_thread) != 0) {
-            fprintf(stderr, "HTTPS: HTTP redirect thread failed\n");
+            fprintf(stderr, "HTTPS: HTTP redirect thread failed\n");  // obs-ok:thread-spawn-fallback-logged
             close(g_http_fd);
             g_http_fd = -1;
         } else {

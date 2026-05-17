@@ -63,11 +63,11 @@ struct db_service {
     bool started;
     int64_t started_at;
 
-    /* Round 5 Part 5: periodic WAL checkpoint thread. Even with
-     * wal_autocheckpoint=1000 set, the autocheckpoint can be deferred
-     * indefinitely if a long-running reader holds the WAL open. The
-     * background thread forces SQLITE_CHECKPOINT_TRUNCATE every 5 min
-     * so the .db-wal file stays bounded regardless of reader pressure. */
+    /* Periodic WAL checkpoint thread. Even with wal_autocheckpoint=1000
+     * set, the autocheckpoint can be deferred indefinitely if a
+     * long-running reader holds the WAL open. The background thread
+     * forces SQLITE_CHECKPOINT_TRUNCATE every 5 min so the .db-wal
+     * file stays bounded regardless of reader pressure. */
     pthread_t ckpt_thread;
     bool ckpt_started;
     bool ckpt_stop_requested;

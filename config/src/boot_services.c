@@ -1804,7 +1804,7 @@ bool app_init_services(struct app_context *ctx,
             const struct block_index *tip =
                 active_chain_tip(&svc->state->chain_active);
             const struct block_index *bi = tip;
-            /* Round 5 Part 3: monotonicity + step-cap guard. */
+            /* Monotonicity + step-cap guard. */
             int bi_steps = 0;
             while (bi && bi->nHeight > commit_h) {
                 const struct block_index *prev = bi->pprev;
@@ -1942,7 +1942,7 @@ bool app_init_services(struct app_context *ctx,
         }
     }
 
-    /* Wave 26b: initialize metrics observers for Prometheus /metrics */
+    /* Initialize metrics observers for Prometheus /metrics */
     mcp_metrics_init();
 
     boot_configure_frontend_rpc(svc);

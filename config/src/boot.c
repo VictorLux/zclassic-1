@@ -993,7 +993,7 @@ static bool boot_step_bodypull_from_legacy(struct app_context *ctx,
 {
     if (!ctx || !ctx->bodypull_from_legacy) return true;
 
-    /* Wave 9: body-pull is disabled.
+    /* Body-pull is disabled.
      *
      * The per-block RPC roundtrip to legacy zclassicd pre-populates
      * block_index entries with BLOCK_HAVE_DATA but does NOT connect
@@ -1150,7 +1150,7 @@ static bool boot_step_bodypull_from_legacy(struct app_context *ctx,
            (double)t_ms / 1000.0);
     return true;
 }
-#endif /* wave 9: original body-pull boot step disabled */
+#endif /* original body-pull boot step disabled */
 
 static bool boot_disk_monitor_service_start(void *ctx)
 {
@@ -3369,12 +3369,12 @@ sapling_tree_boot_check_done:
                  *      future blocks see a coherent set. */
                 if (boot_promote_tip_via_csr(
                         best_have_data, "best_have_data", true)) {
-                    /* Round 5 Part 2 follow-up: chose best_have_data over
-                     * the orphan-coins anchor, so clear the anchor too —
-                     * otherwise activation stays in ANCHOR_ACTIVE waiting
-                     * for tip to climb above the anchor height, but we
-                     * intentionally chose a LOWER tip and want gap-fill
-                     * to drive us forward. */
+                    /* Chose best_have_data over the orphan-coins
+                     * anchor, so clear the anchor too — otherwise
+                     * activation stays in ANCHOR_ACTIVE waiting for
+                     * tip to climb above the anchor height, but we
+                     * intentionally chose a LOWER tip and want
+                     * gap-fill to drive us forward. */
                     snapsync_set_anchor(NULL);
                     if (g_node_db.open) {
                         char delsql[160];
@@ -3453,7 +3453,7 @@ sapling_tree_boot_check_done:
      * framing — "be brutal, fail fast" — means we refuse to proceed
      * into a half-loaded state. Operators who want the legacy "log
      * loud, continue" behavior must opt in with -allow-degraded. */
-    /* Round 5 follow-up: rewind a placeholder tip.
+    /* Rewind a placeholder tip.
      *
      * If a placeholder (nBits==0) ever became our active tip — e.g.,
      * because a chain_restore anchor at h=N was promoted into the

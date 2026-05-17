@@ -40,7 +40,7 @@
 /* -connect mode: only connect to specified peers, no seeds */
 bool g_connect_only = false;
 
-/* Per-peer bandwidth quotas (wave 10 #3). */
+/* Per-peer bandwidth quotas. */
 static struct peer_bandwidth g_peer_bw;
 static bool g_peer_bw_active = false;
 

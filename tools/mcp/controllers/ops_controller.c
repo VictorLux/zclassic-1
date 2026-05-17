@@ -447,7 +447,7 @@ static int h_zcl_self_heal_stats(const struct mcp_request *req,
     return 0;
 }
 
-/* ── zcl_profile (wave 6): per-thread CPU sampler ────────────
+/* ── zcl_profile — per-thread CPU sampler ────────────────────
  *
  * Reads /proc/self/task/<tid>/stat for every live thread, sleeps
  * `duration_ms`, reads again, diffs utime + stime, sorts descending,

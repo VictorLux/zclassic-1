@@ -443,9 +443,9 @@ static int h_zcl_metrics_reset(const struct mcp_request *req,
     return 0;
 }
 
-/* zcl_rpc_report — HTTP RPC middleware summary (wave 5 session 1).
+/* zcl_rpc_report — HTTP RPC middleware summary.
  * Live config + stat counters + tracked IPs + active bans from the
- * global rpc_http_middleware registered by httpserver.c.  The report
+ * global rpc_http_middleware registered by httpserver.c. The report
  * also appears in the Prometheus dump emitted by zcl_metrics, but
  * this tool returns a smaller structured JSON object for operators
  * who want a single-call snapshot instead of a full text scrape. */
@@ -471,12 +471,11 @@ static int h_zcl_rpc_report(const struct mcp_request *req,
     return 0;
 }
 
-/* zcl_consensus_report — consensus-reject counter snapshot (wave 8).
- * Surfaces the `EV_CONSENSUS_REJECT_TX`/`_BLOCK` ring AGENT2 plumbed
- * in wave 7 as a bounded (kind, reason) → count table plus per-kind
- * totals and overflow buckets.  Companion to AGENT2's upcoming
- * `zcl_explain_reject` lookup tool — this one is for dashboards and
- * alerting; the other one resolves a specific hash. */
+/* zcl_consensus_report — consensus-reject counter snapshot.
+ * Surfaces the `EV_CONSENSUS_REJECT_TX`/`_BLOCK` ring as a bounded
+ * (kind, reason) → count table plus per-kind totals and overflow
+ * buckets. This is the dashboards/alerting view; the per-hash
+ * `zcl_explain_reject` lookup is the targeted companion. */
 static int h_zcl_consensus_report(const struct mcp_request *req,
                                    struct mcp_response *res)
 {
@@ -501,7 +500,7 @@ static int h_zcl_consensus_report(const struct mcp_request *req,
     return 0;
 }
 
-/* ── Admin dashboard (wave 5 #5) ──────────────────────────────
+/* ── Admin dashboard ──────────────────────────────────────────
  *
  * zcl_admin is a composite snapshot tool: it dispatches the existing
  * observability tools (zcl_kpi / zcl_peer_report / zcl_rpc_report /

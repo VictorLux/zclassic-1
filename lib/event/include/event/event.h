@@ -164,17 +164,17 @@ enum event_type {
     /* ── Addrman integrity ─────────────────────────── */
     EV_ADDRMAN_CORRUPT,          /* payload: "verdict=NAME body_size=N ..." */
 
-    /* ── Peer bandwidth (wave 6 #6) ────────────────── */
+    /* ── Peer bandwidth ────────────────────────────── */
     EV_PEER_THROTTLED,           /* payload: "peer=N dir=up|down bytes=N bucket=N/N" */
 
     /* ── IBD throttle ──────────────────────────────── */
     EV_IBD_THROTTLED,            /* payload: "blocked=N total_wait_ms=N rate=N burst=N" */
 
-    /* ── Consensus rejects (wave 7, hash added wave 8) ─ */
+    /* ── Consensus rejects ─────────────────────────── */
     EV_CONSENSUS_REJECT_TX,      /* payload: "hash=<64hex> reason=... dos=N" */
     EV_CONSENSUS_REJECT_BLOCK,   /* payload: "hash=<64hex> reason=... dos=N" */
 
-    /* ── HTTP RPC request timeout (wave 6 #1) ──────── */
+    /* ── HTTP RPC request timeout ──────────────────── */
     EV_RPC_TIMEOUT,              /* payload: "method=NAME elapsed_ms=N ip=A.B.C.D" */
 
     /* ── Block pruning ────────────────────────────────── */

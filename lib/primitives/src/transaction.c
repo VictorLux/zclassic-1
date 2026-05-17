@@ -12,7 +12,7 @@
 #include "util/safe_alloc.h"
 #include "util/log_macros.h"
 
-/* Logging policy for this file (Wave 4a):
+/* Logging policy for this file:
  *
  *   Stream read/write failures inside (de)serializers propagate as plain
  *   `return false;` — they fire on every truncated peer message during

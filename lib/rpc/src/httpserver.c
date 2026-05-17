@@ -60,13 +60,12 @@ static pthread_mutex_t g_cookie_mutex = PTHREAD_MUTEX_INITIALIZER;
 static pthread_t g_cookie_rotate_thread;
 static bool g_cookie_rotate_started = false;
 static int g_cookie_rotate_sec = 86400; /* default 24h, env ZCL_RPC_COOKIE_ROTATE_SEC */
-/* Wave 6: Prometheus /metrics HTTP endpoint.  Off by default; an
- * operator sets ZCL_METRICS_HTTP_ENABLE=1 to expose the same text
- * that `zcl_metrics` returns via MCP.
- *
- * (2026-04-18): gated behind the same RPC Basic-auth cookie
- * the wallet endpoints use. Prometheus `scrape_configs` supports
- * `basic_auth: { username_file: ..., password_file: ... }` — point
+/* Prometheus /metrics HTTP endpoint. Off by default; an operator
+ * sets ZCL_METRICS_HTTP_ENABLE=1 to expose the same text that
+ * `zcl_metrics` returns via MCP. Gated behind the same RPC Basic-auth
+ * cookie the wallet endpoints use. Prometheus `scrape_configs`
+ * supports `basic_auth: { username_file: ..., password_file: ... }` —
+ * point
  * those at the two halves of `~/.zclassic-c23/.cookie` and the
  * scraper authenticates exactly like `zclassic-cli`. Previously the
  * endpoint was open by design, exposing peer counts / tx volume /
@@ -346,10 +345,10 @@ static void handle_client(struct rpc_conn conn)
         }
     }
 
-    /* Wave 6 #1: register this request with the timeout watchdog.
-     * The watchdog will shutdown() our fd if the dispatch phase runs
-     * past ZCL_RPC_TIMEOUT_MS — our in-flight read/write then fails
-     * and we unwind cleanly.  slot == -1 means table full or module
+    /* Register this request with the timeout watchdog. The watchdog
+     * will shutdown() our fd if the dispatch phase runs past
+     * ZCL_RPC_TIMEOUT_MS — our in-flight read/write then fails and
+     * we unwind cleanly. slot == -1 means table full or module
      * disabled; either way we just proceed without tracking. */
     int tmo_slot = -1;
     if (g_rpc_timeout_active) {
@@ -390,8 +389,8 @@ static void handle_client(struct rpc_conn conn)
     if (sscanf(line, "%15s %255s", method, path) != 2)
         goto done;
 
-    /* Wave 6 GET /metrics serves Prometheus text when enabled
-     * via ZCL_METRICS_HTTP_ENABLE=1. Auth required — same Basic-auth
+    /* GET /metrics serves Prometheus text when enabled via
+     * ZCL_METRICS_HTTP_ENABLE=1. Auth required — same Basic-auth
      * cookie the wallet endpoints use. Scrapers point
      * `basic_auth.password_file` at the cookie and authenticate as
      * `zclassic-cli` does. Rate-limit + ban middleware has already
@@ -448,7 +447,7 @@ static void handle_client(struct rpc_conn conn)
         goto done;
     }
 
-    /* Wave 10 #1: WebSocket event stream at GET /events.
+    /* WebSocket event stream at GET /events.
      * Check for WebSocket upgrade request before rejecting non-POST.
      * The path may include a query string: /events?domain=chain,peer */
     if (strcmp(method, "GET") == 0 &&
@@ -575,9 +574,9 @@ static void handle_client(struct rpc_conn conn)
     }
     json_free(&request);
 
-    /* Wave 6 #1: now that we know the method name, label the timeout
-     * slot so EV_RPC_TIMEOUT carries useful context if the watchdog
-     * kills us during dispatch. */
+    /* Now that we know the method name, label the timeout slot so
+     * EV_RPC_TIMEOUT carries useful context if the watchdog kills us
+     * during dispatch. */
     if (tmo_slot >= 0) {
         rpc_timeout_set_method(&g_rpc_timeout, tmo_slot, req.method);
     }
@@ -863,10 +862,10 @@ bool rpc_http_start(const struct rpc_table *table, uint16_t port,
         return false;
     }
 
-    /* Wave 4 #2: rate limit + per-IP bucket + IP ban for the HTTP RPC
-     * surface.  Init once on first start; load env config so operators
-     * can tune via ZCL_RPC_RPS / ZCL_RPC_PER_IP_RPS / ZCL_RPC_BAN_*
-     * without a rebuild. */
+    /* Rate limit + per-IP bucket + IP ban for the HTTP RPC surface.
+     * Init once on first start; load env config so operators can tune
+     * via ZCL_RPC_RPS / ZCL_RPC_PER_IP_RPS / ZCL_RPC_BAN_* without a
+     * rebuild. */
     if (!g_middleware_active) {
         rpc_http_middleware_init(&g_middleware);
         rpc_http_middleware_load_from_env(&g_middleware);
@@ -876,9 +875,9 @@ bool rpc_http_start(const struct rpc_table *table, uint16_t port,
      * the live config and stats without reaching into httpserver.c. */
     rpc_http_middleware_set_global(&g_middleware);
 
-    /* Wave 6 #1: per-request timeout watchdog.  ZCL_RPC_TIMEOUT_MS=0
-     * disables entirely so existing operators who prefer the old
-     * behaviour can opt out.  Watchdog thread is dormant in that case. */
+    /* Per-request timeout watchdog. ZCL_RPC_TIMEOUT_MS=0 disables
+     * entirely so operators can opt out. Watchdog thread is dormant
+     * in that case. */
     if (!g_rpc_timeout_active) {
         rpc_timeout_init(&g_rpc_timeout);
         rpc_timeout_load_from_env(&g_rpc_timeout);
@@ -889,8 +888,8 @@ bool rpc_http_start(const struct rpc_table *table, uint16_t port,
         fprintf(stderr, "RPC server: rpc_timeout watchdog start failed\n");  // obs-ok:helper-context-logged
     }
 
-    /* Wave 6: optional GET /metrics Prometheus endpoint.  Accept "1",
-     * "true", "yes", "on" as truthy; anything else leaves it off. */
+    /* Optional GET /metrics Prometheus endpoint. Accept "1", "true",
+     * "yes", "on" as truthy; anything else leaves it off. */
     g_metrics_http_enable = false;
     const char *mx = getenv("ZCL_METRICS_HTTP_ENABLE");
     if (mx && *mx) {
@@ -903,9 +902,9 @@ bool rpc_http_start(const struct rpc_table *table, uint16_t port,
         }
     }
 
-    /* Wave 10 #4: RPC cookie rotation.  Default 24h; operators tune via
-     * ZCL_RPC_COOKIE_ROTATE_SEC.  Set to 0 to disable rotation.
-     * Only active in cookie mode (no explicit rpcuser/rpcpassword). */
+    /* RPC cookie rotation. Default 24h; operators tune via
+     * ZCL_RPC_COOKIE_ROTATE_SEC. Set to 0 to disable rotation. Only
+     * active in cookie mode (no explicit rpcuser/rpcpassword). */
     g_cookie_rotate_sec = 86400;
     const char *rot_env = getenv("ZCL_RPC_COOKIE_ROTATE_SEC");
     if (rot_env && *rot_env) {
@@ -918,10 +917,10 @@ bool rpc_http_start(const struct rpc_table *table, uint16_t port,
         /* Thread created after g_running is set (below) */
     }
 
-    /* Wave 11 #6: optional TLS listener for non-loopback RPC.
-     * Set ZCL_RPC_TLS_CERT and ZCL_RPC_TLS_KEY to PEM file paths.
-     * TLS listener binds to 0.0.0.0 on rpcport+1 (or ZCL_RPC_TLS_PORT).
-     * Plain-text listener stays on 127.0.0.1 for local tools. */
+    /* Optional TLS listener for non-loopback RPC. Set ZCL_RPC_TLS_CERT
+     * and ZCL_RPC_TLS_KEY to PEM file paths. TLS listener binds to
+     * 0.0.0.0 on rpcport+1 (or ZCL_RPC_TLS_PORT). Plain-text listener
+     * stays on 127.0.0.1 for local tools. */
     g_tls_ctx = NULL;
     g_tls_listen_fd = -1;
     g_tls_listen_thread_started = false;

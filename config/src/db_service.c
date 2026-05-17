@@ -268,7 +268,7 @@ bool db_service_attach(struct db_service *svc, struct node_db *node_db)
     return true;
 }
 
-/* Round 5 Part 5: WAL checkpoint thread.
+/* WAL checkpoint thread.
  *
  * sqlite3 autocheckpoint can be silently deferred when a long-running
  * reader holds the WAL open — observed in practice as multi-GB

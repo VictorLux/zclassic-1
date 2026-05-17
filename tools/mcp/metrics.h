@@ -127,7 +127,7 @@ size_t mcp_metrics_peer_report_json(char *buf, size_t cap);
  * `zcl_rpc_*` block derived from the same snapshot. */
 size_t mcp_metrics_rpc_report_json(char *buf, size_t cap);
 
-/* ── Consensus reject counters (wave 8) ───────────────────────
+/* ── Consensus reject counters ────────────────────────────────
  *
  * Subscribed to EV_CONSENSUS_REJECT_TX and EV_CONSENSUS_REJECT_BLOCK
  * via `mcp_metrics_init()`.  The handler extracts the `reason=...`
@@ -194,10 +194,10 @@ void mcp_metrics_set_node_gauges(int64_t block_height, int64_t peer_count,
 /* Set the sync state gauge separately (name is a static string). */
 void mcp_metrics_set_sync_state(int state, const char *name);
 
-/* Wave 8: seconds since the most recent EV_BLOCK_CONNECTED (or -1 if
- * the node has not seen one yet). Pair with zcl_sync_state in PromQL
- * to alert on `tip_advance_age > 600 AND sync_state != at_tip`. Fed
- * from lib/metrics/src/metrics.c periodic tick via
+/* Seconds since the most recent EV_BLOCK_CONNECTED (or -1 if the node
+ * has not seen one yet). Pair with zcl_sync_state in PromQL to alert
+ * on `tip_advance_age > 600 AND sync_state != at_tip`. Fed from
+ * lib/metrics/src/metrics.c periodic tick via
  * sync_watchdog_get_tip_advance_age(). */
 void mcp_metrics_set_tip_advance_age(int64_t seconds);
 

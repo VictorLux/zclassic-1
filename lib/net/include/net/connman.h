@@ -83,7 +83,7 @@ int connman_max_peer_height(struct connman *cm);
 void connman_relay_transaction(struct connman *cm,
                                 const struct uint256 *txid);
 
-/* Access the connman's per-peer bandwidth state (wave 10 #3).
+/* Access the connman's per-peer bandwidth state.
  * Returns NULL if bandwidth quotas are not active. */
 struct peer_bandwidth;
 struct peer_bandwidth *connman_peer_bandwidth(void);

@@ -44,7 +44,7 @@ enum mcp_error_code {
     MCP_ERR_ENUM_MISMATCH,
     MCP_ERR_HANDLER_FAILED,
     MCP_ERR_INTERNAL,
-    /* Middleware-specific codes (wave 2) */
+    /* Middleware-specific codes */
     MCP_ERR_AUTH_REQUIRED,
     MCP_ERR_RATE_LIMITED,
     MCP_ERR_TOOL_TIMEOUT,

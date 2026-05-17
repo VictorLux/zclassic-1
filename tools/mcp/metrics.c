@@ -81,10 +81,11 @@ static _Atomic int64_t  g_node_peer_count;
 static _Atomic int64_t  g_node_rss_mb_x100;   /* fixed-point: RSS_MB * 100 */
 static _Atomic int64_t  g_node_utxo_count;
 static _Atomic int64_t  g_node_uptime_seconds;
-/* Wave 8: seconds since last EV_BLOCK_CONNECTED, fed by
- * sync_watchdog_get_tip_advance_age() via the lib/metrics tick. Negative
- * means "not yet observed" (cold boot); emitted as -1 so PromQL queries
- * can distinguish bootstrap from a real stall via `> 0` guards. */
+/* Seconds since last EV_BLOCK_CONNECTED, fed by
+ * sync_watchdog_get_tip_advance_age() via the lib/metrics tick.
+ * Negative means "not yet observed" (cold boot); emitted as -1 so
+ * PromQL queries can distinguish bootstrap from a real stall via
+ * `> 0` guards. */
 static _Atomic int64_t  g_node_tip_advance_age = -1;
 
 /* Consensus reject registry — bounded (kind, reason) → count table.
@@ -109,7 +110,7 @@ static uint64_t                  g_reject_overflow_block;
 static pthread_mutex_t      g_lock = PTHREAD_MUTEX_INITIALIZER;
 static bool                 g_observer_installed = false;
 
-/* Wave 26b: sync state gauge (set atomically alongside node gauges) */
+/* Sync state gauge (set atomically alongside node gauges) */
 static _Atomic int          g_node_sync_state;
 static const char          *g_node_sync_state_name = "unknown";
 
@@ -307,7 +308,7 @@ uint64_t mcp_metrics_peer_bans_total(void)
     return v;
 }
 
-/* ── Consensus reject counters (wave 8) ─────────────────────── */
+/* ── Consensus reject counters ──────────────────────────────── */
 
 /* Find an existing (kind, reason) slot or create a new one.  Returns
  * -1 when the table is full so the caller can fall back to overflow.

@@ -1054,7 +1054,7 @@ void bn_g2_to_affine(struct bn_fq2 *ax, struct bn_fq2 *ay, const struct bn_g2 *p
     bn_fq2_mul(ay, &p->y, &zi3);
 }
 
-/* ── FE2IP decoding for CompressedG2 (wave 9 PHGR13 fix, bug #2) ───
+/* ── FE2IP decoding for CompressedG2 ──────────────────────────────
  *
  * Zcash's CompressedG2 wire format encodes the Fq2 x-coordinate as
  * a single 512-bit big-endian integer: combined = c1*q + c0 (FE2IP).
@@ -1775,7 +1775,7 @@ bool ppzksnark_proof_read(struct ppzksnark_proof *proof, const uint8_t data[296]
     return (off == 296);
 }
 
-/* ── libsnark VK file parser (wave 9 PHGR13 fix, bug #1) ───────
+/* ── libsnark VK file parser ───────────────────────────────────
  *
  * The sprout-verifying.key file is in libsnark's native binary format,
  * NOT the flat big-endian concat the previous code assumed. The format:
