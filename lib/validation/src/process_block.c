@@ -67,7 +67,7 @@ static int s_utxo_fail_height = -1;
 static int s_utxo_hot_loop_reported_height = -1;
 static int s_utxo_activation_paused_height = -1;
 
-/* Round 7 A2: set when activate_best_chain returns early due to
+/* set when activate_best_chain returns early due to
  * tip_child_connect_limit. Read by chain_activation_controller drain
  * loop so we don't wait for the next P2P block to make progress. */
 static _Atomic bool s_active_tip_more_pending = false;
@@ -1480,7 +1480,7 @@ static struct block_index *find_most_work_chain(struct main_state *ms)
                "(no data, nChainTx==0)\n", skipped_no_chaintx);
     }
 
-    /* Round 6 Part 1: refuse to return a candidate BELOW the current tip.
+    /* refuse to return a candidate BELOW the current tip.
      * The tip is canonical. A "fork tip" at a lower height with higher
      * nChainWork can appear from old import data with incorrect work
      * accounting, but reorging backwards 17 k blocks because of it is
@@ -1510,7 +1510,7 @@ static struct block_index *find_most_work_chain(struct main_state *ms)
      * the canary identifies which shortlisted cause is keeping
      * production stuck without another investigative round-trip.
      *
-     * Round 6 Part 1: also kick the gap-fill service so it requests the
+     * also kick the gap-fill service so it requests the
      * missing bodies for headers above the tip. Without this kick,
      * gap_fill only wakes every GAPFILL_TICK_SECS=5s and the headers
      * gap closes slowly; an explicit kick from chain selection
@@ -2163,7 +2163,7 @@ bool accept_block_header(const struct block_header *header,
             struct block_index *stack[2048];
             int depth = 0;
             struct block_index *cur = pindex;
-            /* Round 5 Part 3: monotonicity guard. A corrupt pprev cycle
+            /* monotonicity guard. A corrupt pprev cycle
              * would otherwise hold this thread until depth==2048, but
              * also poison every block we push on the stack. Bail clean. */
             while (cur->pprev &&
@@ -2237,7 +2237,7 @@ bool accept_block_header(const struct block_header *header,
         struct block_index *stack[2048];
         int depth = 0;
         struct block_index *cur = pindex_prev;
-        /* Round 5 Part 3: monotonicity guard (see same site at L1575). */
+        /* monotonicity guard (see same site at L1575). */
         while (cur->pprev &&
                cur->pprev->nHeight < cur->nHeight &&
                cur->nHeight != cur->pprev->nHeight + 1 &&
@@ -2421,7 +2421,7 @@ bool accept_block(struct block *block,
         struct block_index *stack[4096];
         int depth = 0;
         struct block_index *cur = pindex;
-        /* Round 5 Part 3: monotonicity guard. */
+        /* monotonicity guard. */
         while (cur->pprev && depth < 4096 &&
                cur->pprev->nHeight < cur->nHeight &&
                arith_uint256_compare(&cur->nChainWork,
@@ -2607,7 +2607,7 @@ bool connect_tip(struct validation_state *state,
                  const struct chain_params *params,
                  const char *datadir)
 {
-    /* Round 5 follow-up: refuse to connect a placeholder block_index.
+    /* refuse to connect a placeholder block_index.
      *
      * A block_index entry with nBits==0 is a chain_restore anchor
      * placeholder (created when coins_best_block hash wasn't yet
@@ -3873,7 +3873,7 @@ bool activate_best_chain(struct validation_state *state,
      * controller (activation_request_connect). This function should only
      * be called via the controller. */
 
-    /* Round 7 A2: clear the "more pending" signal — we are about to
+    /* clear the "more pending" signal — we are about to
      * try to make progress. The loop below sets it again if it returns
      * early because of the per-pass child-connect limit. */
     atomic_store(&s_active_tip_more_pending, false);
@@ -4021,7 +4021,7 @@ bool activate_best_chain(struct validation_state *state,
                     missing_data);
             }
 
-            /* Round 4 Part 1.5: fork-tip rollback.
+            /* fork-tip rollback.
              *
              * If the peer's incoming block claims a parent hash that
              * matches our tip's PARENT (not our tip), our local tip
@@ -4077,7 +4077,7 @@ bool activate_best_chain(struct validation_state *state,
                 }
             }
 
-            /* Round 4 Part 1.5.2: sibling-fork rollback.
+            /* sibling-fork rollback.
              *
              * Scenario: tip and pindex_new->pprev are SIBLING blocks
              * at the same height (h=tip->nHeight), both extending
@@ -4216,7 +4216,7 @@ bool activate_best_chain(struct validation_state *state,
                     "active-tip children (limit=%d) so service startup and "
                     "RPC stay responsive\n",
                     connected_tip_children, tip_child_connect_limit);
-                /* Round 7 A2: tell the activation controller drain loop
+                /* tell the activation controller drain loop
                  * that another pass will likely make more progress.
                  * Without this we'd wait for the next P2P block to
                  * trigger a fresh activation. */
@@ -4246,7 +4246,7 @@ bool activate_best_chain(struct validation_state *state,
 
         /* Check reorg length */
         if (tip) {
-            /* Round 4 Part 4: hard checkpoint invariant.
+            /* hard checkpoint invariant.
              *
              * ZCL_FINALITY_DEPTH (=10) blocks deep is the protocol
              * promise — anything older is permanently immutable.

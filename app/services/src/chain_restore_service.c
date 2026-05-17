@@ -340,7 +340,7 @@ void chain_integrity_check_post_restore(struct chain_integrity_result *out,
 
     /* every pindex with on-disk data must have nBits != 0.
      *
-     * Round 5: skip nBits=0 entries that have no BLOCK_HAVE_DATA bit.
+     * skip nBits=0 entries that have no BLOCK_HAVE_DATA bit.
      * Those are metadata-anchor placeholders left by chain_restore when
      * coins_best_block was unrecoverable from disk. They never enter
      * validation walks (no header is loaded), so a zero nBits on them
@@ -498,7 +498,7 @@ bool chain_restore_dump_state_json(struct json_value *out, const char *key)
                      g_boot_snapshot.backfill_read_errors);
     json_push_kv_int(out, "backfill_off_chain_cleared",
                      g_boot_snapshot.backfill_off_chain_cleared);
-    /* Round 7 A4: chain_restore_plan result */
+    /* chain_restore_plan result */
     json_push_kv_bool(out, "plan_recorded", g_boot_snapshot.plan_recorded);
     json_push_kv_str(out, "plan_next_state",
                      chain_restore_state_name(g_boot_snapshot.plan_next_state));
@@ -507,7 +507,7 @@ bool chain_restore_dump_state_json(struct json_value *out, const char *key)
     json_push_kv_bool(out, "plan_should_skip_activate",
                       g_boot_snapshot.plan_should_skip_activate);
     json_push_kv_str(out, "plan_reason", g_boot_snapshot.plan_reason);
-    /* Round 7 B1: CSR consistency snapshot at boot */
+    /* CSR consistency snapshot at boot */
     json_push_kv_bool(out, "csr_consistency_checked",
                       g_boot_snapshot.csr_consistency_checked);
     json_push_kv_bool(out, "csr_consistent", g_boot_snapshot.csr_consistent);
@@ -669,7 +669,7 @@ int chain_restore_backfill_nbits_from_disk(struct main_state *ms,
     if (!ms || !datadir || !datadir[0])
         return 0;
 
-    /* Round 6 Part 8: collect the active tip height once so we can
+    /* collect the active tip height once so we can
      * cheaply identify entries that are "off-chain" — i.e. block-index
      * entries not on the current active chain. If those entries have
      * unrecoverable nBits, we can safely clear BLOCK_HAVE_DATA: the
@@ -981,7 +981,7 @@ bool chain_restore_finalize(struct main_state *ms, const char *datadir)
     struct chain_integrity_result r;
     chain_integrity_check_post_restore(&r, ms);
 
-    /* Round 7 B1: also record csr-side tip ↔ coins_best_block
+    /* also record csr-side tip ↔ coins_best_block
      * consistency in the boot snapshot. csr_snapshot is idempotent
      * and returns tip_height=-1 if csr isn't initialized (some test
      * paths), in which case we leave csr_consistency_checked=false. */

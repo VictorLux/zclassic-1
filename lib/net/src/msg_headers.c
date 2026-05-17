@@ -635,7 +635,7 @@ bool process_headers(struct msg_processor *mp, struct p2p_node *node,
                         ACTIVATION_SRC_BLOCK_FILE_SCAN, NULL, &ao);
                 }
 
-                /* Round 4 Part 5: structural repair moved out of the
+                /* structural repair moved out of the
                  * P2P handler into block_index_integrity. The handler
                  * is no longer the right layer to fix block_map
                  * heights / restore active tip — that's repair-module

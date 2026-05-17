@@ -17,7 +17,7 @@
  * dynamically on overflow up to CONNMAN_DEFERRED_FREE_HARD_CAP. The fixed
  * cap-256 used to overflow under Tor-driven churn while the message
  * handler held snapshot refs, triggering the deliberate-leak fallback in
- * thread_socket_handler. Round 6: grow the array instead. The hard
+ * thread_socket_handler. grow the array instead. The hard
  * ceiling is 8× DEFAULT_MAX_PEER_CONNECTIONS = 1000, large enough that
  * hitting it indicates a genuine leak (and tripping the SIGABRT handler
  * is the right outcome). */

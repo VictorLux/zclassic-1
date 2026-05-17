@@ -131,7 +131,7 @@ void chain_restore_validate(struct chain_restore_validation *out,
  * 3M-block chain) and are not corruption — they get filled on demand
  * by code that needs ancestor lookups.
  *
- * Round 4 Part 1.5: boot fail-fast gate honors `tip_window_holes`,
+ * boot fail-fast gate honors `tip_window_holes`,
  * not `active_chain_holes`. The latter is informational and stays
  * positive on every live-tip-only boot. */
 #define CHAIN_INTEGRITY_TIP_WINDOW 10000
@@ -175,7 +175,7 @@ struct chain_restore_boot_snapshot {
     int    backfill_fixed;
     int    backfill_read_errors;
     int    backfill_off_chain_cleared;
-    /* Round 7 A4: capture the most recent chain_restore_plan result so
+    /* capture the most recent chain_restore_plan result so
      * `zcl_state(boot)` can show WHY boot reached the FAILED state
      * (e.g. "coins_best_block set but height unknown — awaiting P2P").
      * Without this, a stuck-at-IDLE boot is invisible until STATE_STUCK
@@ -185,7 +185,7 @@ struct chain_restore_boot_snapshot {
     int    plan_anchor_height;
     bool   plan_should_skip_activate;
     char   plan_reason[160];
-    /* Round 7 B1: post-boot CSR consistency. csr_snapshot.consistent
+    /* post-boot CSR consistency. csr_snapshot.consistent
      * compares tip_hash == coins_best_block. Diverges only after a
      * crash-window in the disconnect_tip path — boot reconstructs
      * chain_tip from coins_best_block, but a stale block_index could
@@ -205,9 +205,9 @@ void chain_restore_record_integrity_result(
 void chain_restore_record_backfill_result(int fixed,
                                           int read_errors,
                                           int off_chain_cleared);
-/* Round 7 A4: record the chain_restore_plan outcome. */
+/* record the chain_restore_plan outcome. */
 void chain_restore_record_plan_result(const struct chain_restore_plan *p);
-/* Round 7 B1: snapshot CSR consistency into the boot snapshot. */
+/* snapshot CSR consistency into the boot snapshot. */
 void chain_restore_record_csr_consistency(bool consistent,
                                           int tip_height,
                                           int header_height);

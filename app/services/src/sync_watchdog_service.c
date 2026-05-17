@@ -409,7 +409,7 @@ static int disconnect_outbound_peers(struct connman *cm)
 
 static int64_t g_peer_floor_first_violation = 0;
 static int64_t g_sync_violation_first_seen = 0;
-/* Round 7 A1: non-static so tests can backdate via extern.
+/* non-static so tests can backdate via extern.
  * Follows the pattern of g_sync_state_entered_time. */
 int64_t g_utxo_pause_first_seen = 0;
 int64_t g_queue_starved_first_seen = 0;   /* Round 7 A7 */
@@ -418,8 +418,8 @@ int64_t g_queue_starved_first_seen = 0;   /* Round 7 A7 */
 #define PEER_FLOOR_TRIGGER_SECS  60
 #define SYNC_VIOLATION_GAP      100   /* blocks behind peer max */
 #define SYNC_VIOLATION_SECS     600   /* sustained for 10 min */
-#define UTXO_PAUSE_TRIGGER_SECS 300   /* Round 7 A1: clear after 5 min */
-#define QUEUE_STARVED_TRIGGER_SECS 120 /* Round 7 A7: starved for >2 min */
+#define UTXO_PAUSE_TRIGGER_SECS 300   /* clear after 5 min */
+#define QUEUE_STARVED_TRIGGER_SECS 120 /* starved for >2 min */
 #define QUEUE_STARVED_RATIO_DEN    10  /* < 1/10th of IBD in-flight limit */
 
 enum watchdog_recovery_type sync_watchdog_check(
@@ -473,7 +473,7 @@ enum watchdog_recovery_type sync_watchdog_check(
         }
     }
 
-    /* ── Round 7 A1: UTXO_PAUSE — activation paused > 300s ──
+    /* ── UTXO_PAUSE — activation paused > 300s ──
      *
      * process_block_note_utxo_failure() pauses activate_best_chain at
      * a specific height when reimport has already been attempted and
@@ -641,7 +641,7 @@ enum watchdog_recovery_type sync_watchdog_check(
 
     /* a2. HEADER_LAG: headers far behind peers.
      *
-     * Round 7 A6: also fires in HEADERS_DOWNLOAD when all peers are
+     * also fires in HEADERS_DOWNLOAD when all peers are
      * stale (peer_max <= our_height + 100 sustained). Pre-Round-7 this
      * branch only ran in BLOCKS_DOWNLOAD — a node stuck in
      * HEADERS_DOWNLOAD with stale peers would wait on the 30s
@@ -751,7 +751,7 @@ enum watchdog_recovery_type sync_watchdog_check(
         g_watchdog.last_chain_height = -1;
     }
 
-    /* Round 7 A7: QUEUE_STARVED — in-flight slots < 10% of IBD cap for
+    /* QUEUE_STARVED — in-flight slots < 10% of IBD cap for
      * >120s while in BLOCKS_DOWNLOAD with peers connected. Means we
      * have peers but they're not feeding the pipeline; BLOCK_STALL
      * (5 min, zero-progress) fires later than we'd like. Recovery:

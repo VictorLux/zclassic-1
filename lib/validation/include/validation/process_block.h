@@ -254,7 +254,7 @@ bool process_block_should_skip_contextual_header(
 void process_block_clear_utxo_activation_pause_range(int scan_start,
                                                      int scan_end);
 
-/* Round 7 Phase A1: expose paused-height so the sync watchdog can
+/* expose paused-height so the sync watchdog can
  * detect when activation has been silently paused after an unrecovered
  * UTXO mismatch. Returns -1 when activation is not paused.
  *
@@ -265,7 +265,7 @@ void process_block_clear_utxo_activation_pause_range(int scan_start,
  * BLOCKS_DOWNLOAD with no height progress event — invisible. */
 int process_block_get_utxo_activation_paused_height(void);
 
-/* Round 7 Phase A2: signal that activate_best_chain returned early
+/* signal that activate_best_chain returned early
  * because the per-pass tip_child_connect_limit (128 blocks by default)
  * was reached — there may be more children ready to connect. The
  * activation controller drain loop should re-call activate_best_chain
@@ -277,7 +277,7 @@ bool process_block_active_tip_has_pending(void);
 void process_block_test_set_utxo_fail_state(int height, int count);
 int  process_block_test_get_utxo_fail_count(void);
 int  process_block_test_get_utxo_activation_paused_height(void);
-/* Round 7 A1: directly set the pause height to drive watchdog tests
+/* directly set the pause height to drive watchdog tests
  * without exercising the full hot-loop-exit failure path. */
 void process_block_test_set_utxo_activation_paused_height(int height);
 void process_block_test_trigger_hot_loop_check(int height,

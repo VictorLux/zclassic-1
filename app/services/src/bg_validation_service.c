@@ -298,7 +298,7 @@ static bool verify_shielded_proofs(const struct transaction *tx,
                 static _Atomic int phgr_warn = 0;
                 if (atomic_load(&phgr_warn) < 3) {
                     atomic_fetch_add(&phgr_warn, 1);
-                    fprintf(stderr, "[bg-valid] Sprout PHGR13 proof "
+                    fprintf(stderr,  // obs-ok:bg-validation-diagnostic "[bg-valid] Sprout PHGR13 proof "
                             "SKIPPED h=%d tx=%zu js=%zu (VK not "
                             "loaded)\n", height, tx_idx, j);
                 }
@@ -394,14 +394,14 @@ static bool validate_block_proofs(const struct block *block,
 
     /* 1. Block header: Equihash + PoW + timestamp */
     if (!check_block_header(&block->header, &state, params, true)) {
-        fprintf(stderr, "[bg-valid] check_block_header FAILED h=%d: %s\n",
+        fprintf(stderr,  // obs-ok:bg-validation-diagnostic "[bg-valid] check_block_header FAILED h=%d: %s\n",
                 pindex->nHeight, state.reject_reason);
         goto out;
     }
 
     /* 2. Block structure: Merkle root + size limits + tx structure */
     if (!check_block(block, &state, params, true, true, false)) {
-        fprintf(stderr, "[bg-valid] check_block FAILED h=%d: %s\n",
+        fprintf(stderr,  // obs-ok:bg-validation-diagnostic "[bg-valid] check_block FAILED h=%d: %s\n",
                 pindex->nHeight, state.reject_reason);
         goto out;
     }
@@ -410,7 +410,7 @@ static bool validate_block_proofs(const struct block *block,
     if (pindex->pprev) {
         if (!contextual_check_block_header(&block->header, &state, params,
                                             pindex->pprev, true)) {
-            fprintf(stderr, "[bg-valid] contextual_check_header FAILED h=%d: %s\n",
+            fprintf(stderr,  // obs-ok:bg-validation-diagnostic "[bg-valid] contextual_check_header FAILED h=%d: %s\n",
                     pindex->nHeight, state.reject_reason);
             goto out;
         }
@@ -488,7 +488,7 @@ static bool validate_block_proofs(const struct block *block,
 
     /* 5. Final script verification flush */
     if (!verify_scripts_parallel(check_items, check_count, num_workers)) {
-        fprintf(stderr, "[bg-valid] script verification FAILED h=%d\n",
+        fprintf(stderr,  // obs-ok:bg-validation-diagnostic "[bg-valid] script verification FAILED h=%d\n",
                 pindex->nHeight);
         goto out;
     }
@@ -573,7 +573,7 @@ static void *bg_validation_thread(void *arg)
     if (prefix_end_h < 0)
         prefix_end_h = local_chain_ingest_evidence_prefix_end_height();
     if (prefix_verified && prefix_end_h > 0) {
-        fprintf(stderr,
+        fprintf(stderr,  // obs-ok:bg-validation-diagnostic
                 "[bg-valid] T3.3: evidence prefix verified up to h=%d — "
                 "skipping crypto reverify for those heights\n",
                 prefix_end_h);
@@ -794,7 +794,7 @@ void bg_validation_stop(struct bg_validation_service *svc)
     if (!svc || !svc->thread_started)
         return;
     atomic_store(&svc->stop_requested, true);
-    /* Round 6 Part 3: cap join at 5 s. bg-validation can be in the
+    /* cap join at 5 s. bg-validation can be in the
      * middle of a slow signature/proof batch — better to detach than
      * to overrun TimeoutStopSec and earn a SIGKILL. */
     struct timespec ts;
@@ -802,7 +802,7 @@ void bg_validation_stop(struct bg_validation_service *svc)
         ts.tv_sec += 5;
         int rc = pthread_timedjoin_np(svc->thread, NULL, &ts);
         if (rc != 0) {
-            fprintf(stderr,
+            fprintf(stderr,  // obs-ok:bg-validation-diagnostic
                     "bg_validation_stop: thread join timed out (rc=%d) "
                     "— detaching\n", rc);
             pthread_detach(svc->thread);

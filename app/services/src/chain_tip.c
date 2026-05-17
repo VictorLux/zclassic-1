@@ -16,7 +16,7 @@
 #include <string.h>
 #include <time.h>
 
-/* Round 5 Part 4: chain-tip fsync barrier.
+/* chain-tip fsync barrier.
  *
  * Without an fsync after the tip commit, a SIGABRT or power-loss between
  * the SQLite page-cache write and the kernel flush can leave coins ahead
@@ -77,7 +77,7 @@ static void chain_tip_fsync_barrier(struct main_state *ms,
         return;
     }
     if (elapsed > FSYNC_BARRIER_BUDGET_MS) {
-        fprintf(stderr,
+        fprintf(stderr,  // obs-ok:fsync-slow-warning
             "[tip-fsync] slow cacheflush elapsed=%dms (gap=%d seq=%llu)\n",
             elapsed, gap, (unsigned long long)seq);
     }

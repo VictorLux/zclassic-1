@@ -178,7 +178,7 @@ bool block_index_heights_repaired(void);
  * Must be called AFTER block_index_repair_heights(), BEFORE header sync. */
 int block_index_repair_pprev(struct main_state *ms, const char *datadir);
 
-/* ── Post-activation anchor repair (Round 4 Part 5) ─────────────
+/* ── Post-activation anchor repair ─────────────
  *
  * Lifted from lib/net/src/msg_headers.c (~88 lines), which is the
  * wrong layer for structural block-index surgery. Called after a

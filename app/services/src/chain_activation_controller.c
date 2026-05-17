@@ -300,7 +300,7 @@ void activation_request_connect(struct chain_activation_controller *ctl,
      * picks it up. find_most_work_chain is idempotent when no new
      * work arrived, so the loop converges quickly.
      *
-     * Round 4 Part 1: replace the 8-round cap with a millisecond
+     * replace the 8-round cap with a millisecond
      * budget. A 2,500-block gap with one block arriving per drain
      * cannot complete in 8 rounds; the ms budget lets the loop run
      * to convergence within bounded mutex-held latency. Boot path
@@ -312,7 +312,7 @@ void activation_request_connect(struct chain_activation_controller *ctl,
         int64_t       drain_start_us  = GetTimeMicros();
         int           drain_rounds    = 0;
         while (drain_rounds < drain_hard_cap) {
-            /* Round 7 A2: also drain when activate_best_chain returned
+            /* also drain when activate_best_chain returned
              * early because of tip_child_connect_limit — otherwise we
              * stall the chain until the next P2P block arrival.
              * The OR is short-circuit, so the atomic_exchange on

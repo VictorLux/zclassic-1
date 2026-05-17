@@ -244,7 +244,7 @@ int wallet_scan_blocks(struct node_db *ndb,
         LOG_ERR("wallet_scan", "scan_blocks: invalid args (ndb=%p chain=%p w=%p datadir=%p)",
                 (void *)ndb, (void *)chain, (void *)w, (void *)datadir);
 
-    /* Round 4 Part 8: range fast-path. Empty range = nothing to do. */
+    /* range fast-path. Empty range = nothing to do. */
     if (start_height > end_height) {
         printf("wallet_scan: range empty (start=%d > end=%d), "
                "skipping\n", start_height, end_height);
@@ -267,7 +267,7 @@ int wallet_scan_blocks(struct node_db *ndb,
     printf("wallet_scan: %d address hashes loaded\n", aht.count);
     fflush(stdout);
 
-    /* Round 4 Part 8: zero-keys fast-path. Without any keys to
+    /* zero-keys fast-path. Without any keys to
      * match, the parallel raw scan would read every block file
      * looking for hashes that aren't in the set — minutes of
      * pointless disk I/O. */

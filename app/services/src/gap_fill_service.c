@@ -222,7 +222,7 @@ void gap_fill_stop(void)
     pthread_cond_broadcast(&g_gf.cv);
     pthread_mutex_unlock(&g_gf.mu);
     if (g_gf.thread_started) {
-        /* Round 6 Part 3: cap join at 5 s. If the worker is stuck
+        /* cap join at 5 s. If the worker is stuck
          * (eg holding cs_main on a long pprev walk), detach rather
          * than block systemd shutdown past TimeoutStopSec. */
         struct timespec ts;

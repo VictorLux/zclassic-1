@@ -2965,7 +2965,7 @@ bool msg_send_messages(void *ctx, struct p2p_node *node, bool send_trickle)
         if (!atomic_load(&g_swarm_active) &&
             header_stall && !node->inbound &&
             node->state >= PEER_SYNCING_HEADERS) {
-            /* Round 5 follow-up: grace period for fresh peers.
+            /* grace period for fresh peers.
              *
              * Without this, a header stall disconnects EVERY outbound
              * peer with total_delivered=0 on the same tick (the old

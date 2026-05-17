@@ -842,7 +842,7 @@ static void *thread_socket_handler(void *arg)
 
                 /* Version handshake timeout: 90s.
                  *
-                 * Round 5 follow-up: the message-cycle loop processes
+                 * the message-cycle loop processes
                  * one peer at a time and shares the thread with chain
                  * activation. While we're doing a multi-block reorg
                  * recovery or a heavy connect_tip, peer handshakes can
@@ -917,7 +917,7 @@ static void *thread_socket_handler(void *arg)
                     cm->deferred_free[cm->num_deferred_free++] = node;
                 } else if (cm->deferred_free_cap <
                            CONNMAN_DEFERRED_FREE_HARD_CAP) {
-                    /* Round 6 Part 2: grow the buffer rather than leak.
+                    /* grow the buffer rather than leak.
                      * Double until hitting the hard cap. */
                     size_t new_cap = cm->deferred_free_cap * 2;
                     if (new_cap > CONNMAN_DEFERRED_FREE_HARD_CAP)
@@ -1040,7 +1040,7 @@ bool connman_run_message_cycle(struct connman *cm)
 
     /* Phase 3: release refs under cs_nodes.
      *
-     * Round 6 Part 2: also drain deferred_free here. The socket thread's
+     * also drain deferred_free here. The socket thread's
      * sweep runs only once per outer loop (potentially many ms); when
      * we've just dropped refs we are exactly the right moment to free
      * any deferred nodes whose refs went to zero. Without this drain the
@@ -1104,7 +1104,7 @@ bool connman_init(struct connman *cm, const struct chain_params *params,
     cm->params = params;
     cm->manager.signals = *signals;
 
-    /* Round 6 Part 2: dynamic deferred_free buffer. */
+    /* dynamic deferred_free buffer. */
     cm->deferred_free_cap = CONNMAN_DEFERRED_FREE_INIT_CAP;
     cm->deferred_free = zcl_malloc(
         cm->deferred_free_cap * sizeof(*cm->deferred_free),
@@ -1199,7 +1199,7 @@ void connman_signal_stop(struct connman *cm)
     g_stop = true;
 }
 
-/* Round 6 Part 3: pthread_timedjoin_np-based bounded join.
+/* pthread_timedjoin_np-based bounded join.
  *
  * Old implementation spawned a helper thread per join and polled a flag;
  * the global g_join_target / g_join_done state meant joins serialised,
@@ -1384,7 +1384,7 @@ void connman_free(struct connman *cm)
     connman_save_addrman(cm);
     net_manager_free(&cm->manager);
 
-    /* Round 6 Part 2: free any deferred entries still pending. After
+    /* free any deferred entries still pending. After
      * connman_stop returns, no other thread should hold node refs. */
     if (cm->deferred_free) {
         for (size_t i = 0; i < cm->num_deferred_free; i++) {

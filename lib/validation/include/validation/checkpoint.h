@@ -10,7 +10,7 @@
  * Before this module, the invariant was checked only at one point
  * (`process_block.c:3494`, in the extending-reorg branch). The
  * fork-point walks at lines 3413/3435/etc. could legitimately try to
- * walk past it, then the cycle guards (Round 3 Part O) would abort
+ * walk past it, then the cycle guards would abort
  * the walk after the damage was done.
  *
  * `reorg_is_allowed` remains the compatibility wrapper for callers
