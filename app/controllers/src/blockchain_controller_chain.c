@@ -96,40 +96,46 @@ bool rpc_getblockchaininfo(const struct json_value *params, bool help,
         progress = (double)our_h / (double)max_peer_h;
     json_push_kv_real(result, "verificationprogress", progress);
 
-    /* valuePools — sprout + sapling pool balances. Match zclassicd format:
-     * each pool is an object with id / monitored / chainValue (ZCL) /
-     * chainValueZat. Convention (verified against running zclassicd at
-     * the same tip): the blocks table stores pool deltas in zclassicd's
-     * "positive = into pool" convention, so pool balance = SUM(delta)
-     * directly. No negation. */
-    if (ctx->node_db && ctx->node_db->open) {
-        int64_t sprout_zat = 0, sapling_zat = 0;
-        sqlite3_stmt *s = NULL;
-        if (sqlite3_prepare_v2(ctx->node_db->db,
-                "SELECT COALESCE(SUM(sprout_value), 0), "
-                "COALESCE(SUM(sapling_value), 0) FROM blocks",
-                -1, &s, NULL) == SQLITE_OK && s) {
-            if (AR_STEP_ROW_READONLY(s) == SQLITE_ROW) {
-                sprout_zat  = sqlite3_column_int64(s, 0);
-                sapling_zat = sqlite3_column_int64(s, 1);
-            }
-            sqlite3_finalize(s);
-        }
-
+    /* valuePools — sprout + sapling pool balances. Match zclassicd
+     * format: each pool is an object with id / monitored / chainValue
+     * (ZCL) / chainValueZat.
+     *
+     * Source: tip->nChainSaplingValue + tip->nChainSproutValue. These
+     * are the cumulative ZIP-209 turnstile values maintained by
+     * connect_block.c lines 172-209 — boost::optional semantics, only
+     * valid when has_chain_*_value is true (i.e., every ancestor's
+     * per-block value was known at connect time).
+     *
+     * The previous implementation read SUM(blocks.sapling_value) but
+     * sync_block_lean (sync_controller_catchup.c:86-109) writes
+     * sapling_value=0 for every block, so on a datadir whose history
+     * came through the catchup path (vs the consensus connect_block
+     * path) the SUM under-reports the pool balance. The fix is to use
+     * the chain_index field which is always populated by
+     * connect_block when the value is known. */
+    if (tip) {
         struct json_value pools = {0};
         json_set_array(&pools);
-        const struct { const char *id; int64_t zat; } pool_defs[] = {
-            { "sprout",  sprout_zat },
-            { "sapling", sapling_zat },
+        const struct {
+            const char *id;
+            bool        monitored;
+            int64_t     zat;
+        } pool_defs[] = {
+            { "sprout",  tip->has_chain_sprout_value,
+              tip->has_chain_sprout_value  ? tip->nChainSproutValue  : 0 },
+            { "sapling", tip->has_chain_sapling_value,
+              tip->has_chain_sapling_value ? tip->nChainSaplingValue : 0 },
         };
         for (size_t i = 0; i < sizeof(pool_defs)/sizeof(pool_defs[0]); i++) {
             struct json_value pool = {0};
             json_set_object(&pool);
             json_push_kv_str(&pool, "id", pool_defs[i].id);
-            json_push_kv_bool(&pool, "monitored", true);
-            json_push_kv_real(&pool, "chainValue",
-                              (double)pool_defs[i].zat / 1e8);
-            json_push_kv_int(&pool, "chainValueZat", pool_defs[i].zat);
+            json_push_kv_bool(&pool, "monitored", pool_defs[i].monitored);
+            if (pool_defs[i].monitored) {
+                json_push_kv_real(&pool, "chainValue",
+                                  (double)pool_defs[i].zat / 1e8);
+                json_push_kv_int(&pool, "chainValueZat", pool_defs[i].zat);
+            }
             json_push_back(&pools, &pool);
             json_free(&pool);
         }
