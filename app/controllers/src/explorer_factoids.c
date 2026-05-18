@@ -1114,11 +1114,17 @@ static size_t emit_section_9_zslp(uint8_t *buf, size_t cap, size_t off,
                 int dec = sqlite3_column_int(s, 2);
                 int64_t gh = sqlite3_column_int64(s, 3);
                 const char *tid = (const char *)sqlite3_column_text(s, 4);
+                /* ticker + name come from attacker-controlled OP_RETURN
+                 * bytes; HTML-escape before emitting. */
+                char esc_ticker[64], esc_name[256];
+                html_escape(esc_ticker, sizeof(esc_ticker),
+                            ticker ? ticker : "?");
+                html_escape(esc_name, sizeof(esc_name), name ? name : "?");
                 APPEND(off, r, max,
                     "<tr><td>%s</td><td>%s</td><td>%d</td>"
                     "<td><a href='/explorer/block/%" PRId64 "'>%" PRId64 "</a></td>"
                     "<td><code>%.16s...</code></td></tr>",
-                    ticker ? ticker : "?", name ? name : "?", dec,
+                    esc_ticker, esc_name, dec,
                     gh, gh, tid ? tid : "?");
             }
             sqlite3_finalize(s);
@@ -1143,9 +1149,13 @@ static size_t emit_section_9_zslp(uint8_t *buf, size_t cap, size_t off,
                 const char *ticker = (const char *)sqlite3_column_text(s, 0);
                 const char *name = (const char *)sqlite3_column_text(s, 1);
                 int64_t cnt = sqlite3_column_int64(s, 2);
+                char esc_ticker[64], esc_name[256];
+                html_escape(esc_ticker, sizeof(esc_ticker),
+                            ticker ? ticker : "?");
+                html_escape(esc_name, sizeof(esc_name), name ? name : "?");
                 APPEND(off, r, max,
                     "<tr><td>%s</td><td>%s</td><td>%" PRId64 "</td></tr>",
-                    ticker ? ticker : "?", name ? name : "?", cnt);
+                    esc_ticker, esc_name, cnt);
             }
             sqlite3_finalize(s);
         }
