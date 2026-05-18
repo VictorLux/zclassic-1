@@ -7,6 +7,7 @@
 #include "services/chain_state_repository.h"
 #include "services/chain_tip.h"
 #include "services/gap_fill_service.h"
+#include "services/hodl_history_service.h"
 #include "services/rolling_anchor_service.h"
 #include "services/zclassicd_oracle_service.h"
 #include "storage/disk_block_io.h"
@@ -807,6 +808,58 @@ static bool boot_start_tx_index_service(struct boot_svc_ctx *svc)
         snapshot_tx_index_job_is_started(&svc->tx_index_job))
         return false;
     return snapshot_tx_index_job_start(&svc->tx_index_job, svc->datadir);
+}
+
+/* HODL history worker.
+ *
+ * Fills the hodl_history table incrementally so /explorer/hodl can
+ * render a time-series of "% of supply held > 1 year" without
+ * recomputing on every page hit. The worker walks every ~day
+ * (HODL_HISTORY_SAMPLE_STRIDE blocks) up to the current chain tip,
+ * idempotent on already-filled rows. Each fill call does one sample
+ * then sleeps 1s so we never starve the database. */
+static void *hodl_history_worker_thread(void *arg)
+{
+    struct boot_svc_ctx *svc = arg;
+    if (!svc)
+        return NULL;
+    /* Initial settle: wait for boot to complete + first chain advance. */
+    sleep(15);
+    while (!svc->hodl_history_thread_stop) {
+        struct node_db *ndb = boot_node_db();
+        if (ndb && ndb->open && svc->state) {
+            int tip = active_chain_height(&svc->state->chain_active);
+            if (tip > 0) {
+                /* Fill at most 4 samples per tick (~one minute of work
+                 * on a busy DB), then sleep so other readers move. */
+                (void)hodl_history_fill_pending(ndb->db, tip, 4);
+            }
+        }
+        /* Slow tick — 60s — until the table is caught up, then
+         * effectively idle since fill_pending becomes a no-op. */
+        for (int i = 0; i < 60 && !svc->hodl_history_thread_stop; i++)
+            sleep(1);
+    }
+    return NULL;
+}
+
+static bool boot_start_hodl_history_service(struct boot_svc_ctx *svc)
+{
+    if (!svc || !svc->datadir)
+        return false;
+    svc->hodl_history_thread_stop = false;
+    return boot_start_thread_service(&svc->hodl_history_thread,
+                                     &svc->hodl_history_thread_started,
+                                     hodl_history_worker_thread, svc);
+}
+
+static void boot_join_hodl_history_service(struct boot_svc_ctx *svc)
+{
+    if (!svc)
+        return;
+    svc->hodl_history_thread_stop = true;
+    boot_join_thread_service(&svc->hodl_history_thread,
+                             &svc->hodl_history_thread_started);
 }
 
 static void boot_join_tx_index_service(struct boot_svc_ctx *svc)
@@ -1991,6 +2044,20 @@ bool app_init_services(struct app_context *ctx,
         }
     }
 
+    /* HODL history filler — populates per-day "% held > 1y" snapshots
+     * for the /explorer/hodl time-series chart. Idempotent; safe to
+     * start on every boot even though the table mostly stays current
+     * after first fill. */
+    if (boot_profile_has_explorer(svc->app_ctx)) {
+        if (boot_start_hodl_history_service(svc)) {
+            printf("HODL history: filler started in tracked background thread\n");
+            fflush(stdout);
+        } else {
+            fprintf(stderr,
+                    "WARNING: failed to start HODL history filler thread\n");
+        }
+    }
+
     if (svc->want_snapshot_tx_index) {
         if (!boot_start_tx_index_service(svc)) {
             fprintf(stderr,
@@ -2087,6 +2154,7 @@ static void shutdown_persist_runtime_state(struct boot_svc_ctx *svc)
 {
     zcl_service_kernel_stop_all(&svc->runtime_kernel);
     boot_join_address_backfill_service(svc);
+    boot_join_hodl_history_service(svc);
     boot_join_tx_index_service(svc);
     boot_join_offer_service(svc);
     boot_join_catchup_service(svc);

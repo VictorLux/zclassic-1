@@ -1006,6 +1006,25 @@ int node_db_migrate(struct node_db *ndb, const char *datadir)
             "shielded_supply INTEGER NOT NULL DEFAULT 0,"
             "block_size INTEGER NOT NULL DEFAULT 0)");
 
+        /* HODL wave history — one row per sample height, populated
+         * lazily by app/services/src/hodl_history_service.c. Each row
+         * is the reconstructed UTXO snapshot as of that height:
+         *   total_zat = sum of unspent output value at H
+         *   older_1y_zat = subset that was older than 1 year at H
+         *   older_1y_pct = older_1y_zat / total_zat * 100
+         * Source: tx_outputs + tx_inputs, no current-UTXO-table dep. */
+        node_db_exec(ndb,
+            "CREATE TABLE IF NOT EXISTS hodl_history ("
+            "height INTEGER PRIMARY KEY,"
+            "time INTEGER NOT NULL,"
+            "total_zat INTEGER NOT NULL DEFAULT 0 CHECK(total_zat >= 0),"
+            "older_1y_zat INTEGER NOT NULL DEFAULT 0 "
+            "  CHECK(older_1y_zat >= 0 AND older_1y_zat <= total_zat),"
+            "older_1y_pct REAL NOT NULL DEFAULT 0)");
+        node_db_exec(ndb,
+            "CREATE INDEX IF NOT EXISTS idx_hodl_history_time "
+            "ON hodl_history(time)");
+
         /* ZSLP token registry — discovered from OP_RETURN GENESIS txs */
         node_db_exec(ndb,
             "CREATE TABLE IF NOT EXISTS zslp_tokens ("

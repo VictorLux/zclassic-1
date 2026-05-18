@@ -22,6 +22,7 @@
 #include "models/hodl_wave.h"
 #include "models/tx_index.h"
 #include "models/utxo.h"
+#include "services/hodl_history_service.h"
 #include "primitives/block.h"
 #include "primitives/transaction.h"
 #include "util/ar_step_readonly.h"
@@ -755,6 +756,222 @@ size_t serve_hodl(uint8_t *r, size_t max)
         "font-family:Georgia,serif'>Current UTXO age distribution at block %" PRId64 "</p>"
         "</div>",
         older_pct, hodl.tip_height);
+
+    /* ── Time-series chart: % held > 1y over time ──────────────── */
+    {
+        sqlite3 *hist_db = NULL;
+        if (explorer_open_readonly_db(ctx->datadir, &hist_db)) {
+            static struct hodl_history_row rows[2048];
+            int n = hodl_history_load_all(hist_db, rows,
+                (int)(sizeof(rows)/sizeof(rows[0])));
+            sqlite3_close(hist_db);
+
+            if (n < 2) {
+                APPEND(off, r, max,
+                    "<div style='max-width:1000px;margin:20px auto;"
+                    "padding:16px;background:#0c0c0c;border:1px solid #1a1a1a;"
+                    "border-radius:8px;color:#888'>"
+                    "<h2 style='color:#bbb;margin-top:0'>"
+                    "%% held &gt; 1 year over time</h2>"
+                    "<p>Time-series snapshots are being computed in the "
+                    "background (one row per ~day). Filled %d of "
+                    "an expected ~%" PRId64 ". Refresh in a minute.</p>"
+                    "</div>",
+                    n, hodl.tip_height / HODL_HISTORY_SAMPLE_STRIDE);
+            } else {
+                /* Compute min/max for y-axis scaling. Use [floor..100]
+                 * with a 5%% headroom floor to keep the curve readable
+                 * even when held>1y stays in a tight band. */
+                double y_min = rows[0].older_1y_pct, y_max = rows[0].older_1y_pct;
+                for (int i = 1; i < n; i++) {
+                    if (rows[i].older_1y_pct < y_min) y_min = rows[i].older_1y_pct;
+                    if (rows[i].older_1y_pct > y_max) y_max = rows[i].older_1y_pct;
+                }
+                y_min -= 2.0; y_max += 2.0;
+                if (y_min < 0) y_min = 0;
+                if (y_max > 100) y_max = 100;
+                if (y_max - y_min < 5) { y_min = y_min > 5 ? y_min - 5 : 0; y_max = y_min + 10; }
+
+                int W = 1000, H = 380;
+                int pl = 70, pr = 25, pt = 50, pb = 60;
+                int pw = W - pl - pr, ph = H - pt - pb;
+                int64_t t_min = rows[0].time, t_max = rows[n-1].time;
+                if (t_max <= t_min) t_max = t_min + 1;
+
+                APPEND(off, r, max,
+                    "<div style='max-width:1000px;margin:20px auto'>"
+                    "<svg id='hodl-ts' viewBox='0 0 %d %d' style='width:100%%;"
+                    "height:auto;background:#0c0c0c;border:1px solid #1a1a1a;"
+                    "border-radius:8px;display:block'>"
+                    "<text x='30' y='30' fill='#bbb' font-size='18' "
+                    "font-family='Georgia,serif'>%% of transparent supply held &gt; 1 year</text>"
+                    "<text x='%d' y='30' fill='#666' font-size='12' "
+                    "text-anchor='end' font-family='Georgia,serif'>"
+                    "%d samples · daily</text>",
+                    W, H, W - pr, n);
+
+                /* Y-axis gridlines + labels */
+                for (int g = 0; g <= 4; g++) {
+                    double yv = y_min + (y_max - y_min) * g / 4.0;
+                    int y = pt + ph - (int)((yv - y_min) / (y_max - y_min) * ph);
+                    APPEND(off, r, max,
+                        "<line x1='%d' y1='%d' x2='%d' y2='%d' "
+                        "stroke='#1a1a1a'/>"
+                        "<text x='%d' y='%d' fill='#777' font-size='12' "
+                        "text-anchor='end'>%.1f%%</text>",
+                        pl, y, pl + pw, y, pl - 8, y + 4, yv);
+                }
+
+                /* X-axis date labels: 5 evenly spaced ticks */
+                for (int g = 0; g <= 4; g++) {
+                    int64_t t = t_min + (t_max - t_min) * g / 4;
+                    int x = pl + pw * g / 4;
+                    time_t tt = (time_t)t;
+                    struct tm tm_;
+                    gmtime_r(&tt, &tm_);
+                    char dbuf[16];
+                    strftime(dbuf, sizeof(dbuf), "%Y-%m", &tm_);
+                    APPEND(off, r, max,
+                        "<line x1='%d' y1='%d' x2='%d' y2='%d' "
+                        "stroke='#1a1a1a'/>"
+                        "<text x='%d' y='%d' fill='#777' font-size='12' "
+                        "text-anchor='middle' font-family='Georgia,serif'>%s</text>",
+                        x, pt, x, pt + ph, x, pt + ph + 18, dbuf);
+                }
+
+                /* Polyline through points */
+                APPEND(off, r, max,
+                    "<polyline fill='none' stroke='#33ff99' "
+                    "stroke-width='2' points='");
+                for (int i = 0; i < n; i++) {
+                    int x = pl + (int)((double)(rows[i].time - t_min) /
+                                       (double)(t_max - t_min) * pw);
+                    int y = pt + ph - (int)((rows[i].older_1y_pct - y_min) /
+                                            (y_max - y_min) * ph);
+                    APPEND(off, r, max, "%s%d,%d", i ? " " : "", x, y);
+                }
+                APPEND(off, r, max, "'/>");
+
+                /* Hover crosshair + tooltip (hidden until JS shows it) */
+                APPEND(off, r, max,
+                    "<line id='hodl-xhair' x1='0' y1='%d' x2='0' y2='%d' "
+                    "stroke='#33ff99' stroke-dasharray='2,3' stroke-width='1' "
+                    "style='display:none'/>"
+                    "<circle id='hodl-dot' cx='0' cy='0' r='4' "
+                    "fill='#33ff99' style='display:none'/>"
+                    "<g id='hodl-tip' style='display:none'>"
+                    "<rect id='hodl-tip-bg' x='0' y='0' width='220' "
+                    "height='86' rx='6' fill='#000' stroke='#33ff99' "
+                    "opacity='0.95'/>"
+                    "<text id='hodl-tip-date' x='10' y='20' fill='#fff' "
+                    "font-size='13' font-family='Georgia,serif'>—</text>"
+                    "<text id='hodl-tip-pct' x='10' y='40' fill='#33ff99' "
+                    "font-size='15' font-weight='600'>—</text>"
+                    "<text id='hodl-tip-amt' x='10' y='60' fill='#bbb' "
+                    "font-size='12'>—</text>"
+                    "<text id='hodl-tip-h' x='10' y='78' fill='#666' "
+                    "font-size='11'>—</text>"
+                    "</g>",
+                    pt, pt + ph);
+
+                /* Inline data block for JS — one row per sample, packed
+                 * as comma-separated integers (height,time,total_zat,
+                 * older_zat,pct_x1000) to keep the inline blob compact. */
+                APPEND(off, r, max,
+                    "<script>(function(){"
+                    "var data=[");
+                for (int i = 0; i < n; i++) {
+                    APPEND(off, r, max,
+                        "%s[%" PRId64 ",%" PRId64 ",%" PRId64 ",%" PRId64 ",%d]",
+                        i ? "," : "",
+                        rows[i].height, rows[i].time,
+                        rows[i].total_zat, rows[i].older_1y_zat,
+                        (int)(rows[i].older_1y_pct * 1000.0));
+                }
+                APPEND(off, r, max,
+                    "];"
+                    "var W=%d,pl=%d,pr=%d,pt=%d,pb=%d,pw=W-pl-pr;"
+                    "var ymin=%.3f,ymax=%.3f,tmin=%" PRId64 ",tmax=%" PRId64 ";"
+                    "var svg=document.getElementById('hodl-ts');"
+                    "var xhair=document.getElementById('hodl-xhair');"
+                    "var dot=document.getElementById('hodl-dot');"
+                    "var tip=document.getElementById('hodl-tip');"
+                    "var tipBg=document.getElementById('hodl-tip-bg');"
+                    "var td=document.getElementById('hodl-tip-date');"
+                    "var tp=document.getElementById('hodl-tip-pct');"
+                    "var ta=document.getElementById('hodl-tip-amt');"
+                    "var th=document.getElementById('hodl-tip-h');"
+                    "function fmtZcl(z){"
+                    "var n=z/1e8;"
+                    "if(n>=1e6)return(n/1e6).toFixed(2)+'M';"
+                    "if(n>=1e3)return(n/1e3).toFixed(2)+'k';"
+                    "return n.toFixed(2);"
+                    "}"
+                    "function fmtDate(t){"
+                    "var d=new Date(t*1000);"
+                    "return d.toISOString().slice(0,10);"
+                    "}"
+                    "function hide(){"
+                    "xhair.style.display='none';"
+                    "dot.style.display='none';"
+                    "tip.style.display='none';"
+                    "}"
+                    "function pickNearest(svgX){"
+                    "var tfrac=(svgX-pl)/pw;"
+                    "var target=tmin+tfrac*(tmax-tmin);"
+                    "var lo=0,hi=data.length-1;"
+                    "while(lo<hi){var m=(lo+hi)>>1;"
+                    "if(data[m][1]<target)lo=m+1;else hi=m;}"
+                    "if(lo>0&&Math.abs(data[lo-1][1]-target)<"
+                    "Math.abs(data[lo][1]-target))lo--;"
+                    "return lo;"
+                    "}"
+                    "function show(svgX){"
+                    "var i=pickNearest(svgX);"
+                    "var row=data[i];"
+                    "var x=pl+(row[1]-tmin)/(tmax-tmin)*pw;"
+                    "var pct=row[4]/1000;"
+                    "var y=pt+(%d)-(pct-ymin)/(ymax-ymin)*(%d);"
+                    "xhair.setAttribute('x1',x);"
+                    "xhair.setAttribute('x2',x);"
+                    "xhair.style.display='';"
+                    "dot.setAttribute('cx',x);"
+                    "dot.setAttribute('cy',y);"
+                    "dot.style.display='';"
+                    "var tx=x+12;"
+                    "if(tx+220>W-pr)tx=x-232;"
+                    "var ty=y-50;"
+                    "if(ty<pt+5)ty=pt+5;"
+                    "tip.setAttribute('transform','translate('+tx+','+ty+')');"
+                    "tip.style.display='';"
+                    "td.textContent=fmtDate(row[1]);"
+                    "tp.textContent=pct.toFixed(3)+'%% held > 1 year';"
+                    "ta.textContent=fmtZcl(row[3])+' / '+fmtZcl(row[2])+' ZCL';"
+                    "th.textContent='Block '+row[0];"
+                    "}"
+                    "function pt2svg(e){"
+                    "var r=svg.getBoundingClientRect();"
+                    "return (e.clientX-r.left)*(W/r.width);"
+                    "}"
+                    "svg.addEventListener('mousemove',function(e){"
+                    "var sx=pt2svg(e);"
+                    "if(sx<pl||sx>W-pr){hide();return;}"
+                    "show(sx);"
+                    "});"
+                    "svg.addEventListener('mouseleave',hide);"
+                    "svg.addEventListener('touchmove',function(e){"
+                    "if(!e.touches[0])return;"
+                    "var sx=pt2svg(e.touches[0]);"
+                    "if(sx>=pl&&sx<=W-pr)show(sx);"
+                    "e.preventDefault();"
+                    "},{passive:false});"
+                    "})();</script>"
+                    "</svg></div>",
+                    W, pl, pr, pt, pb, y_min, y_max, t_min, t_max,
+                    ph, ph);
+            }
+        }
+    }
 
     APPEND(off, r, max,
         "<div style='max-width:1000px;margin:20px auto'>"

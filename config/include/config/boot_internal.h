@@ -107,6 +107,9 @@ struct boot_svc_ctx {
     bool offer_thread_started;
     pthread_t address_backfill_thread;
     bool address_backfill_thread_started;
+    pthread_t hodl_history_thread;
+    bool hodl_history_thread_started;
+    bool hodl_history_thread_stop;
     struct snapshot_tx_index_job tx_index_job;
     bool want_address_backfill;
     bool want_snapshot_tx_index;
