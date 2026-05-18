@@ -432,19 +432,6 @@ static bool prepare_statements(struct node_db *ndb)
          "file_num,file_pos,is_coinbase"
          " FROM transactions WHERE txid=?");
 
-    PREP(stmt_tx_output_insert,
-         "INSERT OR REPLACE INTO tx_outputs"
-         "(txid,vout,value,script_type,address_hash,block_height)"
-         " VALUES(?,?,?,?,?,?)");
-
-    PREP(stmt_tx_input_insert,
-         "INSERT OR REPLACE INTO tx_inputs"
-         "(txid,vin_index,prev_txid,prev_vout,block_height)"
-         " VALUES(?,?,?,?,?)");
-
-    PREP(stmt_tx_output_find,
-         "SELECT value FROM tx_outputs WHERE txid=? AND vout=?");
-
     PREP(stmt_wallet_utxo_insert,
          "INSERT OR REPLACE INTO wallet_utxos"
          "(txid,vout,value,address_hash,"
@@ -625,9 +612,6 @@ static void finalize_statements(struct node_db *ndb)
     sqlite3_finalize(ndb->stmt_block_by_height);
     sqlite3_finalize(ndb->stmt_tx_insert);
     sqlite3_finalize(ndb->stmt_tx_find);
-    sqlite3_finalize(ndb->stmt_tx_output_insert);
-    sqlite3_finalize(ndb->stmt_tx_input_insert);
-    sqlite3_finalize(ndb->stmt_tx_output_find);
     sqlite3_finalize(ndb->stmt_wallet_utxo_insert);
     sqlite3_finalize(ndb->stmt_wallet_utxo_spend);
     sqlite3_finalize(ndb->stmt_wallet_balance);
