@@ -538,7 +538,17 @@ static inline void explorer_format_y_label(char *buf, size_t max, double val)
  * Returns total supply in zatoshi (int64_t). Overflow-safe for all heights.
  */
 
-#define BUTTERCUP_ACTIVATION_HEIGHT 707000
+/* Mainnet network-upgrade activation heights. Source of truth lives in
+ * lib/chain/src/chainparams.c (the consensus params struct). These
+ * are duplicated here so the explorer/factoids code can build static
+ * tables and use them as compile-time constants without taking a
+ * runtime dep on consensus_params; CI / a future test should pin them
+ * to the chainparams values. */
+#define OVERWINTER_ACTIVATION_HEIGHT 476969
+#define SAPLING_ACTIVATION_HEIGHT    476969
+#define BUBBLES_ACTIVATION_HEIGHT    585318
+#define BUBBLY_ACTIVATION_HEIGHT     585322
+#define BUTTERCUP_ACTIVATION_HEIGHT  707000
 #define PRE_BC_HALVING   840000
 #define POST_BC_HALVING  1680000
 #define BASE_SUBSIDY_SAT 1250000000LL  /* 12.5 ZCL */

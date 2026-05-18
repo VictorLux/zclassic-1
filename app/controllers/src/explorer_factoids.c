@@ -389,15 +389,19 @@ static size_t emit_section_2_upgrades(uint8_t *buf, size_t cap, size_t off,
     } upgrades[] = {
         { "Sprout (Base)", 0, 170002, "0x00000000",
           "Initial ZClassic network launch" },
-        { "Overwinter", 476969, 170005, "0x5ba81b19",
+        { "Overwinter", OVERWINTER_ACTIVATION_HEIGHT, 170005, "0x5ba81b19",
           "Transaction format v3, replay protection, expiry" },
-        { "Sapling", 476969, 170007, "0x76b809bb",
+        { "Sapling", SAPLING_ACTIVATION_HEIGHT, 170007, "0x76b809bb",
           "Shielded transactions (Groth16 proofs, 100x faster)" },
-        { "Bubbles", 585318, 170009, "0x821a451c",
+        { "Bubbles", BUBBLES_ACTIVATION_HEIGHT, 170009, "0x821a451c",
           "ZClassic-specific protocol enhancements" },
-        { "DiffAdj (Bubbly)", 585322, 170010, "0x930b540d",
+        /* Bubbly intentionally shares branch ID 0x930b540d with Buttercup
+         * in consensus (lib/consensus/src/upgrades.c:16-17) — Buttercup
+         * did not change transaction-binding format, so it reuses Bubbly's
+         * branch ID. The duplicate is correct. */
+        { "DiffAdj (Bubbly)", BUBBLY_ACTIVATION_HEIGHT, 170010, "0x930b540d",
           "Difficulty adjustment algorithm refinement" },
-        { "Buttercup", 707000, 170011, "0x930b540d",
+        { "Buttercup", BUTTERCUP_ACTIVATION_HEIGHT, 170011, "0x930b540d",
           "Block time 150s\xe2\x86\x92" "75s, halving doubled, subsidy adjusted" },
     };
     int n_upgrades = (int)(sizeof(upgrades) / sizeof(upgrades[0]));
@@ -578,19 +582,27 @@ static size_t emit_section_4_milestones(uint8_t *buf, size_t cap, size_t off,
           "SELECT MIN(block_height) FROM transactions WHERE is_coinbase = 0", -1, -1 },
         { "First Sprout JoinSplit",
           "SELECT MIN(block_height) FROM joinsplits", -1, 241 },
-        { "Overwinter + Sapling activation", NULL, 476969, -1 },
+        { "Overwinter + Sapling activation", NULL,
+          OVERWINTER_ACTIVATION_HEIGHT, -1 },
         { "First Sapling shielded spend",
           "SELECT MIN(block_height) FROM sapling_spends", -1, 477214 },
         { "First Sapling shielded output",
           "SELECT MIN(block_height) FROM sapling_outputs", -1, 477214 },
         { "First OP_RETURN",
           "SELECT MIN(block_height) FROM op_returns", -1, 649950 },
-        { "Bubbles upgrade activation", NULL, 585318, -1 },
-        { "DiffAdj (Bubbly) activation", NULL, 585322, -1 },
+        { "Bubbles upgrade activation", NULL,
+          BUBBLES_ACTIVATION_HEIGHT, -1 },
+        { "DiffAdj (Bubbly) activation", NULL,
+          BUBBLY_ACTIVATION_HEIGHT, -1 },
         { "First ZSLP token genesis",
           "SELECT MIN(genesis_height) FROM zslp_tokens", -1, -1 },
-        { "Buttercup activation (75s blocks)", NULL, 707000, -1 },
-        { "First halving (pre-Buttercup)", NULL, 840000, -1 },
+        { "Buttercup activation (75s blocks)", NULL,
+          BUTTERCUP_ACTIVATION_HEIGHT, -1 },
+        /* The pre-Buttercup halving at height 840000 never fired —
+         * Buttercup activated at 707000 first and rolled the schedule
+         * into the post-BC era. The previous "First halving (pre-
+         * Buttercup)" milestone row was removed because it would
+         * permanently render "Not yet reached." */
         { "Block 1,000,000", NULL, 1000000, -1 },
         { "Block 2,000,000", NULL, 2000000, -1 },
         { "Block 3,000,000", NULL, 3000000, -1 },
@@ -1320,16 +1332,22 @@ static size_t emit_section_13_blocktimes(uint8_t *buf, size_t cap, size_t off,
         "<p style='color:#888'>Pre-Buttercup target: 150s. "
         "Post-Buttercup target: 75s. Actual times from chain data.</p>");
 
-    /* Pre-Buttercup stats */
+    /* Pre-Buttercup stats. Bound the join on a.height + 1 < activation
+     * so we don't pair the last pre-BC block with the first post-BC
+     * block (different target spacing across that boundary would
+     * poison the pre-BC max gap). */
+    char pre_bc_sql[512];
+    snprintf(pre_bc_sql, sizeof(pre_bc_sql),
+        "SELECT AVG(b.time - a.time), "
+        "MIN(CASE WHEN b.time - a.time > 0 THEN b.time - a.time END), "
+        "MAX(b.time - a.time), "
+        "count(*) "
+        "FROM blocks a JOIN blocks b ON b.height = a.height + 1 "
+        "WHERE a.time > 0 AND b.time > 0 AND b.height < %d",
+        BUTTERCUP_ACTIVATION_HEIGHT);
     {
         sqlite3_stmt *s = NULL;
-        const char *sql =
-            "SELECT AVG(b.time - a.time), "
-            "MIN(CASE WHEN b.time - a.time > 0 THEN b.time - a.time END), "
-            "MAX(b.time - a.time), "
-            "count(*) "
-            "FROM blocks a JOIN blocks b ON b.height = a.height + 1 "
-            "WHERE a.time > 0 AND b.time > 0 AND a.height < 707000";
+        const char *sql = pre_bc_sql;
         if (sqlite3_prepare_v2(db, sql, -1, &s, NULL) == SQLITE_OK && s) {
             if (AR_STEP_ROW_READONLY(s) == SQLITE_ROW) {
                 double avg = sqlite3_column_double(s, 0);
@@ -1355,16 +1373,22 @@ static size_t emit_section_13_blocktimes(uint8_t *buf, size_t cap, size_t off,
         }
     }
 
-    /* Post-Buttercup stats */
+    /* Post-Buttercup stats. Use a.height (not b.height) so the very
+     * first pair starts at the activation block, but the join's
+     * b = a+1 means b.height >= activation+1; that's intentional
+     * symmetric with the pre-BC bound above. */
+    char post_bc_sql[512];
+    snprintf(post_bc_sql, sizeof(post_bc_sql),
+        "SELECT AVG(b.time - a.time), "
+        "MIN(CASE WHEN b.time - a.time > 0 THEN b.time - a.time END), "
+        "MAX(b.time - a.time), "
+        "count(*) "
+        "FROM blocks a JOIN blocks b ON b.height = a.height + 1 "
+        "WHERE a.time > 0 AND b.time > 0 AND a.height >= %d",
+        BUTTERCUP_ACTIVATION_HEIGHT);
     if (chain_height > BUTTERCUP_ACTIVATION_HEIGHT) {
         sqlite3_stmt *s = NULL;
-        const char *sql =
-            "SELECT AVG(b.time - a.time), "
-            "MIN(CASE WHEN b.time - a.time > 0 THEN b.time - a.time END), "
-            "MAX(b.time - a.time), "
-            "count(*) "
-            "FROM blocks a JOIN blocks b ON b.height = a.height + 1 "
-            "WHERE a.time > 0 AND b.time > 0 AND a.height >= 707000";
+        const char *sql = post_bc_sql;
         if (sqlite3_prepare_v2(db, sql, -1, &s, NULL) == SQLITE_OK && s) {
             if (AR_STEP_ROW_READONLY(s) == SQLITE_ROW) {
                 double avg = sqlite3_column_double(s, 0);
