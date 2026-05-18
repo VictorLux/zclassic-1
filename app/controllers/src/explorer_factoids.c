@@ -1479,7 +1479,7 @@ static size_t emit_section_15_empty_blocks(uint8_t *buf, size_t cap, size_t off,
 
     {
         int64_t empty_total = fq_i64(db,
-            "SELECT count(*) FROM blocks WHERE num_tx <= 1");
+            "SELECT count(*) FROM blocks WHERE num_tx = 1");
         int64_t total_blocks_2 = fq_i64(db, "SELECT count(*) FROM blocks");
         double empty_pct = total_blocks_2 > 0
             ? (double)empty_total * 100.0 / (double)total_blocks_2 : 0.0;
@@ -1507,7 +1507,7 @@ static size_t emit_section_15_empty_blocks(uint8_t *buf, size_t cap, size_t off,
         sqlite3_stmt *s = NULL;
         const char *sql =
             "SELECT CAST(strftime('%Y', time, 'unixepoch') AS INTEGER) AS yr, "
-            "SUM(CASE WHEN num_tx <= 1 THEN 1 ELSE 0 END) AS empty, "
+            "SUM(CASE WHEN num_tx = 1 THEN 1 ELSE 0 END) AS empty, "
             "count(*) AS total "
             "FROM blocks WHERE time > 0 GROUP BY yr ORDER BY yr";
         if (sqlite3_prepare_v2(db, sql, -1, &s, NULL) == SQLITE_OK && s) {
