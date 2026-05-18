@@ -77,3 +77,4 @@ tools/inspect_html
 
 # Claude Code agent worktrees (runtime)
 .claude/worktrees/
+.claude/scheduled_tasks.lock
