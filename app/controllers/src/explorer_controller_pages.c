@@ -694,6 +694,22 @@ size_t serve_token_detail(const char *token_id_hex, uint8_t *r, size_t max)
     return off;
 }
 
+/* Helper for serve_hodl: bisect a height-sorted cumulative-value
+ * array. Returns the cumulative value at the largest stored height
+ * that does not exceed target_h, or 0 when no such row exists. */
+struct hodl_cum_row { int64_t h; int64_t cum_v; };
+static int64_t hodl_cum_at(const struct hodl_cum_row *cum, int n,
+                           int64_t target_h)
+{
+    int lo = 0, hi = n - 1, found = -1;
+    while (lo <= hi) {
+        int m = (lo + hi) / 2;
+        if (cum[m].h <= target_h) { found = m; lo = m + 1; }
+        else hi = m - 1;
+    }
+    return found >= 0 ? cum[found].cum_v : (int64_t)0;
+}
+
 size_t serve_hodl(uint8_t *r, size_t max)
 {
     struct explorer_context *ctx = explorer_ctx();
@@ -767,73 +783,118 @@ size_t serve_hodl(uint8_t *r, size_t max)
         "</div>",
         older_pct, hodl.tip_height);
 
-    /* ── Time-series chart: % held > 1y over time ──────────────── */
+    /* ── Time-series chart: % held > 1y over time ────────────────
+     *
+     * Metric: at each historical block height H, what fraction of
+     * TODAY'S transparent UTXO supply was already > 1 year old at H?
+     *
+     * Source: the live `utxos` table. Every row is a currently-unspent
+     * output with its creation height — dense, no indexer dependency.
+     *
+     * Note: this metric measures "% of supply that survives today, as
+     * a function of how long it was held when the chart sampled". It
+     * does NOT include UTXOs that existed at H but have since been
+     * spent (those rows aren't in the utxos table by definition). The
+     * right edge of the chart equals the headline `older_pct` because
+     * at H = today every current UTXO contributes to the denominator
+     * and the >1y subset to the numerator.
+     *
+     * Correctness: each (total, older) pair is computed from a strict
+     * subset of current UTXOs, so the displayed pct is always a real
+     * ratio of real-value sums. No partial-index assumptions. */
     {
-        sqlite3 *hist_db = NULL;
-        if (explorer_open_readonly_db(ctx->datadir, &hist_db)) {
-            static struct hodl_history_row rows_raw[2048];
-            int n_raw = hodl_history_load_all(hist_db, rows_raw,
-                (int)(sizeof(rows_raw)/sizeof(rows_raw[0])));
-
-            /* Correctness gate. The hodl_history filler queries
-             * tx_outputs LEFT JOIN tx_inputs to reconstruct historical
-             * UTXO snapshots. If those tables aren't fully populated
-             * for a given height, the SQL returns either (0, 0) — a
-             * trivially-zero sample — or a numerically wrong pair
-             * computed against a partial source. Either way the
-             * resulting row is not safe to show.
-             *
-             * The previous gate compared row counts globally, but the
-             * runaway-WAL incident left tx_outputs with millions of
-             * rows starting at height ~341k — the row-count gate
-             * passed even though heights 0..341k were missing. The
-             * correct gate is HEIGHT coverage: tx_outputs must start
-             * at height 0 (or 1) AND extend to at least tip - 1y. */
-            int64_t tx_out_min_h = sql_query_i64(hist_db,
-                "SELECT COALESCE(MIN(block_height), -1) FROM tx_outputs");
-            int64_t tx_out_max_h = sql_query_i64(hist_db,
-                "SELECT COALESCE(MAX(block_height), -1) FROM tx_outputs");
-            int64_t blocks_max_h = sql_query_i64(hist_db,
-                "SELECT COALESCE(MAX(height), 0) FROM blocks");
-            sqlite3_close(hist_db);
-
-            /* Coverage: must start at or near genesis (height ≤ 1
-             * accommodates the convention where coinbase is the only
-             * tx at height 1; some indexers skip the genesis coinbase).
-             * Must extend to at least the chain tip minus one year, so
-             * "older than 1y" can be evaluated at every sample. */
-            int64_t bpY = HODL_HISTORY_BLOCKS_PER_YEAR;
-            bool source_complete =
-                tx_out_min_h >= 0 && tx_out_min_h <= 1 &&
-                tx_out_max_h >= 0 &&
-                (blocks_max_h == 0 ||
-                 tx_out_max_h >= blocks_max_h - bpY);
-
-            /* Filter out (0,0) sentinel rows from old partial fills. */
-            static struct hodl_history_row rows[2048];
-            int n = 0;
-            if (source_complete) {
-                for (int i = 0; i < n_raw; i++) {
-                    if (rows_raw[i].total_zat > 0)
-                        rows[n++] = rows_raw[i];
+        sqlite3 *udb = NULL;
+        if (explorer_open_readonly_db(ctx->datadir, &udb)) {
+            /* Pass 1: load utxos sorted by creation height; build a
+             * cumulative-value array so we can answer "sum of value of
+             * UTXOs created at height ≤ H" via a binary search.
+             * Static buffer sized for ~2 M current UTXOs (today: 1.34 M
+             * on mainnet). If the table exceeds the cap, sample
+             * accuracy degrades smoothly — we just stop accumulating. */
+            #define HODL_CUM_MAX 2000000
+            static struct hodl_cum_row cum[HODL_CUM_MAX];
+            int n_cum = 0;
+            int64_t total_supply_zat = 0;
+            {
+                sqlite3_stmt *s = NULL;
+                if (sqlite3_prepare_v2(udb,
+                        "SELECT height, value FROM utxos "
+                        "WHERE value > 0 ORDER BY height ASC",
+                        -1, &s, NULL) == SQLITE_OK && s) {
+                    int64_t running = 0;
+                    while (AR_STEP_ROW_READONLY(s) == SQLITE_ROW &&
+                           n_cum < HODL_CUM_MAX) {
+                        int64_t h = sqlite3_column_int64(s, 0);
+                        int64_t v = sqlite3_column_int64(s, 1);
+                        if (h < 0) continue;
+                        running += v;
+                        cum[n_cum].h     = h;
+                        cum[n_cum].cum_v = running;
+                        n_cum++;
+                    }
+                    sqlite3_finalize(s);
+                    total_supply_zat = running;
                 }
             }
+            sqlite3_close(udb);
 
-            if (!source_complete || n < 2) {
+            /* bisect via the file-scope helper hodl_hodl_cum_at(cum, n_cum,). */
+
+            /* Sample one row per ~day from stride to tip. Use the
+             * chain tip from the headline snapshot as the right edge
+             * so the last sample lines up with the headline value. */
+            int64_t bpY = HODL_HISTORY_BLOCKS_PER_YEAR;
+            int64_t tip_h = hodl.tip_height;
+            static struct hodl_history_row rows[2048];
+            int n = 0;
+            const int64_t GENESIS_TIME = 1478403829LL;
+            const int64_t BC_HEIGHT    = 707000;
+            for (int64_t sample_h = HODL_HISTORY_SAMPLE_STRIDE;
+                 sample_h <= tip_h &&
+                 n < (int)(sizeof(rows)/sizeof(rows[0])) - 1;
+                 sample_h += HODL_HISTORY_SAMPLE_STRIDE) {
+                int64_t total = hodl_cum_at(cum, n_cum,sample_h);
+                if (total <= 0) continue;
+                int64_t older = sample_h > bpY
+                              ? hodl_cum_at(cum, n_cum,sample_h - bpY)
+                              : 0;
+                /* Estimate block time: pre-Buttercup 150 s/block,
+                 * post-Buttercup 75 s/block. Slightly idealized but
+                 * close enough for x-axis labels. */
+                int64_t pre  = sample_h < BC_HEIGHT ? sample_h : BC_HEIGHT;
+                int64_t post = sample_h < BC_HEIGHT
+                             ? 0 : (sample_h - BC_HEIGHT);
+                rows[n].height       = sample_h;
+                rows[n].time         = GENESIS_TIME + pre * 150 + post * 75;
+                rows[n].total_zat    = total;
+                rows[n].older_1y_zat = older;
+                rows[n].older_1y_pct = (double)older / (double)total * 100.0;
+                n++;
+            }
+
+            /* Append a "today" anchor — uses the live headline values
+             * directly so the rightmost data point IS the headline. */
+            if (n < (int)(sizeof(rows)/sizeof(rows[0])) &&
+                hodl.total_value > 0) {
+                rows[n].height       = hodl.tip_height;
+                rows[n].time         = (int64_t)time(NULL);
+                rows[n].total_zat    = hodl.total_value;
+                rows[n].older_1y_zat = hodl.older_than_1y_value;
+                rows[n].older_1y_pct = older_pct;
+                n++;
+            }
+            #undef HODL_CUM_MAX
+
+            if (n < 2 || total_supply_zat <= 0) {
                 APPEND(off, r, max,
                     "<div style='max-width:1000px;margin:20px auto;"
                     "padding:16px;background:#0c0c0c;border:1px solid #1a1a1a;"
                     "border-radius:8px;color:#888'>"
                     "<h2 style='color:#bbb;margin-top:0'>"
                     "%% held &gt; 1 year over time</h2>"
-                    "<p>Historical snapshots need the per-output index "
-                    "(<code>tx_outputs</code>) to be populated end-to-end. "
-                    "Current coverage: heights %" PRId64 " &ndash; "
-                    "%" PRId64 " (chain tip %" PRId64 "). The chart will "
-                    "appear once coverage extends from genesis to within "
-                    "one year of the tip.</p>"
-                    "</div>",
-                    tx_out_min_h, tx_out_max_h, blocks_max_h);
+                    "<p>The UTXO set is still being indexed. Refresh in "
+                    "a minute.</p>"
+                    "</div>");
             } else {
                 /* Compute min/max for y-axis scaling. Use [floor..100]
                  * with a 5%% headroom floor to keep the curve readable
@@ -860,7 +921,7 @@ size_t serve_hodl(uint8_t *r, size_t max)
                     "height:auto;background:#0c0c0c;border:1px solid #1a1a1a;"
                     "border-radius:8px;display:block'>"
                     "<text x='30' y='30' fill='#bbb' font-size='18' "
-                    "font-family='Georgia,serif'>%% of transparent supply held &gt; 1 year</text>"
+                    "font-family='Georgia,serif'>Current supply: %% already held &gt; 1 year, by historical block</text>"
                     "<text x='%d' y='30' fill='#666' font-size='12' "
                     "text-anchor='end' font-family='Georgia,serif'>"
                     "%d samples · daily</text>",
