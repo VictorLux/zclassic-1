@@ -38,6 +38,9 @@ struct node_db {
     sqlite3_stmt *stmt_block_by_height;
     sqlite3_stmt *stmt_tx_insert;
     sqlite3_stmt *stmt_tx_find;
+    sqlite3_stmt *stmt_tx_output_insert;
+    sqlite3_stmt *stmt_tx_input_insert;
+    sqlite3_stmt *stmt_tx_output_find;
     sqlite3_stmt *stmt_wallet_utxo_insert;
     sqlite3_stmt *stmt_wallet_utxo_spend;
     sqlite3_stmt *stmt_wallet_balance;

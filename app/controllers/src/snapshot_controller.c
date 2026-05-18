@@ -932,6 +932,56 @@ static bool snapshot_tx_index_save_block_txs(struct node_db *ndb,
                     height, ti);
             return false;
         }
+
+        /* Per-output rows (tx_outputs) — feeds the explorer history
+         * index and the HODL time-series filler. address_hash + script
+         * extraction is intentionally deferred: address_backfill_service
+         * fills the addresses table separately from the UTXO set, and
+         * the script_type column is currently 0 across the board
+         * (explorer queries it but doesn't depend on the value being
+         * accurate). The columns are nullable / default-0. */
+        sqlite3_stmt *so = ndb->stmt_tx_output_insert;
+        const struct transaction *tx = &blk->vtx[ti];
+        for (size_t vi = 0; vi < tx->num_vout; vi++) {
+            sqlite3_reset(so);
+            sqlite3_bind_blob(so, 1, dt.txid, 32, SQLITE_STATIC);
+            sqlite3_bind_int(so, 2, (int)vi);
+            sqlite3_bind_int64(so, 3, tx->vout[vi].value);
+            sqlite3_bind_int(so, 4, 0);
+            sqlite3_bind_null(so, 5);
+            sqlite3_bind_int(so, 6, height);
+            int rc = sqlite3_step(so);  // raw-sql-ok:tx-output-batch-insert
+            if (rc != SQLITE_DONE && rc != SQLITE_ROW) {
+                fprintf(stderr,
+                        "tx_index: tx_output insert failed h=%d ti=%zu vi=%zu rc=%d\n",
+                        height, ti, vi, rc);
+                return false;
+            }
+        }
+
+        /* Per-input rows (tx_inputs). Coinbase transactions have a
+         * single dummy input whose prevout is null; skip it. Other tx
+         * inputs reference real prior outputs (txid, vout). */
+        if (ti > 0) {
+            sqlite3_stmt *si = ndb->stmt_tx_input_insert;
+            for (size_t vi = 0; vi < tx->num_vin; vi++) {
+                sqlite3_reset(si);
+                sqlite3_bind_blob(si, 1, dt.txid, 32, SQLITE_STATIC);
+                sqlite3_bind_int(si, 2, (int)vi);
+                sqlite3_bind_blob(si, 3, tx->vin[vi].prevout.hash.data, 32,
+                                  SQLITE_STATIC);
+                sqlite3_bind_int64(si, 4, (int64_t)tx->vin[vi].prevout.n);
+                sqlite3_bind_int(si, 5, height);
+                int rc = sqlite3_step(si);  // raw-sql-ok:tx-input-batch-insert
+                if (rc != SQLITE_DONE && rc != SQLITE_ROW) {
+                    fprintf(stderr,
+                            "tx_index: tx_input insert failed h=%d ti=%zu vi=%zu rc=%d\n",
+                            height, ti, vi, rc);
+                    return false;
+                }
+            }
+        }
+
         (*indexed)++;
         if (!snapshot_tx_index_maybe_commit(ndb, tx_open, *indexed,
                                             t_start))
@@ -1045,11 +1095,17 @@ static void *build_tx_index_thread(void *arg)
     /* Check how many transactions already indexed. A nonzero count is not
      * proof that the index is complete; older boots skipped after 100k rows,
      * which left historical spends unrecoverable during replay. Only skip
-     * when a previous additive build explicitly marked completion. */
+     * when a previous additive build explicitly marked completion at the
+     * current schema version.
+     *
+     * v4 (today): adds tx_outputs + tx_inputs per-row writes so the
+     * explorer history index and HODL time-series have a real source.
+     * Previous markers (v1..v3) only populated `transactions` — bump
+     * forces those existing datadirs to re-scan once. */
     int existing = db_tx_count(&ndb);
     int64_t complete = 0;
     node_db_state_get_int(&ndb, "tx_index_complete", &complete);
-    if (complete >= 3 && existing > 100000) {
+    if (complete >= 4 && existing > 100000) {
         printf("tx_index: complete marker v%lld present (%d transactions), skipping\n",
                (long long)complete, existing);
         node_db_close(&ndb);
@@ -1282,7 +1338,7 @@ static void *build_tx_index_thread(void *arg)
         ok = false;
     }
     if (ok)
-        node_db_state_set_int(&ndb, "tx_index_complete", 3);
+        node_db_state_set_int(&ndb, "tx_index_complete", 4);
 
     node_db_close(&ndb);
 
