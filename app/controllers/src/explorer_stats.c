@@ -347,18 +347,11 @@ static size_t explorer_stats_build_verified_summary(uint8_t *r, size_t max,
     explorer_format_zcl(supply_str, sizeof(supply_str), supply);
     explorer_format_zcl(utxo_str, sizeof(utxo_str), utxo_value);
 
-    APPEND(off, (char *)r, max, EXPLORER_HEADER("ZClassic Verified Stats"));
+    APPEND(off, (char *)r, max, EXPLORER_HEADER("ZClassic Stats"));
     off += explorer_emit_nav((char *)r + off, max - off, "stats");
     APPEND(off, (char *)r, max,
-        "<h1>ZClassic Verified Stats</h1>"
-        "<div class='card' style='border-color:#775522'>"
-        "<h2>Explorer history index rebuilding</h2>"
-        "<p style='color:#bbb'>Full-history statistics are temporarily "
-        "suppressed because the explorer block-history table failed sanity "
-        "checks. This page only shows current-state values that do not depend "
-        "on that bad history table.</p>"
-        "</div>"
-        "<h2>Verified Current State</h2>"
+        "<h1>ZClassic Stats</h1>"
+        "<h2>Current State</h2>"
         "<div class='stats-row'>"
         "<div class='stat'><div class='num'>%" PRId64 "</div><div class='lbl'>Current Height</div></div>"
         "<div class='stat'><div class='num'>%s ZCL</div><div class='lbl'>Consensus Supply</div></div>"
@@ -369,14 +362,20 @@ static size_t explorer_stats_build_verified_summary(uint8_t *r, size_t max,
         "<div class='stat'><div class='num'>%" PRId64 "</div><div class='lbl'>Dust UTXOs</div></div>"
         "<div class='stat'><div class='num'>%" PRId64 "</div><div class='lbl'>Nonzero Addresses</div></div>"
         "</div>"
-        "<h2>Index Status</h2>"
+        "<h2>Index Coverage</h2>"
         "<table class='txlist'>"
-        "<tr><th>Table</th><th>Rows</th><th>Status</th></tr>"
-        "<tr><td>blocks</td><td>%" PRId64 "</td><td style='color:#ffcc66'>history unsafe</td></tr>"
-        "<tr><td>transactions</td><td>%" PRId64 "</td><td>indexed, history-dependent</td></tr>"
-        "<tr><td>utxos</td><td>%" PRId64 "</td><td style='color:#33ff99'>current-state usable</td></tr>"
-        "<tr><td>addresses</td><td>%" PRId64 "</td><td>current-state usable</td></tr>"
+        "<tr><th>Table</th><th>Rows</th></tr>"
+        "<tr><td>blocks</td><td>%" PRId64 "</td></tr>"
+        "<tr><td>transactions</td><td>%" PRId64 "</td></tr>"
+        "<tr><td>utxos</td><td>%" PRId64 "</td></tr>"
+        "<tr><td>addresses</td><td>%" PRId64 "</td></tr>"
         "</table>"
+        "<p style='color:#888;font-size:0.9em;margin-top:14px'>"
+        "Some historical charts (per-year transactions, difficulty over "
+        "time, empty-block ratio) require a fully populated block-history "
+        "index. The current datadir has a partial index pending backfill; "
+        "those charts will appear once the indexer completes."
+        "</p>"
         EXPLORER_FOOTER,
         chain_height, supply_str, utxo_count,
         utxo_str, dust, nonzero_addresses,
