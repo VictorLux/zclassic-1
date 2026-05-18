@@ -813,7 +813,11 @@ static size_t emit_section_6_supply(uint8_t *buf, size_t cap, size_t off,
     struct { const char *label; int64_t target_sat; } supply_milestones[] = {
         { "1,000,000 ZCL mined",  ZATOSHI_PER_ZCL * 1000000LL },
         { "5,000,000 ZCL mined",  ZATOSHI_PER_ZCL * 5000000LL },
-        { "8,837,500 ZCL (pre-Buttercup max)", ZATOSHI_PER_ZCL * 8837500LL },
+        /* Pre-Buttercup max: last pre-BC block is BUTTERCUP_ACTIVATION_HEIGHT-1
+         * (= 706999), genesis (h=0) has zero subsidy in zcl_total_supply, so
+         * the pre-BC supply is 706999 * 12.5 = 8,837,487.5 ZCL. */
+        { "8,837,487.5 ZCL (pre-Buttercup max)",
+          (BUTTERCUP_ACTIVATION_HEIGHT - 1) * BASE_SUBSIDY_SAT },
         { "10,000,000 ZCL mined", ZATOSHI_PER_ZCL * 10000000LL },
         { "10,500,000 ZCL mined", ZATOSHI_PER_ZCL * 10500000LL },
     };
