@@ -41,12 +41,14 @@ ExecStart=%h/zclassic23/zclassic23 \
 Restart=always
 RestartSec=10
 
-# P7.5: WAL drain + Tor teardown budget, trimmed.  The 300s ceiling
-# turned every hung shutdown into a 5-minute outage; live evidence
-# (AGENT.md P7 live-node review) shows hangs do happen.  90s clears
-# the observed worst-case shutdown (~60s) with reasonable headroom
-# for slow disks, and bounds operator-visible downtime.
-TimeoutStopSec=90
+# WAL drain + Tor teardown budget. The earlier 90s ceiling was
+# breached in the 2026-05-18 session (15 restarts in 8 hours, every
+# stop SIGKILL'd because WAL fsync + Tor teardown didn't complete in
+# 90s on a busy node). Each SIGKILL costs peer reputation — remote
+# peers flag us as flaky, throttle reconnect attempts. Bump to 300s
+# so the worst-case shutdown is clean; if it ever exceeds 300s
+# something is genuinely wedged and warrants investigation.
+TimeoutStopSec=300
 
 # control-group ensures the embedded Tor pthread (and any helper
 # processes) die with the parent instead of lingering.
