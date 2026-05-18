@@ -710,6 +710,31 @@ static int64_t hodl_cum_at(const struct hodl_cum_row *cum, int n,
     return found >= 0 ? cum[found].cum_v : (int64_t)0;
 }
 
+/* Same bisect but returns the array INDEX (0-based) of the matched
+ * row, or -1. Use to convert a height boundary into a UTXO count. */
+static int hodl_cum_idx_at(const struct hodl_cum_row *cum, int n,
+                           int64_t target_h)
+{
+    int lo = 0, hi = n - 1, found = -1;
+    while (lo <= hi) {
+        int m = (lo + hi) / 2;
+        if (cum[m].h <= target_h) { found = m; lo = m + 1; }
+        else hi = m - 1;
+    }
+    return found;
+}
+
+/* Per-sample chart row including the day-window movement counters. */
+struct hodl_chart_row {
+    int64_t height;
+    int64_t time;
+    int64_t total_zat;
+    int64_t older_1y_zat;
+    double  older_1y_pct;
+    int64_t created_count;  /* UTXOs created in this day's window, still unspent */
+    int64_t created_zat;
+};
+
 size_t serve_hodl(uint8_t *r, size_t max)
 {
     struct explorer_context *ctx = explorer_ctx();
@@ -842,33 +867,55 @@ size_t serve_hodl(uint8_t *r, size_t max)
 
             /* Sample one row per ~day from stride to tip. Use the
              * chain tip from the headline snapshot as the right edge
-             * so the last sample lines up with the headline value. */
+             * so the last sample lines up with the headline value.
+             *
+             * Per-sample movement metric: count + value of UTXOs whose
+             * creation height falls inside the day's window
+             * (sample_h - stride, sample_h] AND that are still unspent
+             * today. This is a strict subset of true daily UTXO creation
+             * (we can't see UTXOs that got spent before today since
+             * those rows aren't in the utxos table) — labelled as
+             * "surviving" in the hover so the metric isn't oversold. */
             int64_t bpY = HODL_HISTORY_BLOCKS_PER_YEAR;
+            int64_t stride = HODL_HISTORY_SAMPLE_STRIDE;
             int64_t tip_h = hodl.tip_height;
-            static struct hodl_history_row rows[2048];
+            static struct hodl_chart_row rows[2048];
             int n = 0;
             const int64_t GENESIS_TIME = 1478403829LL;
             const int64_t BC_HEIGHT    = 707000;
-            for (int64_t sample_h = HODL_HISTORY_SAMPLE_STRIDE;
+            for (int64_t sample_h = stride;
                  sample_h <= tip_h &&
                  n < (int)(sizeof(rows)/sizeof(rows[0])) - 1;
-                 sample_h += HODL_HISTORY_SAMPLE_STRIDE) {
-                int64_t total = hodl_cum_at(cum, n_cum,sample_h);
+                 sample_h += stride) {
+                int64_t total = hodl_cum_at(cum, n_cum, sample_h);
                 if (total <= 0) continue;
                 int64_t older = sample_h > bpY
-                              ? hodl_cum_at(cum, n_cum,sample_h - bpY)
+                              ? hodl_cum_at(cum, n_cum, sample_h - bpY)
                               : 0;
+
+                /* Day-window: indices of (sample_h - stride, sample_h]. */
+                int hi_idx = hodl_cum_idx_at(cum, n_cum, sample_h);
+                int lo_idx = sample_h >= stride
+                           ? hodl_cum_idx_at(cum, n_cum, sample_h - stride)
+                           : -1;
+                int64_t created_count = (int64_t)(hi_idx - lo_idx);
+                int64_t created_zat =
+                    (hi_idx >= 0 ? cum[hi_idx].cum_v : 0) -
+                    (lo_idx >= 0 ? cum[lo_idx].cum_v : 0);
+
                 /* Estimate block time: pre-Buttercup 150 s/block,
                  * post-Buttercup 75 s/block. Slightly idealized but
                  * close enough for x-axis labels. */
                 int64_t pre  = sample_h < BC_HEIGHT ? sample_h : BC_HEIGHT;
                 int64_t post = sample_h < BC_HEIGHT
                              ? 0 : (sample_h - BC_HEIGHT);
-                rows[n].height       = sample_h;
-                rows[n].time         = GENESIS_TIME + pre * 150 + post * 75;
-                rows[n].total_zat    = total;
-                rows[n].older_1y_zat = older;
-                rows[n].older_1y_pct = (double)older / (double)total * 100.0;
+                rows[n].height        = sample_h;
+                rows[n].time          = GENESIS_TIME + pre * 150 + post * 75;
+                rows[n].total_zat     = total;
+                rows[n].older_1y_zat  = older;
+                rows[n].older_1y_pct  = (double)older / (double)total * 100.0;
+                rows[n].created_count = created_count;
+                rows[n].created_zat   = created_zat;
                 n++;
             }
 
@@ -876,11 +923,20 @@ size_t serve_hodl(uint8_t *r, size_t max)
              * directly so the rightmost data point IS the headline. */
             if (n < (int)(sizeof(rows)/sizeof(rows[0])) &&
                 hodl.total_value > 0) {
-                rows[n].height       = hodl.tip_height;
-                rows[n].time         = (int64_t)time(NULL);
-                rows[n].total_zat    = hodl.total_value;
-                rows[n].older_1y_zat = hodl.older_than_1y_value;
-                rows[n].older_1y_pct = older_pct;
+                int hi_idx = hodl_cum_idx_at(cum, n_cum, hodl.tip_height);
+                int lo_idx = hodl.tip_height >= stride
+                           ? hodl_cum_idx_at(cum, n_cum,
+                                             hodl.tip_height - stride)
+                           : -1;
+                rows[n].height        = hodl.tip_height;
+                rows[n].time          = (int64_t)time(NULL);
+                rows[n].total_zat     = hodl.total_value;
+                rows[n].older_1y_zat  = hodl.older_than_1y_value;
+                rows[n].older_1y_pct  = older_pct;
+                rows[n].created_count = (int64_t)(hi_idx - lo_idx);
+                rows[n].created_zat   =
+                    (hi_idx >= 0 ? cum[hi_idx].cum_v : 0) -
+                    (lo_idx >= 0 ? cum[lo_idx].cum_v : 0);
                 n++;
             }
             #undef HODL_CUM_MAX
@@ -977,8 +1033,8 @@ size_t serve_hodl(uint8_t *r, size_t max)
                     "<circle id='hodl-dot' cx='0' cy='0' r='4' "
                     "fill='#33ff99' style='display:none'/>"
                     "<g id='hodl-tip' style='display:none'>"
-                    "<rect id='hodl-tip-bg' x='0' y='0' width='220' "
-                    "height='86' rx='6' fill='#000' stroke='#33ff99' "
+                    "<rect id='hodl-tip-bg' x='0' y='0' width='280' "
+                    "height='104' rx='6' fill='#000' stroke='#33ff99' "
                     "opacity='0.95'/>"
                     "<text id='hodl-tip-date' x='10' y='20' fill='#fff' "
                     "font-size='13' font-family='Georgia,serif'>—</text>"
@@ -986,24 +1042,31 @@ size_t serve_hodl(uint8_t *r, size_t max)
                     "font-size='15' font-weight='600'>—</text>"
                     "<text id='hodl-tip-amt' x='10' y='60' fill='#bbb' "
                     "font-size='12'>—</text>"
-                    "<text id='hodl-tip-h' x='10' y='78' fill='#666' "
+                    "<text id='hodl-tip-mv' x='10' y='78' fill='#ffcc66' "
+                    "font-size='12'>—</text>"
+                    "<text id='hodl-tip-h' x='10' y='96' fill='#666' "
                     "font-size='11'>—</text>"
                     "</g>",
                     pt, pt + ph);
 
                 /* Inline data block for JS — one row per sample, packed
-                 * as comma-separated integers (height,time,total_zat,
-                 * older_zat,pct_x1000) to keep the inline blob compact. */
+                 * as comma-separated integers
+                 * [height, time, total_zat, older_zat, pct_x1000,
+                 *  created_count, created_zat]
+                 * to keep the inline blob compact. created_* are the
+                 * UTXOs created in this day's window that are still
+                 * unspent today ("surviving creation"). */
                 APPEND(off, r, max,
                     "<script>(function(){"
                     "var data=[");
                 for (int i = 0; i < n; i++) {
                     APPEND(off, r, max,
-                        "%s[%" PRId64 ",%" PRId64 ",%" PRId64 ",%" PRId64 ",%d]",
+                        "%s[%" PRId64 ",%" PRId64 ",%" PRId64 ",%" PRId64 ",%d,%" PRId64 ",%" PRId64 "]",
                         i ? "," : "",
                         rows[i].height, rows[i].time,
                         rows[i].total_zat, rows[i].older_1y_zat,
-                        (int)(rows[i].older_1y_pct * 1000.0));
+                        (int)(rows[i].older_1y_pct * 1000.0),
+                        rows[i].created_count, rows[i].created_zat);
                 }
                 APPEND(off, r, max,
                     "];"
@@ -1017,6 +1080,7 @@ size_t serve_hodl(uint8_t *r, size_t max)
                     "var td=document.getElementById('hodl-tip-date');"
                     "var tp=document.getElementById('hodl-tip-pct');"
                     "var ta=document.getElementById('hodl-tip-amt');"
+                    "var tm=document.getElementById('hodl-tip-mv');"
                     "var th=document.getElementById('hodl-tip-h');"
                     "function fmtZcl(z){"
                     "var n=z/1e8;"
@@ -1056,14 +1120,15 @@ size_t serve_hodl(uint8_t *r, size_t max)
                     "dot.setAttribute('cy',y);"
                     "dot.style.display='';"
                     "var tx=x+12;"
-                    "if(tx+220>W-pr)tx=x-232;"
-                    "var ty=y-50;"
+                    "if(tx+280>W-pr)tx=x-292;"
+                    "var ty=y-58;"
                     "if(ty<pt+5)ty=pt+5;"
                     "tip.setAttribute('transform','translate('+tx+','+ty+')');"
                     "tip.style.display='';"
                     "td.textContent=fmtDate(row[1]);"
                     "tp.textContent=pct.toFixed(3)+'%% held > 1 year';"
                     "ta.textContent=fmtZcl(row[3])+' / '+fmtZcl(row[2])+' ZCL';"
+                    "tm.textContent='+ '+row[5].toLocaleString()+' UTXOs, '+fmtZcl(row[6])+' ZCL surviving';"
                     "th.textContent='Block '+row[0];"
                     "}"
                     "function pt2svg(e){"
