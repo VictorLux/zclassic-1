@@ -1626,7 +1626,12 @@ static size_t emit_section_17_integrity(uint8_t *buf, size_t cap, size_t off,
 
         unsigned char digest[32];
         sha3_256_finalize(&ctx, digest);
-        compute_full_hash(integrity_hash, sizeof(integrity_hash), digest, 32);
+        for (int i = 0; i < 32 &&
+             (size_t)(i * 2 + 2) <= sizeof(integrity_hash); i++) {
+            snprintf(integrity_hash + i * 2,
+                     sizeof(integrity_hash) - (size_t)(i * 2),
+                     "%02x", digest[i]);
+        }
     }
 
     {
