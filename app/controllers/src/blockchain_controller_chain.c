@@ -17,6 +17,8 @@
 #include "chain/chain.h"
 #include "chain/chainparams.h"
 #include "chain/checkpoints.h"
+#include "consensus/upgrades.h"
+#include "consensus/params.h"
 #include "chain/mmr.h"
 #include "chain/mmb.h"
 #include "coins/coins.h"
@@ -63,7 +65,10 @@ bool rpc_getblockchaininfo(const struct json_value *params, bool help,
     struct block_index *tip = active_chain_tip(&ctx->main_state->chain_active);
     json_push_kv_int(result, "blocks", tip ? tip->nHeight : 0);
     struct block_index *best_hdr = ctx->main_state->pindex_best_header;
-    int header_height = best_hdr ? best_hdr->nHeight : (tip ? tip->nHeight : 0);
+    /* Emit headers=0 when best_header isn't known yet, rather than
+     * falling back to tip — that masks the "headers haven't been
+     * downloaded yet" condition. Matches zclassicd which emits 0. */
+    int header_height = best_hdr ? best_hdr->nHeight : 0;
     json_push_kv_int(result, "headers", header_height);
     json_push_kv_int(result, "best_header_height", header_height);
 
@@ -88,12 +93,26 @@ bool rpc_getblockchaininfo(const struct json_value *params, bool help,
         json_push_kv_str(result, "chainwork", work_hex);
     }
 
-    struct connman *cm = rpc_net_get_connman();
-    int max_peer_h = cm ? connman_max_peer_height(cm) : 0;
-    int our_h = tip ? tip->nHeight : 0;
+    /* verificationprogress: fraction of expected validation work done,
+     * matching zclassicd semantics (chain_tx history vs checkpoint
+     * baseline projection). Falls back to peer-height ratio only when
+     * the checkpoint data is unavailable. */
     double progress = 1.0;
-    if (max_peer_h > 0 && our_h < max_peer_h)
-        progress = (double)our_h / (double)max_peer_h;
+    if (tip) {
+        progress = checkpoints_guess_verification_progress(
+            &cp->checkpointData, tip, true);
+        if (progress <= 0.0 || progress > 1.0) {
+            /* Fallback: ratio against best peer height. Catches the
+             * fresh-IBD window where the checkpoint projection isn't
+             * meaningful yet. */
+            struct connman *cm = rpc_net_get_connman();
+            int max_peer_h = cm ? connman_max_peer_height(cm) : 0;
+            int our_h = tip->nHeight;
+            progress = (max_peer_h > 0 && our_h < max_peer_h)
+                ? (double)our_h / (double)max_peer_h
+                : 1.0;
+        }
+    }
     json_push_kv_real(result, "verificationprogress", progress);
 
     /* valuePools — sprout + sapling pool balances. Match zclassicd
@@ -143,9 +162,35 @@ bool rpc_getblockchaininfo(const struct json_value *params, bool help,
         json_free(&pools);
     }
 
-    /* Upgrades */
+    /* Upgrades — one entry per network-upgrade slot whose activation
+     * height is set (skipping BASE_SPROUT, which is always-active and
+     * doesn't appear in zclassicd's output, and UPGRADE_TESTDUMMY,
+     * which has no real activation height on mainnet). Matches
+     * zclassicd format: keyed by branch-id hex string, each value
+     * carries name + activationheight + status + info. */
     struct json_value upgrades = {0};
     json_set_object(&upgrades);
+    int tip_height = tip ? tip->nHeight : 0;
+    for (int idx = UPGRADE_OVERWINTER; idx < MAX_NETWORK_UPGRADES; idx++) {
+        int activation = cp->consensus.vUpgrades[idx].nActivationHeight;
+        if (activation == NETWORK_UPGRADE_NO_ACTIVATION)
+            continue;
+        const struct nu_info *info = &NetworkUpgradeInfo[idx];
+        char key[16];
+        snprintf(key, sizeof(key), "%08x", info->nBranchId);
+        const char *status =
+            tip_height >= activation ? "active" :
+            (activation == NETWORK_UPGRADE_NO_ACTIVATION ? "disabled" :
+             "pending");
+        struct json_value upg = {0};
+        json_set_object(&upg);
+        json_push_kv_str(&upg, "name", info->strName ? info->strName : "?");
+        json_push_kv_int(&upg, "activationheight", activation);
+        json_push_kv_str(&upg, "status", status);
+        json_push_kv_str(&upg, "info", info->strInfo ? info->strInfo : "");
+        json_push_kv(&upgrades, key, &upg);
+        json_free(&upg);
+    }
     json_push_kv(result, "upgrades", &upgrades);
     json_free(&upgrades);
 
