@@ -276,9 +276,13 @@ static inline void explorer_query_privacy_stats(sqlite3 *db,
     out->joinsplits = sql_query_i64(db, "SELECT count(*) FROM joinsplits");
     out->sapling_spends = sql_query_i64(db, "SELECT count(*) FROM sapling_spends");
     out->sapling_outputs = sql_query_i64(db, "SELECT count(*) FROM sapling_outputs");
-    /* Negate: negative sapling_value = shielding (value entering pool),
-       so pool balance = -SUM(sapling_value) */
-    out->net_shielded_sat = -sql_query_i64(db, "SELECT COALESCE(SUM(sapling_value), 0) FROM blocks");
+    /* blocks.sapling_value stores zclassicd's valueDelta convention:
+     * positive = pool INCREASED (t→z shielding-in event),
+     * negative = pool DECREASED (z→t unshielding-out event).
+     * Verified by comparing block 1275039 (-29963.3742 ZCL) and block
+     * 2670693 (+40380.0 ZCL) against zclassicd's getblock RPC.
+     * Pool balance = cumulative SUM(valueDelta), no negation. */
+    out->net_shielded_sat = sql_query_i64(db, "SELECT COALESCE(SUM(sapling_value), 0) FROM blocks");
 }
 
 static inline void explorer_query_utxo_stats(sqlite3 *db,

@@ -98,9 +98,10 @@ bool rpc_getblockchaininfo(const struct json_value *params, bool help,
 
     /* valuePools — sprout + sapling pool balances. Match zclassicd format:
      * each pool is an object with id / monitored / chainValue (ZCL) /
-     * chainValueZat. Convention: pool balance = -SUM(per_block_delta),
-     * since negative deltas mean coins entering the pool. Same negation
-     * explorer_query_privacy_stats uses. */
+     * chainValueZat. Convention (verified against running zclassicd at
+     * the same tip): the blocks table stores pool deltas in zclassicd's
+     * "positive = into pool" convention, so pool balance = SUM(delta)
+     * directly. No negation. */
     if (ctx->node_db && ctx->node_db->open) {
         int64_t sprout_zat = 0, sapling_zat = 0;
         sqlite3_stmt *s = NULL;
@@ -109,8 +110,8 @@ bool rpc_getblockchaininfo(const struct json_value *params, bool help,
                 "COALESCE(SUM(sapling_value), 0) FROM blocks",
                 -1, &s, NULL) == SQLITE_OK && s) {
             if (AR_STEP_ROW_READONLY(s) == SQLITE_ROW) {
-                sprout_zat  = -sqlite3_column_int64(s, 0);
-                sapling_zat = -sqlite3_column_int64(s, 1);
+                sprout_zat  = sqlite3_column_int64(s, 0);
+                sapling_zat = sqlite3_column_int64(s, 1);
             }
             sqlite3_finalize(s);
         }

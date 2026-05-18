@@ -777,20 +777,13 @@ static size_t emit_section_5_records(uint8_t *buf, size_t cap, size_t off,
         }
     }
 
-    /* Largest single shielding (t→z): negative sapling_value = value entering pool */
-    {
-        struct sql_row_i64_3 row;
-        const char *sql = "SELECT height, sapling_value, time FROM blocks "
-                          "WHERE sapling_value < 0 ORDER BY sapling_value ASC LIMIT 1";
-        if (sql_query_row_i64_3(db, sql, &row)) {
-            char vstr[64];
-            fmt_zcl(vstr, sizeof(vstr), -row.v1);
-            RECORD_ROW("Largest single-block shielding (t\xe2\x86\x92z)",
-                "%s ZCL", vstr, row.v0, row.v2);
-        }
-    }
+    /* blocks.sapling_value uses zclassicd's valueDelta convention:
+     * positive = t→z shielding (pool grew), negative = z→t unshielding
+     * (pool shrank). Verified against zclassicd getblock for blocks
+     * 1275039 (delta=-29,963 ZCL, unshielding) and 2670693
+     * (delta=+40,380 ZCL, shielding). */
 
-    /* Largest single unshielding (z→t): positive sapling_value = value leaving pool */
+    /* Largest single-block shielding (t→z): most positive sapling_value */
     {
         struct sql_row_i64_3 row;
         const char *sql = "SELECT height, sapling_value, time FROM blocks "
@@ -798,6 +791,19 @@ static size_t emit_section_5_records(uint8_t *buf, size_t cap, size_t off,
         if (sql_query_row_i64_3(db, sql, &row)) {
             char vstr[64];
             fmt_zcl(vstr, sizeof(vstr), row.v1);
+            RECORD_ROW("Largest single-block shielding (t\xe2\x86\x92z)",
+                "%s ZCL", vstr, row.v0, row.v2);
+        }
+    }
+
+    /* Largest single-block unshielding (z→t): most negative sapling_value */
+    {
+        struct sql_row_i64_3 row;
+        const char *sql = "SELECT height, sapling_value, time FROM blocks "
+                          "WHERE sapling_value < 0 ORDER BY sapling_value ASC LIMIT 1";
+        if (sql_query_row_i64_3(db, sql, &row)) {
+            char vstr[64];
+            fmt_zcl(vstr, sizeof(vstr), -row.v1);
             RECORD_ROW("Largest single-block unshielding (z\xe2\x86\x92t)",
                 "%s ZCL", vstr, row.v0, row.v2);
         }
@@ -1045,14 +1051,14 @@ static size_t emit_section_8_privacy(uint8_t *buf, size_t cap, size_t off,
             sqlite3_finalize(s); s = NULL;
         }
 
-        /* Net shielding volume per year. Convention (matches
-         * explorer_query_privacy_stats + getblockchaininfo valuePools):
-         * net_shielded = -SUM(sapling_value) — negative raw values are
-         * coins entering the shielded pool, so the negation makes the
-         * column positive when shielding > unshielding for the year. */
+        /* Net shielding volume per year. Convention (verified against
+         * running zclassicd valuePools): blocks.sapling_value stores
+         * pool-balance deltas in "positive = into pool" sign, so
+         * "Net Shielded" = SUM(sapling_value) directly — positive when
+         * the year was a net shield-in, negative when net unshield. */
         if (sqlite3_prepare_v2(db,
                 "SELECT CAST(strftime('%Y', time, 'unixepoch') AS INTEGER), "
-                "-SUM(sapling_value) FROM blocks "
+                "SUM(sapling_value) FROM blocks "
                 "WHERE sapling_value != 0 AND time > 0 GROUP BY 1 ORDER BY 1",
                 -1, &s, NULL) == SQLITE_OK && s) {
             while (AR_STEP_ROW_READONLY(s) == SQLITE_ROW) {
