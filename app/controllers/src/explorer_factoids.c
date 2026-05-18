@@ -1756,8 +1756,13 @@ size_t explorer_factoids_build(uint8_t *buf, size_t buf_max, const char *datadir
         "<div class='content'>"
         "<h1>ZClassic Historian Factoids</h1>"
         "<p style='color:#888'>Deep chain archaeology with SHA3-256 data receipts. "
-        "Every fact hashed: <code>SHA3(height_le64 || block_hash || fact_name)</code>. "
-        "First 16 hex chars shown. Independently verifiable from raw chain data.</p>"
+        "Two receipt formats in use: "
+        "<code>SHA3(height_le64 || block_hash_hex || fact_name)</code> for "
+        "milestones (sections 1, 2, 4, 12), and "
+        "<code>SHA3(val1_le64 || val2_le64 || label)</code> for record "
+        "summaries (sections 5-7, 9-11, 13-16). First 16 hex chars shown. "
+        "Section 17 chains a SHA3 over the last 100 blocks and shows the "
+        "full 64-hex digest. Independently verifiable from raw chain data.</p>"
         "<p style='color:#555;font-size:0.85em'>Chain height: %" PRId64
         " | All timestamps UTC | All hashes big-endian display order</p>",
         chain_height);
