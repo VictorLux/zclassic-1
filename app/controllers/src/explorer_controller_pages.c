@@ -783,21 +783,31 @@ size_t serve_hodl(uint8_t *r, size_t max)
              * computed against a partial source. Either way the
              * resulting row is not safe to show.
              *
-             * Until we have a way to certify each sample's source
-             * coverage at fill time, treat any partial state as
-             * insufficient: skip the time-series entirely and rely
-             * on the current-snapshot bar chart + headline below. */
-            int64_t tx_out_count = sql_query_i64(hist_db,
-                "SELECT count(*) FROM tx_outputs");
-            int64_t tx_count = sql_query_i64(hist_db,
-                "SELECT count(*) FROM transactions");
+             * The previous gate compared row counts globally, but the
+             * runaway-WAL incident left tx_outputs with millions of
+             * rows starting at height ~341k — the row-count gate
+             * passed even though heights 0..341k were missing. The
+             * correct gate is HEIGHT coverage: tx_outputs must start
+             * at height 0 (or 1) AND extend to at least tip - 1y. */
+            int64_t tx_out_min_h = sql_query_i64(hist_db,
+                "SELECT COALESCE(MIN(block_height), -1) FROM tx_outputs");
+            int64_t tx_out_max_h = sql_query_i64(hist_db,
+                "SELECT COALESCE(MAX(block_height), -1) FROM tx_outputs");
+            int64_t blocks_max_h = sql_query_i64(hist_db,
+                "SELECT COALESCE(MAX(height), 0) FROM blocks");
             sqlite3_close(hist_db);
 
-            /* Conservative threshold: require tx_outputs to have at
-             * least one row per transaction we know about (typical
-             * txs have 2+ outputs; this is a generous lower bound). */
-            bool source_complete = (tx_count > 0) &&
-                                   (tx_out_count >= tx_count);
+            /* Coverage: must start at or near genesis (height ≤ 1
+             * accommodates the convention where coinbase is the only
+             * tx at height 1; some indexers skip the genesis coinbase).
+             * Must extend to at least the chain tip minus one year, so
+             * "older than 1y" can be evaluated at every sample. */
+            int64_t bpY = HODL_HISTORY_BLOCKS_PER_YEAR;
+            bool source_complete =
+                tx_out_min_h >= 0 && tx_out_min_h <= 1 &&
+                tx_out_max_h >= 0 &&
+                (blocks_max_h == 0 ||
+                 tx_out_max_h >= blocks_max_h - bpY);
 
             /* Filter out (0,0) sentinel rows from old partial fills. */
             static struct hodl_history_row rows[2048];
@@ -817,13 +827,13 @@ size_t serve_hodl(uint8_t *r, size_t max)
                     "<h2 style='color:#bbb;margin-top:0'>"
                     "%% held &gt; 1 year over time</h2>"
                     "<p>Historical snapshots need the per-output index "
-                    "(<code>tx_outputs</code>) to be fully populated. "
-                    "Coverage so far: %" PRId64 " output rows for "
-                    "%" PRId64 " indexed transactions. Once the backfill "
-                    "completes, this card switches to a daily-sample "
-                    "time-series with mouse-hover detail.</p>"
+                    "(<code>tx_outputs</code>) to be populated end-to-end. "
+                    "Current coverage: heights %" PRId64 " &ndash; "
+                    "%" PRId64 " (chain tip %" PRId64 "). The chart will "
+                    "appear once coverage extends from genesis to within "
+                    "one year of the tip.</p>"
                     "</div>",
-                    tx_out_count, tx_count);
+                    tx_out_min_h, tx_out_max_h, blocks_max_h);
             } else {
                 /* Compute min/max for y-axis scaling. Use [floor..100]
                  * with a 5%% headroom floor to keep the curve readable
