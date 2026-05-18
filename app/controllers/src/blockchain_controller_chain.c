@@ -73,7 +73,21 @@ bool rpc_getblockchaininfo(const struct json_value *params, bool help,
         json_push_kv_str(result, "bestblockhash", hex);
     }
 
+    /* Median-time-past at tip — zclassicd parity for BIP113 / mempool
+     * timestamp checks. */
+    if (tip)
+        json_push_kv_int(result, "mediantime",
+                         block_index_get_median_time_past(tip));
+
     json_push_kv_real(result, "difficulty", get_difficulty(tip));
+
+    /* Cumulative PoW at tip, big-endian hex (zclassicd format). */
+    if (tip) {
+        char work_hex[65];
+        arith_uint256_get_hex(&tip->nChainWork, work_hex);
+        json_push_kv_str(result, "chainwork", work_hex);
+    }
+
     struct connman *cm = rpc_net_get_connman();
     int max_peer_h = cm ? connman_max_peer_height(cm) : 0;
     int our_h = tip ? tip->nHeight : 0;
@@ -81,6 +95,46 @@ bool rpc_getblockchaininfo(const struct json_value *params, bool help,
     if (max_peer_h > 0 && our_h < max_peer_h)
         progress = (double)our_h / (double)max_peer_h;
     json_push_kv_real(result, "verificationprogress", progress);
+
+    /* valuePools — sprout + sapling pool balances. Match zclassicd format:
+     * each pool is an object with id / monitored / chainValue (ZCL) /
+     * chainValueZat. Convention: pool balance = -SUM(per_block_delta),
+     * since negative deltas mean coins entering the pool. Same negation
+     * explorer_query_privacy_stats uses. */
+    if (ctx->node_db && ctx->node_db->open) {
+        int64_t sprout_zat = 0, sapling_zat = 0;
+        sqlite3_stmt *s = NULL;
+        if (sqlite3_prepare_v2(ctx->node_db->db,
+                "SELECT COALESCE(SUM(sprout_value), 0), "
+                "COALESCE(SUM(sapling_value), 0) FROM blocks",
+                -1, &s, NULL) == SQLITE_OK && s) {
+            if (AR_STEP_ROW_READONLY(s) == SQLITE_ROW) {
+                sprout_zat  = -sqlite3_column_int64(s, 0);
+                sapling_zat = -sqlite3_column_int64(s, 1);
+            }
+            sqlite3_finalize(s);
+        }
+
+        struct json_value pools = {0};
+        json_set_array(&pools);
+        const struct { const char *id; int64_t zat; } pool_defs[] = {
+            { "sprout",  sprout_zat },
+            { "sapling", sapling_zat },
+        };
+        for (size_t i = 0; i < sizeof(pool_defs)/sizeof(pool_defs[0]); i++) {
+            struct json_value pool = {0};
+            json_set_object(&pool);
+            json_push_kv_str(&pool, "id", pool_defs[i].id);
+            json_push_kv_bool(&pool, "monitored", true);
+            json_push_kv_real(&pool, "chainValue",
+                              (double)pool_defs[i].zat / 1e8);
+            json_push_kv_int(&pool, "chainValueZat", pool_defs[i].zat);
+            json_push_back(&pools, &pool);
+            json_free(&pool);
+        }
+        json_push_kv(result, "valuePools", &pools);
+        json_free(&pools);
+    }
 
     /* Upgrades */
     struct json_value upgrades = {0};
