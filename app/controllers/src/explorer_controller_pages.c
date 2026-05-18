@@ -761,23 +761,59 @@ size_t serve_hodl(uint8_t *r, size_t max)
     {
         sqlite3 *hist_db = NULL;
         if (explorer_open_readonly_db(ctx->datadir, &hist_db)) {
-            static struct hodl_history_row rows[2048];
-            int n = hodl_history_load_all(hist_db, rows,
-                (int)(sizeof(rows)/sizeof(rows[0])));
+            static struct hodl_history_row rows_raw[2048];
+            int n_raw = hodl_history_load_all(hist_db, rows_raw,
+                (int)(sizeof(rows_raw)/sizeof(rows_raw[0])));
+
+            /* Correctness gate. The hodl_history filler queries
+             * tx_outputs LEFT JOIN tx_inputs to reconstruct historical
+             * UTXO snapshots. If those tables aren't fully populated
+             * for a given height, the SQL returns either (0, 0) — a
+             * trivially-zero sample — or a numerically wrong pair
+             * computed against a partial source. Either way the
+             * resulting row is not safe to show.
+             *
+             * Until we have a way to certify each sample's source
+             * coverage at fill time, treat any partial state as
+             * insufficient: skip the time-series entirely and rely
+             * on the current-snapshot bar chart + headline below. */
+            int64_t tx_out_count = sql_query_i64(hist_db,
+                "SELECT count(*) FROM tx_outputs");
+            int64_t tx_count = sql_query_i64(hist_db,
+                "SELECT count(*) FROM transactions");
             sqlite3_close(hist_db);
 
-            if (n < 2) {
+            /* Conservative threshold: require tx_outputs to have at
+             * least one row per transaction we know about (typical
+             * txs have 2+ outputs; this is a generous lower bound). */
+            bool source_complete = (tx_count > 0) &&
+                                   (tx_out_count >= tx_count);
+
+            /* Filter out (0,0) sentinel rows from old partial fills. */
+            static struct hodl_history_row rows[2048];
+            int n = 0;
+            if (source_complete) {
+                for (int i = 0; i < n_raw; i++) {
+                    if (rows_raw[i].total_zat > 0)
+                        rows[n++] = rows_raw[i];
+                }
+            }
+
+            if (!source_complete || n < 2) {
                 APPEND(off, r, max,
                     "<div style='max-width:1000px;margin:20px auto;"
                     "padding:16px;background:#0c0c0c;border:1px solid #1a1a1a;"
                     "border-radius:8px;color:#888'>"
                     "<h2 style='color:#bbb;margin-top:0'>"
                     "%% held &gt; 1 year over time</h2>"
-                    "<p>Time-series snapshots are being computed in the "
-                    "background (one row per ~day). Filled %d of "
-                    "an expected ~%" PRId64 ". Refresh in a minute.</p>"
+                    "<p>Historical snapshots need the per-output index "
+                    "(<code>tx_outputs</code>) to be fully populated. "
+                    "Coverage so far: %" PRId64 " output rows for "
+                    "%" PRId64 " indexed transactions. Once the backfill "
+                    "completes, this card switches to a daily-sample "
+                    "time-series with mouse-hover detail.</p>"
                     "</div>",
-                    n, hodl.tip_height / HODL_HISTORY_SAMPLE_STRIDE);
+                    tx_out_count, tx_count);
             } else {
                 /* Compute min/max for y-axis scaling. Use [floor..100]
                  * with a 5%% headroom floor to keep the curve readable
