@@ -1029,10 +1029,14 @@ static size_t emit_section_8_privacy(uint8_t *buf, size_t cap, size_t off,
             sqlite3_finalize(s); s = NULL;
         }
 
-        /* Net shielding volume per year */
+        /* Net shielding volume per year. Convention (matches
+         * explorer_query_privacy_stats + getblockchaininfo valuePools):
+         * net_shielded = -SUM(sapling_value) — negative raw values are
+         * coins entering the shielded pool, so the negation makes the
+         * column positive when shielding > unshielding for the year. */
         if (sqlite3_prepare_v2(db,
                 "SELECT CAST(strftime('%Y', time, 'unixepoch') AS INTEGER), "
-                "SUM(sapling_value) FROM blocks "
+                "-SUM(sapling_value) FROM blocks "
                 "WHERE sapling_value != 0 AND time > 0 GROUP BY 1 ORDER BY 1",
                 -1, &s, NULL) == SQLITE_OK && s) {
             while (AR_STEP_ROW_READONLY(s) == SQLITE_ROW) {
