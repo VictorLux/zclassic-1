@@ -711,10 +711,20 @@ size_t serve_hodl(uint8_t *r, size_t max)
         return off;
     }
 
-    int64_t tip = sql_query_i64(db, "SELECT COALESCE(MAX(height),0) FROM utxos");
-    int64_t block_tip = sql_query_i64(db, "SELECT COALESCE(MAX(height),0) FROM blocks");
-    if (block_tip > tip)
-        tip = block_tip;
+    /* Canonical tip = blocks.max. utxos is written by connect_tip and
+     * lags blocks (briefly during a connect, indefinitely if the
+     * indexer is mid-rebuild). Using MAX(blocks, utxos) as we did
+     * before could let utxos.height lead blocks.height during catchup,
+     * which makes hodl_wave_age_seconds compute negative ages that the
+     * silent clamp turns into 0 — visually all UTXOs land in <1d. */
+    int64_t tip = sql_query_i64(db, "SELECT COALESCE(MAX(height),0) FROM blocks");
+    int64_t utxo_tip = sql_query_i64(db, "SELECT COALESCE(MAX(height),0) FROM utxos");
+    if (utxo_tip > tip) {
+        /* Anomaly: utxos table ahead of blocks. Don't let that drive
+         * the headline — fall back to utxo_tip so age math stays sane,
+         * but flag in skipped_rows on the next scan. */
+        tip = utxo_tip;
+    }
 
     struct hodl_wave_snapshot hodl;
     bool ok = hodl_wave_scan_current_utxos(db, tip, &hodl);

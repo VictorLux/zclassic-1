@@ -140,8 +140,16 @@ int hodl_history_fill_pending(sqlite3 *db, int64_t chain_tip, int max_rows)
         ? last_filled + HODL_HISTORY_SAMPLE_STRIDE
         : HODL_HISTORY_SAMPLE_STRIDE;
     while (filled < max_rows && next <= target) {
-        if (hodl_history_fill_one(db, next))
-            filled++;
+        /* Break on first failure rather than skip — fill_one fails when
+         * the source index (tx_outputs) doesn't cover the sample. If we
+         * advanced past the failed height we'd create a permanent gap
+         * that later passes couldn't retry, because fill_pending picks
+         * next = MAX(filled) + stride. Leaving `next` unchanged on
+         * failure means the next tick (after the indexer makes more
+         * progress) will retry the same height. */
+        if (!hodl_history_fill_one(db, next))
+            break;
+        filled++;
         next += HODL_HISTORY_SAMPLE_STRIDE;
     }
     return filled;
