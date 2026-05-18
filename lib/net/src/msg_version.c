@@ -73,8 +73,15 @@ void push_version(struct msg_processor *mp, struct p2p_node *node)
         ver.addr_from.svc.port = g_external_port;
     }
     ver.nonce = mp->net_mgr->local_host_nonce;
+    /* User-agent: lead with /MagicBean:.../ so existing zclassicd peers
+     * recognize us as a same-network client (some peer filters check
+     * this prefix when picking outbound slots). Append our own
+     * ZClassic-C23 identifier so operators can tell us apart from the
+     * legacy C++ daemon in `getpeerinfo` output. The MagicBean version
+     * stays in sync with the running zclassicd reference so the
+     * protocol version signaling matches what peers expect. */
     snprintf(ver.sub_version, sizeof(ver.sub_version),
-             "/ZClassic-C23:1.0.0/");
+             "/MagicBean:2.1.2-beta1/ZClassic-C23:1.0.0/");
     ver.start_height = active_chain_height(&mp->main_state->chain_active);
     ver.relay = true;
 
