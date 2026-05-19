@@ -3,6 +3,8 @@
  * file COPYING or http://www.opensource.org/licenses/mit-license.php. */
 
 #include "services/node_health_service.h"
+#include "services/chain_advance_coordinator.h"
+#include "services/legacy_mirror_sync_service.h"
 #include "services/sync_watchdog_service.h"
 #include "config/runtime.h"
 #include "controllers/sync_controller.h"
@@ -88,6 +90,7 @@ static int64_t get_rss_kb(void)
                "get_rss_kb: VmRSS line not found in /proc/self/status");
 }
 static const int64_t HEALTH_JOB_STALL_SECONDS = 120;
+static const int64_t HEALTH_RECENT_ERROR_SECONDS = 300;
 
 static bool health_query_int(sqlite3 *db, const char *sql, int *out)
 {
@@ -123,6 +126,30 @@ static bool health_query_int64(sqlite3 *db, const char *sql, int64_t *out)
     return ok;
 }
 
+bool node_health_chain_advance_synced(const struct cac_decision *decision)
+{
+    if (!decision)
+        return false;
+    if (decision->result != CAC_DECISION_USE_SOURCE)
+        return false;
+    if (decision->selected_source <= CAC_SOURCE_NONE ||
+        decision->selected_source >= CAC_SOURCE_NUM)
+        return false;
+    if (decision->blocker[0] != '\0')
+        return false;
+    if (decision->local_height < 0 || decision->target_height < 0)
+        return false;
+    if (decision->local_height + 1 < decision->target_height)
+        return false;
+    if (decision->projection_lag < 0 || decision->projection_lag > 1)
+        return false;
+
+    const struct cac_source_status *source =
+        &decision->sources[decision->selected_source];
+    return source->available && source->healthy && source->selectable &&
+           !source->blocked && source->selection_blocker[0] == '\0';
+}
+
 void node_health_collect(struct node_health_snapshot *snapshot,
                          struct node_db *ndb,
                          const struct main_state *ms)
@@ -136,6 +163,7 @@ void node_health_collect(struct node_health_snapshot *snapshot,
     snapshot->tip_height = -1;
     snapshot->header_height = -1;
     snapshot->peer_best_height = -1;
+    snapshot->last_error_age_seconds = -1;
     snapshot->tor_enabled = tor_integration_is_enabled();
     snapshot->tor_ready = tor_integration_is_ready();
     snapshot->onion_service_ready = false;
@@ -245,6 +273,13 @@ void node_health_collect(struct node_health_snapshot *snapshot,
         snapshot->tip_lag = snapshot->peer_best_height - snapshot->tip_height;
     }
 
+    {
+        struct cac_decision decision;
+        chain_advance_coordinator_get_status(&decision);
+        if (node_health_chain_advance_synced(&decision))
+            snapshot->synced = true;
+    }
+
     dl_get_stats(msg_get_download_mgr(),
                  &snapshot->blocks_requested,
                  &snapshot->blocks_received,
@@ -289,8 +324,22 @@ void node_health_collect(struct node_health_snapshot *snapshot,
         const struct error_entry *last_err = error_ring_last(er);
         snapshot->error_total = error_ring_total(er);
         if (last_err && last_err->message[0]) {
+            int64_t now_us = (int64_t)time(NULL) * 1000000;
+            if (last_err->timestamp_us > 0) {
+                if (now_us >= last_err->timestamp_us) {
+                    snapshot->last_error_age_seconds =
+                        (now_us - last_err->timestamp_us) / 1000000;
+                } else if (last_err->timestamp_us - now_us < 1000000) {
+                    snapshot->last_error_age_seconds = 0;
+                }
+            }
+            snapshot->last_error_recent =
+                snapshot->last_error_age_seconds >= 0 &&
+                snapshot->last_error_age_seconds <= HEALTH_RECENT_ERROR_SECONDS;
             snprintf(snapshot->last_error, sizeof(snapshot->last_error),
                      "%s", last_err->message);
+            snprintf(snapshot->last_error_type, sizeof(snapshot->last_error_type),
+                     "%s", event_type_name(last_err->type));
         }
     }
 
@@ -341,9 +390,6 @@ void node_health_collect(struct node_health_snapshot *snapshot,
         snprintf(snapshot->degraded_reason, sizeof(snapshot->degraded_reason),
                  "db_tx_open_%llds",
                  (long long)snapshot->db_last_activity_age_seconds);
-    } else if (snapshot->error_total > 0 && snapshot->last_error[0]) {
-        snprintf(snapshot->degraded_reason, sizeof(snapshot->degraded_reason),
-                 "recent_error");
     } else if (snapshot->memory_rss_mb > 4096) {
         snprintf(snapshot->degraded_reason, sizeof(snapshot->degraded_reason),
                  "high_memory_usage");
@@ -384,5 +430,30 @@ void node_health_collect(struct node_health_snapshot *snapshot,
         snprintf(snapshot->wd_last_recovery_name,
                  sizeof(snapshot->wd_last_recovery_name),
                  "%s", watchdog_recovery_type_name(wd.last_recovery));
+    }
+
+    /* Mirror lag SLO breach → loud health degradation. When mirror
+     * reports "fatal" severity, flip healthy=false so the sd_notify
+     * heartbeat thread stops pinging WatchdogSec and systemd restarts
+     * the unit. This is the hard half of fail-loud-and-fast. */
+    {
+        struct legacy_mirror_sync_stats ms = {0};
+        legacy_mirror_sync_stats_snapshot(&ms);
+        snapshot->mirror_lag_blocks = ms.lag;
+        snapshot->mirror_lag_breach_seconds = ms.lag_breach_seconds;
+        snapshot->mirror_lag_critical_seconds = ms.lag_critical_seconds;
+        snprintf(snapshot->mirror_lag_breach_severity,
+                 sizeof(snapshot->mirror_lag_breach_severity), "%s",
+                 ms.lag_breach_severity);
+        if (strcmp(ms.lag_breach_severity, "fatal") == 0) {
+            if (snapshot->degraded_reason[0] == '\0') {
+                snprintf(snapshot->degraded_reason,
+                         sizeof(snapshot->degraded_reason),
+                         "mirror_lag_fatal_%lld_blocks_%llds",
+                         (long long)ms.lag,
+                         (long long)ms.lag_critical_seconds);
+            }
+            snapshot->healthy = false;
+        }
     }
 }

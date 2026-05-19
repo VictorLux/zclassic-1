@@ -12,6 +12,7 @@
 
 struct node_db;
 struct main_state;
+struct cac_decision;
 
 struct node_health_snapshot {
     enum sync_state sync_state;
@@ -35,7 +36,10 @@ struct node_health_snapshot {
     int64_t db_last_activity_age_seconds;
     int error_total;
     int db_last_sqlite_rc;
+    int64_t last_error_age_seconds;
+    bool last_error_recent;
     char last_error[EVENT_PAYLOAD_SIZE + 1];
+    char last_error_type[64];
     char degraded_reason[128];
     char onion_address[128];
     char db_last_op[64];
@@ -81,10 +85,21 @@ struct node_health_snapshot {
      * TIP_ADVANCE_AGE_DEGRADED_SECS (600) AND peers>0 AND
      * sync_state!=SYNC_AT_TIP. */
     int64_t  tip_advance_age_seconds;
+
+    /* Mirror lag SLO breach severity (none|warn|critical|fatal). When
+     * "fatal" the snapshot.healthy gate flips false, which causes the
+     * sd_notify heartbeat thread to skip pinging systemd's WatchdogSec
+     * timer and triggers a service restart. Surfaced via zcl_health,
+     * zcl_status, and Prometheus zcl_mirror_lag_breach_seconds. */
+    int64_t  mirror_lag_blocks;
+    int64_t  mirror_lag_breach_seconds;
+    int64_t  mirror_lag_critical_seconds;
+    char     mirror_lag_breach_severity[16];
 };
 
 void node_health_collect(struct node_health_snapshot *snapshot,
                          struct node_db *ndb,
                          const struct main_state *ms);
+bool node_health_chain_advance_synced(const struct cac_decision *decision);
 
 #endif
