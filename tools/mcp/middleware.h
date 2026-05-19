@@ -89,6 +89,13 @@ void mcp_middleware_destroy(struct mcp_middleware *mw);
  * Unknown / unset vars keep their current struct values. */
 void mcp_middleware_load_from_env(struct mcp_middleware *mw);
 
+/* Process-wide middleware singleton.  init_global() is idempotent and
+ * intended to be called from mcp_server_main() once at startup; get_global()
+ * returns NULL until init_global() runs (e.g. in tests that link only
+ * the controller lib). */
+void mcp_middleware_init_global(void);
+struct mcp_middleware *mcp_middleware_get_global(void);
+
 /* True if the tool name is in the destructive list. */
 bool mcp_middleware_is_destructive(const struct mcp_middleware *mw,
                                     const char *tool_name);

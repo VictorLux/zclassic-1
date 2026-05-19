@@ -82,6 +82,26 @@ void mcp_middleware_destroy(struct mcp_middleware *mw)
     mw->initialized = false;
 }
 
+/* Process-wide MCP middleware singleton.  Lives in the controller
+ * library (not mcp_server.c) so test_zcl can link the accessor symbol
+ * without dragging in the server's stdio loop.  Returns NULL until
+ * mcp_middleware_init_global() runs at server startup. */
+static struct mcp_middleware g_mcp_middleware;
+static bool g_mcp_middleware_active = false;
+
+void mcp_middleware_init_global(void)
+{
+    if (g_mcp_middleware_active) return;
+    mcp_middleware_init(&g_mcp_middleware);
+    mcp_middleware_load_from_env(&g_mcp_middleware);
+    g_mcp_middleware_active = true;
+}
+
+struct mcp_middleware *mcp_middleware_get_global(void)
+{
+    return g_mcp_middleware_active ? &g_mcp_middleware : NULL;
+}
+
 void mcp_middleware_load_from_env(struct mcp_middleware *mw)
 {
     if (!mw->initialized) mcp_middleware_init(mw);

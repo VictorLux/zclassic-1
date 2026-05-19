@@ -50,6 +50,11 @@ bool g_connect_only = false;
 static struct peer_bandwidth g_peer_bw;
 static bool g_peer_bw_active = false;
 
+struct peer_bandwidth *peer_bandwidth_get_global(void)
+{
+    return g_peer_bw_active ? &g_peer_bw : NULL;
+}
+
 static pthread_t g_thread_dns_seed;
 static pthread_t g_thread_socket;
 static pthread_t g_thread_open;

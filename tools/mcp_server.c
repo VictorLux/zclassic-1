@@ -37,7 +37,9 @@
 #include "util/safe_alloc.h"
 
 /* Process-wide middleware.  Populated from environment at boot. */
-static struct mcp_middleware g_middleware;
+/* MCP middleware singleton lives in middleware.c so test_zcl (which
+ * links the controller lib but not mcp_server.c) can still resolve the
+ * accessor symbol used by zcl_config_reload. */
 
 /* ── MCP protocol ────────────────────────────────────────────── */
 
@@ -104,7 +106,8 @@ static void handle_tools_call(const struct json_value *req)
         if (auth && auth->type == JSON_STR) bearer = json_get_str(auth);
     }
 
-    char *result = mcp_middleware_dispatch(&g_middleware,
+    struct mcp_middleware *mw = mcp_middleware_get_global();
+    char *result = mcp_middleware_dispatch(mw,
                                             json_get_str(name_v), args, bearer);
     if (!result) result = strdup("null");
 
@@ -153,8 +156,7 @@ int mcp_server_main(const char *datadir, int rpc_port)
 {
     mcp_rpc_client_init(datadir, rpc_port);
     register_all_controllers();
-    mcp_middleware_init(&g_middleware);
-    mcp_middleware_load_from_env(&g_middleware);
+    mcp_middleware_init_global();
     mcp_metrics_init();
     mcp_replay_init();
 

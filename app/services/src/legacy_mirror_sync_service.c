@@ -1342,6 +1342,32 @@ bool legacy_mirror_sync_init(const struct legacy_mirror_sync_config *cfg,
     return true;
 }
 
+void legacy_mirror_sync_reload_from_env(void)
+{
+    if (!g_lms.initialized)
+        return;
+    pthread_mutex_lock(&g_lms.lock);
+    g_lms.cadence_secs = lms_env_int("ZCL_MIRROR_CADENCE_SECS",
+                                     g_lms.cadence_secs, 1, 300);
+    g_lms.max_blocks_tick = lms_env_int("ZCL_MIRROR_MAX_BLOCKS_PER_TICK",
+                                        g_lms.max_blocks_tick, 1, 20000);
+    g_lms.lag_sla = lms_env_int("ZCL_MIRROR_LAG_SLA",
+                                g_lms.lag_sla, 0, 10000);
+    g_lms.lag_sla_breach_blocks =
+        lms_env_int("ZCL_MIRROR_LAG_SLA_BREACH_BLOCKS",
+                    g_lms.lag_sla_breach_blocks, 1, 100000);
+    g_lms.lag_sla_breach_secs =
+        lms_env_int("ZCL_MIRROR_LAG_SLA_BREACH_SECS",
+                    g_lms.lag_sla_breach_secs, 1, 86400);
+    g_lms.lag_sla_critical_blocks =
+        lms_env_int("ZCL_MIRROR_LAG_SLA_CRITICAL_BLOCKS",
+                    g_lms.lag_sla_critical_blocks, 1, 1000000);
+    g_lms.lag_sla_critical_secs =
+        lms_env_int("ZCL_MIRROR_LAG_SLA_CRITICAL_SECS",
+                    g_lms.lag_sla_critical_secs, 1, 86400);
+    pthread_mutex_unlock(&g_lms.lock);
+}
+
 bool legacy_mirror_sync_start(void)
 {
     if (!g_lms.initialized) {

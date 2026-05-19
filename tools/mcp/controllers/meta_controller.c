@@ -16,9 +16,13 @@
 
 #include "json/json.h"
 #include "net/peer_scoring.h"
+#include "net/peer_bandwidth.h"
 #include "rpc/http_middleware.h"
+#include "rpc/rpc_timeout.h"
+#include "services/legacy_mirror_sync_service.h"
 #include "util/log_macros.h"
 #include "util/safe_alloc.h"
+#include "../middleware.h"
 
 #include <stdbool.h>
 #include <stdint.h>
@@ -616,7 +620,30 @@ static int h_zcl_config_reload(const struct mcp_request *req,
         rpc_ban_seconds   = s.ban_seconds;
     }
 
-    size_t cap = 1024;
+    /* Legacy mirror sync: re-reads ZCL_MIRROR_CADENCE_SECS,
+     * MAX_BLOCKS_PER_TICK, LAG_SLA, LAG_SLA_BREACH_BLOCKS/_SECS,
+     * LAG_SLA_CRITICAL_BLOCKS/_SECS. The mirror service holds a
+     * snapshot in g_lms behind its own mutex; reload swaps the
+     * numeric thresholds atomically wrt the next tick. */
+    legacy_mirror_sync_reload_from_env();
+    struct legacy_mirror_sync_stats mstats = {0};
+    legacy_mirror_sync_stats_snapshot(&mstats);
+
+    /* Per-peer bandwidth: re-reads ZCL_PEER_UP_BPS / DOWN_BPS / BURST. */
+    struct peer_bandwidth *pb = peer_bandwidth_get_global();
+    if (pb) peer_bandwidth_load_from_env(pb);
+
+    /* RPC timeout watchdog: re-reads ZCL_RPC_TIMEOUT_MS / _SWEEP_MS. */
+    struct rpc_timeout_mgr *rt = rpc_timeout_get_global();
+    if (rt) rpc_timeout_load_from_env(rt);
+
+    /* MCP middleware (this process): re-reads ZCL_MCP_BEARER_TOKEN /
+     * GLOBAL_RPS / DESTRUCTIVE_RPS / TIMEOUT_MS. NULL when called from
+     * a non-MCP build (e.g. tests linking only the controller lib). */
+    struct mcp_middleware *mcp_mw = mcp_middleware_get_global();
+    if (mcp_mw) mcp_middleware_load_from_env(mcp_mw);
+
+    size_t cap = 2048;
     char *out = zcl_malloc(cap, "config_reload_body");
     if (!out) {
         res->error = MCP_ERR_INTERNAL;
@@ -631,10 +658,26 @@ static int h_zcl_config_reload(const struct mcp_request *req,
             "\"ban_hours\":%d,"
             "\"decay_per_min\":%d"
          "},"
+         "\"mirror\":{"
+            "\"lag_sla_breach_blocks\":%d,"
+            "\"lag_sla_breach_secs\":%d,"
+            "\"lag_sla_critical_blocks\":%d,"
+            "\"lag_sla_critical_secs\":%d"
+         "},"
+         "\"peer_bandwidth\":%s,"
+         "\"rpc_timeout\":%s,"
+         "\"mcp_middleware\":%s,"
          "\"rpc_middleware\":%s",
         peer_scoring_ban_threshold(),
         peer_scoring_ban_hours(),
         peer_scoring_decay_rate(),
+        mstats.lag_sla_breach_blocks,
+        mstats.lag_sla_breach_secs,
+        mstats.lag_sla_critical_blocks,
+        mstats.lag_sla_critical_secs,
+        pb     ? "\"reloaded\"" : "null",
+        rt     ? "\"reloaded\"" : "null",
+        mcp_mw ? "\"reloaded\"" : "null",
         rpc_active ? "{" : "null");
 
     if (rpc_active) {
