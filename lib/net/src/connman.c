@@ -248,18 +248,45 @@ static void *thread_dns_seed(void *arg)
         }
     }
 
-    /* Also try hardcoded onion seeds if Tor is ready and few peers */
+    /* Also try operator-curated + hardcoded onion seeds if Tor is
+     * ready and few peers. Operator file at ~/.config/zclassic23/
+     * onion-seeds (one .onion per line, # comments allowed) is loaded
+     * first; the hardcoded fallback is currently empty (this node's
+     * own .onion is published on boot once Tor is ready, so once any
+     * peer has us in their directory.json the fleet bootstraps via
+     * gossip without a static seed). */
     if (!g_stop && cm->manager.num_nodes < 3) {
         extern bool tor_integration_is_ready(void);
         if (tor_integration_is_ready()) {
-            /* Hardcoded .onion seeds for ZClassic23 network.
-             * These are known nodes that serve /directory.json with
-             * clearnet IPs for fast direct P2P connections. */
-            static const char *onion_seeds[] = {
-                /* Add seed .onion addresses here as they become known.
-                 * This server's .onion gets populated after first Tor boot. */
-                NULL
-            };
+            char buf[32][96];
+            int n_seeds = 0;
+            const char *home = getenv("HOME");
+            if (home) {
+                char path[512];
+                snprintf(path, sizeof(path),
+                         "%s/.config/zclassic23/onion-seeds", home);
+                FILE *fp = fopen(path, "re");
+                if (fp) {
+                    char line[256];
+                    while (n_seeds < 32 && fgets(line, sizeof(line), fp)) {
+                        char *p = line;
+                        while (*p == ' ' || *p == '\t') p++;
+                        if (*p == '#' || *p == '\n' || *p == '\0') continue;
+                        char *end = strpbrk(p, " \t\r\n#");
+                        if (end) *end = '\0';
+                        if (strstr(p, ".onion")) {
+                            snprintf(buf[n_seeds], sizeof(buf[0]), "%s", p);
+                            n_seeds++;
+                        }
+                    }
+                    fclose(fp);
+                }
+            }
+            /* Hardcoded fallback list (currently empty — populate as
+             * stable public seed onions are minted). */
+            static const char *onion_seeds[] = { NULL };
+            for (int i = 0; i < n_seeds && !g_stop; i++)
+                try_onion_seed_fetch(cm, buf[i]);
             for (int i = 0; onion_seeds[i] && !g_stop; i++)
                 try_onion_seed_fetch(cm, onion_seeds[i]);
         }
