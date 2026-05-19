@@ -1483,17 +1483,25 @@ static void *build_snapshot_offer_thread(void *arg)
     if (!datadir || datadir[0] == '\0')
         return NULL;
 
-    /* Consensus snapshot export is expensive on a public archival node:
-     * SQLite can allocate tens of GB while copying/vacuuming the UTXO
-     * snapshot. Keep boot fast and memory-bounded by default; operators
-     * can opt into a rebuild when they intentionally want to refresh the
-     * shareable consensus_snapshot.db artifact. */
+    /* Wave L (Goal 3 — fast secure sync): snapshot export defaults to
+     * ON when file_service is enabled. Every zclassic23 node that runs
+     * a file service contributes a shareable consensus_snapshot.db so
+     * fresh peers can fast-sync without a central download host.
+     *
+     * Cost: SQLite vacuum allocates transiently — typically a few GB
+     * on archival nodes, sub-second to a few seconds on healthy hosts.
+     * Operators on memory-constrained boxes can opt out by setting
+     * ZCL_EXPORT_CONSENSUS_SNAPSHOT_ON_BOOT=0.
+     *
+     * Build only fires when file_service is enabled (boot profile);
+     * other profiles still skip the export. */
     bool file_service_enabled =
         svc && boot_profile_has_file_service(svc->app_ctx);
     const char *export_snapshot =
         getenv("ZCL_EXPORT_CONSENSUS_SNAPSHOT_ON_BOOT");
-    if (file_service_enabled && export_snapshot &&
-        strcmp(export_snapshot, "1") == 0) {
+    bool export_opt_out = export_snapshot &&
+                          strcmp(export_snapshot, "0") == 0;
+    if (file_service_enabled && !export_opt_out) {
         printf("Exporting consensus snapshot (no wallet data)...\n");
         if (file_export_consensus_snapshot(datadir)) {
             file_controller_refresh_manifest();
@@ -1502,7 +1510,7 @@ static void *build_snapshot_offer_thread(void *arg)
         }
     } else if (file_service_enabled) {
         printf("Consensus snapshot export skipped on boot "
-               "(set ZCL_EXPORT_CONSENSUS_SNAPSHOT_ON_BOOT=1 to rebuild)\n");
+               "(ZCL_EXPORT_CONSENSUS_SNAPSHOT_ON_BOOT=0 — opt-out)\n");
     }
 
     printf("Building fast sync snapshot offer...\n");
