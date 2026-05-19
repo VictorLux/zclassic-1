@@ -16,6 +16,7 @@
 #include "validation/main_state.h"
 #include "net/connman.h"
 #include "net/download.h"
+#include "net/msg_internal.h"
 #include "net/tor_integration.h"
 #include <sqlite3.h>
 #include <stdio.h>
@@ -180,6 +181,25 @@ void node_health_collect(struct node_health_snapshot *snapshot,
     struct connman *cm = rpc_net_get_connman();
     snapshot->peer_count = cm ? connman_get_node_count(cm) : 0;
     snapshot->has_peers = snapshot->peer_count > 0;
+
+    /* Classify handshaked peers by subver so /api/health.network can
+     * report magicbean vs zclassic-c23 counts (Goal 3 — magic-bean
+     * reporting). Uses the same msg_version_classify_peer() helper as
+     * getnetworkinfo so the two surfaces never drift. */
+    if (cm) {
+        zcl_mutex_lock(&cm->manager.cs_nodes);
+        for (size_t i = 0; i < cm->manager.num_nodes; i++) {
+            struct p2p_node *node = cm->manager.nodes[i];
+            if (!node || node->disconnect) continue;
+            if (node->state < PEER_HANDSHAKE_COMPLETE) continue;
+            bool is_mb = false, is_z23 = false;
+            msg_version_classify_peer(node->sub_ver, node->services,
+                                      &is_mb, &is_z23);
+            if (is_mb) snapshot->magicbean_peer_count++;
+            if (is_z23) snapshot->zclassic_c23_peer_count++;
+        }
+        zcl_mutex_unlock(&cm->manager.cs_nodes);
+    }
 
     if (ms) {
         struct block_index *tip = active_chain_tip(&ms->chain_active);

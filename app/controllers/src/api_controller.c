@@ -713,7 +713,9 @@ size_t api_handle_request(const char *method, const char *path,
               "\"peer_count\":%zu,"
               "\"has_peers\":%s,"
               "\"tip_stale\":%s,"
-              "\"tip_stale_seconds\":%lld"
+              "\"tip_stale_seconds\":%lld,"
+              "\"magicbean_peer_count\":%zu,"
+              "\"zclassic_c23_peer_count\":%zu"
             "},"
             "\"services\":{"
               "\"tor_enabled\":%s,"
@@ -761,6 +763,8 @@ size_t api_handle_request(const char *method, const char *path,
             health.has_peers ? "true" : "false",
             health.tip_stale ? "true" : "false",
             (long long)health.tip_stale_seconds,
+            health.magicbean_peer_count,
+            health.zclassic_c23_peer_count,
             health.tor_enabled ? "true" : "false",
             health.tor_ready ? "true" : "false",
             health.onion_service_ready ? "true" : "false",

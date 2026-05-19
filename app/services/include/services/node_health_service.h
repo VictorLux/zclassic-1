@@ -95,6 +95,15 @@ struct node_health_snapshot {
     int64_t  mirror_lag_breach_seconds;
     int64_t  mirror_lag_critical_seconds;
     char     mirror_lag_breach_severity[16];
+
+    /* Magic Bean / zclassic23 peer classification: counts of currently
+     * connected peers whose advertised subver matches the legacy
+     * /MagicBean:.../ or the new /ZClassic-C23:.../ identifier. Goal 3
+     * of the redundancy plan ("magic bean reporting"): operators can
+     * see at a glance how many zclassicd-era peers are connecting to
+     * us and how many native zclassic23 peers we have. */
+    size_t   magicbean_peer_count;
+    size_t   zclassic_c23_peer_count;
 };
 
 void node_health_collect(struct node_health_snapshot *snapshot,
