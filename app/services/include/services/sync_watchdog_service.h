@@ -31,6 +31,7 @@ enum watchdog_recovery_type {
     WATCHDOG_SYNC_VIOLATION,/* peer_max - tip > 100 for > 600s (Part D) */
     WATCHDOG_UTXO_PAUSE,    /* activation paused > 300s */
     WATCHDOG_QUEUE_STARVED, /* in-flight slots < 10% for > 120s */
+    WATCHDOG_LOCAL_HEADER_REFILL, /* active_tip+1 absent; retry P2P headers */
 };
 
 /* Watchdog status snapshot (for RPC) */
@@ -44,6 +45,10 @@ struct sync_watchdog_status {
     int64_t  current_state_duration_secs;
     int      current_state_entry_height;
     int      escalation_level;
+    int      last_recovery_local_height;
+    int      last_recovery_peer_height;
+    int      last_recovery_peer_count;
+    char     last_recovery_reason[96];
 };
 
 /* Extended watchdog stats (for MCP health) */
@@ -56,8 +61,23 @@ struct watchdog_stats {
     enum watchdog_recovery_type last_recovery;
 };
 
+struct watchdog_local_recovery_stats {
+    bool    active;
+    bool    mirror_repair_gated;
+    bool    retries_exhausted;
+    int     missing_height;
+    int     retry_count;
+    int     distinct_peer_count;
+    int     peer_rotation_count;
+    char    mode[32];
+    char    last_reason[64];
+};
+
 /* Get extended watchdog stats for MCP health endpoint. */
 void sync_watchdog_get_stats(struct watchdog_stats *out);
+
+void sync_watchdog_get_local_recovery_stats(
+    struct watchdog_local_recovery_stats *out);
 
 /* Initialize watchdog state and register state-change callback.
  * Call once at startup. */

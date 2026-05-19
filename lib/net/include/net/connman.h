@@ -30,6 +30,30 @@ enum connman_outbound_target_source {
     CONNMAN_TARGET_ADDRMAN,
 };
 
+enum connman_addnode_failure_kind {
+    CONNMAN_ADDNODE_FAILURE_TCP = 0,
+    CONNMAN_ADDNODE_FAILURE_PROTOCOL,
+};
+
+struct connman_outbound_health {
+    size_t outbound_total;
+    size_t inbound_total;
+    size_t healthy;
+    size_t inbound_healthy;
+    size_t connecting;
+    size_t handshake_incomplete;
+    size_t inbound_handshake_incomplete;
+    size_t ipv4_group_count;
+    size_t ipv4_max_group_size;
+    size_t healthy_ipv4_group_count;
+    size_t healthy_ipv4_max_group_size;
+    size_t addnode_count;
+    size_t addnode_backoff_active;
+    int addnode_backoff_max_sec;
+    int64_t addnode_tcp_failures;
+    int64_t addnode_protocol_failures;
+};
+
 struct connman {
     struct net_manager manager;
     const struct chain_params *params;
@@ -47,6 +71,8 @@ struct connman {
     size_t next_addnode_cursor;
     int64_t addnode_last_attempt[MAX_ADDNODES];
     int addnode_backoff_sec[MAX_ADDNODES];
+    int64_t addnode_tcp_failures[MAX_ADDNODES];
+    int64_t addnode_protocol_failures[MAX_ADDNODES];
     /* Data directory for persisting addrman (peers.dat) */
     const char *datadir;
 };
@@ -70,6 +96,12 @@ void connman_add_seed_node(struct connman *cm, const char *host,
 void connman_open_connection(struct connman *cm,
                               const struct net_address *addr);
 
+/* Kick the seed-discovery loop: re-add fixed seeds + retry DNS resolve.
+ * Safe to call from any thread; idempotent. Used by the sync watchdog
+ * when it detects a peer-floor breach or single-peer recovery state to
+ * widen the addrman selection without waiting for the adaptive timer. */
+void connman_kick_seed_discovery(struct connman *cm);
+
 size_t connman_get_node_count(const struct connman *cm);
 
 /* Count of outbound peers in PEER_HANDSHAKE_COMPLETE or later. Used by
@@ -79,6 +111,8 @@ size_t connman_outbound_healthy_count(struct connman *cm);
 
 /* Return the highest starting_height among all connected peers, or -1. */
 int connman_max_peer_height(struct connman *cm);
+void connman_get_outbound_health(struct connman *cm,
+                                 struct connman_outbound_health *out);
 
 void connman_relay_transaction(struct connman *cm,
                                 const struct uint256 *txid);
@@ -116,5 +150,12 @@ bool connman_pick_next_outbound_target(
 void connman_record_addnode_attempt(struct connman *cm,
                                     size_t addnode_index,
                                     bool success);
+void connman_record_addnode_failure(struct connman *cm,
+                                    size_t addnode_index,
+                                    enum connman_addnode_failure_kind kind);
+void connman_note_addnode_prehandshake_disconnect(
+    struct connman *cm,
+    const struct p2p_node *node,
+    const char *reason);
 
 #endif

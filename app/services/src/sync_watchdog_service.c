@@ -9,6 +9,9 @@
  *   REPEATED_RESTART: circuit breaker after >3 recoveries in 30 minutes */
 
 #include "services/sync_watchdog_service.h"
+#include "services/chain_activation_controller.h"
+#include "services/chain_advance_coordinator.h"
+#include "services/gap_fill_service.h"
 #include "net/connman.h"
 #include "validation/chainstate.h"
 #include "validation/process_block.h"
@@ -147,10 +150,17 @@ static struct {
     int      progress_count;
     int      progress_index;       /* circular index into progress[] */
     double   blocks_per_sec;
+
+    int      last_recovery_local_height;
+    int      last_recovery_peer_height;
+    int      last_recovery_peer_count;
+    char     last_recovery_reason[96];
 } g_watchdog;
 
 /* Last header reject reason (updated by msg_headers.c via setter) */
 static char g_last_header_reject_reason[256] = {0};
+
+static void local_recovery_reset(void);
 
 void sync_watchdog_set_last_reject_reason(const char *reason)
 {
@@ -170,6 +180,7 @@ void sync_watchdog_init(void)
     g_watchdog.initialized = true;
     g_watchdog.last_header_height = -1;
     g_watchdog.last_chain_height = -1;
+    local_recovery_reset();
     atomic_store(&g_sync_state_entered_time, (int64_t)time(NULL));
     sync_set_state_change_callback(sync_watchdog_on_state_change);
 }
@@ -187,6 +198,7 @@ const char *watchdog_recovery_type_name(enum watchdog_recovery_type type)
     case WATCHDOG_SYNC_VIOLATION:   return "SYNC_VIOLATION";
     case WATCHDOG_UTXO_PAUSE:       return "UTXO_PAUSE";
     case WATCHDOG_QUEUE_STARVED:    return "QUEUE_STARVED";
+    case WATCHDOG_LOCAL_HEADER_REFILL: return "LOCAL_HEADER_REFILL";
     }
     return "UNKNOWN";
 }
@@ -205,6 +217,11 @@ void sync_watchdog_get_status(struct sync_watchdog_status *out)
     out->current_state_duration_secs = sync_get_state_duration();
     out->current_state_entry_height = sync_get_state_entry_height();
     out->escalation_level = g_watchdog.escalation_level;
+    out->last_recovery_local_height = g_watchdog.last_recovery_local_height;
+    out->last_recovery_peer_height = g_watchdog.last_recovery_peer_height;
+    out->last_recovery_peer_count = g_watchdog.last_recovery_peer_count;
+    snprintf(out->last_recovery_reason, sizeof(out->last_recovery_reason),
+             "%s", g_watchdog.last_recovery_reason);
 }
 
 void sync_watchdog_get_stats(struct watchdog_stats *out)
@@ -249,14 +266,58 @@ bool sync_watchdog_dump_state_json(struct json_value *out, const char *key)
     json_push_kv_int(out, "current_state_entry_height",
                      (int64_t)ws.current_state_entry_height);
     json_push_kv_int(out, "escalation_level", (int64_t)ws.escalation_level);
+    json_push_kv_str(out, "last_recovery_reason",
+                     ws.last_recovery_reason);
+    json_push_kv_int(out, "last_recovery_local_height",
+                     ws.last_recovery_local_height);
+    json_push_kv_int(out, "last_recovery_peer_height",
+                     ws.last_recovery_peer_height);
+    json_push_kv_int(out, "last_recovery_peer_count",
+                     ws.last_recovery_peer_count);
     json_push_kv_real(out, "blocks_per_sec", st.blocks_per_sec);
     json_push_kv_int(out, "utxo_paused_height",
                      (int64_t)process_block_get_utxo_activation_paused_height());
+    {
+        struct watchdog_local_recovery_stats lr;
+        sync_watchdog_get_local_recovery_stats(&lr);
+        json_push_kv_bool(out, "local_recovery_active", lr.active);
+        json_push_kv_bool(out, "mirror_repair_gated_by_local_retries",
+                          lr.mirror_repair_gated);
+        json_push_kv_bool(out, "local_retries_exhausted",
+                          lr.retries_exhausted);
+        json_push_kv_int(out, "local_missing_height", lr.missing_height);
+        json_push_kv_int(out, "local_retry_count", lr.retry_count);
+        json_push_kv_int(out, "local_distinct_peer_count",
+                         lr.distinct_peer_count);
+        json_push_kv_int(out, "local_peer_rotation_count",
+                         lr.peer_rotation_count);
+        json_push_kv_str(out, "local_recovery_mode", lr.mode);
+        json_push_kv_str(out, "last_local_refill_reason", lr.last_reason);
+    }
     return true;
 }
 
 /* Forward declarations */
 static int disconnect_outbound_peers(struct connman *cm);
+static void watchdog_kick_local_sync(const char *reason);
+
+static void watchdog_reconcile_at_tip(enum sync_state state)
+{
+    if (state == SYNC_IDLE)
+        sync_set_state(SYNC_FINDING_PEERS,
+                       "watchdog at-tip reconciliation via peers");
+    if (sync_get_state() == SYNC_FINDING_PEERS)
+        sync_set_state(SYNC_HEADERS_DOWNLOAD,
+                       "watchdog at-tip reconciliation via headers");
+    if (sync_get_state() == SYNC_HEADERS_DOWNLOAD)
+        sync_set_state(SYNC_BLOCKS_DOWNLOAD,
+                       "watchdog at-tip reconciliation via blocks");
+    if (sync_get_state() == SYNC_BLOCKS_DOWNLOAD)
+        sync_set_state(SYNC_CONNECTING_BLOCKS,
+                       "watchdog at-tip reconciliation via connect");
+    if (sync_get_state() == SYNC_CONNECTING_BLOCKS)
+        sync_set_state(SYNC_AT_TIP, "watchdog at-tip reconciliation");
+}
 
 /* ── Escalation check (replaces circuit breaker) ────────── */
 
@@ -288,11 +349,22 @@ static int check_escalation_level(int64_t now)
     return g_watchdog.escalation_level > 0 ? g_watchdog.escalation_level : 1;
 }
 
-static void record_recovery(int64_t now, enum watchdog_recovery_type type)
+static void record_recovery_detail(int64_t now,
+                                   enum watchdog_recovery_type type,
+                                   const char *reason,
+                                   int local_height,
+                                   int peer_height,
+                                   int peer_count)
 {
     g_watchdog.recoveries_triggered++;
     g_watchdog.last_recovery_time = now;
     g_watchdog.last_recovery_type = type;
+    g_watchdog.last_recovery_local_height = local_height;
+    g_watchdog.last_recovery_peer_height = peer_height;
+    g_watchdog.last_recovery_peer_count = peer_count;
+    snprintf(g_watchdog.last_recovery_reason,
+             sizeof(g_watchdog.last_recovery_reason),
+             "%s", reason && *reason ? reason : "unspecified");
 
     /* Track failures per escalation level */
     int level = g_watchdog.escalation_level;
@@ -315,6 +387,12 @@ static void record_recovery(int64_t now, enum watchdog_recovery_type type)
         g_watchdog.recovery_count = REPEATED_MAX;
     }
     g_watchdog.recovery_times[g_watchdog.recovery_count++] = now;
+}
+
+static void record_recovery(int64_t now, enum watchdog_recovery_type type)
+{
+    record_recovery_detail(now, type, watchdog_recovery_type_name(type),
+                           -1, -1, -1);
 }
 
 /* L2 recovery: clear download state, force header re-sync from genesis */
@@ -396,6 +474,29 @@ static int disconnect_outbound_peers(struct connman *cm)
     return disconnected;
 }
 
+static void watchdog_kick_local_sync(const char *reason)
+{
+    gap_fill_kick();
+
+    struct chain_activation_controller *ctl = boot_activation_controller();
+    if (!ctl || !ctl->ms || !ctl->coins_tip || !ctl->params || !ctl->datadir)
+        return;
+
+    enum activation_state state = activation_get_state(ctl);
+    if (state != ACTIVATION_READY && state != ACTIVATION_AT_TIP)
+        return;
+
+    struct activation_exec_outcome outcome;
+    activation_request_connect(ctl, ACTIVATION_SRC_HEADERS_ALL_DATA,
+                               NULL, &outcome);
+    if (outcome.result == ACTIVATION_EXEC_FAILED) {
+        fprintf(stderr, // obs-ok:pre-existing-diagnostic
+                "[watchdog] local activation kick failed (%s): %s\n",
+                reason ? reason : "unspecified",
+                outcome.reason[0] ? outcome.reason : "unknown");
+    }
+}
+
 /* ── Main watchdog check ─────────────────────────────────── */
 
 /* ── Persistent counters for the floor / sync-violation invariants ──
@@ -420,6 +521,131 @@ int64_t g_queue_starved_first_seen = 0;
 #define UTXO_PAUSE_TRIGGER_SECS 300   /* clear after 5 min */
 #define QUEUE_STARVED_TRIGGER_SECS 120 /* starved for >2 min */
 #define QUEUE_STARVED_RATIO_DEN    10  /* < 1/10th of IBD in-flight limit */
+#define LOCAL_HEADER_REFILL_MIN_PEERS 3
+#define LOCAL_HEADER_REFILL_MAX_RETRIES 3
+
+static struct {
+    bool active;
+    bool retries_exhausted;
+    int missing_height;
+    int retry_count;
+    int distinct_peer_count;
+    int peer_rotation_count;
+    char mode[32];
+    char last_reason[64];
+} g_local_recovery;
+
+static void local_recovery_reset(void)
+{
+    memset(&g_local_recovery, 0, sizeof(g_local_recovery));
+}
+
+static bool active_next_child_exists(struct main_state *ms,
+                                     struct block_index *tip,
+                                     int next_h)
+{
+    if (!ms || !tip)
+        return false;
+
+    size_t iter = 0;
+    struct block_index *bi = NULL;
+    while (block_map_next(&ms->map_block_index, &iter, NULL, &bi)) {
+        if (bi && bi->nHeight == next_h && bi->pprev == tip &&
+            bi->phashBlock && !(bi->nStatus & BLOCK_FAILED_MASK))
+            return true;
+    }
+    return false;
+}
+
+static int local_header_refill_from_peers(struct connman *cm,
+                                          int next_h,
+                                          const char *reason)
+{
+    if (!cm)
+        return 0;
+
+    int eligible = 0;
+    struct p2p_node *worst = NULL;
+
+    zcl_mutex_lock(&cm->manager.cs_nodes);
+    for (size_t i = 0; i < cm->manager.num_nodes; i++) {
+        struct p2p_node *n = cm->manager.nodes[i];
+        if (!n || n->disconnect || n->inbound)
+            continue;
+        if (n->starting_height < next_h ||
+            n->state < PEER_HANDSHAKE_COMPLETE)
+            continue;
+
+        eligible++;
+        n->last_getheaders_time = 0;
+        n->getheaders_stale_count = 0;
+        if (n->state == PEER_HANDSHAKE_COMPLETE ||
+            n->state == PEER_ACTIVE ||
+            n->state == PEER_SYNCING_BLOCKS ||
+            n->state == PEER_STALE) {
+            (void)peer_set_state_checked((uint32_t)n->id, &n->state,
+                                         PEER_SYNCING_HEADERS,
+                                         "watchdog local header refill");
+        }
+
+        if (!worst ||
+            n->total_headers_delivered < worst->total_headers_delivered)
+            worst = n;
+    }
+
+    /* Self-preservation: never disconnect a peer when it's the only one
+     * carrying the missing height. With eligible<=1, "rotating" the worst
+     * peer means rotating our only fetch source — the chain stops dead.
+     * The right response there is to widen the peer set (seed re-walk),
+     * not to discard what we have. */
+    if (g_local_recovery.retry_count > 0 && worst && eligible >= 2 &&
+        eligible < LOCAL_HEADER_REFILL_MIN_PEERS) {
+        worst->disconnect = true;
+        g_local_recovery.peer_rotation_count++;
+    }
+    zcl_mutex_unlock(&cm->manager.cs_nodes);
+
+    /* When the eligible set is too narrow to risk rotation, kick the
+     * outbound discovery so the addrman has a fresh selection on the
+     * next tick. This is idempotent and cheap. */
+    if (g_local_recovery.retry_count > 0 &&
+        eligible < LOCAL_HEADER_REFILL_MIN_PEERS) {
+        connman_kick_seed_discovery(cm);
+    }
+
+    g_local_recovery.active = true;
+    g_local_recovery.missing_height = next_h;
+    g_local_recovery.retry_count++;
+    g_local_recovery.distinct_peer_count = eligible;
+    snprintf(g_local_recovery.mode, sizeof(g_local_recovery.mode),
+             "%s", "next-child-missing");
+    snprintf(g_local_recovery.last_reason,
+             sizeof(g_local_recovery.last_reason), "%s",
+             reason ? reason : "");
+    if (eligible >= LOCAL_HEADER_REFILL_MIN_PEERS ||
+        g_local_recovery.retry_count >= LOCAL_HEADER_REFILL_MAX_RETRIES)
+        g_local_recovery.retries_exhausted = true;
+
+    return eligible;
+}
+
+void sync_watchdog_get_local_recovery_stats(
+    struct watchdog_local_recovery_stats *out)
+{
+    if (!out) return;
+    memset(out, 0, sizeof(*out));
+    out->active = g_local_recovery.active;
+    out->mirror_repair_gated = g_local_recovery.active &&
+        !g_local_recovery.retries_exhausted;
+    out->retries_exhausted = g_local_recovery.retries_exhausted;
+    out->missing_height = g_local_recovery.missing_height;
+    out->retry_count = g_local_recovery.retry_count;
+    out->distinct_peer_count = g_local_recovery.distinct_peer_count;
+    out->peer_rotation_count = g_local_recovery.peer_rotation_count;
+    snprintf(out->mode, sizeof(out->mode), "%s", g_local_recovery.mode);
+    snprintf(out->last_reason, sizeof(out->last_reason), "%s",
+             g_local_recovery.last_reason);
+}
 
 enum watchdog_recovery_type sync_watchdog_check(
     struct connman *cm,
@@ -434,37 +660,100 @@ enum watchdog_recovery_type sync_watchdog_check(
     int64_t now = (int64_t)time(NULL);
     enum sync_state state = sync_get_state();
     int64_t duration = sync_get_state_duration();
+    int local_height = ms ? active_chain_height(&ms->chain_active) : -1;
+    int best_header_height =
+        ms && ms->pindex_best_header ? ms->pindex_best_header->nHeight : -1;
+    int peer_max_height = cm ? connman_max_peer_height(cm) : -1;
+    size_t healthy = connman_outbound_healthy_count(cm);
+
+    /* Local sync is the primary authority. Mirror/zclassicd is an
+     * auxiliary source owned by legacy_mirror_sync_service; the watchdog
+     * must not invoke it before exercising peer download, gap-fill, and
+     * activation recovery. */
+
+    if (state != SYNC_AT_TIP && local_height >= 0 &&
+        best_header_height >= 0 && best_header_height <= local_height &&
+        peer_max_height <= local_height && healthy > 0) {
+        watchdog_reconcile_at_tip(state);
+        return WATCHDOG_NONE;
+    }
 
     /* ── Part C: PEER_FLOOR — < 3 healthy outbound for > 60s ──
      * Even with peers in the table, if none are past handshake we
      * can't sync. Forces a fresh seed walk + drops any inbound peers
      * blocking outbound slots. */
     {
-        size_t healthy = connman_outbound_healthy_count(cm);
         if (healthy < PEER_FLOOR_MIN_HEALTHY) {
             if (g_peer_floor_first_violation == 0)
                 g_peer_floor_first_violation = now;
             if (now - g_peer_floor_first_violation > PEER_FLOOR_TRIGGER_SECS) {
+                struct cac_decision decision;
+                bool recover =
+                    chain_advance_coordinator_peer_floor_recovery_needed(
+                        (int)healthy,
+                        PEER_FLOOR_MIN_HEALTHY,
+                        local_height,
+                        peer_max_height,
+                        &decision);
                 printf("[watchdog] PEER_FLOOR: only %zu/%d healthy "
-                       "outbound — forcing seed rewalk\n",
-                       healthy, PEER_FLOOR_MIN_HEALTHY);
+                       "outbound, coordinator=%s reason=%s\n",
+                       healthy, PEER_FLOOR_MIN_HEALTHY,
+                       recover ? "recover" : "wait",
+                       decision.reason);
                 event_emitf(EV_SYNC_STATE_CHANGE, 0,
-                            "watchdog PEER_FLOOR healthy=%zu", healthy);
+                            "watchdog PEER_FLOOR healthy=%zu decision=%s "
+                            "reason=%s",
+                            healthy,
+                            cac_decision_result_name(decision.result),
+                            decision.reason);
+                if (!recover) {
+                    g_peer_floor_first_violation = now;
+                    return WATCHDOG_NONE;
+                }
                 /* Disconnect outbound peers stuck below handshake
                  * (PEER_CONNECTING/PEER_CONNECTED) to free slots for
                  * the outbound thread's aggressive backfill. */
                 if (cm) {
+                    size_t inbound_seen = 0;
+                    size_t inbound_dropped = 0;
+                    size_t outbound_dropped = 0;
                     zcl_mutex_lock(&cm->manager.cs_nodes);
                     for (size_t i = 0; i < cm->manager.num_nodes; i++) {
                         struct p2p_node *n = cm->manager.nodes[i];
                         if (n && !n->inbound && !n->disconnect &&
-                            n->state < PEER_HANDSHAKE_COMPLETE)
+                            n->state < PEER_HANDSHAKE_COMPLETE) {
                             n->disconnect = true;
+                            outbound_dropped++;
+                        }
+                        if (n && n->inbound && !n->disconnect) {
+                            inbound_seen++;
+                            if (inbound_seen > 2) {
+                                n->disconnect = true;
+                                inbound_dropped++;
+                            }
+                        }
                     }
                     zcl_mutex_unlock(&cm->manager.cs_nodes);
+                    for (int ai = 0; ai < cm->num_addnodes; ai++) {
+                        if (cm->addnode_protocol_failures[ai] == 0 &&
+                            cm->addnode_tcp_failures[ai] > 0) {
+                            cm->addnode_backoff_sec[ai] = 0;
+                            cm->addnode_last_attempt[ai] = 0;
+                        }
+                    }
+                    event_emitf(EV_SYNC_STATE_CHANGE, 0,
+                                "watchdog PEER_FLOOR churn "
+                                "drop_outbound=%zu drop_inbound=%zu "
+                                "reset_tcp_backoff=true",
+                                outbound_dropped, inbound_dropped);
                 }
                 g_peer_floor_first_violation = now;  /* re-arm */
-                record_recovery(now, WATCHDOG_PEER_FLOOR);
+                watchdog_kick_local_sync("peer-floor");
+                record_recovery_detail(now, WATCHDOG_PEER_FLOOR,
+                                       decision.reason,
+                                       local_height,
+                                       peer_max_height,
+                                       (int)healthy);
                 return WATCHDOG_PEER_FLOOR;
             }
         } else {
@@ -497,6 +786,7 @@ enum watchdog_recovery_type sync_watchdog_check(
                             "watchdog UTXO_PAUSE h=%d", paused);
                 process_block_clear_utxo_activation_pause_range(
                     paused, paused);
+                watchdog_kick_local_sync("utxo-pause");
                 g_utxo_pause_first_seen = now;  /* re-arm */
                 record_recovery(now, WATCHDOG_UTXO_PAUSE);
                 return WATCHDOG_UTXO_PAUSE;
@@ -528,12 +818,80 @@ enum watchdog_recovery_type sync_watchdog_check(
                             "watchdog SYNC_VIOLATION tip=%d peer=%d gap=%d",
                             our_height, peer_max, peer_max - our_height);
                 escalation_l2(cm, dm);
+                watchdog_kick_local_sync("sync-violation");
                 g_sync_violation_first_seen = now;  /* re-arm */
                 record_recovery(now, WATCHDOG_SYNC_VIOLATION);
                 return WATCHDOG_SYNC_VIOLATION;
             }
         } else {
             g_sync_violation_first_seen = 0;
+        }
+    }
+
+    /* NEXT_CHILD_MISSING — peers are ahead but the local block index
+     * has no connectable header at active_tip+1. This is a local-first
+     * recovery: make multiple eligible peers immediately due for
+     * getheaders from the active tip, rotate a poor peer on repeated
+     * attempts, and leave mirror repair gated until local retries have
+     * been exercised. */
+    if (cm && ms) {
+        int peer_max = connman_max_peer_height(cm);
+        int tip_h = -1;
+        int next_h = -1;
+        bool missing = false;
+
+        zcl_mutex_lock(&ms->cs_main);
+        struct block_index *tip = active_chain_tip(&ms->chain_active);
+        if (tip) {
+            tip_h = tip->nHeight;
+            next_h = tip_h + 1;
+            missing = (peer_max >= next_h &&
+                       !active_next_child_exists(ms, tip, next_h));
+        }
+        zcl_mutex_unlock(&ms->cs_main);
+
+        if (missing) {
+            int peers = local_header_refill_from_peers(
+                cm, next_h, "next-child-missing");
+            struct cac_decision decision;
+            bool proceed =
+                chain_advance_coordinator_local_header_refill_needed(
+                    tip_h,
+                    next_h,
+                    peer_max,
+                    peers,
+                    g_local_recovery.retry_count,
+                    g_local_recovery.retries_exhausted,
+                    &decision);
+            printf("[watchdog] LOCAL_HEADER_REFILL: missing h=%d after "
+                   "tip=%d peers_ahead=%d eligible=%d retry=%d "
+                   "coordinator=%s reason=%s\n",
+                   next_h, tip_h, peer_max, peers,
+                   g_local_recovery.retry_count,
+                   proceed ? "proceed" : "blocked",
+                   decision.reason);
+            event_emitf(EV_SYNC_STATE_CHANGE, 0,
+                        "watchdog LOCAL_HEADER_REFILL h=%d peer_max=%d "
+                        "eligible=%d retry=%d decision=%s reason=%s",
+                        next_h, peer_max, peers,
+                        g_local_recovery.retry_count,
+                        cac_decision_result_name(decision.result),
+                        decision.reason);
+            if (!proceed)
+                return WATCHDOG_NONE;
+            if (!sync_set_state(SYNC_HEADERS_DOWNLOAD,
+                                "watchdog local header refill")) {
+                sync_set_state(SYNC_IDLE,
+                               "watchdog local header refill via idle");
+                sync_set_state(SYNC_HEADERS_DOWNLOAD,
+                               "watchdog local header refill");
+            }
+            watchdog_kick_local_sync("next-child-missing");
+            record_recovery(now, WATCHDOG_LOCAL_HEADER_REFILL);
+            return WATCHDOG_LOCAL_HEADER_REFILL;
+        } else if (g_local_recovery.active &&
+                   g_local_recovery.missing_height == next_h) {
+            local_recovery_reset();
         }
     }
 
@@ -621,7 +979,14 @@ enum watchdog_recovery_type sync_watchdog_check(
             sync_set_state(SYNC_FINDING_PEERS, "watchdog HEADER_STALL recovery");
             printf("[watchdog] HEADER_STALL recovery: disconnected %d peers, "
                    "resetting sync\n", ndisconnected);
-            record_recovery(now, WATCHDOG_HEADER_STALL);
+            record_recovery_detail(now, WATCHDOG_HEADER_STALL,
+                                   g_last_header_reject_reason[0]
+                                       ? g_last_header_reject_reason
+                                       : "header_height_not_advancing",
+                                   ms ? active_chain_height(&ms->chain_active)
+                                      : -1,
+                                   current_header_height,
+                                   ndisconnected);
             g_watchdog.last_header_height = -1;
 
             /* Escalation: if peer rotation hasn't fixed it after 2 cycles */
@@ -681,8 +1046,11 @@ enum watchdog_recovery_type sync_watchdog_check(
          * no recovery needed. */
         bool header_stuck = (current_header_height >= 0 &&
                              current_header_height <= g_watchdog.last_header_height);
+        bool first_block_lag_sample =
+            (state == SYNC_BLOCKS_DOWNLOAD &&
+             g_watchdog.last_header_height < 0);
 
-        if (header_stuck &&
+        if ((header_stuck || first_block_lag_sample) &&
             current_header_height >= 0 && max_peer_height >= 0 &&
             current_header_height < (max_peer_height - 500)) {
             printf("[watchdog] HEADER_LAG: headers at %d (no advance "
@@ -776,6 +1144,7 @@ enum watchdog_recovery_type sync_watchdog_check(
                                    "watchdog BLOCK_STALL: no blocks");
                 }
             }
+            watchdog_kick_local_sync("block-stall");
 
             printf("[watchdog] BLOCK_STALL recovery: reset download manager, "
                    "re-queued blocks\n");
@@ -821,6 +1190,7 @@ enum watchdog_recovery_type sync_watchdog_check(
                             (unsigned long long)queued);
                 int dropped = disconnect_outbound_peers(cm);
                 (void)dropped;
+                watchdog_kick_local_sync("queue-starved");
                 g_queue_starved_first_seen = now;  /* re-arm */
                 record_recovery(now, WATCHDOG_QUEUE_STARVED);
                 return WATCHDOG_QUEUE_STARVED;
@@ -851,6 +1221,7 @@ enum watchdog_recovery_type sync_watchdog_check(
                 sync_set_state(SYNC_HEADERS_DOWNLOAD,
                                "watchdog STALE_TIP recovery");
             }
+            watchdog_kick_local_sync("stale-tip");
             record_recovery(now, WATCHDOG_STATE_STUCK);
             return WATCHDOG_STATE_STUCK;
         }
@@ -866,12 +1237,14 @@ enum watchdog_recovery_type sync_watchdog_check(
         int peer_max_log = cm ? connman_max_peer_height(cm) : -1;
         int peer_count_log = cm ? (int)connman_outbound_healthy_count(cm) : 0;
         if (!atomic_exchange(&g_stall_event_emitted, 1)) {
-            LOG_FAIL("watchdog",
-                     "STATE_STUCK state=%s duration_s=%lld timeout_s=%lld "
-                     "our_h=%d peer_max=%d peers=%d — forcing header re-sync",
-                     sync_state_name(state), (long long)duration,
-                     (long long)state_stuck_timeout(state),
-                     our_h_log, peer_max_log, peer_count_log);
+            fprintf(stderr, // obs-ok:paired-watchdog-event
+                    "[watchdog] %s:%d %s(): STATE_STUCK state=%s "
+                    "duration_s=%lld timeout_s=%lld our_h=%d peer_max=%d "
+                    "peers=%d -- forcing header re-sync\n",
+                    __FILE__, __LINE__, __func__, sync_state_name(state),
+                    (long long)duration,
+                    (long long)state_stuck_timeout(state),
+                    our_h_log, peer_max_log, peer_count_log);
             event_emitf(EV_TIP_STALE, 0,
                         "state=%s since=%lld peers=%d max_peer=%d our_h=%d",
                         sync_state_name(state), (long long)duration,
@@ -889,7 +1262,12 @@ enum watchdog_recovery_type sync_watchdog_check(
             sync_set_state(SYNC_HEADERS_DOWNLOAD,
                            "watchdog STATE_STUCK recovery");
         }
-        record_recovery(now, WATCHDOG_STATE_STUCK);
+        watchdog_kick_local_sync("state-stuck");
+        record_recovery_detail(now, WATCHDOG_STATE_STUCK,
+                               sync_state_name(state),
+                               our_h_log,
+                               peer_max_log,
+                               peer_count_log);
         return WATCHDOG_STATE_STUCK;
     }
 

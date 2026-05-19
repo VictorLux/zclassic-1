@@ -9,10 +9,13 @@
 #define _DEFAULT_SOURCE
 #include "net/connman.h"
 #include "net/addrman.h"
+#include "event/event.h"
 #include "net/peer_bandwidth.h"
+#include "net/peer_lifecycle.h"
 #include "net/peer_scoring.h"
 #include "services/addrman_integrity.h"
 #include "net/download.h"
+#include "net/fast_sync.h"
 #include "net/tor_integration.h"
 #include "controllers/blog_controller.h"
 #include "models/peer.h"
@@ -36,6 +39,9 @@
 #include "util/safe_alloc.h"
 #include "util/log_macros.h"
 #include "util/thread_registry.h"
+
+extern bool msg_version_get_external_ip(char *buf, size_t buflen,
+                                        uint16_t *port);
 
 /* -connect mode: only connect to specified peers, no seeds */
 bool g_connect_only = false;
@@ -114,6 +120,19 @@ static void seed_from_fixed(struct connman *cm)
     }
     if (p->nFixedSeeds > 0)
         printf("Added %zu hardcoded seed nodes\n", p->nFixedSeeds);
+}
+
+/* Public: kick seed discovery from outside the connman thread. Used by
+ * the sync watchdog when the peer set is too narrow to risk rotation —
+ * widens addrman selection so the next outbound cycle picks fresh hosts.
+ * Re-adds fixed seeds (cheap, in-memory) and re-runs DNS resolution
+ * (one-shot, blocking on the caller's thread for the duration of the
+ * resolves). Safe to call concurrently with the discovery thread. */
+void connman_kick_seed_discovery(struct connman *cm)
+{
+    if (!cm || g_stop) return;
+    seed_from_fixed(cm);
+    dns_seed_resolve(cm);
 }
 
 /* Fetch /directory.json from a .onion seed and add clearnet IPs */
@@ -257,17 +276,40 @@ static void *thread_dns_seed(void *arg)
     /* Adaptive peer discovery:
      * - 0 peers: retry every 30s (urgent)
      * - 1-2 peers: retry every 60s (degraded)
-     * - 3+ peers: check every 5 minutes (healthy) */
+     * - 3+ peers: check every 5 minutes (healthy)
+     *
+     * Floor-breach loudness: once we've been below the floor (3 peers)
+     * for more than PEER_FLOOR_LOUD_SECS continuously past startup
+     * grace, emit EV_PEER_FLOOR_BREACH on every iteration. Independent
+     * from the watchdog's recovery path — this is the "loud" half of
+     * the redundancy guarantee, so the absence of strong P2P is itself
+     * a first-class observable signal. */
+    const int PEER_FLOOR_MIN = 3;
+    const int PEER_FLOOR_GRACE_SECS = 120;
+    int64_t start_ts = (int64_t)time(NULL);
+    int64_t floor_below_since = 0;
     while (!g_stop) {
         size_t n = cm->manager.num_nodes;
         int interval = (n == 0) ? 30 : (n < 3) ? 60 : 300;
         sleep(interval);
         if (g_stop) break;
-        if (cm->manager.num_nodes < 3) {
-            printf("Peer discovery: %zu peers (need 3+)\n",
-                   cm->manager.num_nodes);
+        size_t cur = cm->manager.num_nodes;
+        int64_t now = (int64_t)time(NULL);
+        if ((int)cur < PEER_FLOOR_MIN) {
+            if (floor_below_since == 0) floor_below_since = now;
+            int64_t below_for = now - floor_below_since;
+            int64_t since_start = now - start_ts;
+            if (since_start > PEER_FLOOR_GRACE_SECS) {
+                event_emitf(EV_PEER_FLOOR_BREACH, 0,
+                            "healthy=%zu min=%d since=%llds",
+                            cur, PEER_FLOOR_MIN, (long long)below_for);
+            }
+            printf("Peer discovery: %zu peers (need %d+)\n",
+                   cur, PEER_FLOOR_MIN);
             seed_from_fixed(cm);
             dns_seed_resolve(cm);
+        } else {
+            floor_below_since = 0;
         }
     }
 
@@ -287,7 +329,7 @@ static int count_outbound_in_group(const struct net_manager *nm, uint16_t group)
     int count = 0;
     for (size_t i = 0; i < nm->num_nodes; i++) {
         const struct p2p_node *n = nm->nodes[i];
-        if (n->inbound) continue;
+        if (n->inbound || n->disconnect) continue;
         if (!net_addr_is_ipv4(&n->addr.svc.addr)) continue;
         if (ipv4_group16(n->addr.svc.addr.ip) == group)
             count++;
@@ -296,6 +338,19 @@ static int count_outbound_in_group(const struct net_manager *nm, uint16_t group)
 }
 
 #define MAX_OUTBOUND_PER_GROUP16 2
+
+static int connman_outbound_group_count(struct connman *cm, uint16_t group)
+{
+    int count = 0;
+
+    if (!cm)
+        return 0;
+
+    zcl_mutex_lock(&cm->manager.cs_nodes);
+    count = count_outbound_in_group(&cm->manager, group);
+    zcl_mutex_unlock(&cm->manager.cs_nodes);
+    return count;
+}
 
 static bool connman_addnode_is_connected(struct connman *cm, size_t addnode_index)
 {
@@ -317,6 +372,233 @@ static bool connman_addnode_is_connected(struct connman *cm, size_t addnode_inde
     zcl_mutex_unlock(&cm->manager.cs_nodes);
 
     return connected;
+}
+
+static bool connman_node_conflicts_with_target(
+    const struct p2p_node *node,
+    const struct net_address *addr)
+{
+    if (!node || !addr || node->disconnect)
+        return false;
+    if (!net_addr_eq(&node->addr.svc.addr, &addr->svc.addr))
+        return false;
+    if (node->addr.svc.port == addr->svc.port)
+        return true;
+
+    /* Inbound peers usually arrive from ephemeral source ports. Do not let
+     * that socket suppress an outbound dial to the peer's advertised listen
+     * port; that learned address is useful for reaching the outbound floor. */
+    return !node->inbound;
+}
+
+static bool connman_addr_is_connected(struct connman *cm,
+                                      const struct net_address *addr)
+{
+    bool connected = false;
+
+    if (!cm || !addr)
+        return false;
+
+    zcl_mutex_lock(&cm->manager.cs_nodes);
+    for (size_t ni = 0; ni < cm->manager.num_nodes; ni++) {
+        struct p2p_node *n = cm->manager.nodes[ni];
+        if (connman_node_conflicts_with_target(n, addr)) {
+            connected = true;
+            break;
+        }
+    }
+    zcl_mutex_unlock(&cm->manager.cs_nodes);
+
+    return connected;
+}
+
+static bool connman_addrman_port_allowed(uint16_t port)
+{
+    return port == 8033 || port == 18033 || port == 8034 ||
+           port == 9033 || port == 20022;
+}
+
+static bool connman_addr_is_advertised_external(
+    const struct net_address *addr)
+{
+    if (!addr || !net_addr_is_ipv4(&addr->svc.addr))
+        return false;
+
+    char ip[64];
+    uint16_t port = 0;
+    if (!msg_version_get_external_ip(ip, sizeof(ip), &port))
+        return false;
+
+    unsigned a, b, c, d;
+    if (sscanf(ip, "%u.%u.%u.%u", &a, &b, &c, &d) != 4)
+        return false;
+    if (a > 255 || b > 255 || c > 255 || d > 255)
+        return false;
+
+    if (addr->svc.addr.ip[12] != (uint8_t)a ||
+        addr->svc.addr.ip[13] != (uint8_t)b ||
+        addr->svc.addr.ip[14] != (uint8_t)c ||
+        addr->svc.addr.ip[15] != (uint8_t)d)
+        return false;
+
+    return port == 0 || addr->svc.port == port;
+}
+
+static int connman_addrman_retry_cooldown(const struct addr_info *info)
+{
+    if (!info || info->attempts <= 0)
+        return 0;
+    if (info->attempts >= 6)
+        return 3600;
+    if (info->attempts >= 3)
+        return 900;
+    return 60;
+}
+
+static bool connman_addrman_candidate_usable(struct connman *cm,
+                                             const struct addr_info *info)
+{
+    if (!cm || !info)
+        return false;
+
+    if (!connman_addrman_port_allowed(info->addr.svc.port))
+        return false;
+
+    if (connman_addr_is_advertised_external(&info->addr))
+        return false;
+
+    if (info->last_try > 0) {
+        int64_t now = (int64_t)time(NULL);
+        int cooldown = connman_addrman_retry_cooldown(info);
+        if (now - info->last_try < cooldown)
+            return false;
+    }
+
+    if (connman_addr_is_connected(cm, &info->addr))
+        return false;
+
+    if (net_addr_is_ipv4(&info->addr.svc.addr)) {
+        uint16_t group = ipv4_group16(info->addr.svc.addr.ip);
+        if (connman_outbound_group_count(cm, group) >=
+                MAX_OUTBOUND_PER_GROUP16)
+            return false;
+    }
+
+    return true;
+}
+
+static bool connman_pick_addrman_target(struct connman *cm,
+                                        struct addr_info *result)
+{
+    if (!cm || !result)
+        return false;
+
+    for (int i = 0; i < 64; i++) {
+        struct addr_info pick;
+        memset(&pick, 0, sizeof(pick));
+        if (!addrman_select(&cm->manager.addrman, false, &pick))
+            return false;
+        if (connman_addrman_candidate_usable(cm, &pick)) {
+            *result = pick;
+            return true;
+        }
+    }
+
+    /* If random addrman selection keeps landing on saturated/already-used
+     * groups, deterministically scan a bounded candidate set. This keeps
+     * peer-floor recovery from repeatedly spending slots on the same bad
+     * subnet while still preserving addrman's randomized first choice. */
+    struct addr_info candidates[128];
+    size_t n_candidates = 0;
+    struct addr_man *am = &cm->manager.addrman;
+
+    zcl_mutex_lock(&am->cs);
+    for (size_t n = 0; n < am->random_size && n_candidates < 128; n++) {
+        int nId = am->random_order[n];
+        if (nId < 0 || (size_t)nId >= am->entries_cap)
+            continue;
+        struct addr_info *info = &am->entries[nId];
+        if (!info->used)
+            continue;
+        candidates[n_candidates++] = *info;
+    }
+    zcl_mutex_unlock(&am->cs);
+
+    for (size_t i = 0; i < n_candidates; i++) {
+        if (connman_addrman_candidate_usable(cm, &candidates[i])) {
+            *result = candidates[i];
+            return true;
+        }
+    }
+
+    return false;
+}
+
+static bool connman_find_addnode_index(struct connman *cm,
+                                       const struct net_address *addr,
+                                       size_t *out)
+{
+    if (out)
+        *out = SIZE_MAX;
+    if (!cm || !addr)
+        return false;
+
+    for (int ai = 0; ai < cm->num_addnodes; ai++) {
+        if (net_addr_eq(&addr->svc.addr, &cm->addnodes[ai].svc.addr) &&
+            addr->svc.port == cm->addnodes[ai].svc.port) {
+            if (out)
+                *out = (size_t)ai;
+            return true;
+        }
+    }
+    return false;
+}
+
+void connman_note_addnode_prehandshake_disconnect(
+    struct connman *cm,
+    const struct p2p_node *node,
+    const char *reason)
+{
+    size_t addnode_index = SIZE_MAX;
+
+    if (!cm || !node || node->inbound ||
+        node->state >= PEER_HANDSHAKE_COMPLETE)
+        return;
+    if (!connman_find_addnode_index(cm, &node->addr, &addnode_index))
+        return;
+
+    connman_record_addnode_failure(cm, addnode_index,
+                                   CONNMAN_ADDNODE_FAILURE_PROTOCOL);
+    printf("Addnode %s: protocol failure before handshake (%s, state=%s)\n",
+           node->addr_name,
+           reason ? reason : "disconnect",
+           peer_state_name(node->state));
+}
+
+static bool connman_ready_addnode_from_other_group(struct connman *cm,
+                                                   uint16_t saturated_group,
+                                                   int64_t now)
+{
+    if (!cm)
+        return false;
+
+    for (int ai = 0; ai < cm->num_addnodes; ai++) {
+        const int cooldown = cm->addnode_backoff_sec[ai] > 0
+                           ? cm->addnode_backoff_sec[ai] : 30;
+        if (now - cm->addnode_last_attempt[ai] < cooldown)
+            continue;
+        if (connman_addnode_is_connected(cm, (size_t)ai))
+            continue;
+        if (!net_addr_is_ipv4(&cm->addnodes[ai].svc.addr))
+            return true;
+
+        uint16_t group = ipv4_group16(cm->addnodes[ai].svc.addr.ip);
+        if (group != saturated_group &&
+            connman_outbound_group_count(cm, group) <
+                MAX_OUTBOUND_PER_GROUP16)
+            return true;
+    }
+    return false;
 }
 
 bool connman_pick_next_outbound_target(
@@ -350,6 +632,14 @@ bool connman_pick_next_outbound_target(
             if (now - cm->addnode_last_attempt[ai] < cooldown)
                 continue;
 
+            if (net_addr_is_ipv4(&cm->addnodes[ai].svc.addr)) {
+                uint16_t group = ipv4_group16(cm->addnodes[ai].svc.addr.ip);
+                if (connman_outbound_group_count(cm, group) >=
+                        MAX_OUTBOUND_PER_GROUP16 &&
+                    connman_ready_addnode_from_other_group(cm, group, now))
+                    continue;
+            }
+
             result->addr = cm->addnodes[ai];
             *source = CONNMAN_TARGET_ADDNODE;
             *addnode_cursor = (ai + 1) % (size_t)cm->num_addnodes;
@@ -362,9 +652,11 @@ bool connman_pick_next_outbound_target(
     if (g_connect_only)
         return false;
 
-    if (!addrman_select(&cm->manager.addrman, false, result))
+    if (!connman_pick_addrman_target(cm, result))
         return false;
 
+    addrman_attempt(&cm->manager.addrman, &result->addr.svc,
+                    (int64_t)time(NULL));
     *source = CONNMAN_TARGET_ADDRMAN;
     return true;
 }
@@ -382,10 +674,29 @@ void connman_record_addnode_attempt(struct connman *cm,
         return;
     }
 
-    if (cm->addnode_backoff_sec[addnode_index] == 0)
-        cm->addnode_backoff_sec[addnode_index] = 120;
-    else if (cm->addnode_backoff_sec[addnode_index] < 1800)
+    connman_record_addnode_failure(cm, addnode_index,
+                                   CONNMAN_ADDNODE_FAILURE_TCP);
+}
+
+void connman_record_addnode_failure(struct connman *cm,
+                                    size_t addnode_index,
+                                    enum connman_addnode_failure_kind kind)
+{
+    if (!cm || addnode_index >= (size_t)cm->num_addnodes)
+        return;
+
+    cm->addnode_last_attempt[addnode_index] = (int64_t)time(NULL);
+    if (kind == CONNMAN_ADDNODE_FAILURE_PROTOCOL)
+        cm->addnode_protocol_failures[addnode_index]++;
+    else
+        cm->addnode_tcp_failures[addnode_index]++;
+
+    if (cm->addnode_backoff_sec[addnode_index] == 0) {
+        cm->addnode_backoff_sec[addnode_index] =
+            kind == CONNMAN_ADDNODE_FAILURE_PROTOCOL ? 900 : 120;
+    } else if (cm->addnode_backoff_sec[addnode_index] < 1800) {
         cm->addnode_backoff_sec[addnode_index] *= 2;
+    }
 
     if (cm->addnode_backoff_sec[addnode_index] > 1800)
         cm->addnode_backoff_sec[addnode_index] = 1800;
@@ -466,9 +777,15 @@ static void *thread_open_connections(void *arg)
                     addr.svc.port = pick->port;
                     addr.nServices = pick->services;
                     addr.nTime = (uint32_t)time(NULL);
+                    peer_lifecycle_note_attempt(&addr,
+                                                PEER_LIFECYCLE_SOURCE_ZCL23_DB);
                     struct p2p_node *node = connect_node(&cm->manager,
                                                           &addr, NULL);
-                    if (node) tried_zcl23 = true;
+                    if (node) {
+                        peer_lifecycle_note_connected(
+                            node, PEER_LIFECYCLE_SOURCE_ZCL23_DB);
+                        tried_zcl23 = true;
+                    }
                 }
             }
         }
@@ -519,13 +836,12 @@ static void *thread_open_connections(void *arg)
             zcl_mutex_lock(&cm->manager.cs_nodes);
             for (size_t ni = 0; ni < cm->manager.num_nodes; ni++) {
                 struct p2p_node *n = cm->manager.nodes[ni];
-                if (!n->disconnect &&
-                    net_addr_eq(&n->addr.svc.addr, &info.addr.svc.addr)) {
+                if (connman_node_conflicts_with_target(n, &info.addr)) {
                     already_connected = true;
                     if (n->addr.svc.port != info.addr.svc.port) {
                         char skip_buf[64];
                         net_addr_to_string(&info.addr.svc.addr, skip_buf, sizeof(skip_buf));
-                        printf("Skipping %s — already connected inbound\n", skip_buf);
+                        printf("Skipping %s — already connected outbound\n", skip_buf);
                     }
                     break;
                 }
@@ -556,8 +872,12 @@ static void *thread_open_connections(void *arg)
             net_addr_to_string(&info.addr.svc.addr, ipbuf, sizeof(ipbuf));
             if (source == CONNMAN_TARGET_ADDNODE) {
                 net_service_to_string(&info.addr.svc, dest, sizeof(dest));
+                peer_lifecycle_note_attempt(&info.addr,
+                                            PEER_LIFECYCLE_SOURCE_ADDNODE);
                 node = connect_node(&cm->manager, &info.addr, dest);
             } else {
+                peer_lifecycle_note_attempt(&info.addr,
+                                            PEER_LIFECYCLE_SOURCE_ADDRMAN);
                 node = connect_node(&cm->manager, &info.addr, NULL);
             }
 
@@ -573,6 +893,11 @@ static void *thread_open_connections(void *arg)
             } else {
                 if (source == CONNMAN_TARGET_ADDNODE)
                     connman_record_addnode_attempt(cm, addnode_index, true);
+                peer_lifecycle_note_connected(
+                    node,
+                    source == CONNMAN_TARGET_ADDNODE
+                        ? PEER_LIFECYCLE_SOURCE_ADDNODE
+                        : PEER_LIFECYCLE_SOURCE_ADDRMAN);
                 printf("Outbound diversity: connected to %s:%u (%zu/%d outbound)\n",
                        ipbuf, info.addr.svc.port, outbound + 1,
                        MAX_OUTBOUND_CONNECTIONS);
@@ -697,6 +1022,8 @@ static void *thread_socket_handler(void *arg)
                 if (n > 0) {
                     if (!p2p_node_receive_bytes(node, buf, (unsigned int)n,
                                                 cm->manager.message_start)) {
+                        connman_note_addnode_prehandshake_disconnect(
+                            cm, node, "message-parse");
                         node->disconnect = true;
                     }
                     node->last_recv = GetTime();
@@ -706,11 +1033,16 @@ static void *thread_socket_handler(void *arg)
                         peer_bandwidth_consume(&g_peer_bw, bw_id,
                                                PEER_BW_DOWN, (size_t)n);
                 } else if (n == 0) {
+                    connman_note_addnode_prehandshake_disconnect(
+                        cm, node, "remote-close");
                     node->disconnect = true;
                 } else {
                     int err = errno;
-                    if (err != EAGAIN && err != EWOULDBLOCK && err != EINTR)
+                    if (err != EAGAIN && err != EWOULDBLOCK && err != EINTR) {
+                        connman_note_addnode_prehandshake_disconnect(
+                            cm, node, "recv-error");
                         node->disconnect = true;
+                    }
                 }
                 /* If disconnecting, clean up messages while holding lock */
                 if (node->disconnect) {
@@ -743,8 +1075,11 @@ static void *thread_socket_handler(void *arg)
             }
 
             /* POLLHUP/POLLERR — peer disconnected or socket error */
-            if (rev & (POLLHUP | POLLERR))
+            if ((rev & (POLLHUP | POLLERR)) && !node->disconnect) {
+                connman_note_addnode_prehandshake_disconnect(
+                    cm, node, "poll-hup-err");
                 node->disconnect = true;
+            }
         }
         /* Free deferred nodes (still under cs_nodes lock). refs
          * held by a parallel message-handler snapshot re-park the node
@@ -788,15 +1123,9 @@ static void *thread_socket_handler(void *arg)
 
                 /* Addnode peers get longer timeout (10 min) since they
                  * auto-reconnect anyway and we want them stable */
-                bool is_addnode = false;
-                for (int ai = 0; ai < cm->num_addnodes; ai++) {
-                    if (net_addr_eq(&n->addr.svc.addr,
-                                    &cm->addnodes[ai].svc.addr) &&
-                        n->addr.svc.port == cm->addnodes[ai].svc.port) {
-                        is_addnode = true;
-                        break;
-                    }
-                }
+                size_t addnode_index = SIZE_MAX;
+                bool is_addnode =
+                    connman_find_addnode_index(cm, &n->addr, &addnode_index);
                 int timeout = is_addnode ? 600 : 120;
 
                 if (n->state >= PEER_HANDSHAKE_COMPLETE &&
@@ -806,6 +1135,7 @@ static void *thread_socket_handler(void *arg)
                                 "inactivity %llds state=%s",
                                 (long long)(now_check - n->last_recv),
                                 peer_state_name(n->state));
+                    peer_lifecycle_note_timeout(n, "inactivity");
                     printf("Peer %s: timeout (no data for %llds)\n",
                            n->addr_name,
                            (long long)(now_check - n->last_recv));
@@ -836,6 +1166,10 @@ static void *thread_socket_handler(void *arg)
                     event_emitf(EV_TCP_TIMEOUT, (uint32_t)n->id,
                                 "tcp_connect %llds state=connecting",
                                 (long long)(now_check - n->time_connected));
+                    peer_lifecycle_note_timeout(n, "tcp_connect");
+                    if (is_addnode)
+                        connman_record_addnode_failure(
+                            cm, addnode_index, CONNMAN_ADDNODE_FAILURE_TCP);
                     n->disconnect = true;
                     continue;
                 }
@@ -865,6 +1199,11 @@ static void *thread_socket_handler(void *arg)
                            n->version,
                            peer_state_name(n->state),
                            n->inbound ? "inbound" : "outbound");
+                    peer_lifecycle_note_timeout(n, "handshake");
+                    if (is_addnode)
+                        connman_record_addnode_failure(
+                            cm, addnode_index,
+                            CONNMAN_ADDNODE_FAILURE_PROTOCOL);
                     n->disconnect = true;
                 }
             }
@@ -879,6 +1218,7 @@ static void *thread_socket_handler(void *arg)
                             node->addr_name,
                             peer_state_name(node->state),
                             node->misbehavior);
+                peer_lifecycle_note_disconnected(node, "cleanup");
 
                 /* Re-queue any in-flight blocks from this peer */
                 {
@@ -1118,12 +1458,12 @@ bool connman_init(struct connman *cm, const struct chain_params *params,
     memcpy(cm->manager.message_start, params->pchMessageStart,
            MESSAGE_START_SIZE);
     cm->manager.default_port = (uint16_t)params->nDefaultPort;
-    cm->manager.local_services = NODE_NETWORK;
+    cm->manager.local_services = NODE_NETWORK | NODE_ZCL23;
     if (bip37_enabled())
         cm->manager.local_services |= NODE_BLOOM;
     cm->manager.local_host_nonce = GetRand(UINT64_MAX);
     snprintf(cm->manager.sub_version, MAX_SUBVERSION_LENGTH,
-             "/ZClassic-C23:1.0.0/");
+             "/MagicBean:2.1.2-beta1/ZClassic-C23:1.0.0/");
 
     return true;
 }
@@ -1472,7 +1812,11 @@ void connman_open_connection(struct connman *cm,
      * This allows connecting to localhost (e.g. local zclassicd peer). */
     char dest[64];
     net_service_to_string(&addr->svc, dest, sizeof(dest));
-    connect_node(&cm->manager, (struct net_address *)addr, dest);
+    peer_lifecycle_note_attempt(addr, PEER_LIFECYCLE_SOURCE_MANUAL);
+    struct p2p_node *node = connect_node(&cm->manager,
+                                         (struct net_address *)addr, dest);
+    if (node)
+        peer_lifecycle_note_connected(node, PEER_LIFECYCLE_SOURCE_MANUAL);
 }
 
 size_t connman_get_node_count(const struct connman *cm)
@@ -1507,6 +1851,106 @@ int connman_max_peer_height(struct connman *cm)
     }
     zcl_mutex_unlock(&cm->manager.cs_nodes);
     return max_height;
+}
+
+void connman_get_outbound_health(struct connman *cm,
+                                 struct connman_outbound_health *out)
+{
+    if (!out) return;
+    memset(out, 0, sizeof(*out));
+    if (!cm) return;
+
+    out->addnode_count = cm->num_addnodes > 0 ? (size_t)cm->num_addnodes : 0;
+    for (int i = 0; i < cm->num_addnodes; i++) {
+        out->addnode_tcp_failures += cm->addnode_tcp_failures[i];
+        out->addnode_protocol_failures +=
+            cm->addnode_protocol_failures[i];
+        if (cm->addnode_backoff_sec[i] > 0) {
+            out->addnode_backoff_active++;
+            if (cm->addnode_backoff_sec[i] > out->addnode_backoff_max_sec)
+                out->addnode_backoff_max_sec = cm->addnode_backoff_sec[i];
+        }
+    }
+
+    uint16_t groups[DEFAULT_MAX_PEER_CONNECTIONS];
+    size_t group_counts[DEFAULT_MAX_PEER_CONNECTIONS];
+    size_t num_groups = 0;
+    uint16_t healthy_groups[DEFAULT_MAX_PEER_CONNECTIONS];
+    size_t healthy_group_counts[DEFAULT_MAX_PEER_CONNECTIONS];
+    size_t healthy_num_groups = 0;
+    memset(groups, 0, sizeof(groups));
+    memset(group_counts, 0, sizeof(group_counts));
+    memset(healthy_groups, 0, sizeof(healthy_groups));
+    memset(healthy_group_counts, 0, sizeof(healthy_group_counts));
+
+    zcl_mutex_lock(&cm->manager.cs_nodes);
+    for (size_t i = 0; i < cm->manager.num_nodes; i++) {
+        const struct p2p_node *n = cm->manager.nodes[i];
+        if (!n || n->disconnect)
+            continue;
+
+        bool handshaked = n->state >= PEER_HANDSHAKE_COMPLETE;
+        if (n->inbound) {
+            out->inbound_total++;
+            if (handshaked)
+                out->inbound_healthy++;
+            else
+                out->inbound_handshake_incomplete++;
+            continue;
+        }
+
+        out->outbound_total++;
+        if (n->state == PEER_CONNECTING)
+            out->connecting++;
+        if (n->state < PEER_HANDSHAKE_COMPLETE)
+            out->handshake_incomplete++;
+        else
+            out->healthy++;
+
+        if (net_addr_is_ipv4(&n->addr.svc.addr)) {
+            uint16_t group = ipv4_group16(n->addr.svc.addr.ip);
+            size_t gi = 0;
+            for (; gi < num_groups; gi++) {
+                if (groups[gi] == group)
+                    break;
+            }
+            if (gi == num_groups &&
+                num_groups < DEFAULT_MAX_PEER_CONNECTIONS) {
+                groups[num_groups] = group;
+                group_counts[num_groups] = 0;
+                num_groups++;
+            }
+            if (gi < num_groups) {
+                group_counts[gi]++;
+                if (group_counts[gi] > out->ipv4_max_group_size)
+                    out->ipv4_max_group_size = group_counts[gi];
+            }
+            if (handshaked) {
+                size_t hgi = 0;
+                for (; hgi < healthy_num_groups; hgi++) {
+                    if (healthy_groups[hgi] == group)
+                        break;
+                }
+                if (hgi == healthy_num_groups &&
+                    healthy_num_groups < DEFAULT_MAX_PEER_CONNECTIONS) {
+                    healthy_groups[healthy_num_groups] = group;
+                    healthy_group_counts[healthy_num_groups] = 0;
+                    healthy_num_groups++;
+                }
+                if (hgi < healthy_num_groups) {
+                    healthy_group_counts[hgi]++;
+                    if (healthy_group_counts[hgi] >
+                        out->healthy_ipv4_max_group_size)
+                        out->healthy_ipv4_max_group_size =
+                            healthy_group_counts[hgi];
+                }
+            }
+        }
+    }
+    zcl_mutex_unlock(&cm->manager.cs_nodes);
+
+    out->ipv4_group_count = num_groups;
+    out->healthy_ipv4_group_count = healthy_num_groups;
 }
 
 struct peer_bandwidth *connman_peer_bandwidth(void)
