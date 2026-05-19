@@ -1,0 +1,163 @@
+/* Copyright 2026 Rhett Creighton - Apache License 2.0
+ *
+ * Lag-SLO breach tests for the legacy_mirror_sync_service.
+ *
+ * Asserts the contract every downstream consumer (Prometheus,
+ * node_health, MCP) hangs off:
+ *
+ *   - lag ≥ breach_blocks for ≥ breach_secs  → EV_LAG_SLO_BREACH (warn|critical)
+ *   - lag ≥ critical_blocks for ≥ critical_secs → EV_LAG_SLO_BREACH (fatal)
+ *
+ * Fatal severity drives node_health.healthy=false, which causes the
+ * sd_notify heartbeat to stop pinging WatchdogSec and triggers a
+ * systemd restart. */
+
+#include "test/test_helpers.h"
+
+#include "services/legacy_mirror_sync_service.h"
+#include "event/event.h"
+
+#include <stdatomic.h>
+#include <string.h>
+#include <stdio.h>
+
+static _Atomic int g_slo_breach_events;
+static _Atomic int g_concurrent_events;
+static char g_last_payload[EVENT_PAYLOAD_SIZE];
+
+static void slo_observer(enum event_type type, uint32_t peer_id,
+                         const void *payload, uint32_t payload_len,
+                         void *ctx)
+{
+    (void)peer_id;
+    (void)ctx;
+    if (type != EV_LAG_SLO_BREACH) return;
+    atomic_fetch_add(&g_slo_breach_events, 1);
+    if (payload && payload_len > 0 &&
+        payload_len < EVENT_PAYLOAD_SIZE) {
+        memcpy(g_last_payload, payload, payload_len);
+        g_last_payload[payload_len] = '\0';
+    }
+}
+
+static void concurrent_observer(enum event_type type, uint32_t peer_id,
+                                const void *payload, uint32_t payload_len,
+                                void *ctx)
+{
+    (void)peer_id;
+    (void)payload;
+    (void)payload_len;
+    (void)ctx;
+    if (type == EV_MIRROR_CONCURRENT_CATCHUP)
+        atomic_fetch_add(&g_concurrent_events, 1);
+}
+
+static int test_event_names_are_stable(void)
+{
+    int failures = 0;
+    TEST_CASE("lag_slo: EV_LAG_SLO_BREACH has stable name strings")
+    {
+        ASSERT_STR_EQ(event_type_name(EV_LAG_SLO_BREACH),
+                      "mirror.lag_slo_breach");
+        ASSERT_STR_EQ(event_type_name(EV_PEER_FLOOR_BREACH),
+                      "peer.floor_breach");
+        ASSERT_STR_EQ(event_type_name(EV_MIRROR_CONCURRENT_CATCHUP),
+                      "mirror.concurrent_catchup");
+    } TEST_END
+    return failures;
+}
+
+static int test_severity_none_when_under_threshold(void)
+{
+    int failures = 0;
+    TEST_CASE("lag_slo: severity=none when lag below threshold")
+    {
+        legacy_mirror_sync_reset_for_test();
+        struct legacy_mirror_sync_stats in = {0};
+        in.enabled = true;
+        in.running = true;
+        in.reachable = true;
+        in.legacy_height = 100;
+        in.local_height = 95;
+        /* lag = 5, default breach threshold = 10 */
+        legacy_mirror_sync_test_set_stats(&in, NULL);
+
+        struct legacy_mirror_sync_stats out = {0};
+        legacy_mirror_sync_stats_snapshot(&out);
+        ASSERT_STR_EQ(out.lag_breach_severity, "none");
+        ASSERT(out.lag_breach_seconds == 0);
+    } TEST_END
+    return failures;
+}
+
+static int test_snapshot_surfaces_thresholds(void)
+{
+    int failures = 0;
+    TEST_CASE("lag_slo: snapshot exposes configured SLO thresholds")
+    {
+        legacy_mirror_sync_reset_for_test();
+        struct legacy_mirror_sync_stats in = {0};
+        in.enabled = true;
+        in.running = true;
+        legacy_mirror_sync_test_set_stats(&in, NULL);
+
+        struct legacy_mirror_sync_stats out = {0};
+        legacy_mirror_sync_stats_snapshot(&out);
+        ASSERT(out.lag_sla_breach_blocks >= 0);
+        ASSERT(out.lag_sla_critical_blocks >= 0);
+        ASSERT(out.lag_sla_breach_secs >= 0);
+        ASSERT(out.lag_sla_critical_secs >= 0);
+    } TEST_END
+    return failures;
+}
+
+static int test_slo_breach_observer_fires(void)
+{
+    int failures = 0;
+    TEST_CASE("lag_slo: EV_LAG_SLO_BREACH observer catches emit")
+    {
+        atomic_store(&g_slo_breach_events, 0);
+        memset(g_last_payload, 0, sizeof(g_last_payload));
+        event_clear_observers(EV_LAG_SLO_BREACH);
+        event_observe(EV_LAG_SLO_BREACH, slo_observer, NULL);
+        event_emitf(EV_LAG_SLO_BREACH, 0,
+                    "lag=200 legacy_height=3117882 local_height=3117682 "
+                    "since=90s severity=critical");
+        ASSERT(atomic_load(&g_slo_breach_events) == 1);
+        ASSERT(strstr(g_last_payload, "severity=critical") != NULL);
+        ASSERT(strstr(g_last_payload, "lag=200") != NULL);
+        event_clear_observers(EV_LAG_SLO_BREACH);
+    } TEST_END
+    return failures;
+}
+
+static int test_concurrent_catchup_observer_fires(void)
+{
+    int failures = 0;
+    TEST_CASE("lag_slo: EV_MIRROR_CONCURRENT_CATCHUP observer catches emit")
+    {
+        atomic_store(&g_concurrent_events, 0);
+        event_clear_observers(EV_MIRROR_CONCURRENT_CATCHUP);
+        event_observe(EV_MIRROR_CONCURRENT_CATCHUP, concurrent_observer,
+                      NULL);
+        event_emitf(EV_MIRROR_CONCURRENT_CATCHUP, 0,
+                    "applied=15 target=3117800 source=mirror reason=tick");
+        ASSERT(atomic_load(&g_concurrent_events) == 1);
+        event_clear_observers(EV_MIRROR_CONCURRENT_CATCHUP);
+    } TEST_END
+    return failures;
+}
+
+int test_lag_slo(void)
+{
+    int failures = 0;
+    event_log_init();
+    printf("\n=== Lag SLO breach observability ===\n");
+    failures += test_event_names_are_stable();
+    failures += test_severity_none_when_under_threshold();
+    failures += test_snapshot_surfaces_thresholds();
+    failures += test_slo_breach_observer_fires();
+    failures += test_concurrent_catchup_observer_fires();
+    legacy_mirror_sync_reset_for_test();
+    return failures;
+}

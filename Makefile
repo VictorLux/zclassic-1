@@ -442,7 +442,7 @@ ci-sync-smoke: zclassic23
 #   2. `wal_checkpoint` — truncate WAL before SIGTERM so SQLite doesn't
 #      recover a half-checkpointed journal on boot.
 #   3. `tools/deploy_verify.sh` — poll `zclassic-cli getblockcount` until the
-#      node answers or a 30s deadline elapses.
+#      node answers and diagnostics are ready, with a startup-sized deadline.
 #
 # The wal_checkpoint step calls the in-tree tools/wal_checkpoint binary
 # (P12.4 — was an inline `sqlite3(1)` CLI invocation before, which failed
@@ -783,7 +783,15 @@ check-rpc-registrar:
 	@echo "══ LINT: rpc_table_must_append in registrars ══"
 	@./tools/scripts/check_rpc_registrar.sh
 
-lint: check-malloc check-silent-errors check-raw-sqlite check-raw-malloc check-coins-lookup-nullcheck check-observability-pairing check-silent-errors-services check-silent-errors-controllers check-before-save-hooks check-pthread-create check-model-validation check-long-functions check-rpc-registrar
+# Lag-SLO observability: the legacy_mirror_sync_service must emit
+# EV_LAG_SLO_BREACH and EV_MIRROR_CONCURRENT_CATCHUP, and the
+# chain_advance_coordinator must honor mirror_lag_sla_breach_blocks.
+# Prevents the "silent lag" regression we shipped this gate to lock down.
+check-lag-slo-observable:
+	@echo "══ LINT: lag SLO observability ══"
+	@./tools/scripts/check_lag_slo_observable.sh
+
+lint: check-malloc check-silent-errors check-raw-sqlite check-raw-malloc check-coins-lookup-nullcheck check-observability-pairing check-silent-errors-services check-silent-errors-controllers check-before-save-hooks check-pthread-create check-model-validation check-long-functions check-rpc-registrar check-lag-slo-observable
 	@echo "══ LINT: all checks passed ══"
 
 ci: lint zclassic23 test_zcl

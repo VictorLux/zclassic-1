@@ -51,6 +51,27 @@ int main(void)
                failures);
         return failures ? 1 : 0;
     }
+    if (only && strcmp(only, "chain_advance_coordinator") == 0) {
+        printf("[test] ZCL_TEST_ONLY=chain_advance_coordinator — running source policy only\n");
+        failures += test_chain_advance_coordinator();
+        printf("\n=== chain_advance_coordinator subset complete: %d failure(s) ===\n",
+               failures);
+        return failures ? 1 : 0;
+    }
+    if (only && strcmp(only, "connman_addnode") == 0) {
+        printf("[test] ZCL_TEST_ONLY=connman_addnode — running addnode fallback only\n");
+        failures += test_connman_addnode_fallback();
+        printf("\n=== connman_addnode subset complete: %d failure(s) ===\n",
+               failures);
+        return failures ? 1 : 0;
+    }
+    if (only && strcmp(only, "node_health") == 0) {
+        printf("[test] ZCL_TEST_ONLY=node_health — running node health only\n");
+        failures += test_node_health_service();
+        printf("\n=== node_health subset complete: %d failure(s) ===\n",
+               failures);
+        return failures ? 1 : 0;
+    }
     if (only && strcmp(only, "shielded_payment") == 0) {
         printf("[test] ZCL_TEST_ONLY=shielded_payment — running shielded-payment gate only\n");
         { extern int test_shielded_payment_gate(void);
@@ -74,6 +95,13 @@ int main(void)
                failures);
         return failures ? 1 : 0;
     }
+    if (only && strcmp(only, "event") == 0) {
+        printf("[test] ZCL_TEST_ONLY=event — running event subset\n");
+        failures += test_event();
+        printf("\n=== event subset complete: %d failure(s) ===\n",
+               failures);
+        return failures ? 1 : 0;
+    }
     if (only && strcmp(only, "persistence") == 0) {
         printf("[test] ZCL_TEST_ONLY=persistence — running persistence subset\n");
         failures += test_schema_migration();
@@ -92,6 +120,13 @@ int main(void)
         { extern int test_wallet_canary(void); failures += test_wallet_canary(); }
         failures += test_unclean_shutdown_advance();
         printf("\n=== Persistence subset complete: %d failure(s) ===\n",
+               failures);
+        return failures ? 1 : 0;
+    }
+    if (only && strcmp(only, "sqlite") == 0) {
+        printf("[test] ZCL_TEST_ONLY=sqlite — running SQLite model subset\n");
+        failures += test_sqlite();
+        printf("\n=== sqlite subset complete: %d failure(s) ===\n",
                failures);
         return failures ? 1 : 0;
     }
@@ -180,10 +215,31 @@ int main(void)
                failures);
         return failures ? 1 : 0;
     }
+    if (only && strcmp(only, "make_lint_gates") == 0) {
+        printf("[test] ZCL_TEST_ONLY=make_lint_gates — running lint gate subset\n");
+        failures += test_make_lint_gates();
+        printf("\n=== make_lint_gates subset complete: %d failure(s) ===\n",
+               failures);
+        return failures ? 1 : 0;
+    }
     if (only && strcmp(only, "zclassicd_oracle") == 0) {
         printf("[test] ZCL_TEST_ONLY=zclassicd_oracle — running oracle subset\n");
         failures += test_zclassicd_oracle();
         printf("\n=== zclassicd_oracle subset complete: %d failure(s) ===\n",
+               failures);
+        return failures ? 1 : 0;
+    }
+    if (only && strcmp(only, "sync_watchdog") == 0) {
+        printf("[test] ZCL_TEST_ONLY=sync_watchdog — running watchdog subset\n");
+        failures += test_sync_watchdog();
+        printf("\n=== sync_watchdog subset complete: %d failure(s) ===\n",
+               failures);
+        return failures ? 1 : 0;
+    }
+    if (only && strcmp(only, "syncdiag_rpc") == 0) {
+        printf("[test] ZCL_TEST_ONLY=syncdiag_rpc — running sync RPC diagnostics subset\n");
+        failures += test_syncdiag_rpc();
+        printf("\n=== syncdiag_rpc subset complete: %d failure(s) ===\n",
                failures);
         return failures ? 1 : 0;
     }
@@ -239,7 +295,15 @@ int main(void)
     if (only && strcmp(only, "net") == 0) {
         printf("[test] ZCL_TEST_ONLY=net — running net subset\n");
         failures += test_net();
+        failures += test_peer_lifecycle();
         printf("\n=== net subset complete: %d failure(s) ===\n",
+               failures);
+        return failures ? 1 : 0;
+    }
+    if (only && strcmp(only, "peer_lifecycle") == 0) {
+        printf("[test] ZCL_TEST_ONLY=peer_lifecycle — running peer lifecycle subset\n");
+        failures += test_peer_lifecycle();
+        printf("\n=== peer_lifecycle subset complete: %d failure(s) ===\n",
                failures);
         return failures ? 1 : 0;
     }
@@ -346,6 +410,7 @@ int main(void)
     failures += test_sync_state_fsm();
     failures += test_heartbeat();
     failures += test_chain_advance();
+    failures += test_chain_advance_coordinator();
     { extern int test_chain_advance_atomicity(void);
       failures += test_chain_advance_atomicity(); }
     failures += test_local_chain_ingest();
@@ -364,6 +429,7 @@ int main(void)
     failures += test_db_validators();
     failures += test_peer_scoring();
     failures += test_peer_bandwidth();
+    failures += test_peer_lifecycle();
     failures += test_secrets_hygiene();
     failures += test_block_index_integrity();
     failures += test_wallet_backup();
@@ -439,6 +505,7 @@ int main(void)
     failures += test_msg_handlers();
     failures += test_zclassicd_oracle();
     failures += test_header_probe_service();
+    { extern int test_lag_slo(void); failures += test_lag_slo(); }
 
     /* Spec-based user story tests */
     failures += spec_wallet_dashboard();
