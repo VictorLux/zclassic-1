@@ -33,6 +33,11 @@ enum event_type {
     EV_PEER_MISBEHAVE,           /* payload: score(i32) + total(i32) + reason */
     EV_PEER_BANNED,              /* payload: duration(i64) */
     EV_PEER_VERSION,             /* payload: proto(i32) + height(i32) + subver */
+    EV_PEER_HANDSHAKE_ATTEMPT,   /* payload: addr/source/version-sent details */
+    EV_PEER_HANDSHAKE_SUCCESS,   /* payload: addr/duration/services/subver */
+    EV_PEER_HANDSHAKE_FAILURE,   /* payload: addr/state/reason */
+    EV_PEER_CONNECT_TIMEOUT,     /* payload: addr/state/reason */
+    EV_PEER_CACHE_SKIPPED,       /* payload: advisory peer cache write skipped */
 
     /* ── Sync state machine ─────────────────────────── */
     EV_SYNC_STATE_CHANGE,        /* payload: from(u8) + to(u8) + reason string */
@@ -195,6 +200,15 @@ enum event_type {
     EV_ANCHOR_PANIC,             /* payload: "h=N our=<hex> their=<hex>" — evidence prefix violated */
     EV_CHAIN_HALTED,             /* payload: "reason=... distinct_heights=N" — chain_advance refusing */
 
+    /* ── Chain advance coordinator ──────────────────────────────── */
+    EV_CHAIN_ADVANCE_DECISION,   /* payload: "source=... decision=... reason=... local=N target=N" */
+    EV_MIRROR_CONSENSUS_DECISION,/* payload: "op=override|blocker auth=local mir=advisory reason=..." */
+
+    /* ── Lag SLO + peer floor (redundancy guarantees) ───────────── */
+    EV_PEER_FLOOR_BREACH,        /* payload: "healthy=N min=N since=Ns" — < floor peers for too long; loud on every cycle while breached */
+    EV_LAG_SLO_BREACH,           /* payload: "lag=N legacy_height=N local_height=N since=Ns severity=warn|critical|fatal" — zclassic23 behind zclassicd past SLO; one emission per breach episode per severity */
+    EV_MIRROR_CONCURRENT_CATCHUP,/* payload: "applied=N target=N source=mirror reason=..." — mirror running concurrently with P2P, not gated on local exhaustion */
+
     EV_NUM_TYPES                 /* sentinel — must be last */
 };
 
@@ -226,7 +240,7 @@ enum peer_state {
 
 /* ── Event structure ────────────────────────────────────── */
 
-#define EVENT_PAYLOAD_SIZE 160
+#define EVENT_PAYLOAD_SIZE 256
 
 struct event {
     _Atomic uint64_t  sequence;      /* monotonic, publish marker */

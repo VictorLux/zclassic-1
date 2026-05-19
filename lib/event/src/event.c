@@ -305,6 +305,11 @@ const char *event_type_name(enum event_type type)
         [EV_PEER_MISBEHAVE]          = "peer.misbehave",
         [EV_PEER_BANNED]             = "peer.banned",
         [EV_PEER_VERSION]            = "peer.version",
+        [EV_PEER_HANDSHAKE_ATTEMPT]  = "peer.handshake_attempt",
+        [EV_PEER_HANDSHAKE_SUCCESS]  = "peer.handshake_success",
+        [EV_PEER_HANDSHAKE_FAILURE]  = "peer.handshake_failure",
+        [EV_PEER_CONNECT_TIMEOUT]    = "peer.connect_timeout",
+        [EV_PEER_CACHE_SKIPPED]      = "peer.cache_skipped",
         [EV_SYNC_STATE_CHANGE]       = "sync.state_change",
         [EV_HEADERS_RECEIVED]        = "sync.headers_received",
         [EV_HEADERS_REJECTED]        = "sync.headers_rejected",
@@ -407,6 +412,11 @@ const char *event_type_name(enum event_type type)
         [EV_SAPLING_PERSIST_FAIL]    = "val.sapling_persist_fail",
         [EV_ORACLE_AGREE]            = "oracle.agree",
         [EV_ORACLE_DISAGREE]         = "oracle.disagree",
+        [EV_CHAIN_ADVANCE_DECISION]  = "chain.advance_decision",
+        [EV_MIRROR_CONSENSUS_DECISION] = "mirror.consensus_decision",
+        [EV_PEER_FLOOR_BREACH]       = "peer.floor_breach",
+        [EV_LAG_SLO_BREACH]          = "mirror.lag_slo_breach",
+        [EV_MIRROR_CONCURRENT_CATCHUP] = "mirror.concurrent_catchup",
     };
     if (type >= 0 && type < EV_NUM_TYPES && names[type])
         return names[type];
