@@ -1583,6 +1583,7 @@ bool app_init(struct app_context *ctx)
              &g_coins_tip,
              &g_node_db,
              NULL);
+    csr_set_db_service(csr_instance(), &g_db_service);
 
     /* Wire UTXO commitment: load from SQLite and set pointer for
      * persistence on flush. */
@@ -1594,6 +1595,10 @@ bool app_init(struct app_context *ctx)
 
     /* skip_activate removed — activation controller is the authority */
     bool fast_restart = false;
+    bool boot_restored_authority_tip = false;
+    int boot_restored_authority_height = -1;
+    struct uint256 boot_restored_authority_hash;
+    memset(&boot_restored_authority_hash, 0, sizeof(boot_restored_authority_hash));
 
     /* Block index is now cached in SQLite (load_block_index_sqlite).
      * The full index is saved on shutdown/save, enabling instant restart
@@ -2070,16 +2075,25 @@ bool app_init(struct app_context *ctx)
      * This must run AFTER block index is loaded but BEFORE header sync.
      * Without this, header processing fixes heights 160-at-a-time which
      * is far too slow for 3M+ entries with wrong heights. */
+    int index_repaired = 0;
     if (g_state.map_block_index.size > 100)
-        block_index_repair_heights(&g_state);
+        index_repaired += block_index_repair_heights(&g_state);
 
     /* pprev chain repair: fix corrupted pprev pointers from LDB import.
      * Reads hashPrevBlock from block data on disk and corrects pprev.
      * Must run after height repair (needs correct heights for sort). */
     if (g_state.map_block_index.size > 100) {
         int pprev_fixed = block_index_repair_pprev(&g_state, ctx->datadir);
-        if (pprev_fixed > 0)
-            block_index_repair_heights(&g_state);
+        if (pprev_fixed > 0) {
+            index_repaired += pprev_fixed;
+            index_repaired += block_index_repair_heights(&g_state);
+        }
+    }
+
+    if (index_repaired > 0 && g_state.map_block_index.size > 1000) {
+        printf("Block index repaired: saving canonical flat file "
+               "(%d repairs)\n", index_repaired);
+        save_block_index_flat(ctx->datadir, &g_state);
     }
 
     /* Block index integrity — verify sidecar SHA3 after all loads.
@@ -2275,6 +2289,25 @@ bool app_init(struct app_context *ctx)
         };
         struct chain_restore_result cr =
             utxo_recovery_restore_chain_tip(&uctx, scan_fallback);
+        if (cr.restored && cr.restored_height > 0) {
+            boot_restored_authority_tip = true;
+            boot_restored_authority_height = cr.restored_height;
+            boot_restored_authority_hash = cr.restored_hash;
+
+            if (!active_chain_tip(&g_state.chain_active) &&
+                !uint256_is_null(&boot_restored_authority_hash)) {
+                struct block_index *restored = block_map_find(
+                    &g_state.map_block_index, &boot_restored_authority_hash);
+                if (restored) {
+                    int populated = chain_restore_rebuild_active_chain(
+                        &g_state, restored, NULL);
+                    fprintf(stderr,
+                        "[boot] restored authority tip h=%d had no active "
+                        "chain slot after restore; reinstalled populated=%d\n",
+                        restored->nHeight, populated);
+                }
+            }
+        }
         if (cr.skip_activate) {
             if (cr.anchor_reason[0])
                 activation_set_anchor_active(&g_activation_ctl,
@@ -2310,10 +2343,23 @@ bool app_init(struct app_context *ctx)
             }
             if (arith_uint256_is_zero(&genesis->nChainWork))
                 genesis->nChainWork = GetBlockProof(genesis);
-            /* Set chain tip to genesis if no tip exists */
+            /* Set chain tip to genesis on true fresh boots only. If the
+             * coins/UTXO authority restored a non-genesis tip, never turn a
+             * cache-rebuild failure into a rollback to height 0: that makes
+             * valid historical UTXOs look stale and triggers destructive
+             * recovery paths. */
             if (!active_chain_tip(&g_state.chain_active)) {
-                if (boot_promote_tip_via_csr(genesis, "genesis_init",
-                                             false)) {
+                if (boot_restored_authority_tip) {
+                    fprintf(stderr,
+                        "[boot] skipped genesis_init: restored authority "
+                        "tip h=%d remains authoritative while active_chain "
+                        "is being rebuilt\n",
+                        boot_restored_authority_height);
+                    event_emitf(EV_BOOT_VALIDATION_FAILED, 0,
+                                "skip_genesis_init restored_authority_tip=%d",
+                                boot_restored_authority_height);
+                } else if (boot_promote_tip_via_csr(genesis, "genesis_init",
+                                                    false)) {
                     printf("Chain tip: initialized to genesis (height 0)\n");
                 }
             }
@@ -2980,15 +3026,26 @@ sapling_tree_boot_check_done:
         }
     }
     {
-        struct boot_phase bp_act;
-        boot_phase_begin(&bp_act, "activate_best_chain");
-        struct activation_exec_outcome outcome;
-        activation_request_connect(&g_activation_ctl, ACTIVATION_SRC_BOOT,
-                                   NULL, &outcome);
-        if (outcome.result == ACTIVATION_EXEC_FAILED)
-            fprintf(stderr, "Warning: Failed to activate best chain: %s\n",
-                    outcome.reason);
-        boot_phase_end(&bp_act);
+        int restored_h = active_chain_height(&g_state.chain_active);
+        if (boot_restored_authority_tip && restored_h > 1000) {
+            printf("[boot] skipping initial activate_best_chain after "
+                   "authority restore h=%d; coordinator will advance after "
+                   "RPC/P2P start\n",
+                   restored_h);
+            event_emitf(EV_BOOT_ACTIVATE, 0,
+                        "skip_initial_activate restored_authority_tip=%d",
+                        restored_h);
+        } else {
+            struct boot_phase bp_act;
+            boot_phase_begin(&bp_act, "activate_best_chain");
+            struct activation_exec_outcome outcome;
+            activation_request_connect(&g_activation_ctl, ACTIVATION_SRC_BOOT,
+                                       NULL, &outcome);
+            if (outcome.result == ACTIVATION_EXEC_FAILED)
+                fprintf(stderr, "Warning: Failed to activate best chain: %s\n",
+                        outcome.reason);
+            boot_phase_end(&bp_act);
+        }
     }
 
     /* final sweep. Post-activation is the last point at

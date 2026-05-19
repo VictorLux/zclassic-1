@@ -1,16 +1,25 @@
+#define _GNU_SOURCE  /* pthread_timedjoin_np */
+
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  * Runtime service initialization: mempool, P2P, RPC, Tor, HTTPS,
  * mining, wallet sync, shutdown, and utility functions. */
 
 #include "config/boot_internal.h"
 #include "services/chain_activation_controller.h"
+#include "services/chain_advance_coordinator.h"
 #include "services/chain_state_repository.h"
 #include "services/chain_tip.h"
 #include "services/gap_fill_service.h"
 #include "services/hodl_history_service.h"
 #include "services/rolling_anchor_service.h"
 #include "services/zclassicd_oracle_service.h"
+#include "services/header_probe_service.h"
+#include "services/legacy_mirror_sync_service.h"
+#include "services/node_health_service.h"
+#include "health/heartbeat.h"
+#include "util/sd_notify.h"
 #include "storage/disk_block_io.h"
+#include "models/block.h"
 #include "models/utxo.h"
 #include "models/mmb_leaf_store.h"
 #include "chain/chainparams.h"
@@ -54,12 +63,14 @@
 #include "net/onion_service.h"
 #include "net/peer_strategy.h"
 #include "net/tor_integration.h"
+#include "util/thread_registry.h"
 #include "validation/process_block.h"
 #include "event/event.h"
 #include "keys/key_io.h"
 #include "script/standard.h"
 #include "sapling/params_init.h"
 #include <netdb.h>
+#include <errno.h>
 
 /* msg_version.c — external IP advertisement to peers */
 extern void msg_version_set_external_ip(const char *ip_str, uint16_t port);
@@ -152,6 +163,7 @@ static void *payment_processor_thread(void *arg);
 static void *background_utxo_replay(void *arg);
 static void *build_snapshot_offer_thread(void *arg);
 static void *address_backfill_service_thread(void *arg);
+static void *projection_backfill_service_thread(void *arg);
 static size_t onion_request_adapter(const char *method, const char *path,
                                     const uint8_t *body, size_t body_len,
                                     uint8_t *response, size_t response_max,
@@ -261,6 +273,135 @@ static void boot_sync_watchdog_stop(void *ctx)
 {
     (void)ctx;
     sync_watchdog_stop();
+}
+
+static bool boot_header_probe_start(void *ctx)
+{
+    struct boot_svc_ctx *svc = ctx;
+    if (!svc)
+        return false;
+    struct header_probe_config cfg = {0};
+    /* Keep header_probe initialized/running for diagnostics and manual
+     * use, but leave lockstep catch-up ownership with legacy_mirror. */
+    cfg.lag_threshold = 1000000000;
+    if (!header_probe_init(&cfg, svc->state, svc->params))
+        return false;
+    if (header_probe_start()) {
+        printf("[header-probe] periodic header probe started\n");
+        return true;
+    }
+    return false;
+}
+
+static void boot_header_probe_stop(void *ctx)
+{
+    (void)ctx;
+    header_probe_stop();
+}
+
+static bool boot_legacy_mirror_start(void *ctx)
+{
+    struct boot_svc_ctx *svc = ctx;
+    if (!svc)
+        return false;
+    struct legacy_mirror_sync_config cfg = {0};
+    cfg.enabled = true;
+    if (!legacy_mirror_sync_init(&cfg, svc->state, svc->coins_tip,
+                                 svc->params, svc->datadir))
+        return false;
+    if (legacy_mirror_sync_start()) {
+        printf("[legacy-mirror] always-on mirror sync started\n");
+        return true;
+    }
+    return false;
+}
+
+static void boot_legacy_mirror_stop(void *ctx)
+{
+    (void)ctx;
+    legacy_mirror_sync_stop();
+}
+
+/* ── systemd watchdog heartbeat ─────────────────────────────────
+ * Pings WATCHDOG=1 on the systemd notify socket every WATCHDOG_USEC/2
+ * microseconds when node health is OK. When health degrades (mirror
+ * lag SLO fatal, tip_advance_age past deadman, etc.) the heartbeat
+ * stops and systemd's WatchdogSec=N timer trips, restarting the unit.
+ *
+ * No-op when NOTIFY_SOCKET is absent (e.g. CLI invocation). */
+static health_subsystem_id g_sd_watchdog_id = HEALTH_INVALID_ID;
+static struct boot_svc_ctx *g_sd_watchdog_ctx;
+
+static void boot_sd_watchdog_tick(void *ctx)
+{
+    struct boot_svc_ctx *svc = ctx;
+    if (!sd_notify_is_active() || !svc)
+        return;
+    struct node_health_snapshot snap = {0};
+    node_health_collect(&snap, svc->node_db, svc->state);
+    if (snap.healthy) {
+        sd_notify_watchdog_ping();
+    }
+    /* Refresh status line — useful for `systemctl status zclassic23`. */
+    char status[256];
+    snprintf(status, sizeof(status),
+             "h=%d peers=%zu mirror_lag=%lld sev=%s",
+             snap.tip_height, snap.peer_count,
+             (long long)snap.mirror_lag_blocks,
+             snap.mirror_lag_breach_severity[0]
+                 ? snap.mirror_lag_breach_severity : "none");
+    sd_notify_status(status);
+}
+
+static bool boot_sd_watchdog_start(void *ctx)
+{
+    struct boot_svc_ctx *svc = ctx;
+    if (!svc)
+        return false;
+    if (!sd_notify_init()) {
+        /* Not running under systemd notify supervision (e.g. invoked
+         * from a CLI). Silent success — the unit is functionally
+         * complete without WatchdogSec. */
+        return true;
+    }
+    g_sd_watchdog_ctx = svc;
+
+    /* Pick cadence: half the configured WatchdogSec, clamped to at
+     * least 5s so we never DoS systemd with too-frequent pings. When
+     * WATCHDOG_USEC is unset the unit didn't ask for a watchdog —
+     * still emit periodic STATUS= lines on a 30s cadence so operators
+     * see a live status in `systemctl status`. */
+    uint64_t wd_us = sd_notify_watchdog_usec();
+    int period_secs;
+    if (wd_us > 0) {
+        int64_t half = (int64_t)(wd_us / 2 / 1000000);
+        if (half < 5) half = 5;
+        if (half > 3600) half = 3600;
+        period_secs = (int)half;
+    } else {
+        period_secs = 30;
+    }
+    g_sd_watchdog_id = health_register_periodic("sd_watchdog", period_secs,
+                                                boot_sd_watchdog_tick, svc);
+    if (g_sd_watchdog_id == HEALTH_INVALID_ID)
+        return false;
+    sd_notify_ready();
+    sd_notify_status("zclassic23 started");
+    printf("[sd-watchdog] active, period=%ds WATCHDOG_USEC=%llu\n",
+           period_secs, (unsigned long long)wd_us);
+    return true;
+}
+
+static void boot_sd_watchdog_stop(void *ctx)
+{
+    (void)ctx;
+    if (g_sd_watchdog_id != HEALTH_INVALID_ID) {
+        health_unregister(g_sd_watchdog_id);
+        g_sd_watchdog_id = HEALTH_INVALID_ID;
+    }
+    if (sd_notify_is_active())
+        sd_notify_stopping("shutdown");
+    g_sd_watchdog_ctx = NULL;
 }
 
 static bool boot_gap_fill_start(void *ctx)
@@ -656,9 +797,23 @@ static bool boot_register_runtime_services(struct boot_svc_ctx *svc)
             .ctx = svc,
         },
         {
+            .name = "header_probe",
+            .start = boot_header_probe_start,
+            .stop = boot_header_probe_stop,
+            .ctx = svc,
+            .flags = ZCL_SERVICE_OPTIONAL,
+        },
+        {
             .name = "gap_fill",
             .start = boot_gap_fill_start,
             .stop = boot_gap_fill_stop,
+            .ctx = svc,
+            .flags = ZCL_SERVICE_OPTIONAL,
+        },
+        {
+            .name = "legacy_mirror",
+            .start = boot_legacy_mirror_start,
+            .stop = boot_legacy_mirror_stop,
             .ctx = svc,
             .flags = ZCL_SERVICE_OPTIONAL,
         },
@@ -673,6 +828,13 @@ static bool boot_register_runtime_services(struct boot_svc_ctx *svc)
             .name = "rolling_anchor",
             .start = boot_rolling_anchor_start,
             .stop = boot_rolling_anchor_stop,
+            .ctx = svc,
+            .flags = ZCL_SERVICE_OPTIONAL,
+        },
+        {
+            .name = "sd_watchdog",
+            .start = boot_sd_watchdog_start,
+            .stop = boot_sd_watchdog_stop,
             .ctx = svc,
             .flags = ZCL_SERVICE_OPTIONAL,
         },
@@ -697,22 +859,58 @@ static bool boot_start_thread_service(pthread_t *thread,
 {
     if (!thread || !started || !entry || *started)
         return false;
-    /* Generic boot service starter wrapper used by a single call site
-     * (boot_start_address_backfill_service); caller owns the pthread_t
-     * and joins it via boot_join_thread_service. A thread_registry_
-     * spawn_ex equivalent here would require a name-from-caller param;
-     * deferred to a focused follow-up. raw-pthread-ok */
+    /* Generic boot service starter wrapper for composition-owned helper
+     * threads. Callers own the pthread_t and join it explicitly. A
+     * thread_registry_spawn_ex equivalent here would require a
+     * name-from-caller param; deferred to a focused follow-up.
+     * raw-pthread-ok */
     if (pthread_create(thread, NULL, entry, arg) != 0)
         return false;
     *started = true;
     return true;
 }
 
-static void boot_join_thread_service(pthread_t *thread, bool *started)
+static void boot_join_deadline_from_now(struct timespec *ts, int timeout_sec)
+{
+    clock_gettime(CLOCK_REALTIME, ts);
+    if (timeout_sec < 0)
+        timeout_sec = 0;
+    ts->tv_sec += timeout_sec;
+}
+
+static bool boot_join_thread_bounded(pthread_t thread,
+                                     const char *name,
+                                     int timeout_sec)
+{
+    struct timespec deadline;
+    int rc;
+
+    boot_join_deadline_from_now(&deadline, timeout_sec);
+    rc = pthread_timedjoin_np(thread, NULL, &deadline);
+    if (rc == 0)
+        return true;
+
+    if (rc == ETIMEDOUT) {
+        fprintf(stderr,
+                "[shutdown] %s join timed out after %ds; detaching\n",
+                name ? name : "thread", timeout_sec);
+    } else {
+        fprintf(stderr,
+                "[shutdown] %s join failed rc=%d (%s); detaching\n",
+                name ? name : "thread", rc, strerror(rc));
+    }
+    pthread_detach(thread);
+    return false;
+}
+
+static void boot_join_thread_service_named(pthread_t *thread,
+                                           bool *started,
+                                           const char *name,
+                                           int timeout_sec)
 {
     if (!thread || !started || !*started)
         return;
-    pthread_join(*thread, NULL);
+    boot_join_thread_bounded(*thread, name, timeout_sec);
     *started = false;
 }
 
@@ -731,7 +929,22 @@ static void boot_join_catchup_service(struct boot_svc_ctx *svc)
 {
     if (!svc)
         return;
-    node_db_sync_catchup_job_join(&svc->catchup_job, NULL);
+    if (!svc->catchup_job.started)
+        return;
+    boot_join_thread_bounded(svc->catchup_job.thread, "catchup", 5);
+    svc->catchup_job.started = false;
+}
+
+static bool boot_reap_catchup_service(struct boot_svc_ctx *svc)
+{
+    if (!svc || !svc->catchup_job.started)
+        return true;
+    if (!atomic_load(&svc->catchup_job.finished))
+        return true;
+    if (!boot_join_thread_bounded(svc->catchup_job.thread, "catchup", 1))
+        return false;
+    svc->catchup_job.started = false;
+    return true;
 }
 
 static bool boot_start_payment_service(struct boot_svc_ctx *svc)
@@ -747,8 +960,9 @@ static void boot_join_payment_service(struct boot_svc_ctx *svc)
 {
     if (!svc)
         return;
-    boot_join_thread_service(&svc->payment_thread,
-                             &svc->payment_thread_started);
+    boot_join_thread_service_named(&svc->payment_thread,
+                                   &svc->payment_thread_started,
+                                   "payment", 5);
 }
 
 static bool boot_start_replay_service(struct boot_svc_ctx *svc)
@@ -764,8 +978,9 @@ static void boot_join_replay_service(struct boot_svc_ctx *svc)
 {
     if (!svc)
         return;
-    boot_join_thread_service(&svc->replay_thread,
-                             &svc->replay_thread_started);
+    boot_join_thread_service_named(&svc->replay_thread,
+                                   &svc->replay_thread_started,
+                                   "utxo_replay", 5);
 }
 
 static bool boot_start_offer_service(struct boot_svc_ctx *svc)
@@ -781,8 +996,9 @@ static void boot_join_offer_service(struct boot_svc_ctx *svc)
 {
     if (!svc)
         return;
-    boot_join_thread_service(&svc->offer_thread,
-                             &svc->offer_thread_started);
+    boot_join_thread_service_named(&svc->offer_thread,
+                                   &svc->offer_thread_started,
+                                   "snapshot_offer", 5);
 }
 
 static bool boot_start_address_backfill_service(struct boot_svc_ctx *svc)
@@ -798,8 +1014,9 @@ static void boot_join_address_backfill_service(struct boot_svc_ctx *svc)
 {
     if (!svc)
         return;
-    boot_join_thread_service(&svc->address_backfill_thread,
-                             &svc->address_backfill_thread_started);
+    boot_join_thread_service_named(&svc->address_backfill_thread,
+                                   &svc->address_backfill_thread_started,
+                                   "address_backfill", 5);
 }
 
 static bool boot_start_tx_index_service(struct boot_svc_ctx *svc)
@@ -843,6 +1060,69 @@ static void *hodl_history_worker_thread(void *arg)
     return NULL;
 }
 
+static void *projection_backfill_service_thread(void *arg)
+{
+    struct boot_svc_ctx *svc = arg;
+    int last_start_height = -1;
+
+    if (!svc)
+        return NULL;
+
+    while (!svc->projection_backfill_thread_stop && boot_running(svc)) {
+        struct node_db *ndb = boot_node_db();
+        int chain_tip = svc->state ?
+            active_chain_height(&svc->state->chain_active) : -1;
+        int projection_tip = -1;
+        int projection_block_tip = -1;
+
+        boot_reap_catchup_service(svc);
+
+        if (ndb && ndb->open && chain_tip >= 0 &&
+            !node_db_sync_catchup_job_is_started(&svc->catchup_job)) {
+            projection_tip = node_db_sync_get_tip_height(ndb);
+            projection_block_tip = db_block_max_height(ndb);
+            if (projection_block_tip >= 0 &&
+                projection_tip > projection_block_tip &&
+                projection_block_tip < chain_tip) {
+                struct block_index *rewind_tip =
+                    active_chain_at(&svc->state->chain_active,
+                                    projection_block_tip);
+                if (rewind_tip && rewind_tip->phashBlock &&
+                    node_db_sync_set_tip(ndb, rewind_tip->phashBlock->data,
+                                         projection_block_tip)) {
+                    event_emitf(EV_RECOVERY_ACTION, 0,
+                                "projection-cursor-rewind from=%d to=%d",
+                                projection_tip, projection_block_tip);
+                    projection_tip = projection_block_tip;
+                }
+            }
+            if (projection_tip < chain_tip) {
+                if (last_start_height != chain_tip) {
+                    event_emitf(EV_RECOVERY_ACTION, 0,
+                                "projection-backfill-start from=%d to=%d",
+                                projection_tip + 1, chain_tip);
+                    last_start_height = chain_tip;
+                }
+                if (!boot_start_catchup_service(svc, svc->datadir)) {
+                    fprintf(stderr,
+                            "WARNING: projection backfill start failed "
+                            "(projection=%d chain=%d)\n",
+                            projection_tip, chain_tip);
+                }
+            }
+        }
+
+        for (int i = 0; i < 5 &&
+             !svc->projection_backfill_thread_stop &&
+             boot_running(svc); i++) {
+            sleep(1);
+        }
+    }
+
+    boot_reap_catchup_service(svc);
+    return NULL;
+}
+
 static bool boot_start_hodl_history_service(struct boot_svc_ctx *svc)
 {
     if (!svc || !svc->datadir)
@@ -858,15 +1138,39 @@ static void boot_join_hodl_history_service(struct boot_svc_ctx *svc)
     if (!svc)
         return;
     svc->hodl_history_thread_stop = true;
-    boot_join_thread_service(&svc->hodl_history_thread,
-                             &svc->hodl_history_thread_started);
+    boot_join_thread_service_named(&svc->hodl_history_thread,
+                                   &svc->hodl_history_thread_started,
+                                   "hodl_history", 5);
+}
+
+static bool boot_start_projection_backfill_service(struct boot_svc_ctx *svc)
+{
+    if (!svc)
+        return false;
+    svc->projection_backfill_thread_stop = false;
+    return boot_start_thread_service(&svc->projection_backfill_thread,
+                                     &svc->projection_backfill_thread_started,
+                                     projection_backfill_service_thread, svc);
+}
+
+static void boot_join_projection_backfill_service(struct boot_svc_ctx *svc)
+{
+    if (!svc)
+        return;
+    svc->projection_backfill_thread_stop = true;
+    boot_join_thread_service_named(&svc->projection_backfill_thread,
+                                   &svc->projection_backfill_thread_started,
+                                   "projection_backfill", 5);
 }
 
 static void boot_join_tx_index_service(struct boot_svc_ctx *svc)
 {
     if (!svc)
         return;
-    snapshot_tx_index_job_join(&svc->tx_index_job, NULL);
+    if (!svc->tx_index_job.started)
+        return;
+    boot_join_thread_bounded(svc->tx_index_job.thread, "snapshot_tx_index", 5);
+    svc->tx_index_job.started = false;
 }
 
 /* ── Helper threads ────────────────────────────────────────── */
@@ -1179,17 +1483,26 @@ static void *build_snapshot_offer_thread(void *arg)
     if (!datadir || datadir[0] == '\0')
         return NULL;
 
-    /* Export consensus snapshot for file service (no wallet data).
-     * This runs first so new peers can get it immediately. */
+    /* Consensus snapshot export is expensive on a public archival node:
+     * SQLite can allocate tens of GB while copying/vacuuming the UTXO
+     * snapshot. Keep boot fast and memory-bounded by default; operators
+     * can opt into a rebuild when they intentionally want to refresh the
+     * shareable consensus_snapshot.db artifact. */
     bool file_service_enabled =
         svc && boot_profile_has_file_service(svc->app_ctx);
-    if (file_service_enabled) {
+    const char *export_snapshot =
+        getenv("ZCL_EXPORT_CONSENSUS_SNAPSHOT_ON_BOOT");
+    if (file_service_enabled && export_snapshot &&
+        strcmp(export_snapshot, "1") == 0) {
         printf("Exporting consensus snapshot (no wallet data)...\n");
         if (file_export_consensus_snapshot(datadir)) {
             file_controller_refresh_manifest();
             fs_server_refresh_manifest();
             printf("Consensus snapshot ready for file service\n");
         }
+    } else if (file_service_enabled) {
+        printf("Consensus snapshot export skipped on boot "
+               "(set ZCL_EXPORT_CONSENSUS_SNAPSHOT_ON_BOOT=1 to rebuild)\n");
     }
 
     printf("Building fast sync snapshot offer...\n");
@@ -1237,9 +1550,11 @@ static void *build_snapshot_offer_thread(void *arg)
             memset(offer.mmb_root, 0, 32);
             printf("Fast sync: WARNING — no MMB leaf store\n");
         }
-        /* Pre-serialize snapshot file for zero-copy serving.
-         * MUST happen before updating offer — the SHA3 from pre-serialization
-         * is used as the offer's utxo_root to guarantee hash/file match. */
+        /* Pre-serialize snapshot file and publish its SHA3 metadata.
+         * The legacy zsnapshot offer is only advertised when an explicit
+         * bounded RAM serving cache exists; otherwise peers should use the
+         * chunk/file manifests below. */
+        bool snapshot_serving_ready = false;
         struct node_db *ndb = boot_node_db();
         if (ndb && ndb->open) {
             int64_t snap_count = fast_sync_prebuild_snapshot(
@@ -1254,6 +1569,10 @@ static void *build_snapshot_offer_thread(void *arg)
                     printf("Snapshot: %llu UTXOs, SHA3 from file\n",
                            (unsigned long long)snap_n);
                 }
+                int64_t snap_buf_size = 0;
+                snapshot_serving_ready =
+                    fast_sync_get_snapshot_buf(&snap_buf_size) != NULL &&
+                    snap_buf_size > 0;
             }
         }
 
@@ -1264,10 +1583,13 @@ static void *build_snapshot_offer_thread(void *arg)
                 break;
             }
         }
-        if (have_mmb_root) {
+        if (have_mmb_root && snapshot_serving_ready) {
             msg_processor_update_offer(&offer);
             printf("Fast sync ready: h=%d, %llu UTXOs, MMB+MMR secured\n",
                    offer.height, (unsigned long long)offer.num_utxos);
+        } else if (have_mmb_root) {
+            printf("Fast sync: snapshot offer withheld "
+                   "(disk-backed snapshot serving not enabled)\n");
         } else {
             printf("Fast sync: snapshot offer withheld (MMB root unavailable)\n");
         }
@@ -1503,8 +1825,6 @@ bool app_init_services(struct app_context *ctx,
 
     /* Load persisted peer addresses from previous session */
     connman_load_addrman(svc->connman);
-
-    addr_db_read(&svc->connman->manager, ctx->datadir);
 
     if (ctx->listen) {
         struct net_service bind4;
@@ -1914,6 +2234,8 @@ bool app_init_services(struct app_context *ctx,
     rpc_misc_set_wallet(svc->wallet);
     register_misc_rpc_commands(svc->rpc_table);
     rpc_net_set_connman(svc->connman);
+    chain_advance_coordinator_init(svc->connman, svc->state,
+                                   boot_node_db());
     register_net_rpc_commands(svc->rpc_table);
 
     /* Game platform RPC — latency measurement, game types */
@@ -2094,6 +2416,10 @@ bool app_init_services(struct app_context *ctx,
                         "WARNING: failed to start tracked SQLite catchup thread\n");
             }
         }
+        if (!boot_start_projection_backfill_service(svc)) {
+            fprintf(stderr,
+                    "WARNING: failed to start projection backfill watcher\n");
+        }
     }
 
     return true;
@@ -2103,18 +2429,21 @@ bool app_init_services(struct app_context *ctx,
 
 static void shutdown_stop_frontend_services(struct boot_svc_ctx *svc)
 {
+    printf("[shutdown] stopping frontend services\n");
     zcl_service_kernel_stop_all(&svc->frontend_kernel);
+    printf("[shutdown] frontend services stopped\n");
 }
 
 static void shutdown_persist_fast_restart_state(struct boot_svc_ctx *svc)
 {
+    printf("[shutdown] persisting fast restart state\n");
     if (svc->state->map_block_index.size > 1000) {
         printf("Saving block index flat file (%zu entries)...\n",
                svc->state->map_block_index.size);
         save_block_index_flat(svc->datadir, svc->state);
     }
 
-    addr_db_write(&svc->connman->manager, svc->datadir);
+    printf("[shutdown] fast restart state persisted\n");
 }
 
 static void shutdown_quiesce_network_and_flush_coins(struct boot_svc_ctx *svc)
@@ -2123,7 +2452,9 @@ static void shutdown_quiesce_network_and_flush_coins(struct boot_svc_ctx *svc)
      * The message thread checks g_stop each iteration (~100ms). Any
      * in-flight activate_best_chain sees g_shutdown_requested and returns.
      * After signal_stop, no new block processing starts. */
+    printf("[shutdown] stopping network services\n");
     zcl_service_kernel_stop_all(&svc->network_kernel);
+    printf("[shutdown] joining replay service\n");
     boot_join_replay_service(svc);
 
     /* Flush coins to SQLite. The message thread is finishing its current
@@ -2136,9 +2467,13 @@ static void shutdown_quiesce_network_and_flush_coins(struct boot_svc_ctx *svc)
         fprintf(stderr, "WARNING: Coins cache flush FAILED during shutdown!\n");
     }
 
+    shutdown_persist_fast_restart_state(svc);
+
     /* Now join threads — safe, coins already persisted */
+    printf("[shutdown] joining connman threads\n");
     connman_join(svc->connman);
     connman_free(svc->connman);
+    printf("[shutdown] connman stopped\n");
 
     /* Final flush in case message thread connected blocks between
      * our flush and its exit */
@@ -2148,15 +2483,19 @@ static void shutdown_quiesce_network_and_flush_coins(struct boot_svc_ctx *svc)
 
     /* Close cached block file handles */
     disk_block_io_close_cache();
+    printf("[shutdown] network quiesced and coins closed\n");
 }
 
 static void shutdown_persist_runtime_state(struct boot_svc_ctx *svc)
 {
+    printf("[shutdown] stopping runtime services\n");
     zcl_service_kernel_stop_all(&svc->runtime_kernel);
+    printf("[shutdown] joining runtime workers\n");
     boot_join_address_backfill_service(svc);
     boot_join_hodl_history_service(svc);
     boot_join_tx_index_service(svc);
     boot_join_offer_service(svc);
+    boot_join_projection_backfill_service(svc);
     boot_join_catchup_service(svc);
 
     rpc_blockchain_mmr_save(boot_node_db());
@@ -2183,12 +2522,15 @@ static void shutdown_persist_runtime_state(struct boot_svc_ctx *svc)
             fprintf(stderr, "[shutdown] WAL checkpoint failed\n");
         db_service_close_write(svc->db_service);
     }
+    printf("[shutdown] stopping DB/service kernels\n");
     boot_stop_db_service_kernel();
     zcl_service_kernel_stop_all(&svc->service_kernel);
+    printf("[shutdown] runtime state persisted\n");
 }
 
 static void shutdown_release_owned_resources(struct boot_svc_ctx *svc)
 {
+    printf("[shutdown] releasing owned resources\n");
     app_runtime_set_current(NULL);
     zcl_service_kernel_reset(&svc->frontend_kernel);
     zcl_service_kernel_reset(&svc->runtime_kernel);
@@ -2201,14 +2543,20 @@ static void shutdown_release_owned_resources(struct boot_svc_ctx *svc)
 
     ecc_verify_destroy();
     ecc_stop();
+    printf("[shutdown] owned resources released\n");
 }
 
 void app_shutdown_svc(struct boot_svc_ctx *svc)
 {
     extern volatile sig_atomic_t g_shutdown_requested;
 
+    /* Once graceful shutdown is actually running, give it its own bounded
+     * window instead of inheriting time already spent finishing startup. */
+    alarm(90);
+
     atomic_store(svc->running, false);
     g_shutdown_requested = 1;
+    thread_registry_request_shutdown();
     event_emitf(EV_NODE_SHUTDOWN, 0, "graceful");
     event_async_stop();
 
@@ -2225,12 +2573,19 @@ void app_shutdown_svc(struct boot_svc_ctx *svc)
     }
 
     shutdown_stop_frontend_services(svc);
-    shutdown_persist_fast_restart_state(svc);
     shutdown_quiesce_network_and_flush_coins(svc);
     shutdown_persist_runtime_state(svc);
+    {
+        int stragglers = thread_registry_join_all(2);
+        if (stragglers > 0)
+            fprintf(stderr,
+                    "[shutdown] %d registered thread(s) still running after sweep\n",
+                    stragglers);
+    }
     shutdown_release_owned_resources(svc);
 
     printf("Shutdown complete.\n");
+    alarm(0);
 }
 
 /* ── Utility functions ─────────────────────────────────────── */
