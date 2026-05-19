@@ -79,6 +79,36 @@ overage became a `SIGKILL` and remote peers logged a flaky disconnect.
 With 300s headroom, normal stops complete cleanly; a stop that genuinely
 hangs past 300s warrants a debugger attach before the next bump.
 
+## Watchdog policy
+
+Main runs `Type=simple` — **never** auto-restarted by systemd. A 120s
+stall during heavy fsync, big block, LevelDB compaction, or snapshot
+export is normal under load; auto-restart would loop and burn peer
+reputation (concrete cost: 15 restarts in 8h once crashed our peer
+count 5→1, with 12-48h recovery via addrman gossip refresh).
+
+Main's failure signal instead comes via:
+- `health.healthy=false` on the HTTPS health endpoint
+- `EV_LAG_SLO_BREACH severity=critical|fatal` in the event log
+- Prometheus gauges `zcl_mirror_lag_*_seconds`
+
+An operator picks the restart window. The binary supports `Type=notify`
+(`boot_sd_watchdog_start` emits `READY=1` and pumps the watchdog) so
+the same code can run under either mode — but main's unit must stay
+`Type=simple`.
+
+Test runs `Type=notify` + `WatchdogSec=120`. Test has no public peers
+(`-addnode=127.0.0.1:8033`, no `-externalip`), so a watchdog-triggered
+restart costs zero peer reputation. This lets us fault-inject lag-SLO
+breaches and verify the binary recovers cleanly without manual
+intervention.
+
+If you ever feel tempted to add `Type=notify` to main "now that things
+are stable" — read this section again. The architectural answer is
+permanent: main is operator-controlled, test is watchdog-controlled.
+Stability arguments don't change the cost of even one accidental
+restart on a peer-reputation-load-bearing node.
+
 ## Multiple-test instances?
 
 `zclassic23-test.service` can be cloned for parallel test instances —

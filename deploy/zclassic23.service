@@ -13,13 +13,18 @@ StartLimitIntervalSec=600
 StartLimitBurst=10
 
 [Service]
-# Type=notify so systemd waits for the binary to call sd_notify(READY=1)
-# before considering the unit "active". The boot path emits READY=1 from
-# boot_sd_watchdog_start once all critical services have come up. Pair
-# with WatchdogSec= below so health degradation triggers a restart.
-Type=notify
-NotifyAccess=main
-WatchdogSec=120
+# Type=simple — main node is operator-controlled, never auto-restarted
+# by systemd. A 120s stall during heavy fsync, big block, or LevelDB
+# compaction is normal under load; auto-restart would loop and burn
+# peer reputation (memory: 15 restarts in 8h crashed peer count 5→1,
+# 12-48h recovery via addrman gossip). Failure signal comes via
+# health.healthy=false + EV_LAG_SLO_BREACH events + Prometheus
+# metrics — operator picks the restart window.
+#
+# The binary still supports Type=notify (boot_sd_watchdog_start
+# emits READY=1) — see deploy/zclassic23-test.service for the
+# auto-restart variant used on the test instance.
+Type=simple
 
 # P5.2: operator-specific flags (externalip + addnodes) live in
 # ~/.config/zclassic23/env, NOT here. The `-` prefix makes the file

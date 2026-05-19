@@ -1,0 +1,33 @@
+[Unit]
+Description=ZClassic23 Test Instance (Onion Bootstrap)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+# Type=notify + WatchdogSec=120 is SAFE on the test instance because
+# it has no public peers (-addnode=127.0.0.1:8033 only, no externalip).
+# A watchdog-triggered restart costs zero peer reputation and lets us
+# fault-inject lag-SLO breaches without manual recovery.
+#
+# Main runs Type=simple — see deploy/zclassic23.service for the
+# architectural reason. Never copy Type=notify to main.
+Type=notify
+NotifyAccess=main
+WatchdogSec=120
+
+ExecStart=%h/zclassic23/zclassic23 \
+    -datadir=%h/.zclassic-c23-test \
+    -port=8035 \
+    -rpcport=18234 \
+    -listen \
+    -tor \
+    -nobgvalidation \
+    -nolegacyimport \
+    -addnode=127.0.0.1:8033 \
+    -showmetrics=0
+Restart=on-failure
+RestartSec=10
+TimeoutStopSec=300
+
+[Install]
+WantedBy=default.target
