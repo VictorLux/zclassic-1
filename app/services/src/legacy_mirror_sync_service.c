@@ -515,7 +515,7 @@ static bool lms_rewind_to_authority_fork(int local_height, int *out_height)
         return false;
     }
 
-    fprintf(stderr,
+    fprintf(stderr,  // obs-ok:operational-log-authority-rewind
             "[legacy_mirror] authority rewind h=%d->%d hash=%s\n",
             local_height, fork_h, fork_hash);
     if (out_height) *out_height = fork_h;

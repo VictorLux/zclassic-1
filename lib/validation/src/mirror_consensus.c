@@ -134,7 +134,7 @@ void mirror_consensus_record_override(int height, const char *reason)
                 (long long)atomic_load(
                     &g_mirror_consensus.unsafe_overrides_total),
                 (long long)atomic_load(&g_mirror_consensus.blockers_total));
-    fprintf(stderr,
+    fprintf(stderr,  // obs-ok:operational-log-override-paired-above
             "[mirror_consensus] override h=%d safe=%s reason=%s\n",
             height, safe ? "true" : "false", r);
 }
