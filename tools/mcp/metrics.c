@@ -88,6 +88,13 @@ static _Atomic int64_t  g_node_uptime_seconds;
  * `> 0` guards. */
 static _Atomic int64_t  g_node_tip_advance_age = -1;
 
+/* Mirror lag SLO breach gauges. Set by the metrics tick from the live
+ * legacy_mirror_sync_stats snapshot. Pre-bootstrap defaults: lag=-1
+ * (mirror not yet attached); seconds=0 (no breach). */
+static _Atomic int64_t  g_mirror_lag_blocks = -1;
+static _Atomic int64_t  g_mirror_lag_breach_seconds = 0;
+static _Atomic int64_t  g_mirror_lag_critical_seconds = 0;
+
 /* Consensus reject registry — bounded (kind, reason) → count table.
  * `kind` is "tx" or "block"; reason is a kebab-case string emitted by
  * the REJECT_IF/UNLESS macros in lib/validation/src/check_*.c.  Beyond
@@ -256,6 +263,15 @@ void mcp_metrics_set_node_gauges(int64_t block_height, int64_t peer_count,
 void mcp_metrics_set_tip_advance_age(int64_t seconds)
 {
     atomic_store(&g_node_tip_advance_age, seconds);
+}
+
+void mcp_metrics_set_mirror_lag(int64_t lag_blocks,
+                                int64_t breach_seconds,
+                                int64_t critical_seconds)
+{
+    atomic_store(&g_mirror_lag_blocks, lag_blocks);
+    atomic_store(&g_mirror_lag_breach_seconds, breach_seconds);
+    atomic_store(&g_mirror_lag_critical_seconds, critical_seconds);
 }
 
 /* ── Peer scoring counters ──────────────────────────────────── */
@@ -725,6 +741,21 @@ size_t mcp_metrics_render_prometheus(char *buf, size_t cap)
         "# TYPE zcl_tip_advance_age_seconds gauge\n"
         "zcl_tip_advance_age_seconds %lld\n",
         (long long)tage);
+
+    int64_t mlag = atomic_load(&g_mirror_lag_blocks);
+    int64_t mbreach = atomic_load(&g_mirror_lag_breach_seconds);
+    int64_t mcrit = atomic_load(&g_mirror_lag_critical_seconds);
+    pos = append(buf, cap, pos,
+        "# HELP zcl_mirror_lag_blocks zclassic23 block-height lag behind zclassicd (-1 pre-bootstrap)\n"
+        "# TYPE zcl_mirror_lag_blocks gauge\n"
+        "zcl_mirror_lag_blocks %lld\n"
+        "# HELP zcl_mirror_lag_breach_seconds Seconds spent above the breach SLO (0 when under)\n"
+        "# TYPE zcl_mirror_lag_breach_seconds gauge\n"
+        "zcl_mirror_lag_breach_seconds %lld\n"
+        "# HELP zcl_mirror_lag_critical_seconds Seconds spent above the critical SLO (0 when under)\n"
+        "# TYPE zcl_mirror_lag_critical_seconds gauge\n"
+        "zcl_mirror_lag_critical_seconds %lld\n",
+        (long long)mlag, (long long)mbreach, (long long)mcrit);
 
     if (pos < cap) buf[pos] = '\0';
     pthread_mutex_unlock(&g_lock);

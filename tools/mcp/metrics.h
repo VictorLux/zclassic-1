@@ -201,6 +201,14 @@ void mcp_metrics_set_sync_state(int state, const char *name);
  * sync_watchdog_get_tip_advance_age(). */
 void mcp_metrics_set_tip_advance_age(int64_t seconds);
 
+/* Mirror lag SLO gauges. Updated on each metrics tick from
+ * legacy_mirror_sync_stats: lag_blocks is the live zclassicd-vs-local
+ * height delta; breach_seconds and critical_seconds are the durations
+ * of the current SLO breach episodes (0 when not breached). */
+void mcp_metrics_set_mirror_lag(int64_t lag_blocks,
+                                int64_t breach_seconds,
+                                int64_t critical_seconds);
+
 #ifdef __cplusplus
 }
 #endif

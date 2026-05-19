@@ -16,6 +16,7 @@
 #include "util/thread_registry.h"
 #include "models/database.h"
 #include "services/sync_watchdog_service.h"
+#include "services/legacy_mirror_sync_service.h"
 #include <pthread.h>
 #include <stdio.h>
 #include <string.h>
@@ -369,6 +370,18 @@ static void *metrics_thread_fn(void *arg)
             /* Seconds since last block-connect; alert hinge for the
              * silent-stall failure shape (HEADERS_DOWNLOAD wedge). */
             mcp_metrics_set_tip_advance_age(sync_watchdog_get_tip_advance_age());
+
+            /* Mirror lag SLO gauges — surfaces redundancy state to
+             * Prometheus so dashboards/alerts can hinge on the actual
+             * zclassicd-vs-local lag without polling MCP. */
+            {
+                struct legacy_mirror_sync_stats lms = {0};
+                legacy_mirror_sync_stats_snapshot(&lms);
+                int64_t lag_b = lms.enabled ? (int64_t)lms.lag : -1;
+                mcp_metrics_set_mirror_lag(lag_b,
+                                           lms.lag_breach_seconds,
+                                           lms.lag_critical_seconds);
+            }
         }
 
         if (is_tty) {
