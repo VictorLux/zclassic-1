@@ -44,6 +44,8 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+struct db_service;
+
 /* ── Result of a tip commit ─────────────────────────────────────
  * CSR_OK means all six sources of truth were updated atomically.
  * Any other value means NOTHING changed — the repository state is
@@ -61,6 +63,7 @@ enum csr_result {
     CSR_REJECTED_HEADER_REGRESSION,  /* header tip would move backward without auth */
     CSR_REJECTED_ROLLBACK_AUTH,      /* rollback/clear auth is absent or invalid */
     CSR_REJECTED_PERSIST,            /* durable metadata persistence failed */
+    CSR_REJECTED_DB_BUSY,            /* SQLite writer was busy/locked */
     CSR_REJECTED_OOM,                /* active_chain realloc failure */
     CSR_NUM_RESULTS                  /* sentinel */
 };
@@ -83,6 +86,7 @@ struct chain_state_repository {
     struct block_index     **pindex_best_hdr; /* slot for header tip */
     struct coins_view_cache *coins_tip;       /* coins_best_block cache */
     struct node_db          *ndb;             /* SQLite blocks + utxos */
+    struct db_service       *db_service;      /* optional serialized writer */
     int64_t                 *wallet_scan_h;   /* optional wallet scan height */
 
     /* Tunables */
@@ -92,6 +96,8 @@ struct chain_state_repository {
     /* Counters for observability (read-only via csr_snapshot) */
     uint64_t commits_ok;
     uint64_t commits_rejected[CSR_NUM_RESULTS];
+    int      last_persist_sqlite_rc;
+    char     last_persist_error[160];
 };
 
 /* ── Read-only view ─────────────────────────────────────────────
@@ -117,6 +123,7 @@ enum chain_state_rollback_source {
     CSR_ROLLBACK_SOURCE_BOOT_REPAIR,
     CSR_ROLLBACK_SOURCE_UTXO_REPAIR,
     CSR_ROLLBACK_SOURCE_REINDEX,
+    CSR_ROLLBACK_SOURCE_MIRROR,
     CSR_ROLLBACK_SOURCE_TEST,
 };
 
@@ -177,6 +184,8 @@ void csr_init(struct chain_state_repository *csr,
               int64_t                 *wallet_scan_h);
 
 void csr_free(struct chain_state_repository *csr);
+void csr_set_db_service(struct chain_state_repository *csr,
+                        struct db_service *db_service);
 
 /* ── Process-lifetime singleton ─────────────────────────────────
  * Call-site migrations reach the repository through this accessor
@@ -208,6 +217,10 @@ enum csr_result csr_repair_set_coins_best(
 /* ── Read-only introspection ──────────────────────────────────── */
 void csr_snapshot(struct chain_state_repository *csr,
                    struct chain_state_view *out);
+void csr_last_persist_status(struct chain_state_repository *csr,
+                             int *out_sqlite_rc,
+                             char *out_msg,
+                             size_t out_msg_sz);
 
 /* ── Tunables ─────────────────────────────────────────────────── */
 

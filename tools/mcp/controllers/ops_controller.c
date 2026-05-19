@@ -42,6 +42,7 @@ static int h_zcl_status(const struct mcp_request *req, struct mcp_response *res)
     char *v  = mcp_node_rpc("validationstatus", NULL);
     char *hc = mcp_node_rpc("healthcheck", NULL);
     char *ci = mcp_node_rpc("getblockchaininfo", NULL);
+    char *cac = mcp_node_rpc("dumpstate", "[\"chain_advance_coordinator\"]");
 
     int pc = 0, inbound = 0, outbound = 0, zcl23_cnt = 0, magicbean_cnt = 0;
     if (p) {
@@ -98,13 +99,15 @@ static int h_zcl_status(const struct mcp_request *req, struct mcp_response *res)
     if (header_gap < 0) header_gap = 0;
     bool sync_behind = header_gap > 144;
 
-    char *out = zcl_malloc(32768, "status_body");
+    enum { ZCL_STATUS_BODY_CAP = 65536 };
+    char *out = zcl_malloc(ZCL_STATUS_BODY_CAP, "status_body");
     if (!out) {
-        free(h); free(p); free(s); free(v); free(hc); free(ci);
+        free(h); free(p); free(s); free(v); free(hc); free(ci); free(cac);
         res->error = MCP_ERR_INTERNAL;
         snprintf(res->error_message, sizeof(res->error_message),
                  "malloc failed for status response");
-        LOG_ERR("mcp.ops", "malloc failed for status body (32768 bytes)");
+        LOG_ERR("mcp.ops", "malloc failed for status body");
+        return -1;  // raw-return-ok:logged-oom
     }
     /* Extract memory_rss_mb and uptime_seconds from healthcheck response */
     int64_t memory_rss_mb = -1;
@@ -124,7 +127,7 @@ static int h_zcl_status(const struct mcp_request *req, struct mcp_response *res)
         }
     }
 
-    snprintf(out, 32768,
+    snprintf(out, ZCL_STATUS_BODY_CAP,
              "{\"height\":%d,\"header_height\":%d,"
              "\"max_peer_height\":%d,\"header_gap\":%d,"
              "\"sync_behind\":%s,"
@@ -133,7 +136,8 @@ static int h_zcl_status(const struct mcp_request *req, struct mcp_response *res)
              "\"outbound\":%d,\"zcl23\":%d,\"magicbean\":%d},"
              "\"memory_rss_mb\":%lld,\"uptime_secs\":%lld,"
              "\"sync\":%s,"
-             "\"validation\":%s,\"health\":%s}",
+             "\"validation\":%s,\"health\":%s,"
+             "\"chain_advance\":%s}",
              block_height, header_height,
              max_peer_height, header_gap,
              sync_behind ? "true" : "false",
@@ -141,8 +145,9 @@ static int h_zcl_status(const struct mcp_request *req, struct mcp_response *res)
              pc, inbound, outbound, zcl23_cnt, magicbean_cnt,
              (long long)memory_rss_mb, (long long)uptime_secs,
              s ? s : "null",
-             v ? v : "null", hc ? hc : "null");
-    free(h); free(p); free(s); free(v); free(hc); free(ci);
+             v ? v : "null", hc ? hc : "null",
+             cac ? cac : "null");
+    free(h); free(p); free(s); free(v); free(hc); free(ci); free(cac);
     res->body = out;
     return 0;
 }
@@ -156,6 +161,21 @@ static int h_zcl_health(const struct mcp_request *req, struct mcp_response *res)
         snprintf(res->error_message, sizeof(res->error_message),
                  "RPC healthcheck returned null");
         LOG_ERR("mcp.ops", "healthcheck returned null");
+    }
+    res->body = out;
+    return 0;
+}
+
+static int h_zcl_mirror_status(const struct mcp_request *req,
+                               struct mcp_response *res)
+{
+    (void)req;
+    char *out = mcp_node_rpc("getmirrorstatus", NULL);
+    if (!out) {
+        res->error = MCP_ERR_HANDLER_FAILED;
+        snprintf(res->error_message, sizeof(res->error_message),
+                 "RPC getmirrorstatus returned null");
+        LOG_ERR("mcp.ops", "getmirrorstatus returned null");
     }
     res->body = out;
     return 0;
@@ -276,7 +296,8 @@ static int h_zcl_node_log(const struct mcp_request *req,
  * plus one dump function in the owning module — no further MCP
  * plumbing required. See CLAUDE.md "Adding state introspection".
  *
- * Current subsystems: watchdog, boot, block_index. */
+ * Current subsystems include watchdog, boot, block_index, and
+ * chain_advance_coordinator. */
 static int h_zcl_state(const struct mcp_request *req, struct mcp_response *res)
 {
     const char *sub = json_get_str(json_get(req->args, "subsystem"));
@@ -837,9 +858,9 @@ static const struct mcp_param_spec p_profile[] = {
 };
 static const struct mcp_param_spec p_state[] = {
     { "subsystem", MCP_PARAM_STR, true,
-      "Subsystem name: watchdog, boot, block_index, health, oracle, local_ingest, header_probe, oracle_policy, rolling_anchor, quorum_oracle",
+      "Subsystem name: watchdog, boot, block_index, health, oracle, local_ingest, header_probe, legacy_mirror, oracle_policy, rolling_anchor, quorum_oracle, peer_lifecycle, chain_advance_coordinator",
       0, 0, 1, 64,
-      "watchdog,boot,block_index,health,oracle,local_ingest,header_probe,oracle_policy,rolling_anchor,quorum_oracle", NULL },
+      "watchdog,boot,block_index,health,oracle,local_ingest,header_probe,legacy_mirror,oracle_policy,rolling_anchor,quorum_oracle,peer_lifecycle,chain_advance_coordinator", NULL },
     { "key", MCP_PARAM_STR, false,
       "Subsystem-specific key (block_index: height or hex hash)",
       0, 0, 0, 128, NULL, NULL },
@@ -875,12 +896,17 @@ static const struct mcp_param_spec p_node_log[] = {
 static const struct mcp_tool_route k_routes[] = {
     { "zcl_status", "ops",
       "Node status: block height, peers, sync state, onion address, "
-      "bg-validation progress, health checks. The single command to "
-      "check if everything is working.",
+      "bg-validation progress, health checks, and chain advance source "
+      "scoring. The single command to check if everything is working.",
       NULL, 0, h_zcl_status },
     { "zcl_health", "ops",
       "Health check: pass/fail, chain height, peers, sync, onion.",
       NULL, 0, h_zcl_health },
+    { "zcl_mirror_status", "ops",
+      "Canonical zclassic23/zclassicd mirror lockstep status: both "
+      "heights and hashes, lag, reachability, running state, and "
+      "catch-up counters.",
+      NULL, 0, h_zcl_mirror_status },
     { "zcl_kpi", "ops",
       "One-shot KPI dashboard: height, peer_count, sync, validation, "
       "health, mempool, wallet, chain, network — every subsystem in "
@@ -917,7 +943,7 @@ static const struct mcp_tool_route k_routes[] = {
       p_rpc, sizeof(p_rpc) / sizeof(p_rpc[0]), h_zcl_rpc },
     { "zcl_state", "ops",
       "Generic in-process state dump. subsystem=watchdog|boot|block_index|"
-      "health|oracle. For block_index, pass `key`=height or hex hash. New "
+      "health|oracle|chain_advance_coordinator. For block_index, pass `key`=height or hex hash. New "
       "subsystems plug in via *_dump_state_json (see CLAUDE.md).",
       p_state, sizeof(p_state) / sizeof(p_state[0]), h_zcl_state },
     { "zcl_probe_zclassicd", "ops",

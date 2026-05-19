@@ -174,7 +174,10 @@ void HexStr(const unsigned char *data, size_t len, bool spaces, char *out, size_
 {
     static const char hexmap[] = "0123456789abcdef";
     size_t j = 0;
-    for (size_t i = 0; i < len && j + 3 < out_size; i++) {
+    for (size_t i = 0; i < len; i++) {
+        size_t need = 2 + ((spaces && i > 0) ? 1 : 0);
+        if (j + need >= out_size)
+            break;
         if (spaces && i > 0)
             out[j++] = ' ';
         out[j++] = hexmap[data[i] >> 4];

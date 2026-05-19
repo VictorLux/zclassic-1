@@ -352,10 +352,10 @@ static int test_registry_null_row(void)
 static int test_registry_register_all(void)
 {
     int failures = 0;
-    TEST("db_register_all_validators wires all 19 tables") {
+    TEST("db_register_all_validators wires all registered tables") {
         db_validator_reset();
         db_register_all_validators();
-        ASSERT(db_validator_count() == 19);
+        ASSERT(db_validator_count() == 25);
         ASSERT(db_validator_has("blocks"));
         ASSERT(db_validator_has("peers"));
         ASSERT(db_validator_has("utxos"));

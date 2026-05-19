@@ -8,14 +8,18 @@
 #include "event/event.h"
 #include "json/json.h"
 #include "net/connman.h"
+#include "net/peer_lifecycle.h"
 #include "net/version.h"
 extern bool msg_version_get_external_ip(char *buf, size_t buflen, uint16_t *port);
+extern bool msg_version_classify_peer(const char *subver, uint64_t services,
+                                      bool *is_magicbean, bool *is_zcl23);
 #include "util/clientversion.h"
 #include <arpa/inet.h>
 #include <netdb.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 struct network_context {
     struct connman *connman;
@@ -38,6 +42,74 @@ struct connman *rpc_net_get_connman(void)
     return network_ctx()->connman;
 }
 
+static bool addnode_is_connected(struct connman *cm, int addnode_index)
+{
+    bool connected = false;
+
+    if (!cm || addnode_index < 0 || addnode_index >= cm->num_addnodes)
+        return false;
+
+    zcl_mutex_lock(&cm->manager.cs_nodes);
+    for (size_t i = 0; i < cm->manager.num_nodes; i++) {
+        const struct p2p_node *node = cm->manager.nodes[i];
+        if (!node || node->disconnect)
+            continue;
+        if (net_addr_eq(&node->addr.svc.addr,
+                        &cm->addnodes[addnode_index].svc.addr) &&
+            node->addr.svc.port == cm->addnodes[addnode_index].svc.port) {
+            connected = true;
+            break;
+        }
+    }
+    zcl_mutex_unlock(&cm->manager.cs_nodes);
+
+    return connected;
+}
+
+static void push_addnode_status(struct json_value *result,
+                                struct connman *cm)
+{
+    struct json_value arr = {0};
+    int64_t now = (int64_t)time(NULL);
+
+    json_set_array(&arr);
+    if (cm) {
+        for (int i = 0; i < cm->num_addnodes; i++) {
+            struct json_value entry = {0};
+            char addr[64];
+            int64_t last = cm->addnode_last_attempt[i];
+            int64_t elapsed = last > 0 && now >= last ? now - last : -1;
+            int64_t remaining = 0;
+
+            if (cm->addnode_backoff_sec[i] > 0 && elapsed >= 0 &&
+                elapsed < cm->addnode_backoff_sec[i])
+                remaining = cm->addnode_backoff_sec[i] - elapsed;
+
+            net_service_to_string(&cm->addnodes[i].svc, addr, sizeof(addr));
+            json_set_object(&entry);
+            json_push_kv_int(&entry, "index", i);
+            json_push_kv_str(&entry, "address", addr);
+            json_push_kv_bool(&entry, "connected",
+                              addnode_is_connected(cm, i));
+            json_push_kv_int(&entry, "last_attempt", last);
+            json_push_kv_int(&entry, "seconds_since_attempt", elapsed);
+            json_push_kv_int(&entry, "backoff_seconds",
+                             cm->addnode_backoff_sec[i]);
+            json_push_kv_int(&entry, "backoff_remaining_seconds",
+                             remaining);
+            json_push_kv_int(&entry, "tcp_failures",
+                             cm->addnode_tcp_failures[i]);
+            json_push_kv_int(&entry, "protocol_failures",
+                             cm->addnode_protocol_failures[i]);
+            json_push_back(&arr, &entry);
+            json_free(&entry);
+        }
+    }
+
+    json_push_kv(result, "addnode_status", &arr);
+    json_free(&arr);
+}
+
 static bool rpc_getnetworkinfo(const struct json_value *params, bool help,
                                  struct json_value *result)
 {
@@ -54,7 +126,15 @@ static bool rpc_getnetworkinfo(const struct json_value *params, bool help,
 
     struct network_context *ctx = network_ctx();
     size_t conns = ctx->connman ? connman_get_node_count(ctx->connman) : 0;
+    int inbound = 0, outbound = 0, handshaked = 0;
+    int inbound_handshaked = 0, outbound_handshaked = 0;
+    int magicbean = 0, zcl23 = 0;
+    size_t listen_socket_count = ctx->connman
+        ? ctx->connman->manager.num_listen_sockets
+        : 0;
     json_push_kv_int(result, "connections", (int64_t)conns);
+    json_push_kv_int(result, "localservices",
+                     ctx->connman ? (int64_t)ctx->connman->manager.local_services : 0);
 
     struct json_value networks = {0};
     json_set_array(&networks);
@@ -78,6 +158,48 @@ static bool rpc_getnetworkinfo(const struct json_value *params, bool help,
     }
     json_push_kv(result, "localaddresses", &localaddrs);
     json_free(&localaddrs);
+
+    if (ctx->connman) {
+        zcl_mutex_lock(&ctx->connman->manager.cs_nodes);
+        for (size_t i = 0; i < ctx->connman->manager.num_nodes; i++) {
+            struct p2p_node *node = ctx->connman->manager.nodes[i];
+            if (!node || node->disconnect) continue;
+            if (node->inbound) inbound++; else outbound++;
+            if (node->state >= PEER_HANDSHAKE_COMPLETE) {
+                bool is_mb = false, is_z23 = false;
+                handshaked++;
+                if (node->inbound) inbound_handshaked++;
+                else outbound_handshaked++;
+                msg_version_classify_peer(node->sub_ver, node->services,
+                                          &is_mb, &is_z23);
+                if (is_mb) magicbean++;
+                if (is_z23) zcl23++;
+            }
+        }
+        zcl_mutex_unlock(&ctx->connman->manager.cs_nodes);
+    }
+    json_push_kv_int(result, "inbound_connections", inbound);
+    json_push_kv_int(result, "outbound_connections", outbound);
+    json_push_kv_int(result, "handshaked_connections", handshaked);
+    json_push_kv_int(result, "inbound_handshaked_connections",
+                     inbound_handshaked);
+    json_push_kv_int(result, "outbound_handshaked_connections",
+                     outbound_handshaked);
+    json_push_kv_int(result, "magicbean_peers", magicbean);
+    json_push_kv_int(result, "zclassic_c23_peers", zcl23);
+    json_push_kv_int(result, "listen_socket_count",
+                     (int64_t)listen_socket_count);
+    json_push_kv_bool(result, "listening", listen_socket_count > 0);
+    json_push_kv_bool(result, "externalip_configured", ext_port != 0);
+    json_push_kv_bool(result, "inbound_handshake_seen",
+                      inbound_handshaked > 0);
+    json_push_kv_bool(result, "remote_handshake_seen", handshaked > 0);
+    push_addnode_status(result, ctx->connman);
+
+    struct json_value life = {0};
+    peer_lifecycle_summary_json(&life);
+    json_push_kv(result, "peer_lifecycle", &life);
+    json_free(&life);
 
     return true;
 }
@@ -127,6 +249,18 @@ static bool rpc_getpeerinfo(const struct json_value *params, bool help,
         if (node->avg_latency_us > 0)
             json_push_kv_real(&entry, "avg_latency_ms",
                                (double)node->avg_latency_us / 1000.0);
+
+        {
+            bool is_mb = false, is_z23 = false;
+            struct json_value lifecycle = {0};
+            msg_version_classify_peer(node->sub_ver, node->services,
+                                      &is_mb, &is_z23);
+            json_push_kv_bool(&entry, "magicbean", is_mb);
+            json_push_kv_bool(&entry, "zclassic_c23", is_z23);
+            peer_lifecycle_peer_json(node, &lifecycle);
+            json_push_kv(&entry, "lifecycle", &lifecycle);
+            json_free(&lifecycle);
+        }
 
         json_push_back(result, &entry);
         json_free(&entry);

@@ -4,6 +4,7 @@
  * Each test exercises the pure plan() function with struct inputs. */
 
 #include "test/test_helpers.h"
+#include "services/block_index_integrity.h"
 #include "services/chain_restore_service.h"
 #include "validation/main_state.h"
 #include "chain/chain.h"
@@ -445,13 +446,13 @@ static int test_integrity_anchor_restore_is_benign(void) {
         /* Anchor lacks BLOCK_HAVE_DATA → skipped by nBits scan. */
         ASSERT(r.zero_nbits_count == 0);
         ASSERT(r.first_nbits_zero_height == -1);
-        /* Below-tip holes are diagnostic but don't gate ok. */
+        /* Below-tip holes are now fail-closed for canonical RPC service. */
         ASSERT(r.active_chain_holes == H);
         ASSERT(r.first_hole_height == 0);
         ASSERT(r.tip_height == H);
         /* Tip slot is populated by anchor itself. */
         ASSERT(active_chain_at(&ms.chain_active, H) == anchor);
-        ASSERT(r.ok == true);
+        ASSERT(r.ok == false);
 
         block_map_free(&ms.map_block_index);
         active_chain_free(&ms.chain_active);
@@ -535,15 +536,17 @@ static int test_rebuild_active_chain_fills_holes_from_block_map(void) {
             pi->nBits   = 0x1f07ffff;
             pi->nStatus = BLOCK_VALID_SCRIPTS | BLOCK_HAVE_DATA;
             pi->nTx     = 1;
-            /* IMPORTANT: pprev deliberately NOT linked — models the
-             * live-node state where the anchor-restore skipped the
-             * pprev backfill that accept_block / connect_block do. */
+            if (h > 0)
+                pi->pprev = block_map_find(&ms.map_block_index,
+                                            &hashes[h - 1]);
             arith_uint256_set_u64(&pi->nChainWork, (uint64_t)(h + 1));
         }
         struct block_index *tip = block_map_find(
             &ms.map_block_index, &hashes[H]);
         ASSERT(tip != NULL);
         ASSERT(active_chain_set_tip(&ms.chain_active, tip));
+        for (int h = 0; h < H; h++)
+            ms.chain_active.chain[h] = NULL;
 
         /* Pre-rebuild: integrity check reports H holes below the tip.
          * Round 4 Part 1.5.1: `ok` no longer requires zero holes —
@@ -557,7 +560,7 @@ static int test_rebuild_active_chain_fills_holes_from_block_map(void) {
 
         /* Apply rebuild. Every slot 0..H must now resolve to the
          * block_map entry of that height. */
-        int populated = chain_restore_rebuild_active_chain(&ms, tip);
+        int populated = chain_restore_rebuild_active_chain(&ms, tip, NULL);
         ASSERT(populated >= H);
 
         for (int h = 0; h <= H; h++) {
@@ -614,15 +617,18 @@ static int test_rebuild_active_chain_scales_at_100k(void) {
             pi->nBits   = 0x1f07ffff;
             pi->nStatus = BLOCK_VALID_SCRIPTS | BLOCK_HAVE_DATA;
             pi->nTx     = 1;
-            /* pprev intentionally NULL — models post-anchor shape. */
+            if (h > 0)
+                pi->pprev = block_map_find(&ms.map_block_index,
+                                            &hashes[h - 1]);
             arith_uint256_set_u64(&pi->nChainWork, (uint64_t)(h + 1));
         }
 
         struct block_index *tip = block_map_find(
             &ms.map_block_index, &hashes[H]);
         ASSERT(tip != NULL);
-        ASSERT(tip->pprev == NULL);
         ASSERT(active_chain_set_tip(&ms.chain_active, tip));
+        for (int h = 0; h < H; h++)
+            ms.chain_active.chain[h] = NULL;
 
         /* Pre-rebuild sanity: every sub-tip slot is NULL. */
         ASSERT(active_chain_at(&ms.chain_active, 0) == NULL);
@@ -631,7 +637,7 @@ static int test_rebuild_active_chain_scales_at_100k(void) {
 
         struct timespec t0, t1;
         clock_gettime(CLOCK_MONOTONIC, &t0);
-        int populated = chain_restore_rebuild_active_chain(&ms, tip);
+        int populated = chain_restore_rebuild_active_chain(&ms, tip, NULL);
         clock_gettime(CLOCK_MONOTONIC, &t1);
 
         double elapsed = (double)(t1.tv_sec - t0.tv_sec)
@@ -700,19 +706,22 @@ static int test_rebuild_populates_skiplist_for_log_n_ancestor(void) {
             pi->nBits   = 0x1f07ffff;
             pi->nStatus = BLOCK_VALID_SCRIPTS | BLOCK_HAVE_DATA;
             pi->nTx     = 1;
-            /* pprev + pskip deliberately NULL — worst-case post-anchor
-             * shape where only heights survived the restore. */
+            if (h > 0)
+                pi->pprev = block_map_find(&ms.map_block_index,
+                                            &hashes[h - 1]);
+            pi->pskip = NULL;
             arith_uint256_set_u64(&pi->nChainWork, (uint64_t)(h + 1));
         }
 
         struct block_index *tip = block_map_find(
             &ms.map_block_index, &hashes[H]);
         ASSERT(tip != NULL);
-        ASSERT(tip->pprev == NULL);
         ASSERT(tip->pskip == NULL);
         ASSERT(active_chain_set_tip(&ms.chain_active, tip));
+        for (int h = 0; h < H; h++)
+            ms.chain_active.chain[h] = NULL;
 
-        int populated = chain_restore_rebuild_active_chain(&ms, tip);
+        int populated = chain_restore_rebuild_active_chain(&ms, tip, NULL);
         ASSERT(populated == H + 1);
 
         /* acceptance: every slot above h=1 must have pskip set.
@@ -792,6 +801,125 @@ static bool write_block_fixture(const char *datadir,
     bool ok = write_block_to_disk(&b, pos, datadir, msg_start);
     block_free(&b);
     return ok;
+}
+
+static bool write_chain_block_fixture(const char *datadir,
+                                      struct disk_block_pos *pos,
+                                      const struct uint256 *prev,
+                                      uint32_t nbits_value,
+                                      uint32_t ntime,
+                                      struct uint256 *hash_out)
+{
+    struct block b;
+    block_init(&b);
+    b.header.nVersion = 4;
+    if (prev)
+        b.header.hashPrevBlock = *prev;
+    b.header.nTime = ntime;
+    b.header.nBits = nbits_value;
+    b.num_vtx = 1;
+    b.vtx = calloc(1, sizeof(struct transaction)); // raw-alloc-ok:test-fixture
+    transaction_init(&b.vtx[0]);
+    transaction_alloc(&b.vtx[0], 1, 1);
+    b.vtx[0].vin[0].sequence = 0xffffffff;
+    b.vtx[0].vout[0].value = 10 * COIN;
+
+    block_get_hash(&b, hash_out);
+    unsigned char msg_start[4] = {0x24, 0xe9, 0x27, 0x64};
+    bool ok = write_block_to_disk(&b, pos, datadir, msg_start);
+    block_free(&b);
+    return ok;
+}
+
+static bool next_block_append_pos(const char *datadir,
+                                  struct disk_block_pos *pos)
+{
+    char path[320];
+    snprintf(path, sizeof(path), "%s/blocks/blk00000.dat", datadir);
+    struct stat st;
+    if (stat(path, &st) != 0)
+        return false;
+    pos->nFile = 0;
+    pos->nPos = (unsigned int)st.st_size;
+    return true;
+}
+
+static int test_rebuild_active_chain_scans_block_files_for_canonical_positions(void) {
+    int failures = 0;
+    TEST("chain_restore_rebuild: scans block files when index disk positions are stale") {
+        char tmpdir[256];
+        snprintf(tmpdir, sizeof(tmpdir), "./test-tmp/%d_rebuild_scan",
+                 (int)getpid());
+        mkdir("./test-tmp", 0755);
+        mkdir(tmpdir, 0755);
+        char blocksdir[320];
+        snprintf(blocksdir, sizeof(blocksdir), "%s/blocks", tmpdir);
+        mkdir(blocksdir, 0755);
+
+        struct disk_block_pos pos[3] = {{ .nFile = 0, .nPos = 0 }};
+        struct uint256 hashes[3];
+        ASSERT(write_chain_block_fixture(tmpdir, &pos[0], NULL,
+                                         0x1e14f400, 1700000000,
+                                         &hashes[0]));
+        ASSERT(next_block_append_pos(tmpdir, &pos[1]));
+        ASSERT(write_chain_block_fixture(tmpdir, &pos[1], &hashes[0],
+                                         0x1e14f401, 1700000001,
+                                         &hashes[1]));
+        ASSERT(next_block_append_pos(tmpdir, &pos[2]));
+        ASSERT(write_chain_block_fixture(tmpdir, &pos[2], &hashes[1],
+                                         0x1e14f402, 1700000002,
+                                         &hashes[2]));
+
+        struct main_state ms;
+        main_state_init(&ms);
+        struct block_index *idx[3];
+        for (int h = 0; h < 3; h++) {
+            idx[h] = chainstate_insert_block_index(
+                (struct chainstate *)&ms, &hashes[h]);
+            ASSERT(idx[h] != NULL);
+            idx[h]->nHeight = h;
+            idx[h]->nBits = 0x1e14f400 + (uint32_t)h;
+            idx[h]->nStatus = BLOCK_VALID_SCRIPTS | BLOCK_HAVE_DATA;
+            idx[h]->nFile = pos[h].nFile;
+            idx[h]->nDataPos = pos[h].nPos;
+            idx[h]->nTx = 1;
+            idx[h]->nChainTx = (unsigned int)(h + 1);
+            if (h > 0)
+                idx[h]->pprev = idx[h - 1];
+        }
+
+        /* Poison the middle entry so index-based ancestry reads the
+         * genesis bytes for h=1. The block-file fallback must ignore
+         * this stale position and recover by header hash. */
+        idx[1]->nDataPos = pos[0].nPos;
+
+        ASSERT(active_chain_set_tip(&ms.chain_active, idx[2]));
+        int populated = chain_restore_rebuild_active_chain(&ms, idx[2], tmpdir);
+        ASSERT(populated == 3);
+        ASSERT(active_chain_at(&ms.chain_active, 0) == idx[0]);
+        ASSERT(active_chain_at(&ms.chain_active, 1) == idx[1]);
+        ASSERT(active_chain_at(&ms.chain_active, 2) == idx[2]);
+        ASSERT(idx[1]->nHeight == 1);
+        ASSERT(idx[1]->nDataPos == pos[1].nPos);
+        ASSERT(idx[2]->pprev == idx[1]);
+        ASSERT(idx[1]->pprev == idx[0]);
+        ASSERT(idx[0]->pprev == NULL);
+
+        struct chain_integrity_result r;
+        chain_integrity_check_post_restore(&r, &ms);
+        ASSERT(r.ok);
+        ASSERT(r.active_chain_mismatches == 0);
+        ASSERT(r.active_chain_holes == 0);
+
+        block_map_free(&ms.map_block_index);
+        active_chain_free(&ms.chain_active);
+
+        char rm_cmd[512];
+        snprintf(rm_cmd, sizeof(rm_cmd), "rm -rf %s", tmpdir);
+        (void)system(rm_cmd);
+        PASS();
+    } _test_next:;
+    return failures;
 }
 
 static int test_backfill_nbits_reads_from_block_file(void) {
@@ -963,9 +1091,20 @@ static int test_finalize_null_datadir_skips_disk(void) {
         struct block_index *tip = block_map_find(
             &ms.map_block_index, &hashes[N-1]);
         ASSERT(active_chain_set_tip(&ms.chain_active, tip));
+        bii_record_recovery_status(BII_TIP_MISSING_IN_SQL,
+                                   BII_RECOVERY_RECONCILE_REQUIRED,
+                                   "unit-test stale reconcile",
+                                   true, false);
 
         /* Fully clean chain — finalize returns true. */
         ASSERT(chain_restore_finalize(&ms, NULL) == true);
+        struct bii_recovery_status st;
+        memset(&st, 0, sizeof(st));
+        bii_get_recovery_status(&st);
+        ASSERT(st.verdict == BII_OK);
+        ASSERT(st.action == BII_RECOVERY_ACCEPTED);
+        ASSERT(!st.degraded);
+        ASSERT(strstr(st.reason, "post-restore integrity clean") != NULL);
 
         block_map_free(&ms.map_block_index);
         active_chain_free(&ms.chain_active);
@@ -1005,6 +1144,7 @@ int test_chain_restore_service(void) {
     failures += test_rebuild_active_chain_fills_holes_from_block_map();
     failures += test_rebuild_active_chain_scales_at_100k();
     failures += test_rebuild_populates_skiplist_for_log_n_ancestor();
+    failures += test_rebuild_active_chain_scans_block_files_for_canonical_positions();
     failures += test_backfill_nbits_reads_from_block_file();
     failures += test_connect_tip_hydrates_placeholder_from_disk();
     failures += test_backfill_nbits_skips_synthetic_anchor();

@@ -219,7 +219,7 @@ static int test_incomplete_evidence_tip_promotion_rejected(void)
     if (chain_evidence_controller_promote_tip(&f.authority, &req)
         != CEC_REJECTED_INCOMPLETE_INDEX_EVIDENCE)
         failures++;
-    if (f.authority.state != CEC_CONTRADICTION_FROZEN)
+    if (f.authority.state != CEC_SNAPSHOT_UTXO_HASH_VERIFIED)
         failures++;
 
     auth_fixture_free(&f);
@@ -343,7 +343,7 @@ static int test_persistence_preflight_blocks_csr_publication(void)
     return failures;
 }
 
-static int test_evidence_transaction_required_before_tip_publication(void)
+static int test_evidence_transaction_can_join_outer_publication_txn(void)
 {
     int failures = 0;
     struct auth_fixture f;
@@ -370,14 +370,15 @@ static int test_evidence_transaction_required_before_tip_publication(void)
     req.verified.block_bytes_hash_checked = true;
 
     if (chain_evidence_controller_promote_tip(&f.authority, &req)
-        != CEC_REJECTED_PERSIST)
+        != CEC_OK)
         failures++;
-    if (active_chain_height(&f.chain) != -1)
+    if (active_chain_height(&f.chain) != 1)
         failures++;
-    if (f.header_tip != NULL)
+    if (f.header_tip != &f.blocks[1])
         failures++;
 
-    (void)node_db_rollback(&f.ndb);
+    if (!node_db_commit(&f.ndb))
+        failures++;
     auth_fixture_free(&f);
     return failures;
 }
@@ -541,7 +542,7 @@ int test_chain_evidence_controller(void)
     failures += test_utxo_ahead_of_evidenced_index_rejected();
     failures += test_csr_rejection_does_not_persist_tip_evidence();
     failures += test_persistence_preflight_blocks_csr_publication();
-    failures += test_evidence_transaction_required_before_tip_publication();
+    failures += test_evidence_transaction_can_join_outer_publication_txn();
     failures += test_valid_evidenced_snapshot_promotes_to_tip_following();
     failures += test_commit_failure_after_csr_restores_concrete_state();
     failures += test_full_validation_requires_matching_utxo_sha3();

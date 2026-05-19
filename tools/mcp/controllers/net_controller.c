@@ -176,7 +176,7 @@ static const struct mcp_tool_route k_routes[] = {
       "Connected peers with addresses, latency, services, heights.",
       NULL, 0, h_zcl_peers },
     { "zcl_networkinfo", "net",
-      "Network info: version, connections, relay fee.",
+      "Network info: reachability, handshakes, and lifecycle failures by source.",
       NULL, 0, h_zcl_networkinfo },
     { "zcl_addnode", "net",
       "Add/remove peer. Actions: add, remove, onetry.",

@@ -5,10 +5,13 @@
 
 #include "services/chain_state_repository.h"
 
+#include "config/db_service.h"
 #include "event/event.h"
+#include <sqlite3.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #include "util/ar_step_readonly.h"
 #include "util/log_macros.h"
@@ -33,6 +36,7 @@ const char *csr_result_name(enum csr_result r)
     case CSR_REJECTED_HEADER_REGRESSION:  return "header_regression";
     case CSR_REJECTED_ROLLBACK_AUTH:      return "rollback_auth";
     case CSR_REJECTED_PERSIST:            return "persist";
+    case CSR_REJECTED_DB_BUSY:            return "db_writer_busy";
     case CSR_REJECTED_OOM:                return "oom";
     case CSR_NUM_RESULTS:                 break;
     }
@@ -96,6 +100,106 @@ static int64_t csr_sqlite_utxo_count(struct node_db *ndb)
     if (!ndb || !ndb->open)
         LOG_RETURN(-1, "csr", "ndb not available");
     return node_db_utxo_count(ndb);
+}
+
+static void csr_set_last_persist_locked(struct chain_state_repository *csr,
+                                        int sqlite_rc,
+                                        const char *msg)
+{
+    if (!csr)
+        return;
+    csr->last_persist_sqlite_rc = sqlite_rc;
+    snprintf(csr->last_persist_error, sizeof(csr->last_persist_error),
+             "%s", msg ? msg : "");
+}
+
+struct csr_persist_state_ctx {
+    const char *key;
+    const void *value;
+    size_t len;
+    bool ok;
+    int sqlite_rc;
+    char msg[128];
+};
+
+static bool csr_persist_state_write(struct node_db *ndb, void *ctx)
+{
+    struct csr_persist_state_ctx *p = ctx;
+    struct node_db_status st;
+
+    if (!ndb || !p) {
+        if (p) {
+            p->sqlite_rc = SQLITE_MISUSE;
+            snprintf(p->msg, sizeof(p->msg), "invalid db writer ctx");
+        }
+        return false;
+    }
+    p->ok = node_db_state_set(ndb, p->key, p->value, p->len);
+    node_db_get_status(ndb, &st);
+    p->sqlite_rc = st.last_sqlite_rc;
+    snprintf(p->msg, sizeof(p->msg), "op=%s rc=%d %s",
+             st.last_op[0] ? st.last_op : "state_set",
+             st.last_sqlite_rc, sqlite3_errstr(st.last_sqlite_rc));
+    return p->ok;
+}
+
+static bool csr_sqlite_busy_or_locked(int rc)
+{
+    return rc == SQLITE_BUSY || rc == SQLITE_LOCKED;
+}
+
+static enum csr_result csr_persist_coins_best_locked(
+    struct chain_state_repository *csr,
+    const struct chain_state_commit *commit)
+{
+    if (!csr || !commit)
+        return CSR_REJECTED_NULL_INPUT;
+    if (!csr->ndb || !csr->ndb->open) {
+        csr_set_last_persist_locked(csr, SQLITE_MISUSE,
+                                    "node_db unavailable");
+        return CSR_REJECTED_PERSIST;
+    }
+
+    struct db_service *dbsvc = csr->db_service;
+    const int attempts = 8;
+    for (int i = 0; i < attempts; i++) {
+        struct csr_persist_state_ctx ctx = {
+            .key = "coins_best_block",
+            .value = commit->new_coins_best.data,
+            .len = 32,
+            .ok = false,
+            .sqlite_rc = SQLITE_OK,
+        };
+        bool submitted = false;
+        if (dbsvc && db_service_is_started(dbsvc) &&
+            db_service_node_db(dbsvc) == csr->ndb) {
+            submitted = db_service_run_write(dbsvc,
+                                             csr_persist_state_write,
+                                             &ctx);
+        } else {
+            submitted = csr_persist_state_write(csr->ndb, &ctx);
+        }
+
+        if (submitted && ctx.ok) {
+            csr_set_last_persist_locked(csr, SQLITE_OK, "");
+            return CSR_OK;
+        }
+
+        csr_set_last_persist_locked(csr, ctx.sqlite_rc, ctx.msg);
+        if (csr_sqlite_busy_or_locked(ctx.sqlite_rc) && i + 1 < attempts) {
+            struct timespec ts = {
+                .tv_sec = 0,
+                .tv_nsec = 25000000L * (long)(i + 1),
+            };
+            nanosleep(&ts, NULL);
+            continue;
+        }
+        return csr_sqlite_busy_or_locked(ctx.sqlite_rc)
+            ? CSR_REJECTED_DB_BUSY
+            : CSR_REJECTED_PERSIST;
+    }
+    csr_set_last_persist_locked(csr, SQLITE_BUSY, "bounded retry exhausted");
+    return CSR_REJECTED_DB_BUSY;
 }
 
 /* ── Validation (caller holds csr->lock) ─────────────────────── */
@@ -368,11 +472,13 @@ void csr_init(struct chain_state_repository *csr,
     csr->pindex_best_hdr  = pindex_best_hdr;
     csr->coins_tip        = coins_tip;
     csr->ndb              = ndb;
+    csr->db_service       = NULL;
     csr->wallet_scan_h    = wallet_scan_h;
     csr->max_utxo_orphan_rows  = CSR_DEFAULT_MAX_ORPHAN_ROWS;
     csr->stale_index_height_gap = CSR_DEFAULT_STALE_INDEX_GAP;
     csr->commits_ok = 0;
     memset(csr->commits_rejected, 0, sizeof(csr->commits_rejected));
+    csr_set_last_persist_locked(csr, SQLITE_OK, "");
     csr->initialized = true;
     pthread_mutex_unlock(&csr->lock);
 }
@@ -387,6 +493,16 @@ void csr_free(struct chain_state_repository *csr)
         pthread_mutex_destroy(&csr->lock);
     }
     csr->initialized = false;
+}
+
+void csr_set_db_service(struct chain_state_repository *csr,
+                        struct db_service *db_service)
+{
+    if (!csr)
+        return;
+    pthread_mutex_lock(&csr->lock);
+    csr->db_service = db_service;
+    pthread_mutex_unlock(&csr->lock);
 }
 
 void csr_set_max_utxo_orphan_rows(struct chain_state_repository *csr,
@@ -527,19 +643,20 @@ enum csr_result csr_commit_tip(struct chain_state_repository *csr,
            commit->new_tip->nHeight, commit->reason);
 
     if (commit->persist_coins_best) {
-        if (!csr->ndb || !csr->ndb->open ||
-            !node_db_state_set(csr->ndb, "coins_best_block",
-                               commit->new_coins_best.data, 32)) {
-            csr->commits_rejected[CSR_REJECTED_PERSIST]++;
-            csr_emit_rejected_event(csr, from_height, commit,
-                                    CSR_REJECTED_PERSIST);
+        enum csr_result prc = csr_persist_coins_best_locked(csr, commit);
+        if (prc != CSR_OK) {
+            csr->commits_rejected[prc]++;
+            csr_emit_rejected_event(csr, from_height, commit, prc);
             pthread_mutex_unlock(&csr->lock);
             fprintf(stderr,  // obs-ok:paired-with-csr_emit_rejected_event-above
-                    "csr: REJECTED code=%s from=%d to=%d reason=%s\n",
-                    csr_result_name(CSR_REJECTED_PERSIST), from_height,
+                    "csr: REJECTED code=%s from=%d to=%d reason=%s "
+                    "sqlite_rc=%d detail=%s\n",
+                    csr_result_name(prc), from_height,
                     commit->new_tip ? commit->new_tip->nHeight : -1,
-                    commit->reason ? commit->reason : "");
-            return CSR_REJECTED_PERSIST;
+                    commit->reason ? commit->reason : "",
+                    csr->last_persist_sqlite_rc,
+                    csr->last_persist_error);
+            return prc;
         }
     }
 
@@ -610,5 +727,25 @@ void csr_snapshot(struct chain_state_repository *csr,
     out->commits_rejected_total = 0;
     for (int i = 0; i < CSR_NUM_RESULTS; i++)
         out->commits_rejected_total += csr->commits_rejected[i];
+    pthread_mutex_unlock(&csr->lock);
+}
+
+void csr_last_persist_status(struct chain_state_repository *csr,
+                             int *out_sqlite_rc,
+                             char *out_msg,
+                             size_t out_msg_sz)
+{
+    if (out_sqlite_rc)
+        *out_sqlite_rc = SQLITE_OK;
+    if (out_msg && out_msg_sz > 0)
+        out_msg[0] = '\0';
+    if (!csr || !csr->initialized)
+        return;
+
+    pthread_mutex_lock(&csr->lock);
+    if (out_sqlite_rc)
+        *out_sqlite_rc = csr->last_persist_sqlite_rc;
+    if (out_msg && out_msg_sz > 0)
+        snprintf(out_msg, out_msg_sz, "%s", csr->last_persist_error);
     pthread_mutex_unlock(&csr->lock);
 }

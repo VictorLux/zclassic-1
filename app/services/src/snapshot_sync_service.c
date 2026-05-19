@@ -13,6 +13,7 @@
  * State machine: IDLE → NEGOTIATING → RECEIVING → VERIFYING → COMPLETE */
 
 #include "services/snapshot_sync_service.h"
+#include "services/chain_advance_coordinator.h"
 #include "services/chain_restore_service.h"
 #include "services/chain_state_repository.h"
 #include "services/chain_tip.h"
@@ -2046,6 +2047,13 @@ enum snapsync_offer_result snapsync_handle_offer(
     manifest_result =
         snapshot_manifest_validate_offer(&manifest, params->our_height);
     if (manifest_result != SNAPSHOT_MANIFEST_OK) {
+        (void)chain_advance_coordinator_snapshot_offer_allowed(
+            params->our_height,
+            params->height,
+            params->peer_tip_height,
+            false,
+            snapshot_manifest_result_name(manifest_result),
+            NULL);
         event_emitf(EV_SNAPSHOT_OFFER_RECEIVED, params->peer_id,
                     "accepted=false reason=%s h=%d peer_tip=%d our_h=%d",
                     snapshot_manifest_result_name(manifest_result),
@@ -2056,6 +2064,13 @@ enum snapsync_offer_result snapsync_handle_offer(
 
     /* Reject peers that previously stalled during snapshot transfer */
     if (snapsync_is_peer_blacklisted(svc, params->peer_id)) {
+        (void)chain_advance_coordinator_snapshot_offer_allowed(
+            params->our_height,
+            params->height,
+            params->peer_tip_height,
+            false,
+            "blacklisted",
+            NULL);
         event_emitf(EV_SNAPSHOT_OFFER_RECEIVED, params->peer_id,
                     "accepted=false reason=blacklisted h=%d peer_tip=%d",
                     params->height, params->peer_tip_height);
@@ -2081,14 +2096,39 @@ enum snapsync_offer_result snapsync_handle_offer(
                (unsigned long long)prior_received);
         snapsync_reset(svc);
     } else if (current_state != SNAPSYNC_IDLE) {
+        (void)chain_advance_coordinator_snapshot_offer_allowed(
+            params->our_height,
+            params->height,
+            params->peer_tip_height,
+            false,
+            "busy",
+            NULL);
         return SNAPSYNC_OFFER_REJECTED_BUSY;
     }
 
     /* Accept the offer via service */
     if (!snapsync_accept_offer(svc, params->height, params->num_utxos,
                                params->utxo_root, params->mmb_root,
-                               params->block_hash, params->peer_id))
+                               params->block_hash, params->peer_id)) {
+        (void)chain_advance_coordinator_snapshot_offer_allowed(
+            params->our_height,
+            params->height,
+            params->peer_tip_height,
+            false,
+            "accept_failed",
+            NULL);
         return SNAPSYNC_OFFER_REJECTED_BUSY;
+    }
+    if (!chain_advance_coordinator_snapshot_offer_allowed(
+            params->our_height,
+            params->height,
+            params->peer_tip_height,
+            true,
+            "manifest_ok",
+            NULL)) {
+        snapsync_reset(svc);
+        return SNAPSYNC_OFFER_REJECTED_BUSY;
+    }
     snapsync_service_lock();
     memcpy(svc->offered_chain_work, params->chain_work, 32);
     svc->offered_peer_tip_height = params->peer_tip_height;

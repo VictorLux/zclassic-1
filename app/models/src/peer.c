@@ -10,8 +10,14 @@
 
 #include "models/peer.h"
 #include "event/event.h"
+#include "util/ar_step_readonly.h"
+#include <stdio.h>
 #include <string.h>
 #include <time.h>
+
+#define DB_PEER_SAVE_MAX_ATTEMPTS 1200
+#define DB_PEER_SAVE_RETRY_MS 25
+#define DB_PEER_SAVE_ADVISORY_MAX_ATTEMPTS 4
 
 /* ── Callbacks ─────────────────────────────────────────────────── */
 
@@ -81,7 +87,11 @@ static void row_to_peer(sqlite3_stmt *s, struct db_peer *out, int off)
 
 /* ── Save (cached stmt) ──────────────────────────────────────── */
 
-bool db_peer_save(struct node_db *ndb, const struct db_peer *p)
+static bool db_peer_save_with_attempts(struct node_db *ndb,
+                                       const struct db_peer *p,
+                                       int max_attempts,
+                                       const char *op_name,
+                                       bool health_error)
 {
     if (!ndb->open) return false;
 
@@ -91,25 +101,80 @@ bool db_peer_save(struct node_db *ndb, const struct db_peer *p)
     AR_VALIDATE_RECORD(cbs, "peer", p, db_peer_validate);
 
     sqlite3_stmt *s = ndb->stmt_peer_save;
-    AR_RESET(s);
-    AR_BIND_BLOB(s, 1, p->ip, 16);
-    AR_BIND_INT(s, 2, p->port);
-    AR_BIND_INT(s, 3, (int64_t)p->services);
-    AR_BIND_INT(s, 4, p->last_seen);
-    AR_BIND_INT(s, 5, p->last_try);
-    AR_BIND_INT(s, 6, p->attempts);
-    if (p->has_source)
-        AR_BIND_BLOB(s, 7, p->source, 16);
-    else
-        AR_BIND_NULL(s, 7);
-    AR_BIND_INT(s, 8, p->bandwidth_score);
-    AR_BIND_INT(s, 9, p->is_zcl23 ? 1 : 0);
+    bool locked_stmt = false;
+    char err_msg[128] = {0};
+    if (ndb->state_mutex_init) {
+        zcl_mutex_lock(&ndb->state_mutex);
+        locked_stmt = true;
+    }
 
-    bool ok = AR_STEP_DONE(s);
+    int rc = SQLITE_OK;
+    int attempts = 0;
+    for (; attempts < max_attempts; attempts++) {
+        AR_RESET(s);
+        sqlite3_clear_bindings(s);
+        AR_BIND_BLOB(s, 1, p->ip, 16);
+        AR_BIND_INT(s, 2, p->port);
+        AR_BIND_INT(s, 3, (int64_t)p->services);
+        AR_BIND_INT(s, 4, p->last_seen);
+        AR_BIND_INT(s, 5, p->last_try);
+        AR_BIND_INT(s, 6, p->attempts);
+        if (p->has_source)
+            AR_BIND_BLOB(s, 7, p->source, 16);
+        else
+            AR_BIND_NULL(s, 7);
+        AR_BIND_INT(s, 8, p->bandwidth_score);
+        AR_BIND_INT(s, 9, p->is_zcl23 ? 1 : 0);
+
+        rc = AR_STEP_ROW_READONLY(s);
+        if (rc == SQLITE_DONE)
+            break;
+        sqlite3_reset(s);
+        if (rc != SQLITE_BUSY && rc != SQLITE_LOCKED)
+            break;
+        sqlite3_sleep(DB_PEER_SAVE_RETRY_MS);
+    }
+    if (rc != SQLITE_DONE) {
+        const char *msg = sqlite3_errmsg(ndb->db);
+        if (!msg || strcmp(msg, "not an error") == 0)
+            msg = sqlite3_errstr(rc);
+        snprintf(err_msg, sizeof(err_msg), "%s", msg ? msg : "unknown");
+    }
+    AR_RESET(s);
+    ndb->last_sqlite_rc = rc;
+    snprintf(ndb->last_op, sizeof(ndb->last_op), "%s", "db_peer_save");
+    if (locked_stmt)
+        zcl_mutex_unlock(&ndb->state_mutex);
+
+    bool ok = rc == SQLITE_DONE;
     if (!ok) {
-        fprintf(stderr, "peer save failed: %s\n", sqlite3_errmsg(ndb->db));
+        if (health_error) {
+            fprintf(stderr, "peer %s failed: rc=%d msg=%s attempts=%d\n", // obs-ok:paired-with-event_emitf-below
+                    op_name, rc, err_msg, attempts);
+        } else {
+            fprintf(stderr, "peer %s skipped: rc=%d msg=%s attempts=%d\n",
+                    op_name, rc, err_msg, attempts);
+        }
+        if (health_error) {
+            event_emitf(EV_DB_ERROR, 0,
+                        "model=peer op=%s rc=%d attempts=%d msg=%s",
+                        op_name, rc, attempts, err_msg);
+        }
     }
     AR_FINISH_SAVE(cbs, p, ok);
+}
+
+bool db_peer_save(struct node_db *ndb, const struct db_peer *p)
+{
+    return db_peer_save_with_attempts(ndb, p, DB_PEER_SAVE_MAX_ATTEMPTS,
+                                      "save", true);
+}
+
+bool db_peer_save_advisory(struct node_db *ndb, const struct db_peer *p)
+{
+    return db_peer_save_with_attempts(ndb, p,
+                                      DB_PEER_SAVE_ADVISORY_MAX_ATTEMPTS,
+                                      "save_advisory", false);
 }
 
 /* ── Find (cached stmt) ──────────────────────────────────────── */

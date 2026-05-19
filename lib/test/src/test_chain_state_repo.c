@@ -9,6 +9,7 @@
  * count. The top-level test_chain_state_repo() aggregates them. */
 
 #include "test/test_helpers.h"
+#include "config/db_service.h"
 #include "services/chain_state_repository.h"
 #include "validation/chainstate.h"
 #include "validation/main_state.h"
@@ -890,6 +891,49 @@ static int t_persist_coins_best_rejects_before_publish(void)
     return failures;
 }
 
+static int t_persist_coins_best_uses_db_writer(void)
+{
+    int failures = 0;
+    struct node_db ndb;
+    bool dbok = node_db_open(&ndb, ":memory:");
+    if (!dbok) {
+        CSR_RUN("csr: persist_coins_best uses serialized db writer (skipped)",
+                false);
+        return failures;
+    }
+    struct db_service dbsvc;
+    db_service_init(&dbsvc);
+    bool ok = db_service_attach(&dbsvc, &ndb) &&
+              db_service_start(&dbsvc);
+
+    struct chain_state_repository csr;
+    struct csr_fixture f; csr_fix_init(&f);
+    csr_init(&csr, &f.bm, &f.chain, &f.header_tip, &f.coins_tip, &ndb, NULL);
+    csr_set_db_service(&csr, &dbsvc);
+    struct block_index *g = csr_fix_add(&f, 0x6e);
+    ok = ok && csr_sql_insert_block(&ndb, g->phashBlock, 0);
+
+    struct chain_state_commit c = csr_make_commit(g, "persist.writer");
+    c.persist_coins_best = true;
+    ok = ok && csr_commit_tip(&csr, &c) == CSR_OK;
+
+    uint8_t persisted[32] = {0};
+    size_t persisted_len = 0;
+    ok = ok && node_db_state_get(&ndb, "coins_best_block",
+                                 persisted, sizeof(persisted),
+                                 &persisted_len);
+    ok = ok && persisted_len == 32 &&
+              memcmp(persisted, g->phashBlock->data, 32) == 0;
+    ok = ok && active_chain_height(&f.chain) == 0;
+    CSR_RUN("csr: persist_coins_best uses serialized db writer", ok);
+
+    csr_free(&csr);
+    csr_fix_free(&f);
+    db_service_stop(&dbsvc);
+    node_db_close(&ndb);
+    return failures;
+}
+
 static int t_snapshot_after_commit(void)
 {
     int failures = 0;
@@ -1226,6 +1270,7 @@ int test_chain_state_repo(void)
     failures += t_expected_utxo_drift();
     failures += t_expected_utxo_close();
     failures += t_persist_coins_best_rejects_before_publish();
+    failures += t_persist_coins_best_uses_db_writer();
     failures += t_snapshot_after_commit();
     failures += t_snapshot_uninitialised();
     failures += t_counters_increment();

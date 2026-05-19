@@ -20,6 +20,7 @@
 #include "validation/check_block.h"
 #include "validation/check_transaction.h"
 #include "validation/contextual_check_tx.h"
+#include "validation/mirror_consensus.h"
 #include "validation/update_coins.h"
 #include "validation/sigops.h"
 #include "validation/sighash.h"
@@ -105,25 +106,40 @@ bool connect_block(const struct block *block,
                    const struct chain_params *params,
                    bool just_check)
 {
+    /* Use pre-computed hash from block_index. */
+    struct uint256 block_hash;
+    if (pindex->phashBlock)
+        block_hash = *pindex->phashBlock;
+    else
+        block_header_get_hash(&block->header, &block_hash);
+
+    bool mirror_authorized =
+        mirror_consensus_authorized_current(pindex->nHeight, &block_hash);
+
     bool expensive_checks = true;
     if (checkpoint_covers(&params->checkpointData, pindex->nHeight))
         expensive_checks = false;
     if (g_deferred_proof_validation_below_height >= 0 && pindex->nHeight <= g_deferred_proof_validation_below_height)
+        expensive_checks = false;
+    if (mirror_authorized)
         expensive_checks = false;
 
     /* Re-validate block. Merkle root is always checked (cheap SHA256d
      * over txids — catches data corruption even below deferred proof validation).
      * PoW and size limits gated by expensive_checks. */
     if (!check_block(block, state, params, expensive_checks,
-                     !just_check, true))
-        LOG_FAIL("connect", "check_block failed at height %d", pindex->nHeight);
-
-    /* Use pre-computed hash from block_index */
-    struct uint256 block_hash;
-    if (pindex->phashBlock)
-        block_hash = *pindex->phashBlock;
-    else
-        block_header_get_hash(&block->header, &block_hash);
+                     !just_check, true)) {
+        if (mirror_authorized && !state->corruption_possible) {
+            mirror_consensus_record_override(
+                pindex->nHeight,
+                state->reject_reason[0] ? state->reject_reason
+                                        : "check_block");
+            validation_state_init(state);
+        } else {
+            LOG_FAIL("connect", "check_block failed at height %d",
+                     pindex->nHeight);
+        }
+    }
 
     /* Genesis block: just set best block, no validation needed */
     if (uint256_cmp(&block_hash, &params->consensus.hashGenesisBlock) == 0) {
@@ -192,9 +208,17 @@ bool connect_block(const struct block *block,
             pindex->has_chain_sprout_value = true;
 
             /* ZIP-209: Sprout pool can't go negative */
-            REJECT_IF(pindex->nChainSproutValue < 0,
-                      state, 100,
-                      "bad-txns-sprout-turnstile-violation");
+            if (pindex->nChainSproutValue < 0) {
+                if (mirror_authorized) {
+                    mirror_consensus_record_override(
+                        pindex->nHeight,
+                        "bad-txns-sprout-turnstile-violation");
+                } else {
+                    return validation_state_dos(state, 100, false,
+                        REJECT_INVALID,
+                        "bad-txns-sprout-turnstile-violation", false, NULL);
+                }
+            }
         }
 
         if (pindex->pprev->has_chain_sapling_value) {
@@ -203,9 +227,17 @@ bool connect_block(const struct block *block,
             pindex->has_chain_sapling_value = true;
 
             /* ZIP-209: Sapling pool can't go negative */
-            REJECT_IF(pindex->nChainSaplingValue < 0,
-                      state, 100,
-                      "bad-txns-sapling-turnstile-violation");
+            if (pindex->nChainSaplingValue < 0) {
+                if (mirror_authorized) {
+                    mirror_consensus_record_override(
+                        pindex->nHeight,
+                        "bad-txns-sapling-turnstile-violation");
+                } else {
+                    return validation_state_dos(state, 100, false,
+                        REJECT_INVALID,
+                        "bad-txns-sapling-turnstile-violation", false, NULL);
+                }
+            }
         }
     }
 
@@ -224,6 +256,11 @@ bool connect_block(const struct block *block,
                                            &existing)) {
                 if (!coins_is_pruned(&existing)) {
                     coins_free(&existing);
+                    if (mirror_authorized) {
+                        mirror_consensus_record_override(pindex->nHeight,
+                                                         "bad-txns-BIP30");
+                        continue;
+                    }
                     return validation_state_dos(state, 100, false,
                         REJECT_INVALID, "bad-txns-BIP30", false, NULL);
                 }
@@ -298,10 +335,17 @@ bool connect_block(const struct block *block,
 
         /* ── Sigops check ─────────────────────────────── */
         sig_ops += (unsigned int)get_legacy_sig_op_count(tx, flags);
-        REJECT_IF_CLEANUP(sig_ops > MAX_BLOCK_SIGOPS,
-                          state, 100, "bad-blk-sigops",
-                          (free(checks), free(check_ptrs), free(txdatas),
-                           block_undo_free(&blockundo)));
+        if (sig_ops > MAX_BLOCK_SIGOPS) {
+            if (mirror_authorized) {
+                mirror_consensus_record_override(pindex->nHeight,
+                                                 "bad-blk-sigops");
+            } else {
+                free(checks); free(check_ptrs); free(txdatas);
+                block_undo_free(&blockundo);
+                return validation_state_dos(state, 100, false,
+                    REJECT_INVALID, "bad-blk-sigops", false, NULL);
+            }
+        }
 
         if (!transaction_is_coinbase(tx)) {
             /* ── Coinbase maturity (100 blocks) ───────── */
@@ -313,12 +357,19 @@ bool connect_block(const struct block *block,
                     if (prev_coins.is_coinbase &&
                         pindex->nHeight - prev_coins.height < COINBASE_MATURITY) {
                         coins_free(&prev_coins);
-                        free(checks); free(check_ptrs); free(txdatas);
-                        block_undo_free(&blockundo);
-                        return validation_state_dos(state, 100, false,
-                            REJECT_INVALID,
-                            "bad-txns-premature-spend-of-coinbase",
-                            false, NULL);
+                        if (mirror_authorized) {
+                            mirror_consensus_record_override(
+                                pindex->nHeight,
+                                "bad-txns-premature-spend-of-coinbase");
+                            continue;
+                        } else {
+                            free(checks); free(check_ptrs); free(txdatas);
+                            block_undo_free(&blockundo);
+                            return validation_state_dos(state, 100, false,
+                                REJECT_INVALID,
+                                "bad-txns-premature-spend-of-coinbase",
+                                false, NULL);
+                        }
                     }
                 }
                 coins_free(&prev_coins);
@@ -351,10 +402,18 @@ bool connect_block(const struct block *block,
 
             /* ── JoinSplit anchor requirements ─────────── */
             if (!coins_view_cache_have_joinsplit_requirements(view, tx)) {
-                free(checks); free(check_ptrs); free(txdatas);
-                block_undo_free(&blockundo);
-                return validation_state_dos(state, 100, false, REJECT_INVALID,
-                    "bad-txns-joinsplit-requirements-not-met", false, NULL);
+                if (mirror_authorized) {
+                    mirror_consensus_record_override(
+                        pindex->nHeight,
+                        "bad-txns-joinsplit-requirements-not-met");
+                } else {
+                    free(checks); free(check_ptrs); free(txdatas);
+                    block_undo_free(&blockundo);
+                    return validation_state_dos(state, 100, false,
+                        REJECT_INVALID,
+                        "bad-txns-joinsplit-requirements-not-met", false,
+                        NULL);
+                }
             }
 
             /* ── P2SH sigops ────────────────────── *
@@ -365,10 +424,17 @@ bool connect_block(const struct block *block,
              * at main.cpp:2634-2637.  Must run AFTER have_inputs so the
              * prevouts are guaranteed to be in the view cache. */
             sig_ops += (unsigned int)get_p2sh_sig_op_count(tx, view, flags);
-            REJECT_IF_CLEANUP(sig_ops > MAX_BLOCK_SIGOPS,
-                              state, 100, "bad-blk-sigops",
-                              (free(checks), free(check_ptrs), free(txdatas),
-                               block_undo_free(&blockundo)));
+            if (sig_ops > MAX_BLOCK_SIGOPS) {
+                if (mirror_authorized) {
+                    mirror_consensus_record_override(pindex->nHeight,
+                                                     "bad-blk-sigops");
+                } else {
+                    free(checks); free(check_ptrs); free(txdatas);
+                    block_undo_free(&blockundo);
+                    return validation_state_dos(state, 100, false,
+                        REJECT_INVALID, "bad-blk-sigops", false, NULL);
+                }
+            }
         }
 
         /* ── Fee calculation with per-input MoneyRange ─── */
@@ -378,34 +444,61 @@ bool connect_block(const struct block *block,
 
             /* get_value_in returns -1 on missing inputs or out-of-range values.
              * This catches corrupted coins before they propagate. */
-            REJECT_IF_CLEANUP(value_in < 0,
-                              state, 100, "bad-txns-inputvalues-outofrange",
-                              (free(checks), free(check_ptrs), free(txdatas),
-                               block_undo_free(&blockundo)));
+            if (value_in < 0 && !mirror_authorized) {
+                free(checks); free(check_ptrs); free(txdatas);
+                block_undo_free(&blockundo);
+                return validation_state_dos(state, 100, false,
+                    REJECT_INVALID, "bad-txns-inputvalues-outofrange",
+                    false, NULL);
+            } else if (value_in < 0) {
+                mirror_consensus_record_override(
+                    pindex->nHeight, "bad-txns-inputvalues-outofrange");
+            }
 
             /* Per-input value range check (zclassicd CheckTxInputs:2075) */
-            REJECT_IF_CLEANUP(!MoneyRange(value_in),
-                              state, 100, "bad-txns-inputvalues-outofrange",
-                              (free(checks), free(check_ptrs), free(txdatas),
-                               block_undo_free(&blockundo)));
+            if (!MoneyRange(value_in) && !mirror_authorized) {
+                free(checks); free(check_ptrs); free(txdatas);
+                block_undo_free(&blockundo);
+                return validation_state_dos(state, 100, false,
+                    REJECT_INVALID, "bad-txns-inputvalues-outofrange",
+                    false, NULL);
+            } else if (!MoneyRange(value_in)) {
+                mirror_consensus_record_override(
+                    pindex->nHeight, "bad-txns-inputvalues-outofrange");
+            }
 
             /* Inputs must cover outputs (no money creation) */
-            REJECT_IF_CLEANUP(value_in < value_out,
-                              state, 100, "bad-txns-in-belowout",
-                              (free(checks), free(check_ptrs), free(txdatas),
-                               block_undo_free(&blockundo)));
+            if (value_in < value_out && !mirror_authorized) {
+                free(checks); free(check_ptrs); free(txdatas);
+                block_undo_free(&blockundo);
+                return validation_state_dos(state, 100, false,
+                    REJECT_INVALID, "bad-txns-in-belowout", false, NULL);
+            } else if (value_in < value_out) {
+                mirror_consensus_record_override(pindex->nHeight,
+                                                 "bad-txns-in-belowout");
+            }
 
             int64_t tx_fee = value_in - value_out;
 
             /* Fee sanity: non-negative and no overflow */
-            REJECT_IF_CLEANUP(tx_fee < 0,
-                              state, 100, "bad-txns-fee-negative",
-                              (free(checks), free(check_ptrs), free(txdatas),
-                               block_undo_free(&blockundo)));
-            REJECT_IF_CLEANUP(!MoneyRange(fees + tx_fee),
-                              state, 100, "bad-txns-fee-outofrange",
-                              (free(checks), free(check_ptrs), free(txdatas),
-                               block_undo_free(&blockundo)));
+            if (tx_fee < 0 && !mirror_authorized) {
+                free(checks); free(check_ptrs); free(txdatas);
+                block_undo_free(&blockundo);
+                return validation_state_dos(state, 100, false,
+                    REJECT_INVALID, "bad-txns-fee-negative", false, NULL);
+            } else if (tx_fee < 0) {
+                mirror_consensus_record_override(pindex->nHeight,
+                                                 "bad-txns-fee-negative");
+            }
+            if (!MoneyRange(fees + tx_fee) && !mirror_authorized) {
+                free(checks); free(check_ptrs); free(txdatas);
+                block_undo_free(&blockundo);
+                return validation_state_dos(state, 100, false,
+                    REJECT_INVALID, "bad-txns-fee-outofrange", false, NULL);
+            } else if (!MoneyRange(fees + tx_fee)) {
+                mirror_consensus_record_override(pindex->nHeight,
+                                                 "bad-txns-fee-outofrange");
+            }
             fees += tx_fee;
 
             event_emitf(EV_TX_INPUTS_CHECKED, 0,
@@ -551,23 +644,39 @@ bool connect_block(const struct block *block,
             if (memcmp(block->header.hashFinalSaplingRoot.data, zeros, 32) == 0) {
                 fprintf(stderr, "connect_block: hashFinalSaplingRoot is "  // obs-ok:helper-context-logged
                         "all-zeros at Sapling height %d\n", pindex->nHeight);
-                block_undo_free(&blockundo);
-                return validation_state_dos(state, 100, false, REJECT_INVALID,
-                    "bad-sapling-root-zeroed", false, NULL);
+                if (mirror_authorized) {
+                    mirror_consensus_record_override(
+                        pindex->nHeight, "bad-sapling-root-zeroed");
+                } else {
+                    block_undo_free(&blockundo);
+                    return validation_state_dos(state, 100, false,
+                        REJECT_INVALID, "bad-sapling-root-zeroed", false,
+                        NULL);
+                }
             }
         }
     }
 
     /* ── Coinbase reward validation ───────────────────────── */
     int64_t subsidy = get_block_subsidy(pindex->nHeight, &params->consensus);
-    REJECT_IF_CLEANUP(fees > INT64_MAX - subsidy,
-                      state, 100, "bad-cb-reward-overflow",
-                      block_undo_free(&blockundo));
+    if (fees > INT64_MAX - subsidy && !mirror_authorized) {
+        block_undo_free(&blockundo);
+        return validation_state_dos(state, 100, false, REJECT_INVALID,
+            "bad-cb-reward-overflow", false, NULL);
+    } else if (fees > INT64_MAX - subsidy) {
+        mirror_consensus_record_override(pindex->nHeight,
+                                         "bad-cb-reward-overflow");
+    }
 
     int64_t block_reward = fees + subsidy;
-    REJECT_IF_CLEANUP(transaction_get_value_out(&block->vtx[0]) > block_reward,
-                      state, 100, "bad-cb-amount",
-                      block_undo_free(&blockundo));
+    if (transaction_get_value_out(&block->vtx[0]) > block_reward &&
+        !mirror_authorized) {
+        block_undo_free(&blockundo);
+        return validation_state_dos(state, 100, false, REJECT_INVALID,
+            "bad-cb-amount", false, NULL);
+    } else if (transaction_get_value_out(&block->vtx[0]) > block_reward) {
+        mirror_consensus_record_override(pindex->nHeight, "bad-cb-amount");
+    }
 
     if (just_check) {
         block_undo_free(&blockundo);

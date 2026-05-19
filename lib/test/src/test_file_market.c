@@ -406,6 +406,8 @@ int test_file_market(void)
             offer.size_bytes = 5000;
             offer.num_chunks = 1;
             offer.price_per_mb = 1000;
+            memset(offer.z_addr, 0x23, sizeof(offer.z_addr));
+            offer.peer_port = 8233;
             offer.ttl = 2;
             offer.last_seen = (int64_t)time(NULL);
 

@@ -76,12 +76,25 @@ static void wallet_key_after_save(void *record, void *ctx)
 
 static void wallet_key_init_hooks(void)
 {
-    static bool done = false;
-    if (done) return;
     struct ar_callbacks *cbs = db_wallet_key_callbacks();
-    ar_register_before_save(cbs, wallet_key_before_save);
-    ar_register_after_save(cbs, wallet_key_after_save);
-    done = true;
+    bool before_present = false;
+    bool after_present = false;
+    for (int i = 0; i < cbs->n_before_save; i++) {
+        if (cbs->before_save[i] == wallet_key_before_save) {
+            before_present = true;
+            break;
+        }
+    }
+    for (int i = 0; i < cbs->n_after_save; i++) {
+        if (cbs->after_save[i] == wallet_key_after_save) {
+            after_present = true;
+            break;
+        }
+    }
+    if (!before_present)
+        ar_register_before_save(cbs, wallet_key_before_save);
+    if (!after_present)
+        ar_register_after_save(cbs, wallet_key_after_save);
 }
 
 static bool sapling_key_before_save(void *record, void *ctx)
@@ -109,12 +122,25 @@ static void sapling_key_after_save(void *record, void *ctx)
 
 static void sapling_key_init_hooks(void)
 {
-    static bool done = false;
-    if (done) return;
     struct ar_callbacks *cbs = db_sapling_key_callbacks();
-    ar_register_before_save(cbs, sapling_key_before_save);
-    ar_register_after_save(cbs, sapling_key_after_save);
-    done = true;
+    bool before_present = false;
+    bool after_present = false;
+    for (int i = 0; i < cbs->n_before_save; i++) {
+        if (cbs->before_save[i] == sapling_key_before_save) {
+            before_present = true;
+            break;
+        }
+    }
+    for (int i = 0; i < cbs->n_after_save; i++) {
+        if (cbs->after_save[i] == sapling_key_after_save) {
+            after_present = true;
+            break;
+        }
+    }
+    if (!before_present)
+        ar_register_before_save(cbs, sapling_key_before_save);
+    if (!after_present)
+        ar_register_after_save(cbs, sapling_key_after_save);
 }
 
 /* ── Validation ────────────────────────────────────────────────── */

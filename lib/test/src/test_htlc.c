@@ -366,6 +366,10 @@ int test_htlc(void)
             swap.locktime = 960;
             snprintf(swap.my_address, sizeof(swap.my_address), "t1me");
             snprintf(swap.counter_address, sizeof(swap.counter_address), "t1them");
+            swap.redeem_script_len = 3;
+            swap.redeem_script[0] = 0x51; /* OP_TRUE */
+            snprintf(swap.p2sh_address, sizeof(swap.p2sh_address),
+                     "t3contract");
             swap.created_at = 1700000000;
 
             bool save_ok = db_swap_save(&ndb, &swap);

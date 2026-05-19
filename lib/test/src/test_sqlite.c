@@ -10,6 +10,8 @@
 #include "script/standard.h"
 #include "validation/chainstate.h"
 #include "util/safe_alloc.h"
+#include <pthread.h>
+#include <time.h>
 #include <unistd.h>
 
 static struct transaction make_sync_test_tx(void)
@@ -65,6 +67,26 @@ static void cleanup_temp_db_dir(const char *dir_path)
     snprintf(path, sizeof(path), "%s/node.db", dir_path);
     unlink(path);
     rmdir(dir_path);
+}
+
+struct sqlite_lock_release_ctx {
+    struct node_db *ndb;
+    unsigned int sleep_us;
+};
+
+static void *release_sqlite_write_lock_after_delay(void *arg)
+{
+    struct sqlite_lock_release_ctx *ctx = arg;
+
+    if (!ctx || !ctx->ndb)
+        return NULL;
+    struct timespec ts = {
+        .tv_sec = ctx->sleep_us / 1000000U,
+        .tv_nsec = (long)(ctx->sleep_us % 1000000U) * 1000L,
+    };
+    nanosleep(&ts, NULL);
+    (void)node_db_exec(ctx->ndb, "COMMIT");
+    return NULL;
 }
 
 static bool test_db_service_write_callback(struct node_db *ndb, void *ctx)
@@ -720,6 +742,80 @@ int test_sqlite(void) {
         else { printf("FAIL\n"); failures++; }
     }
 
+    /* Block projection waits through transient writer locks. */
+    {
+        printf("SQLite block save retries transient writer lock... ");
+        char dir_template[] = "/tmp/zclassic23-block-save-lock-XXXXXX";
+        char *dir_path = mkdtemp(dir_template);
+        char db_path[1024];
+        struct node_db locker;
+        struct node_db writer;
+        pthread_t thread;
+        bool thread_started = false;
+        bool ok = dir_path != NULL;
+        uint8_t sol[] = {0x01, 0x02, 0x03};
+
+        memset(&locker, 0, sizeof(locker));
+        memset(&writer, 0, sizeof(writer));
+        if (ok) {
+            snprintf(db_path, sizeof(db_path), "%s/node.db", dir_path);
+            ok = node_db_open(&locker, db_path);
+        }
+        if (ok)
+            ok = node_db_open(&writer, db_path);
+        if (ok)
+            sqlite3_busy_timeout(writer.db, 0);
+        if (ok)
+            ok = node_db_exec(&locker, "BEGIN IMMEDIATE");
+        if (ok)
+            ok = node_db_exec(&locker,
+                "INSERT OR REPLACE INTO node_state(key,value) "
+                "VALUES('block_save_lock_test', X'01')");
+
+        struct sqlite_lock_release_ctx ctx = {
+            .ndb = &locker,
+            .sleep_us = 1200000,
+        };
+        if (ok) {
+            ok = pthread_create(&thread, NULL,
+                                release_sqlite_write_lock_after_delay,
+                                &ctx) == 0;
+            thread_started = ok;
+        }
+
+        struct db_block blk;
+        memset(&blk, 0, sizeof(blk));
+        memset(blk.hash, 0xA3, 32);
+        blk.height = 201;
+        memset(blk.prev_hash, 0xB3, 32);
+        blk.version = 4;
+        memset(blk.merkle_root, 0xC3, 32);
+        blk.time = 1700000201;
+        blk.bits = 0x1d00ffff;
+        memset(blk.nonce, 0xD3, 32);
+        blk.solution = sol;
+        blk.solution_len = sizeof(sol);
+        memset(blk.chain_work, 0xE3, 32);
+        blk.status = BLOCK_VALID_SCRIPTS | BLOCK_HAVE_DATA;
+        blk.file_num = 3;
+        blk.data_pos = 24576;
+        blk.num_tx = 1;
+
+        if (ok)
+            ok = db_block_save(&writer, &blk);
+        if (thread_started)
+            ok = pthread_join(thread, NULL) == 0 && ok;
+        if (ok)
+            ok = db_block_count(&writer) == 1;
+
+        node_db_close(&writer);
+        node_db_close(&locker);
+        if (dir_path)
+            cleanup_temp_db_dir(dir_path);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
     /* DB transaction index CRUD */
     {
         printf("SQLite tx index save/find... ");
@@ -1068,6 +1164,125 @@ int test_sqlite(void) {
         ok = ok && (n == 1);
 
         node_db_close(&ndb);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* Peer persistence waits through transient writer locks. */
+    {
+        printf("SQLite peer save retries transient writer lock... ");
+        char dir_template[] = "/tmp/zclassic23-peer-save-lock-XXXXXX";
+        char *dir_path = mkdtemp(dir_template);
+        char db_path[1024];
+        struct node_db locker;
+        struct node_db writer;
+        pthread_t thread;
+        bool thread_started = false;
+        bool ok = dir_path != NULL;
+
+        memset(&locker, 0, sizeof(locker));
+        memset(&writer, 0, sizeof(writer));
+        if (ok) {
+            snprintf(db_path, sizeof(db_path), "%s/node.db", dir_path);
+            ok = node_db_open(&locker, db_path);
+        }
+        if (ok)
+            ok = node_db_open(&writer, db_path);
+        if (ok)
+            sqlite3_busy_timeout(writer.db, 0);
+        if (ok)
+            ok = node_db_exec(&locker, "BEGIN IMMEDIATE");
+        if (ok)
+            ok = node_db_exec(&locker,
+                "INSERT OR REPLACE INTO node_state(key,value) "
+                "VALUES('peer_save_lock_test', X'01')");
+
+        struct sqlite_lock_release_ctx ctx = {
+            .ndb = &locker,
+            .sleep_us = 3000000,
+        };
+        if (ok) {
+            ok = pthread_create(&thread, NULL,
+                                release_sqlite_write_lock_after_delay,
+                                &ctx) == 0;
+            thread_started = ok;
+        }
+
+        struct db_peer p;
+        memset(&p, 0, sizeof(p));
+        p.ip[10] = 0xFF; p.ip[11] = 0xFF;
+        p.ip[12] = 10; p.ip[13] = 9; p.ip[14] = 8; p.ip[15] = 7;
+        p.port = 8033;
+        p.services = 1;
+        p.last_seen = 1700000200;
+
+        if (ok)
+            ok = db_peer_save(&writer, &p);
+        if (thread_started)
+            ok = pthread_join(thread, NULL) == 0 && ok;
+        if (ok)
+            ok = db_peer_count(&writer) == 1;
+
+        node_db_close(&writer);
+        node_db_close(&locker);
+        if (dir_path)
+            cleanup_temp_db_dir(dir_path);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* Advisory peer persistence is used by the P2P handshake path and
+     * must fail fast instead of pinning the DB worker behind peer churn. */
+    {
+        printf("SQLite advisory peer save fails fast under writer lock... ");
+        char dir_template[] = "/tmp/zclassic23-peer-save-advisory-XXXXXX";
+        char *dir_path = mkdtemp(dir_template);
+        char db_path[1024];
+        struct node_db locker;
+        struct node_db writer;
+        bool ok = dir_path != NULL;
+
+        memset(&locker, 0, sizeof(locker));
+        memset(&writer, 0, sizeof(writer));
+        if (ok) {
+            snprintf(db_path, sizeof(db_path), "%s/node.db", dir_path);
+            ok = node_db_open(&locker, db_path);
+        }
+        if (ok)
+            ok = node_db_open(&writer, db_path);
+        if (ok)
+            sqlite3_busy_timeout(writer.db, 0);
+        if (ok)
+            ok = node_db_exec(&locker, "BEGIN IMMEDIATE");
+        if (ok)
+            ok = node_db_exec(&locker,
+                "INSERT OR REPLACE INTO node_state(key,value) "
+                "VALUES('peer_save_advisory_lock_test', X'01')");
+
+        struct db_peer p;
+        memset(&p, 0, sizeof(p));
+        p.ip[10] = 0xFF; p.ip[11] = 0xFF;
+        p.ip[12] = 10; p.ip[13] = 9; p.ip[14] = 8; p.ip[15] = 6;
+        p.port = 8033;
+        p.services = 1;
+        p.last_seen = 1700000300;
+
+        struct timespec start;
+        struct timespec end;
+        clock_gettime(CLOCK_MONOTONIC, &start);
+        bool saved = ok && db_peer_save_advisory(&writer, &p);
+        clock_gettime(CLOCK_MONOTONIC, &end);
+        int64_t elapsed_ms =
+            (int64_t)(end.tv_sec - start.tv_sec) * 1000 +
+            (int64_t)(end.tv_nsec - start.tv_nsec) / 1000000;
+        ok = ok && !saved;
+        ok = ok && elapsed_ms < 1000;
+
+        node_db_rollback(&locker);
+        node_db_close(&writer);
+        node_db_close(&locker);
+        if (dir_path)
+            cleanup_temp_db_dir(dir_path);
         if (ok) printf("OK\n");
         else { printf("FAIL\n"); failures++; }
     }

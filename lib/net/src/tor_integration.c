@@ -5,14 +5,17 @@
  * via direct C callbacks. A localhost-only SocksPort remains as a temporary
  * Tor bootstrap workaround in tor_write_torrc(). */
 
+#define _GNU_SOURCE  /* pthread_timedjoin_np */
 #define _DEFAULT_SOURCE
 #include "net/tor_integration.h"
+#include <errno.h>
 #include <pthread.h>
 #include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <time.h>
 #include <unistd.h>
 #include "util/safe_alloc.h"
 #include "util/log_macros.h"
@@ -30,6 +33,38 @@ static char g_tor_datadir[512];
 
 static tor_request_handler_fn g_request_handler = NULL;
 static void *g_request_handler_ctx = NULL;
+
+static void tor_join_deadline_from_now(struct timespec *ts, int timeout_sec)
+{
+    clock_gettime(CLOCK_REALTIME, ts);
+    if (timeout_sec < 0)
+        timeout_sec = 0;
+    ts->tv_sec += timeout_sec;
+}
+
+static void tor_join_thread_bounded(pthread_t thread,
+                                    const char *name,
+                                    int timeout_sec)
+{
+    struct timespec deadline;
+    int rc;
+
+    tor_join_deadline_from_now(&deadline, timeout_sec);
+    rc = pthread_timedjoin_np(thread, NULL, &deadline);
+    if (rc == 0)
+        return;
+
+    if (rc == ETIMEDOUT) {
+        fprintf(stderr,  // obs-ok:shutdown-straggler-named
+                "Tor: %s join timed out after %ds; detaching\n",
+                name ? name : "thread", timeout_sec);
+    } else {
+        fprintf(stderr,  // obs-ok:shutdown-straggler-named
+                "Tor: %s join failed rc=%d (%s); detaching\n",
+                name ? name : "thread", rc, strerror(rc));
+    }
+    pthread_detach(thread);
+}
 
 static void ensure_onion_suffix(void)
 {
@@ -217,7 +252,7 @@ static void *tor_thread_fn(void *arg)
     atomic_store(&g_tor_running, false);
     atomic_store(&g_tor_ready, false);
     if (atomic_exchange(&g_monitor_started, false))
-        pthread_join(g_monitor_thread, NULL);
+        tor_join_thread_bounded(g_monitor_thread, "monitor", 5);
 
     printf("Tor: exited with code %d\n", result);
     atomic_store(&g_tor_thread_done, true);
@@ -304,7 +339,7 @@ void tor_integration_stop(void)
         usleep(100000); /* 100ms, up to 5s total */
     }
 
-    pthread_join(g_tor_thread, NULL);
+    tor_join_thread_bounded(g_tor_thread, "main", 5);
     atomic_store(&g_tor_thread_done, false);
 }
 

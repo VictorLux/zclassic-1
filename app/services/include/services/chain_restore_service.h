@@ -139,10 +139,12 @@ void chain_restore_validate(struct chain_restore_validation *out,
 struct chain_integrity_result {
     int  zero_nbits_count;
     int  active_chain_holes;      /* total NULL slots in [0, tip] */
+    int  active_chain_mismatches; /* slots whose block_index height != slot */
     int  tip_window_holes;        /* NULL slots in [tip-WINDOW, tip] */
     int  tip_height;
     int  first_nbits_zero_height; /* -1 if none */
     int  first_hole_height;       /* -1 if none (overall) */
+    int  first_mismatch_height;   /* -1 if none */
     int  first_tip_window_hole;   /* -1 if none (within window) */
     bool ok;                      /* zero_nbits_count==0 && tip_window_holes==0 */
 };
@@ -165,10 +167,12 @@ struct chain_restore_boot_snapshot {
     bool   integrity_ok;
     int    zero_nbits_count;
     int    active_chain_holes;
+    int    active_chain_mismatches;
     int    tip_window_holes;
     int    tip_height;
     int    first_nbits_zero_height;
     int    first_hole_height;
+    int    first_mismatch_height;
     int    first_tip_window_hole;
     /* From the most recent chain_restore_backfill_nbits_from_disk */
     bool   backfill_ran;
@@ -250,7 +254,8 @@ bool chain_restore_dump_state_json(struct json_value *out, const char *key);
  * (used by unit tests that don't wire a real data directory). */
 
 int chain_restore_rebuild_active_chain(struct main_state *ms,
-                                       struct block_index *tip);
+                                       struct block_index *tip,
+                                       const char *datadir);
 
 int chain_restore_backfill_nbits_from_disk(struct main_state *ms,
                                            const char *datadir);

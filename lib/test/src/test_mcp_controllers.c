@@ -4,9 +4,8 @@
  * controller registers its tools with well-formed metadata, no
  * duplicate names, and consistent domain labels.  These tests touch
  * the real tool registration code (they link the same controller .c
- * files as the live zclassic23 -mcp binary), but do NOT dispatch any
- * handler — the handlers would call mcp_node_rpc() which needs a
- * running node.
+ * files as the live zclassic23 -mcp binary).  Handler dispatch tests
+ * use the ZCL_TESTING mcp_node_rpc hook instead of a running node.
  *
  * Coverage:
  *   1. mcp_register_* populate the router with the expected number of
@@ -26,6 +25,7 @@
 #include "mcp/router.h"
 #include "mcp/controllers.h"
 #include "mcp/rpc_params.h"
+#include "mcp/rpc_client.h"
 #include "event/event.h"
 #include "json/json.h"
 
@@ -41,8 +41,8 @@
 /* Expected tool counts.  If a future commit intentionally adds or
  * removes tools, bump these numbers in the same commit — they are the
  * contract for "how big is the MCP surface." */
-#define EXPECTED_TOTAL      86  /* +1 for probe_zclassicd (FS6 oracle service) */
-#define EXPECTED_OPS        30  /* status, health, kpi, self_heal_stats, mempool*, mininginfo,
+#define EXPECTED_TOTAL      87  /* +1 for probe_zclassicd (FS6 oracle service) */
+#define EXPECTED_OPS        31  /* status, health, kpi, self_heal_stats, mempool*, mininginfo,
                                  * benchmark, dbstats, filemanifest, events,
                                  * rpc, state + node_log + sql (round 6.5 MCP primitives),
                                  * tools_list, self_test, logtail,
@@ -52,7 +52,8 @@
                                  * profile (wave 6),
                                  * config_reload (wave 6),
                                  * consensus_report (wave 8),
-                                 * + 2 new ops tools (wave 14) */
+                                 * syncdiag, replay_dump, replay_exec,
+                                 * + mirror status and zclassicd probe */
 #define EXPECTED_CHAIN      11
 #define EXPECTED_NET         9  /* + zcl_peer_report (wave 4 #5),
                                  * + zcl_onion_health (wave 6 #7) */
@@ -340,8 +341,296 @@ static int test_zcl_status_no_params(void)
         ASSERT(r != NULL);
         ASSERT(r->num_params == 0);
         ASSERT(strcmp(r->domain, "ops") == 0);
+        ASSERT(contains(r->description, "chain advance source scoring"));
         PASS();
     } _test_next:;
+    return failures;
+}
+
+static char *mock_status_rpc(const char *method, const char *params_json)
+{
+    (void)params_json;
+    if (strcmp(method, "getblockcount") == 0)
+        return strdup("3117073");
+    if (strcmp(method, "getpeerinfo") == 0)
+        return strdup("[{\"inbound\":false,\"subver\":\"/MagicBean:2.1.2-beta1/ZClassic-C23:1.0.0/\",\"startingheight\":3117074}]");
+    if (strcmp(method, "syncstate") == 0)
+        return strdup("{\"state\":\"at_tip\"}");
+    if (strcmp(method, "validationstatus") == 0)
+        return strdup("{\"ok\":true}");
+    if (strcmp(method, "healthcheck") == 0)
+        return strdup("{\"ok\":true,\"memory_rss_mb\":128,\"uptime_seconds\":9}");
+    if (strcmp(method, "getblockchaininfo") == 0)
+        return strdup("{\"best_header_height\":3117074}");
+    if (strcmp(method, "dumpstate") == 0)
+        return strdup("{\"initialized\":true,"
+                      "\"has_connman\":true,"
+                      "\"has_main_state\":true,"
+                      "\"has_node_db\":true,"
+                      "\"authority\":\"local_consensus_validation\","
+                      "\"decision\":\"use_source\","
+                      "\"selected_source\":\"p2p\","
+                      "\"selected_source_trust\":\"native_peer_validated\","
+                      "\"selected_source_selectable\":true,"
+                      "\"selected_source_selection_blocker\":\"\","
+                      "\"selected_source_score_base\":100,"
+                      "\"selected_source_score_health\":20,"
+                      "\"selected_source_score_height\":10,"
+                      "\"selected_source_score_authorized\":0,"
+                      "\"selected_source_score_target_lag_penalty\":0,"
+                      "\"selected_source_score_failure_penalty\":0,"
+                      "\"selected_source_score_mirror_gate_penalty\":0,"
+                      "\"has_last_decision\":true,"
+                      "\"last_decision\":{"
+                      "\"op\":\"peer_floor\","
+                      "\"selected_source\":\"p2p\","
+                      "\"selected_source_trust\":\"native_peer_validated\","
+                      "\"selected_source_selectable\":true,"
+                      "\"selected_source_selection_blocker\":\"\","
+                      "\"selected_source_score_base\":100,"
+                      "\"selected_source_score_health\":20,"
+                      "\"selected_source_score_height\":10,"
+                      "\"selected_source_score_authorized\":0,"
+                      "\"selected_source_score_target_lag_penalty\":0,"
+                      "\"selected_source_score_failure_penalty\":0,"
+                      "\"selected_source_score_mirror_gate_penalty\":0,"
+                      "\"authority\":\"local_consensus_validation\","
+                      "\"selected_source_reason\":\"healthy=3 connecting=0 groups=3 backoff=0/0 tcp_fail=0 proto_fail=0\","
+                      "\"sources\":[{\"source\":\"p2p\","
+                      "\"trust\":\"native_peer_validated\","
+                      "\"state\":\"healthy\","
+                      "\"selectable\":true,"
+                      "\"selection_blocker\":\"\","
+                      "\"score_base\":100,"
+                      "\"score_target_lag_penalty\":0,"
+                      "\"score_failure_penalty\":0,"
+                      "\"reason\":\"healthy=3 connecting=0 groups=3 backoff=0/0 tcp_fail=0 proto_fail=0\","
+                      "\"blocker\":\"\"}]"
+                      "},"
+                      "\"sources\":[{\"source\":\"p2p\","
+                      "\"trust\":\"native_peer_validated\","
+                      "\"state\":\"healthy\","
+                      "\"selectable\":true,"
+                      "\"selection_blocker\":\"\","
+                      "\"score_base\":100,"
+                      "\"score_target_lag_penalty\":0,"
+                      "\"score_failure_penalty\":0,"
+                      "\"healthy_peers\":3}]}");
+    return strdup("null");
+}
+
+static int test_zcl_status_includes_chain_advance_dump(void)
+{
+    int failures = 0;
+    TEST("controllers: zcl_status includes chain advance coordinator dump") {
+        register_all();
+        mcp_rpc_client_set_test_hook(mock_status_rpc);
+        struct json_value args;
+        json_init(&args);
+        json_set_object(&args);
+        char *body = mcp_router_dispatch("zcl_status", &args);
+        mcp_rpc_client_set_test_hook(NULL);
+        ASSERT(body != NULL);
+
+        struct json_value root;
+        ASSERT(json_read(&root, body, strlen(body)));
+        const struct json_value *chain_advance =
+            json_get(&root, "chain_advance");
+        ASSERT(chain_advance != NULL);
+        ASSERT(json_get_bool(json_get(chain_advance, "initialized")));
+        ASSERT(json_get_bool(json_get(chain_advance, "has_connman")));
+        ASSERT(json_get_bool(json_get(chain_advance, "has_main_state")));
+        ASSERT(json_get_bool(json_get(chain_advance, "has_node_db")));
+        ASSERT_STR_EQ(json_get_str(json_get(chain_advance, "authority")),
+                      "local_consensus_validation");
+        ASSERT_STR_EQ(json_get_str(json_get(chain_advance,
+                                            "selected_source")),
+                      "p2p");
+        ASSERT_STR_EQ(json_get_str(json_get(chain_advance,
+                                            "selected_source_trust")),
+                      "native_peer_validated");
+        ASSERT(json_get_bool(json_get(chain_advance,
+                                      "selected_source_selectable")));
+        ASSERT_STR_EQ(json_get_str(json_get(chain_advance,
+                                            "selected_source_selection_blocker")),
+                      "");
+        ASSERT(json_get_int(json_get(chain_advance,
+                                     "selected_source_score_base")) == 100);
+        ASSERT(json_get_int(json_get(chain_advance,
+                                     "selected_source_score_health")) == 20);
+        ASSERT(json_get_int(json_get(chain_advance,
+                                     "selected_source_score_height")) == 10);
+        ASSERT(json_get_int(json_get(chain_advance,
+                                     "selected_source_score_authorized")) == 0);
+        ASSERT(json_get_int(json_get(
+                   chain_advance,
+                   "selected_source_score_target_lag_penalty")) == 0);
+        ASSERT(json_get_int(json_get(
+                   chain_advance,
+                   "selected_source_score_failure_penalty")) == 0);
+        ASSERT(json_get_int(json_get(
+                   chain_advance,
+                   "selected_source_score_mirror_gate_penalty")) == 0);
+        ASSERT(json_get_bool(json_get(chain_advance,
+                                      "has_last_decision")));
+        const struct json_value *last =
+            json_get(chain_advance, "last_decision");
+        ASSERT(last != NULL);
+        ASSERT_STR_EQ(json_get_str(json_get(last, "op")), "peer_floor");
+        ASSERT_STR_EQ(json_get_str(json_get(last, "selected_source_trust")),
+                      "native_peer_validated");
+        ASSERT(json_get_bool(json_get(last, "selected_source_selectable")));
+        ASSERT_STR_EQ(json_get_str(json_get(
+                          last, "selected_source_selection_blocker")), "");
+        ASSERT(json_get_int(json_get(last,
+                                     "selected_source_score_base")) == 100);
+        ASSERT(json_get_int(json_get(last,
+                                     "selected_source_score_health")) == 20);
+        ASSERT(json_get_int(json_get(last,
+                                     "selected_source_score_height")) == 10);
+        ASSERT(json_get_int(json_get(
+                   last, "selected_source_score_authorized")) == 0);
+        ASSERT(json_get_int(json_get(
+                   last, "selected_source_score_target_lag_penalty")) == 0);
+        ASSERT(json_get_int(json_get(
+                   last, "selected_source_score_failure_penalty")) == 0);
+        ASSERT(json_get_int(json_get(
+                   last, "selected_source_score_mirror_gate_penalty")) == 0);
+        const char *last_reason =
+            json_get_str(json_get(last, "selected_source_reason"));
+        ASSERT(last_reason != NULL);
+        ASSERT(contains(last_reason, "healthy=3"));
+        const struct json_value *last_sources = json_get(last, "sources");
+        ASSERT(last_sources != NULL);
+        ASSERT(json_size(last_sources) == 1);
+        ASSERT_STR_EQ(json_get_str(json_get(json_at(last_sources, 0),
+                                            "source")),
+                      "p2p");
+        ASSERT_STR_EQ(json_get_str(json_get(json_at(last_sources, 0),
+                                            "trust")),
+                      "native_peer_validated");
+        ASSERT(json_get_bool(json_get(json_at(last_sources, 0),
+                                      "selectable")));
+        ASSERT_STR_EQ(json_get_str(json_get(json_at(last_sources, 0),
+                                            "selection_blocker")), "");
+        ASSERT(json_get_int(json_get(json_at(last_sources, 0),
+                                     "score_base")) == 100);
+        ASSERT(json_get_int(json_get(json_at(last_sources, 0),
+                                     "score_target_lag_penalty")) == 0);
+        ASSERT(json_get_int(json_get(json_at(last_sources, 0),
+                                     "score_failure_penalty")) == 0);
+        ASSERT(contains(json_get_str(json_get(json_at(last_sources, 0),
+                                              "reason")),
+                        "healthy=3"));
+        const struct json_value *sources = json_get(chain_advance, "sources");
+        ASSERT(sources != NULL);
+        ASSERT(json_size(sources) == 1);
+        ASSERT_STR_EQ(json_get_str(json_get(json_at(sources, 0), "trust")),
+                      "native_peer_validated");
+        ASSERT_STR_EQ(json_get_str(json_get(json_at(sources, 0), "state")),
+                      "healthy");
+        ASSERT(json_get_bool(json_get(json_at(sources, 0), "selectable")));
+        ASSERT_STR_EQ(json_get_str(json_get(json_at(sources, 0),
+                                            "selection_blocker")), "");
+        ASSERT(json_get_int(json_get(json_at(sources, 0),
+                                     "score_base")) == 100);
+        ASSERT(json_get_int(json_get(json_at(sources, 0),
+                                     "score_target_lag_penalty")) == 0);
+        ASSERT(json_get_int(json_get(json_at(sources, 0),
+                                     "score_failure_penalty")) == 0);
+        json_free(&root);
+        json_free(&args);
+        free(body);
+        PASS();
+    } _test_next:;
+    mcp_rpc_client_set_test_hook(NULL);
+    return failures;
+}
+
+static char *mock_networkinfo_rpc(const char *method, const char *params_json)
+{
+    (void)params_json;
+    if (strcmp(method, "getnetworkinfo") == 0)
+        return strdup("{\"connections\":2,"
+                      "\"inbound_connections\":1,"
+                      "\"outbound_connections\":1,"
+                      "\"handshaked_connections\":2,"
+                      "\"inbound_handshaked_connections\":1,"
+                      "\"outbound_handshaked_connections\":1,"
+                      "\"inbound_handshake_seen\":true,"
+                      "\"remote_handshake_seen\":true,"
+                      "\"magicbean_peers\":2,"
+                      "\"zclassic_c23_peers\":1,"
+                      "\"peer_lifecycle\":{"
+                      "\"attempted\":4,"
+                      "\"connected\":3,"
+                      "\"version_sent\":3,"
+                      "\"version_received\":2,"
+                      "\"verack_received\":2,"
+                      "\"handshake_complete\":2,"
+                      "\"active\":1,"
+                      "\"disconnected\":1,"
+                      "\"timeout\":1,"
+                      "\"rejected\":0,"
+                      "\"magicbean_handshakes\":2,"
+                      "\"zclassic_c23_handshakes\":1,"
+                      "\"sources\":["
+                      "{\"source\":\"addnode\",\"attempted\":2,"
+                      "\"connected\":1,\"handshake_complete\":1,"
+                      "\"timeout\":1,\"rejected\":0},"
+                      "{\"source\":\"addrman\",\"attempted\":2,"
+                      "\"connected\":2,\"handshake_complete\":1,"
+                      "\"timeout\":0,\"rejected\":0}]},"
+                      "\"localaddresses\":[{\"address\":\"203.0.113.7\","
+                      "\"port\":8033,\"score\":1}],"
+                      "\"listening\":true}");
+    return strdup("null");
+}
+
+static int test_zcl_networkinfo_exposes_reachability_fields(void)
+{
+    int failures = 0;
+    TEST("controllers: zcl_networkinfo exposes inbound reachability fields") {
+        register_all();
+        mcp_rpc_client_set_test_hook(mock_networkinfo_rpc);
+        struct json_value args;
+        json_init(&args);
+        json_set_object(&args);
+        char *body = mcp_router_dispatch("zcl_networkinfo", &args);
+        mcp_rpc_client_set_test_hook(NULL);
+        ASSERT(body != NULL);
+
+        struct json_value root;
+        ASSERT(json_read(&root, body, strlen(body)));
+        ASSERT(json_get_int(json_get(&root,
+                                     "handshaked_connections")) == 2);
+        ASSERT(json_get_int(json_get(&root,
+                                     "inbound_handshaked_connections")) == 1);
+        ASSERT(json_get_int(json_get(&root,
+                                     "outbound_handshaked_connections")) == 1);
+        ASSERT(json_get_bool(json_get(&root, "inbound_handshake_seen")));
+        ASSERT(json_get_bool(json_get(&root, "remote_handshake_seen")));
+        const struct json_value *life = json_get(&root, "peer_lifecycle");
+        const struct json_value *sources =
+            life ? json_get(life, "sources") : NULL;
+        ASSERT(life && life->type == JSON_OBJ);
+        ASSERT(json_get_int(json_get(life, "attempted")) == 4);
+        ASSERT(json_get_int(json_get(life, "timeout")) == 1);
+        ASSERT(sources && sources->type == JSON_ARR);
+        ASSERT(json_size(sources) == 2);
+        ASSERT_STR_EQ(json_get_str(json_get(json_at(sources, 0), "source")),
+                      "addnode");
+        ASSERT(json_get_int(json_get(json_at(sources, 0),
+                                     "handshake_complete")) == 1);
+        ASSERT(json_get_int(json_get(json_at(sources, 0), "timeout")) == 1);
+        ASSERT_STR_EQ(json_get_str(json_get(json_at(sources, 1), "source")),
+                      "addrman");
+        json_free(&root);
+        json_free(&args);
+        free(body);
+        PASS();
+    } _test_next:;
+    mcp_rpc_client_set_test_hook(NULL);
     return failures;
 }
 
@@ -898,6 +1187,8 @@ int test_mcp_controllers(void)
     failures += test_specific_flagship_tools_registered();
     failures += test_zcl_getblock_param_shape();
     failures += test_zcl_status_no_params();
+    failures += test_zcl_status_includes_chain_advance_dump();
+    failures += test_zcl_networkinfo_exposes_reachability_fields();
     failures += test_meta_tools_in_ops_domain();
     failures += test_tools_list_json_well_formed();
     failures += test_input_schema_for_zcl_getblock();

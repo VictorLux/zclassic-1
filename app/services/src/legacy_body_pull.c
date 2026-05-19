@@ -32,6 +32,7 @@
 #include "validation/main_state.h"
 #include "validation/chainstate.h"
 #include "validation/process_block.h"
+#include "validation/mirror_consensus.h"
 #include "models/database.h"
 #include "consensus/validation.h"
 #include "chain/chain.h"
@@ -300,13 +301,14 @@ static bool lbp_spotcheck_sha3_windows(const char *host, int port,
     return true;
 }
 
-bool legacy_body_pull_range_blocking(struct main_state *ms,
-                                     struct coins_view_cache *coins_tip,
-                                     const struct chain_params *params,
-                                     const char *our_datadir,
-                                     int from_height,
-                                     int to_height,
-                                     int *out_applied)
+static bool legacy_body_pull_range_impl(struct main_state *ms,
+                                        struct coins_view_cache *coins_tip,
+                                        const struct chain_params *params,
+                                        const char *our_datadir,
+                                        int from_height,
+                                        int to_height,
+                                        int *out_applied,
+                                        bool run_spotcheck)
 {
     if (out_applied) *out_applied = 0;
     if (!ms || !params || !our_datadir) {
@@ -342,7 +344,8 @@ bool legacy_body_pull_range_blocking(struct main_state *ms,
      * Before pulling any blocks, verify K=3 random SHA3 windows
      * against the legacy node. This is source-integrity telemetry only;
      * proof/script validation remains enabled. */
-    if (!lbp_spotcheck_sha3_windows(host, port, user, pass,
+    if (run_spotcheck &&
+        !lbp_spotcheck_sha3_windows(host, port, user, pass,
                                     to_height,
                                     LBP_SPOTCHECK_K)) {
         fprintf(stderr, // obs-ok:pre-existing-diagnostic
@@ -405,9 +408,20 @@ bool legacy_body_pull_range_blocking(struct main_state *ms,
                                                  &hash);
         bool have_data = bi && (bi->nStatus & BLOCK_HAVE_DATA);
         bool failed = bi && (bi->nStatus & BLOCK_FAILED_MASK);
+        if (failed && have_data && bi && bi->phashBlock &&
+            uint256_eq(bi->phashBlock, &hash)) {
+            (void)mirror_consensus_authorize_block(h, bi->phashBlock);
+            mirror_consensus_scope_enter();
+            bi->nStatus &= ~BLOCK_FAILED_MASK;
+            mirror_consensus_record_override(h,
+                                             "cleared-stale-failed-valid");
+            mirror_consensus_scope_leave();
+            failed = false;
+        }
         zcl_mutex_unlock(&ms->cs_main);
 
         if (have_data) {
+            (void)mirror_consensus_authorize_block(h, &hash);
             skipped_have_data++;
             free(hash_hex);
             continue;
@@ -473,10 +487,28 @@ bool legacy_body_pull_range_blocking(struct main_state *ms,
             break;
         }
 
+        struct uint256 block_hash;
+        block_header_get_hash(&block.header, &block_hash);
+        if (!uint256_eq(&block_hash, &hash)) {
+            char expected[65], got[65];
+            uint256_get_hex(&hash, expected);
+            uint256_get_hex(&block_hash, got);
+            block_free(&block);
+            fprintf(stderr, // obs-ok:pre-existing-diagnostic
+                    "[legacy_body_pull] h=%d body hash mismatch "
+                    "expected=%s got=%s\n", h, expected, got);
+            mirror_consensus_record_blocker("body-hash-mismatch");
+            ok = false;
+            break;
+        }
+        (void)mirror_consensus_authorize_block(h, &block_hash);
+
         struct validation_state vs;
         memset(&vs, 0, sizeof(vs));
+        mirror_consensus_scope_enter();
         bool pn_ok = process_new_block(&vs, ms, coins_tip, params,
                                         &block, true, our_datadir);
+        mirror_consensus_scope_leave();
         block_free(&block);
         if (!pn_ok) {
             fprintf(stderr,  // obs-ok:pre-existing-diagnostic
@@ -530,4 +562,30 @@ bool legacy_body_pull_range_blocking(struct main_state *ms,
 
     if (out_applied) *out_applied = applied;
     return ok;
+}
+
+bool legacy_body_pull_range_blocking(struct main_state *ms,
+                                     struct coins_view_cache *coins_tip,
+                                     const struct chain_params *params,
+                                     const char *our_datadir,
+                                     int from_height,
+                                     int to_height,
+                                     int *out_applied)
+{
+    return legacy_body_pull_range_impl(ms, coins_tip, params, our_datadir,
+                                       from_height, to_height, out_applied,
+                                       true);
+}
+
+bool legacy_body_pull_range_incremental(struct main_state *ms,
+                                        struct coins_view_cache *coins_tip,
+                                        const struct chain_params *params,
+                                        const char *our_datadir,
+                                        int from_height,
+                                        int to_height,
+                                        int *out_applied)
+{
+    return legacy_body_pull_range_impl(ms, coins_tip, params, our_datadir,
+                                       from_height, to_height, out_applied,
+                                       false);
 }

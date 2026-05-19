@@ -136,6 +136,15 @@ static int gap_fill_pass(void)
         free(bis);
         return -1; // raw-return-ok:sentinel
     }
+    if (collected == 0) {
+        zcl_mutex_unlock(&ms->cs_main);
+        free(bis);
+        g_gf.stats.last_tip_h = tip_h;
+        g_gf.stats.last_best_h = best_h;
+        g_gf.stats.last_window_lo = tip_h + 1;
+        g_gf.stats.last_window_hi = tip_h;
+        return 0;
+    }
 
     /* Filter: needs data AND not in-flight. Build parallel arrays for
      * dl_queue_blocks. We allocate up to `collected` slots. */

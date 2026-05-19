@@ -47,4 +47,16 @@ bool legacy_body_pull_range_blocking(struct main_state *ms,
                                      int to_height,
                                      int *out_applied);
 
+/* Same validation path as legacy_body_pull_range_blocking(), but tuned
+ * for always-on mirror ticks: bounded caller-supplied ranges and no
+ * expensive SHA3 window spotcheck on each small catch-up. The mirror
+ * service performs active-chain hash anchors before/after the pull. */
+bool legacy_body_pull_range_incremental(struct main_state *ms,
+                                        struct coins_view_cache *coins_tip,
+                                        const struct chain_params *params,
+                                        const char *our_datadir,
+                                        int from_height,
+                                        int to_height,
+                                        int *out_applied);
+
 #endif /* ZCL_SERVICES_LEGACY_BODY_PULL_H */

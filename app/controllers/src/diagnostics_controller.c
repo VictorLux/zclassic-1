@@ -36,9 +36,11 @@
 #include "controllers/strong_params.h"
 #include "services/sync_watchdog_service.h"
 #include "services/chain_restore_service.h"
+#include "services/chain_advance_coordinator.h"
 #include "services/local_chain_ingest.h"
 #include "services/zclassicd_oracle_service.h"
 #include "services/header_probe_service.h"
+#include "services/legacy_mirror_sync_service.h"
 #include "services/oracle_policy.h"
 #include "services/quorum_oracle_service.h"
 #include "services/rolling_anchor_service.h"
@@ -47,6 +49,7 @@
 #include "health/heartbeat.h"
 #include "models/database.h"
 #include "config/runtime.h"
+#include "net/peer_lifecycle.h"
 #include "util/ar_step_readonly.h"
 #include "util/log_macros.h"
 #include "util/safe_alloc.h"
@@ -339,12 +342,18 @@ static const struct dump_entry g_dumpers[] = {
                      "local chain ingest: phase/result/blocks/UTXOs from co-located zclassicd" },
     { "header_probe", header_probe_dump_state_json,
                      "header probe: bulk header pull from co-located zclassicd via JSON-RPC" },
+    { "legacy_mirror", legacy_mirror_sync_dump_state_json,
+                     "legacy mirror: always-on lockstep catch-up from co-located zclassicd" },
     { "oracle_policy", oracle_policy_dump_state_json,
                      "oracle policy: disagreement state machine (NORMAL / HALTED / PANIC)" },
     { "rolling_anchor", rolling_anchor_dump_state_json,
                      "rolling SHA3 anchor extension: runtime windows past compile-time prefix" },
     { "quorum_oracle", quorum_oracle_dump_state_json,
                      "multi-source quorum oracle: per-source vote stats + last verdict" },
+    { "peer_lifecycle", peer_lifecycle_dump_state_json,
+                     "P2P peer lifecycle attempts, handshakes, timeouts, and rejects by address/source" },
+    { "chain_advance_coordinator", chain_advance_coordinator_dump_state_json,
+                     "canonical chain-advance source scoring: P2P, snapshot, local import, mirror fallback" },
 };
 
 static bool rpc_dumpstate(const struct json_value *params, bool help,
@@ -354,6 +363,7 @@ static bool rpc_dumpstate(const struct json_value *params, bool help,
         "dumpstate <subsystem> [key]\n"
         "\nDump in-process state for a subsystem. Subsystems:\n"
         "  watchdog     — sync watchdog status + stats\n"
+        "  chain_advance_coordinator — source scoring + fallback policy\n"
         "  boot         — last boot's integrity + backfill counters\n"
         "  block_index  — block_index entry (key = height or hex hash)\n"
         "\nResult: { subsystem, captured_at, state: {...} }");
@@ -914,6 +924,21 @@ static bool rpc_probezclassicd(const struct json_value *params, bool help,
     return ok;
 }
 
+static bool rpc_getmirrorstatus(const struct json_value *params, bool help,
+                                struct json_value *result)
+{
+    (void)params;
+    RPC_HELP(help, result,
+        "getmirrorstatus\n"
+        "\nReturn legacy mirror sync status.\n"
+        "\nResult: zclassic23_height/hash, zclassicd_height/hash, lag, "
+        "reachable, mirror_running, last_catchup, last_error, "
+        "headers_added, blocks_applied.");
+
+    json_set_object(result);
+    return legacy_mirror_sync_dump_state_json(result, NULL);
+}
+
 /* ── Registration ────────────────────────────────────────────────── */
 
 void register_diagnostics_rpc_commands(struct rpc_table *t)
@@ -923,6 +948,7 @@ void register_diagnostics_rpc_commands(struct rpc_table *t)
         { "control", "getnodelog",    rpc_getnodelog,    true },
         { "control", "dbquery",       rpc_dbquery,       true },
         { "control", "probezclassicd", rpc_probezclassicd, true },
+        { "control", "getmirrorstatus", rpc_getmirrorstatus, true },
     };
     for (size_t i = 0; i < sizeof(cmds) / sizeof(cmds[0]); i++)
         rpc_table_must_append(t, &cmds[i]);

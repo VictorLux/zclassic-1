@@ -510,11 +510,54 @@ static bool has_disk_backed_competing_sibling(
     return false;
 }
 
+static int utxo_recovery_max_utxo_height(struct utxo_recovery_ctx *ctx)
+{
+    if (!ctx || !ctx->ndb || !ctx->ndb->open || !ctx->ndb->db)
+        return 0;
+
+    sqlite3_stmt *stmt = NULL;
+    int max_h = 0;
+    if (sqlite3_prepare_v2(ctx->ndb->db,
+            "SELECT MAX(height) FROM utxos", -1, &stmt, NULL) == SQLITE_OK) {
+        if (stmt && AR_STEP_ROW_READONLY(stmt) == SQLITE_ROW)
+            max_h = sqlite3_column_int(stmt, 0);
+    }
+    if (stmt)
+        sqlite3_finalize(stmt);
+    return max_h;
+}
+
+static struct block_index *utxo_recovery_find_disk_backed_utxo_tip(
+    struct utxo_recovery_ctx *ctx,
+    int max_height)
+{
+    if (!ctx || !ctx->ndb || !ctx->ndb->open || max_height <= 0)
+        return NULL;
+
+    const int floor = max_height > 10000 ? max_height - 10000 : 1;
+    for (int h = max_height; h >= floor; h--) {
+        struct db_block blk;
+        if (!db_block_find_by_height(ctx->ndb, h, &blk))
+            continue;
+        struct uint256 hash;
+        memcpy(hash.data, blk.hash, sizeof(hash.data));
+        struct block_index *bi = block_map_find(&ctx->state->map_block_index,
+                                                &hash);
+        if (!bi)
+            continue;
+        if (chain_restore_block_is_consensus_backed_on_disk(bi,
+                                                            ctx->datadir))
+            return bi;
+    }
+    return NULL;
+}
+
 struct chain_restore_result utxo_recovery_restore_chain_tip(
     struct utxo_recovery_ctx *ctx,
     struct block_index *scan_fallback)
 {
     struct chain_restore_result res = {0};
+    res.restored_height = -1;
 
     struct uint256 best_hash;
     coins_view_cache_get_best_block(ctx->coins_tip, &best_hash);
@@ -533,6 +576,9 @@ struct chain_restore_result utxo_recovery_restore_chain_tip(
                 else
                     printf("Fast rebuild unavailable — will activate from genesis.\n");
                 res.restored = true;
+                res.restored_height = scan_fallback->nHeight;
+                if (scan_fallback->phashBlock)
+                    res.restored_hash = *scan_fallback->phashBlock;
             }
         }
         return res;
@@ -576,6 +622,32 @@ struct chain_restore_result utxo_recovery_restore_chain_tip(
             }
         } else {
             best = NULL;
+        }
+    }
+
+    if (best && best->nHeight == 0 &&
+        uint256_eq(&best_hash, &ctx->params->consensus.hashGenesisBlock)) {
+        int max_utxo_h = utxo_recovery_max_utxo_height(ctx);
+        if (max_utxo_h > 1000) {
+            struct block_index *utxo_tip =
+                utxo_recovery_find_disk_backed_utxo_tip(ctx, max_utxo_h);
+            if (utxo_tip && utxo_tip->phashBlock) {
+                char tip_hex[65] = {0};
+                uint256_get_hex(utxo_tip->phashBlock, tip_hex);
+                fprintf(stderr,  // obs-ok:helper-context-logged
+                    "[boot] coins_best_block is genesis but UTXOs reach "
+                    "h=%d; recovering directly to disk-backed UTXO ancestor "
+                    "h=%d hash=%s\n",
+                    max_utxo_h, utxo_tip->nHeight, tip_hex);
+                best = utxo_tip;
+                best_hash = *utxo_tip->phashBlock;
+            } else {
+                fprintf(stderr,  // obs-ok:helper-context-logged
+                    "[boot] coins_best_block is genesis but UTXOs reach "
+                    "h=%d; no disk-backed UTXO ancestor found within "
+                    "10000 blocks\n",
+                    max_utxo_h);
+            }
         }
     }
 
@@ -643,12 +715,15 @@ struct chain_restore_result utxo_recovery_restore_chain_tip(
         if (!utxo_recovery_commit_tip(
                 ctx, restore_tip, "coins_best_restore", true))
             return res;
-        (void)chain_restore_rebuild_active_chain(ctx->state, restore_tip);
+        (void)chain_restore_rebuild_active_chain(ctx->state, restore_tip, NULL);
         printf("Restored chain tip from coins DB: height=%d\n",
                restore_tip->nHeight);
         event_emitf(EV_BOOT_CHAIN_RESTORED, 0, "height=%d",
                     restore_tip->nHeight);
         res.restored = true;
+        res.restored_height = restore_tip->nHeight;
+        if (restore_tip->phashBlock)
+            res.restored_hash = *restore_tip->phashBlock;
 
         /* populate active_chain.chain from pprev +
          * block_map, and backfill nBits from on-disk block headers for
@@ -691,6 +766,9 @@ struct chain_restore_result utxo_recovery_restore_chain_tip(
             /* see the same call above; fire here too
              * so the fresh-anchor path gets rebuild + nBits backfill. */
             (void)chain_restore_finalize(ctx->state, ctx->datadir);
+            res.restored_height = anchor->nHeight;
+            if (anchor->phashBlock)
+                res.restored_hash = *anchor->phashBlock;
         }
         res.skip_activate = true;
         snprintf(res.anchor_reason, sizeof(res.anchor_reason),
@@ -700,6 +778,8 @@ struct chain_restore_result utxo_recovery_restore_chain_tip(
         printf("No UTXOs found — wiping coins state.\n");
         (void)utxo_recovery_wipe(ctx->ndb, "boot.restore_no_utxos");
         (void)utxo_recovery_commit_genesis(ctx, "boot.restore_no_utxos");
+        res.restored_height = 0;
+        res.restored_hash = ctx->params->consensus.hashGenesisBlock;
     }
 
     res.restored = true;

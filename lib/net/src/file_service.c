@@ -1,3 +1,5 @@
+#define _GNU_SOURCE  /* pthread_timedjoin_np */
+
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
  * Fast File Service — SHA3-encrypted direct TCP transfer.
@@ -29,6 +31,38 @@
 #include "util/safe_alloc.h"
 #include "util/log_macros.h"
 #include "util/thread_registry.h"
+
+static void fs_join_deadline_from_now(struct timespec *ts, int timeout_sec)
+{
+    clock_gettime(CLOCK_REALTIME, ts);
+    if (timeout_sec < 0)
+        timeout_sec = 0;
+    ts->tv_sec += timeout_sec;
+}
+
+static void fs_join_thread_bounded(pthread_t thread,
+                                   const char *name,
+                                   int timeout_sec)
+{
+    struct timespec deadline;
+    int rc;
+
+    fs_join_deadline_from_now(&deadline, timeout_sec);
+    rc = pthread_timedjoin_np(thread, NULL, &deadline);
+    if (rc == 0)
+        return;
+
+    if (rc == ETIMEDOUT) {
+        fprintf(stderr,  // obs-ok:shutdown-straggler-named
+                "file_service: %s join timed out after %ds; detaching\n",
+                name ? name : "thread", timeout_sec);
+    } else {
+        fprintf(stderr,  // obs-ok:shutdown-straggler-named
+                "file_service: %s join failed rc=%d (%s); detaching\n",
+                name ? name : "thread", rc, strerror(rc));
+    }
+    pthread_detach(thread);
+}
 
 /* ── Session management ────────────────────────────────────────── */
 
@@ -577,7 +611,8 @@ static void fs_handle_client_fd(int client_fd)
                 } else {
                     /* Send empty chunk on read failure so client can
                      * track progress; don't break entire range */
-                    fprintf(stderr, "file_service: read failed chunk %u\n", ci);
+                    fprintf(stderr,  // obs-ok:file-transfer-client-visible
+                            "file_service: read failed chunk %u\n", ci);
                     break;
                 }
             }
@@ -691,7 +726,8 @@ static void *fs_server_thread(void *arg)
         if (client_fd < 0) continue;
 
         if (!fs_client_queue_push(client_fd)) {
-            fprintf(stderr, "file_service: client queue full, rejecting\n");
+            fprintf(stderr,  // obs-ok:file-service-overload-visible
+                    "file_service: client queue full, rejecting\n");
             close(client_fd);
         }
     }
@@ -726,7 +762,8 @@ void fs_server_start(const char *datadir, uint16_t port)
     for (unsigned i = 0; i < FS_SERVER_WORKERS; i++) {
         if (thread_registry_spawn_ex("zcl_fs_wkr", fs_client_worker_thread,
                                       NULL, &g_fs_worker_threads[i]) != 0) {
-            fprintf(stderr, "file_service: failed to start worker %u\n", i);
+            fprintf(stderr,  // obs-ok:file-service-startup-failure
+                    "file_service: failed to start worker %u\n", i);
             break;
         }
         started_workers++;
@@ -750,7 +787,8 @@ void fs_server_start(const char *datadir, uint16_t port)
                                       NULL, &g_fs_manifest_thread) == 0) {
             g_fs_manifest_thread_started = true;
         } else {
-            fprintf(stderr, "file_service: failed to start manifest thread\n");
+            fprintf(stderr,  // obs-ok:file-service-startup-failure
+                    "file_service: failed to start manifest thread\n");
         }
     }
     pthread_mutex_unlock(&g_fs_state_mutex);
@@ -794,11 +832,11 @@ void fs_server_stop(void)
     fs_client_queue_close_all();
 
     if (have_server)
-        pthread_join(server_thread, NULL);
+        fs_join_thread_bounded(server_thread, "server", 5);
     if (have_manifest)
-        pthread_join(manifest_thread, NULL);
+        fs_join_thread_bounded(manifest_thread, "manifest", 5);
     for (unsigned i = 0; i < worker_threads_started; i++)
-        pthread_join(worker_threads[i], NULL);
+        fs_join_thread_bounded(worker_threads[i], "worker", 5);
 }
 
 /* ── Parallel download worker ──────────────────────────────────── */
@@ -865,7 +903,8 @@ static void *range_worker_fn(void *arg)
         uint8_t *buf = NULL;
         uint32_t sz = 0;
         if (!fs_recv_chunk_fast(&ws, &buf, &sz, w->chunks[i].sha3)) {
-            fprintf(stderr, "worker %d: chunk %u/%u recv failed\n",
+            fprintf(stderr,  // obs-ok:file-transfer-peer-failure
+                    "worker %d: chunk %u/%u recv failed\n",
                     w->id, i, w->end);
             atomic_fetch_add(&w->chunks_fail, 1);
             continue;
@@ -888,7 +927,8 @@ static void *range_worker_fn(void *arg)
         if (bfd >= 0) {
             ssize_t written = pwrite(bfd, buf, sz, (off_t)w->chunks[i].offset);
             if (written != (ssize_t)sz) {
-                fprintf(stderr, "worker %d: pwrite %s offset=%llu "
+                fprintf(stderr,  // obs-ok:file-transfer-disk-failure
+                        "worker %d: pwrite %s offset=%llu "
                         "sz=%u wrote=%zd errno=%d\n",
                         w->id, blk_path,
                         (unsigned long long)w->chunks[i].offset,
@@ -902,7 +942,8 @@ static void *range_worker_fn(void *arg)
             close(bfd);
             atomic_fetch_add(&w->chunks_ok, 1);
         } else {
-            fprintf(stderr, "worker %d: open %s failed: %s\n",
+            fprintf(stderr,  // obs-ok:file-transfer-disk-failure
+                    "worker %d: open %s failed: %s\n",
                     w->id, blk_path, strerror(errno));
             atomic_fetch_add(&w->chunks_fail, 1);
         }
@@ -1070,7 +1111,8 @@ bool fs_client_sync(const char *peer_addr, uint16_t port,
                 sha3_256(vbuf, chunks[j].size, hash);
                 free(vbuf);
                 if (memcmp(hash, chunks[j].sha3, 32) != 0) {
-                    fprintf(stderr, "file_service: resume SHA3 mismatch at "
+                    fprintf(stderr,  // obs-ok:file-transfer-integrity-retry
+                            "file_service: resume SHA3 mismatch at "
                             "chunk %u (file=%d off=%llu) — re-downloading "
                             "from here\n", j, chunks[j].file_index,
                             (unsigned long long)chunks[j].offset);
@@ -1177,7 +1219,8 @@ bool fs_client_sync(const char *peer_addr, uint16_t port,
                 if (!atomic_load(&workers[w].done) && wb == prev_done_bytes[w]) {
                     stall_counts[w]++;
                     if (stall_counts[w] >= 12) { /* 12*5s = 60s stall */
-                        fprintf(stderr, "file_service: worker %d stalled "
+                        fprintf(stderr,  // obs-ok:file-transfer-stall-recovery
+                                "file_service: worker %d stalled "
                                 "at %llu bytes, cancelling\n",
                                 w, (unsigned long long)wb);
                         atomic_store(&workers[w].cancel, true);

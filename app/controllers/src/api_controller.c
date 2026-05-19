@@ -732,7 +732,10 @@ size_t api_handle_request(const char *method, const char *path,
             "\"boot\":{\"uptime_seconds\":%lld},"
             "\"errors\":{"
               "\"total\":%d,"
-              "\"last\":%s%s%s"
+              "\"last\":%s%s%s,"
+              "\"last_type\":%s%s%s,"
+              "\"last_age_seconds\":%lld,"
+              "\"last_recent\":%s"
             "},"
             "\"watchdog\":{"
               "\"checks_run\":%d,"
@@ -775,6 +778,11 @@ size_t api_handle_request(const char *method, const char *path,
             health.last_error[0] ? "\"" : "null",
             health.last_error,
             health.last_error[0] ? "\"" : "",
+            health.last_error_type[0] ? "\"" : "null",
+            health.last_error_type,
+            health.last_error_type[0] ? "\"" : "",
+            (long long)health.last_error_age_seconds,
+            health.last_error_recent ? "true" : "false",
             health.wd_checks_run,
             health.wd_recoveries,
             health.wd_blocks_per_sec,
@@ -980,7 +988,11 @@ size_t api_handle_request(const char *method, const char *path,
               "\"wal_size_bytes\":%lld,"
               "\"utxo_count\":%lld"
             "},"
-            "\"errors\":{\"total\":%d,\"recent\":%s},"
+            "\"errors\":{\"total\":%d,"
+              "\"last_type\":%s%s%s,"
+              "\"last_age_seconds\":%lld,"
+              "\"last_recent\":%s,"
+              "\"recent\":%s},"
             "\"defer_proof_validation_below_height\":%d,"
             "\"uptime_seconds\":%lld"
             "}",
@@ -1016,7 +1028,13 @@ size_t api_handle_request(const char *method, const char *path,
             mb ? mb->num_mountains : 0,
             (long long)health.wal_size_bytes,
             (long long)health.utxo_count,
-            error_ring_total(er), errors_json,
+            error_ring_total(er),
+            health.last_error_type[0] ? "\"" : "null",
+            health.last_error_type,
+            health.last_error_type[0] ? "\"" : "",
+            (long long)health.last_error_age_seconds,
+            health.last_error_recent ? "true" : "false",
+            errors_json,
             g_deferred_proof_validation_below_height,
             (long long)health.uptime_seconds);
 

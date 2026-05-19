@@ -12,8 +12,10 @@
 #include "net/version.h"
 #include "net/p2p_message.h"
 #include "net/file_service.h"
+#include "net/peer_lifecycle.h"
 #include "net/peer_scoring.h"
 #include "net/fast_sync.h"
+#include "config/db_service.h"
 #include "models/peer.h"
 #include "models/database.h"
 #include "core/serialize.h"
@@ -31,6 +33,74 @@
 static uint8_t g_external_ip[4];
 static uint16_t g_external_port;
 static bool g_has_external_ip = false;
+
+struct msg_version_peer_save_ctx {
+    struct db_peer peer;
+    int64_t peer_id;
+    char addr[256];
+};
+
+static bool msg_version_peer_save_write(struct node_db *ndb, void *ctx)
+{
+    struct msg_version_peer_save_ctx *save = ctx;
+    if (!ndb || !save)
+        return false;
+    bool ok = db_peer_save_advisory(ndb, &save->peer);
+    if (!ok)
+        peer_lifecycle_note_cache_skipped_addr(save->addr, save->peer_id,
+                                               "save_advisory");
+    return ok;
+}
+
+static void msg_version_peer_save_free(void *ctx)
+{
+    free(ctx);
+}
+
+static void msg_version_build_peer_record(const struct p2p_node *node,
+                                          struct db_peer *peer)
+{
+    memset(peer, 0, sizeof(*peer));
+    memcpy(peer->ip, node->addr.svc.addr.ip, 16);
+    peer->port = node->addr.svc.port;
+    peer->services = node->services;
+    peer->last_seen = (int64_t)time(NULL);
+    peer->is_zcl23 = peer_supports_fast_sync(node->services);
+}
+
+static void msg_version_save_peer(struct msg_processor *mp,
+                                  const struct p2p_node *node)
+{
+    struct db_peer peer;
+    struct db_service *dbsvc = NULL;
+    struct node_db *ndb = NULL;
+
+    if (!mp || !node)
+        return;
+    msg_version_build_peer_record(node, &peer);
+
+    if (mp->runtime)
+        dbsvc = mp->runtime->db_service;
+    if (dbsvc && db_service_is_started(dbsvc)) {
+        struct msg_version_peer_save_ctx *ctx =
+            zcl_malloc(sizeof(*ctx), "msg_version.peer_save_ctx");
+        if (!ctx)
+            return;
+        ctx->peer = peer;
+        ctx->peer_id = node->id;
+        snprintf(ctx->addr, sizeof(ctx->addr), "%s", node->addr_name);
+        if (db_service_enqueue_write(dbsvc, msg_version_peer_save_write,
+                                     ctx, msg_version_peer_save_free))
+            return;
+        peer_lifecycle_note_cache_skipped(node, "enqueue_queue_full");
+        msg_version_peer_save_free(ctx);
+        return;
+    }
+
+    ndb = msg_node_db(mp);
+    if (ndb && ndb->open && !db_peer_save_advisory(ndb, &peer))
+        peer_lifecycle_note_cache_skipped(node, "save_advisory");
+}
 
 void msg_version_set_external_ip(const char *ip_str, uint16_t port)
 {
@@ -53,26 +123,78 @@ bool msg_version_get_external_ip(char *buf, size_t buflen, uint16_t *port)
     return true;
 }
 
-void push_version(struct msg_processor *mp, struct p2p_node *node)
+const char *msg_version_user_agent(void)
 {
-    struct version_message ver;
-    version_message_init(&ver);
-    ver.protocol_version = PROTOCOL_VERSION;
-    ver.services = NODE_NETWORK;
+    return "/MagicBean:2.1.2-beta1/ZClassic-C23:1.0.0/";
+}
+
+bool msg_version_classify_peer(const char *subver, uint64_t services,
+                               bool *is_magicbean, bool *is_zcl23)
+{
+    bool mb = subver && strstr(subver, "MagicBean") != NULL;
+    bool z23 = peer_supports_fast_sync(services) ||
+               (subver && strstr(subver, "ZClassic-C23") != NULL);
+    if (is_magicbean) *is_magicbean = mb;
+    if (is_zcl23) *is_zcl23 = z23;
+    return mb || z23;
+}
+
+static bool msg_version_addr_is_external_self(const struct net_address *addr)
+{
+    if (!addr || !g_has_external_ip || !net_addr_is_ipv4(&addr->svc.addr))
+        return false;
+    if (memcmp(addr->svc.addr.ip + 12, g_external_ip, 4) != 0)
+        return false;
+    return g_external_port == 0 || addr->svc.port == g_external_port;
+}
+
+bool msg_version_learn_advertised_addr(struct net_manager *nm,
+                                       const struct p2p_node *node,
+                                       const struct version_message *ver)
+{
+    if (!nm || !node || !ver || !node->inbound)
+        return false;
+    if (ver->addr_from.svc.port == 0)
+        return false;
+    if (!net_addr_is_routable(&ver->addr_from.svc.addr))
+        return false;
+    if (msg_version_addr_is_external_self(&ver->addr_from))
+        return false;
+
+    struct net_address learned = ver->addr_from;
+    if (learned.nTime == 0)
+        learned.nTime = (uint32_t)time(NULL);
+    if (learned.nServices == 0)
+        learned.nServices = ver->services;
+
+    struct net_addr source = node->addr.svc.addr;
+    return addrman_add(&nm->addrman, &learned, &source, 0);
+}
+
+void msg_version_build(struct version_message *ver,
+                       const struct msg_processor *mp,
+                       const struct p2p_node *node,
+                       int start_height)
+{
+    if (!ver || !mp || !node)
+        return;
+    version_message_init(ver);
+    ver->protocol_version = PROTOCOL_VERSION;
+    ver->services = NODE_NETWORK | NODE_ZCL23;
     if (bip37_enabled())
-        ver.services |= NODE_BLOOM;
-    ver.timestamp = (int64_t)time(NULL);
-    ver.addr_recv = node->addr;
+        ver->services |= NODE_BLOOM;
+    ver->timestamp = (int64_t)time(NULL);
+    ver->addr_recv = node->addr;
     if (g_has_external_ip) {
-        ver.addr_from.nServices = NODE_NETWORK;
-        ver.addr_from.nTime = (uint32_t)time(NULL);
-        memset(ver.addr_from.svc.addr.ip, 0, 10);
-        ver.addr_from.svc.addr.ip[10] = 0xff;
-        ver.addr_from.svc.addr.ip[11] = 0xff;
-        memcpy(ver.addr_from.svc.addr.ip + 12, g_external_ip, 4);
-        ver.addr_from.svc.port = g_external_port;
+        ver->addr_from.nServices = ver->services;
+        ver->addr_from.nTime = (uint32_t)time(NULL);
+        memset(ver->addr_from.svc.addr.ip, 0, 10);
+        ver->addr_from.svc.addr.ip[10] = 0xff;
+        ver->addr_from.svc.addr.ip[11] = 0xff;
+        memcpy(ver->addr_from.svc.addr.ip + 12, g_external_ip, 4);
+        ver->addr_from.svc.port = g_external_port;
     }
-    ver.nonce = mp->net_mgr->local_host_nonce;
+    ver->nonce = mp->net_mgr->local_host_nonce;
     /* User-agent: lead with /MagicBean:.../ so existing zclassicd peers
      * recognize us as a same-network client (some peer filters check
      * this prefix when picking outbound slots). Append our own
@@ -80,10 +202,17 @@ void push_version(struct msg_processor *mp, struct p2p_node *node)
      * legacy C++ daemon in `getpeerinfo` output. The MagicBean version
      * stays in sync with the running zclassicd reference so the
      * protocol version signaling matches what peers expect. */
-    snprintf(ver.sub_version, sizeof(ver.sub_version),
-             "/MagicBean:2.1.2-beta1/ZClassic-C23:1.0.0/");
-    ver.start_height = active_chain_height(&mp->main_state->chain_active);
-    ver.relay = true;
+    snprintf(ver->sub_version, sizeof(ver->sub_version), "%s",
+             msg_version_user_agent());
+    ver->start_height = start_height;
+    ver->relay = true;
+}
+
+void push_version(struct msg_processor *mp, struct p2p_node *node)
+{
+    struct version_message ver;
+    int start_height = active_chain_height(&mp->main_state->chain_active);
+    msg_version_build(&ver, mp, node, start_height);
 
     struct byte_stream s;
     stream_init(&s, 256);
@@ -94,6 +223,8 @@ void push_version(struct msg_processor *mp, struct p2p_node *node)
     p2p_node_end_message(node);
 
     stream_free(&s);
+    peer_lifecycle_note_version_sent(node, ver.services, ver.start_height,
+                                     ver.sub_version);
 }
 
 void push_verack(struct msg_processor *mp, struct p2p_node *node)
@@ -123,6 +254,7 @@ bool process_version(struct msg_processor *mp, struct p2p_node *node,
                     ver.protocol_version, MIN_PEER_PROTO_VERSION,
                     node->addr_name);
         node->disconnect = true;
+        peer_lifecycle_note_reject(node, "protocol-too-old");
         LOG_FAIL("net", "proto version %d too old (min %d) from %s",
                  ver.protocol_version, MIN_PEER_PROTO_VERSION,
                  node->addr_name);
@@ -135,6 +267,7 @@ bool process_version(struct msg_processor *mp, struct p2p_node *node,
         event_emitf(EV_TCP_DISCONNECTED, (uint32_t)node->id,
                     "self-connection %s", node->addr_name);
         node->disconnect = true;
+        peer_lifecycle_note_reject(node, "self-connection");
         LOG_FAIL("net", "self-connection detected for %s", node->addr_name);
     }
 
@@ -151,6 +284,14 @@ bool process_version(struct msg_processor *mp, struct p2p_node *node,
     event_emitf(EV_PEER_VERSION, (uint32_t)node->id,
                 "proto=%d h=%d %s", ver.protocol_version,
                 ver.start_height, ver.sub_version);
+    peer_lifecycle_note_version_received(node, ver.services,
+                                         ver.start_height, ver.sub_version);
+    if (msg_version_learn_advertised_addr(mp->net_mgr, node, &ver)) {
+        char learned[72];
+        net_service_to_string(&ver.addr_from.svc, learned, sizeof(learned));
+        printf("Peer %s: learned advertised address %s from inbound version\n",
+               node->addr_name, learned);
+    }
 
     /* Ignore duplicate version messages from peers already past handshake */
     if (node->state >= PEER_HANDSHAKE_COMPLETE) {
@@ -178,6 +319,7 @@ bool process_version(struct msg_processor *mp, struct p2p_node *node,
     if (node->inbound) {
         peer_set_state_checked((uint32_t)node->id, &node->state,
                                PEER_HANDSHAKE_COMPLETE, "inbound version+verack");
+        peer_lifecycle_note_handshake_complete(node);
     }
 
     /* Ask outbound peers for their address list */
@@ -214,8 +356,11 @@ bool process_version(struct msg_processor *mp, struct p2p_node *node,
 
     /* Detect zclassic23 peers via subversion string.
      * Service bit detection is secondary — some peers filter unknown bits. */
-    bool is_zcl23 = peer_supports_fast_sync(node->services) ||
-                    strstr(node->sub_ver, "ZClassic-C23") != NULL;
+    bool is_magicbean = false;
+    bool is_zcl23 = false;
+    msg_version_classify_peer(node->sub_ver, node->services,
+                              &is_magicbean, &is_zcl23);
+    (void)is_magicbean;
     if (is_zcl23) {
         node->services |= NODE_ZCL23; /* mark for fast sync */
         node->swarm_inflight_chunk = -1;
@@ -257,16 +402,19 @@ bool process_version(struct msg_processor *mp, struct p2p_node *node,
 bool process_verack(struct msg_processor *mp, struct p2p_node *node)
 {
     node->recv_version = PROTOCOL_VERSION;
+    peer_lifecycle_note_verack_received(node);
 
     /* Outbound: handshake complete (we sent version, got version+verack).
      * Inbound: already marked in process_version. */
     if (!node->inbound && node->state < PEER_HANDSHAKE_COMPLETE) {
         peer_set_state_checked((uint32_t)node->id, &node->state,
                                PEER_HANDSHAKE_COMPLETE, "verack received");
+        peer_lifecycle_note_handshake_complete(node);
         printf("Peer %s: handshake complete (outbound)\n", node->addr_name);
     } else if (node->state < PEER_HANDSHAKE_COMPLETE) {
         peer_set_state_checked((uint32_t)node->id, &node->state,
                                PEER_HANDSHAKE_COMPLETE, "verack received");
+        peer_lifecycle_note_handshake_complete(node);
         printf("Peer %s: verack received\n", node->addr_name);
     }
 
@@ -301,17 +449,8 @@ bool process_verack(struct msg_processor *mp, struct p2p_node *node)
         }
     }
 
-    /* Save peer via ActiveRecord model */
-    struct node_db *ndb = msg_node_db(mp);
-    if (ndb && ndb->open) {
-        struct db_peer peer;
-        memset(&peer, 0, sizeof(peer));
-        memcpy(peer.ip, node->addr.svc.addr.ip, 16);
-        peer.port = node->addr.svc.port;
-        peer.services = node->services;
-        peer.last_seen = (int64_t)time(NULL);
-        peer.is_zcl23 = peer_supports_fast_sync(node->services);
-        db_peer_save(ndb, &peer);
-    }
+    /* Peer persistence is advisory; enqueue it so handshake processing
+     * is never held behind a busy SQLite writer. */
+    msg_version_save_peer(mp, node);
     return true;
 }

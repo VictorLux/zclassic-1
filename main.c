@@ -228,7 +228,7 @@ static void shutdown_alarm_handler(int sig)
 {
     (void)sig;
     static const char msg[] =
-        "Shutdown watchdog: 25s timeout — forcing exit\n";
+        "Shutdown watchdog: 90s timeout — forcing exit\n";
     /* write() is async-signal-safe; fprintf is not. */
     (void)!write(STDERR_FILENO, msg, sizeof(msg) - 1);
     _exit(1);
@@ -236,10 +236,12 @@ static void shutdown_alarm_handler(int sig)
 
 static void signal_handler(int sig)
 {
-    (void)sig;
     if (g_shutdown_requested) {
-        /* Second signal: force immediate exit */
-        _exit(1);
+        /* Repeated SIGTERM is normal under service managers and must be
+         * idempotent. Keep Ctrl-C as the operator's immediate escape hatch. */
+        if (sig == SIGINT)
+            _exit(1);
+        return;
     }
     g_shutdown_requested = 1;
     /* P7.9 — mirror to the thread_registry flag so every loop that
@@ -247,10 +249,11 @@ static void signal_handler(int sig)
      * legacy g_shutdown_requested readers. The setter is an atomic
      * store, safe to call from the signal handler. */
     thread_registry_request_shutdown();
-    /* Schedule a forced exit in 25 s. signal() and alarm() are
-     * async-signal-safe (POSIX). */
+    /* Schedule a forced exit if graceful shutdown cannot get control.
+     * Startup may still be finishing when SIGTERM arrives, so this must
+     * allow enough time for app_init to unwind into app_shutdown. */
     signal(SIGALRM, shutdown_alarm_handler);
-    alarm(25);
+    alarm(90);
 }
 
 static void print_usage(const char *prog)
@@ -1180,8 +1183,12 @@ int main(int argc, char **argv)
 
     if (show_metrics) app_start_metrics(ctx.gen);
 
-    while (!g_shutdown_requested && app_is_running())
+    while (!g_shutdown_requested &&
+           !thread_registry_shutdown_requested() &&
+           app_is_running())
         sleep(1);
+    if (thread_registry_shutdown_requested())
+        g_shutdown_requested = 1;
 
     if (show_metrics) app_stop_metrics();
     app_shutdown();

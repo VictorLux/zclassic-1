@@ -18,4 +18,10 @@ void mcp_rpc_client_init(const char *datadir, int rpc_port);
  * failure, returns a minimal error object instead.  Caller frees. */
 char *mcp_node_rpc(const char *method, const char *params_json);
 
+#ifdef ZCL_TESTING
+typedef char *(*mcp_node_rpc_test_fn)(const char *method,
+                                      const char *params_json);
+void mcp_rpc_client_set_test_hook(mcp_node_rpc_test_fn fn);
+#endif
+
 #endif

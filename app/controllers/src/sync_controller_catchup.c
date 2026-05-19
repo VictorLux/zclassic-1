@@ -100,6 +100,10 @@ static bool sync_block_lean(struct node_db *ndb,
     db_blk.solution_len = blk->header.nSolutionSize;
     memcpy(db_blk.chain_work, pindex->nChainWork.pn, 32);
     db_blk.status = pindex->nStatus;
+    if ((db_blk.status & BLOCK_VALID_MASK) < BLOCK_VALID_TRANSACTIONS)
+        db_blk.status = (db_blk.status & ~BLOCK_VALID_MASK) |
+                        BLOCK_VALID_TRANSACTIONS;
+    db_blk.status |= BLOCK_HAVE_DATA;
     db_blk.file_num = pindex->nFile;
     db_blk.data_pos = (int)pindex->nDataPos;
     db_blk.num_tx = (int)blk->num_vtx;
@@ -878,6 +882,7 @@ static void *node_db_sync_catchup_job_thread(void *arg)
     if (!work_db || !work_db->open) {
         fprintf(stderr, "catchup: no usable database handle\n");
         job->result = -1;
+        atomic_store(&job->finished, true);
         return NULL;
     }
 
@@ -886,6 +891,7 @@ static void *node_db_sync_catchup_job_thread(void *arg)
 
     if (owns_db)
         node_db_close(&catchup_db);
+    atomic_store(&job->finished, true);
     return NULL;
 }
 
@@ -914,6 +920,7 @@ void node_db_sync_catchup_job_init(struct node_db_sync_catchup_job *job)
         return;
     memset(job, 0, sizeof(*job));
     job->result = -1;
+    atomic_store(&job->finished, false);
 }
 
 bool node_db_sync_catchup_job_start(struct node_db_sync_catchup_job *job,
@@ -931,11 +938,15 @@ bool node_db_sync_catchup_job_start(struct node_db_sync_catchup_job *job,
     job->args.w = w;
     job->args.datadir = datadir;
     job->result = -1;
+    atomic_store(&job->finished, false);
+    job->started = true;
     if (thread_registry_spawn_ex("zcl_catchup",
                                   node_db_sync_catchup_job_thread, job,
-                                  &job->thread) != 0)
+                                  &job->thread) != 0) {
+        job->started = false;
+        atomic_store(&job->finished, false);
         LOG_FAIL("sync", "catchup_job_start: thread_registry_spawn_ex failed");
-    job->started = true;
+    }
     return true;
 }
 
@@ -951,6 +962,7 @@ bool node_db_sync_catchup_job_join(struct node_db_sync_catchup_job *job,
     if (join_rc != 0)
         LOG_FAIL("sync", "catchup_job_join: pthread_join failed (rc=%d)", join_rc);
     job->started = false;
+    atomic_store(&job->finished, false);
     if (result_out)
         *result_out = job->result;
     return true;

@@ -28,7 +28,9 @@
 
 #include <errno.h>
 #include <dirent.h>
+#include <fcntl.h>
 #include <limits.h>
+#include <signal.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -483,12 +485,71 @@ static int run_check_raw_malloc_script(void)
     char script[PATH_MAX];
     if (repo_path(script, sizeof(script), RAW_MALLOC_SCRIPT_REL) != 0)
         return -1;
-    char cmd[PATH_MAX + 32];
-    snprintf(cmd, sizeof(cmd), "%s >/dev/null 2>&1", script);
-    int rc = system(cmd);
-    if (rc == -1) return -1;
+
+    char out_path[PATH_MAX];
+    if (repo_path(out_path, sizeof(out_path),
+                  "test-tmp/zcl_raw_malloc_lint.out") != 0)
+        return -1;
+
+    struct sigaction old_chld;
+    struct sigaction dfl_chld;
+    int restore_chld = 0;
+    memset(&old_chld, 0, sizeof(old_chld));
+    memset(&dfl_chld, 0, sizeof(dfl_chld));
+    dfl_chld.sa_handler = SIG_DFL;
+    sigemptyset(&dfl_chld.sa_mask);
+    if (sigaction(SIGCHLD, NULL, &old_chld) == 0 &&
+        sigaction(SIGCHLD, &dfl_chld, NULL) == 0) {
+        restore_chld = 1;
+    }
+
+    pid_t pid = fork();
+    if (pid < 0) {
+        if (restore_chld)
+            (void)sigaction(SIGCHLD, &old_chld, NULL);
+        return -1;
+    }
+    if (pid == 0) {
+        int fd = open(out_path, O_CREAT | O_WRONLY | O_TRUNC, 0600);
+        if (fd >= 0) {
+            (void)dup2(fd, STDOUT_FILENO);
+            (void)dup2(fd, STDERR_FILENO);
+            close(fd);
+        }
+        execl(script, script, (char *)NULL);
+        _exit(127);
+    }
+
+    int rc = 0;
+    while (waitpid(pid, &rc, 0) < 0) {
+        if (errno == EINTR)
+            continue;
+        if (restore_chld)
+            (void)sigaction(SIGCHLD, &old_chld, NULL);
+        return -1;
+    }
+    if (restore_chld)
+        (void)sigaction(SIGCHLD, &old_chld, NULL);
     if (WIFEXITED(rc)) return WEXITSTATUS(rc);
     return -1;
+}
+
+static void unlink_lint_fixtures(void)
+{
+    const char *fixtures[] = {
+        FIXTURE_DST_REL,
+        COINS_FIXTURE_DST_REL,
+        OBS_FIXTURE_DST_REL,
+        OBS_OK_FIXTURE_DST_REL,
+        RAW_MALLOC_FIXTURE_DST_REL,
+        RAW_MALLOC_OK_FIXTURE_DST_REL,
+    };
+
+    for (size_t i = 0; i < sizeof(fixtures) / sizeof(fixtures[0]); i++) {
+        char path[PATH_MAX];
+        if (repo_path(path, sizeof(path), fixtures[i]) == 0)
+            (void)unlink(path);
+    }
 }
 
 static int t_raw_malloc_fixture_trips_gate(void)
@@ -522,7 +583,7 @@ static int t_raw_malloc_zcl_fixture_passes(void)
         fprintf(stderr, "[lint-gate] could not resolve raw_malloc-ok fixture path\n");
         return 1;
     }
-    (void)unlink(fixture_dst);
+    unlink_lint_fixtures();
     const char *good =
         "/* fixture */\n"
         "#include \"util/safe_alloc.h\"\n"
@@ -532,7 +593,7 @@ static int t_raw_malloc_zcl_fixture_passes(void)
         return 1;
     }
     int rc = run_check_raw_malloc_script();
-    (void)unlink(fixture_dst);
+    unlink_lint_fixtures();
     TEST("[lint-gate] zcl_malloc-only fixture passes the gate (exit == 0)") {
         ASSERT(rc == 0);
         PASS();
@@ -550,8 +611,9 @@ static int t_raw_malloc_gate_recovers(void)
         fprintf(stderr, "[lint-gate] could not resolve raw_malloc fixture paths\n");
         return 1;
     }
-    (void)unlink(fixture_dst1);
-    (void)unlink(fixture_dst2);
+    (void)fixture_dst1;
+    (void)fixture_dst2;
+    unlink_lint_fixtures();
     TEST("[lint-gate] raw_malloc gate passes after fixtures removed") {
         ASSERT(run_check_raw_malloc_script() == 0);
         PASS();
@@ -572,6 +634,337 @@ static int t_coins_guard_gate_recovers(void)
         ASSERT(run_check_coins_lookup_nullcheck() == 0);
         PASS();
     } _test_next:;
+    return failures;
+}
+
+static int t_tools_z_mirror_fallback_contract(void)
+{
+    int failures = 0;
+    char *buf = NULL;
+    TEST("tools/z mirror fallback preserves local authority contract") {
+        char path[PATH_MAX];
+        ASSERT(repo_path(path, sizeof(path), "tools/z") == 0);
+        ASSERT(read_entire_file(path, &buf) == 0);
+        ASSERT(strstr(buf, "\"consensus_authority\":\"local\"") != NULL);
+        ASSERT(strstr(buf, "\"mirror_authorization_enabled\":false") != NULL);
+        ASSERT(strstr(buf,
+                      "\"mirror_source_trust\":\"bounded_advisory_fallback\"")
+               != NULL);
+        ASSERT(strstr(buf, "\"blockers_total\":0") != NULL);
+        ASSERT(strstr(buf, "\"stalls_total\":0") != NULL);
+        ASSERT(strstr(buf, "\"unsafe_overrides_total\":0") != NULL);
+        ASSERT(strstr(buf, "\"last_override_safe\":false") != NULL);
+        ASSERT(strstr(buf, "\"last_override_scope\":\"\"") != NULL);
+        ASSERT(strstr(buf, "blockers=%s") != NULL);
+        ASSERT(strstr(buf, "stalls=%s") != NULL);
+        ASSERT(strstr(buf, "unsafe_overrides=%s") != NULL);
+        ASSERT(strstr(buf, "last_override_safe=%s") != NULL);
+        ASSERT(strstr(buf, "\"consensus_authority\":\"zclassicd\"") == NULL);
+        PASS();
+    } _test_next:;
+    free(buf);
+    return failures;
+}
+
+static int t_tools_z_operator_diagnostics_contract(void)
+{
+    int failures = 0;
+    char *buf = NULL;
+    TEST("tools/z exposes canonical operator diagnostics") {
+        char path[PATH_MAX];
+        ASSERT(repo_path(path, sizeof(path), "tools/z") == 0);
+        ASSERT(read_entire_file(path, &buf) == 0);
+        ASSERT(strstr(buf, "network|net)") != NULL);
+        ASSERT(strstr(buf, "rpc getnetworkinfo") != NULL);
+        ASSERT(strstr(buf, "status|health)") != NULL);
+        ASSERT(strstr(buf, "rpc healthcheck") != NULL);
+        ASSERT(strstr(buf, "advance|chain-advance)") != NULL);
+        ASSERT(strstr(buf, "rpc dumpstate chain_advance_coordinator") != NULL);
+        ASSERT(strstr(buf, "peerlife|peer-lifecycle)") != NULL);
+        ASSERT(strstr(buf, "rpc dumpstate peer_lifecycle") != NULL);
+        ASSERT(strstr(buf, "P2P reachability and handshake summary") != NULL);
+        ASSERT(strstr(buf,
+                      "Chain advance source scoring and selection blockers")
+               != NULL);
+        ASSERT(strstr(buf,
+                      "Peer lifecycle attempts, handshakes, failures by source")
+               != NULL);
+        free(buf);
+        buf = NULL;
+        ASSERT(repo_path(path, sizeof(path), "docs/RUNBOOK.md") == 0);
+        ASSERT(read_entire_file(path, &buf) == 0);
+        ASSERT(strstr(buf, "sources[].selectable=false") != NULL);
+        ASSERT(strstr(buf, "selection_blocker") != NULL);
+        ASSERT(strstr(buf, "initialized=true") != NULL);
+        ASSERT(strstr(buf, "has_connman=true") != NULL);
+        ASSERT(strstr(buf, "has_main_state=true") != NULL);
+        ASSERT(strstr(buf, "has_node_db=true") != NULL);
+        ASSERT(strstr(buf, "blockers_total") != NULL);
+        ASSERT(strstr(buf, "stalls_total") != NULL);
+        ASSERT(strstr(buf, "unsafe_overrides_total") != NULL);
+        ASSERT(strstr(buf, "last_override_safe") != NULL);
+        ASSERT(strstr(buf, "last_override_scope") != NULL);
+        free(buf);
+        buf = NULL;
+        ASSERT(repo_path(path, sizeof(path), "tools/deploy_verify.sh") == 0);
+        ASSERT(read_entire_file(path, &buf) == 0);
+        ASSERT(strstr(buf, "canonical diagnostics ready") != NULL);
+        ASSERT(strstr(buf, "chain_advance_coordinator") != NULL);
+        ASSERT(strstr(buf, "local_consensus_validation") != NULL);
+        ASSERT(strstr(buf, "handshaked_connections") != NULL);
+        ASSERT(strstr(buf, "peer_lifecycle") != NULL);
+        ASSERT(strstr(buf, "legacy_mirror") != NULL);
+        ASSERT(strstr(buf, "blockers_total") != NULL);
+        ASSERT(strstr(buf, "stalls_total") != NULL);
+        ASSERT(strstr(buf, "unsafe_overrides_total") != NULL);
+        ASSERT(strstr(buf, "last_override_safe") != NULL);
+        ASSERT(strstr(buf, "last_override_scope") != NULL);
+        PASS();
+    } _test_next:;
+    free(buf);
+    return failures;
+}
+
+static int t_boot_chain_advance_diagnostics_contract(void)
+{
+    int failures = 0;
+    char *buf = NULL;
+    TEST("boot wiring initializes chain advance before diagnostics") {
+        char path[PATH_MAX];
+        ASSERT(repo_path(path, sizeof(path), "config/src/boot_services.c") == 0);
+        ASSERT(read_entire_file(path, &buf) == 0);
+        char *init = strstr(buf, "chain_advance_coordinator_init(");
+        char *diag_state = strstr(buf, "diagnostics_controller_set_state(");
+        char *diag_register = strstr(buf, "register_diagnostics_rpc_commands(");
+        ASSERT(init != NULL);
+        ASSERT(diag_state != NULL);
+        ASSERT(diag_register != NULL);
+        ASSERT(init < diag_state);
+        ASSERT(init < diag_register);
+        PASS();
+    } _test_next:;
+    free(buf);
+    return failures;
+}
+
+static int t_boot_addrman_persistence_contract(void)
+{
+    int failures = 0;
+    char *buf = NULL;
+    TEST("boot uses one sidecar-protected addrman persistence path") {
+        char path[PATH_MAX];
+        ASSERT(repo_path(path, sizeof(path), "config/src/boot_services.c") == 0);
+        ASSERT(read_entire_file(path, &buf) == 0);
+        ASSERT(strstr(buf, "connman_load_addrman(") != NULL);
+        ASSERT(strstr(buf, "addr_db_read(") == NULL);
+        ASSERT(strstr(buf, "addr_db_write(") == NULL);
+        PASS();
+    } _test_next:;
+    free(buf);
+    return failures;
+}
+
+static int t_boot_shutdown_persistence_order_contract(void)
+{
+    int failures = 0;
+    char *buf = NULL;
+    TEST("shutdown persists block index after network quiesce") {
+        char path[PATH_MAX];
+        ASSERT(repo_path(path, sizeof(path), "config/src/boot_services.c") == 0);
+        ASSERT(read_entire_file(path, &buf) == 0);
+        char *network_stop = strstr(buf, "zcl_service_kernel_stop_all(&svc->network_kernel);");
+        char *replay_join = strstr(buf, "boot_join_replay_service(svc);");
+        char *coins_flushed = strstr(buf, "Coins cache flushed.");
+        char *fast = strstr(buf, "shutdown_persist_fast_restart_state(svc);");
+        char *connman_join = strstr(buf, "connman_join(svc->connman);");
+        ASSERT(network_stop != NULL);
+        ASSERT(replay_join != NULL);
+        ASSERT(coins_flushed != NULL);
+        ASSERT(fast != NULL);
+        ASSERT(connman_join != NULL);
+        ASSERT(network_stop < fast);
+        ASSERT(replay_join < fast);
+        ASSERT(coins_flushed < fast);
+        ASSERT(fast < connman_join);
+        PASS();
+    } _test_next:;
+    free(buf);
+    return failures;
+}
+
+static int t_peer_save_busy_reports_db_error(void)
+{
+    int failures = 0;
+    char *buf = NULL;
+    TEST("peer save lock exhaustion is reported as DB error") {
+        char path[PATH_MAX];
+        ASSERT(repo_path(path, sizeof(path), "app/models/src/peer.c") == 0);
+        ASSERT(read_entire_file(path, &buf) == 0);
+        ASSERT(strstr(buf, "event_emitf(EV_DB_ERROR") != NULL);
+        ASSERT(strstr(buf, "sqlite3_errstr(rc)") != NULL);
+        ASSERT(strstr(buf, "model=peer op=%s rc=%d attempts=%d msg=%s")
+               != NULL);
+        ASSERT(strstr(buf, "peer %s skipped") != NULL);
+        ASSERT(strstr(buf, "event_emitf(EV_MODEL_VALIDATION_FAILED, 0,\n"
+                           "                    \"model=peer op=save") == NULL);
+        PASS();
+    } _test_next:;
+    free(buf);
+    return failures;
+}
+
+static int t_handshake_peer_save_is_async(void)
+{
+    int failures = 0;
+    char *buf = NULL;
+    TEST("handshake peer persistence is advisory async write") {
+        char path[PATH_MAX];
+        ASSERT(repo_path(path, sizeof(path), "lib/net/src/msg_version.c") == 0);
+        ASSERT(read_entire_file(path, &buf) == 0);
+        ASSERT(strstr(buf, "db_service_enqueue_write(dbsvc") != NULL);
+        ASSERT(strstr(buf, "db_peer_save_advisory") != NULL);
+        ASSERT(strstr(buf, "msg_version.peer_save_ctx") != NULL);
+        ASSERT(strstr(buf, "enqueue_queue_full") != NULL);
+        ASSERT(strstr(buf, "peer_lifecycle_note_cache_skipped") != NULL);
+        ASSERT(strstr(buf, "peer_lifecycle_note_cache_skipped_addr") != NULL);
+        ASSERT(strstr(buf, "handshake processing") != NULL);
+        ASSERT(strstr(buf, "EV_DB_ERROR") == NULL);
+        free(buf);
+        buf = NULL;
+        ASSERT(repo_path(path, sizeof(path), "lib/net/src/peer_lifecycle.c") == 0);
+        ASSERT(read_entire_file(path, &buf) == 0);
+        ASSERT(strstr(buf, "EV_PEER_CACHE_SKIPPED") != NULL);
+        ASSERT(strstr(buf, "\"cache_skipped\"") != NULL);
+        PASS();
+    } _test_next:;
+    free(buf);
+    return failures;
+}
+
+static int t_boot_repaired_index_persistence_contract(void)
+{
+    int failures = 0;
+    char *buf = NULL;
+    TEST("boot persists repaired canonical block index") {
+        char path[PATH_MAX];
+        ASSERT(repo_path(path, sizeof(path), "config/src/boot.c") == 0);
+        ASSERT(read_entire_file(path, &buf) == 0);
+        char *height_repair = strstr(buf, "block_index_repair_heights(&g_state)");
+        char *pprev_repair = strstr(buf, "block_index_repair_pprev(&g_state");
+        char *repaired_save = strstr(buf, "Block index repaired: saving canonical flat file");
+        char *integrity = strstr(buf, "bii_verify(ctx->datadir");
+        ASSERT(height_repair != NULL);
+        ASSERT(pprev_repair != NULL);
+        ASSERT(repaired_save != NULL);
+        ASSERT(integrity != NULL);
+        ASSERT(height_repair < repaired_save);
+        ASSERT(pprev_repair < repaired_save);
+        ASSERT(repaired_save < integrity);
+        PASS();
+    } _test_next:;
+    free(buf);
+    return failures;
+}
+
+static int t_boot_genesis_init_preserves_restored_authority_contract(void)
+{
+    int failures = 0;
+    char *buf = NULL;
+    TEST("boot genesis init preserves restored non-genesis authority tip") {
+        char path[PATH_MAX];
+        ASSERT(repo_path(path, sizeof(path), "config/src/boot.c") == 0);
+        ASSERT(read_entire_file(path, &buf) == 0);
+        char *restore = strstr(buf, "utxo_recovery_restore_chain_tip");
+        char *guard = strstr(buf, "boot_restored_authority_tip = true");
+        char *skip = strstr(buf, "skipped genesis_init");
+        char *genesis = strstr(buf, "\"genesis_init\"");
+        char *skip_activate = strstr(buf, "skip_initial_activate");
+        ASSERT(restore != NULL);
+        ASSERT(guard != NULL);
+        ASSERT(skip != NULL);
+        ASSERT(genesis != NULL);
+        ASSERT(skip_activate != NULL);
+        ASSERT(restore < guard);
+        ASSERT(guard < genesis);
+        ASSERT(skip < genesis);
+        free(buf);
+        buf = NULL;
+        ASSERT(repo_path(path, sizeof(path),
+                         "app/services/src/utxo_recovery_service.c") == 0);
+        ASSERT(read_entire_file(path, &buf) == 0);
+        ASSERT(strstr(buf, "coins_best_block is genesis but UTXOs reach")
+               != NULL);
+        ASSERT(strstr(buf, "utxo_recovery_find_disk_backed_utxo_tip")
+               != NULL);
+        PASS();
+    } _test_next:;
+    free(buf);
+    return failures;
+}
+
+static int t_block_index_flat_atomic_save_contract(void)
+{
+    int failures = 0;
+    char *buf = NULL;
+    TEST("block index flat save is atomic") {
+        char path[PATH_MAX];
+        ASSERT(repo_path(path, sizeof(path),
+                         "app/services/src/block_index_loader.c") == 0);
+        ASSERT(read_entire_file(path, &buf) == 0);
+        char *tmp = strstr(buf, "block_index.bin\", datadir");
+        char *tmp_suffix = strstr(buf, "\"%s.tmp\", path");
+        char *unlink_tmp = strstr(buf, "(void)unlink(tmp_path)");
+        char *open_tmp = strstr(buf, "fopen(tmp_path, \"wb\")");
+        char *rename_tmp = strstr(buf, "rename(tmp_path, path)");
+        char *sidecar = strstr(buf, "bii_write_sidecar(datadir)");
+        ASSERT(tmp != NULL);
+        ASSERT(tmp_suffix != NULL);
+        ASSERT(unlink_tmp != NULL);
+        ASSERT(open_tmp != NULL);
+        ASSERT(rename_tmp != NULL);
+        ASSERT(sidecar != NULL);
+        ASSERT(tmp_suffix < unlink_tmp);
+        ASSERT(unlink_tmp < open_tmp);
+        ASSERT(open_tmp < rename_tmp);
+        ASSERT(rename_tmp < sidecar);
+        PASS();
+    } _test_next:;
+    free(buf);
+    return failures;
+}
+
+static int t_projection_deferral_is_not_block_rejected_contract(void)
+{
+    int failures = 0;
+    char *buf = NULL;
+    TEST("projection deferral is chain advance diagnostic, not block reject") {
+        char path[PATH_MAX];
+        ASSERT(repo_path(path, sizeof(path), "lib/validation/src/process_block.c") == 0);
+        ASSERT(read_entire_file(path, &buf) == 0);
+        ASSERT(strstr(buf, "chain_advance_coordinator_note_projection_deferred") != NULL);
+        ASSERT(strstr(buf, "\"consensus_path\"") != NULL);
+        ASSERT(strstr(buf, "projection-deferred-consensus-path") == NULL);
+        ASSERT(strstr(buf, "EV_CHAIN_ADVANCE_DECISION") == NULL);
+        free(buf);
+        buf = NULL;
+        ASSERT(repo_path(path, sizeof(path),
+                         "app/controllers/src/sync_controller_blocks.c") == 0);
+        ASSERT(read_entire_file(path, &buf) == 0);
+        ASSERT(strstr(buf, "chain_advance_coordinator_note_projection_deferred") != NULL);
+        ASSERT(strstr(buf, "\"no_db_service\"") != NULL);
+        ASSERT(strstr(buf, "projection-deferred-no-db-service") == NULL);
+        ASSERT(strstr(buf, "EV_CHAIN_ADVANCE_DECISION") == NULL);
+        free(buf);
+        buf = NULL;
+        ASSERT(repo_path(path, sizeof(path),
+                         "app/services/src/chain_advance_coordinator.c") == 0);
+        ASSERT(read_entire_file(path, &buf) == 0);
+        ASSERT(strstr(buf, "op=projection_deferred reason=%s") != NULL);
+        ASSERT(strstr(buf, "projection_deferred_total") != NULL);
+        ASSERT(strstr(buf, "EV_CHAIN_ADVANCE_DECISION") != NULL);
+        PASS();
+    } _test_next:;
+    free(buf);
     return failures;
 }
 
@@ -603,6 +996,17 @@ int test_make_lint_gates(void)
     failures += t_raw_malloc_fixture_trips_gate();
     failures += t_raw_malloc_zcl_fixture_passes();
     failures += t_raw_malloc_gate_recovers();
+    failures += t_tools_z_mirror_fallback_contract();
+    failures += t_tools_z_operator_diagnostics_contract();
+    failures += t_boot_chain_advance_diagnostics_contract();
+    failures += t_boot_addrman_persistence_contract();
+    failures += t_boot_shutdown_persistence_order_contract();
+    failures += t_peer_save_busy_reports_db_error();
+    failures += t_handshake_peer_save_is_async();
+    failures += t_boot_repaired_index_persistence_contract();
+    failures += t_boot_genesis_init_preserves_restored_authority_contract();
+    failures += t_block_index_flat_atomic_save_contract();
+    failures += t_projection_deferral_is_not_block_rejected_contract();
     return failures;
 }
 

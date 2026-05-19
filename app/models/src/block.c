@@ -24,7 +24,7 @@
 #include <string.h>
 #include <stdio.h>
 
-#define DB_BLOCK_SAVE_MAX_ATTEMPTS 40
+#define DB_BLOCK_SAVE_MAX_ATTEMPTS 1200
 #define DB_BLOCK_SAVE_RETRY_MS 25
 
 /* ── Callbacks ─────────────────────────────────────────────────── */

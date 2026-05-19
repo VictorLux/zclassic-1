@@ -70,7 +70,10 @@ static int cmp_height(const void *a, const void *b)
 void save_block_index_flat(const char *datadir, struct main_state *ms)
 {
     char path[1024];
+    char tmp_path[1056];
     snprintf(path, sizeof(path), "%s/block_index.bin", datadir);
+    snprintf(tmp_path, sizeof(tmp_path), "%s.tmp", path);
+    (void)unlink(tmp_path);
 
     size_t count = ms->map_block_index.size;
     struct block_index **sorted = zcl_malloc(count * sizeof(void *), "block_index sorted save");
@@ -90,10 +93,10 @@ void save_block_index_flat(const char *datadir, struct main_state *ms)
     qsort(sorted, count, sizeof(struct block_index *), cmp_height);
 
     int64_t t0 = (int64_t)time(NULL);
-    FILE *f = fopen(path, "wb");
+    FILE *f = fopen(tmp_path, "wb");
     if (!f) {
         fprintf(stderr, "save_block_index_flat: cannot create %s: %s\n",
-                path, strerror(errno));
+                tmp_path, strerror(errno));
         free(sorted); return;
     }
 
@@ -101,7 +104,7 @@ void save_block_index_flat(const char *datadir, struct main_state *ms)
     if (fwrite(&magic, 4, 1, f) != 1 || // disk-io-lock: private-fd (block index flat file)
         fwrite(&(uint32_t){(uint32_t)count}, 4, 1, f) != 1) {
         fprintf(stderr, "save_block_index_flat: header write failed\n");
-        fclose(f); free(sorted); return;
+        fclose(f); unlink(tmp_path); free(sorted); return;
     }
 
     for (size_t i = 0; i < count; i++) {
@@ -127,12 +130,22 @@ void save_block_index_flat(const char *datadir, struct main_state *ms)
         if (fwrite(&entry, sizeof(entry), 1, f) != 1) { // disk-io-lock: private-fd
             fprintf(stderr, "save_block_index_flat: write failed at entry "
                     "%zu/%zu: %s\n", i, count, strerror(errno));
-            fclose(f); free(sorted); return;
+            fclose(f); unlink(tmp_path); free(sorted); return;
         }
     }
     fflush(f);
+    int fd = fileno(f);
+    if (fd >= 0)
+        (void)fsync(fd);
     fclose(f);
     free(sorted);
+
+    if (rename(tmp_path, path) != 0) {
+        fprintf(stderr, "save_block_index_flat: rename %s -> %s failed: %s\n",
+                tmp_path, path, strerror(errno));
+        unlink(tmp_path);
+        return;
+    }
 
     if (!bii_write_sidecar(datadir)) {
         fprintf(stderr,

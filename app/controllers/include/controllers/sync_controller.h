@@ -24,6 +24,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include <pthread.h>
+#include <stdatomic.h>
 
 struct block;
 struct block_index;
@@ -49,6 +50,7 @@ struct node_db_sync_job_status {
 struct node_db_sync_catchup_job {
     pthread_t thread;
     bool started;
+    atomic_bool finished;
     int result;
     struct {
         struct node_db *ndb;

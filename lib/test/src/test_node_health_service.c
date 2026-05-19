@@ -7,6 +7,7 @@
 #include "controllers/network_controller.h"
 #include "net/connman.h"
 #include "net/net.h"
+#include "services/chain_advance_coordinator.h"
 #include "validation/main_state.h"
 #include "util/safe_alloc.h"
 
@@ -121,6 +122,144 @@ int test_node_health_service(void)
         main_state_free(&ms);
         rpc_net_set_connman(NULL);
         net_manager_free(&cm.manager);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("node_health_service: coordinator at-tip overrides stale sync FSM... ");
+    {
+        struct cac_decision decision;
+        memset(&decision, 0, sizeof(decision));
+        decision.result = CAC_DECISION_USE_SOURCE;
+        decision.selected_source = CAC_SOURCE_P2P;
+        decision.local_height = 3117591;
+        decision.target_height = 3117591;
+        decision.projection_height = 3117591;
+        decision.projection_lag = 0;
+        struct cac_source_status *p2p =
+            &decision.sources[CAC_SOURCE_P2P];
+        p2p->source = CAC_SOURCE_P2P;
+        p2p->available = true;
+        p2p->healthy = true;
+        p2p->selectable = true;
+        p2p->height = 3117591;
+
+        bool ok = node_health_chain_advance_synced(&decision);
+        decision.projection_lag = 2;
+        ok = ok && !node_health_chain_advance_synced(&decision);
+        decision.projection_lag = 0;
+        snprintf(decision.blocker, sizeof(decision.blocker),
+                 "body-hash-mismatch");
+        ok = ok && !node_health_chain_advance_synced(&decision);
+
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("node_health_service: old errors stay visible without degrading... ");
+    {
+        struct node_health_snapshot health;
+        struct error_ring *er = error_ring_global();
+        struct connman cm;
+        struct net_address addr;
+        struct p2p_node *node = NULL;
+        bool ok = true;
+
+        memset(&cm, 0, sizeof(cm));
+        memset(&addr, 0, sizeof(addr));
+        error_ring_init(er);
+        net_manager_init(&cm.manager);
+        cm.manager.nodes = zcl_calloc(1, sizeof(*cm.manager.nodes), "test_nodes");
+        ok = ok && (cm.manager.nodes != NULL);
+        if (ok) {
+            node = p2p_node_create(&cm.manager, ZCL_INVALID_SOCKET, &addr,
+                                   "old-error-peer", false);
+            ok = ok && (node != NULL);
+        }
+        if (ok) {
+            cm.manager.nodes[0] = node;
+            cm.manager.num_nodes = 1;
+            rpc_net_set_connman(&cm);
+            sync_set_state(SYNC_FINDING_PEERS, "test");
+            sync_set_state(SYNC_HEADERS_DOWNLOAD, "test");
+            sync_set_state(SYNC_BLOCKS_DOWNLOAD, "test");
+            sync_set_state(SYNC_CONNECTING_BLOCKS, "test");
+            sync_set_state(SYNC_AT_TIP, "test");
+            error_ring_observer(EV_DB_ERROR, 0, "old recoverable error",
+                                21, er);
+            er->entries[0].timestamp_us =
+                ((int64_t)time(NULL) - 600) * 1000000;
+            node_health_collect(&health, NULL, NULL);
+
+            ok = health.synced;
+            ok = ok && health.has_peers;
+            ok = ok && health.healthy;
+            ok = ok && health.error_total == 1;
+            ok = ok && !health.last_error_recent;
+            ok = ok && health.last_error_age_seconds >= 300;
+            ok = ok && strcmp(health.last_error_type,
+                              event_type_name(EV_DB_ERROR)) == 0;
+            ok = ok && strcmp(health.last_error,
+                              "old recoverable error") == 0;
+            ok = ok && health.degraded_reason[0] == '\0';
+        }
+
+        rpc_net_set_connman(NULL);
+        net_manager_free(&cm.manager);
+        error_ring_init(er);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("node_health_service: recent errors stay actionable without false degradation... ");
+    {
+        struct node_health_snapshot health;
+        struct error_ring *er = error_ring_global();
+        struct connman cm;
+        struct net_address addr;
+        struct p2p_node *node = NULL;
+        bool ok = true;
+
+        memset(&cm, 0, sizeof(cm));
+        memset(&addr, 0, sizeof(addr));
+        error_ring_init(er);
+        net_manager_init(&cm.manager);
+        cm.manager.nodes = zcl_calloc(1, sizeof(*cm.manager.nodes), "test_nodes");
+        ok = ok && (cm.manager.nodes != NULL);
+        if (ok) {
+            node = p2p_node_create(&cm.manager, ZCL_INVALID_SOCKET, &addr,
+                                   "recent-error-peer", false);
+            ok = ok && (node != NULL);
+        }
+        if (ok) {
+            cm.manager.nodes[0] = node;
+            cm.manager.num_nodes = 1;
+            rpc_net_set_connman(&cm);
+            sync_set_state(SYNC_FINDING_PEERS, "test");
+            sync_set_state(SYNC_HEADERS_DOWNLOAD, "test");
+            sync_set_state(SYNC_BLOCKS_DOWNLOAD, "test");
+            sync_set_state(SYNC_CONNECTING_BLOCKS, "test");
+            sync_set_state(SYNC_AT_TIP, "test");
+            error_ring_observer(EV_BLOCK_REJECTED, 0, "fresh reject",
+                                12, er);
+            node_health_collect(&health, NULL, NULL);
+
+            ok = health.synced;
+            ok = ok && health.has_peers;
+            ok = ok && health.healthy;
+            ok = ok && health.error_total == 1;
+            ok = ok && health.last_error_recent;
+            ok = ok && health.last_error_age_seconds >= 0;
+            ok = ok && health.last_error_age_seconds <= 300;
+            ok = ok && strcmp(health.last_error_type,
+                              event_type_name(EV_BLOCK_REJECTED)) == 0;
+            ok = ok && strcmp(health.last_error, "fresh reject") == 0;
+            ok = ok && health.degraded_reason[0] == '\0';
+        }
+
+        rpc_net_set_connman(NULL);
+        net_manager_free(&cm.manager);
+        error_ring_init(er);
         if (ok) printf("OK\n");
         else { printf("FAIL\n"); failures++; }
     }

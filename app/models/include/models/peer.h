@@ -29,6 +29,7 @@ struct ar_callbacks *db_peer_callbacks(void);
 bool db_peer_validate(const struct db_peer *p, struct ar_errors *errors);
 
 bool db_peer_save(struct node_db *ndb, const struct db_peer *p);
+bool db_peer_save_advisory(struct node_db *ndb, const struct db_peer *p);
 bool db_peer_find_by_addr(struct node_db *ndb,
                           const uint8_t ip[16], uint16_t port,
                           struct db_peer *out);

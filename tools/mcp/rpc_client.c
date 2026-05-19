@@ -23,6 +23,15 @@ static char g_cookie[256];
 static int g_port = 18232;
 static char g_datadir[512];
 
+#ifdef ZCL_TESTING
+static mcp_node_rpc_test_fn g_test_rpc_hook;
+
+void mcp_rpc_client_set_test_hook(mcp_node_rpc_test_fn fn)
+{
+    g_test_rpc_hook = fn;
+}
+#endif
+
 static const char b64[] =
     "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 
@@ -74,6 +83,10 @@ void mcp_rpc_client_init(const char *datadir, int rpc_port)
 
 char *mcp_node_rpc(const char *method, const char *params_json)
 {
+#ifdef ZCL_TESTING
+    if (g_test_rpc_hook)
+        return g_test_rpc_hook(method, params_json);
+#endif
     read_cookie();
 
     char body[8192];

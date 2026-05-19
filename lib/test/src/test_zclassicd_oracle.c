@@ -13,9 +13,12 @@
 
 #include "test/test_helpers.h"
 #include "services/zclassicd_oracle_service.h"
+#include "services/legacy_mirror_sync_service.h"
+#include "services/sync_watchdog_service.h"
 #include "controllers/wallet_helpers.h"
 #include "validation/main_state.h"
 #include "validation/chainstate.h"
+#include "validation/mirror_consensus.h"
 #include "chain/chain.h"
 #include "core/uint256.h"
 #include "event/event.h"
@@ -353,6 +356,236 @@ int test_zclassicd_oracle(void)
         mock_server_stop(&srv);
         zo_teardown();
         unsetenv("ZCL_ORACLE_TIP_MARGIN");
+    }
+
+    {
+        struct uint256 h;
+        char events[4096];
+        size_t events_len;
+        uint256_set_hex(&h, AGREE_HEX);
+        event_log_init();
+        mirror_consensus_reset_for_test();
+        mirror_consensus_set_enabled(true);
+        ZO_CHECK("mirror authority authorizes hash",
+                 mirror_consensus_authorize_block(7, &h));
+        ZO_CHECK("mirror authority inactive without scope",
+                 !mirror_consensus_authorized_current(7, &h));
+        mirror_consensus_scope_enter();
+        ZO_CHECK("mirror authority active in scope",
+                 mirror_consensus_authorized_current(7, &h));
+        struct uint256 wrong_h;
+        uint256_set_hex(&wrong_h, DISAGREE_HEX);
+        ZO_CHECK("mirror authority rejects wrong hash in scope",
+                 !mirror_consensus_authorized_current(7, &wrong_h));
+        mirror_consensus_record_override(7, "bad-txns-BIP30");
+        struct mirror_consensus_stats ms;
+        mirror_consensus_stats_snapshot(&ms);
+        ZO_CHECK("mirror override counted", ms.overrides_total == 1);
+        ZO_CHECK("mirror unsafe overrides initially zero",
+                 ms.unsafe_overrides_total == 0);
+        ZO_CHECK("mirror override marked safe", ms.last_override_safe);
+        ZO_CHECK("mirror override scope recorded",
+                 strcmp(ms.last_override_scope,
+                        "authorized_mirror_scope") == 0);
+        ZO_CHECK("mirror blockers initially zero", ms.blockers_total == 0);
+        ZO_CHECK("mirror override height", ms.last_override_height == 7);
+        ZO_CHECK("mirror override reason",
+                 strcmp(ms.last_override_reason, "bad-txns-BIP30") == 0);
+        events_len = event_dump_json(events, sizeof(events), 8);
+        events[events_len < sizeof(events) ? events_len : sizeof(events) - 1] =
+            '\0';
+        ZO_CHECK("mirror override event visible",
+                 strstr(events, "mirror.consensus_decision") != NULL);
+        ZO_CHECK("mirror override event authority",
+                 strstr(events,
+                        "authority=local_consensus_validation") != NULL);
+        ZO_CHECK("mirror override event advisory",
+                 strstr(events,
+                        "trust=bounded_advisory_fallback") != NULL);
+        ZO_CHECK("mirror override event safe",
+                 strstr(events, "safe=true") != NULL);
+        ZO_CHECK("mirror override event reason",
+                 strstr(events, "reason=bad-txns-BIP30") != NULL);
+        ZO_CHECK("mirror override event count",
+                 strstr(events, "overrides=1") != NULL);
+        ZO_CHECK("mirror override event unsafe count",
+                 strstr(events, "unsafe=0") != NULL);
+        ZO_CHECK("mirror override event blocker count",
+                 strstr(events, "blockers=0") != NULL);
+        mirror_consensus_record_blocker("activation-no-progress");
+        mirror_consensus_stats_snapshot(&ms);
+        ZO_CHECK("mirror blocker counted", ms.blockers_total == 1);
+        ZO_CHECK("mirror blocker records precise code",
+                 strcmp(ms.activation_blocker,
+                        "activation-no-progress") == 0);
+        events_len = event_dump_json(events, sizeof(events), 8);
+        events[events_len < sizeof(events) ? events_len : sizeof(events) - 1] =
+            '\0';
+        ZO_CHECK("mirror blocker event visible",
+                 strstr(events, "op=blocker") != NULL);
+        ZO_CHECK("mirror blocker event reason",
+                 strstr(events, "reason=activation-no-progress") != NULL);
+        ZO_CHECK("mirror blocker event count",
+                 strstr(events, "blockers=1") != NULL);
+        ZO_CHECK("mirror blocker event blocker code",
+                 strstr(events, "blk=activation-no-progress") != NULL);
+        mirror_consensus_clear_blocker();
+        mirror_consensus_stats_snapshot(&ms);
+        ZO_CHECK("mirror blocker clears",
+                 ms.activation_blocker[0] == '\0');
+        mirror_consensus_scope_leave();
+        ZO_CHECK("mirror authority leaves scope",
+                 !mirror_consensus_scope_active());
+        mirror_consensus_record_override(8, "test-unsafe-no-scope");
+        mirror_consensus_stats_snapshot(&ms);
+        ZO_CHECK("mirror unsafe override counted",
+                 ms.unsafe_overrides_total == 1);
+        ZO_CHECK("mirror unsafe override marked unsafe",
+                 !ms.last_override_safe);
+        ZO_CHECK("mirror unsafe override scope recorded",
+                 strcmp(ms.last_override_scope,
+                        "unsafe_no_authorized_scope") == 0);
+        mirror_consensus_reset_for_test();
+    }
+
+    {
+        struct legacy_mirror_sync_stats stats;
+        struct json_value root;
+        const struct json_value *state;
+        const struct json_value *authority;
+        const struct json_value *mirror_enabled;
+        const struct json_value *trust;
+        const struct json_value *overrides;
+        const struct json_value *blockers_total;
+        const struct json_value *override_height;
+        const struct json_value *override_reason;
+        const struct json_value *unsafe_overrides;
+        const struct json_value *override_safe;
+        const struct json_value *override_scope;
+        const struct json_value *blocker;
+        const struct json_value *last_blocker_code;
+        const struct json_value *stalls_total;
+        const struct json_value *local_recovery_active;
+        const struct json_value *local_retries_exhausted;
+
+        sync_watchdog_init();
+        legacy_mirror_sync_reset_for_test();
+        mirror_consensus_set_enabled(true);
+        mirror_consensus_record_override(123, "body-hash-mismatch");
+        mirror_consensus_record_blocker("body-hash-mismatch");
+
+        memset(&stats, 0, sizeof(stats));
+        stats.enabled = true;
+        stats.running = true;
+        stats.reachable = true;
+        stats.legacy_height = 1000;
+        stats.legacy_headers = 1000;
+        stats.local_height = 999;
+        stats.best_header_height = 1000;
+        stats.target_height = 1000;
+        stats.stalls_total = 2;
+        snprintf(stats.stuck_reason, sizeof(stats.stuck_reason),
+                 "%s", "no-authorized-child");
+        snprintf(stats.last_blocker_code, sizeof(stats.last_blocker_code),
+                 "%s", "body-hash-mismatch");
+        legacy_mirror_sync_test_set_stats(&stats, NULL);
+
+        json_init(&root);
+        json_set_object(&root);
+        ZO_CHECK("legacy mirror dump succeeds",
+                 legacy_mirror_sync_dump_state_json(&root, NULL));
+        state = json_get(&root, "state");
+        authority = json_get(&root, "consensus_authority");
+        mirror_enabled = json_get(&root, "mirror_authorization_enabled");
+        trust = json_get(&root, "mirror_source_trust");
+        overrides = json_get(&root, "overrides_total");
+        unsafe_overrides = json_get(&root, "unsafe_overrides_total");
+        blockers_total = json_get(&root, "blockers_total");
+        override_height = json_get(&root, "last_override_height");
+        override_safe = json_get(&root, "last_override_safe");
+        override_scope = json_get(&root, "last_override_scope");
+        override_reason = json_get(&root, "last_override_reason");
+        blocker = json_get(&root, "activation_blocker");
+        last_blocker_code = json_get(&root, "last_blocker_code");
+        stalls_total = json_get(&root, "stalls_total");
+        local_recovery_active = json_get(&root, "local_recovery_active");
+        local_retries_exhausted = json_get(&root, "local_retries_exhausted");
+
+        ZO_CHECK("legacy mirror dump state is blocked",
+                 state && strcmp(json_get_str(state), "blocked") == 0);
+        ZO_CHECK("legacy mirror dump authority stays local",
+                 authority &&
+                 strcmp(json_get_str(authority), "local") == 0);
+        ZO_CHECK("legacy mirror dump marks advisory authorization",
+                 mirror_enabled && json_get_bool(mirror_enabled));
+        ZO_CHECK("legacy mirror dump trust is bounded advisory",
+                 trust &&
+                 strcmp(json_get_str(trust),
+                        "bounded_advisory_fallback") == 0);
+        ZO_CHECK("legacy mirror dump override count",
+                 overrides && json_get_int(overrides) == 1);
+        ZO_CHECK("legacy mirror dump unsafe override count",
+                 unsafe_overrides && json_get_int(unsafe_overrides) == 1);
+        ZO_CHECK("legacy mirror dump blocker count",
+                 blockers_total && json_get_int(blockers_total) == 1);
+        ZO_CHECK("legacy mirror dump override height",
+                 override_height && json_get_int(override_height) == 123);
+        ZO_CHECK("legacy mirror dump override safe flag",
+                 override_safe && !json_get_bool(override_safe));
+        ZO_CHECK("legacy mirror dump override scope",
+                 override_scope &&
+                 strcmp(json_get_str(override_scope),
+                        "unsafe_no_authorized_scope") == 0);
+        ZO_CHECK("legacy mirror dump override reason",
+                 override_reason &&
+                 strcmp(json_get_str(override_reason),
+                        "body-hash-mismatch") == 0);
+        ZO_CHECK("legacy mirror dump activation blocker",
+                 blocker &&
+                 strcmp(json_get_str(blocker),
+                        "body-hash-mismatch") == 0);
+        ZO_CHECK("legacy mirror dump last blocker code",
+                 last_blocker_code &&
+                 strcmp(json_get_str(last_blocker_code),
+                        "body-hash-mismatch") == 0);
+        ZO_CHECK("legacy mirror dump stall count",
+                 stalls_total && json_get_int(stalls_total) == 2);
+        ZO_CHECK("legacy mirror dump local recovery field",
+                 local_recovery_active &&
+                 !json_get_bool(local_recovery_active));
+        ZO_CHECK("legacy mirror dump local retry field",
+                 local_retries_exhausted &&
+                 !json_get_bool(local_retries_exhausted));
+        json_free(&root);
+        legacy_mirror_sync_reset_for_test();
+    }
+
+    {
+        struct legacy_mirror_sync_stats stats;
+        struct legacy_mirror_sync_stats snap;
+
+        zo_build_fixture(AGREE_HEX);
+        legacy_mirror_sync_reset_for_test();
+        memset(&stats, 0, sizeof(stats));
+        stats.enabled = true;
+        stats.running = true;
+        stats.reachable = true;
+        stats.legacy_height = 4;
+        stats.legacy_headers = 4;
+        snprintf(stats.last_blocker_code, sizeof(stats.last_blocker_code),
+                 "%s", "");
+        legacy_mirror_sync_test_set_stats(&stats, &g_zo_ms);
+
+        legacy_mirror_sync_stats_snapshot(&snap);
+        ZO_CHECK("legacy mirror behind local observes",
+                 strcmp(snap.state, "observing") == 0);
+        ZO_CHECK("legacy mirror behind local has negative lag",
+                 snap.lag < 0);
+        ZO_CHECK("legacy mirror behind local not blocked",
+                 snap.activation_blocker[0] == '\0' &&
+                 snap.last_blocker_code[0] == '\0');
+        legacy_mirror_sync_reset_for_test();
+        zo_teardown();
     }
 
     if (failures == 0)

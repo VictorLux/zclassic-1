@@ -258,21 +258,42 @@ bool active_chain_set_tip(struct active_chain *c, struct block_index *bi)
 
     int new_height = bi->nHeight;
     if (new_height >= c->capacity) {
+        int old_cap = c->capacity;
         int new_cap = new_height + 1024;
         struct block_index **nc = zcl_realloc(c->chain,
             (size_t)new_cap * sizeof(struct block_index *), "active_chain");
         if (!nc)
             LOG_FAIL("chainstate", "active_chain_set_tip: realloc failed for height %d", new_height);
         c->chain = nc;
+        memset(&c->chain[old_cap], 0,
+               (size_t)(new_cap - old_cap) * sizeof(struct block_index *));
         c->capacity = new_cap;
     }
 
     c->chain[new_height] = bi;
     struct block_index *p = bi->pprev;
     int h = new_height - 1;
-    while (h >= 0 && (h > c->height || c->chain[h] != p)) {
-        c->chain[h] = p;
-        if (p) p = p->pprev;
+    int walk_budget = new_height + 1;
+    while (h >= 0) {
+        while (p && p->nHeight > h) {
+            if (--walk_budget < 0) {
+                p = NULL;
+                break;
+            }
+            p = p->pprev;
+        }
+        struct block_index *slot = (p && p->nHeight == h) ? p : NULL;
+        if (h <= c->height && c->chain[h] == slot)
+            break;
+        c->chain[h] = slot;
+        if (p && p->nHeight == h) {
+            if (--walk_budget < 0)
+                p = NULL;
+            else
+                p = p->pprev;
+        }
+        if (!p && slot == NULL && h <= c->height)
+            break;
         h--;
     }
     c->height = new_height;

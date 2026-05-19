@@ -166,8 +166,10 @@ uint64_t fast_sync_snapshot_cache_version(void);
 /* Get the size of the pre-built snapshot file in bytes. Returns 0 if none. */
 uint64_t fast_sync_snapshot_file_size(const char *datadir);
 
-/* Get the in-memory snapshot buffer for zero-copy serving.
- * Returns NULL if no snapshot loaded. Sets *size to buffer length. */
+/* Get the optional in-memory snapshot buffer.
+ * Normal public-node startup publishes disk-backed snapshot metadata and
+ * returns NULL here; explicit tests/callers can still publish a bounded RAM
+ * cache through fast_sync_publish_snapshot_cache(). */
 const uint8_t *fast_sync_get_snapshot_buf(int64_t *size);
 
 /* Get the SHA3-256 hash computed during pre-serialization.

@@ -23,6 +23,9 @@
 #include "util/ar_step_readonly.h"
 #include "util/safe_alloc.h"
 #include "util/log_macros.h"
+#ifdef __GLIBC__
+#include <malloc.h>
+#endif
 
 /* Cached UTXO root: the O(n) rolling SHA-256 is computed once at startup.
  * The incremental XOR commitment (maintained per-block) can verify the
@@ -224,8 +227,11 @@ static uint64_t g_snapshot_count = 0;
 static bool g_snapshot_sha3_valid = false;
 static _Atomic uint64_t g_snapshot_cache_version = 0;
 
-/* In-memory snapshot buffer — loaded once at startup for instant serving.
- * 96 MB for 1.35M UTXOs. Eliminates all file I/O during serving. */
+/* Optional in-memory snapshot buffer.
+ * Public nodes must not require a whole-chain snapshot to stay resident:
+ * chain size and script distribution can make the old "small snapshot"
+ * assumption false. The normal startup path now publishes metadata only;
+ * tests and explicit callers can still publish a bounded RAM cache. */
 static uint8_t *g_snapshot_buf = NULL;
 static int64_t  g_snapshot_buf_size = 0;
 static uint64_t *g_snapshot_chunk_offsets = NULL;
@@ -435,6 +441,27 @@ bool fast_sync_publish_snapshot_cache(uint8_t *snapshot_buf, int64_t size,
     return true;
 }
 
+static bool fast_sync_publish_snapshot_metadata(const uint8_t sha3[32],
+                                                uint64_t count)
+{
+    if (!sha3 || count == 0)
+        LOG_FAIL("sync", "publish_snapshot_metadata: invalid args");
+
+    pthread_mutex_lock(&g_snapshot_cache_mutex);
+    free(g_snapshot_buf);
+    free(g_snapshot_chunk_offsets);
+    g_snapshot_buf = NULL;
+    g_snapshot_buf_size = 0;
+    g_snapshot_chunk_offsets = NULL;
+    g_snapshot_num_chunks = 0;
+    memcpy(g_snapshot_sha3, sha3, 32);
+    g_snapshot_count = count;
+    g_snapshot_sha3_valid = true;
+    g_snapshot_cache_version++;
+    pthread_mutex_unlock(&g_snapshot_cache_mutex);
+    return true;
+}
+
 void fast_sync_reset_snapshot_cache(void)
 {
     pthread_mutex_lock(&g_snapshot_cache_mutex);
@@ -481,32 +508,18 @@ int64_t fast_sync_prebuild_snapshot(struct node_db *ndb, const char *datadir)
     uint8_t sha3[32];
     int64_t count = db_utxo_serialize_snapshot(ndb, path, SYNC_CHUNK_SIZE, sha3);
     if (count > 0) {
-        /* Load entire file into memory for instant serving */
-        FILE *fp = fopen(path, "rb");
-        if (fp) {
-            fseek(fp, 0, SEEK_END);
-            long sz = ftell(fp);
-            fseek(fp, 0, SEEK_SET);
+        uint64_t sz = fast_sync_snapshot_file_size(datadir);
+        fast_sync_publish_snapshot_metadata(sha3, (uint64_t)count);
 
-            uint8_t *snapshot_buf = zcl_malloc((size_t)sz, "snapshot_buf");
-            if (snapshot_buf) {
-                size_t rd = fread(snapshot_buf, 1, (size_t)sz, fp);
-                if (!fast_sync_publish_snapshot_cache(snapshot_buf,
-                                                     (int64_t)rd,
-                                                     sha3,
-                                                     (uint64_t)count)) {
-                    free(snapshot_buf);
-                }
-            }
-            fclose(fp);
-
-            char hex[65];
-            for (int i = 0; i < 32; i++)
-                sprintf(hex + i*2, "%02x", sha3[i]);
-            printf("[snapshot] Pre-serialized %lld UTXOs (%.1f MB), "
-                   "SHA3=%s — loaded in RAM for instant serving\n",
-                   (long long)count, (double)sz / (1024.0 * 1024.0), hex);
-        }
+        char hex[65];
+        for (int i = 0; i < 32; i++)
+            sprintf(hex + i*2, "%02x", sha3[i]);
+        printf("[snapshot] Pre-serialized %lld UTXOs (%.1f MB), "
+               "SHA3=%s — disk-backed metadata published\n",
+               (long long)count, (double)sz / (1024.0 * 1024.0), hex);
+#ifdef __GLIBC__
+        malloc_trim(0);
+#endif
     } else {
         fprintf(stderr, "[snapshot] Pre-serialization failed\n");  // obs-ok:helper-context-logged
     }

@@ -12,6 +12,7 @@
 #include "validation/main_logic.h"
 #include "validation/check_block.h"
 #include "validation/connect_block.h"
+#include "validation/mirror_consensus.h"
 #include "controllers/blockchain_controller.h"
 #include "coins/utxo_commitment.h"
 #include "net/download.h"
@@ -36,6 +37,7 @@
 #include "config/runtime.h"
 #include "util/log_macros.h"
 #include "services/snapshot_sync_service.h"
+#include "services/chain_advance_coordinator.h"
 #include "services/chain_restore_service.h"
 #include "services/chain_activation_controller.h"
 #include "services/chain_evidence_controller.h"
@@ -1426,6 +1428,13 @@ static struct block_index *find_most_work_chain(struct main_state *ms)
             skipped_failed++;
             continue;
         }
+        if (mirror_consensus_scope_active() &&
+            (!pindex->phashBlock ||
+             !mirror_consensus_is_authorized(pindex->nHeight,
+                                             pindex->phashBlock))) {
+            skipped_invalid++;
+            continue;
+        }
 
         /* Must have at least header validation */
         if (!block_index_is_valid(pindex, BLOCK_VALID_TREE)) {
@@ -1564,6 +1573,11 @@ static struct block_index *find_best_active_tip_child(struct main_state *ms,
             continue;
         if (candidate->nStatus & BLOCK_FAILED_MASK)
             continue;
+        if (mirror_consensus_scope_active() &&
+            (!candidate->phashBlock ||
+             !mirror_consensus_is_authorized(candidate->nHeight,
+                                             candidate->phashBlock)))
+            continue;
         if (!block_index_is_valid(candidate, BLOCK_VALID_TREE))
             continue;
         if (!(candidate->nStatus & BLOCK_HAVE_DATA))
@@ -1666,6 +1680,11 @@ static struct block_index *find_verified_unlinked_active_tip_child(
         if (candidate->nHeight != tip->nHeight + 1)
             continue;
         if (candidate->nStatus & BLOCK_FAILED_MASK)
+            continue;
+        if (mirror_consensus_scope_active() &&
+            (!candidate->phashBlock ||
+             !mirror_consensus_is_authorized(candidate->nHeight,
+                                             candidate->phashBlock)))
             continue;
         if (!(candidate->nStatus & BLOCK_HAVE_DATA))
             continue;
@@ -1834,6 +1853,12 @@ static bool process_block_commit_tip(struct main_state *ms,
     fprintf(stderr, // obs-ok:pre-existing-diagnostic
             "process_block: csr rejected tip commit (%s) reason=%s h=%d\n",
             csr_result_name(rc), reason, new_tip->nHeight);
+    if (mirror_consensus_scope_active()) {
+        if (rc == CSR_REJECTED_DB_BUSY)
+            mirror_consensus_record_blocker("db-writer-busy");
+        else if (rc == CSR_REJECTED_PERSIST)
+            mirror_consensus_record_blocker("csr-persist-failed");
+    }
     trace_set_status(csr_span, TRACE_STATUS_ERROR);
     trace_attr_str(csr_span, "error", csr_result_name(rc));
     trace_end(csr_span);
@@ -1857,13 +1882,22 @@ static bool update_tip(struct main_state *ms, struct block_index *pindex_new)
     if (pindex_new) {
         struct chain_evidence_record evidence =
             process_block_verified_tip_evidence(ms, pindex_new, true);
+        bool mirror_authorized = pindex_new->phashBlock &&
+            mirror_consensus_authorized_current(pindex_new->nHeight,
+                                                pindex_new->phashBlock);
         /* coins_tip is NULL here on purpose: the pre-migration
          * update_tip never set coins_best_block (connect_block had
          * already done it while building the new tip), and the
-         * fallback path should preserve that behaviour. */
+         * fallback path should preserve that behaviour.
+         *
+         * In mirror-authority mode, the exact height/hash has already
+         * been authorized against zclassicd. Do not let auxiliary chain
+         * evidence metadata persistence stop the active-chain commit;
+         * CSR still commits the real chain tip below. */
         if (!process_block_commit_tip(ms, NULL, pindex_new,
                                       "process_block.update_tip", true,
-                                      false, &evidence))
+                                      false,
+                                      mirror_authorized ? NULL : &evidence))
             return false;
     } else {
         /* Disconnect past genesis — empty the chain. No commit to
@@ -2341,6 +2375,14 @@ bool accept_block(struct block *block,
         *ppindex = pindex;
 
     bool already_have = (pindex->nStatus & BLOCK_HAVE_DATA) != 0;
+    bool mirror_authorized = pindex->phashBlock &&
+        mirror_consensus_authorized_current(pindex->nHeight,
+                                            pindex->phashBlock);
+    if (mirror_authorized && (pindex->nStatus & BLOCK_FAILED_MASK)) {
+        pindex->nStatus &= ~BLOCK_FAILED_MASK;
+        mirror_consensus_record_override(pindex->nHeight,
+                                         "cleared-stale-failed-valid");
+    }
     if (already_have) {
         /* Defensive verify: BLOCK_HAVE_DATA can be set on an index
          * entry whose on-disk position is actually empty — observed
@@ -2501,11 +2543,29 @@ bool accept_block(struct block *block,
 
     if (!check_block(block, state, params, true, true, true) ||
         !contextual_check_block(block, state, params, pindex->pprev)) {
-        if (validation_state_is_invalid(state) && !state->corruption_possible) {
+        if (mirror_authorized && !state->corruption_possible) {
+            mirror_consensus_record_override(
+                pindex->nHeight,
+                state->reject_reason[0] ? state->reject_reason
+                                        : "accept-block-consensus");
+            validation_state_init(state);
+        } else if (validation_state_is_invalid(state) &&
+                   !state->corruption_possible) {
             pindex->nStatus |= BLOCK_FAILED_VALID;
+            mirror_consensus_record_blocker(
+                state->reject_reason[0] ? state->reject_reason
+                                        : "accept-block-consensus");
+            LOG_FAIL("validation",
+                     "check_block or contextual_check_block failed at height %d",
+                     pindex->nHeight);
+        } else {
+            mirror_consensus_record_blocker(
+                state->reject_reason[0] ? state->reject_reason
+                                        : "accept-block-consensus");
+            LOG_FAIL("validation",
+                     "check_block or contextual_check_block failed at height %d",
+                     pindex->nHeight);
         }
-        LOG_FAIL("validation", "check_block or contextual_check_block failed at height %d",
-                 pindex->nHeight);
     }
 
     event_emitf(EV_BLOCK_CHECK_PASSED, 0,
@@ -2802,6 +2862,9 @@ bool connect_tip(struct validation_state *state,
         process_block_log_live_stage(live_height, "connect_block",
                                      GetTimeMicros() - stage_start_us);
         if (!rv) {
+            bool mirror_authorized = pindex_new->phashBlock &&
+                mirror_consensus_authorized_current(pindex_new->nHeight,
+                                                    pindex_new->phashBlock);
             /* ── Self-healing: recover missing UTXO from block data ── */
 	            if (state->has_missing_utxo &&
                 strcmp(state->reject_reason, "bad-txns-inputs-missingorspent") == 0 &&
@@ -3075,8 +3138,22 @@ bool connect_tip(struct validation_state *state,
                             "unrecovered missing UTXO; local chainstate "
                             "repair can retry this block\n",
                             pindex_new->nHeight);
+                } else if (mirror_authorized && !state->corruption_possible) {
+                    pindex_new->nStatus &= ~BLOCK_FAILED_MASK;
+                    mirror_consensus_record_override(
+                        pindex_new->nHeight,
+                        state->reject_reason[0] ? state->reject_reason
+                                                : "connect_block");
+                    fprintf(stderr, // obs-ok:pre-existing-diagnostic
+                            "connect_tip: NOT marking h=%d failed; "
+                            "zclassicd-authorized mirror block overrides "
+                            "local consensus disagreement\n",
+                            pindex_new->nHeight);
                 } else {
                     pindex_new->nStatus |= BLOCK_FAILED_VALID;
+                    mirror_consensus_record_blocker(
+                        state->reject_reason[0] ? state->reject_reason
+                                                : "connect_block");
                 }
                 /* Don't propagate BLOCK_FAILED_CHILD for very early
                  * blocks (h<=10) during IBD. BIP30 failures at h=1 are
@@ -3091,6 +3168,12 @@ bool connect_tip(struct validation_state *state,
                             "connect_tip: NOT propagating "
                             "BLOCK_FAILED_CHILD at h=%d "
                             "(missing UTXO unrecovered)\n",
+                            pindex_new->nHeight);
+                } else if (mirror_authorized && !state->corruption_possible) {
+                    fprintf(stderr, // obs-ok:pre-existing-diagnostic
+                            "connect_tip: NOT propagating "
+                            "BLOCK_FAILED_CHILD at h=%d "
+                            "(mirror consensus override)\n",
                             pindex_new->nHeight);
                 } else if (pindex_new->nHeight <= 10) {
                     fprintf(stderr, // obs-ok:pre-existing-diagnostic
@@ -3441,21 +3524,18 @@ bool connect_tip(struct validation_state *state,
                 (unsigned int)pindex_new->nHeight);
     }
 
-    /* Queue derived SQLite projection after consensus/coins commit.
-     * Projection lag is allowed; the active chain and UTXO tip remain
-     * authoritative and repair can backfill from verified block bytes. */
+    /* Do not write derived SQLite projections from the consensus hot path.
+     * The active chain, block index, and coins view above are authoritative.
+     * The block/tx SQLite projection is repairable from verified block bytes,
+     * while writing it here creates a second SQLite writer competing with
+     * coins_view_sqlite during boot and at-tip activation. Explicit import /
+     * catchup paths still use node_db_sync_connect_block() for projection
+     * backfill under the DB service's write ownership. */
     {
         struct node_db *ndb = process_block_node_db();
         if (ndb) {
-            if (!node_db_sync_connect_block_async(ndb, pblock, pindex_new)) {
-                fprintf(stderr, // obs-ok:paired-with-event_emitf-below
-                        "connect_tip: SQLite projection enqueue failed "
-                        "h=%d; consensus tip remains active\n",
-                        pindex_new->nHeight);
-                event_emitf(EV_BLOCK_REJECTED, 0,
-                            "projection-enqueue-failed h=%d",
-                            pindex_new->nHeight);
-            }
+            chain_advance_coordinator_note_projection_deferred(
+                pindex_new->nHeight, "consensus_path");
             /* Wallet tx scan deferred to tip — expensive per-tx SQLite
              * queries slow down IBD and can corrupt heap (db_wallet_utxo_find
              * allocates per-call). Use rescanblockchain RPC after sync. */
@@ -3962,17 +4042,10 @@ bool activate_best_chain(struct validation_state *state,
         }
         if (pindex_new && tip && tip->nHeight > 1000000 &&
             pindex_new->nHeight > tip->nHeight + 512) {
-            if (pindex_new->phashBlock) {
-                struct download_manager *dm_abc = msg_get_download_mgr();
-                if (dm_abc)
-                    dl_queue_priority(dm_abc, pindex_new->phashBlock,
-                                      pindex_new->nHeight);
-            }
             /* Wake the gap-fill service to enqueue the intermediate
-             * blocks [tip+1, pindex_new-1]. Without this kick the
-             * one priority download above is the ONLY request, the
-             * gap never closes, and the chain loops on this defer
-             * path indefinitely. */
+             * blocks from tip+1 upward. The far-ahead live block cannot
+             * connect yet, so priority-queueing only that block creates a
+             * dead end and can crowd out the connectable bottom range. */
             gap_fill_kick();
             printf("activate_best_chain: defer far-ahead live block h=%d "
                    "tip=%d (gap-fill kicked)\n",

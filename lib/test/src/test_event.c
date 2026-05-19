@@ -325,6 +325,10 @@ static int test_event_type_name(void)
         ASSERT_STR_EQ(event_type_name(EV_BLOCK_CONNECTED), "val.block_connected");
         ASSERT_STR_EQ(event_type_name(EV_NODE_READY), "sys.ready");
         ASSERT_STR_EQ(event_type_name(EV_CRASH), "sys.crash");
+        ASSERT_STR_EQ(event_type_name(EV_CHAIN_ADVANCE_DECISION),
+                      "chain.advance_decision");
+        ASSERT_STR_EQ(event_type_name(EV_MIRROR_CONSENSUS_DECISION),
+                      "mirror.consensus_decision");
         ASSERT_STR_EQ(event_type_name(EV_NUM_TYPES), "unknown");
         PASS();
     } _test_next:;

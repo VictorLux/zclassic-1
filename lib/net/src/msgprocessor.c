@@ -21,6 +21,7 @@ extern volatile sig_atomic_t g_shutdown_requested;
 #include "net/p2p_game.h"
 #include "net/version.h"
 #include "net/p2p_message.h"
+#include "net/peer_lifecycle.h"
 #include "net/peer_scoring.h"
 #include "services/chain_state_repository.h"
 #include "services/header_sync_service.h"
@@ -2828,9 +2829,11 @@ bool msg_send_messages(void *ctx, struct p2p_node *node, bool send_trickle)
     }
 
     /* Transition to ACTIVE if still at HANDSHAKE_COMPLETE */
-    if (node->state == PEER_HANDSHAKE_COMPLETE)
+    if (node->state == PEER_HANDSHAKE_COMPLETE) {
         peer_set_state_checked((uint32_t)node->id, &node->state,
                                PEER_ACTIVE, "ready for sync");
+        peer_lifecycle_note_active(node);
+    }
 
     /* Offer fast sync to ZCL23 peers that are behind us */
     if (peer_supports_fast_sync(node->services) &&

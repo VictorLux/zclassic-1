@@ -5,6 +5,7 @@
  * file COPYING or http://www.opensource.org/licenses/mit-license.php. */
 
 #include "net/net.h"
+#include "net/peer_lifecycle.h"
 #include "net/peer_scoring.h"
 #include "primitives/block.h"
 #include "util/log_json.h"
@@ -1186,6 +1187,7 @@ bool accept_connection(struct net_manager *nm, const struct listen_socket *ls)
     }
     p2p_node_add_ref(node);
     node->whitelisted = is_whitelisted;
+    peer_lifecycle_note_connected(node, PEER_LIFECYCLE_SOURCE_INBOUND);
 
     zcl_mutex_lock(&nm->cs_nodes);
     nm_add_node(nm, node);

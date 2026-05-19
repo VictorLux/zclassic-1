@@ -26,6 +26,7 @@ static void reset_test_state(void)
     memset(&g_test_ms, 0, sizeof(g_test_ms));
     memset(&g_test_cm, 0, sizeof(g_test_cm));
     zcl_mutex_init(&g_test_dm.cs);
+    zcl_mutex_init(&g_test_ms.cs_main);
     zcl_mutex_init(&g_test_cm.manager.cs_nodes);
 
     sync_watchdog_init();
@@ -72,6 +73,12 @@ static int test_header_stall_detection(void)
         /* Second check: last_header_height=2000, current=2000 → stall */
         r = sync_watchdog_check(&g_test_cm, &g_test_dm, &g_test_ms);
         ASSERT(r == WATCHDOG_HEADER_STALL);
+        struct sync_watchdog_status status;
+        sync_watchdog_get_status(&status);
+        ASSERT(status.last_recovery_type == WATCHDOG_HEADER_STALL);
+        ASSERT_STR_EQ(status.last_recovery_reason,
+                      "header_height_not_advancing");
+        ASSERT(status.last_recovery_peer_height == 2000);
 
         PASS();
     } _test_next:;
@@ -134,7 +141,45 @@ static int test_state_stuck_detection(void)
         enum watchdog_recovery_type r = sync_watchdog_check(
             &g_test_cm, &g_test_dm, &g_test_ms);
         ASSERT(r == WATCHDOG_STATE_STUCK);
+        struct sync_watchdog_status status;
+        sync_watchdog_get_status(&status);
+        ASSERT(status.last_recovery_type == WATCHDOG_STATE_STUCK);
+        ASSERT_STR_EQ(status.last_recovery_reason, "finding_peers");
 
+        PASS();
+    } _test_next:;
+
+    return failures;
+}
+
+static int test_at_tip_reconciliation(void)
+{
+    int failures = 0;
+
+    TEST("watchdog reconciles finding_peers to at_tip when chain is current") {
+        reset_test_state();
+
+        struct block_index tip = {0};
+        tip.nHeight = 500;
+        ASSERT(active_chain_set_tip(&g_test_ms.chain_active, &tip));
+        g_test_ms.pindex_best_header = &tip;
+
+        struct p2p_node p1 = {0};
+        p1.id = 1;
+        p1.starting_height = 500;
+        p1.state = PEER_ACTIVE;
+        struct p2p_node *peers[1] = { &p1 };
+        g_test_cm.manager.nodes = peers;
+        g_test_cm.manager.num_nodes = 1;
+
+        sync_set_state(SYNC_FINDING_PEERS, "startup reconcile");
+        enum watchdog_recovery_type r = sync_watchdog_check(
+            &g_test_cm, &g_test_dm, &g_test_ms);
+        ASSERT(r == WATCHDOG_NONE);
+        ASSERT(sync_get_state() == SYNC_AT_TIP);
+
+        g_test_cm.manager.nodes = NULL;
+        g_test_cm.manager.num_nodes = 0;
         PASS();
     } _test_next:;
 
@@ -534,6 +579,7 @@ static int test_utxo_pause_fires_after_window(void)
 
     TEST("watchdog detects + clears UTXO_PAUSE after 300s") {
         reset_test_state();
+        sync_set_state(SYNC_HEADERS_DOWNLOAD, "utxo_pause setup");
         sync_set_state(SYNC_BLOCKS_DOWNLOAD, "utxo_pause test");
 
         process_block_test_set_utxo_activation_paused_height(1500);
@@ -565,6 +611,7 @@ static int test_utxo_pause_inactive_resets_timer(void)
 
     TEST("watchdog does not fire UTXO_PAUSE when no pause set") {
         reset_test_state();
+        sync_set_state(SYNC_HEADERS_DOWNLOAD, "no pause setup");
         sync_set_state(SYNC_BLOCKS_DOWNLOAD, "no pause");
 
         process_block_test_set_utxo_activation_paused_height(-1);
@@ -623,6 +670,93 @@ static int test_queue_starved_fires_after_window(void)
     return failures;
 }
 
+static int test_next_child_missing_triggers_local_refill(void)
+{
+    int failures = 0;
+
+    TEST("watchdog locally refills headers when next child is missing") {
+        reset_test_state();
+        sync_set_state(SYNC_HEADERS_DOWNLOAD, "setup");
+        sync_set_state(SYNC_BLOCKS_DOWNLOAD, "next child missing");
+
+        struct block_index tip = {0};
+        tip.nHeight = 10;
+        ASSERT(active_chain_set_tip(&g_test_ms.chain_active, &tip));
+
+        struct p2p_node p1 = {0}, p2 = {0}, p3 = {0};
+        p1.id = 1; p1.starting_height = 20; p1.state = PEER_ACTIVE;
+        p2.id = 2; p2.starting_height = 20; p2.state = PEER_ACTIVE;
+        p3.id = 3; p3.starting_height = 20; p3.state = PEER_ACTIVE;
+        p1.last_getheaders_time = p2.last_getheaders_time =
+            p3.last_getheaders_time = (int64_t)time(NULL);
+        struct p2p_node *peers[3] = { &p1, &p2, &p3 };
+        g_test_cm.manager.nodes = peers;
+        g_test_cm.manager.num_nodes = 3;
+
+        enum watchdog_recovery_type r = sync_watchdog_check(
+            &g_test_cm, &g_test_dm, &g_test_ms);
+        ASSERT(r == WATCHDOG_LOCAL_HEADER_REFILL);
+        ASSERT(p1.state == PEER_SYNCING_HEADERS);
+        ASSERT(p2.state == PEER_SYNCING_HEADERS);
+        ASSERT(p3.state == PEER_SYNCING_HEADERS);
+        ASSERT(p1.last_getheaders_time == 0);
+
+        struct watchdog_local_recovery_stats lr;
+        sync_watchdog_get_local_recovery_stats(&lr);
+        ASSERT(lr.active);
+        ASSERT(lr.missing_height == 11);
+        ASSERT(lr.distinct_peer_count == 3);
+        ASSERT(lr.retries_exhausted);
+        ASSERT(!lr.mirror_repair_gated);
+
+        g_test_cm.manager.nodes = NULL;
+        g_test_cm.manager.num_nodes = 0;
+        PASS();
+    } _test_next:;
+
+    return failures;
+}
+
+static int test_next_child_missing_gates_mirror_until_retries(void)
+{
+    int failures = 0;
+
+    TEST("watchdog gates mirror repair while local retries remain") {
+        reset_test_state();
+        sync_set_state(SYNC_HEADERS_DOWNLOAD, "setup");
+        sync_set_state(SYNC_BLOCKS_DOWNLOAD, "next child missing");
+
+        struct block_index tip = {0};
+        tip.nHeight = 100;
+        ASSERT(active_chain_set_tip(&g_test_ms.chain_active, &tip));
+
+        struct p2p_node p1 = {0};
+        p1.id = 1;
+        p1.starting_height = 110;
+        p1.state = PEER_ACTIVE;
+        struct p2p_node *peers[1] = { &p1 };
+        g_test_cm.manager.nodes = peers;
+        g_test_cm.manager.num_nodes = 1;
+
+        enum watchdog_recovery_type r = sync_watchdog_check(
+            &g_test_cm, &g_test_dm, &g_test_ms);
+        ASSERT(r == WATCHDOG_LOCAL_HEADER_REFILL);
+
+        struct watchdog_local_recovery_stats lr;
+        sync_watchdog_get_local_recovery_stats(&lr);
+        ASSERT(lr.active);
+        ASSERT(lr.mirror_repair_gated);
+        ASSERT(!lr.retries_exhausted);
+        ASSERT(lr.retry_count == 1);
+
+        g_test_cm.manager.nodes = NULL;
+        g_test_cm.manager.num_nodes = 0;
+        PASS();
+    } _test_next:;
+
+    return failures;
+}
+
 /* ── Test runner ─────────────────────────────────────────── */
 
 int test_sync_watchdog(void)
@@ -632,6 +766,7 @@ int test_sync_watchdog(void)
     failures += test_header_stall_detection();
     failures += test_block_stall_detection();
     failures += test_state_stuck_detection();
+    failures += test_at_tip_reconciliation();
     failures += test_repeated_restart_circuit_breaker();
     failures += test_at_tip_exempt();
     failures += test_diagnostic_counters();
@@ -649,5 +784,7 @@ int test_sync_watchdog(void)
     failures += test_utxo_pause_fires_after_window();
     failures += test_utxo_pause_inactive_resets_timer();
     failures += test_queue_starved_fires_after_window();
+    failures += test_next_child_missing_triggers_local_refill();
+    failures += test_next_child_missing_gates_mirror_until_retries();
     return failures;
 }

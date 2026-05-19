@@ -20,6 +20,9 @@
 #include <unistd.h>
 #include <sqlite3.h>
 #include <pthread.h>
+#ifdef __GLIBC__
+#include <malloc.h>
+#endif
 #include "util/ar_step_readonly.h"
 #include "util/log_macros.h"
 #include "util/safe_alloc.h"
@@ -623,8 +626,10 @@ bool file_export_consensus_snapshot(const char *datadir)
                                  "set journal_mode WAL") ||
         !file_export_exec_checked(dst_db, "PRAGMA synchronous=OFF",
                                  "set synchronous OFF") ||
-        !file_export_exec_checked(dst_db, "PRAGMA cache_size=-262144",
-                                 "set cache_size")) {
+        !file_export_exec_checked(dst_db, "PRAGMA cache_size=-65536",
+                                 "set cache_size") ||
+        !file_export_exec_checked(dst_db, "PRAGMA temp_store=FILE",
+                                 "set temp_store FILE")) {
         ok = false;
         goto export_cleanup;
     }
@@ -786,6 +791,9 @@ export_cleanup:
     }
     if (!ok)
         unlink(dst_path);
+#ifdef __GLIBC__
+    malloc_trim(0);
+#endif
 
     return ok;
 }

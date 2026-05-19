@@ -58,6 +58,76 @@ du -sh ~/.zclassic-c23/*
 
 ---
 
+## Public Node Strength
+
+**Symptoms:** The node is synced but public P2P looks weak: peers stay in `connecting`, no completed MagicBean or ZClassic-C23 handshakes, or watchdog logs repeat `PEER_FLOOR`, `HEADER_STALL`, or `STATE_STUCK`.
+
+**Diagnose:**
+```bash
+./tools/zcl-rpc getnetworkinfo | jq '{
+  connections, inbound_connections, outbound_connections,
+  handshaked_connections, inbound_handshaked_connections,
+  outbound_handshaked_connections, inbound_handshake_seen,
+  remote_handshake_seen, magicbean_peers, zclassic_c23_peers,
+  localservices, localaddresses, listening,
+  peer_lifecycle
+}'
+
+./tools/zcl-rpc getpeerinfo | jq '.[] | {
+  id, addr, state, inbound, subver, magicbean, zclassic_c23,
+  startingheight, lifecycle
+}'
+
+./tools/zcl-rpc dumpstate peer_lifecycle | jq '{
+  summary: .state.summary,
+  sources: [.state.sources[] | {
+    source, attempted, connected, handshake_complete,
+    active, disconnected, timeout, rejected,
+    magicbean_handshakes, zclassic_c23_handshakes
+  }]
+}'
+./tools/zcl-rpc healthcheck | jq '.checks.chain_advance'
+./tools/zcl-rpc dumpstate chain_advance_coordinator | jq '{
+  initialized, has_connman, has_main_state, has_node_db,
+  authority, decision, selected_source, activation_allowed,
+  mirror_fallback_allowed, local_height, target_height, reason,
+  blocker, sources: [.sources[] | {
+    source, trust, available, healthy, blocked, selectable,
+    selection_blocker, score, state,
+    score_base, score_health, score_height, score_authorized,
+    score_target_lag_penalty, score_failure_penalty,
+    score_mirror_gate_penalty,
+    addnode_tcp_failures, addnode_protocol_failures,
+    reason, blocker
+  }]
+}'
+./tools/zcl-rpc dumpstate legacy_mirror | jq '{
+  state, lag, activation_blocker, last_blocker_code,
+  stuck_reason, stuck_height, stalls_total,
+  consensus_authority, mirror_authorization_enabled,
+  mirror_source_trust, overrides_total, unsafe_overrides_total,
+  blockers_total, last_override_safe, last_override_scope, last_error
+}'
+```
+
+**Fix:**
+1. **No completed handshakes:** check outbound reachability and peer quality before restarting.
+   ```bash
+   ss -tlnp | grep 8033
+   ./tools/zcl-rpc addnode "IP:8033" "onetry"
+   ./tools/zcl-rpc dumpstate peer_lifecycle | jq '.state.sources[] | select(.timeout>0 or .rejected>0 or .handshake_complete==0)'
+   ./tools/zcl-rpc dumpstate peer_lifecycle | jq '.state.peers[] | select(.timeout>0 or .rejected>0)'
+   ```
+2. **External IP missing or wrong:** set `-externalip=<public-ip>` in the service environment and verify it appears in `getnetworkinfo.localaddresses`. For public reachability, `inbound_handshake_seen=true` or `inbound_handshaked_connections > 0` is stronger evidence than outbound-only handshakes.
+3. **Only `connecting` peers:** prefer fresh addnodes from known ZClassic peers. `peer_lifecycle.sources[]` shows whether failures are concentrated in `addnode`, `addrman`, `manual`, `zcl23_db`, or `inbound`; the coordinator dump distinguishes TCP failures (`addnode_tcp_failures`) from post-connect protocol/handshake failures (`addnode_protocol_failures`).
+4. **Coordinator blocked or waiting:** use `dumpstate chain_advance_coordinator` first. `initialized=true` plus `has_connman=true`, `has_main_state=true`, and `has_node_db=true` confirm the running daemon has the coordinator wired into live P2P, chainstate, and persistence. `authority` must remain `local_consensus_validation`; `selected_source` shows the best current input, `selected_source_trust`/`sources[].trust` explain its trust class, and `sources[].selectable=false` with `selection_blocker` explains why a source was excluded before score ranking. `activation_allowed=false` or a non-empty `blocker` explains why the node is refusing to advance.
+5. **Mirror fallback active:** mirror use is acceptable only when `mirror_fallback_allowed=true` and local retries are exhausted. `legacy_mirror.state` should be `observing`, `catching_up`, or `healthy`. Treat `blocked`, `gated_by_local_retries`, and `rewinding_to_authority` as actionable states; inspect `activation_blocker`, `last_blocker_code`, `stuck_reason`, `stalls_total`, `blockers_total`, `unsafe_overrides_total`, `last_override_safe`, `last_override_scope`, and `last_error`. `unsafe_overrides_total` must stay `0` on a healthy node; any increase means an override happened outside the authorized mirror fallback scope and should be investigated before trusting further mirror recovery.
+6. **When not to restart:** if `chain_advance.decision` is `use_source` or `wait` with a clear reason, `lag <= 1`, and peer lifecycle shows active handshakes, leave the node running. Restarting resets peer reputation and can make public reachability look worse for a few minutes.
+
+**Prevention:** Alert when `handshaked_connections == 0` for 5 minutes, `peer_lifecycle.timeout` rises quickly, `chain_advance.decision == "blocked"`, or `legacy_mirror.state == "blocked"`.
+
+---
+
 ## Wallet Backup Failed
 
 **Symptoms:** `EV_WALLET_BACKUP_FAILED` event. `zcl_status` health check shows wallet backup warning.

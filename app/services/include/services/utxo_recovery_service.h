@@ -85,6 +85,8 @@ struct utxo_import_result utxo_recovery_import_ldb(
 struct chain_restore_result {
     bool restored;          /* chain tip was successfully restored */
     bool skip_activate;     /* caller should skip activate_best_chain */
+    int restored_height;    /* restored tip height, -1 if none */
+    struct uint256 restored_hash; /* restored tip hash, null if none */
     char anchor_reason[64]; /* activation anchor reason, if set */
 };
 

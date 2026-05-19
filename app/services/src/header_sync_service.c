@@ -110,24 +110,32 @@ static void syncsvc_build_locator_from_chain(struct block_locator *loc,
         return;
 
     walk = (struct block_index *)tip;
-    while (walk && walk->phashBlock) {
+    while (walk && walk->phashBlock && idx < MAX_LOCATOR_HASHES) {
         if (idx == alloc) {
+            if (alloc >= MAX_LOCATOR_HASHES)
+                break;
+            size_t next_alloc = alloc * 2;
+            if (next_alloc > MAX_LOCATOR_HASHES)
+                next_alloc = MAX_LOCATOR_HASHES;
             struct uint256 *nv = zcl_realloc(loc->vhave,
-                                         alloc * 2 * sizeof(struct uint256),
+                                         next_alloc * sizeof(struct uint256),
                                          "header_sync.locator_chain");
             if (!nv)
                 break;
             loc->vhave = nv;
-            alloc *= 2;
+            alloc = next_alloc;
         }
         loc->vhave[idx++] = *walk->phashBlock;
 
+        struct block_index *prev = walk;
         for (int i = 0; i < step && walk; i++)
             walk = walk->pprev;
+        if (walk == prev)
+            break;
 
         /* Keep the first 12 hashes dense (step=1) for better fork
          * detection near the tip, then double every step after. */
-        if (++counter > 12)
+        if (++counter > 12 && step < 1048576)
             step *= 2;
     }
 
@@ -151,22 +159,30 @@ static void syncsvc_build_locator_from_index(struct block_locator *loc,
     if (!loc->vhave)
         return;
 
-    while (walk && walk->phashBlock) {
+    while (walk && walk->phashBlock && idx < MAX_LOCATOR_HASHES) {
         if (idx == alloc) {
+            if (alloc >= MAX_LOCATOR_HASHES)
+                break;
+            size_t next_alloc = alloc * 2;
+            if (next_alloc > MAX_LOCATOR_HASHES)
+                next_alloc = MAX_LOCATOR_HASHES;
             struct uint256 *nv = zcl_realloc(loc->vhave,
-                                         alloc * 2 * sizeof(struct uint256),
+                                         next_alloc * sizeof(struct uint256),
                                          "header_sync.locator_index");
             if (!nv)
                 break;
             loc->vhave = nv;
-            alloc *= 2;
+            alloc = next_alloc;
         }
         loc->vhave[idx++] = *walk->phashBlock;
 
+        const struct block_index *prev = walk;
         for (int i = 0; i < step && walk; i++)
             walk = walk->pprev;
+        if (walk == prev)
+            break;
 
-        if (++counter > 12)
+        if (++counter > 12 && step < 1048576)
             step *= 2;
     }
 
