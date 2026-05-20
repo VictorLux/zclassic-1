@@ -595,6 +595,38 @@ bool file_export_consensus_snapshot(const char *datadir)
     if (stat(src_path, &src_st) != 0 || src_st.st_size < 1000000)
         LOG_FAIL("file", "export_snapshot: %s missing or too small", src_path);
 
+    /* Refuse to clobber a downloaded snapshot with an empty rebuild.
+     * On a fresh node, node.db has only the genesis-era UTXOs that
+     * block-by-block IBD has produced so far. Exporting that would
+     * also unlink the downloaded consensus_snapshot.db that the next
+     * boot needs to import — destroying the secure-snapshot fast-path
+     * for any node that runs file_service and then restarts before
+     * full chain catchup. Bail when the source is too small to make
+     * a useful snapshot. */
+    {
+        sqlite3 *probe = NULL;
+        int64_t src_utxos = 0;
+        if (sqlite3_open_v2(src_path, &probe,
+                            SQLITE_OPEN_READONLY, NULL) == SQLITE_OK
+            && probe) {
+            sqlite3_stmt *q = NULL;
+            if (sqlite3_prepare_v2(probe,
+                    "SELECT COUNT(*) FROM utxos",
+                    -1, &q, NULL) == SQLITE_OK && q) {
+                if (sqlite3_step(q) == SQLITE_ROW)  // raw-sql-ok:read-only-probe
+                    src_utxos = sqlite3_column_int64(q, 0);
+                sqlite3_finalize(q);
+            }
+            sqlite3_close(probe);
+        }
+        if (src_utxos < 1000)
+            LOG_FAIL("file",
+                "export_snapshot: source utxos=%lld is below the "
+                "1000-row threshold — preserving any downloaded "
+                "consensus_snapshot.db so the next boot can import it",
+                (long long)src_utxos);
+    }
+
     /* Remove old snapshot */
     unlink(dst_path);
 
