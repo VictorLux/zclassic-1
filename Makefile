@@ -416,6 +416,15 @@ bench_fresh_sync: tools/bench_fresh_sync.c
 # peer. Fails the build if sync regresses to the 9-hour stall the
 # baked checkpoints + watchdog thread + peer-floor invariant are
 # meant to prevent. Skipped automatically if no local peer is up.
+# CI guard: fresh datadir + downloaded consensus_snapshot.db only,
+# must reach tip > 1M with utxos > 1M in <90s. Asserts Wave 11A
+# snapshot-first boot ordering didn't regress — without that fix the
+# import path is silently dead. Skipped if no source snapshot is
+# available locally (~/.zclassic-c23{,-test}/consensus_snapshot.db).
+.PHONY: ci-coldstart
+ci-coldstart: zclassic23
+	@bash tools/scripts/cold_start_test.sh
+
 .PHONY: ci-sync-smoke
 ci-sync-smoke: zclassic23
 	@if ! ss -tln 2>/dev/null | grep -q ':8033 '; then \
