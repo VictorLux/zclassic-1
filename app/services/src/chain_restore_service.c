@@ -484,6 +484,17 @@ void chain_restore_record_csr_consistency(bool consistent,
     g_boot_snapshot.csr_header_height = header_height;
 }
 
+void chain_restore_record_snapshot_import(bool ok,
+                                          int64_t utxo_count,
+                                          int64_t snap_height)
+{
+    g_boot_snapshot.has_data = true;
+    g_boot_snapshot.boot_time = (int64_t)time(NULL);
+    g_boot_snapshot.snapshot_imported_pre_restore = ok;
+    g_boot_snapshot.snapshot_imported_utxos = utxo_count;
+    g_boot_snapshot.snapshot_imported_height = snap_height;
+}
+
 void chain_restore_get_boot_snapshot(struct chain_restore_boot_snapshot *out)
 {
     if (!out) return;
@@ -537,6 +548,13 @@ bool chain_restore_dump_state_json(struct json_value *out, const char *key)
     json_push_kv_int(out, "csr_tip_height", g_boot_snapshot.csr_tip_height);
     json_push_kv_int(out, "csr_header_height",
                      g_boot_snapshot.csr_header_height);
+    /* Wave 11A — snapshot-first boot ordering probe outcome. */
+    json_push_kv_bool(out, "snapshot_imported_pre_restore",
+                      g_boot_snapshot.snapshot_imported_pre_restore);
+    json_push_kv_int(out, "snapshot_imported_utxos",
+                     g_boot_snapshot.snapshot_imported_utxos);
+    json_push_kv_int(out, "snapshot_imported_height",
+                     g_boot_snapshot.snapshot_imported_height);
     return true;
 }
 

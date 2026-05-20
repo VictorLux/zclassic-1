@@ -5,6 +5,7 @@
  * file COPYING or http://www.opensource.org/licenses/mit-license.php. */
 
 #include "config/boot_internal.h"
+#include "config/boot_snapshot_import.h"
 #include "config/file_ops.h"
 #include "services/snapshot_sync_service.h"
 #include "services/chain_activation_controller.h"
@@ -1448,6 +1449,67 @@ bool app_init(struct app_context *ctx)
     }
     printf("[boot] %-30s %lldms\n", "sqlite_open_migrate",
            (long long)(boot_clock_ms() - t_phase));
+
+    /* Snapshot-first (Wave 11A): if a downloaded consensus_snapshot.db
+     * is present in the datadir, import its UTXOs into node.db *before*
+     * any chain-tip restoration runs. This makes coins_best_block
+     * resolve to the snapshot height when the coins view first reads
+     * it, so utxo_recovery_restore_chain_tip / chain_restore_finalize
+     * observe the snapshot anchor as ground truth instead of racing
+     * past it with the older block_index.bin tip and leaving utxos=0.
+     *
+     * Idempotent: the helper refuses to import if main.utxos already
+     * holds the snapshot's contents (handled by checking the source
+     * file's integrity + size; a re-run with utxos>1000 is a no-op via
+     * the export guard in file_export_consensus_snapshot). */
+    if (g_node_db.open) {
+        char snap_path[PATH_MAX];
+        int sp_n = snprintf(snap_path, sizeof(snap_path),
+                            "%s/consensus_snapshot.db", ctx->datadir);
+        if (sp_n > 0 && (size_t)sp_n < sizeof(snap_path)) {
+            struct stat sp_st;
+            if (stat(snap_path, &sp_st) == 0 &&
+                sp_st.st_size > (off_t)(10 * 1024 * 1024)) {
+                int64_t existing = node_db_utxo_count(&g_node_db);
+                if (existing > 1000) {
+                    printf("[boot] consensus_snapshot.db present "
+                           "(%.0f MB) — node.db already has %lld UTXOs, "
+                           "skipping pre-restore import\n",
+                           (double)sp_st.st_size / (1024.0 * 1024.0),
+                           (long long)existing);
+                    chain_restore_record_snapshot_import(
+                        true, existing, -1);
+                } else {
+                    int64_t imp_utxos = 0, imp_height = 0;
+                    uint8_t imp_best[32] = {0};
+                    bool ok = boot_import_snapshot_db(&g_node_db,
+                                                     snap_path,
+                                                     &imp_utxos,
+                                                     &imp_height,
+                                                     imp_best);
+                    chain_restore_record_snapshot_import(
+                        ok, imp_utxos, imp_height);
+                    event_emitf(EV_BOOT_UTXO_IMPORT, 0,
+                                "phase=pre-restore ok=%d utxos=%lld "
+                                "height=%lld",
+                                ok ? 1 : 0,
+                                (long long)imp_utxos,
+                                (long long)imp_height);
+                    if (ok)
+                        printf("[boot] snapshot-first import OK: "
+                               "%lld UTXOs at h=%lld — chain restore "
+                               "will observe snapshot anchor\n",
+                               (long long)imp_utxos,
+                               (long long)imp_height);
+                    else
+                        fprintf(stderr,  // obs-ok:helper-context-logged
+                                "[boot] snapshot-first import failed "
+                                "for %s — falling through to block-by-block "
+                                "IBD path\n", snap_path);
+                }
+            }
+        }
+    }
 
     /* -snapshot: Create snapshot of legacy data dir, import in parallel,
      * then start normally with P2P sync to catch up any delta. */

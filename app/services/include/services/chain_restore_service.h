@@ -198,6 +198,15 @@ struct chain_restore_boot_snapshot {
     bool   csr_consistent;
     int    csr_tip_height;
     int    csr_header_height;
+    /* Wave 11A snapshot-first import probe. Captured by boot.c before
+     * any chain-tip restoration runs. snapshot_imported_pre_restore is
+     * true when consensus_snapshot.db was either freshly imported into
+     * node.db OR already populated from a prior boot. utxos/-1 height
+     * means "already populated from prior boot, source height unknown
+     * but utxo count surfaced". */
+    bool   snapshot_imported_pre_restore;
+    int64_t snapshot_imported_utxos;
+    int64_t snapshot_imported_height;
 };
 
 void chain_restore_get_boot_snapshot(struct chain_restore_boot_snapshot *out);
@@ -215,6 +224,14 @@ void chain_restore_record_plan_result(const struct chain_restore_plan *p);
 void chain_restore_record_csr_consistency(bool consistent,
                                           int tip_height,
                                           int header_height);
+/* Wave 11A — record the pre-restore snapshot-import probe outcome.
+ * Called from boot.c before any chain-tip restoration runs. height==-1
+ * indicates "skipped because already populated"; ok=false indicates the
+ * import was attempted and failed (the snapshot file is preserved by
+ * the Wave 10 export guard for retry on a subsequent boot). */
+void chain_restore_record_snapshot_import(bool ok,
+                                          int64_t utxo_count,
+                                          int64_t snap_height);
 
 /* State-dump convention (see CLAUDE.md "Adding state introspection"). */
 struct json_value;
