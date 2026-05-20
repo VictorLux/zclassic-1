@@ -9,15 +9,54 @@
 
 #include "config/boot_snapshot_import.h"
 #include "models/database.h"
+#include "util/boot_progress.h"
 #include "util/log_macros.h"
 
 #include <errno.h>
+#include <pthread.h>
+#include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <time.h>
+#include <unistd.h>
 
 #include <sqlite3.h>
+
+/* Pump thread that ticks boot_progress every second during the bulk
+ * INSERT. The INSERT can take tens of seconds on slower disks; without
+ * this, systemd WatchdogSec=120 would fire SIGABRT mid-write. The
+ * thread exits as soon as the import path sets the stop flag. */
+struct progress_pump {
+    _Atomic bool stop;
+    pthread_t tid;
+};
+
+static void *progress_pump_run(void *arg)
+{
+    struct progress_pump *p = arg;
+    while (!atomic_load_explicit(&p->stop, memory_order_acquire)) {
+        boot_progress_tick("snapshot_import_bulk_insert");
+        struct timespec ts = { .tv_sec = 1, .tv_nsec = 0 };
+        nanosleep(&ts, NULL);
+    }
+    return NULL;
+}
+
+static void progress_pump_start(struct progress_pump *p)
+{
+    atomic_store_explicit(&p->stop, false, memory_order_release);
+    if (pthread_create(&p->tid, NULL, progress_pump_run, p) != 0)  // raw-pthread-ok:boot-time-pump-no-thread-registry-dep
+        p->tid = 0;
+}
+
+static void progress_pump_stop(struct progress_pump *p)
+{
+    atomic_store_explicit(&p->stop, true, memory_order_release);
+    if (p->tid)
+        pthread_join(p->tid, NULL);
+}
 
 bool boot_import_snapshot_db(struct node_db *ndb,
                               const char *snapshot_path,
@@ -150,6 +189,13 @@ bool boot_import_snapshot_db(struct node_db *ndb,
         sqlite3_exec(ndb->db, "DETACH DATABASE snapsrc", NULL, NULL, NULL);
         LOG_FAIL("boot_snapshot_import", "BEGIN failed: %s", msg);
     }
+    /* Pump systemd watchdog liveness while the bulk copy runs.
+     * The single INSERT statement holds the main thread for tens of
+     * seconds on snapshots with millions of UTXOs; without this pump
+     * the unit's WatchdogSec=120 timer would expire and SIGABRT the
+     * process mid-write. */
+    struct progress_pump pump = {0};
+    progress_pump_start(&pump);
     if (ok && sqlite3_exec(ndb->db, "DELETE FROM main.utxos",
                            NULL, NULL, &err) != SQLITE_OK) {
         fprintf(stderr, "[boot_snapshot_import] clear utxos: %s\n",  // obs-ok:bulk-import-failure
@@ -170,6 +216,7 @@ bool boot_import_snapshot_db(struct node_db *ndb,
     else
         sqlite3_exec(ndb->db, "ROLLBACK", NULL, NULL, NULL);
     sqlite3_exec(ndb->db, "DETACH DATABASE snapsrc", NULL, NULL, NULL);
+    progress_pump_stop(&pump);
 
     if (!ok)
         LOG_FAIL("boot_snapshot_import",

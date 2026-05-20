@@ -17,6 +17,7 @@
 
 #include "controllers/sync_controller.h"
 #include "sync_controller_internal.h"
+#include "util/boot_progress.h"
 #include "services/recovery_policy.h"
 #include "models/db_txn.h"
 #include "models/wallet_key.h"
@@ -397,6 +398,11 @@ int sapling_tree_rebuild(struct node_db *ndb,
     size_t cached_size = 0;
 
     for (int h = start_height; h <= chain_tip; h++) {
+        /* Wave 11B — pump systemd watchdog liveness during long
+         * sapling-tree replay loops. Without this the unit's
+         * WatchdogSec timer expires and the bulk replay is killed. */
+        if ((h % 100) == 0)
+            boot_progress_tick("sapling_tree_rebuild");
         const struct block_index *bi = active_chain_at(chain, h);
         if (!bi) continue;
         if (!(bi->nStatus & BLOCK_HAVE_DATA)) continue;
@@ -615,6 +621,10 @@ int node_db_sync_catchup(struct node_db *ndb,
             interrupted = true;
             break;
         }
+        /* Wave 11B — pump systemd watchdog liveness during long
+         * node_db sync-catchup loops (block indexing replay). */
+        if ((h % 100) == 0)
+            boot_progress_tick("node_db_sync_catchup");
         const struct block_index *pindex = active_chain_at(chain, h);
         if (!pindex) continue;
         if (!(pindex->nStatus & BLOCK_HAVE_DATA)) continue;

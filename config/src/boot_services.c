@@ -18,6 +18,7 @@
 #include "services/node_health_service.h"
 #include "health/heartbeat.h"
 #include "util/sd_notify.h"
+#include "util/boot_progress.h"
 #include "util/log_macros.h"
 #include "config/boot_snapshot_import.h"
 #include "storage/disk_block_io.h"
@@ -341,17 +342,44 @@ static void boot_sd_watchdog_tick(void *ctx)
         return;
     struct node_health_snapshot snap = {0};
     node_health_collect(&snap, svc->node_db, svc->state);
-    if (snap.healthy) {
+    /* Wave 11B hybrid heartbeat: ping if either the steady-state
+     * health snapshot is healthy OR a long-running synchronous worker
+     * has bumped boot_progress_tick recently. Snapshot import bulk
+     * INSERT, block-by-block catchup, and UTXO replay all take longer
+     * than WatchdogSec/2 and would otherwise be killed mid-write.
+     * Freshness window mirrors WATCHDOG_USEC — if both signals expire,
+     * the watchdog times out as intended. */
+    bool recent_progress = false;
+    {
+        int64_t last_us = boot_progress_last_us();
+        if (last_us > 0) {
+            uint64_t wd_us = sd_notify_watchdog_usec();
+            int64_t window_us = wd_us > 0 ? (int64_t)wd_us
+                                          : (int64_t)(120 * 1000000LL);
+            struct timespec now_ts;
+            clock_gettime(CLOCK_MONOTONIC, &now_ts);
+            int64_t now_us = (int64_t)now_ts.tv_sec * 1000000
+                           + (int64_t)now_ts.tv_nsec / 1000;
+            if (now_us - last_us < window_us)
+                recent_progress = true;
+        }
+    }
+    if (snap.healthy || recent_progress) {
         sd_notify_watchdog_ping();
     }
-    /* Refresh status line — useful for `systemctl status zclassic23`. */
-    char status[256];
+    /* Refresh status line — useful for `systemctl status zclassic23`.
+     * Include the recent-progress label so operators can see which
+     * subsystem is keeping the watchdog alive during bulk ops. */
+    char status[320];
+    const char *label = recent_progress ? boot_progress_last_label() : NULL;
     snprintf(status, sizeof(status),
-             "h=%d peers=%zu mirror_lag=%lld sev=%s",
+             "h=%d peers=%zu mirror_lag=%lld sev=%s%s%s",
              snap.tip_height, snap.peer_count,
              (long long)snap.mirror_lag_blocks,
              snap.mirror_lag_breach_severity[0]
-                 ? snap.mirror_lag_breach_severity : "none");
+                 ? snap.mirror_lag_breach_severity : "none",
+             label ? " busy=" : "",
+             label ? label : "");
     sd_notify_status(status);
 }
 
