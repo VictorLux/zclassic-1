@@ -17,6 +17,7 @@
 #include "models/database.h"
 #include "services/sync_watchdog_service.h"
 #include "services/legacy_mirror_sync_service.h"
+#include "services/node_health_service.h"
 #include <pthread.h>
 #include <stdio.h>
 #include <string.h>
@@ -381,6 +382,17 @@ static void *metrics_thread_fn(void *arg)
                 mcp_metrics_set_mirror_lag(lag_b,
                                            lms.lag_breach_seconds,
                                            lms.lag_critical_seconds);
+            }
+
+            /* Peer-kind gauges — "Magic Bean reporting" signal as a
+             * Prometheus time series. node_health_collect iterates the
+             * connman peer list and runs msg_version_classify_peer on
+             * each; we just snapshot the resulting counts. */
+            {
+                struct node_health_snapshot nhs = {0};
+                node_health_collect(&nhs, gndb, ctx->ms);
+                mcp_metrics_set_peer_kinds((int64_t)nhs.magicbean_peer_count,
+                                           (int64_t)nhs.zclassic_c23_peer_count);
             }
         }
 

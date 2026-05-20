@@ -95,6 +95,13 @@ static _Atomic int64_t  g_mirror_lag_blocks = -1;
 static _Atomic int64_t  g_mirror_lag_breach_seconds = 0;
 static _Atomic int64_t  g_mirror_lag_critical_seconds = 0;
 
+/* Peer-kind gauges. Set by the metrics tick from node_health_snapshot
+ * peer classification (subver_is_magicbean / subver_is_zcl23). These
+ * are the "Magic Bean reporting" signal — track how many zclassicd-era
+ * peers and native zclassic23 peers are connected to us over time. */
+static _Atomic int64_t  g_node_magicbean_peer_count;
+static _Atomic int64_t  g_node_zcl23_peer_count;
+
 /* Consensus reject registry — bounded (kind, reason) → count table.
  * `kind` is "tx" or "block"; reason is a kebab-case string emitted by
  * the REJECT_IF/UNLESS macros in lib/validation/src/check_*.c.  Beyond
@@ -272,6 +279,13 @@ void mcp_metrics_set_mirror_lag(int64_t lag_blocks,
     atomic_store(&g_mirror_lag_blocks, lag_blocks);
     atomic_store(&g_mirror_lag_breach_seconds, breach_seconds);
     atomic_store(&g_mirror_lag_critical_seconds, critical_seconds);
+}
+
+void mcp_metrics_set_peer_kinds(int64_t magicbean_count,
+                                int64_t zcl23_count)
+{
+    atomic_store(&g_node_magicbean_peer_count, magicbean_count);
+    atomic_store(&g_node_zcl23_peer_count, zcl23_count);
 }
 
 /* ── Peer scoring counters ──────────────────────────────────── */
@@ -710,6 +724,17 @@ size_t mcp_metrics_render_prometheus(char *buf, size_t cap)
         "# TYPE zcl_peer_count gauge\n"
         "zcl_peer_count %lld\n",
         (long long)pc);
+
+    int64_t mb_pc = atomic_load(&g_node_magicbean_peer_count);
+    int64_t z23_pc = atomic_load(&g_node_zcl23_peer_count);
+    pos = append(buf, cap, pos,
+        "# HELP zcl_magicbean_peer_count Connected peers identifying as /MagicBean:.../ (zclassicd or compatible)\n"
+        "# TYPE zcl_magicbean_peer_count gauge\n"
+        "zcl_magicbean_peer_count %lld\n"
+        "# HELP zcl_zclassic_c23_peer_count Connected peers identifying as ZClassic-C23 (NODE_ZCL23 services or subver tag)\n"
+        "# TYPE zcl_zclassic_c23_peer_count gauge\n"
+        "zcl_zclassic_c23_peer_count %lld\n",
+        (long long)mb_pc, (long long)z23_pc);
 
     pos = append(buf, cap, pos,
         "# HELP zcl_rss_mb Resident set size in megabytes\n"
