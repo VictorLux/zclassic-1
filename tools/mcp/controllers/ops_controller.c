@@ -374,6 +374,114 @@ static int h_zcl_probe_zclassicd(const struct mcp_request *req,
     return 0;
 }
 
+/* Tiny helper: pull "key":N out of a JSON-ish string, return N or -1.
+ * Not a real parser — we only read fields we know our own RPCs emit. */
+static long long ops_scan_int(const char *body, const char *key)
+{
+    if (!body || !key) return -1;  // raw-return-ok:sentinel
+    char needle[64];
+    int n = snprintf(needle, sizeof(needle), "\"%s\":", key);
+    if (n <= 0 || (size_t)n >= sizeof(needle)) return -1;  // raw-return-ok:sentinel
+    const char *p = strstr(body, needle);
+    if (!p) return -1;  // raw-return-ok:sentinel
+    p += (size_t)n;
+    while (*p == ' ') p++;
+    char *end = NULL;
+    long long v = strtoll(p, &end, 10);
+    if (end == p) return -1;  // raw-return-ok:sentinel
+    return v;
+}
+
+static bool ops_scan_bool(const char *body, const char *key)
+{
+    if (!body || !key) return false;
+    char needle[64];
+    int n = snprintf(needle, sizeof(needle), "\"%s\":", key);
+    if (n <= 0 || (size_t)n >= sizeof(needle)) return false;
+    const char *p = strstr(body, needle);
+    if (!p) return false;
+    p += (size_t)n;
+    while (*p == ' ') p++;
+    return strncmp(p, "true", 4) == 0;
+}
+
+/* zcl_diff_with_legacy — one-call "are we tracking zclassicd?" check.
+ * Composes getmirrorstatus (height delta + lag) with probezclassicd at
+ * local_tip-6 (hash comparison at a recent-but-stable block) and
+ * derives a single-word verdict so an operator can answer "did my
+ * change converge?" without composing four RPCs by hand. */
+static int h_zcl_diff_with_legacy(const struct mcp_request *req,
+                                  struct mcp_response *res)
+{
+    (void)req;
+
+    char *mstatus = mcp_node_rpc("getmirrorstatus", NULL);
+    if (!mstatus) {
+        res->error = MCP_ERR_HANDLER_FAILED;
+        snprintf(res->error_message, sizeof(res->error_message),
+                 "getmirrorstatus returned null — mirror service down?");
+        LOG_ERR("mcp.ops", "diff_with_legacy: getmirrorstatus null");
+        return 0;
+    }
+    int local_h    = (int)ops_scan_int(mstatus, "local_height");
+    int legacy_h   = (int)ops_scan_int(mstatus, "legacy_height");
+    int lag        = (int)ops_scan_int(mstatus, "lag");
+    bool reachable = ops_scan_bool(mstatus, "reachable");
+
+    char *probe = NULL;
+    int probe_h = -1;
+    bool hash_match = false;
+    if (reachable && local_h > 100) {
+        probe_h = local_h - 6;
+        struct mcp_params p;
+        mcp_params_init(&p);
+        mcp_params_push_int(&p, probe_h);
+        char *pjson = mcp_params_to_json(&p);
+        probe = pjson ? mcp_node_rpc("probezclassicd", pjson) : NULL;
+        free(pjson);
+        if (probe) hash_match = ops_scan_bool(probe, "match");
+    }
+
+    const char *verdict;
+    if (!reachable)               verdict = "legacy_unreachable";
+    else if (probe && !hash_match) verdict = "diverged";
+    else if (lag == 0 && hash_match) verdict = "converged";
+    else if (lag > 0 && lag <= 10) verdict = "tracking";
+    else if (lag > 10)             verdict = "lagging";
+    else                           verdict = "unknown";
+
+    size_t cap = 8192;
+    char *out = zcl_malloc(cap, "diff_with_legacy_body");
+    if (!out) {
+        free(mstatus); free(probe);
+        res->error = MCP_ERR_INTERNAL;
+        snprintf(res->error_message, sizeof(res->error_message),
+                 "malloc failed for diff_with_legacy response");
+        LOG_ERR("mcp.ops", "malloc failed for diff_with_legacy (%zu)", cap);
+        return 0;
+    }
+    snprintf(out, cap,
+        "{\"verdict\":\"%s\","
+         "\"local_height\":%d,"
+         "\"legacy_height\":%d,"
+         "\"lag\":%d,"
+         "\"reachable\":%s,"
+         "\"probe_height\":%d,"
+         "\"hash_match\":%s,"
+         "\"mirror_status\":%s,"
+         "\"probe_zclassicd\":%s}",
+        verdict, local_h, legacy_h, lag,
+        reachable ? "true" : "false",
+        probe_h,
+        hash_match ? "true" : "false",
+        mstatus,
+        probe ? probe : "null");
+
+    free(mstatus); free(probe);
+    res->body = out;
+    return 0;
+}
+
 /* zcl_kpi — single call that returns every subsystem KPI. Used by
  * operators to take the pulse of the node in one shot. Each nested
  * field is the raw result of the corresponding RPC, so field shapes
@@ -954,6 +1062,13 @@ static const struct mcp_tool_route k_routes[] = {
       p_probe_zclassicd,
       sizeof(p_probe_zclassicd) / sizeof(p_probe_zclassicd[0]),
       h_zcl_probe_zclassicd },
+    { "zcl_diff_with_legacy", "ops",
+      "One-call \"are we tracking zclassicd?\" check. Composes mirror "
+      "status (height delta + lag) with a probe_zclassicd hash compare "
+      "at local_tip-6, returns a single-word verdict (converged / "
+      "tracking / lagging / diverged / legacy_unreachable) plus the "
+      "raw inputs for triage.",
+      NULL, 0, h_zcl_diff_with_legacy },
     { "zcl_node_log", "ops",
       "Reverse-scan node.log server-side with regex + level filter. Avoids "
       "downloading the 56 MB log just to grep. Returns newest matches first.",
