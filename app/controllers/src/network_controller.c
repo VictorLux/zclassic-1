@@ -13,6 +13,7 @@
 extern bool msg_version_get_external_ip(char *buf, size_t buflen, uint16_t *port);
 extern bool msg_version_classify_peer(const char *subver, uint64_t services,
                                       bool *is_magicbean, bool *is_zcl23);
+extern const char *msg_version_user_agent(void);
 #include "util/clientversion.h"
 #include <arpa/inet.h>
 #include <netdb.h>
@@ -122,6 +123,7 @@ static bool rpc_getnetworkinfo(const struct json_value *params, bool help,
     json_set_object(result);
     json_push_kv_int(result, "version", CLIENT_VERSION);
     json_push_kv_str(result, "subversion", CLIENT_NAME);
+    json_push_kv_str(result, "advertised_subver", msg_version_user_agent());
     json_push_kv_int(result, "protocolversion", PROTOCOL_VERSION);
 
     struct network_context *ctx = network_ctx();
@@ -134,6 +136,8 @@ static bool rpc_getnetworkinfo(const struct json_value *params, bool help,
         : 0;
     json_push_kv_int(result, "connections", (int64_t)conns);
     json_push_kv_int(result, "localservices",
+                     ctx->connman ? (int64_t)ctx->connman->manager.local_services : 0);
+    json_push_kv_int(result, "advertised_services",
                      ctx->connman ? (int64_t)ctx->connman->manager.local_services : 0);
 
     struct json_value networks = {0};

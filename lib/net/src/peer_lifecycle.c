@@ -290,7 +290,10 @@ void peer_lifecycle_note_handshake_complete(const struct p2p_node *node)
         duration = handshake_duration_secs(e);
     }
     g_pl.totals.handshake_complete++;
-    if (magicbean) g_pl.totals.magicbean_handshakes++;
+    if (magicbean) {
+        g_pl.totals.magicbean_handshakes++;
+        g_pl.totals.legacy_compatible_handshakes++;
+    }
     if (zcl23) g_pl.totals.zcl23_handshakes++;
     pthread_mutex_unlock(&g_pl.lock);
     if (node) {
@@ -323,6 +326,7 @@ static void note_terminal(const struct p2p_node *node, const char *reason,
     struct peer_lifecycle_entry *e = entry_for_node_locked(node, true);
     if (e) {
         int64_t now = GetTime();
+        bool pre_handshake = e->handshake_complete == 0;
         e->last_seen = now;
         snprintf(e->last_reason, sizeof(e->last_reason), "%s",
                  reason ? reason : "");
@@ -336,6 +340,8 @@ static void note_terminal(const struct p2p_node *node, const char *reason,
             e->disconnected++;
             e->disconnected_at = now;
         }
+        if (pre_handshake)
+            g_pl.totals.pre_handshake_disconnects++;
     }
     if (timeout) g_pl.totals.timeout++;
     else if (reject) g_pl.totals.rejected++;
@@ -471,8 +477,12 @@ static void summary_to_json(const struct peer_lifecycle_summary *s,
     json_push_kv_int(out, "cache_skipped", s->cache_skipped);
     json_push_kv_int(out, "magicbean_handshakes",
                      s->magicbean_handshakes);
+    json_push_kv_int(out, "legacy_compatible_handshakes",
+                     s->legacy_compatible_handshakes);
     json_push_kv_int(out, "zclassic_c23_handshakes",
                      s->zcl23_handshakes);
+    json_push_kv_int(out, "pre_handshake_disconnects",
+                     s->pre_handshake_disconnects);
 }
 
 static void summary_add_entry(struct peer_lifecycle_summary *s,
@@ -494,9 +504,14 @@ static void summary_add_entry(struct peer_lifecycle_summary *s,
     s->cache_skipped += e->cache_skipped;
     if (e->handshake_complete > 0 && subver_is_magicbean(e->subver))
         s->magicbean_handshakes += e->handshake_complete;
+    if (e->handshake_complete > 0 && subver_is_magicbean(e->subver))
+        s->legacy_compatible_handshakes += e->handshake_complete;
     if (e->handshake_complete > 0 &&
         subver_is_zcl23(e->subver, e->services))
         s->zcl23_handshakes += e->handshake_complete;
+    if (e->handshake_complete == 0)
+        s->pre_handshake_disconnects += e->disconnected + e->rejected +
+                                        e->timeout;
 }
 
 static void append_sources_locked(struct json_value *out)

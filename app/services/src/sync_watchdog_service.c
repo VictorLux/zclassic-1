@@ -9,6 +9,7 @@
  *   REPEATED_RESTART: circuit breaker after >3 recoveries in 30 minutes */
 
 #include "services/sync_watchdog_service.h"
+#include "services/block_sync_service.h"
 #include "services/chain_activation_controller.h"
 #include "services/chain_advance_coordinator.h"
 #include "services/gap_fill_service.h"
@@ -281,6 +282,8 @@ bool sync_watchdog_dump_state_json(struct json_value *out, const char *key)
         struct watchdog_local_recovery_stats lr;
         sync_watchdog_get_local_recovery_stats(&lr);
         json_push_kv_bool(out, "local_recovery_active", lr.active);
+        json_push_kv_bool(out, "legacy_advisory_gated_by_native_retries",
+                          lr.mirror_repair_gated);
         json_push_kv_bool(out, "mirror_repair_gated_by_local_retries",
                           lr.mirror_repair_gated);
         json_push_kv_bool(out, "local_retries_exhausted",
@@ -676,6 +679,24 @@ enum watchdog_recovery_type sync_watchdog_check(
         peer_max_height <= local_height && healthy > 0) {
         watchdog_reconcile_at_tip(state);
         return WATCHDOG_NONE;
+    }
+
+    if (state != SYNC_AT_TIP && ms && dm &&
+        local_height >= 0 && best_header_height > local_height) {
+        struct sync_next_block_download download;
+        if (syncsvc_queue_next_block_download(&download, ms, dm)) {
+            printf("[watchdog] NEXT_BLOCK_DOWNLOAD: h=%d reason=%s "
+                   "queued=%d\n",
+                   download.height, download.reason, download.queued);
+            event_emitf(EV_SYNC_STATE_CHANGE, 0,
+                        "watchdog NEXT_BLOCK_DOWNLOAD h=%d reason=%s",
+                        download.height, download.reason);
+            watchdog_kick_local_sync("native-next-block-download");
+            record_recovery_detail(now, WATCHDOG_BLOCK_STALL,
+                                   download.reason, local_height,
+                                   best_header_height, (int)healthy);
+            return WATCHDOG_BLOCK_STALL;
+        }
     }
 
     /* ── Part C: PEER_FLOOR — < 3 healthy outbound for > 60s ──

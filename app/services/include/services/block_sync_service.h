@@ -48,6 +48,16 @@ struct sync_stall_recovery {
     size_t alt_count;
 };
 
+struct sync_next_block_download {
+    bool attempted;
+    bool queued;
+    int height;
+    unsigned int status_before;
+    unsigned int status_after;
+    char reason[64];
+    struct uint256 hash;
+};
+
 struct sync_block_assignment {
     bool should_assign;
     size_t max_assign;
@@ -110,6 +120,9 @@ void syncsvc_apply_stall_recovery(const struct sync_stall_recovery *recovery,
                                   struct main_state *ms,
                                   struct download_manager *dm,
                                   int *cleared_blocks);
+bool syncsvc_queue_next_block_download(struct sync_next_block_download *download,
+                                       struct main_state *ms,
+                                       struct download_manager *dm);
 bool syncsvc_should_warn_tip_stale(
     const struct sync_progress_snapshot *snapshot,
     const struct p2p_node *node,

@@ -40,6 +40,41 @@ json_field() {
     printf '%s\n' "$1" | sed -n "s/.*\"$2\"[[:space:]]*:[[:space:]]*\"\([^\"]*\)\".*/\1/p; s/.*\"$2\"[[:space:]]*:[[:space:]]*\([-0-9][0-9]*\).*/\1/p; s/.*\"$2\"[[:space:]]*:[[:space:]]*\(true\|false\).*/\1/p" | head -1
 }
 
+json_put_string() {
+    local json="$1" key="$2" value="$3"
+    if printf '%s\n' "$json" | grep -q "\"$key\"[[:space:]]*:"; then
+        printf '%s\n' "$json" | sed "s/\"$key\"[[:space:]]*:[[:space:]]*\"[^\"]*\"/\"$key\":\"$value\"/g"
+    else
+        printf '%s\n' "$json" | sed "s/}$/,\"$key\":\"$value\"}/"
+    fi
+}
+
+json_put_number() {
+    local json="$1" key="$2" value="$3"
+    if printf '%s\n' "$json" | grep -q "\"$key\"[[:space:]]*:"; then
+        printf '%s\n' "$json" | sed "s/\"$key\"[[:space:]]*:[[:space:]]*[-0-9][0-9]*/\"$key\":$value/g"
+    else
+        printf '%s\n' "$json" | sed "s/}$/,\"$key\":$value}/"
+    fi
+}
+
+normalize_mirror_status_json() {
+    local json="$1" lag blocker
+    lag="$(json_field "$json" candidate_lag)"
+    [ -n "$lag" ] || lag="$(json_field "$json" lag)"
+    [ -n "$lag" ] || lag=0
+    blocker="$(json_field "$json" candidate_blocker)"
+    [ -n "$blocker" ] || blocker="$(json_field "$json" last_blocker_code)"
+    [ -n "$blocker" ] || blocker="$(json_field "$json" activation_blocker)"
+
+    json="$(json_put_string "$json" consensus_authority local_consensus_validation)"
+    json="$(json_put_string "$json" candidate_source legacy_advisory)"
+    json="$(json_put_string "$json" candidate_trust bounded_advisory_fallback)"
+    json="$(json_put_number "$json" candidate_lag "$lag")"
+    json="$(json_put_string "$json" candidate_blocker "$blocker")"
+    printf '%s\n' "$json"
+}
+
 legacy_conf_value() {
     awk -F= -v k="$1" '
         $0 !~ /^[[:space:]]*[#;]/ {
@@ -94,15 +129,15 @@ mirror_fallback_json() {
     else
         lag=0
     fi
-    printf '{"zclassic23_height":%s,"zclassic23_hash":"%s","zclassicd_height":%s,"zclassicd_hash":"%s","lag":%s,"reachable":%s,"mirror_running":false,"last_catchup":0,"last_error":"fallback: getmirrorstatus unavailable","headers_added":0,"blocks_applied":0,"target_height":0,"authority_rewind_target":0,"last_advanced_height":0,"last_progress_blocks":0,"local_recovery_active":false,"mirror_repair_gated_by_local_retries":false,"local_retries_exhausted":false,"local_missing_height":0,"local_retry_count":0,"local_distinct_peer_count":0,"local_peer_rotation_count":0,"stuck_height":0,"stuck_status_flags":0,"stuck_reason":"","stalls_total":0,"last_blocker_code":"","consensus_authority":"local","mirror_authorization_enabled":false,"mirror_source_trust":"bounded_advisory_fallback","override_active":false,"overrides_total":0,"unsafe_overrides_total":0,"blockers_total":0,"last_override_height":0,"last_override_safe":false,"last_override_scope":"","last_override_reason":"","activation_blocker":"","csr_sqlite_rc":0,"csr_failure_reason":""}\n' \
-        "${c23_h:-0}" "$c23_hash" "${zd_h:-0}" "$zd_hash" "$lag" "$reachable"
+    printf '{"zclassic23_height":%s,"zclassic23_hash":"%s","zclassicd_height":%s,"zclassicd_hash":"%s","lag":%s,"reachable":%s,"mirror_running":false,"last_catchup":0,"last_error":"fallback: getmirrorstatus unavailable","headers_added":0,"blocks_applied":0,"target_height":0,"authority_rewind_target":0,"last_advanced_height":0,"last_progress_blocks":0,"local_recovery_active":false,"legacy_advisory_gated_by_native_retries":false,"mirror_repair_gated_by_local_retries":false,"local_retries_exhausted":false,"local_missing_height":0,"local_retry_count":0,"local_distinct_peer_count":0,"local_peer_rotation_count":0,"stuck_height":0,"stuck_status_flags":0,"stuck_reason":"","stalls_total":0,"last_blocker_code":"","consensus_authority":"local_consensus_validation","candidate_source":"legacy_advisory","candidate_trust":"bounded_advisory_fallback","candidate_lag":%s,"candidate_blocker":"","override_active":false,"overrides_total":0,"unsafe_overrides_total":0,"blockers_total":0,"last_override_height":0,"last_override_safe":false,"last_override_scope":"","last_override_reason":"","activation_blocker":"","csr_sqlite_rc":0,"csr_failure_reason":""}\n' \
+        "${c23_h:-0}" "$c23_hash" "${zd_h:-0}" "$zd_hash" "$lag" "$reachable" "$lag"
 }
 
 mirror_status_json() {
     local out
     out="$(rpc getmirrorstatus 2>/dev/null || true)"
     if [ -n "$out" ] && printf '%s' "$out" | grep -q 'zclassic23_height'; then
-        printf '%s\n' "$out"
+        normalize_mirror_status_json "$out"
     else
         mirror_fallback_json
     fi
@@ -189,10 +224,11 @@ mirror)
             "$(json_field "$JSON" lag)" \
             "$(json_field "$JSON" reachable)" \
             "$(json_field "$JSON" mirror_running)"
-        printf 'authority=%s mirror_auth=%s trust=%s overrides=%s unsafe_overrides=%s blockers=%s last_override_height=%s last_override_safe=%s activation_blocker=%s\n' \
+        printf 'authority=%s trust=%s candidate_source=%s candidate_lag=%s overrides=%s unsafe_overrides=%s blockers=%s last_override_height=%s last_override_safe=%s activation_blocker=%s\n' \
             "$(json_field "$JSON" consensus_authority)" \
-            "$(json_field "$JSON" mirror_authorization_enabled)" \
-            "$(json_field "$JSON" mirror_source_trust)" \
+            "$(json_field "$JSON" candidate_trust)" \
+            "$(json_field "$JSON" candidate_source)" \
+            "$(json_field "$JSON" candidate_lag)" \
             "$(json_field "$JSON" overrides_total)" \
             "$(json_field "$JSON" unsafe_overrides_total)" \
             "$(json_field "$JSON" blockers_total)" \
@@ -200,12 +236,14 @@ mirror)
             "$(json_field "$JSON" last_override_safe)" \
             "$(json_field "$JSON" activation_blocker)"
         if [ "$(json_field "$JSON" local_recovery_active)" = "true" ]; then
-            printf 'local_recovery missing_height=%s retries=%s peers=%s rotations=%s mirror_gated=%s\n' \
+            legacy_gate="$(json_field "$JSON" legacy_advisory_gated_by_native_retries)"
+            [ -n "$legacy_gate" ] || legacy_gate="$(json_field "$JSON" mirror_repair_gated_by_local_retries)"
+            printf 'local_recovery missing_height=%s retries=%s peers=%s rotations=%s legacy_advisory_gated=%s\n' \
                 "$(json_field "$JSON" local_missing_height)" \
                 "$(json_field "$JSON" local_retry_count)" \
                 "$(json_field "$JSON" local_distinct_peer_count)" \
                 "$(json_field "$JSON" local_peer_rotation_count)" \
-                "$(json_field "$JSON" mirror_repair_gated_by_local_retries)"
+                "$legacy_gate"
         fi
         blocker="$(json_field "$JSON" last_blocker_code)"
         if [ -n "$blocker" ]; then

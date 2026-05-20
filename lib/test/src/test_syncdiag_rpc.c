@@ -498,11 +498,14 @@ int test_syncdiag_rpc(void)
             strcmp(json_get_str(json_get(svc, "state")), "blocked") == 0;
         ok = ok && json_get(svc, "consensus_authority") != NULL &&
             strcmp(json_get_str(json_get(svc, "consensus_authority")),
-                   "local") == 0;
-        ok = ok && json_get(svc, "mirror_authorization_enabled") != NULL &&
-            json_get_bool(json_get(svc, "mirror_authorization_enabled"));
-        ok = ok && json_get(svc, "mirror_source_trust") != NULL &&
-            strcmp(json_get_str(json_get(svc, "mirror_source_trust")),
+                   "local_consensus_validation") == 0;
+        ok = ok && json_get(svc, "candidate_source") != NULL &&
+            strcmp(json_get_str(json_get(svc, "candidate_source")),
+                   "legacy_advisory") == 0;
+        ok = ok && json_get(svc, "mirror_authorization_enabled") == NULL;
+        ok = ok && json_get(svc, "mirror_source_trust") == NULL;
+        ok = ok && json_get(svc, "candidate_trust") != NULL &&
+            strcmp(json_get_str(json_get(svc, "candidate_trust")),
                    "bounded_advisory_fallback") == 0;
         ok = ok && json_get(svc, "activation_blocker") != NULL &&
             strcmp(json_get_str(json_get(svc, "activation_blocker")),
@@ -510,6 +513,7 @@ int test_syncdiag_rpc(void)
         ok = ok && json_get(svc, "last_blocker_code") != NULL &&
             strcmp(json_get_str(json_get(svc, "last_blocker_code")),
                    "body-hash-mismatch") == 0;
+        ok = ok && json_get(svc, "legacy_advisory_gated_by_native_retries") != NULL;
         ok = ok && json_get(svc, "mirror_repair_gated_by_local_retries") != NULL;
         ok = ok && json_get(svc, "local_retries_exhausted") != NULL;
         ok = ok && json_get(svc, "overrides_total") != NULL;

@@ -579,6 +579,19 @@ const char *cac_source_trust_name(enum cac_source source)
     return "unknown";
 }
 
+static const char *cac_source_class_name(enum cac_source source)
+{
+    switch (source) {
+        case CAC_SOURCE_NONE:             return "none";
+        case CAC_SOURCE_P2P:              return "native_p2p";
+        case CAC_SOURCE_SNAPSHOT:         return "snapshot";
+        case CAC_SOURCE_LOCAL_IMPORT:     return "local_import";
+        case CAC_SOURCE_ZCLASSICD_MIRROR: return "legacy_advisory";
+        case CAC_SOURCE_NUM:              break;
+    }
+    return "unknown";
+}
+
 static int source_base_score(enum cac_source source)
 {
     switch (source) {
@@ -691,6 +704,10 @@ static const char *source_selection_blocker(const struct cac_plan_input *in,
     if (s->source == CAC_SOURCE_ZCLASSICD_MIRROR &&
         !mirror_fallback_allowed(in))
         return "local_recovery_gate";
+    if (s->source == CAC_SOURCE_P2P &&
+        in->best_header_height >= in->local_height &&
+        s->height >= in->best_header_height)
+        return "";
     if (in->target_height > in->local_height && s->height <= in->local_height)
         return "no_forward_progress";
     return "";
@@ -1307,7 +1324,10 @@ static void source_to_json(const struct cac_source_status *s,
 {
     json_set_object(out);
     json_push_kv_str(out, "source", cac_source_name(s->source));
+    json_push_kv_str(out, "source_class", cac_source_class_name(s->source));
+    json_push_kv_str(out, "candidate_source", cac_source_class_name(s->source));
     json_push_kv_str(out, "trust", cac_source_trust_name(s->source));
+    json_push_kv_str(out, "candidate_trust", cac_source_trust_name(s->source));
     json_push_kv_bool(out, "available", s->available);
     json_push_kv_bool(out, "healthy", s->healthy);
     json_push_kv_bool(out, "blocked", s->blocked);
@@ -1356,12 +1376,15 @@ static void source_to_json(const struct cac_source_status *s,
     json_push_kv_int(out, "progress_current", s->progress_current);
     json_push_kv_int(out, "progress_total", s->progress_total);
     json_push_kv_int(out, "lag", s->lag);
+    json_push_kv_int(out, "candidate_lag", s->lag);
     json_push_kv_int(out, "retry_count", s->retry_count);
     json_push_kv_int(out, "distinct_peer_count", s->distinct_peer_count);
     json_push_kv_int(out, "serving_peer_id", s->serving_peer_id);
     json_push_kv_str(out, "state", s->state);
     json_push_kv_str(out, "reason", s->reason);
     json_push_kv_str(out, "blocker", s->blocker);
+    json_push_kv_str(out, "candidate_blocker",
+                     s->blocker[0] ? s->blocker : s->selection_blocker);
 }
 
 static void decision_to_json(const struct cac_decision *d,
@@ -1373,7 +1396,11 @@ static void decision_to_json(const struct cac_decision *d,
                      cac_decision_result_name(d->result));
     json_push_kv_str(out, "selected_source",
                      cac_source_name(d->selected_source));
+    json_push_kv_str(out, "candidate_source",
+                     cac_source_class_name(d->selected_source));
     json_push_kv_str(out, "selected_source_trust",
+                     cac_source_trust_name(d->selected_source));
+    json_push_kv_str(out, "candidate_trust",
                      cac_source_trust_name(d->selected_source));
     json_push_kv_str(out, "authority", "local_consensus_validation");
     json_push_kv_bool(out, "activation_allowed", d->activation_allowed);
@@ -1476,7 +1503,11 @@ bool chain_advance_coordinator_dump_state_json(struct json_value *out,
                      cac_decision_result_name(d.result));
     json_push_kv_str(out, "selected_source",
                      cac_source_name(d.selected_source));
+    json_push_kv_str(out, "candidate_source",
+                     cac_source_class_name(d.selected_source));
     json_push_kv_str(out, "selected_source_trust",
+                     cac_source_trust_name(d.selected_source));
+    json_push_kv_str(out, "candidate_trust",
                      cac_source_trust_name(d.selected_source));
     json_push_kv_bool(out, "activation_allowed", d.activation_allowed);
     json_push_kv_bool(out, "mirror_fallback_allowed",

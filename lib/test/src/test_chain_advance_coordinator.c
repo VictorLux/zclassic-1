@@ -95,6 +95,33 @@ static int test_cac_prefers_native_p2p(void)
     return failures;
 }
 
+static int test_cac_keeps_caught_up_p2p_when_legacy_is_ahead(void)
+{
+    int failures = 0;
+    TEST_CASE("chain_advance_coordinator: caught-up P2P remains selected over legacy advisory lag")
+    {
+        struct cac_plan_input in = base_input();
+        struct cac_decision out;
+        in.local_height = 120;
+        in.best_header_height = 120;
+        in.target_height = 122;
+        init_source(&in, CAC_SOURCE_P2P, true, true, 120);
+        init_source(&in, CAC_SOURCE_ZCLASSICD_MIRROR, true, true, 122);
+        in.sources[CAC_SOURCE_ZCLASSICD_MIRROR].authorized = true;
+        snprintf(in.sources[CAC_SOURCE_ZCLASSICD_MIRROR].blocker,
+                 sizeof(in.sources[CAC_SOURCE_ZCLASSICD_MIRROR].blocker),
+                 "activation-no-progress");
+        in.sources[CAC_SOURCE_ZCLASSICD_MIRROR].blocked = true;
+
+        chain_advance_coordinator_plan(&in, &out);
+        ASSERT(out.result == CAC_DECISION_USE_SOURCE);
+        ASSERT(out.selected_source == CAC_SOURCE_P2P);
+        ASSERT(out.sources[CAC_SOURCE_P2P].selectable);
+        ASSERT_STR_EQ(out.sources[CAC_SOURCE_P2P].selection_blocker, "");
+    } TEST_END
+    return failures;
+}
+
 static int test_cac_gates_mirror_during_local_retries(void)
 {
     int failures = 0;
@@ -1731,6 +1758,7 @@ int test_chain_advance_coordinator(void)
     int failures = 0;
     failures += test_cac_names();
     failures += test_cac_prefers_native_p2p();
+    failures += test_cac_keeps_caught_up_p2p_when_legacy_is_ahead();
     failures += test_cac_gates_mirror_during_local_retries();
     failures += test_cac_allows_bounded_mirror_after_retries();
     failures += test_cac_lag_slo_overrides_local_gate();

@@ -123,7 +123,6 @@ enum chain_state_rollback_source {
     CSR_ROLLBACK_SOURCE_BOOT_REPAIR,
     CSR_ROLLBACK_SOURCE_UTXO_REPAIR,
     CSR_ROLLBACK_SOURCE_REINDEX,
-    CSR_ROLLBACK_SOURCE_MIRROR,
     CSR_ROLLBACK_SOURCE_TEST,
 };
 
@@ -213,6 +212,10 @@ enum csr_result csr_clear_active_tip(
 enum csr_result csr_repair_set_coins_best(
     struct chain_state_repository *csr,
     const struct chain_state_coins_best_repair *repair);
+bool csr_restore_in_memory_view(struct chain_state_repository *csr,
+                                struct block_index *old_tip,
+                                struct block_index *old_header,
+                                const struct uint256 *old_coins_best);
 
 /* ── Read-only introspection ──────────────────────────────────── */
 void csr_snapshot(struct chain_state_repository *csr,

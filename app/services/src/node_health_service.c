@@ -4,6 +4,8 @@
 
 #include "services/node_health_service.h"
 #include "services/chain_advance_coordinator.h"
+#include "services/chain_evidence_controller.h"
+#include "services/chain_state_repository.h"
 #include "services/legacy_mirror_sync_service.h"
 #include "services/sync_watchdog_service.h"
 #include "config/runtime.h"
@@ -457,6 +459,29 @@ void node_health_collect(struct node_health_snapshot *snapshot,
      * heartbeat thread stops pinging WatchdogSec and systemd restarts
      * the unit. This is the hard half of fail-loud-and-fast. */
     {
+        struct chain_evidence_controller cec;
+        struct chain_evidence_controller_view view;
+        chain_evidence_controller_init(&cec, ndb, csr_instance());
+        chain_evidence_controller_snapshot(&cec, &view);
+        if (view.state == CEC_CONTRADICTION_FROZEN) {
+            if (snapshot->degraded_reason[0] == '\0') {
+                snprintf(snapshot->degraded_reason,
+                         sizeof(snapshot->degraded_reason),
+                         "%s", view.health_reason[0] ? view.health_reason
+                                                       : "chain_evidence_contradiction");
+            }
+            snapshot->healthy = false;
+        } else if (view.health_reason[0]) {
+            if (snapshot->degraded_reason[0] == '\0') {
+                snprintf(snapshot->degraded_reason,
+                         sizeof(snapshot->degraded_reason),
+                         "%s", view.health_reason);
+            }
+            snapshot->healthy = false;
+        }
+    }
+
+    {
         struct legacy_mirror_sync_stats ms = {0};
         legacy_mirror_sync_stats_snapshot(&ms);
         snapshot->mirror_lag_blocks = ms.lag;
@@ -465,6 +490,15 @@ void node_health_collect(struct node_health_snapshot *snapshot,
         snprintf(snapshot->mirror_lag_breach_severity,
                  sizeof(snapshot->mirror_lag_breach_severity), "%s",
                  ms.lag_breach_severity);
+        if (ms.unsafe_overrides_total > 0) {
+            if (snapshot->degraded_reason[0] == '\0') {
+                snprintf(snapshot->degraded_reason,
+                         sizeof(snapshot->degraded_reason),
+                         "mirror_unsafe_overrides_%lld",
+                         (long long)ms.unsafe_overrides_total);
+            }
+            snapshot->healthy = false;
+        }
         if (strcmp(ms.lag_breach_severity, "fatal") == 0) {
             if (snapshot->degraded_reason[0] == '\0') {
                 snprintf(snapshot->degraded_reason,

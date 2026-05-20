@@ -104,8 +104,8 @@ du -sh ~/.zclassic-c23/*
 ./tools/zcl-rpc dumpstate legacy_mirror | jq '{
   state, lag, activation_blocker, last_blocker_code,
   stuck_reason, stuck_height, stalls_total,
-  consensus_authority, mirror_authorization_enabled,
-  mirror_source_trust, overrides_total, unsafe_overrides_total,
+  consensus_authority, candidate_source, candidate_trust, candidate_lag,
+  candidate_blocker, overrides_total, unsafe_overrides_total,
   blockers_total, last_override_safe, last_override_scope, last_error
 }'
 ```
@@ -121,7 +121,7 @@ du -sh ~/.zclassic-c23/*
 2. **External IP missing or wrong:** set `-externalip=<public-ip>` in the service environment and verify it appears in `getnetworkinfo.localaddresses`. For public reachability, `inbound_handshake_seen=true` or `inbound_handshaked_connections > 0` is stronger evidence than outbound-only handshakes.
 3. **Only `connecting` peers:** prefer fresh addnodes from known ZClassic peers. `peer_lifecycle.sources[]` shows whether failures are concentrated in `addnode`, `addrman`, `manual`, `zcl23_db`, or `inbound`; the coordinator dump distinguishes TCP failures (`addnode_tcp_failures`) from post-connect protocol/handshake failures (`addnode_protocol_failures`).
 4. **Coordinator blocked or waiting:** use `dumpstate chain_advance_coordinator` first. `initialized=true` plus `has_connman=true`, `has_main_state=true`, and `has_node_db=true` confirm the running daemon has the coordinator wired into live P2P, chainstate, and persistence. `authority` must remain `local_consensus_validation`; `selected_source` shows the best current input, `selected_source_trust`/`sources[].trust` explain its trust class, and `sources[].selectable=false` with `selection_blocker` explains why a source was excluded before score ranking. `activation_allowed=false` or a non-empty `blocker` explains why the node is refusing to advance.
-5. **Mirror fallback active:** mirror use is acceptable only when `mirror_fallback_allowed=true` and local retries are exhausted. `legacy_mirror.state` should be `observing`, `catching_up`, or `healthy`. Treat `blocked`, `gated_by_local_retries`, and `rewinding_to_authority` as actionable states; inspect `activation_blocker`, `last_blocker_code`, `stuck_reason`, `stalls_total`, `blockers_total`, `unsafe_overrides_total`, `last_override_safe`, `last_override_scope`, and `last_error`. `unsafe_overrides_total` must stay `0` on a healthy node; any increase means an override happened outside the authorized mirror fallback scope and should be investigated before trusting further mirror recovery.
+5. **Legacy advisory active:** legacy data may be used only as `candidate_source=legacy_advisory`. `legacy_mirror.state` should be `observing`, `catching_up`, or `healthy`. Treat `blocked`, `gated_by_local_retries`, or `legacy_advisory_gated_by_native_retries=true` as actionable states; inspect `candidate_blocker`, `last_blocker_code`, `stuck_reason`, `stalls_total`, `blockers_total`, `unsafe_overrides_total`, `last_override_safe`, `last_override_scope`, and `last_error`. `consensus_authority` must stay `local_consensus_validation`; `candidate_trust` describes candidate data, not a co-authority. `unsafe_overrides_total` must stay `0` on a healthy node; any increase fails health and means an unsafe override path was reached. Stop trusting legacy-assisted recovery until the cause is understood and local validation has re-established the tip.
 6. **When not to restart:** if `chain_advance.decision` is `use_source` or `wait` with a clear reason, `lag <= 1`, and peer lifecycle shows active handshakes, leave the node running. Restarting resets peer reputation and can make public reachability look worse for a few minutes.
 
 **Prevention:** Alert when `handshaked_connections == 0` for 5 minutes, `peer_lifecycle.timeout` rises quickly, `chain_advance.decision == "blocked"`, or `legacy_mirror.state == "blocked"`.

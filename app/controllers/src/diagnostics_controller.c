@@ -226,6 +226,13 @@ static void push_evidence_record_json(struct json_value *out, const char *key,
 {
     struct json_value obj = {0};
     json_set_object(&obj);
+    json_push_kv_str(&obj, "source_class",
+                      chain_evidence_source_class_name(
+                          e ? e->source_class : CEC_SOURCE_CLASS_UNKNOWN));
+    json_push_kv_str(&obj, "publish_state",
+                      chain_evidence_publish_state_name(
+                          e ? e->publish_state
+                            : CEC_PUBLISH_NOT_PUBLISHABLE));
     json_push_kv_bool(&obj, "header_ancestry_linked",
                       e && e->header_ancestry_linked);
     json_push_kv_bool(&obj, "chainwork_recomputed",
@@ -244,6 +251,15 @@ static void push_evidence_record_json(struct json_value *out, const char *key,
                       e && e->full_validation_complete);
     json_push_kv(out, key, &obj);
     json_free(&obj);
+}
+
+static void push_hash_json(struct json_value *out, const char *key,
+                           bool present, const struct uint256 *hash)
+{
+    char hex[65] = {0};
+    if (present && hash)
+        uint256_get_hex(hash, hex);
+    json_push_kv_str(out, key, present ? hex : "");
 }
 
 static void push_explorer_index_state_json(struct json_value *out,
@@ -287,16 +303,46 @@ static bool chain_evidence_controller_dump_state_json(struct json_value *out,
 
     json_push_kv_str(out, "sync_state",
                      chain_evidence_controller_state_name(view.state));
+    json_push_kv_str(out, "publish_state",
+                     chain_evidence_publish_state_name(view.publish_state));
+    json_push_kv_str(out, "active_tip_source_class",
+                     chain_evidence_source_class_name(
+                         view.active_tip_source_class));
     json_push_kv_int(out, "active_tip",
                      (int64_t)view.active_tip_height);
     json_push_kv_int(out, "header_tip",
                      (int64_t)view.header_tip_height);
+    json_push_kv_int(out, "persisted_active_tip",
+                     (int64_t)view.persisted_active_tip_height);
     json_push_kv_int(out, "snapshot_anchor",
                      (int64_t)view.snapshot_anchor_height);
     json_push_kv_int(out, "utxo_max_height",
                      (int64_t)view.utxo_max_height);
     json_push_kv_int(out, "coins_best_block_height",
                      (int64_t)view.coins_best_block_height);
+    json_push_kv_int(out, "csr_sqlite_max_height",
+                     (int64_t)view.sqlite_max_height);
+    push_hash_json(out, "active_tip_hash", view.has_active_tip_hash,
+                   &view.active_tip_hash);
+    push_hash_json(out, "header_tip_hash", view.has_header_tip_hash,
+                   &view.header_tip_hash);
+    push_hash_json(out, "persisted_active_tip_hash",
+                   view.has_persisted_active_tip_hash,
+                   &view.persisted_active_tip_hash);
+    push_hash_json(out, "coins_best_block_hash",
+                   view.has_coins_best_block_hash,
+                   &view.coins_best_block_hash);
+    json_push_kv_bool(out, "missing_active_tip_evidence",
+                      view.missing_active_tip_evidence);
+    json_push_kv_bool(out, "publish_state_not_local",
+                      view.publish_state_not_local);
+    json_push_kv_bool(out, "active_tip_hash_mismatch",
+                      view.active_tip_hash_mismatch);
+    json_push_kv_bool(out, "csr_cursor_mismatch",
+                      view.csr_cursor_mismatch);
+    json_push_kv_bool(out, "repaired_active_tip_evidence",
+                      view.repaired_active_tip_evidence);
+    json_push_kv_str(out, "health_reason", view.health_reason);
     push_evidence_record_json(out, "block_index_evidence_state",
                               &view.block_index_evidence_state);
     push_evidence_record_json(out, "active_tip_evidence",
@@ -328,6 +374,8 @@ struct dump_entry {
 static const struct dump_entry g_dumpers[] = {
     { "watchdog",    sync_watchdog_dump_state_json,
                      "sync watchdog status + stats" },
+    { "chain_evidence", chain_evidence_controller_dump_state_json,
+                     "native chain evidence: tips, cursors, evidence flags, reconciliation reason" },
     { "chain_evidence_controller", chain_evidence_controller_dump_state_json,
                      "native chain evidence controller: tips, snapshot anchor, evidence, contradiction reason" },
     { "boot",        chain_restore_dump_state_json,

@@ -40,6 +40,7 @@ static bool auth_fixture_init(struct auth_fixture *f)
         f->blocks[i].nHeight = i;
         f->blocks[i].pprev = i ? &f->blocks[i - 1] : NULL;
         f->blocks[i].nStatus = BLOCK_VALID_TREE;
+        arith_uint256_set_u64(&f->blocks[i].nChainWork, (uint64_t)i + 1);
         block_map_insert(&f->bm, &f->hashes[i], &f->blocks[i]);
         const struct uint256 *canon =
             block_map_find_hash(&f->bm, &f->hashes[i]);
@@ -76,6 +77,8 @@ static struct chain_evidence_controller_snapshot_meta auth_manifest(
     m.finality_depth = 100;
     m.schema_version = 1;
     m.producer = "unit";
+    m.verified.source_class = CEC_SOURCE_CLASS_SNAPSHOT;
+    m.verified.publish_state = CEC_PUBLISH_LOCAL_EVIDENCE;
     m.verified.header_ancestry_linked = true;
     m.verified.chainwork_recomputed = true;
     m.verified.nakamoto_selected_best_work = true;
@@ -531,6 +534,85 @@ static int test_full_validation_requires_matching_utxo_sha3(void)
     return failures;
 }
 
+static int test_startup_reconstructs_missing_active_tip_evidence(void)
+{
+    int failures = 0;
+    struct auth_fixture f;
+    if (!auth_fixture_init(&f))
+        return 1;
+
+    struct chain_state_commit commit = {
+        .new_tip = &f.blocks[1],
+        .new_coins_best = *f.blocks[1].phashBlock,
+        .expected_utxo_count = 0,
+        .update_header_tip = true,
+        .persist_coins_best = true,
+        .rollback_auth = NULL,
+        .wallet_scan_height = -1,
+        .reason = "unit.reconcile_seed",
+    };
+    if (csr_commit_tip(&f.csr, &commit) != CSR_OK)
+        failures++;
+
+    chain_evidence_controller_init(&f.authority, &f.ndb, &f.csr);
+
+    struct chain_evidence_controller_view view;
+    chain_evidence_controller_snapshot(&f.authority, &view);
+    if (view.state == CEC_CONTRADICTION_FROZEN)
+        failures++;
+    if (!view.repaired_active_tip_evidence)
+        failures++;
+    if (strcmp(view.health_reason, "") != 0)
+        failures++;
+    if (!chain_evidence_record_has_block_index_required(
+            &view.active_tip_evidence))
+        failures++;
+    if (view.active_tip_source_class != CEC_SOURCE_CLASS_NATIVE_P2P)
+        failures++;
+    if (view.publish_state != CEC_PUBLISH_LOCAL_EVIDENCE)
+        failures++;
+
+    auth_fixture_free(&f);
+    return failures;
+}
+
+static int test_startup_freezes_on_active_tip_hash_mismatch(void)
+{
+    int failures = 0;
+    struct auth_fixture f;
+    if (!auth_fixture_init(&f))
+        return 1;
+
+    struct chain_state_commit commit = {
+        .new_tip = &f.blocks[1],
+        .new_coins_best = *f.blocks[1].phashBlock,
+        .expected_utxo_count = 0,
+        .update_header_tip = true,
+        .persist_coins_best = true,
+        .rollback_auth = NULL,
+        .wallet_scan_height = -1,
+        .reason = "unit.reconcile_seed",
+    };
+    if (csr_commit_tip(&f.csr, &commit) != CSR_OK)
+        failures++;
+    if (!node_db_state_set(&f.ndb, "cec.active_tip_hash",
+                           f.blocks[2].phashBlock->data, 32))
+        failures++;
+    if (!node_db_state_set_int(&f.ndb, "cec.active_tip_height", 1))
+        failures++;
+
+    chain_evidence_controller_init(&f.authority, &f.ndb, &f.csr);
+    struct chain_evidence_controller_view view;
+    chain_evidence_controller_snapshot(&f.authority, &view);
+    if (view.state != CEC_CONTRADICTION_FROZEN)
+        failures++;
+    if (strcmp(view.health_reason, "active_tip_hash_mismatch") != 0)
+        failures++;
+
+    auth_fixture_free(&f);
+    return failures;
+}
+
 int test_chain_evidence_controller(void)
 {
     int failures = 0;
@@ -546,5 +628,7 @@ int test_chain_evidence_controller(void)
     failures += test_valid_evidenced_snapshot_promotes_to_tip_following();
     failures += test_commit_failure_after_csr_restores_concrete_state();
     failures += test_full_validation_requires_matching_utxo_sha3();
+    failures += test_startup_reconstructs_missing_active_tip_evidence();
+    failures += test_startup_freezes_on_active_tip_hash_mismatch();
     return failures;
 }

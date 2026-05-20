@@ -13,9 +13,11 @@
 
 #include "test/test_helpers.h"
 #include "services/zclassicd_oracle_service.h"
+#include "services/chain_evidence_controller.h"
 #include "services/legacy_mirror_sync_service.h"
 #include "services/sync_watchdog_service.h"
 #include "controllers/wallet_helpers.h"
+#include "validation/process_block.h"
 #include "validation/main_state.h"
 #include "validation/chainstate.h"
 #include "validation/mirror_consensus.h"
@@ -59,6 +61,7 @@ struct mock_server {
     int listen_fd;
     int port;
     const char *canned_hex;       /* NULL → respond with JSON error */
+    int chain_blocks;             /* >=0 → getblockchaininfo response */
     _Atomic int requests_served;
     _Atomic bool stop;
     pthread_t thread;
@@ -92,7 +95,12 @@ static void *mock_server_loop(void *arg)  /* raw-pthread-ok: test-local */
         /* Build JSON-RPC body */
         char body[256];
         int bl;
-        if (m->canned_hex) {
+        if (m->chain_blocks >= 0 && strstr(buf, "getblockchaininfo")) {
+            bl = snprintf(body, sizeof(body),
+                "{\"result\":{\"blocks\":%d,\"headers\":%d},"
+                "\"error\":null,\"id\":\"zcl-oracle\"}\n",
+                m->chain_blocks, m->chain_blocks);
+        } else if (m->canned_hex) {
             bl = snprintf(body, sizeof(body),
                 "{\"result\":\"%s\",\"error\":null,\"id\":\"zcl-oracle\"}\n",
                 m->canned_hex);
@@ -120,6 +128,7 @@ static bool mock_server_start(struct mock_server *m, const char *canned_hex)
 {
     memset(m, 0, sizeof(*m));
     m->canned_hex = canned_hex;
+    m->chain_blocks = -1;
     m->listen_fd = socket(AF_INET, SOCK_STREAM, 0);
     if (m->listen_fd < 0) return false;
 
@@ -150,6 +159,16 @@ static bool mock_server_start(struct mock_server *m, const char *canned_hex)
         return false;
     }
     return true;
+}
+
+static bool mock_server_start_chain(struct mock_server *m,
+                                    const char *canned_hex,
+                                    int blocks)
+{
+    bool ok = mock_server_start(m, canned_hex);
+    if (ok)
+        m->chain_blocks = blocks;
+    return ok;
 }
 
 static void mock_server_stop(struct mock_server *m)
@@ -255,6 +274,59 @@ int test_zclassicd_oracle(void)
         ZO_CHECK("rpc_errors=0",      st.rpc_errors == 0);
 
         mock_server_stop(&srv);
+        zo_teardown();
+    }
+
+    /* Legacy advisory disagreement must freeze publication evidence, not
+     * repair/advance state from zclassicd. */
+    {
+        zo_build_fixture(AGREE_HEX);
+        struct mock_server srv;
+        struct node_db ndb;
+        ZO_CHECK("mock server starts (legacy contradiction)",
+                 mock_server_start_chain(&srv, DISAGREE_HEX, 7));
+        ZO_CHECK("legacy contradiction node_db opens",
+                 node_db_open(&ndb, ":memory:"));
+        process_block_set_node_db(&ndb);
+
+        struct legacy_mirror_sync_config cfg = {
+            .rpc_host = "127.0.0.1",
+            .rpc_port = srv.port,
+            .rpc_user = "u",
+            .rpc_password = "p",
+            .cadence_secs = 60,
+            .max_blocks_tick = 8,
+            .lag_sla = 1,
+            .enabled = true,
+        };
+        ZO_CHECK("legacy mirror init for contradiction",
+                 legacy_mirror_sync_init(&cfg, &g_zo_ms, NULL, NULL, NULL));
+        ZO_CHECK("legacy mirror catchup rejects contradiction",
+                 !legacy_mirror_sync_request_catchup("unit-contradiction"));
+
+        struct chain_evidence_controller authority;
+        struct chain_evidence_controller_view view;
+        chain_evidence_controller_init(&authority, &ndb, NULL);
+        chain_evidence_controller_snapshot(&authority, &view);
+        ZO_CHECK("legacy contradiction freezes evidence",
+                 view.state == CEC_CONTRADICTION_FROZEN);
+        ZO_CHECK("legacy contradiction records reason",
+                 strstr(view.contradiction_reason,
+                        "legacy advisory hash disagreement") != NULL ||
+                 strstr(view.contradiction_reason,
+                        "legacy advisory post-catchup disagreement") != NULL);
+
+        struct legacy_mirror_sync_stats lms;
+        legacy_mirror_sync_stats_snapshot(&lms);
+        ZO_CHECK("legacy contradiction surfaces blocker",
+                 strcmp(lms.last_blocker_code, "hash-disagreement") == 0);
+        ZO_CHECK("legacy contradiction does not claim rewind",
+                 lms.authority_rewind_target == 0);
+
+        process_block_set_node_db(NULL);
+        node_db_close(&ndb);
+        mock_server_stop(&srv);
+        legacy_mirror_sync_reset_for_test();
         zo_teardown();
     }
 
@@ -497,7 +569,7 @@ int test_zclassicd_oracle(void)
         state = json_get(&root, "state");
         authority = json_get(&root, "consensus_authority");
         mirror_enabled = json_get(&root, "mirror_authorization_enabled");
-        trust = json_get(&root, "mirror_source_trust");
+        trust = json_get(&root, "candidate_trust");
         overrides = json_get(&root, "overrides_total");
         unsafe_overrides = json_get(&root, "unsafe_overrides_total");
         blockers_total = json_get(&root, "blockers_total");
@@ -515,9 +587,10 @@ int test_zclassicd_oracle(void)
                  state && strcmp(json_get_str(state), "blocked") == 0);
         ZO_CHECK("legacy mirror dump authority stays local",
                  authority &&
-                 strcmp(json_get_str(authority), "local") == 0);
-        ZO_CHECK("legacy mirror dump marks advisory authorization",
-                 mirror_enabled && json_get_bool(mirror_enabled));
+                 strcmp(json_get_str(authority),
+                        "local_consensus_validation") == 0);
+        ZO_CHECK("legacy mirror dump omits mirror authorization",
+                 mirror_enabled == NULL);
         ZO_CHECK("legacy mirror dump trust is bounded advisory",
                  trust &&
                  strcmp(json_get_str(trust),

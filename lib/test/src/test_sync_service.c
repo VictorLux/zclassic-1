@@ -1136,7 +1136,7 @@ static int test_sync_service_applies_reset_recovery(void)
 {
     int failures = 0;
 
-    TEST("sync_service apply clears failed/data flags at stalled height") {
+    TEST("sync_service apply preserves failed/data flags at stalled height") {
         struct main_state ms;
         struct download_manager dm;
         struct sync_stall_recovery recovery;
@@ -1166,9 +1166,9 @@ static int test_sync_service_applies_reset_recovery(void)
         recovery.should_reset_tip_next = true;
         recovery.next_height = 2;
         syncsvc_apply_stall_recovery(&recovery, &ms, &dm, &cleared);
-        ASSERT(cleared == 1);
-        ASSERT((stuck2.nStatus & BLOCK_FAILED_MASK) == 0);
-        ASSERT((stuck2.nStatus & BLOCK_HAVE_DATA) == 0);
+        ASSERT(cleared == 0);
+        ASSERT((stuck2.nStatus & BLOCK_FAILED_MASK) != 0);
+        ASSERT((stuck2.nStatus & BLOCK_HAVE_DATA) != 0);
 
         dl_free(&dm);
         main_state_free(&ms);

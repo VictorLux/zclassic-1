@@ -11,7 +11,8 @@
 #include "services/header_probe_service.h"
 #include "services/legacy_body_pull.h"
 #include "services/chain_activation_controller.h"
-#include "services/chain_advance_coordinator.h"
+#include "services/chain_evidence_controller.h"
+#include "services/chain_tip.h"
 #include "services/chain_state_repository.h"
 #include "services/gap_fill_service.h"
 #include "services/oracle_policy.h"
@@ -53,8 +54,6 @@
 #define LMS_DEFAULT_LAG_SLA_BREACH_SECS     60
 #define LMS_DEFAULT_LAG_SLA_CRITICAL_BLOCKS 100
 #define LMS_DEFAULT_LAG_SLA_CRITICAL_SECS   300
-#define LMS_MAX_AUTHORITY_REWIND 2048
-#define LMS_LOCAL_PRIMARY_GRACE_SECS 120
 
 static struct {
     pthread_mutex_t lock;
@@ -142,27 +141,24 @@ static void lms_set_blocker(const char *code, const char *msg)
         mirror_consensus_record_blocker(code);
 }
 
-static void lms_set_csr_failure(enum csr_result rc)
-{
-    int sqlite_rc = 0;
-    char detail[160] = {0};
-
-    csr_last_persist_status(csr_instance(), &sqlite_rc,
-                            detail, sizeof(detail));
-    atomic_store(&g_lms.csr_sqlite_rc, sqlite_rc);
-    pthread_mutex_lock(&g_lms.lock);
-    snprintf(g_lms.csr_failure_reason, sizeof(g_lms.csr_failure_reason),
-             "%s%s%s", csr_result_name(rc),
-             detail[0] ? ": " : "", detail);
-    pthread_mutex_unlock(&g_lms.lock);
-}
-
 static void lms_clear_csr_failure(void)
 {
     atomic_store(&g_lms.csr_sqlite_rc, 0);
     pthread_mutex_lock(&g_lms.lock);
     g_lms.csr_failure_reason[0] = '\0';
     pthread_mutex_unlock(&g_lms.lock);
+}
+
+static void lms_freeze_local_evidence(const char *reason)
+{
+    struct node_db *ndb = process_block_get_node_db();
+    if (!ndb)
+        return;
+    struct chain_evidence_controller authority;
+    chain_evidence_controller_init(&authority, ndb, csr_instance());
+    chain_evidence_controller_freeze(&authority,
+                                     reason ? reason
+                                            : "legacy advisory contradiction");
 }
 
 static void lms_set_stuck_reason(const char *reason)
@@ -331,7 +327,7 @@ static bool lms_local_hash_at(int height, char out_hex[65])
     if (!bi) {
         bi = active_chain_tip(&ms->chain_active);
         int steps = 0;
-        while (bi && bi->nHeight > height && steps <= LMS_MAX_AUTHORITY_REWIND + 2) {
+        while (bi && bi->nHeight > height && steps <= 2050) {
             bi = bi->pprev;
             steps++;
         }
@@ -357,231 +353,10 @@ static bool lms_verify_anchor(int height)
     }
     if (strcasecmp(local, remote) != 0) {
         oracle_policy_record_disagreement(height, local, remote);
+        lms_freeze_local_evidence("legacy advisory hash disagreement");
         lms_set_blocker("hash-disagreement", "legacy hash disagreement");
         return false;
     }
-    return true;
-}
-
-static bool lms_hashes_equal_at(int height, char local[65], char remote[65],
-                                char *err, size_t err_sz)
-{
-    if (local) local[0] = '\0';
-    if (remote) remote[0] = '\0';
-    char lbuf[65] = {0};
-    char rbuf[65] = {0};
-    if (!lms_local_hash_at(height, lbuf))
-        return false;
-    if (!lms_fetch_hash(height, rbuf, err, err_sz))
-        return false;
-    if (local) snprintf(local, 65, "%s", lbuf);
-    if (remote) snprintf(remote, 65, "%s", rbuf);
-    return strcasecmp(lbuf, rbuf) == 0;
-}
-
-static bool lms_rewind_to_authority_fork(int local_height, int *out_height)
-{
-    if (out_height) *out_height = local_height;
-    if (local_height <= 0 || !g_lms.ms)
-        return false;
-
-    char local[65] = {0}, remote[65] = {0}, err[160] = {0};
-    if (lms_hashes_equal_at(local_height, local, remote,
-                            err, sizeof(err)))
-        return false;
-    if (err[0]) {
-        atomic_fetch_add(&g_lms.rpc_errors, 1);
-        lms_set_blocker("rpc-unreachable", err);
-        return false;
-    }
-
-    int min_h = local_height - LMS_MAX_AUTHORITY_REWIND;
-    if (min_h < 0) min_h = 0;
-    int fork_h = -1;
-    char fork_hash[65] = {0};
-    struct block_index *fork = NULL;
-    for (int h = local_height - 1; h >= min_h; h--) {
-        char lh[65] = {0}, rh[65] = {0};
-        char h_err[160] = {0};
-        if (!lms_fetch_hash(h, rh, h_err, sizeof(h_err))) {
-            atomic_fetch_add(&g_lms.rpc_errors, 1);
-            lms_set_blocker("rpc-unreachable", h_err);
-            return false;
-        }
-        struct uint256 remote_hash;
-        uint256_set_hex(&remote_hash, rh);
-        zcl_mutex_lock(&g_lms.ms->cs_main);
-        struct block_index *known =
-            block_map_find(&g_lms.ms->map_block_index, &remote_hash);
-        if (known && known->nHeight == h && known->phashBlock &&
-            uint256_eq(known->phashBlock, &remote_hash)) {
-            fork = known;
-            fork_h = h;
-            snprintf(fork_hash, sizeof(fork_hash), "%s", rh);
-            zcl_mutex_unlock(&g_lms.ms->cs_main);
-            break;
-        }
-        zcl_mutex_unlock(&g_lms.ms->cs_main);
-        if (!lms_local_hash_at(h, lh))
-            continue;
-        if (strcasecmp(lh, rh) == 0) {
-            fork_h = h;
-            snprintf(fork_hash, sizeof(fork_hash), "%s", lh);
-            zcl_mutex_lock(&g_lms.ms->cs_main);
-            struct uint256 local_hash;
-            uint256_set_hex(&local_hash, lh);
-            fork = block_map_find(&g_lms.ms->map_block_index, &local_hash);
-            zcl_mutex_unlock(&g_lms.ms->cs_main);
-            break;
-        }
-    }
-    if (fork_h < 0)
-    {
-        lms_set_blocker("hash-disagreement",
-                        "no bounded zclassicd-matching ancestor");
-        return false;
-    }
-    atomic_store(&g_lms.authority_rewind_target, fork_h);
-
-    if (g_lms.coins_tip && !coins_view_cache_flush(g_lms.coins_tip)) {
-        lms_set_blocker("authority-rewind-failed",
-                        "coins flush before authority rewind failed");
-        return false;
-    }
-    {
-        struct db_service *dbsvc = app_runtime_db_service();
-        struct node_db *ndb = process_block_get_node_db();
-        if (dbsvc && db_service_is_started(dbsvc)) {
-            if (!db_service_flush_write(dbsvc)) {
-                lms_set_blocker("db-writer-busy",
-                                "node DB flush before authority rewind failed");
-                return false;
-            }
-        } else if (ndb && !node_db_sync_flush(ndb)) {
-            lms_set_blocker("db-writer-busy",
-                            "node DB flush before authority rewind failed");
-            return false;
-        }
-    }
-
-    zcl_mutex_lock(&g_lms.ms->cs_main);
-    if (!fork)
-        fork = active_chain_at(&g_lms.ms->chain_active, fork_h);
-    if (!fork || !fork->phashBlock) {
-        zcl_mutex_unlock(&g_lms.ms->cs_main);
-        lms_set_blocker("activation-failed", "authority fork unavailable");
-        return false;
-    }
-    char check[65] = {0};
-    uint256_get_hex(fork->phashBlock, check);
-    if (strcasecmp(check, fork_hash) != 0) {
-        zcl_mutex_unlock(&g_lms.ms->cs_main);
-        lms_set_blocker("activation-failed", "authority fork changed");
-        return false;
-    }
-    zcl_mutex_unlock(&g_lms.ms->cs_main);
-
-    struct chain_state_rollback_authorization auth = {
-        .source = CSR_ROLLBACK_SOURCE_MIRROR,
-        .decision = POLICY_ALLOW,
-        .from_height = local_height,
-        .to_height = fork_h,
-        .max_depth = LMS_MAX_AUTHORITY_REWIND,
-        .evidence_class = "zclassicd-authority-fork",
-        .reason = "mirror_authority_rewind",
-    };
-    struct chain_state_commit commit = {
-        .new_tip = fork,
-        .new_coins_best = *fork->phashBlock,
-        .expected_utxo_count = -1,
-        .update_header_tip = false,
-        .persist_coins_best = true,
-        .rollback_auth = &auth,
-        .wallet_scan_height = -1,
-        .reason = "mirror_authority_rewind",
-    };
-    enum csr_result rc = csr_commit_tip(csr_instance(), &commit);
-    if (rc != CSR_OK) {
-        char msg[160];
-        lms_set_csr_failure(rc);
-        snprintf(msg, sizeof(msg), "authority rewind csr rejected: %s",
-                 csr_result_name(rc));
-        if (rc == CSR_REJECTED_DB_BUSY)
-            lms_set_blocker("db-writer-busy", msg);
-        else if (rc == CSR_REJECTED_PERSIST)
-            lms_set_blocker("csr-persist-failed", msg);
-        else
-            lms_set_blocker("authority-rewind-failed", msg);
-        return false;
-    }
-
-    fprintf(stderr,  // obs-ok:operational-log-authority-rewind
-            "[legacy_mirror] authority rewind h=%d->%d hash=%s\n",
-            local_height, fork_h, fork_hash);
-    if (out_height) *out_height = fork_h;
-    lms_set_stuck_reason("");
-    lms_clear_csr_failure();
-    lms_clear_blocker();
-    return true;
-}
-
-static bool lms_repair_one_high_anchor(int local_height)
-{
-    if (local_height <= 0 || !g_lms.ms)
-        return false;
-
-    char local[65] = {0}, remote_prev[65] = {0}, err[160] = {0};
-    if (!lms_local_hash_at(local_height, local))
-        return false;
-    if (!lms_fetch_hash(local_height - 1, remote_prev, err, sizeof(err)))
-        return false;
-    if (strcasecmp(local, remote_prev) != 0)
-        return false;
-
-    zcl_mutex_lock(&g_lms.ms->cs_main);
-    struct block_index *tip = active_chain_tip(&g_lms.ms->chain_active);
-    char tip_hex[65] = {0};
-    if (tip && tip->phashBlock)
-        uint256_get_hex(tip->phashBlock, tip_hex);
-    if (!tip || tip->nHeight != local_height ||
-        strcasecmp(tip_hex, local) != 0) {
-        zcl_mutex_unlock(&g_lms.ms->cs_main);
-        return false;
-    }
-
-    tip->nHeight = local_height - 1;
-    block_index_build_skip(tip);
-
-    /* Headers accepted while the restore anchor was one high inherit that
-     * drift through pprev->nHeight + 1. Relabel only descendants reachable
-     * from the corrected anchor; hashes and validation state are unchanged. */
-    for (int pass = 0; pass < 8; pass++) {
-        bool changed = false;
-        size_t iter = 0;
-        struct block_index *bi = NULL;
-        while (block_map_next(&g_lms.ms->map_block_index, &iter,
-                              NULL, &bi)) {
-            if (!bi || !bi->pprev)
-                continue;
-            int expected = bi->pprev->nHeight + 1;
-            if (bi->pprev->nHeight < tip->nHeight ||
-                bi->nHeight == expected)
-                continue;
-            if (bi->nHeight < local_height ||
-                bi->nHeight > local_height + g_lms.max_blocks_tick + 32)
-                continue;
-            bi->nHeight = expected;
-            block_index_build_skip(bi);
-            changed = true;
-        }
-        if (!changed)
-            break;
-    }
-    (void)active_chain_set_tip(&g_lms.ms->chain_active, tip);
-    zcl_mutex_unlock(&g_lms.ms->cs_main);
-
-    lms_set_stuck_reason("");
-    lms_clear_blocker();
     return true;
 }
 
@@ -599,6 +374,7 @@ static bool lms_verify_after_tip(int height)
     }
     if (strcasecmp(local, remote) != 0) {
         oracle_policy_record_disagreement(height, local, remote);
+        lms_freeze_local_evidence("legacy advisory post-catchup disagreement");
         lms_set_blocker("hash-disagreement", "post-catchup tip disagreement");
         return false;
     }
@@ -672,64 +448,10 @@ static void lms_record_stuck_status(int height)
 
 static bool lms_try_recover_stale_next_failed(int local_height)
 {
-    if (!g_lms.ms)
-        return false;
-    int h = local_height + 1;
-    char remote[65] = {0};
-    char err[160] = {0};
-    if (!lms_fetch_hash(h, remote, err, sizeof(err))) {
-        atomic_fetch_add(&g_lms.rpc_errors, 1);
-        lms_set_blocker("rpc-unreachable", err);
-        return false;
-    }
-
-    struct uint256 hash;
-    uint256_set_hex(&hash, remote);
-    bool cleared = false;
-    unsigned int flags = 0;
-    zcl_mutex_lock(&g_lms.ms->cs_main);
-    struct block_index *bi = block_map_find(&g_lms.ms->map_block_index,
-                                            &hash);
-    if (bi) {
-        flags = bi->nStatus;
-        bool have_authority_body = (bi->nStatus & BLOCK_HAVE_DATA) &&
-            bi->phashBlock && uint256_eq(bi->phashBlock, &hash);
-        if (have_authority_body &&
-            process_block_get_utxo_activation_paused_height() == h) {
-            (void)mirror_consensus_authorize_block(h, &hash);
-            mirror_consensus_scope_enter();
-            process_block_clear_utxo_activation_pause_range(h, h);
-            mirror_consensus_record_override(h,
-                                             "cleared-utxo-activation-pause");
-            mirror_consensus_scope_leave();
-            flags = bi->nStatus;
-            cleared = true;
-        } else if (have_authority_body &&
-                   (bi->nStatus & BLOCK_FAILED_MASK)) {
-            (void)mirror_consensus_authorize_block(h, &hash);
-            mirror_consensus_scope_enter();
-            bi->nStatus &= ~BLOCK_FAILED_MASK;
-            mirror_consensus_record_override(h,
-                                             "cleared-stale-failed-valid");
-            mirror_consensus_scope_leave();
-            flags = bi->nStatus;
-            cleared = true;
-        }
-        if (!cleared) {
-            if (!(bi->nStatus & BLOCK_HAVE_DATA))
-                lms_set_stuck_reason("missing-have-data");
-            else if (bi->nStatus & BLOCK_FAILED_MASK)
-                lms_set_stuck_reason("failed-mask");
-            else
-                lms_set_stuck_reason("activation-state");
-        }
-    } else {
-        lms_set_stuck_reason("no-authorized-child");
-    }
-    zcl_mutex_unlock(&g_lms.ms->cs_main);
-    atomic_store(&g_lms.stuck_height, h);
-    atomic_store(&g_lms.stuck_status_flags, flags);
-    return cleared;
+    (void)local_height;
+    lms_set_blocker("activation-no-progress",
+                    "legacy advisory cannot clear validation blockers; native_failed_mask_revalidation_required");
+    return false;
 }
 
 static bool lms_consensus_blocker_is(const char *code)
@@ -747,8 +469,6 @@ static const char *lms_state_name(const struct legacy_mirror_sync_stats *s)
     if (s->activation_blocker[0] || s->last_blocker_code[0] ||
         s->csr_sqlite_rc != 0)
         return "blocked";
-    if (s->authority_rewind_target > 0)
-        return "rewinding_to_authority";
     /* Concurrent redundancy: when lag breaches SLO and zclassicd is
      * reachable, the mirror is actively pulling regardless of whether
      * local recovery is "exhausted". Surface this as a distinct state
@@ -895,24 +615,9 @@ static bool lms_next_block_needs_mirror_body(int local_height, int lag)
     atomic_store(&g_lms.stuck_status_flags, flags);
 
     if (no_authorized_child) {
-        struct watchdog_local_recovery_stats lr;
-        struct cac_decision decision;
-
-        sync_watchdog_get_local_recovery_stats(&lr);
-        bool local_path_exhausted = lr.retries_exhausted || !lr.active;
-        if (!chain_advance_coordinator_mirror_repair_allowed(
-                local_height, local_height + lag, local_path_exhausted,
-                &decision)) {
-            char msg[192];
-            snprintf(msg, sizeof(msg),
-                     "mirror repair gated by coordinator: %s",
-                     decision.reason);
-            lms_set_error(msg);
-            atomic_store(&g_lms.no_authorized_child_first_seen,
-                         (int64_t)time(NULL));
-            return false;
-        }
-        lms_set_error("coordinator authorized mirror repair");
+        lms_set_error("native_next_block_download_required");
+        atomic_store(&g_lms.no_authorized_child_first_seen,
+                     (int64_t)time(NULL));
         return true;
     }
     return needs_body;
@@ -997,10 +702,8 @@ static bool lms_run_activation_to_target(int target,
     while (local < target && rounds < hard_cap) {
         int before_round = local;
         struct activation_exec_outcome act = {0};
-        mirror_consensus_scope_enter();
         activation_request_connect(ctl, ACTIVATION_SRC_NEW_BLOCK,
                                    NULL, &act);
-        mirror_consensus_scope_leave();
         if (act.result == ACTIVATION_EXEC_FAILED) {
             lms_set_blocker("activation-failed",
                             act.reason[0] ? act.reason
@@ -1078,15 +781,6 @@ bool legacy_mirror_sync_request_catchup(const char *reason)
         lms_set_error("mirror behind local; observing");
         ok = true;
         goto out;
-    }
-
-    if (lms_repair_one_high_anchor(local)) {
-        lms_refresh_local_heights(&local, &hdr);
-        lag = legacy_blocks - local;
-    }
-    if (lms_rewind_to_authority_fork(local, &local)) {
-        lms_refresh_local_heights(&local, &hdr);
-        lag = legacy_blocks - local;
     }
 
     if (!lms_verify_anchor(local)) {
@@ -1206,7 +900,7 @@ bool legacy_mirror_sync_request_catchup(const char *reason)
     if (target > local && progress == 0) {
         lms_record_stuck_status(local + 1);
         lms_set_blocker("activation-no-progress",
-                        "body data available but activation did not advance");
+                        "body data available but activation did not advance; native_failed_mask_revalidation_required");
         ok = false;
         goto out;
     }
@@ -1462,10 +1156,10 @@ void legacy_mirror_sync_stats_snapshot(
         struct mirror_consensus_stats mcs;
         mirror_consensus_stats_snapshot(&mcs);
         snprintf(out->consensus_authority,
-                 sizeof(out->consensus_authority), "%s", "local");
-        out->mirror_authorization_enabled = mcs.enabled;
-        snprintf(out->mirror_source_trust,
-                 sizeof(out->mirror_source_trust), "%s",
+                 sizeof(out->consensus_authority), "%s",
+                 "local_consensus_validation");
+        snprintf(out->candidate_trust,
+                 sizeof(out->candidate_trust), "%s",
                  "bounded_advisory_fallback");
         out->override_active = mcs.override_active;
         out->overrides_total = mcs.overrides_total;
@@ -1538,6 +1232,12 @@ bool legacy_mirror_sync_dump_state_json(struct json_value *out,
     json_push_kv_int(out, "local_height", s.local_height);
     json_push_kv_int(out, "best_header_height", s.best_header_height);
     json_push_kv_int(out, "lag", s.lag);
+    json_push_kv_str(out, "candidate_source", "legacy_advisory");
+    json_push_kv_str(out, "candidate_trust", s.candidate_trust);
+    json_push_kv_int(out, "candidate_lag", s.lag);
+    json_push_kv_str(out, "candidate_blocker",
+                     s.activation_blocker[0] ? s.activation_blocker
+                                             : s.last_blocker_code);
     json_push_kv_int(out, "target_height", s.target_height);
     json_push_kv_int(out, "authority_rewind_target",
                      s.authority_rewind_target);
@@ -1545,6 +1245,8 @@ bool legacy_mirror_sync_dump_state_json(struct json_value *out,
     json_push_kv_int(out, "last_progress_blocks", s.last_progress_blocks);
     json_push_kv_bool(out, "local_recovery_active",
                       s.local_recovery_active);
+    json_push_kv_bool(out, "legacy_advisory_gated_by_native_retries",
+                      s.mirror_repair_gated_by_local_retries);
     json_push_kv_bool(out, "mirror_repair_gated_by_local_retries",
                       s.mirror_repair_gated_by_local_retries);
     json_push_kv_bool(out, "local_retries_exhausted",
@@ -1566,9 +1268,6 @@ bool legacy_mirror_sync_dump_state_json(struct json_value *out,
     json_push_kv_int(out, "blocks_applied", s.blocks_applied);
     json_push_kv_int(out, "headers_added", s.headers_added);
     json_push_kv_str(out, "consensus_authority", s.consensus_authority);
-    json_push_kv_bool(out, "mirror_authorization_enabled",
-                      s.mirror_authorization_enabled);
-    json_push_kv_str(out, "mirror_source_trust", s.mirror_source_trust);
     json_push_kv_bool(out, "override_active", s.override_active);
     json_push_kv_int(out, "overrides_total", s.overrides_total);
     json_push_kv_int(out, "unsafe_overrides_total",

@@ -244,6 +244,14 @@ static bool rpc_healthcheck(const struct json_value *params, bool help,
     {
         struct legacy_mirror_sync_stats ms;
         legacy_mirror_sync_stats_snapshot(&ms);
+        json_push_kv_str(result, "consensus_authority",
+                         "local_consensus_validation");
+        json_push_kv_str(result, "candidate_source", "legacy_advisory");
+        json_push_kv_str(result, "candidate_trust", ms.candidate_trust);
+        json_push_kv_int(result, "candidate_lag", ms.lag);
+        json_push_kv_str(result, "candidate_blocker",
+                         ms.activation_blocker[0] ? ms.activation_blocker
+                                                  : ms.last_blocker_code);
         json_push_kv_str(result, "mirror_activation_blocker",
                          ms.activation_blocker);
         json_push_kv_str(result, "mirror_last_blocker_code",

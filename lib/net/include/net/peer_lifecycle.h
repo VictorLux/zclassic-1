@@ -31,7 +31,9 @@ struct peer_lifecycle_summary {
     int64_t rejected;
     int64_t cache_skipped;
     int64_t magicbean_handshakes;
+    int64_t legacy_compatible_handshakes;
     int64_t zcl23_handshakes;
+    int64_t pre_handshake_disconnects;
 };
 
 const char *peer_lifecycle_source_name(enum peer_lifecycle_source source);

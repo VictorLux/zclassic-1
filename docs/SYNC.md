@@ -6,6 +6,30 @@ path that exists only while the zclassic23 peer network is still small.
 
 Primary = zclassic23-native. Legacy = pulling data from the old C++ `zclassicd`.
 
+## Canonical Authority Model
+
+Canonical chain state is always **locally validated and evidence-published**.
+The only publishable active tip is one that passes the local validation and
+evidence gate:
+
+- `chain_advance_coordinator` chooses which input source may provide candidate
+  headers or bodies.
+- `chain_activation_controller` is the block-connection entrypoint.
+- `chain_evidence_controller` decides whether a tip transition has enough
+  local evidence to publish.
+- `chain_state_repository` performs the atomic in-memory/persistent state
+  update, and `chain_tip` is the public active-tip publication wrapper.
+- `legacy_mirror_sync_service` may fetch candidate data from `zclassicd` and
+  request work, but it cannot make `zclassicd` a consensus authority.
+
+`zclassicd` may accelerate bootstrap while the native peer network is small.
+It is removable advisory infrastructure: matching `zclassicd` is not proof of
+canonical state, and diverging from `zclassicd` is not by itself a reason to
+rewind or publish a tip. Health/status surfaces must keep
+`consensus_authority=local_consensus_validation`; `candidate_*` fields describe
+source and trust class only. Any `unsafe_overrides_total > 0` is unhealthy and
+should be treated as a fail-loud condition.
+
 ---
 
 ## Method 1 (native): P2P Fast Sync (~60 s)
@@ -73,8 +97,9 @@ scratch).
 mainnet.** We temporarily read data from a synced legacy `zclassicd` (C++)
 node on the same machine to get developer workstations to tip fast.
 `zclassicd` is advisory only: its block files, UTXO snapshots, and height/hash
-answers are accepted only when they also match compiled SHA3 anchors, runtime
-window commitments, local consensus state, or quorum with zclassic23 peers.
+answers can seed candidates only. Tip publication still requires the local
+activation/evidence path described above and cannot be justified merely by
+matching the legacy daemon.
 Once the zclassic23 peer network is healthy, this path goes away.
 
 Requirements: a local synced legacy `zclassicd` with `~/.zclassic/`.

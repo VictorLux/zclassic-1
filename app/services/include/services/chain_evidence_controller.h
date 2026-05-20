@@ -43,6 +43,20 @@ enum chain_evidence_controller_result {
     CEC_REJECTED_PERSIST,
 };
 
+enum chain_evidence_source_class {
+    CEC_SOURCE_CLASS_UNKNOWN = 0,
+    CEC_SOURCE_CLASS_NATIVE_P2P,
+    CEC_SOURCE_CLASS_SNAPSHOT,
+    CEC_SOURCE_CLASS_LOCAL_IMPORT,
+    CEC_SOURCE_CLASS_LEGACY_ADVISORY,
+};
+
+enum chain_evidence_publish_state {
+    CEC_PUBLISH_NOT_PUBLISHABLE = 0,
+    CEC_PUBLISH_LOCAL_EVIDENCE,
+    CEC_PUBLISH_FROZEN_CONTRADICTION,
+};
+
 struct chain_evidence_controller {
     struct node_db *ndb;                 /* non-owning */
     struct chain_state_repository *csr;  /* non-owning */
@@ -51,6 +65,8 @@ struct chain_evidence_controller {
 };
 
 struct chain_evidence_record {
+    enum chain_evidence_source_class source_class;
+    enum chain_evidence_publish_state publish_state;
     bool header_ancestry_linked;
     bool chainwork_recomputed;
     bool nakamoto_selected_best_work;
@@ -86,19 +102,39 @@ struct chain_evidence_controller_view {
     enum chain_evidence_controller_state state;
     int active_tip_height;
     int header_tip_height;
+    int persisted_active_tip_height;
     int snapshot_anchor_height;
     int background_validation_height;
     int utxo_max_height;
     int coins_best_block_height;
+    int sqlite_max_height;
+    struct uint256 active_tip_hash;
+    struct uint256 header_tip_hash;
+    struct uint256 persisted_active_tip_hash;
+    struct uint256 coins_best_block_hash;
+    bool has_active_tip_hash;
+    bool has_header_tip_hash;
+    bool has_persisted_active_tip_hash;
+    bool has_coins_best_block_hash;
+    enum chain_evidence_source_class active_tip_source_class;
+    enum chain_evidence_publish_state publish_state;
+    bool missing_active_tip_evidence;
+    bool publish_state_not_local;
+    bool active_tip_hash_mismatch;
+    bool csr_cursor_mismatch;
+    bool repaired_active_tip_evidence;
     struct chain_evidence_record block_index_evidence_state;
     struct chain_evidence_record active_tip_evidence;
     struct chain_evidence_record snapshot_evidence;
     struct chain_evidence_record header_chain_evidence;
+    char health_reason[128];
     char contradiction_reason[192];
 };
 
 const char *chain_evidence_controller_state_name(enum chain_evidence_controller_state state);
 const char *chain_evidence_controller_result_name(enum chain_evidence_controller_result result);
+const char *chain_evidence_source_class_name(enum chain_evidence_source_class source);
+const char *chain_evidence_publish_state_name(enum chain_evidence_publish_state state);
 
 void chain_evidence_controller_init(struct chain_evidence_controller *authority,
                          struct node_db *ndb,

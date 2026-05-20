@@ -1822,6 +1822,15 @@ bool msg_process_messages(void *ctx, struct p2p_node *node)
                 net_message_free(&msg);
                 goto _msg_loop_exit;
             }
+            if (e->zcl23_only && !peer_supports_fast_sync(node->services)) {
+                event_emitf(EV_BACKPRESSURE_REJECT, (uint32_t)node->id,
+                            "%s requires NODE_ZCL23", cmd);
+                printf("Peer %s: ignoring ZCL23-only %s without NODE_ZCL23\n",
+                       node->addr_name, cmd);
+                ok = true;
+                dispatched = true;
+                break;
+            }
 
             ok = e->handler(mp, node, &s);
             dispatched = true;
@@ -1837,6 +1846,17 @@ bool msg_process_messages(void *ctx, struct p2p_node *node)
                 stream_free(&s);
                 net_message_free(&msg);
                 goto _msg_loop_exit;
+            }
+            if (!peer_supports_fast_sync(node->services)) {
+                event_emitf(EV_BACKPRESSURE_REJECT, (uint32_t)node->id,
+                            "%s requires NODE_ZCL23", cmd);
+                printf("Peer %s: ignoring ZCL23-only %s without NODE_ZCL23\n",
+                       node->addr_name, cmd);
+                dispatched = true;
+                ok = true;
+                stream_free(&s);
+                net_message_free(&msg);
+                continue;
             }
             if (strcmp(cmd, MSG_CHUNK_REQ) == 0)
                 printf("Peer %s: dispatch %s size=%u\n",

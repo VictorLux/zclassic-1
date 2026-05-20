@@ -408,20 +408,9 @@ static bool legacy_body_pull_range_impl(struct main_state *ms,
                                                  &hash);
         bool have_data = bi && (bi->nStatus & BLOCK_HAVE_DATA);
         bool failed = bi && (bi->nStatus & BLOCK_FAILED_MASK);
-        if (failed && have_data && bi && bi->phashBlock &&
-            uint256_eq(bi->phashBlock, &hash)) {
-            (void)mirror_consensus_authorize_block(h, bi->phashBlock);
-            mirror_consensus_scope_enter();
-            bi->nStatus &= ~BLOCK_FAILED_MASK;
-            mirror_consensus_record_override(h,
-                                             "cleared-stale-failed-valid");
-            mirror_consensus_scope_leave();
-            failed = false;
-        }
         zcl_mutex_unlock(&ms->cs_main);
 
         if (have_data) {
-            (void)mirror_consensus_authorize_block(h, &hash);
             skipped_have_data++;
             free(hash_hex);
             continue;
@@ -501,14 +490,10 @@ static bool legacy_body_pull_range_impl(struct main_state *ms,
             ok = false;
             break;
         }
-        (void)mirror_consensus_authorize_block(h, &block_hash);
-
         struct validation_state vs;
         memset(&vs, 0, sizeof(vs));
-        mirror_consensus_scope_enter();
         bool pn_ok = process_new_block(&vs, ms, coins_tip, params,
                                         &block, true, our_datadir);
-        mirror_consensus_scope_leave();
         block_free(&block);
         if (!pn_ok) {
             fprintf(stderr,  // obs-ok:pre-existing-diagnostic

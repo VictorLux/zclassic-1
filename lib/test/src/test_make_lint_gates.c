@@ -264,6 +264,41 @@ static int check_observability_file(const char *path)
     return 0;
 }
 
+static bool active_chain_set_tip_file_allowed(const char *path)
+{
+    return strstr(path, "/app/services/src/chain_tip.c") ||
+           strstr(path, "/app/services/src/chain_state_repository.c");
+}
+
+static int check_active_chain_set_tip_file(const char *path)
+{
+    if (active_chain_set_tip_file_allowed(path))
+        return 0;
+
+    FILE *fp = fopen(path, "rb");
+    if (!fp) return -1;
+
+    char line[4096];
+    while (fgets(line, sizeof(line), fp)) {
+        char *hit = strstr(line, "active_chain_set_tip(");
+        if (!hit)
+            continue;
+        char *block_comment = strstr(line, "/*");
+        char *star_comment = strstr(line, "*");
+        char *line_comment = strstr(line, "//");
+        bool comment_only = (block_comment && block_comment < hit) ||
+                            (star_comment && star_comment < hit) ||
+                            (line_comment && line_comment < hit);
+        if (!comment_only) {
+            fclose(fp);
+            return 1;
+        }
+    }
+
+    fclose(fp);
+    return 0;
+}
+
 static int walk_c_files(const char *dirpath,
                         int (*check_file)(const char *path))
 {
@@ -331,6 +366,14 @@ static int run_check_coins_lookup_nullcheck(void)
                   "app/controllers/src") != 0)
         return -1;
     return walk_c_files(controllers_dir, check_coins_guard_file);
+}
+
+static int run_check_service_tip_mutation_gate(void)
+{
+    char services_dir[PATH_MAX];
+    if (repo_path(services_dir, sizeof(services_dir), "app/services/src") != 0)
+        return -1;
+    return walk_c_files(services_dir, check_active_chain_set_tip_file);
 }
 
 static int t_observability_fixture_trips_gate(void)
@@ -645,11 +688,18 @@ static int t_tools_z_mirror_fallback_contract(void)
         char path[PATH_MAX];
         ASSERT(repo_path(path, sizeof(path), "tools/z") == 0);
         ASSERT(read_entire_file(path, &buf) == 0);
-        ASSERT(strstr(buf, "\"consensus_authority\":\"local\"") != NULL);
-        ASSERT(strstr(buf, "\"mirror_authorization_enabled\":false") != NULL);
         ASSERT(strstr(buf,
-                      "\"mirror_source_trust\":\"bounded_advisory_fallback\"")
+                      "\"consensus_authority\":\"local_consensus_validation\"")
                != NULL);
+        ASSERT(strstr(buf, "\"candidate_source\":\"legacy_advisory\"")
+               != NULL);
+        ASSERT(strstr(buf, "\"candidate_trust\":\"bounded_advisory_fallback\"")
+               != NULL);
+        ASSERT(strstr(buf,
+                      "\"legacy_advisory_gated_by_native_retries\":false")
+               != NULL);
+        ASSERT(strstr(buf, "mirror_authorization_enabled") == NULL);
+        ASSERT(strstr(buf, "mirror_source_trust") == NULL);
         ASSERT(strstr(buf, "\"blockers_total\":0") != NULL);
         ASSERT(strstr(buf, "\"stalls_total\":0") != NULL);
         ASSERT(strstr(buf, "\"unsafe_overrides_total\":0") != NULL);
@@ -659,10 +709,51 @@ static int t_tools_z_mirror_fallback_contract(void)
         ASSERT(strstr(buf, "stalls=%s") != NULL);
         ASSERT(strstr(buf, "unsafe_overrides=%s") != NULL);
         ASSERT(strstr(buf, "last_override_safe=%s") != NULL);
+        ASSERT(strstr(buf, "legacy_advisory_gated=%s") != NULL);
+        ASSERT(strstr(buf, "mirror_gated=%s") == NULL);
         ASSERT(strstr(buf, "\"consensus_authority\":\"zclassicd\"") == NULL);
         PASS();
     } _test_next:;
     free(buf);
+    return failures;
+}
+
+static int t_service_tip_mutation_gate(void)
+{
+    int failures = 0;
+    TEST("[lint-gate] services do not bypass canonical tip publication") {
+        ASSERT(run_check_service_tip_mutation_gate() == 0);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int t_legacy_candidate_source_has_no_override_scope(void)
+{
+    int failures = 0;
+    char *body_pull = NULL;
+    char *mirror = NULL;
+    TEST("legacy candidate source has no mirror override mutation path") {
+        char body_path[PATH_MAX];
+        char mirror_path[PATH_MAX];
+        ASSERT(repo_path(body_path, sizeof(body_path),
+                         "app/services/src/legacy_body_pull.c") == 0);
+        ASSERT(repo_path(mirror_path, sizeof(mirror_path),
+                         "app/services/src/legacy_mirror_sync_service.c") == 0);
+        ASSERT(read_entire_file(body_path, &body_pull) == 0);
+        ASSERT(read_entire_file(mirror_path, &mirror) == 0);
+        ASSERT(strstr(body_pull, "mirror_consensus_scope_enter") == NULL);
+        ASSERT(strstr(body_pull, "mirror_consensus_record_override") == NULL);
+        ASSERT(strstr(body_pull, "mirror_consensus_authorize_block") == NULL);
+        ASSERT(strstr(body_pull,
+                      "process_block_clear_utxo_activation_pause_range") == NULL);
+        ASSERT(strstr(mirror, "CSR_ROLLBACK_SOURCE_MIRROR") == NULL);
+        ASSERT(strstr(mirror, "chain_set_active_tip(") == NULL);
+        ASSERT(strstr(mirror, "active_chain_set_tip(") == NULL);
+        PASS();
+    } _test_next:;
+    free(body_pull);
+    free(mirror);
     return failures;
 }
 
@@ -717,6 +808,7 @@ static int t_tools_z_operator_diagnostics_contract(void)
         ASSERT(strstr(buf, "blockers_total") != NULL);
         ASSERT(strstr(buf, "stalls_total") != NULL);
         ASSERT(strstr(buf, "unsafe_overrides_total") != NULL);
+        ASSERT(strstr(buf, "unsafe_overrides_total 0") != NULL);
         ASSERT(strstr(buf, "last_override_safe") != NULL);
         ASSERT(strstr(buf, "last_override_scope") != NULL);
         PASS();
@@ -996,6 +1088,8 @@ int test_make_lint_gates(void)
     failures += t_raw_malloc_fixture_trips_gate();
     failures += t_raw_malloc_zcl_fixture_passes();
     failures += t_raw_malloc_gate_recovers();
+    failures += t_service_tip_mutation_gate();
+    failures += t_legacy_candidate_source_has_no_override_scope();
     failures += t_tools_z_mirror_fallback_contract();
     failures += t_tools_z_operator_diagnostics_contract();
     failures += t_boot_chain_advance_diagnostics_contract();

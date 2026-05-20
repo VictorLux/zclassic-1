@@ -35,12 +35,14 @@ static void push_mirror_sync_fields(struct json_value *result)
     json_push_kv_bool(result, "mirror_enabled", ms.enabled);
     json_push_kv_bool(result, "mirror_reachable", ms.reachable);
     json_push_kv_str(result, "legacy_mirror_state", ms.state);
-    json_push_kv_str(result, "mirror_consensus_authority",
-                     ms.consensus_authority);
-    json_push_kv_bool(result, "mirror_authorization_enabled",
-                      ms.mirror_authorization_enabled);
-    json_push_kv_str(result, "mirror_source_trust",
-                     ms.mirror_source_trust);
+    json_push_kv_str(result, "consensus_authority",
+                     "local_consensus_validation");
+    json_push_kv_str(result, "candidate_source", "legacy_advisory");
+    json_push_kv_str(result, "candidate_trust", ms.candidate_trust);
+    json_push_kv_int(result, "candidate_lag", ms.lag);
+    json_push_kv_str(result, "candidate_blocker",
+                     ms.activation_blocker[0] ? ms.activation_blocker
+                                              : ms.last_blocker_code);
     json_push_kv_int(result, "legacy_height", ms.legacy_height);
     json_push_kv_int(result, "mirror_lag", ms.lag);
     json_push_kv_str(result, "mirror_activation_blocker",
@@ -59,6 +61,8 @@ static void push_mirror_sync_fields(struct json_value *result)
                      ms.last_override_reason);
     json_push_kv_str(result, "mirror_last_override_scope",
                      ms.last_override_scope);
+    json_push_kv_bool(result, "legacy_advisory_gated_by_native_retries",
+                      ms.mirror_repair_gated_by_local_retries);
     json_push_kv_bool(result, "mirror_repair_gated_by_local_retries",
                       ms.mirror_repair_gated_by_local_retries);
     json_push_kv_bool(result, "mirror_local_retries_exhausted",
@@ -278,15 +282,20 @@ static bool rpc_getservicehealth(const struct json_value *params, bool help,
         json_push_kv_bool(&svc, "mirror_reachable", ms.reachable);
         json_push_kv_str(&svc, "consensus_authority",
                          ms.consensus_authority);
-        json_push_kv_bool(&svc, "mirror_authorization_enabled",
-                          ms.mirror_authorization_enabled);
-        json_push_kv_str(&svc, "mirror_source_trust",
-                         ms.mirror_source_trust);
+        json_push_kv_str(&svc, "candidate_source", "legacy_advisory");
+        json_push_kv_str(&svc, "candidate_trust",
+                         ms.candidate_trust);
+        json_push_kv_int(&svc, "candidate_lag", ms.lag);
+        json_push_kv_str(&svc, "candidate_blocker",
+                         ms.activation_blocker[0] ? ms.activation_blocker
+                                                  : ms.last_blocker_code);
         json_push_kv_int(&svc, "legacy_height", ms.legacy_height);
         json_push_kv_int(&svc, "local_height", ms.local_height);
         json_push_kv_int(&svc, "lag", ms.lag);
         json_push_kv_bool(&svc, "local_recovery_active",
                           ms.local_recovery_active);
+        json_push_kv_bool(&svc, "legacy_advisory_gated_by_native_retries",
+                          ms.mirror_repair_gated_by_local_retries);
         json_push_kv_bool(&svc, "mirror_repair_gated_by_local_retries",
                           ms.mirror_repair_gated_by_local_retries);
         json_push_kv_bool(&svc, "local_retries_exhausted",

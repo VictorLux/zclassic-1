@@ -1882,22 +1882,14 @@ static bool update_tip(struct main_state *ms, struct block_index *pindex_new)
     if (pindex_new) {
         struct chain_evidence_record evidence =
             process_block_verified_tip_evidence(ms, pindex_new, true);
-        bool mirror_authorized = pindex_new->phashBlock &&
-            mirror_consensus_authorized_current(pindex_new->nHeight,
-                                                pindex_new->phashBlock);
         /* coins_tip is NULL here on purpose: the pre-migration
          * update_tip never set coins_best_block (connect_block had
          * already done it while building the new tip), and the
-         * fallback path should preserve that behaviour.
-         *
-         * In mirror-authority mode, the exact height/hash has already
-         * been authorized against zclassicd. Do not let auxiliary chain
-         * evidence metadata persistence stop the active-chain commit;
-         * CSR still commits the real chain tip below. */
+         * fallback path should preserve that behaviour. */
         if (!process_block_commit_tip(ms, NULL, pindex_new,
                                       "process_block.update_tip", true,
                                       false,
-                                      mirror_authorized ? NULL : &evidence))
+                                      &evidence))
             return false;
     } else {
         /* Disconnect past genesis — empty the chain. No commit to
@@ -2225,13 +2217,8 @@ bool accept_block_header(const struct block_header *header,
                 }
             }
         }
-        if (pindex->nStatus & BLOCK_FAILED_MASK) {
-            int tip_h = active_chain_height(&ms->chain_active);
-            static time_t last_retry_clear = 0;
-            process_block_try_clear_stale_failed(pindex, tip_h,
-                                                  time(NULL),
-                                                  &last_retry_clear);
-        }
+        if ((pindex->nStatus & BLOCK_FAILED_MASK) == BLOCK_FAILED_CHILD)
+            pindex->nStatus &= ~BLOCK_FAILED_CHILD;
         /* Re-arriving headers must promote nStatus from
          * BLOCK_VALID_HEADER to BLOCK_VALID_TREE. Without this, blocks
          * stored to block_map by body-pull / direct-import (which
@@ -2375,14 +2362,6 @@ bool accept_block(struct block *block,
         *ppindex = pindex;
 
     bool already_have = (pindex->nStatus & BLOCK_HAVE_DATA) != 0;
-    bool mirror_authorized = pindex->phashBlock &&
-        mirror_consensus_authorized_current(pindex->nHeight,
-                                            pindex->phashBlock);
-    if (mirror_authorized && (pindex->nStatus & BLOCK_FAILED_MASK)) {
-        pindex->nStatus &= ~BLOCK_FAILED_MASK;
-        mirror_consensus_record_override(pindex->nHeight,
-                                         "cleared-stale-failed-valid");
-    }
     if (already_have) {
         /* Defensive verify: BLOCK_HAVE_DATA can be set on an index
          * entry whose on-disk position is actually empty — observed
@@ -2543,13 +2522,7 @@ bool accept_block(struct block *block,
 
     if (!check_block(block, state, params, true, true, true) ||
         !contextual_check_block(block, state, params, pindex->pprev)) {
-        if (mirror_authorized && !state->corruption_possible) {
-            mirror_consensus_record_override(
-                pindex->nHeight,
-                state->reject_reason[0] ? state->reject_reason
-                                        : "accept-block-consensus");
-            validation_state_init(state);
-        } else if (validation_state_is_invalid(state) &&
+        if (validation_state_is_invalid(state) &&
                    !state->corruption_possible) {
             pindex->nStatus |= BLOCK_FAILED_VALID;
             mirror_consensus_record_blocker(
@@ -2862,9 +2835,6 @@ bool connect_tip(struct validation_state *state,
         process_block_log_live_stage(live_height, "connect_block",
                                      GetTimeMicros() - stage_start_us);
         if (!rv) {
-            bool mirror_authorized = pindex_new->phashBlock &&
-                mirror_consensus_authorized_current(pindex_new->nHeight,
-                                                    pindex_new->phashBlock);
             /* ── Self-healing: recover missing UTXO from block data ── */
 	            if (state->has_missing_utxo &&
                 strcmp(state->reject_reason, "bad-txns-inputs-missingorspent") == 0 &&
@@ -3138,17 +3108,6 @@ bool connect_tip(struct validation_state *state,
                             "unrecovered missing UTXO; local chainstate "
                             "repair can retry this block\n",
                             pindex_new->nHeight);
-                } else if (mirror_authorized && !state->corruption_possible) {
-                    pindex_new->nStatus &= ~BLOCK_FAILED_MASK;
-                    mirror_consensus_record_override(
-                        pindex_new->nHeight,
-                        state->reject_reason[0] ? state->reject_reason
-                                                : "connect_block");
-                    fprintf(stderr, // obs-ok:pre-existing-diagnostic
-                            "connect_tip: NOT marking h=%d failed; "
-                            "zclassicd-authorized mirror block overrides "
-                            "local consensus disagreement\n",
-                            pindex_new->nHeight);
                 } else {
                     pindex_new->nStatus |= BLOCK_FAILED_VALID;
                     mirror_consensus_record_blocker(
@@ -3168,12 +3127,6 @@ bool connect_tip(struct validation_state *state,
                             "connect_tip: NOT propagating "
                             "BLOCK_FAILED_CHILD at h=%d "
                             "(missing UTXO unrecovered)\n",
-                            pindex_new->nHeight);
-                } else if (mirror_authorized && !state->corruption_possible) {
-                    fprintf(stderr, // obs-ok:pre-existing-diagnostic
-                            "connect_tip: NOT propagating "
-                            "BLOCK_FAILED_CHILD at h=%d "
-                            "(mirror consensus override)\n",
                             pindex_new->nHeight);
                 } else if (pindex_new->nHeight <= 10) {
                     fprintf(stderr, // obs-ok:pre-existing-diagnostic
@@ -4021,7 +3974,6 @@ bool activate_best_chain(struct validation_state *state,
                 struct arith_uint256 proof = GetBlockProof(pindex_new);
                 arith_uint256_add(&pindex_new->nChainWork,
                                   &tip->nChainWork, &proof);
-                pindex_new->nStatus &= ~BLOCK_FAILED_MASK;
                 fprintf(stderr, // obs-ok:pre-existing-diagnostic
                         "activate_best_chain: repaired provided near-tip "
                         "index h=%d from header prev=tip\n",

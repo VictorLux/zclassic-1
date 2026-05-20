@@ -89,8 +89,7 @@ struct legacy_mirror_sync_stats {
     char    zclassic23_hash[65];
     char    zclassicd_hash[65];
     char    consensus_authority[32];
-    bool    mirror_authorization_enabled;
-    char    mirror_source_trust[32];
+    char    candidate_trust[32];
     bool    override_active;
     bool    last_override_safe;
     char    last_override_reason[128];

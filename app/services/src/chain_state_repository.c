@@ -615,6 +615,26 @@ enum csr_result csr_repair_set_coins_best(
     return CSR_OK;
 }
 
+bool csr_restore_in_memory_view(struct chain_state_repository *csr,
+                                struct block_index *old_tip,
+                                struct block_index *old_header,
+                                const struct uint256 *old_coins_best)
+{
+    if (!csr || !csr->initialized)
+        return false;
+
+    pthread_mutex_lock(&csr->lock);
+    bool ok = true;
+    if (csr->chain_active)
+        ok = active_chain_set_tip(csr->chain_active, old_tip);
+    if (ok && csr->pindex_best_hdr)
+        *csr->pindex_best_hdr = old_header;
+    if (ok && csr->coins_tip && old_coins_best)
+        coins_view_cache_set_best_block(csr->coins_tip, old_coins_best);
+    pthread_mutex_unlock(&csr->lock);
+    return ok;
+}
+
 enum csr_result csr_commit_tip(struct chain_state_repository *csr,
                                 const struct chain_state_commit *commit)
 {

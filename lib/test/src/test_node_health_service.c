@@ -9,6 +9,7 @@
 #include "net/net.h"
 #include "services/chain_advance_coordinator.h"
 #include "validation/main_state.h"
+#include "validation/mirror_consensus.h"
 #include "util/safe_alloc.h"
 
 int test_node_health_service(void)
@@ -260,6 +261,53 @@ int test_node_health_service(void)
         rpc_net_set_connman(NULL);
         net_manager_free(&cm.manager);
         error_ring_init(er);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("node_health_service: unsafe mirror override fails health loud... ");
+    {
+        struct node_health_snapshot health;
+        struct connman cm;
+        struct net_address addr;
+        struct p2p_node *node = NULL;
+        bool ok = true;
+
+        memset(&health, 0, sizeof(health));
+        memset(&cm, 0, sizeof(cm));
+        memset(&addr, 0, sizeof(addr));
+        mirror_consensus_reset_for_test();
+        net_manager_init(&cm.manager);
+        cm.manager.nodes = zcl_calloc(1, sizeof(*cm.manager.nodes),
+                                      "test_nodes");
+        ok = ok && (cm.manager.nodes != NULL);
+        if (ok) {
+            node = p2p_node_create(&cm.manager, ZCL_INVALID_SOCKET, &addr,
+                                   "unsafe-mirror-peer", false);
+            ok = ok && (node != NULL);
+        }
+        if (ok) {
+            cm.manager.nodes[0] = node;
+            cm.manager.num_nodes = 1;
+            rpc_net_set_connman(&cm);
+            sync_set_state(SYNC_FINDING_PEERS, "test");
+            sync_set_state(SYNC_HEADERS_DOWNLOAD, "test");
+            sync_set_state(SYNC_BLOCKS_DOWNLOAD, "test");
+            sync_set_state(SYNC_CONNECTING_BLOCKS, "test");
+            sync_set_state(SYNC_AT_TIP, "test");
+            mirror_consensus_record_override(42, "test_unsafe_override");
+            node_health_collect(&health, NULL, NULL);
+
+            ok = health.synced;
+            ok = ok && health.has_peers;
+            ok = ok && !health.healthy;
+            ok = ok && strcmp(health.degraded_reason,
+                              "mirror_unsafe_overrides_1") == 0;
+        }
+
+        rpc_net_set_connman(NULL);
+        net_manager_free(&cm.manager);
+        mirror_consensus_reset_for_test();
         if (ok) printf("OK\n");
         else { printf("FAIL\n"); failures++; }
     }
