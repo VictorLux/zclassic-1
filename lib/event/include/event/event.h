@@ -47,6 +47,11 @@ enum event_type {
     EV_TIP_STALE,                /* payload: "state=... since=N peers=N max_peer=N" — sync state has not advanced for STALL_DEADLINE_SECS in any non-tip state; emitted once per stall episode (reset on state change or block-connect). Pairs with the existing STATE_STUCK watchdog so absence-of-progress is a first-class structured signal, not just stdout. */
     EV_SYNC_HEARTBEAT,           /* payload: "state=... h=N max_peer=N tip_age=N" — periodic (60s) liveness emit from sync_watchdog_periodic_tick; silence > 2 ticks implies process wedge separate from sync wedge */
 
+    /* ── Long-operation heartbeat contract (util/long_op.h) ────── */
+    EV_LONG_OP_BEGIN,            /* payload: "label=... begin_us=..." — long_op_scope opened around a >600s code path (snapshot import, bulk copy, wallet rescan) */
+    EV_LONG_OP_TICK,             /* payload: "label=... age_us=... tick=N" — periodic (>=30s rate-limited) liveness from inside the scope */
+    EV_LONG_OP_END,              /* payload: "label=... duration_us=... ticks=N ok=..." — scope closed, work complete */
+
     /* ── Validation pipeline ────────────────────────── */
     EV_BLOCK_CONNECTED,          /* payload: height string */
     EV_BLOCK_REJECTED,           /* payload: dos + reason string */

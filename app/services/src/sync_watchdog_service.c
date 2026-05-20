@@ -24,6 +24,7 @@
 #include <stdatomic.h>
 
 #include "util/log_macros.h"
+#include "util/long_op.h"
 #include "util/thread_registry.h"
 #include "health/heartbeat.h"
 
@@ -1250,6 +1251,20 @@ enum watchdog_recovery_type sync_watchdog_check(
 
     /* c. STATE_STUCK: any state (except at_tip) exceeded per-state timeout */
     if (state != SYNC_AT_TIP && duration > state_stuck_timeout(state)) {
+        /* Long-operation suppression (WS-2a): if a long_op_scope is
+         * actively ticking (snapshot import, bulk copy, wallet rescan)
+         * then progress is happening elsewhere and STATE_STUCK would
+         * trigger a counterproductive header re-sync. Skip this tick. */
+        int64_t lo_age = 0;
+        if (long_op_is_active(&lo_age) && lo_age < 60) {
+            const char *lo_label = long_op_recent_label();
+            printf("[watchdog] suppressing STATE_STUCK: long_op active "
+                   "(label=%s age=%llds)\n",
+                   lo_label ? lo_label : "(unknown)",
+                   (long long)lo_age);
+            return WATCHDOG_NONE;
+        }
+
         /* Surface through node.log + event stream, not just the systemd
          * journal — operators grep node.log via zcl_node_log, and printf
          * goes to stdout (journal) only. Throttle to once per stall

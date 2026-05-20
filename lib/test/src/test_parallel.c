@@ -64,6 +64,7 @@ volatile sig_atomic_t g_shutdown_requested = 0;
     X(flyclient) X(scan_util) X(tor) X(event) X(download) X(consensus) \
     X(policy) X(wallet_view) X(fast_sync) X(block_scan) \
     X(node_health_service) X(chain_state_repo) X(recovery_policy) \
+    X(long_op) \
     X(db_txn) X(sync_service) X(snapshot_sync_service) \
     X(file_controller) X(file_ops) X(integrity) X(protocols) \
     X(chain_restore_service) X(chain_activation_controller) \

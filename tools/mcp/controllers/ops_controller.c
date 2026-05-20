@@ -966,9 +966,9 @@ static const struct mcp_param_spec p_profile[] = {
 };
 static const struct mcp_param_spec p_state[] = {
     { "subsystem", MCP_PARAM_STR, true,
-      "Subsystem name: watchdog, boot, block_index, health, oracle, local_ingest, header_probe, legacy_mirror, oracle_policy, rolling_anchor, quorum_oracle, peer_lifecycle, chain_advance_coordinator",
+      "Subsystem name: watchdog, boot, block_index, health, oracle, local_ingest, header_probe, legacy_mirror, oracle_policy, rolling_anchor, quorum_oracle, peer_lifecycle, chain_advance_coordinator, long_op",
       0, 0, 1, 64,
-      "watchdog,boot,block_index,health,oracle,local_ingest,header_probe,legacy_mirror,oracle_policy,rolling_anchor,quorum_oracle,peer_lifecycle,chain_advance_coordinator", NULL },
+      "watchdog,boot,block_index,health,oracle,local_ingest,header_probe,legacy_mirror,oracle_policy,rolling_anchor,quorum_oracle,peer_lifecycle,chain_advance_coordinator,long_op", NULL },
     { "key", MCP_PARAM_STR, false,
       "Subsystem-specific key (block_index: height or hex hash)",
       0, 0, 0, 128, NULL, NULL },

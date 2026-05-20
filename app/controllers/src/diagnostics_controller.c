@@ -52,6 +52,7 @@
 #include "net/peer_lifecycle.h"
 #include "util/ar_step_readonly.h"
 #include "util/log_macros.h"
+#include "util/long_op.h"
 #include "util/safe_alloc.h"
 
 #include <sqlite3.h>
@@ -402,6 +403,8 @@ static const struct dump_entry g_dumpers[] = {
                      "P2P peer lifecycle attempts, handshakes, timeouts, and rejects by address/source" },
     { "chain_advance_coordinator", chain_advance_coordinator_dump_state_json,
                      "canonical chain-advance source scoring: P2P, snapshot, local import, mirror fallback" },
+    { "long_op",     long_op_dump_state_json,
+                     "active long-operation scopes (>600s code paths) that gate STATE_STUCK watchdog suppression" },
 };
 
 static bool rpc_dumpstate(const struct json_value *params, bool help,

@@ -32,6 +32,7 @@
 #include "storage/dbwrapper.h"
 #include "models/database.h"
 #include "util/log_macros.h"
+#include "util/long_op.h"
 #include "util/safe_alloc.h"
 #include "util/thread_registry.h"
 #include "validation/chainstate.h"
@@ -248,6 +249,12 @@ static int64_t lci_copy_block_index(const char *legacy_blocks_index_dir,
     enum { BATCH_LIMIT = 5000 };
     int32_t best_h = -1;
 
+    /* WS-2a: surround the iteration with a long_op_scope so the sync
+     * watchdog does not fire STATE_STUCK while we are quietly copying
+     * the legacy LevelDB into ours. Each completed batch ticks. */
+    struct long_op_scope lo_scope;
+    long_op_begin(&lo_scope, "legacy_cold_import.bulk_copy");
+
     while (db_iter_valid(&it)) {
         if (thread_registry_shutdown_requested()) break;
 
@@ -293,10 +300,12 @@ static int64_t lci_copy_block_index(const char *legacy_blocks_index_dir,
                 db_batch_free(&batch);
                 db_iter_free(&it);
                 db_wrapper_close(&src);
+                long_op_end(&lo_scope);
                 return -1;  // raw-return-ok:logged-above
             }
             db_batch_clear(&batch);
             batch_fill = 0;
+            long_op_tick(&lo_scope);
         }
 
         db_iter_next(&it);
@@ -309,12 +318,14 @@ static int64_t lci_copy_block_index(const char *legacy_blocks_index_dir,
             db_batch_free(&batch);
             db_iter_free(&it);
             db_wrapper_close(&src);
+            long_op_end(&lo_scope);
             return -1;  // raw-return-ok:logged-above
         }
     }
     db_batch_free(&batch);
     db_iter_free(&it);
     db_wrapper_close(&src);
+    long_op_end(&lo_scope);
 
     if (out_tip_height) *out_tip_height = best_h;
     return written;
