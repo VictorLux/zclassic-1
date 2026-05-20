@@ -28,6 +28,7 @@
 #define _POSIX_C_SOURCE 200809L
 
 #include "test/test_helpers.h"
+#include "event/event.h"
 
 #include <errno.h>
 #include <fcntl.h>
@@ -172,6 +173,7 @@ static void child_run(size_t idx, const char *out_path)
     chain_params_select(CHAIN_MAIN);
     ecc_start();
     ecc_verify_init();
+    event_log_init();
 
     int failures = g_groups[idx].fn();
 
