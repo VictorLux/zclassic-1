@@ -1,0 +1,423 @@
+/* Copyright 2026 Rhett Creighton - Apache License 2.0
+ *
+ * Supervisor — implementation. See util/supervisor.h for design notes. */
+#define _GNU_SOURCE  /* pthread_timedjoin_np */
+/*
+ *
+ * Architecture:
+ *   - Fixed-cap pointer registry (caller owns contracts).
+ *   - One dedicated thread "zcl_supervisor", loop period configurable
+ *     (default 1000 ms). Loop body: snapshot now; for each registered
+ *     contract: maybe-tick (period_secs), maybe-stall (deadline_secs
+ *     OR progress_max_quiet_us). All edge-triggered: stall_reason set
+ *     to non-zero means "we already fired"; child clearing it by
+ *     ticking re-arms the edge.
+ *   - Registry mutex protects the array of pointers; supervisor
+ *     snapshots pointers under lock, then releases the lock BEFORE
+ *     invoking any callback — callbacks may freely call back into the
+ *     supervisor API. */
+
+#include "util/supervisor.h"
+
+#include "json/json.h"
+#include "util/thread_registry.h"
+
+#include <pthread.h>
+#include <stdatomic.h>
+#include <stdio.h>
+#include <string.h>
+#include <time.h>
+
+/* ── Internal state ────────────────────────────────────────────────── */
+
+static pthread_mutex_t g_lock = PTHREAD_MUTEX_INITIALIZER;
+
+static struct liveness_contract *g_contracts[SUPERVISOR_CAP];
+static int                       g_contract_count = 0;
+
+static _Atomic bool   g_running       = false;
+static _Atomic bool   g_thread_alive  = false;
+static _Atomic int    g_tick_ms       = 1000;
+static pthread_t      g_thread_id;
+static _Atomic bool   g_thread_handle_set = false;
+
+/* ── Time helpers ──────────────────────────────────────────────────── */
+
+static int64_t mono_us(void)
+{
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (int64_t)ts.tv_sec * 1000000 + ts.tv_nsec / 1000;
+}
+
+const char *supervisor_stall_reason_name(enum supervisor_stall_reason r)
+{
+    switch (r) {
+    case SUPERVISOR_STALL_NONE:             return "none";
+    case SUPERVISOR_STALL_TIME_DEADLINE:    return "time_deadline";
+    case SUPERVISOR_STALL_NO_PROGRESS:      return "no_progress";
+    case SUPERVISOR_STALL_CHILD_REPORTED:   return "child_reported";
+    case SUPERVISOR_STALL_REPEATED_RESTART: return "repeated_restart";
+    }
+    return "(invalid)";
+}
+
+/* ── Init / registry ───────────────────────────────────────────────── */
+
+void liveness_contract_init(struct liveness_contract *c, const char *name)
+{
+    if (!c) return;
+    memset(c, 0, sizeof(*c));
+    if (name) {
+        size_t n = strnlen(name, SUPERVISOR_NAME_MAX - 1);
+        memcpy(c->name, name, n);
+        c->name[n] = '\0';
+    }
+    c->parent = -1;
+    /* All atomic fields zero-initialize to their value-equivalent of
+     * the underlying type (0 for ints), which is correct for first use. */
+    atomic_store(&c->last_tick_us, mono_us());
+    atomic_store(&c->progress_changed_at_us, mono_us());
+}
+
+supervisor_child_id supervisor_register(struct liveness_contract *c)
+{
+    if (!c) return SUPERVISOR_INVALID_ID;
+    pthread_mutex_lock(&g_lock);
+    if (g_contract_count >= SUPERVISOR_CAP) {
+        pthread_mutex_unlock(&g_lock);
+        fprintf(stderr,
+            "[supervisor] FAIL register '%s': registry full (cap=%d)\n",
+            c->name, SUPERVISOR_CAP);
+        return SUPERVISOR_INVALID_ID;
+    }
+    /* Reject duplicate name (helps tests + catches double-registers). */
+    for (int i = 0; i < g_contract_count; i++) {
+        if (strncmp(g_contracts[i]->name, c->name, SUPERVISOR_NAME_MAX) == 0) {
+            pthread_mutex_unlock(&g_lock);
+            fprintf(stderr,
+                "[supervisor] FAIL register '%s': duplicate name\n", c->name);
+            return SUPERVISOR_INVALID_ID;
+        }
+    }
+    int id = g_contract_count++;
+    g_contracts[id] = c;
+    pthread_mutex_unlock(&g_lock);
+    return id;
+}
+
+void supervisor_unregister(supervisor_child_id id)
+{
+    pthread_mutex_lock(&g_lock);
+    if (id < 0 || id >= g_contract_count) {
+        pthread_mutex_unlock(&g_lock);
+        return;
+    }
+    /* Compact: move last into the freed slot. Note: this changes the
+     * effective id of the last child. Unregister is rare (test teardown
+     * + shutdown), so we accept the rename rather than holding zombie
+     * slots. */
+    g_contracts[id] = g_contracts[g_contract_count - 1];
+    g_contracts[g_contract_count - 1] = NULL;
+    g_contract_count--;
+    pthread_mutex_unlock(&g_lock);
+}
+
+/* ── Child-side O(1) helpers ───────────────────────────────────────── */
+
+static struct liveness_contract *contract_for(supervisor_child_id id)
+{
+    /* Reads under lock; the returned pointer is to caller-owned static
+     * storage, so dereferencing without the lock is safe. */
+    pthread_mutex_lock(&g_lock);
+    struct liveness_contract *c = NULL;
+    if (id >= 0 && id < g_contract_count) c = g_contracts[id];
+    pthread_mutex_unlock(&g_lock);
+    return c;
+}
+
+void supervisor_tick(supervisor_child_id id)
+{
+    struct liveness_contract *c = contract_for(id);
+    if (!c) return;
+    atomic_store(&c->last_tick_us, mono_us());
+    atomic_fetch_add(&c->ticks_run, 1u);
+    /* Edge-rearm: ticking clears a TIME_DEADLINE stall. NO_PROGRESS
+     * is cleared by progress changes, not by ticks. */
+    int prev = atomic_load(&c->stall_reason);
+    if (prev == SUPERVISOR_STALL_TIME_DEADLINE ||
+        prev == SUPERVISOR_STALL_CHILD_REPORTED) {
+        atomic_store(&c->stall_reason, SUPERVISOR_STALL_NONE);
+    }
+}
+
+void supervisor_progress(supervisor_child_id id, int64_t marker)
+{
+    struct liveness_contract *c = contract_for(id);
+    if (!c) return;
+    int64_t prev = atomic_load(&c->progress_marker);
+    if (marker != prev) {
+        atomic_store(&c->progress_marker, marker);
+        atomic_store(&c->progress_changed_at_us, mono_us());
+        /* Progress rearm: clears NO_PROGRESS. */
+        int sr = atomic_load(&c->stall_reason);
+        if (sr == SUPERVISOR_STALL_NO_PROGRESS)
+            atomic_store(&c->stall_reason, SUPERVISOR_STALL_NONE);
+    }
+}
+
+void supervisor_report_stall(supervisor_child_id id,
+                             enum supervisor_stall_reason r)
+{
+    struct liveness_contract *c = contract_for(id);
+    if (!c) return;
+    /* Only fire on the rising edge. */
+    int expected = SUPERVISOR_STALL_NONE;
+    if (atomic_compare_exchange_strong(&c->stall_reason, &expected, (int)r)) {
+        atomic_fetch_add(&c->stall_fires, 1u);
+        if (c->on_stall) c->on_stall(c);
+    }
+}
+
+void supervisor_set_period(supervisor_child_id id, int64_t secs)
+{
+    struct liveness_contract *c = contract_for(id);
+    if (c) atomic_store(&c->period_secs, secs);
+}
+
+void supervisor_set_deadline(supervisor_child_id id, int64_t secs)
+{
+    struct liveness_contract *c = contract_for(id);
+    if (c) atomic_store(&c->deadline_secs, secs);
+}
+
+void supervisor_set_progress_max_quiet(supervisor_child_id id,
+                                       int64_t microseconds)
+{
+    struct liveness_contract *c = contract_for(id);
+    if (c) atomic_store(&c->progress_max_quiet_us, microseconds);
+}
+
+/* ── Supervisor loop ───────────────────────────────────────────────── */
+
+static void sweep_once(void)
+{
+    int64_t now = mono_us();
+
+    /* Snapshot the list of pointers under lock; release before
+     * invoking any callback so callbacks can re-enter the API safely. */
+    struct liveness_contract *snap[SUPERVISOR_CAP];
+    int n;
+    pthread_mutex_lock(&g_lock);
+    n = g_contract_count;
+    memcpy(snap, g_contracts, (size_t)n * sizeof(snap[0]));
+    pthread_mutex_unlock(&g_lock);
+
+    for (int i = 0; i < n; i++) {
+        struct liveness_contract *c = snap[i];
+        if (!c) continue;
+
+        int64_t last_tick = atomic_load(&c->last_tick_us);
+        int64_t period_s  = atomic_load(&c->period_secs);
+        int64_t deadl_s   = atomic_load(&c->deadline_secs);
+        int64_t quiet_us  = atomic_load(&c->progress_max_quiet_us);
+
+        /* Periodic on_tick driving. Supervisor calls on_tick when the
+         * configured period has elapsed; on_tick is expected to do the
+         * child's actual work and then call supervisor_tick to record
+         * the heartbeat (or do work that emits supervisor_progress). */
+        if (period_s > 0 && (now - last_tick) >= period_s * 1000000) {
+            if (c->on_tick) c->on_tick(c);
+            /* If on_tick didn't call supervisor_tick itself, stamp it
+             * now so we don't busy-fire. */
+            int64_t after = atomic_load(&c->last_tick_us);
+            if (after == last_tick) {
+                atomic_store(&c->last_tick_us, mono_us());
+                atomic_fetch_add(&c->ticks_run, 1u);
+            }
+        }
+
+        /* Edge-triggered stall fires. Only on the rising edge:
+         * stall_reason transitions NONE → something. */
+        int sr = atomic_load(&c->stall_reason);
+        if (sr != SUPERVISOR_STALL_NONE) continue;
+
+        /* Reload last_tick_us in case on_tick just bumped it. */
+        int64_t lt = atomic_load(&c->last_tick_us);
+
+        if (deadl_s > 0 && (now - lt) >= deadl_s * 1000000) {
+            int expected = SUPERVISOR_STALL_NONE;
+            if (atomic_compare_exchange_strong(&c->stall_reason,
+                    &expected, SUPERVISOR_STALL_TIME_DEADLINE)) {
+                atomic_fetch_add(&c->stall_fires, 1u);
+                if (c->on_stall) c->on_stall(c);
+            }
+            continue;
+        }
+
+        if (quiet_us > 0) {
+            int64_t changed = atomic_load(&c->progress_changed_at_us);
+            if ((now - changed) >= quiet_us) {
+                int expected = SUPERVISOR_STALL_NONE;
+                if (atomic_compare_exchange_strong(&c->stall_reason,
+                        &expected, SUPERVISOR_STALL_NO_PROGRESS)) {
+                    atomic_fetch_add(&c->stall_fires, 1u);
+                    if (c->on_stall) c->on_stall(c);
+                }
+            }
+        }
+    }
+}
+
+static void *supervisor_thread_main(void *arg)
+{
+    (void)arg;
+    atomic_store(&g_thread_alive, true);
+    while (atomic_load(&g_running) &&
+           !thread_registry_shutdown_requested())
+    {
+        sweep_once();
+        int ms = atomic_load(&g_tick_ms);
+        if (ms < 1) ms = 1;
+        if (ms > 60000) ms = 60000;
+        struct timespec req = { ms / 1000, (long)(ms % 1000) * 1000000L };
+        nanosleep(&req, NULL);
+    }
+    atomic_store(&g_thread_alive, false);
+    thread_registry_unregister_self();
+    return NULL;
+}
+
+/* ── Lifecycle ─────────────────────────────────────────────────────── */
+
+bool supervisor_start(void)
+{
+    bool was = atomic_exchange(&g_running, true);
+    if (was) return true;        /* idempotent */
+    atomic_store(&g_thread_alive, false);
+
+    pthread_t tid;
+    int rc = thread_registry_spawn_ex("zcl_supervisor",
+                                       supervisor_thread_main, NULL, &tid);
+    if (rc != 0) {
+        atomic_store(&g_running, false);
+        fprintf(stderr,
+            "[supervisor] FAIL thread_registry_spawn_ex rc=%d\n", rc);
+        return false;
+    }
+    g_thread_id = tid;
+    atomic_store(&g_thread_handle_set, true);
+    return true;
+}
+
+void supervisor_stop(void)
+{
+    if (!atomic_load(&g_running)) return;
+    atomic_store(&g_running, false);
+
+    /* Wait up to ~2 s for the loop to exit. Loop polls g_running and
+     * the global shutdown flag, so this is bounded by tick_ms. */
+    if (atomic_load(&g_thread_handle_set)) {
+        struct timespec deadline;
+        clock_gettime(CLOCK_REALTIME, &deadline);
+        deadline.tv_sec += 2;
+        int rc = pthread_timedjoin_np(g_thread_id, NULL, &deadline);
+        if (rc != 0) {
+            fprintf(stderr,
+                "[supervisor] WARN supervisor_stop join rc=%d (thread still alive)\n",
+                rc);
+        } else {
+            atomic_store(&g_thread_handle_set, false);
+        }
+    }
+}
+
+void supervisor_set_tick_ms_for_testing(int ms)
+{
+    if (ms < 1) ms = 1;
+    atomic_store(&g_tick_ms, ms);
+}
+
+#ifdef ZCL_TESTING
+void supervisor_reset_for_testing(void)
+{
+    /* Stop first so the sweeper isn't iterating while we clear. */
+    supervisor_stop();
+    pthread_mutex_lock(&g_lock);
+    for (int i = 0; i < SUPERVISOR_CAP; i++) g_contracts[i] = NULL;
+    g_contract_count = 0;
+    pthread_mutex_unlock(&g_lock);
+    atomic_store(&g_tick_ms, 1000);
+}
+#endif
+
+/* ── Introspection ─────────────────────────────────────────────────── */
+
+int supervisor_snapshot_all(struct supervisor_snapshot *out, int max)
+{
+    if (!out || max <= 0) return 0;
+    int64_t now = mono_us();
+    pthread_mutex_lock(&g_lock);
+    int n = g_contract_count;
+    if (n > max) n = max;
+    for (int i = 0; i < n; i++) {
+        const struct liveness_contract *c = g_contracts[i];
+        memset(&out[i], 0, sizeof(out[i]));
+        memcpy(out[i].name, c->name, sizeof(out[i].name));
+        out[i].parent           = c->parent;
+        int64_t lt              = atomic_load(&c->last_tick_us);
+        out[i].last_tick_age_us = now - lt;
+        out[i].progress_marker  = atomic_load(&c->progress_marker);
+        out[i].period_secs      = atomic_load(&c->period_secs);
+        out[i].deadline_secs    = atomic_load(&c->deadline_secs);
+        out[i].stall_reason     = atomic_load(&c->stall_reason);
+        out[i].ticks_run        = atomic_load(&c->ticks_run);
+        out[i].stall_fires      = atomic_load(&c->stall_fires);
+        out[i].restart_count    = atomic_load(&c->restart_count);
+    }
+    pthread_mutex_unlock(&g_lock);
+    return n;
+}
+
+bool supervisor_dump_state_json(struct json_value *out, const char *key)
+{
+    (void)key;
+    if (!out) return false;
+    json_set_object(out);
+    json_push_kv_bool(out, "running",      atomic_load(&g_running));
+    json_push_kv_bool(out, "thread_alive", atomic_load(&g_thread_alive));
+    json_push_kv_int (out, "tick_ms",      atomic_load(&g_tick_ms));
+
+    struct supervisor_snapshot snaps[SUPERVISOR_CAP];
+    int n = supervisor_snapshot_all(snaps, SUPERVISOR_CAP);
+    json_push_kv_int(out, "child_count", n);
+
+    struct json_value arr;
+    json_init(&arr);
+    json_set_array(&arr);
+    for (int i = 0; i < n; i++) {
+        struct json_value child;
+        json_init(&child);
+        json_set_object(&child);
+        json_push_kv_str (&child, "name",   snaps[i].name);
+        json_push_kv_int (&child, "parent", snaps[i].parent);
+        json_push_kv_int (&child, "last_tick_age_us",
+                          snaps[i].last_tick_age_us);
+        json_push_kv_int (&child, "progress_marker",
+                          snaps[i].progress_marker);
+        json_push_kv_int (&child, "period_secs",   snaps[i].period_secs);
+        json_push_kv_int (&child, "deadline_secs", snaps[i].deadline_secs);
+        json_push_kv_str (&child, "stall_reason",
+                          supervisor_stall_reason_name(
+                              (enum supervisor_stall_reason)
+                              snaps[i].stall_reason));
+        json_push_kv_int (&child, "ticks_run",     snaps[i].ticks_run);
+        json_push_kv_int (&child, "stall_fires",   snaps[i].stall_fires);
+        json_push_kv_int (&child, "restart_count", snaps[i].restart_count);
+        json_push_back(&arr, &child);
+        json_free(&child);
+    }
+    json_push_kv(out, "children", &arr);
+    json_free(&arr);
+    return true;
+}

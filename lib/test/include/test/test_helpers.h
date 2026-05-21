@@ -318,6 +318,7 @@ int test_failed_child_cap(void);
 int test_power_node_contract_spec(void);
 int test_boot_phase(void);
 int test_path_check(void);
+int test_supervisor(void);
 
 /* Spec-based user story tests (one per feature area) */
 int spec_wallet_dashboard(void);
