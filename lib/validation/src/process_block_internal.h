@@ -133,11 +133,19 @@ bool sapling_tree_persist_once(void);
 /* process_block_core.c helpers exposed to sibling .c files in the
  * WS-6 phase 1 split. add_to_block_index used by accept_block_header.c.
  * update_tip used by disconnect_tip.c.
+ * find_block_pos + block_index_refresh_header used by accept_block.c.
+ * g_last_block_file_size updated by accept_block.c after on-disk write.
  * process_block_should_skip_contextual_header is already declared in
  * <validation/process_block.h> (public). */
 struct block_header;
+struct disk_block_pos;
 struct block_index *add_to_block_index(struct main_state *ms,
                                        const struct block_header *header);
 bool update_tip(struct main_state *ms, struct block_index *pindex_new);
+bool find_block_pos(struct disk_block_pos *pos, unsigned int block_size,
+                    const char *datadir);
+void block_index_refresh_header(struct block_index *pindex,
+                                const struct block_header *header);
+extern unsigned int g_last_block_file_size; /* defined in process_block_core.c */
 
 #endif /* ZCL_VALIDATION_PROCESS_BLOCK_INTERNAL_H */
