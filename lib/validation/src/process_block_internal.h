@@ -165,4 +165,17 @@ bool process_block_commit_tip(struct main_state *ms,
                               bool persist_coins_best,
                               const struct chain_evidence_record *verified);
 
+/* WS-6.5: helpers exposed for activate_best_chain.c. */
+bool process_block_verify_active_tip_child_on_disk(
+    const struct block_index *candidate,
+    const struct block_index *tip,
+    const char *datadir);
+struct block_index *find_best_active_tip_child(struct main_state *ms,
+                                               struct block_index *tip,
+                                               const char *datadir);
+struct block_index *find_verified_unlinked_active_tip_child(
+    struct main_state *ms,
+    struct block_index *tip,
+    const char *datadir);
+
 #endif /* ZCL_VALIDATION_PROCESS_BLOCK_INTERNAL_H */
