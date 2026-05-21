@@ -1030,8 +1030,11 @@ static int t_projection_deferral_is_not_block_rejected_contract(void)
     int failures = 0;
     char *buf = NULL;
     TEST("projection deferral is chain advance diagnostic, not block reject") {
+        /* WS-6 phase 1 moved connect_tip() out of process_block_core.c
+         * into its own file. The projection-deferred contract now lives
+         * in connect_tip.c — check there instead. */
         char path[PATH_MAX];
-        ASSERT(repo_path(path, sizeof(path), "lib/validation/src/process_block_core.c") == 0);
+        ASSERT(repo_path(path, sizeof(path), "lib/validation/src/connect_tip.c") == 0);
         ASSERT(read_entire_file(path, &buf) == 0);
         ASSERT(strstr(buf, "chain_advance_coordinator_note_projection_deferred") != NULL);
         ASSERT(strstr(buf, "\"consensus_path\"") != NULL);

@@ -148,4 +148,21 @@ void block_index_refresh_header(struct block_index *pindex,
                                 const struct block_header *header);
 extern unsigned int g_last_block_file_size; /* defined in process_block_core.c */
 
+/* WS-6.4: helpers exposed for connect_tip.c. block_index_hydrate_from_disk
+ * is also called by process_block_test_hydrate_index_from_disk in core.c.
+ * find_most_work_chain + process_block_commit_tip are called by
+ * activate_best_chain (still in core.c) as well. */
+struct coins_view_cache;
+struct chain_evidence_record;
+bool block_index_hydrate_from_disk(struct block_index *pindex,
+                                   const char *datadir);
+struct block_index *find_most_work_chain(struct main_state *ms);
+bool process_block_commit_tip(struct main_state *ms,
+                              struct coins_view_cache *coins_tip,
+                              struct block_index *new_tip,
+                              const char *reason,
+                              bool update_header_tip,
+                              bool persist_coins_best,
+                              const struct chain_evidence_record *verified);
+
 #endif /* ZCL_VALIDATION_PROCESS_BLOCK_INTERNAL_H */
