@@ -130,4 +130,12 @@ bool flush_coins_if_needed(struct coins_view_cache *coins_tip, bool force);
 void sapling_checkpoint_maybe_flush(int height);
 bool sapling_tree_persist_once(void);
 
+/* process_block_core.c helpers exposed to sibling .c files in the
+ * WS-6 phase 1 split. add_to_block_index used by accept_block_header.c.
+ * process_block_should_skip_contextual_header is already declared in
+ * <validation/process_block.h> (public). */
+struct block_header;
+struct block_index *add_to_block_index(struct main_state *ms,
+                                       const struct block_header *header);
+
 #endif /* ZCL_VALIDATION_PROCESS_BLOCK_INTERNAL_H */
