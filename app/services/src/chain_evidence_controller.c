@@ -408,16 +408,36 @@ static void chain_evidence_controller_reconcile_startup(
         load_evidence(authority->ndb, "cec.active_tip_evidence",
                       &active_evidence);
 
+    /* Persisted hash / height mismatches between the in-memory active_tip
+     * and the cec.active_tip_* keys are NOT contradictions during startup
+     * — they reflect transient mid-boot state (coins view loaded before
+     * active chain restored, OR a prior session was killed mid-reorg and
+     * the running boot has rebuilt the chain to a different tip). The
+     * in-memory active_tip is the running source of truth; update the
+     * persisted state to match so future boots don't re-trigger, and
+     * continue without freezing. The auto-clear path above handles legacy
+     * frozen state from older binaries that did freeze here. */
     if (has_persisted_hash &&
         !u256_equal(&persisted_hash, active_tip->phashBlock)) {
-        chain_evidence_controller_freeze(authority,
-                                         "active_tip_hash_mismatch");
-        return;
+        char old_hex[65], new_hex[65];
+        uint256_get_hex(&persisted_hash, old_hex);
+        uint256_get_hex(active_tip->phashBlock, new_hex);
+        fprintf(stderr,  // obs-ok:cec-startup-tip-drift
+                "[cec] startup tip drift: persisted=%s in-memory=%s — "
+                "updating persisted to in-memory (h=%d)\n",
+                old_hex, new_hex, active_tip->nHeight);
+        persist_blob(authority, "cec.active_tip_hash",
+                     active_tip->phashBlock, sizeof(*active_tip->phashBlock));
+        persist_i64(authority, "cec.active_tip_height",
+                    active_tip->nHeight);
     }
     if (persisted_height >= 0 && persisted_height != active_tip->nHeight) {
-        chain_evidence_controller_freeze(authority,
-                                         "active_tip_height_mismatch");
-        return;
+        fprintf(stderr,  // obs-ok:cec-startup-tip-drift
+                "[cec] startup tip drift: persisted_height=%d "
+                "in-memory_height=%d — updating persisted\n",
+                persisted_height, active_tip->nHeight);
+        persist_i64(authority, "cec.active_tip_height",
+                    active_tip->nHeight);
     }
     /* coins_best_block lagging active_tip is recoverable on the running
      * node — the next block commit advances the coins cursor. Reaching
@@ -516,7 +536,9 @@ enum chain_evidence_controller_state chain_evidence_controller_load_state(
         bool demoted =
             (strcmp(r, "csr_header_tip_behind_active_tip") == 0) ||
             (strcmp(r, "sqlite_height_behind_active_tip") == 0) ||
-            (strcmp(r, "csr_cursor_mismatch") == 0);
+            (strcmp(r, "csr_cursor_mismatch") == 0) ||
+            (strcmp(r, "active_tip_hash_mismatch") == 0) ||
+            (strcmp(r, "active_tip_height_mismatch") == 0);
         if (demoted) {
             fprintf(stderr,  // obs-ok:cec-auto-clear-demoted-freeze
                     "[cec] auto-clearing stale freeze (reason=%s now "
