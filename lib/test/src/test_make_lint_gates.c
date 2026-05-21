@@ -1031,7 +1031,7 @@ static int t_projection_deferral_is_not_block_rejected_contract(void)
     char *buf = NULL;
     TEST("projection deferral is chain advance diagnostic, not block reject") {
         char path[PATH_MAX];
-        ASSERT(repo_path(path, sizeof(path), "lib/validation/src/process_block.c") == 0);
+        ASSERT(repo_path(path, sizeof(path), "lib/validation/src/process_block_core.c") == 0);
         ASSERT(read_entire_file(path, &buf) == 0);
         ASSERT(strstr(buf, "chain_advance_coordinator_note_projection_deferred") != NULL);
         ASSERT(strstr(buf, "\"consensus_path\"") != NULL);
