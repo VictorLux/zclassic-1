@@ -20,7 +20,6 @@
 #include "config/runtime.h"
 #include "models/zslp.h"
 #include "services/zslp_command_service.h"
-#include "services/zslp_payment_service.h"
 #include "services/zslp_service.h"
 #include "rpc/server.h"
 #include "json/json.h"

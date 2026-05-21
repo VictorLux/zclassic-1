@@ -12,6 +12,7 @@
 struct tx_destination;
 struct db_zslp_token_info;
 struct db_zslp_transfer_info;
+struct wallet;
 
 struct zslp_token_create_request {
     const char *ticker;
@@ -56,5 +57,11 @@ bool zslp_service_credit_balance(sqlite3 *db, const char *token_id,
 bool zslp_service_store_token(sqlite3 *db, const char *token_id,
                               const char *ticker, const char *name,
                               int decimals, int64_t initial_supply);
+
+bool zslp_payment_generate_address(struct wallet *wallet,
+                                   char *z_addr_out, size_t max);
+int64_t zslp_payment_check_received(const char *datadir,
+                                    const char *z_addr,
+                                    int64_t min_amount);
 
 #endif
