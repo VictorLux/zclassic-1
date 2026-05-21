@@ -59,7 +59,11 @@ LIBS = -Lvendor/lib -lsecp256k1 -lleveldb \
 .PHONY: all test test-e2e test-shielded-payment test-store-e2e clean deploy check-restart-follow \
         coverage coverage-clean docs-mcp docs-mcp-check ci audit release \
         lint check-malloc check-silent-errors check-raw-sqlite check-raw-malloc \
-        check-coins-lookup-nullcheck \
+        check-coins-lookup-nullcheck check-observability-pairing \
+        check-silent-errors-services check-silent-errors-controllers \
+        check-before-save-hooks check-pthread-create check-model-validation \
+        check-long-functions check-rpc-registrar check-lag-slo-observable \
+        fuzz-ci-leaks \
         soak-smoke soak-7day
 
 CLI_SRCS = lib/rpc/src/client.c lib/json/src/json.c
@@ -90,38 +94,42 @@ $(TMPL_GEN): $(TMPL_SRC) $(TMPL_TOOL)
 .PHONY: templates
 templates: $(TMPL_GEN)
 
-test_zcl: $(TMPL_GEN) $(TEST_SRCS_NO_MAIN) lib/test/src/test.c $(SPEC_SRCS) $(ALL_SRCS)
-	$(CC) $(CFLAGS) -DZCL_TESTING -Wno-deprecated-declarations $(LDFLAGS) -o $@ $(filter-out $(TMPL_GEN),$^) $(TOR_LIBS) $(LIBS) $(GTK_LIBS) $(WEBKIT_LIBS)
+# Build a tool/test binary that links against the full node library stack
+# (Tor, OpenSSL, libevent, GTK, WebKit). Used by 8 binaries to keep the
+# recipe in one place — a new tool becomes one $(eval $(call ...)) line and
+# cannot drift on flags.
+#   $(1) = target name (e.g., wallet_dump)
+#   $(2) = entry source(s) — single file or whitespace-separated list
+#   $(3) = extra link libs (e.g., -lm); empty by default
+#   $(4) = extra CFLAGS (e.g., -DZCL_TESTING); empty by default
+define BUILD_NODE_TOOL
+$(1): $$(TMPL_GEN) $(2) $$(ALL_SRCS)
+	$$(CC) $$(CFLAGS) $(4) -Wno-deprecated-declarations $$(LDFLAGS) -o $$@ $$(filter-out $$(TMPL_GEN),$$^) $$(TOR_LIBS) $$(LIBS) $$(GTK_LIBS) $$(WEBKIT_LIBS) $(3)
+endef
 
-test_parallel: $(TMPL_GEN) $(TEST_SRCS_NO_MAIN) lib/test/src/test_parallel.c $(SPEC_SRCS) $(ALL_SRCS)
-	$(CC) $(CFLAGS) -DZCL_TESTING -Wno-deprecated-declarations $(LDFLAGS) -o $@ $(filter-out $(TMPL_GEN),$^) $(TOR_LIBS) $(LIBS) $(GTK_LIBS) $(WEBKIT_LIBS)
+$(eval $(call BUILD_NODE_TOOL,test_zcl,$(TEST_SRCS_NO_MAIN) lib/test/src/test.c $(SPEC_SRCS),,-DZCL_TESTING))
+$(eval $(call BUILD_NODE_TOOL,test_parallel,$(TEST_SRCS_NO_MAIN) lib/test/src/test_parallel.c $(SPEC_SRCS),,-DZCL_TESTING))
 
 .PHONY: test-parallel
 test-parallel: test_parallel
 	ulimit -s unlimited && ./test_parallel
 
-spec_zcl: $(TMPL_GEN) lib/test/spec_main.c $(SPEC_SRCS) lib/test/src/test_helpers.c $(ALL_SRCS)
-	$(CC) $(CFLAGS) -Wno-deprecated-declarations $(LDFLAGS) -o $@ $(filter-out $(TMPL_GEN),$^) $(TOR_LIBS) $(LIBS) $(GTK_LIBS) $(WEBKIT_LIBS)
-
-wallet_dump: $(TMPL_GEN) tools/wallet_dump.c $(ALL_SRCS)
-	$(CC) $(CFLAGS) -Wno-deprecated-declarations $(LDFLAGS) -o $@ tools/wallet_dump.c $(ALL_SRCS) $(TOR_LIBS) $(LIBS) $(GTK_LIBS) $(WEBKIT_LIBS)
+$(eval $(call BUILD_NODE_TOOL,spec_zcl,lib/test/spec_main.c $(SPEC_SRCS) lib/test/src/test_helpers.c))
+$(eval $(call BUILD_NODE_TOOL,wallet_dump,tools/wallet_dump.c))
 
 session: $(TMPL_GEN) tools/session.c $(ALL_SRCS)
-	$(CC) $(CFLAGS) -Wno-deprecated-declarations $(LDFLAGS) -o $@ tools/session.c $(ALL_SRCS) $(TOR_LIBS) $(LIBS) $(GTK_LIBS) $(WEBKIT_LIBS) -lm
+	$(CC) $(CFLAGS) -Wno-deprecated-declarations $(LDFLAGS) -o $@ $(filter-out $(TMPL_GEN),$^) $(TOR_LIBS) $(LIBS) $(GTK_LIBS) $(WEBKIT_LIBS) -lm
 	./session
 
 bot: $(TMPL_GEN) tools/bot.c $(ALL_SRCS)
-	$(CC) $(CFLAGS) -Wno-deprecated-declarations $(LDFLAGS) -o $@ tools/bot.c $(ALL_SRCS) $(TOR_LIBS) $(LIBS) $(GTK_LIBS) $(WEBKIT_LIBS) -lm
+	$(CC) $(CFLAGS) -Wno-deprecated-declarations $(LDFLAGS) -o $@ $(filter-out $(TMPL_GEN),$^) $(TOR_LIBS) $(LIBS) $(GTK_LIBS) $(WEBKIT_LIBS) -lm
 	./bot
 
 mock_rpc: tools/mock_rpc.c
 	$(CC) -std=c23 -O2 -Wall -Wextra -Werror -pthread -o $@ $<
 
-wallet_sim: $(TMPL_GEN) tools/wallet_sim.c $(ALL_SRCS)
-	$(CC) $(CFLAGS) -Wno-deprecated-declarations $(LDFLAGS) -o $@ tools/wallet_sim.c $(ALL_SRCS) $(TOR_LIBS) $(LIBS) $(GTK_LIBS) $(WEBKIT_LIBS)
-
-wallet_check: $(TMPL_GEN) tools/wallet_check.c $(ALL_SRCS)
-	$(CC) $(CFLAGS) -Wno-deprecated-declarations $(LDFLAGS) -o $@ tools/wallet_check.c $(ALL_SRCS) $(TOR_LIBS) $(LIBS) $(GTK_LIBS) $(WEBKIT_LIBS) -lm
+$(eval $(call BUILD_NODE_TOOL,wallet_sim,tools/wallet_sim.c))
+$(eval $(call BUILD_NODE_TOOL,wallet_check,tools/wallet_check.c,-lm))
 
 .PHONY: sim dump check-wallet
 sim: wallet_sim
@@ -153,11 +161,8 @@ tools/wal_checkpoint: tools/wal_checkpoint.c
 	$(CC) -std=c23 -O2 -Wall -Wextra -Werror -Ivendor/include -o $@ $< \
 	    -Lvendor/lib -l:libsqlite3.a -lpthread -ldl -lm
 
-wallet-wireframes: $(TMPL_GEN) tools/wallet_wireframes.c $(ALL_SRCS)
-	$(CC) $(CFLAGS) -Wno-deprecated-declarations $(LDFLAGS) -o $@ $(filter-out $(TMPL_GEN),$^) $(TOR_LIBS) $(LIBS) $(GTK_LIBS) $(WEBKIT_LIBS)
-
-speedrun: $(TMPL_GEN) tools/speedrun.c $(ALL_SRCS)
-	$(CC) $(CFLAGS) -Wno-deprecated-declarations $(LDFLAGS) -o $@ tools/speedrun.c $(ALL_SRCS) $(TOR_LIBS) $(LIBS) $(GTK_LIBS) $(WEBKIT_LIBS)
+$(eval $(call BUILD_NODE_TOOL,wallet-wireframes,tools/wallet_wireframes.c))
+$(eval $(call BUILD_NODE_TOOL,speedrun,tools/speedrun.c))
 
 zcl-rpc: tools/zcl-rpc.c
 	$(CC) -std=c23 -O2 -Wall -o $@ $<
