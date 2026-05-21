@@ -20,7 +20,6 @@
 #include "services/block_index_integrity.h"
 #include "services/snapshot_sync_service.h"
 #include "validation/process_block.h"
-#include "controllers/sync_controller.h"
 #include "config/boot_internal.h"
 #include "net/download.h"
 #include "event/event.h"
