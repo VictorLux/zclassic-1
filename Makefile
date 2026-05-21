@@ -822,7 +822,16 @@ check-supervisor-registration:
 	@echo "══ LINT: supervisor registration ══"
 	@./tools/scripts/check_supervisor_registration.sh
 
-lint: check-malloc check-silent-errors check-raw-sqlite check-raw-malloc check-coins-lookup-nullcheck check-observability-pairing check-silent-errors-services check-silent-errors-controllers check-before-save-hooks check-pthread-create check-model-validation check-long-functions check-rpc-registrar check-lag-slo-observable check-lib-layering check-supervisor-registration
+# Lint gate #16 — typed blocker primitive adoption (Round 6 C6).
+# Ratchets raw `char *_blocker[]` string fields / `lms_set_blocker(`
+# legacy setters / `last_blocker_code` mutations to the typed
+# `blocker_set()` primitive (lib/util/blocker.h). Baseline file
+# enumerates the grandfathered sites; must shrink over Rounds 7-9.
+check-typed-blocker:
+	@echo "══ LINT: typed blocker adoption ══"
+	@./tools/scripts/check_typed_blocker.sh
+
+lint: check-malloc check-silent-errors check-raw-sqlite check-raw-malloc check-coins-lookup-nullcheck check-observability-pairing check-silent-errors-services check-silent-errors-controllers check-before-save-hooks check-pthread-create check-model-validation check-long-functions check-rpc-registrar check-lag-slo-observable check-lib-layering check-supervisor-registration check-typed-blocker
 	@echo "══ LINT: all checks passed ══"
 
 ci: lint zclassic23 test_zcl
