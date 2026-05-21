@@ -135,13 +135,24 @@ bool node_db_rebuild_indexes(struct node_db *ndb);
 
 /* ── Schema ────────────────────────────────────────────────────── */
 
+/* Highest schema_version this binary knows how to read or migrate.
+ * Bump in lockstep with the last `if (current_ver < N)` block in
+ * node_db_migrate(). A node.db with `schema_version > NODE_DB_MAX_SCHEMA`
+ * was written by a newer binary and is unsafe to open — its tables
+ * may use columns this binary doesn't understand, leading to silent
+ * data corruption on writes. node_db_migrate() refuses to proceed
+ * in that case (Campaign C3: schema-downgrade detection). */
+#define NODE_DB_MAX_SCHEMA 19
+
 /* Schema version for future migrations. */
 int node_db_schema_version(struct node_db *ndb);
 
 /* Rails-style migration runner.
  * Runs all pending migrations from db/migrate/ directory.
  * Tracks applied migrations in schema_migrations table.
- * Returns number of migrations applied, or -1 on error. */
+ * Returns number of migrations applied, or -1 on error.
+ * Returns -2 if the on-disk schema_version exceeds NODE_DB_MAX_SCHEMA
+ * (downgrade attempted — fatal). */
 int node_db_migrate(struct node_db *ndb, const char *datadir);
 
 #endif

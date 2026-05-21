@@ -1431,7 +1431,14 @@ bool app_init(struct app_context *ctx)
     /* Open SQLite node database */
     t_phase = boot_clock_ms();
     if (node_db_sync_init(&g_node_db, ctx->datadir)) {
-        node_db_migrate(&g_node_db, ctx->datadir);
+        int migrate_rc = node_db_migrate(&g_node_db, ctx->datadir);
+        if (migrate_rc == -2) {
+            /* Schema downgrade refused — node_db_migrate has already
+             * printed the operator-actionable explanation to stderr.
+             * Bail before any wallet / chain logic runs so we don't
+             * write through a schema we don't understand. */
+            exit(1);
+        }
         process_block_set_node_db(&g_node_db);
         if (!db_service_is_started(&g_db_service)) {
             if (!boot_step_start_db_service()) {

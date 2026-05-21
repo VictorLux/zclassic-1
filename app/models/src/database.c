@@ -902,6 +902,29 @@ int node_db_migrate(struct node_db *ndb, const char *datadir)
     int current_ver = node_db_schema_version(ndb);
     printf("db: current schema version %d\n", current_ver);
 
+    /* Campaign C3: schema-downgrade detection.
+     *
+     * If the on-disk schema_version exceeds what this binary knows
+     * about, refuse to proceed. The newer binary may have added
+     * columns or constraints we don't understand; opening as-is and
+     * writing through this binary's persistence layer would silently
+     * corrupt the data the newer binary expected to see.
+     *
+     * The operator must either run a binary that supports schema vN+,
+     * or restore from a backup taken before the upgrade. There is no
+     * automatic downgrade path. */
+    if (current_ver > NODE_DB_MAX_SCHEMA) {
+        fprintf(stderr,  // obs-ok:db-migrate-downgrade-precedes-abort
+            "\nFATAL: node.db schema_version=%d but this binary only knows up to %d.\n"
+            "       Refusing to open a database written by a newer binary —\n"
+            "       writes through this layer would silently corrupt the data.\n"
+            "       Either run a binary that supports schema v%d+,\n"
+            "       or restore node.db from a backup taken before the upgrade.\n\n",
+            current_ver, NODE_DB_MAX_SCHEMA, current_ver);
+        fflush(stderr);
+        return -2;
+    }
+
     /* Future migrations go here as versioned blocks.
      * Each block checks schema_migrations before running.
      *
@@ -914,6 +937,8 @@ int node_db_migrate(struct node_db *ndb, const char *datadir)
      *       current_ver = N;
      *       applied++;
      *   }
+     * Don't forget to bump NODE_DB_MAX_SCHEMA in
+     * app/models/include/models/database.h when you add a new block.
      */
 
     if (current_ver < 2) {
