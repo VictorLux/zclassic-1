@@ -191,8 +191,19 @@ runtime state, follow the convention:
 
 That's it — no new RPC handler, no new MCP route, no new schema.
 Every future subsystem becomes introspectable via `zcl_state` with
-~30 lines of changes total. Currently wired: `watchdog`, `boot`,
-`block_index`.
+~30 lines of changes total. Currently wired: `supervisor`, `watchdog`,
+`boot`, `block_index`, plus the existing services that follow the
+same convention (`health`, `chain_evidence`, `chain_advance_coordinator`,
+`legacy_mirror`, `oracle`, `header_probe`, etc).
+
+The `supervisor` subsystem (Round 5) is the *root* of the liveness
+tree: it lists every registered child (`sync.watchdog`,
+`net.outbound_floor`, `chain.coord_escalation` after Round 5), along
+with each child's last_tick_age_us, progress_marker, deadline,
+ticks_run, and stall_fires. Use it to confirm any time-driven thing
+is actually running. See `lib/util/include/util/supervisor.h` for the
+contract API and `DEFENSIVE_CODING.md` Gate #15 for the lint gate that
+ratchets adoption.
 
 For raw SQL inspection of node tables (blocks, utxos, mempool, etc),
 use `zcl_sql`: SELECT-only, semicolon-rejected, auto-LIMIT, 2 s

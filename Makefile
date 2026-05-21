@@ -813,7 +813,16 @@ check-lib-layering:
 	@echo "══ LINT: lib/ layer purity ══"
 	@./tools/scripts/check_lib_layering.sh
 
-lint: check-malloc check-silent-errors check-raw-sqlite check-raw-malloc check-coins-lookup-nullcheck check-observability-pairing check-silent-errors-services check-silent-errors-controllers check-before-save-hooks check-pthread-create check-model-validation check-long-functions check-rpc-registrar check-lag-slo-observable check-lib-layering
+# Supervisor registration: every long-running service in
+# app/services/src/*_service.c must register a liveness contract with
+# the supervisor (Round 5) OR appear in supervisor_baseline.txt OR
+# carry a per-file `// supervisor-ok:<tag>` override marker. Drives
+# opt-in adoption of the supervisor primitive over Rounds 6-8.
+check-supervisor-registration:
+	@echo "══ LINT: supervisor registration ══"
+	@./tools/scripts/check_supervisor_registration.sh
+
+lint: check-malloc check-silent-errors check-raw-sqlite check-raw-malloc check-coins-lookup-nullcheck check-observability-pairing check-silent-errors-services check-silent-errors-controllers check-before-save-hooks check-pthread-create check-model-validation check-long-functions check-rpc-registrar check-lag-slo-observable check-lib-layering check-supervisor-registration
 	@echo "══ LINT: all checks passed ══"
 
 ci: lint zclassic23 test_zcl

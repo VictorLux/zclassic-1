@@ -387,12 +387,53 @@ definition that happens to live in a controller header). Use sparingly.
 
 Implementation: `tools/scripts/check_lib_layering.sh`.
 
+### Gate #15: supervisor registration for long-running services (ratchet)
+
+`check-supervisor-registration` walks every
+`app/services/src/*_service.c` and flags any file that contains
+`pthread_create(`, `thread_registry_spawn`, or
+`health_register_periodic(` but does NOT contain `supervisor_register(`,
+is not in `tools/scripts/supervisor_baseline.txt`, and does not carry
+a `// supervisor-ok:<tag>` override.
+
+Why: Round 5 (2026-05-21) introduced a dedicated time-driven
+supervisor in `lib/util/supervisor.{c,h}` after the lib/health sweeper
+wedged for 8.6 h, leaving every periodic check silently dead. Services
+that register a `struct liveness_contract` are protected by an
+independent driver: even if their normal scheduler stalls, the
+supervisor still fires `on_tick` and edge-triggers `on_stall` on
+deadline or progress-frozen.
+
+Three children were registered in Round 5:
+* `sync.watchdog` — tick rescue for `sync_watchdog_periodic_tick`
+  (R5 C2, sync_watchdog_service.c).
+* `net.outbound_floor` — emits `EV_PEER_FLOOR_BREACH` + calls
+  `connman_kick_seed_discovery` when outbound peers stay below 2 for
+  60 s (R5 C3, boot_services.c).
+* `chain.coord_escalation` — calls
+  `chain_advance_coordinator_force_mirror_promotion` (300 s bounded
+  window, bypasses `mir->blocked` short-circuit) when mirror lag is
+  "fatal" and local height is frozen for 900 s (R5 C4,
+  boot_services.c).
+
+The gate ships with a 9-entry baseline of services that need
+contracts but weren't migrated in Round 5. Rounds 6–8 will pay these
+down: the highest blast-radius targets are `block_sync_service`,
+`header_sync_service`, and `legacy_mirror_sync_service` (see
+`tools/scripts/supervisor_baseline.txt`).
+
+**Override marker.** `// supervisor-ok:<tag>` on any line in the file
+exempts it (use when the service intentionally manages its own
+lifecycle — e.g. main-thread workers, signal-driven helpers).
+
+Implementation: `tools/scripts/check_supervisor_registration.sh`.
+
 ---
 
 ## 8. Lint-override discipline — every escape hatch is named
 
-Six lint gates accept an inline override marker when the underlying
-rule cannot mechanically hold. The six marker classes:
+Seven lint gates accept an inline override marker when the underlying
+rule cannot mechanically hold. The seven marker classes:
 
 | Marker | Where allowed | Lint gate |
 |--------|---------------|-----------|
@@ -402,6 +443,7 @@ rule cannot mechanically hold. The six marker classes:
 | `// raw-alloc-ok:<tag>` | line with `malloc/calloc/realloc` outside the `zcl_*` wrappers | `check-raw-malloc` |
 | `// long-function-ok:<tag>` | signature line of a top-level controller/service function whose body spans >500 lines | `check-long-functions` |
 | `// lib-layer-ok:<tag>` | line in `lib/` that includes a `controllers/`, `models/`, `services/`, or `views/` header | `check-lib-layering` |
+| `// supervisor-ok:<tag>` | any line in a long-running `app/services/src/*_service.c` that intentionally does not register a supervisor liveness contract | `check-supervisor-registration` |
 
 **Syntax (machine-enforced).** Every marker requires a non-empty
 single-token tag matching `[A-Za-z][A-Za-z0-9_-]+` immediately after
