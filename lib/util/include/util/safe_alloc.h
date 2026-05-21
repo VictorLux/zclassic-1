@@ -79,4 +79,24 @@ static inline void *zcl_malloc_or_die_impl(size_t size, const char *label,
 #define zcl_malloc_or_die(size, label) \
     zcl_malloc_or_die_impl((size), (label), __FILE__, __LINE__)
 
+/* Checked strdup — every duplicate-string allocation in app code should
+ * use this instead of raw libc strdup, mirroring the discipline already
+ * enforced for malloc/calloc/realloc. Returns NULL on failure with
+ * logged context. Tolerates a NULL input (returns NULL silently — the
+ * caller already knows there's no source string). */
+#include <string.h>
+static inline char *zcl_strdup_impl(const char *s, const char *label,
+                                     const char *file, int line)
+{
+    if (!s) return NULL;
+    char *out = strdup(s);
+    if (!out) {
+        fprintf(stderr, "zcl_strdup FAILED: %zu bytes for '%s' at %s:%d\n",
+                strlen(s) + 1, label, file, line);
+    }
+    return out;
+}
+
+#define zcl_strdup(s, label) zcl_strdup_impl((s), (label), __FILE__, __LINE__)
+
 #endif /* ZCL_SAFE_ALLOC_H */

@@ -65,8 +65,12 @@ void json_set_real(struct json_value *v, double d)
 void json_set_str(struct json_value *v, const char *s)
 {
     json_free(v);
-    v->type = JSON_STR;
-    v->val.s = strdup(s);
+    v->val.s = zcl_strdup(s, "json_set_str");
+    /* Under OOM we silently degrade to JSON_NULL rather than leaving a
+     * JSON_STR with NULL val.s — every downstream consumer dereferences
+     * val.s expecting a real string. Loud failure was logged inside
+     * zcl_strdup; here we just stay type-safe. */
+    v->type = v->val.s ? JSON_STR : JSON_NULL;
 }
 
 void json_set_array(struct json_value *v)
@@ -105,17 +109,32 @@ void json_copy(struct json_value *dst, const struct json_value *src)
     case JSON_BOOL: dst->val.b = src->val.b; break;
     case JSON_INT:  dst->val.i = src->val.i; break;
     case JSON_REAL: dst->val.d = src->val.d; break;
-    case JSON_STR:  dst->val.s = strdup(src->val.s); break;
+    case JSON_STR:
+        dst->val.s = zcl_strdup(src->val.s, "json_copy_str");
+        /* Degrade to JSON_NULL on OOM rather than leaving a JSON_STR
+         * with NULL val.s — see json_set_str for rationale. */
+        if (!dst->val.s) dst->type = JSON_NULL;
+        break;
     default: break;
     }
     if (src->num_children > 0) {
         dst->children_cap = src->num_children;
         dst->children = zcl_malloc(dst->children_cap * sizeof(*dst->children), "json_copy_children");
+        if (!dst->children) {
+            dst->children_cap = 0;
+            return;
+        }
         dst->keys = zcl_malloc(dst->children_cap * sizeof(*dst->keys), "json_copy_keys");
+        if (!dst->keys) {
+            free(dst->children);
+            dst->children = NULL;
+            dst->children_cap = 0;
+            return;
+        }
         dst->num_children = src->num_children;
         for (size_t i = 0; i < src->num_children; i++) {
             json_copy(&dst->children[i], &src->children[i]);
-            dst->keys[i] = src->keys[i] ? strdup(src->keys[i]) : NULL;
+            dst->keys[i] = zcl_strdup(src->keys[i], "json_copy_key");
         }
     }
 }
@@ -135,8 +154,13 @@ bool json_push_kv(struct json_value *obj, const char *key,
 {
     if (obj->type != JSON_OBJ) return false;
     if (!json_grow(obj)) return false;
+    /* Allocate the key first so an OOM here doesn't leave a copied
+     * child stranded with a NULL key — json_get does
+     * strcmp(obj->keys[i], key) and a NULL slot would crash. */
+    char *kdup = zcl_strdup(key, "json_push_kv_key");
+    if (!kdup) return false;
     json_copy(&obj->children[obj->num_children], child);
-    obj->keys[obj->num_children] = strdup(key);
+    obj->keys[obj->num_children] = kdup;
     obj->num_children++;
     return true;
 }
@@ -359,6 +383,7 @@ static bool parse_string(char **out, const char **pp, const char *end)
     p++;
     size_t cap = 64, len = 0;
     char *s = zcl_malloc(cap, "json_string");
+    if (!s) return false;
     while (p < end && *p != '"') {
         if (*p == '\\') {
             p++;
