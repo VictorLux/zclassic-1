@@ -11,6 +11,7 @@
 #include "mcp/metrics.h"
 #include "net/onion_service.h"
 #include "util/log_macros.h"
+#include "util/path_check.h"
 #include "util/safe_alloc.h"
 
 #include <stdio.h>
@@ -81,6 +82,13 @@ static int h_zcl_onion_health(const struct mcp_request *req,
 {
     const char *probe_path = json_get_str_or(req->args, "path", "/directory.json");
     if (!probe_path || !*probe_path) probe_path = "/directory.json";
+    if (!path_check_url_arg(probe_path, 256)) {
+        res->error = MCP_ERR_HANDLER_FAILED;
+        snprintf(res->error_message, sizeof(res->error_message),
+                 "path: must start with '/', "
+                 "be 1..256 chars, contain no control chars or '..' segments");
+        return 0;
+    }
 
     const char *addr = onion_service_get_address();
 

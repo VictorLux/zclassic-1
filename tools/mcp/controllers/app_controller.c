@@ -10,6 +10,7 @@
 
 #include "json/json.h"
 #include "util/log_macros.h"
+#include "util/path_check.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -115,6 +116,13 @@ DEFINE_PT(h_zcl_market_status, "zmarket_status", "mcp.app")
 static int h_zcl_market_offer(const struct mcp_request *req, struct mcp_response *res)
 {
     const char *fp = json_get_str(json_get(req->args, "filepath"));
+    if (!path_check_fs_arg(fp, 1024)) {
+        res->error = MCP_ERR_HANDLER_FAILED;
+        snprintf(res->error_message, sizeof(res->error_message),
+                 "filepath: missing, empty, oversized (>1024), "
+                 "or contains control characters");
+        return 0;
+    }
     int64_t price  = json_get_int(json_get(req->args, "price_per_mb_zat"));
     struct mcp_params p;
     mcp_params_init(&p);
