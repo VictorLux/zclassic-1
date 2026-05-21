@@ -497,6 +497,7 @@ int main(void)
     failures += test_chain_stall_repro();
     failures += test_failed_child_cap();
     failures += test_power_node_contract_spec();
+    failures += test_boot_phase();
     failures += test_make_lint_gates();
     failures += test_multisig();
     failures += test_mcp_fuzz();

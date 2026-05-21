@@ -109,4 +109,13 @@ void boot_stage_advance_to(enum boot_stage next);
  * if `s` is not the current stage. Use for read-only assertions. */
 bool boot_stage_is(enum boot_stage s);
 
+#ifdef ZCL_TESTING
+/* Test-only escape hatch: reset the global stage back to INIT so unit
+ * tests can exercise the advance state machine without polluting the
+ * stage observed by later tests in the same process. Production code
+ * MUST NOT call this — it would defeat the misorder-detection invariant.
+ * Only compiled in -DZCL_TESTING builds (test_zcl, test_parallel). */
+void boot_stage_reset_for_testing(void);
+#endif
+
 #endif

@@ -173,3 +173,10 @@ void boot_stage_advance_to(enum boot_stage next)
     fflush(stderr);
     g_boot_stage = next;
 }
+
+#ifdef ZCL_TESTING
+void boot_stage_reset_for_testing(void)
+{
+    g_boot_stage = BOOT_STAGE_INIT;
+}
+#endif
