@@ -182,6 +182,10 @@ blocker_escape_fn blocker_lookup_escape(const char *action_name);
  * escapes fired. Intended for a supervisor child running ~1 Hz. */
 int blocker_supervisor_sweep(void);
 
+/* Monotonic count of escape dispatches since module init. Exposed for
+ * Prometheus + zcl_blockers MCP tool. */
+int blocker_escape_dispatched_count(void);
+
 /* Lifecycle: init at boot, before any blocker_set call. shutdown is
  * idempotent. */
 bool blocker_module_init(void);

@@ -7,6 +7,7 @@
 #include "event/event.h"
 #include "net/peer_scoring.h"
 #include "rpc/http_middleware.h"
+#include "util/blocker.h"
 
 #include <pthread.h>
 #include <stdarg.h>
@@ -781,6 +782,33 @@ size_t mcp_metrics_render_prometheus(char *buf, size_t cap)
         "# TYPE zcl_mirror_lag_critical_seconds gauge\n"
         "zcl_mirror_lag_critical_seconds %lld\n",
         (long long)mlag, (long long)mbreach, (long long)mcrit);
+
+    /* ── Typed blocker block (Round 6 C5) ──────────────────────
+     *
+     * Live counts per class + escape-dispatch total. The blocker
+     * primitive's own JSON dumper is exposed via the zcl_blockers
+     * MCP tool; Prometheus gets the numeric gauges so dashboards can
+     * alert on class-level pressure (e.g. permanent>0 is always an
+     * operator-escalation event). */
+    int active_total = blocker_count_active();
+    int active_perm  = blocker_count_by_class(BLOCKER_PERMANENT);
+    int active_trans = blocker_count_by_class(BLOCKER_TRANSIENT);
+    int active_dep   = blocker_count_by_class(BLOCKER_DEPENDENCY);
+    int active_res   = blocker_count_by_class(BLOCKER_RESOURCE);
+    int escape_total = blocker_escape_dispatched_count();
+    pos = append(buf, cap, pos,
+        "# HELP zcl_blockers_active Currently-active typed blockers per class\n"
+        "# TYPE zcl_blockers_active gauge\n"
+        "zcl_blockers_active{class=\"permanent\"} %d\n"
+        "zcl_blockers_active{class=\"transient\"} %d\n"
+        "zcl_blockers_active{class=\"dependency\"} %d\n"
+        "zcl_blockers_active{class=\"resource\"} %d\n"
+        "zcl_blockers_active{class=\"all\"} %d\n"
+        "# HELP zcl_blocker_escape_dispatched_total Edge-triggered escape dispatches since boot\n"
+        "# TYPE zcl_blocker_escape_dispatched_total counter\n"
+        "zcl_blocker_escape_dispatched_total %d\n",
+        active_perm, active_trans, active_dep, active_res, active_total,
+        escape_total);
 
     if (pos < cap) buf[pos] = '\0';
     pthread_mutex_unlock(&g_lock);

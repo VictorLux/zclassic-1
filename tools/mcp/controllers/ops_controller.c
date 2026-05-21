@@ -17,6 +17,7 @@
 #include "../rpc_params.h"
 
 #include "json/json.h"
+#include "util/blocker.h"
 #include "util/log_macros.h"
 #include "util/safe_alloc.h"
 #include "validation/process_block.h"
@@ -340,6 +341,94 @@ static int h_zcl_syncdiag(const struct mcp_request *req,
     return 0;
 }
 
+/* zcl_blockers — dedicated MCP tool returning the typed blocker
+ * registry (Round 6 C5).
+ *
+ * The generic `zcl_state subsystem=blocker` primitive already exposes
+ * the JSON dump, but operators expect a top-level tool name for "show
+ * me what's actively blocking the node right now." Same JSON body, no
+ * subsystem= argument, easier to script against. */
+static int h_zcl_blockers(const struct mcp_request *req,
+                          struct mcp_response *res)
+{
+    (void)req;
+
+    struct blocker_snapshot snaps[BLOCKER_CAP];
+    int n = blocker_snapshot_all(snaps, BLOCKER_CAP);
+    if (n < 0) n = 0;
+
+    int counts[4] = {0};
+    for (int i = 0; i < n; i++) {
+        int c = snaps[i].class;
+        if (c >= 0 && c < 4) counts[c]++;
+    }
+
+    /* 1 KB header + per-record budget (id/owner/reason/action all
+     * bounded). 768 B per record is safely larger than the worst
+     * stringified record. */
+    size_t cap = 4096 + (size_t)n * 768;
+    char *out = zcl_malloc(cap, "zcl_blockers_body");
+    if (!out) {
+        res->error = MCP_ERR_INTERNAL;
+        snprintf(res->error_message, sizeof(res->error_message),
+                 "malloc failed for blockers body");
+        LOG_ERR("mcp.ops",
+                "malloc failed for zcl_blockers body (cap=%zu, n=%d)",
+                cap, n);
+        return 0;
+    }
+
+    size_t pos = 0;
+    pos += (size_t)snprintf(out + pos, cap - pos,
+        "{"
+        "\"active_count\":%d,"
+        "\"permanent_count\":%d,"
+        "\"transient_count\":%d,"
+        "\"dependency_count\":%d,"
+        "\"resource_count\":%d,"
+        "\"escape_dispatched_total\":%d,"
+        "\"rate_limit_ms\":%d,"
+        "\"blockers\":[",
+        n,
+        counts[BLOCKER_PERMANENT], counts[BLOCKER_TRANSIENT],
+        counts[BLOCKER_DEPENDENCY], counts[BLOCKER_RESOURCE],
+        blocker_escape_dispatched_count(),
+        BLOCKER_DEFAULT_RATE_LIMIT_MS);
+
+    for (int i = 0; i < n && pos < cap; i++) {
+        const struct blocker_snapshot *s = &snaps[i];
+        pos += (size_t)snprintf(out + pos, cap - pos,
+            "%s{"
+            "\"id\":\"%s\","
+            "\"owner\":\"%s\","
+            "\"class\":\"%s\","
+            "\"age_us\":%lld,"
+            "\"escape_action\":\"%s\","
+            "\"deadline_remaining_us\":%lld,"
+            "\"retry_count\":%d,"
+            "\"retry_budget\":%d,"
+            "\"fire_count\":%u,"
+            "\"reason\":\"%s\""
+            "}",
+            (i == 0) ? "" : ",",
+            s->id, s->owner_subsystem,
+            blocker_class_name((enum blocker_class)s->class),
+            (long long)s->age_us,
+            s->escape_action,
+            (long long)s->deadline_remaining_us,
+            s->retry_count, s->retry_budget, s->fire_count,
+            s->reason);
+    }
+
+    if (pos < cap)
+        pos += (size_t)snprintf(out + pos, cap - pos, "]}");
+    else
+        out[cap - 1] = '\0';
+
+    res->body = out;
+    return 0;
+}
+
 /* ── Route table ─────────────────────────────────────────────── */
 
 static const struct mcp_param_spec p_events[] = {
@@ -375,6 +464,14 @@ static const struct mcp_tool_route k_routes[] = {
       "Self-heal UTXO recovery counters: tx-index hits, bounded scan "
       "hits/exhaustion, total scanned blocks, and active scan depth.",
       NULL, 0, h_zcl_self_heal_stats, 0, NULL },
+    { "zcl_blockers", "ops",
+      "Typed blocker registry: active blockers by class "
+      "{permanent,transient,dependency,resource}, deadlines, escape "
+      "actions, fire counts, retry budgets. Same shape as "
+      "`zcl_state subsystem=blocker` but at a top-level tool name "
+      "for direct invocation. PERMANENT>0 is always an operator "
+      "escalation event — typed-PERMANENT means we will not auto-retry.",
+      NULL, 0, h_zcl_blockers, 0, NULL },
     { "zcl_getmempoolinfo", "ops",
       "Mempool size, bytes, usage.",
       NULL, 0, h_zcl_getmempoolinfo, 0, NULL },

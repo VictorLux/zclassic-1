@@ -497,9 +497,14 @@ uint32_t blocker_fire_count_for_testing(const char *id)
     return fc;
 }
 
-int blocker_escape_dispatched_count_for_testing(void)
+int blocker_escape_dispatched_count(void)
 {
     return atomic_load(&g_dispatched_count);
+}
+
+int blocker_escape_dispatched_count_for_testing(void)
+{
+    return blocker_escape_dispatched_count();
 }
 
 void blocker_set_rate_limit_ms_for_testing(int ms)

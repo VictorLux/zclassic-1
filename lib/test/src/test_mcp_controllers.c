@@ -41,9 +41,10 @@
 /* Expected tool counts.  If a future commit intentionally adds or
  * removes tools, bump these numbers in the same commit — they are the
  * contract for "how big is the MCP surface." */
-#define EXPECTED_TOTAL      91  /* +3 power-user tools: chain_tip,
-                                 * reorg_history, mempool_inspect */
-#define EXPECTED_OPS        33  /* status, health, kpi, self_heal_stats, mempool*, mininginfo,
+#define EXPECTED_TOTAL      92  /* +3 power-user tools: chain_tip,
+                                 * reorg_history, mempool_inspect;
+                                 * +1 Round 6 C5: zcl_blockers */
+#define EXPECTED_OPS        34  /* status, health, kpi, self_heal_stats, mempool*, mininginfo,
                                  * benchmark, dbstats, filemanifest, events,
                                  * rpc, state + node_log + sql (round 6.5 MCP primitives),
                                  * tools_list, self_test, logtail,
