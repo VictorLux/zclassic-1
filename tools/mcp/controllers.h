@@ -8,8 +8,11 @@
 #define ZCL_MCP_CONTROLLERS_H
 
 #include <stdarg.h>
+#include <stdbool.h>
+#include <stdint.h>
 #include <stdio.h>
 
+#include "json/json.h"
 #include "router.h"
 #include "rpc_client.h"
 #include "util/log_macros.h"
@@ -26,6 +29,38 @@ void mcp_register_meta(void);     /* zcl_tools_list, zcl_self_test, zcl_logtail 
  * loops. Replaces the `sizeof(arr) / sizeof(arr[0])` boilerplate that
  * was repeated ~50 times across the MCP layer. */
 #define PARAM_COUNT(arr) (sizeof(arr) / sizeof((arr)[0]))
+
+/* ── Defaulted JSON accessors ─────────────────────────────────────
+ *
+ * Optional MCP parameters with handler-side defaults used to look like:
+ *
+ *   const struct json_value *mc = json_get(req->args, "minconf");
+ *   int64_t v = mc ? json_get_int(mc) : 1;
+ *
+ * Three inline helpers collapse the two-line pattern to one line and
+ * make the default visible inline at the call site. Repeated ~30
+ * times across the controllers prior to adoption.
+ */
+static inline int64_t
+json_get_int_or(const struct json_value *obj, const char *key, int64_t dflt)
+{
+    const struct json_value *v = json_get(obj, key);
+    return v ? json_get_int(v) : dflt;
+}
+
+static inline bool
+json_get_bool_or(const struct json_value *obj, const char *key, bool dflt)
+{
+    const struct json_value *v = json_get(obj, key);
+    return v ? json_get_bool(v) : dflt;
+}
+
+static inline const char *
+json_get_str_or(const struct json_value *obj, const char *key, const char *dflt)
+{
+    const struct json_value *v = json_get(obj, key);
+    return v ? json_get_str(v) : dflt;
+}
 
 /* ── Pass-through handler macro ────────────────────────────────────
  *

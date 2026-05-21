@@ -166,10 +166,9 @@ DEFINE_PT(h_zcl_filemanifest,  "getfilemanifeststatus", "mcp.ops")
 
 static int h_zcl_events(const struct mcp_request *req, struct mcp_response *res)
 {
-    const struct json_value *cnt = json_get(req->args, "count");
     char params[64];
     snprintf(params, sizeof(params), "[%lld]",
-             cnt ? (long long)json_get_int(cnt) : 20LL);
+             (long long)json_get_int_or(req->args, "count", 20));
     return mcp_return_rpc_body(res, mcp_node_rpc("eventlog", params),
                                 "eventlog", "mcp.ops");
 }
@@ -177,9 +176,8 @@ static int h_zcl_events(const struct mcp_request *req, struct mcp_response *res)
 static int h_zcl_rpc(const struct mcp_request *req, struct mcp_response *res)
 {
     const char *m = json_get_str(json_get(req->args, "method"));
-    const struct json_value *p = json_get(req->args, "params");
     return mcp_return_rpc_body(res,
-                                mcp_node_rpc(m, p ? json_get_str(p) : NULL),
+                                mcp_node_rpc(m, json_get_str_or(req->args, "params", NULL)),
                                 m ? m : "(null)", "mcp.ops");
 }
 
@@ -190,12 +188,11 @@ static int h_zcl_sql(const struct mcp_request *req,
                      struct mcp_response *res)
 {
     const char *sql = json_get_str(json_get(req->args, "sql"));
-    const struct json_value *limit = json_get(req->args, "limit");
 
     struct mcp_params p;
     mcp_params_init(&p);
     mcp_params_push_str(&p, sql ? sql : "");
-    mcp_params_push_int(&p, limit ? json_get_int(limit) : 10);
+    mcp_params_push_int(&p, json_get_int_or(req->args, "limit", 10));
     char *pjson = mcp_params_to_json(&p);
 
     char *out = pjson ? mcp_node_rpc("dbquery", pjson) : NULL;
@@ -213,15 +210,13 @@ static int h_zcl_node_log(const struct mcp_request *req,
                           struct mcp_response *res)
 {
     const char *pattern = json_get_str(json_get(req->args, "pattern"));
-    const struct json_value *since = json_get(req->args, "since_secs");
-    const struct json_value *maxl  = json_get(req->args, "max_lines");
     const char *level = json_get_str(json_get(req->args, "level"));
 
     struct mcp_params p;
     mcp_params_init(&p);
     mcp_params_push_str(&p, pattern ? pattern : "");
-    mcp_params_push_int(&p, since ? json_get_int(since) : 300);
-    mcp_params_push_int(&p, maxl  ? json_get_int(maxl)  : 50);
+    mcp_params_push_int(&p, json_get_int_or(req->args, "since_secs", 300));
+    mcp_params_push_int(&p, json_get_int_or(req->args, "max_lines",   50));
     mcp_params_push_str(&p, level && level[0] ? level : "all");
     char *pjson = mcp_params_to_json(&p);
 
@@ -243,8 +238,7 @@ static int h_zcl_node_log(const struct mcp_request *req,
 static int h_zcl_state(const struct mcp_request *req, struct mcp_response *res)
 {
     const char *sub = json_get_str(json_get(req->args, "subsystem"));
-    const struct json_value *key_val = json_get(req->args, "key");
-    const char *key = key_val ? json_get_str(key_val) : NULL;
+    const char *key = json_get_str_or(req->args, "key", NULL);
 
     struct mcp_params p;
     mcp_params_init(&p);
@@ -617,11 +611,8 @@ static int profile_delta_cmp(const void *a, const void *b)
 static int h_zcl_profile(const struct mcp_request *req,
                           struct mcp_response *res)
 {
-    const struct json_value *dv = json_get(req->args, "duration_ms");
-    const struct json_value *nv = json_get(req->args, "top_n");
-
-    int64_t duration_ms = dv ? json_get_int(dv) : 1000;
-    int64_t top_n       = nv ? json_get_int(nv) : 10;
+    int64_t duration_ms = json_get_int_or(req->args, "duration_ms", 1000);
+    int64_t top_n       = json_get_int_or(req->args, "top_n",       10);
     if (duration_ms < 100)   duration_ms = 100;
     if (duration_ms > 10000) duration_ms = 10000;
     if (top_n < 1)           top_n = 1;

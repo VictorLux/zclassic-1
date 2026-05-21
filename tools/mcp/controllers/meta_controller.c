@@ -158,10 +158,8 @@ static int h_zcl_self_test(const struct mcp_request *req,
 static int h_zcl_logtail(const struct mcp_request *req,
                           struct mcp_response *res)
 {
-    const struct json_value *cnt = json_get(req->args, "count");
-    const struct json_value *df  = json_get(req->args, "domain");
-    int count = cnt ? (int)json_get_int(cnt) : 100;
-    const char *dom = df ? json_get_str(df) : NULL;
+    int count = (int)json_get_int_or(req->args, "count",  100);
+    const char *dom = json_get_str_or(req->args, "domain", NULL);
 
     char params[64];
     snprintf(params, sizeof(params), "[%d]", count);
@@ -641,8 +639,7 @@ static int h_zcl_config_reload(const struct mcp_request *req,
 static int h_zcl_admin(const struct mcp_request *req,
                         struct mcp_response *res)
 {
-    const struct json_value *since_val = json_get(req->args, "since");
-    int64_t since = since_val ? json_get_int(since_val) : 0;
+    int64_t since = json_get_int_or(req->args, "since", 0);
 
     /* Dispatch each sub-tool.  Each returns a malloc'd body or an
      * error envelope — we treat both identically via embed_or_null. */

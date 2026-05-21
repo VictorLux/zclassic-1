@@ -31,10 +31,9 @@ DEFINE_PT(h_zcl_hodlwave,          "gethodlwave",       "mcp.chain")
 static int h_zcl_reorg_history(const struct mcp_request *req,
                                 struct mcp_response *res)
 {
-    const struct json_value *cv = json_get(req->args, "count");
-    int64_t count = cv ? json_get_int(cv) : 50;
     char params[32];
-    snprintf(params, sizeof(params), "[%lld]", (long long)count);
+    snprintf(params, sizeof(params), "[%lld]",
+             (long long)json_get_int_or(req->args, "count", 50));
     return mcp_return_rpc_body(res, mcp_node_rpc("getreorghistory", params),
                                 "getreorghistory", "mcp.chain");
 }
@@ -42,17 +41,14 @@ static int h_zcl_reorg_history(const struct mcp_request *req,
 static int h_zcl_utxo_audit(const struct mcp_request *req,
                             struct mcp_response *res)
 {
-    const struct json_value *remote_v = json_get(req->args, "remote_sha3");
-    const struct json_value *source_v = json_get(req->args, "source");
-    const struct json_value *height_v = json_get(req->args, "remote_height");
-    const char *remote = remote_v ? json_get_str(remote_v) : NULL;
-    const char *source = source_v ? json_get_str(source_v) : NULL;
+    const char *remote = json_get_str_or(req->args, "remote_sha3", NULL);
+    const char *source = json_get_str_or(req->args, "source",      NULL);
 
     struct mcp_params p;
     mcp_params_init(&p);
     if (remote && remote[0]) {
         mcp_params_push_str(&p, remote);
-        mcp_params_push_int(&p, height_v ? json_get_int(height_v) : 0);
+        mcp_params_push_int(&p, json_get_int_or(req->args, "remote_height", 0));
         mcp_params_push_str(&p, source && source[0] ? source : "trusted-peer");
     }
     char *params = mcp_params_to_json(&p);
@@ -65,12 +61,10 @@ static int h_zcl_getrawtransaction(const struct mcp_request *req,
                                     struct mcp_response *res)
 {
     const char *txid = json_get_str(json_get(req->args, "txid"));
-    const struct json_value *verb = json_get(req->args, "verbose");
-    int verbose = verb ? (int)json_get_int(verb) : 1;
     struct mcp_params p;
     mcp_params_init(&p);
     mcp_params_push_str(&p, txid);
-    mcp_params_push_int(&p, verbose);
+    mcp_params_push_int(&p, json_get_int_or(req->args, "verbose", 1));
     char *params = mcp_params_to_json(&p);
     char *out = params ? mcp_node_rpc("getrawtransaction", params) : NULL;
     free(params);
@@ -81,8 +75,7 @@ static int h_zcl_getrawtransaction(const struct mcp_request *req,
 static int h_zcl_getblock(const struct mcp_request *req, struct mcp_response *res)
 {
     const char *id_str = json_get_str(json_get(req->args, "block_id"));
-    const struct json_value *verb = json_get(req->args, "verbosity");
-    int verbosity = verb ? (int)json_get_int(verb) : 1;
+    int verbosity = (int)json_get_int_or(req->args, "verbosity", 1);
 
     bool is_num = id_str && id_str[0];
     for (const char *c = id_str; is_num && *c; c++)

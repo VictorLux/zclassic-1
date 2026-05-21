@@ -27,11 +27,10 @@ DEFINE_PT(h_zcl_peerlatency,  "getpeerlatency", "mcp.net")
 static int h_zcl_addnode(const struct mcp_request *req, struct mcp_response *res)
 {
     const char *addr = json_get_str(json_get(req->args, "addr"));
-    const struct json_value *act = json_get(req->args, "action");
     struct mcp_params p;
     mcp_params_init(&p);
     mcp_params_push_str(&p, addr);
-    mcp_params_push_str(&p, act ? json_get_str(act) : "onetry");
+    mcp_params_push_str(&p, json_get_str_or(req->args, "action", "onetry"));
     char *params = mcp_params_to_json(&p);
     char *out = params ? mcp_node_rpc("addnode", params) : NULL;
     free(params);
@@ -80,8 +79,7 @@ static int h_zcl_peer_report(const struct mcp_request *req,
 static int h_zcl_onion_health(const struct mcp_request *req,
                                struct mcp_response *res)
 {
-    const struct json_value *pv = json_get(req->args, "path");
-    const char *probe_path = pv ? json_get_str(pv) : "/directory.json";
+    const char *probe_path = json_get_str_or(req->args, "path", "/directory.json");
     if (!probe_path || !*probe_path) probe_path = "/directory.json";
 
     const char *addr = onion_service_get_address();

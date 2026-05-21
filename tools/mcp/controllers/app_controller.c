@@ -150,8 +150,7 @@ static int h_zcl_swap_initiate(const struct mcp_request *req, struct mcp_respons
     const char *ca = json_get_str(json_get(req->args, "counter_address"));
     int64_t amount   = json_get_int(json_get(req->args, "amount"));
     int64_t locktime = json_get_int(json_get(req->args, "locktime_blocks"));
-    const struct json_value *chain_v = json_get(req->args, "chain");
-    const char *chain = chain_v ? json_get_str(chain_v) : NULL;
+    const char *chain = json_get_str_or(req->args, "chain", NULL);
     struct mcp_params p;
     mcp_params_init(&p);
     mcp_params_push_str(&p, ma);
@@ -173,8 +172,7 @@ static int h_zcl_swap_participate(const struct mcp_request *req, struct mcp_resp
     int64_t amount   = json_get_int(json_get(req->args, "amount"));
     int64_t locktime = json_get_int(json_get(req->args, "locktime_blocks"));
     const char *sh = json_get_str(json_get(req->args, "secret_hash"));
-    const struct json_value *chain_v = json_get(req->args, "chain");
-    const char *chain = chain_v ? json_get_str(chain_v) : NULL;
+    const char *chain = json_get_str_or(req->args, "chain", NULL);
     struct mcp_params p;
     mcp_params_init(&p);
     mcp_params_push_str(&p, ma);

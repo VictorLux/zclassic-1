@@ -81,12 +81,10 @@ static int h_zcl_sendtoaddress(const struct mcp_request *req,
 static int h_zcl_listunspent(const struct mcp_request *req,
                               struct mcp_response *res)
 {
-    const struct json_value *mc = json_get(req->args, "minconf");
-    const struct json_value *mx = json_get(req->args, "maxconf");
     char params[128];
     snprintf(params, sizeof(params), "[%lld,%lld]",
-             mc ? (long long)json_get_int(mc) : 1LL,
-             mx ? (long long)json_get_int(mx) : 9999999LL);
+             (long long)json_get_int_or(req->args, "minconf", 1),
+             (long long)json_get_int_or(req->args, "maxconf", 9999999));
     return mcp_return_rpc_body(res, mcp_node_rpc("listunspent", params),
                                 "listunspent", "mcp.wallet");
 }
@@ -94,12 +92,10 @@ static int h_zcl_listunspent(const struct mcp_request *req,
 static int h_zcl_listtransactions(const struct mcp_request *req,
                                     struct mcp_response *res)
 {
-    const struct json_value *cnt = json_get(req->args, "count");
-    const struct json_value *sk  = json_get(req->args, "skip");
     char params[128];
     snprintf(params, sizeof(params), "[\"\",%lld,%lld]",
-             cnt ? (long long)json_get_int(cnt) : 10LL,
-             sk  ? (long long)json_get_int(sk)  : 0LL);
+             (long long)json_get_int_or(req->args, "count", 10),
+             (long long)json_get_int_or(req->args, "skip",   0));
     return mcp_return_rpc_body(res, mcp_node_rpc("listtransactions", params),
                                 "listtransactions", "mcp.wallet");
 }
@@ -205,13 +201,11 @@ static int h_zcl_importprivkey(const struct mcp_request *req,
 {
     const char *wif   = json_get_str(json_get(req->args, "privkey"));
     const char *label = json_get_str(json_get(req->args, "label"));
-    const struct json_value *rs = json_get(req->args, "rescan");
-    bool rescan = rs ? json_get_bool(rs) : false;
     struct mcp_params p;
     mcp_params_init(&p);
     mcp_params_push_str (&p, wif);
     mcp_params_push_str (&p, label);
-    mcp_params_push_bool(&p, rescan);
+    mcp_params_push_bool(&p, json_get_bool_or(req->args, "rescan", false));
     char *params = mcp_params_to_json(&p);
     char *out = params ? mcp_node_rpc("importprivkey", params) : NULL;
     free(params);
@@ -235,10 +229,9 @@ static int h_zcl_importaddress(const struct mcp_request *req,
 static int h_zcl_z_listunspent(const struct mcp_request *req,
                                  struct mcp_response *res)
 {
-    const struct json_value *mc = json_get(req->args, "minconf");
     char params[64];
     snprintf(params, sizeof(params), "[%lld]",
-             mc ? (long long)json_get_int(mc) : 1LL);
+             (long long)json_get_int_or(req->args, "minconf", 1));
     return mcp_return_rpc_body(res, mcp_node_rpc("z_listunspent", params),
                                 "z_listunspent", "mcp.wallet");
 }
@@ -247,11 +240,10 @@ static int h_zcl_z_getbalance(const struct mcp_request *req,
                                 struct mcp_response *res)
 {
     const char *addr = json_get_str(json_get(req->args, "address"));
-    const struct json_value *mc = json_get(req->args, "minconf");
     struct mcp_params p;
     mcp_params_init(&p);
     mcp_params_push_str(&p, addr);
-    mcp_params_push_int(&p, mc ? json_get_int(mc) : 1LL);
+    mcp_params_push_int(&p, json_get_int_or(req->args, "minconf", 1));
     char *params = mcp_params_to_json(&p);
     char *out = params ? mcp_node_rpc("z_getbalance", params) : NULL;
     free(params);
@@ -280,10 +272,9 @@ static int h_zcl_rescanblockchain(const struct mcp_request *req,
 static int h_zcl_listwalletkeys(const struct mcp_request *req,
                                   struct mcp_response *res)
 {
-    const struct json_value *ip = json_get(req->args, "include_privkeys");
-    bool inc = ip ? json_get_bool(ip) : false;
     char params[32];
-    snprintf(params, sizeof(params), "[%s]", inc ? "true" : "false");
+    snprintf(params, sizeof(params), "[%s]",
+             json_get_bool_or(req->args, "include_privkeys", false) ? "true" : "false");
     return mcp_return_rpc_body(res, mcp_node_rpc("listwalletkeys", params),
                                 "listwalletkeys", "mcp.wallet");
 }
@@ -292,9 +283,7 @@ static int h_zcl_replaywalletfromchain(const struct mcp_request *req,
                                          struct mcp_response *res)
 {
     /* RPC requires "confirm" literal. Wrap the user's boolean for safety. */
-    const struct json_value *cv = json_get(req->args, "confirm");
-    bool confirm = cv ? json_get_bool(cv) : false;
-    if (!confirm) {
+    if (!json_get_bool_or(req->args, "confirm", false)) {
         res->error = MCP_ERR_OUT_OF_RANGE;
         snprintf(res->error_message, sizeof(res->error_message),
                  "replaywalletfromchain requires confirm=true "
