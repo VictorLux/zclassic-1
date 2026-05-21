@@ -134,7 +134,7 @@ int blocker_set(const struct blocker_record *r)
         int64_t since_last = now - s->last_set_us;
         if (since_last < (int64_t)g_rate_limit_ms * 1000) {
             pthread_mutex_unlock(&g_lock);
-            return 0;
+            return 1; /* rate-limited dup */
         }
         s->last_set_us = now;
         /* Refresh fields except since_us (preserves age semantics). */

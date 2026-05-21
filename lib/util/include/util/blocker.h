@@ -108,11 +108,15 @@ bool blocker_init(struct blocker_record *out,
                   const char *reason);
 
 /* Set or refresh a blocker. If `r->id` already exists in the registry:
- *   - rate-limited: if last set < rate-limit, only fire_count++
- *   - otherwise: replaces fields, fire_count++, since_us untouched
- * If new: inserts a record, since_us = now, retry_count = 0.
+ *   - rate-limited: if last set < rate-limit, only fire_count++; returns 1
+ *   - otherwise: replaces fields, fire_count++, since_us untouched; returns 0
+ * If new: inserts a record, since_us = now, retry_count = 0; returns 0.
  * Capacity exhaustion → logs LOG_FAIL and returns -1.
- * Returns: 0 on success, -1 on failure (cap exhausted, bad input). */
+ *
+ * Return code contract:
+ *   0  — fresh write stored (caller may emit event)
+ *   1  — rate-limited dup (caller SHOULD suppress event emission)
+ *  -1  — error (bad input, cap exhausted) */
 int blocker_set(const struct blocker_record *r);
 
 /* Mark a retry attempt against a blocker. Increments retry_count.

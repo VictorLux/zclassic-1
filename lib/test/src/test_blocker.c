@@ -108,7 +108,7 @@ int test_blocker(void)
 
         /* Set again immediately → rate-limited, fire_count++ only */
         rc = blocker_set(&r);
-        BCK_CHECK("set rate-limited → 0", rc == 0);
+        BCK_CHECK("set rate-limited → 1", rc == 1);
         BCK_CHECK("fire_count 2 after re-set",
                   blocker_fire_count_for_testing("alpha") == 2u);
         BCK_CHECK("still 1 active",

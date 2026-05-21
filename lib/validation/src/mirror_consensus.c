@@ -3,6 +3,7 @@
 #include "validation/mirror_consensus.h"
 
 #include "event/event.h"
+#include "util/blocker.h"
 
 #include <pthread.h>
 #include <stdatomic.h>
@@ -139,9 +140,34 @@ void mirror_consensus_record_override(int height, const char *reason)
             height, safe ? "true" : "false", r);
 }
 
+/* Mirror reasons → typed blocker class. Most are TRANSIENT — they go
+ * away when the network advances or local validation retries. A few
+ * are PERMANENT (cryptographic mismatches that won't change without
+ * operator action). */
+static enum blocker_class classify_mirror_reason(const char *r)
+{
+    if (!r || !r[0]) return BLOCKER_TRANSIENT;
+    /* Cryptographic mismatches — bad data, never auto-retry. */
+    if (strcmp(r, "body-hash-mismatch") == 0)              return BLOCKER_PERMANENT;
+    if (strcmp(r, "header-hash-mismatch") == 0)            return BLOCKER_PERMANENT;
+    if (strcmp(r, "merkle-root-mismatch") == 0)            return BLOCKER_PERMANENT;
+    if (strcmp(r, "consensus-reject") == 0)                return BLOCKER_PERMANENT;
+    /* Everything else: TRANSIENT (chain may advance next try). */
+    return BLOCKER_TRANSIENT;
+}
+
 void mirror_consensus_record_blocker(const char *reason)
 {
     const char *r = reason ? reason : "";
+    /* Typed primitive: rate-limits + classifies. If it tells us this is
+     * a rate-limited dup, suppress event emission (spam guard). */
+    struct blocker_record rec;
+    char bid[BLOCKER_ID_MAX];
+    snprintf(bid, sizeof(bid), "mirror.%s", r[0] ? r : "unknown");
+    blocker_init(&rec, bid, "mirror_consensus",
+                 classify_mirror_reason(r), r);
+    int rc = blocker_set(&rec);
+    /* Always increment the unsuppressed total (legacy semantics). */
     int64_t blockers =
         atomic_fetch_add(&g_mirror_consensus.blockers_total, 1) + 1;
     pthread_mutex_lock(&g_mirror_consensus.lock);
@@ -149,18 +175,29 @@ void mirror_consensus_record_blocker(const char *reason)
              sizeof(g_mirror_consensus.activation_blocker), "%s",
              r);
     pthread_mutex_unlock(&g_mirror_consensus.lock);
-    event_emitf(EV_MIRROR_CONSENSUS_DECISION, 0,
-                "op=blocker authority=local_consensus_validation "
-                "trust=bounded_advisory_fallback allowed=false "
-                "reason=%s blockers=%lld blk=%s",
-                r, (long long)blockers, r[0] ? r : "-");
+    /* Only emit the event on a fresh write (rc == 0) — rate-limited
+     * dups (rc == 1) are suppressed at the source. */
+    if (rc == 0) {
+        event_emitf(EV_MIRROR_CONSENSUS_DECISION, 0,
+                    "op=blocker authority=local_consensus_validation "
+                    "trust=bounded_advisory_fallback allowed=false "
+                    "reason=%s blockers=%lld blk=%s",
+                    r, (long long)blockers, r[0] ? r : "-");
+    }
 }
 
 void mirror_consensus_clear_blocker(void)
 {
     pthread_mutex_lock(&g_mirror_consensus.lock);
+    char old[128];
+    snprintf(old, sizeof(old), "%s", g_mirror_consensus.activation_blocker);
     g_mirror_consensus.activation_blocker[0] = '\0';
     pthread_mutex_unlock(&g_mirror_consensus.lock);
+    if (old[0]) {
+        char bid[BLOCKER_ID_MAX];
+        snprintf(bid, sizeof(bid), "mirror.%s", old);
+        blocker_clear(bid);
+    }
 }
 
 void mirror_consensus_stats_snapshot(struct mirror_consensus_stats *out)
