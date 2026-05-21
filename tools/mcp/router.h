@@ -94,6 +94,13 @@ struct mcp_tool_route {
     const struct mcp_param_spec *params;
     size_t                       num_params;
     mcp_handler_fn               handler;
+    /* Optional metadata — set inline in the route initializer.
+     * flags: OR of mcp_tool_flag bits. Default 0.
+     * self_test_args: NUL-terminated JSON literal that lives for the
+     *   process lifetime; used by zcl_self_test to call this tool
+     *   with non-default arguments. Default NULL. */
+    uint32_t      flags;
+    const char   *self_test_args;
 };
 
 /* ── Registry ────────────────────────────────────────────────── */
@@ -110,29 +117,15 @@ const struct mcp_tool_route *mcp_router_find(const char *name);
 size_t mcp_router_count(void);
 const struct mcp_tool_route *mcp_router_at(size_t idx);
 
-/* ── Tool metadata (sidecar, set after register) ─────────────── */
+/* ── Tool metadata (set inline in the route initializer) ─────── */
 
-/* Flag bits attached to a registered route. */
+/* Flag bits attached to a route. Set inline in the route struct's
+ * `flags` field. */
 enum mcp_tool_flag {
     /* Tool writes state on the node, network, or wallet — skipped by
      * zcl_self_test, treated as destructive by middleware (rate-gated). */
     MCP_TOOL_FLAG_DESTRUCTIVE = 1u << 0,
 };
-
-/* Set flags on an already-registered route.  Returns false if the tool
- * is not registered. */
-bool mcp_router_set_flags(const char *tool, uint32_t flags);
-
-/* Return the flag bits for a registered route, or 0 if not registered. */
-uint32_t mcp_router_get_flags(const struct mcp_tool_route *route);
-
-/* Set the canonical zcl_self_test args for a registered route. `args_json`
- * is a NUL-terminated literal that survives registration (no copy). Returns
- * false if the tool is not registered. */
-bool mcp_router_set_self_test_args(const char *tool, const char *args_json);
-
-/* Return the self-test args for a registered route, or NULL if not set. */
-const char *mcp_router_get_self_test_args(const struct mcp_tool_route *route);
 
 /* ── Validation / dispatch ───────────────────────────────────── */
 

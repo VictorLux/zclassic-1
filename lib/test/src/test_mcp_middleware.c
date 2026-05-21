@@ -41,13 +41,13 @@ static int h_slow(const struct mcp_request *req, struct mcp_response *res)
 }
 
 static const struct mcp_tool_route r_read = {
-    "t_read", "test", "read-only", NULL, 0, h_ok
+    "t_read", "test", "read-only", NULL, 0, h_ok, 0, NULL
 };
 static const struct mcp_tool_route r_send = {
-    "zcl_send", "test", "sim send", NULL, 0, h_ok
+    "zcl_send", "test", "sim send", NULL, 0, h_ok, 0, NULL
 };
 static const struct mcp_tool_route r_slow = {
-    "t_slow", "test", "slow handler", NULL, 0, h_slow
+    "t_slow", "test", "slow handler", NULL, 0, h_slow, 0, NULL
 };
 
 static void register_routes(void)

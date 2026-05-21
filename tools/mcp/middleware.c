@@ -146,6 +146,12 @@ bool mcp_middleware_is_destructive(const struct mcp_middleware *mw,
                                     const char *tool_name)
 {
     if (!mw || !tool_name) return false;
+    /* Source of truth is the route's `flags` field, populated inline
+     * by each controller. Falls back to the seed list in mw->destructive_tools
+     * for tools that aren't (yet) registered when this is called. */
+    const struct mcp_tool_route *r = mcp_router_find(tool_name);
+    if (r && (r->flags & MCP_TOOL_FLAG_DESTRUCTIVE))
+        return true;
     for (size_t i = 0; i < mw->num_destructive_tools; i++) {
         if (mw->destructive_tools[i] &&
             strcmp(mw->destructive_tools[i], tool_name) == 0)

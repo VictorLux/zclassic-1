@@ -31,10 +31,9 @@
 #include <string.h>
 
 /* Destructive flags and self_test argument overrides used to live as
- * ad-hoc tables in this file. They now live on the route itself —
- * each controller flags its own tools via mcp_router_set_flags /
- * mcp_router_set_self_test_args during mcp_register_*(). See
- * tools/mcp/controllers/{wallet,net,app,ops,chain,meta}_controller.c. */
+ * ad-hoc tables in this file. They now live inline on the route itself
+ * — see the `flags` and `self_test_args` fields on each entry in the
+ * k_routes[] tables in {wallet,net,app,ops,chain,meta}_controller.c. */
 
 /* True if any required param has no default value we can synthesize. */
 static bool has_unfillable_required(const struct mcp_tool_route *r)
@@ -97,13 +96,13 @@ static int h_zcl_self_test(const struct mcp_request *req,
         const char *status;
         const char *reason = NULL;
 
-        const char *override = mcp_router_get_self_test_args(r);
+        const char *override = r->self_test_args;
         struct json_value override_val = {0};
         bool have_override = false;
         if (override && json_read(&override_val, override, strlen(override)))
             have_override = true;
 
-        if (mcp_router_get_flags(r) & MCP_TOOL_FLAG_DESTRUCTIVE) {
+        if (r->flags & MCP_TOOL_FLAG_DESTRUCTIVE) {
             status = "skipped";
             reason = "destructive";
             skipped++;
@@ -747,66 +746,57 @@ static const struct mcp_tool_route k_routes[] = {
     { "zcl_tools_list", "ops",
       "Dump the full MCP routing table: every tool with its domain, "
       "description, and parameter schema. Self-documenting surface.",
-      NULL, 0, h_zcl_tools_list },
+      NULL, 0, h_zcl_tools_list, 0, NULL },
     { "zcl_self_test", "ops",
       "Call every registered tool with safe defaults, reporting "
       "pass/fail/skip. Destructive tools are skipped.",
-      NULL, 0, h_zcl_self_test },
+      NULL, 0, h_zcl_self_test,
+      .flags = MCP_TOOL_FLAG_DESTRUCTIVE /* avoid recursion */ },
     { "zcl_logtail", "ops",
       "Tail the structured event log. Optional domain prefix filter.",
-      p_logtail, PARAM_COUNT(p_logtail), h_zcl_logtail },
+      p_logtail, PARAM_COUNT(p_logtail), h_zcl_logtail, 0, NULL },
     { "zcl_openapi", "ops",
       "Emit an OpenAPI 3.0-flavored schema document derived from the "
       "MCP routing table. Clients can use it for type generation or "
       "auto-test harnesses.",
-      NULL, 0, h_zcl_openapi },
+      NULL, 0, h_zcl_openapi, 0, NULL },
     { "zcl_metrics", "ops",
       "Prometheus-text metrics dump: request counters, latency histogram, "
       "and summary totals accumulated in-process.",
-      NULL, 0, h_zcl_metrics },
+      NULL, 0, h_zcl_metrics, 0, NULL },
     { "zcl_metrics_reset", "ops",
       "Reset all MCP metric counters. Destructive — gated by the "
       "middleware rate limiter.",
-      NULL, 0, h_zcl_metrics_reset },
+      NULL, 0, h_zcl_metrics_reset, .flags = MCP_TOOL_FLAG_DESTRUCTIVE },
     { "zcl_rpc_report", "ops",
       "HTTP RPC middleware report: live rate-limit / ban config plus "
       "allowed/rate-limited/banned/auth-failure counters and current "
       "tracked-IP and active-ban gauges. Parallel to zcl_peer_report "
       "for the RPC surface.",
-      NULL, 0, h_zcl_rpc_report },
+      NULL, 0, h_zcl_rpc_report, 0, NULL },
     { "zcl_consensus_report", "ops",
       "Consensus-reject snapshot: per-(kind, reason) counts plus "
       "tx/block totals and overflow buckets for the in-process "
       "EV_CONSENSUS_REJECT_TX / EV_CONSENSUS_REJECT_BLOCK stream. "
       "Dashboard companion to AGENT2's zcl_explain_reject.",
-      NULL, 0, h_zcl_consensus_report },
+      NULL, 0, h_zcl_consensus_report, 0, NULL },
     { "zcl_config_reload", "ops",
       "Re-read env-tunable config for live subsystems (peer_scoring, "
       "rpc_middleware) without restarting the node. Returns the new "
       "effective values so an operator can verify the change took "
       "effect.",
-      NULL, 0, h_zcl_config_reload },
+      NULL, 0, h_zcl_config_reload,
+      .flags = MCP_TOOL_FLAG_DESTRUCTIVE /* re-applies env vars to live subsystems */ },
     { "zcl_admin", "ops",
       "Admin dashboard: aggregates zcl_kpi + zcl_peer_report + "
       "zcl_rpc_report + zcl_events into one snapshot and derives "
       "threshold-based alerts from the nested counters. Missing "
       "subsystems render as null; flagship single-call operator tool.",
-      p_admin, PARAM_COUNT(p_admin), h_zcl_admin },
-};
-
-/* Meta tools that mutate state or would recurse — skipped by self_test. */
-static const char *const k_meta_destructive[] = {
-    "zcl_self_test",              /* avoid recursion */
-    "zcl_metrics_reset",          /* resets metric counters */
-    "zcl_config_reload",          /* re-applies env vars to live subsystems */
+      p_admin, PARAM_COUNT(p_admin), h_zcl_admin, 0, NULL },
 };
 
 void mcp_register_meta(void)
 {
     for (size_t i = 0; i < PARAM_COUNT(k_routes); i++)
         mcp_router_register(&k_routes[i]);
-    for (size_t i = 0;
-         i < PARAM_COUNT(k_meta_destructive); i++)
-        mcp_router_set_flags(k_meta_destructive[i],
-                             MCP_TOOL_FLAG_DESTRUCTIVE);
 }

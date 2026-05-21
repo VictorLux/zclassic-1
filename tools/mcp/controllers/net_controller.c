@@ -148,50 +148,42 @@ static const struct mcp_param_spec p_onion_health[] = {
 static const struct mcp_tool_route k_routes[] = {
     { "zcl_peers", "net",
       "Connected peers with addresses, latency, services, heights.",
-      NULL, 0, h_zcl_peers },
+      NULL, 0, h_zcl_peers, 0, NULL },
     { "zcl_networkinfo", "net",
       "Network info: reachability, handshakes, and lifecycle failures by source.",
-      NULL, 0, h_zcl_networkinfo },
+      NULL, 0, h_zcl_networkinfo, 0, NULL },
     { "zcl_addnode", "net",
       "Add/remove peer. Actions: add, remove, onetry.",
-      p_addnode, PARAM_COUNT(p_addnode), h_zcl_addnode },
+      p_addnode, PARAM_COUNT(p_addnode), h_zcl_addnode,
+      .flags = MCP_TOOL_FLAG_DESTRUCTIVE },
     { "zcl_onion_status", "net",
       "Tor onion service: .onion address, bootstrap state.",
-      NULL, 0, h_zcl_onion_status },
+      NULL, 0, h_zcl_onion_status, 0, NULL },
     { "zcl_gametypes", "net",
       "P2P game types: Ping (latency measurement), TicTacToe.",
-      NULL, 0, h_zcl_gametypes },
+      NULL, 0, h_zcl_gametypes, 0, NULL },
     { "zcl_pingpeer", "net",
       "Measure round-trip latency to a connected peer.",
-      p_pingpeer, PARAM_COUNT(p_pingpeer), h_zcl_pingpeer },
+      p_pingpeer, PARAM_COUNT(p_pingpeer), h_zcl_pingpeer,
+      .flags = MCP_TOOL_FLAG_DESTRUCTIVE /* fires a P2P message */ },
     { "zcl_peerlatency", "net",
       "Latency for all peers: ping_ms, min_ping_ms, avg_latency_ms.",
-      NULL, 0, h_zcl_peerlatency },
+      NULL, 0, h_zcl_peerlatency, 0, NULL },
     { "zcl_peer_report", "net",
       "Peer scoring report: live ban threshold/hours/decay config plus "
       "per-kind offence counts and total bans observed since boot.",
-      NULL, 0, h_zcl_peer_report },
+      NULL, 0, h_zcl_peer_report, 0, NULL },
     { "zcl_onion_health", "net",
       "Probe the in-process onion service via direct function call "
       "(no Tor circuit, no SOCKS). Returns {ok, onion_address, path, "
       "latency_ms, response_bytes}. Liveness check, not an e2e reach "
       "test.",
       p_onion_health, PARAM_COUNT(p_onion_health),
-      h_zcl_onion_health },
-};
-
-/* Tools that touch the network — skipped by zcl_self_test. */
-static const char *const k_net_destructive[] = {
-    "zcl_addnode",
-    "zcl_pingpeer",               /* fires a P2P message */
+      h_zcl_onion_health, 0, NULL },
 };
 
 void mcp_register_net(void)
 {
     for (size_t i = 0; i < PARAM_COUNT(k_routes); i++)
         mcp_router_register(&k_routes[i]);
-    for (size_t i = 0;
-         i < PARAM_COUNT(k_net_destructive); i++)
-        mcp_router_set_flags(k_net_destructive[i],
-                             MCP_TOOL_FLAG_DESTRUCTIVE);
 }

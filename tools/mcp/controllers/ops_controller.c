@@ -932,59 +932,60 @@ static const struct mcp_tool_route k_routes[] = {
       "Node status: block height, peers, sync state, onion address, "
       "bg-validation progress, health checks, and chain advance source "
       "scoring. The single command to check if everything is working.",
-      NULL, 0, h_zcl_status },
+      NULL, 0, h_zcl_status, 0, NULL },
     { "zcl_health", "ops",
       "Health check: pass/fail, chain height, peers, sync, onion.",
-      NULL, 0, h_zcl_health },
+      NULL, 0, h_zcl_health, 0, NULL },
     { "zcl_mirror_status", "ops",
       "Canonical zclassic23/zclassicd mirror lockstep status: both "
       "heights and hashes, lag, reachability, running state, and "
       "catch-up counters.",
-      NULL, 0, h_zcl_mirror_status },
+      NULL, 0, h_zcl_mirror_status, 0, NULL },
     { "zcl_kpi", "ops",
       "One-shot KPI dashboard: height, peer_count, sync, validation, "
       "health, mempool, wallet, chain, network — every subsystem in "
       "one response. The flagship operator tool for debugging.",
-      NULL, 0, h_zcl_kpi },
+      NULL, 0, h_zcl_kpi, 0, NULL },
     { "zcl_self_heal_stats", "ops",
       "Self-heal UTXO recovery counters: tx-index hits, bounded scan "
       "hits/exhaustion, total scanned blocks, and active scan depth.",
-      NULL, 0, h_zcl_self_heal_stats },
+      NULL, 0, h_zcl_self_heal_stats, 0, NULL },
     { "zcl_getmempoolinfo", "ops",
       "Mempool size, bytes, usage.",
-      NULL, 0, h_zcl_getmempoolinfo },
+      NULL, 0, h_zcl_getmempoolinfo, 0, NULL },
     { "zcl_mempool_inspect", "ops",
       "Mempool fee-rate (zat/byte) and age histograms. Power-user "
       "signal for transaction fee construction and congestion diagnosis.",
-      NULL, 0, h_zcl_mempool_inspect },
+      NULL, 0, h_zcl_mempool_inspect, 0, NULL },
     { "zcl_getrawmempool", "ops",
       "Array of txids currently in the mempool.",
-      NULL, 0, h_zcl_getrawmempool },
+      NULL, 0, h_zcl_getrawmempool, 0, NULL },
     { "zcl_getmininginfo", "ops",
       "Mining stats: hashrate, difficulty, current block, pooled tx.",
-      NULL, 0, h_zcl_getmininginfo },
+      NULL, 0, h_zcl_getmininginfo, 0, NULL },
     { "zcl_benchmark", "ops",
       "Hash / malloc / hash160 throughput (sha256d, malloc-4K, hash160 "
       "ops/sec).",
-      NULL, 0, h_zcl_benchmark },
+      NULL, 0, h_zcl_benchmark, 0, NULL },
     { "zcl_dbstats", "ops",
       "Database health: table counts, SQLite page stats, sizes.",
-      NULL, 0, h_zcl_dbstats },
+      NULL, 0, h_zcl_dbstats, 0, NULL },
     { "zcl_filemanifest", "ops",
       "File service status: chunks, SHA3 hashes, total size.",
-      NULL, 0, h_zcl_filemanifest },
+      NULL, 0, h_zcl_filemanifest, 0, NULL },
     { "zcl_events", "ops",
       "Recent event log: sync events, peer connections, blocks.",
-      p_events, PARAM_COUNT(p_events), h_zcl_events },
+      p_events, PARAM_COUNT(p_events), h_zcl_events, 0, NULL },
     { "zcl_rpc", "ops",
       "Call any RPC method directly. 85+ commands available.",
-      p_rpc, PARAM_COUNT(p_rpc), h_zcl_rpc },
+      p_rpc, PARAM_COUNT(p_rpc), h_zcl_rpc,
+      .flags = MCP_TOOL_FLAG_DESTRUCTIVE /* arbitrary RPC — skip in self_test */ },
     { "zcl_state", "ops",
       "Generic in-process state dump. See params.subsystem.enum for the "
       "live list (derived from g_dumpers in diagnostics_controller.c). "
       "For block_index, pass `key`=height or hex hash. New subsystems "
       "plug in via *_dump_state_json (see CLAUDE.md).",
-      p_state, PARAM_COUNT(p_state), h_zcl_state },
+      p_state, PARAM_COUNT(p_state), h_zcl_state, 0, NULL },
     { "zcl_probe_zclassicd", "ops",
       "Drift detection: ask the local zclassicd (independent ZClassic "
       "impl) for getblockhash(H) and compare to our block_index. Picks a "
@@ -992,61 +993,48 @@ static const struct mcp_tool_route k_routes[] = {
       "their_hash, match}.",
       p_probe_zclassicd,
       PARAM_COUNT(p_probe_zclassicd),
-      h_zcl_probe_zclassicd },
+      h_zcl_probe_zclassicd, 0, NULL },
     { "zcl_diff_with_legacy", "ops",
       "One-call \"are we tracking zclassicd?\" check. Composes mirror "
       "status (height delta + lag) with a probe_zclassicd hash compare "
       "at local_tip-6, returns a single-word verdict (converged / "
       "tracking / lagging / diverged / legacy_unreachable) plus the "
       "raw inputs for triage.",
-      NULL, 0, h_zcl_diff_with_legacy },
+      NULL, 0, h_zcl_diff_with_legacy, 0, NULL },
     { "zcl_node_log", "ops",
       "Reverse-scan node.log server-side with regex + level filter. Avoids "
       "downloading the 56 MB log just to grep. Returns newest matches first.",
       p_node_log, PARAM_COUNT(p_node_log),
-      h_zcl_node_log },
+      h_zcl_node_log, 0, NULL },
     { "zcl_sql", "ops",
       "SELECT-only SQL passthrough to node.db. Hard validation + 2s timeout. "
       "Marked destructive (rate-gated) because arbitrary scans can be costly.",
-      p_sql, PARAM_COUNT(p_sql), h_zcl_sql },
+      p_sql, PARAM_COUNT(p_sql), h_zcl_sql, 0, NULL },
     { "zcl_profile", "ops",
       "Per-thread CPU sampler: reads /proc/self/task/*/stat before "
       "and after `duration_ms`, returns top N threads by CPU delta "
       "with name, user_ms, sys_ms, cpu_pct. For diagnosing slow "
       "nodes without attaching gdb.",
-      p_profile, PARAM_COUNT(p_profile), h_zcl_profile },
+      p_profile, PARAM_COUNT(p_profile), h_zcl_profile,
+      /* duration_ms sleeps that long per call — clamp to 100ms so
+       * the full self_test sweep doesn't balloon by a second. */
+      .self_test_args = "{\"duration_ms\":100,\"top_n\":3}" },
     { "zcl_syncdiag", "ops",
       "Deep sync diagnostics: sync state, chain height, best header "
       "height, peer max height, header gap, watchdog status and "
       "escalation level, header batch counters, download queue size "
       "and in-flight count. The single tool for diagnosing sync stalls.",
-      NULL, 0, h_zcl_syncdiag },
+      NULL, 0, h_zcl_syncdiag, 0, NULL },
     { "zcl_replay_dump", "ops",
       "Dump the MCP request/response replay buffer (last 100 calls). "
       "Shows tool name, args, response, timestamp, duration, error status.",
       p_replay_dump, PARAM_COUNT(p_replay_dump),
-      h_zcl_replay_dump },
+      h_zcl_replay_dump, 0, NULL },
     { "zcl_replay_exec", "ops",
       "Re-execute a previously recorded MCP request by index from the "
       "replay buffer. Useful for debugging and regression testing.",
       p_replay_exec, PARAM_COUNT(p_replay_exec),
-      h_zcl_replay_exec },
-};
-
-/* Tools that mutate state or are otherwise unsafe to call via self_test. */
-static const char *const k_ops_destructive[] = {
-    "zcl_rpc",                    /* arbitrary RPC — skip by default */
-};
-
-/* Canonical self_test args for tools that need a required param but
- * have a known-safe probe value. */
-static const struct {
-    const char *tool;
-    const char *args_json;
-} k_ops_self_test_args[] = {
-    /* zcl_profile sleeps duration_ms per call — clamp to 100ms so
-     * the full self_test sweep doesn't balloon by a second. */
-    { "zcl_profile", "{\"duration_ms\":100,\"top_n\":3}" },
+      h_zcl_replay_exec, 0, NULL },
 };
 
 void mcp_register_ops(void)
@@ -1064,12 +1052,4 @@ void mcp_register_ops(void)
 
     for (size_t i = 0; i < PARAM_COUNT(k_routes); i++)
         mcp_router_register(&k_routes[i]);
-    for (size_t i = 0;
-         i < PARAM_COUNT(k_ops_destructive); i++)
-        mcp_router_set_flags(k_ops_destructive[i],
-                             MCP_TOOL_FLAG_DESTRUCTIVE);
-    for (size_t i = 0;
-         i < PARAM_COUNT(k_ops_self_test_args); i++)
-        mcp_router_set_self_test_args(k_ops_self_test_args[i].tool,
-                                       k_ops_self_test_args[i].args_json);
 }

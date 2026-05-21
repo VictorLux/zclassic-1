@@ -22,28 +22,6 @@
 static const struct mcp_tool_route *g_routes[MCP_ROUTER_MAX_ROUTES];
 static size_t g_num_routes = 0;
 
-/* Sidecar metadata indexed by registration slot.  Set after register via
- * mcp_router_set_flags / mcp_router_set_self_test_args; read by self_test
- * and the destructive-rate-limit middleware. */
-static uint32_t    g_flags[MCP_ROUTER_MAX_ROUTES];
-static const char *g_self_test_args[MCP_ROUTER_MAX_ROUTES];
-
-static ptrdiff_t route_index(const struct mcp_tool_route *route)
-{
-    if (!route) return -1;
-    for (size_t i = 0; i < g_num_routes; i++)
-        if (g_routes[i] == route) return (ptrdiff_t)i;
-    return -1;
-}
-
-static ptrdiff_t route_index_by_name(const char *tool)
-{
-    if (!tool) return -1;
-    for (size_t i = 0; i < g_num_routes; i++)
-        if (strcmp(g_routes[i]->name, tool) == 0) return (ptrdiff_t)i;
-    return -1;
-}
-
 /* ── Helpers ─────────────────────────────────────────────────── */
 
 static uint64_t now_us(void)
@@ -114,38 +92,6 @@ void mcp_router_reset(void)
 {
     g_num_routes = 0;
     memset(g_routes, 0, sizeof(g_routes));
-    memset(g_flags, 0, sizeof(g_flags));
-    memset(g_self_test_args, 0, sizeof(g_self_test_args));
-}
-
-bool mcp_router_set_flags(const char *tool, uint32_t flags)
-{
-    ptrdiff_t idx = route_index_by_name(tool);
-    if (idx < 0) return false;
-    g_flags[idx] = flags;
-    return true;
-}
-
-uint32_t mcp_router_get_flags(const struct mcp_tool_route *route)
-{
-    ptrdiff_t idx = route_index(route);
-    if (idx < 0) return 0;
-    return g_flags[idx];
-}
-
-bool mcp_router_set_self_test_args(const char *tool, const char *args_json)
-{
-    ptrdiff_t idx = route_index_by_name(tool);
-    if (idx < 0) return false;
-    g_self_test_args[idx] = args_json;
-    return true;
-}
-
-const char *mcp_router_get_self_test_args(const struct mcp_tool_route *route)
-{
-    ptrdiff_t idx = route_index(route);
-    if (idx < 0) return NULL;
-    return g_self_test_args[idx];
 }
 
 bool mcp_router_register(const struct mcp_tool_route *route)

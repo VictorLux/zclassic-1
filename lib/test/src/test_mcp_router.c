@@ -77,33 +77,33 @@ static const struct mcp_param_spec p_strlen[] = {
 };
 
 static const struct mcp_tool_route r_echo = {
-    "t.echo", "test", "Echo handler", NULL, 0, h_echo
+    "t.echo", "test", "Echo handler", NULL, 0, h_echo, 0, NULL
 };
 static const struct mcp_tool_route r_required = {
     "t.required", "test", "Requires name", p_required_str,
-    sizeof(p_required_str) / sizeof(p_required_str[0]), h_echo
+    sizeof(p_required_str) / sizeof(p_required_str[0]), h_echo, 0, NULL
 };
 static const struct mcp_tool_route r_int = {
     "t.int", "test", "Int in range", p_int_range,
-    sizeof(p_int_range) / sizeof(p_int_range[0]), h_echo
+    sizeof(p_int_range) / sizeof(p_int_range[0]), h_echo, 0, NULL
 };
 static const struct mcp_tool_route r_enum = {
     "t.enum", "test", "Enum", p_enum_str,
-    sizeof(p_enum_str) / sizeof(p_enum_str[0]), h_echo
+    sizeof(p_enum_str) / sizeof(p_enum_str[0]), h_echo, 0, NULL
 };
 static const struct mcp_tool_route r_mixed = {
     "t.mixed", "test", "Mixed params", p_mixed,
-    sizeof(p_mixed) / sizeof(p_mixed[0]), h_echo
+    sizeof(p_mixed) / sizeof(p_mixed[0]), h_echo, 0, NULL
 };
 static const struct mcp_tool_route r_strlen = {
     "t.strlen", "test", "Strlen 3-8", p_strlen,
-    sizeof(p_strlen) / sizeof(p_strlen[0]), h_echo
+    sizeof(p_strlen) / sizeof(p_strlen[0]), h_echo, 0, NULL
 };
 static const struct mcp_tool_route r_fail = {
-    "t.fail", "test", "Always fails", NULL, 0, h_fail
+    "t.fail", "test", "Always fails", NULL, 0, h_fail, 0, NULL
 };
 static const struct mcp_tool_route r_null = {
-    "t.null", "test", "Returns null", NULL, 0, h_null
+    "t.null", "test", "Returns null", NULL, 0, h_null, 0, NULL
 };
 
 /* ── Helpers ────────────────────────────────────────────────── */

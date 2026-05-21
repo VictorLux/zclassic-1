@@ -284,104 +284,80 @@ static const struct mcp_tool_route k_routes[] = {
     /* Tokens */
     { "zcl_tokens", "app",
       "List all ZSLP tokens on the network.",
-      NULL, 0, h_zcl_tokens },
+      NULL, 0, h_zcl_tokens, 0, NULL },
 
     /* Names */
     { "zcl_name_resolve", "app",
       "Resolve a ZCL Name to its target (.onion, z-addr, or t-addr).",
       p_name_resolve, PARAM_COUNT(p_name_resolve),
-      h_zcl_name_resolve },
+      h_zcl_name_resolve,
+      /* Canonical self_test args: pick a sentinel safe to probe on
+       * every node (returns "not found"). */
+      .self_test_args = "{\"name\":\"__self_test_probe__\"}" },
     { "zcl_name_register", "app",
       "Build an OP_RETURN script to register a ZCL Name on-chain.",
       p_name_register, PARAM_COUNT(p_name_register),
-      h_zcl_name_register },
+      h_zcl_name_register, .flags = MCP_TOOL_FLAG_DESTRUCTIVE },
     { "zcl_name_list", "app",
       "List all registered ZCL Names on the network.",
-      NULL, 0, h_zcl_name_list },
+      NULL, 0, h_zcl_name_list, 0, NULL },
 
     /* Messaging */
     { "zcl_msg_send_named", "app",
       "Send a message to a ZCL Name. Resolves the name first.",
       p_msg_send_named,
       PARAM_COUNT(p_msg_send_named),
-      h_zcl_msg_send_named },
+      h_zcl_msg_send_named, .flags = MCP_TOOL_FLAG_DESTRUCTIVE },
     { "zcl_msg_send", "app",
       "Send a P2P message to a connected peer.",
-      p_msg_send, PARAM_COUNT(p_msg_send), h_zcl_msg_send },
+      p_msg_send, PARAM_COUNT(p_msg_send), h_zcl_msg_send,
+      .flags = MCP_TOOL_FLAG_DESTRUCTIVE },
     { "zcl_msg_inbox", "app",
       "List messages in the inbox. Newest first.",
       p_msg_inbox, PARAM_COUNT(p_msg_inbox),
-      h_zcl_msg_inbox },
+      h_zcl_msg_inbox, 0, NULL },
     { "zcl_msg_read", "app",
       "Mark a message as read and return its content.",
-      p_msg_read, PARAM_COUNT(p_msg_read), h_zcl_msg_read },
+      p_msg_read, PARAM_COUNT(p_msg_read), h_zcl_msg_read,
+      .flags = MCP_TOOL_FLAG_DESTRUCTIVE /* mutates read-state */ },
 
     /* File market */
     { "zcl_market_list", "app",
       "List files available on the ZCL Market P2P file sharing network.",
-      NULL, 0, h_zcl_market_list },
+      NULL, 0, h_zcl_market_list, 0, NULL },
     { "zcl_market_offer", "app",
       "Announce a file for sale on the ZCL Market.",
       p_market_offer, PARAM_COUNT(p_market_offer),
-      h_zcl_market_offer },
+      h_zcl_market_offer, .flags = MCP_TOOL_FLAG_DESTRUCTIVE },
     { "zcl_market_buy", "app",
       "Initiate purchase and download of a file from the ZCL Market.",
       p_market_buy, PARAM_COUNT(p_market_buy),
-      h_zcl_market_buy },
+      h_zcl_market_buy, .flags = MCP_TOOL_FLAG_DESTRUCTIVE },
     { "zcl_market_status", "app",
       "ZCL Market status: cached offers, persisted offers, active downloads.",
-      NULL, 0, h_zcl_market_status },
+      NULL, 0, h_zcl_market_status, 0, NULL },
 
     /* Atomic swaps */
     { "zcl_swap_chains", "app",
       "List supported chains for atomic swaps: ZCL, BTC, LTC, DOGE.",
-      NULL, 0, h_zcl_swap_chains },
+      NULL, 0, h_zcl_swap_chains, 0, NULL },
     { "zcl_swap_initiate", "app",
       "Initiate an atomic swap. Generates secret, builds HTLC, returns P2SH.",
       p_swap_initiate, PARAM_COUNT(p_swap_initiate),
-      h_zcl_swap_initiate },
+      h_zcl_swap_initiate, .flags = MCP_TOOL_FLAG_DESTRUCTIVE },
     { "zcl_swap_participate", "app",
       "Participate in an atomic swap (counter-HTLC with shorter locktime).",
       p_swap_participate,
       PARAM_COUNT(p_swap_participate),
-      h_zcl_swap_participate },
+      h_zcl_swap_participate, .flags = MCP_TOOL_FLAG_DESTRUCTIVE },
     { "zcl_swap_list", "app",
       "List atomic swap contracts.",
       p_swap_list, PARAM_COUNT(p_swap_list),
-      h_zcl_swap_list },
-};
-
-/* Tools that write state on this node — skipped by zcl_self_test. */
-static const char *const k_app_destructive[] = {
-    "zcl_name_register",
-    "zcl_msg_send",
-    "zcl_msg_send_named",
-    "zcl_msg_read",               /* mutates read-state */
-    "zcl_market_offer",
-    "zcl_market_buy",
-    "zcl_swap_initiate",
-    "zcl_swap_participate",
-};
-
-/* Canonical self_test args. zcl_name_resolve takes a name — pick a
- * sentinel that's safe to probe (returns "not found" on every node). */
-static const struct {
-    const char *tool;
-    const char *args_json;
-} k_app_self_test_args[] = {
-    { "zcl_name_resolve", "{\"name\":\"__self_test_probe__\"}" },
+      h_zcl_swap_list, 0, NULL },
 };
 
 void mcp_register_app(void)
 {
     for (size_t i = 0; i < PARAM_COUNT(k_routes); i++)
         mcp_router_register(&k_routes[i]);
-    for (size_t i = 0;
-         i < PARAM_COUNT(k_app_destructive); i++)
-        mcp_router_set_flags(k_app_destructive[i],
-                             MCP_TOOL_FLAG_DESTRUCTIVE);
-    for (size_t i = 0;
-         i < PARAM_COUNT(k_app_self_test_args); i++)
-        mcp_router_set_self_test_args(k_app_self_test_args[i].tool,
-                                       k_app_self_test_args[i].args_json);
 }

@@ -148,67 +148,55 @@ static const struct mcp_param_spec p_utxo_audit[] = {
 
 static const struct mcp_tool_route k_routes[] = {
     { "zcl_getblockcount", "chain",
-      "Current block height.", NULL, 0, h_zcl_getblockcount },
+      "Current block height.", NULL, 0, h_zcl_getblockcount, 0, NULL },
     { "zcl_chain_tip", "chain",
       "Active chain tip in one call: hash, height, time, age_seconds, "
       "work, bits, difficulty. Power-user shortcut that bundles "
       "getbestblockhash + getblockheader + chainwork.",
-      NULL, 0, h_zcl_chain_tip },
+      NULL, 0, h_zcl_chain_tip, 0, NULL },
     { "zcl_getblock", "chain",
       "Get block by height or hash.",
-      p_getblock, PARAM_COUNT(p_getblock), h_zcl_getblock },
+      p_getblock, PARAM_COUNT(p_getblock), h_zcl_getblock,
+      /* required block_id, but height "1" exists on every synced node. */
+      .self_test_args = "{\"block_id\":\"1\"}" },
     { "zcl_getrawtransaction", "chain",
       "Transaction by id. verbose=1 decodes, verbose=0 returns hex.",
       p_getrawtx, PARAM_COUNT(p_getrawtx),
-      h_zcl_getrawtransaction },
+      h_zcl_getrawtransaction, 0, NULL },
     { "zcl_getblockchaininfo", "chain",
       "Chain state: height, best block, difficulty, chain work, value pools.",
-      NULL, 0, h_zcl_getblockchaininfo },
+      NULL, 0, h_zcl_getblockchaininfo, 0, NULL },
     { "zcl_syncstate", "chain",
       "Sync state machine: phase, progress, header/block/UTXO status.",
-      NULL, 0, h_zcl_syncstate },
+      NULL, 0, h_zcl_syncstate, 0, NULL },
     { "zcl_validationstatus", "chain",
       "Background validation: verified height, sigs, proofs, blocks/sec.",
-      NULL, 0, h_zcl_validationstatus },
+      NULL, 0, h_zcl_validationstatus, 0, NULL },
     { "zcl_dataintegrity", "chain",
       "SHA3-256 hashes over all consensus tables.",
-      NULL, 0, h_zcl_dataintegrity },
+      NULL, 0, h_zcl_dataintegrity, 0, NULL },
     { "zcl_mmb", "chain",
       "Merkle Mountain Belt root. FlyClient chain verification.",
-      NULL, 0, h_zcl_mmb },
+      NULL, 0, h_zcl_mmb, 0, NULL },
     { "zcl_utxocommitment", "chain",
       "SHA3-256 over entire UTXO set in canonical order.",
-      NULL, 0, h_zcl_utxocommitment },
+      NULL, 0, h_zcl_utxocommitment, 0, NULL },
     { "zcl_utxo_audit", "chain",
       "Post-IBD UTXO drift audit. Computes local commitment and optionally compares a trusted peer SHA3.",
       p_utxo_audit, PARAM_COUNT(p_utxo_audit),
-      h_zcl_utxo_audit },
+      h_zcl_utxo_audit, 0, NULL },
     { "zcl_hodlwave", "chain",
       "UTXO age distribution: 10 buckets from 24h to 5y+.",
-      NULL, 0, h_zcl_hodlwave },
+      NULL, 0, h_zcl_hodlwave, 0, NULL },
     { "zcl_reorg_history", "chain",
       "Recent chain.reorg_* events (start, disconnect_failed, "
       "recovery_complete). Power-user lens on chain stability.",
       p_reorg_history, PARAM_COUNT(p_reorg_history),
-      h_zcl_reorg_history },
-};
-
-/* Canonical self_test args. zcl_getblock requires a height — pick "1"
- * because it exists on every synced node. */
-static const struct {
-    const char *tool;
-    const char *args_json;
-} k_chain_self_test_args[] = {
-    { "zcl_getblock", "{\"block_id\":\"1\"}" },
+      h_zcl_reorg_history, 0, NULL },
 };
 
 void mcp_register_chain(void)
 {
     for (size_t i = 0; i < PARAM_COUNT(k_routes); i++)
         mcp_router_register(&k_routes[i]);
-    for (size_t i = 0;
-         i < PARAM_COUNT(k_chain_self_test_args);
-         i++)
-        mcp_router_set_self_test_args(k_chain_self_test_args[i].tool,
-                                       k_chain_self_test_args[i].args_json);
 }
