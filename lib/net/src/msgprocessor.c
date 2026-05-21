@@ -31,8 +31,11 @@
 #include "net/zmsg.h"
 #include "models/database.h"
 #include "models/file_service.h"
-#include "controllers/file_controller.h"
-#include "controllers/sync_controller.h"
+/* lib/net → app/controllers boundary: msgprocessor.c needs the full
+ * struct file_manifest definition (not just a function decl) to handle
+ * P2P file challenge messages. Real fix is to move the manifest struct
+ * down into a lib/net or lib/storage header; out of scope. */
+#include "controllers/file_controller.h"  // lib-layer-ok:file_manifest-struct-defn
 #include "services/snapshot_sync_service.h"
 #include "services/block_sync_service.h"
 #include "services/chain_state_repository.h"

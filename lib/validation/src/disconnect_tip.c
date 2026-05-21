@@ -30,12 +30,22 @@
 #include "storage/disk_block_io.h"
 #include "storage/block_index_db.h"
 #include "models/database.h"
-#include "controllers/sync_controller.h"
 #include "event/event.h"
 #include "util/log_macros.h"
 #include "util/safe_alloc.h"
 
 #include "process_block_internal.h"
+
+/* Forward decl: app/controllers/sync_controller.h defines the full
+ * controller surface, but this file only needs one function. Avoid
+ * dragging the controller header into lib/. Real fix is to move this
+ * function down into lib/storage with the rest of node_db; out of
+ * scope here. */
+struct block;
+struct block_index;
+bool node_db_sync_disconnect_block(struct node_db *ndb,
+                                   const struct block *blk,
+                                   const struct block_index *pindex);
 
 bool disconnect_tip(struct validation_state *state,
                     struct main_state *ms,

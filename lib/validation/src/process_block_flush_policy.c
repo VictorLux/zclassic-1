@@ -22,13 +22,20 @@
 #include "coins/utxo_commitment.h"
 #include "core/serialize.h"
 #include "core/utiltime.h"
-#include "controllers/sync_controller.h"
 #include "event/event.h"
 #include "models/database.h"
 #include "storage/coins_view_sqlite.h"
 #include "util/log_macros.h"
 
 #include "process_block_internal.h"
+
+/* `g_sapling_tree_rebuilding` is defined in app/controllers/sync_controller.c
+ * and declared in controllers/sync_controller.h (outside ZCL_TESTING),
+ * but lib/ shouldn't pull the full controller header in. Mirror the
+ * local-extern pattern already used in
+ * app/controllers/src/blockchain_controller_chain.c. Real fix is to
+ * promote the global into a lib/-owned header — out of scope. */
+extern _Atomic bool g_sapling_tree_rebuilding;
 
 /* ── Flush policy ────────────────────────────────────────────
  * Controls when the in-memory UTXO cache writes to LevelDB.

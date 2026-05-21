@@ -36,7 +36,6 @@
 #include "validation/checkpoint.h"
 #include "validation/main_constants.h"
 #include "validation/process_block_internals.h"
-#include "controllers/sync_controller.h"
 #include "coins/utxo_commitment.h"
 #include "coins/undo.h"
 #include "net/download.h"
