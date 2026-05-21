@@ -25,6 +25,7 @@
 
 #include "util/log_macros.h"
 #include "util/long_op.h"
+#include "util/supervisor.h"
 #include "util/thread_registry.h"
 #include "health/heartbeat.h"
 
@@ -1326,6 +1327,48 @@ struct watchdog_periodic_args {
 static struct watchdog_periodic_args g_watchdog_args;
 static health_subsystem_id g_watchdog_health_id = HEALTH_INVALID_ID;
 
+/* Supervisor liveness contract (Round 5).
+ *
+ * The lib/health sweeper above is the *primary* driver. The supervisor
+ * is a redundant, independent driver: if the sweeper thread wedges
+ * (which it did silently on 2026-05-21 for 8.6 h), the supervisor
+ * keeps calling the same tick from its own thread, so the watchdog's
+ * stall-detection logic still runs.
+ *
+ * sync_watchdog_check() is mutex-protected and edge-idempotent on
+ * state_stuck_since, so double-firing (sweeper + supervisor both
+ * calling it) is safe — at worst we get two acquire-mutex / release
+ * pairs per 30-second window. */
+static struct liveness_contract g_wd_contract;
+static supervisor_child_id      g_wd_supervisor_id = SUPERVISOR_INVALID_ID;
+
+/* Forward decl: the supervisor callbacks below dispatch into the
+ * periodic tick, which is defined further down. */
+static void sync_watchdog_periodic_tick(void *arg);
+
+static void sync_watchdog_supervisor_tick(struct liveness_contract *c)
+{
+    (void)c;
+    sync_watchdog_periodic_tick(&g_watchdog_args);
+}
+
+static void sync_watchdog_supervisor_stall(struct liveness_contract *c)
+{
+    /* Supervisor noticed the watchdog hasn't ticked within its deadline
+     * (120 s). That means the lib/health sweeper is stuck. Force-run
+     * the tick on the supervisor's own thread so stall detection keeps
+     * working even when the sweeper is dead. The supervisor's edge-
+     * once semantics mean this fires exactly once per stall episode;
+     * a successful tick (which calls supervisor_tick implicitly via
+     * the contract's on_tick path on the next sweep) rearms the edge. */
+    fprintf(stderr,  // obs-ok:supervisor-rescue-precedes-tick
+        "[supervisor] sync.watchdog deadline missed (%lluus age) — "
+        "force-running tick from supervisor thread\n",
+        (unsigned long long)(c ? 0 : 0));
+    fflush(stderr);
+    sync_watchdog_periodic_tick(&g_watchdog_args);
+}
+
 static void sync_watchdog_periodic_tick(void *arg)
 {
     struct watchdog_periodic_args *a = arg;
@@ -1370,11 +1413,34 @@ bool sync_watchdog_start(struct connman *cm,
         LOG_FAIL("watchdog", "health_register_periodic failed");
         return false;
     }
+
+    /* Round 5: register a parallel supervisor contract so the watchdog
+     * tick keeps running if the lib/health sweeper itself wedges. */
+    if (g_wd_supervisor_id == SUPERVISOR_INVALID_ID) {
+        liveness_contract_init(&g_wd_contract, "sync.watchdog");
+        atomic_store(&g_wd_contract.period_secs,   WATCHDOG_TICK_SECS);
+        atomic_store(&g_wd_contract.deadline_secs, WATCHDOG_TICK_SECS * 4);
+        g_wd_contract.on_tick  = sync_watchdog_supervisor_tick;
+        g_wd_contract.on_stall = sync_watchdog_supervisor_stall;
+        g_wd_supervisor_id = supervisor_register(&g_wd_contract);
+        /* Registration failure is non-fatal — the lib/health sweeper
+         * is still active. Log + continue. */
+        if (g_wd_supervisor_id == SUPERVISOR_INVALID_ID) {
+            fprintf(stderr,  // obs-ok:supervisor-register-fallback-warn
+                "[watchdog] WARN supervisor_register failed; relying on "
+                "lib/health sweeper alone\n");
+            fflush(stderr);
+        }
+    }
     return true;
 }
 
 void sync_watchdog_stop(void)
 {
+    if (g_wd_supervisor_id != SUPERVISOR_INVALID_ID) {
+        supervisor_unregister(g_wd_supervisor_id);
+        g_wd_supervisor_id = SUPERVISOR_INVALID_ID;
+    }
     if (g_watchdog_health_id == HEALTH_INVALID_ID) return;
     health_unregister(g_watchdog_health_id);
     g_watchdog_health_id = HEALTH_INVALID_ID;

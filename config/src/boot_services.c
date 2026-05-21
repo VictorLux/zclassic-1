@@ -20,6 +20,7 @@
 #include "util/sd_notify.h"
 #include "util/boot_progress.h"
 #include "util/log_macros.h"
+#include "util/supervisor.h"
 #include "config/boot_snapshot_import.h"
 #include "storage/disk_block_io.h"
 #include "models/block.h"
@@ -2438,6 +2439,16 @@ bool app_init_services(struct app_context *ctx,
 
     atomic_store(svc->running, true);
 
+    /* Round 5: start the supervisor thread BEFORE runtime services
+     * register their liveness contracts. Idempotent — subsequent calls
+     * return true without re-spawning. The supervisor runs its own
+     * monotonic-clock loop independent of the lib/health sweeper, so a
+     * wedged sweeper can no longer silence stall detection. */
+    if (!supervisor_start()) {
+        fprintf(stderr,
+            "WARNING: supervisor_start failed; lib/health sweeper alone\n");
+    }
+
     if (!boot_register_runtime_services(svc) ||
         !zcl_service_kernel_start_all(&svc->runtime_kernel)) {
         fprintf(stderr, "FATAL: failed to start runtime services\n");
@@ -2539,6 +2550,10 @@ static void shutdown_persist_runtime_state(struct boot_svc_ctx *svc)
 {
     printf("[shutdown] stopping runtime services\n");
     zcl_service_kernel_stop_all(&svc->runtime_kernel);
+    /* Round 5: stop the supervisor AFTER runtime services so any
+     * stall-detection callbacks they emit at teardown are still
+     * delivered. */
+    supervisor_stop();
     printf("[shutdown] joining runtime workers\n");
     boot_join_address_backfill_service(svc);
     boot_join_hodl_history_service(svc);

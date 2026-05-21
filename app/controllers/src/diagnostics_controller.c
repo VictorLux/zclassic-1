@@ -57,6 +57,7 @@
 #include "util/log_macros.h"
 #include "util/long_op.h"
 #include "util/safe_alloc.h"
+#include "util/supervisor.h"
 
 #include <sqlite3.h>
 #include <ctype.h>
@@ -376,6 +377,9 @@ struct dump_entry {
 };
 
 static const struct dump_entry g_dumpers[] = {
+    { "supervisor", supervisor_dump_state_json,
+                    "root supervisor: registered liveness contracts, "
+                    "ticks_run, stall_fires, deadlines" },
     { "watchdog",    sync_watchdog_dump_state_json,
                      "sync watchdog status + stats" },
     { "chain_evidence", chain_evidence_controller_dump_state_json,
