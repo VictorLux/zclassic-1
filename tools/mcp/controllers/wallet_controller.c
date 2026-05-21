@@ -99,15 +99,8 @@ static int h_zcl_listunspent(const struct mcp_request *req,
     snprintf(params, sizeof(params), "[%lld,%lld]",
              mc ? (long long)json_get_int(mc) : 1LL,
              mx ? (long long)json_get_int(mx) : 9999999LL);
-    char *out = mcp_node_rpc("listunspent", params);
-    if (!out) {
-        res->error = MCP_ERR_HANDLER_FAILED;
-        snprintf(res->error_message, sizeof(res->error_message),
-                 "RPC listunspent returned null");
-        LOG_ERR("mcp.wallet", "listunspent returned null");
-    }
-    res->body = out;
-    return 0;
+    return mcp_return_rpc_body(res, mcp_node_rpc("listunspent", params),
+                                "listunspent", "mcp.wallet");
 }
 
 static int h_zcl_listtransactions(const struct mcp_request *req,
@@ -119,15 +112,8 @@ static int h_zcl_listtransactions(const struct mcp_request *req,
     snprintf(params, sizeof(params), "[\"\",%lld,%lld]",
              cnt ? (long long)json_get_int(cnt) : 10LL,
              sk  ? (long long)json_get_int(sk)  : 0LL);
-    char *out = mcp_node_rpc("listtransactions", params);
-    if (!out) {
-        res->error = MCP_ERR_HANDLER_FAILED;
-        snprintf(res->error_message, sizeof(res->error_message),
-                 "RPC listtransactions returned null");
-        LOG_ERR("mcp.wallet", "listtransactions returned null");
-    }
-    res->body = out;
-    return 0;
+    return mcp_return_rpc_body(res, mcp_node_rpc("listtransactions", params),
+                                "listtransactions", "mcp.wallet");
 }
 
 static int h_zcl_gettransaction(const struct mcp_request *req,
@@ -294,15 +280,8 @@ static int h_zcl_z_listunspent(const struct mcp_request *req,
     char params[64];
     snprintf(params, sizeof(params), "[%lld]",
              mc ? (long long)json_get_int(mc) : 1LL);
-    char *out = mcp_node_rpc("z_listunspent", params);
-    if (!out) {
-        res->error = MCP_ERR_HANDLER_FAILED;
-        snprintf(res->error_message, sizeof(res->error_message),
-                 "RPC z_listunspent returned null");
-        LOG_ERR("mcp.wallet", "z_listunspent returned null");
-    }
-    res->body = out;
-    return 0;
+    return mcp_return_rpc_body(res, mcp_node_rpc("z_listunspent", params),
+                                "z_listunspent", "mcp.wallet");
 }
 
 static int h_zcl_z_getbalance(const struct mcp_request *req,

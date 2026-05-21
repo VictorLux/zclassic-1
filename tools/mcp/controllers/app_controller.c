@@ -115,14 +115,7 @@ static int h_zcl_msg_inbox(const struct mcp_request *req, struct mcp_response *r
     char *out = (uo && json_get_bool(uo))
                  ? mcp_node_rpc("msg_inbox", "[true]")
                  : mcp_node_rpc("msg_inbox", NULL);
-    if (!out) {
-        res->error = MCP_ERR_HANDLER_FAILED;
-        snprintf(res->error_message, sizeof(res->error_message),
-                 "RPC msg_inbox returned null");
-        LOG_ERR("mcp.app", "msg_inbox returned null");
-    }
-    res->body = out;
-    return 0;
+    return mcp_return_rpc_body(res, out, "msg_inbox", "mcp.app");
 }
 
 static int h_zcl_msg_read(const struct mcp_request *req, struct mcp_response *res)
