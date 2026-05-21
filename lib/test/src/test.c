@@ -500,6 +500,7 @@ int main(void)
     failures += test_boot_phase();
     failures += test_path_check();
     failures += test_supervisor();
+    failures += test_blocker();
     failures += test_make_lint_gates();
     failures += test_multisig();
     failures += test_mcp_fuzz();
