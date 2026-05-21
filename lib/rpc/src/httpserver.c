@@ -21,12 +21,14 @@
 #include <openssl/err.h>
 #include <openssl/ssl.h>
 #include <pthread.h>
+#include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
 #include <sys/socket.h>
 #include <sys/time.h>
+#include <time.h>
 #include <unistd.h>
 #include "util/safe_alloc.h"
 #include "util/thread_registry.h"
@@ -45,7 +47,13 @@ static int g_listen_fd = -1;
 static const struct rpc_table *g_table = NULL;
 static pthread_t g_listen_thread;
 static bool g_listen_thread_started = false;
-static volatile bool g_running = false;
+/* g_running coordinates the listener + worker threads with rpc_http_stop().
+ * volatile is *not* a thread-synchronization primitive in C (it's for MMIO
+ * and signal handlers); reads/writes across threads need atomic semantics
+ * for memory ordering. The shutdown path also broadcasts g_client_queue_cond
+ * after flipping this, so workers in dequeue_client wake; this atomic is
+ * belt-and-suspenders for any other read sites. */
+static _Atomic bool g_running = false;
 static struct rpc_http_middleware g_middleware;
 static bool g_middleware_active = false;
 static struct rpc_timeout_mgr g_rpc_timeout;
@@ -294,8 +302,17 @@ static struct rpc_conn dequeue_client(void)
     struct rpc_conn conn = { .fd = -1, .ssl = NULL };
 
     pthread_mutex_lock(&g_client_queue_mutex);
-    while (g_client_queue_count == 0 && g_running)
-        pthread_cond_wait(&g_client_queue_cond, &g_client_queue_mutex);
+    /* Timed wait so a worker never blocks past a shutdown that skipped
+     * the cond_broadcast (e.g., an abort path that bypasses
+     * rpc_http_stop). 2 s wake is invisible under load — the cond is
+     * signaled on each enqueue — and bounded under shutdown. */
+    while (g_client_queue_count == 0 && g_running) {
+        struct timespec deadline;
+        clock_gettime(CLOCK_REALTIME, &deadline);
+        deadline.tv_sec += 2;
+        pthread_cond_timedwait(&g_client_queue_cond, &g_client_queue_mutex,
+                               &deadline);
+    }
 
     if (g_client_queue_count > 0) {
         conn = g_client_queue[g_client_queue_head];
