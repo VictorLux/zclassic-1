@@ -1,9 +1,3 @@
 [submodule "vendor/tor"]
 	path = vendor/tor
 	url = git@github.com:RhettCreighton/tor.git
-[submodule "vendor/dcrdex"]
-	path = vendor/dcrdex
-	url = https://github.com/decred/dcrdex.git
-[submodule "vendor/ens-contracts"]
-	path = vendor/ens-contracts
-	url = https://github.com/ensdomains/ens-contracts.git
