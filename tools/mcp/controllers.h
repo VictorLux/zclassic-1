@@ -18,6 +18,7 @@
 #include "util/log_macros.h"
 
 void mcp_register_ops(void);      /* zcl_status, zcl_health, zcl_events, zcl_rpc, ... */
+void mcp_register_diagnostics(void); /* zcl_sql, zcl_state, zcl_node_log, zcl_profile, ... */
 void mcp_register_chain(void);    /* zcl_getblock, zcl_mmb, zcl_syncstate, ...        */
 void mcp_register_net(void);      /* zcl_peers, zcl_addnode, zcl_pingpeer, ...        */
 void mcp_register_wallet(void);   /* zcl_balance, zcl_send, zcl_getnewaddress, ...    */
