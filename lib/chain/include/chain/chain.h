@@ -29,6 +29,27 @@ enum block_status {
     BLOCK_HAVE_DATA          = 8,
     BLOCK_HAVE_UNDO          = 16,
     BLOCK_HAVE_MASK          = 24,
+    /* Three-class typed failure model (Round 6 C4).
+     *
+     *   VALID  = PERMANENT consensus reject. Bad PoW, bad signature,
+     *            failed proof, malformed block. Only the consensus-scope
+     *            retry path may legitimately clear this. See
+     *            process_block_core.c:973 (rate-limited near-tip retry).
+     *
+     *   CHILD  = DEPENDENCY failure propagated from a failed ancestor.
+     *            Self-clears once the ancestor is cleared (no separate
+     *            evidence required).
+     *
+     *   TRANSIENT = recoverable resource/timing failure. Missing UTXO
+     *            row a self-heal can repair, DB writer busy, I/O retry
+     *            budget. Distinct from VALID so the eventual retry path
+     *            never re-runs full consensus on a known-good block.
+     *            Reserved here; no SET site yet — see Round 7 plan.
+     *
+     * BLOCK_FAILED_MASK (= VALID | CHILD = 96) is preserved for
+     * backward compatibility with persisted nStatus on disk; new code
+     * should prefer block_has_any_failure() / the typed predicates
+     * below so the eventual TRANSIENT introduction is automatic. */
     BLOCK_FAILED_VALID       = 32,
     BLOCK_FAILED_CHILD       = 64,
     BLOCK_FAILED_MASK        = 96,
@@ -36,6 +57,8 @@ enum block_status {
     BLOCK_PARKED_FLAG        = 256,
     BLOCK_PARKED_PARENT_FLAG = 512,
     BLOCK_PARKED_MASK        = 768,
+    BLOCK_FAILED_TRANSIENT   = 1024,
+    BLOCK_FAILED_ANY_MASK    = 1120, /* VALID | CHILD | TRANSIENT */
 };
 
 #define BLOCK_VALID_CONSENSUS BLOCK_VALID_SCRIPTS
@@ -130,10 +153,30 @@ static inline int64_t block_index_get_median_time_past(const struct block_index 
     return pmedian[count / 2];
 }
 
+/* Typed failure classification (Round 6 C4). Prefer these over raw
+ * nStatus bit tests so the future TRANSIENT retry policy lands at one
+ * site. */
+static inline bool block_is_permanently_failed(const struct block_index *bi)
+{
+    return bi && (bi->nStatus & BLOCK_FAILED_VALID) != 0;
+}
+static inline bool block_is_dependency_failed(const struct block_index *bi)
+{
+    return bi && (bi->nStatus & BLOCK_FAILED_CHILD) != 0;
+}
+static inline bool block_is_transiently_failed(const struct block_index *bi)
+{
+    return bi && (bi->nStatus & BLOCK_FAILED_TRANSIENT) != 0;
+}
+static inline bool block_has_any_failure(const struct block_index *bi)
+{
+    return bi && (bi->nStatus & BLOCK_FAILED_ANY_MASK) != 0;
+}
+
 static inline bool block_index_is_valid(const struct block_index *bi,
                                         enum block_status up_to)
 {
-    if (bi->nStatus & BLOCK_FAILED_MASK)
+    if (block_has_any_failure(bi))
         return false;
     return (bi->nStatus & BLOCK_VALID_MASK) >= (unsigned int)up_to;
 }

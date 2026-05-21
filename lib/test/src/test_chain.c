@@ -1947,5 +1947,68 @@ int test_chain(void)
         if (ok) printf("OK\n"); else { printf("FAIL (sz=%zu)\n", sz); failures++; }
     }
 
+    /* Round 6 C4 — typed BLOCK_FAILED classification.
+     *
+     * Verifies the three-class model: PERMANENT (VALID), DEPENDENCY
+     * (CHILD), TRANSIENT. block_has_any_failure() must catch all
+     * three; block_index_is_valid() must reject all three. Each
+     * predicate must answer for its own class only. */
+    printf("block_failed typed classification... ");
+    {
+        struct block_index perm, dep, trans, clean, mixed;
+        block_index_init(&perm);
+        block_index_init(&dep);
+        block_index_init(&trans);
+        block_index_init(&clean);
+        block_index_init(&mixed);
+
+        perm.nStatus  = BLOCK_VALID_SCRIPTS | BLOCK_HAVE_DATA | BLOCK_FAILED_VALID;
+        dep.nStatus   = BLOCK_VALID_SCRIPTS | BLOCK_HAVE_DATA | BLOCK_FAILED_CHILD;
+        trans.nStatus = BLOCK_VALID_SCRIPTS | BLOCK_HAVE_DATA | BLOCK_FAILED_TRANSIENT;
+        clean.nStatus = BLOCK_VALID_SCRIPTS | BLOCK_HAVE_DATA;
+        mixed.nStatus = BLOCK_VALID_SCRIPTS | BLOCK_HAVE_DATA |
+                        BLOCK_FAILED_VALID | BLOCK_FAILED_TRANSIENT;
+
+        bool ok = true;
+        ok = ok && block_is_permanently_failed(&perm);
+        ok = ok && !block_is_dependency_failed(&perm);
+        ok = ok && !block_is_transiently_failed(&perm);
+        ok = ok && block_has_any_failure(&perm);
+
+        ok = ok && !block_is_permanently_failed(&dep);
+        ok = ok && block_is_dependency_failed(&dep);
+        ok = ok && !block_is_transiently_failed(&dep);
+        ok = ok && block_has_any_failure(&dep);
+
+        ok = ok && !block_is_permanently_failed(&trans);
+        ok = ok && !block_is_dependency_failed(&trans);
+        ok = ok && block_is_transiently_failed(&trans);
+        ok = ok && block_has_any_failure(&trans);
+
+        ok = ok && !block_has_any_failure(&clean);
+        ok = ok && block_index_is_valid(&clean, BLOCK_VALID_TREE);
+
+        ok = ok && block_is_permanently_failed(&mixed);
+        ok = ok && block_is_transiently_failed(&mixed);
+        ok = ok && block_has_any_failure(&mixed);
+        ok = ok && !block_index_is_valid(&perm, BLOCK_VALID_TREE);
+        ok = ok && !block_index_is_valid(&trans, BLOCK_VALID_TREE);
+
+        /* NULL-safety: every typed helper must tolerate NULL. */
+        ok = ok && !block_is_permanently_failed(NULL);
+        ok = ok && !block_is_dependency_failed(NULL);
+        ok = ok && !block_is_transiently_failed(NULL);
+        ok = ok && !block_has_any_failure(NULL);
+
+        /* BLOCK_FAILED_MASK preserved at legacy value (VALID|CHILD) for
+         * on-disk compatibility; ANY_MASK widens to include TRANSIENT. */
+        ok = ok && (BLOCK_FAILED_MASK == (BLOCK_FAILED_VALID | BLOCK_FAILED_CHILD));
+        ok = ok && (BLOCK_FAILED_ANY_MASK ==
+                    (BLOCK_FAILED_VALID | BLOCK_FAILED_CHILD | BLOCK_FAILED_TRANSIENT));
+
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
     return failures;
 }

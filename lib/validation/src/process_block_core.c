@@ -356,8 +356,11 @@ struct block_index *find_most_work_chain(struct main_state *ms)
         if (!pindex)
             continue;
 
-        /* Skip failed blocks and their children */
-        if (pindex->nStatus & BLOCK_FAILED_MASK) {
+        /* Skip failed blocks and their children (typed: PERMANENT,
+         * DEPENDENCY, and TRANSIENT all gate selection here; the
+         * eventual retry-budget for TRANSIENT lands in a separate
+         * path that re-validates without involving this scan). */
+        if (block_has_any_failure(pindex)) {
             skipped_failed++;
             continue;
         }
@@ -396,7 +399,7 @@ struct block_index *find_most_work_chain(struct main_state *ms)
             struct block_index *check = pindex;
             int tip_h = best ? best->nHeight : -1;
             while (check && check->nHeight > tip_h) {
-                if (check->nStatus & BLOCK_FAILED_MASK) {
+                if (block_has_any_failure(check)) {
                     chain_ok = false;
                     break;
                 }
@@ -504,7 +507,7 @@ struct block_index *find_best_active_tip_child(struct main_state *ms,
             continue;
         if (!uint256_eq(candidate->pprev->phashBlock, tip->phashBlock))
             continue;
-        if (candidate->nStatus & BLOCK_FAILED_MASK)
+        if (block_has_any_failure(candidate))
             continue;
         if (mirror_consensus_scope_active() &&
             (!candidate->phashBlock ||
@@ -612,7 +615,7 @@ struct block_index *find_verified_unlinked_active_tip_child(
             continue;
         if (candidate->nHeight != tip->nHeight + 1)
             continue;
-        if (candidate->nStatus & BLOCK_FAILED_MASK)
+        if (block_has_any_failure(candidate))
             continue;
         if (mirror_consensus_scope_active() &&
             (!candidate->phashBlock ||
@@ -707,7 +710,7 @@ static bool process_block_tip_is_best_work(const struct main_state *ms,
     if (!ms || !tip)
         return false;
     while (block_map_next(&ms->map_block_index, &iter, NULL, &candidate)) {
-        if (!candidate || (candidate->nStatus & BLOCK_FAILED_MASK))
+        if (!candidate || block_has_any_failure(candidate))
             continue;
         if (arith_uint256_compare(&candidate->nChainWork,
                                   &tip->nChainWork) <= 0)
