@@ -41,6 +41,14 @@ zcl_persist_*/
 # Build artifacts (additional)
 zclassic23-asan
 speedrun
+spec_zcl
+session
+bot
+wallet_dump
+wallet_sim
+wallet_check
+wallet-wireframes
+mock_rpc
 export_snapshot
 bench_fresh_sync
 zcl-watchdog

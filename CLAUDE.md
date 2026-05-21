@@ -8,6 +8,11 @@ For modules prefixed `legacy_` (cold-start bootstrap, drift detection
 against an external `zclassicd`), see [`LEGACY_LIFECYCLE.md`](./LEGACY_LIFECYCLE.md)
 for which paths are active vs deprecated.
 
+For the boot ordering invariants (`enum boot_stage` + the stage
+advance state machine in `lib/util/src/boot_phase.c`), see
+[`BOOT_INVARIANTS.md`](./BOOT_INVARIANTS.md) — explains what each
+stage guarantees and how to wire a new boundary.
+
 Key rules enforced by the compiler and CI:
 - **Every write goes through the AR lifecycle** — `AR_BEGIN_SAVE` + `AR_FINISH_SAVE`, or the combined `AR_ADHOC_SAVE` (locally-prepared stmt) / `AR_CACHED_SAVE` (cached stmt). No raw `sqlite3_step()` in app code. See `app/models/include/models/activerecord.h`.
 - **Every error return must log context** — use `LOG_FAIL()`, `LOG_ERR()`, `LOG_NULL()` from `util/log_macros.h`

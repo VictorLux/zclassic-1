@@ -470,6 +470,8 @@ static bool boot_step_select_chain_and_datadir(struct app_context *ctx)
      * corrupting SQLite / LevelDB by writing concurrently. */
     if (!acquire_datadir_lock(ctx->datadir))
         return false;
+
+    boot_stage_advance_to(BOOT_STAGE_DATADIR_LOCKED);
     return true;
 }
 
@@ -851,6 +853,8 @@ static bool boot_step_init_crypto_and_state(struct app_context *ctx,
             fprintf(stderr,
                     "WARNING: failed to start ZK params loader thread\n");
     }
+
+    boot_stage_advance_to(BOOT_STAGE_CRYPTO_READY);
     return true;
 }
 
@@ -1436,6 +1440,7 @@ bool app_init(struct app_context *ctx)
                     "activation metadata writes will use direct SQLite\n");
             }
         }
+        boot_stage_advance_to(BOOT_STAGE_DB_OPEN);
         int db_tip = node_db_sync_get_tip_height(&g_node_db);
         if (db_tip >= 0) {
             printf("SQLite tip: height=%d\n", db_tip);
@@ -3248,6 +3253,8 @@ sapling_tree_boot_check_done:
            (long long)(boot_clock_ms() - t_phase));
     printf("[boot] %-30s %lldms\n", "total",
            (long long)(boot_clock_ms() - t_boot_start));
+    if (svc_ok)
+        boot_stage_advance_to(BOOT_STAGE_READY);
     return svc_ok;
 }
 
@@ -3267,10 +3274,12 @@ static void write_clean_shutdown_marker(void)
 /* app_shutdown delegates to boot_services.c */
 void app_shutdown(void)
 {
+    boot_stage_advance_to(BOOT_STAGE_SHUTDOWN_REQUESTED);
     write_clean_shutdown_marker();
     boot_stop_platform_services();
     app_shutdown_svc(&g_svc);
     release_datadir_lock();
+    boot_stage_advance_to(BOOT_STAGE_SHUTDOWN_COMPLETE);
 }
 bool app_is_running(void) { return atomic_load(&g_running); }
 
