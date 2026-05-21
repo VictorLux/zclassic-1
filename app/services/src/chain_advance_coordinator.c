@@ -1706,5 +1706,10 @@ void chain_advance_coordinator_reset_for_test(void)
     g_cac.last_projection_deferred_time = 0;
     memset(g_cac.last_projection_deferred_reason, 0,
            sizeof(g_cac.last_projection_deferred_reason));
+    /* Round 6 C3 — clear force-mirror window state so tests that
+     * invoke chain_advance_coordinator_force_mirror_promotion() do
+     * not leak the 300s bypass into subsequent tests in the same
+     * process. */
+    atomic_store(&g_force_mirror_until_us, 0);
     zcl_mutex_unlock(&g_cac.lock);
 }

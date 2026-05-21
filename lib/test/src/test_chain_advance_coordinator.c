@@ -334,6 +334,7 @@ static int test_cac_force_window_refuses_permanent(void)
          * NOT select the mirror. */
         ASSERT(out.selected_source != CAC_SOURCE_ZCLASSICD_MIRROR);
         ASSERT(out.sources[CAC_SOURCE_ZCLASSICD_MIRROR].score <= -900);
+        chain_advance_coordinator_reset_for_test();
     } TEST_END
     return failures;
 }
@@ -362,6 +363,7 @@ static int test_cac_force_window_allows_transient(void)
         /* Mirror's transient blocker is bypassed inside the force
          * window → mirror gets a positive score. */
         ASSERT(out.sources[CAC_SOURCE_ZCLASSICD_MIRROR].score > -900);
+        chain_advance_coordinator_reset_for_test();
     } TEST_END
     return failures;
 }
