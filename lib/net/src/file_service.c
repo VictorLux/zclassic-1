@@ -533,8 +533,18 @@ static bool fs_client_queue_pop(int *client_fd_out)
         LOG_FAIL("filesvc", "client_queue_pop: client_fd_out is NULL");
 
     pthread_mutex_lock(&g_fs_client_queue_mutex);
-    while (g_fs_client_queue_len == 0 && atomic_load(&g_fs_running))
-        pthread_cond_wait(&g_fs_client_queue_cv, &g_fs_client_queue_mutex);
+    /* Timed wait so a worker never blocks past shutdown if the cond
+     * broadcast in fs_server_stop is skipped (e.g., abort path). 2 s
+     * wake is invisible under load — every queue push signals the
+     * cond — but bounded under shutdown. Mirror of the httpserver
+     * dequeue_client treatment. */
+    while (g_fs_client_queue_len == 0 && atomic_load(&g_fs_running)) {
+        struct timespec deadline;
+        clock_gettime(CLOCK_REALTIME, &deadline);
+        deadline.tv_sec += 2;
+        pthread_cond_timedwait(&g_fs_client_queue_cv,
+                               &g_fs_client_queue_mutex, &deadline);
+    }
 
     if (g_fs_client_queue_len == 0) {
         pthread_mutex_unlock(&g_fs_client_queue_mutex);
@@ -724,6 +734,17 @@ static void *fs_server_thread(void *arg)
         int client_fd = accept(listen_fd,
                                 (struct sockaddr *)&client_addr, &client_len);
         if (client_fd < 0) continue;
+
+        /* Defense against a peer that opens a connection and then goes
+         * silent mid-frame. recv_all() / recv() on this fd would block
+         * indefinitely without a per-socket deadline. 30 s is generous
+         * for a file-service handshake or frame — anything longer is a
+         * misbehaving peer and we'd rather drop the connection than
+         * hold a worker hostage. Wave 8 watchdog catches the hang
+         * post-hoc; this prevents it. */
+        struct timeval ctv = { .tv_sec = 30, .tv_usec = 0 };
+        setsockopt(client_fd, SOL_SOCKET, SO_RCVTIMEO, &ctv, sizeof(ctv));
+        setsockopt(client_fd, SOL_SOCKET, SO_SNDTIMEO, &ctv, sizeof(ctv));
 
         if (!fs_client_queue_push(client_fd)) {
             fprintf(stderr,  // obs-ok:file-service-overload-visible
