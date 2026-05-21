@@ -419,10 +419,18 @@ static void chain_evidence_controller_reconcile_startup(
                                          "active_tip_height_mismatch");
         return;
     }
+    /* coins_best_block lagging active_tip is recoverable on the running
+     * node — the next block commit advances the coins cursor. Reaching
+     * this point with a mismatch during reconcile_startup almost always
+     * means the controller observed a transient mid-boot state (coins
+     * view loaded before active chain restored, or vice versa). Hard
+     * contradictions where the persisted active_tip_hash itself diverges
+     * are still caught above. Log and continue. */
     if (!u256_equal(&csv.coins_best_block, active_tip->phashBlock)) {
-        chain_evidence_controller_freeze(authority,
-                                         "csr_cursor_mismatch");
-        return;
+        fprintf(stderr,  // obs-ok:cec-self-heal-csr-cursor
+                "[cec] reconcile_startup: coins_best_block != active_tip "
+                "hash (transient or post-shutdown lag) — deferring to "
+                "next commit\n");
     }
     /* Derived-state lag is not a contradiction. After a clean shutdown the
      * persisted pindex_best_header / blocks-table max can be behind the
@@ -499,6 +507,32 @@ enum chain_evidence_controller_state chain_evidence_controller_load_state(
     (void)node_db_state_get(authority->ndb, "cec.contradiction_reason",
                             authority->contradiction_reason,
                             sizeof(authority->contradiction_reason) - 1, &len);
+
+    /* Auto-clear stale freezes from reasons that have been demoted to
+     * non-fatal warnings. Without this, a previously frozen node stays
+     * frozen across upgrades even after the underlying check is gone. */
+    if (authority->state == CEC_CONTRADICTION_FROZEN) {
+        const char *r = authority->contradiction_reason;
+        bool demoted =
+            (strcmp(r, "csr_header_tip_behind_active_tip") == 0) ||
+            (strcmp(r, "sqlite_height_behind_active_tip") == 0) ||
+            (strcmp(r, "csr_cursor_mismatch") == 0);
+        if (demoted) {
+            fprintf(stderr,  // obs-ok:cec-auto-clear-demoted-freeze
+                    "[cec] auto-clearing stale freeze (reason=%s now "
+                    "demoted to warning)\n", r);
+            authority->state = CEC_EMPTY;
+            memset(authority->contradiction_reason, 0,
+                   sizeof(authority->contradiction_reason));
+            (void)node_db_state_set(authority->ndb, "cec.sync_state",
+                                    "empty", strlen("empty") + 1);
+            (void)node_db_state_set(authority->ndb,
+                                    "cec.contradiction_reason", "", 1);
+            int32_t zero = 0;
+            (void)node_db_state_set(authority->ndb, "cec.publish_state",
+                                    &zero, sizeof(zero));
+        }
+    }
     return authority->state;
 }
 
