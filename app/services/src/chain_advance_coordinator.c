@@ -16,6 +16,7 @@
 
 #include <stdio.h>
 #include <stdarg.h>
+#include <stdatomic.h>
 #include <string.h>
 #include <time.h>
 
@@ -35,6 +36,59 @@ static struct {
     int64_t last_projection_deferred_time;
     char last_projection_deferred_reason[64];
 } g_cac;
+
+/* Round 5 C4: force-promotion deadline.
+ *
+ * When the supervisor's coord-escalation child observes a sustained
+ * "fatal" mirror-lag breach with no chain advance, it calls
+ * chain_advance_coordinator_force_mirror_promotion(), which sets
+ * g_force_mirror_until_us to (now + 300 s). While this window is
+ * active:
+ *   - mirror_fallback_allowed() short-circuits true.
+ *   - score_source() bypasses the if (s->blocked) early-out.
+ * Bodies still validate through local consensus — only the source
+ * gate is bypassed. The 5-minute bound limits exposure to a poisoned
+ * mirror; the supervisor decides whether to extend on its next edge. */
+static _Atomic int64_t g_force_mirror_until_us = 0;
+
+static int64_t cac_mono_us(void)
+{
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (int64_t)ts.tv_sec * 1000000 + ts.tv_nsec / 1000;
+}
+
+static bool force_mirror_active_now(void)
+{
+    int64_t until = atomic_load(&g_force_mirror_until_us);
+    return until > cac_mono_us();
+}
+
+bool chain_advance_coordinator_force_mirror_active(void)
+{
+    return force_mirror_active_now();
+}
+
+#define FORCE_MIRROR_WINDOW_US ((int64_t)300 * 1000 * 1000)
+
+void chain_advance_coordinator_force_mirror_promotion(const char *audit_reason)
+{
+    int64_t now = cac_mono_us();
+    int64_t until = now + FORCE_MIRROR_WINDOW_US;
+    atomic_store(&g_force_mirror_until_us, until);
+    /* Emit a structured event for the audit trail. EV_COORDINATOR_FORCE_PROMOTION
+     * is defined just for this — operator-visible in zcl_events / Prometheus. */
+    event_emitf(EV_COORDINATOR_FORCE_PROMOTION, 0,
+                "reason=%s dur_us=%lld until_us=%lld",
+                audit_reason ? audit_reason : "(unspecified)",
+                (long long)FORCE_MIRROR_WINDOW_US,
+                (long long)until);
+    fprintf(stderr,  // obs-ok:coordinator-force-promotion-precedes-event
+        "[coordinator] FORCE_MIRROR_PROMOTION reason=%s "
+        "window=300s — mir->blocked bypass active\n",
+        audit_reason ? audit_reason : "(unspecified)");
+    fflush(stderr);
+}
 
 #define CAC_STATE_PREFIX "chain_advance_coordinator."
 #define CAC_KEY_LAST_OP CAC_STATE_PREFIX "last_op"
@@ -606,6 +660,9 @@ static int source_base_score(enum cac_source source)
 static bool mirror_fallback_allowed(const struct cac_plan_input *in)
 {
     if (!in) return false;
+    /* Round 5 C4: supervisor-initiated force-promotion window bypasses
+     * every other gate. Local consensus still validates each body. */
+    if (force_mirror_active_now()) return true;
     if (in->local_retries_exhausted) return true;
     /* Concurrent-redundancy override: once mirror lag breaches the SLO
      * and zclassicd is reachable, the mirror MUST be allowed to pull
@@ -671,8 +728,14 @@ static void score_source(const struct cac_plan_input *in,
         return;
     }
     if (s->blocked) {
-        s->score = -900;
-        return;
+        /* Round 5 C4: during the force-promotion window, ignore the
+         * blocked flag for the mirror source specifically so the score
+         * loop can still pick it. Other sources stay blocked. */
+        if (!(s->source == CAC_SOURCE_ZCLASSICD_MIRROR &&
+              force_mirror_active_now())) {
+            s->score = -900;
+            return;
+        }
     }
 
     s->score_base = source_base_score(s->source);

@@ -166,4 +166,28 @@ bool chain_advance_coordinator_dump_state_json(struct json_value *out,
                                                const char *key);
 void chain_advance_coordinator_reset_for_test(void);
 
+/* Round 5 C4: time-based mirror promotion bypass.
+ *
+ * When zclassicd mirror has been at "fatal" lag-SLO breach for a
+ * sustained period AND the local chain has not advanced, the
+ * supervisor calls this function to authorize the coordinator to
+ * promote the mirror source despite the `mir->blocked` flag.
+ *
+ * Effect: for the next 300 s, `mirror_fallback_allowed()` returns
+ * true unconditionally and `score_source()` bypasses the
+ * `if (s->blocked)` short-circuit. Bodies still validate through
+ * local consensus — the bypass only changes *which source feeds the
+ * queue*, not whether validation runs.
+ *
+ * Emits EV_COORDINATOR_FORCE_PROMOTION with the audit reason. The
+ * bounded 300 s window expires automatically; supervisor decides
+ * whether to re-extend on the next on_stall edge.
+ *
+ * Idempotent — repeated calls reset the expiration timestamp. */
+void chain_advance_coordinator_force_mirror_promotion(const char *audit_reason);
+
+/* Returns true if a force-promotion window is currently active (i.e.
+ * now < g_force_mirror_until_us). Used by tests + introspection. */
+bool chain_advance_coordinator_force_mirror_active(void);
+
 #endif /* ZCL_SERVICES_CHAIN_ADVANCE_COORDINATOR_H */

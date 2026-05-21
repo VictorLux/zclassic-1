@@ -429,6 +429,7 @@ const char *event_type_name(enum event_type type)
         [EV_CHAIN_ADVANCE_DECISION]  = "chain.advance_decision",
         [EV_MIRROR_CONSENSUS_DECISION] = "mirror.consensus_decision",
         [EV_PEER_FLOOR_BREACH]       = "peer.floor_breach",
+        [EV_COORDINATOR_FORCE_PROMOTION] = "coordinator.force_promotion",
         [EV_LAG_SLO_BREACH]          = "mirror.lag_slo_breach",
         [EV_MIRROR_CONCURRENT_CATCHUP] = "mirror.concurrent_catchup",
     };

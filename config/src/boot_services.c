@@ -341,6 +341,72 @@ static void boot_peer_floor_supervisor_register(struct boot_svc_ctx *svc)
     }
 }
 
+/* ── Round 5 C4: coordinator escalation supervisor child ───────── */
+static struct main_state       *g_coord_esc_ms       = NULL;
+static struct liveness_contract g_coord_esc_contract;
+static supervisor_child_id      g_coord_esc_id        = SUPERVISOR_INVALID_ID;
+
+/* Progress-quiet window: 900s (15 min) of fatal breach + frozen height
+ * before forcing mirror promotion. Tuned long because mirror promotion
+ * is a bigger hammer than peer-floor seed kicks — we want plenty of
+ * time for natural P2P recovery first. */
+#define COORD_ESC_QUIET_US ((int64_t)900 * 1000 * 1000)
+
+static void coord_esc_tick(struct liveness_contract *c)
+{
+    (void)c;
+    if (!g_coord_esc_ms) return;
+    struct legacy_mirror_sync_stats msnap;
+    memset(&msnap, 0, sizeof(msnap));
+    legacy_mirror_sync_stats_snapshot(&msnap);
+    int local_h = active_chain_height(&g_coord_esc_ms->chain_active);
+
+    /* progress_marker tracks the CONCATENATION of local_height and
+     * severity-good. While severity is "fatal", we only advance the
+     * marker if local_h actually moves. While severity is anything
+     * better, we encode "all good" as a monotonically increasing
+     * counter so the quiet timer never fires. */
+    bool is_fatal = (strcmp(msnap.lag_breach_severity, "fatal") == 0);
+    int64_t marker;
+    if (is_fatal) {
+        marker = (int64_t)local_h;
+    } else {
+        /* Non-fatal: bump a forever-increasing counter (using time so
+         * it always advances). Frozen-progress detection inactive. */
+        marker = (int64_t)time(NULL) + (int64_t)1000000;
+    }
+    supervisor_progress(g_coord_esc_id, marker);
+    /* Also tick so any deadline timer (if configured) doesn't fire. */
+    supervisor_tick(g_coord_esc_id);
+}
+
+static void coord_esc_stall(struct liveness_contract *c)
+{
+    (void)c;
+    /* Frozen progress under fatal breach — force mirror promotion. */
+    chain_advance_coordinator_force_mirror_promotion("supervisor:fatal_breach_900s");
+}
+
+static void boot_coord_escalation_supervisor_register(struct boot_svc_ctx *svc)
+{
+    if (!svc || !svc->state) return;
+    if (g_coord_esc_id != SUPERVISOR_INVALID_ID) return;  /* idempotent */
+
+    g_coord_esc_ms = svc->state;
+    liveness_contract_init(&g_coord_esc_contract, "chain.coord_escalation");
+    atomic_store(&g_coord_esc_contract.period_secs, (int64_t)60);
+    atomic_store(&g_coord_esc_contract.deadline_secs, (int64_t)0);
+    atomic_store(&g_coord_esc_contract.progress_max_quiet_us,
+                 COORD_ESC_QUIET_US);
+    g_coord_esc_contract.on_tick  = coord_esc_tick;
+    g_coord_esc_contract.on_stall = coord_esc_stall;
+    g_coord_esc_id = supervisor_register(&g_coord_esc_contract);
+    if (g_coord_esc_id == SUPERVISOR_INVALID_ID) {
+        fprintf(stderr,  // obs-ok:coord-esc-supervisor-fallback-warn
+            "[supervisor] WARN chain.coord_escalation register failed\n");
+    }
+}
+
 static bool boot_header_probe_start(void *ctx)
 {
     struct boot_svc_ctx *svc = ctx;
@@ -2531,6 +2597,7 @@ bool app_init_services(struct app_context *ctx,
      * adaptive loop; the supervisor only kicks the seed re-walk so the
      * thread has fresh targets to try. */
     boot_peer_floor_supervisor_register(svc);
+    boot_coord_escalation_supervisor_register(svc);
 
     if (!boot_register_runtime_services(svc) ||
         !zcl_service_kernel_start_all(&svc->runtime_kernel)) {
