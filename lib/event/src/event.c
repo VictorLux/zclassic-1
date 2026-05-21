@@ -10,6 +10,7 @@
 #include <unistd.h>
 #include <execinfo.h>
 #include <sys/time.h>
+#include <time.h>
 
 /* ── Global event log ─────────────────────────────────────
  * Single instance. Lock-free ring buffer. Every thread writes
@@ -138,10 +139,20 @@ static void *async_dispatch_thread(void *arg)
         uint64_t wp = atomic_load(&g_async.write_pos);
 
         if (rp >= wp) {
-            /* Nothing to process — wait for signal */
+            /* Nothing to process — wait for signal. Timed wait so the
+             * dispatch thread never blocks past event_async_stop() if
+             * the cond_signal is missed (the stop path signals after
+             * setting running=false; this is belt-and-suspenders for
+             * any path that bypasses event_async_stop). 1 s is well
+             * below human-noticeable latency for event delivery. */
             pthread_mutex_lock(&g_async.wake_mutex);
-            if (atomic_load(&g_async.read_pos) >= atomic_load(&g_async.write_pos))
-                pthread_cond_wait(&g_async.wake_cond, &g_async.wake_mutex);
+            if (atomic_load(&g_async.read_pos) >= atomic_load(&g_async.write_pos)) {
+                struct timespec deadline;
+                clock_gettime(CLOCK_REALTIME, &deadline);
+                deadline.tv_sec += 1;
+                pthread_cond_timedwait(&g_async.wake_cond,
+                                       &g_async.wake_mutex, &deadline);
+            }
             pthread_mutex_unlock(&g_async.wake_mutex);
             continue;
         }

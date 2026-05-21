@@ -312,11 +312,38 @@ bool block_pruning_start(struct block_pruning_service *svc)
         LOG_FAIL("block_pruning", "failed to create thread: %s", strerror(errno));
     svc->thread_started = true;
 
-    /* Wait for thread to confirm it's running — no sleeps, no races. */
+    /* Wait for thread to confirm it's running — no sleeps, no races.
+     * Bounded so we don't block app_init indefinitely if the pruning
+     * thread hangs before its ready-signal (e.g., stuck in
+     * thread_registry init or a downstream malloc). 30 s is generous
+     * for what is normally a sub-millisecond handshake; longer is
+     * almost certainly a deadlock. */
     pthread_mutex_lock(&svc->ready_mutex);
-    while (!svc->ready)
-        pthread_cond_wait(&svc->ready_cond, &svc->ready_mutex);
+    bool ready_ok = true;
+    while (!svc->ready) {
+        struct timespec deadline;
+        clock_gettime(CLOCK_REALTIME, &deadline);
+        deadline.tv_sec += 30;
+        int rc = pthread_cond_timedwait(&svc->ready_cond,
+                                        &svc->ready_mutex, &deadline);
+        if (rc == ETIMEDOUT && !svc->ready) {
+            ready_ok = false;
+            break;
+        }
+    }
     pthread_mutex_unlock(&svc->ready_mutex);
+
+    if (!ready_ok) {
+        /* Signal stop and detach so the OS reaps the thread whenever
+         * it next checks the flag. We don't pthread_join here because
+         * the thread may be wedged in a syscall (disk I/O); blocking
+         * app_init on that is exactly the failure mode we're escaping. */
+        atomic_store(&svc->stop_requested, true);
+        pthread_detach(svc->thread);
+        svc->thread_started = false;
+        LOG_FAIL("block_pruning",
+                 "thread did not signal ready within 30 s — aborted start");
+    }
 
     printf("[prune] started — keep_blocks=%d tick=%ds\n",
            svc->keep_blocks, svc->tick_seconds);
