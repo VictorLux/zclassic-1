@@ -212,6 +212,112 @@ bool rpc_getmempoolinfo(const struct json_value *params, bool help,
     return true;
 }
 
+/* getmempoolfeestats: fee-rate (zat/byte) + age histogram across mempool
+ * entries. Power-user signal for transaction construction (what fee will
+ * get my tx confirmed?) and for diagnosing congestion. Single snapshot
+ * under the mempool mutex. */
+bool rpc_getmempoolfeestats(const struct json_value *params, bool help,
+                             struct json_value *result)
+{
+    struct blockchain_context *ctx = blockchain_ctx();
+    (void)params;
+    RPC_HELP(help, result,
+        "getmempoolfeestats\n"
+        "\nReturns fee-rate (zat/byte) and age histograms for the current\n"
+        "mempool. Buckets are fixed.\n"
+        "\nResult:\n"
+        "  { size, bytes, fee_buckets:[{rate_zat_per_byte_ge,count,bytes,...}],\n"
+        "    age_buckets:[{name,max_age_seconds,count,bytes}] }");
+
+    json_set_object(result);
+    if (!ctx->mempool) {
+        json_push_kv_int(result, "size",  0);
+        json_push_kv_int(result, "bytes", 0);
+        return true;
+    }
+
+    /* Fee buckets: lower-bound zat/byte. Upper-open at the top. */
+    static const int64_t fee_lower[] = { 0, 1, 2, 5, 10, 50, 100, 500 };
+    enum { N_FEE = sizeof(fee_lower) / sizeof(fee_lower[0]) };
+    int64_t fee_count[N_FEE] = {0};
+    int64_t fee_bytes[N_FEE] = {0};
+
+    /* Age buckets: upper-bound seconds. Last bucket is open. */
+    static const struct { const char *name; int64_t max_age; }
+        age_buckets[] = {
+            { "lt_1m",     60 },
+            { "lt_5m",    300 },
+            { "lt_30m",  1800 },
+            { "lt_2h",   7200 },
+            { "ge_2h",     -1 },
+        };
+    enum { N_AGE = sizeof(age_buckets) / sizeof(age_buckets[0]) };
+    int64_t age_count[N_AGE] = {0};
+    int64_t age_bytes[N_AGE] = {0};
+
+    int64_t now = (int64_t)time(NULL);
+    int64_t total_count = 0, total_bytes = 0;
+
+    zcl_mutex_lock(&ctx->mempool->cs);
+    for (size_t i = 0; i < ctx->mempool->num_entries; i++) {
+        const struct mempool_entry *e = &ctx->mempool->entries[i];
+        size_t sz = e->tx_size ? e->tx_size : 1;
+        int64_t rate = e->fee / (int64_t)sz;  // zat/byte, integer floor
+        int fb = 0;
+        for (int j = N_FEE - 1; j >= 0; j--) {
+            if (rate >= fee_lower[j]) { fb = j; break; }
+        }
+        fee_count[fb]++;
+        fee_bytes[fb] += (int64_t)sz;
+
+        int64_t age = now - e->time;
+        int ab = N_AGE - 1;
+        for (int j = 0; j < N_AGE - 1; j++) {
+            if (age < age_buckets[j].max_age) { ab = j; break; }
+        }
+        age_count[ab]++;
+        age_bytes[ab] += (int64_t)sz;
+
+        total_count++;
+        total_bytes += (int64_t)sz;
+    }
+    zcl_mutex_unlock(&ctx->mempool->cs);
+
+    json_push_kv_int(result, "size",  total_count);
+    json_push_kv_int(result, "bytes", total_bytes);
+
+    struct json_value fees = {0};
+    json_set_array(&fees);
+    for (int i = 0; i < N_FEE; i++) {
+        struct json_value row = {0};
+        json_set_object(&row);
+        json_push_kv_int(&row, "rate_zat_per_byte_ge", fee_lower[i]);
+        json_push_kv_int(&row, "count", fee_count[i]);
+        json_push_kv_int(&row, "bytes", fee_bytes[i]);
+        json_push_back(&fees, &row);
+        json_free(&row);
+    }
+    json_push_kv(result, "fee_buckets", &fees);
+    json_free(&fees);
+
+    struct json_value ages = {0};
+    json_set_array(&ages);
+    for (int i = 0; i < N_AGE; i++) {
+        struct json_value row = {0};
+        json_set_object(&row);
+        json_push_kv_str(&row, "name", age_buckets[i].name);
+        json_push_kv_int(&row, "max_age_seconds", age_buckets[i].max_age);
+        json_push_kv_int(&row, "count", age_count[i]);
+        json_push_kv_int(&row, "bytes", age_bytes[i]);
+        json_push_back(&ages, &row);
+        json_free(&row);
+    }
+    json_push_kv(result, "age_buckets", &ages);
+    json_free(&ages);
+
+    return true;
+}
+
 /* gettxoutsetinfo: UTXO set statistics matching legacy node output. */
 bool rpc_gettxoutsetinfo(const struct json_value *params, bool help,
                                  struct json_value *result)

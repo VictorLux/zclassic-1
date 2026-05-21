@@ -321,12 +321,14 @@ void register_blockchain_rpc_commands(struct rpc_table *t)
     struct rpc_command cmds[] = {
         { "blockchain", "getblockcount",     rpc_getblockcount,     true },
         { "blockchain", "getbestblockhash",  rpc_getbestblockhash,  true },
+        { "blockchain", "getchaintip",       rpc_getchaintip,       true },
         { "blockchain", "getdifficulty",     rpc_getdifficulty,     true },
         { "blockchain", "getblockhash",      rpc_getblockhash,      true },
         { "blockchain", "getblockheader",    rpc_getblockheader,    true },
         { "blockchain", "getblock",          rpc_getblock,          true },
         { "blockchain", "getblockchaininfo", rpc_getblockchaininfo, true },
         { "blockchain", "getmempoolinfo",    rpc_getmempoolinfo,    true },
+        { "blockchain", "getmempoolfeestats", rpc_getmempoolfeestats, true },
         { "blockchain", "gettxoutsetinfo",      rpc_gettxoutsetinfo,      true },
         /* HODL wave commands in hodl_controller.c */
         { "blockchain", "reindexchainstate",    rpc_reindexchainstate,     false },

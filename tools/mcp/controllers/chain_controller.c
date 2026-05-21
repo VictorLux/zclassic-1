@@ -19,6 +19,7 @@
 /* ── Handlers ───────────────────────────────────────────────── */
 
 DEFINE_PT(h_zcl_getblockcount,     "getblockcount",     "mcp.chain")
+DEFINE_PT(h_zcl_chain_tip,         "getchaintip",       "mcp.chain")
 DEFINE_PT(h_zcl_getblockchaininfo, "getblockchaininfo", "mcp.chain")
 DEFINE_PT(h_zcl_syncstate,         "syncstate",         "mcp.chain")
 DEFINE_PT(h_zcl_validationstatus,  "validationstatus",  "mcp.chain")
@@ -26,6 +27,17 @@ DEFINE_PT(h_zcl_dataintegrity,     "getdataintegrity",  "mcp.chain")
 DEFINE_PT(h_zcl_mmb,               "getmmrroot",        "mcp.chain")
 DEFINE_PT(h_zcl_utxocommitment,    "getutxocommitment", "mcp.chain")
 DEFINE_PT(h_zcl_hodlwave,          "gethodlwave",       "mcp.chain")
+
+static int h_zcl_reorg_history(const struct mcp_request *req,
+                                struct mcp_response *res)
+{
+    const struct json_value *cv = json_get(req->args, "count");
+    int64_t count = cv ? json_get_int(cv) : 50;
+    char params[32];
+    snprintf(params, sizeof(params), "[%lld]", (long long)count);
+    return mcp_return_rpc_body(res, mcp_node_rpc("getreorghistory", params),
+                                "getreorghistory", "mcp.chain");
+}
 
 static int h_zcl_utxo_audit(const struct mcp_request *req,
                             struct mcp_response *res)
@@ -46,14 +58,7 @@ static int h_zcl_utxo_audit(const struct mcp_request *req,
     char *params = mcp_params_to_json(&p);
     char *out = mcp_node_rpc("getutxoaudit", params);
     free(params);
-    if (!out) {
-        res->error = MCP_ERR_HANDLER_FAILED;
-        snprintf(res->error_message, sizeof(res->error_message),
-                 "RPC getutxoaudit failed");
-        LOG_ERR("mcp.chain", "getutxoaudit failed");
-    }
-    res->body = out;
-    return 0;
+    return mcp_return_rpc_body(res, out, "getutxoaudit", "mcp.chain");
 }
 
 static int h_zcl_getrawtransaction(const struct mcp_request *req,
@@ -69,14 +74,8 @@ static int h_zcl_getrawtransaction(const struct mcp_request *req,
     char *params = mcp_params_to_json(&p);
     char *out = params ? mcp_node_rpc("getrawtransaction", params) : NULL;
     free(params);
-    if (!out) {
-        res->error = MCP_ERR_HANDLER_FAILED;
-        snprintf(res->error_message, sizeof(res->error_message),
-                 "RPC getrawtransaction failed: txid=%s", txid ? txid : "(null)");
-        LOG_ERR("mcp.chain", "getrawtransaction failed: txid=%s", txid ? txid : "(null)");
-    }
-    res->body = out;
-    return 0;
+    return mcp_return_rpc_body_ctx(res, out, "getrawtransaction", "mcp.chain",
+                                   "txid=%s", txid ? txid : "(null)");
 }
 
 static int h_zcl_getblock(const struct mcp_request *req, struct mcp_response *res)
@@ -98,12 +97,9 @@ static int h_zcl_getblock(const struct mcp_request *req, struct mcp_response *re
         char *php = mcp_params_to_json(&ph);
         char *hash = php ? mcp_node_rpc("getblockhash", php) : NULL;
         free(php);
-        if (!hash) {
-            res->error = MCP_ERR_HANDLER_FAILED;
-            snprintf(res->error_message, sizeof(res->error_message),
-                     "RPC getblockhash failed: height=%s", id_str);
-            LOG_ERR("mcp.chain", "getblockhash failed: height=%s", id_str);
-        }
+        if (!hash)
+            return mcp_return_rpc_body_ctx(res, NULL, "getblockhash", "mcp.chain",
+                                           "height=%s", id_str ? id_str : "(null)");
         size_t ci = 0;
         for (size_t i = 0; hash[i] && ci < 127; i++)
             if (hash[i] != '"' && hash[i] != '\n') clean[ci++] = hash[i];
@@ -119,14 +115,8 @@ static int h_zcl_getblock(const struct mcp_request *req, struct mcp_response *re
     char *params = mcp_params_to_json(&p);
     char *out = params ? mcp_node_rpc("getblock", params) : NULL;
     free(params);
-    if (!out) {
-        res->error = MCP_ERR_HANDLER_FAILED;
-        snprintf(res->error_message, sizeof(res->error_message),
-                 "RPC getblock failed: id=%s", id_str ? id_str : "(null)");
-        LOG_ERR("mcp.chain", "getblock failed: id=%s", id_str ? id_str : "(null)");
-    }
-    res->body = out;
-    return 0;
+    return mcp_return_rpc_body_ctx(res, out, "getblock", "mcp.chain",
+                                   "id=%s", id_str ? id_str : "(null)");
 }
 
 /* ── Route table ─────────────────────────────────────────────── */
@@ -145,6 +135,12 @@ static const struct mcp_param_spec p_getrawtx[] = {
       0, 1, 0, 0, NULL, "1" },
 };
 
+static const struct mcp_param_spec p_reorg_history[] = {
+    { "count", MCP_PARAM_INT, false,
+      "Max reorg events to return (1..1024)",
+      1, 1024, 0, 0, NULL, "50" },
+};
+
 static const struct mcp_param_spec p_utxo_audit[] = {
     { "remote_sha3", MCP_PARAM_STR, false,
       "Trusted peer SHA3 commitment to compare against.",
@@ -160,6 +156,11 @@ static const struct mcp_param_spec p_utxo_audit[] = {
 static const struct mcp_tool_route k_routes[] = {
     { "zcl_getblockcount", "chain",
       "Current block height.", NULL, 0, h_zcl_getblockcount },
+    { "zcl_chain_tip", "chain",
+      "Active chain tip in one call: hash, height, time, age_seconds, "
+      "work, bits, difficulty. Power-user shortcut that bundles "
+      "getbestblockhash + getblockheader + chainwork.",
+      NULL, 0, h_zcl_chain_tip },
     { "zcl_getblock", "chain",
       "Get block by height or hash.",
       p_getblock, sizeof(p_getblock) / sizeof(p_getblock[0]), h_zcl_getblock },
@@ -192,6 +193,11 @@ static const struct mcp_tool_route k_routes[] = {
     { "zcl_hodlwave", "chain",
       "UTXO age distribution: 10 buckets from 24h to 5y+.",
       NULL, 0, h_zcl_hodlwave },
+    { "zcl_reorg_history", "chain",
+      "Recent chain.reorg_* events (start, disconnect_failed, "
+      "recovery_complete). Power-user lens on chain stability.",
+      p_reorg_history, sizeof(p_reorg_history) / sizeof(p_reorg_history[0]),
+      h_zcl_reorg_history },
 };
 
 /* Canonical self_test args. zcl_getblock requires a height — pick "1"

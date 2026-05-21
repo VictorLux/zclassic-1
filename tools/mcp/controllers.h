@@ -7,6 +7,7 @@
 #ifndef ZCL_MCP_CONTROLLERS_H
 #define ZCL_MCP_CONTROLLERS_H
 
+#include <stdarg.h>
 #include <stdio.h>
 
 #include "router.h"
@@ -74,6 +75,32 @@ static inline int mcp_return_rpc_body(struct mcp_response *res,
         snprintf(res->error_message, sizeof(res->error_message),
                  "RPC %s returned null", rpc_method);
         LOG_ERR(log_tag, "RPC %s returned null", rpc_method);
+    }
+    res->body = body_or_null;
+    return 0;
+}
+
+/* Same as mcp_return_rpc_body but with a printf-style parameter context
+ * appended to the error message and log line. Use when the failure
+ * message benefits from caller-visible inputs (e.g., "name=foo",
+ * "peer_id=5"). On success ctx_fmt is ignored. */
+__attribute__((format(printf, 5, 6)))
+static inline int mcp_return_rpc_body_ctx(struct mcp_response *res,
+                                          char *body_or_null,
+                                          const char *rpc_method,
+                                          const char *log_tag,
+                                          const char *ctx_fmt, ...)
+{
+    if (!body_or_null) {
+        char ctx[192];
+        va_list ap;
+        va_start(ap, ctx_fmt);
+        vsnprintf(ctx, sizeof(ctx), ctx_fmt, ap);
+        va_end(ap);
+        res->error = MCP_ERR_HANDLER_FAILED;
+        snprintf(res->error_message, sizeof(res->error_message),
+                 "RPC %s failed: %s", rpc_method, ctx);
+        LOG_ERR(log_tag, "%s failed: %s", rpc_method, ctx);
     }
     res->body = body_or_null;
     return 0;

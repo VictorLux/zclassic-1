@@ -13,6 +13,7 @@
 #include "controllers/strong_params.h"
 #include "chain/chain.h"
 #include "chain/pow.h"
+#include "core/arith_uint256.h"
 #include "core/uint256.h"
 #include "json/json.h"
 #include "primitives/block.h"
@@ -21,6 +22,7 @@
 
 #include <stdint.h>
 #include <stdio.h>
+#include <time.h>
 
 double get_difficulty(const struct block_index *bi)
 {
@@ -59,6 +61,46 @@ bool rpc_getbestblockhash(const struct json_value *params, bool help,
     char hex[65];
     uint256_get_hex(tip->phashBlock, hex);
     json_set_str(result, hex);
+    return true;
+}
+
+/* Bundle the tip identity + timing + work into one call. Power-user
+ * convenience: avoids round-tripping getbestblockhash + getblockheader
+ * just to check "where am I and how stale am I". */
+bool rpc_getchaintip(const struct json_value *params, bool help,
+                     struct json_value *result)
+{
+    struct blockchain_context *ctx = blockchain_ctx();
+    (void)params;
+    RPC_HELP(help, result,
+        "getchaintip\n"
+        "\nReturns the active chain tip in one shot.\n"
+        "Result: { hash, height, time, age_seconds, work, bits, difficulty }");
+    if (!ctx->main_state) {
+        json_set_str(result, "Not initialized");
+        LOG_FAIL("blockchain", "getchaintip: main_state not initialized");
+    }
+    struct block_index *tip = active_chain_tip(&ctx->main_state->chain_active);
+    if (!tip || !tip->phashBlock) {
+        json_set_str(result, "No tip");
+        LOG_FAIL("blockchain", "getchaintip: chain tip or phashBlock is NULL");
+    }
+    char hex[65];
+    uint256_get_hex(tip->phashBlock, hex);
+    char work_hex[65];
+    arith_uint256_get_hex(&tip->nChainWork, work_hex);
+
+    int64_t now = (int64_t)time(NULL);
+    int64_t tip_time = (int64_t)tip->nTime;
+
+    json_set_object(result);
+    json_push_kv_str(result, "hash", hex);
+    json_push_kv_int(result, "height", tip->nHeight);
+    json_push_kv_int(result, "time", tip_time);
+    json_push_kv_int(result, "age_seconds", now - tip_time);
+    json_push_kv_str(result, "work", work_hex);
+    json_push_kv_int(result, "bits", (int64_t)tip->nBits);
+    json_push_kv_real(result, "difficulty", get_difficulty(tip));
     return true;
 }
 

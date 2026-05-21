@@ -41,8 +41,9 @@
 /* Expected tool counts.  If a future commit intentionally adds or
  * removes tools, bump these numbers in the same commit — they are the
  * contract for "how big is the MCP surface." */
-#define EXPECTED_TOTAL      87  /* +1 for probe_zclassicd (FS6 oracle service) */
-#define EXPECTED_OPS        31  /* status, health, kpi, self_heal_stats, mempool*, mininginfo,
+#define EXPECTED_TOTAL      91  /* +3 power-user tools: chain_tip,
+                                 * reorg_history, mempool_inspect */
+#define EXPECTED_OPS        33  /* status, health, kpi, self_heal_stats, mempool*, mininginfo,
                                  * benchmark, dbstats, filemanifest, events,
                                  * rpc, state + node_log + sql (round 6.5 MCP primitives),
                                  * tools_list, self_test, logtail,
@@ -53,8 +54,9 @@
                                  * config_reload (wave 6),
                                  * consensus_report (wave 8),
                                  * syncdiag, replay_dump, replay_exec,
-                                 * + mirror status and zclassicd probe */
-#define EXPECTED_CHAIN      11
+                                 * + mirror status and zclassicd probe,
+                                 * + mempool_inspect (fee+age histograms) */
+#define EXPECTED_CHAIN      13  /* + chain_tip + reorg_history */
 #define EXPECTED_NET         9  /* + zcl_peer_report (wave 4 #5),
                                  * + zcl_onion_health (wave 6 #7) */
 #define EXPECTED_WALLET     20

@@ -61,6 +61,50 @@ static bool rpc_eventlog(const struct json_value *params, bool help,
     return true;
 }
 
+/* Last N chain.reorg_* events from the ring buffer. Same shape as
+ * eventlog, but filtered to the reorg family — exposes the on-the-wire
+ * EV_REORG_START / EV_REORG_DISCONNECT_FAILED / EV_REORG_RECOVERY_COMPLETE
+ * stream without parsing all 200+ general events client-side. */
+static bool rpc_getreorghistory(const struct json_value *params, bool help,
+                                 struct json_value *result)
+{
+    RPC_HELP(help, result,
+        "getreorghistory ( count )\n"
+        "\nReturn recent chain.reorg_* events from the system event log.\n"
+        "\nArguments:\n"
+        "1. count     (numeric, optional, default=50) Max events\n"
+        "\nResult:\n"
+        "  { \"sync_state\": \"...\", \"reorgs\": [...] }\n");
+
+    int count = 50;
+    if (params && params->type == JSON_ARR && params->num_children > 0) {
+        const struct json_value *v = &params->children[0];
+        if (v->type == JSON_INT) count = (int)v->val.i;
+        else if (v->type == JSON_REAL) count = (int)v->val.d;
+    }
+    if (count < 1) count = 1;
+    if (count > 1024) count = 1024;
+
+    size_t buf_size = (size_t)count * 256 + 256;
+    char *buf = zcl_malloc(buf_size, "reorghistory json buf");
+    if (!buf) {
+        json_set_str(result, "out of memory");
+        return false;
+    }
+
+    size_t w = 0;
+    w += (size_t)snprintf(buf + w, 256, "{\"sync_state\":\"%s\",\"reorgs\":",
+                           sync_state_name(sync_get_state()));
+    w += event_dump_json_filtered(buf + w, buf_size - w,
+                                   (size_t)count, "chain.reorg_");
+    if (w + 1 < buf_size) buf[w++] = '}';
+    buf[w] = '\0';
+
+    json_read(result, buf, w);
+    free(buf);
+    return true;
+}
+
 static bool rpc_syncstate(const struct json_value *params, bool help,
                           struct json_value *result)
 {
@@ -349,6 +393,7 @@ void register_event_rpc_commands(struct rpc_table *t)
 {
     struct rpc_command cmds[] = {
         { "control", "eventlog",          rpc_eventlog,          true },
+        { "control", "getreorghistory",   rpc_getreorghistory,   true },
         { "control", "syncstate",         rpc_syncstate,         true },
         { "control", "healthcheck",       rpc_healthcheck,       true },
         { "control", "validationstatus",  rpc_validationstatus,  true },

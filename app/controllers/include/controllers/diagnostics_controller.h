@@ -14,6 +14,8 @@
 #ifndef ZCL_DIAGNOSTICS_CONTROLLER_H
 #define ZCL_DIAGNOSTICS_CONTROLLER_H
 
+#include <stddef.h>
+
 struct rpc_table;
 struct main_state;
 
@@ -23,5 +25,12 @@ void diagnostics_controller_set_state(struct main_state *ms,
                                       const char *datadir);
 
 void register_diagnostics_rpc_commands(struct rpc_table *t);
+
+/* Fill `out` with a comma-separated list of every subsystem name accepted
+ * by `dumpstate` (and hence by the MCP `zcl_state` tool). The list is
+ * derived from the live g_dumpers registry, so adding a subsystem in
+ * diagnostics_controller.c automatically propagates here. Truncates on
+ * overflow; returns the unclamped length (snprintf-style). */
+int diagnostics_subsystems_csv(char *out, size_t out_sz);
 
 #endif /* ZCL_DIAGNOSTICS_CONTROLLER_H */

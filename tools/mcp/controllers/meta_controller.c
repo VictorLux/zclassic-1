@@ -743,7 +743,7 @@ static const struct mcp_param_spec p_admin[] = {
      * embedded counters are cumulative since boot. */
     { "since", MCP_PARAM_INT, false,
       "Unix-seconds baseline for future windowed counters (unused).",
-      0, INT64_MAX, 0, 0, NULL, "0" },
+      0, INT32_MAX, 0, 0, NULL, "0" },
 };
 
 static const struct mcp_tool_route k_routes[] = {

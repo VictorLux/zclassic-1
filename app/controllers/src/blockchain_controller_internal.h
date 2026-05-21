@@ -63,12 +63,16 @@ bool rpc_getblockheader(const struct json_value *params, bool help,
                         struct json_value *result);
 bool rpc_getblock(const struct json_value *params, bool help,
                   struct json_value *result);
+bool rpc_getchaintip(const struct json_value *params, bool help,
+                     struct json_value *result);
 
 /* blockchain_controller_chain.c */
 bool rpc_getblockchaininfo(const struct json_value *params, bool help,
                            struct json_value *result);
 bool rpc_getmempoolinfo(const struct json_value *params, bool help,
                         struct json_value *result);
+bool rpc_getmempoolfeestats(const struct json_value *params, bool help,
+                            struct json_value *result);
 bool rpc_gettxoutsetinfo(const struct json_value *params, bool help,
                          struct json_value *result);
 bool rpc_getutxocommitment(const struct json_value *params, bool help,

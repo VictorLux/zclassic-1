@@ -407,6 +407,22 @@ static const struct dump_entry g_dumpers[] = {
                      "active long-operation scopes (>600s code paths) that gate STATE_STUCK watchdog suppression" },
 };
 
+int diagnostics_subsystems_csv(char *out, size_t out_sz)
+{
+    if (!out || out_sz == 0) return 0;
+    out[0] = '\0';
+    size_t pos = 0;
+    int unclamped = 0;
+    for (size_t i = 0; i < sizeof(g_dumpers) / sizeof(g_dumpers[0]); i++) {
+        int n = snprintf(out + pos, pos < out_sz ? out_sz - pos : 0,
+                         "%s%s", i ? "," : "", g_dumpers[i].name);
+        unclamped += n;
+        if (n > 0 && (size_t)n < out_sz - pos) pos += (size_t)n;
+        else pos = out_sz - 1;
+    }
+    return unclamped;
+}
+
 static bool rpc_dumpstate(const struct json_value *params, bool help,
                           struct json_value *result)
 {

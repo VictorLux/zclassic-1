@@ -35,14 +35,8 @@ static int h_zcl_addnode(const struct mcp_request *req, struct mcp_response *res
     char *params = mcp_params_to_json(&p);
     char *out = params ? mcp_node_rpc("addnode", params) : NULL;
     free(params);
-    if (!out) {
-        res->error = MCP_ERR_HANDLER_FAILED;
-        snprintf(res->error_message, sizeof(res->error_message),
-                 "RPC addnode failed: addr=%s", addr ? addr : "(null)");
-        LOG_ERR("mcp.net", "addnode failed: addr=%s", addr ? addr : "(null)");
-    }
-    res->body = out;
-    return 0;
+    return mcp_return_rpc_body_ctx(res, out, "addnode", "mcp.net",
+                                   "addr=%s", addr ? addr : "(null)");
 }
 
 static int h_zcl_pingpeer(const struct mcp_request *req, struct mcp_response *res)
@@ -51,14 +45,8 @@ static int h_zcl_pingpeer(const struct mcp_request *req, struct mcp_response *re
     char params[64];
     snprintf(params, sizeof(params), "[%lld]", (long long)peer_id);
     char *out = mcp_node_rpc("pingpeer", params);
-    if (!out) {
-        res->error = MCP_ERR_HANDLER_FAILED;
-        snprintf(res->error_message, sizeof(res->error_message),
-                 "RPC pingpeer failed: peer_id=%lld", (long long)peer_id);
-        LOG_ERR("mcp.net", "pingpeer failed: peer_id=%lld", (long long)peer_id);
-    }
-    res->body = out;
-    return 0;
+    return mcp_return_rpc_body_ctx(res, out, "pingpeer", "mcp.net",
+                                   "peer_id=%lld", (long long)peer_id);
 }
 
 /* zcl_peer_report — peer scoring summary derived from in-process
@@ -71,20 +59,8 @@ static int h_zcl_peer_report(const struct mcp_request *req,
     (void)req;
     char body[2048];
     size_t n = mcp_metrics_peer_report_json(body, sizeof(body));
-    if (n == 0) {
-        res->error = MCP_ERR_HANDLER_FAILED;
-        snprintf(res->error_message, sizeof(res->error_message),
-                 "peer report generation returned empty");
-        LOG_ERR("mcp.net", "peer_report_json returned 0 bytes");
-    }
-    res->body = strdup(body);
-    if (!res->body) {
-        res->error = MCP_ERR_INTERNAL;
-        snprintf(res->error_message, sizeof(res->error_message),
-                 "strdup failed for peer report");
-        LOG_ERR("mcp.net", "strdup failed for peer report (%zu bytes)", n);
-    }
-    return 0;
+    char *out = (n == 0) ? NULL : strdup(body);
+    return mcp_return_rpc_body(res, out, "peer_report", "mcp.net");
 }
 
 /* zcl_onion_health — probe the in-process onion service by calling

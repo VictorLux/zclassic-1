@@ -53,15 +53,10 @@ static int h_zcl_send(const struct mcp_request *req, struct mcp_response *res)
     char *params = mcp_params_to_json(&p);
     char *out = params ? mcp_node_rpc("z_sendmany", params) : NULL;
     free(params);
-    if (!out) {
-        res->error = MCP_ERR_HANDLER_FAILED;
-        snprintf(res->error_message, sizeof(res->error_message),
-                 "RPC z_sendmany failed: from=%s to=%s", from ? from : "(null)", to ? to : "(null)");
-        LOG_ERR("mcp.wallet", "z_sendmany failed: from=%s to=%s amount=%.8f",
-                from ? from : "(null)", to ? to : "(null)", amount);
-    }
-    res->body = out;
-    return 0;
+    return mcp_return_rpc_body_ctx(res, out, "z_sendmany", "mcp.wallet",
+                                   "from=%s to=%s",
+                                   from ? from : "(null)",
+                                   to ? to : "(null)");
 }
 
 static int h_zcl_sendtoaddress(const struct mcp_request *req,
@@ -79,15 +74,8 @@ static int h_zcl_sendtoaddress(const struct mcp_request *req,
     char *params = mcp_params_to_json(&p);
     char *out = params ? mcp_node_rpc("sendtoaddress", params) : NULL;
     free(params);
-    if (!out) {
-        res->error = MCP_ERR_HANDLER_FAILED;
-        snprintf(res->error_message, sizeof(res->error_message),
-                 "RPC sendtoaddress failed: addr=%s", addr ? addr : "(null)");
-        LOG_ERR("mcp.wallet", "sendtoaddress failed: addr=%s amount=%.8f",
-                addr ? addr : "(null)", amount);
-    }
-    res->body = out;
-    return 0;
+    return mcp_return_rpc_body_ctx(res, out, "sendtoaddress", "mcp.wallet",
+                                   "addr=%s", addr ? addr : "(null)");
 }
 
 static int h_zcl_listunspent(const struct mcp_request *req,
@@ -126,14 +114,8 @@ static int h_zcl_gettransaction(const struct mcp_request *req,
     char *params = mcp_params_to_json(&p);
     char *out = params ? mcp_node_rpc("gettransaction", params) : NULL;
     free(params);
-    if (!out) {
-        res->error = MCP_ERR_HANDLER_FAILED;
-        snprintf(res->error_message, sizeof(res->error_message),
-                 "RPC gettransaction failed: txid=%s", txid ? txid : "(null)");
-        LOG_ERR("mcp.wallet", "gettransaction failed: txid=%s", txid ? txid : "(null)");
-    }
-    res->body = out;
-    return 0;
+    return mcp_return_rpc_body_ctx(res, out, "gettransaction", "mcp.wallet",
+                                   "txid=%s", txid ? txid : "(null)");
 }
 
 static int h_zcl_listaddresses(const struct mcp_request *req,
@@ -144,12 +126,8 @@ static int h_zcl_listaddresses(const struct mcp_request *req,
      * sapling_keys:[...]}.  Call it without private keys and project just
      * the addresses so the caller gets a clean list. */
     char *raw = mcp_node_rpc("listwalletkeys", "[false]");
-    if (!raw) {
-        res->error = MCP_ERR_HANDLER_FAILED;
-        snprintf(res->error_message, sizeof(res->error_message),
-                 "RPC listwalletkeys returned null");
-        LOG_ERR("mcp.wallet", "listwalletkeys returned null");
-    }
+    if (!raw)
+        return mcp_return_rpc_body(res, raw, "listwalletkeys", "mcp.wallet");
 
     struct json_value root;
     if (!json_read(&root, raw, strlen(raw))) { res->body = raw; return 0; }
@@ -218,14 +196,8 @@ static int h_zcl_dumpprivkey(const struct mcp_request *req,
     char *params = mcp_params_to_json(&p);
     char *out = params ? mcp_node_rpc("dumpprivkey", params) : NULL;
     free(params);
-    if (!out) {
-        res->error = MCP_ERR_HANDLER_FAILED;
-        snprintf(res->error_message, sizeof(res->error_message),
-                 "RPC dumpprivkey failed: address=%s", addr ? addr : "(null)");
-        LOG_ERR("mcp.wallet", "dumpprivkey failed: address=%s", addr ? addr : "(null)");
-    }
-    res->body = out;
-    return 0;
+    return mcp_return_rpc_body_ctx(res, out, "dumpprivkey", "mcp.wallet",
+                                   "address=%s", addr ? addr : "(null)");
 }
 
 static int h_zcl_importprivkey(const struct mcp_request *req,
@@ -243,14 +215,7 @@ static int h_zcl_importprivkey(const struct mcp_request *req,
     char *params = mcp_params_to_json(&p);
     char *out = params ? mcp_node_rpc("importprivkey", params) : NULL;
     free(params);
-    if (!out) {
-        res->error = MCP_ERR_HANDLER_FAILED;
-        snprintf(res->error_message, sizeof(res->error_message),
-                 "RPC importprivkey failed");
-        LOG_ERR("mcp.wallet", "importprivkey failed: rescan=%s", rescan ? "true" : "false");
-    }
-    res->body = out;
-    return 0;
+    return mcp_return_rpc_body(res, out, "importprivkey", "mcp.wallet");
 }
 
 static int h_zcl_importaddress(const struct mcp_request *req,
@@ -263,14 +228,8 @@ static int h_zcl_importaddress(const struct mcp_request *req,
     char *params = mcp_params_to_json(&p);
     char *out = params ? mcp_node_rpc("importaddress", params) : NULL;
     free(params);
-    if (!out) {
-        res->error = MCP_ERR_HANDLER_FAILED;
-        snprintf(res->error_message, sizeof(res->error_message),
-                 "RPC importaddress failed: address=%s", addr ? addr : "(null)");
-        LOG_ERR("mcp.wallet", "importaddress failed: address=%s", addr ? addr : "(null)");
-    }
-    res->body = out;
-    return 0;
+    return mcp_return_rpc_body_ctx(res, out, "importaddress", "mcp.wallet",
+                                   "address=%s", addr ? addr : "(null)");
 }
 
 static int h_zcl_z_listunspent(const struct mcp_request *req,
@@ -296,14 +255,8 @@ static int h_zcl_z_getbalance(const struct mcp_request *req,
     char *params = mcp_params_to_json(&p);
     char *out = params ? mcp_node_rpc("z_getbalance", params) : NULL;
     free(params);
-    if (!out) {
-        res->error = MCP_ERR_HANDLER_FAILED;
-        snprintf(res->error_message, sizeof(res->error_message),
-                 "RPC z_getbalance failed: address=%s", addr ? addr : "(null)");
-        LOG_ERR("mcp.wallet", "z_getbalance failed: address=%s", addr ? addr : "(null)");
-    }
-    res->body = out;
-    return 0;
+    return mcp_return_rpc_body_ctx(res, out, "z_getbalance", "mcp.wallet",
+                                   "address=%s", addr ? addr : "(null)");
 }
 
 static int h_zcl_rescanblockchain(const struct mcp_request *req,
@@ -320,15 +273,8 @@ static int h_zcl_rescanblockchain(const struct mcp_request *req,
                  (long long)json_get_int(s));
     else
         snprintf(params, sizeof(params), "[]");
-    char *out = mcp_node_rpc("rescanblockchain", params);
-    if (!out) {
-        res->error = MCP_ERR_HANDLER_FAILED;
-        snprintf(res->error_message, sizeof(res->error_message),
-                 "RPC rescanblockchain returned null");
-        LOG_ERR("mcp.wallet", "rescanblockchain returned null");
-    }
-    res->body = out;
-    return 0;
+    return mcp_return_rpc_body(res, mcp_node_rpc("rescanblockchain", params),
+                                "rescanblockchain", "mcp.wallet");
 }
 
 static int h_zcl_listwalletkeys(const struct mcp_request *req,
@@ -338,15 +284,8 @@ static int h_zcl_listwalletkeys(const struct mcp_request *req,
     bool inc = ip ? json_get_bool(ip) : false;
     char params[32];
     snprintf(params, sizeof(params), "[%s]", inc ? "true" : "false");
-    char *out = mcp_node_rpc("listwalletkeys", params);
-    if (!out) {
-        res->error = MCP_ERR_HANDLER_FAILED;
-        snprintf(res->error_message, sizeof(res->error_message),
-                 "RPC listwalletkeys returned null");
-        LOG_ERR("mcp.wallet", "listwalletkeys returned null");
-    }
-    res->body = out;
-    return 0;
+    return mcp_return_rpc_body(res, mcp_node_rpc("listwalletkeys", params),
+                                "listwalletkeys", "mcp.wallet");
 }
 
 static int h_zcl_replaywalletfromchain(const struct mcp_request *req,
@@ -356,22 +295,17 @@ static int h_zcl_replaywalletfromchain(const struct mcp_request *req,
     const struct json_value *cv = json_get(req->args, "confirm");
     bool confirm = cv ? json_get_bool(cv) : false;
     if (!confirm) {
-        res->error = MCP_ERR_HANDLER_FAILED;
+        res->error = MCP_ERR_OUT_OF_RANGE;
         snprintf(res->error_message, sizeof(res->error_message),
                  "replaywalletfromchain requires confirm=true "
                  "(destructive: wipes derived wallet state)");
         snprintf(res->error_param, sizeof(res->error_param), "confirm");
         LOG_ERR("mcp.wallet", "replaywalletfromchain called without confirm=true");
+        return 0;
     }
-    char *out = mcp_node_rpc("replaywalletfromchain", "[\"confirm\"]");
-    if (!out) {
-        res->error = MCP_ERR_HANDLER_FAILED;
-        snprintf(res->error_message, sizeof(res->error_message),
-                 "RPC replaywalletfromchain returned null");
-        LOG_ERR("mcp.wallet", "replaywalletfromchain returned null");
-    }
-    res->body = out;
-    return 0;
+    return mcp_return_rpc_body(res,
+                                mcp_node_rpc("replaywalletfromchain", "[\"confirm\"]"),
+                                "replaywalletfromchain", "mcp.wallet");
 }
 
 /* ── Parameter specs ─────────────────────────────────────────── */

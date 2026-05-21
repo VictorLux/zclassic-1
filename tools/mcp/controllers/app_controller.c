@@ -32,14 +32,8 @@ static int h_zcl_name_resolve(const struct mcp_request *req, struct mcp_response
     char *params = mcp_params_to_json(&p);
     char *out = params ? mcp_node_rpc("name_resolve", params) : NULL;
     free(params);
-    if (!out) {
-        res->error = MCP_ERR_HANDLER_FAILED;
-        snprintf(res->error_message, sizeof(res->error_message),
-                 "RPC name_resolve failed: name=%s", n ? n : "(null)");
-        LOG_ERR("mcp.app", "name_resolve failed: name=%s", n ? n : "(null)");
-    }
-    res->body = out;
-    return 0;
+    return mcp_return_rpc_body_ctx(res, out, "name_resolve", "mcp.app",
+                                   "name=%s", n ? n : "(null)");
 }
 
 static int h_zcl_name_register(const struct mcp_request *req, struct mcp_response *res)
@@ -55,14 +49,8 @@ static int h_zcl_name_register(const struct mcp_request *req, struct mcp_respons
     char *params = mcp_params_to_json(&p);
     char *out = params ? mcp_node_rpc("name_register", params) : NULL;
     free(params);
-    if (!out) {
-        res->error = MCP_ERR_HANDLER_FAILED;
-        snprintf(res->error_message, sizeof(res->error_message),
-                 "RPC name_register failed: name=%s", n ? n : "(null)");
-        LOG_ERR("mcp.app", "name_register failed: name=%s", n ? n : "(null)");
-    }
-    res->body = out;
-    return 0;
+    return mcp_return_rpc_body_ctx(res, out, "name_register", "mcp.app",
+                                   "name=%s", n ? n : "(null)");
 }
 
 /* ── Messaging (ZMSG) ───────────────────────────────────────── */
@@ -78,14 +66,8 @@ static int h_zcl_msg_send_named(const struct mcp_request *req, struct mcp_respon
     char *params = mcp_params_to_json(&p);
     char *out = params ? mcp_node_rpc("msg_send_named", params) : NULL;
     free(params);
-    if (!out) {
-        res->error = MCP_ERR_HANDLER_FAILED;
-        snprintf(res->error_message, sizeof(res->error_message),
-                 "RPC msg_send_named failed: name=%s", n ? n : "(null)");
-        LOG_ERR("mcp.app", "msg_send_named failed: name=%s", n ? n : "(null)");
-    }
-    res->body = out;
-    return 0;
+    return mcp_return_rpc_body_ctx(res, out, "msg_send_named", "mcp.app",
+                                   "name=%s", n ? n : "(null)");
 }
 
 static int h_zcl_msg_send(const struct mcp_request *req, struct mcp_response *res)
@@ -99,14 +81,8 @@ static int h_zcl_msg_send(const struct mcp_request *req, struct mcp_response *re
     char *params = mcp_params_to_json(&p);
     char *out = params ? mcp_node_rpc("msg_send", params) : NULL;
     free(params);
-    if (!out) {
-        res->error = MCP_ERR_HANDLER_FAILED;
-        snprintf(res->error_message, sizeof(res->error_message),
-                 "RPC msg_send failed: peer_id=%lld", (long long)pid);
-        LOG_ERR("mcp.app", "msg_send failed: peer_id=%lld", (long long)pid);
-    }
-    res->body = out;
-    return 0;
+    return mcp_return_rpc_body_ctx(res, out, "msg_send", "mcp.app",
+                                   "peer_id=%lld", (long long)pid);
 }
 
 static int h_zcl_msg_inbox(const struct mcp_request *req, struct mcp_response *res)
@@ -127,14 +103,8 @@ static int h_zcl_msg_read(const struct mcp_request *req, struct mcp_response *re
     char *params = mcp_params_to_json(&p);
     char *out = params ? mcp_node_rpc("msg_read", params) : NULL;
     free(params);
-    if (!out) {
-        res->error = MCP_ERR_HANDLER_FAILED;
-        snprintf(res->error_message, sizeof(res->error_message),
-                 "RPC msg_read failed: msg_id=%s", mid ? mid : "(null)");
-        LOG_ERR("mcp.app", "msg_read failed: msg_id=%s", mid ? mid : "(null)");
-    }
-    res->body = out;
-    return 0;
+    return mcp_return_rpc_body_ctx(res, out, "msg_read", "mcp.app",
+                                   "msg_id=%s", mid ? mid : "(null)");
 }
 
 /* ── File market ────────────────────────────────────────────── */
@@ -153,14 +123,8 @@ static int h_zcl_market_offer(const struct mcp_request *req, struct mcp_response
     char *params = mcp_params_to_json(&p);
     char *out = params ? mcp_node_rpc("zmarket_offer", params) : NULL;
     free(params);
-    if (!out) {
-        res->error = MCP_ERR_HANDLER_FAILED;
-        snprintf(res->error_message, sizeof(res->error_message),
-                 "RPC zmarket_offer failed: filepath=%s", fp ? fp : "(null)");
-        LOG_ERR("mcp.app", "zmarket_offer failed: filepath=%s", fp ? fp : "(null)");
-    }
-    res->body = out;
-    return 0;
+    return mcp_return_rpc_body_ctx(res, out, "zmarket_offer", "mcp.app",
+                                   "filepath=%s", fp ? fp : "(null)");
 }
 
 static int h_zcl_market_buy(const struct mcp_request *req, struct mcp_response *res)
@@ -172,14 +136,8 @@ static int h_zcl_market_buy(const struct mcp_request *req, struct mcp_response *
     char *params = mcp_params_to_json(&p);
     char *out = params ? mcp_node_rpc("zmarket_buy", params) : NULL;
     free(params);
-    if (!out) {
-        res->error = MCP_ERR_HANDLER_FAILED;
-        snprintf(res->error_message, sizeof(res->error_message),
-                 "RPC zmarket_buy failed: root_hash=%s", rh ? rh : "(null)");
-        LOG_ERR("mcp.app", "zmarket_buy failed: root_hash=%s", rh ? rh : "(null)");
-    }
-    res->body = out;
-    return 0;
+    return mcp_return_rpc_body_ctx(res, out, "zmarket_buy", "mcp.app",
+                                   "root_hash=%s", rh ? rh : "(null)");
 }
 
 /* ── Atomic swaps (ZSWP) ────────────────────────────────────── */
@@ -204,14 +162,8 @@ static int h_zcl_swap_initiate(const struct mcp_request *req, struct mcp_respons
     char *params = mcp_params_to_json(&p);
     char *out = params ? mcp_node_rpc("swap_initiate", params) : NULL;
     free(params);
-    if (!out) {
-        res->error = MCP_ERR_HANDLER_FAILED;
-        snprintf(res->error_message, sizeof(res->error_message),
-                 "RPC swap_initiate failed");
-        LOG_ERR("mcp.app", "swap_initiate failed: amount=%lld", (long long)amount);
-    }
-    res->body = out;
-    return 0;
+    return mcp_return_rpc_body_ctx(res, out, "swap_initiate", "mcp.app",
+                                   "amount=%lld", (long long)amount);
 }
 
 static int h_zcl_swap_participate(const struct mcp_request *req, struct mcp_response *res)
@@ -234,14 +186,8 @@ static int h_zcl_swap_participate(const struct mcp_request *req, struct mcp_resp
     char *params = mcp_params_to_json(&p);
     char *out = params ? mcp_node_rpc("swap_participate", params) : NULL;
     free(params);
-    if (!out) {
-        res->error = MCP_ERR_HANDLER_FAILED;
-        snprintf(res->error_message, sizeof(res->error_message),
-                 "RPC swap_participate failed");
-        LOG_ERR("mcp.app", "swap_participate failed: amount=%lld", (long long)amount);
-    }
-    res->body = out;
-    return 0;
+    return mcp_return_rpc_body_ctx(res, out, "swap_participate", "mcp.app",
+                                   "amount=%lld", (long long)amount);
 }
 
 static int h_zcl_swap_list(const struct mcp_request *req, struct mcp_response *res)
@@ -258,14 +204,7 @@ static int h_zcl_swap_list(const struct mcp_request *req, struct mcp_response *r
     } else {
         out = mcp_node_rpc("swap_list", NULL);
     }
-    if (!out) {
-        res->error = MCP_ERR_HANDLER_FAILED;
-        snprintf(res->error_message, sizeof(res->error_message),
-                 "RPC swap_list returned null");
-        LOG_ERR("mcp.app", "swap_list returned null");
-    }
-    res->body = out;
-    return 0;
+    return mcp_return_rpc_body(res, out, "swap_list", "mcp.app");
 }
 
 /* ── Parameter specs ────────────────────────────────────────── */

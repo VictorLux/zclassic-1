@@ -11,6 +11,7 @@
 #include "../replay.h"
 #include "../rpc_params.h"
 
+#include "controllers/diagnostics_controller.h"
 #include "json/json.h"
 #include "util/log_macros.h"
 #include "util/safe_alloc.h"
@@ -25,6 +26,7 @@
 #include <unistd.h>
 
 DEFINE_PT(h_zcl_getmempoolinfo, "getmempoolinfo", "mcp.ops")
+DEFINE_PT(h_zcl_mempool_inspect, "getmempoolfeestats", "mcp.ops")
 DEFINE_PT(h_zcl_getrawmempool,  "getrawmempool",  "mcp.ops")
 DEFINE_PT(h_zcl_getmininginfo,  "getmininginfo",  "mcp.ops")
 DEFINE_PT(h_zcl_benchmark,      "benchmark",      "mcp.ops")
@@ -155,15 +157,8 @@ static int h_zcl_status(const struct mcp_request *req, struct mcp_response *res)
 static int h_zcl_health(const struct mcp_request *req, struct mcp_response *res)
 {
     (void)req;
-    char *out = mcp_node_rpc("healthcheck", NULL);
-    if (!out) {
-        res->error = MCP_ERR_HANDLER_FAILED;
-        snprintf(res->error_message, sizeof(res->error_message),
-                 "RPC healthcheck returned null");
-        LOG_ERR("mcp.ops", "healthcheck returned null");
-    }
-    res->body = out;
-    return 0;
+    return mcp_return_rpc_body(res, mcp_node_rpc("healthcheck", NULL),
+                                "healthcheck", "mcp.ops");
 }
 
 DEFINE_PT(h_zcl_mirror_status, "getmirrorstatus",       "mcp.ops")
@@ -232,14 +227,7 @@ static int h_zcl_node_log(const struct mcp_request *req,
 
     char *out = pjson ? mcp_node_rpc("getnodelog", pjson) : NULL;
     free(pjson);
-    if (!out) {
-        res->error = MCP_ERR_HANDLER_FAILED;
-        snprintf(res->error_message, sizeof(res->error_message),
-                 "getnodelog returned null");
-        LOG_ERR("mcp.ops", "getnodelog returned null");
-    }
-    res->body = out;
-    return 0;
+    return mcp_return_rpc_body(res, out, "getnodelog", "mcp.ops");
 }
 
 /* zcl_state — generic in-process state dump.
@@ -267,14 +255,8 @@ static int h_zcl_state(const struct mcp_request *req, struct mcp_response *res)
 
     char *out = pjson ? mcp_node_rpc("dumpstate", pjson) : NULL;
     free(pjson);
-    if (!out) {
-        res->error = MCP_ERR_HANDLER_FAILED;
-        snprintf(res->error_message, sizeof(res->error_message),
-                 "dumpstate %s returned null", sub ? sub : "(null)");
-        LOG_ERR("mcp.ops", "dumpstate %s returned null", sub ? sub : "(null)");
-    }
-    res->body = out;
-    return 0;
+    return mcp_return_rpc_body_ctx(res, out, "dumpstate", "mcp.ops",
+                                    "subsystem=%s", sub ? sub : "(null)");
 }
 
 /* zcl_probe_zclassicd — drift detection against the local zclassicd
@@ -318,14 +300,8 @@ static int h_zcl_probe_zclassicd(const struct mcp_request *req,
     char *pjson = mcp_params_to_json(&p);
     char *out = pjson ? mcp_node_rpc("probezclassicd", pjson) : NULL;
     free(pjson);
-    if (!out) {
-        res->error = MCP_ERR_HANDLER_FAILED;
-        snprintf(res->error_message, sizeof(res->error_message),
-                 "probezclassicd h=%d returned null", height);
-        LOG_ERR("mcp.ops", "probezclassicd h=%d returned null", height);
-    }
-    res->body = out;
-    return 0;
+    return mcp_return_rpc_body_ctx(res, out, "probezclassicd", "mcp.ops",
+                                    "h=%d", height);
 }
 
 /* Tiny helper: pull "key":N out of a JSON-ish string, return N or -1.
@@ -918,11 +894,16 @@ static const struct mcp_param_spec p_profile[] = {
       "Max threads returned, sorted by CPU (clamped to [1, 64])",
       1, 64, 0, 0, NULL, "10" },
 };
-static const struct mcp_param_spec p_state[] = {
+/* p_state.subsystem.enum_csv + description are derived from the live
+ * g_dumpers registry at mcp_register_ops() time (see populate below).
+ * Hence non-const: we patch the pointers once at boot. New subsystems
+ * added to diagnostics_controller.c auto-propagate to the MCP schema. */
+static char g_state_subsystems_csv[512];
+static char g_state_subsystem_desc[768];
+static struct mcp_param_spec p_state[] = {
     { "subsystem", MCP_PARAM_STR, true,
-      "Subsystem name: watchdog, boot, block_index, health, oracle, local_ingest, header_probe, legacy_mirror, oracle_policy, rolling_anchor, quorum_oracle, peer_lifecycle, chain_advance_coordinator, long_op",
-      0, 0, 1, 64,
-      "watchdog,boot,block_index,health,oracle,local_ingest,header_probe,legacy_mirror,oracle_policy,rolling_anchor,quorum_oracle,peer_lifecycle,chain_advance_coordinator,long_op", NULL },
+      "Subsystem name (filled at register-time from g_dumpers registry)",
+      0, 0, 1, 64, NULL, NULL },
     { "key", MCP_PARAM_STR, false,
       "Subsystem-specific key (block_index: height or hex hash)",
       0, 0, 0, 128, NULL, NULL },
@@ -981,6 +962,10 @@ static const struct mcp_tool_route k_routes[] = {
     { "zcl_getmempoolinfo", "ops",
       "Mempool size, bytes, usage.",
       NULL, 0, h_zcl_getmempoolinfo },
+    { "zcl_mempool_inspect", "ops",
+      "Mempool fee-rate (zat/byte) and age histograms. Power-user "
+      "signal for transaction fee construction and congestion diagnosis.",
+      NULL, 0, h_zcl_mempool_inspect },
     { "zcl_getrawmempool", "ops",
       "Array of txids currently in the mempool.",
       NULL, 0, h_zcl_getrawmempool },
@@ -1004,9 +989,10 @@ static const struct mcp_tool_route k_routes[] = {
       "Call any RPC method directly. 85+ commands available.",
       p_rpc, sizeof(p_rpc) / sizeof(p_rpc[0]), h_zcl_rpc },
     { "zcl_state", "ops",
-      "Generic in-process state dump. subsystem=watchdog|boot|block_index|"
-      "health|oracle|chain_advance_coordinator. For block_index, pass `key`=height or hex hash. New "
-      "subsystems plug in via *_dump_state_json (see CLAUDE.md).",
+      "Generic in-process state dump. See params.subsystem.enum for the "
+      "live list (derived from g_dumpers in diagnostics_controller.c). "
+      "For block_index, pass `key`=height or hex hash. New subsystems "
+      "plug in via *_dump_state_json (see CLAUDE.md).",
       p_state, sizeof(p_state) / sizeof(p_state[0]), h_zcl_state },
     { "zcl_probe_zclassicd", "ops",
       "Drift detection: ask the local zclassicd (independent ZClassic "
@@ -1074,6 +1060,17 @@ static const struct {
 
 void mcp_register_ops(void)
 {
+    /* Derive p_state.subsystem schema from the live g_dumpers registry so
+     * adding a new *_dump_state_json subsystem in diagnostics_controller.c
+     * automatically updates the MCP-visible enum and description with
+     * zero further plumbing. */
+    diagnostics_subsystems_csv(g_state_subsystems_csv,
+                               sizeof(g_state_subsystems_csv));
+    snprintf(g_state_subsystem_desc, sizeof(g_state_subsystem_desc),
+             "Subsystem name (one of: %s)", g_state_subsystems_csv);
+    p_state[0].enum_csv    = g_state_subsystems_csv;
+    p_state[0].description = g_state_subsystem_desc;
+
     for (size_t i = 0; i < sizeof(k_routes) / sizeof(k_routes[0]); i++)
         mcp_router_register(&k_routes[i]);
     for (size_t i = 0;
