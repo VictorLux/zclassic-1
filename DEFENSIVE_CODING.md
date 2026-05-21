@@ -7,6 +7,10 @@ impossible for any contributor (human or AI agent) to accidentally skip
 validation, swallow errors, or leak memory. Read this before writing
 any new code.
 
+Modules prefixed `legacy_` are a compatibility layer with an external
+`zclassicd`. See [`LEGACY_LIFECYCLE.md`](./LEGACY_LIFECYCLE.md) for
+which paths are still load-bearing.
+
 ---
 
 ## 1. Every write goes through the AR lifecycle — no exceptions
