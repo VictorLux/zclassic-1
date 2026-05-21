@@ -360,12 +360,39 @@ and describe WHY the rule does not apply.
 
 Implementation: `tools/scripts/check_long_functions.sh`.
 
+### Gate #14: lib/ layer purity (regression ratchet)
+
+`check-lib-layering` walks every `lib/**/*.c` and `lib/**/*.h` outside
+`lib/test/` and flags any `#include "controllers/..."`, `"models/..."`,
+`"services/..."`, or `"views/..."` directive. lib/ is the foundation —
+controllers/models/services/views are upstream consumers, and a
+backward include typically means the lib/ file is doing something that
+belongs in app/ or relying on a symbol that should live in lib/.
+
+The gate ships with a baseline file at
+`tools/scripts/lib_layering_baseline.txt` listing the 105 violations
+that pre-existed at the time the gate was introduced (round 4). Each
+entry is `<file>:<exact #include directive>`. Any *new* violation not
+in the baseline fails CI. The list is a ratchet: shrinking it is
+permanent progress.
+
+To pay down debt: pick a baseline entry, replace the include with a
+forward declaration (or move the symbol into lib/, or delete it if
+unused), delete the matching baseline line, and re-run `make lint`.
+
+**Override marker.** `// lib-layer-ok:<tag>` on the include line keeps
+the include while documenting that the deviation is intentional
+(e.g. `file_manifest-struct-defn` where lib/net needs the full struct
+definition that happens to live in a controller header). Use sparingly.
+
+Implementation: `tools/scripts/check_lib_layering.sh`.
+
 ---
 
 ## 8. Lint-override discipline — every escape hatch is named
 
-Five lint gates accept an inline override marker when the underlying
-rule cannot mechanically hold. The five marker classes:
+Six lint gates accept an inline override marker when the underlying
+rule cannot mechanically hold. The six marker classes:
 
 | Marker | Where allowed | Lint gate |
 |--------|---------------|-----------|
@@ -374,6 +401,7 @@ rule cannot mechanically hold. The five marker classes:
 | `// raw-return-ok:<tag>` | bare `return -1;` in MCP / service / controller code with no preceding log line | `check-silent-errors`, `-services`, `-controllers` |
 | `// raw-alloc-ok:<tag>` | line with `malloc/calloc/realloc` outside the `zcl_*` wrappers | `check-raw-malloc` |
 | `// long-function-ok:<tag>` | signature line of a top-level controller/service function whose body spans >500 lines | `check-long-functions` |
+| `// lib-layer-ok:<tag>` | line in `lib/` that includes a `controllers/`, `models/`, `services/`, or `views/` header | `check-lib-layering` |
 
 **Syntax (machine-enforced).** Every marker requires a non-empty
 single-token tag matching `[A-Za-z][A-Za-z0-9_-]+` immediately after

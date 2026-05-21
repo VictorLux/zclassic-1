@@ -805,7 +805,15 @@ check-lag-slo-observable:
 	@echo "══ LINT: lag SLO observability ══"
 	@./tools/scripts/check_lag_slo_observable.sh
 
-lint: check-malloc check-silent-errors check-raw-sqlite check-raw-malloc check-coins-lookup-nullcheck check-observability-pairing check-silent-errors-services check-silent-errors-controllers check-before-save-hooks check-pthread-create check-model-validation check-long-functions check-rpc-registrar check-lag-slo-observable
+# lib/ layer purity: no lib/ file should #include from app/ unless the
+# include is in the grandfathered baseline or has a documented per-line
+# override marker. Catches regressions; lets us pay down the existing
+# debt incrementally.
+check-lib-layering:
+	@echo "══ LINT: lib/ layer purity ══"
+	@./tools/scripts/check_lib_layering.sh
+
+lint: check-malloc check-silent-errors check-raw-sqlite check-raw-malloc check-coins-lookup-nullcheck check-observability-pairing check-silent-errors-services check-silent-errors-controllers check-before-save-hooks check-pthread-create check-model-validation check-long-functions check-rpc-registrar check-lag-slo-observable check-lib-layering
 	@echo "══ LINT: all checks passed ══"
 
 ci: lint zclassic23 test_zcl
