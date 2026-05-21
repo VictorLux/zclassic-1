@@ -424,15 +424,25 @@ static void chain_evidence_controller_reconcile_startup(
                                          "csr_cursor_mismatch");
         return;
     }
+    /* Derived-state lag is not a contradiction. After a clean shutdown the
+     * persisted pindex_best_header / blocks-table max can be behind the
+     * active tip; the active tip is the source of truth. Self-heal
+     * pindex_best_header forward and log a one-liner; the lagging signal
+     * will catch up via P2P / projection. A freeze here was sticky and
+     * required manual node.db surgery to clear. */
     if (csv.header_height >= 0 && csv.header_height < active_tip->nHeight) {
-        chain_evidence_controller_freeze(authority,
-                                         "csr_header_tip_behind_active_tip");
-        return;
+        fprintf(stderr,  // obs-ok:cec-self-heal-header-tip
+                "[cec] reconcile_startup: pindex_best_header h=%d behind "
+                "active_tip h=%d — advancing in-memory tracker\n",
+                csv.header_height, active_tip->nHeight);
+        if (authority->csr && authority->csr->pindex_best_hdr)
+            *authority->csr->pindex_best_hdr = active_tip;
     }
     if (csv.sql_max_height >= 0 && csv.sql_max_height < active_tip->nHeight) {
-        chain_evidence_controller_freeze(authority,
-                                         "sqlite_height_behind_active_tip");
-        return;
+        fprintf(stderr,  // obs-ok:cec-self-heal-sql-max
+                "[cec] reconcile_startup: blocks.max_height=%lld behind "
+                "active_tip h=%d — projection will backfill\n",
+                (long long)csv.sql_max_height, active_tip->nHeight);
     }
 
     if (!has_active_evidence ||
