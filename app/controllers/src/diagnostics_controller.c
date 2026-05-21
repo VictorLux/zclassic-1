@@ -58,6 +58,7 @@
 #include "util/long_op.h"
 #include "util/safe_alloc.h"
 #include "util/supervisor.h"
+#include "util/blocker.h"
 
 #include <sqlite3.h>
 #include <ctype.h>
@@ -380,6 +381,10 @@ static const struct dump_entry g_dumpers[] = {
     { "supervisor", supervisor_dump_state_json,
                     "root supervisor: registered liveness contracts, "
                     "ticks_run, stall_fires, deadlines" },
+    { "blocker",    blocker_dump_state_json,
+                    "typed blocker registry: active blockers by class "
+                    "{permanent,transient,dependency,resource}, "
+                    "deadlines, escape actions, fire counts" },
     { "watchdog",    sync_watchdog_dump_state_json,
                      "sync watchdog status + stats" },
     { "chain_evidence", chain_evidence_controller_dump_state_json,

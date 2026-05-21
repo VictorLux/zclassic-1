@@ -21,6 +21,7 @@
 #include "util/boot_progress.h"
 #include "util/log_macros.h"
 #include "util/supervisor.h"
+#include "util/blocker.h"
 #include "net/connman.h"
 #include "config/boot_snapshot_import.h"
 #include "storage/disk_block_io.h"
@@ -2576,6 +2577,11 @@ bool app_init_services(struct app_context *ctx,
         fprintf(stderr,  // obs-ok:supervisor-start-fallback-warn
             "WARNING: supervisor_start failed; lib/health sweeper alone\n");
     }
+
+    /* Round 6 C1+C5: initialize the typed blocker primitive. Must
+     * come before any subsystem calls blocker_set / mirror_consensus_
+     * record_blocker. Idempotent. */
+    blocker_module_init();
 
     /* Round 5 C3: outbound peer-floor liveness contract.
      *
