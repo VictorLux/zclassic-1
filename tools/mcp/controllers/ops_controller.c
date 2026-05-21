@@ -166,34 +166,8 @@ static int h_zcl_health(const struct mcp_request *req, struct mcp_response *res)
     return 0;
 }
 
-static int h_zcl_mirror_status(const struct mcp_request *req,
-                               struct mcp_response *res)
-{
-    (void)req;
-    char *out = mcp_node_rpc("getmirrorstatus", NULL);
-    if (!out) {
-        res->error = MCP_ERR_HANDLER_FAILED;
-        snprintf(res->error_message, sizeof(res->error_message),
-                 "RPC getmirrorstatus returned null");
-        LOG_ERR("mcp.ops", "getmirrorstatus returned null");
-    }
-    res->body = out;
-    return 0;
-}
-
-static int h_zcl_filemanifest(const struct mcp_request *req, struct mcp_response *res)
-{
-    (void)req;
-    char *out = mcp_node_rpc("getfilemanifeststatus", NULL);
-    if (!out) {
-        res->error = MCP_ERR_HANDLER_FAILED;
-        snprintf(res->error_message, sizeof(res->error_message),
-                 "RPC getfilemanifeststatus returned null");
-        LOG_ERR("mcp.ops", "getfilemanifeststatus returned null");
-    }
-    res->body = out;
-    return 0;
-}
+DEFINE_PT(h_zcl_mirror_status, "getmirrorstatus",       "mcp.ops")
+DEFINE_PT(h_zcl_filemanifest,  "getfilemanifeststatus", "mcp.ops")
 
 static int h_zcl_events(const struct mcp_request *req, struct mcp_response *res)
 {
@@ -201,30 +175,17 @@ static int h_zcl_events(const struct mcp_request *req, struct mcp_response *res)
     char params[64];
     snprintf(params, sizeof(params), "[%lld]",
              cnt ? (long long)json_get_int(cnt) : 20LL);
-    char *out = mcp_node_rpc("eventlog", params);
-    if (!out) {
-        res->error = MCP_ERR_HANDLER_FAILED;
-        snprintf(res->error_message, sizeof(res->error_message),
-                 "RPC eventlog returned null");
-        LOG_ERR("mcp.ops", "eventlog returned null");
-    }
-    res->body = out;
-    return 0;
+    return mcp_return_rpc_body(res, mcp_node_rpc("eventlog", params),
+                                "eventlog", "mcp.ops");
 }
 
 static int h_zcl_rpc(const struct mcp_request *req, struct mcp_response *res)
 {
     const char *m = json_get_str(json_get(req->args, "method"));
     const struct json_value *p = json_get(req->args, "params");
-    char *out = mcp_node_rpc(m, p ? json_get_str(p) : NULL);
-    if (!out) {
-        res->error = MCP_ERR_HANDLER_FAILED;
-        snprintf(res->error_message, sizeof(res->error_message),
-                 "RPC %s returned null", m ? m : "(null)");
-        LOG_ERR("mcp.ops", "RPC %s returned null", m ? m : "(null)");
-    }
-    res->body = out;
-    return 0;
+    return mcp_return_rpc_body(res,
+                                mcp_node_rpc(m, p ? json_get_str(p) : NULL),
+                                m ? m : "(null)", "mcp.ops");
 }
 
 /* zcl_sql — SELECT-only SQL passthrough to node.db. Marked destructive
@@ -244,14 +205,7 @@ static int h_zcl_sql(const struct mcp_request *req,
 
     char *out = pjson ? mcp_node_rpc("dbquery", pjson) : NULL;
     free(pjson);
-    if (!out) {
-        res->error = MCP_ERR_HANDLER_FAILED;
-        snprintf(res->error_message, sizeof(res->error_message),
-                 "dbquery returned null");
-        LOG_ERR("mcp.ops", "dbquery returned null");
-    }
-    res->body = out;
-    return 0;
+    return mcp_return_rpc_body(res, out, "dbquery", "mcp.ops");
 }
 
 /* zcl_node_log — reverse-scan node.log via getnodelog RPC.
