@@ -984,23 +984,23 @@ static const struct mcp_tool_route k_routes[] = {
       NULL, 0, h_zcl_filemanifest },
     { "zcl_events", "ops",
       "Recent event log: sync events, peer connections, blocks.",
-      p_events, sizeof(p_events) / sizeof(p_events[0]), h_zcl_events },
+      p_events, PARAM_COUNT(p_events), h_zcl_events },
     { "zcl_rpc", "ops",
       "Call any RPC method directly. 85+ commands available.",
-      p_rpc, sizeof(p_rpc) / sizeof(p_rpc[0]), h_zcl_rpc },
+      p_rpc, PARAM_COUNT(p_rpc), h_zcl_rpc },
     { "zcl_state", "ops",
       "Generic in-process state dump. See params.subsystem.enum for the "
       "live list (derived from g_dumpers in diagnostics_controller.c). "
       "For block_index, pass `key`=height or hex hash. New subsystems "
       "plug in via *_dump_state_json (see CLAUDE.md).",
-      p_state, sizeof(p_state) / sizeof(p_state[0]), h_zcl_state },
+      p_state, PARAM_COUNT(p_state), h_zcl_state },
     { "zcl_probe_zclassicd", "ops",
       "Drift detection: ask the local zclassicd (independent ZClassic "
       "impl) for getblockhash(H) and compare to our block_index. Picks a "
       "random height if `height` is omitted. Returns {height, our_hash, "
       "their_hash, match}.",
       p_probe_zclassicd,
-      sizeof(p_probe_zclassicd) / sizeof(p_probe_zclassicd[0]),
+      PARAM_COUNT(p_probe_zclassicd),
       h_zcl_probe_zclassicd },
     { "zcl_diff_with_legacy", "ops",
       "One-call \"are we tracking zclassicd?\" check. Composes mirror "
@@ -1012,18 +1012,18 @@ static const struct mcp_tool_route k_routes[] = {
     { "zcl_node_log", "ops",
       "Reverse-scan node.log server-side with regex + level filter. Avoids "
       "downloading the 56 MB log just to grep. Returns newest matches first.",
-      p_node_log, sizeof(p_node_log) / sizeof(p_node_log[0]),
+      p_node_log, PARAM_COUNT(p_node_log),
       h_zcl_node_log },
     { "zcl_sql", "ops",
       "SELECT-only SQL passthrough to node.db. Hard validation + 2s timeout. "
       "Marked destructive (rate-gated) because arbitrary scans can be costly.",
-      p_sql, sizeof(p_sql) / sizeof(p_sql[0]), h_zcl_sql },
+      p_sql, PARAM_COUNT(p_sql), h_zcl_sql },
     { "zcl_profile", "ops",
       "Per-thread CPU sampler: reads /proc/self/task/*/stat before "
       "and after `duration_ms`, returns top N threads by CPU delta "
       "with name, user_ms, sys_ms, cpu_pct. For diagnosing slow "
       "nodes without attaching gdb.",
-      p_profile, sizeof(p_profile) / sizeof(p_profile[0]), h_zcl_profile },
+      p_profile, PARAM_COUNT(p_profile), h_zcl_profile },
     { "zcl_syncdiag", "ops",
       "Deep sync diagnostics: sync state, chain height, best header "
       "height, peer max height, header gap, watchdog status and "
@@ -1033,12 +1033,12 @@ static const struct mcp_tool_route k_routes[] = {
     { "zcl_replay_dump", "ops",
       "Dump the MCP request/response replay buffer (last 100 calls). "
       "Shows tool name, args, response, timestamp, duration, error status.",
-      p_replay_dump, sizeof(p_replay_dump) / sizeof(p_replay_dump[0]),
+      p_replay_dump, PARAM_COUNT(p_replay_dump),
       h_zcl_replay_dump },
     { "zcl_replay_exec", "ops",
       "Re-execute a previously recorded MCP request by index from the "
       "replay buffer. Useful for debugging and regression testing.",
-      p_replay_exec, sizeof(p_replay_exec) / sizeof(p_replay_exec[0]),
+      p_replay_exec, PARAM_COUNT(p_replay_exec),
       h_zcl_replay_exec },
 };
 
@@ -1071,14 +1071,14 @@ void mcp_register_ops(void)
     p_state[0].enum_csv    = g_state_subsystems_csv;
     p_state[0].description = g_state_subsystem_desc;
 
-    for (size_t i = 0; i < sizeof(k_routes) / sizeof(k_routes[0]); i++)
+    for (size_t i = 0; i < PARAM_COUNT(k_routes); i++)
         mcp_router_register(&k_routes[i]);
     for (size_t i = 0;
-         i < sizeof(k_ops_destructive)/sizeof(k_ops_destructive[0]); i++)
+         i < PARAM_COUNT(k_ops_destructive); i++)
         mcp_router_set_flags(k_ops_destructive[i],
                              MCP_TOOL_FLAG_DESTRUCTIVE);
     for (size_t i = 0;
-         i < sizeof(k_ops_self_test_args)/sizeof(k_ops_self_test_args[0]); i++)
+         i < PARAM_COUNT(k_ops_self_test_args); i++)
         mcp_router_set_self_test_args(k_ops_self_test_args[i].tool,
                                        k_ops_self_test_args[i].args_json);
 }

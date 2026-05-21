@@ -409,67 +409,67 @@ static const struct mcp_tool_route k_routes[] = {
       NULL, 0, h_zcl_z_getnewaddress },
     { "zcl_send", "wallet",
       "Send ZCL (transparent or shielded).",
-      p_send, sizeof(p_send) / sizeof(p_send[0]), h_zcl_send },
+      p_send, PARAM_COUNT(p_send), h_zcl_send },
 
     { "zcl_getwalletinfo", "wallet",
       "One-shot wallet health snapshot: balance, tx count, keys, status.",
       NULL, 0, h_zcl_getwalletinfo },
     { "zcl_listunspent", "wallet",
       "List transparent UTXOs available to spend.",
-      p_listunspent, sizeof(p_listunspent) / sizeof(p_listunspent[0]),
+      p_listunspent, PARAM_COUNT(p_listunspent),
       h_zcl_listunspent },
     { "zcl_listtransactions", "wallet",
       "Recent wallet transaction history.",
-      p_listtx, sizeof(p_listtx) / sizeof(p_listtx[0]),
+      p_listtx, PARAM_COUNT(p_listtx),
       h_zcl_listtransactions },
     { "zcl_gettransaction", "wallet",
       "Fetch a single wallet transaction by id.",
-      p_gettx, sizeof(p_gettx) / sizeof(p_gettx[0]), h_zcl_gettransaction },
+      p_gettx, PARAM_COUNT(p_gettx), h_zcl_gettransaction },
     { "zcl_sendtoaddress", "wallet",
       "Simple send to a single transparent address.",
-      p_sendtoaddr, sizeof(p_sendtoaddr) / sizeof(p_sendtoaddr[0]),
+      p_sendtoaddr, PARAM_COUNT(p_sendtoaddr),
       h_zcl_sendtoaddress },
     { "zcl_listaddresses", "wallet",
       "All transparent (t-addr) addresses in the wallet.",
       NULL, 0, h_zcl_listaddresses },
     { "zcl_dumpprivkey", "wallet",
       "Export the WIF private key for a transparent address.",
-      p_addr, sizeof(p_addr) / sizeof(p_addr[0]), h_zcl_dumpprivkey },
+      p_addr, PARAM_COUNT(p_addr), h_zcl_dumpprivkey },
     { "zcl_importprivkey", "wallet",
       "Import a WIF private key into the wallet.",
-      p_importkey, sizeof(p_importkey) / sizeof(p_importkey[0]),
+      p_importkey, PARAM_COUNT(p_importkey),
       h_zcl_importprivkey },
     { "zcl_importaddress", "wallet",
       "Watch a transparent address without private key. Tracks balance and "
       "transactions but cannot spend.",
-      p_importaddr, sizeof(p_importaddr) / sizeof(p_importaddr[0]),
+      p_importaddr, PARAM_COUNT(p_importaddr),
       h_zcl_importaddress },
     { "zcl_z_listaddresses", "wallet",
       "All shielded Sapling (z-addr) addresses in the wallet.",
       NULL, 0, h_zcl_z_listaddresses },
     { "zcl_z_listunspent", "wallet",
       "List shielded notes available to spend.",
-      p_zunspent, sizeof(p_zunspent) / sizeof(p_zunspent[0]),
+      p_zunspent, PARAM_COUNT(p_zunspent),
       h_zcl_z_listunspent },
     { "zcl_z_getbalance", "wallet",
       "Balance for a single t-address or z-address.",
-      p_zbalance, sizeof(p_zbalance) / sizeof(p_zbalance[0]),
+      p_zbalance, PARAM_COUNT(p_zbalance),
       h_zcl_z_getbalance },
     { "zcl_rescanblockchain", "wallet",
       "Manually trigger a wallet rescan over a height range.",
-      p_rescan, sizeof(p_rescan) / sizeof(p_rescan[0]),
+      p_rescan, PARAM_COUNT(p_rescan),
       h_zcl_rescanblockchain },
     { "zcl_walletaudit", "wallet",
       "Reconcile the wallet against the on-chain UTXO set.",
       NULL, 0, h_zcl_walletaudit },
     { "zcl_listwalletkeys", "wallet",
       "List all keys (metadata, and optionally WIFs).",
-      p_listkeys, sizeof(p_listkeys) / sizeof(p_listkeys[0]),
+      p_listkeys, PARAM_COUNT(p_listkeys),
       h_zcl_listwalletkeys },
     { "zcl_replaywalletfromchain", "wallet",
       "Rebuild the derived wallet state by replaying the chain. "
       "Destructive — requires confirm=true.",
-      p_confirm, sizeof(p_confirm) / sizeof(p_confirm[0]),
+      p_confirm, PARAM_COUNT(p_confirm),
       h_zcl_replaywalletfromchain },
 };
 
@@ -487,10 +487,10 @@ static const char *const k_wallet_destructive[] = {
 
 void mcp_register_wallet(void)
 {
-    for (size_t i = 0; i < sizeof(k_routes) / sizeof(k_routes[0]); i++)
+    for (size_t i = 0; i < PARAM_COUNT(k_routes); i++)
         mcp_router_register(&k_routes[i]);
     for (size_t i = 0;
-         i < sizeof(k_wallet_destructive)/sizeof(k_wallet_destructive[0]); i++)
+         i < PARAM_COUNT(k_wallet_destructive); i++)
         mcp_router_set_flags(k_wallet_destructive[i],
                              MCP_TOOL_FLAG_DESTRUCTIVE);
 }

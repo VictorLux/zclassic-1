@@ -156,7 +156,7 @@ static const struct mcp_tool_route k_routes[] = {
       NULL, 0, h_zcl_networkinfo },
     { "zcl_addnode", "net",
       "Add/remove peer. Actions: add, remove, onetry.",
-      p_addnode, sizeof(p_addnode) / sizeof(p_addnode[0]), h_zcl_addnode },
+      p_addnode, PARAM_COUNT(p_addnode), h_zcl_addnode },
     { "zcl_onion_status", "net",
       "Tor onion service: .onion address, bootstrap state.",
       NULL, 0, h_zcl_onion_status },
@@ -165,7 +165,7 @@ static const struct mcp_tool_route k_routes[] = {
       NULL, 0, h_zcl_gametypes },
     { "zcl_pingpeer", "net",
       "Measure round-trip latency to a connected peer.",
-      p_pingpeer, sizeof(p_pingpeer) / sizeof(p_pingpeer[0]), h_zcl_pingpeer },
+      p_pingpeer, PARAM_COUNT(p_pingpeer), h_zcl_pingpeer },
     { "zcl_peerlatency", "net",
       "Latency for all peers: ping_ms, min_ping_ms, avg_latency_ms.",
       NULL, 0, h_zcl_peerlatency },
@@ -178,7 +178,7 @@ static const struct mcp_tool_route k_routes[] = {
       "(no Tor circuit, no SOCKS). Returns {ok, onion_address, path, "
       "latency_ms, response_bytes}. Liveness check, not an e2e reach "
       "test.",
-      p_onion_health, sizeof(p_onion_health) / sizeof(p_onion_health[0]),
+      p_onion_health, PARAM_COUNT(p_onion_health),
       h_zcl_onion_health },
 };
 
@@ -190,10 +190,10 @@ static const char *const k_net_destructive[] = {
 
 void mcp_register_net(void)
 {
-    for (size_t i = 0; i < sizeof(k_routes) / sizeof(k_routes[0]); i++)
+    for (size_t i = 0; i < PARAM_COUNT(k_routes); i++)
         mcp_router_register(&k_routes[i]);
     for (size_t i = 0;
-         i < sizeof(k_net_destructive)/sizeof(k_net_destructive[0]); i++)
+         i < PARAM_COUNT(k_net_destructive); i++)
         mcp_router_set_flags(k_net_destructive[i],
                              MCP_TOOL_FLAG_DESTRUCTIVE);
 }

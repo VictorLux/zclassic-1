@@ -757,7 +757,7 @@ static const struct mcp_tool_route k_routes[] = {
       NULL, 0, h_zcl_self_test },
     { "zcl_logtail", "ops",
       "Tail the structured event log. Optional domain prefix filter.",
-      p_logtail, sizeof(p_logtail) / sizeof(p_logtail[0]), h_zcl_logtail },
+      p_logtail, PARAM_COUNT(p_logtail), h_zcl_logtail },
     { "zcl_openapi", "ops",
       "Emit an OpenAPI 3.0-flavored schema document derived from the "
       "MCP routing table. Clients can use it for type generation or "
@@ -794,7 +794,7 @@ static const struct mcp_tool_route k_routes[] = {
       "zcl_rpc_report + zcl_events into one snapshot and derives "
       "threshold-based alerts from the nested counters. Missing "
       "subsystems render as null; flagship single-call operator tool.",
-      p_admin, sizeof(p_admin) / sizeof(p_admin[0]), h_zcl_admin },
+      p_admin, PARAM_COUNT(p_admin), h_zcl_admin },
 };
 
 /* Meta tools that mutate state or would recurse — skipped by self_test. */
@@ -806,10 +806,10 @@ static const char *const k_meta_destructive[] = {
 
 void mcp_register_meta(void)
 {
-    for (size_t i = 0; i < sizeof(k_routes) / sizeof(k_routes[0]); i++)
+    for (size_t i = 0; i < PARAM_COUNT(k_routes); i++)
         mcp_router_register(&k_routes[i]);
     for (size_t i = 0;
-         i < sizeof(k_meta_destructive)/sizeof(k_meta_destructive[0]); i++)
+         i < PARAM_COUNT(k_meta_destructive); i++)
         mcp_router_set_flags(k_meta_destructive[i],
                              MCP_TOOL_FLAG_DESTRUCTIVE);
 }

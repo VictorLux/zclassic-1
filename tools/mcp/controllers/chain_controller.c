@@ -163,10 +163,10 @@ static const struct mcp_tool_route k_routes[] = {
       NULL, 0, h_zcl_chain_tip },
     { "zcl_getblock", "chain",
       "Get block by height or hash.",
-      p_getblock, sizeof(p_getblock) / sizeof(p_getblock[0]), h_zcl_getblock },
+      p_getblock, PARAM_COUNT(p_getblock), h_zcl_getblock },
     { "zcl_getrawtransaction", "chain",
       "Transaction by id. verbose=1 decodes, verbose=0 returns hex.",
-      p_getrawtx, sizeof(p_getrawtx) / sizeof(p_getrawtx[0]),
+      p_getrawtx, PARAM_COUNT(p_getrawtx),
       h_zcl_getrawtransaction },
     { "zcl_getblockchaininfo", "chain",
       "Chain state: height, best block, difficulty, chain work, value pools.",
@@ -188,7 +188,7 @@ static const struct mcp_tool_route k_routes[] = {
       NULL, 0, h_zcl_utxocommitment },
     { "zcl_utxo_audit", "chain",
       "Post-IBD UTXO drift audit. Computes local commitment and optionally compares a trusted peer SHA3.",
-      p_utxo_audit, sizeof(p_utxo_audit) / sizeof(p_utxo_audit[0]),
+      p_utxo_audit, PARAM_COUNT(p_utxo_audit),
       h_zcl_utxo_audit },
     { "zcl_hodlwave", "chain",
       "UTXO age distribution: 10 buckets from 24h to 5y+.",
@@ -196,7 +196,7 @@ static const struct mcp_tool_route k_routes[] = {
     { "zcl_reorg_history", "chain",
       "Recent chain.reorg_* events (start, disconnect_failed, "
       "recovery_complete). Power-user lens on chain stability.",
-      p_reorg_history, sizeof(p_reorg_history) / sizeof(p_reorg_history[0]),
+      p_reorg_history, PARAM_COUNT(p_reorg_history),
       h_zcl_reorg_history },
 };
 
@@ -211,10 +211,10 @@ static const struct {
 
 void mcp_register_chain(void)
 {
-    for (size_t i = 0; i < sizeof(k_routes) / sizeof(k_routes[0]); i++)
+    for (size_t i = 0; i < PARAM_COUNT(k_routes); i++)
         mcp_router_register(&k_routes[i]);
     for (size_t i = 0;
-         i < sizeof(k_chain_self_test_args)/sizeof(k_chain_self_test_args[0]);
+         i < PARAM_COUNT(k_chain_self_test_args);
          i++)
         mcp_router_set_self_test_args(k_chain_self_test_args[i].tool,
                                        k_chain_self_test_args[i].args_json);

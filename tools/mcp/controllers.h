@@ -21,6 +21,12 @@ void mcp_register_wallet(void);   /* zcl_balance, zcl_send, zcl_getnewaddress, .
 void mcp_register_app(void);      /* zcl_name_*, zcl_msg_*, zcl_market_*, zcl_swap_*  */
 void mcp_register_meta(void);     /* zcl_tools_list, zcl_self_test, zcl_logtail       */
 
+/* Compile-time element count for a statically-sized array. Used by the
+ * route + param-spec tables in every controller, and by the register
+ * loops. Replaces the `sizeof(arr) / sizeof(arr[0])` boilerplate that
+ * was repeated ~50 times across the MCP layer. */
+#define PARAM_COUNT(arr) (sizeof(arr) / sizeof((arr)[0]))
+
 /* ── Pass-through handler macro ────────────────────────────────────
  *
  * Most MCP handlers are just "call the RPC, forward the JSON body,
