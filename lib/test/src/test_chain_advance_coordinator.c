@@ -299,6 +299,73 @@ static int test_cac_blocks_unsafe_mirror(void)
     return failures;
 }
 
+/* Round 6 C3 — typed blocker class gates the force-window bypass.
+ *
+ * Force-promotion (Round 5 C4) was designed to bypass `s->blocked`
+ * temporarily for the mirror source when the supervisor escalates a
+ * fatal lag breach. The original implementation bypassed *all*
+ * mirror blockers indiscriminately, which would activate a chain we
+ * KNOW disagrees with us if the typed class is PERMANENT (e.g.
+ * hash-disagreement / body-hash-mismatch). C3 narrows the bypass to
+ * non-PERMANENT classes only. */
+static int test_cac_force_window_refuses_permanent(void)
+{
+    int failures = 0;
+    TEST_CASE("force window: PERMANENT blocker is NEVER bypassed")
+    {
+        struct cac_plan_input in = base_input();
+        struct cac_decision out;
+        init_source(&in, CAC_SOURCE_ZCLASSICD_MIRROR, true, true, 130);
+        in.sources[CAC_SOURCE_ZCLASSICD_MIRROR].authorized = true;
+        in.sources[CAC_SOURCE_ZCLASSICD_MIRROR].blocked = true;
+        in.sources[CAC_SOURCE_ZCLASSICD_MIRROR].blocked_class =
+            BLOCKER_PERMANENT;
+        snprintf(in.sources[CAC_SOURCE_ZCLASSICD_MIRROR].blocker,
+                 sizeof(in.sources[CAC_SOURCE_ZCLASSICD_MIRROR].blocker),
+                 "hash-disagreement");
+
+        chain_advance_coordinator_force_mirror_promotion(
+            "test: hash divergence + force-window simulation");
+
+        chain_advance_coordinator_plan(&in, &out);
+
+        /* Mirror is force-eligible by source, force window active, but
+         * blocker class is PERMANENT → bypass refused. Decision must
+         * NOT select the mirror. */
+        ASSERT(out.selected_source != CAC_SOURCE_ZCLASSICD_MIRROR);
+        ASSERT(out.sources[CAC_SOURCE_ZCLASSICD_MIRROR].score <= -900);
+    } TEST_END
+    return failures;
+}
+
+static int test_cac_force_window_allows_transient(void)
+{
+    int failures = 0;
+    TEST_CASE("force window: TRANSIENT blocker IS bypassed for mirror")
+    {
+        struct cac_plan_input in = base_input();
+        struct cac_decision out;
+        init_source(&in, CAC_SOURCE_ZCLASSICD_MIRROR, true, true, 130);
+        in.sources[CAC_SOURCE_ZCLASSICD_MIRROR].authorized = true;
+        in.sources[CAC_SOURCE_ZCLASSICD_MIRROR].blocked = true;
+        in.sources[CAC_SOURCE_ZCLASSICD_MIRROR].blocked_class =
+            BLOCKER_TRANSIENT;
+        snprintf(in.sources[CAC_SOURCE_ZCLASSICD_MIRROR].blocker,
+                 sizeof(in.sources[CAC_SOURCE_ZCLASSICD_MIRROR].blocker),
+                 "rpc-unreachable");
+
+        chain_advance_coordinator_force_mirror_promotion(
+            "test: transient network blocker + force-window");
+
+        chain_advance_coordinator_plan(&in, &out);
+
+        /* Mirror's transient blocker is bypassed inside the force
+         * window → mirror gets a positive score. */
+        ASSERT(out.sources[CAC_SOURCE_ZCLASSICD_MIRROR].score > -900);
+    } TEST_END
+    return failures;
+}
+
 static int test_cac_avoids_stale_dead_p2p(void)
 {
     int failures = 0;
@@ -1767,6 +1834,8 @@ int test_chain_advance_coordinator(void)
     failures += test_cac_peer_floor_helper_classifies_recovery();
     failures += test_cac_peer_floor_helper_accepts_healthy_p2p();
     failures += test_cac_blocks_unsafe_mirror();
+    failures += test_cac_force_window_refuses_permanent();
+    failures += test_cac_force_window_allows_transient();
     failures += test_cac_avoids_stale_dead_p2p();
     failures += test_cac_snapshot_can_outrank_mirror();
     failures += test_cac_fresh_snapshot_outranks_stale_p2p();

@@ -136,6 +136,49 @@ static void copy_text(char *dst, size_t dst_len, const char *src)
     snprintf(dst, dst_len, "%s", src);
 }
 
+/* Round 6 C3 — classify legacy_mirror_sync_service blocker strings into
+ * the typed enum used by the force-window bypass at score_source().
+ *
+ * The string codes come from lms_set_blocker() in
+ * legacy_mirror_sync_service.c. They're stable identifiers, not free
+ * text — this table is the canonical mapping. Any unknown code is
+ * conservatively TRANSIENT (recoverable by default; force-window may
+ * bypass) so an un-mapped new code doesn't accidentally become a hard
+ * gate. Reverse risk — accidentally classifying a real consensus
+ * divergence as TRANSIENT — is bounded: hash-disagreement and
+ * body-hash-mismatch are the only PERMANENT entries and they are the
+ * existing codes that signal consensus divergence today; any future
+ * consensus-divergence code MUST be added here.
+ *
+ * Update sites: when lms_set_blocker() gains a new code, add it here. */
+static enum blocker_class classify_mirror_blocker_class(const char *code)
+{
+    if (!code || code[0] == '\0')
+        return BLOCKER_TRANSIENT;
+
+    /* Consensus divergence — the mirror disagrees with us on a hash.
+     * Bypassing this in force-window means activating a chain we know
+     * disagrees with native consensus; never allowed. */
+    if (strcmp(code, "hash-disagreement") == 0 ||
+        strcmp(code, "body-hash-mismatch") == 0)
+        return BLOCKER_PERMANENT;
+
+    /* Resource contention — DB writer busy or similar. RESOURCE class
+     * signals "operator action may be needed" but the force window
+     * may still bypass briefly if higher policy decides the cost is
+     * acceptable. */
+    if (strcmp(code, "db-writer-busy") == 0)
+        return BLOCKER_RESOURCE;
+
+    /* Waiting on a downstream subsystem (activation controller). */
+    if (strcmp(code, "activation-failed") == 0)
+        return BLOCKER_DEPENDENCY;
+
+    /* Default: network/timeout/no-progress class — transient by
+     * construction; retry under the force window is the desired path. */
+    return BLOCKER_TRANSIENT;
+}
+
 static bool persist_text(struct node_db *ndb, const char *key, const char *val)
 {
     if (!ndb || !key || !val)
@@ -210,6 +253,8 @@ static void persist_source_snapshot(struct node_db *ndb,
     persist_source_int(ndb, source, "healthy", s->healthy ? 1 : 0);
     persist_source_int(ndb, source, "available", s->available ? 1 : 0);
     persist_source_int(ndb, source, "blocked", s->blocked ? 1 : 0);
+    persist_source_int(ndb, source, "blocked_class",
+                       (int64_t)s->blocked_class);
     persist_source_int(ndb, source, "authorized", s->authorized ? 1 : 0);
     persist_source_int(ndb, source, "selectable", s->selectable ? 1 : 0);
     persist_source_int(ndb, source, "failures", s->failures);
@@ -298,6 +343,10 @@ static void restore_source_snapshot(struct node_db *ndb,
     restore_source_int(ndb, source, "healthy", &v); s->healthy = v != 0;
     restore_source_int(ndb, source, "available", &v); s->available = v != 0;
     restore_source_int(ndb, source, "blocked", &v); s->blocked = v != 0;
+    restore_source_int(ndb, source, "blocked_class", &v);
+    s->blocked_class = (v >= 0 && v <= BLOCKER_RESOURCE)
+                            ? (enum blocker_class)v
+                            : BLOCKER_TRANSIENT;
     restore_source_int(ndb, source, "authorized", &v);
     s->authorized = v != 0;
     restore_source_int(ndb, source, "selectable", &v);
@@ -728,11 +777,18 @@ static void score_source(const struct cac_plan_input *in,
         return;
     }
     if (s->blocked) {
-        /* Round 5 C4: during the force-promotion window, ignore the
-         * blocked flag for the mirror source specifically so the score
-         * loop can still pick it. Other sources stay blocked. */
-        if (!(s->source == CAC_SOURCE_ZCLASSICD_MIRROR &&
-              force_mirror_active_now())) {
+        /* Round 5 C4 + Round 6 C3: during the force-promotion window,
+         * ignore the `blocked` flag for the mirror source specifically
+         * so the score loop can still pick it. Other sources stay
+         * blocked. PERMANENT blockers (e.g. mirror hash-disagreement)
+         * are NEVER bypassed regardless of window state — activating a
+         * chain a typed-PERMANENT blocker covers means activating a
+         * known-divergent chain. */
+        bool mirror_force_eligible =
+            s->source == CAC_SOURCE_ZCLASSICD_MIRROR &&
+            force_mirror_active_now() &&
+            s->blocked_class != BLOCKER_PERMANENT;
+        if (!mirror_force_eligible) {
             s->score = -900;
             return;
         }
@@ -1286,6 +1342,9 @@ static void build_runtime_input(struct cac_plan_input *in)
         copy_text(mir->blocker, sizeof(mir->blocker),
                   msnap.activation_blocker[0] ? msnap.activation_blocker
                                                : msnap.last_blocker_code);
+        mir->blocked_class = classify_mirror_blocker_class(mir->blocker);
+    } else {
+        mir->blocked_class = BLOCKER_TRANSIENT;
     }
     snprintf(mir->reason, sizeof(mir->reason),
              "state=%s lag=%d local_retries_exhausted=%s",
@@ -1394,6 +1453,8 @@ static void source_to_json(const struct cac_source_status *s,
     json_push_kv_bool(out, "available", s->available);
     json_push_kv_bool(out, "healthy", s->healthy);
     json_push_kv_bool(out, "blocked", s->blocked);
+    json_push_kv_str(out, "blocked_class",
+                     blocker_class_name(s->blocked_class));
     json_push_kv_bool(out, "authorized", s->authorized);
     json_push_kv_bool(out, "selectable", s->selectable);
     json_push_kv_str(out, "selection_blocker", s->selection_blocker);

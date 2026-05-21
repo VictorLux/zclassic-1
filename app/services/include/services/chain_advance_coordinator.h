@@ -12,6 +12,7 @@
 #define ZCL_SERVICES_CHAIN_ADVANCE_COORDINATOR_H
 
 #include "json/json.h"
+#include "util/blocker.h"
 #include <stdbool.h>
 #include <stdint.h>
 
@@ -41,6 +42,15 @@ struct cac_source_status {
     bool available;
     bool healthy;
     bool blocked;
+    /* Round 6 C3 — typed classification of `blocked` for the
+     * force-window bypass at score_source(). The force window (Round 5
+     * C4, see chain_advance_coordinator.c:74) may bypass `blocked` ONLY
+     * for TRANSIENT/DEPENDENCY/RESOURCE classes; PERMANENT blockers
+     * (e.g. mirror hash-disagreement, body-hash-mismatch) are never
+     * bypassed regardless of window state. Default is BLOCKER_TRANSIENT
+     * so today's behavior is preserved for sources that haven't been
+     * classified yet — the typed knob is opt-in per source. */
+    enum blocker_class blocked_class;
     bool authorized;
     bool selectable;
     int height;
