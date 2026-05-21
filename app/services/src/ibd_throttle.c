@@ -25,6 +25,7 @@
 #include "services/ibd_throttle.h"
 
 #include "event/event.h"
+#include "json/json.h"
 
 #include <errno.h>
 #include <inttypes.h>
@@ -301,4 +302,23 @@ void ibd_throttle_status_snapshot(struct ibd_throttle_status *out)
     out->blocked_count    = g_it.blocked_count;
     out->total_wait_us    = g_it.total_wait_us;
     pthread_mutex_unlock(&g_it.lock);
+}
+
+/* See CLAUDE.md "Adding state introspection". Reentrant-safe — uses
+ * the existing snapshot helper which already takes the throttle lock. */
+bool ibd_throttle_dump_state_json(struct json_value *out, const char *key)
+{
+    (void)key;
+    if (!out) return false;
+    struct ibd_throttle_status s = {0};
+    ibd_throttle_status_snapshot(&s);
+    json_set_object(out);
+    json_push_kv_bool(out, "running", s.running);
+    json_push_kv_int(out, "blocks_per_sec", s.blocks_per_sec);
+    json_push_kv_int(out, "burst", s.burst);
+    json_push_kv_real(out, "tokens_available", s.tokens_available);
+    json_push_kv_int(out, "acquired_count", (int64_t)s.acquired_count);
+    json_push_kv_int(out, "blocked_count", (int64_t)s.blocked_count);
+    json_push_kv_int(out, "total_wait_us", s.total_wait_us);
+    return true;
 }

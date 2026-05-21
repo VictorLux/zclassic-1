@@ -22,6 +22,7 @@
 
 #include "chain/chain.h"
 #include "event/event.h"
+#include "json/json.h"
 #include "storage/disk_block_io.h"
 #include "util/log_macros.h"
 #include "util/safe_alloc.h"
@@ -374,4 +375,29 @@ void block_pruning_get_status(const struct block_pruning_service *svc,
     out->keep_blocks     = svc->keep_blocks;
     if (svc->ms)
         out->chain_height = active_chain_height(&svc->ms->chain_active);
+}
+
+/* See CLAUDE.md "Adding state introspection". Reads g_block_pruning
+ * which is set by boot once init has run; returns a `running:false`
+ * stub otherwise. Reentrant-safe via the atomic snapshot helper. */
+bool block_pruning_dump_state_json(struct json_value *out, const char *key)
+{
+    (void)key;
+    if (!out) return false;
+    json_set_object(out);
+    if (!g_block_pruning) {
+        json_push_kv_bool(out, "running", false);
+        return true;
+    }
+    struct block_pruning_status s = {0};
+    block_pruning_get_status(g_block_pruning, &s);
+    json_push_kv_bool(out, "running", g_block_pruning->thread_started);
+    json_push_kv_int(out, "state", s.state);
+    json_push_kv_int(out, "files_pruned", s.files_pruned);
+    json_push_kv_int(out, "blocks_pruned", s.blocks_pruned);
+    json_push_kv_int(out, "bytes_reclaimed", s.bytes_reclaimed);
+    json_push_kv_int(out, "lowest_have_data", s.lowest_have_data);
+    json_push_kv_int(out, "keep_blocks", s.keep_blocks);
+    json_push_kv_int(out, "chain_height", s.chain_height);
+    return true;
 }

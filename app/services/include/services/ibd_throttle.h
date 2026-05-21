@@ -93,6 +93,11 @@ struct ibd_throttle_status {
 
 void ibd_throttle_status_snapshot(struct ibd_throttle_status *out);
 
+/* See CLAUDE.md "Adding state introspection". Reentrant-safe.
+ * Wired into the `zcl_state subsystem=ibd_throttle` MCP tool. */
+struct json_value;
+bool ibd_throttle_dump_state_json(struct json_value *out, const char *key);
+
 /* ── Lifecycle ──────────────────────────────────────────────── */
 
 /* Start the throttle with the given config. `cfg` may be NULL,

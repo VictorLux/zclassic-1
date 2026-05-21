@@ -23,6 +23,7 @@
 #include "services/mempool_limits.h"
 #include "validation/txmempool.h"
 #include "event/event.h"
+#include "json/json.h"
 
 #include <errno.h>
 #include <inttypes.h>
@@ -321,6 +322,27 @@ void mempool_limits_reset_stats(void)
     g_ml.last_enforce_unix = 0;
     g_ml.last_expire_unix = 0;
     pthread_mutex_unlock(&g_ml.lock);
+}
+
+/* See CLAUDE.md "Adding state introspection". Reentrant-safe — defers
+ * to the existing snapshot helper which takes the service lock. */
+bool mempool_limits_dump_state_json(struct json_value *out, const char *key)
+{
+    (void)key;
+    if (!out) return false;
+    struct mempool_limits_stats s = {0};
+    mempool_limits_stats_snapshot(&s);
+    json_set_object(out);
+    json_push_kv_bool(out, "running", s.running);
+    json_push_kv_int(out, "enforce_calls", s.enforce_calls);
+    json_push_kv_int(out, "expire_calls", s.expire_calls);
+    json_push_kv_int(out, "evicted_total", s.evicted_total);
+    json_push_kv_int(out, "expired_total", s.expired_total);
+    json_push_kv_int(out, "last_enforce_evicted", s.last_enforce_evicted);
+    json_push_kv_int(out, "last_expire_expired", s.last_expire_expired);
+    json_push_kv_int(out, "last_enforce_unix", s.last_enforce_unix);
+    json_push_kv_int(out, "last_expire_unix", s.last_expire_unix);
+    return true;
 }
 
 /* ── Post-add hook (registered with txmempool) ──────────────── */

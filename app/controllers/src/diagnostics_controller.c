@@ -45,7 +45,10 @@
 #include "services/quorum_oracle_service.h"
 #include "services/rolling_anchor_service.h"
 #include "services/block_index_integrity.h"
+#include "services/block_pruning_service.h"
 #include "services/chain_evidence_controller.h"
+#include "services/ibd_throttle.h"
+#include "services/mempool_limits.h"
 #include "health/heartbeat.h"
 #include "models/database.h"
 #include "config/runtime.h"
@@ -405,6 +408,12 @@ static const struct dump_entry g_dumpers[] = {
                      "canonical chain-advance source scoring: P2P, snapshot, local import, mirror fallback" },
     { "long_op",     long_op_dump_state_json,
                      "active long-operation scopes (>600s code paths) that gate STATE_STUCK watchdog suppression" },
+    { "ibd_throttle", ibd_throttle_dump_state_json,
+                     "IBD throttle: token-bucket state, acquired/blocked counts, total wait time" },
+    { "mempool_limits", mempool_limits_dump_state_json,
+                     "mempool limits: enforce/expire call counts, evicted/expired totals, last-run summary" },
+    { "block_pruning", block_pruning_dump_state_json,
+                     "block pruning service: files/blocks pruned, bytes reclaimed, lowest height with data" },
 };
 
 int diagnostics_subsystems_csv(char *out, size_t out_sz)

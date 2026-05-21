@@ -129,4 +129,9 @@ int block_pruning_run_once(struct block_pruning_service *svc);
 void block_pruning_get_status(const struct block_pruning_service *svc,
                               struct block_pruning_status *out);
 
+/* See CLAUDE.md "Adding state introspection". Reentrant-safe.
+ * Wired into the `zcl_state subsystem=block_pruning` MCP tool. */
+struct json_value;
+bool block_pruning_dump_state_json(struct json_value *out, const char *key);
+
 #endif /* ZCL_SERVICES_BLOCK_PRUNING_SERVICE_H */
