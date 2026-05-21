@@ -259,12 +259,17 @@ static bool rpc_getservicehealth(const struct json_value *params, bool help,
 
     /* Game platform */
     {
+        int64_t game_count = (int64_t)game_type_count();
         struct json_value svc = {0};
         json_set_object(&svc);
         json_push_kv_str(&svc, "name", "game_platform");
-        json_push_kv_str(&svc, "state", "running");
-        json_push_kv_int(&svc, "registered_types",
-            (int64_t)game_type_count());
+        /* State is "running" only when at least one game type is
+         * registered. Empty registry → "idle", mirroring the
+         * conditional pattern used by p2p above. Previously this was
+         * hardcoded "running" regardless of registry state. */
+        json_push_kv_str(&svc, "state",
+                         game_count > 0 ? "running" : "idle");
+        json_push_kv_int(&svc, "registered_types", game_count);
         json_push_back(result, &svc);
         json_free(&svc);
     }

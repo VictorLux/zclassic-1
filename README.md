@@ -172,6 +172,23 @@ make zcl-nodectl
 ./zcl-nodectl verify-follow --restart
 ```
 
+## Environment variables
+
+A handful of env vars override default behavior. The most commonly
+useful for clients/tools:
+
+| Variable | Used by | Effect |
+|---|---|---|
+| `ZCL_RPCPORT` | `zcl-rpc`, `zclassic-cli` | Override the RPC port to dial (default `18232`; legacy zclassicd uses `8232`). Unparseable values fall back to the default. |
+| `ZCL_DATADIR` | `zcl-rpc` | Override the data directory used to locate the `.cookie` file. Default `$HOME/.zclassic-c23`. |
+| `ZCL_OFFLINE_REPAIR` | `zclassic23` | Allow `node_db_wipe_utxos()` to drop more than 1,000 rows. Off-line use only. |
+| `ZCL_PRUNE_KEEP_BLOCKS` | `zclassic23` | Block-pruning retention depth (default 1000, min 288). |
+| `ZCL_RPC_COOKIE_ROTATE_SEC` | `zclassic23` | Cookie rotation interval in seconds (default 86400 = 24h). |
+
+Many other `ZCL_*` env vars exist for niche tuning (see source for the
+full set). The ones above are the ones most commonly reached for from
+outside the node process.
+
 ## Deployment
 
 ```bash

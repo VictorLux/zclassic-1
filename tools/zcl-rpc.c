@@ -134,9 +134,16 @@ int main(int argc, char *argv[])
         }
     }
 
+    /* Override the default RPC port via env. Matches the documentation
+     * in README.md (Environment variables section). atoi() returns 0
+     * for unparseable values; we keep the literal default in that
+     * case rather than connecting to port 0. */
     int port = 18232;
     const char *port_env = getenv("ZCL_RPCPORT");
-    if (port_env) port = atoi(port_env);
+    if (port_env) {
+        int parsed = atoi(port_env);
+        if (parsed > 0 && parsed <= 65535) port = parsed;
+    }
 
     char response[1024 * 1024];
     int n = rpc_call("127.0.0.1", port, cookie, argv[1], params,
