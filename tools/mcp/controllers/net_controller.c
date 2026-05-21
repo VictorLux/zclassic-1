@@ -206,8 +206,18 @@ static const struct mcp_tool_route k_routes[] = {
       h_zcl_onion_health },
 };
 
+/* Tools that touch the network — skipped by zcl_self_test. */
+static const char *const k_net_destructive[] = {
+    "zcl_addnode",
+    "zcl_pingpeer",               /* fires a P2P message */
+};
+
 void mcp_register_net(void)
 {
     for (size_t i = 0; i < sizeof(k_routes) / sizeof(k_routes[0]); i++)
         mcp_router_register(&k_routes[i]);
+    for (size_t i = 0;
+         i < sizeof(k_net_destructive)/sizeof(k_net_destructive[0]); i++)
+        mcp_router_set_flags(k_net_destructive[i],
+                             MCP_TOOL_FLAG_DESTRUCTIVE);
 }

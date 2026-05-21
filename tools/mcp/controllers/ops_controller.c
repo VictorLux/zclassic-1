@@ -1102,8 +1102,32 @@ static const struct mcp_tool_route k_routes[] = {
       h_zcl_replay_exec },
 };
 
+/* Tools that mutate state or are otherwise unsafe to call via self_test. */
+static const char *const k_ops_destructive[] = {
+    "zcl_rpc",                    /* arbitrary RPC — skip by default */
+};
+
+/* Canonical self_test args for tools that need a required param but
+ * have a known-safe probe value. */
+static const struct {
+    const char *tool;
+    const char *args_json;
+} k_ops_self_test_args[] = {
+    /* zcl_profile sleeps duration_ms per call — clamp to 100ms so
+     * the full self_test sweep doesn't balloon by a second. */
+    { "zcl_profile", "{\"duration_ms\":100,\"top_n\":3}" },
+};
+
 void mcp_register_ops(void)
 {
     for (size_t i = 0; i < sizeof(k_routes) / sizeof(k_routes[0]); i++)
         mcp_router_register(&k_routes[i]);
+    for (size_t i = 0;
+         i < sizeof(k_ops_destructive)/sizeof(k_ops_destructive[0]); i++)
+        mcp_router_set_flags(k_ops_destructive[i],
+                             MCP_TOOL_FLAG_DESTRUCTIVE);
+    for (size_t i = 0;
+         i < sizeof(k_ops_self_test_args)/sizeof(k_ops_self_test_args[0]); i++)
+        mcp_router_set_self_test_args(k_ops_self_test_args[i].tool,
+                                       k_ops_self_test_args[i].args_json);
 }

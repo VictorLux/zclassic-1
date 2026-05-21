@@ -421,8 +421,37 @@ static const struct mcp_tool_route k_routes[] = {
       h_zcl_swap_list },
 };
 
+/* Tools that write state on this node — skipped by zcl_self_test. */
+static const char *const k_app_destructive[] = {
+    "zcl_name_register",
+    "zcl_msg_send",
+    "zcl_msg_send_named",
+    "zcl_msg_read",               /* mutates read-state */
+    "zcl_market_offer",
+    "zcl_market_buy",
+    "zcl_swap_initiate",
+    "zcl_swap_participate",
+};
+
+/* Canonical self_test args. zcl_name_resolve takes a name — pick a
+ * sentinel that's safe to probe (returns "not found" on every node). */
+static const struct {
+    const char *tool;
+    const char *args_json;
+} k_app_self_test_args[] = {
+    { "zcl_name_resolve", "{\"name\":\"__self_test_probe__\"}" },
+};
+
 void mcp_register_app(void)
 {
     for (size_t i = 0; i < sizeof(k_routes) / sizeof(k_routes[0]); i++)
         mcp_router_register(&k_routes[i]);
+    for (size_t i = 0;
+         i < sizeof(k_app_destructive)/sizeof(k_app_destructive[0]); i++)
+        mcp_router_set_flags(k_app_destructive[i],
+                             MCP_TOOL_FLAG_DESTRUCTIVE);
+    for (size_t i = 0;
+         i < sizeof(k_app_self_test_args)/sizeof(k_app_self_test_args[0]); i++)
+        mcp_router_set_self_test_args(k_app_self_test_args[i].tool,
+                                       k_app_self_test_args[i].args_json);
 }

@@ -560,8 +560,24 @@ static const struct mcp_tool_route k_routes[] = {
       h_zcl_replaywalletfromchain },
 };
 
+/* Tools that write state — skipped by zcl_self_test, rate-gated by the
+ * destructive-tool middleware. Kept here next to the route table so a new
+ * destructive wallet tool isn't accidentally missed when added. */
+static const char *const k_wallet_destructive[] = {
+    "zcl_send",
+    "zcl_sendtoaddress",
+    "zcl_importprivkey",
+    "zcl_rescanblockchain",
+    "zcl_replaywalletfromchain",
+    "zcl_dumpprivkey",            /* exposes secrets */
+};
+
 void mcp_register_wallet(void)
 {
     for (size_t i = 0; i < sizeof(k_routes) / sizeof(k_routes[0]); i++)
         mcp_router_register(&k_routes[i]);
+    for (size_t i = 0;
+         i < sizeof(k_wallet_destructive)/sizeof(k_wallet_destructive[0]); i++)
+        mcp_router_set_flags(k_wallet_destructive[i],
+                             MCP_TOOL_FLAG_DESTRUCTIVE);
 }

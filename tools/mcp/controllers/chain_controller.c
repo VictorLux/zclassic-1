@@ -194,8 +194,22 @@ static const struct mcp_tool_route k_routes[] = {
       NULL, 0, h_zcl_hodlwave },
 };
 
+/* Canonical self_test args. zcl_getblock requires a height — pick "1"
+ * because it exists on every synced node. */
+static const struct {
+    const char *tool;
+    const char *args_json;
+} k_chain_self_test_args[] = {
+    { "zcl_getblock", "{\"block_id\":\"1\"}" },
+};
+
 void mcp_register_chain(void)
 {
     for (size_t i = 0; i < sizeof(k_routes) / sizeof(k_routes[0]); i++)
         mcp_router_register(&k_routes[i]);
+    for (size_t i = 0;
+         i < sizeof(k_chain_self_test_args)/sizeof(k_chain_self_test_args[0]);
+         i++)
+        mcp_router_set_self_test_args(k_chain_self_test_args[i].tool,
+                                       k_chain_self_test_args[i].args_json);
 }

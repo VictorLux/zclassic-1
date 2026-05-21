@@ -30,75 +30,11 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* ── Destructive tool list ───────────────────────────────────── */
-/* self_test skips these because they modify state on the node, the
- * network, or the wallet.  Keep this list in sync with any new routes
- * that write externally.  (A future version could add a `flags` field
- * on mcp_tool_route — for now a central list is simpler.) */
-static const char *const k_destructive[] = {
-    /* wallet */
-    "zcl_send",
-    "zcl_sendtoaddress",
-    "zcl_importprivkey",
-    "zcl_rescanblockchain",
-    "zcl_replaywalletfromchain",
-    "zcl_dumpprivkey",           /* exposes secrets — treat as destructive */
-    /* net */
-    "zcl_addnode",
-    "zcl_pingpeer",              /* fires a P2P message */
-    /* app (state-modifying) */
-    "zcl_name_register",
-    "zcl_msg_send",
-    "zcl_msg_send_named",
-    "zcl_msg_read",              /* mutates read-state */
-    "zcl_market_offer",
-    "zcl_market_buy",
-    "zcl_swap_initiate",
-    "zcl_swap_participate",
-    /* meta-tools */
-    "zcl_self_test",             /* avoid recursion */
-    "zcl_rpc",                   /* arbitrary RPC — skip by default */
-    "zcl_metrics_reset",         /* resets metric counters — treat as destructive */
-    "zcl_config_reload",         /* re-applies env vars to live subsystems */
-};
-
-static bool is_destructive(const char *name)
-{
-    for (size_t i = 0; i < sizeof(k_destructive)/sizeof(k_destructive[0]); i++)
-        if (strcmp(k_destructive[i], name) == 0)
-            return true;
-    return false;
-}
-
-/* ── Self-test argument overrides ─────────────────────────────── */
-/* Some tools have a required param the router has no default for, but
- * a well-known, safe value still exercises the code path.  self_test
- * looks up this table before skipping.  The overrides are strings so
- * they survive router validation (values are re-parsed per call). */
-static const struct {
-    const char *tool;
-    const char *args_json;
-} k_self_test_overrides[] = {
-    /* Block 1 exists on every synced node; verbosity defaults to JSON. */
-    { "zcl_getblock",    "{\"block_id\":\"1\"}" },
-    /* Safe: returns a "not found" body for an unregistered name. */
-    { "zcl_name_resolve", "{\"name\":\"__self_test_probe__\"}" },
-    /* zcl_profile sleeps duration_ms per call — clamp to 100ms in
-     * self_test so the whole sweep doesn't balloon by a second on
-     * every run. */
-    { "zcl_profile",     "{\"duration_ms\":100,\"top_n\":3}" },
-};
-
-static const char *self_test_override_args(const char *tool)
-{
-    for (size_t i = 0;
-         i < sizeof(k_self_test_overrides)/sizeof(k_self_test_overrides[0]);
-         i++) {
-        if (strcmp(k_self_test_overrides[i].tool, tool) == 0)
-            return k_self_test_overrides[i].args_json;
-    }
-    return NULL;
-}
+/* Destructive flags and self_test argument overrides used to live as
+ * ad-hoc tables in this file. They now live on the route itself —
+ * each controller flags its own tools via mcp_router_set_flags /
+ * mcp_router_set_self_test_args during mcp_register_*(). See
+ * tools/mcp/controllers/{wallet,net,app,ops,chain,meta}_controller.c. */
 
 /* True if any required param has no default value we can synthesize. */
 static bool has_unfillable_required(const struct mcp_tool_route *r)
@@ -161,13 +97,13 @@ static int h_zcl_self_test(const struct mcp_request *req,
         const char *status;
         const char *reason = NULL;
 
-        const char *override = self_test_override_args(r->name);
+        const char *override = mcp_router_get_self_test_args(r);
         struct json_value override_val = {0};
         bool have_override = false;
         if (override && json_read(&override_val, override, strlen(override)))
             have_override = true;
 
-        if (is_destructive(r->name)) {
+        if (mcp_router_get_flags(r) & MCP_TOOL_FLAG_DESTRUCTIVE) {
             status = "skipped";
             reason = "destructive";
             skipped++;
@@ -861,8 +797,19 @@ static const struct mcp_tool_route k_routes[] = {
       p_admin, sizeof(p_admin) / sizeof(p_admin[0]), h_zcl_admin },
 };
 
+/* Meta tools that mutate state or would recurse — skipped by self_test. */
+static const char *const k_meta_destructive[] = {
+    "zcl_self_test",              /* avoid recursion */
+    "zcl_metrics_reset",          /* resets metric counters */
+    "zcl_config_reload",          /* re-applies env vars to live subsystems */
+};
+
 void mcp_register_meta(void)
 {
     for (size_t i = 0; i < sizeof(k_routes) / sizeof(k_routes[0]); i++)
         mcp_router_register(&k_routes[i]);
+    for (size_t i = 0;
+         i < sizeof(k_meta_destructive)/sizeof(k_meta_destructive[0]); i++)
+        mcp_router_set_flags(k_meta_destructive[i],
+                             MCP_TOOL_FLAG_DESTRUCTIVE);
 }
