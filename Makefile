@@ -39,8 +39,10 @@ APPLICATION_SRCS = $(foreach c,$(APPLICATION_CONTEXTS),$(wildcard application/$(
 # Adapters layer (port implementations).
 # Inbound (RPC/MCP/CLI) translates wire to typed commands; outbound
 # (persistence, network) implements the port interfaces.
-ADAPTERS_INCLUDES = -Iadapters/outbound/persistence/include
-ADAPTERS_SRCS = $(wildcard adapters/outbound/persistence/src/*.c)
+ADAPTERS_INCLUDES = -Iadapters/outbound/persistence/include \
+	-Iadapters/inbound/include
+ADAPTERS_SRCS = $(wildcard adapters/outbound/persistence/src/*.c) \
+	$(wildcard adapters/inbound/src/*.c)
 
 # Mutator layer (single-thread loop + bounded input queue).
 # The runtime spine — every state change flows through it.
