@@ -37,7 +37,6 @@
 #include "services/sync_watchdog_service.h"
 #include "services/chain_restore_service.h"
 #include "services/chain_advance_coordinator.h"
-#include "services/local_chain_ingest.h"
 #include "services/zclassicd_oracle_service.h"
 #include "services/header_probe_service.h"
 #include "services/legacy_mirror_sync_service.h"
@@ -399,8 +398,6 @@ static const struct dump_entry g_dumpers[] = {
                      "unified heartbeat ring: registered subsystems, ages, stall fires" },
     { "oracle",      zclassicd_oracle_dump_state_json,
                      "zclassicd oracle: drift-probe stats + RPC config" },
-    { "local_ingest", local_chain_ingest_dump_state_json,
-                     "local chain ingest: phase/result/blocks/UTXOs from co-located zclassicd" },
     { "header_probe", header_probe_dump_state_json,
                      "header probe: bulk header pull from co-located zclassicd via JSON-RPC" },
     { "legacy_mirror", legacy_mirror_sync_dump_state_json,

@@ -413,7 +413,6 @@ int main(void)
     failures += test_chain_advance_coordinator();
     { extern int test_chain_advance_atomicity(void);
       failures += test_chain_advance_atomicity(); }
-    failures += test_local_chain_ingest();
     failures += test_snapshot_sync_service();
     failures += test_file_controller();
     failures += test_file_ops();

@@ -26,8 +26,6 @@
  */
 
 #include "services/bg_validation_service.h"
-#include "services/local_chain_ingest.h"
-#include "services/rolling_anchor_service.h"
 #include "validation/main_state.h"
 #include "validation/chainstate.h"
 #include "validation/check_block.h"
@@ -561,29 +559,6 @@ static void *bg_validation_thread(void *arg)
     int64_t total_sigs = 0;
     int64_t total_proofs = 0;
 
-    /* T3.3: precompute evidence-prefix bounds. Inside the prefix, the
-     * compile-time SHA3 windows bind the block bytes (which include
-     * the Equihash solution + Merkle root + every tx). A bit-flip
-     * anywhere in those heights would have failed phase 1's window
-     * check, so re-running Equihash + sig + Sapling here is pure
-     * redundant work. We still do everything for heights past the
-     * prefix. */
-    const bool prefix_verified =
-        local_chain_ingest_evidence_prefix_verified();
-    /* The effective prefix end is the union of compile-time + runtime
-     * (T3.1) windows. Falls back to the compile-time end when no
-     * runtime anchors are loaded. */
-    int prefix_end_h = rolling_anchor_effective_prefix_end_height();
-    if (prefix_end_h < 0)
-        prefix_end_h = local_chain_ingest_evidence_prefix_end_height();
-    if (prefix_verified && prefix_end_h > 0) {
-        fprintf(stderr,  // obs-ok:bg-validation-diagnostic
-                "[bg-valid] T3.3: evidence prefix verified up to h=%d — "
-                "skipping crypto reverify for those heights\n",
-                prefix_end_h);
-    }
-    int64_t skipped_by_evidence_prefix = 0;
-
     for (int h = start_height; h <= chain_height; h++) {
         if (atomic_load(&svc->stop_requested))
             break;
@@ -607,16 +582,6 @@ static void *bg_validation_thread(void *arg)
             continue;
         }
 
-        /* T3.3: heights inside the verified evidence prefix don't need
-         * proof reverification. Still update progress so the operator
-         * can see we're walking the prefix. */
-        if (prefix_verified && h <= prefix_end_h) {
-            skipped_by_evidence_prefix++;
-            atomic_store(&svc->progress.verified_height, h);
-            if (h % SAVE_INTERVAL == 0)
-                save_progress(svc->ndb, h);
-            continue;
-        }
         struct block blk;
         block_init(&blk);
         if (!read_block_from_disk_index_pread(&blk, pindex, datadir)) {
@@ -690,11 +655,10 @@ static void *bg_validation_thread(void *arg)
 
         int64_t total_time = (int64_t)time(NULL) - t_start;
         printf("[bg-valid] COMPLETE: %d blocks, %lld sigs, %lld proofs "
-               "in %lldm%llds (evidence-prefix-skipped=%lld)\n",
+               "in %lldm%llds\n",
                chain_height - start_height + 1,
                (long long)total_sigs, (long long)total_proofs,
-               (long long)(total_time / 60), (long long)(total_time % 60),
-               (long long)skipped_by_evidence_prefix);
+               (long long)(total_time / 60), (long long)(total_time % 60));
         event_emitf(EV_SYNC_STATE_CHANGE, 0,
                     "bg_validation complete height=%d sigs=%lld proofs=%lld "
                     "time=%llds",

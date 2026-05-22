@@ -14,7 +14,6 @@
 #include "services/chain_tip.h"
 #include "services/recovery_policy.h"
 #include "services/utxo_recovery_service.h"
-#include "services/local_chain_ingest.h"
 #include "services/legacy_body_pull.h"
 #include "services/legacy_cold_import.h"
 #include "services/legacy_direct_import.h"
@@ -859,6 +858,20 @@ static bool boot_step_init_crypto_and_state(struct app_context *ctx,
 }
 
 
+/* True iff <path>/blocks/blk00000.dat exists — quick presence check used
+ * by -fastimport / -cold-import before invoking the heavy import paths. */
+static bool boot_detect_legacy_datadir(const char *path)
+{
+    if (!path || !path[0]) return false;
+    char buf[1024];
+    int n = snprintf(buf, sizeof(buf), "%s/blocks/blk00000.dat", path);
+    if (n <= 0 || (size_t)n >= sizeof(buf)) return false;
+    struct stat st;
+    if (stat(buf, &st) != 0) return false;
+    return S_ISREG(st.st_mode);
+}
+
+
 /* Direct LevelDB+mmap fast-import from a sibling zclassicd.
  *
  * Bypasses JSON-RPC entirely — reads the legacy node's blocks/index/
@@ -878,7 +891,7 @@ static bool boot_step_fastimport(struct app_context *ctx,
            ctx->fastimport_from);
     fflush(stdout);
 
-    if (!local_chain_ingest_detect_legacy_datadir(ctx->fastimport_from)) {
+    if (!boot_detect_legacy_datadir(ctx->fastimport_from)) {
         fprintf(stderr,
             "fastimport: %s does not contain blocks/blk00000.dat — "
             "is this a zclassic datadir? Skipping.\n",
@@ -1712,7 +1725,7 @@ bool app_init(struct app_context *ctx)
      * index load (so the freshly-written LevelDB entries get picked
      * up). No-op when ctx->cold_import_from is NULL. */
     if (ctx->cold_import_from && g_block_tree_open && g_coins_sqlite.db) {
-        if (!local_chain_ingest_detect_legacy_datadir(ctx->cold_import_from)) {
+        if (!boot_detect_legacy_datadir(ctx->cold_import_from)) {
             fprintf(stderr,
                 "cold-import: %s does not look like a zclassic datadir; "
                 "skipping.\n", ctx->cold_import_from);
