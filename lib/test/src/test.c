@@ -505,6 +505,7 @@ int main(void)
     failures += test_rng();
     failures += test_stage();
     failures += test_mailbox();
+    failures += test_projection();
     failures += test_domain_consensus_verify();
     failures += test_application_consensus_validate_block();
     failures += test_block_log_file();
