@@ -15,6 +15,7 @@
 #include "services/recovery_policy.h"
 #include "services/utxo_recovery_service.h"
 #include "services/legacy_body_pull.h"
+#include "storage/progress_store.h"
 #include "services/legacy_cold_import.h"
 #include "services/legacy_direct_import.h"
 #include "services/header_probe_service.h"
@@ -1474,6 +1475,15 @@ bool app_init(struct app_context *ctx)
     }
     printf("[boot] %-30s %lldms\n", "sqlite_open_migrate",
            (long long)(boot_clock_ms() - t_phase));
+
+    /* Wave S, S-1: open the dedicated progress.kv SQLite file that will
+     * host every staged-sync stage's cursor. Independent of node.db so
+     * cursor commits stay off the hot path of larger transactions. */
+    if (!progress_store_open(ctx->datadir)) {
+        fprintf(stderr,
+            "Warning: progress_store unavailable; staged-sync stages will "
+            "not be able to persist cursors\n");
+    }
 
     /* Snapshot-first (Wave 11A): if a downloaded consensus_snapshot.db
      * is present in the datadir, import its UTXOs into node.db *before*

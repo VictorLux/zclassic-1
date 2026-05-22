@@ -25,6 +25,7 @@
 #include "net/connman.h"
 #include "config/boot_snapshot_import.h"
 #include "storage/disk_block_io.h"
+#include "storage/progress_store.h"
 #include "models/block.h"
 #include "models/utxo.h"
 #include "models/mmb_leaf_store.h"
@@ -2846,6 +2847,10 @@ static void shutdown_release_owned_resources(struct boot_svc_ctx *svc)
     tx_mempool_free(svc->mempool);
     main_state_free(svc->state);
     sapling_free_params();
+
+    /* Wave S, S-1: graceful checkpoint + close of progress.kv. No-op if
+     * never opened. */
+    progress_store_close();
 
     ecc_verify_destroy();
     ecc_stop();

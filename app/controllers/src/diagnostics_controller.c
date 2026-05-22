@@ -46,6 +46,7 @@
 #include "services/block_index_integrity.h"
 #include "services/block_pruning_service.h"
 #include "services/chain_evidence_controller.h"
+#include "storage/progress_store.h"
 #include "services/ibd_throttle.h"
 #include "services/mempool_limits.h"
 #include "health/heartbeat.h"
@@ -406,6 +407,8 @@ static const struct dump_entry g_dumpers[] = {
                      "oracle policy: disagreement state machine (NORMAL / HALTED / PANIC)" },
     { "rolling_anchor", rolling_anchor_dump_state_json,
                      "rolling SHA3 anchor extension: runtime windows past compile-time prefix" },
+    { "progress",    progress_store_dump_state_json,
+                     "Wave S progress.kv: open/path/stage_cursor row count" },
     { "quorum_oracle", quorum_oracle_dump_state_json,
                      "multi-source quorum oracle: per-source vote stats + last verdict" },
     { "peer_lifecycle", peer_lifecycle_dump_state_json,
