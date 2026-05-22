@@ -36,11 +36,13 @@ struct block_hash {
 /* Block log error codes. Returned via zcl_result.code when the
  * result is not OK. */
 enum block_log_err {
-    BLOCK_LOG_ERR_IO          = 1,  /* disk error, see errno via adapter logs */
-    BLOCK_LOG_ERR_CORRUPT     = 2,  /* checksum or framing mismatch on read */
-    BLOCK_LOG_ERR_NOT_FOUND   = 3,  /* lookup miss */
-    BLOCK_LOG_ERR_TOO_LARGE   = 4,  /* block bytes exceed configured max */
-    BLOCK_LOG_ERR_CLOSED      = 5,  /* port handle no longer valid */
+    BLOCK_LOG_ERR_IO            = 1,  /* disk error, see errno via adapter logs */
+    BLOCK_LOG_ERR_CORRUPT       = 2,  /* checksum or framing mismatch on read */
+    BLOCK_LOG_ERR_NOT_FOUND     = 3,  /* lookup miss */
+    BLOCK_LOG_ERR_TOO_LARGE     = 4,  /* block bytes exceed configured max */
+    BLOCK_LOG_ERR_CLOSED        = 5,  /* port handle no longer valid */
+    BLOCK_LOG_ERR_NOT_SUPPORTED = 6,  /* operation not supported by this adapter
+                                       * (e.g. append() on a read-only view). */
 };
 
 /* Iteration callback. Return true to continue, false to stop early.

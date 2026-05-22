@@ -323,6 +323,7 @@ int test_blocker(void);
 int test_domain_consensus_verify(void);
 int test_application_consensus_validate_block(void);
 int test_block_log_file(void);
+int test_block_log_legacy(void);
 int test_mutator(void);
 int test_shadow_feeder(void);
 int test_shadow_feeder_global(void);
