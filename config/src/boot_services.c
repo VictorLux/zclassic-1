@@ -13,6 +13,7 @@
 #include "services/hodl_history_service.h"
 #include "services/rolling_anchor_service.h"
 #include "services/zclassicd_oracle_service.h"
+#include "services/header_admit_stage.h"
 #include "services/header_probe_service.h"
 #include "services/legacy_mirror_sync_service.h"
 #include "services/node_health_service.h"
@@ -488,6 +489,69 @@ static void boot_coord_escalation_supervisor_register(struct boot_svc_ctx *svc)
     if (g_coord_esc_id == SUPERVISOR_INVALID_ID) {
         fprintf(stderr,  // obs-ok:coord-esc-supervisor-fallback-warn
             "[supervisor] WARN chain.coord_escalation register failed\n");
+    }
+}
+
+/* ── Wave S, S-2: header_admit shadow-stage supervisor child ──── */
+static struct liveness_contract g_header_admit_contract;
+static supervisor_child_id      g_header_admit_id = SUPERVISOR_INVALID_ID;
+static struct main_state       *g_header_admit_ms = NULL;
+
+static void header_admit_tick(struct liveness_contract *c)
+{
+    (void)c;
+    if (!g_header_admit_ms) return;
+    /* Drain a bounded batch each tick — keeps progress.kv churn low
+     * and avoids starving other supervisor children. */
+    (void)header_admit_stage_drain(HEADER_ADMIT_BATCH_PER_TICK);
+    supervisor_progress(g_header_admit_id,
+                        (int64_t)header_admit_stage_cursor());
+    supervisor_tick(g_header_admit_id);
+}
+
+static void header_admit_stall(struct liveness_contract *c)
+{
+    (void)c;
+    /* Shadow-mode: a stall here means the shadow log is falling behind
+     * the live chain, NOT that the live chain has stalled. Emit a
+     * visible warning so an operator can investigate; do nothing
+     * destructive. */
+    fprintf(stderr,  // obs-ok:header-admit-shadow-stall
+            "[supervisor] staged.header_admit stalled "
+            "(cursor=%llu admitted=%llu) — shadow log behind live chain\n",
+            (unsigned long long)header_admit_stage_cursor(),
+            (unsigned long long)header_admit_stage_admitted_total());
+}
+
+static void boot_header_admit_supervisor_register(struct boot_svc_ctx *svc)
+{
+    if (!svc || !svc->state) return;
+    if (g_header_admit_id != SUPERVISOR_INVALID_ID) return;  /* idempotent */
+
+    /* Bind the stage to the live chainstate. If progress_store didn't
+     * open at boot, init returns false — log and skip supervisor wire
+     * so a misconfigured boot doesn't loop on a perma-IDLE child. */
+    if (!header_admit_stage_init(svc->state)) {
+        fprintf(stderr,  // obs-ok:header-admit-init-warn
+            "[supervisor] WARN staged.header_admit init failed — "
+            "shadow stage not running this boot\n");
+        return;
+    }
+
+    g_header_admit_ms = svc->state;
+    liveness_contract_init(&g_header_admit_contract, "staged.header_admit");
+    atomic_store(&g_header_admit_contract.period_secs, (int64_t)2);
+    /* Generous progress-quiet window: shadow can legitimately be IDLE
+     * for long stretches when the live chain is stuck. 30 min before
+     * we emit a "behind live chain" warning. */
+    atomic_store(&g_header_admit_contract.progress_max_quiet_us,
+                 (int64_t)1800 * 1000 * 1000);
+    g_header_admit_contract.on_tick  = header_admit_tick;
+    g_header_admit_contract.on_stall = header_admit_stall;
+    g_header_admit_id = supervisor_register(&g_header_admit_contract);
+    if (g_header_admit_id == SUPERVISOR_INVALID_ID) {
+        fprintf(stderr,  // obs-ok:header-admit-supervisor-fallback-warn
+            "[supervisor] WARN staged.header_admit register failed\n");
     }
 }
 
@@ -2687,6 +2751,7 @@ bool app_init_services(struct app_context *ctx,
      * thread has fresh targets to try. */
     boot_peer_floor_supervisor_register(svc);
     boot_coord_escalation_supervisor_register(svc);
+    boot_header_admit_supervisor_register(svc);
 
     if (!boot_register_runtime_services(svc) ||
         !zcl_service_kernel_start_all(&svc->runtime_kernel)) {
@@ -2847,6 +2912,10 @@ static void shutdown_release_owned_resources(struct boot_svc_ctx *svc)
     tx_mempool_free(svc->mempool);
     main_state_free(svc->state);
     sapling_free_params();
+
+    /* Wave S, S-2: stop the shadow header_admit stage before closing
+     * progress.kv (so any in-flight step finishes). */
+    header_admit_stage_shutdown();
 
     /* Wave S, S-1: graceful checkpoint + close of progress.kv. No-op if
      * never opened. */

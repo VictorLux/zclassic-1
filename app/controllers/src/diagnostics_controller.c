@@ -46,6 +46,7 @@
 #include "services/block_index_integrity.h"
 #include "services/block_pruning_service.h"
 #include "services/chain_evidence_controller.h"
+#include "services/header_admit_stage.h"
 #include "storage/progress_store.h"
 #include "services/ibd_throttle.h"
 #include "services/mempool_limits.h"
@@ -409,6 +410,8 @@ static const struct dump_entry g_dumpers[] = {
                      "rolling SHA3 anchor extension: runtime windows past compile-time prefix" },
     { "progress",    progress_store_dump_state_json,
                      "Wave S progress.kv: open/path/stage_cursor row count" },
+    { "header_admit", header_admit_stage_dump_state_json,
+                     "Wave S header_admit shadow stage: cursor, counters, last admit" },
     { "quorum_oracle", quorum_oracle_dump_state_json,
                      "multi-source quorum oracle: per-source vote stats + last verdict" },
     { "peer_lifecycle", peer_lifecycle_dump_state_json,
