@@ -186,6 +186,128 @@ int test_progress_store(void)
                  !progress_store_dump_state_json(NULL, NULL));
     }
 
+    /* ── progress_meta k/v API (S-4b) ───────────────────────────────── */
+    {
+        char dir[256];
+        ps_tmpdir(dir, sizeof(dir), "meta");
+        mkdir_p(dir);
+        PS_CHECK("open for meta", progress_store_open(dir));
+        sqlite3 *db = progress_store_db();
+
+        /* Missing key returns found=false, len=0, function returns true. */
+        bool found = true;
+        size_t got = 99;
+        uint8_t out[64] = {0};
+        PS_CHECK("get missing returns true",
+                 progress_meta_get(db, "no-such", out, sizeof(out),
+                                   &got, &found));
+        PS_CHECK("get missing reports not-found", !found && got == 0);
+
+        /* Round-trip a blob value. */
+        const char *payload = "the-quick-brown-fox";
+        size_t payload_len = strlen(payload);
+        PS_CHECK("set blob OK",
+                 progress_meta_set(db, "k.blob", payload, payload_len));
+
+        memset(out, 0, sizeof(out));
+        got = 0; found = false;
+        PS_CHECK("get blob OK",
+                 progress_meta_get(db, "k.blob", out, sizeof(out),
+                                   &got, &found));
+        PS_CHECK("get blob reports found", found);
+        PS_CHECK("get blob length matches", got == payload_len);
+        PS_CHECK("get blob bytes match",
+                 memcmp(out, payload, payload_len) == 0);
+
+        /* Out-of-band: get with NULL buffer reports length only. */
+        got = 0;
+        PS_CHECK("get blob with NULL buf reports length",
+                 progress_meta_get(db, "k.blob", NULL, 0, &got, &found) &&
+                 got == payload_len && found);
+
+        /* INSERT OR REPLACE semantics — second set overwrites. */
+        const char *payload2 = "OVERWRITTEN";
+        PS_CHECK("set overwrite OK",
+                 progress_meta_set(db, "k.blob",
+                                   payload2, strlen(payload2)));
+        got = 0;
+        PS_CHECK("overwritten get OK",
+                 progress_meta_get(db, "k.blob", out, sizeof(out),
+                                   &got, &found));
+        PS_CHECK("overwritten length matches",
+                 got == strlen(payload2));
+        PS_CHECK("overwritten bytes match",
+                 memcmp(out, payload2, strlen(payload2)) == 0);
+
+        /* int32 round-trip — typical sentinel/height storage. */
+        int32_t height_in = 3120921;
+        int32_t height_out = 0;
+        PS_CHECK("set int32",
+                 progress_meta_set(db, "k.height",
+                                   &height_in, sizeof(height_in)));
+        PS_CHECK("get int32",
+                 progress_meta_get(db, "k.height", &height_out,
+                                   sizeof(height_out), &got, &found));
+        PS_CHECK("int32 round-trips",
+                 found && got == sizeof(int32_t) &&
+                 height_out == height_in);
+
+        /* delete removes the row. */
+        PS_CHECK("delete OK", progress_meta_delete(db, "k.blob"));
+        found = true; got = 99;
+        PS_CHECK("delete is observable",
+                 progress_meta_get(db, "k.blob", out, sizeof(out),
+                                   &got, &found) && !found && got == 0);
+        /* deleting a missing key is allowed (no-op). */
+        PS_CHECK("delete missing is no-op success",
+                 progress_meta_delete(db, "never-existed"));
+
+        /* in_tx variants compose with an outer BEGIN IMMEDIATE. */
+        PS_CHECK("BEGIN for compose",
+                 sqlite3_exec(db, "BEGIN IMMEDIATE",
+                              NULL, NULL, NULL) == SQLITE_OK);
+        const uint8_t one = 1;
+        PS_CHECK("set_in_tx",
+                 progress_meta_set_in_tx(db, "sentinel", &one, 1));
+        PS_CHECK("delete_in_tx (sentinel) ok",
+                 progress_meta_delete_in_tx(db, "sentinel"));
+        PS_CHECK("COMMIT compose OK",
+                 sqlite3_exec(db, "COMMIT",
+                              NULL, NULL, NULL) == SQLITE_OK);
+        PS_CHECK("sentinel not present after delete in compose",
+                 progress_meta_get(db, "sentinel", out, sizeof(out),
+                                   &got, &found) && !found);
+
+        /* Bad input → false. */
+        PS_CHECK("set NULL db rejected",
+                 !progress_meta_set(NULL, "k", "v", 1));
+        PS_CHECK("set NULL key rejected",
+                 !progress_meta_set(db, NULL, "v", 1));
+        PS_CHECK("set empty key rejected",
+                 !progress_meta_set(db, "", "v", 1));
+        PS_CHECK("get NULL db rejected",
+                 !progress_meta_get(NULL, "k", out, sizeof(out),
+                                    &got, &found));
+
+        /* Persistence across close + reopen. */
+        const char *persist_payload = "PERSISTED-1";
+        PS_CHECK("set for persistence",
+                 progress_meta_set(db, "k.persist",
+                                   persist_payload,
+                                   strlen(persist_payload)));
+        progress_store_close();
+        PS_CHECK("reopen for persistence", progress_store_open(dir));
+        memset(out, 0, sizeof(out));
+        got = 0; found = false;
+        PS_CHECK("persisted blob survives close+reopen",
+                 progress_meta_get(progress_store_db(), "k.persist",
+                                   out, sizeof(out), &got, &found) &&
+                 found && got == strlen(persist_payload) &&
+                 memcmp(out, persist_payload, got) == 0);
+        progress_store_close();
+        test_cleanup_tmpdir(dir);
+    }
+
     printf("progress_store: %d failures\n", failures);
     return failures;
 }

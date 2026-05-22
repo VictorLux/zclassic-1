@@ -1021,6 +1021,24 @@ int main(int argc, char **argv)
                 return 1;
             }
         }
+        else if (strncmp(argv[i], "-legacy-attach=", 15) == 0) {
+            ctx.legacy_attach_from = argv[i]+15;
+        }
+        else if (strcmp(argv[i], "-legacy-attach") == 0) {
+            const char *home = getenv("HOME");
+            static char default_legacy_attach_path[1024];
+            if (home && *home) {
+                snprintf(default_legacy_attach_path,
+                         sizeof(default_legacy_attach_path),
+                         "%s/.zclassic", home);
+                ctx.legacy_attach_from = default_legacy_attach_path;
+            } else {
+                fprintf(stderr,
+                    "-legacy-attach with no path requires $HOME; "
+                    "use -legacy-attach=PATH\n");
+                return 1;
+            }
+        }
         else if (strncmp(argv[i], "-fastimport=", 12) == 0) {
             ctx.fastimport_from = argv[i]+12;
         }

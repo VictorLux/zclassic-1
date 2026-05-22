@@ -38,8 +38,8 @@
 
 #include <sqlite3.h>
 #include <stdbool.h>
-
-struct json_value;
+#include <stddef.h>
+#include <stdint.h>
 
 /* Open <datadir>/progress.kv in WAL mode and ensure the stage_cursor
  * table exists. Idempotent — a second call with the same datadir is a
@@ -57,6 +57,41 @@ void progress_store_close(void);
 /* For zcl_state subsystem=progress (CLAUDE.md convention). `out` is
  * expected to have been json_set_object'd by the caller; this function
  * also calls json_set_object(out) defensively. `key` is unused. */
+struct json_value;
 bool progress_store_dump_state_json(struct json_value *out, const char *key);
+
+/* ── progress_meta — small key/value table on the same store ──
+ *
+ * A general-purpose blob k/v table colocated with stage_cursor in
+ * progress.kv. The schema is `(key TEXT PRIMARY KEY, value BLOB)`.
+ *
+ * Wave S, S-4b introduces this table to host:
+ *   - `import_in_progress` sentinel (1-byte blob {0x01})
+ *   - `legacy_attach_tip_hash` (32 bytes, little-endian)
+ *   - `legacy_attach_tip_height` (4 bytes int32, native byte order)
+ *   - `legacy_attach_done_at` (8 bytes int64, native byte order)
+ *
+ * Callers wanting transactional grouping with a stage_cursor advance
+ * (the saga atomicity contract) must call `_tx` variants inside their
+ * own `BEGIN IMMEDIATE`. The non-`_tx` variants commit immediately
+ * via implicit BEGIN/COMMIT — convenient for boot-time wiring.
+ *
+ * Values are opaque blobs to this layer; the caller owns serialization. */
+
+bool progress_meta_table_ensure(sqlite3 *db);
+
+/* Standalone (own-txn) helpers — use during boot / outside saga steps. */
+bool progress_meta_set(sqlite3 *db, const char *key,
+                       const void *value, size_t value_len);
+bool progress_meta_get(sqlite3 *db, const char *key,
+                       void *out_buf, size_t out_cap,
+                       size_t *out_len, bool *out_found);
+bool progress_meta_delete(sqlite3 *db, const char *key);
+
+/* Transactional variant — caller has an outer BEGIN IMMEDIATE on `db`.
+ * No BEGIN/COMMIT issued; the value participates in the caller's txn. */
+bool progress_meta_set_in_tx(sqlite3 *db, const char *key,
+                             const void *value, size_t value_len);
+bool progress_meta_delete_in_tx(sqlite3 *db, const char *key);
 
 #endif /* ZCL_STORAGE_PROGRESS_STORE_H */

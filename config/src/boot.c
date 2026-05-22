@@ -18,6 +18,7 @@
 #include "storage/progress_store.h"
 #include "services/legacy_cold_import.h"
 #include "services/legacy_direct_import.h"
+#include "services/legacy_oneshot_import.h"
 #include "services/header_probe_service.h"
 #include "services/block_index_integrity.h"
 #include "services/wallet_backup_service.h"
@@ -1728,6 +1729,31 @@ bool app_init(struct app_context *ctx)
                    sys_ram / (1024 * 1024), est_mem / (1024 * 1024),
                    (long long)est_count);
         }
+    }
+
+    /* -legacy-attach (Wave S, S-4b): one-shot import from a running
+     * zclassicd via ldb_snapshot. Runs at the same boot point as
+     * -cold-import but uses snapshots (no need to stop zclassicd) and
+     * atomically stamps progress.kv stage cursors so Wave S stages
+     * skip imported heights. No-op when legacy_attach_from is NULL. */
+    if (ctx->legacy_attach_from && g_block_tree_open && g_coins_sqlite.db) {
+        printf("\n═══ Legacy Attach (one-shot) from %s ═══\n",
+               ctx->legacy_attach_from);
+        fflush(stdout);
+        struct loi_result lr = {0};
+        bool la_ok = legacy_oneshot_import_run(
+            ctx->datadir, ctx->legacy_attach_from,
+            &g_state, &g_coins_sqlite, &g_node_db, &g_block_tree, &lr);
+        printf("Legacy attach: ok=%s outcome=%s legacy_tip=%d "
+               "block_index=%lld utxos=%lld blk_files=%lld "
+               "stages_stamped=%lld elapsed=%.1fs\n",
+               la_ok ? "yes" : "no", loi_outcome_name(lr.outcome),
+               (int)lr.legacy_tip_height,
+               (long long)lr.block_index_writes,
+               (long long)lr.utxos_imported,
+               (long long)lr.blk_files_linked,
+               (long long)lr.stages_stamped,
+               lr.total_secs);
     }
 
     /* -cold-import: bulk state import from a sibling zclassicd. Runs

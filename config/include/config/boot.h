@@ -51,6 +51,13 @@ struct app_context {
      * Designed for empty datadirs — refuses if active_tip > 1000.
      * Requires zclassicd stopped (LOCK on blocks/index/). */
     const char *cold_import_from;
+    /* -legacy-attach[=PATH] : Wave S S-4b one-shot import from a
+     * locally-running zclassicd. Uses ldb_snapshot_make to avoid
+     * stopping zclassicd, and stamps progress.kv stage cursors for
+     * header_admit / validate_headers / body_fetch to legacy_tip+1
+     * so Wave S stages return STAGE_IDLE for imported heights.
+     * Idempotent + crash-safe via progress_meta sentinel. */
+    const char *legacy_attach_from;
     const char *snapshot_dir;
     bool reindex_chainstate;
     bool reimport_utxos;

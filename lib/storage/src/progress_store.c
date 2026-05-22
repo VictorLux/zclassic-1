@@ -99,7 +99,8 @@ bool progress_store_open(const char *datadir)
         return false;
     }
 
-    if (!apply_pragmas(db) || !stage_table_ensure(db)) {
+    if (!apply_pragmas(db) || !stage_table_ensure(db) ||
+        !progress_meta_table_ensure(db)) {
         sqlite3_close(db);
         pthread_mutex_unlock(&g_lock);
         return false;
@@ -155,6 +156,143 @@ void progress_store_close(void)
     g_path[0] = '\0';
     g_opened_at = 0;
     pthread_mutex_unlock(&g_lock);
+}
+
+/* ── progress_meta ─────────────────────────────────────────────────────
+ *
+ * Tiny k/v table colocated with stage_cursor. See header for purpose.
+ * Same kernel-primitive justification as stage_cursor — raw sqlite3_step
+ * carries the `// raw-sql-ok:kernel-primitive` marker. */
+
+bool progress_meta_table_ensure(sqlite3 *db)
+{
+    if (!db) return false;
+    char *err = NULL;
+    int rc = sqlite3_exec(db,
+        "CREATE TABLE IF NOT EXISTS progress_meta ("
+        "  key   TEXT PRIMARY KEY,"
+        "  value BLOB NOT NULL"
+        ")",
+        NULL, NULL, &err);
+    if (rc != SQLITE_OK) {
+        fprintf(stderr,  // obs-ok:progress-store-open-failure
+                "[progress_store] progress_meta CREATE failed: %s\n",
+                err ? err : "(no message)");
+        if (err) sqlite3_free(err);
+        return false;
+    }
+    return true;
+}
+
+static bool progress_meta_set_stmt(sqlite3 *db, const char *key,
+                                   const void *value, size_t value_len)
+{
+    if (!db || !key || !key[0]) return false;
+    if (value_len > 0 && !value) return false;
+    sqlite3_stmt *stmt = NULL;
+    int rc = sqlite3_prepare_v2(db,
+        "INSERT OR REPLACE INTO progress_meta(key, value) VALUES(?, ?)",
+        -1, &stmt, NULL);
+    if (rc != SQLITE_OK) return false;
+    sqlite3_bind_text(stmt, 1, key, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_blob(stmt, 2, value ? value : "", (int)value_len,
+                      SQLITE_TRANSIENT);
+    rc = sqlite3_step(stmt);  // raw-sql-ok:kernel-primitive
+    sqlite3_finalize(stmt);
+    return rc == SQLITE_DONE;
+}
+
+static bool progress_meta_delete_stmt(sqlite3 *db, const char *key)
+{
+    if (!db || !key || !key[0]) return false;
+    sqlite3_stmt *stmt = NULL;
+    int rc = sqlite3_prepare_v2(db,
+        "DELETE FROM progress_meta WHERE key = ?",
+        -1, &stmt, NULL);
+    if (rc != SQLITE_OK) return false;
+    sqlite3_bind_text(stmt, 1, key, -1, SQLITE_TRANSIENT);
+    rc = sqlite3_step(stmt);  // raw-sql-ok:kernel-primitive
+    sqlite3_finalize(stmt);
+    return rc == SQLITE_DONE;
+}
+
+bool progress_meta_set_in_tx(sqlite3 *db, const char *key,
+                             const void *value, size_t value_len)
+{
+    return progress_meta_set_stmt(db, key, value, value_len);
+}
+
+bool progress_meta_delete_in_tx(sqlite3 *db, const char *key)
+{
+    return progress_meta_delete_stmt(db, key);
+}
+
+bool progress_meta_set(sqlite3 *db, const char *key,
+                       const void *value, size_t value_len)
+{
+    if (!db) return false;
+    char *err = NULL;
+    if (sqlite3_exec(db, "BEGIN IMMEDIATE", NULL, NULL, &err) != SQLITE_OK) {
+        if (err) sqlite3_free(err);
+        return false;
+    }
+    bool ok = progress_meta_set_stmt(db, key, value, value_len);
+    const char *fini = ok ? "COMMIT" : "ROLLBACK";
+    if (sqlite3_exec(db, fini, NULL, NULL, &err) != SQLITE_OK) {
+        if (err) sqlite3_free(err);
+        return false;
+    }
+    return ok;
+}
+
+bool progress_meta_delete(sqlite3 *db, const char *key)
+{
+    if (!db) return false;
+    char *err = NULL;
+    if (sqlite3_exec(db, "BEGIN IMMEDIATE", NULL, NULL, &err) != SQLITE_OK) {
+        if (err) sqlite3_free(err);
+        return false;
+    }
+    bool ok = progress_meta_delete_stmt(db, key);
+    const char *fini = ok ? "COMMIT" : "ROLLBACK";
+    if (sqlite3_exec(db, fini, NULL, NULL, &err) != SQLITE_OK) {
+        if (err) sqlite3_free(err);
+        return false;
+    }
+    return ok;
+}
+
+bool progress_meta_get(sqlite3 *db, const char *key,
+                       void *out_buf, size_t out_cap,
+                       size_t *out_len, bool *out_found)
+{
+    if (out_found) *out_found = false;
+    if (out_len) *out_len = 0;
+    if (!db || !key || !key[0]) return false;
+
+    sqlite3_stmt *stmt = NULL;
+    int rc = sqlite3_prepare_v2(db,
+        "SELECT value FROM progress_meta WHERE key = ?",
+        -1, &stmt, NULL);
+    if (rc != SQLITE_OK) return false;
+    sqlite3_bind_text(stmt, 1, key, -1, SQLITE_TRANSIENT);
+
+    rc = sqlite3_step(stmt);  // raw-sql-ok:kernel-primitive
+    bool ok = true;
+    if (rc == SQLITE_ROW) {
+        if (out_found) *out_found = true;
+        int n = sqlite3_column_bytes(stmt, 0);
+        const void *blob = sqlite3_column_blob(stmt, 0);
+        if (out_len) *out_len = (size_t)n;
+        if (out_buf && out_cap > 0) {
+            size_t copy = (size_t)n < out_cap ? (size_t)n : out_cap;
+            if (blob && copy > 0) memcpy(out_buf, blob, copy);
+        }
+    } else if (rc != SQLITE_DONE) {
+        ok = false;
+    }
+    sqlite3_finalize(stmt);
+    return ok;
 }
 
 static int64_t stage_cursor_count(sqlite3 *db)
