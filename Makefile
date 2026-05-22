@@ -32,7 +32,7 @@ DOMAIN_SRCS = $(foreach c,$(DOMAIN_CONTEXTS),$(wildcard domain/$(c)/src/*.c))
 
 # Application layer (use cases / service objects).
 # May depend on domain/, ports/, primitives, util — never on adapters or I/O.
-APPLICATION_CONTEXTS = consensus
+APPLICATION_CONTEXTS = consensus operations
 APPLICATION_INCLUDES = $(foreach c,$(APPLICATION_CONTEXTS),-Iapplication/$(c)/include)
 APPLICATION_SRCS = $(foreach c,$(APPLICATION_CONTEXTS),$(wildcard application/$(c)/src/*.c))
 

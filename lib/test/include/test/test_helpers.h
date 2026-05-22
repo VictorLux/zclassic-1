@@ -325,6 +325,7 @@ int test_application_consensus_validate_block(void);
 int test_block_log_file(void);
 int test_mutator(void);
 int test_shadow_feeder(void);
+int test_diff_with_legacy_shadow(void);
 
 /* Spec-based user story tests (one per feature area) */
 int spec_wallet_dashboard(void);
