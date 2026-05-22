@@ -8,13 +8,20 @@
 #include "../rpc_client.h"
 #include "../rpc_params.h"
 
+#include "adapters/inbound/shadow_feeder_global.h"
+#include "adapters/outbound/persistence/block_log_file.h"
+#include "adapters/outbound/persistence/block_log_legacy.h"
+#include "application/operations/diff_with_legacy_shadow.h"
 #include "json/json.h"
+#include "mcp/metrics.h"
+#include "ports/block_log_port.h"
 #include "util/log_macros.h"
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <stdbool.h>
+#include <time.h>
 
 /* ── Handlers ───────────────────────────────────────────────── */
 
@@ -36,6 +43,171 @@ static int h_zcl_reorg_history(const struct mcp_request *req,
              (long long)json_get_int_or(req->args, "count", 50));
     return mcp_return_rpc_body(res, mcp_node_rpc("getreorghistory", params),
                                 "getreorghistory", "mcp.chain");
+}
+
+static const char *diff_status_name(enum diff_with_legacy_shadow_status s)
+{
+    switch (s) {
+    case DIFF_STATUS_CONVERGED:        return "CONVERGED";
+    case DIFF_STATUS_DIVERGENT:        return "DIVERGENT";
+    case DIFF_STATUS_SHADOW_MISSING:   return "SHADOW_MISSING";
+    case DIFF_STATUS_PRIMARY_MISSING:  return "PRIMARY_MISSING";
+    case DIFF_STATUS_EMPTY_RANGE:      return "EMPTY_RANGE";
+    }
+    return "UNKNOWN";
+}
+
+static int h_zcl_diff_with_legacy_shadow(const struct mcp_request *req,
+                                          struct mcp_response *res)
+{
+    /* Inputs (all optional). */
+    int64_t start_h = json_get_int_or(req->args, "start_height", 0);
+    int64_t count   = json_get_int_or(req->args, "count", 256);
+    const char *legacy_dir = json_get_str_or(req->args, "legacy_datadir", NULL);
+    if (!legacy_dir || !legacy_dir[0]) {
+        static char def_legacy[1024];
+        const char *home = getenv("HOME");
+        if (home && home[0]) {
+            snprintf(def_legacy, sizeof def_legacy, "%s/.zclassic", home);
+            legacy_dir = def_legacy;
+        } else {
+            res->error = MCP_ERR_HANDLER_FAILED;
+            snprintf(res->error_message, sizeof(res->error_message),
+                     "legacy_datadir not provided and $HOME is unset");
+            LOG_ERR("mcp.chain", "diff_with_legacy_shadow: no legacy_datadir");
+            return 0;
+        }
+    }
+
+    if (start_h < 0)          start_h = 0;
+    if (count < 1)            count = 1;
+    if (count > 10000)        count = 10000;  /* cap per call */
+    int64_t end_h = start_h + count - 1;
+    if (end_h > UINT32_MAX)   end_h = UINT32_MAX;
+
+    /* Shadow side: must be active. The path is implied by the boot
+     * convention (<node_datadir>/blocks.shadow), so we re-derive it
+     * from the node datadir rather than threading state through. */
+    if (!shadow_feeder_global_is_active()) {
+        res->error = MCP_ERR_HANDLER_FAILED;
+        snprintf(res->error_message, sizeof(res->error_message),
+                 "shadow feeder not active — start node with -shadow");
+        LOG_ERR("mcp.chain", "diff_with_legacy_shadow: shadow inactive");
+        return 0;
+    }
+    const char *node_datadir = mcp_rpc_client_datadir();
+    if (!node_datadir || !node_datadir[0]) {
+        res->error = MCP_ERR_HANDLER_FAILED;
+        snprintf(res->error_message, sizeof(res->error_message),
+                 "node datadir not initialized");
+        LOG_ERR("mcp.chain", "diff_with_legacy_shadow: no node datadir");
+        return 0;
+    }
+    char shadow_dir[1100];
+    snprintf(shadow_dir, sizeof shadow_dir, "%s/blocks.shadow", node_datadir);
+
+    /* Open both ports. */
+    struct block_log_file *shadow_h = NULL;
+    struct block_log_port  shadow_p = {0};
+    struct zcl_result rs = block_log_file_open(shadow_dir, &shadow_h, &shadow_p);
+    if (!rs.ok) {
+        res->error = MCP_ERR_HANDLER_FAILED;
+        snprintf(res->error_message, sizeof(res->error_message),
+                 "shadow log open(%s) failed: code=%d %s",
+                 shadow_dir, rs.code, rs.message);
+        LOG_ERR("mcp.chain", "diff_with_legacy_shadow: %s",
+                res->error_message);
+        return 0;
+    }
+
+    struct block_log_legacy *legacy_h = NULL;
+    struct block_log_port    legacy_p = {0};
+    struct zcl_result rl = block_log_legacy_open(legacy_dir, &legacy_h,
+                                                  &legacy_p);
+    if (!rl.ok) {
+        block_log_file_close(shadow_h);
+        res->error = MCP_ERR_HANDLER_FAILED;
+        snprintf(res->error_message, sizeof(res->error_message),
+                 "legacy log open(%s) failed: code=%d %s",
+                 legacy_dir, rl.code, rl.message);
+        LOG_ERR("mcp.chain", "diff_with_legacy_shadow: %s",
+                res->error_message);
+        return 0;
+    }
+
+    /* Run the diff. */
+    struct diff_with_legacy_shadow_inputs in = {
+        .primary      = &legacy_p,
+        .shadow       = &shadow_p,
+        .start_height = (uint32_t)start_h,
+        .end_height   = (uint32_t)end_h,
+    };
+    struct diff_with_legacy_shadow_report report = {0};
+    struct zcl_result rd = diff_with_legacy_shadow(&in, &report);
+
+    /* Update Prometheus gauges. divergence_count == 1 for any non-CONVERGED
+     * /non-EMPTY_RANGE result (the use case stops at the first divergence,
+     * so we can't return an exact count without a second walk). For the
+     * I-9 soak the binary "any divergence in window" signal is what we
+     * actually alert on. */
+    int64_t div_count = 0;
+    int64_t first_div = -1;
+    if (rd.ok) {
+        if (report.status != DIFF_STATUS_CONVERGED &&
+            report.status != DIFF_STATUS_EMPTY_RANGE) {
+            div_count = 1;
+            first_div = (int64_t)report.first_divergent_height;
+        }
+    }
+    mcp_metrics_set_shadow_divergence(div_count, first_div, (int64_t)time(NULL));
+
+    /* Build response body. shadow_dir + legacy_dir are bounded by the
+     * snprintf caps above; the rest is small ints + a short status
+     * string. 4 KB is plenty. */
+    char buf[4096];
+    int written;
+    if (!rd.ok) {
+        written = snprintf(buf, sizeof buf,
+                "{\"error\":{\"code\":%d,\"message\":\"%s\"},"
+                "\"start_height\":%lld,\"end_height\":%lld,"
+                "\"shadow_dir\":\"%s\",\"legacy_datadir\":\"%s\"}",
+                rd.code, rd.message,
+                (long long)start_h, (long long)end_h,
+                shadow_dir, legacy_dir);
+    } else {
+        written = snprintf(buf, sizeof buf,
+                "{\"status\":\"%s\","
+                "\"checked_count\":%u,"
+                "\"first_divergent_height\":%lld,"
+                "\"primary_tip\":%u,"
+                "\"shadow_tip\":%u,"
+                "\"start_height\":%lld,"
+                "\"end_height\":%lld,"
+                "\"shadow_dir\":\"%s\","
+                "\"legacy_datadir\":\"%s\"}",
+                diff_status_name(report.status),
+                report.checked_count,
+                (long long)first_div,
+                report.primary_tip,
+                report.shadow_tip,
+                (long long)start_h, (long long)end_h,
+                shadow_dir, legacy_dir);
+    }
+    char *body = (written > 0 && written < (int)sizeof buf)
+                     ? strdup(buf) : NULL;
+
+    block_log_legacy_close(legacy_h);
+    block_log_file_close(shadow_h);
+
+    if (!body) {
+        res->error = MCP_ERR_HANDLER_FAILED;
+        snprintf(res->error_message, sizeof(res->error_message),
+                 "diff_with_legacy_shadow: asprintf body");
+        LOG_ERR("mcp.chain", "diff_with_legacy_shadow: asprintf body");
+        return 0;
+    }
+    res->body = body;
+    return 0;
 }
 
 static int h_zcl_utxo_audit(const struct mcp_request *req,
@@ -134,6 +306,18 @@ static const struct mcp_param_spec p_reorg_history[] = {
       1, 1024, 0, 0, NULL, "50" },
 };
 
+static const struct mcp_param_spec p_diff_shadow[] = {
+    { "start_height", MCP_PARAM_INT, false,
+      "First height to compare (inclusive).",
+      0, 100000000, 0, 0, NULL, "0" },
+    { "count", MCP_PARAM_INT, false,
+      "How many heights to compare (capped at 10000 per call).",
+      1, 10000, 0, 0, NULL, "256" },
+    { "legacy_datadir", MCP_PARAM_STR, false,
+      "Legacy zclassicd data directory. Defaults to $HOME/.zclassic.",
+      0, 0, 0, 1023, NULL, NULL },
+};
+
 static const struct mcp_param_spec p_utxo_audit[] = {
     { "remote_sha3", MCP_PARAM_STR, false,
       "Trusted peer SHA3 commitment to compare against.",
@@ -193,6 +377,12 @@ static const struct mcp_tool_route k_routes[] = {
       "recovery_complete). Power-user lens on chain stability.",
       p_reorg_history, PARAM_COUNT(p_reorg_history),
       h_zcl_reorg_history, 0, NULL },
+    { "zcl_diff_with_legacy_shadow", "chain",
+      "Compare the legacy block_log against the in-process shadow "
+      "log over a height window. Requires -shadow at startup. "
+      "Updates zcl_shadow_divergence_count Prometheus gauge.",
+      p_diff_shadow, PARAM_COUNT(p_diff_shadow),
+      h_zcl_diff_with_legacy_shadow, 0, NULL },
 };
 
 void mcp_register_chain(void)

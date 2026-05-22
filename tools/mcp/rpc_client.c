@@ -81,6 +81,11 @@ void mcp_rpc_client_init(const char *datadir, int rpc_port)
     g_port = rpc_port;
 }
 
+const char *mcp_rpc_client_datadir(void)
+{
+    return g_datadir;
+}
+
 char *mcp_node_rpc(const char *method, const char *params_json)
 {
 #ifdef ZCL_TESTING

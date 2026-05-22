@@ -11,6 +11,11 @@
 /* Call once at startup (from tools/mcp_server.c main loop). */
 void mcp_rpc_client_init(const char *datadir, int rpc_port);
 
+/* Return the datadir passed to mcp_rpc_client_init (empty string if
+ * not yet initialized). The pointer is to a static buffer owned by
+ * the client; callers must not free or modify it. */
+const char *mcp_rpc_client_datadir(void);
+
 /* Invoke a JSON-RPC method on the local node.
  * params_json may be NULL (sends []) or a JSON array string.
  * Returns a malloc'd JSON string (either the "result" field or an
