@@ -14,7 +14,7 @@ CONFIG_SRCS = $(wildcard config/src/*.c)
 
 # Library layer
 LIB_MODULES = bloom chain coins consensus core crypto encoding event health kernel \
-	json keys metrics mining net policy primitives rpc script storage \
+	json keys metrics mining net platform policy primitives rpc script storage \
 	support sync util validation wallet sapling zslp znam
 LIB_INCLUDES = $(foreach m,$(LIB_MODULES),-Ilib/$(m)/include)
 LIB_SRCS = $(foreach m,$(LIB_MODULES),$(wildcard lib/$(m)/src/*.c))

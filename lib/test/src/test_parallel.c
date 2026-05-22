@@ -91,6 +91,7 @@ volatile sig_atomic_t g_shutdown_requested = 0;
     X(mcp_fuzz) X(rpc_auth_hardening) X(sync_watchdog) \
     X(disk_block_io) X(msg_handlers) X(chain_advance_coordinator) \
     X(lag_slo) X(boot_phase) X(path_check) X(supervisor) X(blocker) \
+    X(clock) \
     X(domain_consensus_verify) X(application_consensus_validate_block) \
     X(block_log_file) X(block_log_legacy) X(mutator) X(shadow_feeder) X(shadow_feeder_global) \
     X(diff_with_legacy_shadow) X(utxo_snapshot_inmem)
