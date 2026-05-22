@@ -91,7 +91,8 @@ volatile sig_atomic_t g_shutdown_requested = 0;
     X(mcp_fuzz) X(rpc_auth_hardening) X(sync_watchdog) \
     X(disk_block_io) X(msg_handlers) X(chain_advance_coordinator) \
     X(lag_slo) X(boot_phase) X(path_check) X(supervisor) X(blocker) \
-    X(domain_consensus_verify) X(application_consensus_validate_block)
+    X(domain_consensus_verify) X(application_consensus_validate_block) \
+    X(block_log_file)
 
 #define SPEC_LIST(X) \
     X(wallet_dashboard) X(wallet_send) X(wallet_receive) \

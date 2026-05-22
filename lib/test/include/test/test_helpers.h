@@ -322,6 +322,7 @@ int test_supervisor(void);
 int test_blocker(void);
 int test_domain_consensus_verify(void);
 int test_application_consensus_validate_block(void);
+int test_block_log_file(void);
 
 /* Spec-based user story tests (one per feature area) */
 int spec_wallet_dashboard(void);
