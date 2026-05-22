@@ -322,6 +322,7 @@ int test_supervisor(void);
 int test_blocker(void);
 int test_clock(void);
 int test_rng(void);
+int test_stage(void);
 int test_domain_consensus_verify(void);
 int test_application_consensus_validate_block(void);
 int test_block_log_file(void);
