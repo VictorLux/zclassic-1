@@ -40,9 +40,17 @@ ExecStart=%h/zclassic23/zclassic23 \
     -listen \
     -txindex \
     -tor \
+    -shadow \
     $ZCL_EXTERNALIP_FLAG \
     $ZCL_ADDNODE_FLAGS \
     -showmetrics=0
+# -shadow (revamp-I-9): starts the new mutator + shadow_feeder so every
+# legacy-accepted block is mirrored into <datadir>/blocks.shadow and
+# validated through the new pipeline. Observable via:
+#   * Prometheus: zcl_shadow_divergence_count gauge
+#   * MCP:        zcl_diff_with_legacy_shadow (compares legacy ~/.zclassic
+#                 vs the in-process shadow log)
+# Remove when Epoch I-10 lands (the flag flip makes shadow the primary).
 # Restart=always (not on-failure) so the self-recovery escape hatch in
 # process_block.c (g_shutdown_requested=1 after 10 consecutive UTXO
 # failures at the same height) causes a systemd restart.  That restart
