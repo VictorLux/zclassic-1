@@ -14,6 +14,7 @@
 #include "services/rolling_anchor_service.h"
 #include "services/zclassicd_oracle_service.h"
 #include "services/header_admit_stage.h"
+#include "services/validate_headers_stage.h"
 #include "services/header_probe_service.h"
 #include "services/legacy_mirror_sync_service.h"
 #include "services/node_health_service.h"
@@ -552,6 +553,64 @@ static void boot_header_admit_supervisor_register(struct boot_svc_ctx *svc)
     if (g_header_admit_id == SUPERVISOR_INVALID_ID) {
         fprintf(stderr,  // obs-ok:header-admit-supervisor-fallback-warn
             "[supervisor] WARN staged.header_admit register failed\n");
+    }
+}
+
+/* ── Wave S, S-3: validate_headers stage supervisor child ─────────── */
+static struct liveness_contract g_vh_contract;
+static supervisor_child_id      g_vh_id = SUPERVISOR_INVALID_ID;
+static struct main_state       *g_vh_ms = NULL;
+
+static void vh_tick(struct liveness_contract *c)
+{
+    (void)c;
+    if (!g_vh_ms) return;
+    (void)validate_headers_stage_drain(VH_BATCH_PER_TICK);
+    supervisor_progress(g_vh_id,
+                        (int64_t)validate_headers_stage_cursor());
+    supervisor_tick(g_vh_id);
+}
+
+static void vh_stall(struct liveness_contract *c)
+{
+    (void)c;
+    /* Shadow-mode stall = validate falling behind admit OR the live
+     * chain itself stalled. Either way, surface but do nothing
+     * destructive. */
+    fprintf(stderr,  // obs-ok:vh-shadow-stall
+            "[supervisor] staged.validate_headers stalled "
+            "(cursor=%llu passed=%llu failed=%llu) — shadow validator behind admit\n",
+            (unsigned long long)validate_headers_stage_cursor(),
+            (unsigned long long)validate_headers_stage_passed_total(),
+            (unsigned long long)validate_headers_stage_failed_total());
+}
+
+static void boot_validate_headers_supervisor_register(struct boot_svc_ctx *svc)
+{
+    if (!svc || !svc->state) return;
+    if (g_vh_id != SUPERVISOR_INVALID_ID) return;  /* idempotent */
+
+    if (!validate_headers_stage_init(svc->state)) {
+        fprintf(stderr,  // obs-ok:vh-init-warn
+            "[supervisor] WARN staged.validate_headers init failed — "
+            "shadow validator not running this boot\n");
+        return;
+    }
+
+    g_vh_ms = svc->state;
+    liveness_contract_init(&g_vh_contract, "staged.validate_headers");
+    atomic_store(&g_vh_contract.period_secs, (int64_t)2);
+    /* Same generous quiet window as header_admit — shadow validation
+     * tracks admission, which itself can be idle for hours when the
+     * live chain is wedged. */
+    atomic_store(&g_vh_contract.progress_max_quiet_us,
+                 (int64_t)1800 * 1000 * 1000);
+    g_vh_contract.on_tick  = vh_tick;
+    g_vh_contract.on_stall = vh_stall;
+    g_vh_id = supervisor_register(&g_vh_contract);
+    if (g_vh_id == SUPERVISOR_INVALID_ID) {
+        fprintf(stderr,  // obs-ok:vh-supervisor-fallback-warn
+            "[supervisor] WARN staged.validate_headers register failed\n");
     }
 }
 
@@ -2752,6 +2811,7 @@ bool app_init_services(struct app_context *ctx,
     boot_peer_floor_supervisor_register(svc);
     boot_coord_escalation_supervisor_register(svc);
     boot_header_admit_supervisor_register(svc);
+    boot_validate_headers_supervisor_register(svc);
 
     if (!boot_register_runtime_services(svc) ||
         !zcl_service_kernel_start_all(&svc->runtime_kernel)) {
@@ -2912,6 +2972,10 @@ static void shutdown_release_owned_resources(struct boot_svc_ctx *svc)
     tx_mempool_free(svc->mempool);
     main_state_free(svc->state);
     sapling_free_params();
+
+    /* Wave S, S-3: stop the validate_headers stage first so its
+     * workers (which read disk) don't outlive the disk_block_io cache. */
+    validate_headers_stage_shutdown();
 
     /* Wave S, S-2: stop the shadow header_admit stage before closing
      * progress.kv (so any in-flight step finishes). */

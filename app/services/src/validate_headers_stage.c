@@ -1,0 +1,539 @@
+/* Copyright 2026 Rhett Creighton - Apache License 2.0
+ *
+ * validate_headers_stage — implementation. See validate_headers_stage.h.
+ *
+ * Single-process singleton. Validates header_admit_log output via a
+ * fixed pthread pool (VH_POOL_SIZE workers) and a per-step bounded
+ * batch. The pool stays warm for the lifetime of the stage; each step
+ * submits up to VH_BATCH_SIZE jobs, awaits them all, and writes the
+ * batch + cursor bump atomically. */
+
+#include "services/validate_headers_stage.h"
+#include "services/header_admit_stage.h"
+
+#include "chain/chain.h"
+#include "chain/chainparams.h"
+#include "chain/equihash.h"
+#include "chain/pow.h"
+#include "core/uint256.h"
+#include "json/json.h"
+#include "primitives/block.h"
+#include "storage/disk_block_io.h"
+#include "storage/progress_store.h"
+#include "util/log_macros.h"
+#include "util/stage.h"
+#include "util/thread_registry.h"
+#include "util/util.h"
+#include "validation/chainstate.h"
+#include "validation/check_block.h"
+#include "validation/main_state.h"
+
+#include <errno.h>
+#include <pthread.h>
+#include <stdatomic.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <time.h>
+
+#define STAGE_NAME       "validate_headers"
+
+/* ── Job + pool state ─────────────────────────────────────────────── */
+
+struct vh_job {
+    const struct block_index *bi;     /* in: block_index ptr */
+    int                       height; /* in: convenience for logging */
+    bool                      ok;     /* out */
+    char                      reason[VH_MAX_REASON];
+};
+
+struct vh_pool {
+    pthread_t       threads[VH_POOL_SIZE];
+    bool            thread_started[VH_POOL_SIZE];
+
+    /* Current batch — pointers stable for the duration of one submit. */
+    struct vh_job  *jobs;
+    int             n_jobs;
+    int             next_to_take;
+    int             n_done;
+
+    bool            stop;
+
+    pthread_mutex_t mu;
+    pthread_cond_t  cv_take;   /* workers wait here for jobs */
+    pthread_cond_t  cv_done;   /* submitter waits here for completion */
+};
+
+/* ── Globals ──────────────────────────────────────────────────────── */
+
+static pthread_mutex_t  g_lock = PTHREAD_MUTEX_INITIALIZER;
+static struct main_state *g_ms = NULL;
+static stage_t          *g_stage = NULL;
+static struct vh_pool    g_pool;
+static bool              g_pool_inited = false;
+
+static _Atomic uint64_t g_passed_total = 0;
+static _Atomic uint64_t g_failed_total = 0;
+static _Atomic int64_t  g_last_step_unix = 0;
+static _Atomic int64_t  g_last_blocked_unix = 0;
+
+/* Injectable validator. Default = full PoW + Equihash from disk.
+ * Tests set this via validate_headers_stage_set_validator(). Reset to
+ * default on shutdown. */
+static vh_validator_fn g_validator      = NULL;
+static void           *g_validator_user = NULL;
+/* Datadir cached at init for the workers (g_validator may need it). */
+static char            g_datadir[2048] = {0};
+
+static int64_t wall_now_s(void)
+{
+    struct timespec ts;
+    clock_gettime(CLOCK_REALTIME, &ts);
+    return (int64_t)ts.tv_sec;
+}
+
+/* ── Default validator: PoW target + Equihash from disk ──────────── */
+
+static bool default_validator(const struct block_index *bi,
+                               const char *datadir,
+                               char *out_reason, size_t out_reason_size,
+                               void *user)
+{
+    (void)user;
+    if (!bi || !bi->phashBlock) {
+        snprintf(out_reason, out_reason_size, "null-block-index");
+        return false;
+    }
+
+    /* (1) version. */
+    if (bi->nVersion < MIN_BLOCK_VERSION) {
+        snprintf(out_reason, out_reason_size, "version-too-low");
+        return false;
+    }
+
+    /* (2) PoW target. Cheap — no disk. */
+    const struct chain_params *cp = chain_params_get();
+    if (!cp) {
+        snprintf(out_reason, out_reason_size, "no-chain-params");
+        return false;
+    }
+    if (!CheckProofOfWork(*bi->phashBlock, bi->nBits, &cp->consensus)) {
+        snprintf(out_reason, out_reason_size, "high-hash");
+        return false;
+    }
+
+    /* (3) Equihash: pull the full block from disk so we have the
+     * solution bytes. Genesis (height 0) has no on-disk file entry on
+     * some configurations; treat nFile<0 as "skip-equihash". */
+    if (bi->nFile < 0) {
+        /* Cheap checks already passed; we can't verify Equihash
+         * without disk. Record as passed-with-caveat. The plan expects
+         * full validation in production where nFile is always ≥ 0; if
+         * we ever see nFile<0 outside genesis, the operator will see
+         * "no-disk-pos" via the diff harness. */
+        if (bi->nHeight != 0) {
+            snprintf(out_reason, out_reason_size, "no-disk-pos");
+            return false;
+        }
+        return true;
+    }
+
+    struct block blk;
+    block_init(&blk);
+    bool read_ok = read_block_from_disk_index_pread(&blk, bi,
+                                                     datadir ? datadir : "");
+    if (!read_ok) {
+        block_free(&blk);
+        snprintf(out_reason, out_reason_size, "disk-read-failed");
+        return false;
+    }
+    /* The header read from disk should hash to the same value as
+     * bi->phashBlock. Cheap consistency check. */
+    struct uint256 disk_hash;
+    block_header_get_hash(&blk.header, &disk_hash);
+    if (memcmp(disk_hash.data, bi->phashBlock->data, 32) != 0) {
+        block_free(&blk);
+        snprintf(out_reason, out_reason_size, "hash-mismatch-disk");
+        return false;
+    }
+
+    bool eq_ok = check_equihash_solution(&blk.header, cp);
+    block_free(&blk);
+    if (!eq_ok) {
+        snprintf(out_reason, out_reason_size, "invalid-solution");
+        return false;
+    }
+
+    return true;
+}
+
+/* ── Worker pool ──────────────────────────────────────────────────── */
+
+static void *worker_entry(void *arg)
+{
+    (void)arg;
+    for (;;) {
+        pthread_mutex_lock(&g_pool.mu);
+        while (!g_pool.stop && g_pool.next_to_take >= g_pool.n_jobs)
+            pthread_cond_wait(&g_pool.cv_take, &g_pool.mu);
+        if (g_pool.stop) {
+            pthread_mutex_unlock(&g_pool.mu);
+            break;
+        }
+        int my = g_pool.next_to_take++;
+        struct vh_job *job = &g_pool.jobs[my];
+        pthread_mutex_unlock(&g_pool.mu);
+
+        /* Snapshot validator under no lock — it can only change via
+         * shutdown which joins workers first. */
+        job->reason[0] = 0;
+        job->ok = g_validator(job->bi, g_datadir,
+                               job->reason, sizeof(job->reason),
+                               g_validator_user);
+
+        pthread_mutex_lock(&g_pool.mu);
+        g_pool.n_done++;
+        if (g_pool.n_done >= g_pool.n_jobs)
+            pthread_cond_broadcast(&g_pool.cv_done);
+        pthread_mutex_unlock(&g_pool.mu);
+    }
+    thread_registry_unregister_self();
+    return NULL;
+}
+
+/* Submit a batch and wait for every worker to finish it. Reentrant on
+ * the same submitter (the F-2 stage primitive serializes step calls
+ * for us, so only one step is active at a time). */
+static void pool_run_batch(struct vh_job *jobs, int n)
+{
+    pthread_mutex_lock(&g_pool.mu);
+    g_pool.jobs         = jobs;
+    g_pool.n_jobs       = n;
+    g_pool.next_to_take = 0;
+    g_pool.n_done       = 0;
+    pthread_cond_broadcast(&g_pool.cv_take);
+    while (g_pool.n_done < g_pool.n_jobs)
+        pthread_cond_wait(&g_pool.cv_done, &g_pool.mu);
+    g_pool.jobs   = NULL;
+    g_pool.n_jobs = 0;
+    pthread_mutex_unlock(&g_pool.mu);
+}
+
+static bool pool_start(void)
+{
+    pthread_mutex_init(&g_pool.mu, NULL);
+    pthread_cond_init(&g_pool.cv_take, NULL);
+    pthread_cond_init(&g_pool.cv_done, NULL);
+    g_pool.jobs         = NULL;
+    g_pool.n_jobs       = 0;
+    g_pool.next_to_take = 0;
+    g_pool.n_done       = 0;
+    g_pool.stop         = false;
+    memset(g_pool.thread_started, 0, sizeof(g_pool.thread_started));
+
+    for (int i = 0; i < VH_POOL_SIZE; i++) {
+        char name[32];
+        snprintf(name, sizeof(name), "vh.worker.%d", i);
+        int rc = thread_registry_spawn_ex(name, worker_entry, NULL,
+                                            &g_pool.threads[i]);
+        if (rc != 0) {
+            fprintf(stderr, "[validate_headers] worker %d spawn failed: rc=%d\n", i, rc);  // obs-ok:vh-worker-spawn-failure
+            /* Tear down what we started. */
+            pthread_mutex_lock(&g_pool.mu);
+            g_pool.stop = true;
+            pthread_cond_broadcast(&g_pool.cv_take);
+            pthread_mutex_unlock(&g_pool.mu);
+            for (int j = 0; j < i; j++)
+                pthread_join(g_pool.threads[j], NULL);
+            pthread_mutex_destroy(&g_pool.mu);
+            pthread_cond_destroy(&g_pool.cv_take);
+            pthread_cond_destroy(&g_pool.cv_done);
+            return false;
+        }
+        g_pool.thread_started[i] = true;
+    }
+    g_pool_inited = true;
+    return true;
+}
+
+static void pool_stop(void)
+{
+    if (!g_pool_inited) return;
+    pthread_mutex_lock(&g_pool.mu);
+    g_pool.stop = true;
+    pthread_cond_broadcast(&g_pool.cv_take);
+    pthread_mutex_unlock(&g_pool.mu);
+    for (int i = 0; i < VH_POOL_SIZE; i++) {
+        if (g_pool.thread_started[i]) {
+            pthread_join(g_pool.threads[i], NULL);
+            g_pool.thread_started[i] = false;
+        }
+    }
+    pthread_mutex_destroy(&g_pool.mu);
+    pthread_cond_destroy(&g_pool.cv_take);
+    pthread_cond_destroy(&g_pool.cv_done);
+    g_pool_inited = false;
+}
+
+/* ── Schema ───────────────────────────────────────────────────────── */
+
+static bool ensure_log_schema(sqlite3 *db)
+{
+    static const char *const sql =
+        "CREATE TABLE IF NOT EXISTS validate_headers_log ("
+        "  height       INTEGER PRIMARY KEY,"
+        "  hash         BLOB    NOT NULL,"
+        "  ok           INTEGER NOT NULL,"
+        "  fail_reason  TEXT,"
+        "  validated_at INTEGER NOT NULL"
+        ")";
+    char *err = NULL;
+    if (sqlite3_exec(db, sql, NULL, NULL, &err) != SQLITE_OK) {
+        fprintf(stderr, "[validate_headers] schema ensure failed: %s\n", err ? err : "(no message)");  // obs-ok:vh-schema-failure
+        if (err) sqlite3_free(err);
+        return false;
+    }
+    return true;
+}
+
+static bool log_insert(sqlite3 *db, const struct vh_job *job)
+{
+    sqlite3_stmt *stmt = NULL;
+    int rc = sqlite3_prepare_v2(db,
+        "INSERT OR REPLACE INTO validate_headers_log "
+        "(height, hash, ok, fail_reason, validated_at) VALUES (?,?,?,?,?)",
+        -1, &stmt, NULL);
+    if (rc != SQLITE_OK) {
+        fprintf(stderr, "[validate_headers] prepare insert failed: %s\n", sqlite3_errmsg(db));  // obs-ok:vh-log-prepare-failure
+        return false;
+    }
+    sqlite3_bind_int64(stmt, 1, (sqlite3_int64)job->height);
+    sqlite3_bind_blob (stmt, 2, job->bi->phashBlock->data, 32, SQLITE_STATIC);
+    sqlite3_bind_int  (stmt, 3, job->ok ? 1 : 0);
+    if (!job->ok && job->reason[0])
+        sqlite3_bind_text(stmt, 4, job->reason, -1, SQLITE_TRANSIENT);
+    else
+        sqlite3_bind_null(stmt, 4);
+    sqlite3_bind_int64(stmt, 5, (sqlite3_int64)wall_now_s());
+
+    rc = sqlite3_step(stmt);  // raw-sql-ok:kernel-primitive
+    sqlite3_finalize(stmt);
+    if (rc != SQLITE_DONE) {
+        fprintf(stderr, "[validate_headers] insert height=%d rc=%d\n", job->height, rc);  // obs-ok:vh-log-insert-failure
+        return false;
+    }
+    return true;
+}
+
+/* ── Step body ────────────────────────────────────────────────────── */
+
+static stage_result_t step_validate(struct stage_step_ctx *c)
+{
+    atomic_store(&g_last_step_unix, wall_now_s());
+
+    struct main_state *ms = g_ms;
+    if (!ms) return STAGE_IDLE;
+    sqlite3 *db = progress_store_db();
+    if (!db) return STAGE_IDLE;
+
+    int next_h = (int)c->cursor_in;
+    if (next_h < 0) return STAGE_ERROR;
+
+    /* Floor: never get ahead of header_admit. The header_admit cursor
+     * is "next height to admit" — so heights [0, ha_cursor-1] are
+     * admitted. We can validate up to ha_cursor-1. */
+    uint64_t ha_cursor = header_admit_stage_cursor();
+    if ((uint64_t)next_h >= ha_cursor) {
+        atomic_store(&g_last_blocked_unix, wall_now_s());
+        return STAGE_IDLE;  /* not BLOCKED — header_admit will catch up */
+    }
+
+    int available = (int)(ha_cursor - (uint64_t)next_h);
+    int batch_n = (available < VH_BATCH_SIZE) ? available : VH_BATCH_SIZE;
+    if (batch_n <= 0) return STAGE_IDLE;
+
+    /* Build the batch. Each job points to the block_index entry at
+     * its target height. */
+    struct vh_job jobs[VH_BATCH_SIZE];
+    memset(jobs, 0, sizeof(jobs));
+    for (int i = 0; i < batch_n; i++) {
+        int h = next_h + i;
+        struct block_index *bi = active_chain_at(&ms->chain_active, h);
+        if (!bi || !bi->phashBlock) {
+            /* Active chain doesn't have this height — shouldn't happen
+             * since header_admit just admitted it, but a concurrent
+             * reorg between admission and validation is conceivable.
+             * Block on this specific case so the supervisor surfaces it. */
+            atomic_store(&g_last_blocked_unix, wall_now_s());
+            return STAGE_IDLE;
+        }
+        jobs[i].bi     = bi;
+        jobs[i].height = h;
+    }
+
+    /* Dispatch + await. Pool stays inside this step. */
+    pool_run_batch(jobs, batch_n);
+
+    /* Write rows + bump cursor, all under the F-2 BEGIN IMMEDIATE txn. */
+    for (int i = 0; i < batch_n; i++) {
+        if (!log_insert(db, &jobs[i])) return STAGE_ERROR;
+        if (jobs[i].ok) atomic_fetch_add(&g_passed_total, 1);
+        else            atomic_fetch_add(&g_failed_total, 1);
+    }
+
+    c->cursor_out = c->cursor_in + (uint64_t)batch_n;
+    return STAGE_ADVANCED;
+}
+
+/* ── Public API ───────────────────────────────────────────────────── */
+
+bool validate_headers_stage_init(struct main_state *ms)
+{
+    if (!ms) LOG_FAIL("validate_headers", "init: NULL main_state");
+
+    sqlite3 *db = progress_store_db();
+    if (!db) LOG_FAIL("validate_headers",
+        "init: progress_store not open");
+
+    pthread_mutex_lock(&g_lock);
+
+    if (g_stage != NULL) {
+        bool same = (g_ms == ms);
+        pthread_mutex_unlock(&g_lock);
+        if (!same)
+            LOG_FAIL("validate_headers",
+                "init: already bound to a different main_state");
+        return true;
+    }
+
+    if (!ensure_log_schema(db)) {
+        pthread_mutex_unlock(&g_lock);
+        return false;
+    }
+
+    /* Cache the datadir for workers. GetDataDir is the canonical
+     * accessor; it's stable for the process lifetime. */
+    GetDataDir(true, g_datadir, sizeof(g_datadir));
+
+    /* Default validator runs full PoW + Equihash from disk. */
+    if (!g_validator) {
+        g_validator      = default_validator;
+        g_validator_user = NULL;
+    }
+
+    if (!pool_start()) {
+        pthread_mutex_unlock(&g_lock);
+        return false;
+    }
+
+    stage_t *s = stage_create(STAGE_NAME, step_validate, NULL);
+    if (!s) {
+        pool_stop();
+        pthread_mutex_unlock(&g_lock);
+        LOG_FAIL("validate_headers", "init: stage_create failed");
+    }
+
+    g_ms    = ms;
+    g_stage = s;
+    pthread_mutex_unlock(&g_lock);
+
+    fprintf(stderr, "[validate_headers] stage initialised (shadow mode, pool=%d batch=%d)\n", VH_POOL_SIZE, VH_BATCH_SIZE);  // obs-ok:vh-lifecycle
+    return true;
+}
+
+void validate_headers_stage_set_validator(vh_validator_fn fn, void *user)
+{
+    pthread_mutex_lock(&g_lock);
+    g_validator      = fn ? fn : default_validator;
+    g_validator_user = fn ? user : NULL;
+    pthread_mutex_unlock(&g_lock);
+}
+
+stage_result_t validate_headers_stage_step_once(void)
+{
+    if (!g_stage) return STAGE_IDLE;
+    sqlite3 *db = progress_store_db();
+    if (!db) return STAGE_IDLE;
+    return stage_run_once(g_stage, db);
+}
+
+int validate_headers_stage_drain(int max_steps)
+{
+    if (max_steps <= 0) return 0;
+    int advanced = 0;
+    for (int i = 0; i < max_steps; i++) {
+        stage_result_t r = validate_headers_stage_step_once();
+        if (r != STAGE_ADVANCED) break;
+        advanced++;
+    }
+    return advanced;
+}
+
+void validate_headers_stage_shutdown(void)
+{
+    pthread_mutex_lock(&g_lock);
+    /* Pool must stop before stage_destroy so the workers' read of
+     * g_validator stays valid. */
+    pool_stop();
+    if (g_stage) {
+        stage_destroy(g_stage);
+        g_stage = NULL;
+    }
+    g_ms = NULL;
+    g_validator      = NULL;   /* re-default on next init */
+    g_validator_user = NULL;
+    atomic_store(&g_passed_total, (uint64_t)0);
+    atomic_store(&g_failed_total, (uint64_t)0);
+    atomic_store(&g_last_step_unix, (int64_t)0);
+    atomic_store(&g_last_blocked_unix, (int64_t)0);
+    pthread_mutex_unlock(&g_lock);
+}
+
+uint64_t validate_headers_stage_cursor(void)
+{
+    return g_stage ? stage_cursor(g_stage) : 0;
+}
+
+uint64_t validate_headers_stage_passed_total(void)
+{
+    return atomic_load(&g_passed_total);
+}
+
+uint64_t validate_headers_stage_failed_total(void)
+{
+    return atomic_load(&g_failed_total);
+}
+
+bool validate_headers_stage_dump_state_json(struct json_value *out,
+                                             const char *key)
+{
+    (void)key;
+    if (!out) return false;
+    json_set_object(out);
+    json_push_kv_bool(out, "initialised", g_stage != NULL);
+    json_push_kv_str (out, "stage_name", STAGE_NAME);
+    json_push_kv_int (out, "cursor",
+                      (int64_t)(g_stage ? stage_cursor(g_stage) : 0));
+    json_push_kv_int (out, "pool_size", (int64_t)VH_POOL_SIZE);
+    json_push_kv_int (out, "batch_size", (int64_t)VH_BATCH_SIZE);
+    json_push_kv_int (out, "passed_total",
+                      (int64_t)atomic_load(&g_passed_total));
+    json_push_kv_int (out, "failed_total",
+                      (int64_t)atomic_load(&g_failed_total));
+    json_push_kv_int (out, "last_step_unix",
+                      atomic_load(&g_last_step_unix));
+    json_push_kv_int (out, "last_blocked_unix",
+                      atomic_load(&g_last_blocked_unix));
+    if (g_stage) {
+        json_push_kv_int(out, "advanced_count",
+                         (int64_t)stage_advanced_count(g_stage));
+        json_push_kv_int(out, "blocked_count",
+                         (int64_t)stage_blocked_count(g_stage));
+        json_push_kv_int(out, "idle_count",
+                         (int64_t)stage_idle_count(g_stage));
+        json_push_kv_int(out, "error_count",
+                         (int64_t)stage_error_count(g_stage));
+    }
+    return true;
+}

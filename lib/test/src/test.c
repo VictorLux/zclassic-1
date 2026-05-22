@@ -506,6 +506,7 @@ int main(void)
     failures += test_projection();
     failures += test_progress_store();
     failures += test_header_admit_stage();
+    failures += test_validate_headers_stage();
     failures += test_domain_consensus_verify();
     failures += test_application_consensus_validate_block();
     failures += test_block_log_file();
