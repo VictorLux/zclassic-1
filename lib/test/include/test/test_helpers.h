@@ -326,6 +326,7 @@ int test_projection(void);
 int test_progress_store(void);
 int test_header_admit_stage(void);
 int test_validate_headers_stage(void);
+int test_body_fetch_stage(void);
 int test_domain_consensus_verify(void);
 int test_application_consensus_validate_block(void);
 int test_block_log_file(void);

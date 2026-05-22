@@ -15,6 +15,7 @@
 #include "services/zclassicd_oracle_service.h"
 #include "services/header_admit_stage.h"
 #include "services/validate_headers_stage.h"
+#include "services/body_fetch_stage.h"
 #include "services/header_probe_service.h"
 #include "services/legacy_mirror_sync_service.h"
 #include "services/node_health_service.h"
@@ -611,6 +612,63 @@ static void boot_validate_headers_supervisor_register(struct boot_svc_ctx *svc)
     if (g_vh_id == SUPERVISOR_INVALID_ID) {
         fprintf(stderr,  // obs-ok:vh-supervisor-fallback-warn
             "[supervisor] WARN staged.validate_headers register failed\n");
+    }
+}
+
+/* ── Wave S, S-4: body_fetch stage supervisor child ──────────────── */
+static struct liveness_contract g_bf_contract;
+static supervisor_child_id      g_bf_id = SUPERVISOR_INVALID_ID;
+static struct main_state       *g_bf_ms = NULL;
+
+static void bf_tick(struct liveness_contract *c)
+{
+    (void)c;
+    if (!g_bf_ms) return;
+    (void)body_fetch_stage_drain(BODY_FETCH_BATCH_PER_TICK);
+    supervisor_progress(g_bf_id,
+                        (int64_t)body_fetch_stage_cursor());
+    supervisor_tick(g_bf_id);
+}
+
+static void bf_stall(struct liveness_contract *c)
+{
+    (void)c;
+    /* Shadow-mode stall = body_fetch falling behind validate OR bodies
+     * not arriving on disk. Either way, surface but do nothing
+     * destructive. */
+    fprintf(stderr,  // obs-ok:bf-shadow-stall
+            "[supervisor] staged.body_fetch stalled "
+            "(cursor=%llu observed=%llu skipped=%llu) — shadow fetch behind validate\n",
+            (unsigned long long)body_fetch_stage_cursor(),
+            (unsigned long long)body_fetch_stage_observed_total(),
+            (unsigned long long)body_fetch_stage_skipped_total());
+}
+
+static void boot_body_fetch_supervisor_register(struct boot_svc_ctx *svc)
+{
+    if (!svc || !svc->state) return;
+    if (g_bf_id != SUPERVISOR_INVALID_ID) return;  /* idempotent */
+
+    if (!body_fetch_stage_init(svc->state)) {
+        fprintf(stderr,  // obs-ok:bf-init-warn
+            "[supervisor] WARN staged.body_fetch init failed — "
+            "shadow fetch not running this boot\n");
+        return;
+    }
+
+    g_bf_ms = svc->state;
+    liveness_contract_init(&g_bf_contract, "staged.body_fetch");
+    atomic_store(&g_bf_contract.period_secs, (int64_t)2);
+    /* Same generous quiet window as upstream shadow stages — body_fetch
+     * naturally idles whenever validate is idle. */
+    atomic_store(&g_bf_contract.progress_max_quiet_us,
+                 (int64_t)1800 * 1000 * 1000);
+    g_bf_contract.on_tick  = bf_tick;
+    g_bf_contract.on_stall = bf_stall;
+    g_bf_id = supervisor_register(&g_bf_contract);
+    if (g_bf_id == SUPERVISOR_INVALID_ID) {
+        fprintf(stderr,  // obs-ok:bf-supervisor-fallback-warn
+            "[supervisor] WARN staged.body_fetch register failed\n");
     }
 }
 
@@ -2812,6 +2870,7 @@ bool app_init_services(struct app_context *ctx,
     boot_coord_escalation_supervisor_register(svc);
     boot_header_admit_supervisor_register(svc);
     boot_validate_headers_supervisor_register(svc);
+    boot_body_fetch_supervisor_register(svc);
 
     if (!boot_register_runtime_services(svc) ||
         !zcl_service_kernel_start_all(&svc->runtime_kernel)) {
@@ -2973,8 +3032,13 @@ static void shutdown_release_owned_resources(struct boot_svc_ctx *svc)
     main_state_free(svc->state);
     sapling_free_params();
 
-    /* Wave S, S-3: stop the validate_headers stage first so its
-     * workers (which read disk) don't outlive the disk_block_io cache. */
+    /* Wave S shutdown order: bottom-up through the saga so each stage's
+     * upstream is still alive while it drains in-flight work. S-4
+     * body_fetch reads from validate_headers_log; tear it down first. */
+    body_fetch_stage_shutdown();
+
+    /* Wave S, S-3: stop the validate_headers stage next so its workers
+     * (which read disk) don't outlive the disk_block_io cache. */
     validate_headers_stage_shutdown();
 
     /* Wave S, S-2: stop the shadow header_admit stage before closing

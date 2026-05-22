@@ -48,6 +48,7 @@
 #include "services/chain_evidence_controller.h"
 #include "services/header_admit_stage.h"
 #include "services/validate_headers_stage.h"
+#include "services/body_fetch_stage.h"
 #include "storage/progress_store.h"
 #include "services/ibd_throttle.h"
 #include "services/mempool_limits.h"
@@ -415,6 +416,8 @@ static const struct dump_entry g_dumpers[] = {
                      "Wave S header_admit shadow stage: cursor, counters, last admit" },
     { "validate_headers", validate_headers_stage_dump_state_json,
                      "Wave S validate_headers shadow stage: cursor, pool stats, pass/fail counters" },
+    { "body_fetch", body_fetch_stage_dump_state_json,
+                     "Wave S body_fetch shadow stage: cursor, observed/skipped counters, last advance" },
     { "quorum_oracle", quorum_oracle_dump_state_json,
                      "multi-source quorum oracle: per-source vote stats + last verdict" },
     { "peer_lifecycle", peer_lifecycle_dump_state_json,
