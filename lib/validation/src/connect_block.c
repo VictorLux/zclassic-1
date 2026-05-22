@@ -113,15 +113,17 @@ bool connect_block(const struct block *block,
     else
         block_header_get_hash(&block->header, &block_hash);
 
-    bool mirror_authorized =
-        mirror_consensus_authorized_current(pindex->nHeight, &block_hash);
+    /* mirror_consensus_authorized_current was deleted in F-1e — the
+     * dormant scope/auth scaffolding never fired in production
+     * (scope_enter was never called), so this value was always false.
+     * Kept as a local so the surrounding override sites compile; the
+     * dead branches dominate-out at -O2. */
+    bool mirror_authorized = false;
 
     bool expensive_checks = true;
     if (checkpoint_covers(&params->checkpointData, pindex->nHeight))
         expensive_checks = false;
     if (g_deferred_proof_validation_below_height >= 0 && pindex->nHeight <= g_deferred_proof_validation_below_height)
-        expensive_checks = false;
-    if (mirror_authorized)
         expensive_checks = false;
 
     /* Re-validate block. Merkle root is always checked (cheap SHA256d

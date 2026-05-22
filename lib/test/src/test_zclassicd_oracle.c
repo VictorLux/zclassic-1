@@ -431,34 +431,28 @@ int test_zclassicd_oracle(void)
     }
 
     {
-        struct uint256 h;
+        /* F-1e: scope/auth machinery deleted. Tests now verify the
+         * surviving observability primitives:
+         *   - mirror_consensus_record_override (emits decision event)
+         *   - mirror_consensus_record_blocker  (typed-blocker primitive)
+         *   - mirror_consensus_stats_snapshot   (counters)
+         * All overrides are classified "unsafe" now since there is no
+         * authorized scope to validate them. */
         char events[4096];
         size_t events_len;
-        uint256_set_hex(&h, AGREE_HEX);
         event_log_init();
         mirror_consensus_reset_for_test();
         mirror_consensus_set_enabled(true);
-        ZO_CHECK("mirror authority authorizes hash",
-                 mirror_consensus_authorize_block(7, &h));
-        ZO_CHECK("mirror authority inactive without scope",
-                 !mirror_consensus_authorized_current(7, &h));
-        mirror_consensus_scope_enter();
-        ZO_CHECK("mirror authority active in scope",
-                 mirror_consensus_authorized_current(7, &h));
-        struct uint256 wrong_h;
-        uint256_set_hex(&wrong_h, DISAGREE_HEX);
-        ZO_CHECK("mirror authority rejects wrong hash in scope",
-                 !mirror_consensus_authorized_current(7, &wrong_h));
         mirror_consensus_record_override(7, "bad-txns-BIP30");
         struct mirror_consensus_stats ms;
         mirror_consensus_stats_snapshot(&ms);
         ZO_CHECK("mirror override counted", ms.overrides_total == 1);
-        ZO_CHECK("mirror unsafe overrides initially zero",
-                 ms.unsafe_overrides_total == 0);
-        ZO_CHECK("mirror override marked safe", ms.last_override_safe);
+        ZO_CHECK("mirror override classified unsafe (no scope)",
+                 ms.unsafe_overrides_total == 1);
+        ZO_CHECK("mirror override marked unsafe", !ms.last_override_safe);
         ZO_CHECK("mirror override scope recorded",
                  strcmp(ms.last_override_scope,
-                        "authorized_mirror_scope") == 0);
+                        "unsafe_no_authorized_scope") == 0);
         ZO_CHECK("mirror blockers initially zero", ms.blockers_total == 0);
         ZO_CHECK("mirror override height", ms.last_override_height == 7);
         ZO_CHECK("mirror override reason",
@@ -474,16 +468,10 @@ int test_zclassicd_oracle(void)
         ZO_CHECK("mirror override event advisory",
                  strstr(events,
                         "trust=bounded_advisory_fallback") != NULL);
-        ZO_CHECK("mirror override event safe",
-                 strstr(events, "safe=true") != NULL);
         ZO_CHECK("mirror override event reason",
                  strstr(events, "reason=bad-txns-BIP30") != NULL);
         ZO_CHECK("mirror override event count",
                  strstr(events, "overrides=1") != NULL);
-        ZO_CHECK("mirror override event unsafe count",
-                 strstr(events, "unsafe=0") != NULL);
-        ZO_CHECK("mirror override event blocker count",
-                 strstr(events, "blockers=0") != NULL);
         mirror_consensus_record_blocker("activation-no-progress");
         mirror_consensus_stats_snapshot(&ms);
         ZO_CHECK("mirror blocker counted", ms.blockers_total == 1);
@@ -501,22 +489,6 @@ int test_zclassicd_oracle(void)
                  strstr(events, "blockers=1") != NULL);
         ZO_CHECK("mirror blocker event blocker code",
                  strstr(events, "blk=activation-no-progress") != NULL);
-        mirror_consensus_clear_blocker();
-        mirror_consensus_stats_snapshot(&ms);
-        ZO_CHECK("mirror blocker clears",
-                 ms.activation_blocker[0] == '\0');
-        mirror_consensus_scope_leave();
-        ZO_CHECK("mirror authority leaves scope",
-                 !mirror_consensus_scope_active());
-        mirror_consensus_record_override(8, "test-unsafe-no-scope");
-        mirror_consensus_stats_snapshot(&ms);
-        ZO_CHECK("mirror unsafe override counted",
-                 ms.unsafe_overrides_total == 1);
-        ZO_CHECK("mirror unsafe override marked unsafe",
-                 !ms.last_override_safe);
-        ZO_CHECK("mirror unsafe override scope recorded",
-                 strcmp(ms.last_override_scope,
-                        "unsafe_no_authorized_scope") == 0);
         mirror_consensus_reset_for_test();
     }
 

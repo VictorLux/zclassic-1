@@ -21,18 +21,9 @@ struct mirror_consensus_stats {
 };
 
 void mirror_consensus_set_enabled(bool enabled);
-bool mirror_consensus_authorize_block(int height, const struct uint256 *hash);
-bool mirror_consensus_is_authorized(int height, const struct uint256 *hash);
-
-void mirror_consensus_scope_enter(void);
-void mirror_consensus_scope_leave(void);
-bool mirror_consensus_scope_active(void);
-bool mirror_consensus_authorized_current(int height,
-                                         const struct uint256 *hash);
 
 void mirror_consensus_record_override(int height, const char *reason);
 void mirror_consensus_record_blocker(const char *reason);
-void mirror_consensus_clear_blocker(void);
 void mirror_consensus_stats_snapshot(struct mirror_consensus_stats *out);
 void mirror_consensus_reset_for_test(void);
 

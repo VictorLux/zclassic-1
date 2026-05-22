@@ -446,8 +446,7 @@ fail:
         node_db_rollback(ndb);
     ndb->sync_in_batch = false;
     ndb->sync_pending_blocks = 0;
-    if (mirror_consensus_scope_active() &&
-        (sqlite_rc == SQLITE_BUSY || sqlite_rc == SQLITE_LOCKED))
+    if (sqlite_rc == SQLITE_BUSY || sqlite_rc == SQLITE_LOCKED)
         mirror_consensus_record_blocker("db-writer-busy");
     LOG_FAIL("sync", "connect_block_local: failed at height %d "
              "reason=%s sqlite_rc=%d sqlite_msg=%s last_op=%s",
@@ -539,8 +538,6 @@ bool node_db_sync_connect_block_async(struct node_db *ndb,
     if (!ndb || !ndb->open || !blk || !pindex || !pindex->phashBlock)
         LOG_FAIL("sync", "connect_block_async: invalid args (ndb=%p, blk=%p, pindex=%p)",
                  (void *)ndb, (void *)blk, (void *)pindex);
-    if (mirror_consensus_scope_active())
-        return true;
     if (!dbsvc) {
         /* This is a derived projection of a block that consensus and the
          * coins view already accepted. During boot activation the runtime

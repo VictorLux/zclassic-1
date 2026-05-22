@@ -180,7 +180,11 @@ static void lms_clear_blocker(void)
     g_lms.last_blocker_code[0] = '\0';
     g_lms.last_error[0] = '\0';
     pthread_mutex_unlock(&g_lms.lock);
-    mirror_consensus_clear_blocker();
+    /* mirror_consensus_clear_blocker was deleted in F-1e — the
+     * mirror.* blocker IDs that wired to the typed blocker registry
+     * via mirror_consensus_record_blocker auto-expire via
+     * BLOCKER_TRANSIENT classification. The cryptographic-mismatch
+     * (PERMANENT) blockers were never intended to auto-clear. */
 }
 
 static int lms_env_int(const char *name, int fallback, int min, int max)

@@ -364,13 +364,6 @@ struct block_index *find_most_work_chain(struct main_state *ms)
             skipped_failed++;
             continue;
         }
-        if (mirror_consensus_scope_active() &&
-            (!pindex->phashBlock ||
-             !mirror_consensus_is_authorized(pindex->nHeight,
-                                             pindex->phashBlock))) {
-            skipped_invalid++;
-            continue;
-        }
 
         /* Must have at least header validation */
         if (!block_index_is_valid(pindex, BLOCK_VALID_TREE)) {
@@ -509,11 +502,6 @@ struct block_index *find_best_active_tip_child(struct main_state *ms,
             continue;
         if (block_has_any_failure(candidate))
             continue;
-        if (mirror_consensus_scope_active() &&
-            (!candidate->phashBlock ||
-             !mirror_consensus_is_authorized(candidate->nHeight,
-                                             candidate->phashBlock)))
-            continue;
         if (!block_index_is_valid(candidate, BLOCK_VALID_TREE))
             continue;
         if (!(candidate->nStatus & BLOCK_HAVE_DATA))
@@ -616,11 +604,6 @@ struct block_index *find_verified_unlinked_active_tip_child(
         if (candidate->nHeight != tip->nHeight + 1)
             continue;
         if (block_has_any_failure(candidate))
-            continue;
-        if (mirror_consensus_scope_active() &&
-            (!candidate->phashBlock ||
-             !mirror_consensus_is_authorized(candidate->nHeight,
-                                             candidate->phashBlock)))
             continue;
         if (!(candidate->nStatus & BLOCK_HAVE_DATA))
             continue;
@@ -835,12 +818,10 @@ bool process_block_commit_tip(struct main_state *ms,
     fprintf(stderr, // obs-ok:pre-existing-diagnostic
             "process_block: csr rejected tip commit (%s) reason=%s h=%d\n",
             csr_result_name(rc), reason, new_tip->nHeight);
-    if (mirror_consensus_scope_active()) {
-        if (rc == CSR_REJECTED_DB_BUSY)
-            mirror_consensus_record_blocker("db-writer-busy");
-        else if (rc == CSR_REJECTED_PERSIST)
-            mirror_consensus_record_blocker("csr-persist-failed");
-    }
+    if (rc == CSR_REJECTED_DB_BUSY)
+        mirror_consensus_record_blocker("db-writer-busy");
+    else if (rc == CSR_REJECTED_PERSIST)
+        mirror_consensus_record_blocker("csr-persist-failed");
     trace_set_status(csr_span, TRACE_STATUS_ERROR);
     trace_attr_str(csr_span, "error", csr_result_name(rc));
     trace_end(csr_span);
