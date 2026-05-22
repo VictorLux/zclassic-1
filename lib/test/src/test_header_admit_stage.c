@@ -312,6 +312,285 @@ int test_header_admit_stage(void)
                  !header_admit_stage_init(NULL));
     }
 
+    /* ── S-11 diff: NOT_READY before init ──────────────────────────── */
+    {
+        /* Note: previous block left state un-init, and pre-init guard
+         * confirmed that. progress.kv is also closed at this point. */
+        struct header_admit_diff_report rep;
+        HA_CHECK("diff: returns true with NOT_READY before init",
+                 header_admit_stage_diff(-1, -1, &rep) &&
+                 rep.status == HEADER_ADMIT_DIFF_NOT_READY);
+        HA_CHECK("diff: NOT_READY report has -1 sentinels",
+                 rep.log_max_height == -1 &&
+                 rep.chain_tip_height == -1 &&
+                 rep.first_divergent_height == -1);
+    }
+
+    /* ── S-11 diff: CONVERGED on fully drained chain ───────────────── */
+    {
+        char dir[256];
+        ha_tmpdir(dir, sizeof(dir), "diff_conv");
+        mkdir_p_ha(dir);
+        HA_CHECK("diff_conv: store opens", progress_store_open(dir));
+
+        struct main_state ms;
+        memset(&ms, 0, sizeof(ms));
+        active_chain_init(&ms.chain_active);
+        struct synth_chain sc;
+        synth_chain_build(&sc, 5);
+        active_chain_set_tip(&ms.chain_active, &sc.blocks[4]);
+
+        HA_CHECK("diff_conv: stage init", header_admit_stage_init(&ms));
+        HA_CHECK("diff_conv: drain 5",
+                 header_admit_stage_drain(100) == 5);
+
+        struct header_admit_diff_report rep;
+        HA_CHECK("diff_conv: diff returns true",
+                 header_admit_stage_diff(-1, -1, &rep));
+        HA_CHECK("diff_conv: status CONVERGED",
+                 rep.status == HEADER_ADMIT_DIFF_CONVERGED);
+        HA_CHECK("diff_conv: matched 5",
+                 rep.match_count == 5 && rep.checked_count == 5);
+        HA_CHECK("diff_conv: no mismatches",
+                 rep.mismatch_count == 0 &&
+                 rep.missing_in_log_count == 0 &&
+                 rep.missing_in_chain_count == 0);
+        HA_CHECK("diff_conv: first_divergent_height == -1",
+                 rep.first_divergent_height == -1);
+        HA_CHECK("diff_conv: bounds resolved [0..4]",
+                 rep.start_height == 0 && rep.end_height == 4);
+        HA_CHECK("diff_conv: log_max=4 chain_tip=4 cursor=5",
+                 rep.log_max_height == 4 &&
+                 rep.chain_tip_height == 4 &&
+                 rep.cursor == 5);
+        HA_CHECK("diff_conv: no samples on converged",
+                 rep.sample_count == 0);
+
+        header_admit_stage_shutdown();
+        active_chain_free(&ms.chain_active);
+        synth_chain_free(&sc);
+        progress_store_close();
+        test_cleanup_tmpdir(dir);
+    }
+
+    /* ── S-11 diff: CHAIN_AHEAD when cursor lags behind tip ────────── */
+    {
+        char dir[256];
+        ha_tmpdir(dir, sizeof(dir), "diff_chainahead");
+        mkdir_p_ha(dir);
+        HA_CHECK("diff_chainahead: store opens", progress_store_open(dir));
+
+        struct main_state ms;
+        memset(&ms, 0, sizeof(ms));
+        active_chain_init(&ms.chain_active);
+        struct synth_chain sc;
+        synth_chain_build(&sc, 5);
+        active_chain_set_tip(&ms.chain_active, &sc.blocks[4]);
+
+        HA_CHECK("diff_chainahead: init", header_admit_stage_init(&ms));
+        /* Only drain 3 of 5 — heights 3,4 will be missing from log. */
+        for (int i = 0; i < 3; i++)
+            HA_CHECK("diff_chainahead: step advances",
+                     header_admit_stage_step_once() == STAGE_ADVANCED);
+
+        struct header_admit_diff_report rep;
+        HA_CHECK("diff_chainahead: diff(-1,-1) uses min(log,chain) for end",
+                 header_admit_stage_diff(-1, -1, &rep));
+        HA_CHECK("diff_chainahead: auto-end=2 (log_max=2)",
+                 rep.end_height == 2 &&
+                 rep.log_max_height == 2 &&
+                 rep.chain_tip_height == 4);
+        HA_CHECK("diff_chainahead: auto bound makes it converged",
+                 rep.status == HEADER_ADMIT_DIFF_CONVERGED);
+
+        /* Explicit end=4 should reveal heights 3,4 missing in log. */
+        HA_CHECK("diff_chainahead: explicit diff(0,4)",
+                 header_admit_stage_diff(0, 4, &rep));
+        HA_CHECK("diff_chainahead: status CHAIN_AHEAD",
+                 rep.status == HEADER_ADMIT_DIFF_CHAIN_AHEAD);
+        HA_CHECK("diff_chainahead: 3 matches + 2 missing_in_log",
+                 rep.match_count == 3 &&
+                 rep.missing_in_log_count == 2 &&
+                 rep.missing_in_chain_count == 0 &&
+                 rep.mismatch_count == 0);
+        HA_CHECK("diff_chainahead: first_divergent=3",
+                 rep.first_divergent_height == 3);
+        HA_CHECK("diff_chainahead: 2 samples for the 2 missings",
+                 rep.sample_count == 2);
+        HA_CHECK("diff_chainahead: sample[0] chain_present log_absent at h=3",
+                 rep.samples[0].height == 3 &&
+                 !rep.samples[0].log_present &&
+                 rep.samples[0].chain_present);
+
+        header_admit_stage_shutdown();
+        active_chain_free(&ms.chain_active);
+        synth_chain_free(&sc);
+        progress_store_close();
+        test_cleanup_tmpdir(dir);
+    }
+
+    /* ── S-11 diff: DIVERGENT on real hash mismatch ────────────────── */
+    {
+        char dir[256];
+        ha_tmpdir(dir, sizeof(dir), "diff_div");
+        mkdir_p_ha(dir);
+        HA_CHECK("diff_div: store opens", progress_store_open(dir));
+
+        struct main_state ms;
+        memset(&ms, 0, sizeof(ms));
+        active_chain_init(&ms.chain_active);
+        struct synth_chain sc;
+        synth_chain_build(&sc, 5);
+        active_chain_set_tip(&ms.chain_active, &sc.blocks[4]);
+
+        HA_CHECK("diff_div: init", header_admit_stage_init(&ms));
+        HA_CHECK("diff_div: drain 5",
+                 header_admit_stage_drain(100) == 5);
+
+        /* Mutate chain hashes at heights 2 and 3 AFTER admission.
+         * The log still has the original hashes; the chain now has
+         * different ones — that's a real DIVERGENT. */
+        sc.hashes[2].data[31] ^= 0xFF;
+        sc.hashes[3].data[31] ^= 0xFF;
+
+        struct header_admit_diff_report rep;
+        HA_CHECK("diff_div: diff(0,4) returns true",
+                 header_admit_stage_diff(0, 4, &rep));
+        HA_CHECK("diff_div: status DIVERGENT",
+                 rep.status == HEADER_ADMIT_DIFF_DIVERGENT);
+        HA_CHECK("diff_div: 3 matches + 2 mismatches",
+                 rep.match_count == 3 && rep.mismatch_count == 2);
+        HA_CHECK("diff_div: first_divergent=2",
+                 rep.first_divergent_height == 2);
+        HA_CHECK("diff_div: 2 samples for the 2 mismatches",
+                 rep.sample_count == 2);
+        HA_CHECK("diff_div: sample[0] both-present at h=2",
+                 rep.samples[0].height == 2 &&
+                 rep.samples[0].log_present &&
+                 rep.samples[0].chain_present);
+        HA_CHECK("diff_div: sample[0] hashes differ",
+                 memcmp(rep.samples[0].log_hash,
+                        rep.samples[0].chain_hash, 32) != 0);
+
+        header_admit_stage_shutdown();
+        active_chain_free(&ms.chain_active);
+        synth_chain_free(&sc);
+        progress_store_close();
+        test_cleanup_tmpdir(dir);
+    }
+
+    /* ── S-11 diff: LOG_AHEAD when chain shrinks below log ─────────── */
+    {
+        char dir[256];
+        ha_tmpdir(dir, sizeof(dir), "diff_logahead");
+        mkdir_p_ha(dir);
+        HA_CHECK("diff_logahead: store opens", progress_store_open(dir));
+
+        struct main_state ms;
+        memset(&ms, 0, sizeof(ms));
+        active_chain_init(&ms.chain_active);
+        struct synth_chain sc;
+        synth_chain_build(&sc, 5);
+        active_chain_set_tip(&ms.chain_active, &sc.blocks[4]);
+
+        HA_CHECK("diff_logahead: init", header_admit_stage_init(&ms));
+        HA_CHECK("diff_logahead: drain 5",
+                 header_admit_stage_drain(100) == 5);
+
+        /* Shrink the chain back to height 2 — log still has 0..4. */
+        HA_CHECK("diff_logahead: shrink chain to height 2",
+                 active_chain_set_tip(&ms.chain_active, &sc.blocks[2]));
+
+        struct header_admit_diff_report rep;
+        HA_CHECK("diff_logahead: diff(0,4)",
+                 header_admit_stage_diff(0, 4, &rep));
+        HA_CHECK("diff_logahead: status LOG_AHEAD",
+                 rep.status == HEADER_ADMIT_DIFF_LOG_AHEAD);
+        HA_CHECK("diff_logahead: 3 matches + 2 missing_in_chain",
+                 rep.match_count == 3 &&
+                 rep.missing_in_chain_count == 2 &&
+                 rep.missing_in_log_count == 0 &&
+                 rep.mismatch_count == 0);
+        HA_CHECK("diff_logahead: first_divergent=3",
+                 rep.first_divergent_height == 3);
+        HA_CHECK("diff_logahead: chain_tip=2 log_max=4",
+                 rep.chain_tip_height == 2 &&
+                 rep.log_max_height == 4);
+
+        header_admit_stage_shutdown();
+        active_chain_free(&ms.chain_active);
+        synth_chain_free(&sc);
+        progress_store_close();
+        test_cleanup_tmpdir(dir);
+    }
+
+    /* ── S-11 diff: EMPTY when range inverted ──────────────────────── */
+    {
+        char dir[256];
+        ha_tmpdir(dir, sizeof(dir), "diff_empty");
+        mkdir_p_ha(dir);
+        progress_store_open(dir);
+
+        struct main_state ms;
+        memset(&ms, 0, sizeof(ms));
+        active_chain_init(&ms.chain_active);
+        struct synth_chain sc;
+        synth_chain_build(&sc, 3);
+        active_chain_set_tip(&ms.chain_active, &sc.blocks[2]);
+
+        header_admit_stage_init(&ms);
+        header_admit_stage_drain(100);
+
+        struct header_admit_diff_report rep;
+        HA_CHECK("diff_empty: explicit start>end → EMPTY",
+                 header_admit_stage_diff(10, 5, &rep) &&
+                 rep.status == HEADER_ADMIT_DIFF_EMPTY);
+
+        header_admit_stage_shutdown();
+        active_chain_free(&ms.chain_active);
+        synth_chain_free(&sc);
+        progress_store_close();
+        test_cleanup_tmpdir(dir);
+    }
+
+    /* ── S-11 diff: sample_count caps at MAX_SAMPLES ───────────────── */
+    {
+        char dir[256];
+        ha_tmpdir(dir, sizeof(dir), "diff_cap");
+        mkdir_p_ha(dir);
+        progress_store_open(dir);
+
+        struct main_state ms;
+        memset(&ms, 0, sizeof(ms));
+        active_chain_init(&ms.chain_active);
+        const int N = HEADER_ADMIT_DIFF_MAX_SAMPLES + 8;  /* 40 */
+        struct synth_chain sc;
+        synth_chain_build(&sc, N);
+        active_chain_set_tip(&ms.chain_active, &sc.blocks[N - 1]);
+
+        header_admit_stage_init(&ms);
+        header_admit_stage_drain(N * 2);
+
+        /* Flip last byte on every chain hash → every height diverges. */
+        for (int i = 0; i < N; i++) sc.hashes[i].data[31] ^= 0xAA;
+
+        struct header_admit_diff_report rep;
+        HA_CHECK("diff_cap: diff(0,N-1)",
+                 header_admit_stage_diff(0, N - 1, &rep));
+        HA_CHECK("diff_cap: status DIVERGENT",
+                 rep.status == HEADER_ADMIT_DIFF_DIVERGENT);
+        HA_CHECK("diff_cap: mismatch_count == N",
+                 rep.mismatch_count == N);
+        HA_CHECK("diff_cap: sample_count capped at MAX_SAMPLES",
+                 rep.sample_count == HEADER_ADMIT_DIFF_MAX_SAMPLES);
+
+        header_admit_stage_shutdown();
+        active_chain_free(&ms.chain_active);
+        synth_chain_free(&sc);
+        progress_store_close();
+        test_cleanup_tmpdir(dir);
+    }
+
     printf("header_admit_stage: %d failures\n", failures);
     return failures;
 }

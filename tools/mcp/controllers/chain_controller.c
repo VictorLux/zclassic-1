@@ -15,6 +15,7 @@
 #include "json/json.h"
 #include "mcp/metrics.h"
 #include "ports/block_log_port.h"
+#include "services/header_admit_stage.h"
 #include "util/log_macros.h"
 
 #include <stdio.h>
@@ -210,6 +211,120 @@ static int h_zcl_diff_with_legacy_shadow(const struct mcp_request *req,
     return 0;
 }
 
+/* ── S-11 mini-diff: staged header_admit vs in-memory active_chain ──── */
+
+static const char *
+header_admit_diff_status_name(enum header_admit_diff_status s)
+{
+    switch (s) {
+    case HEADER_ADMIT_DIFF_CONVERGED:    return "CONVERGED";
+    case HEADER_ADMIT_DIFF_DIVERGENT:    return "DIVERGENT";
+    case HEADER_ADMIT_DIFF_LOG_AHEAD:    return "LOG_AHEAD";
+    case HEADER_ADMIT_DIFF_CHAIN_AHEAD:  return "CHAIN_AHEAD";
+    case HEADER_ADMIT_DIFF_EMPTY:        return "EMPTY";
+    case HEADER_ADMIT_DIFF_NOT_READY:    return "NOT_READY";
+    }
+    return "UNKNOWN";
+}
+
+/* Render 32-byte hash as 64-char lowercase hex. Caller owns the buffer
+ * which must hold at least 65 bytes. */
+static void hex32(const uint8_t *in, char *out)
+{
+    static const char *hx = "0123456789abcdef";
+    for (int i = 0; i < 32; i++) {
+        out[2*i]   = hx[(in[i] >> 4) & 0xF];
+        out[2*i+1] = hx[in[i]        & 0xF];
+    }
+    out[64] = 0;
+}
+
+static int h_zcl_diff_staged_header_admit(const struct mcp_request *req,
+                                           struct mcp_response *res)
+{
+    int64_t start_h = json_get_int_or(req->args, "start_height", -1);
+    int64_t end_h   = json_get_int_or(req->args, "end_height",   -1);
+
+    if (start_h < -1)            start_h = -1;
+    if (end_h   < -1)            end_h   = -1;
+    if (start_h > (int64_t)INT32_MAX) start_h = INT32_MAX;
+    if (end_h   > (int64_t)INT32_MAX) end_h   = INT32_MAX;
+
+    struct header_admit_diff_report rep;
+    if (!header_admit_stage_diff((int32_t)start_h, (int32_t)end_h, &rep)) {
+        res->error = MCP_ERR_HANDLER_FAILED;
+        snprintf(res->error_message, sizeof(res->error_message),
+                 "diff_staged_header_admit: bad inputs");
+        LOG_ERR("mcp.chain", "diff_staged_header_admit: bad inputs");
+        return 0;
+    }
+
+    /* Body: scalars + an array of up to HEADER_ADMIT_DIFF_MAX_SAMPLES
+     * samples. Each sample is ≤ ~260 bytes (two hex hashes + flags), so
+     * a 16 KB buffer comfortably holds 32 samples + header. */
+    char buf[16384];
+    int n = snprintf(buf, sizeof buf,
+            "{\"status\":\"%s\","
+            "\"start_height\":%d,\"end_height\":%d,"
+            "\"checked_count\":%d,"
+            "\"match_count\":%d,"
+            "\"mismatch_count\":%d,"
+            "\"missing_in_log_count\":%d,"
+            "\"missing_in_chain_count\":%d,"
+            "\"first_divergent_height\":%d,"
+            "\"log_max_height\":%d,"
+            "\"chain_tip_height\":%d,"
+            "\"cursor\":%d,"
+            "\"samples\":[",
+            header_admit_diff_status_name(rep.status),
+            rep.start_height, rep.end_height,
+            rep.checked_count, rep.match_count, rep.mismatch_count,
+            rep.missing_in_log_count, rep.missing_in_chain_count,
+            rep.first_divergent_height,
+            rep.log_max_height, rep.chain_tip_height, rep.cursor);
+    if (n < 0 || n >= (int)sizeof buf) goto body_too_big;
+
+    for (int i = 0; i < rep.sample_count; i++) {
+        const struct header_admit_diff_sample *s = &rep.samples[i];
+        char log_hex[65]   = {0};
+        char chain_hex[65] = {0};
+        if (s->log_present)   hex32(s->log_hash,   log_hex);
+        if (s->chain_present) hex32(s->chain_hash, chain_hex);
+        int m = snprintf(buf + n, sizeof(buf) - n,
+                "%s{\"height\":%d,"
+                "\"log_present\":%s,\"chain_present\":%s,"
+                "\"log_hash\":\"%s\",\"chain_hash\":\"%s\"}",
+                (i == 0) ? "" : ",",
+                s->height,
+                s->log_present   ? "true" : "false",
+                s->chain_present ? "true" : "false",
+                log_hex, chain_hex);
+        if (m < 0 || (n + m) >= (int)sizeof buf) goto body_too_big;
+        n += m;
+    }
+
+    int tail = snprintf(buf + n, sizeof(buf) - n, "]}");
+    if (tail < 0 || (n + tail) >= (int)sizeof buf) goto body_too_big;
+
+    char *body = strdup(buf);
+    if (!body) {
+        res->error = MCP_ERR_HANDLER_FAILED;
+        snprintf(res->error_message, sizeof(res->error_message),
+                 "diff_staged_header_admit: strdup");
+        LOG_ERR("mcp.chain", "diff_staged_header_admit: strdup");
+        return 0;
+    }
+    res->body = body;
+    return 0;
+
+body_too_big:
+    res->error = MCP_ERR_HANDLER_FAILED;
+    snprintf(res->error_message, sizeof(res->error_message),
+             "diff_staged_header_admit: body buffer overflow");
+    LOG_ERR("mcp.chain", "diff_staged_header_admit: body buffer overflow");
+    return 0;
+}
+
 static int h_zcl_utxo_audit(const struct mcp_request *req,
                             struct mcp_response *res)
 {
@@ -318,6 +433,16 @@ static const struct mcp_param_spec p_diff_shadow[] = {
       0, 0, 0, 1023, NULL, NULL },
 };
 
+static const struct mcp_param_spec p_diff_staged[] = {
+    { "start_height", MCP_PARAM_INT, false,
+      "First height to compare (inclusive). -1 = 0.",
+      -1, 100000000, 0, 0, NULL, "-1" },
+    { "end_height", MCP_PARAM_INT, false,
+      "Last height to compare (inclusive). -1 = min(log_max, chain_tip). "
+      "Range hard-capped at 10000 heights per call.",
+      -1, 100000000, 0, 0, NULL, "-1" },
+};
+
 static const struct mcp_param_spec p_utxo_audit[] = {
     { "remote_sha3", MCP_PARAM_STR, false,
       "Trusted peer SHA3 commitment to compare against.",
@@ -383,6 +508,13 @@ static const struct mcp_tool_route k_routes[] = {
       "Updates zcl_shadow_divergence_count Prometheus gauge.",
       p_diff_shadow, PARAM_COUNT(p_diff_shadow),
       h_zcl_diff_with_legacy_shadow, 0, NULL },
+    { "zcl_diff_staged_header_admit", "chain",
+      "S-11 mini-diff: compare the staged header_admit_log (S-2 output) "
+      "against the live in-memory active_chain over a height window. "
+      "Reports CONVERGED / DIVERGENT / LOG_AHEAD / CHAIN_AHEAD with "
+      "counts and up to 32 sample mismatches. Read-only diagnostic.",
+      p_diff_staged, PARAM_COUNT(p_diff_staged),
+      h_zcl_diff_staged_header_admit, 0, NULL },
 };
 
 void mcp_register_chain(void)
