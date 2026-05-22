@@ -507,6 +507,7 @@ int main(void)
     failures += test_mutator();
     failures += test_shadow_feeder();
     failures += test_diff_with_legacy_shadow();
+    failures += test_utxo_snapshot_inmem();
     failures += test_make_lint_gates();
     failures += test_multisig();
     failures += test_mcp_fuzz();
