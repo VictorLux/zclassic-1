@@ -24,12 +24,18 @@ LIB_SRCS = $(foreach m,$(LIB_MODULES),$(wildcard lib/$(m)/src/*.c))
 # See ports/include/ports/README.md for the convention.
 PORTS_INCLUDES = -Iports/include
 
+# Domain layer (pure, framework-free, no I/O).
+# Bounded contexts under domain/<context>/ each expose include/domain/<context>/.
+DOMAIN_CONTEXTS = consensus
+DOMAIN_INCLUDES = $(foreach c,$(DOMAIN_CONTEXTS),-Idomain/$(c)/include)
+DOMAIN_SRCS = $(foreach c,$(DOMAIN_CONTEXTS),$(wildcard domain/$(c)/src/*.c))
+
 # MCP router + future controllers (schema-driven tool dispatch)
 MCP_INCLUDES = -Itools
 MCP_SRCS = $(wildcard tools/mcp/*.c) $(wildcard tools/mcp/controllers/*.c) \
 	$(wildcard tools/mcp/views/*.c)
 
-ALL_SRCS = $(APP_SRCS) $(CONFIG_SRCS) $(LIB_SRCS) $(MCP_SRCS)
+ALL_SRCS = $(APP_SRCS) $(CONFIG_SRCS) $(LIB_SRCS) $(DOMAIN_SRCS) $(MCP_SRCS)
 ALL_OBJS = $(ALL_SRCS:.c=.o)
 
 GTK_CFLAGS := $(shell pkg-config --cflags gtk+-3.0 2>/dev/null)
@@ -41,7 +47,7 @@ WEBKIT_DEF    := $(if $(WEBKIT_CFLAGS),-DHAVE_WEBKIT,)
 
 CFLAGS = -std=c23 -O3 -march=native -flto -Wall -Wextra -Werror -pedantic \
 	-Wno-stringop-overflow -Wno-unused-result \
-	$(APP_INCLUDES) $(CONFIG_INCLUDES) $(LIB_INCLUDES) $(PORTS_INCLUDES) $(MCP_INCLUDES) \
+	$(APP_INCLUDES) $(CONFIG_INCLUDES) $(LIB_INCLUDES) $(PORTS_INCLUDES) $(DOMAIN_INCLUDES) $(MCP_INCLUDES) \
 	-Ilib/test/include \
 	-D_POSIX_C_SOURCE=200809L -DZCL_AR_ENFORCE -Ivendor/include $(GTK_DEF) $(GTK_CFLAGS) \
 	$(WEBKIT_DEF) $(WEBKIT_CFLAGS)

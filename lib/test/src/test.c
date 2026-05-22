@@ -501,6 +501,7 @@ int main(void)
     failures += test_path_check();
     failures += test_supervisor();
     failures += test_blocker();
+    failures += test_domain_consensus_verify();
     failures += test_make_lint_gates();
     failures += test_multisig();
     failures += test_mcp_fuzz();

@@ -320,6 +320,7 @@ int test_boot_phase(void);
 int test_path_check(void);
 int test_supervisor(void);
 int test_blocker(void);
+int test_domain_consensus_verify(void);
 
 /* Spec-based user story tests (one per feature area) */
 int spec_wallet_dashboard(void);
