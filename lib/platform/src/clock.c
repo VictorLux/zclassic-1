@@ -23,7 +23,7 @@ static int64_t real_now_monotonic_ns(void *self)
          * EFAULT (bad pointer). Both are programming errors. Log and
          * return zero so callers see a stuck clock rather than UB. */
         int e = errno;
-        fprintf(stderr,
+        fprintf(stderr, // obs-ok:platform-primitive
             "[platform] %s:%d %s(): clock_gettime(CLOCK_MONOTONIC) failed errno=%d\n",
             __FILE__, __LINE__, __func__, e);
         return 0;
@@ -37,7 +37,7 @@ static int64_t real_now_wall_ms(void *self)
     struct timespec ts;
     if (clock_gettime(CLOCK_REALTIME, &ts) != 0) {
         int e = errno;
-        fprintf(stderr,
+        fprintf(stderr, // obs-ok:platform-primitive
             "[platform] %s:%d %s(): clock_gettime(CLOCK_REALTIME) failed errno=%d\n",
             __FILE__, __LINE__, __func__, e);
         return 0;
