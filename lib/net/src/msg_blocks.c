@@ -262,6 +262,14 @@ bool msg_blocks_should_mark_seen(const struct active_chain *chain,
     return active_chain_contains(chain, bi);
 }
 
+/* Forward declaration to keep lib/net free of an adapters/ include.
+ * The symbol is provided by adapters/inbound/src/shadow_feeder_global.c
+ * and is a no-op when -shadow is not enabled. */
+extern void shadow_feeder_global_observe(uint32_t height,
+                                         const struct block *block,
+                                         const uint8_t *bytes,
+                                         size_t len);
+
 bool process_block_msg(struct msg_processor *mp, struct p2p_node *node,
                        struct byte_stream *s)
 {
@@ -275,6 +283,14 @@ bool process_block_msg(struct msg_processor *mp, struct p2p_node *node,
         LOG_FAIL("net", "oversized block msg %zu bytes from %s",
                  s->size, node->addr_name);
     }
+
+    /* Capture the raw block bytes BEFORE deserialization advances the
+     * stream's read_pos. The shadow feeder needs the exact wire bytes
+     * the legacy path accepted, so it can append them to a parallel
+     * block_log_port. The stream's data buffer is owned by the caller
+     * and remains valid for the duration of process_block_msg. */
+    const uint8_t *raw_block_bytes = (const uint8_t *)s->data;
+    const size_t raw_block_len = s->size;
 
     struct block blk;
     block_init(&blk);
@@ -386,6 +402,13 @@ bool process_block_msg(struct msg_processor *mp, struct p2p_node *node,
                                          new_tip->nHeight));
             event_emitf(EV_BLOCK_CONNECTED, (uint32_t)node->id,
                         "h=%d", new_tip->nHeight);
+            /* I-7b: fire-and-forget the accepted block at the shadow
+             * feeder. No-op when -shadow is off (the global is unset).
+             * Raw bytes are the exact wire bytes captured at the top
+             * of this function; new_tip->nHeight is the legacy path's
+             * authoritative height for this block. */
+            shadow_feeder_global_observe((uint32_t)new_tip->nHeight, &blk,
+                                         raw_block_bytes, raw_block_len);
             /* Refresh the watchdog's tip-advance timestamp so
              * sync_watchdog_get_tip_advance_age() reflects reality and
              * a stuck-at-headers stall doesn't go undetected. */

@@ -1068,6 +1068,7 @@ int main(int argc, char **argv)
         else if (strncmp(argv[i], "-fileservice=", 13) == 0) ctx.file_service_peer = argv[i]+13;
         else if (strcmp(argv[i], "-nofilesync") == 0) ctx.no_file_sync = true;
         else if (strcmp(argv[i], "-nobgvalidation") == 0) ctx.no_bg_validation = true;
+        else if (strcmp(argv[i], "-shadow") == 0) ctx.shadow_feeder_enabled = true;
         else if (strcmp(argv[i], "-nolegacyimport") == 0) ctx.no_legacy_auto_import = true;
         else if (strcmp(argv[i], "-leveldb-no-verify-checksums") == 0) {
             /* Turns off LevelDB checksum verification for both point

@@ -65,6 +65,11 @@ struct app_context {
     const char *external_ip;   /* -externalip=IP : advertise this address to peers */
     bool allow_degraded;       /* -allow-degraded : continue past failed post-restore integrity check
                                  * (default false → boot FATALs on broken chain state). */
+    bool shadow_feeder_enabled;/* -shadow : I-7b live wiring. When set,
+                                * boot starts a mutator + shadow_feeder
+                                * and installs the global hook so every
+                                * legacy-accepted block is mirrored into
+                                * the new pipeline. Default OFF. */
 };
 
 void app_context_defaults(struct app_context *ctx);

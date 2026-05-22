@@ -325,6 +325,7 @@ int test_application_consensus_validate_block(void);
 int test_block_log_file(void);
 int test_mutator(void);
 int test_shadow_feeder(void);
+int test_shadow_feeder_global(void);
 int test_diff_with_legacy_shadow(void);
 int test_utxo_snapshot_inmem(void);
 

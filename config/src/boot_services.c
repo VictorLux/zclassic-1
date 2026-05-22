@@ -107,6 +107,88 @@ extern int g_deferred_proof_validation_below_height;
 /* Module-local pointer to boot context (set once by app_init_services) */
 static struct boot_svc_ctx *S;
 
+/* I-7b: shadow_feeder boot handles. Owned by this translation unit;
+ * lifecycle aligned with app_init_services / app_shutdown_svc. */
+#include "adapters/inbound/shadow_feeder.h"
+#include "adapters/inbound/shadow_feeder_global.h"
+#include "mutator/mutator.h"
+static struct mutator       *g_shadow_mutator = NULL;
+static struct shadow_feeder *g_shadow_feeder  = NULL;
+
+static void boot_shadow_feeder_start(struct app_context *ctx)
+{
+    if (!ctx || !ctx->shadow_feeder_enabled)
+        return;
+
+    struct mutator_config mcfg = {
+        .queue_capacity = 1024,
+        .thread_name = "mutator",
+    };
+    struct zcl_result r = mutator_start(&mcfg, &g_shadow_mutator);
+    if (!r.ok) {
+        fprintf(stderr,
+                "WARN: shadow_feeder: mutator_start failed code=%d %s; "
+                "shadow disabled\n", r.code, r.message);
+        g_shadow_mutator = NULL;
+        return;
+    }
+
+    char shadow_dir[1024];
+    snprintf(shadow_dir, sizeof shadow_dir, "%s/blocks.shadow", ctx->datadir);
+    if (mkdir(shadow_dir, 0755) != 0 && errno != EEXIST) {
+        fprintf(stderr,
+                "WARN: shadow_feeder: cannot create %s (errno=%d %s); "
+                "shadow disabled\n", shadow_dir, errno, strerror(errno));
+        mutator_stop(g_shadow_mutator);
+        g_shadow_mutator = NULL;
+        return;
+    }
+
+    const struct chain_params *cp = chain_params_get();
+    struct shadow_feeder_config sfcfg = {
+        .shadow_dir = shadow_dir,
+        .mutator    = g_shadow_mutator,
+        .params     = &cp->consensus,
+    };
+    r = shadow_feeder_create(&sfcfg, &g_shadow_feeder);
+    if (!r.ok) {
+        fprintf(stderr,
+                "WARN: shadow_feeder_create failed code=%d %s; "
+                "shadow disabled\n", r.code, r.message);
+        mutator_stop(g_shadow_mutator);
+        g_shadow_mutator = NULL;
+        g_shadow_feeder = NULL;
+        return;
+    }
+    shadow_feeder_global_set(g_shadow_feeder);
+    printf("shadow_feeder active: log at %s\n", shadow_dir);
+}
+
+/* Phase-1 teardown: clear the global so no new observations land. The
+ * hot path snapshots the global per call; after this returns, in-flight
+ * observers that already snapshotted the live pointer may still execute
+ * against the feeder — that's fine, the feeder itself is still alive. */
+static void boot_shadow_feeder_disarm(void)
+{
+    if (g_shadow_feeder)
+        shadow_feeder_global_set(NULL);
+}
+
+/* Phase-2 teardown: destroy after net threads have joined. By this
+ * point no new observe calls are possible (sources are gone) and no
+ * in-flight observers remain. Safe to free. */
+static void boot_shadow_feeder_dispose(void)
+{
+    if (g_shadow_feeder) {
+        shadow_feeder_destroy(g_shadow_feeder);
+        g_shadow_feeder = NULL;
+    }
+    if (g_shadow_mutator) {
+        mutator_stop(g_shadow_mutator);
+        g_shadow_mutator = NULL;
+    }
+}
+
 static struct app_runtime_context *boot_runtime(void)
 {
     if (!S)
@@ -2619,6 +2701,10 @@ bool app_init_services(struct app_context *ctx,
     }
     printf("ZClassic C23 node initialized.\n");
 
+    /* I-7b: start the shadow_feeder once the legacy ingest is ready.
+     * No-op unless -shadow is set. */
+    boot_shadow_feeder_start(ctx);
+
     /* SQLite catchup — skip when no UTXO set (P2P snapshot incoming).
      * Running catchup during snapshot receive causes DB lock contention
      * that stalls the snapshot data flow. */
@@ -2792,6 +2878,11 @@ void app_shutdown_svc(struct boot_svc_ctx *svc)
         printf("Emergency flush done.\n");
     }
 
+    /* I-7b phase-1: detach hot path observers from the feeder while
+     * the network is still draining. New block_msg arrivals between
+     * here and quiesce will short-circuit at the global hook. */
+    boot_shadow_feeder_disarm();
+
     shutdown_stop_frontend_services(svc);
     shutdown_quiesce_network_and_flush_coins(svc);
     shutdown_persist_runtime_state(svc);
@@ -2802,6 +2893,8 @@ void app_shutdown_svc(struct boot_svc_ctx *svc)
                     "[shutdown] %d registered thread(s) still running after sweep\n",
                     stragglers);
     }
+    /* I-7b phase-2: net threads are joined; safe to destroy. */
+    boot_shadow_feeder_dispose();
     shutdown_release_owned_resources(svc);
 
     printf("Shutdown complete.\n");
