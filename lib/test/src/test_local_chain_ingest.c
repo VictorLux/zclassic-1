@@ -139,40 +139,5 @@ int test_local_chain_ingest(void)
         json_free(&v);
     }
 
-    /* ── 4. phase1 placeholder behavior when table is empty ─────── */
-    printf("local_chain_ingest: phase1 placeholder skip... ");
-    {
-        /* When g_sha3_windows_count == 0, a full run against a fake
-         * source dir should still try the detector first and return
-         * LCI_SOURCE_MISSING (not crash, not loop).  This pins the
-         * "phase1 is a no-op when table is empty" path. */
-        struct local_chain_ingest_config cfg = {
-            .legacy_datadir = "/nonexistent/path/zcl_lci_test_no_data",
-            .skip_blk_verify = false,
-            .skip_pow_verify = true,
-            .max_height = 0,
-        };
-        enum local_ingest_result r = local_chain_ingest_run(
-            &cfg, NULL, NULL, NULL, NULL);
-        if (r != LCI_SOURCE_MISSING) {
-            printf("FAIL (got %s expected source_missing)\n",
-                   local_ingest_result_name(r));
-            failures++;
-        } else {
-            printf("OK (table_size=%zu, run rejected missing source)\n",
-                   g_sha3_windows_count);
-        }
-    }
-
-    /* ── 5. phase2/3 against real chainstate are deferred ────────
-     *
-     * The legacy chainstate import + per-block apply require a real
-     * LevelDB + a fully initialised main_state.  They are exercised
-     * end-to-end by the "boot a fresh datadir against ~/.zclassic"
-     * runtime acceptance test, not by this unit test (per the spec).
-     * Skipping cleanly here. */
-    printf("local_chain_ingest: phase2/phase3 deferred to runtime acceptance "
-           "(boot fresh datadir vs ~/.zclassic) — skipping\n");
-
     return failures;
 }

@@ -37,16 +37,6 @@ struct coins_view_cache;
 struct chain_params;
 struct json_value;
 
-struct local_chain_ingest_config {
-    const char *legacy_datadir;   /* e.g. "/home/rhett/.zclassic" */
-    bool        skip_blk_verify;  /* if true, skip SHA3 window check (testing) */
-    bool        skip_pow_verify;  /* skip PoW up to checkpoint; default true */
-    bool        ignore_evidence_cookie; /* force re-scan even if cookie says clean */
-    bool        force_sequential_phase1; /* T1.2: disable parallel SHA3 (testing) */
-    int         phase1_workers;   /* T1.2: parallel SHA3 worker count; 0 = auto */
-    int         max_height;       /* 0 = ingest to peer-claimed tip */
-};
-
 enum local_ingest_result {
     LCI_OK = 0,
     LCI_SOURCE_MISSING,       /* legacy_datadir or its blocks/ does not exist */
@@ -58,33 +48,6 @@ enum local_ingest_result {
 };
 
 const char *local_ingest_result_name(enum local_ingest_result r);
-
-/* Run the full ingest pipeline:
- *  1. (Option E) SHA3-window verify of <datadir>/blocks/blk*.dat
- *     against g_sha3_windows[]. No-op if table is the placeholder.
- *  2. (Option B) Import chainstate/ → coins.db at the anchor height.
- *     Verify imported set matches get_sha3_utxo_checkpoint().
- *  3. (Option A) For heights [anchor+1 .. final_height], read each
- *     block via read_block_from_disk_index_pread from the legacy
- *     blocks/, run it through chain_advance() so the at-tip ordering
- *     invariant applies to every ingested block too.
- *
- * Blocking: this runs on the caller's thread. It registers a periodic
- * tick with lib/health so progress shows up in zcl_state
- * subsystem=local_ingest.
- *
- * Postcondition on LCI_OK:
- *   - active_chain tip == min(legacy_tip, max_height)
- *   - coins.db tip + UTXO set match the anchor checkpoint AND every
- *     subsequent block applied via chain_advance
- *   - block_index, sapling tree, csr all consistent
- */
-enum local_ingest_result local_chain_ingest_run(
-    const struct local_chain_ingest_config *cfg,
-    struct main_state *ms,
-    struct coins_view_cache *coins_tip,
-    const struct chain_params *params,
-    const char *our_datadir);
 
 /* For zcl_state subsystem=local_ingest. `out` must be json_set_object'd
  * by the caller (matches the *_dump_state_json convention in CLAUDE.md).
