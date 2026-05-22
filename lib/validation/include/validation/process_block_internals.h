@@ -45,14 +45,4 @@ bool process_block_flush_coins(struct coins_view_cache *coins_tip,
  * logged but never abort the chain advance. */
 bool process_block_persist_sapling_tree(void);
 
-/* Per-block stage logger forwarded for chain_advance's tracing. */
-void process_block_log_live_stage_ext(int height, const char *stage,
-                                      long long elapsed_us);
-
-/* Test crash-injection check. Inlined in process_block.c via
- * process_block_check_crash_stage; chain_advance.c calls this
- * out-of-line variant. */
-#include "validation/process_block.h"
-void process_block_check_crash_stage_ext(enum process_block_crash_stage here);
-
 #endif /* ZCL_VALIDATION_PROCESS_BLOCK_INTERNALS_H */

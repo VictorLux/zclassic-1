@@ -77,12 +77,6 @@ void process_block_log_live_stage(int height,
     fflush(stderr);
 }
 
-void process_block_log_live_stage_ext(int height, const char *stage,
-                                      long long elapsed_us)
-{
-    process_block_log_live_stage(height, stage, (int64_t)elapsed_us);
-}
-
 /* ── body-pull signal (public via process_block.h) ───────────── */
 /* See process_block.h. Set by fast-sync ingesters before their loops;
  * cleared after. Each connect_tip call reads atomically. */

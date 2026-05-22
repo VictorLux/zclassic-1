@@ -410,7 +410,6 @@ int main(void)
     failures += test_sync_service();
     failures += test_sync_state_fsm();
     failures += test_heartbeat();
-    failures += test_chain_advance();
     failures += test_chain_advance_coordinator();
     { extern int test_chain_advance_atomicity(void);
       failures += test_chain_advance_atomicity(); }

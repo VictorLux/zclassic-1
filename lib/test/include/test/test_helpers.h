@@ -233,7 +233,6 @@ int test_db_txn(void);
 int test_sync_service(void);
 int test_sync_state_fsm(void);
 int test_heartbeat(void);
-int test_chain_advance(void);
 int test_chain_advance_coordinator(void);
 int test_local_chain_ingest(void);
 int test_snapshot_sync_service(void);

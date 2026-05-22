@@ -37,9 +37,3 @@ const char *process_block_crash_stage_name(enum process_block_crash_stage s)
     }
 }
 
-/* Out-of-line variant for chain_advance.c (which lives in a different
- * translation unit and can't reach the static inline). */
-void process_block_check_crash_stage_ext(enum process_block_crash_stage here)
-{
-    process_block_check_crash_stage(here);
-}
