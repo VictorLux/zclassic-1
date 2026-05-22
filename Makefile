@@ -19,6 +19,11 @@ LIB_MODULES = bloom chain coins consensus core crypto encoding event health kern
 LIB_INCLUDES = $(foreach m,$(LIB_MODULES),-Ilib/$(m)/include)
 LIB_SRCS = $(foreach m,$(LIB_MODULES),$(wildcard lib/$(m)/src/*.c))
 
+# Ports layer (Clean Architecture / Hexagonal interface headers).
+# Headers only — adapters that implement these interfaces live elsewhere.
+# See ports/include/ports/README.md for the convention.
+PORTS_INCLUDES = -Iports/include
+
 # MCP router + future controllers (schema-driven tool dispatch)
 MCP_INCLUDES = -Itools
 MCP_SRCS = $(wildcard tools/mcp/*.c) $(wildcard tools/mcp/controllers/*.c) \
@@ -36,7 +41,7 @@ WEBKIT_DEF    := $(if $(WEBKIT_CFLAGS),-DHAVE_WEBKIT,)
 
 CFLAGS = -std=c23 -O3 -march=native -flto -Wall -Wextra -Werror -pedantic \
 	-Wno-stringop-overflow -Wno-unused-result \
-	$(APP_INCLUDES) $(CONFIG_INCLUDES) $(LIB_INCLUDES) $(MCP_INCLUDES) \
+	$(APP_INCLUDES) $(CONFIG_INCLUDES) $(LIB_INCLUDES) $(PORTS_INCLUDES) $(MCP_INCLUDES) \
 	-Ilib/test/include \
 	-D_POSIX_C_SOURCE=200809L -DZCL_AR_ENFORCE -Ivendor/include $(GTK_DEF) $(GTK_CFLAGS) \
 	$(WEBKIT_DEF) $(WEBKIT_CFLAGS)
