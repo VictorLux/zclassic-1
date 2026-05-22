@@ -1,4 +1,18 @@
-# ZClassic23 — AI-Integrated Power Node
+# ZClassic23 — AI-Integrated Personal Sovereignty Stack
+
+## Vision — Personal Sovereignty Stack
+
+ZClassic23 is one 26 MB statically-linked C23 binary that runs a full ZClassic node (Equihash 200,9 PoW, Sapling shielded txs), an embedded Tor onion service, a block explorer, a shielded wallet, a P2P file marketplace, ZNAM name registry, encrypted P2P messaging, cross-chain atomic swaps (BTC/LTC/DOGE), a P2P game framework, and an MCP server. **Claude is a first-class operator via 200+ typed MCP tools** — not just an observer. Cold sync to tip in 30 seconds via FlyClient + SHA3 UTXO snapshots. Wedges are unreachable by construction (chain progress is a stage cursor on disk). Bugs become 64-bit seeds in a deterministic simulator. Reproducible signed releases. **One binary, one onion, one stack — your sovereign personal computing surface.**
+
+See [`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md) for the L1–L7 layer cake and the file-to-layer mapping, and [`docs/adr/0001-personal-sovereignty-stack.md`](./docs/adr/0001-personal-sovereignty-stack.md) for the 2026-05-22 pivot rationale.
+
+## Current focus
+
+Active master plan: `~/.claude/plans/zclassic23-plan.md`. Vision doc: `~/.claude/plans/zclassic23-ideal-architecture.md`.
+
+**Wave F — Foundation** (in progress). Eight milestones: F-1 purge ~2,500 LOC of pure cruft; F-2..F-5 introduce kernel primitives (`stage`, `mailbox`, `projection`, `platform.clock`, `platform.rng`); F-6..F-8 land the docs (this file, the architecture doc, ADR-001). Next: **Wave S — Staged sync**, the wedge-extinction wave.
+
+On a fresh session, type `continue zclassic23` — Claude will `cat ~/.claude/plans/zclassic23-plan.md`, find the current focus, and resume.
 
 ## Defensive Coding Standards (MANDATORY)
 
