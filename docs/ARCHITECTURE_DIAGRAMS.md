@@ -1,5 +1,7 @@
 # ZClassic23 Architecture Diagrams
 
+> **Note (2026-05-22):** For the canonical architecture (L1–L7 layer cake, file-to-layer mapping, current vs. target shape) see [`ARCHITECTURE.md`](./ARCHITECTURE.md). The diagrams below remain useful references for the **current** boot sequence and subsystem topology, but the destination shape lives in `ARCHITECTURE.md`. See also [`adr/0001-personal-sovereignty-stack.md`](./adr/0001-personal-sovereignty-stack.md) for the pivot rationale.
+
 Mermaid diagrams for the core subsystems. Render with any Mermaid-compatible viewer (GitHub, Obsidian, mermaid.live).
 
 ---
