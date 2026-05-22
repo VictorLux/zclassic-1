@@ -77,7 +77,7 @@ becomes a conscious, visible decision.
 writes across `app/models/src/`, `app/controllers/src/`,
 `app/services/src/`, and `lib/wallet/src/wallet_sqlite.c` route through
 the AR lifecycle (one of the three macros above). `make lint` runs
-`check_raw_sqlite.sh` as gate #3 of 11.
+`check_raw_sqlite.sh` as gate #3 of 17.
 
 ---
 
@@ -305,21 +305,42 @@ Add to `Makefile`:
 lint: check-malloc check-silent-errors check-raw-sqlite \
       check-raw-malloc check-coins-lookup-nullcheck \
       check-observability-pairing check-silent-errors-services \
-      check-before-save-hooks check-pthread-create \
-      check-silent-errors-controllers check-model-validation \
-      check-long-functions
+      check-silent-errors-controllers check-before-save-hooks \
+      check-pthread-create check-model-validation \
+      check-long-functions check-rpc-registrar \
+      check-lag-slo-observable check-lib-layering \
+      check-supervisor-registration check-typed-blocker
 	@echo "All lint checks passed"
 
 ci: lint test fuzz-ci coverage
 ```
 
-**Status: 12 gates active.** `make ci` fails if any fire. An agent
-that pushes code with raw malloc, silent errors, bypassed AR
-validation, unpaired stderr diagnostics, a critical model missing
-its before_save hook, a model file with no `validates_*` call and
-no `ar-validate-skip:<tag>` marker, or a controller/service function
-over 500 lines without a `long-function-ok:<tag>` override, gets a
-red build before any human sees it.
+**Status: 17 gates active** (as of 2026-05-22). `make ci` fails if any
+fire. An agent that pushes code with raw malloc, silent errors,
+bypassed AR validation, unpaired stderr diagnostics, a critical model
+missing its before_save hook, a model file with no `validates_*` call
+and no `ar-validate-skip:<tag>` marker, or a controller/service
+function over 500 lines without a `long-function-ok:<tag>` override,
+gets a red build before any human sees it.
+
+Detailed sections below cover gates #11 (`check-model-validation`),
+#12 (`check-long-functions`), #15 (`check-lib-layering`, was numbered
+#14 in earlier drafts of this doc) and #16
+(`check-supervisor-registration`, was numbered #15). Three more gates
+are live in `make lint` but not yet detailed in this doc — they
+remain on the doc-accuracy backlog:
+
+- **Gate #13: `check-rpc-registrar`** — every RPC handler declared in
+  `lib/rpc/src/` must appear in the registrar table at the bottom of
+  the same file; "method not found" failures are caught at build time
+  rather than at runtime.
+- **Gate #14: `check-lag-slo-observable`** — any code path that can
+  produce SLO-relevant lag (block lag, peer floor, watchdog miss)
+  must pair with a structured event emit and a Prometheus gauge.
+- **Gate #17: `check-typed-blocker`** — Round 6 (2026-05-21) introduced
+  `lib/util/src/blocker.c` (typed blocker primitive). Any code raising
+  a `block_id` must use a typed kind from `enum blocker_kind`; raw
+  string blockers fall in a baseline (see Layer baselines below).
 
 ### Gate #11: every model is either validated or explicitly skipped
 
@@ -374,7 +395,8 @@ The gate ships with a baseline file at
 that pre-existed at the time the gate was introduced (round 4). Each
 entry is `<file>:<exact #include directive>`. Any *new* violation not
 in the baseline fails CI. The list is a ratchet: shrinking it is
-permanent progress.
+permanent progress; **growing it requires an ADR justifying the
+regression.**
 
 To pay down debt: pick a baseline entry, replace the include with a
 forward declaration (or move the symbol into lib/, or delete it if
@@ -417,9 +439,10 @@ Three children were registered in Round 5:
   boot_services.c).
 
 The gate ships with a 9-entry baseline of services that need
-contracts but weren't migrated in Round 5. Rounds 6–8 will pay these
-down: the highest blast-radius targets are `block_sync_service`,
-`header_sync_service`, and `legacy_mirror_sync_service` (see
+contracts but weren't migrated in Round 5. Track C-3 of the master
+plan drains these. The highest blast-radius targets are
+`block_sync_service`, `header_sync_service`, and
+`legacy_mirror_sync_service` (see
 `tools/scripts/supervisor_baseline.txt`).
 
 **Override marker.** `// supervisor-ok:<tag>` on any line in the file
