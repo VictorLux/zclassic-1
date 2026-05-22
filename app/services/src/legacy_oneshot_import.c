@@ -67,6 +67,14 @@
  * separate from steady-state operation. */
 #define LOI_REFUSE_ABOVE_TIP 1000
 
+/* Refuse to stamp cursors if the discovered legacy tip is below this.
+ * A genuine legacy datadir has hundreds of thousands of blocks; below
+ * this threshold something is wrong (corrupt LevelDB, wrong directory,
+ * fresh zclassicd that hasn't synced). Stamping cursors at tiny values
+ * is worse than stamping nothing — it silently advertises "we've
+ * processed the early chain" when we haven't. */
+#define LOI_MIN_LEGACY_TIP 100
+
 /* progress_meta keys (kept here, not in the header — internal protocol). */
 #define LOI_META_SENTINEL      "import_in_progress"
 #define LOI_META_TIP_HASH      "legacy_attach_tip_hash"
@@ -434,18 +442,82 @@ static bool loi_cs_cb(const struct uint256 *txid,
 
 /* ── atomic finalization on progress.kv ──────────────────────────────── */
 
+/* ── Wave S stage stamp list ──────────────────────────────────────────
+ *
+ * **Read the long comment in legacy_oneshot_import.h before editing.**
+ * Every addition or removal here MUST be paired with the EXPECTED list
+ * in lib/test/src/test_legacy_oneshot_import.c::EXPECTED_LOI_STAGES.
+ * The drift-gate test asserts both lists match exactly. */
 static const char *const LOI_STAGES_TO_STAMP[] = {
     "header_admit",
     "validate_headers",
     "body_fetch",
-    /* NB: extend when S-5..S-9 land — see header comment. */
     NULL,
 };
 
+/* Computed once at init: how many real (non-NULL) entries the list has. */
+static size_t loi_stages_count_cached(void)
+{
+    size_t n = 0;
+    while (LOI_STAGES_TO_STAMP[n]) n++;
+    return n;
+}
+
+size_t loi_stages_to_stamp_count(void)
+{
+    return loi_stages_count_cached();
+}
+
+const char *loi_stages_to_stamp_at(size_t i)
+{
+    if (i >= loi_stages_count_cached()) return NULL;
+    return LOI_STAGES_TO_STAMP[i];
+}
+
+/* Stamp a stage cursor with anti-rewind semantics: if the existing
+ * persisted cursor is already >= new_cursor, leave it untouched. This
+ * prevents -legacy-attach from rewinding a stage that has already
+ * advanced past legacy_tip+1 via the live shadow pipeline (or via a
+ * prior -legacy-attach against a more recent legacy tip).
+ *
+ * Returns true on success (whether or not a write occurred). Sets
+ * *out_was_write to true iff an UPSERT actually happened. */
 static bool loi_stamp_stage_cursor_in_tx(sqlite3 *db,
                                          const char *name,
-                                         uint64_t cursor)
+                                         uint64_t new_cursor,
+                                         bool *out_was_write)
 {
+    if (out_was_write) *out_was_write = false;
+
+    /* Read existing cursor (defaults to 0 on miss). */
+    uint64_t existing = 0;
+    bool have_row = false;
+    {
+        sqlite3_stmt *q = NULL;
+        if (sqlite3_prepare_v2(db,
+                "SELECT cursor FROM stage_cursor WHERE name = ?",
+                -1, &q, NULL) != SQLITE_OK) return false;
+        sqlite3_bind_text(q, 1, name, -1, SQLITE_TRANSIENT);
+        int rc = sqlite3_step(q);  // raw-sql-ok:kernel-primitive
+        if (rc == SQLITE_ROW) {
+            existing = (uint64_t)sqlite3_column_int64(q, 0);
+            have_row = true;
+        } else if (rc != SQLITE_DONE) {
+            sqlite3_finalize(q);
+            return false;
+        }
+        sqlite3_finalize(q);
+    }
+
+    /* Anti-rewind: never move cursor backward or stay-in-place. */
+    if (have_row && existing >= new_cursor) {
+        fprintf(stderr,  // obs-ok:legacy-oneshot-no-rewind
+                "[legacy_attach] stage '%s': cursor already at %" PRIu64
+                " (>= proposed %" PRIu64 "); leaving as-is\n",
+                name, existing, new_cursor);
+        return true;
+    }
+
     sqlite3_stmt *stmt = NULL;
     int rc = sqlite3_prepare_v2(db,
         "INSERT INTO stage_cursor(name, cursor, updated_at) VALUES(?, ?, ?) "
@@ -454,11 +526,29 @@ static bool loi_stamp_stage_cursor_in_tx(sqlite3 *db,
         -1, &stmt, NULL);
     if (rc != SQLITE_OK) return false;
     sqlite3_bind_text(stmt, 1, name, -1, SQLITE_TRANSIENT);
-    sqlite3_bind_int64(stmt, 2, (sqlite3_int64)cursor);
+    sqlite3_bind_int64(stmt, 2, (sqlite3_int64)new_cursor);
     sqlite3_bind_int64(stmt, 3, (sqlite3_int64)time(NULL));
     rc = sqlite3_step(stmt);  // raw-sql-ok:kernel-primitive
     sqlite3_finalize(stmt);
+    if (rc == SQLITE_DONE && out_was_write) *out_was_write = true;
     return rc == SQLITE_DONE;
+}
+
+/* Test seam: exercise the anti-rewind logic from a unit test without
+ * spinning up the full pipeline. Wraps the static helper above in a
+ * BEGIN IMMEDIATE / COMMIT for own-txn semantics. */
+bool loi_stamp_one_for_test(sqlite3 *db, const char *name,
+                            uint64_t cursor, bool *out_was_write)
+{
+    if (!db) return false;
+    char *err = NULL;
+    if (sqlite3_exec(db, "BEGIN IMMEDIATE", NULL, NULL, &err) != SQLITE_OK) {
+        if (err) sqlite3_free(err);
+        return false;
+    }
+    bool ok = loi_stamp_stage_cursor_in_tx(db, name, cursor, out_was_write);
+    sqlite3_exec(db, ok ? "COMMIT" : "ROLLBACK", NULL, NULL, NULL);
+    return ok;
 }
 
 static bool loi_finalize_atomic(sqlite3 *db,
@@ -480,13 +570,14 @@ static bool loi_finalize_atomic(sqlite3 *db,
     int64_t stamped = 0;
     uint64_t cursor_value = (uint64_t)(legacy_tip + 1);
     for (size_t i = 0; ok && LOI_STAGES_TO_STAMP[i]; i++) {
+        bool was_write = false;
         if (!loi_stamp_stage_cursor_in_tx(db, LOI_STAGES_TO_STAMP[i],
-                                          cursor_value)) {
+                                          cursor_value, &was_write)) {
             fprintf(stderr,  // obs-ok:legacy-oneshot-finalize-failure
                     "[legacy_attach] stamp stage '%s' failed\n",
                     LOI_STAGES_TO_STAMP[i]);
             ok = false;
-        } else {
+        } else if (was_write) {
             stamped++;
         }
     }
@@ -584,14 +675,14 @@ bool legacy_oneshot_import_run(
 
     sqlite3 *pdb = progress_store_db();
     if (!pdb) {
-        fprintf(stderr,
+        fprintf(stderr,  // obs-ok:legacy-oneshot-preflight
             "[legacy_attach] progress.kv not open — boot order regression?\n");
         return false;
     }
 
     /* ── Pre-flight ──────────────────────────────────────────────────── */
     if (!loi_detect_legacy_datadir(legacy_datadir)) {
-        fprintf(stderr,
+        fprintf(stderr,  // obs-ok:legacy-oneshot-soft-skip
             "[legacy_attach] %s does not look like a zclassic datadir; "
             "skipping.\n", legacy_datadir);
         r.outcome = LOI_OUTCOME_LEGACY_NOT_FOUND;
@@ -602,7 +693,7 @@ bool legacy_oneshot_import_run(
     int our_tip = active_chain_height(&ms->chain_active);
     bool sentinel_present = loi_meta_has_sentinel(pdb);
     if (our_tip > LOI_REFUSE_ABOVE_TIP && !sentinel_present) {
-        fprintf(stderr,
+        fprintf(stderr,  // obs-ok:legacy-oneshot-refused
             "[legacy_attach] REFUSING: our active_tip=%d > %d. "
             "Legacy-attach is for empty datadirs; use other modes for "
             "warm catch-up.\n", our_tip, LOI_REFUSE_ABOVE_TIP);
@@ -654,9 +745,26 @@ bool legacy_oneshot_import_run(
             }
         }
     } else {
+        /* Wipe guard — never wipe block_index if our active_chain has
+         * substantial state. A sentinel + live state is anomalous (the
+         * sentinel is supposed to clear atomically at import-end; a live
+         * chain means we got past S-4b cleanly at some point). Refuse
+         * and leave the operator to diagnose. */
+        if (our_tip > 100) {
+            fprintf(stderr,  // obs-ok:legacy-oneshot-wipe-refused
+                "[legacy_attach] REFUSING wipe: sentinel found AND "
+                "active_chain_height=%d > 100. This combination is "
+                "anomalous (sentinel should clear atomically with import "
+                "completion). Manual intervention required: inspect "
+                "progress.kv (sqlite3 -- DELETE FROM progress_meta WHERE "
+                "key='import_in_progress') if the sentinel is truly "
+                "stale.\n", our_tip);
+            return false;
+        }
         fprintf(stderr,  // obs-ok:legacy-oneshot-recovery
                 "[legacy_attach] sentinel found from a prior aborted "
-                "import — recovering: wipe + re-import\n");
+                "import — recovering: wipe + re-import (active_tip=%d)\n",
+                our_tip);
         if (!loi_wipe_block_index(btdb)) {
             fprintf(stderr,
                 "[legacy_attach] wipe of stale block_index failed\n");
@@ -723,6 +831,20 @@ bool legacy_oneshot_import_run(
             "%" PRId64 " ms (best h=%d)\n",
             bi_written, loi_now_ms() - t_bi, legacy_tip_h);
 
+    /* Sanity floor on legacy tip — refuse to stamp cursors at tiny
+     * values that would silently advertise progress we can't attest. */
+    if (legacy_tip_h < LOI_MIN_LEGACY_TIP) {
+        fprintf(stderr,  // obs-ok:legacy-oneshot-tip-too-small
+            "[legacy_attach] REFUSING: discovered legacy tip h=%d is "
+            "below the LOI_MIN_LEGACY_TIP threshold (%d). The legacy "
+            "datadir at %s looks empty, corrupted, or freshly initialized. "
+            "No cursors stamped; sentinel retained for next-boot retry.\n",
+            legacy_tip_h, LOI_MIN_LEGACY_TIP, legacy_datadir);
+        ldb_snapshot_destroy(idx_snap);
+        ldb_snapshot_destroy(cs_snap);
+        return false;
+    }
+
     /* ── Import chainstate UTXOs. ────────────────────────────────────── */
     void *cs = NULL;
     if (!chainstate_legacy_open(cs_snap, &cs)) {
@@ -775,31 +897,38 @@ bool legacy_oneshot_import_run(
 
     /* ── Persist pending CSR anchor so the existing boot resolver lifts
      *    the tip into active_chain later in boot. ────────────────────── */
-    if (got_best) {
-        bool pending_ok =
-            node_db_state_set(ndb, "cold_import_pending_coins_best_block",
-                              cs_best.data, 32) &&
-            node_db_state_set(ndb, "cold_import_pending_coins_best_height",
-                              &legacy_tip_h, sizeof(legacy_tip_h)) &&
-            node_db_state_set(ndb, "cold_import_pending_utxo_count",
-                              &ctx.inserted, sizeof(ctx.inserted));
-        if (!pending_ok) {
-            fprintf(stderr,
-                "[legacy_attach] failed to persist pending CSR anchor\n");
-            ldb_snapshot_destroy(idx_snap);
-            ldb_snapshot_destroy(cs_snap);
-            return false;
-        }
-    } else {
-        fprintf(stderr,  // obs-ok:legacy-oneshot-warning
-            "[legacy_attach] WARNING: legacy chainstate had no 'B' key; "
-            "tip will not be activated this boot\n");
+    if (!got_best) {
+        /* Without 'B' we cannot publish a CSR anchor — meaning cursors
+         * would be stamped but active_chain would never be lifted to the
+         * imported tip. That leaves the node in the worst possible state
+         * (Wave S stages think they're done; chain is empty). Refuse. */
+        fprintf(stderr,  // obs-ok:legacy-oneshot-no-b-key
+            "[legacy_attach] REFUSING: legacy chainstate had no 'B' key; "
+            "cannot publish a tip anchor, so cursor stamps would advertise "
+            "progress without an activatable tip. Sentinel retained for "
+            "retry once legacy's chainstate is healthy.\n");
+        ldb_snapshot_destroy(idx_snap);
+        ldb_snapshot_destroy(cs_snap);
+        return false;
+    }
+    bool pending_ok =
+        node_db_state_set(ndb, "cold_import_pending_coins_best_block",
+                          cs_best.data, 32) &&
+        node_db_state_set(ndb, "cold_import_pending_coins_best_height",
+                          &legacy_tip_h, sizeof(legacy_tip_h)) &&
+        node_db_state_set(ndb, "cold_import_pending_utxo_count",
+                          &ctx.inserted, sizeof(ctx.inserted));
+    if (!pending_ok) {
+        fprintf(stderr,
+            "[legacy_attach] failed to persist pending CSR anchor\n");
+        ldb_snapshot_destroy(idx_snap);
+        ldb_snapshot_destroy(cs_snap);
+        return false;
     }
 
     /* Use the chainstate 'B' hash as the canonical legacy tip hash for
-     * the cursor-stamp record. Falls back to the block_index best hash
-     * if 'B' wasn't present. */
-    const struct uint256 *cursor_hash = got_best ? &cs_best : &legacy_tip_hash;
+     * the cursor-stamp record. */
+    const struct uint256 *cursor_hash = &cs_best;
 
     /* ── Atomic finalization: cursors + completion record + sentinel ── */
     int64_t stages_stamped = 0;

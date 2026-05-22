@@ -33,6 +33,11 @@
 #include "util/blocker.h"
 #include "util/stage.h"
 
+/* Test seam exported by legacy_oneshot_import.c — exercises the
+ * anti-rewind branch without spinning up the full import pipeline. */
+bool loi_stamp_one_for_test(sqlite3 *db, const char *name,
+                            uint64_t cursor, bool *out_was_write);
+
 #include <errno.h>
 #include <sqlite3.h>
 #include <stdint.h>
@@ -201,6 +206,111 @@ int test_legacy_oneshot_import(void)
                                     "legacy_attach_tip_height",
                                     &h_out, sizeof(h_out), &got, &found) &&
                   found && h_out == 3120921);
+
+        progress_store_close();
+        test_cleanup_tmpdir(dir);
+    }
+
+    /* ── 3a. Drift gate — LOI_STAGES_TO_STAMP exactly matches expected.
+     * Adding a stage requires updating BOTH the production list AND
+     * this expected list — exactly the developer hand-off the long
+     * comment in legacy_oneshot_import.h describes. */
+    {
+        static const char *const EXPECTED_LOI_STAGES[] = {
+            "header_admit",
+            "validate_headers",
+            "body_fetch",
+        };
+        size_t expected_n = sizeof(EXPECTED_LOI_STAGES) /
+                            sizeof(EXPECTED_LOI_STAGES[0]);
+        LOI_CHECK("stages count matches expected",
+                  loi_stages_to_stamp_count() == expected_n);
+        for (size_t i = 0; i < expected_n; i++) {
+            char label[96];
+            snprintf(label, sizeof(label),
+                     "stage[%zu] is '%s'", i, EXPECTED_LOI_STAGES[i]);
+            const char *got = loi_stages_to_stamp_at(i);
+            LOI_CHECK(label, got && strcmp(got, EXPECTED_LOI_STAGES[i]) == 0);
+        }
+        LOI_CHECK("stages_at(count) returns NULL",
+                  loi_stages_to_stamp_at(expected_n) == NULL);
+        LOI_CHECK("stages_at(big) returns NULL",
+                  loi_stages_to_stamp_at(99) == NULL);
+    }
+
+    /* ── 3b. Anti-rewind guard — forward stamp writes, backward stamp
+     * leaves existing value intact. The promise the production
+     * pipeline relies on for "shadow stage already ahead of legacy". */
+    {
+        char dir[256];
+        loi_tmpdir(dir, sizeof(dir), "rewind");
+        mkdir_p(dir);
+
+        LOI_CHECK("open progress.kv (rewind)", progress_store_open(dir));
+        sqlite3 *db = progress_store_db();
+
+        /* First stamp — fresh row, write happens. */
+        bool was_write = false;
+        LOI_CHECK("first stamp at 100 succeeds",
+                  loi_stamp_one_for_test(db, "header_admit",
+                                         100, &was_write));
+        LOI_CHECK("first stamp reports was_write=true", was_write);
+
+        /* Direct SELECT confirms cursor=100. */
+        sqlite3_stmt *q = NULL;
+        sqlite3_prepare_v2(db,
+            "SELECT cursor FROM stage_cursor WHERE name='header_admit'",
+            -1, &q, NULL);
+        int rc = sqlite3_step(q);  // raw-sql-ok:test-direct
+        int64_t cursor_after_first =
+            rc == SQLITE_ROW ? sqlite3_column_int64(q, 0) : -1;
+        sqlite3_finalize(q);
+        LOI_CHECK("cursor stored as 100", cursor_after_first == 100);
+
+        /* Forward stamp at 200 — write happens, cursor moves. */
+        was_write = false;
+        LOI_CHECK("forward stamp at 200 succeeds",
+                  loi_stamp_one_for_test(db, "header_admit",
+                                         200, &was_write));
+        LOI_CHECK("forward stamp reports was_write=true", was_write);
+
+        /* Backward stamp at 50 — anti-rewind kicks in: success, no write. */
+        was_write = true;  /* deliberately wrong sentinel */
+        LOI_CHECK("backward stamp at 50 succeeds (no-op)",
+                  loi_stamp_one_for_test(db, "header_admit",
+                                         50, &was_write));
+        LOI_CHECK("backward stamp reports was_write=false", !was_write);
+
+        sqlite3_prepare_v2(db,
+            "SELECT cursor FROM stage_cursor WHERE name='header_admit'",
+            -1, &q, NULL);
+        rc = sqlite3_step(q);  // raw-sql-ok:test-direct
+        int64_t cursor_after_rewind =
+            rc == SQLITE_ROW ? sqlite3_column_int64(q, 0) : -1;
+        sqlite3_finalize(q);
+        LOI_CHECK("cursor preserved at 200 after backward stamp",
+                  cursor_after_rewind == 200);
+
+        /* Equal stamp at 200 — anti-rewind treats it as no-op. */
+        was_write = true;
+        LOI_CHECK("equal stamp at 200 succeeds (no-op)",
+                  loi_stamp_one_for_test(db, "header_admit",
+                                         200, &was_write));
+        LOI_CHECK("equal stamp reports was_write=false", !was_write);
+
+        /* Forward stamp at 5_000_000 — large jumps work. */
+        was_write = false;
+        LOI_CHECK("large forward stamp succeeds",
+                  loi_stamp_one_for_test(db, "header_admit",
+                                         5000000, &was_write));
+        LOI_CHECK("large forward stamp reports was_write=true", was_write);
+
+        /* Stamping a different stage starts fresh at the proposed value. */
+        was_write = false;
+        LOI_CHECK("fresh stage stamp at 1 succeeds",
+                  loi_stamp_one_for_test(db, "validate_headers",
+                                         1, &was_write));
+        LOI_CHECK("fresh stage stamp reports was_write=true", was_write);
 
         progress_store_close();
         test_cleanup_tmpdir(dir);

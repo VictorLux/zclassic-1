@@ -58,6 +58,7 @@
 #define ZCL_SERVICES_LEGACY_ONESHOT_IMPORT_H
 
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 
 struct main_state;
@@ -108,5 +109,40 @@ bool legacy_oneshot_import_run(
 
 /* Convert an outcome to a short stable string for logging. */
 const char *loi_outcome_name(enum loi_outcome o);
+
+/* ── Drift gate ──────────────────────────────────────────────────────
+ *
+ * The list of Wave S stage names whose progress.kv cursors get stamped
+ * to legacy_tip+1 at import-end. EVERY time a new Wave S stage ships:
+ *
+ *   1. Decide whether legacy-attach's imported state SATISFIES that
+ *      stage's contract for heights ≤ legacy_tip.
+ *      - For header_admit: yes — block_index entries are imported.
+ *      - For validate_headers: yes — legacy already Equihash-checked.
+ *      - For body_fetch: yes — BLOCK_HAVE_DATA set on imported entries.
+ *      - For body_persist (S-5, pending): UNDECIDED — bodies live in
+ *        hardlinked blk*.dat, not in blocks.log. Either teach
+ *        body_persist that "blk*.dat counts as persisted" or do NOT
+ *        add to LOI_STAGES_TO_STAMP. Either decision is fine; silently
+ *        forgetting is the bug.
+ *      - For S-6 script_validate / S-7 proof_validate: yes — legacy
+ *        chain has been live-mined and validators have run.
+ *      - For S-8 utxo_apply: yes — chainstate UTXOs are imported.
+ *      - For S-9 tip_finalize: yes — but only if we're sure we want
+ *        S-4b to claim authoritative tip-finalization.
+ *
+ *   2. If YES → add the stage name to LOI_STAGES_TO_STAMP[] in
+ *      legacy_oneshot_import.c AND update the EXPECTED_LOI_STAGES list
+ *      in lib/test/src/test_legacy_oneshot_import.c. The test fails
+ *      if either side drifts.
+ *
+ *   3. If NO → do nothing. The stage will start at cursor=0 on the
+ *      first boot after S-4b imports, which is the correct behavior
+ *      for a stage that has work to do on imported heights.
+ *
+ * Iterate with: for (size_t i = 0; i < loi_stages_to_stamp_count();
+ * i++) name = loi_stages_to_stamp_at(i); */
+size_t      loi_stages_to_stamp_count(void);
+const char *loi_stages_to_stamp_at(size_t i);
 
 #endif /* ZCL_SERVICES_LEGACY_ONESHOT_IMPORT_H */
