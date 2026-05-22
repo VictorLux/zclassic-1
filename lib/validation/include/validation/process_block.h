@@ -87,7 +87,6 @@ extern _Atomic int g_body_pull_active;
 
 void process_block_self_heal_stats_snapshot(
     struct self_heal_scan_stats *out);
-void process_block_self_heal_stats_reset(void);
 int process_block_self_heal_scan_depth_limit(void);
 bool process_block_self_heal_scan_enabled(void);
 
@@ -121,12 +120,6 @@ void set_sapling_tree_for_flush(struct incremental_merkle_tree *tree);
  * full 2.6M-block Sapling history. Passing NULL disables the
  * checkpoint (used by unit tests). */
 void set_sapling_checkpoint_datadir(const char *datadir);
-
-bool test_block_validity(struct validation_state *state,
-                         const struct chain_params *params,
-                         struct coins_view_cache *coins_tip,
-                         const struct block *block,
-                         struct block_index *pindex_prev);
 
 /* test-only surface: drives update_tip directly so a unit test
  * can verify csr_commit_tip rejection propagates to the caller.
@@ -163,27 +156,7 @@ enum process_block_crash_stage {
     PBCS_NUM_STAGES
 };
 
-void process_block_test_set_crash_stage(enum process_block_crash_stage s);
-enum process_block_crash_stage process_block_test_get_crash_stage(void);
 const char *process_block_crash_stage_name(enum process_block_crash_stage s);
-
-/* test-only surface: drives the stale-FAILED-mark clear logic
- * that accept_block_header uses when a header re-arrives for an
- * existing pindex. Caller owns last_retry_clear — passing 0 forces
- * a fresh rate-limit window. Returns true if nStatus was modified.
- *
- * Rules:
- *  - if pindex is near tip (height >= tip_h - 100): clear FAILED_MASK
- *  - else if ONLY FAILED_CHILD is set (no FAILED_VALID): clear
- *    FAILED_CHILD without rate-limit — propagation marks are stale
- *    once their root FAILED_VALID is gone, and clearing does not
- *    trigger re-validation
- *  - else (FAILED_VALID present, far from tip): rate-limited clear
- *    of FAILED_MASK once per 300s */
-bool process_block_try_clear_stale_failed(struct block_index *pindex,
-                                           int tip_h,
-                                           time_t now,
-                                           time_t *last_retry_clear);
 
 /* result codes for process_block_propagate_failed_child. Values
  * are stable and tested directly; add new codes at the end. */

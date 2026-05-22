@@ -106,18 +106,6 @@ void process_block_self_heal_stats_snapshot(
                              memory_order_relaxed);
 }
 
-void process_block_self_heal_stats_reset(void)
-{
-    atomic_store_explicit(&g_self_heal_tx_index_hits, 0,
-                          memory_order_relaxed);
-    atomic_store_explicit(&g_self_heal_scan_hits, 0,
-                          memory_order_relaxed);
-    atomic_store_explicit(&g_self_heal_scan_exhausted, 0,
-                          memory_order_relaxed);
-    atomic_store_explicit(&g_self_heal_scan_blocks_checked_total, 0,
-                          memory_order_relaxed);
-}
-
 /* ── UTXO injection helper ────────────────────────────────────── */
 bool process_block_inject_missing_utxo(
     struct coins_view_cache *coins_tip,

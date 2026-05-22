@@ -25,7 +25,7 @@ int test_self_heal_scan_fallback(void)
     struct self_heal_scan_stats stats;
 
     unsetenv("ZCL_SELF_HEAL_SCAN_DEPTH");
-    process_block_self_heal_stats_reset();
+    /* counters start at zero in a fresh process; no reset needed. */
     process_block_self_heal_stats_snapshot(&stats);
     bool ok = stats.tx_index_hits == 0 &&
               stats.scan_hits == 0 &&

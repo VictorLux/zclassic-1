@@ -6,7 +6,7 @@
  *
  * Core consensus paths split out of process_block.c: chain selection,
  * accept_block_header / accept_block, connect_tip / disconnect_tip,
- * activate_best_chain, process_new_block, test_block_validity.
+ * activate_best_chain, process_new_block.
  *
  * Pure code motion. Function bodies are byte-identical to the
  * original lib/validation/src/process_block.c. */
@@ -953,53 +953,6 @@ bool process_block_test_update_tip(struct main_state *ms,
     return update_tip(ms, pindex_new);
 }
 
-/* stale-FAILED-mark clear.
- *
- * Previous logic rate-limited ALL clears of blocks below tip-100 to
- * one per 300s globally. For BLOCK_FAILED_CHILD (propagation-only)
- * marks that was wrong: when the root FAILED_VALID is cleared
- * (e.g. by a retry near tip, or a reorg-recovery sweep), the
- * descendant CHILD marks become stale and need to drain. At 300s
- * per block, draining 2,000 stale CHILD marks took 166 hours — long
- * enough to look like a permanent chain pin.
- *
- * Clearing a CHILD-only mark is cheap: it does not trigger a
- * connect_block retry by itself. connect_block runs only when
- * find_most_work_chain selects the block as a candidate tip, at
- * which point real validation gates the actual re-commit. So the
- * only cost of un-masking is a possible future validation run,
- * bounded by the selection logic.
- *
- * FAILED_VALID rate-limit stays in place — those are real
- * validation failures. Thrashing connect_block on a known-bad
- * block is the scenario we want to avoid. */
-bool process_block_try_clear_stale_failed(struct block_index *pindex,
-                                           int tip_h,
-                                           time_t now,
-                                           time_t *last_retry_clear)
-{
-    if (!pindex || !(pindex->nStatus & BLOCK_FAILED_MASK))
-        return false;
-
-    if (pindex->nHeight >= tip_h - 100) {
-        pindex->nStatus &= ~BLOCK_FAILED_MASK;
-        return true;
-    }
-
-    if ((pindex->nStatus & BLOCK_FAILED_VALID) == 0) {
-        pindex->nStatus &= ~BLOCK_FAILED_CHILD;
-        return true;
-    }
-
-    if (last_retry_clear && now - *last_retry_clear >= 300) {
-        pindex->nStatus &= ~BLOCK_FAILED_MASK;
-        *last_retry_clear = now;
-        return true;
-    }
-
-    return false;
-}
-
 /* BLOCK_FAILED_CHILD propagation with OOM-amplifier guards.
  *
  * History: the original connect_tip inlined a full block_map scan +
@@ -1118,40 +1071,3 @@ bool process_new_block(struct validation_state *state,
     return true;
 }
 
-bool test_block_validity(struct validation_state *state,
-                         const struct chain_params *params,
-                         struct coins_view_cache *coins_tip,
-                         const struct block *block,
-                         struct block_index *pindex_prev)
-{
-    struct coins_view_cache view;
-    struct coins_view backing;
-    coins_view_cache_as_view(&backing, coins_tip);
-    coins_view_cache_init(&view, &backing);
-
-    struct block_index index_dummy;
-    block_index_init(&index_dummy);
-    index_dummy.pprev = pindex_prev;
-    index_dummy.nHeight = pindex_prev->nHeight + 1;
-
-    if (!contextual_check_block_header(&block->header, state, params,
-                                        pindex_prev, true)) {
-        coins_view_cache_free(&view);
-        LOG_FAIL("validation", "test_block_validity: contextual_check_block_header failed");
-    }
-    if (!check_block(block, state, params, true, true, true)) {
-        coins_view_cache_free(&view);
-        LOG_FAIL("validation", "test_block_validity: check_block failed");
-    }
-    if (!contextual_check_block(block, state, params, pindex_prev)) {
-        coins_view_cache_free(&view);
-        LOG_FAIL("validation", "test_block_validity: contextual_check_block failed");
-    }
-    if (!connect_block(block, state, &index_dummy, &view, params, true)) {
-        coins_view_cache_free(&view);
-        LOG_FAIL("validation", "test_block_validity: connect_block failed");
-    }
-
-    coins_view_cache_free(&view);
-    return true;
-}

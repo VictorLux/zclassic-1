@@ -24,20 +24,6 @@
  * header reads the same global. */
 _Atomic int g_test_crash_stage_storage = PBCS_NONE;
 
-void process_block_test_set_crash_stage(enum process_block_crash_stage s)
-{
-    if (s < PBCS_NONE || s >= PBCS_NUM_STAGES) s = PBCS_NONE;
-    atomic_store_explicit(&g_test_crash_stage_storage, (int)s,
-                          memory_order_relaxed);
-}
-
-enum process_block_crash_stage process_block_test_get_crash_stage(void)
-{
-    return (enum process_block_crash_stage)
-        atomic_load_explicit(&g_test_crash_stage_storage,
-                             memory_order_relaxed);
-}
-
 const char *process_block_crash_stage_name(enum process_block_crash_stage s)
 {
     switch (s) {
