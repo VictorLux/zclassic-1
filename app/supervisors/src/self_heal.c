@@ -26,6 +26,7 @@ void self_heal_register(struct main_state *ms)
     if (!ms) return;
     if (atomic_load(&g_id) != SUPERVISOR_INVALID_ID) return;
     g_ms = ms;
+    condition_engine_set_main_state(ms);
     liveness_contract_init(&g_contract, "self_heal.engine");
     atomic_store(&g_contract.period_secs, (int64_t)5);
     atomic_store(&g_contract.deadline_secs, (int64_t)0);

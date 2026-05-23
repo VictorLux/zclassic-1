@@ -53,11 +53,15 @@ struct condition {
     struct condition_state state;
 };
 
+struct main_state;
+
 bool condition_register(const struct condition *cond);
 void condition_engine_tick(void);
 bool condition_engine_dump_state_json(struct json_value *out, const char *key);
 int condition_engine_get_active_count(void);
 int condition_engine_get_unresolved_count(void);
+void condition_engine_set_main_state(struct main_state *ms);
+struct main_state *condition_engine_main_state(void);
 
 const char *condition_severity_name(enum condition_severity s);
 const char *condition_remedy_result_name(enum condition_remedy_result r);

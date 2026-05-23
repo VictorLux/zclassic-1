@@ -18,6 +18,8 @@
 #include "services/validate_headers_stage.h"
 #include "services/body_fetch_stage.h"
 #include "services/chain_tip_watchdog.h"
+#include "conditions/condition_registry.h"
+#include "supervisors/self_heal.h"
 #include "services/header_probe_service.h"
 #include "services/legacy_mirror_sync_service.h"
 #include "services/node_health_service.h"
@@ -2906,6 +2908,8 @@ bool app_init_services(struct app_context *ctx,
      * active_chain_height advance and escalates to force_mirror +
      * orderly shutdown if it doesn't. See services/chain_tip_watchdog.h. */
     chain_tip_watchdog_register(svc->state);
+    condition_registry_register_all();
+    self_heal_register(svc->state);
     boot_header_admit_supervisor_register(svc);
     boot_validate_headers_supervisor_register(svc);
     boot_body_fetch_supervisor_register(svc);

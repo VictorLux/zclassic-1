@@ -12,6 +12,7 @@
 static const struct condition *g_conditions[CONDITION_MAX_REGISTRY];
 static int g_condition_count;
 static pthread_mutex_t g_condition_mu = PTHREAD_MUTEX_INITIALIZER;
+static struct main_state *g_main_state;
 
 static int64_t now_unix(void)
 {
@@ -36,6 +37,16 @@ const char *condition_remedy_result_name(enum condition_remedy_result r)
     case COND_REMEDY_SKIP: return "skip";
     }
     return "unknown";
+}
+
+void condition_engine_set_main_state(struct main_state *ms)
+{
+    g_main_state = ms;
+}
+
+struct main_state *condition_engine_main_state(void)
+{
+    return g_main_state;
 }
 
 static int condition_find_locked(const char *name)
@@ -279,6 +290,7 @@ void condition_engine_reset_for_testing(void)
         condition_state_reset((struct condition_state *)&g_conditions[i]->state);
     memset(g_conditions, 0, sizeof(g_conditions));
     g_condition_count = 0;
+    g_main_state = NULL;
     pthread_mutex_unlock(&g_condition_mu);
 }
 #endif
