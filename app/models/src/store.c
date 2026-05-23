@@ -129,7 +129,7 @@ bool db_store_product_save(struct node_db *ndb, const struct db_store_product *p
     bool ok = false;
     AR_FINALIZE_STEP_DONE(s, ok);
     if (!ok) {
-        fprintf(stderr, "store_product save failed: %s\n", sqlite3_errmsg(ndb->db));
+        fprintf(stderr, "store_product save failed: %s\n", sqlite3_errmsg(ndb->db));  // obs-ok:pre-existing-diagnostic
     }
     AR_FINISH_SAVE(cbs, p, ok);
 }

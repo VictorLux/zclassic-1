@@ -138,13 +138,13 @@ static bool ldi_spotcheck_sha3_windows(struct blocks_mmap *bmr,
         picked[i] = (size_t)(r % max_w);
     }
 
-    fprintf(stderr,
+    fprintf(stderr,  // obs-ok:pre-existing-diagnostic
             "[legacy_direct_import] SHA3 spotcheck: K=%d windows over "
             "[0..%zu) (legacy_tip=%d)\n", k, max_w, legacy_tip);
 
     for (int i = 0; i < k; i++) {
         size_t wi = picked[i];
-        fprintf(stderr,
+        fprintf(stderr,  // obs-ok:pre-existing-diagnostic
                 "[legacy_direct_import] spotcheck: verifying w=%zu "
                 "(h=%d..%d)\n",
                 wi, g_sha3_windows[wi].start_height,
@@ -155,10 +155,10 @@ static bool ldi_spotcheck_sha3_windows(struct blocks_mmap *bmr,
                     "%zu; continuing with full validation\n", wi);
             return false;
         }
-        fprintf(stderr,
+        fprintf(stderr,  // obs-ok:pre-existing-diagnostic
                 "[legacy_direct_import] spotcheck: w=%zu OK\n", wi);
     }
-    fprintf(stderr,
+    fprintf(stderr,  // obs-ok:pre-existing-diagnostic
             "[legacy_direct_import] SHA3 spotcheck: %d/%d windows match\n",
             k, k);
     return true;
@@ -218,7 +218,7 @@ bool legacy_direct_import_range_blocking(
     while (legacy_tip > 0 && map[(size_t)legacy_tip].height < 0)
         legacy_tip--;
     r.legacy_tip = legacy_tip;
-    fprintf(stderr,
+    fprintf(stderr,  // obs-ok:pre-existing-diagnostic
             "[legacy_direct_import] legacy tip h=%d (map_count=%zu, "
             "load took %" PRId64 " ms)\n",
             legacy_tip, map_count, ldi_now_ms() - t_open);
@@ -227,7 +227,7 @@ bool legacy_direct_import_range_blocking(
         from_height = active_chain_height(&ms->chain_active);
     if (from_height < 0) from_height = 0;
     if (from_height >= legacy_tip) {
-        fprintf(stderr,
+        fprintf(stderr,  // obs-ok:pre-existing-diagnostic
                 "[legacy_direct_import] already at/past legacy tip "
                 "(from=%d legacy=%d) — nothing to do\n",
                 from_height, legacy_tip);
@@ -252,11 +252,11 @@ bool legacy_direct_import_range_blocking(
     if (ldi_spotcheck_sha3_windows(bmr, map, map_count,
                                     legacy_tip, LDI_SPOTCHECK_K)) {
         r.source_checked = true;
-        fprintf(stderr,
+        fprintf(stderr,  // obs-ok:pre-existing-diagnostic
                 "[legacy_direct_import] SHA3 source spotcheck passed; "
                 "proof validation remains enabled\n");
     } else {
-        fprintf(stderr,
+        fprintf(stderr,  // obs-ok:pre-existing-diagnostic
                 "[legacy_direct_import] WARNING: SHA3 spotcheck did not "
                 "pass; continuing with full validation\n");
     }
@@ -265,7 +265,7 @@ bool legacy_direct_import_range_blocking(
     atomic_store(&g_body_pull_active, 1);
 
     /* ── Height walk + ingest ─────────────────────────────── */
-    fprintf(stderr,
+    fprintf(stderr,  // obs-ok:pre-existing-diagnostic
             "[legacy_direct_import] starting walk: [%d+1 .. %d] "
             "(%d blocks)\n",
             from_height, legacy_tip, legacy_tip - from_height);
@@ -277,7 +277,7 @@ bool legacy_direct_import_range_blocking(
 
     for (int h = from_height + 1; h <= legacy_tip; h++) {
         if (thread_registry_shutdown_requested()) {
-            fprintf(stderr,
+            fprintf(stderr,  // obs-ok:pre-existing-diagnostic
                     "[legacy_direct_import] shutdown requested at h=%d\n", h);
             ok = false;
             break;
@@ -285,7 +285,7 @@ bool legacy_direct_import_range_blocking(
 
         const struct legacy_block_loc *loc = &map[(size_t)h];
         if (loc->height < 0) {
-            fprintf(stderr,
+            fprintf(stderr,  // obs-ok:pre-existing-diagnostic
                     "[legacy_direct_import] h=%d MISSING in legacy index "
                     "(gap in blocks/index/) — aborting\n", h);
             ok = false;
@@ -312,7 +312,7 @@ bool legacy_direct_import_range_blocking(
         const uint8_t *payload =
             bmr_get_payload(bmr, loc->nFile, loc->nDataPos, &plen);
         if (!payload || plen == 0) {
-            fprintf(stderr,
+            fprintf(stderr,  // obs-ok:pre-existing-diagnostic
                     "[legacy_direct_import] h=%d mmap fetch failed "
                     "(nFile=%d nDataPos=%u)\n",
                     h, loc->nFile, loc->nDataPos);
@@ -328,7 +328,7 @@ bool legacy_direct_import_range_blocking(
         stream_free(&s);
         if (!deser_ok) {
             block_free(&block);
-            fprintf(stderr,
+            fprintf(stderr,  // obs-ok:pre-existing-diagnostic
                     "[legacy_direct_import] h=%d block_deserialize "
                     "failed\n", h);
             ok = false;
@@ -341,7 +341,7 @@ bool legacy_direct_import_range_blocking(
                                         &block, true, our_datadir);
         block_free(&block);
         if (!pn_ok) {
-            fprintf(stderr,
+            fprintf(stderr,  // obs-ok:pre-existing-diagnostic
                     "[legacy_direct_import] h=%d process_new_block "
                     "FAILED: %s\n",
                     h, vs.reject_reason[0] ? vs.reject_reason : "(unknown)");
@@ -357,7 +357,7 @@ bool legacy_direct_import_range_blocking(
             double rate = elapsed > 0
                 ? (double)r.applied * 1000.0 / (double)elapsed
                 : 0.0;
-            fprintf(stderr,
+            fprintf(stderr,  // obs-ok:pre-existing-diagnostic
                     "[legacy_direct_import] applied=%d h=%d rate=%.1f "
                     "bps (target=%d)\n",
                     r.applied, h, rate, legacy_tip);
@@ -382,7 +382,7 @@ bool legacy_direct_import_range_blocking(
     r.final_tip = active_chain_height(&ms->chain_active);
     r.ok = ok;
 
-    fprintf(stderr,
+    fprintf(stderr,  // obs-ok:pre-existing-diagnostic
             "[legacy_direct_import] walk %s: applied=%d "
             "skipped_have=%d skipped_failed=%d elapsed=%.1fs "
             "rate=%.1f bps final_tip=%d\n",
@@ -392,7 +392,7 @@ bool legacy_direct_import_range_blocking(
 
     /* ── Auto-rescan wallet ───────────────────────────────── */
     if (ok && wallet && r.applied > 0) {
-        fprintf(stderr,
+        fprintf(stderr,  // obs-ok:pre-existing-diagnostic
                 "[legacy_direct_import] starting wallet rescan "
                 "[%d..%d]...\n", from_height + 1, r.final_tip);
         int64_t t_rescan = ldi_now_ms();
@@ -400,7 +400,7 @@ bool legacy_direct_import_range_blocking(
                                   from_height + 1, r.final_tip,
                                   our_datadir);
         double secs = (double)(ldi_now_ms() - t_rescan) / 1000.0;
-        fprintf(stderr,
+        fprintf(stderr,  // obs-ok:pre-existing-diagnostic
                 "[legacy_direct_import] wallet rescan complete: "
                 "%d hits in %.1fs\n", hits, secs);
     }

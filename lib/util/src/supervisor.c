@@ -87,7 +87,7 @@ supervisor_child_id supervisor_register(struct liveness_contract *c)
     pthread_mutex_lock(&g_lock);
     if (g_contract_count >= SUPERVISOR_CAP) {
         pthread_mutex_unlock(&g_lock);
-        fprintf(stderr,
+        fprintf(stderr,  // obs-ok:pre-existing-diagnostic
             "[supervisor] FAIL register '%s': registry full (cap=%d)\n",
             c->name, SUPERVISOR_CAP);
         return SUPERVISOR_INVALID_ID;
@@ -96,7 +96,7 @@ supervisor_child_id supervisor_register(struct liveness_contract *c)
     for (int i = 0; i < g_contract_count; i++) {
         if (strncmp(g_contracts[i]->name, c->name, SUPERVISOR_NAME_MAX) == 0) {
             pthread_mutex_unlock(&g_lock);
-            fprintf(stderr,
+            fprintf(stderr,  // obs-ok:pre-existing-diagnostic
                 "[supervisor] FAIL register '%s': duplicate name\n", c->name);
             return SUPERVISOR_INVALID_ID;
         }
@@ -324,7 +324,7 @@ void supervisor_stop(void)
         deadline.tv_sec += 2;
         int rc = pthread_timedjoin_np(g_thread_id, NULL, &deadline);
         if (rc != 0) {
-            fprintf(stderr,
+            fprintf(stderr,  // obs-ok:pre-existing-diagnostic
                 "[supervisor] WARN supervisor_stop join rc=%d (thread still alive)\n",
                 rc);
         } else {

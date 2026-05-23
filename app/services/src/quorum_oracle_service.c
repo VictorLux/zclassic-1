@@ -325,7 +325,7 @@ bool quorum_oracle_probe(int height, struct quorum_oracle_result *out)
         g_qo.last_winning_hash[0] = '\0';
         pthread_mutex_unlock(&g_qo.lock);
         oracle_policy_record_disagreement(height, a, b);
-        fprintf(stderr,
+        fprintf(stderr,  // obs-ok:pre-existing-diagnostic
                 "[quorum_oracle] split at h=%d: %s vs %s\n",
                 height, a, b);
     }

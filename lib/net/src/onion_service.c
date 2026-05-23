@@ -356,7 +356,7 @@ static void ensure_directory_table(sqlite3 *db)
         "clearnet_port INTEGER DEFAULT 0"
         ")", NULL, NULL, &err);
     if (rc != SQLITE_OK) {
-        fprintf(stderr, "onion_service: failed to create directory table: %s\n",
+        fprintf(stderr, "onion_service: failed to create directory table: %s\n",  // obs-ok:pre-existing-diagnostic
                 err ? err : "unknown");
         sqlite3_free(err);
     }

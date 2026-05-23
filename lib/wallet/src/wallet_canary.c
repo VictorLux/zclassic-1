@@ -52,7 +52,7 @@ static int fail(int code, struct wallet_canary_status *out,
     int64_t now = now_unix();
     set_status(false, code, now, buf);
     if (out) *out = wallet_canary_get_status();
-    fprintf(stderr, "[wallet_canary] %s:%d %s(): code=%d: %s\n",
+    fprintf(stderr, "[wallet_canary] %s:%d %s(): code=%d: %s\n",  // obs-ok:pre-existing-diagnostic
             __FILE__, __LINE__, __func__, code, buf);
     return code;
 }
