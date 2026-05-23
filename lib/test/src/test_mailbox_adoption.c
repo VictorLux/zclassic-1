@@ -9,6 +9,7 @@
 
 static struct header_admit_msg g_seen[4];
 static int g_seen_count;
+static bool g_reentrant_pushed;
 
 static void capture_header_admit_msg(const struct header_admit_msg *msg)
 {
@@ -32,6 +33,14 @@ static struct header_admit_msg make_msg(int64_t height)
     msg.hash.data[0] = (uint8_t)height;
     msg.hash.data[31] = (uint8_t)(height >> 8);
     return msg;
+}
+
+static void reentrant_publish_header_admit_msg(const struct header_admit_msg *msg)
+{
+    if (!g_reentrant_pushed) {
+        struct header_admit_msg next = make_msg(msg->height + 1);
+        g_reentrant_pushed = mailbox_header_admit_push(&next);
+    }
 }
 
 int test_mailbox_adoption(void)
@@ -65,15 +74,33 @@ int test_mailbox_adoption(void)
         (void)mailbox_header_admit_drain(discard_header_admit_msg);
 
         bool all_fit = true;
-        for (int i = 0; i < 1024; i++) {
+        for (int i = 0; i < HEADER_ADMIT_INBOX_CAPACITY; i++) {
             struct header_admit_msg msg = make_msg(i);
             all_fit = all_fit && mailbox_header_admit_push(&msg);
         }
-        struct header_admit_msg overflow = make_msg(1024);
+        struct header_admit_msg overflow = make_msg(HEADER_ADMIT_INBOX_CAPACITY);
 
         if (!all_fit) failures++;
         if (mailbox_header_admit_push(&overflow)) failures++;
-        if (mailbox_header_admit_drain(discard_header_admit_msg) != 1024) failures++;
+        if (mailbox_header_admit_drain(discard_header_admit_msg) != HEADER_ADMIT_INBOX_CAPACITY) failures++;
+        if (mailbox_header_admit_drain(discard_header_admit_msg) != 0) failures++;
+        printf("OK\n");
+    }
+
+    TEST("header_admit_inbox_drain_is_snapshot_bounded") {
+        (void)mailbox_header_admit_drain(discard_header_admit_msg);
+
+        struct header_admit_msg first = make_msg(41);
+        g_reentrant_pushed = false;
+        if (!mailbox_header_admit_push(&first)) failures++;
+        if (mailbox_header_admit_drain(reentrant_publish_header_admit_msg) != 1) failures++;
+        if (!g_reentrant_pushed) failures++;
+
+        memset(g_seen, 0, sizeof(g_seen));
+        g_seen_count = 0;
+        if (mailbox_header_admit_drain(capture_header_admit_msg) != 1) failures++;
+        if (g_seen_count != 1) failures++;
+        if (g_seen[0].height != 42) failures++;
         if (mailbox_header_admit_drain(discard_header_admit_msg) != 0) failures++;
         printf("OK\n");
     }

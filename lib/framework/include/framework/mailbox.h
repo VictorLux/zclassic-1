@@ -31,7 +31,6 @@
     static mailbox_t *g_mbox_##name; \
     static pthread_mutex_t g_mbox_##name##_init_lock = PTHREAD_MUTEX_INITIALIZER; \
     static bool mailbox_##name##_init_once(void) { \
-        if (g_mbox_##name) return true; \
         pthread_mutex_lock(&g_mbox_##name##_init_lock); \
         if (!g_mbox_##name) \
             g_mbox_##name = mailbox_create((capacity), sizeof(T)); \
@@ -47,7 +46,8 @@
         if (!handler || !mailbox_##name##_init_once()) return 0; \
         T tmp; \
         size_t n = 0; \
-        while (mailbox_try_recv(g_mbox_##name, &tmp)) { \
+        size_t limit = mailbox_depth(g_mbox_##name); \
+        while (n < limit && mailbox_try_recv(g_mbox_##name, &tmp)) { \
             handler(&tmp); \
             n++; \
         } \
