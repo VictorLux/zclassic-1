@@ -37,7 +37,7 @@ static bool witness_contradiction_frozen(int64_t target_at_detect)
     return current_state() != CEC_CONTRADICTION_FROZEN;
 }
 
-static const struct condition c_contradiction_frozen = {
+static struct condition c_contradiction_frozen = {
     .name = "contradiction_frozen",
     .severity = COND_CRITICAL,
     .poll_secs = 10,

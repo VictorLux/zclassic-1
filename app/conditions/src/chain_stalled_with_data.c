@@ -62,7 +62,7 @@ static bool witness_chain_stalled_with_data(int64_t target_at_detect)
     return current_tip() > atomic_load(&g_last_tip);
 }
 
-static const struct condition c_chain_stalled_with_data = {
+static struct condition c_chain_stalled_with_data = {
     .name = "chain_stalled_with_data",
     .severity = COND_WARN,
     .poll_secs = 10,

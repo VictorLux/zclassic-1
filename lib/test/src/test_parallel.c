@@ -90,7 +90,7 @@ volatile sig_atomic_t g_shutdown_requested = 0;
     X(coins_view_atomicity) X(make_lint_gates) X(multisig) \
     X(mcp_fuzz) X(rpc_auth_hardening) X(sync_watchdog) \
     X(disk_block_io) X(msg_handlers) X(chain_advance_coordinator) \
-    X(lag_slo) X(boot_phase) X(path_check) X(supervisor) X(blocker) \
+    X(lag_slo) X(boot_phase) X(path_check) X(supervisor) X(condition_engine) X(blocker) \
     X(clock) X(rng) X(stage) X(mailbox) X(projection) X(progress_store) \
     X(header_admit_stage) \
     X(domain_consensus_verify) X(application_consensus_validate_block) \

@@ -498,6 +498,7 @@ int main(void)
     failures += test_boot_phase();
     failures += test_path_check();
     failures += test_supervisor();
+    failures += test_condition_engine();
     failures += test_blocker();
     failures += test_clock();
     failures += test_rng();

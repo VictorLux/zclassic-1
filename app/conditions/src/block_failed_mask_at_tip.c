@@ -60,7 +60,7 @@ static bool witness_block_failed_mask_at_tip(int64_t target_at_detect)
     return ms && target >= 0 && find_failed_next(ms, (int)target) == NULL;
 }
 
-static const struct condition c_block_failed_mask_at_tip = {
+static struct condition c_block_failed_mask_at_tip = {
     .name = "block_failed_mask_at_tip",
     .severity = COND_CRITICAL,
     .poll_secs = 5,
