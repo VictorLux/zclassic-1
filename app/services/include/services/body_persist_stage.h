@@ -1,0 +1,47 @@
+/* Copyright 2026 Rhett Creighton - Apache License 2.0
+ *
+ * body_persist_stage — Wave S, S-5 shadow stage.
+ *
+ * Consumes `body_fetch_log`; for each height where the body is on disk,
+ * reads the body, verifies header+merkle consistency, and logs the result.
+ * Shadow mode: no mutation of consensus state. */
+
+#ifndef ZCL_SERVICES_BODY_PERSIST_STAGE_H
+#define ZCL_SERVICES_BODY_PERSIST_STAGE_H
+
+#include "util/stage.h"
+
+#include <stdbool.h>
+#include <stdint.h>
+
+struct block;
+struct block_index;
+struct json_value;
+struct main_state;
+
+#define BODY_PERSIST_BATCH_PER_TICK 500
+
+typedef bool (*body_persist_reader_fn)(struct block *out,
+                                       const struct block_index *bi,
+                                       const char *datadir,
+                                       void *user);
+
+bool body_persist_stage_init(struct main_state *ms);
+void body_persist_stage_shutdown(void);
+
+stage_result_t body_persist_stage_step_once(void);
+int body_persist_stage_drain(int max_steps);
+
+uint64_t body_persist_stage_cursor(void);
+uint64_t body_persist_stage_verified_total(void);
+uint64_t body_persist_stage_upstream_failed_total(void);
+uint64_t body_persist_stage_read_failed_total(void);
+uint64_t body_persist_stage_header_mismatch_total(void);
+uint64_t body_persist_stage_merkle_mismatch_total(void);
+
+/* Test seam. Passing NULL restores the production disk reader. */
+void body_persist_stage_set_reader(body_persist_reader_fn fn, void *user);
+
+bool body_persist_dump_state_json(struct json_value *out, const char *key);
+
+#endif /* ZCL_SERVICES_BODY_PERSIST_STAGE_H */

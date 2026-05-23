@@ -18,6 +18,7 @@
 #include "services/header_admit_stage.h"
 #include "services/validate_headers_stage.h"
 #include "services/body_fetch_stage.h"
+#include "services/body_persist_stage.h"
 #include "services/chain_tip_watchdog.h"
 #include "conditions/condition_registry.h"
 #include "supervisors/self_heal.h"
@@ -706,6 +707,60 @@ static void boot_body_fetch_supervisor_register(struct boot_svc_ctx *svc)
     if (g_bf_id == SUPERVISOR_INVALID_ID) {
         fprintf(stderr,  // obs-ok:bf-supervisor-fallback-warn
             "[supervisor] WARN staged.body_fetch register failed\n");
+    }
+}
+
+/* ── Wave S, S-5: body_persist stage supervisor child ────────────── */
+static struct liveness_contract g_bp_contract;
+static supervisor_child_id      g_bp_id = SUPERVISOR_INVALID_ID;
+static struct main_state       *g_bp_ms = NULL;
+
+static void bp_tick(struct liveness_contract *c)
+{
+    (void)c;
+    if (!g_bp_ms) return;
+    (void)body_persist_stage_drain(BODY_PERSIST_BATCH_PER_TICK);
+    supervisor_progress(g_bp_id,
+                        (int64_t)body_persist_stage_cursor());
+    supervisor_tick(g_bp_id);
+}
+
+static void bp_stall(struct liveness_contract *c)
+{
+    (void)c;
+    fprintf(stderr,  // obs-ok:bp-shadow-stall
+            "[supervisor] staged.body_persist stalled "
+            "(cursor=%llu verified=%llu upstream_failed=%llu read_failed=%llu) "
+            "— shadow persist behind body_fetch\n",
+            (unsigned long long)body_persist_stage_cursor(),
+            (unsigned long long)body_persist_stage_verified_total(),
+            (unsigned long long)body_persist_stage_upstream_failed_total(),
+            (unsigned long long)body_persist_stage_read_failed_total());
+}
+
+static void boot_body_persist_supervisor_register(struct boot_svc_ctx *svc)
+{
+    if (!svc || !svc->state) return;
+    if (g_bp_id != SUPERVISOR_INVALID_ID) return;  /* idempotent */
+
+    if (!body_persist_stage_init(svc->state)) {
+        fprintf(stderr,  // obs-ok:bp-init-warn
+            "[supervisor] WARN staged.body_persist init failed — "
+            "shadow persist not running this boot\n");
+        return;
+    }
+
+    g_bp_ms = svc->state;
+    liveness_contract_init(&g_bp_contract, "staged.body_persist");
+    atomic_store(&g_bp_contract.period_secs, (int64_t)2);
+    atomic_store(&g_bp_contract.progress_max_quiet_us,
+                 (int64_t)1800 * 1000 * 1000);
+    g_bp_contract.on_tick  = bp_tick;
+    g_bp_contract.on_stall = bp_stall;
+    g_bp_id = supervisor_register(&g_bp_contract);
+    if (g_bp_id == SUPERVISOR_INVALID_ID) {
+        fprintf(stderr,  // obs-ok:bp-supervisor-fallback-warn
+            "[supervisor] WARN staged.body_persist register failed\n");
     }
 }
 
@@ -2914,6 +2969,7 @@ bool app_init_services(struct app_context *ctx,
     boot_header_admit_supervisor_register(svc);
     boot_validate_headers_supervisor_register(svc);
     boot_body_fetch_supervisor_register(svc);
+    boot_body_persist_supervisor_register(svc);
 
     if (!boot_register_runtime_services(svc) ||
         !zcl_service_kernel_start_all(&svc->runtime_kernel)) {
@@ -3076,8 +3132,12 @@ static void shutdown_release_owned_resources(struct boot_svc_ctx *svc)
     sapling_free_params();
 
     /* Wave S shutdown order: bottom-up through the saga so each stage's
-     * upstream is still alive while it drains in-flight work. S-4
-     * body_fetch reads from validate_headers_log; tear it down first. */
+     * upstream is still alive while it drains in-flight work. S-5
+     * body_persist reads from body_fetch_log; tear it down first. */
+    body_persist_stage_shutdown();
+
+    /* S-4 body_fetch reads from validate_headers_log; tear it down
+     * before validate_headers. */
     body_fetch_stage_shutdown();
 
     /* Wave S, S-3: stop the validate_headers stage next so its workers
