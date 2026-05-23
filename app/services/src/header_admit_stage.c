@@ -12,6 +12,7 @@
 #include "chain/chain.h"
 #include "core/uint256.h"
 #include "json/json.h"
+#include "services/header_admit_inbox.h"
 #include "storage/progress_store.h"
 #include "util/blocker.h"
 #include "util/log_macros.h"
@@ -34,9 +35,13 @@ static pthread_mutex_t g_lock = PTHREAD_MUTEX_INITIALIZER;
 static struct main_state *g_ms = NULL;
 static stage_t *g_stage = NULL;
 static _Atomic uint64_t g_admitted_total = 0;
+static _Atomic uint64_t g_inbox_drained_total = 0;
+static _Atomic uint64_t g_inbox_logged_total = 0;
 static _Atomic int64_t  g_last_admit_height = -1;
 static _Atomic int64_t  g_last_step_unix = 0;
 static _Atomic int64_t  g_last_blocked_unix = 0;
+
+MAILBOX_DEFINE(header_admit, struct header_admit_msg, 1024);
 
 static int64_t wall_now_s(void)
 {
@@ -100,6 +105,40 @@ static bool log_insert(sqlite3 *db, int height,
         return false;
     }
     return true;
+}
+
+static void handle_header_admit_msg(const struct header_admit_msg *m)
+{
+    if (!m) return;
+
+    atomic_fetch_add(&g_inbox_drained_total, 1);
+
+    struct main_state *ms = g_ms;
+    sqlite3 *db = progress_store_db();
+    if (!ms || !db || m->height < 0 || m->height > INT32_MAX)
+        return;
+
+    struct block_index *bi = active_chain_at(&ms->chain_active,
+                                             (int)m->height);
+    if (!bi || !bi->phashBlock)
+        return;
+
+    if (memcmp(bi->phashBlock->data, m->hash.data, 32) != 0) {
+        fprintf(stderr,  // obs-ok:header-admit-inbox-hash-mismatch
+                "[header_admit] inbox hash mismatch height=%lld peer=%u\n",
+                (long long)m->height, m->peer_id);
+        return;
+    }
+
+    const struct uint256 *parent_hash = NULL;
+    if (m->height > 0) {
+        if (!bi->pprev || !bi->pprev->phashBlock)
+            return;
+        parent_hash = bi->pprev->phashBlock;
+    }
+
+    if (log_insert(db, (int)m->height, bi->phashBlock, parent_hash))
+        atomic_fetch_add(&g_inbox_logged_total, 1);
 }
 
 static stage_result_t step_admit(struct stage_step_ctx *c)
@@ -187,6 +226,7 @@ stage_result_t header_admit_stage_step_once(void)
     if (!g_stage) return STAGE_IDLE;
     sqlite3 *db = progress_store_db();
     if (!db) return STAGE_IDLE;
+    (void)mailbox_header_admit_drain(handle_header_admit_msg);
     return stage_run_once(g_stage, db);
 }
 
@@ -215,6 +255,8 @@ void header_admit_stage_shutdown(void)
      * what we reset is what would be misleading across re-inits —
      * lifetime counters that should restart with each bind. */
     atomic_store(&g_admitted_total, (uint64_t)0);
+    atomic_store(&g_inbox_drained_total, (uint64_t)0);
+    atomic_store(&g_inbox_logged_total, (uint64_t)0);
     atomic_store(&g_last_admit_height, (int64_t)-1);
     atomic_store(&g_last_step_unix, (int64_t)0);
     atomic_store(&g_last_blocked_unix, (int64_t)0);
@@ -244,6 +286,10 @@ bool header_admit_stage_dump_state_json(struct json_value *out,
                       (int64_t)(g_stage ? stage_cursor(g_stage) : 0));
     json_push_kv_int (out, "admitted_total",
                       (int64_t)atomic_load(&g_admitted_total));
+    json_push_kv_int (out, "inbox_drained_total",
+                      (int64_t)atomic_load(&g_inbox_drained_total));
+    json_push_kv_int (out, "inbox_logged_total",
+                      (int64_t)atomic_load(&g_inbox_logged_total));
     json_push_kv_int (out, "last_admit_height",
                       atomic_load(&g_last_admit_height));
     json_push_kv_int (out, "last_step_unix",
