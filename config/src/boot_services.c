@@ -17,6 +17,7 @@
 #include "services/header_admit_stage.h"
 #include "services/validate_headers_stage.h"
 #include "services/body_fetch_stage.h"
+#include "services/chain_tip_watchdog.h"
 #include "services/header_probe_service.h"
 #include "services/legacy_mirror_sync_service.h"
 #include "services/node_health_service.h"
@@ -2901,6 +2902,10 @@ bool app_init_services(struct app_context *ctx,
      * thread has fresh targets to try. */
     boot_peer_floor_supervisor_register(svc);
     boot_coord_escalation_supervisor_register(svc);
+    /* Wave M-W: tip-stuck overlord watchdog. Single-purpose: watches
+     * active_chain_height advance and escalates to force_mirror +
+     * orderly shutdown if it doesn't. See services/chain_tip_watchdog.h. */
+    chain_tip_watchdog_register(svc->state);
     boot_header_admit_supervisor_register(svc);
     boot_validate_headers_supervisor_register(svc);
     boot_body_fetch_supervisor_register(svc);

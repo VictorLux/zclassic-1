@@ -49,6 +49,7 @@
 #include "services/header_admit_stage.h"
 #include "services/validate_headers_stage.h"
 #include "services/body_fetch_stage.h"
+#include "services/chain_tip_watchdog.h"
 #include "storage/progress_store.h"
 #include "services/ibd_throttle.h"
 #include "services/mempool_limits.h"
@@ -424,6 +425,8 @@ static const struct dump_entry g_dumpers[] = {
                      "P2P peer lifecycle attempts, handshakes, timeouts, and rejects by address/source" },
     { "chain_advance_coordinator", chain_advance_coordinator_dump_state_json,
                      "canonical chain-advance source scoring: P2P, snapshot, local import, mirror fallback" },
+    { "chain_tip_watchdog", chain_tip_watchdog_dump_state_json,
+                     "tip-stuck overlord: highest_tip, age_secs since last advance, escalation level + fire counts" },
     { "long_op",     long_op_dump_state_json,
                      "active long-operation scopes (>600s code paths) that gate STATE_STUCK watchdog suppression" },
     { "ibd_throttle", ibd_throttle_dump_state_json,
