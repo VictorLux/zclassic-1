@@ -4,20 +4,23 @@
 > truth for "what's done, what's next, what's blocked." Read this first
 > when you start a session. Full architecture: [`FRAMEWORK.md`](./FRAMEWORK.md).
 
-**Updated:** 2026-05-23 (Phase 1 merged: mailbox adoption + platform rewire)
+**Updated:** 2026-05-23 (Phase 1 COMPLETE; Phase 2 S-5 shipped; Phase 3 PR-1 dispatched)
 
 ---
 
 ## Phases
 
 ```
-Phase 0  [██████████] 100%   Condition engine + scaffold        ✅ DONE 2026-05-23
-Phase 1  [████████░░]  80%   Adopt unused primitives            ← IN FLIGHT
-  ├ 1a    [██████████] 100%   mailbox  (wt2 — header_probe→admit_inbox) ✅
-  ├ 1b    [░░░░░░░░░░]   0%   projection (zcl_status/health/kpi)        ← wt2 next
-  └ 1c    [██████████] 100%   platform.clock/rng rewire (wt3, gate #19=FAIL) ✅
-Phase 2  [██░░░░░░░░]  20%   Wave S → S-12 cutover  (S-1..S-4b shipped)
-Phase 3  [░░░░░░░░░░]   0%   Dissolve mega-modules
+Phase 0  [██████████] 100%   Condition engine + scaffold              ✅ DONE
+Phase 1  [██████████] 100%   Adopt unused primitives                  ✅ DONE
+  ├ 1a    [██████████] 100%   mailbox        (wt2)                    ✅
+  ├ 1b    [██████████] 100%   projection     (wt2)                    ✅
+  └ 1c    [██████████] 100%   platform.clock/rng (wt3, gate #19=FAIL) ✅
+Phase 2  [████░░░░░░]  40%   Wave S → S-12 cutover (S-1..S-5 shipped) ← IN FLIGHT
+  ├ S-5    [██████████] 100%   body_persist shadow (wt3)              ✅
+  └ S-6    [░░░░░░░░░░]   0%   script_validate shadow (wt3 next)      ← READY
+Phase 3  [░░░░░░░░░░]   0%   Dissolve mega-modules                   ← IN FLIGHT
+  └ PR-1   [░░░░░░░░░░]   0%   sync_watchdog → 2 conditions (wt2 next) ← READY
 Phase 4  [░░░░░░░░░░]   0%   Storage unification (event log)
 Phase 5  [░░░░░░░░░░]   0%   Crypto agility + reproducible builds
 Phase 6  [░░░░░░░░░░]   0%   Determinism + simulator
@@ -69,9 +72,9 @@ clause. The table below is the dashboard.
 
 | Worktree | Branch | Assignment | Status | Last update |
 |---|---|---|---|---|
-| `~/github/zclassic23` (main) | `main` | Orchestrator: review + merge + dispatch | ✅ Phase 1 merged + Phase 1b/Phase 2 dispatched | 2026-05-23 |
-| `~/github/zclassic23-2` (wt2) | `wt2/phase1-projection-adoption` | [`docs/work/wt2-phase1-projection-adoption.md`](./work/wt2-phase1-projection-adoption.md) | 🕐 READY (restart agent 2 to begin) | 2026-05-23 |
-| `~/github/zclassic23-3` (wt3) | `wt3/phase2-body-persist-shadow` | [`docs/work/wt3-phase2-body-persist-shadow.md`](./work/wt3-phase2-body-persist-shadow.md) | 🕐 READY (restart agent 3 to begin) | 2026-05-23 |
+| `~/github/zclassic23` (main) | `main` | Orchestrator: review + merge + dispatch | ✅ Phase 1 COMPLETE; Phase 2 S-5 shipped; Phase 2 S-6 + Phase 3 PR-1 dispatched | 2026-05-23 |
+| `~/github/zclassic23-2` (wt2) | `wt2/phase3-watchdog-dissolve-pr1` | [`docs/work/wt2-phase3-watchdog-dissolve-pr1.md`](./work/wt2-phase3-watchdog-dissolve-pr1.md) | 🕐 READY (restart agent 2 to begin) | 2026-05-23 |
+| `~/github/zclassic23-3` (wt3) | `wt3/phase2-script-validate-shadow` | [`docs/work/wt3-phase2-s6-script-validate.md`](./work/wt3-phase2-s6-script-validate.md) | 🕐 READY (restart agent 3 to begin) | 2026-05-23 |
 
 ---
 
@@ -79,6 +82,9 @@ clause. The table below is the dashboard.
 
 | Date | What | Worktree | Commit |
 |---|---|---|---|
+| 2026-05-23 | **Phase 1b MERGED** — projection adoption: `zcl_getblockcount` reads MVCC snapshot; new `chain_projection_*`, framework projection wrapper, MVCC-under-load stress test (4 readers + 1 writer × 1000) | main | a96856925 |
+| 2026-05-23 | **Phase 2 S-5 MERGED** — body_persist shadow stage: per-height read + header + Merkle verification, no consensus mutation | main | 218b79bb4 |
+| 2026-05-23 | Plan: dissolve `sync_watchdog_service.c` (1,448 LOC) → 8 Conditions over 3 PRs (~850 LOC net deletion) | main | b7257f225 |
 | 2026-05-23 | **Phase 1c MERGED** — platform.clock + platform.rng rewired in 167 files; gate #19 ratcheted WARN→FAIL with 0 violations | main | be9e05022 |
 | 2026-05-23 | **Phase 1a MERGED** — first production mailbox adopter: `header_probe_service` → `header_admit_inbox` → `header_admit_stage` drain | main | (prior merge before be9e05022) |
 | 2026-05-23 | **Phase 0 MERGED** — condition engine + 3 conditions (wt2) + lint gates #18-#20 WARN (wt3) + test fixture fixes | main | 4e0ea3382 |

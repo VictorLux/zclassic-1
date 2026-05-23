@@ -212,8 +212,7 @@ defer.
 
 ## Status
 
-**DONE (integration replay)** — completed 2026-05-23 on
-`integration/phase1-projection-adoption`.
+**✅ DONE — merged 2026-05-23** into main as `a96856925`. Next: `wt2-phase3-watchdog-dissolve-pr1.md`.
 
 <!-- Worker: append a Completion section below when done. -->
 

@@ -224,7 +224,7 @@ Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
 
 ## Status
 
-**IN PROGRESS (wt3)** — started 2026-05-23; body_persist shadow stage branch active.
+**✅ DONE — merged 2026-05-23** into main as `218b79bb4`. Next: `wt3-phase2-s6-script-validate.md`.
 
 <!-- Worker: append a Completion section below when done. -->
 
