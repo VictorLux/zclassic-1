@@ -185,7 +185,7 @@ One commit per task. Push after tasks 2, 4, 5.
 
 ## Status
 
-**READY** — gated on S-7 merge. Start when human invokes you in
-`~/github/zclassic23-3` AFTER S-7 is merged.
+**IN PROGRESS (wt3)** — started 2026-05-23; utxo_apply shadow stage
+branch active.
 
 <!-- Worker: append a Completion section below when done. -->
