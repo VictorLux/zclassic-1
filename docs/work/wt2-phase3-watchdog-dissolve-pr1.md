@@ -187,8 +187,7 @@ Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
 
 ## Status
 
-**IN PROGRESS (wt2)** — started 2026-05-23 on
-`wt2/phase3-watchdog-dissolve-pr1`.
+**✅ DONE — merged 2026-05-23** as `19ae6d8b1`. Next: `wt2-phase3-watchdog-dissolve-pr2.md`.
 
 <!-- Worker: append a Completion section below when done. -->
 

@@ -170,7 +170,7 @@ Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
 
 ## Status
 
-**IN PROGRESS (wt3)** — started 2026-05-23; script_validate shadow stage branch active.
+**✅ DONE — merged 2026-05-23** as merge commit on main. Next: `wt3-phase2-s7-proof-validate.md`.
 
 <!-- Worker: append a Completion section below when done. -->
 

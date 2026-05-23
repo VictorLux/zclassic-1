@@ -4,7 +4,7 @@
 > truth for "what's done, what's next, what's blocked." Read this first
 > when you start a session. Full architecture: [`FRAMEWORK.md`](./FRAMEWORK.md).
 
-**Updated:** 2026-05-23 (Phase 1 COMPLETE; Phase 2 S-5 shipped; Phase 3 PR-1 dispatched)
+**Updated:** 2026-05-23 (Phase 2 → 60%; Phase 3 PR-1 MERGED; PR-2 + S-7 dispatched)
 
 ---
 
@@ -13,15 +13,15 @@
 ```
 Phase 0  [██████████] 100%   Condition engine + scaffold              ✅ DONE
 Phase 1  [██████████] 100%   Adopt unused primitives                  ✅ DONE
-  ├ 1a    [██████████] 100%   mailbox        (wt2)                    ✅
-  ├ 1b    [██████████] 100%   projection     (wt2)                    ✅
-  └ 1c    [██████████] 100%   platform.clock/rng (wt3, gate #19=FAIL) ✅
-Phase 2  [████░░░░░░]  40%   Wave S → S-12 cutover (S-1..S-5 shipped) ← IN FLIGHT
+Phase 2  [██████░░░░]  60%   Wave S → S-12 cutover (S-1..S-6 shipped) ← IN FLIGHT
   ├ S-5    [██████████] 100%   body_persist shadow (wt3)              ✅
-  └ S-6    [░░░░░░░░░░]   0%   script_validate shadow (wt3 next)      ← READY
-Phase 3  [░░░░░░░░░░]   0%   Dissolve mega-modules                   ← IN FLIGHT
-  └ PR-1   [░░░░░░░░░░]   0%   sync_watchdog → 2 conditions (wt2 next) ← READY
-Phase 4  [░░░░░░░░░░]   0%   Storage unification (event log)
+  ├ S-6    [██████████] 100%   script_validate shadow (wt3)           ✅
+  └ S-7    [░░░░░░░░░░]   0%   proof_validate shadow (wt3 next)       ← READY
+Phase 3  [██░░░░░░░░]  20%   Dissolve mega-modules                    ← IN FLIGHT
+  ├ PR-1   [██████████] 100%   watchdog: 2 conditions (wt2)           ✅
+  ├ PR-2   [░░░░░░░░░░]   0%   watchdog: 4 kick conditions (wt2 next) ← READY
+  └ PR-3   [░░░░░░░░░░]   0%   watchdog: 2 + DELETE module (wt2 queued)
+Phase 4  [░░░░░░░░░░]   0%   Storage unification — plan drafted (docs/architecture/)
 Phase 5  [░░░░░░░░░░]   0%   Crypto agility + reproducible builds
 Phase 6  [░░░░░░░░░░]   0%   Determinism + simulator
 Phase 7  [░░░░░░░░░░]   0%   Frontier (io_uring, hot reload)
@@ -72,9 +72,9 @@ clause. The table below is the dashboard.
 
 | Worktree | Branch | Assignment | Status | Last update |
 |---|---|---|---|---|
-| `~/github/zclassic23` (main) | `main` | Orchestrator: review + merge + dispatch | ✅ Phase 1 COMPLETE; Phase 2 S-5 shipped; Phase 2 S-6 + Phase 3 PR-1 dispatched | 2026-05-23 |
-| `~/github/zclassic23-2` (wt2) | `wt2/phase3-watchdog-dissolve-pr1` | [`docs/work/wt2-phase3-watchdog-dissolve-pr1.md`](./work/wt2-phase3-watchdog-dissolve-pr1.md) | 🕐 READY (restart agent 2 to begin) | 2026-05-23 |
-| `~/github/zclassic23-3` (wt3) | `wt3/phase2-script-validate-shadow` | [`docs/work/wt3-phase2-s6-script-validate.md`](./work/wt3-phase2-s6-script-validate.md) | 🕐 READY (restart agent 3 to begin) | 2026-05-23 |
+| `~/github/zclassic23` (main) | `main` | Orchestrator: review + merge + dispatch | ✅ Phase 2 S-6 + Phase 3 PR-1 MERGED; PR-2 + S-7 dispatched + PR-3 queued | 2026-05-23 |
+| `~/github/zclassic23-2` (wt2) | `wt2/phase3-watchdog-dissolve-pr2` | [`docs/work/wt2-phase3-watchdog-dissolve-pr2.md`](./work/wt2-phase3-watchdog-dissolve-pr2.md) | 🕐 READY (restart agent 2) | 2026-05-23 |
+| `~/github/zclassic23-3` (wt3) | `wt3/phase2-proof-validate-shadow` | [`docs/work/wt3-phase2-s7-proof-validate.md`](./work/wt3-phase2-s7-proof-validate.md) | 🕐 READY (restart agent 3) | 2026-05-23 |
 
 ---
 
@@ -82,6 +82,9 @@ clause. The table below is the dashboard.
 
 | Date | What | Worktree | Commit |
 |---|---|---|---|
+| 2026-05-23 | **Phase 2 S-6 MERGED** — script_validate shadow stage: per-input script_verify across every tx; per-height log of (verified \| script_invalid \| internal_error \| upstream_failed) | main | (S-6 merge) |
+| 2026-05-23 | **Phase 3 PR-1 MERGED** — first 2 watchdog conditions extracted: `block_failed_mask_at_tip` predicate extended; NEW `utxo_activation_paused` | main | 19ae6d8b1 |
+| 2026-05-23 | Plans: 2 more dissolve plans drafted (`chain_advance_coordinator.md`, `legacy_mirror_sync_service.md`) + Phase 4 storage unification architecture | main | 123c00b13 |
 | 2026-05-23 | **Phase 1b MERGED** — projection adoption: `zcl_getblockcount` reads MVCC snapshot; new `chain_projection_*`, framework projection wrapper, MVCC-under-load stress test (4 readers + 1 writer × 1000) | main | a96856925 |
 | 2026-05-23 | **Phase 2 S-5 MERGED** — body_persist shadow stage: per-height read + header + Merkle verification, no consensus mutation | main | 218b79bb4 |
 | 2026-05-23 | Plan: dissolve `sync_watchdog_service.c` (1,448 LOC) → 8 Conditions over 3 PRs (~850 LOC net deletion) | main | b7257f225 |
