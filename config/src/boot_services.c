@@ -7,6 +7,7 @@
 #include "config/boot_internal.h"
 #include "services/chain_activation_controller.h"
 #include "services/chain_advance_coordinator.h"
+#include "validation/process_block_revalidate.h"
 #include "services/chain_state_repository.h"
 #include "services/chain_tip.h"
 #include "services/gap_fill_service.h"
@@ -470,8 +471,40 @@ static void coord_esc_tick(struct liveness_contract *c)
 static void coord_esc_stall(struct liveness_contract *c)
 {
     (void)c;
-    /* Frozen progress under fatal breach — force mirror promotion. */
-    chain_advance_coordinator_force_mirror_promotion("supervisor:fatal_breach_900s");
+    if (!g_coord_esc_ms) {
+        chain_advance_coordinator_force_mirror_promotion(
+            "supervisor:fatal_breach_900s");
+        return;
+    }
+    /* Wave M: before falling back to the legacy force-mirror hammer,
+     * try evidence-based revalidation of the next-child block. If the
+     * stuck height has a BLOCK_FAILED_VALID pindex AND ≥2 oracles
+     * agree on its hash, clear the bit and re-run activation. The
+     * canonical wedge class (BLOCK_FAILED_VALID set on the only
+     * candidate above the active tip) becomes self-healing within
+     * the supervisor's natural 60s tick. */
+    int tip_h = active_chain_height(&g_coord_esc_ms->chain_active);
+    int stuck_h = tip_h + 1;
+    struct uint256 reval_hash;
+    memset(&reval_hash, 0, sizeof(reval_hash));
+    enum reval_result rr = process_block_revalidate(stuck_h, g_coord_esc_ms,
+                                                     &reval_hash);
+    fprintf(stderr,  // obs-ok:coord-esc-revalidate
+            "[supervisor] chain.coord_escalation: revalidate h=%d -> %s\n",
+            stuck_h, reval_result_name(rr));
+    event_emitf(EV_CHAIN_ADVANCE_DECISION, 0,
+                "revalidate height=%d result=%s",
+                stuck_h, reval_result_name(rr));
+    if (rr == REVAL_RECOVERED) {
+        /* Don't also force-mirror — natural activation will pick up the
+         * cleared block on the next supervisor tick. */
+        return;
+    }
+    /* Revalidation couldn't help (no failed pindex at this height, no
+     * quorum, evidence disagreed, or connect_block re-failed). Fall
+     * back to the original force-mirror promotion path. */
+    chain_advance_coordinator_force_mirror_promotion(
+        "supervisor:fatal_breach_900s");
 }
 
 static void boot_coord_escalation_supervisor_register(struct boot_svc_ctx *svc)
