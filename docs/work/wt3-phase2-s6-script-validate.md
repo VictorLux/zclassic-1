@@ -173,3 +173,43 @@ Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
 **IN PROGRESS (wt3)** — started 2026-05-23; script_validate shadow stage branch active.
 
 <!-- Worker: append a Completion section below when done. -->
+
+## Completion (wt3, 2026-05-23)
+
+### Summary
+Shipped S-6 `script_validate` as a shadow stage over
+`body_persist_log`. It reads verified block bodies, resolves prevouts,
+runs the existing script interpreter/checker path for each transparent
+input, and records per-height outcomes in `script_validate_log` without
+mutating consensus state.
+
+### Commits
+- 558f39c37 wt3: mark script validate stage in progress
+- fc92f109b add script validate shadow stage
+
+### Files added/modified
+- `app/services/include/services/script_validate_stage.h` (NEW, 57 LOC)
+- `app/services/src/script_validate_stage.c` (NEW, 627 LOC)
+- `lib/test/src/test_script_validate_stage.c` (NEW, 444 LOC)
+- `config/src/boot_services.c`
+- `app/controllers/src/diagnostics_controller.c`
+- `lib/test/include/test/test_helpers.h`
+- `lib/test/src/test.c`
+- `lib/test/src/test_parallel.c`
+
+### Acceptance verification
+- [x] `make -j$(nproc)` — PASS
+- [x] `make lint` — PASS
+- [x] `ZCL_TEST_ONLY=script_validate ./test_zcl` — PASS
+- [x] `./test_parallel --jobs=$(nproc) --verbose` — PASS: `ALL TESTS PASSED — 0/186 groups failed`
+
+### Surprises / follow-ups
+The production prevout resolver uses txindex when available. If a node
+runs S-6 without txindex or without historical transaction positions for
+a height, the stage records `internal_error` for that height and advances
+in shadow mode; cutover work should decide whether S-7/S-8 require a
+dedicated historical UTXO/undo source instead of txindex lookup.
+
+### Status
+DONE — branch `wt3/phase2-script-validate-shadow` pushed to origin, ready
+for orchestrator merge.
