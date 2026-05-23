@@ -4,6 +4,10 @@
 this protocol exactly.** It is the contract between the orchestrator and
 the workers. Deviating breaks coordination and risks data loss.
 
+**Workflow:** workers push DIRECTLY to `main`. No feature branches. No
+orchestrator merge step. The remote has exactly one branch (`main`),
+and every worker rebases on top of it before pushing.
+
 ---
 
 ## Startup ritual (run on EVERY fresh session)
@@ -15,7 +19,7 @@ the workers. Deviating breaks coordination and risks data loss.
    → if no suffix → you are the orchestrator; read the orchestrator section
                     of REFACTOR_STATUS.md, NOT a worker assignment
 
-2. Sync from origin
+2. Sync from origin (always main, no feature branches)
    $ git fetch origin
    $ git checkout main
    $ git pull --ff-only origin main
@@ -45,12 +49,16 @@ the workers. Deviating breaks coordination and risks data loss.
      to retry or escalate
    - If status is "READY" or "IN PROGRESS (wt<N>)" → proceed
 
-6. Branch off main
-   $ git checkout -b <branch-name-from-assignment>
+6. Stay on main
+   - DO NOT branch off — workers commit directly to main.
+   - If you need to experiment, use `git stash` or a LOCAL-ONLY scratch
+     branch, but the work that ships goes onto main directly.
 
-7. Mark in-progress
+7. Mark in-progress + push
    - Edit the assignment doc's Status section to "IN PROGRESS (wt<N>)"
-   - Commit + push (small commit, marks ownership)
+   - $ git add docs/work/<file>
+   - $ git commit -m "wt<N>: mark <slug> in progress"
+   - $ git push origin main                   # see "Push discipline" below
 ```
 
 After this, **execute the assignment's Tasks section in order**.
@@ -66,11 +74,12 @@ Each Task in an assignment has:
 
 For each task:
 
-1. Implement.
-2. Run the acceptance test (`make test_parallel`, build, lint, etc.).
-3. **If green:** `git add` the specific files, `git commit -m "<task description>"`.
-4. **If red:** debug. Do NOT commit a broken state. If stuck > 30 min, append a `BLOCKED` note to the assignment.
-5. After every 2-3 tasks: `git pull --rebase origin main` to stay current; `git push origin <branch>` to back up work.
+1. `git pull --rebase origin main` to stay current.
+2. Implement.
+3. Run the acceptance test (`make test_parallel`, build, lint, etc.).
+4. **If green:** `git add` the specific files, `git commit -m "<task description>"`.
+5. **If red:** debug. Do NOT commit a broken state. If stuck > 30 min, append a `BLOCKED` note to the assignment.
+6. `git push origin main` after EACH committed task (see "Push discipline").
 
 ---
 
@@ -88,26 +97,36 @@ For each task:
 
 ---
 
-## Push discipline (the part we MUST NOT FORGET)
+## Push discipline — DIRECTLY TO MAIN
 
-Push at three points:
-
-1. **At in-progress mark** (step 7 of startup): so the orchestrator can see you're working.
-2. **Every 2-3 task commits**: backup.
-3. **At completion**: final push of the branch.
+Push directly to `origin/main` after **every committed task**.
 
 ```bash
-git push origin <branch-name>
+git push origin main
 ```
 
-If push fails due to non-fast-forward:
+If push fails due to non-fast-forward (another worker pushed first):
+
 ```bash
-git pull --rebase origin <branch-name>
-# resolve any conflicts
-git push origin <branch-name>
+git pull --rebase origin main      # rebase your commits on top of theirs
+# resolve any conflicts (probably none — workers own different scopes)
+git push origin main               # retry
 ```
 
-**Never** `git push --force` to main. **Never** `git push` directly to main.
+If the rebase has conflicts you can't resolve in <10 minutes:
+
+```bash
+git rebase --abort
+git stash                          # save your work
+git pull --ff-only origin main     # get the new state
+# re-read the file you were touching; the other worker may have changed it
+git stash pop                      # apply your work, resolve conflicts manually
+# commit + push
+```
+
+**Never** `git push --force` to main. **Never** `git push --force-with-lease`
+either. If you've made a mistake, write a NEW commit that fixes it; let the
+orchestrator clean up history if needed.
 
 ---
 
@@ -117,14 +136,18 @@ When all tasks pass and acceptance criteria are met:
 
 1. **Run the full test suite** one more time:
    ```bash
-   make test_parallel    # fork-based runner, ~1 min
-   make lint             # all 17+ gates
+   make test_parallel    # fork-based runner, ~1-2 min
+   make lint             # all 20+ gates
    ```
    All green = ready. Any red = back to debugging.
 
-2. **Update the assignment doc** — append a Completion section:
+2. **Update the assignment doc** — append a Completion section AND change Status:
 
    ```markdown
+   ## Status
+
+   **✅ DONE — pushed 2026-MM-DD** to main as commit `<sha>`.
+
    ## Completion (wt<N>, YYYY-MM-DD)
 
    ### Summary
@@ -147,22 +170,21 @@ When all tasks pass and acceptance criteria are met:
 
    ### Surprises / follow-ups
    <anything orchestrator should know — found bug elsewhere, scope change, etc.>
-
-   ### Status
-   DONE — branch wt<N>/<slug> pushed to origin, ready for orchestrator merge.
    ```
 
 3. **Push the completion update**:
    ```bash
-   git add docs/work/wt<N>-<slug>.md
+   git add docs/work/<file>
    git commit -m "wt<N>: complete <slug>"
-   git push origin <branch-name>
+   git push origin main
    ```
 
 4. **Report to the user**:
-   > Completed assignment `wt<N>/<slug>`. Branch pushed to origin. Ready for orchestrator merge.
+   > Completed assignment `<slug>`. Pushed directly to main.
 
-5. **Do NOT merge to main yourself.** Orchestrator handles that.
+5. **The orchestrator does NOT need to merge anything** — your commits are
+   already on main. The orchestrator only writes new assignments, updates
+   `REFACTOR_STATUS.md`, and curates the work pipeline.
 
 ---
 
@@ -189,11 +211,11 @@ In this priority order:
 
 ## Forbidden moves
 
-- ❌ Editing `docs/REFACTOR_STATUS.md` directly (workers don't touch it; orchestrator only).
+- ❌ Creating new branches on `origin` (workers push to main only).
+- ❌ Editing `docs/REFACTOR_STATUS.md` directly (orchestrator only — exception: workers may update the mega-module roster when they DELETE a module).
 - ❌ Touching files outside your assignment's scope.
-- ❌ `git push --force` on any branch.
-- ❌ Merging your own branch to main.
-- ❌ Deleting another worker's branch.
+- ❌ `git push --force` / `--force-with-lease` to ANY branch.
+- ❌ Deleting another worker's commits via rebase-and-overwrite.
 - ❌ `--no-verify`, `--amend` after push, skipping tests "just this once".
 - ❌ Editing CLAUDE.md without orchestrator sign-off (it's auto-loaded into every session).
 - ❌ Writing code that doesn't match one of the 8 framework shapes.
@@ -205,7 +227,7 @@ In this priority order:
 Whether you finished or not:
 
 1. `git status` — verify clean (or known WIP).
-2. `git push origin <branch>` — back up.
-3. If finished: update assignment Status to `DONE`.
-4. If not finished: update assignment Status to `IN PROGRESS (wt<N>) — paused at task <X>`.
+2. `git push origin main` — back up.
+3. If finished: update assignment Status to `✅ DONE — pushed YYYY-MM-DD`.
+4. If not finished: update assignment Status to `IN PROGRESS (wt<N>) — paused at task <X>` and `git push origin main`.
 5. Report briefly to user.
