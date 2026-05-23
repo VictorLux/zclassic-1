@@ -10,13 +10,15 @@
 #include "util/projection.h"
 
 #include <stdint.h>
+#include <stdio.h>
 
 static inline projection_t *
 framework_projection_open(const char *label, const char *path)
 {
     projection_t *p = projection_open(path);
     if (!p) {
-        LOG_ERR("projection", "open miss label=%s path=%s",
+        fprintf(stderr,  // obs-ok:projection-framework-miss
+                "[projection] open miss label=%s path=%s\n",
                 label ? label : "(null)", path ? path : "(null)");
     }
     return p;

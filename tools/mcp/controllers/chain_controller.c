@@ -13,6 +13,7 @@
 #include "adapters/outbound/persistence/block_log_file.h"
 #include "adapters/outbound/persistence/block_log_legacy.h"
 #include "application/operations/diff_with_legacy_shadow.h"
+#include "controllers/chain_projection.h"
 #include "json/json.h"
 #include "mcp/metrics.h"
 #include "ports/block_log_port.h"
@@ -27,7 +28,31 @@
 
 /* ── Handlers ───────────────────────────────────────────────── */
 
-DEFINE_PT(h_zcl_getblockcount,     "getblockcount",     "mcp.chain")
+static int h_zcl_getblockcount(const struct mcp_request *req,
+                               struct mcp_response *res)
+{
+    (void)req;
+
+    int64_t height = chain_projection_best_block_height();
+    if (height >= 0) {
+        char buf[32];
+        snprintf(buf, sizeof(buf), "%lld", (long long)height);
+        res->body = strdup(buf);
+        if (!res->body) {
+            res->error = MCP_ERR_HANDLER_FAILED;
+            snprintf(res->error_message, sizeof(res->error_message),
+                     "getblockcount projection response alloc failed");
+            LOG_ERR("mcp.chain", "getblockcount projection response alloc failed");
+        }
+        return 0;
+    }
+
+    fprintf(stderr,  // obs-ok:mcp-chain-projection-fallback
+            "[mcp.chain] projection miss: getblockcount rpc fallback\n");
+    return mcp_return_rpc_body(res, mcp_node_rpc("getblockcount", NULL),
+                               "getblockcount", "mcp.chain");
+}
+
 DEFINE_PT(h_zcl_chain_tip,         "getchaintip",       "mcp.chain")
 DEFINE_PT(h_zcl_getblockchaininfo, "getblockchaininfo", "mcp.chain")
 DEFINE_PT(h_zcl_syncstate,         "syncstate",         "mcp.chain")
