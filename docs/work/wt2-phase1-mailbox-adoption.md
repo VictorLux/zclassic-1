@@ -252,6 +252,46 @@ Append completion section to this doc per `docs/work/agent-protocol.md`.
 
 ## Status
 
-**READY** — start when human invokes you in `~/github/zclassic23-2`.
+**IN PROGRESS (wt2)** — started 2026-05-23; mailbox adoption branch active.
 
 <!-- Worker: append a Completion section below when done. -->
+
+## Completion (wt2, 2026-05-23)
+
+### Summary
+Shipped the first production mailbox adoption path: `header_probe_service`
+now publishes accepted headers into a typed `header_admit` inbox, and
+`header_admit_stage` drains that inbox before its existing cursor scan.
+The direct path remains intact for Phase 1 observation.
+
+### Commits
+- `18474963b` wt2: mark mailbox adoption in progress
+- `7b223e8dc` add framework mailbox wrapper
+- `587f23dff` add header admit inbox API
+- `d285241ea` drain header admit mailbox
+- `0aaad6015` publish probed headers to admit inbox
+- `ce871f9ed` test header admit mailbox adoption
+
+### Files added/modified
+- `lib/framework/include/framework/mailbox.h` (NEW)
+- `app/services/include/services/header_admit_inbox.h` (NEW)
+- `app/services/src/header_admit_stage.c`
+- `app/services/src/header_probe_service.c`
+- `lib/test/src/test_mailbox_adoption.c` (NEW)
+- `lib/test/src/test.c`
+- `lib/test/src/test_parallel.c`
+- `lib/test/include/test/test_helpers.h`
+
+### Acceptance verification
+- [x] `make -j$(nproc)` — PASS
+- [x] `make lint` — PASS
+- [x] `./test_parallel --jobs=$(nproc)` — PASS: `ALL TESTS PASSED — 0/181 groups failed`
+
+### Surprises / follow-ups
+`make test_zcl` was terminated by the environment during LTO once while
+linking; the assignment acceptance path (`test_parallel`) built and ran
+successfully before and after the final commit.
+
+### Status
+DONE — branch `wt2/phase1-mailbox-adoption` pushed to origin, ready for
+orchestrator merge.

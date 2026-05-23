@@ -222,6 +222,13 @@ int main(void)
                failures);
         return failures ? 1 : 0;
     }
+    if (only && strcmp(only, "mailbox_adoption") == 0) {
+        printf("[test] ZCL_TEST_ONLY=mailbox_adoption — running only\n");
+        failures += test_mailbox_adoption();
+        printf("\n=== mailbox_adoption subset complete: %d failure(s) ===\n",
+               failures);
+        return failures ? 1 : 0;
+    }
     if (only && strcmp(only, "zclassicd_oracle") == 0) {
         printf("[test] ZCL_TEST_ONLY=zclassicd_oracle — running oracle subset\n");
         failures += test_zclassicd_oracle();
@@ -322,7 +329,6 @@ int main(void)
                failures);
         return failures ? 1 : 0;
     }
-
     failures += test_load_balancer();
     failures += test_game();
     failures += test_crypto();
@@ -504,6 +510,7 @@ int main(void)
     failures += test_rng();
     failures += test_stage();
     failures += test_mailbox();
+    failures += test_mailbox_adoption();
     failures += test_projection();
     failures += test_progress_store();
     failures += test_header_admit_stage();

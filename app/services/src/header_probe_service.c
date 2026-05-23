@@ -16,6 +16,8 @@
 
 #include "services/header_probe_service.h"
 
+#include "platform/clock.h"
+#include "services/header_admit_inbox.h"
 #include "validation/main_state.h"
 #include "validation/chainstate.h"
 #include "validation/process_block.h"
@@ -850,6 +852,24 @@ static bool hp_fetch_headers_batch(const char *host, int port,
     return true;
 }
 
+static void hp_publish_header_admit(const struct block_index *pindex)
+{
+    if (!pindex || !pindex->phashBlock)
+        return;
+
+    struct header_admit_msg msg = {
+        .height = pindex->nHeight,
+        .hash = *pindex->phashBlock,
+        .peer_id = 0,
+        .observed_unix = clock_now_wall_ms() / 1000,
+    };
+    if (!mailbox_header_admit_push(&msg)) {
+        fprintf(stderr,  // obs-ok:header-probe-header-admit-inbox-full
+                "[header_probe] header_admit inbox full; drop height=%d\n",
+                pindex->nHeight);
+    }
+}
+
 /* ── Public pull-range ─────────────────────────────────────────── */
 
 bool header_probe_pull_range(int start_height, int max_headers,
@@ -945,6 +965,7 @@ bool header_probe_pull_range(int start_height, int max_headers,
             if (accept_block_header(&hdr, &vs, ms, params, &pindex)) {
                 atomic_fetch_add(&g_hp.headers_added, 1);
                 added++;
+                hp_publish_header_admit(pindex);
                 if (pindex && pindex->nHeight > 0)
                     atomic_store(&g_hp.last_local_height,
                                  pindex->nHeight);
@@ -963,6 +984,7 @@ bool header_probe_pull_range(int start_height, int max_headers,
             if (accept_block_header(&hbuf[i], &vs, ms, params, &pindex)) {
                 atomic_fetch_add(&g_hp.headers_added, 1);
                 added++;
+                hp_publish_header_admit(pindex);
                 if (pindex && pindex->nHeight > 0)
                     atomic_store(&g_hp.last_local_height,
                                  pindex->nHeight);
