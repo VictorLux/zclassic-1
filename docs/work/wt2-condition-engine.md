@@ -5,7 +5,7 @@
 **Phase:** 0 (foundation)
 **Depends on:** scaffold commit (already in `main` when you start)
 **Owns (no other worker may touch):**
-- `lib/framework/condition.h`
+- `lib/framework/include/framework/condition.h`  ← canonical include path (matches project convention `lib/<area>/include/<area>/foo.h`, e.g. `lib/util/include/util/mailbox.h`)
 - `lib/framework/src/condition.c`
 - `app/supervisors/src/self_heal.c`
 - `app/supervisors/include/supervisors/self_heal.h`
@@ -73,7 +73,16 @@ condition stays active and emits `EV_OPERATOR_NEEDED`.
 
 ## Tasks (in order)
 
-### Task 1: Implement `lib/framework/condition.h`
+### Task 1: Implement `lib/framework/include/framework/condition.h`
+
+**Path note:** canonical include path is `lib/framework/include/framework/condition.h`
+(included from C as `#include "framework/condition.h"`). The build's
+`-I lib/framework/include` flag is added by wt3 in Makefile edits if
+not already present. wt3 may also have created a tiny forward-declaration
+stub at this exact path — you OVERWRITE it with the full header below.
+(If wt3's branch merges first, you'll see the stub; just replace it.
+If you merge first, wt3's stub task is moot — coordination handled by
+this note.)
 
 Public API. Define:
 
@@ -90,7 +99,8 @@ Public API. Define:
 Use atomics for cross-thread reads (condition_state fields). Use a mutex
 for the registry list itself.
 
-**Acceptance:** `lib/framework/condition.h` compiles standalone.
+**Acceptance:** `lib/framework/include/framework/condition.h` compiles standalone
+(`echo '#include "framework/condition.h"' | gcc -x c -c - -Ilib/framework/include`).
 
 ### Task 2: Implement `lib/framework/src/condition.c`
 

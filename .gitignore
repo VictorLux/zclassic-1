@@ -86,3 +86,8 @@ tools/inspect_html
 # Claude Code agent worktrees (runtime)
 .claude/worktrees/
 .claude/scheduled_tasks.lock
+
+# Other AI tool local state
+.antigravitycli/
+.gemini/
+.aider*

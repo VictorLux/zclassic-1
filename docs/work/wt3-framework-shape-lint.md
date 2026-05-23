@@ -9,8 +9,8 @@
 - `tools/lint/framework_shape_allowlist.txt` (new)
 - `tools/lint/check_no_raw_clock_outside_platform.sh` (new — Phase 1 prep, WARN mode)
 - `tools/lint/check_no_raw_sqlite_in_controllers.sh` (new — Phase 1 prep, WARN mode)
-- `lib/framework/include/framework/condition.h` (STUB ONLY — wt2 fleshes it out, but you create the placeholder so the include path exists)
-- Edits to `Makefile` — add new gates to `make lint`
+- `lib/framework/include/framework/condition.h` (OPTIONAL one-line stub — see Task 1; wt2 owns the full file. Skip Task 1 entirely if wt2 has already pushed its branch.)
+- Edits to `Makefile` — add new gates to `make lint` (the **lint** target ONLY; do not touch the build/sources sections — those belong to wt2's Makefile edits)
 - Edits to `DEFENSIVE_CODING.md` — document new gates #18, #19, #20
 
 **MUST NOT touch:**
@@ -69,39 +69,29 @@ exit 0
 
 ## Tasks (in order)
 
-### Task 1: Stub `lib/framework/include/framework/condition.h`
+### Task 1: (OPTIONAL — SKIP if wt2 already pushed)
 
-Just enough for wt2 to find the header. One forward declaration + a
-comment that wt2 owns the implementation. This unblocks the include
-path so lint runs cleanly even before wt2 ships.
+**Background:** wt2 owns the canonical `lib/framework/include/framework/condition.h`
+with the full implementation. If wt2 has already pushed its branch by the
+time you start, this task is a no-op — proceed to Task 2.
+
+If wt2 has NOT yet pushed (check `git fetch origin && git branch -r | grep wt2/phase0-condition-engine`),
+create a one-line forward-declaration stub at the canonical path so the
+lint gates can run cleanly even before wt2 ships. When wt2 merges, its
+full header overwrites your stub (clean merge — single hunk).
 
 ```c
 /* lib/framework/include/framework/condition.h
- *
- * Condition shape — auto-healing primitive.
- * This is a stub created by wt3 to establish the include path.
- * Real implementation shipped by wt2 in branch wt2/phase0-condition-engine.
- * See docs/FRAMEWORK.md § 3.6.
+ * Condition shape — see docs/FRAMEWORK.md § 3.6. Full impl in wt2.
  */
 #ifndef ZCL_FRAMEWORK_CONDITION_H
 #define ZCL_FRAMEWORK_CONDITION_H
-
-#ifdef __cplusplus
-extern "C" {
-#endif
-
-/* Forward declaration — full struct in wt2's implementation. */
 struct condition;
 void condition_register(const struct condition *cond);
-
-#ifdef __cplusplus
-}
 #endif
-
-#endif /* ZCL_FRAMEWORK_CONDITION_H */
 ```
 
-**Acceptance:** file exists, compiles standalone via gcc -c with no source.
+**Acceptance:** file exists OR is skipped because wt2 already has it.
 
 ### Task 2: Write `tools/lint/framework_shape_check.sh`
 
