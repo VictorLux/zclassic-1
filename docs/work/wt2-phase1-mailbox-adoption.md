@@ -271,6 +271,7 @@ The direct path remains intact for Phase 1 observation.
 - `d285241ea` drain header admit mailbox
 - `0aaad6015` publish probed headers to admit inbox
 - `ce871f9ed` test header admit mailbox adoption
+- `d42b023ea` bound typed mailbox drains
 
 ### Files added/modified
 - `lib/framework/include/framework/mailbox.h` (NEW)
@@ -286,11 +287,20 @@ The direct path remains intact for Phase 1 observation.
 - [x] `make -j$(nproc)` — PASS
 - [x] `make lint` — PASS
 - [x] `./test_parallel --jobs=$(nproc)` — PASS: `ALL TESTS PASSED — 0/181 groups failed`
+- [x] Integration hardening re-check — PASS: `make -j$(nproc)`,
+      `make lint`, and `./test_parallel --jobs=$(nproc)` after bounding
+      typed mailbox drains
 
 ### Surprises / follow-ups
 `make test_zcl` was terminated by the environment during LTO once while
 linking; the assignment acceptance path (`test_parallel`) built and ran
 successfully before and after the final commit.
+
+Follow-up integration hardening on the merged wt2/wt3 branch changed
+`MAILBOX_DEFINE(...).drain` to process a snapshot of queued depth rather
+than looping until empty. This prevents a producer that publishes while a
+stage drains from keeping the stage inside mailbox handling indefinitely;
+the header_admit inbox test now covers that reentrant publish case.
 
 ### Status
 DONE — branch `wt2/phase1-mailbox-adoption` pushed to origin, ready for
