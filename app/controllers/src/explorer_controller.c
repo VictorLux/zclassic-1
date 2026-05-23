@@ -4,6 +4,7 @@
  * over Tor .onion. Supports blocks, transactions (transparent + shielded),
  * ZSLP tokens, and address lookups. */
 
+#include "platform/time_compat.h"
 #include "controllers/explorer_controller.h"
 #include "controllers/explorer_stats.h"
 #include "controllers/explorer_factoids.h"
@@ -420,7 +421,7 @@ void format_time(char *buf, size_t max, uint32_t t)
 
 void format_time_ago(char *buf, size_t max, uint32_t t)
 {
-    time_t now = time(NULL);
+    time_t now = platform_time_wall_time_t();
     int64_t diff = (int64_t)now - (int64_t)t;
     if (diff < 0) diff = 0;
     if (diff < 60)

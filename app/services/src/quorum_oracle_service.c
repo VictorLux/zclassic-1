@@ -10,6 +10,7 @@
  * The verdict logic accepts arbitrary N — a future P2P source plugs in
  * without changing callers. */
 
+#include "platform/time_compat.h"
 #include "services/quorum_oracle_service.h"
 #include "services/oracle_policy.h"
 #include "services/zclassicd_oracle_service.h"
@@ -123,7 +124,7 @@ void quorum_oracle_record_peer_header_vote(uint32_t peer_id,
     g_qo.peer_votes[slot].height = height;
     snprintf(g_qo.peer_votes[slot].hash_hex,
              sizeof(g_qo.peer_votes[slot].hash_hex), "%s", hash_hex);
-    g_qo.peer_votes[slot].unix_time = (int64_t)time(NULL);
+    g_qo.peer_votes[slot].unix_time = (int64_t)platform_time_wall_time_t();
     pthread_mutex_unlock(&g_qo.lock);
 }
 
@@ -191,7 +192,7 @@ static void qo_probe_peer(int height,
 {
     int best_count = 0;
     char best_hash[65] = {0};
-    int64_t now = (int64_t)time(NULL);
+    int64_t now = (int64_t)platform_time_wall_time_t();
 
     out->present = false;
     out->error = false;
@@ -270,7 +271,7 @@ bool quorum_oracle_probe(int height, struct quorum_oracle_result *out)
 
     atomic_fetch_add(&g_qo.total_probes, 1);
     atomic_store(&g_qo.last_height, height);
-    atomic_store(&g_qo.last_probe_unix, (int64_t)time(NULL));
+    atomic_store(&g_qo.last_probe_unix, (int64_t)platform_time_wall_time_t());
 
     if (total_with_hash == 0) {
         out->verdict = QO_VERDICT_NO_DATA;
@@ -365,7 +366,7 @@ bool quorum_oracle_dump_state_json(struct json_value *out, const char *key)
         json_push_kv(out, "last_split", &split);
         json_free(&split);
     }
-    int64_t now = (int64_t)time(NULL);
+    int64_t now = (int64_t)platform_time_wall_time_t();
     int live_peer_votes = 0;
     struct json_value peer_votes = {0};
     json_set_array(&peer_votes);

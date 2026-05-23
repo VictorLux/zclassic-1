@@ -3,6 +3,7 @@
  * Distributed under the MIT software license, see the accompanying
  * file COPYING or http://www.opensource.org/licenses/mit-license.php. */
 
+#include "platform/time_compat.h"
 #include "chain/checkpoints.h"
 #include "util/log_macros.h"
 #include <stddef.h>
@@ -24,7 +25,7 @@ double checkpoints_guess_verification_progress(
     if (pindex == NULL)
         return 0.0;
 
-    int64_t nNow = time(NULL);
+    int64_t nNow = platform_time_wall_time_t();
     double fSigcheckFactor = fSigchecks ? SIGCHECK_VERIFICATION_FACTOR : 1.0;
     double fWorkBefore = 0.0;
     double fWorkAfter = 0.0;

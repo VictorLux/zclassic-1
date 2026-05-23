@@ -5,6 +5,7 @@
  * HTTPS handler threads only serve from cache (api_rpc_call crashes
  * when called from HTTPS handler threads). */
 
+#include "platform/time_compat.h"
 #include "controllers/api_controller.h"
 #include "controllers/explorer_internal.h"
 #include "encoding/utilstrencodings.h"
@@ -793,7 +794,7 @@ size_t api_handle_request(const char *method, const char *path,
             health.wd_escalation_level,
             health.wd_last_recovery_name,
             health.wd_last_recovery_time > 0
-                ? (long long)((int64_t)time(NULL) - health.wd_last_recovery_time)
+                ? (long long)((int64_t)platform_time_wall_time_t() - health.wd_last_recovery_time)
                 : 0LL,
             health.degraded_reason[0] ? "\"" : "null",
             health.degraded_reason,
@@ -1130,7 +1131,7 @@ size_t api_handle_request(const char *method, const char *path,
             "\"activity\":[",
             (long long)transparent, (long long)shielded,
             address, (long long)height,
-            (long long)block_time, (long long)time(NULL));
+            (long long)block_time, (long long)platform_time_wall_time_t());
 
         if (sqlite3_prepare_v2(db,
                 "SELECT wu.value, wu.height, COALESCE(b.time,0)"

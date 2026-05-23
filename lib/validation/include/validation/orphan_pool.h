@@ -10,6 +10,7 @@
 #ifndef ZCL_ORPHAN_POOL_H
 #define ZCL_ORPHAN_POOL_H
 
+#include "platform/time_compat.h"
 #include "primitives/transaction.h"
 #include "core/uint256.h"
 #include "util/sync.h"
@@ -22,7 +23,7 @@
 
 struct orphan_entry {
     struct transaction tx;
-    int64_t  arrival_time;       /* time(NULL) when added */
+    int64_t  arrival_time;       /* platform_time_wall_time_t() when added */
     bool     used;
 };
 

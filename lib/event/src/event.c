@@ -1,5 +1,6 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0 */
 
+#include "platform/time_compat.h"
 #include "event/event.h"
 #include "util/thread_registry.h"
 #include <stdio.h>
@@ -148,7 +149,7 @@ static void *async_dispatch_thread(void *arg)
             pthread_mutex_lock(&g_async.wake_mutex);
             if (atomic_load(&g_async.read_pos) >= atomic_load(&g_async.write_pos)) {
                 struct timespec deadline;
-                clock_gettime(CLOCK_REALTIME, &deadline);
+                platform_time_realtime_timespec(&deadline);
                 deadline.tv_sec += 1;
                 pthread_cond_timedwait(&g_async.wake_cond,
                                        &g_async.wake_mutex, &deadline);

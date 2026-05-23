@@ -1,5 +1,6 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0 */
 
+#include "platform/time_compat.h"
 #include "test/test_helpers.h"
 #include "validation/process_block.h"
 #include "event/event.h"
@@ -126,7 +127,7 @@ int test_connect_tip_hot_loop_exit(void)
     printf("hot_loop_exit: stale marker allows shutdown request... ");
     {
         struct utimbuf old_times;
-        time_t now_s = time(NULL);
+        time_t now_s = platform_time_wall_time_t();
         old_times.actime = now_s - 700;
         old_times.modtime = now_s - 700;
         bool ok = utime(marker_path, &old_times) == 0;

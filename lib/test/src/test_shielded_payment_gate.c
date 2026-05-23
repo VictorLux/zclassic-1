@@ -17,6 +17,7 @@
  *   ZCL_STRESS_TESTS=1 ZCL_TEST_ONLY=shielded_payment ./test_zcl
  */
 
+#include "platform/time_compat.h"
 #include "test/test_helpers.h"
 #include "controllers/wallet_controller.h"
 #include "controllers/wallet_shielded_controller.h"
@@ -261,7 +262,7 @@ int test_shielded_payment_gate(void)
     transaction_init(&sent_tx);
 
     tip.nHeight = 500000;
-    tip.nTime = (uint32_t)time(NULL);
+    tip.nTime = (uint32_t)platform_time_wall_time_t();
     active_chain_set_tip(&ms.chain_active, &tip);
     wallet->best_block = &tip;
     wallet->best_block_height = tip.nHeight;

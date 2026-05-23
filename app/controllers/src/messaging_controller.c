@@ -7,6 +7,7 @@
  *   msg_inbox  — list messages (all or unread only)
  *   msg_read   — mark message as read, return content */
 
+#include "platform/time_compat.h"
 #include "net/zmsg.h"
 #include "net/net.h"
 #include "net/connman.h"
@@ -113,7 +114,7 @@ static bool rpc_msg_send(const struct json_value *params, bool help,
     memset(&msg, 0, sizeof(msg));
     msg.direction = ZMSG_OUTBOUND;
     msg.channel = ZMSG_CHANNEL_P2P;
-    msg.timestamp = (int64_t)time(NULL);
+    msg.timestamp = (int64_t)platform_time_wall_time_t();
     snprintf(msg.sender, sizeof(msg.sender), "self");
     snprintf(msg.recipient, sizeof(msg.recipient), "peer:%lld",
              (long long)peer_id);
@@ -263,7 +264,7 @@ static bool rpc_msg_send_named(const struct json_value *params, bool help,
     memset(&msg, 0, sizeof(msg));
     msg.direction = ZMSG_OUTBOUND;
     msg.channel = ZMSG_CHANNEL_P2P;
-    msg.timestamp = (int64_t)time(NULL);
+    msg.timestamp = (int64_t)platform_time_wall_time_t();
     snprintf(msg.sender, sizeof(msg.sender), "self");
     snprintf(msg.recipient, sizeof(msg.recipient), "%s (%s)",
              name, entry.target_value);

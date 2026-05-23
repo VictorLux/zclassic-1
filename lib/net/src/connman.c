@@ -7,6 +7,7 @@
 #define _GNU_SOURCE  /* pthread_timedjoin_np */
 
 #define _DEFAULT_SOURCE
+#include "platform/time_compat.h"
 #include "net/connman.h"
 #include "net/addrman.h"
 #include "event/event.h"
@@ -318,7 +319,7 @@ static void *thread_dns_seed(void *arg)
      * a first-class observable signal. */
     const int PEER_FLOOR_MIN = 3;
     const int PEER_FLOOR_GRACE_SECS = 120;
-    int64_t start_ts = (int64_t)time(NULL);
+    int64_t start_ts = (int64_t)platform_time_wall_time_t();
     int64_t floor_below_since = 0;
     while (!g_stop) {
         size_t n = cm->manager.num_nodes;
@@ -326,7 +327,7 @@ static void *thread_dns_seed(void *arg)
         sleep(interval);
         if (g_stop) break;
         size_t cur = cm->manager.num_nodes;
-        int64_t now = (int64_t)time(NULL);
+        int64_t now = (int64_t)platform_time_wall_time_t();
         if ((int)cur < PEER_FLOOR_MIN) {
             if (floor_below_since == 0) floor_below_since = now;
             int64_t below_for = now - floor_below_since;
@@ -500,7 +501,7 @@ static bool connman_addrman_candidate_usable(struct connman *cm,
         return false;
 
     if (info->last_try > 0) {
-        int64_t now = (int64_t)time(NULL);
+        int64_t now = (int64_t)platform_time_wall_time_t();
         int cooldown = connman_addrman_retry_cooldown(info);
         if (now - info->last_try < cooldown)
             return false;
@@ -649,7 +650,7 @@ bool connman_pick_next_outbound_target(
     memset(result, 0, sizeof(*result));
 
     if (cm->num_addnodes > 0) {
-        const int64_t now = (int64_t)time(NULL);
+        const int64_t now = (int64_t)platform_time_wall_time_t();
         const size_t start = *addnode_cursor % (size_t)cm->num_addnodes;
 
         for (size_t offset = 0; offset < (size_t)cm->num_addnodes; offset++) {
@@ -688,7 +689,7 @@ bool connman_pick_next_outbound_target(
         return false;
 
     addrman_attempt(&cm->manager.addrman, &result->addr.svc,
-                    (int64_t)time(NULL));
+                    (int64_t)platform_time_wall_time_t());
     *source = CONNMAN_TARGET_ADDRMAN;
     return true;
 }
@@ -700,7 +701,7 @@ void connman_record_addnode_attempt(struct connman *cm,
     if (!cm || addnode_index >= (size_t)cm->num_addnodes)
         return;
 
-    cm->addnode_last_attempt[addnode_index] = (int64_t)time(NULL);
+    cm->addnode_last_attempt[addnode_index] = (int64_t)platform_time_wall_time_t();
     if (success) {
         cm->addnode_backoff_sec[addnode_index] = 0;
         return;
@@ -717,7 +718,7 @@ void connman_record_addnode_failure(struct connman *cm,
     if (!cm || addnode_index >= (size_t)cm->num_addnodes)
         return;
 
-    cm->addnode_last_attempt[addnode_index] = (int64_t)time(NULL);
+    cm->addnode_last_attempt[addnode_index] = (int64_t)platform_time_wall_time_t();
     if (kind == CONNMAN_ADDNODE_FAILURE_PROTOCOL)
         cm->addnode_protocol_failures[addnode_index]++;
     else
@@ -808,7 +809,7 @@ static void *thread_open_connections(void *arg)
                     memcpy(addr.svc.addr.ip, pick->ip, 16);
                     addr.svc.port = pick->port;
                     addr.nServices = pick->services;
-                    addr.nTime = (uint32_t)time(NULL);
+                    addr.nTime = (uint32_t)platform_time_wall_time_t();
                     peer_lifecycle_note_attempt(&addr,
                                                 PEER_LIFECYCLE_SOURCE_ZCL23_DB);
                     struct p2p_node *node = connect_node(&cm->manager,
@@ -827,7 +828,7 @@ static void *thread_open_connections(void *arg)
          * outbound) we try harder — peers stuck in PEER_CONNECTING
          * don't count, so a node with 1 working peer + 4 sockets
          * stuck in connecting still gets aggressive backfill. */
-        int64_t now_oc = (int64_t)time(NULL);
+        int64_t now_oc = (int64_t)platform_time_wall_time_t();
         const size_t OUTBOUND_HEALTHY_FLOOR = 3;
         bool below_floor = (outbound_healthy < OUTBOUND_HEALTHY_FLOOR);
         bool rate_ok = below_floor ||
@@ -916,7 +917,7 @@ static void *thread_open_connections(void *arg)
             if (!node) {
                 if (source == CONNMAN_TARGET_ADDRMAN) {
                     addrman_attempt(&cm->manager.addrman, &info.addr.svc,
-                                    (int64_t)time(NULL));
+                                    (int64_t)platform_time_wall_time_t());
                 } else {
                     connman_record_addnode_attempt(cm, addnode_index, false);
                 }
@@ -1581,7 +1582,7 @@ void connman_signal_stop(struct connman *cm)
 static bool timed_join(pthread_t thread, int timeout_sec)
 {
     struct timespec ts;
-    if (clock_gettime(CLOCK_REALTIME, &ts) != 0) {
+    if (platform_time_realtime_timespec(&ts) != 0) {
         pthread_join(thread, NULL);
         return true;
     }

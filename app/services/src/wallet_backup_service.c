@@ -31,6 +31,7 @@
  * need the bytes even when verification fails.
  */
 
+#include "platform/time_compat.h"
 #include "services/wallet_backup_service.h"
 
 #include "event/event.h"
@@ -111,13 +112,13 @@ static struct wallet_backup_service_state g_wbs = {
 static int64_t wbs_now_ms(void)
 {
     struct timespec ts;
-    clock_gettime(CLOCK_MONOTONIC, &ts);
+    platform_time_monotonic_timespec(&ts);
     return (int64_t)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
 }
 
 static int64_t wbs_now_unix(void)
 {
-    return (int64_t)time(NULL);
+    return (int64_t)platform_time_wall_time_t();
 }
 
 void wallet_backup_config_defaults(struct wallet_backup_config *cfg)

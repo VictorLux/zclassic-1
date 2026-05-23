@@ -2,6 +2,7 @@
  *
  * MCP router implementation.  See router.h for the public API. */
 
+#include "platform/time_compat.h"
 #include "router.h"
 #include "replay.h"
 
@@ -27,7 +28,7 @@ static size_t g_num_routes = 0;
 static uint64_t now_us(void)
 {
     struct timespec ts;
-    clock_gettime(CLOCK_MONOTONIC, &ts);
+    platform_time_monotonic_timespec(&ts);
     return (uint64_t)ts.tv_sec * 1000000ULL + (uint64_t)(ts.tv_nsec / 1000);
 }
 

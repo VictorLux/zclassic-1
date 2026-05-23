@@ -3,6 +3,7 @@
  * Tests for chain_restore_service — planning pattern tests.
  * Each test exercises the pure plan() function with struct inputs. */
 
+#include "platform/time_compat.h"
 #include "test/test_helpers.h"
 #include "services/block_index_integrity.h"
 #include "services/chain_restore_service.h"
@@ -636,9 +637,9 @@ static int test_rebuild_active_chain_scales_at_100k(void) {
         ASSERT(active_chain_at(&ms.chain_active, H - 1) == NULL);
 
         struct timespec t0, t1;
-        clock_gettime(CLOCK_MONOTONIC, &t0);
+        platform_time_monotonic_timespec(&t0);
         int populated = chain_restore_rebuild_active_chain(&ms, tip, NULL);
-        clock_gettime(CLOCK_MONOTONIC, &t1);
+        platform_time_monotonic_timespec(&t1);
 
         double elapsed = (double)(t1.tv_sec - t0.tv_sec)
                        + (double)(t1.tv_nsec - t0.tv_nsec) / 1e9;
@@ -754,7 +755,7 @@ static int test_rebuild_populates_skiplist_for_log_n_ancestor(void) {
          * on this host. With pskip, each walk is ~20 hops → <50ms
          * total. The 1s budget leaves plenty of CI headroom. */
         struct timespec t0, t1;
-        clock_gettime(CLOCK_MONOTONIC, &t0);
+        platform_time_monotonic_timespec(&t0);
         int queries = 1000;
         for (int i = 0; i < queries; i++) {
             int target = (i * 7919) % (H + 1);
@@ -762,7 +763,7 @@ static int test_rebuild_populates_skiplist_for_log_n_ancestor(void) {
             ASSERT(r != NULL);
             ASSERT(r->nHeight == target);
         }
-        clock_gettime(CLOCK_MONOTONIC, &t1);
+        platform_time_monotonic_timespec(&t1);
         double elapsed = (double)(t1.tv_sec - t0.tv_sec)
                        + (double)(t1.tv_nsec - t0.tv_nsec) / 1e9;
         if (elapsed >= 1.0) {

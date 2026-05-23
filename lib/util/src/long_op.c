@@ -18,6 +18,7 @@
  *   (or begin) within the last LONG_OP_ACTIVE_WINDOW_SECS.
  */
 
+#include "platform/time_compat.h"
 #include "util/long_op.h"
 
 #include "event/event.h"
@@ -40,7 +41,7 @@ static struct long_op_scope *g_table[LONG_OP_TABLE_SIZE];
 static int64_t monotonic_us(void)
 {
     struct timespec ts;
-    if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0)
+    if (platform_time_monotonic_timespec(&ts) != 0)
         return 0;
     return (int64_t)ts.tv_sec * 1000000 + (int64_t)ts.tv_nsec / 1000;
 }

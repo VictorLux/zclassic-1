@@ -3,6 +3,7 @@
  * Onion service: bridges Tor dynhost to zclassic23 MVC controllers.
  * All .onion traffic flows through here. */
 
+#include "platform/time_compat.h"
 #include "net/onion_service.h"
 #include "net/tor_integration.h"
 #include "util/log_json.h"
@@ -38,7 +39,7 @@ static _Atomic int64_t g_rate_window_start = 0;
 
 static bool rate_limit_check(void)
 {
-    int64_t now = (int64_t)time(NULL);
+    int64_t now = (int64_t)platform_time_wall_time_t();
     int64_t window = atomic_load(&g_rate_window_start);
     if (now != window) {
         if (atomic_compare_exchange_strong(&g_rate_window_start, &window, now))
@@ -94,7 +95,7 @@ static size_t serve_landing_page(uint8_t *response, size_t max)
 
     long uptime = 0;
     if (ctx->start_time > 0)
-        uptime = (long)(time(NULL) - ctx->start_time);
+        uptime = (long)(platform_time_wall_time_t() - ctx->start_time);
 
     /* Discover registered .onion sites from chain */
     struct onion_peer peers[64];
@@ -575,7 +576,7 @@ static size_t serve_directory_html(uint8_t *response, size_t max)
         int self = sqlite3_column_int(s, 5);
 
         /* Format last_seen as relative time */
-        int64_t age = (int64_t)time(NULL) - ls;
+        int64_t age = (int64_t)platform_time_wall_time_t() - ls;
         char age_str[32];
         if (age < 60) snprintf(age_str, sizeof(age_str), "%llds ago", (long long)age);
         else if (age < 3600) snprintf(age_str, sizeof(age_str), "%lldm ago", (long long)(age/60));
@@ -620,7 +621,7 @@ static size_t serve_status(uint8_t *response, size_t max)
 
     long uptime = 0;
     if (ctx->start_time > 0)
-        uptime = (long)(time(NULL) - ctx->start_time);
+        uptime = (long)(platform_time_wall_time_t() - ctx->start_time);
 
     /* Query extra stats from SQLite */
     int64_t last_block_time = 0, tx_count = 0;
@@ -650,7 +651,7 @@ static size_t serve_status(uint8_t *response, size_t max)
         }
     }
 
-    int64_t now = (int64_t)time(NULL);
+    int64_t now = (int64_t)platform_time_wall_time_t();
     int64_t last_block_age = (last_block_time > 0) ? now - last_block_time : -1;
     bool is_syncing = (height == 0 && uptime < 600) ||
                       (last_block_age > 600 && uptime > 300);
@@ -810,7 +811,7 @@ const char *onion_service_start(const char *datadir)
 {
     struct onion_context *ctx = onion_ctx();
     ctx->datadir = datadir;
-    ctx->start_time = time(NULL);
+    ctx->start_time = platform_time_wall_time_t();
 
     /* Initialize peer directory from chain data */
     if (datadir) {

@@ -3,6 +3,7 @@
  * HTTP RPC middleware — implementation.  See http_middleware.h for the
  * design notes. */
 
+#include "platform/time_compat.h"
 #include "rpc/http_middleware.h"
 
 #include <stdio.h>
@@ -20,14 +21,14 @@
 static int64_t mono_us(void)
 {
     struct timespec ts;
-    clock_gettime(CLOCK_MONOTONIC, &ts);
+    platform_time_monotonic_timespec(&ts);
     return (int64_t)ts.tv_sec * 1000000LL + (int64_t)ts.tv_nsec / 1000LL;
 }
 
 static int64_t now_unix(void)
 {
     struct timespec ts;
-    clock_gettime(CLOCK_REALTIME, &ts);
+    platform_time_realtime_timespec(&ts);
     return (int64_t)ts.tv_sec;
 }
 

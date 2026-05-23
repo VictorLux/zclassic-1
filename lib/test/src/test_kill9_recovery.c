@@ -71,6 +71,7 @@
  * gate, not RED-first.
  */
 
+#include "platform/time_compat.h"
 #include "test/test_helpers.h"
 #include "storage/coins_view_sqlite.h"
 #include <errno.h>
@@ -427,8 +428,8 @@ int test_kill9_recovery(void)
     const int n_cycles = 10;
     const int budget_sec = 120;
 
-    unsigned int rng = (unsigned int)(time(NULL) ^ getpid());
-    time_t t0 = time(NULL);
+    unsigned int rng = (unsigned int)(platform_time_wall_time_t() ^ getpid());
+    time_t t0 = platform_time_wall_time_t();
 
     int n_killed = 0, n_clean = 0;
     for (int i = 0; i < n_cycles; i++) {
@@ -456,7 +457,7 @@ int test_kill9_recovery(void)
         else n_killed++;
     }
 
-    int elapsed = (int)(time(NULL) - t0);
+    int elapsed = (int)(platform_time_wall_time_t() - t0);
 
     if (!failures && elapsed > budget_sec) {
         printf("FAIL (10 cycles took %ds, exceeds %ds MVP budget)\n",

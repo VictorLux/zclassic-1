@@ -20,6 +20,7 @@
  *  11. Security — XSS prevention, SQL injection, CSRF
  *  12. Edge cases — empty DB, huge values, special characters */
 
+#include "platform/time_compat.h"
 #include "test/test_helpers.h"
 #include "controllers/wallet_view_controller.h"
 #include "util/template.h"
@@ -2261,9 +2262,9 @@ int test_wallet_view(void)
     printf("PERF: dashboard renders in < 50ms... ");
     {
         struct timespec t0, t1;
-        clock_gettime(CLOCK_MONOTONIC, &t0);
+        platform_time_monotonic_timespec(&t0);
         for (int i = 0; i < 100; i++) wv_get("/wallet");
-        clock_gettime(CLOCK_MONOTONIC, &t1);
+        platform_time_monotonic_timespec(&t1);
         double ms = ((t1.tv_sec - t0.tv_sec) * 1000.0 +
                       (t1.tv_nsec - t0.tv_nsec) / 1e6) / 100.0;
         if (ms < 50.0) printf("OK (%.2f ms avg)\n", ms);
@@ -2273,9 +2274,9 @@ int test_wallet_view(void)
     printf("PERF: pulse renders in < 10ms... ");
     {
         struct timespec t0, t1;
-        clock_gettime(CLOCK_MONOTONIC, &t0);
+        platform_time_monotonic_timespec(&t0);
         for (int i = 0; i < 100; i++) wv_get("/api/wallet/pulse");
-        clock_gettime(CLOCK_MONOTONIC, &t1);
+        platform_time_monotonic_timespec(&t1);
         double ms = ((t1.tv_sec - t0.tv_sec) * 1000.0 +
                       (t1.tv_nsec - t0.tv_nsec) / 1e6) / 100.0;
         if (ms < 10.0) printf("OK (%.2f ms avg)\n", ms);
@@ -2285,9 +2286,9 @@ int test_wallet_view(void)
     printf("PERF: history renders in < 100ms... ");
     {
         struct timespec t0, t1;
-        clock_gettime(CLOCK_MONOTONIC, &t0);
+        platform_time_monotonic_timespec(&t0);
         for (int i = 0; i < 100; i++) wv_get("/wallet/history");
-        clock_gettime(CLOCK_MONOTONIC, &t1);
+        platform_time_monotonic_timespec(&t1);
         double ms = ((t1.tv_sec - t0.tv_sec) * 1000.0 +
                       (t1.tv_nsec - t0.tv_nsec) / 1e6) / 100.0;
         if (ms < 100.0) printf("OK (%.2f ms avg)\n", ms);
@@ -2297,9 +2298,9 @@ int test_wallet_view(void)
     printf("PERF: receive renders in < 50ms... ");
     {
         struct timespec t0, t1;
-        clock_gettime(CLOCK_MONOTONIC, &t0);
+        platform_time_monotonic_timespec(&t0);
         for (int i = 0; i < 100; i++) wv_get("/wallet/receive");
-        clock_gettime(CLOCK_MONOTONIC, &t1);
+        platform_time_monotonic_timespec(&t1);
         double ms = ((t1.tv_sec - t0.tv_sec) * 1000.0 +
                       (t1.tv_nsec - t0.tv_nsec) / 1e6) / 100.0;
         if (ms < 50.0) printf("OK (%.2f ms avg)\n", ms);

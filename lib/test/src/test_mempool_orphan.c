@@ -2,6 +2,7 @@
  * Tests for orphan transaction pool: max 50 txs, 10-min TTL,
  * reconnect on parent arrival. */
 
+#include "platform/time_compat.h"
 #include "test/test_helpers.h"
 #include "validation/orphan_pool.h"
 #include "validation/txmempool.h"
@@ -166,7 +167,7 @@ int test_mempool_orphan(void)
                 pool.entries[i].arrival_time -= ORPHAN_TTL_SECONDS + 1;
         }
         zcl_mutex_unlock(&pool.cs);
-        int64_t now = (int64_t)time(NULL);
+        int64_t now = (int64_t)platform_time_wall_time_t();
         size_t removed = orphan_pool_expire(&pool, now);
         bool t1gone = !orphan_pool_exists(&pool, &tx1.hash);
         bool t2here = orphan_pool_exists(&pool, &tx2.hash);
@@ -183,7 +184,7 @@ int test_mempool_orphan(void)
         orphan_pool_init(&pool);
         struct transaction tx; init_orphan_tx(&tx,0x01, 0xAA);
         orphan_pool_add(&pool, &tx);
-        int64_t now = (int64_t)time(NULL);
+        int64_t now = (int64_t)platform_time_wall_time_t();
         size_t removed = orphan_pool_expire(&pool, now);
         free_orphan_tx(&tx);
         orphan_pool_free(&pool);
@@ -336,7 +337,7 @@ int test_mempool_orphan(void)
                 pool.entries[i].arrival_time -= ORPHAN_TTL_SECONDS + 1;
         }
         zcl_mutex_unlock(&pool.cs);
-        int64_t now = (int64_t)time(NULL);
+        int64_t now = (int64_t)platform_time_wall_time_t();
         size_t removed = orphan_pool_expire(&pool, now);
         size_t sz = orphan_pool_size(&pool);
         for (int i = 0; i < 50; i++) free_orphan_tx(&txs[i]);

@@ -3,6 +3,7 @@
  * backpressure watchdog implementation. See net/tip_watchdog.h
  * for the rationale and state machine. */
 
+#include "platform/time_compat.h"
 #include "net/tip_watchdog.h"
 #include "net/download.h"
 #include "event/event.h"
@@ -34,8 +35,8 @@ static _Atomic int64_t g_test_queue_bytes = -1;
 static int64_t now_ns_real(void)
 {
     struct timespec ts;
-    if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0)
-        return (int64_t)time(NULL) * 1000000000LL;
+    if (platform_time_monotonic_timespec(&ts) != 0)
+        return (int64_t)platform_time_wall_time_t() * 1000000000LL;
     return (int64_t)ts.tv_sec * 1000000000LL + (int64_t)ts.tv_nsec;
 }
 

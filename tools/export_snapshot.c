@@ -2,6 +2,7 @@
  * Copies only public tables from node.db to consensus_snapshot.db.
  * Usage: ./export_snapshot [datadir] */
 
+#include "platform/time_compat.h"
 #include <sqlite3.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -61,7 +62,7 @@ int main(int argc, char *argv[])
         NULL
     };
 
-    int64_t t0 = (int64_t)time(NULL);
+    int64_t t0 = (int64_t)platform_time_wall_time_t();
     sqlite3_exec(dst, "BEGIN", NULL, NULL, NULL);
 
     int copied = 0;
@@ -99,7 +100,7 @@ int main(int argc, char *argv[])
     sqlite3_exec(dst, "VACUUM", NULL, NULL, NULL);
     sqlite3_close(dst);
 
-    int64_t elapsed = (int64_t)time(NULL) - t0;
+    int64_t elapsed = (int64_t)platform_time_wall_time_t() - t0;
     struct stat dst_st;
     stat(dst_path, &dst_st);
     printf("\nExported %d tables to %s (%.0f MB) in %llds\n",

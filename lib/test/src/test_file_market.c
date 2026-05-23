@@ -1,6 +1,7 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  * Tests for ZCL Market — file sharing serialization, cache, and DB. */
 
+#include "platform/time_compat.h"
 #include "test/test_helpers.h"
 #include "net/file_market.h"
 #include "core/serialize.h"
@@ -409,7 +410,7 @@ int test_file_market(void)
             memset(offer.z_addr, 0x23, sizeof(offer.z_addr));
             offer.peer_port = 8233;
             offer.ttl = 2;
-            offer.last_seen = (int64_t)time(NULL);
+            offer.last_seen = (int64_t)platform_time_wall_time_t();
 
             bool save = db_file_offer_save(&ndb, &offer);
             struct file_offer found = {0};

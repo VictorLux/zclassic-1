@@ -3,6 +3,7 @@
  * Chain Restore Service — deterministic chain tip restoration.
  * See chain_restore_service.h for architecture overview. */
 
+#include "platform/time_compat.h"
 #include "services/chain_restore_service.h"
 #include "services/chain_state_repository.h"
 #include "services/chain_tip.h"
@@ -431,7 +432,7 @@ void chain_restore_record_integrity_result(
 {
     if (!r) return;
     g_boot_snapshot.has_data = true;
-    g_boot_snapshot.boot_time = (int64_t)time(NULL);
+    g_boot_snapshot.boot_time = (int64_t)platform_time_wall_time_t();
     g_boot_snapshot.integrity_ok = r->ok;
     g_boot_snapshot.zero_nbits_count = r->zero_nbits_count;
     g_boot_snapshot.active_chain_holes = r->active_chain_holes;
@@ -449,7 +450,7 @@ void chain_restore_record_backfill_result(int fixed,
                                           int off_chain_cleared)
 {
     g_boot_snapshot.has_data = true;
-    g_boot_snapshot.boot_time = (int64_t)time(NULL);
+    g_boot_snapshot.boot_time = (int64_t)platform_time_wall_time_t();
     g_boot_snapshot.backfill_ran = true;
     g_boot_snapshot.backfill_fixed = fixed;
     g_boot_snapshot.backfill_read_errors = read_errors;
@@ -460,7 +461,7 @@ void chain_restore_record_plan_result(const struct chain_restore_plan *p)
 {
     if (!p) return;
     g_boot_snapshot.has_data = true;
-    g_boot_snapshot.boot_time = (int64_t)time(NULL);
+    g_boot_snapshot.boot_time = (int64_t)platform_time_wall_time_t();
     g_boot_snapshot.plan_recorded = true;
     g_boot_snapshot.plan_next_state = (int)p->next_state;
     g_boot_snapshot.plan_anchor_height = p->anchor_height;
@@ -477,7 +478,7 @@ void chain_restore_record_csr_consistency(bool consistent,
                                           int header_height)
 {
     g_boot_snapshot.has_data = true;
-    g_boot_snapshot.boot_time = (int64_t)time(NULL);
+    g_boot_snapshot.boot_time = (int64_t)platform_time_wall_time_t();
     g_boot_snapshot.csr_consistency_checked = true;
     g_boot_snapshot.csr_consistent = consistent;
     g_boot_snapshot.csr_tip_height = tip_height;
@@ -489,7 +490,7 @@ void chain_restore_record_snapshot_import(bool ok,
                                           int64_t snap_height)
 {
     g_boot_snapshot.has_data = true;
-    g_boot_snapshot.boot_time = (int64_t)time(NULL);
+    g_boot_snapshot.boot_time = (int64_t)platform_time_wall_time_t();
     g_boot_snapshot.snapshot_imported_pre_restore = ok;
     g_boot_snapshot.snapshot_imported_utxos = utxo_count;
     g_boot_snapshot.snapshot_imported_height = snap_height;

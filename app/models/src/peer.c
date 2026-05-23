@@ -8,6 +8,7 @@
  *
  * after_save -> emit EV_MODEL_SAVED */
 
+#include "platform/time_compat.h"
 #include "models/peer.h"
 #include "event/event.h"
 #include "util/ar_step_readonly.h"
@@ -32,7 +33,7 @@ static bool peer_before_save(void *record, void *ctx)
     if (!peer)
         return false;
     if (peer->last_seen == 0)
-        peer->last_seen = (int64_t)time(NULL);
+        peer->last_seen = (int64_t)platform_time_wall_time_t();
     if (peer->last_try < 0)
         peer->last_try = 0;
     if (peer->attempts < 0)

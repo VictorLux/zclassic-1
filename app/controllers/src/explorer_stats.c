@@ -7,6 +7,7 @@
  * (single-pass scans) instead of dozens of individual queries.
  * Chart data uses batch SELECT with height ranges. */
 
+#include "platform/time_compat.h"
 #include "controllers/explorer_stats.h"
 #include "controllers/explorer_internal.h"
 #include "chain/chainparams.h"
@@ -1234,7 +1235,7 @@ size_t explorer_stats_build(uint8_t *r, size_t buf_max, const char *datadir)
     if (!r || buf_max == 0 || !datadir)
         return 0;
 
-    int64_t t_start_ms = (int64_t)time(NULL);
+    int64_t t_start_ms = (int64_t)platform_time_wall_time_t();
     size_t max = buf_max;
     size_t off = 0;
 
@@ -1467,7 +1468,7 @@ size_t explorer_stats_build(uint8_t *r, size_t buf_max, const char *datadir)
     double pct_mined = (max_supply_sat > 0)
         ? (double)total_supply / (double)max_supply_sat * 100.0 : 0.0;
 
-    int64_t t_query_ms = (int64_t)time(NULL) - t_start_ms;
+    int64_t t_query_ms = (int64_t)platform_time_wall_time_t() - t_start_ms;
     printf("Stats: phase 1 complete in %llds, building HTML...\n",
         (long long)t_query_ms); fflush(stdout);
 
@@ -1588,7 +1589,7 @@ size_t explorer_stats_build(uint8_t *r, size_t buf_max, const char *datadir)
 
     sqlite3_close(db);
     printf("Stats: built %zu bytes (tip=%d) in %llds total\n",
-        off, tip, (long long)((int64_t)time(NULL) - t_start_ms));
+        off, tip, (long long)((int64_t)platform_time_wall_time_t() - t_start_ms));
     fflush(stdout);
     return off;
 }

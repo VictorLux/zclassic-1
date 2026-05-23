@@ -56,6 +56,7 @@
 #ifndef ZCL_SERVICES_MEMPOOL_LIMITS_H
 #define ZCL_SERVICES_MEMPOOL_LIMITS_H
 
+#include "platform/time_compat.h"
 #include <stdbool.h>
 #include <stdint.h>
 #include <stddef.h>
@@ -132,7 +133,7 @@ int mempool_limits_enforce(struct tx_mempool *pool,
 /* Remove entries whose `time` field is older than
  * `now - expiry_seconds`. Returns number removed. Uses the
  * injected clock (`mempool_limits_set_clock_fn`) if one is set,
- * otherwise `time(NULL)`. Emits `EV_MEMPOOL_EXPIRE` on non-zero
+ * otherwise `platform_time_wall_time_t()`. Emits `EV_MEMPOOL_EXPIRE` on non-zero
  * removal counts. */
 int mempool_limits_expire(struct tx_mempool *pool,
                            const struct mempool_limits_config *cfg);
@@ -162,7 +163,7 @@ void mempool_limits_stop(void);
 
 /* Inject a fake wall clock for deterministic expiry tests.
  * `fn` returns seconds since Unix epoch. Pass NULL to revert to
- * the real `time(NULL)`. */
+ * the real `platform_time_wall_time_t()`. */
 typedef int64_t (*mempool_limits_clock_fn)(void);
 void mempool_limits_set_clock_fn(mempool_limits_clock_fn fn);
 

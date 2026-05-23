@@ -14,6 +14,7 @@
  * parallel LevelDB-to-SQLite bulk import (~1-2 minutes). */
 
 #pragma GCC diagnostic ignored "-Wformat-truncation"
+#include "platform/time_compat.h"
 #include "controllers/snapshot_controller.h"
 #include "config/file_ops.h"
 #include "controllers/legacy_import.h"
@@ -149,7 +150,7 @@ const char *snapshot_create(const char *legacy_datadir,
     rotate_snapshots(snapshots_dir, max_keep);
 
     /* Create timestamped snapshot dir */
-    time_t now = time(NULL);
+    time_t now = platform_time_wall_time_t();
     struct tm *tm = localtime(&now);
     static char snap_dir[2048];
     char ts[16];
@@ -158,7 +159,7 @@ const char *snapshot_create(const char *legacy_datadir,
     mkdir(snap_dir, 0700);
 
     struct timespec t0;
-    clock_gettime(CLOCK_MONOTONIC, &t0);
+    platform_time_monotonic_timespec(&t0);
 
     /* Hard-link block files (instant — same filesystem) */
     char src[2048], dst[2048];
@@ -215,7 +216,7 @@ const char *snapshot_create(const char *legacy_datadir,
     printf(" done\n");
 
     struct timespec t1;
-    clock_gettime(CLOCK_MONOTONIC, &t1);
+    platform_time_monotonic_timespec(&t1);
     double elapsed = (double)(t1.tv_sec - t0.tv_sec) +
                      (double)(t1.tv_nsec - t0.tv_nsec) / 1e9;
     printf("snapshot: created %s in %.1fs\n", ts, elapsed);
@@ -259,7 +260,7 @@ static void *import_block_index_thread(void *arg)
 
     printf("T1: importing block index...\n");
     fflush(stdout);
-    int64_t t_start = (int64_t)time(NULL);
+    int64_t t_start = (int64_t)platform_time_wall_time_t();
     bool tx_open = false;
     bool ok = true;
 
@@ -377,7 +378,7 @@ static void *import_block_index_thread(void *arg)
                 break;
             }
             tx_open = false;
-            int64_t elapsed = (int64_t)time(NULL) - t_start;
+            int64_t elapsed = (int64_t)platform_time_wall_time_t() - t_start;
             int rate = elapsed > 0 ? a->count / (int)elapsed : a->count;
             printf("T1: %d blocks (%d/s)\n", a->count, rate);
             fflush(stdout);
@@ -429,7 +430,7 @@ static void *import_block_index_thread(void *arg)
     db_wrapper_close(&dbw);
     node_db_close(&ndb);
 
-    int64_t elapsed = (int64_t)time(NULL) - t_start;
+    int64_t elapsed = (int64_t)platform_time_wall_time_t() - t_start;
     printf("T1: block index import complete: %d blocks in %llds\n",
            a->count, (long long)elapsed);
     fflush(stdout);
@@ -652,7 +653,7 @@ int snapshot_import(const char *snapshot_dir,
     (void)ndb; /* Each thread opens its own SQLite connection */
     struct timespec t0;
     struct snapshot_import_job job;
-    clock_gettime(CLOCK_MONOTONIC, &t0);
+    platform_time_monotonic_timespec(&t0);
 
     /* SQLite database path */
     char db_path[1024];
@@ -670,7 +671,7 @@ int snapshot_import(const char *snapshot_dir,
     snapshot_import_job_join(&job);
 
     struct timespec t1_end;
-    clock_gettime(CLOCK_MONOTONIC, &t1_end);
+    platform_time_monotonic_timespec(&t1_end);
     double import_time = (double)(t1_end.tv_sec - t0.tv_sec) +
                          (double)(t1_end.tv_nsec - t0.tv_nsec) / 1e9;
 
@@ -741,7 +742,7 @@ int snapshot_import(const char *snapshot_dir,
     }
 
     struct timespec t2_end;
-    clock_gettime(CLOCK_MONOTONIC, &t2_end);
+    platform_time_monotonic_timespec(&t2_end);
     double total_time = (double)(t2_end.tv_sec - t0.tv_sec) +
                         (double)(t2_end.tv_nsec - t0.tv_nsec) / 1e9;
 
@@ -889,7 +890,7 @@ static bool snapshot_tx_index_maybe_commit(struct node_db *ndb,
         return false;
     }
     *tx_open = false;
-    int64_t elapsed = (int64_t)time(NULL) - t_start;
+    int64_t elapsed = (int64_t)platform_time_wall_time_t() - t_start;
     int rate = elapsed > 0 ? indexed / (int)elapsed : indexed;
     printf("tx_index: %d transactions (%d/s)\n", indexed, rate);
     fflush(stdout);
@@ -1060,7 +1061,7 @@ static void *build_tx_index_thread(void *arg)
     printf("tx_index: additive build from block files (existing=%d, marker=%lld)...\n",
            existing, (long long)complete);
     fflush(stdout);
-    int64_t t_start = (int64_t)time(NULL);
+    int64_t t_start = (int64_t)platform_time_wall_time_t();
 
     sqlite3_busy_timeout(ndb.db, 30000);
     sqlite3_exec(ndb.db, "PRAGMA synchronous=NORMAL", NULL, NULL, NULL);
@@ -1286,7 +1287,7 @@ static void *build_tx_index_thread(void *arg)
 
     node_db_close(&ndb);
 
-    int64_t elapsed = (int64_t)time(NULL) - t_start;
+    int64_t elapsed = (int64_t)platform_time_wall_time_t() - t_start;
     if (ok) {
         printf("tx_index: complete — %d transactions indexed, %d blocks "
                "skipped in %llds\n",

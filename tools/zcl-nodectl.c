@@ -1,5 +1,6 @@
 #define _POSIX_C_SOURCE 200809L
 
+#include "platform/time_compat.h"
 #include <arpa/inet.h>
 #include <ctype.h>
 #include <errno.h>
@@ -72,7 +73,7 @@ static const char *env_or_default(const char *name, const char *fallback)
 
 static int64_t now_secs(void)
 {
-    return (int64_t)time(NULL);
+    return (int64_t)platform_time_wall_time_t();
 }
 
 static void sleep_ms(int ms)

@@ -25,6 +25,7 @@
  * Resets g_deferred_proof_validation_below_height = -1 when complete.
  */
 
+#include "platform/time_compat.h"
 #include "services/bg_validation_service.h"
 #include "validation/main_state.h"
 #include "validation/chainstate.h"
@@ -553,7 +554,7 @@ static void *bg_validation_thread(void *arg)
                 "bg_validation start from=%d to=%d workers=%d",
                 start_height, chain_height, num_workers);
 
-    int64_t t_start = (int64_t)time(NULL);
+    int64_t t_start = (int64_t)platform_time_wall_time_t();
     int64_t t_last_log = t_start;
     int h_last_log = start_height;
     int64_t total_sigs = 0;
@@ -615,7 +616,7 @@ static void *bg_validation_thread(void *arg)
 
         /* Log progress */
         if (h % LOG_INTERVAL == 0 && h > start_height) {
-            int64_t now = (int64_t)time(NULL);
+            int64_t now = (int64_t)platform_time_wall_time_t();
             int64_t elapsed = now - t_last_log;
             double bps = elapsed > 0 ?
                 (double)(h - h_last_log) / (double)elapsed : 0;
@@ -653,7 +654,7 @@ static void *bg_validation_thread(void *arg)
         if (chain_height >= g_deferred_proof_validation_below_height)
             g_deferred_proof_validation_below_height = -1;
 
-        int64_t total_time = (int64_t)time(NULL) - t_start;
+        int64_t total_time = (int64_t)platform_time_wall_time_t() - t_start;
         printf("[bg-valid] COMPLETE: %d blocks, %lld sigs, %lld proofs "
                "in %lldm%llds\n",
                chain_height - start_height + 1,
@@ -782,7 +783,7 @@ void bg_validation_stop(struct bg_validation_service *svc)
      * middle of a slow signature/proof batch — better to detach than
      * to overrun TimeoutStopSec and earn a SIGKILL. */
     struct timespec ts;
-    if (clock_gettime(CLOCK_REALTIME, &ts) == 0) {
+    if (platform_time_realtime_timespec(&ts) == 0) {
         ts.tv_sec += 5;
         int rc = pthread_timedjoin_np(svc->thread, NULL, &ts);
         if (rc != 0) {

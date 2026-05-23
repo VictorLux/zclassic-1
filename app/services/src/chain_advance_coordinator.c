@@ -1,5 +1,6 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0 */
 
+#include "platform/time_compat.h"
 #include "services/chain_advance_coordinator.h"
 
 #include "services/legacy_mirror_sync_service.h"
@@ -54,7 +55,7 @@ static _Atomic int64_t g_force_mirror_until_us = 0;
 static int64_t cac_mono_us(void)
 {
     struct timespec ts;
-    clock_gettime(CLOCK_MONOTONIC, &ts);
+    platform_time_monotonic_timespec(&ts);
     return (int64_t)ts.tv_sec * 1000000 + ts.tv_nsec / 1000;
 }
 
@@ -576,7 +577,7 @@ static void record_decision(const char *op, const struct cac_decision *d)
 {
     if (!d) return;
     struct node_db *ndb = NULL;
-    int64_t when = (int64_t)time(NULL);
+    int64_t when = (int64_t)platform_time_wall_time_t();
     int64_t total = 0;
     char op_copy[32];
     copy_text(op_copy, sizeof(op_copy), op ? op : "unknown");
@@ -1405,7 +1406,7 @@ void chain_advance_coordinator_note_projection_deferred(int height,
 {
     struct node_db *ndb = NULL;
     int64_t total = 0;
-    int64_t when = (int64_t)time(NULL);
+    int64_t when = (int64_t)platform_time_wall_time_t();
     char reason_copy[64];
 
     copy_text(reason_copy, sizeof(reason_copy),

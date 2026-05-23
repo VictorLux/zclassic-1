@@ -10,6 +10,7 @@
  *
  * This is the definitive test: if the bot passes, the app works. */
 
+#include "platform/time_compat.h"
 #include "controllers/wallet_view_controller.h"
 #include "controllers/wallet_view_internal.h"
 #include "chain/chainparams.h"
@@ -75,10 +76,10 @@ static double extract_js_var(const char *var_name) {
 static int _num, _pass, _fail;
 static struct timespec _t0;
 
-static void start_timer(void) { clock_gettime(CLOCK_MONOTONIC, &_t0); }
+static void start_timer(void) { platform_time_monotonic_timespec(&_t0); }
 static double elapsed_ms(void) {
     struct timespec t1;
-    clock_gettime(CLOCK_MONOTONIC, &t1);
+    platform_time_monotonic_timespec(&t1);
     return (t1.tv_sec - _t0.tv_sec) * 1000.0 +
            (t1.tv_nsec - _t0.tv_nsec) / 1e6;
 }

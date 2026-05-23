@@ -1,6 +1,7 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0 */
 
 #define _DEFAULT_SOURCE
+#include "platform/time_compat.h"
 #include "test/test_helpers.h"
 #include "primitives/transaction.h"
 #include "chain/chainparams.h"
@@ -3063,8 +3064,8 @@ int test_net(void)
         swarm_sync_assign_chunk(&ss, 30);
 
         /* Backdate chunk 0 and 1 request times to simulate timeout */
-        ss.chunk_request_time[0] = (int64_t)time(NULL) - 120;
-        ss.chunk_request_time[1] = (int64_t)time(NULL) - 120;
+        ss.chunk_request_time[0] = (int64_t)platform_time_wall_time_t() - 120;
+        ss.chunk_request_time[1] = (int64_t)platform_time_wall_time_t() - 120;
         /* Chunk 2 stays recent */
 
         swarm_sync_handle_timeouts(&ss, 60);

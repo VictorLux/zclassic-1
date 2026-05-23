@@ -8,6 +8,7 @@
  * net_manager->cs_nodes when calling dandelion_maybe_rotate_epoch()
  * (it acquires cs_nodes internally only if not rotating). */
 
+#include "platform/time_compat.h"
 #include "net/dandelion.h"
 #include "crypto/random_secret.h"
 #include "util/log_macros.h"
@@ -42,7 +43,7 @@ void dandelion_free(struct dandelion_state *ds)
  *
  * Dandelion's stem-peer selection (Fisher-Yates) and per-tx fluff
  * coin-flip MUST be unpredictable to the network. these ran
- * on an xorshift64 PRNG seeded from `time(NULL) ^ const` — ~31 bits
+ * on an xorshift64 PRNG seeded from `platform_time_wall_time_t() ^ const` — ~31 bits
  * of effective entropy. An attacker who knows rough boot time and
  * epoch cadence could replay the stream and predict (a) which
  * outbound peers we use for stem relay this epoch and (b) every
@@ -83,7 +84,7 @@ void dandelion_maybe_rotate_epoch(struct dandelion_state *ds,
     if (!ds || !nm)
         return;
 
-    int64_t now = (int64_t)time(NULL);
+    int64_t now = (int64_t)platform_time_wall_time_t();
 
     zcl_mutex_lock(&ds->cs);
 
@@ -258,7 +259,7 @@ void dandelion_stempool_add(struct dandelion_state *ds,
     }
 
     ds->stempool[slot].txhash = *txhash;
-    ds->stempool[slot].embargo_time = (int64_t)time(NULL) + DANDELION_EMBARGO_SECS;
+    ds->stempool[slot].embargo_time = (int64_t)platform_time_wall_time_t() + DANDELION_EMBARGO_SECS;
     ds->stempool[slot].from_peer = from_peer;
     ds->stempool[slot].active = true;
     ds->stempool_count++;
@@ -295,7 +296,7 @@ int dandelion_stempool_check_embargo(struct dandelion_state *ds,
     if (!ds || !out_hashes || max_out <= 0)
         return 0;
 
-    int64_t now = (int64_t)time(NULL);
+    int64_t now = (int64_t)platform_time_wall_time_t();
     int count = 0;
 
     zcl_mutex_lock(&ds->cs);

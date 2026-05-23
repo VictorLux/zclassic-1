@@ -1,5 +1,6 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0 */
 
+#include "platform/time_compat.h"
 #include "test/test_helpers.h"
 
 static void test_set_ipv4(struct net_address *addr,
@@ -404,7 +405,7 @@ int test_connman_addnode_fallback(void)
         }
 
         if (ok) {
-            int64_t now = (int64_t)time(NULL);
+            int64_t now = (int64_t)platform_time_wall_time_t();
             for (int i = 0; i < cm.manager.addrman.id_count; i++) {
                 struct addr_info *info = &cm.manager.addrman.entries[i];
                 if (!info->used)

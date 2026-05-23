@@ -36,6 +36,7 @@
  *   $ make test-e2e
  */
 
+#include "platform/time_compat.h"
 #include "test/test_helpers.h"
 #include "json/json.h"
 #include "mcp/router.h"
@@ -221,7 +222,7 @@ static ssize_t child_recv_line(struct mcp_child *ch, char *out, size_t cap,
     int64_t deadline_ms = (int64_t)timeout_ms;
     int64_t elapsed = 0;
     struct timespec t0;
-    clock_gettime(CLOCK_MONOTONIC, &t0);
+    platform_time_monotonic_timespec(&t0);
 
     while (pos + 1 < cap) {
         fd_set rs;
@@ -241,7 +242,7 @@ static ssize_t child_recv_line(struct mcp_child *ch, char *out, size_t cap,
         out[pos++] = c;
 
         struct timespec t1;
-        clock_gettime(CLOCK_MONOTONIC, &t1);
+        platform_time_monotonic_timespec(&t1);
         elapsed = (int64_t)((t1.tv_sec - t0.tv_sec) * 1000 +
                             (t1.tv_nsec - t0.tv_nsec) / 1000000);
     }

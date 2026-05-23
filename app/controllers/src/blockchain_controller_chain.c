@@ -8,6 +8,7 @@
  * verification, sapling-tree rebuild and chain audit. See
  * blockchain_controller_internal.h for shared declarations. */
 
+#include "platform/time_compat.h"
 #include "controllers/blockchain_controller.h"
 #include "blockchain_controller_internal.h"
 #include "controllers/network_controller.h"
@@ -255,7 +256,7 @@ bool rpc_getmempoolfeestats(const struct json_value *params, bool help,
     int64_t age_count[N_AGE] = {0};
     int64_t age_bytes[N_AGE] = {0};
 
-    int64_t now = (int64_t)time(NULL);
+    int64_t now = (int64_t)platform_time_wall_time_t();
     int64_t total_count = 0, total_bytes = 0;
 
     zcl_mutex_lock(&ctx->mempool->cs);
@@ -404,9 +405,9 @@ bool rpc_getutxocommitment(const struct json_value *params, bool help,
 
     uint8_t sha3_hash[32];
     uint64_t count = 0;
-    int64_t t0 = (int64_t)time(NULL);
+    int64_t t0 = (int64_t)platform_time_wall_time_t();
     utxo_commitment_sha3_compute(ctx->node_db->db, sha3_hash, &count);
-    int64_t elapsed = (int64_t)time(NULL) - t0;
+    int64_t elapsed = (int64_t)platform_time_wall_time_t() - t0;
 
     int tip = active_chain_height(&ctx->main_state->chain_active);
 
@@ -583,10 +584,10 @@ bool rpc_getdataintegrity(const struct json_value *params, bool help,
     if (ctx->coins_tip)
         coins_view_cache_flush(ctx->coins_tip);
 
-    int64_t t0 = (int64_t)time(NULL);
+    int64_t t0 = (int64_t)platform_time_wall_time_t();
     struct data_integrity_detail d;
     data_integrity_compute(ctx->node_db->db, &d);
-    int64_t elapsed = (int64_t)time(NULL) - t0;
+    int64_t elapsed = (int64_t)platform_time_wall_time_t() - t0;
 
     json_set_object(result);
 

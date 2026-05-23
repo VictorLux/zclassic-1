@@ -1,6 +1,7 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  * Tests for the block download manager. */
 
+#include "platform/time_compat.h"
 #include "test/test_helpers.h"
 #include "net/download.h"
 #include "core/uint256.h"
@@ -236,7 +237,7 @@ static int test_dl_check_timeouts(void)
         dl_mark_requested(&dm, &h1, 100, 1);
 
         /* No timeout at current time */
-        int64_t now = (int64_t)time(NULL);
+        int64_t now = (int64_t)platform_time_wall_time_t();
         ASSERT(dl_check_timeouts(&dm, now) == 0);
         ASSERT(dl_is_in_flight(&dm, &h1));
 

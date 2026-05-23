@@ -20,6 +20,7 @@
  *
  * Cross-file glue lives in sync_controller_internal.h. */
 
+#include "platform/time_compat.h"
 #include "controllers/sync_controller.h"
 #include "sync_controller_internal.h"
 #include "config/db_service.h"
@@ -54,7 +55,7 @@ _Atomic int64_t g_import_last_progress_at = 0;
 
 int64_t sync_job_now(void)
 {
-    return (int64_t)time(NULL);
+    return (int64_t)platform_time_wall_time_t();
 }
 
 void sync_job_catchup_begin(int start_height, int target_height)

@@ -3,6 +3,7 @@
  * MCP Middleware — implementation.  See middleware.h for the contract.
  */
 
+#include "platform/time_compat.h"
 #include "mcp/middleware.h"
 #include "mcp/router.h"
 #include "event/event.h"
@@ -45,7 +46,7 @@ static const char *k_default_destructive[] = {
 static int64_t now_us(void)
 {
     struct timespec ts;
-    clock_gettime(CLOCK_MONOTONIC, &ts);
+    platform_time_monotonic_timespec(&ts);
     return (int64_t)ts.tv_sec * 1000000LL + (int64_t)ts.tv_nsec / 1000LL;
 }
 
@@ -279,7 +280,7 @@ static char *dispatch_with_timeout(const char *tool_name,
     pthread_detach(th);
 
     struct timespec deadline;
-    clock_gettime(CLOCK_REALTIME, &deadline);
+    platform_time_realtime_timespec(&deadline);
     deadline.tv_sec  += timeout_ms / 1000;
     deadline.tv_nsec += (timeout_ms % 1000) * 1000000L;
     if (deadline.tv_nsec >= 1000000000L) {

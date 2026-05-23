@@ -1,6 +1,7 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  * Tests for the incremental UTXO set commitment (XOR-hash accumulator). */
 
+#include "platform/time_compat.h"
 #include "test/test_helpers.h"
 #include "coins/utxo_commitment.h"
 #include "net/fast_sync.h"
@@ -315,7 +316,7 @@ int test_utxo_commitment(void)
         block_swarm_init(&bs, &m, "/tmp");
 
         block_swarm_assign_piece(&bs, 1, NULL);
-        bs.piece_request_time[0] = (int64_t)time(NULL) - 60;
+        bs.piece_request_time[0] = (int64_t)platform_time_wall_time_t() - 60;
 
         block_swarm_handle_timeouts(&bs, 30);
         bool ok = (bs.piece_states[0] == CHUNK_NEEDED);

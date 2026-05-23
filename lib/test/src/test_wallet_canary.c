@@ -8,6 +8,7 @@
  * datadir, so we're checking the actual sqlite3 path the running
  * node takes — not a mock. */
 
+#include "platform/time_compat.h"
 #include "test/test_helpers.h"
 
 #include "wallet/wallet_canary.h"
@@ -67,7 +68,7 @@ static int t_happy(void)
     WC_RUN("canary: status.ok reflects success",
            st.ok && st.code == WALLET_CANARY_OK);
     WC_RUN("canary: status.last_ok_ts is recent",
-           st.last_ok_ts >= (int64_t)time(NULL) - 5);
+           st.last_ok_ts >= (int64_t)platform_time_wall_time_t() - 5);
     WC_RUN("canary: status.error is empty on success",
            st.error[0] == '\0');
 

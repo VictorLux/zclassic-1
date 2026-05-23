@@ -2,6 +2,7 @@
  * Distributed under the MIT software license, see the accompanying
  * file COPYING or http://www.opensource.org/licenses/mit-license.php. */
 
+#include "platform/time_compat.h"
 #include "controllers/misc_controller.h"
 #include "controllers/strong_params.h"
 #include "event/event.h"
@@ -284,14 +285,14 @@ static bool rpc_benchmark(const struct json_value *params, bool help,
     /* SHA256 benchmark - 10000 iterations */
     {
         struct timespec t0, t1;
-        clock_gettime(CLOCK_MONOTONIC, &t0);
+        platform_time_monotonic_timespec(&t0);
         uint8_t buf[64] = {0};
         for (int i = 0; i < 10000; i++) {
             uint8_t out[32];
             hash256(buf, sizeof(buf), out);
             memcpy(buf, out, 32);
         }
-        clock_gettime(CLOCK_MONOTONIC, &t1);
+        platform_time_monotonic_timespec(&t1);
         double elapsed = (t1.tv_sec - t0.tv_sec) +
                          (t1.tv_nsec - t0.tv_nsec) / 1e9;
         int64_t ops = (int64_t)(10000.0 / elapsed);
@@ -301,12 +302,12 @@ static bool rpc_benchmark(const struct json_value *params, bool help,
     /* Memory alloc+free benchmark - 10000 iterations */
     {
         struct timespec t0, t1;
-        clock_gettime(CLOCK_MONOTONIC, &t0);
+        platform_time_monotonic_timespec(&t0);
         for (int i = 0; i < 10000; i++) {
             void *p = zcl_malloc(4096, "benchmark alloc");
             if (p) { memset(p, 0, 4096); free(p); }
         }
-        clock_gettime(CLOCK_MONOTONIC, &t1);
+        platform_time_monotonic_timespec(&t1);
         double elapsed = (t1.tv_sec - t0.tv_sec) +
                          (t1.tv_nsec - t0.tv_nsec) / 1e9;
         int64_t ops = (int64_t)(10000.0 / elapsed);
@@ -317,13 +318,13 @@ static bool rpc_benchmark(const struct json_value *params, bool help,
     {
         struct timespec t0, t1;
         uint8_t buf2[32] = {1,2,3};
-        clock_gettime(CLOCK_MONOTONIC, &t0);
+        platform_time_monotonic_timespec(&t0);
         for (int i = 0; i < 10000; i++) {
             uint8_t out[20];
             hash160(buf2, sizeof(buf2), out);
             memcpy(buf2, out, 20);
         }
-        clock_gettime(CLOCK_MONOTONIC, &t1);
+        platform_time_monotonic_timespec(&t1);
         double elapsed = (t1.tv_sec - t0.tv_sec) +
                          (t1.tv_nsec - t0.tv_nsec) / 1e9;
         int64_t ops = (int64_t)(10000.0 / elapsed);

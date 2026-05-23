@@ -6,6 +6,7 @@
 
 #define _GNU_SOURCE  /* pthread_timedjoin_np, pthread_setname_np */
 
+#include "platform/time_compat.h"
 #include "util/thread_registry.h"
 #include "util/safe_alloc.h"
 
@@ -156,7 +157,7 @@ int thread_registry_join_all(int timeout_sec)
         if (!active) continue;
 
         struct timespec ts;
-        clock_gettime(CLOCK_REALTIME, &ts);
+        platform_time_realtime_timespec(&ts);
         ts.tv_sec += timeout_sec;
 
         int rc = pthread_timedjoin_np(tid, NULL, &ts);

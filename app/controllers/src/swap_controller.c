@@ -3,6 +3,7 @@
  * Atomic Swap RPC controller.
  * Cross-chain: ZCL <-> BTC, LTC, DOGE via HTLC. */
 
+#include "platform/time_compat.h"
 #include "script/htlc.h"
 #include "znam/znam.h"
 #include "encoding/utilstrencodings.h"
@@ -197,7 +198,7 @@ static bool rpc_swap_initiate(const struct json_value *params, bool help,
     memcpy(swap.redeem_script, script, script_len);
     swap.redeem_script_len = script_len;
     snprintf(swap.p2sh_address, sizeof(swap.p2sh_address), "%s", p2sh_addr);
-    swap.created_at = (int64_t)time(NULL);
+    swap.created_at = (int64_t)platform_time_wall_time_t();
 
     /* Persist */
     if (g_swap_ndb)
@@ -298,7 +299,7 @@ static bool rpc_swap_participate(const struct json_value *params, bool help,
     memcpy(swap.redeem_script, script, script_len);
     swap.redeem_script_len = script_len;
     snprintf(swap.p2sh_address, sizeof(swap.p2sh_address), "%s", p2sh_addr);
-    swap.created_at = (int64_t)time(NULL);
+    swap.created_at = (int64_t)platform_time_wall_time_t();
 
     if (g_swap_ndb)
         db_swap_save(g_swap_ndb, &swap);

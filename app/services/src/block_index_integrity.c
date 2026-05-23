@@ -25,6 +25,7 @@
  * CSR catches the mutation attempt, bii catches the load attempt.
  */
 
+#include "platform/time_compat.h"
 #include "services/block_index_integrity.h"
 
 #include "services/chain_state_repository.h"
@@ -110,7 +111,7 @@ void bii_record_recovery_status(enum bii_verdict verdict,
     memset(&g_bii_status, 0, sizeof(g_bii_status));
     g_bii_status.verdict = verdict;
     g_bii_status.action = action;
-    g_bii_status.unix_time = (int64_t)time(NULL);
+    g_bii_status.unix_time = (int64_t)platform_time_wall_time_t();
     g_bii_status.degraded = degraded;
     g_bii_status.unsafe_override = unsafe_override;
     if (reason)
@@ -415,7 +416,7 @@ static void bii_rename_if_present(const char *src, int64_t ts,
 void bii_quarantine_corrupt(const char *datadir, enum bii_verdict v)
 {
     if (!datadir) return;
-    int64_t ts = (int64_t)time(NULL);
+    int64_t ts = (int64_t)platform_time_wall_time_t();
 
     char body_path[1024];
     char side_path[1024];
@@ -479,7 +480,7 @@ int block_index_repair_heights(struct main_state *ms)
     if (!ms) return 0;
 
     struct timespec t0;
-    clock_gettime(CLOCK_MONOTONIC, &t0);
+    platform_time_monotonic_timespec(&t0);
 
     size_t n = ms->map_block_index.size;
     if (n == 0) {
@@ -571,7 +572,7 @@ int block_index_repair_heights(struct main_state *ms)
     free(arr);
 
     struct timespec t1;
-    clock_gettime(CLOCK_MONOTONIC, &t1);
+    platform_time_monotonic_timespec(&t1);
     int64_t elapsed_ms = (t1.tv_sec - t0.tv_sec) * 1000
                        + (t1.tv_nsec - t0.tv_nsec) / 1000000;
 
@@ -601,7 +602,7 @@ int block_index_repair_pprev(struct main_state *ms, const char *datadir)
     if (!ms || !datadir) return 0;
 
     struct timespec t0;
-    clock_gettime(CLOCK_MONOTONIC, &t0);
+    platform_time_monotonic_timespec(&t0);
 
     size_t n = ms->map_block_index.size;
     if (n == 0) return 0;
@@ -728,7 +729,7 @@ int block_index_repair_pprev(struct main_state *ms, const char *datadir)
     free(arr);
 
     struct timespec t1;
-    clock_gettime(CLOCK_MONOTONIC, &t1);
+    platform_time_monotonic_timespec(&t1);
     int64_t elapsed_ms = (t1.tv_sec - t0.tv_sec) * 1000
                        + (t1.tv_nsec - t0.tv_nsec) / 1000000;
 

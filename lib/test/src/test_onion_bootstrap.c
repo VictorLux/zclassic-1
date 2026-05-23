@@ -37,6 +37,7 @@
  * state that `test_tor_initial_state` observed at boot.
  */
 
+#include "platform/time_compat.h"
 #include "test/test_helpers.h"
 #include "net/tor_integration.h"
 #include <sys/stat.h>
@@ -146,14 +147,14 @@ int test_onion_bootstrap(void)
     const int budget_sec = 60;
     const int ceiling_sec = 90;
     bool ready = false;
-    time_t t0 = time(NULL);
+    time_t t0 = platform_time_wall_time_t();
 
     for (int i = 0; i < ceiling_sec; i++) {
         if (tor_integration_is_ready()) { ready = true; break; }
         sleep(1);
     }
 
-    int elapsed = (int)(time(NULL) - t0);
+    int elapsed = (int)(platform_time_wall_time_t() - t0);
     const char *addr = tor_integration_get_onion_address();
 
     if (!ready) {

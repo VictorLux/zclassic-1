@@ -6,6 +6,7 @@
  * legacy_body_pull.
  */
 
+#include "platform/time_compat.h"
 #include "services/legacy_mirror_sync_service.h"
 
 #include "services/header_probe_service.h"
@@ -621,7 +622,7 @@ static bool lms_next_block_needs_mirror_body(int local_height, int lag)
     if (no_authorized_child) {
         lms_set_error("native_next_block_download_required");
         atomic_store(&g_lms.no_authorized_child_first_seen,
-                     (int64_t)time(NULL));
+                     (int64_t)platform_time_wall_time_t());
         return true;
     }
     return needs_body;
@@ -658,7 +659,7 @@ static void lms_mark_success(int local, int progress)
     if (progress < 0)
         progress = 0;
     atomic_store(&g_lms.last_progress_blocks, progress);
-    atomic_store(&g_lms.last_catchup, (int64_t)time(NULL));
+    atomic_store(&g_lms.last_catchup, (int64_t)platform_time_wall_time_t());
     atomic_store(&g_lms.last_advanced_height, local);
     atomic_store(&g_lms.stuck_height, 0);
     atomic_store(&g_lms.stuck_status_flags, 0);
@@ -741,7 +742,7 @@ bool legacy_mirror_sync_request_catchup(const char *reason)
         return true;
 
     atomic_store(&g_lms.in_flight, 1);
-    atomic_store(&g_lms.last_attempt, (int64_t)time(NULL));
+    atomic_store(&g_lms.last_attempt, (int64_t)platform_time_wall_time_t());
 
     bool ok = true;
     int legacy_blocks = -1, legacy_headers = -1;
@@ -765,7 +766,7 @@ bool legacy_mirror_sync_request_catchup(const char *reason)
     /* SLO evaluation runs every tick regardless of gating — the loud
      * half of the redundancy guarantee. Severity is emitted once per
      * episode (latched), cleared when lag drops back below threshold. */
-    lms_evaluate_lag_slo(lag, legacy_blocks, local, (int64_t)time(NULL));
+    lms_evaluate_lag_slo(lag, legacy_blocks, local, (int64_t)platform_time_wall_time_t());
 
     {
         char local_hash[65] = {0}, remote_hash[65] = {0};
@@ -1188,7 +1189,7 @@ void legacy_mirror_sync_stats_snapshot(
     out->lag_breach_since        = atomic_load(&g_lms.lag_breach_since);
     out->lag_critical_since      = atomic_load(&g_lms.lag_critical_since);
     {
-        int64_t now = (int64_t)time(NULL);
+        int64_t now = (int64_t)platform_time_wall_time_t();
         out->lag_breach_seconds =
             out->lag_breach_since > 0 && now >= out->lag_breach_since
                 ? now - out->lag_breach_since : 0;

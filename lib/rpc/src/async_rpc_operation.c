@@ -3,6 +3,7 @@
  * Distributed under the MIT software license, see the accompanying
  * file COPYING or http://www.opensource.org/licenses/mit-license.php. */
 
+#include "platform/time_compat.h"
 #include "rpc/async_rpc_operation.h"
 #include "core/random.h"
 #include "core/utiltime.h"
@@ -28,7 +29,7 @@ void async_op_init(struct async_rpc_operation *op)
 {
     memset(op, 0, sizeof(*op));
     generate_uuid(op->id, sizeof(op->id));
-    op->creation_time = (int64_t)time(NULL);
+    op->creation_time = (int64_t)platform_time_wall_time_t();
     atomic_store(&op->state, ASYNC_OP_READY);
     zcl_mutex_init(&op->lock);
     json_init(&op->result);

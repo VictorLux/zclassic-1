@@ -1,5 +1,6 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0 */
 
+#include "platform/time_compat.h"
 #include "controllers/wallet_view_internal.h"
 #include "controllers/wallet_controller.h"
 #include "util/ar_step_readonly.h"
@@ -131,7 +132,7 @@ size_t serve_dashboard(uint8_t *r, size_t max) {
         if (shield_st == 1) {
             char el_s[16];
             snprintf(el_s, sizeof(el_s), "%d",
-                (int)(time(NULL) - g_shield_pending_since));
+                (int)(platform_time_wall_time_t() - g_shield_pending_since));
             struct template_var pv[] = { { "elapsed", el_s } };
             template_render(TMPL_SHIELD_PENDING, pv, 1,
                 privacy_buf, sizeof(privacy_buf));

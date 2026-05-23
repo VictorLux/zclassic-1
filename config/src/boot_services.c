@@ -4,6 +4,7 @@
  * Runtime service initialization: mempool, P2P, RPC, Tor, HTTPS,
  * mining, wallet sync, shutdown, and utility functions. */
 
+#include "platform/time_compat.h"
 #include "config/boot_internal.h"
 #include "services/chain_activation_controller.h"
 #include "services/chain_advance_coordinator.h"
@@ -464,7 +465,7 @@ static void coord_esc_tick(struct liveness_contract *c)
     } else {
         /* Non-fatal: bump a forever-increasing counter (using time so
          * it always advances). Frozen-progress detection inactive. */
-        marker = (int64_t)time(NULL) + (int64_t)1000000;
+        marker = (int64_t)platform_time_wall_time_t() + (int64_t)1000000;
     }
     supervisor_progress(g_coord_esc_id, marker);
     /* Also tick so any deadline timer (if configured) doesn't fire. */
@@ -787,7 +788,7 @@ static void boot_sd_watchdog_tick(void *ctx)
             int64_t window_us = wd_us > 0 ? (int64_t)wd_us
                                           : (int64_t)(120 * 1000000LL);
             struct timespec now_ts;
-            clock_gettime(CLOCK_MONOTONIC, &now_ts);
+            platform_time_monotonic_timespec(&now_ts);
             int64_t now_us = (int64_t)now_ts.tv_sec * 1000000
                            + (int64_t)now_ts.tv_nsec / 1000;
             if (now_us - last_us < window_us)
@@ -1332,7 +1333,7 @@ static bool boot_start_thread_service(pthread_t *thread,
 
 static void boot_join_deadline_from_now(struct timespec *ts, int timeout_sec)
 {
-    clock_gettime(CLOCK_REALTIME, ts);
+    platform_time_realtime_timespec(ts);
     if (timeout_sec < 0)
         timeout_sec = 0;
     ts->tv_sec += timeout_sec;
@@ -1644,7 +1645,7 @@ static void watchdog_check_stuck(struct boot_svc_ctx *svc)
     static int last_height = -1;
 
     int h = active_chain_height(&svc->state->chain_active);
-    int64_t now = (int64_t)time(NULL);
+    int64_t now = (int64_t)platform_time_wall_time_t();
 
     if (h != last_height) {
         last_height = h;
@@ -1814,7 +1815,7 @@ static void *background_utxo_replay(void *arg)
         return NULL;
 
     atomic_store(&g_utxo_replay_active, true);
-    int64_t t0 = (int64_t)time(NULL);
+    int64_t t0 = (int64_t)platform_time_wall_time_t();
 
     printf("UTXO replay: starting background chain validation...\n");
     fflush(stdout);
@@ -1913,7 +1914,7 @@ static void *background_utxo_replay(void *arg)
     }
 
     int tip = active_chain_height(&svc->state->chain_active);
-    int64_t elapsed = (int64_t)time(NULL) - t0;
+    int64_t elapsed = (int64_t)platform_time_wall_time_t() - t0;
     atomic_store(&g_utxo_replay_height, tip);
     atomic_store(&g_utxo_replay_active, false);
 
@@ -2206,7 +2207,7 @@ bool app_init_services(struct app_context *ctx,
     {
         struct node_db *ndb = boot_node_db();
         if (ndb && ndb->open) {
-            int64_t t0 = (int64_t)time(NULL);
+            int64_t t0 = (int64_t)platform_time_wall_time_t();
             sqlite3_stmt *chk = NULL;
             int existing = 0;
             if (sqlite3_prepare_v2(ndb->db,
@@ -2271,7 +2272,7 @@ bool app_init_services(struct app_context *ctx,
             sqlite3_finalize(s);
             printf("Wallet: %.8f ZCL (%d UTXOs, %lldms)\n",
                    (double)bal / 1e8, cnt,
-                   (long long)((int64_t)time(NULL) - t0) * 1000);
+                   (long long)((int64_t)platform_time_wall_time_t() - t0) * 1000);
         }
     }
 
@@ -2345,10 +2346,10 @@ bool app_init_services(struct app_context *ctx,
                 printf("Trying file service at %s:%d "
                        "(from -fileservice=)...\n",
                        ctx->file_service_peer, FS_PORT);
-                int64_t t0 = (int64_t)time(NULL);
+                int64_t t0 = (int64_t)platform_time_wall_time_t();
                 if (fs_client_sync(ctx->file_service_peer, FS_PORT,
                                     ctx->datadir, utxo_root)) {
-                    int64_t elapsed = (int64_t)time(NULL) - t0;
+                    int64_t elapsed = (int64_t)platform_time_wall_time_t() - t0;
                     printf("=== File sync complete from %s: %llds ===\n",
                            ctx->file_service_peer, (long long)elapsed);
                     file_sync_ok = true;
@@ -2377,10 +2378,10 @@ bool app_init_services(struct app_context *ctx,
                 for (int i = 0; file_seeds[i] && !file_sync_ok; i++) {
                     printf("Trying file service at %s:%d...\n",
                            file_seeds[i], FS_PORT);
-                    int64_t t0 = (int64_t)time(NULL);
+                    int64_t t0 = (int64_t)platform_time_wall_time_t();
                     if (fs_client_sync(file_seeds[i], FS_PORT,
                                         ctx->datadir, utxo_root)) {
-                        int64_t elapsed = (int64_t)time(NULL) - t0;
+                        int64_t elapsed = (int64_t)platform_time_wall_time_t() - t0;
                         printf("=== File sync complete from %s: %llds ===\n",
                                file_seeds[i], (long long)elapsed);
                         file_sync_ok = true;

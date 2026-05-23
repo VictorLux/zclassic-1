@@ -16,6 +16,7 @@
  * bg_validation re-verifies every block bit-exact over the next hours.
  */
 
+#include "platform/time_compat.h"
 #include "services/legacy_cold_import.h"
 
 #include "chain/chain.h"
@@ -61,7 +62,7 @@
 static int64_t lci_now_ms(void)
 {
     struct timespec ts;
-    clock_gettime(CLOCK_MONOTONIC, &ts);
+    platform_time_monotonic_timespec(&ts);
     return (int64_t)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
 }
 

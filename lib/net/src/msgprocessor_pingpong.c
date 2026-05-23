@@ -6,6 +6,7 @@
  * these need access to the chain or mempool — they tweak per-node
  * latency/state and emit a reply. */
 
+#include "platform/time_compat.h"
 #include "msgprocessor_internal.h"
 #include "net/version.h"
 #include "util/log_macros.h"
@@ -44,7 +45,7 @@ static bool process_pong(struct p2p_node *node, struct byte_stream *s)
                  node->addr_name);
 
     if (node->ping_nonce_sent != 0 && nonce == node->ping_nonce_sent) {
-        int64_t now = (int64_t)time(NULL) * 1000000;
+        int64_t now = (int64_t)platform_time_wall_time_t() * 1000000;
         int64_t rtt = now - node->ping_usec_start;
         if (rtt > 0) {
             node->ping_usec_time = rtt;

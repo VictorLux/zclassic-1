@@ -4,6 +4,7 @@
  * Provides fast, comprehensive views of blocks, transactions, UTXO set,
  * Sapling tree state, and chain statistics. */
 
+#include "platform/time_compat.h"
 #include "views/format_helpers.h"
 #include "controllers/chain_inspect_controller.h"
 #include "controllers/rpc_chainstate_guard.h"
@@ -465,7 +466,7 @@ static bool rpc_scancommitments(const struct json_value *params, bool help,
     size_t cached_size = 0;
     int64_t total_cms = 0;
     int blocks_with_cms = 0;
-    int64_t t0 = (int64_t)time(NULL);
+    int64_t t0 = (int64_t)platform_time_wall_time_t();
 
     for (int h = start; h <= end; h++) {
         const struct block_index *bi =
@@ -503,7 +504,7 @@ static bool rpc_scancommitments(const struct json_value *params, bool help,
     }
     if (cached_data) munmap(cached_data, cached_size);
 
-    int64_t elapsed = (int64_t)time(NULL) - t0;
+    int64_t elapsed = (int64_t)platform_time_wall_time_t() - t0;
 
     json_set_object(result);
     json_push_kv_int(result, "start_height", start);
@@ -556,7 +557,7 @@ static bool rpc_verifychainroots(const struct json_value *params, bool help,
     size_t total_cms = 0;
     int first_mismatch = -1;
     int checkpoints_ok = 0;
-    int64_t t0 = (int64_t)time(NULL);
+    int64_t t0 = (int64_t)platform_time_wall_time_t();
 
     for (int h = sapling_start; h <= end; h++) {
         const struct block_index *bi =
@@ -611,7 +612,7 @@ next:
     }
     if (cached_data) munmap(cached_data, cached_size);
 
-    int64_t elapsed = (int64_t)time(NULL) - t0;
+    int64_t elapsed = (int64_t)platform_time_wall_time_t() - t0;
 
     json_set_object(result);
     json_push_kv_int(result, "range_start", start);

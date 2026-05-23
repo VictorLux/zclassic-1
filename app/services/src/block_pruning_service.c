@@ -18,6 +18,7 @@
  * referenced the deleted file.
  */
 
+#include "platform/time_compat.h"
 #include "services/block_pruning_service.h"
 
 #include "chain/chain.h"
@@ -323,7 +324,7 @@ bool block_pruning_start(struct block_pruning_service *svc)
     bool ready_ok = true;
     while (!svc->ready) {
         struct timespec deadline;
-        clock_gettime(CLOCK_REALTIME, &deadline);
+        platform_time_realtime_timespec(&deadline);
         deadline.tv_sec += 30;
         int rc = pthread_cond_timedwait(&svc->ready_cond,
                                         &svc->ready_mutex, &deadline);

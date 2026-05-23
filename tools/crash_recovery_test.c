@@ -62,6 +62,7 @@
 
 #define _POSIX_C_SOURCE 200809L
 
+#include "platform/time_compat.h"
 #include <errno.h>
 #include <fcntl.h>
 #include <inttypes.h>
@@ -107,7 +108,7 @@ static void cr_defaults(struct cr_config *cfg)
     cfg->min_delay_ms  = 250;
     cfg->max_delay_ms  = 3000;
     cfg->rpc_port      = 18232;
-    cfg->seed          = (uint64_t)time(NULL);
+    cfg->seed          = (uint64_t)platform_time_wall_time_t();
     cfg->verbose       = false;
 }
 
@@ -184,7 +185,7 @@ static int rand_range(uint64_t *state, int lo, int hi)
 static int64_t now_ms(void)
 {
     struct timespec ts;
-    clock_gettime(CLOCK_MONOTONIC, &ts);
+    platform_time_monotonic_timespec(&ts);
     return (int64_t)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
 }
 

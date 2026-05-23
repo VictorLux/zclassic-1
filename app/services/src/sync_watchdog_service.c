@@ -8,6 +8,7 @@
  *   STATE_STUCK:   any sync state (except at_tip) unchanged for >600s
  *   REPEATED_RESTART: circuit breaker after >3 recoveries in 30 minutes */
 
+#include "platform/time_compat.h"
 #include "services/sync_watchdog_service.h"
 #include "services/block_sync_service.h"
 #include "services/chain_activation_controller.h"
@@ -77,7 +78,7 @@ _Atomic int     g_stall_event_emitted = 0;
 void sync_watchdog_on_state_change(enum sync_state new_state, int height)
 {
     (void)new_state;
-    atomic_store(&g_sync_state_entered_time, (int64_t)time(NULL));
+    atomic_store(&g_sync_state_entered_time, (int64_t)platform_time_wall_time_t());
     atomic_store(&g_sync_state_entry_height, height);
     /* State changed → if a stall just ended, allow a fresh EV_TIP_STALE
      * the next time we get stuck. Don't clear g_last_block_connected_ts:
@@ -88,7 +89,7 @@ void sync_watchdog_on_state_change(enum sync_state new_state, int height)
 
 void sync_watchdog_on_block_connected(int height)
 {
-    atomic_store(&g_last_block_connected_ts, (int64_t)time(NULL));
+    atomic_store(&g_last_block_connected_ts, (int64_t)platform_time_wall_time_t());
     atomic_store(&g_last_block_connected_height, height);
     /* Block actually arrived → previous stall (if any) is over. */
     atomic_store(&g_stall_event_emitted, 0);
@@ -100,7 +101,7 @@ int64_t sync_watchdog_get_tip_advance_age(void)
     /* Bootstrap: if we have not seen a connect yet, age is meaningless;
      * report -1 so consumers (zcl_health, Prometheus) can skip the gate. */
     if (last == 0) return -1; // raw-return-ok:sentinel
-    int64_t now = (int64_t)time(NULL);
+    int64_t now = (int64_t)platform_time_wall_time_t();
     return (now > last) ? (now - last) : 0;
 }
 
@@ -109,7 +110,7 @@ int64_t sync_get_state_duration(void)
     int64_t entered = atomic_load(&g_sync_state_entered_time);
     if (entered == 0)
         return 0;
-    int64_t now = (int64_t)time(NULL);
+    int64_t now = (int64_t)platform_time_wall_time_t();
     return (now > entered) ? (now - entered) : 0;
 }
 
@@ -184,7 +185,7 @@ void sync_watchdog_init(void)
     g_watchdog.last_header_height = -1;
     g_watchdog.last_chain_height = -1;
     local_recovery_reset();
-    atomic_store(&g_sync_state_entered_time, (int64_t)time(NULL));
+    atomic_store(&g_sync_state_entered_time, (int64_t)platform_time_wall_time_t());
     sync_set_state_change_callback(sync_watchdog_on_state_change);
 }
 
@@ -662,7 +663,7 @@ enum watchdog_recovery_type sync_watchdog_check(
 
     g_watchdog.checks_run++;
 
-    int64_t now = (int64_t)time(NULL);
+    int64_t now = (int64_t)platform_time_wall_time_t();
     enum sync_state state = sync_get_state();
     int64_t duration = sync_get_state_duration();
     int local_height = ms ? active_chain_height(&ms->chain_active) : -1;

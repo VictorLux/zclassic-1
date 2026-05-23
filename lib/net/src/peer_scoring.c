@@ -3,6 +3,7 @@
  * Typed peer-offence scoring layered on top of peer_misbehaving().
  * See lib/net/include/net/peer_scoring.h for design notes. */
 
+#include "platform/time_compat.h"
 #include "net/peer_scoring.h"
 #include "net/net.h"
 #include "event/event.h"
@@ -72,7 +73,7 @@ int peer_scoring_decay_rate(void)
 int64_t peer_scoring_now_ms(void)
 {
     struct timespec ts;
-    if (clock_gettime(CLOCK_REALTIME, &ts) != 0)
+    if (platform_time_realtime_timespec(&ts) != 0)
         return 0;
     return (int64_t)ts.tv_sec * 1000 + (int64_t)ts.tv_nsec / 1000000;
 }

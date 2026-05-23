@@ -14,6 +14,7 @@
  *
  * Result: skips 99.9%+ of block deserialization. */
 
+#include "platform/time_compat.h"
 #include "views/format_helpers.h"
 #include "controllers/wallet_scan.h"
 #include "controllers/sync_controller.h"
@@ -252,7 +253,7 @@ int wallet_scan_blocks(struct node_db *ndb,
     }
 
     struct timespec ts_start, ts_p1, ts_p2;
-    clock_gettime(CLOCK_MONOTONIC, &ts_start);
+    platform_time_monotonic_timespec(&ts_start);
 
     /* Build address hash table */
     struct addr_ht aht;
@@ -327,7 +328,7 @@ int wallet_scan_blocks(struct node_db *ndb,
         }
     }
 
-    clock_gettime(CLOCK_MONOTONIC, &ts_p1);
+    platform_time_monotonic_timespec(&ts_p1);
     double p1_ms = (double)(ts_p1.tv_sec - ts_start.tv_sec) * 1000.0 +
                    (double)(ts_p1.tv_nsec - ts_start.tv_nsec) / 1e6;
 
@@ -426,7 +427,7 @@ int wallet_scan_blocks(struct node_db *ndb,
     }
     if (fdata) munmap(fdata, fsize);
 
-    clock_gettime(CLOCK_MONOTONIC, &ts_p2);
+    platform_time_monotonic_timespec(&ts_p2);
     double p2_ms = (double)(ts_p2.tv_sec - ts_p1.tv_sec) * 1000.0 +
                    (double)(ts_p2.tv_nsec - ts_p1.tv_nsec) / 1e6;
     double total_ms = (double)(ts_p2.tv_sec - ts_start.tv_sec) * 1000.0 +

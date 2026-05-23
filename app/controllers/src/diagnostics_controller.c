@@ -21,6 +21,7 @@
  *                 they don't mutate.
  */
 
+#include "platform/time_compat.h"
 #include "controllers/diagnostics_controller.h"
 
 #include "views/format_helpers.h"
@@ -504,7 +505,7 @@ static bool rpc_dumpstate(const struct json_value *params, bool help,
     json_set_object(result);
     json_push_kv_str(result, "subsystem", e->name);
     json_push_kv_str(result, "description", e->desc);
-    json_push_kv_int(result, "captured_at", (int64_t)time(NULL));
+    json_push_kv_int(result, "captured_at", (int64_t)platform_time_wall_time_t());
 
     struct json_value state = {0};
     json_set_object(&state);
@@ -632,7 +633,7 @@ static bool rpc_getnodelog(const struct json_value *params, bool help,
                  pattern, errbuf);
     }
 
-    int64_t now = (int64_t)time(NULL);
+    int64_t now = (int64_t)platform_time_wall_time_t();
     int64_t earliest = (since_secs > 0) ? (now - since_secs) : 0;
 
     /* Reverse-scan in NODELOG_CHUNK_SIZE chunks. Each chunk we read,
@@ -782,7 +783,7 @@ struct dbq_progress_ctx {
 static int64_t now_ms(void)
 {
     struct timespec ts;
-    clock_gettime(CLOCK_MONOTONIC, &ts);
+    platform_time_monotonic_timespec(&ts);
     return (int64_t)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
 }
 

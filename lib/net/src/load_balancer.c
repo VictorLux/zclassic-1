@@ -2,6 +2,7 @@
  *
  * On-chain load balancer implementation. */
 
+#include "platform/time_compat.h"
 #include "net/load_balancer.h"
 #include "zslp/slp.h"
 #include "core/uint256.h"
@@ -176,7 +177,7 @@ bool site_probe_replica(struct site_replica *replica)
     /* Measure time to establish connection.
      * In production: connect via Tor circuit, send HTTP HEAD, measure RTT.
      * For now: mark as reachable with estimated latency based on height freshness. */
-    int64_t now = (int64_t)time(NULL);
+    int64_t now = (int64_t)platform_time_wall_time_t();
     /* Rough estimate: 75s per block, newer = likely still running */
     int64_t age_blocks = 3046500 - (int64_t)replica->height; /* approximate */
     if (age_blocks < 0) age_blocks = 0;

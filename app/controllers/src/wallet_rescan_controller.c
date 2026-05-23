@@ -5,6 +5,7 @@
  *
  * Wallet rescan, legacy import, and witness management RPCs. */
 
+#include "platform/time_compat.h"
 #include "controllers/wallet_rescan_controller.h"
 #include "controllers/rpc_chainstate_guard.h"
 #include "controllers/wallet_helpers.h"
@@ -760,7 +761,7 @@ static bool rpc_rescanwitnesses(const struct json_value *params, bool help,
     uint8_t *cached_data = NULL;
     size_t cached_size = 0;
 
-    int64_t t_start = (int64_t)time(NULL);
+    int64_t t_start = (int64_t)platform_time_wall_time_t();
     int blocks_scanned = 0;
     size_t total_commitments = 0;
 
@@ -842,7 +843,7 @@ static bool rpc_rescanwitnesses(const struct json_value *params, bool help,
         bool do_ckpt = (blocks_scanned % 100000 == 0) ||
                        (h > safe_tip - 10000 && h % 1000 == 0);
         if (do_ckpt) {
-            int64_t elapsed = (int64_t)time(NULL) - t_start;
+            int64_t elapsed = (int64_t)platform_time_wall_time_t() - t_start;
             printf("rescanwitnesses: %d blocks (height %d), "
                    "%zu cms, %d/%d witnesses, %llds",
                    blocks_scanned, h, total_commitments,
@@ -969,7 +970,7 @@ static bool rpc_rescanwitnesses(const struct json_value *params, bool help,
     /* NOW release the rescan lock — tree and witnesses are all saved */
     atomic_store(&g_sapling_rescan_active, false);
 
-    int64_t elapsed = (int64_t)time(NULL) - t_start;
+    int64_t elapsed = (int64_t)platform_time_wall_time_t() - t_start;
     printf("rescanwitnesses: done in %llds — %zu cms, %d/%d witnesses, "
            "%d saved\n",
            (long long)elapsed, total_commitments, witnesses_built,

@@ -9,6 +9,7 @@
  * event cost unless a kill actually fires.
  */
 
+#include "platform/time_compat.h"
 #include "rpc/rpc_timeout.h"
 #include "event/event.h"
 #include "util/thread_registry.h"
@@ -261,7 +262,7 @@ static void *watchdog_fn(void *arg)
         if (period < 10) period = 10;
 
         struct timespec wake;
-        clock_gettime(CLOCK_REALTIME, &wake);
+        platform_time_realtime_timespec(&wake);
         wake.tv_sec  += period / 1000;
         wake.tv_nsec += (long)(period % 1000) * 1000000L;
         if (wake.tv_nsec >= 1000000000L) {

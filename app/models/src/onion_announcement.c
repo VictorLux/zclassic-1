@@ -1,5 +1,6 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0 */
 
+#include "platform/time_compat.h"
 #include "models/onion_announcement.h"
 #include "models/model_text.h"
 #include <string.h>
@@ -61,7 +62,7 @@ bool db_onion_announcement_save(struct node_db *ndb,
     if (!ndb || !ndb->open || !a)
         return false;
     if (a->announced_at == 0)
-        ((struct db_onion_announcement *)a)->announced_at = (int64_t)time(NULL);
+        ((struct db_onion_announcement *)a)->announced_at = (int64_t)platform_time_wall_time_t();
 
     cbs = onion_announcement_callbacks_ready();
     if (!ar_run_before_save(cbs, (void *)a)) {

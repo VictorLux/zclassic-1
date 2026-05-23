@@ -1,5 +1,6 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0 */
 
+#include "platform/time_compat.h"
 #include "models/store.h"
 #include "models/model_text.h"
 #include <string.h>
@@ -198,7 +199,7 @@ bool db_store_order_save(struct node_db *ndb, const struct db_store_order *o)
     if (!ndb || !ndb->open || !o)
         return false;
     if (o->created_at == 0)
-        ((struct db_store_order *)o)->created_at = (int64_t)time(NULL);
+        ((struct db_store_order *)o)->created_at = (int64_t)platform_time_wall_time_t();
 
     cbs = store_order_callbacks_ready();
     if (!ar_run_before_save(cbs, (void *)o)) {

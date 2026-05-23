@@ -1,6 +1,7 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  * File controller tests — manifest coverage and cache invalidation. */
 
+#include "platform/time_compat.h"
 #include "test/test_helpers.h"
 #include "controllers/file_controller.h"
 #include "net/file_service.h"
@@ -27,7 +28,7 @@ static void test_file_write_bytes(const char *path, size_t size, uint8_t seed)
 static void test_file_touch_age(const char *path, int seconds_ago)
 {
     struct utimbuf tb;
-    time_t now = time(NULL);
+    time_t now = platform_time_wall_time_t();
     tb.actime = now - seconds_ago;
     tb.modtime = now - seconds_ago;
     utime(path, &tb);

@@ -7,6 +7,7 @@
 /* msg_version.c — Version/verack handshake processing.
  * Split from msgprocessor.c for maintainability. */
 
+#include "platform/time_compat.h"
 #include "net/msg_internal.h"
 #include "net/addrman.h"
 #include "net/version.h"
@@ -64,7 +65,7 @@ static void msg_version_build_peer_record(const struct p2p_node *node,
     memcpy(peer->ip, node->addr.svc.addr.ip, 16);
     peer->port = node->addr.svc.port;
     peer->services = node->services;
-    peer->last_seen = (int64_t)time(NULL);
+    peer->last_seen = (int64_t)platform_time_wall_time_t();
     peer->is_zcl23 = peer_supports_fast_sync(node->services);
 }
 
@@ -163,7 +164,7 @@ bool msg_version_learn_advertised_addr(struct net_manager *nm,
 
     struct net_address learned = ver->addr_from;
     if (learned.nTime == 0)
-        learned.nTime = (uint32_t)time(NULL);
+        learned.nTime = (uint32_t)platform_time_wall_time_t();
     if (learned.nServices == 0)
         learned.nServices = ver->services;
 
@@ -183,11 +184,11 @@ void msg_version_build(struct version_message *ver,
     ver->services = NODE_NETWORK | NODE_ZCL23;
     if (bip37_enabled())
         ver->services |= NODE_BLOOM;
-    ver->timestamp = (int64_t)time(NULL);
+    ver->timestamp = (int64_t)platform_time_wall_time_t();
     ver->addr_recv = node->addr;
     if (g_has_external_ip) {
         ver->addr_from.nServices = ver->services;
-        ver->addr_from.nTime = (uint32_t)time(NULL);
+        ver->addr_from.nTime = (uint32_t)platform_time_wall_time_t();
         memset(ver->addr_from.svc.addr.ip, 0, 10);
         ver->addr_from.svc.addr.ip[10] = 0xff;
         ver->addr_from.svc.addr.ip[11] = 0xff;
@@ -278,7 +279,7 @@ bool process_version(struct msg_processor *mp, struct p2p_node *node,
     strncpy(node->clean_sub_ver, ver.sub_version, MAX_SUBVERSION_LENGTH - 1);
     node->clean_sub_ver[MAX_SUBVERSION_LENGTH - 1] = '\0';
     node->starting_height = ver.start_height;
-    node->time_offset = ver.timestamp - (int64_t)time(NULL);
+    node->time_offset = ver.timestamp - (int64_t)platform_time_wall_time_t();
     node->relay_txes = ver.relay;
 
     event_emitf(EV_PEER_VERSION, (uint32_t)node->id,
@@ -339,7 +340,7 @@ bool process_version(struct msg_processor *mp, struct p2p_node *node,
         struct net_address self;
         memset(&self, 0, sizeof(self));
         self.nServices = NODE_NETWORK;
-        self.nTime = (uint32_t)time(NULL);
+        self.nTime = (uint32_t)platform_time_wall_time_t();
         memset(self.svc.addr.ip, 0, 10);
         self.svc.addr.ip[10] = 0xff;
         self.svc.addr.ip[11] = 0xff;
@@ -421,9 +422,9 @@ bool process_verack(struct msg_processor *mp, struct p2p_node *node)
     /* Mark peer as good in addrman — increases selection priority */
     if (mp->net_mgr) {
         addrman_good(&mp->net_mgr->addrman, &node->addr.svc,
-                      (int64_t)time(NULL));
+                      (int64_t)platform_time_wall_time_t());
         addrman_connected(&mp->net_mgr->addrman, &node->addr.svc,
-                           (int64_t)time(NULL));
+                           (int64_t)platform_time_wall_time_t());
     }
 
     /* Aggressive peer exchange with ZCL23 nodes — don't wait for getaddr.

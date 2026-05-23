@@ -9,6 +9,7 @@
  * schema-bootstrap glue for the `body_fetch_log` table that lives in
  * progress.kv alongside the cursor table. */
 
+#include "platform/time_compat.h"
 #include "services/body_fetch_stage.h"
 
 #include "chain/chain.h"
@@ -43,7 +44,7 @@ static _Atomic int64_t  g_last_blocked_unix = 0;
 static int64_t wall_now_s(void)
 {
     struct timespec ts;
-    clock_gettime(CLOCK_REALTIME, &ts);
+    platform_time_realtime_timespec(&ts);
     return (int64_t)ts.tv_sec;
 }
 

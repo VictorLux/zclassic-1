@@ -15,6 +15,7 @@
  *   - hot-loop / needs-reimport flag writers
  *   - ZCL_TESTING hooks */
 
+#include "platform/time_compat.h"
 #include <assert.h>
 #include <limits.h>
 #include <sqlite3.h>
@@ -444,7 +445,7 @@ static void process_block_maybe_trigger_hot_loop_exit(int height,
     snprintf(marker_path, sizeof(marker_path),
              "%s/last_reimport_attempted", datadir);
     struct stat mst;
-    time_t now_s = time(NULL);
+    time_t now_s = platform_time_wall_time_t();
     bool reimport_recent =
         (stat(marker_path, &mst) == 0 &&
          now_s - mst.st_mtime < 600);

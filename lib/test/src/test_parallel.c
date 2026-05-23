@@ -27,6 +27,7 @@
 
 #define _POSIX_C_SOURCE 200809L
 
+#include "platform/time_compat.h"
 #include "test/test_helpers.h"
 #include "event/event.h"
 
@@ -296,7 +297,7 @@ int main(int argc, char **argv)
     }
 
     struct timespec t_start;
-    clock_gettime(CLOCK_MONOTONIC, &t_start);
+    platform_time_monotonic_timespec(&t_start);
 
     pid_t parent_pid = getpid();
     size_t next_idx = 0;
@@ -312,7 +313,7 @@ int main(int argc, char **argv)
             make_tempfile_path(slots[slot].out_path,
                                sizeof(slots[slot].out_path),
                                next_idx, parent_pid);
-            results[next_idx].start = time(NULL);
+            results[next_idx].start = platform_time_wall_time_t();
 
             pid_t pid = fork();
             if (pid < 0) {
@@ -336,7 +337,7 @@ int main(int argc, char **argv)
         /* Enforce the per-group timeout by SIGKILLing any slot whose
          * child has been running longer than `timeout_secs`. The kill
          * flows into the normal reap path below. */
-        time_t now_tick = time(NULL);
+        time_t now_tick = platform_time_wall_time_t();
         for (int i = 0; i < jobs; i++) {
             if (slots[i].pid == 0) continue;
             if (now_tick - results[slots[i].group_idx].start > timeout_secs) {
@@ -381,7 +382,7 @@ int main(int argc, char **argv)
         }
         memcpy(results[idx].out_path, slots[slot].out_path,
                sizeof(results[idx].out_path));
-        time_t now = time(NULL);
+        time_t now = platform_time_wall_time_t();
         results[idx].wall_seconds = (double)(now - results[idx].start);
 
         if (verbose) {
@@ -398,7 +399,7 @@ int main(int argc, char **argv)
 
     /* All children reaped — replay their output in group order. */
     struct timespec t_end;
-    clock_gettime(CLOCK_MONOTONIC, &t_end);
+    platform_time_monotonic_timespec(&t_end);
     double wall =
         (double)(t_end.tv_sec - t_start.tv_sec) +
         (double)(t_end.tv_nsec - t_start.tv_nsec) / 1e9;

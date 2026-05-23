@@ -4,6 +4,7 @@
  * QuickCheck-style: generate random transaction mutations,
  * assert no crashes and correct accept/reject. */
 
+#include "platform/time_compat.h"
 #include "test/test_helpers.h"
 #include "validation/check_transaction.h"
 #include "core/amount.h"
@@ -158,7 +159,7 @@ static void free_tx(struct transaction *tx)
 int test_tx_property(void)
 {
     int failures = 0;
-    rng_seed((uint32_t)time(NULL));
+    rng_seed((uint32_t)platform_time_wall_time_t());
 
     /* Property 1: valid transactions always accepted */
     printf("prop: valid sprout txs always accepted [100 rounds]... ");

@@ -2,6 +2,7 @@
  * Distributed under the MIT software license, see the accompanying
  * file COPYING or http://www.opensource.org/licenses/mit-license.php. */
 
+#include "platform/time_compat.h"
 #include "config/db_service.h"
 #include "models/database.h"
 #include "util/thread_registry.h"
@@ -12,7 +13,7 @@
 
 static int64_t db_service_now(void)
 {
-    return (int64_t)time(NULL);
+    return (int64_t)platform_time_wall_time_t();
 }
 
 static void db_service_reset_queue(struct db_service *svc)

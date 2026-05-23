@@ -12,6 +12,7 @@
  *   (range checks, address syntax, …) that row models invoke from
  *   their own validates_* paths. */
 
+#include "platform/time_compat.h"
 #include "models/database.h"
 #include "models/database_validators.h"
 #include <errno.h>
@@ -23,7 +24,7 @@
 
 static int64_t db_now_seconds(void)
 {
-    return (int64_t)time(NULL);
+    return (int64_t)platform_time_wall_time_t();
 }
 
 static void node_db_state_init(struct node_db *ndb)
@@ -574,7 +575,7 @@ static void db_quarantine_files(const char *path)
     char wal[1200];
     char shm[1200];
     char suffix[64];
-    time_t now = time(NULL);
+    time_t now = platform_time_wall_time_t();
     struct tm tmv;
     gmtime_r(&now, &tmv);
     strftime(suffix, sizeof(suffix), "corrupt-%Y%m%dT%H%M%SZ", &tmv);

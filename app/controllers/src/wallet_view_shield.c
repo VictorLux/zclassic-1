@@ -1,5 +1,6 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0 */
 
+#include "platform/time_compat.h"
 #include "controllers/wallet_view_internal.h"
 #include "controllers/wallet_controller.h"
 #include "util/ar_step_readonly.h"
@@ -261,7 +262,7 @@ size_t serve_shield_confirm(uint8_t *r, size_t max,
 
     if (success) {
         /* Track the pending shield operation for dashboard feedback */
-        g_shield_pending_since = time(NULL);
+        g_shield_pending_since = platform_time_wall_time_t();
         snprintf(g_shield_opid, sizeof(g_shield_opid), "%s", opid_str);
         g_shield_pending_amount = (int64_t)(total_shielded * 1e8 + 0.5);
         /* Sync wallet tables immediately so balance is correct on return */

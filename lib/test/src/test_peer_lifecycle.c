@@ -1,5 +1,6 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0 */
 
+#include "platform/time_compat.h"
 #include "test/test_helpers.h"
 
 #include "event/event.h"
@@ -144,7 +145,7 @@ static int test_peer_lifecycle_learns_inbound_advertised_addr(void)
         ver.services = NODE_NETWORK;
         test_addr_ipv4(&ver.addr_from, 66, 70, 182, 44, 8033);
         ver.addr_from.nServices = NODE_NETWORK;
-        ver.addr_from.nTime = (uint32_t)time(NULL);
+        ver.addr_from.nTime = (uint32_t)platform_time_wall_time_t();
 
         ASSERT(msg_version_learn_advertised_addr(&nm, &node, &ver));
         ASSERT(addrman_size(&nm.addrman) == 1);

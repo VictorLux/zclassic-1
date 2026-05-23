@@ -8,6 +8,7 @@
  * submits up to VH_BATCH_SIZE jobs, awaits them all, and writes the
  * batch + cursor bump atomically. */
 
+#include "platform/time_compat.h"
 #include "services/validate_headers_stage.h"
 #include "services/header_admit_stage.h"
 
@@ -89,7 +90,7 @@ static char            g_datadir[2048] = {0};
 static int64_t wall_now_s(void)
 {
     struct timespec ts;
-    clock_gettime(CLOCK_REALTIME, &ts);
+    platform_time_realtime_timespec(&ts);
     return (int64_t)ts.tv_sec;
 }
 

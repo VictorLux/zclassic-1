@@ -2,6 +2,7 @@
  * Distributed under the MIT software license, see the accompanying
  * file COPYING or http://www.opensource.org/licenses/mit-license.php. */
 
+#include "platform/time_compat.h"
 #include "rpc/httpserver.h"
 #include "rpc/http_middleware.h"
 #include <sys/stat.h>
@@ -308,7 +309,7 @@ static struct rpc_conn dequeue_client(void)
      * signaled on each enqueue — and bounded under shutdown. */
     while (g_client_queue_count == 0 && g_running) {
         struct timespec deadline;
-        clock_gettime(CLOCK_REALTIME, &deadline);
+        platform_time_realtime_timespec(&deadline);
         deadline.tv_sec += 2;
         pthread_cond_timedwait(&g_client_queue_cond, &g_client_queue_mutex,
                                &deadline);

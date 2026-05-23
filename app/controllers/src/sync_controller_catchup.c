@@ -15,6 +15,7 @@
  * Split out of sync_controller.c. See sync_controller_internal.h for
  * cross-file glue. */
 
+#include "platform/time_compat.h"
 #include "controllers/sync_controller.h"
 #include "sync_controller_internal.h"
 #include "util/boot_progress.h"
@@ -584,7 +585,7 @@ int node_db_sync_catchup(struct node_db *ndb,
     int indexed = 0;
     int wallet_hits = 0;
     int batch_size = 100000;
-    int64_t t_start = (int64_t)time(NULL);
+    int64_t t_start = (int64_t)platform_time_wall_time_t();
 
     /* mmap cache */
     int cached_file = -1;
@@ -756,7 +757,7 @@ int node_db_sync_catchup(struct node_db *ndb,
             }
             tx_open = false;
             last_committed_height = h;
-            int64_t elapsed = (int64_t)time(NULL) - t_start;
+            int64_t elapsed = (int64_t)platform_time_wall_time_t() - t_start;
             int rate = elapsed > 0 ? indexed / (int)elapsed : 0;
             printf("SQLite: %d/%d blocks (height %d, %d blk/s, %d wallet txs)\n",
                    indexed, total, h, rate, wallet_hits);
@@ -825,7 +826,7 @@ int node_db_sync_catchup(struct node_db *ndb,
                 failed, restore_ok, indexed);
     }
 
-    int64_t elapsed = (int64_t)time(NULL) - t_start;
+    int64_t elapsed = (int64_t)platform_time_wall_time_t() - t_start;
     printf("SQLite catchup %s: %d blocks in %llds (%d blk/s, tip=%d)\n",
            interrupted ? "stopped" : "complete",
            indexed, (long long)elapsed,
@@ -1095,7 +1096,7 @@ static bool node_db_sync_wallet_keys_write(struct node_db *ndb, void *ctx)
         dbk.pubkey_len = pk.size;
         memcpy(dbk.privkey, ke->key.vch, 32);
         dbk.compressed = ke->key.fCompressed;
-        dbk.created_at = (int64_t)time(NULL);
+        dbk.created_at = (int64_t)platform_time_wall_time_t();
 
         if (db_wallet_key_save(ndb, &dbk)) {
             count++;

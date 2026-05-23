@@ -4,6 +4,7 @@
  * Distributed under the MIT software license, see the accompanying
  * file COPYING or http://www.opensource.org/licenses/mit-license.php. */
 
+#include "platform/time_compat.h"
 #include "config/boot_internal.h"
 #include "config/boot_snapshot_import.h"
 #include "config/file_ops.h"
@@ -385,7 +386,7 @@ bool app_runtime_profile_has_file_service(enum zcl_runtime_profile profile)
 static int64_t boot_clock_ms(void)
 {
     struct timespec ts;
-    clock_gettime(CLOCK_MONOTONIC, &ts);
+    platform_time_monotonic_timespec(&ts);
     return ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
 }
 
@@ -1857,12 +1858,12 @@ bool app_init(struct app_context *ctx)
         }
 
         if (!loaded) {
-            int64_t t_idx_start = (int64_t)time(NULL);
+            int64_t t_idx_start = (int64_t)platform_time_wall_time_t();
             printf("Loading block index from LevelDB...\n");
             if (!load_block_index(&g_state, params, &g_block_tree, g_block_tree_open)) {
                 fprintf(stderr, "Warning: Failed to load block index\n");
             }
-            int64_t t_idx_elapsed = (int64_t)time(NULL) - t_idx_start;
+            int64_t t_idx_elapsed = (int64_t)platform_time_wall_time_t() - t_idx_start;
             printf("Block index loaded: %zu entries in %llds\n",
                    g_state.map_block_index.size, (long long)t_idx_elapsed);
             event_emitf(EV_BOOT_BLOCK_INDEX, 0, "loaded entries=%zu elapsed=%llds",
@@ -1939,12 +1940,12 @@ bool app_init(struct app_context *ctx)
                 }
 
                 struct block_tree_db zcd_btdb;
-                int64_t t0 = (int64_t)time(NULL);
+                int64_t t0 = (int64_t)platform_time_wall_time_t();
                 if (block_tree_db_open(&zcd_btdb, open_path,
                                        450 << 20, false, false)) {
                     if (block_tree_db_load_block_index_guts(
                             &zcd_btdb, boot_insert_block_index_cb, &g_state)) {
-                        int64_t elapsed = (int64_t)time(NULL) - t0;
+                        int64_t elapsed = (int64_t)platform_time_wall_time_t() - t0;
                         printf("Loaded %zu block index entries from zclassicd "
                                "in %llds\n",
                                g_state.map_block_index.size,
@@ -3322,7 +3323,7 @@ static void write_clean_shutdown_marker(void)
     snprintf(path, sizeof(path), "%s/.shutdown_clean", g_datadir);
     FILE *f = fopen(path, "w");
     if (f) {
-        fprintf(f, "%ld\n", (long)time(NULL));
+        fprintf(f, "%ld\n", (long)platform_time_wall_time_t());
         fclose(f);
     }
 }

@@ -2,6 +2,7 @@
  *
  * Implementation of the structured JSON log helper. */
 
+#include "platform/time_compat.h"
 #include "util/log_json.h"
 #include "util/util.h"
 
@@ -82,7 +83,7 @@ static size_t format_v(char *buf, size_t cap, enum log_json_level level,
 
     /* ISO-8601 microsecond timestamp in UTC. */
     struct timespec t;
-    if (clock_gettime(CLOCK_REALTIME, &t) != 0) {
+    if (platform_time_realtime_timespec(&t) != 0) {
         t.tv_sec = 0;
         t.tv_nsec = 0;
     }

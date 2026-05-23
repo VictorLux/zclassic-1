@@ -18,6 +18,7 @@
  * protocols layered on the ZCL23 service bit and share no state with
  * the snapshot/sync engine. They're each <200 lines. */
 
+#include "platform/time_compat.h"
 #include "msgprocessor_internal.h"
 #include "net/addrman.h"
 #include "net/dandelion.h"
@@ -569,7 +570,7 @@ static bool handle_zfileaddr(struct msg_processor *mp, struct p2p_node *node,
             memcpy(fs.ip, fip, 16);
             fs.port = fport;
             fs.p2p_port = node->addr.svc.port;
-            fs.last_seen = (int64_t)time(NULL);
+            fs.last_seen = (int64_t)platform_time_wall_time_t();
             fs.is_zcl23 = true;
             db_file_service_save(ndb, &fs);
         }
@@ -949,7 +950,7 @@ bool msg_send_messages(void *ctx, struct p2p_node *node, bool send_trickle)
         struct sync_getheaders_action periodic = {0};
 
         bool in_ibd = syncsvc_is_initial_block_download(node, our_height);
-        int64_t now_send = (int64_t)time(NULL);
+        int64_t now_send = (int64_t)platform_time_wall_time_t();
 
         if (syncsvc_should_mark_peer_caught_up(node, our_height,
                                                best_header_height)) {
@@ -1128,7 +1129,7 @@ bool msg_send_messages(void *ctx, struct p2p_node *node, bool send_trickle)
     /* ── Download manager: assign queued blocks to this peer ────── */
     {
         struct download_manager *dm = get_download_mgr();
-        int64_t now_dl = (int64_t)time(NULL);
+        int64_t now_dl = (int64_t)platform_time_wall_time_t();
 
         /* Check timeouts (cheap — linear scan of active slots) */
         size_t timed_out = dl_check_timeouts(dm, now_dl);
@@ -1218,7 +1219,7 @@ bool msg_send_messages(void *ctx, struct p2p_node *node, bool send_trickle)
     /* ── IBD progress log (every 30s, first outbound peer only) ── */
     {
         static int64_t last_progress_log = 0;
-        int64_t now_prog = (int64_t)time(NULL);
+        int64_t now_prog = (int64_t)platform_time_wall_time_t();
         bool is_progress_peer = !node->inbound && node->id == 0;
         bool is_watchdog_peer = !node->inbound;
 
@@ -1289,7 +1290,7 @@ bool msg_send_messages(void *ctx, struct p2p_node *node, bool send_trickle)
     }
 
     /* Send ping */
-    int64_t now = (int64_t)time(NULL);
+    int64_t now = (int64_t)platform_time_wall_time_t();
     if (node->ping_nonce_sent == 0 &&
         now - node->last_send > PING_INTERVAL) {
         uint64_t nonce = GetRand(UINT64_MAX);

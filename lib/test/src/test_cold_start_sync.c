@@ -71,6 +71,7 @@
  * reset_test_state.
  */
 
+#include "platform/time_compat.h"
 #include "test/test_helpers.h"
 #include "event/event.h"
 #include <pthread.h>
@@ -150,13 +151,13 @@ static int p11_3_run_path(const char *label,
     /* 1Hz polling loop — mirrors operator zcl_syncstate cadence.
      * Budget is the full MVP #3 limit: 10 minutes = 600 seconds. */
     const int budget_sec = 600;
-    time_t t0 = time(NULL);
+    time_t t0 = platform_time_wall_time_t();
     int elapsed = 0;
     while (elapsed < budget_sec) {
         if (sync_get_state() == SYNC_AT_TIP) break;
         if (atomic_load(&ctx.error)) break;
         sleep(1);
-        elapsed = (int)(time(NULL) - t0);
+        elapsed = (int)(platform_time_wall_time_t() - t0);
     }
 
     pthread_join(t, NULL);

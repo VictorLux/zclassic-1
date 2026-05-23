@@ -3,6 +3,7 @@
  * MCP chain controller: block, chain, UTXO commitment, sync, MMB.
  */
 
+#include "platform/time_compat.h"
 #include "../controllers.h"
 #include "../router.h"
 #include "../rpc_client.h"
@@ -160,7 +161,7 @@ static int h_zcl_diff_with_legacy_shadow(const struct mcp_request *req,
             first_div = (int64_t)report.first_divergent_height;
         }
     }
-    mcp_metrics_set_shadow_divergence(div_count, first_div, (int64_t)time(NULL));
+    mcp_metrics_set_shadow_divergence(div_count, first_div, (int64_t)platform_time_wall_time_t());
 
     /* Build response body. shadow_dir + legacy_dir are bounded by the
      * snprintf caps above; the rest is small ints + a short status

@@ -3,6 +3,7 @@
  * Distributed under the MIT software license, see the accompanying
  * file COPYING or http://www.opensource.org/licenses/mit-license.php. */
 
+#include "platform/time_compat.h"
 #include "views/format_helpers.h"
 #include "controllers/rpc_chainstate_guard.h"
 #include "controllers/transaction_controller.h"
@@ -298,7 +299,7 @@ static bool rpc_sendrawtransaction(const struct json_value *params, bool help,
             tip_height + 1, &chain_params_get()->consensus);
 
         struct mempool_entry entry;
-        mempool_entry_init(&entry, &tx, 0, (int64_t)time(NULL), 0.0,
+        mempool_entry_init(&entry, &tx, 0, (int64_t)platform_time_wall_time_t(), 0.0,
                            (unsigned int)(tip_height + 1),
                            tx_mempool_has_no_inputs_of(ctx->mempool, &tx),
                            false, branch_id);

@@ -10,6 +10,7 @@
  *
  * See sync_controller_internal.h for cross-file glue. */
 
+#include "platform/time_compat.h"
 #include "controllers/sync_controller.h"
 #include "sync_controller_internal.h"
 #include "services/recovery_policy.h"
@@ -201,10 +202,10 @@ static bool node_db_sync_wallet_tx_local(struct node_db *ndb,
                     memcpy(wtx.block_hash, blk.hash, 32);
                     wtx.time_received = (int64_t)blk.time;
                 } else {
-                    wtx.time_received = (int64_t)time(NULL);
+                    wtx.time_received = (int64_t)platform_time_wall_time_t();
                 }
             } else {
-                wtx.time_received = (int64_t)time(NULL);
+                wtx.time_received = (int64_t)platform_time_wall_time_t();
             }
             wtx.from_me = from_me;
             if (from_me) {
@@ -277,7 +278,7 @@ static bool node_db_sync_mempool_add_local(struct node_db *ndb,
     e.raw_tx_len = raw_len;
     e.fee = fee;
     e.size = (int)raw_len;
-    e.time_added = (int64_t)time(NULL);
+    e.time_added = (int64_t)platform_time_wall_time_t();
     e.height_added = height;
     e.spends_coinbase = false;
 

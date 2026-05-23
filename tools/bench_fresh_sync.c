@@ -10,6 +10,7 @@
  * Run:   ./bench_fresh_sync
  */
 
+#include "platform/time_compat.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -45,7 +46,7 @@ static void cleanup(void)
 static double now_sec(void)
 {
     struct timespec ts;
-    clock_gettime(CLOCK_MONOTONIC, &ts);
+    platform_time_monotonic_timespec(&ts);
     return (double)ts.tv_sec + (double)ts.tv_nsec / 1e9;
 }
 
@@ -139,7 +140,7 @@ int main(void)
 {
     /* Build datadir path */
     char datadir[256];
-    time_t t = time(NULL);
+    time_t t = platform_time_wall_time_t();
     struct tm *tm = localtime(&t);
     snprintf(datadir, sizeof(datadir),
         "%s/.zclassic-c23-bench-%04d%02d%02d-%02d%02d%02d",

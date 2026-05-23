@@ -9,6 +9,7 @@
  * utxos table. Split out of sync_controller.c. See
  * sync_controller_internal.h for cross-file glue. */
 
+#include "platform/time_compat.h"
 #include "controllers/sync_controller.h"
 #include "sync_controller_internal.h"
 #include "services/recovery_policy.h"
@@ -690,7 +691,7 @@ int node_db_sync_import_utxos(struct node_db *ndb,
     fflush(stdout);
 
     struct timespec ts_start;
-    clock_gettime(CLOCK_MONOTONIC, &ts_start);
+    platform_time_monotonic_timespec(&ts_start);
 
     /* ── SQLite turbo mode — delegate to node_db layer ────────────── */
     if (!sync_db_turbo_scope_begin(&turbo_mode, ndb, true)) {
@@ -951,7 +952,7 @@ reader_done:
     fflush(stdout);
 
     struct timespec ts_write;
-    clock_gettime(CLOCK_MONOTONIC, &ts_write);
+    platform_time_monotonic_timespec(&ts_write);
     double pipe_ms = (ts_write.tv_sec - ts_start.tv_sec) * 1000.0 +
                      (ts_write.tv_nsec - ts_start.tv_nsec) / 1e6;
     printf("UTXO import: %d rows written in %.0fms\n", total_rows, pipe_ms);
@@ -974,7 +975,7 @@ reader_done:
     fflush(stdout);
 
     struct timespec ts_idx;
-    clock_gettime(CLOCK_MONOTONIC, &ts_idx);
+    platform_time_monotonic_timespec(&ts_idx);
 
     /* Rebuild indexes and restore safe pragmas */
     if (!sync_db_turbo_scope_end(&turbo_mode)) {
@@ -989,7 +990,7 @@ reader_done:
     }
 
     struct timespec ts_idx_done;
-    clock_gettime(CLOCK_MONOTONIC, &ts_idx_done);
+    platform_time_monotonic_timespec(&ts_idx_done);
     double idx_ms = (ts_idx_done.tv_sec - ts_idx.tv_sec) * 1000.0 +
                     (ts_idx_done.tv_nsec - ts_idx.tv_nsec) / 1e6;
     printf("UTXO import: indexes built in %.0fms\n", idx_ms);

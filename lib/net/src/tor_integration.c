@@ -7,6 +7,7 @@
 
 #define _GNU_SOURCE  /* pthread_timedjoin_np */
 #define _DEFAULT_SOURCE
+#include "platform/time_compat.h"
 #include "net/tor_integration.h"
 #include <errno.h>
 #include <pthread.h>
@@ -36,7 +37,7 @@ static void *g_request_handler_ctx = NULL;
 
 static void tor_join_deadline_from_now(struct timespec *ts, int timeout_sec)
 {
-    clock_gettime(CLOCK_REALTIME, ts);
+    platform_time_realtime_timespec(ts);
     if (timeout_sec < 0)
         timeout_sec = 0;
     ts->tv_sec += timeout_sec;

@@ -4,6 +4,7 @@
  * Each block file is split into 50MB chunks, SHA3-256 hashed.
  * Chunks are served by hash over REST, RPC, and P2P. */
 
+#include "platform/time_compat.h"
 #include "controllers/file_controller.h"
 #include "controllers/strong_params.h"
 #include "views/format_helpers.h"
@@ -437,7 +438,7 @@ bool file_manifest_build(struct file_manifest *fm, const char *datadir)
      * the node may be actively appending blocks via P2P, which
      * changes the file after we hash it, causing SHA3 mismatches.
      * Only serve stable, immutable files. */
-    int64_t cutoff = (int64_t)time(NULL) - 3600;
+    int64_t cutoff = (int64_t)platform_time_wall_time_t() - 3600;
     for (int i = 0; i < num_files; i++) {
         char path[576];
         snprintf(path, sizeof(path), "%s/blk%05d.dat", blocks_dir, i);
@@ -447,7 +448,7 @@ bool file_manifest_build(struct file_manifest *fm, const char *datadir)
         if (st.st_size == 0) continue;
         if ((int64_t)st.st_mtime > cutoff) {
             printf("file_manifest: skipping %s (modified %llds ago)\n",
-                   path, (long long)((int64_t)time(NULL) - (int64_t)st.st_mtime));
+                   path, (long long)((int64_t)platform_time_wall_time_t() - (int64_t)st.st_mtime));
             continue;
         }
 
@@ -466,7 +467,7 @@ bool file_manifest_build(struct file_manifest *fm, const char *datadir)
             if ((int64_t)flat_st.st_mtime > cutoff) {
                 printf("file_manifest: skipping block_index.bin "
                        "(modified %llds ago)\n",
-                       (long long)((int64_t)time(NULL) -
+                       (long long)((int64_t)platform_time_wall_time_t() -
                                    (int64_t)flat_st.st_mtime));
             } else {
                 printf("file_manifest: adding block_index.bin (%.0f MB)\n",

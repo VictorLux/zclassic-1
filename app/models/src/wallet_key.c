@@ -12,6 +12,7 @@
  * validates :xsk, :xfvk, :diversifier, :pk_d, presence: true
  * validates :address, string_present: true */
 
+#include "platform/time_compat.h"
 #include "models/wallet_key.h"
 #include "models/wallet_tx.h"
 #include "keys/key.h"
@@ -195,7 +196,7 @@ bool db_wallet_key_save(struct node_db *ndb, const struct db_wallet_key *k)
 {
     if (!ndb->open) return false;
     if (k->created_at == 0)
-        ((struct db_wallet_key *)k)->created_at = (int64_t)time(NULL);
+        ((struct db_wallet_key *)k)->created_at = (int64_t)platform_time_wall_time_t();
 
     wallet_key_init_hooks();
     struct ar_callbacks *cbs = db_wallet_key_callbacks();
@@ -245,7 +246,7 @@ struct zcl_result db_wallet_key_save_r(struct node_db *ndb,
     dbk.pubkey_len = pk->size;
     memcpy(dbk.privkey, key->vch, 32);
     dbk.compressed = key->fCompressed;
-    dbk.created_at = (int64_t)time(NULL);
+    dbk.created_at = (int64_t)platform_time_wall_time_t();
 
     bool ok = db_wallet_key_save(ndb, &dbk);
 
