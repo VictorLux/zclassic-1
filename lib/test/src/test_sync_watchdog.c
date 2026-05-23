@@ -36,13 +36,13 @@ static void reset_test_state(void)
     g_queue_starved_first_seen = 0;
 }
 
-/* ── Test: header stall detection ────────────────────────── */
+/* ── Test: PR-2 branches moved to conditions ─────────────── */
 
 static int test_header_stall_detection(void)
 {
     int failures = 0;
 
-    TEST("watchdog detects header stall after 300s") {
+    TEST("watchdog no longer handles header stall inline") {
         reset_test_state();
 
         sync_set_state(SYNC_HEADERS_DOWNLOAD, "test");
@@ -69,15 +69,12 @@ static int test_header_stall_detection(void)
         atomic_store(&g_sync_state_entered_time,
                      (int64_t)platform_time_wall_time_t() - 350);
 
-        /* Second check: last_header_height=2000, current=2000 → stall */
+        /* Second check: condition owns this now; watchdog stays quiet. */
         r = sync_watchdog_check(&g_test_cm, &g_test_dm, &g_test_ms);
-        ASSERT(r == WATCHDOG_HEADER_STALL);
+        ASSERT(r == WATCHDOG_NONE);
         struct sync_watchdog_status status;
         sync_watchdog_get_status(&status);
-        ASSERT(status.last_recovery_type == WATCHDOG_HEADER_STALL);
-        ASSERT_STR_EQ(status.last_recovery_reason,
-                      "header_height_not_advancing");
-        ASSERT(status.last_recovery_peer_height == 2000);
+        ASSERT(status.last_recovery_type == WATCHDOG_NONE);
 
         PASS();
     } _test_next:;
@@ -93,7 +90,7 @@ static int test_state_stuck_detection(void)
 {
     int failures = 0;
 
-    TEST("watchdog detects state stuck after 600s") {
+    TEST("watchdog no longer handles state stuck inline") {
         reset_test_state();
 
         sync_set_state(SYNC_FINDING_PEERS, "test");
@@ -102,11 +99,10 @@ static int test_state_stuck_detection(void)
 
         enum watchdog_recovery_type r = sync_watchdog_check(
             &g_test_cm, &g_test_dm, &g_test_ms);
-        ASSERT(r == WATCHDOG_STATE_STUCK);
+        ASSERT(r == WATCHDOG_NONE);
         struct sync_watchdog_status status;
         sync_watchdog_get_status(&status);
-        ASSERT(status.last_recovery_type == WATCHDOG_STATE_STUCK);
-        ASSERT_STR_EQ(status.last_recovery_reason, "finding_peers");
+        ASSERT(status.last_recovery_type == WATCHDOG_NONE);
 
         PASS();
     } _test_next:;
@@ -154,7 +150,7 @@ static int test_repeated_restart_circuit_breaker(void)
 {
     int failures = 0;
 
-    TEST("watchdog escalates after repeated recoveries") {
+    TEST("watchdog no longer escalates on condition-owned state stuck") {
         reset_test_state();
 
         /* Trigger 3 L1 recoveries via STATE_STUCK */
@@ -166,19 +162,19 @@ static int test_repeated_restart_circuit_breaker(void)
             sync_watchdog_check(&g_test_cm, &g_test_dm, &g_test_ms);
         }
 
-        /* 4th recovery should trigger L2 escalation */
+        /* STATE_STUCK recovery moved to conditions; inline circuit stays idle. */
         sync_set_state(SYNC_IDLE, "reset");
         sync_set_state(SYNC_FINDING_PEERS, "trigger L2");
         atomic_store(&g_sync_state_entered_time,
                      (int64_t)platform_time_wall_time_t() - 650);
         enum watchdog_recovery_type r = sync_watchdog_check(
             &g_test_cm, &g_test_dm, &g_test_ms);
-        ASSERT(r == WATCHDOG_REPEATED_RESTART);
+        ASSERT(r == WATCHDOG_NONE);
 
         struct sync_watchdog_status status;
         sync_watchdog_get_status(&status);
-        ASSERT(status.escalation_level >= 2);
-        ASSERT(status.recoveries_triggered >= 3);
+        ASSERT(status.escalation_level == 0);
+        ASSERT(status.recoveries_triggered == 0);
 
         PASS();
     } _test_next:;
@@ -304,7 +300,7 @@ static int test_watchdog_escalation(void)
 {
     int failures = 0;
 
-    TEST("watchdog escalates after 2 consecutive header stalls") {
+    TEST("watchdog no longer escalates on condition-owned header stalls") {
         reset_test_state();
 
         struct block_index fake_header = {0};
@@ -335,15 +331,13 @@ static int test_watchdog_escalation(void)
             /* Second check: trigger stall */
             enum watchdog_recovery_type r = sync_watchdog_check(
                 &g_test_cm, &g_test_dm, &g_test_ms);
-            ASSERT(r == WATCHDOG_HEADER_STALL);
+            ASSERT(r == WATCHDOG_NONE);
         }
 
-        /* After 2 stalls, the escalation should have fired
-         * (verified by the printf output; here we just confirm
-         * the recoveries count) */
+        /* Header stall moved to conditions; inline recovery count is unchanged. */
         struct sync_watchdog_status status;
         sync_watchdog_get_status(&status);
-        ASSERT(status.recoveries_triggered >= 2);
+        ASSERT(status.recoveries_triggered == 0);
         PASS();
     } _test_next:;
 
@@ -356,7 +350,7 @@ static int test_header_lag_detection(void)
 {
     int failures = 0;
 
-    TEST("watchdog detects header lag during block download") {
+    TEST("watchdog no longer handles header lag inline") {
         reset_test_state();
 
         sync_set_state(SYNC_HEADERS_DOWNLOAD, "setup");
@@ -380,7 +374,7 @@ static int test_header_lag_detection(void)
 
         enum watchdog_recovery_type r = sync_watchdog_check(
             &g_test_cm, &g_test_dm, &g_test_ms);
-        ASSERT(r == WATCHDOG_HEADER_LAG);
+        ASSERT(r == WATCHDOG_NONE);
 
         g_test_cm.manager.nodes = NULL;
         g_test_cm.manager.num_nodes = 0;
@@ -432,14 +426,8 @@ static int test_recovery_type_names(void)
 
     TEST("recovery type names are non-null") {
         ASSERT(strcmp(watchdog_recovery_type_name(WATCHDOG_NONE), "NONE") == 0);
-        ASSERT(strcmp(watchdog_recovery_type_name(WATCHDOG_HEADER_STALL),
-                      "HEADER_STALL") == 0);
-        ASSERT(strcmp(watchdog_recovery_type_name(WATCHDOG_HEADER_LAG),
-                      "HEADER_LAG") == 0);
         ASSERT(strcmp(watchdog_recovery_type_name(WATCHDOG_BLOCK_STALL),
                       "BLOCK_STALL") == 0);
-        ASSERT(strcmp(watchdog_recovery_type_name(WATCHDOG_STATE_STUCK),
-                      "STATE_STUCK") == 0);
         ASSERT(strcmp(watchdog_recovery_type_name(WATCHDOG_REPEATED_RESTART),
                       "REPEATED_RESTART") == 0);
         PASS();
@@ -454,7 +442,7 @@ static int test_zero_peers_stuck(void)
 {
     int failures = 0;
 
-    TEST("watchdog with 0 peers in FINDING_PEERS triggers STATE_STUCK") {
+    TEST("watchdog with 0 peers leaves state stuck to condition") {
         reset_test_state();
 
         /* Zero peers: num_nodes = 0, nodes = NULL */
@@ -467,7 +455,7 @@ static int test_zero_peers_stuck(void)
 
         enum watchdog_recovery_type r = sync_watchdog_check(
             &g_test_cm, &g_test_dm, &g_test_ms);
-        ASSERT(r == WATCHDOG_STATE_STUCK);
+        ASSERT(r == WATCHDOG_NONE);
 
         PASS();
     } _test_next:;
@@ -541,7 +529,7 @@ static int test_queue_starved_fires_after_window(void)
 {
     int failures = 0;
 
-    TEST("watchdog fires QUEUE_STARVED after 120s of empty in-flight") {
+    TEST("watchdog no longer handles queue starvation inline") {
         reset_test_state();
         /* Transition idle → headers → blocks (direct idle→blocks is
          * an illegal sync state transition). */
@@ -558,13 +546,12 @@ static int test_queue_starved_fires_after_window(void)
         /* First check: records baseline, no recovery yet. */
         enum watchdog_recovery_type r = sync_watchdog_check(
             &g_test_cm, &g_test_dm, &g_test_ms);
-        ASSERT(r != WATCHDOG_QUEUE_STARVED);
-        ASSERT(g_queue_starved_first_seen != 0);
+        ASSERT(r == WATCHDOG_NONE);
 
         /* Backdate >120s and check again — must fire. */
         g_queue_starved_first_seen = (int64_t)platform_time_wall_time_t() - 150;
         r = sync_watchdog_check(&g_test_cm, &g_test_dm, &g_test_ms);
-        ASSERT(r == WATCHDOG_QUEUE_STARVED);
+        ASSERT(r == WATCHDOG_NONE);
 
         /* Cleanup */
         g_test_cm.manager.nodes = NULL;
@@ -580,7 +567,7 @@ static int test_next_child_missing_triggers_local_refill(void)
 {
     int failures = 0;
 
-    TEST("watchdog locally refills headers when next child is missing") {
+    TEST("watchdog leaves local header refill to condition") {
         reset_test_state();
         sync_set_state(SYNC_HEADERS_DOWNLOAD, "setup");
         sync_set_state(SYNC_BLOCKS_DOWNLOAD, "next child missing");
@@ -601,19 +588,11 @@ static int test_next_child_missing_triggers_local_refill(void)
 
         enum watchdog_recovery_type r = sync_watchdog_check(
             &g_test_cm, &g_test_dm, &g_test_ms);
-        ASSERT(r == WATCHDOG_LOCAL_HEADER_REFILL);
-        ASSERT(p1.state == PEER_SYNCING_HEADERS);
-        ASSERT(p2.state == PEER_SYNCING_HEADERS);
-        ASSERT(p3.state == PEER_SYNCING_HEADERS);
-        ASSERT(p1.last_getheaders_time == 0);
+        ASSERT(r == WATCHDOG_NONE);
 
         struct watchdog_local_recovery_stats lr;
         sync_watchdog_get_local_recovery_stats(&lr);
-        ASSERT(lr.active);
-        ASSERT(lr.missing_height == 11);
-        ASSERT(lr.distinct_peer_count == 3);
-        ASSERT(lr.retries_exhausted);
-        ASSERT(!lr.mirror_repair_gated);
+        ASSERT(!lr.active);
 
         g_test_cm.manager.nodes = NULL;
         g_test_cm.manager.num_nodes = 0;
@@ -627,7 +606,7 @@ static int test_next_child_missing_gates_mirror_until_retries(void)
 {
     int failures = 0;
 
-    TEST("watchdog gates mirror repair while local retries remain") {
+    TEST("watchdog leaves local retry gate to condition") {
         reset_test_state();
         sync_set_state(SYNC_HEADERS_DOWNLOAD, "setup");
         sync_set_state(SYNC_BLOCKS_DOWNLOAD, "next child missing");
@@ -646,14 +625,11 @@ static int test_next_child_missing_gates_mirror_until_retries(void)
 
         enum watchdog_recovery_type r = sync_watchdog_check(
             &g_test_cm, &g_test_dm, &g_test_ms);
-        ASSERT(r == WATCHDOG_LOCAL_HEADER_REFILL);
+        ASSERT(r == WATCHDOG_NONE);
 
         struct watchdog_local_recovery_stats lr;
         sync_watchdog_get_local_recovery_stats(&lr);
-        ASSERT(lr.active);
-        ASSERT(lr.mirror_repair_gated);
-        ASSERT(!lr.retries_exhausted);
-        ASSERT(lr.retry_count == 1);
+        ASSERT(!lr.active);
 
         g_test_cm.manager.nodes = NULL;
         g_test_cm.manager.num_nodes = 0;

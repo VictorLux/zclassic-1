@@ -30,28 +30,13 @@
 #include "util/supervisor.h"
 #include "util/thread_registry.h"
 #include "health/heartbeat.h"
+#include "framework/condition.h"
 
 /* ── Thresholds ──────────────────────────────────────────── */
 
 #define HEADER_STALL_SECS    300   /* 5 minutes */
 #define REPEATED_WINDOW_SECS 1800  /* 30 minutes */
 #define REPEATED_MAX         3     /* max recoveries before giving up */
-
-/* Per-state stuck timeouts (replaces single STATE_STUCK_SECS=600).
- * HEADERS_DOWNLOAD and BLOCKS_DOWNLOAD keep longer timeouts because
- * they have dedicated stall checks (HEADER_STALL, HEADER_LAG, BLOCK_STALL)
- * that fire first — STATE_STUCK is their last-resort backup. */
-static int64_t state_stuck_timeout(enum sync_state state)
-{
-    switch (state) {
-    case SYNC_FINDING_PEERS:      return 120;
-    case SYNC_HEADERS_DOWNLOAD:   return 600;  /* backup for HEADER_STALL */
-    case SYNC_BLOCKS_DOWNLOAD:    return 600;  /* backup for BLOCK_STALL */
-    case SYNC_CONNECTING_BLOCKS:  return 180;
-    case SYNC_REORG:              return 60;
-    default:                      return 300;
-    }
-}
 
 /* ── Sync state timestamps (Task 2) ─────────────────────── */
 
@@ -194,9 +179,9 @@ const char *watchdog_recovery_type_name(enum watchdog_recovery_type type)
     switch (type) {
     case WATCHDOG_NONE:             return "NONE";
     case WATCHDOG_HEADER_STALL:     return "HEADER_STALL";
+    case WATCHDOG_HEADER_LAG:       return "HEADER_LAG";
     case WATCHDOG_BLOCK_STALL:      return "BLOCK_STALL";
     case WATCHDOG_STATE_STUCK:      return "STATE_STUCK";
-    case WATCHDOG_HEADER_LAG:       return "HEADER_LAG";
     case WATCHDOG_REPEATED_RESTART: return "REPEATED_RESTART";
     case WATCHDOG_PEER_FLOOR:       return "PEER_FLOOR";
     case WATCHDOG_SYNC_VIOLATION:   return "SYNC_VIOLATION";
@@ -305,6 +290,39 @@ bool sync_watchdog_dump_state_json(struct json_value *out, const char *key)
 /* Forward declarations */
 static int disconnect_outbound_peers(struct connman *cm);
 static void watchdog_kick_local_sync(const char *reason);
+
+static struct connman *g_condition_cm;
+static struct download_manager *g_condition_dm;
+static struct main_state *g_condition_ms;
+
+void sync_watchdog_set_condition_context(struct connman *cm,
+                                         struct download_manager *dm,
+                                         struct main_state *ms)
+{
+    g_condition_cm = cm;
+    g_condition_dm = dm;
+    g_condition_ms = ms;
+}
+
+struct connman *sync_watchdog_condition_connman(void)
+{
+    return g_condition_cm;
+}
+
+struct download_manager *sync_watchdog_condition_download_manager(void)
+{
+    return g_condition_dm;
+}
+
+struct main_state *sync_watchdog_condition_main_state(void)
+{
+    return g_condition_ms ? g_condition_ms : condition_engine_main_state();
+}
+
+void sync_watchdog_condition_kick_local_sync(const char *reason)
+{
+    watchdog_kick_local_sync(reason);
+}
 
 static void watchdog_reconcile_at_tip(enum sync_state state)
 {
@@ -541,9 +559,9 @@ static void local_recovery_reset(void)
     memset(&g_local_recovery, 0, sizeof(g_local_recovery));
 }
 
-static bool active_next_child_exists(struct main_state *ms,
-                                     struct block_index *tip,
-                                     int next_h)
+bool sync_watchdog_condition_active_next_child_exists(struct main_state *ms,
+                                                      struct block_index *tip,
+                                                      int next_h)
 {
     if (!ms || !tip)
         return false;
@@ -558,9 +576,9 @@ static bool active_next_child_exists(struct main_state *ms,
     return false;
 }
 
-static int local_header_refill_from_peers(struct connman *cm,
-                                          int next_h,
-                                          const char *reason)
+int sync_watchdog_condition_local_header_refill(struct connman *cm,
+                                                int next_h,
+                                                const char *reason)
 {
     if (!cm)
         return 0;
@@ -653,6 +671,8 @@ enum watchdog_recovery_type sync_watchdog_check(
     struct download_manager *dm,
     struct main_state *ms)
 {
+    sync_watchdog_set_condition_context(cm, dm, ms);
+
     if (!g_watchdog.initialized)
         return WATCHDOG_NONE;
 
@@ -814,72 +834,7 @@ enum watchdog_recovery_type sync_watchdog_check(
         }
     }
 
-    /* NEXT_CHILD_MISSING — peers are ahead but the local block index
-     * has no connectable header at active_tip+1. This is a local-first
-     * recovery: make multiple eligible peers immediately due for
-     * getheaders from the active tip, rotate a poor peer on repeated
-     * attempts, and leave mirror repair gated until local retries have
-     * been exercised. */
-    if (cm && ms) {
-        int peer_max = connman_max_peer_height(cm);
-        int tip_h = -1;
-        int next_h = -1;
-        bool missing = false;
-
-        zcl_mutex_lock(&ms->cs_main);
-        struct block_index *tip = active_chain_tip(&ms->chain_active);
-        if (tip) {
-            tip_h = tip->nHeight;
-            next_h = tip_h + 1;
-            missing = (peer_max >= next_h &&
-                       !active_next_child_exists(ms, tip, next_h));
-        }
-        zcl_mutex_unlock(&ms->cs_main);
-
-        if (missing) {
-            int peers = local_header_refill_from_peers(
-                cm, next_h, "next-child-missing");
-            struct cac_decision decision;
-            bool proceed =
-                chain_advance_coordinator_local_header_refill_needed(
-                    tip_h,
-                    next_h,
-                    peer_max,
-                    peers,
-                    g_local_recovery.retry_count,
-                    g_local_recovery.retries_exhausted,
-                    &decision);
-            printf("[watchdog] LOCAL_HEADER_REFILL: missing h=%d after "
-                   "tip=%d peers_ahead=%d eligible=%d retry=%d "
-                   "coordinator=%s reason=%s\n",
-                   next_h, tip_h, peer_max, peers,
-                   g_local_recovery.retry_count,
-                   proceed ? "proceed" : "blocked",
-                   decision.reason);
-            event_emitf(EV_SYNC_STATE_CHANGE, 0,
-                        "watchdog LOCAL_HEADER_REFILL h=%d peer_max=%d "
-                        "eligible=%d retry=%d decision=%s reason=%s",
-                        next_h, peer_max, peers,
-                        g_local_recovery.retry_count,
-                        cac_decision_result_name(decision.result),
-                        decision.reason);
-            if (!proceed)
-                return WATCHDOG_NONE;
-            if (!sync_set_state(SYNC_HEADERS_DOWNLOAD,
-                                "watchdog local header refill")) {
-                sync_set_state(SYNC_IDLE,
-                               "watchdog local header refill via idle");
-                sync_set_state(SYNC_HEADERS_DOWNLOAD,
-                               "watchdog local header refill");
-            }
-            watchdog_kick_local_sync("next-child-missing");
-            record_recovery(now, WATCHDOG_LOCAL_HEADER_REFILL);
-            return WATCHDOG_LOCAL_HEADER_REFILL;
-        } else if (g_local_recovery.active &&
-                   g_local_recovery.missing_height == next_h) {
-            local_recovery_reset();
-        }
-    }
+    /* moved to condition local_header_refill_needed (PR-2, 2026-05-23) */
 
     /* Progress rate tracking: record {height, timestamp} each cycle */
     {
@@ -952,168 +907,11 @@ enum watchdog_recovery_type sync_watchdog_check(
         }
     }
 
-    /* a. HEADER_STALL: headers_download >300s with no header progress */
-    if (state == SYNC_HEADERS_DOWNLOAD && duration > HEADER_STALL_SECS) {
-        int current_header_height = -1;
-        if (ms && ms->pindex_best_header)
-            current_header_height = ms->pindex_best_header->nHeight;
-
-        /* Only trigger if header height hasn't advanced since last check */
-        if (current_header_height >= 0 &&
-            current_header_height <= g_watchdog.last_header_height) {
-            int ndisconnected = disconnect_outbound_peers(cm);
-            sync_set_state(SYNC_FINDING_PEERS, "watchdog HEADER_STALL recovery");
-            printf("[watchdog] HEADER_STALL recovery: disconnected %d peers, "
-                   "resetting sync\n", ndisconnected);
-            record_recovery_detail(now, WATCHDOG_HEADER_STALL,
-                                   g_last_header_reject_reason[0]
-                                       ? g_last_header_reject_reason
-                                       : "header_height_not_advancing",
-                                   ms ? active_chain_height(&ms->chain_active)
-                                      : -1,
-                                   current_header_height,
-                                   ndisconnected);
-            g_watchdog.last_header_height = -1;
-
-            /* Escalation: if peer rotation hasn't fixed it after 2 cycles */
-            g_watchdog.header_stall_consecutive++;
-            if (g_watchdog.header_stall_consecutive >= 2 &&
-                !g_watchdog.header_stall_escalated) {
-                g_watchdog.header_stall_escalated = true;
-                printf("[watchdog] ESCALATION: persistent header stall "
-                       "(%d consecutive recoveries)\n",
-                       g_watchdog.header_stall_consecutive);
-                if (g_last_header_reject_reason[0]) {
-                    printf("[watchdog] ESCALATION: last reject reason: %s\n",
-                           g_last_header_reject_reason);
-                    if (strstr(g_last_header_reject_reason, "equihash") ||
-                        strstr(g_last_header_reject_reason, "solution-size"))
-                        printf("[watchdog] ESCALATION: height corruption "
-                               "detected, headers rejected with wrong-era "
-                               "validation rules\n");
-                }
-            }
-
-            return WATCHDOG_HEADER_STALL;
-        }
-        g_watchdog.last_header_height = current_header_height;
-    } else if (state != SYNC_HEADERS_DOWNLOAD) {
-        /* Reset tracking when not in header download */
-        g_watchdog.last_header_height = -1;
-        g_watchdog.header_stall_consecutive = 0;
-        g_watchdog.header_stall_escalated = false;
-    }
-
-    /* a2. HEADER_LAG: headers far behind peers AND not advancing.
-     *
-     * Only meaningful when headers are STUCK relative to peers — not
-     * when we're just far behind doing a genesis-up sync. The
-     * header_stall path above (a) covers "headers not advancing for
-     * >300 s" with a tip-comparison check. This branch adds the
-     * additional condition that headers must ALSO be far behind
-     * peers and ALSO stuck — i.e. the lag is sustained, not
-     * progress-driven. Use the same last_header_height comparison
-     * pattern as HEADER_STALL.
-     *
-     * Originally written to handle "all peers stale" in HEADERS_DOWNLOAD
-     * — that case is now also covered by HEADER_STALL's existing peer
-     * rotation, so this branch reduces to a redundant safety net that
-     * only fires when both conditions hold. */
-    if ((state == SYNC_BLOCKS_DOWNLOAD && duration > 60) ||
-        (state == SYNC_HEADERS_DOWNLOAD && duration > 300)) {
-        int current_header_height = -1;
-        if (ms && ms->pindex_best_header)
-            current_header_height = ms->pindex_best_header->nHeight;
-
-        int max_peer_height = connman_max_peer_height(cm);
-
-        /* Progress check: only fire if header tip has NOT advanced
-         * since the last cycle. Headers advancing → genuine progress,
-         * no recovery needed. */
-        bool header_stuck = (current_header_height >= 0 &&
-                             current_header_height <= g_watchdog.last_header_height);
-        bool first_block_lag_sample =
-            (state == SYNC_BLOCKS_DOWNLOAD &&
-             g_watchdog.last_header_height < 0);
-
-        if ((header_stuck || first_block_lag_sample) &&
-            current_header_height >= 0 && max_peer_height >= 0 &&
-            current_header_height < (max_peer_height - 500)) {
-            printf("[watchdog] HEADER_LAG: headers at %d (no advance "
-                   "since last cycle), peers at %d (gap %d), "
-                   "transitioning to SYNC_HEADERS_DOWNLOAD\n",
-                   current_header_height, max_peer_height,
-                   max_peer_height - current_header_height);
-            event_emitf(EV_SYNC_STATE_CHANGE, 0,
-                        "watchdog HEADER_LAG: headers=%d peers=%d gap=%d",
-                        current_header_height, max_peer_height,
-                        max_peer_height - current_header_height);
-
-            if (!sync_set_state(SYNC_HEADERS_DOWNLOAD,
-                                "watchdog HEADER_LAG recovery")) {
-                sync_set_state(SYNC_IDLE, "watchdog HEADER_LAG via idle");
-                sync_set_state(SYNC_HEADERS_DOWNLOAD,
-                               "watchdog HEADER_LAG recovery");
-            }
-            record_recovery(now, WATCHDOG_HEADER_LAG);
-            return WATCHDOG_HEADER_LAG;
-        }
-
-        /* Headers ARE advancing — update the watermark so the next
-         * cycle compares against current progress. This is the same
-         * pattern HEADER_STALL uses below. */
-        if (current_header_height >= 0 &&
-            current_header_height > g_watchdog.last_header_height) {
-            g_watchdog.last_header_height = current_header_height;
-        }
-    }
+    /* moved to condition header_stall_at_height (PR-2, 2026-05-23) */
 
     /* moved to condition block_failed_mask_at_tip (PR-1, 2026-05-23) */
 
-    /* QUEUE_STARVED — in-flight slots < 10% of IBD cap for
-     * >120s while in BLOCKS_DOWNLOAD with peers connected. Means we
-     * have peers but they're not feeding the pipeline; BLOCK_STALL
-     * (5 min, zero-progress) fires later than we'd like. Recovery:
-     * disconnect outbound peers that haven't delivered a block
-     * recently so the outbound thread picks fresh ones.
-     * Gated on connman_get_node_count(cm) > 0 to avoid colliding with
-     * the PEER_FLOOR / STATE_STUCK paths when there are no peers. */
-    if (state == SYNC_BLOCKS_DOWNLOAD && dm &&
-        connman_get_node_count(cm) > 0) {
-        uint64_t inflight = 0, queued = 0;
-        dl_get_stats(dm, NULL, NULL, NULL, &inflight, &queued);
-        size_t starved_threshold =
-            DL_MAX_IN_FLIGHT_TOTAL_IBD / QUEUE_STARVED_RATIO_DEN;
-        bool starved = (inflight < starved_threshold);
-        if (starved) {
-            if (g_queue_starved_first_seen == 0)
-                g_queue_starved_first_seen = now;
-            if (now - g_queue_starved_first_seen >
-                    QUEUE_STARVED_TRIGGER_SECS) {
-                printf("[watchdog] QUEUE_STARVED: in_flight=%llu queued=%llu "
-                       "(threshold=%zu) for %llds — rotating slow peers + "
-                       "kicking refill\n",
-                       (unsigned long long)inflight,
-                       (unsigned long long)queued,
-                       starved_threshold,
-                       (long long)(now - g_queue_starved_first_seen));
-                event_emitf(EV_SYNC_STATE_CHANGE, 0,
-                            "watchdog QUEUE_STARVED in_flight=%llu queued=%llu",
-                            (unsigned long long)inflight,
-                            (unsigned long long)queued);
-                int dropped = disconnect_outbound_peers(cm);
-                (void)dropped;
-                watchdog_kick_local_sync("queue-starved");
-                g_queue_starved_first_seen = now;  /* re-arm */
-                record_recovery(now, WATCHDOG_QUEUE_STARVED);
-                return WATCHDOG_QUEUE_STARVED;
-            }
-        } else {
-            g_queue_starved_first_seen = 0;
-        }
-    } else {
-        g_queue_starved_first_seen = 0;
-    }
+    /* moved to condition download_queue_starved (PR-2, 2026-05-23) */
 
     /* e. STALE_TIP: at_tip but peers are far ahead */
     if (state == SYNC_AT_TIP && duration > 120) {
@@ -1140,63 +938,7 @@ enum watchdog_recovery_type sync_watchdog_check(
         }
     }
 
-    /* c. STATE_STUCK: any state (except at_tip) exceeded per-state timeout */
-    if (state != SYNC_AT_TIP && duration > state_stuck_timeout(state)) {
-        /* Long-operation suppression (WS-2a): if a long_op_scope is
-         * actively ticking (snapshot import, bulk copy, wallet rescan)
-         * then progress is happening elsewhere and STATE_STUCK would
-         * trigger a counterproductive header re-sync. Skip this tick. */
-        int64_t lo_age = 0;
-        if (long_op_is_active(&lo_age) && lo_age < 60) {
-            const char *lo_label = long_op_recent_label();
-            printf("[watchdog] suppressing STATE_STUCK: long_op active "
-                   "(label=%s age=%llds)\n",
-                   lo_label ? lo_label : "(unknown)",
-                   (long long)lo_age);
-            return WATCHDOG_NONE;
-        }
-
-        /* Surface through node.log + event stream, not just the systemd
-         * journal — operators grep node.log via zcl_node_log, and printf
-         * goes to stdout (journal) only. Throttle to once per stall
-         * episode (cleared on state change or block-connect). */
-        int our_h_log = ms ? active_chain_height(&ms->chain_active) : -1;
-        int peer_max_log = cm ? connman_max_peer_height(cm) : -1;
-        int peer_count_log = cm ? (int)connman_outbound_healthy_count(cm) : 0;
-        if (!atomic_exchange(&g_stall_event_emitted, 1)) {
-            fprintf(stderr, // obs-ok:paired-watchdog-event
-                    "[watchdog] %s:%d %s(): STATE_STUCK state=%s "
-                    "duration_s=%lld timeout_s=%lld our_h=%d peer_max=%d "
-                    "peers=%d -- forcing header re-sync\n",
-                    __FILE__, __LINE__, __func__, sync_state_name(state),
-                    (long long)duration,
-                    (long long)state_stuck_timeout(state),
-                    our_h_log, peer_max_log, peer_count_log);
-            event_emitf(EV_TIP_STALE, 0,
-                        "state=%s since=%lld peers=%d max_peer=%d our_h=%d",
-                        sync_state_name(state), (long long)duration,
-                        peer_count_log, peer_max_log, our_h_log);
-        }
-        printf("[watchdog] STATE_STUCK: %s for %llds (timeout %llds), "
-               "forcing header re-sync\n",
-               sync_state_name(state), (long long)duration,
-               (long long)state_stuck_timeout(state));
-
-        /* Try direct transition; if not allowed, go through IDLE first */
-        if (!sync_set_state(SYNC_HEADERS_DOWNLOAD,
-                            "watchdog STATE_STUCK recovery")) {
-            sync_set_state(SYNC_IDLE, "watchdog STATE_STUCK via idle");
-            sync_set_state(SYNC_HEADERS_DOWNLOAD,
-                           "watchdog STATE_STUCK recovery");
-        }
-        watchdog_kick_local_sync("state-stuck");
-        record_recovery_detail(now, WATCHDOG_STATE_STUCK,
-                               sync_state_name(state),
-                               our_h_log,
-                               peer_max_log,
-                               peer_count_log);
-        return WATCHDOG_STATE_STUCK;
-    }
+    /* moved to condition sync_state_stuck (PR-2, 2026-05-23) */
 
     return WATCHDOG_NONE;
 }

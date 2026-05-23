@@ -142,4 +142,20 @@ void sync_watchdog_stop(void);
 struct json_value;
 bool sync_watchdog_dump_state_json(struct json_value *out, const char *key);
 
+/* Runtime context shared with watchdog-dissolve conditions. */
+void sync_watchdog_set_condition_context(struct connman *cm,
+                                         struct download_manager *dm,
+                                         struct main_state *ms);
+struct connman *sync_watchdog_condition_connman(void);
+struct download_manager *sync_watchdog_condition_download_manager(void);
+struct main_state *sync_watchdog_condition_main_state(void);
+void sync_watchdog_condition_kick_local_sync(const char *reason);
+int sync_watchdog_condition_local_header_refill(struct connman *cm,
+                                                int next_h,
+                                                const char *reason);
+bool sync_watchdog_condition_active_next_child_exists(
+    struct main_state *ms,
+    struct block_index *tip,
+    int next_h);
+
 #endif /* ZCL_SERVICES_SYNC_WATCHDOG_H */

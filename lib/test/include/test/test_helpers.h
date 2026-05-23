@@ -320,6 +320,7 @@ int test_supervisor(void);
 int test_supervisor_domains(void);
 int test_condition_engine(void);
 int test_utxo_activation_paused(void);
+int test_watchdog_dissolve_pr2(void);
 int test_blocker(void);
 int test_clock(void);
 int test_rng(void);

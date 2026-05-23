@@ -8,12 +8,16 @@
 #include "services/sync_watchdog_service.h"
 #include "config/runtime.h"
 #include "event/event.h"
+#include "framework/condition.h"
 #include "models/block.h"
 #include "models/database.h"
 #include "net/connman.h"
 #include "net/download.h"
 #include "validation/main_state.h"
 #include "validation/mirror_consensus.h"
+
+void register_local_header_refill_needed(void);
+void local_header_refill_needed_test_reset(void);
 
 static void init_source(struct cac_plan_input *in,
                         enum cac_source source,
@@ -1189,6 +1193,8 @@ static int test_cac_dump_populates_local_import_recovery(void)
         zcl_mutex_init(&ms.cs_main);
 
         sync_watchdog_init();
+        condition_engine_reset_for_testing();
+        local_header_refill_needed_test_reset();
         sync_set_state(SYNC_IDLE, "cac local import reset");
         sync_set_state(SYNC_HEADERS_DOWNLOAD, "cac local import setup");
         sync_set_state(SYNC_BLOCKS_DOWNLOAD, "cac next child missing");
@@ -1203,11 +1209,12 @@ static int test_cac_dump_populates_local_import_recovery(void)
         cm.manager.nodes = peers;
         cm.manager.num_nodes = 1;
 
-        ASSERT(sync_watchdog_check(&cm, &dm, &ms) ==
-               WATCHDOG_LOCAL_HEADER_REFILL);
-
         chain_advance_coordinator_reset_for_test();
         chain_advance_coordinator_init(&cm, &ms, NULL);
+        sync_watchdog_set_condition_context(&cm, &dm, &ms);
+        condition_engine_set_main_state(&ms);
+        register_local_header_refill_needed();
+        condition_engine_tick();
         json_init(&root);
         ASSERT(chain_advance_coordinator_dump_state_json(&root, NULL));
         sources = json_get(&root, "sources");
