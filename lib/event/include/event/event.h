@@ -214,6 +214,10 @@ enum event_type {
     EV_LAG_SLO_BREACH,           /* payload: "lag=N legacy_height=N local_height=N since=Ns severity=warn|critical|fatal" — zclassic23 behind zclassicd past SLO; one emission per breach episode per severity */
     EV_MIRROR_CONCURRENT_CATCHUP,/* payload: "applied=N target=N source=mirror reason=..." — mirror running concurrently with P2P, not gated on local exhaustion */
     EV_COORDINATOR_FORCE_PROMOTION,/* payload: "reason=... dur_us=N until_us=N" — Round 5 C4: supervisor forced 300s mirror-promotion window; mir->blocked short-circuit bypassed; bodies still locally consensus-validated */
+    EV_CONDITION_DETECTED,       /* payload: "name=... severity=..." */
+    EV_CONDITION_REMEDY_ATTEMPTED,/* payload: "name=... attempt=N result=..." */
+    EV_CONDITION_CLEARED,        /* payload: "name=... cleared_count=N" */
+    EV_OPERATOR_NEEDED,          /* payload: "condition=... attempts=N" */
 
     EV_NUM_TYPES                 /* sentinel — must be last */
 };

@@ -4,7 +4,7 @@
 CC = cc
 
 # App layer (MVC)
-APP_DIRS = models controllers views services
+APP_DIRS = models controllers views services supervisors conditions
 APP_INCLUDES = $(foreach d,$(APP_DIRS),-Iapp/$(d)/include)
 APP_SRCS = $(foreach d,$(APP_DIRS),$(wildcard app/$(d)/src/*.c))
 
@@ -13,7 +13,7 @@ CONFIG_INCLUDES = -Iconfig/include
 CONFIG_SRCS = $(wildcard config/src/*.c)
 
 # Library layer
-LIB_MODULES = bloom chain coins consensus core crypto encoding event health kernel \
+LIB_MODULES = bloom chain coins consensus core crypto encoding event framework health kernel \
 	json keys metrics mining net platform policy primitives rpc script storage \
 	support sync util validation wallet sapling zslp znam
 LIB_INCLUDES = $(foreach m,$(LIB_MODULES),-Ilib/$(m)/include)
