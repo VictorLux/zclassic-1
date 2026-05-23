@@ -52,6 +52,7 @@
 #include "services/body_fetch_stage.h"
 #include "services/body_persist_stage.h"
 #include "services/script_validate_stage.h"
+#include "services/proof_validate_stage.h"
 #include "services/chain_tip_watchdog.h"
 #include "framework/condition.h"
 #include "storage/progress_store.h"
@@ -427,6 +428,8 @@ static const struct dump_entry g_dumpers[] = {
                      "Wave S body_persist shadow stage: cursor, verification counters, log rows" },
     { "script_validate", script_validate_dump_state_json,
                      "Wave S script_validate shadow stage: cursor, script counters, log rows" },
+    { "proof_validate", proof_validate_dump_state_json,
+                     "Wave S proof_validate shadow stage: cursor, proof counters, log rows" },
     { "quorum_oracle", quorum_oracle_dump_state_json,
                      "multi-source quorum oracle: per-source vote stats + last verdict" },
     { "peer_lifecycle", peer_lifecycle_dump_state_json,
