@@ -204,6 +204,50 @@ One commit per task. Push after tasks 3, 5, 6.
 
 ## Status
 
-**IN PROGRESS (wt3)** — started 2026-05-23 on `main`.
+**✅ DONE — pushed 2026-05-23** to main as commit `6397ccf28`.
 
 <!-- Worker: append a Completion section below when done. -->
+
+## Completion (wt3, 2026-05-23)
+
+### Summary
+Split the flat supervisor registry into named domains (`chain`, `net`,
+`mempool`, `wallet`, `feature`, `onion`, `op`) while keeping the
+existing child-id and tick-loop behavior. Production registrations now
+use `supervisor_register_in_domain(...)`, and `zcl_state
+subsystem=supervisor` returns domain-grouped children plus empty
+`root_orphans`.
+
+### Commits
+- `cb85f002f` wt3: mark supervisor tree split in progress
+- `6397ccf28` add supervisor domains
+
+### Files added/modified
+- `app/supervisors/include/supervisors/domains.h` (NEW)
+- `app/supervisors/src/domains.c` (NEW)
+- `lib/test/src/test_supervisor_domains.c` (NEW)
+- `tools/lint/check_supervisor_domain.sh` (NEW)
+- `lib/util/include/util/supervisor.h`
+- `lib/util/src/supervisor.c`
+- `config/src/boot_services.c`
+- `app/supervisors/src/self_heal.c`
+- `app/services/src/chain_tip_watchdog.c`
+- `app/services/src/sync_watchdog_service.c`
+- `app/controllers/src/diagnostics_controller.c`
+- `tools/scripts/check_supervisor_registration.sh`
+- `Makefile`
+- `DEFENSIVE_CODING.md`
+- `lib/test/include/test/test_helpers.h`
+- `lib/test/src/test.c`
+- `lib/test/src/test_parallel.c`
+- `docs/work/wt-supervisor-tree-split.md`
+
+### Acceptance verification
+- [x] `make -j$(nproc)` — PASS (`Nothing to be done for 'all'`, prior build current)
+- [x] `make lint` — PASS, including Gate #21 `check_supervisor_domain`
+- [x] `./test_parallel --jobs=$(nproc)` — PASS: `ALL TESTS PASSED — 0/190 groups failed (105.0s wall, 32 workers)`
+
+### Surprises / follow-ups
+The existing `ZCL_TEST_ONLY` shortcut does not cover supervisor groups,
+so the focused test attempt started the sequential suite. It was stopped
+and replaced with the required full `test_parallel` run.
