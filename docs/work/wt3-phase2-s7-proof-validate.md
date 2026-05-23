@@ -176,8 +176,7 @@ One commit per task. Push after tasks 2, 4, 5.
 
 ## Status
 
-**IN PROGRESS (wt3)** — started 2026-05-23; proof_validate shadow stage
-branch active.
+**✅ DONE — merged 2026-05-23** as `b6138327f`. Next: `wt3-phase2-s8-utxo-apply.md`.
 
 <!-- Worker: append a Completion section below when done. -->
 

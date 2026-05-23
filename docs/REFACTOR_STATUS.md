@@ -4,7 +4,7 @@
 > truth for "what's done, what's next, what's blocked." Read this first
 > when you start a session. Full architecture: [`FRAMEWORK.md`](./FRAMEWORK.md).
 
-**Updated:** 2026-05-23 (Phase 2 → 60%; Phase 3 PR-1 MERGED; PR-2 + S-7 dispatched)
+**Updated:** 2026-05-23 (Phase 2 → 78%; S-7 proof_validate MERGED; S-8 + PR-2 dispatched)
 
 ---
 
@@ -13,18 +13,25 @@
 ```
 Phase 0  [██████████] 100%   Condition engine + scaffold              ✅ DONE
 Phase 1  [██████████] 100%   Adopt unused primitives                  ✅ DONE
-Phase 2  [██████░░░░]  60%   Wave S → S-12 cutover (S-1..S-6 shipped) ← IN FLIGHT
+Phase 2  [████████░░]  78%   Wave S → S-12 cutover (S-1..S-7 shipped) ← IN FLIGHT
   ├ S-5    [██████████] 100%   body_persist shadow (wt3)              ✅
   ├ S-6    [██████████] 100%   script_validate shadow (wt3)           ✅
-  └ S-7    [░░░░░░░░░░]   0%   proof_validate shadow (wt3 next)       ← READY
+  ├ S-7    [██████████] 100%   proof_validate shadow (wt3)            ✅
+  ├ S-8    [░░░░░░░░░░]   0%   utxo_apply shadow (wt3 next)           ← READY
+  └ S-9    [░░░░░░░░░░]   0%   tip_finalize shadow (wt3 queued)
+Phase 2 cutover plan drafted: docs/architecture/wave-s-cutover.md
 Phase 3  [██░░░░░░░░]  20%   Dissolve mega-modules                    ← IN FLIGHT
   ├ PR-1   [██████████] 100%   watchdog: 2 conditions (wt2)           ✅
   ├ PR-2   [░░░░░░░░░░]   0%   watchdog: 4 kick conditions (wt2 next) ← READY
   └ PR-3   [░░░░░░░░░░]   0%   watchdog: 2 + DELETE module (wt2 queued)
-Phase 4  [░░░░░░░░░░]   0%   Storage unification — plan drafted (docs/architecture/)
-Phase 5  [░░░░░░░░░░]   0%   Crypto agility + reproducible builds
+Phase 4  [░░░░░░░░░░]   0%   Storage unification — plan: docs/architecture/phase4-storage-unification.md
+Phase 5  [░░░░░░░░░░]   0%   Crypto agility + reproducible builds — plan: docs/architecture/phase5-crypto-agility-and-releases.md
 Phase 6  [░░░░░░░░░░]   0%   Determinism + simulator
 Phase 7  [░░░░░░░░░░]   0%   Frontier (io_uring, hot reload)
+
+All 5 mega-module dissolve plans drafted: docs/dissolve/
+(sync_watchdog, chain_advance_coordinator, legacy_mirror_sync,
+chain_restore, header_probe, utxo_recovery)
 ```
 
 ---
@@ -74,7 +81,7 @@ clause. The table below is the dashboard.
 |---|---|---|---|---|
 | `~/github/zclassic23` (main) | `main` | Orchestrator: review + merge + dispatch | ✅ Phase 2 S-6 + Phase 3 PR-1 MERGED; PR-2 + S-7 dispatched + PR-3 queued | 2026-05-23 |
 | `~/github/zclassic23-2` (wt2) | `wt2/phase3-watchdog-dissolve-pr2` | [`docs/work/wt2-phase3-watchdog-dissolve-pr2.md`](./work/wt2-phase3-watchdog-dissolve-pr2.md) | 🕐 READY (restart agent 2) | 2026-05-23 |
-| `~/github/zclassic23-3` (wt3) | `wt3/phase2-proof-validate-shadow` | [`docs/work/wt3-phase2-s7-proof-validate.md`](./work/wt3-phase2-s7-proof-validate.md) | 🕐 READY (restart agent 3) | 2026-05-23 |
+| `~/github/zclassic23-3` (wt3) | `wt3/phase2-utxo-apply-shadow` | [`docs/work/wt3-phase2-s8-utxo-apply.md`](./work/wt3-phase2-s8-utxo-apply.md) | 🕐 READY (restart agent 3) | 2026-05-23 |
 
 ---
 
@@ -82,6 +89,8 @@ clause. The table below is the dashboard.
 
 | Date | What | Worktree | Commit |
 |---|---|---|---|
+| 2026-05-23 | **Phase 2 S-7 MERGED** — zero-knowledge proof verification shadow stage: Sapling spends + outputs (Groth16), Sprout JoinSplits (Groth16/PHGR13), binding sigs; per-proof-type counters | main | b6138327f |
+| 2026-05-23 | Plans: Wave S cutover playbook (9 PRs, 4-commit structure) + Phase 5 crypto agility + 3 mega-module dissolve plans | main | 0a6fd9108 |
 | 2026-05-23 | **Phase 2 S-6 MERGED** — script_validate shadow stage: per-input script_verify across every tx; per-height log of (verified \| script_invalid \| internal_error \| upstream_failed) | main | (S-6 merge) |
 | 2026-05-23 | **Phase 3 PR-1 MERGED** — first 2 watchdog conditions extracted: `block_failed_mask_at_tip` predicate extended; NEW `utxo_activation_paused` | main | 19ae6d8b1 |
 | 2026-05-23 | Plans: 2 more dissolve plans drafted (`chain_advance_coordinator.md`, `legacy_mirror_sync_service.md`) + Phase 4 storage unification architecture | main | 123c00b13 |
