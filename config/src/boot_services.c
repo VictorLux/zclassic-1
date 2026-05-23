@@ -22,6 +22,7 @@
 #include "services/script_validate_stage.h"
 #include "services/proof_validate_stage.h"
 #include "services/utxo_apply_stage.h"
+#include "services/tip_finalize_stage.h"
 #include "services/chain_tip_watchdog.h"
 #include "conditions/condition_registry.h"
 #include "supervisors/self_heal.h"
@@ -926,6 +927,60 @@ static void boot_utxo_apply_supervisor_register(struct boot_svc_ctx *svc)
     if (g_uv_id == SUPERVISOR_INVALID_ID) {
         fprintf(stderr,  // obs-ok:uv-supervisor-fallback-warn
             "[supervisor] WARN staged.utxo_apply register failed\n");
+    }
+}
+
+/* ── Wave S, S-9: tip_finalize stage supervisor child ─────────────── */
+static struct liveness_contract g_tf_contract;
+static supervisor_child_id      g_tf_id = SUPERVISOR_INVALID_ID;
+static struct main_state       *g_tf_ms = NULL;
+
+static void tf_tick(struct liveness_contract *c)
+{
+    (void)c;
+    if (!g_tf_ms) return;
+    (void)tip_finalize_stage_drain(TIP_FINALIZE_BATCH_PER_TICK);
+    supervisor_progress(g_tf_id,
+                        (int64_t)tip_finalize_stage_cursor());
+    supervisor_tick(g_tf_id);
+}
+
+static void tf_stall(struct liveness_contract *c)
+{
+    (void)c;
+    fprintf(stderr,  // obs-ok:tf-shadow-stall
+            "[supervisor] staged.tip_finalize stalled "
+            "(cursor=%llu finalized=%llu upstream_failed=%llu reorg=%llu) "
+            "— shadow tip finalize behind utxo_apply or live tip\n",
+            (unsigned long long)tip_finalize_stage_cursor(),
+            (unsigned long long)tip_finalize_stage_finalized_total(),
+            (unsigned long long)tip_finalize_stage_upstream_failed_total(),
+            (unsigned long long)tip_finalize_stage_reorg_detected_total());
+}
+
+static void boot_tip_finalize_supervisor_register(struct boot_svc_ctx *svc)
+{
+    if (!svc || !svc->state) return;
+    if (g_tf_id != SUPERVISOR_INVALID_ID) return;  /* idempotent */
+
+    if (!tip_finalize_stage_init(svc->state)) {
+        fprintf(stderr,  // obs-ok:tf-init-warn
+            "[supervisor] WARN staged.tip_finalize init failed — "
+            "shadow tip finalize not running this boot\n");
+        return;
+    }
+
+    g_tf_ms = svc->state;
+    liveness_contract_init(&g_tf_contract, "staged.tip_finalize");
+    atomic_store(&g_tf_contract.period_secs, (int64_t)2);
+    atomic_store(&g_tf_contract.progress_max_quiet_us,
+                 (int64_t)1800 * 1000 * 1000);
+    g_tf_contract.on_tick  = tf_tick;
+    g_tf_contract.on_stall = tf_stall;
+    g_tf_id = supervisor_register(&g_tf_contract);
+    if (g_tf_id == SUPERVISOR_INVALID_ID) {
+        fprintf(stderr,  // obs-ok:tf-supervisor-fallback-warn
+            "[supervisor] WARN staged.tip_finalize register failed\n");
     }
 }
 
@@ -3138,6 +3193,7 @@ bool app_init_services(struct app_context *ctx,
     boot_script_validate_supervisor_register(svc);
     boot_proof_validate_supervisor_register(svc);
     boot_utxo_apply_supervisor_register(svc);
+    boot_tip_finalize_supervisor_register(svc);
 
     if (!boot_register_runtime_services(svc) ||
         !zcl_service_kernel_start_all(&svc->runtime_kernel)) {
@@ -3300,8 +3356,15 @@ static void shutdown_release_owned_resources(struct boot_svc_ctx *svc)
     sapling_free_params();
 
     /* Wave S shutdown order: bottom-up through the saga so each stage's
-     * upstream is still alive while it drains in-flight work. S-7
-     * proof_validate reads from script_validate_log; tear it down first. */
+     * upstream is still alive while it drains in-flight work. S-9
+     * tip_finalize reads from utxo_apply_log; tear it down first. */
+    tip_finalize_stage_shutdown();
+
+    /* S-8 utxo_apply reads from proof_validate_log; tear it down before
+     * proof_validate. */
+    utxo_apply_stage_shutdown();
+
+    /* S-7 proof_validate reads from script_validate_log; tear it down first. */
     proof_validate_stage_shutdown();
 
     /* S-6 script_validate reads from body_persist_log; tear it down before

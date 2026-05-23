@@ -1,0 +1,395 @@
+/* Copyright 2026 Rhett Creighton - Apache License 2.0
+ * Unit tests for Wave S S-9 tip_finalize shadow stage. */
+
+#include "test/test_helpers.h"
+
+#include "chain/chain.h"
+#include "json/json.h"
+#include "services/tip_finalize_stage.h"
+#include "storage/progress_store.h"
+#include "util/blocker.h"
+#include "util/stage.h"
+#include "validation/chainstate.h"
+#include "validation/main_state.h"
+
+#include <errno.h>
+#include <sqlite3.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/stat.h>
+#include <unistd.h>
+
+#define TF_CHECK(name, expr) do { \
+    printf("tip_finalize: %s... ", (name)); \
+    if ((expr)) printf("OK\n"); \
+    else { printf("FAIL\n"); failures++; } \
+} while (0)
+
+enum tf_fail_kind {
+    TF_FAIL_NONE = 0,
+    TF_FAIL_REORG,
+    TF_FAIL_PRECONDITION,
+    TF_FAIL_UTXO_COUNT,
+};
+
+struct synth_chain_tf {
+    struct block_index *blocks;
+    struct uint256     *hashes;
+    int n;
+    int upstream_fail_height;
+    enum tf_fail_kind fail_kind;
+};
+
+static int mkdir_p_tf(const char *p)
+{
+    if (mkdir(p, 0700) == 0) return 0;
+    if (errno == EEXIST) return 0;
+    return -1;
+}
+
+static void tf_tmpdir(char *buf, size_t n, const char *tag)
+{
+    snprintf(buf, n, "./test-tmp/tip_finalize_%d_%s",
+             (int)getpid(), tag);
+}
+
+static void synthetic_hash(struct uint256 *out, int h)
+{
+    uint256_set_null(out);
+    out->data[0] = (uint8_t)(0xa0 + h);
+}
+
+static bool synth_chain_tf_build(struct synth_chain_tf *sc, int n)
+{
+    sc->blocks = calloc((size_t)n, sizeof(struct block_index));
+    sc->hashes = calloc((size_t)n, sizeof(struct uint256));
+    if (!sc->blocks || !sc->hashes) return false;
+    for (int i = 0; i < n; i++) {
+        synthetic_hash(&sc->hashes[i], i);
+        block_index_init(&sc->blocks[i]);
+        sc->blocks[i].phashBlock = &sc->hashes[i];
+        sc->blocks[i].nHeight = i;
+        sc->blocks[i].nVersion = 4;
+        sc->blocks[i].nTime = (uint32_t)(1700005000u + (uint32_t)i);
+        sc->blocks[i].nBits = 0x1f07ffff;
+        sc->blocks[i].nStatus = BLOCK_HAVE_DATA | BLOCK_VALID_SCRIPTS;
+        arith_uint256_set_u64(&sc->blocks[i].nChainWork,
+                              (uint64_t)i + 1);
+        if (i > 0) sc->blocks[i].pprev = &sc->blocks[i - 1];
+    }
+    if (sc->fail_kind == TF_FAIL_PRECONDITION && n > 2)
+        sc->blocks[2].nStatus = BLOCK_VALID_SCRIPTS;
+    if (sc->fail_kind == TF_FAIL_REORG && n > 2)
+        sc->blocks[2].pprev = NULL;
+    sc->n = n;
+    return true;
+}
+
+static void synth_chain_tf_free(struct synth_chain_tf *sc)
+{
+    free(sc->blocks);
+    free(sc->hashes);
+    memset(sc, 0, sizeof(*sc));
+}
+
+static bool exec_sql(sqlite3 *db, const char *sql)
+{
+    char *err = NULL;
+    int rc = sqlite3_exec(db, sql, NULL, NULL, &err);
+    if (err) sqlite3_free(err);
+    return rc == SQLITE_OK;
+}
+
+static bool seed_utxo_apply(sqlite3 *db, int n, int upstream_fail_height)
+{
+    if (!exec_sql(db,
+        "CREATE TABLE IF NOT EXISTS utxo_apply_log ("
+        "  height               INTEGER PRIMARY KEY,"
+        "  status               TEXT    NOT NULL,"
+        "  ok                   INTEGER NOT NULL,"
+        "  spent_count          INTEGER NOT NULL,"
+        "  added_count          INTEGER NOT NULL,"
+        "  total_value_delta    INTEGER NOT NULL,"
+        "  first_failure_kind   TEXT,"
+        "  first_failure_detail BLOB,"
+        "  applied_at           INTEGER NOT NULL"
+        ")"))
+        return false;
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(db,
+        "INSERT OR REPLACE INTO utxo_apply_log "
+        "(height, status, ok, spent_count, added_count, "
+        " total_value_delta, applied_at) "
+        "VALUES (?, ?, ?, 1, 2, 1, 1)",
+        -1, &st, NULL) != SQLITE_OK)
+        return false;
+    for (int h = 0; h < n; h++) {
+        int ok = (h == upstream_fail_height) ? 0 : 1;
+        sqlite3_bind_int(st, 1, h);
+        sqlite3_bind_text(st, 2, ok ? "verified" : "value_overflow",
+                          -1, SQLITE_STATIC);
+        sqlite3_bind_int(st, 3, ok);
+        if (sqlite3_step(st) != SQLITE_DONE) {
+            sqlite3_finalize(st);
+            return false;
+        }
+        sqlite3_reset(st);
+        sqlite3_clear_bindings(st);
+    }
+    sqlite3_finalize(st);
+
+    if (sqlite3_prepare_v2(db,
+        "INSERT OR REPLACE INTO stage_cursor(name, cursor, updated_at) "
+        "VALUES('utxo_apply', ?, 1)",
+        -1, &st, NULL) != SQLITE_OK)
+        return false;
+    sqlite3_bind_int(st, 1, n);
+    bool ok = sqlite3_step(st) == SQLITE_DONE;
+    sqlite3_finalize(st);
+    return ok;
+}
+
+static bool log_row_at(sqlite3 *db, int height, int *out_ok,
+                       char *out_status, size_t status_size,
+                       int *out_reorg_depth, int64_t *out_utxo_size)
+{
+    *out_ok = -1;
+    if (out_status && status_size) out_status[0] = 0;
+    if (out_reorg_depth) *out_reorg_depth = -1;
+    if (out_utxo_size) *out_utxo_size = -2;
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(db,
+        "SELECT ok, status, reorg_depth, utxo_size_after "
+        "FROM tip_finalize_log WHERE height = ?",
+        -1, &st, NULL) != SQLITE_OK) return false;
+    sqlite3_bind_int(st, 1, height);
+    bool found = false;
+    if (sqlite3_step(st) == SQLITE_ROW) {
+        *out_ok = sqlite3_column_int(st, 0);
+        const unsigned char *txt = sqlite3_column_text(st, 1);
+        if (txt && out_status && status_size)
+            snprintf(out_status, status_size, "%s", (const char *)txt);
+        if (out_reorg_depth)
+            *out_reorg_depth = sqlite3_column_int(st, 2);
+        if (out_utxo_size)
+            *out_utxo_size = sqlite3_column_int64(st, 3);
+        found = true;
+    }
+    sqlite3_finalize(st);
+    return found;
+}
+
+static bool fake_utxo_count(int height_after, int64_t *out_count, void *user)
+{
+    struct synth_chain_tf *sc = user;
+    if (sc && sc->fail_kind == TF_FAIL_UTXO_COUNT && height_after == 2) {
+        *out_count = 99;
+        return true;
+    }
+    *out_count = height_after;
+    return true;
+}
+
+static int tf_setup(const char *tag, int log_rows,
+                    enum tf_fail_kind fail_kind,
+                    int upstream_fail_height,
+                    char *dir_out, size_t dir_out_size,
+                    struct main_state *ms, struct synth_chain_tf *sc)
+{
+    tf_tmpdir(dir_out, dir_out_size, tag);
+    mkdir_p_tf("./test-tmp");
+    mkdir_p_tf(dir_out);
+    if (!progress_store_open(dir_out)) return 1;
+
+    memset(sc, 0, sizeof(*sc));
+    sc->fail_kind = fail_kind;
+    sc->upstream_fail_height = upstream_fail_height;
+    memset(ms, 0, sizeof(*ms));
+    active_chain_init(&ms->chain_active);
+    if (!synth_chain_tf_build(sc, log_rows + 1)) return 2;
+    active_chain_set_tip(&ms->chain_active, &sc->blocks[log_rows]);
+    if (fail_kind == TF_FAIL_REORG && ms->chain_active.chain) {
+        for (int i = 0; i <= log_rows; i++)
+            ms->chain_active.chain[i] = &sc->blocks[i];
+        ms->chain_active.height = log_rows;
+    }
+
+    if (!seed_utxo_apply(progress_store_db(), log_rows,
+                         upstream_fail_height))
+        return 3;
+    if (!tip_finalize_stage_init(ms)) return 4;
+    tip_finalize_stage_set_utxo_counter(fake_utxo_count, sc);
+    return 0;
+}
+
+static void tf_teardown(const char *dir, struct main_state *ms,
+                        struct synth_chain_tf *sc)
+{
+    tip_finalize_stage_shutdown();
+    active_chain_free(&ms->chain_active);
+    synth_chain_tf_free(sc);
+    progress_store_close();
+    test_cleanup_tmpdir(dir);
+}
+
+int test_tip_finalize_stage(void);
+int test_tip_finalize_stage(void)
+{
+    printf("\n=== tip_finalize_stage tests ===\n");
+    int failures = 0;
+
+    blocker_module_init();
+
+    {
+        char dir[256]; struct main_state ms; struct synth_chain_tf sc;
+        TF_CHECK("happy: setup",
+                 tf_setup("happy", 3, TF_FAIL_NONE, -1, dir, sizeof(dir),
+                          &ms, &sc) == 0);
+        TF_CHECK("happy: drains 3", tip_finalize_stage_drain(100) == 3);
+        TF_CHECK("happy: cursor at 3", tip_finalize_stage_cursor() == 3);
+        TF_CHECK("happy: finalized_total == 3",
+                 tip_finalize_stage_finalized_total() == 3);
+        TF_CHECK("happy: work_added_low == 3",
+                 tip_finalize_stage_total_work_added_low() == 3);
+        for (int h = 0; h < 3; h++) {
+            int ok = -1, depth = -1; int64_t utxos = -1; char status[32];
+            log_row_at(progress_store_db(), h, &ok, status, sizeof(status),
+                       &depth, &utxos);
+            TF_CHECK("happy: row ok=1", ok == 1);
+            TF_CHECK("happy: row status finalized",
+                     strcmp(status, "finalized") == 0);
+            TF_CHECK("happy: row reorg_depth=0", depth == 0);
+            TF_CHECK("happy: utxo size matches delta",
+                     utxos == (int64_t)h + 1);
+        }
+        TF_CHECK("happy: next step IDLE",
+                 tip_finalize_stage_step_once() == STAGE_IDLE);
+        tf_teardown(dir, &ms, &sc);
+    }
+
+    {
+        char dir[256]; struct main_state ms; struct synth_chain_tf sc;
+        TF_CHECK("reorg: setup",
+                 tf_setup("reorg", 3, TF_FAIL_REORG, -1, dir, sizeof(dir),
+                          &ms, &sc) == 0);
+        TF_CHECK("reorg: first finalizes",
+                 tip_finalize_stage_step_once() == STAGE_ADVANCED);
+        TF_CHECK("reorg: second logs and advances",
+                 tip_finalize_stage_step_once() == STAGE_ADVANCED);
+        TF_CHECK("reorg: counter == 1",
+                 tip_finalize_stage_reorg_detected_total() == 1);
+        int ok = -1, depth = -1; int64_t utxos = -1; char status[32];
+        log_row_at(progress_store_db(), 1, &ok, status, sizeof(status),
+                   &depth, &utxos);
+        TF_CHECK("reorg: h=1 ok=0", ok == 0);
+        TF_CHECK("reorg: h=1 status",
+                 strcmp(status, "reorg_detected") == 0);
+        TF_CHECK("reorg: depth > 0", depth > 0);
+        TF_CHECK("reorg: cursor advances to 2",
+                 tip_finalize_stage_cursor() == 2);
+        tf_teardown(dir, &ms, &sc);
+    }
+
+    {
+        char dir[256]; struct main_state ms; struct synth_chain_tf sc;
+        TF_CHECK("precondition: setup",
+                 tf_setup("precondition", 3, TF_FAIL_PRECONDITION, -1,
+                          dir, sizeof(dir), &ms, &sc) == 0);
+        TF_CHECK("precondition: drains 3",
+                 tip_finalize_stage_drain(100) == 3);
+        TF_CHECK("precondition: counter == 1",
+                 tip_finalize_stage_precondition_failed_total() == 1);
+        int ok = -1, depth = -1; int64_t utxos = -1; char status[32];
+        log_row_at(progress_store_db(), 1, &ok, status, sizeof(status),
+                   &depth, &utxos);
+        TF_CHECK("precondition: h=1 ok=0", ok == 0);
+        TF_CHECK("precondition: h=1 status",
+                 strcmp(status, "precondition_failed") == 0);
+        tf_teardown(dir, &ms, &sc);
+    }
+
+    {
+        char dir[256]; struct main_state ms; struct synth_chain_tf sc;
+        TF_CHECK("utxo_count: setup",
+                 tf_setup("utxo_count", 3, TF_FAIL_UTXO_COUNT, -1,
+                          dir, sizeof(dir), &ms, &sc) == 0);
+        TF_CHECK("utxo_count: drains 3", tip_finalize_stage_drain(100) == 3);
+        TF_CHECK("utxo_count: counter == 1",
+                 tip_finalize_stage_utxo_count_diverged_total() == 1);
+        int ok = -1, depth = -1; int64_t utxos = -1; char status[32];
+        log_row_at(progress_store_db(), 1, &ok, status, sizeof(status),
+                   &depth, &utxos);
+        TF_CHECK("utxo_count: h=1 ok=0", ok == 0);
+        TF_CHECK("utxo_count: h=1 status",
+                 strcmp(status, "utxo_count_diverged") == 0);
+        TF_CHECK("utxo_count: live count recorded", utxos == 99);
+        tf_teardown(dir, &ms, &sc);
+    }
+
+    {
+        char dir[256]; struct main_state ms; struct synth_chain_tf sc;
+        TF_CHECK("upstream_failed: setup",
+                 tf_setup("upstream", 3, TF_FAIL_NONE, 2, dir, sizeof(dir),
+                          &ms, &sc) == 0);
+        TF_CHECK("upstream_failed: drains 3",
+                 tip_finalize_stage_drain(100) == 3);
+        TF_CHECK("upstream_failed: counter == 1",
+                 tip_finalize_stage_upstream_failed_total() == 1);
+        int ok = -1, depth = -1; int64_t utxos = -1; char status[32];
+        log_row_at(progress_store_db(), 2, &ok, status, sizeof(status),
+                   &depth, &utxos);
+        TF_CHECK("upstream_failed: h=2 ok=0", ok == 0);
+        TF_CHECK("upstream_failed: h=2 status",
+                 strcmp(status, "upstream_failed") == 0);
+        tf_teardown(dir, &ms, &sc);
+    }
+
+    {
+        char dir[256]; struct main_state ms; struct synth_chain_tf sc;
+        TF_CHECK("idle: setup",
+                 tf_setup("idle", 3, TF_FAIL_NONE, -1, dir, sizeof(dir),
+                          &ms, &sc) == 0);
+        sqlite3_exec(progress_store_db(),
+            "UPDATE stage_cursor SET cursor=1 WHERE name='utxo_apply'",
+            NULL, NULL, NULL);
+        TF_CHECK("idle: advances one", tip_finalize_stage_drain(100) == 1);
+        TF_CHECK("idle: next step IDLE",
+                 tip_finalize_stage_step_once() == STAGE_IDLE);
+        TF_CHECK("idle: cursor stays 1", tip_finalize_stage_cursor() == 1);
+        tf_teardown(dir, &ms, &sc);
+    }
+
+    {
+        TF_CHECK("guard: step_once with no init returns IDLE",
+                 tip_finalize_stage_step_once() == STAGE_IDLE);
+        TF_CHECK("guard: init(NULL) rejected",
+                 !tip_finalize_stage_init(NULL));
+    }
+
+    {
+        char dir[256]; struct main_state ms; struct synth_chain_tf sc;
+        TF_CHECK("dump: setup",
+                 tf_setup("dump", 2, TF_FAIL_NONE, -1, dir, sizeof(dir),
+                          &ms, &sc) == 0);
+        tip_finalize_stage_drain(100);
+        struct json_value v;
+        json_init(&v);
+        TF_CHECK("dump: returns true",
+                 tip_finalize_dump_state_json(&v, NULL));
+        char buf[1024];
+        size_t n = json_write(&v, buf, sizeof(buf));
+        TF_CHECK("dump: serializes", n > 0 && n < sizeof(buf));
+        TF_CHECK("dump: stage_name",
+                 strstr(buf, "\"stage_name\":\"tip_finalize\"") != NULL);
+        TF_CHECK("dump: cursor=2", strstr(buf, "\"cursor\":2") != NULL);
+        TF_CHECK("dump: finalized_total=2",
+                 strstr(buf, "\"finalized_total\":2") != NULL);
+        json_free(&v);
+        tf_teardown(dir, &ms, &sc);
+    }
+
+    printf("tip_finalize_stage tests: %s\n",
+           failures ? "FAILED" : "PASSED");
+    return failures;
+}

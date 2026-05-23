@@ -54,6 +54,7 @@
 #include "services/script_validate_stage.h"
 #include "services/proof_validate_stage.h"
 #include "services/utxo_apply_stage.h"
+#include "services/tip_finalize_stage.h"
 #include "services/chain_tip_watchdog.h"
 #include "framework/condition.h"
 #include "storage/progress_store.h"
@@ -433,6 +434,8 @@ static const struct dump_entry g_dumpers[] = {
                      "Wave S proof_validate shadow stage: cursor, proof counters, log rows" },
     { "utxo_apply", utxo_apply_dump_state_json,
                      "Wave S utxo_apply shadow stage: cursor, UTXO delta counters, log rows" },
+    { "tip_finalize", tip_finalize_dump_state_json,
+                     "Wave S tip_finalize shadow stage: cursor, finalize counters, log rows" },
     { "quorum_oracle", quorum_oracle_dump_state_json,
                      "multi-source quorum oracle: per-source vote stats + last verdict" },
     { "peer_lifecycle", peer_lifecycle_dump_state_json,
