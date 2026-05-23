@@ -252,6 +252,58 @@ git push origin wt3/phase0-framework-shape-lint
 
 ## Status
 
-**READY** — waiting for human to start `claude` in `~/github/zclassic23-3`.
+**IN PROGRESS (wt3)** — framework shape lint gate implementation started 2026-05-23.
 
 <!-- Worker: append a Completion section below when done, per agent-protocol.md -->
+
+## Completion (wt3, 2026-05-23)
+
+### Summary
+Shipped the Phase 0 framework lint ratchet in WARN mode: condition header
+stub, framework shape gate, clock-discipline gate, controller-SQL gate,
+Makefile wiring, and defensive-coding documentation.
+
+Baseline violation counts (2026-05-23, WARN mode):
+- Gate #18 framework_shape_check: 0 violations
+- Gate #19 no_raw_clock_outside_platform: 443 violations
+- Gate #20 no_raw_sqlite_in_controllers: 121 violations
+
+### Commits
+- b2da10f54 wt3: mark framework lint in progress
+- 57fdaf67a add condition framework header stub
+- 53cf30930 add framework shape lint gate
+- 654389364 add framework shape allowlist
+- 417180e14 add raw clock lint gate
+- b2c19977f add controller sqlite lint gate
+- c7bc1cbaa wire framework lint gates
+- 7ab163e83 document framework lint ratchets
+
+### Files added/modified
+- lib/framework/include/framework/condition.h (NEW, 23 LOC)
+- tools/lint/framework_shape_check.sh (NEW, 68 LOC)
+- tools/lint/framework_shape_allowlist.txt (NEW, 7 LOC)
+- tools/lint/check_no_raw_clock_outside_platform.sh (NEW, 42 LOC)
+- tools/lint/check_no_raw_sqlite_in_controllers.sh (NEW, 40 LOC)
+- Makefile
+- DEFENSIVE_CODING.md
+- docs/work/wt3-framework-shape-lint.md
+
+### Acceptance verification
+- [x] Condition header compiles standalone with `gcc -x c -std=c23 -Ilib/framework/include -c lib/framework/include/framework/condition.h` — PASS
+- [x] Gate #18 runs in WARN mode and reports baseline — PASS, 0 violations
+- [x] Gate #19 runs in WARN mode and reports baseline — PASS, 443 violations
+- [x] Gate #20 runs in WARN mode and reports baseline — PASS, 121 violations
+- [x] `make lint` runs all existing gates plus gates #18-#20 — PASS
+- [x] `make test_parallel` target builds the fork-based runner — PASS after restoring missing local vendor archives from `~/github/zclassic23/vendor/lib`
+- [x] `./test_parallel --jobs=$(nproc)` full suite — PASS, 0/179 groups failed after updating the `test_file_controller` snapshot fixture to satisfy the exporter UTXO threshold.
+
+### Surprises / follow-ups
+This worker clone was missing local vendor archives (`libtor_stub.a`,
+`libleveldb.a`, then the rest of `vendor/lib/*.a`). Copying the archives
+from `~/github/zclassic23/vendor/lib` allowed the test runner to link.
+The follow-up `test_file_controller` failure was a stale fixture that
+created only one UTXO even though the exporter now refuses to publish
+snapshots below the 1000-row threshold.
+
+### Status
+DONE — branch `wt3/phase0-framework-shape-lint` pushed to origin, ready for orchestrator review.

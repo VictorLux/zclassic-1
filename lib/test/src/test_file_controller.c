@@ -68,6 +68,7 @@ static void cleanup_file_controller_test_dir(const char *dir)
 static bool build_snapshot_source_db(const char *db_path, bool include_all_tables)
 {
     sqlite3 *db = NULL;
+    sqlite3_stmt *utxo_insert = NULL;
     int rc = sqlite3_open_v2(db_path, &db,
                              SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE,
                              NULL);
@@ -99,7 +100,28 @@ static bool build_snapshot_source_db(const char *db_path, bool include_all_table
         sqlite3_exec(db,
             "INSERT INTO transactions VALUES(x'11',0)",
             NULL, NULL, NULL);
-        sqlite3_exec(db, "INSERT INTO utxos VALUES(x'11',0)", NULL, NULL, NULL);
+        sqlite3_exec(db, "BEGIN", NULL, NULL, NULL);
+        rc = sqlite3_prepare_v2(db,
+                                "INSERT INTO utxos VALUES(x'11',?)",
+                                -1, &utxo_insert, NULL);
+        if (rc != SQLITE_OK || !utxo_insert) {
+            sqlite3_close(db);
+            return false;
+        }
+        for (int i = 0; i < 1000; i++) {
+            sqlite3_bind_int(utxo_insert, 1, i);
+            rc = sqlite3_step(utxo_insert);
+            sqlite3_reset(utxo_insert);
+            sqlite3_clear_bindings(utxo_insert);
+            if (rc != SQLITE_DONE) {
+                sqlite3_finalize(utxo_insert);
+                sqlite3_close(db);
+                return false;
+            }
+        }
+        sqlite3_finalize(utxo_insert);
+        utxo_insert = NULL;
+        sqlite3_exec(db, "COMMIT", NULL, NULL, NULL);
         sqlite3_exec(db, "INSERT INTO addresses VALUES(x'22',1)", NULL, NULL, NULL);
         sqlite3_exec(db, "INSERT INTO chain_stats VALUES(0)", NULL, NULL, NULL);
         sqlite3_exec(db, "INSERT INTO zslp_tokens VALUES('TKN')", NULL, NULL, NULL);

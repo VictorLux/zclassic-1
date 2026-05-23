@@ -309,14 +309,17 @@ lint: check-malloc check-silent-errors check-raw-sqlite \
       check-pthread-create check-model-validation \
       check-long-functions check-rpc-registrar \
       check-lag-slo-observable check-lib-layering \
-      check-supervisor-registration check-typed-blocker
+      check-supervisor-registration check-typed-blocker \
+      check-framework-shape check-no-raw-clock-outside-platform \
+      check-no-raw-sqlite-in-controllers
 	@echo "All lint checks passed"
 
 ci: lint test fuzz-ci coverage
 ```
 
-**Status: 17 gates active** (as of 2026-05-22). `make ci` fails if any
-fire. An agent that pushes code with raw malloc, silent errors,
+**Status: 20 gates active** (as of 2026-05-23). Gates #18-#20 are
+framework-refactor ratchets and currently run in WARN mode; the earlier
+gates fail `make ci` if they fire. An agent that pushes code with raw malloc, silent errors,
 bypassed AR validation, unpaired stderr diagnostics, a critical model
 missing its before_save hook, a model file with no `validates_*` call
 and no `ar-validate-skip:<tag>` marker, or a controller/service
@@ -341,6 +344,51 @@ remain on the doc-accuracy backlog:
   `lib/util/src/blocker.c` (typed blocker primitive). Any code raising
   a `block_id` must use a typed kind from `enum blocker_kind`; raw
   string blockers fall in a baseline (see Layer baselines below).
+
+### Framework refactor gates (#18-#20, ratcheting)
+
+These three gates shipped with the Phase 0 framework refactor
+scaffold. They default to WARN mode through `ZCL_LINT_MODE=WARN` in
+`make lint` so the current tree gets measured before the refactor
+starts deleting debt. Later phases flip them to FAIL after the relevant
+shape or primitive migration lands.
+
+- **Gate #18: `framework_shape_check`**
+  - Path: `tools/lint/framework_shape_check.sh`
+  - Checks: every `.c` file under `app/` must live under one framework
+    shape source folder: `controllers`, `services`, `models`, `jobs`,
+    `supervisors`, `conditions`, `events`, or `views`.
+  - Current mode: WARN.
+  - Ratchets to FAIL: Phase 2, after the Wave S job cutover has removed
+    any remaining off-shape app code.
+  - Fix: move the file into the correct shape folder or split mixed
+    responsibilities into separate shape files.
+  - Allowlist: add one relative path per line to
+    `tools/lint/framework_shape_allowlist.txt` for grandfathered
+    violations only. The file is a ratchet and should shrink to empty.
+
+- **Gate #19: `check_no_raw_clock_outside_platform`**
+  - Path: `tools/lint/check_no_raw_clock_outside_platform.sh`
+  - Checks: direct `clock_gettime(` and `time(NULL)` calls outside
+    `lib/platform/`.
+  - Current mode: WARN.
+  - Ratchets to FAIL: Phase 1, after platform clock adoption is wired
+    through jobs, supervisors, conditions, and services.
+  - Fix: route wall-clock and monotonic reads through the platform clock
+    abstraction. For deliberate one-off exceptions, add
+    `// platform-ok` on the line with a nearby explanation.
+
+- **Gate #20: `check_no_raw_sqlite_in_controllers`**
+  - Path: `tools/lint/check_no_raw_sqlite_in_controllers.sh`
+  - Checks: direct `sqlite3_prepare_v2(` or `sqlite3_exec(` use in
+    `app/controllers/` and `tools/mcp/controllers/`.
+  - Current mode: WARN.
+  - Ratchets to FAIL: Phase 1, after read paths move behind
+    projections or models.
+  - Fix: move reads into projection helpers or model queries; move
+    writes through models and the ActiveRecord lifecycle. For a
+    temporary documented exception, add `// raw-controller-sql-ok` on
+    the line.
 
 ### Gate #11: every model is either validated or explicitly skipped
 
