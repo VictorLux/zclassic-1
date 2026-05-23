@@ -212,6 +212,55 @@ defer.
 
 ## Status
 
-**IN PROGRESS (wt2)** — started 2026-05-23.
+**DONE (integration replay)** — completed 2026-05-23 on
+`integration/phase1-projection-adoption`.
 
 <!-- Worker: append a Completion section below when done. -->
+
+## Completion (integration replay, 2026-05-23)
+
+### Summary
+Replayed the Phase 1 projection adoption work onto current `main` after
+the S-5 body_persist merge. The branch adds the generic projection
+primitive, the framework typed-query wrapper, chain height projections,
+and rewires MCP `zcl_getblockcount` to read `node.db` directly with an
+RPC fallback on projection miss.
+
+### Commits
+- `cd4ffdd84` wt2: start projection adoption
+- `b3c7c9ee9` add projection typed queries
+- `35dcc5837` route getblockcount through projection
+- `0a7420a9e` test projection adoption under load
+
+### Files added/modified
+- `lib/util/include/util/projection.h`
+- `lib/util/src/projection.c`
+- `lib/framework/include/framework/projection.h`
+- `app/controllers/include/controllers/chain_projection.h`
+- `app/controllers/src/chain_projection.c`
+- `tools/mcp/controllers/chain_controller.c`
+- `lib/test/src/test_projection_adoption.c`
+- `lib/test/include/test/test_helpers.h`
+- `lib/test/src/test.c`
+- `lib/test/src/test_parallel.c`
+
+### Acceptance verification
+- [x] `make -j$(nproc)` — PASS
+- [x] `ZCL_TEST_ONLY=projection_adoption ./test_zcl` — PASS:
+      `projection_adoption: 0 failures`
+- [x] `make lint` — PASS
+- [x] `./test_parallel --jobs=$(nproc)` — PASS:
+      `ALL TESTS PASSED — 0/181 groups failed`
+- [x] `./tools/zcl-rpc getblockcount` — PASS:
+      `{"result":3121684,"error":null,"id":null}`
+- [x] MCP `tools/call zcl_getblockcount` — PASS:
+      text body `3121684`
+
+### Surprises / follow-ups
+The replay only conflicted in `lib/test/src/test_parallel.c` because
+current `main` already had the S-5 `body_persist_stage` test entry. The
+resolution keeps both `projection_adoption` and `body_persist_stage`.
+
+### Status
+DONE — branch `integration/phase1-projection-adoption` is ready for
+orchestrator review/merge.
