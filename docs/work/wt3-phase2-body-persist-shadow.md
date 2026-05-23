@@ -224,6 +224,6 @@ Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
 
 ## Status
 
-**READY** — start when human invokes you in `~/github/zclassic23-3`.
+**IN PROGRESS (wt3)** — started 2026-05-23; body_persist shadow stage branch active.
 
 <!-- Worker: append a Completion section below when done. -->
