@@ -19,6 +19,7 @@
 #include "services/validate_headers_stage.h"
 #include "services/body_fetch_stage.h"
 #include "services/body_persist_stage.h"
+#include "services/script_validate_stage.h"
 #include "services/chain_tip_watchdog.h"
 #include "conditions/condition_registry.h"
 #include "supervisors/self_heal.h"
@@ -761,6 +762,60 @@ static void boot_body_persist_supervisor_register(struct boot_svc_ctx *svc)
     if (g_bp_id == SUPERVISOR_INVALID_ID) {
         fprintf(stderr,  // obs-ok:bp-supervisor-fallback-warn
             "[supervisor] WARN staged.body_persist register failed\n");
+    }
+}
+
+/* ── Wave S, S-6: script_validate stage supervisor child ───────────── */
+static struct liveness_contract g_sv_contract;
+static supervisor_child_id      g_sv_id = SUPERVISOR_INVALID_ID;
+static struct main_state       *g_sv_ms = NULL;
+
+static void sv_tick(struct liveness_contract *c)
+{
+    (void)c;
+    if (!g_sv_ms) return;
+    (void)script_validate_stage_drain(SCRIPT_VALIDATE_BATCH_PER_TICK);
+    supervisor_progress(g_sv_id,
+                        (int64_t)script_validate_stage_cursor());
+    supervisor_tick(g_sv_id);
+}
+
+static void sv_stall(struct liveness_contract *c)
+{
+    (void)c;
+    fprintf(stderr,  // obs-ok:sv-shadow-stall
+            "[supervisor] staged.script_validate stalled "
+            "(cursor=%llu verified=%llu upstream_failed=%llu internal_error=%llu) "
+            "— shadow script validation behind body_persist\n",
+            (unsigned long long)script_validate_stage_cursor(),
+            (unsigned long long)script_validate_stage_verified_total(),
+            (unsigned long long)script_validate_stage_upstream_failed_total(),
+            (unsigned long long)script_validate_stage_internal_error_total());
+}
+
+static void boot_script_validate_supervisor_register(struct boot_svc_ctx *svc)
+{
+    if (!svc || !svc->state) return;
+    if (g_sv_id != SUPERVISOR_INVALID_ID) return;  /* idempotent */
+
+    if (!script_validate_stage_init(svc->state)) {
+        fprintf(stderr,  // obs-ok:sv-init-warn
+            "[supervisor] WARN staged.script_validate init failed — "
+            "shadow script validation not running this boot\n");
+        return;
+    }
+
+    g_sv_ms = svc->state;
+    liveness_contract_init(&g_sv_contract, "staged.script_validate");
+    atomic_store(&g_sv_contract.period_secs, (int64_t)2);
+    atomic_store(&g_sv_contract.progress_max_quiet_us,
+                 (int64_t)1800 * 1000 * 1000);
+    g_sv_contract.on_tick  = sv_tick;
+    g_sv_contract.on_stall = sv_stall;
+    g_sv_id = supervisor_register(&g_sv_contract);
+    if (g_sv_id == SUPERVISOR_INVALID_ID) {
+        fprintf(stderr,  // obs-ok:sv-supervisor-fallback-warn
+            "[supervisor] WARN staged.script_validate register failed\n");
     }
 }
 
@@ -2970,6 +3025,7 @@ bool app_init_services(struct app_context *ctx,
     boot_validate_headers_supervisor_register(svc);
     boot_body_fetch_supervisor_register(svc);
     boot_body_persist_supervisor_register(svc);
+    boot_script_validate_supervisor_register(svc);
 
     if (!boot_register_runtime_services(svc) ||
         !zcl_service_kernel_start_all(&svc->runtime_kernel)) {
@@ -3132,8 +3188,12 @@ static void shutdown_release_owned_resources(struct boot_svc_ctx *svc)
     sapling_free_params();
 
     /* Wave S shutdown order: bottom-up through the saga so each stage's
-     * upstream is still alive while it drains in-flight work. S-5
-     * body_persist reads from body_fetch_log; tear it down first. */
+     * upstream is still alive while it drains in-flight work. S-6
+     * script_validate reads from body_persist_log; tear it down first. */
+    script_validate_stage_shutdown();
+
+    /* S-5 body_persist reads from body_fetch_log; tear it down before
+     * body_fetch. */
     body_persist_stage_shutdown();
 
     /* S-4 body_fetch reads from validate_headers_log; tear it down
