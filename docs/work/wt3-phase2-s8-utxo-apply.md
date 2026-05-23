@@ -200,8 +200,9 @@ subsystem=utxo_apply`, and runs under the supervisor without mutating
 consensus state.
 
 ### Commits
-- 950750300 wt3: start utxo apply shadow stage
-- 5019329a2 add utxo apply shadow stage
+- 511104a9e wt3: start utxo apply shadow stage
+- 848c37219 add utxo apply shadow stage
+- 8ddb34a0e wt3: complete utxo apply shadow stage
 
 ### Files added/modified
 - `app/services/include/services/utxo_apply_stage.h` (NEW)
@@ -217,7 +218,7 @@ consensus state.
 - [x] `make -j$(nproc) test_zcl` — PASS
 - [x] `ZCL_TEST_ONLY=utxo_apply ./test_zcl` — PASS
 - [x] `make lint` — PASS
-- [x] `./test_parallel --jobs=$(nproc)` — PASS: `ALL TESTS PASSED — 0/186 groups failed`
+- [x] `./test_parallel --jobs=$(nproc)` — PASS: `ALL TESTS PASSED — 0/186 groups failed (107.0s wall, 32 workers)`
 - [x] `make -j$(nproc)` — PASS
 
 ### Surprises / follow-ups
