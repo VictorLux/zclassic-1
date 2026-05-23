@@ -69,6 +69,7 @@ projection_t *projection_open(const char *path)
         free(p);
         return NULL;
     }
+    sqlite3_busy_timeout(p->db, 1000);
 
     char *err = NULL;
     if (sqlite3_exec(p->db, "BEGIN DEFERRED", NULL, NULL, &err) != SQLITE_OK) {

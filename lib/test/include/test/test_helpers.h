@@ -325,6 +325,7 @@ int test_stage(void);
 int test_mailbox(void);
 int test_mailbox_adoption(void);
 int test_projection(void);
+int test_projection_adoption(void);
 int test_progress_store(void);
 int test_header_admit_stage(void);
 int test_validate_headers_stage(void);
