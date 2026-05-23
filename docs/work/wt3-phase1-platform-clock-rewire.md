@@ -172,6 +172,38 @@ Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
 
 ## Status
 
-**IN PROGRESS (wt3)** — platform clock/RNG rewire started 2026-05-23.
+**BLOCKED (wt3)** — platform clock/RNG rewire mostly complete and pushed;
+gate #19 cannot ratchet to FAIL without touching three files this assignment
+explicitly marks out of scope.
 
 <!-- Worker: append a Completion section below when done. -->
+
+## Progress / Blocker (wt3, 2026-05-23)
+
+### Summary
+Rewired the allowed direct `clock_gettime(...)` and `time(NULL)` call sites
+through `platform.clock` using `lib/platform/include/platform/time_compat.h`
+and `tools/lint/rewire_platform_clock.sh`. Rewired `lib/core/src/random.c`
+through `platform.rng` and extended gate #19 to scan `getrandom(`.
+
+### Commits
+- 8103da683 wt3: mark platform rewire in progress
+- a64834bb9 rewire raw clock calls to platform clock
+- 2b7b98f10 route core random through platform rng
+- 2929e50f7 justify preexisting stderr diagnostics
+
+### Verification
+- [x] `make -j$(nproc)` — PASS
+- [x] `make lint` — PASS in current WARN mode
+- [x] `make test_parallel` — PASS, runner builds
+
+### Remaining gate #19 violations
+- `app/conditions/src/chain_stalled_with_data.c:35` — forbidden by this assignment (`app/conditions/`, wt2 owns)
+- `app/services/src/header_admit_stage.c:44` — forbidden by this assignment (explicit wt2-owned file)
+- `lib/framework/src/condition.c:19` — forbidden by this assignment (`lib/framework/`, wt2 owns)
+
+### Status
+BLOCKED — branch `wt3/phase1-platform-rewire` pushed to origin. To finish,
+the orchestrator should either let wt3 touch the three listed files or merge
+the owning wt2 changes first, then wt3 can flip gate #19 default to FAIL and
+update `Makefile` / `DEFENSIVE_CODING.md`.
