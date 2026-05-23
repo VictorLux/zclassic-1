@@ -137,6 +137,13 @@ int main(void)
                failures);
         return failures ? 1 : 0;
     }
+    if (only && strcmp(only, "proof_validate") == 0) {
+        printf("[test] ZCL_TEST_ONLY=proof_validate — running proof_validate stage only\n");
+        failures += test_proof_validate_stage();
+        printf("\n=== proof_validate subset complete: %d failure(s) ===\n",
+               failures);
+        return failures ? 1 : 0;
+    }
     if (only && strcmp(only, "rpc_safety") == 0) {
         printf("[test] ZCL_TEST_ONLY=rpc_safety — running RPC safety subset\n");
         failures += test_rpc_safety();
@@ -541,6 +548,7 @@ int main(void)
     failures += test_body_fetch_stage();
     failures += test_body_persist_stage();
     failures += test_script_validate_stage();
+    failures += test_proof_validate_stage();
     failures += test_legacy_oneshot_import();
     failures += test_process_block_revalidate();
     failures += test_domain_consensus_verify();

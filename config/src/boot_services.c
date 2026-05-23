@@ -20,6 +20,7 @@
 #include "services/body_fetch_stage.h"
 #include "services/body_persist_stage.h"
 #include "services/script_validate_stage.h"
+#include "services/proof_validate_stage.h"
 #include "services/chain_tip_watchdog.h"
 #include "conditions/condition_registry.h"
 #include "supervisors/self_heal.h"
@@ -816,6 +817,60 @@ static void boot_script_validate_supervisor_register(struct boot_svc_ctx *svc)
     if (g_sv_id == SUPERVISOR_INVALID_ID) {
         fprintf(stderr,  // obs-ok:sv-supervisor-fallback-warn
             "[supervisor] WARN staged.script_validate register failed\n");
+    }
+}
+
+/* ── Wave S, S-7: proof_validate stage supervisor child ────────────── */
+static struct liveness_contract g_pv_contract;
+static supervisor_child_id      g_pv_id = SUPERVISOR_INVALID_ID;
+static struct main_state       *g_pv_ms = NULL;
+
+static void pv_tick(struct liveness_contract *c)
+{
+    (void)c;
+    if (!g_pv_ms) return;
+    (void)proof_validate_stage_drain(PROOF_VALIDATE_BATCH_PER_TICK);
+    supervisor_progress(g_pv_id,
+                        (int64_t)proof_validate_stage_cursor());
+    supervisor_tick(g_pv_id);
+}
+
+static void pv_stall(struct liveness_contract *c)
+{
+    (void)c;
+    fprintf(stderr,  // obs-ok:pv-shadow-stall
+            "[supervisor] staged.proof_validate stalled "
+            "(cursor=%llu verified=%llu upstream_failed=%llu internal_error=%llu) "
+            "— shadow proof validation behind script_validate\n",
+            (unsigned long long)proof_validate_stage_cursor(),
+            (unsigned long long)proof_validate_stage_verified_total(),
+            (unsigned long long)proof_validate_stage_upstream_failed_total(),
+            (unsigned long long)proof_validate_stage_internal_error_total());
+}
+
+static void boot_proof_validate_supervisor_register(struct boot_svc_ctx *svc)
+{
+    if (!svc || !svc->state) return;
+    if (g_pv_id != SUPERVISOR_INVALID_ID) return;  /* idempotent */
+
+    if (!proof_validate_stage_init(svc->state)) {
+        fprintf(stderr,  // obs-ok:pv-init-warn
+            "[supervisor] WARN staged.proof_validate init failed — "
+            "shadow proof validation not running this boot\n");
+        return;
+    }
+
+    g_pv_ms = svc->state;
+    liveness_contract_init(&g_pv_contract, "staged.proof_validate");
+    atomic_store(&g_pv_contract.period_secs, (int64_t)2);
+    atomic_store(&g_pv_contract.progress_max_quiet_us,
+                 (int64_t)1800 * 1000 * 1000);
+    g_pv_contract.on_tick  = pv_tick;
+    g_pv_contract.on_stall = pv_stall;
+    g_pv_id = supervisor_register(&g_pv_contract);
+    if (g_pv_id == SUPERVISOR_INVALID_ID) {
+        fprintf(stderr,  // obs-ok:pv-supervisor-fallback-warn
+            "[supervisor] WARN staged.proof_validate register failed\n");
     }
 }
 
@@ -3026,6 +3081,7 @@ bool app_init_services(struct app_context *ctx,
     boot_body_fetch_supervisor_register(svc);
     boot_body_persist_supervisor_register(svc);
     boot_script_validate_supervisor_register(svc);
+    boot_proof_validate_supervisor_register(svc);
 
     if (!boot_register_runtime_services(svc) ||
         !zcl_service_kernel_start_all(&svc->runtime_kernel)) {
@@ -3188,8 +3244,12 @@ static void shutdown_release_owned_resources(struct boot_svc_ctx *svc)
     sapling_free_params();
 
     /* Wave S shutdown order: bottom-up through the saga so each stage's
-     * upstream is still alive while it drains in-flight work. S-6
-     * script_validate reads from body_persist_log; tear it down first. */
+     * upstream is still alive while it drains in-flight work. S-7
+     * proof_validate reads from script_validate_log; tear it down first. */
+    proof_validate_stage_shutdown();
+
+    /* S-6 script_validate reads from body_persist_log; tear it down before
+     * body_persist. */
     script_validate_stage_shutdown();
 
     /* S-5 body_persist reads from body_fetch_log; tear it down before

@@ -176,7 +176,53 @@ One commit per task. Push after tasks 2, 4, 5.
 
 ## Status
 
-**READY** — gated on S-6 merge. Start when human invokes you in
-`~/github/zclassic23-3` AFTER S-6 is merged into main.
+**IN PROGRESS (wt3)** — started 2026-05-23; proof_validate shadow stage
+branch active.
 
 <!-- Worker: append a Completion section below when done. -->
+
+## Completion (wt3, 2026-05-23)
+
+### Summary
+Shipped S-7 `proof_validate` as a shadow stage over `script_validate_log`.
+It reads verified block bodies, verifies Sapling spends/outputs, Sapling
+binding signatures, and Sprout Groth16/PHGR13 JoinSplit proofs through the
+existing verification APIs, and records per-height outcomes in
+`proof_validate_log` without mutating consensus state.
+
+### Commits
+- 23648751a wt3: start proof validate shadow stage
+- 9e0cc4725 add proof validate shadow stage
+
+### Files added/modified
+- `app/services/include/services/proof_validate_stage.h` (NEW)
+- `app/services/src/proof_validate_stage.c` (NEW)
+- `lib/test/src/test_proof_validate_stage.c` (NEW)
+- `config/src/boot_services.c`
+- `app/controllers/src/diagnostics_controller.c`
+- `lib/test/include/test/test_helpers.h`
+- `lib/test/src/test.c`
+- `lib/test/src/test_parallel.c`
+
+### Acceptance verification
+- [x] `make -j$(nproc) test_zcl` — PASS
+- [x] `ZCL_TEST_ONLY=proof_validate ./test_zcl` — PASS
+- [x] `make lint` — PASS
+- [x] `make -j$(nproc)` — PASS
+- [x] `./test_parallel --jobs=$(nproc)` — PASS: `ALL TESTS PASSED — 0/186 groups failed`
+
+### Surprises / follow-ups
+The S-7 assignment text still mentions manually updating the `zcl_state`
+enum CSV in `tools/mcp/controllers/ops_controller.c`, but current main derives
+that schema from `diagnostics_controller.c:g_dumpers` at registration time.
+Adding `proof_validate` to `g_dumpers` is therefore enough for both the MCP
+schema and `zcl_state subsystem=proof_validate`.
+
+Unit tests use the stage-local verifier hook to deterministically exercise
+each proof failure class without generating expensive real Sapling/Sprout
+proofs. Production default verification still calls the existing Sapling and
+Sprout APIs directly.
+
+### Status
+DONE — branch `wt3/phase2-proof-validate-shadow` pushed to origin, ready
+for orchestrator merge.
