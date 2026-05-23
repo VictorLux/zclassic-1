@@ -457,6 +457,7 @@ int test_mcp_e2e(void)
     mcp_router_reset();
     mcp_register_ops();
     mcp_register_diagnostics();
+    mcp_register_conditions();
     mcp_register_chain();
     mcp_register_net();
     mcp_register_wallet();
