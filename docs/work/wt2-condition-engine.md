@@ -335,6 +335,22 @@ git push origin wt2/phase0-condition-engine
 
 ## Status
 
-**IN PROGRESS (wt2)** — condition engine implementation started.
+**IN PROGRESS (wt2)** — paused after Task 9 source implementation. Branch
+contains the condition engine, self-heal supervisor wiring, first three
+condition files, `zcl_conditions`, and `test_condition_engine`.
+
+Current verification:
+- `make lint` — PASS
+- condition/self-heal/MCP objects compile — PASS
+- `test_condition_engine.c` standalone compile with `-DZCL_TESTING` — PASS
+- `make test_zcl` — BLOCKED at link in this checkout:
+  `/usr/bin/ld: cannot find -ltor_stub` and `cannot find -lleveldb`
+
+Follow-up before DONE:
+- Run `make test_parallel` once vendor link libraries are present.
+- Run live `dumpstate condition_engine` / `zcl_conditions`.
+- Decide whether `contradiction_frozen` may expose the existing private
+  chain-evidence reconstruction helper, or leave it as operator escalation
+  until the Phase 2 mega-module dissolve.
 
 <!-- Worker: append a Completion section below when done, per agent-protocol.md -->
