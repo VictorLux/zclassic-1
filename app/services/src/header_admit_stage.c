@@ -12,6 +12,7 @@
 #include "chain/chain.h"
 #include "core/uint256.h"
 #include "json/json.h"
+#include "platform/clock.h"
 #include "services/header_admit_inbox.h"
 #include "storage/progress_store.h"
 #include "util/blocker.h"
@@ -23,11 +24,11 @@
 
 #include <pthread.h>
 #include <stdatomic.h>
+#include <limits.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <time.h>
 
 #define STAGE_NAME       "header_admit"
 
@@ -41,13 +42,12 @@ static _Atomic int64_t  g_last_admit_height = -1;
 static _Atomic int64_t  g_last_step_unix = 0;
 static _Atomic int64_t  g_last_blocked_unix = 0;
 
-MAILBOX_DEFINE(header_admit, struct header_admit_msg, 1024);
+MAILBOX_DEFINE(header_admit, struct header_admit_msg,
+               HEADER_ADMIT_INBOX_CAPACITY)
 
 static int64_t wall_now_s(void)
 {
-    struct timespec ts;
-    clock_gettime(CLOCK_REALTIME, &ts);
-    return (int64_t)ts.tv_sec;
+    return clock_now_wall_ms() / 1000;
 }
 
 /* ── Schema bootstrap (idempotent) ─────────────────────────────────── */

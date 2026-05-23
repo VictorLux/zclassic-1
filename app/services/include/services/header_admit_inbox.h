@@ -12,6 +12,8 @@
 
 #include <stdint.h>
 
+#define HEADER_ADMIT_INBOX_CAPACITY 1024
+
 struct header_admit_msg {
     int64_t height;           /* hint; admit verifies against active chain */
     struct uint256 hash;

@@ -16,6 +16,7 @@
 
 #include "services/header_probe_service.h"
 
+#include "platform/clock.h"
 #include "services/header_admit_inbox.h"
 #include "validation/main_state.h"
 #include "validation/chainstate.h"
@@ -860,7 +861,7 @@ static void hp_publish_header_admit(const struct block_index *pindex)
         .height = pindex->nHeight,
         .hash = *pindex->phashBlock,
         .peer_id = 0,
-        .observed_unix = (int64_t)time(NULL),
+        .observed_unix = clock_now_wall_ms() / 1000,
     };
     if (!mailbox_header_admit_push(&msg)) {
         fprintf(stderr,  // obs-ok:header-probe-header-admit-inbox-full

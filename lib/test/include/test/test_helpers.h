@@ -323,6 +323,7 @@ int test_clock(void);
 int test_rng(void);
 int test_stage(void);
 int test_mailbox(void);
+int test_mailbox_adoption(void);
 int test_projection(void);
 int test_progress_store(void);
 int test_header_admit_stage(void);
