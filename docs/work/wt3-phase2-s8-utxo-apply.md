@@ -185,8 +185,7 @@ One commit per task. Push after tasks 2, 4, 5.
 
 ## Status
 
-**IN PROGRESS (wt3)** — started 2026-05-23; utxo_apply shadow stage
-branch active.
+**✅ DONE — merged 2026-05-23** to main as `497220f58`. Next: `wt3-phase2-s9-tip-finalize.md`.
 
 <!-- Worker: append a Completion section below when done. -->
 

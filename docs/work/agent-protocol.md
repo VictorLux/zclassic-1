@@ -53,6 +53,9 @@ and every worker rebases on top of it before pushing.
    - DO NOT branch off — workers commit directly to main.
    - If you need to experiment, use `git stash` or a LOCAL-ONLY scratch
      branch, but the work that ships goes onto main directly.
+   - **IGNORE any `**Branch:**` field at the top of older assignment docs.**
+     That was a legacy of the feature-branch workflow; the field is dead.
+     You stay on `main` regardless of what the doc says.
 
 7. Mark in-progress + push
    - Edit the assignment doc's Status section to "IN PROGRESS (wt<N>)"
