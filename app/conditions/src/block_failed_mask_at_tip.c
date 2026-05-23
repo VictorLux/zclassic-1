@@ -10,6 +10,9 @@
 #include "validation/process_block_revalidate.h"
 
 #include <stdio.h>
+#include <stdatomic.h>
+
+static _Atomic int64_t g_target_at_detect = -1;
 
 static struct block_index *find_failed_next(struct main_state *ms, int target)
 {
@@ -33,7 +36,10 @@ static bool detect_block_failed_mask_at_tip(void)
 {
     struct main_state *ms = condition_engine_main_state();
     int64_t target = target_height();
-    return target >= 0 && find_failed_next(ms, (int)target) != NULL;
+    bool found = target >= 0 && find_failed_next(ms, (int)target) != NULL;
+    if (found)
+        atomic_store(&g_target_at_detect, target);
+    return found;
 }
 
 static enum condition_remedy_result remedy_block_failed_mask_at_tip(void)
@@ -56,7 +62,7 @@ static bool witness_block_failed_mask_at_tip(int64_t target_at_detect)
 {
     (void)target_at_detect;
     struct main_state *ms = condition_engine_main_state();
-    int64_t target = target_height();
+    int64_t target = atomic_load(&g_target_at_detect);
     return ms && target >= 0 && find_failed_next(ms, (int)target) == NULL;
 }
 

@@ -17,11 +17,13 @@
 
 static _Atomic bool g_detect;
 static _Atomic bool g_witness;
+static _Atomic int g_detect_calls;
 static _Atomic int g_remedy_calls;
 static _Atomic int g_operator_events;
 
 static bool ce_detect(void)
 {
+    atomic_fetch_add(&g_detect_calls, 1);
     return atomic_load(&g_detect);
 }
 
@@ -55,6 +57,7 @@ static void reset_fixture(void)
     event_clear_all_observers();
     atomic_store(&g_detect, false);
     atomic_store(&g_witness, false);
+    atomic_store(&g_detect_calls, 0);
     atomic_store(&g_remedy_calls, 0);
     atomic_store(&g_operator_events, 0);
 }
@@ -94,6 +97,29 @@ int test_condition_engine(void)
         condition_engine_tick();
         ok = ok && atomic_load(&g_remedy_calls) == 1;
         CE_CHECK("backoff suppresses immediate retry", ok);
+    }
+
+    static struct condition c_slow_poll = {
+        .name = "ce_slow_poll",
+        .severity = COND_WARN,
+        .poll_secs = 60,
+        .backoff_secs = 0,
+        .max_attempts = 1,
+        .detect = ce_detect,
+        .remedy = ce_remedy,
+        .witness = ce_witness,
+        .witness_window_secs = 60,
+    };
+
+    {
+        reset_fixture();
+        bool ok = condition_register(&c_slow_poll);
+        atomic_store(&g_detect, false);
+        condition_engine_tick();
+        condition_engine_tick();
+        ok = ok && atomic_load(&g_detect_calls) == 1;
+        ok = ok && atomic_load(&g_remedy_calls) == 0;
+        CE_CHECK("poll interval suppresses immediate recheck", ok);
     }
 
     {

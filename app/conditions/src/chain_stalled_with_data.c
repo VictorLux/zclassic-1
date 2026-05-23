@@ -14,6 +14,7 @@
 
 static _Atomic int64_t g_last_tip = -1;
 static _Atomic int64_t g_last_tip_change_unix = 0;
+static _Atomic int64_t g_tip_at_detect = -1;
 
 static int64_t current_tip(void)
 {
@@ -44,7 +45,11 @@ static bool detect_chain_stalled_with_data(void)
         atomic_store(&g_last_tip_change_unix, now);
         return false;
     }
-    return tip >= 0 && now - changed >= 60 && mirror_has_body_stall_error();
+    bool stalled = tip >= 0 && now - changed >= 60 &&
+                   mirror_has_body_stall_error();
+    if (stalled)
+        atomic_store(&g_tip_at_detect, tip);
+    return stalled;
 }
 
 static enum condition_remedy_result remedy_chain_stalled_with_data(void)
@@ -59,7 +64,8 @@ static enum condition_remedy_result remedy_chain_stalled_with_data(void)
 static bool witness_chain_stalled_with_data(int64_t target_at_detect)
 {
     (void)target_at_detect;
-    return current_tip() > atomic_load(&g_last_tip);
+    int64_t tip_at_detect = atomic_load(&g_tip_at_detect);
+    return tip_at_detect >= 0 && current_tip() > tip_at_detect;
 }
 
 static struct condition c_chain_stalled_with_data = {
