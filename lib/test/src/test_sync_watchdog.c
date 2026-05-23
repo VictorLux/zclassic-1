@@ -12,7 +12,6 @@
 #include <time.h>
 
 extern _Atomic int64_t g_sync_state_entered_time;
-extern int64_t g_utxo_pause_first_seen;       /* Round 7 A1 */
 extern int64_t g_queue_starved_first_seen;    /* Round 7 A7 */
 
 /* ── Helpers ──────────────────────────────────────────────── */
@@ -32,9 +31,8 @@ static void reset_test_state(void)
 
     sync_watchdog_init();
     sync_set_state(SYNC_IDLE, "test reset");
-    /* Round 7 A1+A7: reset cross-test global timers so a backdated
+    /* Round 7 A7: reset cross-test global timers so a backdated
      * timestamp in one TEST() doesn't bleed into the next. */
-    g_utxo_pause_first_seen = 0;
     g_queue_starved_first_seen = 0;
 }
 
@@ -87,44 +85,7 @@ static int test_header_stall_detection(void)
     return failures;
 }
 
-/* ── Test: block stall detection ─────────────────────────── */
-
-static int test_block_stall_detection(void)
-{
-    int failures = 0;
-
-    TEST("watchdog detects block stall after 300s") {
-        reset_test_state();
-
-        sync_set_state(SYNC_HEADERS_DOWNLOAD, "setup");
-        sync_set_state(SYNC_BLOCKS_DOWNLOAD, "test");
-        atomic_store(&g_sync_state_entered_time,
-                     (int64_t)platform_time_wall_time_t() - 350);
-
-        /* active_chain_height returns 0 for zeroed main_state.
-         * First check: last_chain_height=-1, current=0 → baseline recorded */
-        enum watchdog_recovery_type r = sync_watchdog_check(
-            &g_test_cm, &g_test_dm, &g_test_ms);
-        ASSERT(r == WATCHDOG_NONE);
-
-        /* Re-enter blocks_download if recovery changed state */
-        if (sync_get_state() != SYNC_BLOCKS_DOWNLOAD) {
-            sync_set_state(SYNC_IDLE, "re-enter");
-            sync_set_state(SYNC_HEADERS_DOWNLOAD, "re-enter");
-            sync_set_state(SYNC_BLOCKS_DOWNLOAD, "re-enter");
-        }
-        atomic_store(&g_sync_state_entered_time,
-                     (int64_t)platform_time_wall_time_t() - 350);
-
-        /* Second check: last_chain_height=0, current=0 → stall */
-        r = sync_watchdog_check(&g_test_cm, &g_test_dm, &g_test_ms);
-        ASSERT(r == WATCHDOG_BLOCK_STALL);
-
-        PASS();
-    } _test_next:;
-
-    return failures;
-}
+/* BLOCK_STALL moved to condition block_failed_mask_at_tip. */
 
 /* ── Test: state stuck detection ─────────────────────────── */
 
@@ -572,63 +533,7 @@ static int test_progress_rate_tracking(void)
     return failures;
 }
 
-/* ── Round 7 A1: UTXO_PAUSE detection ────────────────────── */
-
-static int test_utxo_pause_fires_after_window(void)
-{
-    int failures = 0;
-
-    TEST("watchdog detects + clears UTXO_PAUSE after 300s") {
-        reset_test_state();
-        sync_set_state(SYNC_HEADERS_DOWNLOAD, "utxo_pause setup");
-        sync_set_state(SYNC_BLOCKS_DOWNLOAD, "utxo_pause test");
-
-        process_block_test_set_utxo_activation_paused_height(1500);
-        g_utxo_pause_first_seen = 0;
-
-        /* First check: records first_seen, no recovery yet. */
-        enum watchdog_recovery_type r = sync_watchdog_check(
-            &g_test_cm, &g_test_dm, &g_test_ms);
-        ASSERT(r != WATCHDOG_UTXO_PAUSE);
-        ASSERT(g_utxo_pause_first_seen != 0);
-        ASSERT(process_block_test_get_utxo_activation_paused_height() == 1500);
-
-        /* Backdate first_seen by 350s and check again — must fire. */
-        g_utxo_pause_first_seen = (int64_t)platform_time_wall_time_t() - 350;
-        r = sync_watchdog_check(&g_test_cm, &g_test_dm, &g_test_ms);
-        ASSERT(r == WATCHDOG_UTXO_PAUSE);
-        /* Pause must have been cleared by the recovery action. */
-        ASSERT(process_block_test_get_utxo_activation_paused_height() == -1);
-
-        PASS();
-    } _test_next:;
-
-    return failures;
-}
-
-static int test_utxo_pause_inactive_resets_timer(void)
-{
-    int failures = 0;
-
-    TEST("watchdog does not fire UTXO_PAUSE when no pause set") {
-        reset_test_state();
-        sync_set_state(SYNC_HEADERS_DOWNLOAD, "no pause setup");
-        sync_set_state(SYNC_BLOCKS_DOWNLOAD, "no pause");
-
-        process_block_test_set_utxo_activation_paused_height(-1);
-        g_utxo_pause_first_seen = (int64_t)platform_time_wall_time_t() - 9999;
-
-        enum watchdog_recovery_type r = sync_watchdog_check(
-            &g_test_cm, &g_test_dm, &g_test_ms);
-        ASSERT(r != WATCHDOG_UTXO_PAUSE);
-        /* first_seen must be reset to 0 when no pause is active. */
-        ASSERT(g_utxo_pause_first_seen == 0);
-
-        PASS();
-    } _test_next:;
-
-    return failures;
-}
+/* UTXO_PAUSE moved to condition utxo_activation_paused. */
 
 /* Round 7 A7: QUEUE_STARVED — empty in-flight slots for >120s with
  * peers connected fires the recovery before BLOCK_STALL would. */
@@ -765,7 +670,6 @@ int test_sync_watchdog(void)
     int failures = 0;
     printf("\n=== Sync Watchdog Tests ===\n");
     failures += test_header_stall_detection();
-    failures += test_block_stall_detection();
     failures += test_state_stuck_detection();
     failures += test_at_tip_reconciliation();
     failures += test_repeated_restart_circuit_breaker();
@@ -782,8 +686,6 @@ int test_sync_watchdog(void)
     failures += test_zero_peers_stuck();
     failures += test_timeout_boundary_exact();
     failures += test_progress_rate_tracking();
-    failures += test_utxo_pause_fires_after_window();
-    failures += test_utxo_pause_inactive_resets_timer();
     failures += test_queue_starved_fires_after_window();
     failures += test_next_child_missing_triggers_local_refill();
     failures += test_next_child_missing_gates_mirror_until_retries();
