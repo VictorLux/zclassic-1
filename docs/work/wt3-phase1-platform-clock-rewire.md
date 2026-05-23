@@ -172,9 +172,7 @@ Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
 
 ## Status
 
-**DONE (wt3)** — platform clock/RNG rewire complete; gate #19 ratcheted
-to FAIL after the final three raw clock callers were routed through
-`platform.clock`.
+**✅ DONE — merged 2026-05-23** into main as `be9e05022`. Gate #19 now FAIL with 0 violations. Next: `wt3-phase2-body-persist-shadow.md`.
 
 <!-- Worker: append a Completion section below when done. -->
 

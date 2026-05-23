@@ -252,7 +252,7 @@ Append completion section to this doc per `docs/work/agent-protocol.md`.
 
 ## Status
 
-**IN PROGRESS (wt2)** — started 2026-05-23; mailbox adoption branch active.
+**✅ DONE — merged 2026-05-23** into main. Next: `wt2-phase1-projection-adoption.md`.
 
 <!-- Worker: append a Completion section below when done. -->
 
