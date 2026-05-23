@@ -12,6 +12,7 @@
 #include "chain/chain.h"
 #include "core/uint256.h"
 #include "json/json.h"
+#include "platform/time_compat.h"
 #include "storage/progress_store.h"
 #include "util/blocker.h"
 #include "util/log_macros.h"
@@ -26,7 +27,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <time.h>
 
 #define STAGE_NAME       "header_admit"
 
@@ -40,9 +40,7 @@ static _Atomic int64_t  g_last_blocked_unix = 0;
 
 static int64_t wall_now_s(void)
 {
-    struct timespec ts;
-    clock_gettime(CLOCK_REALTIME, &ts);
-    return (int64_t)ts.tv_sec;
+    return platform_time_wall_unix();
 }
 
 /* ── Schema bootstrap (idempotent) ─────────────────────────────────── */
