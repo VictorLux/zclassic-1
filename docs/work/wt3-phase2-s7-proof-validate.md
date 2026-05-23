@@ -176,7 +176,7 @@ One commit per task. Push after tasks 2, 4, 5.
 
 ## Status
 
-**READY** — gated on S-6 merge. Start when human invokes you in
-`~/github/zclassic23-3` AFTER S-6 is merged into main.
+**IN PROGRESS (wt3)** — started 2026-05-23; proof_validate shadow stage
+branch active.
 
 <!-- Worker: append a Completion section below when done. -->
