@@ -187,6 +187,7 @@ Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
 
 ## Status
 
-**READY** — start when human invokes you in `~/github/zclassic23-2`.
+**IN PROGRESS (wt2)** — started 2026-05-23 on
+`wt2/phase3-watchdog-dissolve-pr1`.
 
 <!-- Worker: append a Completion section below when done. -->
