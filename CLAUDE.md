@@ -6,13 +6,28 @@ ZClassic23 is one 26 MB statically-linked C23 binary that runs a full ZClassic n
 
 See [`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md) for the L1–L7 layer cake and the file-to-layer mapping, and [`docs/adr/0001-personal-sovereignty-stack.md`](./docs/adr/0001-personal-sovereignty-stack.md) for the 2026-05-22 pivot rationale.
 
-## Current focus
+## Current focus — **Framework refactor**
 
-Active master plan: `~/.claude/plans/zclassic23-plan.md`. Vision doc: `~/.claude/plans/zclassic23-ideal-architecture.md`.
+**Canonical architecture:** [`docs/FRAMEWORK.md`](./docs/FRAMEWORK.md) — read this BEFORE writing or moving any code.
+**Status board:** [`docs/REFACTOR_STATUS.md`](./docs/REFACTOR_STATUS.md) — current phase, conformance metrics, in-flight worktrees.
 
-**Wave F — Foundation** (in progress). Eight milestones: F-1 purge ~2,500 LOC of pure cruft; F-2..F-5 introduce kernel primitives (`stage`, `mailbox`, `projection`, `platform.clock`, `platform.rng`); F-6..F-8 land the docs (this file, the architecture doc, ADR-001). Next: **Wave S — Staged sync**, the wedge-extinction wave.
+The refactor adopts Rails-style MVC + Phoenix-style supervised actors + hexagonal ports/adapters + a new **Condition** shape for auto-healing. Every `.c` file under `app/` lives in exactly one of eight folders matching one of eight shapes (Controller, Service, Model, Job, Supervisor, Condition, Event, Storage Adapter). Lint gates ratchet to enforce.
 
-On a fresh session, type `continue zclassic23` — Claude will `cat ~/.claude/plans/zclassic23-plan.md`, find the current focus, and resume.
+**Parallel-worktree workflow:** main repo is the orchestrator; `~/github/zclassic23-2` (wt2) and `~/github/zclassic23-3` (wt3) are workers. See [`docs/work/README.md`](./docs/work/README.md) and [`docs/work/agent-protocol.md`](./docs/work/agent-protocol.md). Worker identity = pwd suffix.
+
+### On a fresh session
+
+Type **`continue zclassic23 development`**. The agent will:
+1. Run `pwd` to detect worktree ID (`main`, `wt2`, `wt3`, ...).
+2. `cat docs/FRAMEWORK.md` and `cat docs/REFACTOR_STATUS.md`.
+3. If worker → read `docs/work/wt<N>-*.md` and follow `docs/work/agent-protocol.md`.
+4. If orchestrator → review in-flight work in status board, merge pushed branches, dispatch next assignments.
+
+### Prior planning history (reference, not active)
+
+Past plans at `~/.claude/plans/` (zclassic23-plan.md, zclassic23-ideal-architecture.md, come-up-with-architecture-concurrent-sutherland.md, zclassic23-50-year-architecture.md) are reference material. The framework refactor at `docs/FRAMEWORK.md` supersedes them all for active work.
+
+Wave F-1..F-5 kernel primitives (stage, mailbox, projection, platform.clock, platform.rng) shipped but mostly unused — Phase 1 of the refactor forces adoption. Wave S S-1..S-4b shipped (staged sync stages) — these ARE Jobs in the new framework; Phase 2 finishes S-5..S-12 and dissolves the chain-advance mega-modules.
 
 ## Defensive Coding Standards (MANDATORY)
 
