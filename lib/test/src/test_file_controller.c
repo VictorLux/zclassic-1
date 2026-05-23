@@ -99,7 +99,19 @@ static bool build_snapshot_source_db(const char *db_path, bool include_all_table
         sqlite3_exec(db,
             "INSERT INTO transactions VALUES(x'11',0)",
             NULL, NULL, NULL);
-        sqlite3_exec(db, "INSERT INTO utxos VALUES(x'11',0)", NULL, NULL, NULL);
+        sqlite3_exec(db, "BEGIN", NULL, NULL, NULL);
+        sqlite3_stmt *utxo_insert = NULL;
+        if (sqlite3_prepare_v2(db,
+                "INSERT INTO utxos VALUES(x'11',?)",
+                -1, &utxo_insert, NULL) == SQLITE_OK) {
+            for (int i = 0; i < 1000; i++) {
+                sqlite3_bind_int(utxo_insert, 1, i);
+                sqlite3_step(utxo_insert);
+                sqlite3_reset(utxo_insert);
+            }
+        }
+        if (utxo_insert) sqlite3_finalize(utxo_insert);
+        sqlite3_exec(db, "COMMIT", NULL, NULL, NULL);
         sqlite3_exec(db, "INSERT INTO addresses VALUES(x'22',1)", NULL, NULL, NULL);
         sqlite3_exec(db, "INSERT INTO chain_stats VALUES(0)", NULL, NULL, NULL);
         sqlite3_exec(db, "INSERT INTO zslp_tokens VALUES('TKN')", NULL, NULL, NULL);

@@ -61,6 +61,7 @@ static int condition_find_locked(const char *name)
 static void condition_state_reset(struct condition_state *s)
 {
     atomic_store(&s->first_detect_unix, 0);
+    atomic_store(&s->last_poll_unix, 0);
     atomic_store(&s->last_remedy_unix, 0);
     atomic_store(&s->last_operator_needed_unix, 0);
     atomic_store(&s->target_at_detect, 0);
@@ -129,14 +130,24 @@ static bool condition_due_for_remedy(const struct condition *cond,
 static void condition_tick_one(const struct condition *cond, int64_t now)
 {
     struct condition_state *s = (struct condition_state *)&cond->state;
+    int poll_secs = cond->poll_secs > 0 ? cond->poll_secs : 1;
+    int64_t last_poll = atomic_load(&s->last_poll_unix);
+    bool active = atomic_load(&s->currently_active);
+    if (!active && last_poll != 0 && now - last_poll < poll_secs)
+        return;
+    if (!active)
+        atomic_store(&s->last_poll_unix, now);
+
     int64_t target = atomic_load(&s->target_at_detect);
     bool detected = cond->detect();
 
     if (!detected) {
         if (atomic_load(&s->currently_active) && cond->witness(target))
             condition_mark_cleared(cond, s, now);
-        else if (!atomic_load(&s->currently_active))
+        else if (!atomic_load(&s->currently_active)) {
             condition_state_reset(s);
+            atomic_store(&s->last_poll_unix, now);
+        }
         return;
     }
 
@@ -256,6 +267,8 @@ bool condition_engine_dump_state_json(struct json_value *out, const char *key)
                           atomic_load(&s->currently_active));
         json_push_kv_int(&obj, "first_detect_unix",
                          atomic_load(&s->first_detect_unix));
+        json_push_kv_int(&obj, "last_poll_unix",
+                         atomic_load(&s->last_poll_unix));
         json_push_kv_int(&obj, "attempts", atomic_load(&s->attempts));
         json_push_kv_str(&obj, "last_outcome",
                          condition_remedy_result_name(

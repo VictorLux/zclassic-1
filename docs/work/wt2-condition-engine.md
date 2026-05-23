@@ -354,3 +354,23 @@ Follow-up before DONE:
   until the Phase 2 mega-module dissolve.
 
 <!-- Worker: append a Completion section below when done, per agent-protocol.md -->
+
+## Completion — 2026-05-23
+
+DONE. Follow-up verification completed in `~/github/zclassic23-2`.
+
+- Added condition-engine idle poll gating so `poll_secs` is honored without
+  delaying active-condition witness/remedy checks.
+- Added unit coverage for idle poll suppression.
+- Updated the file-controller snapshot export success fixture to create
+  enough UTXOs for the production 1000-row export guard.
+
+Verification:
+- `make lint` — PASS
+- `make test_parallel` — PASS (build target)
+- `./test_parallel` — PASS: `ALL TESTS PASSED — 0/180 groups failed`
+
+Environment note:
+- This checkout was missing vendored `libtor_stub.a`, `libleveldb.a`, and
+  `libsqlite3.a`; copied the matching archives from `~/github/zclassic23/vendor/lib`
+  into this worktree's ignored `vendor/lib/` so the full suite could link.
