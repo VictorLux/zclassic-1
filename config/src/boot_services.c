@@ -21,6 +21,7 @@
 #include "services/body_persist_stage.h"
 #include "services/script_validate_stage.h"
 #include "services/proof_validate_stage.h"
+#include "services/utxo_apply_stage.h"
 #include "services/chain_tip_watchdog.h"
 #include "conditions/condition_registry.h"
 #include "supervisors/self_heal.h"
@@ -871,6 +872,60 @@ static void boot_proof_validate_supervisor_register(struct boot_svc_ctx *svc)
     if (g_pv_id == SUPERVISOR_INVALID_ID) {
         fprintf(stderr,  // obs-ok:pv-supervisor-fallback-warn
             "[supervisor] WARN staged.proof_validate register failed\n");
+    }
+}
+
+/* ── Wave S, S-8: utxo_apply stage supervisor child ───────────────── */
+static struct liveness_contract g_uv_contract;
+static supervisor_child_id      g_uv_id = SUPERVISOR_INVALID_ID;
+static struct main_state       *g_uv_ms = NULL;
+
+static void uv_tick(struct liveness_contract *c)
+{
+    (void)c;
+    if (!g_uv_ms) return;
+    (void)utxo_apply_stage_drain(UTXO_APPLY_BATCH_PER_TICK);
+    supervisor_progress(g_uv_id,
+                        (int64_t)utxo_apply_stage_cursor());
+    supervisor_tick(g_uv_id);
+}
+
+static void uv_stall(struct liveness_contract *c)
+{
+    (void)c;
+    fprintf(stderr,  // obs-ok:uv-shadow-stall
+            "[supervisor] staged.utxo_apply stalled "
+            "(cursor=%llu verified=%llu upstream_failed=%llu internal_error=%llu) "
+            "— shadow UTXO apply behind proof_validate\n",
+            (unsigned long long)utxo_apply_stage_cursor(),
+            (unsigned long long)utxo_apply_stage_verified_total(),
+            (unsigned long long)utxo_apply_stage_upstream_failed_total(),
+            (unsigned long long)utxo_apply_stage_internal_error_total());
+}
+
+static void boot_utxo_apply_supervisor_register(struct boot_svc_ctx *svc)
+{
+    if (!svc || !svc->state) return;
+    if (g_uv_id != SUPERVISOR_INVALID_ID) return;  /* idempotent */
+
+    if (!utxo_apply_stage_init(svc->state)) {
+        fprintf(stderr,  // obs-ok:uv-init-warn
+            "[supervisor] WARN staged.utxo_apply init failed — "
+            "shadow UTXO apply not running this boot\n");
+        return;
+    }
+
+    g_uv_ms = svc->state;
+    liveness_contract_init(&g_uv_contract, "staged.utxo_apply");
+    atomic_store(&g_uv_contract.period_secs, (int64_t)2);
+    atomic_store(&g_uv_contract.progress_max_quiet_us,
+                 (int64_t)1800 * 1000 * 1000);
+    g_uv_contract.on_tick  = uv_tick;
+    g_uv_contract.on_stall = uv_stall;
+    g_uv_id = supervisor_register(&g_uv_contract);
+    if (g_uv_id == SUPERVISOR_INVALID_ID) {
+        fprintf(stderr,  // obs-ok:uv-supervisor-fallback-warn
+            "[supervisor] WARN staged.utxo_apply register failed\n");
     }
 }
 
@@ -3082,6 +3137,7 @@ bool app_init_services(struct app_context *ctx,
     boot_body_persist_supervisor_register(svc);
     boot_script_validate_supervisor_register(svc);
     boot_proof_validate_supervisor_register(svc);
+    boot_utxo_apply_supervisor_register(svc);
 
     if (!boot_register_runtime_services(svc) ||
         !zcl_service_kernel_start_all(&svc->runtime_kernel)) {
