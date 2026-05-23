@@ -158,3 +158,104 @@ int projection_query_int64(projection_t *p, const char *sql, int64_t *out)
     }
     return 0;
 }
+
+int projection_query_text(projection_t *p, const char *sql,
+                          char *out, size_t out_cap)
+{
+    if (!p || !p->open || !sql || !out || out_cap == 0) {
+        fprintf(stderr,  // obs-ok:projection-arg-failure
+            "[projection] query_text: bad arg (p=%p open=%d sql=%p out=%p cap=%zu)\n",
+            (void *)p, p ? (int)p->open : -1,
+            (const void *)sql, (void *)out, out_cap);
+        return -1;
+    }
+    out[0] = '\0';
+
+    sqlite3_stmt *stmt = NULL;
+    if (sqlite3_prepare_v2(p->db, sql, -1, &stmt, NULL) != SQLITE_OK) {
+        fprintf(stderr, "[projection] prepare: %s\n",  // obs-ok:projection-prepare-failure
+                sqlite3_errmsg(p->db));
+        return -1;
+    }
+
+    int rc = sqlite3_step(stmt);  // raw-sql-ok:kernel-primitive
+    if (rc != SQLITE_ROW) {
+        fprintf(stderr, "[projection] query_text: no rows (rc=%d)\n",  // obs-ok:projection-no-row
+                rc);
+        sqlite3_finalize(stmt);
+        return -1;
+    }
+    if (sqlite3_column_count(stmt) < 1) {
+        fprintf(stderr, "[projection] query_text: zero columns\n");  // obs-ok:projection-bad-shape
+        sqlite3_finalize(stmt);
+        return -1;
+    }
+    if (sqlite3_column_type(stmt, 0) != SQLITE_TEXT) {
+        fprintf(stderr,  // obs-ok:projection-bad-shape
+            "[projection] query_text: col0 type=%d (want TEXT)\n",
+            sqlite3_column_type(stmt, 0));
+        sqlite3_finalize(stmt);
+        return -1;
+    }
+
+    const unsigned char *txt = sqlite3_column_text(stmt, 0);
+    snprintf(out, out_cap, "%s", txt ? (const char *)txt : "");
+
+    int rc2 = sqlite3_step(stmt);  // raw-sql-ok:kernel-primitive
+    sqlite3_finalize(stmt);
+    if (rc2 == SQLITE_ROW) {
+        fprintf(stderr,  // obs-ok:projection-bad-shape
+            "[projection] query_text: more than one row, use a richer typed query\n");
+        out[0] = '\0';
+        return -1;
+    }
+    return 0;
+}
+
+int projection_query_double(projection_t *p, const char *sql, double *out)
+{
+    if (!p || !p->open || !sql || !out) {
+        fprintf(stderr,  // obs-ok:projection-arg-failure
+            "[projection] query_double: bad arg (p=%p open=%d sql=%p out=%p)\n",
+            (void *)p, p ? (int)p->open : -1,
+            (const void *)sql, (void *)out);
+        return -1;
+    }
+
+    sqlite3_stmt *stmt = NULL;
+    if (sqlite3_prepare_v2(p->db, sql, -1, &stmt, NULL) != SQLITE_OK) {
+        fprintf(stderr, "[projection] prepare: %s\n",  // obs-ok:projection-prepare-failure
+                sqlite3_errmsg(p->db));
+        return -1;
+    }
+
+    int rc = sqlite3_step(stmt);  // raw-sql-ok:kernel-primitive
+    if (rc != SQLITE_ROW) {
+        fprintf(stderr, "[projection] query_double: no rows (rc=%d)\n",  // obs-ok:projection-no-row
+                rc);
+        sqlite3_finalize(stmt);
+        return -1;
+    }
+    if (sqlite3_column_count(stmt) < 1) {
+        fprintf(stderr, "[projection] query_double: zero columns\n");  // obs-ok:projection-bad-shape
+        sqlite3_finalize(stmt);
+        return -1;
+    }
+    int typ = sqlite3_column_type(stmt, 0);
+    if (typ != SQLITE_FLOAT && typ != SQLITE_INTEGER) {
+        fprintf(stderr,  // obs-ok:projection-bad-shape
+            "[projection] query_double: col0 type=%d (want REAL)\n", typ);
+        sqlite3_finalize(stmt);
+        return -1;
+    }
+    *out = sqlite3_column_double(stmt, 0);
+
+    int rc2 = sqlite3_step(stmt);  // raw-sql-ok:kernel-primitive
+    sqlite3_finalize(stmt);
+    if (rc2 == SQLITE_ROW) {
+        fprintf(stderr,  // obs-ok:projection-bad-shape
+            "[projection] query_double: more than one row, use a richer typed query\n");
+        return -1;
+    }
+    return 0;
+}
