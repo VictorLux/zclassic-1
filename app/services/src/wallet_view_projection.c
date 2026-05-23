@@ -1,8 +1,10 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0 */
 
-#include "controllers/wallet_view_internal.h"
+#include "services/wallet_view_projection.h"
 #include "util/ar_step_readonly.h"
 #include "util/log_macros.h"
+
+#include <stdio.h>
 
 int wv_list_receive_addresses(sqlite3 *db, struct wv_receive_address *out,
                               size_t max)

@@ -111,13 +111,18 @@ static inline size_t explorer_emit_nav(char *buf, size_t max, const char *active
     "<footer>ZClassic23 Block Explorer &mdash; Pure C23 &mdash; zclnet.net</footer>" \
     "</body></html>"
 
-/* ── SQLite query helpers (DRY — one definition for all controllers) ── */
+/* ── SQLite query helpers (DRY — one definition for all controllers) ──
+ *
+ * These are read-only explorer projection helpers. Gate #20 permits a
+ * documented marker while this mixed controller/projection header is split
+ * into a dedicated service in Phase 1.
+ */
 
 static inline int64_t sql_query_i64(sqlite3 *db, const char *sql)
 {
     int64_t val = 0;
     sqlite3_stmt *s = NULL;
-    int rc = sqlite3_prepare_v2(db, sql, -1, &s, NULL);
+    int rc = sqlite3_prepare_v2(db, sql, -1, &s, NULL);  // raw-controller-sql-ok:explorer-read-projection-helper
     if (rc != SQLITE_OK) {
         fprintf(stderr, "sql_query_i64: prepare failed (%d): %s [%s]\n",
                 rc, sqlite3_errmsg(db), sql);
@@ -209,7 +214,7 @@ static inline bool sql_query_row_i64_2(sqlite3 *db, const char *sql,
     if (!out)
         return false;
 
-    if (sqlite3_prepare_v2(db, sql, -1, &s, NULL) == SQLITE_OK && s) {
+    if (sqlite3_prepare_v2(db, sql, -1, &s, NULL) == SQLITE_OK && s) {  // raw-controller-sql-ok:explorer-read-projection-helper
         if (sqlite3_step(s) == SQLITE_ROW) {  // raw-sql-ok:read-only-introspection
             out->v0 = sqlite3_column_int64(s, 0);
             out->v1 = sqlite3_column_int64(s, 1);
@@ -234,7 +239,7 @@ static inline bool sql_query_row_i64_3(sqlite3 *db, const char *sql,
     if (!out)
         return false;
 
-    if (sqlite3_prepare_v2(db, sql, -1, &s, NULL) == SQLITE_OK && s) {
+    if (sqlite3_prepare_v2(db, sql, -1, &s, NULL) == SQLITE_OK && s) {  // raw-controller-sql-ok:explorer-read-projection-helper
         if (sqlite3_step(s) == SQLITE_ROW) {  // raw-sql-ok:read-only-introspection
             out->v0 = sqlite3_column_int64(s, 0);
             out->v1 = sqlite3_column_int64(s, 1);
@@ -367,7 +372,7 @@ static inline bool sql_query_text(sqlite3 *db, const char *sql,
                                    char *out, size_t max)
 {
     sqlite3_stmt *s = NULL;
-    if (sqlite3_prepare_v2(db, sql, -1, &s, NULL) == SQLITE_OK && s) {
+    if (sqlite3_prepare_v2(db, sql, -1, &s, NULL) == SQLITE_OK && s) {  // raw-controller-sql-ok:explorer-read-projection-helper
         if (sqlite3_step(s) == SQLITE_ROW) {  // raw-sql-ok:read-only-introspection
             const char *t = (const char *)sqlite3_column_text(s, 0);
             if (t) { snprintf(out, max, "%s", t); sqlite3_finalize(s); return true; }

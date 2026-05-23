@@ -7,6 +7,7 @@
 #define ZCL_CONTROLLERS_WALLET_VIEW_INTERNAL_H
 
 #include "controllers/wallet_view_controller.h"
+#include "services/wallet_view_projection.h"
 #include "views/wallet_view.h"
 #include "views/wallet_templates_gen.h"
 #include "views/format_helpers.h"
@@ -52,20 +53,6 @@ int64_t wv_query_ground_truth_balance(sqlite3 *db, int *utxo_count);
 int64_t wv_query_shielded_balance(sqlite3 *db, int *note_count);
 int64_t wv_query_speed_balance(sqlite3 *db);
 int wv_effective_tip(sqlite3 *db);
-
-struct wv_receive_address {
-    char address[128];
-};
-
-struct wv_held_token {
-    char token_id[65];
-    char ticker[16];
-    int decimals;
-};
-
-int wv_list_receive_addresses(sqlite3 *db, struct wv_receive_address *out,
-                              size_t max);
-int wv_list_held_tokens(sqlite3 *db, struct wv_held_token *out, size_t max);
 
 /* ── RPC helpers ──────────────────────────────────────────── */
 
