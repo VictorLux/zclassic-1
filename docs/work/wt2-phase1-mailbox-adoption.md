@@ -252,6 +252,6 @@ Append completion section to this doc per `docs/work/agent-protocol.md`.
 
 ## Status
 
-**READY** — start when human invokes you in `~/github/zclassic23-2`.
+**IN PROGRESS (wt2)** — started 2026-05-23; mailbox adoption branch active.
 
 <!-- Worker: append a Completion section below when done. -->
