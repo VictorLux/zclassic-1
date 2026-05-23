@@ -6,6 +6,7 @@
 #include "services/chain_tip_watchdog.h"
 
 #include "services/chain_advance_coordinator.h"
+#include "supervisors/domains.h"
 #include "validation/chainstate.h"
 #include "validation/main_state.h"
 #include "util/supervisor.h"
@@ -132,7 +133,8 @@ void chain_tip_watchdog_register(struct main_state *ms)
     atomic_store(&g_contract.progress_max_quiet_us, (int64_t)0);
     g_contract.on_tick  = chain_tip_wd_tick;
     g_contract.on_stall = NULL;
-    atomic_store(&g_id, supervisor_register(&g_contract));
+    supervisor_domains_init();
+    atomic_store(&g_id, supervisor_register_in_domain(g_chain_sup, &g_contract));
     if (atomic_load(&g_id) == SUPERVISOR_INVALID_ID) {
         fprintf(stderr,  // obs-ok:tip-wd-register-fail
             "[chain_tip_watchdog] WARN register failed\n");

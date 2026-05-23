@@ -505,11 +505,16 @@ static bool rpc_dumpstate(const struct json_value *params, bool help,
     }
 
     const struct dump_entry *e = NULL;
+    const char *domain_key = NULL;
     for (size_t i = 0; i < sizeof(g_dumpers) / sizeof(g_dumpers[0]); i++) {
         if (strcmp(g_dumpers[i].name, sub) == 0) {
             e = &g_dumpers[i];
             break;
         }
+    }
+    if (!e && strncmp(sub, "supervisor.", strlen("supervisor.")) == 0) {
+        e = &g_dumpers[0];
+        domain_key = sub + strlen("supervisor.");
     }
     if (!e) {
         LOG_FAIL("diag",
@@ -518,13 +523,13 @@ static bool rpc_dumpstate(const struct json_value *params, bool help,
     }
 
     json_set_object(result);
-    json_push_kv_str(result, "subsystem", e->name);
+    json_push_kv_str(result, "subsystem", domain_key ? sub : e->name);
     json_push_kv_str(result, "description", e->desc);
     json_push_kv_int(result, "captured_at", (int64_t)platform_time_wall_time_t());
 
     struct json_value state = {0};
     json_set_object(&state);
-    bool ok = e->fn(&state, key);
+    bool ok = e->fn(&state, domain_key ? domain_key : key);
     if (!ok) {
         json_free(&state);
         LOG_FAIL("diag", "dumpstate: %s dump function returned false", sub);

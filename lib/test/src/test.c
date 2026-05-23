@@ -546,6 +546,7 @@ int main(void)
     failures += test_boot_phase();
     failures += test_path_check();
     failures += test_supervisor();
+    failures += test_supervisor_domains();
     failures += test_condition_engine();
     failures += test_utxo_activation_paused();
     failures += test_blocker();

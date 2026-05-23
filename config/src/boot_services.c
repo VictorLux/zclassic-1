@@ -25,6 +25,7 @@
 #include "services/tip_finalize_stage.h"
 #include "services/chain_tip_watchdog.h"
 #include "conditions/condition_registry.h"
+#include "supervisors/domains.h"
 #include "supervisors/self_heal.h"
 #include "services/header_probe_service.h"
 #include "services/legacy_mirror_sync_service.h"
@@ -431,7 +432,8 @@ static void boot_peer_floor_supervisor_register(struct boot_svc_ctx *svc)
                  PEER_FLOOR_QUIET_US);
     g_peer_floor_contract.on_tick  = peer_floor_tick;
     g_peer_floor_contract.on_stall = peer_floor_stall;
-    g_peer_floor_id = supervisor_register(&g_peer_floor_contract);
+    g_peer_floor_id = supervisor_register_in_domain(g_net_sup,
+                                                    &g_peer_floor_contract);
     if (g_peer_floor_id == SUPERVISOR_INVALID_ID) {
         fprintf(stderr,  // obs-ok:peer-floor-supervisor-fallback-warn
             "[supervisor] WARN net.outbound_floor register failed\n");
@@ -529,7 +531,8 @@ static void boot_coord_escalation_supervisor_register(struct boot_svc_ctx *svc)
                  COORD_ESC_QUIET_US);
     g_coord_esc_contract.on_tick  = coord_esc_tick;
     g_coord_esc_contract.on_stall = coord_esc_stall;
-    g_coord_esc_id = supervisor_register(&g_coord_esc_contract);
+    g_coord_esc_id = supervisor_register_in_domain(g_chain_sup,
+                                                   &g_coord_esc_contract);
     if (g_coord_esc_id == SUPERVISOR_INVALID_ID) {
         fprintf(stderr,  // obs-ok:coord-esc-supervisor-fallback-warn
             "[supervisor] WARN chain.coord_escalation register failed\n");
@@ -592,7 +595,8 @@ static void boot_header_admit_supervisor_register(struct boot_svc_ctx *svc)
                  (int64_t)1800 * 1000 * 1000);
     g_header_admit_contract.on_tick  = header_admit_tick;
     g_header_admit_contract.on_stall = header_admit_stall;
-    g_header_admit_id = supervisor_register(&g_header_admit_contract);
+    g_header_admit_id = supervisor_register_in_domain(g_chain_sup,
+                                                      &g_header_admit_contract);
     if (g_header_admit_id == SUPERVISOR_INVALID_ID) {
         fprintf(stderr,  // obs-ok:header-admit-supervisor-fallback-warn
             "[supervisor] WARN staged.header_admit register failed\n");
@@ -650,7 +654,7 @@ static void boot_validate_headers_supervisor_register(struct boot_svc_ctx *svc)
                  (int64_t)1800 * 1000 * 1000);
     g_vh_contract.on_tick  = vh_tick;
     g_vh_contract.on_stall = vh_stall;
-    g_vh_id = supervisor_register(&g_vh_contract);
+    g_vh_id = supervisor_register_in_domain(g_chain_sup, &g_vh_contract);
     if (g_vh_id == SUPERVISOR_INVALID_ID) {
         fprintf(stderr,  // obs-ok:vh-supervisor-fallback-warn
             "[supervisor] WARN staged.validate_headers register failed\n");
@@ -707,7 +711,7 @@ static void boot_body_fetch_supervisor_register(struct boot_svc_ctx *svc)
                  (int64_t)1800 * 1000 * 1000);
     g_bf_contract.on_tick  = bf_tick;
     g_bf_contract.on_stall = bf_stall;
-    g_bf_id = supervisor_register(&g_bf_contract);
+    g_bf_id = supervisor_register_in_domain(g_chain_sup, &g_bf_contract);
     if (g_bf_id == SUPERVISOR_INVALID_ID) {
         fprintf(stderr,  // obs-ok:bf-supervisor-fallback-warn
             "[supervisor] WARN staged.body_fetch register failed\n");
@@ -761,7 +765,7 @@ static void boot_body_persist_supervisor_register(struct boot_svc_ctx *svc)
                  (int64_t)1800 * 1000 * 1000);
     g_bp_contract.on_tick  = bp_tick;
     g_bp_contract.on_stall = bp_stall;
-    g_bp_id = supervisor_register(&g_bp_contract);
+    g_bp_id = supervisor_register_in_domain(g_chain_sup, &g_bp_contract);
     if (g_bp_id == SUPERVISOR_INVALID_ID) {
         fprintf(stderr,  // obs-ok:bp-supervisor-fallback-warn
             "[supervisor] WARN staged.body_persist register failed\n");
@@ -815,7 +819,7 @@ static void boot_script_validate_supervisor_register(struct boot_svc_ctx *svc)
                  (int64_t)1800 * 1000 * 1000);
     g_sv_contract.on_tick  = sv_tick;
     g_sv_contract.on_stall = sv_stall;
-    g_sv_id = supervisor_register(&g_sv_contract);
+    g_sv_id = supervisor_register_in_domain(g_chain_sup, &g_sv_contract);
     if (g_sv_id == SUPERVISOR_INVALID_ID) {
         fprintf(stderr,  // obs-ok:sv-supervisor-fallback-warn
             "[supervisor] WARN staged.script_validate register failed\n");
@@ -869,7 +873,7 @@ static void boot_proof_validate_supervisor_register(struct boot_svc_ctx *svc)
                  (int64_t)1800 * 1000 * 1000);
     g_pv_contract.on_tick  = pv_tick;
     g_pv_contract.on_stall = pv_stall;
-    g_pv_id = supervisor_register(&g_pv_contract);
+    g_pv_id = supervisor_register_in_domain(g_chain_sup, &g_pv_contract);
     if (g_pv_id == SUPERVISOR_INVALID_ID) {
         fprintf(stderr,  // obs-ok:pv-supervisor-fallback-warn
             "[supervisor] WARN staged.proof_validate register failed\n");
@@ -923,7 +927,7 @@ static void boot_utxo_apply_supervisor_register(struct boot_svc_ctx *svc)
                  (int64_t)1800 * 1000 * 1000);
     g_uv_contract.on_tick  = uv_tick;
     g_uv_contract.on_stall = uv_stall;
-    g_uv_id = supervisor_register(&g_uv_contract);
+    g_uv_id = supervisor_register_in_domain(g_chain_sup, &g_uv_contract);
     if (g_uv_id == SUPERVISOR_INVALID_ID) {
         fprintf(stderr,  // obs-ok:uv-supervisor-fallback-warn
             "[supervisor] WARN staged.utxo_apply register failed\n");
@@ -977,7 +981,7 @@ static void boot_tip_finalize_supervisor_register(struct boot_svc_ctx *svc)
                  (int64_t)1800 * 1000 * 1000);
     g_tf_contract.on_tick  = tf_tick;
     g_tf_contract.on_stall = tf_stall;
-    g_tf_id = supervisor_register(&g_tf_contract);
+    g_tf_id = supervisor_register_in_domain(g_chain_sup, &g_tf_contract);
     if (g_tf_id == SUPERVISOR_INVALID_ID) {
         fprintf(stderr,  // obs-ok:tf-supervisor-fallback-warn
             "[supervisor] WARN staged.tip_finalize register failed\n");
@@ -3153,6 +3157,7 @@ bool app_init_services(struct app_context *ctx,
         fprintf(stderr,  // obs-ok:supervisor-start-fallback-warn
             "WARNING: supervisor_start failed; lib/health sweeper alone\n");
     }
+    supervisor_domains_init();
 
     /* Round 6 C1+C5: initialize the typed blocker primitive. Must
      * come before any subsystem calls blocker_set / mirror_consensus_

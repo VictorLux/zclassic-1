@@ -34,7 +34,15 @@
 static pthread_mutex_t g_lock = PTHREAD_MUTEX_INITIALIZER;
 
 static struct liveness_contract *g_contracts[SUPERVISOR_CAP];
+static supervisor_domain_t      *g_contract_domains[SUPERVISOR_CAP];
 static int                       g_contract_count = 0;
+
+struct supervisor_domain {
+    char label[SUPERVISOR_NAME_MAX];
+};
+
+static supervisor_domain_t       g_domains[SUPERVISOR_DOMAIN_CAP];
+static int                       g_domain_count = 0;
 
 static _Atomic bool   g_running       = false;
 static _Atomic bool   g_thread_alive  = false;
@@ -81,12 +89,11 @@ void liveness_contract_init(struct liveness_contract *c, const char *name)
     atomic_store(&c->progress_changed_at_us, mono_us());
 }
 
-supervisor_child_id supervisor_register(struct liveness_contract *c)
+static supervisor_child_id supervisor_register_locked(
+    supervisor_domain_t *domain, struct liveness_contract *c)
 {
     if (!c) return SUPERVISOR_INVALID_ID;
-    pthread_mutex_lock(&g_lock);
     if (g_contract_count >= SUPERVISOR_CAP) {
-        pthread_mutex_unlock(&g_lock);
         fprintf(stderr,  // obs-ok:pre-existing-diagnostic
             "[supervisor] FAIL register '%s': registry full (cap=%d)\n",
             c->name, SUPERVISOR_CAP);
@@ -95,7 +102,6 @@ supervisor_child_id supervisor_register(struct liveness_contract *c)
     /* Reject duplicate name (helps tests + catches double-registers). */
     for (int i = 0; i < g_contract_count; i++) {
         if (strncmp(g_contracts[i]->name, c->name, SUPERVISOR_NAME_MAX) == 0) {
-            pthread_mutex_unlock(&g_lock);
             fprintf(stderr,  // obs-ok:pre-existing-diagnostic
                 "[supervisor] FAIL register '%s': duplicate name\n", c->name);
             return SUPERVISOR_INVALID_ID;
@@ -103,6 +109,50 @@ supervisor_child_id supervisor_register(struct liveness_contract *c)
     }
     int id = g_contract_count++;
     g_contracts[id] = c;
+    g_contract_domains[id] = domain;
+    return id;
+}
+
+supervisor_child_id supervisor_register(struct liveness_contract *c)
+{
+    pthread_mutex_lock(&g_lock);
+    supervisor_child_id id = supervisor_register_locked(NULL, c);
+    pthread_mutex_unlock(&g_lock);
+    return id;
+}
+
+supervisor_domain_t *supervisor_create_domain(const char *label)
+{
+    if (!label || !label[0]) return NULL;
+    pthread_mutex_lock(&g_lock);
+    for (int i = 0; i < g_domain_count; i++) {
+        if (strncmp(g_domains[i].label, label, SUPERVISOR_NAME_MAX) == 0) {
+            pthread_mutex_unlock(&g_lock);
+            return &g_domains[i];
+        }
+    }
+    if (g_domain_count >= SUPERVISOR_DOMAIN_CAP) {
+        pthread_mutex_unlock(&g_lock);
+        fprintf(stderr,  // obs-ok:supervisor-domain-full
+            "[supervisor] FAIL create domain '%s': domain registry full (cap=%d)\n",
+            label, SUPERVISOR_DOMAIN_CAP);
+        return NULL;
+    }
+    supervisor_domain_t *domain = &g_domains[g_domain_count++];
+    memset(domain, 0, sizeof(*domain));
+    size_t n = strnlen(label, SUPERVISOR_NAME_MAX - 1);
+    memcpy(domain->label, label, n);
+    domain->label[n] = '\0';
+    pthread_mutex_unlock(&g_lock);
+    return domain;
+}
+
+supervisor_child_id supervisor_register_in_domain(
+    supervisor_domain_t *domain, struct liveness_contract *c)
+{
+    if (!domain) return SUPERVISOR_INVALID_ID;
+    pthread_mutex_lock(&g_lock);
+    supervisor_child_id id = supervisor_register_locked(domain, c);
     pthread_mutex_unlock(&g_lock);
     return id;
 }
@@ -119,7 +169,9 @@ void supervisor_unregister(supervisor_child_id id)
      * + shutdown), so we accept the rename rather than holding zombie
      * slots. */
     g_contracts[id] = g_contracts[g_contract_count - 1];
+    g_contract_domains[id] = g_contract_domains[g_contract_count - 1];
     g_contracts[g_contract_count - 1] = NULL;
+    g_contract_domains[g_contract_count - 1] = NULL;
     g_contract_count--;
     pthread_mutex_unlock(&g_lock);
 }
@@ -346,13 +398,24 @@ void supervisor_reset_for_testing(void)
     supervisor_stop();
     pthread_mutex_lock(&g_lock);
     for (int i = 0; i < SUPERVISOR_CAP; i++) g_contracts[i] = NULL;
+    for (int i = 0; i < SUPERVISOR_CAP; i++) g_contract_domains[i] = NULL;
     g_contract_count = 0;
+    memset(g_domains, 0, sizeof(g_domains));
+    g_domain_count = 0;
     pthread_mutex_unlock(&g_lock);
     atomic_store(&g_tick_ms, 1000);
 }
 #endif
 
 /* ── Introspection ─────────────────────────────────────────────────── */
+
+int supervisor_child_count_total(void)
+{
+    pthread_mutex_lock(&g_lock);
+    int n = g_contract_count;
+    pthread_mutex_unlock(&g_lock);
+    return n;
+}
 
 int supervisor_snapshot_all(struct supervisor_snapshot *out, int max)
 {
@@ -382,43 +445,121 @@ int supervisor_snapshot_all(struct supervisor_snapshot *out, int max)
 
 bool supervisor_dump_state_json(struct json_value *out, const char *key)
 {
-    (void)key;
     if (!out) return false;
     json_set_object(out);
     json_push_kv_bool(out, "running",      atomic_load(&g_running));
     json_push_kv_bool(out, "thread_alive", atomic_load(&g_thread_alive));
     json_push_kv_int (out, "tick_ms",      atomic_load(&g_tick_ms));
 
-    struct supervisor_snapshot snaps[SUPERVISOR_CAP];
-    int n = supervisor_snapshot_all(snaps, SUPERVISOR_CAP);
-    json_push_kv_int(out, "child_count", n);
-
-    struct json_value arr;
-    json_init(&arr);
-    json_set_array(&arr);
-    for (int i = 0; i < n; i++) {
-        struct json_value child;
-        json_init(&child);
-        json_set_object(&child);
-        json_push_kv_str (&child, "name",   snaps[i].name);
-        json_push_kv_int (&child, "parent", snaps[i].parent);
-        json_push_kv_int (&child, "last_tick_age_us",
-                          snaps[i].last_tick_age_us);
-        json_push_kv_int (&child, "progress_marker",
-                          snaps[i].progress_marker);
-        json_push_kv_int (&child, "period_secs",   snaps[i].period_secs);
-        json_push_kv_int (&child, "deadline_secs", snaps[i].deadline_secs);
-        json_push_kv_str (&child, "stall_reason",
-                          supervisor_stall_reason_name(
-                              (enum supervisor_stall_reason)
-                              snaps[i].stall_reason));
-        json_push_kv_int (&child, "ticks_run",     snaps[i].ticks_run);
-        json_push_kv_int (&child, "stall_fires",   snaps[i].stall_fires);
-        json_push_kv_int (&child, "restart_count", snaps[i].restart_count);
-        json_push_back(&arr, &child);
-        json_free(&child);
+    if (key && key[0]) {
+        pthread_mutex_lock(&g_lock);
+        supervisor_domain_t *domain = NULL;
+        for (int i = 0; i < g_domain_count; i++) {
+            if (strncmp(g_domains[i].label, key, SUPERVISOR_NAME_MAX) == 0) {
+                domain = &g_domains[i];
+                break;
+            }
+        }
+        pthread_mutex_unlock(&g_lock);
+        return supervisor_domain_dump_state_json(domain, out);
     }
-    json_push_kv(out, "children", &arr);
-    json_free(&arr);
+
+    json_push_kv_int(out, "child_count", supervisor_child_count_total());
+
+    struct json_value domains;
+    json_init(&domains);
+    json_set_array(&domains);
+
+    pthread_mutex_lock(&g_lock);
+    supervisor_domain_t *domain_snap[SUPERVISOR_DOMAIN_CAP];
+    int dn = g_domain_count;
+    for (int i = 0; i < dn; i++) domain_snap[i] = &g_domains[i];
+    pthread_mutex_unlock(&g_lock);
+
+    for (int i = 0; i < dn; i++) {
+        struct json_value domain_json;
+        json_init(&domain_json);
+        if (supervisor_domain_dump_state_json(domain_snap[i], &domain_json)) {
+            json_push_back(&domains, &domain_json);
+        }
+        json_free(&domain_json);
+    }
+    json_push_kv(out, "domains", &domains);
+    json_free(&domains);
+
+    struct json_value orphans;
+    json_init(&orphans);
+    json_set_array(&orphans);
+    struct supervisor_domain root_domain;
+    memset(&root_domain, 0, sizeof(root_domain));
+    if (supervisor_domain_dump_state_json(&root_domain, &orphans)) {
+        const struct json_value *kids = json_get(&orphans, "children");
+        if (kids) json_push_kv(out, "root_orphans", kids);
+    } else {
+        json_push_kv(out, "root_orphans", &orphans);
+    }
+    json_free(&orphans);
+    return true;
+}
+
+static void push_contract_json(struct json_value *arr,
+                               const struct liveness_contract *c,
+                               int64_t now)
+{
+    struct json_value child;
+    json_init(&child);
+    json_set_object(&child);
+    json_push_kv_str (&child, "name",   c->name);
+    json_push_kv_int (&child, "parent", c->parent);
+    int64_t lt = atomic_load(&c->last_tick_us);
+    json_push_kv_int (&child, "last_tick_age_us", now - lt);
+    json_push_kv_int (&child, "progress_marker",
+                      atomic_load(&c->progress_marker));
+    json_push_kv_int (&child, "period_secs",
+                      atomic_load(&c->period_secs));
+    json_push_kv_int (&child, "deadline_secs",
+                      atomic_load(&c->deadline_secs));
+    json_push_kv_str (&child, "stall_reason",
+                      supervisor_stall_reason_name(
+                          (enum supervisor_stall_reason)
+                          atomic_load(&c->stall_reason)));
+    json_push_kv_int (&child, "ticks_run",
+                      atomic_load(&c->ticks_run));
+    json_push_kv_int (&child, "stall_fires",
+                      atomic_load(&c->stall_fires));
+    json_push_kv_int (&child, "restart_count",
+                      atomic_load(&c->restart_count));
+    json_push_back(arr, &child);
+    json_free(&child);
+}
+
+bool supervisor_domain_dump_state_json(supervisor_domain_t *domain,
+                                       struct json_value *out)
+{
+    if (!domain || !out) return false;
+    bool root = (domain->label[0] == '\0');
+    json_set_object(out);
+    json_push_kv_str(out, "name", root ? "root" : domain->label);
+
+    struct liveness_contract *snap[SUPERVISOR_CAP];
+    int n = 0;
+    pthread_mutex_lock(&g_lock);
+    for (int i = 0; i < g_contract_count && n < SUPERVISOR_CAP; i++) {
+        bool match = root ? (g_contract_domains[i] == NULL)
+                          : (g_contract_domains[i] == domain);
+        if (match) snap[n++] = g_contracts[i];
+    }
+    pthread_mutex_unlock(&g_lock);
+
+    json_push_kv_int(out, "child_count", n);
+    struct json_value children;
+    json_init(&children);
+    json_set_array(&children);
+    int64_t now = mono_us();
+    for (int i = 0; i < n; i++) {
+        if (snap[i]) push_contract_json(&children, snap[i], now);
+    }
+    json_push_kv(out, "children", &children);
+    json_free(&children);
     return true;
 }

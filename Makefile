@@ -873,7 +873,11 @@ check-no-raw-sqlite-in-controllers:
 	@echo "→ Gate #20: no_raw_sqlite_in_controllers"
 	@ZCL_LINT_MODE=WARN ./tools/lint/check_no_raw_sqlite_in_controllers.sh
 
-lint: check-malloc check-silent-errors check-raw-sqlite check-raw-malloc check-coins-lookup-nullcheck check-observability-pairing check-silent-errors-services check-silent-errors-controllers check-before-save-hooks check-pthread-create check-model-validation check-long-functions check-rpc-registrar check-lag-slo-observable check-lib-layering check-supervisor-registration check-typed-blocker check-framework-shape check-no-raw-clock-outside-platform check-no-raw-sqlite-in-controllers
+check-supervisor-domain:
+	@echo "→ Gate #21: supervisor_domain"
+	@./tools/lint/check_supervisor_domain.sh
+
+lint: check-malloc check-silent-errors check-raw-sqlite check-raw-malloc check-coins-lookup-nullcheck check-observability-pairing check-silent-errors-services check-silent-errors-controllers check-before-save-hooks check-pthread-create check-model-validation check-long-functions check-rpc-registrar check-lag-slo-observable check-lib-layering check-supervisor-registration check-typed-blocker check-framework-shape check-no-raw-clock-outside-platform check-no-raw-sqlite-in-controllers check-supervisor-domain
 	@echo "══ LINT: all checks passed ══"
 
 ci: lint zclassic23 test_zcl

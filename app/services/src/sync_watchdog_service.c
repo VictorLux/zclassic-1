@@ -14,6 +14,7 @@
 #include "services/chain_activation_controller.h"
 #include "services/chain_advance_coordinator.h"
 #include "services/gap_fill_service.h"
+#include "supervisors/domains.h"
 #include "net/connman.h"
 #include "validation/chainstate.h"
 #include "validation/process_block.h"
@@ -1311,7 +1312,9 @@ bool sync_watchdog_start(struct connman *cm,
         atomic_store(&g_wd_contract.deadline_secs, WATCHDOG_TICK_SECS * 4);
         g_wd_contract.on_tick  = sync_watchdog_supervisor_tick;
         g_wd_contract.on_stall = sync_watchdog_supervisor_stall;
-        g_wd_supervisor_id = supervisor_register(&g_wd_contract);
+        supervisor_domains_init();
+        g_wd_supervisor_id =
+            supervisor_register_in_domain(g_chain_sup, &g_wd_contract);
         /* Registration failure is non-fatal — the lib/health sweeper
          * is still active. Log + continue. */
         if (g_wd_supervisor_id == SUPERVISOR_INVALID_ID) {

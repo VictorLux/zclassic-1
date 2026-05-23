@@ -389,6 +389,16 @@ Phase 1 after the platform clock/RNG migration landed.
     temporary documented exception, add `// raw-controller-sql-ok` on
     the line.
 
+- **Gate #21: `check_supervisor_domain`**
+  - Path: `tools/lint/check_supervisor_domain.sh`
+  - Checks: production `supervisor_register(` calls under `app/`,
+    `config/`, and `lib/` must use `supervisor_register_in_domain(...)`.
+  - Current mode: FAIL — added with the supervisor tree split.
+  - Fix: classify the child into one of the boot-created domains
+    (`chain`, `net`, `mempool`, `wallet`, `feature`, `onion`, `op`) and
+    register through that domain. For a deliberate root child, add
+    `// supervisor-root-ok:<tag>` on the registration line.
+
 ### Gate #11: every model is either validated or explicitly skipped
 
 `check-model-validation` walks every `app/models/src/*.c` and

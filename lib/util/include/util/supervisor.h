@@ -49,9 +49,12 @@
 
 #define SUPERVISOR_NAME_MAX 40
 #define SUPERVISOR_CAP      32
+#define SUPERVISOR_DOMAIN_CAP 16
 
 typedef int supervisor_child_id;
 #define SUPERVISOR_INVALID_ID (-1)
+
+typedef struct supervisor_domain supervisor_domain_t;
 
 /* Typed stall causes. Mirrors `enum watchdog_recovery_type` in concept
  * but lives in lib/util so it does not pull in app-side headers
@@ -125,6 +128,21 @@ void liveness_contract_init(struct liveness_contract *c, const char *name);
  * or SUPERVISOR_INVALID_ID on registry-full. The supervisor stores the
  * pointer — do NOT pass a stack-allocated contract. */
 supervisor_child_id supervisor_register(struct liveness_contract *c);
+
+/* Create or return a named domain supervisor. Children registered in a
+ * domain still use the same global child ids, tick loop, and lifecycle;
+ * the domain is an operator-facing grouping boundary for dumps and
+ * future restart policy. */
+supervisor_domain_t *supervisor_create_domain(const char *label);
+
+supervisor_child_id supervisor_register_in_domain(
+    supervisor_domain_t *domain,
+    struct liveness_contract *c);
+
+bool supervisor_domain_dump_state_json(supervisor_domain_t *domain,
+                                       struct json_value *out);
+
+int supervisor_child_count_total(void);
 
 /* Remove a contract from the registry. Idempotent. */
 void supervisor_unregister(supervisor_child_id id);

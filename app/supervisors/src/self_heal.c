@@ -3,6 +3,7 @@
 #include "supervisors/self_heal.h"
 
 #include "framework/condition.h"
+#include "supervisors/domains.h"
 #include "util/supervisor.h"
 
 #include <stdatomic.h>
@@ -33,7 +34,8 @@ void self_heal_register(struct main_state *ms)
     atomic_store(&g_contract.progress_max_quiet_us, (int64_t)0);
     g_contract.on_tick = self_heal_tick;
     g_contract.on_stall = NULL;
-    atomic_store(&g_id, supervisor_register(&g_contract));
+    supervisor_domains_init();
+    atomic_store(&g_id, supervisor_register_in_domain(g_op_sup, &g_contract));
     if (atomic_load(&g_id) == SUPERVISOR_INVALID_ID) {
         fprintf(stderr,  // obs-ok:self-heal-register-fail
                 "[self_heal] WARN register failed\n");

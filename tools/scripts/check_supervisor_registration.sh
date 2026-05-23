@@ -9,7 +9,7 @@
 # Why: on 2026-05-21 the node ran for 8.6 h with `watchdog.checks_run`
 # stuck at 0 because the lib/health sweeper wedged. The supervisor
 # primitive (Round 5 C1) provides an independent time-driven driver,
-# but only for services that opt in via supervisor_register(). This
+# but only for services that opt in via supervisor_register_in_domain().
 # gate is the ratchet that drives opt-in: new long-running services
 # cannot land without a contract; baseline shrinks over Rounds 6-8.
 #
@@ -18,7 +18,7 @@
 #   - thread_registry_spawn      (the project's wrapper)
 #   - health_register_periodic(  (lib/health sweeper subscriber)
 #
-# Such a file must contain ≥1 call to `supervisor_register(`, OR an
+# Such a file must contain ≥1 call to `supervisor_register_in_domain(`, OR an
 # entry in `tools/scripts/supervisor_baseline.txt`, OR a per-file
 # override marker `// supervisor-ok:<tag>` on a line in the file.
 #
@@ -44,7 +44,7 @@ for f in app/services/src/*_service.c; do
     is_long=$(grep -lE 'pthread_create\(|thread_registry_spawn|health_register_periodic\(' "$f" || true)
     [ -z "$is_long" ] && continue
     # Already registered with the supervisor? Pass.
-    if grep -qE 'supervisor_register\(' "$f"; then
+    if grep -qE 'supervisor_register(_in_domain)?\(' "$f"; then
         continue
     fi
     # Per-file override marker? Pass.
@@ -65,7 +65,7 @@ if [ "$fail" = "0" ]; then
 fi
 
 echo ""
-echo "check_supervisor_registration: ${#new_violations[@]} NEW long-running service(s) without supervisor_register"
+echo "check_supervisor_registration: ${#new_violations[@]} NEW long-running service(s) without supervisor_register_in_domain"
 echo ""
 for v in "${new_violations[@]}"; do
     echo "  $v"
