@@ -262,6 +262,6 @@ git push origin wt3/phase0-framework-shape-lint
 
 ## Status
 
-**READY** — waiting for human to start `claude` in `~/github/zclassic23-3`.
+**IN PROGRESS (wt3)** — framework shape lint gate implementation started 2026-05-23.
 
 <!-- Worker: append a Completion section below when done, per agent-protocol.md -->
