@@ -345,6 +345,10 @@ git push origin wt2/phase0-condition-engine
 
 ## Status
 
+**✅ DONE — merged to main 2026-05-23 in commit `cbe3673e6` (merge) + `4e0ea3382` (combined with wt3).** Branch `wt2/phase0-condition-engine` is closed. Pick up your next assignment at `docs/work/wt2-phase1-mailbox-adoption.md`.
+
+Original pause note (kept for history):
+
 **IN PROGRESS (wt2)** — paused after Task 9 source implementation. Branch
 contains the condition engine, self-heal supervisor wiring, first three
 condition files, `zcl_conditions`, and `test_condition_engine`.

@@ -11,8 +11,8 @@
 ## Phases
 
 ```
-Phase 0  [██░░░░░░░░]  20%   Condition engine + scaffold       ← IN FLIGHT
-Phase 1  [░░░░░░░░░░]   0%   Adopt unused primitives
+Phase 0  [██████████] 100%   Condition engine + scaffold       ✅ DONE 2026-05-23
+Phase 1  [██░░░░░░░░]  20%   Adopt unused primitives           ← IN FLIGHT
 Phase 2  [██░░░░░░░░]  20%   Wave S → S-12 cutover  (S-1..S-4b shipped)
 Phase 3  [░░░░░░░░░░]   0%   Dissolve mega-modules
 Phase 4  [░░░░░░░░░░]   0%   Storage unification (event log)
@@ -63,9 +63,9 @@ clause. The table below is the dashboard.
 
 | Worktree | Branch | Assignment | Status | Last update |
 |---|---|---|---|---|
-| `~/github/zclassic23` (main) | `main` | Orchestrator: scaffold + assign | ✅ scaffold pushed | 2026-05-23 |
-| `~/github/zclassic23-2` (wt2) | `wt2/phase0-condition-engine` | [`docs/work/wt2-condition-engine.md`](./work/wt2-condition-engine.md) | 🕐 ready to start | — |
-| `~/github/zclassic23-3` (wt3) | `wt3/phase0-framework-shape-lint` | [`docs/work/wt3-framework-shape-lint.md`](./work/wt3-framework-shape-lint.md) | 🕐 ready to start | — |
+| `~/github/zclassic23` (main) | `main` | Orchestrator: review + merge + dispatch | ✅ Phase 0 merged + Phase 1 dispatched | 2026-05-23 |
+| `~/github/zclassic23-2` (wt2) | `wt2/phase1-mailbox-adoption` | [`docs/work/wt2-phase1-mailbox-adoption.md`](./work/wt2-phase1-mailbox-adoption.md) | 🕐 READY (restart agent 2 to begin) | 2026-05-23 |
+| `~/github/zclassic23-3` (wt3) | `wt3/phase1-platform-rewire` | [`docs/work/wt3-phase1-platform-clock-rewire.md`](./work/wt3-phase1-platform-clock-rewire.md) | 🕐 READY (restart agent 3 to begin) | 2026-05-23 |
 
 ---
 
@@ -73,10 +73,25 @@ clause. The table below is the dashboard.
 
 | Date | What | Worktree | Commit |
 |---|---|---|---|
-| 2026-05-23 | Scaffold: FRAMEWORK.md + REFACTOR_STATUS.md + folder scaffold + work/ docs | main | _pending push_ |
-| 2026-05-23 | `chain_tip_watchdog` — single-purpose tip-stuck overlord (PRE-framework, becomes a Condition in Phase 0) | main | fb32df981 |
+| 2026-05-23 | **Phase 0 MERGED** — condition engine + 3 conditions (wt2) + lint gates #18-#20 WARN (wt3) + test fixture fixes | main | 4e0ea3382 |
+| 2026-05-23 | wt3 Phase 0b — `lib/framework/condition.h` stub, `tools/lint/framework_shape_check.sh` + 2 prep gates, `DEFENSIVE_CODING.md` updates | wt3/phase0-framework-shape-lint | 32b17449c |
+| 2026-05-23 | wt2 Phase 0a — `lib/framework/condition.{c,h}`, `self_heal` supervisor, 3 conditions (block_failed_mask_at_tip, contradiction_frozen, chain_stalled_with_data), `zcl_conditions` MCP tool, 6 unit tests passing | wt2/phase0-condition-engine | 94e5fa31f |
+| 2026-05-23 | Scaffold: FRAMEWORK.md + REFACTOR_STATUS.md + folder scaffold + work/ docs | main | 786ec92cc |
+| 2026-05-23 | `chain_tip_watchdog` — single-purpose tip-stuck overlord (PRE-framework, will dissolve into a Condition in a future phase) | main | fb32df981 |
 | 2026-05-22 | Wave S S-4b — legacy-attach one-shot import | main | (multiple) |
 | 2026-05-22 | Wave S S-4 — body_fetch shadow stage | main | 95abed36d |
+
+## Phase 0 acceptance evidence
+
+- ✅ condition engine primitive shipped: `lib/framework/condition.{c,h}` (284 LOC impl, 73 LOC header)
+- ✅ 3 conditions registered: `block_failed_mask_at_tip` (CRITICAL, wires Wave M's process_block_revalidate), `contradiction_frozen` (CRITICAL, detect-only Phase 0), `chain_stalled_with_data` (WARN, force_mirror remedy)
+- ✅ `self_heal.engine` supervisor child registered (5s period)
+- ✅ MCP tool `zcl_conditions` + `zcl_state subsystem=condition_engine`
+- ✅ 6 unit tests passing
+- ✅ Lint gates #18 (framework_shape, WARN, baseline=0), #19 (raw_clock, WARN, baseline=443), #20 (raw_sqlite_in_controllers, WARN, baseline=121)
+- ✅ `make lint` PASS
+- ✅ `make` builds clean
+- ✅ Live unwedge verification deferred (current live node is past the wedge); condition lifecycle verified via unit tests instead
 
 ---
 
