@@ -30,30 +30,17 @@
  * correct for the secret case and merely noisy for the non-secret
  * case.
  *
- * Entropy sources, in order:
- *   1. getrandom(2) (Linux ≥ 3.17, glibc ≥ 2.25). Works in chroots
- *      and containers without /dev mounted. We use the blocking
- *      default (flags=0) which waits for the kernel CSPRNG to be
- *      initialized on first call and then never blocks again.
- *   2. /dev/urandom, as a fallback when getrandom returns ENOSYS
- *      (older kernel or locked-down seccomp filter).
- *   EINTR and short-read cases are retried in both paths.
+ * Entropy source:
+ *   platform.rng, whose production default wraps the kernel CSPRNG with
+ *   /dev/urandom fallback while tests/simulators may inject a seeded
+ *   deterministic RNG.
  * ───────────────────────────────────────────────────────────────── */
 
 #include "core/random.h"
-#include <errno.h>
-#include <fcntl.h>
+#include "platform/rng.h"
+
 #include <stdio.h>
 #include <stdlib.h>
-#include <string.h>
-#include <unistd.h>
-
-#if defined(__linux__)
-#include <sys/random.h>
-#define ZCL_HAS_GETRANDOM 1
-#else
-#define ZCL_HAS_GETRANDOM 0
-#endif
 
 #ifdef ZCL_TESTING
 #include <stdatomic.h>
@@ -71,53 +58,6 @@ void zcl_random_test_force_fail(bool on)
 }
 #endif
 
-static bool fill_from_getrandom(unsigned char *buf, size_t num)
-{
-#if ZCL_HAS_GETRANDOM
-    size_t got = 0;
-    while (got < num) {
-        ssize_t r = getrandom(buf + got, num - got, 0);
-        if (r < 0) {
-            if (errno == EINTR) continue;
-            return false; /* ENOSYS / seccomp / etc → caller falls back */
-        }
-        if (r == 0) return false;
-        got += (size_t)r;
-    }
-    return true;
-#else
-    (void)buf; (void)num;
-    return false;
-#endif
-}
-
-static bool fill_from_urandom(unsigned char *buf, size_t num)
-{
-    int fd;
-    do {
-        fd = open("/dev/urandom", O_RDONLY | O_CLOEXEC);
-    } while (fd < 0 && errno == EINTR);
-    if (fd < 0) return false;
-
-    size_t got = 0;
-    while (got < num) {
-        ssize_t r = read(fd, buf + got, num - got);
-        if (r < 0) {
-            if (errno == EINTR) continue;
-            close(fd);
-            return false;
-        }
-        if (r == 0) {
-            /* EOF on /dev/urandom — should never happen. */
-            close(fd);
-            return false;
-        }
-        got += (size_t)r;
-    }
-    close(fd);
-    return true;
-}
-
 void GetRandBytes(unsigned char *buf, size_t num)
 {
     if (num == 0) return;
@@ -133,15 +73,13 @@ void GetRandBytes(unsigned char *buf, size_t num)
     }
 #endif
 
-    if (fill_from_getrandom(buf, num)) return;
-    if (fill_from_urandom(buf, num))   return;
+    if (rng_fill(buf, num)) return;
 
-    int saved = errno;
     fprintf(stderr,  // obs-ok:helper-context-logged
         "[fatal] %s:%d GetRandBytes(): no entropy source available "
-        "(getrandom + /dev/urandom both failed, errno=%d %s) for %zu bytes "
+        "(platform.rng failed) for %zu bytes "
         "— aborting to avoid silent zero-fill\n",
-        __FILE__, __LINE__, saved, strerror(saved), num);
+        __FILE__, __LINE__, num);
     fflush(stderr);
     abort();
 }

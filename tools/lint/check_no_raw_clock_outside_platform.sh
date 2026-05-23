@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Gate #19: no direct clock_gettime/time(NULL) outside lib/platform.
+# Gate #19: no direct clock_gettime/time(NULL)/getrandom outside lib/platform.
 # Mode: WARN | FAIL (controlled by ZCL_LINT_MODE; default WARN for Phase 0)
 set -euo pipefail
 
@@ -16,7 +16,7 @@ done
 
 matches=$(
     grep -rn --include='*.c' --include='*.h' \
-        -E '\bclock_gettime\s*\(|\btime\s*\(\s*NULL\s*\)' \
+        -E '\bclock_gettime\s*\(|\btime\s*\(\s*NULL\s*\)|\bgetrandom\s*\(' \
         "${roots[@]}" 2>/dev/null \
     | grep -v '^lib/platform/' \
     | grep -v '^tools/lint/check_no_raw_clock_outside_platform.sh:' \
@@ -34,7 +34,7 @@ if [[ -n "${matches//[[:space:]]/}" ]]; then
 fi
 
 echo "[check_no_raw_clock_outside_platform] $violations violation(s) found (mode: $MODE)"
-echo "[check_no_raw_clock_outside_platform] use platform.clock or add // platform-ok for a documented exception"
+echo "[check_no_raw_clock_outside_platform] use platform.clock/platform.rng or add // platform-ok for a documented exception"
 
 if (( violations > 0 )) && [[ "$MODE" == "FAIL" ]]; then
     exit 1
