@@ -204,8 +204,6 @@ One commit per task. Push after tasks 3, 5, 6.
 
 ## Status
 
-**READY (any worker)** — parallel-safe with Wave S cutover and Phase 3
-dissolves. Pick this up if you're between assignments or as an
-explicit dispatch from the orchestrator.
+**IN PROGRESS (wt3)** — started 2026-05-23 on `main`.
 
 <!-- Worker: append a Completion section below when done. -->
