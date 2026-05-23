@@ -335,6 +335,6 @@ git push origin wt2/phase0-condition-engine
 
 ## Status
 
-**READY** — waiting for human to start `claude` in `~/github/zclassic23-2`.
+**IN PROGRESS (wt2)** — condition engine implementation started.
 
 <!-- Worker: append a Completion section below when done, per agent-protocol.md -->
