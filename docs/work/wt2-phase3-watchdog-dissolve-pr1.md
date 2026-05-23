@@ -187,6 +187,54 @@ Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
 
 ## Status
 
-**READY** — start when human invokes you in `~/github/zclassic23-2`.
+**IN PROGRESS (wt2)** — started 2026-05-23 on
+`wt2/phase3-watchdog-dissolve-pr1`.
 
 <!-- Worker: append a Completion section below when done. -->
+
+## Completion (wt2, 2026-05-23)
+
+### Summary
+Extracted the first sync watchdog dissolve slice: `block_failed_mask_at_tip`
+now also detects stale tips with `BLOCK_HAVE_DATA` on the next block, and
+`utxo_activation_paused` is a registered CRITICAL condition with resume,
+drift-repair, witness, and operator-needed coverage. Removed the matching
+inline watchdog branches while leaving the still-used `WATCHDOG_BLOCK_STALL`
+native-next-block recovery intact.
+
+### Commits
+- `a7c794f0d` wt2: start watchdog dissolve pr1
+- `14c4a079e` extract watchdog pause conditions
+
+### Files added/modified
+- `app/conditions/src/block_failed_mask_at_tip.c`
+- `app/conditions/include/conditions/utxo_activation_paused.h` (NEW)
+- `app/conditions/src/utxo_activation_paused.c` (NEW)
+- `app/conditions/src/condition_registry.c`
+- `app/services/include/services/sync_watchdog_service.h`
+- `app/services/src/sync_watchdog_service.c`
+- `lib/test/src/test_utxo_activation_paused.c` (NEW)
+- `lib/test/src/test_sync_watchdog.c`
+- `lib/test/include/test/test_helpers.h`
+- `lib/test/src/test.c`
+- `lib/test/src/test_parallel.c`
+
+### Acceptance verification
+- [x] `make -j$(nproc) test_zcl test_parallel` — PASS
+- [x] `ZCL_TEST_ONLY=utxo_activation_paused ./test_zcl` — PASS
+- [x] `ZCL_TEST_ONLY=sync_watchdog ./test_zcl` — PASS
+- [x] `make lint` — PASS
+- [x] `./test_parallel --jobs=$(nproc)` — PASS: `ALL TESTS PASSED — 0/186 groups failed`
+
+### Surprises / follow-ups
+The assignment text referenced `chain_advance_coordinator_resume()` and
+`utxo_recovery_kick()`, but those APIs do not exist in current `main`.
+The condition therefore preserves the existing production recovery path:
+clear the process-block UTXO activation pause, kick gap-fill, and request
+activation when an activation controller is available. The drift branch is
+kept as a distinct tested path so it can be swapped to a real
+`utxo_recovery_kick()` if that API lands later.
+
+### Status
+DONE — branch `wt2/phase3-watchdog-dissolve-pr1` pushed to origin, ready
+for orchestrator merge.

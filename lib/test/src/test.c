@@ -236,6 +236,13 @@ int main(void)
                failures);
         return failures ? 1 : 0;
     }
+    if (only && strcmp(only, "utxo_activation_paused") == 0) {
+        printf("[test] ZCL_TEST_ONLY=utxo_activation_paused — running only\n");
+        failures += test_utxo_activation_paused();
+        printf("\n=== utxo_activation_paused subset complete: %d failure(s) ===\n",
+               failures);
+        return failures ? 1 : 0;
+    }
     if (only && strcmp(only, "zclassicd_oracle") == 0) {
         printf("[test] ZCL_TEST_ONLY=zclassicd_oracle — running oracle subset\n");
         failures += test_zclassicd_oracle();
@@ -512,6 +519,7 @@ int main(void)
     failures += test_path_check();
     failures += test_supervisor();
     failures += test_condition_engine();
+    failures += test_utxo_activation_paused();
     failures += test_blocker();
     failures += test_clock();
     failures += test_rng();

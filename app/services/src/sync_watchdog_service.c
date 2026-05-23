@@ -33,7 +33,6 @@
 /* ── Thresholds ──────────────────────────────────────────── */
 
 #define HEADER_STALL_SECS    300   /* 5 minutes */
-#define BLOCK_STALL_SECS     300   /* 5 minutes */
 #define REPEATED_WINDOW_SECS 1800  /* 30 minutes */
 #define REPEATED_MAX         3     /* max recoveries before giving up */
 
@@ -200,7 +199,6 @@ const char *watchdog_recovery_type_name(enum watchdog_recovery_type type)
     case WATCHDOG_REPEATED_RESTART: return "REPEATED_RESTART";
     case WATCHDOG_PEER_FLOOR:       return "PEER_FLOOR";
     case WATCHDOG_SYNC_VIOLATION:   return "SYNC_VIOLATION";
-    case WATCHDOG_UTXO_PAUSE:       return "UTXO_PAUSE";
     case WATCHDOG_QUEUE_STARVED:    return "QUEUE_STARVED";
     case WATCHDOG_LOCAL_HEADER_REFILL: return "LOCAL_HEADER_REFILL";
     }
@@ -515,16 +513,12 @@ static void watchdog_kick_local_sync(const char *reason)
 
 static int64_t g_peer_floor_first_violation = 0;
 static int64_t g_sync_violation_first_seen = 0;
-/* non-static so tests can backdate via extern.
- * Follows the pattern of g_sync_state_entered_time. */
-int64_t g_utxo_pause_first_seen = 0;
 int64_t g_queue_starved_first_seen = 0;
 
 #define PEER_FLOOR_MIN_HEALTHY    3
 #define PEER_FLOOR_TRIGGER_SECS  60
 #define SYNC_VIOLATION_GAP      100   /* blocks behind peer max */
 #define SYNC_VIOLATION_SECS     600   /* sustained for 10 min */
-#define UTXO_PAUSE_TRIGGER_SECS 300   /* clear after 5 min */
 #define QUEUE_STARVED_TRIGGER_SECS 120 /* starved for >2 min */
 #define QUEUE_STARVED_RATIO_DEN    10  /* < 1/10th of IBD in-flight limit */
 #define LOCAL_HEADER_REFILL_MIN_PEERS 3
@@ -785,40 +779,7 @@ enum watchdog_recovery_type sync_watchdog_check(
         }
     }
 
-    /* ── UTXO_PAUSE — activation paused > 300s ──
-     *
-     * process_block_note_utxo_failure() pauses activate_best_chain at
-     * a specific height when reimport has already been attempted and
-     * did NOT heal the chain (lib/validation/src/process_block.c:504).
-     * Pre-Round-7 this state was silent to the watchdog: sync state
-     * stayed BLOCKS_DOWNLOAD, no height progress event, BLOCK_STALL
-     * eventually fired but its recovery (re-queue download manager)
-     * didn't address the root cause. Now: detect the pause, clear it
-     * after 300s, let activate_best_chain re-try. If it re-pauses
-     * within the 30min escalation window, L1→L2→L3 picks up. */
-    {
-        int paused = process_block_get_utxo_activation_paused_height();
-        if (paused >= 0) {
-            if (g_utxo_pause_first_seen == 0)
-                g_utxo_pause_first_seen = now;
-            if (now - g_utxo_pause_first_seen > UTXO_PAUSE_TRIGGER_SECS) {
-                printf("[watchdog] UTXO_PAUSE: activation paused at h=%d "
-                       "for %llds — clearing pause and re-arming\n",
-                       paused,
-                       (long long)(now - g_utxo_pause_first_seen));
-                event_emitf(EV_SYNC_STATE_CHANGE, 0,
-                            "watchdog UTXO_PAUSE h=%d", paused);
-                process_block_clear_utxo_activation_pause_range(
-                    paused, paused);
-                watchdog_kick_local_sync("utxo-pause");
-                g_utxo_pause_first_seen = now;  /* re-arm */
-                record_recovery(now, WATCHDOG_UTXO_PAUSE);
-                return WATCHDOG_UTXO_PAUSE;
-            }
-        } else {
-            g_utxo_pause_first_seen = 0;
-        }
-    }
+    /* moved to condition utxo_activation_paused (PR-1, 2026-05-23) */
 
     /* ── Part D: SYNC_VIOLATION — peer_max - tip > 100 for > 600s ──
      * Active-tense invariant: the node MUST stay within 100 blocks
@@ -1106,80 +1067,7 @@ enum watchdog_recovery_type sync_watchdog_check(
         }
     }
 
-    /* b. BLOCK_STALL: blocks_download >300s with no chain height progress */
-    if (state == SYNC_BLOCKS_DOWNLOAD && duration > BLOCK_STALL_SECS) {
-        int current_height = -1;
-        if (ms)
-            current_height = active_chain_height(&ms->chain_active);
-
-        if (current_height >= 0 &&
-            current_height <= g_watchdog.last_chain_height) {
-            /* Reset download manager: clear in-flight, re-queue */
-            if (dm) {
-                zcl_mutex_lock(&dm->cs);
-                /* Clear all in-flight entries */
-                for (size_t i = 0; i < dm->num_slots; i++) {
-                    if (dm->slots[i].active) {
-                        /* Re-queue this block */
-                        if (dm->queue_len < dm->queue_cap) {
-                            dm->queue[dm->queue_len] = dm->slots[i].hash;
-                            dm->queue_heights[dm->queue_len] = dm->slots[i].height;
-                            dm->queue_len++;
-                        }
-                        dm->slots[i].active = false;
-                        dm->num_active--;
-                    }
-                }
-                zcl_mutex_unlock(&dm->cs);
-            }
-
-            /* After re-queuing timed-out blocks, check if queue is
-             * still empty — if so, force-populate from block index */
-            uint64_t post_queued = 0, post_inflight = 0;
-            dl_get_stats(dm, NULL, NULL, NULL, &post_inflight, &post_queued);
-            if (post_queued == 0 && post_inflight == 0 && ms) {
-                int chain_h = active_chain_height(&ms->chain_active);
-                struct uint256 scan_hashes[256];
-                int32_t scan_heights[256];
-                size_t scan_count = 0;
-                size_t iter = 0;
-                struct block_index *bi;
-                while (block_map_next(&ms->map_block_index, &iter,
-                                      NULL, &bi)) {
-                    if (!bi || scan_count >= 256) break;
-                    if (bi->nHeight <= chain_h) continue;
-                    if (bi->nHeight > chain_h + 2048) continue;
-                    if (bi->nStatus & BLOCK_HAVE_DATA) continue;
-                    if (bi->nStatus & BLOCK_FAILED_MASK) continue;
-                    if (!bi->phashBlock) continue;
-                    scan_hashes[scan_count] = *bi->phashBlock;
-                    scan_heights[scan_count] = bi->nHeight;
-                    scan_count++;
-                }
-                if (scan_count > 0) {
-                    dl_queue_blocks(dm, scan_hashes, scan_heights,
-                                    scan_count);
-                    printf("[watchdog] BLOCK_STALL: force-queued %zu "
-                           "blocks from index\n", scan_count);
-                } else {
-                    printf("[watchdog] BLOCK_STALL: no downloadable "
-                           "blocks, reverting to HEADERS_DOWNLOAD\n");
-                    sync_set_state(SYNC_HEADERS_DOWNLOAD,
-                                   "watchdog BLOCK_STALL: no blocks");
-                }
-            }
-            watchdog_kick_local_sync("block-stall");
-
-            printf("[watchdog] BLOCK_STALL recovery: reset download manager, "
-                   "re-queued blocks\n");
-            record_recovery(now, WATCHDOG_BLOCK_STALL);
-            g_watchdog.last_chain_height = -1;
-            return WATCHDOG_BLOCK_STALL;
-        }
-        g_watchdog.last_chain_height = current_height;
-    } else if (state != SYNC_BLOCKS_DOWNLOAD) {
-        g_watchdog.last_chain_height = -1;
-    }
+    /* moved to condition block_failed_mask_at_tip (PR-1, 2026-05-23) */
 
     /* QUEUE_STARVED — in-flight slots < 10% of IBD cap for
      * >120s while in BLOCKS_DOWNLOAD with peers connected. Means we

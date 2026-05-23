@@ -318,6 +318,7 @@ int test_boot_phase(void);
 int test_path_check(void);
 int test_supervisor(void);
 int test_condition_engine(void);
+int test_utxo_activation_paused(void);
 int test_blocker(void);
 int test_clock(void);
 int test_rng(void);
