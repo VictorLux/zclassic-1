@@ -185,7 +185,50 @@ One commit per task. Push after tasks 2, 4, 5.
 
 ## Status
 
-**READY** — gated on S-7 merge. Start when human invokes you in
-`~/github/zclassic23-3` AFTER S-7 is merged.
+**IN PROGRESS (wt3)** — started 2026-05-23; utxo_apply shadow stage
+branch active.
 
 <!-- Worker: append a Completion section below when done. -->
+
+## Completion (wt3, 2026-05-23)
+
+### Summary
+Shipped S-8 `utxo_apply` as a shadow stage over `proof_validate_log`.
+It computes per-block transparent UTXO deltas, records verified/failure
+outcomes in `utxo_apply_log`, exposes live counters through `zcl_state
+subsystem=utxo_apply`, and runs under the supervisor without mutating
+consensus state.
+
+### Commits
+- 511104a9e wt3: start utxo apply shadow stage
+- 848c37219 add utxo apply shadow stage
+- 8ddb34a0e wt3: complete utxo apply shadow stage
+
+### Files added/modified
+- `app/services/include/services/utxo_apply_stage.h` (NEW)
+- `app/services/src/utxo_apply_stage.c` (NEW)
+- `lib/test/src/test_utxo_apply_stage.c` (NEW)
+- `config/src/boot_services.c`
+- `app/controllers/src/diagnostics_controller.c`
+- `lib/test/include/test/test_helpers.h`
+- `lib/test/src/test.c`
+- `lib/test/src/test_parallel.c`
+
+### Acceptance verification
+- [x] `make -j$(nproc) test_zcl` — PASS
+- [x] `ZCL_TEST_ONLY=utxo_apply ./test_zcl` — PASS
+- [x] `make lint` — PASS
+- [x] `./test_parallel --jobs=$(nproc)` — PASS: `ALL TESTS PASSED — 0/186 groups failed (107.0s wall, 32 workers)`
+- [x] `make -j$(nproc)` — PASS
+
+### Surprises / follow-ups
+The currently available runtime UTXO cache is tip-state, not a historical
+parent view for arbitrary shadow heights. The stage therefore keeps the
+production path mutation-free and exposes stage-local lookup/live-diff hooks
+so tests can deterministically cover `spend_unknown_utxo`,
+`utxo_collision`, `value_overflow`, and `delta_diverged`. Cutover should wire
+a real historical parent-view before making this stage authoritative.
+
+### Status
+DONE — branch `wt3/phase2-utxo-apply-shadow` pushed to origin, ready for
+orchestrator merge.

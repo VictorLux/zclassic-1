@@ -97,6 +97,7 @@ volatile sig_atomic_t g_shutdown_requested = 0;
     X(projection) X(projection_adoption) X(progress_store) \
     X(header_admit_stage) X(validate_headers_stage) X(body_fetch_stage) \
     X(body_persist_stage) X(script_validate_stage) X(proof_validate_stage) \
+    X(utxo_apply_stage) \
     X(domain_consensus_verify) X(application_consensus_validate_block) \
     X(block_log_file) X(block_log_legacy) X(mutator) X(shadow_feeder) X(shadow_feeder_global) \
     X(diff_with_legacy_shadow) X(utxo_snapshot_inmem)

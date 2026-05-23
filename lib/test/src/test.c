@@ -144,6 +144,13 @@ int main(void)
                failures);
         return failures ? 1 : 0;
     }
+    if (only && strcmp(only, "utxo_apply") == 0) {
+        printf("[test] ZCL_TEST_ONLY=utxo_apply — running utxo_apply stage only\n");
+        failures += test_utxo_apply_stage();
+        printf("\n=== utxo_apply subset complete: %d failure(s) ===\n",
+               failures);
+        return failures ? 1 : 0;
+    }
     if (only && strcmp(only, "rpc_safety") == 0) {
         printf("[test] ZCL_TEST_ONLY=rpc_safety — running RPC safety subset\n");
         failures += test_rpc_safety();
