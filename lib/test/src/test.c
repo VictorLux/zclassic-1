@@ -516,6 +516,7 @@ int main(void)
     failures += test_header_admit_stage();
     failures += test_validate_headers_stage();
     failures += test_body_fetch_stage();
+    failures += test_body_persist_stage();
     failures += test_legacy_oneshot_import();
     failures += test_process_block_revalidate();
     failures += test_domain_consensus_verify();

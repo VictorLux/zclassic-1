@@ -1,0 +1,461 @@
+/* Copyright 2026 Rhett Creighton - Apache License 2.0
+ *
+ * body_persist_stage — implementation. See services/body_persist_stage.h.
+ *
+ * S-5 consumes body_fetch_log and verifies that bodies observed on disk are
+ * readable, hash to the active-chain header, and merkle-reconstruct to the
+ * admitted header's root. It is a shadow stage: it writes only
+ * body_persist_log plus its stage cursor in progress.kv. */
+
+#include "platform/time_compat.h"
+#include "services/body_persist_stage.h"
+
+#include "bloom/merkle.h"
+#include "chain/chain.h"
+#include "core/uint256.h"
+#include "event/event.h"
+#include "json/json.h"
+#include "primitives/block.h"
+#include "storage/disk_block_io.h"
+#include "storage/progress_store.h"
+#include "util/log_macros.h"
+#include "util/stage.h"
+#include "util/util.h"
+#include "validation/chainstate.h"
+#include "validation/main_state.h"
+
+#include <pthread.h>
+#include <sqlite3.h>
+#include <stdatomic.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <time.h>
+
+#define STAGE_NAME "body_persist"
+
+struct body_fetch_row {
+    int ok;
+    char source[64];
+};
+
+static pthread_mutex_t g_lock = PTHREAD_MUTEX_INITIALIZER;
+static struct main_state *g_ms = NULL;
+static stage_t *g_stage = NULL;
+static char g_datadir[2048] = {0};
+static body_persist_reader_fn g_reader = NULL;
+static void *g_reader_user = NULL;
+
+static _Atomic uint64_t g_verified_total = 0;
+static _Atomic uint64_t g_upstream_failed_total = 0;
+static _Atomic uint64_t g_read_failed_total = 0;
+static _Atomic uint64_t g_header_mismatch_total = 0;
+static _Atomic uint64_t g_merkle_mismatch_total = 0;
+static _Atomic int64_t  g_last_step_unix = 0;
+static _Atomic int64_t  g_last_blocked_unix = 0;
+static _Atomic int64_t  g_last_advance_height = -1;
+
+static int64_t wall_now_s(void)
+{
+    return (int64_t)platform_time_wall_time_t();
+}
+
+static bool default_reader(struct block *out, const struct block_index *bi,
+                           const char *datadir, void *user)
+{
+    (void)user;
+    if (!out || !bi || !(bi->nStatus & BLOCK_HAVE_DATA))
+        return false;
+
+    struct disk_block_pos pos;
+    disk_block_pos_init(&pos);
+    pos.nFile = bi->nFile;
+    pos.nPos = bi->nDataPos;
+    return read_block_from_disk_pread(out, &pos, datadir ? datadir : "");
+}
+
+static bool ensure_log_schema(sqlite3 *db)
+{
+    static const char *const sql =
+        "CREATE TABLE IF NOT EXISTS body_persist_log ("
+        "  height       INTEGER PRIMARY KEY,"
+        "  source       TEXT    NOT NULL,"
+        "  ok           INTEGER NOT NULL,"
+        "  persisted_at INTEGER NOT NULL"
+        ")";
+    char *err = NULL;
+    if (sqlite3_exec(db, sql, NULL, NULL, &err) != SQLITE_OK) {
+        fprintf(stderr,  // obs-ok:body-persist-schema-failure
+                "[body_persist] schema ensure failed: %s\n",
+                err ? err : "(no message)");
+        if (err) sqlite3_free(err);
+        return false;
+    }
+    return true;
+}
+
+static uint64_t upstream_cursor_persisted(sqlite3 *db, const char *name)
+{
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(db,
+        "SELECT cursor FROM stage_cursor WHERE name = ?",
+        -1, &st, NULL) != SQLITE_OK) {
+        fprintf(stderr,  // obs-ok:body-persist-upstream-prepare-failure
+                "[body_persist] upstream cursor prepare failed: %s\n",
+                sqlite3_errmsg(db));
+        return 0;
+    }
+    sqlite3_bind_text(st, 1, name, -1, SQLITE_STATIC);
+    uint64_t out = 0;
+    if (sqlite3_step(st) == SQLITE_ROW)  // raw-sql-ok:kernel-primitive
+        out = (uint64_t)sqlite3_column_int64(st, 0);
+    sqlite3_finalize(st);
+    return out;
+}
+
+static int body_fetch_log_at(sqlite3 *db, int height,
+                             struct body_fetch_row *out)
+{
+    memset(out, 0, sizeof(*out));
+    out->ok = -1;
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(db,
+        "SELECT source, ok FROM body_fetch_log WHERE height = ?",
+        -1, &st, NULL) != SQLITE_OK) {
+        fprintf(stderr,  // obs-ok:body-persist-fetch-log-prepare-failure
+                "[body_persist] body_fetch_log prepare failed: %s\n",
+                sqlite3_errmsg(db));
+        return -1;  // raw-return-ok:logged-above
+    }
+    sqlite3_bind_int(st, 1, height);
+    int found = 0;
+    int rc = sqlite3_step(st);  // raw-sql-ok:kernel-primitive
+    if (rc == SQLITE_ROW) {
+        const unsigned char *src = sqlite3_column_text(st, 0);
+        if (src)
+            snprintf(out->source, sizeof(out->source), "%s",
+                     (const char *)src);
+        out->ok = sqlite3_column_int(st, 1);
+        found = 1;
+    }
+    sqlite3_finalize(st);
+    return found;
+}
+
+static bool log_insert(sqlite3 *db, int height, const char *source, bool ok)
+{
+    sqlite3_stmt *stmt = NULL;
+    int rc = sqlite3_prepare_v2(db,
+        "INSERT OR REPLACE INTO body_persist_log "
+        "(height, source, ok, persisted_at) VALUES (?,?,?,?)",
+        -1, &stmt, NULL);
+    if (rc != SQLITE_OK) {
+        fprintf(stderr,  // obs-ok:body-persist-log-prepare-failure
+                "[body_persist] prepare insert failed: %s\n",
+                sqlite3_errmsg(db));
+        return false;
+    }
+    sqlite3_bind_int64(stmt, 1, (sqlite3_int64)height);
+    sqlite3_bind_text (stmt, 2, source, -1, SQLITE_STATIC);
+    sqlite3_bind_int  (stmt, 3, ok ? 1 : 0);
+    sqlite3_bind_int64(stmt, 4, (sqlite3_int64)wall_now_s());
+    rc = sqlite3_step(stmt);  // raw-sql-ok:kernel-primitive
+    sqlite3_finalize(stmt);
+    if (rc != SQLITE_DONE) {
+        fprintf(stderr,  // obs-ok:body-persist-log-insert-failure
+                "[body_persist] insert height=%d rc=%d\n", height, rc);
+        return false;
+    }
+    return true;
+}
+
+static int64_t log_row_count(sqlite3 *db)
+{
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(db,
+        "SELECT COUNT(*) FROM body_persist_log",
+        -1, &st, NULL) != SQLITE_OK) {
+        fprintf(stderr,  // obs-ok:body-persist-count-prepare-failure
+                "[body_persist] log count prepare failed: %s\n",
+                sqlite3_errmsg(db));
+        return -1;  // raw-return-ok:logged-above
+    }
+    int64_t n = -1;
+    if (sqlite3_step(st) == SQLITE_ROW)  // raw-sql-ok:kernel-primitive
+        n = sqlite3_column_int64(st, 0);
+    sqlite3_finalize(st);
+    return n;
+}
+
+static bool verify_merkle_root(const struct block *blk)
+{
+    if (!blk) return false;
+    if (blk->num_vtx == 0)
+        return uint256_is_null(&blk->header.hashMerkleRoot);
+
+    struct uint256 *txids = malloc(blk->num_vtx * sizeof(struct uint256)); // raw-alloc-ok:bounded-temporary
+    if (!txids) return false;
+    for (size_t i = 0; i < blk->num_vtx; i++)
+        txids[i] = blk->vtx[i].hash;
+    struct uint256 root = compute_merkle_root(txids, blk->num_vtx);
+    free(txids);
+    return uint256_eq(&root, &blk->header.hashMerkleRoot);
+}
+
+static stage_result_t step_persist(struct stage_step_ctx *c)
+{
+    atomic_store(&g_last_step_unix, wall_now_s());
+
+    struct main_state *ms = g_ms;
+    if (!ms) return STAGE_IDLE;
+    sqlite3 *db = progress_store_db();
+    if (!db) return STAGE_IDLE;
+
+    int next_h = (int)c->cursor_in;
+    if (next_h < 0) return STAGE_ERROR;
+
+    uint64_t bf_cursor = upstream_cursor_persisted(db, "body_fetch");
+    if ((uint64_t)next_h >= bf_cursor) {
+        atomic_store(&g_last_blocked_unix, wall_now_s());
+        return STAGE_IDLE;
+    }
+
+    struct body_fetch_row upstream;
+    int found = body_fetch_log_at(db, next_h, &upstream);
+    if (found < 0) return STAGE_ERROR;
+    if (found == 0) {
+        atomic_store(&g_last_blocked_unix, wall_now_s());
+        return STAGE_IDLE;
+    }
+
+    if (upstream.ok == 0) {
+        if (!log_insert(db, next_h, "upstream_failed", false))
+            return STAGE_ERROR;
+        atomic_fetch_add(&g_upstream_failed_total, 1);
+        atomic_store(&g_last_advance_height, (int64_t)next_h);
+        c->cursor_out = c->cursor_in + 1;
+        return STAGE_ADVANCED;
+    }
+
+    struct block_index *bi = active_chain_at(&ms->chain_active, next_h);
+    if (!bi || !bi->phashBlock || !(bi->nStatus & BLOCK_HAVE_DATA)) {
+        atomic_store(&g_last_blocked_unix, wall_now_s());
+        return STAGE_IDLE;
+    }
+
+    struct block blk;
+    block_init(&blk);
+    body_persist_reader_fn reader = g_reader ? g_reader : default_reader;
+    if (!reader(&blk, bi, g_datadir, g_reader_user)) {
+        block_free(&blk);
+        if (!log_insert(db, next_h, "read_failed", false))
+            return STAGE_ERROR;
+        atomic_fetch_add(&g_read_failed_total, 1);
+        atomic_store(&g_last_advance_height, (int64_t)next_h);
+        event_emitf(EV_BLOCK_REJECTED, 0,
+                    "body_persist read_failed height=%d source=%s",
+                    next_h, upstream.source);
+        c->cursor_out = c->cursor_in + 1;
+        return STAGE_ADVANCED;
+    }
+
+    struct uint256 disk_hash;
+    block_get_hash(&blk, &disk_hash);
+    if (uint256_cmp(&disk_hash, bi->phashBlock) != 0) {
+        block_free(&blk);
+        if (!log_insert(db, next_h, "header_mismatch", false))
+            return STAGE_ERROR;
+        atomic_fetch_add(&g_header_mismatch_total, 1);
+        atomic_store(&g_last_advance_height, (int64_t)next_h);
+        event_emitf(EV_BLOCK_REJECTED, 0,
+                    "body_persist header_mismatch height=%d", next_h);
+        c->cursor_out = c->cursor_in + 1;
+        return STAGE_ADVANCED;
+    }
+
+    if (!verify_merkle_root(&blk)) {
+        block_free(&blk);
+        if (!log_insert(db, next_h, "merkle_mismatch", false))
+            return STAGE_ERROR;
+        atomic_fetch_add(&g_merkle_mismatch_total, 1);
+        atomic_store(&g_last_advance_height, (int64_t)next_h);
+        event_emitf(EV_BLOCK_REJECTED, 0,
+                    "body_persist merkle_mismatch height=%d", next_h);
+        c->cursor_out = c->cursor_in + 1;
+        return STAGE_ADVANCED;
+    }
+
+    block_free(&blk);
+    if (!log_insert(db, next_h, "verified", true))
+        return STAGE_ERROR;
+    atomic_fetch_add(&g_verified_total, 1);
+    atomic_store(&g_last_advance_height, (int64_t)next_h);
+    c->cursor_out = c->cursor_in + 1;
+    return STAGE_ADVANCED;
+}
+
+bool body_persist_stage_init(struct main_state *ms)
+{
+    if (!ms) LOG_FAIL("body_persist", "init: NULL main_state");
+
+    sqlite3 *db = progress_store_db();
+    if (!db) LOG_FAIL("body_persist",
+        "init: progress_store not open");
+
+    pthread_mutex_lock(&g_lock);
+    if (g_stage != NULL) {
+        bool same = (g_ms == ms);
+        pthread_mutex_unlock(&g_lock);
+        if (!same)
+            LOG_FAIL("body_persist",
+                "init: already bound to a different main_state");
+        return true;
+    }
+
+    if (!ensure_log_schema(db)) {
+        pthread_mutex_unlock(&g_lock);
+        return false;
+    }
+
+    GetDataDir(true, g_datadir, sizeof(g_datadir));
+
+    stage_t *s = stage_create(STAGE_NAME, step_persist, NULL);
+    if (!s) {
+        pthread_mutex_unlock(&g_lock);
+        LOG_FAIL("body_persist", "init: stage_create failed");
+    }
+
+    g_ms = ms;
+    g_stage = s;
+    pthread_mutex_unlock(&g_lock);
+
+    fprintf(stderr,  // obs-ok:body-persist-lifecycle
+            "[body_persist] stage initialised (shadow mode)\n");
+    return true;
+}
+
+stage_result_t body_persist_stage_step_once(void)
+{
+    if (!g_stage) return STAGE_IDLE;
+    sqlite3 *db = progress_store_db();
+    if (!db) return STAGE_IDLE;
+    return stage_run_once(g_stage, db);
+}
+
+int body_persist_stage_drain(int max_steps)
+{
+    if (max_steps <= 0) return 0;
+    int advanced = 0;
+    for (int i = 0; i < max_steps; i++) {
+        stage_result_t r = body_persist_stage_step_once();
+        if (r != STAGE_ADVANCED) break;
+        advanced++;
+    }
+    return advanced;
+}
+
+void body_persist_stage_shutdown(void)
+{
+    pthread_mutex_lock(&g_lock);
+    if (g_stage) {
+        stage_destroy(g_stage);
+        g_stage = NULL;
+    }
+    g_ms = NULL;
+    g_datadir[0] = '\0';
+    g_reader = NULL;
+    g_reader_user = NULL;
+    atomic_store(&g_verified_total, (uint64_t)0);
+    atomic_store(&g_upstream_failed_total, (uint64_t)0);
+    atomic_store(&g_read_failed_total, (uint64_t)0);
+    atomic_store(&g_header_mismatch_total, (uint64_t)0);
+    atomic_store(&g_merkle_mismatch_total, (uint64_t)0);
+    atomic_store(&g_last_step_unix, (int64_t)0);
+    atomic_store(&g_last_blocked_unix, (int64_t)0);
+    atomic_store(&g_last_advance_height, (int64_t)-1);
+    pthread_mutex_unlock(&g_lock);
+}
+
+void body_persist_stage_set_reader(body_persist_reader_fn fn, void *user)
+{
+    pthread_mutex_lock(&g_lock);
+    g_reader = fn;
+    g_reader_user = user;
+    pthread_mutex_unlock(&g_lock);
+}
+
+uint64_t body_persist_stage_cursor(void)
+{
+    return g_stage ? stage_cursor(g_stage) : 0;
+}
+
+uint64_t body_persist_stage_verified_total(void)
+{
+    return atomic_load(&g_verified_total);
+}
+
+uint64_t body_persist_stage_upstream_failed_total(void)
+{
+    return atomic_load(&g_upstream_failed_total);
+}
+
+uint64_t body_persist_stage_read_failed_total(void)
+{
+    return atomic_load(&g_read_failed_total);
+}
+
+uint64_t body_persist_stage_header_mismatch_total(void)
+{
+    return atomic_load(&g_header_mismatch_total);
+}
+
+uint64_t body_persist_stage_merkle_mismatch_total(void)
+{
+    return atomic_load(&g_merkle_mismatch_total);
+}
+
+bool body_persist_dump_state_json(struct json_value *out, const char *key)
+{
+    (void)key;
+    if (!out) return false;
+    json_set_object(out);
+
+    sqlite3 *db = progress_store_db();
+    int64_t now = wall_now_s();
+    int64_t last = atomic_load(&g_last_step_unix);
+
+    json_push_kv_bool(out, "initialised", g_stage != NULL);
+    json_push_kv_str (out, "stage_name", STAGE_NAME);
+    json_push_kv_int (out, "cursor",
+                      (int64_t)(g_stage ? stage_cursor(g_stage) : 0));
+    json_push_kv_int (out, "verified_total",
+                      (int64_t)atomic_load(&g_verified_total));
+    json_push_kv_int (out, "upstream_failed_total",
+                      (int64_t)atomic_load(&g_upstream_failed_total));
+    json_push_kv_int (out, "read_failed_total",
+                      (int64_t)atomic_load(&g_read_failed_total));
+    json_push_kv_int (out, "header_mismatch_total",
+                      (int64_t)atomic_load(&g_header_mismatch_total));
+    json_push_kv_int (out, "merkle_mismatch_total",
+                      (int64_t)atomic_load(&g_merkle_mismatch_total));
+    json_push_kv_int (out, "last_advance_height",
+                      atomic_load(&g_last_advance_height));
+    json_push_kv_int (out, "last_step_unix", last);
+    json_push_kv_int (out, "last_step_age_seconds",
+                      last > 0 ? now - last : -1);
+    json_push_kv_int (out, "last_blocked_unix",
+                      atomic_load(&g_last_blocked_unix));
+    json_push_kv_int (out, "log_rows", db ? log_row_count(db) : 0);
+    if (g_stage) {
+        json_push_kv_int(out, "advanced_count",
+                         (int64_t)stage_advanced_count(g_stage));
+        json_push_kv_int(out, "blocked_count",
+                         (int64_t)stage_blocked_count(g_stage));
+        json_push_kv_int(out, "idle_count",
+                         (int64_t)stage_idle_count(g_stage));
+        json_push_kv_int(out, "error_count",
+                         (int64_t)stage_error_count(g_stage));
+    }
+    return true;
+}

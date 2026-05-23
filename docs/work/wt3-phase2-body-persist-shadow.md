@@ -224,6 +224,45 @@ Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
 
 ## Status
 
-**READY** — start when human invokes you in `~/github/zclassic23-3`.
+**IN PROGRESS (wt3)** — started 2026-05-23; body_persist shadow stage branch active.
 
 <!-- Worker: append a Completion section below when done. -->
+
+## Completion (wt3, 2026-05-23)
+
+### Summary
+Shipped S-5 `body_persist` as a shadow stage over `body_fetch_log`.
+It verifies readable block bodies, header hash consistency, and Merkle
+root consistency, then records per-height outcomes in `body_persist_log`
+without mutating consensus state.
+
+### Commits
+- 33f789919 wt3: mark body persist stage in progress
+- 09bdd3f93 add body persist shadow stage
+- 58c44ad25 test body persist shadow stage
+
+### Files added/modified
+- `app/services/include/services/body_persist_stage.h` (NEW)
+- `app/services/src/body_persist_stage.c` (NEW)
+- `lib/test/src/test_body_persist_stage.c` (NEW)
+- `config/src/boot_services.c`
+- `app/controllers/src/diagnostics_controller.c`
+- `lib/test/include/test/test_helpers.h`
+- `lib/test/src/test.c`
+- `lib/test/src/test_parallel.c`
+
+### Acceptance verification
+- [x] `make -j$(nproc)` — PASS
+- [x] `make lint` — PASS
+- [x] `./test_parallel --jobs=$(nproc)` — PASS: `ALL TESTS PASSED — 0/184 groups failed`
+
+### Surprises / follow-ups
+`progress.kv` stage log schemas are bootstrapped by each stage's
+`ensure_log_schema()` today; there is no central progress-store
+migration ladder for `header_admit_log`, `validate_headers_log`, or
+`body_fetch_log`. S-5 follows that existing pattern for
+`body_persist_log`.
+
+### Status
+DONE — branch `wt3/phase2-body-persist-shadow` pushed to origin, ready
+for orchestrator merge.
