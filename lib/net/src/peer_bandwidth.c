@@ -4,6 +4,7 @@
  * lib/net/include/net/peer_bandwidth.h for design notes.
  */
 
+#include "platform/time_compat.h"
 #include "net/peer_bandwidth.h"
 #include "event/event.h"
 #include "util/log_macros.h"
@@ -20,7 +21,7 @@
 static int64_t mono_us(void)
 {
     struct timespec ts;
-    clock_gettime(CLOCK_MONOTONIC, &ts);
+    platform_time_monotonic_timespec(&ts);
     return (int64_t)ts.tv_sec * 1000000LL + (int64_t)ts.tv_nsec / 1000LL;
 }
 

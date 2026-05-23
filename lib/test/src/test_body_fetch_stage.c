@@ -18,6 +18,7 @@
  *   - cursor floor invariant: body_fetch cannot pass validate even when
  *     validate cursor is forced backward (truncated log) */
 
+#include "platform/time_compat.h"
 #include "test/test_helpers.h"
 
 #include "chain/chain.h"
@@ -513,7 +514,7 @@ int test_body_fetch_stage(void)
         /* Parent. Randomised delay (100-300 ms) — leaves time for the
          * child's 1000-row vh_log seed insert + body_fetch warmup so
          * the SIGKILL lands during the drain loop, not during setup. */
-        srand((unsigned)time(NULL) ^ (unsigned)getpid());
+        srand((unsigned)platform_time_wall_time_t() ^ (unsigned)getpid());
         long delay_us = 100000 + (rand() % 200000);
         struct timespec delay_ts = {
             .tv_sec  = 0,

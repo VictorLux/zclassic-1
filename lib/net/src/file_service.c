@@ -6,6 +6,7 @@
  * Designed for maximum throughput: 64KB fixed frames, zero protocol
  * overhead visible to observers, wire-speed on gigabit links. */
 
+#include "platform/time_compat.h"
 #include "net/file_service.h"
 #include "util/log_json.h"
 #include "crypto/sha3_crypt.h"
@@ -34,7 +35,7 @@
 
 static void fs_join_deadline_from_now(struct timespec *ts, int timeout_sec)
 {
-    clock_gettime(CLOCK_REALTIME, ts);
+    platform_time_realtime_timespec(ts);
     if (timeout_sec < 0)
         timeout_sec = 0;
     ts->tv_sec += timeout_sec;
@@ -70,7 +71,7 @@ void fs_session_init(struct fs_session *s, int fd)
 {
     memset(s, 0, sizeof(*s));
     s->fd = fd;
-    s->start_time = (int64_t)time(NULL);
+    s->start_time = (int64_t)platform_time_wall_time_t();
 
     /* TCP tuning for max throughput */
     int one = 1;
@@ -83,7 +84,7 @@ void fs_session_init(struct fs_session *s, int fd)
 
 double fs_session_mbps(const struct fs_session *s)
 {
-    int64_t elapsed = (int64_t)time(NULL) - s->start_time;
+    int64_t elapsed = (int64_t)platform_time_wall_time_t() - s->start_time;
     if (elapsed < 1) elapsed = 1;
     uint64_t total = s->bytes_sent + s->bytes_received;
     return (double)total / (1048576.0 * (double)elapsed);
@@ -459,13 +460,13 @@ static pthread_mutex_t g_manifest_build_mutex = PTHREAD_MUTEX_INITIALIZER;
 static bool fs_server_rebuild_manifest_locked(struct file_manifest *out)
 {
     struct file_manifest next = {0};
-    int64_t t0 = (int64_t)time(NULL);
+    int64_t t0 = (int64_t)platform_time_wall_time_t();
     bool ok;
 
     pthread_mutex_lock(&g_manifest_build_mutex);
     ok = file_manifest_build(&next, g_fs_datadir);
     pthread_mutex_unlock(&g_manifest_build_mutex);
-    int64_t elapsed = (int64_t)time(NULL) - t0;
+    int64_t elapsed = (int64_t)platform_time_wall_time_t() - t0;
 
     if (ok) {
         *out = next;
@@ -540,7 +541,7 @@ static bool fs_client_queue_pop(int *client_fd_out)
      * dequeue_client treatment. */
     while (g_fs_client_queue_len == 0 && atomic_load(&g_fs_running)) {
         struct timespec deadline;
-        clock_gettime(CLOCK_REALTIME, &deadline);
+        platform_time_realtime_timespec(&deadline);
         deadline.tv_sec += 2;
         pthread_cond_timedwait(&g_fs_client_queue_cv,
                                &g_fs_client_queue_mutex, &deadline);
@@ -1094,7 +1095,7 @@ bool fs_client_sync(const char *peer_addr, uint16_t port,
     snprintf(blocks_dir, sizeof(blocks_dir), "%s/blocks", datadir);
     mkdir(blocks_dir, 0755);
 
-    int64_t dl_start = (int64_t)time(NULL);
+    int64_t dl_start = (int64_t)platform_time_wall_time_t();
 
     /* Check if previous partial download exists — verify and resume.
      * We spot-check existing chunks with SHA3 to detect corruption. */
@@ -1221,7 +1222,7 @@ bool fs_client_sync(const char *peer_addr, uint16_t port,
             done += atomic_load(&workers[w].bytes);
             if (!atomic_load(&workers[w].done)) all_done = false;
         }
-        int64_t el = (int64_t)time(NULL) - dl_start;
+        int64_t el = (int64_t)platform_time_wall_time_t() - dl_start;
         if (el > max_wait) {
             printf("file_service: timeout after %llds, cancelling stuck "
                    "workers\n", (long long)el);
@@ -1255,7 +1256,7 @@ bool fs_client_sync(const char *peer_addr, uint16_t port,
             }
         }
         double pct = total_bytes > 0 ? 100.0 * (double)done / (double)total_bytes : 0;
-        int64_t elapsed = (int64_t)time(NULL) - dl_start;
+        int64_t elapsed = (int64_t)platform_time_wall_time_t() - dl_start;
         double mbps = elapsed > 0 ? (double)done / (1048576.0 * (double)elapsed) : 0;
         int eta = (done > 0 && elapsed > 0) ?
             (int)((double)(total_bytes - done) / ((double)done / (double)elapsed)) : 0;
@@ -1283,7 +1284,7 @@ bool fs_client_sync(const char *peer_addr, uint16_t port,
         total_fail += atomic_load(&workers[w].chunks_fail);
     }
 
-    int64_t dl_elapsed = (int64_t)time(NULL) - dl_start;
+    int64_t dl_elapsed = (int64_t)platform_time_wall_time_t() - dl_start;
     printf("=== File sync: %.1f GB in %llds (%.1f MB/s avg) "
            "chunks: %u ok, %u failed out of %u ===\n",
            (double)bytes_done / (1024.0 * 1024.0 * 1024.0),

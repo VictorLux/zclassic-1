@@ -8,6 +8,7 @@
  * pipeline. See explorer_controller_internal.h for shared declarations
  * and controllers/explorer_internal.h for chart/SQL inline helpers. */
 
+#include "platform/time_compat.h"
 #include "controllers/explorer_controller.h"
 #include "controllers/explorer_internal.h"
 #include "controllers/explorer_stats.h"
@@ -929,7 +930,7 @@ size_t serve_hodl(uint8_t *r, size_t max)
                                              hodl.tip_height - stride)
                            : -1;
                 rows[n].height        = hodl.tip_height;
-                rows[n].time          = (int64_t)time(NULL);
+                rows[n].time          = (int64_t)platform_time_wall_time_t();
                 rows[n].total_zat     = hodl.total_value;
                 rows[n].older_1y_zat  = hodl.older_than_1y_value;
                 rows[n].older_1y_pct  = older_pct;

@@ -34,6 +34,7 @@
 
 #define _POSIX_C_SOURCE 200809L
 
+#include "platform/time_compat.h"
 #include "test/soak_harness.h"
 
 #include <errno.h>
@@ -123,7 +124,7 @@ static bool height_via_rpc(const char *rpc_bin, int64_t *out)
 
 static void default_log_path(char *out, size_t n)
 {
-    time_t t = time(NULL);
+    time_t t = platform_time_wall_time_t();
     struct tm tm;
     localtime_r(&t, &tm);
     snprintf(out, n, "soak-%04d%02d%02d-%02d%02d.log",
@@ -219,7 +220,7 @@ int main(int argc, char **argv)
     soak_state_t st;
     soak_state_init(&st, &cfg);
 
-    time_t started = time(NULL);
+    time_t started = platform_time_wall_time_t();
     fprintf(log,
         "# soak runner\n"
         "# duration_sec=%" PRIu64 " interval_sec=%" PRIu64 "\n"
@@ -238,7 +239,7 @@ int main(int argc, char **argv)
 
     time_t deadline = started + (time_t)cfg.min_duration_sec;
     while (!g_stop) {
-        time_t now = time(NULL);
+        time_t now = platform_time_wall_time_t();
         if (now >= deadline) break;
 
         pid_t pid = pidof_service(service);
@@ -265,7 +266,7 @@ int main(int argc, char **argv)
     }
 
     soak_verdict_t v = soak_compute_verdict(&st);
-    time_t ended = time(NULL);
+    time_t ended = platform_time_wall_time_t();
     fprintf(log,
         "# ended=%ld verdict=%s samples=%zu crashes=%" PRIu32 "\n"
         "# tip_hwm=%" PRId64 " rss_max=%" PRIu64 " rss_baseline=%" PRIu64 "\n",

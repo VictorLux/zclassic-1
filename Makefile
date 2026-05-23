@@ -867,7 +867,7 @@ check-framework-shape:
 
 check-no-raw-clock-outside-platform:
 	@echo "→ Gate #19: no_raw_clock_outside_platform"
-	@ZCL_LINT_MODE=WARN ./tools/lint/check_no_raw_clock_outside_platform.sh
+	@./tools/lint/check_no_raw_clock_outside_platform.sh
 
 check-no-raw-sqlite-in-controllers:
 	@echo "→ Gate #20: no_raw_sqlite_in_controllers"

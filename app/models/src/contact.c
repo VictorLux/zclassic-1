@@ -1,5 +1,6 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0 */
 
+#include "platform/time_compat.h"
 #include "models/contact.h"
 #include "models/model_text.h"
 #include <string.h>
@@ -50,7 +51,7 @@ bool db_contact_save(struct node_db *ndb, const struct db_contact *c)
     if (!ndb || !ndb->open || !c)
         return false;
     if (c->last_used == 0)
-        ((struct db_contact *)c)->last_used = (int64_t)time(NULL);
+        ((struct db_contact *)c)->last_used = (int64_t)platform_time_wall_time_t();
 
     cbs = contact_callbacks_ready();
     if (!ar_run_before_save(cbs, (void *)c)) {

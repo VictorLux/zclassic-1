@@ -18,6 +18,7 @@
 #ifndef ZCL_CHAIN_RESTORE_SERVICE_H
 #define ZCL_CHAIN_RESTORE_SERVICE_H
 
+#include "platform/time_compat.h"
 #include "core/uint256.h"
 #include "core/arith_uint256.h"
 #include <stdbool.h>
@@ -162,7 +163,7 @@ void chain_integrity_check_post_restore(struct chain_integrity_result *out,
  * use (single struct copy; no locking). */
 struct chain_restore_boot_snapshot {
     bool   has_data;            /* false until first integrity check */
-    int64_t boot_time;          /* time(NULL) when struct was last filled */
+    int64_t boot_time;          /* platform_time_wall_time_t() when struct was last filled */
     /* From the most recent chain_integrity_check_post_restore */
     bool   integrity_ok;
     int    zero_nbits_count;

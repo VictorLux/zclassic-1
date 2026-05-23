@@ -1,6 +1,7 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  * ZSLP application service — validation and persistence helpers. */
 
+#include "platform/time_compat.h"
 #include "services/zslp_service.h"
 #include "config/runtime.h"
 #include "models/database.h"
@@ -340,7 +341,7 @@ bool zslp_payment_generate_address(struct wallet *wallet,
         }
     }
 
-    snprintf(z_addr_out, max, "zs1_pay_%lld", (long long)time(NULL));
+    snprintf(z_addr_out, max, "zs1_pay_%lld", (long long)platform_time_wall_time_t());
     return true;
 }
 

@@ -12,7 +12,7 @@
 #include "chain/chain.h"
 #include "core/uint256.h"
 #include "json/json.h"
-#include "platform/clock.h"
+#include "platform/time_compat.h"
 #include "services/header_admit_inbox.h"
 #include "storage/progress_store.h"
 #include "util/blocker.h"
@@ -47,7 +47,7 @@ MAILBOX_DEFINE(header_admit, struct header_admit_msg,
 
 static int64_t wall_now_s(void)
 {
-    return clock_now_wall_ms() / 1000;
+    return platform_time_wall_unix();
 }
 
 /* ── Schema bootstrap (idempotent) ─────────────────────────────────── */

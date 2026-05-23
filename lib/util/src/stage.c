@@ -20,6 +20,7 @@
  * AR lifecycle because it is the foundation other models will use, and a
  * cursor row is not a model. */
 
+#include "platform/time_compat.h"
 #include "util/stage.h"
 
 #include "util/log_macros.h"
@@ -65,7 +66,7 @@ const char *stage_result_name(stage_result_t r)
 static int64_t wall_now_s(void)
 {
     struct timespec ts;
-    clock_gettime(CLOCK_REALTIME, &ts);
+    platform_time_realtime_timespec(&ts);
     return (int64_t)ts.tv_sec;
 }
 

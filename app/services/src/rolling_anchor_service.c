@@ -9,6 +9,7 @@
  *   3. boot+: rolling_anchor_effective_prefix_end_height() consulted by
  *             bg-validation skip path and operator diagnostics. */
 
+#include "platform/time_compat.h"
 #include "services/rolling_anchor_service.h"
 #include "services/oracle_policy.h"
 #include "services/quorum_oracle_service.h"
@@ -514,7 +515,7 @@ int rolling_anchor_extend_if_due(struct main_state *ms,
                 "[rolling_anchor] extended: start=%d end=%d sha3=%s\n",
                 next_start, last_h_in_win, hex);
         atomic_fetch_add(&g_ra.total_extended, 1);
-        atomic_store(&g_ra.last_extend_unix, (int64_t)time(NULL));
+        atomic_store(&g_ra.last_extend_unix, (int64_t)platform_time_wall_time_t());
 
         next_start += (int)SHA3_WINDOW_SIZE;
         extended++;

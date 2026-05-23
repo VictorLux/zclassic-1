@@ -3,6 +3,7 @@
  * Wallet view shared helpers — extracted from wallet_view_controller.c.
  * Global state, DB access, RPC, QR codes, HTML chrome, form parsing. */
 
+#include "platform/time_compat.h"
 #include "controllers/wallet_view_internal.h"
 /* CSS is now in app/views/css/wallet.ccss, compiled as CSS_WALLET */
 #include "models/contact.h"
@@ -756,7 +757,7 @@ void wv_format_relative_time(int64_t timestamp, char *out, size_t out_max) {
     if (!out || out_max == 0) return;
     out[0] = '\0';
     if (timestamp <= 0) { snprintf(out, out_max, "Just now"); return; }
-    time_t now = time(NULL);
+    time_t now = platform_time_wall_time_t();
     int64_t diff = (int64_t)now - timestamp;
     if (diff < 0) { snprintf(out, out_max, "just now"); return; }
     if (diff < 60)    { snprintf(out, out_max, "%d second%s ago", (int)diff, diff == 1 ? "" : "s"); return; }
@@ -812,7 +813,7 @@ int64_t wv_query_speed_balance(sqlite3 *db) {
 int wv_shield_check_status(void) {
     if (!g_shield_opid[0] || g_shield_pending_since == 0)
         return 0;
-    if (time(NULL) - g_shield_pending_since > 600) {
+    if (platform_time_wall_time_t() - g_shield_pending_since > 600) {
         g_shield_opid[0] = '\0';
         g_shield_pending_since = 0;
         g_shield_pending_amount = 0;

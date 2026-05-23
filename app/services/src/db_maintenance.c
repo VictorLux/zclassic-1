@@ -35,6 +35,7 @@
  * rather than fighting over the db handle.
  */
 
+#include "platform/time_compat.h"
 #include "services/db_maintenance.h"
 
 #include "event/event.h"
@@ -135,13 +136,13 @@ void db_maintenance_set_vacuum_gate(db_maintenance_vacuum_gate_fn fn)
 static int64_t dbm_now_ms(void)
 {
     struct timespec ts;
-    clock_gettime(CLOCK_MONOTONIC, &ts);
+    platform_time_monotonic_timespec(&ts);
     return (int64_t)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
 }
 
 static int64_t dbm_now_unix(void)
 {
-    return (int64_t)time(NULL);
+    return (int64_t)platform_time_wall_time_t();
 }
 
 /* Maps an op name to the SQL string to execute. NULL for an

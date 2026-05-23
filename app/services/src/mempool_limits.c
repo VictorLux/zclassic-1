@@ -20,6 +20,7 @@
  * hot-path reads.
  */
 
+#include "platform/time_compat.h"
 #include "services/mempool_limits.h"
 #include "validation/txmempool.h"
 #include "event/event.h"
@@ -77,7 +78,7 @@ static int64_t ml_now_unix_locked_safe(void)
     fn = g_ml.clock_fn;
     pthread_mutex_unlock(&g_ml.lock);
     if (fn) return fn();
-    return (int64_t)time(NULL);
+    return (int64_t)platform_time_wall_time_t();
 }
 
 void mempool_limits_set_clock_fn(mempool_limits_clock_fn fn)
@@ -376,7 +377,7 @@ static void *ml_thread_fn(void *arg)
     pthread_mutex_unlock(&g_ml.lock);
 
     struct timespec now;
-    clock_gettime(CLOCK_MONOTONIC, &now);
+    platform_time_monotonic_timespec(&now);
     int64_t now_ms = (int64_t)now.tv_sec * 1000 + now.tv_nsec / 1000000;
     int64_t next_at_ms = now_ms + (int64_t)tick * 1000;
 
@@ -386,7 +387,7 @@ static void *ml_thread_fn(void *arg)
         pthread_mutex_unlock(&g_ml.lock);
         if (stop) break;
 
-        clock_gettime(CLOCK_MONOTONIC, &now);
+        platform_time_monotonic_timespec(&now);
         now_ms = (int64_t)now.tv_sec * 1000 + now.tv_nsec / 1000000;
         if (now_ms >= next_at_ms) {
             struct tx_mempool *pool;

@@ -2,6 +2,7 @@
 
 #include "framework/condition.h"
 
+#include "platform/time_compat.h"
 #include "services/chain_advance_coordinator.h"
 #include "services/legacy_mirror_sync_service.h"
 #include "validation/chainstate.h"
@@ -10,7 +11,6 @@
 #include <stdatomic.h>
 #include <stdio.h>
 #include <string.h>
-#include <time.h>
 
 static _Atomic int64_t g_last_tip = -1;
 static _Atomic int64_t g_last_tip_change_unix = 0;
@@ -33,7 +33,7 @@ static bool mirror_has_body_stall_error(void)
 static bool detect_chain_stalled_with_data(void)
 {
     int64_t tip = current_tip();
-    int64_t now = (int64_t)time(NULL);
+    int64_t now = platform_time_wall_unix();
     int64_t prev = atomic_load(&g_last_tip);
     if (prev != tip) {
         atomic_store(&g_last_tip, tip);

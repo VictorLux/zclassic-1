@@ -348,10 +348,10 @@ remain on the doc-accuracy backlog:
 ### Framework refactor gates (#18-#20, ratcheting)
 
 These three gates shipped with the Phase 0 framework refactor
-scaffold. They default to WARN mode through `ZCL_LINT_MODE=WARN` in
-`make lint` so the current tree gets measured before the refactor
-starts deleting debt. Later phases flip them to FAIL after the relevant
-shape or primitive migration lands.
+scaffold. Gates #18 and #20 still default to WARN mode through
+`ZCL_LINT_MODE=WARN` in `make lint` so the current tree gets measured
+before the refactor starts deleting debt. Gate #19 ratcheted to FAIL in
+Phase 1 after the platform clock/RNG migration landed.
 
 - **Gate #18: `framework_shape_check`**
   - Path: `tools/lint/framework_shape_check.sh`
@@ -369,13 +369,12 @@ shape or primitive migration lands.
 
 - **Gate #19: `check_no_raw_clock_outside_platform`**
   - Path: `tools/lint/check_no_raw_clock_outside_platform.sh`
-  - Checks: direct `clock_gettime(` and `time(NULL)` calls outside
-    `lib/platform/`.
-  - Current mode: WARN.
-  - Ratchets to FAIL: Phase 1, after platform clock adoption is wired
-    through jobs, supervisors, conditions, and services.
+  - Checks: direct `clock_gettime(`, `time(NULL)`, and `getrandom(`
+    calls outside `lib/platform/`.
+  - Current mode: FAIL — added Phase 1 (2026-05-23).
   - Fix: route wall-clock and monotonic reads through the platform clock
-    abstraction. For deliberate one-off exceptions, add
+    abstraction, and route entropy reads through platform RNG. For
+    deliberate one-off exceptions, add
     `// platform-ok` on the line with a nearby explanation.
 
 - **Gate #20: `check_no_raw_sqlite_in_controllers`**

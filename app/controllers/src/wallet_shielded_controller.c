@@ -3,6 +3,7 @@
  * Distributed under the MIT software license, see the accompanying
  * file COPYING or http://www.opensource.org/licenses/mit-license.php. */
 
+#include "platform/time_compat.h"
 #include "controllers/wallet_shielded_controller.h"
 #include "controllers/wallet_helpers.h"
 #include "controllers/strong_params.h"
@@ -747,7 +748,7 @@ shielded_cleanup:
 
         if (ctx->mempool) {
             struct mempool_entry me;
-            mempool_entry_init(&me, &wtx.tx, fee, (int64_t)time(NULL),
+            mempool_entry_init(&me, &wtx.tx, fee, (int64_t)platform_time_wall_time_t(),
                                0.0, (unsigned int)height, true, false, 0);
             tx_mempool_add_unchecked(ctx->mempool, &wtx.tx.hash, &me);
         }

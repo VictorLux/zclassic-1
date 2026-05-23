@@ -15,6 +15,7 @@
  * synthesise larger inputs.
  */
 
+#include "platform/time_compat.h"
 #include "services/addrman_integrity.h"
 
 #include "crypto/sha3.h"
@@ -278,7 +279,7 @@ static void aii_rename_if_present(const char *src, int64_t ts,
 void aii_quarantine_corrupt(const char *datadir, enum aii_verdict v)
 {
     if (!datadir) return;
-    int64_t ts = (int64_t)time(NULL);
+    int64_t ts = (int64_t)platform_time_wall_time_t();
 
     char body_path[1024];
     char side_path[1024];

@@ -2,6 +2,7 @@
  *
  * Fast P2P sync: UTXO snapshot transfer between zclassic23 nodes. */
 
+#include "platform/time_compat.h"
 #include "net/fast_sync.h"
 #include "views/format_helpers.h"
 #include "coins/utxo_commitment.h"
@@ -612,7 +613,7 @@ bool fast_sync_verify_pow(const struct fast_sync_pow *pow)
     GUARD(pow, "sync", "verify_pow: pow is NULL");
 
     /* Timestamp must be within 5 minutes */
-    int64_t now = (int64_t)time(NULL);
+    int64_t now = (int64_t)platform_time_wall_time_t();
     if (pow->timestamp < now - 300 || pow->timestamp > now + 60)
         LOG_FAIL("sync", "verify_pow: timestamp out of range: ts=%lld now=%lld",
                  (long long)pow->timestamp, (long long)now);
@@ -642,7 +643,7 @@ bool fast_sync_solve_pow(const uint8_t peer_id[32], struct fast_sync_pow *pow)
 {
     GUARD(pow, "sync", "solve_pow: pow is NULL");
     memcpy(pow->peer_id, peer_id, 32);
-    pow->timestamp = (int64_t)time(NULL);
+    pow->timestamp = (int64_t)platform_time_wall_time_t();
     pow->nonce = 0;
 
     while (pow->nonce < UINT64_MAX) {
@@ -658,7 +659,7 @@ bool fast_sync_solve_pow(const uint8_t peer_id[32], struct fast_sync_pow *pow)
 bool fast_sync_rate_check(struct fast_sync_rate_limiter *rl,
                            const uint8_t ip[16])
 {
-    int64_t now = (int64_t)time(NULL);
+    int64_t now = (int64_t)platform_time_wall_time_t();
 
     /* Global rate limit — prevents distributed DoS from many IPs */
     if (now - rl->global_window_start > 3600) {
@@ -1221,7 +1222,7 @@ int32_t swarm_sync_assign_chunk(struct swarm_sync *ss, int peer_id)
         if (ss->chunk_states[i] == CHUNK_NEEDED) {
             ss->chunk_states[i] = CHUNK_INFLIGHT;
             ss->chunk_peer[i] = peer_id;
-            ss->chunk_request_time[i] = (int64_t)time(NULL);
+            ss->chunk_request_time[i] = (int64_t)platform_time_wall_time_t();
             ss->chunks_inflight++;
             return (int32_t)i;
         }
@@ -1304,7 +1305,7 @@ void swarm_sync_handle_timeouts(struct swarm_sync *ss, int timeout_secs)
 {
     if (!ss || !ss->chunk_states) return;
 
-    int64_t now = (int64_t)time(NULL);
+    int64_t now = (int64_t)platform_time_wall_time_t();
     for (uint32_t i = 0; i < ss->manifest.num_chunks; i++) {
         if (ss->chunk_states[i] == CHUNK_INFLIGHT &&
             now - ss->chunk_request_time[i] > timeout_secs) {
@@ -1654,7 +1655,7 @@ int32_t block_swarm_assign_piece(struct block_swarm *bs, int peer_id,
     if (best >= 0) {
         bs->piece_states[best] = CHUNK_INFLIGHT;
         bs->piece_peer[best] = peer_id;
-        bs->piece_request_time[best] = (int64_t)time(NULL);
+        bs->piece_request_time[best] = (int64_t)platform_time_wall_time_t();
         bs->pieces_inflight++;
     }
     return best;
@@ -1702,7 +1703,7 @@ void block_swarm_handle_timeouts(struct block_swarm *bs, int timeout_secs)
 {
     if (!bs || !bs->piece_states) return;
 
-    int64_t now = (int64_t)time(NULL);
+    int64_t now = (int64_t)platform_time_wall_time_t();
     for (uint32_t i = 0; i < bs->manifest.num_pieces; i++) {
         if (bs->piece_states[i] == CHUNK_INFLIGHT &&
             now - bs->piece_request_time[i] > timeout_secs) {

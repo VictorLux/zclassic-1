@@ -7,6 +7,7 @@
 /* msg_compact.c — BIP152 compact block message processing.
  * Split from msgprocessor.c for maintainability. */
 
+#include "platform/time_compat.h"
 #include "net/msg_internal.h"
 #include "net/compact_blocks.h"
 #include "net/peer_scoring.h"
@@ -70,7 +71,7 @@ static void compact_submit_block(struct msg_processor *mp,
                     state.reject_reason[0] ? state.reject_reason : "unknown");
     } else {
         peer_scoring_on_good_interaction(node, peer_scoring_now_ms());
-        node->last_block_time = (int64_t)time(NULL);
+        node->last_block_time = (int64_t)platform_time_wall_time_t();
         node->blocks_received++;
     }
 }
@@ -87,7 +88,7 @@ bool process_sendcmpct(struct p2p_node *node, struct byte_stream *s)
 
     if (version == COMPACT_BLOCK_VERSION) {
         node->send_compact = (announce != 0);
-        fprintf(stderr, "Peer %s: sendcmpct announce=%u version=%lu\n",
+        fprintf(stderr, "Peer %s: sendcmpct announce=%u version=%lu\n",  // obs-ok:pre-existing-diagnostic
                 node->addr_name, announce, (unsigned long)version);
     }
     return true;
@@ -107,7 +108,7 @@ bool process_cmpctblock(struct msg_processor *mp, struct p2p_node *node,
 
     char hex[65];
     uint256_get_hex(&block_hash, hex);
-    fprintf(stderr, "Peer %s: cmpctblock %s (%zu short txids, %zu prefilled)\n",
+    fprintf(stderr, "Peer %s: cmpctblock %s (%zu short txids, %zu prefilled)\n",  // obs-ok:pre-existing-diagnostic
             node->addr_name, hex, cb.num_short_txids, cb.num_prefilled);
 
     /* Discard any prior pending compact block for this peer */
@@ -151,12 +152,12 @@ bool process_cmpctblock(struct msg_processor *mp, struct p2p_node *node,
                                               &missing_indices, &num_missing);
 
     if (complete) {
-        fprintf(stderr, "Peer %s: compact block fully reconstructed from mempool\n",
+        fprintf(stderr, "Peer %s: compact block fully reconstructed from mempool\n",  // obs-ok:pre-existing-diagnostic
                 node->addr_name);
         compact_submit_block(mp, node, &out_block);
         block_free(&out_block);
     } else if (num_missing > 0) {
-        fprintf(stderr, "Peer %s: compact block missing %zu txs, sending getblocktxn\n",
+        fprintf(stderr, "Peer %s: compact block missing %zu txs, sending getblocktxn\n",  // obs-ok:pre-existing-diagnostic
                 node->addr_name, num_missing);
 
         /* Stash the partial block in per-peer state for blocktxn completion */
@@ -167,7 +168,7 @@ bool process_cmpctblock(struct msg_processor *mp, struct p2p_node *node,
             node->compact_pending_hash = block_hash;
             node->compact_missing_indices = missing_indices;
             node->compact_num_missing = num_missing;
-            node->compact_request_time = (int64_t)time(NULL);
+            node->compact_request_time = (int64_t)platform_time_wall_time_t();
             missing_indices = NULL; /* ownership transferred */
         } else {
             /* Alloc failed — fall back to just freeing */
@@ -218,7 +219,7 @@ bool process_getblocktxn(struct msg_processor *mp, struct p2p_node *node,
 
     char hex[65];
     uint256_get_hex(&req.block_hash, hex);
-    fprintf(stderr, "Peer %s: getblocktxn %s (%zu indices)\n",
+    fprintf(stderr, "Peer %s: getblocktxn %s (%zu indices)\n",  // obs-ok:pre-existing-diagnostic
             node->addr_name, hex, req.num_indices);
 
     /* Read the full block from disk */
@@ -295,23 +296,23 @@ bool process_blocktxn(struct msg_processor *mp, struct p2p_node *node,
 
     char hex[65];
     uint256_get_hex(&resp.block_hash, hex);
-    fprintf(stderr, "Peer %s: blocktxn %s (%zu txs)\n",
+    fprintf(stderr, "Peer %s: blocktxn %s (%zu txs)\n",  // obs-ok:pre-existing-diagnostic
             node->addr_name, hex, resp.num_txs);
 
     /* Match against pending compact block reconstruction */
     if (!node->compact_pending_block ||
         memcmp(&resp.block_hash, &node->compact_pending_hash,
                sizeof(struct uint256)) != 0) {
-        fprintf(stderr, "Peer %s: blocktxn %s — no matching pending compact block\n",
+        fprintf(stderr, "Peer %s: blocktxn %s — no matching pending compact block\n",  // obs-ok:pre-existing-diagnostic
                 node->addr_name, hex);
         block_txn_response_free(&resp);
         return true;
     }
 
     /* Timeout check: reject stale responses (>30 seconds) */
-    int64_t age = (int64_t)time(NULL) - node->compact_request_time;
+    int64_t age = (int64_t)platform_time_wall_time_t() - node->compact_request_time;
     if (age > 30) {
-        fprintf(stderr, "Peer %s: blocktxn %s — stale response (%lld sec), discarding\n",
+        fprintf(stderr, "Peer %s: blocktxn %s — stale response (%lld sec), discarding\n",  // obs-ok:pre-existing-diagnostic
                 node->addr_name, hex, (long long)age);
         compact_pending_clear(node);
         block_txn_response_free(&resp);
@@ -322,7 +323,7 @@ bool process_blocktxn(struct msg_processor *mp, struct p2p_node *node,
     if (!compact_block_fill_missing(node->compact_pending_block, &resp,
                                     node->compact_missing_indices,
                                     node->compact_num_missing)) {
-        fprintf(stderr, "Peer %s: blocktxn %s — fill_missing failed\n",
+        fprintf(stderr, "Peer %s: blocktxn %s — fill_missing failed\n",  // obs-ok:pre-existing-diagnostic
                 node->addr_name, hex);
         peer_misbehaving(mp->net_mgr, node, 10, "bad blocktxn response");
         compact_pending_clear(node);
@@ -330,7 +331,7 @@ bool process_blocktxn(struct msg_processor *mp, struct p2p_node *node,
         return true;
     }
 
-    fprintf(stderr, "Peer %s: compact block %s fully assembled from blocktxn\n",
+    fprintf(stderr, "Peer %s: compact block %s fully assembled from blocktxn\n",  // obs-ok:pre-existing-diagnostic
             node->addr_name, hex);
 
     /* Submit the completed block for validation */

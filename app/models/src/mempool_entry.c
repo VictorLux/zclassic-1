@@ -8,6 +8,7 @@
  * validates :time_added, positive: true
  * validates :height_added, numericality: { >= 0 } */
 
+#include "platform/time_compat.h"
 #include "models/mempool_entry.h"
 #include <string.h>
 #include <stdlib.h>
@@ -72,7 +73,7 @@ bool db_mempool_save(struct node_db *ndb, const struct db_mempool_entry *e)
 {
     if (!ndb->open) return false;
     if (e->time_added == 0)
-        ((struct db_mempool_entry *)e)->time_added = (int64_t)time(NULL);
+        ((struct db_mempool_entry *)e)->time_added = (int64_t)platform_time_wall_time_t();
 
     mempool_init_hooks();
     struct ar_callbacks *cbs = db_mempool_callbacks();

@@ -11,6 +11,7 @@
  * tests finish in well under a second without real time scaling.
  */
 
+#include "platform/time_compat.h"
 #include "test/test_helpers.h"
 #include "services/ibd_throttle.h"
 #include "event/event.h"
@@ -208,9 +209,9 @@ int test_ibd_throttle(void)
         /* Drain. */
         (void)ibd_throttle_try_acquire();
         struct timespec t0, t1;
-        clock_gettime(CLOCK_MONOTONIC, &t0);
+        platform_time_monotonic_timespec(&t0);
         bool got = ibd_throttle_acquire();
-        clock_gettime(CLOCK_MONOTONIC, &t1);
+        platform_time_monotonic_timespec(&t1);
         int64_t dur_ms = (int64_t)(t1.tv_sec - t0.tv_sec) * 1000 +
                          (t1.tv_nsec - t0.tv_nsec) / 1000000;
         IT_CHECK("it: acquire returns true after blocking", got == true);

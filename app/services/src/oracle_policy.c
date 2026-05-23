@@ -10,6 +10,7 @@
  *     Once HALTED or PANIC, we stay there until the operator says
  *     otherwise — this is the safe default. */
 
+#include "platform/time_compat.h"
 #include "services/oracle_policy.h"
 
 #include "chain/sha3_windows.h"   /* SHA3_WINDOW_SIZE, g_sha3_windows_count */
@@ -119,7 +120,7 @@ void oracle_policy_record_disagreement(int height,
                 "(h=%d) — call oracle_policy_init() first\n", height);
         return;
     }
-    int64_t now = (int64_t)time(NULL);
+    int64_t now = (int64_t)platform_time_wall_time_t();
     atomic_fetch_add(&g_op.total_disagree, 1);
     atomic_store(&g_op.last_h, height);
     atomic_store(&g_op.last_unix, now);
@@ -232,7 +233,7 @@ bool oracle_policy_dump_state_json(struct json_value *out, const char *key)
     json_set_object(out);
     enum oracle_policy_state s =
         (enum oracle_policy_state)atomic_load(&g_op.state);
-    int64_t now = (int64_t)time(NULL);
+    int64_t now = (int64_t)platform_time_wall_time_t();
 
     pthread_mutex_lock(&g_op.lock);
     int distinct = op_count_distinct_live(now);

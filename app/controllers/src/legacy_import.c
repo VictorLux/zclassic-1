@@ -9,6 +9,7 @@
  *
  * The legacy node should be stopped to avoid partial block reads. */
 
+#include "platform/time_compat.h"
 #include "views/format_helpers.h"
 #include "controllers/legacy_import.h"
 #include "controllers/wallet_scan.h"
@@ -703,7 +704,7 @@ int legacy_import(const char *legacy_datadir,
                 (ndb ? ndb->open : 0), (const void *)w);
 
     struct timespec ts_start, ts_p1, ts_p2, ts_p3;
-    clock_gettime(CLOCK_MONOTONIC, &ts_start);
+    platform_time_monotonic_timespec(&ts_start);
 
     /* Build address hash table from wallet keys. */
     struct addr_ht aht;
@@ -767,7 +768,7 @@ int legacy_import(const char *legacy_datadir,
         }
     }
 
-    clock_gettime(CLOCK_MONOTONIC, &ts_p1);
+    platform_time_monotonic_timespec(&ts_p1);
     double p1_ms = (double)(ts_p1.tv_sec - ts_start.tv_sec) * 1000.0 +
                    (double)(ts_p1.tv_nsec - ts_start.tv_nsec) / 1e6;
 
@@ -810,7 +811,7 @@ int legacy_import(const char *legacy_datadir,
         munmap(data, sz);
     }
 
-    clock_gettime(CLOCK_MONOTONIC, &ts_p2);
+    platform_time_monotonic_timespec(&ts_p2);
     double p2_ms = (double)(ts_p2.tv_sec - ts_p1.tv_sec) * 1000.0 +
                    (double)(ts_p2.tv_nsec - ts_p1.tv_nsec) / 1e6;
 
@@ -957,7 +958,7 @@ pass2_db_done:
         }
 
         struct timespec ts_p3a;
-        clock_gettime(CLOCK_MONOTONIC, &ts_p3a);
+        platform_time_monotonic_timespec(&ts_p3a);
         double p3a_ms = (double)(ts_p3a.tv_sec - ts_p2.tv_sec) * 1000.0 +
                         (double)(ts_p3a.tv_nsec - ts_p2.tv_nsec) / 1e6;
         printf("legacy_import: pass 3a done in %.1f ms — %d blocks, "
@@ -1058,7 +1059,7 @@ pass2_db_done:
         }
 
         z_found = sapling_notes;
-        clock_gettime(CLOCK_MONOTONIC, &ts_p3);
+        platform_time_monotonic_timespec(&ts_p3);
         double p3_ms = (double)(ts_p3.tv_sec - ts_p2.tv_sec) * 1000.0 +
                        (double)(ts_p3.tv_nsec - ts_p2.tv_nsec) / 1e6;
         printf("legacy_import: pass 3 done in %.1f ms — %d blocks, "
@@ -1082,7 +1083,7 @@ pass2_db_done:
     int64_t total = t_bal + z_bal;
 
     struct timespec ts_end;
-    clock_gettime(CLOCK_MONOTONIC, &ts_end);
+    platform_time_monotonic_timespec(&ts_end);
     double elapsed = (double)(ts_end.tv_sec - ts_start.tv_sec) +
                      (double)(ts_end.tv_nsec - ts_start.tv_nsec) / 1e9;
 

@@ -5,6 +5,7 @@
  * Block index flat file save/load and SQLite cache functions have been
  * extracted to app/services/src/block_index_loader.c (Phase A). */
 
+#include "platform/time_compat.h"
 #include "config/boot_internal.h"
 #include "chain/chain.h"
 #include "chain/chainparams.h"
@@ -184,7 +185,7 @@ bool reindex_chainstate(struct main_state *ms,
     }
 
     const struct chain_params *cparams = chain_params_get();
-    int64_t t_start = (int64_t)time(NULL);
+    int64_t t_start = (int64_t)platform_time_wall_time_t();
     int errors = 0;
 
     for (int h = 0; h <= tip_height; h++) {
@@ -223,7 +224,7 @@ bool reindex_chainstate(struct main_state *ms,
             coins_view_cache_flush(cvtip);
             malloc_trim(0);
             if (h % 1000 == 0) {
-                int64_t elapsed = (int64_t)time(NULL) - t_start;
+                int64_t elapsed = (int64_t)platform_time_wall_time_t() - t_start;
                 double rate = elapsed > 0 ? (double)h / (double)elapsed : 0;
                 int eta = rate > 0 ? (int)((tip_height - h) / rate) : 0;
                 printf("  height %d/%d (%.0f blk/s, ETA %dm%ds, cache %zu)\n",
@@ -248,7 +249,7 @@ bool reindex_chainstate(struct main_state *ms,
             fprintf(stderr, "reindex-chainstate: failed to reset sync batch size\n");
     }
 
-    int64_t elapsed = (int64_t)time(NULL) - t_start;
+    int64_t elapsed = (int64_t)platform_time_wall_time_t() - t_start;
     printf("reindex-chainstate: complete in %lldm%llds (%d errors)\n",
            (long long)(elapsed / 60), (long long)(elapsed % 60), errors);
     event_emitf(EV_SYNC_STATE_CHANGE, 0, "reindex complete %dm%ds errors=%d",
@@ -284,7 +285,7 @@ void *backfill_addresses_thread(void *arg)
 
     printf("Address backfill: aggregating UTXOs...\n");
     fflush(stdout);
-    int64_t t0 = (int64_t)time(NULL);
+    int64_t t0 = (int64_t)platform_time_wall_time_t();
 
     /* Ensure addresses table exists (it should, but be safe) */
     sqlite3_exec(db,
@@ -371,7 +372,7 @@ void *backfill_addresses_thread(void *arg)
     sqlite3_finalize(upsert);
     sqlite3_exec(db, "COMMIT", NULL, NULL, NULL);
 
-    int64_t elapsed = (int64_t)time(NULL) - t0;
+    int64_t elapsed = (int64_t)platform_time_wall_time_t() - t0;
 
     sqlite3_exec(db,
         "INSERT OR REPLACE INTO node_state(key,value) "
@@ -989,7 +990,7 @@ int scan_block_files_mark_data(struct main_state *ms, const char *datadir,
 
     int marked = 0, created = 0;
     char path[576];
-    int64_t t0 = (int64_t)time(NULL);
+    int64_t t0 = (int64_t)platform_time_wall_time_t();
 
     /* Pass 1: scan all block files.
      * Don't break on first gap — blk00000.dat may be empty (0 bytes)
@@ -1226,7 +1227,7 @@ int scan_block_files_mark_data(struct main_state *ms, const char *datadir,
         }
     }
 
-    int64_t elapsed = (int64_t)time(NULL) - t0;
+    int64_t elapsed = (int64_t)platform_time_wall_time_t() - t0;
 
     /* Summary stats: how many index entries have BLOCK_HAVE_DATA vs total */
     size_t total_entries = 0, have_data_entries = 0;

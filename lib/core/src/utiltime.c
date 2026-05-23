@@ -4,6 +4,7 @@
  * Distributed under the MIT software license, see the accompanying
  * file COPYING or http://www.opensource.org/licenses/mit-license.php. */
 
+#include "platform/time_compat.h"
 #include "core/utiltime.h"
 #include <time.h>
 
@@ -16,7 +17,7 @@ static int64_t nMockTime = 0;
 int64_t GetTime(void)
 {
     if (nMockTime) return nMockTime;
-    return (int64_t)time(NULL);
+    return (int64_t)platform_time_wall_time_t();
 }
 
 void SetMockTime(int64_t nMockTimeIn)
@@ -34,7 +35,7 @@ int64_t GetTimeMillis(void)
     return (int64_t)(t / 10000);
 #else
     struct timespec ts;
-    clock_gettime(CLOCK_REALTIME, &ts);
+    platform_time_realtime_timespec(&ts);
     return (int64_t)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
 #endif
 }
@@ -49,7 +50,7 @@ int64_t GetTimeMicros(void)
     return (int64_t)(t / 10);
 #else
     struct timespec ts;
-    clock_gettime(CLOCK_REALTIME, &ts);
+    platform_time_realtime_timespec(&ts);
     return (int64_t)ts.tv_sec * 1000000 + ts.tv_nsec / 1000;
 #endif
 }

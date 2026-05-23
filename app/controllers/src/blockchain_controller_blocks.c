@@ -8,6 +8,7 @@
  * block_header_to_json and get_difficulty helpers used by the chain
  * controller siblings. See blockchain_controller_internal.h. */
 
+#include "platform/time_compat.h"
 #include "controllers/blockchain_controller.h"
 #include "blockchain_controller_internal.h"
 #include "controllers/strong_params.h"
@@ -90,7 +91,7 @@ bool rpc_getchaintip(const struct json_value *params, bool help,
     char work_hex[65];
     arith_uint256_get_hex(&tip->nChainWork, work_hex);
 
-    int64_t now = (int64_t)time(NULL);
+    int64_t now = (int64_t)platform_time_wall_time_t();
     int64_t tip_time = (int64_t)tip->nTime;
 
     json_set_object(result);

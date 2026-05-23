@@ -2,6 +2,7 @@
  *
  * Wallet persistence canary — see wallet_canary.h for rationale. */
 
+#include "platform/time_compat.h"
 #include "wallet/wallet_canary.h"
 #include "wallet/wallet_sqlite.h"
 
@@ -22,7 +23,7 @@ static struct wallet_canary_status g_status = { 0 };
 
 static int64_t now_unix(void)
 {
-    return (int64_t)time(NULL);
+    return (int64_t)platform_time_wall_time_t();
 }
 
 static void set_status(bool ok, int code, int64_t now, const char *msg)
@@ -51,7 +52,7 @@ static int fail(int code, struct wallet_canary_status *out,
     int64_t now = now_unix();
     set_status(false, code, now, buf);
     if (out) *out = wallet_canary_get_status();
-    fprintf(stderr, "[wallet_canary] %s:%d %s(): code=%d: %s\n",
+    fprintf(stderr, "[wallet_canary] %s:%d %s(): code=%d: %s\n",  // obs-ok:pre-existing-diagnostic
             __FILE__, __LINE__, __func__, code, buf);
     return code;
 }

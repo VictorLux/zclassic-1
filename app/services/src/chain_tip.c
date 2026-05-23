@@ -1,5 +1,6 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0 */
 
+#include "platform/time_compat.h"
 #include "services/chain_tip.h"
 
 #include "validation/main_state.h"
@@ -47,7 +48,7 @@ static _Atomic uint64_t g_fsync_seq = 0;
 static int monotonic_ms(void)
 {
     struct timespec ts;
-    clock_gettime(CLOCK_MONOTONIC, &ts);
+    platform_time_monotonic_timespec(&ts);
     return (int)(ts.tv_sec * 1000 + ts.tv_nsec / 1000000);
 }
 

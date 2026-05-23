@@ -24,7 +24,7 @@
  *
  * Self-test:
  *   1. Generate 32 fresh random bytes.
- *   2. INSERT OR REPLACE (id=1, probe, time(NULL)).
+ *   2. INSERT OR REPLACE (id=1, probe, platform_time_wall_time_t()).
  *   3. SELECT probe FROM wallet_canary WHERE id=1.
  *   4. memcmp: if equal, success; otherwise CANARY_MISMATCH.
  *
@@ -34,6 +34,7 @@
 #ifndef ZCL_WALLET_CANARY_H
 #define ZCL_WALLET_CANARY_H
 
+#include "platform/time_compat.h"
 #include <sqlite3.h>
 #include <stdbool.h>
 #include <stdint.h>

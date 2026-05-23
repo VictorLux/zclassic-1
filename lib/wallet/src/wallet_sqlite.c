@@ -10,6 +10,7 @@
  * `wallet_sqlite_open() returned false and nobody noticed` is no
  * longer possible. That silent path lost real money on 2026-04-12. */
 
+#include "platform/time_compat.h"
 #include "wallet/wallet_sqlite.h"
 #include "wallet/wallet_keystore.h"
 #include "wallet/keystore.h"
@@ -333,7 +334,7 @@ struct zcl_result wallet_sqlite_self_test(struct wallet_sqlite *ws)
     /* Seed the probe from a blend of clock and getrandom-ish
      * sources.  Correctness here is about uniqueness across
      * consecutive calls, not cryptographic strength. */
-    int64_t now = (int64_t)time(NULL);
+    int64_t now = (int64_t)platform_time_wall_time_t();
     uint32_t salt = (uint32_t)((uintptr_t)ws ^ (uint32_t)now ^
                                (uint32_t)sqlite3_last_insert_rowid(ws->db));
     for (size_t i = 0; i < sizeof(probe); i++)
@@ -1031,7 +1032,7 @@ bool wallet_sqlite_write_watch_only(struct wallet_sqlite *ws,
     sqlite3_reset(s);
     sqlite3_bind_blob(s, 1, address_hash, 20, SQLITE_STATIC);
     sqlite3_bind_text(s, 2, address, -1, SQLITE_STATIC);
-    sqlite3_bind_int64(s, 3, (int64_t)time(NULL));
+    sqlite3_bind_int64(s, 3, (int64_t)platform_time_wall_time_t());
     bool ok = AR_STEP_WRITE(s) == SQLITE_DONE;
     if (!ok)
         LOG_FAIL("wallet_sqlite", "write_watch_only: step failed: %s",

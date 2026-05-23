@@ -1,6 +1,7 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  * Orphan transaction pool implementation. */
 
+#include "platform/time_compat.h"
 #include "validation/orphan_pool.h"
 #include "util/log_macros.h"
 #include <stdlib.h>
@@ -76,7 +77,7 @@ bool orphan_pool_add(struct orphan_pool *pool, const struct transaction *tx)
     }
 
     transaction_copy(&pool->entries[slot].tx, tx);
-    pool->entries[slot].arrival_time = (int64_t)time(NULL);
+    pool->entries[slot].arrival_time = (int64_t)platform_time_wall_time_t();
     pool->entries[slot].used = true;
     pool->count++;
 

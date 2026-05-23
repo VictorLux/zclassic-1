@@ -7,6 +7,7 @@
  *
  * after_save -> emit EV_MODEL_SAVED */
 
+#include "platform/time_compat.h"
 #include "models/file_service.h"
 #include "event/event.h"
 #include <string.h>
@@ -26,7 +27,7 @@ static bool file_service_before_save(void *record, void *ctx)
     if (fs->p2p_port == 0)
         fs->p2p_port = fs->port;
     if (fs->last_seen == 0)
-        fs->last_seen = (int64_t)time(NULL);
+        fs->last_seen = (int64_t)platform_time_wall_time_t();
     return true;
 }
 

@@ -4,6 +4,7 @@
  * header on disk and compares against the stored hash in the block index.
  * See bg_hash_verification_service.h for design overview. */
 
+#include "platform/time_compat.h"
 #include "services/bg_hash_verification_service.h"
 #include "validation/main_state.h"
 #include "validation/chainstate.h"
@@ -81,7 +82,7 @@ static void *bg_hash_verify_thread(void *arg)
     atomic_store(&svc->progress.state, BG_HASH_VERIFY_RUNNING);
 
     struct timespec ts_start;
-    clock_gettime(CLOCK_MONOTONIC, &ts_start);
+    platform_time_monotonic_timespec(&ts_start);
 
     int verified = 0;
     int mismatches = 0;
@@ -148,7 +149,7 @@ static void *bg_hash_verify_thread(void *arg)
             save_progress(svc->ndb, h);
         if (h % LOG_INTERVAL == 0) {
             struct timespec now;
-            clock_gettime(CLOCK_MONOTONIC, &now);
+            platform_time_monotonic_timespec(&now);
             double elapsed = (now.tv_sec - ts_start.tv_sec) +
                 (now.tv_nsec - ts_start.tv_nsec) / 1e9;
             double bps = elapsed > 0 ? verified / elapsed : 0;
@@ -171,7 +172,7 @@ static void *bg_hash_verify_thread(void *arg)
         save_progress(svc->ndb, chain_height);
 
     struct timespec ts_end;
-    clock_gettime(CLOCK_MONOTONIC, &ts_end);
+    platform_time_monotonic_timespec(&ts_end);
     double total = (ts_end.tv_sec - ts_start.tv_sec) +
         (ts_end.tv_nsec - ts_start.tv_nsec) / 1e9;
 

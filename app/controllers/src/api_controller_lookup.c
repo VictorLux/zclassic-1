@@ -2,6 +2,7 @@
  * Distributed under the MIT software license, see the accompanying
  * file COPYING or http://www.opensource.org/licenses/mit-license.php. */
 
+#include "platform/time_compat.h"
 #include "controllers/api_controller.h"
 #include "controllers/blockchain_controller.h"
 #include "controllers/explorer_factoids.h"
@@ -431,7 +432,7 @@ static void *api_lookup_thread(void *arg)
         pthread_mutex_lock(&g_lookup_mutex);
         while (g_lookup_type == LOOKUP_NONE && g_lookup_thread_running) {
             struct timespec ts;
-            clock_gettime(CLOCK_REALTIME, &ts);
+            platform_time_realtime_timespec(&ts);
             ts.tv_sec += 1;
             pthread_cond_timedwait(&g_lookup_request_cond, &g_lookup_mutex, &ts);
         }
@@ -512,7 +513,7 @@ size_t do_lookup(enum lookup_type type, const char *param,
 
     /* Wait up to 15 seconds for result */
     struct timespec ts;
-    clock_gettime(CLOCK_REALTIME, &ts);
+    platform_time_realtime_timespec(&ts);
     ts.tv_sec += 15;
 
     while (g_lookup_type != LOOKUP_NONE) {

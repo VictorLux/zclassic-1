@@ -22,6 +22,7 @@
  * writer throttle — the sleep dominates, not the lock.
  */
 
+#include "platform/time_compat.h"
 #include "services/ibd_throttle.h"
 
 #include "event/event.h"
@@ -70,7 +71,7 @@ static struct ibd_throttle_state g_it = {
 static int64_t it_now_us(void)
 {
     struct timespec ts;
-    clock_gettime(CLOCK_MONOTONIC, &ts);
+    platform_time_monotonic_timespec(&ts);
     return (int64_t)ts.tv_sec * 1000000 + ts.tv_nsec / 1000;
 }
 

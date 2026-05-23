@@ -2,6 +2,7 @@
 
 #define _GNU_SOURCE  /* pthread_timedjoin_np */
 
+#include "platform/time_compat.h"
 #include "services/gap_fill_service.h"
 
 #include "validation/main_state.h"
@@ -220,7 +221,7 @@ static void *gap_fill_thread_main(void *arg)
         pthread_mutex_lock(&g_gf.mu);
         if (!atomic_load(&g_gf.stop_requested)) {
             struct timespec until;
-            clock_gettime(CLOCK_REALTIME, &until);
+            platform_time_realtime_timespec(&until);
             until.tv_sec += GAPFILL_TICK_SECS;
             pthread_cond_timedwait(&g_gf.cv, &g_gf.mu, &until);
         }
@@ -266,7 +267,7 @@ void gap_fill_stop(void)
          * (eg holding cs_main on a long pprev walk), detach rather
          * than block systemd shutdown past TimeoutStopSec. */
         struct timespec ts;
-        if (clock_gettime(CLOCK_REALTIME, &ts) == 0) {
+        if (platform_time_realtime_timespec(&ts) == 0) {
             ts.tv_sec += 5;
             int rc = pthread_timedjoin_np(g_gf.thread, NULL, &ts);
             if (rc != 0) {

@@ -11,6 +11,7 @@
  * module sits below the AR lifecycle — the stage_cursor row is not a
  * model. */
 
+#include "platform/time_compat.h"
 #include "storage/progress_store.h"
 
 #include "json/json.h"
@@ -35,7 +36,7 @@ static int64_t g_opened_at;
 static int64_t wall_now_s(void)
 {
     struct timespec ts;
-    clock_gettime(CLOCK_REALTIME, &ts);
+    platform_time_realtime_timespec(&ts);
     return (int64_t)ts.tv_sec;
 }
 

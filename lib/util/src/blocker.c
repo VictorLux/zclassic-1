@@ -2,6 +2,7 @@
  *
  * Typed blocker primitive — implementation. See util/blocker.h. */
 
+#include "platform/time_compat.h"
 #include "util/blocker.h"
 
 #include "json/json.h"
@@ -56,7 +57,7 @@ static int64_t mono_us(void)
     int64_t over = atomic_load(&g_test_clock_us);
     if (over != 0) return over;
     struct timespec ts;
-    clock_gettime(CLOCK_MONOTONIC, &ts);
+    platform_time_monotonic_timespec(&ts);
     return (int64_t)ts.tv_sec * 1000000 + ts.tv_nsec / 1000;
 }
 
@@ -481,7 +482,7 @@ void blocker_advance_clock_for_testing(int64_t delta_us)
     int64_t cur = atomic_load(&g_test_clock_us);
     if (cur == 0) {
         struct timespec ts;
-        clock_gettime(CLOCK_MONOTONIC, &ts);
+        platform_time_monotonic_timespec(&ts);
         cur = (int64_t)ts.tv_sec * 1000000 + ts.tv_nsec / 1000;
     }
     atomic_store(&g_test_clock_us, cur + delta_us);

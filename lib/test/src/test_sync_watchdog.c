@@ -1,6 +1,7 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  * Tests for sync watchdog service — stall detection and recovery. */
 
+#include "platform/time_compat.h"
 #include "test/test_helpers.h"
 #include "services/sync_watchdog_service.h"
 #include "net/msgprocessor.h"
@@ -55,7 +56,7 @@ static int test_header_stall_detection(void)
 
         /* Backdate state entry >300s */
         atomic_store(&g_sync_state_entered_time,
-                     (int64_t)time(NULL) - 350);
+                     (int64_t)platform_time_wall_time_t() - 350);
 
         /* First check: last_header_height=-1, current=2000 → records baseline */
         enum watchdog_recovery_type r = sync_watchdog_check(
@@ -68,7 +69,7 @@ static int test_header_stall_detection(void)
             sync_set_state(SYNC_HEADERS_DOWNLOAD, "re-enter");
         }
         atomic_store(&g_sync_state_entered_time,
-                     (int64_t)time(NULL) - 350);
+                     (int64_t)platform_time_wall_time_t() - 350);
 
         /* Second check: last_header_height=2000, current=2000 → stall */
         r = sync_watchdog_check(&g_test_cm, &g_test_dm, &g_test_ms);
@@ -98,7 +99,7 @@ static int test_block_stall_detection(void)
         sync_set_state(SYNC_HEADERS_DOWNLOAD, "setup");
         sync_set_state(SYNC_BLOCKS_DOWNLOAD, "test");
         atomic_store(&g_sync_state_entered_time,
-                     (int64_t)time(NULL) - 350);
+                     (int64_t)platform_time_wall_time_t() - 350);
 
         /* active_chain_height returns 0 for zeroed main_state.
          * First check: last_chain_height=-1, current=0 → baseline recorded */
@@ -113,7 +114,7 @@ static int test_block_stall_detection(void)
             sync_set_state(SYNC_BLOCKS_DOWNLOAD, "re-enter");
         }
         atomic_store(&g_sync_state_entered_time,
-                     (int64_t)time(NULL) - 350);
+                     (int64_t)platform_time_wall_time_t() - 350);
 
         /* Second check: last_chain_height=0, current=0 → stall */
         r = sync_watchdog_check(&g_test_cm, &g_test_dm, &g_test_ms);
@@ -136,7 +137,7 @@ static int test_state_stuck_detection(void)
 
         sync_set_state(SYNC_FINDING_PEERS, "test");
         atomic_store(&g_sync_state_entered_time,
-                     (int64_t)time(NULL) - 650);
+                     (int64_t)platform_time_wall_time_t() - 650);
 
         enum watchdog_recovery_type r = sync_watchdog_check(
             &g_test_cm, &g_test_dm, &g_test_ms);
@@ -200,7 +201,7 @@ static int test_repeated_restart_circuit_breaker(void)
             sync_set_state(SYNC_IDLE, "reset");
             sync_set_state(SYNC_FINDING_PEERS, "trigger");
             atomic_store(&g_sync_state_entered_time,
-                         (int64_t)time(NULL) - 650);
+                         (int64_t)platform_time_wall_time_t() - 650);
             sync_watchdog_check(&g_test_cm, &g_test_dm, &g_test_ms);
         }
 
@@ -208,7 +209,7 @@ static int test_repeated_restart_circuit_breaker(void)
         sync_set_state(SYNC_IDLE, "reset");
         sync_set_state(SYNC_FINDING_PEERS, "trigger L2");
         atomic_store(&g_sync_state_entered_time,
-                     (int64_t)time(NULL) - 650);
+                     (int64_t)platform_time_wall_time_t() - 650);
         enum watchdog_recovery_type r = sync_watchdog_check(
             &g_test_cm, &g_test_dm, &g_test_ms);
         ASSERT(r == WATCHDOG_REPEATED_RESTART);
@@ -236,7 +237,7 @@ static int test_at_tip_exempt(void)
         sync_set_state(SYNC_HEADERS_DOWNLOAD, "test");
         sync_set_state(SYNC_AT_TIP, "test");
         atomic_store(&g_sync_state_entered_time,
-                     (int64_t)time(NULL) - 3600);
+                     (int64_t)platform_time_wall_time_t() - 3600);
 
         enum watchdog_recovery_type r = sync_watchdog_check(
             &g_test_cm, &g_test_dm, &g_test_ms);
@@ -357,7 +358,7 @@ static int test_watchdog_escalation(void)
             sync_set_state(SYNC_IDLE, "reset");
             sync_set_state(SYNC_HEADERS_DOWNLOAD, "trigger");
             atomic_store(&g_sync_state_entered_time,
-                         (int64_t)time(NULL) - 350);
+                         (int64_t)platform_time_wall_time_t() - 350);
 
             /* First check: record baseline */
             sync_watchdog_check(&g_test_cm, &g_test_dm, &g_test_ms);
@@ -368,7 +369,7 @@ static int test_watchdog_escalation(void)
                 sync_set_state(SYNC_HEADERS_DOWNLOAD, "re-enter");
             }
             atomic_store(&g_sync_state_entered_time,
-                         (int64_t)time(NULL) - 350);
+                         (int64_t)platform_time_wall_time_t() - 350);
 
             /* Second check: trigger stall */
             enum watchdog_recovery_type r = sync_watchdog_check(
@@ -402,7 +403,7 @@ static int test_header_lag_detection(void)
 
         /* Backdate state entry >60s */
         atomic_store(&g_sync_state_entered_time,
-                     (int64_t)time(NULL) - 90);
+                     (int64_t)platform_time_wall_time_t() - 90);
 
         /* Headers at 2000, but set up a fake peer at 3000 */
         struct block_index fake_header = {0};
@@ -438,7 +439,7 @@ static int test_header_lag_small_gap(void)
         sync_set_state(SYNC_HEADERS_DOWNLOAD, "setup");
         sync_set_state(SYNC_BLOCKS_DOWNLOAD, "test");
         atomic_store(&g_sync_state_entered_time,
-                     (int64_t)time(NULL) - 90);
+                     (int64_t)platform_time_wall_time_t() - 90);
 
         struct block_index fake_header = {0};
         fake_header.nHeight = 2800;
@@ -501,7 +502,7 @@ static int test_zero_peers_stuck(void)
 
         sync_set_state(SYNC_FINDING_PEERS, "test 0 peers");
         atomic_store(&g_sync_state_entered_time,
-                     (int64_t)time(NULL) - 650);
+                     (int64_t)platform_time_wall_time_t() - 650);
 
         enum watchdog_recovery_type r = sync_watchdog_check(
             &g_test_cm, &g_test_dm, &g_test_ms);
@@ -530,7 +531,7 @@ static int test_timeout_boundary_exact(void)
 
         /* Set exactly 300s — should record baseline, not trigger */
         atomic_store(&g_sync_state_entered_time,
-                     (int64_t)time(NULL) - 300);
+                     (int64_t)platform_time_wall_time_t() - 300);
 
         enum watchdog_recovery_type r = sync_watchdog_check(
             &g_test_cm, &g_test_dm, &g_test_ms);
@@ -593,7 +594,7 @@ static int test_utxo_pause_fires_after_window(void)
         ASSERT(process_block_test_get_utxo_activation_paused_height() == 1500);
 
         /* Backdate first_seen by 350s and check again — must fire. */
-        g_utxo_pause_first_seen = (int64_t)time(NULL) - 350;
+        g_utxo_pause_first_seen = (int64_t)platform_time_wall_time_t() - 350;
         r = sync_watchdog_check(&g_test_cm, &g_test_dm, &g_test_ms);
         ASSERT(r == WATCHDOG_UTXO_PAUSE);
         /* Pause must have been cleared by the recovery action. */
@@ -615,7 +616,7 @@ static int test_utxo_pause_inactive_resets_timer(void)
         sync_set_state(SYNC_BLOCKS_DOWNLOAD, "no pause");
 
         process_block_test_set_utxo_activation_paused_height(-1);
-        g_utxo_pause_first_seen = (int64_t)time(NULL) - 9999;
+        g_utxo_pause_first_seen = (int64_t)platform_time_wall_time_t() - 9999;
 
         enum watchdog_recovery_type r = sync_watchdog_check(
             &g_test_cm, &g_test_dm, &g_test_ms);
@@ -656,7 +657,7 @@ static int test_queue_starved_fires_after_window(void)
         ASSERT(g_queue_starved_first_seen != 0);
 
         /* Backdate >120s and check again — must fire. */
-        g_queue_starved_first_seen = (int64_t)time(NULL) - 150;
+        g_queue_starved_first_seen = (int64_t)platform_time_wall_time_t() - 150;
         r = sync_watchdog_check(&g_test_cm, &g_test_dm, &g_test_ms);
         ASSERT(r == WATCHDOG_QUEUE_STARVED);
 
@@ -688,7 +689,7 @@ static int test_next_child_missing_triggers_local_refill(void)
         p2.id = 2; p2.starting_height = 20; p2.state = PEER_ACTIVE;
         p3.id = 3; p3.starting_height = 20; p3.state = PEER_ACTIVE;
         p1.last_getheaders_time = p2.last_getheaders_time =
-            p3.last_getheaders_time = (int64_t)time(NULL);
+            p3.last_getheaders_time = (int64_t)platform_time_wall_time_t();
         struct p2p_node *peers[3] = { &p1, &p2, &p3 };
         g_test_cm.manager.nodes = peers;
         g_test_cm.manager.num_nodes = 3;

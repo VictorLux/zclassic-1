@@ -6,6 +6,7 @@
  * emits a single JSON line via log_jsonf() at trace_end() time.
  */
 
+#include "platform/time_compat.h"
 #include "util/trace.h"
 #include "encoding/utilstrencodings.h"
 #include "util/log_json.h"
@@ -22,7 +23,7 @@
 static uint64_t trace_now_us(void)
 {
     struct timespec ts;
-    clock_gettime(CLOCK_MONOTONIC, &ts);
+    platform_time_monotonic_timespec(&ts);
     return (uint64_t)ts.tv_sec * 1000000ULL + (uint64_t)ts.tv_nsec / 1000ULL;
 }
 

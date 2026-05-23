@@ -1,6 +1,7 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  * Tests for node health snapshot service. */
 
+#include "platform/time_compat.h"
 #include "test/test_helpers.h"
 #include "config/db_service.h"
 #include "config/runtime.h"
@@ -88,7 +89,7 @@ int test_node_health_service(void)
         h_hdr.data[0] = 2;
         tip.phashBlock = &h_tip;
         tip.nHeight = 100;
-        tip.nTime = (uint32_t)time(NULL);
+        tip.nTime = (uint32_t)platform_time_wall_time_t();
         header.phashBlock = &h_hdr;
         header.nHeight = 125;
         header.pprev = &tip;
@@ -189,7 +190,7 @@ int test_node_health_service(void)
             error_ring_observer(EV_DB_ERROR, 0, "old recoverable error",
                                 21, er);
             er->entries[0].timestamp_us =
-                ((int64_t)time(NULL) - 600) * 1000000;
+                ((int64_t)platform_time_wall_time_t() - 600) * 1000000;
             node_health_collect(&health, NULL, NULL);
 
             ok = health.synced;
@@ -356,7 +357,7 @@ int test_node_health_service(void)
         /* Simulate an inactive open transaction and existing peers-free state. */
         if (ndb.state_mutex_init) {
             zcl_mutex_lock(&ndb.state_mutex);
-            ndb.last_activity_time = (int64_t)time(NULL) - 61;
+            ndb.last_activity_time = (int64_t)platform_time_wall_time_t() - 61;
             zcl_mutex_unlock(&ndb.state_mutex);
         }
 

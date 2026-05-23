@@ -11,6 +11,7 @@
  * Pure code motion. Function bodies are byte-identical to the
  * original lib/validation/src/process_block.c. */
 
+#include "platform/time_compat.h"
 #include <assert.h>
 #include <limits.h>
 #include <signal.h>
@@ -430,7 +431,7 @@ struct block_index *find_most_work_chain(struct main_state *ms)
         struct block_index *tip = active_chain_tip(&ms->chain_active);
         if (tip && best && best != tip && best->nHeight < tip->nHeight) {
             static time_t g_last_stale_log = 0;
-            time_t now_log = time(NULL);
+            time_t now_log = platform_time_wall_time_t();
             if (now_log - g_last_stale_log >= 60) {
                 g_last_stale_log = now_log;
                 printf("find_most_work_chain: ignoring stale fork tip "
@@ -463,7 +464,7 @@ struct block_index *find_most_work_chain(struct main_state *ms)
             }
             if (header_h > tip->nHeight + 100) {
                 static time_t g_last_stuck_log = 0;
-                time_t now_log = time(NULL);
+                time_t now_log = platform_time_wall_time_t();
                 if (now_log - g_last_stuck_log >= 60) {
                     g_last_stuck_log = now_log;
                     printf("find_most_work_chain: STUCK at tip h=%d "

@@ -5,6 +5,7 @@
  *
  * All IPs use public ranges (50-99.x.x.x) to pass net_addr_is_routable(). */
 
+#include "platform/time_compat.h"
 #include "test/test_helpers.h"
 #include "net/addrman.h"
 #include "core/random.h"
@@ -29,7 +30,7 @@ static struct net_address make_pub_addr(uint8_t a, uint8_t b, uint8_t c,
     addr.svc.addr.ip[14] = c;
     addr.svc.addr.ip[15] = d ? d : 1;
     addr.svc.port = port;
-    addr.nTime = (uint32_t)time(NULL);
+    addr.nTime = (uint32_t)platform_time_wall_time_t();
     addr.nServices = 1;
     return addr;
 }
@@ -109,7 +110,7 @@ int test_addrman_rebalance(void)
         /* Mark some as good to promote to tried */
         for (int i = 1; i <= 10; i++) {
             struct net_address addr = make_pub_addr(53, 1, 0, (uint8_t)i, 8033);
-            addrman_good(&am, &addr.svc, (int64_t)time(NULL));
+            addrman_good(&am, &addr.svc, (int64_t)platform_time_wall_time_t());
         }
 
         char err[256] = {0};
@@ -252,7 +253,7 @@ int test_addrman_rebalance(void)
                 (uint8_t)(i % 256),
                 (uint8_t)((i * 11) % 256),
                 (uint8_t)((i * 17) % 254 + 1), 8033);
-            addrman_good(&am, &addr.svc, (int64_t)time(NULL));
+            addrman_good(&am, &addr.svc, (int64_t)platform_time_wall_time_t());
         }
 
         char err[256] = {0};
@@ -285,7 +286,7 @@ int test_addrman_rebalance(void)
         for (int i = 1; i <= 5; i++) {
             struct net_address addr = make_pub_addr(83, 1, 1, (uint8_t)i, 8033);
             addrman_add(&am, &addr, &src, 0);
-            addrman_good(&am, &addr.svc, (int64_t)time(NULL));
+            addrman_good(&am, &addr.svc, (int64_t)platform_time_wall_time_t());
         }
 
         struct addr_info result;
@@ -309,7 +310,7 @@ int test_addrman_rebalance(void)
         addrman_add(&am, &addr, &src, 0);
 
         for (int i = 0; i < 5; i++)
-            addrman_attempt(&am, &addr.svc, (int64_t)time(NULL) + i);
+            addrman_attempt(&am, &addr.svc, (int64_t)platform_time_wall_time_t() + i);
 
         bool consistent = (addrman_consistency_check(&am, NULL, 0) == 0);
         if (consistent)
@@ -363,7 +364,7 @@ int test_addrman_rebalance(void)
 
         /* Add address with old timestamp */
         struct net_address old_addr = make_pub_addr(89, 1, 1, 1, 8033);
-        old_addr.nTime = (uint32_t)(time(NULL) - 60 * 24 * 60 * 60);
+        old_addr.nTime = (uint32_t)(platform_time_wall_time_t() - 60 * 24 * 60 * 60);
         addrman_add(&am, &old_addr, &src, 0);
 
         size_t size_before = addrman_size(&am);

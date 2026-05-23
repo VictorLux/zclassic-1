@@ -5,6 +5,7 @@
  *
  * Extracted from config/src/boot_index.c (boot decomposition Phase A). */
 
+#include "platform/time_compat.h"
 #include "services/block_index_loader.h"
 #include "services/block_index_integrity.h"
 #include "services/chain_state_repository.h"
@@ -92,7 +93,7 @@ void save_block_index_flat(const char *datadir, struct main_state *ms)
 
     qsort(sorted, count, sizeof(struct block_index *), cmp_height);
 
-    int64_t t0 = (int64_t)time(NULL);
+    int64_t t0 = (int64_t)platform_time_wall_time_t();
     FILE *f = fopen(tmp_path, "wb");
     if (!f) {
         fprintf(stderr, "save_block_index_flat: cannot create %s: %s\n",
@@ -153,7 +154,7 @@ void save_block_index_flat(const char *datadir, struct main_state *ms)
                 path);
     }
 
-    int64_t elapsed = (int64_t)time(NULL) - t0;
+    int64_t elapsed = (int64_t)platform_time_wall_time_t() - t0;
     printf("Block index flat file: %zu entries, %zuMB (%llds)\n",
            count, count * sizeof(struct block_index_flat) / (1024*1024),
            (long long)elapsed);
@@ -212,7 +213,7 @@ bool load_block_index_flat(const char *datadir, struct main_state *ms)
         munmap(data, file_size); return false;
     }
 
-    int64_t t0 = (int64_t)time(NULL);
+    int64_t t0 = (int64_t)platform_time_wall_time_t();
     const struct block_index_flat *entries =
         (const struct block_index_flat *)(data + 8);
 
@@ -342,7 +343,7 @@ bool load_block_index_flat(const char *datadir, struct main_state *ms)
 
     munmap(data, file_size);
 
-    int64_t elapsed = (int64_t)time(NULL) - t0;
+    int64_t elapsed = (int64_t)platform_time_wall_time_t() - t0;
     printf("Block index flat: loaded %u entries in %llds\n",
            count, (long long)elapsed);
 
@@ -358,7 +359,7 @@ void save_block_index_recent(struct node_db *ndb, struct main_state *ms)
     size_t total = ms->map_block_index.size;
     if (total == 0) return;
 
-    int64_t t0 = (int64_t)time(NULL);
+    int64_t t0 = (int64_t)platform_time_wall_time_t();
     bool tx_open = false;
     int exec_rc = sqlite3_exec(ndb->db, "DELETE FROM block_index_cache",
                                NULL, NULL, NULL);
@@ -435,7 +436,7 @@ void save_block_index_recent(struct node_db *ndb, struct main_state *ms)
         return;
     }
 
-    int64_t elapsed = (int64_t)time(NULL) - t0;
+    int64_t elapsed = (int64_t)platform_time_wall_time_t() - t0;
     printf("Block index: cached %zu/%zu entries in SQLite (%llds)\n",
            count, total, (long long)elapsed);
     return;
@@ -465,7 +466,7 @@ bool load_block_index_sqlite(struct node_db *ndb, struct main_state *ms)
     }
     if (cached_count < 1000) LOG_FAIL("block_index", "SQLite block_index_cache too small: %lld entries", (long long)cached_count);
 
-    int64_t t0 = (int64_t)time(NULL);
+    int64_t t0 = (int64_t)platform_time_wall_time_t();
     printf("Loading block index from SQLite (%lld entries)...\n",
            (long long)cached_count);
 
@@ -534,7 +535,7 @@ bool load_block_index_sqlite(struct node_db *ndb, struct main_state *ms)
         sqlite3_finalize(sel);
     }
 
-    int64_t elapsed = (int64_t)time(NULL) - t0;
+    int64_t elapsed = (int64_t)platform_time_wall_time_t() - t0;
     printf("Block index SQLite: loaded %zu entries in %llds\n",
            loaded, (long long)elapsed);
 

@@ -2,6 +2,7 @@
  *
  * Store controller — ZSLP token commerce. */
 
+#include "platform/time_compat.h"
 #include "views/format_helpers.h"
 #include "controllers/store_controller.h"
 #include "controllers/zslp_controller.h"
@@ -1092,7 +1093,7 @@ void store_process_payments(const char *datadir)
     struct db_store_pending_payment pending_orders[64];
     int pending_count = db_store_order_list_pending_payments(&ndb,
         pending_orders, sizeof(pending_orders) / sizeof(pending_orders[0]),
-        (int64_t)time(NULL) - 3600);
+        (int64_t)platform_time_wall_time_t() - 3600);
 
     for (int i = 0; i < pending_count; ++i) {
         int64_t order_id = pending_orders[i].id;

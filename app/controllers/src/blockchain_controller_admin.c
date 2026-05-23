@@ -8,6 +8,7 @@
  * LevelDB chainstate). Heavy, operator-invoked operations. See
  * blockchain_controller_internal.h for shared declarations. */
 
+#include "platform/time_compat.h"
 #include "controllers/blockchain_controller.h"
 #include "blockchain_controller_internal.h"
 #include "controllers/sync_controller.h"
@@ -130,7 +131,7 @@ bool rpc_reindexchainstate(const struct json_value *params, bool help,
         }
     }
 
-    int64_t t_start = (int64_t)time(NULL);
+    int64_t t_start = (int64_t)platform_time_wall_time_t();
     int errors = 0;
 
     /* Step 4: Replay all blocks */
@@ -190,7 +191,7 @@ bool rpc_reindexchainstate(const struct json_value *params, bool help,
         /* Periodic flush every 10000 blocks */
         if (h % 10000 == 0) {
             coins_view_cache_flush(ctx->coins_tip);
-            int64_t elapsed = (int64_t)time(NULL) - t_start;
+            int64_t elapsed = (int64_t)platform_time_wall_time_t() - t_start;
             double rate = elapsed > 0 ? (double)h / (double)elapsed : 0;
             int eta = rate > 0 ? (int)((tip_height - h) / rate) : 0;
             printf("  height %d/%d (%.0f blk/s, ETA %dm%ds)\n",
@@ -202,7 +203,7 @@ bool rpc_reindexchainstate(const struct json_value *params, bool help,
     /* Step 5: Final flush */
     coins_view_cache_flush(ctx->coins_tip);
 
-    int64_t elapsed = (int64_t)time(NULL) - t_start;
+    int64_t elapsed = (int64_t)platform_time_wall_time_t() - t_start;
     printf("reindexchainstate: complete in %lldm%llds (%d errors)\n",
            (long long)(elapsed / 60), (long long)(elapsed % 60), errors);
     fflush(stdout);

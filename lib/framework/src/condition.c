@@ -3,11 +3,11 @@
 #include "framework/condition.h"
 
 #include "event/event.h"
+#include "platform/time_compat.h"
 
 #include <pthread.h>
 #include <stdio.h>
 #include <string.h>
-#include <time.h>
 
 static const struct condition *g_conditions[CONDITION_MAX_REGISTRY];
 static int g_condition_count;
@@ -16,7 +16,7 @@ static struct main_state *g_main_state;
 
 static int64_t now_unix(void)
 {
-    return (int64_t)time(NULL);
+    return platform_time_wall_unix();
 }
 
 const char *condition_severity_name(enum condition_severity s)

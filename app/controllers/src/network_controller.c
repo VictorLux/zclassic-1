@@ -2,6 +2,7 @@
  * Distributed under the MIT software license, see the accompanying
  * file COPYING or http://www.opensource.org/licenses/mit-license.php. */
 
+#include "platform/time_compat.h"
 #include "controllers/network_controller.h"
 #include "util/log_macros.h"
 #include "controllers/strong_params.h"
@@ -71,7 +72,7 @@ static void push_addnode_status(struct json_value *result,
                                 struct connman *cm)
 {
     struct json_value arr = {0};
-    int64_t now = (int64_t)time(NULL);
+    int64_t now = (int64_t)platform_time_wall_time_t();
 
     json_set_array(&arr);
     if (cm) {

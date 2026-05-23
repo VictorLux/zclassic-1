@@ -7,6 +7,7 @@
 /* msg_blocks.c — Block message processing.
  * Split from msgprocessor.c for maintainability. */
 
+#include "platform/time_compat.h"
 #include "net/msg_internal.h"
 #include "net/peer_scoring.h"
 #include "net/compact_blocks.h"
@@ -388,7 +389,7 @@ bool process_block_msg(struct msg_processor *mp, struct p2p_node *node,
             &mp->main_state->chain_active);
         if (new_tip) {
             struct sync_block_acceptance acceptance;
-            node->last_block_time = (int64_t)time(NULL);
+            node->last_block_time = (int64_t)platform_time_wall_time_t();
             node->blocks_received++;
             int header_height = mp->main_state->pindex_best_header
                                     ? mp->main_state->pindex_best_header->nHeight
@@ -494,7 +495,7 @@ bool process_block_msg(struct msg_processor *mp, struct p2p_node *node,
                                 block_init(&blk_cmp);
                                 if (read_block_from_disk_index(&blk_cmp, new_tip, mp->datadir)) {
                                     struct compact_block_msg cb;
-                                    uint64_t nonce = (uint64_t)time(NULL) ^ (uint64_t)peer->id;
+                                    uint64_t nonce = (uint64_t)platform_time_wall_time_t() ^ (uint64_t)peer->id;
                                     if (compact_block_from_block(&cb, &blk_cmp, nonce)) {
                                         struct byte_stream cs;
                                         stream_init(&cs, 4096);

@@ -1,6 +1,7 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  * Sapling/Zcash test suite for ZClassic C23. */
 
+#include "platform/time_compat.h"
 #include "test/test_helpers.h"
 #include "util/safe_alloc.h"
 #include <time.h>
@@ -8,7 +9,7 @@
 static uint64_t curve25519_monotonic_ns(void)
 {
     struct timespec ts;
-    clock_gettime(CLOCK_MONOTONIC, &ts);
+    platform_time_monotonic_timespec(&ts);
     return (uint64_t)ts.tv_sec * 1000000000ULL + (uint64_t)ts.tv_nsec;
 }
 

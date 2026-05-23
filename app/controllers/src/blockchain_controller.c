@@ -13,6 +13,7 @@
  *
  * See blockchain_controller_internal.h for cross-sibling declarations. */
 
+#include "platform/time_compat.h"
 #include "controllers/blockchain_controller.h"
 #include "blockchain_controller_internal.h"
 #include "chain/chain.h"
@@ -108,13 +109,13 @@ void rpc_blockchain_mmr_catchup(struct main_state *ms)
     if (mmr_height >= chain_height) return;
 
     int start = mmr_height + 1;
-    int64_t t0 = (int64_t)time(NULL);
+    int64_t t0 = (int64_t)platform_time_wall_time_t();
     for (int h = start; h <= chain_height; h++) {
         const struct block_index *bi = active_chain_at(&ms->chain_active, h);
         if (bi && bi->phashBlock)
             mmr_append(&g_mmr, bi->phashBlock->data);
     }
-    int64_t elapsed = (int64_t)time(NULL) - t0;
+    int64_t elapsed = (int64_t)platform_time_wall_time_t() - t0;
     printf("MMR catchup: %d → %d (%d blocks, %llds)\n",
            start, chain_height, chain_height - start + 1, (long long)elapsed);
 }
@@ -183,7 +184,7 @@ void rpc_blockchain_mmb_catchup(struct main_state *ms)
     if (mmb_height >= chain_height) return;
 
     int start = mmb_height + 1;
-    int64_t t0 = (int64_t)time(NULL);
+    int64_t t0 = (int64_t)platform_time_wall_time_t();
     for (int h = start; h <= chain_height; h++) {
         const struct block_index *bi = active_chain_at(&ms->chain_active, h);
         if (bi && bi->phashBlock) {
@@ -196,7 +197,7 @@ void rpc_blockchain_mmb_catchup(struct main_state *ms)
             mmb_append(&g_mmb, &leaf);
         }
     }
-    int64_t elapsed = (int64_t)time(NULL) - t0;
+    int64_t elapsed = (int64_t)platform_time_wall_time_t() - t0;
     printf("MMB catchup: %d → %d (%d blocks, %llds, %u peaks)\n",
            start, chain_height, chain_height - start + 1,
            (long long)elapsed, g_mmb.num_mountains);

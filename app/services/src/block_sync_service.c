@@ -2,6 +2,7 @@
  * Distributed under the MIT software license, see the accompanying
  * file COPYING or http://www.opensource.org/licenses/mit-license.php. */
 
+#include "platform/time_compat.h"
 #include "services/block_sync_service.h"
 #include "services/header_sync_service.h"
 #include "util/pprev_walk.h"
@@ -120,7 +121,7 @@ void syncsvc_note_valid_block(struct sync_block_acceptance *result,
      * handshake is stale — the peer advanced while we were syncing,
      * so new_tip_height never reaches the old starting_height. */
     bool tip_is_recent = (new_tip_time > 0 &&
-        (int64_t)new_tip_time > (int64_t)time(NULL) - 75 * 2);
+        (int64_t)new_tip_time > (int64_t)platform_time_wall_time_t() - 75 * 2);
     bool reached_peer = (node->starting_height > 0 &&
                          new_tip_height >= node->starting_height);
     /* Guard against stale starting_height: if peers have advanced

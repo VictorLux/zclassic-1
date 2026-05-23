@@ -11,6 +11,7 @@
  *
  * Usage: make session */
 
+#include "platform/time_compat.h"
 #include "controllers/wallet_view_controller.h"
 #include "controllers/wallet_view_internal.h"
 #include "models/activerecord.h"
@@ -31,16 +32,16 @@ volatile sig_atomic_t g_shutdown_requested = 0;
 static struct timespec _t0, _session_start;
 static int _step;
 
-static void tick(void) { clock_gettime(CLOCK_MONOTONIC, &_t0); }
+static void tick(void) { platform_time_monotonic_timespec(&_t0); }
 static double tock_ms(void) {
     struct timespec t1;
-    clock_gettime(CLOCK_MONOTONIC, &t1);
+    platform_time_monotonic_timespec(&t1);
     return (t1.tv_sec - _t0.tv_sec) * 1000.0 +
            (t1.tv_nsec - _t0.tv_nsec) / 1e6;
 }
 static double session_ms(void) {
     struct timespec t1;
-    clock_gettime(CLOCK_MONOTONIC, &t1);
+    platform_time_monotonic_timespec(&t1);
     return (t1.tv_sec - _session_start.tv_sec) * 1000.0 +
            (t1.tv_nsec - _session_start.tv_nsec) / 1e6;
 }
@@ -154,7 +155,7 @@ int main(int argc, char **argv)
 
     _step = 0;
     _errors = 0;
-    clock_gettime(CLOCK_MONOTONIC, &_session_start);
+    platform_time_monotonic_timespec(&_session_start);
 
     printf("── User opens the app ──\n");
 

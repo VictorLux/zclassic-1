@@ -13,6 +13,7 @@
  *   zcl_replay_exec        — re-execute a recorded MCP request
  */
 
+#include "platform/time_compat.h"
 #include "../controllers.h"
 #include "../router.h"
 #include "../rpc_client.h"
@@ -129,7 +130,7 @@ static int h_zcl_probe_zclassicd(const struct mcp_request *req,
                      "node not synced: tip=%d", tip);
             LOG_ERR("mcp.diag", "probe_zclassicd: tip too low (%d)", tip);
         }
-        unsigned seed = (unsigned)time(NULL) ^ (unsigned)getpid();
+        unsigned seed = (unsigned)platform_time_wall_time_t() ^ (unsigned)getpid();
         height = (int)(rand_r(&seed) % (unsigned)max_h);
     }
 

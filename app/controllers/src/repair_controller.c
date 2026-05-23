@@ -4,6 +4,7 @@
  * UTXOs are missing locally, fetch and insert them so connect_block succeeds.
  */
 
+#include "platform/time_compat.h"
 #include "controllers/repair_controller.h"
 #include "controllers/rpc_chainstate_guard.h"
 #include "services/chain_activation_controller.h"
@@ -373,7 +374,7 @@ static bool rpc_repairutxos(const struct json_value *params, bool help,
            port, REPAIRUTXOS_MAX_SCAN_BLOCKS, tip_height);
     fflush(stdout);
 
-    int64_t t_start = (int64_t)time(NULL);
+    int64_t t_start = (int64_t)platform_time_wall_time_t();
     int blocks_scanned = 0, inputs_checked = 0;
     int missing_found = 0, repaired_gettxout = 0, repaired_rawtx = 0;
     int repair_failed = 0;
@@ -599,7 +600,7 @@ static bool rpc_repairutxos(const struct json_value *params, bool help,
         process_block_clear_utxo_activation_pause_range(tip_height + 1,
                                                         scan_end);
 
-    int64_t elapsed = (int64_t)time(NULL) - t_start;
+    int64_t elapsed = (int64_t)platform_time_wall_time_t() - t_start;
 
     printf("repairutxos: done in %llds — %d blocks, %d inputs, "
            "%d missing, %d repaired (%d gettxout, %d rawtx), %d failed, "
@@ -647,7 +648,7 @@ static bool rpc_repairheights(const struct json_value *params, bool help,
         return false;
     }
 
-    int64_t t0 = (int64_t)time(NULL);
+    int64_t t0 = (int64_t)platform_time_wall_time_t();
 
     /* Count before */
     sqlite3_stmt *s = NULL;
@@ -692,7 +693,7 @@ static bool rpc_repairheights(const struct json_value *params, bool help,
         after = sqlite3_column_int64(s, 0);
     sqlite3_finalize(s);
 
-    int64_t elapsed = (int64_t)time(NULL) - t0;
+    int64_t elapsed = (int64_t)platform_time_wall_time_t() - t0;
 
     printf("repairheights: fixed %d heights in %llds (%lld remaining)\n",
            changes, (long long)elapsed, (long long)after);
@@ -730,7 +731,7 @@ static bool rpc_rescanblockfiles(const struct json_value *params, bool help,
         return false;
     }
 
-    int64_t t0 = (int64_t)time(NULL);
+    int64_t t0 = (int64_t)platform_time_wall_time_t();
     printf("RPC rescanblockfiles: starting full block file scan...\n");
     fflush(stdout);
 
@@ -744,7 +745,7 @@ static bool rpc_rescanblockfiles(const struct json_value *params, bool help,
         printf("RPC rescanblockfiles: propagated nChainTx for %d blocks\n",
                propagated);
 
-    int64_t elapsed = (int64_t)time(NULL) - t0;
+    int64_t elapsed = (int64_t)platform_time_wall_time_t() - t0;
 
     /* Count index stats */
     size_t total_entries = 0, have_data_entries = 0;

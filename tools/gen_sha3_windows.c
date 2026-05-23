@@ -24,6 +24,7 @@
 
 #define _POSIX_C_SOURCE 200809L
 
+#include "platform/time_compat.h"
 #include "chain/sha3_windows.h"
 #include "crypto/sha3.h"
 #include "encoding/utilstrencodings.h"
@@ -506,7 +507,7 @@ static bool fetch_block_hex_into_sha3(struct rpc_ctx *r, int height,
 static double now_secs(void)
 {
     struct timespec ts;
-    clock_gettime(CLOCK_MONOTONIC, &ts);
+    platform_time_monotonic_timespec(&ts);
     return (double)ts.tv_sec + (double)ts.tv_nsec / 1e9;
 }
 

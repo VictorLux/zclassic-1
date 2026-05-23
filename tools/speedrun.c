@@ -16,6 +16,7 @@
  *   4. Delta block replay (snapshot height → tip)
  */
 
+#include "platform/time_compat.h"
 #include "config/boot.h"
 #include "chain/chainparams.h"
 #include <stdio.h>
@@ -32,7 +33,7 @@ volatile sig_atomic_t g_shutdown_requested = 0;
 static inline int64_t now_ms(void)
 {
     struct timespec ts;
-    clock_gettime(CLOCK_MONOTONIC, &ts);
+    platform_time_monotonic_timespec(&ts);
     return (int64_t)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
 }
 

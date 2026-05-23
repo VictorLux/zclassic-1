@@ -2,6 +2,7 @@
  *
  * Tip-stuck watchdog. See services/chain_tip_watchdog.h. */
 
+#include "platform/time_compat.h"
 #include "services/chain_tip_watchdog.h"
 
 #include "services/chain_advance_coordinator.h"
@@ -49,7 +50,7 @@ static _Atomic int64_t  g_thr_restart  = CHAIN_TIP_WD_DEFAULT_RESTART_SECS;
 static int64_t mono_us_now(void)
 {
     struct timespec ts;
-    clock_gettime(CLOCK_MONOTONIC, &ts);
+    platform_time_monotonic_timespec(&ts);
     return (int64_t)ts.tv_sec * 1000000 + ts.tv_nsec / 1000;
 }
 
@@ -67,7 +68,7 @@ static void chain_tip_wd_tick(struct liveness_contract *c)
     if (h > prev) {
         atomic_store(&g_highest_tip, h);
         atomic_store(&g_last_advance_us, now_us);
-        atomic_store(&g_last_advance_unix, (int64_t)time(NULL));
+        atomic_store(&g_last_advance_unix, (int64_t)platform_time_wall_time_t());
         atomic_store(&g_escalation, 0);
         supervisor_progress(atomic_load(&g_id), h);
         return;
@@ -78,7 +79,7 @@ static void chain_tip_wd_tick(struct liveness_contract *c)
     if (last == 0) {
         /* First-ever tick: seed the timer; nothing to escalate yet. */
         atomic_store(&g_last_advance_us, now_us);
-        atomic_store(&g_last_advance_unix, (int64_t)time(NULL));
+        atomic_store(&g_last_advance_unix, (int64_t)platform_time_wall_time_t());
         supervisor_progress(atomic_load(&g_id), h);
         return;
     }

@@ -1,5 +1,6 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0 */
 
+#include "platform/time_compat.h"
 #include "test/test_helpers.h"
 #include "net/dandelion.h"
 #include "core/uint256.h"
@@ -220,7 +221,7 @@ int test_dandelion(void)
         /* Force the embargo time to be in the past */
         for (int i = 0; i < DANDELION_MAX_STEMPOOL; i++) {
             if (ds.stempool[i].active) {
-                ds.stempool[i].embargo_time = (int64_t)time(NULL) - 1;
+                ds.stempool[i].embargo_time = (int64_t)platform_time_wall_time_t() - 1;
                 break;
             }
         }
@@ -312,7 +313,7 @@ int test_dandelion(void)
 
     /* ── stem shuffle is non-deterministic across calls ─────
      *
-     * Pre-fix: xorshift64 seeded from time(NULL) ^ const → two boots
+     * Pre-fix: xorshift64 seeded from platform_time_wall_time_t() ^ const → two boots
      * inside the same wall-clock second produced identical shuffles.
      * Post-fix: each call pulls fresh entropy from the cryptographic
      * RNG, so back-to-back shuffles of the same input differ with

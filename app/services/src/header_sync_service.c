@@ -2,6 +2,7 @@
  * Distributed under the MIT software license, see the accompanying
  * file COPYING or http://www.opensource.org/licenses/mit-license.php. */
 
+#include "platform/time_compat.h"
 #include "services/header_sync_service.h"
 #include "services/snapshot_sync_service.h"
 #include "net/net.h"
@@ -434,7 +435,7 @@ void syncsvc_note_headers_received(struct p2p_node *node,
     if (!node) return;
     if (accepted > 0) {
         node->getheaders_stale_count = 0;
-        node->last_useful_headers_time = (int64_t)time(NULL);
+        node->last_useful_headers_time = (int64_t)platform_time_wall_time_t();
         node->total_headers_delivered += (uint64_t)accepted;
     } else {
         node->getheaders_stale_count++;

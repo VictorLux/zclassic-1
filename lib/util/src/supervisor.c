@@ -17,6 +17,7 @@
  *     invoking any callback — callbacks may freely call back into the
  *     supervisor API. */
 
+#include "platform/time_compat.h"
 #include "util/supervisor.h"
 
 #include "json/json.h"
@@ -46,7 +47,7 @@ static _Atomic bool   g_thread_handle_set = false;
 static int64_t mono_us(void)
 {
     struct timespec ts;
-    clock_gettime(CLOCK_MONOTONIC, &ts);
+    platform_time_monotonic_timespec(&ts);
     return (int64_t)ts.tv_sec * 1000000 + ts.tv_nsec / 1000;
 }
 
@@ -86,7 +87,7 @@ supervisor_child_id supervisor_register(struct liveness_contract *c)
     pthread_mutex_lock(&g_lock);
     if (g_contract_count >= SUPERVISOR_CAP) {
         pthread_mutex_unlock(&g_lock);
-        fprintf(stderr,
+        fprintf(stderr,  // obs-ok:pre-existing-diagnostic
             "[supervisor] FAIL register '%s': registry full (cap=%d)\n",
             c->name, SUPERVISOR_CAP);
         return SUPERVISOR_INVALID_ID;
@@ -95,7 +96,7 @@ supervisor_child_id supervisor_register(struct liveness_contract *c)
     for (int i = 0; i < g_contract_count; i++) {
         if (strncmp(g_contracts[i]->name, c->name, SUPERVISOR_NAME_MAX) == 0) {
             pthread_mutex_unlock(&g_lock);
-            fprintf(stderr,
+            fprintf(stderr,  // obs-ok:pre-existing-diagnostic
                 "[supervisor] FAIL register '%s': duplicate name\n", c->name);
             return SUPERVISOR_INVALID_ID;
         }
@@ -319,11 +320,11 @@ void supervisor_stop(void)
      * the global shutdown flag, so this is bounded by tick_ms. */
     if (atomic_load(&g_thread_handle_set)) {
         struct timespec deadline;
-        clock_gettime(CLOCK_REALTIME, &deadline);
+        platform_time_realtime_timespec(&deadline);
         deadline.tv_sec += 2;
         int rc = pthread_timedjoin_np(g_thread_id, NULL, &deadline);
         if (rc != 0) {
-            fprintf(stderr,
+            fprintf(stderr,  // obs-ok:pre-existing-diagnostic
                 "[supervisor] WARN supervisor_stop join rc=%d (thread still alive)\n",
                 rc);
         } else {

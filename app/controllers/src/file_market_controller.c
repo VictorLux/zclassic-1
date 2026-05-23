@@ -8,6 +8,7 @@
  *   zmarket_buy     — initiate purchase of a file
  *   zmarket_status  — show active downloads/uploads */
 
+#include "platform/time_compat.h"
 #include "net/file_market.h"
 #include "encoding/utilstrencodings.h"
 #include "util/log_macros.h"
@@ -152,7 +153,7 @@ static bool rpc_zmarket_offer(const struct json_value *params, bool help,
     }
     offer.price_per_mb = price;
     offer.ttl = FILE_MARKET_MAX_TTL;
-    offer.last_seen = (int64_t)time(NULL);
+    offer.last_seen = (int64_t)platform_time_wall_time_t();
 
     /* Compute root hash: SHA3-256 of the file path + size as a simple
      * placeholder. Full implementation would hash the file manifest. */

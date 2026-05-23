@@ -29,6 +29,7 @@
  *      completion record commit or roll back together.
  *   9. Tear down the snapshot directory. */
 
+#include "platform/time_compat.h"
 #include "services/legacy_oneshot_import.h"
 
 #include "chain/chain.h"
@@ -100,7 +101,7 @@ const char *loi_outcome_name(enum loi_outcome o)
 static int64_t loi_now_ms(void)
 {
     struct timespec ts;
-    clock_gettime(CLOCK_MONOTONIC, &ts);
+    platform_time_monotonic_timespec(&ts);
     return (int64_t)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
 }
 
@@ -527,7 +528,7 @@ static bool loi_stamp_stage_cursor_in_tx(sqlite3 *db,
     if (rc != SQLITE_OK) return false;
     sqlite3_bind_text(stmt, 1, name, -1, SQLITE_TRANSIENT);
     sqlite3_bind_int64(stmt, 2, (sqlite3_int64)new_cursor);
-    sqlite3_bind_int64(stmt, 3, (sqlite3_int64)time(NULL));
+    sqlite3_bind_int64(stmt, 3, (sqlite3_int64)platform_time_wall_time_t());
     rc = sqlite3_step(stmt);  // raw-sql-ok:kernel-primitive
     sqlite3_finalize(stmt);
     if (rc == SQLITE_DONE && out_was_write) *out_was_write = true;
@@ -591,7 +592,7 @@ static bool loi_finalize_atomic(sqlite3 *db,
                                      &legacy_tip, sizeof(legacy_tip));
     }
     if (ok) {
-        int64_t now = (int64_t)time(NULL);
+        int64_t now = (int64_t)platform_time_wall_time_t();
         ok = progress_meta_set_in_tx(db, LOI_META_DONE_AT,
                                      &now, sizeof(now));
     }

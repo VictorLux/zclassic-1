@@ -2,6 +2,7 @@
  *
  * MCP net controller: peers, network info, peer discovery, ping, games. */
 
+#include "platform/time_compat.h"
 #include "../controllers.h"
 #include "../router.h"
 #include "../rpc_client.h"
@@ -111,13 +112,13 @@ static int h_zcl_onion_health(const struct mcp_request *req,
     }
 
     struct timespec t0, t1;
-    clock_gettime(CLOCK_MONOTONIC, &t0);
+    platform_time_monotonic_timespec(&t0);
 
     static uint8_t resp[65536];
     size_t n = onion_service_handle_request("GET", probe_path, NULL, 0,
                                               resp, sizeof(resp));
 
-    clock_gettime(CLOCK_MONOTONIC, &t1);
+    platform_time_monotonic_timespec(&t1);
     int64_t latency_us =
         (t1.tv_sec - t0.tv_sec) * 1000000LL +
         (t1.tv_nsec - t0.tv_nsec) / 1000LL;

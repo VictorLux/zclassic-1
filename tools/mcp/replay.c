@@ -2,6 +2,7 @@
  *
  * MCP replay recorder implementation. */
 
+#include "platform/time_compat.h"
 #include "replay.h"
 
 #include <stdio.h>
@@ -37,7 +38,7 @@ void mcp_replay_record(const char *tool, const char *args_json,
         snprintf(e->response, sizeof(e->response), "%s", response);
 
     struct timespec ts;
-    clock_gettime(CLOCK_REALTIME, &ts);
+    platform_time_realtime_timespec(&ts);
     e->timestamp_us = (uint64_t)ts.tv_sec * 1000000ULL +
                       (uint64_t)(ts.tv_nsec / 1000);
     e->duration_us = duration_us;

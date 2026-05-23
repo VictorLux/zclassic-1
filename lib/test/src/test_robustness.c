@@ -1,6 +1,7 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  * Robustness and defensive coding tests: validation, bounds, edge cases. */
 
+#include "platform/time_compat.h"
 #include "test/test_helpers.h"
 #include "controllers/store_controller.h"
 #include "controllers/zslp_controller.h"
@@ -174,7 +175,7 @@ int test_robustness(void)
     {
         struct fast_sync_pow pow;
         memset(&pow, 0, sizeof(pow));
-        pow.timestamp = (int64_t)time(NULL) - 600;
+        pow.timestamp = (int64_t)platform_time_wall_time_t() - 600;
         bool ok = !fast_sync_verify_pow(&pow);
         if (ok) printf("OK\n");
         else { printf("FAIL\n"); failures++; }
@@ -184,7 +185,7 @@ int test_robustness(void)
     {
         struct fast_sync_pow pow;
         memset(&pow, 0, sizeof(pow));
-        pow.timestamp = (int64_t)time(NULL) + 120;
+        pow.timestamp = (int64_t)platform_time_wall_time_t() + 120;
         bool ok = !fast_sync_verify_pow(&pow);
         if (ok) printf("OK\n");
         else { printf("FAIL\n"); failures++; }

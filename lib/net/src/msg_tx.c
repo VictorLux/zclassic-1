@@ -7,6 +7,7 @@
 /* msg_tx.c — Transaction relay message processing.
  * Split from msgprocessor.c for maintainability. */
 
+#include "platform/time_compat.h"
 #include "net/msg_internal.h"
 #include "net/peer_scoring.h"
 #include "net/dandelion.h"
@@ -108,7 +109,7 @@ static enum tx_accept_result msg_tx_classify(struct msg_processor *mp,
         : 0;
 
     struct mempool_entry entry;
-    mempool_entry_init(&entry, tx, fee, (int64_t)time(NULL), 0.0,
+    mempool_entry_init(&entry, tx, fee, (int64_t)platform_time_wall_time_t(), 0.0,
                        (unsigned int)(tip_height + 1),
                        tx_mempool_has_no_inputs_of(mp->mempool, tx),
                        false, branch_id);
@@ -207,7 +208,7 @@ bool process_inv(struct msg_processor *mp, struct p2p_node *node,
              * the node in headers-only mode too long after catchup. */
             bool in_ibd = !tip || !tip->nTime ||
                           ((int64_t)tip->nTime <
-                           (int64_t)time(NULL) - 75 * 20);
+                           (int64_t)platform_time_wall_time_t() - 75 * 20);
             bool need_data = !bi || !(bi->nStatus & BLOCK_HAVE_DATA);
             if (need_data && !in_ibd) {
                 /* ZClassic C++: send getheaders FIRST, then getdata.

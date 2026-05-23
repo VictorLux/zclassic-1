@@ -1,6 +1,7 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  * SQLite ActiveRecord model tests for ZClassic C23. */
 
+#include "platform/time_compat.h"
 #include "test/test_helpers.h"
 #include "controllers/snapshot_controller.h"
 #include "controllers/sync_controller.h"
@@ -1269,9 +1270,9 @@ int test_sqlite(void) {
 
         struct timespec start;
         struct timespec end;
-        clock_gettime(CLOCK_MONOTONIC, &start);
+        platform_time_monotonic_timespec(&start);
         bool saved = ok && db_peer_save_advisory(&writer, &p);
-        clock_gettime(CLOCK_MONOTONIC, &end);
+        platform_time_monotonic_timespec(&end);
         int64_t elapsed_ms =
             (int64_t)(end.tv_sec - start.tv_sec) * 1000 +
             (int64_t)(end.tv_nsec - start.tv_nsec) / 1000000;

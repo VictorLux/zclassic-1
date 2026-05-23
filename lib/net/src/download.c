@@ -3,6 +3,7 @@
  * Block download manager — coordinates parallel block downloads.
  * Lock-free reads where possible, mutex for writes. */
 
+#include "platform/time_compat.h"
 #include "net/download.h"
 #include "event/event.h"
 #include "util/log_macros.h"
@@ -244,7 +245,7 @@ bool dl_mark_requested(struct download_manager *dm,
     slot->hash = *hash;
     slot->height = height;
     slot->peer_id = peer_id;
-    slot->request_time = (int64_t)time(NULL);
+    slot->request_time = (int64_t)platform_time_wall_time_t();
     slot->active = true;
     dm->num_active++;
     dm->total_requested++;
@@ -271,7 +272,7 @@ uint32_t dl_mark_received(struct download_manager *dm,
     }
 
     uint32_t peer_id = s->peer_id;
-    int64_t delivery = (int64_t)time(NULL) - s->request_time;
+    int64_t delivery = (int64_t)platform_time_wall_time_t() - s->request_time;
 
     s->active = false;
     /* Don't zero the hash — find_slot needs it to detect "was used" vs "never used"
@@ -282,7 +283,7 @@ uint32_t dl_mark_received(struct download_manager *dm,
     struct dl_peer_stats *ps = dl_find_peer(dm, peer_id, false);
     if (ps) {
         ps->blocks_received++;
-        ps->last_block_time = (int64_t)time(NULL);
+        ps->last_block_time = (int64_t)platform_time_wall_time_t();
         int64_t delivery_us = delivery * 1000000;
         if (ps->avg_delivery_us == 0)
             ps->avg_delivery_us = delivery_us;
@@ -511,7 +512,7 @@ size_t dl_assign_to_peer(struct download_manager *dm,
         slot->hash = hash;
         slot->height = height;
         slot->peer_id = peer_id;
-        slot->request_time = (int64_t)time(NULL);
+        slot->request_time = (int64_t)platform_time_wall_time_t();
         slot->active = true;
         dm->num_active++;
         dm->total_requested++;
@@ -546,7 +547,7 @@ void dl_peer_block_received(struct download_manager *dm,
     struct dl_peer_stats *ps = dl_find_peer(dm, peer_id, false);
     if (ps) {
         ps->blocks_received++;
-        ps->last_block_time = (int64_t)time(NULL);
+        ps->last_block_time = (int64_t)platform_time_wall_time_t();
         if (ps->avg_delivery_us == 0)
             ps->avg_delivery_us = delivery_us;
         else
@@ -593,7 +594,7 @@ void dl_add_bytes_received(struct download_manager *dm, uint64_t bytes)
 {
     zcl_mutex_lock(&dm->cs);
     if (dm->sync_start_time == 0)
-        dm->sync_start_time = (int64_t)time(NULL);
+        dm->sync_start_time = (int64_t)platform_time_wall_time_t();
     dm->total_bytes_received += bytes;
     zcl_mutex_unlock(&dm->cs);
 }
@@ -605,7 +606,7 @@ void dl_get_throughput(struct download_manager *dm,
     if (total_bytes) *total_bytes = dm->total_bytes_received;
     if (mbps_avg) {
         if (dm->sync_start_time > 0 && dm->total_bytes_received > 0) {
-            int64_t elapsed = (int64_t)time(NULL) - dm->sync_start_time;
+            int64_t elapsed = (int64_t)platform_time_wall_time_t() - dm->sync_start_time;
             if (elapsed < 1) elapsed = 1;
             *mbps_avg = (double)dm->total_bytes_received / (1048576.0 * elapsed);
         } else {

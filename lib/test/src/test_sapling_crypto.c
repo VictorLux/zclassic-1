@@ -1,6 +1,7 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  * Fr/Fs field arithmetic, Jubjub, BLS12-381, PRF, FF1 tests. */
 
+#include "platform/time_compat.h"
 #include "test/test_helpers.h"
 #include "sapling/groth16_prover.h"
 #include "sapling/sapling_circuit.h"
@@ -34,7 +35,7 @@ static void jub_scalar_mul_naive(struct jub_point *r,
 static uint64_t monotonic_ns_now(void)
 {
     struct timespec ts;
-    clock_gettime(CLOCK_MONOTONIC, &ts);
+    platform_time_monotonic_timespec(&ts);
     return (uint64_t)ts.tv_sec * 1000000000ULL + (uint64_t)ts.tv_nsec;
 }
 

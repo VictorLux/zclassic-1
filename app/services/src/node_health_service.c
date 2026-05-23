@@ -2,6 +2,7 @@
  * Distributed under the MIT software license, see the accompanying
  * file COPYING or http://www.opensource.org/licenses/mit-license.php. */
 
+#include "platform/time_compat.h"
 #include "services/node_health_service.h"
 #include "services/chain_advance_coordinator.h"
 #include "services/chain_evidence_controller.h"
@@ -208,7 +209,7 @@ void node_health_collect(struct node_health_snapshot *snapshot,
         if (tip) {
             snapshot->tip_height = tip->nHeight;
             if (tip->nTime > 0) {
-                int64_t now = (int64_t)time(NULL);
+                int64_t now = (int64_t)platform_time_wall_time_t();
                 if (now > (int64_t)tip->nTime) {
                     snapshot->tip_stale_seconds = now - (int64_t)tip->nTime;
                     snapshot->tip_stale = snapshot->tip_stale_seconds > 600;
@@ -233,7 +234,7 @@ void node_health_collect(struct node_health_snapshot *snapshot,
         snapshot->db_service_stop_requested = svc_status.stop_requested;
         snapshot->db_service_queue_depth = svc_status.queue_depth;
         if (svc_status.started_at > 0) {
-            int64_t now = (int64_t)time(NULL);
+            int64_t now = (int64_t)platform_time_wall_time_t();
             if (now >= svc_status.started_at)
                 snapshot->db_service_uptime_seconds =
                     now - svc_status.started_at;
@@ -241,7 +242,7 @@ void node_health_collect(struct node_health_snapshot *snapshot,
         snprintf(snapshot->db_last_op, sizeof(snapshot->db_last_op),
                  "%s", dbs.last_op);
         if (dbs.last_activity_time > 0) {
-            int64_t now = (int64_t)time(NULL);
+            int64_t now = (int64_t)platform_time_wall_time_t();
             if (now >= dbs.last_activity_time)
                 snapshot->db_last_activity_age_seconds =
                     now - dbs.last_activity_time;
@@ -320,23 +321,23 @@ void node_health_collect(struct node_health_snapshot *snapshot,
         snapshot->import_active = jobs.import_active;
         snapshot->import_rows_written = jobs.import_rows_written;
         if (jobs.catchup_started_at > 0) {
-            int64_t now = (int64_t)time(NULL);
+            int64_t now = (int64_t)platform_time_wall_time_t();
             if (now >= jobs.catchup_started_at)
                 snapshot->catchup_uptime_seconds = now - jobs.catchup_started_at;
         }
         if (jobs.catchup_last_progress_at > 0) {
-            int64_t now = (int64_t)time(NULL);
+            int64_t now = (int64_t)platform_time_wall_time_t();
             if (now >= jobs.catchup_last_progress_at)
                 snapshot->catchup_progress_age_seconds =
                     now - jobs.catchup_last_progress_at;
         }
         if (jobs.import_started_at > 0) {
-            int64_t now = (int64_t)time(NULL);
+            int64_t now = (int64_t)platform_time_wall_time_t();
             if (now >= jobs.import_started_at)
                 snapshot->import_uptime_seconds = now - jobs.import_started_at;
         }
         if (jobs.import_last_progress_at > 0) {
-            int64_t now = (int64_t)time(NULL);
+            int64_t now = (int64_t)platform_time_wall_time_t();
             if (now >= jobs.import_last_progress_at)
                 snapshot->import_progress_age_seconds =
                     now - jobs.import_last_progress_at;
@@ -346,7 +347,7 @@ void node_health_collect(struct node_health_snapshot *snapshot,
         const struct error_entry *last_err = error_ring_last(er);
         snapshot->error_total = error_ring_total(er);
         if (last_err && last_err->message[0]) {
-            int64_t now_us = (int64_t)time(NULL) * 1000000;
+            int64_t now_us = (int64_t)platform_time_wall_time_t() * 1000000;
             if (last_err->timestamp_us > 0) {
                 if (now_us >= last_err->timestamp_us) {
                     snapshot->last_error_age_seconds =

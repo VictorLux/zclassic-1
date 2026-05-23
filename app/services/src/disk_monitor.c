@@ -11,6 +11,7 @@
  * the log every 60 seconds on a sustained low-disk situation.
  */
 
+#include "platform/time_compat.h"
 #include "services/disk_monitor.h"
 
 #include "event/event.h"
@@ -118,7 +119,7 @@ static void dm_run_one_locked(void)
         dm_classify(free_b, g_dm.refuse_free_bytes, g_dm.warn_free_bytes);
 
     g_dm.last_free_bytes = free_b;
-    g_dm.last_poll_unix  = (int64_t)time(NULL);
+    g_dm.last_poll_unix  = (int64_t)platform_time_wall_time_t();
 
     enum disk_monitor_level prev = g_dm.last_level;
     g_dm.last_level = new_level;
@@ -176,7 +177,7 @@ static void *dm_thread_fn(void *arg)
     pthread_mutex_unlock(&g_dm.lock);
 
     struct timespec now;
-    clock_gettime(CLOCK_MONOTONIC, &now);
+    platform_time_monotonic_timespec(&now);
     int64_t now_ms = (int64_t)now.tv_sec * 1000 + now.tv_nsec / 1000000;
     next_at_ms = now_ms + (int64_t)poll_seconds * 1000;
 
@@ -186,7 +187,7 @@ static void *dm_thread_fn(void *arg)
         pthread_mutex_unlock(&g_dm.lock);
         if (stop) break;
 
-        clock_gettime(CLOCK_MONOTONIC, &now);
+        platform_time_monotonic_timespec(&now);
         now_ms = (int64_t)now.tv_sec * 1000 + now.tv_nsec / 1000000;
         if (now_ms >= next_at_ms) {
             pthread_mutex_lock(&g_dm.lock);

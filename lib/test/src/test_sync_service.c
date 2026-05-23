@@ -1,6 +1,7 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  * Tests for sync service policy extraction. */
 
+#include "platform/time_compat.h"
 #include "test/test_helpers.h"
 #include "services/header_sync_service.h"
 #include "services/block_sync_service.h"
@@ -1287,7 +1288,7 @@ static int test_sync_service_recent_tip_bypasses_headers(void)
         node.starting_height = 3078009;
 
         /* Tip time is 60 seconds ago — recent enough to bypass header check */
-        uint32_t recent_time = (uint32_t)(time(NULL) - 60);
+        uint32_t recent_time = (uint32_t)(platform_time_wall_time_t() - 60);
         syncsvc_note_valid_block(&result, &node, SYNC_BLOCKS_DOWNLOAD,
                                  3078000, 1000, recent_time, 3078009);
         ASSERT(result.should_set_sync_state);

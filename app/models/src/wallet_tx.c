@@ -18,6 +18,7 @@
  *   validates :value, money_range: [0, MAX_MONEY]
  *   belongs_to :sapling_key */
 
+#include "platform/time_compat.h"
 #include "models/wallet_tx.h"
 #include "models/block.h"
 #include "models/wallet_key.h"
@@ -362,7 +363,7 @@ bool db_wallet_tx_save(struct node_db *ndb, const struct db_wallet_tx *t)
 {
     if (!ndb->open) return false;
     if (t->time_received == 0)
-        ((struct db_wallet_tx *)t)->time_received = (int64_t)time(NULL);
+        ((struct db_wallet_tx *)t)->time_received = (int64_t)platform_time_wall_time_t();
 
     wallet_tx_init_hooks();
     struct ar_callbacks *cbs = db_wallet_tx_callbacks();

@@ -22,6 +22,7 @@
  *   - mp_snapshot_init / mp_snapshot_send_tick / mp_snapshot_maybe_offer
  *     (lifecycle / per-peer trickle hooks invoked from msgprocessor.c) */
 
+#include "platform/time_compat.h"
 #include "msgprocessor_internal.h"
 
 #include "net/addrman.h"
@@ -1213,7 +1214,7 @@ bool mp_handle_zcl23_sync(struct msg_processor *mp,
                                 if (swarm_sync_init(&g_swarm, &peer_manifest,
                                                     mp->datadir)) {
                                     g_swarm_last_progress_time =
-                                        (int64_t)time(NULL);
+                                        (int64_t)platform_time_wall_time_t();
                                     printf("Swarm sync started: %u chunks "
                                            "from h=%d\n", num_chunks, height);
                                     first_chunk = swarm_sync_assign_chunk(
@@ -1222,7 +1223,7 @@ bool mp_handle_zcl23_sync(struct msg_processor *mp,
                                         node->swarm_inflight_chunk =
                                             first_chunk;
                                         node->swarm_chunk_req_time =
-                                            (int64_t)time(NULL);
+                                            (int64_t)platform_time_wall_time_t();
                                     }
                                 } else {
                                     /* Init failed — release the claim so
@@ -1483,7 +1484,7 @@ bool mp_handle_zcl23_sync(struct msg_processor *mp,
                     pthread_mutex_lock(&g_block_swarm_mutex);
                     if (block_swarm_init(&g_block_swarm, &pm, mp->datadir)) {
                         g_block_swarm_active = true;
-                        g_block_swarm_last_progress = (int64_t)time(NULL);
+                        g_block_swarm_last_progress = (int64_t)platform_time_wall_time_t();
                         printf("Block swarm started: %u pieces, h=%d..%d\n",
                                num_pieces, start_h, end_h);
                     }
@@ -1828,7 +1829,7 @@ void mp_snapshot_send_tick(struct msg_processor *mp,
 
         /* Handle timeout: if this peer's chunk is stale, re-queue it */
         if (node->swarm_inflight_chunk >= 0) {
-            int64_t now_sw = (int64_t)time(NULL);
+            int64_t now_sw = (int64_t)platform_time_wall_time_t();
             if (now_sw - node->swarm_chunk_req_time > SWARM_CHUNK_TIMEOUT_SECS) {
                 uint32_t ci = (uint32_t)node->swarm_inflight_chunk;
                 if (ci < g_swarm.manifest.num_chunks &&
@@ -1849,13 +1850,13 @@ void mp_snapshot_send_tick(struct msg_processor *mp,
             int32_t ci = swarm_sync_assign_chunk(&g_swarm, node->id);
             if (ci >= 0) {
                 node->swarm_inflight_chunk = ci;
-                node->swarm_chunk_req_time = (int64_t)time(NULL);
+                node->swarm_chunk_req_time = (int64_t)platform_time_wall_time_t();
                 push_chunk_request(mp, node, (uint32_t)ci);
             }
         }
 
         /* Progress display (rate-limited to every 5 seconds) */
-        int64_t now_prog = (int64_t)time(NULL);
+        int64_t now_prog = (int64_t)platform_time_wall_time_t();
         if (now_prog - g_swarm_last_progress_time >= SWARM_PROGRESS_INTERVAL_SECS) {
             g_swarm_last_progress_time = now_prog;
 
@@ -1892,7 +1893,7 @@ void mp_snapshot_send_tick(struct msg_processor *mp,
         pthread_mutex_lock(&g_block_swarm_mutex);
 
         /* Handle timeouts on this peer's pipeline */
-        int64_t now_bs = (int64_t)time(NULL);
+        int64_t now_bs = (int64_t)platform_time_wall_time_t();
         for (int pi = 0; pi < PIECE_PIPELINE_DEPTH; pi++) {
             int32_t pidx = node->blk_pipeline[pi].piece_index;
             if (pidx >= 0 &&
@@ -1928,7 +1929,7 @@ void mp_snapshot_send_tick(struct msg_processor *mp,
         }
 
         /* Progress display (rate-limited) */
-        int64_t now_bp = (int64_t)time(NULL);
+        int64_t now_bp = (int64_t)platform_time_wall_time_t();
         if (now_bp - g_block_swarm_last_progress >=
             SWARM_PROGRESS_INTERVAL_SECS) {
             g_block_swarm_last_progress = now_bp;

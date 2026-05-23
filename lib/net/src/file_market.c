@@ -5,6 +5,7 @@
  * In-memory offer cache + SQLite persistence + serialization.
  * Gossip logic: receive offers, decrement TTL, re-broadcast. */
 
+#include "platform/time_compat.h"
 #include "net/file_market.h"
 #include "core/serialize.h"
 #include "models/activerecord.h"
@@ -97,7 +98,7 @@ bool file_offer_deserialize(struct file_offer *offer,
     ok &= stream_read_u16_le(s, &offer->peer_port);
     ok &= stream_read_u8(s, &offer->ttl);
 
-    if (ok) offer->last_seen = (int64_t)time(NULL);
+    if (ok) offer->last_seen = (int64_t)platform_time_wall_time_t();
     return ok;
 }
 
@@ -177,7 +178,7 @@ bool file_market_add_offer(const struct file_offer *offer)
     for (int i = 0; i < g_offer_count; i++) {
         if (memcmp(g_offers[i].root_hash, offer->root_hash, 32) == 0) {
             g_offers[i] = *offer;
-            g_offers[i].last_seen = (int64_t)time(NULL);
+            g_offers[i].last_seen = (int64_t)platform_time_wall_time_t();
             pthread_mutex_unlock(&g_market_mutex);
             return false; /* updated, not new */
         }
@@ -192,13 +193,13 @@ bool file_market_add_offer(const struct file_offer *offer)
                 oldest = i;
         }
         g_offers[oldest] = *offer;
-        g_offers[oldest].last_seen = (int64_t)time(NULL);
+        g_offers[oldest].last_seen = (int64_t)platform_time_wall_time_t();
         pthread_mutex_unlock(&g_market_mutex);
         return true;
     }
 
     g_offers[g_offer_count] = *offer;
-    g_offers[g_offer_count].last_seen = (int64_t)time(NULL);
+    g_offers[g_offer_count].last_seen = (int64_t)platform_time_wall_time_t();
     g_offer_count++;
     pthread_mutex_unlock(&g_market_mutex);
     return true;
@@ -231,7 +232,7 @@ bool file_market_find_offer(const uint8_t root_hash[32],
 
 int file_market_prune(int64_t max_age)
 {
-    int64_t cutoff = (int64_t)time(NULL) - max_age;
+    int64_t cutoff = (int64_t)platform_time_wall_time_t() - max_age;
     int pruned = 0;
 
     pthread_mutex_lock(&g_market_mutex);
@@ -383,7 +384,7 @@ bool db_file_offer_save(struct node_db *ndb,
     sqlite3_bind_blob(s, 6, offer->z_addr, 43, SQLITE_STATIC);
     sqlite3_bind_blob(s, 7, offer->peer_ip, 16, SQLITE_STATIC);
     sqlite3_bind_int(s, 8, offer->peer_port);
-    sqlite3_bind_int64(s, 9, offer->last_seen ? offer->last_seen : (int64_t)time(NULL));
+    sqlite3_bind_int64(s, 9, offer->last_seen ? offer->last_seen : (int64_t)platform_time_wall_time_t());
     sqlite3_bind_int(s, 10, offer->ttl);
 
     bool ok = AR_STEP_DONE(s);
@@ -469,7 +470,7 @@ int db_file_offer_prune(struct node_db *ndb, int64_t max_age)
 {
     if (!ndb || !ndb->open) return 0;
 
-    int64_t cutoff = (int64_t)time(NULL) - max_age;
+    int64_t cutoff = (int64_t)platform_time_wall_time_t() - max_age;
     char sql[128];
     snprintf(sql, sizeof(sql),
              "DELETE FROM file_offers WHERE last_seen < %lld",
