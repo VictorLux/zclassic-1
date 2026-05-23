@@ -25,8 +25,11 @@ the workers. Deviating breaks coordination and risks data loss.
    $ cat docs/REFACTOR_STATUS.md          # current phase + your row in "In flight"
 
 4. Load your assignment
-   $ ls docs/work/wt<N>-*.md              # your assignment(s)
-   $ cat docs/work/wt<N>-<slug>.md        # full spec — branch name, scope, tasks
+   $ ls docs/work/wt<N>-*.md              # may show MULTIPLE files
+   $ for f in docs/work/wt<N>-*.md; do echo "=== $f ==="; grep -A2 '^## Status$' "$f" | head -4; done
+   # Pick the assignment whose Status is **READY** (or IN PROGRESS resumable).
+   # SKIP any whose Status starts with "✅ DONE — merged" — that work is closed.
+   $ cat docs/work/wt<N>-<chosen-slug>.md  # full spec — branch name, scope, tasks
 
 5. Verify assignment is unclaimed / in-progress for you
    - Check the "Status" section at the bottom of your assignment doc

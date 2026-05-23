@@ -252,7 +252,26 @@ git push origin wt3/phase0-framework-shape-lint
 
 ## Status
 
-**IN PROGRESS (wt3)** — framework shape lint gate implementation started 2026-05-23.
+**✅ DONE — merged to main 2026-05-23 in commit `4e0ea3382`.** Branch `wt3/phase0-framework-shape-lint` is closed. **Your next assignment is at [`wt3-phase1-platform-clock-rewire.md`](./wt3-phase1-platform-clock-rewire.md).** Switch to branch `wt3/phase1-platform-rewire` (off main) and follow the protocol.
+
+Final wt3 commits on this branch (kept for history):
+
+- `32b17449c fix snapshot export test fixture`
+- `522f5d933 wt3: complete framework shape lint`
+- `7ab163e83 document framework lint ratchets`
+- `c7bc1cbaa wire framework lint gates`
+- `b2c19977f add controller sqlite lint gate`
+- `417180e14 add raw clock lint gate`
+- `654389364 add framework shape allowlist`
+- `53cf30930 add framework shape lint gate`
+- `57fdaf67a add condition framework header stub` (superseded at merge by wt2's full header)
+
+Acceptance verified by orchestrator post-merge:
+- All 3 lint gates in WARN mode active under `make lint`
+- Baseline counts: #18=0, #19=443, #20=121
+- Snapshot export fixture fix verified
+
+**Original IN-PROGRESS note (historical):** framework shape lint gate implementation started 2026-05-23.
 
 <!-- Worker: append a Completion section below when done, per agent-protocol.md -->
 
