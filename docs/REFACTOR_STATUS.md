@@ -25,6 +25,11 @@ Phase 7  [░░░░░░░░░░]   0%   Frontier (io_uring, hot reload)
 
 ## Conformance metrics (updated each PR)
 
+The five user-facing numbers (cold-start, warm-start, MTBF, RSS,
+kill-9 recovery) are spec'd in [`USER_BENCHMARKS.md`](./USER_BENCHMARKS.md)
+along with QoL numbers and the **operator paging rate target: 0/month**
+clause. The table below is the dashboard.
+
 | Metric | Today | Target | Delta |
 |---|---|---|---|
 | Files conforming to shape | scaffold | 342 / 342 | scaffold lint not yet run |
@@ -36,6 +41,7 @@ Phase 7  [░░░░░░░░░░]   0%   Frontier (io_uring, hot reload)
 | Cold-start | 145 s | 60 s | Phase 2 |
 | Warm-start | 33 s | 10 s | Phase 2 |
 | Kill-9 recovery | 60-360 s | 60 s | Phase 2 |
+| Operator pages | n/a | 0/month | Phase 0+ (condition engine) |
 
 ---
 

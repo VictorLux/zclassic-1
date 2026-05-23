@@ -521,7 +521,10 @@ The framework holds; the implementation moves.
 ## 11. Where to start (per role)
 
 **Reading this for the first time:** also read
-[`docs/REFACTOR_STATUS.md`](./REFACTOR_STATUS.md) to see current phase.
+[`docs/REFACTOR_STATUS.md`](./REFACTOR_STATUS.md) (current phase) and
+[`docs/USER_BENCHMARKS.md`](./USER_BENCHMARKS.md) (the five user-facing
+acceptance numbers + operator-paging clause that everything is judged
+against).
 
 **Implementing a worker assignment:** read
 [`docs/work/agent-protocol.md`](./work/agent-protocol.md), then your
