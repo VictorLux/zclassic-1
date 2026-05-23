@@ -40,6 +40,7 @@
 
 #include <stdbool.h>
 #include <stdint.h>
+#include <stddef.h>
 
 typedef struct projection projection_t;
 
@@ -71,5 +72,17 @@ bool projection_is_open(const projection_t *p);
  * cursor values. Typed queries for richer shapes will land alongside
  * the first staged-sync stage that needs them. */
 int projection_query_int64(projection_t *p, const char *sql, int64_t *out);
+
+/* Run a parameter-free SELECT that returns one TEXT column from one row.
+ * Copies up to out_cap - 1 bytes and always NUL-terminates on success.
+ * Returns 0 on success, -1 on the same shape/argument failures as
+ * projection_query_int64. */
+int projection_query_text(projection_t *p, const char *sql,
+                          char *out, size_t out_cap);
+
+/* Run a parameter-free SELECT that returns one REAL column from one row.
+ * INTEGER values are accepted and converted to double because SQLite's
+ * dynamic typing can preserve integral REAL literals as INTEGER. */
+int projection_query_double(projection_t *p, const char *sql, double *out);
 
 #endif /* ZCL_UTIL_PROJECTION_H */
