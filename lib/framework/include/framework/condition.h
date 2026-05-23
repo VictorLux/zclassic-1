@@ -30,6 +30,7 @@ typedef bool (*condition_witness_fn)(int64_t target_at_detect);
 
 struct condition_state {
     _Atomic int64_t first_detect_unix;
+    _Atomic int64_t last_poll_unix;
     _Atomic int64_t last_remedy_unix;
     _Atomic int64_t last_operator_needed_unix;
     _Atomic int64_t target_at_detect;
