@@ -172,7 +172,47 @@ One commit per task. Push after tasks 2, 4, 5.
 
 ## Status
 
-**IN PROGRESS (wt3)** — started 2026-05-23 on `main` after S-8 merged.
-Replaying completed local S-9 work under the direct-to-main protocol.
+**✅ DONE — pushed 2026-05-23** to main as commit `53df52190`.
 
 <!-- Worker: append a Completion section below when done. -->
+
+## Completion (wt3, 2026-05-23)
+
+### Summary
+Shipped S-9 `tip_finalize`, the last Wave S shadow stage. It consumes
+`utxo_apply_log`, records observed live tip finalization into
+`tip_finalize_log`, exposes `zcl_state subsystem=tip_finalize`, and runs
+under the supervisor after `utxo_apply`.
+
+### Commits
+- `2f3377a80` wt3: mark tip finalize in progress
+- `53df52190` add tip finalize shadow stage
+
+### Files added/modified
+- `app/services/include/services/tip_finalize_stage.h` (NEW)
+- `app/services/src/tip_finalize_stage.c` (NEW)
+- `lib/test/src/test_tip_finalize_stage.c` (NEW)
+- `config/src/boot_services.c`
+- `app/controllers/src/diagnostics_controller.c`
+- `lib/test/include/test/test_helpers.h`
+- `lib/test/src/test.c`
+- `lib/test/src/test_parallel.c`
+- `docs/work/wt3-phase2-s9-tip-finalize.md`
+
+### Acceptance verification
+- [x] `make -j$(nproc)` — PASS
+- [x] `make lint` — PASS
+- [x] `ZCL_TEST_ONLY=tip_finalize ./test_zcl` — PASS
+- [x] `ZCL_TEST_ONLY=utxo_apply ./test_zcl` — PASS
+- [x] `./test_parallel --jobs=$(nproc)` — PASS: `ALL TESTS PASSED — 0/190 groups failed (106.0s wall, 32 workers)`
+
+### Surprises / follow-ups
+The shared stage primitive rolls back all progress-store writes for
+`STAGE_IDLE`, so a reorg row cannot be both persisted and returned as
+idle. This implementation records `reorg_detected` and advances the
+shadow cursor, matching the existing Wave S failure-path persistence
+discipline.
+
+S-9 was first completed on the old feature-branch workflow; after S-8
+merged, wt3 replayed the work onto `main` and pushed directly per the
+updated protocol.
