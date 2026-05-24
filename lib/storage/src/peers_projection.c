@@ -414,6 +414,11 @@ event_log_t *peers_projection_event_log(void)
     return atomic_load_explicit(&g_event_log, memory_order_acquire);
 }
 
+peers_projection_t *peers_projection_current(void)
+{
+    return atomic_load_explicit(&g_projection, memory_order_acquire);
+}
+
 bool peers_projection_emit_observed(const uint8_t ip[16], uint16_t port,
                                     uint64_t services, int64_t observed_unix,
                                     int32_t height_hint)

@@ -64,6 +64,7 @@
 #include "services/mempool_limits.h"
 #include "health/heartbeat.h"
 #include "models/database.h"
+#include "models/peer.h"
 #include "config/runtime.h"
 #include "net/peer_lifecycle.h"
 #include "util/ar_step_readonly.h"
@@ -1066,6 +1067,78 @@ static bool rpc_getmirrorstatus(const struct json_value *params, bool help,
     return legacy_mirror_sync_dump_state_json(result, NULL);
 }
 
+static bool rpc_peersprojectiondiff(const struct json_value *params, bool help,
+                                    struct json_value *result)
+{
+    (void)params;
+    RPC_HELP(help, result,
+        "peersprojectiondiff\n"
+        "\nCompare Phase 4d peers_projection against legacy peers table.\n"
+        "\nResult: projection_count, legacy_count, match, first_diff.");
+
+    json_set_object(result);
+    peers_projection_t *proj = peers_projection_current();
+    struct node_db *ndb = app_runtime_node_db();
+    if (!proj || !ndb || !ndb->open) {
+        json_push_kv_bool(result, "match", false);
+        json_push_kv_str(result, "first_diff",
+                         !proj ? "projection_not_open" : "legacy_db_not_open");
+        json_push_kv_int(result, "projection_count",
+                         proj ? (int64_t)peers_projection_count(proj) : 0);
+        json_push_kv_int(result, "legacy_count",
+                         ndb && ndb->open ? db_peer_count(ndb) : 0);
+        return true;
+    }
+
+    uint64_t projection_count = peers_projection_count(proj);
+    int legacy_count = db_peer_count(ndb);
+    bool match = projection_count == (uint64_t)legacy_count;
+    char first_diff[160] = {0};
+    if (!match) {
+        snprintf(first_diff, sizeof(first_diff),
+                 "count projection=%llu legacy=%d",
+                 (unsigned long long)projection_count, legacy_count);
+    }
+
+    struct db_peer sample[10];
+    int n = db_peer_recent(ndb, sample, 10);
+    for (int i = 0; i < n && match; i++) {
+        uint64_t services = 0;
+        int64_t last_seen = 0;
+        if (!peers_projection_get(proj, sample[i].ip, sample[i].port,
+                                  &services, &last_seen, NULL)) {
+            snprintf(first_diff, sizeof(first_diff),
+                     "missing recent peer port=%u", sample[i].port);
+            match = false;
+            break;
+        }
+        if (services != sample[i].services) {
+            snprintf(first_diff, sizeof(first_diff),
+                     "services mismatch port=%u projection=%llu legacy=%llu",
+                     sample[i].port,
+                     (unsigned long long)services,
+                     (unsigned long long)sample[i].services);
+            match = false;
+            break;
+        }
+    }
+
+    json_push_kv_str(result, "projection", "peers_projection");
+    json_push_kv_int(result, "projection_count", (int64_t)projection_count);
+    json_push_kv_int(result, "legacy_count", legacy_count);
+    json_push_kv_int(result, "sample_checked", n);
+    json_push_kv_bool(result, "match", match);
+    if (match) {
+        struct json_value nullv;
+        json_init(&nullv);
+        json_set_null(&nullv);
+        json_push_kv(result, "first_diff", &nullv);
+    } else {
+        json_push_kv_str(result, "first_diff", first_diff);
+    }
+    return true;
+}
+
 /* ── Registration ────────────────────────────────────────────────── */
 
 void register_diagnostics_rpc_commands(struct rpc_table *t)
@@ -1076,6 +1149,7 @@ void register_diagnostics_rpc_commands(struct rpc_table *t)
         { "control", "dbquery",       rpc_dbquery,       true },
         { "control", "probezclassicd", rpc_probezclassicd, true },
         { "control", "getmirrorstatus", rpc_getmirrorstatus, true },
+        { "control", "peersprojectiondiff", rpc_peersprojectiondiff, true },
     };
     for (size_t i = 0; i < sizeof(cmds) / sizeof(cmds[0]); i++)
         rpc_table_must_append(t, &cmds[i]);

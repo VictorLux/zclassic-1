@@ -6,6 +6,7 @@
  *   zcl_sql                — SELECT-only passthrough to node.db
  *   zcl_node_log           — reverse-scan node.log on the server side
  *   zcl_state              — generic *_dump_state_json dispatcher
+ *   zcl_peers_projection_diff — peers projection vs legacy peer table
  *   zcl_probe_zclassicd    — drift check against local zclassicd
  *   zcl_diff_with_legacy   — composite "are we tracking?" verdict
  *   zcl_profile            — per-thread /proc CPU sampler
@@ -100,6 +101,14 @@ static int h_zcl_state(const struct mcp_request *req, struct mcp_response *res)
     free(pjson);
     return mcp_return_rpc_body_ctx(res, out, "dumpstate", "mcp.diag",
                                     "subsystem=%s", sub ? sub : "(null)");
+}
+
+static int h_zcl_peers_projection_diff(const struct mcp_request *req,
+                                       struct mcp_response *res)
+{
+    (void)req;
+    char *out = mcp_node_rpc("peersprojectiondiff", NULL);
+    return mcp_return_rpc_body(res, out, "peersprojectiondiff", "mcp.diag");
 }
 
 /* ── zcl_probe_zclassicd ─────────────────────────────────────── */
@@ -606,6 +615,10 @@ static const struct mcp_tool_route k_routes[] = {
       "For block_index, pass `key`=height or hex hash. New subsystems "
       "plug in via *_dump_state_json (see CLAUDE.md).",
       p_state, PARAM_COUNT(p_state), h_zcl_state, 0, NULL },
+    { "zcl_peers_projection_diff", "ops",
+      "Compare Phase 4d peers_projection against the legacy peers table: "
+      "row counts plus recent peer samples.",
+      NULL, 0, h_zcl_peers_projection_diff, 0, NULL },
     { "zcl_probe_zclassicd", "ops",
       "Drift detection: ask the local zclassicd (independent ZClassic "
       "impl) for getblockhash(H) and compare to our block_index. Picks a "
