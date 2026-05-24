@@ -17,8 +17,8 @@ Phase 2  [██████████] 100%   Wave S SHADOW complete (S-1..S-
   ├ S-5..S-7 [██████████] 100%   body_persist, script_validate, proof_validate ✅
   ├ S-8    [██████████] 100%   utxo_apply shadow (wt3)                ✅ 497220f58
   └ S-9    [██████████] 100%   tip_finalize shadow (wt3)              ✅ 1a65b33c7
-Phase 2 CUTOVER [███░░░░░░░]   6%   Flip shadow → authoritative      ← C-2 IN PROGRESS
-  ├ C-2    [█████░░░░░]  50%   header_admit authoritative             🚧 commit 2/4 (58921e518)
+Phase 2 CUTOVER [████░░░░░░]  11%   Flip shadow → authoritative      ← C-2 IN PROGRESS
+  ├ C-2    [████████░░]  75%   header_admit authoritative             🚧 commit 3/4 (659bc3e5a divergence guard); commit 4 = flip default
   ├ C-3    [░░░░░░░░░░]   0%   validate_headers authoritative          ← spec'd (queued, post C-2)
   ├ C-5    [░░░░░░░░░░]   0%   body_persist + delete body_fetch (batch spec, post C-3)
   ├ C-6    [░░░░░░░░░░]   0%   script_validate authoritative (batch spec, post C-5)
@@ -38,9 +38,9 @@ Phase 4  [░░░░░░░░░░]   0%   Storage unification — plan: d
   ├ 4b     [░░░░░░░░░░]   0%   utxo_projection — first event-log consumer (queued, post-4a)
   ├ 4c     [░░░░░░░░░░]   0%   block_index_projection — kills LevelDB (queued, post-4a)
   └ 4d     [░░░░░░░░░░]   0%   mempool/peers/wallet/znam/store projections — 5 parallel PRs (queued, post-4a, batch spec)
-Phase 5  [██░░░░░░░░]  14%   Crypto agility + reproducible builds — plan: docs/architecture/phase5-crypto-agility-and-releases.md
-  ├ 5a-1   [██████████] 100%   Crypto registry skeleton  ✅ c4bebe0a2
-  ├ 5a-2   [██░░░░░░░░]  15%   First call site rewire: Equihash PoW   🚧 IN PROGRESS by wt2 (58181fc74)
+Phase 5  [███░░░░░░░]  29%   Crypto agility + reproducible builds — plan: docs/architecture/phase5-crypto-agility-and-releases.md
+  ├ 5a-1   [██████████] 100%   Crypto registry skeleton  ✅ c4bebe0a2 + polish dde0183c7
+  ├ 5a-2   [██████████] 100%   First call site rewire: Equihash PoW   ✅ f00be351f (wt2)
   └ 5b-1   [░░░░░░░░░░]   0%   flake.nix reproducible build skeleton  ← READY (needs Nix installed locally)
 Phase 6  [░░░░░░░░░░]   0%   Determinism + simulator
 Phase 7  [░░░░░░░░░░]   0%   Frontier (io_uring, hot reload)
@@ -96,14 +96,21 @@ clause. The table below is the dashboard.
 | Worktree | Branch | Assignment | Status | Last update |
 |---|---|---|---|---|
 | `~/github/zclassic23` (main) | `main` | Orchestrator: queue + plan + merge; spawned 2 sub-agents (5a-1 done; 4a in isolated worktree) | ✅ active drafting + dispatching | 2026-05-24 |
-| `~/github/zclassic23-2` (wt2) | `main` (direct push) | [`docs/work/wt-phase5a2-first-call-site-rewire.md`](./work/wt-phase5a2-first-call-site-rewire.md) | 🚧 IN PROGRESS (started 58181fc74) | 2026-05-24 |
-| `~/github/zclassic23-3` (wt3) | `main` (direct push) | [`docs/work/wt-phase2-cutover-c2-header-admit.md`](./work/wt-phase2-cutover-c2-header-admit.md) | 🚧 commit 2/4 (58921e518) | 2026-05-24 |
+| `~/github/zclassic23-2` (wt2) | `main` (direct push) | ✅ 5a-2 complete (f00be351f); pick next from READY queue below | 🕐 idle, awaiting restart | 2026-05-24 |
+| `~/github/zclassic23-3` (wt3) | `main` (direct push) | [`docs/work/wt-phase2-cutover-c2-header-admit.md`](./work/wt-phase2-cutover-c2-header-admit.md) | 🚧 commit 3/4 (659bc3e5a — divergence guard); commit 4 = flip | 2026-05-24 |
 | orch sub-agent (isolated worktree) | `main` | [`docs/work/wt-phase4a-event-log-primitive.md`](./work/wt-phase4a-event-log-primitive.md) | 🚧 IN PROGRESS | 2026-05-24 |
 
 **READY queue** (any worker can pick on restart; first to mark IN PROGRESS wins):
-- [`docs/work/wt-phase4a-event-log-primitive.md`](./work/wt-phase4a-event-log-primitive.md) — append-only event log with kill-9 fuzz harness; primitive sits idle, no callers wired.
-- [`docs/work/wt-phase5a2-first-call-site-rewire.md`](./work/wt-phase5a2-first-call-site-rewire.md) — route Equihash PoW through the registry; 5-task PR with indirection-cost benchmark gate.
 - [`docs/work/wt-phase5b1-flake-nix-skeleton.md`](./work/wt-phase5b1-flake-nix-skeleton.md) — `flake.nix` reproducible build skeleton; **needs Nix installed locally** (`sh <(curl -L https://nixos.org/nix/install) --daemon`).
+
+**SOON-READY** (gate will clear within minutes/hours):
+- C-3 validate_headers cutover — unblocks the moment C-2 commit 4 lands + brief soak
+- Phase 4b/4c/4d — unblock the moment 4a (in flight in isolated worktree) lands
+
+**QUEUED with full spec:**
+- Phase 5a-3..5a-N (other crypto rewires: script_validate, proof_validate) — easy follow-on after 5a-2 shows the indirection layer is zero-cost
+- C-5..C-9 batch spec (gated sequentially)
+- All Phase 3 dissolves besides watchdog (gated on cutover progress per `docs/dissolve/`)
 
 **QUEUED (gated on a specific predecessor)** — workers can read the spec but should not start until the gate clears:
 - C-3 validate_headers cutover (after C-2 + soak)
@@ -118,7 +125,12 @@ clause. The table below is the dashboard.
 
 | Date | What | Worktree | Commit |
 |---|---|---|---|
-| 2026-05-24 | **Phase 5a-1 MERGED — crypto registry skeleton.** SHA256/BLAKE2b/ECDSA/Groth16 wrappers + dispatch table. No consensus call sites rewired yet (5a-2 does the first rewire) | main | c4bebe0a2 |
+| 2026-05-24 | **test_supervisor regression fixed** — pre-existing failure on main (introduced by supervisor tree split); test now looks at `root_orphans[]` instead of removed `children[]`. test_parallel: 0/193 failed | main | ae47aa283 |
+| 2026-05-24 | **C-2 commit 3/4 shipped** — divergence guard in legacy `accept_block_header` ingress | wt3 → main | 659bc3e5a |
+| 2026-05-24 | **Phase 5a-2 MERGED** — first call-site rewire: Equihash PoW now routes through `crypto_registry` (`CRYPTO_PROOF_EQUIHASH_200_9`); registry indirection in production | wt2 → main | f00be351f |
+| 2026-05-24 | **5a-1 polish** — fixed JSON leaks in `crypto_registry_dump_state_json`, added LOG_FAIL diagnostics on registration failures, expanded test from 5 to 9 cases | orch sub-agent → main | dde0183c7 |
+| 2026-05-24 | **C-2 commit 2/4 shipped** — authoritative write path gated on `HEADER_ADMIT_MODE_AUTHORITATIVE` | wt3 → main | 58921e518 |
+| 2026-05-24 | **Phase 5a-1 MERGED — crypto registry skeleton.** SHA256/BLAKE2b/ECDSA/Groth16 wrappers + dispatch table | wt2 → main | c4bebe0a2 |
 | 2026-05-24 | **Plans:** standalone cutover C-3 spec; Phase 4c block_index_projection (kills LevelDB); Phase 5a-2 first call-site rewire (Equihash PoW); orchestrator launched sub-agent for Phase 5a-1 implementation | main | e41fb92ba |
 | 2026-05-24 | **Phase 3 supervisor tree split MERGED** — flat supervisor → 7 domain supervisors (chain, net, mempool, wallet, feature, onion, op) + self_heal | wt3 → main | dae31dee9 |
 | 2026-05-24 | **Phase 3 watchdog dissolve COMPLETE** — PR-2 (4 kick conditions) + PR-3 (DELETED `sync_watchdog_service.c` — 1,448 LOC gone) | wt2 → main | 611631541 |
