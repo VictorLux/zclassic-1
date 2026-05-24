@@ -60,6 +60,7 @@
 #include "storage/peers_projection.h"
 #include "storage/progress_store.h"
 #include "storage/utxo_projection.h"
+#include "storage/znam_projection.h"
 #include "crypto_registry/crypto_registry.h"
 #include "services/ibd_throttle.h"
 #include "services/mempool_limits.h"
@@ -468,6 +469,10 @@ static const struct dump_entry g_dumpers[] = {
                      "REPLACE collisions, last_catch_up_ms. Shadow-mode UTXO "
                      "set derived from the event_log; diff via "
                      "zcl_utxo_projection_diff before cutover." },
+    { "znam_projection", znam_projection_dump_state_json,
+                     "Phase 4d-4 znam projection: name_count, addr/text counts, "
+                     "events_consumed_total, per-event-type counters, emit/fail "
+                     "counters, last_consumed_offset, last_catch_up_ms." },
 };
 
 int diagnostics_subsystems_csv(char *out, size_t out_sz)

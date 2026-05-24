@@ -43,6 +43,7 @@
 #include "storage/peers_projection.h"
 #include "storage/event_log_singleton.h"
 #include "storage/block_index_projection.h"
+#include "storage/znam_projection.h"
 #include "storage/progress_store.h"
 #include "storage/utxo_projection.h"
 #include "models/block.h"
@@ -128,6 +129,7 @@ static event_log_t *g_phase4_event_log;
 static peers_projection_t *g_phase4_peers_projection;
 static utxo_projection_t *g_phase4_utxo_projection;
 static block_index_projection_t *g_phase4_block_index_projection;
+static znam_projection_t *g_phase4_znam_projection;
 
 /* Module-local pointer to boot context (set once by app_init_services) */
 static struct boot_svc_ctx *S;
@@ -1747,6 +1749,33 @@ static void boot_start_phase4_storage_shadow(const char *datadir)
     }
     block_index_projection_set_singleton(g_phase4_block_index_projection);
     (void)block_index_projection_catch_up(g_phase4_block_index_projection);
+
+    /* Phase 4d-4: znam_projection shadow */
+    char znam_path[PATH_MAX];
+    int n5 = snprintf(znam_path, sizeof(znam_path),
+                      "%s/znam_projection.db", datadir);
+    if (n5 <= 0 || (size_t)n5 >= sizeof(znam_path)) {
+        fprintf(stderr,  // obs-ok:phase4-shadow
+                "[phase4] znam_projection path too long\n");
+        return;
+    }
+    znam_projection_set_event_log(g_phase4_event_log);
+    g_phase4_znam_projection =
+        znam_projection_open(znam_path, g_phase4_event_log);
+    if (!g_phase4_znam_projection) {
+        fprintf(stderr,  // obs-ok:phase4-shadow
+                "[phase4] znam_projection unavailable; shadow emit only\n");
+        return;
+    }
+    uint64_t zoff = znam_projection_catch_up(g_phase4_znam_projection);
+    if (zoff == UINT64_MAX) {
+        fprintf(stderr,  // obs-ok:phase4-shadow
+                "[phase4] znam_projection catch_up failed\n");
+    } else {
+        fprintf(stderr,  // obs-ok:phase4-shadow
+                "[phase4] znam_projection caught up to offset=%llu\n",
+                (unsigned long long)zoff);
+    }
 }
 
 static void boot_stop_phase4_storage_shadow(void)
@@ -1763,6 +1792,11 @@ static void boot_stop_phase4_storage_shadow(void)
     if (g_phase4_utxo_projection) {
         utxo_projection_close(g_phase4_utxo_projection);
         g_phase4_utxo_projection = NULL;
+    }
+    znam_projection_set_event_log(NULL);
+    if (g_phase4_znam_projection) {
+        znam_projection_close(g_phase4_znam_projection);
+        g_phase4_znam_projection = NULL;
     }
     block_index_projection_set_singleton(NULL);
     if (g_phase4_block_index_projection) {
