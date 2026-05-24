@@ -59,6 +59,7 @@
 #include "framework/condition.h"
 #include "storage/peers_projection.h"
 #include "storage/progress_store.h"
+#include "storage/utxo_projection.h"
 #include "crypto_registry/crypto_registry.h"
 #include "services/ibd_throttle.h"
 #include "services/mempool_limits.h"
@@ -461,6 +462,12 @@ static const struct dump_entry g_dumpers[] = {
                      "registered crypto schemes, statuses, implementations, and kind counts" },
     { "peers_projection", peers_projection_dump_state_json,
                      "Phase 4d peers projection over EV_PEER_OBSERVED / EV_PEER_DROPPED" },
+    { "utxo_projection", utxo_projection_dump_state_json,
+                     "Phase 4b utxo_projection: open/path/last_consumed_offset, "
+                     "utxo_count, events_consumed_total, emit/consume counters, "
+                     "REPLACE collisions, last_catch_up_ms. Shadow-mode UTXO "
+                     "set derived from the event_log; diff via "
+                     "zcl_utxo_projection_diff before cutover." },
 };
 
 int diagnostics_subsystems_csv(char *out, size_t out_sz)

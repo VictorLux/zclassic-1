@@ -333,6 +333,7 @@ int test_projection_adoption(void);
 int test_progress_store(void);
 int test_event_log(void);
 int test_peers_projection(void);
+int test_utxo_projection(void);
 int test_header_admit_stage(void);
 int test_validate_headers_stage(void);
 int test_body_fetch_stage(void);

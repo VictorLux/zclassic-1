@@ -42,6 +42,7 @@
 #include "storage/event_log.h"
 #include "storage/peers_projection.h"
 #include "storage/progress_store.h"
+#include "storage/utxo_projection.h"
 #include "models/block.h"
 #include "models/utxo.h"
 #include "models/mmb_leaf_store.h"
@@ -123,6 +124,7 @@ extern int g_deferred_proof_validation_below_height;
 
 static event_log_t *g_phase4_event_log;
 static peers_projection_t *g_phase4_peers_projection;
+static utxo_projection_t *g_phase4_utxo_projection;
 
 /* Module-local pointer to boot context (set once by app_init_services) */
 static struct boot_svc_ctx *S;
@@ -1655,12 +1657,16 @@ static void boot_start_phase4_storage_shadow(const char *datadir)
         return;
     char event_path[PATH_MAX];
     char peers_path[PATH_MAX];
+    char utxo_path[PATH_MAX];
     int n1 = snprintf(event_path, sizeof(event_path), "%s/event_log.dat",
                       datadir);
     int n2 = snprintf(peers_path, sizeof(peers_path),
                       "%s/peers_projection.db", datadir);
+    int n3 = snprintf(utxo_path, sizeof(utxo_path),
+                      "%s/utxo_projection.db", datadir);
     if (n1 <= 0 || (size_t)n1 >= sizeof(event_path) ||
-        n2 <= 0 || (size_t)n2 >= sizeof(peers_path)) {
+        n2 <= 0 || (size_t)n2 >= sizeof(peers_path) ||
+        n3 <= 0 || (size_t)n3 >= sizeof(utxo_path)) {
         fprintf(stderr,  // obs-ok:phase4-shadow
                 "[phase4] storage shadow paths too long\n");
         return;
@@ -1689,14 +1695,44 @@ static void boot_start_phase4_storage_shadow(const char *datadir)
                 "[phase4] peers_projection caught up to offset=%llu\n",
                 (unsigned long long)off);
     }
+
+    /* Phase 4b: utxo_projection — first PRODUCTION consumer of the
+     * event log. Shadow mode only here; legacy update_coins.c still
+     * authors coins.db. The shadow-diff MCP tool gates the 24h cutover
+     * soak before the legacy path is disabled. */
+    utxo_projection_set_event_log(g_phase4_event_log);
+    g_phase4_utxo_projection =
+        utxo_projection_open(utxo_path, g_phase4_event_log);
+    if (!g_phase4_utxo_projection) {
+        fprintf(stderr,  // obs-ok:phase4-shadow
+                "[phase4] utxo_projection unavailable; shadow emit only\n");
+        return;
+    }
+    uint64_t uoff = utxo_projection_catch_up(g_phase4_utxo_projection);
+    if (uoff == UINT64_MAX) {
+        fprintf(stderr,  // obs-ok:phase4-shadow
+                "[phase4] utxo_projection catch_up failed\n");
+    } else {
+        fprintf(stderr,  // obs-ok:phase4-shadow
+                "[phase4] utxo_projection caught up to offset=%llu\n",
+                (unsigned long long)uoff);
+    }
 }
 
 static void boot_stop_phase4_storage_shadow(void)
 {
+    /* Order: detach emitters before closing the projections so no
+     * in-flight emit lands on a stale handle. Then close projections
+     * before the event log they point to. */
     peers_projection_set_event_log(NULL);
+    utxo_projection_set_event_log(NULL);
     if (g_phase4_peers_projection) {
         peers_projection_close(g_phase4_peers_projection);
         g_phase4_peers_projection = NULL;
+    }
+    if (g_phase4_utxo_projection) {
+        utxo_projection_close(g_phase4_utxo_projection);
+        g_phase4_utxo_projection = NULL;
     }
     if (g_phase4_event_log) {
         event_log_close(g_phase4_event_log);

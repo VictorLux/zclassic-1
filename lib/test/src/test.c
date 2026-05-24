@@ -591,6 +591,7 @@ int main(void)
     failures += test_progress_store();
     failures += test_event_log();
     failures += test_peers_projection();
+    failures += test_utxo_projection();
     failures += test_header_admit_stage();
     failures += test_validate_headers_stage();
     failures += test_body_fetch_stage();
