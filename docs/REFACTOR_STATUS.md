@@ -19,25 +19,49 @@ Honest scoreboard. **MEASURED** = a real number from this box (date + how, in
      Cold sync to tip          180s  (05-24)      30s           ▸ PR-3 building
      Warm restart              37.7s (05-24)      10s           ▸ real restart→tip
      Validation speed          108 blk/s (05-24)  fast          ✓ measured, running
-     Stay at tip               AT TIP, 0 gap      keep <1 blk    ✓ synced now
+     Stay at tip               WEDGED 45 behind   keep <1 blk    ✗ C-3 cutover froze it
 
   🪶 LEAN
      Memory (RSS)              ~2.4 GB (05-24)*    1.0 GB        ▲ climbs w/ bg-verify
      Binary size               14.6 MB (05-24)     stay slim     ✓ met (docs' 26MB stale)
 
-  💪 UNBREAKABLE
+  💪 UNBREAKABLE  ← resilience is a PROMISE, measured by truth not by "result=ok"
+     Tip advancing             NO — frozen 13min+  always         ✗ P0: header-admit-cutover-diverged
+     Self-heal tells the truth 46 false "ok"        0 false-ok     ✗ P0: peer_floor remedy lies
      Wedge/crash recovery      180s, manual        <60s, auto    ▸ PR-0 building (wt3)
-     Uptime before failure     soak running        30 days       ◷ baselined 05-24
-     Alerts to a human         not measured        0 / month     10 Conditions live, self-heal
+     Uptime before failure     restart @22min       30 days       ✗ soak broke; node wedged
+     Alerts to a human         silent on wedge      0 / month     ✗ stuck tip pages nobody
 
   🔬 HONEST
+     Scoreboard ≠ reality      caught 1 lie today  always true    ◷ "0 gap" was stale snapshot
      Bug → reproducible fix    not built           1 seed-tape   simulator pending
 ```
 `*` RSS soak (05-24): fresh boot 1.53 GB → **stair-steps up with bg-validation
 depth** → ~2.4 GB by 17min (only 6.6% validated), still creeping. NOT bounded
 at a low plateau — tracks how much chain bg-verify has buffered. ~2.4× the 1 GB
 target; real ceiling needs the full ~8h run. `✓` met · `▸` in flight · `◷`
-measuring · `▲` above target.
+measuring · `▲` above target · `✗` BROKEN/regressed.
+
+### 🚨 P0 — the live node is WEDGED (caught 2026-05-24, not by us — by reading the log)
+
+`ad34efb65` (C-3 validate_headers cutover, 17:40) shipped "green" (test_parallel
+0/196) but **froze the chain**. The new authoritative header-admit path diverges
+from legacy on block 3,123,689; the cutover guard rejects it
+(`reason=header-admit-cutover-diverged`), every later block cascades to
+`bad-prevblk`, and the tip has not moved for the whole session (45 behind the
+legacy peer). The self-heal fired `peer_floor_violated` **46×, all `result=ok`**
+— it blamed peers and "fixed" nothing. The scoreboard read "stay at tip ✓ 0 gap"
+the entire time (a stale snapshot).
+
+**RESILIENCE DOCTRINE (new, load-bearing):**
+1. **A green test suite is not a healthy node.** No cutover is "done" until the
+   *live* node advances past the cutover height. Forward-progress is the gate.
+2. **A remedy that returns `ok` must resolve the symptom.** A Condition that
+   reports success while its symptom persists is worse than none — it hides the
+   failure. Verify by symptom delta, not by "the remedy ran."
+3. **The scoreboard must read live truth, not a cached snapshot.** "At tip" =
+   `tip_advance_age < threshold` AND `gap == 0`, sampled now.
+These three are now first-class promises under UNBREAKABLE/HONEST above.
 
 **When you finish a task, name the goal you moved and the measured delta**
 (e.g. "warm restart 33s→29s"), then add a row to BENCHMARKS_LOG.md.

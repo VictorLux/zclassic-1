@@ -65,3 +65,11 @@ Tried OpenMP parallel parse+CRC-framing with a single `ordered` writer feeding i
 | date | commit | height-behind | peers | uptime | errors_total | note |
 |---|---|---|---|---|---|---|
 | 2026-05-24 | be5e90b05 | 1,905 | 2 | 990s | 16,396 | node stuck: chain-advance blocked, `block_failed_mask_at_tip` failing |
+
+## 🚨 Resilience regressions (P0 — these gate "done", per the doctrine in REFACTOR_STATUS)
+
+| date | commit | what broke | evidence |
+|---|---|---|---|
+| 2026-05-24 | ad34efb65 | **C-3 cutover wedged the live chain** — tip frozen at 3,123,688 (45 behind legacy) for the entire session, 0 forward progress. Shipped "green" (test_parallel 0/196). | `HEADER REJECT reason=header-admit-cutover-diverged` at h=3123689; cascade `bad-prevblk`; `HEADER STALL ... stuck for 782s`. The new authoritative header-admit diverges from legacy on the next real block. |
+| 2026-05-24 | (condition_engine) | **Self-heal lies** — `peer_floor_violated` remedy fired 46× all `result=ok` while tip never advanced. Wrong diagnosis (blames peers), false success. | `[condition_engine] remedy name=peer_floor_violated attempt=N result=ok` ×46, tip unchanged throughout. |
+| 2026-05-24 | (scoreboard) | **Scoreboard lied** — "stay at tip ✓ 0 gap" while node 45 behind & frozen 13min+. Snapshot was stale. | Fixed: "at tip" must = live `tip_advance_age < T` AND gap==0. |
