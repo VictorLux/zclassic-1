@@ -24,13 +24,54 @@ The snapshot source has the machinery to fix this (jump to a fresh verified
 height past the wedge) but **nothing triggers it from a near-tip stall** — it
 only fires at cold start, and only if a peer is *offering* a snapshot.
 
+## ⚠️ Feasibility checked (2026-05-24) — read before claiming
+
+A read-only audit + spot-check of the snapshot subsystem found the original
+plan (a Condition that "triggers a re-sync") is **NOT buildable as-is**. Two
+hard facts, both verified at the source:
+
+- **No trigger API.** The only public entry to snapshot sync is
+  `snapsync_handle_offer()` (`snapshot_sync_service.h:209`) — it is *peer-offer
+  driven*. There is no `initiate` / `request_resync` / `start`. A Condition has
+  nothing to call.
+- **Apply is replace-all, cold-start-gated.** `snapshot_apply.c:52` does
+  `DELETE FROM utxos` then promotes the staged set — it assumes *snapshot = new
+  tip*. That replace-all is actually exactly what wedge-recovery wants (discard
+  the wedged set, adopt a verified snapshot past the wedge), BUT acceptance is
+  gated to a near-empty UTXO set (<100K, `snapshot_offer.c`), so it refuses to
+  run over a populated 3.12M-height chain.
+- **No runtime local-snapshot builder.** The LDB→snapshot path exists only at
+  boot (`-cold-import` / `-snapshot`), not as a runtime-callable function.
+
+So this needs a **foundational PR-0** before the Condition can be written.
+
 ## The fix: make snapshot a reachable recovery path
 
 Wire snapshot re-sync as a **self-heal action for a wedged tip**, with two
 sources of a snapshot (network OR local), so recovery does not depend on a
 zclassic23 peer being connected.
 
-### PR-1 — Wedge-detect Condition that arms snapshot recovery  ← CLAIM FIRST
+### PR-0 — Runtime re-sync entry point + recovery gate  ← CLAIM FIRST (foundational)
+
+Make snapshot sync reachable without a peer offer, over a populated chain:
+- Add a PUBLIC function the recovery Condition can call, e.g.
+  `bool snapsync_request_recovery(int32_t target_height, const struct snapshot_offer_params *manifest)`.
+  It takes a manifest as a parameter (does NOT invent one) and drives the
+  existing IDLE→NEGOTIATING→… lifecycle.
+- Add a runtime **local-snapshot manifest builder** that wraps the proven
+  boot-time LDB read (`ldb_snapshot.c` / `utxo_snapshot_loader.c`, and the
+  immutable-LDB read in `tools/rebuild_recent.c`) into `snapshot_offer_params`
+  (height, UTXO root, MMB root, chainwork). This is the peerless source.
+- Parameterize the cold-start accept gate so a **recovery** resync is permitted
+  over a populated UTXO set (today's <100K gate refuses it). Recovery must be
+  explicitly opt-in (a flag/reason), never the default offer path.
+- Reuse `snapshot_apply` replace-all unchanged — for recovery, discarding the
+  wedged set and adopting the verified snapshot is the intended semantics.
+
+**MUST:** keep FlyClient + SHA3 verification on the recovery path. No trust
+shortcut — a recovery snapshot is verified exactly like a cold-start one.
+
+### PR-1 — Wedge-detect Condition that calls PR-0  (gated on PR-0)
 
 Add (or extend) a self-heal Condition `tip_wedged_resnapshot`:
 - **Detect:** `block_failed_mask_at_tip` exhausted (attempts == max, last_outcome
@@ -45,22 +86,20 @@ Add (or extend) a self-heal Condition `tip_wedged_resnapshot`:
 - **MUST:** keep FlyClient + SHA3 verification on the recovery path (no trust
   shortcut — a wedge-recovery snapshot is verified exactly like a cold-start one).
 
-**Owns:** the new Condition + its registration; the trigger call into
-`snapshot_sync_service`. Wire a `zcl_state`/`zcl_conditions` field so the
-recovery attempt is observable.
+**Owns:** the new Condition + its registration; the call into the PR-0 entry
+point. Wire a `zcl_state`/`zcl_conditions` field so the recovery attempt is
+observable. (The peerless local source is delivered by PR-0's manifest builder.)
 
-### PR-2 — Local snapshot source (no peer required)  (spec; gated on PR-1)
+### First-line recovery is cheaper than re-snapshot — respect the ordering
 
-On THIS box the real always-available escape hatch is the local `zclassicd`
-LevelDB (`~/.zclassic`), already proven by the `-cold-import` path
-([[reference_zclassic23_cold_import_path]]: 145s cold / 33s warm). Today
-network snapshot recovery needs a zclassic23 peer *offering* a snapshot; the
-node is usually connected only to magicbean (C++) peers that don't serve them.
-
-**Plan:** let `tip_wedged_resnapshot` fall back to a **local** snapshot built
-from the legacy LDB (the immutable-data read proven in `tools/rebuild_recent.c`)
-when no peer offers one. This makes wedge-recovery work offline / peerless.
-Gated on PR-1 + a confirmed wedge reproduction.
+Re-snapshot is the **last-resort** hammer. The cheap first line already exists:
+`block_failed_mask_at_tip`'s remedy (`process_block_revalidate`) clears a
+`BLOCK_FAILED_VALID` flag once the quorum oracle (peers + zclassicd mirror)
+agrees on the block hash. `find_most_work_chain` (`process_block_core.c:364`)
+skips any fork with a failed ancestor, so one stale failed-flag wedges the tip;
+clearing it is enough. That remedy is failing **only because the quorum can't be
+reached** (no zclassic23 peers / mirror disagreement). `tip_wedged_resnapshot`
+must fire **after** the quorum-clear path is exhausted, not instead of it.
 
 ---
 
