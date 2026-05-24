@@ -90,7 +90,8 @@ bool db_onion_announcement_save(struct node_db *ndb,
     }
     AR_FINALIZE(s);
     ar_run_after_save(cbs, (void *)a);
-    if (!onion_ann_projection_emit(a->onion_address,
+    if (a->announced_at < 0 || a->announced_at > UINT32_MAX ||
+        !onion_ann_projection_emit(a->onion_address,
                                    (uint32_t)a->announced_at,
                                    a->script_hex)) {
         fprintf(stderr,  // obs-ok:onion-ann-projection-shadow

@@ -463,7 +463,18 @@ Progress, 2026-05-24:
   (`add small projection diagnostics`). Follow-up tightening adds the
   task-required `<table>_count` fields and verifies per-projection
   consumed-event totals exclude skipped event-log frames.
+- Task 5 shadow emits landed in `a67a0028c`
+  (`shadow emit small projection events`). Follow-up tightening keeps
+  int64-to-event-payload narrowing checked at legacy write sites and
+  asserts the global emit counters in focused small-projection tests.
+  The HODL write owner is `app/services/src/hodl_history_service.c` in
+  this tree; there is no current `db_contact_delete` write path to hook
+  for delete emits.
+- Task 6 boot wiring landed in `b98cadb51`
+  (`wire small projections at boot`).
+- Task 7 projection diff tools landed in `68234ade6`
+  (`add small projection diff tools`).
 
-Next slice: Task 5 shadow emits at the legacy write sites.
+Next slice: Task 8/9 coverage and MCP count audit.
 
 <!-- Worker: append a Completion section below when done. -->

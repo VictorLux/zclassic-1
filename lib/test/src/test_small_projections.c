@@ -183,6 +183,12 @@ done:
     return found;
 }
 
+static int64_t dump_int(struct json_value *dump, const char *key)
+{
+    const struct json_value *v = json_get(dump, key);
+    return v ? json_get_int(v) : INT64_MIN;
+}
+
 static int t_projection_skeletons_fresh(void)
 {
     int failures = 0;
@@ -511,6 +517,14 @@ static int t_projection_emit_helpers(void)
     contacts_projection_set_event_log(log);
     onion_ann_projection_set_event_log(log);
     hodl_history_projection_set_event_log(log);
+
+    struct json_value contacts_before = {0};
+    struct json_value onion_before = {0};
+    struct json_value hodl_before = {0};
+    contacts_projection_dump_state_json(&contacts_before, NULL);
+    onion_ann_projection_dump_state_json(&onion_before, NULL);
+    hodl_history_projection_dump_state_json(&hodl_before, NULL);
+
     SP_CHECK("emit contact set",
              contacts_projection_emit_set("t1EmitAlice", "Alice"));
     SP_CHECK("emit contact touched",
@@ -522,6 +536,31 @@ static int t_projection_emit_helpers(void)
     SP_CHECK("emit hodl",
              hodl_history_projection_emit_snapshot(
                  200, 1763333335u, 123456789LL, 12345LL, 0.01));
+
+    struct json_value contacts_after = {0};
+    struct json_value onion_after = {0};
+    struct json_value hodl_after = {0};
+    contacts_projection_dump_state_json(&contacts_after, NULL);
+    onion_ann_projection_dump_state_json(&onion_after, NULL);
+    hodl_history_projection_dump_state_json(&hodl_after, NULL);
+    SP_CHECK("emit contact set counter",
+             dump_int(&contacts_after, "emit_set_total") ==
+             dump_int(&contacts_before, "emit_set_total") + 1);
+    SP_CHECK("emit contact touched counter",
+             dump_int(&contacts_after, "emit_touched_total") ==
+             dump_int(&contacts_before, "emit_touched_total") + 1);
+    SP_CHECK("emit onion counter",
+             dump_int(&onion_after, "emit_announcement_total") ==
+             dump_int(&onion_before, "emit_announcement_total") + 1);
+    SP_CHECK("emit hodl counter",
+             dump_int(&hodl_after, "emit_snapshot_total") ==
+             dump_int(&hodl_before, "emit_snapshot_total") + 1);
+    json_free(&contacts_before);
+    json_free(&onion_before);
+    json_free(&hodl_before);
+    json_free(&contacts_after);
+    json_free(&onion_after);
+    json_free(&hodl_after);
 
     contacts_projection_t *contacts =
         contacts_projection_open(contacts_path, log);

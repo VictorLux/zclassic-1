@@ -454,7 +454,14 @@ int main(int argc, char **argv)
     /* More segments than threads + dynamic scheduling balances the very
      * uneven historical block density (some height ranges are far heavier). */
     int NT = whole ? nthreads * 2 : 1;
-    struct shard_res *res = calloc((size_t)NT, sizeof *res);
+    struct shard_res *res = zcl_calloc((size_t)NT, sizeof *res,
+                                       "rebuild_recent shard results");
+    if (!res) {
+        bilr_free_height_map(map);
+        bilr_close(bilr);
+        free(idx_snap);
+        return 1;
+    }
     int64_t span = (tip - lo + 1 + NT - 1) / NT;
     bool ok = true;
 

@@ -120,7 +120,8 @@ bool hodl_history_fill_one(sqlite3 *db, int64_t height)
         LOG_FAIL("hodl_history",
                  "INSERT step rc=%d: %s", rc, sqlite3_errmsg(db));
     }
-    if (!hodl_history_projection_emit_snapshot(
+    if (height > INT32_MAX || block_time > UINT32_MAX ||
+        !hodl_history_projection_emit_snapshot(
             (int32_t)height, (uint32_t)block_time, total, older, pct)) {
         fprintf(stderr,  // obs-ok:hodl-history-projection-shadow
                 "hodl history projection shadow emit failed for snapshot\n");

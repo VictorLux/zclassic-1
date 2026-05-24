@@ -77,7 +77,8 @@ bool db_contact_save(struct node_db *ndb, const struct db_contact *c)
     }
     AR_FINALIZE(s);
     ar_run_after_save(cbs, (void *)c);
-    if (!contacts_projection_emit_set(c->address, c->name) ||
+    if (c->last_used < 0 || c->last_used > UINT32_MAX ||
+        !contacts_projection_emit_set(c->address, c->name) ||
         !contacts_projection_emit_touched(c->address,
                                           (uint32_t)c->last_used)) {
         fprintf(stderr,  // obs-ok:contacts-projection-shadow
