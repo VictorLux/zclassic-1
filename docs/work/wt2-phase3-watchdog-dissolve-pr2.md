@@ -185,7 +185,54 @@ One commit per task (8 total). Push after tasks 2, 4, 6, 7.
 
 ## Status
 
-**READY** — gated on PR-1 merge. Start when human invokes you in
-`~/github/zclassic23-2` AFTER PR-1 is merged into main.
+**✅ DONE — pushed 2026-05-24** to main as commit `b40b555b3`.
 
 <!-- Worker: append a Completion section below when done. -->
+
+## Completion (wt2, 2026-05-24)
+
+### Summary
+Shipped watchdog dissolve PR-2 on top of current `main`: four
+kick-only watchdog paths now live as Conditions
+(`header_stall_at_height`, `sync_state_stuck`,
+`download_queue_starved`, `local_header_refill_needed`), while
+`sync_watchdog_service` keeps only the PR-3-owned peer-floor and
+sync-violation paths.
+
+### Commits
+- `09fd89ba7` wt2: extract watchdog dissolve pr2 conditions
+- `b40b555b3` stabilize tests after watchdog pr2 replay
+
+### Files added/modified
+- `app/conditions/include/conditions/watchdog_dissolve_pr2.h` (NEW)
+- `app/conditions/src/header_stall_at_height.c` (NEW)
+- `app/conditions/src/sync_state_stuck.c` (NEW)
+- `app/conditions/src/download_queue_starved.c` (NEW)
+- `app/conditions/src/local_header_refill_needed.c` (NEW)
+- `app/conditions/src/condition_registry.c`
+- `app/services/include/services/sync_watchdog_service.h`
+- `app/services/src/sync_watchdog_service.c`
+- `lib/test/src/test_watchdog_dissolve_pr2.c` (NEW)
+- `lib/test/src/test_sync_watchdog.c`
+- `lib/test/src/test_chain_advance_coordinator.c`
+- `lib/test/src/test_event.c`
+- `lib/test/src/test_projection_adoption.c`
+- `lib/test/src/test_zclassicd_oracle.c`
+- `lib/test/include/test/test_helpers.h`
+- `lib/test/src/test.c`
+- `lib/test/src/test_parallel.c`
+
+### Acceptance verification
+- [x] `make -j$(nproc)` — PASS
+- [x] `make lint` — PASS
+- [x] `ZCL_TEST_ONLY=watchdog_dissolve_pr2 ./test_zcl` — PASS
+- [x] `ZCL_TEST_ONLY=sync_watchdog ./test_zcl` — PASS
+- [x] `./test_parallel --jobs=$(nproc)` — PASS: `ALL TESTS PASSED — 0/187 groups failed (108.0s wall, 32 workers)`
+
+### Surprises / follow-ups
+The replay started from the older feature-branch workflow and had to be
+cherry-picked onto current `main`. A pre-existing dirty test patch in
+the wt2 worktree was preserved as a separate stabilizer commit; it fixes
+condition cleanup between PR-2 cases plus unrelated test flake surfaces
+around async event stop, projection WAL contention, and oracle evidence
+setup.
