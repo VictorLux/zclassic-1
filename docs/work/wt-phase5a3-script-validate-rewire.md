@@ -235,7 +235,41 @@ One commit per task. Push after task 2.
 
 ## Status
 
-**IN PROGRESS (wt3)** — claimed 2026-05-24. Phase 5a-2 merged
-(`f00be351f`) proves the indirection pattern.
+**✅ DONE — pushed 2026-05-24** to main as commit `cde601acf`.
 
 <!-- Worker: append a Completion section below when done. -->
+
+## Completion (wt3, 2026-05-24)
+
+### Summary
+ECDSA/secp256k1 verification now routes through `crypto_registry` from
+`pubkey_verify`, which covers the script-validation signature hot path.
+The registry wrapper owns the raw DER parse, normalization, and secp256k1
+verify sequence to avoid recursive dispatch.
+
+### Commits
+- `51a9783db` wt3: claim script validate crypto rewire
+- `7c2c067a0` crypto_registry: route ECDSA verify hot path
+- `cde601acf` crypto_registry: stabilize ECDSA benchmark
+
+### Files added/modified
+- `lib/crypto_registry/src/scheme_secp256k1_ecdsa.c`
+- `lib/keys/include/keys/pubkey.h`
+- `lib/keys/src/pubkey.c`
+- `lib/test/src/test_crypto_registry.c`
+- `docs/work/wt-phase5a3-script-validate-rewire.md`
+
+### Acceptance verification
+- [x] `make -j$(nproc)` — PASS.
+- [x] `make test_parallel` — PASS.
+- [x] `make lint` — PASS.
+- [x] `ZCL_TEST_ONLY=crypto_registry ./test_zcl` — PASS.
+- [x] `./test_parallel --jobs=$(nproc)` — PASS: 0/196 groups failed.
+- [x] ECDSA hot-path benchmark — PASS in parallel run:
+  direct `5048051928ns`, registry `5026082601ns`, overhead `-4352ppm`.
+
+### Surprises / follow-ups
+The first benchmark version measured all direct calls before all registry
+calls, which was vulnerable to parallel-suite load drift. The shipped
+benchmark interleaves direct and registry batches while preserving the
+100K-call and 0.5% overhead gates.
