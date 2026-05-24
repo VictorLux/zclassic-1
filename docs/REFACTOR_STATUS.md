@@ -159,12 +159,14 @@ Claim a doc by marking it **IN PROGRESS** at the top; first to mark wins.
 Push direct to main, one commit per task. Run `./test_parallel --jobs=$(nproc)`
 before pushing.
 
+**Shipped since last board sync (origin/main, fetch to see):** 4d-3 wallet
+projection ✅ (a9fb0f396..49ef6bbe6) · chain_restore PR-1 planner extract ✅
+(afed3d673..a5fbe3700) · utxo_recovery PR-1 reimport-flag primitive ✅ (af7ba7a30).
+
 ### Claimable NOW (no soak gate, fully independent)
-1. [`wt-phase4d-3-wallet-projection.md`](./work/wt-phase4d-3-wallet-projection.md) — wallet view projection. Event-log consumer; pattern proven by 4b/4c/4d-1/4d-4. Keep private keys out of the log (see spec note).
-2. [`wt-phase4d-5-small-batch-projections.md`](./work/wt-phase4d-5-small-batch-projections.md) — zmsg/zslp/zswp/store + hodl batch. Closes out the 4d projections.
-3. [`wt-phase3-chain-restore-pr1-planner-extract.md`](./work/wt-phase3-chain-restore-pr1-planner-extract.md) — extract the restore planner out of `chain_restore_service.c`. Independent of the cutover chain.
-4. [`wt-phase3-utxo-recovery-pr1-reimport-flag.md`](./work/wt-phase3-utxo-recovery-pr1-reimport-flag.md) — reimport-flag prep slice (the soak-independent piece; the full utxo_recovery dissolve still gates on C-8).
-5. header_probe PR-2 / PR-3 — now unblocked (C-3 landed). Spec in `docs/dissolve/`; split into a `wt-phase3-header-probe-pr2.md` doc when claimed.
+1. [`wt-phase4d-5-small-batch-projections.md`](./work/wt-phase4d-5-small-batch-projections.md) — zmsg/zslp/zswp/store + hodl batch. Closes out the 4d projections.
+2. header_probe PR-2 / PR-3 — now unblocked (C-3 landed). Spec in `docs/dissolve/`; split into a `wt-phase3-header-probe-pr2.md` doc when claimed.
+3. chain_restore PR-2 — next dissolve slice now that the planner is extracted (PR-1 ✅). Split a `wt-phase3-chain-restore-pr2.md` from `docs/dissolve/chain_restore_service.md`.
 
 ### Soak-gated (read the spec now, start when the 24 h C-3 soak clears)
 - [`wt-phase2-cutover-c3-final-delete.md`](./work/wt-phase2-cutover-c3-final-delete.md) — delete the legacy validate_headers fallback.
