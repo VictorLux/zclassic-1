@@ -301,4 +301,81 @@ ev_utxo_spend_parse(const void *payload, size_t payload_len,
     return true;
 }
 
+/* ── EV_BLOCK_HEADER ─────────────────────────────────────────────────
+ *
+ * Per-block-index entry. Emitted alongside the legacy LevelDB write in
+ * block_index_db.c (shadow mode for Phase 4c). The block_index_projection
+ * consumes these to materialize a SQLite-backed replacement for the
+ * LevelDB `b` keyspace.
+ *
+ * Wire layout (little-endian, no padding):
+ *   bytes  0..31    hash                  (block hash)
+ *   bytes 32..63    hashPrev              (previous block hash)
+ *   bytes 64..67    height                (int32 LE)
+ *   bytes 68..71    nStatus               (uint32 LE)
+ *   bytes 72..75    nFile                 (int32 LE)
+ *   bytes 76..79    nDataPos              (uint32 LE)
+ *   bytes 80..83    nUndoPos              (uint32 LE)
+ *   bytes 84..87    nTime                 (uint32 LE)
+ *   bytes 88..91    nBits                 (uint32 LE)
+ *   bytes 92..123   nNonce                (32 bytes)
+ *   bytes 124..155  hashMerkleRoot        (32 bytes)
+ *   bytes 156..187  hashFinalSaplingRoot  (32 bytes)
+ *   bytes 188..191  nVersion              (int32 LE)
+ *   bytes 192..195  nTx                   (uint32 LE)
+ *   bytes 196..197  nSolutionSize         (uint16 LE)
+ *   bytes 198..199  reserved              (2 bytes, MBZ)
+ *   bytes 200..     nSolution             (nSolutionSize bytes)
+ *
+ * Total fixed prefix: 200 bytes. nSolution follows. */
+#define EV_BLOCK_HEADER_FIXED_BYTES  200u
+#define EV_BLOCK_HEADER_MAX_SOLUTION 1344u   /* Equihash 200,9 = 1344 B */
+
+struct ev_block_header {
+    uint8_t  hash[32];
+    uint8_t  hashPrev[32];
+    int32_t  height;
+    uint32_t nStatus;
+    int32_t  nFile;
+    uint32_t nDataPos;
+    uint32_t nUndoPos;
+    uint32_t nTime;
+    uint32_t nBits;
+    uint8_t  nNonce[32];
+    uint8_t  hashMerkleRoot[32];
+    uint8_t  hashFinalSaplingRoot[32];
+    int32_t  nVersion;
+    uint32_t nTx;
+    uint16_t nSolutionSize;
+    uint8_t  reserved[2];
+    /* nSolution bytes follow on the wire (nSolutionSize bytes). In the
+     * in-memory struct, the caller passes the solution pointer
+     * separately to ev_block_header_serialize() / receives it back from
+     * ev_block_header_parse(). */
+};
+
+/* Returns the on-disk size of the serialization for the given solution
+ * size. Pass `nSolutionSize` from the struct. */
+static inline size_t ev_block_header_wire_size(uint16_t nSolutionSize)
+{
+    return (size_t)EV_BLOCK_HEADER_FIXED_BYTES + (size_t)nSolutionSize;
+}
+
+/* Serialize a header into `out` (must have at least
+ * ev_block_header_wire_size(h->nSolutionSize) bytes). The trailing
+ * solution comes from `solution` (may be NULL iff nSolutionSize == 0).
+ * Returns true on success, false on bad input. */
+bool ev_block_header_serialize(const struct ev_block_header *h,
+                               const uint8_t *solution,
+                               uint8_t *out, size_t out_cap,
+                               size_t *out_written);
+
+/* Parse a serialized header from `in`. The fixed-size fields populate
+ * `*h_out`. The pointer `*solution_out` is set to the trailing solution
+ * bytes inside `in` (no copy) — valid only while `in` remains alive.
+ * Returns true on success, false on truncation / size mismatch. */
+bool ev_block_header_parse(const uint8_t *in, size_t in_len,
+                           struct ev_block_header *h_out,
+                           const uint8_t **solution_out);
+
 #endif /* ZCL_STORAGE_EVENT_LOG_PAYLOADS_H */
