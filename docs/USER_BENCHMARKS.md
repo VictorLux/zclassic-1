@@ -16,7 +16,7 @@
 | 1 | **Cold-start to operational** (empty datadir → tip current within 100 blocks, RPC + wallet ready) | ≤ **60 s** | 180s (05-24, wedge recovery path) | `time zclassic23 -bench-coldstart` |
 | 2 | **Warm-start to operational** (restart with synced datadir → same tip, RPC ready) | ≤ **10 s** | 37.7s (05-24, real restart→tip) | `time zclassic23 -bench-warmstart` |
 | 3 | **Stay-in-sync MTBF** (mean time between unattended stalls > 60 s) | ≥ **30 days** | soak in progress (started 05-24) | 30-day chaos soak (kill -9, net blip, peer churn) |
-| 4 | **RAM budget steady-state** | ≤ **1 GB RSS** | 1.93 GB (05-24, measured plateau) | `zcl_status.memory_rss_mb` after warm-up |
+| 4 | **RAM budget steady-state** | ≤ **1 GB RSS** | ~2.4 GB & climbing (05-24 soak, 6.6% bg-verify) | `zcl_status.memory_rss_mb` over a soak |
 | 5 | **Recovery from kill -9** | ≤ **60 s** | — (not measured this session) | scripted kill loop, recovery histogram |
 
 ## Quality-of-life numbers

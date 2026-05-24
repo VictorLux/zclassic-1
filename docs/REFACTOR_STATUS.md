@@ -22,7 +22,7 @@ Honest scoreboard. **MEASURED** = a real number from this box (date + how, in
      Stay at tip               AT TIP, 0 gap      keep <1 blk    ✓ synced now
 
   🪶 LEAN
-     Memory (RSS)              1.93 GB (05-24)*    1.0 GB        ▲ plateaus, ~2x target
+     Memory (RSS)              ~2.4 GB (05-24)*    1.0 GB        ▲ climbs w/ bg-verify
      Binary size               14.6 MB (05-24)     stay slim     ✓ met (docs' 26MB stale)
 
   💪 UNBREAKABLE
@@ -33,10 +33,11 @@ Honest scoreboard. **MEASURED** = a real number from this box (date + how, in
   🔬 HONEST
      Bug → reproducible fix    not built           1 seed-tape   simulator pending
 ```
-`*` RSS measured plateau (soak 05-24): fresh boot 1.53 GB → 1.93 GB after
-bg-validation fills buffers (~330s), then **stable** — bounded, not a leak,
-but still ~2× the 1 GB target. `✓` met · `▸` work in flight · `◷` measuring ·
-`▲` above target.
+`*` RSS soak (05-24): fresh boot 1.53 GB → **stair-steps up with bg-validation
+depth** → ~2.4 GB by 17min (only 6.6% validated), still creeping. NOT bounded
+at a low plateau — tracks how much chain bg-verify has buffered. ~2.4× the 1 GB
+target; real ceiling needs the full ~8h run. `✓` met · `▸` in flight · `◷`
+measuring · `▲` above target.
 
 **When you finish a task, name the goal you moved and the measured delta**
 (e.g. "warm restart 33s→29s"), then add a row to BENCHMARKS_LOG.md.
