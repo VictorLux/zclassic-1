@@ -4,7 +4,7 @@
 > truth for "what's done, what's next, what's blocked." Read this first
 > when you start a session. Full architecture: [`FRAMEWORK.md`](./FRAMEWORK.md).
 
-**Updated:** 2026-05-24 (**MASSIVE shipping wave** — 4b utxo + 4d-4 znam + 6a seed_tape ALL 100% complete; 4c projection in production at 60% (diff tool pending as 4c-finalize); Phase 4 jumps 75% → 91%)
+**Updated:** 2026-05-24 (**cutover wave** — C-3 validate_headers AUTHORITATIVE, header_probe PR-1, 4c finalize, 4d-1 mempool ALL shipped. Phase 2 cutover is now SOAK-GATED, not worker-gated — freed workers should take soak-independent work from NEXT UP below.)
 
 ---
 
@@ -17,10 +17,11 @@ Phase 2  [██████████] 100%   Wave S SHADOW complete (S-1..S-
   ├ S-5..S-7 [██████████] 100%   body_persist, script_validate, proof_validate ✅
   ├ S-8    [██████████] 100%   utxo_apply shadow (wt3)                ✅ 497220f58
   └ S-9    [██████████] 100%   tip_finalize shadow (wt3)              ✅ 1a65b33c7
-Phase 2 CUTOVER [██░░░░░░░░]  22%   Flip shadow → authoritative      ← C-3 NOW READY
+Phase 2 CUTOVER [███░░░░░░░]  28%   Flip shadow → authoritative      ← C-5 next, SOAK-GATED
   ├ C-2    [██████████] 100%   header_admit AUTHORITATIVE             ✅ f3f0c6c4e (the flip)
-  ├ C-3    [░░░░░░░░░░]   0%   validate_headers authoritative          ← READY (any worker can claim)
-  ├ C-5    [░░░░░░░░░░]   0%   body_persist + delete body_fetch  ← spec'd (queued, post C-3)
+  ├ C-3    [██████████] 100%   validate_headers AUTHORITATIVE         ✅ ad34efb65 + 535f14902
+  ├ C-3del [░░░░░░░░░░]   0%   delete legacy validate_headers fallback ← gated on C-3 24h soak
+  ├ C-5    [░░░░░░░░░░]   0%   body_persist + delete body_fetch  ← gated on C-3 24h soak
   ├ C-6    [░░░░░░░░░░]   0%   script_validate authoritative (batch spec, post C-5)
   ├ C-7    [░░░░░░░░░░]   0%   proof_validate authoritative (batch spec, post C-6)
   ├ C-8    [░░░░░░░░░░]   0%   utxo_apply authoritative (batch spec, post C-7 — gates utxo_recovery dissolve)
@@ -31,14 +32,13 @@ Phase 3  [██████░░░░]  60%   Dissolve mega-modules          
   ├ chain_advance  [░░░░░░░░░░] gated on C-9 cutover (dissolve plan ready)
   ├ legacy_mirror  [░░░░░░░░░░] gated on C-9 cutover (dissolve plan ready)
   ├ chain_restore  [░░░░░░░░░░] independent — plan ready, awaiting per-PR assignment
-  ├ header_probe   [░░░░░░░░░░] PR-1 (poll Job extract) READY; PR-2/3 gated on C-3
+  ├ header_probe   [████░░░░░░] PR-1 (poll Job) ✅ 79b53852a; PR-2/3 now unblocked (C-3 landed)
   └ utxo_recovery  [░░░░░░░░░░] gated on C-8 cutover (dissolve plan ready)
-Phase 4  [█████████░]  91%   Storage unification — plan: docs/architecture/phase4-storage-unification.md
+Phase 4  [█████████░]  93%   Storage unification — plan: docs/architecture/phase4-storage-unification.md
   ├ 4a     [██████████] 100%   event_log primitive  ✅ 76b3a10b4
   ├ 4b     [██████████] 100%   utxo_projection — Tasks 1-10 SHIPPED  ✅ (39b1e8efa..ee1c5c7b1, 7 commits)
-  ├ 4c     [██████░░░░]  60%   block_index_projection — Tasks 1-6 SHIPPED  ✅ (490508125, 76bca5655, d40286d4e, ed34743ba)
-  ├ 4c-fin [░░░░░░░░░░]   0%   block_index_projection finalize — diff MCP tool + 9 unit tests  ← spec'd, READY
-  ├ 4d-1   [░░░░░░░░░░]   0%   mempool projection (READY)
+  ├ 4c     [██████████] 100%   block_index_projection + finalize (diff tool + 9 tests)  ✅ (…ed34743ba, 066462576, 91b4ee734, 2f23d6a44, 2e289e41b)
+  ├ 4d-1   [██████████] 100%   mempool projection + shadow replay  ✅ da005eb31, cc84e9419
   ├ 4d-2   [██████████] 100%   peers_projection  ✅ 91aa65c1c + 5dc442a81 + 48e78d801 + f925fb6f3 (wt2)
   ├ 4d-3   [░░░░░░░░░░]   0%   wallet view projection (READY)
   ├ 4d-4   [██████████] 100%   znam projection — Tasks 1-5b SHIPPED  ✅ (f52313f02..eb53d9d52, 7 commits, 30 test cases pass)
@@ -107,33 +107,48 @@ clause. The table below is the dashboard.
 
 ## In flight (worktrees)
 
-| Worktree | Branch | Assignment | Status | Last update |
-|---|---|---|---|---|
-| `~/github/zclassic23` (main) | `main` | Orchestrator: queue + plan + merge; 2 sub-agents complete (5a-1 + 4a both merged) | ✅ active | 2026-05-24 |
-| `~/github/zclassic23-2` (wt2) | `main` (direct push) | ✅ 5a-2 complete (f00be351f); pick next from READY queue below | 🕐 idle, awaiting restart | 2026-05-24 |
-| `~/github/zclassic23-3` (wt3) | `main` (direct push) | [`docs/work/wt-phase2-cutover-c2-header-admit.md`](./work/wt-phase2-cutover-c2-header-admit.md) | 🚧 commit 3/4 (659bc3e5a — divergence guard); commit 4 = flip | 2026-05-24 |
+6 agent worktrees active under `.claude/worktrees/agent-*` (locked).
+Orchestrator on `main` queues + merges; workers push direct to main.
 
-**READY queue** (any worker can pick on restart; first to mark IN PROGRESS wins):
-- [`docs/work/wt-phase4d-projections-batch.md`](./work/wt-phase4d-projections-batch.md) — 4 remaining sub-PRs: 4d-1 mempool, 4d-3 wallet, 4d-4 znam, 4d-5 (zmsg/zslp/zswp/store).
-- [`docs/work/wt-phase5a3-script-validate-rewire.md`](./work/wt-phase5a3-script-validate-rewire.md) — route ECDSA pubkey_verify through the registry (HOT PATH; benchmark gate).
-- [`docs/work/wt-phase5b1-flake-nix-skeleton.md`](./work/wt-phase5b1-flake-nix-skeleton.md) — `flake.nix` reproducible build skeleton; **needs Nix installed**.
+**The Phase 2 cutover critical path is currently SOAK-GATED, not
+worker-gated.** C-3 (validate_headers) went authoritative today; C-3del and
+C-5 cannot flip until a 24 h zero-divergence soak completes. So a freed worker
+should take **soak-independent** work from "Claimable NOW" below rather than
+idle on the soak.
 
-(Phase 4b, 4c, 6a are claimed by orchestrator sub-agents in isolated worktrees; do not double-dispatch.)
+---
 
-**SOON-READY** (gate will clear within minutes):
-- C-3 validate_headers cutover — unblocks the moment C-2 commit 4 lands + brief soak
+## NEXT UP — claim order
 
-**QUEUED with full spec:**
-- Phase 5a-3..5a-N (script_validate, proof_validate rewires) — natural follow-on
-- C-5..C-9 batch spec (gated sequentially)
-- All Phase 3 dissolves besides watchdog (gated on cutover progress per `docs/dissolve/`)
+Claim a doc by marking it **IN PROGRESS** at the top; first to mark wins.
+Push direct to main, one commit per task. Run `./test_parallel --jobs=$(nproc)`
+before pushing.
 
-**QUEUED (gated on a specific predecessor)** — workers can read the spec but should not start until the gate clears:
-- C-3 validate_headers cutover (after C-2 + soak)
-- Phase 4b utxo_projection (after 4a)
-- Phase 4c block_index_projection (after 4a) — kills LevelDB
-- Phase 2 cutovers C-5..C-9 (each gated on its predecessor + soak)
-- All Phase 3 dissolves besides watchdog (gated on cutover progress per their respective `docs/dissolve/` plans).
+### Claimable NOW (no soak gate, fully independent)
+1. [`wt-phase4d-3-wallet-projection.md`](./work/wt-phase4d-3-wallet-projection.md) — wallet view projection. Event-log consumer; pattern proven by 4b/4c/4d-1/4d-4. Keep private keys out of the log (see spec note).
+2. [`wt-phase4d-5-small-batch-projections.md`](./work/wt-phase4d-5-small-batch-projections.md) — zmsg/zslp/zswp/store + hodl batch. Closes out the 4d projections.
+3. [`wt-phase3-chain-restore-pr1-planner-extract.md`](./work/wt-phase3-chain-restore-pr1-planner-extract.md) — extract the restore planner out of `chain_restore_service.c`. Independent of the cutover chain.
+4. [`wt-phase3-utxo-recovery-pr1-reimport-flag.md`](./work/wt-phase3-utxo-recovery-pr1-reimport-flag.md) — reimport-flag prep slice (the soak-independent piece; the full utxo_recovery dissolve still gates on C-8).
+5. [`wt-phase5b1-flake-nix-skeleton.md`](./work/wt-phase5b1-flake-nix-skeleton.md) — `flake.nix` reproducible-build skeleton. **Needs Nix installed.**
+6. header_probe PR-2 / PR-3 — now unblocked (C-3 landed). Spec in `docs/dissolve/`; split into a `wt-phase3-header-probe-pr2.md` doc when claimed.
+
+### Soak-gated (read the spec now, start when the 24 h C-3 soak clears)
+- [`wt-phase2-cutover-c3-final-delete.md`](./work/wt-phase2-cutover-c3-final-delete.md) — delete the legacy validate_headers fallback.
+- [`wt-phase2-cutover-c5-body-persist.md`](./work/wt-phase2-cutover-c5-body-persist.md) — body_persist authoritative + DELETE body_fetch. Then C-6→C-9 in sequence per [`wt-phase2-cutover-c3-through-c9.md`](./work/wt-phase2-cutover-c3-through-c9.md) (each + its own soak).
+- [`wt-phase4e-block-body-migration.md`](./work/wt-phase4e-block-body-migration.md) — block bodies into the log; gated on the 4c-cutover soak. Last Phase 4 PR. Phase 8 compaction follows ([`phase8-log-compaction-and-retention.md`](./architecture/phase8-log-compaction-and-retention.md)).
+
+### Deferred — do NOT dispatch without explicit user approval
+- Phase 7a/7b/7c (io_uring, structured concurrency, hot reload) — optional frontier.
+
+### Critical path to 100%
+```
+C-3 ✅ ─► C-3del/C-5 ─► C-6 ─► C-7 ─► C-8 ─► C-9      (each + 24h soak)
+                                       │       └─► dissolve chain_advance + legacy_mirror (P3)
+                                       └─────────► dissolve utxo_recovery (P3)
+4c ✅ ─► 4e (bodies in log) ─► Phase 8 (log self-bounding)
+```
+Everything in "Claimable NOW" runs in parallel to this path — that's where
+freed workers add the most while the soak runs.
 
 ---
 
@@ -141,6 +156,11 @@ clause. The table below is the dashboard.
 
 | Date | What | Worktree | Commit |
 |---|---|---|---|
+| 2026-05-24 | **Phase 2 C-3 validate_headers AUTHORITATIVE** — the flip; full test_parallel 0/196; stabilized 2 pre-existing flaky timing tests (crypto_registry ECDSA, event async) | wt3 → main | ad34efb65, 535f14902, 72dd5e01f |
+| 2026-05-24 | **Phase 4c FINALIZED** — `zcl_block_index_diff` MCP tool + dumper wired + 9-case `test_block_index_projection`; block_index_projection complete | wt2 → main | 066462576, 91b4ee734, 2f23d6a44, 2e289e41b |
+| 2026-05-24 | **Phase 4d-1 mempool projection MERGED** — `EV_TX_ADMIT/REMOVE_MEMPOOL` consumer + shadow replay | wt2 → main | da005eb31, cc84e9419 |
+| 2026-05-24 | **Phase 3 header_probe PR-1 MERGED** — `header_probe_poll` Job under net supervisor (period=30s, live-confirmed in supervisor dump) | main | 79b53852a |
+| 2026-05-24 | **Phase 8 spec drafted** — event-log compaction & retention (checkpoint event + segmentation + retention modes) | main | 533b7223e |
 | 2026-05-24 | **Phase 4a event_log primitive MERGED** — append-only file with fsync-sentinel torn-write recovery; 24-trial kill-9 fuzz harness all green; 131 evt/sec on this disk (disk fsync-rate-limited per assignment doc note). Cherry-picked from orch sub-agent's isolated worktree | orch sub-agent → main | 76b3a10b4 |
 | 2026-05-24 | **test_supervisor regression fixed** — pre-existing failure on main (introduced by supervisor tree split); test now looks at `root_orphans[]` instead of removed `children[]`. test_parallel: 0/194 failed | main | ae47aa283 |
 | 2026-05-24 | **C-2 commit 3/4 shipped** — divergence guard in legacy `accept_block_header` ingress | wt3 → main | 659bc3e5a |
