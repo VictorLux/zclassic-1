@@ -4,7 +4,7 @@
 > truth for "what's done, what's next, what's blocked." Read this first
 > when you start a session. Full architecture: [`FRAMEWORK.md`](./FRAMEWORK.md).
 
-**Updated:** 2026-05-24 (Wave S SHADOW 100%; Phase 5a-1 crypto registry MERGED; C-2 cutover IN PROGRESS by wt3; 5a-2 READY)
+**Updated:** 2026-05-24 (Phase 4a event_log MERGED; Phase 5a-1+5a-2 MERGED; C-2 at 3/4; 4b/4c/4d/5b-1 all READY for any worker)
 
 ---
 
@@ -33,11 +33,11 @@ Phase 3  [██████░░░░]  60%   Dissolve mega-modules          
   ├ chain_restore  [░░░░░░░░░░] independent — plan ready, awaiting per-PR assignment
   ├ header_probe   [░░░░░░░░░░] independent — plan ready, awaiting per-PR assignment
   └ utxo_recovery  [░░░░░░░░░░] gated on C-8 cutover (dissolve plan ready)
-Phase 4  [░░░░░░░░░░]   0%   Storage unification — plan: docs/architecture/phase4-storage-unification.md
-  ├ 4a     [█░░░░░░░░░]   5%   event_log primitive  🚧 IN PROGRESS by orchestrator sub-agent (isolated worktree)
-  ├ 4b     [░░░░░░░░░░]   0%   utxo_projection — first event-log consumer (queued, post-4a)
-  ├ 4c     [░░░░░░░░░░]   0%   block_index_projection — kills LevelDB (queued, post-4a)
-  └ 4d     [░░░░░░░░░░]   0%   mempool/peers/wallet/znam/store projections — 5 parallel PRs (queued, post-4a, batch spec)
+Phase 4  [██░░░░░░░░]  17%   Storage unification — plan: docs/architecture/phase4-storage-unification.md
+  ├ 4a     [██████████] 100%   event_log primitive  ✅ 76b3a10b4 (append + kill-9 fuzz harness; 131 evt/s on this disk, disk-limited)
+  ├ 4b     [░░░░░░░░░░]   0%   utxo_projection — first event-log consumer  ← READY (4a merged)
+  ├ 4c     [░░░░░░░░░░]   0%   block_index_projection — kills LevelDB  ← READY (4a merged)
+  └ 4d     [░░░░░░░░░░]   0%   mempool/peers/wallet/znam/store projections — 5 parallel PRs  ← READY (4a merged, batch spec)
 Phase 5  [███░░░░░░░]  29%   Crypto agility + reproducible builds — plan: docs/architecture/phase5-crypto-agility-and-releases.md
   ├ 5a-1   [██████████] 100%   Crypto registry skeleton  ✅ c4bebe0a2 + polish dde0183c7
   ├ 5a-2   [██████████] 100%   First call site rewire: Equihash PoW   ✅ f00be351f (wt2)
@@ -95,20 +95,21 @@ clause. The table below is the dashboard.
 
 | Worktree | Branch | Assignment | Status | Last update |
 |---|---|---|---|---|
-| `~/github/zclassic23` (main) | `main` | Orchestrator: queue + plan + merge; spawned 2 sub-agents (5a-1 done; 4a in isolated worktree) | ✅ active drafting + dispatching | 2026-05-24 |
+| `~/github/zclassic23` (main) | `main` | Orchestrator: queue + plan + merge; 2 sub-agents complete (5a-1 + 4a both merged) | ✅ active | 2026-05-24 |
 | `~/github/zclassic23-2` (wt2) | `main` (direct push) | ✅ 5a-2 complete (f00be351f); pick next from READY queue below | 🕐 idle, awaiting restart | 2026-05-24 |
 | `~/github/zclassic23-3` (wt3) | `main` (direct push) | [`docs/work/wt-phase2-cutover-c2-header-admit.md`](./work/wt-phase2-cutover-c2-header-admit.md) | 🚧 commit 3/4 (659bc3e5a — divergence guard); commit 4 = flip | 2026-05-24 |
-| orch sub-agent (isolated worktree) | `main` | [`docs/work/wt-phase4a-event-log-primitive.md`](./work/wt-phase4a-event-log-primitive.md) | 🚧 IN PROGRESS | 2026-05-24 |
 
 **READY queue** (any worker can pick on restart; first to mark IN PROGRESS wins):
-- [`docs/work/wt-phase5b1-flake-nix-skeleton.md`](./work/wt-phase5b1-flake-nix-skeleton.md) — `flake.nix` reproducible build skeleton; **needs Nix installed locally** (`sh <(curl -L https://nixos.org/nix/install) --daemon`).
+- [`docs/work/wt-phase4b-utxo-projection.md`](./work/wt-phase4b-utxo-projection.md) — first event-log consumer; `EV_UTXO_ADD`/`EV_UTXO_SPEND` + 24h shadow-diff gate.
+- [`docs/work/wt-phase4c-block-index-projection.md`](./work/wt-phase4c-block-index-projection.md) — **kills LevelDB.** ~513MB disk freed + ~3MB binary shrink after cutover + delete PRs.
+- [`docs/work/wt-phase4d-projections-batch.md`](./work/wt-phase4d-projections-batch.md) — 5 small parallel PRs (mempool/peers/wallet/znam/store projections).
+- [`docs/work/wt-phase5b1-flake-nix-skeleton.md`](./work/wt-phase5b1-flake-nix-skeleton.md) — `flake.nix` reproducible build skeleton; **needs Nix installed locally**.
 
-**SOON-READY** (gate will clear within minutes/hours):
+**SOON-READY** (gate will clear within minutes):
 - C-3 validate_headers cutover — unblocks the moment C-2 commit 4 lands + brief soak
-- Phase 4b/4c/4d — unblock the moment 4a (in flight in isolated worktree) lands
 
 **QUEUED with full spec:**
-- Phase 5a-3..5a-N (other crypto rewires: script_validate, proof_validate) — easy follow-on after 5a-2 shows the indirection layer is zero-cost
+- Phase 5a-3..5a-N (script_validate, proof_validate rewires) — natural follow-on
 - C-5..C-9 batch spec (gated sequentially)
 - All Phase 3 dissolves besides watchdog (gated on cutover progress per `docs/dissolve/`)
 
@@ -125,7 +126,8 @@ clause. The table below is the dashboard.
 
 | Date | What | Worktree | Commit |
 |---|---|---|---|
-| 2026-05-24 | **test_supervisor regression fixed** — pre-existing failure on main (introduced by supervisor tree split); test now looks at `root_orphans[]` instead of removed `children[]`. test_parallel: 0/193 failed | main | ae47aa283 |
+| 2026-05-24 | **Phase 4a event_log primitive MERGED** — append-only file with fsync-sentinel torn-write recovery; 24-trial kill-9 fuzz harness all green; 131 evt/sec on this disk (disk fsync-rate-limited per assignment doc note). Cherry-picked from orch sub-agent's isolated worktree | orch sub-agent → main | 76b3a10b4 |
+| 2026-05-24 | **test_supervisor regression fixed** — pre-existing failure on main (introduced by supervisor tree split); test now looks at `root_orphans[]` instead of removed `children[]`. test_parallel: 0/194 failed | main | ae47aa283 |
 | 2026-05-24 | **C-2 commit 3/4 shipped** — divergence guard in legacy `accept_block_header` ingress | wt3 → main | 659bc3e5a |
 | 2026-05-24 | **Phase 5a-2 MERGED** — first call-site rewire: Equihash PoW now routes through `crypto_registry` (`CRYPTO_PROOF_EQUIHASH_200_9`); registry indirection in production | wt2 → main | f00be351f |
 | 2026-05-24 | **5a-1 polish** — fixed JSON leaks in `crypto_registry_dump_state_json`, added LOG_FAIL diagnostics on registration failures, expanded test from 5 to 9 cases | orch sub-agent → main | dde0183c7 |
