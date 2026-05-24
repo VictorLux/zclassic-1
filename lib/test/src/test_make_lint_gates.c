@@ -1057,6 +1057,34 @@ static int t_cold_import_spotcheck_diagnostics_contract(void)
     return failures;
 }
 
+static int t_sha3_window_tool_check_contract(void)
+{
+    int failures = 0;
+    char *buf = NULL;
+    TEST("gen_sha3_windows supports single-window source proof checks") {
+        char path[PATH_MAX];
+        ASSERT(repo_path(path, sizeof(path), "tools/gen_sha3_windows.c") == 0);
+        ASSERT(read_entire_file(path, &buf) == 0);
+        char *flag = strstr(buf, "--check-window=");
+        char *no_write = strstr(buf, "without writing output files");
+        char *compare = strstr(buf, "expected=%s actual=%s");
+        char *return_mismatch = strstr(buf, "return ok ? 0 : 1");
+        ASSERT(flag != NULL);
+        ASSERT(no_write != NULL);
+        ASSERT(compare != NULL);
+        ASSERT(return_mismatch != NULL);
+        free(buf);
+        buf = NULL;
+
+        ASSERT(repo_path(path, sizeof(path), "Makefile") == 0);
+        ASSERT(read_entire_file(path, &buf) == 0);
+        ASSERT(strstr(buf, "lib/chain/src/sha3_windows.c") != NULL);
+        PASS();
+    } _test_next:;
+    free(buf);
+    return failures;
+}
+
 static int t_block_index_flat_atomic_save_contract(void)
 {
     int failures = 0;
@@ -1167,6 +1195,7 @@ int test_make_lint_gates(void)
     failures += t_boot_genesis_init_preserves_restored_authority_contract();
     failures += t_cold_import_fails_closed_contract();
     failures += t_cold_import_spotcheck_diagnostics_contract();
+    failures += t_sha3_window_tool_check_contract();
     failures += t_block_index_flat_atomic_save_contract();
     failures += t_projection_deferral_is_not_block_rejected_contract();
     return failures;

@@ -11,9 +11,12 @@
  *   gen_sha3_windows --rpc-host=127.0.0.1 --rpc-port=8232 \
  *                    --rpc-user=USER --rpc-pass=PASS \
  *                    [--out-h=PATH] [--out-c=PATH] [--max-height=H]
+ *   gen_sha3_windows --check-window=N [same RPC options]
  *
  * Missing --rpc-user / --rpc-pass are read from ~/.zclassic/zclassic.conf.
  * --max-height is useful for smoke tests; defaults to the chain tip.
+ * --check-window computes one window and compares it to the compiled table
+ * without writing output files.
  *
  * Links only standalone libs:
  *   lib/crypto/src/sha3.c          (zcl_sha3_256 + streaming ctx)
@@ -252,6 +255,7 @@ struct cli {
     const char *out_h;
     const char *out_c;
     int max_height;     /* -1 = use chain tip */
+    int check_window;   /* -1 = generate table */
 };
 
 static void load_conf_auth(char user[128], char pass[128])
@@ -273,6 +277,18 @@ static void load_conf_auth(char user[128], char pass[128])
     fclose(f);
 }
 
+static bool parse_nonnegative_int(const char *s, int *out)
+{
+    if (!s || !*s) return false;
+    char *end = NULL;
+    errno = 0;
+    long v = strtol(s, &end, 10);
+    if (errno || !end || *end != '\0' || v < 0 || v > INT32_MAX)
+        return false;
+    *out = (int)v;
+    return true;
+}
+
 static bool parse_cli(int argc, char **argv, struct cli *c)
 {
     c->host = "127.0.0.1";
@@ -282,6 +298,7 @@ static bool parse_cli(int argc, char **argv, struct cli *c)
     c->out_h = DEFAULT_OUT_H;
     c->out_c = DEFAULT_OUT_C;
     c->max_height = -1;
+    c->check_window = -1;
 
     for (int i = 1; i < argc; i++) {
         const char *a = argv[i];
@@ -295,10 +312,17 @@ static bool parse_cli(int argc, char **argv, struct cli *c)
         else if (strncmp(a, "--out-c=", 8) == 0) c->out_c = a + 8;
         else if (strncmp(a, "--max-height=", 13) == 0)
             c->max_height = atoi(a + 13);
+        else if (strncmp(a, "--check-window=", 15) == 0) {
+            if (!parse_nonnegative_int(a + 15, &c->check_window)) {
+                fprintf(stderr, "--check-window must be >= 0\n");
+                return false;
+            }
+        }
         else if (strcmp(a, "-h") == 0 || strcmp(a, "--help") == 0) {
             printf("Usage: %s [--rpc-host=H] [--rpc-port=N] "
                    "[--rpc-user=U] [--rpc-pass=P] [--out-h=PATH] "
-                   "[--out-c=PATH] [--max-height=H]\n", argv[0]);
+                   "[--out-c=PATH] [--max-height=H] "
+                   "[--check-window=N]\n", argv[0]);
             return false;
         }
         else {
@@ -314,6 +338,16 @@ static bool parse_cli(int argc, char **argv, struct cli *c)
         return false;
     }
     return true;
+}
+
+static void hex32(const uint8_t hash[32], char out[65])
+{
+    static const char hexdigits[] = "0123456789abcdef";
+    for (size_t i = 0; i < 32; i++) {
+        out[i * 2] = hexdigits[hash[i] >> 4];
+        out[i * 2 + 1] = hexdigits[hash[i] & 0x0f];
+    }
+    out[64] = '\0';
 }
 
 /* ── Streaming hex decoder feeding SHA3 ─────────────────────────────── */
@@ -453,6 +487,8 @@ static void emit_c_close(FILE *f, size_t count)
 
 /* ── Per-block / per-window worker ─────────────────────────────────── */
 
+static double now_secs(void);
+
 static bool fetch_block_hex_into_sha3(struct rpc_ctx *r, int height,
                                       struct sha3_256_ctx *ctx)
 {
@@ -502,6 +538,57 @@ static bool fetch_block_hex_into_sha3(struct rpc_ctx *r, int height,
     return true;
 }
 
+static bool compute_window_digest(struct rpc_ctx *r, int start, int end,
+                                  uint8_t digest[32])
+{
+    struct sha3_256_ctx ctx;
+    sha3_256_init(&ctx);
+    for (int h = start; h <= end; h++) {
+        if (!fetch_block_hex_into_sha3(r, h, &ctx))
+            return false;
+    }
+    sha3_256_finalize(&ctx, digest);
+    return true;
+}
+
+static int check_one_window(struct rpc_ctx *r, int window, int tip)
+{
+    if (window < 0) {
+        fprintf(stderr, "--check-window must be >= 0\n");
+        return 1;
+    }
+    if ((size_t)window >= g_sha3_windows_count) {
+        fprintf(stderr,
+                "[gen_sha3_windows] window %d is outside compiled table "
+                "(count=%zu)\n", window, g_sha3_windows_count);
+        return 1;
+    }
+
+    int start = window * SHA3_WINDOW_SIZE;
+    int end = start + SHA3_WINDOW_SIZE - 1;
+    if (end > tip) {
+        fprintf(stderr,
+                "[gen_sha3_windows] window %d h=%d..%d exceeds tip=%d\n",
+                window, start, end, tip);
+        return 1;
+    }
+
+    uint8_t actual[32];
+    double t0 = now_secs();
+    if (!compute_window_digest(r, start, end, actual))
+        return 1;
+
+    char expected_hex[65], actual_hex[65];
+    hex32(g_sha3_windows[window].hash, expected_hex);
+    hex32(actual, actual_hex);
+    bool ok = memcmp(actual, g_sha3_windows[window].hash, 32) == 0;
+    printf("[gen_sha3_windows] check window=%d h=%d..%d "
+           "expected=%s actual=%s ok=%s (%.1fs)\n",
+           window, start, end, expected_hex, actual_hex,
+           ok ? "yes" : "no", now_secs() - t0);
+    return ok ? 0 : 1;
+}
+
 /* ── Main ──────────────────────────────────────────────────────────── */
 
 static double now_secs(void)
@@ -546,6 +633,12 @@ int main(int argc, char **argv)
     printf("[gen_sha3_windows] host=%s:%d tip=%d windows=%zu\n",
            c.host, c.port, tip, num_windows);
 
+    if (c.check_window >= 0) {
+        int rc = check_one_window(&r, c.check_window, tip);
+        rpc_free(&r);
+        return rc;
+    }
+
     if (!emit_header(c.out_h)) { rpc_free(&r); return 1; }
 
     FILE *fc = NULL;
@@ -559,19 +652,12 @@ int main(int argc, char **argv)
         int end = start + SHA3_WINDOW_SIZE - 1;
         if (end > tip) end = tip;
 
-        struct sha3_256_ctx ctx;
-        sha3_256_init(&ctx);
-
-        for (int h = start; h <= end; h++) {
-            if (!fetch_block_hex_into_sha3(&r, h, &ctx)) {
-                fclose(fc);
-                rpc_free(&r);
-                return 1;
-            }
-        }
-
         uint8_t digest[32];
-        sha3_256_finalize(&ctx, digest);
+        if (!compute_window_digest(&r, start, end, digest)) {
+            fclose(fc);
+            rpc_free(&r);
+            return 1;
+        }
         emit_c_row(fc, (int32_t)start, digest);
 
         if (((wi + 1) % 50u) == 0u || wi + 1 == num_windows) {

@@ -203,12 +203,13 @@ zcl-rpc: tools/zcl-rpc.c
 # with SHA3-256 commitments over 1000-block windows. Standalone build:
 # only the libs it directly uses, no DB, no Tor.
 tools/gen_sha3_windows: tools/gen_sha3_windows.c \
+		lib/chain/src/sha3_windows.c \
 		lib/crypto/src/sha3.c lib/encoding/src/utilstrencodings.c \
-		lib/json/src/json.c
+		lib/json/src/json.c lib/platform/src/clock.c
 	$(CC) -std=c23 -O3 -march=native -Wall -Wextra -Werror -pedantic \
 	    -Wno-stringop-overflow -Wno-unused-result \
 	    -Ilib/chain/include -Ilib/crypto/include -Ilib/encoding/include \
-	    -Ilib/json/include -Ilib/util/include \
+	    -Ilib/json/include -Ilib/platform/include -Ilib/util/include \
 	    -D_POSIX_C_SOURCE=200809L \
 	    -o $@ $^ -pthread
 

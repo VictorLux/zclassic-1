@@ -166,6 +166,9 @@ Summary:
   range plus expected/actual SHA3 digests, with
   `ZCL_COLD_IMPORT_DEBUG_WINDOW=N` available as an extra deterministic window
   check while keeping the normal random spotcheck active.
+- Extended `tools/gen_sha3_windows` with `--check-window=N` so a suspect
+  source can be compared against one compiled SHA3 window over RPC without
+  regenerating the whole table.
 
 Verification:
 - `make -j$(nproc) test_zcl test_parallel zclassic23` PASS
@@ -182,6 +185,10 @@ Verification:
   `spotcheck FAILED at window 3028`. This blocks serial/parallel byte-identical
   proof on this machine until a source datadir matching `g_sha3_windows` is
   available or the checkpoint table is regenerated intentionally.
+- Follow-up source-proof check: `tools/gen_sha3_windows --check-window=3028`
+  against live zclassicd RPC matched the compiled table for
+  `h=3028000..3028999`. The mismatch is therefore in the copied filesystem
+  snapshot/source datadir, not the baked SHA3 table.
 
 Still required before PR-3 completion:
 - Run serial vs parallel cold-import on the live datadir and compare tip hash +
