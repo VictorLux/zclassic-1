@@ -99,7 +99,7 @@ volatile sig_atomic_t g_shutdown_requested = 0;
     X(clock) X(rng) X(seed_tape) X(stage) X(mailbox) X(mailbox_adoption) \
     X(projection) X(projection_adoption) X(progress_store) X(event_log) \
     X(mempool_projection) X(peers_projection) X(znam_projection) \
-    X(wallet_projection) \
+    X(wallet_projection) X(small_projections) \
     X(utxo_projection) X(block_index_projection) \
     X(header_admit_stage) X(header_probe_poll) \
     X(validate_headers_stage) X(body_fetch_stage) \

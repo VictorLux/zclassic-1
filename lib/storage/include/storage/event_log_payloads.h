@@ -28,6 +28,15 @@
 #define EV_WALLET_TX_SEEN_LEN 52u
 #define EV_WALLET_NOTE_DECRYPTED_LEN 80u
 #define EV_WALLET_UTXO_SEEN_LEN 72u
+#define EV_CONTACT_ADDRESS_MAX 64u
+#define EV_CONTACT_NAME_MAX 64u
+#define EV_CONTACT_SET_FIXED_LEN 8u
+#define EV_CONTACT_TOUCHED_LEN 8u
+#define EV_CONTACT_DELETE_FIXED_LEN 8u
+#define EV_ONION_ANNOUNCEMENT_FIXED_LEN 8u
+#define EV_ONION_ADDRESS_MAX 96u
+#define EV_ONION_SCRIPT_HEX_MAX 250u
+#define EV_HODL_SNAPSHOT_LEN 32u
 
 struct ev_tx_admit_mempool {
     uint8_t  txid[32];
@@ -110,6 +119,44 @@ struct ev_wallet_utxo_seen {
     uint8_t  reserved[3];
 };
 
+struct ev_contact_set {
+    uint8_t address_len;
+    uint8_t name_len;
+    uint8_t reserved[6];
+    const char *address;
+    const char *name;
+};
+
+struct ev_contact_touched {
+    uint8_t address_len;
+    uint8_t reserved[3];
+    uint32_t last_used_unix;
+    const char *address;
+};
+
+struct ev_contact_delete {
+    uint8_t address_len;
+    uint8_t reserved[7];
+    const char *address;
+};
+
+struct ev_onion_announcement {
+    uint32_t announced_at_unix;
+    uint8_t onion_addr_len;
+    uint8_t script_hex_len;
+    uint8_t reserved[2];
+    const char *onion_address;
+    const char *script_hex;
+};
+
+struct ev_hodl_snapshot {
+    int32_t height;
+    uint32_t time_unix;
+    int64_t total_zat;
+    int64_t older_1y_zat;
+    double older_1y_pct;
+};
+
 static inline void ev_put_u16_le(uint8_t *dst, uint16_t v)
 {
     dst[0] = (uint8_t)(v & 0xFFu);
@@ -148,6 +195,21 @@ static inline uint64_t ev_get_u64_le(const uint8_t *src)
     uint64_t v = 0;
     for (int i = 0; i < 8; i++)
         v |= (uint64_t)src[i] << (i * 8);
+    return v;
+}
+
+static inline void ev_put_double_le(uint8_t *dst, double v)
+{
+    uint64_t bits;
+    memcpy(&bits, &v, sizeof(bits));
+    ev_put_u64_le(dst, bits);
+}
+
+static inline double ev_get_double_le(const uint8_t *src)
+{
+    uint64_t bits = ev_get_u64_le(src);
+    double v;
+    memcpy(&v, &bits, sizeof(v));
     return v;
 }
 
@@ -497,6 +559,249 @@ ev_wallet_utxo_seen_parse(const void *payload, size_t len,
     memcpy(out->address_hash, buf + 44, 20);
     out->height = (int32_t)ev_get_u32_le(buf + 64);
     out->is_coinbase = buf[68] ? 1u : 0u;
+    return true;
+}
+
+/* ── EV_CONTACT_* / EV_ONION_ANNOUNCEMENT / EV_HODL_SNAPSHOT
+ *    (Phase 4d-5 small-batch projections) ──────────────────────── */
+
+static inline size_t
+ev_contact_set_serialized_len(const struct ev_contact_set *ev)
+{
+    if (!ev) return 0;
+    return EV_CONTACT_SET_FIXED_LEN + (size_t)ev->address_len +
+           (size_t)ev->name_len;
+}
+
+static inline bool
+ev_contact_set_serialize(const struct ev_contact_set *ev,
+                         uint8_t *out, size_t out_cap, size_t *out_len)
+{
+    if (!ev || !out || !out_len) return false;
+    if (ev->address_len == 0 || ev->address_len > EV_CONTACT_ADDRESS_MAX)
+        return false;
+    if (ev->name_len > EV_CONTACT_NAME_MAX) return false;
+    if (!ev->address) return false;
+    if (ev->name_len && !ev->name) return false;
+    size_t need = ev_contact_set_serialized_len(ev);
+    if (out_cap < need) return false;
+
+    out[0] = ev->address_len;
+    out[1] = ev->name_len;
+    memset(out + 2, 0, 6);
+    memcpy(out + EV_CONTACT_SET_FIXED_LEN, ev->address, ev->address_len);
+    if (ev->name_len)
+        memcpy(out + EV_CONTACT_SET_FIXED_LEN + ev->address_len,
+               ev->name, ev->name_len);
+    *out_len = need;
+    return true;
+}
+
+static inline bool
+ev_contact_set_parse(const void *payload, size_t len,
+                     struct ev_contact_set *out)
+{
+    if (!payload || !out || len < EV_CONTACT_SET_FIXED_LEN)
+        return false;
+    const uint8_t *buf = (const uint8_t *)payload;
+    uint8_t address_len = buf[0];
+    uint8_t name_len = buf[1];
+    if (address_len == 0 || address_len > EV_CONTACT_ADDRESS_MAX)
+        return false;
+    if (name_len > EV_CONTACT_NAME_MAX)
+        return false;
+    size_t need = EV_CONTACT_SET_FIXED_LEN + (size_t)address_len +
+                  (size_t)name_len;
+    if (len != need) return false;
+
+    memset(out, 0, sizeof(*out));
+    out->address_len = address_len;
+    out->name_len = name_len;
+    out->address = (const char *)(buf + EV_CONTACT_SET_FIXED_LEN);
+    out->name = name_len
+              ? (const char *)(buf + EV_CONTACT_SET_FIXED_LEN + address_len)
+              : NULL;
+    return true;
+}
+
+static inline bool
+ev_contact_touched_serialize(const struct ev_contact_touched *ev,
+                             uint8_t *out, size_t out_cap, size_t *out_len)
+{
+    if (!ev || !out || !out_len) return false;
+    if (ev->address_len == 0 || ev->address_len > EV_CONTACT_ADDRESS_MAX)
+        return false;
+    if (!ev->address) return false;
+    size_t need = EV_CONTACT_TOUCHED_LEN + (size_t)ev->address_len;
+    if (out_cap < need) return false;
+
+    out[0] = ev->address_len;
+    memset(out + 1, 0, 3);
+    ev_put_u32_le(out + 4, ev->last_used_unix);
+    memcpy(out + EV_CONTACT_TOUCHED_LEN, ev->address, ev->address_len);
+    *out_len = need;
+    return true;
+}
+
+static inline bool
+ev_contact_touched_parse(const void *payload, size_t len,
+                         struct ev_contact_touched *out)
+{
+    if (!payload || !out || len < EV_CONTACT_TOUCHED_LEN)
+        return false;
+    const uint8_t *buf = (const uint8_t *)payload;
+    uint8_t address_len = buf[0];
+    if (address_len == 0 || address_len > EV_CONTACT_ADDRESS_MAX)
+        return false;
+    if (len != EV_CONTACT_TOUCHED_LEN + (size_t)address_len)
+        return false;
+
+    memset(out, 0, sizeof(*out));
+    out->address_len = address_len;
+    out->last_used_unix = ev_get_u32_le(buf + 4);
+    out->address = (const char *)(buf + EV_CONTACT_TOUCHED_LEN);
+    return true;
+}
+
+static inline size_t
+ev_contact_delete_serialized_len(const struct ev_contact_delete *ev)
+{
+    if (!ev) return 0;
+    return EV_CONTACT_DELETE_FIXED_LEN + (size_t)ev->address_len;
+}
+
+static inline bool
+ev_contact_delete_serialize(const struct ev_contact_delete *ev,
+                            uint8_t *out, size_t out_cap, size_t *out_len)
+{
+    if (!ev || !out || !out_len) return false;
+    if (ev->address_len == 0 || ev->address_len > EV_CONTACT_ADDRESS_MAX)
+        return false;
+    if (!ev->address) return false;
+    size_t need = ev_contact_delete_serialized_len(ev);
+    if (out_cap < need) return false;
+
+    out[0] = ev->address_len;
+    memset(out + 1, 0, 7);
+    memcpy(out + EV_CONTACT_DELETE_FIXED_LEN, ev->address, ev->address_len);
+    *out_len = need;
+    return true;
+}
+
+static inline bool
+ev_contact_delete_parse(const void *payload, size_t len,
+                        struct ev_contact_delete *out)
+{
+    if (!payload || !out || len < EV_CONTACT_DELETE_FIXED_LEN)
+        return false;
+    const uint8_t *buf = (const uint8_t *)payload;
+    uint8_t address_len = buf[0];
+    if (address_len == 0 || address_len > EV_CONTACT_ADDRESS_MAX)
+        return false;
+    if (len != EV_CONTACT_DELETE_FIXED_LEN + (size_t)address_len)
+        return false;
+
+    memset(out, 0, sizeof(*out));
+    out->address_len = address_len;
+    out->address = (const char *)(buf + EV_CONTACT_DELETE_FIXED_LEN);
+    return true;
+}
+
+static inline size_t
+ev_onion_announcement_serialized_len(
+    const struct ev_onion_announcement *ev)
+{
+    if (!ev) return 0;
+    return EV_ONION_ANNOUNCEMENT_FIXED_LEN + (size_t)ev->onion_addr_len +
+           (size_t)ev->script_hex_len;
+}
+
+static inline bool
+ev_onion_announcement_serialize(const struct ev_onion_announcement *ev,
+                                uint8_t *out, size_t out_cap,
+                                size_t *out_len)
+{
+    if (!ev || !out || !out_len) return false;
+    if (ev->onion_addr_len == 0 ||
+        ev->onion_addr_len > EV_ONION_ADDRESS_MAX)
+        return false;
+    if (ev->script_hex_len > EV_ONION_SCRIPT_HEX_MAX)
+        return false;
+    if (!ev->onion_address) return false;
+    if (ev->script_hex_len && !ev->script_hex) return false;
+    size_t need = ev_onion_announcement_serialized_len(ev);
+    if (out_cap < need) return false;
+
+    ev_put_u32_le(out + 0, ev->announced_at_unix);
+    out[4] = ev->onion_addr_len;
+    out[5] = ev->script_hex_len;
+    out[6] = 0u;
+    out[7] = 0u;
+    memcpy(out + EV_ONION_ANNOUNCEMENT_FIXED_LEN, ev->onion_address,
+           ev->onion_addr_len);
+    if (ev->script_hex_len)
+        memcpy(out + EV_ONION_ANNOUNCEMENT_FIXED_LEN + ev->onion_addr_len,
+               ev->script_hex, ev->script_hex_len);
+    *out_len = need;
+    return true;
+}
+
+static inline bool
+ev_onion_announcement_parse(const void *payload, size_t len,
+                            struct ev_onion_announcement *out)
+{
+    if (!payload || !out || len < EV_ONION_ANNOUNCEMENT_FIXED_LEN)
+        return false;
+    const uint8_t *buf = (const uint8_t *)payload;
+    uint8_t onion_addr_len = buf[4];
+    uint8_t script_hex_len = buf[5];
+    if (onion_addr_len == 0 || onion_addr_len > EV_ONION_ADDRESS_MAX)
+        return false;
+    if (script_hex_len > EV_ONION_SCRIPT_HEX_MAX)
+        return false;
+    size_t need = EV_ONION_ANNOUNCEMENT_FIXED_LEN +
+                  (size_t)onion_addr_len + (size_t)script_hex_len;
+    if (len != need) return false;
+
+    memset(out, 0, sizeof(*out));
+    out->announced_at_unix = ev_get_u32_le(buf + 0);
+    out->onion_addr_len = onion_addr_len;
+    out->script_hex_len = script_hex_len;
+    out->onion_address =
+        (const char *)(buf + EV_ONION_ANNOUNCEMENT_FIXED_LEN);
+    out->script_hex = script_hex_len
+                    ? (const char *)(buf + EV_ONION_ANNOUNCEMENT_FIXED_LEN +
+                                     onion_addr_len)
+                    : NULL;
+    return true;
+}
+
+static inline bool
+ev_hodl_snapshot_serialize(const struct ev_hodl_snapshot *ev,
+                           uint8_t out[EV_HODL_SNAPSHOT_LEN])
+{
+    if (!ev || !out) return false;
+    ev_put_u32_le(out + 0, (uint32_t)ev->height);
+    ev_put_u32_le(out + 4, ev->time_unix);
+    ev_put_u64_le(out + 8, (uint64_t)ev->total_zat);
+    ev_put_u64_le(out + 16, (uint64_t)ev->older_1y_zat);
+    ev_put_double_le(out + 24, ev->older_1y_pct);
+    return true;
+}
+
+static inline bool
+ev_hodl_snapshot_parse(const void *payload, size_t len,
+                       struct ev_hodl_snapshot *out)
+{
+    if (!payload || !out || len != EV_HODL_SNAPSHOT_LEN)
+        return false;
+    const uint8_t *buf = (const uint8_t *)payload;
+    memset(out, 0, sizeof(*out));
+    out->height = (int32_t)ev_get_u32_le(buf + 0);
+    out->time_unix = ev_get_u32_le(buf + 4);
+    out->total_zat = (int64_t)ev_get_u64_le(buf + 8);
+    out->older_1y_zat = (int64_t)ev_get_u64_le(buf + 16);
+    out->older_1y_pct = ev_get_double_le(buf + 24);
     return true;
 }
 

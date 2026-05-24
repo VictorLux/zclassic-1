@@ -158,6 +158,13 @@ int main(void)
                failures);
         return failures ? 1 : 0;
     }
+    if (only && strcmp(only, "small_projections") == 0) {
+        printf("[test] ZCL_TEST_ONLY=small_projections — running small projections only\n");
+        failures += test_small_projections();
+        printf("\n=== small_projections subset complete: %d failure(s) ===\n",
+               failures);
+        return failures ? 1 : 0;
+    }
     if (only && strcmp(only, "script_validate") == 0) {
         printf("[test] ZCL_TEST_ONLY=script_validate — running script_validate stage only\n");
         failures += test_script_validate_stage();
@@ -631,6 +638,7 @@ int main(void)
     failures += test_mempool_projection();
     failures += test_peers_projection();
     failures += test_wallet_projection();
+    failures += test_small_projections();
     failures += test_utxo_projection();
     failures += test_block_index_projection();
     failures += test_header_admit_stage();

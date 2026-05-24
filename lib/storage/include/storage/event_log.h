@@ -77,6 +77,12 @@ enum event_log_type {
     EV_WALLET_ADDR_DERIVED  = 17,
     EV_WALLET_NOTE_DECRYPTED = 18,
     EV_WALLET_UTXO_SEEN     = 19,
+    /* Phase 4d-5 — small-batch projection events. */
+    EV_CONTACT_SET          = 20,
+    EV_CONTACT_TOUCHED      = 21,
+    EV_CONTACT_DELETE       = 22,
+    EV_ONION_ANNOUNCEMENT   = 23,
+    EV_HODL_SNAPSHOT        = 24,
     /* Add cautiously — every entry is a permanent wire surface. */
 };
 

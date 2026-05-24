@@ -339,6 +339,7 @@ int test_mempool_projection(void);
 int test_peers_projection(void);
 int test_znam_projection(void);
 int test_wallet_projection(void);
+int test_small_projections(void);
 int test_utxo_projection(void);
 int test_block_index_projection(void);
 int test_header_admit_stage(void);
