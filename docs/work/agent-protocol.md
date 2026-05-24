@@ -144,6 +144,23 @@ When all tasks pass and acceptance criteria are met:
    ```
    All green = ready. Any red = back to debugging.
 
+   **⚠️ A GREEN TEST SUITE IS NOT A HEALTHY NODE (RESILIENCE DOCTRINE #1).**
+   On 2026-05-24 the C-3 header cutover (`ad34efb65`) shipped with
+   `test_parallel` 0/196 green and **froze the live chain for the whole
+   session** — the tip never advanced one block. Tests passed; the node was
+   dead. So: **if your change touches sync, validation, header/block admit, a
+   cutover, or anything on the chain-advance path, forward progress on the
+   LIVE node is a required gate, not optional:**
+   ```bash
+   # the gate already exists — RUN IT against the live node:
+   SAMPLES=6 INTERVAL_SECS=15 ./tools/bench_running_lag.sh   # exit 0 = tip advancing
+   # for restart/recovery changes also:
+   ITERATIONS=3 ./tools/bench_no_stuck.sh                    # exit 0 = advances after kill -9
+   ```
+   `bench_running_lag.sh` exit 3 = "stays in sync only on paper, tip not
+   advancing." If you cannot show the live tip advancing past your change
+   (e.g. past the cutover height), it is NOT done — report it, don't ship it.
+
 2. **Update the assignment doc** — append a Completion section AND change Status:
 
    ```markdown
