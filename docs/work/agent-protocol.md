@@ -156,6 +156,11 @@ When all tasks pass and acceptance criteria are met:
    ### Summary
    <1-3 sentence summary of what shipped>
 
+   ### Benchmark moved
+   <which of the TOP 10 BENCHMARKS (REFACTOR_STATUS.md) this advances, and by
+    how much if measurable — e.g. "#2 warm restart 33s→29s" or "#3 RSS: removed
+    a 1,410-LOC module, expect ~80MB". If purely enabling, say which it unblocks.>
+
    ### Commits
    - <sha> <subject>
    - <sha> <subject>

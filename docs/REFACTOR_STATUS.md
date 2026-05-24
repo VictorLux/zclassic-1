@@ -4,7 +4,43 @@
 > truth for "what's done, what's next, what's blocked." Read this first
 > when you start a session. Full architecture: [`FRAMEWORK.md`](./FRAMEWORK.md).
 
-**Updated:** 2026-05-24 (**cutover wave** — C-3 validate_headers AUTHORITATIVE, header_probe PR-1, 4c finalize, 4d-1 mempool ALL shipped. Phase 2 cutover is now SOAK-GATED, not worker-gated — freed workers should take soak-independent work from NEXT UP below.)
+**Updated:** 2026-05-24 (**goals reframed around 10 real benchmarks** — agents now report work as "moved benchmark N", not phase codes. Phase detail still below as the execution map.)
+
+---
+
+## TOP 10 BENCHMARKS — what we are actually building
+
+These are the goals. Phases/PRs are just the means. **When you finish a task,
+report which benchmark you moved and by how much** (e.g. "warm restart 33s→29s").
+
+```
+ONE 26 MB STATIC C23 BINARY · ZERO-GC · SUPERVISED ACTORS · EVENT-SOURCED
+
+                          now ──▶ target     progress     architecture lever
+ 1 Cold sync to tip       145s ──▶  30s   ████░░░░░░ 40%  FlyClient PoW samples + SHA3 UTXO snapshot
+ 2 Warm restart            33s ──▶  10s   ████░░░░░░ 35%  one append-only event log, fsync-sentinel recovery
+ 3 Memory (RSS)          1.5GB ──▶ 1.0GB ██████░░░░ 58%✓ static link, arena alloc, no GC
+ 4 Validation throughput  cold ──▶ 5k b/s ████░░░░░░ 40%  multi-pthread stage pipeline + crypto registry
+ 5 Tip keep-up latency     n/a ──▶ <250ms ███░░░░░░░ 30%  mailbox actors, lock-free stage hand-off
+ 6 Kill-9 recovery       ≤360s ──▶  <60s  █████░░░░░ 50%  event-log torn-write sentinel + coins-before-index
+ 7 Uptime / MTBF          5.5d ──▶   30d  ███░░░░░░░ 30%  Phoenix-style supervised actor tree
+ 8 Operator pages         some ──▶ 0/mo   ████░░░░░░ 40%  Condition engine (10 live) self-heals
+ 9 Single static binary   26MB ──▶  26MB  █████████░ 95%✓ node+Tor+wallet+explorer+MCP, no deps
+10 Bug → repro → fix       hrs ──▶ 1 seed ███░░░░░░░ 33%  platform.clock/rng → seed-tape → simulator replay
+```
+
+### Which work moves which benchmark (claim from NEXT UP, aim at a number)
+
+| In-flight / claimable task | Moves benchmark |
+|---|---|
+| Cutover C-5→C-9 (body_persist…tip_finalize authoritative) | #1 cold sync, #4 throughput, #5 keep-up, #6 kill-9 |
+| 4e block-bodies-into-log + 4d-3/4d-5 projections | #2 warm restart, #6 kill-9 (one storage engine) |
+| Phase-3 dissolves (chain_restore, header_probe, utxo_recovery, …) | #3 RSS, #7 MTBF (less code, supervised) |
+| utxo_recovery PR-1 + more Conditions | #8 operator pages, #7 MTBF |
+| Phase 6 postmortem capsule (6b) + simulator (6c) | #10 bug→repro→fix |
+
+*(% bars are estimates; #3 RSS and #9 binary are live-measured. Re-measure
+the timing/throughput numbers at each cutover soak — see Conformance metrics.)*
 
 ---
 
@@ -44,13 +80,11 @@ Phase 4  [█████████░]  93%   Storage unification — plan: d
   ├ 4d-4   [██████████] 100%   znam projection — Tasks 1-5b SHIPPED  ✅ (f52313f02..eb53d9d52, 7 commits, 30 test cases pass)
   ├ 4d-5   [░░░░░░░░░░]   0%   zmsg/zslp/zswp/store batch (READY)
   └ 4e     [░░░░░░░░░░]   0%   block-body migration (spec'd, gated on 4c cutover)
-Phase 5  [█████░░░░░]  50%   Crypto agility + reproducible builds — plan: docs/architecture/phase5-crypto-agility-and-releases.md
+Phase 5  [██████████] 100%   Crypto agility (registry indirection)    ✅ DONE
   ├ 5a-1   [██████████] 100%   Crypto registry skeleton  ✅ c4bebe0a2 + polish dde0183c7
   ├ 5a-2   [██████████] 100%   First call site rewire: Equihash PoW   ✅ f00be351f (wt2)
   ├ 5a-3   [██████████] 100%   script_validate ECDSA rewire (HOT PATH)  ✅ 7c2c067a0 + cde601acf + e8b926610 (wt3)
-  ├ 5b-1   [░░░░░░░░░░]   0%   flake.nix reproducible build skeleton  ← READY (needs Nix)
-  ├ 5c     [░░░░░░░░░░]   0%   verify-reproducibility target  ← spec'd (queued post 5b-1)
-  └ 5d     [░░░░░░░░░░]   0%   cosign keyless signing  ← spec'd (queued post 5b-1)
+  └ Nix reproducible builds (5b/5c) DROPPED 2026-05-24 — out of scope. Cosign signing (5d) parked pending decision.
 Phase 6  [██░░░░░░░░]  20%   Determinism + simulator
   ├ 6a     [██████████] 100%   seed_tape primitive  ✅ c2ed3145d + cb03fe595 + c62161c2a + b53f251b7 (sub-agent)
   ├ 6b     [░░░░░░░░░░]   0%   postmortem capsule (crash → seed.cap.gz)  ← spec'd (queued post 6a)
@@ -129,8 +163,7 @@ before pushing.
 2. [`wt-phase4d-5-small-batch-projections.md`](./work/wt-phase4d-5-small-batch-projections.md) — zmsg/zslp/zswp/store + hodl batch. Closes out the 4d projections.
 3. [`wt-phase3-chain-restore-pr1-planner-extract.md`](./work/wt-phase3-chain-restore-pr1-planner-extract.md) — extract the restore planner out of `chain_restore_service.c`. Independent of the cutover chain.
 4. [`wt-phase3-utxo-recovery-pr1-reimport-flag.md`](./work/wt-phase3-utxo-recovery-pr1-reimport-flag.md) — reimport-flag prep slice (the soak-independent piece; the full utxo_recovery dissolve still gates on C-8).
-5. [`wt-phase5b1-flake-nix-skeleton.md`](./work/wt-phase5b1-flake-nix-skeleton.md) — `flake.nix` reproducible-build skeleton. **Needs Nix installed.**
-6. header_probe PR-2 / PR-3 — now unblocked (C-3 landed). Spec in `docs/dissolve/`; split into a `wt-phase3-header-probe-pr2.md` doc when claimed.
+5. header_probe PR-2 / PR-3 — now unblocked (C-3 landed). Spec in `docs/dissolve/`; split into a `wt-phase3-header-probe-pr2.md` doc when claimed.
 
 ### Soak-gated (read the spec now, start when the 24 h C-3 soak clears)
 - [`wt-phase2-cutover-c3-final-delete.md`](./work/wt-phase2-cutover-c3-final-delete.md) — delete the legacy validate_headers fallback.
