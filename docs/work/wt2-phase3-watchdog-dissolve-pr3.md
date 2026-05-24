@@ -208,6 +208,5 @@ Verification:
 - [x] `make lint` — PASS (gate #20 remains WARN with existing baseline)
 - [x] `ZCL_TEST_ONLY=watchdog_dissolve_pr2 ./test_zcl` — PASS
 - [x] `ZCL_TEST_ONLY=watchdog_conditions_pr3 ./test_zcl` — PASS
-
-Full `./test_parallel --jobs=$(nproc)` was not run in this pass; the
-focused dissolve suites and full build/lint completed cleanly.
+- [x] `./test_parallel --jobs=$(nproc)` — PASS:
+  `ALL TESTS PASSED — 0/187 groups failed (119.0s wall, 32 workers)`
