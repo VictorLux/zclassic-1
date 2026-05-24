@@ -230,8 +230,15 @@ Verification:
   cold-import completed in 49.2s, pending anchor published via CSR at
   `h=3123726`, RPC started, and peers accepted post-import headers up to
   `h=3123784` without `*-cutover-diverged` rejects.
+- Added `tools/bench_cold_import_equivalence.sh`, the PR-3 acceptance harness
+  for the remaining proof: it runs fresh serial
+  `ZCL_BLOCK_SCAN_WORKERS=1` and parallel `-cold-import` boots from the same
+  legacy datadir, computes `getblockhash(tip)` plus `getutxocommitment`, fails
+  on any height/tip/UTXO-count/SHA3 mismatch, and prints a ready-to-paste
+  `docs/BENCHMARKS_LOG.md` row seed with both `Block file scan` summary lines.
 
 Still required before PR-3 completion:
-- Run serial vs parallel cold-import on the live datadir and compare tip hash +
-  `utxo_sha3`.
-- Record before/after `blk*.dat` marking wall-time in `docs/BENCHMARKS_LOG.md`.
+- Run `tools/bench_cold_import_equivalence.sh` on a stable live/snapshotted
+  legacy datadir and keep the PASS output as the serial-vs-parallel proof.
+- Paste the harness's benchmark row seed into `docs/BENCHMARKS_LOG.md` with
+  the measured serial and parallel `blk*.dat` marking wall-times.
