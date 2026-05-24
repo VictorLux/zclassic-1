@@ -57,6 +57,7 @@
 #include "services/tip_finalize_stage.h"
 #include "services/chain_tip_watchdog.h"
 #include "framework/condition.h"
+#include "storage/block_index_projection.h"
 #include "storage/peers_projection.h"
 #include "storage/progress_store.h"
 #include "storage/utxo_projection.h"
@@ -478,6 +479,9 @@ static const struct dump_entry g_dumpers[] = {
                      "Phase 4d-4 znam projection: name_count, addr/text counts, "
                      "events_consumed_total, per-event-type counters, emit/fail "
                      "counters, last_consumed_offset, last_catch_up_ms." },
+    { "block_index_projection", block_index_projection_dump_state_json,
+                     "Phase 4c block_index_projection: cursor, entry count, "
+                     "events consumed, replace collisions, last catch_up_ms" },
 };
 
 int diagnostics_subsystems_csv(char *out, size_t out_sz)
