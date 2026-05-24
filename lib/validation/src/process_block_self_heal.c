@@ -42,6 +42,7 @@
 #include "storage/disk_block_io.h"
 #include "storage/txdb.h"
 #include "storage/block_index_db.h"
+#include "storage/utxo_reimport_flag.h"
 #include "util/log_macros.h"
 #include "util/safe_alloc.h"
 
@@ -417,14 +418,9 @@ static void process_block_maybe_write_needs_reimport_flag(int height,
     if (s_utxo_fail_count < 3 || !datadir)
         return;
 
-    char flag_path[512];
-    snprintf(flag_path, sizeof(flag_path),
-             "%s/needs_reimport", datadir);
-    FILE *flag = fopen(flag_path, "w");
-    if (flag) {
-        fprintf(flag, "1\n");
-        fclose(flag);
-    }
+    /* Storage layout + on-disk format owned by the
+     * utxo_reimport_flag primitive (lib/storage/). */
+    (void)utxo_reimport_flag_set(datadir);
     fprintf(stderr, // obs-ok:pre-existing-diagnostic
         "CRITICAL: %d UTXO failures at h=%d — "
         "wrote needs_reimport flag.\n",

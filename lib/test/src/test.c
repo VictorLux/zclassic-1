@@ -566,6 +566,7 @@ int main(void)
     failures += test_block_index_loader();
     failures += test_chain_state_validator();
     failures += test_utxo_recovery_service();
+    failures += test_utxo_reimport_flag();
     failures += test_connect_tip_hot_loop_exit();
     failures += test_self_heal_scan_fallback();
     failures += test_utxo_audit();

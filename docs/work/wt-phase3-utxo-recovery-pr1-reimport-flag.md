@@ -215,5 +215,44 @@ One commit. The entire PR is a primitive extraction + rename + tests.
 
 ## Status
 
-**READY.** Any worker can claim. Smallest Phase 3 PR available — extraction
-of a ~30 LOC primitive into its own file with isolated unit tests.
+**SHIPPED** 2026-05-24 (worker: isolated sub-agent worktree
+`.claude/worktrees/agent-a1dd386e80e2ef0ac/`).
+
+### Completion
+
+- NEW `lib/storage/include/storage/utxo_reimport_flag.h` —
+  `utxo_reimport_flag_check_and_clear` + `utxo_reimport_flag_set`.
+- NEW `lib/storage/src/utxo_reimport_flag.c` — body lifted from
+  `utxo_recovery_service.c:200-218` (read side) and the inline writer
+  in `process_block_self_heal.c:414-433` (set side). On-disk format
+  preserved byte-for-byte ("1\n", path `<datadir>/needs_reimport`).
+- EDIT `app/services/include/services/utxo_recovery_service.h` —
+  removed `utxo_recovery_check_reimport_flag` decl; added
+  `#include "storage/utxo_reimport_flag.h"` so existing recovery-service
+  callers transparently see the new primitive.
+- EDIT `app/services/src/utxo_recovery_service.c` — deleted the function
+  body; `utxo_recovery_prepare_reimport` stays here (node_db concern).
+- EDIT `config/src/boot.c:1657` — renamed boot caller to
+  `utxo_reimport_flag_check_and_clear`.
+- EDIT `lib/validation/src/process_block_self_heal.c` — replaced inline
+  `fopen`+`fprintf("1\n")`+`fclose` with `utxo_reimport_flag_set(datadir)`;
+  added include; preserved the existing diagnostic line.
+- EDIT `lib/test/src/test_utxo_recovery_service.c` — updated 3 call
+  sites to the new name (transparent via the header re-include).
+- NEW `lib/test/src/test_utxo_reimport_flag.c` — 9 assertions across
+  5 groups (absent, present-'1', present-'0', round-trip, NULL guards).
+- EDIT `lib/test/include/test/test_helpers.h` + `lib/test/src/test.c` +
+  `lib/test/src/test_parallel.c` — registered the new test.
+- Makefile: no edit needed (uses `wildcard` for `lib/storage/src/*.c`).
+
+**Verification**
+- `grep -rn 'utxo_recovery_check_reimport_flag' app/ lib/ config/ tools/` →
+  0 hits in production code (only docstrings in the new primitive and
+  this spec mention the historical name).
+- `make -j$(nproc)` PASS (test_zcl, zclassic23, test_parallel built).
+- `make lint` PASS — "all checks passed".
+- `./test_parallel --jobs=$(nproc)` → 199 / 199 groups PASS, 112 s wall.
+  - `test_utxo_reimport_flag` reports "ALL PASS" (9/9 assertions).
+  - `test_utxo_recovery_service` still PASS (no regression).
+  - `test_connect_tip_hot_loop_exit` still PASS (validates the flag
+    file written by the new `_set` helper).

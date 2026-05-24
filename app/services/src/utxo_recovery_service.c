@@ -196,26 +196,10 @@ bool utxo_recovery_wipe(struct node_db *ndb, const char *reason)
 }
 
 /* ── Auto-reimport flag ──────────────────────────────────────── */
-
-bool utxo_recovery_check_reimport_flag(const char *datadir)
-{
-    char flag_path[512];
-    snprintf(flag_path, sizeof(flag_path), "%s/needs_reimport", datadir);
-    FILE *flag = fopen(flag_path, "r");
-    if (!flag) return false;
-
-    char buf[8] = {0};
-    fread(buf, 1, sizeof(buf) - 1, flag);
-    fclose(flag);
-    remove(flag_path);
-
-    if (buf[0] == '1') {
-        printf("Auto-reimport triggered by previous UTXO "
-               "validation failures.\n");
-        return true;
-    }
-    return false;
-}
+/* The read-side helper now lives in lib/storage/ as the
+ * `utxo_reimport_flag_check_and_clear` primitive (Phase 3 PR-1).
+ * Only the reimport-prep helper remains here, because it touches
+ * `node_db` state and is conceptually a recovery-service concern. */
 
 bool utxo_recovery_prepare_reimport(struct node_db *ndb)
 {

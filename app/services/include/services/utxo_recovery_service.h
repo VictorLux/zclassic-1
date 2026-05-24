@@ -20,6 +20,10 @@
 #include <stdint.h>
 #include "core/uint256.h"
 #include "services/chain_state_validator.h"
+/* Reimport flag was extracted to a storage primitive (Phase 3 PR-1).
+ * Keep this include here so existing callers of the recovery service
+ * keep compiling without an explicit storage include. */
+#include "storage/utxo_reimport_flag.h"
 
 /* Forward declarations */
 struct main_state;
@@ -55,13 +59,13 @@ bool utxo_recovery_wipe(struct node_db *ndb, const char *reason);
 
 /* ── Auto-reimport flag ───────────────────────────────────── */
 
-/* Check for needs_reimport flag file written by process_block.c
- * after consecutive UTXO validation failures.
- * Returns true if flag was found (and removes the file). */
-bool utxo_recovery_check_reimport_flag(const char *datadir);
+/* The read-side helper moved to lib/storage/ as
+ * `utxo_reimport_flag_check_and_clear` (Phase 3 PR-1).
+ * The header above re-exports it transparently. */
 
-/* Prepare for reimport: policy-gated wipe + clear migration flag.
- * Returns true if wipe was allowed, false if refused. */
+/* Prepare for reimport: clear migration flag (the actual UTXO wipe
+ * happens at the start of utxo_recovery_import_ldb). Returns true on
+ * success. */
 bool utxo_recovery_prepare_reimport(struct node_db *ndb);
 
 /* ── LDB→SQLite UTXO import ──────────────────────────────── */

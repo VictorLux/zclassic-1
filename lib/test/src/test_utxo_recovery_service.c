@@ -157,7 +157,7 @@ int test_utxo_recovery_service(void)
         FILE *f = fopen(flag_path, "w");
         if (f) { fputs("1", f); fclose(f); }
 
-        bool found = utxo_recovery_check_reimport_flag(tmpdir);
+        bool found = utxo_reimport_flag_check_and_clear(tmpdir);
         /* File should be removed after check */
         struct stat st;
         bool file_gone = (stat(flag_path, &st) != 0);
@@ -175,7 +175,7 @@ int test_utxo_recovery_service(void)
         snprintf(tmpdir, sizeof(tmpdir), "./test-tmp/%d_urs_no_reimport", getpid());
         mkdir(tmpdir, 0755);
 
-        bool found = utxo_recovery_check_reimport_flag(tmpdir);
+        bool found = utxo_reimport_flag_check_and_clear(tmpdir);
         URS_CHECK("urs: no reimport flag → false", !found);
 
         rmdir(tmpdir);
@@ -327,7 +327,7 @@ int test_utxo_recovery_service(void)
         FILE *f = fopen(flag_path, "w");
         if (f) { fputs("0", f); fclose(f); }
 
-        bool found = utxo_recovery_check_reimport_flag(tmpdir);
+        bool found = utxo_reimport_flag_check_and_clear(tmpdir);
         URS_CHECK("urs: reimport flag '0' → no reimport", !found);
 
         /* File should still be removed */

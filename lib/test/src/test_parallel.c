@@ -83,7 +83,8 @@ volatile sig_atomic_t g_shutdown_requested = 0;
     X(chain_rollback) X(alerts) X(ws_events) X(trace) X(phgr13_fix) \
     X(no_hardcoded_home) X(cookie_rotation) X(reorg_safety) \
     X(key_scrub) X(block_index_loader) X(chain_state_validator) \
-    X(utxo_recovery_service) X(rpc_error_envelope) X(tx_property) \
+    X(utxo_recovery_service) X(utxo_reimport_flag) \
+    X(rpc_error_envelope) X(tx_property) \
     X(workpool) X(bip113_bip65) X(mempool_orphan) X(fee_estimation) \
     X(header_sync) X(header_sync_stall) X(hd_keychain) X(mnemonic) \
     X(bip44) X(compact_blocks) X(dandelion) X(addrman_rebalance) \

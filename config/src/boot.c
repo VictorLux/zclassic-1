@@ -1654,7 +1654,7 @@ bool app_init(struct app_context *ctx)
         }
 
         /* Auto-recovery: check for needs_reimport flag */
-        if (utxo_recovery_check_reimport_flag(ctx->datadir))
+        if (utxo_reimport_flag_check_and_clear(ctx->datadir))
             ctx->reimport_utxos = true;
 
         /* -reimport-utxos: force re-import from LevelDB chainstate */
