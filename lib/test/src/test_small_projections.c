@@ -4,9 +4,12 @@
 
 #include "storage/event_log.h"
 #include "storage/event_log_payloads.h"
+#include "storage/small_projections.h"
 
 #include <stdio.h>
 #include <string.h>
+#include <sys/stat.h>
+#include <unistd.h>
 
 #define SP_CHECK(label, cond) do { \
     bool _ok = (cond); \
@@ -151,6 +154,96 @@ static int t_hodl_payload_roundtrip(void)
     return failures;
 }
 
+static void sp_tmpdir(char *buf, size_t n, const char *tag)
+{
+    snprintf(buf, n, "./test-tmp/small_projections_%d_%s",
+             (int)getpid(), tag);
+    test_cleanup_tmpdir(buf);
+    mkdir("test-tmp", 0755);
+    mkdir(buf, 0755);
+}
+
+static int t_projection_skeletons_fresh(void)
+{
+    int failures = 0;
+    char dir[256];
+    char elog_path[320];
+    char contacts_path[320];
+    char onion_path[320];
+    char hodl_path[320];
+    sp_tmpdir(dir, sizeof(dir), "fresh");
+    snprintf(elog_path, sizeof(elog_path), "%s/event_log.dat", dir);
+    snprintf(contacts_path, sizeof(contacts_path), "%s/contacts.db", dir);
+    snprintf(onion_path, sizeof(onion_path), "%s/onion_announcements.db",
+             dir);
+    snprintf(hodl_path, sizeof(hodl_path), "%s/hodl_history.db", dir);
+
+    event_log_t *log = event_log_open(elog_path);
+    SP_CHECK("event log open", log != NULL);
+    if (!log) {
+        test_cleanup_tmpdir(dir);
+        return failures;
+    }
+
+    contacts_projection_t *contacts =
+        contacts_projection_open(contacts_path, log);
+    onion_ann_projection_t *onion =
+        onion_ann_projection_open(onion_path, log);
+    hodl_history_projection_t *hodl =
+        hodl_history_projection_open(hodl_path, log);
+    SP_CHECK("contacts open", contacts != NULL);
+    SP_CHECK("onion announcements open", onion != NULL);
+    SP_CHECK("hodl history open", hodl != NULL);
+    SP_CHECK("contacts current", contacts_projection_current() == contacts);
+    SP_CHECK("onion current", onion_ann_projection_current() == onion);
+    SP_CHECK("hodl current", hodl_history_projection_current() == hodl);
+    SP_CHECK("contacts fresh count",
+             contacts && contacts_projection_count(contacts) == 0);
+    SP_CHECK("onion fresh count",
+             onion && onion_ann_projection_count(onion) == 0);
+    SP_CHECK("hodl fresh count",
+             hodl && hodl_history_projection_count(hodl) == 0);
+    SP_CHECK("contacts fresh catchup",
+             contacts && contacts_projection_catch_up(contacts) == 0);
+    SP_CHECK("onion fresh catchup",
+             onion && onion_ann_projection_catch_up(onion) == 0);
+    SP_CHECK("hodl fresh catchup",
+             hodl && hodl_history_projection_catch_up(hodl) == 0);
+
+    contacts_projection_close(contacts);
+    onion_ann_projection_close(onion);
+    hodl_history_projection_close(hodl);
+    SP_CHECK("contacts current cleared", contacts_projection_current() == NULL);
+    SP_CHECK("onion current cleared", onion_ann_projection_current() == NULL);
+    SP_CHECK("hodl current cleared", hodl_history_projection_current() == NULL);
+
+    contacts = contacts_projection_open(contacts_path, log);
+    onion = onion_ann_projection_open(onion_path, log);
+    hodl = hodl_history_projection_open(hodl_path, log);
+    SP_CHECK("contacts reopen", contacts != NULL);
+    SP_CHECK("onion reopen", onion != NULL);
+    SP_CHECK("hodl reopen", hodl != NULL);
+    SP_CHECK("contacts reopen count",
+             contacts && contacts_projection_count(contacts) == 0);
+    SP_CHECK("onion reopen count",
+             onion && onion_ann_projection_count(onion) == 0);
+    SP_CHECK("hodl reopen count",
+             hodl && hodl_history_projection_count(hodl) == 0);
+    SP_CHECK("contacts offset preserved",
+             contacts && contacts_projection_catch_up(contacts) == 0);
+    SP_CHECK("onion offset preserved",
+             onion && onion_ann_projection_catch_up(onion) == 0);
+    SP_CHECK("hodl offset preserved",
+             hodl && hodl_history_projection_catch_up(hodl) == 0);
+
+    contacts_projection_close(contacts);
+    onion_ann_projection_close(onion);
+    hodl_history_projection_close(hodl);
+    event_log_close(log);
+    test_cleanup_tmpdir(dir);
+    return failures;
+}
+
 int test_small_projections(void)
 {
     int failures = 0;
@@ -159,6 +252,7 @@ int test_small_projections(void)
     failures += t_contact_payload_roundtrip();
     failures += t_onion_payload_roundtrip();
     failures += t_hodl_payload_roundtrip();
+    failures += t_projection_skeletons_fresh();
     printf("small_projections: %d failures\n", failures);
     return failures;
 }
