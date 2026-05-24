@@ -8,48 +8,57 @@
 
 ---
 
-## OUR GOALS — one binary, four promises, ten numbers
-
-Everything we build serves four promises. Each promise is a few measurable
-numbers. **When you finish a task, say which number you moved** (e.g. "warm
-restart 33s→29s"). Phases/PRs below are just the means.
+## OUR GOALS — one binary, four promises
 
 ```
-        Z C L A S S I C 2 3   —   one static C23 binary, no GC, no daemons
+   ════════════════  Z C L A S S I C 2 3  ════════════════
+        one static C23 binary · no GC · no daemons
 
-                                  now  ──▶  goal     progress      how we get there
- ┌ ⚡ FAST ───────────────────────────────────────────────────────────────────────┐
- │  1  Cold sync to tip          180s ──▶   30s   ███░░░░░░░ 30%  parallel blk-scan (PR-3)│
- │  2  Warm restart               33s ──▶   10s   ████░░░░░░ 40%  one append-only event log│
- │  4  Validation speed          cold ──▶ 5k blk/s ████░░░░░░ 40%  staged multi-thread pipeline│
- │  5  New-block latency          n/a ──▶ <250ms  ███░░░░░░░ 30%  actor mailboxes, no locks│
- ├ 🪶 LEAN ────────────────────────────────────────────────────────────────────────┤
- │  3  Memory (RSS)             1.5GB ──▶  1.0GB  ██████░░░░ 58%  arena alloc, zero GC │
- │  9  Binary size             14.6MB ──▶  stay slim ██████████ ✓  static link, no deps │
- ├ 💪 UNBREAKABLE ─────────────────────────────────────────────────────────────────┤
- │  6  Crash/wedge recovery     180s* ──▶   <60s  ████░░░░░░ 45%  torn-write sentinel + snapshot escape (PR-0)│
- │  7  Uptime before failure     5.5d ──▶    30d  ███░░░░░░░ 30%  supervised actor tree│
- │  8  Alerts to a human       some/mo ──▶   0/mo  ████░░░░░░ 40%  10 self-healing Conditions│
- ├ 🔬 DEBUGGABLE ──────────────────────────────────────────────────────────────────┤
- │ 10  Bug → reproducible fix   hours ──▶  1 seed ███░░░░░░░ 33%  deterministic seed-tape replay│
- └─────────────────────────────────────────────────────────────────────────────────┘
-   *a stale failed-block wedged the tip today; cold-import fixed it. PR-0 makes
-    that recovery in-place and automatic (<60s) instead of a manual reimport.
-   Bars are estimates except #3 RSS and #9 binary (live-measured). History →
-   BENCHMARKS_LOG.md — append a row each session; "now" comes from there.
+   ⚡  FAST          start cold, reach tip      3 min  ──▶  30 sec
+       ███░░░░░░░░░░░░░░░░░░░░░░░░░░░░  on the way
+
+   🪶  LEAN          fit on a small box        1.5 GB  ──▶  1.0 GB
+       ███████████████░░░░░░░░░░░░░░░  binary already 15 MB ✓
+
+   💪  UNBREAKABLE   heal itself, no operator   manual  ──▶  automatic
+       █████████████░░░░░░░░░░░░░░░░░  self-heal building now
+
+   🔬  HONEST        any bug, reproduce it       hours  ──▶  1 seed
+       ██████████░░░░░░░░░░░░░░░░░░░░  replay simulator
+
+   ════════════════════════════════════════════════════════
 ```
 
-### What moves which number (claim from NEXT UP, aim at a goal)
+**When you finish a task, say which promise you moved.** The four promises
+break into 10 measured numbers (the contract agents aim at):
 
-| Work in flight / claimable | Moves |
+| # | Number | now ──▶ goal | promise |
+|---|---|---|---|
+| 1 | Cold sync to tip | 180s ─▶ 30s | ⚡ |
+| 2 | Warm restart | 33s ─▶ 10s | ⚡ |
+| 4 | Validation speed | cold ─▶ 5k blk/s | ⚡ |
+| 5 | New-block latency | n/a ─▶ <250ms | ⚡ |
+| 3 | Memory (RSS) | 1.5GB ─▶ 1.0GB | 🪶 |
+| 9 | Binary size | 14.6MB ─▶ slim ✓ | 🪶 |
+| 6 | Crash/wedge recovery | 180s ─▶ <60s | 💪 |
+| 7 | Uptime before failure | 5.5d ─▶ 30d | 💪 |
+| 8 | Alerts to a human | some ─▶ 0/mo | 💪 |
+| 10 | Bug → reproducible fix | hours ─▶ 1 seed | 🔬 |
+
+*Live-measured: #3 RSS, #9 binary. Rest are estimates → run a harness and log it
+in [`BENCHMARKS_LOG.md`](./BENCHMARKS_LOG.md). The "now" column comes from there.*
+
+### What's moving each number right now
+
+| Work | Number |
 |---|---|
-| PR-3 parallel blk*.dat marking in cold-import | **#1** cold sync (101s→seconds) |
-| PR-0/PR-1 snapshot wedge-recovery *(wt3 in progress)* | **#6** recovery, #5 keep-up |
-| Cutover C-5→C-9 (body_persist…tip_finalize authoritative) | #1, #4, #5, #6 |
-| 4e block-bodies-into-log + 4d projections | **#2** warm restart, #6 |
-| Phase-3 dissolves (chain_restore, header_probe ✅, utxo_recovery) | **#3** RSS, #7 MTBF |
-| More self-heal Conditions | **#8** pages, #7 MTBF |
-| Phase-6 postmortem capsule + simulator | **#10** bug→fix |
+| PR-3 parallel blk*.dat marking *(claimable, profiled)* | **#1** |
+| Snapshot wedge-recovery *(wt3 building)* | **#6** #5 |
+| Cutover C-5→C-9 authoritative | #1 #4 #5 #6 |
+| 4e bodies-into-log + 4d projections | **#2** #6 |
+| Phase-3 dissolves (header_probe ✅, chain_restore, utxo_recovery) | **#3** #7 |
+| More self-heal Conditions | **#8** #7 |
+| Phase-6 postmortem + simulator | **#10** |
 
 ---
 
