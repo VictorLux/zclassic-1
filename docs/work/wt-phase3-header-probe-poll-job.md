@@ -217,3 +217,63 @@ One commit per task. Push after Task 4 + Task 5.
 supervisor exists; the existing service exposes the needed function.
 
 <!-- Worker: append a Completion section below when done. -->
+
+---
+
+## Completion — 2026-05-24 (wt-main session)
+
+**Status: DONE**
+
+### What shipped
+- NEW `app/jobs/include/jobs/header_probe_poll.h` — Job public API.
+- NEW `app/jobs/src/header_probe_poll.c` — Job impl. Static
+  `liveness_contract`, 30 s `period_secs`, registers into
+  `g_net_sup` via `supervisor_register_in_domain`. Tick body
+  delegates to a new public `header_probe_tick_once()` on the
+  service.
+- EDIT `app/services/include/services/header_probe_service.h` —
+  exposed `header_probe_tick_once()`. Existing
+  `header_probe_pull_range` was already public; no change.
+- EDIT `app/services/src/header_probe_service.c` — extracted the
+  heartbeat-callback body into the public `header_probe_tick_once()`;
+  legacy `hp_on_tick` is now a thin shim delegating to it. Zero
+  behavior change — same RPC, same gating, same
+  `accept_block_header` path.
+- EDIT `config/src/boot_services.c` — `boot_header_probe_start()`
+  now calls `header_probe_poll_register()` after init instead of
+  `header_probe_start()` (heartbeat ring). `boot_header_probe_stop()`
+  is a no-op (supervisor handles unregister at `supervisor_stop()`).
+- EDIT `Makefile` — added `jobs` to `APP_DIRS` so
+  `app/jobs/src/*.c` is compiled and `app/jobs/include` is on
+  the include path.
+- NEW `lib/test/src/test_header_probe_poll.c` — 8 assertions:
+  registration idempotency, visibility in supervisor snapshot,
+  cadence config = 30 s, safe-no-op when service uninitialized.
+- WIRE the test into `lib/test/include/test/test_helpers.h`,
+  `lib/test/src/test.c`, `lib/test/src/test_parallel.c`.
+
+### Verification
+- `make -j$(nproc)` clean (zclassic23 + test_zcl + test_parallel
+  all rebuilt).
+- `make lint` PASS (no new violations; pre-existing WARN gates
+  unchanged).
+- `./test_parallel --jobs=$(nproc)` — **0/199 groups failed**,
+  108 s wall, 32 workers. `test_header_probe_poll` 8/8 OK.
+- `make deploy` restarted the live node (deploy_verify timed out
+  on a pre-existing `chain_evidence` frozen-contradiction
+  unrelated to this PR; node started cleanly and serves RPC).
+- **Live `dumpstate supervisor` confirms the new child:**
+  ```
+  [net] net.header_probe_poll: period=30s ticks_run=1
+        last_tick_age_us=7154168 progress_marker=1
+  ```
+  Ticked once within the first 30 s as designed.
+
+### What was NOT touched (per spec)
+- `header_probe_service.c` peer-selection / scoring / batched
+  RPC / `accept_block_header` paths — all unchanged.
+- Wave S stage files, Phase 4 / 5 / 6 code paths.
+- `docs/REFACTOR_STATUS.md`, `docs/FRAMEWORK.md`, `CLAUDE.md`.
+- The legacy `header_probe_start()` heartbeat-ring path stays
+  callable (MCP tools / tests that still need it). Boot just no
+  longer wires it.

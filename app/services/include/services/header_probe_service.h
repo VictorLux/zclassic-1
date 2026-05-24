@@ -54,11 +54,25 @@ bool header_probe_init(const struct header_probe_config *cfg,
                        struct main_state *ms,
                        const struct chain_params *params);
 
-/* Register periodic tick on heartbeat ring. Idempotent. */
+/* Register periodic tick on heartbeat ring. Idempotent.
+ *
+ * DEPRECATED in Phase 3 PR-1: prefer registering the
+ * `header_probe_poll` Job (app/jobs/) with the network supervisor.
+ * Still functional for legacy callers / tests. */
 bool header_probe_start(void);
 
 /* Unregister periodic tick. Idempotent. */
 void header_probe_stop(void);
+
+/* One-shot poll tick. Identical logic to the legacy heartbeat
+ * callback: cheap getblockcount to discover remote tip, compare
+ * against local header tip, and pull a batch if the lag threshold
+ * is exceeded. Safe to call when not initialized (no-op).
+ *
+ * Used by the `header_probe_poll` Job (app/jobs/) as the body of
+ * its supervisor tick callback. Pure scheduling separation — same
+ * RPC, same validation, same accept_block_header path. */
+void header_probe_tick_once(void);
 
 /* Synchronous one-shot for the MCP tool + tests:
  *   start_height: where to begin (inclusive). Use our_tip+1 normally.

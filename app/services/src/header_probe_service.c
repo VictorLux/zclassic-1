@@ -1078,18 +1078,25 @@ bool header_probe_pull_range_blocking(int from_height,
     return cursor > remote_tip;
 }
 
-/* ── Periodic tick (heartbeat callback) ────────────────────────── */
+/* ── Periodic tick (shared body for heartbeat + supervisor Job) ── */
 
-static void hp_on_tick(void *ctx)
+void header_probe_tick_once(void)
 {
-    (void)ctx;
     pthread_mutex_lock(&g_hp.lock);
+    bool inited = g_hp.initialized;
     struct main_state *ms = g_hp.ms;
     int lag_thresh = g_hp.lag_threshold > 0
                          ? g_hp.lag_threshold : HP_DEFAULT_LAG;
     int batch = g_hp.batch_size > 0 ? g_hp.batch_size : HP_DEFAULT_BATCH;
+    char host[64], user[64], pass[128];
+    int port;
+    snprintf(host, sizeof(host), "%s",
+             g_hp.rpc_host[0] ? g_hp.rpc_host : HP_DEFAULT_HOST);
+    port = g_hp.rpc_port ? g_hp.rpc_port : HP_DEFAULT_PORT;
+    snprintf(user, sizeof(user), "%s", g_hp.rpc_user);
+    snprintf(pass, sizeof(pass), "%s", g_hp.rpc_password);
     pthread_mutex_unlock(&g_hp.lock);
-    if (!ms) return;
+    if (!inited || !ms) return;
 
     int local_tip = 0;
     if (ms->pindex_best_header)
@@ -1099,16 +1106,6 @@ static void hp_on_tick(void *ctx)
     if (local_tip < 0) local_tip = 0;
 
     /* Cheap getblockcount to decide whether to pull. */
-    char host[64], user[64], pass[128];
-    int port;
-    pthread_mutex_lock(&g_hp.lock);
-    snprintf(host, sizeof(host), "%s",
-             g_hp.rpc_host[0] ? g_hp.rpc_host : HP_DEFAULT_HOST);
-    port = g_hp.rpc_port ? g_hp.rpc_port : HP_DEFAULT_PORT;
-    snprintf(user, sizeof(user), "%s", g_hp.rpc_user);
-    snprintf(pass, sizeof(pass), "%s", g_hp.rpc_password);
-    pthread_mutex_unlock(&g_hp.lock);
-
     int remote_tip = -1;
     char err[160] = {0};
     if (!hp_fetch_remote_tip(host, port, user, pass, &remote_tip,
@@ -1123,6 +1120,15 @@ static void hp_on_tick(void *ctx)
 
     int added = 0;
     (void)header_probe_pull_range(local_tip + 1, batch, &added);
+}
+
+/* Heartbeat callback shim — delegates to the public tick. Kept so the
+ * `header_probe_start` path (legacy heartbeat ring) still works for
+ * tests and operators not yet on the supervisor Job. */
+static void hp_on_tick(void *ctx)
+{
+    (void)ctx;
+    header_probe_tick_once();
 }
 
 /* ── init / start / stop ───────────────────────────────────────── */

@@ -28,6 +28,7 @@
 #include "supervisors/domains.h"
 #include "supervisors/self_heal.h"
 #include "services/header_probe_service.h"
+#include "jobs/header_probe_poll.h"
 #include "services/legacy_mirror_sync_service.h"
 #include "services/node_health_service.h"
 #include "health/heartbeat.h"
@@ -1003,17 +1004,28 @@ static bool boot_header_probe_start(void *ctx)
     cfg.lag_threshold = 1000000000;
     if (!header_probe_init(&cfg, svc->state, svc->params))
         return false;
-    if (header_probe_start()) {
-        printf("[header-probe] periodic header probe started\n");
+    /* Phase 3 dissolve PR-1: register the polling cadence as a
+     * supervised Job in the network domain instead of using the
+     * shared heartbeat ring. Same 30 s cadence, same RPC, same
+     * accept_block_header path — just owned by the supervisor so
+     * `zcl_state subsystem=supervisor` shows last_tick_age_us +
+     * ticks_run for the poll. */
+    header_probe_poll_register();
+    if (header_probe_poll_is_registered()) {
+        printf("[header-probe] poll Job registered with net supervisor\n");
         return true;
     }
-    return false;
+    fprintf(stderr,  // obs-ok:header-probe-poll-fallback
+            "[header-probe] WARN poll Job register failed; "
+            "header_probe RPC + state introspection still available\n");
+    return true;  /* non-fatal — manual MCP calls still work */
 }
 
 static void boot_header_probe_stop(void *ctx)
 {
     (void)ctx;
-    header_probe_stop();
+    /* No-op: supervisor unregister happens at supervisor_stop().
+     * The legacy `header_probe_stop()` is unused in the Job path. */
 }
 
 static bool boot_legacy_mirror_start(void *ctx)

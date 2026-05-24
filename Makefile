@@ -4,7 +4,7 @@
 CC = cc
 
 # App layer (MVC)
-APP_DIRS = models controllers views services supervisors conditions
+APP_DIRS = models controllers views services supervisors conditions jobs
 APP_INCLUDES = $(foreach d,$(APP_DIRS),-Iapp/$(d)/include)
 APP_SRCS = $(foreach d,$(APP_DIRS),$(wildcard app/$(d)/src/*.c))
 

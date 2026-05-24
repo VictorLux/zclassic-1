@@ -607,7 +607,9 @@ int main(void)
     failures += test_event_log();
     failures += test_peers_projection();
     failures += test_utxo_projection();
+    failures += test_block_index_projection();
     failures += test_header_admit_stage();
+    failures += test_header_probe_poll();
     failures += test_validate_headers_stage();
     failures += test_body_fetch_stage();
     failures += test_body_persist_stage();
