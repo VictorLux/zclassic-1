@@ -164,7 +164,8 @@ projection ✅ (a9fb0f396..49ef6bbe6) · chain_restore PR-1 planner extract ✅
 (afed3d673..a5fbe3700) · utxo_recovery PR-1 reimport-flag primitive ✅ (af7ba7a30).
 
 ### Claimable NOW (no soak gate, fully independent)
-1. [`wt-phase4d-5-small-batch-projections.md`](./work/wt-phase4d-5-small-batch-projections.md) — zmsg/zslp/zswp/store + hodl batch. Closes out the 4d projections.
+1. ⚡ [`wt-perf-integrate-rebuild.md`](./work/wt-perf-integrate-rebuild.md) **PR-1: hardware CRC32C in event_log.c** — proven in `tools/rebuild_recent.c` (whole-chain rebuild 34s→5.6s; software CRC was ~half). Drop-in, self-checked byte-exact. Moves #2 warm-restart + all bulk writes. **High-value, low-risk — take this.**
+2. [`wt-phase4d-5-small-batch-projections.md`](./work/wt-phase4d-5-small-batch-projections.md) — zmsg/zslp/zswp/store + hodl batch. Closes out the 4d projections.
 2. header_probe PR-2 / PR-3 — now unblocked (C-3 landed). Spec in `docs/dissolve/`; split into a `wt-phase3-header-probe-pr2.md` doc when claimed.
 3. chain_restore PR-2 — next dissolve slice now that the planner is extracted (PR-1 ✅). Split a `wt-phase3-chain-restore-pr2.md` from `docs/dissolve/chain_restore_service.md`.
 
