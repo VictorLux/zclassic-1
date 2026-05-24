@@ -49,6 +49,7 @@
 #include <sys/mman.h>
 #include <sys/syscall.h>
 #include <linux/io_uring.h>
+#include <nmmintrin.h>   /* SSE4.2 hardware CRC-32C */
 
 /* Provided by main.c in the node; standalone tools define their own. */
 volatile sig_atomic_t g_shutdown_requested = 0;
@@ -60,7 +61,9 @@ static int64_t now_ms(void)
     return (int64_t)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
 }
 
-/* ── crc32c (Castagnoli), byte-identical to lib/storage/src/event_log.c ── */
+/* ── crc32c (Castagnoli) — CRC-32C value identical to event_log.c ──────
+ * Software table is the reference; the SSE4.2 hardware path (this CPU has
+ * it) is ~10-20x faster and is verified to match the table at startup. */
 static uint32_t g_crc_tab[256];
 static void crc_init(void)
 {
@@ -70,13 +73,36 @@ static void crc_init(void)
         g_crc_tab[i] = c;
     }
 }
-static uint32_t crc32c(const void *data, size_t len)
+static uint32_t crc32c_sw(const void *data, size_t len)
 {
     const uint8_t *p = data;
     uint32_t crc = 0xFFFFFFFFu;
     for (size_t i = 0; i < len; i++)
         crc = (crc >> 8) ^ g_crc_tab[(crc ^ p[i]) & 0xFFu];
     return crc ^ 0xFFFFFFFFu;
+}
+/* Hardware CRC-32C via SSE4.2 (8 bytes/step). Same polynomial + reflection
+ * + 0xFFFFFFFF init/final-xor as the table, so values are identical. */
+static uint32_t crc32c(const void *data, size_t len)
+{
+    const uint8_t *p = data;
+    uint32_t crc = 0xFFFFFFFFu;
+    while (len >= 8) { uint64_t v; memcpy(&v, p, 8);
+        crc = (uint32_t)_mm_crc32_u64(crc, v); p += 8; len -= 8; }
+    while (len--) crc = _mm_crc32_u8(crc, *p++);
+    return crc ^ 0xFFFFFFFFu;
+}
+/* Abort early if HW and SW disagree — guarantees byte-valid output. */
+static void crc_selfcheck(void)
+{
+    uint8_t buf[1031];
+    for (size_t i = 0; i < sizeof buf; i++) buf[i] = (uint8_t)(i * 31u + 7u);
+    for (size_t n = 0; n <= sizeof buf; n += (n < 16 ? 1 : 97)) {
+        if (crc32c(buf, n) != crc32c_sw(buf, n)) {
+            fprintf(stderr, "rebuild_recent: HW crc32c mismatch at n=%zu — abort\n", n);
+            exit(2);
+        }
+    }
 }
 static void put_u32_le(uint8_t *d, uint32_t v) { for (int i=0;i<4;i++) d[i]=(uint8_t)(v>>(8*i)); }
 static void put_u64_le(uint8_t *d, uint64_t v) { for (int i=0;i<8;i++) d[i]=(uint8_t)(v>>(8*i)); }
@@ -291,6 +317,7 @@ static char *snapshot_dir(const char *src)
 int main(int argc, char **argv)
 {
     crc_init();
+    crc_selfcheck();
     const char *home = getenv("HOME");
     char default_dd[2048];
     snprintf(default_dd, sizeof default_dd, "%s/.zclassic", home ? home : ".");

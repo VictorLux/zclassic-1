@@ -37,7 +37,8 @@ Format: `date | commit | benchmark | value | how measured / notes`
 | date | commit | N blocks | rebuild ms | blocks/s | bytes | notes |
 |---|---|---|---|---|---|---|
 | 2026-05-24 | (tool) | 10 | 339 | 29 | 14,590 | v1, durable event_log appender. **fsync-bound** (fsync×2/event). |
-| 2026-05-24 | (tool) | ALL (3,123,618) | 34,180 | 91,387 | 11.25 GB | **io_uring** bulk writer (8 buffers in flight, 1 fsync at end). 5.1M tx, 11.4M utxo-adds, 27.7M events, short_writes=0. 329 MB/s. setup +5.4s (snapshot 1.9s + index 3.5s). ~3000× the v1 write path. **This is the kept version.** |
+| 2026-05-24 | (tool) | ALL (3,123,618) | 34,180 | 91,387 | 11.25 GB | **io_uring** bulk writer (8 buffers in flight, 1 fsync at end). 5.1M tx, 11.4M utxo-adds, 27.7M events, short_writes=0. 329 MB/s. setup +5.4s. ~3000× the v1 write path. |
+| 2026-05-24 | (tool) | ALL (3,123,618) | 17,990 | 173,611 | 11.25 GB | **+ hardware CRC32C (SSE4.2)**, verified == software table at startup. 625 MB/s. Software CRC was ~half the runtime (34→18s). SHA256 already SHA-NI. **Kept version.** |
 
 ### Parallelization experiment (NEGATIVE result — reverted)
 
