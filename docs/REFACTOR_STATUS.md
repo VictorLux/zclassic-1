@@ -4,7 +4,7 @@
 > truth for "what's done, what's next, what's blocked." Read this first
 > when you start a session. Full architecture: [`FRAMEWORK.md`](./FRAMEWORK.md).
 
-**Updated:** 2026-05-24 (**5a-3 COMPLETE** — ECDSA hot-path through registry; **C-2 CUTOVER COMPLETE** — header_admit AUTHORITATIVE; 4b at 80%; 4c + 6a sub-agents in flight; C-3 + 5b-1 + 4d-1/3/4/5 READY)
+**Updated:** 2026-05-24 (**4c block_index_projection SHIPPED to production** — Tasks 1-6 on main; **6a seed_tape SHIPPED**; 4d-4 znam at 20%; diff MCP tool + unit tests pending as Phase 4c-finalize)
 
 ---
 
@@ -33,14 +33,15 @@ Phase 3  [██████░░░░]  60%   Dissolve mega-modules          
   ├ chain_restore  [░░░░░░░░░░] independent — plan ready, awaiting per-PR assignment
   ├ header_probe   [░░░░░░░░░░] PR-1 (poll Job extract) READY; PR-2/3 gated on C-3
   └ utxo_recovery  [░░░░░░░░░░] gated on C-8 cutover (dissolve plan ready)
-Phase 4  [██████░░░░]  58%   Storage unification — plan: docs/architecture/phase4-storage-unification.md
+Phase 4  [████████░░]  75%   Storage unification — plan: docs/architecture/phase4-storage-unification.md
   ├ 4a     [██████████] 100%   event_log primitive  ✅ 76b3a10b4
-  ├ 4b     [████████░░]  80%   utxo_projection  🚧 sub-agent shipped tasks 1, 2-4, 5, 6-8/10 (168c522de) — diff tool + push remain
-  ├ 4c     [░░░░░░░░░░]   0%   block_index_projection — kills LevelDB  🚧 sub-agent in flight
+  ├ 4b     [██████████] 100%   utxo_projection — Tasks 1-9 SHIPPED  ✅ (diff tool: 96113ca4e)
+  ├ 4c     [██████░░░░]  60%   block_index_projection — Tasks 1-6 SHIPPED  ✅ (490508125, 76bca5655, d40286d4e, ed34743ba)
+  ├ 4c-fin [░░░░░░░░░░]   0%   block_index_projection finalize — diff MCP tool + 9 unit tests  ← spec'd, READY
   ├ 4d-1   [░░░░░░░░░░]   0%   mempool projection (READY)
   ├ 4d-2   [██████████] 100%   peers_projection  ✅ 91aa65c1c + 5dc442a81 + 48e78d801 + f925fb6f3 (wt2)
   ├ 4d-3   [░░░░░░░░░░]   0%   wallet view projection (READY)
-  ├ 4d-4   [░░░░░░░░░░]   0%   znam projection (READY)
+  ├ 4d-4   [██░░░░░░░░]  20%   znam projection  🚧 sub-agent shipped Tasks 1-2 (f52313f02, 60b33dbd1)
   ├ 4d-5   [░░░░░░░░░░]   0%   zmsg/zslp/zswp/store batch (READY)
   └ 4e     [░░░░░░░░░░]   0%   block-body migration (spec'd, gated on 4c cutover)
 Phase 5  [█████░░░░░]  50%   Crypto agility + reproducible builds — plan: docs/architecture/phase5-crypto-agility-and-releases.md
@@ -50,8 +51,8 @@ Phase 5  [█████░░░░░]  50%   Crypto agility + reproducible b
   ├ 5b-1   [░░░░░░░░░░]   0%   flake.nix reproducible build skeleton  ← READY (needs Nix)
   ├ 5c     [░░░░░░░░░░]   0%   verify-reproducibility target  ← spec'd (queued post 5b-1)
   └ 5d     [░░░░░░░░░░]   0%   cosign keyless signing  ← spec'd (queued post 5b-1)
-Phase 6  [░░░░░░░░░░]   0%   Determinism + simulator
-  ├ 6a     [█░░░░░░░░░]   5%   seed_tape primitive  🚧 sub-agent in flight (isolated worktree)
+Phase 6  [██░░░░░░░░]  20%   Determinism + simulator
+  ├ 6a     [██████████] 100%   seed_tape primitive  ✅ c2ed3145d + cb03fe595 + c62161c2a + b53f251b7 (sub-agent)
   ├ 6b     [░░░░░░░░░░]   0%   postmortem capsule (crash → seed.cap.gz)  ← spec'd (queued post 6a)
   └ 6c     [░░░░░░░░░░]   0%   simulator harness (chaos CI)  ← spec'd (queued post 6b)
 Phase 7  [░░░░░░░░░░]   0%   Frontier (io_uring, hot reload)
