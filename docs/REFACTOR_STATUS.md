@@ -17,8 +17,8 @@ Phase 2  [██████████] 100%   Wave S SHADOW complete (S-1..S-
   ├ S-5..S-7 [██████████] 100%   body_persist, script_validate, proof_validate ✅
   ├ S-8    [██████████] 100%   utxo_apply shadow (wt3)                ✅ 497220f58
   └ S-9    [██████████] 100%   tip_finalize shadow (wt3)              ✅ 1a65b33c7
-Phase 2 CUTOVER [░░░░░░░░░░]   0%   Flip shadow → authoritative      ← C-2 READY (S-9 merged)
-  ├ C-2    [░░░░░░░░░░]   0%   header_admit authoritative             ← READY  (standalone spec)
+Phase 2 CUTOVER [██░░░░░░░░]   3%   Flip shadow → authoritative      ← C-2 IN PROGRESS
+  ├ C-2    [██░░░░░░░░]  25%   header_admit authoritative             🚧 commit 1/4 (58c08193c)
   ├ C-3    [░░░░░░░░░░]   0%   validate_headers authoritative          ← spec'd (queued, post C-2)
   ├ C-5    [░░░░░░░░░░]   0%   body_persist + delete body_fetch (batch spec, post C-3)
   ├ C-6    [░░░░░░░░░░]   0%   script_validate authoritative (batch spec, post C-5)
