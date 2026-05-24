@@ -32,6 +32,12 @@ Format: `date | commit | benchmark | value | how measured / notes`
 | 2026-05-24 | be5e90b05 | #7 MTBF | — | uptime only 990s (recent restart); needs a soak to measure |
 | 2026-05-24 | be5e90b05 | #8 operator pages | 6/10 conditions active, 1 critical failing | `zcl_conditions` — self-heal degraded right now |
 
+## Native rebuild benchmark (`rebuild_recent` tool)
+
+| date | commit | N blocks | rebuild ms | blocks/s | bytes | notes |
+|---|---|---|---|---|---|---|
+| 2026-05-24 | (tool) | 10 | 339 | 29 | 14,590 | from live zclassicd tip 3,123,617; **fsync-bound** (event_log fsync×2/event, ~60 fsyncs). setup: snapshot 2.1s + index scan 3.2s (3.0GB index). Optimization: batch fsync per-block → est. 10–30× faster. |
+
 ## Operational snapshot (context for the above, not a benchmark)
 
 | date | commit | height-behind | peers | uptime | errors_total | note |
