@@ -166,14 +166,13 @@ int test_header_admit_stage(void)
 
     blocker_module_init();
 
-    /* ── cutover mode defaults to AUTHORITATIVE ───────────────────── */
+    /* ── cutover mode defaults to SHADOW ──────────────────────────── */
     {
-        HA_CHECK("mode defaults to AUTHORITATIVE",
-                 header_admit_get_mode() == HEADER_ADMIT_MODE_AUTHORITATIVE);
+        HA_CHECK("mode defaults to SHADOW",
+                 header_admit_get_mode() == HEADER_ADMIT_MODE_SHADOW);
         header_admit_set_mode((header_admit_mode_t)999);
         HA_CHECK("invalid mode coerces to SHADOW",
                  header_admit_get_mode() == HEADER_ADMIT_MODE_SHADOW);
-        header_admit_set_mode(HEADER_ADMIT_MODE_AUTHORITATIVE);
     }
 
     /* ── happy path: drain a 5-block synthetic chain ───────────────── */
@@ -382,6 +381,7 @@ int test_header_admit_stage(void)
             hdr.nSolutionSize = 0;
 
             int guard_events = 0;
+            event_log_init();
             event_clear_observers(EV_CUTOVER_GUARD_DIVERGED);
             HA_CHECK("guard: observer registers",
                      event_observe(EV_CUTOVER_GUARD_DIVERGED,

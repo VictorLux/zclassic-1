@@ -79,7 +79,7 @@ static _Atomic uint64_t g_failed_total = 0;
 static _Atomic int64_t  g_last_step_unix = 0;
 static _Atomic int64_t  g_last_blocked_unix = 0;
 static _Atomic validate_headers_mode_t g_mode =
-    VALIDATE_HEADERS_MODE_AUTHORITATIVE;
+    VALIDATE_HEADERS_MODE_SHADOW;
 
 /* Injectable validator. Default = full PoW + Equihash from disk.
  * Tests set this via validate_headers_stage_set_validator(). Reset to

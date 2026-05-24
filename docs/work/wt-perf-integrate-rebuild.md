@@ -218,9 +218,20 @@ Verification:
 - New observed live-sync blocker after activation: headers immediately after
   the imported tip are rejected as `validate-headers-cutover-diverged` /
   `header-admit-cutover-diverged`, leaving sync stalled at `h=3123726`.
+- Diagnosis for that blocker: `header_admit` / `validate_headers` were
+  defaulting to AUTHORITATIVE even though live P2P/RPC header ingress still
+  calls `accept_block_header()` first. In that mode the legacy ingress guard
+  requires pre-existing stage records and refuses to create new block-index
+  entries, so post-import header sync cannot advance. The pragmatic fix was to
+  restore SHADOW defaults until an actual authoritative stage ingress owns
+  header admission end-to-end.
+- Restored `header_admit` and `validate_headers` to SHADOW defaults while
+  preserving explicit authoritative guard tests. Follow-up live smoke:
+  cold-import completed in 49.2s, pending anchor published via CSR at
+  `h=3123726`, RPC started, and peers accepted post-import headers up to
+  `h=3123784` without `*-cutover-diverged` rejects.
 
 Still required before PR-3 completion:
-- Resolve post-activation live header divergence after successful cold-import.
 - Run serial vs parallel cold-import on the live datadir and compare tip hash +
   `utxo_sha3`.
 - Record before/after `blk*.dat` marking wall-time in `docs/BENCHMARKS_LOG.md`.

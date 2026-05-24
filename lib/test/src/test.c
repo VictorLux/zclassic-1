@@ -179,6 +179,13 @@ int main(void)
                failures);
         return failures ? 1 : 0;
     }
+    if (only && strcmp(only, "header_admit") == 0) {
+        printf("[test] ZCL_TEST_ONLY=header_admit — running header_admit stage only\n");
+        failures += test_header_admit_stage();
+        printf("\n=== header_admit subset complete: %d failure(s) ===\n",
+               failures);
+        return failures ? 1 : 0;
+    }
     if (only && strcmp(only, "validate_headers") == 0) {
         printf("[test] ZCL_TEST_ONLY=validate_headers — running validate_headers stage only\n");
         failures += test_validate_headers_stage();

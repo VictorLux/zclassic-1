@@ -220,14 +220,13 @@ int test_validate_headers_stage(void)
 
     /* ── cutover mode defaults and input validation ───────────────── */
     {
-        VH_CHECK("mode: default is authoritative",
+        VH_CHECK("mode: default is shadow",
                  validate_headers_get_mode() ==
-                     VALIDATE_HEADERS_MODE_AUTHORITATIVE);
+                     VALIDATE_HEADERS_MODE_SHADOW);
         validate_headers_set_mode((validate_headers_mode_t)999);
         VH_CHECK("mode: invalid value maps to shadow",
                  validate_headers_get_mode() ==
                      VALIDATE_HEADERS_MODE_SHADOW);
-        validate_headers_set_mode(VALIDATE_HEADERS_MODE_AUTHORITATIVE);
     }
 
     /* ── happy: 5 blocks, all pass under stub ──────────────────────── */
@@ -425,7 +424,7 @@ int test_validate_headers_stage(void)
         VH_CHECK("auth: pass record lookup succeeds",
                  validate_headers_stage_has_pass_record(0, &sc.hashes[0]));
 
-        validate_headers_set_mode(VALIDATE_HEADERS_MODE_AUTHORITATIVE);
+        validate_headers_set_mode(VALIDATE_HEADERS_MODE_SHADOW);
         vh_teardown(dir, &ms, &sc);
     }
 
@@ -499,7 +498,7 @@ int test_validate_headers_stage(void)
             VH_CHECK("guard: divergence event emitted",
                      guard_events == 1);
 
-            validate_headers_set_mode(VALIDATE_HEADERS_MODE_AUTHORITATIVE);
+            validate_headers_set_mode(VALIDATE_HEADERS_MODE_SHADOW);
             event_clear_observers(EV_CUTOVER_GUARD_DIVERGED);
             validate_headers_stage_shutdown();
             main_state_free(&ms);
