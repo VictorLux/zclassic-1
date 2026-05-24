@@ -32,6 +32,42 @@ struct wallet_projection {
 
 static _Atomic(event_log_t *) g_event_log = NULL;
 static _Atomic(wallet_projection_t *) g_projection = NULL;
+static _Atomic uint64_t g_emit_key_add_total = 0;
+static _Atomic uint64_t g_emit_addr_derived_total = 0;
+static _Atomic uint64_t g_emit_tx_seen_total = 0;
+static _Atomic uint64_t g_emit_utxo_seen_total = 0;
+static _Atomic uint64_t g_emit_note_decrypted_total = 0;
+static _Atomic uint64_t g_emit_fail_total = 0;
+
+static size_t bounded_strlen(const char *s, size_t max)
+{
+    if (!s) return 0;
+    size_t n = 0;
+    while (n <= max && s[n] != '\0')
+        n++;
+    return n;
+}
+
+static bool append_wallet_event(enum event_log_type type,
+                                const void *payload, size_t len,
+                                _Atomic uint64_t *counter)
+{
+    event_log_t *log = wallet_projection_event_log();
+    if (!log)
+        return true;
+    if (!payload || len > EV_WALLET_PAYLOAD_MAX) {
+        atomic_fetch_add_explicit(&g_emit_fail_total, 1,
+                                  memory_order_relaxed);
+        return false;
+    }
+    if (event_log_append(log, type, payload, len) == UINT64_MAX) {
+        atomic_fetch_add_explicit(&g_emit_fail_total, 1,
+                                  memory_order_relaxed);
+        return false;
+    }
+    atomic_fetch_add_explicit(counter, 1, memory_order_relaxed);
+    return true;
+}
 
 static bool exec_sql(sqlite3 *db, const char *sql, const char *ctx)
 {
@@ -279,6 +315,27 @@ static bool apply_note_decrypted(
     return rc == SQLITE_DONE;
 }
 
+static bool apply_utxo_seen(wallet_projection_t *p,
+                            const struct ev_wallet_utxo_seen *ev)
+{
+    sqlite3_stmt *s = NULL;
+    int rc = sqlite3_prepare_v2(p->db,
+        "INSERT OR REPLACE INTO wallet_view_utxos"
+        "(txid,vout,value,address_hash,height,is_coinbase)"
+        " VALUES(?,?,?,?,?,?)",
+        -1, &s, NULL);
+    if (rc != SQLITE_OK) return false;
+    sqlite3_bind_blob(s, 1, ev->txid, 32, SQLITE_TRANSIENT);
+    sqlite3_bind_int(s, 2, (int)ev->vout);
+    sqlite3_bind_int64(s, 3, (sqlite3_int64)ev->value);
+    sqlite3_bind_blob(s, 4, ev->address_hash, 20, SQLITE_TRANSIENT);
+    sqlite3_bind_int(s, 5, ev->height);
+    sqlite3_bind_int(s, 6, ev->is_coinbase ? 1 : 0);
+    rc = sqlite3_step(s);  // raw-sql-ok:projection-primitive
+    sqlite3_finalize(s);
+    return rc == SQLITE_DONE;
+}
+
 struct catchup_ctx {
     wallet_projection_t *p;
     bool ok;
@@ -318,6 +375,13 @@ static bool catchup_cb(uint64_t offset, enum event_log_type type,
         struct ev_wallet_note_decrypted ev;
         if (!ev_wallet_note_decrypted_parse(payload, len, &ev) ||
             !apply_note_decrypted(p, &ev)) {
+            ctx->ok = false;
+            return false;
+        }
+    } else if (type == EV_WALLET_UTXO_SEEN) {
+        struct ev_wallet_utxo_seen ev;
+        if (!ev_wallet_utxo_seen_parse(payload, len, &ev) ||
+            !apply_utxo_seen(p, &ev)) {
             ctx->ok = false;
             return false;
         }
@@ -422,6 +486,156 @@ void wallet_projection_set_event_log(event_log_t *log)
 event_log_t *wallet_projection_event_log(void)
 {
     return atomic_load_explicit(&g_event_log, memory_order_acquire);
+}
+
+bool wallet_projection_emit_key_add(const uint8_t pubkey_hash[20],
+                                    const char *address,
+                                    const char *label,
+                                    uint32_t created_unix)
+{
+    uint8_t payload[EV_WALLET_PAYLOAD_MAX];
+    size_t len = 0;
+    size_t address_len = bounded_strlen(address, EV_WALLET_ADDRESS_MAX);
+    size_t label_len = bounded_strlen(label, EV_WALLET_LABEL_MAX);
+    struct ev_wallet_key_add ev;
+
+    if (!pubkey_hash || address_len > EV_WALLET_ADDRESS_MAX ||
+        label_len > EV_WALLET_LABEL_MAX) {
+        atomic_fetch_add_explicit(&g_emit_fail_total, 1,
+                                  memory_order_relaxed);
+        return false;
+    }
+    memset(&ev, 0, sizeof(ev));
+    memcpy(ev.pubkey_hash, pubkey_hash, 20);
+    ev.created_unix = created_unix;
+    ev.address = address ? address : "";
+    ev.address_len = (uint8_t)address_len;
+    ev.label = label ? label : "";
+    ev.label_len = (uint8_t)label_len;
+    if (!ev_wallet_key_add_serialize(&ev, payload, sizeof(payload), &len)) {
+        atomic_fetch_add_explicit(&g_emit_fail_total, 1,
+                                  memory_order_relaxed);
+        return false;
+    }
+    return append_wallet_event(EV_WALLET_KEY_ADD, payload, len,
+                               &g_emit_key_add_total);
+}
+
+bool wallet_projection_emit_addr_derived(
+    const uint8_t pubkey_hash[20],
+    const uint8_t derived_pubkey_hash[20],
+    uint32_t derivation_index,
+    uint32_t derived_unix)
+{
+    uint8_t payload[EV_WALLET_ADDR_DERIVED_LEN];
+    struct ev_wallet_addr_derived ev;
+
+    if (!pubkey_hash || !derived_pubkey_hash) {
+        atomic_fetch_add_explicit(&g_emit_fail_total, 1,
+                                  memory_order_relaxed);
+        return false;
+    }
+    memset(&ev, 0, sizeof(ev));
+    memcpy(ev.pubkey_hash, pubkey_hash, 20);
+    memcpy(ev.derived_pubkey_hash, derived_pubkey_hash, 20);
+    ev.derivation_index = derivation_index;
+    ev.derived_unix = derived_unix;
+    if (!ev_wallet_addr_derived_serialize(&ev, payload)) {
+        atomic_fetch_add_explicit(&g_emit_fail_total, 1,
+                                  memory_order_relaxed);
+        return false;
+    }
+    return append_wallet_event(EV_WALLET_ADDR_DERIVED, payload,
+                               sizeof(payload),
+                               &g_emit_addr_derived_total);
+}
+
+bool wallet_projection_emit_tx_seen(const uint8_t txid[32],
+                                    int32_t block_height,
+                                    int64_t fee,
+                                    uint8_t from_me)
+{
+    uint8_t payload[EV_WALLET_TX_SEEN_LEN];
+    struct ev_wallet_tx_seen ev;
+
+    if (!txid) {
+        atomic_fetch_add_explicit(&g_emit_fail_total, 1,
+                                  memory_order_relaxed);
+        return false;
+    }
+    memset(&ev, 0, sizeof(ev));
+    memcpy(ev.txid, txid, 32);
+    ev.block_height = block_height;
+    ev.fee = fee;
+    ev.from_me = from_me ? 1u : 0u;
+    if (!ev_wallet_tx_seen_serialize(&ev, payload)) {
+        atomic_fetch_add_explicit(&g_emit_fail_total, 1,
+                                  memory_order_relaxed);
+        return false;
+    }
+    return append_wallet_event(EV_WALLET_TX_SEEN, payload, sizeof(payload),
+                               &g_emit_tx_seen_total);
+}
+
+bool wallet_projection_emit_utxo_seen(const uint8_t txid[32],
+                                      uint32_t vout,
+                                      int64_t value,
+                                      const uint8_t address_hash[20],
+                                      int32_t height,
+                                      uint8_t is_coinbase)
+{
+    uint8_t payload[EV_WALLET_UTXO_SEEN_LEN];
+    struct ev_wallet_utxo_seen ev;
+
+    if (!txid || !address_hash) {
+        atomic_fetch_add_explicit(&g_emit_fail_total, 1,
+                                  memory_order_relaxed);
+        return false;
+    }
+    memset(&ev, 0, sizeof(ev));
+    memcpy(ev.txid, txid, 32);
+    ev.vout = vout;
+    ev.value = value;
+    memcpy(ev.address_hash, address_hash, 20);
+    ev.height = height;
+    ev.is_coinbase = is_coinbase ? 1u : 0u;
+    if (!ev_wallet_utxo_seen_serialize(&ev, payload)) {
+        atomic_fetch_add_explicit(&g_emit_fail_total, 1,
+                                  memory_order_relaxed);
+        return false;
+    }
+    return append_wallet_event(EV_WALLET_UTXO_SEEN, payload, sizeof(payload),
+                               &g_emit_utxo_seen_total);
+}
+
+bool wallet_projection_emit_note_decrypted(const uint8_t txid[32],
+                                           uint32_t output_index,
+                                           int64_t value,
+                                           const uint8_t cm[32],
+                                           int32_t block_height)
+{
+    uint8_t payload[EV_WALLET_NOTE_DECRYPTED_LEN];
+    struct ev_wallet_note_decrypted ev;
+
+    if (!txid || !cm) {
+        atomic_fetch_add_explicit(&g_emit_fail_total, 1,
+                                  memory_order_relaxed);
+        return false;
+    }
+    memset(&ev, 0, sizeof(ev));
+    memcpy(ev.txid, txid, 32);
+    ev.output_index = output_index;
+    ev.value = value;
+    memcpy(ev.cm, cm, 32);
+    ev.block_height = block_height;
+    if (!ev_wallet_note_decrypted_serialize(&ev, payload)) {
+        atomic_fetch_add_explicit(&g_emit_fail_total, 1,
+                                  memory_order_relaxed);
+        return false;
+    }
+    return append_wallet_event(EV_WALLET_NOTE_DECRYPTED, payload,
+                               sizeof(payload),
+                               &g_emit_note_decrypted_total);
 }
 
 wallet_projection_t *wallet_projection_current(void)

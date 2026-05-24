@@ -524,4 +524,12 @@ is Task 4 reader/API expansion.
 is implemented and verified for counts plus UTXO/note total value.
 The assignment remains in progress; next slice is Task 5 shadow emits.
 
+2026-05-24 wt2 progress: Task 5 shadow emits are implemented for
+transparent key saves, wallet tx saves, wallet UTXO saves, and Sapling
+note saves. Added the missing public-only `EV_WALLET_UTXO_SEEN` wire
+event required by the UTXO emit path, replay support, emit counters,
+model write-site coverage, and the required secret-argument diff grep
+returned zero matches. The assignment remains in progress; next slice
+is Task 6 boot wiring.
+
 <!-- Worker: append a Completion section below when done. -->

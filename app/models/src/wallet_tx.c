@@ -25,6 +25,7 @@
 #include "wallet/sapling_keys.h"
 #include "chain/chainparams.h"
 #include "event/event.h"
+#include "storage/wallet_projection.h"
 #include "util/safe_alloc.h"
 #include <string.h>
 #include <stdlib.h>
@@ -111,6 +112,12 @@ static void wallet_tx_after_save(void *record, void *ctx)
     const char *category = t->from_me ? "send" : "receive";
     event_emitf(EV_WALLET_TX_SAVED, 0,
                 "txid=%s category=%s", txid_hex, category);
+    if (!wallet_projection_emit_tx_seen(t->txid,
+            t->has_block ? t->block_height : -1,
+            t->fee, t->from_me ? 1u : 0u)) {
+        fprintf(stderr,  // obs-ok:wallet-projection-shadow-emit
+                "[wallet_projection] tx seen shadow emit failed\n");
+    }
 }
 
 static void wallet_tx_init_hooks(void)
@@ -148,6 +155,11 @@ static void wallet_utxo_after_save(void *record, void *ctx)
     const struct db_wallet_utxo *u = record;
     event_emitf(EV_WALLET_UTXO_SAVED, 0, "vout=%u value=%lld",
                 u->vout, (long long)u->value);
+    if (!wallet_projection_emit_utxo_seen(u->txid, u->vout, u->value,
+            u->address_hash, u->height, u->is_coinbase ? 1u : 0u)) {
+        fprintf(stderr,  // obs-ok:wallet-projection-shadow-emit
+                "[wallet_projection] utxo seen shadow emit failed\n");
+    }
 }
 
 static void wallet_utxo_init_hooks(void)
@@ -844,6 +856,11 @@ bool db_sapling_note_save(struct node_db *ndb, const struct db_sapling_note *n)
         AR_BIND_NULL(s, 13);
     bool ok = AR_STEP_DONE(s);
     AR_FINALIZE(s);
+    if (ok && !wallet_projection_emit_note_decrypted(
+            n->txid, n->output_index, n->value, n->cm, n->block_height)) {
+        fprintf(stderr,  // obs-ok:wallet-projection-shadow-emit
+                "[wallet_projection] note decrypted shadow emit failed\n");
+    }
     AR_FINISH_SAVE(cbs, n, ok);
 }
 

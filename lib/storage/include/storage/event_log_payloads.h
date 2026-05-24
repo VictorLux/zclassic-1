@@ -27,6 +27,7 @@
 #define EV_WALLET_ADDR_DERIVED_LEN 48u
 #define EV_WALLET_TX_SEEN_LEN 52u
 #define EV_WALLET_NOTE_DECRYPTED_LEN 80u
+#define EV_WALLET_UTXO_SEEN_LEN 72u
 
 struct ev_tx_admit_mempool {
     uint8_t  txid[32];
@@ -97,6 +98,16 @@ struct ev_wallet_note_decrypted {
     int32_t  block_height;
     int64_t  value;
     uint8_t  cm[32];           /* Note commitment; public. */
+};
+
+struct ev_wallet_utxo_seen {
+    uint8_t  txid[32];
+    uint32_t vout;
+    int64_t  value;
+    uint8_t  address_hash[20];
+    int32_t  height;
+    uint8_t  is_coinbase;
+    uint8_t  reserved[3];
 };
 
 static inline void ev_put_u16_le(uint8_t *dst, uint16_t v)
@@ -454,6 +465,38 @@ ev_wallet_note_decrypted_parse(const void *payload, size_t len,
     out->block_height = (int32_t)ev_get_u32_le(buf + 36);
     out->value = (int64_t)ev_get_u64_le(buf + 40);
     memcpy(out->cm, buf + 48, 32);
+    return true;
+}
+
+static inline bool
+ev_wallet_utxo_seen_serialize(const struct ev_wallet_utxo_seen *ev,
+                              uint8_t buf[EV_WALLET_UTXO_SEEN_LEN])
+{
+    if (!ev || !buf) return false;
+    memcpy(buf + 0, ev->txid, 32);
+    ev_put_u32_le(buf + 32, ev->vout);
+    ev_put_u64_le(buf + 36, (uint64_t)ev->value);
+    memcpy(buf + 44, ev->address_hash, 20);
+    ev_put_u32_le(buf + 64, (uint32_t)ev->height);
+    buf[68] = ev->is_coinbase ? 1u : 0u;
+    memset(buf + 69, 0, 3);
+    return true;
+}
+
+static inline bool
+ev_wallet_utxo_seen_parse(const void *payload, size_t len,
+                          struct ev_wallet_utxo_seen *out)
+{
+    if (!payload || !out || len != EV_WALLET_UTXO_SEEN_LEN)
+        return false;
+    const uint8_t *buf = (const uint8_t *)payload;
+    memset(out, 0, sizeof(*out));
+    memcpy(out->txid, buf + 0, 32);
+    out->vout = ev_get_u32_le(buf + 32);
+    out->value = (int64_t)ev_get_u64_le(buf + 36);
+    memcpy(out->address_hash, buf + 44, 20);
+    out->height = (int32_t)ev_get_u32_le(buf + 64);
+    out->is_coinbase = buf[68] ? 1u : 0u;
     return true;
 }
 

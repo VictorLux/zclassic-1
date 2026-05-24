@@ -76,6 +76,7 @@ enum event_log_type {
     /* Phase 4d-3 — wallet_view_projection public-only events. */
     EV_WALLET_ADDR_DERIVED  = 17,
     EV_WALLET_NOTE_DECRYPTED = 18,
+    EV_WALLET_UTXO_SEEN     = 19,
     /* Add cautiously — every entry is a permanent wire surface. */
 };
 

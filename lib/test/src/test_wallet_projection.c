@@ -142,6 +142,23 @@ static bool append_wallet_note(event_log_t *log, int idx)
                             sizeof(payload)) != UINT64_MAX;
 }
 
+static bool append_wallet_utxo(event_log_t *log, int idx)
+{
+    uint8_t payload[EV_WALLET_UTXO_SEEN_LEN];
+    struct ev_wallet_utxo_seen ev;
+    memset(&ev, 0, sizeof(ev));
+    fill_seq(ev.txid, sizeof(ev.txid), (uint8_t)(0xb0 + idx));
+    fill_seq(ev.address_hash, sizeof(ev.address_hash), (uint8_t)(0xc0 + idx));
+    ev.vout = (uint32_t)idx;
+    ev.value = 10 + idx;
+    ev.height = 300000 + idx;
+    ev.is_coinbase = (uint8_t)(idx % 2);
+    if (!ev_wallet_utxo_seen_serialize(&ev, payload))
+        return false;
+    return event_log_append(log, EV_WALLET_UTXO_SEEN, payload,
+                            sizeof(payload)) != UINT64_MAX;
+}
+
 static int t_wallet_event_ids(void)
 {
     int failures = 0;
@@ -150,6 +167,7 @@ static int t_wallet_event_ids(void)
     WP_CHECK("addr derived id is allocated", EV_WALLET_ADDR_DERIVED == 17);
     WP_CHECK("note decrypted id is allocated",
              EV_WALLET_NOTE_DECRYPTED == 18);
+    WP_CHECK("utxo seen id is allocated", EV_WALLET_UTXO_SEEN == 19);
     return failures;
 }
 
@@ -278,6 +296,38 @@ static int t_note_decrypted_payload_roundtrip(void)
     return failures;
 }
 
+static int t_utxo_seen_payload_roundtrip(void)
+{
+    int failures = 0;
+    uint8_t payload[EV_WALLET_UTXO_SEEN_LEN];
+    struct ev_wallet_utxo_seen in, out;
+    memset(&in, 0, sizeof(in));
+    fill_seq(in.txid, sizeof(in.txid), 0xc0);
+    fill_seq(in.address_hash, sizeof(in.address_hash), 0xd0);
+    in.vout = 42;
+    in.value = 123456789;
+    in.height = 98765;
+    in.is_coinbase = 1;
+
+    WP_CHECK("utxo seen serialize",
+             ev_wallet_utxo_seen_serialize(&in, payload));
+    WP_CHECK("utxo seen public payload cap",
+             sizeof(payload) <= EV_WALLET_PAYLOAD_MAX);
+    WP_CHECK("utxo seen parse",
+             ev_wallet_utxo_seen_parse(payload, sizeof(payload), &out));
+    WP_CHECK("utxo seen roundtrip",
+             memcmp(in.txid, out.txid, 32) == 0 &&
+             out.vout == in.vout &&
+             out.value == in.value &&
+             memcmp(in.address_hash, out.address_hash, 20) == 0 &&
+             out.height == in.height &&
+             out.is_coinbase == 1);
+    WP_CHECK("utxo seen rejects wrong length",
+             !ev_wallet_utxo_seen_parse(payload, sizeof(payload) - 1,
+                                        &out));
+    return failures;
+}
+
 static int t_projection_skeleton_open_reopen(void)
 {
     int failures = 0;
@@ -376,6 +426,8 @@ static int t_projection_catch_up_replay(void)
         appended = append_wallet_addr_derived(log, i);
     for (int i = 0; i < 200 && appended; i++)
         appended = append_wallet_tx(log, i);
+    for (int i = 0; i < 10 && appended; i++)
+        appended = append_wallet_utxo(log, i);
     for (int i = 0; i < 50 && appended; i++)
         appended = append_wallet_note(log, i);
     WP_CHECK("synthetic wallet events appended", appended);
@@ -384,14 +436,15 @@ static int t_projection_catch_up_replay(void)
     WP_CHECK("replay address count",
              wallet_projection_address_count(p) == 105);
     WP_CHECK("replay tx count", wallet_projection_tx_count(p) == 200);
-    WP_CHECK("replay utxo count", wallet_projection_utxo_count(p) == 0);
+    WP_CHECK("replay utxo count", wallet_projection_utxo_count(p) == 10);
     WP_CHECK("replay note count", wallet_projection_note_count(p) == 50);
-    WP_CHECK("replay total note value",
-             wallet_projection_total_value_zat(p) == 1275);
+    WP_CHECK("replay total value",
+             wallet_projection_total_value_zat(p) == 1420);
     WP_CHECK("replay idempotent",
              wallet_projection_catch_up(p) != UINT64_MAX &&
              wallet_projection_address_count(p) == 105 &&
              wallet_projection_tx_count(p) == 200 &&
+             wallet_projection_utxo_count(p) == 10 &&
              wallet_projection_note_count(p) == 50);
     wallet_projection_close(p);
 
@@ -400,9 +453,147 @@ static int t_projection_catch_up_replay(void)
     WP_CHECK("replay persists counts",
              wallet_projection_address_count(p) == 105 &&
              wallet_projection_tx_count(p) == 200 &&
+             wallet_projection_utxo_count(p) == 10 &&
              wallet_projection_note_count(p) == 50 &&
-             wallet_projection_total_value_zat(p) == 1275);
+             wallet_projection_total_value_zat(p) == 1420);
     wallet_projection_close(p);
+    event_log_close(log);
+    test_cleanup_tmpdir(dir);
+    return failures;
+}
+
+static int t_emit_helpers_replay_public_view(void)
+{
+    int failures = 0;
+    char dir[256], elog_path[300], proj_path[300];
+    uint8_t pubhash[20], derived[20], txid[32], cm[32];
+    wp_tmpdir(dir, sizeof(dir), "emit_helpers");
+    wp_paths(dir, elog_path, sizeof(elog_path), proj_path, sizeof(proj_path));
+
+    event_log_t *log = event_log_open(elog_path);
+    wallet_projection_t *p = wallet_projection_open(proj_path, log);
+    wallet_projection_set_event_log(log);
+    fill_seq(pubhash, sizeof(pubhash), 0x11);
+    fill_seq(derived, sizeof(derived), 0x22);
+    fill_seq(txid, sizeof(txid), 0x33);
+    fill_seq(cm, sizeof(cm), 0x44);
+
+    WP_CHECK("emit helper open", log && p);
+    WP_CHECK("emit key add",
+             wallet_projection_emit_key_add(pubhash, "t1public", "",
+                                            1770000200u));
+    WP_CHECK("emit addr derived",
+             wallet_projection_emit_addr_derived(pubhash, derived, 7,
+                                                 1770000300u));
+    WP_CHECK("emit tx seen",
+             wallet_projection_emit_tx_seen(txid, 12, 99, 1));
+    WP_CHECK("emit utxo seen",
+             wallet_projection_emit_utxo_seen(txid, 1, 200, pubhash, 12, 0));
+    WP_CHECK("emit note decrypted",
+             wallet_projection_emit_note_decrypted(txid, 2, 300, cm, 12));
+    WP_CHECK("emit catch up", wallet_projection_catch_up(p) != UINT64_MAX);
+    WP_CHECK("emit address count", wallet_projection_address_count(p) == 2);
+    WP_CHECK("emit tx count", wallet_projection_tx_count(p) == 1);
+    WP_CHECK("emit utxo count", wallet_projection_utxo_count(p) == 1);
+    WP_CHECK("emit note count", wallet_projection_note_count(p) == 1);
+    WP_CHECK("emit total value", wallet_projection_total_value_zat(p) == 500);
+
+    wallet_projection_close(p);
+    wallet_projection_set_event_log(NULL);
+    event_log_close(log);
+    test_cleanup_tmpdir(dir);
+    return failures;
+}
+
+static int t_model_shadow_emits(void)
+{
+    int failures = 0;
+    char dir[256], elog_path[300], proj_path[300], db_path[300];
+    struct node_db ndb;
+    wp_tmpdir(dir, sizeof(dir), "model_shadow");
+    wp_paths(dir, elog_path, sizeof(elog_path), proj_path, sizeof(proj_path));
+    snprintf(db_path, sizeof(db_path), "%s/node.db", dir);
+    memset(&ndb, 0, sizeof(ndb));
+
+    event_log_t *log = event_log_open(elog_path);
+    wallet_projection_t *p = wallet_projection_open(proj_path, log);
+    wallet_projection_set_event_log(log);
+    bool ok = log && p && node_db_open(&ndb, db_path);
+    WP_CHECK("model shadow open", ok);
+
+    if (ok) {
+        struct db_wallet_key key;
+        struct db_wallet_tx tx;
+        struct db_wallet_utxo utxo;
+        struct db_sapling_note note;
+        uint8_t raw_tx[] = {0x01, 0x02, 0x03};
+        uint8_t script[] = {0x76, 0xa9, 0x14, 0x88, 0xac};
+        memset(&key, 0, sizeof(key));
+        memset(&tx, 0, sizeof(tx));
+        memset(&utxo, 0, sizeof(utxo));
+        memset(&note, 0, sizeof(note));
+
+        fill_seq(key.pubkey_hash, sizeof(key.pubkey_hash), 0x10);
+        fill_seq(key.pubkey, sizeof(key.pubkey), 0x20);
+        fill_seq(key.privkey, sizeof(key.privkey), 0x30);
+        key.pubkey_len = sizeof(key.pubkey);
+        key.compressed = true;
+        key.created_at = 1770000400;
+        ok = db_wallet_key_save(&ndb, &key);
+        WP_CHECK("model shadow key save", ok);
+
+        fill_seq(tx.txid, sizeof(tx.txid), 0x40);
+        fill_seq(tx.block_hash, sizeof(tx.block_hash), 0x50);
+        tx.has_block = true;
+        tx.block_height = 77;
+        tx.time_received = 1770000500;
+        tx.from_me = true;
+        tx.fee = 123;
+        tx.raw_tx = raw_tx;
+        tx.raw_tx_len = sizeof(raw_tx);
+        ok = ok && db_wallet_tx_save(&ndb, &tx);
+        WP_CHECK("model shadow tx save", ok);
+
+        memcpy(utxo.txid, tx.txid, sizeof(utxo.txid));
+        utxo.vout = 1;
+        utxo.value = 200;
+        memcpy(utxo.address_hash, key.pubkey_hash, sizeof(utxo.address_hash));
+        utxo.script = script;
+        utxo.script_len = sizeof(script);
+        utxo.height = 77;
+        ok = ok && db_wallet_utxo_save(&ndb, &utxo);
+        WP_CHECK("model shadow utxo save", ok);
+
+        fill_seq(note.txid, sizeof(note.txid), 0x60);
+        fill_seq(note.rcm, sizeof(note.rcm), 0x70);
+        fill_seq(note.ivk, sizeof(note.ivk), 0x80);
+        fill_seq(note.diversifier, sizeof(note.diversifier), 0x90);
+        fill_seq(note.pk_d, sizeof(note.pk_d), 0xa0);
+        fill_seq(note.cm, sizeof(note.cm), 0xb0);
+        fill_seq(note.nullifier, sizeof(note.nullifier), 0xc0);
+        note.output_index = 2;
+        note.value = 300;
+        note.block_height = 77;
+        ok = ok && db_sapling_note_save(&ndb, &note);
+        WP_CHECK("model shadow note save", ok);
+
+        ok = ok && wallet_projection_catch_up(p) != UINT64_MAX;
+        WP_CHECK("model shadow catch up", ok);
+        WP_CHECK("model shadow saves", ok);
+        WP_CHECK("model shadow address count",
+                 wallet_projection_address_count(p) == 1);
+        WP_CHECK("model shadow tx count", wallet_projection_tx_count(p) == 1);
+        WP_CHECK("model shadow utxo count",
+                 wallet_projection_utxo_count(p) == 1);
+        WP_CHECK("model shadow note count",
+                 wallet_projection_note_count(p) == 1);
+        WP_CHECK("model shadow total",
+                 wallet_projection_total_value_zat(p) == 500);
+        node_db_close(&ndb);
+    }
+
+    wallet_projection_close(p);
+    wallet_projection_set_event_log(NULL);
     event_log_close(log);
     test_cleanup_tmpdir(dir);
     return failures;
@@ -417,9 +608,12 @@ int test_wallet_projection(void)
     failures += t_addr_derived_payload_roundtrip();
     failures += t_tx_seen_payload_roundtrip();
     failures += t_note_decrypted_payload_roundtrip();
+    failures += t_utxo_seen_payload_roundtrip();
     failures += t_projection_skeleton_open_reopen();
     failures += t_reader_api_aggregates();
     failures += t_projection_catch_up_replay();
+    failures += t_emit_helpers_replay_public_view();
+    failures += t_model_shadow_emits();
     printf("wallet_projection: %s\n", failures ? "FAIL" : "PASS");
     return failures;
 }

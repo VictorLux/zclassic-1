@@ -16,7 +16,12 @@
 #include "models/wallet_key.h"
 #include "models/wallet_tx.h"
 #include "keys/key.h"
+#include "keys/key_io.h"
 #include "keys/pubkey.h"
+#include "chain/chainparams.h"
+#include "script/standard.h"
+#include "storage/event_log_payloads.h"
+#include "storage/wallet_projection.h"
 #include "support/cleanse.h"
 #include "util/result.h"
 #include "event/event.h"
@@ -69,10 +74,35 @@ static void wallet_key_after_save(void *record, void *ctx)
     (void)ctx;
     const struct db_wallet_key *k = record;
     char addr_hex[41];
+    char address[EV_WALLET_ADDRESS_MAX + 1];
     wk_hash_hex_short(k->pubkey_hash, sizeof(k->pubkey_hash),
                       addr_hex, sizeof(addr_hex));
     event_emitf(EV_WALLET_KEY_SAVED, 0,
                 "kind=transparent addr_hash=%s", addr_hex);
+
+    memset(address, 0, sizeof(address));
+    const struct chain_params *cp = chain_params_get();
+    if (cp) {
+        size_t pk_pfx_len = 0;
+        size_t sc_pfx_len = 0;
+        const unsigned char *pk_pfx = chain_params_base58_prefix(
+            cp, B58_PUBKEY_ADDRESS, &pk_pfx_len);
+        const unsigned char *sc_pfx = chain_params_base58_prefix(
+            cp, B58_SCRIPT_ADDRESS, &sc_pfx_len);
+        struct tx_destination dest;
+        memset(&dest, 0, sizeof(dest));
+        dest.type = DEST_KEY_ID;
+        memcpy(dest.id.key.id.data, k->pubkey_hash, 20);
+        (void)encode_destination(&dest, pk_pfx, pk_pfx_len,
+                                 sc_pfx, sc_pfx_len,
+                                 address, sizeof(address));
+    }
+
+    if (!wallet_projection_emit_key_add(k->pubkey_hash, address, "",
+            (uint32_t)k->created_at)) {
+        fprintf(stderr,  // obs-ok:wallet-projection-shadow-emit
+                "[wallet_projection] key add shadow emit failed\n");
+    }
 }
 
 static void wallet_key_init_hooks(void)
