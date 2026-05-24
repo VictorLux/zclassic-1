@@ -169,6 +169,9 @@ Summary:
 - Extended `tools/gen_sha3_windows` with `--check-window=N` so a suspect
   source can be compared against one compiled SHA3 window over RPC without
   regenerating the whole table.
+- Moved cold-import block-index and chainstate reads through staged LevelDB
+  snapshots under the destination datadir, so a live zclassicd source can be
+  imported without opening its locked LevelDB directories directly.
 
 Verification:
 - `make -j$(nproc) test_zcl test_parallel zclassic23` PASS
@@ -189,6 +192,11 @@ Verification:
   against live zclassicd RPC matched the compiled table for
   `h=3028000..3028999`. The mismatch is therefore in the copied filesystem
   snapshot/source datadir, not the baked SHA3 table.
+- Live-source smoke after staged LevelDB snapshots: cold-import now snapshots
+  the running source LevelDBs successfully (`LevelDB snapshots took 43 ms`),
+  but the filesystem payload proof still fails at window 3028. Remaining
+  blocker is the `blocks/index` height-to-`blk*.dat` payload selection path,
+  not LevelDB locking.
 
 Still required before PR-3 completion:
 - Run serial vs parallel cold-import on the live datadir and compare tip hash +

@@ -1057,6 +1057,38 @@ static int t_cold_import_spotcheck_diagnostics_contract(void)
     return failures;
 }
 
+static int t_cold_import_uses_leveldb_snapshots_contract(void)
+{
+    int failures = 0;
+    char *buf = NULL;
+    TEST("cold-import reads legacy LevelDBs through staged snapshots") {
+        char path[PATH_MAX];
+        ASSERT(repo_path(path, sizeof(path),
+                         "app/services/src/legacy_cold_import.c") == 0);
+        ASSERT(read_entire_file(path, &buf) == 0);
+        char *include = strstr(buf, "#include \"storage/ldb_snapshot.h\"");
+        char *stage = strstr(buf, "cold_import_ldb_snapshot");
+        char *snapshot = strstr(buf, "lci_snapshot_legacy_leveldbs");
+        char *height_map = strstr(buf, "bilr_open(idx_dir");
+        char *block_index = strstr(buf, "lci_copy_block_index(idx_dir");
+        char *chainstate = strstr(buf, "chainstate_legacy_open(cs_dir");
+        char *destroy = strstr(buf, "ldb_snapshot_destroy(idx_dir)");
+        ASSERT(include != NULL);
+        ASSERT(stage != NULL);
+        ASSERT(snapshot != NULL);
+        ASSERT(height_map != NULL);
+        ASSERT(block_index != NULL);
+        ASSERT(chainstate != NULL);
+        ASSERT(destroy != NULL);
+        ASSERT(snapshot < height_map);
+        ASSERT(height_map < block_index);
+        ASSERT(block_index < chainstate);
+        PASS();
+    } _test_next:;
+    free(buf);
+    return failures;
+}
+
 static int t_sha3_window_tool_check_contract(void)
 {
     int failures = 0;
@@ -1195,6 +1227,7 @@ int test_make_lint_gates(void)
     failures += t_boot_genesis_init_preserves_restored_authority_contract();
     failures += t_cold_import_fails_closed_contract();
     failures += t_cold_import_spotcheck_diagnostics_contract();
+    failures += t_cold_import_uses_leveldb_snapshots_contract();
     failures += t_sha3_window_tool_check_contract();
     failures += t_block_index_flat_atomic_save_contract();
     failures += t_projection_deferral_is_not_block_rejected_contract();

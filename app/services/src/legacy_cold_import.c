@@ -31,6 +31,7 @@
 #include "storage/chainstate_legacy_reader.h"
 #include "storage/coins_view_sqlite.h"
 #include "storage/dbwrapper.h"
+#include "storage/ldb_snapshot.h"
 #include "models/database.h"
 #include "util/log_macros.h"
 #include "util/long_op.h"
@@ -58,12 +59,69 @@
 #define LCI_REFUSE_ABOVE_TIP 1000
 
 #define LCI_SPOTCHECK_K 5
+#define LCI_STAGE_SUBDIR "cold_import_ldb_snapshot"
 
 static int64_t lci_now_ms(void)
 {
     struct timespec ts;
     platform_time_monotonic_timespec(&ts);
     return (int64_t)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
+}
+
+static bool lci_make_stage_dir(const char *our_datadir, char *out, size_t cap)
+{
+    int n = snprintf(out, cap, "%s/%s", our_datadir, LCI_STAGE_SUBDIR);
+    if (n <= 0 || (size_t)n >= cap) return false;
+    if (mkdir(out, 0700) != 0 && errno != EEXIST) return false;
+    return true;
+}
+
+static bool lci_snapshot_one_leveldb(const char *src,
+                                     const char *dst,
+                                     const char *label)
+{
+    char err[128];
+    for (int tries = 0; tries < 3; tries++) {
+        err[0] = '\0';
+        if (ldb_snapshot_make(src, dst, err, sizeof(err)))
+            return true;
+        if (strcmp(err, "manifest_changed") != 0) {
+            fprintf(stderr,
+                    "[cold_import] snapshot of %s failed: %s\n",
+                    src, err);
+            return false;
+        }
+        fprintf(stderr, // obs-ok:retryable-leveldb-snapshot-race
+                "[cold_import] snapshot %s manifest_changed; retry %d\n",
+                label, tries + 1);
+    }
+    fprintf(stderr,
+            "[cold_import] snapshot of %s failed after retries: %s\n",
+            src, err);
+    return false;
+}
+
+static bool lci_snapshot_legacy_leveldbs(const char *legacy_datadir,
+                                         const char *stage_dir,
+                                         char *out_idx, size_t idx_cap,
+                                         char *out_cs, size_t cs_cap)
+{
+    char src_idx[1100], src_cs[1100];
+    snprintf(src_idx, sizeof(src_idx), "%s/blocks/index", legacy_datadir);
+    snprintf(src_cs, sizeof(src_cs), "%s/chainstate", legacy_datadir);
+
+    int ni = snprintf(out_idx, idx_cap, "%s/blocks-index", stage_dir);
+    int nc = snprintf(out_cs, cs_cap, "%s/chainstate", stage_dir);
+    if (ni <= 0 || (size_t)ni >= idx_cap) return false;
+    if (nc <= 0 || (size_t)nc >= cs_cap) return false;
+
+    if (!lci_snapshot_one_leveldb(src_idx, out_idx, "blocks/index"))
+        return false;
+    if (!lci_snapshot_one_leveldb(src_cs, out_cs, "chainstate")) {
+        ldb_snapshot_destroy(out_idx);
+        return false;
+    }
+    return true;
 }
 
 static void lci_hex32(const uint8_t hash[32], char out[65])
@@ -464,25 +522,47 @@ bool legacy_cold_import_blocking(
         return false;
     }
 
-    char idx_dir[1024], blk_dir[1024];
-    snprintf(idx_dir, sizeof(idx_dir), "%s/blocks/index", legacy_datadir);
+    char blk_dir[1024];
     snprintf(blk_dir, sizeof(blk_dir), "%s/blocks", legacy_datadir);
     char our_blocks[1024];
     snprintf(our_blocks, sizeof(our_blocks), "%s/blocks", our_datadir);
 
     int64_t t_start = lci_now_ms();
 
+    /* Snapshot legacy LevelDBs before reading them. The source zclassicd may
+     * still be running and holding LOCK; the snapshot helper hardlinks
+     * immutable SST files and gives us independent read-only LOCK contexts. */
+    char stage_dir[1100], idx_dir[1200], cs_dir[1200];
+    if (!lci_make_stage_dir(our_datadir, stage_dir, sizeof(stage_dir))) {
+        fprintf(stderr,
+                "[cold_import] cannot create stage dir under %s\n",
+                our_datadir);
+        return false;
+    }
+    int64_t t_snap = lci_now_ms();
+    if (!lci_snapshot_legacy_leveldbs(legacy_datadir, stage_dir,
+                                      idx_dir, sizeof(idx_dir),
+                                      cs_dir, sizeof(cs_dir)))
+        return false;
+    fprintf(stderr, // obs-ok:cold-import-progress
+            "[cold_import] LevelDB snapshots took %" PRId64 " ms\n",
+            lci_now_ms() - t_snap);
+
     /* ── Build height map ──────────────────────────────────── */
     struct bilr *bilr = NULL;
     if (!bilr_open(idx_dir, &bilr)) {
         fprintf(stderr,
                 "[cold_import] bilr_open %s failed\n", idx_dir);
+        ldb_snapshot_destroy(idx_dir);
+        ldb_snapshot_destroy(cs_dir);
         return false;
     }
     struct legacy_block_loc *map = NULL;
     size_t map_count = 0;
     if (!bilr_load_height_map(bilr, &map, &map_count)) {
         bilr_close(bilr);
+        ldb_snapshot_destroy(idx_dir);
+        ldb_snapshot_destroy(cs_dir);
         return false;
     }
     int legacy_tip = (int)map_count - 1;
@@ -498,6 +578,8 @@ bool legacy_cold_import_blocking(
     if (!bmr_open(blk_dir, &bmr)) {
         bilr_free_height_map(map);
         bilr_close(bilr);
+        ldb_snapshot_destroy(idx_dir);
+        ldb_snapshot_destroy(cs_dir);
         return false;
     }
     bool evidence_ok = lci_spotcheck(bmr, map, map_count,
@@ -506,6 +588,8 @@ bool legacy_cold_import_blocking(
     if (!evidence_ok) {
         bilr_free_height_map(map);
         bilr_close(bilr);
+        ldb_snapshot_destroy(idx_dir);
+        ldb_snapshot_destroy(cs_dir);
         fprintf(stderr,
                 "[cold_import] aborting due to spotcheck failure\n");
         return false;
@@ -518,6 +602,8 @@ bool legacy_cold_import_blocking(
     if (linked < 0) {
         bilr_free_height_map(map);
         bilr_close(bilr);
+        ldb_snapshot_destroy(idx_dir);
+        ldb_snapshot_destroy(cs_dir);
         return false;
     }
     r.blk_files_linked = linked;
@@ -534,7 +620,11 @@ bool legacy_cold_import_blocking(
                                                &legacy_tip_h);
     bilr_free_height_map(map);
     bilr_close(bilr);
-    if (bi_written < 0) return false;
+    if (bi_written < 0) {
+        ldb_snapshot_destroy(idx_dir);
+        ldb_snapshot_destroy(cs_dir);
+        return false;
+    }
     r.block_index_writes = bi_written;
     fprintf(stderr, // obs-ok:pre-existing-diagnostic
             "[cold_import] block_index copy: %" PRId64 " entries "
@@ -542,12 +632,12 @@ bool legacy_cold_import_blocking(
             bi_written, lci_now_ms() - t_bi, legacy_tip_h);
 
     /* ── Bulk-import chainstate UTXOs ─────────────────────── */
-    char cs_dir[1024];
-    snprintf(cs_dir, sizeof(cs_dir), "%s/chainstate", legacy_datadir);
     void *cs = NULL;
     if (!chainstate_legacy_open(cs_dir, &cs)) {
         fprintf(stderr,
                 "[cold_import] chainstate_legacy_open %s failed\n", cs_dir);
+        ldb_snapshot_destroy(idx_dir);
+        ldb_snapshot_destroy(cs_dir);
         return false;
     }
     int64_t t_cs = lci_now_ms();
@@ -557,6 +647,8 @@ bool legacy_cold_import_blocking(
         zcl_malloc(sizeof(*batch) * BATCH, "lci.batch");
     if (!batch) {
         chainstate_legacy_close(cs);
+        ldb_snapshot_destroy(idx_dir);
+        ldb_snapshot_destroy(cs_dir);
         return false;
     }
     struct lci_chainstate_ctx ctx = {
@@ -575,6 +667,8 @@ bool legacy_cold_import_blocking(
         fprintf(stderr,
                 "[cold_import] chainstate import failed "
                 "(iter=%" PRId64 " errors=%d)\n", n, ctx.errors);
+        ldb_snapshot_destroy(idx_dir);
+        ldb_snapshot_destroy(cs_dir);
         return false;
     }
     r.utxos_imported = ctx.inserted;
@@ -595,6 +689,8 @@ bool legacy_cold_import_blocking(
         if (!pending_ok) {
             fprintf(stderr,
                     "[cold_import] failed to persist pending CSR anchor\n");
+            ldb_snapshot_destroy(idx_dir);
+            ldb_snapshot_destroy(cs_dir);
             return false;
         }
         char hex[65] = {0};
@@ -617,5 +713,7 @@ bool legacy_cold_import_blocking(
             " utxos=%" PRId64 " blk_files=%" PRId64 "\n",
             r.total_secs, r.block_index_writes, r.utxos_imported,
             r.blk_files_linked);
+    ldb_snapshot_destroy(idx_dir);
+    ldb_snapshot_destroy(cs_dir);
     return true;
 }
