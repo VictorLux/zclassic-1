@@ -4,7 +4,7 @@
 > truth for "what's done, what's next, what's blocked." Read this first
 > when you start a session. Full architecture: [`FRAMEWORK.md`](./FRAMEWORK.md).
 
-**Updated:** 2026-05-24 (Phase 2 → 89%; S-8 utxo_apply MERGED; S-9 + PR-2 READY; Phase 4b + 5a-1 plans drafted)
+**Updated:** 2026-05-24 (Wave S SHADOW 100% — S-9 MERGED; Phase 3 watchdog 100% — DELETED; supervisor tree split DONE; cutover C-2 next)
 
 ---
 
@@ -13,23 +13,31 @@
 ```
 Phase 0  [██████████] 100%   Condition engine + scaffold              ✅ DONE
 Phase 1  [██████████] 100%   Adopt unused primitives                  ✅ DONE
-Phase 2  [█████████░]  89%   Wave S → S-12 cutover (S-1..S-8 shipped) ← IN FLIGHT
-  ├ S-5    [██████████] 100%   body_persist shadow (wt3)              ✅
-  ├ S-6    [██████████] 100%   script_validate shadow (wt3)           ✅
-  ├ S-7    [██████████] 100%   proof_validate shadow (wt3)            ✅
+Phase 2  [██████████] 100%   Wave S SHADOW complete (S-1..S-9 all shipped)  ✅
+  ├ S-5..S-7 [██████████] 100%   body_persist, script_validate, proof_validate ✅
   ├ S-8    [██████████] 100%   utxo_apply shadow (wt3)                ✅ 497220f58
-  └ S-9    [░░░░░░░░░░]   0%   tip_finalize shadow (wt3 next)         ← READY (LAST shadow stage)
-Phase 2 cutover plan drafted: docs/architecture/wave-s-cutover.md
-                C-2 spec'd; C-3..C-9 batch-spec'd
-Phase 3  [██░░░░░░░░]  20%   Dissolve mega-modules                    ← IN FLIGHT
-  ├ PR-1   [██████████] 100%   watchdog: 2 conditions (wt2)           ✅
-  ├ PR-2   [░░░░░░░░░░]   0%   watchdog: 4 kick conditions (wt2 next) ← READY
-  └ PR-3   [░░░░░░░░░░]   0%   watchdog: 2 + DELETE module (wt2 queued)
+  └ S-9    [██████████] 100%   tip_finalize shadow (wt3)              ✅ 1a65b33c7
+Phase 2 CUTOVER [░░░░░░░░░░]   0%   Flip shadow → authoritative      ← C-2 READY (S-9 merged)
+  ├ C-2    [░░░░░░░░░░]   0%   header_admit authoritative             ← READY
+  ├ C-3    [░░░░░░░░░░]   0%   validate_headers authoritative (queued, post C-2)
+  ├ C-5    [░░░░░░░░░░]   0%   body_persist + delete body_fetch (queued)
+  ├ C-6    [░░░░░░░░░░]   0%   script_validate authoritative (queued)
+  ├ C-7    [░░░░░░░░░░]   0%   proof_validate authoritative (queued)
+  ├ C-8    [░░░░░░░░░░]   0%   utxo_apply authoritative (queued — gates utxo_recovery dissolve)
+  └ C-9    [░░░░░░░░░░]   0%   tip_finalize authoritative (queued — gates chain_advance dissolve)
+Phase 3  [██████░░░░]  60%   Dissolve mega-modules                    ← partial
+  ├ watchdog [██████████] 100%   sync_watchdog_service.c DELETED      ✅ 611631541
+  ├ supervisor tree split [██████████] 100%   7 domain supervisors    ✅ dae31dee9
+  ├ chain_advance  [░░░░░░░░░░] gated on C-9 cutover (dissolve plan ready)
+  ├ legacy_mirror  [░░░░░░░░░░] gated on C-9 cutover (dissolve plan ready)
+  ├ chain_restore  [░░░░░░░░░░] independent — plan ready, awaiting per-PR assignment
+  ├ header_probe   [░░░░░░░░░░] independent — plan ready, awaiting per-PR assignment
+  └ utxo_recovery  [░░░░░░░░░░] gated on C-8 cutover (dissolve plan ready)
 Phase 4  [░░░░░░░░░░]   0%   Storage unification — plan: docs/architecture/phase4-storage-unification.md
-  ├ 4a     [░░░░░░░░░░]   0%   event_log primitive (queued, post-Phase 3)
+  ├ 4a     [░░░░░░░░░░]   0%   event_log primitive  ← READY (primitive sits idle, no callers wired)
   └ 4b     [░░░░░░░░░░]   0%   utxo_projection — first event-log consumer (queued, post-4a)
 Phase 5  [░░░░░░░░░░]   0%   Crypto agility + reproducible builds — plan: docs/architecture/phase5-crypto-agility-and-releases.md
-  └ 5a-1   [░░░░░░░░░░]   0%   Crypto registry skeleton (queued, parallel-safe with Phase 2/3)
+  └ 5a-1   [░░░░░░░░░░]   0%   Crypto registry skeleton  ← READY (parallel-safe, no gates)
 Phase 6  [░░░░░░░░░░]   0%   Determinism + simulator
 Phase 7  [░░░░░░░░░░]   0%   Frontier (io_uring, hot reload)
 
@@ -83,12 +91,16 @@ clause. The table below is the dashboard.
 
 | Worktree | Branch | Assignment | Status | Last update |
 |---|---|---|---|---|
-| `~/github/zclassic23` (main) | `main` | Orchestrator: queue + plan + merge | ✅ S-8 merged; 22 stale branches deleted; direct-push protocol; Phase 4b + 5a-1 drafted | 2026-05-24 |
-| `~/github/zclassic23-2` (wt2) | `main` (direct push) | [`docs/work/wt2-phase3-watchdog-dissolve-pr2.md`](./work/wt2-phase3-watchdog-dissolve-pr2.md) | 🕐 READY (restart agent 2) | 2026-05-24 |
-| `~/github/zclassic23-3` (wt3) | `main` (direct push) | [`docs/work/wt3-phase2-s9-tip-finalize.md`](./work/wt3-phase2-s9-tip-finalize.md) | 🕐 READY — LAST shadow stage (restart agent 3) | 2026-05-24 |
+| `~/github/zclassic23` (main) | `main` | Orchestrator: queue + plan + merge | ✅ Wave S 100% shadow; cutover C-2 + crypto-registry + 2 dissolves drafted | 2026-05-24 |
+| `~/github/zclassic23-2` (wt2) | `main` (direct push) | (idle — restart and pick from READY queue below) | 🕐 READY for next task | 2026-05-24 |
+| `~/github/zclassic23-3` (wt3) | `main` (direct push) | (idle — restart and pick from READY queue below) | 🕐 READY for next task | 2026-05-24 |
 
-**Parallel-safe READY** for any worker that wants an unblocked alternative:
-- [`docs/work/wt-supervisor-tree-split.md`](./work/wt-supervisor-tree-split.md) — split flat supervisor into 7 domain supervisors.
+**READY queue** (any worker can pick on restart; first to mark IN PROGRESS wins):
+- [`docs/work/wt-phase2-cutover-c2-header-admit.md`](./work/wt-phase2-cutover-c2-header-admit.md) — **FIRST authoritative cutover.** 4-commit PR (mode flag → authoritative path gated → divergence guard → flip default). Recommend wt3 (most familiar with Wave S). Commits 1-3 are risk-free; commit 4 flips the default and is one-line revertable.
+- [`docs/work/wt-phase5a1-crypto-registry-skeleton.md`](./work/wt-phase5a1-crypto-registry-skeleton.md) — pure indirection layer; parallel-safe with cutover; no consensus call sites rewired in this PR.
+- [`docs/work/wt-phase4a-event-log-primitive.md`](./work/wt-phase4a-event-log-primitive.md) — append-only event log with kill-9 fuzz harness; **primitive sits idle, no callers wired** — actually safe to ship before Phase 3 fully completes (the original "gated on Phase 3" was priority ordering, not a technical dependency).
+
+**Other phase-3 dissolve PRs (chain_advance, legacy_mirror, chain_restore, header_probe, utxo_recovery)** are gated on Wave S cutover progress per their respective plans in [`docs/dissolve/`](./dissolve/). Don't dispatch them yet.
 
 ---
 
@@ -96,7 +108,10 @@ clause. The table below is the dashboard.
 
 | Date | What | Worktree | Commit |
 |---|---|---|---|
-| 2026-05-24 | **Plans:** Phase 4b utxo_projection assignment (10 tasks, first event-log consumer) + Phase 5a-1 crypto registry skeleton assignment (parallel-safe, additive indirection) | main | (this commit) |
+| 2026-05-24 | **Phase 3 supervisor tree split MERGED** — flat supervisor → 7 domain supervisors (chain, net, mempool, wallet, feature, onion, op) + self_heal | wt3 → main | dae31dee9 |
+| 2026-05-24 | **Phase 3 watchdog dissolve COMPLETE** — PR-2 (4 kick conditions) + PR-3 (DELETED `sync_watchdog_service.c` — 1,448 LOC gone) | wt2 → main | 611631541 |
+| 2026-05-24 | **Phase 2 S-9 MERGED — Wave S SHADOW COMPLETE** — tip_finalize shadow stage; all 9 stages ship; cutover C-2 unblocked | wt3 → main | 1a65b33c7 |
+| 2026-05-24 | **Plans:** Phase 4b utxo_projection assignment (10 tasks, first event-log consumer) + Phase 5a-1 crypto registry skeleton assignment (parallel-safe, additive indirection) | main | 7b3832c62 |
 | 2026-05-24 | **Workflow:** direct-push-to-main; agent-protocol.md rewritten; 22 stale remote branches deleted; only `origin/main` remains | main | bb5bcc7f1 |
 | 2026-05-24 | **Phase 2 S-8 MERGED** — utxo_apply shadow stage: per-block UTXO delta computation (added/spent), shadow-vs-live diff (`g_delta_diverged_total` gate for C-8) | main | 497220f58 |
 | 2026-05-24 | Cherry-picked wt2 mailbox drain hardening (bounded drains prevent reentrant-publish starvation) + wallet view projection move (lint gate #20 debt) | main | 12d9c8e73 |

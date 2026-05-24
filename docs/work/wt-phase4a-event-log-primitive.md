@@ -199,7 +199,9 @@ the next sub-phase to start using it.
 
 ## Status
 
-**QUEUED** — gated on Phase 3 dissolves complete. Independent of Wave S
-cutover. Either worker can pick it up when their pipeline clears.
+**READY** (status updated 2026-05-24) — the prior "gated on Phase 3"
+note was about priority ordering, not a technical dependency. This
+primitive sits in `lib/storage/` with no callers wired, so it's safe
+to land any time. Any worker may claim by marking IN PROGRESS (wt<N>).
 
 <!-- Worker: append a Completion section below when done. -->

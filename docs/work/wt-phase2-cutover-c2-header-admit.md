@@ -185,7 +185,18 @@ see progress + revert individual commits if needed.
 
 ## Status
 
-**QUEUED** — gated on S-9 merge + 24h soak. Do NOT start until
-orchestrator green-lights via REFACTOR_STATUS.md update.
+**READY** (status updated 2026-05-24, post S-9 merge `1a65b33c7`) —
+**FIRST authoritative cutover.** Commits 1-3 are pure additions (mode
+flag default SHADOW → no behavior change). Commit 4 flips the default
+to AUTHORITATIVE and is one-line revertable.
+
+Soak discipline: ship commits 1-3 together, then watch
+`zcl_state subsystem=header_admit` for ≥1h of zero divergence on a
+moving chain before commit 4. If the live node is wedged (chain not
+advancing), use test fixtures only and don't flip commit 4 until
+the chain resumes advancement.
+
+Recommend wt3 (most familiar with Wave S stages). Any worker may
+claim by marking IN PROGRESS (wt<N>).
 
 <!-- Worker: append a Completion section below when done. -->

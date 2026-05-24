@@ -311,8 +311,7 @@ One commit per task. Push after tasks 2, 5, 7.
 
 ## Status
 
-**QUEUED** — independent of Wave S and Phase 3 dissolves. Can be
-picked up by any worker that finishes their current assignment and
-has no Wave S / Phase 3 work ready.
+**READY** (status updated 2026-05-24) — independent of Wave S and
+Phase 3. Any worker may claim by marking IN PROGRESS (wt<N>).
 
 <!-- Worker: append a Completion section below when done. -->
