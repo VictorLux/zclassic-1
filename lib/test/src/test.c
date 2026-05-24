@@ -583,6 +583,7 @@ int main(void)
     failures += test_blocker();
     failures += test_clock();
     failures += test_rng();
+    failures += test_seed_tape();
     failures += test_stage();
     failures += test_mailbox();
     failures += test_mailbox_adoption();
