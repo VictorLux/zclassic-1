@@ -540,4 +540,20 @@ the shared event log. `wallet_projection` is registered in dumpstate so
 public counts and emit counters. The assignment remains in progress;
 next slice is Task 7 wallet projection diff.
 
+2026-05-24 wt2 progress: Task 7 wallet projection diff RPC/MCP wiring
+is implemented. `zcl_wallet_projection_diff` now reports projection/live
+aggregate counts, total value, `match`, and category-only `first_diff`.
+The diff deliberately does not query `wallet_keys`; there is no legacy
+public address-view table, so `live_address_count` mirrors the public
+projection aggregate while tx/UTXO/note/value counts compare against
+legacy public wallet view aggregates. Verified with `make -j$(nproc)`,
+`ZCL_TEST_ONLY=wallet_projection ./test_zcl`,
+`ZCL_TEST_ONLY=mcp_controllers ./test_zcl`,
+`ZCL_TEST_ONLY=mcp_e2e ./test_zcl`, and `make lint`. Two
+`./test_parallel --jobs=$(nproc)` attempts were blocked by the existing
+`crypto_registry` registry-indirection timing threshold under 32-worker
+load; `ZCL_TEST_ONLY=crypto_registry ./test_zcl` passed standalone.
+The assignment remains in progress; next slice is Task 9/10 final
+coverage and verification audit.
+
 <!-- Worker: append a Completion section below when done. -->

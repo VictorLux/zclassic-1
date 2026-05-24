@@ -41,7 +41,7 @@
 /* Expected tool counts.  If a future commit intentionally adds or
  * removes tools, bump these numbers in the same commit — they are the
  * contract for "how big is the MCP surface." */
-#define EXPECTED_TOTAL      100 /* +3 power-user tools: chain_tip,
+#define EXPECTED_TOTAL      101 /* +3 power-user tools: chain_tip,
                                  * reorg_history, mempool_inspect;
                                  * +1 Round 6 C5: zcl_blockers;
                                  * +1 I-9 (revamp): zcl_diff_with_legacy_shadow;
@@ -50,8 +50,9 @@
                                  * +1 Phase 4b: zcl_utxo_projection_diff (24h cutover gate);
                                  * +1 Phase 4c: zcl_block_index_diff (24h cutover gate);
                                  * +1 Phase 4d-1: zcl_mempool_projection_diff;
-                                 * +1 Phase 4d-4: zcl_znam_projection_diff */
-#define EXPECTED_OPS        38  /* status, health, kpi, self_heal_stats, mempool*, mininginfo,
+                                 * +1 Phase 4d-4: zcl_znam_projection_diff;
+                                 * +1 Phase 4d-3: zcl_wallet_projection_diff */
+#define EXPECTED_OPS        39  /* status, health, kpi, self_heal_stats, mempool*, mininginfo,
                                  * benchmark, dbstats, filemanifest, events,
                                  * rpc, state + node_log + sql (round 6.5 MCP primitives),
                                  * tools_list, self_test, logtail,
@@ -65,7 +66,8 @@
                                  * + mirror status and zclassicd probe,
                                  * + mempool_inspect (fee+age histograms)
                                  * + zcl_mempool_projection_diff (Phase 4d-1)
-                                 * + zcl_znam_projection_diff (Phase 4d-4) */
+                                 * + zcl_znam_projection_diff (Phase 4d-4)
+                                 * + zcl_wallet_projection_diff (Phase 4d-3) */
 #define EXPECTED_CHAIN      17  /* + chain_tip + reorg_history
                                  * + zcl_diff_with_legacy_shadow (I-9 revamp)
                                  * + zcl_diff_staged_header_admit (S-11 mini-diff)

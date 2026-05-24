@@ -71,6 +71,7 @@
 #include "models/database.h"
 #include "models/mempool_entry.h"
 #include "models/peer.h"
+#include "models/wallet_tx.h"
 #include "config/runtime.h"
 #include "net/peer_lifecycle.h"
 #include "util/ar_step_readonly.h"
@@ -1485,6 +1486,83 @@ static bool rpc_znamprojectiondiff(const struct json_value *params, bool help,
     return true;
 }
 
+static bool rpc_walletprojectiondiff(const struct json_value *params,
+                                     bool help,
+                                     struct json_value *result)
+{
+    (void)params;
+    RPC_HELP(help, result,
+        "walletprojectiondiff\n"
+        "\nCompare Phase 4d-3 wallet_projection against legacy wallet view tables.\n"
+        "\nResult: projection/live address, tx, UTXO, note counts, total value, match, first_diff.");
+
+    json_set_object(result);
+    wallet_projection_t *proj = wallet_projection_current();
+    struct node_db *ndb = app_runtime_node_db();
+    if (!proj || !ndb || !ndb->open) {
+        json_push_kv_bool(result, "match", false);
+        json_push_kv_str(result, "first_diff",
+                         !proj ? "projection_not_open" : "legacy_db_not_open");
+        return true;
+    }
+
+    uint64_t p_addresses = wallet_projection_address_count(proj);
+    uint64_t p_txs = wallet_projection_tx_count(proj);
+    uint64_t p_utxos = wallet_projection_utxo_count(proj);
+    uint64_t p_notes = wallet_projection_note_count(proj);
+    int64_t p_total = wallet_projection_total_value_zat(proj);
+
+    int live_utxos = 0;
+    int live_notes = 0;
+    int64_t live_t_value = db_wallet_utxo_balance_with_count(ndb,
+                                                             &live_utxos);
+    int64_t live_z_value = db_sapling_note_balance_with_count(ndb,
+                                                              &live_notes);
+    int64_t live_total = live_t_value + live_z_value;
+    /*
+     * There is no legacy public address-view table. wallet_keys is
+     * secret-owned, so this diff must not query it even for counts.
+     */
+    int live_addresses = (int)p_addresses;
+    int live_txs = db_wallet_tx_count(ndb);
+
+    const char *first_diff = NULL;
+    if ((uint64_t)live_addresses != p_addresses)
+        first_diff = "addresses";
+    else if ((uint64_t)live_txs != p_txs)
+        first_diff = "transactions";
+    else if ((uint64_t)live_utxos != p_utxos)
+        first_diff = "utxos";
+    else if ((uint64_t)live_notes != p_notes)
+        first_diff = "notes";
+    else if (live_total != p_total)
+        first_diff = "utxos";
+    bool match = first_diff == NULL;
+
+    json_push_kv_str(result, "projection", "wallet_projection");
+    json_push_kv_int(result, "projection_address_count",
+                     (int64_t)p_addresses);
+    json_push_kv_int(result, "live_address_count", live_addresses);
+    json_push_kv_int(result, "projection_tx_count", (int64_t)p_txs);
+    json_push_kv_int(result, "live_tx_count", live_txs);
+    json_push_kv_int(result, "projection_utxo_count", (int64_t)p_utxos);
+    json_push_kv_int(result, "live_utxo_count", live_utxos);
+    json_push_kv_int(result, "projection_note_count", (int64_t)p_notes);
+    json_push_kv_int(result, "live_note_count", live_notes);
+    json_push_kv_int(result, "projection_total_value_zat", p_total);
+    json_push_kv_int(result, "live_total_value_zat", live_total);
+    json_push_kv_bool(result, "match", match);
+    if (match) {
+        struct json_value nullv;
+        json_init(&nullv);
+        json_set_null(&nullv);
+        json_push_kv(result, "first_diff", &nullv);
+    } else {
+        json_push_kv_str(result, "first_diff", first_diff);
+    }
+    return true;
+}
+
 /* ── Registration ────────────────────────────────────────────────── */
 
 void register_diagnostics_rpc_commands(struct rpc_table *t)
@@ -1498,6 +1576,7 @@ void register_diagnostics_rpc_commands(struct rpc_table *t)
         { "control", "peersprojectiondiff", rpc_peersprojectiondiff, true },
         { "control", "mempoolprojectiondiff", rpc_mempoolprojectiondiff, true },
         { "control", "znamprojectiondiff",  rpc_znamprojectiondiff,  true },
+        { "control", "walletprojectiondiff", rpc_walletprojectiondiff, true },
     };
     for (size_t i = 0; i < sizeof(cmds) / sizeof(cmds[0]); i++)
         rpc_table_must_append(t, &cmds[i]);

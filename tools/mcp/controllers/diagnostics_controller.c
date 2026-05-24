@@ -9,6 +9,7 @@
  *   zcl_mempool_projection_diff — mempool projection vs legacy mempool table
  *   zcl_peers_projection_diff — peers projection vs legacy peer table
  *   zcl_znam_projection_diff  — znam projection vs legacy znam tables
+ *   zcl_wallet_projection_diff — wallet projection vs legacy wallet view tables
  *   zcl_probe_zclassicd    — drift check against local zclassicd
  *   zcl_diff_with_legacy   — composite "are we tracking?" verdict
  *   zcl_profile            — per-thread /proc CPU sampler
@@ -128,6 +129,15 @@ static int h_zcl_znam_projection_diff(const struct mcp_request *req,
     (void)req;
     char *out = mcp_node_rpc("znamprojectiondiff", NULL);
     return mcp_return_rpc_body(res, out, "znamprojectiondiff", "mcp.diag");
+}
+
+static int h_zcl_wallet_projection_diff(const struct mcp_request *req,
+                                        struct mcp_response *res)
+{
+    (void)req;
+    char *out = mcp_node_rpc("walletprojectiondiff", NULL);
+    return mcp_return_rpc_body(res, out, "walletprojectiondiff",
+                               "mcp.diag");
 }
 
 /* ── zcl_probe_zclassicd ─────────────────────────────────────── */
@@ -647,6 +657,11 @@ static const struct mcp_tool_route k_routes[] = {
       "(znam_names + znam_addr_records + znam_text_records): per-table row "
       "counts plus first_diff if any.",
       NULL, 0, h_zcl_znam_projection_diff, 0, NULL },
+    { "zcl_wallet_projection_diff", "ops",
+      "Compare Phase 4d-3 wallet_projection against legacy public wallet "
+      "view tables: address/tx/UTXO/note counts plus total value. "
+      "first_diff is a category name only.",
+      NULL, 0, h_zcl_wallet_projection_diff, 0, NULL },
     { "zcl_probe_zclassicd", "ops",
       "Drift detection: ask the local zclassicd (independent ZClassic "
       "impl) for getblockhash(H) and compare to our block_index. Picks a "
