@@ -264,9 +264,9 @@ Drafted as its own assignment when 4d cutover gets close.
 
 ## Status
 
-**IN PROGRESS (wt2)** — claimed 2026-05-24 for 4d-2
-`peers_projection` after Phase 4a merged. The other 4d projections
-remain available for independent workers.
+**4d-2 DONE (wt2)** — completed 2026-05-24 for
+`peers_projection`. The other 4d projections remain available for
+independent workers.
 
 Recommend dispatch order when 4a is done:
 1. 4d-2 (peers — smallest, lowest risk, easy to verify with `zcl_peers`)
@@ -276,3 +276,33 @@ Recommend dispatch order when 4a is done:
 5. 4d-5 (small batch — last; mostly mechanical)
 
 <!-- Each worker assignment for a specific projection appends a Completion section. -->
+
+## Completion — 4d-2 peers_projection (wt2, 2026-05-24)
+
+Commits:
+- `db2cfa800` wt2: mark peers projection in progress
+- `91aa65c1c` peers_projection: add shadow replay primitive
+- `5dc442a81` peers_projection: wire shadow peer events
+- `48e78d801` peers_projection: add diff MCP tool
+- `58ab883a5` validation: avoid app service include
+- `ecf5ea8b6` mcp_e2e: add diagnostics stale witness
+
+Implemented:
+- Added `EV_PEER_OBSERVED` / `EV_PEER_DROPPED` payload helpers and a
+  SQLite-backed `peers_projection` replay primitive.
+- Shadow-emits peer observe/drop events from legacy peer writes without
+  blocking the existing direct-write path.
+- Opens/catches up the projection during phase 4 storage-shadow boot and
+  exposes diagnostics state.
+- Added `zcl_peers_projection_diff` through diagnostics RPC + MCP.
+- Added focused unit coverage and MCP stale-binary guard coverage for
+  diagnostics controller surface changes.
+
+Verification:
+- `make -j$(nproc) test_zcl zclassic23`
+- `ZCL_TEST_ONLY=peers_projection ./test_zcl`
+- `ZCL_TEST_ONLY=mcp_controllers ./test_zcl`
+- `ZCL_TEST_ONLY=mcp_e2e ./test_zcl`
+- `make lint`
+- `./test_parallel --jobs=$(nproc)` PASS on rerun:
+  `ALL TESTS PASSED — 0/195 groups failed`
