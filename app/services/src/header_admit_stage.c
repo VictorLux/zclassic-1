@@ -42,6 +42,10 @@ static _Atomic int64_t  g_last_admit_height = -1;
 static _Atomic int64_t  g_last_step_unix = 0;
 static _Atomic int64_t  g_last_blocked_unix = 0;
 static _Atomic header_admit_mode_t g_mode = HEADER_ADMIT_MODE_SHADOW;
+#ifdef ZCL_TESTING
+static header_admit_authoritative_hook g_authoritative_hook = NULL;
+static void *g_authoritative_hook_user = NULL;
+#endif
 
 MAILBOX_DEFINE(header_admit, struct header_admit_msg,
                HEADER_ADMIT_INBOX_CAPACITY)
@@ -142,6 +146,27 @@ static void handle_header_admit_msg(const struct header_admit_msg *m)
         atomic_fetch_add(&g_inbox_logged_total, 1);
 }
 
+static bool authoritative_admit(struct main_state *ms, struct block_index *bi)
+{
+#ifdef ZCL_TESTING
+    if (g_authoritative_hook)
+        return g_authoritative_hook(ms, bi, g_authoritative_hook_user);
+#endif
+
+    if (!ms || !bi || !bi->phashBlock)
+        return false;
+
+    struct block_index *mapped =
+        block_map_find(&ms->map_block_index, bi->phashBlock);
+    if (mapped && mapped != bi)
+        return false;
+
+    if ((bi->nStatus & BLOCK_VALID_MASK) < BLOCK_VALID_TREE)
+        bi->nStatus = (bi->nStatus & ~BLOCK_VALID_MASK) |
+                      BLOCK_VALID_TREE;
+    return true;
+}
+
 static stage_result_t step_admit(struct stage_step_ctx *c)
 {
     atomic_store(&g_last_step_unix, wall_now_s());
@@ -171,6 +196,14 @@ static stage_result_t step_admit(struct stage_step_ctx *c)
         parent_hash = bi->pprev->phashBlock;
     }
 
+    if (header_admit_get_mode() == HEADER_ADMIT_MODE_AUTHORITATIVE &&
+        !authoritative_admit(ms, bi)) {
+        fprintf(stderr,  // obs-ok:header-admit-authoritative-failure
+                "[header_admit] authoritative admit failed height=%d\n",
+                next_h);
+        return STAGE_ERROR;
+    }
+
     if (!log_insert(db, next_h, bi->phashBlock, parent_hash))
         return STAGE_ERROR;
 
@@ -193,6 +226,16 @@ header_admit_mode_t header_admit_get_mode(void)
 {
     return atomic_load(&g_mode);
 }
+
+#ifdef ZCL_TESTING
+void header_admit_stage_set_authoritative_hook(
+    header_admit_authoritative_hook hook,
+    void *user)
+{
+    g_authoritative_hook = hook;
+    g_authoritative_hook_user = user;
+}
+#endif
 
 bool header_admit_stage_init(struct main_state *ms)
 {
@@ -273,6 +316,10 @@ void header_admit_stage_shutdown(void)
     atomic_store(&g_last_admit_height, (int64_t)-1);
     atomic_store(&g_last_step_unix, (int64_t)0);
     atomic_store(&g_last_blocked_unix, (int64_t)0);
+#ifdef ZCL_TESTING
+    g_authoritative_hook = NULL;
+    g_authoritative_hook_user = NULL;
+#endif
     pthread_mutex_unlock(&g_lock);
 }
 
@@ -309,6 +356,11 @@ bool header_admit_stage_dump_state_json(struct json_value *out,
                       atomic_load(&g_last_step_unix));
     json_push_kv_int (out, "last_blocked_unix",
                       atomic_load(&g_last_blocked_unix));
+    json_push_kv_str (out, "mode",
+                      header_admit_get_mode() ==
+                          HEADER_ADMIT_MODE_AUTHORITATIVE
+                              ? "authoritative"
+                              : "shadow");
     if (g_stage) {
         json_push_kv_int(out, "advanced_count",
                          (int64_t)stage_advanced_count(g_stage));

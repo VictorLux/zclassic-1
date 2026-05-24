@@ -54,6 +54,7 @@
 #include <stdint.h>
 
 struct main_state;
+struct block_index;
 struct json_value;
 
 /* Max steps drained per supervisor tick. Bounded to keep contention
@@ -94,6 +95,17 @@ uint64_t header_admit_stage_admitted_total(void);
 /* zcl_state subsystem=header_admit (CLAUDE.md convention). */
 bool header_admit_stage_dump_state_json(struct json_value *out,
                                          const char *key);
+
+#ifdef ZCL_TESTING
+typedef bool (*header_admit_authoritative_hook)(
+    struct main_state *ms,
+    struct block_index *bi,
+    void *user);
+
+void header_admit_stage_set_authoritative_hook(
+    header_admit_authoritative_hook hook,
+    void *user);
+#endif
 
 /* ── S-11 mini-diff harness ─────────────────────────────────────────── */
 /*

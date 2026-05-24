@@ -124,6 +124,23 @@ static bool log_hash_at(sqlite3 *db, int height,
     return true;
 }
 
+struct auth_hook_state {
+    int calls;
+    int height;
+};
+
+static bool auth_observer(struct main_state *ms,
+                          struct block_index *bi,
+                          void *user)
+{
+    struct auth_hook_state *st = user;
+    if (!st || !ms || !bi)
+        return false;
+    st->calls++;
+    st->height = bi->nHeight;
+    return true;
+}
+
 int test_header_admit_stage(void)
 {
     printf("\n=== header_admit_stage tests ===\n");
@@ -268,6 +285,40 @@ int test_header_admit_stage(void)
         HA_CHECK("blocked: cursor stuck at 1",
                  header_admit_stage_cursor() == 1);
 
+        header_admit_stage_shutdown();
+        active_chain_free(&ms.chain_active);
+        synth_chain_free(&sc);
+        progress_store_close();
+        test_cleanup_tmpdir(dir);
+    }
+
+    /* ── authoritative path is gated behind mode flag ──────────────── */
+    {
+        char dir[256];
+        ha_tmpdir(dir, sizeof(dir), "authoritative");
+        mkdir_p_ha(dir);
+        HA_CHECK("auth: store opens", progress_store_open(dir));
+
+        struct main_state ms;
+        memset(&ms, 0, sizeof(ms));
+        active_chain_init(&ms.chain_active);
+        struct synth_chain sc;
+        synth_chain_build(&sc, 2);
+        active_chain_set_tip(&ms.chain_active, &sc.blocks[1]);
+
+        struct auth_hook_state st = {0, -1};
+        header_admit_stage_set_authoritative_hook(auth_observer, &st);
+        header_admit_set_mode(HEADER_ADMIT_MODE_AUTHORITATIVE);
+
+        HA_CHECK("auth: init", header_admit_stage_init(&ms));
+        HA_CHECK("auth: step calls authoritative hook",
+                 header_admit_stage_step_once() == STAGE_ADVANCED);
+        HA_CHECK("auth: hook saw height 0",
+                 st.calls == 1 && st.height == 0);
+        HA_CHECK("auth: log still records row",
+                 log_row_count(progress_store_db()) == 1);
+
+        header_admit_set_mode(HEADER_ADMIT_MODE_SHADOW);
         header_admit_stage_shutdown();
         active_chain_free(&ms.chain_active);
         synth_chain_free(&sc);
