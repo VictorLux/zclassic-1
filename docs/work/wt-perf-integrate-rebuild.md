@@ -209,10 +209,18 @@ Verification:
   33.8s (`block_index=3124929`, `utxos=1345066`, `blk_files=50`). Boot then
   failed later on a separate pending-anchor UTXO count mismatch:
   `pending=1345066 actual=75454`.
+- Fixed chainstate bulk import ownership: cold-import and legacy one-shot import
+  now copy callback-owned txids/scripts into batch-owned storage before flush.
+  This removed the pending-anchor accounting mismatch in the live smoke:
+  cold-import completed in 49.3s (`block_index=3124929`, `utxos=1345066`,
+  `blk_files=50`), boot published the pending anchor via CSR at `h=3123726`,
+  RPC started, and coins flushes preserved `utxos=1345066`.
+- New observed live-sync blocker after activation: headers immediately after
+  the imported tip are rejected as `validate-headers-cutover-diverged` /
+  `header-admit-cutover-diverged`, leaving sync stalled at `h=3123726`.
 
 Still required before PR-3 completion:
-- Resolve the post-import activation/accounting mismatch after successful
-  cold-import (`cold-import pending anchor UTXO count mismatch`).
+- Resolve post-activation live header divergence after successful cold-import.
 - Run serial vs parallel cold-import on the live datadir and compare tip hash +
   `utxo_sha3`.
 - Record before/after `blk*.dat` marking wall-time in `docs/BENCHMARKS_LOG.md`.

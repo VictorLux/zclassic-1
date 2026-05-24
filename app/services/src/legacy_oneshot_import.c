@@ -396,6 +396,8 @@ static int64_t loi_copy_block_index(const char *legacy_idx_snapshot,
 
 struct loi_cs_ctx {
     struct utxo_bulk_rec *batch;
+    uint8_t (*txids)[32];
+    uint8_t **scripts;
     size_t fill, cap;
     struct coins_view_sqlite *cvs;
     int64_t inserted, records;
@@ -403,16 +405,27 @@ struct loi_cs_ctx {
     struct long_op_scope *lo_scope;
 };
 
+static void loi_cs_clear_batch(struct loi_cs_ctx *c)
+{
+    if (!c || !c->scripts) return;
+    for (size_t i = 0; i < c->fill; i++) {
+        free(c->scripts[i]);
+        c->scripts[i] = NULL;
+    }
+    c->fill = 0;
+}
+
 static bool loi_cs_flush(struct loi_cs_ctx *c)
 {
     if (c->fill == 0) return true;
     int64_t w = coins_view_sqlite_bulk_insert(c->cvs, c->batch, c->fill);
     if (w != (int64_t)c->fill) {
         c->errors++;
+        loi_cs_clear_batch(c);
         return false;
     }
     c->inserted += w;
-    c->fill = 0;
+    loi_cs_clear_batch(c);
     long_op_tick(c->lo_scope);
     return true;
 }
@@ -428,15 +441,26 @@ static bool loi_cs_cb(const struct uint256 *txid,
         if (c->fill >= c->cap) {
             if (!loi_cs_flush(c)) return false;
         }
+        size_t script_len = lc->vouts[i].script_len;
+        uint8_t *script_copy = zcl_malloc(script_len ? script_len : 1,
+                                          "loi.chainstate.script");
+        if (!script_copy) {
+            c->errors++;
+            return false;
+        }
+        size_t slot = c->fill;
+        memcpy(c->txids[slot], txid->data, 32);
+        if (script_len) memcpy(script_copy, lc->vouts[i].script, script_len);
         c->batch[c->fill++] = (struct utxo_bulk_rec){
-            .txid = txid->data,
+            .txid = c->txids[slot],
             .vout = lc->vouts[i].n,
             .value = lc->vouts[i].value,
-            .script = lc->vouts[i].script,
-            .script_len = (uint32_t)lc->vouts[i].script_len,
+            .script = script_copy,
+            .script_len = (uint32_t)script_len,
             .height = (uint32_t)lc->height,
             .is_coinbase = lc->coinbase ? 1u : 0u,
         };
+        c->scripts[slot] = script_copy;
     }
     return true;
 }
@@ -862,15 +886,24 @@ bool legacy_oneshot_import_run(
     enum { BATCH = 50000 };  /* per plan: 50k rows/txn */
     struct utxo_bulk_rec *batch =
         zcl_malloc(sizeof(*batch) * BATCH, "loi.batch");
-    if (!batch) {
+    uint8_t (*txids)[32] =
+        zcl_malloc(sizeof(*txids) * BATCH, "loi.batch.txids");
+    uint8_t **scripts =
+        zcl_malloc(sizeof(*scripts) * BATCH, "loi.batch.scripts");
+    if (!batch || !txids || !scripts) {
+        free(batch);
+        free(txids);
+        free(scripts);
         chainstate_legacy_close(cs);
         long_op_end(&cs_scope);
         ldb_snapshot_destroy(idx_snap);
         ldb_snapshot_destroy(cs_snap);
         return false;
     }
+    memset(scripts, 0, sizeof(*scripts) * BATCH);
     struct loi_cs_ctx ctx = {
-        .batch = batch, .fill = 0, .cap = BATCH,
+        .batch = batch, .txids = txids, .scripts = scripts,
+        .fill = 0, .cap = BATCH,
         .cvs = cvs, .lo_scope = &cs_scope,
     };
     int64_t n = chainstate_legacy_iter(cs, loi_cs_cb, &ctx);
@@ -879,7 +912,10 @@ bool legacy_oneshot_import_run(
     struct uint256 cs_best;
     bool got_best = chainstate_legacy_get_best_block(cs, &cs_best);
     chainstate_legacy_close(cs);
+    loi_cs_clear_batch(&ctx);
     free(batch);
+    free(txids);
+    free(scripts);
     long_op_end(&cs_scope);
 
     if (n < 0 || ctx.errors > 0) {
