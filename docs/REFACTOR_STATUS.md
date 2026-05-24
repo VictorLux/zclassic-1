@@ -71,13 +71,13 @@ Phase 3  [██████░░░░]  60%   Dissolve mega-modules          
   ├ chain_restore  [░░░░░░░░░░] independent — plan ready, awaiting per-PR assignment
   ├ header_probe   [████░░░░░░] PR-1 (poll Job) ✅ 79b53852a; PR-2/3 now unblocked (C-3 landed)
   └ utxo_recovery  [░░░░░░░░░░] gated on C-8 cutover (dissolve plan ready)
-Phase 4  [█████████░]  93%   Storage unification — plan: docs/architecture/phase4-storage-unification.md
+Phase 4  [█████████░]  95%   Storage unification — plan: docs/architecture/phase4-storage-unification.md
   ├ 4a     [██████████] 100%   event_log primitive  ✅ 76b3a10b4
   ├ 4b     [██████████] 100%   utxo_projection — Tasks 1-10 SHIPPED  ✅ (39b1e8efa..ee1c5c7b1, 7 commits)
   ├ 4c     [██████████] 100%   block_index_projection + finalize (diff tool + 9 tests)  ✅ (…ed34743ba, 066462576, 91b4ee734, 2f23d6a44, 2e289e41b)
   ├ 4d-1   [██████████] 100%   mempool projection + shadow replay  ✅ da005eb31, cc84e9419
   ├ 4d-2   [██████████] 100%   peers_projection  ✅ 91aa65c1c + 5dc442a81 + 48e78d801 + f925fb6f3 (wt2)
-  ├ 4d-3   [░░░░░░░░░░]   0%   wallet view projection (READY)
+  ├ 4d-3   [██████████] 100%   wallet view projection + diff + final verification  ✅ 12284eb3e, 5626552cb
   ├ 4d-4   [██████████] 100%   znam projection — Tasks 1-5b SHIPPED  ✅ (f52313f02..eb53d9d52, 7 commits, 30 test cases pass)
   ├ 4d-5   [░░░░░░░░░░]   0%   zmsg/zslp/zswp/store batch (READY)
   └ 4e     [░░░░░░░░░░]   0%   block-body migration (spec'd, gated on 4c cutover)
@@ -192,6 +192,7 @@ freed workers add the most while the soak runs.
 
 | Date | What | Worktree | Commit |
 |---|---|---|---|
+| 2026-05-24 | **Phase 4d-3 wallet projection COMPLETE** — public-only wallet projection, diff RPC/MCP tool, diagnostics, replay edge coverage, secret/payload audit, and live fresh-node `match:true` diff evidence | wt2 → main | 12284eb3e, 5626552cb |
 | 2026-05-24 | **Phase 2 C-3 validate_headers AUTHORITATIVE** — the flip; full test_parallel 0/196; stabilized 2 pre-existing flaky timing tests (crypto_registry ECDSA, event async) | wt3 → main | ad34efb65, 535f14902, 72dd5e01f |
 | 2026-05-24 | **Phase 4c FINALIZED** — `zcl_block_index_diff` MCP tool + dumper wired + 9-case `test_block_index_projection`; block_index_projection complete | wt2 → main | 066462576, 91b4ee734, 2f23d6a44, 2e289e41b |
 | 2026-05-24 | **Phase 4d-1 mempool projection MERGED** — `EV_TX_ADMIT/REMOVE_MEMPOOL` consumer + shadow replay | wt2 → main | da005eb31, cc84e9419 |
