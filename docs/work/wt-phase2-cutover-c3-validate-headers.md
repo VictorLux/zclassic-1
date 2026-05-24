@@ -197,10 +197,51 @@ see progress + revert individual commits if needed.
 
 ## Status
 
-**QUEUED** — gated on C-2 cutover MERGED + soak. Don't start until
-the orchestrator marks this READY via `REFACTOR_STATUS.md` update.
+**✅ DONE — pushed 2026-05-24** to main as commit `8218042f6`.
 
 When this lands, the next-in-line is `wt-phase2-cutover-c5-body-persist.md`
 (C-4 body_fetch is folded into C-5 per the batch spec).
 
 <!-- Worker: append a Completion section below when done. -->
+
+## Completion (wt3, 2026-05-24)
+
+### Summary
+
+Implemented C-3 validate_headers authoritative cutover:
+- `validate_headers_stage` now defaults to AUTHORITATIVE mode, marks passing
+  block index entries at least `BLOCK_VALID_HEADER`, exposes mode and pass-row
+  lookup APIs, and reports mode in stage JSON.
+- `accept_block_header` now skips legacy PoW/header verification only in
+  AUTHORITATIVE mode and requires a passing `validate_headers_log` row before
+  promoting legacy state; missing rows emit `EV_CUTOVER_GUARD_DIVERGED` and
+  reject with `validate-headers-cutover-diverged`.
+- Added focused tests for mode defaults, authoritative status marking, pass-row
+  lookup, and the missing-pass-row divergence guard.
+
+### Commits
+- `8218042f6` validate_headers: cut over authoritative verification
+- `a0f79b8c5` crypto_registry: stabilize ECDSA overhead benchmark
+- `531189783` event: deflake async dispatcher lifecycle test
+
+### Files modified
+- `app/services/include/services/validate_headers_stage.h`
+- `app/services/src/validate_headers_stage.c`
+- `lib/validation/src/accept_block_header.c`
+- `lib/test/src/test.c`
+- `lib/test/src/test_crypto_registry.c`
+- `lib/test/src/test_event.c`
+- `lib/test/src/test_validate_headers_stage.c`
+
+### Acceptance verification
+- [x] `make test_zcl -j$(nproc)` — PASS
+- [x] `ZCL_TEST_ONLY=validate_headers ./test_zcl` — PASS
+- [x] `make lint` — PASS
+- [x] `./test_parallel --jobs=$(nproc)` — PASS, 0/196 groups failed
+
+### Surprises / follow-ups
+The local worktree was 24 commits behind origin before commit; the C-3 patch
+reapplied cleanly after a fast-forward to `8d4edd206`. Full-suite verification
+then exposed two pre-existing timing-sensitive tests (`crypto_registry` ECDSA
+overhead and `event` async dispatch); both are now stabilized in separate
+commits above.
