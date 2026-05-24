@@ -17,8 +17,8 @@ Phase 2  [██████████] 100%   Wave S SHADOW complete (S-1..S-
   ├ S-5..S-7 [██████████] 100%   body_persist, script_validate, proof_validate ✅
   ├ S-8    [██████████] 100%   utxo_apply shadow (wt3)                ✅ 497220f58
   └ S-9    [██████████] 100%   tip_finalize shadow (wt3)              ✅ 1a65b33c7
-Phase 2 CUTOVER [██░░░░░░░░]   3%   Flip shadow → authoritative      ← C-2 IN PROGRESS
-  ├ C-2    [██░░░░░░░░]  25%   header_admit authoritative             🚧 commit 1/4 (58c08193c)
+Phase 2 CUTOVER [███░░░░░░░]   6%   Flip shadow → authoritative      ← C-2 IN PROGRESS
+  ├ C-2    [█████░░░░░]  50%   header_admit authoritative             🚧 commit 2/4 (58921e518)
   ├ C-3    [░░░░░░░░░░]   0%   validate_headers authoritative          ← spec'd (queued, post C-2)
   ├ C-5    [░░░░░░░░░░]   0%   body_persist + delete body_fetch (batch spec, post C-3)
   ├ C-6    [░░░░░░░░░░]   0%   script_validate authoritative (batch spec, post C-5)
@@ -34,13 +34,14 @@ Phase 3  [██████░░░░]  60%   Dissolve mega-modules          
   ├ header_probe   [░░░░░░░░░░] independent — plan ready, awaiting per-PR assignment
   └ utxo_recovery  [░░░░░░░░░░] gated on C-8 cutover (dissolve plan ready)
 Phase 4  [░░░░░░░░░░]   0%   Storage unification — plan: docs/architecture/phase4-storage-unification.md
-  ├ 4a     [░░░░░░░░░░]   0%   event_log primitive  ← READY (primitive sits idle, no callers wired)
+  ├ 4a     [█░░░░░░░░░]   5%   event_log primitive  🚧 IN PROGRESS by orchestrator sub-agent (isolated worktree)
   ├ 4b     [░░░░░░░░░░]   0%   utxo_projection — first event-log consumer (queued, post-4a)
-  └ 4c     [░░░░░░░░░░]   0%   block_index_projection — kills LevelDB (queued, post-4a)
+  ├ 4c     [░░░░░░░░░░]   0%   block_index_projection — kills LevelDB (queued, post-4a)
+  └ 4d     [░░░░░░░░░░]   0%   mempool/peers/wallet/znam/store projections — 5 parallel PRs (queued, post-4a, batch spec)
 Phase 5  [██░░░░░░░░]  14%   Crypto agility + reproducible builds — plan: docs/architecture/phase5-crypto-agility-and-releases.md
-  ├ 5a-1   [██████████] 100%   Crypto registry skeleton  ✅ c4bebe0a2 (SHA256/BLAKE2b/ECDSA/Groth16 wrappers, no call sites rewired)
-  ├ 5a-2   [░░░░░░░░░░]   0%   First call site rewire: Equihash PoW  ← READY (5a-1 merged)
-  └ 5b-1   [░░░░░░░░░░]   0%   flake.nix reproducible build skeleton  ← READY (independent of everything; needs Nix installed locally)
+  ├ 5a-1   [██████████] 100%   Crypto registry skeleton  ✅ c4bebe0a2
+  ├ 5a-2   [██░░░░░░░░]  15%   First call site rewire: Equihash PoW   🚧 IN PROGRESS by wt2 (58181fc74)
+  └ 5b-1   [░░░░░░░░░░]   0%   flake.nix reproducible build skeleton  ← READY (needs Nix installed locally)
 Phase 6  [░░░░░░░░░░]   0%   Determinism + simulator
 Phase 7  [░░░░░░░░░░]   0%   Frontier (io_uring, hot reload)
 
@@ -94,9 +95,10 @@ clause. The table below is the dashboard.
 
 | Worktree | Branch | Assignment | Status | Last update |
 |---|---|---|---|---|
-| `~/github/zclassic23` (main) | `main` | Orchestrator: queue + plan + merge | ✅ 5a-1 merged via sub-agent; 3 more queue items drafted (C-3, 4c, 5a-2) | 2026-05-24 |
-| `~/github/zclassic23-2` (wt2) | `main` (direct push) | (idle — pick next from READY queue below) | 🕐 READY for next task | 2026-05-24 |
-| `~/github/zclassic23-3` (wt3) | `main` (direct push) | [`docs/work/wt-phase2-cutover-c2-header-admit.md`](./work/wt-phase2-cutover-c2-header-admit.md) | 🚧 IN PROGRESS (started 97fc3b02b) | 2026-05-24 |
+| `~/github/zclassic23` (main) | `main` | Orchestrator: queue + plan + merge; spawned 2 sub-agents (5a-1 done; 4a in isolated worktree) | ✅ active drafting + dispatching | 2026-05-24 |
+| `~/github/zclassic23-2` (wt2) | `main` (direct push) | [`docs/work/wt-phase5a2-first-call-site-rewire.md`](./work/wt-phase5a2-first-call-site-rewire.md) | 🚧 IN PROGRESS (started 58181fc74) | 2026-05-24 |
+| `~/github/zclassic23-3` (wt3) | `main` (direct push) | [`docs/work/wt-phase2-cutover-c2-header-admit.md`](./work/wt-phase2-cutover-c2-header-admit.md) | 🚧 commit 2/4 (58921e518) | 2026-05-24 |
+| orch sub-agent (isolated worktree) | `main` | [`docs/work/wt-phase4a-event-log-primitive.md`](./work/wt-phase4a-event-log-primitive.md) | 🚧 IN PROGRESS | 2026-05-24 |
 
 **READY queue** (any worker can pick on restart; first to mark IN PROGRESS wins):
 - [`docs/work/wt-phase4a-event-log-primitive.md`](./work/wt-phase4a-event-log-primitive.md) — append-only event log with kill-9 fuzz harness; primitive sits idle, no callers wired.

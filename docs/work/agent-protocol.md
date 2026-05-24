@@ -215,6 +215,7 @@ In this priority order:
 ## Forbidden moves
 
 - ❌ Creating new branches on `origin` (workers push to main only).
+- ❌ **Pushing ANY non-main branch to `origin`**, even by accident. If your local checkout has stale feature branches from the old workflow, run `git branch -D <name>` to delete them locally before doing any `git push`. **NEVER `git push --all` or `git push --mirror`** — those push every local branch.
 - ❌ Editing `docs/REFACTOR_STATUS.md` directly (orchestrator only — exception: workers may update the mega-module roster when they DELETE a module).
 - ❌ Touching files outside your assignment's scope.
 - ❌ `git push --force` / `--force-with-lease` to ANY branch.
