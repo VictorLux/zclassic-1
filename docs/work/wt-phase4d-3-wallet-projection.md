@@ -502,7 +502,8 @@ One commit per task. Push after Task 4, Task 7, Task 9.
 
 ## Status
 
-**READY** — Phase 4a is merged; this is a parallel-dispatchable spec.
+**IN PROGRESS (wt2)** — claimed 2026-05-24.
+Phase 4a is merged; this is a parallel-dispatchable spec.
 The KEY OWNERSHIP callout at the top is the hardest invariant in this
 spec — re-read it before each commit.
 
