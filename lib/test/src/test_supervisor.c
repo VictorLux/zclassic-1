@@ -387,8 +387,11 @@ int test_supervisor(void)
         const struct json_value *count = json_get(&v, "child_count");
         SUP_CHECK("dump has child_count=2",
             count && json_get_int(count) == 2);
-        const struct json_value *kids = json_get(&v, "children");
-        SUP_CHECK("dump has children array of size 2",
+        /* After the supervisor tree split, children registered without a
+         * domain appear in root_orphans[], not the top-level children[]
+         * key (which no longer exists). */
+        const struct json_value *kids = json_get(&v, "root_orphans");
+        SUP_CHECK("dump has root_orphans array of size 2",
             kids && json_size(kids) == 2);
         json_free(&v);
     }
