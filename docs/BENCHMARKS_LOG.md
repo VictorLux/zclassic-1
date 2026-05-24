@@ -38,7 +38,10 @@ Format: `date | commit | benchmark | value | how measured / notes`
 |---|---|---|---|---|---|---|
 | 2026-05-24 | (tool) | 10 | 339 | 29 | 14,590 | v1, durable event_log appender. **fsync-bound** (fsync×2/event). |
 | 2026-05-24 | (tool) | ALL (3,123,618) | 34,180 | 91,387 | 11.25 GB | **io_uring** bulk writer (8 buffers in flight, 1 fsync at end). 5.1M tx, 11.4M utxo-adds, 27.7M events, short_writes=0. 329 MB/s. setup +5.4s. ~3000× the v1 write path. |
-| 2026-05-24 | (tool) | ALL (3,123,618) | 17,990 | 173,611 | 11.25 GB | **+ hardware CRC32C (SSE4.2)**, verified == software table at startup. 625 MB/s. Software CRC was ~half the runtime (34→18s). SHA256 already SHA-NI. **Kept version.** |
+| 2026-05-24 | (tool) | ALL (3,123,618) | 17,990 | 173,611 | 11.25 GB | + hardware CRC32C (SSE4.2), verified == software table. 625 MB/s. Software CRC was ~half the runtime (34→18s). SHA256 already SHA-NI. |
+| 2026-05-24 | (tool) | ALL (3,123,618) | 5,570 | 560,693 | 11.25 GB | **+ parallel sharding** (32 threads, 64 independent io_uring segments, dynamic schedule). **2.0 GB/s — at the NVMe write floor.** All 64 segments byte-valid, 27.7M events, short_writes=0. 6× over single-thread io_uring; **34s→5.6s overall (~10× / fsync-v1 ~astronomical)**. ~5.4s setup (snapshot+index) on top. NOTE: output is a 64-segment event log (each a standalone valid log), not one file — matches Phase 8 segmentation; single-file needs an offset-fixup concat pass. **Kept version.** |
+
+**Why parallel works now but failed before:** the first attempt used one shared `ordered` io_uring writer → the serial 11 GB memcpy + offset patch was the bottleneck (Amdahl). Sharding gives each thread its *own* io_uring ring + segment file — zero coordination, near-linear until the disk saturates. Hardware CRC was the prerequisite (software CRC would have re-become the per-thread bottleneck).
 
 ### Parallelization experiment (NEGATIVE result — reverted)
 
