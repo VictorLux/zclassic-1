@@ -4,7 +4,8 @@
 **Branch:** PUSH DIRECT TO MAIN
 **Phase:** 6 (Determinism + simulator)
 **Depends on:** Phase 6a (seed_tape primitive) ✅ — required for the
-capsule's tape contents. **Status: QUEUED until 6a merges.**
+capsule's tape contents. **Status: IN PROGRESS (wt2)** — claimed
+2026-05-24 after Phase 6a landed on main.
 **Plan reference:** [`docs/architecture/phase6-determinism-and-simulator.md`](../architecture/phase6-determinism-and-simulator.md) § 6b
 
 **Owns:**
@@ -296,8 +297,8 @@ One commit per task. Push after tasks 2, 3, 5.
 
 ## Status
 
-**QUEUED** — gated on Phase 6a (seed_tape primitive) shipping. Once
-6a's `seed_tape_save` / `seed_tape_load` are on main, this PR
-becomes READY for any worker.
+**IN PROGRESS (wt2)** — claimed 2026-05-24 after Phase 6a
+`seed_tape_save` / `seed_tape_load` landed on main. Current slice is
+the capsule API plus the non-signal save/list/load path.
 
 <!-- Worker: append a Completion section below when done. -->
