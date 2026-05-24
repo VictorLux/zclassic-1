@@ -14,13 +14,17 @@
 
 #include "chain/chain.h"
 #include "core/uint256.h"
+#include "event/event.h"
+#include "primitives/block.h"
 #include "services/header_admit_stage.h"
 #include "storage/progress_store.h"
 #include "util/blocker.h"
 #include "util/safe_alloc.h"
 #include "util/stage.h"
 #include "validation/chainstate.h"
+#include "validation/main_logic.h"
 #include "validation/main_state.h"
+#include "validation/process_block.h"
 
 #include <errno.h>
 #include <sqlite3.h>
@@ -139,6 +143,20 @@ static bool auth_observer(struct main_state *ms,
     st->calls++;
     st->height = bi->nHeight;
     return true;
+}
+
+static void cutover_guard_observer(enum event_type type,
+                                   uint32_t peer_id,
+                                   const void *payload,
+                                   uint32_t payload_len,
+                                   void *ctx)
+{
+    (void)peer_id;
+    (void)payload;
+    (void)payload_len;
+    int *calls = ctx;
+    if (type == EV_CUTOVER_GUARD_DIVERGED && calls)
+        (*calls)++;
 }
 
 int test_header_admit_stage(void)
@@ -322,6 +340,69 @@ int test_header_admit_stage(void)
         header_admit_stage_shutdown();
         active_chain_free(&ms.chain_active);
         synth_chain_free(&sc);
+        progress_store_close();
+        test_cleanup_tmpdir(dir);
+    }
+
+    /* ── authoritative legacy ingress guard detects missing stage row ─ */
+    {
+        char dir[256];
+        ha_tmpdir(dir, sizeof(dir), "cutover_guard");
+        mkdir_p_ha(dir);
+        HA_CHECK("guard: store opens", progress_store_open(dir));
+
+        const struct chain_params *params = chain_params_get();
+        if (!params) {
+            printf("header_admit: guard skipped (no chain params)\n");
+        } else {
+            struct main_state ms;
+            main_state_init(&ms);
+
+            struct uint256 parent_hash;
+            memset(&parent_hash, 0, sizeof(parent_hash));
+            parent_hash.data[0] = 0x55;
+            struct block_index *parent = chainstate_insert_block_index(
+                (struct chainstate *)&ms, &parent_hash);
+            HA_CHECK("guard: parent inserted", parent != NULL);
+            if (parent) {
+                parent->nHeight = 0;
+                parent->nStatus = BLOCK_VALID_TREE;
+                active_chain_set_tip(&ms.chain_active, parent);
+                ms.pindex_best_header = parent;
+            }
+
+            HA_CHECK("guard: stage init creates schema",
+                     header_admit_stage_init(&ms));
+
+            struct block_header hdr;
+            block_header_init(&hdr);
+            hdr.hashPrevBlock = parent_hash;
+            hdr.nTime = 1;
+            hdr.nBits = 1;
+            hdr.nSolutionSize = 0;
+
+            int guard_events = 0;
+            event_clear_observers(EV_CUTOVER_GUARD_DIVERGED);
+            HA_CHECK("guard: observer registers",
+                     event_observe(EV_CUTOVER_GUARD_DIVERGED,
+                                   cutover_guard_observer,
+                                   &guard_events));
+
+            struct validation_state vs;
+            validation_state_init(&vs);
+            struct block_index *out = NULL;
+            header_admit_set_mode(HEADER_ADMIT_MODE_AUTHORITATIVE);
+            bool ok = accept_block_header(&hdr, &vs, &ms, params, &out);
+            HA_CHECK("guard: legacy path rejects missing stage row", !ok);
+            HA_CHECK("guard: divergence event emitted",
+                     guard_events == 1);
+
+            header_admit_set_mode(HEADER_ADMIT_MODE_SHADOW);
+            event_clear_observers(EV_CUTOVER_GUARD_DIVERGED);
+            header_admit_stage_shutdown();
+            main_state_free(&ms);
+        }
+
         progress_store_close();
         test_cleanup_tmpdir(dir);
     }

@@ -333,6 +333,35 @@ uint64_t header_admit_stage_admitted_total(void)
     return atomic_load(&g_admitted_total);
 }
 
+bool header_admit_stage_has_record(int32_t height,
+                                   const struct uint256 *hash)
+{
+    if (height < 0 || !hash)
+        return false;
+
+    sqlite3 *db = progress_store_db();
+    if (!db)
+        return false;
+
+    sqlite3_stmt *st = NULL;
+    int rc = sqlite3_prepare_v2(db,
+        "SELECT hash FROM header_admit_log WHERE height=?",
+        -1, &st, NULL);
+    if (rc != SQLITE_OK)
+        return false;
+
+    sqlite3_bind_int(st, 1, height);
+    bool found = false;
+    if (sqlite3_step(st) == SQLITE_ROW) {  // raw-sql-ok:kernel-primitive
+        const void *blob = sqlite3_column_blob(st, 0);
+        int nb = sqlite3_column_bytes(st, 0);
+        found = (blob && nb == 32 &&
+                 memcmp(blob, hash->data, 32) == 0);
+    }
+    sqlite3_finalize(st);
+    return found;
+}
+
 bool header_admit_stage_dump_state_json(struct json_value *out,
                                          const char *key)
 {

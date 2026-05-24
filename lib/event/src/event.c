@@ -429,6 +429,7 @@ const char *event_type_name(enum event_type type)
         [EV_ORACLE_DISAGREE]         = "oracle.disagree",
         [EV_CHAIN_ADVANCE_DECISION]  = "chain.advance_decision",
         [EV_MIRROR_CONSENSUS_DECISION] = "mirror.consensus_decision",
+        [EV_CUTOVER_GUARD_DIVERGED]  = "cutover.guard_diverged",
         [EV_PEER_FLOOR_BREACH]       = "peer.floor_breach",
         [EV_COORDINATOR_FORCE_PROMOTION] = "coordinator.force_promotion",
         [EV_LAG_SLO_BREACH]          = "mirror.lag_slo_breach",

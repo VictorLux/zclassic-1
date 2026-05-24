@@ -55,6 +55,7 @@
 
 struct main_state;
 struct block_index;
+struct uint256;
 struct json_value;
 
 /* Max steps drained per supervisor tick. Bounded to keep contention
@@ -91,6 +92,8 @@ void header_admit_stage_shutdown(void);
 /* Observability. */
 uint64_t header_admit_stage_cursor(void);
 uint64_t header_admit_stage_admitted_total(void);
+bool header_admit_stage_has_record(int32_t height,
+                                   const struct uint256 *hash);
 
 /* zcl_state subsystem=header_admit (CLAUDE.md convention). */
 bool header_admit_stage_dump_state_json(struct json_value *out,

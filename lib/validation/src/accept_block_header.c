@@ -16,6 +16,8 @@
 #include "validation/main_logic.h"
 #include "validation/check_block.h"
 #include "chain/pow.h"
+#include "event/event.h"
+#include "services/header_admit_stage.h"
 #include "util/log_macros.h"
 
 #include "process_block_internal.h"
@@ -129,6 +131,45 @@ bool accept_block_header(const struct block_header *header,
                               BLOCK_VALID_TREE;
         }
         return true;
+    }
+
+    if (header_admit_get_mode() == HEADER_ADMIT_MODE_AUTHORITATIVE) {
+        struct block_index *pindex_prev = NULL;
+        if (uint256_cmp(&hash, &params->consensus.hashGenesisBlock) != 0) {
+            pindex_prev = block_map_find(&ms->map_block_index,
+                                          &header->hashPrevBlock);
+            if (!pindex_prev) {
+                return validation_state_invalid(state, false, 0,
+                                                "bad-prevblk", NULL);
+            }
+            if (pindex_prev->nStatus & BLOCK_FAILED_MASK) {
+                return validation_state_invalid(state, false, REJECT_INVALID,
+                                                "bad-prevblk", NULL);
+            }
+        }
+
+        int expected_height = pindex_prev ? pindex_prev->nHeight + 1 : 0;
+        if (!header_admit_stage_has_record(expected_height, &hash)) {
+            char hex[65];
+            uint256_get_hex(&hash, hex);
+            event_emitf(EV_CUTOVER_GUARD_DIVERGED, 0,
+                        "stage=header_admit height=%d hash=%s "
+                        "reason=legacy_expected_admit_missing_stage_record",
+                        expected_height, hex);
+            return validation_state_invalid(state, false, 0,
+                                            "header-admit-cutover-diverged",
+                                            NULL);
+        }
+
+        char hex[65];
+        uint256_get_hex(&hash, hex);
+        event_emitf(EV_CUTOVER_GUARD_DIVERGED, 0,
+                    "stage=header_admit height=%d hash=%s "
+                    "reason=stage_record_without_block_index",
+                    expected_height, hex);
+        return validation_state_invalid(state, false, 0,
+                                        "header-admit-cutover-diverged",
+                                        NULL);
     }
 
     if (!check_block_header(header, state, params, true))
