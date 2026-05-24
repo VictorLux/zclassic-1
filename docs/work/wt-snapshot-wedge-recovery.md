@@ -5,6 +5,7 @@
 **Moves benchmarks:** #6 kill-9 / wedge recovery (360s → <60s), #5 tip keep-up
 **Vision tie-in:** "wedges unreachable by construction" — if the tip is wedged,
 the node re-snapshots *past* the bad block instead of giving up.
+**Status: IN PROGRESS (wt3)** — claimed 2026-05-24.
 
 ---
 
