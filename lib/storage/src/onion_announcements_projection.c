@@ -2,6 +2,8 @@
 
 #include "storage/small_projections.h"
 
+#include "json/json.h"
+#include "platform/time_compat.h"
 #include "storage/event_log_payloads.h"
 #include "util/safe_alloc.h"
 
@@ -19,11 +21,22 @@ struct onion_ann_projection {
     event_log_t *log;
     uint64_t last_consumed_offset;
     uint64_t events_consumed_total;
+    uint64_t announcement_total;
+    uint64_t last_catch_up_ms;
     char path[1024];
 };
 
 static _Atomic(event_log_t *) g_event_log = NULL;
 static _Atomic(onion_ann_projection_t *) g_projection = NULL;
+static _Atomic uint64_t g_emit_announcement_total = 0;
+static _Atomic uint64_t g_emit_fail_total = 0;
+
+static int64_t now_ms(void)
+{
+    struct timespec ts;
+    platform_time_monotonic_timespec(&ts);
+    return (int64_t)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
+}
 
 static bool exec_sql(sqlite3 *db, const char *sql, const char *ctx)
 {
@@ -209,6 +222,7 @@ static bool catchup_cb(uint64_t offset, enum event_log_type type,
             ctx->ok = false;
             return false;
         }
+        p->announcement_total++;
     }
 
     ctx->next_offset = next;
@@ -228,6 +242,7 @@ static bool catchup_cb(uint64_t offset, enum event_log_type type,
 uint64_t onion_ann_projection_catch_up(onion_ann_projection_t *p)
 {
     if (!p || !p->db || !p->log) return UINT64_MAX;
+    int64_t start_ms = now_ms();
     struct catchup_ctx ctx = {
         .p = p,
         .ok = true,
@@ -247,6 +262,7 @@ uint64_t onion_ann_projection_catch_up(onion_ann_projection_t *p)
     if (!ctx.ok)
         return UINT64_MAX;
     p->events_consumed_total += ctx.events_consumed;
+    p->last_catch_up_ms = (uint64_t)(now_ms() - start_ms);
     return p->last_consumed_offset;
 }
 
@@ -288,7 +304,28 @@ bool onion_ann_projection_emit(const char *onion_address,
 bool onion_ann_projection_dump_state_json(struct json_value *out,
                                           const char *key)
 {
-    (void)out;
     (void)key;
-    return false;
+    if (!out) return false;
+    json_set_object(out);
+    onion_ann_projection_t *p =
+        atomic_load_explicit(&g_projection, memory_order_acquire);
+    json_push_kv_bool(out, "open", p != NULL);
+    json_push_kv_int(out, "emit_announcement_total",
+        (int64_t)atomic_load_explicit(&g_emit_announcement_total,
+                                      memory_order_relaxed));
+    json_push_kv_int(out, "emit_fail_total",
+        (int64_t)atomic_load_explicit(&g_emit_fail_total,
+                                      memory_order_relaxed));
+    if (!p) return true;
+    json_push_kv_str(out, "path", p->path);
+    json_push_kv_int(out, "last_consumed_offset",
+                     (int64_t)p->last_consumed_offset);
+    json_push_kv_int(out, "events_consumed_total",
+                     (int64_t)p->events_consumed_total);
+    json_push_kv_int(out, "announcement_total",
+                     (int64_t)p->announcement_total);
+    json_push_kv_int(out, "count", (int64_t)onion_ann_projection_count(p));
+    json_push_kv_int(out, "last_catch_up_ms",
+                     (int64_t)p->last_catch_up_ms);
+    return true;
 }

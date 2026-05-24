@@ -5,6 +5,7 @@
 #include "storage/event_log.h"
 #include "storage/event_log_payloads.h"
 #include "storage/small_projections.h"
+#include "json/json.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -411,6 +412,35 @@ static int t_projection_catchup_mixed(void)
              onion_p && onion_ann_projection_count(onion_p) == 1);
     SP_CHECK("hodl mixed count",
              hodl && hodl_history_projection_count(hodl) == 2);
+
+    {
+        struct json_value dump = {0};
+        SP_CHECK("contacts dump",
+                 contacts_projection_dump_state_json(&dump, NULL));
+        SP_CHECK("contacts dump count",
+                 json_get_int(json_get(&dump, "count")) == 1);
+        SP_CHECK("contacts dump consumed",
+                 json_get_int(json_get(&dump, "events_consumed_total")) > 0);
+        json_free(&dump);
+
+        memset(&dump, 0, sizeof(dump));
+        SP_CHECK("onion dump",
+                 onion_ann_projection_dump_state_json(&dump, NULL));
+        SP_CHECK("onion dump count",
+                 json_get_int(json_get(&dump, "count")) == 1);
+        SP_CHECK("onion dump consumed",
+                 json_get_int(json_get(&dump, "events_consumed_total")) > 0);
+        json_free(&dump);
+
+        memset(&dump, 0, sizeof(dump));
+        SP_CHECK("hodl dump",
+                 hodl_history_projection_dump_state_json(&dump, NULL));
+        SP_CHECK("hodl dump count",
+                 json_get_int(json_get(&dump, "count")) == 2);
+        SP_CHECK("hodl dump consumed",
+                 json_get_int(json_get(&dump, "events_consumed_total")) > 0);
+        json_free(&dump);
+    }
 
     contacts_projection_close(contacts);
     onion_ann_projection_close(onion_p);

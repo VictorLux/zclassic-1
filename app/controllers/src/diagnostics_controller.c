@@ -61,6 +61,7 @@
 #include "storage/mempool_projection.h"
 #include "storage/peers_projection.h"
 #include "storage/progress_store.h"
+#include "storage/small_projections.h"
 #include "storage/utxo_projection.h"
 #include "storage/znam_projection.h"
 #include "storage/wallet_projection.h"
@@ -489,6 +490,15 @@ static const struct dump_entry g_dumpers[] = {
                      "Phase 4d-3 wallet view projection: public-only "
                      "address/tx/UTXO/note counts, total value, cursor, "
                      "and shadow emit counters." },
+    { "contacts_projection", contacts_projection_dump_state_json,
+                     "Phase 4d-5 contacts projection: count, cursor, "
+                     "consume counters, shadow emit counters, catch_up timing." },
+    { "onion_announcements_projection", onion_ann_projection_dump_state_json,
+                     "Phase 4d-5 onion announcements projection: count, cursor, "
+                     "consume counters, shadow emit counters, catch_up timing." },
+    { "hodl_history_projection", hodl_history_projection_dump_state_json,
+                     "Phase 4d-5 HODL history projection: count, cursor, "
+                     "consume counters, shadow emit counters, catch_up timing." },
     { "block_index_projection", block_index_projection_dump_state_json,
                      "Phase 4c block_index_projection: cursor, entry count, "
                      "events consumed, replace collisions, last catch_up_ms" },
