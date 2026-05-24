@@ -1573,6 +1573,167 @@ static bool rpc_walletprojectiondiff(const struct json_value *params,
     return true;
 }
 
+static int64_t diag_count_table(sqlite3 *db, const char *table)
+{
+    if (!db || !table || !table[0])
+        return -1;
+    char sql[128];
+    snprintf(sql, sizeof(sql), "SELECT COUNT(*) FROM %s", table);
+    sqlite3_stmt *s = NULL;
+    int64_t count = -1;
+    if (sqlite3_prepare_v2(db, sql, -1, &s, NULL) == SQLITE_OK) {
+        if (sqlite3_step(s) == SQLITE_ROW)  // raw-sql-ok:projection-diff
+            count = sqlite3_column_int64(s, 0);
+    }
+    sqlite3_finalize(s);
+    return count;
+}
+
+static void push_projection_count_diff(struct json_value *result,
+                                       const char *projection,
+                                       int64_t projection_count,
+                                       int64_t legacy_count)
+{
+    bool match = projection_count == legacy_count;
+    json_push_kv_str(result, "projection", projection);
+    json_push_kv_int(result, "projection_count", projection_count);
+    json_push_kv_int(result, "legacy_count", legacy_count);
+    json_push_kv_bool(result, "match", match);
+    if (match) {
+        struct json_value nullv;
+        json_init(&nullv);
+        json_set_null(&nullv);
+        json_push_kv(result, "first_diff", &nullv);
+    } else {
+        char first_diff[128];
+        snprintf(first_diff, sizeof(first_diff),
+                 "count projection=%lld legacy=%lld",
+                 (long long)projection_count, (long long)legacy_count);
+        json_push_kv_str(result, "first_diff", first_diff);
+    }
+}
+
+static bool rpc_contactsprojectiondiff(const struct json_value *params,
+                                       bool help,
+                                       struct json_value *result)
+{
+    (void)params;
+    RPC_HELP(help, result,
+        "contactsprojectiondiff\n"
+        "\nCompare Phase 4d-5 contacts_projection against legacy contacts table.\n"
+        "\nResult: projection_count, legacy_count, match, first_diff.");
+
+    json_set_object(result);
+    contacts_projection_t *proj = contacts_projection_current();
+    struct node_db *ndb = app_runtime_node_db();
+    if (!proj || !ndb || !ndb->open) {
+        json_push_kv_bool(result, "match", false);
+        json_push_kv_str(result, "first_diff",
+                         !proj ? "projection_not_open" : "legacy_db_not_open");
+        json_push_kv_int(result, "projection_count",
+                         proj ? (int64_t)contacts_projection_count(proj) : 0);
+        json_push_kv_int(result, "legacy_count",
+                         ndb && ndb->open ?
+                         diag_count_table(ndb->db, "contacts") : 0);
+        return true;
+    }
+    if (contacts_projection_catch_up(proj) == UINT64_MAX) {
+        json_push_kv_bool(result, "match", false);
+        json_push_kv_str(result, "first_diff", "projection_catch_up_failed");
+        json_push_kv_int(result, "projection_count",
+                         (int64_t)contacts_projection_count(proj));
+        json_push_kv_int(result, "legacy_count",
+                         diag_count_table(ndb->db, "contacts"));
+        return true;
+    }
+
+    push_projection_count_diff(result, "contacts_projection",
+                               (int64_t)contacts_projection_count(proj),
+                               diag_count_table(ndb->db, "contacts"));
+    return true;
+}
+
+static bool rpc_onionannouncementsprojectiondiff(
+    const struct json_value *params, bool help, struct json_value *result)
+{
+    (void)params;
+    RPC_HELP(help, result,
+        "onionannouncementsprojectiondiff\n"
+        "\nCompare Phase 4d-5 onion_announcements_projection against legacy onion_announcements table.\n"
+        "\nResult: projection_count, legacy_count, match, first_diff.");
+
+    json_set_object(result);
+    onion_ann_projection_t *proj = onion_ann_projection_current();
+    struct node_db *ndb = app_runtime_node_db();
+    if (!proj || !ndb || !ndb->open) {
+        json_push_kv_bool(result, "match", false);
+        json_push_kv_str(result, "first_diff",
+                         !proj ? "projection_not_open" : "legacy_db_not_open");
+        json_push_kv_int(result, "projection_count",
+                         proj ? (int64_t)onion_ann_projection_count(proj) : 0);
+        json_push_kv_int(result, "legacy_count",
+                         ndb && ndb->open ?
+                         diag_count_table(ndb->db,
+                                          "onion_announcements") : 0);
+        return true;
+    }
+    if (onion_ann_projection_catch_up(proj) == UINT64_MAX) {
+        json_push_kv_bool(result, "match", false);
+        json_push_kv_str(result, "first_diff", "projection_catch_up_failed");
+        json_push_kv_int(result, "projection_count",
+                         (int64_t)onion_ann_projection_count(proj));
+        json_push_kv_int(result, "legacy_count",
+                         diag_count_table(ndb->db, "onion_announcements"));
+        return true;
+    }
+
+    push_projection_count_diff(
+        result, "onion_announcements_projection",
+        (int64_t)onion_ann_projection_count(proj),
+        diag_count_table(ndb->db, "onion_announcements"));
+    return true;
+}
+
+static bool rpc_hodlhistoryprojectiondiff(const struct json_value *params,
+                                          bool help,
+                                          struct json_value *result)
+{
+    (void)params;
+    RPC_HELP(help, result,
+        "hodlhistoryprojectiondiff\n"
+        "\nCompare Phase 4d-5 hodl_history_projection against legacy hodl_history table.\n"
+        "\nResult: projection_count, legacy_count, match, first_diff.");
+
+    json_set_object(result);
+    hodl_history_projection_t *proj = hodl_history_projection_current();
+    struct node_db *ndb = app_runtime_node_db();
+    if (!proj || !ndb || !ndb->open) {
+        json_push_kv_bool(result, "match", false);
+        json_push_kv_str(result, "first_diff",
+                         !proj ? "projection_not_open" : "legacy_db_not_open");
+        json_push_kv_int(result, "projection_count",
+                         proj ? (int64_t)hodl_history_projection_count(proj) : 0);
+        json_push_kv_int(result, "legacy_count",
+                         ndb && ndb->open ?
+                         diag_count_table(ndb->db, "hodl_history") : 0);
+        return true;
+    }
+    if (hodl_history_projection_catch_up(proj) == UINT64_MAX) {
+        json_push_kv_bool(result, "match", false);
+        json_push_kv_str(result, "first_diff", "projection_catch_up_failed");
+        json_push_kv_int(result, "projection_count",
+                         (int64_t)hodl_history_projection_count(proj));
+        json_push_kv_int(result, "legacy_count",
+                         diag_count_table(ndb->db, "hodl_history"));
+        return true;
+    }
+
+    push_projection_count_diff(result, "hodl_history_projection",
+                               (int64_t)hodl_history_projection_count(proj),
+                               diag_count_table(ndb->db, "hodl_history"));
+    return true;
+}
+
 /* ── Registration ────────────────────────────────────────────────── */
 
 void register_diagnostics_rpc_commands(struct rpc_table *t)
@@ -1587,6 +1748,12 @@ void register_diagnostics_rpc_commands(struct rpc_table *t)
         { "control", "mempoolprojectiondiff", rpc_mempoolprojectiondiff, true },
         { "control", "znamprojectiondiff",  rpc_znamprojectiondiff,  true },
         { "control", "walletprojectiondiff", rpc_walletprojectiondiff, true },
+        { "control", "contactsprojectiondiff",
+          rpc_contactsprojectiondiff, true },
+        { "control", "onionannouncementsprojectiondiff",
+          rpc_onionannouncementsprojectiondiff, true },
+        { "control", "hodlhistoryprojectiondiff",
+          rpc_hodlhistoryprojectiondiff, true },
     };
     for (size_t i = 0; i < sizeof(cmds) / sizeof(cmds[0]); i++)
         rpc_table_must_append(t, &cmds[i]);

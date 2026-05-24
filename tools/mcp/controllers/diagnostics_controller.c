@@ -10,6 +10,9 @@
  *   zcl_peers_projection_diff — peers projection vs legacy peer table
  *   zcl_znam_projection_diff  — znam projection vs legacy znam tables
  *   zcl_wallet_projection_diff — wallet projection vs legacy wallet view tables
+ *   zcl_contacts_projection_diff — contacts projection vs legacy contacts
+ *   zcl_onion_announcements_projection_diff — onion projection vs legacy table
+ *   zcl_hodl_history_projection_diff — hodl projection vs legacy hodl_history
  *   zcl_probe_zclassicd    — drift check against local zclassicd
  *   zcl_diff_with_legacy   — composite "are we tracking?" verdict
  *   zcl_profile            — per-thread /proc CPU sampler
@@ -137,6 +140,33 @@ static int h_zcl_wallet_projection_diff(const struct mcp_request *req,
     (void)req;
     char *out = mcp_node_rpc("walletprojectiondiff", NULL);
     return mcp_return_rpc_body(res, out, "walletprojectiondiff",
+                               "mcp.diag");
+}
+
+static int h_zcl_contacts_projection_diff(const struct mcp_request *req,
+                                          struct mcp_response *res)
+{
+    (void)req;
+    char *out = mcp_node_rpc("contactsprojectiondiff", NULL);
+    return mcp_return_rpc_body(res, out, "contactsprojectiondiff",
+                               "mcp.diag");
+}
+
+static int h_zcl_onion_announcements_projection_diff(
+    const struct mcp_request *req, struct mcp_response *res)
+{
+    (void)req;
+    char *out = mcp_node_rpc("onionannouncementsprojectiondiff", NULL);
+    return mcp_return_rpc_body(res, out, "onionannouncementsprojectiondiff",
+                               "mcp.diag");
+}
+
+static int h_zcl_hodl_history_projection_diff(const struct mcp_request *req,
+                                              struct mcp_response *res)
+{
+    (void)req;
+    char *out = mcp_node_rpc("hodlhistoryprojectiondiff", NULL);
+    return mcp_return_rpc_body(res, out, "hodlhistoryprojectiondiff",
                                "mcp.diag");
 }
 
@@ -662,6 +692,18 @@ static const struct mcp_tool_route k_routes[] = {
       "view tables: address/tx/UTXO/note counts plus total value. "
       "first_diff is a category name only.",
       NULL, 0, h_zcl_wallet_projection_diff, 0, NULL },
+    { "zcl_contacts_projection_diff", "ops",
+      "Compare Phase 4d-5 contacts_projection against the legacy contacts "
+      "table: row counts plus first_diff if any.",
+      NULL, 0, h_zcl_contacts_projection_diff, 0, NULL },
+    { "zcl_onion_announcements_projection_diff", "ops",
+      "Compare Phase 4d-5 onion_announcements_projection against the "
+      "legacy onion_announcements table: row counts plus first_diff if any.",
+      NULL, 0, h_zcl_onion_announcements_projection_diff, 0, NULL },
+    { "zcl_hodl_history_projection_diff", "ops",
+      "Compare Phase 4d-5 hodl_history_projection against the legacy "
+      "hodl_history table: row counts plus first_diff if any.",
+      NULL, 0, h_zcl_hodl_history_projection_diff, 0, NULL },
     { "zcl_probe_zclassicd", "ops",
       "Drift detection: ask the local zclassicd (independent ZClassic "
       "impl) for getblockhash(H) and compare to our block_index. Picks a "
