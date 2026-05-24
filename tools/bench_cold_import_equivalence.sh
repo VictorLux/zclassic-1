@@ -86,6 +86,7 @@ wait_for_height() {
     local datadir="$1"
     local port="$2"
     local start_ns="$3"
+    local node_pid="$4"
     local height=0
 
     while :; do
@@ -96,6 +97,26 @@ wait_for_height() {
             echo
             echo "FAIL: ${MAX_SECS}s elapsed for $datadir, height=$height" >&2
             tail -40 "$datadir/node.stderr" >&2 || true
+            return 1
+        fi
+
+        if ! kill -0 "$node_pid" 2>/dev/null; then
+            echo
+            echo "FAIL: node exited before reaching height floor for $datadir" >&2
+            echo "      last 40 lines of node.stderr:" >&2
+            tail -40 "$datadir/node.stderr" >&2 || true
+            echo "      last 40 lines of node.stdout:" >&2
+            tail -40 "$datadir/node.stdout" >&2 || true
+            return 1
+        fi
+        if grep -Eq "Initialization failed\\.|FATAL:|aborting due to spotcheck failure|cannot open .*blocks/index|DB_ERR_TIP_MISMATCH" \
+            "$datadir/node.stderr" 2>/dev/null; then
+            echo
+            echo "FAIL: node initialization failed for $datadir" >&2
+            echo "      last 40 lines of node.stderr:" >&2
+            tail -40 "$datadir/node.stderr" >&2 || true
+            echo "      last 40 lines of node.stdout:" >&2
+            tail -40 "$datadir/node.stdout" >&2 || true
             return 1
         fi
 
@@ -165,7 +186,7 @@ run_case() {
     }
     trap cleanup_pid RETURN
 
-    wait_for_height "$datadir" "$rpc_port" "$start_ns"
+    wait_for_height "$datadir" "$rpc_port" "$start_ns" "$pid"
 
     local height tip_hash commitment sha3 utxo_count elapsed_ms scan_line
     height=$(rpc_call "$datadir" "$rpc_port" getblockcount | json_result_field "")

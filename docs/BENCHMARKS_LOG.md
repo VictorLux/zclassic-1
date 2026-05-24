@@ -37,6 +37,7 @@ Format: `date | commit | benchmark | value | how measured / notes`
 | 2026-05-24 | 319596f0d | #5 stay-at-tip | 0-block gap | `getblockchaininfo`: blocks==headers==3,123,688. Node fully synced. Latency-to-new-block not yet harnessed. |
 | 2026-05-24 | be5e90b05 | #7 MTBF | — | uptime only 990s (recent restart); needs a soak to measure |
 | 2026-05-24 | be5e90b05 | #8 operator pages | 6/10 conditions active, 1 critical failing | `zcl_conditions` — self-heal degraded right now |
+| 2026-05-24 | 078667266 | #1 cold sync PR-3 serial-vs-parallel | serial 194.856s; parallel 295.263s | `tools/bench_cold_import_equivalence.sh` against `/tmp/zcl-legacy-snapshot`; both reached h=3,123,688, tip `00000f027587b4eeb3f4890f77659c7057f9ea0512f761295c294d1000f9d462`, `utxo_sha3=3160565aba65ef205ba54886a57d39fccd1dade2ec709de1eff9c1d1307ffc48`, `utxos=1,345,067`. |
 
 ## Native rebuild benchmark (`rebuild_recent` tool)
 

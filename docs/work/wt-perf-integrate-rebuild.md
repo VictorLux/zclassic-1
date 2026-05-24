@@ -236,6 +236,16 @@ Verification:
   legacy datadir, computes `getblockhash(tip)` plus `getutxocommitment`, fails
   on any height/tip/UTXO-count/SHA3 mismatch, and prints a ready-to-paste
   `docs/BENCHMARKS_LOG.md` row seed with both `Block file scan` summary lines.
+- Hardened the harness to fail fast if the child node exits or reports a
+  startup/import error instead of polling height 0 until timeout.
+- Serial-vs-default proof passed 2026-05-24 against `/tmp/zcl-legacy-snapshot`:
+  serial `ZCL_BLOCK_SCAN_WORKERS=1` reached `h=3123688` in 194.856s; default
+  reached the same height in 295.263s. Both runs produced tip
+  `00000f027587b4eeb3f4890f77659c7057f9ea0512f761295c294d1000f9d462`,
+  `utxo_sha3=3160565aba65ef205ba54886a57d39fccd1dade2ec709de1eff9c1d1307ffc48`,
+  and `utxos=1345067`. Benchmark row recorded in `docs/BENCHMARKS_LOG.md`.
+  The harness did not find a distinct `Block file scan` phase line in either
+  log, so the scan-phase before/after acceptance item remains open.
 
 Live cold-import identity check (2026-05-24, `6e0f6a82c` plus local test/doc
 change):
