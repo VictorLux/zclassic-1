@@ -69,7 +69,8 @@ volatile sig_atomic_t g_shutdown_requested = 0;
     X(long_op) \
     X(db_txn) X(sync_service) X(snapshot_sync_service) \
     X(file_controller) X(file_ops) X(integrity) X(protocols) \
-    X(chain_restore_service) X(chain_activation_controller) \
+    X(chain_restore_planner) X(chain_restore_service) \
+    X(chain_activation_controller) \
     X(mcp_router) X(mcp_controllers) X(mcp_middleware) X(mcp_metrics) \
     X(mcp_e2e) X(db_validators) X(peer_scoring) X(peer_bandwidth) \
     X(secrets_hygiene) X(block_index_integrity) X(wallet_backup) \

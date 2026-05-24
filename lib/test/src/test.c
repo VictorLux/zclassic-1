@@ -229,6 +229,13 @@ int main(void)
                failures);
         return failures ? 1 : 0;
     }
+    if (only && strcmp(only, "chain_restore_planner") == 0) {
+        printf("[test] ZCL_TEST_ONLY=chain_restore_planner — running chain restore planner only\n");
+        failures += test_chain_restore_planner();
+        printf("\n=== chain_restore_planner subset complete: %d failure(s) ===\n",
+               failures);
+        return failures ? 1 : 0;
+    }
     if (only && strcmp(only, "block_index_loader") == 0) {
         printf("[test] ZCL_TEST_ONLY=block_index_loader — running block index loader only\n");
         failures += test_block_index_loader();
@@ -516,6 +523,7 @@ int main(void)
     failures += test_file_ops();
     failures += test_integrity();
     failures += test_protocols();
+    failures += test_chain_restore_planner();
     failures += test_chain_restore_service();
     failures += test_chain_activation_controller();
     failures += test_mcp_router();

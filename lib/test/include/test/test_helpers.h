@@ -240,6 +240,7 @@ int test_file_controller(void);
 int test_file_ops(void);
 int test_integrity(void);
 int test_protocols(void);
+int test_chain_restore_planner(void);
 int test_chain_restore_service(void);
 int test_chain_activation_controller(void);
 int test_mcp_router(void);

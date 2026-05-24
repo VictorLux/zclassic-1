@@ -67,9 +67,7 @@ struct chain_restore_plan {
     char reason[128];
 };
 
-/* Pure function: examines input, produces plan. No global state. */
-void chain_restore_plan(struct chain_restore_plan *out,
-                        const struct chain_restore_input *in);
+#include "services/chain_restore_planner.h"
 
 /* ── Execution ─────────────────────────────────────────────────── */
 
@@ -219,8 +217,6 @@ void chain_restore_record_integrity_result(
 void chain_restore_record_backfill_result(int fixed,
                                           int read_errors,
                                           int off_chain_cleared);
-/* record the chain_restore_plan outcome. */
-void chain_restore_record_plan_result(const struct chain_restore_plan *p);
 /* snapshot CSR consistency into the boot snapshot. */
 void chain_restore_record_csr_consistency(bool consistent,
                                           int tip_height,

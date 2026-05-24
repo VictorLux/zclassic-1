@@ -5,6 +5,7 @@
 
 #include "platform/time_compat.h"
 #include "services/chain_restore_service.h"
+#include "services/chain_restore_planner.h"
 #include "services/chain_state_repository.h"
 #include "services/chain_tip.h"
 #include "services/block_index_integrity.h"
@@ -26,63 +27,6 @@
 
 #include "util/log_macros.h"
 #include "util/safe_alloc.h"
-
-/* ── Planning (pure function) ──────────────────────────────────── */
-
-void chain_restore_plan(struct chain_restore_plan *out,
-                        const struct chain_restore_input *in)
-{
-    memset(out, 0, sizeof(*out));
-
-    /* Null hash → nothing to restore */
-    if (uint256_is_null(&in->coins_best_hash)) {
-        out->next_state = CHAIN_RESTORE_FAILED;
-        out->should_skip_activate = true;
-        snprintf(out->reason, sizeof(out->reason),
-                 "coins_best_block is null — no UTXO state");
-        chain_restore_record_plan_result(out);
-        return;
-    }
-
-    /* Path A: hash found in block_map with valid height */
-    if (in->hash_found_in_map && in->found_height > 0) {
-        out->next_state = CHAIN_RESTORE_FOUND_IN_INDEX;
-        out->should_set_chain_tip = true;
-        out->should_set_best_header = true;
-        out->should_skip_activate = true;
-        out->anchor_height = in->found_height;
-        out->anchor_hash = in->coins_best_hash;
-        snprintf(out->reason, sizeof(out->reason),
-                 "found in block index at h=%d", in->found_height);
-        chain_restore_record_plan_result(out);
-        return;
-    }
-
-    /* Path B: hash NOT in block_map but we know UTXO height */
-    if (in->utxo_max_height > 0) {
-        out->next_state = CHAIN_RESTORE_ANCHOR_CREATED;
-        out->should_create_anchor = true;
-        out->should_set_snapshot_anchor = true;
-        out->should_skip_activate = true;
-        out->anchor_height = in->utxo_max_height;
-        out->anchor_hash = in->coins_best_hash;
-        snprintf(out->reason, sizeof(out->reason),
-                 "anchor at h=%d (hash not in index, %s)",
-                 in->utxo_max_height,
-                 in->source == CHAIN_RESTORE_SRC_LDB_IMPORT ? "LDB import"
-                 : in->source == CHAIN_RESTORE_SRC_SNAPSHOT ? "snapshot"
-                 : "boot");
-        chain_restore_record_plan_result(out);
-        return;
-    }
-
-    /* Path C: no height info at all */
-    out->next_state = CHAIN_RESTORE_FAILED;
-    out->should_skip_activate = true;
-    snprintf(out->reason, sizeof(out->reason),
-             "coins_best_block set but height unknown — awaiting P2P");
-    chain_restore_record_plan_result(out);
-}
 
 static const char *chain_restore_state_name(int s)
 {
@@ -425,137 +369,132 @@ void chain_integrity_check_post_restore(struct chain_integrity_result *out,
 
 /* ── Boot snapshot ─────────────────────────────────────────────── */
 
-static struct chain_restore_boot_snapshot g_boot_snapshot;
+extern struct chain_restore_boot_snapshot g_chain_restore_boot_snapshot;
 
 void chain_restore_record_integrity_result(
     const struct chain_integrity_result *r)
 {
     if (!r) return;
-    g_boot_snapshot.has_data = true;
-    g_boot_snapshot.boot_time = (int64_t)platform_time_wall_time_t();
-    g_boot_snapshot.integrity_ok = r->ok;
-    g_boot_snapshot.zero_nbits_count = r->zero_nbits_count;
-    g_boot_snapshot.active_chain_holes = r->active_chain_holes;
-    g_boot_snapshot.active_chain_mismatches = r->active_chain_mismatches;
-    g_boot_snapshot.tip_window_holes = r->tip_window_holes;
-    g_boot_snapshot.tip_height = r->tip_height;
-    g_boot_snapshot.first_nbits_zero_height = r->first_nbits_zero_height;
-    g_boot_snapshot.first_hole_height = r->first_hole_height;
-    g_boot_snapshot.first_mismatch_height = r->first_mismatch_height;
-    g_boot_snapshot.first_tip_window_hole = r->first_tip_window_hole;
+    g_chain_restore_boot_snapshot.has_data = true;
+    g_chain_restore_boot_snapshot.boot_time =
+        (int64_t)platform_time_wall_time_t();
+    g_chain_restore_boot_snapshot.integrity_ok = r->ok;
+    g_chain_restore_boot_snapshot.zero_nbits_count = r->zero_nbits_count;
+    g_chain_restore_boot_snapshot.active_chain_holes = r->active_chain_holes;
+    g_chain_restore_boot_snapshot.active_chain_mismatches =
+        r->active_chain_mismatches;
+    g_chain_restore_boot_snapshot.tip_window_holes = r->tip_window_holes;
+    g_chain_restore_boot_snapshot.tip_height = r->tip_height;
+    g_chain_restore_boot_snapshot.first_nbits_zero_height =
+        r->first_nbits_zero_height;
+    g_chain_restore_boot_snapshot.first_hole_height = r->first_hole_height;
+    g_chain_restore_boot_snapshot.first_mismatch_height =
+        r->first_mismatch_height;
+    g_chain_restore_boot_snapshot.first_tip_window_hole =
+        r->first_tip_window_hole;
 }
 
 void chain_restore_record_backfill_result(int fixed,
                                           int read_errors,
                                           int off_chain_cleared)
 {
-    g_boot_snapshot.has_data = true;
-    g_boot_snapshot.boot_time = (int64_t)platform_time_wall_time_t();
-    g_boot_snapshot.backfill_ran = true;
-    g_boot_snapshot.backfill_fixed = fixed;
-    g_boot_snapshot.backfill_read_errors = read_errors;
-    g_boot_snapshot.backfill_off_chain_cleared = off_chain_cleared;
-}
-
-void chain_restore_record_plan_result(const struct chain_restore_plan *p)
-{
-    if (!p) return;
-    g_boot_snapshot.has_data = true;
-    g_boot_snapshot.boot_time = (int64_t)platform_time_wall_time_t();
-    g_boot_snapshot.plan_recorded = true;
-    g_boot_snapshot.plan_next_state = (int)p->next_state;
-    g_boot_snapshot.plan_anchor_height = p->anchor_height;
-    g_boot_snapshot.plan_should_skip_activate = p->should_skip_activate;
-    size_t n = strnlen(p->reason, sizeof(p->reason));
-    if (n >= sizeof(g_boot_snapshot.plan_reason))
-        n = sizeof(g_boot_snapshot.plan_reason) - 1;
-    memcpy(g_boot_snapshot.plan_reason, p->reason, n);
-    g_boot_snapshot.plan_reason[n] = '\0';
+    g_chain_restore_boot_snapshot.has_data = true;
+    g_chain_restore_boot_snapshot.boot_time =
+        (int64_t)platform_time_wall_time_t();
+    g_chain_restore_boot_snapshot.backfill_ran = true;
+    g_chain_restore_boot_snapshot.backfill_fixed = fixed;
+    g_chain_restore_boot_snapshot.backfill_read_errors = read_errors;
+    g_chain_restore_boot_snapshot.backfill_off_chain_cleared =
+        off_chain_cleared;
 }
 
 void chain_restore_record_csr_consistency(bool consistent,
                                           int tip_height,
                                           int header_height)
 {
-    g_boot_snapshot.has_data = true;
-    g_boot_snapshot.boot_time = (int64_t)platform_time_wall_time_t();
-    g_boot_snapshot.csr_consistency_checked = true;
-    g_boot_snapshot.csr_consistent = consistent;
-    g_boot_snapshot.csr_tip_height = tip_height;
-    g_boot_snapshot.csr_header_height = header_height;
+    g_chain_restore_boot_snapshot.has_data = true;
+    g_chain_restore_boot_snapshot.boot_time =
+        (int64_t)platform_time_wall_time_t();
+    g_chain_restore_boot_snapshot.csr_consistency_checked = true;
+    g_chain_restore_boot_snapshot.csr_consistent = consistent;
+    g_chain_restore_boot_snapshot.csr_tip_height = tip_height;
+    g_chain_restore_boot_snapshot.csr_header_height = header_height;
 }
 
 void chain_restore_record_snapshot_import(bool ok,
                                           int64_t utxo_count,
                                           int64_t snap_height)
 {
-    g_boot_snapshot.has_data = true;
-    g_boot_snapshot.boot_time = (int64_t)platform_time_wall_time_t();
-    g_boot_snapshot.snapshot_imported_pre_restore = ok;
-    g_boot_snapshot.snapshot_imported_utxos = utxo_count;
-    g_boot_snapshot.snapshot_imported_height = snap_height;
+    g_chain_restore_boot_snapshot.has_data = true;
+    g_chain_restore_boot_snapshot.boot_time =
+        (int64_t)platform_time_wall_time_t();
+    g_chain_restore_boot_snapshot.snapshot_imported_pre_restore = ok;
+    g_chain_restore_boot_snapshot.snapshot_imported_utxos = utxo_count;
+    g_chain_restore_boot_snapshot.snapshot_imported_height = snap_height;
 }
 
 void chain_restore_get_boot_snapshot(struct chain_restore_boot_snapshot *out)
 {
     if (!out) return;
-    *out = g_boot_snapshot;
+    *out = g_chain_restore_boot_snapshot;
 }
 
 bool chain_restore_dump_state_json(struct json_value *out, const char *key)
 {
     (void)key;
     if (!out) return false;
+    const struct chain_restore_boot_snapshot *s =
+        &g_chain_restore_boot_snapshot;
     json_set_object(out);
-    json_push_kv_bool(out, "has_data", g_boot_snapshot.has_data);
-    json_push_kv_int(out, "boot_time", g_boot_snapshot.boot_time);
-    json_push_kv_bool(out, "integrity_ok", g_boot_snapshot.integrity_ok);
+    json_push_kv_bool(out, "has_data", s->has_data);
+    json_push_kv_int(out, "boot_time", s->boot_time);
+    json_push_kv_bool(out, "integrity_ok", s->integrity_ok);
     json_push_kv_int(out, "zero_nbits_count",
-                     g_boot_snapshot.zero_nbits_count);
+                     s->zero_nbits_count);
     json_push_kv_int(out, "active_chain_holes",
-                     g_boot_snapshot.active_chain_holes);
+                     s->active_chain_holes);
     json_push_kv_int(out, "active_chain_mismatches",
-                     g_boot_snapshot.active_chain_mismatches);
+                     s->active_chain_mismatches);
     json_push_kv_int(out, "tip_window_holes",
-                     g_boot_snapshot.tip_window_holes);
-    json_push_kv_int(out, "tip_height", g_boot_snapshot.tip_height);
+                     s->tip_window_holes);
+    json_push_kv_int(out, "tip_height", s->tip_height);
     json_push_kv_int(out, "first_nbits_zero_height",
-                     g_boot_snapshot.first_nbits_zero_height);
+                     s->first_nbits_zero_height);
     json_push_kv_int(out, "first_hole_height",
-                     g_boot_snapshot.first_hole_height);
+                     s->first_hole_height);
     json_push_kv_int(out, "first_mismatch_height",
-                     g_boot_snapshot.first_mismatch_height);
+                     s->first_mismatch_height);
     json_push_kv_int(out, "first_tip_window_hole",
-                     g_boot_snapshot.first_tip_window_hole);
-    json_push_kv_bool(out, "backfill_ran", g_boot_snapshot.backfill_ran);
-    json_push_kv_int(out, "backfill_fixed", g_boot_snapshot.backfill_fixed);
+                     s->first_tip_window_hole);
+    json_push_kv_bool(out, "backfill_ran", s->backfill_ran);
+    json_push_kv_int(out, "backfill_fixed", s->backfill_fixed);
     json_push_kv_int(out, "backfill_read_errors",
-                     g_boot_snapshot.backfill_read_errors);
+                     s->backfill_read_errors);
     json_push_kv_int(out, "backfill_off_chain_cleared",
-                     g_boot_snapshot.backfill_off_chain_cleared);
+                     s->backfill_off_chain_cleared);
     /* chain_restore_plan result */
-    json_push_kv_bool(out, "plan_recorded", g_boot_snapshot.plan_recorded);
+    json_push_kv_bool(out, "plan_recorded", s->plan_recorded);
     json_push_kv_str(out, "plan_next_state",
-                     chain_restore_state_name(g_boot_snapshot.plan_next_state));
+                     chain_restore_state_name(s->plan_next_state));
     json_push_kv_int(out, "plan_anchor_height",
-                     g_boot_snapshot.plan_anchor_height);
+                     s->plan_anchor_height);
     json_push_kv_bool(out, "plan_should_skip_activate",
-                      g_boot_snapshot.plan_should_skip_activate);
-    json_push_kv_str(out, "plan_reason", g_boot_snapshot.plan_reason);
+                      s->plan_should_skip_activate);
+    json_push_kv_str(out, "plan_reason", s->plan_reason);
     /* CSR consistency snapshot at boot */
     json_push_kv_bool(out, "csr_consistency_checked",
-                      g_boot_snapshot.csr_consistency_checked);
-    json_push_kv_bool(out, "csr_consistent", g_boot_snapshot.csr_consistent);
-    json_push_kv_int(out, "csr_tip_height", g_boot_snapshot.csr_tip_height);
+                      s->csr_consistency_checked);
+    json_push_kv_bool(out, "csr_consistent", s->csr_consistent);
+    json_push_kv_int(out, "csr_tip_height", s->csr_tip_height);
     json_push_kv_int(out, "csr_header_height",
-                     g_boot_snapshot.csr_header_height);
+                     s->csr_header_height);
     /* Wave 11A — snapshot-first boot ordering probe outcome. */
     json_push_kv_bool(out, "snapshot_imported_pre_restore",
-                      g_boot_snapshot.snapshot_imported_pre_restore);
+                      s->snapshot_imported_pre_restore);
     json_push_kv_int(out, "snapshot_imported_utxos",
-                     g_boot_snapshot.snapshot_imported_utxos);
+                     s->snapshot_imported_utxos);
     json_push_kv_int(out, "snapshot_imported_height",
-                     g_boot_snapshot.snapshot_imported_height);
+                     s->snapshot_imported_height);
     return true;
 }
 
