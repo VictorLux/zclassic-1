@@ -83,6 +83,7 @@ static const char *const stale_witnesses[] = {
     "tools/mcp/controllers/wallet_controller.c",
     "tools/mcp/controllers/net_controller.c",
     "tools/mcp/controllers/ops_controller.c",
+    "tools/mcp/controllers/diagnostics_controller.c",
     "tools/mcp/controllers/app_controller.c",
     "tools/mcp/metrics.c",
     "tools/mcp/middleware.c",

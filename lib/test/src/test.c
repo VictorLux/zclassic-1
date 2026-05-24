@@ -257,6 +257,13 @@ int main(void)
                failures);
         return failures ? 1 : 0;
     }
+    if (only && strcmp(only, "mcp_e2e") == 0) {
+        printf("[test] ZCL_TEST_ONLY=mcp_e2e — running MCP e2e only\n");
+        failures += test_mcp_e2e();
+        printf("\n=== mcp_e2e subset complete: %d failure(s) ===\n",
+               failures);
+        return failures ? 1 : 0;
+    }
     if (only && strcmp(only, "make_lint_gates") == 0) {
         printf("[test] ZCL_TEST_ONLY=make_lint_gates — running lint gate subset\n");
         failures += test_make_lint_gates();
