@@ -1151,6 +1151,81 @@ static bool rpc_peersprojectiondiff(const struct json_value *params, bool help,
     return true;
 }
 
+static bool rpc_znamprojectiondiff(const struct json_value *params, bool help,
+                                   struct json_value *result)
+{
+    (void)params;
+    RPC_HELP(help, result,
+        "znamprojectiondiff\n"
+        "\nCompare Phase 4d-4 znam_projection against the legacy znam tables.\n"
+        "\nResult: projection/legacy name/addr/text counts, match, first_diff.");
+
+    json_set_object(result);
+    znam_projection_t *proj = znam_projection_current();
+    struct node_db *ndb = app_runtime_node_db();
+    if (!proj || !ndb || !ndb->open) {
+        json_push_kv_bool(result, "match", false);
+        json_push_kv_str(result, "first_diff",
+                         !proj ? "projection_not_open" : "legacy_db_not_open");
+        return true;
+    }
+
+    uint64_t p_names = znam_projection_name_count(proj);
+    uint64_t p_addrs = znam_projection_addr_count(proj);
+    uint64_t p_texts = znam_projection_text_count(proj);
+
+    int64_t l_names = 0, l_addrs = 0, l_texts = 0;
+    sqlite3_stmt *s = NULL;
+    if (sqlite3_prepare_v2(ndb->db, "SELECT COUNT(*) FROM znam_names",
+                           -1, &s, NULL) == SQLITE_OK) {
+        if (sqlite3_step(s) == SQLITE_ROW)  // raw-sql-ok:projection-diff
+            l_names = sqlite3_column_int64(s, 0);
+        sqlite3_finalize(s);
+    }
+    if (sqlite3_prepare_v2(ndb->db, "SELECT COUNT(*) FROM znam_addr_records",
+                           -1, &s, NULL) == SQLITE_OK) {
+        if (sqlite3_step(s) == SQLITE_ROW)  // raw-sql-ok:projection-diff
+            l_addrs = sqlite3_column_int64(s, 0);
+        sqlite3_finalize(s);
+    }
+    if (sqlite3_prepare_v2(ndb->db, "SELECT COUNT(*) FROM znam_text_records",
+                           -1, &s, NULL) == SQLITE_OK) {
+        if (sqlite3_step(s) == SQLITE_ROW)  // raw-sql-ok:projection-diff
+            l_texts = sqlite3_column_int64(s, 0);
+        sqlite3_finalize(s);
+    }
+
+    bool match = (int64_t)p_names == l_names &&
+                 (int64_t)p_addrs == l_addrs &&
+                 (int64_t)p_texts == l_texts;
+    char first_diff[256] = {0};
+    if (!match) {
+        snprintf(first_diff, sizeof(first_diff),
+                 "names p=%llu l=%lld; addrs p=%llu l=%lld; texts p=%llu l=%lld",
+                 (unsigned long long)p_names, (long long)l_names,
+                 (unsigned long long)p_addrs, (long long)l_addrs,
+                 (unsigned long long)p_texts, (long long)l_texts);
+    }
+
+    json_push_kv_str(result, "projection", "znam_projection");
+    json_push_kv_int(result, "projection_name_count", (int64_t)p_names);
+    json_push_kv_int(result, "legacy_name_count", l_names);
+    json_push_kv_int(result, "projection_addr_count", (int64_t)p_addrs);
+    json_push_kv_int(result, "legacy_addr_count", l_addrs);
+    json_push_kv_int(result, "projection_text_count", (int64_t)p_texts);
+    json_push_kv_int(result, "legacy_text_count", l_texts);
+    json_push_kv_bool(result, "match", match);
+    if (match) {
+        struct json_value nullv;
+        json_init(&nullv);
+        json_set_null(&nullv);
+        json_push_kv(result, "first_diff", &nullv);
+    } else {
+        json_push_kv_str(result, "first_diff", first_diff);
+    }
+    return true;
+}
+
 /* ── Registration ────────────────────────────────────────────────── */
 
 void register_diagnostics_rpc_commands(struct rpc_table *t)
@@ -1162,6 +1237,7 @@ void register_diagnostics_rpc_commands(struct rpc_table *t)
         { "control", "probezclassicd", rpc_probezclassicd, true },
         { "control", "getmirrorstatus", rpc_getmirrorstatus, true },
         { "control", "peersprojectiondiff", rpc_peersprojectiondiff, true },
+        { "control", "znamprojectiondiff",  rpc_znamprojectiondiff,  true },
     };
     for (size_t i = 0; i < sizeof(cmds) / sizeof(cmds[0]); i++)
         rpc_table_must_append(t, &cmds[i]);
