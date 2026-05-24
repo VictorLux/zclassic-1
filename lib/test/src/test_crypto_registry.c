@@ -1,4 +1,20 @@
-/* Copyright 2026 Rhett Creighton - Apache License 2.0 */
+/* Copyright 2026 Rhett Creighton - Apache License 2.0
+ *
+ * Phase 5a-1 — crypto_registry skeleton tests.
+ *
+ * Test cases per docs/work/wt-phase5a1-crypto-registry-skeleton.md §Task 7:
+ *   1. register_lookup_basic
+ *   2. register_collision_rejected
+ *   3. lookup_unregistered_returns_null
+ *   4. is_usable_false_for_unregistered
+ *   5. hash_vectors (sha256, blake2b-256)
+ *   6. sig_verify_known_good (ECDSA)
+ *   7. sig_verify_known_bad_rejected
+ *   8. zk_verify_* (Groth16 — uses malformed-input rejection here since
+ *      loading the multi-megabyte proving params is too fragile for a
+ *      unit test; the wrapper exercises groth16_proof_read +
+ *      groth16_vk_read_raw which is the same code path real proofs use)
+ */
 
 #include "test/test_helpers.h"
 #include "crypto_registry/crypto_registry.h"
@@ -10,6 +26,8 @@ int test_crypto_registry(void)
 
     printf("\n=== crypto_registry ===\n");
 
+    /* Case 1: register_lookup_basic — all four wrappers registered at
+     * constructor time with the expected per-kind counts. */
     printf("registry has expected schemes... ");
     const struct crypto_scheme *sha =
         crypto_registry_lookup(CRYPTO_HASH_SHA256);
@@ -26,8 +44,66 @@ int test_crypto_registry(void)
         crypto_registry_count_by_kind(CRYPTO_KIND_ZK) == 1) {
         printf("OK\n");
     } else {
-        printf("FAIL\n");
+        printf("FAIL (have sha=%d blake=%d ecdsa=%d groth=%d count=%zu)\n",
+               sha != NULL, blake != NULL, ecdsa != NULL, groth != NULL,
+               crypto_registry_count());
         failures++;
+    }
+
+    /* Case 2: register_collision_rejected — try to re-register the
+     * SHA256 slot. The CAS must fail and the original wrapper must
+     * remain in place. */
+    printf("re-register collision rejected... ");
+    {
+        const struct crypto_scheme original_sha =
+            *crypto_registry_lookup(CRYPTO_HASH_SHA256);
+        struct crypto_scheme dup = original_sha;
+        dup.name = "sha256-duplicate";
+        dup.impl = "test fixture";
+        bool ok = !crypto_registry_register(&dup);
+        const struct crypto_scheme *after =
+            crypto_registry_lookup(CRYPTO_HASH_SHA256);
+        if (ok && after &&
+            after->fn.hash == original_sha.fn.hash &&
+            strcmp(after->name, original_sha.name) == 0) {
+            printf("OK\n");
+        } else {
+            printf("FAIL (collision_register=%s, name_after=%s)\n",
+                   ok ? "rejected" : "ACCEPTED",
+                   after ? after->name : "(null)");
+            failures++;
+        }
+    }
+
+    /* Case 3: lookup of an unregistered slot returns NULL. */
+    printf("lookup_unregistered_returns_null... ");
+    {
+        const struct crypto_scheme *miss =
+            crypto_registry_lookup((enum crypto_scheme_id)999);
+        const struct crypto_scheme *ed =
+            crypto_registry_lookup(CRYPTO_SIG_ED25519);
+        if (miss == NULL && ed == NULL)
+            printf("OK\n");
+        else {
+            printf("FAIL (id=999 -> %p, ed25519 -> %p)\n",
+                   (const void *)miss, (const void *)ed);
+            failures++;
+        }
+    }
+
+    /* Case 4: is_usable returns false for unregistered + out-of-range. */
+    printf("is_usable_false_for_unregistered... ");
+    {
+        bool a = !crypto_registry_is_usable((enum crypto_scheme_id)999);
+        bool b = !crypto_registry_is_usable(CRYPTO_SIG_ED25519);
+        bool c = !crypto_registry_is_usable((enum crypto_scheme_id)0);
+        bool d = crypto_registry_is_usable(CRYPTO_HASH_SHA256);
+        if (a && b && c && d)
+            printf("OK\n");
+        else {
+            printf("FAIL (999=%d ed=%d 0=%d sha=%d)\n", a, b, c, d);
+            failures++;
+        }
     }
 
     printf("sha256 wrapper vector... ");

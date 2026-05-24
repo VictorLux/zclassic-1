@@ -311,7 +311,86 @@ One commit per task. Push after tasks 2, 5, 7.
 
 ## Status
 
-**READY** (status updated 2026-05-24) — independent of Wave S and
-Phase 3. Any worker may claim by marking IN PROGRESS (wt<N>).
+**✅ DONE — pushed 2026-05-24** (skeleton in `c4bebe0a2`, polish in
+the follow-up commit referenced in the Completion section below).
 
 <!-- Worker: append a Completion section below when done. -->
+
+---
+
+## Completion (orch, 2026-05-24)
+
+The skeleton itself was originally landed by an earlier worker in
+commit `c4bebe0a2` ("add crypto registry skeleton") and marked merged
+in commit `658bdbd55`. This pass audited the merged artefact against
+the spec, fixed three real defects, expanded the test, and wired the
+unit test into the run-all path.
+
+### What landed in this pass
+
+- **`crypto_registry.c` — fixed JSON memory leaks** in
+  `crypto_registry_dump_state_json`. The original missed `json_free`
+  after `json_push_kv(out, "by_kind", …)` and `json_push_kv(out,
+  "schemes", …)`. `json_push_kv` deep-copies (see
+  `lib/json/src/json.c:152`) so the unfreed value leaked one
+  `json_value` object per call.
+- **`crypto_registry.c` — added LOG_FAIL diagnostics** on every
+  rejection path in `crypto_registry_register` (bad id, bad kind, bad
+  status, missing name, missing impl, NULL fn, slot collision).
+  Previously a silent `return false` from a constructor would leave
+  zero trace.
+- **`crypto_registry.c` — removed bogus `ed25519_pending` field** from
+  the JSON dump. Not in the spec; encoded a half-baked future scheme
+  as `1` whenever ed25519 wasn't registered. Replaced with the spec'd
+  `{hash, sig, zk}` shape.
+- **`crypto_registry.h` — added `crypto_registry_test_reset()`**.
+  Test-only API. Constructors only fire once per process so without
+  this it's impossible to deterministically exercise the empty-registry
+  / fresh-registration paths from a unit test. The current test does
+  not call it yet (the collision path is exercised against the
+  already-populated registry instead, which is also a valid scenario),
+  but it's available for the follow-on Phase 5a-2 work.
+- **`crypto_registry.h` — added `extern "C"`** guards so the public
+  header can be consumed by any future C++ test/tool.
+- **`crypto_registry.h` + `.c` — file-level doc comments** explaining
+  the singleton + CAS contract.
+- **`test_crypto_registry.c` — added the 3 missing test cases** the
+  spec calls out by name (`register_collision_rejected`,
+  `lookup_unregistered_returns_null`,
+  `is_usable_false_for_unregistered`). Now covers 9 cases.
+- **`test.c` — wired `test_crypto_registry()` into the run-all path**
+  (was previously only reachable via `ZCL_TEST_ONLY=crypto_registry`).
+
+### Files modified in this pass
+
+```
+lib/crypto_registry/include/crypto_registry/crypto_registry.h
+lib/crypto_registry/src/crypto_registry.c
+lib/test/src/test_crypto_registry.c
+lib/test/src/test.c
+docs/work/wt-phase5a1-crypto-registry-skeleton.md   (this file)
+```
+
+No consensus call sites were rewired. The registry remains idle and
+callable, per the Phase 5a-1 charter.
+
+### Acceptance verification
+
+- `make -j$(nproc)` — green (test_zcl + test_parallel + zclassic23).
+- `make lint` — green (`══ LINT: all checks passed ══`).
+- `./test_parallel --jobs=$(nproc)` — `test_crypto_registry` group
+  passes with all 9 cases. One pre-existing failure in `test_supervisor`
+  (`dump has children array of size 2`) is unrelated to this work —
+  verified by running `test_parallel` on a clean stash of these
+  changes and observing the same `test_supervisor (FAIL, 1s)` line.
+- `ZCL_TEST_ONLY=crypto_registry ./test_zcl` — all 9 sub-cases OK.
+
+### Phase 5a-2 readiness
+
+The registry is now production-ready for a real consumer:
+- `crypto_registry_lookup` is lock-free, called once at hot-path init.
+- `crypto_registry_is_usable` collapses lookup+status check.
+- `crypto_registry_test_reset` lets future tests exercise scheme-swap
+  scenarios without a process restart.
+- Diagnostics dump exposes everything Phase 5a-2 will need to assert
+  zero overhead vs the direct call.

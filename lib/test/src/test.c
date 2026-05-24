@@ -388,6 +388,7 @@ int main(void)
     failures += test_load_balancer();
     failures += test_game();
     failures += test_crypto();
+    failures += test_crypto_registry();
     failures += test_encoding();
     failures += test_chain();
     { extern int test_pprev_walk(void); failures += test_pprev_walk(); }
