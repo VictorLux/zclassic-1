@@ -225,6 +225,13 @@ int main(void)
                failures);
         return failures ? 1 : 0;
     }
+    if (only && strcmp(only, "postmortem") == 0) {
+        printf("[test] ZCL_TEST_ONLY=postmortem — running postmortem only\n");
+        failures += test_postmortem();
+        printf("\n=== postmortem subset complete: %d failure(s) ===\n",
+               failures);
+        return failures ? 1 : 0;
+    }
     if (only && strcmp(only, "rpc_safety") == 0) {
         printf("[test] ZCL_TEST_ONLY=rpc_safety — running RPC safety subset\n");
         failures += test_rpc_safety();
@@ -668,6 +675,7 @@ int main(void)
     failures += test_clock();
     failures += test_rng();
     failures += test_seed_tape();
+    failures += test_postmortem();
     failures += test_stage();
     failures += test_mailbox();
     failures += test_mailbox_adoption();

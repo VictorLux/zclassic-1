@@ -301,4 +301,16 @@ One commit per task. Push after tasks 2, 3, 5.
 `seed_tape_save` / `seed_tape_load` landed on main. Current slice is
 the capsule API plus the non-signal save/list/load path.
 
+### Progress (wt2, 2026-05-24)
+
+- Added `sim/postmortem.h` and `lib/sim/src/postmortem.c`.
+- Current primitive writes an unpacked `.cap` directory containing
+  `manifest.json`, `tape.bin`, `procstatus.txt`, `log.txt`, and
+  `coremarker.txt`. This keeps the durable capsule contract testable before
+  the async-signal-safe install path is wired; `.cap.gz` packaging remains for
+  the signal/boot integration slice.
+- Added focused `test_postmortem` coverage for capture, manifest fields,
+  log-tail copy, list, tape load, corruption rejection, and bad argument
+  handling.
+
 <!-- Worker: append a Completion section below when done. -->
