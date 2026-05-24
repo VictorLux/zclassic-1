@@ -233,11 +233,42 @@ One commit per task. Push after tasks 2 and 4.
 
 ## Status
 
-**IN PROGRESS (wt2)** — claimed 2026-05-24 after Phase 5a-1 merged
-(`c4bebe0a2`). Current code routes the header PoW check through
-`check_block.c` rather than directly inside `accept_block_header.c`, so
-the implementation will rewire the actual `check_block_header` Equihash
-call site while preserving the assignment's consensus surface.
+**✅ DONE — pushed 2026-05-24** to main as commit `f00be351f`.
+
+## Completion (wt2, 2026-05-24)
+
+### Summary
+Phase 5a-2 is shipped: Equihash proof verification is registered in the
+crypto registry and the real header PoW check now dispatches through a
+cached registry scheme. The current call site lives in
+`lib/validation/src/check_block.c` via `check_block_header`; no other
+consensus crypto call sites were rewired.
+
+### Commits
+- `58181fc74` wt2: mark phase5a2 in progress
+- `f00be351f` crypto_registry: route equihash pow checks
+
+### Files added/modified
+- `lib/crypto_registry/include/crypto_registry/crypto_registry.h` — added `CRYPTO_PROOF_EQUIHASH_200_9`
+- `lib/crypto_registry/src/scheme_equihash_200_9.c` — new registry wrapper over in-tree Equihash verification
+- `lib/validation/src/check_block.c` — header PoW solution check now uses cached registry dispatch
+- `lib/test/src/test_crypto_registry.c` — Equihash lookup, good/bad fixture, diagnostics count, and timing coverage
+
+### Acceptance verification
+- [x] `make -j$(nproc) test_zcl` — PASS
+- [x] `ZCL_TEST_ONLY=crypto_registry ./test_zcl` — PASS
+- [x] `make -j$(nproc) zclassic23` — PASS
+- [x] `make lint` — PASS (gate #20 still WARNs on existing raw-controller-SQL debt)
+- [x] `./test_parallel --jobs=$(nproc)` — PASS, 0/187 groups failed
+
+### Surprises / follow-ups
+The assignment text pointed at `accept_block_header.c`, but this checkout
+performs the Equihash call inside `check_block_header()` in
+`check_block.c`; `accept_block_header()` reaches it through
+`check_block_header(header, ..., check_pow=true)`. A single-process
+`ZCL_TEST_ONLY=chain ./test_zcl` run still shows unrelated state-leakage
+failures in historical supervisor tests, while the forked authoritative
+runner is clean.
 
 When this ships + 24h soak passes, the queue extends with:
 - 5a-3 script_validate batch path through registry (hot loop, careful)
