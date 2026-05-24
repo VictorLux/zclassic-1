@@ -306,3 +306,57 @@ Verification:
 - `make lint`
 - `./test_parallel --jobs=$(nproc)` PASS on rerun:
   `ALL TESTS PASSED — 0/195 groups failed`
+
+## Completion — 4d-4 znam_projection (2026-05-24)
+
+Commits:
+- `f52313f02` Phase 4d-4 Task 1: EV_ZNAM_* event payload schemas
+- `60b33dbd1` Phase 4d-4 Task 2: znam_projection skeleton + catch_up replay
+- `57804149c` Phase 4d-4 Task 3: shadow-emit ZNAM events from legacy DB writes
+- `519aa2383` Phase 4d-4 Task 4: wire znam_projection boot replay + diagnostics
+- `958d15839` Phase 4d-4 Task 5: zcl_znam_projection_diff MCP tool
+- `4986a4684` Phase 4d-4 Task 5b: add znamprojectiondiff RPC handler + bump counts
+- `ee1c5c7b1` (test_znam_projection — 30 cases across 5 events, picked up by
+  the Phase 4b completion commit's omnibus add of the same files)
+
+Implemented:
+- Added five new event_log_type slots (12-16: EV_ZNAM_REGISTER /
+  UPDATE / TRANSFER / RENEW / EXPIRE) with length-prefixed wire
+  formats in `event_log_payloads.h`. Pure addition — every existing
+  consumer untouched.
+- SQLite-backed `znam_projection` primitive in `lib/storage` mirroring
+  the `peers_projection` shape: open / close / catch_up / find /
+  addr_get / text_get / count accessors, all using `INSERT OR REPLACE`
+  for idempotent replay.
+- Shadow-emits `EV_ZNAM_REGISTER` on every `db_znam_save` and
+  `EV_ZNAM_UPDATE` (text + addr action types) on every
+  `db_znam_text_save` / `db_znam_addr_save`. Legacy SQLite writes
+  remain authoritative; emit failures log via `obs-ok` stderr.
+- Opens the projection in the Phase 4 storage-shadow boot, runs
+  catch_up at startup, attaches the global event log, and closes in
+  shutdown ordering matching peers/utxo/block_index.
+- Registered `znam_projection` in the diagnostics `g_dumpers` table so
+  `zcl_state subsystem=znam_projection` returns counters via MCP. The
+  enum_csv auto-derives — no further wiring required.
+- Added `zcl_znam_projection_diff` MCP tool wrapping a new
+  `znamprojectiondiff` RPC handler that compares the projection's
+  name/addr/text row counts against the legacy `znam_names` /
+  `znam_addr_records` / `znam_text_records` tables and returns a
+  single `first_diff` string when they disagree.
+- Added `test_znam_projection` (30 cases) covering payload roundtrip
+  for all 5 events, open/close clean lifecycle, register replay,
+  addr+text update record creation, transfer+renew+expire lifecycle
+  with cascade delete, and projection state persistence across
+  event-log reopen. Wired into test.c (run + ZCL_TEST_ONLY block),
+  test_helpers.h, and test_parallel.c.
+
+Verification:
+- `make -j$(nproc)` clean.
+- `make lint` PASS (WARN-mode raw-sqlite-in-controllers count
+  unchanged from baseline aside from the new diff handler's 3 read-only
+  COUNT(*) calls).
+- `ZCL_TEST_ONLY=znam_projection ./test_zcl` → 0 failures (30/30 cases).
+- `ZCL_TEST_ONLY=mcp_controllers ./test_zcl` → 0 failures with new
+  EXPECTED_TOTAL=98 / EXPECTED_OPS=37.
+- `./test_parallel --jobs=$(nproc)` → ALL TESTS PASSED — 0/197 groups
+  failed (106s wall, 32 workers).
