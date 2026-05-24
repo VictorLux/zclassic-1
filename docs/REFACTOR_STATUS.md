@@ -56,6 +56,8 @@ Phase 6  [██░░░░░░░░]  20%   Determinism + simulator
   ├ 6b     [░░░░░░░░░░]   0%   postmortem capsule (crash → seed.cap.gz)  ← spec'd (queued post 6a)
   └ 6c     [░░░░░░░░░░]   0%   simulator harness (chaos CI)  ← spec'd (queued post 6b)
 Phase 7  [░░░░░░░░░░]   0%   Frontier (io_uring, hot reload)
+Phase 8  [░░░░░░░░░░]   0%   Event-log compaction & retention — plan: docs/architecture/phase8-log-compaction-and-retention.md
+  └ (draft)  gated on 4e — checkpoint event + segmentation + prune policy; pairs with SHA3 snapshot/FlyClient cold-sync
 
 All 5 mega-module dissolve plans drafted: docs/dissolve/
 (sync_watchdog, chain_advance_coordinator, legacy_mirror_sync,
