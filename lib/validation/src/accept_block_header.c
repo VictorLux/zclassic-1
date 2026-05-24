@@ -22,6 +22,9 @@
 
 #include "process_block_internal.h"
 
+/* Avoid a lib/validation -> app/services include while the C-2 cutover
+ * guard still needs the stage mode and parity record check.
+ */
 typedef enum {
     HEADER_ADMIT_MODE_SHADOW = 0,
     HEADER_ADMIT_MODE_AUTHORITATIVE
