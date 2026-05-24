@@ -187,7 +187,38 @@ One commit per task. Push after task 3.
 
 ## Status
 
-**READY** — Tasks 1-6 already on main; reference impl preserved in
-`worktree-agent-a44e0099a96b25d8c`. Any worker may claim.
+**DONE — pushed 2026-05-24** to main as commits `066462576`,
+`91b4ee734`, and `2f23d6a44`.
 
-<!-- Worker: append a Completion section below when done. -->
+## Completion (wt2, 2026-05-24)
+
+### Summary
+Phase 4c finalize shipped the `zcl_block_index_diff` MCP cutover gate,
+registered the `block_index_projection` state dumper, and added the
+9-case `test_block_index_projection` suite. The projection cutover now
+has an hourly live-vs-projection diff check for the 24h soak gate.
+
+### Commits
+- `066462576` Phase 4c finalize Task 1: zcl_block_index_diff MCP tool
+- `91b4ee734` Phase 4c finalize Task 2: wire block_index_projection dumper
+- `2f23d6a44` Phase 4c finalize Task 3: test_block_index_projection — 9 cases
+
+### Files Added/Modified
+- `tools/mcp/controllers/chain_controller.c`
+- `app/controllers/src/diagnostics_controller.c`
+- `lib/test/src/test_block_index_projection.c`
+- `lib/test/include/test/test_helpers.h`
+- `lib/test/src/test.c`
+- `lib/test/src/test_parallel.c`
+- `lib/test/src/test_mcp_controllers.c`
+
+### Acceptance Verification
+- [x] `ZCL_TEST_ONLY=mcp_controllers ./test_zcl` — PASS, 0 failures
+- [x] `make -j$(nproc)` — PASS
+- [x] `make lint` — PASS; gate #20 remains WARN with grandfathered raw-controller-SQL violations
+- [x] `./test_parallel --jobs=$(nproc)` — PASS, 0/201 groups failed
+
+### Surprises / Follow-ups
+The implementation was already on `main`; this update closes the stale
+assignment doc only. The 4c cutover remains gated on live 24h
+`zcl_block_index_diff` polling with `match=true`.
