@@ -47,6 +47,7 @@
 #include "storage/block_index_projection.h"
 #include "storage/znam_projection.h"
 #include "storage/wallet_projection.h"
+#include "storage/small_projections.h"
 #include "storage/progress_store.h"
 #include "storage/utxo_projection.h"
 #include "models/block.h"
@@ -135,6 +136,9 @@ static utxo_projection_t *g_phase4_utxo_projection;
 static block_index_projection_t *g_phase4_block_index_projection;
 static znam_projection_t *g_phase4_znam_projection;
 static wallet_projection_t *g_phase4_wallet_projection;
+static contacts_projection_t *g_phase4_contacts_projection;
+static onion_ann_projection_t *g_phase4_onion_ann_projection;
+static hodl_history_projection_t *g_phase4_hodl_history_projection;
 
 /* Module-local pointer to boot context (set once by app_init_services) */
 static struct boot_svc_ctx *S;
@@ -1845,6 +1849,85 @@ static void boot_start_phase4_storage_shadow(const char *datadir)
                 (unsigned long long)woff);
     }
     wallet_projection_set_event_log(g_phase4_event_log);
+
+    /* Phase 4d-5: small-batch projections shadow */
+    char contacts_path[PATH_MAX];
+    char onion_ann_path[PATH_MAX];
+    char hodl_history_path[PATH_MAX];
+    int n8 = snprintf(contacts_path, sizeof(contacts_path),
+                      "%s/contacts_projection.db", datadir);
+    int n9 = snprintf(onion_ann_path, sizeof(onion_ann_path),
+                      "%s/onion_announcements_projection.db", datadir);
+    int n10 = snprintf(hodl_history_path, sizeof(hodl_history_path),
+                       "%s/hodl_history_projection.db", datadir);
+    if (n8 <= 0 || (size_t)n8 >= sizeof(contacts_path) ||
+        n9 <= 0 || (size_t)n9 >= sizeof(onion_ann_path) ||
+        n10 <= 0 || (size_t)n10 >= sizeof(hodl_history_path)) {
+        fprintf(stderr,  // obs-ok:phase4-shadow
+                "[phase4] small projection paths too long\n");
+        return;
+    }
+
+    contacts_projection_set_event_log(g_phase4_event_log);
+    g_phase4_contacts_projection =
+        contacts_projection_open(contacts_path, g_phase4_event_log);
+    if (!g_phase4_contacts_projection) {
+        fprintf(stderr,  // obs-ok:phase4-shadow
+                "[phase4] contacts_projection unavailable; shadow emit only\n");
+    } else {
+        uint64_t coff =
+            contacts_projection_catch_up(g_phase4_contacts_projection);
+        if (coff == UINT64_MAX) {
+            fprintf(stderr,  // obs-ok:phase4-shadow
+                    "[phase4] contacts_projection catch_up failed\n");
+        } else {
+            fprintf(stderr,  // obs-ok:phase4-shadow
+                    "[phase4] contacts_projection caught up to offset=%llu\n",
+                    (unsigned long long)coff);
+        }
+    }
+
+    onion_ann_projection_set_event_log(g_phase4_event_log);
+    g_phase4_onion_ann_projection =
+        onion_ann_projection_open(onion_ann_path, g_phase4_event_log);
+    if (!g_phase4_onion_ann_projection) {
+        fprintf(stderr,  // obs-ok:phase4-shadow
+                "[phase4] onion_announcements_projection unavailable; "
+                "shadow emit only\n");
+    } else {
+        uint64_t aoff =
+            onion_ann_projection_catch_up(g_phase4_onion_ann_projection);
+        if (aoff == UINT64_MAX) {
+            fprintf(stderr,  // obs-ok:phase4-shadow
+                    "[phase4] onion_announcements_projection catch_up failed\n");
+        } else {
+            fprintf(stderr,  // obs-ok:phase4-shadow
+                    "[phase4] onion_announcements_projection caught up to "
+                    "offset=%llu\n",
+                    (unsigned long long)aoff);
+        }
+    }
+
+    hodl_history_projection_set_event_log(g_phase4_event_log);
+    g_phase4_hodl_history_projection =
+        hodl_history_projection_open(hodl_history_path, g_phase4_event_log);
+    if (!g_phase4_hodl_history_projection) {
+        fprintf(stderr,  // obs-ok:phase4-shadow
+                "[phase4] hodl_history_projection unavailable; "
+                "shadow emit only\n");
+    } else {
+        uint64_t hoff =
+            hodl_history_projection_catch_up(g_phase4_hodl_history_projection);
+        if (hoff == UINT64_MAX) {
+            fprintf(stderr,  // obs-ok:phase4-shadow
+                    "[phase4] hodl_history_projection catch_up failed\n");
+        } else {
+            fprintf(stderr,  // obs-ok:phase4-shadow
+                    "[phase4] hodl_history_projection caught up to "
+                    "offset=%llu\n",
+                    (unsigned long long)hoff);
+        }
+    }
 }
 
 static void boot_stop_phase4_storage_shadow(void)
@@ -1856,6 +1939,9 @@ static void boot_stop_phase4_storage_shadow(void)
     peers_projection_set_event_log(NULL);
     utxo_projection_set_event_log(NULL);
     wallet_projection_set_event_log(NULL);
+    contacts_projection_set_event_log(NULL);
+    onion_ann_projection_set_event_log(NULL);
+    hodl_history_projection_set_event_log(NULL);
     if (g_phase4_mempool_projection) {
         mempool_projection_close(g_phase4_mempool_projection);
         g_phase4_mempool_projection = NULL;
@@ -1876,6 +1962,18 @@ static void boot_stop_phase4_storage_shadow(void)
     if (g_phase4_wallet_projection) {
         wallet_projection_close(g_phase4_wallet_projection);
         g_phase4_wallet_projection = NULL;
+    }
+    if (g_phase4_contacts_projection) {
+        contacts_projection_close(g_phase4_contacts_projection);
+        g_phase4_contacts_projection = NULL;
+    }
+    if (g_phase4_onion_ann_projection) {
+        onion_ann_projection_close(g_phase4_onion_ann_projection);
+        g_phase4_onion_ann_projection = NULL;
+    }
+    if (g_phase4_hodl_history_projection) {
+        hodl_history_projection_close(g_phase4_hodl_history_projection);
+        g_phase4_hodl_history_projection = NULL;
     }
     block_index_projection_set_singleton(NULL);
     if (g_phase4_block_index_projection) {
