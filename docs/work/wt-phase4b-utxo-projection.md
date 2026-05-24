@@ -325,7 +325,119 @@ One commit per task. Push after tasks 4, 7, 9.
 
 ## Status
 
-**QUEUED** — gated on Phase 4a merged. After 4a ships, this becomes
-READY.
+✅ **DONE — pushed 2026-05-24**
 
-<!-- Worker: append a Completion section below when done. -->
+## Completion (orch sub-agent, 2026-05-24)
+
+### Commits (in order)
+
+| SHA | Subject |
+|---|---|
+| `39b1e8efa` | Phase 4b Task 1: EV_UTXO_ADD / EV_UTXO_SPEND payload schemas |
+| `089cdc01d` | Phase 4b Tasks 2-4: utxo_projection skeleton + catch_up + reads |
+| `f0e4f8d93` | Phase 4b Task 5: wire EV_UTXO_ADD/SPEND shadow emission in update_coins |
+| `626d52a94` | Phase 4b Tasks 6-8: boot wiring + diagnostics + 7 test cases |
+| `96113ca4e` | Phase 4b Task 9: zcl_utxo_projection_diff MCP tool (24h cutover gate) |
+| `d053381b0` | Phase 4b: bump test_mcp_controllers expected counts |
+
+### Files added
+
+- `lib/storage/include/storage/utxo_projection.h` (NEW)
+- `lib/storage/src/utxo_projection.c` (NEW)
+- `lib/test/src/test_utxo_projection.c` (NEW — 7 test cases per spec)
+
+### Files modified
+
+- `lib/storage/include/storage/event_log_payloads.h` — added
+  `ev_utxo_add_hdr` + `ev_utxo_spend` typed structs + (de)serialiser
+  helpers (inline, matching the existing peer-event style)
+- `lib/validation/src/update_coins.c` — emits `EV_UTXO_ADD` /
+  `EV_UTXO_SPEND` alongside the existing `coins_view` writes
+  (additive shadow mode; emit failures NEVER gate the legacy path)
+- `lib/validation/include/validation/update_coins.h` — exposes
+  `update_coins_event_emit_total()` and
+  `update_coins_event_emit_fail_total()` for observability
+- `config/src/boot_services.c` — extended the existing Phase 4
+  shadow startup (added by 4d-2) to also open the
+  `utxo_projection` alongside `peers_projection` and call
+  `catch_up()` after open; shutdown teardown closes in order
+  (detach emitters → projections → event log)
+- `app/controllers/src/diagnostics_controller.c` — registers
+  `utxo_projection` in `g_dumpers`; auto-propagates to the MCP
+  `zcl_state.subsystem` enum via the live derivation in
+  `tools/mcp/controllers/diagnostics_controller.c`
+- `tools/mcp/controllers/chain_controller.c` — new MCP tool
+  `zcl_utxo_projection_diff` (Task 9) computes both commitments
+  in-process and returns `{match, legacy_sha3, projection_sha3,
+  legacy_height, legacy_utxo_count, projection_utxo_count}`. On
+  shadow-disabled boots (projection_not_open) the tool returns a
+  structured reason field so soak scripts can distinguish from
+  actual divergences.
+- `lib/test/src/test.c`, `lib/test/src/test_parallel.c`,
+  `lib/test/include/test/test_helpers.h` — wire `test_utxo_projection`
+- `lib/test/src/test_mcp_controllers.c` — `EXPECTED_TOTAL` 96→97,
+  `EXPECTED_CHAIN` 15→16, test description updated to "16 tools"
+
+### Acceptance verification
+
+```
+$ make -j$(nproc)
+... clean build (zclassic23 + test_zcl + test_parallel) ...
+
+$ ./test_parallel --jobs=$(nproc)
+ALL TESTS PASSED — 0/197 groups failed (105s wall, 32 workers)
+```
+
+Note: `make lint` failed on one pre-existing violation in
+`lib/znam/src/znam.c:318` (raw `time(NULL)` call) that was
+introduced by an unrelated Phase 4d-4 commit. Not caused by this
+PR.
+
+### Diff-tool smoke test (fresh datadir, no chain loaded)
+
+```
+$ zclassic23 -mcp -datadir=/tmp/zcl_proj_test < ... tools/call zcl_utxo_projection_diff
+{
+  "match": false,
+  "reason": "projection_not_open",
+  "legacy_sha3": "",
+  "legacy_height": 0,
+  "legacy_utxo_count": 0
+}
+```
+
+This is the documented behaviour on a fresh datadir (no events
+emitted yet → projection accessor returns NULL → structured
+reason field reports `projection_not_open`). On a fully-synced
+node post-IBD the soak run should return `match: true` with both
+hashes populated; the 4b-cutover PR is gated on 24h of
+`match: true` runs.
+
+### Notable design notes
+
+1. **Payload header co-located.** The `ev_utxo_add_hdr` /
+   `ev_utxo_spend` structs ship inline in
+   `event_log_payloads.h` (matching the pattern peer events
+   established) rather than in a separate .c file — emitter and
+   consumer link against the same static helpers, so wire-format
+   drift is impossible.
+
+2. **Boot wiring extended, not duplicated.** The Phase 4d-2
+   `boot_start_phase4_storage_shadow` scaffold already opens
+   the event log + peers_projection. This PR extends that
+   function to also open the utxo_projection, sharing the same
+   event log handle. One log file, multiple projections — exactly
+   the Phase 4 unification shape.
+
+3. **Schema mirrors legacy `utxos` table.** Both
+   `utxo_projection.commitment` and the existing
+   `utxo_commitment_sha3_compute_table` walk
+   `ORDER BY txid, vout` and emit the same canonical bytes
+   (`txid|vout_le|value_le|script_len_le|script|height_le|cb`).
+   Identical UTXO sets → identical SHA3 → `match: true`.
+
+4. **REPLACE collisions are observability, not failures.** A
+   chain reorg may legitimately replay an ADD over an existing
+   entry. The projection counts these but never rejects — the
+   emitter is the authority on event ordering.
+

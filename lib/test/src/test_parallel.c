@@ -96,7 +96,7 @@ volatile sig_atomic_t g_shutdown_requested = 0;
     X(watchdog_dissolve_pr2) X(watchdog_conditions_pr3) X(blocker) \
     X(clock) X(rng) X(seed_tape) X(stage) X(mailbox) X(mailbox_adoption) \
     X(projection) X(projection_adoption) X(progress_store) X(event_log) \
-    X(peers_projection) X(utxo_projection) \
+    X(peers_projection) X(znam_projection) X(utxo_projection) \
     X(header_admit_stage) X(validate_headers_stage) X(body_fetch_stage) \
     X(body_persist_stage) X(script_validate_stage) X(proof_validate_stage) \
     X(utxo_apply_stage) X(tip_finalize_stage) \

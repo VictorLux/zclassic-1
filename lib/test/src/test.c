@@ -137,6 +137,13 @@ int main(void)
                failures);
         return failures ? 1 : 0;
     }
+    if (only && strcmp(only, "znam_projection") == 0) {
+        printf("[test] ZCL_TEST_ONLY=znam_projection — running znam projection only\n");
+        failures += test_znam_projection();
+        printf("\n=== znam_projection subset complete: %d failure(s) ===\n",
+               failures);
+        return failures ? 1 : 0;
+    }
     if (only && strcmp(only, "script_validate") == 0) {
         printf("[test] ZCL_TEST_ONLY=script_validate — running script_validate stage only\n");
         failures += test_script_validate_stage();
