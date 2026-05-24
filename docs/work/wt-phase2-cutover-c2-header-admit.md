@@ -185,10 +185,7 @@ see progress + revert individual commits if needed.
 
 ## Status
 
-**IN PROGRESS (wt3)** (claimed 2026-05-24, post S-9 merge `1a65b33c7`) —
-**FIRST authoritative cutover.** Commits 1-3 are pure additions (mode
-flag default SHADOW → no behavior change). Commit 4 flips the default
-to AUTHORITATIVE and is one-line revertable.
+**✅ DONE — pushed 2026-05-24** to main as commit `f3f0c6c4e`.
 
 Soak discipline: ship commits 1-3 together, then watch
 `zcl_state subsystem=header_admit` for ≥1h of zero divergence on a

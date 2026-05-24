@@ -235,7 +235,7 @@ One commit per task. Push after task 2.
 
 ## Status
 
-**READY** — Phase 5a-2 merged (`f00be351f`) proves the indirection
-pattern. Any worker may claim by marking IN PROGRESS (wt<N>).
+**IN PROGRESS (wt3)** — claimed 2026-05-24. Phase 5a-2 merged
+(`f00be351f`) proves the indirection pattern.
 
 <!-- Worker: append a Completion section below when done. -->
