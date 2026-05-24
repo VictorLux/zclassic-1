@@ -4,7 +4,7 @@
 > truth for "what's done, what's next, what's blocked." Read this first
 > when you start a session. Full architecture: [`FRAMEWORK.md`](./FRAMEWORK.md).
 
-**Updated:** 2026-05-24 (Wave S SHADOW 100% — S-9 MERGED; Phase 3 watchdog 100% — DELETED; supervisor tree split DONE; cutover C-2 next)
+**Updated:** 2026-05-24 (Wave S SHADOW 100%; Phase 5a-1 crypto registry MERGED; C-2 cutover IN PROGRESS by wt3; 5a-2 READY)
 
 ---
 
@@ -37,9 +37,9 @@ Phase 4  [░░░░░░░░░░]   0%   Storage unification — plan: d
   ├ 4a     [░░░░░░░░░░]   0%   event_log primitive  ← READY (primitive sits idle, no callers wired)
   ├ 4b     [░░░░░░░░░░]   0%   utxo_projection — first event-log consumer (queued, post-4a)
   └ 4c     [░░░░░░░░░░]   0%   block_index_projection — kills LevelDB (queued, post-4a)
-Phase 5  [░░░░░░░░░░]   0%   Crypto agility + reproducible builds — plan: docs/architecture/phase5-crypto-agility-and-releases.md
-  ├ 5a-1   [░░░░░░░░░░]   0%   Crypto registry skeleton  ← READY (parallel-safe, no gates)
-  └ 5a-2   [░░░░░░░░░░]   0%   First call site rewire: Equihash PoW (queued, post-5a-1)
+Phase 5  [██░░░░░░░░]  17%   Crypto agility + reproducible builds — plan: docs/architecture/phase5-crypto-agility-and-releases.md
+  ├ 5a-1   [██████████] 100%   Crypto registry skeleton  ✅ c4bebe0a2 (SHA256/BLAKE2b/ECDSA/Groth16 wrappers, no call sites rewired)
+  └ 5a-2   [░░░░░░░░░░]   0%   First call site rewire: Equihash PoW  ← READY (5a-1 merged)
 Phase 6  [░░░░░░░░░░]   0%   Determinism + simulator
 Phase 7  [░░░░░░░░░░]   0%   Frontier (io_uring, hot reload)
 
@@ -93,16 +93,20 @@ clause. The table below is the dashboard.
 
 | Worktree | Branch | Assignment | Status | Last update |
 |---|---|---|---|---|
-| `~/github/zclassic23` (main) | `main` | Orchestrator: queue + plan + merge | ✅ Wave S 100% shadow; cutover C-2 + crypto-registry + 2 dissolves drafted | 2026-05-24 |
-| `~/github/zclassic23-2` (wt2) | `main` (direct push) | (idle — restart and pick from READY queue below) | 🕐 READY for next task | 2026-05-24 |
-| `~/github/zclassic23-3` (wt3) | `main` (direct push) | (idle — restart and pick from READY queue below) | 🕐 READY for next task | 2026-05-24 |
+| `~/github/zclassic23` (main) | `main` | Orchestrator: queue + plan + merge | ✅ 5a-1 merged via sub-agent; 3 more queue items drafted (C-3, 4c, 5a-2) | 2026-05-24 |
+| `~/github/zclassic23-2` (wt2) | `main` (direct push) | (idle — pick next from READY queue below) | 🕐 READY for next task | 2026-05-24 |
+| `~/github/zclassic23-3` (wt3) | `main` (direct push) | [`docs/work/wt-phase2-cutover-c2-header-admit.md`](./work/wt-phase2-cutover-c2-header-admit.md) | 🚧 IN PROGRESS (started 97fc3b02b) | 2026-05-24 |
 
 **READY queue** (any worker can pick on restart; first to mark IN PROGRESS wins):
-- [`docs/work/wt-phase2-cutover-c2-header-admit.md`](./work/wt-phase2-cutover-c2-header-admit.md) — **FIRST authoritative cutover.** 4-commit PR (mode flag → authoritative path gated → divergence guard → flip default). Recommend wt3 (most familiar with Wave S). Commits 1-3 are risk-free; commit 4 flips the default and is one-line revertable.
-- [`docs/work/wt-phase5a1-crypto-registry-skeleton.md`](./work/wt-phase5a1-crypto-registry-skeleton.md) — pure indirection layer; parallel-safe with cutover; no consensus call sites rewired in this PR.
-- [`docs/work/wt-phase4a-event-log-primitive.md`](./work/wt-phase4a-event-log-primitive.md) — append-only event log with kill-9 fuzz harness; **primitive sits idle, no callers wired** — actually safe to ship before Phase 3 fully completes (the original "gated on Phase 3" was priority ordering, not a technical dependency).
+- [`docs/work/wt-phase4a-event-log-primitive.md`](./work/wt-phase4a-event-log-primitive.md) — append-only event log with kill-9 fuzz harness; primitive sits idle, no callers wired.
+- [`docs/work/wt-phase5a2-first-call-site-rewire.md`](./work/wt-phase5a2-first-call-site-rewire.md) — route Equihash PoW through the registry; 5-task PR with indirection-cost benchmark gate.
 
-**Other phase-3 dissolve PRs (chain_advance, legacy_mirror, chain_restore, header_probe, utxo_recovery)** are gated on Wave S cutover progress per their respective plans in [`docs/dissolve/`](./dissolve/). Don't dispatch them yet.
+**QUEUED (gated on a specific predecessor)** — workers can read the spec but should not start until the gate clears:
+- C-3 validate_headers cutover (after C-2 + soak)
+- Phase 4b utxo_projection (after 4a)
+- Phase 4c block_index_projection (after 4a) — kills LevelDB
+- Phase 2 cutovers C-5..C-9 (each gated on its predecessor + soak)
+- All Phase 3 dissolves besides watchdog (gated on cutover progress per their respective `docs/dissolve/` plans).
 
 ---
 
@@ -110,7 +114,8 @@ clause. The table below is the dashboard.
 
 | Date | What | Worktree | Commit |
 |---|---|---|---|
-| 2026-05-24 | **Plans:** standalone cutover C-3 spec; Phase 4c block_index_projection (kills LevelDB); Phase 5a-2 first call-site rewire (Equihash PoW); orchestrator launched sub-agent for Phase 5a-1 implementation | main | (this commit) |
+| 2026-05-24 | **Phase 5a-1 MERGED — crypto registry skeleton.** SHA256/BLAKE2b/ECDSA/Groth16 wrappers + dispatch table. No consensus call sites rewired yet (5a-2 does the first rewire) | main | c4bebe0a2 |
+| 2026-05-24 | **Plans:** standalone cutover C-3 spec; Phase 4c block_index_projection (kills LevelDB); Phase 5a-2 first call-site rewire (Equihash PoW); orchestrator launched sub-agent for Phase 5a-1 implementation | main | e41fb92ba |
 | 2026-05-24 | **Phase 3 supervisor tree split MERGED** — flat supervisor → 7 domain supervisors (chain, net, mempool, wallet, feature, onion, op) + self_heal | wt3 → main | dae31dee9 |
 | 2026-05-24 | **Phase 3 watchdog dissolve COMPLETE** — PR-2 (4 kick conditions) + PR-3 (DELETED `sync_watchdog_service.c` — 1,448 LOC gone) | wt2 → main | 611631541 |
 | 2026-05-24 | **Phase 2 S-9 MERGED — Wave S SHADOW COMPLETE** — tip_finalize shadow stage; all 9 stages ship; cutover C-2 unblocked | wt3 → main | 1a65b33c7 |
