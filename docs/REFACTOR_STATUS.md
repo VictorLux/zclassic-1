@@ -33,16 +33,23 @@ Phase 3  [██████░░░░]  60%   Dissolve mega-modules          
   ├ chain_restore  [░░░░░░░░░░] independent — plan ready, awaiting per-PR assignment
   ├ header_probe   [░░░░░░░░░░] independent — plan ready, awaiting per-PR assignment
   └ utxo_recovery  [░░░░░░░░░░] gated on C-8 cutover (dissolve plan ready)
-Phase 4  [██░░░░░░░░]  17%   Storage unification — plan: docs/architecture/phase4-storage-unification.md
-  ├ 4a     [██████████] 100%   event_log primitive  ✅ 76b3a10b4 (append + kill-9 fuzz harness; 131 evt/s on this disk, disk-limited)
-  ├ 4b     [░░░░░░░░░░]   0%   utxo_projection — first event-log consumer  ← READY (4a merged)
-  ├ 4c     [░░░░░░░░░░]   0%   block_index_projection — kills LevelDB  ← READY (4a merged)
-  └ 4d     [░░░░░░░░░░]   0%   mempool/peers/wallet/znam/store projections — 5 parallel PRs  ← READY (4a merged, batch spec)
+Phase 4  [████░░░░░░]  39%   Storage unification — plan: docs/architecture/phase4-storage-unification.md
+  ├ 4a     [██████████] 100%   event_log primitive  ✅ 76b3a10b4
+  ├ 4b     [█████░░░░░]  50%   utxo_projection  🚧 sub-agent shipped tasks 1, 2-4, 5/10 to main directly
+  ├ 4c     [░░░░░░░░░░]   0%   block_index_projection — kills LevelDB  🚧 sub-agent in flight
+  ├ 4d-1   [░░░░░░░░░░]   0%   mempool projection (READY)
+  ├ 4d-2   [██████████] 100%   peers_projection  ✅ 91aa65c1c + 5dc442a81 + 48e78d801 + f925fb6f3 (wt2)
+  ├ 4d-3   [░░░░░░░░░░]   0%   wallet view projection (READY)
+  ├ 4d-4   [░░░░░░░░░░]   0%   znam projection (READY)
+  ├ 4d-5   [░░░░░░░░░░]   0%   zmsg/zslp/zswp/store batch (READY)
+  └ 4e     [░░░░░░░░░░]   0%   block-body migration (spec'd, gated on 4c cutover)
 Phase 5  [███░░░░░░░]  29%   Crypto agility + reproducible builds — plan: docs/architecture/phase5-crypto-agility-and-releases.md
   ├ 5a-1   [██████████] 100%   Crypto registry skeleton  ✅ c4bebe0a2 + polish dde0183c7
   ├ 5a-2   [██████████] 100%   First call site rewire: Equihash PoW   ✅ f00be351f (wt2)
-  └ 5b-1   [░░░░░░░░░░]   0%   flake.nix reproducible build skeleton  ← READY (needs Nix installed locally)
+  ├ 5a-3   [░░░░░░░░░░]   0%   script_validate rewire (HOT PATH; ECDSA pubkey_verify)  ← READY
+  └ 5b-1   [░░░░░░░░░░]   0%   flake.nix reproducible build skeleton  ← READY (needs Nix)
 Phase 6  [░░░░░░░░░░]   0%   Determinism + simulator
+  └ 6a     [█░░░░░░░░░]   5%   seed_tape primitive  🚧 sub-agent in flight (isolated worktree)
 Phase 7  [░░░░░░░░░░]   0%   Frontier (io_uring, hot reload)
 
 All 5 mega-module dissolve plans drafted: docs/dissolve/
@@ -100,10 +107,11 @@ clause. The table below is the dashboard.
 | `~/github/zclassic23-3` (wt3) | `main` (direct push) | [`docs/work/wt-phase2-cutover-c2-header-admit.md`](./work/wt-phase2-cutover-c2-header-admit.md) | 🚧 commit 3/4 (659bc3e5a — divergence guard); commit 4 = flip | 2026-05-24 |
 
 **READY queue** (any worker can pick on restart; first to mark IN PROGRESS wins):
-- [`docs/work/wt-phase4b-utxo-projection.md`](./work/wt-phase4b-utxo-projection.md) — first event-log consumer; `EV_UTXO_ADD`/`EV_UTXO_SPEND` + 24h shadow-diff gate.
-- [`docs/work/wt-phase4c-block-index-projection.md`](./work/wt-phase4c-block-index-projection.md) — **kills LevelDB.** ~513MB disk freed + ~3MB binary shrink after cutover + delete PRs.
-- [`docs/work/wt-phase4d-projections-batch.md`](./work/wt-phase4d-projections-batch.md) — 5 small parallel PRs (mempool/peers/wallet/znam/store projections).
-- [`docs/work/wt-phase5b1-flake-nix-skeleton.md`](./work/wt-phase5b1-flake-nix-skeleton.md) — `flake.nix` reproducible build skeleton; **needs Nix installed locally**.
+- [`docs/work/wt-phase4d-projections-batch.md`](./work/wt-phase4d-projections-batch.md) — 4 remaining sub-PRs: 4d-1 mempool, 4d-3 wallet, 4d-4 znam, 4d-5 (zmsg/zslp/zswp/store).
+- [`docs/work/wt-phase5a3-script-validate-rewire.md`](./work/wt-phase5a3-script-validate-rewire.md) — route ECDSA pubkey_verify through the registry (HOT PATH; benchmark gate).
+- [`docs/work/wt-phase5b1-flake-nix-skeleton.md`](./work/wt-phase5b1-flake-nix-skeleton.md) — `flake.nix` reproducible build skeleton; **needs Nix installed**.
+
+(Phase 4b, 4c, 6a are claimed by orchestrator sub-agents in isolated worktrees; do not double-dispatch.)
 
 **SOON-READY** (gate will clear within minutes):
 - C-3 validate_headers cutover — unblocks the moment C-2 commit 4 lands + brief soak
