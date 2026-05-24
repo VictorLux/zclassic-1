@@ -4,7 +4,7 @@
 **Branch:** PUSH DIRECT TO MAIN
 **Phase:** 3 (Dissolve mega-modules)
 **Depends on:** header_probe PR-1 (`header_probe_poll` Job) shipped.
-**Status: IN PROGRESS (wt2)** — claimed 2026-05-24.
+**Status: DONE (wt2)** — shipped 2026-05-24.
 
 ## Why This Slice
 
@@ -18,6 +18,7 @@ file-rename work.
 
 - EDIT `app/services/include/services/header_probe_service.h`
 - EDIT `app/services/src/header_probe_service.c`
+- EDIT `lib/test/src/test.c`
 - EDIT `lib/test/src/test_header_probe_service.c`
 - UPDATE this file with completion notes.
 
@@ -45,6 +46,25 @@ file-rename work.
 
 ## Status
 
-**IN PROGRESS (wt2)** — claimed 2026-05-24.
+**DONE (wt2)** — shipped 2026-05-24.
 
 <!-- Worker: append Completion below when done. -->
+
+## Completion — 2026-05-24
+
+- Removed the legacy heartbeat-ring `header_probe_start()` /
+  `header_probe_stop()` scheduler API and callback shim.
+- Kept `header_probe_tick_once()` as the scheduler-independent body driven by
+  the supervised `header_probe_poll` Job.
+- Replaced start/stop unit coverage with direct under-lag `tick_once` coverage.
+- Added focused `ZCL_TEST_ONLY=header_probe` and
+  `ZCL_TEST_ONLY=header_probe_poll` selectors.
+
+Verification:
+
+- `make -j$(nproc) test_zcl test_parallel`
+- `ZCL_TEST_ONLY=header_probe ./test_zcl`
+- `ZCL_TEST_ONLY=header_probe_poll ./test_zcl`
+- `./test_parallel --jobs=$(nproc) --verbose`
+- `make lint`
+- `git diff --check`

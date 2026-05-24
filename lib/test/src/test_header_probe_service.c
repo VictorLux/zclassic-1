@@ -9,7 +9,7 @@
  *   1. pull_range with mocked happy-path RPC → calls bump.
  *   2. pull_range with disagreeable mock (bogus header) → reject path.
  *   3. unreachable mock → rpc_errors bumps.
- *   4. heartbeat tick under-lag → no headers fetched.
+ *   4. direct poll tick under-lag -> no headers fetched.
  */
 
 #include "test/test_helpers.h"
@@ -20,7 +20,6 @@
 #include "chain/chain.h"
 #include "chain/chainparams.h"
 #include "core/uint256.h"
-#include "health/heartbeat.h"
 
 #include <arpa/inet.h>
 #include <netinet/in.h>
@@ -398,7 +397,7 @@ int test_header_probe_service(void)
         hp_teardown();
     }
 
-    /* Test 4: heartbeat tick under-lag does NOT pull. Our fixture
+    /* Test 4: direct poll tick under-lag does NOT pull. Our fixture
      * local_tip = 0; configure lag_threshold = 100 and remote_tip = 50.
      * The tick should see lag (50 vs 0) = 50 ≤ 100 → no fetch. */
     {
@@ -418,31 +417,15 @@ int test_header_probe_service(void)
         HP_CHECK("init (under-lag)",
                  header_probe_init(&cfg, &g_hp_ms, params));
 
-        health_reset_for_test();
-        health_set_check_interval_ms(50);
-        HP_CHECK("start", header_probe_start());
-
-        /* Wait up to ~3s for the tick to fire at least once. We
-         * detect it indirectly: last_remote_height should get set
-         * by the getblockcount probe inside on_tick. */
-        bool saw_tick = false;
-        for (int i = 0; i < 80; i++) {
-            struct header_probe_stats st;
-            header_probe_stats_snapshot(&st);
-            if (st.last_remote_height == 50) { saw_tick = true; break; }
-            struct timespec ts = { .tv_sec = 0, .tv_nsec = 50 * 1000 * 1000 };
-            nanosleep(&ts, NULL);
-        }
-        HP_CHECK("tick observed remote tip", saw_tick);
+        header_probe_tick_once();
 
         struct header_probe_stats st;
         header_probe_stats_snapshot(&st);
-        /* Under-lag means on_tick did NOT call pull_range, so
+        HP_CHECK("tick observed remote tip", st.last_remote_height == 50);
+        /* Under-lag means tick_once did NOT call pull_range, so
          * calls_total stays at 0. */
         HP_CHECK("under-lag: calls_total=0", st.calls_total == 0);
 
-        header_probe_stop();
-        health_reset_for_test();
         hp_mock_stop(&srv);
         hp_teardown();
     }

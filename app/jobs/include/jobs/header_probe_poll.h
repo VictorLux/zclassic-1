@@ -3,9 +3,8 @@
  * header_probe_poll — Job (Wave S / Phase 3 dissolve PR-1).
  *
  * Periodic supervisor child that drives the header_probe service's
- * polling cadence. Replaces the heartbeat-ring-driven `hp_on_tick`
- * with a typed liveness contract registered in the network
- * supervisor domain.
+ * polling cadence through header_probe_tick_once(), with a typed
+ * liveness contract registered in the network supervisor domain.
  *
  * Why this shape:
  *   - The heartbeat ring is a shared sweeper thread (single point of

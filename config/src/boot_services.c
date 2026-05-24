@@ -1032,8 +1032,7 @@ static bool boot_header_probe_start(void *ctx)
 static void boot_header_probe_stop(void *ctx)
 {
     (void)ctx;
-    /* No-op: supervisor unregister happens at supervisor_stop().
-     * The legacy `header_probe_stop()` is unused in the Job path. */
+    /* No-op: supervisor unregister happens at supervisor_stop(). */
 }
 
 static bool boot_legacy_mirror_start(void *ctx)

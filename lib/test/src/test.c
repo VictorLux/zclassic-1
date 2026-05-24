@@ -441,6 +441,20 @@ int main(void)
                failures);
         return failures ? 1 : 0;
     }
+    if (only && strcmp(only, "header_probe") == 0) {
+        printf("[test] ZCL_TEST_ONLY=header_probe — running header probe service only\n");
+        failures += test_header_probe_service();
+        printf("\n=== header_probe subset complete: %d failure(s) ===\n",
+               failures);
+        return failures ? 1 : 0;
+    }
+    if (only && strcmp(only, "header_probe_poll") == 0) {
+        printf("[test] ZCL_TEST_ONLY=header_probe_poll — running header probe poll only\n");
+        failures += test_header_probe_poll();
+        printf("\n=== header_probe_poll subset complete: %d failure(s) ===\n",
+               failures);
+        return failures ? 1 : 0;
+    }
     if (only && strcmp(only, "snapshot_sync") == 0) {
         printf("[test] ZCL_TEST_ONLY=snapshot_sync - running snapshot sync subset\n");
         failures += test_snapshot_sync_service();

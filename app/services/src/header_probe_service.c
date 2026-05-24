@@ -7,11 +7,11 @@
  *   2. POSIX-sockets HTTP/1.1 JSON-RPC client (Basic auth)
  *   3. Parse JSON-RPC responses (string + integer results)
  *   4. header_probe_pull_range() — fetch + validate + insert
- *   5. on_tick() — periodic heartbeat callback
- *   6. init/start/stop + stats snapshot + dump_state_json
+ *   5. header_probe_tick_once() — scheduler-independent Job body
+ *   6. init + stats snapshot + dump_state_json
  *
- * Threading: the only background work is the heartbeat sweeper, which
- * is owned by lib/health/heartbeat.c. No new pthreads are created here.
+ * Threading: the service creates no background work. The supervised
+ * header_probe_poll Job owns cadence and calls header_probe_tick_once().
  */
 
 #include "services/header_probe_service.h"
@@ -29,7 +29,6 @@
 #include "primitives/block.h"
 #include "encoding/utilstrencodings.h"
 #include "json/json.h"
-#include "health/heartbeat.h"
 #include "util/log_macros.h"
 #include "util/safe_alloc.h"
 
@@ -84,7 +83,6 @@ static struct {
     int    cadence_secs;
     int    batch_size;
     int    lag_threshold;
-    health_subsystem_id health_id;
     struct main_state *ms;
     const struct chain_params *params;
 
@@ -97,7 +95,6 @@ static struct {
     _Atomic int     last_local_height;
 } g_hp = {
     .lock = PTHREAD_MUTEX_INITIALIZER,
-    .health_id = HEALTH_INVALID_ID,
 };
 
 /* ── zclassic.conf parser (mirrors oracle service) ─────────────── */
@@ -1078,7 +1075,7 @@ bool header_probe_pull_range_blocking(int from_height,
     return cursor > remote_tip;
 }
 
-/* ── Periodic tick (shared body for heartbeat + supervisor Job) ── */
+/* ── Poll tick body used by the supervised header_probe_poll Job ── */
 
 void header_probe_tick_once(void)
 {
@@ -1122,16 +1119,7 @@ void header_probe_tick_once(void)
     (void)header_probe_pull_range(local_tip + 1, batch, &added);
 }
 
-/* Heartbeat callback shim — delegates to the public tick. Kept so the
- * `header_probe_start` path (legacy heartbeat ring) still works for
- * tests and operators not yet on the supervisor Job. */
-static void hp_on_tick(void *ctx)
-{
-    (void)ctx;
-    header_probe_tick_once();
-}
-
-/* ── init / start / stop ───────────────────────────────────────── */
+/* ── init ──────────────────────────────────────────────────────── */
 
 bool header_probe_init(const struct header_probe_config *cfg,
                        struct main_state *ms,
@@ -1188,30 +1176,6 @@ bool header_probe_init(const struct header_probe_config *cfg,
     return true;
 }
 
-bool header_probe_start(void)
-{
-    if (g_hp.health_id != HEALTH_INVALID_ID) return true;
-    if (!g_hp.initialized) {
-        LOG_FAIL("header_probe", "start: not initialized");
-    }
-    (void)health_start();  /* idempotent */
-    int cad = g_hp.cadence_secs > 0
-                  ? g_hp.cadence_secs : HP_DEFAULT_CADENCE;
-    g_hp.health_id = health_register_periodic(
-        "header_probe", cad, hp_on_tick, NULL);
-    if (g_hp.health_id == HEALTH_INVALID_ID) {
-        LOG_FAIL("header_probe", "health_register_periodic failed");
-    }
-    return true;
-}
-
-void header_probe_stop(void)
-{
-    if (g_hp.health_id == HEALTH_INVALID_ID) return;
-    health_unregister(g_hp.health_id);
-    g_hp.health_id = HEALTH_INVALID_ID;
-}
-
 /* ── Stats snapshot ────────────────────────────────────────────── */
 
 void header_probe_stats_snapshot(struct header_probe_stats *out)
@@ -1228,10 +1192,6 @@ void header_probe_stats_snapshot(struct header_probe_stats *out)
 void header_probe_reset_for_test(void)
 {
     pthread_mutex_lock(&g_hp.lock);
-    if (g_hp.health_id != HEALTH_INVALID_ID) {
-        health_unregister(g_hp.health_id);
-        g_hp.health_id = HEALTH_INVALID_ID;
-    }
     g_hp.initialized = false;
     g_hp.rpc_host[0] = '\0';
     g_hp.rpc_port = 0;
@@ -1261,7 +1221,6 @@ bool header_probe_dump_state_json(struct json_value *out, const char *key)
     header_probe_stats_snapshot(&s);
 
     pthread_mutex_lock(&g_hp.lock);
-    bool running   = (g_hp.health_id != HEALTH_INVALID_ID);
     int cad        = g_hp.cadence_secs;
     int batch      = g_hp.batch_size;
     int lag        = g_hp.lag_threshold;
@@ -1273,7 +1232,7 @@ bool header_probe_dump_state_json(struct json_value *out, const char *key)
     bool initialized = g_hp.initialized;
     pthread_mutex_unlock(&g_hp.lock);
 
-    json_push_kv_bool(out, "running",            running);
+    json_push_kv_bool(out, "running",            initialized);
     json_push_kv_bool(out, "initialized",        initialized);
     json_push_kv_str (out, "rpc_host",           host);
     json_push_kv_int (out, "rpc_port",           port);

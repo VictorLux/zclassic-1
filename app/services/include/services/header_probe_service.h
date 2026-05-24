@@ -17,9 +17,9 @@
  *     for height range [start, start+max] on the local zclassicd.
  *   - Each returned hex-serialized header is parsed via
  *     block_header_deserialize and handed to accept_block_header().
- *   - Optional periodic tick on the unified heartbeat ring fires
- *     header_probe_pull_range whenever our header tip trails the
- *     remote tip by more than `lag_threshold`.
+ *   - A supervised header_probe_poll Job calls header_probe_tick_once()
+ *     whenever our header tip trails the remote tip by more than
+ *     `lag_threshold`.
  *   - No new pthreads. Service is OPT-IN — boot.c does not start it.
  *
  * See CLAUDE.md "Adding state introspection" — this module follows
@@ -42,7 +42,7 @@ struct header_probe_config {
     int         rpc_port;       /* default 8232 */
     const char *rpc_user;       /* read zclassic.conf if NULL */
     const char *rpc_password;
-    int         cadence_secs;   /* default 30 */
+    int         cadence_secs;   /* legacy config field; scheduling is owned by header_probe_poll */
     int         batch_size;     /* default 2000; max 5000 */
     int         lag_threshold;  /* only probe when our_tip < their_tip - this; default 100 */
 };
@@ -54,20 +54,9 @@ bool header_probe_init(const struct header_probe_config *cfg,
                        struct main_state *ms,
                        const struct chain_params *params);
 
-/* Register periodic tick on heartbeat ring. Idempotent.
- *
- * DEPRECATED in Phase 3 PR-1: prefer registering the
- * `header_probe_poll` Job (app/jobs/) with the network supervisor.
- * Still functional for legacy callers / tests. */
-bool header_probe_start(void);
-
-/* Unregister periodic tick. Idempotent. */
-void header_probe_stop(void);
-
-/* One-shot poll tick. Identical logic to the legacy heartbeat
- * callback: cheap getblockcount to discover remote tip, compare
- * against local header tip, and pull a batch if the lag threshold
- * is exceeded. Safe to call when not initialized (no-op).
+/* One-shot poll tick. Cheap getblockcount discovers the remote tip,
+ * compares it against the local header tip, and pulls a batch if the
+ * lag threshold is exceeded. Safe to call when not initialized (no-op).
  *
  * Used by the `header_probe_poll` Job (app/jobs/) as the body of
  * its supervisor tick callback. Pure scheduling separation — same
