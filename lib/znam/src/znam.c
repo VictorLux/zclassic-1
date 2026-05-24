@@ -7,6 +7,7 @@
 #include "models/activerecord.h"
 #include "models/database.h"
 #include "models/znam.h"
+#include "platform/clock.h"
 #include "storage/znam_projection.h"
 #include "util/ar_step_readonly.h"
 #include "util/log_macros.h"
@@ -315,7 +316,7 @@ bool db_znam_save(struct node_db *ndb, const struct znam_entry *entry)
         if (!znam_projection_emit_register(
                 entry->name, entry->owner_address, entry->target_type,
                 entry->target_value, entry->reg_txid, entry->reg_height,
-                (uint32_t)time(NULL), 0)) {
+                (uint32_t)(clock_now_wall_ms() / 1000), 0)) {
             fprintf(stderr,  // obs-ok:znam-projection-shadow
                     "znam projection shadow emit failed for register\n");
         }
