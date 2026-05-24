@@ -84,7 +84,8 @@ stretch 30s).
 
 ## Status
 
-**PR-1 READY** (claim by marking IN PROGRESS). PR-2/PR-3 spec'd, gated.
+**PR-1 IN PROGRESS (wt2)** — claimed 2026-05-24.
+PR-2/PR-3 spec'd, gated.
 One commit per task; push direct to main; `./test_parallel` before pushing.
 
 <!-- Worker: append a Completion section with the "Benchmark moved" line. -->
