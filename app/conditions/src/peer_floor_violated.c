@@ -142,9 +142,40 @@ static enum condition_remedy_result remedy_peer_floor_violated(void)
 static bool witness_peer_floor_violated(int64_t target_at_detect)
 {
     (void)target_at_detect;
+    if (peerless_ok())
+        return true;
+
     struct connman *cm = sync_monitor_connman();
-    return peerless_ok() || (cm && connman_outbound_healthy_count(cm) >=
-                             PEER_FLOOR_MIN_HEALTHY);
+    if (!cm)
+        return false;
+
+    /* Peers must be restored above the floor — necessary but NOT sufficient. */
+    if (connman_outbound_healthy_count(cm) < PEER_FLOOR_MIN_HEALTHY)
+        return false;
+
+    /* DOCTRINE: a peer_floor remedy only resolved the symptom if the chain
+     * actually resumed making progress. Counting peers alone is the original
+     * false-ok bug: during a header-admit-cutover wedge we HAD >=3 healthy
+     * peers, so the old witness reported `ok` 46x while the tip never moved.
+     *
+     * Resolution = either (a) the local height advanced past the height
+     * recorded at detect (chain is moving again), OR (b) there is genuinely
+     * nothing to fetch — we are already at/above the best height any peer
+     * advertises, so peers were the only deficit and it is now cured. If
+     * peers advertise blocks beyond our tip and our tip has NOT advanced, the
+     * symptom persists (something other than a peer shortage is wedging us)
+     * and the witness must FAIL so attempts accrue toward operator_needed. */
+    struct main_state *ms = sync_monitor_main_state();
+    if (!ms)
+        return false;
+    int height_now = active_chain_height(&ms->chain_active);
+    int height_at_detect = atomic_load(&g_local_height_at_detect);
+    if (height_at_detect >= 0 && height_now > height_at_detect)
+        return true; /* chain advanced — genuinely recovered */
+
+    int peer_max = connman_max_peer_height(cm);
+    /* Nothing to sync: peers offer nothing beyond what we already have. */
+    return peer_max >= 0 && height_now >= peer_max;
 }
 
 static struct condition c_peer_floor_violated = {
@@ -152,7 +183,11 @@ static struct condition c_peer_floor_violated = {
     .severity = COND_WARN,
     .poll_secs = 5,
     .backoff_secs = 60,
-    .max_attempts = 100000,
+    /* Finite: after this many un-witnessed remedies (peers present but the
+     * tip is not advancing), the engine escalates to operator_needed. The old
+     * value (100000) meant a wedged-but-peered chain could never page anyone
+     * — the engine just looped result=ok forever. */
+    .max_attempts = 5,
     .detect = detect_peer_floor_violated,
     .remedy = remedy_peer_floor_violated,
     .witness = witness_peer_floor_violated,

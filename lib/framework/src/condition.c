@@ -35,6 +35,7 @@ const char *condition_remedy_result_name(enum condition_remedy_result r)
     case COND_REMEDY_OK: return "ok";
     case COND_REMEDY_FAILED: return "failed";
     case COND_REMEDY_SKIP: return "skip";
+    case COND_REMEDY_UNWITNESSED: return "unwitnessed";
     }
     return "unknown";
 }
@@ -164,22 +165,45 @@ static void condition_tick_one(const struct condition *cond, int64_t now)
     }
 
     target = atomic_load(&s->target_at_detect);
+
+    /* If a prior remedy already cleared the symptom, witness it now (covers
+     * the case where the symptom clears between remedy attempts). */
+    if (cond->witness(target)) {
+        condition_mark_cleared(cond, s, now);
+        return;
+    }
+
     if (condition_due_for_remedy(cond, s, now)) {
         enum condition_remedy_result r = cond->remedy();
         int attempts = atomic_fetch_add(&s->attempts, 1) + 1;
         atomic_store(&s->last_remedy_unix, now);
-        atomic_store(&s->last_outcome, r);
+
+        /* DOCTRINE (REFACTOR_STATUS): a remedy may only be reported as `ok`
+         * if the symptom actually cleared. We re-check the witness right
+         * after the remedy ran. A remedy that returned COND_REMEDY_OK but did
+         * NOT clear the symptom is reported as `unwitnessed` — NOT ok — so a
+         * frozen tip can never self-report success. Witnessed success clears
+         * the condition (and resets attempts); an unwitnessed OK leaves the
+         * attempt counted so it accrues toward operator escalation. */
+        bool witnessed = cond->witness(target);
+        enum condition_remedy_result reported = r;
+        if (r == COND_REMEDY_OK && !witnessed)
+            reported = COND_REMEDY_UNWITNESSED;
+        atomic_store(&s->last_outcome, reported);
+
         fprintf(stderr,  // obs-ok:condition-remedy-paired
                 "[condition_engine] remedy name=%s attempt=%d result=%s\n",
-                cond->name, attempts, condition_remedy_result_name(r));
+                cond->name, attempts,
+                condition_remedy_result_name(reported));
         event_emitf(EV_CONDITION_REMEDY_ATTEMPTED, 0,
                     "name=%s attempt=%d result=%s",
-                    cond->name, attempts, condition_remedy_result_name(r));
-    }
+                    cond->name, attempts,
+                    condition_remedy_result_name(reported));
 
-    if (cond->witness(target)) {
-        condition_mark_cleared(cond, s, now);
-        return;
+        if (witnessed) {
+            condition_mark_cleared(cond, s, now);
+            return;
+        }
     }
 
     int max_attempts = cond->max_attempts > 0 ? cond->max_attempts : 1;

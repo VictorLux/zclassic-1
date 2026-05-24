@@ -22,6 +22,13 @@ enum condition_remedy_result {
     COND_REMEDY_OK = 0,
     COND_REMEDY_FAILED,
     COND_REMEDY_SKIP,
+    /* Engine-only synthetic outcome: a remedy returned COND_REMEDY_OK but
+     * the condition's witness did NOT confirm the symptom cleared within
+     * witness_window_secs. Doctrine: "A remedy that returns ok must resolve
+     * the symptom." The engine downgrades an un-witnessed remedy to this so
+     * node.log never shows result=ok for a symptom that persists. A remedy
+     * function MUST NOT return this value itself. */
+    COND_REMEDY_UNWITNESSED,
 };
 
 typedef bool (*condition_detect_fn)(void);

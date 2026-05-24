@@ -166,6 +166,68 @@ int test_condition_engine(void)
         CE_CHECK("duplicate registration rejected", ok);
     }
 
+    /* P0 RESILIENCE REGRESSION: a remedy that returns COND_REMEDY_OK but whose
+     * symptom never clears (witness stays false) must NOT be reported as `ok`,
+     * must accrue attempts, and must escalate to operator_needed after
+     * max_attempts. This is the "self-heal LIES" wedge: peer_floor_violated
+     * fired 46x result=ok while the tip stayed frozen. */
+    static struct condition c_unwitnessed = {
+        .name = "ce_unwitnessed",
+        .severity = COND_CRITICAL,
+        .poll_secs = 1,
+        .backoff_secs = 0,
+        .max_attempts = 3,
+        .detect = ce_detect,
+        .remedy = ce_remedy,       /* always returns COND_REMEDY_OK */
+        .witness = ce_witness,     /* stays false → symptom never clears */
+        .witness_window_secs = 60,
+    };
+
+    {
+        reset_fixture();
+        event_observe(EV_OPERATOR_NEEDED, operator_observer, NULL);
+        bool ok = condition_register(&c_unwitnessed);
+        atomic_store(&g_detect, true);
+        atomic_store(&g_witness, false); /* symptom NEVER clears */
+
+        /* Run enough ticks to exhaust max_attempts. */
+        condition_engine_tick();
+        condition_engine_tick();
+        condition_engine_tick();
+        condition_engine_tick();
+
+        /* Remedy returned OK every time, but because the witness never
+         * confirmed the symptom cleared, the reported outcome must be
+         * UNWITNESSED — never OK. A frozen tip cannot self-report success. */
+        ok = ok && atomic_load(&c_unwitnessed.state.last_outcome) ==
+                       COND_REMEDY_UNWITNESSED;
+        /* The condition must still be active and never marked cleared. */
+        ok = ok && atomic_load(&c_unwitnessed.state.currently_active);
+        ok = ok && atomic_load(&c_unwitnessed.state.cleared_count) == 0;
+        /* After max_attempts un-witnessed remedies it must escalate. */
+        ok = ok && condition_engine_get_unresolved_count() == 1;
+        ok = ok && atomic_load(&g_operator_events) >= 1;
+        CE_CHECK("unwitnessed remedy is not ok and escalates", ok);
+    }
+
+    {
+        /* Counter-case: once the symptom DOES clear, a witnessed remedy clears
+         * the condition and never escalates — even after prior failed attempts. */
+        reset_fixture();
+        event_observe(EV_OPERATOR_NEEDED, operator_observer, NULL);
+        bool ok = condition_register(&c_unwitnessed);
+        atomic_store(&g_detect, true);
+        atomic_store(&g_witness, false);
+        condition_engine_tick();            /* attempt 1: unwitnessed */
+        ok = ok && atomic_load(&c_unwitnessed.state.last_outcome) ==
+                       COND_REMEDY_UNWITNESSED;
+        atomic_store(&g_witness, true);     /* symptom now resolved */
+        condition_engine_tick();            /* early-witness clears it */
+        ok = ok && atomic_load(&c_unwitnessed.state.cleared_count) == 1;
+        ok = ok && condition_engine_get_active_count() == 0;
+        CE_CHECK("witnessed clear after unwitnessed attempt resolves", ok);
+    }
+
     {
         reset_fixture();
         bool ok = condition_register(&c_basic);
