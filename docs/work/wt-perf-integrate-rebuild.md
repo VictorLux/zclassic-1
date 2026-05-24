@@ -107,7 +107,7 @@ marking, not the live event-log appender). Claim it.
 Benchmark moved: production event-log CRC32C now dispatches to SSE4.2 after a
 software-reference self-check; measured active CRC throughput moved from
 0.60 GB/s software to 12.99 GB/s hardware on this box.
-**PR-3 PROMOTED + claimable** — live profile in hand (blk*.dat marking = 101s of
+**PR-3 IN PROGRESS (wt2)** — claimed 2026-05-24; live profile in hand (blk*.dat marking = 101s of
 ~180s cold-import). PR-2 (io_uring bulk-append) still spec'd.
 One commit per task; push direct to main; `./test_parallel` before pushing.
 
