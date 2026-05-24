@@ -18,13 +18,13 @@ Phase 2  [██████████] 100%   Wave S SHADOW complete (S-1..S-
   ├ S-8    [██████████] 100%   utxo_apply shadow (wt3)                ✅ 497220f58
   └ S-9    [██████████] 100%   tip_finalize shadow (wt3)              ✅ 1a65b33c7
 Phase 2 CUTOVER [░░░░░░░░░░]   0%   Flip shadow → authoritative      ← C-2 READY (S-9 merged)
-  ├ C-2    [░░░░░░░░░░]   0%   header_admit authoritative             ← READY
-  ├ C-3    [░░░░░░░░░░]   0%   validate_headers authoritative (queued, post C-2)
-  ├ C-5    [░░░░░░░░░░]   0%   body_persist + delete body_fetch (queued)
-  ├ C-6    [░░░░░░░░░░]   0%   script_validate authoritative (queued)
-  ├ C-7    [░░░░░░░░░░]   0%   proof_validate authoritative (queued)
-  ├ C-8    [░░░░░░░░░░]   0%   utxo_apply authoritative (queued — gates utxo_recovery dissolve)
-  └ C-9    [░░░░░░░░░░]   0%   tip_finalize authoritative (queued — gates chain_advance dissolve)
+  ├ C-2    [░░░░░░░░░░]   0%   header_admit authoritative             ← READY  (standalone spec)
+  ├ C-3    [░░░░░░░░░░]   0%   validate_headers authoritative          ← spec'd (queued, post C-2)
+  ├ C-5    [░░░░░░░░░░]   0%   body_persist + delete body_fetch (batch spec, post C-3)
+  ├ C-6    [░░░░░░░░░░]   0%   script_validate authoritative (batch spec, post C-5)
+  ├ C-7    [░░░░░░░░░░]   0%   proof_validate authoritative (batch spec, post C-6)
+  ├ C-8    [░░░░░░░░░░]   0%   utxo_apply authoritative (batch spec, post C-7 — gates utxo_recovery dissolve)
+  └ C-9    [░░░░░░░░░░]   0%   tip_finalize authoritative (batch spec, post C-8 — gates chain_advance dissolve)
 Phase 3  [██████░░░░]  60%   Dissolve mega-modules                    ← partial
   ├ watchdog [██████████] 100%   sync_watchdog_service.c DELETED      ✅ 611631541
   ├ supervisor tree split [██████████] 100%   7 domain supervisors    ✅ dae31dee9
@@ -35,9 +35,11 @@ Phase 3  [██████░░░░]  60%   Dissolve mega-modules          
   └ utxo_recovery  [░░░░░░░░░░] gated on C-8 cutover (dissolve plan ready)
 Phase 4  [░░░░░░░░░░]   0%   Storage unification — plan: docs/architecture/phase4-storage-unification.md
   ├ 4a     [░░░░░░░░░░]   0%   event_log primitive  ← READY (primitive sits idle, no callers wired)
-  └ 4b     [░░░░░░░░░░]   0%   utxo_projection — first event-log consumer (queued, post-4a)
+  ├ 4b     [░░░░░░░░░░]   0%   utxo_projection — first event-log consumer (queued, post-4a)
+  └ 4c     [░░░░░░░░░░]   0%   block_index_projection — kills LevelDB (queued, post-4a)
 Phase 5  [░░░░░░░░░░]   0%   Crypto agility + reproducible builds — plan: docs/architecture/phase5-crypto-agility-and-releases.md
-  └ 5a-1   [░░░░░░░░░░]   0%   Crypto registry skeleton  ← READY (parallel-safe, no gates)
+  ├ 5a-1   [░░░░░░░░░░]   0%   Crypto registry skeleton  ← READY (parallel-safe, no gates)
+  └ 5a-2   [░░░░░░░░░░]   0%   First call site rewire: Equihash PoW (queued, post-5a-1)
 Phase 6  [░░░░░░░░░░]   0%   Determinism + simulator
 Phase 7  [░░░░░░░░░░]   0%   Frontier (io_uring, hot reload)
 
@@ -108,6 +110,7 @@ clause. The table below is the dashboard.
 
 | Date | What | Worktree | Commit |
 |---|---|---|---|
+| 2026-05-24 | **Plans:** standalone cutover C-3 spec; Phase 4c block_index_projection (kills LevelDB); Phase 5a-2 first call-site rewire (Equihash PoW); orchestrator launched sub-agent for Phase 5a-1 implementation | main | (this commit) |
 | 2026-05-24 | **Phase 3 supervisor tree split MERGED** — flat supervisor → 7 domain supervisors (chain, net, mempool, wallet, feature, onion, op) + self_heal | wt3 → main | dae31dee9 |
 | 2026-05-24 | **Phase 3 watchdog dissolve COMPLETE** — PR-2 (4 kick conditions) + PR-3 (DELETED `sync_watchdog_service.c` — 1,448 LOC gone) | wt2 → main | 611631541 |
 | 2026-05-24 | **Phase 2 S-9 MERGED — Wave S SHADOW COMPLETE** — tip_finalize shadow stage; all 9 stages ship; cutover C-2 unblocked | wt3 → main | 1a65b33c7 |
