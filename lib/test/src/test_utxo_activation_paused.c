@@ -305,6 +305,7 @@ int test_utxo_activation_paused(void)
         bool ok = true;
         struct main_state ms;
         struct block_index tip;
+        struct block_index recovered_tip;
         struct block_index best_header;
         struct node_db ndb;
         struct snapshot_sync_service svc;
@@ -317,12 +318,16 @@ int test_utxo_activation_paused(void)
         const struct json_value *last_outcome;
 
         memset(&tip, 0, sizeof(tip));
+        memset(&recovered_tip, 0, sizeof(recovered_tip));
         memset(&best_header, 0, sizeof(best_header));
         memset(block_hash, 0x51, sizeof(block_hash));
         memset(chain_work, 0x55, sizeof(chain_work));
         main_state_init(&ms);
         tip.nHeight = 100;
         tip.nStatus = BLOCK_VALID_SCRIPTS | BLOCK_HAVE_DATA;
+        recovered_tip.nHeight = 101;
+        recovered_tip.nStatus = BLOCK_VALID_SCRIPTS | BLOCK_HAVE_DATA;
+        recovered_tip.pprev = &tip;
         best_header.nHeight = 110;
         ms.pindex_best_header = &best_header;
         ok = ok && active_chain_set_tip(&ms.chain_active, &tip);
@@ -364,10 +369,65 @@ int test_utxo_activation_paused(void)
         observed = observed && attempts && json_get_int(attempts) == 1;
         observed = observed && last_outcome &&
                    strcmp(json_get_str(last_outcome), "ok") == 0;
+
+        ok = ok && active_chain_set_tip(&ms.chain_active, &recovered_tip);
+        fake_clock_set(&clock, 6001);
+        condition_engine_tick();
+        observed = observed && condition_engine_get_active_count() == 0;
         ok = ok && observed;
         json_free(&root);
 
         UAP_CHECK("tip_wedged_resnapshot requests snapshot recovery", ok);
+        snapsync_reset(&svc);
+        node_db_close(&ndb);
+        main_state_free(&ms);
+        clock_reset_default();
+    }
+
+    {
+        reset_conditions();
+        struct fake_clock clock;
+        fake_clock_install(&clock, 7000);
+        bool ok = true;
+        struct main_state ms;
+        struct block_index tip;
+        struct block_index best_header;
+        struct node_db ndb;
+        struct snapshot_sync_service svc;
+        uint8_t block_hash[32];
+        uint8_t chain_work[32];
+
+        memset(&tip, 0, sizeof(tip));
+        memset(&best_header, 0, sizeof(best_header));
+        memset(block_hash, 0x52, sizeof(block_hash));
+        memset(chain_work, 0x56, sizeof(chain_work));
+        main_state_init(&ms);
+        tip.nHeight = 100;
+        tip.nStatus = BLOCK_VALID_SCRIPTS | BLOCK_HAVE_DATA;
+        best_header.nHeight = 110;
+        ms.pindex_best_header = &best_header;
+        ok = ok && active_chain_set_tip(&ms.chain_active, &tip);
+
+        ok = ok && node_db_open(&ndb, ":memory:");
+        ok = ok && seed_snapshot_manifest_db(&ndb, block_hash, chain_work);
+        snapsync_init(&svc, &ndb);
+
+        condition_engine_set_main_state(&ms);
+        sync_monitor_init();
+        sync_monitor_set_context(NULL, NULL, &ms);
+        sync_monitor_test_set_local_recovery(true, true, 101, 3,
+                                             "next-child-missing");
+        tip_wedged_resnapshot_test_set_runtime(&ndb, &svc);
+        register_tip_wedged_resnapshot();
+
+        condition_engine_tick();
+        ok = ok && tip_wedged_resnapshot_test_remedy_calls() == 1;
+        ok = ok && tip_wedged_resnapshot_test_recovery_accepted() == 1;
+        ok = ok && tip_wedged_resnapshot_test_last_manifest_height() == 101;
+        ok = ok && svc.state == SNAPSYNC_NEGOTIATING;
+        ok = ok && condition_engine_get_active_count() == 1;
+
+        UAP_CHECK("tip_wedged_resnapshot uses exhausted local import", ok);
         snapsync_reset(&svc);
         node_db_close(&ndb);
         main_state_free(&ms);

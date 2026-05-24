@@ -75,4 +75,12 @@ void sync_monitor_get_stats(struct watchdog_stats *out);
 
 const char *watchdog_recovery_type_name(enum watchdog_recovery_type type);
 
+#ifdef ZCL_TESTING
+void sync_monitor_test_set_local_recovery(bool active,
+                                          bool retries_exhausted,
+                                          int missing_height,
+                                          int retry_count,
+                                          const char *mode);
+#endif
+
 #endif /* ZCL_SERVICES_SYNC_MONITOR_H */

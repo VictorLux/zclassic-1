@@ -263,3 +263,22 @@ const char *watchdog_recovery_type_name(enum watchdog_recovery_type type)
     }
     return "UNKNOWN";
 }
+
+#ifdef ZCL_TESTING
+void sync_monitor_test_set_local_recovery(bool active,
+                                          bool retries_exhausted,
+                                          int missing_height,
+                                          int retry_count,
+                                          const char *mode)
+{
+    g_local_recovery.active = active;
+    g_local_recovery.retries_exhausted = retries_exhausted;
+    g_local_recovery.missing_height = missing_height;
+    g_local_recovery.retry_count = retry_count;
+    g_local_recovery.distinct_peer_count = 0;
+    g_local_recovery.peer_rotation_count = 0;
+    snprintf(g_local_recovery.mode, sizeof(g_local_recovery.mode), "%s",
+             mode ? mode : "");
+    g_local_recovery.last_reason[0] = '\0';
+}
+#endif
