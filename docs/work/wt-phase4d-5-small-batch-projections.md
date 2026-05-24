@@ -446,9 +446,7 @@ One commit per task (10 commits). Push after Task 4, Task 7, Task 9.
 
 ## Status
 
-**READY** — Phase 4a is merged; this is a parallel-dispatchable spec.
-Pick this last in the 4d batch ordering (per the dispatch
-recommendation in `wt-phase4d-projections-batch.md`): mostly
-mechanical, three subsystems collapsed into one PR.
+**IN PROGRESS (wt2)** — claimed 2026-05-24.
+Starting with Task 1 event payload ids and serialize/parse helpers.
 
 <!-- Worker: append a Completion section below when done. -->
