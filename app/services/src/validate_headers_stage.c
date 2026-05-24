@@ -78,6 +78,8 @@ static _Atomic uint64_t g_passed_total = 0;
 static _Atomic uint64_t g_failed_total = 0;
 static _Atomic int64_t  g_last_step_unix = 0;
 static _Atomic int64_t  g_last_blocked_unix = 0;
+static _Atomic validate_headers_mode_t g_mode =
+    VALIDATE_HEADERS_MODE_AUTHORITATIVE;
 
 /* Injectable validator. Default = full PoW + Equihash from disk.
  * Tests set this via validate_headers_stage_set_validator(). Reset to
@@ -327,6 +329,16 @@ static bool log_insert(sqlite3 *db, const struct vh_job *job)
     return true;
 }
 
+static bool mark_valid_header(struct block_index *bi)
+{
+    if (!bi || (bi->nStatus & BLOCK_FAILED_MASK))
+        return false;
+    if ((bi->nStatus & BLOCK_VALID_MASK) < BLOCK_VALID_HEADER)
+        bi->nStatus = (bi->nStatus & ~BLOCK_VALID_MASK) |
+                      BLOCK_VALID_HEADER;
+    return true;
+}
+
 /* ── Step body ────────────────────────────────────────────────────── */
 
 static stage_result_t step_validate(struct stage_step_ctx *c)
@@ -378,6 +390,15 @@ static stage_result_t step_validate(struct stage_step_ctx *c)
 
     /* Write rows + bump cursor, all under the F-2 BEGIN IMMEDIATE txn. */
     for (int i = 0; i < batch_n; i++) {
+        if (jobs[i].ok &&
+            validate_headers_get_mode() ==
+                VALIDATE_HEADERS_MODE_AUTHORITATIVE &&
+            !mark_valid_header((struct block_index *)jobs[i].bi)) {
+            fprintf(stderr,  // obs-ok:vh-authoritative-status-failure
+                    "[validate_headers] authoritative mark failed height=%d\n",
+                    jobs[i].height);
+            return STAGE_ERROR;
+        }
         if (!log_insert(db, &jobs[i])) return STAGE_ERROR;
         if (jobs[i].ok) atomic_fetch_add(&g_passed_total, 1);
         else            atomic_fetch_add(&g_failed_total, 1);
@@ -439,8 +460,23 @@ bool validate_headers_stage_init(struct main_state *ms)
     g_stage = s;
     pthread_mutex_unlock(&g_lock);
 
-    fprintf(stderr, "[validate_headers] stage initialised (shadow mode, pool=%d batch=%d)\n", VH_POOL_SIZE, VH_BATCH_SIZE);  // obs-ok:vh-lifecycle
+    fprintf(stderr, "[validate_headers] stage initialised (mode=%s, pool=%d batch=%d)\n",  // obs-ok:vh-lifecycle
+            validate_headers_get_mode() ==
+                VALIDATE_HEADERS_MODE_AUTHORITATIVE ? "authoritative" : "shadow",
+            VH_POOL_SIZE, VH_BATCH_SIZE);
     return true;
+}
+
+void validate_headers_set_mode(validate_headers_mode_t mode)
+{
+    if (mode != VALIDATE_HEADERS_MODE_AUTHORITATIVE)
+        mode = VALIDATE_HEADERS_MODE_SHADOW;
+    atomic_store(&g_mode, mode);
+}
+
+validate_headers_mode_t validate_headers_get_mode(void)
+{
+    return atomic_load(&g_mode);
 }
 
 void validate_headers_stage_set_validator(vh_validator_fn fn, void *user)
@@ -506,6 +542,27 @@ uint64_t validate_headers_stage_failed_total(void)
     return atomic_load(&g_failed_total);
 }
 
+bool validate_headers_stage_has_pass_record(int32_t height,
+                                            const struct uint256 *hash)
+{
+    sqlite3 *db = progress_store_db();
+    if (!db || !hash || height < 0) return false;
+
+    sqlite3_stmt *st = NULL;
+    int rc = sqlite3_prepare_v2(db,
+        "SELECT ok FROM validate_headers_log WHERE height=? AND hash=?",
+        -1, &st, NULL);
+    if (rc != SQLITE_OK) return false;
+    sqlite3_bind_int64(st, 1, (sqlite3_int64)height);
+    sqlite3_bind_blob(st, 2, hash->data, 32, SQLITE_STATIC);
+
+    bool found = false;
+    if (sqlite3_step(st) == SQLITE_ROW)  // raw-sql-ok:kernel-primitive
+        found = sqlite3_column_int(st, 0) == 1;
+    sqlite3_finalize(st);
+    return found;
+}
+
 bool validate_headers_stage_dump_state_json(struct json_value *out,
                                              const char *key)
 {
@@ -514,6 +571,10 @@ bool validate_headers_stage_dump_state_json(struct json_value *out,
     json_set_object(out);
     json_push_kv_bool(out, "initialised", g_stage != NULL);
     json_push_kv_str (out, "stage_name", STAGE_NAME);
+    json_push_kv_str (out, "mode",
+                      validate_headers_get_mode() ==
+                          VALIDATE_HEADERS_MODE_AUTHORITATIVE
+                          ? "authoritative" : "shadow");
     json_push_kv_int (out, "cursor",
                       (int64_t)(g_stage ? stage_cursor(g_stage) : 0));
     json_push_kv_int (out, "pool_size", (int64_t)VH_POOL_SIZE);

@@ -4,8 +4,9 @@
  *
  * Second saga stage. Consumes `header_admit_log` (produced by S-2) and
  * records the result of full header validation in `validate_headers_log`.
- * Operates in **shadow mode** — no mutation of consensus state; the
- * stage is observational until the S-12 cutover.
+ * In authoritative mode, a passing stage row also marks the in-memory
+ * block_index entry as at least BLOCK_VALID_HEADER; legacy ingress becomes
+ * a divergence guard.
  *
  * Validation pipeline (per height)
  * --------------------------------
@@ -70,6 +71,7 @@
 
 struct main_state;
 struct block_index;
+struct uint256;
 struct json_value;
 
 #define VH_POOL_SIZE         4
@@ -91,6 +93,14 @@ typedef bool (*vh_validator_fn)(const struct block_index *bi,
                                  size_t out_reason_size,
                                  void *user);
 
+typedef enum {
+    VALIDATE_HEADERS_MODE_SHADOW = 0,
+    VALIDATE_HEADERS_MODE_AUTHORITATIVE
+} validate_headers_mode_t;
+
+void validate_headers_set_mode(validate_headers_mode_t mode);
+validate_headers_mode_t validate_headers_get_mode(void);
+
 /* Bind the stage to `ms`, ensure the validate_headers_log schema, and
  * launch VH_POOL_SIZE workers. Idempotent — a second call against the
  * same `ms` returns true. Requires `progress_store_open` first. */
@@ -107,6 +117,9 @@ void           validate_headers_stage_shutdown(void);
 uint64_t validate_headers_stage_cursor(void);
 uint64_t validate_headers_stage_passed_total(void);
 uint64_t validate_headers_stage_failed_total(void);
+
+bool validate_headers_stage_has_pass_record(int32_t height,
+                                            const struct uint256 *hash);
 
 bool validate_headers_stage_dump_state_json(struct json_value *out,
                                              const char *key);

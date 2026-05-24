@@ -34,6 +34,38 @@ extern header_admit_mode_t header_admit_get_mode(void);
 extern bool header_admit_stage_has_record(int32_t height,
                                           const struct uint256 *hash);
 
+typedef enum {
+    VALIDATE_HEADERS_MODE_SHADOW = 0,
+    VALIDATE_HEADERS_MODE_AUTHORITATIVE
+} validate_headers_mode_t;
+
+extern validate_headers_mode_t validate_headers_get_mode(void);
+extern bool validate_headers_stage_has_pass_record(int32_t height,
+                                                   const struct uint256 *hash);
+
+static bool validate_headers_authoritative_guard(
+    struct validation_state *state,
+    int32_t height,
+    const struct uint256 *hash)
+{
+    if (validate_headers_get_mode() !=
+        VALIDATE_HEADERS_MODE_AUTHORITATIVE)
+        return true;
+
+    if (validate_headers_stage_has_pass_record(height, hash))
+        return true;
+
+    char hex[65];
+    uint256_get_hex(hash, hex);
+    event_emitf(EV_CUTOVER_GUARD_DIVERGED, 0,
+                "stage=validate_headers height=%d hash=%s "
+                "reason=legacy_expected_valid_header_missing_stage_pass",
+                height, hex);
+    return validation_state_invalid(state, false, 0,
+                                    "validate-headers-cutover-diverged",
+                                    NULL);
+}
+
 bool accept_block_header(const struct block_header *header,
                          struct validation_state *state,
                          struct main_state *ms,
@@ -137,6 +169,10 @@ bool accept_block_header(const struct block_header *header,
          * chain refuses to connect. pprev_valid here means we've
          * already gone through the "Fix scrambled heights" pass above,
          * so ancestry is linked. */
+        if (!validate_headers_authoritative_guard(state, pindex->nHeight,
+                                                  &hash))
+            return false;
+
         if ((pindex->nStatus & BLOCK_VALID_MASK) < BLOCK_VALID_TREE &&
             !(pindex->nStatus & BLOCK_FAILED_MASK)) {
             pindex->nStatus = (pindex->nStatus & ~BLOCK_VALID_MASK) |
@@ -184,9 +220,6 @@ bool accept_block_header(const struct block_header *header,
                                         NULL);
     }
 
-    if (!check_block_header(header, state, params, true))
-        LOG_FAIL("validation", "check_block_header failed for accepted header");
-
     /* Get prev block index */
     struct block_index *pindex_prev = NULL;
     if (uint256_cmp(&hash, &params->consensus.hashGenesisBlock) != 0) {
@@ -207,6 +240,17 @@ bool accept_block_header(const struct block_header *header,
             return validation_state_invalid(state, false, REJECT_INVALID,
                                             "bad-prevblk", NULL);
         }
+    }
+
+    bool validate_headers_authoritative =
+        validate_headers_get_mode() == VALIDATE_HEADERS_MODE_AUTHORITATIVE;
+    if (validate_headers_authoritative) {
+        int32_t expected_height = pindex_prev ? pindex_prev->nHeight + 1 : 0;
+        if (!validate_headers_authoritative_guard(state, expected_height,
+                                                  &hash))
+            return false;
+    } else if (!check_block_header(header, state, params, true)) {
+        LOG_FAIL("validation", "check_block_header failed for accepted header");
     }
 
     /* Fix pindex_prev height if scrambled (same logic as the already-known
