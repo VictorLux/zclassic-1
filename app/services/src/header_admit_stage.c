@@ -327,7 +327,22 @@ void header_admit_stage_shutdown(void)
 
 uint64_t header_admit_stage_cursor(void)
 {
-    return g_stage ? stage_cursor(g_stage) : 0;
+    if (!g_stage)
+        return 0;
+    uint64_t cached = stage_cursor(g_stage);
+    sqlite3 *db = progress_store_db();
+    if (!db)
+        return cached;
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(db,
+            "SELECT cursor FROM stage_cursor WHERE name=?",
+            -1, &st, NULL) != SQLITE_OK)
+        return cached;
+    sqlite3_bind_text(st, 1, STAGE_NAME, -1, SQLITE_STATIC);
+    if (sqlite3_step(st) == SQLITE_ROW)  // raw-sql-ok:kernel-primitive
+        cached = (uint64_t)sqlite3_column_int64(st, 0);
+    sqlite3_finalize(st);
+    return cached;
 }
 
 uint64_t header_admit_stage_admitted_total(void)

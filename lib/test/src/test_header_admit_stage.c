@@ -17,6 +17,7 @@
 #include "event/event.h"
 #include "primitives/block.h"
 #include "services/header_admit_stage.h"
+#include "services/validate_headers_stage.h"
 #include "storage/progress_store.h"
 #include "util/blocker.h"
 #include "util/safe_alloc.h"
@@ -44,6 +45,21 @@ static int mkdir_p_ha(const char *p)
     if (mkdir(p, 0700) == 0) return 0;
     if (errno == EEXIST) return 0;
     return -1;
+}
+
+static bool ha_stamp_cursor(sqlite3 *db, const char *name, int64_t cursor)
+{
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(db,
+            "INSERT OR REPLACE INTO stage_cursor(name,cursor,updated_at)"
+            " VALUES(?,?,0)",
+            -1, &st, NULL) != SQLITE_OK)
+        return false;
+    sqlite3_bind_text(st, 1, name, -1, SQLITE_STATIC);
+    sqlite3_bind_int64(st, 2, cursor);
+    int rc = sqlite3_step(st);  // raw-sql-ok:test-direct
+    sqlite3_finalize(st);
+    return rc == SQLITE_DONE;
 }
 
 static void ha_tmpdir(char *buf, size_t n, const char *tag)
@@ -399,6 +415,89 @@ int test_header_admit_stage(void)
 
             header_admit_set_mode(HEADER_ADMIT_MODE_SHADOW);
             event_clear_observers(EV_CUTOVER_GUARD_DIVERGED);
+            header_admit_stage_shutdown();
+            main_state_free(&ms);
+        }
+
+        progress_store_close();
+        test_cleanup_tmpdir(dir);
+    }
+
+    /* ── cold-import fast-forward lets first post-anchor header in ─── */
+    {
+        char dir[256];
+        ha_tmpdir(dir, sizeof(dir), "fast_forward_guard");
+        mkdir_p_ha(dir);
+        HA_CHECK("ff: store opens", progress_store_open(dir));
+
+        const struct chain_params *params = chain_params_get();
+        if (!params) {
+            printf("header_admit: fast-forward guard skipped (no chain params)\n");
+        } else {
+            sqlite3 *db = progress_store_db();
+            HA_CHECK("ff: stamp header cursor",
+                     ha_stamp_cursor(db, "header_admit", 1));
+            HA_CHECK("ff: stamp validate cursor",
+                     ha_stamp_cursor(db, "validate_headers", 1));
+            int32_t legacy_tip = 0;
+            HA_CHECK("ff: stamp legacy attach tip meta",
+                     progress_meta_set(db, "legacy_attach_tip_height",
+                                       &legacy_tip, sizeof(legacy_tip)));
+
+            struct main_state ms;
+            main_state_init(&ms);
+
+            struct uint256 parent_hash;
+            memset(&parent_hash, 0, sizeof(parent_hash));
+            parent_hash.data[0] = 0x66;
+            struct block_index *parent = chainstate_insert_block_index(
+                (struct chainstate *)&ms, &parent_hash);
+            HA_CHECK("ff: parent inserted", parent != NULL);
+            if (parent) {
+                parent->nHeight = 0;
+                parent->nStatus = BLOCK_VALID_TREE;
+                parent->nTime = 0; /* force contextual-header skip */
+                active_chain_set_tip(&ms.chain_active, parent);
+                ms.pindex_best_header = parent;
+            }
+
+            HA_CHECK("ff: header stage init", header_admit_stage_init(&ms));
+            HA_CHECK("ff: validate stage init",
+                     validate_headers_stage_init(&ms));
+            HA_CHECK("ff: header cursor observes persisted fast-forward",
+                     header_admit_stage_cursor() == 1);
+            HA_CHECK("ff: validate cursor observes persisted fast-forward",
+                     validate_headers_stage_cursor() == 1);
+
+            struct block_header hdr;
+            block_header_init(&hdr);
+            hdr.hashPrevBlock = parent_hash;
+            hdr.nTime = 1;
+            hdr.nBits = 1;
+            hdr.nSolutionSize = 0;
+
+            int guard_events = 0;
+            event_log_init();
+            event_clear_observers(EV_CUTOVER_GUARD_DIVERGED);
+            HA_CHECK("ff: observer registers",
+                     event_observe(EV_CUTOVER_GUARD_DIVERGED,
+                                   cutover_guard_observer,
+                                   &guard_events));
+
+            struct validation_state vs;
+            validation_state_init(&vs);
+            struct block_index *out = NULL;
+            header_admit_set_mode(HEADER_ADMIT_MODE_AUTHORITATIVE);
+            validate_headers_set_mode(VALIDATE_HEADERS_MODE_AUTHORITATIVE);
+            bool ok = accept_block_header(&hdr, &vs, &ms, params, &out);
+            HA_CHECK("ff: legacy path accepts height at fast-forward cursor",
+                     ok && out != NULL && out->nHeight == 1);
+            HA_CHECK("ff: no divergence event emitted", guard_events == 0);
+
+            header_admit_set_mode(HEADER_ADMIT_MODE_SHADOW);
+            validate_headers_set_mode(VALIDATE_HEADERS_MODE_AUTHORITATIVE);
+            event_clear_observers(EV_CUTOVER_GUARD_DIVERGED);
+            validate_headers_stage_shutdown();
             header_admit_stage_shutdown();
             main_state_free(&ms);
         }

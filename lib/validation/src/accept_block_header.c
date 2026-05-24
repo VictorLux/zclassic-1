@@ -18,6 +18,7 @@
 #include "validation/check_block.h"
 #include "chain/pow.h"
 #include "event/event.h"
+#include "storage/progress_store.h"
 #include "util/log_macros.h"
 
 #include "process_block_internal.h"
@@ -31,6 +32,7 @@ typedef enum {
 } header_admit_mode_t;
 
 extern header_admit_mode_t header_admit_get_mode(void);
+extern uint64_t header_admit_stage_cursor(void);
 extern bool header_admit_stage_has_record(int32_t height,
                                           const struct uint256 *hash);
 
@@ -40,8 +42,30 @@ typedef enum {
 } validate_headers_mode_t;
 
 extern validate_headers_mode_t validate_headers_get_mode(void);
+extern uint64_t validate_headers_stage_cursor(void);
 extern bool validate_headers_stage_has_pass_record(int32_t height,
                                                    const struct uint256 *hash);
+
+static bool fast_forward_cursor_allows(uint64_t cursor, int32_t height)
+{
+    sqlite3 *db = progress_store_db();
+    if (!db)
+        return false;
+
+    int32_t legacy_tip = -1;
+    size_t got = 0;
+    bool found = false;
+    if (!progress_meta_get(db, "legacy_attach_tip_height",
+                           &legacy_tip, sizeof(legacy_tip),
+                           &got, &found) ||
+        !found || got != sizeof(legacy_tip) || legacy_tip < 0)
+        return false;
+
+    uint64_t imported_boundary = (uint64_t)legacy_tip + 1u;
+    return cursor == imported_boundary &&
+           height >= 0 &&
+           (uint64_t)height >= imported_boundary;
+}
 
 static bool validate_headers_authoritative_guard(
     struct validation_state *state,
@@ -50,6 +74,9 @@ static bool validate_headers_authoritative_guard(
 {
     if (validate_headers_get_mode() !=
         VALIDATE_HEADERS_MODE_AUTHORITATIVE)
+        return true;
+
+    if (fast_forward_cursor_allows(validate_headers_stage_cursor(), height))
         return true;
 
     if (validate_headers_stage_has_pass_record(height, hash))
@@ -197,6 +224,10 @@ bool accept_block_header(const struct block_header *header,
         }
 
         int expected_height = pindex_prev ? pindex_prev->nHeight + 1 : 0;
+        if (fast_forward_cursor_allows(header_admit_stage_cursor(),
+                                       expected_height))
+            goto legacy_header_checks;
+
         if (!header_admit_stage_has_record(expected_height, &hash)) {
             char hex[65];
             uint256_get_hex(&hash, hex);
@@ -220,6 +251,7 @@ bool accept_block_header(const struct block_header *header,
                                         NULL);
     }
 
+legacy_header_checks:
     /* Get prev block index */
     struct block_index *pindex_prev = NULL;
     if (uint256_cmp(&hash, &params->consensus.hashGenesisBlock) != 0) {

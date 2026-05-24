@@ -52,6 +52,21 @@ static int mkdir_p_vh(const char *p)
     return -1;
 }
 
+static bool vh_stamp_cursor(sqlite3 *db, const char *name, int64_t cursor)
+{
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(db,
+            "INSERT OR REPLACE INTO stage_cursor(name,cursor,updated_at)"
+            " VALUES(?,?,0)",
+            -1, &st, NULL) != SQLITE_OK)
+        return false;
+    sqlite3_bind_text(st, 1, name, -1, SQLITE_STATIC);
+    sqlite3_bind_int64(st, 2, cursor);
+    int rc = sqlite3_step(st);  // raw-sql-ok:test-direct
+    sqlite3_finalize(st);
+    return rc == SQLITE_DONE;
+}
+
 static void vh_tmpdir(char *buf, size_t n, const char *tag)
 {
     snprintf(buf, n, "./test-tmp/validate_headers_%d_%s",
@@ -499,6 +514,93 @@ int test_validate_headers_stage(void)
                      guard_events == 1);
 
             validate_headers_set_mode(VALIDATE_HEADERS_MODE_SHADOW);
+            event_clear_observers(EV_CUTOVER_GUARD_DIVERGED);
+            validate_headers_stage_shutdown();
+            main_state_free(&ms);
+        }
+
+        progress_store_close();
+        test_cleanup_tmpdir(dir);
+    }
+
+    /* ── fast-forwarded cursor permits the first post-import header ── */
+    {
+        char dir[256];
+        vh_tmpdir(dir, sizeof(dir), "fast_forward_guard");
+        mkdir_p_vh(dir);
+        VH_CHECK("ff: store opens", progress_store_open(dir));
+
+        const struct chain_params *params = chain_params_get();
+        if (!params) {
+            printf("validate_headers: fast-forward guard skipped (no chain params)\n");
+        } else {
+            sqlite3 *db = progress_store_db();
+            VH_CHECK("ff: stamp validate cursor",
+                     vh_stamp_cursor(db, "validate_headers", 1));
+            int32_t legacy_tip = 0;
+            VH_CHECK("ff: stamp legacy attach tip meta",
+                     progress_meta_set(db, "legacy_attach_tip_height",
+                                       &legacy_tip, sizeof(legacy_tip)));
+
+            struct main_state ms;
+            main_state_init(&ms);
+
+            struct uint256 parent_hash;
+            memset(&parent_hash, 0, sizeof(parent_hash));
+            parent_hash.data[0] = 0x77;
+            struct block_index *parent = chainstate_insert_block_index(
+                (struct chainstate *)&ms, &parent_hash);
+            VH_CHECK("ff: parent inserted", parent != NULL);
+            if (parent) {
+                parent->nHeight = 0;
+                parent->nStatus = BLOCK_VALID_TREE;
+                active_chain_set_tip(&ms.chain_active, parent);
+                ms.pindex_best_header = parent;
+            }
+
+            struct block_header hdr;
+            block_header_init(&hdr);
+            hdr.hashPrevBlock = parent_hash;
+            hdr.nTime = 1;
+            hdr.nBits = 1;
+            hdr.nSolutionSize = 0;
+
+            struct uint256 hash;
+            block_header_get_hash(&hdr, &hash);
+            struct block_index *bi = chainstate_insert_block_index(
+                (struct chainstate *)&ms, &hash);
+            VH_CHECK("ff: block index inserted", bi != NULL);
+            if (bi) {
+                bi->nHeight = 1;
+                bi->nStatus = BLOCK_VALID_UNKNOWN;
+                bi->pprev = parent;
+                active_chain_set_tip(&ms.chain_active, bi);
+                ms.pindex_best_header = bi;
+            }
+
+            VH_CHECK("ff: stage init creates schema",
+                     validate_headers_stage_init(&ms));
+            VH_CHECK("ff: cursor observes persisted fast-forward",
+                     validate_headers_stage_cursor() == 1);
+
+            int guard_events = 0;
+            event_log_init();
+            event_clear_observers(EV_CUTOVER_GUARD_DIVERGED);
+            VH_CHECK("ff: observer registers",
+                     event_observe(EV_CUTOVER_GUARD_DIVERGED,
+                                   cutover_guard_observer,
+                                   &guard_events));
+
+            struct validation_state vs;
+            validation_state_init(&vs);
+            struct block_index *out = NULL;
+            validate_headers_set_mode(VALIDATE_HEADERS_MODE_AUTHORITATIVE);
+            bool ok = accept_block_header(&hdr, &vs, &ms, params, &out);
+            VH_CHECK("ff: existing header at fast-forward cursor accepted",
+                     ok && out == bi);
+            VH_CHECK("ff: no divergence event emitted", guard_events == 0);
+
+            validate_headers_set_mode(VALIDATE_HEADERS_MODE_AUTHORITATIVE);
             event_clear_observers(EV_CUTOVER_GUARD_DIVERGED);
             validate_headers_stage_shutdown();
             main_state_free(&ms);
