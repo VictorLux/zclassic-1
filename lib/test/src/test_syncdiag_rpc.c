@@ -23,7 +23,7 @@
 #include "controllers/network_controller.h"
 #include "services/chain_advance_coordinator.h"
 #include "services/legacy_mirror_sync_service.h"
-#include "services/sync_watchdog_service.h"
+#include "services/sync_monitor.h"
 #include "validation/mirror_consensus.h"
 #include "net/connman.h"
 #include "net/fast_sync.h"
@@ -471,7 +471,7 @@ int test_syncdiag_rpc(void)
         struct legacy_mirror_sync_stats stats;
         struct json_value result;
 
-        sync_watchdog_init();
+        sync_monitor_init();
         legacy_mirror_sync_reset_for_test();
         mirror_consensus_reset_for_test();
         mirror_consensus_set_enabled(true);

@@ -5,7 +5,7 @@
 
 #include "net/connman.h"
 #include "services/chain_advance_coordinator.h"
-#include "services/sync_watchdog_service.h"
+#include "services/sync_monitor.h"
 #include "sync/sync_state.h"
 #include "validation/chainstate.h"
 #include "validation/main_state.h"
@@ -23,8 +23,8 @@ static _Atomic int g_test_remedy_calls;
 
 static bool detect_local_header_refill_needed(void)
 {
-    struct connman *cm = sync_watchdog_condition_connman();
-    struct main_state *ms = sync_watchdog_condition_main_state();
+    struct connman *cm = sync_monitor_connman();
+    struct main_state *ms = sync_monitor_main_state();
     if (!cm || !ms)
         return false;
 
@@ -38,7 +38,7 @@ static bool detect_local_header_refill_needed(void)
         tip_h = tip->nHeight;
         next_h = tip_h + 1;
         missing = peer_max >= next_h &&
-            !sync_watchdog_condition_active_next_child_exists(ms, tip, next_h);
+            !sync_monitor_active_next_child_exists(ms, tip, next_h);
     }
     zcl_mutex_unlock(&ms->cs_main);
     if (!missing)
@@ -52,9 +52,9 @@ static bool detect_local_header_refill_needed(void)
 
 static enum condition_remedy_result remedy_local_header_refill_needed(void)
 {
-    struct connman *cm = sync_watchdog_condition_connman();
+    struct connman *cm = sync_monitor_connman();
     int next_h = atomic_load(&g_missing_height);
-    int peers = sync_watchdog_condition_local_header_refill(
+    int peers = sync_monitor_local_header_refill(
         cm, next_h, "condition:local_header_refill_needed");
     struct cac_decision decision;
     bool proceed = chain_advance_coordinator_local_header_refill_needed(
@@ -77,7 +77,7 @@ static enum condition_remedy_result remedy_local_header_refill_needed(void)
             sync_set_state(SYNC_HEADERS_DOWNLOAD,
                            "condition local_header_refill_needed");
         }
-        sync_watchdog_condition_kick_local_sync(
+        sync_monitor_kick_local_sync(
             "condition:local_header_refill_needed");
     }
 #ifdef ZCL_TESTING

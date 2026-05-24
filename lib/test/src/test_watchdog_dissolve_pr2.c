@@ -6,7 +6,7 @@
 #include "framework/condition.h"
 #include "net/download.h"
 #include "platform/clock.h"
-#include "services/sync_watchdog_service.h"
+#include "services/sync_monitor.h"
 
 #include <stdatomic.h>
 
@@ -20,8 +20,6 @@ void register_header_stall_at_height(void);
 void register_sync_state_stuck(void);
 void register_download_queue_starved(void);
 void register_local_header_refill_needed(void);
-
-extern _Atomic int64_t g_sync_state_entered_time;
 
 struct fake_clock {
     _Atomic int64_t wall_ms;
@@ -69,15 +67,15 @@ static void reset_pr2(struct connman *cm,
     zcl_mutex_init(&cm->manager.cs_nodes);
     zcl_mutex_init(&dm->cs);
     zcl_mutex_init(&ms->cs_main);
-    sync_watchdog_set_condition_context(cm, dm, ms);
+    sync_monitor_set_context(cm, dm, ms);
     condition_engine_set_main_state(ms);
-    sync_watchdog_init();
+    sync_monitor_init();
 }
 
 static void cleanup_pr2(void)
 {
     condition_engine_reset_for_testing();
-    sync_watchdog_set_condition_context(NULL, NULL, NULL);
+    sync_monitor_set_context(NULL, NULL, NULL);
     clock_reset_default();
 }
 
@@ -134,7 +132,7 @@ int test_watchdog_dissolve_pr2(void)
         bool ok = true;
         register_sync_state_stuck();
         sync_set_state(SYNC_FINDING_PEERS, "test");
-        atomic_store(&g_sync_state_entered_time, 2000);
+        sync_state_test_set_entered_unix(2000);
         fake_clock_set(&clock, 2601);
 
         condition_engine_tick();
@@ -202,7 +200,7 @@ int test_watchdog_dissolve_pr2(void)
         ok = ok && p3.state == PEER_SYNCING_HEADERS;
         ok = ok && p1.last_getheaders_time == 0;
         struct watchdog_local_recovery_stats lr;
-        sync_watchdog_get_local_recovery_stats(&lr);
+        sync_monitor_get_local_recovery_stats(&lr);
         ok = ok && lr.active && lr.missing_height == 11;
         WDP2_CHECK("local header refill rotates peers", ok);
         cleanup_pr2();

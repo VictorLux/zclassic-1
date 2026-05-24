@@ -198,7 +198,7 @@ void mcp_metrics_set_sync_state(int state, const char *name);
  * has not seen one yet). Pair with zcl_sync_state in PromQL to alert
  * on `tip_advance_age > 600 AND sync_state != at_tip`. Fed from
  * lib/metrics/src/metrics.c periodic tick via
- * sync_watchdog_get_tip_advance_age(). */
+ * sync_monitor_tip_advance_age(). */
 void mcp_metrics_set_tip_advance_age(int64_t seconds);
 
 /* Mirror lag SLO gauges. Updated on each metrics tick from

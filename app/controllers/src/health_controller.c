@@ -4,8 +4,9 @@
 
 #include "controllers/health_controller.h"
 #include "controllers/strong_params.h"
+#include "framework/condition.h"
 #include "services/chain_advance_coordinator.h"
-#include "services/sync_watchdog_service.h"
+#include "services/sync_monitor.h"
 #include "services/legacy_mirror_sync_service.h"
 #include "validation/chainstate.h"
 #include "net/p2p_game.h"
@@ -460,31 +461,17 @@ static bool rpc_getsyncwatchdog(const struct json_value *params, bool help,
         "\nReturn sync watchdog status including recovery history.\n"
         "\nResult: object with watchdog state, checks_run, recoveries, etc.");
 
-    struct sync_watchdog_status ws;
-    sync_watchdog_get_status(&ws);
-
     json_set_object(result);
-    json_push_kv_bool(result, "enabled", ws.enabled);
-    json_push_kv_int(result, "checks_run", (int64_t)ws.checks_run);
-    json_push_kv_int(result, "recoveries_triggered",
-                     (int64_t)ws.recoveries_triggered);
-    json_push_kv_int(result, "last_recovery_time", ws.last_recovery_time);
-    json_push_kv_str(result, "last_recovery_type",
-                     watchdog_recovery_type_name(ws.last_recovery_type));
-    json_push_kv_str(result, "last_recovery_reason",
-                     ws.last_recovery_reason);
-    json_push_kv_int(result, "last_recovery_local_height",
-                     ws.last_recovery_local_height);
-    json_push_kv_int(result, "last_recovery_peer_height",
-                     ws.last_recovery_peer_height);
-    json_push_kv_int(result, "last_recovery_peer_count",
-                     ws.last_recovery_peer_count);
-    json_push_kv_str(result, "current_state",
-                     sync_state_name(ws.current_state));
+    json_push_kv_bool(result, "enabled", true);
+    json_push_kv_int(result, "active_conditions",
+                     condition_engine_get_active_count());
+    json_push_kv_int(result, "unresolved_conditions",
+                     condition_engine_get_unresolved_count());
+    json_push_kv_str(result, "current_state", sync_state_name(sync_get_state()));
     json_push_kv_int(result, "current_state_duration_secs",
-                     ws.current_state_duration_secs);
+                     sync_get_state_duration());
     json_push_kv_int(result, "current_state_entry_height",
-                     (int64_t)ws.current_state_entry_height);
+                     (int64_t)sync_get_state_entry_height());
 
     return true;
 }
@@ -503,27 +490,15 @@ static bool rpc_getsyncdiag(const struct json_value *params, bool help,
 
     json_set_object(result);
 
-    /* Watchdog status */
+    /* Watchdog status now aliases condition-engine health. */
     {
-        struct sync_watchdog_status ws;
-        sync_watchdog_get_status(&ws);
-
         struct json_value wd = {0};
         json_set_object(&wd);
-        json_push_kv_bool(&wd, "enabled", ws.enabled);
-        json_push_kv_int(&wd, "checks_run", (int64_t)ws.checks_run);
-        json_push_kv_int(&wd, "recoveries", (int64_t)ws.recoveries_triggered);
-        json_push_kv_int(&wd, "last_recovery_time", ws.last_recovery_time);
-        json_push_kv_str(&wd, "last_recovery_type",
-                         watchdog_recovery_type_name(ws.last_recovery_type));
-        json_push_kv_str(&wd, "last_recovery_reason",
-                         ws.last_recovery_reason);
-        json_push_kv_int(&wd, "last_recovery_local_height",
-                         ws.last_recovery_local_height);
-        json_push_kv_int(&wd, "last_recovery_peer_height",
-                         ws.last_recovery_peer_height);
-        json_push_kv_int(&wd, "last_recovery_peer_count",
-                         ws.last_recovery_peer_count);
+        json_push_kv_bool(&wd, "enabled", true);
+        json_push_kv_int(&wd, "active_conditions",
+                         condition_engine_get_active_count());
+        json_push_kv_int(&wd, "unresolved_conditions",
+                         condition_engine_get_unresolved_count());
         json_push_kv(result, "watchdog", &wd);
         json_free(&wd);
     }

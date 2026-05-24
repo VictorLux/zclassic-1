@@ -83,7 +83,7 @@ static _Atomic int64_t  g_node_rss_mb_x100;   /* fixed-point: RSS_MB * 100 */
 static _Atomic int64_t  g_node_utxo_count;
 static _Atomic int64_t  g_node_uptime_seconds;
 /* Seconds since last EV_BLOCK_CONNECTED, fed by
- * sync_watchdog_get_tip_advance_age() via the lib/metrics tick.
+ * sync_monitor_tip_advance_age() via the lib/metrics tick.
  * Negative means "not yet observed" (cold boot); emitted as -1 so
  * PromQL queries can distinguish bootstrap from a real stall via
  * `> 0` guards. */

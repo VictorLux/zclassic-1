@@ -15,7 +15,7 @@
 #include "config/runtime.h"
 #include "util/thread_registry.h"
 #include "models/database.h"
-#include "services/sync_watchdog_service.h"
+#include "services/sync_monitor.h"
 #include "services/legacy_mirror_sync_service.h"
 #include "services/node_health_service.h"
 #include <pthread.h>
@@ -370,7 +370,7 @@ static void *metrics_thread_fn(void *arg)
 
             /* Seconds since last block-connect; alert hinge for the
              * silent-stall failure shape (HEADERS_DOWNLOAD wedge). */
-            mcp_metrics_set_tip_advance_age(sync_watchdog_get_tip_advance_age());
+            mcp_metrics_set_tip_advance_age(sync_monitor_tip_advance_age());
 
             /* Mirror lag SLO gauges — surfaces redundancy state to
              * Prometheus so dashboards/alerts can hinge on the actual

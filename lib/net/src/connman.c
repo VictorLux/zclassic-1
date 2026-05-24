@@ -136,7 +136,7 @@ static void seed_from_fixed(struct connman *cm)
  * resolves). Safe to call concurrently with the discovery thread. */
 void connman_kick_seed_discovery(struct connman *cm)
 {
-    if (!cm || g_stop) return;
+    if (!cm || !cm->params || g_stop) return;
     seed_from_fixed(cm);
     dns_seed_resolve(cm);
 }
@@ -1884,6 +1884,27 @@ int connman_max_peer_height(struct connman *cm)
     }
     zcl_mutex_unlock(&cm->manager.cs_nodes);
     return max_height;
+}
+
+int connman_force_outbound_rotation(struct connman *cm, const char *reason)
+{
+    if (!cm) return 0;
+    int disconnected = 0;
+
+    zcl_mutex_lock(&cm->manager.cs_nodes);
+    for (size_t i = 0; i < cm->manager.num_nodes; i++) {
+        struct p2p_node *node = cm->manager.nodes[i];
+        if (node && !node->inbound && !node->disconnect) {
+            node->disconnect = true;
+            disconnected++;
+        }
+    }
+    zcl_mutex_unlock(&cm->manager.cs_nodes);
+
+    printf("[connman] outbound rotation reason=%s disconnected=%d\n",
+           reason ? reason : "unspecified", disconnected);
+    connman_kick_seed_discovery(cm);
+    return disconnected;
 }
 
 void connman_get_outbound_health(struct connman *cm,

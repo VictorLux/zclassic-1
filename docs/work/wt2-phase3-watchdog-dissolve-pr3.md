@@ -178,3 +178,36 @@ One commit per task (8 total). Push after tasks 3, 5, 6, 7.
 `~/github/zclassic23-2` AFTER both prior PRs are merged into main.
 
 <!-- Worker: append a Completion section below when done. -->
+
+---
+
+## Completion — 2026-05-24
+
+DONE — branch `wt2/phase3-watchdog-dissolve-pr3` is ready for
+orchestrator review.
+
+Shipped the final sync watchdog dissolve slice:
+
+- Added `peer_floor_violated` and `sync_violation_lag` conditions.
+- Moved outbound peer rotation into public `connman_force_outbound_rotation`.
+- Split the remaining reusable watchdog context/progress helpers into
+  `sync_monitor`.
+- Deleted `app/services/src/sync_watchdog_service.c`,
+  `app/services/include/services/sync_watchdog_service.h`, and the legacy
+  `test_sync_watchdog.c` suite.
+- Kept `zcl_state subsystem=watchdog` as a compatibility alias to the
+  condition engine dump.
+
+Net code movement: 1,595 watchdog service/header lines removed; 596 lines
+added for the two final conditions plus `sync_monitor`, before call-site
+cleanup and tests.
+
+Verification:
+
+- [x] `make -j$(nproc)` — PASS
+- [x] `make lint` — PASS (gate #20 remains WARN with existing baseline)
+- [x] `ZCL_TEST_ONLY=watchdog_dissolve_pr2 ./test_zcl` — PASS
+- [x] `ZCL_TEST_ONLY=watchdog_conditions_pr3 ./test_zcl` — PASS
+
+Full `./test_parallel --jobs=$(nproc)` was not run in this pass; the
+focused dissolve suites and full build/lint completed cleanly.

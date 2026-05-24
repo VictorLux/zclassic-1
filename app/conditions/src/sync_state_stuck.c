@@ -6,7 +6,7 @@
 #include "event/event.h"
 #include "net/connman.h"
 #include "platform/time_compat.h"
-#include "services/sync_watchdog_service.h"
+#include "services/sync_monitor.h"
 #include "sync/sync_state.h"
 #include "util/long_op.h"
 #include "validation/chainstate.h"
@@ -38,7 +38,7 @@ static bool detect_sync_state_stuck(void)
     if (long_op_is_active(&lo_age) && lo_age < 60)
         return false;
 
-    struct main_state *ms = sync_watchdog_condition_main_state();
+    struct main_state *ms = sync_monitor_main_state();
     int h = ms ? active_chain_height(&ms->chain_active) : -1;
     atomic_store(&g_state_at_detect, state);
     atomic_store(&g_height_at_detect, h);
@@ -49,7 +49,7 @@ static bool detect_sync_state_stuck(void)
 static enum condition_remedy_result remedy_sync_state_stuck(void)
 {
     enum sync_state state = (enum sync_state)atomic_load(&g_state_at_detect);
-    struct connman *cm = sync_watchdog_condition_connman();
+    struct connman *cm = sync_monitor_connman();
     int peer_max = cm ? connman_max_peer_height(cm) : -1;
     fprintf(stderr,  // obs-ok:condition-sync-state-stuck
             "[condition:sync_state_stuck] state=%s age=%llds height=%d "
@@ -66,7 +66,7 @@ static enum condition_remedy_result remedy_sync_state_stuck(void)
         sync_set_state(SYNC_HEADERS_DOWNLOAD,
                        "condition sync_state_stuck");
     }
-    sync_watchdog_condition_kick_local_sync("condition:sync_state_stuck");
+    sync_monitor_kick_local_sync("condition:sync_state_stuck");
 #ifdef ZCL_TESTING
     atomic_fetch_add(&g_test_remedy_calls, 1);
 #endif

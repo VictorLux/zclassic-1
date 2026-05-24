@@ -13,6 +13,7 @@
 
 #include "sync/sync_state.h"
 #include "event/event.h"
+#include "platform/time_compat.h"
 
 #include <stdatomic.h>
 #include <stdio.h>
@@ -21,6 +22,8 @@
 /* ── Sync state machine ──────────────────────────────────── */
 
 static _Atomic int g_sync_state = SYNC_IDLE;
+static _Atomic int64_t g_sync_state_entered_time;
+static _Atomic int g_sync_state_entry_height;
 
 const char *sync_state_name(enum sync_state state)
 {
@@ -108,6 +111,34 @@ enum sync_state sync_get_state(void)
     return (enum sync_state)atomic_load(&g_sync_state);
 }
 
+void sync_state_monitor_init(void)
+{
+    atomic_store(&g_sync_state_entered_time,
+                 (int64_t)platform_time_wall_time_t());
+    atomic_store(&g_sync_state_entry_height, 0);
+}
+
+int64_t sync_get_state_duration(void)
+{
+    int64_t entered = atomic_load(&g_sync_state_entered_time);
+    if (entered == 0)
+        return 0;
+    int64_t now = (int64_t)platform_time_wall_time_t();
+    return (now > entered) ? (now - entered) : 0;
+}
+
+int sync_get_state_entry_height(void)
+{
+    return atomic_load(&g_sync_state_entry_height);
+}
+
+#ifdef ZCL_TESTING
+void sync_state_test_set_entered_unix(int64_t entered_unix)
+{
+    atomic_store(&g_sync_state_entered_time, entered_unix);
+}
+#endif
+
 static sync_state_change_cb g_sync_state_change_cb = NULL;
 
 void sync_set_state_change_callback(sync_state_change_cb cb)
@@ -135,6 +166,9 @@ bool sync_set_state(enum sync_state new_state, const char *reason)
     }
 
     atomic_store(&g_sync_state, (int)new_state);
+    atomic_store(&g_sync_state_entered_time,
+                 (int64_t)platform_time_wall_time_t());
+    atomic_store(&g_sync_state_entry_height, 0);
 
     /* Notify watchdog of state change */
     if (g_sync_state_change_cb)

@@ -278,17 +278,17 @@ int main(void)
                failures);
         return failures ? 1 : 0;
     }
+    if (only && strcmp(only, "watchdog_conditions_pr3") == 0) {
+        printf("[test] ZCL_TEST_ONLY=watchdog_conditions_pr3 — running only\n");
+        failures += test_watchdog_conditions_pr3();
+        printf("\n=== watchdog_conditions_pr3 subset complete: %d failure(s) ===\n",
+               failures);
+        return failures ? 1 : 0;
+    }
     if (only && strcmp(only, "zclassicd_oracle") == 0) {
         printf("[test] ZCL_TEST_ONLY=zclassicd_oracle — running oracle subset\n");
         failures += test_zclassicd_oracle();
         printf("\n=== zclassicd_oracle subset complete: %d failure(s) ===\n",
-               failures);
-        return failures ? 1 : 0;
-    }
-    if (only && strcmp(only, "sync_watchdog") == 0) {
-        printf("[test] ZCL_TEST_ONLY=sync_watchdog — running watchdog subset\n");
-        failures += test_sync_watchdog();
-        printf("\n=== sync_watchdog subset complete: %d failure(s) ===\n",
                failures);
         return failures ? 1 : 0;
     }
@@ -557,6 +557,7 @@ int main(void)
     failures += test_condition_engine();
     failures += test_utxo_activation_paused();
     failures += test_watchdog_dissolve_pr2();
+    failures += test_watchdog_conditions_pr3();
     failures += test_blocker();
     failures += test_clock();
     failures += test_rng();
@@ -589,7 +590,6 @@ int main(void)
     failures += test_multisig();
     failures += test_mcp_fuzz();
     failures += test_rpc_auth_hardening();
-    failures += test_sync_watchdog();
     failures += test_disk_block_io();
     failures += test_msg_handlers();
     failures += test_zclassicd_oracle();

@@ -23,6 +23,7 @@
 #define ZCL_SYNC_STATE_H
 
 #include <stdbool.h>
+#include <stdint.h>
 
 /* ── Top-level sync state machine ──────────────────────── */
 
@@ -43,9 +44,15 @@ enum sync_state {
 enum sync_state sync_get_state(void);
 bool sync_set_state(enum sync_state new_state, const char *reason);
 const char *sync_state_name(enum sync_state state);
+void sync_state_monitor_init(void);
+int64_t sync_get_state_duration(void);
+int sync_get_state_entry_height(void);
+#ifdef ZCL_TESTING
+void sync_state_test_set_entered_unix(int64_t entered_unix);
+#endif
 
 /* Optional callback invoked on successful sync state change.
- * Set by sync_watchdog_init() to track state timestamps. */
+ * Set by sync_monitor_init() to track state timestamps. */
 typedef void (*sync_state_change_cb)(enum sync_state new_state, int height);
 void sync_set_state_change_callback(sync_state_change_cb cb);
 

@@ -18,7 +18,7 @@
 #include "services/gap_fill_service.h"
 #include "services/oracle_policy.h"
 #include "services/snapshot_sync_service.h"
-#include "services/sync_watchdog_service.h"
+#include "services/sync_monitor.h"
 
 #include "config/db_service.h"
 #include "config/runtime.h"
@@ -1138,7 +1138,7 @@ void legacy_mirror_sync_stats_snapshot(
     out->last_progress_blocks = atomic_load(&g_lms.last_progress_blocks);
     {
         struct watchdog_local_recovery_stats lr;
-        sync_watchdog_get_local_recovery_stats(&lr);
+        sync_monitor_get_local_recovery_stats(&lr);
         out->local_recovery_active = lr.active;
         out->mirror_repair_gated_by_local_retries =
             lr.mirror_repair_gated;

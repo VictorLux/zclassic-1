@@ -35,7 +35,7 @@
 #include "rpc/server.h"
 #include "controllers/explorer_internal.h"
 #include "controllers/strong_params.h"
-#include "services/sync_watchdog_service.h"
+#include "services/sync_monitor.h"
 #include "services/chain_restore_service.h"
 #include "services/chain_advance_coordinator.h"
 #include "services/zclassicd_oracle_service.h"
@@ -396,8 +396,8 @@ static const struct dump_entry g_dumpers[] = {
                     "typed blocker registry: active blockers by class "
                     "{permanent,transient,dependency,resource}, "
                     "deadlines, escape actions, fire counts" },
-    { "watchdog",    sync_watchdog_dump_state_json,
-                     "sync watchdog status + stats" },
+    { "watchdog",    condition_engine_dump_state_json,
+                     "compat alias for condition_engine status" },
     { "chain_evidence", chain_evidence_controller_dump_state_json,
                      "native chain evidence: tips, cursors, evidence flags, reconciliation reason" },
     { "chain_evidence_controller", chain_evidence_controller_dump_state_json,

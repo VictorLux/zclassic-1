@@ -113,6 +113,7 @@ size_t connman_outbound_healthy_count(struct connman *cm);
 int connman_max_peer_height(struct connman *cm);
 void connman_get_outbound_health(struct connman *cm,
                                  struct connman_outbound_health *out);
+int connman_force_outbound_rotation(struct connman *cm, const char *reason);
 
 void connman_relay_transaction(struct connman *cm,
                                 const struct uint256 *txid);

@@ -5,7 +5,7 @@
 #include "services/chain_advance_coordinator.h"
 #include "services/legacy_mirror_sync_service.h"
 #include "services/snapshot_sync_service.h"
-#include "services/sync_watchdog_service.h"
+#include "services/sync_monitor.h"
 #include "config/runtime.h"
 #include "event/event.h"
 #include "framework/condition.h"
@@ -1192,7 +1192,7 @@ static int test_cac_dump_populates_local_import_recovery(void)
         zcl_mutex_init(&dm.cs);
         zcl_mutex_init(&ms.cs_main);
 
-        sync_watchdog_init();
+        sync_monitor_init();
         condition_engine_reset_for_testing();
         local_header_refill_needed_test_reset();
         sync_set_state(SYNC_IDLE, "cac local import reset");
@@ -1211,7 +1211,7 @@ static int test_cac_dump_populates_local_import_recovery(void)
 
         chain_advance_coordinator_reset_for_test();
         chain_advance_coordinator_init(&cm, &ms, NULL);
-        sync_watchdog_set_condition_context(&cm, &dm, &ms);
+        sync_monitor_set_context(&cm, &dm, &ms);
         condition_engine_set_main_state(&ms);
         register_local_header_refill_needed();
         condition_engine_tick();
@@ -1271,7 +1271,7 @@ static int test_cac_dump_populates_live_mirror_source(void)
         tip.nHeight = 500;
         ASSERT(active_chain_set_tip(&ms.chain_active, &tip));
 
-        sync_watchdog_init();
+        sync_monitor_init();
         legacy_mirror_sync_reset_for_test();
         stats.enabled = true;
         stats.running = true;

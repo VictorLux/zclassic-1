@@ -112,7 +112,7 @@ extern void msg_version_set_external_ip(const char *ip_str, uint16_t port);
 #include "services/wallet_backup_service.h"
 #include "services/disk_monitor.h"
 #include "services/ibd_throttle.h"
-#include "services/sync_watchdog_service.h"
+#include "services/sync_monitor.h"
 #include "net/download.h"
 #include "services/db_maintenance.h"
 #include "mcp/metrics.h"
@@ -361,21 +361,6 @@ static void boot_bg_hash_verify_stop(void *ctx)
     struct boot_svc_ctx *svc = ctx;
     if (svc)
         bg_hash_verify_stop(&svc->bg_hash_verify);
-}
-
-static bool boot_sync_watchdog_start(void *ctx)
-{
-    struct boot_svc_ctx *svc = ctx;
-    if (!svc)
-        return false;
-    return sync_watchdog_start(svc->connman, msg_get_download_mgr(),
-                               svc->state);
-}
-
-static void boot_sync_watchdog_stop(void *ctx)
-{
-    (void)ctx;
-    sync_watchdog_stop();
 }
 
 /* ── Round 5 C3: outbound peer floor supervisor child ──────────── */
@@ -1529,12 +1514,6 @@ static bool boot_register_runtime_services(struct boot_svc_ctx *svc)
             .stop = boot_bg_hash_verify_stop,
             .ctx = svc,
             .flags = ZCL_SERVICE_OPTIONAL,
-        },
-        {
-            .name = "sync_watchdog",
-            .start = boot_sync_watchdog_start,
-            .stop = boot_sync_watchdog_stop,
-            .ctx = svc,
         },
         {
             .name = "header_probe",
@@ -3001,11 +2980,9 @@ bool app_init_services(struct app_context *ctx,
     rpc_game_set_connman(svc->connman);
     register_game_rpc_commands(svc->rpc_table);
 
-    /* Sync watchdog — initialize state here, but defer thread start
-     * until after `atomic_store(svc->running, true)` below. Starting
-     * the thread now would read svc->running as false (still in boot)
-     * and the thread loop would exit on its very first iteration. */
-    sync_watchdog_init();
+    sync_monitor_init();
+    sync_monitor_set_context(svc->connman, msg_get_download_mgr(),
+                             svc->state);
 
     /* Service health and sync detail RPCs */
     rpc_health_set_state(svc->state, &svc->bg_validation,

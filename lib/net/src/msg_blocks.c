@@ -15,7 +15,7 @@
 #include "services/block_sync_service.h"
 #include "services/snapshot_sync_service.h"
 #include "services/header_sync_service.h"
-#include "services/sync_watchdog_service.h"
+#include "services/sync_monitor.h"
 #include "validation/process_block.h"
 #include "consensus/validation.h"
 #include "controllers/sync_controller.h"
@@ -411,9 +411,9 @@ bool process_block_msg(struct msg_processor *mp, struct p2p_node *node,
             shadow_feeder_global_observe((uint32_t)new_tip->nHeight, &blk,
                                          raw_block_bytes, raw_block_len);
             /* Refresh the watchdog's tip-advance timestamp so
-             * sync_watchdog_get_tip_advance_age() reflects reality and
+             * sync_monitor_tip_advance_age() reflects reality and
              * a stuck-at-headers stall doesn't go undetected. */
-            sync_watchdog_on_block_connected(new_tip->nHeight);
+            sync_monitor_on_block_connected(new_tip->nHeight);
 
             if (acceptance.reached_peer_tip) {
                 if (acceptance.should_set_sync_state) {

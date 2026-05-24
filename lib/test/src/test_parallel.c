@@ -89,11 +89,11 @@ volatile sig_atomic_t g_shutdown_requested = 0;
     X(bip44) X(compact_blocks) X(dandelion) X(addrman_rebalance) \
     X(block_pruning) X(schema_migration) X(db_migration_idempotent) \
     X(coins_view_atomicity) X(make_lint_gates) X(multisig) \
-    X(mcp_fuzz) X(rpc_auth_hardening) X(sync_watchdog) \
+    X(mcp_fuzz) X(rpc_auth_hardening) \
     X(disk_block_io) X(msg_handlers) X(chain_advance_coordinator) \
     X(lag_slo) X(boot_phase) X(path_check) X(supervisor) \
     X(supervisor_domains) X(condition_engine) X(utxo_activation_paused) \
-    X(watchdog_dissolve_pr2) X(blocker) \
+    X(watchdog_dissolve_pr2) X(watchdog_conditions_pr3) X(blocker) \
     X(clock) X(rng) X(stage) X(mailbox) X(mailbox_adoption) \
     X(projection) X(projection_adoption) X(progress_store) \
     X(header_admit_stage) X(validate_headers_stage) X(body_fetch_stage) \

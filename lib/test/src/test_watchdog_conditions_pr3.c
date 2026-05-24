@@ -1,0 +1,170 @@
+/* Copyright 2026 Rhett Creighton - Apache License 2.0 */
+
+#include "test/test_helpers.h"
+
+#include "conditions/watchdog_dissolve_pr3.h"
+#include "framework/condition.h"
+#include "platform/clock.h"
+#include "services/sync_monitor.h"
+#include "validation/chainstate.h"
+
+#include <stdatomic.h>
+#include <stdlib.h>
+#include <string.h>
+
+#define WDP3_CHECK(name, expr) do { \
+    printf("watchdog_conditions_pr3: %s... ", (name)); \
+    if (expr) printf("OK\n"); \
+    else { printf("FAIL\n"); failures++; } \
+} while (0)
+
+void register_peer_floor_violated(void);
+void register_sync_violation_lag(void);
+
+struct fake_clock_pr3 {
+    _Atomic int64_t wall_ms;
+};
+
+static int64_t fake_now_mono(void *self)
+{
+    (void)self;
+    return 1;
+}
+
+static int64_t fake_now_wall(void *self)
+{
+    struct fake_clock_pr3 *c = (struct fake_clock_pr3 *)self;
+    return atomic_load(&c->wall_ms);
+}
+
+static void fake_clock_install(struct fake_clock_pr3 *c, int64_t unix_s)
+{
+    atomic_store(&c->wall_ms, unix_s * 1000);
+    static clock_iface_t iface;
+    iface.now_monotonic_ns = fake_now_mono;
+    iface.now_wall_ms = fake_now_wall;
+    iface.self = c;
+    clock_set_default(&iface);
+}
+
+static void fake_clock_set(struct fake_clock_pr3 *c, int64_t unix_s)
+{
+    atomic_store(&c->wall_ms, unix_s * 1000);
+}
+
+static void reset_pr3(struct connman *cm,
+                      struct download_manager *dm,
+                      struct main_state *ms)
+{
+    condition_engine_reset_for_testing();
+    peer_floor_violated_test_reset();
+    sync_violation_lag_test_reset();
+    memset(cm, 0, sizeof(*cm));
+    memset(dm, 0, sizeof(*dm));
+    memset(ms, 0, sizeof(*ms));
+    zcl_mutex_init(&cm->manager.cs_nodes);
+    zcl_mutex_init(&dm->cs);
+    zcl_mutex_init(&ms->cs_main);
+    static struct chain_params params;
+    memset(&params, 0, sizeof(params));
+    cm->params = &params;
+    sync_monitor_init();
+    sync_monitor_set_context(cm, dm, ms);
+}
+
+static void cleanup_pr3(void)
+{
+    condition_engine_reset_for_testing();
+    sync_monitor_set_context(NULL, NULL, NULL);
+    clock_reset_default();
+    unsetenv("ZCL_PEERLESS_OK");
+}
+
+int test_watchdog_conditions_pr3(void)
+{
+    printf("\n=== watchdog PR-3 condition tests ===\n");
+    int failures = 0;
+
+    {
+        struct fake_clock_pr3 clock;
+        fake_clock_install(&clock, 1000);
+        struct connman cm;
+        struct download_manager dm;
+        struct main_state ms;
+        reset_pr3(&cm, &dm, &ms);
+        bool ok = true;
+        register_peer_floor_violated();
+
+        struct p2p_node stuck = {0};
+        stuck.id = 1;
+        stuck.state = PEER_CONNECTED;
+        struct p2p_node *peers[1] = { &stuck };
+        cm.manager.nodes = peers;
+        cm.manager.num_nodes = 1;
+
+        condition_engine_tick();
+        ok = ok && peer_floor_violated_test_remedy_calls() == 0;
+        fake_clock_set(&clock, 1061);
+        condition_engine_tick();
+        ok = ok && peer_floor_violated_test_remedy_calls() == 1;
+        ok = ok && stuck.disconnect;
+        WDP3_CHECK("peer floor kicks unhealthy outbound slots", ok);
+        cleanup_pr3();
+    }
+
+    {
+        struct fake_clock_pr3 clock;
+        fake_clock_install(&clock, 2000);
+        struct connman cm;
+        struct download_manager dm;
+        struct main_state ms;
+        reset_pr3(&cm, &dm, &ms);
+        bool ok = true;
+        register_peer_floor_violated();
+        setenv("ZCL_PEERLESS_OK", "1", 1);
+
+        condition_engine_tick();
+        fake_clock_set(&clock, 2061);
+        condition_engine_tick();
+        ok = ok && peer_floor_violated_test_remedy_calls() == 0;
+        WDP3_CHECK("peer floor honors peerless test mode", ok);
+        cleanup_pr3();
+    }
+
+    {
+        struct fake_clock_pr3 clock;
+        fake_clock_install(&clock, 3000);
+        struct connman cm;
+        struct download_manager dm;
+        struct main_state ms;
+        reset_pr3(&cm, &dm, &ms);
+        bool ok = true;
+        register_sync_violation_lag();
+
+        struct block_index tip = {0};
+        tip.nHeight = 100;
+        ok = ok && active_chain_set_tip(&ms.chain_active, &tip);
+        struct p2p_node peer = {0};
+        peer.id = 1;
+        peer.starting_height = 250;
+        peer.state = PEER_ACTIVE;
+        struct p2p_node *peers[1] = { &peer };
+        cm.manager.nodes = peers;
+        cm.manager.num_nodes = 1;
+
+        condition_engine_tick();
+        ok = ok && sync_violation_lag_test_remedy_calls() == 0;
+        fake_clock_set(&clock, 3601);
+        condition_engine_tick();
+        ok = ok && sync_violation_lag_test_remedy_calls() == 1;
+        ok = ok && peer.disconnect;
+        ok = ok && condition_engine_get_unresolved_count() == 1;
+        condition_engine_tick();
+        ok = ok && sync_violation_lag_test_remedy_calls() == 1;
+        WDP3_CHECK("sync violation rotates peers once and pages", ok);
+        cleanup_pr3();
+    }
+
+    cleanup_pr3();
+    return failures;
+}

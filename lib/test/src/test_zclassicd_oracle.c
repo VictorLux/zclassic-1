@@ -15,7 +15,7 @@
 #include "services/zclassicd_oracle_service.h"
 #include "services/chain_evidence_controller.h"
 #include "services/legacy_mirror_sync_service.h"
-#include "services/sync_watchdog_service.h"
+#include "services/sync_monitor.h"
 #include "controllers/wallet_helpers.h"
 #include "validation/process_block.h"
 #include "validation/main_state.h"
@@ -513,7 +513,7 @@ int test_zclassicd_oracle(void)
         const struct json_value *local_recovery_active;
         const struct json_value *local_retries_exhausted;
 
-        sync_watchdog_init();
+        sync_monitor_init();
         legacy_mirror_sync_reset_for_test();
         mirror_consensus_set_enabled(true);
         mirror_consensus_record_override(123, "body-hash-mismatch");

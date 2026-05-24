@@ -6,7 +6,7 @@
 #include "net/connman.h"
 #include "net/download.h"
 #include "platform/time_compat.h"
-#include "services/sync_watchdog_service.h"
+#include "services/sync_monitor.h"
 #include "sync/sync_state.h"
 
 #include <stdatomic.h>
@@ -26,9 +26,9 @@ static _Atomic int g_test_remedy_calls;
 
 static bool detect_download_queue_starved(void)
 {
-    struct connman *cm = sync_watchdog_condition_connman();
+    struct connman *cm = sync_monitor_connman();
     struct download_manager *dm =
-        sync_watchdog_condition_download_manager();
+        sync_monitor_download_manager();
     int64_t now = platform_time_wall_unix();
     if (sync_get_state() != SYNC_BLOCKS_DOWNLOAD || !cm || !dm ||
         connman_get_node_count(cm) == 0) {
@@ -67,7 +67,7 @@ static enum condition_remedy_result remedy_download_queue_starved(void)
             (unsigned long long)atomic_load(&g_inflight_at_detect),
             (unsigned long long)atomic_load(&g_queued_at_detect),
             (long long)atomic_load(&g_age_at_detect));
-    sync_watchdog_condition_kick_local_sync("condition:download_queue_starved");
+    sync_monitor_kick_local_sync("condition:download_queue_starved");
 #ifdef ZCL_TESTING
     atomic_fetch_add(&g_test_remedy_calls, 1);
 #endif
@@ -78,7 +78,7 @@ static bool witness_download_queue_starved(int64_t target_at_detect)
 {
     (void)target_at_detect;
     struct download_manager *dm =
-        sync_watchdog_condition_download_manager();
+        sync_monitor_download_manager();
     if (!dm)
         return false;
     uint64_t inflight = 0;

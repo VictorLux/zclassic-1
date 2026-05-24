@@ -25,7 +25,7 @@
 #include "event/event.h"
 #include "util/log_macros.h"
 #include "util/safe_alloc.h"
-#include "services/sync_watchdog_service.h"
+#include "services/sync_monitor.h"
 #include "services/quorum_oracle_service.h"
 #include "services/block_index_integrity.h"
 #include "services/chain_tip.h"
@@ -394,9 +394,6 @@ bool process_headers(struct msg_processor *mp, struct p2p_node *node,
                 seq_count++;
             }
         } else {
-            /* Record reject reason for watchdog escalation */
-            if (state.reject_reason[0])
-                sync_watchdog_set_last_reject_reason(state.reject_reason);
             if (i < 3) {
                 char hex[65], prevhex[65];
                 struct uint256 hh;

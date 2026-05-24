@@ -8,7 +8,7 @@
 #include "services/chain_evidence_controller.h"
 #include "services/chain_state_repository.h"
 #include "services/legacy_mirror_sync_service.h"
-#include "services/sync_watchdog_service.h"
+#include "services/sync_monitor.h"
 #include "config/runtime.h"
 #include "controllers/sync_controller.h"
 #include "controllers/network_controller.h"
@@ -428,7 +428,7 @@ void node_health_collect(struct node_health_snapshot *snapshot,
      * threshold is crossed in any non-tip state with peers. Threshold
      * matches sync_watchdog_service.c state_stuck_timeout for
      * HEADERS_DOWNLOAD / BLOCKS_DOWNLOAD (600s). */
-    snapshot->tip_advance_age_seconds = sync_watchdog_get_tip_advance_age();
+    snapshot->tip_advance_age_seconds = sync_monitor_tip_advance_age();
     if (snapshot->tip_advance_age_seconds > 600 &&
         snapshot->has_peers &&
         snapshot->sync_state != SYNC_AT_TIP &&
@@ -443,7 +443,7 @@ void node_health_collect(struct node_health_snapshot *snapshot,
     /* Watchdog stats */
     {
         struct watchdog_stats wd;
-        sync_watchdog_get_stats(&wd);
+        sync_monitor_get_stats(&wd);
         snapshot->wd_checks_run = wd.checks_run;
         snapshot->wd_recoveries = wd.recoveries_total;
         snapshot->wd_blocks_per_sec = wd.blocks_per_sec;

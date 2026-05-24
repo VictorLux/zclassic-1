@@ -5,7 +5,7 @@
 
 #include "services/legacy_mirror_sync_service.h"
 #include "services/snapshot_sync_service.h"
-#include "services/sync_watchdog_service.h"
+#include "services/sync_monitor.h"
 #include "models/block.h"
 #include "models/database.h"
 #include "net/connman.h"
@@ -1265,7 +1265,7 @@ static void build_runtime_input(struct cac_plan_input *in)
 
     struct watchdog_local_recovery_stats wr;
     memset(&wr, 0, sizeof(wr));
-    sync_watchdog_get_local_recovery_stats(&wr);
+    sync_monitor_get_local_recovery_stats(&wr);
     in->local_recovery_active = wr.active;
     in->local_retries_exhausted = wr.retries_exhausted;
 

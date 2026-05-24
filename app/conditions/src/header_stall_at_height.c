@@ -6,7 +6,7 @@
 #include "net/connman.h"
 #include "platform/time_compat.h"
 #include "services/header_probe_service.h"
-#include "services/sync_watchdog_service.h"
+#include "services/sync_monitor.h"
 #include "sync/sync_state.h"
 #include "validation/chainstate.h"
 #include "validation/main_state.h"
@@ -26,8 +26,8 @@ static _Atomic int g_test_remedy_calls;
 
 static bool detect_header_stall_at_height(void)
 {
-    struct main_state *ms = sync_watchdog_condition_main_state();
-    struct connman *cm = sync_watchdog_condition_connman();
+    struct main_state *ms = sync_monitor_main_state();
+    struct connman *cm = sync_monitor_connman();
     enum sync_state state = sync_get_state();
     if (!ms || !cm ||
         (state != SYNC_HEADERS_DOWNLOAD && state != SYNC_BLOCKS_DOWNLOAD)) {
@@ -75,7 +75,7 @@ static enum condition_remedy_result remedy_header_stall_at_height(void)
             "age=%llds action=kick_headers\n",
             header_h, peer_max, (long long)atomic_load(&g_age_at_detect));
 
-    struct connman *cm = sync_watchdog_condition_connman();
+    struct connman *cm = sync_monitor_connman();
     if (cm) {
         zcl_mutex_lock(&cm->manager.cs_nodes);
         for (size_t i = 0; i < cm->manager.num_nodes; i++) {
@@ -105,7 +105,7 @@ static enum condition_remedy_result remedy_header_stall_at_height(void)
 static bool witness_header_stall_at_height(int64_t target_at_detect)
 {
     (void)target_at_detect;
-    struct main_state *ms = sync_watchdog_condition_main_state();
+    struct main_state *ms = sync_monitor_main_state();
     if (!ms || !ms->pindex_best_header)
         return false;
     return ms->pindex_best_header->nHeight >
