@@ -369,6 +369,44 @@ One commit per task. Push after Task 4, Task 7, Task 9.
 
 ## Status
 
-**READY** — Phase 4a is merged; this is a parallel-dispatchable spec.
+**DONE — pushed 2026-05-24** to main as commit `da005eb31`.
 
-<!-- Worker: append a Completion section below when done. -->
+## Completion (wt2, 2026-05-24)
+
+### Summary
+Phase 4d-1 mempool projection shipped in shadow mode. The node now
+emits `EV_TX_ADMIT_MEMPOOL` / `EV_TX_REMOVE_MEMPOOL`, replays them into
+`mempool_projection.db`, exposes diagnostics through `zcl_state
+subsystem=mempool_projection`, and registers `zcl_mempool_projection_diff`
+for live-vs-projection soak checks.
+
+### Commits
+- `da005eb31` mempool_projection: add shadow replay
+
+### Files Added/Modified
+- `lib/storage/include/storage/mempool_projection.h`
+- `lib/storage/src/mempool_projection.c`
+- `lib/test/src/test_mempool_projection.c`
+- `lib/storage/include/storage/event_log_payloads.h`
+- `app/models/src/mempool_entry.c`
+- `config/src/boot_services.c`
+- `app/controllers/src/diagnostics_controller.c`
+- `tools/mcp/controllers/diagnostics_controller.c`
+- `lib/test/include/test/test_helpers.h`
+- `lib/test/src/test.c`
+- `lib/test/src/test_parallel.c`
+- `lib/test/src/test_mcp_controllers.c`
+
+### Acceptance Verification
+- [x] `ZCL_TEST_ONLY=mempool_projection ./test_zcl` — PASS, 0 failures
+- [x] `ZCL_TEST_ONLY=mcp_controllers ./test_zcl` — PASS, 0 failures
+- [x] `ZCL_TEST_ONLY=mcp_e2e ./test_zcl` — PASS, 0 failures
+- [x] `make -j$(nproc)` — PASS
+- [x] `make lint` — PASS; gate #20 remains WARN with grandfathered raw-controller-SQL violations
+- [x] `./test_parallel --jobs=$(nproc)` — PASS, 0/201 groups failed
+
+### Surprises / Follow-ups
+The implementation landed before this assignment document was closed out,
+so this completion update records the shipped commit and verification
+without changing production code. Live 24h soak still needs the
+orchestrator to poll `zcl_mempool_projection_diff`.
