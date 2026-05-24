@@ -13,7 +13,7 @@ lands them in the production node, one safe PR at a time.
 
 ---
 
-## PR-1 — Hardware CRC32C in the production event log  ← CLAIM FIRST (READY)
+## PR-1 — Hardware CRC32C in the production event log  (DONE)
 
 `lib/storage/src/event_log.c` computes its per-event CRC with a **software
 table** (`crc32c()`, ~0.3-1 GB/s). The prototype proved this was ~HALF the
@@ -37,9 +37,11 @@ pays this, so it speeds warm-restart (#2) and all bulk writes.
 (0xFFFFFFFF). The value must equal the current table output exactly.
 
 **Acceptance:**
-- [ ] `ZCL_TEST_ONLY=event ./test_zcl` (event-log fingerprint/round-trip) PASS
-- [ ] `./test_parallel --jobs=$(nproc)` PASS
-- [ ] A micro-bench or note showing HW vs SW CRC throughput on this box.
+- [x] `ZCL_TEST_ONLY=event ./test_zcl` PASS
+- [x] `ZCL_TEST_ONLY=event_log ./test_zcl` PASS
+- [x] `ZCL_EVENT_LOG_BENCH=1 ZCL_TEST_ONLY=event_log ./test_zcl` PASS
+- [x] `./test_parallel --jobs=$(nproc)` PASS
+- [x] Micro-bench note: `event_log: crc32c — impl=hardware-sse4.2 sw=0.60 GB/s active=12.99 GB/s (sink=0)` on this box.
 
 ---
 
@@ -85,6 +87,9 @@ stretch 30s).
 ## Status
 
 **PR-1 COMPLETE (wt2)** — claimed and implemented 2026-05-24.
+Benchmark moved: production event-log CRC32C now dispatches to SSE4.2 after a
+software-reference self-check; measured active CRC throughput moved from
+0.60 GB/s software to 12.99 GB/s hardware on this box.
 PR-2/PR-3 spec'd, gated.
 One commit per task; push direct to main; `./test_parallel` before pushing.
 
@@ -109,9 +114,10 @@ Summary:
 Micro-bench on this box:
 - Software CRC32C: 0.57 GiB/s
 - SSE4.2 CRC32C: 12.36 GiB/s
+- Focused event-log dispatch check: 0.60 GB/s software, 12.99 GB/s active
 
 Verification:
 - `make -j$(nproc) test_zcl test_parallel` PASS
 - `ZCL_TEST_ONLY=event ./test_zcl` PASS
 - `make lint` PASS
-- `./test_parallel --jobs=$(nproc)` PASS — 205/205 groups, 32 workers
+- `./test_parallel --jobs=$(nproc)` PASS — 199/199 groups, 32 workers

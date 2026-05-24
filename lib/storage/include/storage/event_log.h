@@ -143,4 +143,11 @@ int event_log_fingerprint(event_log_t *log, uint8_t out[32]);
  * and observability. */
 uint64_t event_log_size(event_log_t *log);
 
+#ifdef ZCL_TESTING
+const char *event_log_crc32c_impl(void);
+uint32_t event_log_crc32c_test_sw(const void *data, size_t len);
+uint32_t event_log_crc32c_test_active(const void *data, size_t len);
+bool event_log_crc32c_hw_available(void);
+#endif
+
 #endif /* ZCL_STORAGE_EVENT_LOG_H */

@@ -144,6 +144,31 @@ static uint32_t crc32c(const void *data, size_t len)
     return crc32c_sw(data, len);
 }
 
+#ifdef ZCL_TESTING
+const char *event_log_crc32c_impl(void)
+{
+    pthread_once(&g_crc32c_once, crc32c_init_once);
+    return g_crc32c_use_hw ? "hardware-sse4.2" : "software-table";
+}
+
+uint32_t event_log_crc32c_test_sw(const void *data, size_t len)
+{
+    pthread_once(&g_crc32c_once, crc32c_init_once);
+    return crc32c_sw(data, len);
+}
+
+uint32_t event_log_crc32c_test_active(const void *data, size_t len)
+{
+    return crc32c(data, len);
+}
+
+bool event_log_crc32c_hw_available(void)
+{
+    pthread_once(&g_crc32c_once, crc32c_init_once);
+    return g_crc32c_use_hw;
+}
+#endif
+
 /* ── little-endian byte helpers ─────────────────────────────────────── */
 
 static void put_u32_le(uint8_t *dst, uint32_t v)

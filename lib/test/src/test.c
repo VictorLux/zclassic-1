@@ -102,6 +102,13 @@ int main(void)
                failures);
         return failures ? 1 : 0;
     }
+    if (only && strcmp(only, "event_log") == 0) {
+        printf("[test] ZCL_TEST_ONLY=event_log — running event-log subset\n");
+        failures += test_event_log();
+        printf("\n=== event_log subset complete: %d failure(s) ===\n",
+               failures);
+        return failures ? 1 : 0;
+    }
     if (only && strcmp(only, "persistence") == 0) {
         printf("[test] ZCL_TEST_ONLY=persistence — running persistence subset\n");
         failures += test_schema_migration();

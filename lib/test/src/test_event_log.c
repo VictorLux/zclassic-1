@@ -699,6 +699,52 @@ done:
     return *failures - start_failures;
 }
 
+/* ── CRC32C implementation dispatch ───────────────────────────────── */
+
+static int run_crc32c_dispatch(int *failures)
+{
+    int start_failures = *failures;
+    enum { LEN = 1u << 20 };
+    uint8_t *buf = malloc(LEN);  // raw-alloc-ok:test-scratch
+    EL_CHECK("crc32c: alloc bench buffer", buf != NULL);
+    if (!buf)
+        return *failures - start_failures;
+    for (size_t i = 0; i < LEN; i++)
+        buf[i] = (uint8_t)(i * 19u + i / 7u + 3u);
+
+    uint32_t sw = event_log_crc32c_test_sw(buf, LEN);
+    uint32_t active = event_log_crc32c_test_active(buf, LEN);
+    EL_CHECK("crc32c: active matches software reference", active == sw);
+
+    bool standalone = getenv("ZCL_EVENT_LOG_BENCH") != NULL;
+    int loops = standalone ? 512 : 16;
+    volatile uint32_t sink = 0;
+    double t0 = mono_sec();
+    for (int i = 0; i < loops; i++)
+        sink ^= event_log_crc32c_test_sw(buf, LEN);
+    double t1 = mono_sec();
+    for (int i = 0; i < loops; i++)
+        sink ^= event_log_crc32c_test_active(buf, LEN);
+    double t2 = mono_sec();
+    double sw_sec = t1 - t0;
+    double active_sec = t2 - t1;
+    double bytes = (double)LEN * (double)loops;
+    double sw_gbs = sw_sec > 0 ? bytes / sw_sec / 1e9 : 0.0;
+    double active_gbs = active_sec > 0 ? bytes / active_sec / 1e9 : 0.0;
+    printf("event_log: crc32c — impl=%s sw=%.2f GB/s active=%.2f GB/s "
+           "(sink=%u)\n",
+           event_log_crc32c_impl(), sw_gbs, active_gbs, (unsigned)sink);
+    if (event_log_crc32c_hw_available())
+        EL_CHECK("crc32c: hardware path selected after self-check",
+                 strcmp(event_log_crc32c_impl(), "hardware-sse4.2") == 0);
+    else
+        EL_CHECK("crc32c: software fallback selected",
+                 strcmp(event_log_crc32c_impl(), "software-table") == 0);
+
+    free(buf);
+    return *failures - start_failures;
+}
+
 int test_event_log(void)
 {
     printf("\n=== event_log tests ===\n");
@@ -712,6 +758,7 @@ int test_event_log(void)
     run_persistence(&failures);
     run_targeted_recovery(&failures);
     run_kill9_fuzz(&failures);
+    run_crc32c_dispatch(&failures);
     run_benchmark(&failures);
 
     printf("event_log: %d failures\n", failures);
