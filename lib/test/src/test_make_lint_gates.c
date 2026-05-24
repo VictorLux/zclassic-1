@@ -1092,6 +1092,43 @@ static int t_cold_import_uses_leveldb_snapshots_contract(void)
     return failures;
 }
 
+static int t_legacy_chainstate_batches_own_callback_buffers(void)
+{
+    int failures = 0;
+    char *buf = NULL;
+    TEST("legacy chainstate import batches own txid and script bytes") {
+        char path[PATH_MAX];
+        ASSERT(repo_path(path, sizeof(path),
+                         "app/services/src/legacy_cold_import.c") == 0);
+        ASSERT(read_entire_file(path, &buf) == 0);
+        ASSERT(strstr(buf, "uint8_t (*txids)[32]") != NULL);
+        ASSERT(strstr(buf, "uint8_t **scripts") != NULL);
+        ASSERT(strstr(buf, "memcpy(c->txids[slot], txid->data, 32)") != NULL);
+        ASSERT(strstr(buf, "zcl_malloc(script_len ? script_len : 1") != NULL);
+        ASSERT(strstr(buf, "memcpy(script_copy, lc->vouts[i].script") != NULL);
+        ASSERT(strstr(buf, ".txid = c->txids[slot]") != NULL);
+        ASSERT(strstr(buf, ".script = script_copy") != NULL);
+        ASSERT(strstr(buf, "lci_chainstate_clear_batch") != NULL);
+        free(buf);
+        buf = NULL;
+
+        ASSERT(repo_path(path, sizeof(path),
+                         "app/services/src/legacy_oneshot_import.c") == 0);
+        ASSERT(read_entire_file(path, &buf) == 0);
+        ASSERT(strstr(buf, "uint8_t (*txids)[32]") != NULL);
+        ASSERT(strstr(buf, "uint8_t **scripts") != NULL);
+        ASSERT(strstr(buf, "memcpy(c->txids[slot], txid->data, 32)") != NULL);
+        ASSERT(strstr(buf, "zcl_malloc(script_len ? script_len : 1") != NULL);
+        ASSERT(strstr(buf, "memcpy(script_copy, lc->vouts[i].script") != NULL);
+        ASSERT(strstr(buf, ".txid = c->txids[slot]") != NULL);
+        ASSERT(strstr(buf, ".script = script_copy") != NULL);
+        ASSERT(strstr(buf, "loi_cs_clear_batch") != NULL);
+        PASS();
+    } _test_next:;
+    free(buf);
+    return failures;
+}
+
 static int t_sha3_window_tool_check_contract(void)
 {
     int failures = 0;
@@ -1231,6 +1268,7 @@ int test_make_lint_gates(void)
     failures += t_cold_import_fails_closed_contract();
     failures += t_cold_import_spotcheck_diagnostics_contract();
     failures += t_cold_import_uses_leveldb_snapshots_contract();
+    failures += t_legacy_chainstate_batches_own_callback_buffers();
     failures += t_sha3_window_tool_check_contract();
     failures += t_block_index_flat_atomic_save_contract();
     failures += t_projection_deferral_is_not_block_rejected_contract();
