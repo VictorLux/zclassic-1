@@ -158,6 +158,13 @@ int main(void)
                failures);
         return failures ? 1 : 0;
     }
+    if (only && strcmp(only, "crypto_registry") == 0) {
+        printf("[test] ZCL_TEST_ONLY=crypto_registry — running crypto registry only\n");
+        failures += test_crypto_registry();
+        printf("\n=== crypto_registry subset complete: %d failure(s) ===\n",
+               failures);
+        return failures ? 1 : 0;
+    }
     if (only && strcmp(only, "rpc_safety") == 0) {
         printf("[test] ZCL_TEST_ONLY=rpc_safety — running RPC safety subset\n");
         failures += test_rpc_safety();

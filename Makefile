@@ -13,7 +13,7 @@ CONFIG_INCLUDES = -Iconfig/include
 CONFIG_SRCS = $(wildcard config/src/*.c)
 
 # Library layer
-LIB_MODULES = bloom chain coins consensus core crypto encoding event framework health kernel \
+LIB_MODULES = bloom chain coins consensus core crypto crypto_registry encoding event framework health kernel \
 	json keys metrics mining net platform policy primitives rpc script storage \
 	support sync util validation wallet sapling zslp znam
 LIB_INCLUDES = $(foreach m,$(LIB_MODULES),-Ilib/$(m)/include)

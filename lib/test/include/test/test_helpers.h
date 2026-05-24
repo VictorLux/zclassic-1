@@ -173,6 +173,7 @@ void test_hex_to_bytes_rev(const char *hex, uint8_t *out, int len);
 
 /* Test group functions — each returns failure count */
 int test_crypto(void);
+int test_crypto_registry(void);
 int test_encoding(void);
 int test_sapling(void);
 int test_script(void);

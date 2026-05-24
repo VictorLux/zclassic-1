@@ -58,6 +58,7 @@
 #include "services/chain_tip_watchdog.h"
 #include "framework/condition.h"
 #include "storage/progress_store.h"
+#include "crypto_registry/crypto_registry.h"
 #include "services/ibd_throttle.h"
 #include "services/mempool_limits.h"
 #include "health/heartbeat.h"
@@ -454,6 +455,8 @@ static const struct dump_entry g_dumpers[] = {
                      "mempool limits: enforce/expire call counts, evicted/expired totals, last-run summary" },
     { "block_pruning", block_pruning_dump_state_json,
                      "block pruning service: files/blocks pruned, bytes reclaimed, lowest height with data" },
+    { "crypto_registry", crypto_registry_dump_state_json,
+                     "registered crypto schemes, statuses, implementations, and kind counts" },
 };
 
 int diagnostics_subsystems_csv(char *out, size_t out_sz)
