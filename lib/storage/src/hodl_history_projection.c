@@ -58,6 +58,10 @@ static bool ensure_schema(sqlite3 *db)
         ")",
         "create hodl_history") &&
         exec_sql(db,
+        "CREATE INDEX IF NOT EXISTS idx_hodl_history_time "
+        "ON hodl_history(time)",
+        "create idx_hodl_history_time") &&
+        exec_sql(db,
         "CREATE TABLE IF NOT EXISTS projection_meta ("
         " k TEXT PRIMARY KEY,"
         " v TEXT NOT NULL"

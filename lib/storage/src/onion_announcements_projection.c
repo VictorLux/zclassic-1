@@ -56,6 +56,10 @@ static bool ensure_schema(sqlite3 *db)
         ") WITHOUT ROWID",
         "create onion_announcements") &&
         exec_sql(db,
+        "CREATE INDEX IF NOT EXISTS idx_onion_announced_at "
+        "ON onion_announcements(announced_at DESC)",
+        "create idx_onion_announced_at") &&
+        exec_sql(db,
         "CREATE TABLE IF NOT EXISTS projection_meta ("
         " k TEXT PRIMARY KEY,"
         " v TEXT NOT NULL"

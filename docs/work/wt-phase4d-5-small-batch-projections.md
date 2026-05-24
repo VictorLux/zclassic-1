@@ -447,6 +447,21 @@ One commit per task (10 commits). Push after Task 4, Task 7, Task 9.
 ## Status
 
 **IN PROGRESS (wt2)** — claimed 2026-05-24.
-Starting with Task 1 event payload ids and serialize/parse helpers.
+
+Progress, 2026-05-24:
+- Task 1 event payload ids plus serialize/parse helpers landed in
+  `0f10cd5f4` (`add small projection event payloads`).
+- Task 2 projection skeletons and SQLite schemas landed in
+  `a177e119d` (`add small projection sqlite skeletons`). Follow-up
+  schema tightening adds the required `idx_onion_announced_at` and
+  `idx_hodl_history_time` indexes with focused test coverage.
+- Task 3 mixed event-log catch-up replay landed in `a4ac396b3`
+  (`replay small projection events`). Rebuilt `test_zcl` and
+  `ZCL_TEST_ONLY=small_projections ./test_zcl` pass with the index
+  checks included.
+
+Next slice: Task 4 reader diagnostics dumps and `zcl_state`
+registration for `contacts_projection`, `onion_announcements_projection`,
+and `hodl_history_projection`.
 
 <!-- Worker: append a Completion section below when done. -->

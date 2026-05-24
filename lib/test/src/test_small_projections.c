@@ -163,6 +163,25 @@ static void sp_tmpdir(char *buf, size_t n, const char *tag)
     mkdir(buf, 0755);
 }
 
+static bool index_exists(const char *db_path, const char *name)
+{
+    sqlite3 *db = NULL;
+    sqlite3_stmt *s = NULL;
+    bool found = false;
+    if (sqlite3_open_v2(db_path, &db, SQLITE_OPEN_READONLY, NULL) != SQLITE_OK)
+        goto done;
+    if (sqlite3_prepare_v2(db,
+            "SELECT 1 FROM sqlite_master WHERE type='index' AND name=?",
+            -1, &s, NULL) != SQLITE_OK)
+        goto done;
+    sqlite3_bind_text(s, 1, name, -1, SQLITE_TRANSIENT);
+    found = sqlite3_step(s) == SQLITE_ROW;
+done:
+    if (s) sqlite3_finalize(s);
+    if (db) sqlite3_close(db);
+    return found;
+}
+
 static int t_projection_skeletons_fresh(void)
 {
     int failures = 0;
@@ -203,6 +222,10 @@ static int t_projection_skeletons_fresh(void)
              onion && onion_ann_projection_count(onion) == 0);
     SP_CHECK("hodl fresh count",
              hodl && hodl_history_projection_count(hodl) == 0);
+    SP_CHECK("onion announced index exists",
+             index_exists(onion_path, "idx_onion_announced_at"));
+    SP_CHECK("hodl time index exists",
+             index_exists(hodl_path, "idx_hodl_history_time"));
     SP_CHECK("contacts fresh catchup",
              contacts && contacts_projection_catch_up(contacts) == 0);
     SP_CHECK("onion fresh catchup",
