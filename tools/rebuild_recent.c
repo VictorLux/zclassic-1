@@ -36,6 +36,7 @@
 #include "storage/blocks_mmap_reader.h"
 #include "storage/event_log.h"
 #include "storage/event_log_payloads.h"
+#include "util/safe_alloc.h"
 #include "primitives/block.h"
 #include "primitives/transaction.h"
 #include "core/serialize.h"
@@ -147,7 +148,12 @@ int main(int argc, char **argv)
     }
     if (tip < 0) { fprintf(stderr, "rebuild_recent: empty index\n"); return 1; }
 
-    int *heights = malloc((size_t)N * sizeof *heights);
+    int *heights = zcl_malloc((size_t)N * sizeof *heights,
+                              "rebuild_recent heights");
+    if (!heights) {
+        fprintf(stderr, "rebuild_recent: heights allocation failed\n");
+        return 1;
+    }
     int collected = 0;
     for (int64_t h = tip; h >= 0 && collected < N; h--) {
         if (map[h].height >= 0) heights[collected++] = (int)h;
