@@ -73,6 +73,32 @@ done:
     return ok;
 }
 
+static bool projection_single_text(const char *db_path, const char *sql,
+                                   char *out, size_t out_sz)
+{
+    sqlite3 *db = NULL;
+    sqlite3_stmt *s = NULL;
+    bool ok = false;
+    if (!out || out_sz == 0)
+        return false;
+    out[0] = '\0';
+    if (sqlite3_open_v2(db_path, &db, SQLITE_OPEN_READONLY, NULL) !=
+        SQLITE_OK)
+        goto done;
+    if (sqlite3_prepare_v2(db, sql, -1, &s, NULL) != SQLITE_OK)
+        goto done;
+    if (sqlite3_step(s) == SQLITE_ROW) {
+        const unsigned char *txt = sqlite3_column_text(s, 0);
+        if (txt)
+            snprintf(out, out_sz, "%s", (const char *)txt);
+        ok = true;
+    }
+done:
+    if (s) sqlite3_finalize(s);
+    if (db) sqlite3_close(db);
+    return ok;
+}
+
 static bool append_wallet_key(event_log_t *log, int idx)
 {
     char address[64];
@@ -89,6 +115,25 @@ static bool append_wallet_key(event_log_t *log, int idx)
     ev.address_len = (uint8_t)strlen(address);
     ev.label = label;
     ev.label_len = (uint8_t)strlen(label);
+    if (!ev_wallet_key_add_serialize(&ev, payload, sizeof(payload), &len))
+        return false;
+    return event_log_append(log, EV_WALLET_KEY_ADD, payload, len) !=
+           UINT64_MAX;
+}
+
+static bool append_wallet_key_with_label(event_log_t *log, const char *label)
+{
+    static const char address[] = "t1WalletPublicDuplicate";
+    uint8_t payload[EV_WALLET_PAYLOAD_MAX];
+    size_t len = 0;
+    struct ev_wallet_key_add ev;
+    memset(&ev, 0, sizeof(ev));
+    fill_seq(ev.pubkey_hash, sizeof(ev.pubkey_hash), 0x5a);
+    ev.created_unix = 1770000000u;
+    ev.address = address;
+    ev.address_len = (uint8_t)strlen(address);
+    ev.label = label;
+    ev.label_len = label ? (uint8_t)strlen(label) : 0;
     if (!ev_wallet_key_add_serialize(&ev, payload, sizeof(payload), &len))
         return false;
     return event_log_append(log, EV_WALLET_KEY_ADD, payload, len) !=
@@ -470,6 +515,69 @@ static int t_projection_catch_up_replay(void)
     return failures;
 }
 
+static int t_replace_on_duplicate_key(void)
+{
+    int failures = 0;
+    char dir[256], elog_path[300], proj_path[300];
+    char label[64];
+    wp_tmpdir(dir, sizeof(dir), "duplicate_key");
+    wp_paths(dir, elog_path, sizeof(elog_path), proj_path, sizeof(proj_path));
+
+    event_log_t *log = event_log_open(elog_path);
+    wallet_projection_t *p = wallet_projection_open(proj_path, log);
+    WP_CHECK("duplicate key open", log && p);
+    WP_CHECK("duplicate key events appended",
+             append_wallet_key_with_label(log, "first") &&
+             append_wallet_key_with_label(log, "second"));
+    WP_CHECK("duplicate key catch up",
+             wallet_projection_catch_up(p) != UINT64_MAX);
+    WP_CHECK("duplicate key count",
+             wallet_projection_address_count(p) == 1);
+    wallet_projection_close(p);
+
+    WP_CHECK("duplicate key final label",
+             projection_single_text(proj_path,
+                 "SELECT label FROM wallet_view_addresses",
+                 label, sizeof(label)) &&
+             strcmp(label, "second") == 0);
+    event_log_close(log);
+    test_cleanup_tmpdir(dir);
+    return failures;
+}
+
+static int t_resume_from_partial_projection(void)
+{
+    int failures = 0;
+    char dir[256], elog_path[300], proj_path[300];
+    wp_tmpdir(dir, sizeof(dir), "partial_resume");
+    wp_paths(dir, elog_path, sizeof(elog_path), proj_path, sizeof(proj_path));
+
+    event_log_t *log = event_log_open(elog_path);
+    wallet_projection_t *p = wallet_projection_open(proj_path, log);
+    WP_CHECK("partial resume open", log && p);
+    bool appended = true;
+    for (int i = 0; i < 50 && appended; i++)
+        appended = append_wallet_tx(log, i);
+    WP_CHECK("partial resume prefix appended", appended);
+    WP_CHECK("partial resume prefix catch up",
+             wallet_projection_catch_up(p) != UINT64_MAX &&
+             wallet_projection_tx_count(p) == 50);
+    wallet_projection_close(p);
+
+    for (int i = 50; i < 100 && appended; i++)
+        appended = append_wallet_tx(log, i);
+    WP_CHECK("partial resume suffix appended", appended);
+    p = wallet_projection_open(proj_path, log);
+    WP_CHECK("partial resume reopen", p != NULL);
+    WP_CHECK("partial resume suffix catch up",
+             wallet_projection_catch_up(p) != UINT64_MAX &&
+             wallet_projection_tx_count(p) == 100);
+    wallet_projection_close(p);
+    event_log_close(log);
+    test_cleanup_tmpdir(dir);
+    return failures;
+}
+
 static int t_emit_helpers_replay_public_view(void)
 {
     int failures = 0;
@@ -620,6 +728,8 @@ int test_wallet_projection(void)
     failures += t_projection_skeleton_open_reopen();
     failures += t_reader_api_aggregates();
     failures += t_projection_catch_up_replay();
+    failures += t_replace_on_duplicate_key();
+    failures += t_resume_from_partial_projection();
     failures += t_emit_helpers_replay_public_view();
     failures += t_model_shadow_emits();
     printf("wallet_projection: %s\n", failures ? "FAIL" : "PASS");

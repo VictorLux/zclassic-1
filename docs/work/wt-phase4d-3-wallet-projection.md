@@ -556,4 +556,10 @@ load; `ZCL_TEST_ONLY=crypto_registry ./test_zcl` passed standalone.
 The assignment remains in progress; next slice is Task 9/10 final
 coverage and verification audit.
 
+2026-05-24 wt2 progress: Task 9 coverage audit filled the remaining
+projection behavior gaps with duplicate-key replacement and partial
+cursor resume tests. `ZCL_TEST_ONLY=wallet_projection ./test_zcl`
+passes with the added cases. The assignment remains in progress; next
+slice is Task 10 final verification and completion block.
+
 <!-- Worker: append a Completion section below when done. -->
