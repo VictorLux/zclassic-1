@@ -259,6 +259,7 @@ const char *watchdog_recovery_type_name(enum watchdog_recovery_type type)
     case 7: return "SYNC_VIOLATION";
     case 8: return "QUEUE_STARVED";
     case 9: return "LOCAL_HEADER_REFILL";
+    case 10: return "SNAPSHOT_RESNAPSHOT";
     }
     return "UNKNOWN";
 }

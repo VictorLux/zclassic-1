@@ -3,12 +3,20 @@
 #include "test/test_helpers.h"
 
 #include "conditions/utxo_activation_paused.h"
+#include "chain/mmb.h"
+#include "chain/mmr.h"
+#include "coins/utxo_commitment.h"
 #include "event/event.h"
 #include "framework/condition.h"
+#include "models/database.h"
 #include "platform/clock.h"
+#include "services/snapshot_sync_service.h"
+#include "services/sync_monitor.h"
 #include "validation/process_block.h"
 
 #include <stdatomic.h>
+#include <sqlite3.h>
+#include <string.h>
 
 #define UAP_CHECK(name, expr) do { \
     printf("utxo_activation_paused: %s... ", (name)); \
@@ -17,8 +25,17 @@
 } while (0)
 
 void register_block_failed_mask_at_tip(void);
+void register_tip_wedged_resnapshot(void);
 void block_failed_mask_at_tip_test_reset(void);
 int block_failed_mask_at_tip_test_stall_type(void);
+void block_failed_mask_at_tip_test_mark_exhausted(int target_height);
+void tip_wedged_resnapshot_test_reset(void);
+void tip_wedged_resnapshot_test_set_runtime(
+    struct node_db *ndb,
+    struct snapshot_sync_service *svc);
+int tip_wedged_resnapshot_test_remedy_calls(void);
+int tip_wedged_resnapshot_test_recovery_accepted(void);
+int tip_wedged_resnapshot_test_last_manifest_height(void);
 
 struct fake_clock {
     _Atomic int64_t wall_ms;
@@ -71,6 +88,7 @@ static void reset_conditions(void)
     process_block_test_set_utxo_activation_paused_height(-1);
     utxo_activation_paused_test_reset();
     block_failed_mask_at_tip_test_reset();
+    tip_wedged_resnapshot_test_reset();
 }
 
 static struct block_index *insert_test_block(struct main_state *ms,
@@ -91,6 +109,77 @@ static struct block_index *insert_test_block(struct main_state *ms,
     if (height > 0)
         bi->pprev = block_map_find(&ms->map_block_index, &hashes[height - 1]);
     return bi;
+}
+
+static void persist_snapshot_roots(struct node_db *ndb,
+                                   const uint8_t block_hash[32],
+                                   const uint8_t chain_work[32])
+{
+    struct mmr mmr;
+    struct mmb mmb;
+    struct mmb_leaf leaf;
+    uint8_t buf[MMB_SERIALIZED_MAX];
+    size_t len;
+
+    mmr_init(&mmr);
+    mmr_append(&mmr, block_hash);
+    len = mmr_serialize(&mmr, buf, sizeof(buf));
+    node_db_state_set(ndb, "mmr_state", buf, len);
+
+    mmb_init(&mmb);
+    mmb_leaf_from_block(&leaf, block_hash, 101, 1234567890, 0x1d00ffff,
+                        block_hash, chain_work);
+    mmb_append(&mmb, &leaf);
+    len = mmb_serialize(&mmb, buf, sizeof(buf));
+    node_db_state_set(ndb, "mmb_state", buf, len);
+}
+
+static bool seed_snapshot_manifest_db(struct node_db *ndb,
+                                      const uint8_t block_hash[32],
+                                      const uint8_t chain_work[32])
+{
+    uint8_t prev_hash[32];
+    uint8_t merkle_root[32];
+    uint8_t nonce[32];
+    uint8_t solution[1] = {0};
+    sqlite3_stmt *st = NULL;
+
+    memset(prev_hash, 0x40, sizeof(prev_hash));
+    memset(merkle_root, 0x42, sizeof(merkle_root));
+    memset(nonce, 0x43, sizeof(nonce));
+
+    if (!node_db_state_set_int(ndb, "tip_height", 101) ||
+        !node_db_state_set(ndb, "tip_hash", block_hash, 32))
+        return false;
+    if (sqlite3_prepare_v2(ndb->db,
+            "INSERT INTO blocks "
+            "(hash,height,prev_hash,version,merkle_root,time,bits,nonce,"
+            "solution,chain_work,status) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,3)",
+            -1, &st, NULL) != SQLITE_OK)
+        return false;
+    sqlite3_bind_blob(st, 1, block_hash, 32, SQLITE_STATIC);
+    sqlite3_bind_int(st, 2, 101);
+    sqlite3_bind_blob(st, 3, prev_hash, 32, SQLITE_STATIC);
+    sqlite3_bind_int(st, 4, 4);
+    sqlite3_bind_blob(st, 5, merkle_root, 32, SQLITE_STATIC);
+    sqlite3_bind_int(st, 6, 1234567890);
+    sqlite3_bind_int(st, 7, 0x1d00ffff);
+    sqlite3_bind_blob(st, 8, nonce, 32, SQLITE_STATIC);
+    sqlite3_bind_blob(st, 9, solution, sizeof(solution), SQLITE_STATIC);
+    sqlite3_bind_blob(st, 10, chain_work, 32, SQLITE_STATIC);
+    bool ok = sqlite3_step(st) == SQLITE_DONE;
+    sqlite3_finalize(st);
+    if (!ok)
+        return false;
+    if (!node_db_exec(ndb,
+            "INSERT INTO utxos "
+            "(txid,vout,value,script,script_type,height,is_coinbase) "
+            "VALUES (X'0102030405060708090A0B0C0D0E0F101112131415161718"
+            "191A1B1C1D1E1F20',0,5000,X'51',0,101,0)"))
+        return false;
+    persist_snapshot_roots(ndb, block_hash, chain_work);
+    return true;
 }
 
 int test_utxo_activation_paused(void)
@@ -206,6 +295,82 @@ int test_utxo_activation_paused(void)
         ok = ok && condition_engine_get_unresolved_count() == 1;
         ok = ok && atomic_load(&operator_events) >= 1;
         UAP_CHECK("max attempts emits operator event", ok);
+        clock_reset_default();
+    }
+
+    {
+        reset_conditions();
+        struct fake_clock clock;
+        fake_clock_install(&clock, 6000);
+        bool ok = true;
+        struct main_state ms;
+        struct block_index tip;
+        struct block_index best_header;
+        struct node_db ndb;
+        struct snapshot_sync_service svc;
+        uint8_t block_hash[32];
+        uint8_t chain_work[32];
+        struct json_value root;
+        const struct json_value *conditions;
+        const struct json_value *condition;
+        const struct json_value *attempts;
+        const struct json_value *last_outcome;
+
+        memset(&tip, 0, sizeof(tip));
+        memset(&best_header, 0, sizeof(best_header));
+        memset(block_hash, 0x51, sizeof(block_hash));
+        memset(chain_work, 0x55, sizeof(chain_work));
+        main_state_init(&ms);
+        tip.nHeight = 100;
+        tip.nStatus = BLOCK_VALID_SCRIPTS | BLOCK_HAVE_DATA;
+        best_header.nHeight = 110;
+        ms.pindex_best_header = &best_header;
+        ok = ok && active_chain_set_tip(&ms.chain_active, &tip);
+
+        ok = ok && node_db_open(&ndb, ":memory:");
+        ok = ok && seed_snapshot_manifest_db(&ndb, block_hash, chain_work);
+        snapsync_init(&svc, &ndb);
+
+        condition_engine_set_main_state(&ms);
+        sync_monitor_init();
+        sync_monitor_set_context(NULL, NULL, &ms);
+        tip_wedged_resnapshot_test_set_runtime(&ndb, &svc);
+        block_failed_mask_at_tip_test_mark_exhausted(101);
+        register_tip_wedged_resnapshot();
+
+        condition_engine_tick();
+        bool observed = true;
+        observed = observed && tip_wedged_resnapshot_test_remedy_calls() == 1;
+        observed = observed && tip_wedged_resnapshot_test_recovery_accepted() == 1;
+        observed = observed &&
+                   tip_wedged_resnapshot_test_last_manifest_height() == 101;
+        observed = observed && svc.state == SNAPSYNC_NEGOTIATING;
+        observed = observed && condition_engine_get_active_count() == 1;
+
+        json_init(&root);
+        json_set_object(&root);
+        bool dump_ok = condition_engine_dump_state_json(&root, NULL);
+        observed = observed && dump_ok;
+        conditions = json_get(&root, "conditions");
+        condition = conditions ? json_at(conditions, 0) : NULL;
+        attempts = condition ? json_get(condition, "attempts") : NULL;
+        last_outcome = condition ? json_get(condition, "last_outcome") : NULL;
+        const struct json_value *name =
+            condition ? json_get(condition, "name") : NULL;
+        observed = observed && condition != NULL;
+        observed = observed && name &&
+                   strcmp(json_get_str(name),
+                          "tip_wedged_resnapshot") == 0;
+        observed = observed && attempts && json_get_int(attempts) == 1;
+        observed = observed && last_outcome &&
+                   strcmp(json_get_str(last_outcome), "ok") == 0;
+        ok = ok && observed;
+        json_free(&root);
+
+        UAP_CHECK("tip_wedged_resnapshot requests snapshot recovery", ok);
+        snapsync_reset(&svc);
+        node_db_close(&ndb);
+        main_state_free(&ms);
         clock_reset_default();
     }
 

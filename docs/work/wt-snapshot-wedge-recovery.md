@@ -6,7 +6,8 @@
 **Vision tie-in:** "wedges unreachable by construction" — if the tip is wedged,
 the node re-snapshots *past* the bad block instead of giving up.
 **Status: IN PROGRESS (wt3)** — PR-0 entry API + runtime local manifest
-builder implemented; PR-1 condition wiring pending.
+builder implemented; PR-1 condition wiring is in progress with simulated
+condition coverage.
 
 ---
 

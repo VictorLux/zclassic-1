@@ -22,6 +22,7 @@ enum watchdog_recovery_type {
     WATCHDOG_SYNC_VIOLATION,
     WATCHDOG_QUEUE_STARVED,
     WATCHDOG_LOCAL_HEADER_REFILL,
+    WATCHDOG_SNAPSHOT_RESNAPSHOT,
 };
 
 struct watchdog_stats {

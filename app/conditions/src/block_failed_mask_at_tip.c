@@ -159,19 +159,52 @@ void register_block_failed_mask_at_tip(void)
     (void)condition_register(&c_block_failed_mask_at_tip);
 }
 
+bool block_failed_mask_at_tip_recovery_exhausted(int *target_height,
+                                                 int *attempts_out)
+{
+    struct condition_state *s = &c_block_failed_mask_at_tip.state;
+    int attempts = atomic_load(&s->attempts);
+    int max_attempts = c_block_failed_mask_at_tip.max_attempts > 0
+        ? c_block_failed_mask_at_tip.max_attempts : 1;
+    bool exhausted = atomic_load(&s->currently_active) &&
+        attempts >= max_attempts &&
+        atomic_load(&s->last_outcome) == COND_REMEDY_FAILED;
+
+    if (target_height)
+        *target_height = (int)atomic_load(&g_target_at_detect);
+    if (attempts_out)
+        *attempts_out = attempts;
+    return exhausted;
+}
+
 #ifdef ZCL_TESTING
 void block_failed_mask_at_tip_test_reset(void)
 {
+    struct condition_state *s = &c_block_failed_mask_at_tip.state;
     atomic_store(&g_target_at_detect, -1);
     atomic_store(&g_tip_height_at_check, -1);
     atomic_store(&g_tip_unchanged_since, 0);
     atomic_store(&g_tip_at_detect, -1);
     atomic_store(&g_tip_age_at_detect, 0);
     atomic_store(&g_stall_type_at_detect, BF_STALL_NONE);
+    atomic_store(&s->attempts, 0);
+    atomic_store(&s->last_outcome, COND_REMEDY_SKIP);
+    atomic_store(&s->currently_active, false);
 }
 
 int block_failed_mask_at_tip_test_stall_type(void)
 {
     return atomic_load(&g_stall_type_at_detect);
+}
+
+void block_failed_mask_at_tip_test_mark_exhausted(int target_height)
+{
+    struct condition_state *s = &c_block_failed_mask_at_tip.state;
+    atomic_store(&g_target_at_detect, target_height);
+    atomic_store(&g_tip_at_detect, target_height - 1);
+    atomic_store(&g_stall_type_at_detect, BF_STALL_FAILED_MASK);
+    atomic_store(&s->currently_active, true);
+    atomic_store(&s->attempts, c_block_failed_mask_at_tip.max_attempts);
+    atomic_store(&s->last_outcome, COND_REMEDY_FAILED);
 }
 #endif
