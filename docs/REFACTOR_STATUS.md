@@ -4,7 +4,7 @@
 > truth for "what's done, what's next, what's blocked." Read this first
 > when you start a session. Full architecture: [`FRAMEWORK.md`](./FRAMEWORK.md).
 
-**Updated:** 2026-05-24 (Phase 4b at 80% — Tasks 1-8 shipped; Phase 4a + 5a-1 + 5a-2 + 4d-2 MERGED; 4c + 6a sub-agents in flight; 5a-3 + 5b-1 + 4d-1/3/4/5 all READY)
+**Updated:** 2026-05-24 (**C-2 CUTOVER COMPLETE** — header_admit AUTHORITATIVE on main; 5a-3 ECDSA rewire 50% by wt3; 4b at 80%; 4c + 6a sub-agents still in flight; C-3 promoted READY)
 
 ---
 
@@ -17,9 +17,9 @@ Phase 2  [██████████] 100%   Wave S SHADOW complete (S-1..S-
   ├ S-5..S-7 [██████████] 100%   body_persist, script_validate, proof_validate ✅
   ├ S-8    [██████████] 100%   utxo_apply shadow (wt3)                ✅ 497220f58
   └ S-9    [██████████] 100%   tip_finalize shadow (wt3)              ✅ 1a65b33c7
-Phase 2 CUTOVER [████░░░░░░]  11%   Flip shadow → authoritative      ← C-2 IN PROGRESS
-  ├ C-2    [████████░░]  75%   header_admit authoritative             🚧 commit 3/4 (659bc3e5a divergence guard); commit 4 = flip default
-  ├ C-3    [░░░░░░░░░░]   0%   validate_headers authoritative          ← spec'd (queued, post C-2)
+Phase 2 CUTOVER [██░░░░░░░░]  22%   Flip shadow → authoritative      ← C-3 NOW READY
+  ├ C-2    [██████████] 100%   header_admit AUTHORITATIVE             ✅ f3f0c6c4e (the flip)
+  ├ C-3    [░░░░░░░░░░]   0%   validate_headers authoritative          ← READY (any worker can claim)
   ├ C-5    [░░░░░░░░░░]   0%   body_persist + delete body_fetch (batch spec, post C-3)
   ├ C-6    [░░░░░░░░░░]   0%   script_validate authoritative (batch spec, post C-5)
   ├ C-7    [░░░░░░░░░░]   0%   proof_validate authoritative (batch spec, post C-6)
@@ -46,12 +46,14 @@ Phase 4  [██████░░░░]  58%   Storage unification — plan: d
 Phase 5  [███░░░░░░░]  29%   Crypto agility + reproducible builds — plan: docs/architecture/phase5-crypto-agility-and-releases.md
   ├ 5a-1   [██████████] 100%   Crypto registry skeleton  ✅ c4bebe0a2 + polish dde0183c7
   ├ 5a-2   [██████████] 100%   First call site rewire: Equihash PoW   ✅ f00be351f (wt2)
-  ├ 5a-3   [░░░░░░░░░░]   0%   script_validate rewire (HOT PATH; ECDSA pubkey_verify)  ← READY
-  └ 5b-1   [░░░░░░░░░░]   0%   flake.nix reproducible build skeleton  ← READY (needs Nix)
+  ├ 5a-3   [█████░░░░░]  50%   script_validate ECDSA rewire (HOT PATH)  🚧 7c2c067a0 by wt3 (Tasks 1+2 done; benchmark + push remain)
+  ├ 5b-1   [░░░░░░░░░░]   0%   flake.nix reproducible build skeleton  ← READY (needs Nix)
+  ├ 5c     [░░░░░░░░░░]   0%   verify-reproducibility target  ← spec'd (queued post 5b-1)
+  └ 5d     [░░░░░░░░░░]   0%   cosign keyless signing  ← spec'd (queued post 5b-1)
 Phase 6  [░░░░░░░░░░]   0%   Determinism + simulator
   ├ 6a     [█░░░░░░░░░]   5%   seed_tape primitive  🚧 sub-agent in flight (isolated worktree)
-  ├ 6b     [░░░░░░░░░░]   0%   postmortem capsule (crash → seed.cap.gz)  ← spec drafted, gated on 6a
-  └ 6c     [░░░░░░░░░░]   0%   simulator harness (chaos CI)  ← spec drafted, gated on 6b
+  ├ 6b     [░░░░░░░░░░]   0%   postmortem capsule (crash → seed.cap.gz)  ← spec'd (queued post 6a)
+  └ 6c     [░░░░░░░░░░]   0%   simulator harness (chaos CI)  ← spec'd (queued post 6b)
 Phase 7  [░░░░░░░░░░]   0%   Frontier (io_uring, hot reload)
 
 All 5 mega-module dissolve plans drafted: docs/dissolve/
