@@ -155,6 +155,9 @@ Summary:
   `thread_registry_spawn_ex()` rather than raw `pthread_create`.
 - Made incomplete parse metadata fail closed: a file with parse allocation
   failure is skipped instead of applying a partial scan.
+- Added `ZCL_BLOCK_SCAN_WORKERS=N` to force a one-worker serial baseline or a
+  specific worker count for benchmark runs, and added parse/apply/worker counts
+  to the `Block file scan` summary line.
 
 Verification:
 - `make -j$(nproc) test_zcl test_parallel zclassic23` PASS
@@ -164,6 +167,13 @@ Verification:
   unrelated/noisy checks: `test_sapling_crypto` timing ratio and
   `test_body_fetch_stage` crash-replay checks. Cold-import scan path did not
   report a failure in that run.
+- Live benchmark attempt 2026-05-24: stopped `zclassicd-rhett.service`, took a
+  clean `/tmp/zcl-legacy-snapshot`, restarted the service, then attempted
+  `ZCL_BLOCK_SCAN_WORKERS=1` cold import. The import failed before block-file
+  marking because the local legacy source fails the baked SHA3 spotcheck:
+  `spotcheck FAILED at window 3028`. This blocks serial/parallel byte-identical
+  proof on this machine until a source datadir matching `g_sha3_windows` is
+  available or the checkpoint table is regenerated intentionally.
 
 Still required before PR-3 completion:
 - Run serial vs parallel cold-import on the live datadir and compare tip hash +

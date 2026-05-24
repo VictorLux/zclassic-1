@@ -819,6 +819,20 @@ static void *scan_parse_worker(void *arg)
 
 static int scan_worker_count(int nfiles)
 {
+    const char *override = getenv("ZCL_BLOCK_SCAN_WORKERS");
+    if (override && override[0]) {
+        char *end = NULL;
+        long requested = strtol(override, &end, 10);
+        if (end && *end == '\0' && requested > 0) {
+            if (requested > nfiles) requested = nfiles;
+            if (requested > 64) requested = 64;
+            if (requested < 1) requested = 1;
+            return (int)requested;
+        }
+        fprintf(stderr, "scan: ignoring invalid ZCL_BLOCK_SCAN_WORKERS=%s\n",
+                override);
+    }
+
     long cpus = sysconf(_SC_NPROCESSORS_ONLN);
     int n = cpus > 0 ? (int)cpus : 1;
     if (n > nfiles) n = nfiles;
@@ -827,11 +841,11 @@ static int scan_worker_count(int nfiles)
     return n;
 }
 
-static void scan_parse_files_parallel(struct boot_scan_file_result *files,
-                                      int nfiles)
+static int scan_parse_files_parallel(struct boot_scan_file_result *files,
+                                     int nfiles)
 {
     if (nfiles <= 0)
-        return;
+        return 0;
 
     int workers = scan_worker_count(nfiles);
     printf("  parallel block-file parse: %d files, %d workers\n",
@@ -839,7 +853,7 @@ static void scan_parse_files_parallel(struct boot_scan_file_result *files,
     if (workers == 1) {
         for (int i = 0; i < nfiles; i++)
             scan_parse_one_file(&files[i]);
-        return;
+        return workers;
     }
 
     pthread_t *threads = zcl_calloc((size_t)workers, sizeof(*threads),
@@ -847,7 +861,7 @@ static void scan_parse_files_parallel(struct boot_scan_file_result *files,
     if (!threads) {
         for (int i = 0; i < nfiles; i++)
             scan_parse_one_file(&files[i]);
-        return;
+        return 1;
     }
 
     struct boot_scan_parallel_ctx ctx = {
@@ -865,11 +879,12 @@ static void scan_parse_files_parallel(struct boot_scan_file_result *files,
         free(threads);
         for (int i = 0; i < nfiles; i++)
             scan_parse_one_file(&files[i]);
-        return;
+        return 1;
     }
     for (int i = 0; i < started; i++)
         pthread_join(threads[i], NULL);
     free(threads);
+    return started;
 }
 
 static struct boot_scan_apply_counts scan_apply_one_file(
@@ -1146,8 +1161,11 @@ int scan_block_files_mark_data(struct main_state *ms, const char *datadir,
         r->file_idx = 255;
     }
 
-    scan_parse_files_parallel(files, nfiles);
+    int64_t parse_t0 = (int64_t)platform_time_wall_time_t();
+    int scan_workers = scan_parse_files_parallel(files, nfiles);
+    int64_t parse_elapsed = (int64_t)platform_time_wall_time_t() - parse_t0;
 
+    int64_t apply_t0 = (int64_t)platform_time_wall_time_t();
     for (int i = 0; i < nfiles; i++) {
         struct boot_scan_file_result *r = &files[i];
         if (!r->ok) {
@@ -1188,6 +1206,7 @@ int scan_block_files_mark_data(struct main_state *ms, const char *datadir,
             printf("  Retry pass %d: %d additional blocks\n", retry + 1, delta);
         }
     }
+    int64_t apply_elapsed = (int64_t)platform_time_wall_time_t() - apply_t0;
 
     /* Resolve orphan pprev links by reading hashPrevBlock from disk.
      * All blocks are now in the map — pprev lookup will succeed for
@@ -1391,8 +1410,11 @@ int scan_block_files_mark_data(struct main_state *ms, const char *datadir,
     }
 
     printf("Block file scan: %d marked, %d created in %llds  "
-           "[index: %zu entries, %zu have data]\n",
+           "[parse=%llds apply=%llds workers=%d index: %zu entries, "
+           "%zu have data]\n",
            marked, created, (long long)elapsed,
+           (long long)parse_elapsed, (long long)apply_elapsed,
+           scan_workers,
            total_entries, have_data_entries);
 
     return marked;
