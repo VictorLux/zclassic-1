@@ -39,6 +39,7 @@ enum crypto_scheme_id {
 
     /* Zero-knowledge proofs */
     CRYPTO_ZK_GROTH16_BLS12_381     = 200,
+    CRYPTO_PROOF_EQUIHASH_200_9     = 201,
 
     /* Sentinel — do not use as a real scheme id. Slot-array size. */
     CRYPTO_SCHEME_MAX               = 1000,

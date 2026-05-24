@@ -18,6 +18,65 @@
 
 #include "test/test_helpers.h"
 #include "crypto_registry/crypto_registry.h"
+#include "crypto/blake2b.h"
+#include "crypto/equihash.h"
+#include "platform/time_compat.h"
+
+static size_t make_equihash_96_5_fixture(uint8_t *input,
+                                         size_t input_cap,
+                                         uint8_t *solution,
+                                         size_t solution_cap)
+{
+    const char *msg = "Equihash is an asymmetric PoW based on the "
+                      "Generalised Birthday problem.";
+    const size_t msg_len = strlen(msg);
+    if (input_cap < msg_len + 32)
+        return 0;
+    memcpy(input, msg, msg_len);
+    memset(input + msg_len, 0, 32);
+    input[msg_len] = 1;
+
+    struct equihash_params ep;
+    equihash_params_init(&ep, 96, 5);
+    eh_index valid_indices[32] = {
+        2261, 15185, 36112, 104243, 23779, 118390, 118332, 130041,
+        32642, 69878, 76925, 80080, 45858, 116805, 92842, 111026,
+        15972, 115059, 85191, 90330, 68190, 122819, 81830, 91132,
+        23460, 49807, 52426, 80391, 69567, 114474, 104973, 122568
+    };
+    size_t sol_len = eh_get_minimal_from_indices(
+        valid_indices, 32, ep.collision_bit_length, solution, solution_cap);
+    return sol_len == 68 ? msg_len + 32 : 0;
+}
+
+static bool equihash_verify_direct(const uint8_t *input, size_t input_len,
+                                   const uint8_t *solution,
+                                   size_t solution_len)
+{
+    unsigned int n = 0;
+    unsigned int k = 0;
+    switch (solution_len) {
+    case 1344: n = 200; k = 9; break;
+    case 400:  n = 192; k = 7; break;
+    case 68:   n = 96;  k = 5; break;
+    case 36:   n = 48;  k = 5; break;
+    default: return false;
+    }
+
+    struct equihash_params ep;
+    equihash_params_init(&ep, n, k);
+    struct blake2b_ctx state;
+    equihash_initialise_state(&ep, &state);
+    blake2b_update(&state, input, input_len);
+    return equihash_is_valid_solution(&ep, &state, solution, solution_len);
+}
+
+static int64_t test_now_ns(void)
+{
+    struct timespec ts;
+    platform_time_monotonic_timespec(&ts);
+    return (int64_t)ts.tv_sec * 1000000000LL + (int64_t)ts.tv_nsec;
+}
 
 int test_crypto_registry(void)
 {
@@ -37,11 +96,13 @@ int test_crypto_registry(void)
         crypto_registry_lookup(CRYPTO_SIG_ECDSA_SECP256K1);
     const struct crypto_scheme *groth =
         crypto_registry_lookup(CRYPTO_ZK_GROTH16_BLS12_381);
-    if (sha && blake && ecdsa && groth &&
-        crypto_registry_count() == 4 &&
+    const struct crypto_scheme *equihash =
+        crypto_registry_lookup(CRYPTO_PROOF_EQUIHASH_200_9);
+    if (sha && blake && ecdsa && groth && equihash &&
+        crypto_registry_count() == 5 &&
         crypto_registry_count_by_kind(CRYPTO_KIND_HASH) == 2 &&
         crypto_registry_count_by_kind(CRYPTO_KIND_SIG) == 1 &&
-        crypto_registry_count_by_kind(CRYPTO_KIND_ZK) == 1) {
+        crypto_registry_count_by_kind(CRYPTO_KIND_ZK) == 2) {
         printf("OK\n");
     } else {
         printf("FAIL (have sha=%d blake=%d ecdsa=%d groth=%d count=%zu)\n",
@@ -168,6 +229,63 @@ int test_crypto_registry(void)
         }
     }
 
+    printf("equihash wrapper verifies known-good fixture... ");
+    {
+        uint8_t input[128];
+        uint8_t solution[68];
+        size_t input_len = make_equihash_96_5_fixture(
+            input, sizeof(input), solution, sizeof(solution));
+        bool ok = input_len > 0 && equihash &&
+                  equihash->fn.zk_verify(NULL, 0, input, input_len,
+                                         solution, sizeof(solution));
+        solution[0] ^= 0x01;
+        bool rejected = equihash &&
+                        !equihash->fn.zk_verify(NULL, 0, input, input_len,
+                                                solution, sizeof(solution));
+        if (ok && rejected)
+            printf("OK\n");
+        else {
+            printf("FAIL\n");
+            failures++;
+        }
+    }
+
+    printf("equihash registry indirection cost... ");
+    {
+        uint8_t input[128];
+        uint8_t solution[68];
+        size_t input_len = make_equihash_96_5_fixture(
+            input, sizeof(input), solution, sizeof(solution));
+        const int iters = 1000;
+        bool ok = input_len > 0 && equihash;
+
+        int64_t t0 = test_now_ns();
+        for (int i = 0; ok && i < iters; i++)
+            ok = equihash_verify_direct(input, input_len,
+                                        solution, sizeof(solution));
+        int64_t t1 = test_now_ns();
+        for (int i = 0; ok && i < iters; i++)
+            ok = equihash->fn.zk_verify(NULL, 0, input, input_len,
+                                        solution, sizeof(solution));
+        int64_t t2 = test_now_ns();
+
+        int64_t direct_ns = t1 - t0;
+        int64_t registry_ns = t2 - t1;
+        int64_t allowed_noise_ns = 5000000;
+        int64_t allowed = direct_ns / 200;
+        if (allowed < allowed_noise_ns)
+            allowed = allowed_noise_ns;
+        bool within_budget = registry_ns <= direct_ns + allowed;
+        if (ok && within_budget)
+            printf("OK (direct=%lldns registry=%lldns)\n",
+                   (long long)direct_ns, (long long)registry_ns);
+        else {
+            printf("FAIL (direct=%lldns registry=%lldns)\n",
+                   (long long)direct_ns, (long long)registry_ns);
+            failures++;
+        }
+    }
+
     printf("diagnostics dump exposes schemes... ");
     {
         struct json_value dump;
@@ -175,8 +293,8 @@ int test_crypto_registry(void)
         bool ok = crypto_registry_dump_state_json(&dump, NULL);
         const struct json_value *total = json_get(&dump, "total_registered");
         const struct json_value *schemes = json_get(&dump, "schemes");
-        ok = ok && total && json_get_int(total) == 4 &&
-             schemes && json_size(schemes) == 4;
+        ok = ok && total && json_get_int(total) == 5 &&
+             schemes && json_size(schemes) == 5;
         json_free(&dump);
         if (ok)
             printf("OK\n");

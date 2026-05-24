@@ -13,9 +13,9 @@
 #include "util/log_macros.h"
 #include "bloom/merkle.h"
 #include "chain/chainparams.h"
-#include "chain/equihash.h"
 #include "chain/pow.h"
 #include "core/uint256.h"
+#include "crypto_registry/crypto_registry.h"
 #include "event/event.h"
 #include "validation/check_transaction.h"
 #include "validation/contextual_check_tx.h"
@@ -27,6 +27,7 @@
 #include <math.h>
 #include <string.h>
 #include "util/safe_alloc.h"
+#include <stdatomic.h>
 
 /* Emit EV_CONSENSUS_REJECT_BLOCK with block hash in the payload.
  * Payload format: "hash=<64hex> reason=<name> dos=<n>".
@@ -63,6 +64,65 @@ static bool check_block_impl(const struct block *block,
                               bool check_merkle_root,
                               bool check_size_limits);
 
+static void write_u32_le_buf(uint8_t **p, uint32_t v)
+{
+    (*p)[0] = (uint8_t)(v & 0xffu);
+    (*p)[1] = (uint8_t)((v >> 8) & 0xffu);
+    (*p)[2] = (uint8_t)((v >> 16) & 0xffu);
+    (*p)[3] = (uint8_t)((v >> 24) & 0xffu);
+    *p += 4;
+}
+
+static void write_i32_le_buf(uint8_t **p, int32_t v)
+{
+    write_u32_le_buf(p, (uint32_t)v);
+}
+
+static bool block_header_equihash_input(const struct block_header *header,
+                                        uint8_t out[BLOCK_HEADER_SIZE])
+{
+    if (!header || !out)
+        return false;
+
+    uint8_t *p = out;
+    write_i32_le_buf(&p, header->nVersion);
+    memcpy(p, header->hashPrevBlock.data, 32); p += 32;
+    memcpy(p, header->hashMerkleRoot.data, 32); p += 32;
+    memcpy(p, header->hashFinalSaplingRoot.data, 32); p += 32;
+    write_u32_le_buf(&p, header->nTime);
+    write_u32_le_buf(&p, header->nBits);
+    memcpy(p, header->nNonce.data, 32); p += 32;
+
+    return (size_t)(p - out) == BLOCK_HEADER_SIZE;
+}
+
+static bool check_equihash_solution_via_registry(
+    const struct block_header *header)
+{
+    static _Atomic(const struct crypto_scheme *) g_equihash_scheme_cache;
+
+    const struct crypto_scheme *scheme =
+        atomic_load(&g_equihash_scheme_cache);
+    if (!scheme) {
+        scheme = crypto_registry_lookup(CRYPTO_PROOF_EQUIHASH_200_9);
+        if (scheme)
+            atomic_store(&g_equihash_scheme_cache, scheme);
+    }
+
+    if (!scheme || !scheme->fn.zk_verify ||
+        scheme->status == CRYPTO_STATUS_RETIRED ||
+        scheme->status == CRYPTO_STATUS_UNREGISTERED) {
+        LOG_FAIL("crypto_registry", "equihash-200-9 scheme unavailable");
+    }
+
+    uint8_t input[BLOCK_HEADER_SIZE];
+    if (!block_header_equihash_input(header, input))
+        return false;
+
+    return scheme->fn.zk_verify(NULL, 0, input, sizeof(input),
+                                header->nSolution, header->nSolutionSize);
+}
+
 /* ── CheckBlockHeader (4 checks) ──────────────────────────────── */
 
 bool check_block_header(const struct block_header *header,
@@ -84,7 +144,7 @@ static bool check_block_header_impl(const struct block_header *header,
               state, 100, "version-too-low");
 
     if (check_pow) {
-        REJECT_IF(!check_equihash_solution(header, params),
+        REJECT_IF(!check_equihash_solution_via_registry(header),
                   state, 100, "invalid-solution");
 
         struct uint256 hash;
