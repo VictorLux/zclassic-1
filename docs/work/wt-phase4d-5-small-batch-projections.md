@@ -446,7 +446,8 @@ One commit per task (10 commits). Push after Task 4, Task 7, Task 9.
 
 ## Status
 
-**IN PROGRESS (wt2)** — claimed 2026-05-24.
+**IMPLEMENTED (wt2)** — claimed 2026-05-24; local verification passed
+2026-05-24. Live diff-tool gate still needs a restarted test instance.
 
 Progress, 2026-05-24:
 - Task 1 event payload ids plus serialize/parse helpers landed in
@@ -475,6 +476,49 @@ Progress, 2026-05-24:
 - Task 7 projection diff tools landed in `68234ade6`
   (`add small projection diff tools`).
 
-Next slice: Task 8/9 coverage and MCP count audit.
+All implementation tasks are complete locally; live diff-tool gate
+remains pending a restarted test instance.
 
 <!-- Worker: append a Completion section below when done. -->
+
+## Completion
+
+Completed locally by wt2 on 2026-05-24.
+
+Commits:
+- `0f10cd5f4` — Task 1, event ids and payload serialize/parse helpers.
+- `a177e119d` — Task 2, projection skeletons and schemas.
+- `b10722950` — Task 2 follow-up, required projection indexes.
+- `a4ac396b3` — Task 3, mixed event-log catch-up replay.
+- `a22d54f9d` — Task 4, diagnostics dumpers.
+- `4a820739a` — Task 4 follow-up, stricter dump counters.
+- `a67a0028c` — Task 5, shadow emits at legacy write sites.
+- `4193ba8ee` — Task 5 follow-up, checked narrowing and emit-counter
+  tests after the final rebase.
+- `b98cadb51` — Task 6, boot open/catch-up/shutdown wiring.
+- `68234ade6` — Tasks 7 and 9, small projection MCP diff tools and
+  controller-count updates.
+- Final verification commit — Task 10, completion note and final lint
+  cleanup after rebasing the parallel rebuild tool.
+
+Verification:
+- `make -j$(nproc)` — PASS.
+- `make lint` — PASS.
+- `make -j$(nproc) test_zcl test_parallel` — PASS.
+- `ZCL_TEST_ONLY=small_projections ./test_zcl` — PASS, 0 failures.
+- `ZCL_TEST_ONLY=mcp_controllers ./test_zcl` — PASS, 0 failures.
+- `ZCL_TEST_ONLY=mcp_e2e ./test_zcl` — PASS, 0 failures.
+- `./test_parallel --jobs=$(nproc)` — PASS, 0/205 groups failed
+  (139.1s wall, 32 workers).
+
+Live diff-tool gate:
+- `/home/rhett/.zclassic-c23-test` RPC probe could not run because no
+  cookie was present.
+- `/home/rhett/.zclassic-c23` RPC probe reached a running node, but the
+  node had not been restarted onto these commits yet and returned
+  `Method not found` for all three new diff RPCs.
+- Required post-restart checks remain:
+  `zcl_contacts_projection_diff`,
+  `zcl_onion_announcements_projection_diff`,
+  `zcl_hodl_history_projection_diff` all returning
+  `{ "match": true, "first_diff": null }`.

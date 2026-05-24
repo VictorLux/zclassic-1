@@ -1575,8 +1575,10 @@ static bool rpc_walletprojectiondiff(const struct json_value *params,
 
 static int64_t diag_count_table(sqlite3 *db, const char *table)
 {
-    if (!db || !table || !table[0])
+    if (!db || !table || !table[0]) {
         LOG_ERR("diag", "projection diff count: invalid table args");
+        return -1;
+    }
     char sql[128];
     snprintf(sql, sizeof(sql), "SELECT COUNT(*) FROM %s", table);
     sqlite3_stmt *s = NULL;
