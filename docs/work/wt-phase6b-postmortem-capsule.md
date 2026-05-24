@@ -312,5 +312,10 @@ the capsule API plus the non-signal save/list/load path.
 - Added focused `test_postmortem` coverage for capture, manifest fields,
   log-tail copy, list, tape load, corruption rejection, and bad argument
   handling.
+- Added the Task 2 seed tape memory codec
+  (`seed_tape_save_to_memory` / `seed_tape_load_from_memory`) and routed
+  postmortem tape capture/replay through it. The current implementation still
+  writes unpacked `.cap` directories, but the tape member now uses the same
+  caller-owned buffer path needed by the future signal-safe capsule writer.
 
 <!-- Worker: append a Completion section below when done. -->

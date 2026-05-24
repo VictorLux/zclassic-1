@@ -2,7 +2,7 @@
  *
  * Unit tests for the seed_tape primitive (lib/sim/src/seed_tape.c).
  *
- * Coverage (10 cases from the assignment spec):
+ * Coverage (11 cases from the assignment spec):
  *   1.  open_close_clean
  *   2.  rng_deterministic
  *   3.  rng_different_seeds_diverge
@@ -13,6 +13,7 @@
  *   8.  save_load_roundtrip
  *   9.  replay_rejects_writes
  *  10.  corruption_detected
+ *  11.  memory_codec_roundtrip
  */
 
 #include "test/test_helpers.h"
@@ -364,6 +365,72 @@ int test_seed_tape(void)
             if (bad) seed_tape_close(bad);
         }
         unlink(g_tmp_path);
+    }
+
+    /* ── 11. memory_codec_roundtrip ──────────────────────────── */
+    {
+        seed_tape_t *rec = seed_tape_open(0x5152535455565758ULL, 42);
+        TAPE_CHECK("memory codec tape open", rec != NULL);
+        if (rec) {
+            seed_tape_advance(rec, 777);
+            uint8_t payload[5] = { 'm', 'e', 'm', 'o', 'k' };
+            seed_tape_inject(rec, 33, payload, sizeof(payload));
+
+            seed_tape_install(rec);
+            uint64_t before_save = rng_u64();
+            seed_tape_uninstall();
+            (void)before_save;
+
+            size_t need = seed_tape_size_bytes(rec);
+            uint8_t small[8];
+            size_t written = 0;
+            TAPE_CHECK("save_to_memory reports required size",
+                       seed_tape_save_to_memory(rec, small, sizeof(small),
+                                                &written) == -ENOSPC &&
+                       written == need);
+
+            uint8_t *buf = (uint8_t *)malloc(need);
+            TAPE_CHECK("malloc memory codec buffer", buf != NULL);
+            if (buf) {
+                TAPE_CHECK("save_to_memory succeeds",
+                           seed_tape_save_to_memory(rec, buf, need,
+                                                    &written) == 0 &&
+                           written == need);
+
+                seed_tape_install(rec);
+                uint64_t expected = rng_u64();
+                seed_tape_uninstall();
+
+                seed_tape_t *rep = seed_tape_load_from_memory(buf, written);
+                TAPE_CHECK("load_from_memory returns non-NULL", rep != NULL);
+                if (rep) {
+                    seed_tape_install(rep);
+                    uint64_t got = rng_u64();
+                    seed_tape_uninstall();
+                    TAPE_CHECK("memory replay RNG resumes",
+                               got == expected);
+
+                    uint8_t type = 0;
+                    uint8_t out[8];
+                    size_t out_len = 0;
+                    int ev = seed_tape_next_event(rep, &type, out,
+                                                  sizeof(out), &out_len);
+                    TAPE_CHECK("memory replay event returns 0", ev == 0);
+                    TAPE_CHECK("memory replay event payload matches",
+                               ev == 0 && type == 33 &&
+                               out_len == sizeof(payload) &&
+                               memcmp(out, payload, sizeof(payload)) == 0);
+                    seed_tape_close(rep);
+                }
+
+                buf[written - 1] ^= 0xff;
+                seed_tape_t *bad = seed_tape_load_from_memory(buf, written);
+                TAPE_CHECK("load_from_memory rejects corruption", bad == NULL);
+                if (bad) seed_tape_close(bad);
+                free(buf);
+            }
+            seed_tape_close(rec);
+        }
     }
 
     /* Always restore default sources at the end. */

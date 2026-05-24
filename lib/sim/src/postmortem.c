@@ -159,7 +159,14 @@ int postmortem_capture_write(const struct postmortem_capture_opts *opts,
 
     char tape_path[576];
     snprintf(tape_path, sizeof(tape_path), "%s/tape.bin", cap_dir);
-    rc = seed_tape_save(opts->tape, tape_path);
+    size_t tape_need = seed_tape_size_bytes(opts->tape);
+    uint8_t *tape_buf = (uint8_t *)zcl_malloc(tape_need, "postmortem.tape");
+    if (!tape_buf) return -ENOMEM;
+    size_t tape_written = 0;
+    rc = seed_tape_save_to_memory(opts->tape, tape_buf, tape_need,
+                                  &tape_written);
+    if (rc == 0) rc = write_bytes_file(tape_path, tape_buf, tape_written);
+    free(tape_buf);
     if (rc != 0) return rc;
 
     char manifest_path[576];
@@ -226,7 +233,41 @@ seed_tape_t *postmortem_capsule_load_tape(const char *capsule_path)
     int n = snprintf(tape_path, sizeof(tape_path), "%s/tape.bin",
                      capsule_path);
     if (n < 0 || (size_t)n >= sizeof(tape_path)) return NULL;
-    return seed_tape_load(tape_path);
+
+    FILE *fp = fopen(tape_path, "rb");
+    if (!fp) return NULL;
+    if (fseek(fp, 0, SEEK_END) != 0) {
+        fclose(fp);
+        return NULL;
+    }
+    long size_l = ftell(fp);
+    if (size_l < 0) {
+        fclose(fp);
+        return NULL;
+    }
+    if (fseek(fp, 0, SEEK_SET) != 0) {
+        fclose(fp);
+        return NULL;
+    }
+    size_t size = (size_t)size_l;
+    if (size == 0) {
+        fclose(fp);
+        return NULL;
+    }
+    uint8_t *buf = (uint8_t *)zcl_malloc(size, "postmortem.tape_load");
+    if (!buf) {
+        fclose(fp);
+        return NULL;
+    }
+    size_t got = fread(buf, 1, size, fp);
+    fclose(fp);
+    if (got != size) {
+        free(buf);
+        return NULL;
+    }
+    seed_tape_t *tape = seed_tape_load_from_memory(buf, size);
+    free(buf);
+    return tape;
 }
 
 bool postmortem_capsule_validate(const char *capsule_path)

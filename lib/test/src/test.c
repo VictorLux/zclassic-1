@@ -232,6 +232,13 @@ int main(void)
                failures);
         return failures ? 1 : 0;
     }
+    if (only && strcmp(only, "seed_tape") == 0) {
+        printf("[test] ZCL_TEST_ONLY=seed_tape — running seed tape only\n");
+        failures += test_seed_tape();
+        printf("\n=== seed_tape subset complete: %d failure(s) ===\n",
+               failures);
+        return failures ? 1 : 0;
+    }
     if (only && strcmp(only, "rpc_safety") == 0) {
         printf("[test] ZCL_TEST_ONLY=rpc_safety — running RPC safety subset\n");
         failures += test_rpc_safety();

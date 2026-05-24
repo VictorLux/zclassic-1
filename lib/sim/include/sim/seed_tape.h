@@ -140,6 +140,19 @@ size_t seed_tape_size_bytes(const seed_tape_t *tape);
  * Returns 0 on success, negative errno on failure. */
 int seed_tape_save(const seed_tape_t *tape, const char *path);
 
+/* Serialize the tape into a caller-owned buffer using the same binary
+ * format as `seed_tape_save`.
+ *
+ * On success, returns 0 and sets `*written_out` to the encoded byte
+ * length. If `out_cap` is too small, returns -ENOSPC and sets
+ * `*written_out` to the required byte length. This API performs no
+ * allocation, making it suitable for the postmortem preallocated
+ * scratch-buffer path. */
+int seed_tape_save_to_memory(const seed_tape_t *tape,
+                             uint8_t *out,
+                             size_t out_cap,
+                             size_t *written_out);
+
 /* Load a tape from disk. Returns NULL on:
  *   - file missing / unreadable
  *   - magic / version mismatch (format drift)
@@ -150,6 +163,10 @@ int seed_tape_save(const seed_tape_t *tape, const char *path);
  * through the recorded values; `seed_tape_advance` /
  * `seed_tape_inject` return -EROFS. */
 seed_tape_t *seed_tape_load(const char *path);
+
+/* Load a tape from a memory buffer encoded by `seed_tape_save` or
+ * `seed_tape_save_to_memory`. The returned tape is in REPLAY mode. */
+seed_tape_t *seed_tape_load_from_memory(const void *data, size_t len);
 
 /* In REPLAY mode, pop the next injected event into the caller's
  * buffer. The simulator dispatches it to whatever handler matches
