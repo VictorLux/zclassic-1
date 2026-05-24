@@ -8,57 +8,48 @@
 
 ---
 
-## OUR GOALS — one binary, four promises
+## OUR GOALS — one static C23 binary, four promises
+
+Honest scoreboard. **MEASURED** = a real number from this box (date + how, in
+[`BENCHMARKS_LOG.md`](./BENCHMARKS_LOG.md)). **TARGET** = where we're going.
+**not measured** = no harness run yet — don't quote a number.
 
 ```
-   ════════════════  Z C L A S S I C 2 3  ════════════════
-        one static C23 binary · no GC · no daemons
+  ⚡ FAST                       measured now      target        state
+     Cold sync to tip          180s  (05-24)      30s           ▸ PR-3 building
+     Warm restart              ~33s  (05-23)      10s           ▸ event-log win landed
+     Validation speed          not measured       fast          run bg-verify + log
+     Stay at tip               AT TIP, 0 gap      keep <1 blk    ✓ synced now
 
-   ⚡  FAST          start cold, reach tip      3 min  ──▶  30 sec
-       ███░░░░░░░░░░░░░░░░░░░░░░░░░░░░  on the way
+  🪶 LEAN
+     Memory (RSS)              2.0 GB (05-24)*     1.0 GB        ▲ crept up — needs work
+     Binary size               14.6 MB (05-24)     stay slim     ✓ met (docs' 26MB stale)
 
-   🪶  LEAN          fit on a small box        1.5 GB  ──▶  1.0 GB
-       ███████████████░░░░░░░░░░░░░░░  binary already 15 MB ✓
+  💪 UNBREAKABLE
+     Wedge/crash recovery      180s, manual        <60s, auto    ▸ PR-0 building (wt3)
+     Uptime before failure     not measured        30 days       needs a soak (up ~10min)
+     Alerts to a human         not measured        0 / month     10 Conditions live, self-heal
 
-   💪  UNBREAKABLE   heal itself, no operator   manual  ──▶  automatic
-       █████████████░░░░░░░░░░░░░░░░░  self-heal building now
-
-   🔬  HONEST        any bug, reproduce it       hours  ──▶  1 seed
-       ██████████░░░░░░░░░░░░░░░░░░░░  replay simulator
-
-   ════════════════════════════════════════════════════════
+  🔬 HONEST
+     Bug → reproducible fix    not built           1 seed-tape   simulator pending
 ```
+`*` RSS was 1.5 GB earlier today; **2.0 GB after cold-import** — a real
+regression to chase, not a win. `✓` met · `▸` work in flight · `▲` regressed.
 
-**When you finish a task, say which promise you moved.** The four promises
-break into 10 measured numbers (the contract agents aim at):
+**When you finish a task, name the goal you moved and the measured delta**
+(e.g. "warm restart 33s→29s"), then add a row to BENCHMARKS_LOG.md.
 
-| # | Number | now ──▶ goal | promise |
-|---|---|---|---|
-| 1 | Cold sync to tip | 180s ─▶ 30s | ⚡ |
-| 2 | Warm restart | 33s ─▶ 10s | ⚡ |
-| 4 | Validation speed | cold ─▶ 5k blk/s | ⚡ |
-| 5 | New-block latency | n/a ─▶ <250ms | ⚡ |
-| 3 | Memory (RSS) | 1.5GB ─▶ 1.0GB | 🪶 |
-| 9 | Binary size | 14.6MB ─▶ slim ✓ | 🪶 |
-| 6 | Crash/wedge recovery | 180s ─▶ <60s | 💪 |
-| 7 | Uptime before failure | 5.5d ─▶ 30d | 💪 |
-| 8 | Alerts to a human | some ─▶ 0/mo | 💪 |
-| 10 | Bug → reproducible fix | hours ─▶ 1 seed | 🔬 |
+### Who's moving what right now
 
-*Live-measured: #3 RSS, #9 binary. Rest are estimates → run a harness and log it
-in [`BENCHMARKS_LOG.md`](./BENCHMARKS_LOG.md). The "now" column comes from there.*
-
-### What's moving each number right now
-
-| Work | Number |
-|---|---|
-| PR-3 parallel blk*.dat marking *(claimable, profiled)* | **#1** |
-| Snapshot wedge-recovery *(wt3 building)* | **#6** #5 |
-| Cutover C-5→C-9 authoritative | #1 #4 #5 #6 |
-| 4e bodies-into-log + 4d projections | **#2** #6 |
-| Phase-3 dissolves (header_probe ✅, chain_restore, utxo_recovery) | **#3** #7 |
-| More self-heal Conditions | **#8** #7 |
-| Phase-6 postmortem + simulator | **#10** |
+| Work | Goal | Who |
+|---|---|---|
+| PR-3 parallel blk*.dat marking (cold-import 101s→seconds) | Cold sync | wt2 |
+| PR-0 snapshot wedge-recovery (auto-heal a stuck tip) | Recovery | wt3 |
+| Cutover C-5→C-9 authoritative | Cold sync, validation, recovery | — |
+| 4e bodies-into-log + 4d projections | Warm restart, recovery | — |
+| Phase-3 dissolves (header_probe ✅, chain_restore, utxo_recovery) | Memory, uptime | — |
+| More self-heal Conditions | Alerts, uptime | — |
+| Phase-6 postmortem + simulator | Bug→fix | — |
 
 ---
 

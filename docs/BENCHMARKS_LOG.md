@@ -31,6 +31,8 @@ Format: `date | commit | benchmark | value | how measured / notes`
 | 2026-05-24 | be5e90b05 | #6 kill-9 recovery | — | not measured |
 | 2026-05-24 | 941b9803d | #1 cold sync (LDB→bootable tip) | ~180s | live cold-import recovery from wedge. **blk*.dat marking = 101s (THE bottleneck), single-threaded**; then wallet backfill + utxo + mmb ~80s. RPC up at tip 3,123,688. This is the path PR-3 (parallel io_uring import) must replace — cf. the 5.6s rebuild_recent prototype (reformat only, no validation, not bootable). |
 | 2026-05-24 | 941b9803d | #6 wedge recovery (cold-import) | ~180s + restart | a single stale BLOCK_FAILED_VALID wedged the tip; restart did NOT clear it; cold-import did. Target <60s via PR-0 in-place snapshot recovery. |
+| 2026-05-24 | 319596f0d | #3 RSS | 2.02 GB | `/proc/PID/VmRSS` after cold-import + warm restart, up ~10min, at tip. **Regression vs 1.5GB earlier today** — post-cold-import RSS higher; investigate. Target ≤1.0GB. |
+| 2026-05-24 | 319596f0d | #5 stay-at-tip | 0-block gap | `getblockchaininfo`: blocks==headers==3,123,688. Node fully synced. Latency-to-new-block not yet harnessed. |
 | 2026-05-24 | be5e90b05 | #7 MTBF | — | uptime only 990s (recent restart); needs a soak to measure |
 | 2026-05-24 | be5e90b05 | #8 operator pages | 6/10 conditions active, 1 critical failing | `zcl_conditions` — self-heal degraded right now |
 
