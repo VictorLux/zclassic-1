@@ -64,23 +64,40 @@ dep). Folds into the existing Phase 7a plan
 
 ---
 
-## PR-3 — Parallel segmented rebuild for cold-import / fast-sync  (spec; Phase 8)
+## PR-3 — Parallel io_uring blk*.dat marking in cold-import  ← PROMOTED, profile in hand
 
-The prototype hit ~2 GB/s (NVMe write floor) by sharding the chain into
-independent segments, each with its own io_uring ring + output file — this is
-the **Phase 8 segmentation** shape. Wire this into the cold-import / fast-sync
-path so a fresh node reaches tip in seconds (benchmark #1: 145s → target 60s,
-stretch 30s).
+**Measured 2026-05-24 (`941b9803d`, live cold-import recovery):** total ~180s,
+of which **`blk*.dat` marking = 101s, single-threaded** ("Block file scan:
+3126097 marked … in 101s"). That scan reads every legacy block file to populate
+`block_index` BLOCK_HAVE_DATA — it is THE bottleneck and it's embarrassingly
+parallel. The prototype already proved the fix on this exact data: independent
+io_uring segments + hardware CRC hit ~2 GB/s (NVMe floor), whole chain in 5.6s.
+
+**Target:** turn the 101s scan into seconds by sharding it the way
+`tools/rebuild_recent.c` shards (own ring + own range per worker, dynamic
+schedule, `nthreads*2` segments). Find the scan in the cold-import path
+(`-cold-import` → block-file marking; grep the "Block file scan" / "marked …
+created" log emit) and parallelize the per-file mark + header-fix.
 
 **Subtleties to respect (NOT prototype shortcuts):**
-- The prototype skips consensus validation (it only reformats). Production
-  cold-import must preserve validation semantics OR only use the fast path for
-  the already-trusted SHA3-snapshot range, delta-validating the tail.
-- Output as segments aligns with `docs/architecture/phase8-log-compaction-and-retention.md`;
-  if a single `event.log` is required, add the offset-fixup concat pass
-  (shift each segment's sentinel offsets by its file position).
+- The prototype skips consensus validation (it only reformats). The marking pass
+  itself doesn't validate signatures, but it MUST preserve the exact
+  block_index/BLOCK_HAVE_DATA semantics and orphan-resolution the serial path
+  produces (the import log showed an orphan-pprev resolve + ancestry recompute
+  pass — those must still run and agree).
+- Shards write disjoint block_index rows; reconcile the ancestry/heights pass
+  once at the end (it already runs as a post-step — keep it).
+- Measure honestly: report the scan phase separately from wallet backfill + mmb
+  (the other ~80s — separate optimization, separate PR if pursued).
 
-**Gated on:** PR-2 + Phase 8 segmented-log reader. Bigger; spec to be expanded.
+**Acceptance:**
+- [ ] Cold-import produces a byte-identical bootable datadir (same tip hash,
+      same utxo_sha3) as the serial path — diff against a serial run.
+- [ ] `blk*.dat` marking phase wall-time recorded before/after in BENCHMARKS_LOG.
+- [ ] `./test_parallel --jobs=$(nproc)` PASS.
+
+**No longer gated** — this is independent of PR-2 (different code path: cold-import
+marking, not the live event-log appender). Claim it.
 
 ---
 
@@ -90,7 +107,8 @@ stretch 30s).
 Benchmark moved: production event-log CRC32C now dispatches to SSE4.2 after a
 software-reference self-check; measured active CRC throughput moved from
 0.60 GB/s software to 12.99 GB/s hardware on this box.
-PR-2/PR-3 spec'd, gated.
+**PR-3 PROMOTED + claimable** — live profile in hand (blk*.dat marking = 101s of
+~180s cold-import). PR-2 (io_uring bulk-append) still spec'd.
 One commit per task; push direct to main; `./test_parallel` before pushing.
 
 <!-- Worker: append a Completion section with the "Benchmark moved" line. -->
