@@ -212,6 +212,9 @@ enum snapsync_offer_result snapsync_handle_offer(
 bool snapsync_request_recovery(struct snapshot_sync_service *svc,
                                int32_t target_height,
                                const struct snapshot_offer_params *manifest);
+bool snapsync_build_local_recovery_manifest(struct node_db *ndb,
+                                            struct snapshot_offer_params *out,
+                                            uint32_t peer_id);
 bool snapsync_parse_offer_params(struct snapshot_offer_params *params,
                                  struct byte_stream *s);
 bool snapsync_parse_fc_response(struct fc_response *resp,

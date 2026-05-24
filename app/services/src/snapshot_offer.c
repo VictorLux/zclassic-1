@@ -12,6 +12,8 @@
 #include "services/snapshot_sync_service.h"
 #include "services/snapshot_manifest.h"
 #include "services/chain_advance_coordinator.h"
+#include "chain/mmb.h"
+#include "chain/mmr.h"
 #include "net/fast_sync.h"
 #include "core/random.h"
 #include "crypto/sha3.h"
@@ -19,6 +21,7 @@
 #include "config/runtime.h"
 #include "util/log_macros.h"
 #include "util/ar_step_readonly.h"
+#include "validation/sync_evidence_policy.h"
 #include "core/serialize.h"
 
 #include "snapshot_sync_internal.h"
@@ -26,6 +29,97 @@
 #include <string.h>
 #include <stdio.h>
 #include <stdint.h>
+#include <limits.h>
+
+static bool snapsync_bytes32_nonzero_internal(const uint8_t b[32])
+{
+    if (!b)
+        return false;
+    for (int i = 0; i < 32; i++) {
+        if (b[i] != 0)
+            return true;
+    }
+    return false;
+}
+
+static bool snapsync_read_i64_state_internal(struct node_db *ndb,
+                                             const char *key,
+                                             int64_t *out)
+{
+    uint8_t buf[8] = {0};
+    size_t len = 0;
+
+    if (!ndb || !key || !out)
+        return false;
+    if (!node_db_state_get(ndb, key, buf, sizeof(buf), &len) ||
+        len == 0 || len > sizeof(buf))
+        return false;
+    memcpy(out, buf, len);
+    return true;
+}
+
+static bool snapsync_load_state_mmr_root_internal(struct node_db *ndb,
+                                                  uint8_t out[32])
+{
+    uint8_t buf[MMR_SERIALIZED_MAX];
+    size_t len = 0;
+    struct mmr m;
+
+    if (!ndb || !out)
+        return false;
+    memset(buf, 0, sizeof(buf));
+    if (!node_db_state_get(ndb, "mmr_state", buf, sizeof(buf), &len) ||
+        len < 12 ||
+        !mmr_deserialize(&m, buf, len) ||
+        m.num_leaves == 0)
+        return false;
+    mmr_root(&m, out);
+    return snapsync_bytes32_nonzero_internal(out);
+}
+
+static bool snapsync_load_state_mmb_root_internal(struct node_db *ndb,
+                                                  uint8_t out[32])
+{
+    uint8_t buf[MMB_SERIALIZED_MAX];
+    size_t len = 0;
+    struct mmb m;
+
+    if (!ndb || !out)
+        return false;
+    memset(buf, 0, sizeof(buf));
+    if (!node_db_state_get(ndb, "mmb_state", buf, sizeof(buf), &len) ||
+        len < 13 ||
+        !mmb_deserialize(&m, buf, len) ||
+        m.num_leaves == 0)
+        return false;
+    mmb_root(&m, out);
+    return snapsync_bytes32_nonzero_internal(out);
+}
+
+static bool snapsync_read_tip_chainwork_internal(struct node_db *ndb,
+                                                 const uint8_t hash[32],
+                                                 uint8_t chain_work[32])
+{
+    sqlite3_stmt *s = NULL;
+    bool ok = false;
+
+    if (!ndb || !ndb->open || !hash || !chain_work)
+        return false;
+    if (sqlite3_prepare_v2(ndb->db,
+            "SELECT chain_work FROM blocks WHERE hash=?",
+            -1, &s, NULL) != SQLITE_OK || !s)
+        return false;
+    sqlite3_bind_blob(s, 1, hash, 32, SQLITE_STATIC);
+    if (AR_STEP_ROW_READONLY(s) == SQLITE_ROW) {
+        const void *cw = sqlite3_column_blob(s, 0);
+        if (cw && sqlite3_column_bytes(s, 0) >= 32) {
+            memcpy(chain_work, cw, 32);
+            ok = !zcl_chainwork_is_zero(chain_work);
+        }
+    }
+    sqlite3_finalize(s);
+    return ok;
+}
 
 enum snapsync_offer_result snapsync_offer_result_from_manifest_internal(
     enum snapshot_manifest_result result)
@@ -85,6 +179,58 @@ void snapsync_params_from_manifest_internal(struct snapshot_offer_params *p,
     p->protocol_version = m->protocol_version;
     p->snapshot_schema_version = m->snapshot_schema_version;
     p->peer_tip_height = m->peer_tip_height;
+}
+
+bool snapsync_build_local_recovery_manifest(struct node_db *ndb,
+                                            struct snapshot_offer_params *out,
+                                            uint32_t peer_id)
+{
+    int64_t tip_height = 0;
+    size_t hash_len = 0;
+    uint64_t utxo_count = 0;
+
+    if (!ndb || !ndb->open || !out)
+        return false;
+
+    memset(out, 0, sizeof(*out));
+    if (!snapsync_read_i64_state_internal(ndb, "tip_height", &tip_height) ||
+        tip_height <= 0 || tip_height > INT32_MAX)
+        return false;
+    out->height = (int32_t)tip_height;
+    out->peer_tip_height = out->height;
+    out->our_height = out->height;
+    out->peer_id = peer_id;
+    out->protocol_version = FAST_SYNC_PROTOCOL_VERSION;
+    out->snapshot_schema_version = FAST_SYNC_SNAPSHOT_SCHEMA_VERSION;
+
+    if (!node_db_state_get(ndb, "tip_hash", out->block_hash, 32,
+                           &hash_len) ||
+        hash_len != 32 ||
+        !snapsync_bytes32_nonzero_internal(out->block_hash))
+        return false;
+    if (!snapsync_read_tip_chainwork_internal(ndb, out->block_hash,
+                                              out->chain_work))
+        return false;
+    if (!snapsync_load_state_mmr_root_internal(ndb, out->mmr_root) ||
+        !snapsync_load_state_mmb_root_internal(ndb, out->mmb_root))
+        return false;
+
+    fast_sync_compute_utxo_root_db(ndb->db, out->utxo_root);
+    if (!snapsync_bytes32_nonzero_internal(out->utxo_root))
+        return false;
+
+    sqlite3_stmt *s = NULL;
+    if (sqlite3_prepare_v2(ndb->db, "SELECT count(*) FROM utxos",
+                           -1, &s, NULL) != SQLITE_OK || !s)
+        return false;
+    if (AR_STEP_ROW_READONLY(s) == SQLITE_ROW)
+        utxo_count = (uint64_t)sqlite3_column_int64(s, 0);
+    sqlite3_finalize(s);
+    if (utxo_count == 0)
+        return false;
+    out->num_utxos = utxo_count;
+    out->total_bytes = utxo_count * 80;
+    return true;
 }
 
 /* ── Accept Offer ────────────────────────────────────────── */

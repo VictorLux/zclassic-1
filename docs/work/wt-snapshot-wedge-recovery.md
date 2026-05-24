@@ -5,8 +5,8 @@
 **Moves benchmarks:** #6 kill-9 / wedge recovery (360s → <60s), #5 tip keep-up
 **Vision tie-in:** "wedges unreachable by construction" — if the tip is wedged,
 the node re-snapshots *past* the bad block instead of giving up.
-**Status: IN PROGRESS (wt3)** — PR-0 entry API slice implemented;
-runtime local-snapshot manifest builder still pending.
+**Status: IN PROGRESS (wt3)** — PR-0 entry API + runtime local manifest
+builder implemented; PR-1 condition wiring pending.
 
 ---
 

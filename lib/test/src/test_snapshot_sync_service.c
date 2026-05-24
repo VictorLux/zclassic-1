@@ -11,6 +11,7 @@
 #include "net/fast_sync.h"
 #include "net/net.h"
 #include "chain/mmb.h"
+#include "chain/mmr.h"
 #include "validation/main_state.h"
 #include <string.h>
 #include <pthread.h>
@@ -1307,6 +1308,116 @@ static int test_snapshot_recovery_request_rejects_unverified_manifest(void)
     return failures;
 }
 
+static void persist_test_roots(struct node_db *ndb,
+                               const uint8_t block_hash[32],
+                               const uint8_t chain_work[32])
+{
+    struct mmr mmr;
+    struct mmb mmb;
+    struct mmb_leaf leaf;
+    uint8_t buf[MMB_SERIALIZED_MAX];
+    size_t len;
+
+    mmr_init(&mmr);
+    mmr_append(&mmr, block_hash);
+    len = mmr_serialize(&mmr, buf, sizeof(buf));
+    node_db_state_set(ndb, "mmr_state", buf, len);
+
+    mmb_init(&mmb);
+    mmb_leaf_from_block(&leaf, block_hash, 1, 1234567890, 0x1d00ffff,
+                        block_hash, chain_work);
+    mmb_append(&mmb, &leaf);
+    len = mmb_serialize(&mmb, buf, sizeof(buf));
+    node_db_state_set(ndb, "mmb_state", buf, len);
+}
+
+static int test_snapshot_local_recovery_manifest_builder(void)
+{
+    int failures = 0;
+
+    TEST("snapshot local recovery manifest binds runtime db roots") {
+        struct node_db ndb;
+        struct snapshot_offer_params params;
+        struct snapshot_manifest manifest;
+        uint8_t block_hash[32];
+        uint8_t prev_hash[32];
+        uint8_t merkle_root[32];
+        uint8_t nonce[32];
+        uint8_t solution[1] = {0};
+        uint8_t chain_work[32];
+        uint8_t expected_root[32];
+        uint64_t expected_count = 0;
+
+        memset(block_hash, 0x41, sizeof(block_hash));
+        memset(prev_hash, 0x40, sizeof(prev_hash));
+        memset(merkle_root, 0x42, sizeof(merkle_root));
+        memset(nonce, 0x43, sizeof(nonce));
+        memset(chain_work, 0x55, sizeof(chain_work));
+
+        ASSERT(node_db_open(&ndb, ":memory:"));
+        ASSERT(node_db_state_set_int(&ndb, "tip_height", 1));
+        ASSERT(node_db_state_set(&ndb, "tip_hash", block_hash, 32));
+
+        sqlite3_stmt *st = NULL;
+        ASSERT(sqlite3_prepare_v2(ndb.db,
+            "INSERT INTO blocks "
+            "(hash,height,prev_hash,version,merkle_root,time,bits,nonce,"
+            "solution,chain_work,status) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,3)",
+            -1, &st, NULL) == SQLITE_OK);
+        sqlite3_bind_blob(st, 1, block_hash, 32, SQLITE_STATIC);
+        sqlite3_bind_int(st, 2, 1);
+        sqlite3_bind_blob(st, 3, prev_hash, 32, SQLITE_STATIC);
+        sqlite3_bind_int(st, 4, 4);
+        sqlite3_bind_blob(st, 5, merkle_root, 32, SQLITE_STATIC);
+        sqlite3_bind_int(st, 6, 1234567890);
+        sqlite3_bind_int(st, 7, 0x1d00ffff);
+        sqlite3_bind_blob(st, 8, nonce, 32, SQLITE_STATIC);
+        sqlite3_bind_blob(st, 9, solution, sizeof(solution), SQLITE_STATIC);
+        sqlite3_bind_blob(st, 10, chain_work, 32, SQLITE_STATIC);
+        ASSERT(sqlite3_step(st) == SQLITE_DONE);
+        sqlite3_finalize(st);
+
+        ASSERT(node_db_exec(&ndb,
+            "INSERT INTO utxos "
+            "(txid,vout,value,script,script_type,height,is_coinbase) "
+            "VALUES (X'0102030405060708090A0B0C0D0E0F101112131415161718"
+            "191A1B1C1D1E1F20',0,5000,X'51',0,1,0)"));
+
+        ASSERT(!snapsync_build_local_recovery_manifest(&ndb, &params, 0));
+        persist_test_roots(&ndb, block_hash, chain_work);
+        ASSERT(snapsync_build_local_recovery_manifest(&ndb, &params, 0));
+
+        utxo_commitment_sha3_compute(ndb.db, expected_root, &expected_count);
+        ASSERT(params.height == 1);
+        ASSERT(params.peer_tip_height == 1);
+        ASSERT(params.num_utxos == expected_count);
+        ASSERT(memcmp(params.utxo_root, expected_root, 32) == 0);
+        ASSERT(memcmp(params.block_hash, block_hash, 32) == 0);
+        ASSERT(memcmp(params.chain_work, chain_work, 32) == 0);
+
+        memset(&manifest, 0, sizeof(manifest));
+        manifest.height = params.height;
+        memcpy(manifest.block_hash, params.block_hash, 32);
+        memcpy(manifest.utxo_root, params.utxo_root, 32);
+        memcpy(manifest.mmr_root, params.mmr_root, 32);
+        memcpy(manifest.mmb_root, params.mmb_root, 32);
+        memcpy(manifest.chain_work, params.chain_work, 32);
+        manifest.num_utxos = params.num_utxos;
+        manifest.total_bytes = params.total_bytes;
+        manifest.protocol_version = params.protocol_version;
+        manifest.snapshot_schema_version = params.snapshot_schema_version;
+        manifest.peer_tip_height = params.peer_tip_height;
+        ASSERT(snapshot_manifest_validate_recovery(&manifest, 1) ==
+               SNAPSHOT_MANIFEST_OK);
+
+        node_db_close(&ndb);
+        PASS();
+    } _test_next:;
+
+    return failures;
+}
+
 static int test_snapshot_blacklist_add_query(void)
 {
     int failures = 0;
@@ -1459,6 +1570,7 @@ int test_snapshot_sync_service(void)
     failures += test_snapshot_accept_offer_with_real_utxos();
     failures += test_snapshot_recovery_request_allows_populated_utxos();
     failures += test_snapshot_recovery_request_rejects_unverified_manifest();
+    failures += test_snapshot_local_recovery_manifest_builder();
     failures += test_snapshot_blacklist_add_query();
     failures += test_snapshot_blacklist_zero_peer();
     failures += test_snapshot_blacklist_refresh();
