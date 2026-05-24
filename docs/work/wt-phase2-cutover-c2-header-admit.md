@@ -200,3 +200,27 @@ Recommend wt3 (most familiar with Wave S stages). Any worker may
 claim by marking IN PROGRESS (wt<N>).
 
 <!-- Worker: append a Completion section below when done. -->
+
+---
+
+## Completion — 2026-05-24
+
+**DONE (wt3):** Commit 4 landed locally — `header_admit` now defaults to
+`HEADER_ADMIT_MODE_AUTHORITATIVE`.
+
+Changed:
+- `app/services/src/header_admit_stage.c` default mode flipped from SHADOW to
+  AUTHORITATIVE.
+- `lib/test/src/test_header_admit_stage.c` updated to assert the new default
+  while preserving the invalid-mode coercion check.
+
+Verification:
+- `make -j$(nproc)` PASS.
+- `make lint` PASS.
+- `ZCL_TEST_ONLY=event ./test_zcl` PASS.
+- `ZCL_TEST_ONLY=mcp_e2e ./test_zcl` PASS.
+- `./test_parallel --jobs=$(nproc)` was rerun after rebase; full parallel
+  runner still reports unrelated flaky groups (`test_mcp_e2e` in parallel,
+  and once `test_event`, once `test_sapling_crypto` timing). The directly
+  relevant/default-mode tests pass and the flaking groups pass or fail outside
+  this change's touched paths.

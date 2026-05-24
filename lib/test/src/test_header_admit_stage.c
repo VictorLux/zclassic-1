@@ -166,14 +166,14 @@ int test_header_admit_stage(void)
 
     blocker_module_init();
 
-    /* ── cutover mode defaults to SHADOW ──────────────────────────── */
+    /* ── cutover mode defaults to AUTHORITATIVE ───────────────────── */
     {
-        header_admit_set_mode(HEADER_ADMIT_MODE_SHADOW);
-        HA_CHECK("mode defaults to SHADOW",
-                 header_admit_get_mode() == HEADER_ADMIT_MODE_SHADOW);
+        HA_CHECK("mode defaults to AUTHORITATIVE",
+                 header_admit_get_mode() == HEADER_ADMIT_MODE_AUTHORITATIVE);
         header_admit_set_mode((header_admit_mode_t)999);
         HA_CHECK("invalid mode coerces to SHADOW",
                  header_admit_get_mode() == HEADER_ADMIT_MODE_SHADOW);
+        header_admit_set_mode(HEADER_ADMIT_MODE_AUTHORITATIVE);
     }
 
     /* ── happy path: drain a 5-block synthetic chain ───────────────── */

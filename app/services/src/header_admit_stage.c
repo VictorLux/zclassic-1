@@ -41,7 +41,7 @@ static _Atomic uint64_t g_inbox_logged_total = 0;
 static _Atomic int64_t  g_last_admit_height = -1;
 static _Atomic int64_t  g_last_step_unix = 0;
 static _Atomic int64_t  g_last_blocked_unix = 0;
-static _Atomic header_admit_mode_t g_mode = HEADER_ADMIT_MODE_SHADOW;
+static _Atomic header_admit_mode_t g_mode = HEADER_ADMIT_MODE_AUTHORITATIVE;
 #ifdef ZCL_TESTING
 static header_admit_authoritative_hook g_authoritative_hook = NULL;
 static void *g_authoritative_hook_user = NULL;
