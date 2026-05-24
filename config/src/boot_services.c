@@ -39,6 +39,8 @@
 #include "net/connman.h"
 #include "config/boot_snapshot_import.h"
 #include "storage/disk_block_io.h"
+#include "storage/event_log.h"
+#include "storage/peers_projection.h"
 #include "storage/progress_store.h"
 #include "models/block.h"
 #include "models/utxo.h"
@@ -118,6 +120,9 @@ extern void msg_version_set_external_ip(const char *ip_str, uint16_t port);
 #include "mcp/metrics.h"
 
 extern int g_deferred_proof_validation_below_height;
+
+static event_log_t *g_phase4_event_log;
+static peers_projection_t *g_phase4_peers_projection;
 
 /* Module-local pointer to boot context (set once by app_init_services) */
 static struct boot_svc_ctx *S;
@@ -1644,6 +1649,61 @@ static bool boot_start_catchup_service(struct boot_svc_ctx *svc,
                                           svc->wallet, datadir);
 }
 
+static void boot_start_phase4_storage_shadow(const char *datadir)
+{
+    if (!datadir || !datadir[0])
+        return;
+    char event_path[PATH_MAX];
+    char peers_path[PATH_MAX];
+    int n1 = snprintf(event_path, sizeof(event_path), "%s/event_log.dat",
+                      datadir);
+    int n2 = snprintf(peers_path, sizeof(peers_path),
+                      "%s/peers_projection.db", datadir);
+    if (n1 <= 0 || (size_t)n1 >= sizeof(event_path) ||
+        n2 <= 0 || (size_t)n2 >= sizeof(peers_path)) {
+        fprintf(stderr,  // obs-ok:phase4-shadow
+                "[phase4] storage shadow paths too long\n");
+        return;
+    }
+
+    g_phase4_event_log = event_log_open(event_path);
+    if (!g_phase4_event_log) {
+        fprintf(stderr,  // obs-ok:phase4-shadow
+                "[phase4] event log unavailable; projections disabled\n");
+        return;
+    }
+    peers_projection_set_event_log(g_phase4_event_log);
+    g_phase4_peers_projection =
+        peers_projection_open(peers_path, g_phase4_event_log);
+    if (!g_phase4_peers_projection) {
+        fprintf(stderr,  // obs-ok:phase4-shadow
+                "[phase4] peers_projection unavailable; shadow emit only\n");
+        return;
+    }
+    uint64_t off = peers_projection_catch_up(g_phase4_peers_projection);
+    if (off == UINT64_MAX) {
+        fprintf(stderr,  // obs-ok:phase4-shadow
+                "[phase4] peers_projection catch_up failed\n");
+    } else {
+        fprintf(stderr,  // obs-ok:phase4-shadow
+                "[phase4] peers_projection caught up to offset=%llu\n",
+                (unsigned long long)off);
+    }
+}
+
+static void boot_stop_phase4_storage_shadow(void)
+{
+    peers_projection_set_event_log(NULL);
+    if (g_phase4_peers_projection) {
+        peers_projection_close(g_phase4_peers_projection);
+        g_phase4_peers_projection = NULL;
+    }
+    if (g_phase4_event_log) {
+        event_log_close(g_phase4_event_log);
+        g_phase4_event_log = NULL;
+    }
+}
+
 static void boot_join_catchup_service(struct boot_svc_ctx *svc)
 {
     if (!svc)
@@ -2411,6 +2471,12 @@ bool app_init_services(struct app_context *ctx,
     svc->runtime.mempool = svc->mempool;
     svc->runtime.wallet = svc->wallet;
     app_runtime_set_current(&svc->runtime);
+
+    /* Phase 4 storage unification shadow path. Opens the append-only
+     * event log and first non-consensus projection; failures are
+     * observational only until cutover.
+     */
+    boot_start_phase4_storage_shadow(ctx->datadir);
 
     /* ── Register sync state observer ──────────────────────────── *
      * Logs every sync state transition via the event system.
@@ -3372,6 +3438,8 @@ static void shutdown_release_owned_resources(struct boot_svc_ctx *svc)
     /* Wave S, S-1: graceful checkpoint + close of progress.kv. No-op if
      * never opened. */
     progress_store_close();
+
+    boot_stop_phase4_storage_shadow();
 
     ecc_verify_destroy();
     ecc_stop();

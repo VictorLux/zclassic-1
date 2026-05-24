@@ -11,6 +11,7 @@
 #include "platform/time_compat.h"
 #include "models/peer.h"
 #include "event/event.h"
+#include "storage/peers_projection.h"
 #include "util/ar_step_readonly.h"
 #include <stdio.h>
 #include <string.h>
@@ -167,15 +168,29 @@ static bool db_peer_save_with_attempts(struct node_db *ndb,
 
 bool db_peer_save(struct node_db *ndb, const struct db_peer *p)
 {
-    return db_peer_save_with_attempts(ndb, p, DB_PEER_SAVE_MAX_ATTEMPTS,
-                                      "save", true);
+    bool ok = db_peer_save_with_attempts(ndb, p, DB_PEER_SAVE_MAX_ATTEMPTS,
+                                         "save", true);
+    if (ok && peers_projection_event_log() &&
+        !peers_projection_emit_observed(p->ip, p->port, p->services,
+                                        p->last_seen, -1)) {
+        fprintf(stderr,  // obs-ok:peers-projection-shadow
+                "peer projection shadow emit failed for save\n");
+    }
+    return ok;
 }
 
 bool db_peer_save_advisory(struct node_db *ndb, const struct db_peer *p)
 {
-    return db_peer_save_with_attempts(ndb, p,
-                                      DB_PEER_SAVE_ADVISORY_MAX_ATTEMPTS,
-                                      "save_advisory", false);
+    bool ok = db_peer_save_with_attempts(ndb, p,
+                                         DB_PEER_SAVE_ADVISORY_MAX_ATTEMPTS,
+                                         "save_advisory", false);
+    if (ok && peers_projection_event_log() &&
+        !peers_projection_emit_observed(p->ip, p->port, p->services,
+                                        p->last_seen, -1)) {
+        fprintf(stderr,  // obs-ok:peers-projection-shadow
+                "peer projection shadow emit failed for advisory save\n");
+    }
+    return ok;
 }
 
 /* ── Find (cached stmt) ──────────────────────────────────────── */
@@ -205,9 +220,20 @@ bool db_peer_delete(struct node_db *ndb, const uint8_t ip[16], uint16_t port)
     memcpy(p.ip, ip, 16);
     p.port = port;
     sqlite3_stmt *s = ndb->stmt_peer_delete;
-    AR_CACHED_DESTROY(s, cbs, &p,
-        AR_BIND_BLOB(s, 1, ip, 16);
-        AR_BIND_INT(s, 2, port));
+    if (!ar_run_before_destroy(cbs, &p))
+        return false;
+    AR_RESET(s);
+    AR_BIND_BLOB(s, 1, ip, 16);
+    AR_BIND_INT(s, 2, port);
+    bool ok = AR_STEP_DONE(s);
+    if (ok)
+        ar_run_after_destroy(cbs, &p);
+    if (ok && peers_projection_event_log() &&
+        !peers_projection_emit_dropped(ip, port, 1)) {
+        fprintf(stderr,  // obs-ok:peers-projection-shadow
+                "peer projection shadow emit failed for delete\n");
+    }
+    return ok;
 }
 
 /* ── Count (cached stmt) ─────────────────────────────────────── */

@@ -57,6 +57,7 @@
 #include "services/tip_finalize_stage.h"
 #include "services/chain_tip_watchdog.h"
 #include "framework/condition.h"
+#include "storage/peers_projection.h"
 #include "storage/progress_store.h"
 #include "crypto_registry/crypto_registry.h"
 #include "services/ibd_throttle.h"
@@ -457,6 +458,8 @@ static const struct dump_entry g_dumpers[] = {
                      "block pruning service: files/blocks pruned, bytes reclaimed, lowest height with data" },
     { "crypto_registry", crypto_registry_dump_state_json,
                      "registered crypto schemes, statuses, implementations, and kind counts" },
+    { "peers_projection", peers_projection_dump_state_json,
+                     "Phase 4d peers projection over EV_PEER_OBSERVED / EV_PEER_DROPPED" },
 };
 
 int diagnostics_subsystems_csv(char *out, size_t out_sz)

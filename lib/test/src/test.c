@@ -130,6 +130,13 @@ int main(void)
                failures);
         return failures ? 1 : 0;
     }
+    if (only && strcmp(only, "peers_projection") == 0) {
+        printf("[test] ZCL_TEST_ONLY=peers_projection — running peers projection only\n");
+        failures += test_peers_projection();
+        printf("\n=== peers_projection subset complete: %d failure(s) ===\n",
+               failures);
+        return failures ? 1 : 0;
+    }
     if (only && strcmp(only, "script_validate") == 0) {
         printf("[test] ZCL_TEST_ONLY=script_validate — running script_validate stage only\n");
         failures += test_script_validate_stage();
@@ -576,6 +583,7 @@ int main(void)
     failures += test_projection_adoption();
     failures += test_progress_store();
     failures += test_event_log();
+    failures += test_peers_projection();
     failures += test_header_admit_stage();
     failures += test_validate_headers_stage();
     failures += test_body_fetch_stage();
