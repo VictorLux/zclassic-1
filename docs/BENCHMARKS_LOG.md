@@ -36,7 +36,8 @@ Format: `date | commit | benchmark | value | how measured / notes`
 
 | date | commit | N blocks | rebuild ms | blocks/s | bytes | notes |
 |---|---|---|---|---|---|---|
-| 2026-05-24 | (tool) | 10 | 339 | 29 | 14,590 | from live zclassicd tip 3,123,617; **fsync-bound** (event_log fsync×2/event, ~60 fsyncs). setup: snapshot 2.1s + index scan 3.2s (3.0GB index). Optimization: batch fsync per-block → est. 10–30× faster. |
+| 2026-05-24 | (tool) | 10 | 339 | 29 | 14,590 | v1, durable event_log appender. **fsync-bound** (fsync×2/event). |
+| 2026-05-24 | (tool) | ALL (3,123,618) | 34,180 | 91,387 | 11.25 GB | **io_uring** bulk writer (8 buffers in flight, 1 fsync at end). 5.1M tx, 11.4M utxo-adds, 27.7M events, short_writes=0. 329 MB/s. setup +5.4s (snapshot 1.9s + index 3.5s). ~3000× the v1 write path. Now parse/read-bound, not write-bound → next lever = parallel parse. |
 
 ## Operational snapshot (context for the above, not a benchmark)
 
