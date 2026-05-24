@@ -70,113 +70,31 @@ Restart Claude Code after adding. The tools appear automatically.
 
 ### Quick Reference
 
-Source of truth: `tools/mcp/controllers/{app,chain,meta,net,ops,wallet}_controller.c`.
-Descriptions below come from the registration tables in those files.
+There are ~105 typed tools. **This table lists only the ones you reach for
+daily** — it is deliberately not exhaustive. For the full catalog, call
+`zcl_tools_list` (live routing table) or read the source of truth:
+`tools/mcp/controllers/{app,chain,meta,net,ops,wallet}_controller.c`.
 
-| Tool | Description |
+| Tool | When to use |
 |------|-------------|
-| **Status & health** | |
-| `zcl_status` | **Start here.** Height, peers, sync, onion address, health — one call |
-| `zcl_health` | Pass/fail health check: chain height, peers, sync, onion |
-| `zcl_kpi` | One-shot KPI dashboard: height, peer_count, sync, validation |
-| **Chain** | |
-| `zcl_getblockcount` | Current block height |
-| `zcl_getblock` | Block by height or hash |
-| `zcl_getrawtransaction` | Transaction by id (verbose=1 decodes, verbose=0 hex) |
-| `zcl_getblockchaininfo` | Chain state: height, best block, difficulty, value pools |
-| `zcl_syncstate` | Sync state machine: phase, progress, header/block/UTXO status |
-| `zcl_validationstatus` | Background validation: verified height, sigs, proofs, blocks/sec |
-| `zcl_dataintegrity` | SHA3-256 hashes over all consensus tables |
-| `zcl_mmb` | Merkle Mountain Belt root (FlyClient, 150-bit security) |
-| `zcl_utxocommitment` | SHA3-256 of entire UTXO set in canonical order |
-| `zcl_utxo_audit` | Post-IBD UTXO drift audit vs trusted peer SHA3 |
-| `zcl_hodlwave` | UTXO age distribution: 10 buckets from 24h to 5y+ |
-| **Network** | |
-| `zcl_peers` | Connected peers with addresses, latency, services, heights |
-| `zcl_networkinfo` | Network info: version, connections, relay fee |
-| `zcl_addnode` | Add/remove peer (actions: add, remove, onetry) |
-| `zcl_onion_status` | Tor onion service: .onion address, bootstrap state |
-| `zcl_gametypes` | P2P game types: Ping (latency), TicTacToe |
-| `zcl_pingpeer` | Measure round-trip latency to a connected peer |
-| `zcl_peerlatency` | Latency for all peers: ping_ms, min_ping_ms, avg_latency_ms |
-| `zcl_peer_report` | Peer scoring report: ban thresholds, decay config, recent rejects |
-| `zcl_onion_health` | Probe in-process onion service via direct function call |
-| **Wallet (basic)** | |
-| `zcl_balance` | Total wallet balance: transparent + shielded |
-| `zcl_getwalletinfo` | One-shot wallet health snapshot: balance, tx count, keys, status |
-| `zcl_getnewaddress` | Generate new transparent (t-addr) receiving address |
-| `zcl_send` | Send ZCL (transparent or shielded) |
-| `zcl_sendtoaddress` | Simple send to a single transparent address |
-| `zcl_listunspent` | List transparent UTXOs available to spend |
-| `zcl_listtransactions` | Recent wallet transaction history |
-| `zcl_gettransaction` | Fetch a single wallet transaction by id |
-| `zcl_listaddresses` | All transparent (t-addr) addresses in the wallet |
-| `zcl_importaddress` | Watch a transparent address without private key |
-| `zcl_importprivkey` | Import a WIF private key into the wallet |
-| `zcl_dumpprivkey` | Export WIF private key for a transparent address |
-| **Wallet (shielded)** | |
-| `zcl_z_getnewaddress` | Generate new shielded Sapling (z-addr) address |
-| `zcl_z_listaddresses` | All shielded Sapling (z-addr) addresses in the wallet |
-| `zcl_z_listunspent` | List shielded notes available to spend |
-| `zcl_z_getbalance` | Balance for a single t-address or z-address |
-| **Wallet (advanced)** | |
-| `zcl_listwalletkeys` | List all keys (metadata, and optionally WIFs) |
-| `zcl_walletaudit` | Reconcile the wallet against the on-chain UTXO set |
-| `zcl_rescanblockchain` | Manually trigger a wallet rescan over a height range |
-| `zcl_replaywalletfromchain` | Rebuild derived wallet state by replaying the chain |
-| **Names (ZNAM)** | |
-| `zcl_name_resolve` | Resolve a ZCL Name to its target (.onion, z-addr, t-addr) |
-| `zcl_name_register` | Build an OP_RETURN script to register a ZCL Name on-chain |
-| `zcl_name_list` | List all registered ZCL Names on the network |
-| **Messaging (ZMSG)** | |
-| `zcl_msg_send` | Send a P2P message to a connected peer |
-| `zcl_msg_send_named` | Send message to a ZCL Name (resolves name first) |
-| `zcl_msg_inbox` | List messages in the inbox (newest first) |
-| `zcl_msg_read` | Mark a message as read and return its content |
-| **Market** | |
-| `zcl_market_list` | List files available on the ZCL Market P2P network |
-| `zcl_market_offer` | Announce a file for sale on the ZCL Market |
-| `zcl_market_buy` | Initiate purchase and download of a file from the Market |
-| `zcl_market_status` | Market status: cached offers, persisted offers, downloads |
-| **Atomic swaps (ZSWP)** | |
-| `zcl_swap_chains` | List supported chains for atomic swaps: ZCL, BTC, LTC, DOGE |
-| `zcl_swap_initiate` | Initiate an atomic swap: generates secret, builds HTLC P2SH |
-| `zcl_swap_participate` | Participate in a swap (counter-HTLC with shorter locktime) |
-| `zcl_swap_list` | List atomic swap contracts |
-| **Files & tokens** | |
-| `zcl_filemanifest` | File service status: chunks, SHA3 hashes, total size |
-| `zcl_tokens` | List all ZSLP tokens on the network |
-| **Mempool & mining** | |
-| `zcl_getmempoolinfo` | Mempool size, bytes, usage |
-| `zcl_getrawmempool` | Array of txids currently in the mempool |
-| `zcl_getmininginfo` | Mining stats: hashrate, difficulty, current block, pooled tx |
-| **Logs & events** | |
-| `zcl_events` | Recent event log: sync events, peer connections, blocks |
-| `zcl_logtail` | Tail the structured event log (optional domain prefix filter) |
-| `zcl_node_log` | **Primitive.** Server-side regex tail of node.log with level filter |
-| **Diagnostics & state** | |
-| `zcl_state` | **Primitive.** Generic state dump: `subsystem=watchdog,boot,block_index` |
-| `zcl_sql` | **Primitive.** SELECT-only SQL passthrough to node.db (rate-gated) |
-| `zcl_syncdiag` | Deep sync diagnostics: state, chain height, best header |
-| `zcl_self_heal_stats` | Self-heal UTXO recovery counters (tx-index hits, scans) |
-| `zcl_dbstats` | Database health: table counts, SQLite page stats, sizes |
-| `zcl_benchmark` | Hash / malloc / hash160 throughput micro-benchmarks |
-| `zcl_profile` | Per-thread CPU sampler from `/proc/self/task/*/stat` |
-| `zcl_probe_zclassicd` | Drift detection: query local zclassicd legacy node |
-| `zcl_consensus_report` | Consensus-reject snapshot: per-(kind, reason) counts |
-| `zcl_rpc_report` | HTTP RPC middleware report: rate-limit / ban config + counters |
-| `zcl_metrics` | Prometheus-text metrics: counters, latency histogram |
-| `zcl_metrics_reset` | Reset all MCP metric counters (destructive, admin-gated) |
-| `zcl_replay_dump` | Dump the MCP request/response replay buffer (last 100 calls) |
-| `zcl_replay_exec` | Re-execute a recorded MCP request by index from the buffer |
-| **Admin & meta** | |
-| `zcl_admin` | Admin dashboard: aggregates kpi + peer_report + others |
-| `zcl_config_reload` | Re-read env-tunable config for live subsystems |
-| `zcl_tools_list` | Dump the full MCP routing table: every tool with its domain |
-| `zcl_self_test` | Call every registered tool with safe defaults and report |
-| `zcl_openapi` | Emit an OpenAPI 3.0 schema derived from the routing table |
-| **Escape hatches** | |
-| `zcl_rpc` | **Escape hatch.** Call any of 85+ RPC methods directly |
+| `zcl_status` | **Start here.** Height, peers, sync, onion, health — one call |
+| `zcl_kpi` | KPI dashboard: height, peer_count, sync, validation |
+| `zcl_syncstate` / `zcl_validationstatus` | Sync phase + background-validation progress |
+| `zcl_getblock` / `zcl_getblockcount` | Block by height/hash; current height |
+| `zcl_peers` | Connected peers (addresses, latency, heights) |
+| `zcl_dataintegrity` / `zcl_utxocommitment` | SHA3 over consensus tables / UTXO set |
+| `zcl_balance` / `zcl_listunspent` | Wallet balance; spendable UTXOs |
+| `*_projection_diff` | Phase-4 shadow-vs-legacy parity (`zcl_utxo_`, `zcl_block_index_diff`, `zcl_mempool_`, `zcl_peers_`, `zcl_znam_`) |
+| **Primitive** `zcl_state` | Generic state dump: `subsystem=supervisor,watchdog,boot,block_index,…` — prefer this over a bespoke tool |
+| **Primitive** `zcl_node_log` | Server-side regex tail of node.log (level filter) |
+| **Primitive** `zcl_sql` | SELECT-only SQL over node.db (rate-gated) |
+| `zcl_tools_list` / `zcl_self_test` / `zcl_openapi` | Enumerate / smoke-test / schema-dump every tool |
+| **Escape hatch** `zcl_rpc` | Call any of 85+ RPC methods directly when no typed tool fits |
+
+Everything else (wallet shielded ops, ZNAM/ZMSG/Market/ZSWP, mining, peer
+games, metrics, replay buffer, admin) is a typed tool too — discover it via
+`zcl_tools_list` rather than memorizing it here. The three **primitives** plus
+the `zcl_rpc` escape hatch answer most one-off questions without a new tool.
 
 ### Example: Check Everything
 
