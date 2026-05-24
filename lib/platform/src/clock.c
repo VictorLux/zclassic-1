@@ -58,6 +58,9 @@ static const clock_iface_t g_real_iface = {
  * the read lock-free is essentially free and keeps the contract clean. */
 static _Atomic(const clock_iface_t *) g_default = &g_real_iface;
 
+/* Phase 6a install-hook source. NULL in production. */
+static _Atomic(struct platform_clock_source *) g_clock_source = NULL;
+
 const clock_iface_t *clock_default(void)
 {
     const clock_iface_t *p = atomic_load_explicit(&g_default,
@@ -70,12 +73,25 @@ const clock_iface_t *clock_default(void)
 
 int64_t clock_now_monotonic_ns(void)
 {
+    /* Fast install-hook check; see rng.c:rng_u64 for rationale. */
+    struct platform_clock_source *src =
+        atomic_load_explicit(&g_clock_source, memory_order_relaxed);
+    if (src != NULL) {
+        /* Source returns microseconds; this entry point is ns. */
+        return src->monotonic_us(src->user) * 1000LL;
+    }
     const clock_iface_t *p = clock_default();
     return p->now_monotonic_ns(p->self);
 }
 
 int64_t clock_now_wall_ms(void)
 {
+    struct platform_clock_source *src =
+        atomic_load_explicit(&g_clock_source, memory_order_relaxed);
+    if (src != NULL) {
+        /* Source returns unix seconds; this entry point is ms. */
+        return src->wall_unix(src->user) * 1000LL;
+    }
     const clock_iface_t *p = clock_default();
     return p->now_wall_ms(p->self);
 }
@@ -94,4 +110,20 @@ void clock_set_default(const clock_iface_t *iface)
 void clock_reset_default(void)
 {
     atomic_store_explicit(&g_default, &g_real_iface, memory_order_release);
+}
+
+void platform_clock_set_source(struct platform_clock_source *src)
+{
+    if (!src) {
+        fprintf(stderr,
+            "[platform] %s:%d %s(): refusing NULL — use platform_clock_clear_source\n",
+            __FILE__, __LINE__, __func__);
+        return;
+    }
+    atomic_store_explicit(&g_clock_source, src, memory_order_release);
+}
+
+void platform_clock_clear_source(void)
+{
+    atomic_store_explicit(&g_clock_source, NULL, memory_order_release);
 }

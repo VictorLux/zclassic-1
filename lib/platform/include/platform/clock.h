@@ -69,6 +69,34 @@ void clock_set_default(const clock_iface_t *iface);
 /* Restore the real-syscall default. Safe to call any number of times. */
 void clock_reset_default(void);
 
+/* ── Phase 6a: install-hook API for the seed tape / simulator ───────
+ *
+ * The install-hook is a thinner, faster path than `clock_set_default`:
+ * it intercepts the two convenience readers (`clock_now_monotonic_ns`,
+ * `clock_now_wall_ms`) that are the simulator's hot path. Default
+ * behavior is unchanged when no source is installed (one atomic_load
+ * + predictable branch, <5 ns in production).
+ *
+ * The source vtable is in microseconds (the units the simulator
+ * naturally tracks). Conversion to/from ns and ms happens in the
+ * wrapper. Wall is in unix seconds — the conversion adds zero cost
+ * on the production path (which is never installed).
+ *
+ * Thread safety: see `platform_rng_set_source`. */
+struct platform_clock_source {
+    int64_t (*monotonic_us)(void *user);
+    int64_t (*wall_unix)(void *user);  /* unix epoch seconds */
+    void *user;
+};
+
+/* Install a tape-driven (or otherwise injected) source. The `src`
+ * pointer must outlive every concurrent reader. NULL is rejected —
+ * use `platform_clock_clear_source` instead. */
+void platform_clock_set_source(struct platform_clock_source *src);
+
+/* Restore the default (real clock_gettime) path. */
+void platform_clock_clear_source(void);
+
 #ifdef __cplusplus
 }
 #endif

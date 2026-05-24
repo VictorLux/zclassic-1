@@ -105,6 +105,11 @@ static const rng_iface_t g_real_iface = {
 
 static _Atomic(const rng_iface_t *) g_default = &g_real_iface;
 
+/* Phase 6a install-hook source. NULL in production (zero-overhead
+ * fast path: one atomic_load + predictable branch). Set non-NULL by
+ * `platform_rng_set_source` (e.g. by `seed_tape_install`). */
+static _Atomic(struct platform_rng_source *) g_rng_source = NULL;
+
 const rng_iface_t *rng_default(void)
 {
     const rng_iface_t *p = atomic_load_explicit(&g_default,
@@ -120,6 +125,18 @@ bool rng_fill(uint8_t *out, size_t len)
 
 uint64_t rng_u64(void)
 {
+    /* Fast install-hook check. `relaxed` is enough here: a stale read
+     * just means one extra call lands on the previous source, which
+     * is exactly what set_source's release semantics already permit
+     * across threads (callers requiring a barrier should use the
+     * higher-level seed_tape API). Branch is predictable in the steady
+     * state (always installed during simulation; always NULL otherwise). */
+    struct platform_rng_source *src =
+        atomic_load_explicit(&g_rng_source, memory_order_relaxed);
+    if (src != NULL) {
+        return src->u64(src->user);
+    }
+
     uint64_t v = 0;
     if (!rng_fill((uint8_t *)&v, sizeof(v))) {
         /* Hard failure of the entropy source. Treat as fatal — there
@@ -173,4 +190,20 @@ void rng_set_default(const rng_iface_t *iface)
 void rng_reset_default(void)
 {
     atomic_store_explicit(&g_default, &g_real_iface, memory_order_release);
+}
+
+void platform_rng_set_source(struct platform_rng_source *src)
+{
+    if (!src) {
+        fprintf(stderr,
+            "[platform] %s:%d %s(): refusing NULL — use platform_rng_clear_source\n",
+            __FILE__, __LINE__, __func__);
+        return;
+    }
+    atomic_store_explicit(&g_rng_source, src, memory_order_release);
+}
+
+void platform_rng_clear_source(void)
+{
+    atomic_store_explicit(&g_rng_source, NULL, memory_order_release);
 }

@@ -80,6 +80,36 @@ void rng_set_default(const rng_iface_t *iface);
 /* Restore the real-syscall default. Safe to call any number of times. */
 void rng_reset_default(void);
 
+/* ── Phase 6a: install-hook API for the seed tape / simulator ───────
+ *
+ * The install-hook is a thinner, faster path than `rng_set_default`:
+ * it intercepts ONLY the `rng_u64` fast path (the simulator's hot
+ * path). Default behavior is unchanged when no source is installed
+ * (one atomic_load + predictable branch, <5 ns in production).
+ *
+ * Coexists with the existing `rng_iface_t` injection: if both are
+ * installed, the install-hook wins for `rng_u64` calls and the
+ * iface still wins for `rng_fill` / `rng_u32_range` calls. The seed
+ * tape only installs the hook, never the iface.
+ *
+ * Thread safety: the source pointer is atomic. Install / clear from
+ * any thread; concurrent readers see either the old or the new
+ * source consistently. The source's `u64` callback must be
+ * reentrant if multiple threads call `rng_u64` concurrently. */
+struct platform_rng_source {
+    uint64_t (*u64)(void *user);
+    void *user;
+};
+
+/* Install a tape-driven (or otherwise injected) source for `rng_u64`.
+ * The `src` pointer must outlive every concurrent reader (typically
+ * static or owned by a `seed_tape_t`). NULL is rejected — use
+ * `platform_rng_clear_source` instead. */
+void platform_rng_set_source(struct platform_rng_source *src);
+
+/* Restore the default (kernel CSPRNG via `getrandom`) path. */
+void platform_rng_clear_source(void);
+
 #ifdef __cplusplus
 }
 #endif
