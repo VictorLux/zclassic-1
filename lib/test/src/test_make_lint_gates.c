@@ -994,6 +994,38 @@ static int t_boot_genesis_init_preserves_restored_authority_contract(void)
     return failures;
 }
 
+static int t_cold_import_fails_closed_contract(void)
+{
+    int failures = 0;
+    char *buf = NULL;
+    TEST("cold-import failure aborts boot before fallback imports") {
+        char path[PATH_MAX];
+        ASSERT(repo_path(path, sizeof(path), "config/src/boot.c") == 0);
+        ASSERT(read_entire_file(path, &buf) == 0);
+        char *cold = strstr(buf, "if (ctx->cold_import_from)");
+        char *missing_prereq = strstr(buf, "FATAL: cold-import requested");
+        char *bad_source = strstr(buf, "FATAL: cold-import source %s");
+        char *call = strstr(buf, "legacy_cold_import_blocking(");
+        char *fail_closed = strstr(buf, "continue with fallback import paths");
+        char *disable_auto = strstr(buf, "ctx->no_legacy_auto_import = true");
+        char *ldb_import = strstr(buf, "utxo_recovery_import_ldb(&uctx)");
+        ASSERT(cold != NULL);
+        ASSERT(missing_prereq != NULL);
+        ASSERT(bad_source != NULL);
+        ASSERT(call != NULL);
+        ASSERT(fail_closed != NULL);
+        ASSERT(disable_auto != NULL);
+        ASSERT(ldb_import != NULL);
+        ASSERT(cold < call);
+        ASSERT(call < fail_closed);
+        ASSERT(fail_closed < disable_auto);
+        ASSERT(disable_auto < ldb_import);
+        PASS();
+    } _test_next:;
+    free(buf);
+    return failures;
+}
+
 static int t_block_index_flat_atomic_save_contract(void)
 {
     int failures = 0;
@@ -1102,6 +1134,7 @@ int test_make_lint_gates(void)
     failures += t_handshake_peer_save_is_async();
     failures += t_boot_repaired_index_persistence_contract();
     failures += t_boot_genesis_init_preserves_restored_authority_contract();
+    failures += t_cold_import_fails_closed_contract();
     failures += t_block_index_flat_atomic_save_contract();
     failures += t_projection_deferral_is_not_block_rejected_contract();
     return failures;

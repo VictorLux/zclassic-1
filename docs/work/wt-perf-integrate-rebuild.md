@@ -158,6 +158,10 @@ Summary:
 - Added `ZCL_BLOCK_SCAN_WORKERS=N` to force a one-worker serial baseline or a
   specific worker count for benchmark runs, and added parse/apply/worker counts
   to the `Block file scan` summary line.
+- After the benchmark exposed a source-mixing risk, made explicit
+  `-cold-import` fail closed on missing prerequisites, invalid source, or import
+  failure, and disabled later legacy UTXO auto-import after a successful cold
+  import.
 
 Verification:
 - `make -j$(nproc) test_zcl test_parallel zclassic23` PASS

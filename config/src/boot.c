@@ -1760,12 +1760,21 @@ bool app_init(struct app_context *ctx)
     /* -cold-import: bulk state import from a sibling zclassicd. Runs
      * AFTER block_tree_db + coins_view_sqlite open but BEFORE block
      * index load (so the freshly-written LevelDB entries get picked
-     * up). No-op when ctx->cold_import_from is NULL. */
-    if (ctx->cold_import_from && g_block_tree_open && g_coins_sqlite.db) {
+     * up). Explicit cold-import is all-or-nothing: continuing after
+     * a spotcheck/open/import failure can mix sources and publish a
+     * mislabeled UTXO anchor. */
+    if (ctx->cold_import_from) {
+        if (!g_block_tree_open || !g_coins_sqlite.db) {
+            fprintf(stderr,
+                "FATAL: cold-import requested but block tree or coins DB "
+                "is not open\n");
+            return false;
+        }
         if (!boot_detect_legacy_datadir(ctx->cold_import_from)) {
             fprintf(stderr,
-                "cold-import: %s does not look like a zclassic datadir; "
-                "skipping.\n", ctx->cold_import_from);
+                "FATAL: cold-import source %s does not look like a "
+                "zclassic datadir\n", ctx->cold_import_from);
+            return false;
         } else {
             printf("\n═══ Cold Import from %s ═══\n",
                    ctx->cold_import_from);
@@ -1782,6 +1791,14 @@ bool app_init(struct app_context *ctx)
                    (long long)cr.utxos_imported,
                    (long long)cr.blk_files_linked,
                    cr.total_secs);
+            if (!ci_ok) {
+                fprintf(stderr,
+                    "FATAL: cold-import from %s failed; refusing to "
+                    "continue with fallback import paths\n",
+                    ctx->cold_import_from);
+                return false;
+            }
+            ctx->no_legacy_auto_import = true;
         }
     }
 
