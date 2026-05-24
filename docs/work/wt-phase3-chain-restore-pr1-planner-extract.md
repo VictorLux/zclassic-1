@@ -7,7 +7,7 @@
 The dissolve plan (docs/dissolve/chain_restore_service.md) lists later PRs
 as gated on C-9, but PR-1 has no such gate; the planning function is
 already side-effect free.
-**Status: IN PROGRESS (wt2)** — claimed 2026-05-24.
+**Status: DONE — pushed 2026-05-24** to main as commit `0eb2d51b1`.
 
 **Owns:**
 - NEW `app/services/include/services/chain_restore_planner.h` — pure planning API
@@ -180,4 +180,41 @@ enough to be a single coherent commit.
 
 ## Status
 
-**IN PROGRESS (wt2)** — claimed 2026-05-24.
+**DONE — pushed 2026-05-24** to main as commit `0eb2d51b1`.
+
+## Completion (wt2, 2026-05-24)
+
+### Summary
+Extracted the chain restore planning slice from
+`chain_restore_service.c` into `chain_restore_planner.{h,c}` while
+preserving the existing public API through `chain_restore_service.h`.
+The plan-result boot snapshot recorder moved with the planner, and the
+remaining boot snapshot recorders continue to share the same snapshot
+storage without behavior changes.
+
+### Commits
+- `0eb2d51b1` extract chain restore planner
+
+### Files Added/Modified
+- `app/services/include/services/chain_restore_planner.h` (NEW)
+- `app/services/src/chain_restore_planner.c` (NEW)
+- `app/services/include/services/chain_restore_service.h`
+- `app/services/src/chain_restore_service.c`
+- `lib/test/src/test_chain_restore_planner.c` (NEW)
+- `lib/test/include/test/test_helpers.h`
+- `lib/test/src/test.c`
+- `lib/test/src/test_parallel.c`
+
+### Acceptance Verification
+- [x] `ZCL_TEST_ONLY=chain_restore_planner ./test_zcl` — PASS, 5/5 cases
+- [x] `ZCL_TEST_ONLY=chain_restore ./test_zcl` — PASS, 0 failures
+- [x] `make -j$(nproc)` — PASS
+- [x] `make lint` — PASS; gate #20 remains WARN with grandfathered raw-controller-SQL violations
+- [x] `./test_parallel --jobs=$(nproc)` — PASS, 0/201 groups failed
+
+### Surprises / Follow-ups
+`Makefile` did not need a manual source-list edit because app service
+sources are already included by wildcard. The boot snapshot static was
+shared by multiple recorders, so the extracted planner owns the storage
+symbol and `chain_restore_service.c` continues to update it through an
+internal extern.
