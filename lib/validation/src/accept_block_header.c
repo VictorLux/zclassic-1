@@ -9,18 +9,27 @@
  * Extracted from process_block_core.c (WS-6 phase 1, file-level split).
  * Pure code motion; function body is byte-identical to its prior site. */
 
-#include <stddef.h>
 #include <stdbool.h>
+#include <stddef.h>
+#include <stdint.h>
 
 #include "validation/process_block.h"
 #include "validation/main_logic.h"
 #include "validation/check_block.h"
 #include "chain/pow.h"
 #include "event/event.h"
-#include "services/header_admit_stage.h"
 #include "util/log_macros.h"
 
 #include "process_block_internal.h"
+
+typedef enum {
+    HEADER_ADMIT_MODE_SHADOW = 0,
+    HEADER_ADMIT_MODE_AUTHORITATIVE
+} header_admit_mode_t;
+
+extern header_admit_mode_t header_admit_get_mode(void);
+extern bool header_admit_stage_has_record(int32_t height,
+                                          const struct uint256 *hash);
 
 bool accept_block_header(const struct block_header *header,
                          struct validation_state *state,
