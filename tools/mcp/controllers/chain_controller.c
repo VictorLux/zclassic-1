@@ -351,6 +351,128 @@ body_too_big:
     return 0;
 }
 
+/* ── Phase 4b: zcl_utxo_projection_diff (24h cutover soak gate) ────
+ *
+ * Compares the projection's SHA3 commitment to the legacy coins.db
+ * commitment (the one served by `getutxocommitment` RPC). When this
+ * returns `match: true` continuously for 24 hours on a live node,
+ * the 4b-cutover PR is unblocked: the legacy update_coins SQLite
+ * write can be disabled and the projection becomes authoritative.
+ *
+ * The legacy commitment requires a SELECT walk of the entire utxo
+ * table — bounded but not free. The projection commitment walks its
+ * own table the same way. Both can take 1-2 seconds on a fully-synced
+ * tip. We return both hashes + a boolean so operators / soak scripts
+ * can compute deltas without re-running. */
+
+#include "storage/utxo_projection.h"
+
+static int h_zcl_utxo_projection_diff(const struct mcp_request *req,
+                                      struct mcp_response *res)
+{
+    (void)req;
+
+    /* Legacy commitment via the existing in-process RPC. The RPC
+     * returns a JSON object {sha3_hash, height, utxo_count, ...}. We
+     * extract sha3_hash without a full JSON parse — same pattern as
+     * h_zcl_diff_with_legacy in diagnostics_controller. */
+    char *legacy_body = mcp_node_rpc("getutxocommitment", NULL);
+    if (!legacy_body) {
+        res->error = MCP_ERR_HANDLER_FAILED;
+        snprintf(res->error_message, sizeof(res->error_message),
+                 "getutxocommitment RPC returned null — chain not loaded?");
+        LOG_ERR("mcp.chain", "utxo_projection_diff: getutxocommitment null");
+        return 0;
+    }
+    char legacy_hex[65] = {0};
+    {
+        const char *p = strstr(legacy_body, "\"sha3_hash\":\"");
+        if (p) {
+            p += strlen("\"sha3_hash\":\"");
+            size_t k = 0;
+            while (k < 64 && p[k] && p[k] != '"') {
+                legacy_hex[k] = p[k];
+                k++;
+            }
+            legacy_hex[k] = '\0';
+        }
+    }
+    int64_t legacy_height = 0, legacy_count = 0;
+    {
+        const char *p = strstr(legacy_body, "\"height\":");
+        if (p) legacy_height = strtoll(p + strlen("\"height\":"), NULL, 10);
+        p = strstr(legacy_body, "\"utxo_count\":");
+        if (p) legacy_count  = strtoll(p + strlen("\"utxo_count\":"), NULL, 10);
+    }
+    free(legacy_body);
+
+    /* Projection commitment via in-process call. NULL handle means
+     * Phase 4b shadow mode is not wired (legitimate during -mcp
+     * helper invocations); report that explicitly. */
+    utxo_projection_t *p = utxo_projection_get_global();
+    if (!p) {
+        char buf[512];
+        snprintf(buf, sizeof(buf),
+            "{\"match\":false,\"reason\":\"projection_not_open\","
+             "\"legacy_sha3\":\"%s\","
+             "\"legacy_height\":%lld,"
+             "\"legacy_utxo_count\":%lld}",
+            legacy_hex, (long long)legacy_height, (long long)legacy_count);
+        res->body = strdup(buf);
+        if (!res->body) {
+            res->error = MCP_ERR_HANDLER_FAILED;
+            snprintf(res->error_message, sizeof(res->error_message),
+                     "utxo_projection_diff: strdup");
+            LOG_ERR("mcp.chain", "utxo_projection_diff: strdup");
+        }
+        return 0;
+    }
+
+    /* One last catch_up so we don't false-positive on a transient
+     * "events emitted but not yet consumed" gap. */
+    (void)utxo_projection_catch_up(p);
+
+    uint8_t proj_hash[32];
+    if (utxo_projection_commitment(p, proj_hash) != 0) {
+        res->error = MCP_ERR_HANDLER_FAILED;
+        snprintf(res->error_message, sizeof(res->error_message),
+                 "utxo_projection_commitment failed");
+        LOG_ERR("mcp.chain", "utxo_projection_diff: commitment failed");
+        return 0;
+    }
+    char proj_hex[65] = {0};
+    static const char hx[] = "0123456789abcdef";
+    for (int i = 0; i < 32; i++) {
+        proj_hex[2*i]     = hx[(proj_hash[i] >> 4) & 0xF];
+        proj_hex[2*i + 1] = hx[ proj_hash[i]       & 0xF];
+    }
+
+    uint64_t proj_count = utxo_projection_count(p);
+    bool match = (legacy_hex[0] != '\0' &&
+                  strcmp(legacy_hex, proj_hex) == 0);
+
+    char buf[1024];
+    snprintf(buf, sizeof(buf),
+        "{\"match\":%s,"
+         "\"legacy_sha3\":\"%s\","
+         "\"projection_sha3\":\"%s\","
+         "\"legacy_height\":%lld,"
+         "\"legacy_utxo_count\":%lld,"
+         "\"projection_utxo_count\":%llu}",
+        match ? "true" : "false",
+        legacy_hex, proj_hex,
+        (long long)legacy_height, (long long)legacy_count,
+        (unsigned long long)proj_count);
+    res->body = strdup(buf);
+    if (!res->body) {
+        res->error = MCP_ERR_HANDLER_FAILED;
+        snprintf(res->error_message, sizeof(res->error_message),
+                 "utxo_projection_diff: strdup body");
+        LOG_ERR("mcp.chain", "utxo_projection_diff: strdup body");
+    }
+    return 0;
+}
+
 static int h_zcl_utxo_audit(const struct mcp_request *req,
                             struct mcp_response *res)
 {
@@ -541,6 +663,15 @@ static const struct mcp_tool_route k_routes[] = {
       "counts and up to 32 sample mismatches. Read-only diagnostic.",
       p_diff_staged, PARAM_COUNT(p_diff_staged),
       h_zcl_diff_staged_header_admit, 0, NULL },
+    { "zcl_utxo_projection_diff", "chain",
+      "Phase 4b shadow-diff gate: SHA3 commitment of the legacy "
+      "coins.db UTXO set vs the same commitment derived from the "
+      "event-log-driven utxo_projection. Returns {match, "
+      "legacy_sha3, projection_sha3, legacy_height, legacy_utxo_count, "
+      "projection_utxo_count}. The 4b-cutover PR (which disables the "
+      "legacy SQLite write and makes the projection authoritative) is "
+      "gated on 24 hours of `match: true` on a live node.",
+      NULL, 0, h_zcl_utxo_projection_diff, 0, NULL },
 };
 
 void mcp_register_chain(void)
