@@ -25,7 +25,7 @@ ONE 26 MB STATIC C23 BINARY · ZERO-GC · SUPERVISED ACTORS · EVENT-SOURCED
  6 Kill-9 recovery       ≤360s ──▶  <60s  █████░░░░░ 50%  event-log torn-write sentinel + coins-before-index
  7 Uptime / MTBF          5.5d ──▶   30d  ███░░░░░░░ 30%  Phoenix-style supervised actor tree
  8 Operator pages         some ──▶ 0/mo   ████░░░░░░ 40%  Condition engine (10 live) self-heals
- 9 Single static binary   26MB ──▶  26MB  █████████░ 95%✓ node+Tor+wallet+explorer+MCP, no deps
+ 9 Single static binary  14.6MB─▶ stay slim ██████████ ✓ measured (docs' "26MB" is stale); no deps
 10 Bug → repro → fix       hrs ──▶ 1 seed ███░░░░░░░ 33%  platform.clock/rng → seed-tape → simulator replay
 ```
 
@@ -39,8 +39,9 @@ ONE 26 MB STATIC C23 BINARY · ZERO-GC · SUPERVISED ACTORS · EVENT-SOURCED
 | utxo_recovery PR-1 + more Conditions | #8 operator pages, #7 MTBF |
 | Phase 6 postmortem capsule (6b) + simulator (6c) | #10 bug→repro→fix |
 
-*(% bars are estimates; #3 RSS and #9 binary are live-measured. Re-measure
-the timing/throughput numbers at each cutover soak — see Conformance metrics.)*
+*(% bars are estimates; #3 RSS and #9 binary are live-measured. **Measured
+history → [`BENCHMARKS_LOG.md`](./BENCHMARKS_LOG.md)** — append a row each
+session; the "now" column should come from there, not guesses.)*
 
 ---
 
