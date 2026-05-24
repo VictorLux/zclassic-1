@@ -515,4 +515,9 @@ in progress; next slice is Task 2 projection skeleton + schema.
 is implemented and verified. The assignment remains in progress; next
 slice is Task 3 `catch_up()` event application.
 
+2026-05-24 wt2 progress: Task 3 `catch_up()` event application is
+implemented and verified for key add, derived address, tx seen, and
+note decrypted events. The assignment remains in progress; next slice
+is Task 4 reader/API expansion.
+
 <!-- Worker: append a Completion section below when done. -->

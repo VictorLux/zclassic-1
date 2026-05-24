@@ -58,6 +58,75 @@ done:
     return found;
 }
 
+static bool append_wallet_key(event_log_t *log, int idx)
+{
+    char address[64];
+    char label[32];
+    uint8_t payload[EV_WALLET_PAYLOAD_MAX];
+    size_t len = 0;
+    struct ev_wallet_key_add ev;
+    memset(&ev, 0, sizeof(ev));
+    fill_seq(ev.pubkey_hash, sizeof(ev.pubkey_hash), (uint8_t)(0x10 + idx));
+    snprintf(address, sizeof(address), "t1WalletPublic%03d", idx);
+    snprintf(label, sizeof(label), "label-%03d", idx);
+    ev.created_unix = 1770000000u + (uint32_t)idx;
+    ev.address = address;
+    ev.address_len = (uint8_t)strlen(address);
+    ev.label = label;
+    ev.label_len = (uint8_t)strlen(label);
+    if (!ev_wallet_key_add_serialize(&ev, payload, sizeof(payload), &len))
+        return false;
+    return event_log_append(log, EV_WALLET_KEY_ADD, payload, len) !=
+           UINT64_MAX;
+}
+
+static bool append_wallet_addr_derived(event_log_t *log, int idx)
+{
+    uint8_t payload[EV_WALLET_ADDR_DERIVED_LEN];
+    struct ev_wallet_addr_derived ev;
+    memset(&ev, 0, sizeof(ev));
+    fill_seq(ev.pubkey_hash, sizeof(ev.pubkey_hash), (uint8_t)(0x20 + idx));
+    fill_seq(ev.derived_pubkey_hash, sizeof(ev.derived_pubkey_hash),
+             (uint8_t)(0xd0 + idx));
+    ev.derivation_index = (uint32_t)idx;
+    ev.derived_unix = 1770001000u + (uint32_t)idx;
+    if (!ev_wallet_addr_derived_serialize(&ev, payload))
+        return false;
+    return event_log_append(log, EV_WALLET_ADDR_DERIVED, payload,
+                            sizeof(payload)) != UINT64_MAX;
+}
+
+static bool append_wallet_tx(event_log_t *log, int idx)
+{
+    uint8_t payload[EV_WALLET_TX_SEEN_LEN];
+    struct ev_wallet_tx_seen ev;
+    memset(&ev, 0, sizeof(ev));
+    fill_seq(ev.txid, sizeof(ev.txid), (uint8_t)(0x40 + idx));
+    ev.block_height = 100000 + idx;
+    ev.fee = 1000 + idx;
+    ev.from_me = (uint8_t)(idx % 2);
+    if (!ev_wallet_tx_seen_serialize(&ev, payload))
+        return false;
+    return event_log_append(log, EV_WALLET_TX_SEEN, payload,
+                            sizeof(payload)) != UINT64_MAX;
+}
+
+static bool append_wallet_note(event_log_t *log, int idx)
+{
+    uint8_t payload[EV_WALLET_NOTE_DECRYPTED_LEN];
+    struct ev_wallet_note_decrypted ev;
+    memset(&ev, 0, sizeof(ev));
+    fill_seq(ev.txid, sizeof(ev.txid), (uint8_t)(0x80 + idx));
+    fill_seq(ev.cm, sizeof(ev.cm), (uint8_t)(0xa0 + idx));
+    ev.output_index = (uint32_t)idx;
+    ev.block_height = 200000 + idx;
+    ev.value = 1 + idx;
+    if (!ev_wallet_note_decrypted_serialize(&ev, payload))
+        return false;
+    return event_log_append(log, EV_WALLET_NOTE_DECRYPTED, payload,
+                            sizeof(payload)) != UINT64_MAX;
+}
+
 static int t_wallet_event_ids(void)
 {
     int failures = 0;
@@ -242,6 +311,55 @@ static int t_projection_skeleton_open_reopen(void)
     return failures;
 }
 
+static int t_projection_catch_up_replay(void)
+{
+    int failures = 0;
+    char dir[256], elog_path[300], proj_path[300];
+    wp_tmpdir(dir, sizeof(dir), "replay");
+    wp_paths(dir, elog_path, sizeof(elog_path), proj_path, sizeof(proj_path));
+
+    event_log_t *log = event_log_open(elog_path);
+    wallet_projection_t *p = wallet_projection_open(proj_path, log);
+    WP_CHECK("replay open", log && p);
+    bool appended = true;
+    for (int i = 0; i < 100 && appended; i++)
+        appended = append_wallet_key(log, i);
+    for (int i = 0; i < 5 && appended; i++)
+        appended = append_wallet_addr_derived(log, i);
+    for (int i = 0; i < 200 && appended; i++)
+        appended = append_wallet_tx(log, i);
+    for (int i = 0; i < 50 && appended; i++)
+        appended = append_wallet_note(log, i);
+    WP_CHECK("synthetic wallet events appended", appended);
+    WP_CHECK("catch up synthetic events",
+             wallet_projection_catch_up(p) != UINT64_MAX);
+    WP_CHECK("replay address count",
+             wallet_projection_address_count(p) == 105);
+    WP_CHECK("replay tx count", wallet_projection_tx_count(p) == 200);
+    WP_CHECK("replay utxo count", wallet_projection_utxo_count(p) == 0);
+    WP_CHECK("replay note count", wallet_projection_note_count(p) == 50);
+    WP_CHECK("replay total note value",
+             wallet_projection_total_value_zat(p) == 1275);
+    WP_CHECK("replay idempotent",
+             wallet_projection_catch_up(p) != UINT64_MAX &&
+             wallet_projection_address_count(p) == 105 &&
+             wallet_projection_tx_count(p) == 200 &&
+             wallet_projection_note_count(p) == 50);
+    wallet_projection_close(p);
+
+    p = wallet_projection_open(proj_path, log);
+    WP_CHECK("replay reopen", p != NULL);
+    WP_CHECK("replay persists counts",
+             wallet_projection_address_count(p) == 105 &&
+             wallet_projection_tx_count(p) == 200 &&
+             wallet_projection_note_count(p) == 50 &&
+             wallet_projection_total_value_zat(p) == 1275);
+    wallet_projection_close(p);
+    event_log_close(log);
+    test_cleanup_tmpdir(dir);
+    return failures;
+}
+
 int test_wallet_projection(void)
 {
     int failures = 0;
@@ -252,6 +370,7 @@ int test_wallet_projection(void)
     failures += t_tx_seen_payload_roundtrip();
     failures += t_note_decrypted_payload_roundtrip();
     failures += t_projection_skeleton_open_reopen();
+    failures += t_projection_catch_up_replay();
     printf("wallet_projection: %s\n", failures ? "FAIL" : "PASS");
     return failures;
 }

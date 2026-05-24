@@ -10,6 +10,7 @@
 #include "storage/wallet_projection.h"
 
 #include "json/json.h"
+#include "storage/event_log_payloads.h"
 #include "util/safe_alloc.h"
 
 #include <inttypes.h>
@@ -20,6 +21,7 @@
 #include <string.h>
 
 #define WALLET_PROJECTION_SCHEMA_VERSION 1
+#define EVENT_LOG_FRAME_OVERHEAD 32u
 
 struct wallet_projection {
     sqlite3 *db;
@@ -196,12 +198,169 @@ void wallet_projection_close(wallet_projection_t *p)
     free(p);
 }
 
+static bool apply_key_add(wallet_projection_t *p,
+                          const struct ev_wallet_key_add *ev)
+{
+    char address[EV_WALLET_ADDRESS_MAX + 1];
+    char label[EV_WALLET_LABEL_MAX + 1];
+    memset(address, 0, sizeof(address));
+    memset(label, 0, sizeof(label));
+    if (ev->address_len && ev->address)
+        memcpy(address, ev->address, ev->address_len);
+    if (ev->label_len && ev->label)
+        memcpy(label, ev->label, ev->label_len);
+
+    sqlite3_stmt *s = NULL;
+    int rc = sqlite3_prepare_v2(p->db,
+        "INSERT OR REPLACE INTO wallet_view_addresses"
+        "(pubkey_hash,address,label,created_unix) VALUES(?,?,?,?)",
+        -1, &s, NULL);
+    if (rc != SQLITE_OK) return false;
+    sqlite3_bind_blob(s, 1, ev->pubkey_hash, 20, SQLITE_TRANSIENT);
+    sqlite3_bind_text(s, 2, address, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(s, 3, label, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(s, 4, (sqlite3_int64)ev->created_unix);
+    rc = sqlite3_step(s);  // raw-sql-ok:projection-primitive
+    sqlite3_finalize(s);
+    return rc == SQLITE_DONE;
+}
+
+static bool apply_addr_derived(wallet_projection_t *p,
+                               const struct ev_wallet_addr_derived *ev)
+{
+    sqlite3_stmt *s = NULL;
+    int rc = sqlite3_prepare_v2(p->db,
+        "INSERT OR REPLACE INTO wallet_view_addresses"
+        "(pubkey_hash,address,label,created_unix) VALUES(?,'','',?)",
+        -1, &s, NULL);
+    if (rc != SQLITE_OK) return false;
+    sqlite3_bind_blob(s, 1, ev->derived_pubkey_hash, 20, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(s, 2, (sqlite3_int64)ev->derived_unix);
+    rc = sqlite3_step(s);  // raw-sql-ok:projection-primitive
+    sqlite3_finalize(s);
+    return rc == SQLITE_DONE;
+}
+
+static bool apply_tx_seen(wallet_projection_t *p,
+                          const struct ev_wallet_tx_seen *ev)
+{
+    sqlite3_stmt *s = NULL;
+    int rc = sqlite3_prepare_v2(p->db,
+        "INSERT OR REPLACE INTO wallet_view_transactions"
+        "(txid,block_height,fee,from_me,seen_unix) VALUES(?,?,?,?,0)",
+        -1, &s, NULL);
+    if (rc != SQLITE_OK) return false;
+    sqlite3_bind_blob(s, 1, ev->txid, 32, SQLITE_TRANSIENT);
+    sqlite3_bind_int(s, 2, ev->block_height);
+    sqlite3_bind_int64(s, 3, (sqlite3_int64)ev->fee);
+    sqlite3_bind_int(s, 4, ev->from_me ? 1 : 0);
+    rc = sqlite3_step(s);  // raw-sql-ok:projection-primitive
+    sqlite3_finalize(s);
+    return rc == SQLITE_DONE;
+}
+
+static bool apply_note_decrypted(
+    wallet_projection_t *p,
+    const struct ev_wallet_note_decrypted *ev)
+{
+    sqlite3_stmt *s = NULL;
+    int rc = sqlite3_prepare_v2(p->db,
+        "INSERT OR REPLACE INTO wallet_view_notes"
+        "(txid,output_index,value,cm,block_height) VALUES(?,?,?,?,?)",
+        -1, &s, NULL);
+    if (rc != SQLITE_OK) return false;
+    sqlite3_bind_blob(s, 1, ev->txid, 32, SQLITE_TRANSIENT);
+    sqlite3_bind_int(s, 2, (int)ev->output_index);
+    sqlite3_bind_int64(s, 3, (sqlite3_int64)ev->value);
+    sqlite3_bind_blob(s, 4, ev->cm, 32, SQLITE_TRANSIENT);
+    sqlite3_bind_int(s, 5, ev->block_height);
+    rc = sqlite3_step(s);  // raw-sql-ok:projection-primitive
+    sqlite3_finalize(s);
+    return rc == SQLITE_DONE;
+}
+
+struct catchup_ctx {
+    wallet_projection_t *p;
+    bool ok;
+    uint64_t next_offset;
+    uint64_t since_commit;
+};
+
+static bool catchup_cb(uint64_t offset, enum event_log_type type,
+                       const void *payload, size_t len, void *user)
+{
+    struct catchup_ctx *ctx = user;
+    wallet_projection_t *p = ctx->p;
+    uint64_t next = offset + EVENT_LOG_FRAME_OVERHEAD + (uint64_t)len;
+
+    if (type == EV_WALLET_KEY_ADD) {
+        struct ev_wallet_key_add ev;
+        if (!ev_wallet_key_add_parse(payload, len, &ev) ||
+            !apply_key_add(p, &ev)) {
+            ctx->ok = false;
+            return false;
+        }
+    } else if (type == EV_WALLET_ADDR_DERIVED) {
+        struct ev_wallet_addr_derived ev;
+        if (!ev_wallet_addr_derived_parse(payload, len, &ev) ||
+            !apply_addr_derived(p, &ev)) {
+            ctx->ok = false;
+            return false;
+        }
+    } else if (type == EV_WALLET_TX_SEEN) {
+        struct ev_wallet_tx_seen ev;
+        if (!ev_wallet_tx_seen_parse(payload, len, &ev) ||
+            !apply_tx_seen(p, &ev)) {
+            ctx->ok = false;
+            return false;
+        }
+    } else if (type == EV_WALLET_NOTE_DECRYPTED) {
+        struct ev_wallet_note_decrypted ev;
+        if (!ev_wallet_note_decrypted_parse(payload, len, &ev) ||
+            !apply_note_decrypted(p, &ev)) {
+            ctx->ok = false;
+            return false;
+        }
+    }
+
+    ctx->next_offset = next;
+    p->last_consumed_offset = next;
+    ctx->since_commit++;
+    if (ctx->since_commit >= 100) {
+        if (!meta_set_u64(p->db, "last_consumed_offset", next)) {
+            ctx->ok = false;
+            return false;
+        }
+        ctx->since_commit = 0;
+    }
+    return true;
+}
+
 uint64_t wallet_projection_catch_up(wallet_projection_t *p)
 {
     if (!p || !p->db || !p->log) return UINT64_MAX;
-    if (!meta_set_u64(p->db, "last_consumed_offset",
-                      p->last_consumed_offset))
+    struct catchup_ctx ctx = {
+        .p = p,
+        .ok = true,
+        .next_offset = p->last_consumed_offset,
+        .since_commit = 0,
+    };
+
+    if (!exec_sql(p->db, "BEGIN IMMEDIATE", "catch_up begin"))
         return UINT64_MAX;
+    if (event_log_stream(p->log, p->last_consumed_offset,
+                         catchup_cb, &ctx) < 0)
+        ctx.ok = false;
+    if (ctx.ok)
+        ctx.ok = meta_set_u64(p->db, "last_consumed_offset",
+                              ctx.next_offset);
+
+    bool finish_ok = exec_sql(p->db, ctx.ok ? "COMMIT" : "ROLLBACK",
+                              ctx.ok ? "catch_up commit" :
+                                       "catch_up rollback");
+    if (!ctx.ok || !finish_ok)
+        return UINT64_MAX;
+    p->last_consumed_offset = ctx.next_offset;
     return p->last_consumed_offset;
 }
 
