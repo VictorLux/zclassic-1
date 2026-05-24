@@ -189,6 +189,19 @@ static int64_t dump_int(struct json_value *dump, const char *key)
     return v ? json_get_int(v) : INT64_MIN;
 }
 
+static bool exec_test_sql(sqlite3 *db, const char *sql)
+{
+    char *err = NULL;
+    int rc = sqlite3_exec(db, sql, NULL, NULL, &err);
+    if (rc != SQLITE_OK) {
+        fprintf(stderr, "small_projections SQL failed: %s\n",
+                err ? err : sqlite3_errmsg(db));
+        sqlite3_free(err);
+        return false;
+    }
+    return true;
+}
+
 static int t_projection_skeletons_fresh(void)
 {
     int failures = 0;
@@ -500,12 +513,14 @@ static int t_projection_emit_helpers(void)
     char contacts_path[320];
     char onion_path[320];
     char hodl_path[320];
+    char legacy_path[320];
     sp_tmpdir(dir, sizeof(dir), "emit");
     snprintf(elog_path, sizeof(elog_path), "%s/event_log.dat", dir);
     snprintf(contacts_path, sizeof(contacts_path), "%s/contacts.db", dir);
     snprintf(onion_path, sizeof(onion_path), "%s/onion_announcements.db",
              dir);
     snprintf(hodl_path, sizeof(hodl_path), "%s/hodl_history.db", dir);
+    snprintf(legacy_path, sizeof(legacy_path), "%s/legacy.db", dir);
 
     event_log_t *log = event_log_open(elog_path);
     SP_CHECK("emit event log open", log != NULL);
@@ -525,14 +540,15 @@ static int t_projection_emit_helpers(void)
     onion_ann_projection_dump_state_json(&onion_before, NULL);
     hodl_history_projection_dump_state_json(&hodl_before, NULL);
 
+    const char *onion_addr =
+        "cdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefgh.onion";
     SP_CHECK("emit contact set",
              contacts_projection_emit_set("t1EmitAlice", "Alice"));
     SP_CHECK("emit contact touched",
              contacts_projection_emit_touched("t1EmitAlice", 1763333333u));
     SP_CHECK("emit onion",
-             onion_ann_projection_emit(
-                 "cdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefgh.onion",
-                 1763333334u, "6a045a434c2301"));
+             onion_ann_projection_emit(onion_addr, 1763333334u,
+                                       "6a045a434c2301"));
     SP_CHECK("emit hodl",
              hodl_history_projection_emit_snapshot(
                  200, 1763333335u, 123456789LL, 12345LL, 0.01));
@@ -581,6 +597,64 @@ static int t_projection_emit_helpers(void)
              onion && onion_ann_projection_count(onion) == 1);
     SP_CHECK("emit hodl count",
              hodl && hodl_history_projection_count(hodl) == 1);
+
+    sqlite3 *legacy = NULL;
+    SP_CHECK("emit legacy db open",
+             sqlite3_open(legacy_path, &legacy) == SQLITE_OK && legacy);
+    if (legacy) {
+        bool ok =
+            exec_test_sql(legacy,
+                "CREATE TABLE contacts(address TEXT PRIMARY KEY,"
+                "name TEXT NOT NULL,last_used INTEGER NOT NULL)") &&
+            exec_test_sql(legacy,
+                "INSERT INTO contacts VALUES"
+                "('t1EmitAlice','Alice',1763333333)") &&
+            exec_test_sql(legacy,
+                "CREATE TABLE onion_announcements("
+                "onion_address TEXT PRIMARY KEY,"
+                "announced_at INTEGER NOT NULL,"
+                "script_hex TEXT NOT NULL DEFAULT '')") &&
+            exec_test_sql(legacy,
+                "INSERT INTO onion_announcements VALUES"
+                "('cdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefgh.onion',"
+                "1763333334,'6a045a434c2301')") &&
+            exec_test_sql(legacy,
+                "CREATE TABLE hodl_history(height INTEGER PRIMARY KEY,"
+                "time INTEGER NOT NULL,total_zat INTEGER NOT NULL,"
+                "older_1y_zat INTEGER NOT NULL,older_1y_pct REAL NOT NULL)") &&
+            exec_test_sql(legacy,
+                "INSERT INTO hodl_history VALUES"
+                "(200,1763333335,123456789,12345,0.01)");
+        SP_CHECK("emit legacy seed", ok);
+
+        int64_t pc = 0;
+        int64_t lc = 0;
+        char first_diff[256] = {0};
+        SP_CHECK("emit contacts diff match",
+                 contacts_projection_diff_legacy(contacts, legacy, &pc, &lc,
+                                                 first_diff,
+                                                 sizeof(first_diff)) &&
+                 pc == 1 && lc == 1 && first_diff[0] == '\0');
+        SP_CHECK("emit onion diff match",
+                 onion_ann_projection_diff_legacy(onion, legacy, &pc, &lc,
+                                                  first_diff,
+                                                  sizeof(first_diff)) &&
+                 pc == 1 && lc == 1 && first_diff[0] == '\0');
+        SP_CHECK("emit hodl diff match",
+                 hodl_history_projection_diff_legacy(hodl, legacy, &pc, &lc,
+                                                     first_diff,
+                                                     sizeof(first_diff)) &&
+                 pc == 1 && lc == 1 && first_diff[0] == '\0');
+        SP_CHECK("emit contacts first diff",
+                 exec_test_sql(legacy,
+                     "UPDATE contacts SET name='Alicia' "
+                     "WHERE address='t1EmitAlice'") &&
+                 contacts_projection_diff_legacy(contacts, legacy, &pc, &lc,
+                                                 first_diff,
+                                                 sizeof(first_diff)) &&
+                 strcmp(first_diff, "t1EmitAlice") == 0);
+        sqlite3_close(legacy);
+    }
 
     contacts_projection_close(contacts);
     onion_ann_projection_close(onion);

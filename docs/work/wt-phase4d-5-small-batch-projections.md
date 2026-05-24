@@ -474,7 +474,9 @@ Progress, 2026-05-24:
 - Task 6 boot wiring landed in `b98cadb51`
   (`wire small projections at boot`).
 - Task 7 projection diff tools landed in `68234ade6`
-  (`add small projection diff tools`).
+  (`add small projection diff tools`). Follow-up tightening makes the
+  three diff RPCs walk projection and legacy rows in primary-key order,
+  returning the first divergent key instead of only comparing counts.
 
 All implementation tasks are complete locally; live diff-tool gate
 remains pending a restarted test instance.

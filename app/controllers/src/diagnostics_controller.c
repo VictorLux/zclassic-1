@@ -1594,9 +1594,11 @@ static int64_t diag_count_table(sqlite3 *db, const char *table)
 static void push_projection_count_diff(struct json_value *result,
                                        const char *projection,
                                        int64_t projection_count,
-                                       int64_t legacy_count)
+                                       int64_t legacy_count,
+                                       const char *first_diff)
 {
-    bool match = projection_count == legacy_count;
+    bool match = projection_count == legacy_count &&
+                 (!first_diff || first_diff[0] == '\0');
     json_push_kv_str(result, "projection", projection);
     json_push_kv_int(result, "projection_count", projection_count);
     json_push_kv_int(result, "legacy_count", legacy_count);
@@ -1607,11 +1609,13 @@ static void push_projection_count_diff(struct json_value *result,
         json_set_null(&nullv);
         json_push_kv(result, "first_diff", &nullv);
     } else {
-        char first_diff[128];
-        snprintf(first_diff, sizeof(first_diff),
+        char count_diff[128];
+        snprintf(count_diff, sizeof(count_diff),
                  "count projection=%lld legacy=%lld",
                  (long long)projection_count, (long long)legacy_count);
-        json_push_kv_str(result, "first_diff", first_diff);
+        json_push_kv_str(result, "first_diff",
+                         first_diff && first_diff[0] ? first_diff
+                                                     : count_diff);
     }
 }
 
@@ -1649,9 +1653,18 @@ static bool rpc_contactsprojectiondiff(const struct json_value *params,
         return true;
     }
 
+    int64_t projection_count = 0;
+    int64_t legacy_count = 0;
+    char first_diff[256] = {0};
+    if (!contacts_projection_diff_legacy(proj, ndb->db, &projection_count,
+                                         &legacy_count, first_diff,
+                                         sizeof(first_diff))) {
+        json_push_kv_bool(result, "match", false);
+        json_push_kv_str(result, "first_diff", "diff_query_failed");
+        return true;
+    }
     push_projection_count_diff(result, "contacts_projection",
-                               (int64_t)contacts_projection_count(proj),
-                               diag_count_table(ndb->db, "contacts"));
+                               projection_count, legacy_count, first_diff);
     return true;
 }
 
@@ -1689,10 +1702,18 @@ static bool rpc_onionannouncementsprojectiondiff(
         return true;
     }
 
-    push_projection_count_diff(
-        result, "onion_announcements_projection",
-        (int64_t)onion_ann_projection_count(proj),
-        diag_count_table(ndb->db, "onion_announcements"));
+    int64_t projection_count = 0;
+    int64_t legacy_count = 0;
+    char first_diff[256] = {0};
+    if (!onion_ann_projection_diff_legacy(proj, ndb->db, &projection_count,
+                                          &legacy_count, first_diff,
+                                          sizeof(first_diff))) {
+        json_push_kv_bool(result, "match", false);
+        json_push_kv_str(result, "first_diff", "diff_query_failed");
+        return true;
+    }
+    push_projection_count_diff(result, "onion_announcements_projection",
+                               projection_count, legacy_count, first_diff);
     return true;
 }
 
@@ -1730,9 +1751,19 @@ static bool rpc_hodlhistoryprojectiondiff(const struct json_value *params,
         return true;
     }
 
+    int64_t projection_count = 0;
+    int64_t legacy_count = 0;
+    char first_diff[256] = {0};
+    if (!hodl_history_projection_diff_legacy(proj, ndb->db,
+                                             &projection_count,
+                                             &legacy_count, first_diff,
+                                             sizeof(first_diff))) {
+        json_push_kv_bool(result, "match", false);
+        json_push_kv_str(result, "first_diff", "diff_query_failed");
+        return true;
+    }
     push_projection_count_diff(result, "hodl_history_projection",
-                               (int64_t)hodl_history_projection_count(proj),
-                               diag_count_table(ndb->db, "hodl_history"));
+                               projection_count, legacy_count, first_diff);
     return true;
 }
 
