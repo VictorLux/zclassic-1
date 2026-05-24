@@ -154,6 +154,53 @@ static int t_add_remove_replay(void)
     return failures;
 }
 
+struct iter_ctx {
+    uint8_t first_bytes[8];
+    int count;
+};
+
+static bool iter_cb(const uint8_t txid[32], int64_t fee,
+                    uint32_t size_bytes, uint32_t weight, void *user)
+{
+    (void)fee;
+    (void)size_bytes;
+    (void)weight;
+    struct iter_ctx *ctx = user;
+    if (!ctx || ctx->count >= (int)(sizeof(ctx->first_bytes) /
+                                    sizeof(ctx->first_bytes[0])))
+        return false;
+    ctx->first_bytes[ctx->count++] = txid[0];
+    return true;
+}
+
+static int t_iterate_sorted(void)
+{
+    int failures = 0;
+    char dir[256], elog_path[300], proj_path[300];
+    uint8_t txid1[32], txid2[32], txid3[32];
+    struct iter_ctx ctx = {0};
+    mp_tmpdir(dir, sizeof(dir), "iter");
+    mp_paths(dir, elog_path, sizeof(elog_path), proj_path, sizeof(proj_path));
+    fill_txid(txid1, 3);
+    fill_txid(txid2, 1);
+    fill_txid(txid3, 2);
+    event_log_t *log = event_log_open(elog_path);
+    mempool_projection_t *p = mempool_projection_open(proj_path, log);
+    MP_CHECK("append iter 3", append_admit(log, txid1, 300, 4, 12));
+    MP_CHECK("append iter 1", append_admit(log, txid2, 100, 4, 4));
+    MP_CHECK("append iter 2", append_admit(log, txid3, 200, 4, 8));
+    MP_CHECK("catch up iterate", mempool_projection_catch_up(p) != UINT64_MAX);
+    MP_CHECK("iterate count",
+             mempool_projection_each(p, iter_cb, &ctx) == 3);
+    MP_CHECK("iterate sorted",
+             ctx.count == 3 && ctx.first_bytes[0] == 1 &&
+             ctx.first_bytes[1] == 2 && ctx.first_bytes[2] == 3);
+    mempool_projection_close(p);
+    event_log_close(log);
+    test_cleanup_tmpdir(dir);
+    return failures;
+}
+
 static int t_emit_helpers(void)
 {
     int failures = 0;
@@ -235,6 +282,7 @@ int test_mempool_projection(void)
     printf("\n=== mempool_projection tests ===\n");
     failures += t_payload_roundtrip();
     failures += t_add_remove_replay();
+    failures += t_iterate_sorted();
     failures += t_emit_helpers();
     failures += t_model_clear_emits_removes();
     printf("mempool_projection: %d failures\n", failures);

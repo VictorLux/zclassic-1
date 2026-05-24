@@ -196,26 +196,56 @@ int64_t db_mempool_total_size(struct node_db *ndb)
     AR_QUERY_INT64_SQL(ndb, "SELECT COALESCE(SUM(size),0) FROM mempool");
 }
 
+struct clear_txid_buf {
+    uint8_t *txids;
+    int cap;
+    int count;
+};
+
+static void emit_clear_remove(const struct db_mempool_entry *e, void *ctx)
+{
+    struct clear_txid_buf *buf = ctx;
+    if (!e || !buf || buf->count >= buf->cap) return;
+    memcpy(buf->txids + (size_t)buf->count * 32u, e->txid, 32);
+    buf->count++;
+}
+
+static void emit_clear_removes(uint8_t *txids, int count)
+{
+    if (!mempool_projection_event_log()) return;
+    for (int i = 0; i < count; i++) {
+        const uint8_t *txid = txids + (size_t)i * 32u;
+        if (!mempool_projection_emit_remove(txid, 3)) {
+            fprintf(stderr,  // obs-ok:mempool-projection-shadow
+                    "mempool projection shadow emit failed for clear\n");
+        }
+    }
+}
+
 bool db_mempool_clear(struct node_db *ndb)
 {
     if (!ndb->open) return false;
-    if (mempool_projection_event_log()) {
-        sqlite3_stmt *s = NULL;
-        sqlite3_prepare_v2(ndb->db, "SELECT txid FROM mempool",
-                           -1, &s, NULL);
-        if (!s) return false;
-        while (AR_STEP_ROW(s)) {
-            uint8_t txid[32];
-            AR_READ_BLOB(s, 0, txid, 32);
-            if (!mempool_projection_emit_remove(txid, 3)) {
-                fprintf(stderr,  // obs-ok:mempool-projection-shadow
-                        "mempool projection shadow emit failed for clear\n");
-            }
+    bool shadow = mempool_projection_event_log() != NULL;
+    int count = shadow ? db_mempool_count(ndb) : 0;
+    uint8_t *txids = NULL;
+    struct clear_txid_buf buf = {0};
+    if (count > 0) {
+        txids = zcl_malloc((size_t)count * 32u, "mempool clear txids");
+        if (!txids) return false;
+        buf.txids = txids;
+        buf.cap = count;
+        int seen = db_mempool_each(ndb, emit_clear_remove, &buf);
+        if (seen != count || buf.count != count) {
+            free(txids);
+            return false;
         }
-        AR_FINALIZE(s);
     }
-    node_db_exec(ndb, "DELETE FROM mempool_spends");
-    return node_db_exec(ndb, "DELETE FROM mempool");
+    bool ok = node_db_exec(ndb, "DELETE FROM mempool_spends") &&
+              node_db_exec(ndb, "DELETE FROM mempool");
+    if (ok && txids)
+        emit_clear_removes(txids, buf.count);
+    free(txids);
+    return ok;
 }
 
 /* ── Spend Tracking ───────────────────────────────────────────── */

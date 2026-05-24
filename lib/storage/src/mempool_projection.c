@@ -415,6 +415,40 @@ bool mempool_projection_get(mempool_projection_t *p,
     return false;
 }
 
+int mempool_projection_each(mempool_projection_t *p,
+                            mempool_projection_cb cb,
+                            void *user)
+{
+    if (!p || !p->db || !cb) return -1;
+    sqlite3_stmt *s = NULL;
+    int rc = sqlite3_prepare_v2(p->db,
+        "SELECT txid,fee,size,weight FROM mempool ORDER BY txid",
+        -1, &s, NULL);
+    if (rc != SQLITE_OK) return -1;
+
+    int count = 0;
+    while ((rc = sqlite3_step(s)) == SQLITE_ROW) {  // raw-sql-ok:projection-primitive
+        const void *txid_blob = sqlite3_column_blob(s, 0);
+        int txid_len = sqlite3_column_bytes(s, 0);
+        if (!txid_blob || txid_len != 32)
+            continue;
+        uint8_t txid[32];
+        memcpy(txid, txid_blob, 32);
+        bool keep_going = cb(txid,
+                             sqlite3_column_int64(s, 1),
+                             (uint32_t)sqlite3_column_int(s, 2),
+                             (uint32_t)sqlite3_column_int(s, 3),
+                             user);
+        count++;
+        if (!keep_going)
+            break;
+    }
+    sqlite3_finalize(s);
+    if (rc != SQLITE_DONE && rc != SQLITE_ROW)
+        return -1;
+    return count;
+}
+
 static int64_t query_i64(sqlite3 *db, const char *sql)
 {
     sqlite3_stmt *s = NULL;

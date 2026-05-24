@@ -1172,34 +1172,104 @@ static bool rpc_peersprojectiondiff(const struct json_value *params, bool help,
     return true;
 }
 
-struct mempool_diff_ctx {
-    mempool_projection_t *proj;
-    bool match;
-    int sample_checked;
-    char first_diff[160];
+struct mempool_diff_entry {
+    uint8_t txid[32];
+    int64_t fee;
+    uint32_t size;
+    uint32_t weight;
 };
 
-static void mempool_diff_cb(const struct db_mempool_entry *e, void *ctx)
+struct mempool_diff_list {
+    struct mempool_diff_entry *items;
+    size_t cap;
+    size_t count;
+    bool overflow;
+};
+
+static int cmp_mempool_diff_entry(const void *a, const void *b)
 {
-    struct mempool_diff_ctx *d = ctx;
-    if (!d || !d->match || !e) return;
-    int64_t fee = 0;
-    uint32_t size = 0, weight = 0;
-    d->sample_checked++;
-    if (!mempool_projection_get(d->proj, e->txid, &fee, &size, &weight)) {
-        snprintf(d->first_diff, sizeof(d->first_diff),
-                 "missing legacy tx in projection");
-        d->match = false;
-        return;
+    const struct mempool_diff_entry *ea = a;
+    const struct mempool_diff_entry *eb = b;
+    return memcmp(ea->txid, eb->txid, 32);
+}
+
+static void mempool_txid_hex(const uint8_t txid[32], char out[65])
+{
+    static const char hex[] = "0123456789abcdef";
+    for (int i = 0; i < 32; i++) {
+        out[i * 2] = hex[(txid[i] >> 4) & 0x0f];
+        out[i * 2 + 1] = hex[txid[i] & 0x0f];
     }
-    if (fee != e->fee || size != (uint32_t)e->size ||
-        weight != (uint32_t)e->size) {
-        snprintf(d->first_diff, sizeof(d->first_diff),
-                 "tx aggregate mismatch fee=%lld/%lld size=%u/%d weight=%u/%d",
-                 (long long)fee, (long long)e->fee,
-                 size, e->size, weight, e->size);
-        d->match = false;
+    out[64] = '\0';
+}
+
+static bool mempool_diff_list_append(struct mempool_diff_list *list,
+                                     const uint8_t txid[32],
+                                     int64_t fee,
+                                     uint32_t size,
+                                     uint32_t weight)
+{
+    if (!list || !txid || list->count >= list->cap) {
+        if (list) list->overflow = true;
+        return false;
     }
+    struct mempool_diff_entry *dst = &list->items[list->count++];
+    memcpy(dst->txid, txid, 32);
+    dst->fee = fee;
+    dst->size = size;
+    dst->weight = weight;
+    return true;
+}
+
+static void mempool_diff_live_cb(const struct db_mempool_entry *e, void *ctx)
+{
+    struct mempool_diff_list *list = ctx;
+    if (!e || !list) return;
+    uint32_t size = e->size > 0 ? (uint32_t)e->size : 0u;
+    (void)mempool_diff_list_append(list, e->txid, e->fee, size, size);
+}
+
+static bool mempool_diff_projection_cb(const uint8_t txid[32],
+                                       int64_t fee,
+                                       uint32_t size_bytes,
+                                       uint32_t weight,
+                                       void *user)
+{
+    return mempool_diff_list_append(user, txid, fee, size_bytes, weight);
+}
+
+static bool mempool_diff_alloc(struct mempool_diff_list *list, size_t count)
+{
+    memset(list, 0, sizeof(*list));
+    list->cap = count;
+    if (count == 0)
+        return true;
+    list->items = zcl_malloc(count * sizeof(list->items[0]),
+                             "mempool projection diff entries");
+    return list->items != NULL;
+}
+
+static void mempool_diff_free(struct mempool_diff_list *list)
+{
+    if (!list) return;
+    free(list->items);
+    memset(list, 0, sizeof(*list));
+}
+
+static int64_t mempool_diff_total_fee(const struct mempool_diff_list *list)
+{
+    int64_t total = 0;
+    for (size_t i = 0; list && i < list->count; i++)
+        total += list->items[i].fee;
+    return total;
+}
+
+static uint64_t mempool_diff_total_weight(const struct mempool_diff_list *list)
+{
+    uint64_t total = 0;
+    for (size_t i = 0; list && i < list->count; i++)
+        total += list->items[i].weight;
+    return total;
 }
 
 static bool rpc_mempoolprojectiondiff(const struct json_value *params,
@@ -1235,50 +1305,103 @@ static bool rpc_mempoolprojectiondiff(const struct json_value *params,
     }
 
     uint64_t projection_count = mempool_projection_count(proj);
-    int64_t projection_fee = mempool_projection_total_fee(proj);
-    uint64_t projection_weight = mempool_projection_total_weight(proj);
-    int legacy_count = db_mempool_count(ndb);
-    int64_t legacy_fee = db_mempool_total_fee(ndb);
-    int64_t legacy_weight = db_mempool_total_size(ndb);
+    int legacy_count_i = db_mempool_count(ndb);
+    size_t legacy_count = legacy_count_i > 0 ? (size_t)legacy_count_i : 0;
 
-    struct mempool_diff_ctx ctx = {
-        .proj = proj,
-        .match = projection_count == (uint64_t)legacy_count &&
+    struct mempool_diff_list projection = {0};
+    struct mempool_diff_list legacy = {0};
+    bool alloc_ok = mempool_diff_alloc(&projection,
+                                       (size_t)projection_count) &&
+                    mempool_diff_alloc(&legacy, legacy_count);
+    if (!alloc_ok) {
+        mempool_diff_free(&projection);
+        mempool_diff_free(&legacy);
+        json_push_kv_bool(result, "match", false);
+        json_push_kv_str(result, "first_diff", "allocation_failed");
+        json_push_kv_int(result, "projection_count",
+                         (int64_t)projection_count);
+        json_push_kv_int(result, "legacy_count", legacy_count_i);
+        return true;
+    }
+
+    int projection_each = mempool_projection_each(
+        proj, mempool_diff_projection_cb, &projection);
+    int legacy_each = db_mempool_each(ndb, mempool_diff_live_cb, &legacy);
+    if (projection_each < 0 || legacy_each < 0 ||
+        projection.overflow || legacy.overflow) {
+        mempool_diff_free(&projection);
+        mempool_diff_free(&legacy);
+        json_push_kv_bool(result, "match", false);
+        json_push_kv_str(result, "first_diff", "iteration_failed");
+        json_push_kv_int(result, "projection_count",
+                         (int64_t)projection_count);
+        json_push_kv_int(result, "legacy_count", legacy_count_i);
+        return true;
+    }
+
+    qsort(projection.items, projection.count, sizeof(projection.items[0]),
+          cmp_mempool_diff_entry);
+    qsort(legacy.items, legacy.count, sizeof(legacy.items[0]),
+          cmp_mempool_diff_entry);
+
+    int64_t projection_fee = mempool_diff_total_fee(&projection);
+    int64_t legacy_fee = mempool_diff_total_fee(&legacy);
+    uint64_t projection_weight = mempool_diff_total_weight(&projection);
+    uint64_t legacy_weight = mempool_diff_total_weight(&legacy);
+
+    bool match = projection.count == legacy.count &&
                  projection_fee == legacy_fee &&
-                 projection_weight == (uint64_t)legacy_weight,
-        .sample_checked = 0,
-    };
-    if (!ctx.match) {
-        snprintf(ctx.first_diff, sizeof(ctx.first_diff),
-                 "aggregate projection_count=%llu legacy_count=%d "
-                 "projection_fee=%lld legacy_fee=%lld "
-                 "projection_weight=%llu legacy_weight=%lld",
-                 (unsigned long long)projection_count, legacy_count,
-                 (long long)projection_fee, (long long)legacy_fee,
-                 (unsigned long long)projection_weight,
-                 (long long)legacy_weight);
-    } else {
-        db_mempool_each(ndb, mempool_diff_cb, &ctx);
+                 projection_weight == legacy_weight;
+    char first_diff[65] = {0};
+    size_t common = projection.count < legacy.count ?
+                    projection.count : legacy.count;
+    for (size_t i = 0; i < common; i++) {
+        int txcmp = memcmp(projection.items[i].txid, legacy.items[i].txid, 32);
+        if (txcmp != 0) {
+            const uint8_t *first = txcmp < 0 ? projection.items[i].txid :
+                                               legacy.items[i].txid;
+            mempool_txid_hex(first, first_diff);
+            match = false;
+            break;
+        }
+        if (projection.items[i].fee != legacy.items[i].fee ||
+            projection.items[i].size != legacy.items[i].size ||
+            projection.items[i].weight != legacy.items[i].weight) {
+            mempool_txid_hex(projection.items[i].txid, first_diff);
+            match = false;
+            break;
+        }
+    }
+    if (!match && first_diff[0] == '\0') {
+        if (projection.count > common)
+            mempool_txid_hex(projection.items[common].txid, first_diff);
+        else if (legacy.count > common)
+            mempool_txid_hex(legacy.items[common].txid, first_diff);
+        else
+            snprintf(first_diff, sizeof(first_diff), "aggregate_mismatch");
     }
 
     json_push_kv_str(result, "projection", "mempool_projection");
-    json_push_kv_int(result, "projection_count", (int64_t)projection_count);
-    json_push_kv_int(result, "legacy_count", legacy_count);
+    json_push_kv_int(result, "projection_count",
+                     (int64_t)projection.count);
+    json_push_kv_int(result, "legacy_count", (int64_t)legacy.count);
     json_push_kv_int(result, "projection_total_fee", projection_fee);
     json_push_kv_int(result, "legacy_total_fee", legacy_fee);
     json_push_kv_int(result, "projection_total_weight",
                      (int64_t)projection_weight);
-    json_push_kv_int(result, "legacy_total_weight", legacy_weight);
-    json_push_kv_int(result, "sample_checked", ctx.sample_checked);
-    json_push_kv_bool(result, "match", ctx.match);
-    if (ctx.match) {
+    json_push_kv_int(result, "legacy_total_weight", (int64_t)legacy_weight);
+    json_push_kv_int(result, "sample_checked", (int64_t)common);
+    json_push_kv_bool(result, "match", match);
+    if (match) {
         struct json_value nullv;
         json_init(&nullv);
         json_set_null(&nullv);
         json_push_kv(result, "first_diff", &nullv);
     } else {
-        json_push_kv_str(result, "first_diff", ctx.first_diff);
+        json_push_kv_str(result, "first_diff", first_diff);
     }
+    mempool_diff_free(&projection);
+    mempool_diff_free(&legacy);
     return true;
 }
 
@@ -1367,8 +1490,8 @@ void register_diagnostics_rpc_commands(struct rpc_table *t)
         { "control", "dbquery",       rpc_dbquery,       true },
         { "control", "probezclassicd", rpc_probezclassicd, true },
         { "control", "getmirrorstatus", rpc_getmirrorstatus, true },
-        { "control", "mempoolprojectiondiff", rpc_mempoolprojectiondiff, true },
         { "control", "peersprojectiondiff", rpc_peersprojectiondiff, true },
+        { "control", "mempoolprojectiondiff", rpc_mempoolprojectiondiff, true },
         { "control", "znamprojectiondiff",  rpc_znamprojectiondiff,  true },
     };
     for (size_t i = 0; i < sizeof(cmds) / sizeof(cmds[0]); i++)

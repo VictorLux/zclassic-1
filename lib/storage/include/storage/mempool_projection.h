@@ -23,6 +23,15 @@ bool mempool_projection_get(mempool_projection_t *p,
                             uint32_t *size_out,
                             uint32_t *weight_out);
 
+typedef bool (*mempool_projection_cb)(const uint8_t txid[32],
+                                      int64_t fee,
+                                      uint32_t size_bytes,
+                                      uint32_t weight,
+                                      void *user);
+int mempool_projection_each(mempool_projection_t *p,
+                            mempool_projection_cb cb,
+                            void *user);
+
 uint64_t mempool_projection_count(mempool_projection_t *p);
 int64_t mempool_projection_total_fee(mempool_projection_t *p);
 uint64_t mempool_projection_total_weight(mempool_projection_t *p);
