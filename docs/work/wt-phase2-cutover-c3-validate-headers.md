@@ -197,7 +197,7 @@ see progress + revert individual commits if needed.
 
 ## Status
 
-**✅ DONE — pushed 2026-05-24** to main as commit `8218042f6`.
+**✅ DONE — pushed 2026-05-24** to main as commit `ad34efb65`.
 
 When this lands, the next-in-line is `wt-phase2-cutover-c5-body-persist.md`
 (C-4 body_fetch is folded into C-5 per the batch spec).
@@ -220,9 +220,9 @@ Implemented C-3 validate_headers authoritative cutover:
   lookup, and the missing-pass-row divergence guard.
 
 ### Commits
-- `8218042f6` validate_headers: cut over authoritative verification
-- `a0f79b8c5` crypto_registry: stabilize ECDSA overhead benchmark
-- `531189783` event: deflake async dispatcher lifecycle test
+- `ad34efb65` validate_headers: cut over authoritative verification
+- `c3e696b1d` crypto_registry: stabilize ECDSA overhead benchmark
+- `686cad976` event: deflake async dispatcher lifecycle test
 
 ### Files modified
 - `app/services/include/services/validate_headers_stage.h`
