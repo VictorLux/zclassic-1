@@ -233,7 +233,11 @@ One commit per task. Push after tasks 2 and 4.
 
 ## Status
 
-**QUEUED** — gated on Phase 5a-1 (crypto registry skeleton) merged.
+**IN PROGRESS (wt2)** — claimed 2026-05-24 after Phase 5a-1 merged
+(`c4bebe0a2`). Current code routes the header PoW check through
+`check_block.c` rather than directly inside `accept_block_header.c`, so
+the implementation will rewire the actual `check_block_header` Equihash
+call site while preserving the assignment's consensus surface.
 
 When this ships + 24h soak passes, the queue extends with:
 - 5a-3 script_validate batch path through registry (hot loop, careful)
