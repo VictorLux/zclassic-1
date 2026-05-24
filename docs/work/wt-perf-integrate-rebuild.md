@@ -162,6 +162,10 @@ Summary:
   `-cold-import` fail closed on missing prerequisites, invalid source, or import
   failure, and disabled later legacy UTXO auto-import after a successful cold
   import.
+- Added cold-import spotcheck failure diagnostics that print the checked height
+  range plus expected/actual SHA3 digests, with
+  `ZCL_COLD_IMPORT_DEBUG_WINDOW=N` available as an extra deterministic window
+  check while keeping the normal random spotcheck active.
 
 Verification:
 - `make -j$(nproc) test_zcl test_parallel zclassic23` PASS

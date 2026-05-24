@@ -66,11 +66,22 @@ static int64_t lci_now_ms(void)
     return (int64_t)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
 }
 
+static void lci_hex32(const uint8_t hash[32], char out[65])
+{
+    static const char hexdigits[] = "0123456789abcdef";
+    for (size_t i = 0; i < 32; i++) {
+        out[i * 2] = hexdigits[hash[i] >> 4];
+        out[i * 2 + 1] = hexdigits[hash[i] & 0x0f];
+    }
+    out[64] = '\0';
+}
+
 /* Hash one SHA3 window using payloads from mmap. */
-static bool lci_verify_window(struct blocks_mmap *bmr,
-                              const struct legacy_block_loc *map,
-                              size_t map_count,
-                              size_t wi)
+static bool lci_compute_window_hash(struct blocks_mmap *bmr,
+                                    const struct legacy_block_loc *map,
+                                    size_t map_count,
+                                    size_t wi,
+                                    uint8_t out[32])
 {
     if (wi >= g_sha3_windows_count) return false;
     int start = g_sha3_windows[wi].start_height;
@@ -92,7 +103,40 @@ static bool lci_verify_window(struct blocks_mmap *bmr,
 
     uint8_t digest[32];
     sha3_256_finalize(&ctx, digest);
-    return memcmp(digest, g_sha3_windows[wi].hash, 32) == 0;
+    memcpy(out, digest, 32);
+    return true;
+}
+
+static bool lci_verify_window_logged(struct blocks_mmap *bmr,
+                                     const struct legacy_block_loc *map,
+                                     size_t map_count,
+                                     size_t wi)
+{
+    uint8_t actual[32];
+    int start = wi < g_sha3_windows_count ?
+        g_sha3_windows[wi].start_height : -1;
+    int end = start >= 0 ? start + SHA3_WINDOW_SIZE - 1 : -1;
+    if (!lci_compute_window_hash(bmr, map, map_count, wi, actual)) {
+        fprintf(stderr,
+                "[cold_import] spotcheck FAILED at window %zu "
+                "(h=%d..%d): unable to compute source digest\n",
+                wi, start, end);
+        return false;
+    }
+    if (memcmp(actual, g_sha3_windows[wi].hash, 32) != 0) {
+        char expected_hex[65], actual_hex[65];
+        lci_hex32(g_sha3_windows[wi].hash, expected_hex);
+        lci_hex32(actual, actual_hex);
+        fprintf(stderr,
+                "[cold_import] spotcheck FAILED at window %zu "
+                "(h=%d..%d): expected=%s actual=%s — refusing to import\n",
+                wi, start, end, expected_hex, actual_hex);
+        return false;
+    }
+    fprintf(stderr, // obs-ok:pre-existing-diagnostic
+            "[cold_import] spotcheck OK: w=%zu h=%d..%d\n",
+            wi, start, end);
+    return true;
 }
 
 static bool lci_spotcheck(struct blocks_mmap *bmr,
@@ -113,6 +157,26 @@ static bool lci_spotcheck(struct blocks_mmap *bmr,
     size_t picked[16];
     if (k > (int)(sizeof(picked) / sizeof(picked[0])))
         k = (int)(sizeof(picked) / sizeof(picked[0]));
+
+    const char *debug_window = getenv("ZCL_COLD_IMPORT_DEBUG_WINDOW");
+    if (debug_window && debug_window[0]) {
+        char *endp = NULL;
+        errno = 0;
+        unsigned long long forced = strtoull(debug_window, &endp, 10);
+        if (errno || !endp || *endp != '\0' || forced >= max_w) {
+            fprintf(stderr,
+                    "[cold_import] invalid ZCL_COLD_IMPORT_DEBUG_WINDOW=%s "
+                    "(valid range: 0..%zu)\n",
+                    debug_window, max_w - 1);
+            return false;
+        }
+        fprintf(stderr, // obs-ok:operator-requested-diagnostic
+                "[cold_import] debug spotcheck window %llu requested\n",
+                forced);
+        if (!lci_verify_window_logged(bmr, map, map_count, (size_t)forced))
+            return false;
+    }
+
     unsigned char rand_buf[16 * 4];
     GetRandBytes(rand_buf, sizeof(rand_buf));
     for (int i = 0; i < k; i++) {
@@ -127,14 +191,8 @@ static bool lci_spotcheck(struct blocks_mmap *bmr,
             "[cold_import] SHA3 spotcheck: K=%d windows over [0..%zu) "
             "(legacy_tip=%d)\n", k, max_w, legacy_tip);
     for (int i = 0; i < k; i++) {
-        if (!lci_verify_window(bmr, map, map_count, picked[i])) {
-            fprintf(stderr,
-                    "[cold_import] spotcheck FAILED at window %zu — "
-                    "refusing to import\n", picked[i]);
+        if (!lci_verify_window_logged(bmr, map, map_count, picked[i]))
             return false;
-        }
-        fprintf(stderr, // obs-ok:pre-existing-diagnostic
-                "[cold_import] spotcheck OK: w=%zu\n", picked[i]);
     }
     return true;
 }

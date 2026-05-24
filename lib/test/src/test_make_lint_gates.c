@@ -1026,6 +1026,37 @@ static int t_cold_import_fails_closed_contract(void)
     return failures;
 }
 
+static int t_cold_import_spotcheck_diagnostics_contract(void)
+{
+    int failures = 0;
+    char *buf = NULL;
+    TEST("cold-import spotcheck failure reports deterministic digest evidence") {
+        char path[PATH_MAX];
+        ASSERT(repo_path(path, sizeof(path),
+                         "app/services/src/legacy_cold_import.c") == 0);
+        ASSERT(read_entire_file(path, &buf) == 0);
+        char *debug_env = strstr(buf, "ZCL_COLD_IMPORT_DEBUG_WINDOW");
+        char *debug_check = strstr(buf, "debug spotcheck window");
+        char *random_check = strstr(buf, "SHA3 spotcheck: K=%d");
+        char *range = strstr(buf, "(h=%d..%d)");
+        char *expected = strstr(buf, "expected=%s actual=%s");
+        char *refuse = strstr(buf, "refusing to import");
+        ASSERT(debug_env != NULL);
+        ASSERT(debug_check != NULL);
+        ASSERT(random_check != NULL);
+        ASSERT(range != NULL);
+        ASSERT(expected != NULL);
+        ASSERT(refuse != NULL);
+        ASSERT(debug_env < debug_check);
+        ASSERT(debug_check < random_check);
+        ASSERT(range < expected);
+        ASSERT(expected < refuse);
+        PASS();
+    } _test_next:;
+    free(buf);
+    return failures;
+}
+
 static int t_block_index_flat_atomic_save_contract(void)
 {
     int failures = 0;
@@ -1135,6 +1166,7 @@ int test_make_lint_gates(void)
     failures += t_boot_repaired_index_persistence_contract();
     failures += t_boot_genesis_init_preserves_restored_authority_contract();
     failures += t_cold_import_fails_closed_contract();
+    failures += t_cold_import_spotcheck_diagnostics_contract();
     failures += t_block_index_flat_atomic_save_contract();
     failures += t_projection_deferral_is_not_block_rejected_contract();
     return failures;
