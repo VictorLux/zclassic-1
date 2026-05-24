@@ -20,7 +20,7 @@ Phase 2  [██████████] 100%   Wave S SHADOW complete (S-1..S-
 Phase 2 CUTOVER [██░░░░░░░░]  22%   Flip shadow → authoritative      ← C-3 NOW READY
   ├ C-2    [██████████] 100%   header_admit AUTHORITATIVE             ✅ f3f0c6c4e (the flip)
   ├ C-3    [░░░░░░░░░░]   0%   validate_headers authoritative          ← READY (any worker can claim)
-  ├ C-5    [░░░░░░░░░░]   0%   body_persist + delete body_fetch (batch spec, post C-3)
+  ├ C-5    [░░░░░░░░░░]   0%   body_persist + delete body_fetch  ← spec'd (queued, post C-3)
   ├ C-6    [░░░░░░░░░░]   0%   script_validate authoritative (batch spec, post C-5)
   ├ C-7    [░░░░░░░░░░]   0%   proof_validate authoritative (batch spec, post C-6)
   ├ C-8    [░░░░░░░░░░]   0%   utxo_apply authoritative (batch spec, post C-7 — gates utxo_recovery dissolve)
@@ -31,7 +31,7 @@ Phase 3  [██████░░░░]  60%   Dissolve mega-modules          
   ├ chain_advance  [░░░░░░░░░░] gated on C-9 cutover (dissolve plan ready)
   ├ legacy_mirror  [░░░░░░░░░░] gated on C-9 cutover (dissolve plan ready)
   ├ chain_restore  [░░░░░░░░░░] independent — plan ready, awaiting per-PR assignment
-  ├ header_probe   [░░░░░░░░░░] independent — plan ready, awaiting per-PR assignment
+  ├ header_probe   [░░░░░░░░░░] PR-1 (poll Job extract) READY; PR-2/3 gated on C-3
   └ utxo_recovery  [░░░░░░░░░░] gated on C-8 cutover (dissolve plan ready)
 Phase 4  [██████░░░░]  58%   Storage unification — plan: docs/architecture/phase4-storage-unification.md
   ├ 4a     [██████████] 100%   event_log primitive  ✅ 76b3a10b4
