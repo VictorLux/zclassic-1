@@ -95,7 +95,8 @@ volatile sig_atomic_t g_shutdown_requested = 0;
     X(disk_block_io) X(msg_handlers) X(chain_advance_coordinator) \
     X(lag_slo) X(boot_phase) X(path_check) X(supervisor) \
     X(supervisor_domains) X(condition_engine) X(utxo_activation_paused) \
-    X(watchdog_dissolve_pr2) X(watchdog_conditions_pr3) X(blocker) \
+    X(watchdog_dissolve_pr2) X(watchdog_conditions_pr3) \
+    X(chain_tip_watchdog_bounded_restart) X(blocker) \
     X(clock) X(rng) X(seed_tape) X(stage) X(mailbox) X(mailbox_adoption) \
     X(projection) X(projection_adoption) X(progress_store) X(event_log) \
     X(mempool_projection) X(peers_projection) X(znam_projection) \
