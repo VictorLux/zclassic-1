@@ -324,23 +324,44 @@ int test_crypto_registry(void)
              ecdsa_verify_direct(ctx, &pk, &hash, sig, sig_len) &&
              pubkey_verify(&pk, &hash, sig, sig_len);
 
-        const int iters = 100000;
+        const int batches = 100;
+        const int batch_iters = 1000;
+        const int iters = batches * batch_iters;
         volatile int direct_true = 0;
         volatile int registry_true = 0;
 
-        int64_t t0 = test_now_ns();
-        for (int i = 0; ok && i < iters; i++)
-            direct_true += ecdsa_verify_direct(ctx, &pk, &hash, sig, sig_len);
-        int64_t t1 = test_now_ns();
-        for (int i = 0; ok && i < iters; i++)
-            registry_true += pubkey_verify(&pk, &hash, sig, sig_len);
-        int64_t t2 = test_now_ns();
+        int64_t direct_ns = 0;
+        int64_t registry_ns = 0;
+        for (int b = 0; ok && b < batches; b++) {
+            int64_t t0, t1, t2;
+            if ((b & 1) == 0) {
+                t0 = test_now_ns();
+                for (int i = 0; i < batch_iters; i++)
+                    direct_true += ecdsa_verify_direct(ctx, &pk, &hash,
+                                                       sig, sig_len);
+                t1 = test_now_ns();
+                for (int i = 0; i < batch_iters; i++)
+                    registry_true += pubkey_verify(&pk, &hash, sig, sig_len);
+                t2 = test_now_ns();
+                direct_ns += t1 - t0;
+                registry_ns += t2 - t1;
+            } else {
+                t0 = test_now_ns();
+                for (int i = 0; i < batch_iters; i++)
+                    registry_true += pubkey_verify(&pk, &hash, sig, sig_len);
+                t1 = test_now_ns();
+                for (int i = 0; i < batch_iters; i++)
+                    direct_true += ecdsa_verify_direct(ctx, &pk, &hash,
+                                                       sig, sig_len);
+                t2 = test_now_ns();
+                registry_ns += t1 - t0;
+                direct_ns += t2 - t1;
+            }
+        }
 
         if (ctx)
             secp256k1_context_destroy(ctx);
 
-        int64_t direct_ns = t1 - t0;
-        int64_t registry_ns = t2 - t1;
         int64_t allowed_noise_ns = 5000000;
         int64_t allowed = direct_ns / 200; /* 0.5% */
         if (allowed < allowed_noise_ns)
