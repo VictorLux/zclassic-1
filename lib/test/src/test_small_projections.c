@@ -419,8 +419,16 @@ static int t_projection_catchup_mixed(void)
                  contacts_projection_dump_state_json(&dump, NULL));
         SP_CHECK("contacts dump count",
                  json_get_int(json_get(&dump, "count")) == 1);
+        SP_CHECK("contacts dump table count",
+                 json_get_int(json_get(&dump, "contacts_count")) == 1);
         SP_CHECK("contacts dump consumed",
-                 json_get_int(json_get(&dump, "events_consumed_total")) > 0);
+                 json_get_int(json_get(&dump, "events_consumed_total")) == 4);
+        SP_CHECK("contacts dump set events",
+                 json_get_int(json_get(&dump, "contact_set_total")) == 2);
+        SP_CHECK("contacts dump touch events",
+                 json_get_int(json_get(&dump, "contact_touched_total")) == 1);
+        SP_CHECK("contacts dump delete events",
+                 json_get_int(json_get(&dump, "contact_delete_total")) == 1);
         json_free(&dump);
 
         memset(&dump, 0, sizeof(dump));
@@ -428,8 +436,12 @@ static int t_projection_catchup_mixed(void)
                  onion_ann_projection_dump_state_json(&dump, NULL));
         SP_CHECK("onion dump count",
                  json_get_int(json_get(&dump, "count")) == 1);
+        SP_CHECK("onion dump table count",
+                 json_get_int(json_get(&dump, "onion_announcements_count")) == 1);
         SP_CHECK("onion dump consumed",
-                 json_get_int(json_get(&dump, "events_consumed_total")) > 0);
+                 json_get_int(json_get(&dump, "events_consumed_total")) == 1);
+        SP_CHECK("onion dump announcement events",
+                 json_get_int(json_get(&dump, "announcement_total")) == 1);
         json_free(&dump);
 
         memset(&dump, 0, sizeof(dump));
@@ -437,8 +449,12 @@ static int t_projection_catchup_mixed(void)
                  hodl_history_projection_dump_state_json(&dump, NULL));
         SP_CHECK("hodl dump count",
                  json_get_int(json_get(&dump, "count")) == 2);
+        SP_CHECK("hodl dump table count",
+                 json_get_int(json_get(&dump, "hodl_history_count")) == 2);
         SP_CHECK("hodl dump consumed",
-                 json_get_int(json_get(&dump, "events_consumed_total")) > 0);
+                 json_get_int(json_get(&dump, "events_consumed_total")) == 2);
+        SP_CHECK("hodl dump snapshot events",
+                 json_get_int(json_get(&dump, "snapshot_total")) == 2);
         json_free(&dump);
     }
 

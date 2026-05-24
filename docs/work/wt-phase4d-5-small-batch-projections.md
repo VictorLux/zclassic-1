@@ -459,9 +459,11 @@ Progress, 2026-05-24:
   (`replay small projection events`). Rebuilt `test_zcl` and
   `ZCL_TEST_ONLY=small_projections ./test_zcl` pass with the index
   checks included.
+- Task 4 reader diagnostics dumps landed in `a22d54f9d`
+  (`add small projection diagnostics`). Follow-up tightening adds the
+  task-required `<table>_count` fields and verifies per-projection
+  consumed-event totals exclude skipped event-log frames.
 
-Next slice: Task 4 reader diagnostics dumps and `zcl_state`
-registration for `contacts_projection`, `onion_announcements_projection`,
-and `hodl_history_projection`.
+Next slice: Task 5 shadow emits at the legacy write sites.
 
 <!-- Worker: append a Completion section below when done. -->

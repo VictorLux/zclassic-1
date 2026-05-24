@@ -205,7 +205,6 @@ struct catchup_ctx {
     bool ok;
     uint64_t next_offset;
     uint64_t since_commit;
-    uint64_t events_consumed;
 };
 
 static bool catchup_cb(uint64_t offset, enum event_log_type type,
@@ -223,11 +222,11 @@ static bool catchup_cb(uint64_t offset, enum event_log_type type,
             return false;
         }
         p->announcement_total++;
+        p->events_consumed_total++;
     }
 
     ctx->next_offset = next;
     p->last_consumed_offset = next;
-    ctx->events_consumed++;
     ctx->since_commit++;
     if (ctx->since_commit >= 100) {
         if (!meta_set_u64(p->db, "last_consumed_offset", next)) {
@@ -261,8 +260,8 @@ uint64_t onion_ann_projection_catch_up(onion_ann_projection_t *p)
         return UINT64_MAX;
     if (!ctx.ok)
         return UINT64_MAX;
-    p->events_consumed_total += ctx.events_consumed;
-    p->last_catch_up_ms = (uint64_t)(now_ms() - start_ms);
+    int64_t elapsed = now_ms() - start_ms;
+    p->last_catch_up_ms = elapsed > 0 ? (uint64_t)elapsed : 0;
     return p->last_consumed_offset;
 }
 
@@ -324,6 +323,8 @@ bool onion_ann_projection_dump_state_json(struct json_value *out,
                      (int64_t)p->events_consumed_total);
     json_push_kv_int(out, "announcement_total",
                      (int64_t)p->announcement_total);
+    json_push_kv_int(out, "onion_announcements_count",
+                     (int64_t)onion_ann_projection_count(p));
     json_push_kv_int(out, "count", (int64_t)onion_ann_projection_count(p));
     json_push_kv_int(out, "last_catch_up_ms",
                      (int64_t)p->last_catch_up_ms);
