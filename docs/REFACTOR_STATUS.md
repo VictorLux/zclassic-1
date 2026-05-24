@@ -4,7 +4,7 @@
 > truth for "what's done, what's next, what's blocked." Read this first
 > when you start a session. Full architecture: [`FRAMEWORK.md`](./FRAMEWORK.md).
 
-**Updated:** 2026-05-24 (**4c block_index_projection SHIPPED to production** — Tasks 1-6 on main; **6a seed_tape SHIPPED**; 4d-4 znam at 20%; diff MCP tool + unit tests pending as Phase 4c-finalize)
+**Updated:** 2026-05-24 (**MASSIVE shipping wave** — 4b utxo + 4d-4 znam + 6a seed_tape ALL 100% complete; 4c projection in production at 60% (diff tool pending as 4c-finalize); Phase 4 jumps 75% → 91%)
 
 ---
 
@@ -33,15 +33,15 @@ Phase 3  [██████░░░░]  60%   Dissolve mega-modules          
   ├ chain_restore  [░░░░░░░░░░] independent — plan ready, awaiting per-PR assignment
   ├ header_probe   [░░░░░░░░░░] PR-1 (poll Job extract) READY; PR-2/3 gated on C-3
   └ utxo_recovery  [░░░░░░░░░░] gated on C-8 cutover (dissolve plan ready)
-Phase 4  [████████░░]  75%   Storage unification — plan: docs/architecture/phase4-storage-unification.md
+Phase 4  [█████████░]  91%   Storage unification — plan: docs/architecture/phase4-storage-unification.md
   ├ 4a     [██████████] 100%   event_log primitive  ✅ 76b3a10b4
-  ├ 4b     [██████████] 100%   utxo_projection — Tasks 1-9 SHIPPED  ✅ (diff tool: 96113ca4e)
+  ├ 4b     [██████████] 100%   utxo_projection — Tasks 1-10 SHIPPED  ✅ (39b1e8efa..ee1c5c7b1, 7 commits)
   ├ 4c     [██████░░░░]  60%   block_index_projection — Tasks 1-6 SHIPPED  ✅ (490508125, 76bca5655, d40286d4e, ed34743ba)
   ├ 4c-fin [░░░░░░░░░░]   0%   block_index_projection finalize — diff MCP tool + 9 unit tests  ← spec'd, READY
   ├ 4d-1   [░░░░░░░░░░]   0%   mempool projection (READY)
   ├ 4d-2   [██████████] 100%   peers_projection  ✅ 91aa65c1c + 5dc442a81 + 48e78d801 + f925fb6f3 (wt2)
   ├ 4d-3   [░░░░░░░░░░]   0%   wallet view projection (READY)
-  ├ 4d-4   [██░░░░░░░░]  20%   znam projection  🚧 sub-agent shipped Tasks 1-2 (f52313f02, 60b33dbd1)
+  ├ 4d-4   [██████████] 100%   znam projection — Tasks 1-5b SHIPPED  ✅ (f52313f02..eb53d9d52, 7 commits, 30 test cases pass)
   ├ 4d-5   [░░░░░░░░░░]   0%   zmsg/zslp/zswp/store batch (READY)
   └ 4e     [░░░░░░░░░░]   0%   block-body migration (spec'd, gated on 4c cutover)
 Phase 5  [█████░░░░░]  50%   Crypto agility + reproducible builds — plan: docs/architecture/phase5-crypto-agility-and-releases.md
