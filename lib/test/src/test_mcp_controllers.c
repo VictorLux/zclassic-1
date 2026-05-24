@@ -41,12 +41,13 @@
 /* Expected tool counts.  If a future commit intentionally adds or
  * removes tools, bump these numbers in the same commit — they are the
  * contract for "how big is the MCP surface." */
-#define EXPECTED_TOTAL      96  /* +3 power-user tools: chain_tip,
+#define EXPECTED_TOTAL      97  /* +3 power-user tools: chain_tip,
                                  * reorg_history, mempool_inspect;
                                  * +1 Round 6 C5: zcl_blockers;
                                  * +1 I-9 (revamp): zcl_diff_with_legacy_shadow;
                                  * +1 S-11 mini-diff: zcl_diff_staged_header_admit;
-                                 * +1 framework Phase 0: zcl_conditions */
+                                 * +1 framework Phase 0: zcl_conditions;
+                                 * +1 Phase 4b: zcl_utxo_projection_diff (24h cutover gate) */
 #define EXPECTED_OPS        36  /* status, health, kpi, self_heal_stats, mempool*, mininginfo,
                                  * benchmark, dbstats, filemanifest, events,
                                  * rpc, state + node_log + sql (round 6.5 MCP primitives),
@@ -60,9 +61,10 @@
                                  * syncdiag, replay_dump, replay_exec,
                                  * + mirror status and zclassicd probe,
                                  * + mempool_inspect (fee+age histograms) */
-#define EXPECTED_CHAIN      15  /* + chain_tip + reorg_history
+#define EXPECTED_CHAIN      16  /* + chain_tip + reorg_history
                                  * + zcl_diff_with_legacy_shadow (I-9 revamp)
-                                 * + zcl_diff_staged_header_admit (S-11 mini-diff) */
+                                 * + zcl_diff_staged_header_admit (S-11 mini-diff)
+                                 * + zcl_utxo_projection_diff (Phase 4b 24h cutover gate) */
 #define EXPECTED_NET         9  /* + zcl_peer_report (wave 4 #5),
                                  * + zcl_onion_health (wave 6 #7) */
 #define EXPECTED_WALLET     20
@@ -144,7 +146,7 @@ static int test_ops_domain_count(void)
 static int test_chain_domain_count(void)
 {
     int failures = 0;
-    TEST("controllers: chain domain has 11 tools") {
+    TEST("controllers: chain domain has 16 tools") {
         register_all();
         size_t n = count_by_domain("chain");
         if (n != EXPECTED_CHAIN) {

@@ -7,6 +7,7 @@
  *   zcl_node_log           — reverse-scan node.log on the server side
  *   zcl_state              — generic *_dump_state_json dispatcher
  *   zcl_peers_projection_diff — peers projection vs legacy peer table
+ *   zcl_znam_projection_diff  — znam projection vs legacy znam tables
  *   zcl_probe_zclassicd    — drift check against local zclassicd
  *   zcl_diff_with_legacy   — composite "are we tracking?" verdict
  *   zcl_profile            — per-thread /proc CPU sampler
@@ -109,6 +110,14 @@ static int h_zcl_peers_projection_diff(const struct mcp_request *req,
     (void)req;
     char *out = mcp_node_rpc("peersprojectiondiff", NULL);
     return mcp_return_rpc_body(res, out, "peersprojectiondiff", "mcp.diag");
+}
+
+static int h_zcl_znam_projection_diff(const struct mcp_request *req,
+                                      struct mcp_response *res)
+{
+    (void)req;
+    char *out = mcp_node_rpc("znamprojectiondiff", NULL);
+    return mcp_return_rpc_body(res, out, "znamprojectiondiff", "mcp.diag");
 }
 
 /* ── zcl_probe_zclassicd ─────────────────────────────────────── */
