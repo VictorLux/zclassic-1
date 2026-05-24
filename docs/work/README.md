@@ -40,6 +40,20 @@ The agent's startup ritual (defined in
 8. Execute assignment
 9. Commit + push + append completion summary
 
+## Where to look (active vs done)
+
+- **`docs/work/*.md`** — only **live** work: in-progress, claimable, soak-gated,
+  and deferred assignments. If it's here, it is not finished.
+- **`docs/work/done/`** — archived assignments whose work has merged. Kept for
+  the completion reports/history; **never claim from `done/`.**
+- The authoritative "what's claimable right now" list is the **NEXT UP** section
+  of [`REFACTOR_STATUS.md`](../REFACTOR_STATUS.md), and live numbers are in
+  [`BENCHMARKS_LOG.md`](../BENCHMARKS_LOG.md) (the single source). Don't quote
+  benchmark numbers anywhere else — they rot.
+
+When an assignment merges, the orchestrator `git mv`s its doc into `done/` so the
+active folder always reflects the real claim surface.
+
 ## How assignments are structured
 
 Each assignment lives at `docs/work/wt<N>-<slug>.md` and contains:
@@ -62,7 +76,8 @@ orchestrator:
 3. Merges to main (fast-forward if possible, merge commit otherwise)
 4. Pushes main to origin
 5. Updates `REFACTOR_STATUS.md` (conformance count, recently completed, in flight cleared)
-6. Writes the next round of assignments
+6. `git mv`s the finished assignment doc into `docs/work/done/` (keeps the active folder = real claim surface)
+7. Writes the next round of assignments
 7. Pushes
 8. Reports to user: "wt2/wt3 ready for next round"
 
