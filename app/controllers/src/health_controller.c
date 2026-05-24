@@ -27,6 +27,28 @@ struct health_context {
 
 static struct health_context g_health_ctx = {0};
 
+static void push_watchdog_recovery_fields(struct json_value *result)
+{
+    if (!result)
+        return;
+
+    struct watchdog_stats wd;
+    sync_monitor_get_stats(&wd);
+    json_push_kv_int(result, "recoveries_total", wd.recoveries_total);
+    json_push_kv_int(result, "last_recovery_time",
+                     wd.last_recovery_time);
+    json_push_kv_str(result, "last_recovery",
+                     watchdog_recovery_type_name(wd.last_recovery));
+    json_push_kv_int(result, "last_recovery_local_height",
+                     wd.last_recovery_local_height);
+    json_push_kv_int(result, "last_recovery_peer_height",
+                     wd.last_recovery_peer_height);
+    json_push_kv_int(result, "last_recovery_peer_count",
+                     wd.last_recovery_peer_count);
+    json_push_kv_str(result, "last_recovery_reason",
+                     wd.last_recovery_reason);
+}
+
 static void push_mirror_sync_fields(struct json_value *result)
 {
     if (!result)
@@ -472,6 +494,7 @@ static bool rpc_getsyncwatchdog(const struct json_value *params, bool help,
                      sync_get_state_duration());
     json_push_kv_int(result, "current_state_entry_height",
                      (int64_t)sync_get_state_entry_height());
+    push_watchdog_recovery_fields(result);
 
     return true;
 }
@@ -499,6 +522,7 @@ static bool rpc_getsyncdiag(const struct json_value *params, bool help,
                          condition_engine_get_active_count());
         json_push_kv_int(&wd, "unresolved_conditions",
                          condition_engine_get_unresolved_count());
+        push_watchdog_recovery_fields(&wd);
         json_push_kv(result, "watchdog", &wd);
         json_free(&wd);
     }

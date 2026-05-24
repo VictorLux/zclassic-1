@@ -244,6 +244,15 @@ void sync_monitor_get_stats(struct watchdog_stats *out)
     out->recoveries_total = atomic_load(&g_recoveries_total);
     out->last_recovery_time = atomic_load(&g_last_recovery_time);
     out->last_recovery = atomic_load(&g_last_recovery_type);
+    out->last_recovery_local_height =
+        atomic_load(&g_last_recovery_local_height);
+    out->last_recovery_peer_height =
+        atomic_load(&g_last_recovery_peer_height);
+    out->last_recovery_peer_count =
+        atomic_load(&g_last_recovery_peer_count);
+    snprintf(out->last_recovery_reason,
+             sizeof(out->last_recovery_reason), "%s",
+             g_last_recovery_reason);
 }
 
 const char *watchdog_recovery_type_name(enum watchdog_recovery_type type)

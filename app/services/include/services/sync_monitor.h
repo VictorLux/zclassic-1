@@ -32,6 +32,10 @@ struct watchdog_stats {
     double   blocks_per_sec;
     int64_t  last_recovery_time;
     enum watchdog_recovery_type last_recovery;
+    int      last_recovery_local_height;
+    int      last_recovery_peer_height;
+    int      last_recovery_peer_count;
+    char     last_recovery_reason[96];
 };
 
 struct watchdog_local_recovery_stats {

@@ -135,6 +135,10 @@ int test_syncdiag_rpc(void)
         rpc_table_init(&tbl);
         rpc_health_set_state(NULL, NULL, NULL, NULL);
         register_health_rpc_commands(&tbl);
+        sync_monitor_init();
+        sync_monitor_record_recovery(WATCHDOG_SNAPSHOT_RESNAPSHOT,
+                                     100, 110, 4,
+                                     "condition:tip_wedged_resnapshot");
         if (rpc_is_in_warmup(NULL, 0))
             set_rpc_warmup_finished();
 
@@ -158,10 +162,77 @@ int test_syncdiag_rpc(void)
         ok = ok && json_get(wd, "last_recovery_local_height") != NULL;
         ok = ok && json_get(wd, "last_recovery_peer_height") != NULL;
         ok = ok && json_get(wd, "last_recovery_peer_count") != NULL;
+        ok = ok && json_get(wd, "recoveries_total") != NULL &&
+            json_get_int(json_get(wd, "recoveries_total")) == 1;
+        ok = ok && json_get(wd, "last_recovery") != NULL &&
+            strcmp(json_get_str(json_get(wd, "last_recovery")),
+                   "SNAPSHOT_RESNAPSHOT") == 0;
+        ok = ok && strcmp(json_get_str(json_get(
+            wd, "last_recovery_reason")),
+            "condition:tip_wedged_resnapshot") == 0;
+        ok = ok && json_get_int(json_get(
+            wd, "last_recovery_local_height")) == 100;
+        ok = ok && json_get_int(json_get(
+            wd, "last_recovery_peer_height")) == 110;
+        ok = ok && json_get_int(json_get(
+            wd, "last_recovery_peer_count")) == 4;
 
         ok = ok && json_get(&result, "sync_state")         != NULL;
         ok = ok && json_get(&result, "chain_height")       != NULL;
         ok = ok && json_get(&result, "best_header_height") != NULL;
+
+        json_free(&params);
+        json_free(&result);
+
+        if (ok) printf("OK\n");
+        else    { printf("FAIL\n"); failures++; }
+    }
+
+    printf("getsyncwatchdog: exposes last recovery context "
+           "(RED)... ");
+    {
+        struct rpc_table tbl;
+        rpc_table_init(&tbl);
+        register_health_rpc_commands(&tbl);
+        sync_monitor_init();
+        sync_monitor_record_recovery(WATCHDOG_SNAPSHOT_RESNAPSHOT,
+                                     120, 130, 2,
+                                     "condition:tip_wedged_resnapshot");
+        if (rpc_is_in_warmup(NULL, 0))
+            set_rpc_warmup_finished();
+
+        struct json_value params;
+        json_init(&params);
+        json_set_array(&params);
+
+        struct json_value result;
+        json_init(&result);
+
+        bool ok = rpc_table_execute(&tbl, "getsyncwatchdog",
+                                    &params, &result);
+
+        ok = ok && result.type == JSON_OBJ;
+        ok = ok && json_get(&result, "enabled") != NULL;
+        ok = ok && json_get(&result, "recoveries_total") != NULL &&
+            json_get_int(json_get(&result, "recoveries_total")) == 1;
+        ok = ok && json_get(&result, "last_recovery") != NULL &&
+            strcmp(json_get_str(json_get(&result, "last_recovery")),
+                   "SNAPSHOT_RESNAPSHOT") == 0;
+        ok = ok && json_get(&result, "last_recovery_time") != NULL &&
+            json_get_int(json_get(&result, "last_recovery_time")) > 0;
+        ok = ok && json_get(&result, "last_recovery_reason") != NULL &&
+            strcmp(json_get_str(json_get(
+            &result, "last_recovery_reason")),
+            "condition:tip_wedged_resnapshot") == 0;
+        ok = ok && json_get(&result, "last_recovery_local_height") != NULL &&
+            json_get_int(json_get(
+            &result, "last_recovery_local_height")) == 120;
+        ok = ok && json_get(&result, "last_recovery_peer_height") != NULL &&
+            json_get_int(json_get(
+            &result, "last_recovery_peer_height")) == 130;
+        ok = ok && json_get(&result, "last_recovery_peer_count") != NULL &&
+            json_get_int(json_get(
+            &result, "last_recovery_peer_count")) == 2;
 
         json_free(&params);
         json_free(&result);

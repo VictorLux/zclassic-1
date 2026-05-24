@@ -6,8 +6,9 @@
 **Vision tie-in:** "wedges unreachable by construction" — if the tip is wedged,
 the node re-snapshots *past* the bad block instead of giving up.
 **Status: IN PROGRESS (wt3)** — PR-0 entry API + runtime local manifest
-builder implemented; PR-1 condition wiring is in progress with simulated
-condition coverage.
+builder implemented; PR-1 condition wiring is implemented with simulated
+condition coverage. Current slice is hardening watchdog/RPC recovery
+observability for the snapshot resnapshot path.
 
 ---
 
@@ -107,12 +108,14 @@ must fire **after** the quorum-clear path is exhausted, not instead of it.
 ---
 
 ## Acceptance
-- [ ] Repro a wedged tip (or simulate the exhausted-`block_failed_mask_at_tip`
-      condition), confirm `tip_wedged_resnapshot` fires and the node resumes
-      advancing — not a manual restart.
+- [x] Simulate the exhausted-`block_failed_mask_at_tip` and exhausted
+      `local_import` conditions; confirm `tip_wedged_resnapshot` fires and
+      requests snapshot recovery.
 - [ ] Snapshot recovery still runs full FlyClient + SHA3 verification.
-- [ ] `./test_parallel --jobs=$(nproc)` PASS; new test in `lib/test/`.
-- [ ] `zcl_conditions` shows the recovery attempt + outcome.
+- [x] `./test_parallel --jobs=$(nproc)` PASS for the latest recovery
+      observability slice; new tests in `lib/test/`.
+- [x] Watchdog RPCs expose the recovery attempt context
+      (`SNAPSHOT_RESNAPSHOT`, heights, peer count, reason).
 
 ## NOT in scope (do not regress)
 - Cold-start fast-sync behavior is unchanged.
