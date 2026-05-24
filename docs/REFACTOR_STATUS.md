@@ -4,7 +4,7 @@
 > truth for "what's done, what's next, what's blocked." Read this first
 > when you start a session. Full architecture: [`FRAMEWORK.md`](./FRAMEWORK.md).
 
-**Updated:** 2026-05-24 (**C-2 CUTOVER COMPLETE** — header_admit AUTHORITATIVE on main; 5a-3 ECDSA rewire 50% by wt3; 4b at 80%; 4c + 6a sub-agents still in flight; C-3 promoted READY)
+**Updated:** 2026-05-24 (**5a-3 COMPLETE** — ECDSA hot-path through registry; **C-2 CUTOVER COMPLETE** — header_admit AUTHORITATIVE; 4b at 80%; 4c + 6a sub-agents in flight; C-3 + 5b-1 + 4d-1/3/4/5 READY)
 
 ---
 
@@ -43,10 +43,10 @@ Phase 4  [██████░░░░]  58%   Storage unification — plan: d
   ├ 4d-4   [░░░░░░░░░░]   0%   znam projection (READY)
   ├ 4d-5   [░░░░░░░░░░]   0%   zmsg/zslp/zswp/store batch (READY)
   └ 4e     [░░░░░░░░░░]   0%   block-body migration (spec'd, gated on 4c cutover)
-Phase 5  [███░░░░░░░]  29%   Crypto agility + reproducible builds — plan: docs/architecture/phase5-crypto-agility-and-releases.md
+Phase 5  [█████░░░░░]  50%   Crypto agility + reproducible builds — plan: docs/architecture/phase5-crypto-agility-and-releases.md
   ├ 5a-1   [██████████] 100%   Crypto registry skeleton  ✅ c4bebe0a2 + polish dde0183c7
   ├ 5a-2   [██████████] 100%   First call site rewire: Equihash PoW   ✅ f00be351f (wt2)
-  ├ 5a-3   [█████░░░░░]  50%   script_validate ECDSA rewire (HOT PATH)  🚧 7c2c067a0 by wt3 (Tasks 1+2 done; benchmark + push remain)
+  ├ 5a-3   [██████████] 100%   script_validate ECDSA rewire (HOT PATH)  ✅ 7c2c067a0 + cde601acf + e8b926610 (wt3)
   ├ 5b-1   [░░░░░░░░░░]   0%   flake.nix reproducible build skeleton  ← READY (needs Nix)
   ├ 5c     [░░░░░░░░░░]   0%   verify-reproducibility target  ← spec'd (queued post 5b-1)
   └ 5d     [░░░░░░░░░░]   0%   cosign keyless signing  ← spec'd (queued post 5b-1)
