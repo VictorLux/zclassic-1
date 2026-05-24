@@ -51,7 +51,11 @@
 
 typedef struct event_log event_log_t;
 
-enum event_type {
+/* Event types for the event log. The tag is `event_log_type` (NOT
+ * `event_type`) to avoid colliding with `lib/event/event.h`'s system-
+ * wide event taxonomy, which is for in-memory observability, not the
+ * persistent log. The two namespaces are intentionally separate. */
+enum event_log_type {
     EV_BLOCK_HEADER         = 1,
     EV_BLOCK_BODY           = 2,
     EV_TX_ADMIT_MEMPOOL     = 3,
@@ -88,7 +92,7 @@ void event_log_close(event_log_t *log);
  * UINT64_MAX on error. The on-disk format is fully durable (fsync x2)
  * before this call returns. */
 uint64_t event_log_append(event_log_t *log,
-                          enum event_type type,
+                          enum event_log_type type,
                           const void *payload, size_t payload_len);
 
 /* Read one event at `offset` (which must have been returned by a prior
@@ -97,13 +101,13 @@ uint64_t event_log_append(event_log_t *log,
  * Returns 0 on success, -1 on error. If `buf_cap < *out_len`, returns
  * -1 (caller must size the buffer correctly). */
 int event_log_read(event_log_t *log, uint64_t offset,
-                   enum event_type *type_out,
+                   enum event_log_type *type_out,
                    void *buf, size_t buf_cap, size_t *out_len);
 
 /* Callback for event_log_stream. Return `true` to continue iteration,
  * `false` to stop. `payload` is owned by the streamer and only valid
  * for the duration of the call. */
-typedef bool (*event_log_cb)(uint64_t offset, enum event_type type,
+typedef bool (*event_log_cb)(uint64_t offset, enum event_log_type type,
                               const void *payload, size_t len,
                               void *user);
 
