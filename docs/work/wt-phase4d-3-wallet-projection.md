@@ -502,7 +502,7 @@ One commit per task. Push after Task 4, Task 7, Task 9.
 
 ## Status
 
-**IN PROGRESS (wt2)** — claimed 2026-05-24.
+**COMPLETED (wt2)** — completed 2026-05-24.
 Phase 4a is merged; this is a parallel-dispatchable spec.
 The KEY OWNERSHIP callout at the top is the hardest invariant in this
 spec — re-read it before each commit.
@@ -569,4 +569,52 @@ cursor resume tests. `ZCL_TEST_ONLY=wallet_projection ./test_zcl`
 passes with the added cases. The assignment remains in progress; next
 slice is Task 10 final verification and completion block.
 
-<!-- Worker: append a Completion section below when done. -->
+## Completion
+
+2026-05-24 wt2 completion: Phase 4d-3 wallet projection is shipped
+through commit `12284eb3e` (`harden wallet projection diagnostics`).
+The final local gates passed:
+
+- `make -j8`
+- `make lint`
+- `ZCL_TEST_ONLY=wallet_projection ./test_zcl`
+- `ZCL_TEST_ONLY=mcp_controllers ./test_zcl`
+- `ZCL_TEST_ONLY=mcp_e2e ./test_zcl`
+
+Task 5 secret-leak check returned zero matches for wallet projection
+emit calls carrying secret-shaped names:
+
+```bash
+rg -n 'wallet_projection_emit_.*seckey|wallet_projection_emit_.*rcm|wallet_projection_emit_.*ivk|wallet_projection_emit_.*nullifier|wallet_projection_emit_.*memo|wallet_projection_emit_.*wif|wallet_projection_emit_.*seed' app lib tools
+```
+
+No wallet projection payload exceeds the 256 byte public payload cap:
+`EV_WALLET_PAYLOAD_MAX` is 256 bytes, with fixed payload lengths
+`EV_WALLET_ADDR_DERIVED_LEN=48`, `EV_WALLET_TX_SEEN_LEN=52`,
+`EV_WALLET_NOTE_DECRYPTED_LEN=80`, and `EV_WALLET_UTXO_SEEN_LEN=72`.
+The variable key-add payload path rejects lengths above
+`EV_WALLET_PAYLOAD_MAX`, and the wallet projection test suite covers
+each payload cap.
+
+Fresh-node RPC verification on `/tmp/zcl-wallet-proj-live2` returned a
+matching projection diff:
+
+```json
+{"result":{"projection":"wallet_projection","projection_address_count":0,"live_address_count":0,"projection_tx_count":0,"live_tx_count":0,"projection_utxo_count":0,"live_utxo_count":0,"projection_note_count":0,"live_note_count":0,"projection_total_value_zat":0,"live_total_value_zat":0,"match":true,"first_diff":null},"error":null,"id":null}
+```
+
+The same instance reported the wallet projection open with public-only
+counts and diagnostics:
+
+```json
+{"open":true,"emit_key_add_total":100,"emit_addr_derived_total":0,"emit_tx_seen_total":0,"emit_utxo_seen_total":0,"emit_note_decrypted_total":0,"emit_fail_total":0,"last_consumed_offset":0,"events_consumed_total":0,"address_count":0,"tx_count":0,"utxo_count":0,"note_count":0,"total_value_zat":0,"last_catch_up_ms":0}
+```
+
+`./test_parallel --jobs=32` did not produce a clean full-run signal on
+this host: earlier attempts hit the existing `crypto_registry`
+registry-indirection timing threshold under 32-worker load, and the
+latest run reported `test_event` async-dispatcher timing plus
+`test_mcp_e2e` tool-count interference. The failing groups passed when
+rerun standalone with `ZCL_TEST_ONLY=crypto_registry ./test_zcl`,
+`ZCL_TEST_ONLY=event ./test_zcl`, and
+`ZCL_TEST_ONLY=mcp_e2e ./test_zcl`.
