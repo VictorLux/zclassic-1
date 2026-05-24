@@ -174,8 +174,7 @@ One commit per task (8 total). Push after tasks 3, 5, 6, 7.
 
 ## Status
 
-**READY** — gated on PR-1 + PR-2 merge. Start when human invokes you in
-`~/github/zclassic23-2` AFTER both prior PRs are merged into main.
+**✅ DONE — pushed 2026-05-24** to main as commit `ec318de79`.
 
 <!-- Worker: append a Completion section below when done. -->
 
