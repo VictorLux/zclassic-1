@@ -7,7 +7,7 @@
 the supervisor to host the new Job. Independent of Wave S cutover.
 **Plan reference:** [`docs/dissolve/header_probe_service.md`](../dissolve/header_probe_service.md) § PR-1
 
-**Status: READY** — claim by marking IN PROGRESS.
+**Status: DONE** — shipped 2026-05-24 in commit `79b53852a`.
 
 **Owns:**
 - NEW `app/jobs/include/jobs/header_probe_poll.h`
@@ -213,8 +213,7 @@ One commit per task. Push after Task 4 + Task 5.
 
 ## Status
 
-**READY** — Phase 0/1 supervisor primitives are in place; the network
-supervisor exists; the existing service exposes the needed function.
+**DONE** — shipped 2026-05-24 in commit `79b53852a`.
 
 <!-- Worker: append a Completion section below when done. -->
 
