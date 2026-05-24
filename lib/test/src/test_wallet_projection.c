@@ -398,6 +398,10 @@ static int t_projection_skeleton_open_reopen(void)
              json_get_bool(json_get(&state, "open")));
     WP_CHECK("dump state address count",
              json_get_int(json_get(&state, "address_count")) == 0);
+    WP_CHECK("dump state events consumed total",
+             json_get_int(json_get(&state, "events_consumed_total")) == 0);
+    WP_CHECK("dump state last catch up ms",
+             json_get_int(json_get(&state, "last_catch_up_ms")) == 0);
     json_free(&state);
     WP_CHECK("skeleton catch up preserves offset",
              wallet_projection_catch_up(p) == 0);
@@ -493,6 +497,14 @@ static int t_projection_catch_up_replay(void)
     WP_CHECK("replay note count", wallet_projection_note_count(p) == 50);
     WP_CHECK("replay total value",
              wallet_projection_total_value_zat(p) == 1420);
+    struct json_value state = {0};
+    WP_CHECK("replay dump state succeeds",
+             wallet_projection_dump_state_json(&state, NULL));
+    WP_CHECK("replay dump events consumed total",
+             json_get_int(json_get(&state, "events_consumed_total")) == 365);
+    WP_CHECK("replay dump last catch up present",
+             json_get(&state, "last_catch_up_ms") != NULL);
+    json_free(&state);
     WP_CHECK("replay idempotent",
              wallet_projection_catch_up(p) != UINT64_MAX &&
              wallet_projection_address_count(p) == 105 &&

@@ -10,6 +10,7 @@
 #include "storage/wallet_projection.h"
 
 #include "json/json.h"
+#include "platform/time_compat.h"
 #include "storage/event_log_payloads.h"
 #include "util/safe_alloc.h"
 
@@ -27,6 +28,8 @@ struct wallet_projection {
     sqlite3 *db;
     event_log_t *log;
     uint64_t last_consumed_offset;
+    uint64_t events_consumed_total;
+    uint64_t last_catch_up_ms;
     char path[1024];
 };
 
@@ -46,6 +49,13 @@ static size_t bounded_strlen(const char *s, size_t max)
     while (n <= max && s[n] != '\0')
         n++;
     return n;
+}
+
+static int64_t now_ms(void)
+{
+    struct timespec ts;
+    platform_time_monotonic_timespec(&ts);
+    return (int64_t)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
 }
 
 static bool append_wallet_event(enum event_log_type type,
@@ -341,6 +351,7 @@ struct catchup_ctx {
     bool ok;
     uint64_t next_offset;
     uint64_t since_commit;
+    uint64_t events_consumed;
 };
 
 static bool catchup_cb(uint64_t offset, enum event_log_type type,
@@ -389,6 +400,7 @@ static bool catchup_cb(uint64_t offset, enum event_log_type type,
 
     ctx->next_offset = next;
     p->last_consumed_offset = next;
+    ctx->events_consumed++;
     ctx->since_commit++;
     if (ctx->since_commit >= 100) {
         if (!meta_set_u64(p->db, "last_consumed_offset", next)) {
@@ -403,11 +415,13 @@ static bool catchup_cb(uint64_t offset, enum event_log_type type,
 uint64_t wallet_projection_catch_up(wallet_projection_t *p)
 {
     if (!p || !p->db || !p->log) return UINT64_MAX;
+    int64_t start_ms = now_ms();
     struct catchup_ctx ctx = {
         .p = p,
         .ok = true,
         .next_offset = p->last_consumed_offset,
         .since_commit = 0,
+        .events_consumed = 0,
     };
 
     if (!exec_sql(p->db, "BEGIN IMMEDIATE", "catch_up begin"))
@@ -425,6 +439,9 @@ uint64_t wallet_projection_catch_up(wallet_projection_t *p)
     if (!ctx.ok || !finish_ok)
         return UINT64_MAX;
     p->last_consumed_offset = ctx.next_offset;
+    p->events_consumed_total += ctx.events_consumed;
+    int64_t elapsed_ms = now_ms() - start_ms;
+    p->last_catch_up_ms = elapsed_ms > 0 ? (uint64_t)elapsed_ms : 0;
     return p->last_consumed_offset;
 }
 
@@ -674,6 +691,8 @@ bool wallet_projection_dump_state_json(struct json_value *out,
     json_push_kv_str(out, "path", p->path);
     json_push_kv_int(out, "last_consumed_offset",
                      (int64_t)p->last_consumed_offset);
+    json_push_kv_int(out, "events_consumed_total",
+                     (int64_t)p->events_consumed_total);
     json_push_kv_int(out, "address_count",
                      (int64_t)wallet_projection_address_count(p));
     json_push_kv_int(out, "tx_count",
@@ -684,5 +703,6 @@ bool wallet_projection_dump_state_json(struct json_value *out,
                      (int64_t)wallet_projection_note_count(p));
     json_push_kv_int(out, "total_value_zat",
                      wallet_projection_total_value_zat(p));
+    json_push_kv_int(out, "last_catch_up_ms", (int64_t)p->last_catch_up_ms);
     return true;
 }

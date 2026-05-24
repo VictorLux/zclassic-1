@@ -556,6 +556,13 @@ load; `ZCL_TEST_ONLY=crypto_registry ./test_zcl` passed standalone.
 The assignment remains in progress; next slice is Task 9/10 final
 coverage and verification audit.
 
+2026-05-24 wt2 progress: Task 8 diagnostics dump hardening is
+implemented. `wallet_projection_dump_state_json` now includes
+`events_consumed_total` and `last_catch_up_ms` alongside the existing
+public aggregate counts and emit counters, and wallet projection tests
+cover the new dump fields. The assignment remains in progress; next
+slice is Task 9/10 final coverage and verification audit.
+
 2026-05-24 wt2 progress: Task 9 coverage audit filled the remaining
 projection behavior gaps with duplicate-key replacement and partial
 cursor resume tests. `ZCL_TEST_ONLY=wallet_projection ./test_zcl`
