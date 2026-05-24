@@ -264,9 +264,9 @@ Drafted as its own assignment when 4d cutover gets close.
 
 ## Status
 
-**QUEUED** — each 4d-N is gated on Phase 4a (event_log primitive)
-merged. They are mutually independent (different subsystems) and can
-land in parallel after 4a ships.
+**IN PROGRESS (wt2)** — claimed 2026-05-24 for 4d-2
+`peers_projection` after Phase 4a merged. The other 4d projections
+remain available for independent workers.
 
 Recommend dispatch order when 4a is done:
 1. 4d-2 (peers — smallest, lowest risk, easy to verify with `zcl_peers`)
