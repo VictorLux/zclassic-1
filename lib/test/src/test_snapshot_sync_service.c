@@ -1308,6 +1308,74 @@ static int test_snapshot_recovery_request_rejects_unverified_manifest(void)
     return failures;
 }
 
+static int test_snapshot_recovery_requires_flyclient_and_sha3(void)
+{
+    int failures = 0;
+
+    TEST("snapshot recovery request still gates promotion on FlyClient and SHA3") {
+        struct snapshot_sync_service svc;
+        struct node_db ndb;
+        struct snapshot_offer_params params;
+        struct byte_stream chunk;
+        uint8_t staged_root[32];
+        uint64_t staged_count = 0;
+
+        ASSERT(node_db_open(&ndb, ":memory:"));
+        snapsync_init(&svc, &ndb);
+
+        ASSERT(node_db_exec(&ndb,
+            "INSERT INTO utxos "
+            "(txid,vout,value,script,script_type,height,is_coinbase) "
+            "VALUES (X'FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF',"
+            "0,100,X'51',0,1,0)"));
+
+        fill_v2_offer_params(&params, 3000000, 2999000, 0);
+        params.num_utxos = 1;
+        params.total_bytes = 128;
+        params.peer_tip_height = params.height + 10;
+
+        ASSERT(snapsync_request_recovery(&svc, 2999500, &params));
+        ASSERT(svc.state == SNAPSYNC_NEGOTIATING);
+        ASSERT(!svc.fc_verified);
+
+        build_snapshot_chunk(&chunk);
+        ASSERT(snapsync_apply_chunk(&svc, chunk.data, chunk.size) == 0);
+        ASSERT(count_table_rows(ndb.db, "snapshot_staging_utxos") == 0);
+        ASSERT(!snapsync_handle_end(&svc, params.peer_id));
+        ASSERT(svc.state == SNAPSYNC_NEGOTIATING);
+
+        ASSERT(snapsync_begin_receive(&svc));
+        ASSERT(snapsync_apply_chunk(&svc, chunk.data, chunk.size) == 1);
+        ASSERT(!snapsync_handle_end(&svc, params.peer_id));
+        ASSERT(svc.state == SNAPSYNC_FAILED);
+        ASSERT(count_table_rows(ndb.db, "utxos") == 1);
+        ASSERT(count_table_rows(ndb.db, "snapshot_staging_utxos") == 0);
+
+        snapsync_reset(&svc);
+        ASSERT(snapsync_request_recovery(&svc, 2999500, &params));
+        ASSERT(snapsync_begin_receive(&svc));
+        ASSERT(snapsync_apply_chunk(&svc, chunk.data, chunk.size) == 1);
+        ASSERT(node_db_commit(&ndb));
+        utxo_commitment_sha3_compute_table(ndb.db, "snapshot_staging_utxos",
+                                           staged_root, &staged_count);
+        ASSERT(staged_count == 1);
+        memcpy(svc.offered_utxo_root, staged_root, sizeof(staged_root));
+        ASSERT(node_db_begin(&ndb));
+        svc.fc_verified = true;
+        ASSERT(snapsync_handle_end(&svc, params.peer_id));
+        ASSERT(svc.state == SNAPSYNC_COMPLETE);
+        ASSERT(count_table_rows(ndb.db, "utxos") == 1);
+        ASSERT(count_table_rows(ndb.db, "snapshot_staging_utxos") == 0);
+
+        stream_free(&chunk);
+        snapsync_reset(&svc);
+        node_db_close(&ndb);
+        PASS();
+    } _test_next:;
+
+    return failures;
+}
+
 static void persist_test_roots(struct node_db *ndb,
                                const uint8_t block_hash[32],
                                const uint8_t chain_work[32])
@@ -1570,6 +1638,7 @@ int test_snapshot_sync_service(void)
     failures += test_snapshot_accept_offer_with_real_utxos();
     failures += test_snapshot_recovery_request_allows_populated_utxos();
     failures += test_snapshot_recovery_request_rejects_unverified_manifest();
+    failures += test_snapshot_recovery_requires_flyclient_and_sha3();
     failures += test_snapshot_local_recovery_manifest_builder();
     failures += test_snapshot_blacklist_add_query();
     failures += test_snapshot_blacklist_zero_peer();

@@ -111,7 +111,10 @@ must fire **after** the quorum-clear path is exhausted, not instead of it.
 - [x] Simulate the exhausted-`block_failed_mask_at_tip` and exhausted
       `local_import` conditions; confirm `tip_wedged_resnapshot` fires and
       requests snapshot recovery.
-- [ ] Snapshot recovery still runs full FlyClient + SHA3 verification.
+- [x] Snapshot recovery still runs full FlyClient + SHA3 verification.
+      `test_snapshot_recovery_requires_flyclient_and_sha3` proves recovery
+      chunks are ignored before FlyClient, finalize fails without proof, and
+      promotion only succeeds after staged SHA3 matches the offered root.
 - [x] `./test_parallel --jobs=$(nproc)` PASS for the latest recovery
       observability slice; new tests in `lib/test/`.
 - [x] Watchdog RPCs expose the recovery attempt context
