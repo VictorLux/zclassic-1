@@ -17,24 +17,26 @@ Honest scoreboard. **MEASURED** = a real number from this box (date + how, in
 ```
   ⚡ FAST                       measured now      target        state
      Cold sync to tip          180s  (05-24)      30s           ▸ PR-3 building
-     Warm restart              ~33s  (05-23)      10s           ▸ event-log win landed
-     Validation speed          not measured       fast          run bg-verify + log
+     Warm restart              37.7s (05-24)      10s           ▸ real restart→tip
+     Validation speed          108 blk/s (05-24)  fast          ✓ measured, running
      Stay at tip               AT TIP, 0 gap      keep <1 blk    ✓ synced now
 
   🪶 LEAN
-     Memory (RSS)              2.0 GB (05-24)*     1.0 GB        ▲ crept up — needs work
+     Memory (RSS)              1.93 GB (05-24)*    1.0 GB        ▲ plateaus, ~2x target
      Binary size               14.6 MB (05-24)     stay slim     ✓ met (docs' 26MB stale)
 
   💪 UNBREAKABLE
      Wedge/crash recovery      180s, manual        <60s, auto    ▸ PR-0 building (wt3)
-     Uptime before failure     not measured        30 days       needs a soak (up ~10min)
+     Uptime before failure     soak running        30 days       ◷ baselined 05-24
      Alerts to a human         not measured        0 / month     10 Conditions live, self-heal
 
   🔬 HONEST
      Bug → reproducible fix    not built           1 seed-tape   simulator pending
 ```
-`*` RSS was 1.5 GB earlier today; **2.0 GB after cold-import** — a real
-regression to chase, not a win. `✓` met · `▸` work in flight · `▲` regressed.
+`*` RSS measured plateau (soak 05-24): fresh boot 1.53 GB → 1.93 GB after
+bg-validation fills buffers (~330s), then **stable** — bounded, not a leak,
+but still ~2× the 1 GB target. `✓` met · `▸` work in flight · `◷` measuring ·
+`▲` above target.
 
 **When you finish a task, name the goal you moved and the measured delta**
 (e.g. "warm restart 33s→29s"), then add a row to BENCHMARKS_LOG.md.
@@ -111,26 +113,21 @@ chain_restore, header_probe, utxo_recovery)
 
 ## Conformance metrics (updated each PR)
 
-The five user-facing numbers (cold-start, warm-start, MTBF, RSS,
-kill-9 recovery) are spec'd in [`USER_BENCHMARKS.md`](./USER_BENCHMARKS.md)
-along with QoL numbers and the **operator paging rate target: 0/month**
-clause. The table below is the dashboard.
+This table tracks **architecture conformance** (is the code the new shape?).
+The **user-facing numbers** (cold/warm/MTBF/RSS/kill-9/pages) live in ONE
+place — [`BENCHMARKS_LOG.md`](./BENCHMARKS_LOG.md), the append-only measured
+ledger — and are surfaced on the scoreboard at the top of this file. Don't
+re-quote them here; they rot. Add a row to the ledger instead.
 
-| Metric | Today | Target | Delta |
+| Conformance metric | Today | Target | Delta |
 |---|---|---|---|
 | Files conforming to shape | scaffold | 342 / 342 | scaffold lint not yet run |
-| `.c` files in `app/` > 800 LOC | 13 | 0 | dissolve in Phases 2-3 |
-| Mega-modules remaining | 6 | 0 | see roster below |
+| `.c` files in `app/` > 800 LOC | 6 (the monoliths) | 0 | dissolve in Phases 2-3 |
+| Mega-modules remaining | 6 | 0 | was 7; `sync_watchdog` DELETED — see roster below |
 | Lint gates active | 20 (1 FAIL'd in P1) | 21 | +1 by Phase 3 (gate #20→FAIL) |
 | Raw clock/RNG callers | **0** | 0 | ✅ Phase 1c (was 443) |
 | Mailbox prod callers | 1 | many | ✅ Phase 1a (header_admit), more in Phase 3 |
-| Conditions registered | 3 | ~15 | Phase 2+ adds ~6 from sync_watchdog dissolution |
-| MTBF (live node) | 5.5 d | 30 d | Phase 0 + Phase 2 |
-| RSS steady-state | 2.2 GB | 1 GB | Phase 3 |
-| Cold-start | 145 s | 60 s | Phase 2 |
-| Warm-start | 33 s | 10 s | Phase 2 |
-| Kill-9 recovery | 60-360 s | 60 s | Phase 2 |
-| Operator pages | n/a | 0/month | Phase 0+ (condition engine) |
+| Conditions registered | ~10 | ~15 | Phase 2+ adds more from monolith dissolution |
 
 ---
 

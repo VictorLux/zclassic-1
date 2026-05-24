@@ -6,13 +6,18 @@
 
 ## The five numbers
 
-| # | Benchmark | Target | Today | How measured |
+> **Live values are tracked in one place:** [`BENCHMARKS_LOG.md`](./BENCHMARKS_LOG.md)
+> (append-only, measured, dated). This table is the *spec* — targets and how to
+> measure. The "Latest" column is a pointer, not a source; never quote an
+> estimate here. `—` = not measured this run.
+
+| # | Benchmark | Target | Latest (see ledger) | How measured |
 |---|---|---|---|---|
-| 1 | **Cold-start to operational** (empty datadir → tip current within 100 blocks, RPC + wallet ready) | ≤ **60 s** | hours (full IBD) | `time zclassic23 -bench-coldstart` |
-| 2 | **Warm-start to operational** (restart with synced datadir → same tip, RPC ready) | ≤ **10 s** | ~30–60 s | `time zclassic23 -bench-warmstart` |
-| 3 | **Stay-in-sync MTBF** (mean time between unattended stalls > 60 s) | ≥ **30 days** | **5.5 days** (this node) | 30-day chaos soak (kill -9, net blip, peer churn) |
-| 4 | **RAM budget steady-state** | ≤ **1 GB RSS** | 2.2 GB | `zcl_metrics` after 24 h |
-| 5 | **Recovery from kill -9** | ≤ **60 s** | 1–6 min | scripted kill loop, recovery histogram |
+| 1 | **Cold-start to operational** (empty datadir → tip current within 100 blocks, RPC + wallet ready) | ≤ **60 s** | 180s (05-24, wedge recovery path) | `time zclassic23 -bench-coldstart` |
+| 2 | **Warm-start to operational** (restart with synced datadir → same tip, RPC ready) | ≤ **10 s** | 37.7s (05-24, real restart→tip) | `time zclassic23 -bench-warmstart` |
+| 3 | **Stay-in-sync MTBF** (mean time between unattended stalls > 60 s) | ≥ **30 days** | soak in progress (started 05-24) | 30-day chaos soak (kill -9, net blip, peer churn) |
+| 4 | **RAM budget steady-state** | ≤ **1 GB RSS** | 1.93 GB (05-24, measured plateau) | `zcl_status.memory_rss_mb` after warm-up |
+| 5 | **Recovery from kill -9** | ≤ **60 s** | — (not measured this session) | scripted kill loop, recovery histogram |
 
 ## Quality-of-life numbers
 
