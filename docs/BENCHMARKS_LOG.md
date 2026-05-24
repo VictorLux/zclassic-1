@@ -37,7 +37,11 @@ Format: `date | commit | benchmark | value | how measured / notes`
 | date | commit | N blocks | rebuild ms | blocks/s | bytes | notes |
 |---|---|---|---|---|---|---|
 | 2026-05-24 | (tool) | 10 | 339 | 29 | 14,590 | v1, durable event_log appender. **fsync-bound** (fsync×2/event). |
-| 2026-05-24 | (tool) | ALL (3,123,618) | 34,180 | 91,387 | 11.25 GB | **io_uring** bulk writer (8 buffers in flight, 1 fsync at end). 5.1M tx, 11.4M utxo-adds, 27.7M events, short_writes=0. 329 MB/s. setup +5.4s (snapshot 1.9s + index 3.5s). ~3000× the v1 write path. Now parse/read-bound, not write-bound → next lever = parallel parse. |
+| 2026-05-24 | (tool) | ALL (3,123,618) | 34,180 | 91,387 | 11.25 GB | **io_uring** bulk writer (8 buffers in flight, 1 fsync at end). 5.1M tx, 11.4M utxo-adds, 27.7M events, short_writes=0. 329 MB/s. setup +5.4s (snapshot 1.9s + index 3.5s). ~3000× the v1 write path. **This is the kept version.** |
+
+### Parallelization experiment (NEGATIVE result — reverted)
+
+Tried OpenMP parallel parse+CRC-framing with a single `ordered` writer feeding io_uring. Result: **no speedup; threads hurt.** Whole-chain REBUILD by thread count: 1t=34.2s, 4t=34.4s (flat), 8t=79.8s, 32t=64.8s. Output stayed byte-valid. Conclusion: the rebuild is **not CPU-parse-bound** — it's bound by the serial write path (11 GB memcpy + crc + io in the ordered region) and malloc-arena contention in `block_deserialize` across threads (Amdahl: large serial fraction). Reverted to single-threaded io_uring. Real levers to go below 34s: zero-copy submit of worker buffers (drop a memcpy) + a per-thread block-parse arena/pool (kill malloc contention) — bigger surgery, deferred.
 
 ## Operational snapshot (context for the above, not a benchmark)
 
