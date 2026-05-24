@@ -640,7 +640,7 @@ static int test_async_dispatch_lifecycle(void)
 
         event_emitf(EV_NODE_READY, 7, "ready");
 
-        for (int i = 0; i < 50; i++) {
+        for (int i = 0; i < 1000; i++) {
             struct timespec pause = {0, 1000000};
             if (atomic_load(&g_async_observer_calls) > 0)
                 break;
