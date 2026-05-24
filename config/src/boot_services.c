@@ -46,6 +46,7 @@
 #include "storage/event_log_singleton.h"
 #include "storage/block_index_projection.h"
 #include "storage/znam_projection.h"
+#include "storage/wallet_projection.h"
 #include "storage/progress_store.h"
 #include "storage/utxo_projection.h"
 #include "models/block.h"
@@ -133,6 +134,7 @@ static peers_projection_t *g_phase4_peers_projection;
 static utxo_projection_t *g_phase4_utxo_projection;
 static block_index_projection_t *g_phase4_block_index_projection;
 static znam_projection_t *g_phase4_znam_projection;
+static wallet_projection_t *g_phase4_wallet_projection;
 
 /* Module-local pointer to boot context (set once by app_init_services) */
 static struct boot_svc_ctx *S;
@@ -1814,6 +1816,35 @@ static void boot_start_phase4_storage_shadow(const char *datadir)
                 "[phase4] znam_projection caught up to offset=%llu\n",
                 (unsigned long long)zoff);
     }
+
+    /* Phase 4d-3: wallet_view_projection shadow. Set the event-log
+     * emitter only after the initial replay so boot catch-up cannot race
+     * new wallet view events. */
+    char wallet_path[PATH_MAX];
+    int n7 = snprintf(wallet_path, sizeof(wallet_path),
+                      "%s/wallet_projection.db", datadir);
+    if (n7 <= 0 || (size_t)n7 >= sizeof(wallet_path)) {
+        fprintf(stderr,  // obs-ok:phase4-shadow
+                "[phase4] wallet_projection path too long\n");
+        return;
+    }
+    g_phase4_wallet_projection =
+        wallet_projection_open(wallet_path, g_phase4_event_log);
+    if (!g_phase4_wallet_projection) {
+        fprintf(stderr,  // obs-ok:phase4-shadow
+                "[phase4] wallet_projection unavailable; shadow emit only\n");
+        return;
+    }
+    uint64_t woff = wallet_projection_catch_up(g_phase4_wallet_projection);
+    if (woff == UINT64_MAX) {
+        fprintf(stderr,  // obs-ok:phase4-shadow
+                "[phase4] wallet_projection catch_up failed\n");
+    } else {
+        fprintf(stderr,  // obs-ok:phase4-shadow
+                "[phase4] wallet_projection caught up to offset=%llu\n",
+                (unsigned long long)woff);
+    }
+    wallet_projection_set_event_log(g_phase4_event_log);
 }
 
 static void boot_stop_phase4_storage_shadow(void)
@@ -1824,6 +1855,7 @@ static void boot_stop_phase4_storage_shadow(void)
     mempool_projection_set_event_log(NULL);
     peers_projection_set_event_log(NULL);
     utxo_projection_set_event_log(NULL);
+    wallet_projection_set_event_log(NULL);
     if (g_phase4_mempool_projection) {
         mempool_projection_close(g_phase4_mempool_projection);
         g_phase4_mempool_projection = NULL;
@@ -1840,6 +1872,10 @@ static void boot_stop_phase4_storage_shadow(void)
     if (g_phase4_znam_projection) {
         znam_projection_close(g_phase4_znam_projection);
         g_phase4_znam_projection = NULL;
+    }
+    if (g_phase4_wallet_projection) {
+        wallet_projection_close(g_phase4_wallet_projection);
+        g_phase4_wallet_projection = NULL;
     }
     block_index_projection_set_singleton(NULL);
     if (g_phase4_block_index_projection) {

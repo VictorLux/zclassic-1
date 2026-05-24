@@ -532,4 +532,12 @@ model write-site coverage, and the required secret-argument diff grep
 returned zero matches. The assignment remains in progress; next slice
 is Task 6 boot wiring.
 
+2026-05-24 wt2 progress: Task 6 boot wiring is implemented. Startup
+opens `<datadir>/wallet_projection.db`, catches it up before attaching
+wallet shadow emitters, and shutdown detaches/ closes it before closing
+the shared event log. `wallet_projection` is registered in dumpstate so
+`zcl_state subsystem=wallet_projection` exposes `open: true` plus
+public counts and emit counters. The assignment remains in progress;
+next slice is Task 7 wallet projection diff.
+
 <!-- Worker: append a Completion section below when done. -->

@@ -63,6 +63,7 @@
 #include "storage/progress_store.h"
 #include "storage/utxo_projection.h"
 #include "storage/znam_projection.h"
+#include "storage/wallet_projection.h"
 #include "crypto_registry/crypto_registry.h"
 #include "services/ibd_throttle.h"
 #include "services/mempool_limits.h"
@@ -483,6 +484,10 @@ static const struct dump_entry g_dumpers[] = {
                      "Phase 4d-4 znam projection: name_count, addr/text counts, "
                      "events_consumed_total, per-event-type counters, emit/fail "
                      "counters, last_consumed_offset, last_catch_up_ms." },
+    { "wallet_projection", wallet_projection_dump_state_json,
+                     "Phase 4d-3 wallet view projection: public-only "
+                     "address/tx/UTXO/note counts, total value, cursor, "
+                     "and shadow emit counters." },
     { "block_index_projection", block_index_projection_dump_state_json,
                      "Phase 4c block_index_projection: cursor, entry count, "
                      "events consumed, replace collisions, last catch_up_ms" },

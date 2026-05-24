@@ -646,7 +646,43 @@ wallet_projection_t *wallet_projection_current(void)
 bool wallet_projection_dump_state_json(struct json_value *out,
                                        const char *key)
 {
-    (void)out;
     (void)key;
-    return false;
+    if (!out) return false;
+    json_set_object(out);
+    wallet_projection_t *p = atomic_load_explicit(&g_projection,
+                                                  memory_order_acquire);
+    json_push_kv_bool(out, "open", p != NULL);
+    json_push_kv_int(out, "emit_key_add_total",
+        (int64_t)atomic_load_explicit(&g_emit_key_add_total,
+                                      memory_order_relaxed));
+    json_push_kv_int(out, "emit_addr_derived_total",
+        (int64_t)atomic_load_explicit(&g_emit_addr_derived_total,
+                                      memory_order_relaxed));
+    json_push_kv_int(out, "emit_tx_seen_total",
+        (int64_t)atomic_load_explicit(&g_emit_tx_seen_total,
+                                      memory_order_relaxed));
+    json_push_kv_int(out, "emit_utxo_seen_total",
+        (int64_t)atomic_load_explicit(&g_emit_utxo_seen_total,
+                                      memory_order_relaxed));
+    json_push_kv_int(out, "emit_note_decrypted_total",
+        (int64_t)atomic_load_explicit(&g_emit_note_decrypted_total,
+                                      memory_order_relaxed));
+    json_push_kv_int(out, "emit_fail_total",
+        (int64_t)atomic_load_explicit(&g_emit_fail_total,
+                                      memory_order_relaxed));
+    if (!p) return true;
+    json_push_kv_str(out, "path", p->path);
+    json_push_kv_int(out, "last_consumed_offset",
+                     (int64_t)p->last_consumed_offset);
+    json_push_kv_int(out, "address_count",
+                     (int64_t)wallet_projection_address_count(p));
+    json_push_kv_int(out, "tx_count",
+                     (int64_t)wallet_projection_tx_count(p));
+    json_push_kv_int(out, "utxo_count",
+                     (int64_t)wallet_projection_utxo_count(p));
+    json_push_kv_int(out, "note_count",
+                     (int64_t)wallet_projection_note_count(p));
+    json_push_kv_int(out, "total_value_zat",
+                     wallet_projection_total_value_zat(p));
+    return true;
 }

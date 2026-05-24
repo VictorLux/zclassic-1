@@ -346,6 +346,14 @@ static int t_projection_skeleton_open_reopen(void)
     WP_CHECK("fresh utxo count", wallet_projection_utxo_count(p) == 0);
     WP_CHECK("fresh note count", wallet_projection_note_count(p) == 0);
     WP_CHECK("fresh total value", wallet_projection_total_value_zat(p) == 0);
+    struct json_value state = {0};
+    WP_CHECK("dump state succeeds",
+             wallet_projection_dump_state_json(&state, NULL));
+    WP_CHECK("dump state open true",
+             json_get_bool(json_get(&state, "open")));
+    WP_CHECK("dump state address count",
+             json_get_int(json_get(&state, "address_count")) == 0);
+    json_free(&state);
     WP_CHECK("skeleton catch up preserves offset",
              wallet_projection_catch_up(p) == 0);
     wallet_projection_close(p);
