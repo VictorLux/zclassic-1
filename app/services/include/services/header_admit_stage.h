@@ -60,6 +60,16 @@ struct json_value;
  * on progress.kv low and to avoid starving other supervisor children. */
 #define HEADER_ADMIT_BATCH_PER_TICK  500
 
+typedef enum {
+    HEADER_ADMIT_MODE_SHADOW = 0,
+    HEADER_ADMIT_MODE_AUTHORITATIVE
+} header_admit_mode_t;
+
+/* Cutover mode. SHADOW observes/logs only; AUTHORITATIVE lets the
+ * stage drive header admission while legacy ingress becomes a guard. */
+void header_admit_set_mode(header_admit_mode_t mode);
+header_admit_mode_t header_admit_get_mode(void);
+
 /* Bind the stage to `ms` (the live chainstate) and ensure the
  * header_admit_log schema in progress.kv. Idempotent — a second call
  * returns true if already initialised against the same `ms`. Requires
