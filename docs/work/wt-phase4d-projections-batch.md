@@ -1,0 +1,278 @@
+# Worker Assignments — Phase 4d: Mempool / Peers / Wallet / ZNAM / Store projections (batch spec)
+
+> Each PR (4d-1..4d-5) follows the same shadow-emit + projection-consume
+> pattern as 4b (utxo_projection) and 4c (block_index_projection).
+> This doc lists the per-projection DELTAS so a worker can pick up any
+> one with minimal duplication.
+
+**Branch pattern:** PUSH DIRECT TO MAIN
+**Plan reference:** [`docs/architecture/phase4-storage-unification.md`](../architecture/phase4-storage-unification.md) § 4d
+**Depends on:** Phase 4a (event_log primitive) merged.
+**Per-PR depends on:** none — each projection is independent.
+
+For each projection PR below:
+- Commit 1: add the event payload struct(s) to `event_log_payloads.h`
+- Commit 2: add the projection skeleton (`.h` + `.c`) + schema + replay loop
+- Commit 3: wire shadow emission alongside the existing direct write
+- Commit 4: wire boot replay + diagnostics + MCP enum
+- Commit 5: add diff MCP tool (`zcl_<name>_projection_diff`)
+- Commit 6: tests + push
+
+The deltas per projection are: which existing module owns the direct
+writes today, which event types to introduce, what to project, and
+any subsystem-specific subtleties.
+
+---
+
+## 4d-1 — mempool_projection
+
+**Branch:** PUSH DIRECT TO MAIN
+**Direct write owner today:** `app/models/src/mempool_model.c` (or wherever `mempool` and `mempool_spends` tables are written)
+
+**Event types to add:**
+- `EV_TX_ADMIT_MEMPOOL` (id 3 — already declared in event_log.h enum)
+- `EV_TX_REMOVE_MEMPOOL` (id 4 — already declared)
+
+**Event payloads** (add to `event_log_payloads.h`):
+```c
+struct ev_tx_admit_mempool {
+    uint8_t  txid[32];
+    int64_t  fee;
+    uint32_t size_bytes;
+    uint32_t weight;             /* virtual size, post-witness */
+    uint32_t admitted_unix;
+    uint8_t  priority_class;     /* 0..3 */
+    uint8_t  reserved[3];
+    /* Raw tx bytes follow (size_bytes) */
+};
+
+struct ev_tx_remove_mempool {
+    uint8_t  txid[32];
+    uint8_t  reason;             /* 1=mined, 2=replaced, 3=expired, 4=conflict */
+    uint8_t  reserved[7];
+};
+```
+
+**What the projection holds:**
+- table `mempool` (txid, fee, size, weight, admitted_unix, priority, raw_tx)
+- table `mempool_spends` (prevout_txid, prevout_vout, by_txid)
+
+**Subtlety:** mempool is **in-memory only** in the dream end-state.
+The 4d-1 PR keeps the SQLite projection on disk for diff-vs-live
+verification during 24h soak. The cutover PR (separate) makes it
+RAM-only and replays from the event log's last 10K events on boot.
+
+**Diff MCP tool:** `zcl_mempool_projection_diff` — compare projection
+to live mempool by (txid count, total fee, total weight) + first
+differing txid if any.
+
+---
+
+## 4d-2 — peers_projection
+
+**Branch:** PUSH DIRECT TO MAIN
+**Direct write owner today:** `lib/net/src/peers_db.c` (or wherever
+the `peers` + `addresses` tables are written)
+
+**Event types to add:**
+- `EV_PEER_OBSERVED` (id 7 — already declared)
+- `EV_PEER_DROPPED` (id 8 — already declared)
+
+**Event payloads:**
+```c
+struct ev_peer_observed {
+    uint8_t  ip_v4_or_v6[16];    /* IPv6-mapped IPv4 if v4 */
+    uint16_t port;
+    uint8_t  is_onion;           /* 1 if the addr is .onion */
+    uint8_t  reserved;
+    uint64_t services_bitmap;
+    uint32_t observed_unix;
+    int32_t  height_hint;        /* -1 if unknown */
+    /* .onion address (62 bytes incl. .onion suffix) follows if is_onion=1 */
+};
+
+struct ev_peer_dropped {
+    uint8_t  ip_v4_or_v6[16];
+    uint16_t port;
+    uint8_t  reason;             /* 1=disconnect, 2=banned, 3=stale */
+    uint8_t  reserved[5];
+};
+```
+
+**What the projection holds:**
+- table `peers` (key = ip|port; last_seen, services, height_hint, is_onion)
+- table `addresses` (.onion + clearnet bundle from `directory.json` advertisements)
+
+**Subtlety:** peers data is fast-changing. The projection should batch
+writes (every 100 events or every 5s) to avoid SQLite churn.
+
+**Diff MCP tool:** `zcl_peers_projection_diff` — compare projection
+to `peers_db_iter()` results by row count + sample 10 random keys.
+
+---
+
+## 4d-3 — wallet_view_projection
+
+**Branch:** PUSH DIRECT TO MAIN
+**Direct write owner today:** `app/services/src/wallet_service.c` +
+`app/models/src/wallet_model.c`
+
+**Event types to add:**
+- `EV_WALLET_KEY_ADD` (id 9 — already declared)
+- `EV_WALLET_TX_SEEN` (id 10 — already declared)
+- NEW `EV_WALLET_ADDR_DERIVED` — derived address for an existing key
+- NEW `EV_WALLET_NOTE_DECRYPTED` — a shielded note was decrypted
+
+**Event payloads:** see header (omitted for brevity in this batch
+spec; the worker writes them following the same shape as 4d-1/4d-2).
+
+**What the projection holds:**
+- table `wallet_view` (read-only mirror of wallet_canary +
+  wallet_transactions + wallet_utxos + wallet_sapling_notes)
+
+**CRITICAL — what the projection does NOT hold:**
+- `wallet_keys` (private keys)
+- `wallet_sapling_keys` (private spending keys)
+- `wallet_seed` (HD seed material)
+
+**These stay in `~/.zclassic-c23/wallet_secret.dat`** — a separate
+file, encrypted at rest, NEVER touched by the event log. Per the
+Phase 4 doc: "secrets don't go into audit trails."
+
+**Subtlety:** the wallet projection is read-only for the wallet RPC
+handlers. The spend path still goes through the existing
+wallet_service.c using `wallet_secret.dat`.
+
+**Diff MCP tool:** `zcl_wallet_projection_diff` — compare balance,
+tx count, note count, utxo count between projection and live wallet
+service.
+
+---
+
+## 4d-4 — znam_projection
+
+**Branch:** PUSH DIRECT TO MAIN
+**Direct write owner today:** `app/services/src/znam_service.c` +
+`app/models/src/znam_model.c`
+
+**Event types to add (NEW):**
+- `EV_ZNAM_REGISTER` — name registered
+- `EV_ZNAM_UPDATE` — name updated (address records, text records)
+- `EV_ZNAM_TRANSFER` — name transferred to new owner
+- `EV_ZNAM_RENEW` — name renewed (lease extended)
+- `EV_ZNAM_EXPIRE` — name expired (lease lapsed; emitted by the
+  pruning Job, not by an external action)
+
+Allocate these as IDs 12..16 in `enum event_type`.
+
+**Event payloads:** standard pattern — owner pubkey, name, address
+record dict, text record dict, expiry block.
+
+**What the projection holds:**
+- table `znam_names` (name → owner_pubkey, expiry_height, registered_at)
+- table `znam_addr_records` (name + chain_id → address)
+- table `znam_text_records` (name + key → value)
+
+**Subtlety:** znam is consensus-controlled (registered via
+OP_RETURN). The projection consumes events emitted by the block
+admission path AFTER the OP_RETURN parser identifies a ZNAM op. The
+event log is the canonical historical view of every name action.
+
+**Diff MCP tool:** `zcl_znam_projection_diff`.
+
+---
+
+## 4d-5 — small projections (zmsg + zslp + zswp + store)
+
+**Branch:** PUSH DIRECT TO MAIN
+
+This is a BATCHED PR covering four small projections, because each is
+~50 LOC and not worth a separate PR. Same shape as the others, just
+collapsed.
+
+**Subsystems:**
+
+- **zmsg** (encrypted messages): `EV_ZMSG_SENT`, `EV_ZMSG_DELIVERED`.
+  Tables: `zmsg_messages`.
+
+- **zslp** (token protocol): `EV_ZSLP_TOKEN_CREATED`,
+  `EV_ZSLP_TRANSFER`. Tables: `zslp_tokens`, `zslp_balances`,
+  `zslp_transfers`.
+
+- **zswp** (atomic swaps): `EV_ZSWP_CONTRACT_OBSERVED`,
+  `EV_ZSWP_CONTRACT_RESOLVED`. Tables: `zswp_contracts`.
+
+- **store** (e-commerce marketplace + file market): `EV_STORE_OFFER`,
+  `EV_STORE_ORDER`, `EV_STORE_FULFILLMENT`. Tables: `products`,
+  `orders`, `file_offers`, `file_services`.
+
+**Allocate event IDs 17..27 for these.**
+
+**Subtlety:** each subsystem's RPC layer continues to read its
+existing SQLite table (which becomes the projection). The event log
+is the audit trail.
+
+**Diff MCP tool:** `zcl_<name>_projection_diff` per subsystem (4 tools).
+
+---
+
+## Per-PR acceptance gate (all of 4d-1..4d-5)
+
+1. `make test_parallel` PASS.
+2. New `zcl_<name>_projection_diff` MCP tool returns
+   `match: true` on a freshly built node.
+3. Live 24h with shadow mode: zero divergence events in
+   `zcl_state subsystem=<name>_projection`.
+
+If gate 3 fails: investigate the emitter or projection. The shadow
+mode lets us catch issues without consensus risk.
+
+---
+
+## After 4d-1..4d-5 ship + soak: 4d-cutover PRs
+
+For each projection, a separate one-line cutover PR disables the
+direct SQLite write inside the corresponding service/model file.
+After cutover:
+- `app/models/src/mempool_model.c` write path → DELETED
+- `lib/net/src/peers_db.c` write path → DELETED
+- `app/models/src/wallet_model.c` view-table writes → DELETED
+- `app/services/src/znam_service.c` direct writes → DELETED
+- ZMSG / ZSLP / ZSWP / store model writes → DELETED
+
+The event log is now the single write path for all of these
+subsystems' derived state.
+
+---
+
+## After 4d full cutover: 4e — delete legacy block files
+
+Per the plan doc § 4e, the final Phase 4 PR replaces
+`blocks/blk*.dat` (6.3 GB of binary block bodies) with
+`EV_BLOCK_BODY` events in the event log. This deletes:
+- `lib/storage/src/blocks_mmap_reader.c`
+- `lib/storage/src/blocks_index_legacy_reader.c`
+- `lib/storage/src/disk_block_io.c`
+
+Plus a one-time migration tool to import the existing `blocks/` into
+the event log. The migration itself is replayable from the existing
+LevelDB block_index pointers + the on-disk `blk*.dat` files.
+
+Drafted as its own assignment when 4d cutover gets close.
+
+---
+
+## Status
+
+**QUEUED** — each 4d-N is gated on Phase 4a (event_log primitive)
+merged. They are mutually independent (different subsystems) and can
+land in parallel after 4a ships.
+
+Recommend dispatch order when 4a is done:
+1. 4d-2 (peers — smallest, lowest risk, easy to verify with `zcl_peers`)
+2. 4d-1 (mempool — moderate; in-memory cutover follows)
+3. 4d-4 (znam — moderate; consensus-derived but well-scoped)
+4. 4d-3 (wallet — most careful; secrets stay in wallet_secret.dat)
+5. 4d-5 (small batch — last; mostly mechanical)
+
+<!-- Each worker assignment for a specific projection appends a Completion section. -->
