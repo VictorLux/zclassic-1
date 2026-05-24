@@ -185,7 +185,7 @@ see progress + revert individual commits if needed.
 
 ## Status
 
-**READY** (status updated 2026-05-24, post S-9 merge `1a65b33c7`) —
+**IN PROGRESS (wt3)** (claimed 2026-05-24, post S-9 merge `1a65b33c7`) —
 **FIRST authoritative cutover.** Commits 1-3 are pure additions (mode
 flag default SHADOW → no behavior change). Commit 4 flips the default
 to AUTHORITATIVE and is one-line revertable.
