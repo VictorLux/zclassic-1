@@ -37,9 +37,10 @@ Phase 4  [░░░░░░░░░░]   0%   Storage unification — plan: d
   ├ 4a     [░░░░░░░░░░]   0%   event_log primitive  ← READY (primitive sits idle, no callers wired)
   ├ 4b     [░░░░░░░░░░]   0%   utxo_projection — first event-log consumer (queued, post-4a)
   └ 4c     [░░░░░░░░░░]   0%   block_index_projection — kills LevelDB (queued, post-4a)
-Phase 5  [██░░░░░░░░]  17%   Crypto agility + reproducible builds — plan: docs/architecture/phase5-crypto-agility-and-releases.md
+Phase 5  [██░░░░░░░░]  14%   Crypto agility + reproducible builds — plan: docs/architecture/phase5-crypto-agility-and-releases.md
   ├ 5a-1   [██████████] 100%   Crypto registry skeleton  ✅ c4bebe0a2 (SHA256/BLAKE2b/ECDSA/Groth16 wrappers, no call sites rewired)
-  └ 5a-2   [░░░░░░░░░░]   0%   First call site rewire: Equihash PoW  ← READY (5a-1 merged)
+  ├ 5a-2   [░░░░░░░░░░]   0%   First call site rewire: Equihash PoW  ← READY (5a-1 merged)
+  └ 5b-1   [░░░░░░░░░░]   0%   flake.nix reproducible build skeleton  ← READY (independent of everything; needs Nix installed locally)
 Phase 6  [░░░░░░░░░░]   0%   Determinism + simulator
 Phase 7  [░░░░░░░░░░]   0%   Frontier (io_uring, hot reload)
 
@@ -100,6 +101,7 @@ clause. The table below is the dashboard.
 **READY queue** (any worker can pick on restart; first to mark IN PROGRESS wins):
 - [`docs/work/wt-phase4a-event-log-primitive.md`](./work/wt-phase4a-event-log-primitive.md) — append-only event log with kill-9 fuzz harness; primitive sits idle, no callers wired.
 - [`docs/work/wt-phase5a2-first-call-site-rewire.md`](./work/wt-phase5a2-first-call-site-rewire.md) — route Equihash PoW through the registry; 5-task PR with indirection-cost benchmark gate.
+- [`docs/work/wt-phase5b1-flake-nix-skeleton.md`](./work/wt-phase5b1-flake-nix-skeleton.md) — `flake.nix` reproducible build skeleton; **needs Nix installed locally** (`sh <(curl -L https://nixos.org/nix/install) --daemon`).
 
 **QUEUED (gated on a specific predecessor)** — workers can read the spec but should not start until the gate clears:
 - C-3 validate_headers cutover (after C-2 + soak)
