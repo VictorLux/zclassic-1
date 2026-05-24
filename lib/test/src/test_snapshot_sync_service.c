@@ -457,6 +457,38 @@ static int test_snapshot_manifest_contract(void)
     return failures;
 }
 
+static int test_snapshot_manifest_recovery_contract(void)
+{
+    int failures = 0;
+
+    TEST("snapshot manifest recovery keeps verification gates but relaxes distance") {
+        struct byte_stream offer;
+        struct snapshot_manifest manifest;
+        enum snapshot_manifest_result result;
+
+        stream_init(&offer, 192);
+        write_valid_snapshot_manifest(&offer, 10000, 10010);
+
+        ASSERT(snapshot_manifest_parse(&manifest, &offer, &result));
+        ASSERT(result == SNAPSHOT_MANIFEST_OK);
+        ASSERT(snapshot_manifest_validate_offer(&manifest, 9500) ==
+               SNAPSHOT_MANIFEST_NOT_AHEAD);
+        ASSERT(snapshot_manifest_validate_recovery(&manifest, 9999) ==
+               SNAPSHOT_MANIFEST_OK);
+        ASSERT(snapshot_manifest_validate_recovery(&manifest, 10001) ==
+               SNAPSHOT_MANIFEST_NOT_AHEAD);
+
+        memset(manifest.chain_work, 0, sizeof(manifest.chain_work));
+        ASSERT(snapshot_manifest_validate_recovery(&manifest, 9999) ==
+               SNAPSHOT_MANIFEST_WEAK_WORK);
+
+        stream_free(&offer);
+        PASS();
+    } _test_next:;
+
+    return failures;
+}
+
 static int test_snapshot_sync_service_fc_roundtrip(void)
 {
     int failures = 0;
@@ -1196,6 +1228,85 @@ static int test_snapshot_accept_offer_with_real_utxos(void)
     return failures;
 }
 
+static int test_snapshot_recovery_request_allows_populated_utxos(void)
+{
+    int failures = 0;
+
+    TEST("snapshot recovery request accepts verified manifest over populated UTXOs") {
+        struct snapshot_sync_service svc;
+        struct node_db ndb;
+        struct snapshot_offer_params params;
+
+        ASSERT(node_db_open(&ndb, ":memory:"));
+        snapsync_init(&svc, &ndb);
+
+        node_db_exec(&ndb, "BEGIN");
+        sqlite3_stmt *ins = NULL;
+        sqlite3_prepare_v2(ndb.db,
+            "INSERT INTO utxos (txid,vout,value,script,script_type,height) "
+            "VALUES (?,0,100,X'00',0,1)", -1, &ins, NULL);
+        for (int i = 0; i < 100001; i++) {
+            uint8_t txid[32];
+            memset(txid, 0, 32);
+            memcpy(txid, &i, sizeof(i));
+            sqlite3_reset(ins);
+            sqlite3_bind_blob(ins, 1, txid, 32, SQLITE_STATIC);
+            sqlite3_step(ins);
+        }
+        sqlite3_finalize(ins);
+        node_db_exec(&ndb, "COMMIT");
+
+        fill_v2_offer_params(&params, 3000000, 2999000, 0);
+        params.num_utxos = 1350000;
+        params.total_bytes = 200000000;
+        params.peer_tip_height = params.height + 10;
+
+        ASSERT(snapsync_handle_offer(&svc, &params) ==
+               SNAPSYNC_OFFER_REJECTED_NOT_AHEAD);
+        ASSERT(svc.state == SNAPSYNC_IDLE);
+
+        ASSERT(snapsync_request_recovery(&svc, 2999500, &params));
+        ASSERT(svc.state == SNAPSYNC_NEGOTIATING);
+        ASSERT(svc.offered_height == params.height);
+        ASSERT(svc.offered_count == params.num_utxos);
+        ASSERT(svc.offered_peer_tip_height == params.peer_tip_height);
+        ASSERT(svc.fc_challenge.chain_length == (uint64_t)params.height + 1);
+        ASSERT(!svc.fc_verified);
+
+        snapsync_reset(&svc);
+        node_db_close(&ndb);
+        PASS();
+    } _test_next:;
+
+    return failures;
+}
+
+static int test_snapshot_recovery_request_rejects_unverified_manifest(void)
+{
+    int failures = 0;
+
+    TEST("snapshot recovery request rejects weak or too-low manifests") {
+        struct snapshot_sync_service svc;
+        struct snapshot_offer_params params;
+
+        memset(&svc, 0, sizeof(svc));
+        svc.state = SNAPSYNC_IDLE;
+
+        fill_v2_offer_params(&params, 3000000, 2999000, 0);
+        params.peer_tip_height = params.height + 10;
+
+        ASSERT(!snapsync_request_recovery(&svc, 3000001, &params));
+        ASSERT(svc.state == SNAPSYNC_IDLE);
+
+        memset(params.chain_work, 0, sizeof(params.chain_work));
+        ASSERT(!snapsync_request_recovery(&svc, 2999500, &params));
+        ASSERT(svc.state == SNAPSYNC_IDLE);
+        PASS();
+    } _test_next:;
+
+    return failures;
+}
+
 static int test_snapshot_blacklist_add_query(void)
 {
     int failures = 0;
@@ -1327,6 +1438,7 @@ int test_snapshot_sync_service(void)
     failures += test_snapshot_sync_service_builds_pow();
     failures += test_snapshot_sync_service_stream_helpers();
     failures += test_snapshot_manifest_contract();
+    failures += test_snapshot_manifest_recovery_contract();
     failures += test_snapshot_sync_service_fc_roundtrip();
     failures += test_snapshot_sync_service_activates_tip();
     failures += test_snapshot_sync_service_activates_fallback_tip();
@@ -1345,6 +1457,8 @@ int test_snapshot_sync_service(void)
     failures += test_snapshot_sync_service_chunk_apply_failure_fails_closed();
     failures += test_snapshot_accept_offer_with_few_utxos();
     failures += test_snapshot_accept_offer_with_real_utxos();
+    failures += test_snapshot_recovery_request_allows_populated_utxos();
+    failures += test_snapshot_recovery_request_rejects_unverified_manifest();
     failures += test_snapshot_blacklist_add_query();
     failures += test_snapshot_blacklist_zero_peer();
     failures += test_snapshot_blacklist_refresh();

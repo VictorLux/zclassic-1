@@ -42,6 +42,9 @@ bool snapshot_manifest_parse(struct snapshot_manifest *out,
 enum snapshot_manifest_result snapshot_manifest_validate_offer(
     const struct snapshot_manifest *m,
     int32_t our_height);
+enum snapshot_manifest_result snapshot_manifest_validate_recovery(
+    const struct snapshot_manifest *m,
+    int32_t target_height);
 const char *snapshot_manifest_result_name(
     enum snapshot_manifest_result result);
 

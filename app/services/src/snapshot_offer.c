@@ -89,12 +89,14 @@ void snapsync_params_from_manifest_internal(struct snapshot_offer_params *p,
 
 /* ── Accept Offer ────────────────────────────────────────── */
 
-bool snapsync_accept_offer(struct snapshot_sync_service *svc,
-                           int32_t height, uint64_t num_utxos,
-                           const uint8_t utxo_root[32],
-                           const uint8_t mmb_root[32],
-                           const uint8_t block_hash[32],
-                           uint32_t peer_id)
+static bool snapsync_accept_offer_internal(struct snapshot_sync_service *svc,
+                                           int32_t height,
+                                           uint64_t num_utxos,
+                                           const uint8_t utxo_root[32],
+                                           const uint8_t mmb_root[32],
+                                           const uint8_t block_hash[32],
+                                           uint32_t peer_id,
+                                           bool allow_populated_utxos)
 {
     snapsync_service_lock_internal();
     if (!svc || !utxo_root || !block_hash || svc->state != SNAPSYNC_IDLE
@@ -120,7 +122,7 @@ bool snapsync_accept_offer(struct snapshot_sync_service *svc,
                 utxo_count = sqlite3_column_int64(sc, 0);
             sqlite3_finalize(sc);
         }
-        if (utxo_count > 100000) {
+        if (utxo_count > 100000 && !allow_populated_utxos) {
             printf("[snapsync] Skipping P2P snapshot — %lld UTXOs already "
                    "imported\n", (long long)utxo_count);
             snapsync_service_unlock_internal();
@@ -140,6 +142,18 @@ bool snapsync_accept_offer(struct snapshot_sync_service *svc,
     snapsync_set_state(SNAPSYNC_NEGOTIATING, "accepted offer");
     snapsync_service_unlock_internal();
     return true;
+}
+
+bool snapsync_accept_offer(struct snapshot_sync_service *svc,
+                           int32_t height, uint64_t num_utxos,
+                           const uint8_t utxo_root[32],
+                           const uint8_t mmb_root[32],
+                           const uint8_t block_hash[32],
+                           uint32_t peer_id)
+{
+    return snapsync_accept_offer_internal(svc, height, num_utxos, utxo_root,
+                                          mmb_root, block_hash, peer_id,
+                                          false);
 }
 
 enum snapsync_followup_action snapsync_offer_followup_action(
@@ -444,4 +458,70 @@ enum snapsync_offer_result snapsync_handle_offer(
            (unsigned long long)((uint64_t)params->height + 1));
 
     return SNAPSYNC_OFFER_ACCEPTED;
+}
+
+bool snapsync_request_recovery(struct snapshot_sync_service *svc,
+                               int32_t target_height,
+                               const struct snapshot_offer_params *manifest)
+{
+    struct snapshot_manifest m;
+    enum snapshot_manifest_result manifest_result =
+        SNAPSHOT_MANIFEST_OK;
+    enum snapshot_sync_state current_state = SNAPSYNC_IDLE;
+    uint8_t fc_seed[32];
+
+    if (!svc || !manifest)
+        return false;
+
+    snapsync_manifest_from_params_internal(&m, manifest);
+    manifest_result = snapshot_manifest_validate_recovery(&m, target_height);
+    if (manifest_result != SNAPSHOT_MANIFEST_OK) {
+        event_emitf(EV_SNAPSHOT_OFFER_RECEIVED, manifest->peer_id,
+                    "accepted=false recovery=true reason=%s h=%d target=%d",
+                    snapshot_manifest_result_name(manifest_result),
+                    manifest->height, target_height);
+        return false;
+    }
+
+    snapsync_service_lock_internal();
+    current_state = svc->state;
+    snapsync_service_unlock_internal();
+    if (current_state != SNAPSYNC_IDLE) {
+        event_emitf(EV_SNAPSHOT_OFFER_RECEIVED, manifest->peer_id,
+                    "accepted=false recovery=true reason=busy h=%d target=%d",
+                    manifest->height, target_height);
+        return false;
+    }
+
+    if (!snapsync_accept_offer_internal(svc, manifest->height,
+                                        manifest->num_utxos,
+                                        manifest->utxo_root,
+                                        manifest->mmb_root,
+                                        manifest->block_hash,
+                                        manifest->peer_id,
+                                        true)) {
+        event_emitf(EV_SNAPSHOT_OFFER_RECEIVED, manifest->peer_id,
+                    "accepted=false recovery=true reason=accept_failed "
+                    "h=%d target=%d",
+                    manifest->height, target_height);
+        return false;
+    }
+
+    GetRandBytes(fc_seed, sizeof(fc_seed));
+    snapsync_service_lock_internal();
+    memcpy(svc->offered_chain_work, manifest->chain_work, 32);
+    svc->offered_peer_tip_height = manifest->peer_tip_height;
+    svc->offered_protocol_version = manifest->protocol_version;
+    svc->offered_schema_version = manifest->snapshot_schema_version;
+    memcpy(svc->fc_challenge.seed, fc_seed, 32);
+    svc->fc_challenge.chain_length = (uint64_t)manifest->height + 1;
+    memcpy(svc->fc_challenge.mmb_root, manifest->mmb_root, 32);
+    svc->fc_verified = false;
+    snapsync_service_unlock_internal();
+
+    event_emitf(EV_SNAPSHOT_OFFER_RECEIVED, manifest->peer_id,
+                "accepted=true recovery=true h=%d target=%d utxos=%llu",
+                manifest->height, target_height,
+                (unsigned long long)manifest->num_utxos);
+    return true;
 }

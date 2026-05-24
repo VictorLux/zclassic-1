@@ -50,9 +50,8 @@ bool snapshot_manifest_parse(struct snapshot_manifest *out,
     return true;
 }
 
-enum snapshot_manifest_result snapshot_manifest_validate_offer(
-    const struct snapshot_manifest *m,
-    int32_t our_height)
+static enum snapshot_manifest_result snapshot_manifest_validate_common(
+    const struct snapshot_manifest *m)
 {
     if (!m)
         return SNAPSHOT_MANIFEST_NULL_ARG;
@@ -73,7 +72,33 @@ enum snapshot_manifest_result snapshot_manifest_validate_offer(
         return SNAPSHOT_MANIFEST_NO_MMR;
     if (!bytes32_nonzero(m->mmb_root))
         return SNAPSHOT_MANIFEST_NO_MMB;
+    return SNAPSHOT_MANIFEST_OK;
+}
+
+enum snapshot_manifest_result snapshot_manifest_validate_offer(
+    const struct snapshot_manifest *m,
+    int32_t our_height)
+{
+    enum snapshot_manifest_result common =
+        snapshot_manifest_validate_common(m);
+    if (common != SNAPSHOT_MANIFEST_OK)
+        return common;
     if (m->height <= our_height + 5000)
+        return SNAPSHOT_MANIFEST_NOT_AHEAD;
+    return SNAPSHOT_MANIFEST_OK;
+}
+
+enum snapshot_manifest_result snapshot_manifest_validate_recovery(
+    const struct snapshot_manifest *m,
+    int32_t target_height)
+{
+    enum snapshot_manifest_result common =
+        snapshot_manifest_validate_common(m);
+    if (common != SNAPSHOT_MANIFEST_OK)
+        return common;
+    if (target_height <= 0)
+        return SNAPSHOT_MANIFEST_RANGE;
+    if (m->height < target_height)
         return SNAPSHOT_MANIFEST_NOT_AHEAD;
     return SNAPSHOT_MANIFEST_OK;
 }
