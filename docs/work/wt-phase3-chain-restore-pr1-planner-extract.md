@@ -7,7 +7,7 @@
 The dissolve plan (docs/dissolve/chain_restore_service.md) lists later PRs
 as gated on C-9, but PR-1 has no such gate; the planning function is
 already side-effect free.
-**Status: READY** — claim by marking IN PROGRESS.
+**Status: IN PROGRESS (wt2)** — claimed 2026-05-24.
 
 **Owns:**
 - NEW `app/services/include/services/chain_restore_planner.h` — pure planning API
@@ -180,6 +180,4 @@ enough to be a single coherent commit.
 
 ## Status
 
-**READY.** Any worker can claim. This is the cheapest Phase 3 PR available
-right now — no cutover dependencies, no API changes, pure mechanical
-refactor with isolation tests as the proof of correctness.
+**IN PROGRESS (wt2)** — claimed 2026-05-24.
