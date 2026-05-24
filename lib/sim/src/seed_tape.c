@@ -273,7 +273,7 @@ int seed_tape_advance(seed_tape_t *tape, int64_t microseconds)
     if (!tape) return -EINVAL;
     if (tape->replay_mode) return -EROFS;
     if (microseconds < 0) {
-        fprintf(stderr,
+        fprintf(stderr,  // obs-ok:sim-primitive-no-event-log
             "[sim.seed_tape] %s: negative delta=%lld rejected\n",
             __func__, (long long)microseconds);
         return -EINVAL;
@@ -300,7 +300,7 @@ int seed_tape_inject(seed_tape_t *tape, uint8_t type,
     if (!tape) return -EINVAL;
     if (tape->replay_mode) return -EROFS;
     if (len > TAPE_MAX_PAYLOAD) {
-        fprintf(stderr,
+        fprintf(stderr,  // obs-ok:sim-primitive-no-event-log
             "[sim.seed_tape] %s: payload too large len=%zu cap=%u\n",
             __func__, len, TAPE_MAX_PAYLOAD);
         return -E2BIG;
@@ -458,7 +458,7 @@ int seed_tape_save(const seed_tape_t *tape, const char *path)
     /* off should equal want. If we overflowed/undershot, size_bytes
      * is wrong and we have a code bug. */
     if (off != want) {
-        fprintf(stderr,
+        fprintf(stderr,  // obs-ok:sim-primitive-no-event-log
             "[sim.seed_tape] %s: size mismatch want=%zu wrote=%zu — fix size_bytes()\n",
             __func__, want, off);
         free(buf);
@@ -468,7 +468,7 @@ int seed_tape_save(const seed_tape_t *tape, const char *path)
     FILE *fp = fopen(path, "wb");
     if (!fp) {
         int e = errno;
-        fprintf(stderr,
+        fprintf(stderr,  // obs-ok:sim-primitive-no-event-log
             "[sim.seed_tape] %s: fopen(%s) failed errno=%d\n",
             __func__, path, e);
         free(buf);
@@ -478,14 +478,14 @@ int seed_tape_save(const seed_tape_t *tape, const char *path)
     int close_rc = fclose(fp);
     free(buf);
     if (w != off) {
-        fprintf(stderr,
+        fprintf(stderr,  // obs-ok:sim-primitive-no-event-log
             "[sim.seed_tape] %s: short write %zu/%zu\n",
             __func__, w, off);
         return -EIO;
     }
     if (close_rc != 0) {
         int e = errno;
-        fprintf(stderr,
+        fprintf(stderr,  // obs-ok:sim-primitive-no-event-log
             "[sim.seed_tape] %s: fclose failed errno=%d\n",
             __func__, e);
         return -e;
