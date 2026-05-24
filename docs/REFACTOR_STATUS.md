@@ -4,7 +4,7 @@
 > truth for "what's done, what's next, what's blocked." Read this first
 > when you start a session. Full architecture: [`FRAMEWORK.md`](./FRAMEWORK.md).
 
-**Updated:** 2026-05-24 (Phase 4a event_log MERGED; Phase 5a-1+5a-2 MERGED; C-2 at 3/4; 4b/4c/4d/5b-1 all READY for any worker)
+**Updated:** 2026-05-24 (Phase 4b at 80% — Tasks 1-8 shipped; Phase 4a + 5a-1 + 5a-2 + 4d-2 MERGED; 4c + 6a sub-agents in flight; 5a-3 + 5b-1 + 4d-1/3/4/5 all READY)
 
 ---
 
@@ -33,9 +33,9 @@ Phase 3  [██████░░░░]  60%   Dissolve mega-modules          
   ├ chain_restore  [░░░░░░░░░░] independent — plan ready, awaiting per-PR assignment
   ├ header_probe   [░░░░░░░░░░] independent — plan ready, awaiting per-PR assignment
   └ utxo_recovery  [░░░░░░░░░░] gated on C-8 cutover (dissolve plan ready)
-Phase 4  [████░░░░░░]  39%   Storage unification — plan: docs/architecture/phase4-storage-unification.md
+Phase 4  [██████░░░░]  58%   Storage unification — plan: docs/architecture/phase4-storage-unification.md
   ├ 4a     [██████████] 100%   event_log primitive  ✅ 76b3a10b4
-  ├ 4b     [█████░░░░░]  50%   utxo_projection  🚧 sub-agent shipped tasks 1, 2-4, 5/10 to main directly
+  ├ 4b     [████████░░]  80%   utxo_projection  🚧 sub-agent shipped tasks 1, 2-4, 5, 6-8/10 (168c522de) — diff tool + push remain
   ├ 4c     [░░░░░░░░░░]   0%   block_index_projection — kills LevelDB  🚧 sub-agent in flight
   ├ 4d-1   [░░░░░░░░░░]   0%   mempool projection (READY)
   ├ 4d-2   [██████████] 100%   peers_projection  ✅ 91aa65c1c + 5dc442a81 + 48e78d801 + f925fb6f3 (wt2)
@@ -49,7 +49,9 @@ Phase 5  [███░░░░░░░]  29%   Crypto agility + reproducible b
   ├ 5a-3   [░░░░░░░░░░]   0%   script_validate rewire (HOT PATH; ECDSA pubkey_verify)  ← READY
   └ 5b-1   [░░░░░░░░░░]   0%   flake.nix reproducible build skeleton  ← READY (needs Nix)
 Phase 6  [░░░░░░░░░░]   0%   Determinism + simulator
-  └ 6a     [█░░░░░░░░░]   5%   seed_tape primitive  🚧 sub-agent in flight (isolated worktree)
+  ├ 6a     [█░░░░░░░░░]   5%   seed_tape primitive  🚧 sub-agent in flight (isolated worktree)
+  ├ 6b     [░░░░░░░░░░]   0%   postmortem capsule (crash → seed.cap.gz)  ← spec drafted, gated on 6a
+  └ 6c     [░░░░░░░░░░]   0%   simulator harness (chaos CI)  ← spec drafted, gated on 6b
 Phase 7  [░░░░░░░░░░]   0%   Frontier (io_uring, hot reload)
 
 All 5 mega-module dissolve plans drafted: docs/dissolve/
