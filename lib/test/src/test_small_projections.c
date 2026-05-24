@@ -244,6 +244,179 @@ static int t_projection_skeletons_fresh(void)
     return failures;
 }
 
+static bool append_contact_set_event(event_log_t *log,
+                                     const char *address,
+                                     const char *name)
+{
+    struct ev_contact_set ev = {
+        .address_len = (uint8_t)strlen(address),
+        .name_len = (uint8_t)strlen(name),
+        .address = address,
+        .name = name,
+    };
+    uint8_t payload[256];
+    size_t len = 0;
+    if (!ev_contact_set_serialize(&ev, payload, sizeof(payload), &len))
+        return false;
+    return event_log_append(log, EV_CONTACT_SET, payload, len) != UINT64_MAX;
+}
+
+static bool append_contact_touched_event(event_log_t *log,
+                                         const char *address,
+                                         uint32_t last_used)
+{
+    struct ev_contact_touched ev = {
+        .address_len = (uint8_t)strlen(address),
+        .last_used_unix = last_used,
+        .address = address,
+    };
+    uint8_t payload[128];
+    size_t len = 0;
+    if (!ev_contact_touched_serialize(&ev, payload, sizeof(payload), &len))
+        return false;
+    return event_log_append(log, EV_CONTACT_TOUCHED, payload, len) != UINT64_MAX;
+}
+
+static bool append_contact_delete_event(event_log_t *log,
+                                        const char *address)
+{
+    struct ev_contact_delete ev = {
+        .address_len = (uint8_t)strlen(address),
+        .address = address,
+    };
+    uint8_t payload[128];
+    size_t len = 0;
+    if (!ev_contact_delete_serialize(&ev, payload, sizeof(payload), &len))
+        return false;
+    return event_log_append(log, EV_CONTACT_DELETE, payload, len) != UINT64_MAX;
+}
+
+static bool append_onion_announcement_event(event_log_t *log,
+                                            const char *onion,
+                                            const char *script,
+                                            uint32_t announced_at)
+{
+    struct ev_onion_announcement ev = {
+        .announced_at_unix = announced_at,
+        .onion_addr_len = (uint8_t)strlen(onion),
+        .script_hex_len = (uint8_t)strlen(script),
+        .onion_address = onion,
+        .script_hex = script,
+    };
+    uint8_t payload[256];
+    size_t len = 0;
+    if (!ev_onion_announcement_serialize(&ev, payload, sizeof(payload), &len))
+        return false;
+    return event_log_append(log, EV_ONION_ANNOUNCEMENT, payload, len) !=
+           UINT64_MAX;
+}
+
+static bool append_hodl_snapshot_event(event_log_t *log, int32_t height)
+{
+    struct ev_hodl_snapshot ev = {
+        .height = height,
+        .time_unix = 1760000000u + (uint32_t)height,
+        .total_zat = 1000000000LL + height,
+        .older_1y_zat = 500000000LL + height,
+        .older_1y_pct = 50.0,
+    };
+    uint8_t payload[EV_HODL_SNAPSHOT_LEN];
+    if (!ev_hodl_snapshot_serialize(&ev, payload))
+        return false;
+    return event_log_append(log, EV_HODL_SNAPSHOT, payload, sizeof(payload)) !=
+           UINT64_MAX;
+}
+
+static int t_projection_catchup_mixed(void)
+{
+    int failures = 0;
+    char dir[256];
+    char elog_path[320];
+    char contacts_path[320];
+    char onion_path[320];
+    char hodl_path[320];
+    sp_tmpdir(dir, sizeof(dir), "mixed");
+    snprintf(elog_path, sizeof(elog_path), "%s/event_log.dat", dir);
+    snprintf(contacts_path, sizeof(contacts_path), "%s/contacts.db", dir);
+    snprintf(onion_path, sizeof(onion_path), "%s/onion_announcements.db",
+             dir);
+    snprintf(hodl_path, sizeof(hodl_path), "%s/hodl_history.db", dir);
+
+    event_log_t *log = event_log_open(elog_path);
+    SP_CHECK("mixed event log open", log != NULL);
+    if (!log) {
+        test_cleanup_tmpdir(dir);
+        return failures;
+    }
+
+    const uint8_t unrelated[] = {1, 2, 3, 4};
+    const char *onion =
+        "bcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefg.onion";
+    bool appended =
+        append_contact_set_event(log, "t1MixedAlice", "Alice") &&
+        event_log_append(log, EV_BLOCK_BODY, unrelated, sizeof(unrelated)) !=
+            UINT64_MAX &&
+        append_onion_announcement_event(log, onion, "6a045a434c23",
+                                        1761234567u) &&
+        append_contact_set_event(log, "t1MixedBob", "Bob") &&
+        append_contact_touched_event(log, "t1MixedAlice", 1762222222u) &&
+        append_hodl_snapshot_event(log, 100) &&
+        append_contact_delete_event(log, "t1MixedBob") &&
+        append_hodl_snapshot_event(log, 101);
+    SP_CHECK("mixed append events", appended);
+
+    contacts_projection_t *contacts =
+        contacts_projection_open(contacts_path, log);
+    onion_ann_projection_t *onion_p =
+        onion_ann_projection_open(onion_path, log);
+    hodl_history_projection_t *hodl =
+        hodl_history_projection_open(hodl_path, log);
+    SP_CHECK("mixed contacts open", contacts != NULL);
+    SP_CHECK("mixed onion open", onion_p != NULL);
+    SP_CHECK("mixed hodl open", hodl != NULL);
+
+    uint64_t end_offset = event_log_size(log);
+    SP_CHECK("contacts catchup mixed",
+             contacts && contacts_projection_catch_up(contacts) == end_offset);
+    SP_CHECK("onion catchup mixed",
+             onion_p && onion_ann_projection_catch_up(onion_p) == end_offset);
+    SP_CHECK("hodl catchup mixed",
+             hodl && hodl_history_projection_catch_up(hodl) == end_offset);
+    SP_CHECK("contacts mixed count",
+             contacts && contacts_projection_count(contacts) == 1);
+    SP_CHECK("onion mixed count",
+             onion_p && onion_ann_projection_count(onion_p) == 1);
+    SP_CHECK("hodl mixed count",
+             hodl && hodl_history_projection_count(hodl) == 2);
+
+    contacts_projection_close(contacts);
+    onion_ann_projection_close(onion_p);
+    hodl_history_projection_close(hodl);
+
+    contacts = contacts_projection_open(contacts_path, log);
+    onion_p = onion_ann_projection_open(onion_path, log);
+    hodl = hodl_history_projection_open(hodl_path, log);
+    SP_CHECK("contacts mixed offset persisted",
+             contacts && contacts_projection_catch_up(contacts) == end_offset);
+    SP_CHECK("onion mixed offset persisted",
+             onion_p && onion_ann_projection_catch_up(onion_p) == end_offset);
+    SP_CHECK("hodl mixed offset persisted",
+             hodl && hodl_history_projection_catch_up(hodl) == end_offset);
+    SP_CHECK("contacts mixed reopen count",
+             contacts && contacts_projection_count(contacts) == 1);
+    SP_CHECK("onion mixed reopen count",
+             onion_p && onion_ann_projection_count(onion_p) == 1);
+    SP_CHECK("hodl mixed reopen count",
+             hodl && hodl_history_projection_count(hodl) == 2);
+
+    contacts_projection_close(contacts);
+    onion_ann_projection_close(onion_p);
+    hodl_history_projection_close(hodl);
+    event_log_close(log);
+    test_cleanup_tmpdir(dir);
+    return failures;
+}
+
 int test_small_projections(void)
 {
     int failures = 0;
@@ -253,6 +426,7 @@ int test_small_projections(void)
     failures += t_onion_payload_roundtrip();
     failures += t_hodl_payload_roundtrip();
     failures += t_projection_skeletons_fresh();
+    failures += t_projection_catchup_mixed();
     printf("small_projections: %d failures\n", failures);
     return failures;
 }

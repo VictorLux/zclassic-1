@@ -13,6 +13,7 @@
 #include <string.h>
 
 #define CONTACTS_PROJECTION_SCHEMA_VERSION 1
+#define EVENT_LOG_FRAME_OVERHEAD 32u
 
 struct contacts_projection {
     sqlite3 *db;
@@ -89,6 +90,22 @@ static uint64_t meta_get_u64(sqlite3 *db, const char *key)
     return v;
 }
 
+static bool meta_set_u64(sqlite3 *db, const char *key, uint64_t value)
+{
+    sqlite3_stmt *s = NULL;
+    char buf[32];
+    snprintf(buf, sizeof(buf), "%" PRIu64, value);
+    int rc = sqlite3_prepare_v2(db,
+        "INSERT OR REPLACE INTO projection_meta(k,v) VALUES(?,?)",
+        -1, &s, NULL);
+    if (rc != SQLITE_OK) return false;
+    sqlite3_bind_text(s, 1, key, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(s, 2, buf, -1, SQLITE_TRANSIENT);
+    rc = sqlite3_step(s);  // raw-sql-ok:projection-primitive
+    sqlite3_finalize(s);
+    return rc == SQLITE_DONE;
+}
+
 contacts_projection_t *contacts_projection_open(const char *path,
                                                 event_log_t *log)
 {
@@ -143,9 +160,129 @@ void contacts_projection_close(contacts_projection_t *p)
     free(p);
 }
 
+static bool apply_contact_set(contacts_projection_t *p,
+                              const struct ev_contact_set *ev)
+{
+    sqlite3_stmt *s = NULL;
+    int rc = sqlite3_prepare_v2(p->db,
+        "INSERT OR REPLACE INTO contacts(address,name,last_used) "
+        "VALUES(?,?,COALESCE((SELECT last_used FROM contacts WHERE address=?),0))",
+        -1, &s, NULL);
+    if (rc != SQLITE_OK) return false;
+    sqlite3_bind_text(s, 1, ev->address, ev->address_len, SQLITE_TRANSIENT);
+    if (ev->name_len)
+        sqlite3_bind_text(s, 2, ev->name, ev->name_len, SQLITE_TRANSIENT);
+    else
+        sqlite3_bind_text(s, 2, "", 0, SQLITE_TRANSIENT);
+    sqlite3_bind_text(s, 3, ev->address, ev->address_len, SQLITE_TRANSIENT);
+    rc = sqlite3_step(s);  // raw-sql-ok:projection-primitive
+    sqlite3_finalize(s);
+    return rc == SQLITE_DONE;
+}
+
+static bool apply_contact_touched(contacts_projection_t *p,
+                                  const struct ev_contact_touched *ev)
+{
+    sqlite3_stmt *s = NULL;
+    int rc = sqlite3_prepare_v2(p->db,
+        "UPDATE contacts SET last_used=? WHERE address=?",
+        -1, &s, NULL);
+    if (rc != SQLITE_OK) return false;
+    sqlite3_bind_int64(s, 1, ev->last_used_unix);
+    sqlite3_bind_text(s, 2, ev->address, ev->address_len, SQLITE_TRANSIENT);
+    rc = sqlite3_step(s);  // raw-sql-ok:projection-primitive
+    sqlite3_finalize(s);
+    return rc == SQLITE_DONE;
+}
+
+static bool apply_contact_delete(contacts_projection_t *p,
+                                 const struct ev_contact_delete *ev)
+{
+    sqlite3_stmt *s = NULL;
+    int rc = sqlite3_prepare_v2(p->db,
+        "DELETE FROM contacts WHERE address=?",
+        -1, &s, NULL);
+    if (rc != SQLITE_OK) return false;
+    sqlite3_bind_text(s, 1, ev->address, ev->address_len, SQLITE_TRANSIENT);
+    rc = sqlite3_step(s);  // raw-sql-ok:projection-primitive
+    sqlite3_finalize(s);
+    return rc == SQLITE_DONE;
+}
+
+struct catchup_ctx {
+    contacts_projection_t *p;
+    bool ok;
+    uint64_t next_offset;
+    uint64_t since_commit;
+    uint64_t events_consumed;
+};
+
+static bool catchup_cb(uint64_t offset, enum event_log_type type,
+                       const void *payload, size_t len, void *user)
+{
+    struct catchup_ctx *ctx = user;
+    contacts_projection_t *p = ctx->p;
+    uint64_t next = offset + EVENT_LOG_FRAME_OVERHEAD + (uint64_t)len;
+
+    if (type == EV_CONTACT_SET) {
+        struct ev_contact_set ev;
+        if (!ev_contact_set_parse(payload, len, &ev) ||
+            !apply_contact_set(p, &ev)) {
+            ctx->ok = false;
+            return false;
+        }
+    } else if (type == EV_CONTACT_TOUCHED) {
+        struct ev_contact_touched ev;
+        if (!ev_contact_touched_parse(payload, len, &ev) ||
+            !apply_contact_touched(p, &ev)) {
+            ctx->ok = false;
+            return false;
+        }
+    } else if (type == EV_CONTACT_DELETE) {
+        struct ev_contact_delete ev;
+        if (!ev_contact_delete_parse(payload, len, &ev) ||
+            !apply_contact_delete(p, &ev)) {
+            ctx->ok = false;
+            return false;
+        }
+    }
+
+    ctx->next_offset = next;
+    p->last_consumed_offset = next;
+    ctx->events_consumed++;
+    ctx->since_commit++;
+    if (ctx->since_commit >= 100) {
+        if (!meta_set_u64(p->db, "last_consumed_offset", next)) {
+            ctx->ok = false;
+            return false;
+        }
+        ctx->since_commit = 0;
+    }
+    return true;
+}
+
 uint64_t contacts_projection_catch_up(contacts_projection_t *p)
 {
     if (!p || !p->db || !p->log) return UINT64_MAX;
+    struct catchup_ctx ctx = {
+        .p = p,
+        .ok = true,
+        .next_offset = p->last_consumed_offset,
+    };
+    if (!exec_sql(p->db, "BEGIN IMMEDIATE", "begin catch_up"))
+        return UINT64_MAX;
+    if (event_log_stream(p->log, p->last_consumed_offset,
+                         catchup_cb, &ctx) != 0)
+        ctx.ok = false;
+    if (ctx.ok && !meta_set_u64(p->db, "last_consumed_offset",
+                                ctx.next_offset))
+        ctx.ok = false;
+    if (!exec_sql(p->db, ctx.ok ? "COMMIT" : "ROLLBACK",
+                  ctx.ok ? "commit catch_up" : "rollback catch_up"))
+        return UINT64_MAX;
+    if (!ctx.ok)
+        return UINT64_MAX;
+    p->events_consumed_total += ctx.events_consumed;
     return p->last_consumed_offset;
 }
 
