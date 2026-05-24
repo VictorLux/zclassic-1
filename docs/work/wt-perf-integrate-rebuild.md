@@ -172,6 +172,12 @@ Summary:
 - Moved cold-import block-index and chainstate reads through staged LevelDB
   snapshots under the destination datadir, so a live zclassicd source can be
   imported without opening its locked LevelDB directories directly.
+- Fixed the filesystem SHA3 proof path by resolving the legacy block map from
+  the chainstate best-block hash backward through `hashPrev`, instead of
+  picking one arbitrary candidate per height from `blocks/index`.
+- Added selected-map diagnostics for duplicate heights and parent continuity;
+  the live source had 1,202 duplicate-height candidates, and the old map
+  selection produced 585 parent-link breaks.
 
 Verification:
 - `make -j$(nproc) test_zcl test_parallel zclassic23` PASS
@@ -197,8 +203,16 @@ Verification:
   but the filesystem payload proof still fails at window 3028. Remaining
   blocker is the `blocks/index` height-to-`blk*.dat` payload selection path,
   not LevelDB locking.
+- Live-source smoke after tip-anchored block-map resolution: window 3028 and
+  the normal random SHA3 windows all passed; selected-map continuity reported
+  `missing=0 parent_mismatch=0`. Cold-import completed into a temp datadir in
+  33.8s (`block_index=3124929`, `utxos=1345066`, `blk_files=50`). Boot then
+  failed later on a separate pending-anchor UTXO count mismatch:
+  `pending=1345066 actual=75454`.
 
 Still required before PR-3 completion:
+- Resolve the post-import activation/accounting mismatch after successful
+  cold-import (`cold-import pending anchor UTXO count mismatch`).
 - Run serial vs parallel cold-import on the live datadir and compare tip hash +
   `utxo_sha3`.
 - Record before/after `blk*.dat` marking wall-time in `docs/BENCHMARKS_LOG.md`.

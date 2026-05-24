@@ -134,6 +134,72 @@ static void lci_hex32(const uint8_t hash[32], char out[65])
     out[64] = '\0';
 }
 
+static void lci_log_window_loc(const struct legacy_block_loc *map,
+                               size_t map_count,
+                               int h)
+{
+    if (h < 0 || (size_t)h >= map_count)
+        return;
+    const struct legacy_block_loc *loc = &map[(size_t)h];
+    if (loc->height < 0) {
+        fprintf(stderr, // obs-ok:legacy-map-diagnostic
+                "[cold_import] selected map h=%d: missing\n", h);
+        return;
+    }
+
+    bool prev_ok = true;
+    if (h > 0 && (size_t)(h - 1) < map_count &&
+        map[(size_t)(h - 1)].height >= 0)
+        prev_ok = uint256_eq(&loc->hashPrev, &map[(size_t)(h - 1)].hash);
+
+    char hash_hex[65], prev_hex[65];
+    lci_hex32(loc->hash.data, hash_hex);
+    lci_hex32(loc->hashPrev.data, prev_hex);
+    fprintf(stderr, // obs-ok:legacy-map-diagnostic
+            "[cold_import] selected map h=%d hash=%.16s prev=%.16s "
+            "file=%d pos=%u status=0x%x prev_ok=%d\n",
+            h, hash_hex, prev_hex, loc->nFile, loc->nDataPos,
+            loc->nStatus, prev_ok ? 1 : 0);
+}
+
+static void lci_log_window_map_diagnostics(
+    const struct legacy_block_loc *map,
+    size_t map_count,
+    int start,
+    int end)
+{
+    fprintf(stderr, // obs-ok:legacy-map-diagnostic
+            "[cold_import] selected map diagnostic for h=%d..%d\n",
+            start, end);
+
+    for (int h = start; h <= end && h < start + 3; h++)
+        lci_log_window_loc(map, map_count, h);
+    int tail_start = end - 2;
+    if (tail_start < start + 3)
+        tail_start = start + 3;
+    for (int h = tail_start; h <= end; h++)
+        lci_log_window_loc(map, map_count, h);
+
+    for (int h = start; h <= end; h++) {
+        if (h <= 0 || (size_t)h >= map_count)
+            continue;
+        const struct legacy_block_loc *loc = &map[(size_t)h];
+        const struct legacy_block_loc *prev = &map[(size_t)(h - 1)];
+        if (loc->height < 0 || prev->height < 0 ||
+            !uint256_eq(&loc->hashPrev, &prev->hash)) {
+            fprintf(stderr, // obs-ok:legacy-map-diagnostic
+                    "[cold_import] first selected-map break in window "
+                    "near h=%d\n", h);
+            lci_log_window_loc(map, map_count, h - 1);
+            lci_log_window_loc(map, map_count, h);
+            return;
+        }
+    }
+    fprintf(stderr, // obs-ok:legacy-map-diagnostic
+            "[cold_import] selected map has no parent break inside "
+            "h=%d..%d\n", start, end);
+}
+
 /* Hash one SHA3 window using payloads from mmap. */
 static bool lci_compute_window_hash(struct blocks_mmap *bmr,
                                     const struct legacy_block_loc *map,
@@ -179,6 +245,7 @@ static bool lci_verify_window_logged(struct blocks_mmap *bmr,
                 "[cold_import] spotcheck FAILED at window %zu "
                 "(h=%d..%d): unable to compute source digest\n",
                 wi, start, end);
+        lci_log_window_map_diagnostics(map, map_count, start, end);
         return false;
     }
     if (memcmp(actual, g_sha3_windows[wi].hash, 32) != 0) {
@@ -189,6 +256,7 @@ static bool lci_verify_window_logged(struct blocks_mmap *bmr,
                 "[cold_import] spotcheck FAILED at window %zu "
                 "(h=%d..%d): expected=%s actual=%s — refusing to import\n",
                 wi, start, end, expected_hex, actual_hex);
+        lci_log_window_map_diagnostics(map, map_count, start, end);
         return false;
     }
     fprintf(stderr, // obs-ok:pre-existing-diagnostic
@@ -548,6 +616,25 @@ bool legacy_cold_import_blocking(
             "[cold_import] LevelDB snapshots took %" PRId64 " ms\n",
             lci_now_ms() - t_snap);
 
+    struct uint256 cs_best_for_map;
+    void *cs_probe = NULL;
+    if (!chainstate_legacy_open(cs_dir, &cs_probe)) {
+        fprintf(stderr,
+                "[cold_import] chainstate_legacy_open %s failed\n", cs_dir);
+        ldb_snapshot_destroy(idx_dir);
+        ldb_snapshot_destroy(cs_dir);
+        return false;
+    }
+    if (!chainstate_legacy_get_best_block(cs_probe, &cs_best_for_map)) {
+        chainstate_legacy_close(cs_probe);
+        ldb_snapshot_destroy(idx_dir);
+        ldb_snapshot_destroy(cs_dir);
+        fprintf(stderr,
+                "[cold_import] chainstate best block unavailable\n");
+        return false;
+    }
+    chainstate_legacy_close(cs_probe);
+
     /* ── Build height map ──────────────────────────────────── */
     struct bilr *bilr = NULL;
     if (!bilr_open(idx_dir, &bilr)) {
@@ -559,7 +646,8 @@ bool legacy_cold_import_blocking(
     }
     struct legacy_block_loc *map = NULL;
     size_t map_count = 0;
-    if (!bilr_load_height_map(bilr, &map, &map_count)) {
+    if (!bilr_load_height_map_for_tip(bilr, &cs_best_for_map,
+                                      &map, &map_count)) {
         bilr_close(bilr);
         ldb_snapshot_destroy(idx_dir);
         ldb_snapshot_destroy(cs_dir);
@@ -572,6 +660,8 @@ bool legacy_cold_import_blocking(
     fprintf(stderr, // obs-ok:pre-existing-diagnostic
             "[cold_import] legacy tip h=%d (map size=%zu)\n",
             legacy_tip, map_count);
+    bilr_close(bilr);
+    bilr = NULL;
 
     /* ── SHA3 spot-check ──────────────────────────────────── */
     struct blocks_mmap *bmr = NULL;

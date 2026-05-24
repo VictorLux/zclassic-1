@@ -2,7 +2,7 @@
  *
  * blocks_index_legacy_reader: read a Bitcoin Core / zclassicd
  * `blocks/index/` LevelDB and produce a height-indexed array of
- * (hash, file, datapos, ...) for every block-index record.
+ * (hash, prev, file, datapos, ...) for the selected chain.
  *
  * Feeds the direct-import fast-sync path (see
  * app/services/src/legacy_direct_import.c): once we know each height's
@@ -28,6 +28,7 @@ extern "C" {
 
 struct legacy_block_loc {
     struct uint256 hash;
+    struct uint256 hashPrev;
     int32_t  height;       /* set; -1 means slot empty (no block at h) */
     int32_t  nFile;
     uint32_t nDataPos;
@@ -45,12 +46,20 @@ bool bilr_open(const char *blocks_index_dir, struct bilr **out);
 
 void bilr_close(struct bilr *r);
 
-/* Iterate every 'b'-prefixed record once. For each height, keep the
- * entry with `BLOCK_HAVE_DATA && !BLOCK_FAILED_MASK` (i.e. the active
- * chain entry). On return: *out_array is a height-indexed array of
- * length *out_count (= max_height + 1). Slots without a usable entry
- * have `height = -1`. Caller frees with `bilr_free_height_map`.
- * Returns false on iterator / deserialization failure. */
+/* Iterate every 'b'-prefixed record and resolve the selected chain by
+ * walking hashPrev backward from tip_hash. On return: *out_array is a
+ * height-indexed array of length *out_count (= max_height + 1). Slots
+ * outside the selected chain have `height = -1`. Caller frees with
+ * `bilr_free_height_map`. Returns false on iterator / deserialization
+ * failure or when the tip chain cannot be resolved. */
+bool bilr_load_height_map_for_tip(struct bilr *r,
+                                  const struct uint256 *tip_hash,
+                                  struct legacy_block_loc **out_array,
+                                  size_t *out_count);
+
+/* Backward-compatible helper that anchors at the highest usable block
+ * when the caller has no chainstate best-block hash. Cold-import should
+ * prefer bilr_load_height_map_for_tip(). */
 bool bilr_load_height_map(struct bilr *r,
                           struct legacy_block_loc **out_array,
                           size_t *out_count);
