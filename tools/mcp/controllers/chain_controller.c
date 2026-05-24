@@ -13,12 +13,18 @@
 #include "adapters/outbound/persistence/block_log_file.h"
 #include "adapters/outbound/persistence/block_log_legacy.h"
 #include "application/operations/diff_with_legacy_shadow.h"
+#include "chain/chain.h"
 #include "controllers/chain_projection.h"
+#include "controllers/diagnostics_controller.h"
+#include "crypto/sha3.h"
 #include "json/json.h"
 #include "mcp/metrics.h"
 #include "ports/block_log_port.h"
 #include "services/header_admit_stage.h"
+#include "storage/block_index_projection.h"
 #include "util/log_macros.h"
+#include "util/safe_alloc.h"
+#include "validation/main_state.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -351,6 +357,249 @@ body_too_big:
     return 0;
 }
 
+/* ── zcl_block_index_diff ──────────────────────────────────────────
+ *
+ * Compare the Phase 4c block_index_projection against the live
+ * in-memory block_map (canonical view of the LevelDB block_index).
+ * Returns commitments from both sides plus, on mismatch, the first
+ * (height, hash) where they diverge.
+ *
+ * Used to gate the 4c-cutover PR: after 24h of `match: true` on
+ * every hourly call, the cutover is safe.
+ *
+ * The commitment is computed exactly the same way on both sides — see
+ * lib/storage/src/block_index_projection.c:block_index_projection_commitment
+ * for the canonical absorb shape. */
+
+struct live_index_entry {
+    uint8_t  hash[32];
+    int32_t  height;
+    uint32_t nStatus;
+    int32_t  nFile;
+    uint32_t nDataPos;
+    uint32_t nUndoPos;
+    uint32_t nTime;
+    uint32_t nBits;
+};
+
+/* qsort: (height ASC, hash ASC). */
+static int live_entry_cmp(const void *a, const void *b)
+{
+    const struct live_index_entry *ea = a;
+    const struct live_index_entry *eb = b;
+    if (ea->height < eb->height) return -1;  // raw-return-ok:qsort-comparator
+    if (ea->height > eb->height) return 1;
+    return memcmp(ea->hash, eb->hash, 32);
+}
+
+static void absorb_live_entry(struct sha3_256_ctx *h,
+                              const struct live_index_entry *e)
+{
+    uint8_t buf[32 + 4*7];
+    memcpy(buf, e->hash, 32);
+    uint8_t *q = buf + 32;
+    uint32_t h32 = (uint32_t)e->height;
+    for (int i = 0; i < 4; i++) q[i] = (uint8_t)((h32 >> (i*8)) & 0xFF);
+    q += 4;
+    for (int i = 0; i < 4; i++) q[i] = (uint8_t)((e->nStatus >> (i*8)) & 0xFF);
+    q += 4;
+    uint32_t f32 = (uint32_t)e->nFile;
+    for (int i = 0; i < 4; i++) q[i] = (uint8_t)((f32 >> (i*8)) & 0xFF);
+    q += 4;
+    for (int i = 0; i < 4; i++) q[i] = (uint8_t)((e->nDataPos >> (i*8)) & 0xFF);
+    q += 4;
+    for (int i = 0; i < 4; i++) q[i] = (uint8_t)((e->nUndoPos >> (i*8)) & 0xFF);
+    q += 4;
+    for (int i = 0; i < 4; i++) q[i] = (uint8_t)((e->nTime >> (i*8)) & 0xFF);
+    q += 4;
+    for (int i = 0; i < 4; i++) q[i] = (uint8_t)((e->nBits >> (i*8)) & 0xFF);
+    sha3_256_write(h, buf, sizeof(buf));
+}
+
+static int h_zcl_block_index_diff(const struct mcp_request *req,
+                                  struct mcp_response *res)
+{
+    (void)req;
+
+    block_index_projection_t *proj = block_index_projection_singleton();
+    if (!proj) {
+        res->error = MCP_ERR_HANDLER_FAILED;
+        snprintf(res->error_message, sizeof(res->error_message),
+                 "block_index_projection not opened (Phase 4c disabled?)");
+        LOG_ERR("mcp.chain", "block_index_diff: projection singleton NULL");
+        return 0;
+    }
+    struct main_state *ms = diagnostics_controller_get_state();
+    if (!ms) {
+        res->error = MCP_ERR_HANDLER_FAILED;
+        snprintf(res->error_message, sizeof(res->error_message),
+                 "main_state not wired");
+        LOG_ERR("mcp.chain", "block_index_diff: main_state NULL");
+        return 0;
+    }
+
+    /* Bring the projection current before computing the diff — otherwise
+     * a freshly written tip would always look like a divergence until
+     * the next periodic catch_up. */
+    (void)block_index_projection_catch_up(proj);
+
+    /* Walk the live block_map into a sortable array. */
+    size_t live_cap = ms->map_block_index.size + 16;
+    struct live_index_entry *live = (struct live_index_entry *)
+        zcl_calloc(live_cap, sizeof(*live), "block_index_diff/live");
+    if (!live) {
+        res->error = MCP_ERR_HANDLER_FAILED;
+        snprintf(res->error_message, sizeof(res->error_message),
+                 "block_index_diff: live entry calloc failed");
+        LOG_ERR("mcp.chain", "block_index_diff: live calloc");
+        return 0;
+    }
+    size_t live_n = 0;
+    {
+        size_t it = 0;
+        const struct uint256 *hash_p = NULL;
+        struct block_index *bi = NULL;
+        while (block_map_next(&ms->map_block_index, &it, &hash_p, &bi)) {
+            if (!bi || !hash_p) continue;
+            /* Skip the synthetic genesis predecessor entry whose nFile
+             * is -1 and nStatus is 0 — it never gets a LevelDB row. */
+            if (bi->nStatus == 0 && bi->nFile == -1) continue;
+            if (live_n >= live_cap) break;  /* defensive */
+            struct live_index_entry *e = &live[live_n++];
+            memcpy(e->hash, hash_p->data, 32);
+            e->height   = (int32_t)bi->nHeight;
+            e->nStatus  = bi->nStatus;
+            e->nFile    = (int32_t)bi->nFile;
+            e->nDataPos = bi->nDataPos;
+            e->nUndoPos = bi->nUndoPos;
+            e->nTime    = bi->nTime;
+            e->nBits    = bi->nBits;
+        }
+    }
+    qsort(live, live_n, sizeof(*live), live_entry_cmp);
+
+    /* Compute live commitment. */
+    uint8_t live_commit[32];
+    {
+        struct sha3_256_ctx h;
+        sha3_256_init(&h);
+        for (size_t i = 0; i < live_n; i++)
+            absorb_live_entry(&h, &live[i]);
+        sha3_256_finalize(&h, live_commit);
+    }
+
+    /* Projection commitment. */
+    uint8_t proj_commit[32];
+    if (block_index_projection_commitment(proj, proj_commit) != 0) {
+        free(live);
+        res->error = MCP_ERR_HANDLER_FAILED;
+        snprintf(res->error_message, sizeof(res->error_message),
+                 "block_index_diff: projection commitment failed");
+        LOG_ERR("mcp.chain", "block_index_diff: projection commitment");
+        return 0;
+    }
+    uint64_t proj_count = block_index_projection_count(proj);
+
+    bool match = (live_n == proj_count) &&
+                 (memcmp(live_commit, proj_commit, 32) == 0);
+
+    /* On mismatch, find the first divergent (height, hash). We walk the
+     * live array sequentially and look each up in the projection. */
+    int first_diff_height = -1;
+    char first_diff_hash[65] = {0};
+    char first_diff_reason[64] = {0};
+    if (!match) {
+        for (size_t i = 0; i < live_n; i++) {
+            struct disk_block_index pj;
+            disk_block_index_init(&pj);
+            bool present = block_index_projection_get(proj, live[i].hash, &pj);
+            bool ok = present
+                   && pj.nHeight   == live[i].height
+                   && pj.nStatus   == live[i].nStatus
+                   && pj.nFile     == live[i].nFile
+                   && pj.nDataPos  == live[i].nDataPos
+                   && pj.nUndoPos  == live[i].nUndoPos
+                   && pj.nTime     == live[i].nTime
+                   && pj.nBits     == live[i].nBits;
+            if (!ok) {
+                first_diff_height = live[i].height;
+                hex32(live[i].hash, first_diff_hash);
+                snprintf(first_diff_reason, sizeof(first_diff_reason),
+                         "%s", present ? "field_mismatch" : "missing_in_projection");
+                break;
+            }
+        }
+        if (first_diff_height < 0) {
+            /* Live had every entry mirrored — divergence is in extras
+             * the projection carries that live doesn't. Don't dig too
+             * deep here; report a generic reason. */
+            snprintf(first_diff_reason, sizeof(first_diff_reason),
+                     "projection_has_extras_or_count_mismatch");
+        }
+    }
+
+    char live_hex[65]; hex32(live_commit, live_hex);
+    char proj_hex[65]; hex32(proj_commit, proj_hex);
+
+    char buf[2048];
+    int n;
+    if (match) {
+        n = snprintf(buf, sizeof(buf),
+            "{\"match\":true,"
+            "\"projection_commitment\":\"%s\","
+            "\"leveldb_commitment\":\"%s\","
+            "\"projection_count\":%llu,"
+            "\"leveldb_count\":%zu,"
+            "\"first_diff\":null}",
+            proj_hex, live_hex,
+            (unsigned long long)proj_count, live_n);
+    } else {
+        if (first_diff_height >= 0) {
+            n = snprintf(buf, sizeof(buf),
+                "{\"match\":false,"
+                "\"projection_commitment\":\"%s\","
+                "\"leveldb_commitment\":\"%s\","
+                "\"projection_count\":%llu,"
+                "\"leveldb_count\":%zu,"
+                "\"first_diff\":{\"height\":%d,\"hash\":\"%s\","
+                "\"reason\":\"%s\"}}",
+                proj_hex, live_hex,
+                (unsigned long long)proj_count, live_n,
+                first_diff_height, first_diff_hash, first_diff_reason);
+        } else {
+            n = snprintf(buf, sizeof(buf),
+                "{\"match\":false,"
+                "\"projection_commitment\":\"%s\","
+                "\"leveldb_commitment\":\"%s\","
+                "\"projection_count\":%llu,"
+                "\"leveldb_count\":%zu,"
+                "\"first_diff\":{\"height\":-1,\"hash\":\"\","
+                "\"reason\":\"%s\"}}",
+                proj_hex, live_hex,
+                (unsigned long long)proj_count, live_n,
+                first_diff_reason);
+        }
+    }
+    free(live);
+    if (n < 0 || n >= (int)sizeof(buf)) {
+        res->error = MCP_ERR_HANDLER_FAILED;
+        snprintf(res->error_message, sizeof(res->error_message),
+                 "block_index_diff: body buffer overflow");
+        LOG_ERR("mcp.chain", "block_index_diff: body overflow");
+        return 0;
+    }
+    char *body = strdup(buf);
+    if (!body) {
+        res->error = MCP_ERR_HANDLER_FAILED;
+        snprintf(res->error_message, sizeof(res->error_message),
+                 "block_index_diff: strdup");
+        LOG_ERR("mcp.chain", "block_index_diff: strdup");
+        return 0;
+    }
+    res->body = body;
+    return 0;
+}
+
 /* ── Phase 4b: zcl_utxo_projection_diff (24h cutover soak gate) ────
  *
  * Compares the projection's SHA3 commitment to the legacy coins.db
@@ -672,6 +921,14 @@ static const struct mcp_tool_route k_routes[] = {
       "legacy SQLite write and makes the projection authoritative) is "
       "gated on 24 hours of `match: true` on a live node.",
       NULL, 0, h_zcl_utxo_projection_diff, 0, NULL },
+    { "zcl_block_index_diff", "chain",
+      "Phase 4c: compare the block_index_projection (SQLite-backed) "
+      "against the live in-memory block_map (canonical view of LevelDB). "
+      "Returns {match, projection_commitment, leveldb_commitment, "
+      "projection_count, leveldb_count, first_diff}. Read-only. "
+      "Gates the cutover PR — 24h of match=true on every hourly call "
+      "is the green light to flip the projection authoritative.",
+      NULL, 0, h_zcl_block_index_diff, 0, NULL },
 };
 
 void mcp_register_chain(void)

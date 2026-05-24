@@ -105,6 +105,11 @@ void diagnostics_controller_set_state(struct main_state *ms,
     }
 }
 
+struct main_state *diagnostics_controller_get_state(void)
+{
+    return g_diag.main_state;
+}
+
 /* ── block_index dump ─────────────────────────────────────────────
  *
  * Lives here (not lib/chain) because the lookup needs main_state, which
