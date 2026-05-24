@@ -304,9 +304,10 @@ int test_zclassicd_oracle(void)
         ZO_CHECK("legacy mirror catchup rejects contradiction",
                  !legacy_mirror_sync_request_catchup("unit-contradiction"));
 
+        struct chain_state_repository empty_csr = {0};
         struct chain_evidence_controller authority;
         struct chain_evidence_controller_view view;
-        chain_evidence_controller_init(&authority, &ndb, NULL);
+        chain_evidence_controller_init(&authority, &ndb, &empty_csr);
         chain_evidence_controller_snapshot(&authority, &view);
         ZO_CHECK("legacy contradiction freezes evidence",
                  view.state == CEC_CONTRADICTION_FROZEN);

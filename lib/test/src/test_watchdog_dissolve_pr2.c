@@ -74,6 +74,13 @@ static void reset_pr2(struct connman *cm,
     sync_watchdog_init();
 }
 
+static void cleanup_pr2(void)
+{
+    condition_engine_reset_for_testing();
+    sync_watchdog_set_condition_context(NULL, NULL, NULL);
+    clock_reset_default();
+}
+
 int test_watchdog_dissolve_pr2(void)
 {
     printf("\n=== watchdog dissolve PR-2 condition tests ===\n");
@@ -114,7 +121,7 @@ int test_watchdog_dissolve_pr2(void)
         condition_engine_tick();
         ok = ok && condition_engine_get_active_count() == 0;
         WDP2_CHECK("header stall kicks header fetch", ok);
-        clock_reset_default();
+        cleanup_pr2();
     }
 
     {
@@ -136,7 +143,7 @@ int test_watchdog_dissolve_pr2(void)
         condition_engine_tick();
         ok = ok && condition_engine_get_active_count() == 0;
         WDP2_CHECK("sync state stuck kicks FSM", ok);
-        clock_reset_default();
+        cleanup_pr2();
     }
 
     {
@@ -160,7 +167,7 @@ int test_watchdog_dissolve_pr2(void)
         condition_engine_tick();
         ok = ok && download_queue_starved_test_remedy_calls() == 1;
         WDP2_CHECK("download queue starved kicks refill", ok);
-        clock_reset_default();
+        cleanup_pr2();
     }
 
     {
@@ -198,9 +205,9 @@ int test_watchdog_dissolve_pr2(void)
         sync_watchdog_get_local_recovery_stats(&lr);
         ok = ok && lr.active && lr.missing_height == 11;
         WDP2_CHECK("local header refill rotates peers", ok);
-        clock_reset_default();
+        cleanup_pr2();
     }
 
-    clock_reset_default();
+    cleanup_pr2();
     return failures;
 }

@@ -49,6 +49,7 @@ static void *projection_writer_thread(void *arg)
         if (db) sqlite3_close(db);
         return NULL;
     }
+    sqlite3_busy_timeout(db, 5000);
 
     for (int i = 0; i < 1000; i++) {
         if (!exec_sql(db, "UPDATE blocks SET height = height + 1")) {
@@ -95,6 +96,7 @@ static bool create_projection_test_db(const char *path)
         if (db) sqlite3_close(db);
         return false;
     }
+    sqlite3_busy_timeout(db, 5000);
 
     bool ok = exec_sql(db, "PRAGMA journal_mode=WAL") &&
               exec_sql(db, "CREATE TABLE blocks(height INTEGER NOT NULL)") &&
@@ -233,6 +235,7 @@ chain_done:
         sqlite3 *db = NULL;
         int64_t final_h = -1;
         if (sqlite3_open_v2(path, &db, SQLITE_OPEN_READONLY, NULL) == SQLITE_OK) {
+            sqlite3_busy_timeout(db, 5000);
             final_h = query_height(db);
             sqlite3_close(db);
         }

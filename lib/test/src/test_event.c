@@ -649,6 +649,7 @@ static int test_async_dispatch_lifecycle(void)
 
         ASSERT(atomic_load(&g_async_observer_calls) > 0);
         event_async_stop();
+        ASSERT(atomic_load(&g_async_observer_calls) > 0);
         event_async_stop();
         PASS();
     } _test_next:;
