@@ -22,6 +22,8 @@
 #include "crypto/equihash.h"
 #include "platform/time_compat.h"
 
+#include <secp256k1.h>
+
 static size_t make_equihash_96_5_fixture(uint8_t *input,
                                          size_t input_cap,
                                          uint8_t *solution,
@@ -76,6 +78,23 @@ static int64_t test_now_ns(void)
     struct timespec ts;
     platform_time_monotonic_timespec(&ts);
     return (int64_t)ts.tv_sec * 1000000000LL + (int64_t)ts.tv_nsec;
+}
+
+static bool ecdsa_verify_direct(secp256k1_context *ctx,
+                                const struct pubkey *pk,
+                                const struct uint256 *hash,
+                                const uint8_t *sig,
+                                size_t sig_len)
+{
+    secp256k1_pubkey parsed_pubkey;
+    secp256k1_ecdsa_signature parsed_sig;
+    if (!secp256k1_ec_pubkey_parse(ctx, &parsed_pubkey, pk->vch, pk->size))
+        return false;
+    if (!secp256k1_ecdsa_signature_parse_der(ctx, &parsed_sig, sig, sig_len))
+        return false;
+    secp256k1_ecdsa_signature_normalize(ctx, &parsed_sig, &parsed_sig);
+    return secp256k1_ecdsa_verify(ctx, &parsed_sig, hash->data,
+                                   &parsed_pubkey);
 }
 
 int test_crypto_registry(void)
@@ -282,6 +301,65 @@ int test_crypto_registry(void)
         else {
             printf("FAIL (direct=%lldns registry=%lldns)\n",
                    (long long)direct_ns, (long long)registry_ns);
+            failures++;
+        }
+    }
+
+    printf("ecdsa pubkey_verify registry indirection cost... ");
+    {
+        struct privkey k;
+        privkey_make_new(&k, true);
+        struct pubkey pk;
+        privkey_get_pubkey(&k, &pk);
+
+        struct uint256 hash;
+        memset(hash.data, 0x33, sizeof(hash.data));
+
+        uint8_t sig[SIGNATURE_SIZE];
+        size_t sig_len = sizeof(sig);
+        bool ok = privkey_sign(&k, &hash, sig, &sig_len);
+        secp256k1_context *ctx =
+            secp256k1_context_create(SECP256K1_CONTEXT_VERIFY);
+        ok = ok && ctx &&
+             ecdsa_verify_direct(ctx, &pk, &hash, sig, sig_len) &&
+             pubkey_verify(&pk, &hash, sig, sig_len);
+
+        const int iters = 100000;
+        volatile int direct_true = 0;
+        volatile int registry_true = 0;
+
+        int64_t t0 = test_now_ns();
+        for (int i = 0; ok && i < iters; i++)
+            direct_true += ecdsa_verify_direct(ctx, &pk, &hash, sig, sig_len);
+        int64_t t1 = test_now_ns();
+        for (int i = 0; ok && i < iters; i++)
+            registry_true += pubkey_verify(&pk, &hash, sig, sig_len);
+        int64_t t2 = test_now_ns();
+
+        if (ctx)
+            secp256k1_context_destroy(ctx);
+
+        int64_t direct_ns = t1 - t0;
+        int64_t registry_ns = t2 - t1;
+        int64_t allowed_noise_ns = 5000000;
+        int64_t allowed = direct_ns / 200; /* 0.5% */
+        if (allowed < allowed_noise_ns)
+            allowed = allowed_noise_ns;
+        bool within_budget = registry_ns <= direct_ns + allowed;
+        ok = ok && direct_true == iters && registry_true == iters;
+        if (ok && within_budget) {
+            long long overhead_ppm = direct_ns > 0
+                ? ((long long)(registry_ns - direct_ns) * 1000000LL) /
+                      (long long)direct_ns
+                : 0;
+            printf("OK (direct=%lldns registry=%lldns overhead=%lldppm)\n",
+                   (long long)direct_ns, (long long)registry_ns,
+                   overhead_ppm);
+        } else {
+            printf("FAIL (direct=%lldns registry=%lldns direct_ok=%d "
+                   "registry_ok=%d)\n",
+                   (long long)direct_ns, (long long)registry_ns,
+                   direct_true, registry_true);
             failures++;
         }
     }

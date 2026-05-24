@@ -67,6 +67,9 @@ static inline struct key_id pubkey_get_id(const struct pubkey *pk)
     return kid;
 }
 
+/* ECDSA/secp256k1 verification routes through crypto_registry so the
+ * script-validation hot path uses the same scheme indirection as other
+ * consensus crypto. */
 bool pubkey_verify(const struct pubkey *pk, const struct uint256 *hash,
                    const unsigned char *sig, size_t siglen);
 

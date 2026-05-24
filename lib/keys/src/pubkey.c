@@ -5,30 +5,38 @@
  * file COPYING or http://www.opensource.org/licenses/mit-license.php. */
 
 #include "keys/pubkey.h"
+#include "crypto_registry/crypto_registry.h"
+#include "util/log_macros.h"
 #include <assert.h>
 #include <secp256k1.h>
 #include <secp256k1_recovery.h>
+#include <stdatomic.h>
 
 static secp256k1_context *secp256k1_ctx_verify = NULL;
+static _Atomic(const struct crypto_scheme *) g_ecdsa_verify_scheme;
 
 bool pubkey_verify(const struct pubkey *pk, const struct uint256 *hash,
                    const unsigned char *sig, size_t siglen)
 {
     if (!pubkey_is_valid(pk))
         return false;
-    secp256k1_pubkey pubkey;
-    secp256k1_ecdsa_signature esig;
-    if (!secp256k1_ec_pubkey_parse(secp256k1_ctx_verify, &pubkey,
-                                    pk->vch, pk->size))
+    if (!hash || !sig || siglen == 0)
         return false;
-    if (siglen == 0)
+
+    const struct crypto_scheme *scheme = atomic_load_explicit(
+        &g_ecdsa_verify_scheme, memory_order_relaxed);
+    if (!scheme) {
+        scheme = crypto_registry_lookup(CRYPTO_SIG_ECDSA_SECP256K1);
+        atomic_store_explicit(&g_ecdsa_verify_scheme, scheme,
+                              memory_order_relaxed);
+    }
+    if (!scheme || !scheme->fn.sig_verify) {
+        LOG_FAIL("crypto_registry", "ecdsa-secp256k1 scheme unavailable");
         return false;
-    if (!secp256k1_ecdsa_signature_parse_der(secp256k1_ctx_verify, &esig,
-                                              sig, siglen))
-        return false;
-    secp256k1_ecdsa_signature_normalize(secp256k1_ctx_verify, &esig, &esig);
-    return secp256k1_ecdsa_verify(secp256k1_ctx_verify, &esig,
-                                   hash->data, &pubkey);
+    }
+
+    return scheme->fn.sig_verify(pk->vch, pk->size, hash->data,
+                                 sizeof(hash->data), sig, siglen);
 }
 
 bool pubkey_recover_compact(struct pubkey *pk, const struct uint256 *hash,
