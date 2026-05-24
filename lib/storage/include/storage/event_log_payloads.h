@@ -16,8 +16,28 @@
 #include <string.h>
 
 #define EV_PEER_ONION_MAX 62u
+#define EV_TX_ADMIT_MEMPOOL_FIXED_LEN 56u
+#define EV_TX_REMOVE_MEMPOOL_LEN 40u
 #define EV_PEER_OBSERVED_FIXED_LEN 40u
 #define EV_PEER_DROPPED_LEN 24u
+
+struct ev_tx_admit_mempool {
+    uint8_t  txid[32];
+    int64_t  fee;
+    uint32_t size_bytes;
+    uint32_t weight;
+    uint32_t admitted_unix;
+    uint8_t  priority_class;
+    uint8_t  reserved[3];
+    const uint8_t *raw_tx;
+    size_t raw_tx_len;
+};
+
+struct ev_tx_remove_mempool {
+    uint8_t  txid[32];
+    uint8_t  reason;
+    uint8_t  reserved[7];
+};
 
 struct ev_peer_observed {
     uint8_t  ip_v4_or_v6[16];
@@ -77,6 +97,82 @@ static inline uint64_t ev_get_u64_le(const uint8_t *src)
     for (int i = 0; i < 8; i++)
         v |= (uint64_t)src[i] << (i * 8);
     return v;
+}
+
+static inline size_t
+ev_tx_admit_mempool_serialized_len(const struct ev_tx_admit_mempool *ev)
+{
+    if (!ev) return 0;
+    return EV_TX_ADMIT_MEMPOOL_FIXED_LEN + ev->raw_tx_len;
+}
+
+static inline bool
+ev_tx_admit_mempool_serialize(const struct ev_tx_admit_mempool *ev,
+                              uint8_t *buf, size_t cap, size_t *out_len)
+{
+    if (!ev || !buf || !out_len) return false;
+    if (ev->raw_tx_len > UINT32_MAX) return false;
+    if (ev->raw_tx_len && !ev->raw_tx) return false;
+    size_t need = ev_tx_admit_mempool_serialized_len(ev);
+    if (cap < need) return false;
+
+    memcpy(buf, ev->txid, 32);
+    ev_put_u64_le(buf + 32, (uint64_t)ev->fee);
+    ev_put_u32_le(buf + 40, ev->size_bytes);
+    ev_put_u32_le(buf + 44, ev->weight);
+    ev_put_u32_le(buf + 48, ev->admitted_unix);
+    buf[52] = ev->priority_class;
+    buf[53] = buf[54] = buf[55] = 0u;
+    if (ev->raw_tx_len)
+        memcpy(buf + EV_TX_ADMIT_MEMPOOL_FIXED_LEN, ev->raw_tx,
+               ev->raw_tx_len);
+    *out_len = need;
+    return true;
+}
+
+static inline bool
+ev_tx_admit_mempool_parse(const void *payload, size_t len,
+                          struct ev_tx_admit_mempool *out)
+{
+    if (!payload || !out || len < EV_TX_ADMIT_MEMPOOL_FIXED_LEN)
+        return false;
+    const uint8_t *buf = (const uint8_t *)payload;
+    memset(out, 0, sizeof(*out));
+    memcpy(out->txid, buf, 32);
+    out->fee = (int64_t)ev_get_u64_le(buf + 32);
+    out->size_bytes = ev_get_u32_le(buf + 40);
+    out->weight = ev_get_u32_le(buf + 44);
+    out->admitted_unix = ev_get_u32_le(buf + 48);
+    out->priority_class = buf[52];
+    out->raw_tx = buf + EV_TX_ADMIT_MEMPOOL_FIXED_LEN;
+    out->raw_tx_len = len - EV_TX_ADMIT_MEMPOOL_FIXED_LEN;
+    if (out->raw_tx_len != out->size_bytes)
+        return false;
+    return true;
+}
+
+static inline bool
+ev_tx_remove_mempool_serialize(const struct ev_tx_remove_mempool *ev,
+                               uint8_t buf[EV_TX_REMOVE_MEMPOOL_LEN])
+{
+    if (!ev || !buf) return false;
+    memcpy(buf, ev->txid, 32);
+    buf[32] = ev->reason;
+    memset(buf + 33, 0, 7);
+    return true;
+}
+
+static inline bool
+ev_tx_remove_mempool_parse(const void *payload, size_t len,
+                           struct ev_tx_remove_mempool *out)
+{
+    if (!payload || !out || len != EV_TX_REMOVE_MEMPOOL_LEN)
+        return false;
+    const uint8_t *buf = (const uint8_t *)payload;
+    memset(out, 0, sizeof(*out));
+    memcpy(out->txid, buf, 32);
+    out->reason = buf[32];
+    return true;
 }
 
 static inline size_t

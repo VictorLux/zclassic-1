@@ -333,6 +333,7 @@ int test_projection(void);
 int test_projection_adoption(void);
 int test_progress_store(void);
 int test_event_log(void);
+int test_mempool_projection(void);
 int test_peers_projection(void);
 int test_znam_projection(void);
 int test_utxo_projection(void);

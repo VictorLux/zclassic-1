@@ -137,6 +137,13 @@ int main(void)
                failures);
         return failures ? 1 : 0;
     }
+    if (only && strcmp(only, "mempool_projection") == 0) {
+        printf("[test] ZCL_TEST_ONLY=mempool_projection — running mempool projection only\n");
+        failures += test_mempool_projection();
+        printf("\n=== mempool_projection subset complete: %d failure(s) ===\n",
+               failures);
+        return failures ? 1 : 0;
+    }
     if (only && strcmp(only, "znam_projection") == 0) {
         printf("[test] ZCL_TEST_ONLY=znam_projection — running znam projection only\n");
         failures += test_znam_projection();
@@ -605,6 +612,7 @@ int main(void)
     failures += test_projection_adoption();
     failures += test_progress_store();
     failures += test_event_log();
+    failures += test_mempool_projection();
     failures += test_peers_projection();
     failures += test_utxo_projection();
     failures += test_block_index_projection();

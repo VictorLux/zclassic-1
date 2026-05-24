@@ -6,6 +6,7 @@
  *   zcl_sql                — SELECT-only passthrough to node.db
  *   zcl_node_log           — reverse-scan node.log on the server side
  *   zcl_state              — generic *_dump_state_json dispatcher
+ *   zcl_mempool_projection_diff — mempool projection vs legacy mempool table
  *   zcl_peers_projection_diff — peers projection vs legacy peer table
  *   zcl_znam_projection_diff  — znam projection vs legacy znam tables
  *   zcl_probe_zclassicd    — drift check against local zclassicd
@@ -110,6 +111,15 @@ static int h_zcl_peers_projection_diff(const struct mcp_request *req,
     (void)req;
     char *out = mcp_node_rpc("peersprojectiondiff", NULL);
     return mcp_return_rpc_body(res, out, "peersprojectiondiff", "mcp.diag");
+}
+
+static int h_zcl_mempool_projection_diff(const struct mcp_request *req,
+                                         struct mcp_response *res)
+{
+    (void)req;
+    char *out = mcp_node_rpc("mempoolprojectiondiff", NULL);
+    return mcp_return_rpc_body(res, out, "mempoolprojectiondiff",
+                               "mcp.diag");
 }
 
 static int h_zcl_znam_projection_diff(const struct mcp_request *req,
@@ -628,6 +638,10 @@ static const struct mcp_tool_route k_routes[] = {
       "Compare Phase 4d peers_projection against the legacy peers table: "
       "row counts plus recent peer samples.",
       NULL, 0, h_zcl_peers_projection_diff, 0, NULL },
+    { "zcl_mempool_projection_diff", "ops",
+      "Compare Phase 4d mempool_projection against the legacy mempool "
+      "table: row counts, aggregate weight, and tx samples.",
+      NULL, 0, h_zcl_mempool_projection_diff, 0, NULL },
     { "zcl_znam_projection_diff", "ops",
       "Compare Phase 4d-4 znam_projection against the legacy znam tables "
       "(znam_names + znam_addr_records + znam_text_records): per-table row "

@@ -41,6 +41,7 @@
 #include "config/boot_snapshot_import.h"
 #include "storage/disk_block_io.h"
 #include "storage/event_log.h"
+#include "storage/mempool_projection.h"
 #include "storage/peers_projection.h"
 #include "storage/event_log_singleton.h"
 #include "storage/block_index_projection.h"
@@ -127,6 +128,7 @@ extern void msg_version_set_external_ip(const char *ip_str, uint16_t port);
 extern int g_deferred_proof_validation_below_height;
 
 static event_log_t *g_phase4_event_log;
+static mempool_projection_t *g_phase4_mempool_projection;
 static peers_projection_t *g_phase4_peers_projection;
 static utxo_projection_t *g_phase4_utxo_projection;
 static block_index_projection_t *g_phase4_block_index_projection;
@@ -1680,17 +1682,21 @@ static void boot_start_phase4_storage_shadow(const char *datadir)
     if (!datadir || !datadir[0])
         return;
     char event_path[PATH_MAX];
+    char mempool_path[PATH_MAX];
     char peers_path[PATH_MAX];
     char utxo_path[PATH_MAX];
     int n1 = snprintf(event_path, sizeof(event_path), "%s/event_log.dat",
                       datadir);
-    int n2 = snprintf(peers_path, sizeof(peers_path),
+    int n2 = snprintf(mempool_path, sizeof(mempool_path),
+                      "%s/mempool_projection.db", datadir);
+    int n3 = snprintf(peers_path, sizeof(peers_path),
                       "%s/peers_projection.db", datadir);
-    int n3 = snprintf(utxo_path, sizeof(utxo_path),
+    int n4 = snprintf(utxo_path, sizeof(utxo_path),
                       "%s/utxo_projection.db", datadir);
     if (n1 <= 0 || (size_t)n1 >= sizeof(event_path) ||
-        n2 <= 0 || (size_t)n2 >= sizeof(peers_path) ||
-        n3 <= 0 || (size_t)n3 >= sizeof(utxo_path)) {
+        n2 <= 0 || (size_t)n2 >= sizeof(mempool_path) ||
+        n3 <= 0 || (size_t)n3 >= sizeof(peers_path) ||
+        n4 <= 0 || (size_t)n4 >= sizeof(utxo_path)) {
         fprintf(stderr,  // obs-ok:phase4-shadow
                 "[phase4] storage shadow paths too long\n");
         return;
@@ -1703,6 +1709,26 @@ static void boot_start_phase4_storage_shadow(const char *datadir)
         return;
     }
     event_log_set_singleton(g_phase4_event_log);
+
+    mempool_projection_set_event_log(g_phase4_event_log);
+    g_phase4_mempool_projection =
+        mempool_projection_open(mempool_path, g_phase4_event_log);
+    if (!g_phase4_mempool_projection) {
+        fprintf(stderr,  // obs-ok:phase4-shadow
+                "[phase4] mempool_projection unavailable; shadow emit only\n");
+    } else {
+        uint64_t off =
+            mempool_projection_catch_up(g_phase4_mempool_projection);
+        if (off == UINT64_MAX) {
+            fprintf(stderr,  // obs-ok:phase4-shadow
+                    "[phase4] mempool_projection catch_up failed\n");
+        } else {
+            fprintf(stderr,  // obs-ok:phase4-shadow
+                    "[phase4] mempool_projection caught up to offset=%llu\n",
+                    (unsigned long long)off);
+        }
+    }
+
     peers_projection_set_event_log(g_phase4_event_log);
     g_phase4_peers_projection =
         peers_projection_open(peers_path, g_phase4_event_log);
@@ -1745,9 +1771,9 @@ static void boot_start_phase4_storage_shadow(const char *datadir)
 
     /* Phase 4c: block_index_projection shadow */
     char bip_path[PATH_MAX];
-    int n4 = snprintf(bip_path, sizeof(bip_path),
+    int n5 = snprintf(bip_path, sizeof(bip_path),
                       "%s/block_index_projection.db", datadir);
-    if (n4 <= 0 || (size_t)n4 >= sizeof(bip_path)) {
+    if (n5 <= 0 || (size_t)n5 >= sizeof(bip_path)) {
         fprintf(stderr,  // obs-ok:phase4-shadow
                 "[phase4] block_index_projection path too long\n");
         return;
@@ -1764,9 +1790,9 @@ static void boot_start_phase4_storage_shadow(const char *datadir)
 
     /* Phase 4d-4: znam_projection shadow */
     char znam_path[PATH_MAX];
-    int n5 = snprintf(znam_path, sizeof(znam_path),
+    int n6 = snprintf(znam_path, sizeof(znam_path),
                       "%s/znam_projection.db", datadir);
-    if (n5 <= 0 || (size_t)n5 >= sizeof(znam_path)) {
+    if (n6 <= 0 || (size_t)n6 >= sizeof(znam_path)) {
         fprintf(stderr,  // obs-ok:phase4-shadow
                 "[phase4] znam_projection path too long\n");
         return;
@@ -1795,8 +1821,13 @@ static void boot_stop_phase4_storage_shadow(void)
     /* Order: detach emitters before closing the projections so no
      * in-flight emit lands on a stale handle. Then close projections
      * before the event log they point to. */
+    mempool_projection_set_event_log(NULL);
     peers_projection_set_event_log(NULL);
     utxo_projection_set_event_log(NULL);
+    if (g_phase4_mempool_projection) {
+        mempool_projection_close(g_phase4_mempool_projection);
+        g_phase4_mempool_projection = NULL;
+    }
     if (g_phase4_peers_projection) {
         peers_projection_close(g_phase4_peers_projection);
         g_phase4_peers_projection = NULL;

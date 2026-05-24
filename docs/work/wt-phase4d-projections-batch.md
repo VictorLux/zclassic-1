@@ -264,18 +264,42 @@ Drafted as its own assignment when 4d cutover gets close.
 
 ## Status
 
+**4d-1 DONE (wt2)** — completed 2026-05-24 for
+`mempool_projection`.
+
 **4d-2 DONE (wt2)** — completed 2026-05-24 for
-`peers_projection`. The other 4d projections remain available for
-independent workers.
+`peers_projection`.
+
+The other 4d projections remain available for independent workers.
 
 Recommend dispatch order when 4a is done:
-1. 4d-2 (peers — smallest, lowest risk, easy to verify with `zcl_peers`)
-2. 4d-1 (mempool — moderate; in-memory cutover follows)
-3. 4d-4 (znam — moderate; consensus-derived but well-scoped)
-4. 4d-3 (wallet — most careful; secrets stay in wallet_secret.dat)
-5. 4d-5 (small batch — last; mostly mechanical)
+1. 4d-4 (znam — moderate; consensus-derived but well-scoped)
+2. 4d-3 (wallet — most careful; secrets stay in wallet_secret.dat)
+3. 4d-5 (small batch — last; mostly mechanical)
 
 <!-- Each worker assignment for a specific projection appends a Completion section. -->
+
+## Completion — 4d-1 mempool_projection (wt2, 2026-05-24)
+
+Implemented:
+- Added `EV_TX_ADMIT_MEMPOOL` / `EV_TX_REMOVE_MEMPOOL` payload helpers
+  and a SQLite-backed `mempool_projection` replay primitive.
+- Shadow-emits mempool admit/remove events from the legacy mempool model
+  without blocking the existing direct-write path.
+- Projection stores `mempool` plus `mempool_spends` derived from raw
+  transaction bytes when parseable.
+- Added `zcl_mempool_projection_diff` through diagnostics RPC + MCP.
+- Diff now compares count, total fee, total weight, and sampled tx
+  aggregates against the legacy table.
+- Legacy `db_mempool_clear()` now shadow-emits remove events so reorg
+  clears do not leave the projection stale.
+- Added focused unit coverage and updated MCP surface-count coverage.
+
+Verification:
+- `make -j$(nproc)`
+- `ZCL_TEST_ONLY=mempool_projection ./test_zcl`
+- `./test_parallel` PASS:
+  `ALL TESTS PASSED — 0/196 groups failed (109.0s wall, 32 workers)`
 
 ## Completion — 4d-2 peers_projection (wt2, 2026-05-24)
 

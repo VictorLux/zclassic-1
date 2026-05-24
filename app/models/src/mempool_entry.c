@@ -10,6 +10,7 @@
 
 #include "platform/time_compat.h"
 #include "models/mempool_entry.h"
+#include "storage/mempool_projection.h"
 #include <string.h>
 #include <stdlib.h>
 #include <time.h>
@@ -95,6 +96,13 @@ bool db_mempool_save(struct node_db *ndb, const struct db_mempool_entry *e)
     AR_BIND_INT(s, 7, e->spends_coinbase ? 1 : 0);
     bool ok = AR_STEP_DONE(s);
     AR_FINALIZE(s);
+    if (ok && mempool_projection_event_log() &&
+        !mempool_projection_emit_admit(e->txid, e->fee, (uint32_t)e->size,
+                                       (uint32_t)e->size, e->time_added,
+                                       e->raw_tx, e->raw_tx_len)) {
+        fprintf(stderr,  // obs-ok:mempool-projection-shadow
+                "mempool projection shadow emit failed for save\n");
+    }
     AR_FINISH_SAVE(cbs, e, ok);
 }
 
@@ -150,10 +158,22 @@ bool db_mempool_delete(struct node_db *ndb, const uint8_t txid[32])
     memset(&e, 0, sizeof(e));
     memcpy(e.txid, txid, 32);
 
+    AR_BEGIN_DESTROY(cbs, &e);
     db_mempool_remove_spends(ndb, txid);
     sqlite3_stmt *s = NULL;
-    AR_ADHOC_DESTROY(ndb, s, "DELETE FROM mempool WHERE txid=?",
-        cbs, &e, AR_BIND_BLOB(s, 1, txid, 32));
+    bool ok = false;
+    sqlite3_prepare_v2(ndb->db, "DELETE FROM mempool WHERE txid=?",
+                       -1, &s, NULL);
+    if (!s) return false;
+    AR_BIND_BLOB(s, 1, txid, 32);
+    ok = AR_STEP_DONE(s);
+    AR_FINALIZE(s);
+    if (ok && mempool_projection_event_log() &&
+        !mempool_projection_emit_remove(txid, 4)) {
+        fprintf(stderr,  // obs-ok:mempool-projection-shadow
+                "mempool projection shadow emit failed for delete\n");
+    }
+    AR_FINISH_DESTROY(cbs, &e, ok);
 }
 
 /* ── Count / Aggregate ────────────────────────────────────────── */
@@ -162,6 +182,12 @@ int db_mempool_count(struct node_db *ndb)
 {
     if (!ndb->open) return 0;
     AR_QUERY_COUNT_SQL(ndb, "SELECT COUNT(*) FROM mempool");
+}
+
+int64_t db_mempool_total_fee(struct node_db *ndb)
+{
+    if (!ndb->open) return 0;
+    AR_QUERY_INT64_SQL(ndb, "SELECT COALESCE(SUM(fee),0) FROM mempool");
 }
 
 int64_t db_mempool_total_size(struct node_db *ndb)
@@ -173,6 +199,21 @@ int64_t db_mempool_total_size(struct node_db *ndb)
 bool db_mempool_clear(struct node_db *ndb)
 {
     if (!ndb->open) return false;
+    if (mempool_projection_event_log()) {
+        sqlite3_stmt *s = NULL;
+        sqlite3_prepare_v2(ndb->db, "SELECT txid FROM mempool",
+                           -1, &s, NULL);
+        if (!s) return false;
+        while (AR_STEP_ROW(s)) {
+            uint8_t txid[32];
+            AR_READ_BLOB(s, 0, txid, 32);
+            if (!mempool_projection_emit_remove(txid, 3)) {
+                fprintf(stderr,  // obs-ok:mempool-projection-shadow
+                        "mempool projection shadow emit failed for clear\n");
+            }
+        }
+        AR_FINALIZE(s);
+    }
     node_db_exec(ndb, "DELETE FROM mempool_spends");
     return node_db_exec(ndb, "DELETE FROM mempool");
 }

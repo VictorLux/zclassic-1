@@ -34,6 +34,7 @@ void db_mempool_entry_free(struct db_mempool_entry *e);
 
 bool db_mempool_delete(struct node_db *ndb, const uint8_t txid[32]);
 int db_mempool_count(struct node_db *ndb);
+int64_t db_mempool_total_fee(struct node_db *ndb);
 int64_t db_mempool_total_size(struct node_db *ndb);
 
 /* Remove all mempool entries (on reorg). */
