@@ -7,6 +7,7 @@
 #include "models/activerecord.h"
 #include "models/database.h"
 #include "models/znam.h"
+#include "storage/znam_projection.h"
 #include "util/ar_step_readonly.h"
 #include "util/log_macros.h"
 #include <string.h>
@@ -307,6 +308,18 @@ bool db_znam_save(struct node_db *ndb, const struct znam_entry *entry)
     bool ok = AR_STEP_DONE(s);
     sqlite3_finalize(s);
     if (ok) ar_run_after_save(cbs, (void *)entry);
+    if (ok && znam_projection_event_log()) {
+        /* Phase 4d-4 shadow emit. Always emit REGISTER — the projection
+         * uses INSERT OR REPLACE so re-registers are idempotent and the
+         * primary-target fields stay in sync without a separate UPDATE. */
+        if (!znam_projection_emit_register(
+                entry->name, entry->owner_address, entry->target_type,
+                entry->target_value, entry->reg_txid, entry->reg_height,
+                (uint32_t)time(NULL), 0)) {
+            fprintf(stderr,  // obs-ok:znam-projection-shadow
+                    "znam projection shadow emit failed for register\n");
+        }
+    }
     return ok;
 }
 
@@ -437,6 +450,16 @@ bool db_znam_text_save(struct node_db *ndb, const char *name,
     bool ok = AR_STEP_DONE(s);
     sqlite3_finalize(s);
     if (ok) ar_run_after_save(cbs, &rec);
+    if (ok && znam_projection_event_log()) {
+        /* Phase 4d-4 shadow emit. update_txid unknown at this layer; the
+         * legacy caller didn't track it, so pass zeros — consumers should
+         * tolerate (it is only used to bump last_update_txid for audit). */
+        static const uint8_t zero_txid[32] = {0};
+        if (!znam_projection_emit_update_text(name, key, value, zero_txid)) {
+            fprintf(stderr,  // obs-ok:znam-projection-shadow
+                    "znam projection shadow emit failed for text update\n");
+        }
+    }
     return ok;
 }
 
@@ -517,6 +540,14 @@ bool db_znam_addr_save(struct node_db *ndb, const char *name,
     bool ok = AR_STEP_DONE(s);
     sqlite3_finalize(s);
     if (ok) ar_run_after_save(cbs, &rec);
+    if (ok && znam_projection_event_log()) {
+        static const uint8_t zero_txid[32] = {0};
+        if (!znam_projection_emit_update_addr(name, coin_type, address,
+                                              zero_txid)) {
+            fprintf(stderr,  // obs-ok:znam-projection-shadow
+                    "znam projection shadow emit failed for addr update\n");
+        }
+    }
     return ok;
 }
 
