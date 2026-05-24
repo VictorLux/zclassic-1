@@ -21,6 +21,7 @@
 #include "primitives/block.h"
 #include "core/serialize.h"
 #include "util/safe_alloc.h"
+#include "util/thread_registry.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -31,6 +32,7 @@
 #include <time.h>
 #include <errno.h>
 #include <malloc.h>
+#include <pthread.h>
 #include <sqlite3.h>
 
 /* ZClassic mainnet block file magic (little-endian 0x6427e924) */
@@ -400,43 +402,72 @@ void *backfill_addresses_thread(void *arg)
      * Skips PoW/equihash validation here; local disk blocks are checked
      * later against the SHA3 UTXO checkpoint. This is 1000x faster than
      * accept_block_header (no equihash solve check). */
+struct boot_scan_block_meta {
+    struct uint256 hash;
+    struct uint256 hashPrevBlock;
+    struct uint256 hashMerkleRoot;
+    struct uint256 hashFinalSaplingRoot;
+    struct uint256 nNonce;
+    int32_t nVersion;
+    uint32_t nTime;
+    uint32_t nBits;
+    unsigned int nTx;
+    unsigned int nDataPos;
+};
+
+struct boot_scan_file_result {
+    char path[576];
+    int file_idx;
+    long file_size;
+    struct boot_scan_block_meta *blocks;
+    size_t count;
+    size_t cap;
+    int skipped;
+    int corrupt;
+    bool ok;
+};
+
+struct boot_scan_apply_counts {
+    int marked;
+    int created;
+    int header_fixed;
+};
+
 static struct block_index *create_block_index_fast(
-    struct main_state *ms, const struct block_header *hdr,
-    const struct uint256 *hash)
+    struct main_state *ms, const struct boot_scan_block_meta *meta)
 {
     struct block_index *pindex = zcl_calloc(1, sizeof(struct block_index), "boot.index.block_index");
     if (!pindex) return NULL;
     block_index_init(pindex);
 
-    pindex->nVersion = hdr->nVersion;
-    pindex->hashMerkleRoot = hdr->hashMerkleRoot;
-    pindex->hashFinalSaplingRoot = hdr->hashFinalSaplingRoot;
-    pindex->nTime = hdr->nTime;
-    pindex->nBits = hdr->nBits;
-    pindex->nNonce = hdr->nNonce;
-    uint32_t sol_copy = hdr->nSolutionSize;
-    if (sol_copy > MAX_SOLUTION_SIZE) sol_copy = MAX_SOLUTION_SIZE;
+    pindex->nVersion = meta->nVersion;
+    pindex->hashMerkleRoot = meta->hashMerkleRoot;
+    pindex->hashFinalSaplingRoot = meta->hashFinalSaplingRoot;
+    pindex->nTime = meta->nTime;
+    pindex->nBits = meta->nBits;
+    pindex->nNonce = meta->nNonce;
     /* Don't store solution in block_index — saves 1.3KB per entry
      * (4GB total for 3M entries). Read from disk when needed. */
     pindex->nSolution = NULL;
     pindex->nSolutionSize = 0;
 
-    if (!block_map_insert(&ms->map_block_index, hash, pindex)) {
+    if (!block_map_insert(&ms->map_block_index, &meta->hash, pindex)) {
         free(pindex);
-        return block_map_find(&ms->map_block_index, hash);
+        return block_map_find(&ms->map_block_index, &meta->hash);
     }
 
     /* phashBlock must point to stable storage inside the block map */
-    struct block_index *found = block_map_find(&ms->map_block_index, hash);
+    struct block_index *found = block_map_find(&ms->map_block_index,
+                                               &meta->hash);
     if (found) {
         const struct uint256 *stored = block_map_find_hash(
-            &ms->map_block_index, hash);
+            &ms->map_block_index, &meta->hash);
         if (stored) found->phashBlock = stored;
     }
 
     /* Link to previous block */
     struct block_index *pprev = block_map_find(
-        &ms->map_block_index, &hdr->hashPrevBlock);
+        &ms->map_block_index, &meta->hashPrevBlock);
     if (pprev) {
         pindex->pprev = pprev;
         pindex->nHeight = pprev->nHeight + 1;
@@ -625,202 +656,292 @@ static int recompute_index_from_genesis(struct main_state *ms,
     return heights_fixed + work_fixed + tx_fixed;
 }
 
-/* Helper: scan one block file, return number of blocks marked.
- * If params != NULL, creates block_index entries for unknown blocks
- * using fast path (no equihash verification — SHA3 checkpoint
- * validates the entire chain later). */
-static int scan_one_block_file(struct main_state *ms,
-                                const char *filepath, int file_idx,
-                                const struct chain_params *params,
-                                int *created_out)
+static uint32_t scan_read_u32_le(const uint8_t *p)
 {
-    int marked = 0, created = 0, consec_errors = 0, skipped = 0;
-    int header_fixed = 0;
-    disk_block_io_lock();
-    FILE *f = fopen(filepath, "rb");
-    if (!f) {
-        disk_block_io_unlock();
-        fprintf(stderr, "scan: cannot open %s: %s\n", filepath, strerror(errno));
-        return 0;
+    return (uint32_t)p[0] | ((uint32_t)p[1] << 8) |
+           ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
+}
+
+static long scan_find_next_magic(const uint8_t *data, long start, long size)
+{
+    const uint8_t m0 = (uint8_t)(ZCL_BLOCK_MAGIC & 0xFF);
+    const uint8_t m1 = (uint8_t)((ZCL_BLOCK_MAGIC >> 8) & 0xFF);
+    const uint8_t m2 = (uint8_t)((ZCL_BLOCK_MAGIC >> 16) & 0xFF);
+    const uint8_t m3 = (uint8_t)((ZCL_BLOCK_MAGIC >> 24) & 0xFF);
+
+    for (long pos = start; pos + 8 + 140 <= size; pos++) {
+        if (data[pos] == m0 && data[pos + 1] == m1 &&
+            data[pos + 2] == m2 && data[pos + 3] == m3)
+            return pos;
+    }
+    return -1;
+}
+
+static bool scan_file_append_meta(struct boot_scan_file_result *r,
+                                  const struct boot_scan_block_meta *meta)
+{
+    if (r->count == r->cap) {
+        size_t new_cap = r->cap ? r->cap * 2 : 4096;
+        struct boot_scan_block_meta *tmp = zcl_realloc(
+            r->blocks, new_cap * sizeof(*r->blocks),
+            "boot.index.scan_file_blocks");
+        if (!tmp)
+            return false;
+        r->blocks = tmp;
+        r->cap = new_cap;
+    }
+    r->blocks[r->count++] = *meta;
+    return true;
+}
+
+static void scan_parse_one_file(struct boot_scan_file_result *r)
+{
+    r->ok = false;
+    int fd = open(r->path, O_RDONLY);
+    if (fd < 0) {
+        fprintf(stderr, "scan: cannot open %s: %s\n", r->path, strerror(errno));
+        return;
     }
 
-    fseek(f, 0, SEEK_END);
-    long file_size = ftell(f);
-    fseek(f, 0, SEEK_SET);
+    struct stat st;
+    if (fstat(fd, &st) != 0 || st.st_size <= 0) {
+        close(fd);
+        r->ok = true;
+        return;
+    }
+    r->file_size = (long)st.st_size;
 
-    /* Magic bytes for fast scan (little-endian ZCL_BLOCK_MAGIC) */
-    const uint8_t magic_bytes[4] = {
-        ZCL_BLOCK_MAGIC & 0xFF,
-        (ZCL_BLOCK_MAGIC >> 8) & 0xFF,
-        (ZCL_BLOCK_MAGIC >> 16) & 0xFF,
-        (ZCL_BLOCK_MAGIC >> 24) & 0xFF
-    };
+    uint8_t *data = mmap(NULL, (size_t)st.st_size, PROT_READ,
+                         MAP_PRIVATE, fd, 0);
+    close(fd);
+    if (data == MAP_FAILED) {
+        fprintf(stderr, "scan: mmap failed for %s: %s\n",
+                r->path, strerror(errno));
+        return;
+    }
 
+    bool complete = true;
+    int consec_errors = 0;
     long pos = 0;
-    while (pos + 8 + 140 <= file_size) {
-        /* Block file format: [4-byte magic][4-byte size][block data] */
-        uint8_t frame[8];
-        if (fread(frame, 1, 8, f) != 8) break; // disk-io-lock: held
+    while (pos + 8 + 140 <= r->file_size) {
+        uint32_t magic = scan_read_u32_le(data + pos);
+        uint32_t blk_size = scan_read_u32_le(data + pos + 4);
 
-        uint32_t magic = (uint32_t)frame[0] | ((uint32_t)frame[1] << 8) |
-                         ((uint32_t)frame[2] << 16) | ((uint32_t)frame[3] << 24);
-        uint32_t blk_size = (uint32_t)frame[4] | ((uint32_t)frame[5] << 8) |
-                            ((uint32_t)frame[6] << 16) | ((uint32_t)frame[7] << 24);
-
-        /* Validate magic (mainnet: 24e92764) */
         if (magic != ZCL_BLOCK_MAGIC) {
-            /* Fast-scan forward for next magic instead of byte-by-byte.
-             * Read a 4KB chunk and search for the magic pattern. */
-            uint8_t scan_buf[4096];
-            long scan_pos = pos + 1;
-            bool found = false;
-            while (scan_pos + 8 + 140 <= file_size) {
-                fseek(f, scan_pos, SEEK_SET);
-                size_t got = fread(scan_buf, 1, sizeof(scan_buf), f); // disk-io-lock: held
-                if (got < 4) break;
-                for (size_t si = 0; si + 3 < got; si++) {
-                    if (scan_buf[si] == magic_bytes[0] &&
-                        scan_buf[si+1] == magic_bytes[1] &&
-                        scan_buf[si+2] == magic_bytes[2] &&
-                        scan_buf[si+3] == magic_bytes[3]) {
-                        pos = scan_pos + (long)si;
-                        fseek(f, pos, SEEK_SET);
-                        found = true;
-                        break;
-                    }
-                }
-                if (found) break;
-                scan_pos += (long)(got - 3); /* overlap by 3 for boundary */
-            }
-            if (!found) break;
-            skipped++;
+            long next = scan_find_next_magic(data, pos + 1, r->file_size);
+            if (next < 0)
+                break;
+            pos = next;
+            r->skipped++;
             continue;
         }
 
         if (blk_size < 140 || blk_size > 2000000 ||
-            pos + 8 + (long)blk_size > file_size) {
+            pos + 8 + (long)blk_size > r->file_size) {
             pos += 8;
-            fseek(f, pos, SEEK_SET);
             continue;
         }
 
-        /* Read enough for header + tx count. ZClassic header = ~1487 bytes
-         * (140 fixed + compact_size + 1344 equihash solution).
-         * Read 1600 bytes to also capture the tx count compact_size. */
-        size_t read_sz = (blk_size < BLOCK_HEADER_READ_SIZE) ? blk_size : BLOCK_HEADER_READ_SIZE;
-        uint8_t buf[BLOCK_HEADER_READ_SIZE];
-        if (fread(buf, 1, read_sz, f) != read_sz) break; // disk-io-lock: held
-
-        /* Parse the block header using proper deserializer */
+        size_t read_sz = (blk_size < BLOCK_HEADER_READ_SIZE)
+                             ? blk_size
+                             : BLOCK_HEADER_READ_SIZE;
         struct block_header bhdr;
         block_header_init(&bhdr);
         struct byte_stream bs;
-        stream_init_from_data(&bs, buf, read_sz);
+        stream_init_from_data(&bs, data + pos + 8, read_sz);
         if (!block_header_deserialize(&bhdr, &bs)) {
-            /* Corrupt or truncated header — skip this block */
             consec_errors++;
+            r->corrupt++;
             if (consec_errors > 20) {
                 fprintf(stderr, "scan: %d consecutive corrupt blocks in "
                         "blk%05d.dat at pos %ld — aborting file\n",
-                        consec_errors, file_idx, pos);
+                        consec_errors, r->file_idx, pos);
                 break;
             }
             pos += 8 + (long)blk_size;
-            fseek(f, pos, SEEK_SET);
             continue;
         }
-        consec_errors = 0; /* reset on success */
+        consec_errors = 0;
 
-        /* Read tx count (compact size right after header) */
         uint64_t num_tx = 0;
         if (!stream_read_compact_size(&bs, &num_tx) || num_tx == 0)
-            num_tx = 1; /* minimum: at least coinbase tx */
+            num_tx = 1;
         if (num_tx > 100000) {
             fprintf(stderr, "scan: suspicious num_tx=%llu at file %d pos %ld, "
                     "clamping to 1\n", (unsigned long long)num_tx,
-                    file_idx, pos);
+                    r->file_idx, pos);
             num_tx = 1;
         }
 
-        /* Compute proper block hash (SHA256d of full serialized header) */
-        struct uint256 hash;
-        block_header_get_hash(&bhdr, &hash);
-
-        /* Look up or create block_index entry */
-        struct block_index *bi = block_map_find(&ms->map_block_index, &hash);
-
-        if (!bi && params) {
-            /* Block not in index - create directly (no equihash check).
-             * Local disk blocks are reconciled by the SHA3 UTXO checkpoint
-             * at height 3,056,758.
-             * This is ~1000x faster than accept_block_header. */
-            bi = create_block_index_fast(ms, &bhdr, &hash);
-            if (bi) created++;
-        }
-
-        if (bi) {
-            if (bi->nVersion == 0 || bi->nTime == 0 || bi->nBits == 0) {
-                bi->nVersion = bhdr.nVersion;
-                bi->hashMerkleRoot = bhdr.hashMerkleRoot;
-                bi->hashFinalSaplingRoot = bhdr.hashFinalSaplingRoot;
-                bi->nTime = bhdr.nTime;
-                bi->nBits = bhdr.nBits;
-                bi->nNonce = bhdr.nNonce;
-                header_fixed++;
-            }
-
-            /* Fix missing pprev link (block was created out of order
-             * in a previous pass — its pprev is now in the map) */
-            if (!bi->pprev && bi->nHeight == 0 && params) {
-                struct block_index *pprev = block_map_find(
-                    &ms->map_block_index, &bhdr.hashPrevBlock);
-                if (pprev) {
-                    bi->pprev = pprev;
-                    bi->nHeight = pprev->nHeight + 1;
-                    block_index_build_skip(bi);
-                    struct arith_uint256 proof = GetBlockProof(bi);
-                    arith_uint256_add(&bi->nChainWork,
-                                      &pprev->nChainWork, &proof);
-                }
-            }
-
-            if (!(bi->nStatus & BLOCK_HAVE_DATA)) {
-                bi->nStatus |= BLOCK_HAVE_DATA;
-                bi->nStatus = (bi->nStatus & ~(unsigned)BLOCK_VALID_MASK) |
-                               BLOCK_VALID_TRANSACTIONS;
-                bi->nFile = file_idx;
-                bi->nDataPos = (unsigned int)(pos + 8);
-                if (bi->nTx == 0)
-                    bi->nTx = (unsigned int)num_tx;
-                marked++;
-            } else {
-                /* Cross-check: block already has data. Verify that
-                 * the stored file position matches where we found it.
-                 * A mismatch means the block was moved or the index
-                 * is stale — update to the file we just scanned. */
-                if (bi->nFile != file_idx ||
-                    bi->nDataPos != (unsigned int)(pos + 8)) {
-                    bi->nFile = file_idx;
-                    bi->nDataPos = (unsigned int)(pos + 8);
-                }
-                if (bi->nTx == 0)
-                    bi->nTx = (unsigned int)num_tx;
-            }
+        struct boot_scan_block_meta meta;
+        memset(&meta, 0, sizeof(meta));
+        block_header_get_hash(&bhdr, &meta.hash);
+        meta.hashPrevBlock = bhdr.hashPrevBlock;
+        meta.hashMerkleRoot = bhdr.hashMerkleRoot;
+        meta.hashFinalSaplingRoot = bhdr.hashFinalSaplingRoot;
+        meta.nNonce = bhdr.nNonce;
+        meta.nVersion = bhdr.nVersion;
+        meta.nTime = bhdr.nTime;
+        meta.nBits = bhdr.nBits;
+        meta.nTx = (unsigned int)num_tx;
+        meta.nDataPos = (unsigned int)(pos + 8);
+        if (!scan_file_append_meta(r, &meta)) {
+            fprintf(stderr, "scan: out of memory while parsing %s at pos %ld\n",
+                    r->path, pos);
+            complete = false;
+            break;
         }
 
         pos += 8 + (long)blk_size;
-        fseek(f, pos, SEEK_SET);
     }
 
-    fclose(f);
-    disk_block_io_unlock();
-    if (created_out) *created_out += created;
-    if (marked > 0 || created > 0 || header_fixed > 0)
-        printf("  blk%05d.dat: %d marked, %d created, %d headers fixed, "
-               "%d skipped (%ld MB)\n",
-               file_idx, marked, created, header_fixed, skipped,
-               file_size / (1024 * 1024));
-    return marked + header_fixed;
+    munmap(data, (size_t)st.st_size);
+    r->ok = complete;
+}
+
+struct boot_scan_parallel_ctx {
+    struct boot_scan_file_result *files;
+    int nfiles;
+    _Atomic int next;
+};
+
+static void *scan_parse_worker(void *arg)
+{
+    struct boot_scan_parallel_ctx *ctx = arg;
+    for (;;) {
+        int i = atomic_fetch_add(&ctx->next, 1);
+        if (i >= ctx->nfiles)
+            break;
+        scan_parse_one_file(&ctx->files[i]);
+    }
+    return NULL;
+}
+
+static int scan_worker_count(int nfiles)
+{
+    long cpus = sysconf(_SC_NPROCESSORS_ONLN);
+    int n = cpus > 0 ? (int)cpus : 1;
+    if (n > nfiles) n = nfiles;
+    if (n > 16) n = 16;
+    if (n < 1) n = 1;
+    return n;
+}
+
+static void scan_parse_files_parallel(struct boot_scan_file_result *files,
+                                      int nfiles)
+{
+    if (nfiles <= 0)
+        return;
+
+    int workers = scan_worker_count(nfiles);
+    printf("  parallel block-file parse: %d files, %d workers\n",
+           nfiles, workers);
+    if (workers == 1) {
+        for (int i = 0; i < nfiles; i++)
+            scan_parse_one_file(&files[i]);
+        return;
+    }
+
+    pthread_t *threads = zcl_calloc((size_t)workers, sizeof(*threads),
+                                    "boot.index.scan_threads");
+    if (!threads) {
+        for (int i = 0; i < nfiles; i++)
+            scan_parse_one_file(&files[i]);
+        return;
+    }
+
+    struct boot_scan_parallel_ctx ctx = {
+        .files = files,
+        .nfiles = nfiles,
+        .next = 0,
+    };
+    int started = 0;
+    for (int i = 0; i < workers; i++) {
+        if (thread_registry_spawn_ex("zcl_blk_scan", scan_parse_worker,
+                                     &ctx, &threads[started]) == 0)
+            started++;
+    }
+    if (started == 0) {
+        free(threads);
+        for (int i = 0; i < nfiles; i++)
+            scan_parse_one_file(&files[i]);
+        return;
+    }
+    for (int i = 0; i < started; i++)
+        pthread_join(threads[i], NULL);
+    free(threads);
+}
+
+static struct boot_scan_apply_counts scan_apply_one_file(
+    struct main_state *ms,
+    const struct boot_scan_file_result *r,
+    const struct chain_params *params)
+{
+    struct boot_scan_apply_counts counts = {0};
+    for (size_t i = 0; i < r->count; i++) {
+        const struct boot_scan_block_meta *meta = &r->blocks[i];
+        struct block_index *bi = block_map_find(&ms->map_block_index,
+                                                &meta->hash);
+
+        if (!bi && params) {
+            bi = create_block_index_fast(ms, meta);
+            if (bi)
+                counts.created++;
+        }
+
+        if (!bi)
+            continue;
+
+        if (bi->nVersion == 0 || bi->nTime == 0 || bi->nBits == 0) {
+            bi->nVersion = meta->nVersion;
+            bi->hashMerkleRoot = meta->hashMerkleRoot;
+            bi->hashFinalSaplingRoot = meta->hashFinalSaplingRoot;
+            bi->nTime = meta->nTime;
+            bi->nBits = meta->nBits;
+            bi->nNonce = meta->nNonce;
+            counts.header_fixed++;
+        }
+
+        if (!bi->pprev && bi->nHeight == 0 && params) {
+            struct block_index *pprev = block_map_find(
+                &ms->map_block_index, &meta->hashPrevBlock);
+            if (pprev) {
+                bi->pprev = pprev;
+                bi->nHeight = pprev->nHeight + 1;
+                block_index_build_skip(bi);
+                struct arith_uint256 proof = GetBlockProof(bi);
+                arith_uint256_add(&bi->nChainWork,
+                                  &pprev->nChainWork, &proof);
+            }
+        }
+
+        if (!(bi->nStatus & BLOCK_HAVE_DATA)) {
+            bi->nStatus |= BLOCK_HAVE_DATA;
+            bi->nStatus = (bi->nStatus & ~(unsigned)BLOCK_VALID_MASK) |
+                           BLOCK_VALID_TRANSACTIONS;
+            bi->nFile = r->file_idx;
+            bi->nDataPos = meta->nDataPos;
+            if (bi->nTx == 0)
+                bi->nTx = meta->nTx;
+            counts.marked++;
+        } else {
+            if (bi->nFile != r->file_idx ||
+                bi->nDataPos != meta->nDataPos) {
+                bi->nFile = r->file_idx;
+                bi->nDataPos = meta->nDataPos;
+            }
+            if (bi->nTx == 0)
+                bi->nTx = meta->nTx;
+        }
+    }
+    return counts;
+}
+
+static void scan_free_file_results(struct boot_scan_file_result *files,
+                                   int nfiles)
+{
+    for (int i = 0; i < nfiles; i++)
+        free(files[i].blocks);
 }
 
 /* ── Post-scan pprev resolution from disk ────────────────────── */
@@ -991,8 +1112,11 @@ int scan_block_files_mark_data(struct main_state *ms, const char *datadir,
     int marked = 0, created = 0;
     char path[576];
     int64_t t0 = (int64_t)platform_time_wall_time_t();
+    struct boot_scan_file_result files[257];
+    int nfiles = 0;
+    memset(files, 0, sizeof(files));
 
-    /* Pass 1: scan all block files.
+    /* Pass 1: parse all block files in parallel.
      * Don't break on first gap — blk00000.dat may be empty (0 bytes)
      * while blk00001.dat+ have data. Stop after 3 consecutive misses. */
     int consecutive_misses = 0;
@@ -1006,8 +1130,9 @@ int scan_block_files_mark_data(struct main_state *ms, const char *datadir,
         }
         consecutive_misses = 0;
 
-        int m = scan_one_block_file(ms, path, file_idx, params, &created);
-        marked += m;
+        struct boot_scan_file_result *r = &files[nfiles++];
+        snprintf(r->path, sizeof(r->path), "%s", path);
+        r->file_idx = file_idx;
     }
 
     /* Also scan blk_sync.dat when it exists.
@@ -1015,27 +1140,48 @@ int scan_block_files_mark_data(struct main_state *ms, const char *datadir,
      * sync spool should not look like a scan failure. */
     snprintf(path, sizeof(path), "%s/blocks/blk_sync.dat", datadir);
     struct stat sync_st;
-    if (stat(path, &sync_st) == 0 && sync_st.st_size > 0)
-        marked += scan_one_block_file(ms, path, 255, params, &created);
+    if (stat(path, &sync_st) == 0 && sync_st.st_size > 0) {
+        struct boot_scan_file_result *r = &files[nfiles++];
+        snprintf(r->path, sizeof(r->path), "%s", path);
+        r->file_idx = 255;
+    }
+
+    scan_parse_files_parallel(files, nfiles);
+
+    for (int i = 0; i < nfiles; i++) {
+        struct boot_scan_file_result *r = &files[i];
+        if (!r->ok) {
+            fprintf(stderr, "scan: parse failed for %s; skipping partial "
+                    "metadata\n", r->path);
+            continue;
+        }
+        struct boot_scan_apply_counts c =
+            scan_apply_one_file(ms, r, params);
+        marked += c.marked + c.header_fixed;
+        created += c.created;
+        if (c.marked > 0 || c.created > 0 || c.header_fixed > 0) {
+            printf("  %s: %d marked, %d created, %d headers fixed, "
+                   "%d skipped (%ld MB)\n",
+                   strrchr(r->path, '/') ? strrchr(r->path, '/') + 1 : r->path,
+                   c.marked, c.created, c.header_fixed, r->skipped,
+                   r->file_size / (1024 * 1024));
+        }
+    }
 
     /* Pass 2: retry for out-of-order blocks (prevblock now in map).
      * Block files from zclassicd are 99%+ in order, so pass 1 catches
-     * nearly everything. Pass 2 picks up stragglers. */
+     * nearly everything. Pass 2 picks up stragglers without re-reading
+     * disk: the parsed metadata is deterministic and immutable. */
     if (created > 0 && params) {
         for (int retry = 0; retry < 3; retry++) {
             int prev_marked = marked;
-            int rmiss = 0;
-            for (int file_idx = 0; file_idx < 256; file_idx++) {
-                snprintf(path, sizeof(path), "%s/blocks/blk%05d.dat",
-                         datadir, file_idx);
-                struct stat st;
-                if (stat(path, &st) != 0 || st.st_size == 0) {
-                    if (++rmiss >= 3) break;
+            for (int i = 0; i < nfiles; i++) {
+                if (!files[i].ok)
                     continue;
-                }
-                rmiss = 0;
-                marked += scan_one_block_file(ms, path, file_idx, params,
-                                               &created);
+                struct boot_scan_apply_counts c =
+                    scan_apply_one_file(ms, &files[i], params);
+                marked += c.marked + c.header_fixed;
+                created += c.created;
             }
             int delta = marked - prev_marked;
             if (delta == 0) break;
@@ -1066,6 +1212,8 @@ int scan_block_files_mark_data(struct main_state *ms, const char *datadir,
             fflush(stdout);
         }
     }
+
+    scan_free_file_results(files, nfiles);
 
     if (marked > 0 && params)
         recompute_index_from_genesis(ms, params);

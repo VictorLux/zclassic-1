@@ -108,7 +108,10 @@ Benchmark moved: production event-log CRC32C now dispatches to SSE4.2 after a
 software-reference self-check; measured active CRC throughput moved from
 0.60 GB/s software to 12.99 GB/s hardware on this box.
 **PR-3 IN PROGRESS (wt2)** — claimed 2026-05-24; live profile in hand (blk*.dat marking = 101s of
-~180s cold-import). PR-2 (io_uring bulk-append) still spec'd.
+~180s cold-import). First implementation split landed locally: blk*.dat files
+are parsed in parallel with mmap + thread-registry workers, then applied in
+deterministic file order to preserve block_index mutation semantics. PR-2
+(io_uring bulk-append) still spec'd.
 One commit per task; push direct to main; `./test_parallel` before pushing.
 
 <!-- Worker: append a Completion section with the "Benchmark moved" line. -->
@@ -139,3 +142,30 @@ Verification:
 - `ZCL_TEST_ONLY=event ./test_zcl` PASS
 - `make lint` PASS
 - `./test_parallel --jobs=$(nproc)` PASS — 199/199 groups, 32 workers
+
+## Progress — PR-3 Parallel blk*.dat marking
+
+Summary:
+- Replaced the serial `FILE *` block-file scan with a two-phase scan/apply path:
+  mmap each blk file, parse compact per-block metadata in parallel workers, and
+  apply marks/header fixes in stable file order.
+- Kept the existing fast block-index creation semantics, out-of-order retry
+  passes, orphan pprev resolution, ancestry recompute, and nChainTx propagation.
+- Bounded parse workers to the smaller of file count, online CPUs, and 16, using
+  `thread_registry_spawn_ex()` rather than raw `pthread_create`.
+- Made incomplete parse metadata fail closed: a file with parse allocation
+  failure is skipped instead of applying a partial scan.
+
+Verification:
+- `make -j$(nproc) test_zcl test_parallel zclassic23` PASS
+- `make lint` PASS
+- `git diff --check` PASS
+- `./test_parallel --jobs=$(nproc) --verbose` ran all 205 groups but failed on
+  unrelated/noisy checks: `test_sapling_crypto` timing ratio and
+  `test_body_fetch_stage` crash-replay checks. Cold-import scan path did not
+  report a failure in that run.
+
+Still required before PR-3 completion:
+- Run serial vs parallel cold-import on the live datadir and compare tip hash +
+  `utxo_sha3`.
+- Record before/after `blk*.dat` marking wall-time in `docs/BENCHMARKS_LOG.md`.
