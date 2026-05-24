@@ -43,6 +43,37 @@ static int64_t now_ms(void)
     return (int64_t)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
 }
 
+static size_t bounded_strlen(const char *s, size_t max)
+{
+    if (!s) return 0;
+    size_t n = 0;
+    while (n <= max && s[n] != '\0')
+        n++;
+    return n;
+}
+
+static bool append_contact_event(enum event_log_type type,
+                                 const void *payload, size_t len,
+                                 _Atomic uint64_t *counter)
+{
+    event_log_t *log = atomic_load_explicit(&g_event_log,
+                                            memory_order_acquire);
+    if (!log)
+        return true;
+    if (!payload) {
+        atomic_fetch_add_explicit(&g_emit_fail_total, 1,
+                                  memory_order_relaxed);
+        return false;
+    }
+    if (event_log_append(log, type, payload, len) == UINT64_MAX) {
+        atomic_fetch_add_explicit(&g_emit_fail_total, 1,
+                                  memory_order_relaxed);
+        return false;
+    }
+    atomic_fetch_add_explicit(counter, 1, memory_order_relaxed);
+    return true;
+}
+
 static bool exec_sql(sqlite3 *db, const char *sql, const char *ctx)
 {
     char *err = NULL;
@@ -335,23 +366,78 @@ contacts_projection_t *contacts_projection_current(void)
 
 bool contacts_projection_emit_set(const char *address, const char *name)
 {
-    (void)address;
-    (void)name;
-    return true;
+    event_log_t *log = atomic_load_explicit(&g_event_log,
+                                            memory_order_acquire);
+    if (!log)
+        return true;
+    size_t address_len = bounded_strlen(address, EV_CONTACT_ADDRESS_MAX);
+    size_t name_len = bounded_strlen(name, EV_CONTACT_NAME_MAX);
+    struct ev_contact_set ev = {
+        .address_len = (uint8_t)address_len,
+        .name_len = (uint8_t)name_len,
+        .address = address,
+        .name = name ? name : "",
+    };
+    uint8_t payload[EV_CONTACT_SET_FIXED_LEN +
+                    EV_CONTACT_ADDRESS_MAX + EV_CONTACT_NAME_MAX];
+    size_t len = 0;
+    if (address_len == 0 || address_len > EV_CONTACT_ADDRESS_MAX ||
+        name_len > EV_CONTACT_NAME_MAX ||
+        !ev_contact_set_serialize(&ev, payload, sizeof(payload), &len)) {
+        atomic_fetch_add_explicit(&g_emit_fail_total, 1,
+                                  memory_order_relaxed);
+        return false;
+    }
+    return append_contact_event(EV_CONTACT_SET, payload, len,
+                                &g_emit_set_total);
 }
 
 bool contacts_projection_emit_touched(const char *address,
                                       uint32_t last_used)
 {
-    (void)address;
-    (void)last_used;
-    return true;
+    event_log_t *log = atomic_load_explicit(&g_event_log,
+                                            memory_order_acquire);
+    if (!log)
+        return true;
+    size_t address_len = bounded_strlen(address, EV_CONTACT_ADDRESS_MAX);
+    struct ev_contact_touched ev = {
+        .address_len = (uint8_t)address_len,
+        .last_used_unix = last_used,
+        .address = address,
+    };
+    uint8_t payload[EV_CONTACT_TOUCHED_LEN + EV_CONTACT_ADDRESS_MAX];
+    size_t len = 0;
+    if (address_len == 0 || address_len > EV_CONTACT_ADDRESS_MAX ||
+        !ev_contact_touched_serialize(&ev, payload, sizeof(payload), &len)) {
+        atomic_fetch_add_explicit(&g_emit_fail_total, 1,
+                                  memory_order_relaxed);
+        return false;
+    }
+    return append_contact_event(EV_CONTACT_TOUCHED, payload, len,
+                                &g_emit_touched_total);
 }
 
 bool contacts_projection_emit_delete(const char *address)
 {
-    (void)address;
-    return true;
+    event_log_t *log = atomic_load_explicit(&g_event_log,
+                                            memory_order_acquire);
+    if (!log)
+        return true;
+    size_t address_len = bounded_strlen(address, EV_CONTACT_ADDRESS_MAX);
+    struct ev_contact_delete ev = {
+        .address_len = (uint8_t)address_len,
+        .address = address,
+    };
+    uint8_t payload[EV_CONTACT_DELETE_FIXED_LEN + EV_CONTACT_ADDRESS_MAX];
+    size_t len = 0;
+    if (address_len == 0 || address_len > EV_CONTACT_ADDRESS_MAX ||
+        !ev_contact_delete_serialize(&ev, payload, sizeof(payload), &len)) {
+        atomic_fetch_add_explicit(&g_emit_fail_total, 1,
+                                  memory_order_relaxed);
+        return false;
+    }
+    return append_contact_event(EV_CONTACT_DELETE, payload, len,
+                                &g_emit_delete_total);
 }
 
 bool contacts_projection_dump_state_json(struct json_value *out,

@@ -13,6 +13,7 @@
 
 #include "services/hodl_history_service.h"
 
+#include "storage/small_projections.h"
 #include "util/ar_step_readonly.h"
 #include "util/log_macros.h"
 
@@ -118,6 +119,11 @@ bool hodl_history_fill_one(sqlite3 *db, int64_t height)
     if (rc != SQLITE_DONE && rc != SQLITE_ROW) {
         LOG_FAIL("hodl_history",
                  "INSERT step rc=%d: %s", rc, sqlite3_errmsg(db));
+    }
+    if (!hodl_history_projection_emit_snapshot(
+            (int32_t)height, (uint32_t)block_time, total, older, pct)) {
+        fprintf(stderr,  // obs-ok:hodl-history-projection-shadow
+                "hodl history projection shadow emit failed for snapshot\n");
     }
     return true;
 }

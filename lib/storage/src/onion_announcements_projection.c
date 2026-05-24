@@ -38,6 +38,37 @@ static int64_t now_ms(void)
     return (int64_t)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
 }
 
+static size_t bounded_strlen(const char *s, size_t max)
+{
+    if (!s) return 0;
+    size_t n = 0;
+    while (n <= max && s[n] != '\0')
+        n++;
+    return n;
+}
+
+static bool append_onion_event(const void *payload, size_t len)
+{
+    event_log_t *log = atomic_load_explicit(&g_event_log,
+                                            memory_order_acquire);
+    if (!log)
+        return true;
+    if (!payload) {
+        atomic_fetch_add_explicit(&g_emit_fail_total, 1,
+                                  memory_order_relaxed);
+        return false;
+    }
+    if (event_log_append(log, EV_ONION_ANNOUNCEMENT,
+                         payload, len) == UINT64_MAX) {
+        atomic_fetch_add_explicit(&g_emit_fail_total, 1,
+                                  memory_order_relaxed);
+        return false;
+    }
+    atomic_fetch_add_explicit(&g_emit_announcement_total, 1,
+                              memory_order_relaxed);
+    return true;
+}
+
 static bool exec_sql(sqlite3 *db, const char *sql, const char *ctx)
 {
     char *err = NULL;
@@ -294,10 +325,31 @@ bool onion_ann_projection_emit(const char *onion_address,
                                uint32_t announced_at,
                                const char *script_hex)
 {
-    (void)onion_address;
-    (void)announced_at;
-    (void)script_hex;
-    return true;
+    event_log_t *log = atomic_load_explicit(&g_event_log,
+                                            memory_order_acquire);
+    if (!log)
+        return true;
+    size_t onion_len = bounded_strlen(onion_address, EV_ONION_ADDRESS_MAX);
+    size_t script_len = bounded_strlen(script_hex, EV_ONION_SCRIPT_HEX_MAX);
+    struct ev_onion_announcement ev = {
+        .announced_at_unix = announced_at,
+        .onion_addr_len = (uint8_t)onion_len,
+        .script_hex_len = (uint8_t)script_len,
+        .onion_address = onion_address,
+        .script_hex = script_hex ? script_hex : "",
+    };
+    uint8_t payload[EV_ONION_ANNOUNCEMENT_FIXED_LEN +
+                    EV_ONION_ADDRESS_MAX + EV_ONION_SCRIPT_HEX_MAX];
+    size_t len = 0;
+    if (onion_len == 0 || onion_len > EV_ONION_ADDRESS_MAX ||
+        script_len > EV_ONION_SCRIPT_HEX_MAX ||
+        !ev_onion_announcement_serialize(&ev, payload, sizeof(payload),
+                                         &len)) {
+        atomic_fetch_add_explicit(&g_emit_fail_total, 1,
+                                  memory_order_relaxed);
+        return false;
+    }
+    return append_onion_event(payload, len);
 }
 
 bool onion_ann_projection_dump_state_json(struct json_value *out,

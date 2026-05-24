@@ -38,6 +38,28 @@ static int64_t now_ms(void)
     return (int64_t)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
 }
 
+static bool append_hodl_event(const void *payload, size_t len)
+{
+    event_log_t *log = atomic_load_explicit(&g_event_log,
+                                            memory_order_acquire);
+    if (!log)
+        return true;
+    if (!payload) {
+        atomic_fetch_add_explicit(&g_emit_fail_total, 1,
+                                  memory_order_relaxed);
+        return false;
+    }
+    if (event_log_append(log, EV_HODL_SNAPSHOT,
+                         payload, len) == UINT64_MAX) {
+        atomic_fetch_add_explicit(&g_emit_fail_total, 1,
+                                  memory_order_relaxed);
+        return false;
+    }
+    atomic_fetch_add_explicit(&g_emit_snapshot_total, 1,
+                              memory_order_relaxed);
+    return true;
+}
+
 static bool exec_sql(sqlite3 *db, const char *sql, const char *ctx)
 {
     char *err = NULL;
@@ -294,12 +316,24 @@ bool hodl_history_projection_emit_snapshot(int32_t height,
                                            int64_t older_1y_zat,
                                            double older_1y_pct)
 {
-    (void)height;
-    (void)time_unix;
-    (void)total_zat;
-    (void)older_1y_zat;
-    (void)older_1y_pct;
-    return true;
+    event_log_t *log = atomic_load_explicit(&g_event_log,
+                                            memory_order_acquire);
+    if (!log)
+        return true;
+    struct ev_hodl_snapshot ev = {
+        .height = height,
+        .time_unix = time_unix,
+        .total_zat = total_zat,
+        .older_1y_zat = older_1y_zat,
+        .older_1y_pct = older_1y_pct,
+    };
+    uint8_t payload[EV_HODL_SNAPSHOT_LEN];
+    if (!ev_hodl_snapshot_serialize(&ev, payload)) {
+        atomic_fetch_add_explicit(&g_emit_fail_total, 1,
+                                  memory_order_relaxed);
+        return false;
+    }
+    return append_hodl_event(payload, sizeof(payload));
 }
 
 bool hodl_history_projection_dump_state_json(struct json_value *out,

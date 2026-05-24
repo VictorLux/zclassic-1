@@ -486,6 +486,74 @@ static int t_projection_catchup_mixed(void)
     return failures;
 }
 
+static int t_projection_emit_helpers(void)
+{
+    int failures = 0;
+    char dir[256];
+    char elog_path[320];
+    char contacts_path[320];
+    char onion_path[320];
+    char hodl_path[320];
+    sp_tmpdir(dir, sizeof(dir), "emit");
+    snprintf(elog_path, sizeof(elog_path), "%s/event_log.dat", dir);
+    snprintf(contacts_path, sizeof(contacts_path), "%s/contacts.db", dir);
+    snprintf(onion_path, sizeof(onion_path), "%s/onion_announcements.db",
+             dir);
+    snprintf(hodl_path, sizeof(hodl_path), "%s/hodl_history.db", dir);
+
+    event_log_t *log = event_log_open(elog_path);
+    SP_CHECK("emit event log open", log != NULL);
+    if (!log) {
+        test_cleanup_tmpdir(dir);
+        return failures;
+    }
+
+    contacts_projection_set_event_log(log);
+    onion_ann_projection_set_event_log(log);
+    hodl_history_projection_set_event_log(log);
+    SP_CHECK("emit contact set",
+             contacts_projection_emit_set("t1EmitAlice", "Alice"));
+    SP_CHECK("emit contact touched",
+             contacts_projection_emit_touched("t1EmitAlice", 1763333333u));
+    SP_CHECK("emit onion",
+             onion_ann_projection_emit(
+                 "cdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefgh.onion",
+                 1763333334u, "6a045a434c2301"));
+    SP_CHECK("emit hodl",
+             hodl_history_projection_emit_snapshot(
+                 200, 1763333335u, 123456789LL, 12345LL, 0.01));
+
+    contacts_projection_t *contacts =
+        contacts_projection_open(contacts_path, log);
+    onion_ann_projection_t *onion =
+        onion_ann_projection_open(onion_path, log);
+    hodl_history_projection_t *hodl =
+        hodl_history_projection_open(hodl_path, log);
+    uint64_t end_offset = event_log_size(log);
+    SP_CHECK("emit contacts catchup",
+             contacts && contacts_projection_catch_up(contacts) == end_offset);
+    SP_CHECK("emit onion catchup",
+             onion && onion_ann_projection_catch_up(onion) == end_offset);
+    SP_CHECK("emit hodl catchup",
+             hodl && hodl_history_projection_catch_up(hodl) == end_offset);
+    SP_CHECK("emit contacts count",
+             contacts && contacts_projection_count(contacts) == 1);
+    SP_CHECK("emit onion count",
+             onion && onion_ann_projection_count(onion) == 1);
+    SP_CHECK("emit hodl count",
+             hodl && hodl_history_projection_count(hodl) == 1);
+
+    contacts_projection_close(contacts);
+    onion_ann_projection_close(onion);
+    hodl_history_projection_close(hodl);
+    contacts_projection_set_event_log(NULL);
+    onion_ann_projection_set_event_log(NULL);
+    hodl_history_projection_set_event_log(NULL);
+    event_log_close(log);
+    test_cleanup_tmpdir(dir);
+    return failures;
+}
+
 int test_small_projections(void)
 {
     int failures = 0;
@@ -496,6 +564,7 @@ int test_small_projections(void)
     failures += t_hodl_payload_roundtrip();
     failures += t_projection_skeletons_fresh();
     failures += t_projection_catchup_mixed();
+    failures += t_projection_emit_helpers();
     printf("small_projections: %d failures\n", failures);
     return failures;
 }
