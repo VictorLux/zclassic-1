@@ -41,6 +41,8 @@
 #include "storage/disk_block_io.h"
 #include "storage/event_log.h"
 #include "storage/peers_projection.h"
+#include "storage/event_log_singleton.h"
+#include "storage/block_index_projection.h"
 #include "storage/progress_store.h"
 #include "storage/utxo_projection.h"
 #include "models/block.h"
@@ -125,9 +127,17 @@ extern int g_deferred_proof_validation_below_height;
 static event_log_t *g_phase4_event_log;
 static peers_projection_t *g_phase4_peers_projection;
 static utxo_projection_t *g_phase4_utxo_projection;
+static block_index_projection_t *g_phase4_block_index_projection;
 
 /* Module-local pointer to boot context (set once by app_init_services) */
 static struct boot_svc_ctx *S;
+
+/* Phase 4c: event_log + block_index_projection lifecycle. Both are
+ * opened in app_init_services and closed in app_shutdown_svc. Held in
+ * module-static pointers so they can be freed regardless of whether
+ * the singleton accessors are cleared. */
+static event_log_t              *g_phase4_event_log = NULL;
+static block_index_projection_t *g_phase4_block_index_projection = NULL;
 
 /* I-7b: shadow_feeder boot handles. Owned by this translation unit;
  * lifecycle aligned with app_init_services / app_shutdown_svc. */
@@ -1678,6 +1688,7 @@ static void boot_start_phase4_storage_shadow(const char *datadir)
                 "[phase4] event log unavailable; projections disabled\n");
         return;
     }
+    event_log_set_singleton(g_phase4_event_log);
     peers_projection_set_event_log(g_phase4_event_log);
     g_phase4_peers_projection =
         peers_projection_open(peers_path, g_phase4_event_log);
@@ -1717,6 +1728,25 @@ static void boot_start_phase4_storage_shadow(const char *datadir)
                 "[phase4] utxo_projection caught up to offset=%llu\n",
                 (unsigned long long)uoff);
     }
+
+    /* Phase 4c: block_index_projection shadow */
+    char bip_path[PATH_MAX];
+    int n4 = snprintf(bip_path, sizeof(bip_path),
+                      "%s/block_index_projection.db", datadir);
+    if (n4 <= 0 || (size_t)n4 >= sizeof(bip_path)) {
+        fprintf(stderr,  // obs-ok:phase4-shadow
+                "[phase4] block_index_projection path too long\n");
+        return;
+    }
+    g_phase4_block_index_projection =
+        block_index_projection_open(bip_path, g_phase4_event_log);
+    if (!g_phase4_block_index_projection) {
+        fprintf(stderr,  // obs-ok:phase4-shadow
+                "[phase4] block_index_projection unavailable\n");
+        return;
+    }
+    block_index_projection_set_singleton(g_phase4_block_index_projection);
+    (void)block_index_projection_catch_up(g_phase4_block_index_projection);
 }
 
 static void boot_stop_phase4_storage_shadow(void)
@@ -1734,6 +1764,12 @@ static void boot_stop_phase4_storage_shadow(void)
         utxo_projection_close(g_phase4_utxo_projection);
         g_phase4_utxo_projection = NULL;
     }
+    block_index_projection_set_singleton(NULL);
+    if (g_phase4_block_index_projection) {
+        block_index_projection_close(g_phase4_block_index_projection);
+        g_phase4_block_index_projection = NULL;
+    }
+    event_log_set_singleton(NULL);
     if (g_phase4_event_log) {
         event_log_close(g_phase4_event_log);
         g_phase4_event_log = NULL;

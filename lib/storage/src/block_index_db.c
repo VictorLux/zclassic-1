@@ -345,7 +345,8 @@ bool block_tree_db_load_block_index_guts(struct block_tree_db *btdb,
                 for (int hi = 0; hi < 8 && hi + 1 < (int)key_len; hi++)
                     snprintf(hex + hi*2, 3, "%02x",
                              (unsigned char)key_data[1 + hi]);
-                fprintf(stderr, "block_index_db: deserialize failed "
+                fprintf(stderr,  // obs-ok:block-index-db-deserialize
+                        "block_index_db: deserialize failed "
                         "key=%.16s (val_len=%zu)\n", hex, val_len);
             }
             stream_free(&s);
