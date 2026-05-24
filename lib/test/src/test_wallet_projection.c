@@ -4,9 +4,12 @@
 
 #include "storage/event_log.h"
 #include "storage/event_log_payloads.h"
+#include "storage/wallet_projection.h"
 
 #include <stdio.h>
 #include <string.h>
+#include <sys/stat.h>
+#include <unistd.h>
 
 #define WP_CHECK(label, cond) do { \
     bool _ok = (cond); \
@@ -18,6 +21,41 @@ static void fill_seq(uint8_t *dst, size_t len, uint8_t seed)
 {
     for (size_t i = 0; i < len; i++)
         dst[i] = (uint8_t)(seed + (uint8_t)i);
+}
+
+static void wp_tmpdir(char *buf, size_t n, const char *tag)
+{
+    snprintf(buf, n, "./test-tmp/wallet_projection_%d_%s",
+             (int)getpid(), tag);
+    test_cleanup_tmpdir(buf);
+    mkdir("test-tmp", 0755);
+    mkdir(buf, 0755);
+}
+
+static void wp_paths(const char *dir, char *elog, size_t elog_n,
+                     char *proj, size_t proj_n)
+{
+    snprintf(elog, elog_n, "%s/event_log.dat", dir);
+    snprintf(proj, proj_n, "%s/wallet_projection.db", dir);
+}
+
+static bool table_exists(const char *db_path, const char *name)
+{
+    sqlite3 *db = NULL;
+    sqlite3_stmt *s = NULL;
+    bool found = false;
+    if (sqlite3_open_v2(db_path, &db, SQLITE_OPEN_READONLY, NULL) != SQLITE_OK)
+        goto done;
+    if (sqlite3_prepare_v2(db,
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
+            -1, &s, NULL) != SQLITE_OK)
+        goto done;
+    sqlite3_bind_text(s, 1, name, -1, SQLITE_TRANSIENT);
+    found = sqlite3_step(s) == SQLITE_ROW;
+done:
+    if (s) sqlite3_finalize(s);
+    if (db) sqlite3_close(db);
+    return found;
 }
 
 static int t_wallet_event_ids(void)
@@ -156,6 +194,54 @@ static int t_note_decrypted_payload_roundtrip(void)
     return failures;
 }
 
+static int t_projection_skeleton_open_reopen(void)
+{
+    int failures = 0;
+    char dir[256], elog_path[300], proj_path[300];
+    wp_tmpdir(dir, sizeof(dir), "skeleton");
+    wp_paths(dir, elog_path, sizeof(elog_path), proj_path, sizeof(proj_path));
+
+    event_log_t *log = event_log_open(elog_path);
+    wallet_projection_t *p = wallet_projection_open(proj_path, log);
+    WP_CHECK("skeleton open", log && p);
+    WP_CHECK("current pointer set", wallet_projection_current() == p);
+    wallet_projection_set_event_log(log);
+    WP_CHECK("event log global set", wallet_projection_event_log() == log);
+    WP_CHECK("fresh address count", wallet_projection_address_count(p) == 0);
+    WP_CHECK("fresh tx count", wallet_projection_tx_count(p) == 0);
+    WP_CHECK("fresh utxo count", wallet_projection_utxo_count(p) == 0);
+    WP_CHECK("fresh note count", wallet_projection_note_count(p) == 0);
+    WP_CHECK("fresh total value", wallet_projection_total_value_zat(p) == 0);
+    WP_CHECK("skeleton catch up preserves offset",
+             wallet_projection_catch_up(p) == 0);
+    wallet_projection_close(p);
+    WP_CHECK("current pointer cleared", wallet_projection_current() == NULL);
+
+    p = wallet_projection_open(proj_path, log);
+    WP_CHECK("skeleton reopen", p != NULL);
+    WP_CHECK("reopen offset preserved", wallet_projection_catch_up(p) == 0);
+    WP_CHECK("address table exists",
+             table_exists(proj_path, "wallet_view_addresses"));
+    WP_CHECK("tx table exists",
+             table_exists(proj_path, "wallet_view_transactions"));
+    WP_CHECK("utxo table exists",
+             table_exists(proj_path, "wallet_view_utxos"));
+    WP_CHECK("note table exists",
+             table_exists(proj_path, "wallet_view_notes"));
+    WP_CHECK("meta table exists", table_exists(proj_path, "projection_meta"));
+    WP_CHECK("no private key projection table",
+             !table_exists(proj_path, "wallet_view_keys"));
+    WP_CHECK("no seed projection table",
+             !table_exists(proj_path, "wallet_view_seed"));
+    WP_CHECK("no sapling key projection table",
+             !table_exists(proj_path, "wallet_view_sapling_keys"));
+    wallet_projection_close(p);
+    wallet_projection_set_event_log(NULL);
+    event_log_close(log);
+    test_cleanup_tmpdir(dir);
+    return failures;
+}
+
 int test_wallet_projection(void)
 {
     int failures = 0;
@@ -165,6 +251,7 @@ int test_wallet_projection(void)
     failures += t_addr_derived_payload_roundtrip();
     failures += t_tx_seen_payload_roundtrip();
     failures += t_note_decrypted_payload_roundtrip();
+    failures += t_projection_skeleton_open_reopen();
     printf("wallet_projection: %s\n", failures ? "FAIL" : "PASS");
     return failures;
 }

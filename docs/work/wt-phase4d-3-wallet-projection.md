@@ -511,4 +511,8 @@ spec — re-read it before each commit.
 schemas and round-trip tests are implemented. The assignment remains
 in progress; next slice is Task 2 projection skeleton + schema.
 
+2026-05-24 wt2 progress: Task 2 projection skeleton + SQLite schema
+is implemented and verified. The assignment remains in progress; next
+slice is Task 3 `catch_up()` event application.
+
 <!-- Worker: append a Completion section below when done. -->
