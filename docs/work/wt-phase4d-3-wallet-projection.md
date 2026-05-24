@@ -520,4 +520,8 @@ implemented and verified for key add, derived address, tx seen, and
 note decrypted events. The assignment remains in progress; next slice
 is Task 4 reader/API expansion.
 
+2026-05-24 wt2 progress: Task 4 reader aggregate acceptance coverage
+is implemented and verified for counts plus UTXO/note total value.
+The assignment remains in progress; next slice is Task 5 shadow emits.
+
 <!-- Worker: append a Completion section below when done. -->

@@ -58,6 +58,21 @@ done:
     return found;
 }
 
+static bool exec_projection_sql(const char *db_path, const char *sql)
+{
+    sqlite3 *db = NULL;
+    char *err = NULL;
+    bool ok = false;
+    if (sqlite3_open_v2(db_path, &db, SQLITE_OPEN_READWRITE, NULL) !=
+        SQLITE_OK)
+        goto done;
+    ok = sqlite3_exec(db, sql, NULL, NULL, &err) == SQLITE_OK;
+done:
+    if (err) sqlite3_free(err);
+    if (db) sqlite3_close(db);
+    return ok;
+}
+
 static bool append_wallet_key(event_log_t *log, int idx)
 {
     char address[64];
@@ -311,6 +326,39 @@ static int t_projection_skeleton_open_reopen(void)
     return failures;
 }
 
+static int t_reader_api_aggregates(void)
+{
+    int failures = 0;
+    char dir[256], elog_path[300], proj_path[300];
+    wp_tmpdir(dir, sizeof(dir), "readers");
+    wp_paths(dir, elog_path, sizeof(elog_path), proj_path, sizeof(proj_path));
+
+    event_log_t *log = event_log_open(elog_path);
+    wallet_projection_t *p = wallet_projection_open(proj_path, log);
+    WP_CHECK("reader open", log && p);
+    WP_CHECK("reader insert utxos",
+             exec_projection_sql(proj_path,
+                 "INSERT INTO wallet_view_utxos"
+                 "(txid,vout,value,address_hash,height,is_coinbase) VALUES"
+                 "(x'0000000000000000000000000000000000000000000000000000000000000001',0,100,x'0101010101010101010101010101010101010101',1,0),"
+                 "(x'0000000000000000000000000000000000000000000000000000000000000002',1,200,x'0202020202020202020202020202020202020202',2,0),"
+                 "(x'0000000000000000000000000000000000000000000000000000000000000003',2,300,x'0303030303030303030303030303030303030303',3,1)"));
+    WP_CHECK("reader utxo count", wallet_projection_utxo_count(p) == 3);
+    WP_CHECK("reader utxo total", wallet_projection_total_value_zat(p) == 600);
+    WP_CHECK("reader insert note",
+             exec_projection_sql(proj_path,
+                 "INSERT INTO wallet_view_notes"
+                 "(txid,output_index,value,cm,block_height) VALUES"
+                 "(x'1000000000000000000000000000000000000000000000000000000000000001',0,50,x'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',4)"));
+    WP_CHECK("reader note count", wallet_projection_note_count(p) == 1);
+    WP_CHECK("reader combined total",
+             wallet_projection_total_value_zat(p) == 650);
+    wallet_projection_close(p);
+    event_log_close(log);
+    test_cleanup_tmpdir(dir);
+    return failures;
+}
+
 static int t_projection_catch_up_replay(void)
 {
     int failures = 0;
@@ -370,6 +418,7 @@ int test_wallet_projection(void)
     failures += t_tx_seen_payload_roundtrip();
     failures += t_note_decrypted_payload_roundtrip();
     failures += t_projection_skeleton_open_reopen();
+    failures += t_reader_api_aggregates();
     failures += t_projection_catch_up_replay();
     printf("wallet_projection: %s\n", failures ? "FAIL" : "PASS");
     return failures;
