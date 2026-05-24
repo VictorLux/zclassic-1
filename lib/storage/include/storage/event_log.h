@@ -67,6 +67,12 @@ enum event_log_type {
     EV_WALLET_KEY_ADD       = 9,
     EV_WALLET_TX_SEEN       = 10,
     EV_STAGE_CURSOR_ADVANCE = 11,
+    /* Phase 4d-4 — znam_projection events. */
+    EV_ZNAM_REGISTER        = 12,
+    EV_ZNAM_UPDATE          = 13,
+    EV_ZNAM_TRANSFER        = 14,
+    EV_ZNAM_RENEW           = 15,
+    EV_ZNAM_EXPIRE          = 16,
     /* Add cautiously — every entry is a permanent wire surface. */
 };
 

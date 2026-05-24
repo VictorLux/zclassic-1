@@ -378,4 +378,390 @@ bool ev_block_header_parse(const uint8_t *in, size_t in_len,
                            struct ev_block_header *h_out,
                            const uint8_t **solution_out);
 
+/* ── ZNAM events (Phase 4d-4 — znam_projection) ───────────────────
+ *
+ * Frozen wire formats. Variable-length strings carry an explicit u8
+ * length prefix so the projection can validate every byte. All names
+ * are bounded by ZNAM_NAME_MAX (63). Owner addresses are text (P2PKH
+ * t-address style strings <= 64 chars). Target / value strings are
+ * bounded by ZNAM_VALUE_MAX (128) and ZNAM_TEXT_VAL_MAX (128).
+ *
+ *   EV_ZNAM_REGISTER (variable):
+ *     [ 1B  name_len               ]
+ *     [ NB  name                   ]
+ *     [ 1B  owner_len              ]
+ *     [ NB  owner_address          ]
+ *     [ 1B  target_type            ]
+ *     [ 1B  target_value_len       ]
+ *     [ NB  target_value           ]
+ *     [ 32B reg_txid               ]
+ *     [  4B reg_height (LE, i32)   ]
+ *     [  4B registered_unix (LE)   ]
+ *     [  4B expiry_height (LE,i32) ]
+ *
+ *   EV_ZNAM_UPDATE (variable):
+ *     [ 1B  name_len               ]
+ *     [ NB  name                   ]
+ *     [ 1B  action_type            ]   // 0=addr_record,1=text_record,2=primary
+ *     [ 1B  key_or_coin_type       ]   // coin_type for action 0/2; ignored if 1
+ *     [ 1B  key_len                ]   // text_record key len; 0 for action 0/2
+ *     [ NB  key                    ]
+ *     [ 1B  value_len              ]
+ *     [ NB  value                  ]
+ *     [ 32B update_txid            ]
+ *
+ *   EV_ZNAM_TRANSFER (variable):
+ *     [ 1B  name_len               ]
+ *     [ NB  name                   ]
+ *     [ 1B  new_owner_len          ]
+ *     [ NB  new_owner              ]
+ *     [ 32B update_txid            ]
+ *
+ *   EV_ZNAM_RENEW (variable):
+ *     [ 1B  name_len               ]
+ *     [ NB  name                   ]
+ *     [  4B new_expiry_height(LE)  ]
+ *     [ 32B update_txid            ]
+ *
+ *   EV_ZNAM_EXPIRE (variable):
+ *     [ 1B  name_len               ]
+ *     [ NB  name                   ]
+ *     [  4B expired_at_height(LE)  ]
+ */
+
+#define EV_ZNAM_NAME_MAX     63u
+#define EV_ZNAM_OWNER_MAX    64u
+#define EV_ZNAM_VALUE_MAX   128u
+#define EV_ZNAM_KEY_MAX      32u
+
+#define EV_ZNAM_UPDATE_ACTION_ADDR        0u
+#define EV_ZNAM_UPDATE_ACTION_TEXT        1u
+#define EV_ZNAM_UPDATE_ACTION_PRIMARY     2u
+
+struct ev_znam_register {
+    uint8_t  name_len;
+    char     name[EV_ZNAM_NAME_MAX + 1];
+    uint8_t  owner_len;
+    char     owner_address[EV_ZNAM_OWNER_MAX + 1];
+    uint8_t  target_type;
+    uint8_t  target_value_len;
+    char     target_value[EV_ZNAM_VALUE_MAX + 1];
+    uint8_t  reg_txid[32];
+    int32_t  reg_height;
+    uint32_t registered_unix;
+    int32_t  expiry_height;
+};
+
+struct ev_znam_update {
+    uint8_t  name_len;
+    char     name[EV_ZNAM_NAME_MAX + 1];
+    uint8_t  action_type;            /* 0=addr,1=text,2=primary */
+    uint8_t  key_or_coin_type;       /* coin_type for action 0/2, ignored if 1 */
+    uint8_t  key_len;
+    char     key[EV_ZNAM_KEY_MAX + 1];
+    uint8_t  value_len;
+    char     value[EV_ZNAM_VALUE_MAX + 1];
+    uint8_t  update_txid[32];
+};
+
+struct ev_znam_transfer {
+    uint8_t  name_len;
+    char     name[EV_ZNAM_NAME_MAX + 1];
+    uint8_t  new_owner_len;
+    char     new_owner[EV_ZNAM_OWNER_MAX + 1];
+    uint8_t  update_txid[32];
+};
+
+struct ev_znam_renew {
+    uint8_t  name_len;
+    char     name[EV_ZNAM_NAME_MAX + 1];
+    int32_t  new_expiry_height;
+    uint8_t  update_txid[32];
+};
+
+struct ev_znam_expire {
+    uint8_t  name_len;
+    char     name[EV_ZNAM_NAME_MAX + 1];
+    int32_t  expired_at_height;
+};
+
+/* ── EV_ZNAM_REGISTER ──────────────────────────────────────────── */
+
+static inline size_t
+ev_znam_register_serialized_len(const struct ev_znam_register *ev)
+{
+    if (!ev) return 0;
+    return (size_t)1 + ev->name_len + 1 + ev->owner_len + 1 + 1 +
+           ev->target_value_len + 32 + 4 + 4 + 4;
+}
+
+static inline bool
+ev_znam_register_serialize(const struct ev_znam_register *ev,
+                           uint8_t *out, size_t out_cap, size_t *out_len)
+{
+    if (!ev || !out || !out_len) return false;
+    if (ev->name_len == 0 || ev->name_len > EV_ZNAM_NAME_MAX) return false;
+    if (ev->owner_len == 0 || ev->owner_len > EV_ZNAM_OWNER_MAX) return false;
+    if (ev->target_value_len > EV_ZNAM_VALUE_MAX) return false;
+    size_t need = ev_znam_register_serialized_len(ev);
+    if (out_cap < need) return false;
+    size_t off = 0;
+    out[off++] = ev->name_len;
+    memcpy(out + off, ev->name, ev->name_len); off += ev->name_len;
+    out[off++] = ev->owner_len;
+    memcpy(out + off, ev->owner_address, ev->owner_len); off += ev->owner_len;
+    out[off++] = ev->target_type;
+    out[off++] = ev->target_value_len;
+    if (ev->target_value_len)
+        memcpy(out + off, ev->target_value, ev->target_value_len);
+    off += ev->target_value_len;
+    memcpy(out + off, ev->reg_txid, 32); off += 32;
+    ev_put_u32_le(out + off, (uint32_t)ev->reg_height); off += 4;
+    ev_put_u32_le(out + off, ev->registered_unix); off += 4;
+    ev_put_u32_le(out + off, (uint32_t)ev->expiry_height); off += 4;
+    *out_len = off;
+    return true;
+}
+
+static inline bool
+ev_znam_register_parse(const void *payload, size_t len,
+                       struct ev_znam_register *out)
+{
+    if (!payload || !out) return false;
+    if (len < 1) return false;
+    const uint8_t *buf = (const uint8_t *)payload;
+    size_t off = 0;
+    memset(out, 0, sizeof(*out));
+    out->name_len = buf[off++];
+    if (out->name_len == 0 || out->name_len > EV_ZNAM_NAME_MAX) return false;
+    if (off + out->name_len + 1 > len) return false;
+    memcpy(out->name, buf + off, out->name_len); off += out->name_len;
+    out->owner_len = buf[off++];
+    if (out->owner_len == 0 || out->owner_len > EV_ZNAM_OWNER_MAX) return false;
+    if (off + out->owner_len + 2 > len) return false;
+    memcpy(out->owner_address, buf + off, out->owner_len); off += out->owner_len;
+    out->target_type = buf[off++];
+    out->target_value_len = buf[off++];
+    if (out->target_value_len > EV_ZNAM_VALUE_MAX) return false;
+    if (off + out->target_value_len + 32 + 12 > len) return false;
+    if (out->target_value_len)
+        memcpy(out->target_value, buf + off, out->target_value_len);
+    off += out->target_value_len;
+    memcpy(out->reg_txid, buf + off, 32); off += 32;
+    out->reg_height     = (int32_t)ev_get_u32_le(buf + off); off += 4;
+    out->registered_unix = ev_get_u32_le(buf + off); off += 4;
+    out->expiry_height  = (int32_t)ev_get_u32_le(buf + off); off += 4;
+    if (off != len) return false;
+    return true;
+}
+
+/* ── EV_ZNAM_UPDATE ─────────────────────────────────────────────── */
+
+static inline size_t
+ev_znam_update_serialized_len(const struct ev_znam_update *ev)
+{
+    if (!ev) return 0;
+    return (size_t)1 + ev->name_len + 1 + 1 + 1 + ev->key_len + 1 +
+           ev->value_len + 32;
+}
+
+static inline bool
+ev_znam_update_serialize(const struct ev_znam_update *ev,
+                         uint8_t *out, size_t out_cap, size_t *out_len)
+{
+    if (!ev || !out || !out_len) return false;
+    if (ev->name_len == 0 || ev->name_len > EV_ZNAM_NAME_MAX) return false;
+    if (ev->key_len > EV_ZNAM_KEY_MAX) return false;
+    if (ev->value_len > EV_ZNAM_VALUE_MAX) return false;
+    size_t need = ev_znam_update_serialized_len(ev);
+    if (out_cap < need) return false;
+    size_t off = 0;
+    out[off++] = ev->name_len;
+    memcpy(out + off, ev->name, ev->name_len); off += ev->name_len;
+    out[off++] = ev->action_type;
+    out[off++] = ev->key_or_coin_type;
+    out[off++] = ev->key_len;
+    if (ev->key_len)
+        memcpy(out + off, ev->key, ev->key_len);
+    off += ev->key_len;
+    out[off++] = ev->value_len;
+    if (ev->value_len)
+        memcpy(out + off, ev->value, ev->value_len);
+    off += ev->value_len;
+    memcpy(out + off, ev->update_txid, 32); off += 32;
+    *out_len = off;
+    return true;
+}
+
+static inline bool
+ev_znam_update_parse(const void *payload, size_t len,
+                     struct ev_znam_update *out)
+{
+    if (!payload || !out) return false;
+    if (len < 1) return false;
+    const uint8_t *buf = (const uint8_t *)payload;
+    size_t off = 0;
+    memset(out, 0, sizeof(*out));
+    out->name_len = buf[off++];
+    if (out->name_len == 0 || out->name_len > EV_ZNAM_NAME_MAX) return false;
+    if (off + out->name_len + 3 > len) return false;
+    memcpy(out->name, buf + off, out->name_len); off += out->name_len;
+    out->action_type      = buf[off++];
+    out->key_or_coin_type = buf[off++];
+    out->key_len          = buf[off++];
+    if (out->key_len > EV_ZNAM_KEY_MAX) return false;
+    if (off + out->key_len + 1 > len) return false;
+    if (out->key_len)
+        memcpy(out->key, buf + off, out->key_len);
+    off += out->key_len;
+    out->value_len = buf[off++];
+    if (out->value_len > EV_ZNAM_VALUE_MAX) return false;
+    if (off + out->value_len + 32 > len) return false;
+    if (out->value_len)
+        memcpy(out->value, buf + off, out->value_len);
+    off += out->value_len;
+    memcpy(out->update_txid, buf + off, 32); off += 32;
+    if (off != len) return false;
+    return true;
+}
+
+/* ── EV_ZNAM_TRANSFER ──────────────────────────────────────────── */
+
+static inline size_t
+ev_znam_transfer_serialized_len(const struct ev_znam_transfer *ev)
+{
+    if (!ev) return 0;
+    return (size_t)1 + ev->name_len + 1 + ev->new_owner_len + 32;
+}
+
+static inline bool
+ev_znam_transfer_serialize(const struct ev_znam_transfer *ev,
+                           uint8_t *out, size_t out_cap, size_t *out_len)
+{
+    if (!ev || !out || !out_len) return false;
+    if (ev->name_len == 0 || ev->name_len > EV_ZNAM_NAME_MAX) return false;
+    if (ev->new_owner_len == 0 || ev->new_owner_len > EV_ZNAM_OWNER_MAX)
+        return false;
+    size_t need = ev_znam_transfer_serialized_len(ev);
+    if (out_cap < need) return false;
+    size_t off = 0;
+    out[off++] = ev->name_len;
+    memcpy(out + off, ev->name, ev->name_len); off += ev->name_len;
+    out[off++] = ev->new_owner_len;
+    memcpy(out + off, ev->new_owner, ev->new_owner_len); off += ev->new_owner_len;
+    memcpy(out + off, ev->update_txid, 32); off += 32;
+    *out_len = off;
+    return true;
+}
+
+static inline bool
+ev_znam_transfer_parse(const void *payload, size_t len,
+                       struct ev_znam_transfer *out)
+{
+    if (!payload || !out) return false;
+    if (len < 1) return false;
+    const uint8_t *buf = (const uint8_t *)payload;
+    size_t off = 0;
+    memset(out, 0, sizeof(*out));
+    out->name_len = buf[off++];
+    if (out->name_len == 0 || out->name_len > EV_ZNAM_NAME_MAX) return false;
+    if (off + out->name_len + 1 > len) return false;
+    memcpy(out->name, buf + off, out->name_len); off += out->name_len;
+    out->new_owner_len = buf[off++];
+    if (out->new_owner_len == 0 || out->new_owner_len > EV_ZNAM_OWNER_MAX)
+        return false;
+    if (off + out->new_owner_len + 32 > len) return false;
+    memcpy(out->new_owner, buf + off, out->new_owner_len);
+    off += out->new_owner_len;
+    memcpy(out->update_txid, buf + off, 32); off += 32;
+    if (off != len) return false;
+    return true;
+}
+
+/* ── EV_ZNAM_RENEW ─────────────────────────────────────────────── */
+
+static inline size_t
+ev_znam_renew_serialized_len(const struct ev_znam_renew *ev)
+{
+    if (!ev) return 0;
+    return (size_t)1 + ev->name_len + 4 + 32;
+}
+
+static inline bool
+ev_znam_renew_serialize(const struct ev_znam_renew *ev,
+                        uint8_t *out, size_t out_cap, size_t *out_len)
+{
+    if (!ev || !out || !out_len) return false;
+    if (ev->name_len == 0 || ev->name_len > EV_ZNAM_NAME_MAX) return false;
+    size_t need = ev_znam_renew_serialized_len(ev);
+    if (out_cap < need) return false;
+    size_t off = 0;
+    out[off++] = ev->name_len;
+    memcpy(out + off, ev->name, ev->name_len); off += ev->name_len;
+    ev_put_u32_le(out + off, (uint32_t)ev->new_expiry_height); off += 4;
+    memcpy(out + off, ev->update_txid, 32); off += 32;
+    *out_len = off;
+    return true;
+}
+
+static inline bool
+ev_znam_renew_parse(const void *payload, size_t len,
+                    struct ev_znam_renew *out)
+{
+    if (!payload || !out) return false;
+    if (len < 1) return false;
+    const uint8_t *buf = (const uint8_t *)payload;
+    size_t off = 0;
+    memset(out, 0, sizeof(*out));
+    out->name_len = buf[off++];
+    if (out->name_len == 0 || out->name_len > EV_ZNAM_NAME_MAX) return false;
+    if (off + out->name_len + 4 + 32 != len) return false;
+    memcpy(out->name, buf + off, out->name_len); off += out->name_len;
+    out->new_expiry_height = (int32_t)ev_get_u32_le(buf + off); off += 4;
+    memcpy(out->update_txid, buf + off, 32); off += 32;
+    return true;
+}
+
+/* ── EV_ZNAM_EXPIRE ────────────────────────────────────────────── */
+
+static inline size_t
+ev_znam_expire_serialized_len(const struct ev_znam_expire *ev)
+{
+    if (!ev) return 0;
+    return (size_t)1 + ev->name_len + 4;
+}
+
+static inline bool
+ev_znam_expire_serialize(const struct ev_znam_expire *ev,
+                         uint8_t *out, size_t out_cap, size_t *out_len)
+{
+    if (!ev || !out || !out_len) return false;
+    if (ev->name_len == 0 || ev->name_len > EV_ZNAM_NAME_MAX) return false;
+    size_t need = ev_znam_expire_serialized_len(ev);
+    if (out_cap < need) return false;
+    size_t off = 0;
+    out[off++] = ev->name_len;
+    memcpy(out + off, ev->name, ev->name_len); off += ev->name_len;
+    ev_put_u32_le(out + off, (uint32_t)ev->expired_at_height); off += 4;
+    *out_len = off;
+    return true;
+}
+
+static inline bool
+ev_znam_expire_parse(const void *payload, size_t len,
+                     struct ev_znam_expire *out)
+{
+    if (!payload || !out) return false;
+    if (len < 1) return false;
+    const uint8_t *buf = (const uint8_t *)payload;
+    size_t off = 0;
+    memset(out, 0, sizeof(*out));
+    out->name_len = buf[off++];
+    if (out->name_len == 0 || out->name_len > EV_ZNAM_NAME_MAX) return false;
+    if (off + out->name_len + 4 != len) return false;
+    memcpy(out->name, buf + off, out->name_len); off += out->name_len;
+    out->expired_at_height = (int32_t)ev_get_u32_le(buf + off); off += 4;
+    return true;
+}
+
 #endif /* ZCL_STORAGE_EVENT_LOG_PAYLOADS_H */
