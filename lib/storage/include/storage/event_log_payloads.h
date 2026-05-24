@@ -20,6 +20,13 @@
 #define EV_TX_REMOVE_MEMPOOL_LEN 40u
 #define EV_PEER_OBSERVED_FIXED_LEN 40u
 #define EV_PEER_DROPPED_LEN 24u
+#define EV_WALLET_PAYLOAD_MAX 256u
+#define EV_WALLET_ADDRESS_MAX 128u
+#define EV_WALLET_LABEL_MAX 96u
+#define EV_WALLET_KEY_ADD_FIXED_LEN 32u
+#define EV_WALLET_ADDR_DERIVED_LEN 48u
+#define EV_WALLET_TX_SEEN_LEN 52u
+#define EV_WALLET_NOTE_DECRYPTED_LEN 80u
 
 struct ev_tx_admit_mempool {
     uint8_t  txid[32];
@@ -56,6 +63,40 @@ struct ev_peer_dropped {
     uint16_t port;
     uint8_t  reason;
     uint8_t  reserved[5];
+};
+
+struct ev_wallet_key_add {
+    uint8_t  pubkey_hash[20];  /* HASH160(pubkey); public metadata. */
+    uint8_t  reserved[4];
+    uint32_t created_unix;
+    uint8_t  address_len;
+    uint8_t  label_len;
+    uint8_t  reserved2[2];
+    const char *address;
+    const char *label;
+};
+
+struct ev_wallet_addr_derived {
+    uint8_t  pubkey_hash[20];
+    uint8_t  derived_pubkey_hash[20];
+    uint32_t derivation_index;
+    uint32_t derived_unix;
+};
+
+struct ev_wallet_tx_seen {
+    uint8_t  txid[32];
+    int32_t  block_height;
+    int64_t  fee;
+    uint8_t  from_me;
+    uint8_t  reserved[7];
+};
+
+struct ev_wallet_note_decrypted {
+    uint8_t  txid[32];
+    uint32_t output_index;
+    int32_t  block_height;
+    int64_t  value;
+    uint8_t  cm[32];           /* Note commitment; public. */
 };
 
 static inline void ev_put_u16_le(uint8_t *dst, uint16_t v)
@@ -256,6 +297,163 @@ ev_peer_dropped_parse(const void *payload, size_t len,
     memcpy(out->ip_v4_or_v6, buf, 16);
     out->port = ev_get_u16_le(buf + 16);
     out->reason = buf[18];
+    return true;
+}
+
+/* ── EV_WALLET_* public-only payloads (Phase 4d-3) ──────────────── */
+
+static inline size_t
+ev_wallet_key_add_serialized_len(const struct ev_wallet_key_add *ev)
+{
+    if (!ev) return 0;
+    return EV_WALLET_KEY_ADD_FIXED_LEN +
+           (size_t)ev->address_len + (size_t)ev->label_len;
+}
+
+static inline bool
+ev_wallet_key_add_serialize(const struct ev_wallet_key_add *ev,
+                            uint8_t *buf, size_t cap, size_t *out_len)
+{
+    if (!ev || !buf || !out_len) return false;
+    if (ev->address_len > EV_WALLET_ADDRESS_MAX) return false;
+    if (ev->label_len > EV_WALLET_LABEL_MAX) return false;
+    if (ev->address_len && !ev->address) return false;
+    if (ev->label_len && !ev->label) return false;
+    size_t need = ev_wallet_key_add_serialized_len(ev);
+    if (need > EV_WALLET_PAYLOAD_MAX || cap < need) return false;
+
+    memcpy(buf + 0, ev->pubkey_hash, 20);
+    memset(buf + 20, 0, 4);
+    ev_put_u32_le(buf + 24, ev->created_unix);
+    buf[28] = ev->address_len;
+    buf[29] = ev->label_len;
+    buf[30] = 0u;
+    buf[31] = 0u;
+    if (ev->address_len)
+        memcpy(buf + EV_WALLET_KEY_ADD_FIXED_LEN, ev->address,
+               ev->address_len);
+    if (ev->label_len)
+        memcpy(buf + EV_WALLET_KEY_ADD_FIXED_LEN + ev->address_len,
+               ev->label, ev->label_len);
+    *out_len = need;
+    return true;
+}
+
+static inline bool
+ev_wallet_key_add_parse(const void *payload, size_t len,
+                        struct ev_wallet_key_add *out)
+{
+    if (!payload || !out || len < EV_WALLET_KEY_ADD_FIXED_LEN)
+        return false;
+    if (len > EV_WALLET_PAYLOAD_MAX)
+        return false;
+    const uint8_t *buf = (const uint8_t *)payload;
+    uint8_t address_len = buf[28];
+    uint8_t label_len = buf[29];
+    if (address_len > EV_WALLET_ADDRESS_MAX) return false;
+    if (label_len > EV_WALLET_LABEL_MAX) return false;
+    size_t need = EV_WALLET_KEY_ADD_FIXED_LEN +
+                  (size_t)address_len + (size_t)label_len;
+    if (len != need)
+        return false;
+
+    memset(out, 0, sizeof(*out));
+    memcpy(out->pubkey_hash, buf + 0, 20);
+    out->created_unix = ev_get_u32_le(buf + 24);
+    out->address_len = address_len;
+    out->label_len = label_len;
+    out->address = address_len
+                 ? (const char *)(buf + EV_WALLET_KEY_ADD_FIXED_LEN)
+                 : NULL;
+    out->label = label_len
+               ? (const char *)(buf + EV_WALLET_KEY_ADD_FIXED_LEN +
+                                address_len)
+               : NULL;
+    return true;
+}
+
+static inline bool
+ev_wallet_addr_derived_serialize(const struct ev_wallet_addr_derived *ev,
+                                 uint8_t buf[EV_WALLET_ADDR_DERIVED_LEN])
+{
+    if (!ev || !buf) return false;
+    memcpy(buf + 0, ev->pubkey_hash, 20);
+    memcpy(buf + 20, ev->derived_pubkey_hash, 20);
+    ev_put_u32_le(buf + 40, ev->derivation_index);
+    ev_put_u32_le(buf + 44, ev->derived_unix);
+    return true;
+}
+
+static inline bool
+ev_wallet_addr_derived_parse(const void *payload, size_t len,
+                             struct ev_wallet_addr_derived *out)
+{
+    if (!payload || !out || len != EV_WALLET_ADDR_DERIVED_LEN)
+        return false;
+    const uint8_t *buf = (const uint8_t *)payload;
+    memset(out, 0, sizeof(*out));
+    memcpy(out->pubkey_hash, buf + 0, 20);
+    memcpy(out->derived_pubkey_hash, buf + 20, 20);
+    out->derivation_index = ev_get_u32_le(buf + 40);
+    out->derived_unix = ev_get_u32_le(buf + 44);
+    return true;
+}
+
+static inline bool
+ev_wallet_tx_seen_serialize(const struct ev_wallet_tx_seen *ev,
+                            uint8_t buf[EV_WALLET_TX_SEEN_LEN])
+{
+    if (!ev || !buf) return false;
+    memcpy(buf + 0, ev->txid, 32);
+    ev_put_u32_le(buf + 32, (uint32_t)ev->block_height);
+    ev_put_u64_le(buf + 36, (uint64_t)ev->fee);
+    buf[44] = ev->from_me ? 1u : 0u;
+    memset(buf + 45, 0, 7);
+    return true;
+}
+
+static inline bool
+ev_wallet_tx_seen_parse(const void *payload, size_t len,
+                        struct ev_wallet_tx_seen *out)
+{
+    if (!payload || !out || len != EV_WALLET_TX_SEEN_LEN)
+        return false;
+    const uint8_t *buf = (const uint8_t *)payload;
+    memset(out, 0, sizeof(*out));
+    memcpy(out->txid, buf + 0, 32);
+    out->block_height = (int32_t)ev_get_u32_le(buf + 32);
+    out->fee = (int64_t)ev_get_u64_le(buf + 36);
+    out->from_me = buf[44] ? 1u : 0u;
+    return true;
+}
+
+static inline bool
+ev_wallet_note_decrypted_serialize(
+    const struct ev_wallet_note_decrypted *ev,
+    uint8_t buf[EV_WALLET_NOTE_DECRYPTED_LEN])
+{
+    if (!ev || !buf) return false;
+    memcpy(buf + 0, ev->txid, 32);
+    ev_put_u32_le(buf + 32, ev->output_index);
+    ev_put_u32_le(buf + 36, (uint32_t)ev->block_height);
+    ev_put_u64_le(buf + 40, (uint64_t)ev->value);
+    memcpy(buf + 48, ev->cm, 32);
+    return true;
+}
+
+static inline bool
+ev_wallet_note_decrypted_parse(const void *payload, size_t len,
+                               struct ev_wallet_note_decrypted *out)
+{
+    if (!payload || !out || len != EV_WALLET_NOTE_DECRYPTED_LEN)
+        return false;
+    const uint8_t *buf = (const uint8_t *)payload;
+    memset(out, 0, sizeof(*out));
+    memcpy(out->txid, buf + 0, 32);
+    out->output_index = ev_get_u32_le(buf + 32);
+    out->block_height = (int32_t)ev_get_u32_le(buf + 36);
+    out->value = (int64_t)ev_get_u64_le(buf + 40);
+    memcpy(out->cm, buf + 48, 32);
     return true;
 }
 

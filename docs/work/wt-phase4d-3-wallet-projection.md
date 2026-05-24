@@ -507,4 +507,8 @@ Phase 4a is merged; this is a parallel-dispatchable spec.
 The KEY OWNERSHIP callout at the top is the hardest invariant in this
 spec — re-read it before each commit.
 
+2026-05-24 wt2 progress: Task 1 public-only `EV_WALLET_*` payload
+schemas and round-trip tests are implemented. The assignment remains
+in progress; next slice is Task 2 projection skeleton + schema.
+
 <!-- Worker: append a Completion section below when done. -->
