@@ -84,8 +84,34 @@ stretch 30s).
 
 ## Status
 
-**PR-1 IN PROGRESS (wt2)** — claimed 2026-05-24.
+**PR-1 COMPLETE (wt2)** — claimed and implemented 2026-05-24.
 PR-2/PR-3 spec'd, gated.
 One commit per task; push direct to main; `./test_parallel` before pushing.
 
 <!-- Worker: append a Completion section with the "Benchmark moved" line. -->
+
+## Completion — PR-1 Hardware CRC32C
+
+Benchmark moved: #2 warm restart and #6 kill-9 recovery scans now use
+runtime-dispatched SSE4.2 CRC32C when available; wire format and CRC values
+remain byte-identical to the software table reference.
+
+Summary:
+- Kept the Castagnoli table path as `crc32c_sw()` and added x86 SSE4.2
+  `crc32c_hw()` using `_mm_crc32_u64` plus byte tail handling.
+- Added `pthread_once` initialization with runtime `__builtin_cpu_supports`
+  detection and HW-vs-SW self-check across many payload lengths, falling back
+  to software on mismatch.
+- Stabilized the event async lifecycle test so the 32-worker parallel gate
+  asserts the documented `event_async_stop()` drain guarantee instead of a
+  scheduler-timing window.
+
+Micro-bench on this box:
+- Software CRC32C: 0.57 GiB/s
+- SSE4.2 CRC32C: 12.36 GiB/s
+
+Verification:
+- `make -j$(nproc) test_zcl test_parallel` PASS
+- `ZCL_TEST_ONLY=event ./test_zcl` PASS
+- `make lint` PASS
+- `./test_parallel --jobs=$(nproc)` PASS — 205/205 groups, 32 workers

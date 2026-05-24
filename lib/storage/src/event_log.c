@@ -12,9 +12,9 @@
  *   replacement safe.
  *
  * - The CRC is Castagnoli (CRC-32C, polynomial 0x1EDC6F41), reflected
- *   form, init 0xFFFFFFFF, final xor 0xFFFFFFFF. Software-only table
- *   lookup — fast enough for the throughput we need (~50K events/sec)
- *   and avoids depending on SSE 4.2 intrinsics.
+ *   form, init 0xFFFFFFFF, final xor 0xFFFFFFFF. The software table is
+ *   the reference implementation; x86 hosts with SSE4.2 use hardware
+ *   CRC32C after a startup self-check proves byte-identical output.
  *
  * - On open() the file is scanned from the tail to detect partial
  *   trailing writes (crash between header-fsync and sentinel-fsync, or
@@ -35,13 +35,17 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <pthread.h>
-#include <stdatomic.h>
+#include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <unistd.h>
+
+#if defined(__x86_64__) || defined(__i386__)
+#include <nmmintrin.h>
+#endif
 
 /* ── on-disk constants ─────────────────────────────────────────────── */
 
@@ -51,12 +55,11 @@
 /* ── crc32c (Castagnoli) — software table impl, public domain ──────── */
 
 static uint32_t g_crc32c_table[256];
-static _Atomic int g_crc32c_init = 0;
+static pthread_once_t g_crc32c_once = PTHREAD_ONCE_INIT;
+static bool g_crc32c_use_hw = false;
 
-static void crc32c_table_init(void)
+static void crc32c_table_build(void)
 {
-    if (atomic_load_explicit(&g_crc32c_init, memory_order_acquire))
-        return;
     /* Castagnoli polynomial reflected: 0x82F63B78. */
     for (uint32_t i = 0; i < 256; i++) {
         uint32_t c = i;
@@ -64,17 +67,81 @@ static void crc32c_table_init(void)
             c = (c >> 1) ^ (0x82F63B78u & -(c & 1u));
         g_crc32c_table[i] = c;
     }
-    atomic_store_explicit(&g_crc32c_init, 1, memory_order_release);
 }
 
-static uint32_t crc32c(const void *data, size_t len)
+static uint32_t crc32c_sw(const void *data, size_t len)
 {
-    crc32c_table_init();
     const uint8_t *p = (const uint8_t *)data;
     uint32_t crc = 0xFFFFFFFFu;
     for (size_t i = 0; i < len; i++)
         crc = (crc >> 8) ^ g_crc32c_table[(crc ^ p[i]) & 0xFFu];
     return crc ^ 0xFFFFFFFFu;
+}
+
+#if defined(__x86_64__) || defined(__i386__)
+__attribute__((target("sse4.2")))
+static uint32_t crc32c_hw(const void *data, size_t len)
+{
+    const uint8_t *p = (const uint8_t *)data;
+    uint32_t crc = 0xFFFFFFFFu;
+#if defined(__x86_64__)
+    while (len >= 8) {
+        uint64_t v;
+        memcpy(&v, p, sizeof(v));
+        crc = (uint32_t)_mm_crc32_u64((uint64_t)crc, v);
+        p += 8;
+        len -= 8;
+    }
+#else
+    while (len >= 4) {
+        uint32_t v;
+        memcpy(&v, p, sizeof(v));
+        crc = _mm_crc32_u32(crc, v);
+        p += 4;
+        len -= 4;
+    }
+#endif
+    while (len > 0) {
+        crc = _mm_crc32_u8(crc, *p++);
+        len--;
+    }
+    return crc ^ 0xFFFFFFFFu;
+}
+#endif
+
+static void crc32c_init_once(void)
+{
+    crc32c_table_build();
+#if defined(__x86_64__) || defined(__i386__)
+    if (__builtin_cpu_supports("sse4.2")) {
+        uint8_t buf[4099];
+        for (size_t i = 0; i < sizeof(buf); i++)
+            buf[i] = (uint8_t)(i * 31u + 7u);
+        bool ok = true;
+        for (size_t n = 0; n <= sizeof(buf); n += (n < 64 ? 1 : 257)) {
+            if (crc32c_hw(buf, n) != crc32c_sw(buf, n)) {
+                ok = false;
+                break;
+            }
+        }
+        g_crc32c_use_hw = ok;
+        if (!ok) {
+            fprintf(stderr,  // obs-ok:event-log-crc-selfcheck
+                    "[event_log] SSE4.2 crc32c self-check failed; "
+                    "using software crc32c\n");
+        }
+    }
+#endif
+}
+
+static uint32_t crc32c(const void *data, size_t len)
+{
+    pthread_once(&g_crc32c_once, crc32c_init_once);
+#if defined(__x86_64__) || defined(__i386__)
+    if (g_crc32c_use_hw)
+        return crc32c_hw(data, len);
+#endif
+    return crc32c_sw(data, len);
 }
 
 /* ── little-endian byte helpers ─────────────────────────────────────── */
