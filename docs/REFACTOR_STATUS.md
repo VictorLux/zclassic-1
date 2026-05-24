@@ -4,44 +4,52 @@
 > truth for "what's done, what's next, what's blocked." Read this first
 > when you start a session. Full architecture: [`FRAMEWORK.md`](./FRAMEWORK.md).
 
-**Updated:** 2026-05-24 (**goals reframed around 10 real benchmarks** — agents now report work as "moved benchmark N", not phase codes. Phase detail still below as the execution map.)
+**Updated:** 2026-05-24 (**goals = 4 promises × 10 numbers** — agents report work as "moved number N", not phase codes. Phase detail below is the execution map.)
 
 ---
 
-## TOP 10 BENCHMARKS — what we are actually building
+## OUR GOALS — one binary, four promises, ten numbers
 
-These are the goals. Phases/PRs are just the means. **When you finish a task,
-report which benchmark you moved and by how much** (e.g. "warm restart 33s→29s").
+Everything we build serves four promises. Each promise is a few measurable
+numbers. **When you finish a task, say which number you moved** (e.g. "warm
+restart 33s→29s"). Phases/PRs below are just the means.
 
 ```
-ONE 26 MB STATIC C23 BINARY · ZERO-GC · SUPERVISED ACTORS · EVENT-SOURCED
+        Z C L A S S I C 2 3   —   one static C23 binary, no GC, no daemons
 
-                          now ──▶ target     progress     architecture lever
- 1 Cold sync to tip       145s ──▶  30s   ████░░░░░░ 40%  FlyClient PoW samples + SHA3 UTXO snapshot
- 2 Warm restart            33s ──▶  10s   ████░░░░░░ 35%  one append-only event log, fsync-sentinel recovery
- 3 Memory (RSS)          1.5GB ──▶ 1.0GB ██████░░░░ 58%✓ static link, arena alloc, no GC
- 4 Validation throughput  cold ──▶ 5k b/s ████░░░░░░ 40%  multi-pthread stage pipeline + crypto registry
- 5 Tip keep-up latency     n/a ──▶ <250ms ███░░░░░░░ 30%  mailbox actors, lock-free stage hand-off
- 6 Kill-9 recovery       ≤360s ──▶  <60s  █████░░░░░ 50%  event-log torn-write sentinel + coins-before-index
- 7 Uptime / MTBF          5.5d ──▶   30d  ███░░░░░░░ 30%  Phoenix-style supervised actor tree
- 8 Operator pages         some ──▶ 0/mo   ████░░░░░░ 40%  Condition engine (10 live) self-heals
- 9 Single static binary  14.6MB─▶ stay slim ██████████ ✓ measured (docs' "26MB" is stale); no deps
-10 Bug → repro → fix       hrs ──▶ 1 seed ███░░░░░░░ 33%  platform.clock/rng → seed-tape → simulator replay
+                                  now  ──▶  goal     progress      how we get there
+ ┌ ⚡ FAST ───────────────────────────────────────────────────────────────────────┐
+ │  1  Cold sync to tip          180s ──▶   30s   ███░░░░░░░ 30%  parallel blk-scan (PR-3)│
+ │  2  Warm restart               33s ──▶   10s   ████░░░░░░ 40%  one append-only event log│
+ │  4  Validation speed          cold ──▶ 5k blk/s ████░░░░░░ 40%  staged multi-thread pipeline│
+ │  5  New-block latency          n/a ──▶ <250ms  ███░░░░░░░ 30%  actor mailboxes, no locks│
+ ├ 🪶 LEAN ────────────────────────────────────────────────────────────────────────┤
+ │  3  Memory (RSS)             1.5GB ──▶  1.0GB  ██████░░░░ 58%  arena alloc, zero GC │
+ │  9  Binary size             14.6MB ──▶  stay slim ██████████ ✓  static link, no deps │
+ ├ 💪 UNBREAKABLE ─────────────────────────────────────────────────────────────────┤
+ │  6  Crash/wedge recovery     180s* ──▶   <60s  ████░░░░░░ 45%  torn-write sentinel + snapshot escape (PR-0)│
+ │  7  Uptime before failure     5.5d ──▶    30d  ███░░░░░░░ 30%  supervised actor tree│
+ │  8  Alerts to a human       some/mo ──▶   0/mo  ████░░░░░░ 40%  10 self-healing Conditions│
+ ├ 🔬 DEBUGGABLE ──────────────────────────────────────────────────────────────────┤
+ │ 10  Bug → reproducible fix   hours ──▶  1 seed ███░░░░░░░ 33%  deterministic seed-tape replay│
+ └─────────────────────────────────────────────────────────────────────────────────┘
+   *a stale failed-block wedged the tip today; cold-import fixed it. PR-0 makes
+    that recovery in-place and automatic (<60s) instead of a manual reimport.
+   Bars are estimates except #3 RSS and #9 binary (live-measured). History →
+   BENCHMARKS_LOG.md — append a row each session; "now" comes from there.
 ```
 
-### Which work moves which benchmark (claim from NEXT UP, aim at a number)
+### What moves which number (claim from NEXT UP, aim at a goal)
 
-| In-flight / claimable task | Moves benchmark |
+| Work in flight / claimable | Moves |
 |---|---|
-| Cutover C-5→C-9 (body_persist…tip_finalize authoritative) | #1 cold sync, #4 throughput, #5 keep-up, #6 kill-9 |
-| 4e block-bodies-into-log + 4d-3/4d-5 projections | #2 warm restart, #6 kill-9 (one storage engine) |
-| Phase-3 dissolves (chain_restore, header_probe, utxo_recovery, …) | #3 RSS, #7 MTBF (less code, supervised) |
-| utxo_recovery PR-1 + more Conditions | #8 operator pages, #7 MTBF |
-| Phase 6 postmortem capsule (6b) + simulator (6c) | #10 bug→repro→fix |
-
-*(% bars are estimates; #3 RSS and #9 binary are live-measured. **Measured
-history → [`BENCHMARKS_LOG.md`](./BENCHMARKS_LOG.md)** — append a row each
-session; the "now" column should come from there, not guesses.)*
+| PR-3 parallel blk*.dat marking in cold-import | **#1** cold sync (101s→seconds) |
+| PR-0/PR-1 snapshot wedge-recovery *(wt3 in progress)* | **#6** recovery, #5 keep-up |
+| Cutover C-5→C-9 (body_persist…tip_finalize authoritative) | #1, #4, #5, #6 |
+| 4e block-bodies-into-log + 4d projections | **#2** warm restart, #6 |
+| Phase-3 dissolves (chain_restore, header_probe ✅, utxo_recovery) | **#3** RSS, #7 MTBF |
+| More self-heal Conditions | **#8** pages, #7 MTBF |
+| Phase-6 postmortem capsule + simulator | **#10** bug→fix |
 
 ---
 
