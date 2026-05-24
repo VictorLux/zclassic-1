@@ -628,6 +628,11 @@ static const struct mcp_tool_route k_routes[] = {
       "Compare Phase 4d peers_projection against the legacy peers table: "
       "row counts plus recent peer samples.",
       NULL, 0, h_zcl_peers_projection_diff, 0, NULL },
+    { "zcl_znam_projection_diff", "ops",
+      "Compare Phase 4d-4 znam_projection against the legacy znam tables "
+      "(znam_names + znam_addr_records + znam_text_records): per-table row "
+      "counts plus first_diff if any.",
+      NULL, 0, h_zcl_znam_projection_diff, 0, NULL },
     { "zcl_probe_zclassicd", "ops",
       "Drift detection: ask the local zclassicd (independent ZClassic "
       "impl) for getblockhash(H) and compare to our block_index. Picks a "
