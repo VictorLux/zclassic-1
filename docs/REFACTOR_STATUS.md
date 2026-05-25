@@ -54,8 +54,7 @@ run. `✓` met · `▸` in flight · `◷` measuring · `◑` fixed-in-code-not-
 ### Halt cured 2026-05-25 — focus is the one-path cutover + DRY
 
 Live node healthy and advancing (0 restarts). Root cause was the `connect_block`
-BIP30 self-write + write-ordering hazard, now fixed
-([`work/done/wt-connect-bip30-selfwrite.md`](./work/done/wt-connect-bip30-selfwrite.md));
+BIP30 self-write + write-ordering hazard, now fixed (see git history);
 silent-halt escalation is closed (`EV_OPERATOR_NEEDED` → alert sinks + `zcl_status`
 DEGRADED + sd_notify). The **structural** cure is the cutover below — collapse to
 ONE path, delete the legacy (~12.5K LOC). Full root-cause + resilience doctrine
@@ -65,23 +64,13 @@ live in git history + memory ([[project_silent_halt_architecture_diagnosis_2026-
 **Working rule:** when you finish a task, name the goal you moved and the measured
 delta (e.g. "warm restart 33s→29s") and add a row to BENCHMARKS_LOG.md.
 
-### Who's moving what right now
+### Owner mandate (2026-05-25)
 
-**OWNER MANDATE (2026-05-25):** NO whack-a-mole. The node still halts because we
-maintain TWO chain paths — the robust stage pipeline AND the legacy
-connect_tip/chain_advance_coordinator/legacy_mirror mega-modules that run the
-live tip. **Robustness = finishing the refactor: collapse to ONE path, DELETE the
-legacy.** Focus = refactor + DRY + cruft removal + high-performance. SUBTRACTION,
-not more conditions. ~17K LOC of cruft to remove (inventory 2026-05-25).
-
-| Work | Goal | Who |
-|---|---|---|
-| **Master lever:** safe-flip guard + cutover C-3→C-9, DELETE legacy path | One path; ~12.5K LOC out; never-silent | **wt2/wt3** (unblocked: healthy node) |
-| Recovery consolidation (DRY) | Lean, uptime | ✅ wt3 (`f7a643442`) |
-| Import-path DRY: 3 importers → 1 (`wt-consolidate-import-paths.md`) | Lean; ~1.7K LOC out | **unclaimed** |
-| Never-silent alert loop (`EV_OPERATOR_NEEDED` → sinks) | Alerts to a human | ✅ orchestrator |
-| Explorer controller cruft removal | Lean; −118 LOC | orchestrator (integrating) |
-| chain_advance + legacy_mirror + snapshot sprawl dissolve | ~9K LOC out | gated on cutover (C-8/C-9) |
+**NO whack-a-mole. Collapse to ONE path, DELETE the legacy.** The node stays
+robust by *finishing* the refactor, not by adding conditions — default to
+SUBTRACTION. While two chain paths coexist a silent halt remains *possible*; the
+cutover ([`work/cutover.md`](./work/cutover.md)) is the structural cure. Current
+work is in NEXT below.
 
 ---
 
@@ -94,21 +83,12 @@ Phase 2  [██████████] 100%   Wave S SHADOW complete (S-1..S-
   ├ S-5..S-7 [██████████] 100%   body_persist, script_validate, proof_validate ✅
   ├ S-8    [██████████] 100%   utxo_apply shadow (wt3)                ✅ 497220f58
   └ S-9    [██████████] 100%   tip_finalize shadow (wt3)              ✅ 1a65b33c7
-Phase 2 CUTOVER [██░░░░░░░░] ~10%   Flip shadow → authoritative   ◐ prereqs CLEARED — ready for C-3 re-flip (0/7 live)
-  ├ UNHALT FIRST [██████████] 100%  ✅ halt cured 2026-05-25 (connect_block fix + rebuild); node healthy/advancing
-  ├ SAFE-FLIP GUARD [█████████░] ~90% ◐ cutover_no_forward_progress exists (wt3 230d9b896) + EV_OPERATOR_NEEDED loop
-  │                                closed; follow work/cutover-safety-protocol.md when flipping
-  ├ C-2    [███████░░░] flipped, then REVERTED   header_admit: flip f3f0c6c4e → set back to SHADOW 6e0f6a82c
-  ├ C-3    [███████░░░] flipped, HALTED, REVERTED validate_headers: flip ad34efb65 → froze chain → SHADOW 6e0f6a82c
-  ├ C-3del [░░░░░░░░░░]   0%   delete legacy validate_headers fallback ← gated on root-cause + clean re-flip
-  ├ C-5    [░░░░░░░░░░]   0%   body_persist + delete body_fetch  ← gated on root-cause + clean re-flip
-  ├ C-6    [░░░░░░░░░░]   0%   script_validate authoritative (batch spec, post C-5)
-  ├ C-7    [░░░░░░░░░░]   0%   proof_validate authoritative (batch spec, post C-6)
-  ├ C-8    [░░░░░░░░░░]   0%   utxo_apply authoritative (batch spec, post C-7 — gates utxo_recovery dissolve)
-  └ C-9    [░░░░░░░░░░]   0%   tip_finalize authoritative (batch spec, post C-8 — gates chain_advance dissolve)
-  NOTE: shadow stages (Phase 2 SHADOW, 100%) all run + match in shadow. The CUTOVER is the act of
-        trusting them as authoritative. C-2/C-3 proved the flip works; the halt that reverted them is
-        CURED (node healthy) + the safe-flip guard exists → C-3 re-flip is the next assignment.
+Phase 2 CUTOVER [██░░░░░░░░] ~15%   Flip shadow → authoritative — plan: work/cutover.md
+  Shadow stages all run + match. The cutover = trusting them, then deleting legacy.
+  Simplified to: prove offline (incl reorg) → flip once → delete. NO per-stage soak
+  ceremony (single personal node). Prereqs done: halt cured, guard + alert loop,
+  header validation decoupled from bodies, HAVE_DATA read-verified.
+  Next real work: reorg-capability in tip_finalize + the offline replay-proof.
 Phase 3  [███████░░░]  70%   Dissolve mega-modules                    ← partial
   ├ watchdog [██████████] 100%   sync_watchdog_service.c DELETED      ✅ 611631541
   ├ supervisor tree split [██████████] 100%   7 domain supervisors    ✅ dae31dee9
@@ -117,7 +97,7 @@ Phase 3  [███████░░░]  70%   Dissolve mega-modules          
   ├ chain_restore  [██████████] 100%   service/header deleted; focused modules own restore ✅
   ├ header_probe   [██████████] 100%   core renamed; old service file deleted ✅ d17eb5ca0
   └ utxo_recovery  [░░░░░░░░░░] gated on C-8 cutover (dissolve plan ready)
-Phase 4  [█████████░]  95%   Storage unification — plan: docs/architecture/phase4-storage-unification.md
+Phase 4  [█████████░]  95%   Storage unification (event log + projections)
   ├ 4a     [██████████] 100%   event_log primitive  ✅ 76b3a10b4
   ├ 4b     [██████████] 100%   utxo_projection — Tasks 1-10 SHIPPED  ✅ (39b1e8efa..ee1c5c7b1, 7 commits)
   ├ 4c     [██████████] 100%   block_index_projection + finalize (diff tool + 9 tests)  ✅ (…ed34743ba, 066462576, 91b4ee734, 2f23d6a44, 2e289e41b)
@@ -137,12 +117,11 @@ Phase 6  [██████████] 100%   Determinism + simulator        
   ├ 6b     [██████████] 100%   postmortem capsule (crash → seed.cap.gz) ✅ 89fabc360
   └ 6c     [██████████] 100%   simulator harness (`make chaos`) ✅ 6fb76f2b0
 Phase 7  [░░░░░░░░░░]   0%   Frontier (io_uring, hot reload)
-Phase 8  [░░░░░░░░░░]   0%   Event-log compaction & retention — plan: docs/architecture/phase8-log-compaction-and-retention.md
+Phase 8  [░░░░░░░░░░]   0%   Event-log compaction & retention (future)
   └ (draft)  gated on 4e — checkpoint event + segmentation + prune policy; pairs with SHA3 snapshot/FlyClient cold-sync
 
-Remaining dissolve plans: docs/dissolve/ (chain_advance_coordinator,
-legacy_mirror_sync, utxo_recovery). The sync_watchdog / chain_restore /
-header_probe plans were deleted 2026-05-25 — those mega-modules are dissolved.
+Mega-modules still to dissolve (chain_advance_coordinator, legacy_mirror_sync,
+utxo_recovery) are cutover-gated; extract-then-delete plan in work/cutover.md.
 ```
 
 ---
@@ -184,133 +163,25 @@ re-quote them here; they rot. Add a row to the ledger instead.
 
 ---
 
-## In flight (worktrees)
+## In flight
 
-**Workers (2026-05-25):** wt3 landed recovery + condition consolidation and the
-chain-evidence/restore/block-index splits (on origin/main). Orchestrator landed:
-shell+explorer cruft purge, the never-silent `EV_OPERATOR_NEEDED` alert loop;
-deep cruft-hunt + wallet-controller purge in flight. Workers push direct to main;
-orchestrator integrates (fetch→rebase→push) and queues. Next for a freed worker:
-the **C-3 re-flip** — cutover prereqs are now cleared.
+**Workers stopped 2026-05-25.** wt2/wt3 worktrees reset to origin/main; work
+continues on `main`. Everything below the cutover is either done or cutover-gated.
 
-**The Phase 2 cutover is now UNBLOCKED.** C-2/C-3 went authoritative, the chain
-halted, `6e0f6a82c` reverted both to shadow — but that halt is CURED (node
-healthy/advancing) and the safe-flip guard (`cutover_no_forward_progress` +
-the `EV_OPERATOR_NEEDED` alert loop) is in place. Next: **re-flip C-3** behind the
-guard (`work/cutover-safety-protocol.md`), confirm the authoritative header path
-matches legacy past the cutover height, then C-5..C-9 in sequence — each flip
-deletes its legacy stage. Independent purges (controllers, importers, dead code)
-run in parallel — see the cruft hunt + "Claimable NOW" below.
+## NEXT
 
----
+1. **The cutover — collapse to ONE path.** Full plan:
+   [`work/cutover.md`](./work/cutover.md). Prereqs done (halt cured, guard +
+   alert loop, header validation decoupled from bodies, HAVE_DATA read-verified).
+   Real next work: reorg-capability in `tip_finalize` + the offline replay-proof,
+   then a single guarded flip, then delete the legacy path + the shadow-vs-legacy
+   comparison apparatus (~12.5K LOC).
+2. **DRY / cruft** —
+   [`work/wt-consolidate-import-paths.md`](./work/wt-consolidate-import-paths.md)
+   (3 importers → 1). Independent of the cutover.
 
-## NEXT UP — claim order
-
-Claim a doc by marking it **IN PROGRESS** at the top; first to mark wins.
-Push direct to main, one commit per task. Run `./test_parallel --jobs=$(nproc)`
-before pushing.
-
-**Shipped since last board sync (origin/main, fetch to see):** 4d-3 wallet
-projection ✅ (a9fb0f396..49ef6bbe6) · chain_restore PR-1 planner extract ✅
-(afed3d673..a5fbe3700) · chain_restore PR-1b boot snapshot extract ✅
-(462be5e5a) · chain_restore PR-2a executor extract ✅ (6ec178eb6) ·
-chain_restore PR-2b repair extract ✅ (5042fde7b) ·
-chain_restore service implementation delete ✅ (89892c441) ·
-chain_restore compatibility header delete ✅ (8658ef0d2) ·
-utxo_recovery PR-1 reimport-flag primitive ✅ (af7ba7a30) · header_probe
-dissolve ✅ (981ad4897..1b0847820) · snapshot halt recovery ✅
-(4d7f7adee..8e25887b0) · small projections 4d-5 ✅
-(0f10cd5f4..2f23d8352) · postmortem capsules ✅
-(720906bf4..89fabc360) · chaos simulator harness ✅
-(ca74cb4c2..6fb76f2b0).
-
-### Claimable NOW (no soak gate, fully independent)
-0. 🔴 **[`wt-connect-bip30-selfwrite.md`](./work/wt-connect-bip30-selfwrite.md) — P0, THE disease: BIP30 self-write halt.** PROVEN root cause of "always stuck": the UTXO set ends up 1 block ahead of the tip, and `connect_block` rejects the block's OWN coinbase as a BIP30 duplicate (impossible post-BIP34 → always a false positive). Recurs at every tip advance; boot-rewind + cold-import only move it. Fix: (1) connect_block tolerates a same-height self-coinbase; (2) write-ordering so coins never commits ahead of the block-index tip. Acceptance = sustained LIVE forward progress. Deploy gated on Rhett.
-1. 🆕 **[`wt-bench-harness.md`](./work/wt-bench-harness.md) — READY for wt3, fully independent of P0.** `make bench`: the 5 primaries + `bench-history.csv` + a >20% regression gate. We've quoted perf numbers from ad-hoc runs with no harness — this is the "high-performance" foundation (can't optimize what you can't measure). Isolated datadir/ports, touches no C source wt2 edits. Build now; full to-tip baselines follow the P0 fix.
-   - (perf track [`wt-perf-integrate-rebuild.md`](./work/wt-perf-integrate-rebuild.md) is CLOSED: PR-1 HW-CRC ✅, PR-3 parallel scan ✅ but cold-import bypasses it; PR-2 io_uring deferred. Don't re-claim.)
-2. 🛡️ [`cutover-safety-protocol.md`](./work/cutover-safety-protocol.md) — auto-revert-on-no-forward-progress Condition (wt3 already shipped the core, `230d9b896`). REQUIRED before any C-* re-flip.
-3. More self-heal Conditions — chain_restore/header_probe dissolved (✅); remaining mega-module plans in [`docs/dissolve/`](./dissolve/).
-
-> **Sequencing:** #0 (stop halting) is the gate on everything — a high-performance
-> node that's always stuck is worthless. #1 (perf) runs in parallel; it touches
-> the cold-import scan, not the connect path, so no conflict with #0.
-
-**QUEUED behind the root fix (DRY / purge — do NOT start while Agent 1 is in
-connect/coins/boot):** [`wt-consolidate-recovery-paths.md`](./work/wt-consolidate-recovery-paths.md)
-— research-backed cleanup of the whack-a-mole sprawl: the coins-rewind SQL is
-copy-pasted in 3 files (→ 1 helper); 17 tip/stall conditions (→ ~10 after the root
-fix makes the BIP30 band-aids dead); LEGACY_LIFECYCLE doc-vs-reality drift. Net
-LOC down. Gated so it can't collide with the live root-cause work.
-
-### Re-flip-gated (read the spec now; start AFTER unhalt + safe-flip guard + a clean C-3 re-flip — there is no soak running, C-3 is reverted)
-- [`wt-phase2-cutover-c3-final-delete.md`](./work/wt-phase2-cutover-c3-final-delete.md) — delete the legacy validate_headers fallback.
-- [`wt-phase2-cutover-c5-body-persist.md`](./work/wt-phase2-cutover-c5-body-persist.md) — body_persist authoritative + DELETE body_fetch. Then C-6→C-9 in sequence per [`wt-phase2-cutover-c3-through-c9.md`](./work/wt-phase2-cutover-c3-through-c9.md) (each + its own soak).
-- [`wt-phase4e-block-body-migration.md`](./work/wt-phase4e-block-body-migration.md) — block bodies into the log; gated on the 4c-cutover soak. Last Phase 4 PR. Phase 8 compaction follows ([`phase8-log-compaction-and-retention.md`](./architecture/phase8-log-compaction-and-retention.md)).
-
-### Deferred — do NOT dispatch without explicit user approval
-- Phase 7a/7b/7c (io_uring, structured concurrency, hot reload) — optional frontier.
-
-### Critical path to 100%
-```
-UNHALT (BIP30) ─► SAFE-FLIP GUARD ─► re-flip C-3 ─► C-3del/C-5 ─► C-6 ─► C-7 ─► C-8 ─► C-9
-  (live P0)         (Condition)        (canary)       │  (each: canary + clean soak)        │
-                                                      └─► dissolve utxo_recovery (P3, post C-8)
-                                                                  C-9 ─► dissolve chain_advance + legacy_mirror (P3)
-4c ✅ ─► 4e (bodies in log) ─► Phase 8 (log self-bounding)
-```
-C-3 is REVERTED (not ✅) — the chain must be unhalted and the safe-flip guard in
-place before any re-flip. Everything in "Claimable NOW" runs in parallel; the
-two top items (unhalt, safe-flip guard) ARE the critical path now.
-
----
-
-## Recently completed
-
-| Date | What | Worktree | Commit |
-|---|---|---|---|
-| 2026-05-25 | **Phase 6 COMPLETE** — postmortem capsules and chaos simulator harness shipped; `make chaos` is now the standing reproducibility gate | wt2 → main | 720906bf4..89fabc360, ca74cb4c2..6fb76f2b0 |
-| 2026-05-25 | **Phase 4d-5 small projections COMPLETE** — contacts, onion announcements, and HODL history shadow projections with event payloads, boot wiring, diagnostics, and diff tools | wt2 → main | 0f10cd5f4..2f23d8352 |
-| 2026-05-25 | **Snapshot halt recovery COMPLETE** — runtime recovery request path, local manifest builder, `tip_wedged_resnapshot` condition, verification gates, and recovery observability | wt3 → main | 4d7f7adee..8e25887b0 |
-| 2026-05-25 | **Phase 3 chain_restore dissolve COMPLETE** — service implementation and compatibility header deleted; focused planner/executor/repair/boot modules own restore | main | 89892c441, 8658ef0d2 |
-| 2026-05-25 | **Phase 3 header_probe dissolve COMPLETE** — PR-2 shrink to 392 LOC, legacy header RPC helper extracted, old `header_probe_service.{h,c}` deleted/renamed to `header_probe.{h,c}` | wt3 → main | 981ad4897, d17eb5ca0 |
-| 2026-05-24 | **Phase 4d-3 wallet projection COMPLETE** — public-only wallet projection, diff RPC/MCP tool, diagnostics, replay edge coverage, secret/payload audit, and live fresh-node `match:true` diff evidence | wt2 → main | 12284eb3e, 5626552cb |
-| 2026-05-24 | **Phase 2 C-3 validate_headers AUTHORITATIVE** — the flip; full test_parallel 0/196; stabilized 2 pre-existing flaky timing tests (crypto_registry ECDSA, event async) | wt3 → main | ad34efb65, 535f14902, 72dd5e01f |
-| 2026-05-24 | **Phase 4c FINALIZED** — `zcl_block_index_diff` MCP tool + dumper wired + 9-case `test_block_index_projection`; block_index_projection complete | wt2 → main | 066462576, 91b4ee734, 2f23d6a44, 2e289e41b |
-| 2026-05-24 | **Phase 4d-1 mempool projection MERGED** — `EV_TX_ADMIT/REMOVE_MEMPOOL` consumer + shadow replay | wt2 → main | da005eb31, cc84e9419 |
-| 2026-05-24 | **Phase 3 header_probe PR-1 MERGED** — `header_probe_poll` Job under net supervisor (period=30s, live-confirmed in supervisor dump) | main | 79b53852a |
-| 2026-05-24 | **Phase 8 spec drafted** — event-log compaction & retention (checkpoint event + segmentation + retention modes) | main | 533b7223e |
-| 2026-05-24 | **Phase 4a event_log primitive MERGED** — append-only file with fsync-sentinel torn-write recovery; 24-trial kill-9 fuzz harness all green; 131 evt/sec on this disk (disk fsync-rate-limited per assignment doc note). Cherry-picked from orch sub-agent's isolated worktree | orch sub-agent → main | 76b3a10b4 |
-| 2026-05-24 | **test_supervisor regression fixed** — pre-existing failure on main (introduced by supervisor tree split); test now looks at `root_orphans[]` instead of removed `children[]`. test_parallel: 0/194 failed | main | ae47aa283 |
-| 2026-05-24 | **C-2 commit 3/4 shipped** — divergence guard in legacy `accept_block_header` ingress | wt3 → main | 659bc3e5a |
-| 2026-05-24 | **Phase 5a-2 MERGED** — first call-site rewire: Equihash PoW now routes through `crypto_registry` (`CRYPTO_PROOF_EQUIHASH_200_9`); registry indirection in production | wt2 → main | f00be351f |
-| 2026-05-24 | **5a-1 polish** — fixed JSON leaks in `crypto_registry_dump_state_json`, added LOG_FAIL diagnostics on registration failures, expanded test from 5 to 9 cases | orch sub-agent → main | dde0183c7 |
-| 2026-05-24 | **C-2 commit 2/4 shipped** — authoritative write path gated on `HEADER_ADMIT_MODE_AUTHORITATIVE` | wt3 → main | 58921e518 |
-| 2026-05-24 | **Phase 5a-1 MERGED — crypto registry skeleton.** SHA256/BLAKE2b/ECDSA/Groth16 wrappers + dispatch table | wt2 → main | c4bebe0a2 |
-| 2026-05-24 | **Plans:** standalone cutover C-3 spec; Phase 4c block_index_projection (kills LevelDB); Phase 5a-2 first call-site rewire (Equihash PoW); orchestrator launched sub-agent for Phase 5a-1 implementation | main | e41fb92ba |
-| 2026-05-24 | **Phase 3 supervisor tree split MERGED** — flat supervisor → 7 domain supervisors (chain, net, mempool, wallet, feature, onion, op) + self_heal | wt3 → main | dae31dee9 |
-| 2026-05-24 | **Phase 3 watchdog dissolve COMPLETE** — PR-2 (4 kick conditions) + PR-3 (DELETED `sync_watchdog_service.c` — 1,448 LOC gone) | wt2 → main | 611631541 |
-| 2026-05-24 | **Phase 2 S-9 MERGED — Wave S SHADOW COMPLETE** — tip_finalize shadow stage; all 9 stages ship; cutover C-2 unblocked | wt3 → main | 1a65b33c7 |
-| 2026-05-24 | **Plans:** Phase 4b utxo_projection assignment (10 tasks, first event-log consumer) + Phase 5a-1 crypto registry skeleton assignment (parallel-safe, additive indirection) | main | 7b3832c62 |
-| 2026-05-24 | **Workflow:** direct-push-to-main; agent-protocol.md rewritten; 22 stale remote branches deleted; only `origin/main` remains | main | bb5bcc7f1 |
-| 2026-05-24 | **Phase 2 S-8 MERGED** — utxo_apply shadow stage: per-block UTXO delta computation (added/spent), shadow-vs-live diff (`g_delta_diverged_total` gate for C-8) | main | 497220f58 |
-| 2026-05-24 | Cherry-picked wt2 mailbox drain hardening (bounded drains prevent reentrant-publish starvation) + wallet view projection move (lint gate #20 debt) | main | 12d9c8e73 |
-| 2026-05-23 | **Phase 2 S-7 MERGED** — zero-knowledge proof verification shadow stage: Sapling spends + outputs (Groth16), Sprout JoinSplits (Groth16/PHGR13), binding sigs; per-proof-type counters | main | b6138327f |
-| 2026-05-23 | Plans: Wave S cutover playbook (9 PRs, 4-commit structure) + Phase 5 crypto agility + 3 mega-module dissolve plans | main | 0a6fd9108 |
-| 2026-05-23 | **Phase 2 S-6 MERGED** — script_validate shadow stage: per-input script_verify across every tx; per-height log of (verified \| script_invalid \| internal_error \| upstream_failed) | main | (S-6 merge) |
-| 2026-05-23 | **Phase 3 PR-1 MERGED** — first 2 watchdog conditions extracted: `block_failed_mask_at_tip` predicate extended; NEW `utxo_activation_paused` | main | 19ae6d8b1 |
-| 2026-05-23 | Plans: 2 more dissolve plans drafted (`chain_advance_coordinator.md`, `legacy_mirror_sync_service.md`) + Phase 4 storage unification architecture | main | 123c00b13 |
-| 2026-05-23 | **Phase 1b MERGED** — projection adoption: `zcl_getblockcount` reads MVCC snapshot; new `chain_projection_*`, framework projection wrapper, MVCC-under-load stress test (4 readers + 1 writer × 1000) | main | a96856925 |
-| 2026-05-23 | **Phase 2 S-5 MERGED** — body_persist shadow stage: per-height read + header + Merkle verification, no consensus mutation | main | 218b79bb4 |
-| 2026-05-23 | Plan: dissolve `sync_watchdog_service.c` (1,448 LOC) → 8 Conditions over 3 PRs (~850 LOC net deletion) | main | b7257f225 |
-| 2026-05-23 | **Phase 1c MERGED** — platform.clock + platform.rng rewired in 167 files; gate #19 ratcheted WARN→FAIL with 0 violations | main | be9e05022 |
-| 2026-05-23 | **Phase 1a MERGED** — first production mailbox adopter: `header_probe_service` → `header_admit_inbox` → `header_admit_stage` drain | main | (prior merge before be9e05022) |
-| 2026-05-23 | **Phase 0 MERGED** — condition engine + 3 conditions (wt2) + lint gates #18-#20 WARN (wt3) + test fixture fixes | main | 4e0ea3382 |
-| 2026-05-23 | wt3 Phase 0b — `lib/framework/condition.h` stub, `tools/lint/framework_shape_check.sh` + 2 prep gates, `DEFENSIVE_CODING.md` updates | wt3/phase0-framework-shape-lint | 32b17449c |
-| 2026-05-23 | wt2 Phase 0a — `lib/framework/condition.{c,h}`, `self_heal` supervisor, 3 conditions (block_failed_mask_at_tip, contradiction_frozen, chain_stalled_with_data), `zcl_conditions` MCP tool, 6 unit tests passing | wt2/phase0-condition-engine | 94e5fa31f |
-| 2026-05-23 | Scaffold: FRAMEWORK.md + REFACTOR_STATUS.md + folder scaffold + work/ docs | main | 786ec92cc |
-| 2026-05-23 | `chain_tip_watchdog` — single-purpose tip-stuck overlord (PRE-framework, will dissolve into a Condition in a future phase) | main | fb32df981 |
-| 2026-05-22 | Wave S S-4b — legacy-attach one-shot import | main | (multiple) |
-| 2026-05-22 | Wave S S-4 — body_fetch shadow stage | main | 95abed36d |
+Recent history lives in `git log` — the per-PR refactor changelog used to sit
+here and was removed as journey archaeology.
 
 ## Decision log (binding)
 
