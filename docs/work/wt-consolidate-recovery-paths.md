@@ -21,6 +21,12 @@ bulk-copies block index + chainstate for empty datadirs, `-fastimport` walks
 legacy block payloads through `process_new_block`, and `-legacy-attach` snapshots
 a running legacy node and stamps Wave S cursors. No safe collapse target found.
 
+Task B audit in progress: current registry has 20 conditions (the original
+17-count inventory predated later snapshot/cutover additions). The called-out
+tip/stall conditions still have distinct triggers; first cleanup narrowed
+`chain_stalled_with_data` to the canonical mirror `activation-no-progress`
+blocker instead of stale `last_error` text.
+
 > Why queued, not now: days of whack-a-mole accreted overlapping wedge-recovery
 > paths. Most exist only because `connect_block` kept false-wedging. Fix the cause
 > first; then a lot of this is provably dead and safe to delete.
