@@ -844,6 +844,9 @@ static int t_scoreboard_operator_gate_contract(void)
         ASSERT(strstr(buf, "state_ready") != NULL);
         ASSERT(strstr(buf, "cursor_lag") != NULL);
         ASSERT(strstr(buf, "window_complete") != NULL);
+        ASSERT(strstr(buf, "failed_total") != NULL);
+        ASSERT(strstr(buf, "error_count") != NULL);
+        ASSERT(strstr(buf, "last_blocked_age_seconds") != NULL);
         ASSERT(strstr(buf, "cutovermode") == NULL);
         ASSERT(strstr(buf, "setgenerate") == NULL);
         ASSERT(strstr(buf, "sendtoaddress") == NULL);

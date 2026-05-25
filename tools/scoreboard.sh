@@ -50,6 +50,7 @@ fi
 python3 - "$health_json" "$preflight_json" "$MODE" <<'PY'
 import json
 import sys
+import time
 
 health_path, preflight_path, mode = sys.argv[1:4]
 
@@ -69,6 +70,16 @@ def fmt_bool(obj, key):
     if not isinstance(obj, dict) or key not in obj:
         return "unknown"
     return str(bool(obj.get(key))).lower()
+
+def fmt_age_from_unix(obj, key):
+    try:
+        ts = int(obj.get(key, 0) or 0)
+    except Exception:
+        return "unknown"
+    if ts <= 0:
+        return "unknown"
+    age = int(time.time()) - ts
+    return str(age) if age >= 0 else "unknown"
 
 health = load_rpc(health_path)
 preflight = load_rpc(preflight_path)
@@ -155,7 +166,10 @@ print(
     f"window_available={fmt_bool(vh, 'window_available')} "
     f"window_complete={fmt_bool(vh, 'window_complete')} "
     f"window_failed_count={vh.get('window_failed_count', 0)} "
-    f"window_first_failed_height={vh.get('window_first_failed_height', -1)}"
+    f"window_first_failed_height={vh.get('window_first_failed_height', -1)} "
+    f"failed_total={vh.get('failed_total', 'unknown')} "
+    f"error_count={vh.get('error_count', 'unknown')} "
+    f"last_blocked_age_seconds={fmt_age_from_unix(vh, 'last_blocked_unix')}"
 )
 print(
     "cutover_state="
