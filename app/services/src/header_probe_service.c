@@ -29,23 +29,17 @@
 #include "primitives/block.h"
 #include "encoding/utilstrencodings.h"
 #include "json/json.h"
+#include "rpc/legacy_rpc_client.h"
 #include "util/log_macros.h"
 #include "util/safe_alloc.h"
 
-#include <arpa/inet.h>
-#include <errno.h>
-#include <netinet/in.h>
 #include <pthread.h>
 #include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
-#include <sys/socket.h>
-#include <sys/time.h>
-#include <sys/types.h>
 #include <time.h>
-#include <unistd.h>
 
 /* ── Constants ─────────────────────────────────────────────────── */
 
@@ -55,7 +49,6 @@
 #define HP_DEFAULT_BATCH         2000
 #define HP_DEFAULT_LAG           100
 #define HP_MAX_BATCH             5000
-#define HP_RPC_TIMEOUT_SECS      5
 #define HP_RESPONSE_MAX          16384    /* a full hex-header is ~3 KB */
 #define HP_MAX_HEADER_BYTES      (BLOCK_HEADER_SIZE + MAX_SOLUTION_SIZE + 8)
 
@@ -66,10 +59,6 @@
  * 2*ceil(N/128) (today: 215 RTTs). Cap chosen to keep response < ~600 KB
  * (each verbose=false header hex is ~3 KB on this chain). */
 #define HP_RPC_BATCH             128
-
-/* Per-batch dynamic-response cap: 1 MB is generous for a 128-item batch
- * of getblockheader responses. */
-#define HP_DYN_RESP_MAX          (1u << 20)
 
 /* ── Global state ──────────────────────────────────────────────── */
 
@@ -97,89 +86,7 @@ static struct {
     .lock = PTHREAD_MUTEX_INITIALIZER,
 };
 
-/* ── zclassic.conf parser (mirrors oracle service) ─────────────── */
-
-static bool hp_parse_zclassic_conf(char *out_user, size_t user_sz,
-                                   char *out_pass, size_t pass_sz,
-                                   int *out_port)
-{
-    const char *home = getenv("HOME");
-    if (!home || !home[0]) return false;
-
-    char path[512];
-    snprintf(path, sizeof(path), "%s/.zclassic/zclassic.conf", home);
-    FILE *f = fopen(path, "r");
-    if (!f) return false;
-
-    char line[512];
-    bool got_user = false, got_pass = false;
-    while (fgets(line, sizeof(line), f)) {
-        char *p = line;
-        while (*p == ' ' || *p == '\t') p++;
-        if (*p == '#' || *p == ';' || *p == '\n' || *p == '\0') continue;
-
-        char *eq = strchr(p, '=');
-        if (!eq) continue;
-        *eq = '\0';
-        char *key = p;
-        char *val = eq + 1;
-        char *kend = eq - 1;
-        while (kend > key && (*kend == ' ' || *kend == '\t')) *kend-- = '\0';
-        while (*val == ' ' || *val == '\t') val++;
-        char *vend = val + strlen(val);
-        while (vend > val && (vend[-1] == '\n' || vend[-1] == '\r' ||
-                              vend[-1] == ' '  || vend[-1] == '\t'))
-            *--vend = '\0';
-
-        if (strcmp(key, "rpcuser") == 0) {
-            snprintf(out_user, user_sz, "%s", val);
-            got_user = true;
-        } else if (strcmp(key, "rpcpassword") == 0) {
-            snprintf(out_pass, pass_sz, "%s", val);
-            got_pass = true;
-        } else if (strcmp(key, "rpcport") == 0 && out_port) {
-            int n = atoi(val);
-            if (n > 0 && n < 65536) *out_port = n;
-        }
-    }
-    fclose(f);
-    return got_user && got_pass;
-}
-
-/* ── Base64 encoder (Basic auth) ────────────────────────────────── */
-
-static const char hp_b64_chars[] =
-    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-
-static void hp_base64_encode(const unsigned char *in, size_t inlen,
-                             char *out, size_t outsz)
-{
-    size_t i = 0, o = 0;
-    while (i + 3 <= inlen && o + 4 < outsz) {
-        unsigned v = (unsigned)((in[i] << 16) | (in[i+1] << 8) | in[i+2]);
-        out[o++] = hp_b64_chars[(v >> 18) & 0x3f];
-        out[o++] = hp_b64_chars[(v >> 12) & 0x3f];
-        out[o++] = hp_b64_chars[(v >>  6) & 0x3f];
-        out[o++] = hp_b64_chars[ v        & 0x3f];
-        i += 3;
-    }
-    if (i < inlen && o + 4 < outsz) {
-        unsigned v = (unsigned)(in[i] << 16);
-        if (i + 1 < inlen) v |= (unsigned)(in[i+1] << 8);
-        out[o++] = hp_b64_chars[(v >> 18) & 0x3f];
-        out[o++] = hp_b64_chars[(v >> 12) & 0x3f];
-        out[o++] = (i + 1 < inlen) ? hp_b64_chars[(v >> 6) & 0x3f] : '=';
-        out[o++] = '=';
-    }
-    if (o < outsz) out[o] = '\0';
-    else if (outsz > 0) out[outsz - 1] = '\0';
-}
-
-/* ── Minimal HTTP/1.1 JSON-RPC client ──────────────────────────────
- *
- * `resp` must be large enough for a hex-encoded header response
- * (~3 KB body + a few hundred bytes of HTTP headers). Returns true
- * if a full body was received. */
+/* ── Shared legacy JSON-RPC transport wrappers ─────────────────── */
 
 static bool hp_http_rpc_call(const char *host, int port,
                              const char *user, const char *pass,
@@ -187,84 +94,20 @@ static bool hp_http_rpc_call(const char *host, int port,
                              char *resp, size_t resp_cap,
                              char *err, size_t err_sz)
 {
-    int fd = socket(AF_INET, SOCK_STREAM, 0);
-    if (fd < 0) {
-        snprintf(err, err_sz, "socket: %s", strerror(errno));
+    char *raw = NULL;
+    if (!legacy_rpc_call(host, port, user, pass, body_json,
+                         &raw, err, err_sz)) {
         return false;
     }
 
-    struct timeval tv = { .tv_sec = HP_RPC_TIMEOUT_SECS, .tv_usec = 0 };
-    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
-    setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
-
-    struct sockaddr_in sa = {0};
-    sa.sin_family = AF_INET;
-    sa.sin_port = htons((uint16_t)port);
-    if (inet_pton(AF_INET, host, &sa.sin_addr) != 1) {
-        close(fd);
-        snprintf(err, err_sz, "bad host: %s", host);
+    size_t n = strlen(raw);
+    if (n + 1 > resp_cap) {
+        snprintf(err, err_sz, "response too large (%zu > %zu)", n, resp_cap);
+        free(raw);
         return false;
     }
-    if (connect(fd, (struct sockaddr *)&sa, sizeof(sa)) != 0) {
-        snprintf(err, err_sz, "connect %s:%d: %s",
-                 host, port, strerror(errno));
-        close(fd);
-        return false;
-    }
-
-    char userpass[256];
-    snprintf(userpass, sizeof(userpass), "%s:%s",
-             user ? user : "", pass ? pass : "");
-    char b64[384];
-    hp_base64_encode((const unsigned char *)userpass, strlen(userpass),
-                     b64, sizeof(b64));
-
-    char req[1024];
-    int reqlen = snprintf(req, sizeof(req),
-        "POST / HTTP/1.1\r\n"
-        "Host: %s:%d\r\n"
-        "Authorization: Basic %s\r\n"
-        "Content-Type: application/json\r\n"
-        "Content-Length: %zu\r\n"
-        "Connection: close\r\n"
-        "\r\n"
-        "%s",
-        host, port, b64, strlen(body_json), body_json);
-    if (reqlen < 0 || (size_t)reqlen >= sizeof(req)) {
-        close(fd);
-        snprintf(err, err_sz, "request too large");
-        return false;
-    }
-
-    ssize_t sent = 0;
-    while (sent < reqlen) {
-        ssize_t n = send(fd, req + sent, (size_t)(reqlen - sent), 0);
-        if (n <= 0) {
-            snprintf(err, err_sz, "send: %s", strerror(errno));
-            close(fd);
-            return false;
-        }
-        sent += n;
-    }
-
-    size_t total = 0;
-    while (total + 1 < resp_cap) {
-        ssize_t n = recv(fd, resp + total, resp_cap - total - 1, 0);
-        if (n < 0) {
-            snprintf(err, err_sz, "recv: %s", strerror(errno));
-            close(fd);
-            return false;
-        }
-        if (n == 0) break;
-        total += (size_t)n;
-    }
-    resp[total] = '\0';
-    close(fd);
-
-    if (total == 0) {
-        snprintf(err, err_sz, "empty response");
-        return false;
-    }
+    memcpy(resp, raw, n + 1);
+    free(raw);
     return true;
 }
 
@@ -277,12 +120,11 @@ static int hp_parse_rpc_result(const char *raw,
                                int64_t *out_int,
                                char *err, size_t err_sz)
 {
-    const char *body = strstr(raw, "\r\n\r\n");
+    const char *body = legacy_rpc_http_body(raw);
     if (!body) {
         snprintf(err, err_sz, "no http body separator");
         return 0;
     }
-    body += 4;
 
     struct json_value v = {0};
     if (!json_read(&v, body, strlen(body))) {
@@ -469,135 +311,6 @@ static bool hp_fetch_one_header(const char *host, int port,
     return true;
 }
 
-/* ── Batched JSON-RPC: dynamic-buffer HTTP call ───────────────────
- *
- * Like hp_http_rpc_call but malloc-grows the response buffer up to
- * HP_DYN_RESP_MAX. On success returns true and *out_resp = the
- * malloc'd response (caller must free). On failure returns false
- * with *out_resp = NULL. */
-static bool hp_http_rpc_call_dyn(const char *host, int port,
-                                  const char *user, const char *pass,
-                                  const char *body_json,
-                                  char **out_resp,
-                                  char *err, size_t err_sz)
-{
-    *out_resp = NULL;
-    int fd = socket(AF_INET, SOCK_STREAM, 0);
-    if (fd < 0) {
-        snprintf(err, err_sz, "socket: %s", strerror(errno));
-        return false;
-    }
-    struct timeval tv = { .tv_sec = HP_RPC_TIMEOUT_SECS, .tv_usec = 0 };
-    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
-    setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
-
-    struct sockaddr_in sa = {0};
-    sa.sin_family = AF_INET;
-    sa.sin_port   = htons((uint16_t)port);
-    if (inet_pton(AF_INET, host, &sa.sin_addr) != 1) {
-        close(fd);
-        snprintf(err, err_sz, "bad host: %s", host);
-        return false;
-    }
-    if (connect(fd, (struct sockaddr *)&sa, sizeof(sa)) != 0) {
-        snprintf(err, err_sz, "connect %s:%d: %s",
-                 host, port, strerror(errno));
-        close(fd);
-        return false;
-    }
-
-    char userpass[256];
-    snprintf(userpass, sizeof(userpass), "%s:%s",
-             user ? user : "", pass ? pass : "");
-    char b64[384];
-    hp_base64_encode((const unsigned char *)userpass, strlen(userpass),
-                     b64, sizeof(b64));
-    /* Assemble the full request (header + body) into one malloc'd
-     * buffer and send in a single loop. Single contiguous send keeps
-     * tiny test servers happy (their recv loop may break at the
-     * \r\n\r\n separator before the body arrives in a separate
-     * packet). */
-    size_t body_len = strlen(body_json);
-    size_t req_cap  = 768 + body_len;
-    char *req = zcl_malloc(req_cap, "hp_dyn_req");
-    if (!req) {
-        close(fd);
-        snprintf(err, err_sz, "oom req");
-        return false;
-    }
-    int reqlen = snprintf(req, req_cap,
-        "POST / HTTP/1.1\r\n"
-        "Host: %s:%d\r\n"
-        "Authorization: Basic %s\r\n"
-        "Content-Type: application/json\r\n"
-        "Content-Length: %zu\r\n"
-        "Connection: close\r\n"
-        "\r\n"
-        "%s",
-        host, port, b64, body_len, body_json);
-    if (reqlen < 0 || (size_t)reqlen >= req_cap) {
-        free(req);
-        close(fd);
-        snprintf(err, err_sz, "request too large for buffer");
-        return false;
-    }
-    size_t sent = 0;
-    while (sent < (size_t)reqlen) {
-        ssize_t n = send(fd, req + sent, (size_t)reqlen - sent, 0);
-        if (n <= 0) {
-            snprintf(err, err_sz, "send: %s", strerror(errno));
-            free(req);
-            close(fd);
-            return false;
-        }
-        sent += (size_t)n;
-    }
-    free(req);
-
-    /* Grow buffer as needed up to cap. */
-    size_t cap = 64 << 10;
-    size_t total = 0;
-    char *buf = zcl_malloc(cap, "hp_dyn_resp");
-    if (!buf) {
-        close(fd);
-        snprintf(err, err_sz, "oom resp");
-        return false;
-    }
-    for (;;) {
-        if (total + 1 >= cap) {
-            if (cap >= HP_DYN_RESP_MAX) {
-                snprintf(err, err_sz, "response > cap %u", HP_DYN_RESP_MAX);
-                free(buf); close(fd); return false;
-            }
-            size_t ncap = cap * 2;
-            if (ncap > HP_DYN_RESP_MAX) ncap = HP_DYN_RESP_MAX;
-            char *nbuf = zcl_realloc(buf, ncap, "hp_dyn_resp");
-            if (!nbuf) {
-                snprintf(err, err_sz, "oom resp grow");
-                free(buf); close(fd); return false;
-            }
-            buf = nbuf;
-            cap = ncap;
-        }
-        ssize_t n = recv(fd, buf + total, cap - total - 1, 0);
-        if (n < 0) {
-            snprintf(err, err_sz, "recv: %s", strerror(errno));
-            free(buf); close(fd); return false;
-        }
-        if (n == 0) break;
-        total += (size_t)n;
-    }
-    buf[total] = '\0';
-    close(fd);
-    if (total == 0) {
-        snprintf(err, err_sz, "empty response");
-        free(buf);
-        return false;
-    }
-    *out_resp = buf;
-    return true;
-}
-
 /* Parse a JSON-RPC array response. Each element must have a string
  * `.result` field. Fills out_strs[i] with the result string (truncated
  * to slot_sz-1 chars). On any element error returns false. */
@@ -606,12 +319,11 @@ static bool hp_parse_rpc_array_strs(const char *raw,
                                      char *out_strs, size_t slot_sz,
                                      char *err, size_t err_sz)
 {
-    const char *body = strstr(raw, "\r\n\r\n");
+    const char *body = legacy_rpc_http_body(raw);
     if (!body) {
         snprintf(err, err_sz, "no http body separator");
         return false;
     }
-    body += 4;
 
     struct json_value v = {0};
     if (!json_read(&v, body, strlen(body))) {
@@ -717,8 +429,8 @@ static bool hp_fetch_headers_batch(const char *host, int port,
     body1[off]   = '\0';
 
     char *resp1 = NULL;
-    if (!hp_http_rpc_call_dyn(host, port, user, pass, body1,
-                               &resp1, err, err_sz)) {
+    if (!legacy_rpc_call(host, port, user, pass, body1,
+                         &resp1, err, err_sz)) {
         free(body1);
         return false;
     }
@@ -787,8 +499,8 @@ static bool hp_fetch_headers_batch(const char *host, int port,
     body2[off]   = '\0';
 
     char *resp2 = NULL;
-    if (!hp_http_rpc_call_dyn(host, port, user, pass, body2,
-                               &resp2, err, err_sz)) {
+    if (!legacy_rpc_call(host, port, user, pass, body2,
+                         &resp2, err, err_sz)) {
         free(body2);
         return false;
     }
@@ -1155,8 +867,8 @@ bool header_probe_init(const struct header_probe_config *cfg,
     if (need_user || need_pass) {
         int port_from_conf = g_hp.rpc_port;
         char u[64] = {0}, p[128] = {0};
-        if (hp_parse_zclassic_conf(u, sizeof(u), p, sizeof(p),
-                                   &port_from_conf)) {
+        if (legacy_rpc_parse_conf(u, sizeof(u), p, sizeof(p),
+                                  &port_from_conf)) {
             if (need_user)
                 snprintf(g_hp.rpc_user, sizeof(g_hp.rpc_user), "%s", u);
             if (need_pass)
