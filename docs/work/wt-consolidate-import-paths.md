@@ -61,6 +61,11 @@ Verification:
   UTXOs, and stamps 3 stage cursors. The 180s smoke wrapper later times out
   while the live legacy activation path repeatedly fails at h=3124590; that path
   is explicitly out of scope for this import-path consolidation.
+- Staged `-fastimport` against a live-safe copied `blocks/index` plus hardlinked
+  `blk*.dat` source loads the direct-import path and returns the expected no-op
+  on an already-attached scratch datadir (`from=3124614 legacy=3124589`). An
+  empty-datadir probe also passed SHA3 spotcheck and began the full walk at
+  ~212 blk/s before the smoke timeout; a full direct import is not a short smoke.
 
 ## The shape (one canonical importer, pluggable mode)
 
