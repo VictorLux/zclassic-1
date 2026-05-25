@@ -208,6 +208,11 @@ Both tools are read-only; no `destructive` flag.
 **Acceptance:** `zcl_postmortem_list` returns the current capsule
 inventory. `zcl_postmortem_replay` returns the event sequence.
 
+**Progress 2026-05-25:** implemented both read-only ops tools against
+the public `postmortem_list`/`postmortem_load` APIs. Added an MCP
+controller dispatch test that writes a real capsule, verifies inventory
+JSON, and replays the recorded injected event stream.
+
 ### Task 5: Test suite
 
 EDIT `lib/test/src/test_postmortem.c`. Test cases:
