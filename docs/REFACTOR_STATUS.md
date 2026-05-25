@@ -139,9 +139,9 @@ Phase 2  [██████████] 100%   Wave S SHADOW complete (S-1..S-
   └ S-9    [██████████] 100%   tip_finalize shadow (wt3)              ✅ 1a65b33c7
 Phase 2 CUTOVER [█░░░░░░░░░]  ~8%   Flip shadow → authoritative   ⚠ REVERTED — 0/7 stages authoritative in prod
   ├ UNWEDGE FIRST [░░░░░░░░░░] 0%  live node wedged on BIP30 stale-coins (see P0) — fix that before ANY re-flip
-  ├ RE-FLIP READINESS [░░░░░░] 0%  was the C-3 `header-admit-cutover-diverged` a TRUE header divergence, or
-  │                                downstream of the same torn coins state? Unverifiable while reverted — re-flip
-  │                                on a clean node, watch one block, revert instantly if it diverges.
+  ├ SAFE-FLIP GUARD [░░░░░░░░] 0%  build the auto-revert-on-no-forward-progress Condition + follow the
+  │                                protocol BEFORE re-flipping — work/cutover-safety-protocol.md. Without it,
+  │                                the next flip can silently wedge the chain again (exactly what C-3 did).
   ├ C-2    [███████░░░] flipped, then REVERTED   header_admit: flip f3f0c6c4e → set back to SHADOW 6e0f6a82c
   ├ C-3    [███████░░░] flipped, WEDGED, REVERTED validate_headers: flip ad34efb65 → froze chain → SHADOW 6e0f6a82c
   ├ C-3del [░░░░░░░░░░]   0%   delete legacy validate_headers fallback ← gated on root-cause + clean re-flip
@@ -267,7 +267,8 @@ dissolve ✅ (981ad4897..1b0847820) · snapshot wedge recovery ✅
 ### Claimable NOW (no soak gate, fully independent)
 0. 🔴 **[`wt-bip30-stale-coins-unwedge.md`](./work/wt-bip30-stale-coins-unwedge.md) — HIGHEST PRIORITY: this is the live wedge.** Root-caused 2026-05-25: 1 stale coinbase UTXO row at 3,123,689 (chain_tip+1) trips `bad-txns-BIP30` every retry; the case-(e) auto-rewind that would clear it isn't running on the live boot path. RED test + make the single-block rewind run at boot. Moves Tip-advancing + Wedge-recovery. Deploy gated on Rhett. NB: the just-landed resnapshot path (`8e25887b0`) is the heavyweight fallback — this is the targeted 1-row fix; don't re-snapshot 1.3M UTXOs to drop one row.
 1. ⚡ [`wt-perf-integrate-rebuild.md`](./work/wt-perf-integrate-rebuild.md) **PR-3: parallel io_uring blk*.dat marking in cold-import** — cold-import is ~180s, **101s of it is single-threaded blk*.dat marking** (measured `941b9803d`). The `rebuild_recent` prototype already proved the fix on this exact data (5.6s/2GB/s). Parallelize the scan → seconds. Moves #1 cold sync. PR-1 (HW-CRC) ✅ `69939ec97`; PR-2 (io_uring bulk-append) still spec'd.
-2. More self-heal Conditions — chain_restore/header_probe are dissolved (✅); use [`docs/dissolve/`](./dissolve/) for the remaining mega-module plans (chain_advance, legacy_mirror, utxo_recovery).
+2. 🛡️ **[`cutover-safety-protocol.md`](./work/cutover-safety-protocol.md) — auto-revert-on-no-forward-progress Condition.** The guard whose absence let C-3 wedge the chain for a whole session. Buildable now from existing infra (`sync_monitor_tip_advance_age`). REQUIRED before any C-* re-flip. Moves UNBREAKABLE (Tip advancing, Alerts).
+3. More self-heal Conditions — chain_restore/header_probe are dissolved (✅); use [`docs/dissolve/`](./dissolve/) for the remaining mega-module plans (chain_advance, legacy_mirror, utxo_recovery).
 
 ### Soak-gated (read the spec now, start when the 24 h C-3 soak clears)
 - [`wt-phase2-cutover-c3-final-delete.md`](./work/wt-phase2-cutover-c3-final-delete.md) — delete the legacy validate_headers fallback.
