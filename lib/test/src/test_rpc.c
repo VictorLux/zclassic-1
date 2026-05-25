@@ -322,6 +322,8 @@ int test_rpc(void) {
         ok = ok && json_get(ce, "health_reason") != NULL;
         ok = ok && json_get(diff, "status") != NULL;
         ok = ok && json_get(vh, "failed_total") != NULL;
+        ok = ok && json_get(vh, "required_cursor") != NULL;
+        ok = ok && json_get(vh, "cursor_lag") != NULL;
         ok = ok && blockers->type == JSON_ARR;
 
         json_free(&params);

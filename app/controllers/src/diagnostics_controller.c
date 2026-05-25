@@ -800,7 +800,8 @@ static bool rpc_cutoverpreflight(const struct json_value *params, bool help,
         "cutoverpreflight [start_height] [end_height]\n"
         "\nRead-only C-3 preflight snapshot: runtime cutover modes, "
         "live node health, header_admit shadow-vs-active-chain diff, "
-        "validate_headers stage counters, and a conservative ready boolean.\n"
+        "validate_headers stage counters/cursor coverage, and a conservative "
+        "ready boolean.\n"
         "\nHeights default to the header_admit diff auto-window. "
         "Result: { ready, blockers, live, chain_evidence, modes, "
         "header_admit_diff, validate_headers }");
@@ -870,9 +871,23 @@ static bool rpc_cutoverpreflight(const struct json_value *params, bool help,
         rep.status == HEADER_ADMIT_DIFF_CONVERGED &&
         rep.mismatch_count == 0 &&
         rep.missing_in_chain_count == 0;
-    bool validate_ready = vh_ok &&
+    int64_t vh_cursor = json_obj_int_or(&vh, "cursor", -1);
+    int64_t required_vh_cursor =
+        (rep.end_height >= 0) ? ((int64_t)rep.end_height + 1) : 0;
+    int64_t vh_cursor_lag =
+        (vh_cursor >= 0 && vh_cursor < required_vh_cursor)
+            ? (required_vh_cursor - vh_cursor) : 0;
+    json_push_kv_int(&vh, "required_cursor", required_vh_cursor);
+    json_push_kv_int(&vh, "cursor_lag", vh_cursor_lag);
+
+    bool validate_clean = vh_ok &&
         json_obj_int_or(&vh, "failed_total", 1) == 0 &&
         json_obj_int_or(&vh, "error_count", 1) == 0;
+    bool validate_caught_up =
+        required_vh_cursor > 0 &&
+        vh_cursor >= required_vh_cursor &&
+        vh_cursor_lag == 0;
+    bool validate_ready = validate_clean && validate_caught_up;
     bool modes_ready =
         strcmp(ha_mode, "shadow") == 0 &&
         strcmp(vh_mode, "shadow") == 0;
@@ -883,8 +898,10 @@ static bool rpc_cutoverpreflight(const struct json_value *params, bool help,
         cutover_preflight_push_blocker(&blockers,
                                        "header_admit_diff_not_converged");
     if (!validate_ready)
-        cutover_preflight_push_blocker(&blockers,
-                                       "validate_headers_counters_not_clean");
+        cutover_preflight_push_blocker(
+            &blockers,
+            validate_clean ? "validate_headers_cursor_lag"
+                           : "validate_headers_counters_not_clean");
     if (!modes_ready)
         cutover_preflight_push_blocker(&blockers,
                                        "cutover_modes_not_shadow");
