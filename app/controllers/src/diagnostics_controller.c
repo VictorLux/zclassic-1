@@ -330,9 +330,12 @@ static bool chain_evidence_controller_dump_state_json(struct json_value *out,
                                            const char *key)
 {
     (void)key;
+    if (!out)
+        return false;
     struct chain_evidence_controller authority;
     struct chain_evidence_controller_view view;
 
+    json_set_object(out);
     chain_evidence_controller_init(&authority, app_runtime_node_db(), csr_instance());
     chain_evidence_controller_snapshot(&authority, &view);
 
@@ -754,8 +757,8 @@ static bool rpc_cutoverpreflight(const struct json_value *params, bool help,
         "live node health, header_admit shadow-vs-active-chain diff, "
         "validate_headers stage counters, and a conservative ready boolean.\n"
         "\nHeights default to the header_admit diff auto-window. "
-        "Result: { ready, blockers, live, modes, header_admit_diff, "
-        "validate_headers }");
+        "Result: { ready, blockers, live, chain_evidence, modes, "
+        "header_admit_diff, validate_headers }");
 
     const struct json_value *start_v = json_at(params, 0);
     const struct json_value *end_v = json_at(params, 1);
@@ -772,11 +775,13 @@ static bool rpc_cutoverpreflight(const struct json_value *params, bool help,
 
     struct json_value modes;
     struct json_value live;
+    struct json_value chain_evidence;
     struct json_value diff;
     struct json_value vh;
     struct json_value blockers;
     json_init(&modes);
     json_init(&live);
+    json_init(&chain_evidence);
     json_init(&diff);
     json_init(&vh);
     json_init(&blockers);
@@ -788,6 +793,10 @@ static bool rpc_cutoverpreflight(const struct json_value *params, bool help,
     bool vh_ok = validate_headers_stage_dump_state_json(&vh, NULL);
     if (!vh_ok)
         json_set_object(&vh);
+    bool ce_ok =
+        chain_evidence_controller_dump_state_json(&chain_evidence, NULL);
+    if (!ce_ok)
+        json_set_object(&chain_evidence);
 
     const char *ha_mode = header_admit_mode_name(header_admit_get_mode());
     const char *vh_mode = validate_headers_mode_name(validate_headers_get_mode());
@@ -840,6 +849,7 @@ static bool rpc_cutoverpreflight(const struct json_value *params, bool help,
                       validate_ready && modes_ready);
     json_push_kv(result, "blockers", &blockers);
     json_push_kv(result, "live", &live);
+    json_push_kv(result, "chain_evidence", &chain_evidence);
     json_push_kv(result, "modes", &modes);
     json_push_kv(result, "header_admit_diff", &diff);
     json_push_kv(result, "validate_headers", &vh);
@@ -847,6 +857,7 @@ static bool rpc_cutoverpreflight(const struct json_value *params, bool help,
     json_free(&blockers);
     json_free(&modes);
     json_free(&live);
+    json_free(&chain_evidence);
     json_free(&diff);
     json_free(&vh);
     return true;
