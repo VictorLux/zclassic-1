@@ -1,6 +1,6 @@
 # Dissolve plan: `chain_restore_service.c` → 3 Jobs + 1 Service + 1 Condition
 
-**Module:** `app/services/src/chain_restore_service.c` (1,674 LOC)
+**Module:** `app/services/src/chain_restore_service.c` (174 LOC after PR-2b)
 **Header:** `app/services/include/services/chain_restore_service.h`
 **Phase:** 3 (Dissolve mega-modules)
 **Gated on:** Wave S cutover C-9 shipped + soaked (so the saga owns
@@ -95,9 +95,17 @@ behavior change.
 function becomes a thin shim that calls the jobs in sequence. Each job
 has its own cursor, so a kill -9 mid-reorg resumes correctly.
 
+Status: partial. The current execution and repair surfaces have been split
+into `chain_restore_executor.{h,c}` and `chain_restore_repair.{h,c}`; the
+remaining job conversion is now isolated from the service shell.
+
 ### PR-3: Replace `chain_restore_create_anchor` + post-restore checks
 
 `restore_from_anchor` job + `chain_integrity_failed` condition.
+
+Status: staged. Post-restore repair now lives in `chain_restore_repair.{h,c}`;
+`chain_restore_service.c` only retains validation, integrity check, and boot
+activation decision code.
 
 ### PR-4: DELETE `chain_restore_service.{c,h}`
 
