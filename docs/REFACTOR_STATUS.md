@@ -110,8 +110,9 @@ shipped but the wedge persists — root cause is deeper (see P0). Fresh assignme
 
 | Work | Goal | Who |
 |---|---|---|
-| 🔴 connect_block BIP30 self-write fix (THE disease) | Tip advancing | unclaimed — P0 |
-| ⚡ PR-3 parallel io_uring blk*.dat marking (high-perf) | Cold sync | unclaimed |
+| 🔴 connect_block BIP30 self-write fix (THE disease) | Tip advancing | **wt2 (in progress)** |
+| 🆕 `make bench` harness (5 primaries + regression gate) | ALL perf (measure first) | **READY → wt3** |
+| Consolidate recovery sprawl (DRY 3 rewinds, purge band-aids) | Lean, uptime | QUEUED behind P0 |
 | Cutover C-5→C-9 authoritative | Cold sync, validation | UNWEDGE-gated (see P0) |
 | 4e bodies-into-log | Warm restart, recovery | unclaimed |
 | chain_advance + legacy_mirror / utxo_recovery dissolve | Memory, uptime | gated on cutover |
@@ -259,7 +260,8 @@ dissolve ✅ (981ad4897..1b0847820) · snapshot wedge recovery ✅
 
 ### Claimable NOW (no soak gate, fully independent)
 0. 🔴 **[`wt-connect-bip30-selfwrite.md`](./work/wt-connect-bip30-selfwrite.md) — P0, THE disease: BIP30 self-write wedge.** PROVEN root cause of "always stuck": the UTXO set ends up 1 block ahead of the tip, and `connect_block` rejects the block's OWN coinbase as a BIP30 duplicate (impossible post-BIP34 → always a false positive). Recurs at every tip advance; boot-rewind + cold-import only move it. Fix: (1) connect_block tolerates a same-height self-coinbase; (2) write-ordering so coins never commits ahead of the block-index tip. Acceptance = sustained LIVE forward progress. Deploy gated on Rhett.
-1. ⚡ [`wt-perf-integrate-rebuild.md`](./work/wt-perf-integrate-rebuild.md) **PR-3: parallel io_uring blk*.dat marking (HIGH-PERFORMANCE track)** — cold-import ~180s, **101s of it single-threaded blk*.dat marking** (`941b9803d`); `rebuild_recent` proved 5.6s/2GB/s with HW-CRC32C + io_uring on this exact data. Parallelize the scan → seconds. Profile-first, use the hardware. Moves #1 cold sync. PR-1 (HW-CRC) ✅ `69939ec97`; PR-2 (io_uring bulk-append) spec'd.
+1. 🆕 **[`wt-bench-harness.md`](./work/wt-bench-harness.md) — READY for wt3, fully independent of P0.** `make bench`: the 5 primaries + `bench-history.csv` + a >20% regression gate. We've quoted perf numbers from ad-hoc runs with no harness — this is the "high-performance" foundation (can't optimize what you can't measure). Isolated datadir/ports, touches no C source wt2 edits. Build now; full to-tip baselines follow the P0 fix.
+   - (perf track [`wt-perf-integrate-rebuild.md`](./work/wt-perf-integrate-rebuild.md) is CLOSED: PR-1 HW-CRC ✅, PR-3 parallel scan ✅ but cold-import bypasses it; PR-2 io_uring deferred. Don't re-claim.)
 2. 🛡️ [`cutover-safety-protocol.md`](./work/cutover-safety-protocol.md) — auto-revert-on-no-forward-progress Condition (wt3 already shipped the core, `230d9b896`). REQUIRED before any C-* re-flip.
 3. More self-heal Conditions — chain_restore/header_probe dissolved (✅); remaining mega-module plans in [`docs/dissolve/`](./dissolve/).
 
