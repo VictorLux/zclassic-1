@@ -350,5 +350,9 @@ the capsule API plus the non-signal save/list/load path.
 - Added boot-time postmortem retention: unpacked `.cap` directories are pruned
   by age and newest-count limit during postmortem setup. Compression of
   unpacked capsules remains the remaining boot maintenance item.
+- Added boot-time postmortem compression: prior unpacked `.cap` directories are
+  archived as `.cap.gz` before retention pruning, and the reader/list/load
+  paths now understand both unpacked and compressed capsules. Remaining work is
+  deeper crash-path hardening and live production SEGV verification.
 
 <!-- Worker: append a Completion section below when done. -->

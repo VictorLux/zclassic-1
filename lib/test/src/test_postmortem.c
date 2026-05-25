@@ -222,6 +222,93 @@ static int test_capsule_prune(void)
     return failures;
 }
 
+static int test_capsule_compress(void)
+{
+    int failures = 0;
+    char dir_template[128];
+    snprintf(dir_template, sizeof(dir_template),
+             "/tmp/zcl_postmortem_compress_%d_XXXXXX", (int)getpid());
+    char *dir = mkdtemp(dir_template);
+    PM_CHECK("compress mkdtemp", dir != NULL);
+    if (!dir) return failures + 1;
+
+    seed_tape_t *tape = seed_tape_open(0x434f4d5052455353ULL, 1779667000);
+    PM_CHECK("compress seed tape open", tape != NULL);
+    if (!tape) {
+        rm_rf_simple(dir);
+        return failures + 1;
+    }
+    seed_tape_advance(tape, 42);
+    seed_tape_inject(tape, 99, "packed", 6);
+
+    char cap_path[512];
+    struct postmortem_capture_opts opts = {
+        .dir = dir,
+        .tape = tape,
+        .crash_signal = 11,
+        .crash_unix = 1779667123,
+        .reason = "compress",
+        .log_path = NULL,
+    };
+    int rc = postmortem_capture_write(&opts, cap_path, sizeof(cap_path));
+    PM_CHECK("compress capture write", rc == 0);
+
+    char gz_path[576];
+    rc = postmortem_capsule_compress(cap_path, gz_path, sizeof(gz_path));
+    PM_CHECK("compress returns 0", rc == 0);
+    PM_CHECK("compress writes .cap.gz",
+             rc == 0 && strstr(gz_path, ".cap.gz") != NULL);
+    struct stat st;
+    PM_CHECK("compress removes unpacked dir", stat(cap_path, &st) != 0);
+    PM_CHECK("compress leaves archive",
+             rc == 0 && stat(gz_path, &st) == 0 && S_ISREG(st.st_mode));
+    PM_CHECK("compressed capsule validates",
+             rc == 0 && postmortem_capsule_validate(gz_path));
+
+    seed_tape_t *loaded = rc == 0 ? postmortem_capsule_load_tape(gz_path)
+                                  : NULL;
+    PM_CHECK("compressed tape loads", loaded != NULL);
+    if (loaded) {
+        PM_CHECK("compressed tape preserves inject count",
+                 seed_tape_inject_count(loaded) == 1);
+        seed_tape_close(loaded);
+    }
+
+    struct postmortem_capsule_entry entries[1];
+    size_t count = 0;
+    rc = postmortem_capsule_list(dir, entries, 1, &count);
+    PM_CHECK("compressed capsule listed", rc == 0 && count == 1);
+    PM_CHECK("compressed list metadata",
+             rc == 0 && count == 1 &&
+             strstr(entries[0].name, ".cap.gz") != NULL &&
+             entries[0].crash_signal == 11 &&
+             entries[0].tape_size_bytes == seed_tape_size_bytes(tape));
+
+    opts.crash_unix = 1779667124;
+    rc = postmortem_capture_write(&opts, cap_path, sizeof(cap_path));
+    PM_CHECK("compress-unpacked seed capture", rc == 0);
+    size_t compressed = 0;
+    rc = postmortem_capsule_compress_unpacked(dir, &compressed);
+    PM_CHECK("compress-unpacked returns 0", rc == 0);
+    PM_CHECK("compress-unpacked archives one", compressed == 1);
+    count = 0;
+    struct postmortem_capsule_entry two_entries[2];
+    rc = postmortem_capsule_list(dir, two_entries, 2, &count);
+    PM_CHECK("compress-unpacked list sees two archives",
+             rc == 0 && count == 2 &&
+             strstr(two_entries[0].name, ".cap.gz") != NULL &&
+             strstr(two_entries[1].name, ".cap.gz") != NULL);
+
+    size_t pruned = 0;
+    rc = postmortem_capsule_prune(dir, 1779668000, 1, 100, &pruned);
+    PM_CHECK("compressed prune returns 0", rc == 0);
+    PM_CHECK("compressed prune removes archives", pruned == 2);
+
+    seed_tape_close(tape);
+    rm_rf_simple(dir);
+    return failures;
+}
+
 int test_postmortem(void)
 {
     printf("\n=== postmortem tests ===\n");
@@ -347,6 +434,7 @@ int test_postmortem(void)
 
     seed_tape_close(tape);
     rm_rf_simple(dir);
+    failures += test_capsule_compress();
     failures += test_capsule_prune();
     failures += test_signal_handler_capsule();
     failures += test_boot_postmortem_install();

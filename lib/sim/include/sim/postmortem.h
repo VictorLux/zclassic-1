@@ -60,6 +60,12 @@ seed_tape_t *postmortem_load(const char *path);
 bool postmortem_capsule_validate(const char *capsule_path);
 seed_tape_t *postmortem_capsule_load_tape(const char *capsule_path);
 
+int postmortem_capsule_compress(const char *capsule_path,
+                                char *compressed_path_out,
+                                size_t compressed_path_cap);
+int postmortem_capsule_compress_unpacked(const char *dir,
+                                         size_t *compressed_out);
+
 int postmortem_capsule_list(const char *dir,
                             struct postmortem_capsule_entry *entries,
                             size_t entry_cap,

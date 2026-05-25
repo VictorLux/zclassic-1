@@ -15,8 +15,11 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <unistd.h>
+#include <zlib.h>
 
 #define POSTMORTEM_LOG_TAIL_MAX (64u * 1024u)
+#define TAR_BLOCK_SIZE 512u
+#define POSTMORTEM_GZ_MEMBER_MAX (4u * 1024u * 1024u)
 
 static seed_tape_t *g_postmortem_tape = NULL;
 static char g_postmortem_dir[512];
@@ -129,6 +132,10 @@ static int64_t parse_capsule_time(const char *name)
 static size_t capsule_regular_bytes(const char *path)
 {
     if (!path) return 0;
+    struct stat pst;
+    if (stat(path, &pst) == 0 && S_ISREG(pst.st_mode))
+        return pst.st_size > 0 ? (size_t)pst.st_size : 0;
+
     DIR *d = opendir(path);
     if (!d) return 0;
     size_t total = 0;
@@ -145,6 +152,192 @@ static size_t capsule_regular_bytes(const char *path)
     }
     closedir(d);
     return total;
+}
+
+static bool all_zero_block(const uint8_t *buf, size_t len)
+{
+    if (!buf) return true;
+    for (size_t i = 0; i < len; i++) {
+        if (buf[i] != 0) return false;
+    }
+    return true;
+}
+
+static unsigned long parse_octal_field(const uint8_t *buf, size_t len)
+{
+    unsigned long v = 0;
+    size_t i = 0;
+    while (i < len && (buf[i] == ' ' || buf[i] == '\0')) i++;
+    for (; i < len && buf[i] >= '0' && buf[i] <= '7'; i++)
+        v = (v << 3) + (unsigned long)(buf[i] - '0');
+    return v;
+}
+
+static void write_octal_field(uint8_t *dst, size_t len, unsigned long v)
+{
+    if (!dst || len == 0) return;
+    memset(dst, '0', len);
+    dst[len - 1] = '\0';
+    if (len >= 2) dst[len - 2] = ' ';
+    size_t pos = len >= 2 ? len - 2 : len - 1;
+    while (v > 0 && pos > 0) {
+        dst[--pos] = (uint8_t)('0' + (v & 7u));
+        v >>= 3;
+    }
+}
+
+static int gz_write_all(gzFile gz, const void *buf, size_t len)
+{
+    const uint8_t *p = (const uint8_t *)buf;
+    while (len > 0) {
+        unsigned chunk = len > (1u << 30) ? (1u << 30) : (unsigned)len;
+        int wrote = gzwrite(gz, p, chunk);
+        if (wrote <= 0) return -EIO;
+        p += (size_t)wrote;
+        len -= (size_t)wrote;
+    }
+    return 0;
+}
+
+static int gz_read_all(gzFile gz, void *buf, size_t len)
+{
+    uint8_t *p = (uint8_t *)buf;
+    while (len > 0) {
+        unsigned chunk = len > (1u << 30) ? (1u << 30) : (unsigned)len;
+        int got = gzread(gz, p, chunk);
+        if (got <= 0) return -EIO;
+        p += (size_t)got;
+        len -= (size_t)got;
+    }
+    return 0;
+}
+
+static int gz_skip(gzFile gz, size_t len)
+{
+    uint8_t buf[4096];
+    while (len > 0) {
+        size_t want = len < sizeof(buf) ? len : sizeof(buf);
+        int rc = gz_read_all(gz, buf, want);
+        if (rc != 0) return rc;
+        len -= want;
+    }
+    return 0;
+}
+
+static int tar_write_header(gzFile gz, const char *name, size_t size)
+{
+    if (!gz || !name || !*name || strlen(name) > 100) return -EINVAL;
+    uint8_t h[TAR_BLOCK_SIZE];
+    memset(h, 0, sizeof(h));
+    snprintf((char *)h, 100, "%s", name);
+    write_octal_field(h + 100, 8, 0644);
+    write_octal_field(h + 108, 8, 0);
+    write_octal_field(h + 116, 8, 0);
+    write_octal_field(h + 124, 12, (unsigned long)size);
+    write_octal_field(h + 136, 12, (unsigned long)clock_now_wall_ms() / 1000);
+    memset(h + 148, ' ', 8);
+    h[156] = '0';
+    memcpy(h + 257, "ustar", 5);
+    memcpy(h + 263, "00", 2);
+
+    unsigned int sum = 0;
+    for (size_t i = 0; i < sizeof(h); i++) sum += h[i];
+    snprintf((char *)(h + 148), 8, "%06o", sum);
+    h[154] = '\0';
+    h[155] = ' ';
+    return gz_write_all(gz, h, sizeof(h));
+}
+
+static int tar_write_file(gzFile gz, const char *archive_name,
+                          const char *path)
+{
+    if (!gz || !archive_name || !path) return -EINVAL;
+    struct stat st;
+    if (stat(path, &st) != 0 || !S_ISREG(st.st_mode)) return -errno;
+    if (st.st_size < 0) return -EINVAL;
+
+    int rc = tar_write_header(gz, archive_name, (size_t)st.st_size);
+    if (rc != 0) return rc;
+
+    FILE *fp = fopen(path, "rb");
+    if (!fp) return -errno;
+    uint8_t buf[8192];
+    size_t remaining = (size_t)st.st_size;
+    while (remaining > 0) {
+        size_t want = remaining < sizeof(buf) ? remaining : sizeof(buf);
+        size_t got = fread(buf, 1, want, fp);
+        if (got == 0) {
+            fclose(fp);
+            return -EIO;
+        }
+        rc = gz_write_all(gz, buf, got);
+        if (rc != 0) {
+            fclose(fp);
+            return rc;
+        }
+        remaining -= got;
+    }
+    fclose(fp);
+
+    size_t pad = (TAR_BLOCK_SIZE - ((size_t)st.st_size % TAR_BLOCK_SIZE)) %
+                 TAR_BLOCK_SIZE;
+    if (pad > 0) {
+        uint8_t zero[TAR_BLOCK_SIZE] = {0};
+        rc = gz_write_all(gz, zero, pad);
+    }
+    return rc;
+}
+
+static int gz_read_tar_member(const char *archive_path, const char *member,
+                              uint8_t **out, size_t *len_out,
+                              size_t max_len)
+{
+    if (!archive_path || !member || !out || !len_out) return -EINVAL;
+    *out = NULL;
+    *len_out = 0;
+    gzFile gz = gzopen(archive_path, "rb");
+    if (!gz) return errno ? -errno : -EIO;
+
+    int rc = 0;
+    for (;;) {
+        uint8_t h[TAR_BLOCK_SIZE];
+        rc = gz_read_all(gz, h, sizeof(h));
+        if (rc != 0) break;
+        if (all_zero_block(h, sizeof(h))) {
+            rc = -ENOENT;
+            break;
+        }
+        char name[101];
+        memcpy(name, h, 100);
+        name[100] = '\0';
+        size_t size = (size_t)parse_octal_field(h + 124, 12);
+        size_t pad = (TAR_BLOCK_SIZE - (size % TAR_BLOCK_SIZE)) %
+                     TAR_BLOCK_SIZE;
+        if (strcmp(name, member) == 0) {
+            if (size > max_len) {
+                rc = -E2BIG;
+                break;
+            }
+            uint8_t *buf = zcl_malloc(size + 1, "postmortem.tar.member");
+            if (!buf) {
+                rc = -ENOMEM;
+                break;
+            }
+            rc = gz_read_all(gz, buf, size);
+            if (rc == 0) {
+                buf[size] = '\0';
+                *out = buf;
+                *len_out = size;
+            } else {
+                free(buf);
+            }
+            break;
+        }
+        rc = gz_skip(gz, size + pad);
+        if (rc != 0) break;
+    }
+    gzclose(gz);
+    return rc;
 }
 
 static int entry_newer(const struct postmortem_capsule_entry *a,
@@ -246,6 +439,27 @@ static void read_manifest_summary(struct postmortem_capsule_entry *entry)
                                            (int64_t)entry->tape_size_bytes);
     if (tape_size >= 0)
         entry->tape_size_bytes = (size_t)tape_size;
+}
+
+static void read_manifest_summary_gz(struct postmortem_capsule_entry *entry)
+{
+    if (!entry) return;
+
+    uint8_t *buf = NULL;
+    size_t len = 0;
+    int rc = gz_read_tar_member(entry->path, "manifest.json", &buf, &len,
+                                64u * 1024u);
+    if (rc != 0 || !buf) return;
+
+    entry->crash_signal = (int)parse_manifest_i64((const char *)buf,
+                                                  "\"crash_signal\"",
+                                                  entry->crash_signal);
+    int64_t tape_size = parse_manifest_i64((const char *)buf,
+                                           "\"tape_size_bytes\"",
+                                           (int64_t)entry->tape_size_bytes);
+    if (tape_size >= 0)
+        entry->tape_size_bytes = (size_t)tape_size;
+    free(buf);
 }
 
 static void json_escape_string(const char *in, char *out, size_t out_cap)
@@ -421,6 +635,20 @@ void postmortem_uninstall(void)
 seed_tape_t *postmortem_capsule_load_tape(const char *capsule_path)
 {
     if (!capsule_path || !*capsule_path) return NULL;
+    if (has_suffix(capsule_path, ".cap.gz")) {
+        uint8_t *buf = NULL;
+        size_t size = 0;
+        int rc = gz_read_tar_member(capsule_path, "tape.bin", &buf, &size,
+                                    POSTMORTEM_GZ_MEMBER_MAX);
+        if (rc != 0 || !buf || size == 0) {
+            free(buf);
+            return NULL;
+        }
+        seed_tape_t *tape = seed_tape_load_from_memory(buf, size);
+        free(buf);
+        return tape;
+    }
+
     char tape_path[576];
     int n = snprintf(tape_path, sizeof(tape_path), "%s/tape.bin",
                      capsule_path);
@@ -465,6 +693,22 @@ seed_tape_t *postmortem_capsule_load_tape(const char *capsule_path)
 bool postmortem_capsule_validate(const char *capsule_path)
 {
     if (!capsule_path || !*capsule_path) return false;
+    if (has_suffix(capsule_path, ".cap.gz")) {
+        uint8_t *manifest = NULL;
+        size_t manifest_len = 0;
+        int rc = gz_read_tar_member(capsule_path, "manifest.json",
+                                    &manifest, &manifest_len, 64u * 1024u);
+        if (rc != 0 || !manifest || manifest_len == 0) {
+            free(manifest);
+            return false;
+        }
+        free(manifest);
+        seed_tape_t *t = postmortem_capsule_load_tape(capsule_path);
+        if (!t) return false;
+        seed_tape_close(t);
+        return true;
+    }
+
     char manifest_path[576];
     int n = snprintf(manifest_path, sizeof(manifest_path),
                      "%s/manifest.json", capsule_path);
@@ -475,6 +719,122 @@ bool postmortem_capsule_validate(const char *capsule_path)
     if (!t) return false;
     seed_tape_close(t);
     return true;
+}
+
+int postmortem_capsule_compress(const char *capsule_path,
+                                char *compressed_path_out,
+                                size_t compressed_path_cap)
+{
+    if (!capsule_path || !*capsule_path) return -EINVAL;
+    if (!has_suffix(capsule_path, ".cap")) return -EINVAL;
+
+    struct stat st;
+    if (stat(capsule_path, &st) != 0) return -errno;
+    if (!S_ISDIR(st.st_mode)) return -ENOTDIR;
+
+    char dst[576];
+    int n = snprintf(dst, sizeof(dst), "%s.gz", capsule_path);
+    if (n < 0 || (size_t)n >= sizeof(dst)) return -ENAMETOOLONG;
+
+    char tmp[640];
+    n = snprintf(tmp, sizeof(tmp), "%s.tmp", dst);
+    if (n < 0 || (size_t)n >= sizeof(tmp)) return -ENAMETOOLONG;
+
+    gzFile gz = gzopen(tmp, "wb6");
+    if (!gz) return errno ? -errno : -EIO;
+
+    const char *required[] = { "manifest.json", "tape.bin" };
+    int rc = 0;
+    for (size_t i = 0; i < sizeof(required) / sizeof(required[0]); i++) {
+        char path[640];
+        n = snprintf(path, sizeof(path), "%s/%s", capsule_path, required[i]);
+        if (n < 0 || (size_t)n >= sizeof(path)) {
+            rc = -ENAMETOOLONG;
+            break;
+        }
+        rc = tar_write_file(gz, required[i], path);
+        if (rc != 0) break;
+    }
+
+    const char *optional[] = {
+        "procstatus.txt",
+        "log.txt",
+        "coremarker.txt",
+    };
+    for (size_t i = 0; rc == 0 &&
+         i < sizeof(optional) / sizeof(optional[0]); i++) {
+        char path[640];
+        n = snprintf(path, sizeof(path), "%s/%s", capsule_path, optional[i]);
+        if (n < 0 || (size_t)n >= sizeof(path)) {
+            rc = -ENAMETOOLONG;
+            break;
+        }
+        if (stat(path, &st) == 0 && S_ISREG(st.st_mode))
+            rc = tar_write_file(gz, optional[i], path);
+    }
+
+    if (rc == 0) {
+        uint8_t zero[TAR_BLOCK_SIZE * 2u] = {0};
+        rc = gz_write_all(gz, zero, sizeof(zero));
+    }
+
+    int close_rc = gzclose(gz);
+    if (rc == 0 && close_rc != Z_OK) rc = -EIO;
+    if (rc != 0) {
+        unlink(tmp);
+        return rc;
+    }
+
+    if (rename(tmp, dst) != 0) {
+        rc = -errno;
+        unlink(tmp);
+        return rc;
+    }
+
+    rc = remove_tree(capsule_path);
+    if (rc != 0) return rc;
+
+    if (compressed_path_out && compressed_path_cap > 0) {
+        n = snprintf(compressed_path_out, compressed_path_cap, "%s", dst);
+        if (n < 0 || (size_t)n >= compressed_path_cap)
+            return -ENAMETOOLONG;
+    }
+    return 0;
+}
+
+int postmortem_capsule_compress_unpacked(const char *dir,
+                                         size_t *compressed_out)
+{
+    if (!dir || !*dir || !compressed_out) return -EINVAL;
+    *compressed_out = 0;
+
+    DIR *d = opendir(dir);
+    if (!d) return errno == ENOENT ? 0 : -errno;
+
+    int first_err = 0;
+    struct dirent *de;
+    while ((de = readdir(d)) != NULL) {
+        if (!has_suffix(de->d_name, ".cap")) continue;
+
+        char path[576];
+        int n = snprintf(path, sizeof(path), "%s/%s", dir, de->d_name);
+        if (n < 0 || (size_t)n >= sizeof(path)) {
+            if (first_err == 0) first_err = -ENAMETOOLONG;
+            continue;
+        }
+        struct stat st;
+        if (stat(path, &st) != 0 || !S_ISDIR(st.st_mode))
+            continue;
+
+        int rc = postmortem_capsule_compress(path, NULL, 0);
+        if (rc == 0) {
+            (*compressed_out)++;
+        } else if (first_err == 0) {
+            first_err = rc;
+        }
+    }
+    closedir(d);
+    return first_err;
 }
 
 int postmortem_list(const char *dir,
@@ -528,7 +888,9 @@ int postmortem_capsule_list(const char *dir,
 
     struct dirent *de;
     while ((de = readdir(d)) != NULL) {
-        if (!has_suffix(de->d_name, ".cap")) continue;
+        bool packed = has_suffix(de->d_name, ".cap.gz");
+        bool unpacked = has_suffix(de->d_name, ".cap");
+        if (!packed && !unpacked) continue;
 
         struct postmortem_capsule_entry candidate;
         memset(&candidate, 0, sizeof(candidate));
@@ -538,9 +900,15 @@ int postmortem_capsule_list(const char *dir,
         candidate.crash_unix = parse_capsule_time(de->d_name);
 
         struct stat st;
-        if (stat(candidate.path, &st) != 0 || !S_ISDIR(st.st_mode))
+        if (stat(candidate.path, &st) != 0)
             continue;
-        read_manifest_summary(&candidate);
+        if (unpacked) {
+            if (!S_ISDIR(st.st_mode)) continue;
+            read_manifest_summary(&candidate);
+        } else {
+            if (!S_ISREG(st.st_mode)) continue;
+            read_manifest_summary_gz(&candidate);
+        }
 
         if (entry_cap > 0) {
             if (*count_out < entry_cap) {

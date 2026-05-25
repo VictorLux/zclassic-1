@@ -256,6 +256,16 @@ static bool boot_step_init_postmortem(const char *datadir)
     }
 
     g_boot_seed_tape = tape;
+    size_t compressed = 0;
+    rc = postmortem_capsule_compress_unpacked(g_boot_postmortem_dir,
+                                              &compressed);
+    if (rc != 0) {
+        fprintf(stderr,  // obs-ok:boot-fatal-before-event-context
+                "WARNING: postmortem compression failed rc=%d\n", rc);
+    } else if (compressed > 0) {
+        printf("[boot] postmortem compressed %zu capsule(s)\n", compressed);
+    }
+
     size_t pruned = 0;
     rc = postmortem_capsule_prune(g_boot_postmortem_dir,
                                   platform_time_wall_time_t(),
