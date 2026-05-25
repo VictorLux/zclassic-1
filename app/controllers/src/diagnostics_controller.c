@@ -641,6 +641,41 @@ static void push_cutover_modes(struct json_value *result, bool changed)
                      validate_headers_mode_name(validate_headers_get_mode()));
 }
 
+static bool rpc_cutoverpreflight(const struct json_value *params, bool help,
+                                 struct json_value *result);
+
+static bool cutover_stage_requests_authoritative(
+    const char *stage,
+    header_admit_mode_t ha_mode,
+    validate_headers_mode_t vh_mode)
+{
+    if (strcasecmp(stage, "header_admit") == 0)
+        return ha_mode == HEADER_ADMIT_MODE_AUTHORITATIVE;
+    if (strcasecmp(stage, "validate_headers") == 0)
+        return vh_mode == VALIDATE_HEADERS_MODE_AUTHORITATIVE;
+    if (strcasecmp(stage, "all") == 0)
+        return ha_mode == HEADER_ADMIT_MODE_AUTHORITATIVE ||
+               vh_mode == VALIDATE_HEADERS_MODE_AUTHORITATIVE;
+    return false;
+}
+
+static bool cutover_preflight_ready_now(void)
+{
+    struct json_value params;
+    struct json_value preflight;
+    json_init(&params);
+    json_init(&preflight);
+    json_set_array(&params);
+
+    bool ok = rpc_cutoverpreflight(&params, false, &preflight);
+    const struct json_value *ready = ok ? json_get(&preflight, "ready") : NULL;
+    ok = ready && json_get_bool(ready);
+
+    json_free(&preflight);
+    json_free(&params);
+    return ok;
+}
+
 static bool rpc_cutovermode(const struct json_value *params, bool help,
                             struct json_value *result)
 {
@@ -650,6 +685,7 @@ static bool rpc_cutovermode(const struct json_value *params, bool help,
         "  header_admit | validate_headers | all\n"
         "mode is one of:\n"
         "  shadow | authoritative\n"
+        "\nAuthoritative mode is refused unless cutoverpreflight.ready is true.\n"
         "\nExamples:\n"
         "  cutovermode\n"
         "  cutovermode validate_headers authoritative\n"
@@ -672,6 +708,17 @@ static bool rpc_cutovermode(const struct json_value *params, bool help,
     if (!parse_cutover_mode(mode_s, &ha_mode, &vh_mode))
         LOG_FAIL("diag", "cutovermode: invalid mode '%s'", mode_s);
 
+    if (strcasecmp(stage, "header_admit") != 0 &&
+        strcasecmp(stage, "validate_headers") != 0 &&
+        strcasecmp(stage, "all") != 0)
+        LOG_FAIL("diag", "cutovermode: invalid stage '%s'", stage);
+
+    if (cutover_stage_requests_authoritative(stage, ha_mode, vh_mode) &&
+        !cutover_preflight_ready_now())
+        LOG_FAIL("diag",
+                 "cutovermode: authoritative flip refused; "
+                 "cutoverpreflight.ready is false");
+
     if (strcasecmp(stage, "header_admit") == 0) {
         header_admit_set_mode(ha_mode);
     } else if (strcasecmp(stage, "validate_headers") == 0) {
@@ -679,8 +726,6 @@ static bool rpc_cutovermode(const struct json_value *params, bool help,
     } else if (strcasecmp(stage, "all") == 0) {
         header_admit_set_mode(ha_mode);
         validate_headers_set_mode(vh_mode);
-    } else {
-        LOG_FAIL("diag", "cutovermode: invalid stage '%s'", stage);
     }
 
     push_cutover_modes(result, true);
