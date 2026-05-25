@@ -106,14 +106,6 @@ static struct {
     char datadir[1024];
 } g_diag = {0};
 
-static _Atomic int g_cutover_has_change;
-static _Atomic int64_t g_cutover_change_unix;
-static _Atomic int64_t g_cutover_change_height;
-static _Atomic int64_t g_cutover_canary_target_height;
-static _Atomic int64_t g_cutover_change_header_height;
-static _Atomic int64_t g_cutover_change_peer_best_height;
-static _Atomic int64_t g_cutover_change_tip_lag;
-
 void diagnostics_controller_set_state(struct main_state *ms,
                                       const char *datadir)
 {
@@ -662,53 +654,29 @@ static cutover_stage_mode_t cutover_stage_mode_from_validate_headers(
         : CUTOVER_STAGE_MODE_SHADOW;
 }
 
-static bool cutover_any_authoritative_active(void)
-{
-    return header_admit_get_mode() == HEADER_ADMIT_MODE_AUTHORITATIVE ||
-           validate_headers_get_mode() ==
-               VALIDATE_HEADERS_MODE_AUTHORITATIVE;
-}
-
 static void cutover_record_mode_change(
     const struct node_health_snapshot *health)
 {
-    int64_t height = health ? health->tip_height : -1;
-    atomic_store(&g_cutover_has_change, 1);
-    atomic_store(&g_cutover_change_unix, platform_time_wall_unix());
-    atomic_store(&g_cutover_change_height, height);
-    atomic_store(&g_cutover_canary_target_height,
-                 height >= 0 ? height + 1 : 0);
-    atomic_store(&g_cutover_change_header_height,
-                 health ? health->header_height : -1);
-    atomic_store(&g_cutover_change_peer_best_height,
-                 health ? health->peer_best_height : -1);
-    atomic_store(&g_cutover_change_tip_lag,
-                 health ? health->tip_lag : -1);
+    cutover_modes_record_change(health ? health->tip_height : -1,
+                                health ? health->header_height : -1,
+                                health ? health->peer_best_height : -1,
+                                health ? health->tip_lag : -1);
 }
 
 static void push_cutover_canary_state(
     struct json_value *out,
     const struct node_health_snapshot *health)
 {
-    bool has_change = atomic_load(&g_cutover_has_change) != 0;
-    int64_t changed_at = atomic_load(&g_cutover_change_unix);
-    int64_t target = atomic_load(&g_cutover_canary_target_height);
     int64_t current_tip = health ? health->tip_height : -1;
-    bool authoritative = cutover_any_authoritative_active();
-    int64_t now = platform_time_wall_unix();
-    int64_t elapsed = has_change && changed_at > 0 && now >= changed_at
-        ? now - changed_at : -1;
-    int64_t deadline = has_change && changed_at > 0
-        ? changed_at + CUTOVER_PREFLIGHT_MAX_TIP_ADVANCE_AGE_SECS : 0;
-    bool passed = has_change && target > 0 && current_tip >= target;
-    bool expired = has_change && !passed && deadline > 0 && now > deadline;
+    struct cutover_canary_snapshot snap;
+    cutover_modes_canary_snapshot(current_tip, &snap);
     const char *status = "inactive";
-    if (has_change) {
-        if (passed) {
+    if (snap.has_change) {
+        if (snap.passed) {
             status = "passed";
-        } else if (expired) {
+        } else if (snap.failed) {
             status = "failed";
-        } else if (authoritative) {
+        } else if (snap.authoritative_active) {
             status = "pending";
         } else {
             status = "reverted";
@@ -716,26 +684,24 @@ static void push_cutover_canary_state(
     }
 
     json_set_object(out);
-    json_push_kv_bool(out, "has_change", has_change);
-    json_push_kv_bool(out, "authoritative_active", authoritative);
+    json_push_kv_bool(out, "has_change", snap.has_change);
+    json_push_kv_bool(out, "authoritative_active", snap.authoritative_active);
     json_push_kv_str(out, "canary_status", status);
-    json_push_kv_bool(out, "canary_failed", expired);
-    json_push_kv_int(out, "changed_at_unix", changed_at);
-    json_push_kv_int(out, "change_height",
-                     atomic_load(&g_cutover_change_height));
-    json_push_kv_int(out, "canary_target_height", target);
-    json_push_kv_int(out, "current_tip_height", current_tip);
-    json_push_kv_bool(out, "canary_passed", passed);
-    json_push_kv_int(out, "canary_elapsed_seconds", elapsed);
-    json_push_kv_int(out, "canary_deadline_unix", deadline);
+    json_push_kv_bool(out, "canary_failed", snap.failed);
+    json_push_kv_int(out, "changed_at_unix", snap.changed_at_unix);
+    json_push_kv_int(out, "change_height", snap.change_height);
+    json_push_kv_int(out, "canary_target_height", snap.target_height);
+    json_push_kv_int(out, "current_tip_height", snap.current_tip_height);
+    json_push_kv_bool(out, "canary_passed", snap.passed);
+    json_push_kv_int(out, "canary_elapsed_seconds", snap.elapsed_seconds);
+    json_push_kv_int(out, "canary_deadline_unix", snap.deadline_unix);
     json_push_kv_int(out, "change_header_height",
-                     atomic_load(&g_cutover_change_header_height));
+                     snap.change_header_height);
     json_push_kv_int(out, "change_peer_best_height",
-                     atomic_load(&g_cutover_change_peer_best_height));
-    json_push_kv_int(out, "change_tip_lag",
-                     atomic_load(&g_cutover_change_tip_lag));
+                     snap.change_peer_best_height);
+    json_push_kv_int(out, "change_tip_lag", snap.change_tip_lag);
     json_push_kv_int(out, "watch_window_seconds",
-                     CUTOVER_PREFLIGHT_MAX_TIP_ADVANCE_AGE_SECS);
+                     snap.watch_window_seconds);
 }
 
 static void push_cutover_modes(struct json_value *result, bool changed,

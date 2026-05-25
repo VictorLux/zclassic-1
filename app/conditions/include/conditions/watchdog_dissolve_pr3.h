@@ -14,6 +14,8 @@ void snapshot_offer_ready_test_set_service(struct snapshot_sync_service *svc);
 int snapshot_offer_ready_test_remedy_calls(void);
 void cutover_no_forward_progress_test_reset(void);
 int cutover_no_forward_progress_test_remedy_calls(void);
+void cutover_canary_complete_test_reset(void);
+int cutover_canary_complete_test_remedy_calls(void);
 #endif
 
 #endif /* ZCL_CONDITIONS_WATCHDOG_DISSOLVE_PR3_H */

@@ -62,12 +62,14 @@ datadir, boot ordering). Prove correctness **off** the live node instead.
   `cutover_modes` atomic bitfield, and `cutovermode all` / the no-progress
   auto-revert use one combined pipeline store instead of two sequential mode
   writes.
-- **Real canary** (not yet built): flip → watch exactly one block connect through
-  the authoritative path → auto-revert on any divergence. The
-  `cutover_no_forward_progress` guard (DONE, `230d9b896`) already reverts both
-  stages to SHADOW on 180s no-progress and fires `EV_OPERATOR_NEEDED` → alert
-  sinks + `zcl_status` DEGRADED + sd_notify. Worst case: 3-min stall, auto-revert,
-  you get paged.
+- **Real canary** (PARTIAL): `cutovermode all authoritative` records
+  `tip_height + 1`, and `cutover_canary_complete` auto-reverts both stages to
+  SHADOW after that target block connects. **Remaining:** tie the one-block
+  pass to explicit authoritative-path evidence/divergence checks before the
+  final guarded flip. The `cutover_no_forward_progress` guard (DONE,
+  `230d9b896`) still reverts both stages to SHADOW on 180s no-progress and fires
+  `EV_OPERATOR_NEEDED` → alert sinks + `zcl_status` DEGRADED + sd_notify. Worst
+  case: 3-min stall, auto-revert, you get paged.
 
 ## 3. DELETE (extract-then-delete — it is NOT a clean delete)
 
