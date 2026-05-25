@@ -10,6 +10,7 @@
 
 #include "platform/time_compat.h"
 #include "services/validate_headers_stage.h"
+#include "services/cutover_modes.h"
 #include "services/header_admit_stage.h"
 
 #include "chain/chain.h"
@@ -82,8 +83,6 @@ static _Atomic uint64_t g_failed_total = 0;
 static _Atomic int64_t  g_last_step_unix = 0;
 static _Atomic int64_t  g_last_blocked_unix = 0;
 static _Atomic int64_t  g_failure_recheck_cursor = 0;
-static _Atomic validate_headers_mode_t g_mode =
-    VALIDATE_HEADERS_MODE_SHADOW;
 
 /* Injectable validator. Default = full PoW + Equihash from disk.
  * Tests set this via validate_headers_stage_set_validator(). Reset to
@@ -667,14 +666,18 @@ bool validate_headers_stage_init(struct main_state *ms)
 
 void validate_headers_set_mode(validate_headers_mode_t mode)
 {
-    if (mode != VALIDATE_HEADERS_MODE_AUTHORITATIVE)
-        mode = VALIDATE_HEADERS_MODE_SHADOW;
-    atomic_store(&g_mode, mode);
+    cutover_modes_set_validate_headers(
+        mode == VALIDATE_HEADERS_MODE_AUTHORITATIVE
+            ? CUTOVER_STAGE_MODE_AUTHORITATIVE
+            : CUTOVER_STAGE_MODE_SHADOW);
 }
 
 validate_headers_mode_t validate_headers_get_mode(void)
 {
-    return atomic_load(&g_mode);
+    return cutover_modes_get_validate_headers() ==
+               CUTOVER_STAGE_MODE_AUTHORITATIVE
+        ? VALIDATE_HEADERS_MODE_AUTHORITATIVE
+        : VALIDATE_HEADERS_MODE_SHADOW;
 }
 
 void validate_headers_stage_set_validator(vh_validator_fn fn, void *user)

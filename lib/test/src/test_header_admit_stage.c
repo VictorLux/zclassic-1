@@ -17,6 +17,7 @@
 #include "event/event.h"
 #include "primitives/block.h"
 #include "services/header_admit_stage.h"
+#include "services/cutover_modes.h"
 #include "services/validate_headers_stage.h"
 #include "storage/progress_store.h"
 #include "util/blocker.h"
@@ -189,6 +190,16 @@ int test_header_admit_stage(void)
         header_admit_set_mode((header_admit_mode_t)999);
         HA_CHECK("invalid mode coerces to SHADOW",
                  header_admit_get_mode() == HEADER_ADMIT_MODE_SHADOW);
+        cutover_modes_set_header_pipeline(CUTOVER_STAGE_MODE_AUTHORITATIVE,
+                                          CUTOVER_STAGE_MODE_AUTHORITATIVE);
+        HA_CHECK("combined mode sets header admit authoritative",
+                 header_admit_get_mode() ==
+                     HEADER_ADMIT_MODE_AUTHORITATIVE);
+        HA_CHECK("combined mode sets validate headers authoritative",
+                 validate_headers_get_mode() ==
+                     VALIDATE_HEADERS_MODE_AUTHORITATIVE);
+        cutover_modes_set_header_pipeline(CUTOVER_STAGE_MODE_SHADOW,
+                                          CUTOVER_STAGE_MODE_SHADOW);
     }
 
     /* ── happy path: drain a 5-block synthetic chain ───────────────── */

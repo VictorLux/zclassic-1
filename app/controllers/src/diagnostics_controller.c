@@ -47,6 +47,7 @@
 #include "services/block_index_integrity.h"
 #include "services/block_pruning_service.h"
 #include "services/chain_evidence_controller.h"
+#include "services/cutover_modes.h"
 #include "services/header_admit_stage.h"
 #include "services/validate_headers_stage.h"
 #include "services/node_health_service.h"
@@ -645,6 +646,22 @@ static bool parse_cutover_mode(const char *s,
     return false;
 }
 
+static cutover_stage_mode_t cutover_stage_mode_from_header_admit(
+    header_admit_mode_t mode)
+{
+    return mode == HEADER_ADMIT_MODE_AUTHORITATIVE
+        ? CUTOVER_STAGE_MODE_AUTHORITATIVE
+        : CUTOVER_STAGE_MODE_SHADOW;
+}
+
+static cutover_stage_mode_t cutover_stage_mode_from_validate_headers(
+    validate_headers_mode_t mode)
+{
+    return mode == VALIDATE_HEADERS_MODE_AUTHORITATIVE
+        ? CUTOVER_STAGE_MODE_AUTHORITATIVE
+        : CUTOVER_STAGE_MODE_SHADOW;
+}
+
 static bool cutover_any_authoritative_active(void)
 {
     return header_admit_get_mode() == HEADER_ADMIT_MODE_AUTHORITATIVE ||
@@ -852,8 +869,9 @@ static bool rpc_cutovermode(const struct json_value *params, bool help,
     } else if (strcasecmp(stage, "validate_headers") == 0) {
         validate_headers_set_mode(vh_mode);
     } else if (strcasecmp(stage, "all") == 0) {
-        header_admit_set_mode(ha_mode);
-        validate_headers_set_mode(vh_mode);
+        cutover_modes_set_header_pipeline(
+            cutover_stage_mode_from_header_admit(ha_mode),
+            cutover_stage_mode_from_validate_headers(vh_mode));
     }
 
     struct node_health_snapshot health;

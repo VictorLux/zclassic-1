@@ -5,6 +5,7 @@
 
 #include "event/event.h"
 #include "net/connman.h"
+#include "services/cutover_modes.h"
 #include "services/header_admit_stage.h"
 #include "services/sync_monitor.h"
 #include "services/validate_headers_stage.h"
@@ -70,10 +71,8 @@ static enum condition_remedy_result remedy_cutover_no_forward_progress(void)
     if (mask == 0)
         return COND_REMEDY_SKIP;
 
-    if (mask & CUTOVER_STAGE_HEADER_ADMIT)
-        header_admit_set_mode(HEADER_ADMIT_MODE_SHADOW);
-    if (mask & CUTOVER_STAGE_VALIDATE_HEADERS)
-        validate_headers_set_mode(VALIDATE_HEADERS_MODE_SHADOW);
+    cutover_modes_set_header_pipeline(CUTOVER_STAGE_MODE_SHADOW,
+                                      CUTOVER_STAGE_MODE_SHADOW);
 
     fprintf(stderr,  // obs-ok:condition-cutover-revert
             "[condition:cutover_no_forward_progress] reverted mask=%d "
@@ -137,8 +136,8 @@ void cutover_no_forward_progress_test_reset(void)
     atomic_store(&g_peer_max_at_detect, -1);
     atomic_store(&g_tip_age_at_detect, 0);
     atomic_store(&g_test_remedy_calls, 0);
-    header_admit_set_mode(HEADER_ADMIT_MODE_SHADOW);
-    validate_headers_set_mode(VALIDATE_HEADERS_MODE_SHADOW);
+    cutover_modes_set_header_pipeline(CUTOVER_STAGE_MODE_SHADOW,
+                                      CUTOVER_STAGE_MODE_SHADOW);
 }
 
 int cutover_no_forward_progress_test_remedy_calls(void)

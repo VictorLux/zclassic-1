@@ -13,6 +13,7 @@
 #include "core/uint256.h"
 #include "json/json.h"
 #include "platform/time_compat.h"
+#include "services/cutover_modes.h"
 #include "services/header_admit_inbox.h"
 #include "storage/progress_store.h"
 #include "util/blocker.h"
@@ -41,7 +42,6 @@ static _Atomic uint64_t g_inbox_logged_total = 0;
 static _Atomic int64_t  g_last_admit_height = -1;
 static _Atomic int64_t  g_last_step_unix = 0;
 static _Atomic int64_t  g_last_blocked_unix = 0;
-static _Atomic header_admit_mode_t g_mode = HEADER_ADMIT_MODE_SHADOW;
 #ifdef ZCL_TESTING
 static header_admit_authoritative_hook g_authoritative_hook = NULL;
 static void *g_authoritative_hook_user = NULL;
@@ -217,14 +217,18 @@ static stage_result_t step_admit(struct stage_step_ctx *c)
 
 void header_admit_set_mode(header_admit_mode_t mode)
 {
-    if (mode != HEADER_ADMIT_MODE_AUTHORITATIVE)
-        mode = HEADER_ADMIT_MODE_SHADOW;
-    atomic_store(&g_mode, mode);
+    cutover_modes_set_header_admit(
+        mode == HEADER_ADMIT_MODE_AUTHORITATIVE
+            ? CUTOVER_STAGE_MODE_AUTHORITATIVE
+            : CUTOVER_STAGE_MODE_SHADOW);
 }
 
 header_admit_mode_t header_admit_get_mode(void)
 {
-    return atomic_load(&g_mode);
+    return cutover_modes_get_header_admit() ==
+               CUTOVER_STAGE_MODE_AUTHORITATIVE
+        ? HEADER_ADMIT_MODE_AUTHORITATIVE
+        : HEADER_ADMIT_MODE_SHADOW;
 }
 
 #ifdef ZCL_TESTING

@@ -54,9 +54,10 @@ datadir, boot ordering). Prove correctness **off** the live node instead.
   + the `have_data_unreadable` self-heal Condition. **Remaining:** fence cold-import
   (`legacy_bootstrap_copy_block_index` still bulk-copies the flag unverified) — or
   retire it; canonical bootstrap is FlyClient + SHA3 snapshot (hash-verified).
-- **Atomic flip:** one combined-mode store (or seqlock) for header_admit +
-  validate_headers — close the tear window at `diagnostics_controller.c:855`
-  (two sequential `atomic_store`s today).
+- **Atomic flip** (DONE): header_admit + validate_headers now share one
+  `cutover_modes` atomic bitfield, and `cutovermode all` / the no-progress
+  auto-revert use one combined pipeline store instead of two sequential mode
+  writes.
 - **Real canary** (not yet built): flip → watch exactly one block connect through
   the authoritative path → auto-revert on any divergence. The
   `cutover_no_forward_progress` guard (DONE, `230d9b896`) already reverts both
