@@ -436,6 +436,13 @@ int main(void)
                failures);
         return failures ? 1 : 0;
     }
+    if (only && strcmp(only, "chain_integrity_failed_condition") == 0) {
+        printf("[test] ZCL_TEST_ONLY=chain_integrity_failed_condition — running only\n");
+        failures += test_chain_integrity_failed_condition();
+        printf("\n=== chain_integrity_failed_condition subset complete: %d failure(s) ===\n",
+               failures);
+        return failures ? 1 : 0;
+    }
     if (only && strcmp(only, "zclassicd_oracle") == 0) {
         printf("[test] ZCL_TEST_ONLY=zclassicd_oracle — running oracle subset\n");
         failures += test_zclassicd_oracle();
@@ -745,6 +752,7 @@ int main(void)
     failures += test_snapshot_negotiation_stalled_condition();
     failures += test_snapshot_failed_reset_condition();
     failures += test_snapshot_complete_resume_condition();
+    failures += test_chain_integrity_failed_condition();
     failures += test_chain_tip_watchdog_bounded_restart();
     failures += test_blocker();
     failures += test_clock();

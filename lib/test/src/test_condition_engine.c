@@ -274,6 +274,7 @@ int test_condition_engine(void)
             "block_failed_mask_at_tip",
             "contradiction_frozen",
             "chain_stalled_with_data",
+            "chain_integrity_failed",
             "utxo_activation_paused",
             "utxo_drift_detected",
             "header_stall_at_height",
@@ -290,8 +291,8 @@ int test_condition_engine(void)
             "snapshot_failed_reset",
             "snapshot_complete_resume",
         };
-        ok = ok && registered && json_get_int(registered) == 18;
-        ok = ok && conditions && json_size(conditions) == 18;
+        ok = ok && registered && json_get_int(registered) == 19;
+        ok = ok && conditions && json_size(conditions) == 19;
         for (size_t i = 0; i < sizeof(expected) / sizeof(expected[0]); i++)
             ok = ok && ce_json_conditions_has(conditions, expected[i]);
         json_free(&out);

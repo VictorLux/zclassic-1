@@ -329,6 +329,7 @@ int test_legacy_mirror_stuck_condition(void);
 int test_snapshot_negotiation_stalled_condition(void);
 int test_snapshot_failed_reset_condition(void);
 int test_snapshot_complete_resume_condition(void);
+int test_chain_integrity_failed_condition(void);
 int test_chain_tip_watchdog_bounded_restart(void);
 int test_blocker(void);
 int test_clock(void);

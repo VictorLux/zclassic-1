@@ -5,6 +5,7 @@
 void register_block_failed_mask_at_tip(void);
 void register_contradiction_frozen(void);
 void register_chain_stalled_with_data(void);
+void register_chain_integrity_failed(void);
 void register_utxo_activation_paused(void);
 void register_utxo_drift_detected(void);
 void register_header_stall_at_height(void);
@@ -26,6 +27,7 @@ void condition_registry_register_all(void)
     register_block_failed_mask_at_tip();
     register_contradiction_frozen();
     register_chain_stalled_with_data();
+    register_chain_integrity_failed();
     register_utxo_activation_paused();
     register_utxo_drift_detected();
     register_header_stall_at_height();
