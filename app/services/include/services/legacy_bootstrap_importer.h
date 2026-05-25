@@ -59,7 +59,6 @@ struct legacy_bootstrap_import_result {
     int64_t utxos_imported;
     int64_t blk_files_linked;
     int applied;
-    int final_tip;
     enum legacy_attach_outcome outcome;
     int64_t stages_stamped;
     double total_secs;

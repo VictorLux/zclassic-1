@@ -1015,10 +1015,11 @@ static bool boot_step_fastimport(struct app_context *ctx,
     }
 
     int64_t t_ms = boot_clock_ms() - t_start;
+    int final_tip = active_chain_height(&g_state.chain_active);
     printf("Fast import: applied=%d ok=%s final_tip=%d legacy_tip=%d "
            "elapsed=%.1fs\n",
            r.applied, ok ? "yes" : "no",
-           r.final_tip, r.legacy_tip,
+           final_tip, r.legacy_tip,
            (double)t_ms / 1000.0);
     return true;
 }

@@ -1118,7 +1118,6 @@ static bool legacy_bootstrap_import_direct(
 {
     struct legacy_bootstrap_import_result r = {
         .legacy_tip = -1,
-        .final_tip = -1,
     };
     if (out) *out = r;
 
@@ -1134,7 +1133,6 @@ static bool legacy_bootstrap_import_direct(
                 "[legacy_direct_import] %s does not contain "
                 "blocks/blk00000.dat — skipping\n",
                 opts->legacy_datadir);
-        r.final_tip = active_chain_height(&opts->ms->chain_active);
         if (out) *out = r;
         return true;
     }
@@ -1175,7 +1173,6 @@ static bool legacy_bootstrap_import_direct(
                 "(from=%d legacy=%d) — nothing to do\n",
                 from_height, legacy_tip);
         bilr_free_height_map(map);
-        r.final_tip = active_chain_height(&opts->ms->chain_active);
         if (out) *out = r;
         return true;
     }
@@ -1306,7 +1303,7 @@ static bool legacy_bootstrap_import_direct(
     bmr_close(bmr);
     bilr_free_height_map(map);
 
-    r.final_tip = active_chain_height(&opts->ms->chain_active);
+    int final_tip = active_chain_height(&opts->ms->chain_active);
 
     fprintf(stderr,  // obs-ok:pre-existing-diagnostic
             "[legacy_direct_import] walk %s: applied=%d "
@@ -1314,15 +1311,15 @@ static bool legacy_bootstrap_import_direct(
             "rate=%.1f bps final_tip=%d\n",
             ok ? "complete" : "ABORTED",
             r.applied, skipped_have_data, skipped_failed,
-            total_secs, avg_rate, r.final_tip);
+            total_secs, avg_rate, final_tip);
 
     if (ok && opts->wallet && r.applied > 0) {
         fprintf(stderr,  // obs-ok:pre-existing-diagnostic
                 "[legacy_direct_import] starting wallet rescan "
-                "[%d..%d]...\n", from_height + 1, r.final_tip);
+                "[%d..%d]...\n", from_height + 1, final_tip);
         int64_t t_rescan = legacy_bootstrap_now_ms();
         int hits = wallet_rescan(opts->wallet, &opts->ms->chain_active,
-                                 from_height + 1, r.final_tip,
+                                 from_height + 1, final_tip,
                                  opts->our_datadir);
         double secs = (double)(legacy_bootstrap_now_ms() - t_rescan) /
                       1000.0;
