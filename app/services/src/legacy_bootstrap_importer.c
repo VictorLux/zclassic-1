@@ -135,9 +135,6 @@ struct legacy_bootstrap_snapshot_import_options {
 };
 
 struct legacy_bootstrap_snapshot_import_result {
-    int64_t blk_files_linked;
-    int64_t block_index_writes;
-    int64_t utxos_imported;
     struct uint256 best_block;
     int32_t legacy_tip_height;
 };
@@ -964,6 +961,7 @@ static bool legacy_bootstrap_record_pending_csr_anchor(
 
 static bool legacy_bootstrap_import_snapshot_state(
     const struct legacy_bootstrap_snapshot_import_options *opts,
+    struct legacy_bootstrap_import_result *counters,
     struct legacy_bootstrap_snapshot_import_result *out)
 {
     if (out)
@@ -974,7 +972,7 @@ static bool legacy_bootstrap_import_snapshot_state(
         opts ? legacy_bootstrap_snapshot_mode_cfg(opts->mode) : NULL;
     if (!opts || !cfg || !opts->legacy_blocks_dir || !opts->our_blocks_dir ||
         !opts->legacy_index_dir || !opts->chainstate_dir || !opts->btdb ||
-        !opts->cvs || cfg->chainstate_batch_limit == 0 ||
+        !opts->cvs || !counters || cfg->chainstate_batch_limit == 0 ||
         !cfg->block_index_long_op_name || !cfg->log_prefix) {
         fprintf(stderr,  // obs-ok:bootstrap-import-terminal-diagnostic
                 "[legacy_bootstrap] import snapshot state: bad args\n");
@@ -990,7 +988,7 @@ static bool legacy_bootstrap_import_snapshot_state(
                                                      cfg->log_prefix);
     if (linked < 0)
         return false;
-    r.blk_files_linked = linked;
+    counters->blk_files_linked = linked;
 
     int32_t block_index_tip_height = -1;
     int64_t bi_written = legacy_bootstrap_copy_block_index(
@@ -999,7 +997,7 @@ static bool legacy_bootstrap_import_snapshot_state(
         cfg->log_prefix);
     if (bi_written < 0)
         return false;
-    r.block_index_writes = bi_written;
+    counters->block_index_writes = bi_written;
 
     if (cfg->min_legacy_tip >= 0 &&
         block_index_tip_height < cfg->min_legacy_tip) {
@@ -1017,7 +1015,7 @@ static bool legacy_bootstrap_import_snapshot_state(
             cfg->chainstate_long_op_name, cfg->log_prefix, &cs_import))
         return false;
 
-    r.utxos_imported = cs_import.inserted;
+    counters->utxos_imported = cs_import.inserted;
     if (cs_import.got_best_block)
         r.best_block = cs_import.best_block;
 
@@ -1111,12 +1109,10 @@ static bool legacy_bootstrap_import_staged_snapshot(
         .anchor_height = anchor_height,
     };
     int64_t t_import = legacy_bootstrap_now_ms();
-    if (!legacy_bootstrap_import_snapshot_state(&import_opts, imported))
+    if (!legacy_bootstrap_import_snapshot_state(
+            &import_opts, result, imported))
         return false;
 
-    result->blk_files_linked = imported->blk_files_linked;
-    result->block_index_writes = imported->block_index_writes;
-    result->utxos_imported = imported->utxos_imported;
     fprintf(stderr,  // obs-ok:pre-existing-diagnostic
             "[%s] snapshot state import took %" PRId64 " ms (best h=%d)\n",
             cfg->log_prefix, legacy_bootstrap_now_ms() - t_import,

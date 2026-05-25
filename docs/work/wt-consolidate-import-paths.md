@@ -142,6 +142,8 @@ Verification:
 - Cold/attach staged snapshot directory names now live in the private snapshot
   mode table; snapshot preparation and the attach no-op probe take a mode
   instead of repeated stage-dir/log-prefix arguments.
+- Private snapshot import results no longer duplicate public importer counters;
+  the shared staged import helper fills the canonical result counters directly.
 
 ## The shape (one canonical importer, pluggable mode)
 
