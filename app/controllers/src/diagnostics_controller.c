@@ -924,11 +924,13 @@ static bool rpc_cutoverpreflight(const struct json_value *params, bool help,
     json_push_kv_int(&diff, "log_max_height", rep.log_max_height);
     json_push_kv_int(&diff, "chain_tip_height", rep.chain_tip_height);
     json_push_kv_int(&diff, "cursor", rep.cursor);
+    int64_t ha_persisted_cursor = (int64_t)header_admit_stage_cursor();
+    json_push_kv_int(&diff, "persisted_cursor", ha_persisted_cursor);
     int64_t required_ha_cursor =
         (rep.chain_tip_height >= 0) ? ((int64_t)rep.chain_tip_height + 1) : 0;
     int64_t ha_cursor_lag =
-        (rep.cursor >= 0 && rep.cursor < required_ha_cursor)
-            ? (required_ha_cursor - rep.cursor) : 0;
+        (ha_persisted_cursor >= 0 && ha_persisted_cursor < required_ha_cursor)
+            ? (required_ha_cursor - ha_persisted_cursor) : 0;
     int64_t ha_log_tip_lag =
         (rep.log_max_height >= 0 && rep.log_max_height < rep.chain_tip_height)
             ? ((int64_t)rep.chain_tip_height - rep.log_max_height) : 0;
@@ -938,7 +940,7 @@ static bool rpc_cutoverpreflight(const struct json_value *params, bool help,
 
     bool header_caught_up =
         required_ha_cursor > 0 &&
-        rep.cursor >= required_ha_cursor &&
+        ha_persisted_cursor >= required_ha_cursor &&
         ha_cursor_lag == 0 &&
         ha_log_tip_lag == 0;
     bool header_ready =
@@ -946,7 +948,8 @@ static bool rpc_cutoverpreflight(const struct json_value *params, bool help,
         rep.mismatch_count == 0 &&
         rep.missing_in_chain_count == 0 &&
         header_caught_up;
-    int64_t vh_cursor = json_obj_int_or(&vh, "cursor", -1);
+    int64_t vh_cursor = (int64_t)validate_headers_stage_cursor();
+    json_push_kv_int(&vh, "persisted_cursor", vh_cursor);
     int64_t required_vh_cursor =
         (rep.end_height >= 0) ? ((int64_t)rep.end_height + 1) : 0;
     int64_t vh_cursor_lag =
