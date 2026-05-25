@@ -36,9 +36,9 @@ Progress:
   adapter-only result structs were removed; boot now calls
   `legacy_bootstrap_import_blocking` directly with `COLD`, `DIRECT`, or `ATTACH`.
 - The canonical importer header now exposes only the true cross-module contract:
-  the mode-driven importer, the height-map loader used by `rebuild_recent`, and
-  attach-stage test accessors. Snapshot, block-source, chainstate, cursor-anchor,
-  and block-index-copy helpers are private implementation details again.
+  the mode-driven importer and the height-map loader used by `rebuild_recent`.
+  Snapshot, block-source, chainstate, cursor-anchor, attach-stage probes, and
+  block-index-copy helpers are private implementation details again.
 - The stale attach API/test names from the deleted attach-only importer were renamed
   to the canonical `legacy_attach_*` / `legacy_bootstrap_attach` surface.
 - Attach-stage drift helpers are no longer part of the production importer
