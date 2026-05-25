@@ -21,6 +21,7 @@
 #include "platform/time_compat.h"
 #include "core/uint256.h"
 #include "core/arith_uint256.h"
+#include "services/chain_restore_boot_snapshot.h"
 #include <stdbool.h>
 #include <stdint.h>
 
@@ -150,89 +151,6 @@ struct chain_integrity_result {
 
 void chain_integrity_check_post_restore(struct chain_integrity_result *out,
                                         const struct main_state *ms);
-
-/* ── Boot snapshot ───────────────────────────────────────────────
- *
- * Captures the most recent post-restore integrity-check result plus
- * the most recent backfill counters. Updated automatically by
- * chain_integrity_check_post_restore and
- * chain_restore_backfill_nbits_from_disk. Reads via
- * chain_restore_get_boot_snapshot are atomic enough for diagnostic
- * use (single struct copy; no locking). */
-struct chain_restore_boot_snapshot {
-    bool   has_data;            /* false until first integrity check */
-    int64_t boot_time;          /* platform_time_wall_time_t() when struct was last filled */
-    /* From the most recent chain_integrity_check_post_restore */
-    bool   integrity_ok;
-    int    zero_nbits_count;
-    int    active_chain_holes;
-    int    active_chain_mismatches;
-    int    tip_window_holes;
-    int    tip_height;
-    int    first_nbits_zero_height;
-    int    first_hole_height;
-    int    first_mismatch_height;
-    int    first_tip_window_hole;
-    /* From the most recent chain_restore_backfill_nbits_from_disk */
-    bool   backfill_ran;
-    int    backfill_fixed;
-    int    backfill_read_errors;
-    int    backfill_off_chain_cleared;
-    /* capture the most recent chain_restore_plan result so
-     * `zcl_state(boot)` can show WHY boot reached the FAILED state
-     * (e.g. "coins_best_block set but height unknown — awaiting P2P").
-     * Without this, a stuck-at-IDLE boot is invisible until STATE_STUCK
-     * fires 300s later via the live watchdog. */
-    bool   plan_recorded;
-    int    plan_next_state;     /* enum chain_restore_state encoded as int */
-    int    plan_anchor_height;
-    bool   plan_should_skip_activate;
-    char   plan_reason[160];
-    /* post-boot CSR consistency. csr_snapshot.consistent
-     * compares tip_hash == coins_best_block. Diverges only after a
-     * crash-window in the disconnect_tip path — boot reconstructs
-     * chain_tip from coins_best_block, but a stale block_index could
-     * still imply an inconsistency on the first activate pass. */
-    bool   csr_consistency_checked;
-    bool   csr_consistent;
-    int    csr_tip_height;
-    int    csr_header_height;
-    /* Wave 11A snapshot-first import probe. Captured by boot.c before
-     * any chain-tip restoration runs. snapshot_imported_pre_restore is
-     * true when consensus_snapshot.db was either freshly imported into
-     * node.db OR already populated from a prior boot. utxos/-1 height
-     * means "already populated from prior boot, source height unknown
-     * but utxo count surfaced". */
-    bool   snapshot_imported_pre_restore;
-    int64_t snapshot_imported_utxos;
-    int64_t snapshot_imported_height;
-};
-
-void chain_restore_get_boot_snapshot(struct chain_restore_boot_snapshot *out);
-
-/* Internal — called from chain_restore_service.c. Updates the boot
- * snapshot so the next dumpstate / zcl_state call sees fresh values. */
-void chain_restore_record_integrity_result(
-    const struct chain_integrity_result *r);
-void chain_restore_record_backfill_result(int fixed,
-                                          int read_errors,
-                                          int off_chain_cleared);
-/* snapshot CSR consistency into the boot snapshot. */
-void chain_restore_record_csr_consistency(bool consistent,
-                                          int tip_height,
-                                          int header_height);
-/* Wave 11A — record the pre-restore snapshot-import probe outcome.
- * Called from boot.c before any chain-tip restoration runs. height==-1
- * indicates "skipped because already populated"; ok=false indicates the
- * import was attempted and failed (the snapshot file is preserved by
- * the Wave 10 export guard for retry on a subsequent boot). */
-void chain_restore_record_snapshot_import(bool ok,
-                                          int64_t utxo_count,
-                                          int64_t snap_height);
-
-/* State-dump convention (see CLAUDE.md "Adding state introspection"). */
-struct json_value;
-bool chain_restore_dump_state_json(struct json_value *out, const char *key);
 
 /* ── Post-restore repair ──────────────────
  *

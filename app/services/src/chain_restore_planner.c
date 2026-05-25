@@ -4,13 +4,10 @@
  * chain tip restoration. */
 
 #include "services/chain_restore_service.h"
-#include "platform/time_compat.h"
 #include "core/uint256.h"
 
 #include <stdio.h>
 #include <string.h>
-
-struct chain_restore_boot_snapshot g_chain_restore_boot_snapshot;
 
 void chain_restore_plan(struct chain_restore_plan *out,
                         const struct chain_restore_input *in)
@@ -65,22 +62,4 @@ void chain_restore_plan(struct chain_restore_plan *out,
     snprintf(out->reason, sizeof(out->reason),
              "coins_best_block set but height unknown — awaiting P2P");
     chain_restore_record_plan_result(out);
-}
-
-void chain_restore_record_plan_result(const struct chain_restore_plan *p)
-{
-    if (!p) return;
-    g_chain_restore_boot_snapshot.has_data = true;
-    g_chain_restore_boot_snapshot.boot_time =
-        (int64_t)platform_time_wall_time_t();
-    g_chain_restore_boot_snapshot.plan_recorded = true;
-    g_chain_restore_boot_snapshot.plan_next_state = (int)p->next_state;
-    g_chain_restore_boot_snapshot.plan_anchor_height = p->anchor_height;
-    g_chain_restore_boot_snapshot.plan_should_skip_activate =
-        p->should_skip_activate;
-    size_t n = strnlen(p->reason, sizeof(p->reason));
-    if (n >= sizeof(g_chain_restore_boot_snapshot.plan_reason))
-        n = sizeof(g_chain_restore_boot_snapshot.plan_reason) - 1;
-    memcpy(g_chain_restore_boot_snapshot.plan_reason, p->reason, n);
-    g_chain_restore_boot_snapshot.plan_reason[n] = '\0';
 }

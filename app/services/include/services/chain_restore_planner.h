@@ -12,6 +12,4 @@ struct chain_restore_plan;
 void chain_restore_plan(struct chain_restore_plan *out,
                         const struct chain_restore_input *in);
 
-void chain_restore_record_plan_result(const struct chain_restore_plan *p);
-
 #endif /* ZCL_CHAIN_RESTORE_PLANNER_H */

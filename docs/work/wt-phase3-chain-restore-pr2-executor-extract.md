@@ -3,7 +3,8 @@
 **Worktree:** wt3
 **Branch:** PUSH DIRECT TO MAIN
 **Phase:** 3 (Dissolve mega-modules)
-**Depends on:** chain_restore PR-1 planner extraction shipped.
+**Depends on:** chain_restore PR-1 planner extraction shipped; PR-1b boot
+snapshot extraction shipped.
 **Status: IN PROGRESS (wt3)** - claimed 2026-05-25.
 
 ## Scope
@@ -12,14 +13,16 @@ Continue the chain_restore dissolve by moving the execution/apply surface out
 of `chain_restore_service.c` into a dedicated executor module. This keeps the
 public `chain_restore_service.h` API stable while separating the mutable
 restore path from validation, boot snapshots, and post-restore repair helpers.
+The boot snapshot/dumpstate surface already lives in
+`chain_restore_boot_snapshot.{h,c}` after PR-1b.
 
 ## Tasks
 
 1. Add `app/services/src/chain_restore_executor.c`.
 2. Move `chain_restore_create_anchor()`, `chain_restore_execute()`, and the
    private CSR commit helpers into the executor module.
-3. Leave `chain_restore_service.c` owning validation, dumpstate, boot snapshot,
-   integrity checks, and finalization.
+3. Leave `chain_restore_service.c` owning validation, integrity checks, and
+   finalization.
 4. Keep behavior and public declarations unchanged.
 
 ## Acceptance
