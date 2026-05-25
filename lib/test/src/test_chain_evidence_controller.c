@@ -576,7 +576,72 @@ static int test_startup_reconstructs_missing_active_tip_evidence(void)
     return failures;
 }
 
-static int test_startup_freezes_on_active_tip_hash_mismatch(void)
+static int test_startup_clears_stale_missing_evidence_freeze_with_sql_lag(void)
+{
+    int failures = 0;
+    struct auth_fixture f;
+    if (!auth_fixture_init(&f))
+        return 1;
+
+    struct chain_state_commit commit = {
+        .new_tip = &f.blocks[1],
+        .new_coins_best = *f.blocks[1].phashBlock,
+        .expected_utxo_count = 0,
+        .update_header_tip = true,
+        .persist_coins_best = true,
+        .rollback_auth = NULL,
+        .wallet_scan_height = -1,
+        .reason = "unit.reconcile_seed",
+    };
+    if (csr_commit_tip(&f.csr, &commit) != CSR_OK)
+        failures++;
+
+    const char frozen[] = "contradiction_frozen";
+    const char reason[] = "missing_active_tip_evidence";
+    if (!node_db_state_set(&f.ndb, "cec.sync_state",
+                           frozen, sizeof(frozen)))
+        failures++;
+    if (!node_db_state_set(&f.ndb, "cec.contradiction_reason",
+                           reason, sizeof(reason)))
+        failures++;
+
+    if (sqlite3_exec(f.ndb.db,
+                     "INSERT OR REPLACE INTO blocks("
+                     "hash,height,prev_hash,version,merkle_root,time,bits,"
+                     "nonce,solution,chain_work,status,num_tx) VALUES("
+                     "X'0000000000000000000000000000000000000000000000000000000000000000',"
+                     "0,"
+                     "X'0000000000000000000000000000000000000000000000000000000000000000',"
+                     "1,"
+                     "X'0000000000000000000000000000000000000000000000000000000000000000',"
+                     "0,0,"
+                     "X'0000000000000000000000000000000000000000000000000000000000000000',"
+                     "X'',"
+                     "X'00',0,0)",
+                     NULL, NULL, NULL) != SQLITE_OK)
+        failures++;
+
+    chain_evidence_controller_init(&f.authority, &f.ndb, &f.csr);
+
+    struct chain_evidence_controller_view view;
+    chain_evidence_controller_snapshot(&f.authority, &view);
+    if (view.state == CEC_CONTRADICTION_FROZEN)
+        failures++;
+    if (!view.repaired_active_tip_evidence)
+        failures++;
+    if (strcmp(view.health_reason, "") != 0)
+        failures++;
+    if (!chain_evidence_record_has_block_index_required(
+            &view.active_tip_evidence))
+        failures++;
+    if (view.active_tip_height != 1)
+        failures++;
+
+    auth_fixture_free(&f);
+    return failures;
+}
+
+static int test_startup_repairs_active_tip_hash_mismatch(void)
 {
     int failures = 0;
     struct auth_fixture f;
@@ -604,9 +669,13 @@ static int test_startup_freezes_on_active_tip_hash_mismatch(void)
     chain_evidence_controller_init(&f.authority, &f.ndb, &f.csr);
     struct chain_evidence_controller_view view;
     chain_evidence_controller_snapshot(&f.authority, &view);
-    if (view.state != CEC_CONTRADICTION_FROZEN)
+    if (view.state == CEC_CONTRADICTION_FROZEN)
         failures++;
-    if (strcmp(view.health_reason, "active_tip_hash_mismatch") != 0)
+    if (strcmp(view.health_reason, "") != 0)
+        failures++;
+    if (!view.has_persisted_active_tip_hash ||
+        memcmp(view.persisted_active_tip_hash.data,
+               f.blocks[1].phashBlock->data, 32) != 0)
         failures++;
 
     auth_fixture_free(&f);
@@ -629,6 +698,7 @@ int test_chain_evidence_controller(void)
     failures += test_commit_failure_after_csr_restores_concrete_state();
     failures += test_full_validation_requires_matching_utxo_sha3();
     failures += test_startup_reconstructs_missing_active_tip_evidence();
-    failures += test_startup_freezes_on_active_tip_hash_mismatch();
+    failures += test_startup_clears_stale_missing_evidence_freeze_with_sql_lag();
+    failures += test_startup_repairs_active_tip_hash_mismatch();
     return failures;
 }

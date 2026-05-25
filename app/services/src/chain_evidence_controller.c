@@ -346,8 +346,6 @@ static bool cec_reconstruct_active_tip_evidence(
         return false;
     if (!u256_equal(&csv->coins_best_block, active_tip->phashBlock))
         return false;
-    if (csv->sql_max_height >= 0 && csv->sql_max_height < csv->tip_height)
-        return false;
     if (arith_uint256_is_zero(&active_tip->nChainWork))
         return false;
 
@@ -538,7 +536,8 @@ enum chain_evidence_controller_state chain_evidence_controller_load_state(
             (strcmp(r, "sqlite_height_behind_active_tip") == 0) ||
             (strcmp(r, "csr_cursor_mismatch") == 0) ||
             (strcmp(r, "active_tip_hash_mismatch") == 0) ||
-            (strcmp(r, "active_tip_height_mismatch") == 0);
+            (strcmp(r, "active_tip_height_mismatch") == 0) ||
+            (strcmp(r, "missing_active_tip_evidence") == 0);
         if (demoted) {
             fprintf(stderr,  // obs-ok:cec-auto-clear-demoted-freeze
                     "[cec] auto-clearing stale freeze (reason=%s now "
