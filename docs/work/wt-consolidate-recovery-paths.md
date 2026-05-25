@@ -16,6 +16,11 @@ surface (`-cold-import`, `-fastimport`, `-legacy-attach`, `-nolegacyimport`)
 and records that `legacy_body_pull` is runtime-active through mirror catch-up,
 not a boot CLI path.
 
+Task D complete in wt3: import wrappers are intentionally distinct. `-cold-import`
+bulk-copies block index + chainstate for empty datadirs, `-fastimport` walks
+legacy block payloads through `process_new_block`, and `-legacy-attach` snapshots
+a running legacy node and stamps Wave S cursors. No safe collapse target found.
+
 > Why queued, not now: days of whack-a-mole accreted overlapping wedge-recovery
 > paths. Most exist only because `connect_block` kept false-wedging. Fix the cause
 > first; then a lot of this is provably dead and safe to delete.
@@ -58,13 +63,15 @@ still-reachable trigger.
 3 import modules (`legacy_cold_import`, `legacy_direct_import`,
 `legacy_oneshot_import`) + `legacy_body_pull`. LEGACY_LIFECYCLE marks cold/direct
 Active. Confirm `legacy_oneshot_import` (5 refs) vs `legacy_direct_import` (1 ref)
-aren't redundant; collapse if one wraps the other.
+aren't redundant; collapse if one wraps the other. Confirmed: they are separate
+CLI paths with different source-lock, validation, cursor-stamping, and state-copy
+contracts.
 
 ## Tasks (after the gate)
 1. [x] Extract `coins_rewind_above_tip` helper; rewire all 3 callers; one test. (A)
 2. Live-audit the 17 conditions; merge/retire the now-unreachable ones. (B)
 3. [x] Fix the LEGACY_LIFECYCLE drift + dead flag docs. (C)
-4. Confirm/collapse redundant import wrappers. (D)
+4. [x] Confirm/collapse redundant import wrappers. (D)
 
 ## Acceptance
 - `make test_parallel` clean, `make lint`; net LOC **down**, condition count down.
