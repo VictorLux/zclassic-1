@@ -27,26 +27,26 @@ Honest scoreboard. **MEASURED** = a real number from this box (date + how, in
      Cold sync to tip          180s  (05-24)       30s           ▸ PR-3 building
      Warm restart              37.7s (05-24)       10s           ▸ real restart→tip
      Validation speed          108 blk/s (05-24)   fast          ◷ measured; tip frozen now
-     Stay at tip               HALTED ~18 behind   keep <1 blk    ✗ BIP30 self-write recurs at tip; real fix queued
+     Stay at tip               advancing (05-25)   keep <1 blk    ◑ live healthy (connect_block fix + rebuild); structural fix = cutover
 
   🪶 LEAN
      Memory (RSS)              2.13 GB (live)*     1.0 GB        ▲ climbs w/ bg-verify
      Binary size               15.4 MB (05-24)     stay slim     ✓ met (docs' 26MB stale)
 
   💪 UNBREAKABLE  ← resilience is a PROMISE, measured by truth not by "result=ok"
-     Tip advancing             NO — re-halts/blk  always         ✗ connect_block rejects own coinbase (BIP30 self-write)
-     Self-heal tells the truth code: gated (47bdbc211) 0 false-ok ◑ fixed in tree · live still lies
-     Halt/crash recovery      180s, manual        <60s, auto    ◑ resnapshot path landed (8e25887b0); BIP30 fix + live timing pending
-     Uptime before failure     halted ~5h, 12 restarts 30 days    ✗ restart loop went quiet — now silently stuck
-     Alerts to a human         code: 19 Conditions  0 / month     ◑ 19 self-heal Conditions in tree · live node still pages nobody
+     Tip advancing             YES (05-25, 0 restart) always      ◑ live healthy; can't-halt-by-construction still needs the cutover
+     Self-heal tells the truth gated + alert loop    0 false-ok    ✓ witness gating (47bdbc211) + EV_OPERATOR_NEEDED routed
+     Halt/crash recovery       rebuild ~secs (05-25)  <60s, auto   ◑ connect_block fix shipped + rebuild-from-zclassicd proven; auto-heal pending
+     Uptime before failure     rebuilt, advancing     30 days      ◷ re-measuring on the healthy node (was halted ~5h pre-fix)
+     Alerts to a human         loop CLOSED (05-25)    0 / month    ✓ EV_OPERATOR_NEEDED → sinks + zcl_status DEGRADED + sd_notify
 
   🔬 HONEST
      Live truth from service   zcl_status (C)      always true    ◑ build-commit + dominant-blocker → surface in zcl_status
      Bug → reproducible fix    built (postmortem+chaos) 1 tape    ✓ Phase 6 done (6fb76f2b0)
 ```
 `*` RSS soak (05-24): fresh boot 1.53 GB → **stair-steps up with bg-validation
-depth** → ~2.4 GB by 17min (only 6.6% validated), still creeping. Live now reads
-2.13 GB at ~5h halted. NOT bounded at a low plateau — tracks how much chain
+depth** → ~2.4 GB by 17min (only 6.6% validated), still creeping. (Node rebuilt
+2026-05-25 — RSS to be re-measured on the healthy node.) NOT bounded at a low plateau — tracks how much chain
 bg-verify has buffered. >2× the 1 GB target; real ceiling needs the full ~8h
 run. `✓` met · `▸` in flight · `◷` measuring · `◑` fixed-in-code-not-deployed ·
 `▲` above target · `✗` BROKEN/regressed.
@@ -145,11 +145,10 @@ Phase 2  [██████████] 100%   Wave S SHADOW complete (S-1..S-
   ├ S-5..S-7 [██████████] 100%   body_persist, script_validate, proof_validate ✅
   ├ S-8    [██████████] 100%   utxo_apply shadow (wt3)                ✅ 497220f58
   └ S-9    [██████████] 100%   tip_finalize shadow (wt3)              ✅ 1a65b33c7
-Phase 2 CUTOVER [█░░░░░░░░░]  ~8%   Flip shadow → authoritative   ⚠ REVERTED — 0/7 stages authoritative in prod
-  ├ UNHALT FIRST [░░░░░░░░░░] 0%  live node halted on BIP30 stale-coins (see P0) — fix that before ANY re-flip
-  ├ SAFE-FLIP GUARD [░░░░░░░░] 0%  build the auto-revert-on-no-forward-progress Condition + follow the
-  │                                protocol BEFORE re-flipping — work/cutover-safety-protocol.md. Without it,
-  │                                the next flip can silently halt the chain again (exactly what C-3 did).
+Phase 2 CUTOVER [██░░░░░░░░] ~10%   Flip shadow → authoritative   ◐ prereqs CLEARED — ready for C-3 re-flip (0/7 live)
+  ├ UNHALT FIRST [██████████] 100%  ✅ halt cured 2026-05-25 (connect_block fix + rebuild); node healthy/advancing
+  ├ SAFE-FLIP GUARD [█████████░] ~90% ◐ cutover_no_forward_progress exists (wt3 230d9b896) + EV_OPERATOR_NEEDED loop
+  │                                closed; follow work/cutover-safety-protocol.md when flipping
   ├ C-2    [███████░░░] flipped, then REVERTED   header_admit: flip f3f0c6c4e → set back to SHADOW 6e0f6a82c
   ├ C-3    [███████░░░] flipped, HALTED, REVERTED validate_headers: flip ad34efb65 → froze chain → SHADOW 6e0f6a82c
   ├ C-3del [░░░░░░░░░░]   0%   delete legacy validate_headers fallback ← gated on root-cause + clean re-flip
@@ -159,8 +158,8 @@ Phase 2 CUTOVER [█░░░░░░░░░]  ~8%   Flip shadow → authorit
   ├ C-8    [░░░░░░░░░░]   0%   utxo_apply authoritative (batch spec, post C-7 — gates utxo_recovery dissolve)
   └ C-9    [░░░░░░░░░░]   0%   tip_finalize authoritative (batch spec, post C-8 — gates chain_advance dissolve)
   NOTE: shadow stages (Phase 2 SHADOW, 100%) all run + match in shadow. The CUTOVER is the act of
-        trusting them as authoritative. C-2/C-3 proved the flip mechanism works, but the live node is
-        halted on a SEPARATE bug (BIP30 stale coins, see P0) — unhalt first, then re-flip on a clean node.
+        trusting them as authoritative. C-2/C-3 proved the flip works; the halt that reverted them is
+        CURED (node healthy) + the safe-flip guard exists → C-3 re-flip is the next assignment.
 Phase 3  [███████░░░]  70%   Dissolve mega-modules                    ← partial
   ├ watchdog [██████████] 100%   sync_watchdog_service.c DELETED      ✅ 611631541
   ├ supervisor tree split [██████████] 100%   7 domain supervisors    ✅ dae31dee9
@@ -210,8 +209,8 @@ re-quote them here; they rot. Add a row to the ledger instead.
 | Conformance metric | Today | Target | Delta |
 |---|---|---|---|
 | Files conforming to shape | scaffold | 342 / 342 | scaffold lint not yet run |
-| `.c` files in `app/` > 800 LOC | 6 (the monoliths) | 0 | dissolve in Phases 2-3 |
-| Mega-modules remaining | 6 | 0 | was 7; `sync_watchdog` DELETED — see roster below |
+| `.c` files in `app/` > 800 LOC | **31** | 0 | mostly controllers — large DRY/split + dead-code surface (cruft hunt 05-25) |
+| Mega-modules remaining | **3** | 0 | chain_advance_coordinator · legacy_mirror_sync · utxo_recovery (all cutover-gated); chain_evidence/restore/watchdog/header_probe DISSOLVED |
 | Lint gates active | 20 (1 FAIL'd in P1) | 21 | +1 by Phase 3 (gate #20→FAIL) |
 | Raw clock/RNG callers | **0** | 0 | ✅ Phase 1c (was 443) |
 | Mailbox prod callers | 1 | many | ✅ Phase 1a (header_admit), more in Phase 3 |
@@ -232,26 +231,27 @@ re-quote them here; they rot. Add a row to the ledger instead.
 | `legacy_mirror_sync_service.c` | 1,410 | `services/sync/legacy_bridge.c` + `jobs/legacy_poll.c` + 1 condition | 2 (S-12) |
 | `header_probe_service.c` | DELETED | `header_probe.c` + `legacy_header_client.c` + mailbox use | 3 (PR-3) |
 | `utxo_recovery_service.c` | 1,241 | `conditions/utxo_drift.c` + `jobs/utxo_repair.c` | 3 |
-| `chain_evidence_controller.c` | 1,083 | `services/chain/evidence.c` + 1 condition | 2 (S-9) |
+| `chain_evidence_controller.c` | DELETED | split into chain-evidence storage helpers ✅ | 3 |
 
 ---
 
 ## In flight (worktrees)
 
-**Workers LIVE (2026-05-25):** wt2 → BIP30 stale-coins unhalt (`ed799dd4a`),
-wt3 → cutover safety guard (`f711ac7b0`) — the two critical-path items.
-Orchestrator on `main` queues + curates; workers push direct to main.
-(Housekeeping: 6 orphaned dead-session sub-agent worktrees pruned; 3 live ones
-remain under `.claude/worktrees/agent-*`.)
+**Workers (2026-05-25):** wt3 landed recovery + condition consolidation and the
+chain-evidence/restore/block-index splits (on origin/main). Orchestrator landed:
+shell+explorer cruft purge, the never-silent `EV_OPERATOR_NEEDED` alert loop;
+deep cruft-hunt + wallet-controller purge in flight. Workers push direct to main;
+orchestrator integrates (fetch→rebase→push) and queues. Next for a freed worker:
+the **C-3 re-flip** — cutover prereqs are now cleared.
 
-**The Phase 2 cutover critical path is UNHALT-BLOCKED, not soak-gated.** C-2/C-3
-went authoritative, the chain halted, and `6e0f6a82c` reverted both stages to
-shadow. The live node is now frozen on a SEPARATE bug — BIP30 stale coins (see
-P0), not a header divergence. No further flip (C-3del, C-5..C-9) should proceed
-until (1) the live node is unhalted, and (2) a clean re-flip confirms the
-authoritative header path actually matches legacy past the cutover height. A
-freed worker should take the BIP30 unhalt or pull **independent** work from
-"Claimable NOW" below.
+**The Phase 2 cutover is now UNBLOCKED.** C-2/C-3 went authoritative, the chain
+halted, `6e0f6a82c` reverted both to shadow — but that halt is CURED (node
+healthy/advancing) and the safe-flip guard (`cutover_no_forward_progress` +
+the `EV_OPERATOR_NEEDED` alert loop) is in place. Next: **re-flip C-3** behind the
+guard (`work/cutover-safety-protocol.md`), confirm the authoritative header path
+matches legacy past the cutover height, then C-5..C-9 in sequence — each flip
+deletes its legacy stage. Independent purges (controllers, importers, dead code)
+run in parallel — see the cruft hunt + "Claimable NOW" below.
 
 ---
 
