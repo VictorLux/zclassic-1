@@ -98,6 +98,28 @@ static int64_t legacy_bootstrap_now_ms(void)
     return (int64_t)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
 }
 
+static bool legacy_bootstrap_format_child_path(const char *base,
+                                               const char *child,
+                                               char *out,
+                                               size_t out_sz,
+                                               const char *log_prefix,
+                                               const char *what)
+{
+    if (!base || !child || !out || out_sz == 0 || !log_prefix || !what) {
+        fprintf(stderr,  // obs-ok:bootstrap-import-terminal-diagnostic
+                "[legacy_bootstrap] format path: bad args\n");
+        return false;
+    }
+
+    int n = snprintf(out, out_sz, "%s/%s", base, child);
+    if (n <= 0 || (size_t)n >= out_sz) {
+        fprintf(stderr,  // obs-ok:bootstrap-import-terminal-diagnostic
+                "[%s] %s path too long\n", log_prefix, what);
+        return false;
+    }
+    return true;
+}
+
 static int64_t legacy_bootstrap_link_blk_files(const char *legacy_blocks_dir,
                                                const char *our_blocks_dir,
                                                const char *log_prefix)
@@ -247,13 +269,10 @@ static bool legacy_bootstrap_make_stage_dir(const char *datadir,
         return false;
     }
 
-    int n = snprintf(out_stage_dir, out_cap, "%s/%s",
-                     datadir, stage_subdir);
-    if (n <= 0 || (size_t)n >= out_cap) {
-        fprintf(stderr,  // obs-ok:bootstrap-import-terminal-diagnostic
-                "[%s] stage dir path too long\n", log_prefix);
+    if (!legacy_bootstrap_format_child_path(datadir, stage_subdir,
+                                            out_stage_dir, out_cap,
+                                            log_prefix, "stage directory"))
         return false;
-    }
 
     if (mkdir(out_stage_dir, 0700) != 0 && errno != EEXIST) {
         fprintf(stderr,  // obs-ok:bootstrap-import-terminal-diagnostic
@@ -307,20 +326,19 @@ static bool legacy_bootstrap_snapshot_leveldbs(const char *legacy_datadir,
     }
 
     char src_idx[1100], src_cs[1100];
-    int si = snprintf(src_idx, sizeof(src_idx), "%s/blocks/index",
-                      legacy_datadir);
-    int sc = snprintf(src_cs, sizeof(src_cs), "%s/chainstate",
-                      legacy_datadir);
-    int ni = snprintf(out_idx_path, idx_cap, "%s/blocks-index", stage_dir);
-    int nc = snprintf(out_cs_path, cs_cap, "%s/chainstate", stage_dir);
-    if (si <= 0 || (size_t)si >= sizeof(src_idx) ||
-        sc <= 0 || (size_t)sc >= sizeof(src_cs) ||
-        ni <= 0 || (size_t)ni >= idx_cap ||
-        nc <= 0 || (size_t)nc >= cs_cap) {
-        fprintf(stderr,  // obs-ok:bootstrap-import-terminal-diagnostic
-                "[%s] snapshot path too long\n", log_prefix);
+    if (!legacy_bootstrap_format_child_path(
+            legacy_datadir, "blocks/index", src_idx, sizeof(src_idx),
+            log_prefix, "legacy block-index directory") ||
+        !legacy_bootstrap_format_child_path(
+            legacy_datadir, "chainstate", src_cs, sizeof(src_cs),
+            log_prefix, "legacy chainstate directory") ||
+        !legacy_bootstrap_format_child_path(
+            stage_dir, "blocks-index", out_idx_path, idx_cap,
+            log_prefix, "staged block-index directory") ||
+        !legacy_bootstrap_format_child_path(
+            stage_dir, "chainstate", out_cs_path, cs_cap,
+            log_prefix, "staged chainstate directory"))
         return false;
-    }
 
     if (!legacy_bootstrap_snapshot_one_leveldb(src_idx, out_idx_path,
                                                "blocks/index", log_prefix))
@@ -977,17 +995,14 @@ static bool legacy_bootstrap_import_cold(
     }
 
     char blk_dir[1024];
-    int nb = snprintf(blk_dir, sizeof(blk_dir), "%s/blocks",
-                      opts->legacy_datadir);
     char our_blocks[1024];
-    int no = snprintf(our_blocks, sizeof(our_blocks), "%s/blocks",
-                      opts->our_datadir);
-    if (nb <= 0 || (size_t)nb >= sizeof(blk_dir) ||
-        no <= 0 || (size_t)no >= sizeof(our_blocks)) {
-        fprintf(stderr,  // obs-ok:bootstrap-import-terminal-diagnostic
-                "[cold_import] block directory path too long\n");
+    if (!legacy_bootstrap_format_child_path(
+            opts->legacy_datadir, "blocks", blk_dir, sizeof(blk_dir),
+            "cold_import", "legacy blocks directory") ||
+        !legacy_bootstrap_format_child_path(
+            opts->our_datadir, "blocks", our_blocks, sizeof(our_blocks),
+            "cold_import", "local blocks directory"))
         return false;
-    }
 
     int64_t t_start = legacy_bootstrap_now_ms();
 
@@ -1125,17 +1140,14 @@ static bool legacy_bootstrap_import_direct(
     }
 
     char idx_dir[1024];
-    int ni = snprintf(idx_dir, sizeof(idx_dir), "%s/blocks/index",
-                      opts->legacy_datadir);
     char blk_dir[1024];
-    int nb = snprintf(blk_dir, sizeof(blk_dir), "%s/blocks",
-                      opts->legacy_datadir);
-    if (ni <= 0 || (size_t)ni >= sizeof(idx_dir) ||
-        nb <= 0 || (size_t)nb >= sizeof(blk_dir)) {
-        fprintf(stderr,  // obs-ok:bootstrap-import-terminal-diagnostic
-                "[legacy_direct_import] legacy path too long\n");
+    if (!legacy_bootstrap_format_child_path(
+            opts->legacy_datadir, "blocks/index", idx_dir, sizeof(idx_dir),
+            "legacy_direct_import", "legacy block-index directory") ||
+        !legacy_bootstrap_format_child_path(
+            opts->legacy_datadir, "blocks", blk_dir, sizeof(blk_dir),
+            "legacy_direct_import", "legacy blocks directory"))
         return false;
-    }
 
     int64_t t_open = legacy_bootstrap_now_ms();
     struct legacy_bootstrap_height_map_result hmap;
@@ -1619,12 +1631,16 @@ static bool legacy_bootstrap_import_attach(
                     opts->our_datadir, LEGACY_BOOTSTRAP_ATTACH_STAGE_SUBDIR,
                     stage_dir, sizeof(stage_dir), "legacy_attach")) {
                 char src_cs[1100], cs_path[1200];
-                snprintf(src_cs, sizeof(src_cs), "%s/chainstate",
-                         opts->legacy_datadir);
-                snprintf(cs_path, sizeof(cs_path), "%s/probe-chainstate",
-                         stage_dir);
                 struct uint256 cur_best;
-                if (legacy_bootstrap_snapshot_one_leveldb(
+                if (legacy_bootstrap_format_child_path(
+                        opts->legacy_datadir, "chainstate", src_cs,
+                        sizeof(src_cs), "legacy_attach",
+                        "legacy chainstate directory") &&
+                    legacy_bootstrap_format_child_path(
+                        stage_dir, "probe-chainstate", cs_path,
+                        sizeof(cs_path), "legacy_attach",
+                        "probe chainstate directory") &&
+                    legacy_bootstrap_snapshot_one_leveldb(
                         src_cs, cs_path, "chainstate", "legacy_attach") &&
                     legacy_bootstrap_read_chainstate_best_block(
                         cs_path, "legacy_attach", &cur_best) &&
@@ -1692,10 +1708,17 @@ static bool legacy_bootstrap_import_attach(
     }
 
     char legacy_blocks[1100], our_blocks[1100];
-    snprintf(legacy_blocks, sizeof(legacy_blocks), "%s/blocks",
-             opts->legacy_datadir);
-    snprintf(our_blocks, sizeof(our_blocks), "%s/blocks",
-             opts->our_datadir);
+    if (!legacy_bootstrap_format_child_path(
+            opts->legacy_datadir, "blocks", legacy_blocks,
+            sizeof(legacy_blocks), "legacy_attach",
+            "legacy blocks directory") ||
+        !legacy_bootstrap_format_child_path(
+            opts->our_datadir, "blocks", our_blocks, sizeof(our_blocks),
+            "legacy_attach", "local blocks directory")) {
+        ldb_snapshot_destroy(idx_snap);
+        ldb_snapshot_destroy(cs_snap);
+        return false;
+    }
     struct legacy_bootstrap_snapshot_import_result imported;
     const struct legacy_bootstrap_snapshot_import_options import_opts = {
         .legacy_blocks_dir = legacy_blocks,
