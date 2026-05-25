@@ -65,6 +65,11 @@ def load_rpc(path):
         return result if isinstance(result, dict) else {}
     return blob if isinstance(blob, dict) else {}
 
+def fmt_bool(obj, key):
+    if not isinstance(obj, dict) or key not in obj:
+        return "unknown"
+    return str(bool(obj.get(key))).lower()
+
 health = load_rpc(health_path)
 preflight = load_rpc(preflight_path)
 checks = health.get("checks") if isinstance(health.get("checks"), dict) else {}
@@ -73,6 +78,10 @@ state = preflight.get("cutover_state")
 if not isinstance(state, dict):
     state = {}
 ca = checks.get("chain_advance") if isinstance(checks.get("chain_advance"), dict) else {}
+ca_gate = preflight.get("chain_advance") if isinstance(preflight.get("chain_advance"), dict) else {}
+guard = preflight.get("guard") if isinstance(preflight.get("guard"), dict) else {}
+diff = preflight.get("header_admit_diff") if isinstance(preflight.get("header_admit_diff"), dict) else {}
+vh = preflight.get("validate_headers") if isinstance(preflight.get("validate_headers"), dict) else {}
 blockers = preflight.get("blockers")
 if not isinstance(blockers, list):
     blockers = []
@@ -106,6 +115,47 @@ print(
     f"ready={str(cutover_ready).lower()} "
     f"canary_target_height={live.get('canary_target_height', 0)} "
     f"blockers={','.join(str(b) for b in blockers) if blockers else 'none'}"
+)
+print(
+    "cutover_live_gate="
+    f"ready={fmt_bool(live, 'cutover_ready')} "
+    f"tip_recent={fmt_bool(live, 'tip_recent')} "
+    f"headers_in_range={fmt_bool(live, 'headers_in_range')} "
+    f"operator_needed_blocks={fmt_bool(live, 'operator_needed_blocks_cutover')} "
+    f"degraded_reason={live.get('degraded_reason', '')}"
+)
+print(
+    "cutover_chain_advance_gate="
+    f"ready={fmt_bool(ca_gate, 'ready')} "
+    f"source_ready={fmt_bool(ca_gate, 'source_ready')} "
+    f"selected_source={ca_gate.get('selected_source', 'unknown')} "
+    f"selected_source_blocker={ca_gate.get('selected_source_blocker', '')} "
+    f"blocker={ca_gate.get('blocker', '')}"
+)
+print(
+    "cutover_guard_gate="
+    f"ready={fmt_bool(guard, 'ready')} "
+    f"registered={fmt_bool(guard, 'registered')} "
+    f"config_ready={fmt_bool(guard, 'config_ready')} "
+    f"state_ready={fmt_bool(guard, 'state_ready')} "
+    f"active={fmt_bool(guard, 'currently_active')} "
+    f"last_outcome={guard.get('last_outcome', 'unknown')}"
+)
+print(
+    "cutover_header_admit_gate="
+    f"status={diff.get('status', 'unknown')} "
+    f"cursor_lag={diff.get('cursor_lag', 0)} "
+    f"log_tip_lag={diff.get('log_tip_lag', 0)} "
+    f"mismatch_count={diff.get('mismatch_count', 0)} "
+    f"first_divergent_height={diff.get('first_divergent_height', -1)}"
+)
+print(
+    "cutover_validate_headers_gate="
+    f"cursor_lag={vh.get('cursor_lag', 0)} "
+    f"window_available={fmt_bool(vh, 'window_available')} "
+    f"window_complete={fmt_bool(vh, 'window_complete')} "
+    f"window_failed_count={vh.get('window_failed_count', 0)} "
+    f"window_first_failed_height={vh.get('window_first_failed_height', -1)}"
 )
 print(
     "cutover_state="

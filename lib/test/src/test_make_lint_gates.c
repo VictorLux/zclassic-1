@@ -834,6 +834,16 @@ static int t_scoreboard_operator_gate_contract(void)
         ASSERT(strstr(buf, "canary_status") != NULL);
         ASSERT(strstr(buf, "canary_failed") != NULL);
         ASSERT(strstr(buf, "elapsed_seconds") != NULL);
+        ASSERT(strstr(buf, "cutover_live_gate") != NULL);
+        ASSERT(strstr(buf, "cutover_chain_advance_gate") != NULL);
+        ASSERT(strstr(buf, "cutover_guard_gate") != NULL);
+        ASSERT(strstr(buf, "cutover_header_admit_gate") != NULL);
+        ASSERT(strstr(buf, "cutover_validate_headers_gate") != NULL);
+        ASSERT(strstr(buf, "operator_needed_blocks") != NULL);
+        ASSERT(strstr(buf, "source_ready") != NULL);
+        ASSERT(strstr(buf, "state_ready") != NULL);
+        ASSERT(strstr(buf, "cursor_lag") != NULL);
+        ASSERT(strstr(buf, "window_complete") != NULL);
         ASSERT(strstr(buf, "cutovermode") == NULL);
         ASSERT(strstr(buf, "setgenerate") == NULL);
         ASSERT(strstr(buf, "sendtoaddress") == NULL);
