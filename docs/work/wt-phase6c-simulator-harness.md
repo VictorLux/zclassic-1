@@ -315,6 +315,8 @@ One commit per task. Push after tasks 2, 4, 7.
 - Added `at_event` dispatch plus the five starter `tools/sim/scenarios/`
   files so `make chaos` now exercises smoke, peer churn, malformed blocks,
   clock skew, and OOM-at-utxo-apply paths.
+- Added elapsed-clock and graceful-shutdown metrics so starter scenarios can
+  assert simulated time advancement, mempool prune ticks, and OOM handling.
 - Skipped CI integration because this repository has no `.github/workflows`
   directory, updated `chaos-clean`, and added `docs/CHAOS_HARNESS.md`.
 - Implemented the first fixture-backed `send_block` simulation: connected peers

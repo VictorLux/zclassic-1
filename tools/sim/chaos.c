@@ -42,7 +42,9 @@ struct chaos_ctx {
     int64_t tip_height;
     int64_t reorg_count;
     int64_t consensus_rejects;
+    int64_t clock_advance_seconds;
     int64_t mempool_prune_runs;
+    int64_t graceful_shutdowns;
     size_t expect_count;
     bool verbose;
     char alloc_fault_site[64];
@@ -240,7 +242,16 @@ static bool metric_value(const struct chaos_ctx *ctx, const char *name,
         *out = ctx->consensus_rejects;
         return true;
     }
-    if (strcmp(name, "mempool_prune_runs") == 0) {
+    if (strcmp(name, "clock_advance_seconds") == 0) {
+        *out = ctx->clock_advance_seconds;
+        return true;
+    }
+    if (strcmp(name, "graceful_shutdowns") == 0) {
+        *out = ctx->graceful_shutdowns;
+        return true;
+    }
+    if (strcmp(name, "mempool_prune_runs") == 0 ||
+        strcmp(name, "mempool_prunes") == 0) {
         *out = ctx->mempool_prune_runs;
         return true;
     }
@@ -336,6 +347,7 @@ static int handle_trigger_oom_at(struct chaos_ctx *ctx, int argc, char **argv,
         return fail_line(line_no, "allocation fault did not clear");
     ctx->alloc_fault_count++;
     ctx->alloc_fault_triggered = true;
+    ctx->graceful_shutdowns++;
     return 0;
 }
 
@@ -454,10 +466,13 @@ static int handle_advance_clock(struct chaos_ctx *ctx, int argc, char **argv,
         return fail_line(line_no, "advance_clock wall time overflows");
     if (seconds > (INT64_MAX - ctx->sim_monotonic_us) / 1000000LL)
         return fail_line(line_no, "advance_clock monotonic time overflows");
+    if (ctx->clock_advance_seconds > INT64_MAX - seconds)
+        return fail_line(line_no, "advance_clock duration overflows");
 
     ctx->sim_wall_unix += seconds;
     ctx->sim_monotonic_us += seconds * 1000000LL;
     ctx->clock_advance_count++;
+    ctx->clock_advance_seconds += seconds;
     if (ctx->peers.active_count > 0)
         ctx->tip_height += seconds / 60;
     if (strcmp(ctx->boot_phase, "mempool_open") == 0 && seconds >= 3600)

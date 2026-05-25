@@ -7,4 +7,5 @@ trigger_oom_at utxo_apply
 
 expect      no_crash
 expect      alloc_faults == 1
+expect      graceful_shutdowns == 1
 expect      consensus_rejects == 0

@@ -14,3 +14,5 @@ expect      scheduled_events == 4
 expect      active_peers == 4
 expect      killed_peers == 4
 expect      tip_height >= 5
+expect      clock_advance_seconds == 300
+expect      consensus_rejects == 0

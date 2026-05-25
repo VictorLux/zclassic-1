@@ -194,11 +194,13 @@ int test_chaos_harness(void)
         "advance_clock 2m\n"
         "expect clock_advance_count == 2\n"
         "expect tip_height == 3\n"
+        "expect clock_advance_seconds == 180\n"
         "expect no_crash\n",
         &ctx);
     CHAOS_CHECK("advance_clock scenario passes", rc == 0);
     CHAOS_CHECK("advance_clock updates virtual clock",
                 ctx.clock_advance_count == 2 &&
+                ctx.clock_advance_seconds == 180 &&
                 ctx.sim_monotonic_us == 180000000LL &&
                 ctx.tip_height == 3);
 
@@ -225,6 +227,26 @@ int test_chaos_harness(void)
 
     rc = run_temp_scenario(
         "seed 1\n"
+        "boot_phase mempool_open\n"
+        "advance_clock +1h\n"
+        "expect clock_advance_seconds == 3600\n"
+        "expect mempool_prune_runs == 1\n"
+        "expect mempool_prunes == 1\n",
+        &ctx);
+    CHAOS_CHECK("advance_clock scenario passes", rc == 0);
+    CHAOS_CHECK("advance_clock records simulated time effects",
+                ctx.clock_advance_seconds == 3600 &&
+                ctx.mempool_prune_runs == 1);
+
+    rc = run_temp_scenario(
+        "seed 1\n"
+        "advance_clock bad-duration\n"
+        "expect no_crash\n",
+        NULL);
+    CHAOS_CHECK("bad advance_clock duration fails", rc != 0);
+
+    rc = run_temp_scenario(
+        "seed 1\n"
         "trigger_oom_at chaos_test_alloc\n"
         "expect no_crash\n",
         &ctx);
@@ -232,7 +254,8 @@ int test_chaos_harness(void)
     CHAOS_CHECK("trigger_oom_at records synthetic fire",
                 ctx.alloc_fault_triggered &&
                 ctx.alloc_fault_count == 1 &&
-                zcl_alloc_fault_armed_label() == NULL);
+                zcl_alloc_fault_armed_label() == NULL &&
+                ctx.graceful_shutdowns == 1);
 
     zcl_alloc_fault_fail_next("unit_alloc");
     void *failed = zcl_malloc(16, "unit_alloc");
