@@ -90,6 +90,54 @@ def fmt_age_from_unix(obj, key):
     age = int(time.time()) - ts
     return str(age) if age >= 0 else "unknown"
 
+def int_or(obj, key, fallback=None):
+    if not isinstance(obj, dict):
+        return fallback
+    try:
+        return int(obj.get(key, fallback))
+    except Exception:
+        return fallback
+
+def str_or(obj, key, fallback=""):
+    if not isinstance(obj, dict):
+        return fallback
+    value = obj.get(key, fallback)
+    return fallback if value is None else str(value)
+
+def chain_advance_target_gap(ca_gate):
+    local_height = int_or(ca_gate, "local_height")
+    target_height = int_or(ca_gate, "target_height")
+    if local_height is None or target_height is None:
+        return "unknown"
+    return str(target_height - local_height) if target_height > local_height else "0"
+
+def chain_advance_not_ready_reason(ca_gate):
+    existing = str_or(ca_gate, "not_ready_reason", "")
+    if existing and existing != "unknown":
+        return existing
+    if fmt_bool(ca_gate, "ready") == "true":
+        return ""
+    if str_or(ca_gate, "decision", "unknown") != "use_source":
+        return "decision_not_use_source"
+    if str_or(ca_gate, "selected_source", "none") in ("none", "unknown"):
+        return "selected_source_invalid"
+    if str_or(ca_gate, "blocker", ""):
+        return "blocker_present"
+    local_height = int_or(ca_gate, "local_height")
+    target_height = int_or(ca_gate, "target_height")
+    if local_height is None or target_height is None:
+        return "invalid_heights"
+    if local_height + 1 < target_height:
+        return "target_height_gap"
+    projection_lag = int_or(ca_gate, "projection_lag")
+    if projection_lag is None:
+        return "projection_lag_unknown"
+    if projection_lag < 0 or projection_lag > 1:
+        return "projection_lag"
+    if fmt_bool(ca_gate, "source_ready") != "true":
+        return "source_not_ready"
+    return "unknown"
+
 health = load_rpc(health_path)
 preflight = load_rpc(preflight_path)
 checks = health.get("checks") if isinstance(health.get("checks"), dict) else {}
@@ -125,6 +173,10 @@ if source_dirty:
     display_blockers.append("source_tree_dirty")
 if not build_matches_source:
     display_blockers.append("live_build_not_current")
+ca_not_ready_reason = chain_advance_not_ready_reason(ca_gate)
+ca_target_gap = str_or(ca_gate, "target_gap", "unknown")
+if ca_target_gap == "unknown":
+    ca_target_gap = chain_advance_target_gap(ca_gate)
 
 print("scoreboard read-only")
 print(f"build_commit={build_commit}")
@@ -167,8 +219,11 @@ print(
     f"ready={fmt_bool(ca_gate, 'ready')} "
     f"source_ready={fmt_bool(ca_gate, 'source_ready')} "
     f"selected_source={ca_gate.get('selected_source', 'unknown')} "
-    f"not_ready_reason={ca_gate.get('not_ready_reason', 'unknown')} "
-    f"target_gap={ca_gate.get('target_gap', 'unknown')} "
+    f"not_ready_reason={ca_not_ready_reason} "
+    f"target_gap={ca_target_gap} "
+    f"local_height={ca_gate.get('local_height', 'unknown')} "
+    f"target_height={ca_gate.get('target_height', 'unknown')} "
+    f"projection_lag={ca_gate.get('projection_lag', 'unknown')} "
     f"selected_source_blocker={ca_gate.get('selected_source_blocker', '')} "
     f"blocker={ca_gate.get('blocker', '')}"
 )

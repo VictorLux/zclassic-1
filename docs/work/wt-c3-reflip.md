@@ -158,3 +158,9 @@ now treats a dirty source tree as not deploy-matched, publishes
 `source_dirty`, and adds `source_tree_dirty` to the local blockers. The operator
 gate cannot bless a live binary that matches `HEAD` while uncommitted cutover
 guard changes are sitting in the worktree.
+
+Scoreboard compatibility hardening shipped in wt3: while older deployed
+binaries do not yet emit `chain_advance.not_ready_reason` or `target_gap`,
+`tools/scoreboard.sh --cutover` derives them from the existing chain-advance
+decision, selected-source, blocker, height, and projection-lag fields. Operators
+get an actionable preflight reason before the next deploy instead of `unknown`.
