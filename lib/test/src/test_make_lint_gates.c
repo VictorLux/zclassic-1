@@ -1034,7 +1034,7 @@ static int t_cold_import_fails_closed_contract(void)
         char *cold = strstr(buf, "if (ctx->cold_import_from)");
         char *missing_prereq = strstr(buf, "FATAL: cold-import requested");
         char *bad_source = strstr(buf, "FATAL: cold-import source %s");
-        char *call = strstr(buf, "legacy_cold_import_blocking(");
+        char *call = strstr(buf, "LEGACY_BOOTSTRAP_IMPORT_COLD");
         char *fail_closed = strstr(buf, "continue with fallback import paths");
         char *disable_auto = strstr(buf, "ctx->no_legacy_auto_import = true");
         char *ldb_import = strstr(buf, "utxo_recovery_import_ldb(&uctx)");

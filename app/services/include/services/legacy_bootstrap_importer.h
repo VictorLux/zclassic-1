@@ -45,43 +45,6 @@ struct legacy_bootstrap_import_options {
     int from_height;
 };
 
-struct legacy_bootstrap_import_result {
-    int32_t legacy_tip;
-    int64_t block_index_writes;
-    int64_t utxos_imported;
-    int64_t blk_files_linked;
-    int applied;
-    int skipped_have_data;
-    int skipped_failed;
-    int final_tip;
-    int outcome;
-    int64_t stages_stamped;
-    double total_secs;
-    bool evidence_armed;
-    bool source_checked;
-    bool ok;
-};
-
-struct lci_cold_result {
-    int legacy_tip;
-    int64_t block_index_writes;
-    int64_t utxos_imported;
-    int64_t blk_files_linked;
-    double total_secs;
-    bool evidence_armed;
-    bool ok;
-};
-
-struct ldi_result {
-    int applied;
-    int skipped_have_data;
-    int skipped_failed;
-    int final_tip;
-    int legacy_tip;
-    bool source_checked;
-    bool ok;
-};
-
 enum loi_outcome {
     LOI_OUTCOME_DID_IMPORT = 0,
     LOI_OUTCOME_NOOP_SAME_TIP = 1,
@@ -91,15 +54,20 @@ enum loi_outcome {
     LOI_OUTCOME_FAILED = 5,
 };
 
-struct loi_result {
-    enum loi_outcome outcome;
-    int32_t legacy_tip_height;
+struct legacy_bootstrap_import_result {
+    int32_t legacy_tip;
     int64_t block_index_writes;
     int64_t utxos_imported;
     int64_t blk_files_linked;
+    int applied;
+    int skipped_have_data;
+    int skipped_failed;
+    int final_tip;
+    enum loi_outcome outcome;
     int64_t stages_stamped;
     double total_secs;
     bool evidence_armed;
+    bool source_checked;
     bool ok;
 };
 
@@ -235,40 +203,12 @@ bool legacy_bootstrap_import_snapshot_state(
     const struct legacy_bootstrap_snapshot_import_options *opts,
     struct legacy_bootstrap_snapshot_import_result *out);
 
-/* Canonical mode-driven bootstrap importer. Public legacy CLI services remain
- * thin compatibility wrappers around this function.
+/* Canonical mode-driven bootstrap importer for -cold-import, -fastimport, and
+ * -legacy-attach.
  */
 bool legacy_bootstrap_import_blocking(
     const struct legacy_bootstrap_import_options *opts,
     struct legacy_bootstrap_import_result *out);
-
-bool legacy_cold_import_blocking(
-    struct main_state *ms,
-    struct coins_view_sqlite *cvs,
-    struct node_db *ndb,
-    struct block_tree_db *btdb,
-    const char *our_datadir,
-    const char *legacy_datadir,
-    struct lci_cold_result *out);
-
-bool legacy_direct_import_range_blocking(
-    struct main_state *ms,
-    struct coins_view_cache *coins_tip,
-    const struct chain_params *params,
-    struct wallet *wallet,
-    const char *our_datadir,
-    const char *legacy_datadir,
-    int from_height,
-    struct ldi_result *out);
-
-bool legacy_oneshot_import_run(
-    const char *our_datadir,
-    const char *legacy_datadir,
-    struct main_state *ms,
-    struct coins_view_sqlite *cvs,
-    struct node_db *ndb,
-    struct block_tree_db *btdb,
-    struct loi_result *out);
 
 const char *loi_outcome_name(enum loi_outcome o);
 

@@ -31,6 +31,10 @@ Progress:
 - The old `legacy_cold_import.h`, `legacy_direct_import.h`, and
   `legacy_oneshot_import.h` compatibility headers were removed; wrapper
   contracts now live in the canonical `legacy_bootstrap_importer.h`.
+- The old wrapper functions (`legacy_cold_import_blocking`,
+  `legacy_direct_import_range_blocking`, `legacy_oneshot_import_run`) and their
+  adapter-only result structs were removed; boot now calls
+  `legacy_bootstrap_import_blocking` directly with `COLD`, `DIRECT`, or `ATTACH`.
 
 Verification:
 - `make -j$(nproc) test_zcl`, `make -j$(nproc) zclassic23`, `make lint`, and

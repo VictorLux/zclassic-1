@@ -327,16 +327,20 @@ int test_legacy_oneshot_import(void)
      * the operator with `-legacy-attach=$HOME/.zclassic` after
      * `make deploy`. */
     {
-        struct loi_result r;
+        struct legacy_bootstrap_import_result r;
         memset(&r, 0, sizeof(r));
+        const struct legacy_bootstrap_import_options null_our = {
+            .mode = LEGACY_BOOTSTRAP_IMPORT_ATTACH,
+            .legacy_datadir = "/tmp/anything",
+        };
+        const struct legacy_bootstrap_import_options null_legacy = {
+            .mode = LEGACY_BOOTSTRAP_IMPORT_ATTACH,
+            .our_datadir = "./test-tmp/x",
+        };
         LOI_CHECK("NULL our_datadir rejected",
-                  !legacy_oneshot_import_run(
-                      NULL, "/tmp/anything",
-                      NULL, NULL, NULL, NULL, &r));
+                  !legacy_bootstrap_import_blocking(&null_our, &r));
         LOI_CHECK("NULL legacy_datadir rejected",
-                  !legacy_oneshot_import_run(
-                      "./test-tmp/x", NULL,
-                      NULL, NULL, NULL, NULL, &r));
+                  !legacy_bootstrap_import_blocking(&null_legacy, &r));
     }
 
     printf("legacy_oneshot_import: %d failures\n", failures);

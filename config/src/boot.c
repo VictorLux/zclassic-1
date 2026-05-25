@@ -1014,11 +1014,18 @@ static bool boot_step_fastimport(struct app_context *ctx,
                "(synchronous=OFF, indexes dropped)\n");
     }
 
-    struct ldi_result r = (struct ldi_result){0};
-    bool ok = legacy_direct_import_range_blocking(
-        &g_state, &g_coins_tip, params, &g_wallet,
-        ctx->datadir, ctx->fastimport_from,
-        -1 /* start from active_chain_height */, &r);
+    struct legacy_bootstrap_import_result r = {.legacy_tip = -1};
+    const struct legacy_bootstrap_import_options import_opts = {
+        .mode = LEGACY_BOOTSTRAP_IMPORT_DIRECT,
+        .ms = &g_state,
+        .coins_tip = &g_coins_tip,
+        .params = params,
+        .wallet = &g_wallet,
+        .our_datadir = ctx->datadir,
+        .legacy_datadir = ctx->fastimport_from,
+        .from_height = -1 /* start from active_chain_height */,
+    };
+    bool ok = legacy_bootstrap_import_blocking(&import_opts, &r);
 
     if (turbo_on) {
         if (!boot_db_restore_normal_mode()) {
@@ -1846,15 +1853,25 @@ bool app_init(struct app_context *ctx)
         printf("\n═══ Legacy Attach (one-shot) from %s ═══\n",
                ctx->legacy_attach_from);
         fflush(stdout);
-        struct loi_result lr = {0};
-        bool la_ok = legacy_oneshot_import_run(
-            ctx->datadir, ctx->legacy_attach_from,
-            &g_state, &g_coins_sqlite, &g_node_db, &g_block_tree, &lr);
+        struct legacy_bootstrap_import_result lr = {
+            .legacy_tip = -1,
+            .outcome = LOI_OUTCOME_FAILED,
+        };
+        const struct legacy_bootstrap_import_options import_opts = {
+            .mode = LEGACY_BOOTSTRAP_IMPORT_ATTACH,
+            .ms = &g_state,
+            .cvs = &g_coins_sqlite,
+            .ndb = &g_node_db,
+            .btdb = &g_block_tree,
+            .our_datadir = ctx->datadir,
+            .legacy_datadir = ctx->legacy_attach_from,
+        };
+        bool la_ok = legacy_bootstrap_import_blocking(&import_opts, &lr);
         printf("Legacy attach: ok=%s outcome=%s legacy_tip=%d "
                "block_index=%lld utxos=%lld blk_files=%lld "
                "stages_stamped=%lld elapsed=%.1fs\n",
                la_ok ? "yes" : "no", loi_outcome_name(lr.outcome),
-               (int)lr.legacy_tip_height,
+               (int)lr.legacy_tip,
                (long long)lr.block_index_writes,
                (long long)lr.utxos_imported,
                (long long)lr.blk_files_linked,
@@ -1884,11 +1901,17 @@ bool app_init(struct app_context *ctx)
             printf("\n═══ Cold Import from %s ═══\n",
                    ctx->cold_import_from);
             fflush(stdout);
-            struct lci_cold_result cr = {0};
-            bool ci_ok = legacy_cold_import_blocking(
-                &g_state, &g_coins_sqlite, &g_node_db,
-                &g_block_tree, ctx->datadir,
-                ctx->cold_import_from, &cr);
+            struct legacy_bootstrap_import_result cr = {.legacy_tip = -1};
+            const struct legacy_bootstrap_import_options import_opts = {
+                .mode = LEGACY_BOOTSTRAP_IMPORT_COLD,
+                .ms = &g_state,
+                .cvs = &g_coins_sqlite,
+                .ndb = &g_node_db,
+                .btdb = &g_block_tree,
+                .our_datadir = ctx->datadir,
+                .legacy_datadir = ctx->cold_import_from,
+            };
+            bool ci_ok = legacy_bootstrap_import_blocking(&import_opts, &cr);
             printf("Cold import: ok=%s legacy_tip=%d block_index=%lld "
                    "utxos=%lld blk_files=%lld elapsed=%.1fs\n",
                    ci_ok ? "yes" : "no", cr.legacy_tip,
