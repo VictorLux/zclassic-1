@@ -52,6 +52,11 @@ sentinel from progress.kv" is the answer.
 Results stream to `docs/bench-history.csv`.
 CI fails any PR that regresses a primary > 20%.
 
+By default the harness never touches the live service. Set
+`ZCL_BENCH_LIVE_READONLY=1` to add read-only `/proc` samples for current RSS
+and uptime when a live `zclassic23.pid` is available. Timing benchmarks that
+restart or kill a node remain explicit subcommands.
+
 ## Dream roadmap (sequenced so each wave moves a benchmark)
 
 1. **Wave B — Benchmarks (1 session).** `zclassic23 -bench` runs all 5 primaries. `docs/bench-history.csv`. CI regression gate. **Today's numbers become the baseline.** Without this, every other wave is unmeasurable.

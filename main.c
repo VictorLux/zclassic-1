@@ -31,6 +31,7 @@
 #include <time.h>
 #include <sys/stat.h>
 #include <sys/socket.h>
+#include <errno.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
 
@@ -58,12 +59,33 @@ static const char *bench_commit(void)
     return (c && *c) ? c : "unknown";
 }
 
+static bool bench_env_true(const char *name)
+{
+    const char *v = getenv(name);
+    if (!v || !*v) return false;
+    return strcmp(v, "0") != 0 &&
+           strcmp(v, "false") != 0 &&
+           strcmp(v, "FALSE") != 0 &&
+           strcmp(v, "no") != 0 &&
+           strcmp(v, "NO") != 0;
+}
+
 static void bench_iso8601(char *out, size_t out_len)
 {
     time_t now = time(NULL);
     struct tm tmv;
     gmtime_r(&now, &tmv);
     strftime(out, out_len, "%Y-%m-%dT%H:%M:%SZ", &tmv);
+}
+
+static double bench_system_uptime_seconds(void)
+{
+    FILE *f = fopen("/proc/uptime", "r");
+    if (!f) return 0.0;
+    double up = 0.0;
+    int n = fscanf(f, "%lf", &up);
+    fclose(f);
+    return n == 1 ? up : 0.0;
 }
 
 static void bench_csv_field(FILE *f, const char *s)
@@ -169,10 +191,149 @@ static void bench_rows_default(struct bench_row rows[5])
     }
 }
 
+static bool bench_read_pid_from_file(const char *path, long *pid_out)
+{
+    if (!path || !pid_out) return false;
+    FILE *f = fopen(path, "r");
+    if (!f) return false;
+    long pid = -1;
+    int n = fscanf(f, "%ld", &pid);
+    fclose(f);
+    if (n != 1 || pid <= 0) return false;
+    *pid_out = pid;
+    return true;
+}
+
+static bool bench_find_live_pid(long *pid_out, char *source, size_t source_len)
+{
+    const char *pid_env = getenv("ZCL_BENCH_PID");
+    if (pid_env && *pid_env) {
+        char *end = NULL;
+        errno = 0;
+        long pid = strtol(pid_env, &end, 10);
+        if (errno == 0 && end && *end == '\0' && pid > 0) {
+            if (pid_out) *pid_out = pid;
+            if (source && source_len)
+                snprintf(source, source_len, "ZCL_BENCH_PID=%ld", pid);
+            return true;
+        }
+    }
+
+    char default_datadir[512];
+    const char *datadir = getenv("ZCL_BENCH_SOURCE_DATADIR");
+    if (!datadir || !*datadir)
+        datadir = getenv("ZCL_BENCH_LIVE_DATADIR");
+    if (!datadir || !*datadir) {
+        const char *home = getenv("HOME");
+        if (!home || !*home)
+            home = ".";
+        snprintf(default_datadir, sizeof(default_datadir),
+                 "%s/.zclassic-c23", home);
+        datadir = default_datadir;
+    }
+
+    char pid_path[512];
+    snprintf(pid_path, sizeof(pid_path), "%s/zclassic23.pid", datadir);
+    long pid = -1;
+    if (!bench_read_pid_from_file(pid_path, &pid))
+        return false;
+    if (pid_out) *pid_out = pid;
+    if (source && source_len)
+        snprintf(source, source_len, "%s", pid_path);
+    return true;
+}
+
+static bool bench_read_proc_status(long pid, double *rss_mb, double *uptime_s)
+{
+    if (pid <= 0) return false;
+
+    char path[128];
+    snprintf(path, sizeof(path), "/proc/%ld/status", pid);
+    FILE *f = fopen(path, "r");
+    if (!f) return false;
+
+    char line[256];
+    bool got_rss = false;
+    while (fgets(line, sizeof(line), f)) {
+        long kb = 0;
+        if (sscanf(line, "VmRSS: %ld kB", &kb) == 1) {
+            if (rss_mb) *rss_mb = (double)kb / 1024.0;
+            got_rss = true;
+            break;
+        }
+    }
+    fclose(f);
+
+    if (uptime_s) {
+        snprintf(path, sizeof(path), "/proc/%ld/stat", pid);
+        f = fopen(path, "r");
+        if (!f) return got_rss;
+        if (fgets(line, sizeof(line), f)) {
+            char *rp = strrchr(line, ')');
+            if (rp) {
+                char fields[256];
+                snprintf(fields, sizeof(fields), "%s", rp + 2);
+                char *save = NULL;
+                char *tok = strtok_r(fields, " \t\r\n", &save);
+                unsigned long long start_ticks = 0;
+                for (int field = 3; tok; field++) {
+                    if (field == 22) {
+                        start_ticks = strtoull(tok, NULL, 10);
+                        break;
+                    }
+                    tok = strtok_r(NULL, " \t\r\n", &save);
+                }
+                long hz = sysconf(_SC_CLK_TCK);
+                double up = bench_system_uptime_seconds();
+                if (start_ticks > 0 && hz > 0 && up > 0.0) {
+                    double start_s = (double)start_ticks / (double)hz;
+                    if (up >= start_s)
+                        *uptime_s = up - start_s;
+                }
+            }
+        }
+        fclose(f);
+    }
+
+    return got_rss;
+}
+
+static void bench_maybe_live_readonly(struct bench_row rows[5])
+{
+    if (!bench_env_true("ZCL_BENCH_LIVE_READONLY"))
+        return;
+
+    long pid = -1;
+    char source[512] = "";
+    double rss_mb = 0.0;
+    double uptime_s = 0.0;
+    if (!bench_find_live_pid(&pid, source, sizeof(source)) ||
+        !bench_read_proc_status(pid, &rss_mb, &uptime_s)) {
+        snprintf(rows[3].notes, sizeof(rows[3].notes),
+                 "live read-only sample requested but no readable zclassic23 pid was found");
+        return;
+    }
+
+    rows[3].value = rss_mb;
+    rows[3].numeric = true;
+    snprintf(rows[3].notes, sizeof(rows[3].notes),
+             "live read-only RSS sample from pid %ld (%s); process uptime %.0fs",
+             pid, source, uptime_s);
+
+    if (uptime_s > 0.0) {
+        rows[2].value = uptime_s;
+        rows[2].numeric = true;
+        snprintf(rows[2].notes, sizeof(rows[2].notes),
+                 "live read-only uptime sample from pid %ld (%s); not a 30-day MTBF soak",
+                 pid, source);
+    }
+}
+
 static int bench_run_all(void)
 {
     struct bench_row rows[5];
     bench_rows_default(rows);
+    bench_maybe_live_readonly(rows);
     const char *path = bench_history_path();
     const char *dir = getenv("ZCL_BENCH_DIR");
     if (!dir || !*dir) dir = "/tmp/zcl23-bench";
@@ -181,11 +342,18 @@ static int bench_run_all(void)
     printf("  commit:        %s\n", bench_commit());
     printf("  history:       %s\n", path);
     printf("  bench datadir: %s\n", dir);
-    printf("  live service:  not touched by this mode\n\n");
+    printf("  live service:  %s\n\n",
+           bench_env_true("ZCL_BENCH_LIVE_READONLY")
+             ? "read-only /proc sample only"
+             : "not touched by this mode");
     for (size_t i = 0; i < 5; ++i) {
+        char value[32];
+        if (rows[i].numeric)
+            snprintf(value, sizeof(value), "%.3f", rows[i].value);
+        else
+            snprintf(value, sizeof(value), "--");
         printf("  %-31s %10s %-8s %s\n",
-               rows[i].bench, rows[i].numeric ? "0" : "--",
-               rows[i].unit, rows[i].notes);
+               rows[i].bench, value, rows[i].unit, rows[i].notes);
     }
     return bench_history_append(path, rows, 5) ? 0 : 1;
 }
@@ -194,6 +362,7 @@ static int bench_run_one(const char *name)
 {
     struct bench_row rows[5];
     bench_rows_default(rows);
+    bench_maybe_live_readonly(rows);
     int idx = -1;
     if (strcmp(name, "-bench-coldstart") == 0) idx = 0;
     else if (strcmp(name, "-bench-warmstart") == 0) idx = 1;
@@ -202,8 +371,18 @@ static int bench_run_one(const char *name)
     else if (strcmp(name, "-bench-kill9") == 0) idx = 4;
     if (idx < 0) return 2;
 
-    printf("%s: pending\n%s\n", rows[idx].bench, rows[idx].notes);
+    if (rows[idx].numeric)
+        printf("%s: %.3f %s\n%s\n",
+               rows[idx].bench, rows[idx].value, rows[idx].unit,
+               rows[idx].notes);
+    else
+        printf("%s: pending\n%s\n", rows[idx].bench, rows[idx].notes);
     return bench_history_append(bench_history_path(), &rows[idx], 1) ? 0 : 1;
+}
+
+static bool bench_higher_is_better(const char *bench)
+{
+    return bench && strstr(bench, "#3 stay-in-sync MTBF") != NULL;
 }
 
 static int bench_regress(void)
@@ -266,7 +445,9 @@ static int bench_regress(void)
     for (size_t i = 0; i < seen_len; ++i) {
         if (seen[i].count < 2 || seen[i].prev <= 0.0)
             continue;
-        double pct = ((seen[i].last - seen[i].prev) / seen[i].prev) * 100.0;
+        double pct = bench_higher_is_better(seen[i].bench)
+            ? ((seen[i].prev - seen[i].last) / seen[i].prev) * 100.0
+            : ((seen[i].last - seen[i].prev) / seen[i].prev) * 100.0;
         if (pct > 20.0) {
             fprintf(stderr,
                     "[bench-regress] FAIL %s: %.3f -> %.3f (%.1f%% > 20%%)\n",
