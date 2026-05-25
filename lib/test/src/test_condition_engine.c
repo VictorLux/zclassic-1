@@ -290,9 +290,12 @@ int test_condition_engine(void)
             "snapshot_negotiation_stalled",
             "snapshot_failed_reset",
             "snapshot_complete_resume",
+            "cutover_no_forward_progress",
         };
-        ok = ok && registered && json_get_int(registered) == 19;
-        ok = ok && conditions && json_size(conditions) == 19;
+        const int expected_count =
+            (int)(sizeof(expected) / sizeof(expected[0]));
+        ok = ok && registered && json_get_int(registered) == expected_count;
+        ok = ok && conditions && json_size(conditions) == (size_t)expected_count;
         for (size_t i = 0; i < sizeof(expected) / sizeof(expected[0]); i++)
             ok = ok && ce_json_conditions_has(conditions, expected[i]);
         json_free(&out);
