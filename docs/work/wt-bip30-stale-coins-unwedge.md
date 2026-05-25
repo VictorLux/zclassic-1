@@ -2,8 +2,7 @@
 
 ## Status
 
-**IN PROGRESS (wt2)** — HIGHEST PRIORITY (this is the live wedge). Independent
-of the Phase-2 cutover soak.
+**✅ DONE — pushed 2026-05-25** to main as commit `dbf4845a1`.
 
 > Goal moved: **UNBREAKABLE — Tip advancing / Wedge recovery**. This is the
 > bug freezing the live node at height 3,123,688 right now.
@@ -129,3 +128,43 @@ Confirm the tip advances past **3,123,689** and `node.log` no longer logs
   (`utxo_recovery_clean_above_tip`).
 - Memory: `feedback_at_tip_kill9_ordering_invariant`,
   `feedback_block_failed_mask_wedges_tip`.
+
+## Completion (wt2, 2026-05-25)
+
+### Summary
+Shipped the targeted live boot-path unwedge in
+`utxo_recovery_clean_above_tip`: the cleanup now only auto-rewinds a
+single-block overshoot with at most 32 rows, clears stale
+`utxo_commitment`, and refuses broader/multi-block UTXO deletion. Added
+regression coverage for the stale coinbase-at-tip+1 shape and for the >32-row
+refusal guard.
+
+### Benchmark moved
+UNBREAKABLE — Tip advancing / Wedge recovery. This enables the live node to
+clear the single stale coinbase row at 3,123,689 after deploy; live
+forward-progress verification is still operator-gated.
+
+### Commits
+- `ed799dd4a` wt2: claim bip30 stale coins unwedge
+- `dbf4845a1` guard boot utxo rewind to one block
+
+### Files added/modified
+- `app/services/src/utxo_recovery_service.c`
+- `lib/test/src/test_utxo_recovery_service.c`
+- `docs/work/wt-bip30-stale-coins-unwedge.md`
+
+### Acceptance verification
+- [x] RED check: `ZCL_TEST_ONLY=utxo_recovery ./test_zcl` failed before the fix
+      on stale commitment persistence and >32-row over-wipe.
+- [x] Focused test: `ZCL_TEST_ONLY=utxo_recovery ./test_zcl` — PASS.
+- [x] Lint: `make lint` — PASS (gate #20 remains WARN with existing baseline).
+- [x] Full parallel suite: `./test_parallel --jobs=$(nproc)` — PASS,
+      0/215 groups failed.
+- [ ] Live deploy/forward progress: not run; gated on Rhett/operator approval.
+
+### Surprises / follow-ups
+Current HEAD already had the direct `coins_view_sqlite_open` case-(e) guard.
+The production boot cleanup path was the gap: it could remove the stale row,
+but left `utxo_commitment` stale and allowed up to 1000 rows across arbitrary
+heights. The new guard makes that path match the documented single-block memory
+rule.
