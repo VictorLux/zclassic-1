@@ -1183,7 +1183,7 @@ static int t_legacy_chainstate_batches_own_callback_buffers(void)
         buf = NULL;
 
         ASSERT(repo_path(path, sizeof(path),
-                         "app/services/src/legacy_oneshot_import.c") == 0);
+                         "app/services/src/legacy_bootstrap_importer.c") == 0);
         ASSERT(read_entire_file(path, &buf) == 0);
         ASSERT(strstr(buf,
             "legacy_bootstrap_import_snapshot_state(") != NULL);

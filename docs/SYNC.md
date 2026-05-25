@@ -119,7 +119,8 @@ Two one-liners, both safe on an empty datadir:
 ```
 
 Implementation: `app/services/src/legacy_bootstrap_importer.c`
-(`LEGACY_BOOTSTRAP_IMPORT_COLD` / `LEGACY_BOOTSTRAP_IMPORT_DIRECT`).
+(`LEGACY_BOOTSTRAP_IMPORT_COLD` / `LEGACY_BOOTSTRAP_IMPORT_DIRECT` /
+`LEGACY_BOOTSTRAP_IMPORT_ATTACH`).
 
 Rules:
 - The import flags **only run on an empty datadir** (or a datadir below the

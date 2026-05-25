@@ -13,6 +13,7 @@
 #include "platform/time_compat.h"
 #include "services/legacy_cold_import.h"
 #include "services/legacy_direct_import.h"
+#include "services/legacy_oneshot_import.h"
 #include "storage/block_index_db.h"
 #include "storage/blocks_index_legacy_reader.h"
 #include "storage/blocks_mmap_reader.h"
@@ -20,6 +21,8 @@
 #include "storage/coins_view_sqlite.h"
 #include "storage/dbwrapper.h"
 #include "storage/ldb_snapshot.h"
+#include "storage/progress_store.h"
+#include "util/log_macros.h"
 #include "util/long_op.h"
 #include "util/safe_alloc.h"
 #include "util/thread_registry.h"
@@ -31,6 +34,7 @@
 #include <dirent.h>
 #include <errno.h>
 #include <inttypes.h>
+#include <sqlite3.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -41,6 +45,13 @@
 #define LEGACY_BOOTSTRAP_COLD_SPOTCHECK_K 5
 #define LEGACY_BOOTSTRAP_COLD_STAGE_SUBDIR "cold_import_ldb_snapshot"
 #define LEGACY_BOOTSTRAP_DIRECT_SPOTCHECK_K 3
+#define LEGACY_BOOTSTRAP_ATTACH_REFUSE_ABOVE_TIP 1000
+#define LEGACY_BOOTSTRAP_ATTACH_MIN_TIP 100
+#define LEGACY_BOOTSTRAP_ATTACH_STAGE_SUBDIR "legacy-attach-stage"
+#define LEGACY_BOOTSTRAP_ATTACH_META_SENTINEL "import_in_progress"
+#define LEGACY_BOOTSTRAP_ATTACH_META_TIP_HASH "legacy_attach_tip_hash"
+#define LEGACY_BOOTSTRAP_ATTACH_META_TIP_HEIGHT "legacy_attach_tip_height"
+#define LEGACY_BOOTSTRAP_ATTACH_META_DONE_AT "legacy_attach_done_at"
 
 static int64_t legacy_bootstrap_now_ms(void)
 {
@@ -1179,6 +1190,471 @@ static bool legacy_bootstrap_import_direct(
     return ok;
 }
 
+const char *loi_outcome_name(enum loi_outcome o)
+{
+    switch (o) {
+        case LOI_OUTCOME_DID_IMPORT:           return "did_import";
+        case LOI_OUTCOME_NOOP_SAME_TIP:        return "noop_same_tip";
+        case LOI_OUTCOME_RECOVERED_FROM_CRASH: return "recovered_from_crash";
+        case LOI_OUTCOME_REFUSED_HAS_STATE:    return "refused_has_state";
+        case LOI_OUTCOME_LEGACY_NOT_FOUND:     return "legacy_not_found";
+        case LOI_OUTCOME_FAILED:               return "failed";
+    }
+    return "?";
+}
+
+static bool legacy_bootstrap_path_isfile(const char *p)
+{
+    struct stat st;
+    if (!p) return false;
+    if (stat(p, &st) != 0) return false;
+    return S_ISREG(st.st_mode);
+}
+
+static bool legacy_bootstrap_attach_detect_datadir(const char *legacy_datadir)
+{
+    if (!legacy_datadir || !legacy_datadir[0]) return false;
+    char p[1100];
+    snprintf(p, sizeof(p), "%s/blocks/index/CURRENT", legacy_datadir);
+    if (!legacy_bootstrap_path_isfile(p)) return false;
+    snprintf(p, sizeof(p), "%s/chainstate/CURRENT", legacy_datadir);
+    if (!legacy_bootstrap_path_isfile(p)) return false;
+    snprintf(p, sizeof(p), "%s/blocks/blk00000.dat", legacy_datadir);
+    if (!legacy_bootstrap_path_isfile(p)) return false;
+    return true;
+}
+
+static bool legacy_bootstrap_attach_meta_has_sentinel(sqlite3 *db)
+{
+    if (!db) return false;
+    uint8_t buf[1];
+    size_t got = 0;
+    bool found = false;
+    if (!progress_meta_get(db, LEGACY_BOOTSTRAP_ATTACH_META_SENTINEL,
+                           buf, sizeof(buf), &got, &found))
+        return false;
+    return found;
+}
+
+static bool legacy_bootstrap_attach_meta_get_tip(sqlite3 *db,
+                                                 struct uint256 *out_hash,
+                                                 int32_t *out_height,
+                                                 bool *out_found)
+{
+    if (out_hash) memset(out_hash, 0, sizeof(*out_hash));
+    if (out_height) *out_height = -1;
+    if (out_found) *out_found = false;
+
+    if (!db) return false;
+    bool fh = false, fH = false;
+    size_t nh = 0, nH = 0;
+    if (!progress_meta_get(db, LEGACY_BOOTSTRAP_ATTACH_META_TIP_HASH,
+                           out_hash ? out_hash->data : NULL,
+                           out_hash ? sizeof(out_hash->data) : 0,
+                           &nh, &fh)) return false;
+    if (!progress_meta_get(db, LEGACY_BOOTSTRAP_ATTACH_META_TIP_HEIGHT,
+                           out_height, sizeof(*out_height), &nH, &fH))
+        return false;
+    if (!fh || !fH) return true;
+    if (nh != 32 || nH != sizeof(*out_height)) return true;
+    if (out_found) *out_found = true;
+    return true;
+}
+
+static const char *const LOI_STAGES_TO_STAMP[] = {
+    "header_admit",
+    "validate_headers",
+    "body_fetch",
+    NULL,
+};
+
+static size_t loi_stages_count_cached(void)
+{
+    size_t n = 0;
+    while (LOI_STAGES_TO_STAMP[n]) n++;
+    return n;
+}
+
+size_t loi_stages_to_stamp_count(void)
+{
+    return loi_stages_count_cached();
+}
+
+const char *loi_stages_to_stamp_at(size_t i)
+{
+    if (i >= loi_stages_count_cached()) return NULL;
+    return LOI_STAGES_TO_STAMP[i];
+}
+
+static bool legacy_bootstrap_attach_stamp_stage_cursor_in_tx(
+    sqlite3 *db,
+    const char *name,
+    uint64_t new_cursor,
+    bool *out_was_write)
+{
+    if (out_was_write) *out_was_write = false;
+
+    uint64_t existing = 0;
+    bool have_row = false;
+    {
+        sqlite3_stmt *q = NULL;
+        if (sqlite3_prepare_v2(db,
+                "SELECT cursor FROM stage_cursor WHERE name = ?",
+                -1, &q, NULL) != SQLITE_OK) return false;
+        sqlite3_bind_text(q, 1, name, -1, SQLITE_TRANSIENT);
+        int rc = sqlite3_step(q);  // raw-sql-ok:kernel-primitive
+        if (rc == SQLITE_ROW) {
+            existing = (uint64_t)sqlite3_column_int64(q, 0);
+            have_row = true;
+        } else if (rc != SQLITE_DONE) {
+            sqlite3_finalize(q);
+            return false;
+        }
+        sqlite3_finalize(q);
+    }
+
+    if (have_row && existing >= new_cursor) {
+        fprintf(stderr,  // obs-ok:legacy-oneshot-no-rewind
+                "[legacy_attach] stage '%s': cursor already at %" PRIu64
+                " (>= proposed %" PRIu64 "); leaving as-is\n",
+                name, existing, new_cursor);
+        return true;
+    }
+
+    sqlite3_stmt *stmt = NULL;
+    int rc = sqlite3_prepare_v2(db,
+        "INSERT INTO stage_cursor(name, cursor, updated_at) VALUES(?, ?, ?) "
+        "ON CONFLICT(name) DO UPDATE SET "
+        "  cursor = excluded.cursor, updated_at = excluded.updated_at",
+        -1, &stmt, NULL);
+    if (rc != SQLITE_OK) return false;
+    sqlite3_bind_text(stmt, 1, name, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(stmt, 2, (sqlite3_int64)new_cursor);
+    sqlite3_bind_int64(stmt, 3, (sqlite3_int64)platform_time_wall_time_t());
+    rc = sqlite3_step(stmt);  // raw-sql-ok:kernel-primitive
+    sqlite3_finalize(stmt);
+    if (rc == SQLITE_DONE && out_was_write) *out_was_write = true;
+    return rc == SQLITE_DONE;
+}
+
+bool loi_stamp_one_for_test(sqlite3 *db, const char *name,
+                            uint64_t cursor, bool *out_was_write)
+{
+    if (!db) return false;
+    char *err = NULL;
+    if (sqlite3_exec(db, "BEGIN IMMEDIATE", NULL, NULL, &err) != SQLITE_OK) {
+        if (err) sqlite3_free(err);
+        return false;
+    }
+    bool ok = legacy_bootstrap_attach_stamp_stage_cursor_in_tx(
+        db, name, cursor, out_was_write);
+    sqlite3_exec(db, ok ? "COMMIT" : "ROLLBACK", NULL, NULL, NULL);
+    return ok;
+}
+
+static bool legacy_bootstrap_attach_finalize_atomic(
+    sqlite3 *db,
+    int32_t legacy_tip,
+    const struct uint256 *legacy_tip_hash,
+    int64_t *out_stages_stamped)
+{
+    if (out_stages_stamped) *out_stages_stamped = 0;
+    char *err = NULL;
+    if (sqlite3_exec(db, "BEGIN IMMEDIATE", NULL, NULL, &err) != SQLITE_OK) {
+        fprintf(stderr,  // obs-ok:legacy-oneshot-finalize-failure
+                "[legacy_attach] finalize BEGIN failed: %s\n",
+                err ? err : "(no message)");
+        if (err) sqlite3_free(err);
+        return false;
+    }
+
+    bool ok = true;
+    int64_t stamped = 0;
+    uint64_t cursor_value = (uint64_t)(legacy_tip + 1);
+    for (size_t i = 0; ok && LOI_STAGES_TO_STAMP[i]; i++) {
+        bool was_write = false;
+        if (!legacy_bootstrap_attach_stamp_stage_cursor_in_tx(
+                db, LOI_STAGES_TO_STAMP[i], cursor_value, &was_write)) {
+            fprintf(stderr,  // obs-ok:legacy-oneshot-finalize-failure
+                    "[legacy_attach] stamp stage '%s' failed\n",
+                    LOI_STAGES_TO_STAMP[i]);
+            ok = false;
+        } else if (was_write) {
+            stamped++;
+        }
+    }
+
+    if (ok) {
+        ok = progress_meta_set_in_tx(db, LEGACY_BOOTSTRAP_ATTACH_META_TIP_HASH,
+                                     legacy_tip_hash->data, 32);
+    }
+    if (ok) {
+        ok = progress_meta_set_in_tx(db,
+                                     LEGACY_BOOTSTRAP_ATTACH_META_TIP_HEIGHT,
+                                     &legacy_tip, sizeof(legacy_tip));
+    }
+    if (ok) {
+        int64_t now = (int64_t)platform_time_wall_time_t();
+        ok = progress_meta_set_in_tx(db, LEGACY_BOOTSTRAP_ATTACH_META_DONE_AT,
+                                     &now, sizeof(now));
+    }
+    if (ok) {
+        ok = progress_meta_delete_in_tx(
+            db, LEGACY_BOOTSTRAP_ATTACH_META_SENTINEL);
+    }
+
+    const char *fini = ok ? "COMMIT" : "ROLLBACK";
+    if (sqlite3_exec(db, fini, NULL, NULL, &err) != SQLITE_OK) {
+        fprintf(stderr,  // obs-ok:legacy-oneshot-finalize-failure
+                "[legacy_attach] finalize %s failed: %s\n",
+                fini, err ? err : "(no message)");
+        if (err) sqlite3_free(err);
+        return false;
+    }
+    if (out_stages_stamped) *out_stages_stamped = stamped;
+    return ok;
+}
+
+static bool legacy_bootstrap_attach_wipe_block_index(
+    struct block_tree_db *our_btdb)
+{
+    struct db_wrapper *db = &our_btdb->db;
+    struct db_iterator it;
+    db_iter_init(&it, db);
+    const char seek_key = 'b';
+    db_iter_seek(&it, &seek_key, 1);
+    struct db_batch batch;
+    db_batch_init(&batch);
+    int64_t deleted = 0;
+    while (db_iter_valid(&it)) {
+        size_t klen = 0;
+        const char *k = db_iter_key(&it, &klen);
+        if (klen < 1 || k[0] != 'b') break;
+        db_batch_delete(&batch, k, klen);
+        deleted++;
+        if (deleted % 5000 == 0) {
+            if (!db_write_batch(db, &batch, false)) {
+                db_batch_free(&batch);
+                db_iter_free(&it);
+                return false;
+            }
+            db_batch_clear(&batch);
+        }
+        db_iter_next(&it);
+    }
+    bool ok = db_write_batch(db, &batch, false);
+    db_batch_free(&batch);
+    db_iter_free(&it);
+    fprintf(stderr,  // obs-ok:legacy-oneshot-wipe
+            "[legacy_attach] wiped %" PRId64 " block_index entries "
+            "from prior aborted import\n", deleted);
+    return ok;
+}
+
+static bool legacy_bootstrap_import_attach(
+    const struct legacy_bootstrap_import_options *opts,
+    struct legacy_bootstrap_import_result *out)
+{
+    struct legacy_bootstrap_import_result r = {
+        .legacy_tip = -1,
+        .outcome = LOI_OUTCOME_FAILED,
+    };
+    if (out) *out = r;
+
+    if (!opts || !opts->our_datadir || !opts->legacy_datadir || !opts->ms ||
+        !opts->cvs || !opts->ndb || !opts->ndb->open || !opts->btdb) {
+        LOG_FAIL("legacy_oneshot_import", "bad args");
+    }
+
+    sqlite3 *pdb = progress_store_db();
+    if (!pdb) {
+        fprintf(stderr,  // obs-ok:legacy-oneshot-preflight
+            "[legacy_attach] progress.kv not open — boot order regression?\n");
+        return false;
+    }
+
+    if (!legacy_bootstrap_attach_detect_datadir(opts->legacy_datadir)) {
+        fprintf(stderr,  // obs-ok:legacy-oneshot-soft-skip
+            "[legacy_attach] %s does not look like a zclassic datadir; "
+            "skipping.\n", opts->legacy_datadir);
+        r.outcome = LOI_OUTCOME_LEGACY_NOT_FOUND;
+        if (out) *out = r;
+        return true;
+    }
+
+    int our_tip = active_chain_height(&opts->ms->chain_active);
+    bool sentinel_present = legacy_bootstrap_attach_meta_has_sentinel(pdb);
+    if (our_tip > LEGACY_BOOTSTRAP_ATTACH_REFUSE_ABOVE_TIP &&
+        !sentinel_present) {
+        fprintf(stderr,  // obs-ok:legacy-oneshot-refused
+            "[legacy_attach] REFUSING: our active_tip=%d > %d. "
+            "Legacy-attach is for empty datadirs; use other modes for "
+            "warm catch-up.\n", our_tip,
+            LEGACY_BOOTSTRAP_ATTACH_REFUSE_ABOVE_TIP);
+        r.outcome = LOI_OUTCOME_REFUSED_HAS_STATE;
+        if (out) *out = r;
+        return true;
+    }
+
+    if (!sentinel_present) {
+        struct uint256 last_hash;
+        int32_t last_h = -1;
+        bool last_found = false;
+        if (legacy_bootstrap_attach_meta_get_tip(pdb, &last_hash, &last_h,
+                                                 &last_found) &&
+            last_found) {
+            char stage_dir[1100], cs_path[1200];
+            if (legacy_bootstrap_make_stage_dir(
+                    opts->our_datadir, LEGACY_BOOTSTRAP_ATTACH_STAGE_SUBDIR,
+                    stage_dir, sizeof(stage_dir), "legacy_attach")) {
+                snprintf(cs_path, sizeof(cs_path),
+                         "%s/probe-chainstate", stage_dir);
+                char err[128] = {0};
+                char src_cs[1100];
+                snprintf(src_cs, sizeof(src_cs), "%s/chainstate",
+                         opts->legacy_datadir);
+                if (ldb_snapshot_make(src_cs, cs_path, err, sizeof(err))) {
+                    void *cs = NULL;
+                    if (chainstate_legacy_open(cs_path, &cs)) {
+                        struct uint256 cur_best;
+                        if (chainstate_legacy_get_best_block(cs, &cur_best) &&
+                            memcmp(cur_best.data, last_hash.data, 32) == 0) {
+                            chainstate_legacy_close(cs);
+                            ldb_snapshot_destroy(cs_path);
+                            r.outcome = LOI_OUTCOME_NOOP_SAME_TIP;
+                            r.legacy_tip = last_h;
+                            r.ok = true;
+                            if (out) *out = r;
+                            fprintf(stderr,  // obs-ok:legacy-oneshot-noop
+                                "[legacy_attach] NOOP: already attached "
+                                "to legacy tip h=%d\n", last_h);
+                            return true;
+                        }
+                        chainstate_legacy_close(cs);
+                    }
+                    ldb_snapshot_destroy(cs_path);
+                }
+            }
+        }
+    } else {
+        if (our_tip > 100) {
+            fprintf(stderr,  // obs-ok:legacy-oneshot-wipe-refused
+                "[legacy_attach] REFUSING wipe: sentinel found AND "
+                "active_chain_height=%d > 100. This combination is "
+                "anomalous (sentinel should clear atomically with import "
+                "completion). Manual intervention required: inspect "
+                "progress.kv (sqlite3 -- DELETE FROM progress_meta WHERE "
+                "key='import_in_progress') if the sentinel is truly "
+                "stale.\n", our_tip);
+            return false;
+        }
+        fprintf(stderr,  // obs-ok:legacy-oneshot-recovery
+                "[legacy_attach] sentinel found from a prior aborted "
+                "import — recovering: wipe + re-import (active_tip=%d)\n",
+                our_tip);
+        if (!legacy_bootstrap_attach_wipe_block_index(opts->btdb)) {
+            fprintf(stderr,
+                "[legacy_attach] wipe of stale block_index failed\n");
+            return false;
+        }
+        r.outcome = LOI_OUTCOME_RECOVERED_FROM_CRASH;
+    }
+
+    int64_t t_start = legacy_bootstrap_now_ms();
+
+    uint8_t one = 1;
+    if (!progress_meta_set(pdb, LEGACY_BOOTSTRAP_ATTACH_META_SENTINEL,
+                           &one, 1)) {
+        fprintf(stderr,
+            "[legacy_attach] failed to set in-progress sentinel\n");
+        return false;
+    }
+
+    char stage_dir[1100], idx_snap[1200], cs_snap[1200];
+    if (!legacy_bootstrap_make_stage_dir(
+            opts->our_datadir, LEGACY_BOOTSTRAP_ATTACH_STAGE_SUBDIR,
+            stage_dir, sizeof(stage_dir), "legacy_attach")) {
+        fprintf(stderr,
+            "[legacy_attach] cannot create stage dir under %s\n",
+            opts->our_datadir);
+        return false;
+    }
+    if (!legacy_bootstrap_snapshot_leveldbs(opts->legacy_datadir, stage_dir,
+                                            idx_snap, sizeof(idx_snap),
+                                            cs_snap, sizeof(cs_snap),
+                                            "legacy_attach")) {
+        return false;
+    }
+
+    char legacy_blocks[1100], our_blocks[1100];
+    snprintf(legacy_blocks, sizeof(legacy_blocks), "%s/blocks",
+             opts->legacy_datadir);
+    snprintf(our_blocks, sizeof(our_blocks), "%s/blocks",
+             opts->our_datadir);
+    struct legacy_bootstrap_snapshot_import_result imported;
+    const struct legacy_bootstrap_snapshot_import_options import_opts = {
+        .legacy_blocks_dir = legacy_blocks,
+        .our_blocks_dir = our_blocks,
+        .legacy_index_dir = idx_snap,
+        .chainstate_dir = cs_snap,
+        .btdb = opts->btdb,
+        .cvs = opts->cvs,
+        .ndb = opts->ndb,
+        .chainstate_batch_limit = 50000,
+        .min_legacy_tip = LEGACY_BOOTSTRAP_ATTACH_MIN_TIP,
+        .require_best_block = true,
+        .block_index_long_op_name = "legacy_attach.bi_copy",
+        .chainstate_long_op_name = "legacy_attach.cs_import",
+        .log_prefix = "legacy_attach",
+    };
+    int64_t t_import = legacy_bootstrap_now_ms();
+    if (!legacy_bootstrap_import_snapshot_state(&import_opts, &imported)) {
+        ldb_snapshot_destroy(idx_snap);
+        ldb_snapshot_destroy(cs_snap);
+        return false;
+    }
+    r.blk_files_linked = imported.blk_files_linked;
+    r.block_index_writes = imported.block_index_writes;
+    r.utxos_imported = imported.utxos_imported;
+    r.legacy_tip = imported.legacy_tip_height;
+    fprintf(stderr,  // obs-ok:legacy-oneshot-progress
+            "[legacy_attach] snapshot state import took %" PRId64 " ms "
+            "(best h=%d records=%" PRId64 ")\n",
+            legacy_bootstrap_now_ms() - t_import,
+            imported.legacy_tip_height, imported.chainstate_records);
+
+    int64_t stages_stamped = 0;
+    if (!legacy_bootstrap_attach_finalize_atomic(
+            pdb, imported.legacy_tip_height, &imported.best_block,
+            &stages_stamped)) {
+        ldb_snapshot_destroy(idx_snap);
+        ldb_snapshot_destroy(cs_snap);
+        return false;
+    }
+    r.stages_stamped = stages_stamped;
+    r.evidence_armed = false;
+
+    ldb_snapshot_destroy(idx_snap);
+    ldb_snapshot_destroy(cs_snap);
+    rmdir(stage_dir);
+
+    r.total_secs = (double)(legacy_bootstrap_now_ms() - t_start) / 1000.0;
+    if (r.outcome == LOI_OUTCOME_FAILED)
+        r.outcome = LOI_OUTCOME_DID_IMPORT;
+    r.ok = true;
+    if (out) *out = r;
+
+    fprintf(stderr,  // obs-ok:legacy-oneshot-done
+        "[legacy_attach] DONE outcome=%s in %.1fs: legacy_tip=%d "
+        "block_index=%" PRId64 " utxos=%" PRId64 " blk_files=%" PRId64
+        " stages_stamped=%" PRId64 "\n",
+        loi_outcome_name((enum loi_outcome)r.outcome), r.total_secs,
+        r.legacy_tip, r.block_index_writes, r.utxos_imported,
+        r.blk_files_linked, r.stages_stamped);
+
+    return true;
+}
+
 bool legacy_bootstrap_import_blocking(
     const struct legacy_bootstrap_import_options *opts,
     struct legacy_bootstrap_import_result *out)
@@ -1196,6 +1672,8 @@ bool legacy_bootstrap_import_blocking(
             return legacy_bootstrap_import_cold(opts, out);
         case LEGACY_BOOTSTRAP_IMPORT_DIRECT:
             return legacy_bootstrap_import_direct(opts, out);
+        case LEGACY_BOOTSTRAP_IMPORT_ATTACH:
+            return legacy_bootstrap_import_attach(opts, out);
     }
 
     fprintf(stderr,  // obs-ok:bootstrap-import-terminal-diagnostic
@@ -1269,6 +1747,43 @@ bool legacy_direct_import_range_blocking(
             .final_tip = imported.final_tip,
             .legacy_tip = imported.legacy_tip,
             .source_checked = imported.source_checked,
+            .ok = imported.ok,
+        };
+    }
+    return ok;
+}
+
+bool legacy_oneshot_import_run(
+    const char *our_datadir,
+    const char *legacy_datadir,
+    struct main_state *ms,
+    struct coins_view_sqlite *cvs,
+    struct node_db *ndb,
+    struct block_tree_db *btdb,
+    struct loi_result *out)
+{
+    struct legacy_bootstrap_import_result imported;
+    const struct legacy_bootstrap_import_options opts = {
+        .mode = LEGACY_BOOTSTRAP_IMPORT_ATTACH,
+        .ms = ms,
+        .cvs = cvs,
+        .ndb = ndb,
+        .btdb = btdb,
+        .our_datadir = our_datadir,
+        .legacy_datadir = legacy_datadir,
+    };
+
+    bool ok = legacy_bootstrap_import_blocking(&opts, &imported);
+    if (out) {
+        *out = (struct loi_result){
+            .outcome = (enum loi_outcome)imported.outcome,
+            .legacy_tip_height = imported.legacy_tip,
+            .block_index_writes = imported.block_index_writes,
+            .utxos_imported = imported.utxos_imported,
+            .blk_files_linked = imported.blk_files_linked,
+            .stages_stamped = imported.stages_stamped,
+            .total_secs = imported.total_secs,
+            .evidence_armed = imported.evidence_armed,
             .ok = imported.ok,
         };
     }

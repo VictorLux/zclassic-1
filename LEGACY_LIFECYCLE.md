@@ -25,7 +25,7 @@ Cross-references: `CLAUDE.md` (top-level architecture),
 |------|--------|--------|--------------|
 | `-cold-import[=DIR]` | `legacy_bootstrap_importer.c` (`LEGACY_BOOTSTRAP_IMPORT_COLD`) | **Active** (recommended cold start) | Hardlinks `blk*.dat`, bulk-copies block_index LevelDB, bulk-imports chainstate at the legacy tip. Empty datadir → tip in ~60s. Skips `process_new_block` entirely. |
 | `-fastimport[=DIR]` | `legacy_bootstrap_importer.c` (`LEGACY_BOOTSTRAP_IMPORT_DIRECT`) | **Active** | Reads blocks LevelDB + mmaps `blk*.dat`, runs the normal block-ingest path with deferred per-block I/O. Slower than `-cold-import` but exercises the full validation pipeline; auto-triggers a wallet rescan at end. |
-| `-legacy-attach[=DIR]` | `legacy_oneshot_import.c` | **Active** | Snapshots a locally running `zclassicd`, imports block index + chainstate, stamps Wave S stage cursors to `legacy_tip+1`, and lets normal live sync resume above the imported tip. |
+| `-legacy-attach[=DIR]` | `legacy_bootstrap_importer.c` (`LEGACY_BOOTSTRAP_IMPORT_ATTACH`) | **Active** | Snapshots a locally running `zclassicd`, imports block index + chainstate, stamps Wave S stage cursors to `legacy_tip+1`, and lets normal live sync resume above the imported tip. |
 | `-nolegacyimport` | (no module — disables) | **Active** | Disable any auto-detection of `~/.zclassic` on boot. Use when you explicitly do not want legacy interaction. Default is to auto-detect. |
 
 There is no `-importfromlegacy`, `-legacy-auto-import`, or
@@ -49,8 +49,8 @@ leaving `find_most_work_chain` stuck.
 
 | File | Status | Role |
 |------|--------|------|
-| `legacy_bootstrap_importer.c` + `.h` | **Active** | Canonical mode-driven bootstrap importer. Owns `-cold-import` state import and `-fastimport` direct per-block ingest. The compatibility headers `legacy_cold_import.h` and `legacy_direct_import.h` keep the old public symbols for CLI callers. |
-| `legacy_oneshot_import.c` + `.h` | **Active** | Used by `-legacy-attach` for a crash-safe one-shot import from a running legacy node snapshot. Stamps Wave S cursors after import. |
+| `legacy_bootstrap_importer.c` + `.h` | **Active** | Canonical mode-driven bootstrap importer. Owns `-cold-import`, `-fastimport`, and `-legacy-attach` modes. The compatibility headers `legacy_cold_import.h`, `legacy_direct_import.h`, and `legacy_oneshot_import.h` keep the old public symbols for CLI callers. |
+| `legacy_oneshot_import.h` | **Active compatibility header** | Public `-legacy-attach` contract and stage-stamp drift gate. Implementation lives in `legacy_bootstrap_importer.c` as `LEGACY_BOOTSTRAP_IMPORT_ATTACH`. |
 | `legacy_body_pull.c` + `.h` | **Runtime-active mirror catch-up; disabled as boot CLI** | `legacy_mirror_sync_service` calls the incremental range puller when local blocks lag legacy. The old boot-time body-pull import path remains removed (pathology — see memory). SHA3 spotcheck helpers remain callable. **Slated for narrower API.** |
 | `legacy_mirror_sync_service.c` + `.h` | **Active** | Background drift-detector. Periodically calls `getmirrorstatus` and surfaces lag / divergence via `EV_MIRROR_*` events. Powers `zcl_mirror_status` and `zcl_diff_with_legacy`. |
 | `legacy_import.c` (controller) | **Active** | RPC/controller surface for legacy import operations. Not wired to a `-importfromlegacy` CLI flag in `main.c`. |

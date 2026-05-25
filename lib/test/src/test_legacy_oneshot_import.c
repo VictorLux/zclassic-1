@@ -33,7 +33,7 @@
 #include "util/blocker.h"
 #include "util/stage.h"
 
-/* Test seam exported by legacy_oneshot_import.c — exercises the
+/* Test seam exported by legacy_bootstrap_importer.c — exercises the
  * anti-rewind branch without spinning up the full import pipeline. */
 bool loi_stamp_one_for_test(sqlite3 *db, const char *name,
                             uint64_t cursor, bool *out_was_write);

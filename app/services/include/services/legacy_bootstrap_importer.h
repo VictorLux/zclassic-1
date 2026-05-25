@@ -28,6 +28,7 @@ struct wallet;
 enum legacy_bootstrap_import_mode {
     LEGACY_BOOTSTRAP_IMPORT_COLD = 0,
     LEGACY_BOOTSTRAP_IMPORT_DIRECT = 1,
+    LEGACY_BOOTSTRAP_IMPORT_ATTACH = 2,
 };
 
 struct legacy_bootstrap_import_options {
@@ -53,6 +54,8 @@ struct legacy_bootstrap_import_result {
     int skipped_have_data;
     int skipped_failed;
     int final_tip;
+    int outcome;
+    int64_t stages_stamped;
     double total_secs;
     bool evidence_armed;
     bool source_checked;

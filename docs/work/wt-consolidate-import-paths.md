@@ -15,7 +15,7 @@ same LevelDB reader + SHA3 spot-check + cursor-stamping logic:
 |---|---|---|
 | `app/services/src/legacy_bootstrap_importer.c` (`COLD`) | current | full state-only import (`-cold-import`), zclassicd stopped |
 | `app/services/src/legacy_bootstrap_importer.c` (`DIRECT`) | current | direct LevelDB+mmap (`-fastimport`), zclassicd stopped |
-| `app/services/src/legacy_oneshot_import.c` | ~? | ldb-snapshot, no-stop (`-legacy-attach`) |
+| `app/services/src/legacy_bootstrap_importer.c` (`ATTACH`) | current | ldb-snapshot, no-stop (`-legacy-attach`) |
 
 Plus `tools/rebuild_recent.c` (the live-safe io_uring whole-chain rebuild) shares
 the same `blocks_index_legacy_reader` / `chainstate_legacy_reader` / SHA3 helpers.
@@ -26,7 +26,8 @@ Progress:
   helpers.
 - `legacy_cold_import.c` and `legacy_direct_import.c` were removed; their public
   compatibility wrappers now dispatch through `legacy_bootstrap_importer` modes.
-- `legacy_oneshot_import.c` remains the next import mode to fold in.
+- `legacy_oneshot_import.c` was removed; its public compatibility wrapper now
+  dispatches through `LEGACY_BOOTSTRAP_IMPORT_ATTACH`.
 
 ## The shape (one canonical importer, pluggable mode)
 

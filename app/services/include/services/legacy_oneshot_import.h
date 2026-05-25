@@ -132,9 +132,9 @@ const char *loi_outcome_name(enum loi_outcome o);
  *        S-4b to claim authoritative tip-finalization.
  *
  *   2. If YES → add the stage name to LOI_STAGES_TO_STAMP[] in
- *      legacy_oneshot_import.c AND update the EXPECTED_LOI_STAGES list
- *      in lib/test/src/test_legacy_oneshot_import.c. The test fails
- *      if either side drifts.
+ *      legacy_bootstrap_importer.c's ATTACH mode AND update the
+ *      EXPECTED_LOI_STAGES list in lib/test/src/test_legacy_oneshot_import.c.
+ *      The test fails if either side drifts.
  *
  *   3. If NO → do nothing. The stage will start at cursor=0 on the
  *      first boot after S-4b imports, which is the correct behavior
