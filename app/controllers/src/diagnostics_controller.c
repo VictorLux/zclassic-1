@@ -767,6 +767,34 @@ static void cutover_preflight_push_blocker(struct json_value *blockers,
     json_free(&v);
 }
 
+static bool cutover_preflight_tail_window(
+    const struct json_value *start_v,
+    const struct json_value *end_v,
+    const struct header_admit_diff_report *rep,
+    int32_t *start_out,
+    int32_t *end_out)
+{
+    if (start_v || end_v || !rep || !start_out || !end_out)
+        return false;
+    if (rep->log_max_height < 0 || rep->chain_tip_height < 0)
+        return false;
+
+    int32_t end = rep->log_max_height < rep->chain_tip_height
+        ? rep->log_max_height : rep->chain_tip_height;
+    if (end < 0)
+        return false;
+
+    int32_t start = 0;
+    if (end >= HEADER_ADMIT_DIFF_MAX_RANGE)
+        start = end - HEADER_ADMIT_DIFF_MAX_RANGE + 1;
+    if (start == rep->start_height && end == rep->end_height)
+        return false;
+
+    *start_out = start;
+    *end_out = end;
+    return true;
+}
+
 static bool push_cutover_live_gate_json(struct json_value *live)
 {
     struct node_health_snapshot health;
@@ -803,7 +831,7 @@ static bool rpc_cutoverpreflight(const struct json_value *params, bool help,
         "live node health, header_admit shadow-vs-active-chain diff, "
         "validate_headers stage counters/cursor coverage, and a conservative "
         "ready boolean gated by the cutover no-progress guard.\n"
-        "\nHeights default to the header_admit diff auto-window. "
+        "\nHeights default to the most recent header_admit diff window. "
         "Result: { ready, blockers, live, chain_evidence, guard, modes, "
         "header_admit_diff, validate_headers }");
 
@@ -819,6 +847,12 @@ static bool rpc_cutoverpreflight(const struct json_value *params, bool help,
     struct header_admit_diff_report rep;
     if (!header_admit_stage_diff((int32_t)start_i, (int32_t)end_i, &rep))
         LOG_FAIL("diag", "cutoverpreflight: header_admit diff failed");
+    int32_t tail_start = 0;
+    int32_t tail_end = 0;
+    if (cutover_preflight_tail_window(start_v, end_v, &rep,
+                                      &tail_start, &tail_end) &&
+        !header_admit_stage_diff(tail_start, tail_end, &rep))
+        LOG_FAIL("diag", "cutoverpreflight: header_admit tail diff failed");
 
     struct json_value modes;
     struct json_value live;
@@ -876,11 +910,28 @@ static bool rpc_cutoverpreflight(const struct json_value *params, bool help,
     json_push_kv_int(&diff, "log_max_height", rep.log_max_height);
     json_push_kv_int(&diff, "chain_tip_height", rep.chain_tip_height);
     json_push_kv_int(&diff, "cursor", rep.cursor);
+    int64_t required_ha_cursor =
+        (rep.chain_tip_height >= 0) ? ((int64_t)rep.chain_tip_height + 1) : 0;
+    int64_t ha_cursor_lag =
+        (rep.cursor >= 0 && rep.cursor < required_ha_cursor)
+            ? (required_ha_cursor - rep.cursor) : 0;
+    int64_t ha_log_tip_lag =
+        (rep.log_max_height >= 0 && rep.log_max_height < rep.chain_tip_height)
+            ? ((int64_t)rep.chain_tip_height - rep.log_max_height) : 0;
+    json_push_kv_int(&diff, "required_cursor", required_ha_cursor);
+    json_push_kv_int(&diff, "cursor_lag", ha_cursor_lag);
+    json_push_kv_int(&diff, "log_tip_lag", ha_log_tip_lag);
 
+    bool header_caught_up =
+        required_ha_cursor > 0 &&
+        rep.cursor >= required_ha_cursor &&
+        ha_cursor_lag == 0 &&
+        ha_log_tip_lag == 0;
     bool header_ready =
         rep.status == HEADER_ADMIT_DIFF_CONVERGED &&
         rep.mismatch_count == 0 &&
-        rep.missing_in_chain_count == 0;
+        rep.missing_in_chain_count == 0 &&
+        header_caught_up;
     int64_t vh_cursor = json_obj_int_or(&vh, "cursor", -1);
     int64_t required_vh_cursor =
         (rep.end_height >= 0) ? ((int64_t)rep.end_height + 1) : 0;
@@ -908,8 +959,10 @@ static bool rpc_cutoverpreflight(const struct json_value *params, bool help,
         cutover_preflight_push_blocker(&blockers,
                                        "cutover_guard_not_registered");
     if (!header_ready)
-        cutover_preflight_push_blocker(&blockers,
-                                       "header_admit_diff_not_converged");
+        cutover_preflight_push_blocker(
+            &blockers,
+            header_caught_up ? "header_admit_diff_not_converged"
+                             : "header_admit_cursor_lag");
     if (!validate_ready)
         cutover_preflight_push_blocker(
             &blockers,

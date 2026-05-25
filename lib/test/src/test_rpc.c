@@ -325,6 +325,9 @@ int test_rpc(void) {
                           "cutover_no_forward_progress") == 0;
         ok = ok && json_get(guard, "registered") != NULL;
         ok = ok && json_get(diff, "status") != NULL;
+        ok = ok && json_get(diff, "required_cursor") != NULL;
+        ok = ok && json_get(diff, "cursor_lag") != NULL;
+        ok = ok && json_get(diff, "log_tip_lag") != NULL;
         ok = ok && json_get(vh, "failed_total") != NULL;
         ok = ok && json_get(vh, "required_cursor") != NULL;
         ok = ok && json_get(vh, "cursor_lag") != NULL;

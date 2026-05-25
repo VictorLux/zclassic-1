@@ -936,8 +936,8 @@ static const struct mcp_tool_route k_routes[] = {
       .flags = MCP_TOOL_FLAG_DESTRUCTIVE /* runtime mode setter */ },
     { "zcl_cutoverpreflight", "ops",
       "Read-only C-3 cutover preflight: runtime modes, header_admit "
-      "shadow parity status, validate_headers counters, blockers, and "
-      "a conservative ready boolean.",
+      "recent shadow parity, header/validate cursor lag, safety guard, "
+      "blockers, and a conservative ready boolean.",
       p_cutoverpreflight, PARAM_COUNT(p_cutoverpreflight),
       h_zcl_cutoverpreflight, 0, NULL },
     { "zcl_syncdiag", "ops",
