@@ -1071,7 +1071,8 @@ static int t_cold_import_uses_leveldb_snapshots_contract(void)
         char *snapshot = strstr(buf, "lci_snapshot_legacy_leveldbs");
         char *cs_probe = strstr(buf, "chainstate_legacy_open(cs_dir, &cs_probe)");
         char *height_map = strstr(buf, "bilr_open(idx_dir");
-        char *block_index = strstr(buf, "lci_copy_block_index(idx_dir");
+        char *block_index = strstr(buf,
+            "legacy_bootstrap_copy_block_index(");
         char *chainstate = strstr(buf, "chainstate_legacy_iter(cs,");
         char *destroy = strstr(buf, "ldb_snapshot_destroy(idx_dir)");
         ASSERT(include != NULL);

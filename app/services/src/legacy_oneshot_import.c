@@ -33,9 +33,9 @@
 #include "services/legacy_oneshot_import.h"
 
 #include "chain/chain.h"
-#include "core/serialize.h"
 #include "core/uint256.h"
 #include "models/database.h"
+#include "services/legacy_bootstrap_importer.h"
 #include "storage/block_index_db.h"
 #include "storage/chainstate_legacy_reader.h"
 #include "storage/coins_view_sqlite.h"
@@ -49,7 +49,6 @@
 #include "validation/chainstate.h"
 #include "validation/main_state.h"
 
-#include <dirent.h>
 #include <errno.h>
 #include <inttypes.h>
 #include <sqlite3.h>
@@ -59,7 +58,6 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
-#include <sys/types.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -223,173 +221,6 @@ static bool loi_snapshot_legacy(const char *legacy_datadir,
                 src_cs, tries + 1);
     }
     return true;
-}
-
-/* ── blk*.dat hardlink (or copy on EXDEV) ────────────────────────────── */
-
-static int64_t loi_link_blk_files(const char *legacy_blocks_dir,
-                                  const char *our_blocks_dir)
-{
-    DIR *d = opendir(legacy_blocks_dir);
-    if (!d) {
-        fprintf(stderr,  // obs-ok:legacy-oneshot-blk-failure
-                "[legacy_attach] cannot opendir %s: %s\n",
-                legacy_blocks_dir, strerror(errno));
-        return -1;  // raw-return-ok:logged-above
-    }
-    mkdir(our_blocks_dir, 0755);
-
-    int64_t linked = 0, copied = 0, skipped = 0, errors = 0;
-    struct dirent *de;
-    while ((de = readdir(d)) != NULL) {
-        size_t nlen = strlen(de->d_name);
-        if (nlen < 12 || strncmp(de->d_name, "blk", 3) != 0 ||
-            strcmp(de->d_name + nlen - 4, ".dat") != 0)
-            continue;
-        char src[1200], dst[1200];
-        snprintf(src, sizeof(src), "%s/%s", legacy_blocks_dir, de->d_name);
-        snprintf(dst, sizeof(dst), "%s/%s", our_blocks_dir, de->d_name);
-        struct stat st;
-        if (stat(dst, &st) == 0) { skipped++; continue; }
-        if (link(src, dst) == 0) { linked++; continue; }
-        if (errno != EXDEV && errno != EPERM) {
-            fprintf(stderr,  // obs-ok:legacy-oneshot-blk-failure
-                    "[legacy_attach] link(%s -> %s) failed: %s\n",
-                    src, dst, strerror(errno));
-            errors++;
-            continue;
-        }
-        FILE *fsrc = fopen(src, "rb");
-        FILE *fdst = fopen(dst, "wb");
-        if (!fsrc || !fdst) {
-            if (fsrc) fclose(fsrc);
-            if (fdst) fclose(fdst);
-            errors++;
-            continue;
-        }
-        char buf[1u << 20];
-        size_t n;
-        while ((n = fread(buf, 1, sizeof(buf), fsrc)) > 0) {
-            if (fwrite(buf, 1, n, fdst) != n) { errors++; break; }
-        }
-        fclose(fsrc);
-        fclose(fdst);
-        copied++;
-    }
-    closedir(d);
-    fprintf(stderr,  // obs-ok:legacy-oneshot-blk-progress
-            "[legacy_attach] blk files: linked=%" PRId64 " copied=%" PRId64
-            " skipped=%" PRId64 " errors=%" PRId64 "\n",
-            linked, copied, skipped, errors);
-    return (errors > 0) ? -1 : (linked + copied);
-}
-
-/* ── block_index bulk copy ───────────────────────────────────────────── */
-
-static int64_t loi_copy_block_index(const char *legacy_idx_snapshot,
-                                    struct block_tree_db *our_btdb,
-                                    struct uint256 *out_tip_hash,
-                                    int32_t *out_tip_height)
-{
-    if (out_tip_height) *out_tip_height = -1;
-    if (out_tip_hash) memset(out_tip_hash, 0, sizeof(*out_tip_hash));
-
-    struct db_wrapper src;
-    if (!db_wrapper_open(&src, legacy_idx_snapshot,
-                         16u << 20, false, false)) {
-        fprintf(stderr,  // obs-ok:legacy-oneshot-bi-failure
-                "[legacy_attach] cannot open snapshot %s\n",
-                legacy_idx_snapshot);
-        return -1;  // raw-return-ok:logged-above
-    }
-
-    struct db_wrapper *dst = &our_btdb->db;
-
-    struct db_iterator it;
-    db_iter_init(&it, &src);
-    const char seek_key = 'b';
-    db_iter_seek(&it, &seek_key, 1);
-
-    struct db_batch batch;
-    db_batch_init(&batch);
-    int64_t written = 0;
-    int64_t batch_fill = 0;
-    enum { BATCH_LIMIT = 5000 };
-    int32_t best_h = -1;
-
-    struct long_op_scope lo_scope;
-    long_op_begin(&lo_scope, "legacy_attach.bi_copy");
-
-    while (db_iter_valid(&it)) {
-        if (thread_registry_shutdown_requested()) break;
-
-        size_t klen = 0;
-        const char *k = db_iter_key(&it, &klen);
-        if (klen < 1 || k[0] != 'b') break;
-        if (klen != 33) { db_iter_next(&it); continue; }
-
-        size_t vlen = 0;
-        const char *v = db_iter_value(&it, &vlen);
-        if (!v || vlen == 0) { db_iter_next(&it); continue; }
-
-        struct disk_block_index dbi;
-        disk_block_index_init(&dbi);
-        struct byte_stream s;
-        stream_init_from_data(&s, (unsigned char *)v, vlen);
-        bool ok = disk_block_index_deserialize(&dbi, &s);
-        stream_free(&s);
-        if (!ok) { db_iter_next(&it); continue; }
-
-        bool have_data = (dbi.nStatus & BLOCK_HAVE_DATA) != 0;
-        bool failed = (dbi.nStatus & BLOCK_FAILED_MASK) != 0;
-        if (!have_data || failed) { db_iter_next(&it); continue; }
-
-        if (dbi.nHeight > best_h) {
-            best_h = dbi.nHeight;
-            if (out_tip_hash)
-                memcpy(out_tip_hash->data, k + 1, 32);
-        }
-
-        db_batch_put(&batch, k, klen, v, vlen);
-        batch_fill++;
-        written++;
-
-        if (batch_fill >= BATCH_LIMIT) {
-            if (!db_write_batch(dst, &batch, false)) {
-                fprintf(stderr,  // obs-ok:legacy-oneshot-bi-failure
-                        "[legacy_attach] db_write_batch failed\n");
-                db_batch_free(&batch);
-                db_iter_free(&it);
-                db_wrapper_close(&src);
-                long_op_end(&lo_scope);
-                return -1;  // raw-return-ok:logged-above
-            }
-            db_batch_clear(&batch);
-            batch_fill = 0;
-            long_op_tick(&lo_scope);
-        }
-
-        db_iter_next(&it);
-    }
-
-    if (batch_fill > 0) {
-        if (!db_write_batch(dst, &batch, false)) {
-            fprintf(stderr,  // obs-ok:legacy-oneshot-bi-failure
-                    "[legacy_attach] final db_write_batch failed\n");
-            db_batch_free(&batch);
-            db_iter_free(&it);
-            db_wrapper_close(&src);
-            long_op_end(&lo_scope);
-            return -1;  // raw-return-ok:logged-above
-        }
-    }
-    db_batch_free(&batch);
-    db_iter_free(&it);
-    db_wrapper_close(&src);
-    long_op_end(&lo_scope);
-
-    if (out_tip_height) *out_tip_height = best_h;
-    return written;
 }
 
 /* ── chainstate UTXO bulk import ─────────────────────────────────────── */
@@ -827,7 +658,8 @@ bool legacy_oneshot_import_run(
     snprintf(legacy_blocks, sizeof(legacy_blocks), "%s/blocks", legacy_datadir);
     snprintf(our_blocks, sizeof(our_blocks), "%s/blocks", our_datadir);
     int64_t t_link = loi_now_ms();
-    int64_t linked = loi_link_blk_files(legacy_blocks, our_blocks);
+    int64_t linked = legacy_bootstrap_link_blk_files(legacy_blocks, our_blocks,
+                                                     "legacy_attach");
     if (linked < 0) {
         ldb_snapshot_destroy(idx_snap);
         ldb_snapshot_destroy(cs_snap);
@@ -842,8 +674,9 @@ bool legacy_oneshot_import_run(
     int64_t t_bi = loi_now_ms();
     struct uint256 legacy_tip_hash;
     int32_t legacy_tip_h = -1;
-    int64_t bi_written = loi_copy_block_index(idx_snap, btdb,
-                                              &legacy_tip_hash, &legacy_tip_h);
+    int64_t bi_written = legacy_bootstrap_copy_block_index(
+        idx_snap, btdb, &legacy_tip_hash, &legacy_tip_h,
+        "legacy_attach.bi_copy", "legacy_attach");
     if (bi_written < 0) {
         ldb_snapshot_destroy(idx_snap);
         ldb_snapshot_destroy(cs_snap);

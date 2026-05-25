@@ -25,12 +25,11 @@
 #include "core/random.h"
 #include "core/uint256.h"
 #include "crypto/sha3.h"
-#include "storage/block_index_db.h"
+#include "services/legacy_bootstrap_importer.h"
 #include "storage/blocks_index_legacy_reader.h"
 #include "storage/blocks_mmap_reader.h"
 #include "storage/chainstate_legacy_reader.h"
 #include "storage/coins_view_sqlite.h"
-#include "storage/dbwrapper.h"
 #include "storage/ldb_snapshot.h"
 #include "models/database.h"
 #include "util/log_macros.h"
@@ -41,7 +40,6 @@
 #include "validation/main_state.h"
 #include "coins/coins_view.h"
 
-#include <dirent.h>
 #include <errno.h>
 #include <inttypes.h>
 #include <stdatomic.h>
@@ -51,7 +49,6 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <time.h>
-#include <unistd.h>
 
 /* Refuse to cold-import when our active tip is at or above this. The
  * threshold is intentionally generous — a fresh genesis-only install
@@ -323,199 +320,6 @@ static bool lci_spotcheck(struct blocks_mmap *bmr,
     return true;
 }
 
-/* Hardlink (or copy on EXDEV) every blk*.dat from legacy/blocks/ into
- * our blocks/. Returns count of files linked, or -1 on fatal error.
- * Skips files that already exist in our blocks/. */
-static int64_t lci_link_blk_files(const char *legacy_blocks_dir,
-                                  const char *our_blocks_dir)
-{
-    DIR *d = opendir(legacy_blocks_dir);
-    if (!d) {
-        fprintf(stderr, "[cold_import] cannot opendir %s: %s\n",
-                legacy_blocks_dir, strerror(errno));
-        return -1;  // raw-return-ok:logged-above
-    }
-    /* Ensure our blocks dir exists. */
-    mkdir(our_blocks_dir, 0755);
-
-    int64_t linked = 0;
-    int64_t copied = 0;
-    int64_t skipped = 0;
-    int64_t errors = 0;
-    struct dirent *de;
-    while ((de = readdir(d)) != NULL) {
-        size_t nlen = strlen(de->d_name);
-        /* Match blkNNNNN.dat */
-        if (nlen < 12 || strncmp(de->d_name, "blk", 3) != 0 ||
-            strcmp(de->d_name + nlen - 4, ".dat") != 0)
-            continue;
-        char src[1024], dst[1024];
-        snprintf(src, sizeof(src), "%s/%s", legacy_blocks_dir, de->d_name);
-        snprintf(dst, sizeof(dst), "%s/%s", our_blocks_dir, de->d_name);
-        struct stat st;
-        if (stat(dst, &st) == 0) {
-            skipped++;
-            continue;  /* already present */
-        }
-        if (link(src, dst) == 0) {
-            linked++;
-            continue;
-        }
-        if (errno != EXDEV && errno != EPERM) {
-            fprintf(stderr, // obs-ok:pre-existing-diagnostic
-                    "[cold_import] link(%s -> %s) failed: %s\n",
-                    src, dst, strerror(errno));
-            errors++;
-            continue;
-        }
-        /* Cross-FS or noperm: fall through to copy. */
-        FILE *fsrc = fopen(src, "rb");
-        FILE *fdst = fopen(dst, "wb");
-        if (!fsrc || !fdst) {
-            if (fsrc) fclose(fsrc);
-            if (fdst) fclose(fdst);
-            fprintf(stderr, // obs-ok:pre-existing-diagnostic
-                    "[cold_import] open failed for copy %s -> %s\n",
-                    src, dst);
-            errors++;
-            continue;
-        }
-        char buf[1u << 20];  /* 1 MB chunks */
-        size_t n;
-        while ((n = fread(buf, 1, sizeof(buf), fsrc)) > 0) {
-            if (fwrite(buf, 1, n, fdst) != n) { errors++; break; }
-        }
-        fclose(fsrc);
-        fclose(fdst);
-        copied++;
-    }
-    closedir(d);
-    fprintf(stderr, // obs-ok:pre-existing-diagnostic
-            "[cold_import] blk files: linked=%" PRId64 " copied=%" PRId64
-            " skipped=%" PRId64 " errors=%" PRId64 "\n",
-            linked, copied, skipped, errors);
-    return (errors > 0) ? -1 : (linked + copied);
-}
-
-/* Walk the legacy blocks/index/ LevelDB 'b' keys and write each record
- * to OUR LevelDB via WriteBatch. dbwrapper handles obfuscation on both
- * sides. Returns the number of records written, or -1 on error.
- *
- * Also returns by reference the (hash, height) of the entry with the
- * highest height — the legacy tip. */
-static int64_t lci_copy_block_index(const char *legacy_blocks_index_dir,
-                                    struct block_tree_db *our_btdb,
-                                    struct uint256 *out_tip_hash,
-                                    int32_t *out_tip_height)
-{
-    if (out_tip_height) *out_tip_height = -1;
-    memset(out_tip_hash, 0, sizeof(*out_tip_hash));
-
-    struct db_wrapper src;
-    if (!db_wrapper_open(&src, legacy_blocks_index_dir,
-                         16u << 20, false, false)) {
-        fprintf(stderr,
-                "[cold_import] cannot open %s — zclassicd still "
-                "running? Stop it first.\n", legacy_blocks_index_dir);
-        return -1;  // raw-return-ok:logged-above
-    }
-
-    struct db_wrapper *dst = &our_btdb->db;
-
-    struct db_iterator it;
-    db_iter_init(&it, &src);
-    const char seek_key = 'b';
-    db_iter_seek(&it, &seek_key, 1);
-
-    struct db_batch batch;
-    db_batch_init(&batch);
-    int64_t written = 0;
-    int64_t batch_fill = 0;
-    enum { BATCH_LIMIT = 5000 };
-    int32_t best_h = -1;
-
-    /* WS-2a: surround the iteration with a long_op_scope so the sync
-     * watchdog does not fire STATE_STUCK while we are quietly copying
-     * the legacy LevelDB into ours. Each completed batch ticks. */
-    struct long_op_scope lo_scope;
-    long_op_begin(&lo_scope, "legacy_cold_import.bulk_copy");
-
-    while (db_iter_valid(&it)) {
-        if (thread_registry_shutdown_requested()) break;
-
-        size_t klen = 0;
-        const char *k = db_iter_key(&it, &klen);
-        if (klen < 1 || k[0] != 'b') break;
-        if (klen != 33) { db_iter_next(&it); continue; }
-
-        size_t vlen = 0;
-        const char *v = db_iter_value(&it, &vlen);
-        if (!v || vlen == 0) { db_iter_next(&it); continue; }
-
-        /* Peek into the serialized disk_block_index for height + status
-         * filtering. We only want HAVE_DATA + !FAILED entries for our
-         * imported index — fork entries with no data would just clutter
-         * our block_map. */
-        struct disk_block_index dbi;
-        disk_block_index_init(&dbi);
-        struct byte_stream s;
-        stream_init_from_data(&s, (unsigned char *)v, vlen);
-        bool ok = disk_block_index_deserialize(&dbi, &s);
-        stream_free(&s);
-        if (!ok) { db_iter_next(&it); continue; }
-
-        bool have_data = (dbi.nStatus & BLOCK_HAVE_DATA) != 0;
-        bool failed = (dbi.nStatus & BLOCK_FAILED_MASK) != 0;
-        if (!have_data || failed) { db_iter_next(&it); continue; }
-
-        if (dbi.nHeight > best_h) {
-            best_h = dbi.nHeight;
-            if (out_tip_hash)
-                memcpy(out_tip_hash->data, k + 1, 32);
-        }
-
-        db_batch_put(&batch, k, klen, v, vlen);
-        batch_fill++;
-        written++;
-
-        if (batch_fill >= BATCH_LIMIT) {
-            if (!db_write_batch(dst, &batch, false)) {
-                fprintf(stderr, // obs-ok:pre-existing-diagnostic
-                        "[cold_import] db_write_batch failed\n");
-                db_batch_free(&batch);
-                db_iter_free(&it);
-                db_wrapper_close(&src);
-                long_op_end(&lo_scope);
-                return -1;  // raw-return-ok:logged-above
-            }
-            db_batch_clear(&batch);
-            batch_fill = 0;
-            long_op_tick(&lo_scope);
-        }
-
-        db_iter_next(&it);
-    }
-
-    if (batch_fill > 0) {
-        if (!db_write_batch(dst, &batch, false)) {
-            fprintf(stderr, // obs-ok:pre-existing-diagnostic
-                    "[cold_import] final db_write_batch failed\n");
-            db_batch_free(&batch);
-            db_iter_free(&it);
-            db_wrapper_close(&src);
-            long_op_end(&lo_scope);
-            return -1;  // raw-return-ok:logged-above
-        }
-    }
-    db_batch_free(&batch);
-    db_iter_free(&it);
-    db_wrapper_close(&src);
-    long_op_end(&lo_scope);
-
-    if (out_tip_height) *out_tip_height = best_h;
-    return written;
-}
-
 /* Bulk-import chainstate UTXOs from legacy. */
 struct lci_chainstate_ctx {
     struct utxo_bulk_rec *batch;
@@ -713,7 +517,8 @@ bool legacy_cold_import_blocking(
 
     /* ── Hardlink blk*.dat files ─────────────────────────── */
     int64_t t_link = lci_now_ms();
-    int64_t linked = lci_link_blk_files(blk_dir, our_blocks);
+    int64_t linked = legacy_bootstrap_link_blk_files(blk_dir, our_blocks,
+                                                     "cold_import");
     if (linked < 0) {
         bilr_free_height_map(map);
         bilr_close(bilr);
@@ -730,9 +535,9 @@ bool legacy_cold_import_blocking(
     int64_t t_bi = lci_now_ms();
     struct uint256 legacy_tip_hash;
     int32_t legacy_tip_h = -1;
-    int64_t bi_written = lci_copy_block_index(idx_dir, btdb,
-                                               &legacy_tip_hash,
-                                               &legacy_tip_h);
+    int64_t bi_written = legacy_bootstrap_copy_block_index(
+        idx_dir, btdb, &legacy_tip_hash, &legacy_tip_h,
+        "legacy_cold_import.bulk_copy", "cold_import");
     bilr_free_height_map(map);
     bilr_close(bilr);
     if (bi_written < 0) {
