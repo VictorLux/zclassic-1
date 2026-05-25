@@ -44,7 +44,8 @@ RESILIENCE DOCTRINE #1–#3 (`docs/REFACTOR_STATUS.md`) for the flip path.
 
 ## Claimable work — build the enforcement (the auto-revert Condition)
 
-**Status: READY.** Independent. Moves UNBREAKABLE (Tip advancing, Alerts).
+**Status: IN PROGRESS (wt3) — claimed 2026-05-25.** Independent. Moves
+UNBREAKABLE (Tip advancing, Alerts).
 
 **Scope:** `app/conditions/src/cutover_no_forward_progress.c` (NEW), registered
 under the chain supervisor; reuse existing infra:
