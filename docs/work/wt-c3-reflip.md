@@ -146,3 +146,9 @@ Cutover diagnostics hardening shipped in wt3: the chain-advance gate now reports
 `tools/scoreboard.sh --cutover` prints them. `chain_advance_not_ready` now names
 whether the blocker is a source decision, explicit blocker, invalid height,
 target-height gap, projection lag, or source readiness issue.
+
+Operator source-gate hardening shipped in wt3: `tools/scoreboard.sh --cutover`
+now treats a dirty source tree as not deploy-matched, publishes
+`source_dirty`, and adds `source_tree_dirty` to the local blockers. The operator
+gate cannot bless a live binary that matches `HEAD` while uncommitted cutover
+guard changes are sitting in the worktree.

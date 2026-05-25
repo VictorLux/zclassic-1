@@ -36,6 +36,10 @@ source_commit="$(git -C "$ROOT" rev-parse --short=9 HEAD 2>/dev/null || true)"
 if [ -z "$source_commit" ]; then
     source_commit="unknown"
 fi
+source_dirty="false"
+if [ -n "$(git -C "$ROOT" status --porcelain 2>/dev/null || true)" ]; then
+    source_dirty="true"
+fi
 
 if ! "$RPC" healthcheck >"$health_json" 2>"$tmpdir/health.err"; then
     echo "scoreboard read-only $(date -u +%Y-%m-%dT%H:%M:%SZ)"
@@ -51,12 +55,13 @@ if ! "$RPC" cutoverpreflight -1 -1 >"$preflight_json" 2>"$tmpdir/preflight.err";
     exit 2
 fi
 
-python3 - "$health_json" "$preflight_json" "$MODE" "$source_commit" <<'PY'
+python3 - "$health_json" "$preflight_json" "$MODE" "$source_commit" "$source_dirty" <<'PY'
 import json
 import sys
 import time
 
-health_path, preflight_path, mode, source_commit = sys.argv[1:5]
+health_path, preflight_path, mode, source_commit, source_dirty_s = sys.argv[1:6]
+source_dirty = source_dirty_s == "true"
 
 def load_rpc(path):
     try:
@@ -111,10 +116,13 @@ build_commit = str(health.get("build_commit", "unknown") or "unknown")
 build_matches_source = (
     source_commit != "unknown" and
     build_commit != "unknown" and
+    not source_dirty and
     build_commit.startswith(source_commit)
 )
 cutover_ready = bool(preflight.get("ready")) and build_matches_source
 display_blockers = list(blockers)
+if source_dirty:
+    display_blockers.append("source_tree_dirty")
 if not build_matches_source:
     display_blockers.append("live_build_not_current")
 
@@ -123,6 +131,7 @@ print(f"build_commit={build_commit}")
 print(
     "source_gate="
     f"source_commit={source_commit} "
+    f"source_dirty={str(source_dirty).lower()} "
     f"build_matches_source={str(build_matches_source).lower()}"
 )
 print(f"sync_state={health.get('sync_state', 'unknown')}")

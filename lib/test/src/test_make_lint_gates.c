@@ -833,6 +833,8 @@ static int t_scoreboard_operator_gate_contract(void)
         ASSERT(strstr(buf, "VERDICT=LIVE_NOT_READY") != NULL);
         ASSERT(strstr(buf, "VERDICT=CUTOVER_NOT_READY") != NULL);
         ASSERT(strstr(buf, "source_gate") != NULL);
+        ASSERT(strstr(buf, "source_dirty") != NULL);
+        ASSERT(strstr(buf, "source_tree_dirty") != NULL);
         ASSERT(strstr(buf, "build_matches_source") != NULL);
         ASSERT(strstr(buf, "live_build_not_current") != NULL);
         ASSERT(strstr(buf, "canary_status") != NULL);
