@@ -817,6 +817,35 @@ static int t_tools_z_operator_diagnostics_contract(void)
     return failures;
 }
 
+static int t_scoreboard_operator_gate_contract(void)
+{
+    int failures = 0;
+    char *buf = NULL;
+    TEST("tools/scoreboard.sh is the read-only operator gate") {
+        char path[PATH_MAX];
+        ASSERT(repo_path(path, sizeof(path), "tools/scoreboard.sh") == 0);
+        ASSERT(read_entire_file(path, &buf) == 0);
+        ASSERT(strstr(buf, "$RPC\" healthcheck") != NULL);
+        ASSERT(strstr(buf, "$RPC\" cutoverpreflight -1 -1") != NULL);
+        ASSERT(strstr(buf, "VERDICT=LIVE_READY") != NULL);
+        ASSERT(strstr(buf, "VERDICT=CUTOVER_READY") != NULL);
+        ASSERT(strstr(buf, "VERDICT=LIVE_NOT_READY") != NULL);
+        ASSERT(strstr(buf, "VERDICT=CUTOVER_NOT_READY") != NULL);
+        ASSERT(strstr(buf, "cutovermode") == NULL);
+        ASSERT(strstr(buf, "setgenerate") == NULL);
+        ASSERT(strstr(buf, "sendtoaddress") == NULL);
+        free(buf);
+        buf = NULL;
+        ASSERT(repo_path(path, sizeof(path),
+                         "docs/work/cutover-safety-protocol.md") == 0);
+        ASSERT(read_entire_file(path, &buf) == 0);
+        ASSERT(strstr(buf, "tools/scoreboard.sh --cutover") != NULL);
+        PASS();
+    } _test_next:;
+    free(buf);
+    return failures;
+}
+
 static int t_boot_chain_advance_diagnostics_contract(void)
 {
     int failures = 0;
@@ -1290,6 +1319,7 @@ int test_make_lint_gates(void)
     failures += t_legacy_candidate_source_has_no_override_scope();
     failures += t_tools_z_mirror_fallback_contract();
     failures += t_tools_z_operator_diagnostics_contract();
+    failures += t_scoreboard_operator_gate_contract();
     failures += t_boot_chain_advance_diagnostics_contract();
     failures += t_boot_addrman_persistence_contract();
     failures += t_boot_shutdown_persistence_order_contract();

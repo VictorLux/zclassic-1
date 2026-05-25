@@ -18,9 +18,9 @@ RESILIENCE DOCTRINE #1–#3 (`docs/REFACTOR_STATUS.md`) for the flip path.
    prove parity; a single unexplained mismatch is a STOP. (C-3 was flipped while
    parity at the tip was unproven on the live node — that's the original sin.)
 
-2. **Pre-flip gate — live node healthy.** `tools/scoreboard.sh` must exit 0
-   (tip advancing, gap ≤ 2) immediately before the flip. Never flip a node that
-   is behind or unhealthy.
+2. **Pre-flip gate — live node healthy.** `tools/scoreboard.sh --cutover` must
+   exit 0 immediately before the flip. Never flip a node that is behind,
+   unhealthy, stale, or failing the shadow/cursor preflight.
 
 3. **Flip is a runtime toggle, reverted in one step.** The mode is already an
    atomic (`HEADER_ADMIT_MODE_*`, `VALIDATE_HEADERS_MODE_*`). Keep the
