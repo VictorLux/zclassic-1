@@ -157,6 +157,11 @@ static int test_signal_handler_capsule(void)
                      entries[0].path);
             PM_CHECK("signal manifest records build id",
                      file_contains(manifest_path, "\"build_id\":"));
+            PM_CHECK("signal manifest records clock count",
+                     file_contains(manifest_path,
+                                   "\"clock_advance_count\": 1"));
+            PM_CHECK("signal manifest records inject count",
+                     file_contains(manifest_path, "\"inject_count\": 1"));
             seed_tape_t *loaded = postmortem_capsule_load_tape(entries[0].path);
             PM_CHECK("signal capsule tape loads", loaded != NULL);
             if (loaded) {

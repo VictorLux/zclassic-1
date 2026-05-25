@@ -698,9 +698,12 @@ static void derive_signal_log_path(const char *dir)
 }
 
 static int signal_write_manifest(const char *path, int sig,
-                                 int64_t crash_unix, size_t tape_size)
+                                 int64_t crash_unix, size_t tape_size,
+                                 uint64_t rng_count,
+                                 uint64_t clock_advance_count,
+                                 uint64_t inject_count)
 {
-    char manifest[512];
+    char manifest[768];
     size_t off = 0;
     manifest[0] = '\0';
     if (signal_append_cstr(manifest, sizeof(manifest), &off,
@@ -721,6 +724,21 @@ static int signal_write_manifest(const char *path, int sig,
                            "  \"tape_size_bytes\": ") != 0) return -1;
     if (signal_append_u64(manifest, sizeof(manifest), &off,
                           (uint64_t)tape_size) != 0) return -1;
+    if (signal_append_cstr(manifest, sizeof(manifest), &off,
+                           ",\n"
+                           "  \"rng_count\": ") != 0) return -1;
+    if (signal_append_u64(manifest, sizeof(manifest), &off,
+                          rng_count) != 0) return -1;
+    if (signal_append_cstr(manifest, sizeof(manifest), &off,
+                           ",\n"
+                           "  \"clock_advance_count\": ") != 0) return -1;
+    if (signal_append_u64(manifest, sizeof(manifest), &off,
+                          clock_advance_count) != 0) return -1;
+    if (signal_append_cstr(manifest, sizeof(manifest), &off,
+                           ",\n"
+                           "  \"inject_count\": ") != 0) return -1;
+    if (signal_append_u64(manifest, sizeof(manifest), &off,
+                          inject_count) != 0) return -1;
     if (signal_append_cstr(manifest, sizeof(manifest), &off,
                            ",\n"
                            "  \"build_id\": \"") != 0) return -1;
@@ -868,6 +886,10 @@ static void postmortem_crash_hook(int sig, siginfo_t *info, void *ucontext,
     g_postmortem_in_handler = 1;
 
     size_t tape_written = 0;
+    uint64_t rng_count = seed_tape_rng_count(g_postmortem_tape);
+    uint64_t clock_advance_count =
+        seed_tape_clock_advance_count(g_postmortem_tape);
+    uint64_t inject_count = seed_tape_inject_count(g_postmortem_tape);
     if (seed_tape_save_to_memory(g_postmortem_tape,
                                  g_postmortem_signal_tape_buf,
                                  g_postmortem_signal_tape_cap,
@@ -913,7 +935,9 @@ static void postmortem_crash_hook(int sig, siginfo_t *info, void *ucontext,
         return;
     }
     if (signal_join_path(path, sizeof(path), cap_dir, "manifest.json") == 0)
-        (void)signal_write_manifest(path, sig, crash_unix, tape_written);
+        (void)signal_write_manifest(path, sig, crash_unix, tape_written,
+                                    rng_count, clock_advance_count,
+                                    inject_count);
     if (signal_join_path(path, sizeof(path), cap_dir, "procstatus.txt") == 0)
         (void)signal_copy_file_limited("/proc/self/status", path, 8192);
     if (signal_join_path(path, sizeof(path), cap_dir, "log.txt") == 0) {

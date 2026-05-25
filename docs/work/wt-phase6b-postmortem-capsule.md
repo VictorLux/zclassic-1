@@ -380,5 +380,9 @@ the capsule API plus the non-signal save/list/load path.
   copying a bounded tail with raw syscalls. Forked boot SIGABRT/SIGSEGV tests
   now seed the node log and assert the captured capsule preserves the
   breadcrumb.
+- Brought the fatal-signal manifest closer to the normal writer by recording
+  `rng_count`, `clock_advance_count`, and `inject_count` from the active tape
+  before serializing it. Forked signal coverage now asserts the recorded
+  advance/inject counts.
 
 <!-- Worker: append a Completion section below when done. -->
