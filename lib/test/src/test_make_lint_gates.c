@@ -1068,7 +1068,8 @@ static int t_cold_import_uses_leveldb_snapshots_contract(void)
         ASSERT(read_entire_file(path, &buf) == 0);
         char *include = strstr(buf, "#include \"storage/ldb_snapshot.h\"");
         char *stage = strstr(buf, "cold_import_ldb_snapshot");
-        char *snapshot = strstr(buf, "lci_snapshot_legacy_leveldbs");
+        char *snapshot = strstr(buf,
+            "legacy_bootstrap_snapshot_leveldbs(");
         char *cs_probe = strstr(buf, "chainstate_legacy_open(cs_dir, &cs_probe)");
         char *height_map = strstr(buf, "bilr_open(idx_dir");
         char *block_index = strstr(buf,

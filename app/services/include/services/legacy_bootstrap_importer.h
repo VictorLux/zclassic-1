@@ -9,6 +9,8 @@
 #ifndef ZCL_SERVICES_LEGACY_BOOTSTRAP_IMPORTER_H
 #define ZCL_SERVICES_LEGACY_BOOTSTRAP_IMPORTER_H
 
+#include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 
 struct block_tree_db;
@@ -19,6 +21,26 @@ struct uint256;
  * skipped. Returns linked+copied count, or -1 after logging a fatal error. */
 int64_t legacy_bootstrap_link_blk_files(const char *legacy_blocks_dir,
                                         const char *our_blocks_dir,
+                                        const char *log_prefix);
+
+/* Create <datadir>/<stage_subdir> with owner-only permissions and write the
+ * full path into out_stage_dir. Returns false after logging or for path
+ * truncation. */
+bool legacy_bootstrap_make_stage_dir(const char *datadir,
+                                     const char *stage_subdir,
+                                     char *out_stage_dir,
+                                     size_t out_cap,
+                                     const char *log_prefix);
+
+/* Snapshot legacy blocks/index and chainstate into stage_dir, retrying
+ * manifest_changed races. On a chainstate failure, the blocks/index snapshot is
+ * torn down before returning false. */
+bool legacy_bootstrap_snapshot_leveldbs(const char *legacy_datadir,
+                                        const char *stage_dir,
+                                        char *out_idx_path,
+                                        size_t idx_cap,
+                                        char *out_cs_path,
+                                        size_t cs_cap,
                                         const char *log_prefix);
 
 /* Copy HAVE_DATA, non-failed block-index records from a legacy/snapshot

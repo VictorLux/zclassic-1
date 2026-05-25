@@ -165,64 +165,6 @@ static bool loi_meta_get_tip(sqlite3 *db,
     return true;
 }
 
-/* ── snapshot stage dir ──────────────────────────────────────────────── */
-
-static bool loi_make_stage_dir(const char *our_datadir, char *out, size_t cap)
-{
-    int n = snprintf(out, cap, "%s/%s", our_datadir, LOI_STAGE_SUBDIR);
-    if (n <= 0 || (size_t)n >= cap) return false;
-    if (mkdir(out, 0700) != 0 && errno != EEXIST) return false;
-    return true;
-}
-
-/* Snapshot legacy/blocks/index AND legacy/chainstate. Try once; if the
- * blocks/index snapshot reports manifest_changed (live writer rolled
- * the manifest while we copied), retry once. */
-static bool loi_snapshot_legacy(const char *legacy_datadir,
-                                const char *stage_dir,
-                                char *out_idx_path, size_t idx_cap,
-                                char *out_cs_path, size_t cs_cap)
-{
-    char src_idx[1100], src_cs[1100];
-    snprintf(src_idx, sizeof(src_idx), "%s/blocks/index", legacy_datadir);
-    snprintf(src_cs,  sizeof(src_cs),  "%s/chainstate",   legacy_datadir);
-
-    int ni = snprintf(out_idx_path, idx_cap, "%s/blocks-index", stage_dir);
-    int nc = snprintf(out_cs_path,  cs_cap,  "%s/chainstate",   stage_dir);
-    if (ni <= 0 || (size_t)ni >= idx_cap) return false;
-    if (nc <= 0 || (size_t)nc >= cs_cap) return false;
-
-    char err[128];
-    for (int tries = 0; tries < 3; tries++) {
-        err[0] = '\0';
-        if (ldb_snapshot_make(src_idx, out_idx_path, err, sizeof(err))) break;
-        if (strcmp(err, "manifest_changed") != 0) {
-            fprintf(stderr,  // obs-ok:legacy-oneshot-snapshot-failure
-                    "[legacy_attach] snapshot of %s failed: %s\n",
-                    src_idx, err);
-            return false;
-        }
-        fprintf(stderr,  // obs-ok:legacy-oneshot-snapshot-retry
-                "[legacy_attach] snapshot %s manifest_changed; retry %d\n",
-                src_idx, tries + 1);
-    }
-    err[0] = '\0';
-    for (int tries = 0; tries < 3; tries++) {
-        if (ldb_snapshot_make(src_cs, out_cs_path, err, sizeof(err))) break;
-        if (strcmp(err, "manifest_changed") != 0) {
-            fprintf(stderr,  // obs-ok:legacy-oneshot-snapshot-failure
-                    "[legacy_attach] snapshot of %s failed: %s\n",
-                    src_cs, err);
-            ldb_snapshot_destroy(out_idx_path);
-            return false;
-        }
-        fprintf(stderr,  // obs-ok:legacy-oneshot-snapshot-retry
-                "[legacy_attach] snapshot %s manifest_changed; retry %d\n",
-                src_cs, tries + 1);
-    }
-    return true;
-}
-
 /* ── chainstate UTXO bulk import ─────────────────────────────────────── */
 
 struct loi_cs_ctx {
@@ -569,8 +511,11 @@ bool legacy_oneshot_import_run(
             last_found) {
             /* Build a tiny snapshot of just chainstate to read 'B'. */
             char stage_dir[1100], cs_path[1200];
-            if (loi_make_stage_dir(our_datadir, stage_dir,
-                                   sizeof(stage_dir))) {
+            if (legacy_bootstrap_make_stage_dir(our_datadir,
+                                                LOI_STAGE_SUBDIR,
+                                                stage_dir,
+                                                sizeof(stage_dir),
+                                                "legacy_attach")) {
                 snprintf(cs_path, sizeof(cs_path),
                          "%s/probe-chainstate", stage_dir);
                 char err[128] = {0};
@@ -641,15 +586,18 @@ bool legacy_oneshot_import_run(
 
     /* ── Snapshot legacy LevelDBs. ───────────────────────────────────── */
     char stage_dir[1100], idx_snap[1200], cs_snap[1200];
-    if (!loi_make_stage_dir(our_datadir, stage_dir, sizeof(stage_dir))) {
+    if (!legacy_bootstrap_make_stage_dir(our_datadir, LOI_STAGE_SUBDIR,
+                                         stage_dir, sizeof(stage_dir),
+                                         "legacy_attach")) {
         fprintf(stderr,
             "[legacy_attach] cannot create stage dir under %s\n",
             our_datadir);
         return false;
     }
-    if (!loi_snapshot_legacy(legacy_datadir, stage_dir,
-                             idx_snap, sizeof(idx_snap),
-                             cs_snap, sizeof(cs_snap))) {
+    if (!legacy_bootstrap_snapshot_leveldbs(legacy_datadir, stage_dir,
+                                            idx_snap, sizeof(idx_snap),
+                                            cs_snap, sizeof(cs_snap),
+                                            "legacy_attach")) {
         return false;
     }
 

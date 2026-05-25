@@ -47,7 +47,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/stat.h>
 #include <time.h>
 
 /* Refuse to cold-import when our active tip is at or above this. The
@@ -63,62 +62,6 @@ static int64_t lci_now_ms(void)
     struct timespec ts;
     platform_time_monotonic_timespec(&ts);
     return (int64_t)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
-}
-
-static bool lci_make_stage_dir(const char *our_datadir, char *out, size_t cap)
-{
-    int n = snprintf(out, cap, "%s/%s", our_datadir, LCI_STAGE_SUBDIR);
-    if (n <= 0 || (size_t)n >= cap) return false;
-    if (mkdir(out, 0700) != 0 && errno != EEXIST) return false;
-    return true;
-}
-
-static bool lci_snapshot_one_leveldb(const char *src,
-                                     const char *dst,
-                                     const char *label)
-{
-    char err[128];
-    for (int tries = 0; tries < 3; tries++) {
-        err[0] = '\0';
-        if (ldb_snapshot_make(src, dst, err, sizeof(err)))
-            return true;
-        if (strcmp(err, "manifest_changed") != 0) {
-            fprintf(stderr,
-                    "[cold_import] snapshot of %s failed: %s\n",
-                    src, err);
-            return false;
-        }
-        fprintf(stderr, // obs-ok:retryable-leveldb-snapshot-race
-                "[cold_import] snapshot %s manifest_changed; retry %d\n",
-                label, tries + 1);
-    }
-    fprintf(stderr,
-            "[cold_import] snapshot of %s failed after retries: %s\n",
-            src, err);
-    return false;
-}
-
-static bool lci_snapshot_legacy_leveldbs(const char *legacy_datadir,
-                                         const char *stage_dir,
-                                         char *out_idx, size_t idx_cap,
-                                         char *out_cs, size_t cs_cap)
-{
-    char src_idx[1100], src_cs[1100];
-    snprintf(src_idx, sizeof(src_idx), "%s/blocks/index", legacy_datadir);
-    snprintf(src_cs, sizeof(src_cs), "%s/chainstate", legacy_datadir);
-
-    int ni = snprintf(out_idx, idx_cap, "%s/blocks-index", stage_dir);
-    int nc = snprintf(out_cs, cs_cap, "%s/chainstate", stage_dir);
-    if (ni <= 0 || (size_t)ni >= idx_cap) return false;
-    if (nc <= 0 || (size_t)nc >= cs_cap) return false;
-
-    if (!lci_snapshot_one_leveldb(src_idx, out_idx, "blocks/index"))
-        return false;
-    if (!lci_snapshot_one_leveldb(src_cs, out_cs, "chainstate")) {
-        ldb_snapshot_destroy(out_idx);
-        return false;
-    }
-    return true;
 }
 
 static void lci_hex32(const uint8_t hash[32], char out[65])
@@ -430,16 +373,19 @@ bool legacy_cold_import_blocking(
      * still be running and holding LOCK; the snapshot helper hardlinks
      * immutable SST files and gives us independent read-only LOCK contexts. */
     char stage_dir[1100], idx_dir[1200], cs_dir[1200];
-    if (!lci_make_stage_dir(our_datadir, stage_dir, sizeof(stage_dir))) {
+    if (!legacy_bootstrap_make_stage_dir(our_datadir, LCI_STAGE_SUBDIR,
+                                         stage_dir, sizeof(stage_dir),
+                                         "cold_import")) {
         fprintf(stderr,
                 "[cold_import] cannot create stage dir under %s\n",
                 our_datadir);
         return false;
     }
     int64_t t_snap = lci_now_ms();
-    if (!lci_snapshot_legacy_leveldbs(legacy_datadir, stage_dir,
-                                      idx_dir, sizeof(idx_dir),
-                                      cs_dir, sizeof(cs_dir)))
+    if (!legacy_bootstrap_snapshot_leveldbs(legacy_datadir, stage_dir,
+                                            idx_dir, sizeof(idx_dir),
+                                            cs_dir, sizeof(cs_dir),
+                                            "cold_import"))
         return false;
     fprintf(stderr, // obs-ok:cold-import-progress
             "[cold_import] LevelDB snapshots took %" PRId64 " ms\n",

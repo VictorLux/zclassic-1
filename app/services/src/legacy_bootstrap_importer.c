@@ -9,6 +9,7 @@
 #include "core/uint256.h"
 #include "storage/block_index_db.h"
 #include "storage/dbwrapper.h"
+#include "storage/ldb_snapshot.h"
 #include "util/long_op.h"
 #include "util/thread_registry.h"
 
@@ -25,21 +26,21 @@ int64_t legacy_bootstrap_link_blk_files(const char *legacy_blocks_dir,
                                         const char *log_prefix)
 {
     if (!legacy_blocks_dir || !our_blocks_dir || !log_prefix) {
-        fprintf(stderr,
+        fprintf(stderr,  // obs-ok:bootstrap-import-terminal-diagnostic
                 "[legacy_bootstrap] link blk files: NULL argument\n");
         return -1;  // raw-return-ok:logged-above
     }
 
     DIR *d = opendir(legacy_blocks_dir);
     if (!d) {
-        fprintf(stderr,
+        fprintf(stderr,  // obs-ok:bootstrap-import-terminal-diagnostic
                 "[%s] cannot opendir %s: %s\n",
                 log_prefix, legacy_blocks_dir, strerror(errno));
         return -1;  // raw-return-ok:logged-above
     }
 
     if (mkdir(our_blocks_dir, 0755) != 0 && errno != EEXIST) {
-        fprintf(stderr,
+        fprintf(stderr,  // obs-ok:bootstrap-import-terminal-diagnostic
                 "[%s] cannot mkdir %s: %s\n",
                 log_prefix, our_blocks_dir, strerror(errno));
         closedir(d);
@@ -131,6 +132,104 @@ int64_t legacy_bootstrap_link_blk_files(const char *legacy_blocks_dir,
             " skipped=%" PRId64 " errors=%" PRId64 "\n",
             log_prefix, linked, copied, skipped, errors);
     return (errors > 0) ? -1 : (linked + copied);
+}
+
+bool legacy_bootstrap_make_stage_dir(const char *datadir,
+                                     const char *stage_subdir,
+                                     char *out_stage_dir,
+                                     size_t out_cap,
+                                     const char *log_prefix)
+{
+    if (!datadir || !stage_subdir || !out_stage_dir || !log_prefix) {
+        fprintf(stderr,  // obs-ok:bootstrap-import-terminal-diagnostic
+                "[legacy_bootstrap] make stage dir: NULL argument\n");
+        return false;
+    }
+
+    int n = snprintf(out_stage_dir, out_cap, "%s/%s",
+                     datadir, stage_subdir);
+    if (n <= 0 || (size_t)n >= out_cap) {
+        fprintf(stderr,  // obs-ok:bootstrap-import-terminal-diagnostic
+                "[%s] stage dir path too long\n", log_prefix);
+        return false;
+    }
+
+    if (mkdir(out_stage_dir, 0700) != 0 && errno != EEXIST) {
+        fprintf(stderr,  // obs-ok:bootstrap-import-terminal-diagnostic
+                "[%s] cannot mkdir %s: %s\n",
+                log_prefix, out_stage_dir, strerror(errno));
+        return false;
+    }
+    return true;
+}
+
+static bool legacy_bootstrap_snapshot_one_leveldb(const char *src,
+                                                  const char *dst,
+                                                  const char *label,
+                                                  const char *log_prefix)
+{
+    char err[128];
+    for (int tries = 0; tries < 3; tries++) {
+        err[0] = '\0';
+        if (ldb_snapshot_make(src, dst, err, sizeof(err)))
+            return true;
+        if (strcmp(err, "manifest_changed") != 0) {
+            fprintf(stderr,  // obs-ok:bootstrap-import-terminal-diagnostic
+                    "[%s] snapshot of %s failed: %s\n",
+                    log_prefix, src, err);
+            return false;
+        }
+        fprintf(stderr,  // obs-ok:retryable-leveldb-snapshot-race
+                "[%s] snapshot %s manifest_changed; retry %d\n",
+                log_prefix, label, tries + 1);
+    }
+
+    fprintf(stderr,  // obs-ok:bootstrap-import-terminal-diagnostic
+            "[%s] snapshot of %s failed after retries: %s\n",
+            log_prefix, src, err);
+    return false;
+}
+
+bool legacy_bootstrap_snapshot_leveldbs(const char *legacy_datadir,
+                                        const char *stage_dir,
+                                        char *out_idx_path,
+                                        size_t idx_cap,
+                                        char *out_cs_path,
+                                        size_t cs_cap,
+                                        const char *log_prefix)
+{
+    if (!legacy_datadir || !stage_dir || !out_idx_path || !out_cs_path ||
+        !log_prefix) {
+        fprintf(stderr,  // obs-ok:bootstrap-import-terminal-diagnostic
+                "[legacy_bootstrap] snapshot LevelDBs: NULL argument\n");
+        return false;
+    }
+
+    char src_idx[1100], src_cs[1100];
+    int si = snprintf(src_idx, sizeof(src_idx), "%s/blocks/index",
+                      legacy_datadir);
+    int sc = snprintf(src_cs, sizeof(src_cs), "%s/chainstate",
+                      legacy_datadir);
+    int ni = snprintf(out_idx_path, idx_cap, "%s/blocks-index", stage_dir);
+    int nc = snprintf(out_cs_path, cs_cap, "%s/chainstate", stage_dir);
+    if (si <= 0 || (size_t)si >= sizeof(src_idx) ||
+        sc <= 0 || (size_t)sc >= sizeof(src_cs) ||
+        ni <= 0 || (size_t)ni >= idx_cap ||
+        nc <= 0 || (size_t)nc >= cs_cap) {
+        fprintf(stderr,  // obs-ok:bootstrap-import-terminal-diagnostic
+                "[%s] snapshot path too long\n", log_prefix);
+        return false;
+    }
+
+    if (!legacy_bootstrap_snapshot_one_leveldb(src_idx, out_idx_path,
+                                               "blocks/index", log_prefix))
+        return false;
+    if (!legacy_bootstrap_snapshot_one_leveldb(src_cs, out_cs_path,
+                                               "chainstate", log_prefix)) {
+        ldb_snapshot_destroy(out_idx_path);
+        return false;
+    }
+    return true;
 }
 
 int64_t legacy_bootstrap_copy_block_index(const char *legacy_index_dir,
