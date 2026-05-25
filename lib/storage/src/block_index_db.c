@@ -311,6 +311,31 @@ bool block_tree_db_write_block_index_sync(struct block_tree_db *btdb,
     return block_tree_db_write_block_index_internal(btdb, d, true);
 }
 
+bool block_tree_db_read_block_index(struct block_tree_db *btdb,
+                                    const struct uint256 *hash,
+                                    struct disk_block_index *out)
+{
+    if (!btdb || !hash || !out)
+        LOG_FAIL("block_index_db", "read_block_index: invalid argument");
+
+    char key[64];
+    key[0] = DB_BLOCK_INDEX;
+    memcpy(key + 1, hash->data, 32);
+
+    char *val = NULL;
+    size_t vallen = 0;
+    if (!db_read(&btdb->db, key, 33, &val, &vallen))
+        return false;
+
+    disk_block_index_init(out);
+    struct byte_stream s;
+    stream_init_from_data(&s, (unsigned char *)val, vallen);
+    bool ok = disk_block_index_deserialize(out, &s);
+    stream_free(&s);
+    free(val);
+    return ok;
+}
+
 bool block_tree_db_load_block_index_guts(struct block_tree_db *btdb,
                                          insert_block_index_fn insert_fn,
                                          void *ctx)

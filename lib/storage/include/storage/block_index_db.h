@@ -76,6 +76,10 @@ bool block_tree_db_write_block_index(struct block_tree_db *btdb,
 bool block_tree_db_write_block_index_sync(struct block_tree_db *btdb,
                                           const struct disk_block_index *d);
 
+bool block_tree_db_read_block_index(struct block_tree_db *btdb,
+                                    const struct uint256 *hash,
+                                    struct disk_block_index *out);
+
 typedef struct block_index *(*insert_block_index_fn)(void *ctx,
                                                       const struct uint256 *hash);
 

@@ -18,8 +18,8 @@
  *  3. Validate cheap fields first:
  *       - nVersion ≥ MIN_BLOCK_VERSION
  *       - CheckProofOfWork(hash, nBits)   (target check, no Equihash)
- *  4. Prefer the indexed header solution; fall back to reading the full
- *     block from disk via `read_block_from_disk_index_pread()`.
+ *  4. Prefer the indexed header solution; when restart/load paths have
+ *     evicted it from RAM, load the persisted block-index record by hash.
  *  5. Validate the Equihash solution against (N, K) from the active
  *     chain params at this height.
  *  6. Write a `validate_headers_log` row in the same `BEGIN IMMEDIATE`
@@ -82,7 +82,7 @@ struct json_value;
 #define VH_BATCH_PER_TICK   64
 
 /* Test seam: injectable validator. The default validator runs the full
- * PoW + Equihash pipeline against disk; tests inject a stub that
+ * PoW + Equihash pipeline against persisted header records; tests inject a stub that
  * decides purely from in-memory fields.
  *
  * Contract: writes a NUL-terminated reason string into `out_reason`

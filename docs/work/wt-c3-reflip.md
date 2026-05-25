@@ -105,3 +105,12 @@ range or a rebuild that produces readable block data throughout. NOT a consensus
 > Deploy/flip on the live node is operator-gated by Rhett. See
 > [`cutover-safety-protocol.md`](./cutover-safety-protocol.md) and
 > [`../VISION.md`](../VISION.md) (dependency spine).
+
+## Progress (wt3, 2026-05-25)
+
+Source-side body-read dependency removed for C-3: `validate_headers` now loads
+the persisted `nSolution` from `block_tree_db` by hash when the hot in-memory
+`block_index` has evicted it, instead of falling back to full block-body reads.
+This keeps header validation a header-only proof after restart/import and lets
+the existing failed-row recheck clear stale `disk-read-failed` rows once the new
+binary is deployed. Live deploy/flip remains operator-gated.

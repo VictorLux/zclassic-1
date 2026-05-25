@@ -19,8 +19,9 @@
 #include "core/uint256.h"
 #include "json/json.h"
 #include "primitives/block.h"
-#include "storage/disk_block_io.h"
+#include "storage/block_index_db.h"
 #include "storage/progress_store.h"
+#include "storage/txdb.h"
 #include "util/log_macros.h"
 #include "util/stage.h"
 #include "util/thread_registry.h"
@@ -39,6 +40,8 @@
 #include <time.h>
 
 #define STAGE_NAME       "validate_headers"
+
+extern struct block_tree_db *g_active_block_tree;
 
 /* ── Job + pool state ─────────────────────────────────────────────── */
 
@@ -137,6 +140,57 @@ static bool header_from_block_index(const struct block_index *bi,
     return true;
 }
 
+static bool header_from_disk_block_index(const struct disk_block_index *dbi,
+                                         struct block_header *out,
+                                         char *out_reason,
+                                         size_t out_reason_size)
+{
+    if (!dbi || !out) {
+        snprintf(out_reason, out_reason_size, "null-disk-block-index");
+        return false;
+    }
+    if (dbi->nSolutionSize == 0) {
+        snprintf(out_reason, out_reason_size, "no-header-solution");
+        return false;
+    }
+    if (dbi->nSolutionSize > sizeof(out->nSolution)) {
+        snprintf(out_reason, out_reason_size, "solution-too-large");
+        return false;
+    }
+
+    block_header_init(out);
+    out->nVersion = dbi->nVersion;
+    out->hashPrevBlock = dbi->hashPrev;
+    out->hashMerkleRoot = dbi->hashMerkleRoot;
+    out->hashFinalSaplingRoot = dbi->hashFinalSaplingRoot;
+    out->nTime = dbi->nTime;
+    out->nBits = dbi->nBits;
+    out->nNonce = dbi->nNonce;
+    memcpy(out->nSolution, dbi->nSolution, dbi->nSolutionSize);
+    out->nSolutionSize = dbi->nSolutionSize;
+    return true;
+}
+
+static bool header_from_persisted_block_index(const struct block_index *bi,
+                                              struct block_header *out,
+                                              char *out_reason,
+                                              size_t out_reason_size)
+{
+    if (!g_active_block_tree || !bi || !bi->phashBlock) {
+        snprintf(out_reason, out_reason_size, "no-header-solution");
+        return false;
+    }
+
+    struct disk_block_index dbi;
+    if (!block_tree_db_read_block_index(g_active_block_tree,
+                                        bi->phashBlock, &dbi)) {
+        snprintf(out_reason, out_reason_size, "no-header-solution");
+        return false;
+    }
+    return header_from_disk_block_index(&dbi, out,
+                                        out_reason, out_reason_size);
+}
+
 static bool validate_header_fields(const struct block_header *header,
                                    const struct chain_params *cp,
                                    char *out_reason,
@@ -166,6 +220,7 @@ static bool default_validator(const struct block_index *bi,
                                void *user)
 {
     (void)user;
+    (void)datadir;
     if (!bi || !bi->phashBlock) {
         snprintf(out_reason, out_reason_size, "null-block-index");
         return false;
@@ -186,9 +241,7 @@ static bool default_validator(const struct block_index *bi,
 
     /* The block index stores full header fields, including nonce and
      * Equihash solution, for headers admitted through normal P2P/RPC
-     * paths. Validate from that header snapshot first. Body files may
-     * legitimately be absent for the newest headers, and that must not
-     * turn a header-only stage into a body-availability gate. */
+     * paths. Validate from that header snapshot first. */
     struct block_header index_header;
     if (header_from_block_index(bi, &index_header,
                                 out_reason, out_reason_size)) {
@@ -196,45 +249,17 @@ static bool default_validator(const struct block_index *bi,
                                       out_reason, out_reason_size);
     }
 
-    /* (3) Equihash: pull the full block from disk so we have the
-     * solution bytes. Genesis (height 0) has no on-disk file entry on
-     * some configurations; treat nFile<0 as "skip-equihash". */
-    if (bi->nFile < 0) {
-        /* Cheap checks already passed; we can't verify Equihash
-         * without disk. Record as passed-with-caveat. The plan expects
-         * full validation in production where nFile is always ≥ 0; if
-         * we ever see nFile<0 outside genesis, the operator will see
-         * "no-disk-pos" via the diff harness. */
-        if (bi->nHeight != 0) {
-            snprintf(out_reason, out_reason_size, "no-disk-pos");
-            return false;
-        }
-        return true;
+    /* Restart/load paths deliberately keep the Equihash solution out
+     * of the hot in-memory index to save RAM. The persisted block-index
+     * record still owns it, so load that compact header record instead
+     * of making header validation depend on readable block bodies. */
+    if (header_from_persisted_block_index(bi, &index_header,
+                                          out_reason, out_reason_size)) {
+        return validate_header_fields(&index_header, cp,
+                                      out_reason, out_reason_size);
     }
 
-    struct block blk;
-    block_init(&blk);
-    bool read_ok = read_block_from_disk_index_pread(&blk, bi,
-                                                     datadir ? datadir : "");
-    if (!read_ok) {
-        block_free(&blk);
-        snprintf(out_reason, out_reason_size, "disk-read-failed");
-        return false;
-    }
-    /* The header read from disk should hash to the same value as
-     * bi->phashBlock. Cheap consistency check. */
-    struct uint256 disk_hash;
-    block_header_get_hash(&blk.header, &disk_hash);
-    if (memcmp(disk_hash.data, bi->phashBlock->data, 32) != 0) {
-        block_free(&blk);
-        snprintf(out_reason, out_reason_size, "hash-mismatch-disk");
-        return false;
-    }
-
-    bool ok = validate_header_fields(&blk.header, cp,
-                                     out_reason, out_reason_size);
-    block_free(&blk);
-    return ok;
+    return false;
 }
 
 /* ── Worker pool ──────────────────────────────────────────────────── */

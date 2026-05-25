@@ -22,7 +22,9 @@
 #include "primitives/block.h"
 #include "services/header_admit_stage.h"
 #include "services/validate_headers_stage.h"
+#include "storage/block_index_db.h"
 #include "storage/progress_store.h"
+#include "storage/txdb.h"
 #include "util/blocker.h"
 #include "util/safe_alloc.h"
 #include "util/stage.h"
@@ -44,6 +46,8 @@
     if ((expr)) printf("OK\n"); \
     else { printf("FAIL\n"); failures++; } \
 } while (0)
+
+extern struct block_tree_db *g_active_block_tree;
 
 static int mkdir_p_vh(const char *p)
 {
@@ -434,6 +438,61 @@ int test_validate_headers_stage(void)
         VH_CHECK("index-header: failure is header-derived",
                  ok == 0 && strcmp(reason, "disk-read-failed") != 0);
 
+        vh_teardown(dir, &ms, &sc);
+    }
+
+    /* ── default validator loads persisted solution, not block body ── */
+    {
+        char dir[256]; struct main_state ms; struct synth_chain_vh sc;
+        struct block_tree_db btdb;
+        bool btdb_open = false;
+        struct block_tree_db *old_tree = g_active_block_tree;
+
+        VH_CHECK("persisted-solution: setup default validator",
+                 vh_setup("persisted_solution", 1, NULL, NULL,
+                          dir, sizeof(dir), &ms, &sc) == 0);
+
+        struct disk_block_index dbi;
+        disk_block_index_init(&dbi);
+        dbi.nHeight = 0;
+        dbi.nStatus = BLOCK_VALID_HEADER;
+        dbi.nVersion = sc.blocks[0].nVersion;
+        dbi.hashMerkleRoot = sc.blocks[0].hashMerkleRoot;
+        dbi.hashFinalSaplingRoot = sc.blocks[0].hashFinalSaplingRoot;
+        dbi.nTime = sc.blocks[0].nTime;
+        dbi.nBits = sc.blocks[0].nBits;
+        dbi.nNonce = sc.blocks[0].nNonce;
+        dbi.nSolutionSize = 36;
+        memset(dbi.nSolution, 0, dbi.nSolutionSize);
+        disk_block_index_get_hash(&dbi, &sc.hashes[0]);
+
+        char btdb_path[512];
+        snprintf(btdb_path, sizeof(btdb_path), "%s/blocktree", dir);
+        btdb_open = block_tree_db_open(&btdb, btdb_path,
+                                       1 << 20, false, true);
+        VH_CHECK("persisted-solution: blocktree opens", btdb_open);
+        if (btdb_open) {
+            VH_CHECK("persisted-solution: writes disk index",
+                     block_tree_db_write_block_index(&btdb, &dbi));
+            g_active_block_tree = &btdb;
+        }
+
+        header_admit_stage_drain(10);
+        VH_CHECK("persisted-solution: validate one row",
+                 validate_headers_stage_drain(10) == 1);
+        int ok = -1;
+        char reason[64];
+        VH_CHECK("persisted-solution: row exists",
+                 log_row_at(progress_store_db(), 0, &ok,
+                            reason, sizeof(reason)));
+        VH_CHECK("persisted-solution: failure is header-derived",
+                 ok == 0 &&
+                 strcmp(reason, "disk-read-failed") != 0 &&
+                 strcmp(reason, "no-header-solution") != 0);
+
+        g_active_block_tree = old_tree;
+        if (btdb_open)
+            block_tree_db_close(&btdb);
         vh_teardown(dir, &ms, &sc);
     }
 
