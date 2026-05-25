@@ -136,6 +136,11 @@ static int test_signal_handler_capsule(void)
         PM_CHECK("signal capsule records signal",
                  rc == 0 && count == 1 && entries[0].crash_signal == SIGABRT);
         if (rc == 0 && count == 1) {
+            char proc_path[576];
+            snprintf(proc_path, sizeof(proc_path), "%s/procstatus.txt",
+                     entries[0].path);
+            PM_CHECK("signal capsule captures proc status",
+                     file_contains(proc_path, "Name:"));
             seed_tape_t *loaded = postmortem_capsule_load_tape(entries[0].path);
             PM_CHECK("signal capsule tape loads", loaded != NULL);
             if (loaded) {
@@ -191,6 +196,11 @@ static int test_boot_postmortem_install(void)
         PM_CHECK("boot postmortem signal recorded",
                  rc == 0 && count == 1 && entries[0].crash_signal == SIGABRT);
         if (rc == 0 && count == 1) {
+            char proc_path[576];
+            snprintf(proc_path, sizeof(proc_path), "%s/procstatus.txt",
+                     entries[0].path);
+            PM_CHECK("boot postmortem proc status captured",
+                     file_contains(proc_path, "Name:"));
             seed_tape_t *loaded = postmortem_capsule_load_tape(entries[0].path);
             PM_CHECK("boot postmortem tape loads", loaded != NULL);
             if (loaded)
@@ -252,6 +262,13 @@ static int test_boot_postmortem_restart_compresses_prior_sigsegv(void)
              rc == 0 && count == 1 &&
              strstr(entries[0].name, ".cap") != NULL &&
              strstr(entries[0].name, ".cap.gz") == NULL);
+    if (rc == 0 && count == 1) {
+        char proc_path[576];
+        snprintf(proc_path, sizeof(proc_path), "%s/procstatus.txt",
+                 entries[0].path);
+        PM_CHECK("boot restart proc status captured",
+                 file_contains(proc_path, "Name:"));
+    }
 
     boot_postmortem_shutdown_for_testing();
 

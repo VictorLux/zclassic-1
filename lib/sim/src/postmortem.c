@@ -583,6 +583,44 @@ static int signal_write_empty_file(const char *path)
     return signal_write_file(path, "", 0);
 }
 
+static int signal_copy_file_limited(const char *src, const char *dst,
+                                    size_t max_bytes)
+{
+    int in = open(src, O_RDONLY);
+    if (in < 0) return -1;
+    int out = open(dst, O_CREAT | O_WRONLY | O_TRUNC, 0644);
+    if (out < 0) {
+        close(in);
+        return -1;
+    }
+
+    char buf[512];
+    size_t copied = 0;
+    int ok = 0;
+    while (copied < max_bytes) {
+        size_t want = max_bytes - copied;
+        if (want > sizeof(buf)) want = sizeof(buf);
+        ssize_t got = read(in, buf, want);
+        if (got < 0 && errno == EINTR)
+            continue;
+        if (got < 0) {
+            ok = -1;
+            break;
+        }
+        if (got == 0)
+            break;
+        if (signal_write_all(out, buf, (size_t)got) != got) {
+            ok = -1;
+            break;
+        }
+        copied += (size_t)got;
+    }
+
+    if (close(out) != 0 && ok == 0) ok = -1;
+    if (close(in) != 0 && ok == 0) ok = -1;
+    return ok;
+}
+
 static int signal_write_manifest(const char *path, int sig,
                                  int64_t crash_unix, size_t tape_size)
 {
@@ -783,7 +821,7 @@ static void postmortem_crash_hook(int sig, siginfo_t *info, void *ucontext,
     if (signal_join_path(path, sizeof(path), cap_dir, "manifest.json") == 0)
         (void)signal_write_manifest(path, sig, crash_unix, tape_written);
     if (signal_join_path(path, sizeof(path), cap_dir, "procstatus.txt") == 0)
-        (void)signal_write_empty_file(path);
+        (void)signal_copy_file_limited("/proc/self/status", path, 8192);
     if (signal_join_path(path, sizeof(path), cap_dir, "log.txt") == 0)
         (void)signal_write_empty_file(path);
     if (signal_join_path(path, sizeof(path), cap_dir, "coremarker.txt") == 0)

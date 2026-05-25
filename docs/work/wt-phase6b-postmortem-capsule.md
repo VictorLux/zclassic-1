@@ -367,5 +367,9 @@ the capsule API plus the non-signal save/list/load path.
 - Hardened `postmortem_install` to create and validate the capsule directory
   before registering the fatal-signal hook, with focused coverage for
   auto-created directories and non-directory rejection.
+- Filled in the signal-path `procstatus.txt` member using a bounded
+  `/proc/self/status` copy through raw `open`/`read`/`write`/`close`, with
+  forked SIGABRT/SIGSEGV coverage proving the captured capsule contains the
+  process status payload.
 
 <!-- Worker: append a Completion section below when done. -->
