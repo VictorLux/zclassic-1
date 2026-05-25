@@ -6,8 +6,8 @@ Symptom-driven troubleshooting. Each section: what you see, how to diagnose, how
 
 ## BIP30 Stale Coinbase Wedge
 
-**Symptoms:** `tools/scoreboard.sh` reports `WEDGED`, `getblockcount` stays
-frozen while legacy peers advance, and `node.log` repeats lines like
+**Symptoms:** `zcl_status` shows the tip frozen (`tip_advance_age_seconds`
+climbing, gap > 0) while legacy peers advance, and `node.log` repeats lines like
 `STALL: h=<tip> entries_at_<tip+1>=1` or `bad-txns-BIP30`.
 
 This is the 2026-05-25 stale coinbase-at-`tip+1` shape: `node.db` has one
@@ -17,7 +17,7 @@ unspent UTXO row one block above the active chain tip, with no matching
 **Diagnose, read-only:**
 ```bash
 ./tools/bip30_unwedge_preflight.sh
-./tools/scoreboard.sh
+./tools/zcl-rpc healthcheck | jq '.checks.chain_advance'   # canonical C (tip_advance_age + blocker)
 ```
 
 `bip30_unwedge_preflight.sh` exits:
@@ -44,12 +44,11 @@ unspent UTXO row one block above the active chain tip, with no matching
    ```bash
    ./tools/bip30_unwedge_preflight.sh
    SAMPLES=6 INTERVAL_SECS=15 ./tools/bench_running_lag.sh
-   ./tools/scoreboard.sh
+   ./tools/zcl-rpc healthcheck | jq '.checks.chain_advance'   # canonical C (tip_advance_age + blocker)
    ```
 
 **Success:** the preflight no longer reports `STALE_TIP_PLUS_ONE_PRESENT`,
-`scoreboard.sh` exits `0`, and the tip advances past the formerly wedged
-height.
+`zcl_status` shows the tip advancing, and it passes the formerly wedged height.
 
 **Do not:** manually delete broad UTXO ranges, bypass BIP30, or re-flip any
 C-* cutover while this check exits non-zero. The boot fix is intentionally

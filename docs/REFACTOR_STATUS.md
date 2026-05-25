@@ -14,7 +14,10 @@ Honest scoreboard. **MEASURED** = a real number from this box (date + how, in
 [`BENCHMARKS_LOG.md`](./BENCHMARKS_LOG.md)). **TARGET** = where we're going.
 **not measured** = no harness run yet — don't quote a number.
 
-> Read live: `tools/scoreboard.sh` (exit 3 = WEDGED). Snapshot below is from
+> Read live from the SERVICE (canonical C, not a shell snapshot): `zcl_status`
+> (tip, sync_state, `tip_advance_age_seconds`) + `zcl_state subsystem=blocker`
+> (the typed blocker registry = "what's blocking"). No-MCP fallback: `tools/zcl-rpc`.
+> Snapshot below is from
 > 2026-05-25 07:08Z. **The cure is written; the patient still runs the disease**
 > — all 3 wedge fixes are merged on origin/main but NOT deployed, so the live
 > node is unchanged from when it broke. Numbers prefixed `code:` = fixed in the
@@ -39,7 +42,7 @@ Honest scoreboard. **MEASURED** = a real number from this box (date + how, in
      Alerts to a human         code: 18 Conditions  0 / month     ◑ 18 self-heal Conditions in tree · live node still pages nobody
 
   🔬 HONEST
-     Scoreboard ≠ reality      scoreboard.sh live  always true    ✓ stale-snapshot lie now impossible
+     Live truth from service   zcl_status (C)      always true    ◑ build-commit + dominant-blocker → surface in zcl_status
      Bug → reproducible fix    built (postmortem+chaos) 1 tape    ✓ Phase 6 done (6fb76f2b0)
 ```
 `*` RSS soak (05-24): fresh boot 1.53 GB → **stair-steps up with bg-validation

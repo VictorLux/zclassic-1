@@ -2,8 +2,17 @@
 
 ## Status
 
-**IN PROGRESS (wt3) — claimed 2026-05-25.** Fully independent of the
-P0 connect_block work.
+**IN PROGRESS (wt3) — ⚠ BUILD IT IN C, NOT SHELL (orchestrator redirect 2026-05-25).**
+Fully independent of the P0 connect_block work.
+
+> **Canonical functionality lives in C, in the binary — shell is thin dev glue
+> only.** `zcl_benchmark` (MCP) already exists and `USER_BENCHMARKS.md` already
+> specs `zclassic23 -bench-coldstart`. So: implement the 5 primaries as `-bench-*`
+> subcommands + extend the `zcl_benchmark` MCP tool, write `bench-history.csv`
+> from C, and **DELETE the redundant `tools/bench_*.sh` scripts as you replace
+> them** (`bench_running_lag.sh`, `bench_no_stuck.sh`, `bench_fresh_sync.sh`,
+> `bench_cold_*.sh`). Net scripts + LOC must go DOWN. "Less is more." The shell
+> sections below are superseded — treat them as the behaviour spec, implement in C.
 
 > This is the foundation the "high-performance" goal has been missing. Every perf
 > number we've quoted (cold 180s, warm 37.7s, RSS 2.4 GB) came from ad-hoc manual
