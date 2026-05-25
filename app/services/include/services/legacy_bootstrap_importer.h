@@ -94,6 +94,8 @@ struct legacy_bootstrap_snapshot_import_options {
     struct node_db *ndb;
     size_t chainstate_batch_limit;
     int32_t min_legacy_tip;
+    int32_t anchor_height;
+    bool has_anchor_height;
     bool require_best_block;
     const char *block_index_long_op_name;
     const char *chainstate_long_op_name;
@@ -107,7 +109,7 @@ struct legacy_bootstrap_snapshot_import_result {
     int64_t chainstate_records;
     bool got_best_block;
     struct uint256 best_block;
-    struct uint256 legacy_tip_hash;
+    int32_t block_index_tip_height;
     int32_t legacy_tip_height;
 };
 

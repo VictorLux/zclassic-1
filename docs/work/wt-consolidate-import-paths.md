@@ -46,6 +46,11 @@ Verification:
   boot then advances the delta through normal activation. This is outside the
   import-path consolidation itself, but it is the remaining acceptance question
   behind "reaches zclassicd tip".
+- Follow-up fix: the shared snapshot importer now records the pending CSR anchor
+  height from the chainstate-best branch, not the copied block-index tip. When
+  the two differ, the imported UTXO set, anchor hash, and anchor height now name
+  the same chain point; higher block-index entries remain available for normal
+  activation above the anchor.
 
 ## The shape (one canonical importer, pluggable mode)
 

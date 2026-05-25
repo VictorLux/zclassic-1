@@ -1149,6 +1149,10 @@ static int t_cold_import_uses_leveldb_snapshots_contract(void)
             "legacy_bootstrap_load_height_map(");
         char *snapshot_import = strstr(cold_mode,
             "legacy_bootstrap_import_snapshot_state(");
+        char *anchor_height = strstr(cold_mode,
+            ".anchor_height = legacy_tip");
+        char *has_anchor_height = strstr(cold_mode,
+            ".has_anchor_height = true");
         char *destroy = strstr(cold_mode, "ldb_snapshot_destroy(idx_dir)");
         ASSERT(include != NULL);
         ASSERT(stage != NULL);
@@ -1156,10 +1160,13 @@ static int t_cold_import_uses_leveldb_snapshots_contract(void)
         ASSERT(cs_probe != NULL);
         ASSERT(height_map != NULL);
         ASSERT(snapshot_import != NULL);
+        ASSERT(anchor_height != NULL);
+        ASSERT(has_anchor_height != NULL);
         ASSERT(destroy != NULL);
         ASSERT(snapshot < cs_probe);
         ASSERT(cs_probe < height_map);
         ASSERT(height_map < snapshot_import);
+        ASSERT(height_map < anchor_height);
         PASS();
     } _test_next:;
     free(buf);

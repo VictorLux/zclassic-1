@@ -447,6 +447,29 @@ bool legacy_bootstrap_load_height_map(
     return true;
 }
 
+static bool legacy_bootstrap_resolve_tip_height(
+    const char *legacy_index_dir,
+    const struct uint256 *tip_hash,
+    const char *log_prefix,
+    int32_t *out_height)
+{
+    if (out_height)
+        *out_height = -1;
+    if (!legacy_index_dir || !tip_hash || !log_prefix || !out_height) {
+        fprintf(stderr,  // obs-ok:bootstrap-import-terminal-diagnostic
+                "[legacy_bootstrap] resolve tip height: bad args\n");
+        return false;
+    }
+
+    struct legacy_bootstrap_height_map_result hmap;
+    if (!legacy_bootstrap_load_height_map(legacy_index_dir, tip_hash,
+                                          log_prefix, &hmap))
+        return false;
+    *out_height = hmap.tip_height;
+    bilr_free_height_map(hmap.map);
+    return *out_height >= 0;
+}
+
 struct legacy_bootstrap_chainstate_ctx {
     struct utxo_bulk_rec *batch;
     uint8_t (*txids)[32];
@@ -661,6 +684,7 @@ bool legacy_bootstrap_import_snapshot_state(
     if (out)
         *out = (struct legacy_bootstrap_snapshot_import_result){
             .legacy_tip_height = -1,
+            .block_index_tip_height = -1,
         };
     if (!opts || !opts->legacy_blocks_dir || !opts->our_blocks_dir ||
         !opts->legacy_index_dir || !opts->chainstate_dir || !opts->btdb ||
@@ -673,6 +697,7 @@ bool legacy_bootstrap_import_snapshot_state(
 
     struct legacy_bootstrap_snapshot_import_result r = {
         .legacy_tip_height = -1,
+        .block_index_tip_height = -1,
     };
 
     int64_t linked = legacy_bootstrap_link_blk_files(opts->legacy_blocks_dir,
@@ -683,19 +708,19 @@ bool legacy_bootstrap_import_snapshot_state(
     r.blk_files_linked = linked;
 
     int64_t bi_written = legacy_bootstrap_copy_block_index(
-        opts->legacy_index_dir, opts->btdb, &r.legacy_tip_hash,
-        &r.legacy_tip_height, opts->block_index_long_op_name,
+        opts->legacy_index_dir, opts->btdb, NULL,
+        &r.block_index_tip_height, opts->block_index_long_op_name,
         opts->log_prefix);
     if (bi_written < 0)
         return false;
     r.block_index_writes = bi_written;
 
     if (opts->min_legacy_tip >= 0 &&
-        r.legacy_tip_height < opts->min_legacy_tip) {
+        r.block_index_tip_height < opts->min_legacy_tip) {
         fprintf(stderr,  // obs-ok:bootstrap-import-terminal-diagnostic
                 "[%s] REFUSING: discovered legacy tip h=%d is below "
                 "minimum %d; no chainstate import or cursor publication\n",
-                opts->log_prefix, r.legacy_tip_height,
+                opts->log_prefix, r.block_index_tip_height,
                 opts->min_legacy_tip);
         return false;
     }
@@ -725,10 +750,44 @@ bool legacy_bootstrap_import_snapshot_state(
                 "pending CSR anchor not recorded\n",
                 opts->log_prefix);
     } else if (opts->ndb) {
+        int32_t anchor_height = opts->has_anchor_height
+            ? opts->anchor_height
+            : -1;
+        if (anchor_height < 0 &&
+            !legacy_bootstrap_resolve_tip_height(
+                opts->legacy_index_dir, &cs_import.best_block,
+                opts->log_prefix, &anchor_height)) {
+            fprintf(stderr,  // obs-ok:bootstrap-import-terminal-diagnostic
+                    "[%s] REFUSING: chainstate best block is not on a "
+                    "usable legacy index chain; no pending CSR anchor "
+                    "published\n", opts->log_prefix);
+            return false;
+        }
+        if (opts->min_legacy_tip >= 0 &&
+            anchor_height < opts->min_legacy_tip) {
+            fprintf(stderr,  // obs-ok:bootstrap-import-terminal-diagnostic
+                    "[%s] REFUSING: chainstate anchor h=%d is below "
+                    "minimum %d; no cursor publication\n",
+                    opts->log_prefix, anchor_height,
+                    opts->min_legacy_tip);
+            return false;
+        }
+        r.legacy_tip_height = anchor_height;
+        if (r.block_index_tip_height != anchor_height) {
+            fprintf(stderr,  // obs-ok:pre-existing-diagnostic
+                    "[%s] block-index tip h=%d differs from chainstate "
+                    "anchor h=%d; publishing chainstate anchor\n",
+                    opts->log_prefix, r.block_index_tip_height,
+                    anchor_height);
+        }
         if (!legacy_bootstrap_record_pending_csr_anchor(
-                opts->ndb, &cs_import.best_block, r.legacy_tip_height,
+                opts->ndb, &cs_import.best_block, anchor_height,
                 cs_import.inserted, opts->log_prefix))
             return false;
+    } else {
+        r.legacy_tip_height = opts->has_anchor_height
+            ? opts->anchor_height
+            : r.block_index_tip_height;
     }
 
     if (out)
@@ -928,6 +987,8 @@ static bool legacy_bootstrap_import_cold(
         .ndb = opts->ndb,
         .chainstate_batch_limit = 5000,
         .min_legacy_tip = -1,
+        .anchor_height = legacy_tip,
+        .has_anchor_height = true,
         .require_best_block = false,
         .block_index_long_op_name = "legacy_cold_import.bulk_copy",
         .chainstate_long_op_name = NULL,
