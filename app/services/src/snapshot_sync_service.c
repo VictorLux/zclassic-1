@@ -342,6 +342,48 @@ bool snapsync_awaiting_utxos(void)
     return false;
 }
 
+void snapsync_get_stall_status(struct snapshot_sync_service *svc,
+                               struct snapsync_stall_status *out)
+{
+    struct snapsync_stall_status local = {0};
+    if (!out)
+        out = &local;
+    memset(out, 0, sizeof(*out));
+
+    if (!svc) {
+        svc = app_runtime_snapshot_sync();
+        if (!svc) {
+            if (!snapsync_global_initialized())
+                return;
+            svc = snapsync_global();
+        }
+    }
+
+    snapsync_service_lock_internal();
+    out->receiving = svc->state == SNAPSYNC_RECEIVING;
+    out->received_utxos = svc->received_utxos;
+    out->offered_utxos = svc->offered_count;
+    out->serving_peer_id = svc->serving_peer_id;
+    if (!out->receiving || svc->last_progress_time_us == 0) {
+        snapsync_service_unlock_internal();
+        return;
+    }
+
+    if (svc->received_utxos > svc->last_progress_utxos) {
+        svc->last_progress_time_us = snapsync_now_us_internal();
+        svc->last_progress_utxos = svc->received_utxos;
+        snapsync_service_unlock_internal();
+        return;
+    }
+
+    int64_t elapsed_us = snapsync_now_us_internal() -
+                         svc->last_progress_time_us;
+    out->elapsed_secs = elapsed_us > 0 ? elapsed_us / 1000000LL : 0;
+    out->stalled = elapsed_us >=
+        (int64_t)SNAPSYNC_STALL_TIMEOUT_SECS * 1000000LL;
+    snapsync_service_unlock_internal();
+}
+
 bool snapsync_check_stall(void)
 {
     struct snapshot_sync_service *svc = app_runtime_snapshot_sync();
@@ -351,41 +393,19 @@ bool snapsync_check_stall(void)
         svc = snapsync_global();
     }
 
-    snapsync_service_lock_internal();
-    if (svc->state != SNAPSYNC_RECEIVING || svc->last_progress_time_us == 0) {
-        snapsync_service_unlock_internal();
+    struct snapsync_stall_status stall;
+    snapsync_get_stall_status(svc, &stall);
+    if (!stall.stalled)
         return false;
-    }
 
-    uint64_t received = svc->received_utxos;
-    uint64_t offered = svc->offered_count;
-    uint32_t peer_id = svc->serving_peer_id;
-
-    /* If progress has been made since last check, update timer */
-    if (received > svc->last_progress_utxos) {
-        svc->last_progress_time_us = snapsync_now_us_internal();
-        svc->last_progress_utxos = received;
-        snapsync_service_unlock_internal();
-        return false;
-    }
-
-    int64_t elapsed_us = snapsync_now_us_internal() - svc->last_progress_time_us;
-    int64_t timeout_us = SNAPSYNC_STALL_TIMEOUT_SECS * 1000000LL;
-    if (elapsed_us < timeout_us) {
-        snapsync_service_unlock_internal();
-        return false;
-    }
-
-    snapsync_service_unlock_internal();
-
-    event_emitf(EV_SNAPSYNC_VERIFIED, peer_id,
+    event_emitf(EV_SNAPSYNC_VERIFIED, stall.serving_peer_id,
                 "snapshot=FAILED reason=stall elapsed_s=%lld received=%llu offered=%llu action=blacklist_reset",
-                (long long)(elapsed_us / 1000000),
-                (unsigned long long)received,
-                (unsigned long long)offered);
+                (long long)stall.elapsed_secs,
+                (unsigned long long)stall.received_utxos,
+                (unsigned long long)stall.offered_utxos);
 
     /* Blacklist the stalling peer before reset (reset clears serving_peer_id) */
-    snapsync_blacklist_peer(svc, peer_id);
+    snapsync_blacklist_peer(svc, stall.serving_peer_id);
 
     snapsync_reset(svc);
 
@@ -393,7 +413,7 @@ bool snapsync_check_stall(void)
      * Active UTXOs were never touched by the stalled receive. */
     if (svc->ndb && svc->ndb->open) {
         if (snapsync_discard_staging_internal(svc->ndb, "stall_cleanup"))
-            event_emitf(EV_SNAPSYNC_VERIFIED, peer_id,
+            event_emitf(EV_SNAPSYNC_VERIFIED, stall.serving_peer_id,
                         "snapshot=FAILED reason=stall staging_discarded=true");
     }
 

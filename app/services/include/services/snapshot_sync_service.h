@@ -155,6 +155,15 @@ struct snapsync_status {
     int64_t staged_row_count;
 };
 
+struct snapsync_stall_status {
+    bool receiving;
+    bool stalled;
+    int64_t elapsed_secs;
+    uint64_t received_utxos;
+    uint64_t offered_utxos;
+    uint32_t serving_peer_id;
+};
+
 /* ── Lifecycle ─────────────────────────────────────────────────── */
 
 /* Initialize (called once at boot) */
@@ -319,6 +328,11 @@ bool snapsync_is_active(void);
  * Becomes false once a snapshot is received (SNAPSYNC_COMPLETE) or if
  * coins_best_block is set at a meaningful height. */
 bool snapsync_awaiting_utxos(void);
+
+/* Query snapshot receive stall state. If progress advanced since the last
+ * check, refreshes the receive timer and reports not stalled. */
+void snapsync_get_stall_status(struct snapshot_sync_service *svc,
+                               struct snapsync_stall_status *out);
 
 /* Check if snapshot receive has stalled (no chunk for >60s while RECEIVING).
  * If stalled, resets the service to IDLE so a new offer can be accepted.

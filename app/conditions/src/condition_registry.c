@@ -13,6 +13,7 @@ void register_local_header_refill_needed(void);
 void register_peer_floor_violated(void);
 void register_sync_violation_lag(void);
 void register_tip_wedged_resnapshot(void);
+void register_snapshot_receive_stalled(void);
 
 void condition_registry_register_all(void)
 {
@@ -27,4 +28,5 @@ void condition_registry_register_all(void)
     register_peer_floor_violated();
     register_sync_violation_lag();
     register_tip_wedged_resnapshot();
+    register_snapshot_receive_stalled();
 }

@@ -394,6 +394,13 @@ int main(void)
                failures);
         return failures ? 1 : 0;
     }
+    if (only && strcmp(only, "snapshot_receive_stalled_condition") == 0) {
+        printf("[test] ZCL_TEST_ONLY=snapshot_receive_stalled_condition — running only\n");
+        failures += test_snapshot_receive_stalled_condition();
+        printf("\n=== snapshot_receive_stalled_condition subset complete: %d failure(s) ===\n",
+               failures);
+        return failures ? 1 : 0;
+    }
     if (only && strcmp(only, "zclassicd_oracle") == 0) {
         printf("[test] ZCL_TEST_ONLY=zclassicd_oracle — running oracle subset\n");
         failures += test_zclassicd_oracle();
@@ -698,6 +705,7 @@ int main(void)
     failures += test_utxo_activation_paused();
     failures += test_watchdog_dissolve_pr2();
     failures += test_watchdog_conditions_pr3();
+    failures += test_snapshot_receive_stalled_condition();
     failures += test_chain_tip_watchdog_bounded_restart();
     failures += test_blocker();
     failures += test_clock();
