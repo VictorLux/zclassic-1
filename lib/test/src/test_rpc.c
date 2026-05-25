@@ -342,10 +342,17 @@ int test_rpc(void) {
         ok = ok && strcmp(json_get_str(json_get(modes, "validate_headers")),
                           "shadow") == 0;
         ok = ok && json_get(live, "healthy") != NULL;
+        ok = ok && json_get(live, "cutover_ready") != NULL;
+        ok = ok && json_get(live, "tip_recent") != NULL;
+        ok = ok && json_get(live, "headers_in_range") != NULL;
+        ok = ok && json_get(live, "operator_needed_blocks_cutover") != NULL;
+        ok = ok && json_get(live, "operator_needed") != NULL;
+        ok = ok && json_get(live, "operator_needed_detail") != NULL;
         ok = ok && json_get(live, "canary_target_height") != NULL;
         ok = ok && json_get(live, "tip_lag") != NULL;
         ok = ok && json_get(live, "tip_advance_age_seconds") != NULL;
         ok = ok && json_get(live, "degraded_reason") != NULL;
+        ok = ok && json_get(live, "mirror_lag_breach_severity") != NULL;
         ok = ok && json_get(ce, "publish_state") != NULL;
         ok = ok && json_get(ce, "publish_state_not_local") != NULL;
         ok = ok && json_get(ce, "health_reason") != NULL;

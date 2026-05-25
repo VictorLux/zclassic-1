@@ -919,6 +919,15 @@ static bool cutover_preflight_tail_window(
     return true;
 }
 
+static bool cutover_preflight_operator_needed_blocks(
+    const struct node_health_snapshot *health)
+{
+    if (!health || !health->operator_needed)
+        return false;
+    return strstr(health->operator_needed_detail,
+                  "peer_floor_violated") == NULL;
+}
+
 static bool push_cutover_live_gate_json(struct json_value *live,
                                         struct node_health_snapshot *out)
 {
@@ -927,10 +936,36 @@ static bool push_cutover_live_gate_json(struct json_value *live,
     if (out)
         *out = health;
 
+    bool tip_recent =
+        health.tip_advance_age_seconds >= 0 &&
+        health.tip_advance_age_seconds <=
+            CUTOVER_PREFLIGHT_MAX_TIP_ADVANCE_AGE_SECS;
+    bool headers_in_range =
+        health.header_height <= health.tip_height + 1;
+    bool operator_needed_blocks =
+        cutover_preflight_operator_needed_blocks(&health);
+    bool cutover_ready =
+        health.synced &&
+        health.has_peers &&
+        health.tip_lag == 0 &&
+        tip_recent &&
+        headers_in_range &&
+        !health.tip_stale &&
+        !operator_needed_blocks &&
+        strcmp(health.mirror_lag_breach_severity, "fatal") != 0;
+
     json_set_object(live);
     json_push_kv_bool(live, "healthy", health.healthy);
+    json_push_kv_bool(live, "cutover_ready", cutover_ready);
     json_push_kv_bool(live, "synced", health.synced);
     json_push_kv_bool(live, "has_peers", health.has_peers);
+    json_push_kv_bool(live, "tip_recent", tip_recent);
+    json_push_kv_bool(live, "headers_in_range", headers_in_range);
+    json_push_kv_bool(live, "operator_needed_blocks_cutover",
+                      operator_needed_blocks);
+    json_push_kv_bool(live, "operator_needed", health.operator_needed);
+    json_push_kv_str(live, "operator_needed_detail",
+                     health.operator_needed_detail);
     json_push_kv_int(live, "peer_count", (int64_t)health.peer_count);
     json_push_kv_int(live, "tip_height", health.tip_height);
     json_push_kv_int(live, "canary_target_height",
@@ -941,14 +976,10 @@ static bool push_cutover_live_gate_json(struct json_value *live,
     json_push_kv_int(live, "tip_advance_age_seconds",
                      health.tip_advance_age_seconds);
     json_push_kv_str(live, "degraded_reason", health.degraded_reason);
+    json_push_kv_str(live, "mirror_lag_breach_severity",
+                     health.mirror_lag_breach_severity);
 
-    return health.healthy &&
-           health.synced &&
-           health.has_peers &&
-           health.tip_lag == 0 &&
-           health.tip_advance_age_seconds >= 0 &&
-           health.tip_advance_age_seconds <=
-               CUTOVER_PREFLIGHT_MAX_TIP_ADVANCE_AGE_SECS;
+    return cutover_ready;
 }
 
 static bool push_cutover_guard_gate_json(struct json_value *guard)
@@ -1024,8 +1055,8 @@ static bool rpc_cutoverpreflight(const struct json_value *params, bool help,
     RPC_HELP(help, result,
         "cutoverpreflight [start_height] [end_height]\n"
         "\nRead-only C-3 preflight snapshot: runtime cutover modes, "
-        "live node health, header_admit shadow-vs-active-chain diff, "
-        "validate_headers persisted window/cursor coverage, and a "
+        "cutover-specific live progress, header_admit shadow-vs-active-chain "
+        "diff, validate_headers persisted window/cursor coverage, and a "
         "conservative ready boolean gated by the cutover no-progress guard.\n"
         "\nHeights default to the most recent header_admit diff window. "
         "Result: { ready, blockers, live, chain_evidence, guard, modes, "
