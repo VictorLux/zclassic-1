@@ -321,5 +321,9 @@ the capsule API plus the non-signal save/list/load path.
   return newest-first entries, keep the newest entries when the caller's buffer
   is smaller than the inventory, and parse manifest signal/tape-size summary
   fields.
+- Added the public `postmortem_list` / `postmortem_load` API surface expected by
+  the assignment, backed by the current unpacked capsule reader and summary
+  byte accounting. Existing `postmortem_capsule_*` helpers remain as lower-level
+  compatibility wrappers.
 
 <!-- Worker: append a Completion section below when done. -->

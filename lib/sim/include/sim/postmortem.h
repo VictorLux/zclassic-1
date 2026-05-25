@@ -36,9 +36,23 @@ struct postmortem_capsule_entry {
     size_t tape_size_bytes;
 };
 
+struct postmortem_summary {
+    char path[512];
+    int64_t crash_unix;
+    int crash_signal;
+    size_t capsule_bytes;
+    size_t tape_size_bytes;
+};
+
 int postmortem_capture_write(const struct postmortem_capture_opts *opts,
                              char *capsule_path_out,
                              size_t capsule_path_cap);
+
+int postmortem_list(const char *dir,
+                    struct postmortem_summary *out,
+                    size_t out_cap,
+                    size_t *count_out);
+seed_tape_t *postmortem_load(const char *path);
 
 bool postmortem_capsule_validate(const char *capsule_path);
 seed_tape_t *postmortem_capsule_load_tape(const char *capsule_path);

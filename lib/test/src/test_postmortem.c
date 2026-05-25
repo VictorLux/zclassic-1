@@ -138,6 +138,21 @@ int test_postmortem(void)
              entries[0].crash_signal == 8 &&
              entries[0].tape_size_bytes == seed_tape_size_bytes(tape));
 
+    struct postmortem_summary summaries[2];
+    size_t summary_count = 0;
+    rc = postmortem_list(dir, summaries, 2, &summary_count);
+    PM_CHECK("summary list returns 0", rc == 0);
+    PM_CHECK("summary list mirrors ordering",
+             summary_count == 3 &&
+             summaries[0].crash_unix == 1779665999 &&
+             summaries[1].crash_unix == 1779665123);
+    PM_CHECK("summary includes capsule bytes",
+             summaries[0].capsule_bytes > summaries[0].tape_size_bytes);
+
+    seed_tape_t *loaded_alias = postmortem_load(cap_path_new);
+    PM_CHECK("postmortem_load alias decodes tape", loaded_alias != NULL);
+    if (loaded_alias) seed_tape_close(loaded_alias);
+
     char tape_path[576];
     snprintf(tape_path, sizeof(tape_path), "%s/tape.bin", cap_path);
     int fd = open(tape_path, O_RDWR);

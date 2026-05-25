@@ -107,6 +107,27 @@ static int64_t parse_capsule_time(const char *name)
     return (int64_t)v;
 }
 
+static size_t capsule_regular_bytes(const char *path)
+{
+    if (!path) return 0;
+    DIR *d = opendir(path);
+    if (!d) return 0;
+    size_t total = 0;
+    struct dirent *de;
+    while ((de = readdir(d)) != NULL) {
+        if (strcmp(de->d_name, ".") == 0 || strcmp(de->d_name, "..") == 0)
+            continue;
+        char child[576];
+        int n = snprintf(child, sizeof(child), "%s/%s", path, de->d_name);
+        if (n < 0 || (size_t)n >= sizeof(child)) continue;
+        struct stat st;
+        if (stat(child, &st) == 0 && S_ISREG(st.st_mode) && st.st_size > 0)
+            total += (size_t)st.st_size;
+    }
+    closedir(d);
+    return total;
+}
+
 static int entry_newer(const struct postmortem_capsule_entry *a,
                        const struct postmortem_capsule_entry *b)
 {
@@ -354,6 +375,45 @@ bool postmortem_capsule_validate(const char *capsule_path)
     if (!t) return false;
     seed_tape_close(t);
     return true;
+}
+
+int postmortem_list(const char *dir,
+                    struct postmortem_summary *out,
+                    size_t out_cap,
+                    size_t *count_out)
+{
+    if (!count_out || (out_cap > 0 && !out)) return -EINVAL;
+    *count_out = 0;
+
+    struct postmortem_capsule_entry *entries = NULL;
+    if (out_cap > 0) {
+        entries = (struct postmortem_capsule_entry *)
+            zcl_malloc(sizeof(entries[0]) * out_cap, "postmortem.list");
+        if (!entries) return -ENOMEM;
+    }
+
+    int rc = postmortem_capsule_list(dir, entries, out_cap, count_out);
+    if (rc != 0) {
+        free(entries);
+        return rc;
+    }
+
+    size_t filled = *count_out < out_cap ? *count_out : out_cap;
+    for (size_t i = 0; i < filled; i++) {
+        memset(&out[i], 0, sizeof(out[i]));
+        snprintf(out[i].path, sizeof(out[i].path), "%s", entries[i].path);
+        out[i].crash_unix = entries[i].crash_unix;
+        out[i].crash_signal = entries[i].crash_signal;
+        out[i].tape_size_bytes = entries[i].tape_size_bytes;
+        out[i].capsule_bytes = capsule_regular_bytes(entries[i].path);
+    }
+    free(entries);
+    return 0;
+}
+
+seed_tape_t *postmortem_load(const char *path)
+{
+    return postmortem_capsule_load_tape(path);
 }
 
 int postmortem_capsule_list(const char *dir,
