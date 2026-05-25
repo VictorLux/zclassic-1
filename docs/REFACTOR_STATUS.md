@@ -19,7 +19,7 @@ Honest scoreboard. **MEASURED** = a real number from this box (date + how, in
 > (the typed blocker registry = "what's blocking"). No-MCP fallback: `tools/zcl-rpc`.
 > Snapshot below is from
 > 2026-05-25 07:08Z. **The cure is written; the patient still runs the disease**
-> — all 3 wedge fixes are merged on origin/main but NOT deployed, so the live
+> — all 3 halt fixes are merged on origin/main but NOT deployed, so the live
 > node is unchanged from when it broke. Numbers prefixed `code:` = fixed in the
 > tree; `live:` = what the running node actually shows right now.
 
@@ -28,18 +28,18 @@ Honest scoreboard. **MEASURED** = a real number from this box (date + how, in
      Cold sync to tip          180s  (05-24)       30s           ▸ PR-3 building
      Warm restart              37.7s (05-24)       10s           ▸ real restart→tip
      Validation speed          108 blk/s (05-24)   fast          ◷ measured; tip frozen now
-     Stay at tip               WEDGED ~18 behind   keep <1 blk    ✗ BIP30 self-write recurs at tip; real fix queued
+     Stay at tip               HALTED ~18 behind   keep <1 blk    ✗ BIP30 self-write recurs at tip; real fix queued
 
   🪶 LEAN
      Memory (RSS)              2.13 GB (live)*     1.0 GB        ▲ climbs w/ bg-verify
      Binary size               15.4 MB (05-24)     stay slim     ✓ met (docs' 26MB stale)
 
   💪 UNBREAKABLE  ← resilience is a PROMISE, measured by truth not by "result=ok"
-     Tip advancing             NO — re-wedges/blk  always         ✗ connect_block rejects own coinbase (BIP30 self-write)
+     Tip advancing             NO — re-halts/blk  always         ✗ connect_block rejects own coinbase (BIP30 self-write)
      Self-heal tells the truth code: gated (47bdbc211) 0 false-ok ◑ fixed in tree · live still lies
-     Wedge/crash recovery      180s, manual        <60s, auto    ◑ resnapshot path landed (8e25887b0); BIP30 fix + live timing pending
-     Uptime before failure     wedged ~5h, 12 restarts 30 days    ✗ restart loop went quiet — now silently stuck
-     Alerts to a human         code: 18 Conditions  0 / month     ◑ 18 self-heal Conditions in tree · live node still pages nobody
+     Halt/crash recovery      180s, manual        <60s, auto    ◑ resnapshot path landed (8e25887b0); BIP30 fix + live timing pending
+     Uptime before failure     halted ~5h, 12 restarts 30 days    ✗ restart loop went quiet — now silently stuck
+     Alerts to a human         code: 19 Conditions  0 / month     ◑ 19 self-heal Conditions in tree · live node still pages nobody
 
   🔬 HONEST
      Live truth from service   zcl_status (C)      always true    ◑ build-commit + dominant-blocker → surface in zcl_status
@@ -47,25 +47,25 @@ Honest scoreboard. **MEASURED** = a real number from this box (date + how, in
 ```
 `*` RSS soak (05-24): fresh boot 1.53 GB → **stair-steps up with bg-validation
 depth** → ~2.4 GB by 17min (only 6.6% validated), still creeping. Live now reads
-2.13 GB at ~5h wedged. NOT bounded at a low plateau — tracks how much chain
+2.13 GB at ~5h halted. NOT bounded at a low plateau — tracks how much chain
 bg-verify has buffered. >2× the 1 GB target; real ceiling needs the full ~8h
 run. `✓` met · `▸` in flight · `◷` measuring · `◑` fixed-in-code-not-deployed ·
 `▲` above target · `✗` BROKEN/regressed.
 
-### 🚨 P0 — the live node is WEDGED on a stale-coins BIP30 false-positive (root-caused 2026-05-25)
+### 🚨 P0 — the live node is HALTED on a stale-coins BIP30 false-positive (root-caused 2026-05-25)
 
-**Earlier diagnosis was WRONG and is corrected here.** The wedge is *not* a
+**Earlier diagnosis was WRONG and is corrected here.** The halt is *not* a
 cutover consensus divergence. The cutover (C-3, `ad34efb65`) was only the
 **trigger**: it flapped the chain, `chain_tip_watchdog` kill-9'd the node 12×
 (`NRestarts=12`), and one of those kills hit the at-tip ordering hazard
 ([[feedback_at_tip_kill9_ordering_invariant]] — coins.db commits before the
 block_index fsync). That left a **torn coins state** that is now the active,
-standalone wedge:
+standalone halt:
 
 **Root cause — PROVEN, deeper than first thought (2026-05-25):** the node freezes
 ~1 block below the tip with `connect_block FAILED: bad-txns-BIP30`, **and it
 recurs at every tip advance.** A cold-import from the good local `zclassicd`
-closed the 536-block gap but the wedge just **moved** 3,123,689 → 3,124,225.
+closed the 536-block gap but the halt just **moved** 3,123,689 → 3,124,225.
 Live `node.db`:
 ```
 chain tip          = 3,124,224
@@ -79,11 +79,11 @@ the node's own coinbase as a consensus violation. **Post-BIP34 (coinbase txids
 are height-unique), BIP30 can NEVER legitimately fire at these heights — so this
 is ALWAYS a false positive on stale local data, never a real duplicate.**
 
-**The symptom-chasers only move the wedge:**
+**The symptom-chasers only move the halt:**
 | Attempt | Commit | Result |
 |---|---|---|
-| boot single-block rewind | `dbf4845a1` | clears one row on boot; tip re-wedges at the next block |
-| cold-import from zclassicd | (manual) | closed 536-blk gap, wedge moved 3,123,689 → 3,124,225 |
+| boot single-block rewind | `dbf4845a1` | clears one row on boot; tip re-halts at the next block |
+| cold-import from zclassicd | (manual) | closed 536-blk gap, halt moved 3,123,689 → 3,124,225 |
 | cutover→shadow / restart-cap / self-heal-witness | `6e0f6a82c` `82ec4e11f` `47bdbc211` | fix the trigger/loop/lie; do NOT cure the BIP30 false-positive |
 
 **The cure (new P0 assignment):**
@@ -109,14 +109,14 @@ These three are now first-class promises under UNBREAKABLE/HONEST above.
 ### Who's moving what right now
 
 **Next agent start (2026-05-25):** prior round (bip30 boot-rewind, cutover guard)
-shipped but the wedge persists — root cause is deeper (see P0). Fresh assignments:
+shipped but the halt persists — root cause is deeper (see P0). Fresh assignments:
 
 | Work | Goal | Who |
 |---|---|---|
 | 🔴 connect_block BIP30 self-write fix (THE disease) | Tip advancing | **wt2 (in progress)** |
 | 🆕 `make bench` harness (5 primaries + regression gate) | ALL perf (measure first) | **READY → wt3** |
 | Consolidate recovery sprawl (DRY 3 rewinds, purge band-aids) | Lean, uptime | QUEUED behind P0 |
-| Cutover C-5→C-9 authoritative | Cold sync, validation | UNWEDGE-gated (see P0) |
+| Cutover C-5→C-9 authoritative | Cold sync, validation | UNHALT-gated (see P0) |
 | 4e bodies-into-log | Warm restart, recovery | unclaimed |
 | chain_advance + legacy_mirror / utxo_recovery dissolve | Memory, uptime | gated on cutover |
 
@@ -132,12 +132,12 @@ Phase 2  [██████████] 100%   Wave S SHADOW complete (S-1..S-
   ├ S-8    [██████████] 100%   utxo_apply shadow (wt3)                ✅ 497220f58
   └ S-9    [██████████] 100%   tip_finalize shadow (wt3)              ✅ 1a65b33c7
 Phase 2 CUTOVER [█░░░░░░░░░]  ~8%   Flip shadow → authoritative   ⚠ REVERTED — 0/7 stages authoritative in prod
-  ├ UNWEDGE FIRST [░░░░░░░░░░] 0%  live node wedged on BIP30 stale-coins (see P0) — fix that before ANY re-flip
+  ├ UNHALT FIRST [░░░░░░░░░░] 0%  live node halted on BIP30 stale-coins (see P0) — fix that before ANY re-flip
   ├ SAFE-FLIP GUARD [░░░░░░░░] 0%  build the auto-revert-on-no-forward-progress Condition + follow the
   │                                protocol BEFORE re-flipping — work/cutover-safety-protocol.md. Without it,
-  │                                the next flip can silently wedge the chain again (exactly what C-3 did).
+  │                                the next flip can silently halt the chain again (exactly what C-3 did).
   ├ C-2    [███████░░░] flipped, then REVERTED   header_admit: flip f3f0c6c4e → set back to SHADOW 6e0f6a82c
-  ├ C-3    [███████░░░] flipped, WEDGED, REVERTED validate_headers: flip ad34efb65 → froze chain → SHADOW 6e0f6a82c
+  ├ C-3    [███████░░░] flipped, HALTED, REVERTED validate_headers: flip ad34efb65 → froze chain → SHADOW 6e0f6a82c
   ├ C-3del [░░░░░░░░░░]   0%   delete legacy validate_headers fallback ← gated on root-cause + clean re-flip
   ├ C-5    [░░░░░░░░░░]   0%   body_persist + delete body_fetch  ← gated on root-cause + clean re-flip
   ├ C-6    [░░░░░░░░░░]   0%   script_validate authoritative (batch spec, post C-5)
@@ -146,7 +146,7 @@ Phase 2 CUTOVER [█░░░░░░░░░]  ~8%   Flip shadow → authorit
   └ C-9    [░░░░░░░░░░]   0%   tip_finalize authoritative (batch spec, post C-8 — gates chain_advance dissolve)
   NOTE: shadow stages (Phase 2 SHADOW, 100%) all run + match in shadow. The CUTOVER is the act of
         trusting them as authoritative. C-2/C-3 proved the flip mechanism works, but the live node is
-        wedged on a SEPARATE bug (BIP30 stale coins, see P0) — unwedge first, then re-flip on a clean node.
+        halted on a SEPARATE bug (BIP30 stale coins, see P0) — unhalt first, then re-flip on a clean node.
 Phase 3  [███████░░░]  70%   Dissolve mega-modules                    ← partial
   ├ watchdog [██████████] 100%   sync_watchdog_service.c DELETED      ✅ 611631541
   ├ supervisor tree split [██████████] 100%   7 domain supervisors    ✅ dae31dee9
@@ -201,7 +201,7 @@ re-quote them here; they rot. Add a row to the ledger instead.
 | Lint gates active | 20 (1 FAIL'd in P1) | 21 | +1 by Phase 3 (gate #20→FAIL) |
 | Raw clock/RNG callers | **0** | 0 | ✅ Phase 1c (was 443) |
 | Mailbox prod callers | 1 | many | ✅ Phase 1a (header_admit), more in Phase 3 |
-| Conditions registered | 18 | ~15 | UTXO drift audit flag now escalates through condition engine |
+| Conditions registered | 19 | ~15 | `chain_stalled_with_data` retired; activation-no-progress routes through `legacy_mirror_stuck` |
 
 > User-facing numbers (MTBF/RSS/cold/warm/kill-9/pages) intentionally NOT
 > tabled here — they rot. Live values: scoreboard at top + `BENCHMARKS_LOG.md`.
@@ -224,19 +224,19 @@ re-quote them here; they rot. Add a row to the ledger instead.
 
 ## In flight (worktrees)
 
-**Workers LIVE (2026-05-25):** wt2 → BIP30 stale-coins unwedge (`ed799dd4a`),
+**Workers LIVE (2026-05-25):** wt2 → BIP30 stale-coins unhalt (`ed799dd4a`),
 wt3 → cutover safety guard (`f711ac7b0`) — the two critical-path items.
 Orchestrator on `main` queues + curates; workers push direct to main.
 (Housekeeping: 6 orphaned dead-session sub-agent worktrees pruned; 3 live ones
 remain under `.claude/worktrees/agent-*`.)
 
-**The Phase 2 cutover critical path is UNWEDGE-BLOCKED, not soak-gated.** C-2/C-3
-went authoritative, the chain wedged, and `6e0f6a82c` reverted both stages to
+**The Phase 2 cutover critical path is UNHALT-BLOCKED, not soak-gated.** C-2/C-3
+went authoritative, the chain halted, and `6e0f6a82c` reverted both stages to
 shadow. The live node is now frozen on a SEPARATE bug — BIP30 stale coins (see
 P0), not a header divergence. No further flip (C-3del, C-5..C-9) should proceed
-until (1) the live node is unwedged, and (2) a clean re-flip confirms the
+until (1) the live node is unhalted, and (2) a clean re-flip confirms the
 authoritative header path actually matches legacy past the cutover height. A
-freed worker should take the BIP30 unwedge or pull **independent** work from
+freed worker should take the BIP30 unhalt or pull **independent** work from
 "Claimable NOW" below.
 
 ---
@@ -255,20 +255,20 @@ chain_restore PR-2b repair extract ✅ (5042fde7b) ·
 chain_restore service implementation delete ✅ (89892c441) ·
 chain_restore compatibility header delete ✅ (8658ef0d2) ·
 utxo_recovery PR-1 reimport-flag primitive ✅ (af7ba7a30) · header_probe
-dissolve ✅ (981ad4897..1b0847820) · snapshot wedge recovery ✅
+dissolve ✅ (981ad4897..1b0847820) · snapshot halt recovery ✅
 (4d7f7adee..8e25887b0) · small projections 4d-5 ✅
 (0f10cd5f4..2f23d8352) · postmortem capsules ✅
 (720906bf4..89fabc360) · chaos simulator harness ✅
 (ca74cb4c2..6fb76f2b0).
 
 ### Claimable NOW (no soak gate, fully independent)
-0. 🔴 **[`wt-connect-bip30-selfwrite.md`](./work/wt-connect-bip30-selfwrite.md) — P0, THE disease: BIP30 self-write wedge.** PROVEN root cause of "always stuck": the UTXO set ends up 1 block ahead of the tip, and `connect_block` rejects the block's OWN coinbase as a BIP30 duplicate (impossible post-BIP34 → always a false positive). Recurs at every tip advance; boot-rewind + cold-import only move it. Fix: (1) connect_block tolerates a same-height self-coinbase; (2) write-ordering so coins never commits ahead of the block-index tip. Acceptance = sustained LIVE forward progress. Deploy gated on Rhett.
+0. 🔴 **[`wt-connect-bip30-selfwrite.md`](./work/wt-connect-bip30-selfwrite.md) — P0, THE disease: BIP30 self-write halt.** PROVEN root cause of "always stuck": the UTXO set ends up 1 block ahead of the tip, and `connect_block` rejects the block's OWN coinbase as a BIP30 duplicate (impossible post-BIP34 → always a false positive). Recurs at every tip advance; boot-rewind + cold-import only move it. Fix: (1) connect_block tolerates a same-height self-coinbase; (2) write-ordering so coins never commits ahead of the block-index tip. Acceptance = sustained LIVE forward progress. Deploy gated on Rhett.
 1. 🆕 **[`wt-bench-harness.md`](./work/wt-bench-harness.md) — READY for wt3, fully independent of P0.** `make bench`: the 5 primaries + `bench-history.csv` + a >20% regression gate. We've quoted perf numbers from ad-hoc runs with no harness — this is the "high-performance" foundation (can't optimize what you can't measure). Isolated datadir/ports, touches no C source wt2 edits. Build now; full to-tip baselines follow the P0 fix.
    - (perf track [`wt-perf-integrate-rebuild.md`](./work/wt-perf-integrate-rebuild.md) is CLOSED: PR-1 HW-CRC ✅, PR-3 parallel scan ✅ but cold-import bypasses it; PR-2 io_uring deferred. Don't re-claim.)
 2. 🛡️ [`cutover-safety-protocol.md`](./work/cutover-safety-protocol.md) — auto-revert-on-no-forward-progress Condition (wt3 already shipped the core, `230d9b896`). REQUIRED before any C-* re-flip.
 3. More self-heal Conditions — chain_restore/header_probe dissolved (✅); remaining mega-module plans in [`docs/dissolve/`](./dissolve/).
 
-> **Sequencing:** #0 (stop wedging) is the gate on everything — a high-performance
+> **Sequencing:** #0 (stop halting) is the gate on everything — a high-performance
 > node that's always stuck is worthless. #1 (perf) runs in parallel; it touches
 > the cold-import scan, not the connect path, so no conflict with #0.
 
@@ -279,7 +279,7 @@ copy-pasted in 3 files (→ 1 helper); 17 tip/stall conditions (→ ~10 after th
 fix makes the BIP30 band-aids dead); LEGACY_LIFECYCLE doc-vs-reality drift. Net
 LOC down. Gated so it can't collide with the live root-cause work.
 
-### Re-flip-gated (read the spec now; start AFTER unwedge + safe-flip guard + a clean C-3 re-flip — there is no soak running, C-3 is reverted)
+### Re-flip-gated (read the spec now; start AFTER unhalt + safe-flip guard + a clean C-3 re-flip — there is no soak running, C-3 is reverted)
 - [`wt-phase2-cutover-c3-final-delete.md`](./work/wt-phase2-cutover-c3-final-delete.md) — delete the legacy validate_headers fallback.
 - [`wt-phase2-cutover-c5-body-persist.md`](./work/wt-phase2-cutover-c5-body-persist.md) — body_persist authoritative + DELETE body_fetch. Then C-6→C-9 in sequence per [`wt-phase2-cutover-c3-through-c9.md`](./work/wt-phase2-cutover-c3-through-c9.md) (each + its own soak).
 - [`wt-phase4e-block-body-migration.md`](./work/wt-phase4e-block-body-migration.md) — block bodies into the log; gated on the 4c-cutover soak. Last Phase 4 PR. Phase 8 compaction follows ([`phase8-log-compaction-and-retention.md`](./architecture/phase8-log-compaction-and-retention.md)).
@@ -289,15 +289,15 @@ LOC down. Gated so it can't collide with the live root-cause work.
 
 ### Critical path to 100%
 ```
-UNWEDGE (BIP30) ─► SAFE-FLIP GUARD ─► re-flip C-3 ─► C-3del/C-5 ─► C-6 ─► C-7 ─► C-8 ─► C-9
+UNHALT (BIP30) ─► SAFE-FLIP GUARD ─► re-flip C-3 ─► C-3del/C-5 ─► C-6 ─► C-7 ─► C-8 ─► C-9
   (live P0)         (Condition)        (canary)       │  (each: canary + clean soak)        │
                                                       └─► dissolve utxo_recovery (P3, post C-8)
                                                                   C-9 ─► dissolve chain_advance + legacy_mirror (P3)
 4c ✅ ─► 4e (bodies in log) ─► Phase 8 (log self-bounding)
 ```
-C-3 is REVERTED (not ✅) — the chain must be unwedged and the safe-flip guard in
+C-3 is REVERTED (not ✅) — the chain must be unhalted and the safe-flip guard in
 place before any re-flip. Everything in "Claimable NOW" runs in parallel; the
-two top items (unwedge, safe-flip guard) ARE the critical path now.
+two top items (unhalt, safe-flip guard) ARE the critical path now.
 
 ---
 
@@ -307,7 +307,7 @@ two top items (unwedge, safe-flip guard) ARE the critical path now.
 |---|---|---|---|
 | 2026-05-25 | **Phase 6 COMPLETE** — postmortem capsules and chaos simulator harness shipped; `make chaos` is now the standing reproducibility gate | wt2 → main | 720906bf4..89fabc360, ca74cb4c2..6fb76f2b0 |
 | 2026-05-25 | **Phase 4d-5 small projections COMPLETE** — contacts, onion announcements, and HODL history shadow projections with event payloads, boot wiring, diagnostics, and diff tools | wt2 → main | 0f10cd5f4..2f23d8352 |
-| 2026-05-25 | **Snapshot wedge recovery COMPLETE** — runtime recovery request path, local manifest builder, `tip_wedged_resnapshot` condition, verification gates, and recovery observability | wt3 → main | 4d7f7adee..8e25887b0 |
+| 2026-05-25 | **Snapshot halt recovery COMPLETE** — runtime recovery request path, local manifest builder, `tip_wedged_resnapshot` condition, verification gates, and recovery observability | wt3 → main | 4d7f7adee..8e25887b0 |
 | 2026-05-25 | **Phase 3 chain_restore dissolve COMPLETE** — service implementation and compatibility header deleted; focused planner/executor/repair/boot modules own restore | main | 89892c441, 8658ef0d2 |
 | 2026-05-25 | **Phase 3 header_probe dissolve COMPLETE** — PR-2 shrink to 392 LOC, legacy header RPC helper extracted, old `header_probe_service.{h,c}` deleted/renamed to `header_probe.{h,c}` | wt3 → main | 981ad4897, d17eb5ca0 |
 | 2026-05-24 | **Phase 4d-3 wallet projection COMPLETE** — public-only wallet projection, diff RPC/MCP tool, diagnostics, replay edge coverage, secret/payload audit, and live fresh-node `match:true` diff evidence | wt2 → main | 12284eb3e, 5626552cb |

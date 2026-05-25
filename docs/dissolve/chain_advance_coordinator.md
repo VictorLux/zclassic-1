@@ -101,11 +101,11 @@ in flight via the `sync_watchdog_service.c` dissolve:
 
 | CAC predicate | Becomes |
 |---|---|
-| `mirror_repair_allowed` | `condition: chain_stalled_with_data` (already Phase 0) |
+| `mirror_repair_allowed` | `condition: legacy_mirror_stuck` |
 | `peer_floor_recovery_needed` | `condition: peer_floor_violated` (Phase 3 PR-3) |
 | `local_header_refill_needed` | `condition: local_header_refill_needed` (Phase 3 PR-2) |
 | `snapshot_offer_allowed` | NEW `condition: snapshot_offer_ready` — fires when peer offers a fresh snapshot and `local_tip < snapshot_height - 1000` |
-| `force_mirror_promotion` | DELETE — was an escape hatch for the wedges Phase 0 conditions now auto-heal |
+| `force_mirror_promotion` | DELETE — was an escape hatch for the halts Phase 0 conditions now auto-heal |
 
 ### Replacement D — `chain_advance_coordinator_plan` → Saga driver
 
@@ -174,14 +174,11 @@ Replaced by:
 
 ## Risk + mitigations
 
-- **`force_mirror_promotion` is load-bearing for the existing wedge
-  recovery path.** Mitigation: the Phase 0 condition
-  `chain_stalled_with_data` already calls
-  `chain_advance_coordinator_force_mirror_promotion` as its remedy.
-  After Wave S cutover, the underlying cause (no advance + have data)
-  is owned by `block_failed_mask_at_tip` extended condition (PR-1 of
-  watchdog dissolve), and force_mirror_promotion has nothing to
-  promote — it's safe to delete.
+- **`force_mirror_promotion` was load-bearing for the old halt
+  recovery path.** The remaining activation-no-progress mirror symptom is
+  owned by `legacy_mirror_stuck`; stale-tip-with-data is owned by
+  `block_failed_mask_at_tip`. After Wave S cutover, force_mirror_promotion has
+  nothing distinct to promote — it's safe to delete.
 - **Diagnostics regression.** Several MCP tools (`zcl_state
   subsystem=chain_advance_coordinator`, `zcl_admin`) read CAC's
   dump_state. Mitigation: PR-5 moves the relevant fields into the

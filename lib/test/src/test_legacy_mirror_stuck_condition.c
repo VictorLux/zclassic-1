@@ -3,9 +3,7 @@
 #include "test/test_helpers.h"
 
 #include "framework/condition.h"
-#include "platform/time_compat.h"
 #include "services/legacy_mirror_sync_service.h"
-#include "validation/mirror_consensus.h"
 
 #include <string.h>
 
@@ -18,10 +16,6 @@
 void register_legacy_mirror_stuck(void);
 void legacy_mirror_stuck_test_reset(void);
 int legacy_mirror_stuck_test_remedy_calls(void);
-void chain_stalled_with_data_test_reset(void);
-void chain_stalled_with_data_test_seed_tip(int64_t tip,
-                                           int64_t last_change_unix);
-bool chain_stalled_with_data_test_detect(void);
 
 static void reset_lmsc(void)
 {
@@ -129,53 +123,6 @@ int test_legacy_mirror_stuck_condition(void)
         ok = ok && legacy_mirror_sync_test_catchup_calls() == 0;
         ok = ok && condition_engine_get_active_count() == 0;
         LMSC_CHECK("unreachable mirror does not request catchup", ok);
-    }
-
-    {
-        reset_lmsc();
-        chain_stalled_with_data_test_reset();
-        struct legacy_mirror_sync_stats s;
-        memset(&s, 0, sizeof(s));
-        s.enabled = true;
-        s.running = true;
-        s.reachable = true;
-        s.local_height = -1;
-        s.legacy_height = -1;
-        s.legacy_headers = -1;
-        snprintf(s.last_error, sizeof(s.last_error), "%s",
-                 "body data available but activation did not advance; "
-                 "native_failed_mask_revalidation_required");
-        legacy_mirror_sync_test_set_stats(&s, NULL);
-        mirror_consensus_record_blocker("activation-no-progress");
-        chain_stalled_with_data_test_seed_tip(
-            7, platform_time_wall_unix() - 61);
-
-        bool ok = !chain_stalled_with_data_test_detect();
-        LMSC_CHECK("at-tip stale activation error does not detect", ok);
-        mirror_consensus_reset_for_test();
-        chain_stalled_with_data_test_reset();
-    }
-
-    {
-        reset_lmsc();
-        chain_stalled_with_data_test_reset();
-        struct legacy_mirror_sync_stats s;
-        memset(&s, 0, sizeof(s));
-        s.enabled = true;
-        s.running = true;
-        s.reachable = true;
-        s.local_height = 7;
-        s.legacy_height = 9;
-        s.legacy_headers = 9;
-        legacy_mirror_sync_test_set_stats(&s, NULL);
-        mirror_consensus_record_blocker("activation-no-progress");
-        chain_stalled_with_data_test_seed_tip(
-            7, platform_time_wall_unix() - 61);
-
-        bool ok = chain_stalled_with_data_test_detect();
-        LMSC_CHECK("behind-tip activation blocker still detects", ok);
-        mirror_consensus_reset_for_test();
-        chain_stalled_with_data_test_reset();
     }
 
     reset_lmsc();

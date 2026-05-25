@@ -57,7 +57,7 @@ Domain supervisors:
 
 Owns:
 - All 9 Wave S stages (S-1..S-9) — both shadow and authoritative
-- `block_failed_mask_at_tip`, `chain_stalled_with_data`,
+- `block_failed_mask_at_tip`, `legacy_mirror_stuck`,
   `contradiction_frozen` conditions
 - `chain_evidence_controller` ticker
 - After Phase 3: every condition extracted from sync_watchdog (all 8)

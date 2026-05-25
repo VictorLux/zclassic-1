@@ -21,14 +21,22 @@ bulk-copies block index + chainstate for empty datadirs, `-fastimport` walks
 legacy block payloads through `process_new_block`, and `-legacy-attach` snapshots
 a running legacy node and stamps Wave S cursors. No safe collapse target found.
 
-Task B audit in progress: current registry has 20 conditions (the original
+Task B audit complete: current registry had 20 conditions before this reduction
+(the original
 17-count inventory predated later snapshot/cutover additions). The called-out
 tip/stall conditions still have distinct triggers; first cleanup narrowed
 `chain_stalled_with_data` to the canonical mirror `activation-no-progress`
 blocker instead of stale `last_error` text.
 
-> Why queued, not now: days of whack-a-mole accreted overlapping wedge-recovery
-> paths. Most exist only because `connect_block` kept false-wedging. Fix the cause
+Task B reduction complete in wt3: `chain_stalled_with_data` is retired from the
+registered set because its remaining activation-no-progress trigger is the same
+mirror stuck-height symptom handled by `legacy_mirror_stuck`. Condition count is
+20 → 19 without deleting `block_failed_mask_at_tip`, `tip_wedged_resnapshot`,
+`contradiction_frozen`, or `sync_state_stuck`, which still cover distinct
+reachable failures.
+
+> Why queued, not now: days of whack-a-mole accreted overlapping halt-recovery
+> paths. Most exist only because `connect_block` kept false-halting. Fix the cause
 > first; then a lot of this is provably dead and safe to delete.
 
 ## Research inventory (2026-05-25, read-only survey)
@@ -47,8 +55,8 @@ in three places**:
 call it from all three. One bounded-guard implementation, one test. ~150 LOC net
 deletion expected.
 
-### B. Wedge/stall Conditions — re-evaluate after the root fix (17 today)
-Many tip/stall conditions are safety nets for the BIP30 false-wedge the root fix
+### B. Halt/stall Conditions — re-evaluate after the root fix (17 today)
+Many tip/stall conditions are safety nets for the BIP30 false-halt the root fix
 removes. After it lands, audit each for "does this still fire on a healthy node?":
 candidates to retire or merge — `block_failed_mask_at_tip`,
 `tip_wedged_resnapshot`, `chain_stalled_with_data`, `contradiction_frozen`,

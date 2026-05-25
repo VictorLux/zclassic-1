@@ -273,7 +273,6 @@ int test_condition_engine(void)
         static const char *expected[] = {
             "block_failed_mask_at_tip",
             "contradiction_frozen",
-            "chain_stalled_with_data",
             "chain_integrity_failed",
             "utxo_activation_paused",
             "utxo_drift_detected",
