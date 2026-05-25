@@ -42,7 +42,6 @@ struct header_probe_config {
     int         rpc_port;       /* default 8232 */
     const char *rpc_user;       /* read zclassic.conf if NULL */
     const char *rpc_password;
-    int         cadence_secs;   /* legacy config field; scheduling is owned by header_probe_poll */
     int         batch_size;     /* default 2000; max 5000 */
     int         lag_threshold;  /* only probe when our_tip < their_tip - this; default 100 */
 };

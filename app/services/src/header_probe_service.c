@@ -45,7 +45,6 @@
 
 #define HP_DEFAULT_HOST          "127.0.0.1"
 #define HP_DEFAULT_PORT          8232
-#define HP_DEFAULT_CADENCE       30
 #define HP_DEFAULT_BATCH         2000
 #define HP_DEFAULT_LAG           100
 #define HP_MAX_BATCH             5000
@@ -69,7 +68,6 @@ static struct {
     int    rpc_port;
     char   rpc_user[64];
     char   rpc_password[128];
-    int    cadence_secs;
     int    batch_size;
     int    lag_threshold;
     struct main_state *ms;
@@ -654,8 +652,6 @@ bool header_probe_init(const struct header_probe_config *cfg,
              (cfg && cfg->rpc_host) ? cfg->rpc_host : HP_DEFAULT_HOST);
     g_hp.rpc_port = (cfg && cfg->rpc_port > 0)
                         ? cfg->rpc_port : HP_DEFAULT_PORT;
-    g_hp.cadence_secs = (cfg && cfg->cadence_secs > 0)
-                        ? cfg->cadence_secs : HP_DEFAULT_CADENCE;
     g_hp.batch_size = (cfg && cfg->batch_size > 0)
                         ? cfg->batch_size : HP_DEFAULT_BATCH;
     if (g_hp.batch_size > HP_MAX_BATCH) g_hp.batch_size = HP_MAX_BATCH;
@@ -720,7 +716,6 @@ void header_probe_reset_for_test(void)
     g_hp.rpc_port = 0;
     g_hp.rpc_user[0] = '\0';
     g_hp.rpc_password[0] = '\0';
-    g_hp.cadence_secs = 0;
     g_hp.batch_size = 0;
     g_hp.lag_threshold = 0;
     g_hp.ms = NULL;
@@ -744,7 +739,6 @@ bool header_probe_dump_state_json(struct json_value *out, const char *key)
     header_probe_stats_snapshot(&s);
 
     pthread_mutex_lock(&g_hp.lock);
-    int cad        = g_hp.cadence_secs;
     int batch      = g_hp.batch_size;
     int lag        = g_hp.lag_threshold;
     int port       = g_hp.rpc_port;
@@ -761,7 +755,6 @@ bool header_probe_dump_state_json(struct json_value *out, const char *key)
     json_push_kv_int (out, "rpc_port",           port);
     json_push_kv_bool(out, "have_user",          have_user);
     json_push_kv_bool(out, "have_password",      have_pass);
-    json_push_kv_int (out, "cadence_secs",       cad);
     json_push_kv_int (out, "batch_size",         batch);
     json_push_kv_int (out, "lag_threshold",      lag);
     json_push_kv_int (out, "calls_total",        s.calls_total);

@@ -308,7 +308,6 @@ int test_header_probe_service(void)
             .rpc_port = srv.port,
             .rpc_user = "u",
             .rpc_password = "p",
-            .cadence_secs = 60,
             .batch_size = 5,
             .lag_threshold = 1,
         };
@@ -344,7 +343,6 @@ int test_header_probe_service(void)
             .rpc_host = "127.0.0.1",
             .rpc_port = srv.port,
             .rpc_user = "u", .rpc_password = "p",
-            .cadence_secs = 60,
             .batch_size = 3,
             .lag_threshold = 1,
         };
@@ -378,7 +376,6 @@ int test_header_probe_service(void)
             .rpc_host = "127.0.0.1",
             .rpc_port = dead_port,
             .rpc_user = "u", .rpc_password = "p",
-            .cadence_secs = 60,
             .batch_size = 5,
             .lag_threshold = 1,
         };
@@ -410,7 +407,6 @@ int test_header_probe_service(void)
             .rpc_host = "127.0.0.1",
             .rpc_port = srv.port,
             .rpc_user = "u", .rpc_password = "p",
-            .cadence_secs = 1,
             .batch_size = 5,
             .lag_threshold = 100,
         };

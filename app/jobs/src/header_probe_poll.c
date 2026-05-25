@@ -12,8 +12,7 @@
 #include <stdint.h>
 #include <stdio.h>
 
-/* Cadence: 30 s matches the legacy `HP_DEFAULT_CADENCE` in the
- * service. Same value the heartbeat-driven path used. */
+/* Cadence: 30 s preserves the heartbeat-driven path's poll period. */
 #define HEADER_PROBE_POLL_PERIOD_SECS  ((int64_t)30)
 
 static struct liveness_contract        g_contract;
