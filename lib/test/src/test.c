@@ -373,6 +373,13 @@ int main(void)
                failures);
         return failures ? 1 : 0;
     }
+    if (only && strcmp(only, "condition_engine") == 0) {
+        printf("[test] ZCL_TEST_ONLY=condition_engine - running only\n");
+        failures += test_condition_engine();
+        printf("\n=== condition_engine subset complete: %d failure(s) ===\n",
+               failures);
+        return failures ? 1 : 0;
+    }
     if (only && strcmp(only, "watchdog_dissolve_pr2") == 0) {
         printf("[test] ZCL_TEST_ONLY=watchdog_dissolve_pr2 — running only\n");
         failures += test_watchdog_dissolve_pr2();

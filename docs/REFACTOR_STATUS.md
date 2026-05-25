@@ -122,7 +122,7 @@ clause. The table below is the dashboard.
 | Lint gates active | 20 (1 FAIL'd in P1) | 21 | +1 by Phase 3 (gate #20→FAIL) |
 | Raw clock/RNG callers | **0** | 0 | ✅ Phase 1c (was 443) |
 | Mailbox prod callers | 1 | many | ✅ Phase 1a (header_admit), more in Phase 3 |
-| Conditions registered | 14 | ~15 | Phase 2+ adds self-heal conditions |
+| Conditions registered | 16 | ~15 | Phase 2+ self-heal conditions now covered by registry test |
 | MTBF (live node) | 5.5 d | 30 d | Phase 0 + Phase 2 |
 | RSS steady-state | 2.2 GB | 1 GB | Phase 3 |
 | Cold-start | 145 s | 60 s | Phase 2 |
