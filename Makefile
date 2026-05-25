@@ -272,6 +272,7 @@ chaos: zclassic23-chaos
 
 chaos-clean:
 	rm -f zclassic23-chaos
+	rm -rf chaos-output/
 
 # Crash recovery harness: fork zclassic23, SIGKILL at random points,
 # restart, and assert data-integrity invariants. Needs a pre-seeded
