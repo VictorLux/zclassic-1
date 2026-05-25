@@ -357,5 +357,12 @@ the capsule API plus the non-signal save/list/load path.
 - Added restart-path coverage for the production shape: a boot-installed child
   raises `SIGSEGV`, the parent verifies the prior unpacked capsule is visible,
   and a second boot compresses it to `.cap.gz` while preserving replayability.
+- Hardened the fatal-signal crash hook so it no longer calls the general
+  stdio/allocation capsule writer from the signal path. `postmortem_install`
+  now preallocates a fixed tape scratch buffer, and the hook writes the minimal
+  unpacked capsule (`manifest.json`, `tape.bin`, empty log/proc placeholders,
+  and `coremarker.txt`) with raw `mkdir`/`open`/`write`/`close` syscalls before
+  the existing fatal handler re-raises. Remaining work is live production SEGV
+  verification and any follow-up needed from that evidence.
 
 <!-- Worker: append a Completion section below when done. -->

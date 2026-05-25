@@ -20,9 +20,13 @@
 #define POSTMORTEM_LOG_TAIL_MAX (64u * 1024u)
 #define TAR_BLOCK_SIZE 512u
 #define POSTMORTEM_GZ_MEMBER_MAX (4u * 1024u * 1024u)
+#define POSTMORTEM_SIGNAL_TAPE_MAX (1024u * 1024u)
 
 static seed_tape_t *g_postmortem_tape = NULL;
 static char g_postmortem_dir[512];
+static uint8_t *g_postmortem_signal_tape_buf = NULL;
+static size_t g_postmortem_signal_tape_cap = 0;
+static int64_t g_postmortem_install_unix = 0;
 static volatile sig_atomic_t g_postmortem_in_handler = 0;
 
 static int mkdir_if_needed(const char *path)
@@ -488,6 +492,142 @@ static void json_escape_string(const char *in, char *out, size_t out_cap)
     out[w] = '\0';
 }
 
+static ssize_t signal_write_all(int fd, const void *buf, size_t len)
+{
+    const uint8_t *p = (const uint8_t *)buf;
+    size_t off = 0;
+    while (off < len) {
+        ssize_t wrote = write(fd, p + off, len - off);
+        if (wrote < 0 && errno == EINTR)
+            continue;
+        if (wrote <= 0)
+            return -1;
+        off += (size_t)wrote;
+    }
+    return (ssize_t)off;
+}
+
+static size_t signal_cstr_len(const char *s)
+{
+    size_t n = 0;
+    if (!s) return 0;
+    while (s[n]) n++;
+    return n;
+}
+
+static int signal_append_cstr(char *dst, size_t cap, size_t *off,
+                              const char *s)
+{
+    if (!dst || !off || !s || *off >= cap) return -1;
+    size_t n = signal_cstr_len(s);
+    if (n >= cap - *off) return -1;
+    memcpy(dst + *off, s, n);
+    *off += n;
+    dst[*off] = '\0';
+    return 0;
+}
+
+static int signal_append_u64(char *dst, size_t cap, size_t *off,
+                             uint64_t v)
+{
+    char tmp[32];
+    size_t n = 0;
+    if (v == 0) {
+        tmp[n++] = '0';
+    } else {
+        while (v > 0 && n < sizeof(tmp)) {
+            tmp[n++] = (char)('0' + (v % 10u));
+            v /= 10u;
+        }
+    }
+    if (n >= cap - *off) return -1;
+    for (size_t i = 0; i < n; i++)
+        dst[(*off)++] = tmp[n - 1u - i];
+    dst[*off] = '\0';
+    return 0;
+}
+
+static int signal_append_i64(char *dst, size_t cap, size_t *off,
+                             int64_t v)
+{
+    if (v < 0) {
+        if (signal_append_cstr(dst, cap, off, "-") != 0) return -1;
+        uint64_t mag = (uint64_t)(-(v + 1)) + 1u;
+        return signal_append_u64(dst, cap, off, mag);
+    }
+    return signal_append_u64(dst, cap, off, (uint64_t)v);
+}
+
+static int signal_join_path(char *dst, size_t cap,
+                            const char *a, const char *b)
+{
+    size_t off = 0;
+    dst[0] = '\0';
+    if (signal_append_cstr(dst, cap, &off, a) != 0) return -1;
+    if (signal_append_cstr(dst, cap, &off, "/") != 0) return -1;
+    if (signal_append_cstr(dst, cap, &off, b) != 0) return -1;
+    return 0;
+}
+
+static int signal_write_file(const char *path, const void *buf, size_t len)
+{
+    int fd = open(path, O_CREAT | O_WRONLY | O_TRUNC, 0644);
+    if (fd < 0) return -1;
+    int ok = signal_write_all(fd, buf, len) == (ssize_t)len ? 0 : -1;
+    if (close(fd) != 0 && ok == 0) ok = -1;
+    return ok;
+}
+
+static int signal_write_empty_file(const char *path)
+{
+    return signal_write_file(path, "", 0);
+}
+
+static int signal_write_manifest(const char *path, int sig,
+                                 int64_t crash_unix, size_t tape_size)
+{
+    char manifest[512];
+    size_t off = 0;
+    manifest[0] = '\0';
+    if (signal_append_cstr(manifest, sizeof(manifest), &off,
+                           "{\n"
+                           "  \"version\": 1,\n"
+                           "  \"format\": \"unpacked-cap-v1\",\n"
+                           "  \"crash_signal\": ") != 0) return -1;
+    if (signal_append_i64(manifest, sizeof(manifest), &off, sig) != 0)
+        return -1;
+    if (signal_append_cstr(manifest, sizeof(manifest), &off,
+                           ",\n"
+                           "  \"crash_unix\": ") != 0) return -1;
+    if (signal_append_i64(manifest, sizeof(manifest), &off, crash_unix) != 0)
+        return -1;
+    if (signal_append_cstr(manifest, sizeof(manifest), &off,
+                           ",\n"
+                           "  \"reason\": \"fatal-signal\",\n"
+                           "  \"tape_size_bytes\": ") != 0) return -1;
+    if (signal_append_u64(manifest, sizeof(manifest), &off,
+                          (uint64_t)tape_size) != 0) return -1;
+    if (signal_append_cstr(manifest, sizeof(manifest), &off,
+                           "\n}\n") != 0) return -1;
+    return signal_write_file(path, manifest, off);
+}
+
+static int signal_write_coremarker(const char *path, int64_t crash_unix)
+{
+    char marker[256];
+    size_t off = 0;
+    marker[0] = '\0';
+    if (signal_append_cstr(marker, sizeof(marker), &off,
+                           "postmortem capsule captured at ") != 0)
+        return -1;
+    if (signal_append_i64(marker, sizeof(marker), &off, crash_unix) != 0)
+        return -1;
+    if (signal_append_cstr(marker, sizeof(marker), &off,
+                           "; match with corefile near this timestamp\n") != 0)
+        return -1;
+    return signal_write_file(path, marker, off);
+}
+
 int postmortem_capture_write(const struct postmortem_capture_opts *opts,
                              char *capsule_path_out,
                              size_t capsule_path_cap)
@@ -589,20 +729,66 @@ static void postmortem_crash_hook(int sig, siginfo_t *info, void *ucontext,
     (void)ucontext;
     (void)ctx;
     if (g_postmortem_in_handler || !g_postmortem_tape ||
-        g_postmortem_dir[0] == '\0') {
+        g_postmortem_dir[0] == '\0' || !g_postmortem_signal_tape_buf ||
+        g_postmortem_signal_tape_cap == 0) {
         return;
     }
     g_postmortem_in_handler = 1;
-    struct postmortem_capture_opts opts = {
-        .dir = g_postmortem_dir,
-        .tape = g_postmortem_tape,
-        .crash_signal = sig,
-        .crash_unix = 0,
-        .reason = "fatal-signal",
-        .log_path = NULL,
-    };
-    char path[512];
-    (void)postmortem_capture_write(&opts, path, sizeof(path));
+
+    size_t tape_written = 0;
+    if (seed_tape_save_to_memory(g_postmortem_tape,
+                                 g_postmortem_signal_tape_buf,
+                                 g_postmortem_signal_tape_cap,
+                                 &tape_written) != 0 ||
+        tape_written == 0) {
+        g_postmortem_in_handler = 0;
+        return;
+    }
+
+    int64_t crash_unix = g_postmortem_install_unix > 0
+        ? g_postmortem_install_unix
+        : 0;
+    char name[128];
+    size_t off = 0;
+    name[0] = '\0';
+    if (signal_append_i64(name, sizeof(name), &off, crash_unix) != 0 ||
+        signal_append_cstr(name, sizeof(name), &off, "-") != 0 ||
+        signal_append_u64(name, sizeof(name), &off,
+                          (uint64_t)getpid()) != 0 ||
+        signal_append_cstr(name, sizeof(name), &off, ".cap") != 0) {
+        g_postmortem_in_handler = 0;
+        return;
+    }
+
+    char cap_dir[512];
+    if (signal_join_path(cap_dir, sizeof(cap_dir),
+                         g_postmortem_dir, name) != 0) {
+        g_postmortem_in_handler = 0;
+        return;
+    }
+
+    (void)mkdir(g_postmortem_dir, 0755);
+    if (mkdir(cap_dir, 0755) != 0 && errno != EEXIST) {
+        g_postmortem_in_handler = 0;
+        return;
+    }
+
+    char path[576];
+    if (signal_join_path(path, sizeof(path), cap_dir, "tape.bin") != 0 ||
+        signal_write_file(path, g_postmortem_signal_tape_buf,
+                          tape_written) != 0) {
+        g_postmortem_in_handler = 0;
+        return;
+    }
+    if (signal_join_path(path, sizeof(path), cap_dir, "manifest.json") == 0)
+        (void)signal_write_manifest(path, sig, crash_unix, tape_written);
+    if (signal_join_path(path, sizeof(path), cap_dir, "procstatus.txt") == 0)
+        (void)signal_write_empty_file(path);
+    if (signal_join_path(path, sizeof(path), cap_dir, "log.txt") == 0)
+        (void)signal_write_empty_file(path);
+    if (signal_join_path(path, sizeof(path), cap_dir, "coremarker.txt") == 0)
+        (void)signal_write_coremarker(path, crash_unix);
+
     g_postmortem_in_handler = 0;
 }
 
@@ -613,8 +799,18 @@ int postmortem_install(seed_tape_t *tape, const char *dir)
     int rc = mkdir_if_needed(dir);
     if (rc != 0) return rc;
 
+    if (!g_postmortem_signal_tape_buf) {
+        g_postmortem_signal_tape_buf =
+            zcl_malloc(POSTMORTEM_SIGNAL_TAPE_MAX,
+                       "postmortem.signal_tape");
+        if (!g_postmortem_signal_tape_buf)
+            return -ENOMEM;
+        g_postmortem_signal_tape_cap = POSTMORTEM_SIGNAL_TAPE_MAX;
+    }
+
     snprintf(g_postmortem_dir, sizeof(g_postmortem_dir), "%s", dir);
     g_postmortem_tape = tape;
+    g_postmortem_install_unix = clock_now_wall_ms() / 1000;
     g_postmortem_in_handler = 0;
     signal_handler_set_crash_hook(postmortem_crash_hook, NULL);
     if (fatal_signal_handlers_are_default() && signal_handler_install() != 0) {
@@ -629,6 +825,10 @@ void postmortem_uninstall(void)
     signal_handler_clear_crash_hook();
     g_postmortem_tape = NULL;
     g_postmortem_dir[0] = '\0';
+    free(g_postmortem_signal_tape_buf);
+    g_postmortem_signal_tape_buf = NULL;
+    g_postmortem_signal_tape_cap = 0;
+    g_postmortem_install_unix = 0;
     g_postmortem_in_handler = 0;
 }
 
