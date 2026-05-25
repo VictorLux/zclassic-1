@@ -130,6 +130,9 @@ Verification:
   `make app/services/src/legacy_bootstrap_importer.o`, `make lint`,
   `git diff --check`, and `make -j1 test_parallel &&
   ./test_parallel --jobs=$(nproc)` pass after this consolidation.
+- The attach no-op probe now reuses one private chainstate-best snapshot helper
+  instead of open-coding stage-dir creation, probe path formatting, LevelDB
+  snapshotting, best-block read, and cleanup inline.
 
 ## The shape (one canonical importer, pluggable mode)
 

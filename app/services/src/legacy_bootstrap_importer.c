@@ -127,6 +127,11 @@ bool legacy_bootstrap_spotcheck_sha3_windows(
     const char *debug_env,
     bool dump_map_on_failure);
 
+static bool legacy_bootstrap_read_chainstate_best_block(
+    const char *chainstate_dir,
+    const char *log_prefix,
+    struct uint256 *out_hash);
+
 static int64_t legacy_bootstrap_now_ms(void)
 {
     struct timespec ts;
@@ -438,6 +443,47 @@ static bool legacy_bootstrap_prepare_staged_snapshot(
         return false;
     }
     return true;
+}
+
+static bool legacy_bootstrap_probe_chainstate_best(
+    const struct legacy_bootstrap_import_options *opts,
+    const char *stage_subdir,
+    const char *snapshot_name,
+    const char *log_prefix,
+    struct uint256 *out_best)
+{
+    if (out_best)
+        memset(out_best, 0, sizeof(*out_best));
+    if (!opts || !opts->our_datadir || !opts->legacy_datadir ||
+        !stage_subdir || !snapshot_name || !log_prefix || !out_best) {
+        fprintf(stderr,  // obs-ok:bootstrap-import-terminal-diagnostic
+                "[legacy_bootstrap] probe chainstate best: bad args\n");
+        return false;
+    }
+
+    char stage_dir[1100];
+    if (!legacy_bootstrap_make_stage_dir(
+            opts->our_datadir, stage_subdir, stage_dir, sizeof(stage_dir),
+            log_prefix))
+        return false;
+
+    char src_cs[1100], cs_path[1200];
+    if (!legacy_bootstrap_format_child_path(
+            opts->legacy_datadir, "chainstate", src_cs, sizeof(src_cs),
+            log_prefix, "legacy chainstate directory") ||
+        !legacy_bootstrap_format_child_path(
+            stage_dir, snapshot_name, cs_path, sizeof(cs_path),
+            log_prefix, "probe chainstate directory"))
+        return false;
+
+    if (!legacy_bootstrap_snapshot_one_leveldb(
+            src_cs, cs_path, "chainstate", log_prefix))
+        return false;
+
+    bool ok = legacy_bootstrap_read_chainstate_best_block(
+        cs_path, log_prefix, out_best);
+    ldb_snapshot_destroy(cs_path);
+    return ok;
 }
 
 static int64_t legacy_bootstrap_copy_block_index(
@@ -1682,35 +1728,18 @@ static bool legacy_bootstrap_import_attach(
         if (legacy_bootstrap_attach_meta_get_tip(pdb, &last_hash, &last_h,
                                                  &last_found) &&
             last_found) {
-            char stage_dir[1100];
-            if (legacy_bootstrap_make_stage_dir(
-                    opts->our_datadir, LEGACY_BOOTSTRAP_ATTACH_STAGE_SUBDIR,
-                    stage_dir, sizeof(stage_dir), "legacy_attach")) {
-                char src_cs[1100], cs_path[1200];
-                struct uint256 cur_best;
-                if (legacy_bootstrap_format_child_path(
-                        opts->legacy_datadir, "chainstate", src_cs,
-                        sizeof(src_cs), "legacy_attach",
-                        "legacy chainstate directory") &&
-                    legacy_bootstrap_format_child_path(
-                        stage_dir, "probe-chainstate", cs_path,
-                        sizeof(cs_path), "legacy_attach",
-                        "probe chainstate directory") &&
-                    legacy_bootstrap_snapshot_one_leveldb(
-                        src_cs, cs_path, "chainstate", "legacy_attach") &&
-                    legacy_bootstrap_read_chainstate_best_block(
-                        cs_path, "legacy_attach", &cur_best) &&
-                    memcmp(cur_best.data, last_hash.data, 32) == 0) {
-                    ldb_snapshot_destroy(cs_path);
-                    r.outcome = LEGACY_ATTACH_OUTCOME_NOOP_SAME_TIP;
-                    r.legacy_tip = last_h;
-                    if (out) *out = r;
-                    fprintf(stderr,  // obs-ok:legacy-attach-noop
-                        "[legacy_attach] NOOP: already attached "
-                        "to legacy tip h=%d\n", last_h);
-                    return true;
-                }
-                ldb_snapshot_destroy(cs_path);
+            struct uint256 cur_best;
+            if (legacy_bootstrap_probe_chainstate_best(
+                    opts, LEGACY_BOOTSTRAP_ATTACH_STAGE_SUBDIR,
+                    "probe-chainstate", "legacy_attach", &cur_best) &&
+                memcmp(cur_best.data, last_hash.data, 32) == 0) {
+                r.outcome = LEGACY_ATTACH_OUTCOME_NOOP_SAME_TIP;
+                r.legacy_tip = last_h;
+                if (out) *out = r;
+                fprintf(stderr,  // obs-ok:legacy-attach-noop
+                    "[legacy_attach] NOOP: already attached "
+                    "to legacy tip h=%d\n", last_h);
+                return true;
             }
         }
     } else {
