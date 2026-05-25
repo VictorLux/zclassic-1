@@ -72,6 +72,9 @@ Progress:
 - Private snapshot import policy is now owned by a mode config table: cold and
   attach call sites name the snapshot mode instead of repeating batch limits,
   minimum-tip policy, best-block requirements, long-op names, and log prefixes.
+- The direct fastimport start height is no longer a public importer option; the
+  only caller requested active-chain height, so direct mode derives it
+  internally.
 
 Verification:
 - `make -j$(nproc) test_zcl`, `make -j$(nproc) zclassic23`, `make lint`, and
@@ -112,6 +115,10 @@ Verification:
   `git diff --check` pass after moving private snapshot policy into the mode
   config table. Full binary linking in wt2 is still blocked by the missing local
   vendor archives above.
+- `make app/services/src/legacy_bootstrap_importer.o config/src/boot.o`,
+  `make lint`, and `git diff --check` pass after removing the public
+  fastimport `from_height` option. Full binary linking in wt2 is still blocked
+  by the missing local vendor archives above.
 
 ## The shape (one canonical importer, pluggable mode)
 
