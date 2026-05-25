@@ -163,6 +163,11 @@ void node_health_collect(struct node_health_snapshot *snapshot,
     if (!snapshot) return;
     *snapshot = empty;
 
+    if (!ndb)
+        ndb = app_runtime_node_db();
+    if (!ms)
+        ms = sync_monitor_main_state();
+
     snapshot->sync_state = sync_get_state();
     snapshot->synced = (snapshot->sync_state == SYNC_AT_TIP);
     snapshot->tip_height = -1;

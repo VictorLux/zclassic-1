@@ -5,10 +5,15 @@
 #include "test/test_helpers.h"
 #include "config/db_service.h"
 #include "config/runtime.h"
+#include "coins/coins_view.h"
 #include "controllers/network_controller.h"
 #include "net/connman.h"
 #include "net/net.h"
 #include "services/chain_advance_coordinator.h"
+#include "services/chain_evidence_controller.h"
+#include "services/chain_evidence_store.h"
+#include "services/chain_state_repository.h"
+#include "services/sync_monitor.h"
 #include "validation/main_state.h"
 #include "validation/mirror_consensus.h"
 #include "util/safe_alloc.h"
@@ -309,6 +314,150 @@ int test_node_health_service(void)
         rpc_net_set_connman(NULL);
         net_manager_free(&cm.manager);
         mirror_consensus_reset_for_test();
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("node_health_service: runtime fallback reads chain evidence... ");
+    {
+        struct node_health_snapshot health;
+        struct node_db ndb;
+        struct db_service dbsvc;
+        struct app_runtime_context runtime;
+        struct main_state ms;
+        struct connman cm;
+        struct net_address addr;
+        struct p2p_node *node = NULL;
+        struct coins_view null_view;
+        struct coins_view_cache coins_tip;
+        struct block_index tip;
+        struct uint256 tip_hash;
+        struct block_index *header_tip = NULL;
+        bool ok = true;
+
+        memset(&health, 0, sizeof(health));
+        memset(&ndb, 0, sizeof(ndb));
+        memset(&dbsvc, 0, sizeof(dbsvc));
+        memset(&runtime, 0, sizeof(runtime));
+        memset(&cm, 0, sizeof(cm));
+        memset(&addr, 0, sizeof(addr));
+        memset(&null_view, 0, sizeof(null_view));
+        memset(&tip, 0, sizeof(tip));
+        memset(&tip_hash, 0, sizeof(tip_hash));
+        main_state_init(&ms);
+        coins_view_cache_init(&coins_tip, &null_view);
+        net_manager_init(&cm.manager);
+
+        ok = ok && node_db_open(&ndb, ":memory:");
+        if (ok) {
+            db_service_init(&dbsvc);
+            ok = ok && db_service_attach(&dbsvc, &ndb);
+            ok = ok && db_service_start(&dbsvc);
+            runtime.db_service = &dbsvc;
+            app_runtime_set_current(&runtime);
+        }
+
+        tip_hash.data[0] = 0x7a;
+        block_index_init(&tip);
+        tip.phashBlock = &tip_hash;
+        tip.nHeight = 7;
+        tip.nTime = (uint32_t)platform_time_wall_time_t();
+        tip.nStatus = BLOCK_HAVE_DATA | BLOCK_VALID_TREE;
+        arith_uint256_set_u64(&tip.nChainWork, 8);
+        ok = ok && active_chain_set_tip(&ms.chain_active, &tip);
+        ms.pindex_best_header = &tip;
+        header_tip = &tip;
+        coins_view_cache_set_best_block(&coins_tip, &tip_hash);
+        block_map_insert(&ms.map_block_index, &tip_hash, &tip);
+        const struct uint256 *canon =
+            block_map_find_hash(&ms.map_block_index, &tip_hash);
+        if (canon)
+            tip.phashBlock = canon;
+
+        if (ok) {
+            csr_init(csr_instance(), &ms.map_block_index, &ms.chain_active,
+                     &header_tip, &coins_tip, &ndb, NULL);
+            sync_monitor_set_context(NULL, NULL, &ms);
+            struct chain_evidence_controller seed = {
+                .ndb = &ndb,
+                .csr = csr_instance(),
+                .state = CEC_TIP_FOLLOWING,
+            };
+            struct chain_evidence_record evidence = {
+                .source_class = CEC_SOURCE_CLASS_NATIVE_P2P,
+                .publish_state = CEC_PUBLISH_LOCAL_EVIDENCE,
+                .header_ancestry_linked = true,
+                .chainwork_recomputed = true,
+                .nakamoto_selected_best_work = true,
+                .block_bytes_hash_checked = true,
+            };
+            const char state_name[] = "tip_following";
+            ok = ok && node_db_state_set(&ndb, "cec.sync_state",
+                                         state_name, sizeof(state_name));
+            ok = ok && node_db_state_set(&ndb, "cec.active_tip_hash",
+                                         tip.phashBlock->data, 32);
+            ok = ok && node_db_state_set_int(&ndb, "cec.active_tip_height",
+                                             tip.nHeight);
+            ok = ok && node_db_state_set_int(&ndb, "cec.coins_best_block_height",
+                                             tip.nHeight);
+            ok = ok && node_db_state_set_int(&ndb, "cec.utxo_max_height",
+                                             tip.nHeight);
+            ok = ok && node_db_state_set_int(&ndb, "cec.publish_state",
+                                             CEC_PUBLISH_LOCAL_EVIDENCE);
+            ok = ok && node_db_state_set_int(&ndb,
+                                             "cec.active_tip_source_class",
+                                             CEC_SOURCE_CLASS_NATIVE_P2P);
+            ok = ok && chain_evidence_store_persist(
+                           &seed, "cec.block_index_evidence_state",
+                           &evidence);
+            ok = ok && chain_evidence_store_persist(
+                           &seed, "cec.active_tip_evidence", &evidence);
+        }
+
+        cm.manager.nodes = zcl_calloc(1, sizeof(*cm.manager.nodes),
+                                      "test_nodes");
+        ok = ok && (cm.manager.nodes != NULL);
+        if (ok) {
+            node = p2p_node_create(&cm.manager, ZCL_INVALID_SOCKET, &addr,
+                                   "runtime-health-peer", false);
+            ok = ok && (node != NULL);
+        }
+        if (ok) {
+            node->starting_height = tip.nHeight;
+            cm.manager.nodes[0] = node;
+            cm.manager.num_nodes = 1;
+            rpc_net_set_connman(&cm);
+            sync_set_state(SYNC_FINDING_PEERS, "test");
+            sync_set_state(SYNC_HEADERS_DOWNLOAD, "test");
+            sync_set_state(SYNC_BLOCKS_DOWNLOAD, "test");
+            sync_set_state(SYNC_CONNECTING_BLOCKS, "test");
+            sync_set_state(SYNC_AT_TIP, "test");
+            node_health_collect(&health, NULL, NULL);
+
+            ok = health.synced;
+            ok = ok && health.has_peers;
+            ok = ok && health.healthy;
+            ok = ok && health.tip_height == tip.nHeight;
+            ok = ok && health.header_height == tip.nHeight;
+            ok = ok && health.degraded_reason[0] == '\0';
+            if (!ok)
+                fprintf(stderr, "node_health_service runtime fallback: "
+                        "healthy=%d synced=%d peers=%d tip=%d header=%d "
+                        "reason=%s\n",
+                        health.healthy, health.synced, health.has_peers,
+                        health.tip_height, health.header_height,
+                        health.degraded_reason);
+        }
+
+        sync_monitor_set_context(NULL, NULL, NULL);
+        csr_free(csr_instance());
+        app_runtime_set_current(NULL);
+        rpc_net_set_connman(NULL);
+        net_manager_free(&cm.manager);
+        coins_view_cache_free(&coins_tip);
+        main_state_free(&ms);
+        db_service_stop(&dbsvc);
+        node_db_close(&ndb);
         if (ok) printf("OK\n");
         else { printf("FAIL\n"); failures++; }
     }
