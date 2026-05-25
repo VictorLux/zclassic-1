@@ -287,9 +287,10 @@ int test_condition_engine(void)
             "snapshot_offer_ready",
             "snapshot_negotiation_stalled",
             "snapshot_failed_reset",
+            "snapshot_complete_resume",
         };
-        ok = ok && registered && json_get_int(registered) == 16;
-        ok = ok && conditions && json_size(conditions) == 16;
+        ok = ok && registered && json_get_int(registered) == 17;
+        ok = ok && conditions && json_size(conditions) == 17;
         for (size_t i = 0; i < sizeof(expected) / sizeof(expected[0]); i++)
             ok = ok && ce_json_conditions_has(conditions, expected[i]);
         json_free(&out);

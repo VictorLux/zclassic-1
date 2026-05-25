@@ -18,6 +18,7 @@ void register_legacy_mirror_stuck(void);
 void register_snapshot_offer_ready(void);
 void register_snapshot_negotiation_stalled(void);
 void register_snapshot_failed_reset(void);
+void register_snapshot_complete_resume(void);
 
 void condition_registry_register_all(void)
 {
@@ -37,4 +38,5 @@ void condition_registry_register_all(void)
     register_snapshot_offer_ready();
     register_snapshot_negotiation_stalled();
     register_snapshot_failed_reset();
+    register_snapshot_complete_resume();
 }
