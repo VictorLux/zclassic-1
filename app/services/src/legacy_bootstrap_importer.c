@@ -211,6 +211,30 @@ static int64_t legacy_bootstrap_link_blk_files(const char *legacy_blocks_dir,
     return (errors > 0) ? -1 : (linked + copied);
 }
 
+static bool legacy_bootstrap_detect_datadir(const char *legacy_datadir,
+                                            bool require_leveldbs)
+{
+    if (!legacy_datadir || !legacy_datadir[0]) return false;
+
+    static const char *const suffixes[] = {
+        "blocks/blk00000.dat",
+        "blocks/index/CURRENT",
+        "chainstate/CURRENT",
+    };
+    char p[1100];
+    size_t n = require_leveldbs ? 3u : 1u;
+    for (size_t i = 0; i < n; i++) {
+        int written = snprintf(p, sizeof(p), "%s/%s",
+                               legacy_datadir, suffixes[i]);
+        if (written <= 0 || (size_t)written >= sizeof(p))
+            return false;
+        struct stat st;
+        if (stat(p, &st) != 0 || !S_ISREG(st.st_mode))
+            return false;
+    }
+    return true;
+}
+
 static bool legacy_bootstrap_make_stage_dir(const char *datadir,
                                             const char *stage_subdir,
                                             char *out_stage_dir,
@@ -935,6 +959,13 @@ static bool legacy_bootstrap_import_cold(
         return false;
     }
 
+    if (!legacy_bootstrap_detect_datadir(opts->legacy_datadir, false)) {
+        fprintf(stderr,  // obs-ok:bootstrap-import-terminal-diagnostic
+                "[cold_import] source %s does not look like a zclassic "
+                "datadir\n", opts->legacy_datadir);
+        return false;
+    }
+
     int our_tip = active_chain_height(&opts->ms->chain_active);
     if (our_tip > LEGACY_BOOTSTRAP_COLD_REFUSE_ABOVE_TIP) {
         fprintf(stderr,
@@ -1081,6 +1112,16 @@ static bool legacy_bootstrap_import_direct(
         fprintf(stderr,  // obs-ok:bootstrap-import-terminal-diagnostic
                 "[legacy_direct_import] bad args\n");
         return false;
+    }
+
+    if (!legacy_bootstrap_detect_datadir(opts->legacy_datadir, false)) {
+        fprintf(stderr,  // obs-ok:pre-existing-diagnostic
+                "[legacy_direct_import] %s does not contain "
+                "blocks/blk00000.dat — skipping\n",
+                opts->legacy_datadir);
+        r.final_tip = active_chain_height(&opts->ms->chain_active);
+        if (out) *out = r;
+        return true;
     }
 
     char idx_dir[1024];
@@ -1293,27 +1334,6 @@ const char *legacy_attach_outcome_name(enum legacy_attach_outcome o)
         case LEGACY_ATTACH_OUTCOME_FAILED:               return "failed";
     }
     return "?";
-}
-
-static bool legacy_bootstrap_path_isfile(const char *p)
-{
-    struct stat st;
-    if (!p) return false;
-    if (stat(p, &st) != 0) return false;
-    return S_ISREG(st.st_mode);
-}
-
-static bool legacy_bootstrap_attach_detect_datadir(const char *legacy_datadir)
-{
-    if (!legacy_datadir || !legacy_datadir[0]) return false;
-    char p[1100];
-    snprintf(p, sizeof(p), "%s/blocks/index/CURRENT", legacy_datadir);
-    if (!legacy_bootstrap_path_isfile(p)) return false;
-    snprintf(p, sizeof(p), "%s/chainstate/CURRENT", legacy_datadir);
-    if (!legacy_bootstrap_path_isfile(p)) return false;
-    snprintf(p, sizeof(p), "%s/blocks/blk00000.dat", legacy_datadir);
-    if (!legacy_bootstrap_path_isfile(p)) return false;
-    return true;
 }
 
 static bool legacy_bootstrap_attach_meta_has_sentinel(sqlite3 *db)
@@ -1564,7 +1584,7 @@ static bool legacy_bootstrap_import_attach(
         return false;
     }
 
-    if (!legacy_bootstrap_attach_detect_datadir(opts->legacy_datadir)) {
+    if (!legacy_bootstrap_detect_datadir(opts->legacy_datadir, true)) {
         fprintf(stderr,  // obs-ok:legacy-attach-soft-skip
             "[legacy_attach] %s does not look like a zclassic datadir; "
             "skipping.\n", opts->legacy_datadir);

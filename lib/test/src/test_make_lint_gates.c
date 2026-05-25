@@ -1067,13 +1067,18 @@ static int t_cold_import_fails_closed_contract(void)
 {
     int failures = 0;
     char *buf = NULL;
+    char *importer_buf = NULL;
     TEST("cold-import failure aborts boot before fallback imports") {
         char path[PATH_MAX];
         ASSERT(repo_path(path, sizeof(path), "config/src/boot.c") == 0);
         ASSERT(read_entire_file(path, &buf) == 0);
+        ASSERT(repo_path(path, sizeof(path),
+                         "app/services/src/legacy_bootstrap_importer.c") == 0);
+        ASSERT(read_entire_file(path, &importer_buf) == 0);
         char *cold = strstr(buf, "if (ctx->cold_import_from)");
         char *missing_prereq = strstr(buf, "FATAL: cold-import requested");
-        char *bad_source = strstr(buf, "FATAL: cold-import source %s");
+        char *bad_source = strstr(importer_buf,
+            "[cold_import] source %s does not look like a zclassic");
         char *call = strstr(buf, "LEGACY_BOOTSTRAP_IMPORT_COLD");
         char *fail_closed = strstr(buf, "continue with fallback import paths");
         char *disable_auto = strstr(buf, "ctx->no_legacy_auto_import = true");
@@ -1092,6 +1097,7 @@ static int t_cold_import_fails_closed_contract(void)
         PASS();
     } _test_next:;
     free(buf);
+    free(importer_buf);
     return failures;
 }
 

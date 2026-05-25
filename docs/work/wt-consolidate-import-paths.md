@@ -59,6 +59,9 @@ Progress:
   the attach no-op probe uses the retrying LevelDB snapshot helper; removed the
   attach-only direct LevelDB open/probe path, private chainstate record metric,
   and unread `legacy_attach_done_at` metadata.
+- Legacy datadir preflight for cold/direct/attach now lives in the canonical
+  importer instead of boot carrying a separate `boot_detect_legacy_datadir`
+  probe; boot delegates mode policy to `legacy_bootstrap_import_blocking`.
 
 Verification:
 - `make -j$(nproc) test_zcl`, `make -j$(nproc) zclassic23`, `make lint`, and
@@ -84,6 +87,9 @@ Verification:
 - `make -j1 test_zcl zclassic23`, `make lint`, and
   `./test_parallel --jobs=$(nproc)` pass after the attach/cold best-block reader
   consolidation.
+- `make -j1 test_zcl zclassic23 test_parallel`, `make lint`, and
+  `./test_parallel --jobs=$(nproc)` pass after moving legacy-datadir preflight
+  into the canonical importer.
 
 ## The shape (one canonical importer, pluggable mode)
 
