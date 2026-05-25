@@ -2,7 +2,7 @@
 
 ## Status
 
-**CODE COMPLETE (wt2) — 2026-05-25; live deploy/forward-progress proof pending.**
+**DONE (wt2) — 2026-05-25; deployed and live forward progress proven.**
 
 Implemented:
 - `connect_block` now tolerates only a block's own same-height coinbase
@@ -18,15 +18,29 @@ Verified:
 - `ZCL_TEST_ONLY=chain_stall_repro ./test_zcl`
 - `ZCL_STRESS_TESTS=1 ZCL_TEST_ONLY=chain_advance_atomicity ./test_zcl`
 - `make lint`
+- `make test_parallel && ./test_parallel` — 0/215 groups failed
 
-Broad-suite note:
-- `make test_parallel` builds the runner in this Makefile; `make test-parallel`
-  runs it.
-- `make test-parallel` currently reports 214/215 groups passing. The lone
-  failure is standalone `test_condition_engine`:
-  `condition_engine: register_all exposes current self-heal set... FAIL`.
-  `ZCL_TEST_ONLY=condition_engine ./test_zcl` reproduces the same failure by
-  itself, independent of this validation/coins patch.
+Live acceptance:
+- Deployed from `/home/rhett/github/zclassic23` after wt2 pushed the fixes.
+- The old stuck activation at `3124225` connected; `node.log` showed the
+  same-height coinbase self-write was tolerated and no new `bad-txns-BIP30`
+  rejection appeared after the fix.
+- A follow-on startup blocker from stale
+  `cec.contradiction_reason=missing_active_tip_evidence` was fixed by
+  auto-clearing that demoted freeze and allowing active-tip evidence
+  reconstruction while the derived `blocks` projection lags.
+- `SAMPLES=12 INTERVAL_SECS=15 ./tools/bench_running_lag.sh` advanced live
+  height from `3124230` to `3124293`; the script exited 2 only because its
+  `peer_max_height` probe stayed 0 despite RPC `getpeerinfo` showing a
+  handshaked MagicBean peer.
+- `tools/bip30_unwedge_preflight.sh` at 2026-05-25T09:56:39Z returned
+  `VERDICT=NO_STALE_ROW_AND_LIVE_HEALTHY` with
+  `RPC_CHAIN_HEIGHT=3124298`, `RPC_LEGACY_HEIGHT=3124298`, and `RPC_GAP=0`.
+- A 5-minute `getsyncdiag` stability watch held `mirror_lag=0`, empty
+  `mirror_last_blocker_code`, and chain/legacy within 0 blocks. Diagnostics
+  still label the legacy mirror state `blocked` with `activation-no-progress`
+  while already `at_tip`; that is a status-reporting oddity, not a forward
+  progress blocker.
 
 > Supersedes the symptom-chasers. The boot-rewind (`dbf4845a1`) and cold-import
 > only *move* the wedge one block; they do not cure it. This does.
