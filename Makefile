@@ -94,7 +94,7 @@ LIBS = -Lvendor/lib -lsecp256k1 -lleveldb \
         check-before-save-hooks check-pthread-create check-model-validation \
         check-long-functions check-rpc-registrar check-lag-slo-observable \
         fuzz-ci-leaks \
-        soak-smoke soak-7day
+        soak-smoke soak-7day chaos chaos-clean
 
 CLI_SRCS = lib/rpc/src/client.c lib/json/src/json.c
 all: test_zcl zclassic23 zclassic-cli
@@ -247,6 +247,22 @@ explorer-css: app/views/src/explorer_css.css
 
 test: test_zcl
 	ulimit -s unlimited && ./test_zcl
+
+zclassic23-chaos: tools/sim/chaos.c
+	$(CC) -std=c23 -O2 -Wall -Wextra -Werror -pedantic \
+	    -D_POSIX_C_SOURCE=200809L \
+	    -o $@ $<
+
+chaos: zclassic23-chaos
+	@set -eu; \
+	for s in tools/sim/scenarios/*.scenario; do \
+	    echo "==> $$s"; \
+	    ./zclassic23-chaos --scenario="$$s"; \
+	done; \
+	echo "==> All chaos scenarios PASSED"
+
+chaos-clean:
+	rm -f zclassic23-chaos
 
 # Crash recovery harness: fork zclassic23, SIGKILL at random points,
 # restart, and assert data-integrity invariants. Needs a pre-seeded

@@ -1,0 +1,336 @@
+/* Copyright 2026 Rhett Creighton - Apache License 2.0
+ *
+ * Phase 6c chaos harness skeleton.
+ *
+ * This first slice proves the scenario parser and command dispatcher without
+ * booting production node paths. Later Phase 6c tasks replace the stubs with
+ * real peer, clock, network, and allocation fault injection.
+ */
+
+#include <ctype.h>
+#include <errno.h>
+#include <inttypes.h>
+#include <stdbool.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+#define CHAOS_MAX_LINE 512
+#define CHAOS_MAX_ARGS 16
+#define CHAOS_MAX_EXPECTS 64
+
+struct chaos_ctx {
+    const char *scenario_path;
+    uint64_t seed;
+    bool seed_set;
+    char boot_phase[32];
+    unsigned peer_count;
+    bool crashed;
+    int64_t tip_height;
+    int64_t reorg_count;
+    int64_t consensus_rejects;
+    size_t expect_count;
+    bool verbose;
+};
+
+typedef int (*chaos_handler_fn)(struct chaos_ctx *ctx, int argc, char **argv,
+                                int line_no);
+
+struct chaos_command {
+    const char *name;
+    chaos_handler_fn handler;
+};
+
+static char *trim_ascii(char *s)
+{
+    if (!s) return s;
+    while (isspace((unsigned char)*s)) s++;
+    char *end = s + strlen(s);
+    while (end > s && isspace((unsigned char)end[-1])) {
+        *--end = '\0';
+    }
+    return s;
+}
+
+static int split_args(char *line, char **argv, int argv_cap)
+{
+    int argc = 0;
+    char *p = line;
+    while (*p) {
+        while (isspace((unsigned char)*p)) p++;
+        if (*p == '\0') break;
+        if (argc >= argv_cap) return -E2BIG;
+        argv[argc++] = p;
+        while (*p && !isspace((unsigned char)*p)) p++;
+        if (*p) *p++ = '\0';
+    }
+    return argc;
+}
+
+static bool parse_i64(const char *s, int64_t *out)
+{
+    if (!s || !*s || !out) return false;
+    errno = 0;
+    char *end = NULL;
+    long long v = strtoll(s, &end, 10);
+    if (errno != 0 || end == s || *end != '\0') return false;
+    *out = (int64_t)v;
+    return true;
+}
+
+static bool parse_u64_auto(const char *s, uint64_t *out)
+{
+    if (!s || !*s || !out) return false;
+    errno = 0;
+    char *end = NULL;
+    unsigned long long v = strtoull(s, &end, 0);
+    if (errno != 0 || end == s || *end != '\0') return false;
+    *out = (uint64_t)v;
+    return true;
+}
+
+static int fail_line(int line_no, const char *msg)
+{
+    fprintf(stderr, "chaos:%d: %s\n", line_no, msg);
+    return -EINVAL;
+}
+
+static int handle_seed(struct chaos_ctx *ctx, int argc, char **argv,
+                       int line_no)
+{
+    if (argc != 2) return fail_line(line_no, "seed requires one value");
+    uint64_t seed = 0;
+    if (!parse_u64_auto(argv[1], &seed))
+        return fail_line(line_no, "seed must be an integer or hex value");
+    ctx->seed = seed;
+    ctx->seed_set = true;
+    return 0;
+}
+
+static int handle_boot_phase(struct chaos_ctx *ctx, int argc, char **argv,
+                             int line_no)
+{
+    if (argc != 2) return fail_line(line_no, "boot_phase requires one value");
+    if (strcmp(argv[1], "idb_complete") != 0 &&
+        strcmp(argv[1], "listening") != 0 &&
+        strcmp(argv[1], "mempool_open") != 0) {
+        return fail_line(line_no, "unknown boot_phase");
+    }
+    snprintf(ctx->boot_phase, sizeof(ctx->boot_phase), "%s", argv[1]);
+    return 0;
+}
+
+static int handle_peer_count(struct chaos_ctx *ctx, int argc, char **argv,
+                             int line_no)
+{
+    if (argc != 2) return fail_line(line_no, "peer_count requires one value");
+    uint64_t n = 0;
+    if (!parse_u64_auto(argv[1], &n) || n > 1024)
+        return fail_line(line_no, "peer_count must be 0..1024");
+    ctx->peer_count = (unsigned)n;
+    return 0;
+}
+
+static int compare_metric(int64_t actual, const char *op, int64_t expected)
+{
+    if (strcmp(op, "==") == 0) return actual == expected ? 0 : -1;
+    if (strcmp(op, "!=") == 0) return actual != expected ? 0 : -1;
+    if (strcmp(op, ">=") == 0) return actual >= expected ? 0 : -1;
+    if (strcmp(op, "<=") == 0) return actual <= expected ? 0 : -1;
+    if (strcmp(op, ">") == 0) return actual > expected ? 0 : -1;
+    if (strcmp(op, "<") == 0) return actual < expected ? 0 : -1;
+    return -2;
+}
+
+static bool metric_value(const struct chaos_ctx *ctx, const char *name,
+                         int64_t *out)
+{
+    if (strcmp(name, "tip_height") == 0) {
+        *out = ctx->tip_height;
+        return true;
+    }
+    if (strcmp(name, "reorg_count") == 0) {
+        *out = ctx->reorg_count;
+        return true;
+    }
+    if (strcmp(name, "consensus_rejects") == 0) {
+        *out = ctx->consensus_rejects;
+        return true;
+    }
+    return false;
+}
+
+static int handle_expect(struct chaos_ctx *ctx, int argc, char **argv,
+                         int line_no)
+{
+    if (argc < 2) return fail_line(line_no, "expect requires an assertion");
+    if (ctx->expect_count >= CHAOS_MAX_EXPECTS)
+        return fail_line(line_no, "too many expect assertions");
+    ctx->expect_count++;
+
+    if (argc == 2 && strcmp(argv[1], "no_crash") == 0) {
+        if (ctx->crashed) {
+            fprintf(stderr, "chaos:%d: expect no_crash failed\n", line_no);
+            return -1;
+        }
+        return 0;
+    }
+
+    if (argc == 4) {
+        int64_t actual = 0;
+        int64_t expected = 0;
+        if (!metric_value(ctx, argv[1], &actual))
+            return fail_line(line_no, "unknown expect metric");
+        if (!parse_i64(argv[3], &expected))
+            return fail_line(line_no, "expect value must be an integer");
+        int cmp = compare_metric(actual, argv[2], expected);
+        if (cmp == -2) return fail_line(line_no, "unknown expect operator");
+        if (cmp != 0) {
+            fprintf(stderr,
+                    "chaos:%d: expect failed: %s %s %" PRId64
+                    " (actual=%" PRId64 ")\n",
+                    line_no, argv[1], argv[2], expected, actual);
+            return -1;
+        }
+        return 0;
+    }
+
+    return fail_line(line_no, "unsupported expect assertion");
+}
+
+static int handle_stub(struct chaos_ctx *ctx, int argc, char **argv,
+                       int line_no)
+{
+    (void)ctx;
+    (void)argc;
+    fprintf(stderr,
+            "chaos:%d: command '%s' is recognized but not implemented yet\n",
+            line_no, argv[0]);
+    return -ENOTSUP;
+}
+
+static const struct chaos_command COMMANDS[] = {
+    { "seed", handle_seed },
+    { "boot_phase", handle_boot_phase },
+    { "peer_count", handle_peer_count },
+    { "expect", handle_expect },
+    { "at_event", handle_stub },
+    { "kill_peer", handle_stub },
+    { "send_block", handle_stub },
+    { "send_malformed_block", handle_stub },
+    { "advance_clock", handle_stub },
+    { "trigger_oom_at", handle_stub },
+    { "partition_network", handle_stub },
+};
+
+static const struct chaos_command *find_command(const char *name)
+{
+    for (size_t i = 0; i < sizeof(COMMANDS) / sizeof(COMMANDS[0]); i++) {
+        if (strcmp(COMMANDS[i].name, name) == 0)
+            return &COMMANDS[i];
+    }
+    return NULL;
+}
+
+static int run_scenario(struct chaos_ctx *ctx)
+{
+    FILE *fp = fopen(ctx->scenario_path, "rb");
+    if (!fp) {
+        fprintf(stderr, "chaos: failed to open %s: %s\n",
+                ctx->scenario_path, strerror(errno));
+        return 1;
+    }
+
+    char line[CHAOS_MAX_LINE];
+    int line_no = 0;
+    while (fgets(line, sizeof(line), fp)) {
+        line_no++;
+        char *nl = strchr(line, '\n');
+        if (nl) {
+            *nl = '\0';
+        } else if (!feof(fp)) {
+            fprintf(stderr, "chaos:%d: line too long\n", line_no);
+            fclose(fp);
+            return 1;
+        }
+
+        char *hash = strchr(line, '#');
+        if (hash) *hash = '\0';
+        char *body = trim_ascii(line);
+        if (*body == '\0') continue;
+
+        char *argv[CHAOS_MAX_ARGS];
+        int argc = split_args(body, argv, CHAOS_MAX_ARGS);
+        if (argc < 0) {
+            fprintf(stderr, "chaos:%d: too many arguments\n", line_no);
+            fclose(fp);
+            return 1;
+        }
+
+        const struct chaos_command *cmd = find_command(argv[0]);
+        if (!cmd) {
+            fprintf(stderr, "chaos:%d: unknown command '%s'\n",
+                    line_no, argv[0]);
+            fclose(fp);
+            return 1;
+        }
+        int rc = cmd->handler(ctx, argc, argv, line_no);
+        if (rc != 0) {
+            fclose(fp);
+            return 1;
+        }
+        if (ctx->verbose)
+            printf("chaos:%d: %s OK\n", line_no, argv[0]);
+    }
+
+    fclose(fp);
+    if (ctx->expect_count == 0) {
+        fprintf(stderr, "chaos: scenario has no expect assertions\n");
+        return 1;
+    }
+    return 0;
+}
+
+static void usage(const char *argv0)
+{
+    fprintf(stderr, "usage: %s --scenario=PATH [--verbose]\n", argv0);
+}
+
+int main(int argc, char **argv)
+{
+    struct chaos_ctx ctx;
+    memset(&ctx, 0, sizeof(ctx));
+    snprintf(ctx.boot_phase, sizeof(ctx.boot_phase), "idb_complete");
+
+    for (int i = 1; i < argc; i++) {
+        if (strncmp(argv[i], "--scenario=", 11) == 0) {
+            ctx.scenario_path = argv[i] + 11;
+        } else if (strcmp(argv[i], "--verbose") == 0) {
+            ctx.verbose = true;
+        } else {
+            usage(argv[0]);
+            return 2;
+        }
+    }
+
+    if (!ctx.scenario_path || !*ctx.scenario_path) {
+        usage(argv[0]);
+        return 2;
+    }
+
+    int rc = run_scenario(&ctx);
+    if (rc == 0) {
+        printf("PASS %s seed=%s0x%016" PRIx64
+               " boot_phase=%s peers=%u expects=%zu\n",
+               ctx.scenario_path,
+               ctx.seed_set ? "" : "(default)",
+               ctx.seed,
+               ctx.boot_phase,
+               ctx.peer_count,
+               ctx.expect_count);
+    } else {
+        printf("FAIL %s\n", ctx.scenario_path);
+    }
+    return rc;
+}

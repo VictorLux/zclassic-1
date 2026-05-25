@@ -4,7 +4,7 @@
 **Branch:** PUSH DIRECT TO MAIN
 **Phase:** 6 (Determinism + simulator)
 **Depends on:** Phase 6a (seed_tape) ✅ + Phase 6b (postmortem capsule) ✅.
-**Status: QUEUED** until 6a + 6b merge.
+**Status: IN PROGRESS (wt2)** — claimed 2026-05-25 after 6a + 6b merged.
 **Plan reference:** [`docs/architecture/phase6-determinism-and-simulator.md`](../architecture/phase6-determinism-and-simulator.md) § 6c
 
 **Owns:**
@@ -283,7 +283,13 @@ One commit per task. Push after tasks 2, 4, 7.
 
 ## Status
 
-**QUEUED** — gated on 6a + 6b. Once both ship, this PR has full
-prereqs (seed_tape + postmortem) and is READY.
+**IN PROGRESS (wt2)** — claimed 2026-05-25 after 6a + 6b merged.
+
+### Progress (wt2, 2026-05-25)
+
+- Started Task 1 with a standalone `zclassic23-chaos` parser/dispatcher
+  skeleton, a `tools/sim/scenarios/smoke.scenario` fixture, and `make chaos`.
+  The initial command set handles `seed`, `boot_phase`, `peer_count`, and
+  `expect`; later Phase 6c injection commands are recognized stubs.
 
 <!-- Worker: append a Completion section below when done. -->

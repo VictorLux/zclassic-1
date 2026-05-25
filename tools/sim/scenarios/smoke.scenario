@@ -1,0 +1,11 @@
+# Phase 6c smoke scenario.
+# The first harness slice only validates parser, dispatcher, and assertions.
+
+seed        0x0000000000000001
+boot_phase  idb_complete
+peer_count  0
+
+expect      no_crash
+expect      tip_height >= 0
+expect      reorg_count == 0
+expect      consensus_rejects == 0
