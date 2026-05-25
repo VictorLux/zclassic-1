@@ -40,7 +40,7 @@ uint64_t update_coins_event_emit_fail_total(void)
                                 memory_order_relaxed);
 }
 
-static void emit_utxo_add_shadow(const uint8_t txid[32], uint32_t vout,
+void update_coins_emit_utxo_add_shadow(const uint8_t txid[32], uint32_t vout,
                                   int64_t value, uint32_t height,
                                   bool is_coinbase,
                                   const uint8_t *script_bytes,
@@ -64,7 +64,7 @@ static void emit_utxo_add_shadow(const uint8_t txid[32], uint32_t vout,
     }
 }
 
-static void emit_utxo_spend_shadow(const uint8_t txid[32], uint32_t vout)
+void update_coins_emit_utxo_spend_shadow(const uint8_t txid[32], uint32_t vout)
 {
     if (utxo_projection_emit_spend(txid, vout)) {
         atomic_fetch_add_explicit(&g_utxo_event_emit_total, 1,
@@ -133,7 +133,8 @@ bool update_coins_with_undo(const struct transaction *tx,
             /* Phase 4b shadow emission: also append EV_UTXO_SPEND to
              * the event_log so utxo_projection can derive the same
              * spend. Additive — does not gate the legacy path. */
-            emit_utxo_spend_shadow(tx->vin[i].prevout.hash.data, nPos);
+            update_coins_emit_utxo_spend_shadow(tx->vin[i].prevout.hash.data,
+                                                nPos);
 
             txundo->vprevout[i].txout = entry->coins.vout[nPos];
             coins_spend(&entry->coins, nPos);
@@ -169,7 +170,7 @@ bool update_coins_with_undo(const struct transaction *tx,
             /* Phase 4b shadow emission: also append EV_UTXO_ADD to
              * the event_log so utxo_projection can derive the same
              * UTXO. Additive — does not gate the legacy path. */
-            emit_utxo_add_shadow(tx->hash.data, (uint32_t)vi,
+            update_coins_emit_utxo_add_shadow(tx->hash.data, (uint32_t)vi,
                                   new_entry->coins.vout[vi].value,
                                   (uint32_t)nHeight,
                                   new_entry->coins.is_coinbase,
