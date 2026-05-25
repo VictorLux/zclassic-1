@@ -27,10 +27,12 @@
 #define _GNU_SOURCE 1
 
 #include "platform/time_compat.h"
+#include "services/legacy_bootstrap_importer.h"
 #include "storage/blocks_index_legacy_reader.h"
 #include "storage/blocks_mmap_reader.h"
 #include "storage/event_log.h"
 #include "storage/event_log_payloads.h"
+#include "storage/ldb_snapshot.h"
 #include "util/safe_alloc.h"
 #include "primitives/block.h"
 #include "primitives/transaction.h"
@@ -301,18 +303,24 @@ static void uw_close(struct uw *u)
 }
 
 /* ── live snapshot of the (locked) index dir ───────────────────────────── */
-static char *snapshot_dir(const char *src)
+static bool snapshot_index_dir(const char *src, char *out, size_t out_cap)
 {
     char tmpl[] = "/tmp/zcl_idx_XXXXXX";
     char *dst = mkdtemp(tmpl);
-    if (!dst) { perror("mkdtemp"); return NULL; }
-    char *out = strdup(dst);
-    char cmd[4096];
-    int n = snprintf(cmd, sizeof cmd, "cp -a '%s/.' '%s/'", src, out);
-    if (n <= 0 || (size_t)n >= sizeof cmd || system(cmd) != 0) {
-        fprintf(stderr, "rebuild_recent: snapshot copy failed\n"); free(out); return NULL;
+    if (!dst) { perror("mkdtemp"); return false; }
+    int n = snprintf(out, out_cap, "%s", dst);
+    if (n <= 0 || (size_t)n >= out_cap) {
+        fprintf(stderr, "rebuild_recent: snapshot path too long\n");
+        ldb_snapshot_destroy(dst);
+        return false;
     }
-    return out;
+    char err[128] = {0};
+    if (!ldb_snapshot_make(src, out, err, sizeof(err))) {
+        fprintf(stderr, "rebuild_recent: snapshot copy failed: %s\n", err);
+        ldb_snapshot_destroy(out);
+        return false;
+    }
+    return true;
 }
 
 /* Frame one block's events into writer `u`. Counts accumulate into the
@@ -429,20 +437,28 @@ int main(int argc, char **argv)
            datadir, whole ? "WHOLE-CHAIN" : "last-N", nthreads, out_path);
 
     int64_t t0 = now_ms();
-    char *idx_snap = snapshot_dir(idx_src);
-    if (!idx_snap) return 1;
+    char idx_snap[2200];
+    if (!snapshot_index_dir(idx_src, idx_snap, sizeof(idx_snap))) return 1;
     int64_t t_snap = now_ms() - t0;
 
     int64_t t1 = now_ms();
-    struct bilr *bilr = NULL;
-    if (!bilr_open(idx_snap, &bilr)) { fprintf(stderr, "bilr_open failed\n"); return 1; }
-    struct legacy_block_loc *map = NULL; size_t map_count = 0;
-    if (!bilr_load_height_map(bilr, &map, &map_count) || map_count == 0) {
-        fprintf(stderr, "load_height_map failed\n"); return 1;
+    struct legacy_bootstrap_height_map_result hmap;
+    if (!legacy_bootstrap_load_height_map(idx_snap, NULL,
+                                          "rebuild_recent", &hmap) ||
+        hmap.map_count == 0) {
+        fprintf(stderr, "load_height_map failed\n");
+        bilr_free_height_map(hmap.map);
+        ldb_snapshot_destroy(idx_snap);
+        return 1;
     }
-    int64_t tip = -1;
-    for (size_t h = map_count; h-- > 0; ) if (map[h].height >= 0) { tip = (int64_t)h; break; }
-    if (tip < 0) { fprintf(stderr, "empty index\n"); return 1; }
+    struct legacy_block_loc *map = hmap.map;
+    int64_t tip = hmap.tip_height;
+    if (tip < 0) {
+        fprintf(stderr, "empty index\n");
+        bilr_free_height_map(map);
+        ldb_snapshot_destroy(idx_snap);
+        return 1;
+    }
     int64_t lo = whole ? 0 : (tip - N + 1 < 0 ? 0 : tip - N + 1);
     int64_t t_load = now_ms() - t1;
 
@@ -458,8 +474,7 @@ int main(int argc, char **argv)
                                        "rebuild_recent shard results");
     if (!res) {
         bilr_free_height_map(map);
-        bilr_close(bilr);
-        free(idx_snap);
+        ldb_snapshot_destroy(idx_snap);
         return 1;
     }
     int64_t span = (tip - lo + 1 + NT - 1) / NT;
@@ -512,11 +527,7 @@ int main(int argc, char **argv)
         for (int k=0;k<NT;k++){ char sp[2300]; snprintf(sp,sizeof sp,"%s.%d",out_path,k); unlink(sp); }
     free(res);
     bilr_free_height_map(map);
-    bilr_close(bilr);
-    char rmcmd[2300];
-    snprintf(rmcmd, sizeof rmcmd, "rm -rf '%s'", idx_snap);
-    if (system(rmcmd) != 0) fprintf(stderr, "warn: snapshot cleanup failed\n");
-    free(idx_snap);
+    ldb_snapshot_destroy(idx_snap);
     if (out_is_temp) unlink(out_path);
     return ok ? 0 : 1;
 }
