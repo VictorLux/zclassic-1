@@ -368,7 +368,7 @@ int test_utxo_activation_paused(void)
                           "tip_wedged_resnapshot") == 0;
         observed = observed && attempts && json_get_int(attempts) == 1;
         observed = observed && last_outcome &&
-                   strcmp(json_get_str(last_outcome), "ok") == 0;
+                   strcmp(json_get_str(last_outcome), "unwitnessed") == 0;
 
         ok = ok && active_chain_set_tip(&ms.chain_active, &recovered_tip);
         fake_clock_set(&clock, 6001);
