@@ -354,6 +354,11 @@ int test_chaos_harness(void)
     chaos_ctx_init(&fail_ctx);
     fail_ctx.scenario_path = fail_path;
     rc = run_scenario(&fail_ctx);
+    fail_ctx.block_bytes = 12;
+    fail_ctx.clock_advance_count = 2;
+    fail_ctx.clock_advance_seconds = 30;
+    fail_ctx.net_partition_seconds = 5;
+    fail_ctx.net_partition_drops = 1;
     char artifact_dir[128];
     int dn = snprintf(artifact_dir, sizeof(artifact_dir),
                       "/tmp/zcl_chaos_artifacts_%d_XXXXXX", (int)getpid());
@@ -373,6 +378,10 @@ int test_chaos_harness(void)
     CHAOS_CHECK("failure artifact writer succeeds",
                 rc != 0 && artifact_rc == 0 &&
                 file_contains_text(summary_path, "seed=0x000000000000feed") &&
+                file_contains_text(summary_path, "block_bytes=12") &&
+                file_contains_text(summary_path, "clock_advance_seconds=30") &&
+                file_contains_text(summary_path, "partition_drops=1") &&
+                file_contains_text(summary_path, "replay_command=./zclassic23-chaos") &&
                 file_contains_text(copied_path, "expect tip_height > 0"));
     unlink(summary_path);
     unlink(copied_path);

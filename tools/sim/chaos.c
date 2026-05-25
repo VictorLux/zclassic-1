@@ -277,13 +277,33 @@ static int write_failure_artifacts(const struct chaos_ctx *ctx)
     fprintf(summary, "peer_count=%u\n", ctx->peer_count);
     fprintf(summary, "expects=%zu\n", ctx->expect_count);
     fprintf(summary, "tip_height=%" PRId64 "\n", ctx->tip_height);
+    fprintf(summary, "reorg_count=%" PRId64 "\n", ctx->reorg_count);
     fprintf(summary, "consensus_rejects=%" PRId64 "\n",
             ctx->consensus_rejects);
     fprintf(summary, "blocks_sent=%u\n", ctx->peers.blocks_sent);
+    fprintf(summary, "block_bytes=%" PRId64 "\n", ctx->block_bytes);
     fprintf(summary, "malformed_blocks=%u\n",
             ctx->peers.malformed_blocks_sent);
     fprintf(summary, "active_peers=%u\n", ctx->peers.active_count);
+    fprintf(summary, "killed_peers=%u\n", ctx->peers.killed_count);
+    fprintf(summary, "clock_advance_count=%" PRIu64 "\n",
+            ctx->clock_advance_count);
+    fprintf(summary, "clock_advance_seconds=%" PRId64 "\n",
+            ctx->clock_advance_seconds);
+    fprintf(summary, "scheduled_events=%" PRIu64 "\n",
+            ctx->scheduled_event_count);
+    fprintf(summary, "alloc_faults=%" PRIu64 "\n", ctx->alloc_fault_count);
+    fprintf(summary, "graceful_shutdowns=%" PRId64 "\n",
+            ctx->graceful_shutdowns);
+    fprintf(summary, "partition_seconds=%" PRId64 "\n",
+            ctx->net_partition_seconds);
+    fprintf(summary, "partition_until=%" PRId64 "\n",
+            ctx->net_partition_until);
+    fprintf(summary, "partition_drops=%" PRId64 "\n",
+            ctx->net_partition_drops);
     fprintf(summary, "artifact_scenario=%s\n", scenario_path);
+    fprintf(summary, "replay_command=./zclassic23-chaos --scenario=%s --verbose\n",
+            scenario_path);
     int close_rc = fclose(summary);
     if (close_rc != 0)
         return -EIO;

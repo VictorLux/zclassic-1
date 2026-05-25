@@ -333,5 +333,7 @@ One commit per task. Push after tasks 2, 4, 7.
 - Made active `partition_network` windows suppress simulated peer block traffic
   and added `network_partition.scenario` to assert dropped messages do not
   advance tip height or consensus rejection counters.
+- Expanded failure artifacts with replay commands and the full current
+  simulator metric set so failed scenarios are easier to replay and minimize.
 
 <!-- Worker: append a Completion section below when done. -->

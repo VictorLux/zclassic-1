@@ -125,8 +125,9 @@ Start with `--verbose`; the harness prints each accepted command as it runs.
 If a scenario fails after a production crash, inspect the postmortem capsule
 beside the scenario and reduce the command list until the failure is minimal.
 For parser failures, the `chaos:LINE:` prefix points to the offending line.
-The failure summary in `chaos-output/` records the seed, scenario path,
-boot phase, peer counts, and key metrics needed to promote the failure into a
+The failure summary in `chaos-output/` records the seed, replay command,
+scenario path, boot phase, peer counts, byte counters, clock movement,
+partition drops, and key metrics needed to promote the failure into a
 checked-in regression.
 
 Before committing a scenario, run:
