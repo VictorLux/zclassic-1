@@ -511,6 +511,11 @@ static const char *lms_state_name(const struct legacy_mirror_sync_stats *s)
     return "observing";
 }
 
+static bool lms_blocker_cleared_by_catchup(const char *code, int lag)
+{
+    return code && strcmp(code, "activation-no-progress") == 0 && lag <= 0;
+}
+
 /* Track lag-SLO breach episodes and emit EV_LAG_SLO_BREACH at most
  * once per (episode, severity). Called from the catchup tick after
  * each fresh lag reading; safe under the single-flight lock.
@@ -1244,6 +1249,10 @@ void legacy_mirror_sync_stats_snapshot(
                  sizeof(out->activation_blocker), "%s",
                  mcs.activation_blocker);
     }
+    if (lms_blocker_cleared_by_catchup(out->activation_blocker, out->lag))
+        out->activation_blocker[0] = '\0';
+    if (lms_blocker_cleared_by_catchup(out->last_blocker_code, out->lag))
+        out->last_blocker_code[0] = '\0';
     out->lag_sla_breach_blocks   = g_lms.lag_sla_breach_blocks;
     out->lag_sla_breach_secs     = g_lms.lag_sla_breach_secs;
     out->lag_sla_critical_blocks = g_lms.lag_sla_critical_blocks;

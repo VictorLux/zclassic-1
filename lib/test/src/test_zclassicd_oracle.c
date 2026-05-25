@@ -612,6 +612,29 @@ int test_zclassicd_oracle(void)
 
         zo_build_fixture(AGREE_HEX);
         legacy_mirror_sync_reset_for_test();
+        mirror_consensus_reset_for_test();
+        memset(&stats, 0, sizeof(stats));
+        stats.enabled = true;
+        stats.running = true;
+        stats.reachable = true;
+        stats.local_height = 7;
+        stats.legacy_height = 7;
+        stats.legacy_headers = 7;
+        legacy_mirror_sync_test_set_stats(&stats, &g_zo_ms);
+        mirror_consensus_record_blocker("activation-no-progress");
+
+        legacy_mirror_sync_stats_snapshot(&snap);
+        ZO_CHECK("legacy mirror at tip suppresses stale activation blocker",
+                 snap.activation_blocker[0] == '\0' &&
+                 snap.last_blocker_code[0] == '\0');
+        ZO_CHECK("legacy mirror at tip reports healthy after catchup",
+                 strcmp(snap.state, "healthy") == 0);
+        legacy_mirror_sync_reset_for_test();
+        mirror_consensus_reset_for_test();
+        zo_teardown();
+
+        zo_build_fixture(AGREE_HEX);
+        legacy_mirror_sync_reset_for_test();
         memset(&stats, 0, sizeof(stats));
         stats.enabled = true;
         stats.running = true;
