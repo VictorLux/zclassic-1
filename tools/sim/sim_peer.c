@@ -14,6 +14,7 @@ void sim_peer_set_init(struct sim_peer_set *set)
     set->active_count = 0;
     set->killed_count = 0;
     set->blocks_sent = 0;
+    set->block_bytes_sent = 0;
     set->malformed_blocks_sent = 0;
     set->malformed_blocks_rejected = 0;
 }
@@ -27,12 +28,14 @@ int sim_peer_set_resize(struct sim_peer_set *set, unsigned count)
     set->active_count = count;
     set->killed_count = 0;
     set->blocks_sent = 0;
+    set->block_bytes_sent = 0;
     set->malformed_blocks_sent = 0;
     set->malformed_blocks_rejected = 0;
     for (unsigned i = 0; i < count; i++) {
         set->peers[i].id = i;
         set->peers[i].connected = true;
         set->peers[i].blocks_sent = 0;
+        set->peers[i].block_bytes_sent = 0;
         set->peers[i].last_block_file[0] = '\0';
         set->peers[i].malformed_blocks_sent = 0;
         set->peers[i].last_malformed_type[0] = '\0';
@@ -41,6 +44,7 @@ int sim_peer_set_resize(struct sim_peer_set *set, unsigned count)
         set->peers[i].id = i;
         set->peers[i].connected = false;
         set->peers[i].blocks_sent = 0;
+        set->peers[i].block_bytes_sent = 0;
         set->peers[i].last_block_file[0] = '\0';
         set->peers[i].malformed_blocks_sent = 0;
         set->peers[i].last_malformed_type[0] = '\0';
@@ -62,11 +66,12 @@ int sim_peer_kill(struct sim_peer_set *set, unsigned id)
 }
 
 int sim_peer_send_block(struct sim_peer_set *set, unsigned id,
-                        const char *path)
+                        const char *path, size_t *bytes_read)
 {
     if (!set || !path || !*path) return -EINVAL;
     if (id >= set->count) return -ENOENT;
     if (!set->peers[id].connected) return -ENOTCONN;
+    if (bytes_read) *bytes_read = 0;
 
     FILE *fp = fopen(path, "rb");
     if (!fp) return -errno;
@@ -77,10 +82,14 @@ int sim_peer_send_block(struct sim_peer_set *set, unsigned id,
     if (close_rc != 0) return -EIO;
     if (size == 0) return -ENODATA;
 
+    size_t bytes = (size_t)size;
     set->peers[id].blocks_sent++;
+    set->peers[id].block_bytes_sent += bytes;
     snprintf(set->peers[id].last_block_file,
              sizeof(set->peers[id].last_block_file), "%s", path);
     set->blocks_sent++;
+    set->block_bytes_sent += bytes;
+    if (bytes_read) *bytes_read = bytes;
     return 0;
 }
 

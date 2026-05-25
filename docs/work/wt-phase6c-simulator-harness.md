@@ -324,5 +324,8 @@ One commit per task. Push after tasks 2, 4, 7.
   synthetic tip height.
 - Added a checked-in synthetic block fixture plus `block_fixture.scenario` so
   `make chaos` exercises the `send_block` path from the repository corpus.
+- Extended fixture-backed block simulation with byte accounting, optional
+  explicit fixture heights, and a multi-peer `fixture_ibd.scenario` where good
+  fixture blocks advance the synthetic tip while a malformed peer is rejected.
 
 <!-- Worker: append a Completion section below when done. -->

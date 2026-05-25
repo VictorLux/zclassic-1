@@ -114,9 +114,10 @@ int test_chaos_harness(void)
         send_block_scenario, sizeof(send_block_scenario),
         "seed 1\n"
         "peer_count 1\n"
-        "send_block peer=0 file=%s\n"
+        "send_block peer=0 file=%s height=7\n"
         "expect blocks_sent == 1\n"
-        "expect tip_height == 1\n",
+        "expect block_bytes > 0\n"
+        "expect tip_height == 7\n",
         block_path);
     rc = send_block_len > 0 && (size_t)send_block_len < sizeof(send_block_scenario)
         ? run_temp_scenario(send_block_scenario, &ctx)
@@ -126,8 +127,11 @@ int test_chaos_harness(void)
     const struct sim_peer *block_peer = sim_peer_get(&ctx.peers, 0);
     CHAOS_CHECK("send_block records peer block state",
                 ctx.peers.blocks_sent == 1 &&
-                ctx.tip_height == 1 &&
-                block_peer && block_peer->blocks_sent == 1);
+                ctx.peers.block_bytes_sent > 0 &&
+                ctx.block_bytes > 0 &&
+                ctx.tip_height == 7 &&
+                block_peer && block_peer->blocks_sent == 1 &&
+                block_peer->block_bytes_sent > 0);
 
     rc = run_temp_scenario(
         "seed 1\n"

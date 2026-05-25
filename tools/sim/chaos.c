@@ -42,6 +42,7 @@ struct chaos_ctx {
     int64_t tip_height;
     int64_t reorg_count;
     int64_t consensus_rejects;
+    int64_t block_bytes;
     int64_t clock_advance_seconds;
     int64_t mempool_prune_runs;
     int64_t graceful_shutdowns;
@@ -267,6 +268,10 @@ static bool metric_value(const struct chaos_ctx *ctx, const char *name,
         *out = (int64_t)ctx->peers.blocks_sent;
         return true;
     }
+    if (strcmp(name, "block_bytes") == 0) {
+        *out = ctx->block_bytes;
+        return true;
+    }
     if (strcmp(name, "malformed_blocks") == 0) {
         *out = (int64_t)ctx->peers.malformed_blocks_sent;
         return true;
@@ -371,11 +376,13 @@ static int handle_kill_peer(struct chaos_ctx *ctx, int argc, char **argv,
 static int handle_send_block(struct chaos_ctx *ctx, int argc, char **argv,
                              int line_no)
 {
-    if (argc != 3)
-        return fail_line(line_no, "send_block requires peer=I file=PATH");
+    if (argc != 3 && argc != 4)
+        return fail_line(line_no,
+                         "send_block requires peer=I file=PATH [height=N]");
 
     const char *peer_arg = arg_value(argc, argv, "peer");
     const char *path = arg_value(argc, argv, "file");
+    const char *height_arg = arg_value(argc, argv, "height");
     uint64_t peer_id = 0;
     if (!peer_arg || !parse_u64_auto(peer_arg, &peer_id) ||
         peer_id > UINT32_MAX) {
@@ -383,8 +390,13 @@ static int handle_send_block(struct chaos_ctx *ctx, int argc, char **argv,
     }
     if (!path || !*path)
         return fail_line(line_no, "send_block file is required");
+    int64_t height = 0;
+    if (height_arg && (!parse_i64(height_arg, &height) || height <= 0))
+        return fail_line(line_no, "send_block height must be a positive integer");
 
-    int rc = sim_peer_send_block(&ctx->peers, (unsigned)peer_id, path);
+    size_t bytes_read = 0;
+    int rc = sim_peer_send_block(&ctx->peers, (unsigned)peer_id, path,
+                                 &bytes_read);
     if (rc == -ENOENT)
         return fail_line(line_no, "send_block peer is not configured");
     if (rc == -ENOTCONN)
@@ -394,7 +406,15 @@ static int handle_send_block(struct chaos_ctx *ctx, int argc, char **argv,
     if (rc != 0)
         return fail_line(line_no, "send_block fixture could not be read");
 
-    ctx->tip_height++;
+    if (bytes_read > (size_t)(INT64_MAX - ctx->block_bytes))
+        return fail_line(line_no, "send_block byte counter overflows");
+    ctx->block_bytes += (int64_t)bytes_read;
+    if (height_arg) {
+        if (height > ctx->tip_height)
+            ctx->tip_height = height;
+    } else {
+        ctx->tip_height++;
+    }
     return 0;
 }
 

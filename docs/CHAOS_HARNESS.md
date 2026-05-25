@@ -54,10 +54,12 @@ assertions over broad smoke checks.
 `kill_peer ID`
 : Disconnects a configured simulated peer.
 
-`send_block peer=I file=PATH`
+`send_block peer=I file=PATH [height=N]`
 : Reads a non-empty fixture file from a connected peer, records the simulated
-  send, and advances `tip_height`. Full consensus validation is future work.
-  Checked-in block fixtures live under `tests/fixtures/blocks/`.
+  send, and advances `tip_height`. When `height=N` is present, `tip_height`
+  moves to that height if it is higher than the current tip. Full consensus
+  validation is future work. Checked-in block fixtures live under
+  `tests/fixtures/blocks/`.
 
 `send_malformed_block peer=I type=ENUM`
 : Simulates a bad block from a connected peer and increments
@@ -84,7 +86,8 @@ assertions over broad smoke checks.
 : Compares a metric with `==`, `!=`, `>=`, `<=`, `>`, or `<`. Current metrics:
   `tip_height`, `reorg_count`, `consensus_rejects`, `mempool_prune_runs`,
   `active_peers`, `killed_peers`, `blocks_sent`, `malformed_blocks`,
-  `clock_advance_count`, `scheduled_events`, `alloc_faults`, and `sim_time`.
+  `block_bytes`, `clock_advance_count`, `clock_advance_seconds`,
+  `scheduled_events`, `alloc_faults`, `graceful_shutdowns`, and `sim_time`.
 
 ## Adding Fault Injection
 
