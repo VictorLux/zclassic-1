@@ -49,8 +49,7 @@ leaving `find_most_work_chain` stuck.
 
 | File | Status | Role |
 |------|--------|------|
-| `legacy_bootstrap_importer.c` + `.h` | **Active** | Canonical mode-driven bootstrap importer. Owns `-cold-import`, `-fastimport`, and `-legacy-attach` modes. The compatibility headers `legacy_cold_import.h`, `legacy_direct_import.h`, and `legacy_oneshot_import.h` keep the old public symbols for CLI callers. |
-| `legacy_oneshot_import.h` | **Active compatibility header** | Public `-legacy-attach` contract and stage-stamp drift gate. Implementation lives in `legacy_bootstrap_importer.c` as `LEGACY_BOOTSTRAP_IMPORT_ATTACH`. |
+| `legacy_bootstrap_importer.c` + `.h` | **Active** | Canonical mode-driven bootstrap importer. Owns the public `-cold-import`, `-fastimport`, and `-legacy-attach` wrapper contracts plus the shared mode implementation. |
 | `legacy_body_pull.c` + `.h` | **Runtime-active mirror catch-up; disabled as boot CLI** | `legacy_mirror_sync_service` calls the incremental range puller when local blocks lag legacy. The old boot-time body-pull import path remains removed (pathology — see memory). SHA3 spotcheck helpers remain callable. **Slated for narrower API.** |
 | `legacy_mirror_sync_service.c` + `.h` | **Active** | Background drift-detector. Periodically calls `getmirrorstatus` and surfaces lag / divergence via `EV_MIRROR_*` events. Powers `zcl_mirror_status` and `zcl_diff_with_legacy`. |
 | `legacy_import.c` (controller) | **Active** | RPC/controller surface for legacy import operations. Not wired to a `-importfromlegacy` CLI flag in `main.c`. |

@@ -62,6 +62,47 @@ struct legacy_bootstrap_import_result {
     bool ok;
 };
 
+struct lci_cold_result {
+    int legacy_tip;
+    int64_t block_index_writes;
+    int64_t utxos_imported;
+    int64_t blk_files_linked;
+    double total_secs;
+    bool evidence_armed;
+    bool ok;
+};
+
+struct ldi_result {
+    int applied;
+    int skipped_have_data;
+    int skipped_failed;
+    int final_tip;
+    int legacy_tip;
+    bool source_checked;
+    bool ok;
+};
+
+enum loi_outcome {
+    LOI_OUTCOME_DID_IMPORT = 0,
+    LOI_OUTCOME_NOOP_SAME_TIP = 1,
+    LOI_OUTCOME_RECOVERED_FROM_CRASH = 2,
+    LOI_OUTCOME_REFUSED_HAS_STATE = 3,
+    LOI_OUTCOME_LEGACY_NOT_FOUND = 4,
+    LOI_OUTCOME_FAILED = 5,
+};
+
+struct loi_result {
+    enum loi_outcome outcome;
+    int32_t legacy_tip_height;
+    int64_t block_index_writes;
+    int64_t utxos_imported;
+    int64_t blk_files_linked;
+    int64_t stages_stamped;
+    double total_secs;
+    bool evidence_armed;
+    bool ok;
+};
+
 struct legacy_bootstrap_chainstate_import_result {
     int64_t inserted;
     int64_t records;
@@ -200,6 +241,39 @@ bool legacy_bootstrap_import_snapshot_state(
 bool legacy_bootstrap_import_blocking(
     const struct legacy_bootstrap_import_options *opts,
     struct legacy_bootstrap_import_result *out);
+
+bool legacy_cold_import_blocking(
+    struct main_state *ms,
+    struct coins_view_sqlite *cvs,
+    struct node_db *ndb,
+    struct block_tree_db *btdb,
+    const char *our_datadir,
+    const char *legacy_datadir,
+    struct lci_cold_result *out);
+
+bool legacy_direct_import_range_blocking(
+    struct main_state *ms,
+    struct coins_view_cache *coins_tip,
+    const struct chain_params *params,
+    struct wallet *wallet,
+    const char *our_datadir,
+    const char *legacy_datadir,
+    int from_height,
+    struct ldi_result *out);
+
+bool legacy_oneshot_import_run(
+    const char *our_datadir,
+    const char *legacy_datadir,
+    struct main_state *ms,
+    struct coins_view_sqlite *cvs,
+    struct node_db *ndb,
+    struct block_tree_db *btdb,
+    struct loi_result *out);
+
+const char *loi_outcome_name(enum loi_outcome o);
+
+size_t loi_stages_to_stamp_count(void);
+const char *loi_stages_to_stamp_at(size_t i);
 
 /* Open legacy blk*.dat through the mmap reader and apply the mode's SHA3
  * spotcheck policy. On success, caller must close out->bmr with

@@ -28,7 +28,7 @@
 
 #include "test/test_helpers.h"
 
-#include "services/legacy_oneshot_import.h"
+#include "services/legacy_bootstrap_importer.h"
 #include "storage/progress_store.h"
 #include "util/blocker.h"
 #include "util/stage.h"
@@ -214,7 +214,7 @@ int test_legacy_oneshot_import(void)
     /* ── 3a. Drift gate — LOI_STAGES_TO_STAMP exactly matches expected.
      * Adding a stage requires updating BOTH the production list AND
      * this expected list — exactly the developer hand-off the long
-     * comment in legacy_oneshot_import.h describes. */
+     * comment in legacy_bootstrap_importer.h describes. */
     {
         static const char *const EXPECTED_LOI_STAGES[] = {
             "header_admit",

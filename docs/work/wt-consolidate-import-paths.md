@@ -28,6 +28,20 @@ Progress:
   compatibility wrappers now dispatch through `legacy_bootstrap_importer` modes.
 - `legacy_oneshot_import.c` was removed; its public compatibility wrapper now
   dispatches through `LEGACY_BOOTSTRAP_IMPORT_ATTACH`.
+- The old `legacy_cold_import.h`, `legacy_direct_import.h`, and
+  `legacy_oneshot_import.h` compatibility headers were removed; wrapper
+  contracts now live in the canonical `legacy_bootstrap_importer.h`.
+
+Verification:
+- `make -j$(nproc) test_zcl`, `make -j$(nproc) zclassic23`, `make lint`, and
+  `make -j1 test_parallel && ./test_parallel --jobs=$(nproc)` pass after the
+  canonical-header collapse.
+- Scratch `-cold-import=/home/rhett/.zclassic` imports successfully in ~47s and
+  publishes the pending CSR anchor from legacy chainstate. Current observation:
+  legacy `blocks/index` maps to h=3124589, while chainstate `B` anchors h=3124356;
+  boot then advances the delta through normal activation. This is outside the
+  import-path consolidation itself, but it is the remaining acceptance question
+  behind "reaches zclassicd tip".
 
 ## The shape (one canonical importer, pluggable mode)
 
