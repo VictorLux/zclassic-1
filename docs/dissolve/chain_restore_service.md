@@ -1,7 +1,7 @@
 # Dissolve plan: `chain_restore_service.c` → 3 Jobs + 1 Service + 1 Condition
 
-**Module:** `app/services/src/chain_restore_service.c` (174 LOC after PR-2b)
-**Header:** `app/services/include/services/chain_restore_service.h`
+**Module:** `app/services/src/chain_restore_service.c` (DELETED after PR-3 shell split)
+**Header:** `app/services/include/services/chain_restore_service.h` (compatibility umbrella)
 **Phase:** 3 (Dissolve mega-modules)
 **Gated on:** Wave S cutover C-9 shipped + soaked (so the saga owns
 the forward-tip path before we touch reorg/restore)
@@ -86,8 +86,8 @@ reorg_connect job from there.
 ### PR-1: Extract `restore_planner.c`
 
 Move planning logic from `chain_restore_plan` into the new service.
-Existing `chain_restore_service.c` calls the planner internally — no
-behavior change.
+Existing callers use the planner through the chain_restore compatibility
+header — no behavior change.
 
 ### PR-2: Replace `chain_restore_execute` with the 2 Jobs
 
@@ -103,14 +103,15 @@ remaining job conversion is now isolated from the service shell.
 
 `restore_from_anchor` job + `chain_integrity_failed` condition.
 
-Status: staged. Post-restore repair now lives in `chain_restore_repair.{h,c}`;
-`chain_restore_service.c` only retains validation, integrity check, and boot
-activation decision code.
+Status: staged. Post-restore repair now lives in `chain_restore_repair.{h,c}`.
+Validation/integrity and boot activation now live in
+`chain_restore_integrity.{h,c}` and `chain_restore_boot_activation.{h,c}`.
+The `chain_restore_service.c` implementation file has been deleted.
 
-### PR-4: DELETE `chain_restore_service.{c,h}`
+### PR-4: DELETE `chain_restore_service.h`
 
-Move the boot-time snapshot recovery (`chain_restore_boot_snapshot`)
-into a one-shot helper in `config/boot.c`. Update the 5-ish call sites.
+Replace the remaining compatibility include sites with the specific
+chain_restore headers and delete the umbrella header.
 
 Net: 1,674 LOC out, ~1,000 LOC in. **~700 LOC net deletion.**
 

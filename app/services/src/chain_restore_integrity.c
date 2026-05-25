@@ -1,15 +1,13 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * Chain Restore Service — deterministic chain tip restoration.
- * See chain_restore_service.h for architecture overview. */
+ * Chain Restore Integrity — post-restore validation and health checks. */
 
-#include "services/chain_restore_service.h"
+#include "services/chain_restore_integrity.h"
+#include "services/chain_restore_boot_snapshot.h"
 #include "validation/main_state.h"
 #include "validation/chainstate.h"
 #include "chain/chain.h"
 #include <string.h>
-
-/* ── Validation ────────────────────────────────────────────────── */
 
 void chain_restore_validate(struct chain_restore_validation *out,
                             const struct main_state *ms,
@@ -37,8 +35,6 @@ void chain_restore_validate(struct chain_restore_validation *out,
                && out->chain_tip_set
                && out->tip_matches_expected;
 }
-
-/* ── Post-restore integrity check ────────────── */
 
 void chain_integrity_check_post_restore(struct chain_integrity_result *out,
                                         const struct main_state *ms)
@@ -132,43 +128,4 @@ void chain_integrity_check_post_restore(struct chain_integrity_result *out,
 
     /* Cache the result for `dumpstate subsystem=boot` / `zcl_state`. */
     chain_restore_record_integrity_result(out);
-}
-
-/* ── Boot activation decision ──────────────────────────────────── */
-
-void boot_should_activate_chain(struct boot_activation_decision *out,
-                                int chain_tip_height,
-                                int64_t utxo_count,
-                                size_t block_index_size,
-                                bool legacy_import,
-                                bool anchor_was_created)
-{
-    memset(out, 0, sizeof(*out));
-    out->chain_height = chain_tip_height;
-    out->utxo_count = utxo_count;
-    out->block_index_size = block_index_size;
-
-    if (legacy_import) {
-        out->should_activate = false;
-        out->reason = ACTIVATE_SKIP_LEGACY_IMPORT;
-        return;
-    }
-
-    if (anchor_was_created) {
-        out->should_activate = false;
-        out->reason = ACTIVATE_SKIP_ANCHOR_CREATED;
-        return;
-    }
-
-    /* No UTXOs + many headers = awaiting P2P snapshot.
-     * Connecting blocks from genesis would mark valid blocks FAILED. */
-    if (utxo_count < 100000 && chain_tip_height == 0
-        && block_index_size > 1000) {
-        out->should_activate = false;
-        out->reason = ACTIVATE_SKIP_NO_UTXOS_AWAITING;
-        return;
-    }
-
-    out->should_activate = true;
-    out->reason = ACTIVATE_OK;
 }
