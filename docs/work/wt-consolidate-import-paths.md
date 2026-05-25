@@ -139,6 +139,9 @@ Verification:
 - Cold/attach staged snapshot imports now share one private helper for
   constructing snapshot import options, timing the import, copying common
   result counters, and logging progress.
+- Cold/attach staged snapshot directory names now live in the private snapshot
+  mode table; snapshot preparation and the attach no-op probe take a mode
+  instead of repeated stage-dir/log-prefix arguments.
 
 ## The shape (one canonical importer, pluggable mode)
 

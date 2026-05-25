@@ -39,10 +39,8 @@
 #include <unistd.h>
 
 #define LEGACY_BOOTSTRAP_COLD_REFUSE_ABOVE_TIP 1000
-#define LEGACY_BOOTSTRAP_COLD_STAGE_SUBDIR "cold_import_ldb_snapshot"
 #define LEGACY_BOOTSTRAP_ATTACH_REFUSE_ABOVE_TIP 1000
 #define LEGACY_BOOTSTRAP_ATTACH_MIN_TIP 100
-#define LEGACY_BOOTSTRAP_ATTACH_STAGE_SUBDIR "legacy-attach-stage"
 #define LEGACY_BOOTSTRAP_ATTACH_META_SENTINEL "import_in_progress"
 #define LEGACY_BOOTSTRAP_ATTACH_META_TIP_HASH "legacy_attach_tip_hash"
 #define LEGACY_BOOTSTRAP_ATTACH_META_TIP_HEIGHT "legacy_attach_tip_height"
@@ -90,6 +88,7 @@ struct legacy_bootstrap_snapshot_mode_config {
     const char *block_index_long_op_name;
     const char *chainstate_long_op_name;
     const char *log_prefix;
+    const char *stage_subdir;
 };
 
 static const struct legacy_bootstrap_snapshot_mode_config
@@ -101,6 +100,7 @@ static const struct legacy_bootstrap_snapshot_mode_config
             .block_index_long_op_name = "legacy_cold_import.bulk_copy",
             .chainstate_long_op_name = NULL,
             .log_prefix = "cold_import",
+            .stage_subdir = "cold_import_ldb_snapshot",
         },
         [LEGACY_BOOTSTRAP_SNAPSHOT_ATTACH] = {
             .chainstate_batch_limit = 50000,
@@ -109,6 +109,7 @@ static const struct legacy_bootstrap_snapshot_mode_config
             .block_index_long_op_name = "legacy_attach.bi_copy",
             .chainstate_long_op_name = "legacy_attach.cs_import",
             .log_prefix = "legacy_attach",
+            .stage_subdir = "legacy-attach-stage",
         },
     };
 
@@ -444,38 +445,39 @@ static void legacy_bootstrap_cleanup_staged_snapshot(
 }
 
 static bool legacy_bootstrap_prepare_staged_snapshot(
+    enum legacy_bootstrap_snapshot_mode mode,
     const struct legacy_bootstrap_import_options *opts,
-    const char *stage_subdir,
-    const char *log_prefix,
     struct legacy_bootstrap_staged_snapshot_paths *paths)
 {
+    const struct legacy_bootstrap_snapshot_mode_config *cfg =
+        legacy_bootstrap_snapshot_mode_cfg(mode);
     if (paths)
         memset(paths, 0, sizeof(*paths));
     if (!opts || !opts->our_datadir || !opts->legacy_datadir ||
-        !stage_subdir || !log_prefix || !paths) {
+        !cfg || !cfg->stage_subdir || !cfg->log_prefix || !paths) {
         fprintf(stderr,  // obs-ok:bootstrap-import-terminal-diagnostic
                 "[legacy_bootstrap] prepare staged snapshot: bad args\n");
         return false;
     }
 
     if (!legacy_bootstrap_make_stage_dir(
-            opts->our_datadir, stage_subdir, paths->stage_dir,
-            sizeof(paths->stage_dir), log_prefix))
+            opts->our_datadir, cfg->stage_subdir, paths->stage_dir,
+            sizeof(paths->stage_dir), cfg->log_prefix))
         return false;
 
     if (!legacy_bootstrap_snapshot_leveldbs(
             opts->legacy_datadir, paths->stage_dir, paths->idx_dir,
             sizeof(paths->idx_dir), paths->cs_dir, sizeof(paths->cs_dir),
-            log_prefix))
+            cfg->log_prefix))
         return false;
 
     if (!legacy_bootstrap_format_child_path(
             opts->legacy_datadir, "blocks", paths->legacy_blocks_dir,
-            sizeof(paths->legacy_blocks_dir), log_prefix,
+            sizeof(paths->legacy_blocks_dir), cfg->log_prefix,
             "legacy blocks directory") ||
         !legacy_bootstrap_format_child_path(
             opts->our_datadir, "blocks", paths->our_blocks_dir,
-            sizeof(paths->our_blocks_dir), log_prefix,
+            sizeof(paths->our_blocks_dir), cfg->log_prefix,
             "local blocks directory")) {
         legacy_bootstrap_cleanup_staged_snapshot(paths, false);
         return false;
@@ -484,16 +486,18 @@ static bool legacy_bootstrap_prepare_staged_snapshot(
 }
 
 static bool legacy_bootstrap_probe_chainstate_best(
+    enum legacy_bootstrap_snapshot_mode mode,
     const struct legacy_bootstrap_import_options *opts,
-    const char *stage_subdir,
     const char *snapshot_name,
-    const char *log_prefix,
     struct uint256 *out_best)
 {
+    const struct legacy_bootstrap_snapshot_mode_config *cfg =
+        legacy_bootstrap_snapshot_mode_cfg(mode);
     if (out_best)
         memset(out_best, 0, sizeof(*out_best));
     if (!opts || !opts->our_datadir || !opts->legacy_datadir ||
-        !stage_subdir || !snapshot_name || !log_prefix || !out_best) {
+        !cfg || !cfg->stage_subdir || !cfg->log_prefix ||
+        !snapshot_name || !out_best) {
         fprintf(stderr,  // obs-ok:bootstrap-import-terminal-diagnostic
                 "[legacy_bootstrap] probe chainstate best: bad args\n");
         return false;
@@ -501,25 +505,25 @@ static bool legacy_bootstrap_probe_chainstate_best(
 
     char stage_dir[1100];
     if (!legacy_bootstrap_make_stage_dir(
-            opts->our_datadir, stage_subdir, stage_dir, sizeof(stage_dir),
-            log_prefix))
+            opts->our_datadir, cfg->stage_subdir, stage_dir,
+            sizeof(stage_dir), cfg->log_prefix))
         return false;
 
     char src_cs[1100], cs_path[1200];
     if (!legacy_bootstrap_format_child_path(
             opts->legacy_datadir, "chainstate", src_cs, sizeof(src_cs),
-            log_prefix, "legacy chainstate directory") ||
+            cfg->log_prefix, "legacy chainstate directory") ||
         !legacy_bootstrap_format_child_path(
             stage_dir, snapshot_name, cs_path, sizeof(cs_path),
-            log_prefix, "probe chainstate directory"))
+            cfg->log_prefix, "probe chainstate directory"))
         return false;
 
     if (!legacy_bootstrap_snapshot_one_leveldb(
-            src_cs, cs_path, "chainstate", log_prefix))
+            src_cs, cs_path, "chainstate", cfg->log_prefix))
         return false;
 
     bool ok = legacy_bootstrap_read_chainstate_best_block(
-        cs_path, log_prefix, out_best);
+        cs_path, cfg->log_prefix, out_best);
     ldb_snapshot_destroy(cs_path);
     return ok;
 }
@@ -1220,7 +1224,7 @@ static bool legacy_bootstrap_import_cold(
     struct legacy_bootstrap_staged_snapshot_paths paths;
     int64_t t_snap = legacy_bootstrap_now_ms();
     if (!legacy_bootstrap_prepare_staged_snapshot(
-            opts, LEGACY_BOOTSTRAP_COLD_STAGE_SUBDIR, "cold_import", &paths))
+            LEGACY_BOOTSTRAP_SNAPSHOT_COLD, opts, &paths))
         return false;
     fprintf(stderr,  // obs-ok:cold-import-progress
             "[cold_import] LevelDB snapshots took %" PRId64 " ms\n",
@@ -1787,8 +1791,8 @@ static bool legacy_bootstrap_import_attach(
             last_found) {
             struct uint256 cur_best;
             if (legacy_bootstrap_probe_chainstate_best(
-                    opts, LEGACY_BOOTSTRAP_ATTACH_STAGE_SUBDIR,
-                    "probe-chainstate", "legacy_attach", &cur_best) &&
+                    LEGACY_BOOTSTRAP_SNAPSHOT_ATTACH, opts,
+                    "probe-chainstate", &cur_best) &&
                 memcmp(cur_best.data, last_hash.data, 32) == 0) {
                 r.outcome = LEGACY_ATTACH_OUTCOME_NOOP_SAME_TIP;
                 r.legacy_tip = last_h;
@@ -1835,8 +1839,7 @@ static bool legacy_bootstrap_import_attach(
 
     struct legacy_bootstrap_staged_snapshot_paths paths;
     if (!legacy_bootstrap_prepare_staged_snapshot(
-            opts, LEGACY_BOOTSTRAP_ATTACH_STAGE_SUBDIR, "legacy_attach",
-            &paths)) {
+            LEGACY_BOOTSTRAP_SNAPSHOT_ATTACH, opts, &paths)) {
         return false;
     }
     struct legacy_bootstrap_snapshot_import_result imported;

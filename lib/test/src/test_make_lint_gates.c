@@ -1170,6 +1170,8 @@ static int t_cold_import_uses_leveldb_snapshots_contract(void)
         char *stage = strstr(buf, "cold_import_ldb_snapshot");
         char *snapshot = strstr(cold_mode,
             "legacy_bootstrap_prepare_staged_snapshot(");
+        char *snapshot_mode = strstr(cold_mode,
+            "LEGACY_BOOTSTRAP_SNAPSHOT_COLD, opts, &paths");
         char *cs_probe = strstr(cold_mode,
             "legacy_bootstrap_read_chainstate_best_block(");
         char *height_map = strstr(cold_mode,
@@ -1183,6 +1185,7 @@ static int t_cold_import_uses_leveldb_snapshots_contract(void)
         ASSERT(include != NULL);
         ASSERT(stage != NULL);
         ASSERT(snapshot != NULL);
+        ASSERT(snapshot_mode != NULL);
         ASSERT(cs_probe != NULL);
         ASSERT(height_map != NULL);
         ASSERT(snapshot_import != NULL);
