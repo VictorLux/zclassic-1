@@ -306,5 +306,8 @@ One commit per task. Push after tasks 2, 4, 7.
 - Started Task 3 simulated peers with `tools/sim/sim_peer.c`: `peer_count`
   now creates an in-process peer set, `kill_peer` transitions peer state, and
   `expect` can assert `active_peers` / `killed_peers`.
+- Added the first simulated block-injection command: `send_malformed_block`
+  accepts the planned 8 malformed block types, records peer-level rejection
+  counters, and increments `consensus_rejects`.
 
 <!-- Worker: append a Completion section below when done. -->

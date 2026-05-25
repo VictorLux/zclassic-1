@@ -53,6 +53,16 @@ struct chaos_command {
     chaos_handler_fn handler;
 };
 
+static const char *arg_value(int argc, char **argv, const char *key)
+{
+    size_t key_len = strlen(key);
+    for (int i = 1; i < argc; i++) {
+        if (strncmp(argv[i], key, key_len) == 0 && argv[i][key_len] == '=')
+            return argv[i] + key_len + 1;
+    }
+    return NULL;
+}
+
 static char *trim_ascii(char *s)
 {
     if (!s) return s;
@@ -205,6 +215,10 @@ static bool metric_value(const struct chaos_ctx *ctx, const char *name,
         *out = (int64_t)ctx->peers.killed_count;
         return true;
     }
+    if (strcmp(name, "malformed_blocks") == 0) {
+        *out = (int64_t)ctx->peers.malformed_blocks_sent;
+        return true;
+    }
     return false;
 }
 
@@ -295,6 +309,36 @@ static int handle_kill_peer(struct chaos_ctx *ctx, int argc, char **argv,
     return 0;
 }
 
+static int handle_send_malformed_block(struct chaos_ctx *ctx, int argc,
+                                       char **argv, int line_no)
+{
+    if (argc != 3)
+        return fail_line(line_no,
+                         "send_malformed_block requires peer=I type=ENUM");
+
+    const char *peer_arg = arg_value(argc, argv, "peer");
+    const char *type = arg_value(argc, argv, "type");
+    uint64_t peer_id = 0;
+    if (!peer_arg || !parse_u64_auto(peer_arg, &peer_id) ||
+        peer_id > UINT32_MAX) {
+        return fail_line(line_no, "send_malformed_block peer must be integer");
+    }
+    if (!type || !sim_peer_malformed_type_known(type))
+        return fail_line(line_no, "send_malformed_block unknown type");
+
+    int rc = sim_peer_send_malformed_block(&ctx->peers, (unsigned)peer_id,
+                                           type);
+    if (rc == -ENOENT)
+        return fail_line(line_no, "send_malformed_block peer is not configured");
+    if (rc == -ENOTCONN)
+        return fail_line(line_no, "send_malformed_block peer is disconnected");
+    if (rc != 0)
+        return fail_line(line_no, "send_malformed_block failed");
+
+    ctx->consensus_rejects++;
+    return 0;
+}
+
 static int handle_partition_network(struct chaos_ctx *ctx, int argc,
                                     char **argv, int line_no)
 {
@@ -331,7 +375,7 @@ static const struct chaos_command COMMANDS[] = {
     { "at_event", handle_stub },
     { "kill_peer", handle_kill_peer },
     { "send_block", handle_stub },
-    { "send_malformed_block", handle_stub },
+    { "send_malformed_block", handle_send_malformed_block },
     { "advance_clock", handle_stub },
     { "trigger_oom_at", handle_trigger_oom_at },
     { "partition_network", handle_partition_network },

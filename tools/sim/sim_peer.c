@@ -4,6 +4,8 @@
 
 #include <errno.h>
 #include <stddef.h>
+#include <stdio.h>
+#include <string.h>
 
 void sim_peer_set_init(struct sim_peer_set *set)
 {
@@ -11,6 +13,8 @@ void sim_peer_set_init(struct sim_peer_set *set)
     set->count = 0;
     set->active_count = 0;
     set->killed_count = 0;
+    set->malformed_blocks_sent = 0;
+    set->malformed_blocks_rejected = 0;
 }
 
 int sim_peer_set_resize(struct sim_peer_set *set, unsigned count)
@@ -21,13 +25,19 @@ int sim_peer_set_resize(struct sim_peer_set *set, unsigned count)
     set->count = count;
     set->active_count = count;
     set->killed_count = 0;
+    set->malformed_blocks_sent = 0;
+    set->malformed_blocks_rejected = 0;
     for (unsigned i = 0; i < count; i++) {
         set->peers[i].id = i;
         set->peers[i].connected = true;
+        set->peers[i].malformed_blocks_sent = 0;
+        set->peers[i].last_malformed_type[0] = '\0';
     }
     for (unsigned i = count; i < SIM_PEER_MAX; i++) {
         set->peers[i].id = i;
         set->peers[i].connected = false;
+        set->peers[i].malformed_blocks_sent = 0;
+        set->peers[i].last_malformed_type[0] = '\0';
     }
     return 0;
 }
@@ -42,6 +52,42 @@ int sim_peer_kill(struct sim_peer_set *set, unsigned id)
     if (set->active_count > 0)
         set->active_count--;
     set->killed_count++;
+    return 0;
+}
+
+bool sim_peer_malformed_type_known(const char *type)
+{
+    static const char *const known[] = {
+        "invalid_pow",
+        "bad_merkle",
+        "bad_timestamp",
+        "bad_size",
+        "bad_coinbase",
+        "duplicate_tx",
+        "bad_bits",
+        "bad_nonce",
+    };
+    if (!type || !*type) return false;
+    for (size_t i = 0; i < sizeof(known) / sizeof(known[0]); i++) {
+        if (strcmp(type, known[i]) == 0)
+            return true;
+    }
+    return false;
+}
+
+int sim_peer_send_malformed_block(struct sim_peer_set *set, unsigned id,
+                                  const char *type)
+{
+    if (!set || !type) return -EINVAL;
+    if (id >= set->count) return -ENOENT;
+    if (!set->peers[id].connected) return -ENOTCONN;
+    if (!sim_peer_malformed_type_known(type)) return -EINVAL;
+
+    set->peers[id].malformed_blocks_sent++;
+    snprintf(set->peers[id].last_malformed_type,
+             sizeof(set->peers[id].last_malformed_type), "%s", type);
+    set->malformed_blocks_sent++;
+    set->malformed_blocks_rejected++;
     return 0;
 }
 

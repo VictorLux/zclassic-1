@@ -131,6 +131,41 @@ int test_chaos_harness(void)
 
     rc = run_temp_scenario(
         "seed 1\n"
+        "peer_count 2\n"
+        "send_malformed_block peer=1 type=invalid_pow\n"
+        "send_malformed_block type=bad_merkle peer=1\n"
+        "expect malformed_blocks == 2\n"
+        "expect consensus_rejects == 2\n"
+        "expect active_peers == 2\n",
+        &ctx);
+    CHAOS_CHECK("send_malformed_block scenario passes", rc == 0);
+    const struct sim_peer *mal_peer = sim_peer_get(&ctx.peers, 1);
+    CHAOS_CHECK("send_malformed_block records peer rejection state",
+                ctx.consensus_rejects == 2 &&
+                ctx.peers.malformed_blocks_sent == 2 &&
+                ctx.peers.malformed_blocks_rejected == 2 &&
+                mal_peer && mal_peer->malformed_blocks_sent == 2 &&
+                strcmp(mal_peer->last_malformed_type, "bad_merkle") == 0);
+
+    rc = run_temp_scenario(
+        "seed 1\n"
+        "peer_count 1\n"
+        "kill_peer 0\n"
+        "send_malformed_block peer=0 type=invalid_pow\n"
+        "expect no_crash\n",
+        NULL);
+    CHAOS_CHECK("send_malformed_block disconnected peer fails", rc != 0);
+
+    rc = run_temp_scenario(
+        "seed 1\n"
+        "peer_count 1\n"
+        "send_malformed_block peer=0 type=unknown_badness\n"
+        "expect no_crash\n",
+        NULL);
+    CHAOS_CHECK("send_malformed_block unknown type fails", rc != 0);
+
+    rc = run_temp_scenario(
+        "seed 1\n"
         "trigger_oom_at chaos_test_alloc\n"
         "expect no_crash\n",
         &ctx);
