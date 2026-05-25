@@ -19,12 +19,19 @@ struct block_tree_db;
 struct blocks_mmap;
 struct coins_view_sqlite;
 struct legacy_block_loc;
+struct node_db;
 
 struct legacy_bootstrap_chainstate_import_result {
     int64_t inserted;
     int64_t records;
     bool got_best_block;
     struct uint256 best_block;
+};
+
+struct legacy_bootstrap_height_map_result {
+    struct legacy_block_loc *map;
+    size_t map_count;
+    int32_t tip_height;
 };
 
 /* Hardlink every blk*.dat from legacy_blocks_dir into our_blocks_dir, with
@@ -64,6 +71,16 @@ int64_t legacy_bootstrap_copy_block_index(const char *legacy_index_dir,
                                           const char *long_op_name,
                                           const char *log_prefix);
 
+/* Load the legacy blocks/index height map, optionally restricted to the branch
+ * ending at tip_filter. The caller owns out->map and frees it with
+ * bilr_free_height_map().
+ */
+bool legacy_bootstrap_load_height_map(
+    const char *legacy_index_dir,
+    const struct uint256 *tip_filter,
+    const char *log_prefix,
+    struct legacy_bootstrap_height_map_result *out);
+
 /* Bulk-import UTXOs from a legacy/snapshot chainstate LevelDB into coins.db.
  * batch_limit selects the transaction size; long_op_name may be NULL. Returns
  * false after logging if open, allocation, iteration, or bulk insertion fails.
@@ -75,6 +92,14 @@ bool legacy_bootstrap_import_chainstate_utxos(
     const char *long_op_name,
     const char *log_prefix,
     struct legacy_bootstrap_chainstate_import_result *out);
+
+/* Persist the pending CSR anchor consumed by boot's cold-import resolver. */
+bool legacy_bootstrap_record_pending_csr_anchor(
+    struct node_db *ndb,
+    const struct uint256 *best_block,
+    int32_t best_height,
+    int64_t utxo_count,
+    const char *log_prefix);
 
 /* Verify k random compile-time SHA3 windows against block payloads served by
  * bmr/map. debug_env may name an environment variable that forces one window

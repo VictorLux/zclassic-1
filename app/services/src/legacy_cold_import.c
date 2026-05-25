@@ -133,38 +133,25 @@ bool legacy_cold_import_blocking(
     chainstate_legacy_close(cs_probe);
 
     /* ── Build height map ──────────────────────────────────── */
-    struct bilr *bilr = NULL;
-    if (!bilr_open(idx_dir, &bilr)) {
-        fprintf(stderr,
-                "[cold_import] bilr_open %s failed\n", idx_dir);
+    struct legacy_bootstrap_height_map_result hmap;
+    if (!legacy_bootstrap_load_height_map(idx_dir, &cs_best_for_map,
+                                          "cold_import", &hmap)) {
         ldb_snapshot_destroy(idx_dir);
         ldb_snapshot_destroy(cs_dir);
         return false;
     }
-    struct legacy_block_loc *map = NULL;
-    size_t map_count = 0;
-    if (!bilr_load_height_map_for_tip(bilr, &cs_best_for_map,
-                                      &map, &map_count)) {
-        bilr_close(bilr);
-        ldb_snapshot_destroy(idx_dir);
-        ldb_snapshot_destroy(cs_dir);
-        return false;
-    }
-    int legacy_tip = (int)map_count - 1;
-    while (legacy_tip > 0 && map[(size_t)legacy_tip].height < 0)
-        legacy_tip--;
+    struct legacy_block_loc *map = hmap.map;
+    size_t map_count = hmap.map_count;
+    int legacy_tip = hmap.tip_height;
     r.legacy_tip = legacy_tip;
     fprintf(stderr, // obs-ok:pre-existing-diagnostic
             "[cold_import] legacy tip h=%d (map size=%zu)\n",
             legacy_tip, map_count);
-    bilr_close(bilr);
-    bilr = NULL;
 
     /* ── SHA3 spot-check ──────────────────────────────────── */
     struct blocks_mmap *bmr = NULL;
     if (!bmr_open(blk_dir, &bmr)) {
         bilr_free_height_map(map);
-        bilr_close(bilr);
         ldb_snapshot_destroy(idx_dir);
         ldb_snapshot_destroy(cs_dir);
         return false;
@@ -175,7 +162,6 @@ bool legacy_cold_import_blocking(
     bmr_close(bmr);
     if (!evidence_ok) {
         bilr_free_height_map(map);
-        bilr_close(bilr);
         ldb_snapshot_destroy(idx_dir);
         ldb_snapshot_destroy(cs_dir);
         fprintf(stderr,
@@ -191,7 +177,6 @@ bool legacy_cold_import_blocking(
                                                      "cold_import");
     if (linked < 0) {
         bilr_free_height_map(map);
-        bilr_close(bilr);
         ldb_snapshot_destroy(idx_dir);
         ldb_snapshot_destroy(cs_dir);
         return false;
@@ -209,7 +194,6 @@ bool legacy_cold_import_blocking(
         idx_dir, btdb, &legacy_tip_hash, &legacy_tip_h,
         "legacy_cold_import.bulk_copy", "cold_import");
     bilr_free_height_map(map);
-    bilr_close(bilr);
     if (bi_written < 0) {
         ldb_snapshot_destroy(idx_dir);
         ldb_snapshot_destroy(cs_dir);
@@ -240,28 +224,13 @@ bool legacy_cold_import_blocking(
 
     /* ── Record an unpublished anchor for post-index CSR publication ── */
     if (cs_import.got_best_block) {
-        bool pending_ok =
-            node_db_state_set(ndb, "cold_import_pending_coins_best_block",
-                              cs_import.best_block.data, 32) &&
-            node_db_state_set(ndb, "cold_import_pending_coins_best_height",
-                              &legacy_tip_h, sizeof(legacy_tip_h)) &&
-            node_db_state_set(ndb, "cold_import_pending_utxo_count",
-                              &cs_import.inserted,
-                              sizeof(cs_import.inserted));
-        if (!pending_ok) {
-            fprintf(stderr,
-                    "[cold_import] failed to persist pending CSR anchor\n");
+        if (!legacy_bootstrap_record_pending_csr_anchor(
+                ndb, &cs_import.best_block, legacy_tip_h,
+                cs_import.inserted, "cold_import")) {
             ldb_snapshot_destroy(idx_dir);
             ldb_snapshot_destroy(cs_dir);
             return false;
         }
-        char hex[65] = {0};
-        for (int i = 0; i < 32; i++)
-            snprintf(hex + i*2, 3, "%02x",
-                     cs_import.best_block.data[31 - i]);
-        fprintf(stderr, // obs-ok:pre-existing-diagnostic
-                "[cold_import] pending CSR anchor recorded %s h=%d\n",
-                hex, legacy_tip_h);
     } else {
         fprintf(stderr, // obs-ok:pre-existing-diagnostic
                 "[cold_import] WARNING: legacy chainstate had no 'B' key; "

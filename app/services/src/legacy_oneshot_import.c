@@ -609,16 +609,9 @@ bool legacy_oneshot_import_run(
         ldb_snapshot_destroy(cs_snap);
         return false;
     }
-    bool pending_ok =
-        node_db_state_set(ndb, "cold_import_pending_coins_best_block",
-                          cs_import.best_block.data, 32) &&
-        node_db_state_set(ndb, "cold_import_pending_coins_best_height",
-                          &legacy_tip_h, sizeof(legacy_tip_h)) &&
-        node_db_state_set(ndb, "cold_import_pending_utxo_count",
-                          &cs_import.inserted, sizeof(cs_import.inserted));
-    if (!pending_ok) {
-        fprintf(stderr,
-            "[legacy_attach] failed to persist pending CSR anchor\n");
+    if (!legacy_bootstrap_record_pending_csr_anchor(
+            ndb, &cs_import.best_block, legacy_tip_h, cs_import.inserted,
+            "legacy_attach")) {
         ldb_snapshot_destroy(idx_snap);
         ldb_snapshot_destroy(cs_snap);
         return false;

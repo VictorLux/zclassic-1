@@ -81,31 +81,15 @@ bool legacy_direct_import_range_blocking(
 
     /* ── Open legacy blocks/index ─────────────────────────── */
     int64_t t_open = ldi_now_ms();
-    struct bilr *bilr = NULL;
-    if (!bilr_open(idx_dir, &bilr)) {
-        fprintf(stderr,
-                "[legacy_direct_import] cannot open %s — "
-                "stop zclassicd or snapshot the dir first\n", idx_dir);
+    struct legacy_bootstrap_height_map_result hmap;
+    if (!legacy_bootstrap_load_height_map(idx_dir, NULL,
+                                          "legacy_direct_import", &hmap)) {
         if (out) *out = r;
         return false;
     }
-
-    /* ── Build height map ─────────────────────────────────── */
-    struct legacy_block_loc *map = NULL;
-    size_t map_count = 0;
-    if (!bilr_load_height_map(bilr, &map, &map_count)) {
-        bilr_close(bilr);
-        fprintf(stderr,
-                "[legacy_direct_import] bilr_load_height_map failed\n");
-        if (out) *out = r;
-        return false;
-    }
-    int legacy_tip = (int)map_count - 1;
-    /* Walk down to find the actual highest populated slot (in case the
-     * top few slots are gaps from an unfinished sync on the legacy
-     * side). */
-    while (legacy_tip > 0 && map[(size_t)legacy_tip].height < 0)
-        legacy_tip--;
+    struct legacy_block_loc *map = hmap.map;
+    size_t map_count = hmap.map_count;
+    int legacy_tip = hmap.tip_height;
     r.legacy_tip = legacy_tip;
     fprintf(stderr,  // obs-ok:pre-existing-diagnostic
             "[legacy_direct_import] legacy tip h=%d (map_count=%zu, "
@@ -121,7 +105,6 @@ bool legacy_direct_import_range_blocking(
                 "(from=%d legacy=%d) — nothing to do\n",
                 from_height, legacy_tip);
         bilr_free_height_map(map);
-        bilr_close(bilr);
         r.ok = true;
         r.final_tip = active_chain_height(&ms->chain_active);
         if (out) *out = r;
@@ -132,7 +115,6 @@ bool legacy_direct_import_range_blocking(
     struct blocks_mmap *bmr = NULL;
     if (!bmr_open(blk_dir, &bmr)) {
         bilr_free_height_map(map);
-        bilr_close(bilr);
         if (out) *out = r;
         return false;
     }
@@ -267,7 +249,6 @@ bool legacy_direct_import_range_blocking(
     /* ── Cleanup readers ──────────────────────────────────── */
     bmr_close(bmr);
     bilr_free_height_map(map);
-    bilr_close(bilr);
 
     r.final_tip = active_chain_height(&ms->chain_active);
     r.ok = ok;

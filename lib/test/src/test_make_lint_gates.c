@@ -1033,7 +1033,7 @@ static int t_cold_import_spotcheck_diagnostics_contract(void)
     TEST("cold-import spotcheck failure reports deterministic digest evidence") {
         char path[PATH_MAX];
         ASSERT(repo_path(path, sizeof(path),
-                         "app/services/src/legacy_bootstrap_importer.c") == 0);
+                         "app/services/src/legacy_bootstrap_spotcheck.c") == 0);
         ASSERT(read_entire_file(path, &buf) == 0);
         char *spotcheck = strstr(buf,
             "legacy_bootstrap_spotcheck_sha3_windows(");
@@ -1082,7 +1082,8 @@ static int t_cold_import_uses_leveldb_snapshots_contract(void)
         char *snapshot = strstr(buf,
             "legacy_bootstrap_snapshot_leveldbs(");
         char *cs_probe = strstr(buf, "chainstate_legacy_open(cs_dir, &cs_probe)");
-        char *height_map = strstr(buf, "bilr_open(idx_dir");
+        char *height_map = strstr(buf,
+            "legacy_bootstrap_load_height_map(");
         char *block_index = strstr(buf,
             "legacy_bootstrap_copy_block_index(");
         char *chainstate = strstr(buf,

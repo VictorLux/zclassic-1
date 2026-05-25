@@ -5,14 +5,11 @@
 #include "services/legacy_bootstrap_importer.h"
 
 #include "chain/chain.h"
-#include "chain/sha3_windows.h"
-#include "core/random.h"
 #include "core/serialize.h"
 #include "core/uint256.h"
-#include "crypto/sha3.h"
+#include "models/database.h"
 #include "storage/block_index_db.h"
 #include "storage/blocks_index_legacy_reader.h"
-#include "storage/blocks_mmap_reader.h"
 #include "storage/chainstate_legacy_reader.h"
 #include "storage/coins_view_sqlite.h"
 #include "storage/dbwrapper.h"
@@ -371,6 +368,55 @@ int64_t legacy_bootstrap_copy_block_index(const char *legacy_index_dir,
     return written;
 }
 
+bool legacy_bootstrap_load_height_map(
+    const char *legacy_index_dir,
+    const struct uint256 *tip_filter,
+    const char *log_prefix,
+    struct legacy_bootstrap_height_map_result *out)
+{
+    if (out)
+        *out = (struct legacy_bootstrap_height_map_result){
+            .map = NULL,
+            .map_count = 0,
+            .tip_height = -1,
+        };
+    if (!legacy_index_dir || !log_prefix || !out) {
+        fprintf(stderr,  // obs-ok:bootstrap-import-terminal-diagnostic
+                "[legacy_bootstrap] load height map: bad args\n");
+        return false;
+    }
+
+    struct bilr *bilr = NULL;
+    if (!bilr_open(legacy_index_dir, &bilr)) {
+        fprintf(stderr,  // obs-ok:bootstrap-import-terminal-diagnostic
+                "[%s] cannot open block index %s\n",
+                log_prefix, legacy_index_dir);
+        return false;
+    }
+
+    struct legacy_block_loc *map = NULL;
+    size_t map_count = 0;
+    bool ok = tip_filter
+        ? bilr_load_height_map_for_tip(bilr, tip_filter, &map, &map_count)
+        : bilr_load_height_map(bilr, &map, &map_count);
+    bilr_close(bilr);
+    if (!ok) {
+        fprintf(stderr,  // obs-ok:bootstrap-import-terminal-diagnostic
+                "[%s] bilr_load_height_map%s failed\n",
+                log_prefix, tip_filter ? "_for_tip" : "");
+        return false;
+    }
+
+    int legacy_tip = (int)map_count - 1;
+    while (legacy_tip > 0 && map[(size_t)legacy_tip].height < 0)
+        legacy_tip--;
+
+    out->map = map;
+    out->map_count = map_count;
+    out->tip_height = legacy_tip;
+    return true;
+}
+
 struct legacy_bootstrap_chainstate_ctx {
     struct utxo_bulk_rec *batch;
     uint8_t (*txids)[32];
@@ -543,255 +589,37 @@ bool legacy_bootstrap_import_chainstate_utxos(
     return true;
 }
 
-static void legacy_bootstrap_hex32(const uint8_t hash[32], char out[65])
-{
-    static const char hexdigits[] = "0123456789abcdef";
-    for (size_t i = 0; i < 32; i++) {
-        out[i * 2] = hexdigits[hash[i] >> 4];
-        out[i * 2 + 1] = hexdigits[hash[i] & 0x0f];
-    }
-    out[64] = '\0';
-}
-
-static void legacy_bootstrap_log_window_loc(
-    const struct legacy_block_loc *map,
-    size_t map_count,
-    int h,
+bool legacy_bootstrap_record_pending_csr_anchor(
+    struct node_db *ndb,
+    const struct uint256 *best_block,
+    int32_t best_height,
+    int64_t utxo_count,
     const char *log_prefix)
 {
-    if (h < 0 || (size_t)h >= map_count)
-        return;
-    const struct legacy_block_loc *loc = &map[(size_t)h];
-    if (loc->height < 0) {
-        fprintf(stderr,  // obs-ok:legacy-map-diagnostic
-                "[%s] selected map h=%d: missing\n", log_prefix, h);
-        return;
+    if (!ndb || !best_block || !log_prefix) {
+        fprintf(stderr,  // obs-ok:bootstrap-import-terminal-diagnostic
+                "[legacy_bootstrap] record CSR anchor: bad args\n");
+        return false;
     }
 
-    bool prev_ok = true;
-    if (h > 0 && (size_t)(h - 1) < map_count &&
-        map[(size_t)(h - 1)].height >= 0)
-        prev_ok = uint256_eq(&loc->hashPrev, &map[(size_t)(h - 1)].hash);
-
-    char hash_hex[65], prev_hex[65];
-    legacy_bootstrap_hex32(loc->hash.data, hash_hex);
-    legacy_bootstrap_hex32(loc->hashPrev.data, prev_hex);
-    fprintf(stderr,  // obs-ok:legacy-map-diagnostic
-            "[%s] selected map h=%d hash=%.16s prev=%.16s "
-            "file=%d pos=%u status=0x%x prev_ok=%d\n",
-            log_prefix, h, hash_hex, prev_hex, loc->nFile, loc->nDataPos,
-            loc->nStatus, prev_ok ? 1 : 0);
-}
-
-static void legacy_bootstrap_log_window_map_diagnostics(
-    const struct legacy_block_loc *map,
-    size_t map_count,
-    int start,
-    int end,
-    const char *log_prefix)
-{
-    fprintf(stderr,  // obs-ok:legacy-map-diagnostic
-            "[%s] selected map diagnostic for h=%d..%d\n",
-            log_prefix, start, end);
-
-    for (int h = start; h <= end && h < start + 3; h++)
-        legacy_bootstrap_log_window_loc(map, map_count, h, log_prefix);
-    int tail_start = end - 2;
-    if (tail_start < start + 3)
-        tail_start = start + 3;
-    for (int h = tail_start; h <= end; h++)
-        legacy_bootstrap_log_window_loc(map, map_count, h, log_prefix);
-
-    for (int h = start; h <= end; h++) {
-        if (h <= 0 || (size_t)h >= map_count)
-            continue;
-        const struct legacy_block_loc *loc = &map[(size_t)h];
-        const struct legacy_block_loc *prev = &map[(size_t)(h - 1)];
-        if (loc->height < 0 || prev->height < 0 ||
-            !uint256_eq(&loc->hashPrev, &prev->hash)) {
-            fprintf(stderr,  // obs-ok:legacy-map-diagnostic
-                    "[%s] first selected-map break in window near h=%d\n",
-                    log_prefix, h);
-            legacy_bootstrap_log_window_loc(map, map_count, h - 1,
-                                            log_prefix);
-            legacy_bootstrap_log_window_loc(map, map_count, h, log_prefix);
-            return;
-        }
-    }
-    fprintf(stderr,  // obs-ok:legacy-map-diagnostic
-            "[%s] selected map has no parent break inside h=%d..%d\n",
-            log_prefix, start, end);
-}
-
-static bool legacy_bootstrap_compute_window_hash(
-    struct blocks_mmap *bmr,
-    const struct legacy_block_loc *map,
-    size_t map_count,
-    size_t wi,
-    const char *log_prefix,
-    uint8_t out[32])
-{
-    if (wi >= g_sha3_windows_count) return false;
-    int start = g_sha3_windows[wi].start_height;
-    int end = start + SHA3_WINDOW_SIZE - 1;
-    if (end < 0 || (size_t)end >= map_count) return false;
-
-    struct sha3_256_ctx ctx;
-    sha3_256_init(&ctx);
-
-    for (int h = start; h <= end; h++) {
-        const struct legacy_block_loc *loc = &map[(size_t)h];
-        if (loc->height < 0) {
-            fprintf(stderr,  // obs-ok:bootstrap-import-terminal-diagnostic
-                    "[%s] spotcheck w=%zu h=%d MISSING in legacy index\n",
-                    log_prefix, wi, h);
-            return false;
-        }
-        size_t len = 0;
-        const uint8_t *bytes =
-            bmr_get_payload(bmr, loc->nFile, loc->nDataPos, &len);
-        if (!bytes || len == 0) {
-            fprintf(stderr,  // obs-ok:bootstrap-import-terminal-diagnostic
-                    "[%s] spotcheck w=%zu h=%d mmap fetch failed\n",
-                    log_prefix, wi, h);
-            return false;
-        }
-        sha3_256_write(&ctx, bytes, len);
+    bool pending_ok =
+        node_db_state_set(ndb, "cold_import_pending_coins_best_block",
+                          best_block->data, 32) &&
+        node_db_state_set(ndb, "cold_import_pending_coins_best_height",
+                          &best_height, sizeof(best_height)) &&
+        node_db_state_set(ndb, "cold_import_pending_utxo_count",
+                          &utxo_count, sizeof(utxo_count));
+    if (!pending_ok) {
+        fprintf(stderr,  // obs-ok:bootstrap-import-terminal-diagnostic
+                "[%s] failed to persist pending CSR anchor\n", log_prefix);
+        return false;
     }
 
-    sha3_256_finalize(&ctx, out);
-    return true;
-}
-
-static bool legacy_bootstrap_verify_window_logged(
-    struct blocks_mmap *bmr,
-    const struct legacy_block_loc *map,
-    size_t map_count,
-    size_t wi,
-    const char *log_prefix,
-    bool dump_map_on_failure)
-{
-    uint8_t actual[32];
-    int start = wi < g_sha3_windows_count ?
-        g_sha3_windows[wi].start_height : -1;
-    int end = start >= 0 ? start + SHA3_WINDOW_SIZE - 1 : -1;
-
+    char hex[65] = {0};
+    for (int i = 0; i < 32; i++)
+        snprintf(hex + i * 2, 3, "%02x", best_block->data[31 - i]);
     fprintf(stderr,  // obs-ok:pre-existing-diagnostic
-            "[%s] spotcheck: verifying w=%zu (h=%d..%d)\n",
-            log_prefix, wi, start, end);
-    if (!legacy_bootstrap_compute_window_hash(bmr, map, map_count, wi,
-                                              log_prefix, actual)) {
-        fprintf(stderr,  // obs-ok:bootstrap-import-terminal-diagnostic
-                "[%s] spotcheck FAILED at window %zu (h=%d..%d): "
-                "unable to compute source digest\n",
-                log_prefix, wi, start, end);
-        if (dump_map_on_failure)
-            legacy_bootstrap_log_window_map_diagnostics(
-                map, map_count, start, end, log_prefix);
-        return false;
-    }
-    if (memcmp(actual, g_sha3_windows[wi].hash, 32) != 0) {
-        char expected_hex[65], actual_hex[65];
-        legacy_bootstrap_hex32(g_sha3_windows[wi].hash, expected_hex);
-        legacy_bootstrap_hex32(actual, actual_hex);
-        fprintf(stderr,  // obs-ok:bootstrap-import-terminal-diagnostic
-                "[%s] spotcheck FAILED at window %zu (h=%d..%d): "
-                "expected=%s actual=%s\n",
-                log_prefix, wi, start, end, expected_hex, actual_hex);
-        if (dump_map_on_failure)
-            legacy_bootstrap_log_window_map_diagnostics(
-                map, map_count, start, end, log_prefix);
-        return false;
-    }
-    fprintf(stderr,  // obs-ok:pre-existing-diagnostic
-            "[%s] spotcheck: w=%zu OK\n", log_prefix, wi);
-    return true;
-}
-
-bool legacy_bootstrap_spotcheck_sha3_windows(
-    struct blocks_mmap *bmr,
-    const struct legacy_block_loc *map,
-    size_t map_count,
-    int legacy_tip,
-    int k,
-    const char *log_prefix,
-    const char *debug_env,
-    bool dump_map_on_failure)
-{
-    if (!bmr || !map || !log_prefix) {
-        fprintf(stderr,  // obs-ok:bootstrap-import-terminal-diagnostic
-                "[legacy_bootstrap] SHA3 spotcheck: bad args\n");
-        return false;
-    }
-    if (g_sha3_windows_count == 0) {
-        fprintf(stderr,  // obs-ok:bootstrap-import-terminal-diagnostic
-                "[%s] spotcheck SKIPPED: no compile-time anchor table "
-                "(g_sha3_windows_count=0)\n", log_prefix);
-        return false;
-    }
-
-    size_t max_w = g_sha3_windows_count;
-    if (legacy_tip > 0) {
-        size_t covered = (size_t)(legacy_tip + 1) / SHA3_WINDOW_SIZE;
-        if (covered < max_w) max_w = covered;
-    }
-    if (max_w == 0) {
-        fprintf(stderr,  // obs-ok:bootstrap-import-terminal-diagnostic
-                "[%s] spotcheck SKIPPED: legacy tip h=%d is below any "
-                "complete anchor window\n", log_prefix, legacy_tip);
-        return false;
-    }
-    if ((size_t)k > max_w) k = (int)max_w;
-
-    size_t picked[16];
-    if (k > (int)(sizeof(picked) / sizeof(picked[0])))
-        k = (int)(sizeof(picked) / sizeof(picked[0]));
-
-    if (debug_env && debug_env[0]) {
-        const char *debug_window = getenv(debug_env);
-        if (debug_window && debug_window[0]) {
-            char *endp = NULL;
-            errno = 0;
-            unsigned long long forced = strtoull(debug_window, &endp, 10);
-            if (errno || !endp || *endp != '\0' || forced >= max_w) {
-                fprintf(stderr,  // obs-ok:operator-requested-diagnostic
-                        "[%s] invalid %s=%s (valid range: 0..%zu)\n",
-                        log_prefix, debug_env, debug_window, max_w - 1);
-                return false;
-            }
-            fprintf(stderr,  // obs-ok:operator-requested-diagnostic
-                    "[%s] debug spotcheck window %llu requested\n",
-                    log_prefix, forced);
-            if (!legacy_bootstrap_verify_window_logged(
-                    bmr, map, map_count, (size_t)forced, log_prefix,
-                    dump_map_on_failure))
-                return false;
-        }
-    }
-
-    unsigned char rand_buf[16 * 4];
-    GetRandBytes(rand_buf, sizeof(rand_buf));
-    for (int i = 0; i < k; i++) {
-        uint32_t r = (uint32_t)rand_buf[i * 4]
-                   | ((uint32_t)rand_buf[i * 4 + 1] << 8)
-                   | ((uint32_t)rand_buf[i * 4 + 2] << 16)
-                   | ((uint32_t)rand_buf[i * 4 + 3] << 24);
-        picked[i] = (size_t)(r % max_w);
-    }
-
-    fprintf(stderr,  // obs-ok:pre-existing-diagnostic
-            "[%s] SHA3 spotcheck: K=%d windows over [0..%zu) "
-            "(legacy_tip=%d)\n",
-            log_prefix, k, max_w, legacy_tip);
-
-    for (int i = 0; i < k; i++) {
-        if (!legacy_bootstrap_verify_window_logged(
-                bmr, map, map_count, picked[i], log_prefix,
-                dump_map_on_failure))
-            return false;
-    }
-    fprintf(stderr,  // obs-ok:pre-existing-diagnostic
-            "[%s] SHA3 spotcheck: %d/%d windows match\n",
-            log_prefix, k, k);
+            "[%s] pending CSR anchor recorded %s h=%d\n",
+            log_prefix, hex, best_height);
     return true;
 }
