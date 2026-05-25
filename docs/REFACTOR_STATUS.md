@@ -4,7 +4,7 @@
 > truth for "what's done, what's next, what's blocked." Read this first
 > when you start a session. Full architecture: [`FRAMEWORK.md`](./FRAMEWORK.md).
 
-**Updated:** 2026-05-24 (**goals = 4 promises × 10 numbers** — agents report work as "moved number N", not phase codes. Phase detail below is the execution map.)
+**Updated:** 2026-05-25 (**goals = 4 promises × 10 numbers** — agents report work as "moved number N", not phase codes. Phase detail below is the execution map.)
 
 ---
 
@@ -14,44 +14,88 @@ Honest scoreboard. **MEASURED** = a real number from this box (date + how, in
 [`BENCHMARKS_LOG.md`](./BENCHMARKS_LOG.md)). **TARGET** = where we're going.
 **not measured** = no harness run yet — don't quote a number.
 
+> Read live: `tools/scoreboard.sh` (exit 3 = WEDGED). Snapshot below is from
+> 2026-05-25 07:08Z. **The cure is written; the patient still runs the disease**
+> — all 3 wedge fixes are merged on origin/main but NOT deployed, so the live
+> node is unchanged from when it broke. Numbers prefixed `code:` = fixed in the
+> tree; `live:` = what the running node actually shows right now.
+
 ```
-  ⚡ FAST                       measured now      target        state
-     Cold sync to tip          180s  (05-24)      30s           ▸ PR-3 building
-     Warm restart              37.7s (05-24)      10s           ▸ real restart→tip
-     Validation speed          108 blk/s (05-24)  fast          ✓ measured, running
-     Stay at tip               WEDGED 45 behind   keep <1 blk    ✗ C-3 cutover froze it
+  ⚡ FAST                       live now           target        state
+     Cold sync to tip          180s  (05-24)       30s           ▸ PR-3 building
+     Warm restart              37.7s (05-24)       10s           ▸ real restart→tip
+     Validation speed          108 blk/s (05-24)   fast          ◷ measured; tip frozen now
+     Stay at tip               WEDGED 474 behind   keep <1 blk    ✗ stale-coins BIP30 @3123689; unwedge NOT built
 
   🪶 LEAN
-     Memory (RSS)              ~2.4 GB (05-24)*    1.0 GB        ▲ climbs w/ bg-verify
-     Binary size               14.6 MB (05-24)     stay slim     ✓ met (docs' 26MB stale)
+     Memory (RSS)              2.13 GB (live)*     1.0 GB        ▲ climbs w/ bg-verify
+     Binary size               15.4 MB (05-24)     stay slim     ✓ met (docs' 26MB stale)
 
   💪 UNBREAKABLE  ← resilience is a PROMISE, measured by truth not by "result=ok"
-     Tip advancing             NO — frozen 13min+  always         ✗ P0: header-admit-cutover-diverged
-     Self-heal tells the truth 46 false "ok"        0 false-ok     ✗ P0: peer_floor remedy lies
+     Tip advancing             NO — frozen ~5h     always         ✗ BIP30 stale coinbase; case-(e) rewind not on live path
+     Self-heal tells the truth code: gated (47bdbc211) 0 false-ok ◑ fixed in tree · live still lies
      Wedge/crash recovery      180s, manual        <60s, auto    ▸ PR-0 building (wt3)
-     Uptime before failure     restart @22min       30 days       ✗ soak broke; node wedged
-     Alerts to a human         silent on wedge      0 / month     ✗ stuck tip pages nobody
+     Uptime before failure     wedged ~5h, 12 restarts 30 days    ✗ restart loop went quiet — now silently stuck
+     Alerts to a human         code: page (82ec4e11f) 0 / month   ◑ fixed in tree · live pages nobody
 
   🔬 HONEST
-     Scoreboard ≠ reality      caught 1 lie today  always true    ◷ "0 gap" was stale snapshot
+     Scoreboard ≠ reality      scoreboard.sh live  always true    ✓ stale-snapshot lie now impossible
      Bug → reproducible fix    not built           1 seed-tape   simulator pending
 ```
 `*` RSS soak (05-24): fresh boot 1.53 GB → **stair-steps up with bg-validation
-depth** → ~2.4 GB by 17min (only 6.6% validated), still creeping. NOT bounded
-at a low plateau — tracks how much chain bg-verify has buffered. ~2.4× the 1 GB
-target; real ceiling needs the full ~8h run. `✓` met · `▸` in flight · `◷`
-measuring · `▲` above target · `✗` BROKEN/regressed.
+depth** → ~2.4 GB by 17min (only 6.6% validated), still creeping. Live now reads
+2.13 GB at ~5h wedged. NOT bounded at a low plateau — tracks how much chain
+bg-verify has buffered. >2× the 1 GB target; real ceiling needs the full ~8h
+run. `✓` met · `▸` in flight · `◷` measuring · `◑` fixed-in-code-not-deployed ·
+`▲` above target · `✗` BROKEN/regressed.
 
-### 🚨 P0 — the live node is WEDGED (caught 2026-05-24, not by us — by reading the log)
+### 🚨 P0 — the live node is WEDGED on a stale-coins BIP30 false-positive (root-caused 2026-05-25)
 
-`ad34efb65` (C-3 validate_headers cutover, 17:40) shipped "green" (test_parallel
-0/196) but **froze the chain**. The new authoritative header-admit path diverges
-from legacy on block 3,123,689; the cutover guard rejects it
-(`reason=header-admit-cutover-diverged`), every later block cascades to
-`bad-prevblk`, and the tip has not moved for the whole session (45 behind the
-legacy peer). The self-heal fired `peer_floor_violated` **46×, all `result=ok`**
-— it blamed peers and "fixed" nothing. The scoreboard read "stay at tip ✓ 0 gap"
-the entire time (a stale snapshot).
+**Earlier diagnosis was WRONG and is corrected here.** The wedge is *not* a
+cutover consensus divergence. The cutover (C-3, `ad34efb65`) was only the
+**trigger**: it flapped the chain, `chain_tip_watchdog` kill-9'd the node 12×
+(`NRestarts=12`), and one of those kills hit the at-tip ordering hazard
+([[feedback_at_tip_kill9_ordering_invariant]] — coins.db commits before the
+block_index fsync). That left a **torn coins state** that is now the active,
+standalone wedge:
+
+**Live forensics (read-only `node.db`, 2026-05-25):**
+- `connect_block FAILED h=3123689: bad-txns-BIP30` on every retry → block marked
+  FAILED → `find_most_work_chain` skips it → tip frozen at **3,123,688** (now 474
+  behind legacy, widening ~1 blk/min).
+- Exactly **1 stale `utxos` row at height 3,123,689** — the coinbase of the wedged
+  block. `coins_best_block` anchor = 3,123,688. So coins holds a lone coinbase at
+  `tip+1`; on retry BIP30 sees it unspent and rejects 3,123,689 as a dup.
+- This is the documented **2026-04-19 BIP30 stall** shape
+  (`docs/archive/2026-04/2026-04-19-bip30-stall.md`). BIP30 is correct; the node
+  is lying to it about which coinbases exist.
+
+**Why it never self-heals (leading hypothesis — confirm at runtime):** the boot
+guard built for exactly this (`coins_view_sqlite_check_tip_consistency`, case
+**(e)** `max_utxo==tip+1` → `rewind_above_tip`,
+`lib/storage/src/coins_view_sqlite.c:309`) emits **none** of its diagnostics and
+the stale row survives all 12 restarts — so the case-(e) rewind is demonstrably
+not clearing it on the live path. Most likely the production coins-view open
+(`leveldb_utxo_migrated=01`) bypasses the SQLite guard at
+`coins_view_sqlite.c:498`. (Caveat: the guard's *healthy* paths log via stdout,
+which this node may not route to `node.log`; only its stderr mismatch/rewind
+path is guaranteed captured — and that is absent. The agent confirms by tracing
+the live coins-open path, not by log absence alone.)
+
+**Consequence for the three merged "wedge" fixes — they do NOT unwedge this node:**
+| Fix | Commit | What it actually fixes | Clears the stale row? |
+|---|---|---|---|
+| Cutover → shadow-by-default | `6e0f6a82c` | stops the *trigger* recurring | ✗ no |
+| Self-heal witness gates "ok" | `47bdbc211` | stops the 46× false "ok" lie | ✗ no |
+| Restart cap + page | `82ec4e11f` | stops the kill-9 restart loop | ✗ no |
+
+They're all correct and worth deploying (they prevent recurrence), but a plain
+**deploy alone leaves the node wedged** — the stale 3,123,689 coinbase row still
+trips BIP30 on boot. **The unwedge requires clearing that row** (run the case-(e)
+rewind on the live boot path, or a one-shot coins rewind to the chain tip), then
+letting connect_block re-land 3,123,689 cleanly. New assignment:
+[`work/wt-bip30-stale-coins-unwedge.md`](./work/wt-bip30-stale-coins-unwedge.md).
+Orchestrator doctrine/gate/`scoreboard.sh` commits (7) are still local-only.
 
 **RESILIENCE DOCTRINE (new, load-bearing):**
 1. **A green test suite is not a healthy node.** No cutover is "done" until the
@@ -68,15 +112,19 @@ These three are now first-class promises under UNBREAKABLE/HONEST above.
 
 ### Who's moving what right now
 
+**Reality check (07:08Z):** 0 commits in the last 6h — the workers are idle, not
+mid-build. The rows below are the *next* claims, not work in progress. Nothing
+advances until a worker picks one up (or the live node is unwedged).
+
 | Work | Goal | Who |
 |---|---|---|
-| PR-3 parallel blk*.dat marking (cold-import 101s→seconds) | Cold sync | wt2 |
-| PR-0 snapshot wedge-recovery (auto-heal a stuck tip) | Recovery | wt3 |
-| Cutover C-5→C-9 authoritative | Cold sync, validation, recovery | — |
-| 4e bodies-into-log + 4d projections | Warm restart, recovery | — |
-| Phase-3 dissolves (header_probe ✅, chain_restore, utxo_recovery) | Memory, uptime | — |
-| More self-heal Conditions | Alerts, uptime | — |
-| Phase-6 postmortem + simulator | Bug→fix | — |
+| PR-3 parallel blk*.dat marking (cold-import 101s→seconds) | Cold sync | unclaimed (was wt2) |
+| PR-0 snapshot wedge-recovery (auto-heal a stuck tip) | Recovery | unclaimed (was wt3) |
+| Cutover C-5→C-9 authoritative | Cold sync, validation, recovery | soak-gated |
+| 4e bodies-into-log + 4d projections | Warm restart, recovery | unclaimed |
+| Phase-3 dissolves (header_probe ✅, chain_restore, utxo_recovery) | Memory, uptime | unclaimed |
+| More self-heal Conditions | Alerts, uptime | unclaimed |
+| Phase-6 postmortem + simulator | Bug→fix | unclaimed |
 
 ---
 
@@ -89,15 +137,22 @@ Phase 2  [██████████] 100%   Wave S SHADOW complete (S-1..S-
   ├ S-5..S-7 [██████████] 100%   body_persist, script_validate, proof_validate ✅
   ├ S-8    [██████████] 100%   utxo_apply shadow (wt3)                ✅ 497220f58
   └ S-9    [██████████] 100%   tip_finalize shadow (wt3)              ✅ 1a65b33c7
-Phase 2 CUTOVER [███░░░░░░░]  28%   Flip shadow → authoritative      ← C-5 next, SOAK-GATED
-  ├ C-2    [██████████] 100%   header_admit AUTHORITATIVE             ✅ f3f0c6c4e (the flip)
-  ├ C-3    [██████████] 100%   validate_headers AUTHORITATIVE         ✅ ad34efb65 + 535f14902
-  ├ C-3del [░░░░░░░░░░]   0%   delete legacy validate_headers fallback ← gated on C-3 24h soak
-  ├ C-5    [░░░░░░░░░░]   0%   body_persist + delete body_fetch  ← gated on C-3 24h soak
+Phase 2 CUTOVER [█░░░░░░░░░]  ~8%   Flip shadow → authoritative   ⚠ REVERTED — 0/7 stages authoritative in prod
+  ├ UNWEDGE FIRST [░░░░░░░░░░] 0%  live node wedged on BIP30 stale-coins (see P0) — fix that before ANY re-flip
+  ├ RE-FLIP READINESS [░░░░░░] 0%  was the C-3 `header-admit-cutover-diverged` a TRUE header divergence, or
+  │                                downstream of the same torn coins state? Unverifiable while reverted — re-flip
+  │                                on a clean node, watch one block, revert instantly if it diverges.
+  ├ C-2    [███████░░░] flipped, then REVERTED   header_admit: flip f3f0c6c4e → set back to SHADOW 6e0f6a82c
+  ├ C-3    [███████░░░] flipped, WEDGED, REVERTED validate_headers: flip ad34efb65 → froze chain → SHADOW 6e0f6a82c
+  ├ C-3del [░░░░░░░░░░]   0%   delete legacy validate_headers fallback ← gated on root-cause + clean re-flip
+  ├ C-5    [░░░░░░░░░░]   0%   body_persist + delete body_fetch  ← gated on root-cause + clean re-flip
   ├ C-6    [░░░░░░░░░░]   0%   script_validate authoritative (batch spec, post C-5)
   ├ C-7    [░░░░░░░░░░]   0%   proof_validate authoritative (batch spec, post C-6)
   ├ C-8    [░░░░░░░░░░]   0%   utxo_apply authoritative (batch spec, post C-7 — gates utxo_recovery dissolve)
   └ C-9    [░░░░░░░░░░]   0%   tip_finalize authoritative (batch spec, post C-8 — gates chain_advance dissolve)
+  NOTE: shadow stages (Phase 2 SHADOW, 100%) all run + match in shadow. The CUTOVER is the act of
+        trusting them as authoritative. C-2/C-3 proved the flip mechanism works but surfaced a real
+        consensus divergence in the new path — that bug, not a soak timer, is what gates the whole column.
 Phase 3  [██████░░░░]  60%   Dissolve mega-modules                    ← partial
   ├ watchdog [██████████] 100%   sync_watchdog_service.c DELETED      ✅ 611631541
   ├ supervisor tree split [██████████] 100%   7 domain supervisors    ✅ dae31dee9
@@ -175,11 +230,13 @@ re-quote them here; they rot. Add a row to the ledger instead.
 6 agent worktrees active under `.claude/worktrees/agent-*` (locked).
 Orchestrator on `main` queues + merges; workers push direct to main.
 
-**The Phase 2 cutover critical path is currently SOAK-GATED, not
-worker-gated.** C-3 (validate_headers) went authoritative today; C-3del and
-C-5 cannot flip until a 24 h zero-divergence soak completes. So a freed worker
-should take **soak-independent** work from "Claimable NOW" below rather than
-idle on the soak.
+**The Phase 2 cutover critical path is DIVERGENCE-BLOCKED, not soak-gated.**
+C-2/C-3 went authoritative, the new header path diverged from legacy at block
+3,123,689, the chain wedged, and `6e0f6a82c` reverted both stages to shadow.
+No further flip (C-3del, C-5..C-9) can proceed until someone **root-causes that
+divergence** — a real consensus bug in the new authoritative path, not a timer.
+A freed worker should either take that root-cause or pull **independent** work
+from "Claimable NOW" below.
 
 ---
 
@@ -194,6 +251,7 @@ projection ✅ (a9fb0f396..49ef6bbe6) · chain_restore PR-1 planner extract ✅
 (afed3d673..a5fbe3700) · utxo_recovery PR-1 reimport-flag primitive ✅ (af7ba7a30).
 
 ### Claimable NOW (no soak gate, fully independent)
+0. 🔴 **[`wt-bip30-stale-coins-unwedge.md`](./work/wt-bip30-stale-coins-unwedge.md) — HIGHEST PRIORITY: this is the live wedge.** Root-caused 2026-05-25: 1 stale coinbase UTXO row at 3,123,689 (chain_tip+1) trips `bad-txns-BIP30` every retry; the case-(e) auto-rewind that would clear it never runs on the live boot path (0 log hits in 12 restarts). RED test + make the single-block rewind run at boot. Moves Tip-advancing + Wedge-recovery. Deploy gated on Rhett.
 1. ⚡ [`wt-snapshot-wedge-recovery.md`](./work/wt-snapshot-wedge-recovery.md) **PR-0: runtime snapshot re-sync entry point** — foundational for wedge recovery. Today snapshot sync has NO trigger API (only peer-offer driven, `snapshot_sync_service.h:209`) and apply is cold-start-gated. Add `snapsync_request_recovery()` + a runtime local-LDB manifest builder + relax the <100K accept gate for opt-in recovery. **Feasibility audited — read the ⚠️ block in the doc before claiming.** Unblocks PR-1 (the `tip_wedged_resnapshot` Condition). Moves #6 recovery + #5 keep-up.
 2. ⚡ [`wt-perf-integrate-rebuild.md`](./work/wt-perf-integrate-rebuild.md) **PR-3: parallel io_uring blk*.dat marking in cold-import** — PROMOTED with a live profile: cold-import is ~180s, **101s of it is single-threaded blk*.dat marking** (measured `941b9803d`). The `rebuild_recent` prototype already proved the fix on this exact data (5.6s/2GB/s). Parallelize the scan → seconds. Moves #1 cold sync. PR-1 (HW-CRC) ✅ `69939ec97`; PR-2 (io_uring bulk-append) still spec'd.
 2. [`wt-phase4d-5-small-batch-projections.md`](./work/wt-phase4d-5-small-batch-projections.md) — zmsg/zslp/zswp/store + hodl batch. Closes out the 4d projections.
