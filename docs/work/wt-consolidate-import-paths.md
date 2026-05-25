@@ -2,9 +2,9 @@
 
 ## Status
 
-**IN PROGRESS (wt2).** Independent of the cutover and the P0 halt — touches only the
-import/bootstrap modules, none of the live chain-advance path. Claim by marking
-**IN PROGRESS** at the top.
+**IN PROGRESS (wt2) — paused after public result-contract trim.** Independent of
+the cutover and the P0 halt — touches only the import/bootstrap modules, none of
+the live chain-advance path. Claim by marking **IN PROGRESS** at the top.
 
 ## Why (the cruft)
 
@@ -62,6 +62,12 @@ Progress:
 - Legacy datadir preflight for cold/direct/attach now lives in the canonical
   importer instead of boot carrying a separate `boot_detect_legacy_datadir`
   probe; boot delegates mode policy to `legacy_bootstrap_import_blocking`.
+- Cold/direct/attach child-path construction now uses one checked formatter in
+  the canonical importer, including the attach no-op probe and snapshot import
+  path.
+- Public importer result state was narrowed again: `final_tip` and `total_secs`
+  are now local/caller-derived values, not part of the shared cross-module
+  contract.
 
 Verification:
 - `make -j$(nproc) test_zcl`, `make -j$(nproc) zclassic23`, `make lint`, and
@@ -90,6 +96,14 @@ Verification:
 - `make -j1 test_zcl zclassic23 test_parallel`, `make lint`, and
   `./test_parallel --jobs=$(nproc)` pass after moving legacy-datadir preflight
   into the canonical importer.
+- `make app/services/src/legacy_bootstrap_importer.o`, `make lint`, and
+  `git diff --check` pass after centralizing child-path formatting. Full binary
+  linking in wt2 is blocked by missing `vendor/lib/libtor_stub` and
+  `vendor/lib/libleveldb`.
+- `make app/services/src/legacy_bootstrap_importer.o config/src/boot.o`,
+  `make lint`, and `git diff --check` pass after trimming `final_tip` and
+  `total_secs` from the public importer result. Full binary linking in wt2 is
+  still blocked by the missing local vendor archives above.
 
 ## The shape (one canonical importer, pluggable mode)
 
