@@ -6,6 +6,11 @@
 live forward progress in `wt-connect-bip30-selfwrite.md`; start with the bounded
 rewind helper to avoid broad condition churn.
 
+Task A complete in wt3: `coins_rewind_above_tip(db, tip_height, max_rows)` is
+now the single storage-layer helper for bounded auto-rewind and explicit
+above-tip UTXO pruning; `coins_view_sqlite`, `utxo_recovery_service`, and
+`boot.c` all call it.
+
 > Why queued, not now: days of whack-a-mole accreted overlapping wedge-recovery
 > paths. Most exist only because `connect_block` kept false-wedging. Fix the cause
 > first; then a lot of this is provably dead and safe to delete.
@@ -51,7 +56,7 @@ Active. Confirm `legacy_oneshot_import` (5 refs) vs `legacy_direct_import` (1 re
 aren't redundant; collapse if one wraps the other.
 
 ## Tasks (after the gate)
-1. Extract `coins_rewind_above_tip` helper; rewire all 3 callers; one test. (A)
+1. [x] Extract `coins_rewind_above_tip` helper; rewire all 3 callers; one test. (A)
 2. Live-audit the 17 conditions; merge/retire the now-unreachable ones. (B)
 3. Fix the LEGACY_LIFECYCLE drift + dead flag docs. (C)
 4. Confirm/collapse redundant import wrappers. (D)

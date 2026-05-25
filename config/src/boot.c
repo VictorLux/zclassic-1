@@ -3225,18 +3225,17 @@ sapling_tree_boot_check_done:
                      * gap-fill to drive us forward. */
                     snapsync_set_anchor(NULL);
                     if (g_node_db.open) {
-                        char delsql[160];
-                        snprintf(delsql, sizeof(delsql),
-                            "DELETE FROM utxos WHERE height > %d",
-                            best_have_data->nHeight);
-                        if (!node_db_exec(&g_node_db, delsql))
+                        int pruned = coins_rewind_above_tip(
+                            g_node_db.db, best_have_data->nHeight, -1);
+                        if (pruned < 0)
                             fprintf(stderr,
                                 "[boot] WARN: failed to prune fork-side "
                                 "utxos above h=%d (continuing)\n",
                                 best_have_data->nHeight);
                         else
                             printf("[boot] pruned fork-side utxos above "
-                                   "h=%d\n", best_have_data->nHeight);
+                                   "h=%d (rows=%d)\n",
+                                   best_have_data->nHeight, pruned);
                     }
                     printf("[boot] cleared orphan-coins restore anchor — "
                            "gap-fill will resync above h=%d\n",
@@ -3341,13 +3340,9 @@ sapling_tree_boot_check_done:
                 if (boot_promote_tip_via_csr(
                         walk, "rewind_placeholder_tip", true) &&
                     walk->phashBlock) {
-                    if (g_node_db.open) {
-                        char delsql[160];
-                        snprintf(delsql, sizeof(delsql),
-                            "DELETE FROM utxos WHERE height > %d",
-                            walk->nHeight);
-                        (void)node_db_exec(&g_node_db, delsql);
-                    }
+                    if (g_node_db.open)
+                        (void)coins_rewind_above_tip(
+                            g_node_db.db, walk->nHeight, -1);
                 }
             } else {
                 fprintf(stderr,

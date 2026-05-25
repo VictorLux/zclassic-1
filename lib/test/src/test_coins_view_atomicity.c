@@ -508,6 +508,62 @@ static int t_p89_basic_rewind_with_tx_table(void)
     return failures;
 }
 
+static int t_shared_rewind_helper_direct(void)
+{
+    int failures = 0;
+    char dir[256]; cva_path(dir, sizeof(dir), "shared_helper"); mkdir_p(dir);
+    char dbpath[512]; snprintf(dbpath, sizeof(dbpath), "%s/node.db", dir);
+
+    TEST("cva shared coins_rewind_above_tip helper rewinds tx_index atomically") {
+        sqlite3 *db = NULL;
+        ASSERT(build_full_db(&db, dbpath));
+
+        seed_utxo(db, 100, 0x31);
+        seed_utxo(db, 101, 0x32);
+        seed_orphan_coinbase(db, 0x33, /*utxo_h*/100, /*tx_h*/101);
+        {
+            sqlite3_stmt *s = NULL;
+            sqlite3_prepare_v2(db,
+                "INSERT OR REPLACE INTO node_state(key,value) "
+                "VALUES('utxo_commitment',?)", -1, &s, NULL);
+            uint8_t stale[64];
+            memset(stale, 0xEF, sizeof(stale));
+            sqlite3_bind_blob(s, 1, stale, sizeof(stale), SQLITE_STATIC);
+            sqlite3_step(s);
+            sqlite3_finalize(s);
+        }
+
+        ASSERT_EQ(coins_rewind_above_tip(db, 100, 32), 2);
+
+        sqlite3_stmt *s = NULL;
+        sqlite3_prepare_v2(db,
+            "SELECT COUNT(*) FROM utxos WHERE height>100", -1, &s, NULL);
+        ASSERT(sqlite3_step(s) == SQLITE_ROW);
+        ASSERT_EQ(sqlite3_column_int(s, 0), 0);
+        sqlite3_finalize(s);
+
+        uint8_t orphan_txid[32]; memset(orphan_txid, 0x33, 32);
+        sqlite3_prepare_v2(db,
+            "SELECT COUNT(*) FROM utxos WHERE txid=?", -1, &s, NULL);
+        sqlite3_bind_blob(s, 1, orphan_txid, 32, SQLITE_STATIC);
+        ASSERT(sqlite3_step(s) == SQLITE_ROW);
+        ASSERT_EQ(sqlite3_column_int(s, 0), 0);
+        sqlite3_finalize(s);
+
+        sqlite3_prepare_v2(db,
+            "SELECT COUNT(*) FROM node_state WHERE key='utxo_commitment'",
+            -1, &s, NULL);
+        ASSERT(sqlite3_step(s) == SQLITE_ROW);
+        ASSERT_EQ(sqlite3_column_int(s, 0), 0);
+        sqlite3_finalize(s);
+
+        sqlite3_close(db);
+        PASS();
+    } _test_next:;
+    test_cleanup_tmpdir(dir);
+    return failures;
+}
+
 int test_coins_view_atomicity(void);
 
 int test_coins_view_atomicity(void)
@@ -524,5 +580,6 @@ int test_coins_view_atomicity(void)
     failures += t_utxos_two_ahead_rejected();
     failures += t_p89_orphan_coinbase_swept_by_txid();
     failures += t_p89_basic_rewind_with_tx_table();
+    failures += t_shared_rewind_helper_direct();
     return failures;
 }

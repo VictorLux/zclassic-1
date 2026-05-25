@@ -7,6 +7,7 @@
 #include "coins/utxo_commitment.h"
 #include <sqlite3.h>
 #include <stdbool.h>
+#include <stdint.h>
 #include <pthread.h>
 
 struct coins_view_sqlite {
@@ -60,6 +61,18 @@ bool coins_view_sqlite_write_commitment(struct coins_view_sqlite *cvs,
                                          const struct utxo_commitment *uc);
 bool coins_view_sqlite_read_commitment(struct coins_view_sqlite *cvs,
                                         struct utxo_commitment *uc);
+
+/* Rewind stale UTXO/tx_index rows above a selected chain tip and clear the
+ * persisted UTXO commitment in one transaction.
+ *
+ * max_rows >= 0: bounded auto-heal mode. Refuses unless rows above tip are
+ * confined to exactly tip_height+1 and count <= max_rows.
+ * max_rows < 0: unbounded explicit prune mode for recovery paths that already
+ * selected a replacement tip.
+ *
+ * Returns deleted UTXO rows (height + txid sweep), 0 when no above-tip rows
+ * exist, or -1 on guard refusal / SQL failure. */
+int coins_rewind_above_tip(sqlite3 *db, int64_t tip_height, int64_t max_rows);
 
 /* Explicit cross-handle transaction control. Used by the chain_advance
  * body to coordinate atomicity across coins.db + node.db (the two

@@ -116,8 +116,7 @@ static int coins_view_sqlite_delete_bind_height(sqlite3 *db,
     return changed;
 }
 
-/* crash-recovery auto-rewind for a single-block UTXO
- * overshoot.
+/* Shared crash-recovery rewind for stale UTXO rows above a selected tip.
  *
  * Original behavior (still performed): DELETE utxos where
  * height > tip_height, clear the stored `utxo_commitment` row.
@@ -132,18 +131,70 @@ static int coins_view_sqlite_delete_bind_height(sqlite3 *db,
  *   - Purge the stale `transactions` rows themselves so the tx_index
  *     stays consistent with the rewound utxos set.
  *
- * The ≤32-row guard at the call site still caps blast radius. Returns
- * true on COMMIT, false on ROLLBACK.  Logs + emits an event in both
- * paths. */
-static bool coins_view_sqlite_rewind_above_tip(sqlite3 *db,
-                                                int64_t tip_height)
+ * max_rows >= 0 enables bounded auto-heal mode: only a one-block overshoot
+ * with at most max_rows directly above-tip rows is accepted. max_rows < 0 is
+ * explicit recovery mode for callers that have already selected a replacement
+ * tip. Returns deleted UTXO rows on COMMIT, 0 for no work, -1 on refusal or
+ * SQL failure. Logs + emits an event in both failure and mutation paths. */
+int coins_rewind_above_tip(sqlite3 *db, int64_t tip_height, int64_t max_rows)
 {
+    if (!db || tip_height < 0) {
+        fprintf(stderr,  // obs-ok:helper-context-logged
+            "[coins] auto-rewind: invalid args db=%p tip_height=%lld\n",
+            (void *)db, (long long)tip_height);
+        return -1;
+    }
+
+    int64_t would_wipe = 0;
+    int64_t max_height = 0;
+    sqlite3_stmt *count_stmt = NULL;
+    if (sqlite3_prepare_v2(db,
+            "SELECT COUNT(*), COALESCE(MAX(height),0) "
+            "FROM utxos WHERE height > ?",
+            -1, &count_stmt, NULL) != SQLITE_OK) {
+        fprintf(stderr,  // obs-ok:helper-context-logged
+            "[coins] auto-rewind: count prepare failed: %s\n",
+            sqlite3_errmsg(db));
+        return -1;
+    }
+    sqlite3_bind_int64(count_stmt, 1, tip_height);
+    int count_rc = AR_STEP_ROW_READONLY(count_stmt);
+    if (count_rc == SQLITE_ROW) {
+        would_wipe = sqlite3_column_int64(count_stmt, 0);
+        max_height = sqlite3_column_int64(count_stmt, 1);
+    } else if (count_rc != SQLITE_DONE) {
+        fprintf(stderr,  // obs-ok:helper-context-logged
+            "[coins] auto-rewind: count step failed: %s\n",
+            sqlite3_errmsg(db));
+        sqlite3_finalize(count_stmt);
+        return -1;
+    }
+    sqlite3_finalize(count_stmt);
+
+    if (would_wipe <= 0)
+        return 0;
+
+    if (max_rows >= 0 &&
+        (max_height != tip_height + 1 || would_wipe > max_rows)) {
+        fprintf(stderr,  // obs-ok:helper-context-logged
+            "[coins] auto-rewind: guard refused tip_height=%lld "
+            "rows=%lld max_height=%lld guard=%lld\n",
+            (long long)tip_height, (long long)would_wipe,
+            (long long)max_height, (long long)max_rows);
+        event_emitf(EV_DB_ERROR, 0,
+            "coins_auto_rewind_refused tip_height=%lld rows=%lld "
+            "max_height=%lld guard=%lld",
+            (long long)tip_height, (long long)would_wipe,
+            (long long)max_height, (long long)max_rows);
+        return -1;
+    }
+
     char *err = NULL;
     if (sqlite3_exec(db, "BEGIN IMMEDIATE", NULL, NULL, &err) != SQLITE_OK) {
         fprintf(stderr,
             "[coins] auto-rewind: BEGIN failed: %s\n", err ? err : "?");
         sqlite3_free(err);
-        return false;
+        return -1;
     }
 
     int deleted_high = coins_view_sqlite_delete_bind_height(db,
@@ -194,14 +245,14 @@ static bool coins_view_sqlite_rewind_above_tip(sqlite3 *db,
         "coins_auto_rewind deleted=%d by_txid=%d tx_index=%d tip_height=%lld",
         deleted_high, deleted_bytxid, deleted_txindex,
         (long long)tip_height);
-    return true;
+    return deleted_total;
 
 rollback:
     sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
     event_emitf(EV_DB_ERROR, 0,
         "coins_auto_rewind_failed tip_height=%lld",
         (long long)tip_height);
-    return false;
+    return -1;
 }
 
 /* Boot-time integrity check: the UTXO set (`utxos` table) must not be
@@ -307,39 +358,18 @@ static bool coins_view_sqlite_check_tip_consistency(sqlite3 *db)
          * commitment.  Anything larger than a single-block overshoot
          * or a bounded row delta gets the strict-halt treatment. */
         if (max_height == tip_height + 1) {
-            int64_t above = 0;
-            sqlite3_stmt *cs = NULL;
-            if (sqlite3_prepare_v2(db,
-                    "SELECT COUNT(*) FROM utxos WHERE height>?",
-                    -1, &cs, NULL) == SQLITE_OK) {
-                sqlite3_bind_int64(cs, 1, tip_height);
-                if (AR_STEP_ROW_READONLY(cs) == SQLITE_ROW)
-                    above = sqlite3_column_int64(cs, 0);
-                sqlite3_finalize(cs);
-            }
-            if (above > 0 && above <= COINS_AUTO_REWIND_MAX_ROWS) {
-                fprintf(stderr,  // obs-ok:helper-context-logged
-                    "[coins] DB_ERR_TIP_MISMATCH: utxos "
-                    "max_height=%lld = tip_height+1 "
-                    "(%lld rows above tip, ≤ %d guard) — "
-                    "attempting single-block auto-rewind\n",
-                    (long long)max_height, (long long)above,
-                    COINS_AUTO_REWIND_MAX_ROWS);
-                if (coins_view_sqlite_rewind_above_tip(db, tip_height))
-                    return true;
-                /* Rewind transaction failed — fall through to halt. */
-                fprintf(stderr,
-                    "[coins] DB_ERR_TIP_MISMATCH: auto-rewind "
-                    "transaction failed — halt and investigate.\n");
-                return false;
-            }
             fprintf(stderr,  // obs-ok:helper-context-logged
                 "[coins] DB_ERR_TIP_MISMATCH: utxos "
-                "max_height=%lld = tip_height+1 but %lld rows "
-                "above tip exceed the auto-rewind guard (%d) — "
-                "halt and investigate; do not auto-heal.\n",
-                (long long)max_height, (long long)above,
+                "max_height=%lld = tip_height+1; attempting "
+                "bounded auto-rewind (guard=%d)\n",
+                (long long)max_height,
                 COINS_AUTO_REWIND_MAX_ROWS);
+            if (coins_rewind_above_tip(
+                    db, tip_height, COINS_AUTO_REWIND_MAX_ROWS) > 0)
+                return true;
+            fprintf(stderr,
+                "[coins] DB_ERR_TIP_MISMATCH: auto-rewind refused or "
+                "failed — halt and investigate.\n");
             return false;
         }
         if (tip_height > 1000000 && max_height - tip_height > 1000) {
