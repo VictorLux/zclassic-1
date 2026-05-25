@@ -44,8 +44,8 @@ RESILIENCE DOCTRINE #1–#3 (`docs/REFACTOR_STATUS.md`) for the flip path.
 
 ## Claimable work — build the enforcement (the auto-revert Condition)
 
-**Status: IN PROGRESS (wt3) — claimed 2026-05-25.** Independent. Moves
-UNBREAKABLE (Tip advancing, Alerts).
+**Status: ✅ DONE — pushed 2026-05-25** to main as commit `230d9b896`.
+Independent. Moves UNBREAKABLE (Tip advancing, Alerts).
 
 **Scope:** `app/conditions/src/cutover_no_forward_progress.c` (NEW), registered
 under the chain supervisor; reuse existing infra:
@@ -83,3 +83,41 @@ under the chain supervisor; reuse existing infra:
 - `wt-phase2-cutover-c3-through-c9.md` — the flip sequence this gates.
 - `wt-bip30-stale-coins-unwedge.md` — the wedge the unguarded C-3 flip caused.
 - Memory: `feedback_resilience_first_class_live_truth`.
+
+## Completion (wt3, 2026-05-25)
+
+### Summary
+Shipped `cutover_no_forward_progress`, a critical Condition that detects
+AUTHORITATIVE cutover mode plus stale tip age plus peers advertising more work,
+then reverts `header_admit` and/or `validate_headers` back to SHADOW. The
+witness only clears after active height advances past the stuck height, so a
+frozen tip cannot report `result=ok`.
+
+### Benchmark moved
+UNBREAKABLE: Tip advancing / Alerts. This does not improve a speed number
+directly; it gates the remaining C-* flips by turning a silent cutover freeze
+into an automatic revert + `EV_OPERATOR_NEEDED` path within 180 s.
+
+### Commits
+- `f711ac7b0` wt3: claim cutover safety guard
+- `230d9b896` add cutover no-progress safety condition
+
+### Files added/modified
+- `app/conditions/src/cutover_no_forward_progress.c` (NEW)
+- `app/conditions/src/condition_registry.c`
+- `app/conditions/include/conditions/watchdog_dissolve_pr3.h`
+- `lib/test/src/test_watchdog_conditions_pr3.c`
+- `docs/work/cutover-safety-protocol.md`
+
+### Acceptance verification
+- [x] `make test_zcl -j$(nproc)` — PASS
+- [x] `ZCL_TEST_ONLY=watchdog_conditions_pr3 ./test_zcl` — PASS
+- [x] `make lint` — PASS
+- [x] `./test_parallel --jobs=$(nproc)` — PASS on rerun: 0/212 groups failed
+- [ ] Live deploy check — GATED on Rhett/operator deploy; not run from wt3
+
+### Surprises / follow-ups
+The first `test_parallel` run reported 1/212 failing group, but its failure
+detail was truncated in the terminal capture. A rerun redirected to
+`/tmp/zcl23-test_parallel.log` passed cleanly with 0/212 groups failed, so this
+is recorded as a transient local run issue rather than a reproducible regression.
