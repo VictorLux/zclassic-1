@@ -59,6 +59,18 @@ static int run_temp_scenario(const char *body, struct chaos_ctx *ctx_out)
     return rc;
 }
 
+static bool file_contains_text(const char *path, const char *needle)
+{
+    FILE *fp = fopen(path, "rb");
+    if (!fp) return false;
+    char buf[2048];
+    size_t n = fread(buf, 1, sizeof(buf) - 1, fp);
+    int close_rc = fclose(fp);
+    if (close_rc != 0) return false;
+    buf[n] = '\0';
+    return strstr(buf, needle) != NULL;
+}
+
 int test_chaos_harness(void)
 {
     printf("\n=== chaos_harness tests ===\n");
@@ -301,6 +313,41 @@ int test_chaos_harness(void)
         "expect tip_height > 0\n",
         NULL);
     CHAOS_CHECK("failing expect fails scenario", rc != 0);
+
+    char fail_path[128];
+    CHAOS_CHECK("artifact scenario write succeeds",
+                write_temp_scenario(
+                    "seed 0xfeed\n"
+                    "expect tip_height > 0\n",
+                    fail_path, sizeof(fail_path)) == 0);
+    struct chaos_ctx fail_ctx;
+    chaos_ctx_init(&fail_ctx);
+    fail_ctx.scenario_path = fail_path;
+    rc = run_scenario(&fail_ctx);
+    char artifact_dir[128];
+    int dn = snprintf(artifact_dir, sizeof(artifact_dir),
+                      "/tmp/zcl_chaos_artifacts_%d_XXXXXX", (int)getpid());
+    char *made_dir = dn > 0 && (size_t)dn < sizeof(artifact_dir)
+        ? mkdtemp(artifact_dir)
+        : NULL;
+    fail_ctx.artifact_dir = made_dir;
+    int artifact_rc = made_dir ? write_failure_artifacts(&fail_ctx) : -1;
+    char stem[128];
+    char summary_path[320];
+    char copied_path[320];
+    sanitize_artifact_stem(fail_path, stem, sizeof(stem));
+    snprintf(summary_path, sizeof(summary_path), "%s/%s.failure.txt",
+             made_dir ? made_dir : "", stem);
+    snprintf(copied_path, sizeof(copied_path), "%s/%s.scenario",
+             made_dir ? made_dir : "", stem);
+    CHAOS_CHECK("failure artifact writer succeeds",
+                rc != 0 && artifact_rc == 0 &&
+                file_contains_text(summary_path, "seed=0x000000000000feed") &&
+                file_contains_text(copied_path, "expect tip_height > 0"));
+    unlink(summary_path);
+    unlink(copied_path);
+    if (made_dir) rmdir(made_dir);
+    unlink(fail_path);
 
     rc = run_temp_scenario(
         "seed not-a-number\n"

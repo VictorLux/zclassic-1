@@ -18,6 +18,9 @@ make zclassic23-chaos
 ./zclassic23-chaos --scenario=tools/sim/scenarios/peer_churn.scenario --verbose
 ```
 
+Failed standalone runs write a summary and a copy of the scenario into
+`chaos-output/`. Use `--artifact-dir=PATH` to redirect those files.
+
 ## Scenario Format
 
 Comments start with `#`. Blank lines are ignored. A minimal scenario looks like:
@@ -120,6 +123,9 @@ Start with `--verbose`; the harness prints each accepted command as it runs.
 If a scenario fails after a production crash, inspect the postmortem capsule
 beside the scenario and reduce the command list until the failure is minimal.
 For parser failures, the `chaos:LINE:` prefix points to the offending line.
+The failure summary in `chaos-output/` records the seed, scenario path,
+boot phase, peer counts, and key metrics needed to promote the failure into a
+checked-in regression.
 
 Before committing a scenario, run:
 

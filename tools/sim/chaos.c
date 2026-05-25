@@ -15,6 +15,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 
 #include "net/net_fault.h"
 #include "platform/time_compat.h"
@@ -27,6 +28,7 @@
 
 struct chaos_ctx {
     const char *scenario_path;
+    const char *artifact_dir;
     uint64_t seed;
     bool seed_set;
     char boot_phase[32];
@@ -177,6 +179,115 @@ static int fail_line(int line_no, const char *msg)
 {
     fprintf(stderr, "chaos:%d: %s\n", line_no, msg);
     return -EINVAL;
+}
+
+static const char *path_basename(const char *path)
+{
+    const char *base = path;
+    if (!path) return "scenario";
+    for (const char *p = path; *p; p++) {
+        if (*p == '/' || *p == '\\')
+            base = p + 1;
+    }
+    return *base ? base : "scenario";
+}
+
+static void sanitize_artifact_stem(const char *path, char *out,
+                                   size_t out_len)
+{
+    const char *base = path_basename(path);
+    size_t n = 0;
+    if (out_len == 0) return;
+    for (const unsigned char *p = (const unsigned char *)base;
+         *p && n + 1 < out_len; p++) {
+        if (isalnum(*p) || *p == '-' || *p == '_' || *p == '.')
+            out[n++] = (char)*p;
+        else
+            out[n++] = '_';
+    }
+    if (n == 0 && out_len > 1)
+        out[n++] = 'x';
+    out[n] = '\0';
+}
+
+static int copy_file_bytes(const char *src_path, const char *dst_path)
+{
+    FILE *src = fopen(src_path, "rb");
+    if (!src) return -errno;
+    FILE *dst = fopen(dst_path, "wb");
+    if (!dst) {
+        int rc = -errno;
+        fclose(src);
+        return rc;
+    }
+
+    char buf[4096];
+    int rc = 0;
+    for (;;) {
+        size_t n = fread(buf, 1, sizeof(buf), src);
+        if (n > 0 && fwrite(buf, 1, n, dst) != n) {
+            rc = -EIO;
+            break;
+        }
+        if (n < sizeof(buf)) {
+            if (ferror(src))
+                rc = -EIO;
+            break;
+        }
+    }
+
+    if (fclose(src) != 0 && rc == 0)
+        rc = -EIO;
+    if (fclose(dst) != 0 && rc == 0)
+        rc = -EIO;
+    return rc;
+}
+
+static int write_failure_artifacts(const struct chaos_ctx *ctx)
+{
+    const char *dir = ctx && ctx->artifact_dir ? ctx->artifact_dir
+                                               : "chaos-output";
+    if (!ctx || !ctx->scenario_path || !*ctx->scenario_path)
+        return -EINVAL;
+    if (mkdir(dir, 0777) != 0 && errno != EEXIST)
+        return -errno;
+
+    char stem[128];
+    sanitize_artifact_stem(ctx->scenario_path, stem, sizeof(stem));
+
+    char summary_path[512];
+    char scenario_path[512];
+    int n = snprintf(summary_path, sizeof(summary_path),
+                     "%s/%s.failure.txt", dir, stem);
+    if (n < 0 || (size_t)n >= sizeof(summary_path))
+        return -ENAMETOOLONG;
+    n = snprintf(scenario_path, sizeof(scenario_path),
+                 "%s/%s.scenario", dir, stem);
+    if (n < 0 || (size_t)n >= sizeof(scenario_path))
+        return -ENAMETOOLONG;
+
+    FILE *summary = fopen(summary_path, "wb");
+    if (!summary)
+        return -errno;
+    fprintf(summary, "scenario=%s\n", ctx->scenario_path);
+    fprintf(summary, "seed=%s0x%016" PRIx64 "\n",
+            ctx->seed_set ? "" : "(default)", ctx->seed);
+    fprintf(summary, "boot_phase=%s\n", ctx->boot_phase);
+    fprintf(summary, "peer_count=%u\n", ctx->peer_count);
+    fprintf(summary, "expects=%zu\n", ctx->expect_count);
+    fprintf(summary, "tip_height=%" PRId64 "\n", ctx->tip_height);
+    fprintf(summary, "consensus_rejects=%" PRId64 "\n",
+            ctx->consensus_rejects);
+    fprintf(summary, "blocks_sent=%u\n", ctx->peers.blocks_sent);
+    fprintf(summary, "malformed_blocks=%u\n",
+            ctx->peers.malformed_blocks_sent);
+    fprintf(summary, "active_peers=%u\n", ctx->peers.active_count);
+    fprintf(summary, "artifact_scenario=%s\n", scenario_path);
+    int close_rc = fclose(summary);
+    if (close_rc != 0)
+        return -EIO;
+
+    return copy_file_bytes(ctx->scenario_path, scenario_path);
 }
 
 static int handle_seed(struct chaos_ctx *ctx, int argc, char **argv,
@@ -621,7 +732,9 @@ static int run_scenario(struct chaos_ctx *ctx)
 #ifndef CHAOS_NO_MAIN
 static void usage(const char *argv0)
 {
-    fprintf(stderr, "usage: %s --scenario=PATH [--verbose]\n", argv0);
+    fprintf(stderr,
+            "usage: %s --scenario=PATH [--verbose] [--artifact-dir=PATH]\n",
+            argv0);
 }
 
 int main(int argc, char **argv)
@@ -632,6 +745,8 @@ int main(int argc, char **argv)
     for (int i = 1; i < argc; i++) {
         if (strncmp(argv[i], "--scenario=", 11) == 0) {
             ctx.scenario_path = argv[i] + 11;
+        } else if (strncmp(argv[i], "--artifact-dir=", 15) == 0) {
+            ctx.artifact_dir = argv[i] + 15;
         } else if (strcmp(argv[i], "--verbose") == 0) {
             ctx.verbose = true;
         } else {
@@ -657,6 +772,13 @@ int main(int argc, char **argv)
                ctx.expect_count);
     } else {
         printf("FAIL %s\n", ctx.scenario_path);
+        int artifact_rc = write_failure_artifacts(&ctx);
+        if (artifact_rc == 0)
+            printf("ARTIFACTS %s\n",
+                   ctx.artifact_dir ? ctx.artifact_dir : "chaos-output");
+        else
+            fprintf(stderr, "chaos: failed to write artifacts: %s\n",
+                    strerror(-artifact_rc));
     }
     return rc;
 }

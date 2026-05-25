@@ -327,5 +327,8 @@ One commit per task. Push after tasks 2, 4, 7.
 - Extended fixture-backed block simulation with byte accounting, optional
   explicit fixture heights, and a multi-peer `fixture_ibd.scenario` where good
   fixture blocks advance the synthetic tip while a malformed peer is rejected.
+- Added failure artifacts for standalone chaos runs: failed scenarios now emit
+  a summary plus a copied scenario under `chaos-output/` or an explicit
+  `--artifact-dir=PATH`.
 
 <!-- Worker: append a Completion section below when done. -->
