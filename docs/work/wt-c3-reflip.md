@@ -69,6 +69,30 @@ peers so it sustains ≥3 diverse outbound. Until the node *actually* meets the
 floor, C-3 correctly does not fire. **Robust connectivity is the work — not a
 lowered bar.** (See memory: always the best, never weaken a bar.)
 
+## REAL BLOCKER (updated 2026-05-25) — validate_headers diverges from legacy on 408 MAIN-CHAIN headers
+
+Peer floor self-resolved (node now holds 4 outbound — earned, not weakened). The
+preflight blocker moved to `validate_headers_counters_not_clean`, and that is a
+**genuine correctness gap, not a transient**:
+
+- `zcl_state validate_headers`: `failed_total=408` (passed 535k+, error_count=0,
+  blocked_count=0). Cursor is AT the tip.
+- `step_validate` (validate_headers_stage.c:375) validates against
+  `active_chain_at(...)` — the **active/main chain**. The per-header verify is
+  `CheckProofOfWork` + `check_equihash_solution`. Main-chain headers have valid
+  PoW/Equihash by construction, so **408 failures = the new path is wrong on 408
+  main-chain headers** (NOT benign fork rejections — verified).
+- Per-header `fail_reason` is written to the `validate_headers_log` table
+  (progress.kv); the cutover canary reads it.
+
+**This is the gate working exactly as intended** — flipping C-3 now would make the
+node reject 408 valid main-chain headers → consensus break. **Do NOT flip until
+`failed_total==0`.** Fix = make the new validate_headers verify bit-exact with
+legacy across whatever fork/param boundary those 408 cluster on (likely a
+difficulty/Equihash-personalization fork). Pull the exact heights+reasons from
+`validate_headers_log` / the canary, root-cause the consensus-param gap, fix,
+re-validate to 0 failures, THEN C-3 fires legitimately.
+
 > Deploy/flip on the live node is operator-gated by Rhett. See
 > [`cutover-safety-protocol.md`](./cutover-safety-protocol.md) and
 > [`../VISION.md`](../VISION.md) (dependency spine).
