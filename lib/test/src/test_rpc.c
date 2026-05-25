@@ -291,6 +291,7 @@ int test_rpc(void) {
         ok = ok && validate_headers_get_mode() == VALIDATE_HEADERS_MODE_SHADOW;
         ok = ok && json_get(&result, "changed_at_unix") != NULL;
         ok = ok && json_get(&result, "change_height") != NULL;
+        ok = ok && json_get(&result, "canary_target_height") != NULL;
         ok = ok && json_get(&result, "change_tip_lag") != NULL;
 
         json_free(&v);
@@ -329,6 +330,7 @@ int test_rpc(void) {
         ok = ok && strcmp(json_get_str(json_get(modes, "validate_headers")),
                           "shadow") == 0;
         ok = ok && json_get(live, "healthy") != NULL;
+        ok = ok && json_get(live, "canary_target_height") != NULL;
         ok = ok && json_get(live, "tip_lag") != NULL;
         ok = ok && json_get(live, "tip_advance_age_seconds") != NULL;
         ok = ok && json_get(live, "degraded_reason") != NULL;

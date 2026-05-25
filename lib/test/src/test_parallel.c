@@ -249,6 +249,52 @@ static void print_captured(const char *path)
     fclose(fp);
 }
 
+static bool group_requires_exclusive_repo(const char *name)
+{
+    return name && strcmp(name, "test_make_lint_gates") == 0;
+}
+
+static void run_group_exclusive(size_t idx, pid_t parent_pid,
+                                struct group_result *results)
+{
+    char out_path[128];
+    make_tempfile_path(out_path, sizeof(out_path), idx, parent_pid);
+    results[idx].start = platform_time_wall_time_t();
+
+    pid_t pid = fork();
+    if (pid < 0) {
+        perror("test_parallel: exclusive fork");
+        results[idx].status = 1;
+        results[idx].signaled = 0;
+        results[idx].exit_code = 2;
+        return;
+    }
+    if (pid == 0) {
+        child_run(idx, out_path);
+        _exit(2); /* unreachable */
+    }
+
+    int status = 0;
+    while (waitpid(pid, &status, 0) < 0) {
+        if (errno == EINTR) continue;
+        perror("test_parallel: exclusive waitpid");
+        status = 1;
+        break;
+    }
+
+    results[idx].status = status;
+    if (WIFSIGNALED(status)) {
+        results[idx].signaled = 1;
+        results[idx].exit_code = WTERMSIG(status);
+    } else {
+        results[idx].signaled = 0;
+        results[idx].exit_code = WIFEXITED(status) ? WEXITSTATUS(status) : -1;
+    }
+    memcpy(results[idx].out_path, out_path, sizeof(results[idx].out_path));
+    time_t now = platform_time_wall_time_t();
+    results[idx].wall_seconds = (double)(now - results[idx].start);
+}
+
 int main(int argc, char **argv)
 {
     int jobs = get_nproc();
@@ -316,13 +362,28 @@ int main(int argc, char **argv)
     platform_time_monotonic_timespec(&t_start);
 
     pid_t parent_pid = getpid();
-    size_t next_idx = 0;
     size_t reaped = 0;
+
+    for (size_t i = 0; i < g_num_groups; i++) {
+        if (!group_requires_exclusive_repo(g_groups[i].name))
+            continue;
+        if (verbose)
+            printf("[exclusive] [%zu/%zu] %s\n",
+                   i + 1, g_num_groups, g_groups[i].name);
+        run_group_exclusive(i, parent_pid, results);
+        reaped++;
+    }
+
+    size_t next_idx = 0;
 
     while (reaped < g_num_groups) {
         /* Dispatch as many children as we have free slots and
          * remaining groups. */
         while (next_idx < g_num_groups) {
+            if (results[next_idx].status != -1) {
+                next_idx++;
+                continue;
+            }
             int slot = find_free_slot(slots, jobs);
             if (slot < 0) break;
 

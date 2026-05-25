@@ -645,6 +645,10 @@ static void push_cutover_modes(struct json_value *result, bool changed,
                          platform_time_wall_unix());
         if (health) {
             json_push_kv_int(result, "change_height", health->tip_height);
+            json_push_kv_int(result, "canary_target_height",
+                             health->tip_height >= 0
+                                 ? health->tip_height + 1
+                                 : 0);
             json_push_kv_int(result, "change_header_height",
                              health->header_height);
             json_push_kv_int(result, "change_peer_best_height",
@@ -710,7 +714,8 @@ static bool rpc_cutovermode(const struct json_value *params, bool help,
         "  cutovermode\n"
         "  cutovermode all authoritative\n"
         "  cutovermode all shadow\n"
-        "\nResult: { changed, header_admit, validate_headers }");
+        "\nResult: { changed, header_admit, validate_headers, "
+        "canary_target_height? }");
 
     const struct json_value *stage_v = json_at(params, 0);
     const struct json_value *mode_v = json_at(params, 1);
@@ -835,6 +840,8 @@ static bool push_cutover_live_gate_json(struct json_value *live)
     json_push_kv_bool(live, "has_peers", health.has_peers);
     json_push_kv_int(live, "peer_count", (int64_t)health.peer_count);
     json_push_kv_int(live, "tip_height", health.tip_height);
+    json_push_kv_int(live, "canary_target_height",
+                     health.tip_height >= 0 ? health.tip_height + 1 : 0);
     json_push_kv_int(live, "header_height", health.header_height);
     json_push_kv_int(live, "peer_best_height", health.peer_best_height);
     json_push_kv_int(live, "tip_lag", health.tip_lag);

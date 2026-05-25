@@ -932,14 +932,14 @@ static const struct mcp_tool_route k_routes[] = {
       "validate_headers. With no args it reads modes; with stage+mode it "
       "sets modes. Authoritative requires stage=all; partial stage requests "
       "are only for shadow reverts. Change responses include the local height "
-      "used for canary/soak tracking. Destructive because authoritative mode "
-      "changes live chain ownership.",
+      "and next canary target height used for soak tracking. Destructive "
+      "because authoritative mode changes live chain ownership.",
       p_cutovermode, PARAM_COUNT(p_cutovermode), h_zcl_cutovermode,
       .flags = MCP_TOOL_FLAG_DESTRUCTIVE /* runtime mode setter */ },
     { "zcl_cutoverpreflight", "ops",
       "Read-only C-3 cutover preflight: runtime modes, header_admit "
       "recent shadow parity, header/validate cursor lag, safety guard, "
-      "blockers, and a conservative ready boolean.",
+      "next canary target height, blockers, and a conservative ready boolean.",
       p_cutoverpreflight, PARAM_COUNT(p_cutoverpreflight),
       h_zcl_cutoverpreflight, 0, NULL },
     { "zcl_syncdiag", "ops",
