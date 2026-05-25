@@ -4,7 +4,7 @@
 **Branch:** PUSH DIRECT TO MAIN
 **Phase:** 3 (Dissolve mega-modules)
 **Depends on:** header_probe PR-2d cadence config delete shipped.
-**Status: IN PROGRESS (wt3)** — claimed 2026-05-25.
+**Status: DONE (wt3)** — claimed and completed 2026-05-25.
 
 ## Scope
 
@@ -36,3 +36,36 @@ operational state and counters that help diagnose header catch-up.
 
 This is a PR-2 state-surface cleanup only. It does not change header probing,
 RPC credentials, polling cadence, or header validation behavior.
+
+## Completion — 2026-05-25
+
+Pushed commits:
+
+- `2114bc326` — `wt3: claim header probe dump config delete slice`
+- `8bef07f9f` — `header_probe: narrow dump state surface`
+
+Summary:
+
+- Removed duplicated `running` and RPC/config echo keys from
+  `header_probe_dump_state_json()`.
+- Kept dumpstate focused on `initialized`, counters, and observed header tips.
+- Made direct `header_probe_dump_state_json()` calls initialize their output
+  object before adding keys.
+- Added a focused header_probe dump contract test covering the remaining keys
+  and removed config echo fields.
+- Kept `app/services/src/header_probe_service.c` at 744 lines after adding the
+  direct-dump initialization.
+
+Verification:
+
+- `make -j$(nproc)` PASS.
+- `ZCL_TEST_ONLY=header_probe ./test_zcl` PASS.
+- `ZCL_TEST_ONLY=header_probe_poll ./test_zcl` PASS.
+- `make lint` PASS.
+- `git diff --check` PASS.
+- `./test_parallel --jobs=$(nproc)` PASS — 0/208 groups failed.
+
+Follow-up:
+
+- Continue PR-2 shrink by moving legacy-mirror-only header observation out of
+  the public header_probe stats surface or extracting remaining core helpers.
