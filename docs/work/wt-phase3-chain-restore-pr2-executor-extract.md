@@ -5,7 +5,7 @@
 **Phase:** 3 (Dissolve mega-modules)
 **Depends on:** chain_restore PR-1 planner extraction shipped; PR-1b boot
 snapshot extraction shipped.
-**Status: IN PROGRESS (wt3)** - claimed 2026-05-25.
+**Status: DONE** - pushed 2026-05-25.
 
 ## Scope
 
@@ -38,3 +38,19 @@ The boot snapshot/dumpstate surface already lives in
 
 This is a code-motion slice only. It does not add resumable reorg jobs or
 change anchor semantics, CSR commits, disk backfill, or integrity validation.
+
+## Completion
+
+Moved `chain_restore_create_anchor()`, `chain_restore_execute()`, and the
+CSR tip/header commit helpers into `chain_restore_executor.{h,c}` while
+leaving the existing public `chain_restore_service.h` declarations stable.
+`chain_restore_service.c` now owns validation, integrity checks, repair, and
+finalization only.
+
+Verification:
+- `make -j$(nproc) test_zcl test_parallel` - PASS
+- `ZCL_TEST_ONLY=chain_restore ./test_zcl` - PASS
+- `ZCL_TEST_ONLY=chain_restore_planner ./test_zcl` - PASS
+- `make lint` - PASS
+- `git diff --check` - PASS
+- `./test_parallel --jobs=$(nproc)` - PASS

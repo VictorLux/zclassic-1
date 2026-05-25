@@ -139,7 +139,7 @@ clause. The table below is the dashboard.
 | File | LOC | Dissolves into | Phase |
 |---|---|---|---|
 | `chain_advance_coordinator.c` | 1,715 | `services/sync/source_scorer.c` + `jobs/tip_finalize.c` + 1 condition | 2 (S-9) |
-| `chain_restore_service.c` | 1,467 | `jobs/reorg_*.c` + `services/chain/restore_planner.c` | 3 |
+| `chain_restore_service.c` | 1,263 | `jobs/reorg_*.c` + `services/chain/restore_planner.c` | 3 |
 | `sync_watchdog_service.c` | DELETED | replaced by 8 supervised conditions | 3 (PR-3) |
 | `legacy_mirror_sync_service.c` | 1,410 | `services/sync/legacy_bridge.c` + `jobs/legacy_poll.c` + 1 condition | 2 (S-12) |
 | `header_probe_service.c` | DELETED | `header_probe.c` + `legacy_header_client.c` + mailbox use | 3 (PR-3) |
@@ -170,16 +170,18 @@ before pushing.
 **Shipped since last board sync (origin/main, fetch to see):** 4d-3 wallet
 projection ✅ (a9fb0f396..49ef6bbe6) · chain_restore PR-1 planner extract ✅
 (afed3d673..a5fbe3700) · chain_restore PR-1b boot snapshot extract ✅
-(this commit) · utxo_recovery PR-1 reimport-flag primitive ✅ (af7ba7a30) ·
-header_probe dissolve ✅ (981ad4897..1b0847820).
+(462be5e5a) · chain_restore PR-2a executor extract ✅ (this commit) ·
+utxo_recovery PR-1 reimport-flag primitive ✅ (af7ba7a30) · header_probe
+dissolve ✅ (981ad4897..1b0847820).
 
 ### Claimable NOW (no soak gate, fully independent)
 1. ⚡ [`wt-snapshot-wedge-recovery.md`](./work/wt-snapshot-wedge-recovery.md) **PR-0: runtime snapshot re-sync entry point** — foundational for wedge recovery. Today snapshot sync has NO trigger API (only peer-offer driven, `snapshot_sync_service.h:209`) and apply is cold-start-gated. Add `snapsync_request_recovery()` + a runtime local-LDB manifest builder + relax the <100K accept gate for opt-in recovery. **Feasibility audited — read the ⚠️ block in the doc before claiming.** Unblocks PR-1 (the `tip_wedged_resnapshot` Condition). Moves #6 recovery + #5 keep-up.
 2. ⚡ [`wt-perf-integrate-rebuild.md`](./work/wt-perf-integrate-rebuild.md) **PR-3: parallel io_uring blk*.dat marking in cold-import** — PROMOTED with a live profile: cold-import is ~180s, **101s of it is single-threaded blk*.dat marking** (measured `941b9803d`). The `rebuild_recent` prototype already proved the fix on this exact data (5.6s/2GB/s). Parallelize the scan → seconds. Moves #1 cold sync. PR-1 (HW-CRC) ✅ `69939ec97`; PR-2 (io_uring bulk-append) still spec'd.
 2. [`wt-phase4d-5-small-batch-projections.md`](./work/wt-phase4d-5-small-batch-projections.md) — zmsg/zslp/zswp/store + hodl batch. Closes out the 4d projections.
-3. chain_restore PR-2a executor extract — claimed in
+3. chain_restore PR-2b/PR-3 — next chain_restore dissolve slice after
+   planner, boot snapshot, and executor extraction. Start from
    [`wt-phase3-chain-restore-pr2-executor-extract.md`](./work/wt-phase3-chain-restore-pr2-executor-extract.md)
-   after PR-1/PR-1b.
+   plus [`docs/dissolve/chain_restore_service.md`](./dissolve/chain_restore_service.md).
 
 ### Soak-gated (read the spec now, start when the 24 h C-3 soak clears)
 - [`wt-phase2-cutover-c3-final-delete.md`](./work/wt-phase2-cutover-c3-final-delete.md) — delete the legacy validate_headers fallback.
