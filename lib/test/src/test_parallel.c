@@ -168,6 +168,7 @@ struct group_result {
     double wall_seconds; /* 0 until measured */
     time_t start;
     char out_path[128];  /* owned by the slot; copied here on reap */
+    int skipped;         /* 1 if excluded by --only=SUBSTR (not run) */
 };
 
 static int get_nproc(void)
@@ -306,6 +307,7 @@ int main(int argc, char **argv)
                              * loaded. */
     bool verbose = false;
     bool list_only = false;
+    const char *only = NULL; /* --only=SUBSTR: run just matching groups */
 
     for (int i = 1; i < argc; i++) {
         if (strncmp(argv[i], "--jobs=", 7) == 0) {
@@ -322,9 +324,12 @@ int main(int argc, char **argv)
             verbose = true;
         } else if (strcmp(argv[i], "--list") == 0) {
             list_only = true;
+        } else if (strncmp(argv[i], "--only=", 7) == 0) {
+            only = argv[i] + 7;
         } else {
             fprintf(stderr,
-                    "Usage: %s [--jobs=N] [--timeout=SECS] [--verbose] [--list]\n",
+                    "Usage: %s [--jobs=N] [--timeout=SECS] [--verbose] "
+                    "[--list] [--only=SUBSTR]\n",
                     argv[0]);
             return 2;
         }
@@ -352,6 +357,27 @@ int main(int argc, char **argv)
         results[i].status = -1;
     }
 
+    /* --only=SUBSTR: pre-mark non-matching groups as already-reaped so
+     * they are neither dispatched nor counted. Lets a dev iterate on one
+     * group in ~seconds instead of waiting on the slowest group (the long
+     * pole is test_merkle_tree, ~110s). */
+    size_t pre_skipped = 0;
+    if (only) {
+        for (size_t i = 0; i < g_num_groups; i++) {
+            if (!strstr(g_groups[i].name, only)) {
+                results[i].status = 0; /* excludes from dispatch loop */
+                results[i].skipped = 1;
+                pre_skipped++;
+            }
+        }
+        if (pre_skipped == g_num_groups) {
+            fprintf(stderr,
+                    "test_parallel: --only=%s matched no groups\n", only);
+            free(results);
+            return 2;
+        }
+    }
+
     struct child_slot *slots =
         calloc((size_t)jobs, sizeof(*slots));
     if (!slots) {
@@ -364,9 +390,11 @@ int main(int argc, char **argv)
     platform_time_monotonic_timespec(&t_start);
 
     pid_t parent_pid = getpid();
-    size_t reaped = 0;
+    size_t reaped = pre_skipped;
 
     for (size_t i = 0; i < g_num_groups; i++) {
+        if (results[i].skipped)
+            continue;
         if (!group_requires_exclusive_repo(g_groups[i].name))
             continue;
         if (verbose)
@@ -485,6 +513,7 @@ int main(int argc, char **argv)
 
     int failed_groups = 0;
     for (size_t i = 0; i < g_num_groups; i++) {
+        if (results[i].skipped) continue;
         bool pass =
             !results[i].signaled && results[i].exit_code == 0;
         printf("\n==================== %s (%s, %.0fs) ====================\n",
@@ -496,12 +525,14 @@ int main(int argc, char **argv)
         if (pass && results[i].out_path[0]) unlink(results[i].out_path);
     }
 
-    printf("\n%s — %d/%zu groups failed (%.1fs wall, %d workers)\n",
+    printf("\n%s — %d/%zu groups failed (%.1fs wall, %d workers)%s\n",
            failed_groups == 0 ? "ALL TESTS PASSED" : "SOME TESTS FAILED",
-           failed_groups, g_num_groups, wall, jobs);
+           failed_groups, g_num_groups - pre_skipped, wall, jobs,
+           only ? " [--only filtered]" : "");
     if (failed_groups > 0) {
         printf("Failed groups:\n");
         for (size_t i = 0; i < g_num_groups; i++) {
+            if (results[i].skipped) continue;
             bool pass =
                 !results[i].signaled && results[i].exit_code == 0;
             if (pass) continue;
