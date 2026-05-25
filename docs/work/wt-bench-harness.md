@@ -2,8 +2,7 @@
 
 ## Status
 
-**IN PROGRESS (wt3) — ⚠ BUILD IT IN C, NOT SHELL (orchestrator redirect 2026-05-25).**
-Fully independent of the P0 connect_block work.
+**✅ DONE — pushed 2026-05-25** to main as commit `8a8f776b6`.
 
 > **Canonical functionality lives in C, in the binary — shell is thin dev glue
 > only.** `zcl_benchmark` (MCP) already exists and `USER_BENCHMARKS.md` already
@@ -70,3 +69,53 @@ Canonical functionality lives in C. `make bench` is thin glue over
 - `docs/USER_BENCHMARKS.md` (the 5-number spec), `docs/BENCHMARKS_LOG.md` (ledger).
 - `zclassic23 -bench`, `zclassic23 -bench-regress`, `zcl_benchmark`.
 - Memory: [[feedback_high_perf_engineering_standard]], [[feedback_dont_sell_clear_info]] (numbers must be measured, dated, honest).
+
+## Completion (wt3, 2026-05-25)
+
+### Summary
+Moved the benchmark harness into the `zclassic23` binary per the orchestrator
+redirect. `make bench` now calls `zclassic23 -bench`, `make ci` gates via
+`zclassic23 -bench-regress`, `zcl_benchmark` reports the five user primaries,
+and the redundant benchmark shell scripts were deleted.
+
+### Benchmark moved
+ALL perf metrics: no speed/RSS number improved directly; this creates the
+canonical C measurement path and regression gate. Current rows are honest
+pending rows until a seeded benchmark datadir or post-P0 live baseline is
+available.
+
+### Commits
+- `c591d8045` wt3: claim bench harness
+- `8d7559743` move benchmark harness into zclassic23
+- `78279fe9b` record C bench pending baseline
+- `43d6d6d46` docs: point benchmark workflow at zclassic23
+- `8a8f776b6` record rebased C bench baseline
+
+### Files added/modified/deleted
+- `main.c` (`-bench`, `-bench-*`, `-bench-regress`)
+- `app/controllers/src/misc_controller.c` (`zcl_benchmark` primary list)
+- `Makefile`
+- `docs/bench-history.csv`
+- `docs/USER_BENCHMARKS.md`, `docs/BENCHMARKS_LOG.md`, `docs/RUNBOOK.md`
+- Deleted redundant scripts: `tools/bench/zcl-bench*.sh`,
+  `tools/bench_running_lag.sh`, `tools/bench_no_stuck.sh`,
+  `tools/bench_fresh_sync.sh`, `tools/bench_cold_*.sh`
+
+### Acceptance verification
+- [x] `make zclassic23` — PASS.
+- [x] `ZCL_BENCH_COMMIT=$(git rev-parse --short HEAD) make bench` — PASS;
+      printed bench datadir `/tmp/zcl23-bench` and `live service: not touched`.
+- [x] `make bench-regress` — PASS.
+- [x] Synthetic regression gate check — PASS path accepted 10s→11s; deliberate
+      10s→13s slowdown failed as expected.
+- [x] `make lint` — PASS.
+- [x] `./test_parallel --jobs=$(nproc)` — PASS, 0/212 groups failed
+      (114.0s wall, 32 workers).
+
+### Surprises / follow-ups
+The first shell implementation was superseded by the orchestrator redirect.
+The C path currently records pending rows rather than pretending to measure
+full-chain numbers on an unseeded/deploy-gated host; numeric implementations of
+`-bench-coldstart`, `-bench-warmstart`, `-bench-rss`, and `-bench-kill9` should
+fill those rows once the required isolated benchmark datadir/live baseline is
+available.
