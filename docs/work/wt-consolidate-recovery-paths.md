@@ -11,6 +11,11 @@ now the single storage-layer helper for bounded auto-rewind and explicit
 above-tip UTXO pruning; `coins_view_sqlite`, `utxo_recovery_service`, and
 `boot.c` all call it.
 
+Task C complete in wt3: `LEGACY_LIFECYCLE.md` now matches the live CLI parse
+surface (`-cold-import`, `-fastimport`, `-legacy-attach`, `-nolegacyimport`)
+and records that `legacy_body_pull` is runtime-active through mirror catch-up,
+not a boot CLI path.
+
 > Why queued, not now: days of whack-a-mole accreted overlapping wedge-recovery
 > paths. Most exist only because `connect_block` kept false-wedging. Fix the cause
 > first; then a lot of this is provably dead and safe to delete.
@@ -42,12 +47,12 @@ those whose symptom is now impossible. Target: 17 → ~10, each with a distinct,
 still-reachable trigger.
 
 ### C. Doc-vs-reality drift to fix (cheap, do in this PR)
-- `LEGACY_LIFECYCLE.md` says `legacy_body_pull` is "disabled at boot," but it ran
-  every few seconds in live logs (gap-fill invokes it at runtime). Either narrow
-  the API as the doc promises ("slated for narrower API") or correct the doc.
-- The doc lists `-fastimport`, `-importfromlegacy`, `-nolegacyimport`,
-  `-legacy-auto-import`; only `-cold-import` and `-legacy-attach` appear as string
-  literals in the tree. Reconcile: delete dead flag docs or wire the missing flags.
+- `LEGACY_LIFECYCLE.md` said `legacy_body_pull` was only "disabled at boot," but
+  it still runs through `legacy_mirror_sync_service` as runtime mirror catch-up.
+- `LEGACY_LIFECYCLE.md` listed dead CLI flags (`-importfromlegacy`,
+  `-legacy-auto-import`) and missed the current `-legacy-attach` path. The live
+  parsed flag set is `-cold-import`, `-fastimport`, `-legacy-attach`,
+  `-nolegacyimport`.
 
 ### D. Import paths — confirm, don't assume
 3 import modules (`legacy_cold_import`, `legacy_direct_import`,
@@ -58,7 +63,7 @@ aren't redundant; collapse if one wraps the other.
 ## Tasks (after the gate)
 1. [x] Extract `coins_rewind_above_tip` helper; rewire all 3 callers; one test. (A)
 2. Live-audit the 17 conditions; merge/retire the now-unreachable ones. (B)
-3. Fix the LEGACY_LIFECYCLE drift + dead flag docs. (C)
+3. [x] Fix the LEGACY_LIFECYCLE drift + dead flag docs. (C)
 4. Confirm/collapse redundant import wrappers. (D)
 
 ## Acceptance

@@ -24,18 +24,22 @@ Cross-references: `CLAUDE.md` (top-level architecture),
 | Flag | Module | Status | What it does |
 |------|--------|--------|--------------|
 | `-cold-import[=DIR]` | `legacy_cold_import.c` | **Active** (recommended cold start) | Hardlinks `blk*.dat`, bulk-copies block_index LevelDB, bulk-imports chainstate at the legacy tip. Empty datadir → tip in ~60s. Skips `process_new_block` entirely. |
-| `-fastimport[=DIR]` | `local_chain_ingest_fastimport.c` (calls into `legacy_*` readers) | **Active** | Reads blocks LevelDB + mmaps `blk*.dat`, runs the normal block-ingest path with deferred per-block I/O. Slower than `-cold-import` but exercises the full validation pipeline; auto-triggers a wallet rescan at end. |
-| `-importfromlegacy=DIR` | dispatcher in `legacy_import.c` | **Active** | The documented one-liner that picks between `-cold-import` and `-fastimport` based on detected state. Mirrors the user-facing CLI from the 2026-05-13 fast-sync plan. |
+| `-fastimport[=DIR]` | `legacy_direct_import.c` | **Active** | Reads blocks LevelDB + mmaps `blk*.dat`, runs the normal block-ingest path with deferred per-block I/O. Slower than `-cold-import` but exercises the full validation pipeline; auto-triggers a wallet rescan at end. |
+| `-legacy-attach[=DIR]` | `legacy_oneshot_import.c` | **Active** | Snapshots a locally running `zclassicd`, imports block index + chainstate, stamps Wave S stage cursors to `legacy_tip+1`, and lets normal live sync resume above the imported tip. |
 | `-nolegacyimport` | (no module — disables) | **Active** | Disable any auto-detection of `~/.zclassic` on boot. Use when you explicitly do not want legacy interaction. Default is to auto-detect. |
-| `-legacy-auto-import` | — | **Active** (default-on) | Implicit. When `~/.zclassic` exists and `-nolegacyimport` is not set, the boot path promotes legacy state via `boot_step_legacy_anchor`. |
 
-There is no `-bodypull-from-legacy` flag in the current tree. It was
-removed in Wave 9i after the [body-pull pathology](MEMORY.md) was
-diagnosed: `legacy_body_pull` pre-populated `block_index` with
-`BLOCK_HAVE_DATA` but never activated those blocks, leaving
-`find_most_work_chain` stuck. The module's `legacy_body_pull.c` /
-`.h` files remain in tree because they still provide the SHA3
-spot-check primitives that other paths call.
+There is no `-importfromlegacy`, `-legacy-auto-import`, or
+`-bodypull-from-legacy` CLI flag in the current tree. `-nolegacyimport`
+is still parsed because boot may auto-detect a sibling `~/.zclassic`
+through the legacy anchor path unless disabled.
+
+`legacy_body_pull` is not a boot CLI path, but it is still runtime-active:
+`legacy_mirror_sync_service` calls `legacy_body_pull_range_incremental()`
+to catch up local bodies from a legacy node when mirror lag is detected.
+The old boot-time body-pull path was removed in Wave 9i after the
+[body-pull pathology](MEMORY.md) was diagnosed: it pre-populated
+`block_index` with `BLOCK_HAVE_DATA` but never activated those blocks,
+leaving `find_most_work_chain` stuck.
 
 ---
 
@@ -47,9 +51,10 @@ spot-check primitives that other paths call.
 |------|--------|------|
 | `legacy_cold_import.c` + `.h` | **Active** | Direct copy/hardlink of legacy state. Triggered by `-cold-import`. Skips `process_new_block`. |
 | `legacy_direct_import.c` + `.h` | **Active** | Used by `-fastimport` for the per-block ingest path that mmaps `blk*.dat` and reads block_index from LevelDB directly. |
-| `legacy_body_pull.c` + `.h` | **Disabled at boot** (Wave 9i); helpers retained | The boot-time call has been removed (pathology — see memory). SHA3 spotcheck helpers used by other paths remain callable. **Slated for narrower API.** |
+| `legacy_oneshot_import.c` + `.h` | **Active** | Used by `-legacy-attach` for a crash-safe one-shot import from a running legacy node snapshot. Stamps Wave S cursors after import. |
+| `legacy_body_pull.c` + `.h` | **Runtime-active mirror catch-up; disabled as boot CLI** | `legacy_mirror_sync_service` calls the incremental range puller when local blocks lag legacy. The old boot-time body-pull import path remains removed (pathology — see memory). SHA3 spotcheck helpers remain callable. **Slated for narrower API.** |
 | `legacy_mirror_sync_service.c` + `.h` | **Active** | Background drift-detector. Periodically calls `getmirrorstatus` and surfaces lag / divergence via `EV_MIRROR_*` events. Powers `zcl_mirror_status` and `zcl_diff_with_legacy`. |
-| `legacy_import.c` (controller) | **Active** | RPC + boot-time dispatcher for `-importfromlegacy`. |
+| `legacy_import.c` (controller) | **Active** | RPC/controller surface for legacy import operations. Not wired to a `-importfromlegacy` CLI flag in `main.c`. |
 
 ### RPC clients (`lib/rpc/src/`)
 
@@ -75,11 +80,10 @@ the bootstrap path is still the fastest way to spin up a fresh
 caught real bugs (see the Wave 9 memory entries on CSR rollback +
 chain_evidence_controller).
 
-The narrowest cleanup target is the `legacy_body_pull` API: only the
-SHA3 spotcheck helpers are still load-bearing; the rest can shrink to
-match. A future sub-wave can fold those helpers into
-`local_chain_ingest_fastimport.c` and remove `legacy_body_pull.{c,h}`
-entirely.
+The narrowest cleanup target is the `legacy_body_pull` API: keep the
+runtime incremental catch-up entrypoint used by `legacy_mirror_sync_service`,
+and shrink or relocate the SHA3 spotcheck helpers so the removed boot import
+shape cannot re-grow.
 
 ---
 
