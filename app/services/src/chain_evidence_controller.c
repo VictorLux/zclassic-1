@@ -1,9 +1,9 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0 */
 
 #include "services/chain_evidence_controller.h"
+#include "services/chain_evidence_store.h"
 
 #include "models/database.h"
-#include "models/block.h"
 #include "models/db_txn.h"
 #include "event/event.h"
 
@@ -32,189 +32,6 @@ static bool u256_nonzero(const struct uint256 *u)
     return u && bytes32_nonzero(u->data);
 }
 
-const char *chain_evidence_controller_state_name(enum chain_evidence_controller_state state)
-{
-    static const char *names[] = {
-        [CEC_EMPTY]                 = "empty",
-        [CEC_HEADERS_WORK_VALIDATED] = "headers_work_validated",
-        [CEC_SNAPSHOT_UTXO_HASH_VERIFIED] = "snapshot_utxo_hash_verified",
-        [CEC_TIP_FOLLOWING]         = "tip_following",
-        [CEC_BACKGROUND_VALIDATING] = "background_validating",
-        [CEC_FULLY_VALIDATED]       = "fully_validated",
-        [CEC_CONTRADICTION_FROZEN]  = "contradiction_frozen",
-    };
-    if (state >= 0 && state < CEC_NUM_STATES)
-        return names[state];
-    return "unknown";
-}
-
-const char *chain_evidence_controller_result_name(enum chain_evidence_controller_result result)
-{
-    switch (result) {
-    case CEC_OK:                              return "ok";
-    case CEC_REJECTED_NULL_ARG:               return "null_arg";
-    case CEC_REJECTED_FROZEN:                 return "frozen";
-    case CEC_REJECTED_BAD_STATE:              return "bad_state";
-    case CEC_REJECTED_BAD_PROOF:              return "bad_proof";
-    case CEC_REJECTED_INCOMPLETE_INDEX_EVIDENCE:
-        return "incomplete_index_evidence";
-    case CEC_REJECTED_UTXO_AHEAD_OF_INDEX:    return "utxo_ahead_of_index";
-    case CEC_REJECTED_CSR:                    return "csr";
-    case CEC_REJECTED_PERSIST:                return "persist";
-    }
-    return "unknown";
-}
-
-const char *chain_evidence_source_class_name(enum chain_evidence_source_class source)
-{
-    switch (source) {
-    case CEC_SOURCE_CLASS_UNKNOWN:         return "unknown";
-    case CEC_SOURCE_CLASS_NATIVE_P2P:      return "native_p2p";
-    case CEC_SOURCE_CLASS_SNAPSHOT:        return "snapshot";
-    case CEC_SOURCE_CLASS_LOCAL_IMPORT:    return "local_import";
-    case CEC_SOURCE_CLASS_LEGACY_ADVISORY: return "legacy_advisory";
-    }
-    return "unknown";
-}
-
-const char *chain_evidence_publish_state_name(enum chain_evidence_publish_state state)
-{
-    switch (state) {
-    case CEC_PUBLISH_NOT_PUBLISHABLE:        return "not_publishable";
-    case CEC_PUBLISH_LOCAL_EVIDENCE:         return "publishable_local_evidence";
-    case CEC_PUBLISH_FROZEN_CONTRADICTION:   return "frozen_contradiction";
-    }
-    return "unknown";
-}
-
-#define CEC_RECORD_MAGIC 0x43454345u
-#define CEC_RECORD_VERSION 2u
-
-struct persisted_evidence_record {
-    uint32_t magic;
-    uint32_t version;
-    uint32_t source_class;
-    uint32_t publish_state;
-    uint8_t header_ancestry_linked;
-    uint8_t chainwork_recomputed;
-    uint8_t nakamoto_selected_best_work;
-    uint8_t block_bytes_hash_checked;
-    uint8_t utxo_sha3_verified;
-    uint8_t mmb_flyclient_proof_verified;
-    uint8_t chunk_hash_coverage_verified;
-    uint8_t full_validation_complete;
-};
-
-struct persisted_evidence_record_v1 {
-    uint32_t magic;
-    uint32_t version;
-    uint8_t header_ancestry_linked;
-    uint8_t chainwork_recomputed;
-    uint8_t nakamoto_selected_best_work;
-    uint8_t block_bytes_hash_checked;
-    uint8_t utxo_sha3_verified;
-    uint8_t mmb_flyclient_proof_verified;
-    uint8_t chunk_hash_coverage_verified;
-    uint8_t full_validation_complete;
-};
-
-static void evidence_to_persisted(const struct chain_evidence_record *in,
-                                  struct persisted_evidence_record *out)
-{
-    memset(out, 0, sizeof(*out));
-    out->magic = CEC_RECORD_MAGIC;
-    out->version = CEC_RECORD_VERSION;
-    if (!in)
-        return;
-    out->source_class = (uint32_t)in->source_class;
-    out->publish_state = (uint32_t)in->publish_state;
-    out->header_ancestry_linked = in->header_ancestry_linked ? 1 : 0;
-    out->chainwork_recomputed = in->chainwork_recomputed ? 1 : 0;
-    out->nakamoto_selected_best_work =
-        in->nakamoto_selected_best_work ? 1 : 0;
-    out->block_bytes_hash_checked = in->block_bytes_hash_checked ? 1 : 0;
-    out->utxo_sha3_verified = in->utxo_sha3_verified ? 1 : 0;
-    out->mmb_flyclient_proof_verified =
-        in->mmb_flyclient_proof_verified ? 1 : 0;
-    out->chunk_hash_coverage_verified =
-        in->chunk_hash_coverage_verified ? 1 : 0;
-    out->full_validation_complete = in->full_validation_complete ? 1 : 0;
-}
-
-static bool evidence_from_persisted(const void *buf, size_t len,
-                                    struct chain_evidence_record *out)
-{
-    const struct persisted_evidence_record *p = buf;
-    if (!buf || !out || len < sizeof(struct persisted_evidence_record_v1))
-        return false;
-    memset(out, 0, sizeof(*out));
-    if (len == sizeof(struct persisted_evidence_record_v1)) {
-        const struct persisted_evidence_record_v1 *v1 = buf;
-        if (v1->magic != CEC_RECORD_MAGIC || v1->version != 1u)
-            return false;
-        out->publish_state = CEC_PUBLISH_LOCAL_EVIDENCE;
-        out->header_ancestry_linked = v1->header_ancestry_linked != 0;
-        out->chainwork_recomputed = v1->chainwork_recomputed != 0;
-        out->nakamoto_selected_best_work =
-            v1->nakamoto_selected_best_work != 0;
-        out->block_bytes_hash_checked = v1->block_bytes_hash_checked != 0;
-        out->utxo_sha3_verified = v1->utxo_sha3_verified != 0;
-        out->mmb_flyclient_proof_verified =
-            v1->mmb_flyclient_proof_verified != 0;
-        out->chunk_hash_coverage_verified =
-            v1->chunk_hash_coverage_verified != 0;
-        out->full_validation_complete = v1->full_validation_complete != 0;
-        if (out->utxo_sha3_verified &&
-            out->mmb_flyclient_proof_verified &&
-            out->chunk_hash_coverage_verified)
-            out->source_class = CEC_SOURCE_CLASS_SNAPSHOT;
-        else if (out->block_bytes_hash_checked)
-            out->source_class = CEC_SOURCE_CLASS_NATIVE_P2P;
-        return true;
-    }
-    if (len != sizeof(*p) ||
-        p->magic != CEC_RECORD_MAGIC ||
-        p->version != CEC_RECORD_VERSION)
-        return false;
-    if (p->version >= 2u) {
-        out->source_class = (enum chain_evidence_source_class)p->source_class;
-        out->publish_state = (enum chain_evidence_publish_state)p->publish_state;
-    }
-    out->header_ancestry_linked = p->header_ancestry_linked != 0;
-    out->chainwork_recomputed = p->chainwork_recomputed != 0;
-    out->nakamoto_selected_best_work = p->nakamoto_selected_best_work != 0;
-    out->block_bytes_hash_checked = p->block_bytes_hash_checked != 0;
-    out->utxo_sha3_verified = p->utxo_sha3_verified != 0;
-    out->mmb_flyclient_proof_verified =
-        p->mmb_flyclient_proof_verified != 0;
-    out->chunk_hash_coverage_verified =
-        p->chunk_hash_coverage_verified != 0;
-    out->full_validation_complete = p->full_validation_complete != 0;
-    return true;
-}
-
-static bool persist_evidence(struct chain_evidence_controller *a,
-                             const char *key,
-                             const struct chain_evidence_record *evidence)
-{
-    struct persisted_evidence_record p;
-    evidence_to_persisted(evidence, &p);
-    return a && a->ndb && node_db_state_set(a->ndb, key, &p, sizeof(p));
-}
-
-static bool load_evidence(struct node_db *ndb, const char *key,
-                          struct chain_evidence_record *out)
-{
-    struct persisted_evidence_record p;
-    size_t len = 0;
-    if (!out)
-        return false;
-    memset(out, 0, sizeof(*out));
-    if (!ndb || !node_db_state_get(ndb, key, &p, sizeof(p), &len))
-        return false;
-    return evidence_from_persisted(&p, len, out);
-}
-
 static bool load_u256(struct node_db *ndb, const char *key,
                       struct uint256 *out)
 {
@@ -229,18 +46,6 @@ static bool load_u256(struct node_db *ndb, const char *key,
 static bool u256_equal(const struct uint256 *a, const struct uint256 *b)
 {
     return a && b && memcmp(a->data, b->data, 32) == 0;
-}
-
-static bool block_evidence_key(const struct uint256 *hash,
-                               char out[sizeof("cec.block_evidence.") + 64])
-{
-    char hex[65];
-    if (!hash || !out)
-        return false;
-    uint256_get_hex(hash, hex);
-    snprintf(out, sizeof("cec.block_evidence.") + 64,
-             "cec.block_evidence.%s", hex);
-    return true;
 }
 
 bool chain_evidence_record_has_block_index_required(
@@ -266,18 +71,6 @@ bool chain_evidence_record_has_snapshot_required(
            evidence->utxo_sha3_verified &&
            evidence->mmb_flyclient_proof_verified &&
            evidence->chunk_hash_coverage_verified;
-}
-
-bool chain_evidence_controller_mark_block_evidence(
-    struct chain_evidence_controller *authority,
-    const struct uint256 *block_hash,
-    const struct chain_evidence_record *evidence)
-{
-    char key[sizeof("cec.block_evidence.") + 64];
-    if (!authority || !authority->ndb || !block_hash || !evidence ||
-        !block_evidence_key(block_hash, key))
-        return false;
-    return persist_evidence(authority, key, evidence);
 }
 
 static bool persist_state(struct chain_evidence_controller *a,
@@ -372,9 +165,9 @@ static bool cec_reconstruct_active_tip_evidence(
            persist_i64(authority, "cec.active_tip_source_class",
                        CEC_SOURCE_CLASS_NATIVE_P2P) &&
            persist_i64(authority, "cec.repaired_active_tip_evidence", 1) &&
-           persist_evidence(authority, "cec.block_index_evidence_state",
+           chain_evidence_store_persist(authority, "cec.block_index_evidence_state",
                             &reconstructed) &&
-           persist_evidence(authority, "cec.active_tip_evidence",
+           chain_evidence_store_persist(authority, "cec.active_tip_evidence",
                             &reconstructed);
 }
 
@@ -403,7 +196,7 @@ static void chain_evidence_controller_reconcile_startup(
                                          "cec.active_tip_height", -1);
     struct chain_evidence_record active_evidence;
     bool has_active_evidence =
-        load_evidence(authority->ndb, "cec.active_tip_evidence",
+        chain_evidence_store_load(authority->ndb, "cec.active_tip_evidence",
                       &active_evidence);
 
     /* Persisted hash / height mismatches between the in-memory active_tip
@@ -627,7 +420,7 @@ enum chain_evidence_controller_result chain_evidence_controller_import_snapshot_
                      snapshot->schema_version) ||
         !persist_i64(authority, "cec.snapshot_finality_depth",
                      snapshot->finality_depth) ||
-        !persist_evidence(authority, "cec.header_chain_evidence", &header)) {
+        !chain_evidence_store_persist(authority, "cec.header_chain_evidence", &header)) {
         chain_evidence_controller_freeze(authority, "snapshot metadata persistence failed");
         return CEC_REJECTED_PERSIST;
     }
@@ -638,7 +431,7 @@ enum chain_evidence_controller_result chain_evidence_controller_import_snapshot_
             return CEC_REJECTED_PERSIST;
         }
     }
-    if (!persist_evidence(authority, "cec.snapshot_evidence",
+    if (!chain_evidence_store_persist(authority, "cec.snapshot_evidence",
                           &snapshot->verified) ||
         !persist_state(authority, CEC_SNAPSHOT_UTXO_HASH_VERIFIED))
         return CEC_REJECTED_PERSIST;
@@ -785,9 +578,9 @@ enum chain_evidence_controller_result chain_evidence_controller_promote_tip(
                     CEC_PUBLISH_LOCAL_EVIDENCE) &&
         persist_i64(authority, "cec.active_tip_source_class",
                     verified.source_class) &&
-        persist_evidence(authority, "cec.block_index_evidence_state",
+        chain_evidence_store_persist(authority, "cec.block_index_evidence_state",
                          &verified) &&
-        persist_evidence(authority, "cec.active_tip_evidence",
+        chain_evidence_store_persist(authority, "cec.active_tip_evidence",
                          &verified);
     if (persisted && next_state != old_state) {
         const char *name = chain_evidence_controller_state_name(next_state);
@@ -948,11 +741,11 @@ enum chain_evidence_controller_result chain_evidence_controller_mark_fully_valid
         return CEC_REJECTED_BAD_PROOF;
     }
     struct chain_evidence_record snapshot_evidence;
-    (void)load_evidence(authority->ndb, "cec.snapshot_evidence",
+    (void)chain_evidence_store_load(authority->ndb, "cec.snapshot_evidence",
                         &snapshot_evidence);
     snapshot_evidence.full_validation_complete = true;
     if (!persist_i64(authority, "cec.snapshot_validated", 1) ||
-        !persist_evidence(authority, "cec.snapshot_evidence",
+        !chain_evidence_store_persist(authority, "cec.snapshot_evidence",
                           &snapshot_evidence) ||
         !persist_state(authority, CEC_FULLY_VALIDATED))
         return CEC_REJECTED_PERSIST;
@@ -965,120 +758,4 @@ static int state_get_i32(struct node_db *ndb, const char *key, int def)
     if (ndb)
         (void)node_db_state_get_int(ndb, key, &v);
     return (int)v;
-}
-
-void chain_evidence_controller_snapshot(struct chain_evidence_controller *authority,
-                             struct chain_evidence_controller_view *out)
-{
-    struct chain_state_view csv;
-    int64_t v = -1;
-
-    if (!out)
-        return;
-    memset(out, 0, sizeof(*out));
-    out->active_tip_height = -1;
-    out->header_tip_height = -1;
-    out->persisted_active_tip_height = -1;
-    out->snapshot_anchor_height = -1;
-    out->background_validation_height = -1;
-    out->utxo_max_height = -1;
-    out->coins_best_block_height = -1;
-    out->sqlite_max_height = -1;
-    if (!authority)
-        return;
-
-    out->state = chain_evidence_controller_load_state(authority);
-    memset(&csv, 0, sizeof(csv));
-    csr_snapshot(authority->csr, &csv);
-    out->active_tip_height = csv.tip_height;
-    out->header_tip_height = csv.header_height;
-    out->sqlite_max_height = (int)csv.sql_max_height;
-    out->coins_best_block_hash = csv.coins_best_block;
-    out->has_coins_best_block_hash = u256_nonzero(&csv.coins_best_block);
-    out->active_tip_hash = csv.tip_hash;
-    out->has_active_tip_hash = u256_nonzero(&csv.tip_hash);
-    if (authority->csr && authority->csr->pindex_best_hdr &&
-        *authority->csr->pindex_best_hdr &&
-        (*authority->csr->pindex_best_hdr)->phashBlock) {
-        out->header_tip_hash =
-            *(*authority->csr->pindex_best_hdr)->phashBlock;
-        out->has_header_tip_hash = true;
-    }
-    if (load_u256(authority->ndb, "cec.active_tip_hash",
-                  &out->persisted_active_tip_hash))
-        out->has_persisted_active_tip_hash = true;
-    out->persisted_active_tip_height =
-        state_get_i32(authority->ndb, "cec.active_tip_height", -1);
-    out->snapshot_anchor_height =
-        state_get_i32(authority->ndb, "cec.snapshot_anchor_height", -1);
-    out->background_validation_height =
-        state_get_i32(authority->ndb, "cec.background_validation_height", -1);
-    out->utxo_max_height =
-        state_get_i32(authority->ndb, "cec.utxo_max_height", -1);
-    out->coins_best_block_height =
-        state_get_i32(authority->ndb, "cec.coins_best_block_height", -1);
-    if (authority->ndb &&
-        node_db_state_get_int(authority->ndb, "cec.active_tip_source_class",
-                              &v))
-        out->active_tip_source_class = (enum chain_evidence_source_class)v;
-    v = CEC_PUBLISH_NOT_PUBLISHABLE;
-    if (authority->ndb &&
-        node_db_state_get_int(authority->ndb, "cec.publish_state", &v))
-        out->publish_state = (enum chain_evidence_publish_state)v;
-    v = 0;
-    if (authority->ndb &&
-        node_db_state_get_int(authority->ndb,
-                              "cec.repaired_active_tip_evidence", &v))
-        out->repaired_active_tip_evidence = v != 0;
-    (void)load_evidence(authority->ndb, "cec.block_index_evidence_state",
-                        &out->block_index_evidence_state);
-    (void)load_evidence(authority->ndb, "cec.active_tip_evidence",
-                        &out->active_tip_evidence);
-    (void)load_evidence(authority->ndb, "cec.snapshot_evidence",
-                        &out->snapshot_evidence);
-    (void)load_evidence(authority->ndb, "cec.header_chain_evidence",
-                        &out->header_chain_evidence);
-    if (out->active_tip_source_class == CEC_SOURCE_CLASS_UNKNOWN &&
-        out->active_tip_evidence.source_class != CEC_SOURCE_CLASS_UNKNOWN)
-        out->active_tip_source_class = out->active_tip_evidence.source_class;
-    if (out->publish_state == CEC_PUBLISH_NOT_PUBLISHABLE &&
-        out->active_tip_evidence.publish_state != CEC_PUBLISH_NOT_PUBLISHABLE)
-        out->publish_state = out->active_tip_evidence.publish_state;
-    snprintf(out->contradiction_reason, sizeof(out->contradiction_reason),
-             "%s", authority->contradiction_reason);
-
-    out->missing_active_tip_evidence =
-        out->active_tip_height >= 0 &&
-        !chain_evidence_record_has_block_index_required(
-            &out->active_tip_evidence);
-    out->publish_state_not_local =
-        out->active_tip_height >= 0 &&
-        out->publish_state != CEC_PUBLISH_LOCAL_EVIDENCE;
-    out->active_tip_hash_mismatch =
-        out->has_active_tip_hash &&
-        out->has_persisted_active_tip_hash &&
-        !u256_equal(&out->active_tip_hash, &out->persisted_active_tip_hash);
-    out->csr_cursor_mismatch =
-        out->has_active_tip_hash &&
-        out->has_coins_best_block_hash &&
-        !u256_equal(&out->active_tip_hash, &out->coins_best_block_hash);
-
-    if (out->state == CEC_CONTRADICTION_FROZEN) {
-        snprintf(out->health_reason, sizeof(out->health_reason),
-                 "%s", out->contradiction_reason[0]
-                           ? out->contradiction_reason
-                           : "chain_evidence_contradiction");
-    } else if (out->active_tip_hash_mismatch) {
-        snprintf(out->health_reason, sizeof(out->health_reason),
-                 "active_tip_hash_mismatch");
-    } else if (out->csr_cursor_mismatch) {
-        snprintf(out->health_reason, sizeof(out->health_reason),
-                 "csr_cursor_mismatch");
-    } else if (out->publish_state_not_local) {
-        snprintf(out->health_reason, sizeof(out->health_reason),
-                 "publish_state_not_local");
-    } else if (out->missing_active_tip_evidence) {
-        snprintf(out->health_reason, sizeof(out->health_reason),
-                 "missing_active_tip_evidence");
-    }
 }

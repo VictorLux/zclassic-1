@@ -1,0 +1,164 @@
+/* Copyright 2026 Rhett Creighton - Apache License 2.0 */
+
+#include "services/chain_evidence_controller.h"
+#include "services/chain_evidence_store.h"
+
+#include "models/database.h"
+
+#include <stdio.h>
+#include <string.h>
+
+static bool bytes32_nonzero(const uint8_t b[32])
+{
+    uint8_t acc = 0;
+    for (int i = 0; i < 32; i++)
+        acc |= b[i];
+    return acc != 0;
+}
+
+static bool u256_nonzero(const struct uint256 *u)
+{
+    return u && bytes32_nonzero(u->data);
+}
+
+static bool u256_equal(const struct uint256 *a, const struct uint256 *b)
+{
+    return a && b && memcmp(a->data, b->data, 32) == 0;
+}
+
+static bool load_u256(struct node_db *ndb, const char *key,
+                      struct uint256 *out)
+{
+    size_t len = 0;
+    if (!out)
+        return false;
+    memset(out, 0, sizeof(*out));
+    return ndb && node_db_state_get(ndb, key, out->data, 32, &len) &&
+           len == 32;
+}
+
+static int state_get_i32(struct node_db *ndb, const char *key, int def)
+{
+    int64_t v = def;
+    if (ndb)
+        (void)node_db_state_get_int(ndb, key, &v);
+    return (int)v;
+}
+
+void chain_evidence_controller_snapshot(
+    struct chain_evidence_controller *authority,
+    struct chain_evidence_controller_view *out)
+{
+    struct chain_state_view csv;
+    int64_t v = -1;
+
+    if (!out)
+        return;
+    memset(out, 0, sizeof(*out));
+    out->active_tip_height = -1;
+    out->header_tip_height = -1;
+    out->persisted_active_tip_height = -1;
+    out->snapshot_anchor_height = -1;
+    out->background_validation_height = -1;
+    out->utxo_max_height = -1;
+    out->coins_best_block_height = -1;
+    out->sqlite_max_height = -1;
+    if (!authority)
+        return;
+
+    out->state = chain_evidence_controller_load_state(authority);
+    memset(&csv, 0, sizeof(csv));
+    csr_snapshot(authority->csr, &csv);
+    out->active_tip_height = csv.tip_height;
+    out->header_tip_height = csv.header_height;
+    out->sqlite_max_height = (int)csv.sql_max_height;
+    out->coins_best_block_hash = csv.coins_best_block;
+    out->has_coins_best_block_hash = u256_nonzero(&csv.coins_best_block);
+    out->active_tip_hash = csv.tip_hash;
+    out->has_active_tip_hash = u256_nonzero(&csv.tip_hash);
+    if (authority->csr && authority->csr->pindex_best_hdr &&
+        *authority->csr->pindex_best_hdr &&
+        (*authority->csr->pindex_best_hdr)->phashBlock) {
+        out->header_tip_hash =
+            *(*authority->csr->pindex_best_hdr)->phashBlock;
+        out->has_header_tip_hash = true;
+    }
+    if (load_u256(authority->ndb, "cec.active_tip_hash",
+                  &out->persisted_active_tip_hash))
+        out->has_persisted_active_tip_hash = true;
+    out->persisted_active_tip_height =
+        state_get_i32(authority->ndb, "cec.active_tip_height", -1);
+    out->snapshot_anchor_height =
+        state_get_i32(authority->ndb, "cec.snapshot_anchor_height", -1);
+    out->background_validation_height =
+        state_get_i32(authority->ndb, "cec.background_validation_height", -1);
+    out->utxo_max_height =
+        state_get_i32(authority->ndb, "cec.utxo_max_height", -1);
+    out->coins_best_block_height =
+        state_get_i32(authority->ndb, "cec.coins_best_block_height", -1);
+    if (authority->ndb &&
+        node_db_state_get_int(authority->ndb, "cec.active_tip_source_class",
+                              &v))
+        out->active_tip_source_class = (enum chain_evidence_source_class)v;
+    v = CEC_PUBLISH_NOT_PUBLISHABLE;
+    if (authority->ndb &&
+        node_db_state_get_int(authority->ndb, "cec.publish_state", &v))
+        out->publish_state = (enum chain_evidence_publish_state)v;
+    v = 0;
+    if (authority->ndb &&
+        node_db_state_get_int(authority->ndb,
+                              "cec.repaired_active_tip_evidence", &v))
+        out->repaired_active_tip_evidence = v != 0;
+    (void)chain_evidence_store_load(authority->ndb,
+                                    "cec.block_index_evidence_state",
+                                    &out->block_index_evidence_state);
+    (void)chain_evidence_store_load(authority->ndb, "cec.active_tip_evidence",
+                                    &out->active_tip_evidence);
+    (void)chain_evidence_store_load(authority->ndb, "cec.snapshot_evidence",
+                                    &out->snapshot_evidence);
+    (void)chain_evidence_store_load(authority->ndb, "cec.header_chain_evidence",
+                                    &out->header_chain_evidence);
+    if (out->active_tip_source_class == CEC_SOURCE_CLASS_UNKNOWN &&
+        out->active_tip_evidence.source_class != CEC_SOURCE_CLASS_UNKNOWN)
+        out->active_tip_source_class = out->active_tip_evidence.source_class;
+    if (out->publish_state == CEC_PUBLISH_NOT_PUBLISHABLE &&
+        out->active_tip_evidence.publish_state != CEC_PUBLISH_NOT_PUBLISHABLE)
+        out->publish_state = out->active_tip_evidence.publish_state;
+    snprintf(out->contradiction_reason, sizeof(out->contradiction_reason),
+             "%s", authority->contradiction_reason);
+
+    out->missing_active_tip_evidence =
+        out->active_tip_height >= 0 &&
+        !chain_evidence_record_has_block_index_required(
+            &out->active_tip_evidence);
+    out->publish_state_not_local =
+        out->active_tip_height >= 0 &&
+        out->publish_state != CEC_PUBLISH_LOCAL_EVIDENCE;
+    out->active_tip_hash_mismatch =
+        out->has_active_tip_hash &&
+        out->has_persisted_active_tip_hash &&
+        !u256_equal(&out->active_tip_hash, &out->persisted_active_tip_hash);
+    out->csr_cursor_mismatch =
+        out->has_active_tip_hash &&
+        out->has_coins_best_block_hash &&
+        !u256_equal(&out->active_tip_hash, &out->coins_best_block_hash);
+
+    if (out->state == CEC_CONTRADICTION_FROZEN) {
+        snprintf(out->health_reason, sizeof(out->health_reason),
+                 "%s", out->contradiction_reason[0]
+                           ? out->contradiction_reason
+                           : "chain_evidence_contradiction");
+    } else if (out->active_tip_hash_mismatch) {
+        snprintf(out->health_reason, sizeof(out->health_reason),
+                 "active_tip_hash_mismatch");
+    } else if (out->csr_cursor_mismatch) {
+        snprintf(out->health_reason, sizeof(out->health_reason),
+                 "csr_cursor_mismatch");
+    } else if (out->publish_state_not_local) {
+        snprintf(out->health_reason, sizeof(out->health_reason),
+                 "publish_state_not_local");
+    } else if (out->missing_active_tip_evidence) {
+        snprintf(out->health_reason, sizeof(out->health_reason),
+                 "missing_active_tip_evidence");
+    }
+}
