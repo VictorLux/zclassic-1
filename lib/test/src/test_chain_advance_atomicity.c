@@ -10,22 +10,17 @@
  *   (a) PRE-CALL  — coins.db at H, node.db at H. Stage fired before
  *                   any disk write. Indistinguishable from never
  *                   having attempted the advance.
- *   (b) FORWARD-ROLLABLE — coins.db at H+1, node.db at H. Crash
- *                   landed between the coins COMMIT (step 7) and
- *                   the LevelDB block_index sync + node.db COMMIT
- *                   (step 8). Boot's utxo_recovery_service walks
- *                   forward deterministically; the test asserts that
- *                   the *direction* is forward, not that recovery
- *                   itself runs.
+ *   (b) REPLAYABLE — node.db at H+1, coins.db at H. Crash landed
+ *                   between the LevelDB block_index sync and the
+ *                   coins COMMIT. Boot/replay can reconnect the
+ *                   block to recover UTXO state.
  *   (c) COMPLETE  — coins.db at H+1, node.db at H+1. Crash landed
  *                   after both COMMITs; the advance is fully durable.
  *
- * The state forbidden by construction is (d): node.db at H+1 while
- * coins.db at H. Reaching it would mean the LevelDB block_index
- * write completed before the coins COMMIT — the exact ordering
- * inversion the 7→8 sequence is designed to prevent. If the test
- * ever observes (d) it fails loudly because the invariant has
- * regressed.
+ * The state forbidden by construction is (d): coins.db at H+1 while
+ * node.db is at H. Reaching it means a crash left UTXOs ahead of the
+ * durable block index; reconnecting H+1 then sees its own coinbase
+ * and can trip BIP30 forever.
  *
  * ── Scope deviation note ──────────────────────────────────
  *
@@ -41,11 +36,11 @@
  * production layout).
  *   - In the child: BEGIN IMMEDIATE on coins.db, BEGIN on node.db,
  *     INSERT block_index N+1 / utxos / coins_best_block at N+1,
- *     fire the armed crash stage, then COMMIT coins → write LevelDB
- *     row (we approximate the LevelDB write with a row in node.db's
- *     `blocks` table to keep the test single-file) → COMMIT node.db.
- *   - Parent kills, reopens, asserts coins.db height ≥ node.db
- *     height. node.db ahead of coins is the forbidden (d) state.
+ *     fire the armed crash stage, then write LevelDB row (approximated
+ *     by a row in node.db's `blocks` table) → COMMIT node.db → COMMIT
+ *     coins.db.
+ *   - Parent kills, reopens, asserts coins.db height ≤ node.db
+ *     height. coins.db ahead of node.db is the forbidden (d) state.
  *
  * The wire-level guarantee being tested is the *direction* of the
  * COMMIT ordering, which is what step 7→8 of chain_advance encodes.
@@ -224,10 +219,10 @@ static int ca_query_coins_height(const char *path)
  *      ── PBCS_AFTER_COINS_VIEW_FLUSH ──
  *   6. csr_commit_tip (in-memory; no on-disk effect)
  *      ── PBCS_AFTER_UPDATE_TIP ──
- *   7. flush_coins; COMMIT coins          ← coins durable @ H+1
- *      ── PBCS_AFTER_COINS_DISK_FLUSH ──
- *   8. write block_index row to node.db; COMMIT node
+ *   7. write block_index row to node.db; COMMIT node
  *      ── PBCS_AFTER_BLOCK_INDEX_WRITE ──
+ *   8. flush_coins; COMMIT coins          ← coins durable @ H+1
+ *      ── PBCS_AFTER_COINS_DISK_FLUSH ──
  *   9. exit 0 */
 static void ca_child(const char *node_path, const char *coins_path,
                      enum process_block_crash_stage armed,
@@ -270,18 +265,7 @@ static void ca_child(const char *node_path, const char *coins_path,
     if (armed == PBCS_AFTER_COINS_VIEW_FLUSH) _exit(137);
     if (armed == PBCS_AFTER_UPDATE_TIP) _exit(137);
 
-    /* Step 7: durable coins flush + COMMIT coins (the ordering anchor) */
-    sqlite3_prepare_v2(cdb,
-        "INSERT OR REPLACE INTO node_state(key,value) "
-        "VALUES('coins_best_block',?)", -1, &s, NULL);
-    sqlite3_bind_blob(s, 1, hash, 32, SQLITE_TRANSIENT);
-    sqlite3_step(s); sqlite3_finalize(s);
-    if (sqlite3_exec(cdb, "COMMIT", NULL, NULL, NULL) != SQLITE_OK)
-        _exit(7);
-
-    if (armed == PBCS_AFTER_COINS_DISK_FLUSH) _exit(137);
-
-    /* Step 8: block_index row + COMMIT node */
+    /* Step 7: block_index row + COMMIT node (the ordering anchor) */
     sqlite3_prepare_v2(ndb,
         "INSERT OR REPLACE INTO blocks(hash,height,status) "
         "VALUES(?,?,3)", -1, &s, NULL);
@@ -295,10 +279,21 @@ static void ca_child(const char *node_path, const char *coins_path,
     sqlite3_bind_blob(s, 1, hash, 32, SQLITE_TRANSIENT);
     sqlite3_step(s); sqlite3_finalize(s);
 
-    if (armed == PBCS_AFTER_BLOCK_INDEX_WRITE) _exit(137);
-
     if (sqlite3_exec(ndb, "COMMIT", NULL, NULL, NULL) != SQLITE_OK)
         _exit(8);
+
+    if (armed == PBCS_AFTER_BLOCK_INDEX_WRITE) _exit(137);
+
+    /* Step 8: durable coins flush + COMMIT coins */
+    sqlite3_prepare_v2(cdb,
+        "INSERT OR REPLACE INTO node_state(key,value) "
+        "VALUES('coins_best_block',?)", -1, &s, NULL);
+    sqlite3_bind_blob(s, 1, hash, 32, SQLITE_TRANSIENT);
+    sqlite3_step(s); sqlite3_finalize(s);
+    if (sqlite3_exec(cdb, "COMMIT", NULL, NULL, NULL) != SQLITE_OK)
+        _exit(7);
+
+    if (armed == PBCS_AFTER_COINS_DISK_FLUSH) _exit(137);
 
     sqlite3_close(cdb);
     sqlite3_close(ndb);
@@ -347,18 +342,18 @@ static int ca_run_stage(int worker, enum process_block_crash_stage stage)
     int coins_h = ca_query_coins_height(coins_path);
 
     int rc = 0;
-    /* Forbidden state (d): node.db ahead of coins.db.
+    /* Forbidden state (d): coins.db ahead of node.db.
      * The ordering invariant guarantees this is unreachable. */
-    if (node_h > coins_h) {
-        printf("FAIL stage=%s: node.db at H=%d but coins.db at H=%d — "
+    if (coins_h > node_h) {
+        printf("FAIL stage=%s: coins.db at H=%d but node.db at H=%d — "
                "ORDERING INVARIANT BROKEN\n",
-               process_block_crash_stage_name(stage), node_h, coins_h);
+               process_block_crash_stage_name(stage), coins_h, node_h);
         rc = 1;
     } else {
         /* Recognised shapes (a/b/c). */
         const char *shape;
         if (node_h == 0 && coins_h == 0)        shape = "PRE-CALL";
-        else if (node_h == 0 && coins_h == 1)   shape = "FORWARD-ROLLABLE";
+        else if (node_h == 1 && coins_h == 0)   shape = "REPLAYABLE";
         else if (node_h == 1 && coins_h == 1)   shape = "COMPLETE";
         else                                    shape = "UNEXPECTED";
         printf("  stage=%-30s node_h=%d coins_h=%d shape=%s\n",
@@ -387,8 +382,8 @@ int test_chain_advance_atomicity(void)
         PBCS_AFTER_CONNECT_BLOCK,
         PBCS_AFTER_COINS_VIEW_FLUSH,
         PBCS_AFTER_UPDATE_TIP,
-        PBCS_AFTER_COINS_DISK_FLUSH,
         PBCS_AFTER_BLOCK_INDEX_WRITE,
+        PBCS_AFTER_COINS_DISK_FLUSH,
     };
     const int n_stages = (int)(sizeof(stages) / sizeof(stages[0]));
 
@@ -398,7 +393,7 @@ int test_chain_advance_atomicity(void)
 
     if (failures == 0)
         printf("  chain_advance_atomicity: OK "
-               "(%d stages × kill -9, node.db never ahead of coins.db)\n",
+               "(%d stages × kill -9, coins.db never ahead of node.db)\n",
                n_stages);
     return failures;
 }

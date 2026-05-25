@@ -744,27 +744,20 @@ bool connect_tip(struct validation_state *state,
                            BLOCK_VALID_SCRIPTS;
 
     /* Ordering invariant for crash-safe tip advance:
-     *   coins.db (UTXOs + coins_best_block) COMMITted BEFORE
-     *   LevelDB block_index is fsynced.
+     *   LevelDB block_index is fsynced BEFORE coins.db UTXOs are
+     *   committed for at-tip operation.
      *
-     * If kill -9 fires between the two writes, the next boot sees
-     * coins.db at N+1 but block_index at N. utxo_recovery_service's
-     * forward-roll re-derives the block_index entry deterministically
-     * from disk_block_io and the block payload — there's no UTXO
-     * delta to recover, only the index row.
+     * A kill -9 between these writes may leave block_index at N+1
+     * while coins.db is still at N. That direction is recoverable by
+     * reconnecting/replaying the block. The reverse direction
+     * (coins.db at N+1 while block_index is at N) is not safe: BIP30
+     * sees block N+1's own coinbase already present and rejects the
+     * block forever. Live 2026-05-25 reproduced this shape at
+     * h=3124225.
      *
-     * The reverse direction (block_index ahead of coins.db) requires
-     * re-running connect_block to recover UTXO state, which is the
-     * 250k-block backward self_heal scan today. Eliminating that
-     * direction by ordering eliminates the scan's load-bearing role.
-     *
-     * Skipped during IBD: bulk sync amortizes per-block fsync over
-     * the lazy flush_coins_if_needed policy. At-tip ops force a
-     * per-block coins flush so kill -9 at the tip never rewinds. */
-    if (!is_initial_block_download(ms)) {
-        flush_coins_if_needed(coins_tip, true);
-    }
-    process_block_check_crash_stage(PBCS_AFTER_COINS_DISK_FLUSH);
+     * During IBD, bulk sync keeps the lazy flush policy; at-tip ops
+     * force a per-block coins flush after the block_index write so the
+     * durable UTXO set never gets ahead of the durable chain tip. */
 
     /* Persist block_index entry to LevelDB */
     if (g_active_block_tree) {
@@ -789,22 +782,18 @@ bool connect_tip(struct validation_state *state,
             memcpy(dbi.nSolution, pindex_new->nSolution, pindex_new->nSolutionSize);
         dbi.nSolutionSize = pindex_new->nSolutionSize;
         /* Use the synchronous write so this block_index entry is
-         * durable in LevelDB before connect_tip returns. Async writes
-         * leave a window where kill -9 rewinds the block_index past
-         * the durable coins.db tip (the 1-6 block rewind documented
-         * in feedback_kill_restart_recovery_cost.md).
+         * durable before the forced at-tip coins.db commit below.
          *
          * Exception: during fast-sync body-pull / direct-import the
-         * caller has explicitly opted into batched durability — coins.db
-         * still commits per block (preserving the ordering invariant on
-         * crash), but block_index goes async. */
+         * caller has explicitly opted into batched durability. Those
+         * paths run under IBD/lazy coins flushing rather than the live
+         * at-tip per-block durability contract. */
         if (atomic_load_explicit(&g_body_pull_active,
                                   memory_order_relaxed)) {
             block_tree_db_write_block_index(g_active_block_tree, &dbi);
         } else {
             block_tree_db_write_block_index_sync(g_active_block_tree, &dbi);
         }
-        process_block_check_crash_stage(PBCS_AFTER_BLOCK_INDEX_WRITE);
 
         /* Free nSolution after persisting to disk — saves 1344B per block
          * (4GB total for 3M entries). Serving code in msg_headers.c and
@@ -813,6 +802,24 @@ bool connect_tip(struct validation_state *state,
         pindex_new->nSolution = NULL;
         pindex_new->nSolutionSize = 0;
     }
+    process_block_check_crash_stage(PBCS_AFTER_BLOCK_INDEX_WRITE);
+
+    if (!is_initial_block_download(ms)) {
+        if (!flush_coins_if_needed(coins_tip, true)) {
+            fprintf(stderr, // obs-ok:pre-existing-diagnostic
+                    "connect_tip: coins flush failed after durable "
+                    "block_index at height %d — halting block "
+                    "connection to preserve recoverable ordering\n",
+                    pindex_new->nHeight);
+            if (pblock == &local_block)
+                block_free(&local_block);
+            trace_set_status(ct_span, TRACE_STATUS_ERROR);
+            trace_end(ct_span);
+            return validation_state_error(state,
+                                          "coins-flush-after-index-failed");
+        }
+    }
+    process_block_check_crash_stage(PBCS_AFTER_COINS_DISK_FLUSH);
 
     /* Write transaction index if enabled */
     if (g_active_block_tree && ms->fTxIndex && pblock->num_vtx > 0) {

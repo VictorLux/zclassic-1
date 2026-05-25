@@ -257,6 +257,23 @@ bool connect_block(const struct block *block,
             if (coins_view_cache_get_coins(view, &block->vtx[i].hash,
                                            &existing)) {
                 if (!coins_is_pruned(&existing)) {
+                    bool own_coinbase_self_write =
+                        i == 0 &&
+                        transaction_is_coinbase(&block->vtx[i]) &&
+                        existing.is_coinbase &&
+                        existing.height == pindex->nHeight &&
+                        pindex->nHeight > 0;
+                    if (own_coinbase_self_write) {
+                        char txid[65];
+                        uint256_get_hex(&block->vtx[i].hash, txid);
+                        fprintf(stderr, // obs-ok:bip30-self-write-heal
+                                "connect_block: tolerating same-height "
+                                "coinbase self-write h=%d txid=%s "
+                                "(stale local UTXO, BIP34 height-unique)\n",
+                                pindex->nHeight, txid);
+                        coins_free(&existing);
+                        continue;
+                    }
                     coins_free(&existing);
                     if (mirror_authorized) {
                         mirror_consensus_record_override(pindex->nHeight,

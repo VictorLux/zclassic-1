@@ -2,7 +2,31 @@
 
 ## Status
 
-**IN PROGRESS (wt2) — claimed 2026-05-25.**
+**CODE COMPLETE (wt2) — 2026-05-25; live deploy/forward-progress proof pending.**
+
+Implemented:
+- `connect_block` now tolerates only a block's own same-height coinbase
+  self-write, preserving BIP30 rejection for real unspent duplicates.
+- `connect_tip` at-tip durability now writes the block index before forcing
+  the coins.db flush, so a crash can leave replayable `block_index=N+1,
+  coins=N` but not the wedged `coins=N+1, block_index=N` shape.
+- Crash-stage ordering tests now assert `coins.db` never gets ahead of the
+  durable block index.
+
+Verified:
+- `make -j$(nproc) test_zcl`
+- `ZCL_TEST_ONLY=chain_stall_repro ./test_zcl`
+- `ZCL_STRESS_TESTS=1 ZCL_TEST_ONLY=chain_advance_atomicity ./test_zcl`
+- `make lint`
+
+Broad-suite note:
+- `make test_parallel` builds the runner in this Makefile; `make test-parallel`
+  runs it.
+- `make test-parallel` currently reports 214/215 groups passing. The lone
+  failure is standalone `test_condition_engine`:
+  `condition_engine: register_all exposes current self-heal set... FAIL`.
+  `ZCL_TEST_ONLY=condition_engine ./test_zcl` reproduces the same failure by
+  itself, independent of this validation/coins patch.
 
 > Supersedes the symptom-chasers. The boot-rewind (`dbf4845a1`) and cold-import
 > only *move* the wedge one block; they do not cure it. This does.

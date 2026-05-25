@@ -38,17 +38,10 @@
  *
  * Scope — what this test is AND is NOT
  * ------------------------------------
- * This row ships the REPRODUCTION, not the fix. The test
- * asserts positively that connect_block trips `bad-txns-BIP30` when
- * the coins view carries a stale unspent coinbase entry for the block
- * being reconnected.  The assertion PASSES today because the bug
- * reproduces deterministically — that passing assertion is the win.
- *
- * The matching negative assertion (invariant: "reconnect after rewind
- * succeeds") lives as the RED regression test. 
- * produces the root-cause writeup that names the exact code path and
- * invariant. is the minimal fix; is the live-node
- * canary.
+ * This file started as a reproduction. It is now the regression gate:
+ * connect_block must tolerate a block's own same-height coinbase
+ * self-write after a local rewind, while preserving BIP30 rejection for
+ * real duplicate transactions.
  *
  * Environment
  * -----------
@@ -167,11 +160,11 @@ static void build_checkpoint_params(struct chain_params_fixture *f,
 
 /* ── Test 1 — live-node stall shape reproduces ──────────────────── */
 
-static int t_stale_coinbase_trips_bip30(void)
+static int t_connect_block_tolerates_own_coinbase_self_write(void)
 {
     int failures = 0;
 
-    TEST("chain_stall_repro: stale unspent coinbase at tip+1 → bad-txns-BIP30") {
+    TEST("chain_stall_repro: connect_block tolerates own coinbase self-write") {
         /* g_deferred_proof_validation_below_height guards the BIP30 skip flag — confirm
          * it is NOT set so the check runs. */
         atomic_store(&g_deferred_proof_validation_below_height, -1);
@@ -254,21 +247,16 @@ static int t_stale_coinbase_trips_bip30(void)
         bool ok = connect_block(&stall_blk, &vs, &stall_idx, &cache,
                                  &fx.params, /*just_check=*/true);
 
-        /* The assertion is the REPRODUCTION: bug is live iff
-         * connect_block returns false with reject_reason == "bad-txns-BIP30".
-         *
-         * When lands the fix (or the invariant is
-         * enforced at a higher layer), connect_block should NOT see the
-         * stale entry and this assertion will need to flip — at that
-         * point the row's repro has served its purpose and the 
-         * regression test becomes the forward-looking gate. */
+        /* The live 2026-05-25 wedge is a same-height self-write:
+         * block N's own coinbase is already present while durable tip
+         * is N-1. Since contextual_check_block enforces BIP34 coinbase
+         * height encoding for every height > 0, this cannot be a real
+         * post-BIP34 duplicate-coinbase consensus violation. */
         printf("connect_block ok=%d reject=\"%s\" dos=%d at h=%d... ",
                (int)ok, vs.reject_reason, vs.dos, stall_height);
 
-        ASSERT(!ok);
-        ASSERT_STR_EQ(vs.reject_reason, "bad-txns-BIP30");
-        ASSERT_EQ(vs.reject_code, REJECT_INVALID);
-        ASSERT_EQ(vs.dos, 100);
+        ASSERT(ok);
+        ASSERT(strcmp(vs.reject_reason, "bad-txns-BIP30") != 0);
 
         /* Cleanup */
         free_block(&stall_blk);
@@ -754,7 +742,7 @@ int test_chain_stall_repro(void)
 {
     printf("\n=== chain stall repro ===\n");
     int failures = 0;
-    failures += t_stale_coinbase_trips_bip30();
+    failures += t_connect_block_tolerates_own_coinbase_self_write();
     failures += t_clean_view_advances();
     failures += t_disconnect_block_purges_coinbase_from_backing();
     failures += t_p14_flush_under_shared_cursor_lands_tombstone();

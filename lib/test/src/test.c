@@ -51,6 +51,14 @@ int main(void)
                failures);
         return failures ? 1 : 0;
     }
+    if (only && strcmp(only, "chain_stall_repro") == 0) {
+        printf("[test] ZCL_TEST_ONLY=chain_stall_repro — running chain-stall regressions only\n");
+        { extern int test_chain_stall_repro(void);
+          failures += test_chain_stall_repro(); }
+        printf("\n=== chain_stall_repro subset complete: %d failure(s) ===\n",
+               failures);
+        return failures ? 1 : 0;
+    }
     if (only && strcmp(only, "chain_advance_coordinator") == 0) {
         printf("[test] ZCL_TEST_ONLY=chain_advance_coordinator — running source policy only\n");
         failures += test_chain_advance_coordinator();

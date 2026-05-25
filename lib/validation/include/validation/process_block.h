@@ -140,9 +140,9 @@ bool process_block_test_update_tip(struct main_state *ms,
  * Stages fire in order:
  *   PBCS_AFTER_CONNECT_BLOCK     in-mem coins view mutated, nothing on disk
  *   PBCS_AFTER_COINS_VIEW_FLUSH  coins cache → coins_tip (RAM), still no disk
- *   PBCS_AFTER_UPDATE_TIP        csr_commit_tip done; coins_best_block on disk
- *   PBCS_AFTER_COINS_DISK_FLUSH  coins.db UTXOs durable (the new invariant)
+ *   PBCS_AFTER_UPDATE_TIP        csr_commit_tip done; in-memory tip advanced
  *   PBCS_AFTER_BLOCK_INDEX_WRITE LevelDB block_index entry durable
+ *   PBCS_AFTER_COINS_DISK_FLUSH  coins.db UTXOs durable and not ahead of index
  *
  * Default PBCS_NONE: hook is a no-op (one atomic_load + branch per
  * stage; negligible). Production never sets a stage. */
@@ -151,8 +151,8 @@ enum process_block_crash_stage {
     PBCS_AFTER_CONNECT_BLOCK,
     PBCS_AFTER_COINS_VIEW_FLUSH,
     PBCS_AFTER_UPDATE_TIP,
-    PBCS_AFTER_COINS_DISK_FLUSH,
     PBCS_AFTER_BLOCK_INDEX_WRITE,
+    PBCS_AFTER_COINS_DISK_FLUSH,
     PBCS_NUM_STAGES
 };
 
