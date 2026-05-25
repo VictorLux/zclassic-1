@@ -13,6 +13,7 @@ void sim_peer_set_init(struct sim_peer_set *set)
     set->count = 0;
     set->active_count = 0;
     set->killed_count = 0;
+    set->blocks_sent = 0;
     set->malformed_blocks_sent = 0;
     set->malformed_blocks_rejected = 0;
 }
@@ -25,17 +26,22 @@ int sim_peer_set_resize(struct sim_peer_set *set, unsigned count)
     set->count = count;
     set->active_count = count;
     set->killed_count = 0;
+    set->blocks_sent = 0;
     set->malformed_blocks_sent = 0;
     set->malformed_blocks_rejected = 0;
     for (unsigned i = 0; i < count; i++) {
         set->peers[i].id = i;
         set->peers[i].connected = true;
+        set->peers[i].blocks_sent = 0;
+        set->peers[i].last_block_file[0] = '\0';
         set->peers[i].malformed_blocks_sent = 0;
         set->peers[i].last_malformed_type[0] = '\0';
     }
     for (unsigned i = count; i < SIM_PEER_MAX; i++) {
         set->peers[i].id = i;
         set->peers[i].connected = false;
+        set->peers[i].blocks_sent = 0;
+        set->peers[i].last_block_file[0] = '\0';
         set->peers[i].malformed_blocks_sent = 0;
         set->peers[i].last_malformed_type[0] = '\0';
     }
@@ -52,6 +58,29 @@ int sim_peer_kill(struct sim_peer_set *set, unsigned id)
     if (set->active_count > 0)
         set->active_count--;
     set->killed_count++;
+    return 0;
+}
+
+int sim_peer_send_block(struct sim_peer_set *set, unsigned id,
+                        const char *path)
+{
+    if (!set || !path || !*path) return -EINVAL;
+    if (id >= set->count) return -ENOENT;
+    if (!set->peers[id].connected) return -ENOTCONN;
+
+    FILE *fp = fopen(path, "rb");
+    if (!fp) return -errno;
+    int seek_rc = fseek(fp, 0, SEEK_END);
+    long size = seek_rc == 0 ? ftell(fp) : -1;
+    int close_rc = fclose(fp);
+    if (seek_rc != 0 || size < 0) return -EIO;
+    if (close_rc != 0) return -EIO;
+    if (size == 0) return -ENODATA;
+
+    set->peers[id].blocks_sent++;
+    snprintf(set->peers[id].last_block_file,
+             sizeof(set->peers[id].last_block_file), "%s", path);
+    set->blocks_sent++;
     return 0;
 }
 

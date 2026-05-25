@@ -317,5 +317,8 @@ One commit per task. Push after tasks 2, 4, 7.
   clock skew, and OOM-at-utxo-apply paths.
 - Skipped CI integration because this repository has no `.github/workflows`
   directory, updated `chaos-clean`, and added `docs/CHAOS_HARNESS.md`.
+- Implemented the first fixture-backed `send_block` simulation: connected peers
+  can read a non-empty block fixture file, record send counters, and advance
+  synthetic tip height.
 
 <!-- Worker: append a Completion section below when done. -->

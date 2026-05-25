@@ -252,6 +252,10 @@ static bool metric_value(const struct chaos_ctx *ctx, const char *name,
         *out = (int64_t)ctx->peers.killed_count;
         return true;
     }
+    if (strcmp(name, "blocks_sent") == 0) {
+        *out = (int64_t)ctx->peers.blocks_sent;
+        return true;
+    }
     if (strcmp(name, "malformed_blocks") == 0) {
         *out = (int64_t)ctx->peers.malformed_blocks_sent;
         return true;
@@ -313,17 +317,6 @@ static int handle_expect(struct chaos_ctx *ctx, int argc, char **argv,
     return fail_line(line_no, "unsupported expect assertion");
 }
 
-static int handle_stub(struct chaos_ctx *ctx, int argc, char **argv,
-                       int line_no)
-{
-    (void)ctx;
-    (void)argc;
-    fprintf(stderr,
-            "chaos:%d: command '%s' is recognized but not implemented yet\n",
-            line_no, argv[0]);
-    return -ENOTSUP;
-}
-
 static int handle_trigger_oom_at(struct chaos_ctx *ctx, int argc, char **argv,
                                  int line_no)
 {
@@ -360,6 +353,36 @@ static int handle_kill_peer(struct chaos_ctx *ctx, int argc, char **argv,
         return fail_line(line_no, "kill_peer id is already disconnected");
     if (rc != 0)
         return fail_line(line_no, "kill_peer failed");
+    return 0;
+}
+
+static int handle_send_block(struct chaos_ctx *ctx, int argc, char **argv,
+                             int line_no)
+{
+    if (argc != 3)
+        return fail_line(line_no, "send_block requires peer=I file=PATH");
+
+    const char *peer_arg = arg_value(argc, argv, "peer");
+    const char *path = arg_value(argc, argv, "file");
+    uint64_t peer_id = 0;
+    if (!peer_arg || !parse_u64_auto(peer_arg, &peer_id) ||
+        peer_id > UINT32_MAX) {
+        return fail_line(line_no, "send_block peer must be integer");
+    }
+    if (!path || !*path)
+        return fail_line(line_no, "send_block file is required");
+
+    int rc = sim_peer_send_block(&ctx->peers, (unsigned)peer_id, path);
+    if (rc == -ENOENT)
+        return fail_line(line_no, "send_block peer is not configured");
+    if (rc == -ENOTCONN)
+        return fail_line(line_no, "send_block peer is disconnected");
+    if (rc == -ENODATA)
+        return fail_line(line_no, "send_block fixture is empty");
+    if (rc != 0)
+        return fail_line(line_no, "send_block fixture could not be read");
+
+    ctx->tip_height++;
     return 0;
 }
 
@@ -477,7 +500,7 @@ static const struct chaos_command COMMANDS[] = {
     { "expect", handle_expect },
     { "at_event", handle_at_event },
     { "kill_peer", handle_kill_peer },
-    { "send_block", handle_stub },
+    { "send_block", handle_send_block },
     { "send_malformed_block", handle_send_malformed_block },
     { "advance_clock", handle_advance_clock },
     { "trigger_oom_at", handle_trigger_oom_at },

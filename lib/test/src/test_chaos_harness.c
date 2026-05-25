@@ -103,7 +103,31 @@ int test_chaos_harness(void)
         "send_block peer=0 file=missing\n"
         "expect no_crash\n",
         NULL);
-    CHAOS_CHECK("recognized stub command fails", rc != 0);
+    CHAOS_CHECK("send_block without peer setup fails", rc != 0);
+
+    char block_path[128];
+    CHAOS_CHECK("block fixture write succeeds",
+                write_temp_scenario("synthetic block bytes\n", block_path,
+                                    sizeof(block_path)) == 0);
+    char send_block_scenario[512];
+    int send_block_len = snprintf(
+        send_block_scenario, sizeof(send_block_scenario),
+        "seed 1\n"
+        "peer_count 1\n"
+        "send_block peer=0 file=%s\n"
+        "expect blocks_sent == 1\n"
+        "expect tip_height == 1\n",
+        block_path);
+    rc = send_block_len > 0 && (size_t)send_block_len < sizeof(send_block_scenario)
+        ? run_temp_scenario(send_block_scenario, &ctx)
+        : 99;
+    unlink(block_path);
+    CHAOS_CHECK("send_block scenario passes", rc == 0);
+    const struct sim_peer *block_peer = sim_peer_get(&ctx.peers, 0);
+    CHAOS_CHECK("send_block records peer block state",
+                ctx.peers.blocks_sent == 1 &&
+                ctx.tip_height == 1 &&
+                block_peer && block_peer->blocks_sent == 1);
 
     rc = run_temp_scenario(
         "seed 1\n"

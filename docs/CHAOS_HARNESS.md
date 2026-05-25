@@ -55,8 +55,8 @@ assertions over broad smoke checks.
 : Disconnects a configured simulated peer.
 
 `send_block peer=I file=PATH`
-: Reserved for fixture-backed block replay. It is recognized but not yet
-  implemented, so scenarios using it currently fail.
+: Reads a non-empty fixture file from a connected peer, records the simulated
+  send, and advances `tip_height`. Full consensus validation is future work.
 
 `send_malformed_block peer=I type=ENUM`
 : Simulates a bad block from a connected peer and increments
@@ -82,8 +82,8 @@ assertions over broad smoke checks.
 `expect METRIC OP VALUE`
 : Compares a metric with `==`, `!=`, `>=`, `<=`, `>`, or `<`. Current metrics:
   `tip_height`, `reorg_count`, `consensus_rejects`, `mempool_prune_runs`,
-  `active_peers`, `killed_peers`, `malformed_blocks`, `clock_advance_count`,
-  `scheduled_events`, `alloc_faults`, and `sim_time`.
+  `active_peers`, `killed_peers`, `blocks_sent`, `malformed_blocks`,
+  `clock_advance_count`, `scheduled_events`, `alloc_faults`, and `sim_time`.
 
 ## Adding Fault Injection
 
