@@ -57,6 +57,10 @@ assertions over broad smoke checks.
 `kill_peer ID`
 : Disconnects a configured simulated peer.
 
+`random_kill_peers count=N`
+: Uses the scenario seed to choose `N` connected peers and disconnect them.
+  The selected peers are deterministic for a given seed.
+
 `send_block peer=I file=PATH [height=N]`
 : Reads a non-empty fixture file from a connected peer, records the simulated
   send, and advances `tip_height`. When `height=N` is present, `tip_height`

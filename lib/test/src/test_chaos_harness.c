@@ -177,6 +177,28 @@ int test_chaos_harness(void)
         NULL);
     CHAOS_CHECK("kill_peer unknown peer fails", rc != 0);
 
+    const char *seeded_churn_scenario =
+        "seed 0x1234\n"
+        "peer_count 5\n"
+        "random_kill_peers count=2\n"
+        "expect active_peers == 3\n"
+        "expect killed_peers == 2\n";
+    rc = run_temp_scenario(seeded_churn_scenario, &ctx);
+    struct chaos_ctx ctx_again;
+    int rc_again = run_temp_scenario(seeded_churn_scenario, &ctx_again);
+    bool same_killed = true;
+    for (unsigned i = 0; i < 5; i++) {
+        same_killed = same_killed &&
+            (ctx.peers.peers[i].connected ==
+             ctx_again.peers.peers[i].connected);
+    }
+    CHAOS_CHECK("random_kill_peers seeded scenario passes",
+                rc == 0 && rc_again == 0);
+    CHAOS_CHECK("random_kill_peers is deterministic for seed",
+                same_killed &&
+                ctx.peers.active_count == 3 &&
+                ctx.peers.killed_count == 2);
+
     rc = run_temp_scenario(
         "seed 1\n"
         "peer_count 2\n"

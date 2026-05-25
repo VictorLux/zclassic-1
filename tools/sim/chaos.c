@@ -30,6 +30,7 @@ struct chaos_ctx {
     const char *scenario_path;
     const char *artifact_dir;
     uint64_t seed;
+    uint64_t rng_state;
     bool seed_set;
     char boot_phase[32];
     unsigned peer_count;
@@ -85,6 +86,7 @@ static void chaos_ctx_init(struct chaos_ctx *ctx)
 {
     memset(ctx, 0, sizeof(*ctx));
     snprintf(ctx->boot_phase, sizeof(ctx->boot_phase), "idb_complete");
+    ctx->rng_state = 0x9e3779b97f4a7c15ULL;
     sim_peer_set_init(&ctx->peers);
     ctx->sim_wall_unix = platform_time_wall_unix();
     ctx->clock_src.monotonic_us = chaos_clock_monotonic_us;
@@ -180,6 +182,18 @@ static int fail_line(int line_no, const char *msg)
 {
     fprintf(stderr, "chaos:%d: %s\n", line_no, msg);
     return -EINVAL;
+}
+
+static uint64_t chaos_rng_next(struct chaos_ctx *ctx)
+{
+    uint64_t x = ctx->rng_state;
+    if (x == 0)
+        x = 0x9e3779b97f4a7c15ULL;
+    x ^= x >> 12;
+    x ^= x << 25;
+    x ^= x >> 27;
+    ctx->rng_state = x;
+    return x * 0x2545f4914f6cdd1dULL;
 }
 
 static const char *path_basename(const char *path)
@@ -319,6 +333,7 @@ static int handle_seed(struct chaos_ctx *ctx, int argc, char **argv,
     if (!parse_u64_auto(argv[1], &seed))
         return fail_line(line_no, "seed must be an integer or hex value");
     ctx->seed = seed;
+    ctx->rng_state = seed ^ 0x9e3779b97f4a7c15ULL;
     ctx->seed_set = true;
     return 0;
 }
@@ -509,6 +524,45 @@ static int handle_kill_peer(struct chaos_ctx *ctx, int argc, char **argv,
     return 0;
 }
 
+static int handle_random_kill_peers(struct chaos_ctx *ctx, int argc,
+                                    char **argv, int line_no)
+{
+    if (argc != 2)
+        return fail_line(line_no, "random_kill_peers requires count=N");
+
+    const char *count_arg = arg_value(argc, argv, "count");
+    uint64_t count = 0;
+    if (!count_arg || !parse_u64_auto(count_arg, &count) ||
+        count > UINT32_MAX) {
+        return fail_line(line_no,
+                         "random_kill_peers count must be an integer");
+    }
+    if (count > ctx->peers.active_count)
+        return fail_line(line_no,
+                         "random_kill_peers count exceeds active peers");
+
+    for (uint64_t killed = 0; killed < count; killed++) {
+        unsigned active_index =
+            (unsigned)(chaos_rng_next(ctx) % ctx->peers.active_count);
+        unsigned selected = UINT32_MAX;
+        for (unsigned i = 0, seen = 0; i < ctx->peers.count; i++) {
+            if (!ctx->peers.peers[i].connected)
+                continue;
+            if (seen == active_index) {
+                selected = i;
+                break;
+            }
+            seen++;
+        }
+        if (selected == UINT32_MAX)
+            return fail_line(line_no, "random_kill_peers selection failed");
+        int rc = sim_peer_kill(&ctx->peers, selected);
+        if (rc != 0)
+            return fail_line(line_no, "random_kill_peers kill failed");
+    }
+    return 0;
+}
+
 static int handle_send_block(struct chaos_ctx *ctx, int argc, char **argv,
                              int line_no)
 {
@@ -691,6 +745,7 @@ static const struct chaos_command COMMANDS[] = {
     { "expect", handle_expect },
     { "at_event", handle_at_event },
     { "kill_peer", handle_kill_peer },
+    { "random_kill_peers", handle_random_kill_peers },
     { "send_block", handle_send_block },
     { "send_malformed_block", handle_send_malformed_block },
     { "advance_clock", handle_advance_clock },

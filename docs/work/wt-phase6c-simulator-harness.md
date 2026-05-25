@@ -335,6 +335,9 @@ One commit per task. Push after tasks 2, 4, 7.
   advance tip height or consensus rejection counters.
 - Expanded failure artifacts with replay commands and the full current
   simulator metric set so failed scenarios are easier to replay and minimize.
+- Added seed-driven `random_kill_peers count=N` plus
+  `seeded_peer_churn.scenario` so peer churn can be generated
+  deterministically from a scenario seed.
 
 ### Completion (wt2, 2026-05-25)
 
