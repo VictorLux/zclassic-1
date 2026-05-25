@@ -428,14 +428,32 @@ int main(int argc, char **argv)
                g_groups[i].name,
                results[i].signaled ? "SIGNALED" : (pass ? "PASS" : "FAIL"),
                results[i].wall_seconds);
-        print_captured(results[i].out_path);
         if (!pass) failed_groups++;
-        if (results[i].out_path[0]) unlink(results[i].out_path);
+        print_captured(results[i].out_path);
+        if (pass && results[i].out_path[0]) unlink(results[i].out_path);
     }
 
     printf("\n%s — %d/%zu groups failed (%.1fs wall, %d workers)\n",
            failed_groups == 0 ? "ALL TESTS PASSED" : "SOME TESTS FAILED",
            failed_groups, g_num_groups, wall, jobs);
+    if (failed_groups > 0) {
+        printf("Failed groups:\n");
+        for (size_t i = 0; i < g_num_groups; i++) {
+            bool pass =
+                !results[i].signaled && results[i].exit_code == 0;
+            if (pass) continue;
+            printf("  - %s: %s",
+                   g_groups[i].name,
+                   results[i].signaled ? "signaled" : "exit");
+            if (results[i].signaled)
+                printf(" signal=%d", results[i].exit_code);
+            else
+                printf(" code=%d", results[i].exit_code);
+            if (results[i].out_path[0])
+                printf(" log=%s", results[i].out_path);
+            printf("\n");
+        }
+    }
 
     free(slots);
     free(results);
