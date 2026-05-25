@@ -291,5 +291,8 @@ One commit per task. Push after tasks 2, 4, 7.
   skeleton, a `tools/sim/scenarios/smoke.scenario` fixture, and `make chaos`.
   The initial command set handles `seed`, `boot_phase`, `peer_count`, and
   `expect`; later Phase 6c injection commands are recognized stubs.
+- Added initial `test_chaos_harness` coverage for parser success, empty
+  scenarios, unknown commands, recognized-but-unimplemented commands, bad
+  seeds, and failing `expect` assertions.
 
 <!-- Worker: append a Completion section below when done. -->

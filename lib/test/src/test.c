@@ -239,6 +239,13 @@ int main(void)
                failures);
         return failures ? 1 : 0;
     }
+    if (only && strcmp(only, "chaos_harness") == 0) {
+        printf("[test] ZCL_TEST_ONLY=chaos_harness — running chaos harness only\n");
+        failures += test_chaos_harness();
+        printf("\n=== chaos_harness subset complete: %d failure(s) ===\n",
+               failures);
+        return failures ? 1 : 0;
+    }
     if (only && strcmp(only, "rpc_safety") == 0) {
         printf("[test] ZCL_TEST_ONLY=rpc_safety — running RPC safety subset\n");
         failures += test_rpc_safety();
@@ -683,6 +690,7 @@ int main(void)
     failures += test_rng();
     failures += test_seed_tape();
     failures += test_postmortem();
+    failures += test_chaos_harness();
     failures += test_stage();
     failures += test_mailbox();
     failures += test_mailbox_adoption();

@@ -292,6 +292,7 @@ static int run_scenario(struct chaos_ctx *ctx)
     return 0;
 }
 
+#ifndef CHAOS_NO_MAIN
 static void usage(const char *argv0)
 {
     fprintf(stderr, "usage: %s --scenario=PATH [--verbose]\n", argv0);
@@ -334,3 +335,4 @@ int main(int argc, char **argv)
     }
     return rc;
 }
+#endif

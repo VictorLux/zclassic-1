@@ -330,6 +330,7 @@ int test_clock(void);
 int test_rng(void);
 int test_seed_tape(void);
 int test_postmortem(void);
+int test_chaos_harness(void);
 int test_stage(void);
 int test_mailbox(void);
 int test_mailbox_adoption(void);
