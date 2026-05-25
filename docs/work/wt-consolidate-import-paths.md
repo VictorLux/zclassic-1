@@ -41,6 +41,9 @@ Progress:
   and block-index-copy helpers are private implementation details again.
 - The stale attach API/test names from the deleted attach-only importer were renamed
   to the canonical `legacy_attach_*` / `legacy_bootstrap_attach` surface.
+- Attach-stage drift helpers are no longer part of the production importer
+  header; they compile only in `ZCL_TESTING`, keeping the canonical header to
+  the runtime import contract plus the shared height-map reader.
 
 Verification:
 - `make -j$(nproc) test_zcl`, `make -j$(nproc) zclassic23`, `make lint`, and

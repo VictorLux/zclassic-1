@@ -35,8 +35,10 @@
 
 /* Test seam exported by legacy_bootstrap_importer.c — exercises the
  * anti-rewind branch without spinning up the full import pipeline. */
+size_t legacy_attach_stages_to_stamp_count(void);
+const char *legacy_attach_stages_to_stamp_at(size_t i);
 bool legacy_attach_stamp_one_for_test(sqlite3 *db, const char *name,
-                            uint64_t cursor, bool *out_was_write);
+                                      uint64_t cursor, bool *out_was_write);
 
 #include <errno.h>
 #include <sqlite3.h>

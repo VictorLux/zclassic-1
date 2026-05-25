@@ -1390,6 +1390,7 @@ static const char *const LEGACY_ATTACH_STAGES_TO_STAMP[] = {
     NULL,
 };
 
+#ifdef ZCL_TESTING
 static size_t legacy_attach_stages_count_cached(void)
 {
     size_t n = 0;
@@ -1407,6 +1408,7 @@ const char *legacy_attach_stages_to_stamp_at(size_t i)
     if (i >= legacy_attach_stages_count_cached()) return NULL;
     return LEGACY_ATTACH_STAGES_TO_STAMP[i];
 }
+#endif
 
 static bool legacy_bootstrap_attach_stamp_stage_cursor_in_tx(
     sqlite3 *db,
@@ -1457,21 +1459,6 @@ static bool legacy_bootstrap_attach_stamp_stage_cursor_in_tx(
     sqlite3_finalize(stmt);
     if (rc == SQLITE_DONE && out_was_write) *out_was_write = true;
     return rc == SQLITE_DONE;
-}
-
-bool legacy_attach_stamp_one_for_test(sqlite3 *db, const char *name,
-                            uint64_t cursor, bool *out_was_write)
-{
-    if (!db) return false;
-    char *err = NULL;
-    if (sqlite3_exec(db, "BEGIN IMMEDIATE", NULL, NULL, &err) != SQLITE_OK) {
-        if (err) sqlite3_free(err);
-        return false;
-    }
-    bool ok = legacy_bootstrap_attach_stamp_stage_cursor_in_tx(
-        db, name, cursor, out_was_write);
-    sqlite3_exec(db, ok ? "COMMIT" : "ROLLBACK", NULL, NULL, NULL);
-    return ok;
 }
 
 static bool legacy_bootstrap_attach_finalize_atomic(
@@ -1536,6 +1523,23 @@ static bool legacy_bootstrap_attach_finalize_atomic(
     if (out_stages_stamped) *out_stages_stamped = stamped;
     return ok;
 }
+
+#ifdef ZCL_TESTING
+bool legacy_attach_stamp_one_for_test(sqlite3 *db, const char *name,
+                                      uint64_t cursor, bool *out_was_write)
+{
+    if (!db) return false;
+    char *err = NULL;
+    if (sqlite3_exec(db, "BEGIN IMMEDIATE", NULL, NULL, &err) != SQLITE_OK) {
+        if (err) sqlite3_free(err);
+        return false;
+    }
+    bool ok = legacy_bootstrap_attach_stamp_stage_cursor_in_tx(
+        db, name, cursor, out_was_write);
+    sqlite3_exec(db, ok ? "COMMIT" : "ROLLBACK", NULL, NULL, NULL);
+    return ok;
+}
+#endif
 
 static bool legacy_bootstrap_attach_wipe_block_index(
     struct block_tree_db *our_btdb)

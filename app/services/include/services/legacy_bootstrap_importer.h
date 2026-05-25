@@ -95,7 +95,4 @@ bool legacy_bootstrap_import_blocking(
 
 const char *legacy_attach_outcome_name(enum legacy_attach_outcome o);
 
-size_t legacy_attach_stages_to_stamp_count(void);
-const char *legacy_attach_stages_to_stamp_at(size_t i);
-
 #endif /* ZCL_SERVICES_LEGACY_BOOTSTRAP_IMPORTER_H */
