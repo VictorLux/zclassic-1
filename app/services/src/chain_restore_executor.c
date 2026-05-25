@@ -1,17 +1,19 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * Chain restore executor — mutable execution helpers for restore plans. */
+ * Chain restore executor — applies restore plans to mutable chain state.
+ * Split from chain_restore_service.c as Phase 3 dissolve PR-2a code motion. */
 
 #include "services/chain_restore_service.h"
 #include "services/chain_restore_executor.h"
 #include "services/chain_state_repository.h"
 #include "services/chain_tip.h"
+#include "services/snapshot_sync_service.h"
 #include "models/db_txn.h"
 #include "validation/main_state.h"
 #include "validation/chainstate.h"
 #include "chain/chain.h"
-#include "services/snapshot_sync_service.h"
 
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 

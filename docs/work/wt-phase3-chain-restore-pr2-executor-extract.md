@@ -5,7 +5,7 @@
 **Phase:** 3 (Dissolve mega-modules)
 **Depends on:** chain_restore PR-1 planner extraction shipped; PR-1b boot
 snapshot extraction shipped.
-**Status: DONE** - pushed 2026-05-25.
+**Status: DONE (wt3)** - pushed 2026-05-25.
 
 ## Scope
 
@@ -47,10 +47,11 @@ leaving the existing public `chain_restore_service.h` declarations stable.
 `chain_restore_service.c` now owns validation, integrity checks, repair, and
 finalization only.
 
-Verification:
-- `make -j$(nproc) test_zcl test_parallel` - PASS
-- `ZCL_TEST_ONLY=chain_restore ./test_zcl` - PASS
-- `ZCL_TEST_ONLY=chain_restore_planner ./test_zcl` - PASS
-- `make lint` - PASS
-- `git diff --check` - PASS
-- `./test_parallel --jobs=$(nproc)` - PASS
+## Verification
+
+- `make -j$(nproc)` PASS.
+- `ZCL_TEST_ONLY=chain_restore ./test_zcl` PASS.
+- `ZCL_TEST_ONLY=chain_restore_planner ./test_zcl` PASS.
+- `make lint` PASS (existing raw-controller-SQL WARN list only).
+- `git diff --check` PASS.
+- `./test_parallel --jobs=$(nproc)` PASS (`0/208 groups failed`).
