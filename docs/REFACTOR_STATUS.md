@@ -31,7 +31,7 @@ Honest scoreboard. **MEASURED** = a real number from this box (date + how, in
      Alerts to a human         not measured        0 / month     11 Conditions live, self-heal
 
   🔬 HONEST
-     Bug → reproducible fix    not built           1 seed-tape   simulator pending
+     Bug → reproducible fix    built              1 seed-tape   ✓ postmortem + chaos harness
 ```
 `*` RSS was 1.5 GB earlier today; **2.0 GB after cold-import** — a real
 regression to chase, not a win. `✓` met · `▸` work in flight · `▲` regressed.
@@ -48,7 +48,6 @@ regression to chase, not a win. `✓` met · `▸` work in flight · `▲` regre
 | 4e bodies-into-log + 4d projections | Warm restart, recovery | — |
 | Phase-3 dissolves (header_probe ✅, chain_restore, utxo_recovery) | Memory, uptime | — |
 | More self-heal Conditions | Alerts, uptime | — |
-| Phase-6 postmortem + simulator | Bug→fix | — |
 
 ---
 
@@ -93,10 +92,10 @@ Phase 5  [██████████] 100%   Crypto agility (registry indire
   ├ 5a-2   [██████████] 100%   First call site rewire: Equihash PoW   ✅ f00be351f (wt2)
   ├ 5a-3   [██████████] 100%   script_validate ECDSA rewire (HOT PATH)  ✅ 7c2c067a0 + cde601acf + e8b926610 (wt3)
   └ Nix reproducible builds (5b/5c) DROPPED 2026-05-24 — out of scope. Cosign signing (5d) parked pending decision.
-Phase 6  [██░░░░░░░░]  20%   Determinism + simulator
+Phase 6  [██████████] 100%   Determinism + simulator                 ✅ DONE
   ├ 6a     [██████████] 100%   seed_tape primitive  ✅ c2ed3145d + cb03fe595 + c62161c2a + b53f251b7 (sub-agent)
-  ├ 6b     [░░░░░░░░░░]   0%   postmortem capsule (crash → seed.cap.gz)  ← spec'd (queued post 6a)
-  └ 6c     [░░░░░░░░░░]   0%   simulator harness (chaos CI)  ← spec'd (queued post 6b)
+  ├ 6b     [██████████] 100%   postmortem capsule (crash → seed.cap.gz) ✅ 89fabc360
+  └ 6c     [██████████] 100%   simulator harness (`make chaos`) ✅ 6fb76f2b0
 Phase 7  [░░░░░░░░░░]   0%   Frontier (io_uring, hot reload)
 Phase 8  [░░░░░░░░░░]   0%   Event-log compaction & retention — plan: docs/architecture/phase8-log-compaction-and-retention.md
   └ (draft)  gated on 4e — checkpoint event + segmentation + prune policy; pairs with SHA3 snapshot/FlyClient cold-sync
@@ -176,7 +175,9 @@ chain_restore compatibility header delete ✅ (8658ef0d2) ·
 utxo_recovery PR-1 reimport-flag primitive ✅ (af7ba7a30) · header_probe
 dissolve ✅ (981ad4897..1b0847820) · snapshot wedge recovery ✅
 (4d7f7adee..8e25887b0) · small projections 4d-5 ✅
-(0f10cd5f4..2f23d8352).
+(0f10cd5f4..2f23d8352) · postmortem capsules ✅
+(720906bf4..89fabc360) · chaos simulator harness ✅
+(ca74cb4c2..6fb76f2b0).
 
 ### Claimable NOW (no soak gate, fully independent)
 1. ⚡ [`wt-perf-integrate-rebuild.md`](./work/wt-perf-integrate-rebuild.md) **PR-3: parallel io_uring blk*.dat marking in cold-import** — PROMOTED with a live profile: cold-import is ~180s, **101s of it is single-threaded blk*.dat marking** (measured `941b9803d`). The `rebuild_recent` prototype already proved the fix on this exact data (5.6s/2GB/s). Parallelize the scan → seconds. Moves #1 cold sync. PR-1 (HW-CRC) ✅ `69939ec97`; PR-2 (io_uring bulk-append) still spec'd.
@@ -207,6 +208,7 @@ freed workers add the most while the soak runs.
 
 | Date | What | Worktree | Commit |
 |---|---|---|---|
+| 2026-05-25 | **Phase 6 COMPLETE** — postmortem capsules and chaos simulator harness shipped; `make chaos` is now the standing reproducibility gate | wt2 → main | 720906bf4..89fabc360, ca74cb4c2..6fb76f2b0 |
 | 2026-05-25 | **Phase 4d-5 small projections COMPLETE** — contacts, onion announcements, and HODL history shadow projections with event payloads, boot wiring, diagnostics, and diff tools | wt2 → main | 0f10cd5f4..2f23d8352 |
 | 2026-05-25 | **Snapshot wedge recovery COMPLETE** — runtime recovery request path, local manifest builder, `tip_wedged_resnapshot` condition, verification gates, and recovery observability | wt3 → main | 4d7f7adee..8e25887b0 |
 | 2026-05-25 | **Phase 3 chain_restore dissolve COMPLETE** — service implementation and compatibility header deleted; focused planner/executor/repair/boot modules own restore | main | 89892c441, 8658ef0d2 |
