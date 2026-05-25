@@ -401,6 +401,13 @@ int main(void)
                failures);
         return failures ? 1 : 0;
     }
+    if (only && strcmp(only, "legacy_mirror_stuck_condition") == 0) {
+        printf("[test] ZCL_TEST_ONLY=legacy_mirror_stuck_condition — running only\n");
+        failures += test_legacy_mirror_stuck_condition();
+        printf("\n=== legacy_mirror_stuck_condition subset complete: %d failure(s) ===\n",
+               failures);
+        return failures ? 1 : 0;
+    }
     if (only && strcmp(only, "zclassicd_oracle") == 0) {
         printf("[test] ZCL_TEST_ONLY=zclassicd_oracle — running oracle subset\n");
         failures += test_zclassicd_oracle();
@@ -706,6 +713,7 @@ int main(void)
     failures += test_watchdog_dissolve_pr2();
     failures += test_watchdog_conditions_pr3();
     failures += test_snapshot_receive_stalled_condition();
+    failures += test_legacy_mirror_stuck_condition();
     failures += test_chain_tip_watchdog_bounded_restart();
     failures += test_blocker();
     failures += test_clock();

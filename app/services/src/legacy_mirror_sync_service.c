@@ -121,6 +121,10 @@ static struct {
 
 #ifdef ZCL_TESTING
 static bool g_lms_test_fake_running;
+static _Atomic int g_lms_test_catchup_enabled;
+static _Atomic int g_lms_test_catchup_result;
+static _Atomic int g_lms_test_catchup_clear_stuck;
+static _Atomic int g_lms_test_catchup_calls;
 #endif
 
 static void lms_set_error(const char *msg)
@@ -781,6 +785,19 @@ static bool lms_drain_headers_to_target(int from_height, int target_height,
 bool legacy_mirror_sync_request_catchup(const char *reason)
 {
     (void)reason;
+#ifdef ZCL_TESTING
+    if (atomic_load(&g_lms_test_catchup_enabled)) {
+        atomic_fetch_add(&g_lms_test_catchup_calls, 1);
+        if (atomic_load(&g_lms_test_catchup_clear_stuck)) {
+            atomic_store(&g_lms.stuck_height, 0);
+            atomic_store(&g_lms.stuck_status_flags, 0);
+            pthread_mutex_lock(&g_lms.lock);
+            g_lms.stuck_reason[0] = '\0';
+            pthread_mutex_unlock(&g_lms.lock);
+        }
+        return atomic_load(&g_lms_test_catchup_result) != 0;
+    }
+#endif
     if (!g_lms.initialized || !g_lms.enabled)
         return true;
     if (pthread_mutex_trylock(&g_lms.flight) != 0)
@@ -1397,6 +1414,12 @@ void legacy_mirror_sync_reset_for_test(void)
     atomic_store(&g_lms.lag_critical_since, 0);
     atomic_store(&g_lms.lag_breach_emitted, 0);
     atomic_store(&g_lms.lag_critical_emitted, 0);
+#ifdef ZCL_TESTING
+    atomic_store(&g_lms_test_catchup_enabled, 0);
+    atomic_store(&g_lms_test_catchup_result, 0);
+    atomic_store(&g_lms_test_catchup_clear_stuck, 0);
+    atomic_store(&g_lms_test_catchup_calls, 0);
+#endif
     mirror_consensus_reset_for_test();
 }
 
@@ -1452,5 +1475,20 @@ void legacy_mirror_sync_test_set_stats(
     atomic_store(&g_lms.rpc_errors, stats->rpc_errors);
     atomic_store(&g_lms.blocks_applied, stats->blocks_applied);
     atomic_store(&g_lms.headers_added, stats->headers_added);
+}
+
+void legacy_mirror_sync_test_set_catchup_result(bool enabled,
+                                                bool result,
+                                                bool clear_stuck)
+{
+    atomic_store(&g_lms_test_catchup_enabled, enabled ? 1 : 0);
+    atomic_store(&g_lms_test_catchup_result, result ? 1 : 0);
+    atomic_store(&g_lms_test_catchup_clear_stuck, clear_stuck ? 1 : 0);
+    atomic_store(&g_lms_test_catchup_calls, 0);
+}
+
+int legacy_mirror_sync_test_catchup_calls(void)
+{
+    return atomic_load(&g_lms_test_catchup_calls);
 }
 #endif
