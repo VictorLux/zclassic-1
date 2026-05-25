@@ -1,7 +1,7 @@
-# Dissolve plan: `header_probe_service.c` → smaller service + mailbox + 1 Condition
+# Dissolve plan: `header_probe.c` → smaller header probe + mailbox + 1 Condition
 
-**Module:** `app/services/src/header_probe_service.c` (1,286 LOC)
-**Header:** `app/services/include/services/header_probe_service.h`
+**Module:** `app/services/src/header_probe.c` (378 LOC after PR-3a rename)
+**Header:** `app/services/include/services/header_probe.h`
 **Phase:** 3 (Dissolve mega-modules)
 **Gated on:** Wave S cutover C-2 + C-3 shipped (S-2 header_admit and
 S-3 validate_headers authoritative — they own the ingest side of headers)
@@ -10,7 +10,7 @@ S-3 validate_headers authoritative — they own the ingest side of headers)
 
 ## Why this exists today
 
-`header_probe_service.c` is responsible for **fetching headers from peers
+`header_probe.c` is responsible for **fetching headers from peers
 ahead of body sync**. It:
 
 1. Selects peers to probe based on their reported tip + recent latency.
@@ -27,7 +27,7 @@ accepted headers into `header_admit_inbox` — that part is clean.
 After Phase 3 watchdog dissolve PR-2, the `local_header_refill_needed`
 predicate becomes a condition that calls `header_probe_kick_for_height`.
 
-What remains in header_probe_service.c after those two events is:
+What remains in header_probe.c after those two events is:
 - Peer selection logic
 - The msg_getheaders request/response loop
 - Peer scoring
@@ -47,7 +47,7 @@ shape but ~3× smaller.
 
 A Job (Wave S sense) that periodically calls
 `header_probe_pull_range(local_tip+1, 2000)` on a 30s cadence. Replaces
-the current background thread in header_probe_service.c.
+the current background thread in header_probe.c.
 
 ### Replacement C — Peer scoring moves to `lib/net/src/peer_scoring.c`
 
@@ -76,7 +76,7 @@ background thread to the supervisor.
 
 Ship gate: existing tests pass, polling cadence unchanged.
 
-### PR-2: Shrink `header_probe_service` to the core
+### PR-2: Shrink `header_probe` to the core
 
 Inline the public functions that are no longer needed externally.
 Move peer-specific scoring to `peer_scoring.c`. Trim dump_state to
@@ -86,7 +86,7 @@ Target after PR-2: ~400 LOC.
 
 ### PR-3: Rename and split
 
-`header_probe_service.c` → `services/network/header_probe.c` (smaller).
+`header_probe.c` → `services/network/header_probe.c` (smaller).
 Delete the old file. Update the 6 call sites.
 
 Net: 1,286 LOC out, ~480 LOC in. **~800 LOC deletion.**

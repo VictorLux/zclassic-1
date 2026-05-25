@@ -4,7 +4,7 @@
 **Branch:** PUSH DIRECT TO MAIN
 **Phase:** 3 (Dissolve mega-modules)
 **Depends on:** header_probe PR-2f legacy header client extraction shipped.
-**Status: IN PROGRESS (wt3)** - claimed 2026-05-25.
+**Status: DONE (wt3)** - claimed and completed 2026-05-25.
 
 ## Scope
 
@@ -36,3 +36,22 @@ shape: a small header probe primitive driven by the supervised poll Job.
 
 This is a rename/surface cleanup only. It does not change RPC transport,
 consensus validation, poll cadence, dump JSON, or mailbox publication.
+
+## Completion
+
+- Renamed `app/services/src/header_probe_service.c` to
+  `app/services/src/header_probe.c`.
+- Renamed `app/services/include/services/header_probe_service.h` to
+  `app/services/include/services/header_probe.h` and updated include sites.
+- Removed the stale header_probe supervisor baseline entry; the module no
+  longer owns long-running service scheduling.
+- Kept `app/services/src/header_probe.c` at 378 lines.
+
+## Verification
+
+- `make -j$(nproc)` PASS.
+- `ZCL_TEST_ONLY=header_probe ./test_zcl` PASS.
+- `ZCL_TEST_ONLY=header_probe_poll ./test_zcl` PASS.
+- `make lint` PASS (existing raw-controller-SQL WARN list only).
+- `git diff --check` PASS.
+- `./test_parallel --jobs=$(nproc)` PASS (`0/208 groups failed`).

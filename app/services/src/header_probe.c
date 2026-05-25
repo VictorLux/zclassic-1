@@ -8,7 +8,7 @@
  *   3. header_probe_tick_once() — scheduler-independent Job body
  *   4. init + dump_state_json
  *
- * Threading: the service creates no background work. The supervised
+ * Threading: this module creates no background work. The supervised
  * header_probe_poll Job owns cadence and calls header_probe_tick_once().
  */
 
