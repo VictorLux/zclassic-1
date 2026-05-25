@@ -2,8 +2,8 @@
 
 ## Status
 
-**READY — claimable NOW by wt3 (or any free worker). Fully independent of the
-P0 connect_block work.** Claim by marking `IN PROGRESS (wtN)`.
+**IN PROGRESS (wt3) — claimed 2026-05-25.** Fully independent of the
+P0 connect_block work.
 
 > This is the foundation the "high-performance" goal has been missing. Every perf
 > number we've quoted (cold 180s, warm 37.7s, RSS 2.4 GB) came from ad-hoc manual
