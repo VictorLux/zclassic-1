@@ -3,6 +3,7 @@
 #include "test/test_helpers.h"
 #include "sim/postmortem.h"
 
+#include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <stdio.h>
@@ -18,9 +19,22 @@
 
 static int rm_rf_simple(const char *path)
 {
-    char cmd[768];
-    snprintf(cmd, sizeof(cmd), "rm -rf '%s'", path);
-    return system(cmd);
+    DIR *d = opendir(path);
+    if (!d) return unlink(path);
+
+    struct dirent *de;
+    while ((de = readdir(d)) != NULL) {
+        if (strcmp(de->d_name, ".") == 0 ||
+            strcmp(de->d_name, "..") == 0) {
+            continue;
+        }
+        char child[768];
+        int n = snprintf(child, sizeof(child), "%s/%s", path, de->d_name);
+        if (n < 0 || (size_t)n >= sizeof(child)) continue;
+        rm_rf_simple(child);
+    }
+    closedir(d);
+    return rmdir(path);
 }
 
 static bool file_contains(const char *path, const char *needle)
