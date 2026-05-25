@@ -131,6 +131,15 @@ int test_chaos_harness(void)
 
     rc = run_temp_scenario(
         "seed 1\n"
+        "peer_count 1\n"
+        "send_block peer=0 file=tests/fixtures/blocks/synthetic_good_block.fixture\n"
+        "expect blocks_sent == 1\n"
+        "expect tip_height == 1\n",
+        &ctx);
+    CHAOS_CHECK("send_block checked-in fixture passes", rc == 0);
+
+    rc = run_temp_scenario(
+        "seed 1\n"
         "peer_count 3\n"
         "kill_peer 1\n"
         "expect active_peers == 2\n"

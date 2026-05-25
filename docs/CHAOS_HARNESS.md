@@ -57,6 +57,7 @@ assertions over broad smoke checks.
 `send_block peer=I file=PATH`
 : Reads a non-empty fixture file from a connected peer, records the simulated
   send, and advances `tip_height`. Full consensus validation is future work.
+  Checked-in block fixtures live under `tests/fixtures/blocks/`.
 
 `send_malformed_block peer=I type=ENUM`
 : Simulates a bad block from a connected peer and increments

@@ -322,5 +322,7 @@ One commit per task. Push after tasks 2, 4, 7.
 - Implemented the first fixture-backed `send_block` simulation: connected peers
   can read a non-empty block fixture file, record send counters, and advance
   synthetic tip height.
+- Added a checked-in synthetic block fixture plus `block_fixture.scenario` so
+  `make chaos` exercises the `send_block` path from the repository corpus.
 
 <!-- Worker: append a Completion section below when done. -->
