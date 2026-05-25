@@ -73,3 +73,14 @@ Follow-up:
 - Continue PR-2 shrink work by moving any remaining header-specific stats or
   scheduling glue out of `header_probe_service.c`, then retire the blocking
   pull API once callers are async.
+
+Follow-up verification after adding narrow `rpc` and `peer_scoring`
+selectors:
+
+- `make -j$(nproc) test_zcl test_parallel` PASS.
+- `ZCL_TEST_ONLY=header_probe ./test_zcl` PASS.
+- `ZCL_TEST_ONLY=header_probe_poll ./test_zcl` PASS.
+- `ZCL_TEST_ONLY=peer_scoring ./test_zcl` PASS.
+- `ZCL_TEST_ONLY=rpc ./test_zcl` PASS.
+- `make lint` PASS.
+- `./test_parallel --jobs=$(nproc)` PASS.

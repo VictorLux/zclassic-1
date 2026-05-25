@@ -494,6 +494,20 @@ int main(void)
                failures);
         return failures ? 1 : 0;
     }
+    if (only && strcmp(only, "rpc") == 0) {
+        printf("[test] ZCL_TEST_ONLY=rpc — running rpc only\n");
+        failures += test_rpc();
+        printf("\n=== rpc subset complete: %d failure(s) ===\n",
+               failures);
+        return failures ? 1 : 0;
+    }
+    if (only && strcmp(only, "peer_scoring") == 0) {
+        printf("[test] ZCL_TEST_ONLY=peer_scoring — running peer scoring only\n");
+        failures += test_peer_scoring();
+        printf("\n=== peer_scoring subset complete: %d failure(s) ===\n",
+               failures);
+        return failures ? 1 : 0;
+    }
     if (only && strcmp(only, "snapshot_sync") == 0) {
         printf("[test] ZCL_TEST_ONLY=snapshot_sync - running snapshot sync subset\n");
         failures += test_snapshot_sync_service();

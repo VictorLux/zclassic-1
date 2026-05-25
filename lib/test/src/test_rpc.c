@@ -2,6 +2,7 @@
 
 #include "test/test_helpers.h"
 #include "rpc/httpserver.h"
+#include "rpc/legacy_rpc_client.h"
 #include <openssl/err.h>
 #include <openssl/pem.h>
 #include <openssl/ssl.h>
@@ -162,6 +163,57 @@ int test_rpc(void) {
         bool ok = code && json_get_int(code) == RPC_METHOD_NOT_FOUND;
         ok = ok && msg && strcmp(json_get_str(msg), "Method not found") == 0;
         json_free(&err);
+        if (ok) printf("OK\n"); else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("legacy_rpc parse scalar results... ");
+    {
+        const char *sraw =
+            "HTTP/1.1 200 OK\r\nContent-Length: 42\r\n\r\n"
+            "{\"result\":\"abc123\",\"error\":null,\"id\":1}";
+        const char *iraw =
+            "HTTP/1.1 200 OK\r\nContent-Length: 34\r\n\r\n"
+            "{\"result\":8232,\"error\":null,\"id\":1}";
+        const char *eraw =
+            "HTTP/1.1 200 OK\r\nContent-Length: 60\r\n\r\n"
+            "{\"result\":null,\"error\":{\"message\":\"boom\"},\"id\":1}";
+        char out[16] = {0};
+        char errbuf[64] = {0};
+        int64_t n = 0;
+        bool ok = legacy_rpc_parse_result_string(sraw, out, sizeof(out),
+                                                 errbuf, sizeof(errbuf));
+        ok = ok && strcmp(out, "abc123") == 0;
+        ok = ok && legacy_rpc_parse_result_int(iraw, &n, errbuf,
+                                               sizeof(errbuf));
+        ok = ok && n == 8232;
+        ok = ok && !legacy_rpc_parse_result_string(eraw, out, sizeof(out),
+                                                   errbuf, sizeof(errbuf));
+        ok = ok && strstr(errbuf, "boom") != NULL;
+        if (ok) printf("OK\n"); else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("legacy_rpc parse string array results... ");
+    {
+        const char *raw =
+            "HTTP/1.1 200 OK\r\nContent-Length: 94\r\n\r\n"
+            "[{\"result\":\"aa\",\"error\":null,\"id\":0},"
+            "{\"result\":\"bb\",\"error\":null,\"id\":1}]";
+        const char *bad =
+            "HTTP/1.1 200 OK\r\nContent-Length: 56\r\n\r\n"
+            "[{\"result\":null,\"error\":{\"message\":\"bad item\"},\"id\":0}]";
+        char slots[2][8] = {{0}};
+        char errbuf[64] = {0};
+        bool ok = legacy_rpc_parse_result_string_array(raw, 2, slots[0],
+                                                       sizeof(slots[0]),
+                                                       errbuf,
+                                                       sizeof(errbuf));
+        ok = ok && strcmp(slots[0], "aa") == 0;
+        ok = ok && strcmp(slots[1], "bb") == 0;
+        ok = ok && !legacy_rpc_parse_result_string_array(bad, 1, slots[0],
+                                                         sizeof(slots[0]),
+                                                         errbuf,
+                                                         sizeof(errbuf));
+        ok = ok && strstr(errbuf, "bad item") != NULL;
         if (ok) printf("OK\n"); else { printf("FAIL\n"); failures++; }
     }
 

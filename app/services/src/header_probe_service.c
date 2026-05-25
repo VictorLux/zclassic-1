@@ -157,9 +157,8 @@ static bool hp_fetch_remote_tip(const char *host, int port,
     int64_t h = 0;
     bool parsed = legacy_rpc_parse_result_int(resp, &h, err, err_sz);
     free(resp);
-    if (!parsed || h < 0 || h > 0x7fffffff) {
+    if (!parsed || h < 0 || h > 0x7fffffff)
         return false;
-    }
     *out_height = (int)h;
     return true;
 }
