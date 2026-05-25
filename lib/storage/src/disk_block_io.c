@@ -276,6 +276,66 @@ ssize_t disk_block_pread(const char *datadir, const struct disk_block_pos *pos,
     return nread;
 }
 
+static bool disk_block_frame_header_valid(const uint8_t hdr[8],
+                                          uint32_t *out_size)
+{
+    bool magic_ok = (hdr[0] == 0x24 && hdr[1] == 0xe9 &&
+                     hdr[2] == 0x27 && hdr[3] == 0x64) ||
+                    (hdr[0] == 0xfa && hdr[1] == 0x1a &&
+                     hdr[2] == 0xf9 && hdr[3] == 0xbf) ||
+                    (hdr[0] == 0xaa && hdr[1] == 0xe8 &&
+                     hdr[2] == 0x3f && hdr[3] == 0x5f);
+    uint32_t block_size = 0;
+    memcpy(&block_size, hdr + 4, 4);
+    if (!magic_ok || block_size == 0 || block_size > 2000000u)
+        return false;
+    if (out_size)
+        *out_size = block_size;
+    return true;
+}
+
+static bool disk_block_locate_payload(int fd,
+                                      const struct disk_block_pos *pos,
+                                      uint32_t *out_payload_pos,
+                                      size_t *out_size)
+{
+    if (!pos || !out_payload_pos || !out_size)
+        return false;
+
+    uint8_t hdr[8];
+    uint32_t block_size = 0;
+
+    /* Canonical block indexes store the payload offset. Check the
+     * frame header immediately before it first. */
+    if (pos->nPos >= 8) {
+        ssize_t hr = pread(fd, hdr, sizeof(hdr), (off_t)(pos->nPos - 8));
+        if (hr == (ssize_t)sizeof(hdr) &&
+            disk_block_frame_header_valid(hdr, &block_size)) {
+            *out_payload_pos = pos->nPos;
+            *out_size = block_size;
+            return true;
+        }
+    }
+
+    /* Some recovery/import paths may hand us the frame offset instead
+     * of the payload offset. Accept that shape too; it is cheaper and
+     * safer to read the block than to strand validation behind a
+     * recoverable offset convention mismatch. */
+    ssize_t hr = pread(fd, hdr, sizeof(hdr), (off_t)pos->nPos);
+    if (hr == (ssize_t)sizeof(hdr) &&
+        disk_block_frame_header_valid(hdr, &block_size)) {
+        if (pos->nPos > UINT32_MAX - 8u)
+            return false;
+        *out_payload_pos = pos->nPos + 8u;
+        *out_size = block_size;
+        return true;
+    }
+
+    *out_payload_pos = pos->nPos;
+    *out_size = 2000000u;
+    return true;
+}
+
 bool read_block_from_disk_pread(struct block *b,
                                 const struct disk_block_pos *pos,
                                 const char *datadir)
@@ -293,26 +353,14 @@ bool read_block_from_disk_pread(struct block *b,
     if (fd < 0)
         LOG_FAIL("disk_block_io", "read_block_pread: cannot open %s", path);
 
-    /* Read the 8-byte header (magic + size) preceding block data */
-    size_t bufsize = 0;
-    if (pos->nPos >= 8) {
-        uint8_t hdr[8];
-        ssize_t hr = pread(fd, hdr, 8, (off_t)(pos->nPos - 8));
-        if (hr == 8) {
-            bool magic_ok = (hdr[0] == 0x24 && hdr[1] == 0xe9 &&
-                             hdr[2] == 0x27 && hdr[3] == 0x64) ||
-                            (hdr[0] == 0xfa && hdr[1] == 0x1a &&
-                             hdr[2] == 0xf9 && hdr[3] == 0xbf) ||
-                            (hdr[0] == 0xaa && hdr[1] == 0xe8 &&
-                             hdr[2] == 0x3f && hdr[3] == 0x5f);
-            uint32_t block_size = 0;
-            memcpy(&block_size, hdr + 4, 4);
-            if (magic_ok && block_size > 0 && block_size <= 2000000)
-                bufsize = block_size;
-        }
+    uint32_t payload_pos = pos->nPos;
+    size_t bufsize = 2000000u;
+    if (!disk_block_locate_payload(fd, pos, &payload_pos, &bufsize)) {
+        close(fd);
+        LOG_FAIL("disk_block_io",
+                 "read_block_pread: locate payload failed for file=%d pos=%u",
+                 pos->nFile, pos->nPos);
     }
-    if (bufsize == 0)
-        bufsize = 2000000;
 
     unsigned char *buf = zcl_malloc(bufsize, "read_block_pread_buf");
     if (!buf) {
@@ -320,13 +368,13 @@ bool read_block_from_disk_pread(struct block *b,
         LOG_FAIL("disk_block_io", "read_block_pread: malloc(%zu) failed", bufsize);
     }
 
-    ssize_t nread = pread(fd, buf, bufsize, (off_t)pos->nPos);
+    ssize_t nread = pread(fd, buf, bufsize, (off_t)payload_pos);
     close(fd);
 
     if (nread <= 0) {
         free(buf);
         LOG_FAIL("disk_block_io", "read_block_pread: pread returned %zd for file=%d pos=%u",
-                 nread, pos->nFile, pos->nPos);
+                 nread, pos->nFile, payload_pos);
     }
 
     struct byte_stream s;

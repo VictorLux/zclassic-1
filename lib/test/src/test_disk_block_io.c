@@ -295,6 +295,48 @@ static int test_disk_block_pread_raw(void)
     return failures;
 }
 
+static int test_pread_accepts_frame_offset(void)
+{
+    int failures = 0;
+    char tmpdir[256];
+    make_test_dir(tmpdir, sizeof(tmpdir));
+
+    TEST("pread: accepts frame offset as recoverable index shape") {
+        struct disk_block_pos pos = { .nFile = 0, .nPos = 0 };
+        if (!write_test_block(tmpdir, &pos, 424242)) {
+            printf("FAIL (write)\n"); failures++; goto _test_next;
+        }
+        if (pos.nPos < 8) {
+            printf("FAIL (unexpected payload pos %u)\n", pos.nPos);
+            failures++;
+            goto _test_next;
+        }
+
+        struct disk_block_pos frame_pos = pos;
+        frame_pos.nPos -= 8;
+
+        struct block b;
+        if (!read_block_from_disk_pread(&b, &frame_pos, tmpdir)) {
+            printf("FAIL (pread frame offset)\n");
+            failures++;
+            goto _test_next;
+        }
+        if (b.header.nTime != 424242 || b.num_vtx != 1) {
+            printf("FAIL (data mismatch: nTime=%u vtx=%zu)\n",
+                   b.header.nTime, b.num_vtx);
+            failures++;
+            block_free(&b);
+            goto _test_next;
+        }
+        block_free(&b);
+        printf("OK\n");
+    }
+    _test_next:
+
+    cleanup_test_dir(tmpdir);
+    return failures;
+}
+
 /* ── Entry point ─────────────────────────────────────────── */
 
 int test_disk_block_io(void)
@@ -306,5 +348,6 @@ int test_disk_block_io(void)
     failures += test_concurrent_reads();
     failures += test_concurrent_pread_same_file();
     failures += test_disk_block_pread_raw();
+    failures += test_pread_accepts_frame_offset();
     return failures;
 }
