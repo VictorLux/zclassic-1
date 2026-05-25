@@ -4,6 +4,59 @@ Symptom-driven troubleshooting. Each section: what you see, how to diagnose, how
 
 ---
 
+## BIP30 Stale Coinbase Wedge
+
+**Symptoms:** `tools/scoreboard.sh` reports `WEDGED`, `getblockcount` stays
+frozen while legacy peers advance, and `node.log` repeats lines like
+`STALL: h=<tip> entries_at_<tip+1>=1` or `bad-txns-BIP30`.
+
+This is the 2026-05-25 stale coinbase-at-`tip+1` shape: `node.db` has one
+unspent UTXO row one block above the active chain tip, with no matching
+`transactions` row above tip. BIP30 is correct; the local coins table is stale.
+
+**Diagnose, read-only:**
+```bash
+./tools/bip30_unwedge_preflight.sh
+./tools/scoreboard.sh
+```
+
+`bip30_unwedge_preflight.sh` exits:
+- `3` when the stale `tip+1` UTXO row is still present and the node still needs
+  the approved deploy/restart unwedge.
+- `0` when the stale row is gone and the live tip appears healthy.
+- `4` when the stale row is gone but the node is still unhealthy; inspect the
+  reported RPC gap and recent log lines before re-flipping any cutover.
+
+**Fix:**
+1. Confirm the fixed code is deployed or ready to deploy:
+   ```bash
+   git log --oneline --max-count=5
+   make -j$(nproc) zclassic23
+   ./tools/bip30_unwedge_preflight.sh
+   ```
+2. Pick an operator-approved restart window. Do not run this as an unattended
+   worker action; the live assignment gates deploy/restart on operator approval.
+3. Deploy/restart the fixed binary:
+   ```bash
+   make deploy
+   ```
+4. Prove the single-row rewind happened and the chain advances:
+   ```bash
+   ./tools/bip30_unwedge_preflight.sh
+   SAMPLES=6 INTERVAL_SECS=15 ./tools/bench_running_lag.sh
+   ./tools/scoreboard.sh
+   ```
+
+**Success:** the preflight no longer reports `STALE_TIP_PLUS_ONE_PRESENT`,
+`scoreboard.sh` exits `0`, and the tip advances past the formerly wedged
+height.
+
+**Do not:** manually delete broad UTXO ranges, bypass BIP30, or re-flip any
+C-* cutover while this check exits non-zero. The boot fix is intentionally
+limited to a one-block overshoot with a bounded row count.
+
+---
+
 ## Disk > 99% Full
 
 **Symptoms:** `EV_DISK_CRITICAL` events, node may refuse new blocks, SQLite writes fail.
