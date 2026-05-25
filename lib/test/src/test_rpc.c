@@ -257,8 +257,12 @@ int test_rpc(void) {
                           "shadow") == 0;
         const struct json_value *state = json_get(&result, "cutover_state");
         ok = ok && state && json_get(state, "has_change") != NULL;
+        ok = ok && json_get(state, "canary_status") != NULL;
+        ok = ok && json_get(state, "canary_failed") != NULL;
         ok = ok && json_get(state, "canary_target_height") != NULL;
         ok = ok && json_get(state, "canary_passed") != NULL;
+        ok = ok && json_get(state, "canary_elapsed_seconds") != NULL;
+        ok = ok && json_get(state, "canary_deadline_unix") != NULL;
         json_free(&result);
 
         json_set_array(&params);
@@ -302,6 +306,10 @@ int test_rpc(void) {
         ok = ok && json_get(state, "changed_at_unix") != NULL;
         ok = ok && json_get(state, "change_height") != NULL;
         ok = ok && json_get(state, "current_tip_height") != NULL;
+        ok = ok && json_get(state, "canary_status") != NULL;
+        ok = ok && json_get(state, "canary_failed") != NULL;
+        ok = ok && json_get(state, "canary_elapsed_seconds") != NULL;
+        ok = ok && json_get(state, "canary_deadline_unix") != NULL;
         ok = ok && json_get(state, "watch_window_seconds") != NULL;
 
         json_free(&v);
@@ -386,9 +394,13 @@ int test_rpc(void) {
         ok = ok && json_get(guard, "max_witness_window_secs") != NULL;
         ok = ok && json_get(state, "has_change") != NULL;
         ok = ok && json_get(state, "authoritative_active") != NULL;
+        ok = ok && json_get(state, "canary_status") != NULL;
+        ok = ok && json_get(state, "canary_failed") != NULL;
         ok = ok && json_get(state, "canary_target_height") != NULL;
         ok = ok && json_get(state, "current_tip_height") != NULL;
         ok = ok && json_get(state, "canary_passed") != NULL;
+        ok = ok && json_get(state, "canary_elapsed_seconds") != NULL;
+        ok = ok && json_get(state, "canary_deadline_unix") != NULL;
         ok = ok && json_get(diff, "status") != NULL;
         ok = ok && json_get(diff, "persisted_cursor") != NULL;
         ok = ok && json_get(diff, "required_cursor") != NULL;

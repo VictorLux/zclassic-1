@@ -831,6 +831,9 @@ static int t_scoreboard_operator_gate_contract(void)
         ASSERT(strstr(buf, "VERDICT=CUTOVER_READY") != NULL);
         ASSERT(strstr(buf, "VERDICT=LIVE_NOT_READY") != NULL);
         ASSERT(strstr(buf, "VERDICT=CUTOVER_NOT_READY") != NULL);
+        ASSERT(strstr(buf, "canary_status") != NULL);
+        ASSERT(strstr(buf, "canary_failed") != NULL);
+        ASSERT(strstr(buf, "elapsed_seconds") != NULL);
         ASSERT(strstr(buf, "cutovermode") == NULL);
         ASSERT(strstr(buf, "setgenerate") == NULL);
         ASSERT(strstr(buf, "sendtoaddress") == NULL);

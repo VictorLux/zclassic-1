@@ -111,10 +111,13 @@ print(
     "cutover_state="
     f"has_change={str(bool(state.get('has_change'))).lower()} "
     f"authoritative_active={str(bool(state.get('authoritative_active'))).lower()} "
+    f"canary_status={state.get('canary_status', 'unknown')} "
     f"change_height={state.get('change_height', 0)} "
     f"canary_target_height={state.get('canary_target_height', 0)} "
     f"current_tip_height={state.get('current_tip_height', 0)} "
-    f"canary_passed={str(bool(state.get('canary_passed'))).lower()}"
+    f"canary_passed={str(bool(state.get('canary_passed'))).lower()} "
+    f"canary_failed={str(bool(state.get('canary_failed'))).lower()} "
+    f"elapsed_seconds={state.get('canary_elapsed_seconds', -1)}"
 )
 
 if not live_ready:
