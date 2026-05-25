@@ -2,9 +2,9 @@
 
 ## Status
 
-**QUEUED — gated on `wt-connect-bip30-selfwrite` (the root fix) landing + a clean
-live soak.** Do NOT start while Agent 1 is in connect_block/coins/boot — it would
-collide. This is the "less is more" cleanup that the root fix *enables*.
+**IN PROGRESS (wt3) — claimed 2026-05-25.** Root fix is marked deployed with
+live forward progress in `wt-connect-bip30-selfwrite.md`; start with the bounded
+rewind helper to avoid broad condition churn.
 
 > Why queued, not now: days of whack-a-mole accreted overlapping wedge-recovery
 > paths. Most exist only because `connect_block` kept false-wedging. Fix the cause
