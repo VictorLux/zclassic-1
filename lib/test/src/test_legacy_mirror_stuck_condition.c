@@ -24,15 +24,15 @@ static void reset_lmsc(void)
     legacy_mirror_stuck_test_reset();
 }
 
-static void install_stats_lmsc(bool enabled, bool running, bool in_flight,
-                               int stuck_height)
+static void install_stats_lmsc(bool enabled, bool running, bool reachable,
+                               bool in_flight, int stuck_height)
 {
     struct legacy_mirror_sync_stats s;
     memset(&s, 0, sizeof(s));
     s.enabled = enabled;
     s.running = running;
     s.in_flight = in_flight;
-    s.reachable = true;
+    s.reachable = reachable;
     s.local_height = stuck_height > 0 ? stuck_height - 2 : 10;
     s.legacy_height = stuck_height > 0 ? stuck_height + 5 : 12;
     s.stuck_height = stuck_height;
@@ -49,7 +49,7 @@ int test_legacy_mirror_stuck_condition(void)
 
     {
         reset_lmsc();
-        install_stats_lmsc(true, true, false, 123);
+        install_stats_lmsc(true, true, true, false, 123);
         legacy_mirror_sync_test_set_catchup_result(true, true, true);
         register_legacy_mirror_stuck();
         bool ok = true;
@@ -67,7 +67,7 @@ int test_legacy_mirror_stuck_condition(void)
 
     {
         reset_lmsc();
-        install_stats_lmsc(true, true, true, 124);
+        install_stats_lmsc(true, true, true, true, 124);
         legacy_mirror_sync_test_set_catchup_result(true, true, true);
         register_legacy_mirror_stuck();
         bool ok = true;
@@ -82,7 +82,7 @@ int test_legacy_mirror_stuck_condition(void)
 
     {
         reset_lmsc();
-        install_stats_lmsc(false, true, false, 125);
+        install_stats_lmsc(false, true, true, false, 125);
         legacy_mirror_sync_test_set_catchup_result(true, true, true);
         register_legacy_mirror_stuck();
         bool ok = true;
@@ -97,7 +97,7 @@ int test_legacy_mirror_stuck_condition(void)
 
     {
         reset_lmsc();
-        install_stats_lmsc(true, true, false, 126);
+        install_stats_lmsc(true, true, true, false, 126);
         legacy_mirror_sync_test_set_catchup_result(true, false, false);
         register_legacy_mirror_stuck();
         bool ok = true;
@@ -108,6 +108,21 @@ int test_legacy_mirror_stuck_condition(void)
         ok = ok && legacy_mirror_sync_test_catchup_calls() == 1;
         ok = ok && condition_engine_get_active_count() == 1;
         LMSC_CHECK("failed catchup leaves condition active", ok);
+    }
+
+    {
+        reset_lmsc();
+        install_stats_lmsc(true, true, false, false, 127);
+        legacy_mirror_sync_test_set_catchup_result(true, true, true);
+        register_legacy_mirror_stuck();
+        bool ok = true;
+
+        condition_engine_tick();
+
+        ok = ok && legacy_mirror_stuck_test_remedy_calls() == 0;
+        ok = ok && legacy_mirror_sync_test_catchup_calls() == 0;
+        ok = ok && condition_engine_get_active_count() == 0;
+        LMSC_CHECK("unreachable mirror does not request catchup", ok);
     }
 
     reset_lmsc();

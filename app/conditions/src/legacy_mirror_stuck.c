@@ -19,7 +19,8 @@ static bool detect_legacy_mirror_stuck(void)
 {
     struct legacy_mirror_sync_stats s;
     legacy_mirror_sync_stats_snapshot(&s);
-    if (!s.enabled || !s.running || s.in_flight || s.stuck_height <= 0)
+    if (!s.enabled || !s.running || !s.reachable || s.in_flight ||
+        s.stuck_height <= 0)
         return false;
 
     atomic_store(&g_stuck_height_at_detect, s.stuck_height);
