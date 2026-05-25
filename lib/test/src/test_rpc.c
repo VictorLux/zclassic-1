@@ -305,10 +305,11 @@ int test_rpc(void) {
         const struct json_value *modes = json_get(&result, "modes");
         const struct json_value *live = json_get(&result, "live");
         const struct json_value *ce = json_get(&result, "chain_evidence");
+        const struct json_value *guard = json_get(&result, "guard");
         const struct json_value *diff = json_get(&result, "header_admit_diff");
         const struct json_value *vh = json_get(&result, "validate_headers");
         const struct json_value *blockers = json_get(&result, "blockers");
-        ok = ok && modes && live && ce && diff && vh && blockers;
+        ok = ok && modes && live && ce && guard && diff && vh && blockers;
         ok = ok && strcmp(json_get_str(json_get(modes, "header_admit")),
                           "shadow") == 0;
         ok = ok && strcmp(json_get_str(json_get(modes, "validate_headers")),
@@ -320,6 +321,9 @@ int test_rpc(void) {
         ok = ok && json_get(ce, "publish_state") != NULL;
         ok = ok && json_get(ce, "publish_state_not_local") != NULL;
         ok = ok && json_get(ce, "health_reason") != NULL;
+        ok = ok && strcmp(json_get_str(json_get(guard, "name")),
+                          "cutover_no_forward_progress") == 0;
+        ok = ok && json_get(guard, "registered") != NULL;
         ok = ok && json_get(diff, "status") != NULL;
         ok = ok && json_get(vh, "failed_total") != NULL;
         ok = ok && json_get(vh, "required_cursor") != NULL;

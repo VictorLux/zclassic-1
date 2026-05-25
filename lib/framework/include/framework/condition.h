@@ -64,6 +64,7 @@ struct condition {
 struct main_state;
 
 bool condition_register(const struct condition *cond);
+bool condition_engine_has_registered(const char *name);
 void condition_engine_tick(void);
 bool condition_engine_dump_state_json(struct json_value *out, const char *key);
 int condition_engine_get_active_count(void);

@@ -115,6 +115,17 @@ bool condition_register(const struct condition *cond)
     return true;
 }
 
+bool condition_engine_has_registered(const char *name)
+{
+    if (!name || !name[0])
+        return false;
+
+    pthread_mutex_lock(&g_condition_mu);
+    bool found = condition_find_locked(name) >= 0;
+    pthread_mutex_unlock(&g_condition_mu);
+    return found;
+}
+
 static bool condition_due_for_remedy(const struct condition *cond,
                                      struct condition_state *s,
                                      int64_t now)

@@ -755,6 +755,7 @@ static int64_t json_obj_int_or(const struct json_value *obj,
 }
 
 #define CUTOVER_PREFLIGHT_MAX_TIP_ADVANCE_AGE_SECS 180
+#define CUTOVER_PREFLIGHT_GUARD_NAME "cutover_no_forward_progress"
 
 static void cutover_preflight_push_blocker(struct json_value *blockers,
                                            const char *reason)
@@ -801,9 +802,9 @@ static bool rpc_cutoverpreflight(const struct json_value *params, bool help,
         "\nRead-only C-3 preflight snapshot: runtime cutover modes, "
         "live node health, header_admit shadow-vs-active-chain diff, "
         "validate_headers stage counters/cursor coverage, and a conservative "
-        "ready boolean.\n"
+        "ready boolean gated by the cutover no-progress guard.\n"
         "\nHeights default to the header_admit diff auto-window. "
-        "Result: { ready, blockers, live, chain_evidence, modes, "
+        "Result: { ready, blockers, live, chain_evidence, guard, modes, "
         "header_admit_diff, validate_headers }");
 
     const struct json_value *start_v = json_at(params, 0);
@@ -822,17 +823,20 @@ static bool rpc_cutoverpreflight(const struct json_value *params, bool help,
     struct json_value modes;
     struct json_value live;
     struct json_value chain_evidence;
+    struct json_value guard;
     struct json_value diff;
     struct json_value vh;
     struct json_value blockers;
     json_init(&modes);
     json_init(&live);
     json_init(&chain_evidence);
+    json_init(&guard);
     json_init(&diff);
     json_init(&vh);
     json_init(&blockers);
     json_set_object(result);
     json_set_object(&modes);
+    json_set_object(&guard);
     json_set_object(&diff);
     json_set_array(&blockers);
 
@@ -849,6 +853,12 @@ static bool rpc_cutoverpreflight(const struct json_value *params, bool help,
     json_push_kv_str(&modes, "header_admit", ha_mode);
     json_push_kv_str(&modes, "validate_headers", vh_mode);
     bool live_ready = push_cutover_live_gate_json(&live);
+    bool guard_ready =
+        condition_engine_has_registered(CUTOVER_PREFLIGHT_GUARD_NAME);
+    json_push_kv_str(&guard, "name", CUTOVER_PREFLIGHT_GUARD_NAME);
+    json_push_kv_bool(&guard, "registered", guard_ready);
+    json_push_kv_int(&guard, "max_tip_advance_age_seconds",
+                     CUTOVER_PREFLIGHT_MAX_TIP_ADVANCE_AGE_SECS);
 
     json_push_kv_str(&diff, "status",
                      header_admit_diff_status_rpc_name(rep.status));
@@ -894,6 +904,9 @@ static bool rpc_cutoverpreflight(const struct json_value *params, bool help,
 
     if (!live_ready)
         cutover_preflight_push_blocker(&blockers, "live_health_not_ready");
+    if (!guard_ready)
+        cutover_preflight_push_blocker(&blockers,
+                                       "cutover_guard_not_registered");
     if (!header_ready)
         cutover_preflight_push_blocker(&blockers,
                                        "header_admit_diff_not_converged");
@@ -907,11 +920,12 @@ static bool rpc_cutoverpreflight(const struct json_value *params, bool help,
                                        "cutover_modes_not_shadow");
 
     json_push_kv_bool(result, "ready",
-                      live_ready && header_ready &&
+                      live_ready && guard_ready && header_ready &&
                       validate_ready && modes_ready);
     json_push_kv(result, "blockers", &blockers);
     json_push_kv(result, "live", &live);
     json_push_kv(result, "chain_evidence", &chain_evidence);
+    json_push_kv(result, "guard", &guard);
     json_push_kv(result, "modes", &modes);
     json_push_kv(result, "header_admit_diff", &diff);
     json_push_kv(result, "validate_headers", &vh);
@@ -920,6 +934,7 @@ static bool rpc_cutoverpreflight(const struct json_value *params, bool help,
     json_free(&modes);
     json_free(&live);
     json_free(&chain_evidence);
+    json_free(&guard);
     json_free(&diff);
     json_free(&vh);
     return true;
