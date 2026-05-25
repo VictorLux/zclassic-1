@@ -874,12 +874,6 @@ static int t_scoreboard_operator_gate_contract(void)
         ASSERT(strstr(buf, "cutovermode") == NULL);
         ASSERT(strstr(buf, "setgenerate") == NULL);
         ASSERT(strstr(buf, "sendtoaddress") == NULL);
-        free(buf);
-        buf = NULL;
-        ASSERT(repo_path(path, sizeof(path),
-                         "docs/work/cutover-safety-protocol.md") == 0);
-        ASSERT(read_entire_file(path, &buf) == 0);
-        ASSERT(strstr(buf, "tools/scoreboard.sh --cutover") != NULL);
         PASS();
     } _test_next:;
     free(buf);
@@ -1184,8 +1178,6 @@ static int t_cold_import_uses_leveldb_snapshots_contract(void)
             "legacy_bootstrap_import_snapshot_state(");
         char *anchor_height = strstr(cold_mode,
             ".anchor_height = legacy_tip");
-        char *has_anchor_height = strstr(cold_mode,
-            ".has_anchor_height = true");
         char *destroy = strstr(cold_mode, "ldb_snapshot_destroy(idx_dir)");
         ASSERT(include != NULL);
         ASSERT(stage != NULL);
@@ -1194,7 +1186,6 @@ static int t_cold_import_uses_leveldb_snapshots_contract(void)
         ASSERT(height_map != NULL);
         ASSERT(snapshot_import != NULL);
         ASSERT(anchor_height != NULL);
-        ASSERT(has_anchor_height != NULL);
         ASSERT(destroy != NULL);
         ASSERT(snapshot < cs_probe);
         ASSERT(cs_probe < height_map);

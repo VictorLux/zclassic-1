@@ -119,6 +119,11 @@ Verification:
   `make lint`, and `git diff --check` pass after removing the public
   fastimport `from_height` option. Full binary linking in wt2 is still blocked
   by the missing local vendor archives above.
+- Local wt2 vendor archives were restored from the orchestrator checkout for
+  verification. `make -j$(nproc) test_zcl zclassic23`, `make lint`,
+  `git diff --check`, and `make -j1 test_parallel &&
+  ./test_parallel --jobs=$(nproc)` pass after refreshing stale importer/cutover
+  contract tests.
 
 ## The shape (one canonical importer, pluggable mode)
 
