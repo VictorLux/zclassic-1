@@ -310,5 +310,7 @@ One commit per task. Push after tasks 2, 4, 7.
 - Added the first simulated block-injection command: `send_malformed_block`
   accepts the planned 8 malformed block types, records peer-level rejection
   counters, and increments `consensus_rejects`.
+- Implemented `advance_clock` against the platform clock injection hook so
+  chaos commands and future simulator paths observe the virtual wall clock.
 
 <!-- Worker: append a Completion section below when done. -->

@@ -32,6 +32,10 @@ struct chaos_ctx {
     char boot_phase[32];
     unsigned peer_count;
     struct sim_peer_set peers;
+    struct platform_clock_source clock_src;
+    int64_t sim_wall_unix;
+    int64_t sim_monotonic_us;
+    uint64_t clock_advance_count;
     bool crashed;
     int64_t tip_height;
     int64_t reorg_count;
@@ -52,6 +56,29 @@ struct chaos_command {
     const char *name;
     chaos_handler_fn handler;
 };
+
+static int64_t chaos_clock_monotonic_us(void *user)
+{
+    const struct chaos_ctx *ctx = (const struct chaos_ctx *)user;
+    return ctx ? ctx->sim_monotonic_us : 0;
+}
+
+static int64_t chaos_clock_wall_unix(void *user)
+{
+    const struct chaos_ctx *ctx = (const struct chaos_ctx *)user;
+    return ctx ? ctx->sim_wall_unix : 0;
+}
+
+static void chaos_ctx_init(struct chaos_ctx *ctx)
+{
+    memset(ctx, 0, sizeof(*ctx));
+    snprintf(ctx->boot_phase, sizeof(ctx->boot_phase), "idb_complete");
+    sim_peer_set_init(&ctx->peers);
+    ctx->sim_wall_unix = platform_time_wall_unix();
+    ctx->clock_src.monotonic_us = chaos_clock_monotonic_us;
+    ctx->clock_src.wall_unix = chaos_clock_wall_unix;
+    ctx->clock_src.user = ctx;
+}
 
 static const char *arg_value(int argc, char **argv, const char *key)
 {
@@ -219,6 +246,14 @@ static bool metric_value(const struct chaos_ctx *ctx, const char *name,
         *out = (int64_t)ctx->peers.malformed_blocks_sent;
         return true;
     }
+    if (strcmp(name, "clock_advance_count") == 0) {
+        *out = (int64_t)ctx->clock_advance_count;
+        return true;
+    }
+    if (strcmp(name, "sim_time") == 0) {
+        *out = ctx->sim_wall_unix;
+        return true;
+    }
     return false;
 }
 
@@ -339,6 +374,31 @@ static int handle_send_malformed_block(struct chaos_ctx *ctx, int argc,
     return 0;
 }
 
+static int handle_advance_clock(struct chaos_ctx *ctx, int argc, char **argv,
+                                int line_no)
+{
+    if (argc != 2)
+        return fail_line(line_no, "advance_clock requires one duration");
+
+    const char *duration = argv[1];
+    if (*duration == '+')
+        duration++;
+
+    int64_t seconds = 0;
+    if (!parse_duration_seconds(duration, &seconds))
+        return fail_line(line_no,
+                         "advance_clock duration must be +Ns/+Nm/+Nh/+Nd");
+    if (ctx->sim_wall_unix > INT64_MAX - seconds)
+        return fail_line(line_no, "advance_clock wall time overflows");
+    if (seconds > (INT64_MAX - ctx->sim_monotonic_us) / 1000000LL)
+        return fail_line(line_no, "advance_clock monotonic time overflows");
+
+    ctx->sim_wall_unix += seconds;
+    ctx->sim_monotonic_us += seconds * 1000000LL;
+    ctx->clock_advance_count++;
+    return 0;
+}
+
 static int handle_partition_network(struct chaos_ctx *ctx, int argc,
                                     char **argv, int line_no)
 {
@@ -376,7 +436,7 @@ static const struct chaos_command COMMANDS[] = {
     { "kill_peer", handle_kill_peer },
     { "send_block", handle_stub },
     { "send_malformed_block", handle_send_malformed_block },
-    { "advance_clock", handle_stub },
+    { "advance_clock", handle_advance_clock },
     { "trigger_oom_at", handle_trigger_oom_at },
     { "partition_network", handle_partition_network },
 };
@@ -392,10 +452,12 @@ static const struct chaos_command *find_command(const char *name)
 
 static int run_scenario(struct chaos_ctx *ctx)
 {
+    platform_clock_set_source(&ctx->clock_src);
     FILE *fp = fopen(ctx->scenario_path, "rb");
     if (!fp) {
         fprintf(stderr, "chaos: failed to open %s: %s\n",
                 ctx->scenario_path, strerror(errno));
+        platform_clock_clear_source();
         return 1;
     }
 
@@ -409,6 +471,7 @@ static int run_scenario(struct chaos_ctx *ctx)
         } else if (!feof(fp)) {
             fprintf(stderr, "chaos:%d: line too long\n", line_no);
             fclose(fp);
+            platform_clock_clear_source();
             return 1;
         }
 
@@ -422,6 +485,7 @@ static int run_scenario(struct chaos_ctx *ctx)
         if (argc < 0) {
             fprintf(stderr, "chaos:%d: too many arguments\n", line_no);
             fclose(fp);
+            platform_clock_clear_source();
             return 1;
         }
 
@@ -430,11 +494,13 @@ static int run_scenario(struct chaos_ctx *ctx)
             fprintf(stderr, "chaos:%d: unknown command '%s'\n",
                     line_no, argv[0]);
             fclose(fp);
+            platform_clock_clear_source();
             return 1;
         }
         int rc = cmd->handler(ctx, argc, argv, line_no);
         if (rc != 0) {
             fclose(fp);
+            platform_clock_clear_source();
             return 1;
         }
         if (ctx->verbose)
@@ -444,8 +510,10 @@ static int run_scenario(struct chaos_ctx *ctx)
     fclose(fp);
     if (ctx->expect_count == 0) {
         fprintf(stderr, "chaos: scenario has no expect assertions\n");
+        platform_clock_clear_source();
         return 1;
     }
+    platform_clock_clear_source();
     return 0;
 }
 
@@ -458,8 +526,7 @@ static void usage(const char *argv0)
 int main(int argc, char **argv)
 {
     struct chaos_ctx ctx;
-    memset(&ctx, 0, sizeof(ctx));
-    snprintf(ctx.boot_phase, sizeof(ctx.boot_phase), "idb_complete");
+    chaos_ctx_init(&ctx);
 
     for (int i = 1; i < argc; i++) {
         if (strncmp(argv[i], "--scenario=", 11) == 0) {

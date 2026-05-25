@@ -50,9 +50,8 @@ static int run_temp_scenario(const char *body, struct chaos_ctx *ctx_out)
         return 99;
 
     struct chaos_ctx ctx;
-    memset(&ctx, 0, sizeof(ctx));
+    chaos_ctx_init(&ctx);
     ctx.scenario_path = path;
-    snprintf(ctx.boot_phase, sizeof(ctx.boot_phase), "idb_complete");
 
     int rc = run_scenario(&ctx);
     if (ctx_out) *ctx_out = ctx;
@@ -163,6 +162,18 @@ int test_chaos_harness(void)
         "expect no_crash\n",
         NULL);
     CHAOS_CHECK("send_malformed_block unknown type fails", rc != 0);
+
+    rc = run_temp_scenario(
+        "seed 1\n"
+        "advance_clock +60s\n"
+        "advance_clock 2m\n"
+        "expect clock_advance_count == 2\n"
+        "expect no_crash\n",
+        &ctx);
+    CHAOS_CHECK("advance_clock scenario passes", rc == 0);
+    CHAOS_CHECK("advance_clock updates virtual clock",
+                ctx.clock_advance_count == 2 &&
+                ctx.sim_monotonic_us == 180000000LL);
 
     rc = run_temp_scenario(
         "seed 1\n"
