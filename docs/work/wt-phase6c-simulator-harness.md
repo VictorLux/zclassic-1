@@ -4,7 +4,7 @@
 **Branch:** PUSH DIRECT TO MAIN
 **Phase:** 6 (Determinism + simulator)
 **Depends on:** Phase 6a (seed_tape) ✅ + Phase 6b (postmortem capsule) ✅.
-**Status: IN PROGRESS (wt2)** — claimed 2026-05-25 after 6a + 6b merged.
+**Status: COMPLETE (wt2)** — completed 2026-05-25 after 6a + 6b merged.
 **Plan reference:** [`docs/architecture/phase6-determinism-and-simulator.md`](../architecture/phase6-determinism-and-simulator.md) § 6c
 
 **Owns:**
@@ -287,7 +287,7 @@ One commit per task. Push after tasks 2, 4, 7.
 
 ## Status
 
-**IN PROGRESS (wt2)** — claimed 2026-05-25 after 6a + 6b merged.
+**COMPLETE (wt2)** — completed 2026-05-25 after 6a + 6b merged.
 
 ### Progress (wt2, 2026-05-25)
 
@@ -335,5 +335,22 @@ One commit per task. Push after tasks 2, 4, 7.
   advance tip height or consensus rejection counters.
 - Expanded failure artifacts with replay commands and the full current
   simulator metric set so failed scenarios are easier to replay and minimize.
+
+### Completion (wt2, 2026-05-25)
+
+Phase 6c is shipped on `main`.
+
+Authoritative checks:
+
+- No `.github/workflows/ci.yml` exists, so Task 6 CI wiring was skipped per
+  assignment; operators run `make chaos` manually before releases.
+- `docs/CHAOS_HARNESS.md` exists and is 138 lines.
+- All `tools/sim/scenarios/*.scenario` files are under 30 lines.
+- `chaos_harness` is registered in `lib/test/src/test_parallel.c`.
+- `make -j$(nproc)` passed.
+- `make lint` passed.
+- `./test_parallel --jobs=$(nproc)` passed:
+  `ALL TESTS PASSED — 0/208 groups failed (107.0s wall, 32 workers)`.
+- `make chaos` passed all checked-in chaos scenarios.
 
 <!-- Worker: append a Completion section below when done. -->
