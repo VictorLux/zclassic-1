@@ -2,8 +2,7 @@
 
 ## Status
 
-**READY — P0, HIGHEST PRIORITY. This is the root cause of "the node is always
-stuck."** Independent. Claim by marking `IN PROGRESS (wtN)`.
+**IN PROGRESS (wt2) — claimed 2026-05-25.**
 
 > Supersedes the symptom-chasers. The boot-rewind (`dbf4845a1`) and cold-import
 > only *move* the wedge one block; they do not cure it. This does.
