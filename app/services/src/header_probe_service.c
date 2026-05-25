@@ -3,9 +3,9 @@
  * Header Probe Service. See header for the high-level rationale.
  *
  * Layout:
- *   1. Config + creds (parse zclassic.conf — reused pattern from oracle)
- *   2. POSIX-sockets HTTP/1.1 JSON-RPC client (Basic auth)
- *   3. Parse JSON-RPC responses (string + integer results)
+ *   1. Config + creds
+ *   2. Shared legacy JSON-RPC transport wrappers
+ *   3. Build JSON-RPC requests
  *   4. header_probe_pull_range() — fetch + validate + insert
  *   5. header_probe_tick_once() — scheduler-independent Job body
  *   6. init + stats snapshot + dump_state_json
@@ -111,62 +111,6 @@ static bool hp_http_rpc_call(const char *host, int port,
     return true;
 }
 
-/* Parse a JSON-RPC response body, returning the `.result` value:
- *   - If string: copies up to out_sz-1 chars into out_str, returns 1.
- *   - If integer: writes the integer into *out_int, returns 2.
- *   - Otherwise: writes error message into err, returns 0. */
-static int hp_parse_rpc_result(const char *raw,
-                               char *out_str, size_t out_sz,
-                               int64_t *out_int,
-                               char *err, size_t err_sz)
-{
-    const char *body = legacy_rpc_http_body(raw);
-    if (!body) {
-        snprintf(err, err_sz, "no http body separator");
-        return 0;
-    }
-
-    struct json_value v = {0};
-    if (!json_read(&v, body, strlen(body))) {
-        snprintf(err, err_sz, "json parse failed");
-        json_free(&v);
-        return 0;
-    }
-    const struct json_value *result = json_get(&v, "result");
-    if (!result || (result->type != JSON_STR && result->type != JSON_INT)) {
-        const struct json_value *jerr = json_get(&v, "error");
-        if (jerr && jerr->type == JSON_OBJ) {
-            const struct json_value *msg = json_get(jerr, "message");
-            if (msg && msg->type == JSON_STR) {
-                snprintf(err, err_sz, "rpc error: %s", json_get_str(msg));
-                json_free(&v);
-                return 0;
-            }
-        }
-        snprintf(err, err_sz, "no .result or wrong type");
-        json_free(&v);
-        return 0;
-    }
-    int kind = 0;
-    if (result->type == JSON_STR) {
-        const char *s = json_get_str(result);
-        size_t slen = s ? strlen(s) : 0;
-        if (slen + 1 > out_sz) {
-            snprintf(err, err_sz, "result string too long (%zu)", slen);
-            json_free(&v);
-            return 0;
-        }
-        memcpy(out_str, s ? s : "", slen);
-        out_str[slen] = '\0';
-        kind = 1;
-    } else {
-        if (out_int) *out_int = json_get_int(result);
-        kind = 2;
-    }
-    json_free(&v);
-    return kind;
-}
-
 /* Build a JSON-RPC body for a method that takes one int param. */
 static void hp_build_rpc_body_int(char *body, size_t body_sz,
                                   const char *method, int64_t param)
@@ -213,10 +157,9 @@ static bool hp_fetch_remote_tip(const char *host, int port,
                                resp, HP_RESPONSE_MAX, err, err_sz);
     if (!ok) { free(resp); return false; }
     int64_t h = 0;
-    int kind = hp_parse_rpc_result(resp, NULL, 0, &h, err, err_sz);
+    bool parsed = legacy_rpc_parse_result_int(resp, &h, err, err_sz);
     free(resp);
-    if (kind != 2 || h < 0 || h > 0x7fffffff) {
-        if (kind == 1) snprintf(err, err_sz, "tip: result not int");
+    if (!parsed || h < 0 || h > 0x7fffffff) {
         return false;
     }
     *out_height = (int)h;
@@ -246,11 +189,13 @@ static bool hp_fetch_one_header(const char *host, int port,
         return false;
     }
     char hash_hex[80] = {0};
-    int kind = hp_parse_rpc_result(resp, hash_hex, sizeof(hash_hex),
-                                    NULL, err, err_sz);
-    if (kind != 1 || strlen(hash_hex) != 64) {
-        if (kind == 1)
-            snprintf(err, err_sz, "hash not 64 hex chars");
+    if (!legacy_rpc_parse_result_string(resp, hash_hex, sizeof(hash_hex),
+                                        err, err_sz)) {
+        free(resp);
+        return false;
+    }
+    if (strlen(hash_hex) != 64) {
+        snprintf(err, err_sz, "hash not 64 hex chars");
         free(resp);
         return false;
     }
@@ -271,9 +216,10 @@ static bool hp_fetch_one_header(const char *host, int port,
         free(resp);
         return false;
     }
-    kind = hp_parse_rpc_result(resp, hex, hex_cap, NULL, err, err_sz);
+    bool parsed_hex = legacy_rpc_parse_result_string(resp, hex, hex_cap,
+                                                     err, err_sz);
     free(resp);
-    if (kind != 1) {
+    if (!parsed_hex) {
         free(hex);
         return false;
     }
@@ -308,74 +254,6 @@ static bool hp_fetch_one_header(const char *host, int port,
         snprintf(err, err_sz, "block_header_deserialize failed");
         return false;
     }
-    return true;
-}
-
-/* Parse a JSON-RPC array response. Each element must have a string
- * `.result` field. Fills out_strs[i] with the result string (truncated
- * to slot_sz-1 chars). On any element error returns false. */
-static bool hp_parse_rpc_array_strs(const char *raw,
-                                     int expected,
-                                     char *out_strs, size_t slot_sz,
-                                     char *err, size_t err_sz)
-{
-    const char *body = legacy_rpc_http_body(raw);
-    if (!body) {
-        snprintf(err, err_sz, "no http body separator");
-        return false;
-    }
-
-    struct json_value v = {0};
-    if (!json_read(&v, body, strlen(body))) {
-        snprintf(err, err_sz, "json parse failed");
-        json_free(&v);
-        return false;
-    }
-    if (v.type != JSON_ARR) {
-        snprintf(err, err_sz, "response not a JSON array");
-        json_free(&v);
-        return false;
-    }
-    if ((int)v.num_children != expected) {
-        snprintf(err, err_sz,
-                 "array len %zu != expected %d",
-                 v.num_children, expected);
-        json_free(&v);
-        return false;
-    }
-    for (int i = 0; i < expected; i++) {
-        const struct json_value *item = json_at(&v, (size_t)i);
-        if (!item || item->type != JSON_OBJ) {
-            snprintf(err, err_sz, "item[%d] not an object", i);
-            json_free(&v);
-            return false;
-        }
-        const struct json_value *r = json_get(item, "result");
-        if (!r || r->type != JSON_STR) {
-            const struct json_value *jerr = json_get(item, "error");
-            const char *msg = "no string result";
-            if (jerr && jerr->type == JSON_OBJ) {
-                const struct json_value *m = json_get(jerr, "message");
-                if (m && m->type == JSON_STR) msg = json_get_str(m);
-            }
-            snprintf(err, err_sz, "item[%d] rpc error: %s", i, msg);
-            json_free(&v);
-            return false;
-        }
-        const char *s = json_get_str(r);
-        size_t slen = s ? strlen(s) : 0;
-        if (slen + 1 > slot_sz) {
-            snprintf(err, err_sz,
-                     "item[%d] string too long (%zu > %zu)",
-                     i, slen, slot_sz);
-            json_free(&v);
-            return false;
-        }
-        char *dst = out_strs + (size_t)i * slot_sz;
-        memcpy(dst, s ? s : "", slen);
-        dst[slen] = '\0';
-    }
-    json_free(&v);
     return true;
 }
 
@@ -444,8 +322,9 @@ static bool hp_fetch_headers_batch(const char *host, int port,
         snprintf(err, err_sz, "oom hashes");
         return false;
     }
-    bool ok = hp_parse_rpc_array_strs(resp1, n, hashes, HP_HASH_SLOT,
-                                       err, err_sz);
+    bool ok = legacy_rpc_parse_result_string_array(resp1, n, hashes,
+                                                   HP_HASH_SLOT,
+                                                   err, err_sz);
     free(resp1);
     if (!ok) {
         free(hashes);
@@ -514,8 +393,8 @@ static bool hp_fetch_headers_batch(const char *host, int port,
         snprintf(err, err_sz, "oom hexes");
         return false;
     }
-    ok = hp_parse_rpc_array_strs(resp2, n, hexes, hex_slot,
-                                  err, err_sz);
+    ok = legacy_rpc_parse_result_string_array(resp2, n, hexes, hex_slot,
+                                              err, err_sz);
     free(resp2);
     if (!ok) {
         free(hexes);

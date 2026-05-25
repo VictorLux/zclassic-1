@@ -9,6 +9,7 @@
 
 #include "rpc/legacy_rpc_client.h"
 
+#include "json/json.h"
 #include "util/safe_alloc.h"
 
 #include <arpa/inet.h>
@@ -233,4 +234,145 @@ const char *legacy_rpc_http_body(const char *raw)
     if (!raw) return NULL;
     const char *p = strstr(raw, "\r\n\r\n");
     return p ? p + 4 : NULL;
+}
+
+/* ── JSON-RPC result parsers ───────────────────────────────────── */
+
+static bool lrc_read_response_json(const char *raw,
+                                   struct json_value *out,
+                                   char *err, size_t err_sz)
+{
+    const char *body = legacy_rpc_http_body(raw);
+    if (!body) {
+        snprintf(err, err_sz, "no http body separator");
+        return false;
+    }
+    if (!json_read(out, body, strlen(body))) {
+        snprintf(err, err_sz, "json parse failed");
+        json_free(out);
+        return false;
+    }
+    return true;
+}
+
+static bool lrc_result_error(const struct json_value *v,
+                             char *err, size_t err_sz)
+{
+    const struct json_value *jerr = json_get(v, "error");
+    if (jerr && jerr->type == JSON_OBJ) {
+        const struct json_value *msg = json_get(jerr, "message");
+        if (msg && msg->type == JSON_STR) {
+            snprintf(err, err_sz, "rpc error: %s", json_get_str(msg));
+            return true;
+        }
+    }
+    return false;
+}
+
+bool legacy_rpc_parse_result_int(const char *raw,
+                                 int64_t *out,
+                                 char *err, size_t err_sz)
+{
+    struct json_value v = {0};
+    if (!lrc_read_response_json(raw, &v, err, err_sz)) return false;
+
+    const struct json_value *result = json_get(&v, "result");
+    if (!result || result->type != JSON_INT) {
+        if (!lrc_result_error(&v, err, err_sz))
+            snprintf(err, err_sz, "no .result or wrong type");
+        json_free(&v);
+        return false;
+    }
+
+    if (out) *out = json_get_int(result);
+    json_free(&v);
+    return true;
+}
+
+bool legacy_rpc_parse_result_string(const char *raw,
+                                    char *out, size_t out_sz,
+                                    char *err, size_t err_sz)
+{
+    struct json_value v = {0};
+    if (!lrc_read_response_json(raw, &v, err, err_sz)) return false;
+
+    const struct json_value *result = json_get(&v, "result");
+    if (!result || result->type != JSON_STR) {
+        if (!lrc_result_error(&v, err, err_sz))
+            snprintf(err, err_sz, "no .result or wrong type");
+        json_free(&v);
+        return false;
+    }
+
+    const char *s = json_get_str(result);
+    size_t slen = s ? strlen(s) : 0;
+    if (slen + 1 > out_sz) {
+        snprintf(err, err_sz, "result string too long (%zu)", slen);
+        json_free(&v);
+        return false;
+    }
+    memcpy(out, s ? s : "", slen);
+    out[slen] = '\0';
+    json_free(&v);
+    return true;
+}
+
+bool legacy_rpc_parse_result_string_array(const char *raw,
+                                          int expected,
+                                          char *out_strs,
+                                          size_t slot_sz,
+                                          char *err, size_t err_sz)
+{
+    struct json_value v = {0};
+    if (!lrc_read_response_json(raw, &v, err, err_sz)) return false;
+
+    if (v.type != JSON_ARR) {
+        snprintf(err, err_sz, "response not a JSON array");
+        json_free(&v);
+        return false;
+    }
+    if ((int)v.num_children != expected) {
+        snprintf(err, err_sz,
+                 "array len %zu != expected %d",
+                 v.num_children, expected);
+        json_free(&v);
+        return false;
+    }
+
+    for (int i = 0; i < expected; i++) {
+        const struct json_value *item = json_at(&v, (size_t)i);
+        if (!item || item->type != JSON_OBJ) {
+            snprintf(err, err_sz, "item[%d] not an object", i);
+            json_free(&v);
+            return false;
+        }
+        const struct json_value *r = json_get(item, "result");
+        if (!r || r->type != JSON_STR) {
+            const struct json_value *jerr = json_get(item, "error");
+            const char *msg = "no string result";
+            if (jerr && jerr->type == JSON_OBJ) {
+                const struct json_value *m = json_get(jerr, "message");
+                if (m && m->type == JSON_STR) msg = json_get_str(m);
+            }
+            snprintf(err, err_sz, "item[%d] rpc error: %s", i, msg);
+            json_free(&v);
+            return false;
+        }
+
+        const char *s = json_get_str(r);
+        size_t slen = s ? strlen(s) : 0;
+        if (slen + 1 > slot_sz) {
+            snprintf(err, err_sz,
+                     "item[%d] string too long (%zu > %zu)",
+                     i, slen, slot_sz);
+            json_free(&v);
+            return false;
+        }
+        char *dst = out_strs + (size_t)i * slot_sz;
+        memcpy(dst, s ? s : "", slen);
+        dst[slen] = '\0';
+    }
+
+    json_free(&v);
+    return true;
 }
