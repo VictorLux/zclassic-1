@@ -733,6 +733,7 @@ int main(void)
     failures += test_cookie_rotation();
     failures += test_reorg_safety();
     failures += test_reorg_parity();
+    failures += test_reorg_projection_parity();
     failures += test_key_scrub();
     failures += test_block_index_loader();
     failures += test_chain_state_validator();

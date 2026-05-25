@@ -83,6 +83,7 @@ volatile sig_atomic_t g_shutdown_requested = 0;
     X(consensus_reject_events) X(consensus_reject_index) \
     X(chain_rollback) X(alerts) X(ws_events) X(trace) X(phgr13_fix) \
     X(no_hardcoded_home) X(cookie_rotation) X(reorg_safety) X(reorg_parity) \
+    X(reorg_projection_parity) \
     X(key_scrub) X(block_index_loader) X(chain_state_validator) \
     X(utxo_recovery_service) X(utxo_reimport_flag) \
     X(self_heal_scan_fallback) \

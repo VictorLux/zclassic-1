@@ -276,6 +276,7 @@ int test_unclean_shutdown_advance(void);
 int test_cookie_rotation(void);
 int test_reorg_safety(void);
 int test_reorg_parity(void);
+int test_reorg_projection_parity(void);
 int test_key_scrub(void);
 int test_block_index_loader(void);
 int test_chain_state_validator(void);
