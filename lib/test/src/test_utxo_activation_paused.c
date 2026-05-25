@@ -316,6 +316,7 @@ int test_utxo_activation_paused(void)
         const struct json_value *condition;
         const struct json_value *attempts;
         const struct json_value *last_outcome;
+        struct watchdog_stats wd;
 
         memset(&tip, 0, sizeof(tip));
         memset(&recovered_tip, 0, sizeof(recovered_tip));
@@ -351,6 +352,16 @@ int test_utxo_activation_paused(void)
                    tip_wedged_resnapshot_test_last_manifest_height() == 101;
         observed = observed && svc.state == SNAPSYNC_NEGOTIATING;
         observed = observed && condition_engine_get_active_count() == 1;
+        sync_monitor_get_stats(&wd);
+        observed = observed &&
+                   wd.last_recovery == WATCHDOG_SNAPSHOT_RESNAPSHOT;
+        observed = observed && wd.last_recovery_local_height == 100;
+        observed = observed && wd.last_recovery_peer_height == 110;
+        observed = observed && wd.last_recovery_target_height == 101;
+        observed = observed && wd.last_recovery_manifest_height == 101;
+        observed = observed &&
+                   strcmp(wd.last_recovery_trigger,
+                          "block_failed_mask_exhausted") == 0;
 
         json_init(&root);
         json_set_object(&root);
@@ -396,6 +407,7 @@ int test_utxo_activation_paused(void)
         struct snapshot_sync_service svc;
         uint8_t block_hash[32];
         uint8_t chain_work[32];
+        struct watchdog_stats wd;
 
         memset(&tip, 0, sizeof(tip));
         memset(&best_header, 0, sizeof(best_header));
@@ -426,6 +438,12 @@ int test_utxo_activation_paused(void)
         ok = ok && tip_wedged_resnapshot_test_last_manifest_height() == 101;
         ok = ok && svc.state == SNAPSYNC_NEGOTIATING;
         ok = ok && condition_engine_get_active_count() == 1;
+        sync_monitor_get_stats(&wd);
+        ok = ok && wd.last_recovery == WATCHDOG_SNAPSHOT_RESNAPSHOT;
+        ok = ok && wd.last_recovery_target_height == 101;
+        ok = ok && wd.last_recovery_manifest_height == 101;
+        ok = ok && strcmp(wd.last_recovery_trigger,
+                          "local_import_exhausted") == 0;
 
         UAP_CHECK("tip_wedged_resnapshot uses exhausted local import", ok);
         snapsync_reset(&svc);

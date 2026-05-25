@@ -189,11 +189,14 @@ static enum condition_remedy_result remedy_tip_wedged_resnapshot(void)
                 trigger_name(trigger), target, manifest.height,
                 accepted ? 1 : 0);
     if (accepted) {
-        sync_monitor_record_recovery(WATCHDOG_SNAPSHOT_RESNAPSHOT,
-                                     atomic_load(&g_local_height_at_detect),
-                                     atomic_load(&g_best_header_at_detect),
-                                     0,
-                                     "condition:tip_wedged_resnapshot");
+        sync_monitor_record_snapshot_resnapshot(
+            atomic_load(&g_local_height_at_detect),
+            atomic_load(&g_best_header_at_detect),
+            0,
+            target,
+            manifest.height,
+            trigger_name(trigger),
+            "condition:tip_wedged_resnapshot");
         return COND_REMEDY_OK;
     }
     return COND_REMEDY_FAILED;

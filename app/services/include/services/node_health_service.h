@@ -76,7 +76,11 @@ struct node_health_snapshot {
     int      wd_escalation_level;
     int64_t  wd_last_recovery_time;
     int      wd_last_recovery_type;       /* enum watchdog_recovery_type */
+    int      wd_last_recovery_target_height;
+    int      wd_last_recovery_manifest_height;
     char     wd_last_recovery_name[32];
+    char     wd_last_recovery_reason[96];
+    char     wd_last_recovery_trigger[64];
 
     /* Seconds since the most recent block-connect, or -1 if we have
      * not seen one yet (cold boot). Decoupled from sync_state so a

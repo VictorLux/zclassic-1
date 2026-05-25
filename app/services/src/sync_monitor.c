@@ -27,7 +27,10 @@ static _Atomic int g_last_recovery_type;
 static _Atomic int g_last_recovery_local_height;
 static _Atomic int g_last_recovery_peer_height;
 static _Atomic int g_last_recovery_peer_count;
+static _Atomic int g_last_recovery_target_height;
+static _Atomic int g_last_recovery_manifest_height;
 static char g_last_recovery_reason[96];
+static char g_last_recovery_trigger[64];
 
 static struct connman *g_condition_cm;
 static struct download_manager *g_condition_dm;
@@ -48,12 +51,15 @@ void sync_monitor_init(void)
 {
     memset(&g_local_recovery, 0, sizeof(g_local_recovery));
     memset(g_last_recovery_reason, 0, sizeof(g_last_recovery_reason));
+    memset(g_last_recovery_trigger, 0, sizeof(g_last_recovery_trigger));
     atomic_store(&g_recoveries_total, 0);
     atomic_store(&g_last_recovery_time, 0);
     atomic_store(&g_last_recovery_type, WATCHDOG_NONE);
     atomic_store(&g_last_recovery_local_height, -1);
     atomic_store(&g_last_recovery_peer_height, -1);
     atomic_store(&g_last_recovery_peer_count, 0);
+    atomic_store(&g_last_recovery_target_height, -1);
+    atomic_store(&g_last_recovery_manifest_height, -1);
     sync_state_monitor_init();
 }
 
@@ -111,8 +117,28 @@ void sync_monitor_record_recovery(enum watchdog_recovery_type type,
     atomic_store(&g_last_recovery_local_height, local_height);
     atomic_store(&g_last_recovery_peer_height, peer_height);
     atomic_store(&g_last_recovery_peer_count, peer_count);
+    atomic_store(&g_last_recovery_target_height, -1);
+    atomic_store(&g_last_recovery_manifest_height, -1);
     snprintf(g_last_recovery_reason, sizeof(g_last_recovery_reason), "%s",
              reason ? reason : "");
+    g_last_recovery_trigger[0] = '\0';
+}
+
+void sync_monitor_record_snapshot_resnapshot(int local_height,
+                                             int peer_height,
+                                             int peer_count,
+                                             int target_height,
+                                             int manifest_height,
+                                             const char *trigger,
+                                             const char *reason)
+{
+    sync_monitor_record_recovery(WATCHDOG_SNAPSHOT_RESNAPSHOT,
+                                 local_height, peer_height, peer_count,
+                                 reason);
+    atomic_store(&g_last_recovery_target_height, target_height);
+    atomic_store(&g_last_recovery_manifest_height, manifest_height);
+    snprintf(g_last_recovery_trigger, sizeof(g_last_recovery_trigger), "%s",
+             trigger ? trigger : "");
 }
 
 void sync_monitor_kick_local_sync(const char *reason)
@@ -250,9 +276,16 @@ void sync_monitor_get_stats(struct watchdog_stats *out)
         atomic_load(&g_last_recovery_peer_height);
     out->last_recovery_peer_count =
         atomic_load(&g_last_recovery_peer_count);
+    out->last_recovery_target_height =
+        atomic_load(&g_last_recovery_target_height);
+    out->last_recovery_manifest_height =
+        atomic_load(&g_last_recovery_manifest_height);
     snprintf(out->last_recovery_reason,
              sizeof(out->last_recovery_reason), "%s",
              g_last_recovery_reason);
+    snprintf(out->last_recovery_trigger,
+             sizeof(out->last_recovery_trigger), "%s",
+             g_last_recovery_trigger);
 }
 
 const char *watchdog_recovery_type_name(enum watchdog_recovery_type type)
