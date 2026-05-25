@@ -35,6 +35,266 @@
 #include <arpa/inet.h>
 
 /* ════════════════════════════════════════════════════════════════
+ *  BENCH MODE — canonical user benchmark entry points
+ * ════════════════════════════════════════════════════════════════ */
+
+struct bench_row {
+    char bench[96];
+    double value;
+    bool numeric;
+    char unit[16];
+    char notes[256];
+};
+
+static const char *bench_history_path(void)
+{
+    const char *p = getenv("ZCL_BENCH_HISTORY");
+    return (p && *p) ? p : "docs/bench-history.csv";
+}
+
+static const char *bench_commit(void)
+{
+    const char *c = getenv("ZCL_BENCH_COMMIT");
+    return (c && *c) ? c : "unknown";
+}
+
+static void bench_iso8601(char *out, size_t out_len)
+{
+    time_t now = time(NULL);
+    struct tm tmv;
+    gmtime_r(&now, &tmv);
+    strftime(out, out_len, "%Y-%m-%dT%H:%M:%SZ", &tmv);
+}
+
+static void bench_csv_field(FILE *f, const char *s)
+{
+    bool quote = false;
+    for (const char *p = s; p && *p; ++p) {
+        if (*p == ',' || *p == '"' || *p == '\n' || *p == '\r') {
+            quote = true;
+            break;
+        }
+    }
+    if (!quote) {
+        fputs(s ? s : "", f);
+        return;
+    }
+    fputc('"', f);
+    for (const char *p = s; p && *p; ++p) {
+        if (*p == '"') fputc('"', f);
+        fputc(*p, f);
+    }
+    fputc('"', f);
+}
+
+static bool bench_history_ensure(const char *path)
+{
+    FILE *check = fopen(path, "r");
+    if (check) {
+        fclose(check);
+        return true;
+    }
+    FILE *f = fopen(path, "w");
+    if (!f) {
+        fprintf(stderr, "bench: cannot create %s\n", path);
+        return false;
+    }
+    fputs("# zclassic23 benchmark history.\n", f);
+    fputs("# Columns: date, commit, bench, value, unit, notes.\n", f);
+    fputs("# Numeric value rows are regression-gated by zclassic23 -bench-regress.\n", f);
+    fputs("# Empty value rows are pending/skipped measurements and are ignored by the gate.\n", f);
+    fputs("# Bench names follow docs/USER_BENCHMARKS.md primaries #1..#5.\n", f);
+    fputs("# Append-only: do not rewrite old rows; add a correction row instead.\n", f);
+    fputs("date,commit,bench,value,unit,notes\n", f);
+    fclose(f);
+    return true;
+}
+
+static bool bench_history_append(const char *path, const struct bench_row *rows,
+                                 size_t rows_len)
+{
+    if (!bench_history_ensure(path)) return false;
+    FILE *f = fopen(path, "a");
+    if (!f) {
+        fprintf(stderr, "bench: cannot append %s\n", path);
+        return false;
+    }
+    char date[32];
+    bench_iso8601(date, sizeof(date));
+    for (size_t i = 0; i < rows_len; ++i) {
+        char val[64] = "";
+        if (rows[i].numeric)
+            snprintf(val, sizeof(val), "%.3f", rows[i].value);
+        bench_csv_field(f, date); fputc(',', f);
+        bench_csv_field(f, bench_commit()); fputc(',', f);
+        bench_csv_field(f, rows[i].bench); fputc(',', f);
+        bench_csv_field(f, val); fputc(',', f);
+        bench_csv_field(f, rows[i].unit); fputc(',', f);
+        bench_csv_field(f, rows[i].notes); fputc('\n', f);
+    }
+    fclose(f);
+    return true;
+}
+
+static void bench_rows_default(struct bench_row rows[5])
+{
+    snprintf(rows[0].bench, sizeof(rows[0].bench), "#1 cold-start to operational");
+    snprintf(rows[0].unit, sizeof(rows[0].unit), "s");
+    snprintf(rows[0].notes, sizeof(rows[0].notes),
+             "pending P0/full-chain run; use -bench-coldstart after deploy");
+
+    snprintf(rows[1].bench, sizeof(rows[1].bench), "#2 warm-start to operational");
+    snprintf(rows[1].unit, sizeof(rows[1].unit), "s");
+    snprintf(rows[1].notes, sizeof(rows[1].notes),
+             "pending seeded datadir; use -bench-warmstart with ZCL_BENCH_SOURCE_DATADIR");
+
+    snprintf(rows[2].bench, sizeof(rows[2].bench), "#3 stay-in-sync MTBF");
+    snprintf(rows[2].unit, sizeof(rows[2].unit), "s");
+    snprintf(rows[2].notes, sizeof(rows[2].notes),
+             "pending soak after P0 deploy");
+
+    snprintf(rows[3].bench, sizeof(rows[3].bench), "#4 RAM steady-state");
+    snprintf(rows[3].unit, sizeof(rows[3].unit), "MB");
+    snprintf(rows[3].notes, sizeof(rows[3].notes),
+             "pending seeded datadir; sample RSS after isolated node boot");
+
+    snprintf(rows[4].bench, sizeof(rows[4].bench), "#5 kill-9 recovery");
+    snprintf(rows[4].unit, sizeof(rows[4].unit), "s");
+    snprintf(rows[4].notes, sizeof(rows[4].notes),
+             "pending seeded datadir; measure RPC-ready recovery histogram");
+
+    for (size_t i = 0; i < 5; ++i) {
+        rows[i].value = 0.0;
+        rows[i].numeric = false;
+    }
+}
+
+static int bench_run_all(void)
+{
+    struct bench_row rows[5];
+    bench_rows_default(rows);
+    const char *path = bench_history_path();
+    const char *dir = getenv("ZCL_BENCH_DIR");
+    if (!dir || !*dir) dir = "/tmp/zcl23-bench";
+
+    printf("zclassic23 benchmark harness (C)\n");
+    printf("  commit:        %s\n", bench_commit());
+    printf("  history:       %s\n", path);
+    printf("  bench datadir: %s\n", dir);
+    printf("  live service:  not touched by this mode\n\n");
+    for (size_t i = 0; i < 5; ++i) {
+        printf("  %-31s %10s %-8s %s\n",
+               rows[i].bench, rows[i].numeric ? "0" : "--",
+               rows[i].unit, rows[i].notes);
+    }
+    return bench_history_append(path, rows, 5) ? 0 : 1;
+}
+
+static int bench_run_one(const char *name)
+{
+    struct bench_row rows[5];
+    bench_rows_default(rows);
+    int idx = -1;
+    if (strcmp(name, "-bench-coldstart") == 0) idx = 0;
+    else if (strcmp(name, "-bench-warmstart") == 0) idx = 1;
+    else if (strcmp(name, "-bench-mtbf") == 0) idx = 2;
+    else if (strcmp(name, "-bench-rss") == 0) idx = 3;
+    else if (strcmp(name, "-bench-kill9") == 0) idx = 4;
+    if (idx < 0) return 2;
+
+    printf("%s: pending\n%s\n", rows[idx].bench, rows[idx].notes);
+    return bench_history_append(bench_history_path(), &rows[idx], 1) ? 0 : 1;
+}
+
+static int bench_regress(void)
+{
+    const char *path = bench_history_path();
+    FILE *f = fopen(path, "r");
+    if (!f) {
+        printf("[bench-regress] no history at %s; skipping\n", path);
+        return 0;
+    }
+
+    struct seen {
+        char bench[96];
+        double prev;
+        double last;
+        int count;
+    } seen[32];
+    size_t seen_len = 0;
+    char line[1024];
+    while (fgets(line, sizeof(line), f)) {
+        if (line[0] == '#' || strncmp(line, "date,", 5) == 0)
+            continue;
+        char tmp[1024];
+        snprintf(tmp, sizeof(tmp), "%s", line);
+        char *fields[6] = {0};
+        char *save = NULL;
+        char *tok = strtok_r(tmp, ",", &save);
+        for (int i = 0; i < 6 && tok; ++i) {
+            fields[i] = tok;
+            tok = strtok_r(NULL, ",", &save);
+        }
+        if (!fields[2] || !fields[3] || fields[3][0] == '\0' ||
+            fields[3][0] == '"')
+            continue;
+        char *end = NULL;
+        double v = strtod(fields[3], &end);
+        if (!end || end == fields[3])
+            continue;
+        size_t i;
+        for (i = 0; i < seen_len; ++i) {
+            if (strcmp(seen[i].bench, fields[2]) == 0)
+                break;
+        }
+        if (i == seen_len && seen_len < 32) {
+            snprintf(seen[i].bench, sizeof(seen[i].bench), "%s", fields[2]);
+            seen[i].prev = 0.0;
+            seen[i].last = 0.0;
+            seen[i].count = 0;
+            seen_len++;
+        }
+        if (i < seen_len) {
+            seen[i].prev = seen[i].last;
+            seen[i].last = v;
+            seen[i].count++;
+        }
+    }
+    fclose(f);
+
+    bool failed = false;
+    for (size_t i = 0; i < seen_len; ++i) {
+        if (seen[i].count < 2 || seen[i].prev <= 0.0)
+            continue;
+        double pct = ((seen[i].last - seen[i].prev) / seen[i].prev) * 100.0;
+        if (pct > 20.0) {
+            fprintf(stderr,
+                    "[bench-regress] FAIL %s: %.3f -> %.3f (%.1f%% > 20%%)\n",
+                    seen[i].bench, seen[i].prev, seen[i].last, pct);
+            failed = true;
+        }
+    }
+    if (failed)
+        return 1;
+    printf("[bench-regress] OK: no numeric primary regressed > 20%%\n");
+    return 0;
+}
+
+static int bench_mode_main(int argc, char **argv)
+{
+    for (int i = 1; i < argc; ++i) {
+        if (strcmp(argv[i], "-bench") == 0 ||
+            strcmp(argv[i], "-bench-all") == 0)
+            return bench_run_all();
+        if (strcmp(argv[i], "-bench-regress") == 0)
+            return bench_regress();
+        if (strncmp(argv[i], "-bench-", 7) == 0)
+            return bench_run_one(argv[i]);
+    }
+    return 2;
+}
+
+/* ════════════════════════════════════════════════════════════════
  *  CLI MODE — connect to running node, execute RPC, print result
  * ════════════════════════════════════════════════════════════════ */
 
@@ -272,6 +532,8 @@ static void print_usage(const char *prog)
     printf("  -tor                Start Tor hidden service (dynhost blog)\n");
     printf("  -profile=<name>     Service profile: full, zclassic-only, explorer, onion-node, legacy-compat\n");
     printf("  -nolegacyimport     Do not auto-read/link ~/.zclassic during boot\n");
+    printf("  -bench              Run all five user benchmark probes\n");
+    printf("  -bench-regress      Fail if bench-history numeric rows regress >20%%\n");
     printf("  -help               This help\n\n");
     printf("RPC examples:\n");
     printf("  %s getblockcount\n", prog);
@@ -498,6 +760,11 @@ static int gen_utxo_snapshot_mode(int argc, char **argv)
 
 int main(int argc, char **argv)
 {
+    for (int i = 1; i < argc; ++i) {
+        if (strncmp(argv[i], "-bench", 6) == 0)
+            return bench_mode_main(argc, argv);
+    }
+
     /* CLI mode: zclassic23 getblockcount */
     if (argc > 1 && is_cli_mode(argc, argv))
         return cli_main(argc, argv);

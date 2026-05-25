@@ -281,6 +281,27 @@ static bool rpc_benchmark(const struct json_value *params, bool help,
         "\nResult: ops/sec for each benchmark.\n");
 
     json_set_object(result);
+    json_push_kv_str(result, "primary_benchmark_source",
+                     "zclassic23 -bench* writes docs/bench-history.csv");
+
+    struct json_value primaries;
+    json_set_array(&primaries);
+    const char *names[] = {
+        "#1 cold-start to operational",
+        "#2 warm-start to operational",
+        "#3 stay-in-sync MTBF",
+        "#4 RAM steady-state",
+        "#5 kill-9 recovery",
+    };
+    for (size_t i = 0; i < sizeof(names) / sizeof(names[0]); ++i) {
+        struct json_value row;
+        json_set_object(&row);
+        json_push_kv_str(&row, "benchmark", names[i]);
+        json_push_kv_str(&row, "status", "pending");
+        json_push_kv_str(&row, "how", "run zclassic23 -bench*");
+        json_push_back(&primaries, &row);
+    }
+    json_push_kv(result, "primary_benchmarks", &primaries);
 
     /* SHA256 benchmark - 10000 iterations */
     {
