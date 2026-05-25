@@ -41,8 +41,8 @@ RPC credentials, polling cadence, or header validation behavior.
 
 Pushed commits:
 
-- `2114bc326` — `wt3: claim header probe dump config delete slice`
-- `8bef07f9f` — `header_probe: narrow dump state surface`
+- `b6630d8e8` — `wt3: claim header probe dump config delete slice`
+- `2414fc712` — `header_probe: narrow dump state surface`
 
 Summary:
 
