@@ -161,6 +161,67 @@ static int test_boot_postmortem_install(void)
     return failures;
 }
 
+static int test_capsule_prune(void)
+{
+    int failures = 0;
+    char dir_template[128];
+    snprintf(dir_template, sizeof(dir_template),
+             "/tmp/zcl_postmortem_prune_%d_XXXXXX", (int)getpid());
+    char *dir = mkdtemp(dir_template);
+    PM_CHECK("prune mkdtemp", dir != NULL);
+    if (!dir) return failures + 1;
+
+    seed_tape_t *tape = seed_tape_open(0x5052554e45ULL, 1000);
+    PM_CHECK("prune seed tape open", tape != NULL);
+    if (!tape) {
+        rm_rf_simple(dir);
+        return failures + 1;
+    }
+
+    struct postmortem_capture_opts opts = {
+        .dir = dir,
+        .tape = tape,
+        .crash_signal = 6,
+        .crash_unix = 0,
+        .reason = "prune",
+        .log_path = NULL,
+    };
+    const int64_t stamps[] = { 1000, 2000, 3000, 4000 };
+    for (size_t i = 0; i < sizeof(stamps) / sizeof(stamps[0]); i++) {
+        char path[512];
+        opts.crash_unix = stamps[i];
+        int rc = postmortem_capture_write(&opts, path, sizeof(path));
+        PM_CHECK("prune seed capsule", rc == 0);
+    }
+
+    size_t pruned = 0;
+    int rc = postmortem_capsule_prune(dir, 5000, 2500, 2, &pruned);
+    PM_CHECK("prune age/count returns 0", rc == 0);
+    PM_CHECK("prune removes older capsules", pruned == 2);
+
+    struct postmortem_capsule_entry entries[4];
+    size_t count = 0;
+    rc = postmortem_capsule_list(dir, entries, 4, &count);
+    PM_CHECK("prune list after age prune", rc == 0 && count == 2);
+    PM_CHECK("prune kept newest two",
+             rc == 0 && count == 2 &&
+             entries[0].crash_unix == 4000 &&
+             entries[1].crash_unix == 3000);
+
+    pruned = 0;
+    rc = postmortem_capsule_prune(dir, 5000, 999999, 1, &pruned);
+    PM_CHECK("prune count-only returns 0", rc == 0);
+    PM_CHECK("prune count-only removes one", pruned == 1);
+    count = 0;
+    rc = postmortem_capsule_list(dir, entries, 4, &count);
+    PM_CHECK("prune count-only kept newest",
+             rc == 0 && count == 1 && entries[0].crash_unix == 4000);
+
+    seed_tape_close(tape);
+    rm_rf_simple(dir);
+    return failures;
+}
+
 int test_postmortem(void)
 {
     printf("\n=== postmortem tests ===\n");
@@ -286,6 +347,7 @@ int test_postmortem(void)
 
     seed_tape_close(tape);
     rm_rf_simple(dir);
+    failures += test_capsule_prune();
     failures += test_signal_handler_capsule();
     failures += test_boot_postmortem_install();
 

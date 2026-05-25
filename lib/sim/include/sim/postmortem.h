@@ -65,6 +65,12 @@ int postmortem_capsule_list(const char *dir,
                             size_t entry_cap,
                             size_t *count_out);
 
+int postmortem_capsule_prune(const char *dir,
+                             int64_t now_unix,
+                             int64_t max_age_seconds,
+                             size_t keep_latest,
+                             size_t *pruned_out);
+
 #ifdef __cplusplus
 }
 #endif

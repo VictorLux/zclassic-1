@@ -342,5 +342,8 @@ the capsule API plus the non-signal save/list/load path.
   `<datadir>/postmortems`, with shutdown cleanup and forked test coverage.
   Production platform RNG/clock takeover remains deferred until the simulator
   clock advancement path is ready.
+- Added boot-time postmortem retention: unpacked `.cap` directories are pruned
+  by age and newest-count limit during postmortem setup. Compression of
+  unpacked capsules remains the remaining boot maintenance item.
 
 <!-- Worker: append a Completion section below when done. -->

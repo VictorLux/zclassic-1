@@ -146,6 +146,9 @@ static struct zcl_service_kernel g_boot_db_kernel;
 static seed_tape_t *g_boot_seed_tape = NULL;
 static char g_boot_postmortem_dir[1024];
 
+#define BOOT_POSTMORTEM_MAX_AGE_SECONDS (30LL * 24LL * 60LL * 60LL)
+#define BOOT_POSTMORTEM_KEEP_LATEST 100u
+
 /* ── System RAM query ────────────────────────────────────────── */
 
 static size_t get_system_ram(void)
@@ -253,6 +256,18 @@ static bool boot_step_init_postmortem(const char *datadir)
     }
 
     g_boot_seed_tape = tape;
+    size_t pruned = 0;
+    rc = postmortem_capsule_prune(g_boot_postmortem_dir,
+                                  platform_time_wall_time_t(),
+                                  BOOT_POSTMORTEM_MAX_AGE_SECONDS,
+                                  BOOT_POSTMORTEM_KEEP_LATEST,
+                                  &pruned);
+    if (rc != 0) {
+        fprintf(stderr,  // obs-ok:boot-fatal-before-event-context
+                "WARNING: postmortem prune failed rc=%d\n", rc);
+    } else if (pruned > 0) {
+        printf("[boot] postmortem pruned %zu old capsule(s)\n", pruned);
+    }
     printf("[boot] postmortem capsules: %s\n", g_boot_postmortem_dir);
     return true;
 }

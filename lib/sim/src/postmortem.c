@@ -178,6 +178,36 @@ static int find_oldest_entry(const struct postmortem_capsule_entry *entries,
     return (int)oldest;
 }
 
+static int remove_tree(const char *path)
+{
+    if (!path || !*path) return -EINVAL;
+    DIR *d = opendir(path);
+    if (!d) {
+        if (unlink(path) == 0) return 0;
+        return -errno;
+    }
+
+    int first_err = 0;
+    struct dirent *de;
+    while ((de = readdir(d)) != NULL) {
+        if (strcmp(de->d_name, ".") == 0 || strcmp(de->d_name, "..") == 0)
+            continue;
+        char child[768];
+        int n = snprintf(child, sizeof(child), "%s/%s", path, de->d_name);
+        if (n < 0 || (size_t)n >= sizeof(child)) {
+            if (first_err == 0) first_err = -ENAMETOOLONG;
+            continue;
+        }
+        int rc = remove_tree(child);
+        if (rc != 0 && first_err == 0)
+            first_err = rc;
+    }
+    closedir(d);
+    if (rmdir(path) != 0 && first_err == 0)
+        first_err = -errno;
+    return first_err;
+}
+
 static int64_t parse_manifest_i64(const char *manifest, const char *key,
                                   int64_t fallback)
 {
@@ -530,4 +560,53 @@ int postmortem_capsule_list(const char *dir,
               compare_entries_newest_first);
     }
     return 0;
+}
+
+int postmortem_capsule_prune(const char *dir,
+                             int64_t now_unix,
+                             int64_t max_age_seconds,
+                             size_t keep_latest,
+                             size_t *pruned_out)
+{
+    if (!dir || !*dir || !pruned_out) return -EINVAL;
+    *pruned_out = 0;
+
+    size_t total = 0;
+    int rc = postmortem_capsule_list(dir, NULL, 0, &total);
+    if (rc != 0 || total == 0) return rc;
+
+    struct postmortem_capsule_entry *entries =
+        zcl_malloc(sizeof(entries[0]) * total, "postmortem.prune.entries");
+    if (!entries) return -ENOMEM;
+
+    size_t listed = 0;
+    rc = postmortem_capsule_list(dir, entries, total, &listed);
+    if (rc != 0) {
+        free(entries);
+        return rc;
+    }
+
+    int first_err = 0;
+    size_t filled = listed < total ? listed : total;
+    for (size_t i = 0; i < filled; i++) {
+        bool over_count = keep_latest > 0 && i >= keep_latest;
+        bool over_age = false;
+        if (max_age_seconds > 0 && now_unix > 0 &&
+            entries[i].crash_unix > 0) {
+            over_age = entries[i].crash_unix < now_unix &&
+                       now_unix - entries[i].crash_unix > max_age_seconds;
+        }
+        if (!over_count && !over_age)
+            continue;
+
+        rc = remove_tree(entries[i].path);
+        if (rc == 0) {
+            (*pruned_out)++;
+        } else if (first_err == 0) {
+            first_err = rc;
+        }
+    }
+
+    free(entries);
+    return first_err;
 }
