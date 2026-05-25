@@ -665,6 +665,8 @@ int test_syncdiag_rpc(void)
         const struct json_value *checks = json_get(&result, "checks");
         const struct json_value *ca =
             checks ? json_get(checks, "chain_advance") : NULL;
+        const struct json_value *ce =
+            checks ? json_get(checks, "chain_evidence") : NULL;
         bool ok = seeded && executed && result.type == JSON_OBJ;
         ok = ok && json_get(&result, "build_commit") != NULL &&
             strcmp(json_get_str(json_get(&result, "build_commit")),
@@ -694,6 +696,20 @@ int test_syncdiag_rpc(void)
             strcmp(json_get_str(json_get(&result,
                                          "mirror_activation_blocker")),
                    "body-hash-mismatch") == 0;
+        ok = ok && ce && ce->type == JSON_OBJ;
+        ok = ok && json_get(ce, "state") != NULL;
+        ok = ok && json_get(ce, "publish_state") != NULL;
+        ok = ok && json_get(ce, "active_tip_source_class") != NULL;
+        ok = ok && json_get(ce, "active_tip") != NULL;
+        ok = ok && json_get(ce, "header_tip") != NULL;
+        ok = ok && json_get(ce, "persisted_active_tip") != NULL;
+        ok = ok && json_get(ce, "utxo_max_height") != NULL;
+        ok = ok && json_get(ce, "coins_best_block_height") != NULL;
+        ok = ok && json_get(ce, "csr_sqlite_max_height") != NULL;
+        ok = ok && json_get(ce, "missing_active_tip_evidence") != NULL;
+        ok = ok && json_get(ce, "publish_state_not_local") != NULL;
+        ok = ok && json_get(ce, "active_tip_hash_mismatch") != NULL;
+        ok = ok && json_get(ce, "csr_cursor_mismatch") != NULL;
         ok = ok && ca && ca->type == JSON_OBJ;
         ok = ok && json_get(ca, "authority") != NULL;
         ok = ok && json_get(ca, "decision") != NULL;

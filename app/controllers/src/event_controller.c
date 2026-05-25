@@ -10,15 +10,67 @@
 #include "services/bg_validation_service.h"
 #include "services/block_index_integrity.h"
 #include "services/chain_advance_coordinator.h"
+#include "services/chain_evidence_controller.h"
+#include "services/chain_state_repository.h"
 #include "services/legacy_mirror_sync_service.h"
 #include "event/event.h"
 #include "json/json.h"
 #include "rpc/server.h"
+#include "config/runtime.h"
 #include <stdlib.h>
 #include <string.h>
 #include "util/clientversion.h"
 #include "util/log_macros.h"
 #include "util/safe_alloc.h"
+
+static void push_chain_evidence_health_json(struct json_value *checks)
+{
+    struct chain_evidence_controller cec;
+    struct chain_evidence_controller_view view;
+    struct json_value ce = {0};
+
+    chain_evidence_controller_init(&cec, app_runtime_node_db(),
+                                   csr_instance());
+    chain_evidence_controller_snapshot(&cec, &view);
+
+    json_set_object(&ce);
+    json_push_kv_str(&ce, "state",
+                     chain_evidence_controller_state_name(view.state));
+    json_push_kv_str(&ce, "publish_state",
+                     chain_evidence_publish_state_name(view.publish_state));
+    json_push_kv_str(&ce, "active_tip_source_class",
+                     chain_evidence_source_class_name(
+                         view.active_tip_source_class));
+    json_push_kv_int(&ce, "active_tip",
+                     (int64_t)view.active_tip_height);
+    json_push_kv_int(&ce, "header_tip",
+                     (int64_t)view.header_tip_height);
+    json_push_kv_int(&ce, "persisted_active_tip",
+                     (int64_t)view.persisted_active_tip_height);
+    json_push_kv_int(&ce, "utxo_max_height",
+                     (int64_t)view.utxo_max_height);
+    json_push_kv_int(&ce, "coins_best_block_height",
+                     (int64_t)view.coins_best_block_height);
+    json_push_kv_int(&ce, "csr_sqlite_max_height",
+                     (int64_t)view.sqlite_max_height);
+    json_push_kv_bool(&ce, "missing_active_tip_evidence",
+                      view.missing_active_tip_evidence);
+    json_push_kv_bool(&ce, "publish_state_not_local",
+                      view.publish_state_not_local);
+    json_push_kv_bool(&ce, "active_tip_hash_mismatch",
+                      view.active_tip_hash_mismatch);
+    json_push_kv_bool(&ce, "csr_cursor_mismatch",
+                      view.csr_cursor_mismatch);
+    json_push_kv_bool(&ce, "repaired_active_tip_evidence",
+                      view.repaired_active_tip_evidence);
+    if (view.health_reason[0])
+        json_push_kv_str(&ce, "health_reason", view.health_reason);
+    if (view.contradiction_reason[0])
+        json_push_kv_str(&ce, "contradiction_reason",
+                         view.contradiction_reason);
+    json_push_kv(checks, "chain_evidence", &ce);
+    json_free(&ce);
+}
 
 static bool rpc_eventlog(const struct json_value *params, bool help,
                          struct json_value *result)
@@ -195,6 +247,7 @@ static bool rpc_healthcheck(const struct json_value *params, bool help,
     if (bii.degraded)
         json_push_kv_str(&checks, "block_index_integrity",
                          bii_recovery_action_name(bii.action));
+    push_chain_evidence_health_json(&checks);
     {
         struct cac_decision d;
         struct json_value ca = {0};
