@@ -277,8 +277,8 @@ int test_zclassicd_oracle(void)
         zo_teardown();
     }
 
-    /* Legacy advisory disagreement must freeze publication evidence, not
-     * repair/advance state from zclassicd. */
+    /* Legacy advisory disagreement must block mirror adoption, not freeze
+     * native publication evidence. */
     {
         zo_build_fixture(AGREE_HEX);
         struct mock_server srv;
@@ -309,13 +309,10 @@ int test_zclassicd_oracle(void)
         struct chain_evidence_controller_view view;
         chain_evidence_controller_init(&authority, &ndb, &empty_csr);
         chain_evidence_controller_snapshot(&authority, &view);
-        ZO_CHECK("legacy contradiction freezes evidence",
-                 view.state == CEC_CONTRADICTION_FROZEN);
-        ZO_CHECK("legacy contradiction records reason",
-                 strstr(view.contradiction_reason,
-                        "legacy advisory hash disagreement") != NULL ||
-                 strstr(view.contradiction_reason,
-                        "legacy advisory post-catchup disagreement") != NULL);
+        ZO_CHECK("legacy contradiction does not freeze evidence",
+                 view.state != CEC_CONTRADICTION_FROZEN);
+        ZO_CHECK("legacy contradiction leaves no freeze reason",
+                 view.contradiction_reason[0] == '\0');
 
         struct legacy_mirror_sync_stats lms;
         legacy_mirror_sync_stats_snapshot(&lms);

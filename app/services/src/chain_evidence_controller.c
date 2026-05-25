@@ -537,7 +537,9 @@ enum chain_evidence_controller_state chain_evidence_controller_load_state(
             (strcmp(r, "csr_cursor_mismatch") == 0) ||
             (strcmp(r, "active_tip_hash_mismatch") == 0) ||
             (strcmp(r, "active_tip_height_mismatch") == 0) ||
-            (strcmp(r, "missing_active_tip_evidence") == 0);
+            (strcmp(r, "missing_active_tip_evidence") == 0) ||
+            (strcmp(r, "legacy advisory hash disagreement") == 0) ||
+            (strcmp(r, "legacy advisory post-catchup disagreement") == 0);
         if (demoted) {
             fprintf(stderr,  // obs-ok:cec-auto-clear-demoted-freeze
                     "[cec] auto-clearing stale freeze (reason=%s now "

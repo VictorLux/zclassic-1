@@ -12,9 +12,7 @@
 #include "services/header_probe.h"
 #include "services/legacy_body_pull.h"
 #include "services/chain_activation_controller.h"
-#include "services/chain_evidence_controller.h"
 #include "services/chain_tip.h"
-#include "services/chain_state_repository.h"
 #include "services/gap_fill_service.h"
 #include "services/oracle_policy.h"
 #include "services/snapshot_sync_service.h"
@@ -153,18 +151,6 @@ static void lms_clear_csr_failure(void)
     pthread_mutex_lock(&g_lms.lock);
     g_lms.csr_failure_reason[0] = '\0';
     pthread_mutex_unlock(&g_lms.lock);
-}
-
-static void lms_freeze_local_evidence(const char *reason)
-{
-    struct node_db *ndb = process_block_get_node_db();
-    if (!ndb)
-        return;
-    struct chain_evidence_controller authority;
-    chain_evidence_controller_init(&authority, ndb, csr_instance());
-    chain_evidence_controller_freeze(&authority,
-                                     reason ? reason
-                                            : "legacy advisory contradiction");
 }
 
 static void lms_set_stuck_reason(const char *reason)
@@ -363,7 +349,6 @@ static bool lms_verify_anchor(int height)
     }
     if (strcasecmp(local, remote) != 0) {
         oracle_policy_record_disagreement(height, local, remote);
-        lms_freeze_local_evidence("legacy advisory hash disagreement");
         lms_set_blocker("hash-disagreement", "legacy hash disagreement");
         return false;
     }
@@ -384,7 +369,6 @@ static bool lms_verify_after_tip(int height)
     }
     if (strcasecmp(local, remote) != 0) {
         oracle_policy_record_disagreement(height, local, remote);
-        lms_freeze_local_evidence("legacy advisory post-catchup disagreement");
         lms_set_blocker("hash-disagreement", "post-catchup tip disagreement");
         return false;
     }
