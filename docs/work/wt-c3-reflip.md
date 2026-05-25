@@ -2,7 +2,7 @@
 
 ## Status
 
-**READY — guard verified GO 2026-05-25.** Prereqs cleared: live node healthy/
+**IN PROGRESS (wt3) — guard verified GO 2026-05-25.** Prereqs cleared: live node healthy/
 advancing; safe-flip guard sound (detects in 180s, reverts live, pages a human).
 This is the master lever — the first authoritative flip of the ONE path. Claim by
 marking IN PROGRESS at the top.
