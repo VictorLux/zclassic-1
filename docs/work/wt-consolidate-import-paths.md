@@ -50,6 +50,9 @@ Progress:
 - More dead direct/no-op result state was removed: callers use the blocking
   import return value, and direct skip counters are now local to the direct
   importer summary log.
+- Private snapshot-import result state was trimmed again: block-index tip
+  height and chainstate-best presence are now local control-flow details, not
+  returned metrics.
 
 Verification:
 - `make -j$(nproc) test_zcl`, `make -j$(nproc) zclassic23`, `make lint`, and
