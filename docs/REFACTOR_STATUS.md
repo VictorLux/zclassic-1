@@ -230,8 +230,9 @@ re-quote them here; they rot. Add a row to the ledger instead.
 
 ## In flight (worktrees)
 
-6 agent worktrees active under `.claude/worktrees/agent-*` (locked).
-Orchestrator on `main` queues + merges; workers push direct to main.
+Workers currently **idle** (Rhett restarts them). 9 locked worktree dirs remain
+under `.claude/worktrees/agent-*` from prior sessions — leftover, not running.
+Orchestrator on `main` queues; workers push direct to main when started.
 
 **The Phase 2 cutover critical path is UNWEDGE-BLOCKED, not soak-gated.** C-2/C-3
 went authoritative, the chain wedged, and `6e0f6a82c` reverted both stages to
@@ -270,7 +271,7 @@ dissolve ✅ (981ad4897..1b0847820) · snapshot wedge recovery ✅
 2. 🛡️ **[`cutover-safety-protocol.md`](./work/cutover-safety-protocol.md) — auto-revert-on-no-forward-progress Condition.** The guard whose absence let C-3 wedge the chain for a whole session. Buildable now from existing infra (`sync_monitor_tip_advance_age`). REQUIRED before any C-* re-flip. Moves UNBREAKABLE (Tip advancing, Alerts).
 3. More self-heal Conditions — chain_restore/header_probe are dissolved (✅); use [`docs/dissolve/`](./dissolve/) for the remaining mega-module plans (chain_advance, legacy_mirror, utxo_recovery).
 
-### Soak-gated (read the spec now, start when the 24 h C-3 soak clears)
+### Re-flip-gated (read the spec now; start AFTER unwedge + safe-flip guard + a clean C-3 re-flip — there is no soak running, C-3 is reverted)
 - [`wt-phase2-cutover-c3-final-delete.md`](./work/wt-phase2-cutover-c3-final-delete.md) — delete the legacy validate_headers fallback.
 - [`wt-phase2-cutover-c5-body-persist.md`](./work/wt-phase2-cutover-c5-body-persist.md) — body_persist authoritative + DELETE body_fetch. Then C-6→C-9 in sequence per [`wt-phase2-cutover-c3-through-c9.md`](./work/wt-phase2-cutover-c3-through-c9.md) (each + its own soak).
 - [`wt-phase4e-block-body-migration.md`](./work/wt-phase4e-block-body-migration.md) — block bodies into the log; gated on the 4c-cutover soak. Last Phase 4 PR. Phase 8 compaction follows ([`phase8-log-compaction-and-retention.md`](./architecture/phase8-log-compaction-and-retention.md)).
@@ -280,13 +281,15 @@ dissolve ✅ (981ad4897..1b0847820) · snapshot wedge recovery ✅
 
 ### Critical path to 100%
 ```
-C-3 ✅ ─► C-3del/C-5 ─► C-6 ─► C-7 ─► C-8 ─► C-9      (each + 24h soak)
-                                       │       └─► dissolve chain_advance + legacy_mirror (P3)
-                                       └─────────► dissolve utxo_recovery (P3)
+UNWEDGE (BIP30) ─► SAFE-FLIP GUARD ─► re-flip C-3 ─► C-3del/C-5 ─► C-6 ─► C-7 ─► C-8 ─► C-9
+  (live P0)         (Condition)        (canary)       │  (each: canary + clean soak)        │
+                                                      └─► dissolve utxo_recovery (P3, post C-8)
+                                                                  C-9 ─► dissolve chain_advance + legacy_mirror (P3)
 4c ✅ ─► 4e (bodies in log) ─► Phase 8 (log self-bounding)
 ```
-Everything in "Claimable NOW" runs in parallel to this path — that's where
-freed workers add the most while the soak runs.
+C-3 is REVERTED (not ✅) — the chain must be unwedged and the safe-flip guard in
+place before any re-flip. Everything in "Claimable NOW" runs in parallel; the
+two top items (unwedge, safe-flip guard) ARE the critical path now.
 
 ---
 
