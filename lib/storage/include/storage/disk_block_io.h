@@ -85,6 +85,12 @@ bool read_block_from_disk_index_pread(struct block *b,
                                       const struct block_index *pindex,
                                       const char *datadir);
 
+/* Verify an existing BLOCK_HAVE_DATA claim by reading the indexed block
+ * position and comparing the deserialized block hash to pindex->phashBlock.
+ * Does not mutate pindex. */
+bool block_index_have_data_readable(const struct block_index *pindex,
+                                    const char *datadir);
+
 /* Verify a block can be read back from `pos` and hashes to `pindex`.
  * Only then mark the index entry as BLOCK_HAVE_DATA at that position. */
 bool block_index_set_have_data_verified(struct block_index *pindex,

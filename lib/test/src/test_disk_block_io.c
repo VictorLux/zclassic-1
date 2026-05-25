@@ -372,6 +372,19 @@ static int test_set_have_data_verified(void)
             failures++;
             goto _test_next;
         }
+        if (!block_index_have_data_readable(&bi, tmpdir)) {
+            printf("FAIL (readability helper rejected valid data)\n");
+            failures++;
+            goto _test_next;
+        }
+        struct uint256 wrong = hash;
+        wrong.data[0] ^= 0xff;
+        bi.phashBlock = &wrong;
+        if (block_index_have_data_readable(&bi, tmpdir)) {
+            printf("FAIL (readability helper accepted mismatched data)\n");
+            failures++;
+            goto _test_next;
+        }
         printf("OK\n");
     }
     _test_next:

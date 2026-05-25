@@ -120,3 +120,10 @@ single `block_index_set_have_data_verified()` helper that reads the just-written
 block back and checks its hash before setting `BLOCK_HAVE_DATA` and disk
 position fields on the index entry. This starts converting body availability
 from a copied metadata claim into a read-verified invariant.
+
+Second body-availability hardening shipped in wt3: `BLOCK_HAVE_DATA` claims now
+share `block_index_have_data_readable()`, a read/hash predicate used by both
+`accept_block` and the self-heal loop. The new `have_data_unreadable` Condition
+waits for a real tip-advance stall, then clears an unreadable next-block data
+flag so normal P2P block fetch can repersist the body instead of treating stale
+metadata as authority.

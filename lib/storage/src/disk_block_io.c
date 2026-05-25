@@ -419,6 +419,20 @@ bool read_block_from_disk_index_pread(struct block *b,
     return true;
 }
 
+bool block_index_have_data_readable(const struct block_index *pindex,
+                                    const char *datadir)
+{
+    if (!pindex || !datadir || !(pindex->nStatus & BLOCK_HAVE_DATA) ||
+        pindex->nFile < 0 || !pindex->phashBlock)
+        return false;
+
+    struct block blk;
+    block_init(&blk);
+    bool ok = read_block_from_disk_index_pread(&blk, pindex, datadir);
+    block_free(&blk);
+    return ok;
+}
+
 bool block_index_set_have_data_verified(struct block_index *pindex,
                                         const struct disk_block_pos *pos,
                                         const char *datadir)
