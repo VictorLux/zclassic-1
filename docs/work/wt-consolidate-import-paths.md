@@ -35,6 +35,10 @@ Progress:
   `legacy_direct_import_range_blocking`, `legacy_oneshot_import_run`) and their
   adapter-only result structs were removed; boot now calls
   `legacy_bootstrap_import_blocking` directly with `COLD`, `DIRECT`, or `ATTACH`.
+- The canonical importer header now exposes only the true cross-module contract:
+  the mode-driven importer, the height-map loader used by `rebuild_recent`, and
+  attach-stage test accessors. Snapshot, block-source, chainstate, cursor-anchor,
+  and block-index-copy helpers are private implementation details again.
 
 Verification:
 - `make -j$(nproc) test_zcl`, `make -j$(nproc) zclassic23`, `make lint`, and

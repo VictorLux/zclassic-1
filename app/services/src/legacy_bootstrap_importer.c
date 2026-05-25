@@ -50,6 +50,69 @@
 #define LEGACY_BOOTSTRAP_ATTACH_META_TIP_HEIGHT "legacy_attach_tip_height"
 #define LEGACY_BOOTSTRAP_ATTACH_META_DONE_AT "legacy_attach_done_at"
 
+struct legacy_bootstrap_snapshot_import_options {
+    const char *legacy_blocks_dir;
+    const char *our_blocks_dir;
+    const char *legacy_index_dir;
+    const char *chainstate_dir;
+    struct block_tree_db *btdb;
+    struct coins_view_sqlite *cvs;
+    struct node_db *ndb;
+    size_t chainstate_batch_limit;
+    int32_t min_legacy_tip;
+    int32_t anchor_height;
+    bool has_anchor_height;
+    bool require_best_block;
+    const char *block_index_long_op_name;
+    const char *chainstate_long_op_name;
+    const char *log_prefix;
+};
+
+struct legacy_bootstrap_snapshot_import_result {
+    int64_t blk_files_linked;
+    int64_t block_index_writes;
+    int64_t utxos_imported;
+    int64_t chainstate_records;
+    bool got_best_block;
+    struct uint256 best_block;
+    int32_t block_index_tip_height;
+    int32_t legacy_tip_height;
+};
+
+struct legacy_bootstrap_chainstate_import_result {
+    int64_t inserted;
+    int64_t records;
+    bool got_best_block;
+    struct uint256 best_block;
+};
+
+struct legacy_bootstrap_block_source_options {
+    const char *legacy_blocks_dir;
+    const struct legacy_block_loc *map;
+    size_t map_count;
+    int legacy_tip;
+    int spotcheck_k;
+    bool require_spotcheck;
+    const char *log_prefix;
+    const char *debug_env;
+    bool dump_map_on_failure;
+};
+
+struct legacy_bootstrap_block_source {
+    struct blocks_mmap *bmr;
+    bool source_checked;
+};
+
+bool legacy_bootstrap_spotcheck_sha3_windows(
+    struct blocks_mmap *bmr,
+    const struct legacy_block_loc *map,
+    size_t map_count,
+    int legacy_tip,
+    int k,
+    const char *log_prefix,
+    const char *debug_env,
+    bool dump_map_on_failure);
+
 static int64_t legacy_bootstrap_now_ms(void)
 {
     struct timespec ts;
@@ -57,9 +120,9 @@ static int64_t legacy_bootstrap_now_ms(void)
     return (int64_t)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
 }
 
-int64_t legacy_bootstrap_link_blk_files(const char *legacy_blocks_dir,
-                                        const char *our_blocks_dir,
-                                        const char *log_prefix)
+static int64_t legacy_bootstrap_link_blk_files(const char *legacy_blocks_dir,
+                                               const char *our_blocks_dir,
+                                               const char *log_prefix)
 {
     if (!legacy_blocks_dir || !our_blocks_dir || !log_prefix) {
         fprintf(stderr,  // obs-ok:bootstrap-import-terminal-diagnostic
@@ -170,11 +233,11 @@ int64_t legacy_bootstrap_link_blk_files(const char *legacy_blocks_dir,
     return (errors > 0) ? -1 : (linked + copied);
 }
 
-bool legacy_bootstrap_make_stage_dir(const char *datadir,
-                                     const char *stage_subdir,
-                                     char *out_stage_dir,
-                                     size_t out_cap,
-                                     const char *log_prefix)
+static bool legacy_bootstrap_make_stage_dir(const char *datadir,
+                                            const char *stage_subdir,
+                                            char *out_stage_dir,
+                                            size_t out_cap,
+                                            const char *log_prefix)
 {
     if (!datadir || !stage_subdir || !out_stage_dir || !log_prefix) {
         fprintf(stderr,  // obs-ok:bootstrap-import-terminal-diagnostic
@@ -226,13 +289,13 @@ static bool legacy_bootstrap_snapshot_one_leveldb(const char *src,
     return false;
 }
 
-bool legacy_bootstrap_snapshot_leveldbs(const char *legacy_datadir,
-                                        const char *stage_dir,
-                                        char *out_idx_path,
-                                        size_t idx_cap,
-                                        char *out_cs_path,
-                                        size_t cs_cap,
-                                        const char *log_prefix)
+static bool legacy_bootstrap_snapshot_leveldbs(const char *legacy_datadir,
+                                               const char *stage_dir,
+                                               char *out_idx_path,
+                                               size_t idx_cap,
+                                               char *out_cs_path,
+                                               size_t cs_cap,
+                                               const char *log_prefix)
 {
     if (!legacy_datadir || !stage_dir || !out_idx_path || !out_cs_path ||
         !log_prefix) {
@@ -268,12 +331,13 @@ bool legacy_bootstrap_snapshot_leveldbs(const char *legacy_datadir,
     return true;
 }
 
-int64_t legacy_bootstrap_copy_block_index(const char *legacy_index_dir,
-                                          struct block_tree_db *our_btdb,
-                                          struct uint256 *out_tip_hash,
-                                          int32_t *out_tip_height,
-                                          const char *long_op_name,
-                                          const char *log_prefix)
+static int64_t legacy_bootstrap_copy_block_index(
+    const char *legacy_index_dir,
+    struct block_tree_db *our_btdb,
+    struct uint256 *out_tip_hash,
+    int32_t *out_tip_height,
+    const char *long_op_name,
+    const char *log_prefix)
 {
     if (out_tip_height)
         *out_tip_height = -1;
@@ -549,7 +613,7 @@ static bool legacy_bootstrap_chainstate_cb(const struct uint256 *txid,
     return true;
 }
 
-bool legacy_bootstrap_import_chainstate_utxos(
+static bool legacy_bootstrap_import_chainstate_utxos(
     const char *chainstate_dir,
     struct coins_view_sqlite *cvs,
     size_t batch_limit,
@@ -642,7 +706,7 @@ bool legacy_bootstrap_import_chainstate_utxos(
     return true;
 }
 
-bool legacy_bootstrap_record_pending_csr_anchor(
+static bool legacy_bootstrap_record_pending_csr_anchor(
     struct node_db *ndb,
     const struct uint256 *best_block,
     int32_t best_height,
@@ -677,7 +741,7 @@ bool legacy_bootstrap_record_pending_csr_anchor(
     return true;
 }
 
-bool legacy_bootstrap_import_snapshot_state(
+static bool legacy_bootstrap_import_snapshot_state(
     const struct legacy_bootstrap_snapshot_import_options *opts,
     struct legacy_bootstrap_snapshot_import_result *out)
 {
@@ -795,7 +859,7 @@ bool legacy_bootstrap_import_snapshot_state(
     return true;
 }
 
-bool legacy_bootstrap_open_block_source(
+static bool legacy_bootstrap_open_block_source(
     const struct legacy_bootstrap_block_source_options *opts,
     struct legacy_bootstrap_block_source *out)
 {
@@ -850,7 +914,7 @@ bool legacy_bootstrap_open_block_source(
     return true;
 }
 
-void legacy_bootstrap_close_block_source(
+static void legacy_bootstrap_close_block_source(
     struct legacy_bootstrap_block_source *src)
 {
     if (!src || !src->bmr)
