@@ -329,13 +329,14 @@ int test_rpc(void) {
         bool ok = cmd && cmd->actor(&params, false, &result);
         const struct json_value *modes = json_get(&result, "modes");
         const struct json_value *live = json_get(&result, "live");
+        const struct json_value *ca = json_get(&result, "chain_advance");
         const struct json_value *ce = json_get(&result, "chain_evidence");
         const struct json_value *guard = json_get(&result, "guard");
         const struct json_value *state = json_get(&result, "cutover_state");
         const struct json_value *diff = json_get(&result, "header_admit_diff");
         const struct json_value *vh = json_get(&result, "validate_headers");
         const struct json_value *blockers = json_get(&result, "blockers");
-        ok = ok && modes && live && ce && guard && state && diff && vh &&
+        ok = ok && modes && live && ca && ce && guard && state && diff && vh &&
              blockers;
         ok = ok && strcmp(json_get_str(json_get(modes, "header_admit")),
                           "shadow") == 0;
@@ -353,6 +354,18 @@ int test_rpc(void) {
         ok = ok && json_get(live, "tip_advance_age_seconds") != NULL;
         ok = ok && json_get(live, "degraded_reason") != NULL;
         ok = ok && json_get(live, "mirror_lag_breach_severity") != NULL;
+        ok = ok && json_get(ca, "ready") != NULL;
+        ok = ok && json_get(ca, "decision") != NULL;
+        ok = ok && json_get(ca, "selected_source") != NULL;
+        ok = ok && json_get(ca, "selected_source_trust") != NULL;
+        ok = ok && json_get(ca, "authority") != NULL;
+        ok = ok && json_get(ca, "source_ready") != NULL;
+        ok = ok && json_get(ca, "activation_allowed") != NULL;
+        ok = ok && json_get(ca, "local_height") != NULL;
+        ok = ok && json_get(ca, "target_height") != NULL;
+        ok = ok && json_get(ca, "projection_lag") != NULL;
+        ok = ok && json_get(ca, "reason") != NULL;
+        ok = ok && json_get(ca, "blocker") != NULL;
         ok = ok && json_get(ce, "publish_state") != NULL;
         ok = ok && json_get(ce, "publish_state_not_local") != NULL;
         ok = ok && json_get(ce, "health_reason") != NULL;

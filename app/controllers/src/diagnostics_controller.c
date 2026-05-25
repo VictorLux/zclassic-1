@@ -982,6 +982,64 @@ static bool push_cutover_live_gate_json(struct json_value *live,
     return cutover_ready;
 }
 
+static bool push_cutover_chain_advance_gate_json(struct json_value *out)
+{
+    struct cac_decision d;
+    chain_advance_coordinator_get_status(&d);
+
+    bool source_ready = false;
+    if (d.selected_source > CAC_SOURCE_NONE &&
+        d.selected_source < CAC_SOURCE_NUM) {
+        const struct cac_source_status *s = &d.sources[d.selected_source];
+        source_ready =
+            s->available && s->healthy && s->selectable && !s->blocked &&
+            s->selection_blocker[0] == '\0';
+    }
+    bool ready = node_health_chain_advance_synced(&d);
+
+    json_set_object(out);
+    json_push_kv_bool(out, "ready", ready);
+    json_push_kv_str(out, "decision",
+                     cac_decision_result_name(d.result));
+    json_push_kv_str(out, "selected_source",
+                     cac_source_name(d.selected_source));
+    json_push_kv_str(out, "selected_source_trust",
+                     cac_source_trust_name(d.selected_source));
+    json_push_kv_str(out, "authority", "local_consensus_validation");
+    json_push_kv_bool(out, "source_ready", source_ready);
+    json_push_kv_bool(out, "activation_allowed", d.activation_allowed);
+    json_push_kv_int(out, "local_height", (int64_t)d.local_height);
+    json_push_kv_int(out, "target_height", (int64_t)d.target_height);
+    json_push_kv_int(out, "best_header_height",
+                     (int64_t)d.best_header_height);
+    json_push_kv_int(out, "projection_height",
+                     (int64_t)d.projection_height);
+    json_push_kv_int(out, "projection_lag", d.projection_lag);
+    json_push_kv_bool(out, "projection_deferred",
+                      d.projection_deferred);
+    json_push_kv_str(out, "projection_state", d.projection_state);
+    json_push_kv_str(out, "reason", d.reason);
+    json_push_kv_str(out, "blocker", d.blocker);
+    if (d.selected_source > CAC_SOURCE_NONE &&
+        d.selected_source < CAC_SOURCE_NUM) {
+        const struct cac_source_status *s = &d.sources[d.selected_source];
+        json_push_kv_str(out, "selected_source_state", s->state);
+        json_push_kv_str(out, "selected_source_reason", s->reason);
+        json_push_kv_str(out, "selected_source_blocker", s->blocker);
+        json_push_kv_str(out, "selected_source_selection_blocker",
+                         s->selection_blocker);
+        json_push_kv_bool(out, "selected_source_available",
+                          s->available);
+        json_push_kv_bool(out, "selected_source_healthy", s->healthy);
+        json_push_kv_bool(out, "selected_source_selectable",
+                          s->selectable);
+        json_push_kv_bool(out, "selected_source_blocked", s->blocked);
+        json_push_kv_int(out, "selected_source_height",
+                         (int64_t)s->height);
+    }
+    return ready;
+}
+
 static bool push_cutover_guard_gate_json(struct json_value *guard)
 {
     struct condition_runtime_snapshot snap;
@@ -1055,12 +1113,13 @@ static bool rpc_cutoverpreflight(const struct json_value *params, bool help,
     RPC_HELP(help, result,
         "cutoverpreflight [start_height] [end_height]\n"
         "\nRead-only C-3 preflight snapshot: runtime cutover modes, "
-        "cutover-specific live progress, header_admit shadow-vs-active-chain "
-        "diff, validate_headers persisted window/cursor coverage, and a "
-        "conservative ready boolean gated by the cutover no-progress guard.\n"
+        "cutover-specific live progress, chain-advance source selection, "
+        "header_admit shadow-vs-active-chain diff, validate_headers "
+        "persisted window/cursor coverage, and a conservative ready boolean "
+        "gated by the cutover no-progress guard.\n"
         "\nHeights default to the most recent header_admit diff window. "
-        "Result: { ready, blockers, live, chain_evidence, guard, modes, "
-        "header_admit_diff, validate_headers }");
+        "Result: { ready, blockers, live, chain_advance, chain_evidence, "
+        "guard, modes, header_admit_diff, validate_headers }");
 
     const struct json_value *start_v = json_at(params, 0);
     const struct json_value *end_v = json_at(params, 1);
@@ -1083,6 +1142,7 @@ static bool rpc_cutoverpreflight(const struct json_value *params, bool help,
 
     struct json_value modes;
     struct json_value live;
+    struct json_value chain_advance;
     struct json_value chain_evidence;
     struct json_value guard;
     struct json_value canary;
@@ -1091,6 +1151,7 @@ static bool rpc_cutoverpreflight(const struct json_value *params, bool help,
     struct json_value blockers;
     json_init(&modes);
     json_init(&live);
+    json_init(&chain_advance);
     json_init(&chain_evidence);
     json_init(&guard);
     json_init(&canary);
@@ -1116,6 +1177,8 @@ static bool rpc_cutoverpreflight(const struct json_value *params, bool help,
     json_push_kv_str(&modes, "validate_headers", vh_mode);
     struct node_health_snapshot live_health;
     bool live_ready = push_cutover_live_gate_json(&live, &live_health);
+    bool chain_advance_ready =
+        push_cutover_chain_advance_gate_json(&chain_advance);
     push_cutover_canary_state(&canary, &live_health);
     bool guard_ready = push_cutover_guard_gate_json(&guard);
 
@@ -1192,6 +1255,9 @@ static bool rpc_cutoverpreflight(const struct json_value *params, bool help,
 
     if (!live_ready)
         cutover_preflight_push_blocker(&blockers, "live_health_not_ready");
+    if (!chain_advance_ready)
+        cutover_preflight_push_blocker(&blockers,
+                                       "chain_advance_not_ready");
     if (!guard_ready)
         cutover_preflight_push_blocker(&blockers,
                                        condition_engine_has_registered(
@@ -1213,10 +1279,11 @@ static bool rpc_cutoverpreflight(const struct json_value *params, bool help,
                                        "cutover_modes_not_shadow");
 
     json_push_kv_bool(result, "ready",
-                      live_ready && guard_ready && header_ready &&
-                      validate_ready && modes_ready);
+                      live_ready && chain_advance_ready && guard_ready &&
+                      header_ready && validate_ready && modes_ready);
     json_push_kv(result, "blockers", &blockers);
     json_push_kv(result, "live", &live);
+    json_push_kv(result, "chain_advance", &chain_advance);
     json_push_kv(result, "chain_evidence", &chain_evidence);
     json_push_kv(result, "guard", &guard);
     json_push_kv(result, "cutover_state", &canary);
@@ -1227,6 +1294,7 @@ static bool rpc_cutoverpreflight(const struct json_value *params, bool help,
     json_free(&blockers);
     json_free(&modes);
     json_free(&live);
+    json_free(&chain_advance);
     json_free(&chain_evidence);
     json_free(&guard);
     json_free(&canary);
