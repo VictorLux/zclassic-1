@@ -631,7 +631,8 @@ static bool parse_cutover_mode(const char *s,
     return false;
 }
 
-static void push_cutover_modes(struct json_value *result, bool changed)
+static void push_cutover_modes(struct json_value *result, bool changed,
+                               const struct node_health_snapshot *health)
 {
     json_set_object(result);
     json_push_kv_bool(result, "changed", changed);
@@ -639,6 +640,18 @@ static void push_cutover_modes(struct json_value *result, bool changed)
                      header_admit_mode_name(header_admit_get_mode()));
     json_push_kv_str(result, "validate_headers",
                      validate_headers_mode_name(validate_headers_get_mode()));
+    if (changed) {
+        json_push_kv_int(result, "changed_at_unix",
+                         platform_time_wall_unix());
+        if (health) {
+            json_push_kv_int(result, "change_height", health->tip_height);
+            json_push_kv_int(result, "change_header_height",
+                             health->header_height);
+            json_push_kv_int(result, "change_peer_best_height",
+                             health->peer_best_height);
+            json_push_kv_int(result, "change_tip_lag", health->tip_lag);
+        }
+    }
 }
 
 static bool rpc_cutoverpreflight(const struct json_value *params, bool help,
@@ -704,7 +717,7 @@ static bool rpc_cutovermode(const struct json_value *params, bool help,
     const char *stage = stage_v ? json_get_str(stage_v) : NULL;
     const char *mode_s = mode_v ? json_get_str(mode_v) : NULL;
     if (!stage || !stage[0]) {
-        push_cutover_modes(result, false);
+        push_cutover_modes(result, false, NULL);
         return true;
     }
     if (!mode_s || !mode_s[0])
@@ -742,7 +755,9 @@ static bool rpc_cutovermode(const struct json_value *params, bool help,
         validate_headers_set_mode(vh_mode);
     }
 
-    push_cutover_modes(result, true);
+    struct node_health_snapshot health;
+    node_health_collect(&health, NULL, NULL);
+    push_cutover_modes(result, true, &health);
     return true;
 }
 

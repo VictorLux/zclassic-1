@@ -289,6 +289,9 @@ int test_rpc(void) {
         ok = ok && cmd->actor(&params, false, &result);
         ok = ok && header_admit_get_mode() == HEADER_ADMIT_MODE_SHADOW;
         ok = ok && validate_headers_get_mode() == VALIDATE_HEADERS_MODE_SHADOW;
+        ok = ok && json_get(&result, "changed_at_unix") != NULL;
+        ok = ok && json_get(&result, "change_height") != NULL;
+        ok = ok && json_get(&result, "change_tip_lag") != NULL;
 
         json_free(&v);
         json_free(&params);
