@@ -5,7 +5,9 @@
 #include "conditions/watchdog_dissolve_pr3.h"
 #include "framework/condition.h"
 #include "platform/clock.h"
+#include "services/snapshot_sync_service.h"
 #include "services/sync_monitor.h"
+#include "sync/sync_state.h"
 #include "validation/chainstate.h"
 
 #include <stdatomic.h>
@@ -20,6 +22,7 @@
 
 void register_peer_floor_violated(void);
 void register_sync_violation_lag(void);
+void register_snapshot_offer_ready(void);
 
 struct fake_clock_pr3 {
     _Atomic int64_t wall_ms;
@@ -59,6 +62,7 @@ static void reset_pr3(struct connman *cm,
     condition_engine_reset_for_testing();
     peer_floor_violated_test_reset();
     sync_violation_lag_test_reset();
+    snapshot_offer_ready_test_reset();
     memset(cm, 0, sizeof(*cm));
     memset(dm, 0, sizeof(*dm));
     memset(ms, 0, sizeof(*ms));
@@ -78,6 +82,8 @@ static void cleanup_pr3(void)
     sync_monitor_set_context(NULL, NULL, NULL);
     clock_reset_default();
     unsetenv("ZCL_PEERLESS_OK");
+    if (sync_get_state() == SYNC_SNAPSHOT_RECEIVE)
+        sync_set_state(SYNC_IDLE, "test cleanup");
 }
 
 int test_watchdog_conditions_pr3(void)
@@ -162,6 +168,40 @@ int test_watchdog_conditions_pr3(void)
         condition_engine_tick();
         ok = ok && sync_violation_lag_test_remedy_calls() == 1;
         WDP3_CHECK("sync violation rotates peers once and pages", ok);
+        cleanup_pr3();
+    }
+
+    {
+        struct fake_clock_pr3 clock;
+        fake_clock_install(&clock, 4000);
+        struct connman cm;
+        struct download_manager dm;
+        struct main_state ms;
+        reset_pr3(&cm, &dm, &ms);
+        bool ok = true;
+        register_snapshot_offer_ready();
+
+        struct block_index tip = {0};
+        tip.nHeight = 100;
+        ok = ok && active_chain_set_tip(&ms.chain_active, &tip);
+
+        struct snapshot_sync_service svc;
+        memset(&svc, 0, sizeof(svc));
+        svc.state = SNAPSYNC_NEGOTIATING;
+        svc.offered_height = 2000;
+        svc.offered_count = 100;
+        svc.serving_peer_id = 42;
+        snapshot_offer_ready_test_set_service(&svc);
+
+        ok = ok && sync_get_state() == SYNC_IDLE;
+        condition_engine_tick();
+        ok = ok && snapshot_offer_ready_test_remedy_calls() == 1;
+        ok = ok && sync_get_state() == SYNC_SNAPSHOT_RECEIVE;
+        ok = ok && condition_engine_get_active_count() == 0;
+
+        condition_engine_tick();
+        ok = ok && snapshot_offer_ready_test_remedy_calls() == 1;
+        WDP3_CHECK("snapshot offer ready reasserts snapshot receive", ok);
         cleanup_pr3();
     }
 
