@@ -30,6 +30,7 @@
 #include "rpc/httpserver.h"
 #include "rpc/server.h"
 #include "json/json.h"
+#include "util/clientversion.h"
 #include <string.h>
 #include <stdio.h>
 
@@ -665,6 +666,9 @@ int test_syncdiag_rpc(void)
         const struct json_value *ca =
             checks ? json_get(checks, "chain_advance") : NULL;
         bool ok = seeded && executed && result.type == JSON_OBJ;
+        ok = ok && json_get(&result, "build_commit") != NULL &&
+            strcmp(json_get_str(json_get(&result, "build_commit")),
+                   zcl_build_commit()) == 0;
         ok = ok && checks && checks->type == JSON_OBJ;
         ok = ok && json_get(checks, "error_total") != NULL;
         ok = ok && json_get(checks, "last_error_age_seconds") != NULL;

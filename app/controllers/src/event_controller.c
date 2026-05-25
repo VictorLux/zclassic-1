@@ -16,6 +16,7 @@
 #include "rpc/server.h"
 #include <stdlib.h>
 #include <string.h>
+#include "util/clientversion.h"
 #include "util/log_macros.h"
 #include "util/safe_alloc.h"
 
@@ -147,13 +148,14 @@ static bool rpc_healthcheck(const struct json_value *params, bool help,
         "healthcheck\n"
         "\nReturn node health status — single pass/fail for monitoring.\n"
         "\nResult:\n"
-        "  { \"healthy\": true/false, \"sync_state\": \"...\",\n"
-        "    \"checks\": { ... } }\n");
+        "  { \"healthy\": true/false, \"build_commit\": \"...\",\n"
+        "    \"sync_state\": \"...\", \"checks\": { ... } }\n");
 
     json_set_object(result);
 
     struct node_health_snapshot health;
     node_health_collect(&health, NULL, NULL);
+    json_push_kv_str(result, "build_commit", zcl_build_commit());
     json_push_kv_str(result, "sync_state", sync_state_name(health.sync_state));
 
     /* Individual health checks */
