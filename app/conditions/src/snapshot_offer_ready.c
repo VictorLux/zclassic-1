@@ -54,6 +54,15 @@ static bool snapshot_offer_is_active(enum snapshot_sync_state state)
            state == SNAPSYNC_VERIFYING;
 }
 
+static bool sync_state_can_receive_snapshot(enum sync_state state)
+{
+    return state == SYNC_IDLE ||
+           state == SYNC_FINDING_PEERS ||
+           state == SYNC_HEADERS_DOWNLOAD ||
+           state == SYNC_BLOCKS_DOWNLOAD ||
+           state == SYNC_CONNECTING_BLOCKS;
+}
+
 static bool detect_snapshot_offer_ready(void)
 {
     struct snapshot_sync_service *svc = runtime_snapshot_service();
@@ -82,7 +91,7 @@ static bool detect_snapshot_offer_ready(void)
         local_h >= status.offered_height - SNAPSHOT_OFFER_READY_MIN_GAP)
         return false;
 
-    if (sync_get_state() == SYNC_SNAPSHOT_RECEIVE)
+    if (!sync_state_can_receive_snapshot(sync_get_state()))
         return false;
 
     atomic_store(&g_local_height_at_detect, local_h);

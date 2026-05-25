@@ -82,7 +82,7 @@ static void cleanup_pr3(void)
     sync_monitor_set_context(NULL, NULL, NULL);
     clock_reset_default();
     unsetenv("ZCL_PEERLESS_OK");
-    if (sync_get_state() == SYNC_SNAPSHOT_RECEIVE)
+    if (sync_get_state() != SYNC_IDLE)
         sync_set_state(SYNC_IDLE, "test cleanup");
 }
 
@@ -202,6 +202,43 @@ int test_watchdog_conditions_pr3(void)
         condition_engine_tick();
         ok = ok && snapshot_offer_ready_test_remedy_calls() == 1;
         WDP3_CHECK("snapshot offer ready reasserts snapshot receive", ok);
+        cleanup_pr3();
+    }
+
+    {
+        struct fake_clock_pr3 clock;
+        fake_clock_install(&clock, 4500);
+        struct connman cm;
+        struct download_manager dm;
+        struct main_state ms;
+        reset_pr3(&cm, &dm, &ms);
+        bool ok = true;
+        register_snapshot_offer_ready();
+
+        struct block_index tip = {0};
+        tip.nHeight = 100;
+        ok = ok && active_chain_set_tip(&ms.chain_active, &tip);
+
+        ok = ok && sync_set_state(SYNC_FINDING_PEERS,
+                                  "test snapshot at-tip setup");
+        ok = ok && sync_set_state(SYNC_HEADERS_DOWNLOAD,
+                                  "test snapshot at-tip setup");
+        ok = ok && sync_set_state(SYNC_AT_TIP,
+                                  "test snapshot at-tip setup");
+
+        struct snapshot_sync_service svc;
+        memset(&svc, 0, sizeof(svc));
+        svc.state = SNAPSYNC_NEGOTIATING;
+        svc.offered_height = 2000;
+        svc.offered_count = 100;
+        svc.serving_peer_id = 43;
+        snapshot_offer_ready_test_set_service(&svc);
+
+        condition_engine_tick();
+        ok = ok && snapshot_offer_ready_test_remedy_calls() == 0;
+        ok = ok && sync_get_state() == SYNC_AT_TIP;
+        ok = ok && condition_engine_get_active_count() == 0;
+        WDP3_CHECK("snapshot offer ready ignores at-tip state", ok);
         cleanup_pr3();
     }
 
