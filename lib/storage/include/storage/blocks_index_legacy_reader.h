@@ -4,10 +4,9 @@
  * `blocks/index/` LevelDB and produce a height-indexed array of
  * (hash, prev, file, datapos, ...) for the selected chain.
  *
- * Feeds the direct-import fast-sync path (see
- * app/services/src/legacy_direct_import.c): once we know each height's
- * on-disk location in zclassicd's blk*.dat files, we mmap and ingest
- * with zero JSON-RPC overhead.
+ * Feeds the direct-import fast-sync mode in legacy_bootstrap_importer.c:
+ * once we know each height's on-disk location in zclassicd's blk*.dat files,
+ * we mmap and ingest with zero JSON-RPC overhead.
  *
  * Open is exclusive; if zclassicd holds the LevelDB LOCK, open fails.
  * Operator must briefly stop zclassicd, or pre-snapshot the directory.

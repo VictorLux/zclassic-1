@@ -5,9 +5,14 @@
 #include "services/legacy_bootstrap_importer.h"
 
 #include "chain/chain.h"
+#include "chain/chainparams.h"
+#include "consensus/validation.h"
 #include "core/serialize.h"
 #include "core/uint256.h"
 #include "models/database.h"
+#include "platform/time_compat.h"
+#include "services/legacy_cold_import.h"
+#include "services/legacy_direct_import.h"
 #include "storage/block_index_db.h"
 #include "storage/blocks_index_legacy_reader.h"
 #include "storage/blocks_mmap_reader.h"
@@ -18,6 +23,10 @@
 #include "util/long_op.h"
 #include "util/safe_alloc.h"
 #include "util/thread_registry.h"
+#include "validation/chainstate.h"
+#include "validation/main_state.h"
+#include "validation/process_block.h"
+#include "wallet/wallet.h"
 
 #include <dirent.h>
 #include <errno.h>
@@ -27,6 +36,18 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <unistd.h>
+
+#define LEGACY_BOOTSTRAP_COLD_REFUSE_ABOVE_TIP 1000
+#define LEGACY_BOOTSTRAP_COLD_SPOTCHECK_K 5
+#define LEGACY_BOOTSTRAP_COLD_STAGE_SUBDIR "cold_import_ldb_snapshot"
+#define LEGACY_BOOTSTRAP_DIRECT_SPOTCHECK_K 3
+
+static int64_t legacy_bootstrap_now_ms(void)
+{
+    struct timespec ts;
+    platform_time_monotonic_timespec(&ts);
+    return (int64_t)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
+}
 
 int64_t legacy_bootstrap_link_blk_files(const char *legacy_blocks_dir,
                                         const char *our_blocks_dir,
@@ -770,4 +791,486 @@ void legacy_bootstrap_close_block_source(
     bmr_close(src->bmr);
     src->bmr = NULL;
     src->source_checked = false;
+}
+
+static bool legacy_bootstrap_import_cold(
+    const struct legacy_bootstrap_import_options *opts,
+    struct legacy_bootstrap_import_result *out)
+{
+    struct legacy_bootstrap_import_result r = {
+        .legacy_tip = -1,
+    };
+    if (out) *out = r;
+
+    if (!opts || !opts->ms || !opts->cvs || !opts->ndb ||
+        !opts->ndb->open || !opts->btdb || !opts->our_datadir ||
+        !opts->legacy_datadir) {
+        fprintf(stderr,  // obs-ok:bootstrap-import-terminal-diagnostic
+                "[cold_import] bad args\n");
+        return false;
+    }
+
+    int our_tip = active_chain_height(&opts->ms->chain_active);
+    if (our_tip > LEGACY_BOOTSTRAP_COLD_REFUSE_ABOVE_TIP) {
+        fprintf(stderr,
+                "[cold_import] REFUSING: our active_tip=%d > %d. "
+                "Cold-import is for empty datadirs; use -fastimport for "
+                "warm catch-up.\n",
+                our_tip, LEGACY_BOOTSTRAP_COLD_REFUSE_ABOVE_TIP);
+        return false;
+    }
+
+    char blk_dir[1024];
+    int nb = snprintf(blk_dir, sizeof(blk_dir), "%s/blocks",
+                      opts->legacy_datadir);
+    char our_blocks[1024];
+    int no = snprintf(our_blocks, sizeof(our_blocks), "%s/blocks",
+                      opts->our_datadir);
+    if (nb <= 0 || (size_t)nb >= sizeof(blk_dir) ||
+        no <= 0 || (size_t)no >= sizeof(our_blocks)) {
+        fprintf(stderr,  // obs-ok:bootstrap-import-terminal-diagnostic
+                "[cold_import] block directory path too long\n");
+        return false;
+    }
+
+    int64_t t_start = legacy_bootstrap_now_ms();
+
+    char stage_dir[1100], idx_dir[1200], cs_dir[1200];
+    if (!legacy_bootstrap_make_stage_dir(
+            opts->our_datadir, LEGACY_BOOTSTRAP_COLD_STAGE_SUBDIR,
+            stage_dir, sizeof(stage_dir), "cold_import")) {
+        fprintf(stderr,
+                "[cold_import] cannot create stage dir under %s\n",
+                opts->our_datadir);
+        return false;
+    }
+    int64_t t_snap = legacy_bootstrap_now_ms();
+    if (!legacy_bootstrap_snapshot_leveldbs(opts->legacy_datadir, stage_dir,
+                                            idx_dir, sizeof(idx_dir),
+                                            cs_dir, sizeof(cs_dir),
+                                            "cold_import"))
+        return false;
+    fprintf(stderr,  // obs-ok:cold-import-progress
+            "[cold_import] LevelDB snapshots took %" PRId64 " ms\n",
+            legacy_bootstrap_now_ms() - t_snap);
+
+    struct uint256 cs_best_for_map;
+    void *cs_probe = NULL;
+    if (!chainstate_legacy_open(cs_dir, &cs_probe)) {
+        fprintf(stderr,
+                "[cold_import] chainstate_legacy_open %s failed\n", cs_dir);
+        ldb_snapshot_destroy(idx_dir);
+        ldb_snapshot_destroy(cs_dir);
+        return false;
+    }
+    if (!chainstate_legacy_get_best_block(cs_probe, &cs_best_for_map)) {
+        chainstate_legacy_close(cs_probe);
+        ldb_snapshot_destroy(idx_dir);
+        ldb_snapshot_destroy(cs_dir);
+        fprintf(stderr,
+                "[cold_import] chainstate best block unavailable\n");
+        return false;
+    }
+    chainstate_legacy_close(cs_probe);
+
+    struct legacy_bootstrap_height_map_result hmap;
+    if (!legacy_bootstrap_load_height_map(idx_dir, &cs_best_for_map,
+                                          "cold_import", &hmap)) {
+        ldb_snapshot_destroy(idx_dir);
+        ldb_snapshot_destroy(cs_dir);
+        return false;
+    }
+    struct legacy_block_loc *map = hmap.map;
+    size_t map_count = hmap.map_count;
+    int legacy_tip = hmap.tip_height;
+    r.legacy_tip = legacy_tip;
+    fprintf(stderr,  // obs-ok:pre-existing-diagnostic
+            "[cold_import] legacy tip h=%d (map size=%zu)\n",
+            legacy_tip, map_count);
+
+    struct legacy_bootstrap_block_source source;
+    const struct legacy_bootstrap_block_source_options source_opts = {
+        .legacy_blocks_dir = blk_dir,
+        .map = map,
+        .map_count = map_count,
+        .legacy_tip = legacy_tip,
+        .spotcheck_k = LEGACY_BOOTSTRAP_COLD_SPOTCHECK_K,
+        .require_spotcheck = true,
+        .log_prefix = "cold_import",
+        .debug_env = "ZCL_COLD_IMPORT_DEBUG_WINDOW",
+        .dump_map_on_failure = true,
+    };
+    if (!legacy_bootstrap_open_block_source(&source_opts, &source)) {
+        bilr_free_height_map(map);
+        ldb_snapshot_destroy(idx_dir);
+        ldb_snapshot_destroy(cs_dir);
+        return false;
+    }
+    legacy_bootstrap_close_block_source(&source);
+    r.evidence_armed = true;
+
+    struct legacy_bootstrap_snapshot_import_result imported;
+    const struct legacy_bootstrap_snapshot_import_options import_opts = {
+        .legacy_blocks_dir = blk_dir,
+        .our_blocks_dir = our_blocks,
+        .legacy_index_dir = idx_dir,
+        .chainstate_dir = cs_dir,
+        .btdb = opts->btdb,
+        .cvs = opts->cvs,
+        .ndb = opts->ndb,
+        .chainstate_batch_limit = 5000,
+        .min_legacy_tip = -1,
+        .require_best_block = false,
+        .block_index_long_op_name = "legacy_cold_import.bulk_copy",
+        .chainstate_long_op_name = NULL,
+        .log_prefix = "cold_import",
+    };
+    int64_t t_import = legacy_bootstrap_now_ms();
+    bool import_ok =
+        legacy_bootstrap_import_snapshot_state(&import_opts, &imported);
+    bilr_free_height_map(map);
+    if (!import_ok) {
+        ldb_snapshot_destroy(idx_dir);
+        ldb_snapshot_destroy(cs_dir);
+        return false;
+    }
+    r.blk_files_linked = imported.blk_files_linked;
+    r.block_index_writes = imported.block_index_writes;
+    r.utxos_imported = imported.utxos_imported;
+    fprintf(stderr,  // obs-ok:pre-existing-diagnostic
+            "[cold_import] snapshot state import took %" PRId64 " ms "
+            "(best h=%d records=%" PRId64 ")\n",
+            legacy_bootstrap_now_ms() - t_import,
+            imported.legacy_tip_height, imported.chainstate_records);
+
+    r.total_secs = (double)(legacy_bootstrap_now_ms() - t_start) / 1000.0;
+    r.ok = true;
+    if (out) *out = r;
+    fprintf(stderr,  // obs-ok:pre-existing-diagnostic
+            "[cold_import] DONE in %.1fs: block_index=%" PRId64
+            " utxos=%" PRId64 " blk_files=%" PRId64 "\n",
+            r.total_secs, r.block_index_writes, r.utxos_imported,
+            r.blk_files_linked);
+    ldb_snapshot_destroy(idx_dir);
+    ldb_snapshot_destroy(cs_dir);
+    return true;
+}
+
+static bool legacy_bootstrap_import_direct(
+    const struct legacy_bootstrap_import_options *opts,
+    struct legacy_bootstrap_import_result *out)
+{
+    struct legacy_bootstrap_import_result r = {
+        .legacy_tip = -1,
+        .final_tip = -1,
+    };
+    if (out) *out = r;
+
+    if (!opts || !opts->ms || !opts->coins_tip || !opts->params ||
+        !opts->our_datadir || !opts->legacy_datadir) {
+        fprintf(stderr,  // obs-ok:bootstrap-import-terminal-diagnostic
+                "[legacy_direct_import] bad args\n");
+        return false;
+    }
+
+    char idx_dir[1024];
+    int ni = snprintf(idx_dir, sizeof(idx_dir), "%s/blocks/index",
+                      opts->legacy_datadir);
+    char blk_dir[1024];
+    int nb = snprintf(blk_dir, sizeof(blk_dir), "%s/blocks",
+                      opts->legacy_datadir);
+    if (ni <= 0 || (size_t)ni >= sizeof(idx_dir) ||
+        nb <= 0 || (size_t)nb >= sizeof(blk_dir)) {
+        fprintf(stderr,  // obs-ok:bootstrap-import-terminal-diagnostic
+                "[legacy_direct_import] legacy path too long\n");
+        return false;
+    }
+
+    int64_t t_open = legacy_bootstrap_now_ms();
+    struct legacy_bootstrap_height_map_result hmap;
+    if (!legacy_bootstrap_load_height_map(idx_dir, NULL,
+                                          "legacy_direct_import", &hmap))
+        return false;
+
+    struct legacy_block_loc *map = hmap.map;
+    size_t map_count = hmap.map_count;
+    int legacy_tip = hmap.tip_height;
+    r.legacy_tip = legacy_tip;
+    fprintf(stderr,  // obs-ok:pre-existing-diagnostic
+            "[legacy_direct_import] legacy tip h=%d (map_count=%zu, "
+            "load took %" PRId64 " ms)\n",
+            legacy_tip, map_count, legacy_bootstrap_now_ms() - t_open);
+
+    int from_height = opts->from_height;
+    if (from_height < 0)
+        from_height = active_chain_height(&opts->ms->chain_active);
+    if (from_height < 0)
+        from_height = 0;
+    if (from_height >= legacy_tip) {
+        fprintf(stderr,  // obs-ok:pre-existing-diagnostic
+                "[legacy_direct_import] already at/past legacy tip "
+                "(from=%d legacy=%d) — nothing to do\n",
+                from_height, legacy_tip);
+        bilr_free_height_map(map);
+        r.ok = true;
+        r.final_tip = active_chain_height(&opts->ms->chain_active);
+        if (out) *out = r;
+        return true;
+    }
+
+    struct legacy_bootstrap_block_source source;
+    const struct legacy_bootstrap_block_source_options source_opts = {
+        .legacy_blocks_dir = blk_dir,
+        .map = map,
+        .map_count = map_count,
+        .legacy_tip = legacy_tip,
+        .spotcheck_k = LEGACY_BOOTSTRAP_DIRECT_SPOTCHECK_K,
+        .require_spotcheck = false,
+        .log_prefix = "legacy_direct_import",
+        .debug_env = NULL,
+        .dump_map_on_failure = false,
+    };
+    if (!legacy_bootstrap_open_block_source(&source_opts, &source)) {
+        bilr_free_height_map(map);
+        if (out) *out = r;
+        return false;
+    }
+    struct blocks_mmap *bmr = source.bmr;
+    r.source_checked = source.source_checked;
+
+    atomic_store(&g_body_pull_active, 1);
+
+    fprintf(stderr,  // obs-ok:pre-existing-diagnostic
+            "[legacy_direct_import] starting walk: [%d+1 .. %d] "
+            "(%d blocks)\n",
+            from_height, legacy_tip, legacy_tip - from_height);
+
+    int64_t t_walk = legacy_bootstrap_now_ms();
+    int last_log_h = from_height;
+    int64_t t_last_log = t_walk;
+    bool ok = true;
+
+    for (int h = from_height + 1; h <= legacy_tip; h++) {
+        if (thread_registry_shutdown_requested()) {
+            fprintf(stderr,  // obs-ok:pre-existing-diagnostic
+                    "[legacy_direct_import] shutdown requested at h=%d\n", h);
+            ok = false;
+            break;
+        }
+
+        const struct legacy_block_loc *loc = &map[(size_t)h];
+        if (loc->height < 0) {
+            fprintf(stderr,  // obs-ok:pre-existing-diagnostic
+                    "[legacy_direct_import] h=%d MISSING in legacy index "
+                    "(gap in blocks/index/) — aborting\n", h);
+            ok = false;
+            break;
+        }
+
+        zcl_mutex_lock(&opts->ms->cs_main);
+        struct block_index *bi =
+            block_map_find(&opts->ms->map_block_index, &loc->hash);
+        bool have_data = bi && (bi->nStatus & BLOCK_HAVE_DATA);
+        bool failed = bi && (bi->nStatus & BLOCK_FAILED_MASK);
+        zcl_mutex_unlock(&opts->ms->cs_main);
+        if (have_data) {
+            r.skipped_have_data++;
+            continue;
+        }
+        if (failed) {
+            r.skipped_failed++;
+            continue;
+        }
+
+        size_t plen = 0;
+        const uint8_t *payload =
+            bmr_get_payload(bmr, loc->nFile, loc->nDataPos, &plen);
+        if (!payload || plen == 0) {
+            fprintf(stderr,  // obs-ok:pre-existing-diagnostic
+                    "[legacy_direct_import] h=%d mmap fetch failed "
+                    "(nFile=%d nDataPos=%u)\n",
+                    h, loc->nFile, loc->nDataPos);
+            ok = false;
+            break;
+        }
+
+        struct byte_stream s;
+        stream_init_from_data(&s, payload, plen);
+        struct block block;
+        block_init(&block);
+        bool deser_ok = block_deserialize(&block, &s);
+        stream_free(&s);
+        if (!deser_ok) {
+            block_free(&block);
+            fprintf(stderr,  // obs-ok:pre-existing-diagnostic
+                    "[legacy_direct_import] h=%d block_deserialize "
+                    "failed\n", h);
+            ok = false;
+            break;
+        }
+
+        struct validation_state vs;
+        memset(&vs, 0, sizeof(vs));
+        bool pn_ok = process_new_block(&vs, opts->ms, opts->coins_tip,
+                                       opts->params, &block, true,
+                                       opts->our_datadir);
+        block_free(&block);
+        if (!pn_ok) {
+            fprintf(stderr,  // obs-ok:pre-existing-diagnostic
+                    "[legacy_direct_import] h=%d process_new_block "
+                    "FAILED: %s\n",
+                    h, vs.reject_reason[0] ? vs.reject_reason : "(unknown)");
+            ok = false;
+            break;
+        }
+        r.applied++;
+
+        int64_t now = legacy_bootstrap_now_ms();
+        if (h - last_log_h >= 1000 || (now - t_last_log) >= 2000) {
+            int64_t elapsed = now - t_walk;
+            double rate = elapsed > 0
+                ? (double)r.applied * 1000.0 / (double)elapsed
+                : 0.0;
+            fprintf(stderr,  // obs-ok:pre-existing-diagnostic
+                    "[legacy_direct_import] applied=%d h=%d rate=%.1f "
+                    "bps (target=%d)\n",
+                    r.applied, h, rate, legacy_tip);
+            last_log_h = h;
+            t_last_log = now;
+        }
+    }
+
+    int64_t t_walk_end = legacy_bootstrap_now_ms();
+    double total_secs = (double)(t_walk_end - t_walk) / 1000.0;
+    double avg_rate = total_secs > 0.0
+        ? (double)r.applied / total_secs : 0.0;
+
+    atomic_store(&g_body_pull_active, 0);
+    legacy_bootstrap_close_block_source(&source);
+    bilr_free_height_map(map);
+
+    r.final_tip = active_chain_height(&opts->ms->chain_active);
+    r.ok = ok;
+
+    fprintf(stderr,  // obs-ok:pre-existing-diagnostic
+            "[legacy_direct_import] walk %s: applied=%d "
+            "skipped_have=%d skipped_failed=%d elapsed=%.1fs "
+            "rate=%.1f bps final_tip=%d\n",
+            ok ? "complete" : "ABORTED",
+            r.applied, r.skipped_have_data, r.skipped_failed,
+            total_secs, avg_rate, r.final_tip);
+
+    if (ok && opts->wallet && r.applied > 0) {
+        fprintf(stderr,  // obs-ok:pre-existing-diagnostic
+                "[legacy_direct_import] starting wallet rescan "
+                "[%d..%d]...\n", from_height + 1, r.final_tip);
+        int64_t t_rescan = legacy_bootstrap_now_ms();
+        int hits = wallet_rescan(opts->wallet, &opts->ms->chain_active,
+                                 from_height + 1, r.final_tip,
+                                 opts->our_datadir);
+        double secs = (double)(legacy_bootstrap_now_ms() - t_rescan) /
+                      1000.0;
+        fprintf(stderr,  // obs-ok:pre-existing-diagnostic
+                "[legacy_direct_import] wallet rescan complete: "
+                "%d hits in %.1fs\n", hits, secs);
+    }
+
+    if (out) *out = r;
+    return ok;
+}
+
+bool legacy_bootstrap_import_blocking(
+    const struct legacy_bootstrap_import_options *opts,
+    struct legacy_bootstrap_import_result *out)
+{
+    if (out)
+        *out = (struct legacy_bootstrap_import_result){.legacy_tip = -1};
+    if (!opts) {
+        fprintf(stderr,  // obs-ok:bootstrap-import-terminal-diagnostic
+                "[legacy_bootstrap] import: NULL options\n");
+        return false;
+    }
+
+    switch (opts->mode) {
+        case LEGACY_BOOTSTRAP_IMPORT_COLD:
+            return legacy_bootstrap_import_cold(opts, out);
+        case LEGACY_BOOTSTRAP_IMPORT_DIRECT:
+            return legacy_bootstrap_import_direct(opts, out);
+    }
+
+    fprintf(stderr,  // obs-ok:bootstrap-import-terminal-diagnostic
+            "[legacy_bootstrap] import: unknown mode %d\n", (int)opts->mode);
+    return false;
+}
+
+bool legacy_cold_import_blocking(
+    struct main_state *ms,
+    struct coins_view_sqlite *cvs,
+    struct node_db *ndb,
+    struct block_tree_db *btdb,
+    const char *our_datadir,
+    const char *legacy_datadir,
+    struct lci_cold_result *out)
+{
+    struct legacy_bootstrap_import_result imported;
+    const struct legacy_bootstrap_import_options opts = {
+        .mode = LEGACY_BOOTSTRAP_IMPORT_COLD,
+        .ms = ms,
+        .cvs = cvs,
+        .ndb = ndb,
+        .btdb = btdb,
+        .our_datadir = our_datadir,
+        .legacy_datadir = legacy_datadir,
+    };
+
+    bool ok = legacy_bootstrap_import_blocking(&opts, &imported);
+    if (out) {
+        *out = (struct lci_cold_result){
+            .legacy_tip = imported.legacy_tip,
+            .block_index_writes = imported.block_index_writes,
+            .utxos_imported = imported.utxos_imported,
+            .blk_files_linked = imported.blk_files_linked,
+            .total_secs = imported.total_secs,
+            .evidence_armed = imported.evidence_armed,
+            .ok = imported.ok,
+        };
+    }
+    return ok;
+}
+
+bool legacy_direct_import_range_blocking(
+    struct main_state *ms,
+    struct coins_view_cache *coins_tip,
+    const struct chain_params *params,
+    struct wallet *wallet,
+    const char *our_datadir,
+    const char *legacy_datadir,
+    int from_height,
+    struct ldi_result *out)
+{
+    struct legacy_bootstrap_import_result imported;
+    const struct legacy_bootstrap_import_options opts = {
+        .mode = LEGACY_BOOTSTRAP_IMPORT_DIRECT,
+        .ms = ms,
+        .coins_tip = coins_tip,
+        .params = params,
+        .wallet = wallet,
+        .our_datadir = our_datadir,
+        .legacy_datadir = legacy_datadir,
+        .from_height = from_height,
+    };
+
+    bool ok = legacy_bootstrap_import_blocking(&opts, &imported);
+    if (out) {
+        *out = (struct ldi_result){
+            .applied = imported.applied,
+            .skipped_have_data = imported.skipped_have_data,
+            .skipped_failed = imported.skipped_failed,
+            .final_tip = imported.final_tip,
+            .legacy_tip = imported.legacy_tip,
+            .source_checked = imported.source_checked,
+            .ok = imported.ok,
+        };
+    }
+    return ok;
 }

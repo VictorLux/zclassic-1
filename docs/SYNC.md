@@ -118,7 +118,8 @@ Two one-liners, both safe on an empty datadir:
 ./zclassic23 -fastimport=~/.zclassic
 ```
 
-Implementation: `app/services/src/legacy_cold_import.c` (cold-import).
+Implementation: `app/services/src/legacy_bootstrap_importer.c`
+(`LEGACY_BOOTSTRAP_IMPORT_COLD` / `LEGACY_BOOTSTRAP_IMPORT_DIRECT`).
 
 Rules:
 - The import flags **only run on an empty datadir** (or a datadir below the

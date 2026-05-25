@@ -1090,7 +1090,7 @@ static int t_cold_import_spotcheck_diagnostics_contract(void)
         buf = NULL;
 
         ASSERT(repo_path(path, sizeof(path),
-                         "app/services/src/legacy_cold_import.c") == 0);
+                         "app/services/src/legacy_bootstrap_importer.c") == 0);
         ASSERT(read_entire_file(path, &buf) == 0);
         char *debug_env = strstr(buf, "ZCL_COLD_IMPORT_DEBUG_WINDOW");
         char *call = strstr(buf, "legacy_bootstrap_open_block_source(");
@@ -1122,18 +1122,21 @@ static int t_cold_import_uses_leveldb_snapshots_contract(void)
     TEST("cold-import reads legacy LevelDBs through staged snapshots") {
         char path[PATH_MAX];
         ASSERT(repo_path(path, sizeof(path),
-                         "app/services/src/legacy_cold_import.c") == 0);
+                         "app/services/src/legacy_bootstrap_importer.c") == 0);
         ASSERT(read_entire_file(path, &buf) == 0);
         char *include = strstr(buf, "#include \"storage/ldb_snapshot.h\"");
+        char *cold_mode = strstr(buf, "static bool legacy_bootstrap_import_cold");
+        ASSERT(cold_mode != NULL);
         char *stage = strstr(buf, "cold_import_ldb_snapshot");
-        char *snapshot = strstr(buf,
+        char *snapshot = strstr(cold_mode,
             "legacy_bootstrap_snapshot_leveldbs(");
-        char *cs_probe = strstr(buf, "chainstate_legacy_open(cs_dir, &cs_probe)");
-        char *height_map = strstr(buf,
+        char *cs_probe = strstr(cold_mode,
+            "chainstate_legacy_open(cs_dir, &cs_probe)");
+        char *height_map = strstr(cold_mode,
             "legacy_bootstrap_load_height_map(");
-        char *snapshot_import = strstr(buf,
+        char *snapshot_import = strstr(cold_mode,
             "legacy_bootstrap_import_snapshot_state(");
-        char *destroy = strstr(buf, "ldb_snapshot_destroy(idx_dir)");
+        char *destroy = strstr(cold_mode, "ldb_snapshot_destroy(idx_dir)");
         ASSERT(include != NULL);
         ASSERT(stage != NULL);
         ASSERT(snapshot != NULL);
@@ -1172,7 +1175,7 @@ static int t_legacy_chainstate_batches_own_callback_buffers(void)
         buf = NULL;
 
         ASSERT(repo_path(path, sizeof(path),
-                         "app/services/src/legacy_cold_import.c") == 0);
+                         "app/services/src/legacy_bootstrap_importer.c") == 0);
         ASSERT(read_entire_file(path, &buf) == 0);
         ASSERT(strstr(buf,
             "legacy_bootstrap_import_snapshot_state(") != NULL);

@@ -17,9 +17,47 @@
 
 struct block_tree_db;
 struct blocks_mmap;
+struct chain_params;
+struct coins_view_cache;
 struct coins_view_sqlite;
 struct legacy_block_loc;
+struct main_state;
 struct node_db;
+struct wallet;
+
+enum legacy_bootstrap_import_mode {
+    LEGACY_BOOTSTRAP_IMPORT_COLD = 0,
+    LEGACY_BOOTSTRAP_IMPORT_DIRECT = 1,
+};
+
+struct legacy_bootstrap_import_options {
+    enum legacy_bootstrap_import_mode mode;
+    struct main_state *ms;
+    struct coins_view_sqlite *cvs;
+    struct node_db *ndb;
+    struct block_tree_db *btdb;
+    struct coins_view_cache *coins_tip;
+    const struct chain_params *params;
+    struct wallet *wallet;
+    const char *our_datadir;
+    const char *legacy_datadir;
+    int from_height;
+};
+
+struct legacy_bootstrap_import_result {
+    int32_t legacy_tip;
+    int64_t block_index_writes;
+    int64_t utxos_imported;
+    int64_t blk_files_linked;
+    int applied;
+    int skipped_have_data;
+    int skipped_failed;
+    int final_tip;
+    double total_secs;
+    bool evidence_armed;
+    bool source_checked;
+    bool ok;
+};
 
 struct legacy_bootstrap_chainstate_import_result {
     int64_t inserted;
@@ -152,6 +190,13 @@ bool legacy_bootstrap_record_pending_csr_anchor(
 bool legacy_bootstrap_import_snapshot_state(
     const struct legacy_bootstrap_snapshot_import_options *opts,
     struct legacy_bootstrap_snapshot_import_result *out);
+
+/* Canonical mode-driven bootstrap importer. Public legacy CLI services remain
+ * thin compatibility wrappers around this function.
+ */
+bool legacy_bootstrap_import_blocking(
+    const struct legacy_bootstrap_import_options *opts,
+    struct legacy_bootstrap_import_result *out);
 
 /* Open legacy blk*.dat through the mmap reader and apply the mode's SHA3
  * spotcheck policy. On success, caller must close out->bmr with

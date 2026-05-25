@@ -8,18 +8,25 @@ import/bootstrap modules, none of the live chain-advance path. Claim by marking
 
 ## Why (the cruft)
 
-Three bootstrap pathways from a sibling zclassicd duplicate the same LevelDB
-reader + SHA3 spot-check + cursor-stamping logic:
+Originally, three bootstrap pathways from a sibling zclassicd duplicated the
+same LevelDB reader + SHA3 spot-check + cursor-stamping logic:
 
 | File | LOC | Mode |
 |---|---|---|
-| `app/services/src/legacy_cold_import.c` | ~? | full state-only import (`-cold-import`), zclassicd stopped |
-| `app/services/src/legacy_direct_import.c` | ~? | direct LevelDB+mmap (`-fastimport`), zclassicd stopped |
+| `app/services/src/legacy_bootstrap_importer.c` (`COLD`) | current | full state-only import (`-cold-import`), zclassicd stopped |
+| `app/services/src/legacy_bootstrap_importer.c` (`DIRECT`) | current | direct LevelDB+mmap (`-fastimport`), zclassicd stopped |
 | `app/services/src/legacy_oneshot_import.c` | ~? | ldb-snapshot, no-stop (`-legacy-attach`) |
 
 Plus `tools/rebuild_recent.c` (the live-safe io_uring whole-chain rebuild) shares
 the same `blocks_index_legacy_reader` / `chainstate_legacy_reader` / SHA3 helpers.
 ~2,400 LOC across these with heavy copy-paste.
+
+Progress:
+- `tools/rebuild_recent.c` now reuses the shared legacy snapshot and height-map
+  helpers.
+- `legacy_cold_import.c` and `legacy_direct_import.c` were removed; their public
+  compatibility wrappers now dispatch through `legacy_bootstrap_importer` modes.
+- `legacy_oneshot_import.c` remains the next import mode to fold in.
 
 ## The shape (one canonical importer, pluggable mode)
 
