@@ -418,3 +418,44 @@ bool read_block_from_disk_index_pread(struct block *b,
     }
     return true;
 }
+
+bool block_index_set_have_data_verified(struct block_index *pindex,
+                                        const struct disk_block_pos *pos,
+                                        const char *datadir)
+{
+    if (!pindex || !pos || !datadir || pos->nFile < 0)
+        LOG_FAIL("disk_block_io",
+                 "set_have_data_verified: invalid argument (pindex=%p pos=%p)",
+                 (void *)pindex, (const void *)pos);
+    if (!pindex->phashBlock)
+        LOG_FAIL("disk_block_io",
+                 "set_have_data_verified: missing block hash at h=%d",
+                 pindex->nHeight);
+
+    struct block blk;
+    block_init(&blk);
+    if (!read_block_from_disk_pread(&blk, pos, datadir)) {
+        block_free(&blk);
+        LOG_FAIL("disk_block_io",
+                 "set_have_data_verified: read-back failed h=%d file=%d pos=%u",
+                 pindex->nHeight, pos->nFile, pos->nPos);
+    }
+
+    struct uint256 got;
+    block_get_hash(&blk, &got);
+    bool hash_ok = uint256_cmp(&got, pindex->phashBlock) == 0;
+    block_free(&blk);
+    if (!hash_ok) {
+        char got_hex[65], want_hex[65];
+        uint256_get_hex(&got, got_hex);
+        uint256_get_hex(pindex->phashBlock, want_hex);
+        LOG_FAIL("disk_block_io",
+                 "set_have_data_verified: hash mismatch h=%d got=%.16s want=%.16s",
+                 pindex->nHeight, got_hex, want_hex);
+    }
+
+    pindex->nFile = pos->nFile;
+    pindex->nDataPos = pos->nPos;
+    pindex->nStatus |= BLOCK_HAVE_DATA;
+    return true;
+}

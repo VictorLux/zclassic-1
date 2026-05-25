@@ -295,12 +295,11 @@ bool accept_block(struct block *block,
             g_last_block_file_size = (unsigned int)st.st_size;
     }
 
-    /* Mark block as having data and valid transactions */
-    pindex->nStatus |= BLOCK_HAVE_DATA;
+    /* Mark block as having data only after a successful read-back. */
+    if (!block_index_set_have_data_verified(pindex, &block_pos, datadir))
+        return validation_state_error(state, "failed-to-verify-block-readback");
     pindex->nStatus = (pindex->nStatus & ~BLOCK_VALID_MASK) |
                        BLOCK_VALID_TRANSACTIONS;
-    pindex->nFile = block_pos.nFile;
-    pindex->nDataPos = block_pos.nPos;
     pindex->nTx = (unsigned int)block->num_vtx;
     pindex->nChainTx = (pindex->pprev ? pindex->pprev->nChainTx : 0) +
                         pindex->nTx;

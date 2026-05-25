@@ -85,6 +85,12 @@ bool read_block_from_disk_index_pread(struct block *b,
                                       const struct block_index *pindex,
                                       const char *datadir);
 
+/* Verify a block can be read back from `pos` and hashes to `pindex`.
+ * Only then mark the index entry as BLOCK_HAVE_DATA at that position. */
+bool block_index_set_have_data_verified(struct block_index *pindex,
+                                        const struct disk_block_pos *pos,
+                                        const char *datadir);
+
 /* Lock/unlock the block I/O mutex. Callers that read block or undo
  * files directly (not through read_block_from_disk) MUST wrap their
  * fopen/fread/fseek/fclose in lock/unlock to prevent SIGSEGV from

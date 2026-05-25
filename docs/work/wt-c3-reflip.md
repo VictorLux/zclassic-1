@@ -114,3 +114,9 @@ the persisted `nSolution` from `block_tree_db` by hash when the hot in-memory
 This keeps header validation a header-only proof after restart/import and lets
 the existing failed-row recheck clear stale `disk-read-failed` rows once the new
 binary is deployed. Live deploy/flip remains operator-gated.
+
+Follow-up source invariant shipped in wt3: accepted block writes now call a
+single `block_index_set_have_data_verified()` helper that reads the just-written
+block back and checks its hash before setting `BLOCK_HAVE_DATA` and disk
+position fields on the index entry. This starts converting body availability
+from a copied metadata claim into a read-verified invariant.
