@@ -3,6 +3,7 @@
  * Alert routing implementation — see alerts.h for the contract. */
 
 #include "util/alerts.h"
+#include "util/sd_notify.h"
 #include "event/event.h"
 #include "core/utiltime.h"
 
@@ -10,6 +11,7 @@
 #include <pthread.h>
 #include <signal.h>
 #include <stdarg.h>
+#include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -35,11 +37,21 @@ static bool              g_webhook_enabled;
 static bool              g_initialized;
 static pthread_mutex_t   g_lock = PTHREAD_MUTEX_INITIALIZER;
 
+/* Operator-needed latch. EV_OPERATOR_NEEDED means the auto-healing engine
+ * exhausted its remedies and a human/MCP must act. We latch it (rather than
+ * relying on a rolling window) so the DEGRADED state stays visible in the
+ * health surface until the underlying condition clears it. Touched from the
+ * event-observer thread, read from the health/heartbeat thread → atomic. */
+static _Atomic bool      g_operator_needed;
+static _Atomic int64_t   g_operator_needed_since_unix;
+static char              g_operator_needed_detail[128];  /* guarded by g_lock */
+
 /* ── Sinks ───────────────────────────────────────────────────── */
 
 static void sink_log(const char *rule_name, const char *payload)
 {
-    fprintf(stderr, "[ALERT] %s: %s\n", rule_name, payload);
+    fprintf(stderr,  // obs-ok:alert-log-sink-is-the-observable-surface
+            "[ALERT] %s: %s\n", rule_name, payload);
 }
 
 /* Fire-and-forget webhook POST via fork+exec.  The child process
@@ -132,11 +144,42 @@ static void check_rule(struct rule_state *rs)
 
 /* ── Event observer ──────────────────────────────────────────── */
 
+/* Latch the operator-needed state so the health surface can report
+ * DEGRADED until the underlying condition clears. `detail` is the event
+ * payload (e.g. "condition=tip_not_advancing attempts=5"). */
+static void operator_needed_set(const char *detail)
+{
+    atomic_store(&g_operator_needed, true);
+    if (atomic_load(&g_operator_needed_since_unix) == 0)
+        atomic_store(&g_operator_needed_since_unix, (int64_t)GetTime());
+    pthread_mutex_lock(&g_lock);
+    snprintf(g_operator_needed_detail, sizeof(g_operator_needed_detail),
+             "%s", detail && *detail ? detail : "(unspecified)");
+    pthread_mutex_unlock(&g_lock);
+    /* Make it impossible to miss: a STATUS= line systemd/operators see. */
+    if (sd_notify_is_active()) {
+        char status[256];
+        snprintf(status, sizeof(status), "DEGRADED operator_needed: %s",
+                 detail && *detail ? detail : "(unspecified)");
+        sd_notify_status(status);
+    }
+}
+
 static void alert_observer(enum event_type type, uint32_t peer_id,
                             const void *payload, uint32_t payload_len,
                             void *ctx)
 {
-    (void)peer_id; (void)payload; (void)payload_len; (void)ctx;
+    (void)peer_id; (void)payload_len; (void)ctx;
+
+    /* EV_OPERATOR_NEEDED is the loudest signal the framework emits: the
+     * condition engine ran out of remedies. Latch it for the health surface
+     * AND let it flow through the normal rule dispatch below for log/webhook. */
+    if (type == EV_OPERATOR_NEEDED)
+        operator_needed_set(payload ? (const char *)payload : NULL);
+    /* The symptom resolved (remedy witnessed) → drop the DEGRADED latch so
+     * the node returns to healthy without operator intervention. */
+    else if (type == EV_CONDITION_CLEARED)
+        alerts_operator_needed_clear();
 
     pthread_mutex_lock(&g_lock);
     for (size_t i = 0; i < g_num_rules; i++) {
@@ -177,6 +220,28 @@ static const struct alert_rule k_seed_rules[] = {
         .name         = "chain_tip_rejected",
         .trigger      = EV_CHAIN_TIP_REJECTED,
         .threshold    = 1,         /* fire immediately */
+        .window_sec   = 300,
+        .cooldown_sec = 600,
+        .enabled      = true,
+    },
+    {
+        /* THE silent-halt fix. The condition engine emits EV_OPERATOR_NEEDED
+         * once it exhausts remedies for a CRITICAL problem (e.g. a halted
+         * tip). Before this rule it reached no sink. Fire on the first one. */
+        .name         = "operator_needed",
+        .trigger      = EV_OPERATOR_NEEDED,
+        .threshold    = 1,         /* fire immediately — never let it be silent */
+        .window_sec   = 300,
+        .cooldown_sec = 300,
+        .enabled      = true,
+    },
+    {
+        /* A CRITICAL-severity condition firing at all is worth a heads-up
+         * before remedies are even exhausted. Detected events carry the
+         * severity in the payload; the engine only emits one per episode. */
+        .name         = "condition_detected",
+        .trigger      = EV_CONDITION_DETECTED,
+        .threshold    = 1,
         .window_sec   = 300,
         .cooldown_sec = 600,
         .enabled      = true,
@@ -235,6 +300,12 @@ void alerts_init(void)
             installed[t] = true;
         }
     }
+    /* EV_CONDITION_CLEARED has no threshold rule — it only clears the
+     * operator-needed latch — but we still need to observe it. */
+    if (!installed[EV_CONDITION_CLEARED]) {
+        event_observe(EV_CONDITION_CLEARED, alert_observer, NULL);
+        installed[EV_CONDITION_CLEARED] = true;
+    }
 
     g_initialized = true;
     pthread_mutex_unlock(&g_lock);
@@ -252,11 +323,16 @@ void alerts_shutdown(void)
             cleared[t] = true;
         }
     }
+    if (!cleared[EV_CONDITION_CLEARED])
+        event_clear_observers(EV_CONDITION_CLEARED);
     g_num_rules = 0;
     g_webhook_enabled = false;
     g_webhook_url[0] = '\0';
+    g_operator_needed_detail[0] = '\0';
     g_initialized = false;
     pthread_mutex_unlock(&g_lock);
+    atomic_store(&g_operator_needed, false);
+    atomic_store(&g_operator_needed_since_unix, 0);
 }
 
 bool alerts_add_rule(const struct alert_rule *rule)
@@ -323,6 +399,32 @@ void alerts_reset(void)
         g_rules[i].total_fires = 0;
         g_rules[i].window_start_us = GetTimeMicros();
     }
+    g_operator_needed_detail[0] = '\0';
+    pthread_mutex_unlock(&g_lock);
+    atomic_store(&g_operator_needed, false);
+    atomic_store(&g_operator_needed_since_unix, 0);
+}
+
+bool alerts_operator_needed(char *detail_out, size_t detail_cap,
+                            int64_t *since_unix_out)
+{
+    bool active = atomic_load(&g_operator_needed);
+    if (since_unix_out)
+        *since_unix_out = atomic_load(&g_operator_needed_since_unix);
+    if (detail_out && detail_cap > 0) {
+        pthread_mutex_lock(&g_lock);
+        snprintf(detail_out, detail_cap, "%s", g_operator_needed_detail);
+        pthread_mutex_unlock(&g_lock);
+    }
+    return active;
+}
+
+void alerts_operator_needed_clear(void)
+{
+    atomic_store(&g_operator_needed, false);
+    atomic_store(&g_operator_needed_since_unix, 0);
+    pthread_mutex_lock(&g_lock);
+    g_operator_needed_detail[0] = '\0';
     pthread_mutex_unlock(&g_lock);
 }
 

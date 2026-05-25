@@ -114,8 +114,8 @@ TMPL_GEN = app/views/include/views/wallet_templates_gen.h
 TMPL_SRC = $(wildcard app/views/templates/*.chtml) $(wildcard app/views/css/*.ccss)
 TMPL_TOOL = tools/gen_templates
 
-$(TMPL_TOOL): tools/gen_templates.c
-	$(CC) -std=c23 -O2 -Wall -Wextra -Ilib/util/include -o $@ $<
+$(TMPL_TOOL): tools/gen_templates.c lib/util/src/safe_alloc.c
+	$(CC) -std=c23 -O2 -Wall -Wextra -Ilib/util/include -o $@ $^
 
 tools/inspect_html: tools/inspect_html.c
 	$(CC) -std=c23 -O2 -Wall -Wextra -o $@ $<
@@ -183,7 +183,7 @@ zclassic23: $(TMPL_GEN) main.c tools/mcp_server.c $(ALL_SRCS)
 	$(CC) $(CFLAGS) -Wno-deprecated-declarations $(LDFLAGS) -o $@ $(filter-out $(TMPL_GEN),$^) $(TOR_LIBS) $(LIBS) $(GTK_LIBS) $(WEBKIT_LIBS)
 	strip -s $@
 
-zclassic-cli: cli.c $(CLI_SRCS)
+zclassic-cli: cli.c $(CLI_SRCS) lib/util/src/safe_alloc.c
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $^ -lm
 
 # In-tree WAL checkpoint tool used by `deploy`.  Replaces a dependency on

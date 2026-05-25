@@ -184,6 +184,10 @@ static bool rpc_healthcheck(const struct json_value *params, bool help,
         json_push_kv_str(&checks, "onion_address", health.onion_address);
     if (health.degraded_reason[0])
         json_push_kv_str(&checks, "degraded_reason", health.degraded_reason);
+    json_push_kv_bool(&checks, "operator_needed", health.operator_needed);
+    if (health.operator_needed && health.operator_needed_detail[0])
+        json_push_kv_str(&checks, "operator_needed_detail",
+                         health.operator_needed_detail);
     struct bii_recovery_status bii;
     bii_get_recovery_status(&bii);
     if (bii.degraded)

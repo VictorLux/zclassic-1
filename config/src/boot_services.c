@@ -33,6 +33,7 @@
 #include "services/node_health_service.h"
 #include "health/heartbeat.h"
 #include "util/sd_notify.h"
+#include "util/alerts.h"
 #include "util/boot_progress.h"
 #include "util/log_macros.h"
 #include "util/supervisor.h"
@@ -3515,6 +3516,11 @@ bool app_init_services(struct app_context *ctx,
      * orderly shutdown if it doesn't. See services/chain_tip_watchdog.h. */
     chain_tip_watchdog_register(svc->state);
     condition_registry_register_all();
+    /* Close the alert loop: install the event→sink routing (incl. the
+     * EV_OPERATOR_NEEDED rule) BEFORE the condition engine can fire, so a
+     * halt that exhausts remedies reaches a human/MCP and the health
+     * surface instead of dead-ending. Was never called in production. */
+    alerts_init();
     self_heal_register(svc->state);
     boot_header_admit_supervisor_register(svc);
     boot_validate_headers_supervisor_register(svc);

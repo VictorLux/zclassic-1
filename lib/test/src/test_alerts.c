@@ -18,13 +18,15 @@ static bool contains(const char *hay, const char *needle)
 static int test_seed_rules_registered(void)
 {
     int failures = 0;
-    TEST("alerts: init registers 4 seed rules") {
+    TEST("alerts: init registers 6 seed rules") {
         alerts_shutdown();
         /* Ensure alerts system is not disabled */
         unsetenv("ZCL_ALERTS_DISABLE");
         unsetenv("ZCL_ALERT_WEBHOOK_URL");
         alerts_init();
-        ASSERT(alerts_rule_count() == 4);
+        /* 4 original + operator_needed + condition_detected (the silent-halt
+         * fix: EV_OPERATOR_NEEDED now reaches a sink). */
+        ASSERT(alerts_rule_count() == 6);
         alerts_shutdown();
         PASS();
     } _test_next:;
@@ -133,11 +135,11 @@ static int test_add_custom_rule(void)
         };
         snprintf(custom.name, sizeof(custom.name), "test_custom");
         ASSERT(alerts_add_rule(&custom));
-        ASSERT(alerts_rule_count() == 5);
+        ASSERT(alerts_rule_count() == 7);
 
         /* Duplicate name rejected */
         ASSERT(!alerts_add_rule(&custom));
-        ASSERT(alerts_rule_count() == 5);
+        ASSERT(alerts_rule_count() == 7);
 
         alerts_shutdown();
         PASS();
@@ -168,7 +170,8 @@ static int test_report_json_shape(void)
         ASSERT(contains(buf, "\"name\":\"peer_bans_high\""));
         ASSERT(contains(buf, "\"name\":\"rpc_ratelimit_spike\""));
         ASSERT(contains(buf, "\"name\":\"chain_tip_rejected\""));
-        ASSERT(contains(buf, "\"total_rules\":4"));
+        ASSERT(contains(buf, "\"name\":\"operator_needed\""));
+        ASSERT(contains(buf, "\"total_rules\":6"));
         ASSERT(contains(buf, "\"fires\":1"));
         ASSERT(contains(buf, "\"trigger\":\"disk.low\""));
 
@@ -205,8 +208,8 @@ static int test_rule_table_full(void)
         alerts_shutdown();
         unsetenv("ZCL_ALERTS_DISABLE");
         alerts_init();
-        /* 4 seed rules already registered; fill to ALERT_MAX_RULES */
-        for (int i = 0; i < (int)(ALERT_MAX_RULES - 4); i++) {
+        /* 6 seed rules already registered; fill to ALERT_MAX_RULES */
+        for (int i = 0; i < (int)(ALERT_MAX_RULES - 6); i++) {
             struct alert_rule r = {
                 .trigger = EV_NODE_READY,
                 .threshold = 1,
@@ -234,6 +237,40 @@ static int test_rule_table_full(void)
     return failures;
 }
 
+static int test_operator_needed_latch(void)
+{
+    int failures = 0;
+    TEST("alerts: EV_OPERATOR_NEEDED latches + clears on EV_CONDITION_CLEARED") {
+        alerts_shutdown();
+        unsetenv("ZCL_ALERTS_DISABLE");
+        unsetenv("ZCL_ALERT_WEBHOOK_URL");
+        alerts_init();
+        alerts_reset();
+
+        /* Before any halt: not latched. */
+        ASSERT(!alerts_operator_needed(NULL, 0, NULL));
+
+        /* The condition engine exhausted remedies → emits EV_OPERATOR_NEEDED.
+         * This is THE silent-halt signal; it must now be observable. */
+        event_emitf(EV_OPERATOR_NEEDED, 0,
+                    "condition=tip_not_advancing attempts=5");
+        char detail[128] = {0};
+        int64_t since = 0;
+        ASSERT(alerts_operator_needed(detail, sizeof(detail), &since));
+        ASSERT(contains(detail, "tip_not_advancing"));
+        ASSERT(alerts_fire_count("operator_needed") == 1);
+
+        /* The underlying condition resolves → latch drops automatically. */
+        event_emitf(EV_CONDITION_CLEARED, 0,
+                    "name=tip_not_advancing cleared_count=1");
+        ASSERT(!alerts_operator_needed(NULL, 0, NULL));
+
+        alerts_shutdown();
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 /* ── Entry point ─────────────────────────────────────────────── */
 
 int test_alerts(void);
@@ -252,6 +289,7 @@ int test_alerts(void)
     failures += test_report_json_shape();
     failures += test_reset_clears_state();
     failures += test_rule_table_full();
+    failures += test_operator_needed_latch();
 
     alerts_shutdown();
     return failures;

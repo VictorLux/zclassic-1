@@ -63,6 +63,18 @@ size_t alerts_rule_count(void);
 /* Reset all counters and state (for tests). */
 void alerts_reset(void);
 
+/* True iff EV_OPERATOR_NEEDED has fired and not yet been cleared (by an
+ * EV_CONDITION_CLEARED for the underlying condition, or an explicit clear).
+ * This is the "a halt can never be silent" signal — the health surface reads
+ * it to report DEGRADED / operator_needed. `detail_out` (optional) receives
+ * the latched event payload; `since_unix_out` (optional) the first-fire time. */
+bool alerts_operator_needed(char *detail_out, size_t detail_cap,
+                            int64_t *since_unix_out);
+
+/* Clear the operator-needed latch. Called automatically on
+ * EV_CONDITION_CLEARED; exposed for tests / manual operator ack. */
+void alerts_operator_needed_clear(void);
+
 /* Render a JSON summary of all rules + their fire counts.
  * Returns bytes written (excluding NUL). */
 size_t alerts_report_json(char *buf, size_t cap);

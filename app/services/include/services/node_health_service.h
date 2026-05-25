@@ -108,6 +108,15 @@ struct node_health_snapshot {
      * us and how many native zclassic23 peers we have. */
     size_t   magicbean_peer_count;
     size_t   zclassic_c23_peer_count;
+
+    /* Operator-needed latch (from lib/util/alerts.c). True once the
+     * auto-healing condition engine exhausts remedies for a CRITICAL
+     * problem and emits EV_OPERATOR_NEEDED — the "a halt can never be
+     * silent" signal. Flips healthy=false and sets degraded_reason so
+     * zcl_status shows it and the sd_notify heartbeat stops. Cleared
+     * automatically when the underlying condition clears. */
+    bool     operator_needed;
+    char     operator_needed_detail[128];
 };
 
 void node_health_collect(struct node_health_snapshot *snapshot,

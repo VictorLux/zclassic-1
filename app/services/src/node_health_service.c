@@ -30,6 +30,7 @@
 #include <unistd.h>
 
 #include "util/log_macros.h"
+#include "util/alerts.h"
 #include "util/ar_step_readonly.h"
 
 /* Read process start time from /proc/self/stat (field 22, starttime in
@@ -518,6 +519,26 @@ void node_health_collect(struct node_health_snapshot *snapshot,
                          (long long)ms.lag,
                          (long long)ms.lag_critical_seconds);
             }
+            snapshot->healthy = false;
+        }
+    }
+
+    /* Operator-needed latch — the loudest signal in the system. When the
+     * auto-healing condition engine exhausts its remedies it emits
+     * EV_OPERATOR_NEEDED, which lib/util/alerts.c latches. Reflect it here
+     * so a halt that no remedy could clear shows up as DEGRADED in
+     * zcl_status and stops the sd_notify heartbeat. Overrides any softer
+     * degraded_reason because it means automation has given up. */
+    {
+        char detail[sizeof(snapshot->operator_needed_detail)] = {0};
+        snapshot->operator_needed =
+            alerts_operator_needed(detail, sizeof(detail), NULL);
+        if (snapshot->operator_needed) {
+            snprintf(snapshot->operator_needed_detail,
+                     sizeof(snapshot->operator_needed_detail), "%s", detail);
+            snprintf(snapshot->degraded_reason,
+                     sizeof(snapshot->degraded_reason),
+                     "operator_needed:%s", detail[0] ? detail : "unspecified");
             snapshot->healthy = false;
         }
     }
