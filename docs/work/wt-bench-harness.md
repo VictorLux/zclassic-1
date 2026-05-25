@@ -20,8 +20,9 @@ Fully independent of the P0 connect_block work.
 > optimize ([[feedback_high_perf_engineering_standard]]) is impossible without it.
 
 ## Why it's safe to run in parallel with the P0 fix
-- Touches **only** new files under `tools/bench/`, `docs/bench-history.csv`, a CI
-  hook, and a small additive `make bench` target. **No C source that wt2 edits.**
+- Touches benchmark entry points in `main.c`, `zcl_benchmark` metadata,
+  `docs/bench-history.csv`, a CI hook, and a small additive `make bench`
+  target. **No connect/coins/boot source that wt2 edits.**
 - Runs against an **isolated** datadir + ports (e.g. `$ZCL_BENCH_DIR`,
   `-rpcport=28232`). It must **never** touch `~/.zclassic-c23` or the live service.
 - Where a benchmark needs a healthy node (the "to-tip" numbers) and the live node
@@ -37,15 +38,14 @@ Fully independent of the P0 connect_block work.
 | 4 | RAM steady-state (RSS over a soak) | ≤1 GB | yes (sample `/proc/<pid>/status` over time) |
 | 5 | Recovery from kill -9 (→ RPC ready) | ≤60s | yes (scripted kill loop, histogram) |
 
-Reuse what exists — do NOT reinvent: `tools/scoreboard.sh`,
-`tools/bench_running_lag.sh`, `tools/bench_no_stuck.sh` already cover pieces of
-3/5. Wrap them; don't duplicate.
+Canonical functionality lives in C. `make bench` is thin glue over
+`zclassic23 -bench`; `zcl_benchmark` exposes the same primary list via MCP/RPC.
 
 ## Tasks
-1. `tools/bench/zcl-bench.sh` — one entry point, runs all 5 primaries against an
-   isolated datadir/ports, prints a table, appends a row to
+1. `zclassic23 -bench` — one entry point, runs all 5 primaries against an
+   isolated datadir/ports when prerequisites exist, prints a table, appends a row to
    `docs/bench-history.csv` (columns: date, commit, bench#, value, unit, notes).
-2. `make bench` target (additive, minimal Makefile diff) → runs `zcl-bench.sh`.
+2. `make bench` target (additive, minimal Makefile diff) → runs `zclassic23 -bench`.
 3. CI regression gate: a script that fails if any primary regresses >20% vs the
    last committed `bench-history.csv` row for that bench. Wire into `make ci`.
 4. Capture today's baseline rows for the benchmarks that run now; mark the
@@ -68,5 +68,5 @@ Reuse what exists — do NOT reinvent: `tools/scoreboard.sh`,
 
 ## References
 - `docs/USER_BENCHMARKS.md` (the 5-number spec), `docs/BENCHMARKS_LOG.md` (ledger).
-- `tools/scoreboard.sh`, `tools/bench_running_lag.sh`, `tools/bench_no_stuck.sh`.
+- `zclassic23 -bench`, `zclassic23 -bench-regress`, `zcl_benchmark`.
 - Memory: [[feedback_high_perf_engineering_standard]], [[feedback_dont_sell_clear_info]] (numbers must be measured, dated, honest).

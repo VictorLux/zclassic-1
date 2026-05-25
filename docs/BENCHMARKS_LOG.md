@@ -8,10 +8,10 @@ measurement. This is the source for the "now" column and the bars on the board
 
 1. Pull live gauges: `zcl_status` (RSS, height, peers, uptime) and `zcl_metrics`.
 2. For timing benchmarks, run the harness (only meaningful on a *healthy* node):
-   - `#1 cold`  → `make bench-sync` / `tools/bench_cold_start_from_legacy.sh`
+   - `#1 cold`  → `zclassic23 -bench-coldstart`
    - `#2 warm`  → `zclassic23 -bench-warmstart`
    - `#4 thru`  → `zcl_validationstatus` `blocks_per_sec` during bg-verify
-   - `#6 kill-9`→ `tools/bench_no_stuck.sh` recovery histogram
+   - `#6 kill-9`→ `zclassic23 -bench-kill9`
 3. Append rows below with today's date + `git rev-parse --short HEAD`.
 4. Leave a metric out rather than guess. `—` = not measured this run.
 5. Commit. Trend for any metric: `grep "RSS" docs/BENCHMARKS_LOG.md`.

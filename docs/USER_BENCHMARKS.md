@@ -54,7 +54,7 @@ CI fails any PR that regresses a primary > 20%.
 
 ## Dream roadmap (sequenced so each wave moves a benchmark)
 
-1. **Wave B — Benchmarks (1 session).** `tools/bench/zcl-bench.sh` runs all 5 primaries. `docs/bench-history.csv`. CI regression gate. **Today's numbers become the baseline.** Without this, every other wave is unmeasurable.
+1. **Wave B — Benchmarks (1 session).** `zclassic23 -bench` runs all 5 primaries. `docs/bench-history.csv`. CI regression gate. **Today's numbers become the baseline.** Without this, every other wave is unmeasurable.
 2. **Wave S close (3–6 sessions).** S-5..S-12. Wedges extinct. Locks benchmarks 3 + 5.
 3. **Wave P — Peer Snapshot (~3 sessions).** A2 of the bridge. Locks benchmark 1 (cold-start over Tor).
 4. **Wave W — Warm-start (1 session).** Mmap + parallel boot. Locks benchmark 2.

@@ -110,7 +110,7 @@ Required:
 - Deploy + restart, then prove the tip advances **many** blocks through and past
   the old wedge points, sustained:
   ```
-  SAMPLES=12 INTERVAL_SECS=15 ./tools/bench_running_lag.sh   # exit 0 = advancing
+  ./tools/zcl-rpc healthcheck | jq '.checks.chain_advance'   # tip_advance_age + blocker
   ./tools/scoreboard.sh                                       # exit 0 = at tip
   ```
 - Explicitly confirm `node.log` shows **zero** `bad-txns-BIP30` after the fix and

@@ -152,13 +152,12 @@ When all tasks pass and acceptance criteria are met:
    cutover, or anything on the chain-advance path, forward progress on the
    LIVE node is a required gate, not optional:**
    ```bash
-   # the gate already exists — RUN IT against the live node:
-   SAMPLES=6 INTERVAL_SECS=15 ./tools/bench_running_lag.sh   # exit 0 = tip advancing
-   # for restart/recovery changes also:
-   ITERATIONS=3 ./tools/bench_no_stuck.sh                    # exit 0 = advances after kill -9
+   # the C health gate reads live chain_advance state:
+   ./tools/zcl-rpc healthcheck | jq '.checks.chain_advance'
+   # for benchmark rows:
+   zclassic23 -bench-kill9
    ```
-   `bench_running_lag.sh` exit 3 = "stays in sync only on paper, tip not
-   advancing." If you cannot show the live tip advancing past your change
+   If you cannot show the live tip advancing past your change
    (e.g. past the cutover height), it is NOT done — report it, don't ship it.
 
 2. **Update the assignment doc** — append a Completion section AND change Status:

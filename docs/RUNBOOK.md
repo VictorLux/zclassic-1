@@ -43,7 +43,6 @@ unspent UTXO row one block above the active chain tip, with no matching
 4. Prove the single-row rewind happened and the chain advances:
    ```bash
    ./tools/bip30_unwedge_preflight.sh
-   SAMPLES=6 INTERVAL_SECS=15 ./tools/bench_running_lag.sh
    ./tools/zcl-rpc healthcheck | jq '.checks.chain_advance'   # canonical C (tip_advance_age + blocker)
    ```
 
