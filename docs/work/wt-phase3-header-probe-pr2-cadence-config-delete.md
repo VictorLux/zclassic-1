@@ -4,7 +4,7 @@
 **Branch:** PUSH DIRECT TO MAIN
 **Phase:** 3 (Dissolve mega-modules)
 **Depends on:** header_probe PR-2c blocking pull delete shipped.
-**Status: IN PROGRESS (wt3)** — claimed 2026-05-25.
+**Status: DONE (wt3)** — claimed and completed 2026-05-25.
 
 ## Scope
 
@@ -34,3 +34,33 @@ carry a legacy cadence field that no longer drives behavior.
 
 This is a PR-2 service shrink only. It does not change the poll job cadence or
 header validation behavior.
+
+## Completion — 2026-05-25
+
+Pushed commits:
+
+- `957ac1b04` — `wt3: claim header probe cadence config delete slice`
+- `5e6963493` — `header_probe: delete stale cadence config`
+
+Summary:
+
+- Deleted `cadence_secs` from `struct header_probe_config`.
+- Removed the unused header_probe cadence default, global state field,
+  init/reset handling, and state dump JSON key.
+- Updated header probe tests and the poll job comment so scheduling ownership
+  is only described in `header_probe_poll`.
+- Reduced `app/services/src/header_probe_service.c` to 767 lines.
+
+Verification:
+
+- `make -j$(nproc)` PASS.
+- `ZCL_TEST_ONLY=header_probe ./test_zcl` PASS.
+- `ZCL_TEST_ONLY=header_probe_poll ./test_zcl` PASS.
+- `make lint` PASS.
+- `git diff --check` PASS.
+- `./test_parallel --jobs=$(nproc)` PASS — 0/208 groups failed.
+
+Follow-up:
+
+- Continue PR-2 shrink by trimming remaining header_probe stats/state surface
+  or moving legacy-mirror-specific orchestration out of the service.
