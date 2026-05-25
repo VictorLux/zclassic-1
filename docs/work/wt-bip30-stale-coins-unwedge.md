@@ -2,8 +2,8 @@
 
 ## Status
 
-**READY — HIGHEST PRIORITY (this is the live wedge).** Independent of the
-Phase-2 cutover soak. Claim by marking `IN PROGRESS (wtN)`.
+**IN PROGRESS (wt2)** — HIGHEST PRIORITY (this is the live wedge). Independent
+of the Phase-2 cutover soak.
 
 > Goal moved: **UNBREAKABLE — Tip advancing / Wedge recovery**. This is the
 > bug freezing the live node at height 3,123,688 right now.
