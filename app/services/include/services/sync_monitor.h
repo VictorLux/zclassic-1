@@ -35,7 +35,10 @@ struct watchdog_stats {
     int      last_recovery_local_height;
     int      last_recovery_peer_height;
     int      last_recovery_peer_count;
+    int      last_recovery_target_height;
+    int      last_recovery_manifest_height;
     char     last_recovery_reason[96];
+    char     last_recovery_trigger[64];
 };
 
 struct watchdog_local_recovery_stats {
@@ -75,6 +78,13 @@ void sync_monitor_record_recovery(enum watchdog_recovery_type type,
                                   int peer_height,
                                   int peer_count,
                                   const char *reason);
+void sync_monitor_record_snapshot_resnapshot(int local_height,
+                                             int peer_height,
+                                             int peer_count,
+                                             int target_height,
+                                             int manifest_height,
+                                             const char *trigger,
+                                             const char *reason);
 void sync_monitor_get_stats(struct watchdog_stats *out);
 
 const char *watchdog_recovery_type_name(enum watchdog_recovery_type type);

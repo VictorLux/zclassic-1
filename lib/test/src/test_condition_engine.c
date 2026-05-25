@@ -2,6 +2,7 @@
 
 #include "test/test_helpers.h"
 
+#include "conditions/condition_registry.h"
 #include "event/event.h"
 #include "framework/condition.h"
 #include "json/json.h"
@@ -60,6 +61,20 @@ static void reset_fixture(void)
     atomic_store(&g_detect_calls, 0);
     atomic_store(&g_remedy_calls, 0);
     atomic_store(&g_operator_events, 0);
+}
+
+static bool ce_json_conditions_has(const struct json_value *conditions,
+                                   const char *name)
+{
+    if (!conditions || !name)
+        return false;
+    for (size_t i = 0; i < json_size(conditions); i++) {
+        const struct json_value *cond = json_at(conditions, i);
+        const struct json_value *n = cond ? json_get(cond, "name") : NULL;
+        if (n && strcmp(json_get_str(n), name) == 0)
+            return true;
+    }
+    return false;
 }
 
 int test_condition_engine(void)
@@ -155,7 +170,8 @@ int test_condition_engine(void)
         condition_engine_tick();
         ok = ok && atomic_load(&g_remedy_calls) == 2;
         ok = ok && condition_engine_get_unresolved_count() == 1;
-        ok = ok && atomic_load(&g_operator_events) >= 1;
+        ok = ok && atomic_load(&c_max.state.operator_needed_emitted);
+        ok = ok && atomic_load(&c_max.state.last_operator_needed_unix) > 0;
         CE_CHECK("max attempts emits operator event", ok);
     }
 
@@ -206,7 +222,10 @@ int test_condition_engine(void)
         ok = ok && atomic_load(&c_unwitnessed.state.cleared_count) == 0;
         /* After max_attempts un-witnessed remedies it must escalate. */
         ok = ok && condition_engine_get_unresolved_count() == 1;
-        ok = ok && atomic_load(&g_operator_events) >= 1;
+        ok = ok &&
+             atomic_load(&c_unwitnessed.state.operator_needed_emitted);
+        ok = ok &&
+             atomic_load(&c_unwitnessed.state.last_operator_needed_unix) > 0;
         CE_CHECK("unwitnessed remedy is not ok and escalates", ok);
     }
 
@@ -239,6 +258,45 @@ int test_condition_engine(void)
         ok = ok && json_get(&out, "conditions") != NULL;
         json_free(&out);
         CE_CHECK("dump json includes registry", ok);
+    }
+
+    {
+        reset_fixture();
+        condition_registry_register_all();
+        struct json_value out;
+        json_init(&out);
+        json_set_object(&out);
+        bool ok = condition_engine_dump_state_json(&out, NULL);
+        const struct json_value *conditions = json_get(&out, "conditions");
+        const struct json_value *registered = json_get(&out,
+                                                       "registered_count");
+        static const char *expected[] = {
+            "block_failed_mask_at_tip",
+            "contradiction_frozen",
+            "chain_stalled_with_data",
+            "chain_integrity_failed",
+            "utxo_activation_paused",
+            "utxo_drift_detected",
+            "header_stall_at_height",
+            "sync_state_stuck",
+            "download_queue_starved",
+            "local_header_refill_needed",
+            "peer_floor_violated",
+            "sync_violation_lag",
+            "tip_wedged_resnapshot",
+            "snapshot_receive_stalled",
+            "legacy_mirror_stuck",
+            "snapshot_offer_ready",
+            "snapshot_negotiation_stalled",
+            "snapshot_failed_reset",
+            "snapshot_complete_resume",
+        };
+        ok = ok && registered && json_get_int(registered) == 19;
+        ok = ok && conditions && json_size(conditions) == 19;
+        for (size_t i = 0; i < sizeof(expected) / sizeof(expected[0]); i++)
+            ok = ok && ce_json_conditions_has(conditions, expected[i]);
+        json_free(&out);
+        CE_CHECK("register_all exposes current self-heal set", ok);
     }
 
     reset_fixture();

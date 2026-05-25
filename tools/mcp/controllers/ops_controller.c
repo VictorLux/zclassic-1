@@ -25,6 +25,7 @@
 #include "validation/process_block.h"
 
 #include <errno.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -432,183 +433,224 @@ static int h_zcl_blockers(const struct mcp_request *req,
     return 0;
 }
 
-static void json_escape_local(const char *in, char *out, size_t out_cap)
+/* ── Phase 6b postmortem capsules ───────────────────────────── */
+
+static int postmortem_default_dir(char *buf, size_t cap)
 {
-    if (!out || out_cap == 0) return;
-    if (!in) in = "";
-    size_t pos = 0;
-    for (size_t i = 0; in[i] && pos + 1 < out_cap; i++) {
-        unsigned char c = (unsigned char)in[i];
-        if ((c == '"' || c == '\\') && pos + 2 < out_cap) {
-            out[pos++] = '\\';
-            out[pos++] = (char)c;
-        } else if (c == '\n' && pos + 2 < out_cap) {
-            out[pos++] = '\\';
-            out[pos++] = 'n';
-        } else if (c == '\r' && pos + 2 < out_cap) {
-            out[pos++] = '\\';
-            out[pos++] = 'r';
-        } else if (c == '\t' && pos + 2 < out_cap) {
-            out[pos++] = '\\';
-            out[pos++] = 't';
-        } else if (c >= 0x20) {
-            out[pos++] = (char)c;
-        }
+    const char *home = getenv("HOME");
+    int n;
+    if (home && *home) {
+        n = snprintf(buf, cap, "%s/.zclassic-c23/postmortems", home);
+    } else {
+        n = snprintf(buf, cap, "./.zclassic-c23/postmortems");
     }
-    out[pos] = '\0';
+    if (n < 0 || (size_t)n >= cap) return -ENOSPC;
+    return 0;
+}
+
+static char *json_value_to_body(struct json_value *v, const char *label)
+{
+    size_t need = json_write(v, NULL, 0);
+    char *out = zcl_malloc(need + 1, label);
+    if (!out) return NULL;
+    json_write(v, out, need + 1);
+    return out;
+}
+
+static void bytes_to_hex(const uint8_t *in, size_t len, char *out)
+{
+    static const char k_hex[] = "0123456789abcdef";
+    for (size_t i = 0; i < len; i++) {
+        out[i * 2] = k_hex[in[i] >> 4];
+        out[i * 2 + 1] = k_hex[in[i] & 0x0f];
+    }
+    out[len * 2] = '\0';
 }
 
 static int h_zcl_postmortem_list(const struct mcp_request *req,
                                  struct mcp_response *res)
 {
-    const char *dir = json_get_str(json_get(req->args, "dir"));
-    int64_t limit_arg = json_get_int_or(req->args, "limit", 100);
-    if (limit_arg < 1) limit_arg = 1;
-    if (limit_arg > 500) limit_arg = 500;
-    size_t limit = (size_t)limit_arg;
+    const char *dir = json_get_str_or(req->args, "dir", NULL);
+    char default_dir[512];
+    if (!dir || !*dir) {
+        if (postmortem_default_dir(default_dir, sizeof(default_dir)) != 0) {
+            res->error = MCP_ERR_INTERNAL;
+            snprintf(res->error_message, sizeof(res->error_message),
+                     "default postmortem dir path too long");
+            LOG_ERR("mcp.ops", "default postmortem dir path too long");
+            return 0;
+        }
+        dir = default_dir;
+    }
 
-    struct postmortem_capsule_entry *entries =
-        zcl_calloc(limit, sizeof(*entries), "postmortem.mcp.entries");
-    if (!entries) {
+    int64_t limit_i = json_get_int_or(req->args, "limit", 20);
+    if (limit_i < 1) limit_i = 1;
+    if (limit_i > 100) limit_i = 100;
+    size_t limit = (size_t)limit_i;
+
+    struct postmortem_summary *summaries =
+        zcl_malloc(sizeof(*summaries) * limit, "mcp.postmortem.list");
+    if (!summaries) {
         res->error = MCP_ERR_INTERNAL;
         snprintf(res->error_message, sizeof(res->error_message),
-                 "malloc failed for postmortem list");
-        LOG_ERR("mcp.ops", "malloc failed for postmortem list entries");
+                 "malloc failed for postmortem summary list");
+        LOG_ERR("mcp.ops", "malloc failed for %zu postmortem summaries",
+                limit);
         return 0;
     }
 
-    size_t total = 0;
-    int rc = postmortem_capsule_list(dir, entries, limit, &total);
+    size_t count = 0;
+    int rc = postmortem_list(dir, summaries, limit, &count);
     if (rc != 0) {
-        free(entries);
+        free(summaries);
         res->error = MCP_ERR_HANDLER_FAILED;
         snprintf(res->error_message, sizeof(res->error_message),
-                 "postmortem list failed rc=%d", rc);
-        LOG_ERR("mcp.ops", "postmortem list failed: dir=%s rc=%d",
-                dir ? dir : "(null)", rc);
+                 "postmortem list failed for %s (rc=%d)", dir, rc);
+        LOG_ERR("mcp.ops", "postmortem list failed dir=%s rc=%d", dir, rc);
         return 0;
     }
 
-    size_t returned = total < limit ? total : limit;
-    size_t cap = 256 + returned * 900;
-    char *out = zcl_malloc(cap, "postmortem.list.body");
-    if (!out) {
-        free(entries);
+    struct json_value root, arr;
+    json_init(&root); json_set_object(&root);
+    json_init(&arr);  json_set_array(&arr);
+    size_t returned = count < limit ? count : limit;
+    json_push_kv_str(&root, "dir", dir);
+    json_push_kv_int(&root, "total", (int64_t)count);
+    json_push_kv_int(&root, "returned", (int64_t)returned);
+    json_push_kv_int(&root, "limit", (int64_t)limit);
+
+    for (size_t i = 0; i < returned; i++) {
+        struct json_value item;
+        json_init(&item); json_set_object(&item);
+        json_push_kv_str(&item, "path", summaries[i].path);
+        json_push_kv_int(&item, "crash_unix", summaries[i].crash_unix);
+        json_push_kv_int(&item, "crash_signal",
+                         (int64_t)summaries[i].crash_signal);
+        json_push_kv_int(&item, "capsule_bytes",
+                         (int64_t)summaries[i].capsule_bytes);
+        json_push_kv_int(&item, "tape_size_bytes",
+                         (int64_t)summaries[i].tape_size_bytes);
+        json_push_back(&arr, &item);
+        json_free(&item);
+    }
+    json_push_kv(&root, "capsules", &arr);
+
+    char *body = json_value_to_body(&root, "mcp.postmortem.list.body");
+    json_free(&arr);
+    json_free(&root);
+    free(summaries);
+    if (!body) {
         res->error = MCP_ERR_INTERNAL;
         snprintf(res->error_message, sizeof(res->error_message),
-                 "malloc failed for postmortem list body");
+                 "malloc failed for postmortem list response");
         LOG_ERR("mcp.ops", "malloc failed for postmortem list body");
         return 0;
     }
-
-    char dir_esc[512];
-    json_escape_local(dir, dir_esc, sizeof(dir_esc));
-    size_t pos = 0;
-    pos += (size_t)snprintf(out + pos, cap - pos,
-        "{\"dir\":\"%s\",\"total\":%zu,\"returned\":%zu,\"capsules\":[",
-        dir_esc, total, returned);
-    for (size_t i = 0; i < returned && pos < cap; i++) {
-        char name_esc[192], path_esc[640];
-        json_escape_local(entries[i].name, name_esc, sizeof(name_esc));
-        json_escape_local(entries[i].path, path_esc, sizeof(path_esc));
-        pos += (size_t)snprintf(out + pos, cap - pos,
-            "%s{\"name\":\"%s\",\"path\":\"%s\",\"crash_unix\":%lld,"
-            "\"crash_signal\":%d,\"tape_size_bytes\":%zu}",
-            i == 0 ? "" : ",",
-            name_esc, path_esc,
-            (long long)entries[i].crash_unix,
-            entries[i].crash_signal,
-            entries[i].tape_size_bytes);
-    }
-    if (pos < cap) snprintf(out + pos, cap - pos, "]}");
-    else out[cap - 1] = '\0';
-
-    free(entries);
-    res->body = out;
+    res->body = body;
     return 0;
-}
-
-static void hex_encode(const uint8_t *buf, size_t len, char *out, size_t out_cap)
-{
-    static const char h[] = "0123456789abcdef";
-    if (!out || out_cap == 0) return;
-    size_t pos = 0;
-    for (size_t i = 0; i < len && pos + 2 < out_cap; i++) {
-        out[pos++] = h[(buf[i] >> 4) & 0xf];
-        out[pos++] = h[buf[i] & 0xf];
-    }
-    out[pos] = '\0';
 }
 
 static int h_zcl_postmortem_replay(const struct mcp_request *req,
                                    struct mcp_response *res)
 {
-    const char *path = json_get_str(json_get(req->args, "path"));
-    int64_t max_arg = json_get_int_or(req->args, "max_events", 1000);
-    if (max_arg < 1) max_arg = 1;
-    if (max_arg > 1000) max_arg = 1000;
-    size_t max_events = (size_t)max_arg;
+    const char *path = json_get_str_or(req->args, "path", NULL);
+    if (!path || !*path) {
+        res->error = MCP_ERR_MISSING_PARAM;
+        snprintf(res->error_message, sizeof(res->error_message),
+                 "path is required");
+        return 0;
+    }
 
-    seed_tape_t *tape = postmortem_capsule_load_tape(path);
+    int64_t limit_i = json_get_int_or(req->args, "limit", 100);
+    if (limit_i < 1) limit_i = 1;
+    if (limit_i > 1000) limit_i = 1000;
+    size_t limit = (size_t)limit_i;
+
+    seed_tape_t *tape = postmortem_load(path);
     if (!tape) {
         res->error = MCP_ERR_HANDLER_FAILED;
         snprintf(res->error_message, sizeof(res->error_message),
-                 "could not load postmortem capsule tape");
-        LOG_ERR("mcp.ops", "postmortem replay failed to load capsule: %s",
-                path ? path : "(null)");
+                 "failed to load postmortem tape from %s", path);
+        LOG_ERR("mcp.ops", "failed to load postmortem tape path=%s", path);
         return 0;
     }
 
-    size_t cap = 1024 + max_events * 512;
-    char *out = zcl_malloc(cap, "postmortem.replay.body");
-    if (!out) {
+    enum { POSTMORTEM_REPLAY_PAYLOAD_CAP = 65536 };
+    uint8_t *payload = zcl_malloc(POSTMORTEM_REPLAY_PAYLOAD_CAP,
+                                  "mcp.postmortem.payload");
+    if (!payload) {
         seed_tape_close(tape);
         res->error = MCP_ERR_INTERNAL;
         snprintf(res->error_message, sizeof(res->error_message),
-                 "malloc failed for postmortem replay body");
-        LOG_ERR("mcp.ops", "malloc failed for postmortem replay body");
+                 "malloc failed for postmortem replay payload");
+        LOG_ERR("mcp.ops", "malloc failed for postmortem replay payload");
         return 0;
     }
 
-    char path_esc[640];
-    json_escape_local(path, path_esc, sizeof(path_esc));
-    size_t pos = 0, emitted = 0;
-    pos += (size_t)snprintf(out + pos, cap - pos,
-        "{\"path\":\"%s\",\"max_events\":%zu,\"events\":[",
-        path_esc, max_events);
+    struct json_value root, events;
+    json_init(&root);   json_set_object(&root);
+    json_init(&events); json_set_array(&events);
+    json_push_kv_str(&root, "path", path);
+    json_push_kv_int(&root, "limit", (int64_t)limit);
 
-    while (emitted < max_events && pos < cap) {
+    size_t returned = 0;
+    int rc = 0;
+    for (; returned < limit; returned++) {
         uint8_t type = 0;
-        uint8_t payload[256];
         size_t payload_len = 0;
-        int rc = seed_tape_next_event(tape, &type, payload, sizeof(payload),
-                                      &payload_len);
+        rc = seed_tape_next_event(tape, &type, payload,
+                                  POSTMORTEM_REPLAY_PAYLOAD_CAP,
+                                  &payload_len);
         if (rc == -ENOENT) break;
-        if (rc == -ENOSPC) {
-            pos += (size_t)snprintf(out + pos, cap - pos,
-                "%s{\"index\":%zu,\"truncated\":true,\"payload_len\":%zu}",
-                emitted == 0 ? "" : ",", emitted, payload_len);
-            emitted++;
-            break;
-        }
         if (rc != 0) break;
 
-        char hex[sizeof(payload) * 2 + 1];
-        hex_encode(payload, payload_len, hex, sizeof(hex));
-        pos += (size_t)snprintf(out + pos, cap - pos,
-            "%s{\"index\":%zu,\"type\":%u,\"payload_len\":%zu,"
-            "\"payload_hex\":\"%s\"}",
-            emitted == 0 ? "" : ",",
-            emitted, (unsigned)type, payload_len, hex);
-        emitted++;
-    }
-    if (pos < cap)
-        snprintf(out + pos, cap - pos, "],\"returned\":%zu}", emitted);
-    else
-        out[cap - 1] = '\0';
+        char *hex = zcl_malloc(payload_len * 2 + 1,
+                               "mcp.postmortem.payload_hex");
+        if (!hex) {
+            rc = -ENOMEM;
+            break;
+        }
+        bytes_to_hex(payload, payload_len, hex);
 
+        struct json_value item;
+        json_init(&item); json_set_object(&item);
+        json_push_kv_int(&item, "index", (int64_t)returned);
+        json_push_kv_int(&item, "type", (int64_t)type);
+        json_push_kv_int(&item, "payload_len", (int64_t)payload_len);
+        json_push_kv_str(&item, "payload_hex", hex);
+        json_push_back(&events, &item);
+        json_free(&item);
+        free(hex);
+    }
+
+    free(payload);
     seed_tape_close(tape);
-    res->body = out;
+
+    if (rc != 0 && rc != -ENOENT) {
+        json_free(&events);
+        json_free(&root);
+        res->error = (rc == -ENOMEM) ? MCP_ERR_INTERNAL : MCP_ERR_HANDLER_FAILED;
+        snprintf(res->error_message, sizeof(res->error_message),
+                 "postmortem replay failed for %s (rc=%d)", path, rc);
+        LOG_ERR("mcp.ops", "postmortem replay failed path=%s rc=%d", path, rc);
+        return 0;
+    }
+
+    json_push_kv_int(&root, "returned", (int64_t)returned);
+    json_push_kv_bool(&root, "truncated", returned == limit);
+    json_push_kv(&root, "events", &events);
+
+    char *body = json_value_to_body(&root, "mcp.postmortem.replay.body");
+    json_free(&events);
+    json_free(&root);
+    if (!body) {
+        res->error = MCP_ERR_INTERNAL;
+        snprintf(res->error_message, sizeof(res->error_message),
+                 "malloc failed for postmortem replay response");
+        LOG_ERR("mcp.ops", "malloc failed for postmortem replay body");
+        return 0;
+    }
+    res->body = body;
     return 0;
 }
 
@@ -625,16 +667,16 @@ static const struct mcp_param_spec p_rpc[] = {
       0, 0, 0, 0, NULL, "\"[]\"" },
 };
 static const struct mcp_param_spec p_postmortem_list[] = {
-    { "dir", MCP_PARAM_STR, true, "Postmortem capsule directory",
-      0, 0, 1, 512, NULL, NULL },
-    { "limit", MCP_PARAM_INT, false, "Maximum summaries to return",
-      1, 500, 0, 0, NULL, "100" },
+    { "dir", MCP_PARAM_STR, false, "Capsule directory",
+      0, 0, 0, 512, NULL, NULL },
+    { "limit", MCP_PARAM_INT, false, "Max capsules to return",
+      1, 100, 0, 0, NULL, "20" },
 };
 static const struct mcp_param_spec p_postmortem_replay[] = {
-    { "path", MCP_PARAM_STR, true, "Path to one .cap capsule directory",
+    { "path", MCP_PARAM_STR, true, "Capsule path",
       0, 0, 1, 512, NULL, NULL },
-    { "max_events", MCP_PARAM_INT, false, "Maximum tape events to return",
-      1, 1000, 0, 0, NULL, "1000" },
+    { "limit", MCP_PARAM_INT, false, "Max injected events to return",
+      1, 1000, 0, 0, NULL, "100" },
 };
 static const struct mcp_tool_route k_routes[] = {
     { "zcl_status", "ops",
@@ -667,6 +709,17 @@ static const struct mcp_tool_route k_routes[] = {
       "for direct invocation. PERMANENT>0 is always an operator "
       "escalation event — typed-PERMANENT means we will not auto-retry.",
       NULL, 0, h_zcl_blockers, 0, NULL },
+    { "zcl_postmortem_list", "ops",
+      "List recent postmortem crash capsules: path, crash time, signal, "
+      "capsule bytes, and embedded seed-tape bytes. Defaults to the "
+      "operator postmortem directory.",
+      p_postmortem_list, PARAM_COUNT(p_postmortem_list),
+      h_zcl_postmortem_list, 0, NULL },
+    { "zcl_postmortem_replay", "ops",
+      "Load a postmortem crash capsule and return the recorded injected "
+      "seed-tape events as bounded replay metadata with hex payloads.",
+      p_postmortem_replay, PARAM_COUNT(p_postmortem_replay),
+      h_zcl_postmortem_replay, 0, NULL },
     { "zcl_getmempoolinfo", "ops",
       "Mempool size, bytes, usage.",
       NULL, 0, h_zcl_getmempoolinfo, 0, NULL },
@@ -703,16 +756,6 @@ static const struct mcp_tool_route k_routes[] = {
       "escalation level, header batch counters, download queue size "
       "and in-flight count. The single tool for diagnosing sync stalls.",
       NULL, 0, h_zcl_syncdiag, 0, NULL },
-    { "zcl_postmortem_list", "ops",
-      "List postmortem crash capsules from a capsule directory, newest "
-      "first, with signal, timestamp, tape size, and path summaries.",
-      p_postmortem_list, PARAM_COUNT(p_postmortem_list),
-      h_zcl_postmortem_list, 0, NULL },
-    { "zcl_postmortem_replay", "ops",
-      "Replay the seed-tape event stream from a postmortem capsule and "
-      "return the first events as JSON with hex payloads.",
-      p_postmortem_replay, PARAM_COUNT(p_postmortem_replay),
-      h_zcl_postmortem_replay, 0, NULL },
 };
 
 void mcp_register_ops(void)

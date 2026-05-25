@@ -54,7 +54,6 @@
 #include "util/log_macros.h"
 #include "services/snapshot_sync_service.h"
 #include "services/chain_advance_coordinator.h"
-#include "services/chain_restore_service.h"
 #include "services/chain_activation_controller.h"
 #include "services/chain_evidence_controller.h"
 #include "services/chain_state_repository.h"
@@ -1052,4 +1051,3 @@ bool process_new_block(struct validation_state *state,
 
     return true;
 }
-

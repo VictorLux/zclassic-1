@@ -5,7 +5,7 @@
  * A tiny POSIX-sockets HTTP/1.1 JSON-RPC client used to talk to a
  * sibling zclassicd (the legacy C++ daemon) when bootstrapping our
  * tip from its already-synced datadir. Bookkeeping that was previously
- * private to header_probe_service.c lives here so other consumers
+ * private to header_probe.c lives here so other consumers
  * (legacy_body_pull, ad-hoc tooling) can share the transport without
  * forking the code.
  *
@@ -23,6 +23,7 @@
 #define ZCL_RPC_LEGACY_RPC_CLIENT_H
 
 #include <stdbool.h>
+#include <stdint.h>
 #include <stddef.h>
 
 /* Parse ~/.zclassic/zclassic.conf into the supplied buffers. Returns
@@ -53,5 +54,23 @@ bool legacy_rpc_call(const char *host, int port,
 /* Extract the HTTP body (after the first "\r\n\r\n") from a raw
  * response. Returns NULL if no separator found. */
 const char *legacy_rpc_http_body(const char *raw);
+
+/* Parse a JSON-RPC response object whose `.result` is an integer. */
+bool legacy_rpc_parse_result_int(const char *raw,
+                                 int64_t *out,
+                                 char *err, size_t err_sz);
+
+/* Parse a JSON-RPC response object whose `.result` is a string. */
+bool legacy_rpc_parse_result_string(const char *raw,
+                                    char *out, size_t out_sz,
+                                    char *err, size_t err_sz);
+
+/* Parse a JSON-RPC batch response array. Each item must contain a string
+ * `.result`. `out_strs` is an array of `expected` fixed-size slots. */
+bool legacy_rpc_parse_result_string_array(const char *raw,
+                                          int expected,
+                                          char *out_strs,
+                                          size_t slot_sz,
+                                          char *err, size_t err_sz);
 
 #endif /* ZCL_RPC_LEGACY_RPC_CLIENT_H */

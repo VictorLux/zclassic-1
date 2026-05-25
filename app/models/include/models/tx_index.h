@@ -27,6 +27,10 @@ bool db_tx_validate(const struct db_tx_index *t, struct ar_errors *errors);
 bool db_tx_save(struct node_db *ndb, const struct db_tx_index *t);
 bool db_tx_find(struct node_db *ndb, const uint8_t txid[32],
                 struct db_tx_index *out);
+bool db_tx_find_native_or_reversed(struct node_db *ndb,
+                                   const uint8_t txid[32],
+                                   struct db_tx_index *out,
+                                   bool *used_reversed);
 bool db_tx_delete(struct node_db *ndb, const uint8_t txid[32]);
 int db_tx_count(struct node_db *ndb);
 bool db_tx_delete_all(struct node_db *ndb);

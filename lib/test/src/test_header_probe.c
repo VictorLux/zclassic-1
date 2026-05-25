@@ -13,13 +13,14 @@
  */
 
 #include "test/test_helpers.h"
-#include "services/header_probe_service.h"
+#include "services/header_probe.h"
 #include "controllers/wallet_helpers.h"
 #include "validation/main_state.h"
 #include "validation/chainstate.h"
 #include "chain/chain.h"
 #include "chain/chainparams.h"
 #include "core/uint256.h"
+#include "json/json.h"
 
 #include <arpa/inet.h>
 #include <netinet/in.h>
@@ -38,6 +39,20 @@
     if ((expr)) printf("OK\n");              \
     else { printf("FAIL\n"); failures++; }   \
 } while (0)
+
+static int64_t hp_dump_int(const char *key)
+{
+    struct json_value dump;
+    json_init(&dump);
+    int64_t value = INT64_MIN;
+    if (header_probe_dump_state_json(&dump, NULL)) {
+        const struct json_value *v = json_get(&dump, key);
+        if (v && v->type == JSON_INT)
+            value = json_get_int(v);
+    }
+    json_free(&dump);
+    return value;
+}
 
 /* ── Mock RPC server ──────────────────────────────────────────────
  *
@@ -280,9 +295,9 @@ static void hp_teardown(void)
 
 /* ── Tests ─────────────────────────────────────────────────────── */
 
-int test_header_probe_service(void);
+int test_header_probe(void);
 
-int test_header_probe_service(void)
+int test_header_probe(void)
 {
     printf("\n=== header probe service tests ===\n");
     int failures = 0;
@@ -308,7 +323,6 @@ int test_header_probe_service(void)
             .rpc_port = srv.port,
             .rpc_user = "u",
             .rpc_password = "p",
-            .cadence_secs = 60,
             .batch_size = 5,
             .lag_threshold = 1,
         };
@@ -318,16 +332,18 @@ int test_header_probe_service(void)
         bool ok = header_probe_pull_range(1, 5, &added);
         HP_CHECK("pull_range returns true", ok);
 
-        struct header_probe_stats st;
-        header_probe_stats_snapshot(&st);
-        HP_CHECK("calls_total=1",        st.calls_total == 1);
-        HP_CHECK("last_remote_height=10", st.last_remote_height == 10);
+        int64_t calls_total = hp_dump_int("calls_total");
+        int64_t last_remote_height = hp_dump_int("last_remote_height");
+        int64_t headers_rejected = hp_dump_int("headers_rejected");
+        int64_t rpc_errors = hp_dump_int("rpc_errors");
+        HP_CHECK("calls_total=1", calls_total == 1);
+        HP_CHECK("last_remote_height=10", last_remote_height == 10);
         /* Either we deserialized + rejected (>=1), or zero adds.
          * Both are valid expressions of "the mock returned a header
          * that doesn't validate". */
         HP_CHECK("headers_rejected >= 1 OR added == 0",
-                 st.headers_rejected >= 1 || added == 0);
-        HP_CHECK("rpc_errors=0",         st.rpc_errors == 0);
+                 headers_rejected >= 1 || added == 0);
+        HP_CHECK("rpc_errors=0", rpc_errors == 0);
 
         hp_mock_stop(&srv);
         hp_teardown();
@@ -344,7 +360,6 @@ int test_header_probe_service(void)
             .rpc_host = "127.0.0.1",
             .rpc_port = srv.port,
             .rpc_user = "u", .rpc_password = "p",
-            .cadence_secs = 60,
             .batch_size = 3,
             .lag_threshold = 1,
         };
@@ -354,12 +369,11 @@ int test_header_probe_service(void)
         int added = 0;
         (void)header_probe_pull_range(1, 3, &added);
 
-        struct header_probe_stats st;
-        header_probe_stats_snapshot(&st);
         HP_CHECK("added = 0 with malformed hex",  added == 0);
         /* A malformed hex causes hp_fetch_one_header to fail and the
          * pull loop bumps rpc_errors before stopping. */
-        HP_CHECK("rpc_errors >= 1 with malformed", st.rpc_errors >= 1);
+        HP_CHECK("rpc_errors >= 1 with malformed",
+                 hp_dump_int("rpc_errors") >= 1);
 
         hp_mock_stop(&srv);
         hp_teardown();
@@ -378,7 +392,6 @@ int test_header_probe_service(void)
             .rpc_host = "127.0.0.1",
             .rpc_port = dead_port,
             .rpc_user = "u", .rpc_password = "p",
-            .cadence_secs = 60,
             .batch_size = 5,
             .lag_threshold = 1,
         };
@@ -388,11 +401,9 @@ int test_header_probe_service(void)
         int added = 0;
         (void)header_probe_pull_range(1, 5, &added);
 
-        struct header_probe_stats st;
-        header_probe_stats_snapshot(&st);
         HP_CHECK("added=0 on unreachable",  added == 0);
         HP_CHECK("rpc_errors >= 1 on unreachable",
-                 st.rpc_errors >= 1);
+                 hp_dump_int("rpc_errors") >= 1);
 
         hp_teardown();
     }
@@ -410,7 +421,6 @@ int test_header_probe_service(void)
             .rpc_host = "127.0.0.1",
             .rpc_port = srv.port,
             .rpc_user = "u", .rpc_password = "p",
-            .cadence_secs = 1,
             .batch_size = 5,
             .lag_threshold = 100,
         };
@@ -419,12 +429,58 @@ int test_header_probe_service(void)
 
         header_probe_tick_once();
 
-        struct header_probe_stats st;
-        header_probe_stats_snapshot(&st);
-        HP_CHECK("tick observed remote tip", st.last_remote_height == 50);
+        HP_CHECK("tick observed remote tip",
+                 hp_dump_int("last_remote_height") == 50);
         /* Under-lag means tick_once did NOT call pull_range, so
          * calls_total stays at 0. */
-        HP_CHECK("under-lag: calls_total=0", st.calls_total == 0);
+        HP_CHECK("under-lag: calls_total=0",
+                 hp_dump_int("calls_total") == 0);
+
+        hp_mock_stop(&srv);
+        hp_teardown();
+    }
+
+    /* Test 5: dumpstate exposes operational state only. */
+    {
+        hp_build_fixture();
+        struct hp_mock srv;
+        HP_CHECK("mock starts (dump)",
+                 hp_mock_start(&srv, 12, false));
+
+        struct header_probe_config cfg = {
+            .rpc_host = "127.0.0.1",
+            .rpc_port = srv.port,
+            .rpc_user = "u", .rpc_password = "p",
+            .batch_size = 5,
+            .lag_threshold = 1,
+        };
+        HP_CHECK("init (dump)",
+                 header_probe_init(&cfg, &g_hp_ms, params));
+        int added = 0;
+        (void)header_probe_pull_range(1, 5, &added);
+
+        struct json_value dump;
+        json_init(&dump);
+        bool ok = header_probe_dump_state_json(&dump, NULL);
+        ok = ok && json_get(&dump, "initialized") != NULL;
+        ok = ok && json_get_bool(json_get(&dump, "initialized"));
+        ok = ok && json_get(&dump, "calls_total") != NULL;
+        ok = ok && json_get_int(json_get(&dump, "calls_total")) == 1;
+        ok = ok && json_get(&dump, "headers_added") != NULL;
+        ok = ok && json_get(&dump, "headers_rejected") != NULL;
+        ok = ok && json_get(&dump, "rpc_errors") != NULL;
+        ok = ok && json_get(&dump, "last_remote_height") != NULL;
+        ok = ok && json_get_int(json_get(&dump, "last_remote_height")) == 12;
+        ok = ok && json_get(&dump, "last_local_height") != NULL;
+        ok = ok && json_get(&dump, "running") == NULL;
+        ok = ok && json_get(&dump, "rpc_host") == NULL;
+        ok = ok && json_get(&dump, "rpc_port") == NULL;
+        ok = ok && json_get(&dump, "have_user") == NULL;
+        ok = ok && json_get(&dump, "have_password") == NULL;
+        ok = ok && json_get(&dump, "batch_size") == NULL;
+        ok = ok && json_get(&dump, "lag_threshold") == NULL;
+        HP_CHECK("dump omits config echo", ok);
+        json_free(&dump);
 
         hp_mock_stop(&srv);
         hp_teardown();

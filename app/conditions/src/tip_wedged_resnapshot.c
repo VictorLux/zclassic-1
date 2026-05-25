@@ -77,6 +77,20 @@ static struct snapshot_sync_service *runtime_snapsync(struct node_db *ndb)
     return snapsync_global();
 }
 
+static bool snapshot_recovery_already_active(void)
+{
+    struct snapshot_sync_service *svc = NULL;
+#ifdef ZCL_TESTING
+    if (g_test_svc)
+        svc = g_test_svc;
+#endif
+    if (!svc)
+        svc = app_runtime_snapshot_sync();
+    if (!svc && snapsync_global_initialized())
+        svc = snapsync_global();
+    return svc && svc->state != SNAPSYNC_IDLE;
+}
+
 static int best_header_height(struct main_state *ms)
 {
     struct connman *cm = sync_monitor_connman();
@@ -113,6 +127,8 @@ static bool detect_tip_wedged_resnapshot(void)
     int gap = best - local;
     if (local < 0 || best <= local ||
         gap > TIP_WEDGED_RESNAPSHOT_NEAR_TIP_BLOCKS)
+        return false;
+    if (snapshot_recovery_already_active())
         return false;
 
     int target = -1;
@@ -189,11 +205,14 @@ static enum condition_remedy_result remedy_tip_wedged_resnapshot(void)
                 trigger_name(trigger), target, manifest.height,
                 accepted ? 1 : 0);
     if (accepted) {
-        sync_monitor_record_recovery(WATCHDOG_SNAPSHOT_RESNAPSHOT,
-                                     atomic_load(&g_local_height_at_detect),
-                                     atomic_load(&g_best_header_at_detect),
-                                     0,
-                                     "condition:tip_wedged_resnapshot");
+        sync_monitor_record_snapshot_resnapshot(
+            atomic_load(&g_local_height_at_detect),
+            atomic_load(&g_best_header_at_detect),
+            0,
+            target,
+            manifest.height,
+            trigger_name(trigger),
+            "condition:tip_wedged_resnapshot");
         return COND_REMEDY_OK;
     }
     return COND_REMEDY_FAILED;

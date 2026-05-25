@@ -34,13 +34,13 @@ Honest scoreboard. **MEASURED** = a real number from this box (date + how, in
   💪 UNBREAKABLE  ← resilience is a PROMISE, measured by truth not by "result=ok"
      Tip advancing             NO — frozen ~5h     always         ✗ BIP30 stale coinbase; case-(e) rewind not on live path
      Self-heal tells the truth code: gated (47bdbc211) 0 false-ok ◑ fixed in tree · live still lies
-     Wedge/crash recovery      180s, manual        <60s, auto    ▸ PR-0 building (wt3)
+     Wedge/crash recovery      180s, manual        <60s, auto    ◑ resnapshot path landed (8e25887b0); BIP30 fix + live timing pending
      Uptime before failure     wedged ~5h, 12 restarts 30 days    ✗ restart loop went quiet — now silently stuck
-     Alerts to a human         code: page (82ec4e11f) 0 / month   ◑ fixed in tree · live pages nobody
+     Alerts to a human         code: 18 Conditions  0 / month     ◑ 18 self-heal Conditions in tree · live node still pages nobody
 
   🔬 HONEST
      Scoreboard ≠ reality      scoreboard.sh live  always true    ✓ stale-snapshot lie now impossible
-     Bug → reproducible fix    not built           1 seed-tape   simulator pending
+     Bug → reproducible fix    built (postmortem+chaos) 1 tape    ✓ Phase 6 done (6fb76f2b0)
 ```
 `*` RSS soak (05-24): fresh boot 1.53 GB → **stair-steps up with bg-validation
 depth** → ~2.4 GB by 17min (only 6.6% validated), still creeping. Live now reads
@@ -94,8 +94,8 @@ They're all correct and worth deploying (they prevent recurrence), but a plain
 trips BIP30 on boot. **The unwedge requires clearing that row** (run the case-(e)
 rewind on the live boot path, or a one-shot coins rewind to the chain tip), then
 letting connect_block re-land 3,123,689 cleanly. New assignment:
-[`work/wt-bip30-stale-coins-unwedge.md`](./work/wt-bip30-stale-coins-unwedge.md).
-Orchestrator doctrine/gate/`scoreboard.sh` commits (7) are still local-only.
+[`work/wt-bip30-stale-coins-unwedge.md`](./work/wt-bip30-stale-coins-unwedge.md)
+(on origin/main — claimable now).
 
 **RESILIENCE DOCTRINE (new, load-bearing):**
 1. **A green test suite is not a healthy node.** No cutover is "done" until the
@@ -118,13 +118,13 @@ advances until a worker picks one up (or the live node is unwedged).
 
 | Work | Goal | Who |
 |---|---|---|
+| 🔴 BIP30 stale-coins unwedge (THE live wedge) | Tip advancing, Recovery | unclaimed — HIGHEST |
 | PR-3 parallel blk*.dat marking (cold-import 101s→seconds) | Cold sync | unclaimed (was wt2) |
-| PR-0 snapshot wedge-recovery (auto-heal a stuck tip) | Recovery | unclaimed (was wt3) |
-| Cutover C-5→C-9 authoritative | Cold sync, validation, recovery | soak-gated |
-| 4e bodies-into-log + 4d projections | Warm restart, recovery | unclaimed |
-| Phase-3 dissolves (header_probe ✅, chain_restore, utxo_recovery) | Memory, uptime | unclaimed |
+| Cutover C-5→C-9 authoritative | Cold sync, validation | UNWEDGE-gated (see P0) |
+| 4e bodies-into-log | Warm restart, recovery | unclaimed |
+| chain_advance + legacy_mirror dissolve | Memory, uptime | gated on C-9 |
+| utxo_recovery dissolve | Memory, uptime | gated on C-8 |
 | More self-heal Conditions | Alerts, uptime | unclaimed |
-| Phase-6 postmortem + simulator | Bug→fix | unclaimed |
 
 ---
 
@@ -151,15 +151,15 @@ Phase 2 CUTOVER [█░░░░░░░░░]  ~8%   Flip shadow → authorit
   ├ C-8    [░░░░░░░░░░]   0%   utxo_apply authoritative (batch spec, post C-7 — gates utxo_recovery dissolve)
   └ C-9    [░░░░░░░░░░]   0%   tip_finalize authoritative (batch spec, post C-8 — gates chain_advance dissolve)
   NOTE: shadow stages (Phase 2 SHADOW, 100%) all run + match in shadow. The CUTOVER is the act of
-        trusting them as authoritative. C-2/C-3 proved the flip mechanism works but surfaced a real
-        consensus divergence in the new path — that bug, not a soak timer, is what gates the whole column.
-Phase 3  [██████░░░░]  60%   Dissolve mega-modules                    ← partial
+        trusting them as authoritative. C-2/C-3 proved the flip mechanism works, but the live node is
+        wedged on a SEPARATE bug (BIP30 stale coins, see P0) — unwedge first, then re-flip on a clean node.
+Phase 3  [███████░░░]  70%   Dissolve mega-modules                    ← partial
   ├ watchdog [██████████] 100%   sync_watchdog_service.c DELETED      ✅ 611631541
   ├ supervisor tree split [██████████] 100%   7 domain supervisors    ✅ dae31dee9
   ├ chain_advance  [░░░░░░░░░░] gated on C-9 cutover (dissolve plan ready)
   ├ legacy_mirror  [░░░░░░░░░░] gated on C-9 cutover (dissolve plan ready)
-  ├ chain_restore  [░░░░░░░░░░] independent — plan ready, awaiting per-PR assignment
-  ├ header_probe   [████░░░░░░] PR-1 (poll Job) ✅ 79b53852a; PR-2/3 now unblocked (C-3 landed)
+  ├ chain_restore  [██████████] 100%   service/header deleted; focused modules own restore ✅
+  ├ header_probe   [██████████] 100%   core renamed; old service file deleted ✅ d17eb5ca0
   └ utxo_recovery  [░░░░░░░░░░] gated on C-8 cutover (dissolve plan ready)
 Phase 4  [█████████░]  95%   Storage unification — plan: docs/architecture/phase4-storage-unification.md
   ├ 4a     [██████████] 100%   event_log primitive  ✅ 76b3a10b4
@@ -169,17 +169,17 @@ Phase 4  [█████████░]  95%   Storage unification — plan: d
   ├ 4d-2   [██████████] 100%   peers_projection  ✅ 91aa65c1c + 5dc442a81 + 48e78d801 + f925fb6f3 (wt2)
   ├ 4d-3   [██████████] 100%   wallet view projection + diff + final verification  ✅ 12284eb3e, 5626552cb
   ├ 4d-4   [██████████] 100%   znam projection — Tasks 1-5b SHIPPED  ✅ (f52313f02..eb53d9d52, 7 commits, 30 test cases pass)
-  ├ 4d-5   [░░░░░░░░░░]   0%   zmsg/zslp/zswp/store batch (READY)
+  ├ 4d-5   [██████████] 100%   small projections: contacts/onion/hodl ✅ 2f23d8352
   └ 4e     [░░░░░░░░░░]   0%   block-body migration (spec'd, gated on 4c cutover)
 Phase 5  [██████████] 100%   Crypto agility (registry indirection)    ✅ DONE
   ├ 5a-1   [██████████] 100%   Crypto registry skeleton  ✅ c4bebe0a2 + polish dde0183c7
   ├ 5a-2   [██████████] 100%   First call site rewire: Equihash PoW   ✅ f00be351f (wt2)
   ├ 5a-3   [██████████] 100%   script_validate ECDSA rewire (HOT PATH)  ✅ 7c2c067a0 + cde601acf + e8b926610 (wt3)
   └ Nix reproducible builds (5b/5c) DROPPED 2026-05-24 — out of scope. Cosign signing (5d) parked pending decision.
-Phase 6  [██░░░░░░░░]  20%   Determinism + simulator
+Phase 6  [██████████] 100%   Determinism + simulator                 ✅ DONE
   ├ 6a     [██████████] 100%   seed_tape primitive  ✅ c2ed3145d + cb03fe595 + c62161c2a + b53f251b7 (sub-agent)
-  ├ 6b     [░░░░░░░░░░]   0%   postmortem capsule (crash → seed.cap.gz)  ← spec'd (queued post 6a)
-  └ 6c     [░░░░░░░░░░]   0%   simulator harness (chaos CI)  ← spec'd (queued post 6b)
+  ├ 6b     [██████████] 100%   postmortem capsule (crash → seed.cap.gz) ✅ 89fabc360
+  └ 6c     [██████████] 100%   simulator harness (`make chaos`) ✅ 6fb76f2b0
 Phase 7  [░░░░░░░░░░]   0%   Frontier (io_uring, hot reload)
 Phase 8  [░░░░░░░░░░]   0%   Event-log compaction & retention — plan: docs/architecture/phase8-log-compaction-and-retention.md
   └ (draft)  gated on 4e — checkpoint event + segmentation + prune policy; pairs with SHA3 snapshot/FlyClient cold-sync
@@ -207,7 +207,10 @@ re-quote them here; they rot. Add a row to the ledger instead.
 | Lint gates active | 20 (1 FAIL'd in P1) | 21 | +1 by Phase 3 (gate #20→FAIL) |
 | Raw clock/RNG callers | **0** | 0 | ✅ Phase 1c (was 443) |
 | Mailbox prod callers | 1 | many | ✅ Phase 1a (header_admit), more in Phase 3 |
-| Conditions registered | ~10 | ~15 | Phase 2+ adds more from monolith dissolution |
+| Conditions registered | 18 | ~15 | UTXO drift audit flag now escalates through condition engine |
+
+> User-facing numbers (MTBF/RSS/cold/warm/kill-9/pages) intentionally NOT
+> tabled here — they rot. Live values: scoreboard at top + `BENCHMARKS_LOG.md`.
 
 ---
 
@@ -216,10 +219,10 @@ re-quote them here; they rot. Add a row to the ledger instead.
 | File | LOC | Dissolves into | Phase |
 |---|---|---|---|
 | `chain_advance_coordinator.c` | 1,715 | `services/sync/source_scorer.c` + `jobs/tip_finalize.c` + 1 condition | 2 (S-9) |
-| `chain_restore_service.c` | 1,673 | `jobs/reorg_*.c` + `services/chain/restore_planner.c` | 3 |
+| `chain_restore_service.{c,h}` | DELETED | `chain_restore_{planner,executor,repair,integrity,boot_activation,boot_snapshot}.{c,h}` | 3 |
 | `sync_watchdog_service.c` | DELETED | replaced by 8 supervised conditions | 3 (PR-3) |
 | `legacy_mirror_sync_service.c` | 1,410 | `services/sync/legacy_bridge.c` + `jobs/legacy_poll.c` + 1 condition | 2 (S-12) |
-| `header_probe_service.c` | 1,264 | `services/network/header_probe.c` (smaller) + mailbox use | 3 |
+| `header_probe_service.c` | DELETED | `header_probe.c` + `legacy_header_client.c` + mailbox use | 3 (PR-3) |
 | `utxo_recovery_service.c` | 1,241 | `conditions/utxo_drift.c` + `jobs/utxo_repair.c` | 3 |
 | `chain_evidence_controller.c` | 1,083 | `services/chain/evidence.c` + 1 condition | 2 (S-9) |
 
@@ -230,13 +233,14 @@ re-quote them here; they rot. Add a row to the ledger instead.
 6 agent worktrees active under `.claude/worktrees/agent-*` (locked).
 Orchestrator on `main` queues + merges; workers push direct to main.
 
-**The Phase 2 cutover critical path is DIVERGENCE-BLOCKED, not soak-gated.**
-C-2/C-3 went authoritative, the new header path diverged from legacy at block
-3,123,689, the chain wedged, and `6e0f6a82c` reverted both stages to shadow.
-No further flip (C-3del, C-5..C-9) can proceed until someone **root-causes that
-divergence** — a real consensus bug in the new authoritative path, not a timer.
-A freed worker should either take that root-cause or pull **independent** work
-from "Claimable NOW" below.
+**The Phase 2 cutover critical path is UNWEDGE-BLOCKED, not soak-gated.** C-2/C-3
+went authoritative, the chain wedged, and `6e0f6a82c` reverted both stages to
+shadow. The live node is now frozen on a SEPARATE bug — BIP30 stale coins (see
+P0), not a header divergence. No further flip (C-3del, C-5..C-9) should proceed
+until (1) the live node is unwedged, and (2) a clean re-flip confirms the
+authoritative header path actually matches legacy past the cutover height. A
+freed worker should take the BIP30 unwedge or pull **independent** work from
+"Claimable NOW" below.
 
 ---
 
@@ -248,15 +252,22 @@ before pushing.
 
 **Shipped since last board sync (origin/main, fetch to see):** 4d-3 wallet
 projection ✅ (a9fb0f396..49ef6bbe6) · chain_restore PR-1 planner extract ✅
-(afed3d673..a5fbe3700) · utxo_recovery PR-1 reimport-flag primitive ✅ (af7ba7a30).
+(afed3d673..a5fbe3700) · chain_restore PR-1b boot snapshot extract ✅
+(462be5e5a) · chain_restore PR-2a executor extract ✅ (6ec178eb6) ·
+chain_restore PR-2b repair extract ✅ (5042fde7b) ·
+chain_restore service implementation delete ✅ (89892c441) ·
+chain_restore compatibility header delete ✅ (8658ef0d2) ·
+utxo_recovery PR-1 reimport-flag primitive ✅ (af7ba7a30) · header_probe
+dissolve ✅ (981ad4897..1b0847820) · snapshot wedge recovery ✅
+(4d7f7adee..8e25887b0) · small projections 4d-5 ✅
+(0f10cd5f4..2f23d8352) · postmortem capsules ✅
+(720906bf4..89fabc360) · chaos simulator harness ✅
+(ca74cb4c2..6fb76f2b0).
 
 ### Claimable NOW (no soak gate, fully independent)
-0. 🔴 **[`wt-bip30-stale-coins-unwedge.md`](./work/wt-bip30-stale-coins-unwedge.md) — HIGHEST PRIORITY: this is the live wedge.** Root-caused 2026-05-25: 1 stale coinbase UTXO row at 3,123,689 (chain_tip+1) trips `bad-txns-BIP30` every retry; the case-(e) auto-rewind that would clear it never runs on the live boot path (0 log hits in 12 restarts). RED test + make the single-block rewind run at boot. Moves Tip-advancing + Wedge-recovery. Deploy gated on Rhett.
-1. ⚡ [`wt-snapshot-wedge-recovery.md`](./work/wt-snapshot-wedge-recovery.md) **PR-0: runtime snapshot re-sync entry point** — foundational for wedge recovery. Today snapshot sync has NO trigger API (only peer-offer driven, `snapshot_sync_service.h:209`) and apply is cold-start-gated. Add `snapsync_request_recovery()` + a runtime local-LDB manifest builder + relax the <100K accept gate for opt-in recovery. **Feasibility audited — read the ⚠️ block in the doc before claiming.** Unblocks PR-1 (the `tip_wedged_resnapshot` Condition). Moves #6 recovery + #5 keep-up.
-2. ⚡ [`wt-perf-integrate-rebuild.md`](./work/wt-perf-integrate-rebuild.md) **PR-3: parallel io_uring blk*.dat marking in cold-import** — PROMOTED with a live profile: cold-import is ~180s, **101s of it is single-threaded blk*.dat marking** (measured `941b9803d`). The `rebuild_recent` prototype already proved the fix on this exact data (5.6s/2GB/s). Parallelize the scan → seconds. Moves #1 cold sync. PR-1 (HW-CRC) ✅ `69939ec97`; PR-2 (io_uring bulk-append) still spec'd.
-2. [`wt-phase4d-5-small-batch-projections.md`](./work/wt-phase4d-5-small-batch-projections.md) — zmsg/zslp/zswp/store + hodl batch. Closes out the 4d projections.
-2. header_probe PR-2 / PR-3 — now unblocked (C-3 landed). Spec in `docs/dissolve/`; split into a `wt-phase3-header-probe-pr2.md` doc when claimed.
-3. chain_restore PR-2 — next dissolve slice now that the planner is extracted (PR-1 ✅). Split a `wt-phase3-chain-restore-pr2.md` from `docs/dissolve/chain_restore_service.md`.
+0. 🔴 **[`wt-bip30-stale-coins-unwedge.md`](./work/wt-bip30-stale-coins-unwedge.md) — HIGHEST PRIORITY: this is the live wedge.** Root-caused 2026-05-25: 1 stale coinbase UTXO row at 3,123,689 (chain_tip+1) trips `bad-txns-BIP30` every retry; the case-(e) auto-rewind that would clear it isn't running on the live boot path. RED test + make the single-block rewind run at boot. Moves Tip-advancing + Wedge-recovery. Deploy gated on Rhett. NB: the just-landed resnapshot path (`8e25887b0`) is the heavyweight fallback — this is the targeted 1-row fix; don't re-snapshot 1.3M UTXOs to drop one row.
+1. ⚡ [`wt-perf-integrate-rebuild.md`](./work/wt-perf-integrate-rebuild.md) **PR-3: parallel io_uring blk*.dat marking in cold-import** — cold-import is ~180s, **101s of it is single-threaded blk*.dat marking** (measured `941b9803d`). The `rebuild_recent` prototype already proved the fix on this exact data (5.6s/2GB/s). Parallelize the scan → seconds. Moves #1 cold sync. PR-1 (HW-CRC) ✅ `69939ec97`; PR-2 (io_uring bulk-append) still spec'd.
+2. More self-heal Conditions — chain_restore/header_probe are dissolved (✅); use [`docs/dissolve/`](./dissolve/) for the remaining mega-module plans (chain_advance, legacy_mirror, utxo_recovery).
 
 ### Soak-gated (read the spec now, start when the 24 h C-3 soak clears)
 - [`wt-phase2-cutover-c3-final-delete.md`](./work/wt-phase2-cutover-c3-final-delete.md) — delete the legacy validate_headers fallback.
@@ -282,6 +293,11 @@ freed workers add the most while the soak runs.
 
 | Date | What | Worktree | Commit |
 |---|---|---|---|
+| 2026-05-25 | **Phase 6 COMPLETE** — postmortem capsules and chaos simulator harness shipped; `make chaos` is now the standing reproducibility gate | wt2 → main | 720906bf4..89fabc360, ca74cb4c2..6fb76f2b0 |
+| 2026-05-25 | **Phase 4d-5 small projections COMPLETE** — contacts, onion announcements, and HODL history shadow projections with event payloads, boot wiring, diagnostics, and diff tools | wt2 → main | 0f10cd5f4..2f23d8352 |
+| 2026-05-25 | **Snapshot wedge recovery COMPLETE** — runtime recovery request path, local manifest builder, `tip_wedged_resnapshot` condition, verification gates, and recovery observability | wt3 → main | 4d7f7adee..8e25887b0 |
+| 2026-05-25 | **Phase 3 chain_restore dissolve COMPLETE** — service implementation and compatibility header deleted; focused planner/executor/repair/boot modules own restore | main | 89892c441, 8658ef0d2 |
+| 2026-05-25 | **Phase 3 header_probe dissolve COMPLETE** — PR-2 shrink to 392 LOC, legacy header RPC helper extracted, old `header_probe_service.{h,c}` deleted/renamed to `header_probe.{h,c}` | wt3 → main | 981ad4897, d17eb5ca0 |
 | 2026-05-24 | **Phase 4d-3 wallet projection COMPLETE** — public-only wallet projection, diff RPC/MCP tool, diagnostics, replay edge coverage, secret/payload audit, and live fresh-node `match:true` diff evidence | wt2 → main | 12284eb3e, 5626552cb |
 | 2026-05-24 | **Phase 2 C-3 validate_headers AUTHORITATIVE** — the flip; full test_parallel 0/196; stabilized 2 pre-existing flaky timing tests (crypto_registry ECDSA, event async) | wt3 → main | ad34efb65, 535f14902, 72dd5e01f |
 | 2026-05-24 | **Phase 4c FINALIZED** — `zcl_block_index_diff` MCP tool + dumper wired + 9-case `test_block_index_projection`; block_index_projection complete | wt2 → main | 066462576, 91b4ee734, 2f23d6a44, 2e289e41b |

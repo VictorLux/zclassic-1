@@ -13,7 +13,7 @@ while IFS= read -r -d '' file; do
     [[ "$file" == app/supervisors/* ]] && continue
     [[ "$file" == lib/framework/* ]] && continue
     [[ "$file" == app/services/src/header_admit_stage.c ]] && continue
-    [[ "$file" == app/services/src/header_probe_service.c ]] && continue
+    [[ "$file" == app/services/src/header_probe.c ]] && continue
     files+=("$file")
 done < <(find app lib config tools -type f \( -name '*.c' -o -name '*.h' \) -print0 2>/dev/null)
 

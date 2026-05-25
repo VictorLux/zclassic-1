@@ -104,6 +104,31 @@ bool db_tx_find(struct node_db *ndb, const uint8_t txid[32],
         out->is_coinbase = AR_COL_INT(s, 5) != 0);
 }
 
+bool db_tx_find_native_or_reversed(struct node_db *ndb,
+                                   const uint8_t txid[32],
+                                   struct db_tx_index *out,
+                                   bool *used_reversed)
+{
+    if (used_reversed)
+        *used_reversed = false;
+    if (!ndb || !txid || !out)
+        return false;
+
+    if (db_tx_find(ndb, txid, out))
+        return true;
+
+    uint8_t reversed[32];
+    for (size_t i = 0; i < sizeof(reversed); i++)
+        reversed[i] = txid[sizeof(reversed) - 1 - i];
+
+    if (!db_tx_find(ndb, reversed, out))
+        return false;
+
+    if (used_reversed)
+        *used_reversed = true;
+    return true;
+}
+
 /* ── Delete ────────────────────────────────────────────────────── */
 
 bool db_tx_delete(struct node_db *ndb, const uint8_t txid[32])

@@ -156,7 +156,7 @@ C-2 through C-9 are NOT parallelizable across workers — each one
 mutates the same legacy code path. They go strictly sequentially.
 
 However, between cutovers, **dissolves are parallel**:
-- After C-2 lands, header_probe_service.c can begin dissolving
+- After C-2 lands, header_probe.c can begin dissolving
   (`docs/dissolve/header_probe_service.md` — to be drafted).
 - After C-5 lands, block-data-related dissolves can begin.
 - After C-8 lands, utxo_recovery_service.c can begin dissolving.

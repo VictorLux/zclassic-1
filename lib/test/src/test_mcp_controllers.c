@@ -55,7 +55,8 @@
                                  * +1 Phase 4d-1: zcl_mempool_projection_diff;
                                  * +1 Phase 4d-4: zcl_znam_projection_diff;
                                  * +1 Phase 4d-3: zcl_wallet_projection_diff
-                                 * +3 Phase 4d-5 small projection diff tools */
+                                 * +3 Phase 4d-5 small projection diff tools
+                                 * +2 Phase 6b postmortem capsule tools */
 #define EXPECTED_OPS        44  /* status, health, kpi, self_heal_stats, mempool*, mininginfo,
                                  * benchmark, dbstats, filemanifest, events,
                                  * rpc, state + node_log + sql (round 6.5 MCP primitives),
@@ -72,7 +73,8 @@
                                  * + zcl_mempool_projection_diff (Phase 4d-1)
                                  * + zcl_znam_projection_diff (Phase 4d-4)
                                  * + zcl_wallet_projection_diff (Phase 4d-3)
-                                 * + small projection diffs (Phase 4d-5) */
+                                 * + small projection diffs (Phase 4d-5)
+                                 * + zcl_postmortem_list/replay (Phase 6b) */
 #define EXPECTED_CHAIN      17  /* + chain_tip + reorg_history
                                  * + zcl_diff_with_legacy_shadow (I-9 revamp)
                                  * + zcl_diff_staged_header_admit (S-11 mini-diff)
@@ -446,6 +448,132 @@ static int test_zcl_status_no_params(void)
         ASSERT(r->num_params == 0);
         ASSERT(strcmp(r->domain, "ops") == 0);
         ASSERT(contains(r->description, "chain advance source scoring"));
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int test_postmortem_tools_list_and_replay(void)
+{
+    int failures = 0;
+    TEST("controllers: postmortem tools list capsules and replay events") {
+        register_all();
+        const struct mcp_tool_route *list =
+            mcp_router_find("zcl_postmortem_list");
+        const struct mcp_tool_route *replay =
+            mcp_router_find("zcl_postmortem_replay");
+        ASSERT(list != NULL);
+        ASSERT(replay != NULL);
+        ASSERT(strcmp(list->domain, "ops") == 0);
+        ASSERT(strcmp(replay->domain, "ops") == 0);
+        ASSERT(list->num_params == 2);
+        ASSERT(replay->num_params == 2);
+        ASSERT(strcmp(list->params[0].name, "dir") == 0);
+        ASSERT(list->params[0].required == false);
+        ASSERT(strcmp(list->params[1].name, "limit") == 0);
+        ASSERT(strcmp(replay->params[0].name, "path") == 0);
+        ASSERT(replay->params[0].required == true);
+        ASSERT(strcmp(replay->params[1].name, "limit") == 0);
+
+        char dir_template[128];
+        snprintf(dir_template, sizeof(dir_template),
+                 "/tmp/zcl_mcp_postmortem_%d_XXXXXX", (int)getpid());
+        char *dir = mkdtemp(dir_template);
+        ASSERT(dir != NULL);
+
+        seed_tape_t *tape = seed_tape_open(0xfeed1234ULL, 1779667000);
+        ASSERT(tape != NULL);
+        ASSERT(seed_tape_inject(tape, 7, "abc", 3) == 0);
+
+        char cap_path[512];
+        struct postmortem_capture_opts opts = {
+            .dir = dir,
+            .tape = tape,
+            .crash_signal = 11,
+            .crash_unix = 1779667123,
+            .reason = "mcp-test",
+            .log_path = NULL,
+        };
+        ASSERT(postmortem_capture_write(&opts, cap_path,
+                                        sizeof(cap_path)) == 0);
+        char old_cap_path[512];
+        opts.crash_unix = 1779667001;
+        opts.crash_signal = 6;
+        opts.reason = "mcp-test-older";
+        ASSERT(postmortem_capture_write(&opts, old_cap_path,
+                                        sizeof(old_cap_path)) == 0);
+        seed_tape_close(tape);
+
+        char list_args_src[768];
+        snprintf(list_args_src, sizeof(list_args_src),
+                 "{\"dir\":\"%s\",\"limit\":1}", dir);
+        struct json_value list_args;
+        json_init(&list_args);
+        ASSERT(json_read(&list_args, list_args_src, strlen(list_args_src)));
+
+        char *list_body = mcp_router_dispatch("zcl_postmortem_list",
+                                              &list_args);
+        ASSERT(list_body != NULL);
+        ASSERT(strstr(list_body, "\"error\":{") == NULL);
+
+        struct json_value list_root;
+        json_init(&list_root);
+        ASSERT(json_read(&list_root, list_body, strlen(list_body)));
+        const struct json_value *total = json_get(&list_root, "total");
+        ASSERT(total != NULL);
+        ASSERT(json_get_int(total) == 2);
+        const struct json_value *returned = json_get(&list_root, "returned");
+        ASSERT(returned != NULL);
+        ASSERT(json_get_int(returned) == 1);
+        const struct json_value *capsules = json_get(&list_root, "capsules");
+        ASSERT(capsules != NULL);
+        ASSERT(capsules->type == JSON_ARR);
+        ASSERT(capsules->num_children == 1);
+        const struct json_value *first = json_at(capsules, 0);
+        ASSERT(first != NULL);
+        const struct json_value *path_v = json_get(first, "path");
+        ASSERT(path_v != NULL);
+        ASSERT_STR_EQ(json_get_str(path_v), cap_path);
+        json_free(&list_root);
+        free(list_body);
+        json_free(&list_args);
+
+        char replay_args_src[768];
+        snprintf(replay_args_src, sizeof(replay_args_src),
+                 "{\"path\":\"%s\",\"limit\":5}", cap_path);
+        struct json_value replay_args;
+        json_init(&replay_args);
+        ASSERT(json_read(&replay_args, replay_args_src,
+                         strlen(replay_args_src)));
+
+        char *replay_body = mcp_router_dispatch("zcl_postmortem_replay",
+                                                &replay_args);
+        ASSERT(replay_body != NULL);
+        ASSERT(strstr(replay_body, "\"error\":{") == NULL);
+
+        struct json_value replay_root;
+        json_init(&replay_root);
+        ASSERT(json_read(&replay_root, replay_body, strlen(replay_body)));
+        const struct json_value *events = json_get(&replay_root, "events");
+        ASSERT(events != NULL);
+        ASSERT(events->type == JSON_ARR);
+        ASSERT(events->num_children == 1);
+        const struct json_value *ev = json_at(events, 0);
+        ASSERT(ev != NULL);
+        const struct json_value *type_v = json_get(ev, "type");
+        const struct json_value *len_v = json_get(ev, "payload_len");
+        const struct json_value *hex_v = json_get(ev, "payload_hex");
+        ASSERT(type_v != NULL);
+        ASSERT(len_v != NULL);
+        ASSERT(hex_v != NULL);
+        ASSERT(json_get_int(type_v) == 7);
+        ASSERT(json_get_int(len_v) == 3);
+        ASSERT_STR_EQ(json_get_str(hex_v), "616263");
+
+        json_free(&replay_root);
+        free(replay_body);
+        json_free(&replay_args);
+        rm_rf_simple(dir);
         PASS();
     } _test_next:;
     return failures;
@@ -1291,6 +1419,7 @@ int test_mcp_controllers(void)
     failures += test_specific_flagship_tools_registered();
     failures += test_zcl_getblock_param_shape();
     failures += test_zcl_status_no_params();
+    failures += test_postmortem_tools_list_and_replay();
     failures += test_zcl_status_includes_chain_advance_dump();
     failures += test_zcl_networkinfo_exposes_reachability_fields();
     failures += test_meta_tools_in_ops_domain();

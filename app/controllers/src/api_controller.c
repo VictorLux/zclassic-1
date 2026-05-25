@@ -746,7 +746,11 @@ size_t api_handle_request(const char *method, const char *path,
               "\"blocks_per_sec\":%.1f,"
               "\"escalation_level\":%d,"
               "\"last_recovery\":\"%s\","
-              "\"last_recovery_ago_secs\":%lld"
+              "\"last_recovery_ago_secs\":%lld,"
+              "\"last_recovery_target_height\":%d,"
+              "\"last_recovery_manifest_height\":%d,"
+              "\"last_recovery_trigger\":\"%s\","
+              "\"last_recovery_reason\":\"%s\""
             "},"
             "\"status\":{"
               "\"degraded_reason\":%s%s%s"
@@ -796,6 +800,10 @@ size_t api_handle_request(const char *method, const char *path,
             health.wd_last_recovery_time > 0
                 ? (long long)((int64_t)platform_time_wall_time_t() - health.wd_last_recovery_time)
                 : 0LL,
+            health.wd_last_recovery_target_height,
+            health.wd_last_recovery_manifest_height,
+            health.wd_last_recovery_trigger,
+            health.wd_last_recovery_reason,
             health.degraded_reason[0] ? "\"" : "null",
             health.degraded_reason,
             health.degraded_reason[0] ? "\"" : "");

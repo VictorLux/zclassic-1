@@ -473,7 +473,7 @@ Full per-phase detail in [`docs/REFACTOR_STATUS.md`](./REFACTOR_STATUS.md).
 | **0** | Condition engine + scaffold | `lib/framework/condition.{c,h}`, first 3 conditions, folder scaffold, lint gate (warn mode), status board. **UNWEDGES LIVE NODE.** |
 | **1** | Adopt the four unused primitives | Wire `mailbox`, `projection`, `platform.clock`, `platform.rng` into real call sites. Lint gates ratchet to fail mode. |
 | **2** | Wave S → S-12 cutover | Land S-5..S-9 (body_persist, script_validate, proof_validate, utxo_apply, tip_finalize). Delete `chain_advance_coordinator.c`, `legacy_mirror_sync_service.c`, `sync_watchdog_service.c`, etc. **~7,000 LOC deletion.** |
-| **3** | Dissolve remaining mega-modules | `chain_restore_service.c`, `header_probe_service.c`, `utxo_recovery_service.c` decompose into jobs + conditions. |
+| **3** | Dissolve remaining mega-modules | `chain_restore_service.c`, `header_probe.c`, `utxo_recovery_service.c` decompose into jobs + conditions. |
 | **4** | Storage unification | One append-only event log + N projections. Replaces 5 storage layers. **Generational win.** |
 | **5** | Crypto agility + reproducible builds | Versioned crypto registry; `flake.nix`; cosign + Rekor. |
 | **6** | Determinism + simulator | Replay any bug from 64-bit seed. Continuous chaos in CI. |

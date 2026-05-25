@@ -1,10 +1,12 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0 */
 
 #include "test/test_helpers.h"
+#include "conditions/utxo_drift_detected.h"
 #include "services/utxo_audit_service.h"
 #include "coins/utxo_commitment.h"
 #include "models/database.h"
 #include "event/event.h"
+#include "framework/condition.h"
 
 #include <sqlite3.h>
 #include <string.h>
@@ -84,9 +86,58 @@ static int test_utxo_audit_detects_drift(void)
     return failures;
 }
 
+static int test_utxo_drift_condition_escalates_and_clears(void)
+{
+    int failures = 0;
+
+    TEST("utxo_drift_detected condition escalates persisted audit drift") {
+        char path[] = "/tmp/zclassic23-utxo-drift-cond-XXXXXX";
+        int fd = mkstemp(path);
+        ASSERT(fd >= 0);
+        close(fd);
+
+        struct node_db ndb;
+        ASSERT(node_db_open(&ndb, path));
+        ASSERT(node_db_state_set_int(&ndb, "utxo_drift_detected", 1));
+        ASSERT(node_db_state_set_int(&ndb, "utxo_audit_last_height", 3078015));
+        ASSERT(node_db_state_set(&ndb, "utxo_audit_last_local_sha3",
+                                 "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                                 "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                                 64));
+        ASSERT(node_db_state_set(&ndb, "utxo_audit_last_remote_sha3",
+                                 "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+                                 "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                                 64));
+
+        condition_engine_reset_for_testing();
+        utxo_drift_detected_test_reset();
+        utxo_drift_detected_test_set_node_db(&ndb);
+        register_utxo_drift_detected();
+        condition_engine_tick();
+
+        ASSERT(utxo_drift_detected_test_remedy_calls() == 1);
+        ASSERT(condition_engine_get_active_count() == 1);
+        ASSERT(condition_engine_get_unresolved_count() == 1);
+
+        ASSERT(node_db_state_set_int(&ndb, "utxo_drift_detected", 0));
+        condition_engine_tick();
+        ASSERT(condition_engine_get_active_count() == 0);
+        ASSERT(condition_engine_get_unresolved_count() == 0);
+
+        condition_engine_reset_for_testing();
+        utxo_drift_detected_test_reset();
+        node_db_close(&ndb);
+        unlink(path);
+        PASS();
+    } _test_next:;
+
+    return failures;
+}
+
 int test_utxo_audit(void)
 {
     int failures = 0;
     failures += test_utxo_audit_detects_drift();
+    failures += test_utxo_drift_condition_escalates_and_clears();
     return failures;
 }

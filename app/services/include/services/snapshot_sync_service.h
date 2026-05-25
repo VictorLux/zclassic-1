@@ -155,6 +155,34 @@ struct snapsync_status {
     int64_t staged_row_count;
 };
 
+struct snapsync_stall_status {
+    bool receiving;
+    bool stalled;
+    int64_t elapsed_secs;
+    uint64_t received_utxos;
+    uint64_t offered_utxos;
+    uint32_t serving_peer_id;
+};
+
+struct snapsync_negotiation_status {
+    bool negotiating;
+    bool stalled;
+    int64_t elapsed_secs;
+    int32_t offered_height;
+    uint64_t offered_utxos;
+    uint32_t serving_peer_id;
+};
+
+struct snapsync_failed_status {
+    bool failed;
+    int64_t elapsed_secs;
+    int32_t offered_height;
+    uint64_t offered_utxos;
+    uint32_t serving_peer_id;
+    bool turbo_active;
+    int64_t staged_row_count;
+};
+
 /* ── Lifecycle ─────────────────────────────────────────────────── */
 
 /* Initialize (called once at boot) */
@@ -320,19 +348,40 @@ bool snapsync_is_active(void);
  * coins_best_block is set at a meaningful height. */
 bool snapsync_awaiting_utxos(void);
 
+/* Query snapshot receive stall state. If progress advanced since the last
+ * check, refreshes the receive timer and reports not stalled. */
+void snapsync_get_stall_status(struct snapshot_sync_service *svc,
+                               struct snapsync_stall_status *out);
+
+/* Query snapshot negotiation stall state. A stalled negotiation means an
+ * offer was accepted but FlyClient proofs did not arrive in time. */
+void snapsync_get_negotiation_status(struct snapshot_sync_service *svc,
+                                     struct snapsync_negotiation_status *out);
+
+/* Query terminal snapshot failure state. A FAILED service rejects new offers
+ * as busy until reset, so Conditions use this as a recoverable terminal edge. */
+void snapsync_get_failed_status(struct snapshot_sync_service *svc,
+                                struct snapsync_failed_status *out);
+
 /* Check if snapshot receive has stalled (no chunk for >60s while RECEIVING).
  * If stalled, resets the service to IDLE so a new offer can be accepted.
  * Returns true if a stall was detected and reset was performed. */
 bool snapsync_check_stall(void);
 
-/* Stall timeout: seconds without any progress (new UTXOs received)
- * before resetting.  Must be long enough for TCP backpressure during
- * SQLite batch writes.  300s is conservative — typical localhost
- * snapshot takes 25-30s, but slow peers + disk I/O can extend it. */
+/* Check if accepted snapshot negotiation has stalled before receive begins.
+ * If stalled, blacklists the peer and resets to IDLE. */
+bool snapsync_check_negotiation_stall(void);
+
+/* Check if snapshot sync is in terminal FAILED. If so, blacklist the failed
+ * serving peer when known, reset to IDLE, and reopen the offer path. */
+bool snapsync_check_failed_reset(void);
+
 /* Stall timeout: seconds without any new UTXOs received before resetting.
  * Must be long enough for SQLite batch commits (~10-30s) + TCP backpressure
  * during WAL checkpoint.  120s balances fast recovery vs false positives. */
 #define SNAPSYNC_STALL_TIMEOUT_SECS 120
+
+#define SNAPSYNC_NEGOTIATION_TIMEOUT_SECS 120
 
 /* Blacklist duration: seconds a peer is rejected after stalling.
  * Long enough to let other peers serve, short enough to retry if

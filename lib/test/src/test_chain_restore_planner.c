@@ -3,7 +3,7 @@
  * Isolated tests for the Phase 3 chain_restore_planner extraction. */
 
 #include "test/test_helpers.h"
-#include "services/chain_restore_service.h"
+#include "services/chain_restore_planner.h"
 #include "core/uint256.h"
 
 #include <string.h>

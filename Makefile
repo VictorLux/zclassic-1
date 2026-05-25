@@ -94,7 +94,7 @@ LIBS = -Lvendor/lib -lsecp256k1 -lleveldb \
         check-before-save-hooks check-pthread-create check-model-validation \
         check-long-functions check-rpc-registrar check-lag-slo-observable \
         fuzz-ci-leaks \
-        soak-smoke soak-7day
+        soak-smoke soak-7day chaos chaos-clean
 
 CLI_SRCS = lib/rpc/src/client.c lib/json/src/json.c
 all: test_zcl zclassic23 zclassic-cli
@@ -137,8 +137,10 @@ $(1): $$(TMPL_GEN) $(2) $$(ALL_SRCS)
 	$$(CC) $$(CFLAGS) $(4) -Wno-deprecated-declarations $$(LDFLAGS) -o $$@ $$(filter-out $$(TMPL_GEN),$$^) $$(TOR_LIBS) $$(LIBS) $$(GTK_LIBS) $$(WEBKIT_LIBS) $(3)
 endef
 
-$(eval $(call BUILD_NODE_TOOL,test_zcl,$(TEST_SRCS_NO_MAIN) lib/test/src/test.c $(SPEC_SRCS),,-DZCL_TESTING))
-$(eval $(call BUILD_NODE_TOOL,test_parallel,$(TEST_SRCS_NO_MAIN) lib/test/src/test_parallel.c $(SPEC_SRCS),,-DZCL_TESTING))
+CHAOS_SIM_SRCS = tools/sim/sim_peer.c
+
+$(eval $(call BUILD_NODE_TOOL,test_zcl,$(TEST_SRCS_NO_MAIN) lib/test/src/test.c $(SPEC_SRCS) $(CHAOS_SIM_SRCS),,-DZCL_TESTING))
+$(eval $(call BUILD_NODE_TOOL,test_parallel,$(TEST_SRCS_NO_MAIN) lib/test/src/test_parallel.c $(SPEC_SRCS) $(CHAOS_SIM_SRCS),,-DZCL_TESTING))
 
 .PHONY: test-parallel
 test-parallel: test_parallel
@@ -247,6 +249,30 @@ explorer-css: app/views/src/explorer_css.css
 
 test: test_zcl
 	ulimit -s unlimited && ./test_zcl
+
+zclassic23-chaos: tools/sim/chaos.c tools/sim/sim_peer.c \
+	lib/util/src/safe_alloc.c \
+	lib/util/include/util/safe_alloc.h lib/net/src/net_fault.c \
+	lib/net/include/net/net_fault.h lib/platform/src/clock.c \
+	lib/platform/include/platform/clock.h lib/platform/include/platform/time_compat.h
+	$(CC) -std=c23 -O2 -Wall -Wextra -Werror -pedantic \
+	    -D_POSIX_C_SOURCE=200809L -Ilib/util/include -Ilib/net/include \
+	    -Ilib/platform/include -Itools \
+	    -o $@ tools/sim/chaos.c tools/sim/sim_peer.c \
+	    lib/util/src/safe_alloc.c lib/net/src/net_fault.c \
+	    lib/platform/src/clock.c
+
+chaos: zclassic23-chaos
+	@set -eu; \
+	for s in tools/sim/scenarios/*.scenario; do \
+	    echo "==> $$s"; \
+	    ./zclassic23-chaos --scenario="$$s"; \
+	done; \
+	echo "==> All chaos scenarios PASSED"
+
+chaos-clean:
+	rm -f zclassic23-chaos
+	rm -rf chaos-output/
 
 # Crash recovery harness: fork zclassic23, SIGKILL at random points,
 # restart, and assert data-integrity invariants. Needs a pre-seeded

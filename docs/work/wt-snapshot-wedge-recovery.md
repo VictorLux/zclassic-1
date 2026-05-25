@@ -5,10 +5,9 @@
 **Moves benchmarks:** #6 kill-9 / wedge recovery (360s → <60s), #5 tip keep-up
 **Vision tie-in:** "wedges unreachable by construction" — if the tip is wedged,
 the node re-snapshots *past* the bad block instead of giving up.
-**Status: IN PROGRESS (wt3)** — PR-0 entry API + runtime local manifest
-builder implemented; PR-1 condition wiring is implemented with simulated
-condition coverage. Current slice is hardening watchdog/RPC recovery
-observability for the snapshot resnapshot path.
+**Status: DONE (wt3)** — PR-0 entry API + runtime local manifest builder,
+PR-1 condition wiring, simulated condition coverage, FlyClient/SHA3 recovery
+gates, and watchdog/RPC recovery observability are implemented.
 
 ---
 
@@ -118,10 +117,33 @@ must fire **after** the quorum-clear path is exhausted, not instead of it.
 - [x] `./test_parallel --jobs=$(nproc)` PASS for the latest recovery
       observability slice; new tests in `lib/test/`.
 - [x] Watchdog RPCs expose the recovery attempt context
-      (`SNAPSHOT_RESNAPSHOT`, heights, peer count, reason).
+      (`SNAPSHOT_RESNAPSHOT`, heights, peer count, reason, target height,
+      manifest height, trigger).
 
 ## NOT in scope (do not regress)
 - Cold-start fast-sync behavior is unchanged.
 - No trust shortcut: recovery snapshots are verified like any other.
 
 <!-- Worker: append a Completion section with the "Benchmark moved" line (#6). -->
+
+## Completion (2026-05-25)
+
+Benchmark moved: #6 kill-9 / wedge recovery now has a reachable snapshot
+escape hatch for an exhausted tip wedge; #5 tip keep-up gets a last-resort
+resnapshot path after cheaper failed-flag/local-import remedies are exhausted.
+
+Implemented sequence:
+- PR-0 recovery entry API and explicit recovery gate:
+  `4d7f7adee`, `08fcb62ef`
+- PR-1 `tip_wedged_resnapshot` condition and simulated exhausted-condition
+  coverage: `058897369`, `b6ff0843c`
+- Recovery verification and observability: `9c4b23a77`, `96c2ecb06`,
+  `157ac34dc`
+
+Verification:
+- `make -j$(nproc)`
+- `ZCL_TEST_ONLY=syncdiag_rpc ./test_zcl`
+- `ZCL_TEST_ONLY=utxo_activation_paused ./test_zcl`
+- `ZCL_TEST_ONLY=node_health ./test_zcl`
+- `make lint`
+- `./test_parallel --jobs=$(nproc)`

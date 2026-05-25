@@ -450,9 +450,19 @@ void node_health_collect(struct node_health_snapshot *snapshot,
         snapshot->wd_escalation_level = wd.escalation_level;
         snapshot->wd_last_recovery_time = wd.last_recovery_time;
         snapshot->wd_last_recovery_type = (int)wd.last_recovery;
+        snapshot->wd_last_recovery_target_height =
+            wd.last_recovery_target_height;
+        snapshot->wd_last_recovery_manifest_height =
+            wd.last_recovery_manifest_height;
         snprintf(snapshot->wd_last_recovery_name,
                  sizeof(snapshot->wd_last_recovery_name),
                  "%s", watchdog_recovery_type_name(wd.last_recovery));
+        snprintf(snapshot->wd_last_recovery_reason,
+                 sizeof(snapshot->wd_last_recovery_reason),
+                 "%s", wd.last_recovery_reason);
+        snprintf(snapshot->wd_last_recovery_trigger,
+                 sizeof(snapshot->wd_last_recovery_trigger),
+                 "%s", wd.last_recovery_trigger);
     }
 
     /* Mirror lag SLO breach → loud health degradation. When mirror

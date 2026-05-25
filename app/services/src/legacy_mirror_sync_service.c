@@ -2,14 +2,14 @@
  *
  * Always-on legacy mirror sync service. zclassicd is used only as an
  * availability source; headers still flow through accept_block_header()
- * via header_probe_service and bodies through process_new_block() via
+ * via header_probe and bodies through process_new_block() via
  * legacy_body_pull.
  */
 
 #include "platform/time_compat.h"
 #include "services/legacy_mirror_sync_service.h"
 
-#include "services/header_probe_service.h"
+#include "services/header_probe.h"
 #include "services/legacy_body_pull.h"
 #include "services/chain_activation_controller.h"
 #include "services/chain_evidence_controller.h"
@@ -55,6 +55,7 @@
 #define LMS_DEFAULT_LAG_SLA_BREACH_SECS     60
 #define LMS_DEFAULT_LAG_SLA_CRITICAL_BLOCKS 100
 #define LMS_DEFAULT_LAG_SLA_CRITICAL_SECS   300
+#define LMS_HEADER_DRAIN_BATCH              5000
 
 static struct {
     pthread_mutex_t lock;
@@ -120,6 +121,10 @@ static struct {
 
 #ifdef ZCL_TESTING
 static bool g_lms_test_fake_running;
+static _Atomic int g_lms_test_catchup_enabled;
+static _Atomic int g_lms_test_catchup_result;
+static _Atomic int g_lms_test_catchup_clear_stuck;
+static _Atomic int g_lms_test_catchup_calls;
 #endif
 
 static void lms_set_error(const char *msg)
@@ -398,6 +403,20 @@ static void lms_cache_hashes(const char *local, const char *remote)
     pthread_mutex_unlock(&g_lms.lock);
 }
 
+static int lms_header_probe_last_local_height(void)
+{
+    struct json_value dump;
+    json_init(&dump);
+    int h = -1;
+    if (header_probe_dump_state_json(&dump, NULL)) {
+        const struct json_value *v = json_get(&dump, "last_local_height");
+        if (v && v->type == JSON_INT)
+            h = (int)json_get_int(v);
+    }
+    json_free(&dump);
+    return h;
+}
+
 static void lms_refresh_local_heights(int *out_local, int *out_header)
 {
     int local = -1, hdr = -1;
@@ -410,10 +429,9 @@ static void lms_refresh_local_heights(int *out_local, int *out_header)
         zcl_mutex_unlock(&ms->cs_main);
     }
     {
-        struct header_probe_stats hs;
-        header_probe_stats_snapshot(&hs);
-        if (hs.last_local_height > hdr)
-            hdr = hs.last_local_height;
+        int hp_height = lms_header_probe_last_local_height();
+        if (hp_height > hdr)
+            hdr = hp_height;
     }
     atomic_store(&g_lms.local_height, local);
     atomic_store(&g_lms.best_header_height, hdr);
@@ -733,9 +751,53 @@ static bool lms_run_activation_to_target(int target,
     return true;
 }
 
+static bool lms_drain_headers_to_target(int from_height, int target_height,
+                                        int *out_total_added)
+{
+    if (out_total_added) *out_total_added = 0;
+    if (from_height < 0 || target_height < from_height)
+        return true;
+
+    int cursor = from_height;
+    int total = 0;
+    int zero_streak = 0;
+    while (cursor <= target_height) {
+        int want = target_height - cursor + 1;
+        if (want > LMS_HEADER_DRAIN_BATCH)
+            want = LMS_HEADER_DRAIN_BATCH;
+
+        int added = 0;
+        if (!header_probe_pull_range(cursor, want, &added))
+            break;
+        if (added == 0) {
+            if (++zero_streak >= 3) break;
+            continue;
+        }
+        zero_streak = 0;
+        cursor += added;
+        total += added;
+    }
+
+    if (out_total_added) *out_total_added = total;
+    return cursor > target_height;
+}
+
 bool legacy_mirror_sync_request_catchup(const char *reason)
 {
     (void)reason;
+#ifdef ZCL_TESTING
+    if (atomic_load(&g_lms_test_catchup_enabled)) {
+        atomic_fetch_add(&g_lms_test_catchup_calls, 1);
+        if (atomic_load(&g_lms_test_catchup_clear_stuck)) {
+            atomic_store(&g_lms.stuck_height, 0);
+            atomic_store(&g_lms.stuck_status_flags, 0);
+            pthread_mutex_lock(&g_lms.lock);
+            g_lms.stuck_reason[0] = '\0';
+            pthread_mutex_unlock(&g_lms.lock);
+        }
+        return atomic_load(&g_lms_test_catchup_result) != 0;
+    }
+#endif
     if (!g_lms.initialized || !g_lms.enabled)
         return true;
     if (pthread_mutex_trylock(&g_lms.flight) != 0)
@@ -821,9 +883,9 @@ bool legacy_mirror_sync_request_catchup(const char *reason)
 
     if (legacy_headers > hdr) {
         int before_hdr = hdr;
-        int added = 0, remote_tip = -1;
-        if (!header_probe_pull_range_blocking(hdr + 1, &added,
-                                              &remote_tip)) {
+        int added = 0;
+        if (!lms_drain_headers_to_target(hdr + 1, legacy_headers,
+                                         &added)) {
             /* Header probe is an accelerator, not the authority path.
              * Full body import below also carries and validates each
              * header, so a stalled header probe must not prevent the
@@ -1352,6 +1414,12 @@ void legacy_mirror_sync_reset_for_test(void)
     atomic_store(&g_lms.lag_critical_since, 0);
     atomic_store(&g_lms.lag_breach_emitted, 0);
     atomic_store(&g_lms.lag_critical_emitted, 0);
+#ifdef ZCL_TESTING
+    atomic_store(&g_lms_test_catchup_enabled, 0);
+    atomic_store(&g_lms_test_catchup_result, 0);
+    atomic_store(&g_lms_test_catchup_clear_stuck, 0);
+    atomic_store(&g_lms_test_catchup_calls, 0);
+#endif
     mirror_consensus_reset_for_test();
 }
 
@@ -1407,5 +1475,20 @@ void legacy_mirror_sync_test_set_stats(
     atomic_store(&g_lms.rpc_errors, stats->rpc_errors);
     atomic_store(&g_lms.blocks_applied, stats->blocks_applied);
     atomic_store(&g_lms.headers_added, stats->headers_added);
+}
+
+void legacy_mirror_sync_test_set_catchup_result(bool enabled,
+                                                bool result,
+                                                bool clear_stuck)
+{
+    atomic_store(&g_lms_test_catchup_enabled, enabled ? 1 : 0);
+    atomic_store(&g_lms_test_catchup_result, result ? 1 : 0);
+    atomic_store(&g_lms_test_catchup_clear_stuck, clear_stuck ? 1 : 0);
+    atomic_store(&g_lms_test_catchup_calls, 0);
+}
+
+int legacy_mirror_sync_test_catchup_calls(void)
+{
+    return atomic_load(&g_lms_test_catchup_calls);
 }
 #endif

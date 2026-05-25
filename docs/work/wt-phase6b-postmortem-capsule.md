@@ -4,8 +4,8 @@
 **Branch:** PUSH DIRECT TO MAIN
 **Phase:** 6 (Determinism + simulator)
 **Depends on:** Phase 6a (seed_tape primitive) ✅ — required for the
-capsule's tape contents. **Status: IN PROGRESS (wt2)** — claimed
-2026-05-24 after Phase 6a landed on main.
+capsule's tape contents. **Status: ✅ DONE — pushed 2026-05-25** to
+main through commit `5027634de`.
 **Plan reference:** [`docs/architecture/phase6-determinism-and-simulator.md`](../architecture/phase6-determinism-and-simulator.md) § 6b
 
 **Owns:**
@@ -208,6 +208,11 @@ Both tools are read-only; no `destructive` flag.
 **Acceptance:** `zcl_postmortem_list` returns the current capsule
 inventory. `zcl_postmortem_replay` returns the event sequence.
 
+**Progress 2026-05-25:** implemented both read-only ops tools against
+the public `postmortem_list`/`postmortem_load` APIs. Added an MCP
+controller dispatch test that writes a real capsule, verifies inventory
+JSON, and replays the recorded injected event stream.
+
 ### Task 5: Test suite
 
 EDIT `lib/test/src/test_postmortem.c`. Test cases:
@@ -297,9 +302,7 @@ One commit per task. Push after tasks 2, 3, 5.
 
 ## Status
 
-**IN PROGRESS (wt2)** — claimed 2026-05-24 after Phase 6a
-`seed_tape_save` / `seed_tape_load` landed on main. Current slice is
-the capsule API plus the non-signal save/list/load path.
+**✅ DONE — pushed 2026-05-25** to main through commit `5027634de`.
 
 ### Progress (wt2, 2026-05-24)
 
@@ -333,5 +336,122 @@ the capsule API plus the non-signal save/list/load path.
   `zcl_postmortem_replay` returns seed-tape events with hex payloads for quick
   operator inspection. The remaining Phase 6b work is the signal handler and
   boot integration path.
+- Added a fatal-signal crash-hook bridge plus `postmortem_install` /
+  `postmortem_uninstall`; forked test coverage now proves a child that raises
+  `SIGABRT` leaves a listed, replayable capsule before terminating. Boot-time
+  seed-tape creation and install wiring remain open.
+- Added boot-time postmortem wiring after datadir lock: each boot now owns a
+  seed tape for crash capture and registers capsules under
+  `<datadir>/postmortems`, with shutdown cleanup and forked test coverage.
+  Production platform RNG/clock takeover remains deferred until the simulator
+  clock advancement path is ready.
+- Added boot-time postmortem retention: unpacked `.cap` directories are pruned
+  by age and newest-count limit during postmortem setup. Compression of
+  unpacked capsules remains the remaining boot maintenance item.
+- Added boot-time postmortem compression: prior unpacked `.cap` directories are
+  archived as `.cap.gz` before retention pruning, and the reader/list/load
+  paths now understand both unpacked and compressed capsules. Remaining work is
+  deeper crash-path hardening and live production SEGV verification.
+- Added restart-path coverage for the production shape: a boot-installed child
+  raises `SIGSEGV`, the parent verifies the prior unpacked capsule is visible,
+  and a second boot compresses it to `.cap.gz` while preserving replayability.
+- Hardened the fatal-signal crash hook so it no longer calls the general
+  stdio/allocation capsule writer from the signal path. `postmortem_install`
+  now preallocates a fixed tape scratch buffer, and the hook writes the minimal
+  unpacked capsule (`manifest.json`, `tape.bin`, empty log/proc placeholders,
+  and `coremarker.txt`) with raw `mkdir`/`open`/`write`/`close` syscalls before
+  the existing fatal handler re-raises. Remaining work is live production SEGV
+  verification and any follow-up needed from that evidence.
+- Hardened `postmortem_install` to create and validate the capsule directory
+  before registering the fatal-signal hook, with focused coverage for
+  auto-created directories and non-directory rejection.
+- Filled in the signal-path `procstatus.txt` member using a bounded
+  `/proc/self/status` copy through raw `open`/`read`/`write`/`close`, with
+  forked SIGABRT/SIGSEGV coverage proving the captured capsule contains the
+  process status payload.
+- Added manifest build identity fields on both normal and fatal-signal capsule
+  paths: `build_id` records the current `CLIENT_NAME` + `CLIENT_VERSION`, and
+  `git_sha` is explicitly set to `unknown` until the build injects a commit
+  SHA. Focused tests now assert those manifest fields.
+- Filled in boot-installed fatal-signal `log.txt` capture by deriving
+  `<datadir>/node.log` from the installed `<datadir>/postmortems` path and
+  copying a bounded tail with raw syscalls. Forked boot SIGABRT/SIGSEGV tests
+  now seed the node log and assert the captured capsule preserves the
+  breadcrumb.
+- Brought the fatal-signal manifest closer to the normal writer by recording
+  `rng_count`, `clock_advance_count`, and `inject_count` from the active tape
+  before serializing it. Forked signal coverage now asserts the recorded
+  advance/inject counts.
+- Added a boot-time seed-tape marker event before installing the crash hook so
+  production-shaped capsules replay with an operator-visible boot breadcrumb
+  even before full platform RNG/clock takeover is enabled.
+- Added `registers.txt` to the capsule layout. Fatal-signal capsules now write
+  signal number, `si_code`, fault address, and x86_64 register values when the
+  platform exposes them; non-signal captures write an explicit placeholder, and
+  boot compression preserves the member.
 
-<!-- Worker: append a Completion section below when done. -->
+## Completion (wt2, 2026-05-25)
+
+### Summary
+
+Phase 6b now ships the postmortem capsule loop end to end: boot creates a
+seed tape and installs a crash hook, fatal signals write replayable capsules,
+restart compresses prior unpacked capsules, MCP can list/replay them, and a
+node-shaped external `SIGSEGV` check proves the operator path works.
+
+### Benchmark moved
+
+Enables the Phase 6 determinism/debuggability path for the chronic SEGV wedge:
+future production crashes now leave a capsule that can be listed and replayed
+through MCP instead of relying only on logs and corefiles.
+
+### Commits
+
+- `720906bf4` postmortem: add capsule primitive
+- `21d7d1a6e` seed_tape: add memory codec
+- `6faa547c2` postmortem: expose reader API
+- `b61cc0a86` postmortem: capture capsules from fatal signals
+- `d777de9f3` boot: register postmortem crash capsules
+- `94ad9cc60` postmortem: prune old crash capsules
+- `0471e1252` mcp: expose postmortem capsule tools
+- `f93701a8a` postmortem: compress unpacked capsules
+- `38416daba` postmortem: test restart compression after segv
+- `6275973b3` postmortem: harden fatal signal capsule writer
+- `79aeb2997` postmortem: cover install directory validation
+- `5487bff46` postmortem: capture proc status in signal capsules
+- `040b7e0e9` postmortem: record build identity in capsules
+- `576d49e5d` postmortem: capture boot log tail in signal capsules
+- `a05d227b8` postmortem: add tape counters to signal manifests
+- `5027634de` postmortem: add boot replay marker
+
+### Files added/modified
+
+- `lib/sim/include/sim/postmortem.h`
+- `lib/sim/src/postmortem.c`
+- `lib/test/src/test_postmortem.c`
+- `config/src/boot.c`
+- `tools/mcp/controllers/ops_controller.c`
+- `lib/test/src/test_mcp_controllers.c`
+- `lib/test/src/test.c`
+- `lib/test/src/test_parallel.c`
+- `lib/test/include/test/test_helpers.h`
+
+### Acceptance verification
+
+- [x] Focused postmortem suite: `ZCL_TEST_ONLY=postmortem ./test_zcl` — PASS.
+- [x] Full build: `make -j$(nproc)` — PASS.
+- [x] Lint: `make lint` — PASS.
+- [x] Full parallel suite: `./test_parallel --jobs=$(nproc)` — PASS,
+  `ALL TESTS PASSED — 0/208 groups failed`.
+- [x] Live node-shaped check: started `./zclassic23` on a temporary regtest
+  datadir, sent external `SIGSEGV`, observed exit 139 and a crash capsule,
+  restarted the same datadir, observed boot compression to `.cap.gz`, and
+  verified `zcl_postmortem_replay` returned the boot marker event
+  `boot-postmortem-installed`.
+
+### Surprises / follow-ups
+
+Production platform RNG/clock takeover remains intentionally deferred; the
+boot marker ensures live capsules already replay with an operator-visible
+breadcrumb while that broader determinism work waits for the simulator clock
+advancement path.

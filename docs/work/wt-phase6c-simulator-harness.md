@@ -4,7 +4,7 @@
 **Branch:** PUSH DIRECT TO MAIN
 **Phase:** 6 (Determinism + simulator)
 **Depends on:** Phase 6a (seed_tape) ✅ + Phase 6b (postmortem capsule) ✅.
-**Status: QUEUED** until 6a + 6b merge.
+**Status: COMPLETE (wt2)** — completed 2026-05-25 after 6a + 6b merged.
 **Plan reference:** [`docs/architecture/phase6-determinism-and-simulator.md`](../architecture/phase6-determinism-and-simulator.md) § 6c
 
 **Owns:**
@@ -119,6 +119,10 @@ is called with a matching `label`, return NULL once + clear the flag.
 
 EDIT `lib/net/src/net_io.c` similarly: a `g_net_partition_until_unix`
 atomic that, when set, drops all incoming messages until clock passes.
+This repository does not currently have `lib/net/src/net_io.c`; wt2 mapped
+the primitive onto `lib/net/src/msgprocessor.c` and keeps the atomic flag in
+`lib/net/src/net_fault.c` so the standalone chaos binary can link it without
+pulling in the full message processor.
 
 Both flags default to inactive (zero overhead in production).
 
@@ -283,7 +287,73 @@ One commit per task. Push after tasks 2, 4, 7.
 
 ## Status
 
-**QUEUED** — gated on 6a + 6b. Once both ship, this PR has full
-prereqs (seed_tape + postmortem) and is READY.
+**COMPLETE (wt2)** — completed 2026-05-25 after 6a + 6b merged.
+
+### Progress (wt2, 2026-05-25)
+
+- Started Task 1 with a standalone `zclassic23-chaos` parser/dispatcher
+  skeleton, a `tools/sim/scenarios/smoke.scenario` fixture, and `make chaos`.
+  The initial command set handles `seed`, `boot_phase`, `peer_count`, and
+  `expect`; later Phase 6c injection commands are recognized stubs.
+- Added initial `test_chaos_harness` coverage for parser success, empty
+  scenarios, unknown commands, recognized-but-unimplemented commands, bad
+  seeds, and failing `expect` assertions.
+- Continued Task 2 fault injection: `safe_alloc` now has a one-shot label
+  hook, and `trigger_oom_at` arms and verifies it in the chaos harness.
+- Added the network partition primitive as `net_fault.{c,h}`, wired the drop
+  check into `msg_process_messages`, added an earlier `p2p_node_receive_bytes`
+  drop seam for raw inbound bytes, and made `partition_network for=DURATION`
+  arm and verify the hook in the chaos harness.
+- Started Task 3 simulated peers with `tools/sim/sim_peer.c`: `peer_count`
+  now creates an in-process peer set, `kill_peer` transitions peer state, and
+  `expect` can assert `active_peers` / `killed_peers`.
+- Added the first simulated block-injection command: `send_malformed_block`
+  accepts the planned 8 malformed block types, records peer-level rejection
+  counters, and increments `consensus_rejects`.
+- Implemented `advance_clock` against the platform clock injection hook so
+  chaos commands and future simulator paths observe the virtual wall clock.
+- Added `at_event` dispatch plus the five starter `tools/sim/scenarios/`
+  files so `make chaos` now exercises smoke, peer churn, malformed blocks,
+  clock skew, and OOM-at-utxo-apply paths.
+- Added elapsed-clock and graceful-shutdown metrics so starter scenarios can
+  assert simulated time advancement, mempool prune ticks, and OOM handling.
+- Skipped CI integration because this repository has no `.github/workflows`
+  directory, updated `chaos-clean`, and added `docs/CHAOS_HARNESS.md`.
+- Implemented the first fixture-backed `send_block` simulation: connected peers
+  can read a non-empty block fixture file, record send counters, and advance
+  synthetic tip height.
+- Added a checked-in synthetic block fixture plus `block_fixture.scenario` so
+  `make chaos` exercises the `send_block` path from the repository corpus.
+- Extended fixture-backed block simulation with byte accounting, optional
+  explicit fixture heights, and a multi-peer `fixture_ibd.scenario` where good
+  fixture blocks advance the synthetic tip while a malformed peer is rejected.
+- Added failure artifacts for standalone chaos runs: failed scenarios now emit
+  a summary plus a copied scenario under `chaos-output/` or an explicit
+  `--artifact-dir=PATH`.
+- Made active `partition_network` windows suppress simulated peer block traffic
+  and added `network_partition.scenario` to assert dropped messages do not
+  advance tip height or consensus rejection counters.
+- Expanded failure artifacts with replay commands and the full current
+  simulator metric set so failed scenarios are easier to replay and minimize.
+- Added seed-driven `random_kill_peers count=N` plus
+  `seeded_peer_churn.scenario` so peer churn can be generated
+  deterministically from a scenario seed.
+
+### Completion (wt2, 2026-05-25)
+
+Phase 6c is shipped on `main`.
+
+Authoritative checks:
+
+- No `.github/workflows/ci.yml` exists, so Task 6 CI wiring was skipped per
+  assignment; operators run `make chaos` manually before releases.
+- `docs/CHAOS_HARNESS.md` exists and is 138 lines.
+- All `tools/sim/scenarios/*.scenario` files are under 30 lines.
+- `chaos_harness` is registered in `lib/test/src/test_parallel.c`.
+- `make -j$(nproc)` passed.
+- `make lint` passed.
+- `./test_parallel --jobs=$(nproc)` passed:
+  `ALL TESTS PASSED — 0/208 groups failed (107.0s wall, 32 workers)`.
+- `make chaos` passed all checked-in chaos scenarios.
 
 <!-- Worker: append a Completion section below when done. -->

@@ -97,6 +97,12 @@ void app_add_node(const char *host, int port);
 void app_start_metrics(bool mining);
 void app_stop_metrics(void);
 
+#ifdef ZCL_TESTING
+bool boot_postmortem_init_for_testing(const char *datadir);
+void boot_postmortem_shutdown_for_testing(void);
+const char *boot_postmortem_dir_for_testing(void);
+#endif
+
 /* Background UTXO replay status (after fast file sync).
  * Node is usable immediately; replay builds UTXO set in background. */
 #include <stdatomic.h>

@@ -239,6 +239,13 @@ int main(void)
                failures);
         return failures ? 1 : 0;
     }
+    if (only && strcmp(only, "chaos_harness") == 0) {
+        printf("[test] ZCL_TEST_ONLY=chaos_harness — running chaos harness only\n");
+        failures += test_chaos_harness();
+        printf("\n=== chaos_harness subset complete: %d failure(s) ===\n",
+               failures);
+        return failures ? 1 : 0;
+    }
     if (only && strcmp(only, "rpc_safety") == 0) {
         printf("[test] ZCL_TEST_ONLY=rpc_safety — running RPC safety subset\n");
         failures += test_rpc_safety();
@@ -366,6 +373,13 @@ int main(void)
                failures);
         return failures ? 1 : 0;
     }
+    if (only && strcmp(only, "condition_engine") == 0) {
+        printf("[test] ZCL_TEST_ONLY=condition_engine - running only\n");
+        failures += test_condition_engine();
+        printf("\n=== condition_engine subset complete: %d failure(s) ===\n",
+               failures);
+        return failures ? 1 : 0;
+    }
     if (only && strcmp(only, "watchdog_dissolve_pr2") == 0) {
         printf("[test] ZCL_TEST_ONLY=watchdog_dissolve_pr2 — running only\n");
         failures += test_watchdog_dissolve_pr2();
@@ -384,6 +398,48 @@ int main(void)
         printf("[test] ZCL_TEST_ONLY=watchdog_conditions_pr3 — running only\n");
         failures += test_watchdog_conditions_pr3();
         printf("\n=== watchdog_conditions_pr3 subset complete: %d failure(s) ===\n",
+               failures);
+        return failures ? 1 : 0;
+    }
+    if (only && strcmp(only, "snapshot_receive_stalled_condition") == 0) {
+        printf("[test] ZCL_TEST_ONLY=snapshot_receive_stalled_condition — running only\n");
+        failures += test_snapshot_receive_stalled_condition();
+        printf("\n=== snapshot_receive_stalled_condition subset complete: %d failure(s) ===\n",
+               failures);
+        return failures ? 1 : 0;
+    }
+    if (only && strcmp(only, "legacy_mirror_stuck_condition") == 0) {
+        printf("[test] ZCL_TEST_ONLY=legacy_mirror_stuck_condition — running only\n");
+        failures += test_legacy_mirror_stuck_condition();
+        printf("\n=== legacy_mirror_stuck_condition subset complete: %d failure(s) ===\n",
+               failures);
+        return failures ? 1 : 0;
+    }
+    if (only && strcmp(only, "snapshot_negotiation_stalled_condition") == 0) {
+        printf("[test] ZCL_TEST_ONLY=snapshot_negotiation_stalled_condition — running only\n");
+        failures += test_snapshot_negotiation_stalled_condition();
+        printf("\n=== snapshot_negotiation_stalled_condition subset complete: %d failure(s) ===\n",
+               failures);
+        return failures ? 1 : 0;
+    }
+    if (only && strcmp(only, "snapshot_failed_reset_condition") == 0) {
+        printf("[test] ZCL_TEST_ONLY=snapshot_failed_reset_condition — running only\n");
+        failures += test_snapshot_failed_reset_condition();
+        printf("\n=== snapshot_failed_reset_condition subset complete: %d failure(s) ===\n",
+               failures);
+        return failures ? 1 : 0;
+    }
+    if (only && strcmp(only, "snapshot_complete_resume_condition") == 0) {
+        printf("[test] ZCL_TEST_ONLY=snapshot_complete_resume_condition — running only\n");
+        failures += test_snapshot_complete_resume_condition();
+        printf("\n=== snapshot_complete_resume_condition subset complete: %d failure(s) ===\n",
+               failures);
+        return failures ? 1 : 0;
+    }
+    if (only && strcmp(only, "chain_integrity_failed_condition") == 0) {
+        printf("[test] ZCL_TEST_ONLY=chain_integrity_failed_condition — running only\n");
+        failures += test_chain_integrity_failed_condition();
+        printf("\n=== chain_integrity_failed_condition subset complete: %d failure(s) ===\n",
                failures);
         return failures ? 1 : 0;
     }
@@ -475,7 +531,7 @@ int main(void)
     }
     if (only && strcmp(only, "header_probe") == 0) {
         printf("[test] ZCL_TEST_ONLY=header_probe — running header probe service only\n");
-        failures += test_header_probe_service();
+        failures += test_header_probe();
         printf("\n=== header_probe subset complete: %d failure(s) ===\n",
                failures);
         return failures ? 1 : 0;
@@ -484,6 +540,20 @@ int main(void)
         printf("[test] ZCL_TEST_ONLY=header_probe_poll — running header probe poll only\n");
         failures += test_header_probe_poll();
         printf("\n=== header_probe_poll subset complete: %d failure(s) ===\n",
+               failures);
+        return failures ? 1 : 0;
+    }
+    if (only && strcmp(only, "rpc") == 0) {
+        printf("[test] ZCL_TEST_ONLY=rpc — running rpc only\n");
+        failures += test_rpc();
+        printf("\n=== rpc subset complete: %d failure(s) ===\n",
+               failures);
+        return failures ? 1 : 0;
+    }
+    if (only && strcmp(only, "peer_scoring") == 0) {
+        printf("[test] ZCL_TEST_ONLY=peer_scoring — running peer scoring only\n");
+        failures += test_peer_scoring();
+        printf("\n=== peer_scoring subset complete: %d failure(s) ===\n",
                failures);
         return failures ? 1 : 0;
     }
@@ -677,12 +747,19 @@ int main(void)
     failures += test_utxo_activation_paused();
     failures += test_watchdog_dissolve_pr2();
     failures += test_watchdog_conditions_pr3();
+    failures += test_snapshot_receive_stalled_condition();
+    failures += test_legacy_mirror_stuck_condition();
+    failures += test_snapshot_negotiation_stalled_condition();
+    failures += test_snapshot_failed_reset_condition();
+    failures += test_snapshot_complete_resume_condition();
+    failures += test_chain_integrity_failed_condition();
     failures += test_chain_tip_watchdog_bounded_restart();
     failures += test_blocker();
     failures += test_clock();
     failures += test_rng();
     failures += test_seed_tape();
     failures += test_postmortem();
+    failures += test_chaos_harness();
     failures += test_stage();
     failures += test_mailbox();
     failures += test_mailbox_adoption();
@@ -723,7 +800,7 @@ int main(void)
     failures += test_disk_block_io();
     failures += test_msg_handlers();
     failures += test_zclassicd_oracle();
-    failures += test_header_probe_service();
+    failures += test_header_probe();
     { extern int test_lag_slo(void); failures += test_lag_slo(); }
 
     /* Spec-based user story tests */

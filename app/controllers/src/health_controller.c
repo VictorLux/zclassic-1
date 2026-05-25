@@ -45,8 +45,14 @@ static void push_watchdog_recovery_fields(struct json_value *result)
                      wd.last_recovery_peer_height);
     json_push_kv_int(result, "last_recovery_peer_count",
                      wd.last_recovery_peer_count);
+    json_push_kv_int(result, "last_recovery_target_height",
+                     wd.last_recovery_target_height);
+    json_push_kv_int(result, "last_recovery_manifest_height",
+                     wd.last_recovery_manifest_height);
     json_push_kv_str(result, "last_recovery_reason",
                      wd.last_recovery_reason);
+    json_push_kv_str(result, "last_recovery_trigger",
+                     wd.last_recovery_trigger);
 }
 
 static void push_mirror_sync_fields(struct json_value *result)

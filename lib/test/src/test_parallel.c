@@ -85,6 +85,7 @@ volatile sig_atomic_t g_shutdown_requested = 0;
     X(no_hardcoded_home) X(cookie_rotation) X(reorg_safety) \
     X(key_scrub) X(block_index_loader) X(chain_state_validator) \
     X(utxo_recovery_service) X(utxo_reimport_flag) \
+    X(self_heal_scan_fallback) \
     X(rpc_error_envelope) X(tx_property) \
     X(workpool) X(bip113_bip65) X(mempool_orphan) X(fee_estimation) \
     X(header_sync) X(header_sync_stall) X(hd_keychain) X(mnemonic) \
@@ -96,8 +97,11 @@ volatile sig_atomic_t g_shutdown_requested = 0;
     X(lag_slo) X(boot_phase) X(path_check) X(supervisor) \
     X(supervisor_domains) X(condition_engine) X(utxo_activation_paused) \
     X(watchdog_dissolve_pr2) X(watchdog_conditions_pr3) \
+    X(snapshot_receive_stalled_condition) X(legacy_mirror_stuck_condition) \
+    X(snapshot_negotiation_stalled_condition) X(snapshot_failed_reset_condition) \
+    X(snapshot_complete_resume_condition) X(chain_integrity_failed_condition) \
     X(chain_tip_watchdog_bounded_restart) X(blocker) \
-    X(clock) X(rng) X(seed_tape) X(postmortem) X(stage) X(mailbox) X(mailbox_adoption) \
+    X(clock) X(rng) X(seed_tape) X(postmortem) X(chaos_harness) X(stage) X(mailbox) X(mailbox_adoption) \
     X(projection) X(projection_adoption) X(progress_store) X(event_log) \
     X(mempool_projection) X(peers_projection) X(znam_projection) \
     X(wallet_projection) X(small_projections) \

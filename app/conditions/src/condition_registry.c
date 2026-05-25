@@ -5,7 +5,9 @@
 void register_block_failed_mask_at_tip(void);
 void register_contradiction_frozen(void);
 void register_chain_stalled_with_data(void);
+void register_chain_integrity_failed(void);
 void register_utxo_activation_paused(void);
+void register_utxo_drift_detected(void);
 void register_header_stall_at_height(void);
 void register_sync_state_stuck(void);
 void register_download_queue_starved(void);
@@ -13,13 +15,21 @@ void register_local_header_refill_needed(void);
 void register_peer_floor_violated(void);
 void register_sync_violation_lag(void);
 void register_tip_wedged_resnapshot(void);
+void register_snapshot_receive_stalled(void);
+void register_legacy_mirror_stuck(void);
+void register_snapshot_offer_ready(void);
+void register_snapshot_negotiation_stalled(void);
+void register_snapshot_failed_reset(void);
+void register_snapshot_complete_resume(void);
 
 void condition_registry_register_all(void)
 {
     register_block_failed_mask_at_tip();
     register_contradiction_frozen();
     register_chain_stalled_with_data();
+    register_chain_integrity_failed();
     register_utxo_activation_paused();
+    register_utxo_drift_detected();
     register_header_stall_at_height();
     register_sync_state_stuck();
     register_download_queue_starved();
@@ -27,4 +37,10 @@ void condition_registry_register_all(void)
     register_peer_floor_violated();
     register_sync_violation_lag();
     register_tip_wedged_resnapshot();
+    register_snapshot_receive_stalled();
+    register_legacy_mirror_stuck();
+    register_snapshot_offer_ready();
+    register_snapshot_negotiation_stalled();
+    register_snapshot_failed_reset();
+    register_snapshot_complete_resume();
 }

@@ -26,6 +26,7 @@
 #include "net/fast_sync.h"
 #include "net/file_market.h"
 #include "net/p2p_game.h"
+#include "net/net_fault.h"
 #include "net/peer_lifecycle.h"
 #include "net/peer_scoring.h"
 #include "net/tip_watchdog.h"
@@ -812,6 +813,13 @@ bool msg_process_messages(void *ctx, struct p2p_node *node)
         /* Log every message received */
         event_emitf(EV_MSG_RECEIVED, (uint32_t)node->id,
                     "%s size=%u", cmd, msg.hdr.nMessageSize);
+
+        if (net_partition_active_at((int64_t)platform_time_wall_time_t())) {
+            event_emitf(EV_BACKPRESSURE_REJECT, (uint32_t)node->id,
+                        "cmd=%s reason=partition", cmd);
+            net_message_free(&msg);
+            continue;
+        }
 
         struct byte_stream s;
         stream_init_from_data(&s, msg.recv_data, msg.data_pos);
