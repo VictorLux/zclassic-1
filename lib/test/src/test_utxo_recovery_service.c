@@ -11,11 +11,18 @@
 #include "validation/main_state.h"
 #include "chain/chainparams.h"
 #include "models/database.h"
+#include "util/ar_step_readonly.h"
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
 #include <unistd.h>
 #include <sys/stat.h>
+
+#define URS_HEX32(byte) \
+    #byte #byte #byte #byte #byte #byte #byte #byte \
+    #byte #byte #byte #byte #byte #byte #byte #byte \
+    #byte #byte #byte #byte #byte #byte #byte #byte \
+    #byte #byte #byte #byte #byte #byte #byte #byte
 
 #define URS_CHECK(name, expr) do {              \
     printf("%s... ", (name));                   \
@@ -59,6 +66,18 @@ static void urs_build_chain(struct main_state *ms, int n)
             &ms->map_block_index, &hashes[limit - 1]);
         if (tip) active_chain_set_tip(&ms->chain_active, tip);
     }
+}
+
+static int64_t urs_count_sql(struct node_db *ndb, const char *sql)
+{
+    int64_t count = -1;
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(ndb->db, sql, -1, &st, NULL) == SQLITE_OK) {
+        if (AR_STEP_ROW_READONLY(st) == SQLITE_ROW)
+            count = sqlite3_column_int64(st, 0);
+        sqlite3_finalize(st);
+    }
+    return count;
 }
 
 int test_utxo_recovery_service(void)
@@ -243,10 +262,10 @@ int test_utxo_recovery_service(void)
         urs_build_chain(&ms, 50);  /* tip at h=49 */
 
         if (node_db_open(&ndb, db_path)) {
-            /* Insert UTXOs: 10 below tip, 5 above */
+            /* Insert UTXOs: 10 below tip, 5 at tip+1 */
             node_db_begin(&ndb);
             for (int i = 0; i < 15; i++) {
-                int h = (i < 10) ? (i + 1) : (50 + i - 9);
+                int h = (i < 10) ? (i + 1) : 50;
                 char sql[256];
                 snprintf(sql, sizeof(sql),
                     "INSERT INTO utxos(txid, vout, height, value, "
@@ -260,7 +279,7 @@ int test_utxo_recovery_service(void)
             int cleaned = utxo_recovery_clean_above_tip(&ndb, &ms);
             int64_t after = node_db_utxo_count(&ndb);
 
-            URS_CHECK("urs: clean above tip removes 5 stragglers",
+            URS_CHECK("urs: clean above tip removes 5 tip+1 stragglers",
                       before == 15 && cleaned == 5 && after == 10);
 
             node_db_close(&ndb);
@@ -315,7 +334,96 @@ int test_utxo_recovery_service(void)
         block_map_free(&ms.map_block_index);
     }
 
-    /* ── 8. Reimport flag with "0" value → no reimport ── */
+    /* ── 8. Clean above tip: stale coinbase at tip+1 is rewound ── */
+
+    {
+        char db_path[256];
+        snprintf(db_path, sizeof(db_path),
+                 "./test-tmp/%d_urs_stale_coinbase.db", getpid());
+
+        struct node_db ndb;
+        memset(&ndb, 0, sizeof(ndb));
+
+        struct main_state ms;
+        memset(&ms, 0, sizeof(ms));
+        block_map_init(&ms.map_block_index);
+        active_chain_init(&ms.chain_active);
+        urs_build_chain(&ms, 50);  /* tip at h=49 */
+
+        if (node_db_open(&ndb, db_path)) {
+            node_db_begin(&ndb);
+            node_db_exec(&ndb,
+                "INSERT INTO utxos(txid, vout, height, value, script, "
+                "is_coinbase) VALUES(X'" URS_HEX32(AB) "', 0, 50, "
+                "100000, X'51', 1)");
+            node_db_exec(&ndb,
+                "INSERT OR REPLACE INTO node_state(key,value) "
+                "VALUES('utxo_commitment', X'" URS_HEX32(CD) "')");
+            node_db_commit(&ndb);
+
+            int cleaned = utxo_recovery_clean_above_tip(&ndb, &ms);
+            int64_t stale = urs_count_sql(&ndb,
+                "SELECT COUNT(*) FROM utxos WHERE txid=X'" URS_HEX32(AB) "'");
+            int64_t commitment = urs_count_sql(&ndb,
+                "SELECT COUNT(*) FROM node_state WHERE key='utxo_commitment'");
+
+            URS_CHECK("urs: stale coinbase at tip+1 is rewound on boot",
+                      cleaned == 1 && stale == 0 && commitment == 0);
+
+            node_db_close(&ndb);
+        } else {
+            URS_CHECK("urs: stale coinbase at tip+1 (db open failed)",
+                      false);
+        }
+        unlink(db_path);
+        block_map_free(&ms.map_block_index);
+    }
+
+    /* ── 9. Clean above tip: refuses >32 single-block rows ── */
+
+    {
+        char db_path[256];
+        snprintf(db_path, sizeof(db_path),
+                 "./test-tmp/%d_urs_refuse_33.db", getpid());
+
+        struct node_db ndb;
+        memset(&ndb, 0, sizeof(ndb));
+
+        struct main_state ms;
+        memset(&ms, 0, sizeof(ms));
+        block_map_init(&ms.map_block_index);
+        active_chain_init(&ms.chain_active);
+        urs_build_chain(&ms, 50);  /* tip at h=49 */
+
+        if (node_db_open(&ndb, db_path)) {
+            node_db_begin(&ndb);
+            for (int i = 0; i < 33; i++) {
+                char sql[256];
+                snprintf(sql, sizeof(sql),
+                    "INSERT INTO utxos(txid, vout, height, value, script, "
+                    "is_coinbase) VALUES(randomblob(32), %d, 50, "
+                    "100000, X'51', 1)", i);
+                node_db_exec(&ndb, sql);
+            }
+            node_db_commit(&ndb);
+
+            int cleaned = utxo_recovery_clean_above_tip(&ndb, &ms);
+            int64_t above = urs_count_sql(&ndb,
+                "SELECT COUNT(*) FROM utxos WHERE height > 49");
+
+            URS_CHECK("urs: clean above tip refuses >32 rows",
+                      cleaned == 0 && above == 33);
+
+            node_db_close(&ndb);
+        } else {
+            URS_CHECK("urs: clean above tip refuses >32 (db open failed)",
+                      false);
+        }
+        unlink(db_path);
+        block_map_free(&ms.map_block_index);
+    }
+
+    /* ── 10. Reimport flag with "0" value → no reimport ── */
 
     {
         char tmpdir[256];
@@ -335,7 +443,7 @@ int test_utxo_recovery_service(void)
         rmdir(tmpdir);
     }
 
-    /* ── 9. LDB import: already migrated → no-op ── */
+    /* ── 11. LDB import: already migrated → no-op ── */
 
     {
         char db_path[256];
@@ -384,7 +492,7 @@ int test_utxo_recovery_service(void)
         unlink(db_path);
     }
 
-    /* ── 10. Restore with no UTXOs publishes genesis through CSR ── */
+    /* ── 12. Restore with no UTXOs publishes genesis through CSR ── */
 
     {
         char db_path[256];
@@ -471,7 +579,7 @@ int test_utxo_recovery_service(void)
         unlink(db_path);
     }
 
-    /* ── 11. Clean above tip: no-op when tip=0 ── */
+    /* ── 13. Clean above tip: no-op when tip=0 ── */
 
     {
         struct main_state ms;

@@ -42,6 +42,7 @@
 #include "util/safe_alloc.h"
 
 #define UTXO_CHECKPOINT_NEAR_WINDOW 144
+#define UTXO_BOOT_REWIND_MAX_ROWS 32
 
 static bool utxo_recovery_commit_tip(struct utxo_recovery_ctx *ctx,
                                      struct block_index *tip,
@@ -1042,50 +1043,105 @@ int utxo_recovery_clean_above_tip(struct node_db *ndb,
     int tip_h = tip ? tip->nHeight : 0;
     if (tip_h <= 0) return 0;
 
-    /* Count how many UTXOs would be wiped */
+    /* Count how many UTXOs would be wiped, and how far they extend.
+     * This is the live boot-path counterpart to coins_view_sqlite_open's
+     * case-(e) guard: only a single-block, bounded overshoot is healable. */
     int64_t would_wipe = 0;
+    int max_h = 0;
     {
         sqlite3_stmt *st = NULL;
         char count_sql[128];
         snprintf(count_sql, sizeof(count_sql),
-                 "SELECT count(*) FROM utxos WHERE height > %d", tip_h);
+                 "SELECT count(*), COALESCE(MAX(height),0) "
+                 "FROM utxos WHERE height > %d", tip_h);
         if (sqlite3_prepare_v2(ndb->db, count_sql, -1, &st, NULL) == SQLITE_OK) {
-            if (AR_STEP_ROW_READONLY(st) == SQLITE_ROW)
+            if (AR_STEP_ROW_READONLY(st) == SQLITE_ROW) {
                 would_wipe = sqlite3_column_int64(st, 0);
+                max_h = sqlite3_column_int(st, 1);
+            }
             sqlite3_finalize(st);
         }
     }
 
-    if (would_wipe > 1000) {
+    if (would_wipe <= 0)
+        return 0;
+
+    if (max_h != tip_h + 1 || would_wipe > UTXO_BOOT_REWIND_MAX_ROWS) {
         fprintf(stderr,  // obs-ok:helper-context-logged
-            "ABORT: would wipe %lld UTXOs above tip h=%d. "
-            "Chain tip is likely wrong, not the UTXOs. "
-            "Refusing to destroy data. "
-            "Investigate block_index.bin corruption.\n",
-            (long long)would_wipe, tip_h);
+            "ABORT: refusing boot UTXO rewind above tip h=%d "
+            "(rows=%lld max_height=%d guard=%d). "
+            "Only a single-block overshoot with a bounded row count "
+            "is auto-healable; investigate block_index/coins drift.\n",
+            tip_h, (long long)would_wipe, max_h,
+            UTXO_BOOT_REWIND_MAX_ROWS);
         event_emitf(EV_BOOT_VALIDATION_FAILED, 0,
-            "wipe_blocked count=%lld tip=%d",
-            (long long)would_wipe, tip_h);
+            "wipe_blocked count=%lld tip=%d max_height=%d guard=%d",
+            (long long)would_wipe, tip_h, max_h,
+            UTXO_BOOT_REWIND_MAX_ROWS);
         return 0;
     }
 
-    if (would_wipe > 0) {
-        event_emitf(EV_RECOVERY_ACTION, 0,
-            "action=utxo_prune_above_tip height=%d count=%lld",
-            tip_h, (long long)would_wipe);
-        char sql[128];
-        snprintf(sql, sizeof(sql),
-                 "DELETE FROM utxos WHERE height > %d", tip_h);
-        char *err = NULL;
-        int rc = sqlite3_exec(ndb->db, sql, NULL, NULL, &err);
-        int changes = sqlite3_changes(ndb->db);
-        if (rc == SQLITE_OK && changes > 0)
-            printf("Boot: removed %d UTXOs above tip h=%d\n",
-                   changes, tip_h);
-        if (err) sqlite3_free(err);
-        return changes;
+    event_emitf(EV_RECOVERY_ACTION, 0,
+        "action=utxo_prune_above_tip height=%d count=%lld",
+        tip_h, (long long)would_wipe);
+
+    char *err = NULL;
+    if (sqlite3_exec(ndb->db, "BEGIN IMMEDIATE", NULL, NULL, &err)
+            != SQLITE_OK) {
+        fprintf(stderr,  // obs-ok:helper-context-logged
+            "utxo_recovery: boot rewind BEGIN failed: %s\n",
+            err ? err : "?");
+        sqlite3_free(err);
+        return 0;
     }
 
+    int deleted_high = 0;
+    int deleted_bytxid = 0;
+    int deleted_txindex = 0;
+    char sql[256];
+    snprintf(sql, sizeof(sql),
+             "DELETE FROM utxos WHERE height > %d", tip_h);
+    if (sqlite3_exec(ndb->db, sql, NULL, NULL, &err) != SQLITE_OK)
+        goto rollback;
+    deleted_high = sqlite3_changes(ndb->db);
+
+    snprintf(sql, sizeof(sql),
+        "DELETE FROM utxos WHERE txid IN "
+        "(SELECT txid FROM transactions WHERE block_height > %d)",
+        tip_h);
+    if (sqlite3_exec(ndb->db, sql, NULL, NULL, &err) != SQLITE_OK)
+        goto rollback;
+    deleted_bytxid = sqlite3_changes(ndb->db);
+
+    snprintf(sql, sizeof(sql),
+             "DELETE FROM transactions WHERE block_height > %d", tip_h);
+    if (sqlite3_exec(ndb->db, sql, NULL, NULL, &err) != SQLITE_OK)
+        goto rollback;
+    deleted_txindex = sqlite3_changes(ndb->db);
+
+    if (sqlite3_exec(ndb->db,
+            "DELETE FROM node_state WHERE key='utxo_commitment'",
+            NULL, NULL, &err) != SQLITE_OK)
+        goto rollback;
+
+    if (sqlite3_exec(ndb->db, "COMMIT", NULL, NULL, &err) != SQLITE_OK)
+        goto rollback;
+
+    int deleted_total = deleted_high + deleted_bytxid;
+    printf("Boot: removed %d UTXOs above tip h=%d "
+           "(high=%d by-txid=%d tx_index=%d)\n",
+           deleted_total, tip_h, deleted_high, deleted_bytxid,
+           deleted_txindex);
+    return deleted_total;
+
+rollback:
+    fprintf(stderr,  // obs-ok:helper-context-logged
+        "utxo_recovery: boot rewind failed: %s\n", err ? err : "?");
+    sqlite3_free(err);
+    sqlite3_exec(ndb->db, "ROLLBACK", NULL, NULL, NULL);
+    event_emitf(EV_BOOT_VALIDATION_FAILED, 0,
+        "utxo_boot_rewind_failed tip=%d count=%lld",
+        tip_h, (long long)would_wipe);
     return 0;
 }
 
