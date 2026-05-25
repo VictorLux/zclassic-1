@@ -2,9 +2,10 @@
 
 ## Status
 
-**IN PROGRESS (wt2) — paused after public result-contract trim.** Independent of
-the cutover and the P0 halt — touches only the import/bootstrap modules, none of
-the live chain-advance path. Claim by marking **IN PROGRESS** at the top.
+**IN PROGRESS (wt2) — paused after private snapshot-policy consolidation.**
+Independent of the cutover and the P0 halt — touches only the import/bootstrap
+modules, none of the live chain-advance path. Claim by marking **IN PROGRESS**
+at the top.
 
 ## Why (the cruft)
 
@@ -68,6 +69,9 @@ Progress:
 - Public importer result state was narrowed again: `final_tip` and `total_secs`
   are now local/caller-derived values, not part of the shared cross-module
   contract.
+- Private snapshot import policy is now owned by a mode config table: cold and
+  attach call sites name the snapshot mode instead of repeating batch limits,
+  minimum-tip policy, best-block requirements, long-op names, and log prefixes.
 
 Verification:
 - `make -j$(nproc) test_zcl`, `make -j$(nproc) zclassic23`, `make lint`, and
@@ -104,6 +108,10 @@ Verification:
   `make lint`, and `git diff --check` pass after trimming `final_tip` and
   `total_secs` from the public importer result. Full binary linking in wt2 is
   still blocked by the missing local vendor archives above.
+- `make app/services/src/legacy_bootstrap_importer.o`, `make lint`, and
+  `git diff --check` pass after moving private snapshot policy into the mode
+  config table. Full binary linking in wt2 is still blocked by the missing local
+  vendor archives above.
 
 ## The shape (one canonical importer, pluggable mode)
 
