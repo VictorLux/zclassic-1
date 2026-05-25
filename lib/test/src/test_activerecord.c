@@ -577,6 +577,68 @@ int test_activerecord(void)
         else { printf("FAIL\n"); failures++; }
     }
 
+    /* tx_index lookup order used by self-heal fallback */
+    {
+        printf("AR tx_index: native/reversed lookup... ");
+        struct node_db ndb;
+        bool ok = node_db_open(&ndb, ":memory:");
+
+        uint8_t native_txid[32];
+        for (size_t i = 0; i < sizeof(native_txid); i++)
+            native_txid[i] = (uint8_t)(i + 1);
+
+        struct db_tx_index native_tx;
+        memset(&native_tx, 0, sizeof(native_tx));
+        memcpy(native_tx.txid, native_txid, sizeof(native_tx.txid));
+        memset(native_tx.block_hash, 0x42, sizeof(native_tx.block_hash));
+        native_tx.block_height = 210;
+        native_tx.tx_index = 2;
+        native_tx.file_num = 3;
+        native_tx.file_pos = 400;
+        ok = ok && db_tx_save(&ndb, &native_tx);
+
+        struct db_tx_index found;
+        bool used_reversed = true;
+        memset(&found, 0, sizeof(found));
+        ok = ok && db_tx_find_native_or_reversed(&ndb, native_txid,
+                                                 &found, &used_reversed);
+        ok = ok && !used_reversed;
+        ok = ok && (found.block_height == 210);
+        ok = ok && (found.tx_index == 2);
+
+        uint8_t native_txid_2[32];
+        uint8_t reversed_txid_2[32];
+        for (size_t i = 0; i < sizeof(native_txid_2); i++)
+            native_txid_2[i] = (uint8_t)(0xa0 + i);
+        for (size_t i = 0; i < sizeof(reversed_txid_2); i++)
+            reversed_txid_2[i] =
+                native_txid_2[sizeof(native_txid_2) - 1 - i];
+
+        struct db_tx_index reversed_tx;
+        memset(&reversed_tx, 0, sizeof(reversed_tx));
+        memcpy(reversed_tx.txid, reversed_txid_2,
+               sizeof(reversed_tx.txid));
+        memset(reversed_tx.block_hash, 0x43,
+               sizeof(reversed_tx.block_hash));
+        reversed_tx.block_height = 211;
+        reversed_tx.tx_index = 3;
+        reversed_tx.file_num = 4;
+        reversed_tx.file_pos = 500;
+        ok = ok && db_tx_save(&ndb, &reversed_tx);
+
+        used_reversed = false;
+        memset(&found, 0, sizeof(found));
+        ok = ok && db_tx_find_native_or_reversed(&ndb, native_txid_2,
+                                                 &found, &used_reversed);
+        ok = ok && used_reversed;
+        ok = ok && (found.block_height == 211);
+        ok = ok && (found.tx_index == 3);
+
+        node_db_close(&ndb);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
     /* Block → prev/next relationship */
     {
         printf("AR relationship: block prev/next... ");

@@ -315,14 +315,6 @@ bool process_block_recover_missing_utxo_from_legacy_rpc(
     return recovered;
 }
 
-static void process_block_reverse_32(uint8_t out[32], const uint8_t in[32])
-{
-    if (!out || !in)
-        return;
-    for (size_t i = 0; i < 32; i++)
-        out[i] = in[31 - i];
-}
-
 bool process_block_recover_missing_utxo_from_sqlite_tx_index(
     struct main_state *ms,
     struct coins_view_cache *coins_tip,
@@ -337,14 +329,10 @@ bool process_block_recover_missing_utxo_from_sqlite_tx_index(
 
     struct db_tx_index dbtx;
     memset(&dbtx, 0, sizeof(dbtx));
-    const char *lookup_order = "native";
-    if (!db_tx_find(ndb, txid->data, &dbtx)) {
-        uint8_t reversed[32];
-        process_block_reverse_32(reversed, txid->data);
-        if (!db_tx_find(ndb, reversed, &dbtx))
-            return false;
-        lookup_order = "reversed";
-    }
+    bool used_reversed = false;
+    if (!db_tx_find_native_or_reversed(ndb, txid->data, &dbtx,
+                                       &used_reversed))
+        return false;
 
     struct uint256 block_hash;
     memcpy(block_hash.data, dbtx.block_hash, sizeof(block_hash.data));
@@ -401,13 +389,13 @@ bool process_block_recover_missing_utxo_from_sqlite_tx_index(
         }
     }
 
-    if (recovered && strcmp(lookup_order, "native") != 0) {
+    if (recovered && used_reversed) {
         char txhex[65];
         uint256_get_hex(txid, txhex);
         fprintf(stderr, // obs-ok:pre-existing-diagnostic
                 "[self-heal] SQLite tx index recovered %s using %s lookup "
                 "after local block/tx hash verification\n",
-                txhex, lookup_order);
+                txhex, "reversed");
     }
 
     block_free(&src_block);
