@@ -384,6 +384,65 @@ void snapsync_get_stall_status(struct snapshot_sync_service *svc,
     snapsync_service_unlock_internal();
 }
 
+void snapsync_get_negotiation_status(struct snapshot_sync_service *svc,
+                                     struct snapsync_negotiation_status *out)
+{
+    struct snapsync_negotiation_status local = {0};
+    if (!out)
+        out = &local;
+    memset(out, 0, sizeof(*out));
+
+    if (!svc) {
+        svc = app_runtime_snapshot_sync();
+        if (!svc) {
+            if (!snapsync_global_initialized())
+                return;
+            svc = snapsync_global();
+        }
+    }
+
+    snapsync_service_lock_internal();
+    out->negotiating = svc->state == SNAPSYNC_NEGOTIATING;
+    out->offered_height = svc->offered_height;
+    out->offered_utxos = svc->offered_count;
+    out->serving_peer_id = svc->serving_peer_id;
+    if (!out->negotiating || svc->start_time_us == 0) {
+        snapsync_service_unlock_internal();
+        return;
+    }
+
+    int64_t elapsed_us = snapsync_now_us_internal() - svc->start_time_us;
+    out->elapsed_secs = elapsed_us > 0 ? elapsed_us / 1000000LL : 0;
+    out->stalled = elapsed_us >=
+        (int64_t)SNAPSYNC_NEGOTIATION_TIMEOUT_SECS * 1000000LL;
+    snapsync_service_unlock_internal();
+}
+
+bool snapsync_check_negotiation_stall(void)
+{
+    struct snapshot_sync_service *svc = app_runtime_snapshot_sync();
+    if (!svc) {
+        if (!snapsync_global_initialized())
+            return false;
+        svc = snapsync_global();
+    }
+
+    struct snapsync_negotiation_status st;
+    snapsync_get_negotiation_status(svc, &st);
+    if (!st.stalled)
+        return false;
+
+    event_emitf(EV_SNAPSHOT_OFFER_RECEIVED, st.serving_peer_id,
+                "accepted=false reason=negotiation_stall elapsed_s=%lld "
+                "h=%d utxos=%llu action=blacklist_reset",
+                (long long)st.elapsed_secs,
+                st.offered_height,
+                (unsigned long long)st.offered_utxos);
+    snapsync_blacklist_peer(svc, st.serving_peer_id);
+    snapsync_reset(svc);
+    return true;
+}
+
 bool snapsync_check_stall(void)
 {
     struct snapshot_sync_service *svc = app_runtime_snapshot_sync();

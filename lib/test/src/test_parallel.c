@@ -98,6 +98,7 @@ volatile sig_atomic_t g_shutdown_requested = 0;
     X(supervisor_domains) X(condition_engine) X(utxo_activation_paused) \
     X(watchdog_dissolve_pr2) X(watchdog_conditions_pr3) \
     X(snapshot_receive_stalled_condition) X(legacy_mirror_stuck_condition) \
+    X(snapshot_negotiation_stalled_condition) \
     X(chain_tip_watchdog_bounded_restart) X(blocker) \
     X(clock) X(rng) X(seed_tape) X(postmortem) X(chaos_harness) X(stage) X(mailbox) X(mailbox_adoption) \
     X(projection) X(projection_adoption) X(progress_store) X(event_log) \

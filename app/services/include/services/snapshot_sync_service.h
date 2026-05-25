@@ -164,6 +164,15 @@ struct snapsync_stall_status {
     uint32_t serving_peer_id;
 };
 
+struct snapsync_negotiation_status {
+    bool negotiating;
+    bool stalled;
+    int64_t elapsed_secs;
+    int32_t offered_height;
+    uint64_t offered_utxos;
+    uint32_t serving_peer_id;
+};
+
 /* ── Lifecycle ─────────────────────────────────────────────────── */
 
 /* Initialize (called once at boot) */
@@ -334,19 +343,26 @@ bool snapsync_awaiting_utxos(void);
 void snapsync_get_stall_status(struct snapshot_sync_service *svc,
                                struct snapsync_stall_status *out);
 
+/* Query snapshot negotiation stall state. A stalled negotiation means an
+ * offer was accepted but FlyClient proofs did not arrive in time. */
+void snapsync_get_negotiation_status(struct snapshot_sync_service *svc,
+                                     struct snapsync_negotiation_status *out);
+
 /* Check if snapshot receive has stalled (no chunk for >60s while RECEIVING).
  * If stalled, resets the service to IDLE so a new offer can be accepted.
  * Returns true if a stall was detected and reset was performed. */
 bool snapsync_check_stall(void);
 
-/* Stall timeout: seconds without any progress (new UTXOs received)
- * before resetting.  Must be long enough for TCP backpressure during
- * SQLite batch writes.  300s is conservative — typical localhost
- * snapshot takes 25-30s, but slow peers + disk I/O can extend it. */
+/* Check if accepted snapshot negotiation has stalled before receive begins.
+ * If stalled, blacklists the peer and resets to IDLE. */
+bool snapsync_check_negotiation_stall(void);
+
 /* Stall timeout: seconds without any new UTXOs received before resetting.
  * Must be long enough for SQLite batch commits (~10-30s) + TCP backpressure
  * during WAL checkpoint.  120s balances fast recovery vs false positives. */
 #define SNAPSYNC_STALL_TIMEOUT_SECS 120
+
+#define SNAPSYNC_NEGOTIATION_TIMEOUT_SECS 120
 
 /* Blacklist duration: seconds a peer is rejected after stalling.
  * Long enough to let other peers serve, short enough to retry if
