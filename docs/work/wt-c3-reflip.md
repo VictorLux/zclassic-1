@@ -85,11 +85,22 @@ holds the HEADERS for the post-import range but not readable block BODIES, so
 `check_equihash_solution` can't read the block → `disk-read-failed` (same root as
 the earlier `read_block_undo: cannot open rev*.dat`).
 
-**Fix:** backfill the full block bodies for 3,124,225→tip (re-fetch + persist) so
-validate_headers can verify them → `failed_total→0` → the cutover gate clears.
-The gate is still correct (don't trust headers you can't verify), but the cause is
-**missing bodies, not consensus logic** — a data-completeness task downstream of
-the cold-import rebuild, NOT a consensus bug to fix.
+**Pinned to the storage layer (2026-05-25):** the bytes are NOT missing —
+`blk00050.dat` exists (380639 B) and the index offsets are valid (h=3124225
+nFile=50 nDataPos=8 BLOCK_HAVE_DATA; h=3124640 nDataPos=370196). But
+`read_block_from_disk_index_pread` (validate_headers_stage.c) returns
+`disk-read-failed` for the whole file-50 range. So it's a **read/index
+inconsistency on the post-cold-import file**, not missing data and not consensus
+logic. blk00049 and below are cold-import hardlinks; blk00050 is the node's own
+post-anchor file. The cold-import marked the post-anchor range BLOCK_HAVE_DATA in
+a state `read_block_from_disk_index_pread` can't read.
+
+**Fix (storage layer — workers' area):** make validate_headers' block read see/
+read `blk00050.dat` correctly (use the open-on-demand `bmr` reader, or repair the
+nDataPos/file state the cold-import wrote), → `failed_total→0` → cutover gate
+clears. **Honest root note:** the cold-import used to cure the halt was a band-aid
+that left this gap; the clean fix is either a body-repair for the post-anchor
+range or a rebuild that produces readable block data throughout. NOT a consensus bug.
 
 > Deploy/flip on the live node is operator-gated by Rhett. See
 > [`cutover-safety-protocol.md`](./cutover-safety-protocol.md) and
