@@ -20,6 +20,7 @@
 #include "chain/chain.h"
 #include "chain/chainparams.h"
 #include "core/uint256.h"
+#include "json/json.h"
 
 #include <arpa/inet.h>
 #include <netinet/in.h>
@@ -434,6 +435,52 @@ int test_header_probe_service(void)
          * calls_total stays at 0. */
         HP_CHECK("under-lag: calls_total=0",
                  hp_dump_int("calls_total") == 0);
+
+        hp_mock_stop(&srv);
+        hp_teardown();
+    }
+
+    /* Test 5: dumpstate exposes operational state only. */
+    {
+        hp_build_fixture();
+        struct hp_mock srv;
+        HP_CHECK("mock starts (dump)",
+                 hp_mock_start(&srv, 12, false));
+
+        struct header_probe_config cfg = {
+            .rpc_host = "127.0.0.1",
+            .rpc_port = srv.port,
+            .rpc_user = "u", .rpc_password = "p",
+            .batch_size = 5,
+            .lag_threshold = 1,
+        };
+        HP_CHECK("init (dump)",
+                 header_probe_init(&cfg, &g_hp_ms, params));
+        int added = 0;
+        (void)header_probe_pull_range(1, 5, &added);
+
+        struct json_value dump;
+        json_init(&dump);
+        bool ok = header_probe_dump_state_json(&dump, NULL);
+        ok = ok && json_get(&dump, "initialized") != NULL;
+        ok = ok && json_get_bool(json_get(&dump, "initialized"));
+        ok = ok && json_get(&dump, "calls_total") != NULL;
+        ok = ok && json_get_int(json_get(&dump, "calls_total")) == 1;
+        ok = ok && json_get(&dump, "headers_added") != NULL;
+        ok = ok && json_get(&dump, "headers_rejected") != NULL;
+        ok = ok && json_get(&dump, "rpc_errors") != NULL;
+        ok = ok && json_get(&dump, "last_remote_height") != NULL;
+        ok = ok && json_get_int(json_get(&dump, "last_remote_height")) == 12;
+        ok = ok && json_get(&dump, "last_local_height") != NULL;
+        ok = ok && json_get(&dump, "running") == NULL;
+        ok = ok && json_get(&dump, "rpc_host") == NULL;
+        ok = ok && json_get(&dump, "rpc_port") == NULL;
+        ok = ok && json_get(&dump, "have_user") == NULL;
+        ok = ok && json_get(&dump, "have_password") == NULL;
+        ok = ok && json_get(&dump, "batch_size") == NULL;
+        ok = ok && json_get(&dump, "lag_threshold") == NULL;
+        HP_CHECK("dump omits config echo", ok);
+        json_free(&dump);
 
         hp_mock_stop(&srv);
         hp_teardown();

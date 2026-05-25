@@ -358,24 +358,10 @@ bool header_probe_dump_state_json(struct json_value *out, const char *key)
     json_set_object(out);
 
     pthread_mutex_lock(&g_hp.lock);
-    int batch      = g_hp.batch_size;
-    int lag        = g_hp.lag_threshold;
-    int port       = g_hp.rpc_port;
-    char host[64];
-    snprintf(host, sizeof(host), "%s", g_hp.rpc_host);
-    bool have_user = g_hp.rpc_user[0] != '\0';
-    bool have_pass = g_hp.rpc_password[0] != '\0';
     bool initialized = g_hp.initialized;
     pthread_mutex_unlock(&g_hp.lock);
 
-    json_push_kv_bool(out, "running",            initialized);
     json_push_kv_bool(out, "initialized",        initialized);
-    json_push_kv_str (out, "rpc_host",           host);
-    json_push_kv_int (out, "rpc_port",           port);
-    json_push_kv_bool(out, "have_user",          have_user);
-    json_push_kv_bool(out, "have_password",      have_pass);
-    json_push_kv_int (out, "batch_size",         batch);
-    json_push_kv_int (out, "lag_threshold",      lag);
     json_push_kv_int (out, "calls_total",
                       atomic_load(&g_hp.calls_total));
     json_push_kv_int (out, "headers_added",
