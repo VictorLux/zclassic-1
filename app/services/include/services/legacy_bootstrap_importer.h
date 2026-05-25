@@ -41,7 +41,6 @@ struct legacy_bootstrap_import_options {
     struct wallet *wallet;
     const char *our_datadir;
     const char *legacy_datadir;
-    int from_height;
 };
 
 enum legacy_attach_outcome {

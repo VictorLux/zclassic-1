@@ -1187,9 +1187,7 @@ static bool legacy_bootstrap_import_direct(
             "load took %" PRId64 " ms)\n",
             legacy_tip, map_count, legacy_bootstrap_now_ms() - t_open);
 
-    int from_height = opts->from_height;
-    if (from_height < 0)
-        from_height = active_chain_height(&opts->ms->chain_active);
+    int from_height = active_chain_height(&opts->ms->chain_active);
     if (from_height < 0)
         from_height = 0;
     if (from_height >= legacy_tip) {

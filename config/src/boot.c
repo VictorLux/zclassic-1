@@ -1001,7 +1001,6 @@ static bool boot_step_fastimport(struct app_context *ctx,
         .wallet = &g_wallet,
         .our_datadir = ctx->datadir,
         .legacy_datadir = ctx->fastimport_from,
-        .from_height = -1 /* start from active_chain_height */,
     };
     bool ok = legacy_bootstrap_import_blocking(&import_opts, &r);
 
