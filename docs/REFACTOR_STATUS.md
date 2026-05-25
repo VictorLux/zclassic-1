@@ -26,9 +26,9 @@ Honest scoreboard. **MEASURED** = a real number from this box (date + how, in
      Binary size               14.6 MB (05-24)     stay slim     ✓ met (docs' 26MB stale)
 
   💪 UNBREAKABLE
-     Wedge/crash recovery      180s, manual        <60s, auto    ▸ PR-0 building (wt3)
+     Wedge/crash recovery      180s, manual        <60s, auto    ✓ recovery path landed; live timing pending
      Uptime before failure     not measured        30 days       needs a soak (up ~10min)
-     Alerts to a human         not measured        0 / month     10 Conditions live, self-heal
+     Alerts to a human         not measured        0 / month     11 Conditions live, self-heal
 
   🔬 HONEST
      Bug → reproducible fix    not built           1 seed-tape   simulator pending
@@ -44,7 +44,6 @@ regression to chase, not a win. `✓` met · `▸` work in flight · `▲` regre
 | Work | Goal | Who |
 |---|---|---|
 | PR-3 parallel blk*.dat marking (cold-import 101s→seconds) | Cold sync | wt2 |
-| PR-0 snapshot wedge-recovery (auto-heal a stuck tip) | Recovery | wt3 |
 | Cutover C-5→C-9 authoritative | Cold sync, validation, recovery | — |
 | 4e bodies-into-log + 4d projections | Warm restart, recovery | — |
 | Phase-3 dissolves (header_probe ✅, chain_restore, utxo_recovery) | Memory, uptime | — |
@@ -87,7 +86,7 @@ Phase 4  [█████████░]  95%   Storage unification — plan: d
   ├ 4d-2   [██████████] 100%   peers_projection  ✅ 91aa65c1c + 5dc442a81 + 48e78d801 + f925fb6f3 (wt2)
   ├ 4d-3   [██████████] 100%   wallet view projection + diff + final verification  ✅ 12284eb3e, 5626552cb
   ├ 4d-4   [██████████] 100%   znam projection — Tasks 1-5b SHIPPED  ✅ (f52313f02..eb53d9d52, 7 commits, 30 test cases pass)
-  ├ 4d-5   [░░░░░░░░░░]   0%   zmsg/zslp/zswp/store batch (READY)
+  ├ 4d-5   [██████████] 100%   small projections: contacts/onion/hodl ✅ 2f23d8352
   └ 4e     [░░░░░░░░░░]   0%   block-body migration (spec'd, gated on 4c cutover)
 Phase 5  [██████████] 100%   Crypto agility (registry indirection)    ✅ DONE
   ├ 5a-1   [██████████] 100%   Crypto registry skeleton  ✅ c4bebe0a2 + polish dde0183c7
@@ -124,7 +123,7 @@ clause. The table below is the dashboard.
 | Lint gates active | 20 (1 FAIL'd in P1) | 21 | +1 by Phase 3 (gate #20→FAIL) |
 | Raw clock/RNG callers | **0** | 0 | ✅ Phase 1c (was 443) |
 | Mailbox prod callers | 1 | many | ✅ Phase 1a (header_admit), more in Phase 3 |
-| Conditions registered | 3 | ~15 | Phase 2+ adds ~6 from sync_watchdog dissolution |
+| Conditions registered | 11 | ~15 | Phase 2+ adds self-heal conditions |
 | MTBF (live node) | 5.5 d | 30 d | Phase 0 + Phase 2 |
 | RSS steady-state | 2.2 GB | 1 GB | Phase 3 |
 | Cold-start | 145 s | 60 s | Phase 2 |
@@ -173,15 +172,15 @@ projection ✅ (a9fb0f396..49ef6bbe6) · chain_restore PR-1 planner extract ✅
 (462be5e5a) · chain_restore PR-2a executor extract ✅ (6ec178eb6) ·
 chain_restore PR-2b repair extract ✅ (5042fde7b) ·
 chain_restore service implementation delete ✅ (89892c441) ·
-chain_restore compatibility header delete ✅ (this commit) ·
+chain_restore compatibility header delete ✅ (8658ef0d2) ·
 utxo_recovery PR-1 reimport-flag primitive ✅ (af7ba7a30) · header_probe
-dissolve ✅ (981ad4897..1b0847820).
+dissolve ✅ (981ad4897..1b0847820) · snapshot wedge recovery ✅
+(4d7f7adee..8e25887b0) · small projections 4d-5 ✅
+(0f10cd5f4..2f23d8352).
 
 ### Claimable NOW (no soak gate, fully independent)
-1. ⚡ [`wt-snapshot-wedge-recovery.md`](./work/wt-snapshot-wedge-recovery.md) **PR-0: runtime snapshot re-sync entry point** — foundational for wedge recovery. Today snapshot sync has NO trigger API (only peer-offer driven, `snapshot_sync_service.h:209`) and apply is cold-start-gated. Add `snapsync_request_recovery()` + a runtime local-LDB manifest builder + relax the <100K accept gate for opt-in recovery. **Feasibility audited — read the ⚠️ block in the doc before claiming.** Unblocks PR-1 (the `tip_wedged_resnapshot` Condition). Moves #6 recovery + #5 keep-up.
-2. ⚡ [`wt-perf-integrate-rebuild.md`](./work/wt-perf-integrate-rebuild.md) **PR-3: parallel io_uring blk*.dat marking in cold-import** — PROMOTED with a live profile: cold-import is ~180s, **101s of it is single-threaded blk*.dat marking** (measured `941b9803d`). The `rebuild_recent` prototype already proved the fix on this exact data (5.6s/2GB/s). Parallelize the scan → seconds. Moves #1 cold sync. PR-1 (HW-CRC) ✅ `69939ec97`; PR-2 (io_uring bulk-append) still spec'd.
-2. [`wt-phase4d-5-small-batch-projections.md`](./work/wt-phase4d-5-small-batch-projections.md) — zmsg/zslp/zswp/store + hodl batch. Closes out the 4d projections.
-3. More self-heal Conditions — chain_restore/header_probe are dissolved; use
+1. ⚡ [`wt-perf-integrate-rebuild.md`](./work/wt-perf-integrate-rebuild.md) **PR-3: parallel io_uring blk*.dat marking in cold-import** — PROMOTED with a live profile: cold-import is ~180s, **101s of it is single-threaded blk*.dat marking** (measured `941b9803d`). The `rebuild_recent` prototype already proved the fix on this exact data (5.6s/2GB/s). Parallelize the scan → seconds. Moves #1 cold sync. PR-1 (HW-CRC) ✅ `69939ec97`; PR-2 (io_uring bulk-append) still spec'd.
+2. More self-heal Conditions — chain_restore/header_probe are dissolved; use
    [`docs/dissolve/`](./dissolve/) for the remaining mega-module plans.
 
 ### Soak-gated (read the spec now, start when the 24 h C-3 soak clears)
@@ -208,6 +207,9 @@ freed workers add the most while the soak runs.
 
 | Date | What | Worktree | Commit |
 |---|---|---|---|
+| 2026-05-25 | **Phase 4d-5 small projections COMPLETE** — contacts, onion announcements, and HODL history shadow projections with event payloads, boot wiring, diagnostics, and diff tools | wt2 → main | 0f10cd5f4..2f23d8352 |
+| 2026-05-25 | **Snapshot wedge recovery COMPLETE** — runtime recovery request path, local manifest builder, `tip_wedged_resnapshot` condition, verification gates, and recovery observability | wt3 → main | 4d7f7adee..8e25887b0 |
+| 2026-05-25 | **Phase 3 chain_restore dissolve COMPLETE** — service implementation and compatibility header deleted; focused planner/executor/repair/boot modules own restore | main | 89892c441, 8658ef0d2 |
 | 2026-05-25 | **Phase 3 header_probe dissolve COMPLETE** — PR-2 shrink to 392 LOC, legacy header RPC helper extracted, old `header_probe_service.{h,c}` deleted/renamed to `header_probe.{h,c}` | wt3 → main | 981ad4897, d17eb5ca0 |
 | 2026-05-24 | **Phase 4d-3 wallet projection COMPLETE** — public-only wallet projection, diff RPC/MCP tool, diagnostics, replay edge coverage, secret/payload audit, and live fresh-node `match:true` diff evidence | wt2 → main | 12284eb3e, 5626552cb |
 | 2026-05-24 | **Phase 2 C-3 validate_headers AUTHORITATIVE** — the flip; full test_parallel 0/196; stabilized 2 pre-existing flaky timing tests (crypto_registry ECDSA, event async) | wt3 → main | ad34efb65, 535f14902, 72dd5e01f |

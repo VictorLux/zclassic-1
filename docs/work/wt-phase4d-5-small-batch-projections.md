@@ -500,7 +500,7 @@ Commits:
 - `b98cadb51` — Task 6, boot open/catch-up/shutdown wiring.
 - `68234ade6` — Tasks 7 and 9, small projection MCP diff tools and
   controller-count updates.
-- Final verification commit — Task 10, completion note and final lint
+- `2f23d8352` — Task 10, completion note and final lint
   cleanup after rebasing the parallel rebuild tool.
 
 Verification:
