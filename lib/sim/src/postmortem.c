@@ -3,6 +3,7 @@
 #include "sim/postmortem.h"
 
 #include "platform/clock.h"
+#include "util/clientversion.h"
 #include "util/signal_handler.h"
 #include "util/safe_alloc.h"
 
@@ -646,6 +647,18 @@ static int signal_write_manifest(const char *path, int sig,
     if (signal_append_u64(manifest, sizeof(manifest), &off,
                           (uint64_t)tape_size) != 0) return -1;
     if (signal_append_cstr(manifest, sizeof(manifest), &off,
+                           ",\n"
+                           "  \"build_id\": \"") != 0) return -1;
+    if (signal_append_cstr(manifest, sizeof(manifest), &off,
+                           CLIENT_NAME) != 0) return -1;
+    if (signal_append_cstr(manifest, sizeof(manifest), &off, "-") != 0)
+        return -1;
+    if (signal_append_u64(manifest, sizeof(manifest), &off,
+                          (uint64_t)CLIENT_VERSION) != 0) return -1;
+    if (signal_append_cstr(manifest, sizeof(manifest), &off,
+                           "\",\n"
+                           "  \"git_sha\": \"unknown\"") != 0) return -1;
+    if (signal_append_cstr(manifest, sizeof(manifest), &off,
                            "\n}\n") != 0) return -1;
     return signal_write_file(path, manifest, off);
 }
@@ -707,6 +720,8 @@ int postmortem_capture_write(const struct postmortem_capture_opts *opts,
              cap_dir);
     char reason_json[256];
     json_escape_string(opts->reason, reason_json, sizeof(reason_json));
+    char version[64];
+    FormatVersion(CLIENT_VERSION, version, sizeof(version));
     char manifest[1024];
     int mn = snprintf(manifest, sizeof(manifest),
         "{\n"
@@ -718,7 +733,9 @@ int postmortem_capture_write(const struct postmortem_capture_opts *opts,
         "  \"tape_size_bytes\": %zu,\n"
         "  \"rng_count\": %llu,\n"
         "  \"clock_advance_count\": %llu,\n"
-        "  \"inject_count\": %llu\n"
+        "  \"inject_count\": %llu,\n"
+        "  \"build_id\": \"%s-%s\",\n"
+        "  \"git_sha\": \"unknown\"\n"
         "}\n",
         opts->crash_signal,
         (long long)ts,
@@ -726,7 +743,9 @@ int postmortem_capture_write(const struct postmortem_capture_opts *opts,
         seed_tape_size_bytes(opts->tape),
         (unsigned long long)seed_tape_rng_count(opts->tape),
         (unsigned long long)seed_tape_clock_advance_count(opts->tape),
-        (unsigned long long)seed_tape_inject_count(opts->tape));
+        (unsigned long long)seed_tape_inject_count(opts->tape),
+        CLIENT_NAME,
+        version);
     if (mn < 0 || (size_t)mn >= sizeof(manifest)) return -EOVERFLOW;
     rc = write_bytes_file(manifest_path, manifest, (size_t)mn);
     if (rc != 0) return rc;

@@ -141,6 +141,11 @@ static int test_signal_handler_capsule(void)
                      entries[0].path);
             PM_CHECK("signal capsule captures proc status",
                      file_contains(proc_path, "Name:"));
+            char manifest_path[576];
+            snprintf(manifest_path, sizeof(manifest_path), "%s/manifest.json",
+                     entries[0].path);
+            PM_CHECK("signal manifest records build id",
+                     file_contains(manifest_path, "\"build_id\":"));
             seed_tape_t *loaded = postmortem_capsule_load_tape(entries[0].path);
             PM_CHECK("signal capsule tape loads", loaded != NULL);
             if (loaded) {
@@ -490,6 +495,10 @@ int test_postmortem(void)
              file_contains(manifest_path, "\"crash_signal\": 11"));
     PM_CHECK("manifest records reason",
              file_contains(manifest_path, "\"reason\": \"unit-test\""));
+    PM_CHECK("manifest records build id",
+             file_contains(manifest_path, "\"build_id\": \"ZClassic-C23-"));
+    PM_CHECK("manifest records git sha placeholder",
+             file_contains(manifest_path, "\"git_sha\": \"unknown\""));
 
     char copied_log_path[576];
     snprintf(copied_log_path, sizeof(copied_log_path), "%s/log.txt",

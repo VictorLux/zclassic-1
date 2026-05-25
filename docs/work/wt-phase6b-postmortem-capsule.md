@@ -371,5 +371,9 @@ the capsule API plus the non-signal save/list/load path.
   `/proc/self/status` copy through raw `open`/`read`/`write`/`close`, with
   forked SIGABRT/SIGSEGV coverage proving the captured capsule contains the
   process status payload.
+- Added manifest build identity fields on both normal and fatal-signal capsule
+  paths: `build_id` records the current `CLIENT_NAME` + `CLIENT_VERSION`, and
+  `git_sha` is explicitly set to `unknown` until the build injects a commit
+  SHA. Focused tests now assert those manifest fields.
 
 <!-- Worker: append a Completion section below when done. -->
