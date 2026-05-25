@@ -47,6 +47,9 @@ Progress:
 - Dead result fields from the old evidence/direct-import split were removed
   from the canonical result contract; boot only receives fields it reports or
   acts on.
+- More dead direct/no-op result state was removed: callers use the blocking
+  import return value, and direct skip counters are now local to the direct
+  importer summary log.
 
 Verification:
 - `make -j$(nproc) test_zcl`, `make -j$(nproc) zclassic23`, `make lint`, and

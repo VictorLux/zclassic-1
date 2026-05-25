@@ -1073,7 +1073,6 @@ static bool legacy_bootstrap_import_cold(
             imported.legacy_tip_height, imported.chainstate_records);
 
     r.total_secs = (double)(legacy_bootstrap_now_ms() - t_start) / 1000.0;
-    r.ok = true;
     if (out) *out = r;
     fprintf(stderr,  // obs-ok:pre-existing-diagnostic
             "[cold_import] DONE in %.1fs: block_index=%" PRId64
@@ -1141,7 +1140,6 @@ static bool legacy_bootstrap_import_direct(
                 "(from=%d legacy=%d) — nothing to do\n",
                 from_height, legacy_tip);
         bilr_free_height_map(map);
-        r.ok = true;
         r.final_tip = active_chain_height(&opts->ms->chain_active);
         if (out) *out = r;
         return true;
@@ -1176,6 +1174,8 @@ static bool legacy_bootstrap_import_direct(
     int64_t t_walk = legacy_bootstrap_now_ms();
     int last_log_h = from_height;
     int64_t t_last_log = t_walk;
+    int skipped_have_data = 0;
+    int skipped_failed = 0;
     bool ok = true;
 
     for (int h = from_height + 1; h <= legacy_tip; h++) {
@@ -1202,11 +1202,11 @@ static bool legacy_bootstrap_import_direct(
         bool failed = bi && (bi->nStatus & BLOCK_FAILED_MASK);
         zcl_mutex_unlock(&opts->ms->cs_main);
         if (have_data) {
-            r.skipped_have_data++;
+            skipped_have_data++;
             continue;
         }
         if (failed) {
-            r.skipped_failed++;
+            skipped_failed++;
             continue;
         }
 
@@ -1278,14 +1278,13 @@ static bool legacy_bootstrap_import_direct(
     bilr_free_height_map(map);
 
     r.final_tip = active_chain_height(&opts->ms->chain_active);
-    r.ok = ok;
 
     fprintf(stderr,  // obs-ok:pre-existing-diagnostic
             "[legacy_direct_import] walk %s: applied=%d "
             "skipped_have=%d skipped_failed=%d elapsed=%.1fs "
             "rate=%.1f bps final_tip=%d\n",
             ok ? "complete" : "ABORTED",
-            r.applied, r.skipped_have_data, r.skipped_failed,
+            r.applied, skipped_have_data, skipped_failed,
             total_secs, avg_rate, r.final_tip);
 
     if (ok && opts->wallet && r.applied > 0) {
@@ -1644,7 +1643,6 @@ static bool legacy_bootstrap_import_attach(
                             ldb_snapshot_destroy(cs_path);
                             r.outcome = LEGACY_ATTACH_OUTCOME_NOOP_SAME_TIP;
                             r.legacy_tip = last_h;
-                            r.ok = true;
                             if (out) *out = r;
                             fprintf(stderr,  // obs-ok:legacy-attach-noop
                                 "[legacy_attach] NOOP: already attached "
@@ -1761,7 +1759,6 @@ static bool legacy_bootstrap_import_attach(
     r.total_secs = (double)(legacy_bootstrap_now_ms() - t_start) / 1000.0;
     if (r.outcome == LEGACY_ATTACH_OUTCOME_FAILED)
         r.outcome = LEGACY_ATTACH_OUTCOME_DID_IMPORT;
-    r.ok = true;
     if (out) *out = r;
 
     fprintf(stderr,  // obs-ok:legacy-attach-done

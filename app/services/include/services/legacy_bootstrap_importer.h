@@ -59,13 +59,10 @@ struct legacy_bootstrap_import_result {
     int64_t utxos_imported;
     int64_t blk_files_linked;
     int applied;
-    int skipped_have_data;
-    int skipped_failed;
     int final_tip;
     enum legacy_attach_outcome outcome;
     int64_t stages_stamped;
     double total_secs;
-    bool ok;
 };
 
 struct legacy_bootstrap_height_map_result {
