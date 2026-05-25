@@ -8,6 +8,7 @@
 #include "config/boot_internal.h"
 #include "config/boot_snapshot_import.h"
 #include "config/file_ops.h"
+#include "platform/rng.h"
 #include "services/snapshot_sync_service.h"
 #include "services/chain_activation_controller.h"
 #include "services/chain_restore_service.h"
@@ -26,6 +27,8 @@
 #include "services/disk_monitor.h"
 #include "services/ibd_throttle.h"
 #include "services/db_maintenance.h"
+#include "sim/postmortem.h"
+#include "sim/seed_tape.h"
 #include "controllers/wallet_scan.h"
 #include "util/signal_handler.h"
 #include "util/sync.h"
@@ -140,6 +143,8 @@ static struct ibd_throttle_config g_ibd_throttle_cfg;
 static struct zcl_service_kernel g_guard_kernel;
 static struct zcl_service_kernel g_maintenance_kernel;
 static struct zcl_service_kernel g_boot_db_kernel;
+static seed_tape_t *g_boot_seed_tape = NULL;
+static char g_boot_postmortem_dir[1024];
 
 /* ── System RAM query ────────────────────────────────────────── */
 
@@ -200,6 +205,74 @@ static void release_datadir_lock(void)
     if (g_pidfile_path[0])
         unlink(g_pidfile_path);
 }
+
+static void boot_step_stop_postmortem(void)
+{
+    postmortem_uninstall();
+    seed_tape_t *tape = g_boot_seed_tape;
+    g_boot_seed_tape = NULL;
+    g_boot_postmortem_dir[0] = '\0';
+    if (tape)
+        seed_tape_close(tape);
+}
+
+static bool boot_step_init_postmortem(const char *datadir)
+{
+    if (!datadir || !*datadir)
+        return false;
+
+    if (g_boot_seed_tape)
+        boot_step_stop_postmortem();
+
+    int n = snprintf(g_boot_postmortem_dir, sizeof(g_boot_postmortem_dir),
+                     "%s/postmortems", datadir);
+    if (n < 0 || (size_t)n >= sizeof(g_boot_postmortem_dir)) {
+        fprintf(stderr,  // obs-ok:boot-fatal-before-event-context
+                "WARNING: postmortem path too long; crash capsules disabled\n");
+        g_boot_postmortem_dir[0] = '\0';
+        return false;
+    }
+
+    uint64_t seed = rng_u64();
+    int64_t wall = platform_time_wall_time_t();
+    seed_tape_t *tape = seed_tape_open(seed, wall);
+    if (!tape) {
+        fprintf(stderr,  // obs-ok:boot-fatal-before-event-context
+                "WARNING: seed_tape_open failed; crash capsules disabled\n");
+        return false;
+    }
+
+    int rc = postmortem_install(tape, g_boot_postmortem_dir);
+    if (rc != 0) {
+        fprintf(stderr,  // obs-ok:boot-fatal-before-event-context
+                "WARNING: postmortem_install failed rc=%d; crash capsules disabled\n",
+                rc);
+        seed_tape_close(tape);
+        g_boot_postmortem_dir[0] = '\0';
+        return false;
+    }
+
+    g_boot_seed_tape = tape;
+    printf("[boot] postmortem capsules: %s\n", g_boot_postmortem_dir);
+    return true;
+}
+
+#ifdef ZCL_TESTING
+bool boot_postmortem_init_for_testing(const char *datadir)
+{
+    return boot_step_init_postmortem(datadir);
+}
+
+void boot_postmortem_shutdown_for_testing(void)
+{
+    boot_step_stop_postmortem();
+}
+
+const char *boot_postmortem_dir_for_testing(void)
+{
+    return g_boot_postmortem_dir[0] ? g_boot_postmortem_dir : NULL;
+}
+#endif
 
 static struct db_service *boot_runtime_db_service(void)
 {
@@ -403,6 +476,7 @@ static int64_t boot_clock_ms(void)
  * Steps already extracted:
  *   - boot_step_init_observability       (signal handler + event log + async)
  *   - boot_step_select_chain_and_datadir (chain params, mkdir, datadir lock)
+ *   - boot_step_init_postmortem          (seed tape + crash capsule hook)
  *   - boot_step_detect_unclean_shutdown  (.shutdown_clean marker check)
  *   - boot_step_start_disk_and_ibd_guards (disk_monitor + ibd_throttle)
  *
@@ -1161,6 +1235,7 @@ bool app_init(struct app_context *ctx)
         return false;
     const struct chain_params *params = chain_params_get();
 
+    boot_step_init_postmortem(ctx->datadir);
     boot_step_detect_unclean_shutdown(ctx->datadir);
     boot_step_start_disk_and_ibd_guards(ctx->datadir);
 
@@ -3352,6 +3427,7 @@ void app_shutdown(void)
     write_clean_shutdown_marker();
     boot_stop_platform_services();
     app_shutdown_svc(&g_svc);
+    boot_step_stop_postmortem();
     release_datadir_lock();
     boot_stage_advance_to(BOOT_STAGE_SHUTDOWN_COMPLETE);
 }

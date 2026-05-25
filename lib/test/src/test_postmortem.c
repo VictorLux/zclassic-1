@@ -1,6 +1,7 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0 */
 
 #include "test/test_helpers.h"
+#include "config/boot.h"
 #include "sim/postmortem.h"
 
 #include <dirent.h>
@@ -104,6 +105,58 @@ static int test_signal_handler_capsule(void)
     }
 
     seed_tape_close(tape);
+    rm_rf_simple(dir);
+    return failures;
+}
+
+static int test_boot_postmortem_install(void)
+{
+    int failures = 0;
+    char dir_template[128];
+    snprintf(dir_template, sizeof(dir_template),
+             "/tmp/zcl_boot_postmortem_%d_XXXXXX", (int)getpid());
+    char *dir = mkdtemp(dir_template);
+    PM_CHECK("boot postmortem mkdtemp", dir != NULL);
+    if (!dir) return failures + 1;
+
+    bool ok = boot_postmortem_init_for_testing(dir);
+    const char *pm_dir = boot_postmortem_dir_for_testing();
+    PM_CHECK("boot postmortem init", ok && pm_dir != NULL);
+
+    pid_t pid = fork();
+    if (pid == 0) {
+        if (!ok || !pm_dir)
+            _exit(121);
+        raise(SIGABRT);
+        _exit(122);
+    }
+
+    if (pid < 0) {
+        PM_CHECK("boot postmortem fork", false);
+    } else {
+        PM_CHECK("boot postmortem fork", true);
+        int status = 0;
+        pid_t got = waitpid(pid, &status, 0);
+        PM_CHECK("boot postmortem wait child", got == pid);
+        PM_CHECK("boot postmortem child SIGABRT",
+                 got == pid && WIFSIGNALED(status) &&
+                 WTERMSIG(status) == SIGABRT);
+
+        struct postmortem_capsule_entry entries[1];
+        size_t count = 0;
+        int rc = postmortem_capsule_list(pm_dir, entries, 1, &count);
+        PM_CHECK("boot postmortem capsule listed", rc == 0 && count == 1);
+        PM_CHECK("boot postmortem signal recorded",
+                 rc == 0 && count == 1 && entries[0].crash_signal == SIGABRT);
+        if (rc == 0 && count == 1) {
+            seed_tape_t *loaded = postmortem_capsule_load_tape(entries[0].path);
+            PM_CHECK("boot postmortem tape loads", loaded != NULL);
+            if (loaded)
+                seed_tape_close(loaded);
+        }
+    }
+
+    boot_postmortem_shutdown_for_testing();
     rm_rf_simple(dir);
     return failures;
 }
@@ -234,6 +287,7 @@ int test_postmortem(void)
     seed_tape_close(tape);
     rm_rf_simple(dir);
     failures += test_signal_handler_capsule();
+    failures += test_boot_postmortem_install();
 
     if (failures == 0)
         printf("=== postmortem tests: ALL PASS ===\n\n");

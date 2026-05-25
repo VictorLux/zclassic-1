@@ -337,5 +337,10 @@ the capsule API plus the non-signal save/list/load path.
   `postmortem_uninstall`; forked test coverage now proves a child that raises
   `SIGABRT` leaves a listed, replayable capsule before terminating. Boot-time
   seed-tape creation and install wiring remain open.
+- Added boot-time postmortem wiring after datadir lock: each boot now owns a
+  seed tape for crash capture and registers capsules under
+  `<datadir>/postmortems`, with shutdown cleanup and forked test coverage.
+  Production platform RNG/clock takeover remains deferred until the simulator
+  clock advancement path is ready.
 
 <!-- Worker: append a Completion section below when done. -->
