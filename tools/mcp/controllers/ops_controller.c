@@ -26,6 +26,7 @@
 #include "validation/process_block.h"
 
 #include <errno.h>
+#include <limits.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -215,6 +216,33 @@ static int h_zcl_cutovermode(const struct mcp_request *req,
     char *out = mcp_node_rpc("cutovermode", params);
     free(params);
     return mcp_return_rpc_body(res, out, "cutovermode", "mcp.ops");
+}
+
+static int h_zcl_cutoverpreflight(const struct mcp_request *req,
+                                  struct mcp_response *res)
+{
+    const struct json_value *start_v = json_get(req->args, "start_height");
+    const struct json_value *end_v = json_get(req->args, "end_height");
+
+    struct mcp_params p;
+    mcp_params_init(&p);
+    if (start_v) {
+        mcp_params_push_int(&p, json_get_int(start_v));
+        if (end_v)
+            mcp_params_push_int(&p, json_get_int(end_v));
+    }
+    char *params = mcp_params_to_json(&p);
+    if (!params) {
+        res->error = MCP_ERR_INTERNAL;
+        snprintf(res->error_message, sizeof(res->error_message),
+                 "malloc failed for cutoverpreflight params");
+        LOG_ERR("mcp.ops", "malloc failed for cutoverpreflight params");
+        return -1;  // raw-return-ok:logged-oom
+    }
+
+    char *out = mcp_node_rpc("cutoverpreflight", params);
+    free(params);
+    return mcp_return_rpc_body(res, out, "cutoverpreflight", "mcp.ops");
 }
 
 /* zcl_kpi — single call that returns every subsystem KPI. Used by
@@ -705,6 +733,14 @@ static const struct mcp_param_spec p_cutovermode[] = {
       "Runtime mode to set when stage is present",
       0, 0, 0, 32, "shadow,authoritative", NULL },
 };
+static const struct mcp_param_spec p_cutoverpreflight[] = {
+    { "start_height", MCP_PARAM_INT, false,
+      "Optional header_admit diff start height (-1 = auto)",
+      -1, INT32_MAX, 0, 0, NULL, "-1" },
+    { "end_height", MCP_PARAM_INT, false,
+      "Optional header_admit diff end height (-1 = auto)",
+      -1, INT32_MAX, 0, 0, NULL, "-1" },
+};
 static const struct mcp_param_spec p_postmortem_list[] = {
     { "dir", MCP_PARAM_STR, false, "Capsule directory",
       0, 0, 0, 512, NULL, NULL },
@@ -796,6 +832,12 @@ static const struct mcp_tool_route k_routes[] = {
       "mode changes live chain ownership.",
       p_cutovermode, PARAM_COUNT(p_cutovermode), h_zcl_cutovermode,
       .flags = MCP_TOOL_FLAG_DESTRUCTIVE /* runtime mode setter */ },
+    { "zcl_cutoverpreflight", "ops",
+      "Read-only C-3 cutover preflight: runtime modes, header_admit "
+      "shadow parity status, validate_headers counters, blockers, and "
+      "a conservative ready boolean.",
+      p_cutoverpreflight, PARAM_COUNT(p_cutoverpreflight),
+      h_zcl_cutoverpreflight, 0, NULL },
     { "zcl_syncdiag", "ops",
       "Deep sync diagnostics: sync state, chain height, best header "
       "height, peer max height, header gap, watchdog status and "

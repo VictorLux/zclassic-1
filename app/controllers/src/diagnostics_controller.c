@@ -87,6 +87,7 @@
 #include <regex.h>
 #include <string.h>
 #include <strings.h>
+#include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <time.h>
@@ -679,6 +680,139 @@ static bool rpc_cutovermode(const struct json_value *params, bool help,
     }
 
     push_cutover_modes(result, true);
+    return true;
+}
+
+static const char *
+header_admit_diff_status_rpc_name(enum header_admit_diff_status s)
+{
+    switch (s) {
+    case HEADER_ADMIT_DIFF_CONVERGED:   return "CONVERGED";
+    case HEADER_ADMIT_DIFF_DIVERGENT:   return "DIVERGENT";
+    case HEADER_ADMIT_DIFF_LOG_AHEAD:   return "LOG_AHEAD";
+    case HEADER_ADMIT_DIFF_CHAIN_AHEAD: return "CHAIN_AHEAD";
+    case HEADER_ADMIT_DIFF_EMPTY:       return "EMPTY";
+    case HEADER_ADMIT_DIFF_NOT_READY:   return "NOT_READY";
+    }
+    return "UNKNOWN";
+}
+
+static int64_t json_obj_int_or(const struct json_value *obj,
+                               const char *key,
+                               int64_t fallback)
+{
+    const struct json_value *v = json_get(obj, key);
+    return v ? json_get_int(v) : fallback;
+}
+
+static bool rpc_cutoverpreflight(const struct json_value *params, bool help,
+                                 struct json_value *result)
+{
+    RPC_HELP(help, result,
+        "cutoverpreflight [start_height] [end_height]\n"
+        "\nRead-only C-3 preflight snapshot: runtime cutover modes, "
+        "header_admit shadow-vs-active-chain diff, validate_headers "
+        "stage counters, and a conservative ready boolean.\n"
+        "\nHeights default to the header_admit diff auto-window. "
+        "Result: { ready, blockers, modes, header_admit_diff, "
+        "validate_headers }");
+
+    const struct json_value *start_v = json_at(params, 0);
+    const struct json_value *end_v = json_at(params, 1);
+    int64_t start_i = start_v ? json_get_int(start_v) : -1;
+    int64_t end_i = end_v ? json_get_int(end_v) : -1;
+    if (start_i < -1) start_i = -1;
+    if (end_i < -1) end_i = -1;
+    if (start_i > INT32_MAX) start_i = INT32_MAX;
+    if (end_i > INT32_MAX) end_i = INT32_MAX;
+
+    struct header_admit_diff_report rep;
+    if (!header_admit_stage_diff((int32_t)start_i, (int32_t)end_i, &rep))
+        LOG_FAIL("diag", "cutoverpreflight: header_admit diff failed");
+
+    struct json_value modes;
+    struct json_value diff;
+    struct json_value vh;
+    struct json_value blockers;
+    json_init(&modes);
+    json_init(&diff);
+    json_init(&vh);
+    json_init(&blockers);
+    json_set_object(result);
+    json_set_object(&modes);
+    json_set_object(&diff);
+    json_set_array(&blockers);
+
+    bool vh_ok = validate_headers_stage_dump_state_json(&vh, NULL);
+    if (!vh_ok)
+        json_set_object(&vh);
+
+    const char *ha_mode = header_admit_mode_name(header_admit_get_mode());
+    const char *vh_mode = validate_headers_mode_name(validate_headers_get_mode());
+    json_push_kv_str(&modes, "header_admit", ha_mode);
+    json_push_kv_str(&modes, "validate_headers", vh_mode);
+
+    json_push_kv_str(&diff, "status",
+                     header_admit_diff_status_rpc_name(rep.status));
+    json_push_kv_int(&diff, "start_height", rep.start_height);
+    json_push_kv_int(&diff, "end_height", rep.end_height);
+    json_push_kv_int(&diff, "checked_count", rep.checked_count);
+    json_push_kv_int(&diff, "match_count", rep.match_count);
+    json_push_kv_int(&diff, "mismatch_count", rep.mismatch_count);
+    json_push_kv_int(&diff, "missing_in_log_count",
+                     rep.missing_in_log_count);
+    json_push_kv_int(&diff, "missing_in_chain_count",
+                     rep.missing_in_chain_count);
+    json_push_kv_int(&diff, "first_divergent_height",
+                     rep.first_divergent_height);
+    json_push_kv_int(&diff, "log_max_height", rep.log_max_height);
+    json_push_kv_int(&diff, "chain_tip_height", rep.chain_tip_height);
+    json_push_kv_int(&diff, "cursor", rep.cursor);
+
+    bool header_ready =
+        rep.status == HEADER_ADMIT_DIFF_CONVERGED &&
+        rep.mismatch_count == 0 &&
+        rep.missing_in_chain_count == 0;
+    bool validate_ready = vh_ok &&
+        json_obj_int_or(&vh, "failed_total", 1) == 0 &&
+        json_obj_int_or(&vh, "error_count", 1) == 0;
+    bool modes_ready =
+        strcmp(ha_mode, "shadow") == 0 &&
+        strcmp(vh_mode, "shadow") == 0;
+
+    if (!header_ready) {
+        struct json_value v;
+        json_init(&v);
+        json_set_str(&v, "header_admit_diff_not_converged");
+        json_push_back(&blockers, &v);
+        json_free(&v);
+    }
+    if (!validate_ready) {
+        struct json_value v;
+        json_init(&v);
+        json_set_str(&v, "validate_headers_counters_not_clean");
+        json_push_back(&blockers, &v);
+        json_free(&v);
+    }
+    if (!modes_ready) {
+        struct json_value v;
+        json_init(&v);
+        json_set_str(&v, "cutover_modes_not_shadow");
+        json_push_back(&blockers, &v);
+        json_free(&v);
+    }
+
+    json_push_kv_bool(result, "ready",
+                      header_ready && validate_ready && modes_ready);
+    json_push_kv(result, "blockers", &blockers);
+    json_push_kv(result, "modes", &modes);
+    json_push_kv(result, "header_admit_diff", &diff);
+    json_push_kv(result, "validate_headers", &vh);
+
+    json_free(&blockers);
+    json_free(&modes);
+    json_free(&diff);
+    json_free(&vh);
     return true;
 }
 
@@ -1869,6 +2003,7 @@ void register_diagnostics_rpc_commands(struct rpc_table *t)
     struct rpc_command cmds[] = {
         { "control", "dumpstate",     rpc_dumpstate,     true },
         { "control", "cutovermode",   rpc_cutovermode,   true },
+        { "control", "cutoverpreflight", rpc_cutoverpreflight, true },
         { "control", "getnodelog",    rpc_getnodelog,    true },
         { "control", "dbquery",       rpc_dbquery,       true },
         { "control", "probezclassicd", rpc_probezclassicd, true },

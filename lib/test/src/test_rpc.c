@@ -285,6 +285,41 @@ int test_rpc(void) {
         if (ok) printf("OK\n"); else { printf("FAIL\n"); failures++; }
     }
 
+    printf("diagnostics cutoverpreflight rpc reports read-only gate... ");
+    {
+        struct rpc_table t;
+        rpc_table_init(&t);
+        register_diagnostics_rpc_commands(&t);
+        const struct rpc_command *cmd = rpc_table_find(&t, "cutoverpreflight");
+
+        header_admit_set_mode(HEADER_ADMIT_MODE_SHADOW);
+        validate_headers_set_mode(VALIDATE_HEADERS_MODE_SHADOW);
+
+        struct json_value params;
+        struct json_value result;
+        json_init(&params);
+        json_init(&result);
+        json_set_array(&params);
+
+        bool ok = cmd && cmd->actor(&params, false, &result);
+        const struct json_value *modes = json_get(&result, "modes");
+        const struct json_value *diff = json_get(&result, "header_admit_diff");
+        const struct json_value *vh = json_get(&result, "validate_headers");
+        const struct json_value *blockers = json_get(&result, "blockers");
+        ok = ok && modes && diff && vh && blockers;
+        ok = ok && strcmp(json_get_str(json_get(modes, "header_admit")),
+                          "shadow") == 0;
+        ok = ok && strcmp(json_get_str(json_get(modes, "validate_headers")),
+                          "shadow") == 0;
+        ok = ok && json_get(diff, "status") != NULL;
+        ok = ok && json_get(vh, "failed_total") != NULL;
+        ok = ok && blockers->type == JSON_ARR;
+
+        json_free(&params);
+        json_free(&result);
+        if (ok) printf("OK\n"); else { printf("FAIL\n"); failures++; }
+    }
+
     printf("rpc warmup state... ");
     {
         set_rpc_warmup_status("Loading blocks...");
