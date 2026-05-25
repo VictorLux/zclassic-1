@@ -126,6 +126,38 @@ bool condition_engine_has_registered(const char *name)
     return found;
 }
 
+bool condition_engine_get_registered_snapshot(
+    const char *name, struct condition_runtime_snapshot *out)
+{
+    if (!name || !name[0] || !out)
+        return false;
+
+    memset(out, 0, sizeof(*out));
+    pthread_mutex_lock(&g_condition_mu);
+    int idx = condition_find_locked(name);
+    if (idx < 0) {
+        pthread_mutex_unlock(&g_condition_mu);
+        return false;
+    }
+
+    const struct condition *c = g_conditions[idx];
+    const struct condition_state *s = &c->state;
+    out->registered = true;
+    out->severity = c->severity;
+    out->poll_secs = c->poll_secs;
+    out->backoff_secs = c->backoff_secs;
+    out->max_attempts = c->max_attempts;
+    out->witness_window_secs = c->witness_window_secs;
+    out->currently_active = atomic_load(&s->currently_active);
+    out->operator_needed_emitted =
+        atomic_load(&s->operator_needed_emitted);
+    out->attempts = atomic_load(&s->attempts);
+    out->last_outcome = atomic_load(&s->last_outcome);
+    out->cleared_count = atomic_load(&s->cleared_count);
+    pthread_mutex_unlock(&g_condition_mu);
+    return true;
+}
+
 static bool condition_due_for_remedy(const struct condition *cond,
                                      struct condition_state *s,
                                      int64_t now)

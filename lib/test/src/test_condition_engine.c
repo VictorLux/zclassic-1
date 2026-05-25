@@ -250,6 +250,27 @@ int test_condition_engine(void)
     {
         reset_fixture();
         bool ok = condition_register(&c_basic);
+        struct condition_runtime_snapshot snap;
+        memset(&snap, 0, sizeof(snap));
+        ok = ok &&
+             condition_engine_get_registered_snapshot("ce_basic", &snap);
+        ok = ok && snap.registered;
+        ok = ok && snap.severity == COND_CRITICAL;
+        ok = ok && snap.poll_secs == 1;
+        ok = ok && snap.backoff_secs == 30;
+        ok = ok && snap.max_attempts == 3;
+        ok = ok && snap.witness_window_secs == 60;
+        ok = ok && !snap.currently_active;
+        ok = ok && snap.attempts == 0;
+        ok = ok &&
+             !condition_engine_get_registered_snapshot("not_a_condition",
+                                                       &snap);
+        CE_CHECK("registered snapshot exposes guardable state", ok);
+    }
+
+    {
+        reset_fixture();
+        bool ok = condition_register(&c_basic);
         struct json_value out;
         json_init(&out);
         json_set_object(&out);

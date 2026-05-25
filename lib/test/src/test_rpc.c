@@ -340,6 +340,18 @@ int test_rpc(void) {
         ok = ok && strcmp(json_get_str(json_get(guard, "name")),
                           "cutover_no_forward_progress") == 0;
         ok = ok && json_get(guard, "registered") != NULL;
+        ok = ok && json_get(guard, "ready") != NULL;
+        ok = ok && json_get(guard, "config_ready") != NULL;
+        ok = ok && json_get(guard, "state_ready") != NULL;
+        ok = ok && json_get(guard, "currently_active") != NULL;
+        ok = ok && json_get(guard, "operator_needed_emitted") != NULL;
+        ok = ok && json_get(guard, "attempts") != NULL;
+        ok = ok && json_get(guard, "last_outcome") != NULL;
+        ok = ok && json_get(guard, "poll_secs") != NULL;
+        ok = ok && json_get(guard, "max_attempts") != NULL;
+        ok = ok && json_get(guard, "witness_window_secs") != NULL;
+        ok = ok && json_get(guard, "max_poll_secs") != NULL;
+        ok = ok && json_get(guard, "max_witness_window_secs") != NULL;
         ok = ok && json_get(diff, "status") != NULL;
         ok = ok && json_get(diff, "persisted_cursor") != NULL;
         ok = ok && json_get(diff, "required_cursor") != NULL;

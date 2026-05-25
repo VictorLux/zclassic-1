@@ -789,6 +789,8 @@ static int64_t json_obj_int_or(const struct json_value *obj,
 }
 
 #define CUTOVER_PREFLIGHT_MAX_TIP_ADVANCE_AGE_SECS 180
+#define CUTOVER_PREFLIGHT_MAX_GUARD_POLL_SECS 5
+#define CUTOVER_PREFLIGHT_MAX_GUARD_WITNESS_SECS 60
 #define CUTOVER_PREFLIGHT_GUARD_NAME "cutover_no_forward_progress"
 
 static void cutover_preflight_push_blocker(struct json_value *blockers,
@@ -858,6 +860,73 @@ static bool push_cutover_live_gate_json(struct json_value *live)
                CUTOVER_PREFLIGHT_MAX_TIP_ADVANCE_AGE_SECS;
 }
 
+static bool push_cutover_guard_gate_json(struct json_value *guard)
+{
+    struct condition_runtime_snapshot snap;
+    bool registered = condition_engine_get_registered_snapshot(
+        CUTOVER_PREFLIGHT_GUARD_NAME, &snap);
+
+    json_set_object(guard);
+    json_push_kv_str(guard, "name", CUTOVER_PREFLIGHT_GUARD_NAME);
+    json_push_kv_bool(guard, "registered", registered);
+    json_push_kv_int(guard, "max_tip_advance_age_seconds",
+                     CUTOVER_PREFLIGHT_MAX_TIP_ADVANCE_AGE_SECS);
+    json_push_kv_int(guard, "max_poll_secs",
+                     CUTOVER_PREFLIGHT_MAX_GUARD_POLL_SECS);
+    json_push_kv_int(guard, "max_witness_window_secs",
+                     CUTOVER_PREFLIGHT_MAX_GUARD_WITNESS_SECS);
+    if (!registered) {
+        json_push_kv_bool(guard, "ready", false);
+        json_push_kv_str(guard, "severity", "unknown");
+        json_push_kv_bool(guard, "config_ready", false);
+        json_push_kv_bool(guard, "state_ready", false);
+        json_push_kv_bool(guard, "currently_active", false);
+        json_push_kv_bool(guard, "operator_needed_emitted", false);
+        json_push_kv_int(guard, "attempts", 0);
+        json_push_kv_str(guard, "last_outcome", "unknown");
+        json_push_kv_int(guard, "cleared_count", 0);
+        json_push_kv_int(guard, "poll_secs", 0);
+        json_push_kv_int(guard, "backoff_secs", 0);
+        json_push_kv_int(guard, "max_attempts", 0);
+        json_push_kv_int(guard, "witness_window_secs", 0);
+        return false;
+    }
+
+    bool config_ready =
+        snap.severity == COND_CRITICAL &&
+        snap.poll_secs > 0 &&
+        snap.poll_secs <= CUTOVER_PREFLIGHT_MAX_GUARD_POLL_SECS &&
+        snap.max_attempts == 1 &&
+        snap.witness_window_secs > 0 &&
+        snap.witness_window_secs <=
+            CUTOVER_PREFLIGHT_MAX_GUARD_WITNESS_SECS;
+    bool state_ready =
+        !snap.currently_active &&
+        !snap.operator_needed_emitted &&
+        snap.attempts == 0 &&
+        snap.last_outcome != COND_REMEDY_UNWITNESSED;
+
+    json_push_kv_bool(guard, "ready", config_ready && state_ready);
+    json_push_kv_str(guard, "severity",
+                     condition_severity_name(snap.severity));
+    json_push_kv_bool(guard, "config_ready", config_ready);
+    json_push_kv_bool(guard, "state_ready", state_ready);
+    json_push_kv_bool(guard, "currently_active",
+                      snap.currently_active);
+    json_push_kv_bool(guard, "operator_needed_emitted",
+                      snap.operator_needed_emitted);
+    json_push_kv_int(guard, "attempts", snap.attempts);
+    json_push_kv_str(guard, "last_outcome",
+                     condition_remedy_result_name(snap.last_outcome));
+    json_push_kv_int(guard, "cleared_count", snap.cleared_count);
+    json_push_kv_int(guard, "poll_secs", snap.poll_secs);
+    json_push_kv_int(guard, "backoff_secs", snap.backoff_secs);
+    json_push_kv_int(guard, "max_attempts", snap.max_attempts);
+    json_push_kv_int(guard, "witness_window_secs",
+                     snap.witness_window_secs);
+    return config_ready && state_ready;
+}
+
 static bool rpc_cutoverpreflight(const struct json_value *params, bool help,
                                  struct json_value *result)
 {
@@ -906,7 +975,6 @@ static bool rpc_cutoverpreflight(const struct json_value *params, bool help,
     json_init(&blockers);
     json_set_object(result);
     json_set_object(&modes);
-    json_set_object(&guard);
     json_set_object(&diff);
     json_set_array(&blockers);
 
@@ -923,12 +991,7 @@ static bool rpc_cutoverpreflight(const struct json_value *params, bool help,
     json_push_kv_str(&modes, "header_admit", ha_mode);
     json_push_kv_str(&modes, "validate_headers", vh_mode);
     bool live_ready = push_cutover_live_gate_json(&live);
-    bool guard_ready =
-        condition_engine_has_registered(CUTOVER_PREFLIGHT_GUARD_NAME);
-    json_push_kv_str(&guard, "name", CUTOVER_PREFLIGHT_GUARD_NAME);
-    json_push_kv_bool(&guard, "registered", guard_ready);
-    json_push_kv_int(&guard, "max_tip_advance_age_seconds",
-                     CUTOVER_PREFLIGHT_MAX_TIP_ADVANCE_AGE_SECS);
+    bool guard_ready = push_cutover_guard_gate_json(&guard);
 
     json_push_kv_str(&diff, "status",
                      header_admit_diff_status_rpc_name(rep.status));
@@ -996,7 +1059,10 @@ static bool rpc_cutoverpreflight(const struct json_value *params, bool help,
         cutover_preflight_push_blocker(&blockers, "live_health_not_ready");
     if (!guard_ready)
         cutover_preflight_push_blocker(&blockers,
-                                       "cutover_guard_not_registered");
+                                       condition_engine_has_registered(
+                                           CUTOVER_PREFLIGHT_GUARD_NAME)
+                                           ? "cutover_guard_not_ready"
+                                           : "cutover_guard_not_registered");
     if (!header_ready)
         cutover_preflight_push_blocker(
             &blockers,

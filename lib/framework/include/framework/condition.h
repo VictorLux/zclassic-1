@@ -61,10 +61,26 @@ struct condition {
     struct condition_state state;
 };
 
+struct condition_runtime_snapshot {
+    bool registered;
+    enum condition_severity severity;
+    int poll_secs;
+    int backoff_secs;
+    int max_attempts;
+    int witness_window_secs;
+    bool currently_active;
+    bool operator_needed_emitted;
+    int attempts;
+    int last_outcome;
+    int cleared_count;
+};
+
 struct main_state;
 
 bool condition_register(const struct condition *cond);
 bool condition_engine_has_registered(const char *name);
+bool condition_engine_get_registered_snapshot(
+    const char *name, struct condition_runtime_snapshot *out);
 void condition_engine_tick(void);
 bool condition_engine_dump_state_json(struct json_value *out, const char *key);
 int condition_engine_get_active_count(void);
