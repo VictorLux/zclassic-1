@@ -13,14 +13,13 @@
  *  1. Read `(height, hash)` from `header_admit_log`.
  *  2. Look up `active_chain_at(ms, height)` for the in-memory
  *     `struct block_index` (carries nVersion / nBits / nNonce /
- *     hashMerkleRoot / nTime / nFile / nDataPos — but NOT the
- *     Equihash solution; block_index intentionally drops nSolution
- *     to save RAM, see lib/storage/src/block_index_db.c:301).
+ *     hashMerkleRoot / nTime / nFile / nDataPos and, on normal header
+ *     ingress, the Equihash solution).
  *  3. Validate cheap fields first:
  *       - nVersion ≥ MIN_BLOCK_VERSION
  *       - CheckProofOfWork(hash, nBits)   (target check, no Equihash)
- *  4. Read the full block from disk via
- *     `read_block_from_disk_index_pread()` (POSIX pread, thread-safe).
+ *  4. Prefer the indexed header solution; fall back to reading the full
+ *     block from disk via `read_block_from_disk_index_pread()`.
  *  5. Validate the Equihash solution against (N, K) from the active
  *     chain params at this height.
  *  6. Write a `validate_headers_log` row in the same `BEGIN IMMEDIATE`
@@ -56,7 +55,10 @@
  * spins up the worker pool. `step_once` runs one batched step.
  * `shutdown` joins the workers, disposes the stage, and resets per-init
  * observability counters (the persisted cursor + log rows are not
- * touched). The supervisor wiring lives in
+ * touched). On each process start, the stage makes one bounded sweep
+ * over persisted failed rows below the header-admit cursor so upgraded
+ * validation logic can clear stale failure rows without cursor rewinds.
+ * The supervisor wiring lives in
  * `config/src/boot_services.c` — `staged.validate_headers` is
  * registered with `period_secs=2`. */
 

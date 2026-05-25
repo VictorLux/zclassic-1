@@ -437,6 +437,52 @@ int test_validate_headers_stage(void)
         vh_teardown(dir, &ms, &sc);
     }
 
+    /* ── persisted failures are rechecked after restart ────────────── */
+    {
+        char dir[256]; struct main_state ms; struct synth_chain_vh sc;
+        struct fail_at_ctx ctx;
+        memset(&ctx, 0, sizeof(ctx));
+        ctx.fail_height = 1;
+        VH_CHECK("recheck: setup with failing validator",
+                 vh_setup("recheck", 3, stub_fail_at, &ctx,
+                          dir, sizeof(dir), &ms, &sc) == 0);
+        header_admit_stage_drain(100);
+        VH_CHECK("recheck: initial validate advances",
+                 validate_headers_stage_drain(10) == 1);
+        int ok = -1;
+        char reason[64] = {0};
+        VH_CHECK("recheck: failed row exists",
+                 log_row_at(progress_store_db(), 1, &ok,
+                            reason, sizeof(reason)));
+        VH_CHECK("recheck: initial row failed",
+                 ok == 0 && strcmp(reason, "stub-injected-failure") == 0);
+
+        validate_headers_stage_shutdown();
+        header_admit_stage_shutdown();
+        progress_store_close();
+
+        VH_CHECK("recheck: reopen store", progress_store_open(dir));
+        VH_CHECK("recheck: re-init admit", header_admit_stage_init(&ms));
+        VH_CHECK("recheck: re-init validate",
+                 validate_headers_stage_init(&ms));
+        validate_headers_stage_set_validator(stub_pass, NULL);
+
+        VH_CHECK("recheck: failed row is retried",
+                 validate_headers_stage_step_once() == STAGE_ADVANCED);
+        ok = -1;
+        reason[0] = 0;
+        VH_CHECK("recheck: retried row exists",
+                 log_row_at(progress_store_db(), 1, &ok,
+                            reason, sizeof(reason)));
+        VH_CHECK("recheck: retried row now passes", ok == 1);
+        VH_CHECK("recheck: cursor remains advanced",
+                 validate_headers_stage_cursor() == 3);
+        VH_CHECK("recheck: next step idle",
+                 validate_headers_stage_step_once() == STAGE_IDLE);
+
+        vh_teardown(dir, &ms, &sc);
+    }
+
     /* ── replay across reopen: cursor + log persist ────────────────── */
     {
         char dir[256]; struct main_state ms; struct synth_chain_vh sc;
@@ -700,6 +746,8 @@ int test_validate_headers_stage(void)
                  strstr(buf, "\"first_failed_height\":-1") != NULL);
         VH_CHECK("dump: last_failed_height present",
                  strstr(buf, "\"last_failed_height\":-1") != NULL);
+        VH_CHECK("dump: recheck cursor present",
+                 strstr(buf, "\"failure_recheck_cursor\":") != NULL);
         json_free(&v);
 
         vh_teardown(dir, &ms, &sc);

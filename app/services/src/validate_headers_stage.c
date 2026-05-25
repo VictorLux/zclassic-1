@@ -78,6 +78,7 @@ static _Atomic uint64_t g_passed_total = 0;
 static _Atomic uint64_t g_failed_total = 0;
 static _Atomic int64_t  g_last_step_unix = 0;
 static _Atomic int64_t  g_last_blocked_unix = 0;
+static _Atomic int64_t  g_failure_recheck_cursor = 0;
 static _Atomic validate_headers_mode_t g_mode =
     VALIDATE_HEADERS_MODE_SHADOW;
 
@@ -394,6 +395,113 @@ static bool log_insert(sqlite3 *db, const struct vh_job *job)
     return true;
 }
 
+static bool mark_valid_header(struct block_index *bi);
+
+static stage_result_t recheck_failed_rows(struct main_state *ms,
+                                          sqlite3 *db,
+                                          uint64_t ha_cursor)
+{
+    if (!ms || !db || ha_cursor == 0)
+        return STAGE_IDLE;
+
+    int64_t start = atomic_load(&g_failure_recheck_cursor);
+    if (start < 0)
+        start = 0;
+    if ((uint64_t)start >= ha_cursor)
+        return STAGE_IDLE;
+
+    sqlite3_stmt *stmt = NULL;
+    int rc = sqlite3_prepare_v2(db,
+        "SELECT height FROM validate_headers_log"
+        " WHERE ok=0 AND height>=? AND height<?"
+        " ORDER BY height ASC LIMIT ?",
+        -1, &stmt, NULL);
+    if (rc != SQLITE_OK) {
+        LOG_ERR("validate_headers",
+                "failed-row recheck query prepare failed");
+        return STAGE_ERROR;
+    }
+    sqlite3_bind_int64(stmt, 1, (sqlite3_int64)start);
+    sqlite3_bind_int64(stmt, 2, (sqlite3_int64)ha_cursor);
+    sqlite3_bind_int(stmt, 3, VH_BATCH_SIZE);
+
+    struct vh_job jobs[VH_BATCH_SIZE];
+    memset(jobs, 0, sizeof(jobs));
+    int n = 0;
+    int64_t last_seen = start - 1;
+    while (n < VH_BATCH_SIZE &&
+           (rc = sqlite3_step(stmt)) == SQLITE_ROW) {  // raw-sql-ok:kernel-primitive
+        int64_t h64 = sqlite3_column_int64(stmt, 0);
+        last_seen = h64;
+        if (h64 < 0 || h64 > INT32_MAX) {
+            sqlite3_finalize(stmt);
+            LOG_ERR("validate_headers",
+                    "failed-row recheck height out of range");
+            return STAGE_ERROR;
+        }
+        struct block_index *bi = active_chain_at(&ms->chain_active, (int)h64);
+        if (!bi || !bi->phashBlock) {
+            sqlite3_finalize(stmt);
+            atomic_store(&g_last_blocked_unix, wall_now_s());
+            return STAGE_IDLE;
+        }
+        jobs[n].bi = bi;
+        jobs[n].height = (int)h64;
+        n++;
+    }
+    if (rc != SQLITE_DONE && rc != SQLITE_ROW) {
+        sqlite3_finalize(stmt);
+        LOG_ERR("validate_headers", "failed-row recheck query failed");
+        return STAGE_ERROR;
+    }
+    sqlite3_finalize(stmt);
+
+    if (n == 0) {
+        atomic_store(&g_failure_recheck_cursor, (int64_t)ha_cursor);
+        return STAGE_IDLE;
+    }
+
+    pool_run_batch(jobs, n);
+    char *err = NULL;
+    if (sqlite3_exec(db, "BEGIN IMMEDIATE", NULL, NULL, &err) != SQLITE_OK) {
+        fprintf(stderr,  // obs-ok:vh-recheck-begin-failure
+                "[validate_headers] failed-row recheck BEGIN failed: %s\n",
+                err ? err : "(no message)");
+        if (err) sqlite3_free(err);
+        return STAGE_ERROR;
+    }
+    for (int i = 0; i < n; i++) {
+        if (jobs[i].ok &&
+            validate_headers_get_mode() ==
+                VALIDATE_HEADERS_MODE_AUTHORITATIVE &&
+            !mark_valid_header((struct block_index *)jobs[i].bi)) {
+            fprintf(stderr,  // obs-ok:vh-recheck-status-failure
+                    "[validate_headers] recheck mark failed height=%d\n",
+                    jobs[i].height);
+            sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
+            return STAGE_ERROR;
+        }
+        if (!log_insert(db, &jobs[i])) {
+            sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
+            return STAGE_ERROR;
+        }
+        if (jobs[i].ok)
+            atomic_fetch_add(&g_passed_total, 1);
+        else
+            atomic_fetch_add(&g_failed_total, 1);
+    }
+    if (sqlite3_exec(db, "COMMIT", NULL, NULL, &err) != SQLITE_OK) {
+        fprintf(stderr,  // obs-ok:vh-recheck-commit-failure
+                "[validate_headers] failed-row recheck COMMIT failed: %s\n",
+                err ? err : "(no message)");
+        if (err) sqlite3_free(err);
+        sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
+        return STAGE_ERROR;
+    }
+    atomic_store(&g_failure_recheck_cursor, last_seen + 1);
+    return STAGE_ADVANCED;
+}
+
 static bool mark_valid_header(struct block_index *bi)
 {
     if (!bi || (bi->nStatus & BLOCK_FAILED_MASK))
@@ -557,6 +665,10 @@ stage_result_t validate_headers_stage_step_once(void)
     if (!g_stage) return STAGE_IDLE;
     sqlite3 *db = progress_store_db();
     if (!db) return STAGE_IDLE;
+    stage_result_t recheck =
+        recheck_failed_rows(g_ms, db, header_admit_stage_cursor());
+    if (recheck != STAGE_IDLE)
+        return recheck;
     return stage_run_once(g_stage, db);
 }
 
@@ -589,6 +701,7 @@ void validate_headers_stage_shutdown(void)
     atomic_store(&g_failed_total, (uint64_t)0);
     atomic_store(&g_last_step_unix, (int64_t)0);
     atomic_store(&g_last_blocked_unix, (int64_t)0);
+    atomic_store(&g_failure_recheck_cursor, (int64_t)0);
     pthread_mutex_unlock(&g_lock);
 }
 
@@ -812,6 +925,8 @@ bool validate_headers_stage_dump_state_json(struct json_value *out,
                       atomic_load(&g_last_step_unix));
     json_push_kv_int (out, "last_blocked_unix",
                       atomic_load(&g_last_blocked_unix));
+    json_push_kv_int (out, "failure_recheck_cursor",
+                      atomic_load(&g_failure_recheck_cursor));
     struct validate_headers_failure_summary failures;
     validate_headers_failure_summary_load(&failures);
     json_push_kv_int(out, "failure_log_count", failures.count);
