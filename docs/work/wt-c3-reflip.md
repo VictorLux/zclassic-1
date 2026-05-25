@@ -49,28 +49,25 @@ C-5→C-9 in sequence (each: runtime flip + same guarded soak), each deleting it
 legacy stage. C-8 unlocks the `utxo_recovery` dissolve; C-9 unlocks the
 `chain_advance_coordinator` + `legacy_mirror_sync` dissolve — the ~12.5K LOC purge.
 
-## LIVE BLOCKER found 2026-05-25 — the peer-floor gate is the wrong gate for the cutover
+## LIVE BLOCKER found 2026-05-25 — C-3 needs GENUINE peer connectivity (do NOT weaken the gate)
 
 C-3 was **attempted** on the live node. Result: preflight `ready:false`, blocker
 `live_health_not_ready` → `operator_needed: condition=peer_floor_violated`.
 Verified (engine, latch, detect all correct — NOT a bug): the node genuinely
 reaches only **2 outbound peers** (`51.178.179.75` + local `zclassicd`); the 8
-configured peers are down and the live inbound nodes (47.88.87.154, 209.91.202.213)
-don't accept outbound on :8033. `PEER_FLOOR_MIN_HEALTHY=3`, so `peer_floor_violated`
-stays active and latches `operator_needed`, which keeps `live.healthy=false` and
-blocks the cutover preflight. Parity itself is clean: `header_admit_diff CONVERGED
-10000/10000`, `validate_headers` 0-fail.
+configured peers are down, and the live inbound nodes don't accept outbound on
+:8033. `PEER_FLOOR_MIN_HEALTHY=3`, so `peer_floor_violated` correctly stays active.
+Parity itself is clean (`header_admit_diff CONVERGED 10000/10000`, `validate_headers`
+0-fail).
 
-**Recommendation for the preflight hardening (this is your hot code, so it's yours
-to land):** the cutover preflight should NOT block on the *general* 3-outbound
-peer-floor. The flip's safety is **parity-converged + guard-armed + a trusted
-local `zclassicd` reference**, not clearnet peer *count*. The peer-floor is a
-general anti-eclipse health condition; gating the cutover on it is a mismatch for
-a personal node whose authoritative reference is the local node. Fix options:
-(a) count a connected trusted-local source toward the floor, or (b) gate the
-cutover preflight on cutover-specific signals (recent-parity + guard-armed +
-tip-tracking) instead of general `live.healthy`. Until then C-3 is blocked on
-2<3 outbound — operator choice: supply a 3rd peer IP, or relax the gate.
+**The gate is RIGHT — do NOT relax it, do NOT count the local node toward the
+floor.** A consensus-authority flip needs ≥3 *diverse* healthy outbound peers for
+real anti-eclipse safety; lowering that bar (or counting your own node) defeats
+the purpose and is not the best/correct design. The correct fix is to make the
+node **genuinely well-connected**: working DNS seeds / addr discovery / reachable
+peers so it sustains ≥3 diverse outbound. Until the node *actually* meets the
+floor, C-3 correctly does not fire. **Robust connectivity is the work — not a
+lowered bar.** (See memory: always the best, never weaken a bar.)
 
 > Deploy/flip on the live node is operator-gated by Rhett. See
 > [`cutover-safety-protocol.md`](./cutover-safety-protocol.md) and
