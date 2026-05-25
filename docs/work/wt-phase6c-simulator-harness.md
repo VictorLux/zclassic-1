@@ -301,7 +301,8 @@ One commit per task. Push after tasks 2, 4, 7.
 - Continued Task 2 fault injection: `safe_alloc` now has a one-shot label
   hook, and `trigger_oom_at` arms and verifies it in the chaos harness.
 - Added the network partition primitive as `net_fault.{c,h}`, wired the drop
-  check into `msg_process_messages`, and made `partition_network for=DURATION`
+  check into `msg_process_messages`, added an earlier `p2p_node_receive_bytes`
+  drop seam for raw inbound bytes, and made `partition_network for=DURATION`
   arm and verify the hook in the chaos harness.
 - Started Task 3 simulated peers with `tools/sim/sim_peer.c`: `peer_count`
   now creates an in-process peer set, `kill_peer` transitions peer state, and

@@ -1,9 +1,10 @@
 # Phase 6c smoke scenario.
-# The first harness slice only validates parser, dispatcher, and assertions.
+# Validates parser, dispatcher, assertions, and first fault-injection hooks.
 
 seed        0x0000000000000001
 boot_phase  idb_complete
 peer_count  0
+partition_network for=5s
 
 expect      no_crash
 expect      tip_height >= 0

@@ -5,9 +5,11 @@
  * file COPYING or http://www.opensource.org/licenses/mit-license.php. */
 
 #include "net/net.h"
+#include "net/net_fault.h"
 #include "net/peer_lifecycle.h"
 #include "net/peer_scoring.h"
 #include "primitives/block.h"
+#include "platform/time_compat.h"
 #include "util/log_json.h"
 #include "util/log_macros.h"
 #include "core/hash.h"
@@ -345,6 +347,9 @@ bool p2p_node_receive_bytes(struct p2p_node *node, const char *data,
                              unsigned int nbytes,
                              const unsigned char msgstart[MESSAGE_START_SIZE])
 {
+    if (net_partition_active_at((int64_t)platform_time_wall_time_t()))
+        return true;
+
     unsigned int orig_nbytes = nbytes;
     int msg_idx = 0;
     while (nbytes > 0) {
