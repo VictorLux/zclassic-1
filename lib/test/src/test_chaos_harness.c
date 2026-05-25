@@ -125,6 +125,23 @@ int test_chaos_harness(void)
 
     rc = run_temp_scenario(
         "seed 1\n"
+        "partition_network for=5s\n"
+        "expect no_crash\n",
+        &ctx);
+    CHAOS_CHECK("partition_network scenario passes", rc == 0);
+    CHAOS_CHECK("partition_network records armed window",
+                ctx.net_partition_triggered &&
+                ctx.net_partition_seconds == 5 &&
+                net_partition_armed_until_unix() == ctx.net_partition_until);
+
+    net_partition_until_unix(42);
+    CHAOS_CHECK("net partition active before deadline",
+                net_partition_active_at(41) &&
+                !net_partition_active_at(42));
+    net_partition_clear();
+
+    rc = run_temp_scenario(
+        "seed 1\n"
         "expect tip_height > 0\n",
         NULL);
     CHAOS_CHECK("failing expect fails scenario", rc != 0);

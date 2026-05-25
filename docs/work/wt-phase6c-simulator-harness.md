@@ -119,6 +119,10 @@ is called with a matching `label`, return NULL once + clear the flag.
 
 EDIT `lib/net/src/net_io.c` similarly: a `g_net_partition_until_unix`
 atomic that, when set, drops all incoming messages until clock passes.
+This repository does not currently have `lib/net/src/net_io.c`; wt2 mapped
+the primitive onto `lib/net/src/msgprocessor.c` and keeps the atomic flag in
+`lib/net/src/net_fault.c` so the standalone chaos binary can link it without
+pulling in the full message processor.
 
 Both flags default to inactive (zero overhead in production).
 
@@ -294,8 +298,10 @@ One commit per task. Push after tasks 2, 4, 7.
 - Added initial `test_chaos_harness` coverage for parser success, empty
   scenarios, unknown commands, recognized-but-unimplemented commands, bad
   seeds, and failing `expect` assertions.
-- Started Task 2 allocation fault injection: `safe_alloc` now has a one-shot
-  label hook, and `trigger_oom_at` arms and verifies it in the chaos harness.
-  The network partition hook remains to map onto this codebase's net seam.
+- Continued Task 2 fault injection: `safe_alloc` now has a one-shot label
+  hook, and `trigger_oom_at` arms and verifies it in the chaos harness.
+- Added the network partition primitive as `net_fault.{c,h}`, wired the drop
+  check into `msg_process_messages`, and made `partition_network for=DURATION`
+  arm and verify the hook in the chaos harness.
 
 <!-- Worker: append a Completion section below when done. -->

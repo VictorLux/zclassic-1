@@ -16,6 +16,8 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "net/net_fault.h"
+#include "platform/time_compat.h"
 #include "util/safe_alloc.h"
 
 #define CHAOS_MAX_LINE 512
@@ -36,6 +38,9 @@ struct chaos_ctx {
     bool verbose;
     char alloc_fault_site[64];
     bool alloc_fault_triggered;
+    int64_t net_partition_seconds;
+    int64_t net_partition_until;
+    bool net_partition_triggered;
 };
 
 typedef int (*chaos_handler_fn)(struct chaos_ctx *ctx, int argc, char **argv,
@@ -91,6 +96,32 @@ static bool parse_u64_auto(const char *s, uint64_t *out)
     unsigned long long v = strtoull(s, &end, 0);
     if (errno != 0 || end == s || *end != '\0') return false;
     *out = (uint64_t)v;
+    return true;
+}
+
+static bool parse_duration_seconds(const char *s, int64_t *out)
+{
+    if (!s || !*s || !out) return false;
+    errno = 0;
+    char *end = NULL;
+    long long v = strtoll(s, &end, 10);
+    if (errno != 0 || end == s || v <= 0) return false;
+
+    int64_t mult = 1;
+    if (*end == '\0' || strcmp(end, "s") == 0) {
+        mult = 1;
+    } else if (strcmp(end, "m") == 0) {
+        mult = 60;
+    } else if (strcmp(end, "h") == 0) {
+        mult = 60 * 60;
+    } else if (strcmp(end, "d") == 0) {
+        mult = 24 * 60 * 60;
+    } else {
+        return false;
+    }
+
+    if (v > INT64_MAX / mult) return false;
+    *out = (int64_t)v * mult;
     return true;
 }
 
@@ -235,6 +266,34 @@ static int handle_trigger_oom_at(struct chaos_ctx *ctx, int argc, char **argv,
     return 0;
 }
 
+static int handle_partition_network(struct chaos_ctx *ctx, int argc,
+                                    char **argv, int line_no)
+{
+    if (argc != 2)
+        return fail_line(line_no, "partition_network requires for=DURATION");
+
+    const char *duration = argv[1];
+    if (strncmp(duration, "for=", 4) == 0)
+        duration += 4;
+
+    int64_t seconds = 0;
+    if (!parse_duration_seconds(duration, &seconds))
+        return fail_line(line_no,
+                         "partition_network duration must be Ns/Nm/Nh/Nd");
+
+    int64_t now = platform_time_wall_unix();
+    if (now > INT64_MAX - seconds)
+        return fail_line(line_no, "partition_network duration overflows");
+
+    ctx->net_partition_seconds = seconds;
+    ctx->net_partition_until = now + seconds;
+    net_partition_until_unix(ctx->net_partition_until);
+    if (!net_partition_active_at(now))
+        return fail_line(line_no, "network partition did not arm");
+    ctx->net_partition_triggered = true;
+    return 0;
+}
+
 static const struct chaos_command COMMANDS[] = {
     { "seed", handle_seed },
     { "boot_phase", handle_boot_phase },
@@ -246,7 +305,7 @@ static const struct chaos_command COMMANDS[] = {
     { "send_malformed_block", handle_stub },
     { "advance_clock", handle_stub },
     { "trigger_oom_at", handle_trigger_oom_at },
-    { "partition_network", handle_stub },
+    { "partition_network", handle_partition_network },
 };
 
 static const struct chaos_command *find_command(const char *name)

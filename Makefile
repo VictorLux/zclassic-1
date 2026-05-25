@@ -248,10 +248,15 @@ explorer-css: app/views/src/explorer_css.css
 test: test_zcl
 	ulimit -s unlimited && ./test_zcl
 
-zclassic23-chaos: tools/sim/chaos.c lib/util/src/safe_alloc.c lib/util/include/util/safe_alloc.h
+zclassic23-chaos: tools/sim/chaos.c lib/util/src/safe_alloc.c \
+	lib/util/include/util/safe_alloc.h lib/net/src/net_fault.c \
+	lib/net/include/net/net_fault.h lib/platform/src/clock.c \
+	lib/platform/include/platform/clock.h lib/platform/include/platform/time_compat.h
 	$(CC) -std=c23 -O2 -Wall -Wextra -Werror -pedantic \
-	    -D_POSIX_C_SOURCE=200809L -Ilib/util/include \
-	    -o $@ $< lib/util/src/safe_alloc.c
+	    -D_POSIX_C_SOURCE=200809L -Ilib/util/include -Ilib/net/include \
+	    -Ilib/platform/include \
+	    -o $@ $< lib/util/src/safe_alloc.c lib/net/src/net_fault.c \
+	    lib/platform/src/clock.c
 
 chaos: zclassic23-chaos
 	@set -eu; \
