@@ -248,10 +248,10 @@ explorer-css: app/views/src/explorer_css.css
 test: test_zcl
 	ulimit -s unlimited && ./test_zcl
 
-zclassic23-chaos: tools/sim/chaos.c
+zclassic23-chaos: tools/sim/chaos.c lib/util/src/safe_alloc.c lib/util/include/util/safe_alloc.h
 	$(CC) -std=c23 -O2 -Wall -Wextra -Werror -pedantic \
-	    -D_POSIX_C_SOURCE=200809L \
-	    -o $@ $<
+	    -D_POSIX_C_SOURCE=200809L -Ilib/util/include \
+	    -o $@ $< lib/util/src/safe_alloc.c
 
 chaos: zclassic23-chaos
 	@set -eu; \

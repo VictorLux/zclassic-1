@@ -294,5 +294,8 @@ One commit per task. Push after tasks 2, 4, 7.
 - Added initial `test_chaos_harness` coverage for parser success, empty
   scenarios, unknown commands, recognized-but-unimplemented commands, bad
   seeds, and failing `expect` assertions.
+- Started Task 2 allocation fault injection: `safe_alloc` now has a one-shot
+  label hook, and `trigger_oom_at` arms and verifies it in the chaos harness.
+  The network partition hook remains to map onto this codebase's net seam.
 
 <!-- Worker: append a Completion section below when done. -->

@@ -106,6 +106,25 @@ int test_chaos_harness(void)
 
     rc = run_temp_scenario(
         "seed 1\n"
+        "trigger_oom_at chaos_test_alloc\n"
+        "expect no_crash\n",
+        &ctx);
+    CHAOS_CHECK("trigger_oom_at scenario passes", rc == 0);
+    CHAOS_CHECK("trigger_oom_at records synthetic fire",
+                ctx.alloc_fault_triggered &&
+                zcl_alloc_fault_armed_label() == NULL);
+
+    zcl_alloc_fault_fail_next("unit_alloc");
+    void *failed = zcl_malloc(16, "unit_alloc");
+    void *after = zcl_malloc(16, "unit_alloc");
+    CHAOS_CHECK("safe_alloc fault fails once",
+                failed == NULL && after != NULL &&
+                zcl_alloc_fault_armed_label() == NULL);
+    free(after);
+    zcl_alloc_fault_clear();
+
+    rc = run_temp_scenario(
+        "seed 1\n"
         "expect tip_height > 0\n",
         NULL);
     CHAOS_CHECK("failing expect fails scenario", rc != 0);

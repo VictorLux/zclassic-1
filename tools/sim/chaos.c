@@ -16,6 +16,8 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "util/safe_alloc.h"
+
 #define CHAOS_MAX_LINE 512
 #define CHAOS_MAX_ARGS 16
 #define CHAOS_MAX_EXPECTS 64
@@ -32,6 +34,8 @@ struct chaos_ctx {
     int64_t consensus_rejects;
     size_t expect_count;
     bool verbose;
+    char alloc_fault_site[64];
+    bool alloc_fault_triggered;
 };
 
 typedef int (*chaos_handler_fn)(struct chaos_ctx *ctx, int argc, char **argv,
@@ -210,6 +214,27 @@ static int handle_stub(struct chaos_ctx *ctx, int argc, char **argv,
     return -ENOTSUP;
 }
 
+static int handle_trigger_oom_at(struct chaos_ctx *ctx, int argc, char **argv,
+                                 int line_no)
+{
+    if (argc != 2) return fail_line(line_no, "trigger_oom_at requires one label");
+    if (strlen(argv[1]) >= sizeof(ctx->alloc_fault_site))
+        return fail_line(line_no, "trigger_oom_at label too long");
+
+    snprintf(ctx->alloc_fault_site, sizeof(ctx->alloc_fault_site), "%s",
+             argv[1]);
+    zcl_alloc_fault_fail_next(ctx->alloc_fault_site);
+    void *p = zcl_malloc(1, ctx->alloc_fault_site);
+    if (p) {
+        free(p);
+        return fail_line(line_no, "allocation fault did not fire");
+    }
+    if (zcl_alloc_fault_armed_label() != NULL)
+        return fail_line(line_no, "allocation fault did not clear");
+    ctx->alloc_fault_triggered = true;
+    return 0;
+}
+
 static const struct chaos_command COMMANDS[] = {
     { "seed", handle_seed },
     { "boot_phase", handle_boot_phase },
@@ -220,7 +245,7 @@ static const struct chaos_command COMMANDS[] = {
     { "send_block", handle_stub },
     { "send_malformed_block", handle_stub },
     { "advance_clock", handle_stub },
-    { "trigger_oom_at", handle_stub },
+    { "trigger_oom_at", handle_trigger_oom_at },
     { "partition_network", handle_stub },
 };
 

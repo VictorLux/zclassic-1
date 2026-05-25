@@ -15,6 +15,17 @@
 #include <stddef.h>
 #include <stdlib.h>
 #include <stdio.h>
+#include <stdbool.h>
+
+/* ── Phase 6c allocation fault injection ─────────────────────────
+ *
+ * Inactive by default. When armed with a label, the next checked allocation
+ * with that exact label returns NULL once and clears the hook. The caller must
+ * keep the label string alive until it fires or is cleared. */
+void zcl_alloc_fault_fail_next(const char *label);
+void zcl_alloc_fault_clear(void);
+const char *zcl_alloc_fault_armed_label(void);
+bool zcl_alloc_fault_should_fail(const char *label);
 
 /* ── Checked allocators ─────────────────────────────────────────── */
 
@@ -23,6 +34,11 @@
 static inline void *zcl_malloc_impl(size_t size, const char *label,
                                      const char *file, int line)
 {
+    if (size > 0 && zcl_alloc_fault_should_fail(label)) {
+        fprintf(stderr, "zcl_malloc INJECTED FAILURE: %zu bytes for '%s' at %s:%d\n",
+                size, label, file, line);
+        return NULL;
+    }
     void *p = malloc(size);
     if (!p && size > 0) {
         fprintf(stderr, "zcl_malloc FAILED: %zu bytes for '%s' at %s:%d\n",
@@ -35,6 +51,11 @@ static inline void *zcl_calloc_impl(size_t count, size_t size,
                                      const char *label,
                                      const char *file, int line)
 {
+    if (count > 0 && size > 0 && zcl_alloc_fault_should_fail(label)) {
+        fprintf(stderr, "zcl_calloc INJECTED FAILURE: %zu x %zu bytes for '%s' at %s:%d\n",
+                count, size, label, file, line);
+        return NULL;
+    }
     void *p = calloc(count, size);
     if (!p && count > 0 && size > 0) {
         fprintf(stderr, "zcl_calloc FAILED: %zu x %zu bytes for '%s' at %s:%d\n",
@@ -49,6 +70,11 @@ static inline void *zcl_realloc_impl(void *ptr, size_t size,
                                       const char *label,
                                       const char *file, int line)
 {
+    if (size > 0 && zcl_alloc_fault_should_fail(label)) {
+        fprintf(stderr, "zcl_realloc INJECTED FAILURE: %zu bytes for '%s' at %s:%d\n",
+                size, label, file, line);
+        return NULL;
+    }
     void *p = realloc(ptr, size);
     if (!p && size > 0) {
         fprintf(stderr, "zcl_realloc FAILED: %zu bytes for '%s' at %s:%d\n",
