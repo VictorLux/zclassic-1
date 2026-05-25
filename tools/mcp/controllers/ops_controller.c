@@ -930,8 +930,9 @@ static const struct mcp_tool_route k_routes[] = {
     { "zcl_cutovermode", "ops",
       "Read or set guarded runtime cutover modes for header_admit and "
       "validate_headers. With no args it reads modes; with stage+mode it "
-      "sets one stage or all stages. Destructive because authoritative "
-      "mode changes live chain ownership.",
+      "sets modes. Authoritative requires stage=all; partial stage requests "
+      "are only for shadow reverts. Destructive because authoritative mode "
+      "changes live chain ownership.",
       p_cutovermode, PARAM_COUNT(p_cutovermode), h_zcl_cutovermode,
       .flags = MCP_TOOL_FLAG_DESTRUCTIVE /* runtime mode setter */ },
     { "zcl_cutoverpreflight", "ops",

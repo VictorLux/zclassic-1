@@ -232,7 +232,7 @@ int test_rpc(void) {
         if (ok) printf("OK\n"); else { printf("FAIL\n"); failures++; }
     }
 
-    printf("diagnostics cutovermode rpc gates authoritative flips... ");
+    printf("diagnostics cutovermode rpc gates paired authoritative flips... ");
     {
         struct rpc_table t;
         rpc_table_init(&t);
@@ -259,6 +259,17 @@ int test_rpc(void) {
 
         json_set_array(&params);
         json_set_str(&v, "validate_headers");
+        ok = ok && json_push_back(&params, &v);
+        json_set_str(&v, "authoritative");
+        ok = ok && json_push_back(&params, &v);
+        ok = ok && !cmd->actor(&params, false, &result);
+        ok = ok && validate_headers_get_mode() ==
+             VALIDATE_HEADERS_MODE_SHADOW;
+        ok = ok && header_admit_get_mode() == HEADER_ADMIT_MODE_SHADOW;
+        json_free(&result);
+
+        json_set_array(&params);
+        json_set_str(&v, "header_admit");
         ok = ok && json_push_back(&params, &v);
         json_set_str(&v, "authoritative");
         ok = ok && json_push_back(&params, &v);

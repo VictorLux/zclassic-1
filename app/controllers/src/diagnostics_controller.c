@@ -659,6 +659,11 @@ static bool cutover_stage_requests_authoritative(
     return false;
 }
 
+static bool cutover_authoritative_request_is_paired(const char *stage)
+{
+    return stage && strcasecmp(stage, "all") == 0;
+}
+
 static bool cutover_preflight_ready_now(void)
 {
     struct json_value params;
@@ -686,9 +691,11 @@ static bool rpc_cutovermode(const struct json_value *params, bool help,
         "mode is one of:\n"
         "  shadow | authoritative\n"
         "\nAuthoritative mode is refused unless cutoverpreflight.ready is true.\n"
+        "Authoritative mode must be applied with stage=all; partial stage "
+        "requests are only valid for shadow reverts.\n"
         "\nExamples:\n"
         "  cutovermode\n"
-        "  cutovermode validate_headers authoritative\n"
+        "  cutovermode all authoritative\n"
         "  cutovermode all shadow\n"
         "\nResult: { changed, header_admit, validate_headers }");
 
@@ -713,7 +720,14 @@ static bool rpc_cutovermode(const struct json_value *params, bool help,
         strcasecmp(stage, "all") != 0)
         LOG_FAIL("diag", "cutovermode: invalid stage '%s'", stage);
 
-    if (cutover_stage_requests_authoritative(stage, ha_mode, vh_mode) &&
+    bool wants_authoritative =
+        cutover_stage_requests_authoritative(stage, ha_mode, vh_mode);
+    if (wants_authoritative &&
+        !cutover_authoritative_request_is_paired(stage))
+        LOG_FAIL("diag",
+                 "cutovermode: authoritative flip must use stage=all");
+
+    if (wants_authoritative &&
         !cutover_preflight_ready_now())
         LOG_FAIL("diag",
                  "cutovermode: authoritative flip refused; "
