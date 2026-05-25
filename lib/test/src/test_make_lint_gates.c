@@ -1134,7 +1134,7 @@ static int t_cold_import_spotcheck_diagnostics_contract(void)
         ASSERT(read_entire_file(path, &buf) == 0);
         char *debug_env = strstr(buf, "ZCL_COLD_IMPORT_DEBUG_WINDOW");
         char *call = strstr(buf, "legacy_bootstrap_open_block_source(");
-        char *required = strstr(buf, "true,  /* require_spotcheck */");
+        char *required = strstr(buf, ".require_spotcheck = true");
         ASSERT(debug_env != NULL);
         ASSERT(call != NULL);
         ASSERT(required != NULL);

@@ -133,6 +133,9 @@ Verification:
 - The attach no-op probe now reuses one private chainstate-best snapshot helper
   instead of open-coding stage-dir creation, probe path formatting, LevelDB
   snapshotting, best-block read, and cleanup inline.
+- Cold/direct block-source spotcheck behavior now comes from one private mode
+  policy table instead of repeated positional call arguments for K-window size,
+  fail-open/fail-closed behavior, debug env, log prefix, and map dump policy.
 
 ## The shape (one canonical importer, pluggable mode)
 
