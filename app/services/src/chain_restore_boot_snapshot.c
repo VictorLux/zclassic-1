@@ -2,7 +2,9 @@
  *
  * Chain restore boot snapshot — diagnostic state captured during restore. */
 
-#include "services/chain_restore_service.h"
+#include "services/chain_restore_boot_snapshot.h"
+#include "services/chain_restore_integrity.h"
+#include "services/chain_restore_planner.h"
 #include "platform/time_compat.h"
 #include "json/json.h"
 

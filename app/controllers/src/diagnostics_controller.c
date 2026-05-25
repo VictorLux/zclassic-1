@@ -36,7 +36,7 @@
 #include "controllers/explorer_internal.h"
 #include "controllers/strong_params.h"
 #include "services/sync_monitor.h"
-#include "services/chain_restore_service.h"
+#include "services/chain_restore_boot_snapshot.h"
 #include "services/chain_advance_coordinator.h"
 #include "services/zclassicd_oracle_service.h"
 #include "services/header_probe.h"

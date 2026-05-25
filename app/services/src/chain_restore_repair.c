@@ -1,11 +1,12 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
  * Chain Restore Repair — post-restore block index and active-chain repair.
- * See chain_restore_service.h for architecture overview. */
+ * See docs/dissolve/chain_restore_service.md for architecture overview. */
 
 #include "services/chain_restore_repair.h"
-#include "services/chain_restore_service.h"
+#include "services/chain_restore_boot_snapshot.h"
 #include "services/chain_restore_executor.h"
+#include "services/chain_restore_integrity.h"
 #include "services/chain_state_repository.h"
 #include "services/block_index_integrity.h"
 #include "validation/main_state.h"

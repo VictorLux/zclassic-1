@@ -754,7 +754,7 @@ int block_index_repair_pprev(struct main_state *ms, const char *datadir)
  * Lives here (not in lib/net/src/msg_headers.c) so the inbound P2P
  * handler does not do structural block-index surgery. */
 
-#include "services/chain_restore_service.h"
+#include "services/chain_restore_repair.h"
 #include "services/chain_tip.h"
 #include "coins/coins_view.h"
 #include "validation/chainstate.h"

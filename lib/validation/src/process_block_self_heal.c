@@ -38,7 +38,6 @@
 #include "models/database.h"
 #include "models/tx_index.h"
 #include "rpc/legacy_rpc_client.h"
-#include "services/chain_restore_service.h"
 #include "storage/disk_block_io.h"
 #include "storage/txdb.h"
 #include "storage/block_index_db.h"
@@ -47,6 +46,10 @@
 #include "util/safe_alloc.h"
 
 #include "process_block_internal.h"
+
+bool chain_restore_block_is_consensus_backed_on_disk(
+    const struct block_index *tip,
+    const char *datadir);
 
 /* ── self-heal state shared with core ─────────────────────────── */
 int s_utxo_fail_count = 0;

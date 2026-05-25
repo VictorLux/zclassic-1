@@ -13,7 +13,8 @@
 
 #include "services/snapshot_sync_service.h"
 #include "services/chain_advance_coordinator.h"
-#include "services/chain_restore_service.h"
+#include "services/chain_restore_executor.h"
+#include "services/chain_restore_repair.h"
 #include "services/chain_state_repository.h"
 #include "services/chain_tip.h"
 #include "services/chain_evidence_controller.h"

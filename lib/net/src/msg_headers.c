@@ -16,7 +16,6 @@
 #include "services/block_sync_service.h"
 #include "services/chain_state_repository.h"
 #include "services/chain_activation_controller.h"
-#include "services/chain_restore_service.h"
 #include "services/block_index_integrity.h"
 #include "services/snapshot_sync_service.h"
 #include "validation/process_block.h"

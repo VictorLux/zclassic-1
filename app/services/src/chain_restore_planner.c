@@ -3,8 +3,8 @@
  * Chain restore planner — deterministic, side-effect-light planning for
  * chain tip restoration. */
 
-#include "services/chain_restore_service.h"
-#include "core/uint256.h"
+#include "services/chain_restore_planner.h"
+#include "services/chain_restore_boot_snapshot.h"
 
 #include <stdio.h>
 #include <string.h>

@@ -172,7 +172,7 @@ enum reval_result process_block_revalidate(int target_height,
     /* ── Step 4: ≥2-oracle verified the same hash. Safe to clear. ────── */
     /* Clear BLOCK_FAILED bits on this pindex AND every descendant above
      * the current active tip. Uses the same shape as
-     * chain_restore_clear_failed_above_tip in chain_restore_service.c —
+     * chain_restore_clear_failed_above_tip in chain_restore_repair.c —
      * proven safe when there's evidence the canonical chain runs
      * through the cleared blocks. The evidence here is the quorum
      * agreement on the target_height block; descendants will be

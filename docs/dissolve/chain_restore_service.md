@@ -1,7 +1,7 @@
 # Dissolve plan: `chain_restore_service.c` → 3 Jobs + 1 Service + 1 Condition
 
 **Module:** `app/services/src/chain_restore_service.c` (DELETED after PR-3 shell split)
-**Header:** `app/services/include/services/chain_restore_service.h` (compatibility umbrella)
+**Header:** `app/services/include/services/chain_restore_service.h` (DELETED after PR-4)
 **Phase:** 3 (Dissolve mega-modules)
 **Gated on:** Wave S cutover C-9 shipped + soaked (so the saga owns
 the forward-tip path before we touch reorg/restore)
@@ -112,6 +112,15 @@ The `chain_restore_service.c` implementation file has been deleted.
 
 Replace the remaining compatibility include sites with the specific
 chain_restore headers and delete the umbrella header.
+
+Status: done. The focused headers are:
+
+- `chain_restore_planner.h`
+- `chain_restore_executor.h`
+- `chain_restore_repair.h`
+- `chain_restore_integrity.h`
+- `chain_restore_boot_activation.h`
+- `chain_restore_boot_snapshot.h`
 
 Net: 1,674 LOC out, ~1,000 LOC in. **~700 LOC net deletion.**
 
