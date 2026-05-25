@@ -1018,9 +1018,34 @@ static bool push_cutover_chain_advance_gate_json(struct json_value *out)
             s->selection_blocker[0] == '\0';
     }
     bool ready = node_health_chain_advance_synced(&d);
+    const char *not_ready_reason = "";
+    int64_t target_gap = 0;
+    if (d.local_height >= 0 && d.target_height >= 0 &&
+        d.target_height > d.local_height)
+        target_gap = (int64_t)d.target_height - d.local_height;
+    if (!ready) {
+        if (d.result != CAC_DECISION_USE_SOURCE)
+            not_ready_reason = "decision_not_use_source";
+        else if (d.selected_source <= CAC_SOURCE_NONE ||
+                 d.selected_source >= CAC_SOURCE_NUM)
+            not_ready_reason = "selected_source_invalid";
+        else if (d.blocker[0] != '\0')
+            not_ready_reason = "blocker_present";
+        else if (d.local_height < 0 || d.target_height < 0)
+            not_ready_reason = "invalid_heights";
+        else if (d.local_height + 1 < d.target_height)
+            not_ready_reason = "target_height_gap";
+        else if (d.projection_lag < 0 || d.projection_lag > 1)
+            not_ready_reason = "projection_lag";
+        else if (!source_ready)
+            not_ready_reason = "source_not_ready";
+        else
+            not_ready_reason = "unknown";
+    }
 
     json_set_object(out);
     json_push_kv_bool(out, "ready", ready);
+    json_push_kv_str(out, "not_ready_reason", not_ready_reason);
     json_push_kv_str(out, "decision",
                      cac_decision_result_name(d.result));
     json_push_kv_str(out, "selected_source",
@@ -1032,6 +1057,7 @@ static bool push_cutover_chain_advance_gate_json(struct json_value *out)
     json_push_kv_bool(out, "activation_allowed", d.activation_allowed);
     json_push_kv_int(out, "local_height", (int64_t)d.local_height);
     json_push_kv_int(out, "target_height", (int64_t)d.target_height);
+    json_push_kv_int(out, "target_gap", target_gap);
     json_push_kv_int(out, "best_header_height",
                      (int64_t)d.best_header_height);
     json_push_kv_int(out, "projection_height",

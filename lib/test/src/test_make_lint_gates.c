@@ -845,6 +845,8 @@ static int t_scoreboard_operator_gate_contract(void)
         ASSERT(strstr(buf, "cutover_validate_headers_gate") != NULL);
         ASSERT(strstr(buf, "operator_needed_blocks") != NULL);
         ASSERT(strstr(buf, "source_ready") != NULL);
+        ASSERT(strstr(buf, "not_ready_reason") != NULL);
+        ASSERT(strstr(buf, "target_gap") != NULL);
         ASSERT(strstr(buf, "state_ready") != NULL);
         ASSERT(strstr(buf, "cursor_lag") != NULL);
         ASSERT(strstr(buf, "window_complete") != NULL);

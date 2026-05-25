@@ -158,6 +158,8 @@ print(
     f"ready={fmt_bool(ca_gate, 'ready')} "
     f"source_ready={fmt_bool(ca_gate, 'source_ready')} "
     f"selected_source={ca_gate.get('selected_source', 'unknown')} "
+    f"not_ready_reason={ca_gate.get('not_ready_reason', 'unknown')} "
+    f"target_gap={ca_gate.get('target_gap', 'unknown')} "
     f"selected_source_blocker={ca_gate.get('selected_source_blocker', '')} "
     f"blocker={ca_gate.get('blocker', '')}"
 )

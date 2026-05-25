@@ -140,3 +140,9 @@ now compares the live node's `build_commit` against the local source commit and
 blocks with `live_build_not_current` when the live binary is stale. A healthy
 old build can no longer print `VERDICT=CUTOVER_READY` from a worktree that has
 newer guard/source changes pending deployment.
+
+Cutover diagnostics hardening shipped in wt3: the chain-advance gate now reports
+`not_ready_reason` and `target_gap` in `cutoverpreflight`, and
+`tools/scoreboard.sh --cutover` prints them. `chain_advance_not_ready` now names
+whether the blocker is a source decision, explicit blocker, invalid height,
+target-height gap, projection lag, or source readiness issue.

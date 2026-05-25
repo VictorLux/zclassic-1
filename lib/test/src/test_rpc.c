@@ -363,6 +363,7 @@ int test_rpc(void) {
         ok = ok && json_get(live, "degraded_reason") != NULL;
         ok = ok && json_get(live, "mirror_lag_breach_severity") != NULL;
         ok = ok && json_get(ca, "ready") != NULL;
+        ok = ok && json_get(ca, "not_ready_reason") != NULL;
         ok = ok && json_get(ca, "decision") != NULL;
         ok = ok && json_get(ca, "selected_source") != NULL;
         ok = ok && json_get(ca, "selected_source_trust") != NULL;
@@ -371,6 +372,7 @@ int test_rpc(void) {
         ok = ok && json_get(ca, "activation_allowed") != NULL;
         ok = ok && json_get(ca, "local_height") != NULL;
         ok = ok && json_get(ca, "target_height") != NULL;
+        ok = ok && json_get(ca, "target_gap") != NULL;
         ok = ok && json_get(ca, "projection_lag") != NULL;
         ok = ok && json_get(ca, "reason") != NULL;
         ok = ok && json_get(ca, "blocker") != NULL;
