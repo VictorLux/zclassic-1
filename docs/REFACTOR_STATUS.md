@@ -71,13 +71,13 @@ Phase 2 CUTOVER [███░░░░░░░]  28%   Flip shadow → authorit
   ├ C-7    [░░░░░░░░░░]   0%   proof_validate authoritative (batch spec, post C-6)
   ├ C-8    [░░░░░░░░░░]   0%   utxo_apply authoritative (batch spec, post C-7 — gates utxo_recovery dissolve)
   └ C-9    [░░░░░░░░░░]   0%   tip_finalize authoritative (batch spec, post C-8 — gates chain_advance dissolve)
-Phase 3  [██████░░░░]  60%   Dissolve mega-modules                    ← partial
+Phase 3  [███████░░░]  70%   Dissolve mega-modules                    ← partial
   ├ watchdog [██████████] 100%   sync_watchdog_service.c DELETED      ✅ 611631541
   ├ supervisor tree split [██████████] 100%   7 domain supervisors    ✅ dae31dee9
   ├ chain_advance  [░░░░░░░░░░] gated on C-9 cutover (dissolve plan ready)
   ├ legacy_mirror  [░░░░░░░░░░] gated on C-9 cutover (dissolve plan ready)
   ├ chain_restore  [░░░░░░░░░░] independent — plan ready, awaiting per-PR assignment
-  ├ header_probe   [████░░░░░░] PR-1 (poll Job) ✅ 79b53852a; PR-2/3 now unblocked (C-3 landed)
+  ├ header_probe   [██████████] 100%   core renamed; old service file deleted ✅ d17eb5ca0
   └ utxo_recovery  [░░░░░░░░░░] gated on C-8 cutover (dissolve plan ready)
 Phase 4  [█████████░]  95%   Storage unification — plan: docs/architecture/phase4-storage-unification.md
   ├ 4a     [██████████] 100%   event_log primitive  ✅ 76b3a10b4
@@ -142,7 +142,7 @@ clause. The table below is the dashboard.
 | `chain_restore_service.c` | 1,673 | `jobs/reorg_*.c` + `services/chain/restore_planner.c` | 3 |
 | `sync_watchdog_service.c` | DELETED | replaced by 8 supervised conditions | 3 (PR-3) |
 | `legacy_mirror_sync_service.c` | 1,410 | `services/sync/legacy_bridge.c` + `jobs/legacy_poll.c` + 1 condition | 2 (S-12) |
-| `header_probe_service.c` | 1,264 | `services/network/header_probe.c` (smaller) + mailbox use | 3 |
+| `header_probe_service.c` | DELETED | `header_probe.c` + `legacy_header_client.c` + mailbox use | 3 (PR-3) |
 | `utxo_recovery_service.c` | 1,241 | `conditions/utxo_drift.c` + `jobs/utxo_repair.c` | 3 |
 | `chain_evidence_controller.c` | 1,083 | `services/chain/evidence.c` + 1 condition | 2 (S-9) |
 
@@ -202,6 +202,7 @@ freed workers add the most while the soak runs.
 
 | Date | What | Worktree | Commit |
 |---|---|---|---|
+| 2026-05-25 | **Phase 3 header_probe dissolve COMPLETE** — PR-2 shrink to 392 LOC, legacy header RPC helper extracted, old `header_probe_service.{h,c}` deleted/renamed to `header_probe.{h,c}` | wt3 → main | 981ad4897, d17eb5ca0 |
 | 2026-05-24 | **Phase 4d-3 wallet projection COMPLETE** — public-only wallet projection, diff RPC/MCP tool, diagnostics, replay edge coverage, secret/payload audit, and live fresh-node `match:true` diff evidence | wt2 → main | 12284eb3e, 5626552cb |
 | 2026-05-24 | **Phase 2 C-3 validate_headers AUTHORITATIVE** — the flip; full test_parallel 0/196; stabilized 2 pre-existing flaky timing tests (crypto_registry ECDSA, event async) | wt3 → main | ad34efb65, 535f14902, 72dd5e01f |
 | 2026-05-24 | **Phase 4c FINALIZED** — `zcl_block_index_diff` MCP tool + dumper wired + 9-case `test_block_index_projection`; block_index_projection complete | wt2 → main | 066462576, 91b4ee734, 2f23d6a44, 2e289e41b |
