@@ -28,7 +28,10 @@
 #include "mcp/rpc_client.h"
 #include "event/event.h"
 #include "json/json.h"
+#include "sim/postmortem.h"
+#include "sim/seed_tape.h"
 
+#include <dirent.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -41,7 +44,7 @@
 /* Expected tool counts.  If a future commit intentionally adds or
  * removes tools, bump these numbers in the same commit — they are the
  * contract for "how big is the MCP surface." */
-#define EXPECTED_TOTAL      104 /* +3 power-user tools: chain_tip,
+#define EXPECTED_TOTAL      106 /* +3 power-user tools: chain_tip,
                                  * reorg_history, mempool_inspect;
                                  * +1 Round 6 C5: zcl_blockers;
                                  * +1 I-9 (revamp): zcl_diff_with_legacy_shadow;
@@ -53,7 +56,7 @@
                                  * +1 Phase 4d-4: zcl_znam_projection_diff;
                                  * +1 Phase 4d-3: zcl_wallet_projection_diff
                                  * +3 Phase 4d-5 small projection diff tools */
-#define EXPECTED_OPS        42  /* status, health, kpi, self_heal_stats, mempool*, mininginfo,
+#define EXPECTED_OPS        44  /* status, health, kpi, self_heal_stats, mempool*, mininginfo,
                                  * benchmark, dbstats, filemanifest, events,
                                  * rpc, state + node_log + sql (round 6.5 MCP primitives),
                                  * tools_list, self_test, logtail,
@@ -119,6 +122,24 @@ static bool is_known_domain(const char *d)
 static bool contains(const char *haystack, const char *needle)
 {
     return haystack && needle && strstr(haystack, needle) != NULL;
+}
+
+static int rm_rf_simple(const char *path)
+{
+    DIR *d = opendir(path);
+    if (!d) return unlink(path);
+    struct dirent *de;
+    while ((de = readdir(d)) != NULL) {
+        if (strcmp(de->d_name, ".") == 0 ||
+            strcmp(de->d_name, "..") == 0)
+            continue;
+        char child[768];
+        int n = snprintf(child, sizeof(child), "%s/%s", path, de->d_name);
+        if (n < 0 || (size_t)n >= sizeof(child)) continue;
+        rm_rf_simple(child);
+    }
+    closedir(d);
+    return rmdir(path);
 }
 
 /* ── Tests ──────────────────────────────────────────────────── */
@@ -321,7 +342,7 @@ static int test_specific_flagship_tools_registered(void)
             "zcl_name_resolve", "zcl_msg_send",
             "zcl_swap_chains", "zcl_market_list",
             "zcl_tools_list", "zcl_self_test", "zcl_logtail",
-            "zcl_rpc",
+            "zcl_rpc", "zcl_postmortem_list", "zcl_postmortem_replay",
         };
         for (size_t i = 0; i < sizeof(k)/sizeof(k[0]); i++) {
             if (mcp_router_find(k[i]) == NULL) {
@@ -329,6 +350,67 @@ static int test_specific_flagship_tools_registered(void)
                 failures++; goto _test_next;
             }
         }
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int test_postmortem_tools_dispatch(void)
+{
+    int failures = 0;
+    TEST("controllers: postmortem list/replay dispatch over MCP") {
+        register_all();
+
+        char dir_template[128];
+        snprintf(dir_template, sizeof(dir_template),
+                 "/tmp/zcl_mcp_postmortem_%d_XXXXXX", (int)getpid());
+        char *dir = mkdtemp(dir_template);
+        ASSERT(dir != NULL);
+
+        seed_tape_t *tape = seed_tape_open(0xBADCAFEULL, 1779667000);
+        ASSERT(tape != NULL);
+        ASSERT(seed_tape_advance(tape, 5000) == 0);
+        ASSERT(seed_tape_inject(tape, 9, "abc", 3) == 0);
+
+        char capsule_path[512];
+        struct postmortem_capture_opts opts = {
+            .dir = dir,
+            .tape = tape,
+            .crash_signal = 11,
+            .crash_unix = 1779667999,
+            .reason = "mcp-test",
+            .log_path = NULL,
+        };
+        ASSERT(postmortem_capture_write(&opts, capsule_path,
+                                        sizeof(capsule_path)) == 0);
+
+        char args_src[768];
+        snprintf(args_src, sizeof(args_src),
+                 "{\"dir\":\"%s\",\"limit\":10}", dir);
+        struct json_value args = {0};
+        ASSERT(json_read(&args, args_src, strlen(args_src)));
+        char *body = mcp_router_dispatch("zcl_postmortem_list", &args);
+        ASSERT(body != NULL);
+        ASSERT(contains(body, "\"total\":1"));
+        ASSERT(contains(body, "\"returned\":1"));
+        ASSERT(contains(body, "\"crash_signal\":11"));
+        ASSERT(contains(body, "1779667999"));
+        free(body);
+        json_free(&args);
+
+        snprintf(args_src, sizeof(args_src),
+                 "{\"path\":\"%s\",\"max_events\":10}", capsule_path);
+        ASSERT(json_read(&args, args_src, strlen(args_src)));
+        body = mcp_router_dispatch("zcl_postmortem_replay", &args);
+        ASSERT(body != NULL);
+        ASSERT(contains(body, "\"returned\":1"));
+        ASSERT(contains(body, "\"type\":9"));
+        ASSERT(contains(body, "\"payload_hex\":\"616263\""));
+        free(body);
+        json_free(&args);
+
+        seed_tape_close(tape);
+        rm_rf_simple(dir);
         PASS();
     } _test_next:;
     return failures;
@@ -1220,6 +1302,7 @@ int test_mcp_controllers(void)
     failures += test_wallet_shielded_tools_registered();
     failures += test_app_protocol_tools_registered();
     failures += test_required_params_have_no_default();
+    failures += test_postmortem_tools_dispatch();
     failures += test_zcl_admin_dispatch_shape();
     failures += test_zcl_admin_since_param_accepted();
     failures += test_zcl_admin_graceful_never_propagates_error();

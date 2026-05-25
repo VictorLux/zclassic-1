@@ -326,4 +326,12 @@ the capsule API plus the non-signal save/list/load path.
   byte accounting. Existing `postmortem_capsule_*` helpers remain as lower-level
   compatibility wrappers.
 
+### Progress (wt2, 2026-05-25)
+
+- Added read-only MCP access to the postmortem reader path:
+  `zcl_postmortem_list` summarizes capsule inventories and
+  `zcl_postmortem_replay` returns seed-tape events with hex payloads for quick
+  operator inspection. The remaining Phase 6b work is the signal handler and
+  boot integration path.
+
 <!-- Worker: append a Completion section below when done. -->
