@@ -49,6 +49,7 @@
 #include "services/chain_evidence_controller.h"
 #include "services/header_admit_stage.h"
 #include "services/validate_headers_stage.h"
+#include "services/node_health_service.h"
 #include "services/body_fetch_stage.h"
 #include "services/body_persist_stage.h"
 #include "services/script_validate_stage.h"
@@ -705,16 +706,55 @@ static int64_t json_obj_int_or(const struct json_value *obj,
     return v ? json_get_int(v) : fallback;
 }
 
+#define CUTOVER_PREFLIGHT_MAX_TIP_ADVANCE_AGE_SECS 180
+
+static void cutover_preflight_push_blocker(struct json_value *blockers,
+                                           const char *reason)
+{
+    struct json_value v;
+    json_init(&v);
+    json_set_str(&v, reason);
+    json_push_back(blockers, &v);
+    json_free(&v);
+}
+
+static bool push_cutover_live_gate_json(struct json_value *live)
+{
+    struct node_health_snapshot health;
+    node_health_collect(&health, NULL, NULL);
+
+    json_set_object(live);
+    json_push_kv_bool(live, "healthy", health.healthy);
+    json_push_kv_bool(live, "synced", health.synced);
+    json_push_kv_bool(live, "has_peers", health.has_peers);
+    json_push_kv_int(live, "peer_count", (int64_t)health.peer_count);
+    json_push_kv_int(live, "tip_height", health.tip_height);
+    json_push_kv_int(live, "header_height", health.header_height);
+    json_push_kv_int(live, "peer_best_height", health.peer_best_height);
+    json_push_kv_int(live, "tip_lag", health.tip_lag);
+    json_push_kv_int(live, "tip_advance_age_seconds",
+                     health.tip_advance_age_seconds);
+    json_push_kv_str(live, "degraded_reason", health.degraded_reason);
+
+    return health.healthy &&
+           health.synced &&
+           health.has_peers &&
+           health.tip_lag == 0 &&
+           health.tip_advance_age_seconds >= 0 &&
+           health.tip_advance_age_seconds <=
+               CUTOVER_PREFLIGHT_MAX_TIP_ADVANCE_AGE_SECS;
+}
+
 static bool rpc_cutoverpreflight(const struct json_value *params, bool help,
                                  struct json_value *result)
 {
     RPC_HELP(help, result,
         "cutoverpreflight [start_height] [end_height]\n"
         "\nRead-only C-3 preflight snapshot: runtime cutover modes, "
-        "header_admit shadow-vs-active-chain diff, validate_headers "
-        "stage counters, and a conservative ready boolean.\n"
+        "live node health, header_admit shadow-vs-active-chain diff, "
+        "validate_headers stage counters, and a conservative ready boolean.\n"
         "\nHeights default to the header_admit diff auto-window. "
-        "Result: { ready, blockers, modes, header_admit_diff, "
+        "Result: { ready, blockers, live, modes, header_admit_diff, "
         "validate_headers }");
 
     const struct json_value *start_v = json_at(params, 0);
@@ -731,10 +771,12 @@ static bool rpc_cutoverpreflight(const struct json_value *params, bool help,
         LOG_FAIL("diag", "cutoverpreflight: header_admit diff failed");
 
     struct json_value modes;
+    struct json_value live;
     struct json_value diff;
     struct json_value vh;
     struct json_value blockers;
     json_init(&modes);
+    json_init(&live);
     json_init(&diff);
     json_init(&vh);
     json_init(&blockers);
@@ -751,6 +793,7 @@ static bool rpc_cutoverpreflight(const struct json_value *params, bool help,
     const char *vh_mode = validate_headers_mode_name(validate_headers_get_mode());
     json_push_kv_str(&modes, "header_admit", ha_mode);
     json_push_kv_str(&modes, "validate_headers", vh_mode);
+    bool live_ready = push_cutover_live_gate_json(&live);
 
     json_push_kv_str(&diff, "status",
                      header_admit_diff_status_rpc_name(rep.status));
@@ -780,37 +823,30 @@ static bool rpc_cutoverpreflight(const struct json_value *params, bool help,
         strcmp(ha_mode, "shadow") == 0 &&
         strcmp(vh_mode, "shadow") == 0;
 
-    if (!header_ready) {
-        struct json_value v;
-        json_init(&v);
-        json_set_str(&v, "header_admit_diff_not_converged");
-        json_push_back(&blockers, &v);
-        json_free(&v);
-    }
-    if (!validate_ready) {
-        struct json_value v;
-        json_init(&v);
-        json_set_str(&v, "validate_headers_counters_not_clean");
-        json_push_back(&blockers, &v);
-        json_free(&v);
-    }
-    if (!modes_ready) {
-        struct json_value v;
-        json_init(&v);
-        json_set_str(&v, "cutover_modes_not_shadow");
-        json_push_back(&blockers, &v);
-        json_free(&v);
-    }
+    if (!live_ready)
+        cutover_preflight_push_blocker(&blockers, "live_health_not_ready");
+    if (!header_ready)
+        cutover_preflight_push_blocker(&blockers,
+                                       "header_admit_diff_not_converged");
+    if (!validate_ready)
+        cutover_preflight_push_blocker(&blockers,
+                                       "validate_headers_counters_not_clean");
+    if (!modes_ready)
+        cutover_preflight_push_blocker(&blockers,
+                                       "cutover_modes_not_shadow");
 
     json_push_kv_bool(result, "ready",
-                      header_ready && validate_ready && modes_ready);
+                      live_ready && header_ready &&
+                      validate_ready && modes_ready);
     json_push_kv(result, "blockers", &blockers);
+    json_push_kv(result, "live", &live);
     json_push_kv(result, "modes", &modes);
     json_push_kv(result, "header_admit_diff", &diff);
     json_push_kv(result, "validate_headers", &vh);
 
     json_free(&blockers);
     json_free(&modes);
+    json_free(&live);
     json_free(&diff);
     json_free(&vh);
     return true;
