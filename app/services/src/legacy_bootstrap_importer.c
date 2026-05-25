@@ -623,3 +623,85 @@ bool legacy_bootstrap_record_pending_csr_anchor(
             log_prefix, hex, best_height);
     return true;
 }
+
+bool legacy_bootstrap_import_snapshot_state(
+    const struct legacy_bootstrap_snapshot_import_options *opts,
+    struct legacy_bootstrap_snapshot_import_result *out)
+{
+    if (out)
+        *out = (struct legacy_bootstrap_snapshot_import_result){
+            .legacy_tip_height = -1,
+        };
+    if (!opts || !opts->legacy_blocks_dir || !opts->our_blocks_dir ||
+        !opts->legacy_index_dir || !opts->chainstate_dir || !opts->btdb ||
+        !opts->cvs || opts->chainstate_batch_limit == 0 ||
+        !opts->block_index_long_op_name || !opts->log_prefix) {
+        fprintf(stderr,  // obs-ok:bootstrap-import-terminal-diagnostic
+                "[legacy_bootstrap] import snapshot state: bad args\n");
+        return false;
+    }
+
+    struct legacy_bootstrap_snapshot_import_result r = {
+        .legacy_tip_height = -1,
+    };
+
+    int64_t linked = legacy_bootstrap_link_blk_files(opts->legacy_blocks_dir,
+                                                     opts->our_blocks_dir,
+                                                     opts->log_prefix);
+    if (linked < 0)
+        return false;
+    r.blk_files_linked = linked;
+
+    int64_t bi_written = legacy_bootstrap_copy_block_index(
+        opts->legacy_index_dir, opts->btdb, &r.legacy_tip_hash,
+        &r.legacy_tip_height, opts->block_index_long_op_name,
+        opts->log_prefix);
+    if (bi_written < 0)
+        return false;
+    r.block_index_writes = bi_written;
+
+    if (opts->min_legacy_tip >= 0 &&
+        r.legacy_tip_height < opts->min_legacy_tip) {
+        fprintf(stderr,  // obs-ok:bootstrap-import-terminal-diagnostic
+                "[%s] REFUSING: discovered legacy tip h=%d is below "
+                "minimum %d; no chainstate import or cursor publication\n",
+                opts->log_prefix, r.legacy_tip_height,
+                opts->min_legacy_tip);
+        return false;
+    }
+
+    struct legacy_bootstrap_chainstate_import_result cs_import;
+    if (!legacy_bootstrap_import_chainstate_utxos(
+            opts->chainstate_dir, opts->cvs, opts->chainstate_batch_limit,
+            opts->chainstate_long_op_name, opts->log_prefix, &cs_import))
+        return false;
+
+    r.utxos_imported = cs_import.inserted;
+    r.chainstate_records = cs_import.records;
+    r.got_best_block = cs_import.got_best_block;
+    if (cs_import.got_best_block)
+        r.best_block = cs_import.best_block;
+
+    if (!cs_import.got_best_block) {
+        if (opts->require_best_block) {
+            fprintf(stderr,  // obs-ok:bootstrap-import-terminal-diagnostic
+                    "[%s] REFUSING: legacy chainstate had no 'B' key; "
+                    "cannot publish an activatable tip\n",
+                    opts->log_prefix);
+            return false;
+        }
+        fprintf(stderr,  // obs-ok:pre-existing-diagnostic
+                "[%s] WARNING: legacy chainstate had no 'B' key; "
+                "pending CSR anchor not recorded\n",
+                opts->log_prefix);
+    } else if (opts->ndb) {
+        if (!legacy_bootstrap_record_pending_csr_anchor(
+                opts->ndb, &cs_import.best_block, r.legacy_tip_height,
+                cs_import.inserted, opts->log_prefix))
+            return false;
+    }
+
+    if (out)
+        *out = r;
+    return true;
+}

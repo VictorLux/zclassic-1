@@ -34,6 +34,33 @@ struct legacy_bootstrap_height_map_result {
     int32_t tip_height;
 };
 
+struct legacy_bootstrap_snapshot_import_options {
+    const char *legacy_blocks_dir;
+    const char *our_blocks_dir;
+    const char *legacy_index_dir;
+    const char *chainstate_dir;
+    struct block_tree_db *btdb;
+    struct coins_view_sqlite *cvs;
+    struct node_db *ndb;
+    size_t chainstate_batch_limit;
+    int32_t min_legacy_tip;
+    bool require_best_block;
+    const char *block_index_long_op_name;
+    const char *chainstate_long_op_name;
+    const char *log_prefix;
+};
+
+struct legacy_bootstrap_snapshot_import_result {
+    int64_t blk_files_linked;
+    int64_t block_index_writes;
+    int64_t utxos_imported;
+    int64_t chainstate_records;
+    bool got_best_block;
+    struct uint256 best_block;
+    struct uint256 legacy_tip_hash;
+    int32_t legacy_tip_height;
+};
+
 /* Hardlink every blk*.dat from legacy_blocks_dir into our_blocks_dir, with
  * a byte-for-byte copy fallback on EXDEV/EPERM. Existing destination files are
  * skipped. Returns linked+copied count, or -1 after logging a fatal error. */
@@ -100,6 +127,14 @@ bool legacy_bootstrap_record_pending_csr_anchor(
     int32_t best_height,
     int64_t utxo_count,
     const char *log_prefix);
+
+/* Shared imported-snapshot body for cold import and legacy-attach. The caller
+ * owns snapshot creation/destruction and any mode-specific preflight or final
+ * cursor stamping.
+ */
+bool legacy_bootstrap_import_snapshot_state(
+    const struct legacy_bootstrap_snapshot_import_options *opts,
+    struct legacy_bootstrap_snapshot_import_result *out);
 
 /* Verify k random compile-time SHA3 windows against block payloads served by
  * bmr/map. debug_env may name an environment variable that forces one window

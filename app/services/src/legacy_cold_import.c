@@ -171,71 +171,40 @@ bool legacy_cold_import_blocking(
     }
     r.evidence_armed = true;
 
-    /* ── Hardlink blk*.dat files ─────────────────────────── */
-    int64_t t_link = lci_now_ms();
-    int64_t linked = legacy_bootstrap_link_blk_files(blk_dir, our_blocks,
-                                                     "cold_import");
-    if (linked < 0) {
-        bilr_free_height_map(map);
-        ldb_snapshot_destroy(idx_dir);
-        ldb_snapshot_destroy(cs_dir);
-        return false;
-    }
-    r.blk_files_linked = linked;
-    fprintf(stderr, // obs-ok:pre-existing-diagnostic
-            "[cold_import] blk linking took %" PRId64 " ms\n",
-            lci_now_ms() - t_link);
-
-    /* ── Bulk-copy block_index into our LevelDB ──────────── */
-    int64_t t_bi = lci_now_ms();
-    struct uint256 legacy_tip_hash;
-    int32_t legacy_tip_h = -1;
-    int64_t bi_written = legacy_bootstrap_copy_block_index(
-        idx_dir, btdb, &legacy_tip_hash, &legacy_tip_h,
-        "legacy_cold_import.bulk_copy", "cold_import");
+    /* ── Shared snapshot import: blk*.dat + block_index + UTXOs ─────── */
+    struct legacy_bootstrap_snapshot_import_result imported;
+    const struct legacy_bootstrap_snapshot_import_options import_opts = {
+        .legacy_blocks_dir = blk_dir,
+        .our_blocks_dir = our_blocks,
+        .legacy_index_dir = idx_dir,
+        .chainstate_dir = cs_dir,
+        .btdb = btdb,
+        .cvs = cvs,
+        .ndb = ndb,
+        .chainstate_batch_limit = 5000,
+        .min_legacy_tip = -1,
+        .require_best_block = false,
+        .block_index_long_op_name = "legacy_cold_import.bulk_copy",
+        .chainstate_long_op_name = NULL,
+        .log_prefix = "cold_import",
+    };
+    int64_t t_import = lci_now_ms();
+    bool import_ok = legacy_bootstrap_import_snapshot_state(
+        &import_opts, &imported);
     bilr_free_height_map(map);
-    if (bi_written < 0) {
+    if (!import_ok) {
         ldb_snapshot_destroy(idx_dir);
         ldb_snapshot_destroy(cs_dir);
         return false;
     }
-    r.block_index_writes = bi_written;
+    r.blk_files_linked = imported.blk_files_linked;
+    r.block_index_writes = imported.block_index_writes;
+    r.utxos_imported = imported.utxos_imported;
     fprintf(stderr, // obs-ok:pre-existing-diagnostic
-            "[cold_import] block_index copy: %" PRId64 " entries "
-            "in %" PRId64 " ms (best h=%d)\n",
-            bi_written, lci_now_ms() - t_bi, legacy_tip_h);
-
-    /* ── Bulk-import chainstate UTXOs ─────────────────────── */
-    int64_t t_cs = lci_now_ms();
-
-    enum { BATCH = 5000 };
-    struct legacy_bootstrap_chainstate_import_result cs_import;
-    if (!legacy_bootstrap_import_chainstate_utxos(
-            cs_dir, cvs, BATCH, NULL, "cold_import", &cs_import)) {
-        ldb_snapshot_destroy(idx_dir);
-        ldb_snapshot_destroy(cs_dir);
-        return false;
-    }
-    r.utxos_imported = cs_import.inserted;
-    fprintf(stderr, // obs-ok:pre-existing-diagnostic
-            "[cold_import] chainstate: %" PRId64 " UTXOs from "
-            "%" PRId64 " records in %" PRId64 " ms\n",
-            cs_import.inserted, cs_import.records, lci_now_ms() - t_cs);
-
-    /* ── Record an unpublished anchor for post-index CSR publication ── */
-    if (cs_import.got_best_block) {
-        if (!legacy_bootstrap_record_pending_csr_anchor(
-                ndb, &cs_import.best_block, legacy_tip_h,
-                cs_import.inserted, "cold_import")) {
-            ldb_snapshot_destroy(idx_dir);
-            ldb_snapshot_destroy(cs_dir);
-            return false;
-        }
-    } else {
-        fprintf(stderr, // obs-ok:pre-existing-diagnostic
-                "[cold_import] WARNING: legacy chainstate had no 'B' key; "
-                "pending CSR anchor not recorded\n");
-    }
+            "[cold_import] snapshot state import took %" PRId64 " ms "
+            "(best h=%d records=%" PRId64 ")\n",
+            lci_now_ms() - t_import, imported.legacy_tip_height,
+            imported.chainstate_records);
 
     r.total_secs = (double)(lci_now_ms() - t_start) / 1000.0;
     r.ok = true;

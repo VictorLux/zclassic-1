@@ -525,105 +525,50 @@ bool legacy_oneshot_import_run(
         return false;
     }
 
-    /* ── Hardlink blk*.dat. ──────────────────────────────────────────── */
+    /* ── Shared snapshot import: blk*.dat + block_index + UTXOs. ────── */
     char legacy_blocks[1100], our_blocks[1100];
     snprintf(legacy_blocks, sizeof(legacy_blocks), "%s/blocks", legacy_datadir);
     snprintf(our_blocks, sizeof(our_blocks), "%s/blocks", our_datadir);
-    int64_t t_link = loi_now_ms();
-    int64_t linked = legacy_bootstrap_link_blk_files(legacy_blocks, our_blocks,
-                                                     "legacy_attach");
-    if (linked < 0) {
+    struct legacy_bootstrap_snapshot_import_result imported;
+    const struct legacy_bootstrap_snapshot_import_options import_opts = {
+        .legacy_blocks_dir = legacy_blocks,
+        .our_blocks_dir = our_blocks,
+        .legacy_index_dir = idx_snap,
+        .chainstate_dir = cs_snap,
+        .btdb = btdb,
+        .cvs = cvs,
+        .ndb = ndb,
+        .chainstate_batch_limit = 50000,
+        .min_legacy_tip = LOI_MIN_LEGACY_TIP,
+        .require_best_block = true,
+        .block_index_long_op_name = "legacy_attach.bi_copy",
+        .chainstate_long_op_name = "legacy_attach.cs_import",
+        .log_prefix = "legacy_attach",
+    };
+    int64_t t_import = loi_now_ms();
+    if (!legacy_bootstrap_import_snapshot_state(&import_opts, &imported)) {
         ldb_snapshot_destroy(idx_snap);
         ldb_snapshot_destroy(cs_snap);
         return false;
     }
-    r.blk_files_linked = linked;
+    r.blk_files_linked = imported.blk_files_linked;
+    r.block_index_writes = imported.block_index_writes;
+    r.utxos_imported = imported.utxos_imported;
+    r.legacy_tip_height = imported.legacy_tip_height;
     fprintf(stderr,  // obs-ok:legacy-oneshot-progress
-            "[legacy_attach] blk link/copy took %" PRId64 " ms\n",
-            loi_now_ms() - t_link);
-
-    /* ── Copy block_index. ───────────────────────────────────────────── */
-    int64_t t_bi = loi_now_ms();
-    struct uint256 legacy_tip_hash;
-    int32_t legacy_tip_h = -1;
-    int64_t bi_written = legacy_bootstrap_copy_block_index(
-        idx_snap, btdb, &legacy_tip_hash, &legacy_tip_h,
-        "legacy_attach.bi_copy", "legacy_attach");
-    if (bi_written < 0) {
-        ldb_snapshot_destroy(idx_snap);
-        ldb_snapshot_destroy(cs_snap);
-        return false;
-    }
-    r.block_index_writes = bi_written;
-    r.legacy_tip_height = legacy_tip_h;
-    fprintf(stderr,  // obs-ok:legacy-oneshot-progress
-            "[legacy_attach] block_index copy: %" PRId64 " entries in "
-            "%" PRId64 " ms (best h=%d)\n",
-            bi_written, loi_now_ms() - t_bi, legacy_tip_h);
-
-    /* Sanity floor on legacy tip — refuse to stamp cursors at tiny
-     * values that would silently advertise progress we can't attest. */
-    if (legacy_tip_h < LOI_MIN_LEGACY_TIP) {
-        fprintf(stderr,  // obs-ok:legacy-oneshot-tip-too-small
-            "[legacy_attach] REFUSING: discovered legacy tip h=%d is "
-            "below the LOI_MIN_LEGACY_TIP threshold (%d). The legacy "
-            "datadir at %s looks empty, corrupted, or freshly initialized. "
-            "No cursors stamped; sentinel retained for next-boot retry.\n",
-            legacy_tip_h, LOI_MIN_LEGACY_TIP, legacy_datadir);
-        ldb_snapshot_destroy(idx_snap);
-        ldb_snapshot_destroy(cs_snap);
-        return false;
-    }
-
-    /* ── Import chainstate UTXOs. ────────────────────────────────────── */
-    int64_t t_cs = loi_now_ms();
-
-    enum { BATCH = 50000 };  /* per plan: 50k rows/txn */
-    struct legacy_bootstrap_chainstate_import_result cs_import;
-    if (!legacy_bootstrap_import_chainstate_utxos(
-            cs_snap, cvs, BATCH, "legacy_attach.cs_import",
-            "legacy_attach", &cs_import)) {
-        ldb_snapshot_destroy(idx_snap);
-        ldb_snapshot_destroy(cs_snap);
-        return false;
-    }
-    r.utxos_imported = cs_import.inserted;
-    fprintf(stderr,  // obs-ok:legacy-oneshot-progress
-            "[legacy_attach] chainstate: %" PRId64 " UTXOs from "
-            "%" PRId64 " records in %" PRId64 " ms\n",
-            cs_import.inserted, cs_import.records, loi_now_ms() - t_cs);
-
-    /* ── Persist pending CSR anchor so the existing boot resolver lifts
-     *    the tip into active_chain later in boot. ────────────────────── */
-    if (!cs_import.got_best_block) {
-        /* Without 'B' we cannot publish a CSR anchor — meaning cursors
-         * would be stamped but active_chain would never be lifted to the
-         * imported tip. That leaves the node in the worst possible state
-         * (Wave S stages think they're done; chain is empty). Refuse. */
-        fprintf(stderr,  // obs-ok:legacy-oneshot-no-b-key
-            "[legacy_attach] REFUSING: legacy chainstate had no 'B' key; "
-            "cannot publish a tip anchor, so cursor stamps would advertise "
-            "progress without an activatable tip. Sentinel retained for "
-            "retry once legacy's chainstate is healthy.\n");
-        ldb_snapshot_destroy(idx_snap);
-        ldb_snapshot_destroy(cs_snap);
-        return false;
-    }
-    if (!legacy_bootstrap_record_pending_csr_anchor(
-            ndb, &cs_import.best_block, legacy_tip_h, cs_import.inserted,
-            "legacy_attach")) {
-        ldb_snapshot_destroy(idx_snap);
-        ldb_snapshot_destroy(cs_snap);
-        return false;
-    }
+            "[legacy_attach] snapshot state import took %" PRId64 " ms "
+            "(best h=%d records=%" PRId64 ")\n",
+            loi_now_ms() - t_import, imported.legacy_tip_height,
+            imported.chainstate_records);
 
     /* Use the chainstate 'B' hash as the canonical legacy tip hash for
      * the cursor-stamp record. */
-    const struct uint256 *cursor_hash = &cs_import.best_block;
+    const struct uint256 *cursor_hash = &imported.best_block;
 
     /* ── Atomic finalization: cursors + completion record + sentinel ── */
     int64_t stages_stamped = 0;
-    if (!loi_finalize_atomic(pdb, legacy_tip_h, cursor_hash, &stages_stamped)) {
+    if (!loi_finalize_atomic(pdb, imported.legacy_tip_height, cursor_hash,
+                             &stages_stamped)) {
         /* Sentinel left set so the next boot retries. */
         ldb_snapshot_destroy(idx_snap);
         ldb_snapshot_destroy(cs_snap);

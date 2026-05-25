@@ -1084,23 +1084,19 @@ static int t_cold_import_uses_leveldb_snapshots_contract(void)
         char *cs_probe = strstr(buf, "chainstate_legacy_open(cs_dir, &cs_probe)");
         char *height_map = strstr(buf,
             "legacy_bootstrap_load_height_map(");
-        char *block_index = strstr(buf,
-            "legacy_bootstrap_copy_block_index(");
-        char *chainstate = strstr(buf,
-            "legacy_bootstrap_import_chainstate_utxos(");
+        char *snapshot_import = strstr(buf,
+            "legacy_bootstrap_import_snapshot_state(");
         char *destroy = strstr(buf, "ldb_snapshot_destroy(idx_dir)");
         ASSERT(include != NULL);
         ASSERT(stage != NULL);
         ASSERT(snapshot != NULL);
         ASSERT(cs_probe != NULL);
         ASSERT(height_map != NULL);
-        ASSERT(block_index != NULL);
-        ASSERT(chainstate != NULL);
+        ASSERT(snapshot_import != NULL);
         ASSERT(destroy != NULL);
         ASSERT(snapshot < cs_probe);
         ASSERT(cs_probe < height_map);
-        ASSERT(height_map < block_index);
-        ASSERT(block_index < chainstate);
+        ASSERT(height_map < snapshot_import);
         PASS();
     } _test_next:;
     free(buf);
@@ -1132,7 +1128,7 @@ static int t_legacy_chainstate_batches_own_callback_buffers(void)
                          "app/services/src/legacy_cold_import.c") == 0);
         ASSERT(read_entire_file(path, &buf) == 0);
         ASSERT(strstr(buf,
-            "legacy_bootstrap_import_chainstate_utxos(") != NULL);
+            "legacy_bootstrap_import_snapshot_state(") != NULL);
         free(buf);
         buf = NULL;
 
@@ -1140,7 +1136,7 @@ static int t_legacy_chainstate_batches_own_callback_buffers(void)
                          "app/services/src/legacy_oneshot_import.c") == 0);
         ASSERT(read_entire_file(path, &buf) == 0);
         ASSERT(strstr(buf,
-            "legacy_bootstrap_import_chainstate_utxos(") != NULL);
+            "legacy_bootstrap_import_snapshot_state(") != NULL);
         PASS();
     } _test_next:;
     free(buf);
