@@ -1025,8 +1025,8 @@ static bool rpc_cutoverpreflight(const struct json_value *params, bool help,
         "cutoverpreflight [start_height] [end_height]\n"
         "\nRead-only C-3 preflight snapshot: runtime cutover modes, "
         "live node health, header_admit shadow-vs-active-chain diff, "
-        "validate_headers stage counters/cursor coverage, and a conservative "
-        "ready boolean gated by the cutover no-progress guard.\n"
+        "validate_headers persisted window/cursor coverage, and a "
+        "conservative ready boolean gated by the cutover no-progress guard.\n"
         "\nHeights default to the most recent header_admit diff window. "
         "Result: { ready, blockers, live, chain_evidence, guard, modes, "
         "header_admit_diff, validate_headers }");
@@ -1176,7 +1176,7 @@ static bool rpc_cutoverpreflight(const struct json_value *params, bool help,
         cutover_preflight_push_blocker(
             &blockers,
             validate_clean ? "validate_headers_cursor_lag"
-                           : "validate_headers_counters_not_clean");
+                           : "validate_headers_window_not_clean");
     if (!modes_ready)
         cutover_preflight_push_blocker(&blockers,
                                        "cutover_modes_not_shadow");
