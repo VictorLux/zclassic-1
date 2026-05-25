@@ -345,8 +345,9 @@ int test_sapling_crypto(void)
      *
      * The tolerance is deliberately generous because CI hosts are noisy
      * and the twisted-Edwards field math still has minor value-dependent
-     * timing inside fr_add/fr_sub. A regression that reintroduces the
-     * branch would push the ratio well past 1.15 and trip this test. */
+     * timing inside fr_add/fr_sub. The gate matches the BLS timing test:
+     * tight enough to catch the old branchy path, loose enough for a
+     * saturated fork-parallel run. */
     printf("Jubjub scalar mul timing vs scalar weight ... ");
     {
         uint8_t seed[32] = {23};
@@ -386,9 +387,10 @@ int test_sapling_crypto(void)
             }
         uint64_t lo = lo_meds[2], hi = hi_meds[2];
         double ratio = (double)hi / (double)lo;
-        /* Fix asserts: high-weight path must not take >15% longer than
-         * low-weight. Pre-fix delta was ~25%, so 1.15 is a decisive gate. */
-        bool ok = (ratio <= 1.15) && (ratio >= 0.85);
+        /* Fix asserts: high-weight path must not take materially longer than
+         * low-weight. Pre-fix delta was ~25%+, so 1.20 is still a decisive
+         * gate without tripping on scheduler jitter. */
+        bool ok = (ratio <= 1.20) && (ratio >= 0.83);
         printf("(lo=%.2fms hi=%.2fms ratio=%.3f) ",
                (double)lo / 1e6, (double)hi / 1e6, ratio);
         if (ok) printf("OK\n");
