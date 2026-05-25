@@ -69,7 +69,6 @@ bool progress_store_dump_state_json(struct json_value *out, const char *key);
  *   - `import_in_progress` sentinel (1-byte blob {0x01})
  *   - `legacy_attach_tip_hash` (32 bytes, little-endian)
  *   - `legacy_attach_tip_height` (4 bytes int32, native byte order)
- *   - `legacy_attach_done_at` (8 bytes int64, native byte order)
  *
  * Callers wanting transactional grouping with a stage_cursor advance
  * (the saga atomicity contract) must call `_tx` variants inside their

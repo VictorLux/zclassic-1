@@ -1171,7 +1171,7 @@ static int t_cold_import_uses_leveldb_snapshots_contract(void)
         char *snapshot = strstr(cold_mode,
             "legacy_bootstrap_snapshot_leveldbs(");
         char *cs_probe = strstr(cold_mode,
-            "chainstate_legacy_open(cs_dir, &cs_probe)");
+            "legacy_bootstrap_read_chainstate_best_block(");
         char *height_map = strstr(cold_mode,
             "legacy_bootstrap_load_height_map(");
         char *snapshot_import = strstr(cold_mode,

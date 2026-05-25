@@ -55,6 +55,10 @@ Progress:
   returned metrics.
 - The leftover block-source wrapper was removed; cold/direct import now use the
   shared checked mmap opener directly instead of a one-field adapter struct.
+- Attach/cold chainstate-best probing now uses the shared best-block reader and
+  the attach no-op probe uses the retrying LevelDB snapshot helper; removed the
+  attach-only direct LevelDB open/probe path, private chainstate record metric,
+  and unread `legacy_attach_done_at` metadata.
 
 Verification:
 - `make -j$(nproc) test_zcl`, `make -j$(nproc) zclassic23`, `make lint`, and
@@ -77,6 +81,9 @@ Verification:
   on an already-attached scratch datadir (`from=3124614 legacy=3124589`). An
   empty-datadir probe also passed SHA3 spotcheck and began the full walk at
   ~212 blk/s before the smoke timeout; a full direct import is not a short smoke.
+- `make -j1 test_zcl zclassic23`, `make lint`, and
+  `./test_parallel --jobs=$(nproc)` pass after the attach/cold best-block reader
+  consolidation.
 
 ## The shape (one canonical importer, pluggable mode)
 

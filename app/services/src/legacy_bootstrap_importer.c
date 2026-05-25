@@ -48,7 +48,6 @@
 #define LEGACY_BOOTSTRAP_ATTACH_META_SENTINEL "import_in_progress"
 #define LEGACY_BOOTSTRAP_ATTACH_META_TIP_HASH "legacy_attach_tip_hash"
 #define LEGACY_BOOTSTRAP_ATTACH_META_TIP_HEIGHT "legacy_attach_tip_height"
-#define LEGACY_BOOTSTRAP_ATTACH_META_DONE_AT "legacy_attach_done_at"
 
 struct legacy_bootstrap_snapshot_import_options {
     const char *legacy_blocks_dir;
@@ -72,14 +71,12 @@ struct legacy_bootstrap_snapshot_import_result {
     int64_t blk_files_linked;
     int64_t block_index_writes;
     int64_t utxos_imported;
-    int64_t chainstate_records;
     struct uint256 best_block;
     int32_t legacy_tip_height;
 };
 
 struct legacy_bootstrap_chainstate_import_result {
     int64_t inserted;
-    int64_t records;
     bool got_best_block;
     struct uint256 best_block;
 };
@@ -523,7 +520,6 @@ struct legacy_bootstrap_chainstate_ctx {
     size_t cap;
     struct coins_view_sqlite *cvs;
     int64_t inserted;
-    int64_t records;
     int errors;
     struct long_op_scope *lo_scope;
 };
@@ -562,7 +558,6 @@ static bool legacy_bootstrap_chainstate_cb(const struct uint256 *txid,
 {
     struct legacy_bootstrap_chainstate_ctx *c = vctx;
     if (thread_registry_shutdown_requested()) return false;
-    c->records++;
     for (size_t i = 0; i < lc->num_vouts; i++) {
         if (c->fill >= c->cap) {
             if (!legacy_bootstrap_chainstate_flush(c)) return false;
@@ -679,12 +674,38 @@ static bool legacy_bootstrap_import_chainstate_utxos(
 
     if (out) {
         out->inserted = ctx.inserted;
-        out->records = ctx.records;
         out->got_best_block = got_best;
         if (got_best)
             out->best_block = best_block;
     }
     return true;
+}
+
+static bool legacy_bootstrap_read_chainstate_best_block(
+    const char *chainstate_dir,
+    const char *log_prefix,
+    struct uint256 *out_best)
+{
+    if (!chainstate_dir || !log_prefix || !out_best) {
+        fprintf(stderr,  // obs-ok:bootstrap-import-terminal-diagnostic
+                "[legacy_bootstrap] read chainstate best: bad args\n");
+        return false;
+    }
+
+    void *cs = NULL;
+    if (!chainstate_legacy_open(chainstate_dir, &cs)) {
+        fprintf(stderr,  // obs-ok:bootstrap-import-terminal-diagnostic
+                "[%s] chainstate_legacy_open %s failed\n",
+                log_prefix, chainstate_dir);
+        return false;
+    }
+
+    bool ok = chainstate_legacy_get_best_block(cs, out_best);
+    chainstate_legacy_close(cs);
+    if (!ok)
+        fprintf(stderr,  // obs-ok:bootstrap-import-terminal-diagnostic
+                "[%s] chainstate best block unavailable\n", log_prefix);
+    return ok;
 }
 
 static bool legacy_bootstrap_record_pending_csr_anchor(
@@ -776,7 +797,6 @@ static bool legacy_bootstrap_import_snapshot_state(
         return false;
 
     r.utxos_imported = cs_import.inserted;
-    r.chainstate_records = cs_import.records;
     if (cs_import.got_best_block)
         r.best_block = cs_import.best_block;
 
@@ -960,23 +980,12 @@ static bool legacy_bootstrap_import_cold(
             legacy_bootstrap_now_ms() - t_snap);
 
     struct uint256 cs_best_for_map;
-    void *cs_probe = NULL;
-    if (!chainstate_legacy_open(cs_dir, &cs_probe)) {
-        fprintf(stderr,
-                "[cold_import] chainstate_legacy_open %s failed\n", cs_dir);
+    if (!legacy_bootstrap_read_chainstate_best_block(
+            cs_dir, "cold_import", &cs_best_for_map)) {
         ldb_snapshot_destroy(idx_dir);
         ldb_snapshot_destroy(cs_dir);
         return false;
     }
-    if (!chainstate_legacy_get_best_block(cs_probe, &cs_best_for_map)) {
-        chainstate_legacy_close(cs_probe);
-        ldb_snapshot_destroy(idx_dir);
-        ldb_snapshot_destroy(cs_dir);
-        fprintf(stderr,
-                "[cold_import] chainstate best block unavailable\n");
-        return false;
-    }
-    chainstate_legacy_close(cs_probe);
 
     struct legacy_bootstrap_height_map_result hmap;
     if (!legacy_bootstrap_load_height_map(idx_dir, &cs_best_for_map,
@@ -1041,9 +1050,9 @@ static bool legacy_bootstrap_import_cold(
     r.utxos_imported = imported.utxos_imported;
     fprintf(stderr,  // obs-ok:pre-existing-diagnostic
             "[cold_import] snapshot state import took %" PRId64 " ms "
-            "(best h=%d records=%" PRId64 ")\n",
+            "(best h=%d)\n",
             legacy_bootstrap_now_ms() - t_import,
-            imported.legacy_tip_height, imported.chainstate_records);
+            imported.legacy_tip_height);
 
     r.total_secs = (double)(legacy_bootstrap_now_ms() - t_start) / 1000.0;
     if (out) *out = r;
@@ -1464,11 +1473,6 @@ static bool legacy_bootstrap_attach_finalize_atomic(
                                      &legacy_tip, sizeof(legacy_tip));
     }
     if (ok) {
-        int64_t now = (int64_t)platform_time_wall_time_t();
-        ok = progress_meta_set_in_tx(db, LEGACY_BOOTSTRAP_ATTACH_META_DONE_AT,
-                                     &now, sizeof(now));
-    }
-    if (ok) {
         ok = progress_meta_delete_in_tx(
             db, LEGACY_BOOTSTRAP_ATTACH_META_SENTINEL);
     }
@@ -1590,36 +1594,31 @@ static bool legacy_bootstrap_import_attach(
         if (legacy_bootstrap_attach_meta_get_tip(pdb, &last_hash, &last_h,
                                                  &last_found) &&
             last_found) {
-            char stage_dir[1100], cs_path[1200];
+            char stage_dir[1100];
             if (legacy_bootstrap_make_stage_dir(
                     opts->our_datadir, LEGACY_BOOTSTRAP_ATTACH_STAGE_SUBDIR,
                     stage_dir, sizeof(stage_dir), "legacy_attach")) {
-                snprintf(cs_path, sizeof(cs_path),
-                         "%s/probe-chainstate", stage_dir);
-                char err[128] = {0};
-                char src_cs[1100];
+                char src_cs[1100], cs_path[1200];
                 snprintf(src_cs, sizeof(src_cs), "%s/chainstate",
                          opts->legacy_datadir);
-                if (ldb_snapshot_make(src_cs, cs_path, err, sizeof(err))) {
-                    void *cs = NULL;
-                    if (chainstate_legacy_open(cs_path, &cs)) {
-                        struct uint256 cur_best;
-                        if (chainstate_legacy_get_best_block(cs, &cur_best) &&
-                            memcmp(cur_best.data, last_hash.data, 32) == 0) {
-                            chainstate_legacy_close(cs);
-                            ldb_snapshot_destroy(cs_path);
-                            r.outcome = LEGACY_ATTACH_OUTCOME_NOOP_SAME_TIP;
-                            r.legacy_tip = last_h;
-                            if (out) *out = r;
-                            fprintf(stderr,  // obs-ok:legacy-attach-noop
-                                "[legacy_attach] NOOP: already attached "
-                                "to legacy tip h=%d\n", last_h);
-                            return true;
-                        }
-                        chainstate_legacy_close(cs);
-                    }
+                snprintf(cs_path, sizeof(cs_path), "%s/probe-chainstate",
+                         stage_dir);
+                struct uint256 cur_best;
+                if (legacy_bootstrap_snapshot_one_leveldb(
+                        src_cs, cs_path, "chainstate", "legacy_attach") &&
+                    legacy_bootstrap_read_chainstate_best_block(
+                        cs_path, "legacy_attach", &cur_best) &&
+                    memcmp(cur_best.data, last_hash.data, 32) == 0) {
                     ldb_snapshot_destroy(cs_path);
+                    r.outcome = LEGACY_ATTACH_OUTCOME_NOOP_SAME_TIP;
+                    r.legacy_tip = last_h;
+                    if (out) *out = r;
+                    fprintf(stderr,  // obs-ok:legacy-attach-noop
+                        "[legacy_attach] NOOP: already attached "
+                        "to legacy tip h=%d\n", last_h);
+                    return true;
                 }
+                ldb_snapshot_destroy(cs_path);
             }
         }
     } else {
@@ -1705,9 +1704,9 @@ static bool legacy_bootstrap_import_attach(
     r.legacy_tip = imported.legacy_tip_height;
     fprintf(stderr,  // obs-ok:legacy-attach-progress
             "[legacy_attach] snapshot state import took %" PRId64 " ms "
-            "(best h=%d records=%" PRId64 ")\n",
+            "(best h=%d)\n",
             legacy_bootstrap_now_ms() - t_import,
-            imported.legacy_tip_height, imported.chainstate_records);
+            imported.legacy_tip_height);
 
     int64_t stages_stamped = 0;
     if (!legacy_bootstrap_attach_finalize_atomic(
