@@ -275,6 +275,7 @@ int test_condition_engine(void)
             "contradiction_frozen",
             "chain_stalled_with_data",
             "utxo_activation_paused",
+            "utxo_drift_detected",
             "header_stall_at_height",
             "sync_state_stuck",
             "download_queue_starved",
@@ -289,8 +290,8 @@ int test_condition_engine(void)
             "snapshot_failed_reset",
             "snapshot_complete_resume",
         };
-        ok = ok && registered && json_get_int(registered) == 17;
-        ok = ok && conditions && json_size(conditions) == 17;
+        ok = ok && registered && json_get_int(registered) == 18;
+        ok = ok && conditions && json_size(conditions) == 18;
         for (size_t i = 0; i < sizeof(expected) / sizeof(expected[0]); i++)
             ok = ok && ce_json_conditions_has(conditions, expected[i]);
         json_free(&out);
