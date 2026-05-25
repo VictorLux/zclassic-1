@@ -134,3 +134,9 @@ rows or nonzero failed counter. The preflight now publishes
 `validate_headers.no_failures`, blocks with `validate_headers_failures_present`,
 and `tools/scoreboard.sh --cutover` prints the boolean beside the failure
 counts.
+
+Operator scoreboard hardening shipped in wt3: `tools/scoreboard.sh --cutover`
+now compares the live node's `build_commit` against the local source commit and
+blocks with `live_build_not_current` when the live binary is stale. A healthy
+old build can no longer print `VERDICT=CUTOVER_READY` from a worktree that has
+newer guard/source changes pending deployment.

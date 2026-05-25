@@ -32,6 +32,10 @@ trap 'rm -rf "$tmpdir"' EXIT
 
 health_json="$tmpdir/health.json"
 preflight_json="$tmpdir/preflight.json"
+source_commit="$(git -C "$ROOT" rev-parse --short=9 HEAD 2>/dev/null || true)"
+if [ -z "$source_commit" ]; then
+    source_commit="unknown"
+fi
 
 if ! "$RPC" healthcheck >"$health_json" 2>"$tmpdir/health.err"; then
     echo "scoreboard read-only $(date -u +%Y-%m-%dT%H:%M:%SZ)"
@@ -47,12 +51,12 @@ if ! "$RPC" cutoverpreflight -1 -1 >"$preflight_json" 2>"$tmpdir/preflight.err";
     exit 2
 fi
 
-python3 - "$health_json" "$preflight_json" "$MODE" <<'PY'
+python3 - "$health_json" "$preflight_json" "$MODE" "$source_commit" <<'PY'
 import json
 import sys
 import time
 
-health_path, preflight_path, mode = sys.argv[1:4]
+health_path, preflight_path, mode, source_commit = sys.argv[1:5]
 
 def load_rpc(path):
     try:
@@ -103,10 +107,24 @@ tip_age = int(checks.get("tip_advance_age_seconds",
                          live.get("tip_advance_age_seconds", 999999)) or 0)
 peer_count = int(checks.get("peer_count", live.get("peer_count", 0)) or 0)
 live_ready = healthy and peer_count > 0 and tip_lag <= 2 and 0 <= tip_age <= 180
-cutover_ready = bool(preflight.get("ready"))
+build_commit = str(health.get("build_commit", "unknown") or "unknown")
+build_matches_source = (
+    source_commit != "unknown" and
+    build_commit != "unknown" and
+    build_commit.startswith(source_commit)
+)
+cutover_ready = bool(preflight.get("ready")) and build_matches_source
+display_blockers = list(blockers)
+if not build_matches_source:
+    display_blockers.append("live_build_not_current")
 
 print("scoreboard read-only")
-print(f"build_commit={health.get('build_commit', 'unknown')}")
+print(f"build_commit={build_commit}")
+print(
+    "source_gate="
+    f"source_commit={source_commit} "
+    f"build_matches_source={str(build_matches_source).lower()}"
+)
 print(f"sync_state={health.get('sync_state', 'unknown')}")
 print(
     "live="
@@ -125,7 +143,7 @@ print(
     "cutover="
     f"ready={str(cutover_ready).lower()} "
     f"canary_target_height={live.get('canary_target_height', 0)} "
-    f"blockers={','.join(str(b) for b in blockers) if blockers else 'none'}"
+    f"blockers={','.join(str(b) for b in display_blockers) if display_blockers else 'none'}"
 )
 print(
     "cutover_live_gate="
