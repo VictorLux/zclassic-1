@@ -587,6 +587,101 @@ static bool rpc_dumpstate(const struct json_value *params, bool help,
     return true;
 }
 
+/* ── RPC: cutovermode [stage] [mode] ────────────────────────────────
+ *
+ * Runtime control for the guarded Wave-S cutovers. Compile-time defaults stay
+ * SHADOW so a bad flip can be reverted with one RPC call instead of rebuild +
+ * redeploy. This intentionally covers only stages that currently expose a
+ * cutover mode.
+ */
+
+static const char *header_admit_mode_name(header_admit_mode_t mode)
+{
+    return mode == HEADER_ADMIT_MODE_AUTHORITATIVE
+        ? "authoritative" : "shadow";
+}
+
+static const char *validate_headers_mode_name(validate_headers_mode_t mode)
+{
+    return mode == VALIDATE_HEADERS_MODE_AUTHORITATIVE
+        ? "authoritative" : "shadow";
+}
+
+static bool parse_cutover_mode(const char *s,
+                               header_admit_mode_t *ha,
+                               validate_headers_mode_t *vh)
+{
+    if (!s || !s[0]) return false;
+    if (strcasecmp(s, "shadow") == 0) {
+        if (ha) *ha = HEADER_ADMIT_MODE_SHADOW;
+        if (vh) *vh = VALIDATE_HEADERS_MODE_SHADOW;
+        return true;
+    }
+    if (strcasecmp(s, "authoritative") == 0 ||
+        strcasecmp(s, "auth") == 0) {
+        if (ha) *ha = HEADER_ADMIT_MODE_AUTHORITATIVE;
+        if (vh) *vh = VALIDATE_HEADERS_MODE_AUTHORITATIVE;
+        return true;
+    }
+    return false;
+}
+
+static void push_cutover_modes(struct json_value *result, bool changed)
+{
+    json_set_object(result);
+    json_push_kv_bool(result, "changed", changed);
+    json_push_kv_str(result, "header_admit",
+                     header_admit_mode_name(header_admit_get_mode()));
+    json_push_kv_str(result, "validate_headers",
+                     validate_headers_mode_name(validate_headers_get_mode()));
+}
+
+static bool rpc_cutovermode(const struct json_value *params, bool help,
+                            struct json_value *result)
+{
+    RPC_HELP(help, result,
+        "cutovermode [stage] [mode]\n"
+        "\nRead or set runtime cutover modes. stage is one of:\n"
+        "  header_admit | validate_headers | all\n"
+        "mode is one of:\n"
+        "  shadow | authoritative\n"
+        "\nExamples:\n"
+        "  cutovermode\n"
+        "  cutovermode validate_headers authoritative\n"
+        "  cutovermode all shadow\n"
+        "\nResult: { changed, header_admit, validate_headers }");
+
+    const struct json_value *stage_v = json_at(params, 0);
+    const struct json_value *mode_v = json_at(params, 1);
+    const char *stage = stage_v ? json_get_str(stage_v) : NULL;
+    const char *mode_s = mode_v ? json_get_str(mode_v) : NULL;
+    if (!stage || !stage[0]) {
+        push_cutover_modes(result, false);
+        return true;
+    }
+    if (!mode_s || !mode_s[0])
+        LOG_FAIL("diag", "cutovermode: missing mode for stage '%s'", stage);
+
+    header_admit_mode_t ha_mode = HEADER_ADMIT_MODE_SHADOW;
+    validate_headers_mode_t vh_mode = VALIDATE_HEADERS_MODE_SHADOW;
+    if (!parse_cutover_mode(mode_s, &ha_mode, &vh_mode))
+        LOG_FAIL("diag", "cutovermode: invalid mode '%s'", mode_s);
+
+    if (strcasecmp(stage, "header_admit") == 0) {
+        header_admit_set_mode(ha_mode);
+    } else if (strcasecmp(stage, "validate_headers") == 0) {
+        validate_headers_set_mode(vh_mode);
+    } else if (strcasecmp(stage, "all") == 0) {
+        header_admit_set_mode(ha_mode);
+        validate_headers_set_mode(vh_mode);
+    } else {
+        LOG_FAIL("diag", "cutovermode: invalid stage '%s'", stage);
+    }
+
+    push_cutover_modes(result, true);
+    return true;
+}
+
 /* ── RPC: getnodelog <pattern> [since_secs] [max_lines] [level] ───
  *
  * Reverse-scans ~/<datadir>/node.log in 64 KB chunks, matches each
@@ -1773,6 +1868,7 @@ void register_diagnostics_rpc_commands(struct rpc_table *t)
 {
     struct rpc_command cmds[] = {
         { "control", "dumpstate",     rpc_dumpstate,     true },
+        { "control", "cutovermode",   rpc_cutovermode,   true },
         { "control", "getnodelog",    rpc_getnodelog,    true },
         { "control", "dbquery",       rpc_dbquery,       true },
         { "control", "probezclassicd", rpc_probezclassicd, true },

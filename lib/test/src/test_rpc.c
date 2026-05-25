@@ -1,8 +1,11 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0 */
 
 #include "test/test_helpers.h"
+#include "controllers/diagnostics_controller.h"
 #include "rpc/httpserver.h"
 #include "rpc/legacy_rpc_client.h"
+#include "services/header_admit_stage.h"
+#include "services/validate_headers_stage.h"
 #include <openssl/err.h>
 #include <openssl/pem.h>
 #include <openssl/ssl.h>
@@ -226,6 +229,59 @@ int test_rpc(void) {
         ok = ok && rpc_table_find(&t, "test_cmd") != NULL;
         ok = ok && rpc_table_find(&t, "nonexistent") == NULL;
         ok = ok && !rpc_table_append(&t, &cmd);
+        if (ok) printf("OK\n"); else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("diagnostics cutovermode rpc toggles runtime modes... ");
+    {
+        struct rpc_table t;
+        rpc_table_init(&t);
+        register_diagnostics_rpc_commands(&t);
+        const struct rpc_command *cmd = rpc_table_find(&t, "cutovermode");
+
+        header_admit_set_mode(HEADER_ADMIT_MODE_SHADOW);
+        validate_headers_set_mode(VALIDATE_HEADERS_MODE_SHADOW);
+
+        struct json_value params;
+        struct json_value result;
+        struct json_value v;
+        json_init(&params);
+        json_init(&result);
+        json_init(&v);
+
+        json_set_array(&params);
+        bool ok = cmd && cmd->actor(&params, false, &result);
+        ok = ok && strcmp(json_get_str(json_get(&result, "header_admit")),
+                          "shadow") == 0;
+        ok = ok && strcmp(json_get_str(json_get(&result, "validate_headers")),
+                          "shadow") == 0;
+        json_free(&result);
+
+        json_set_array(&params);
+        json_set_str(&v, "validate_headers");
+        ok = ok && json_push_back(&params, &v);
+        json_set_str(&v, "authoritative");
+        ok = ok && json_push_back(&params, &v);
+        ok = ok && cmd->actor(&params, false, &result);
+        ok = ok && validate_headers_get_mode() ==
+             VALIDATE_HEADERS_MODE_AUTHORITATIVE;
+        ok = ok && header_admit_get_mode() == HEADER_ADMIT_MODE_SHADOW;
+        ok = ok && strcmp(json_get_str(json_get(&result, "validate_headers")),
+                          "authoritative") == 0;
+        json_free(&result);
+
+        json_set_array(&params);
+        json_set_str(&v, "all");
+        ok = ok && json_push_back(&params, &v);
+        json_set_str(&v, "shadow");
+        ok = ok && json_push_back(&params, &v);
+        ok = ok && cmd->actor(&params, false, &result);
+        ok = ok && header_admit_get_mode() == HEADER_ADMIT_MODE_SHADOW;
+        ok = ok && validate_headers_get_mode() == VALIDATE_HEADERS_MODE_SHADOW;
+
+        json_free(&v);
+        json_free(&params);
+        json_free(&result);
         if (ok) printf("OK\n"); else { printf("FAIL\n"); failures++; }
     }
 
