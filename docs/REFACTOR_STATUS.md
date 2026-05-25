@@ -17,11 +17,10 @@ Honest scoreboard. **MEASURED** = a real number from this box (date + how, in
 > Read live from the SERVICE (canonical C, not a shell snapshot): `zcl_status`
 > (tip, sync_state, `tip_advance_age_seconds`) + `zcl_state subsystem=blocker`
 > (the typed blocker registry = "what's blocking"). No-MCP fallback: `tools/zcl-rpc`.
-> Snapshot below is from
-> 2026-05-25 07:08Z. **The cure is written; the patient still runs the disease**
-> — all 3 halt fixes are merged on origin/main but NOT deployed, so the live
-> node is unchanged from when it broke. Numbers prefixed `code:` = fixed in the
-> tree; `live:` = what the running node actually shows right now.
+> **Halt cured 2026-05-25** — the live node was rebuilt from the local zclassicd
+> and is HEALTHY (advancing, 0 restarts). The scoreboard numbers below are a
+> 2026-05-25 07:08Z snapshot from BEFORE the cure and the cutover; re-measure
+> after the cutover lands rather than quoting them.
 
 ```
   ⚡ FAST                       live now           target        state
@@ -52,7 +51,18 @@ bg-verify has buffered. >2× the 1 GB target; real ceiling needs the full ~8h
 run. `✓` met · `▸` in flight · `◷` measuring · `◑` fixed-in-code-not-deployed ·
 `▲` above target · `✗` BROKEN/regressed.
 
-### 🚨 P0 — the live node is HALTED on a stale-coins BIP30 false-positive (root-caused 2026-05-25)
+### ✅ RESOLVED 2026-05-25 — halt cured; focus = one-path cutover + DRY  (history kept below for context)
+
+**The live node no longer halts** — verified HEALTHY 2026-05-25 (advancing past
+the old halt block, 0 restarts), via the `connect_block` self-write + write-order
+fix (shipped, `work/done/wt-connect-bip30-selfwrite.md`) + a clean rebuild from
+the local `zclassicd` when on-disk state was already torn. **Silent-halt
+escalation is now closed:** `EV_OPERATOR_NEEDED` → alert sinks + `zcl_status`
+DEGRADED + sd_notify — a halt can no longer page nobody. **The structural cure is
+the cutover: collapse to ONE path and delete the legacy (~12.5K LOC)** — a node
+where every step must "advance the cursor or name a typed blocker" can't halt
+silently. See [[project_silent_halt_architecture_diagnosis_2026-05-25]] (memory).
+Condition consolidation is owned by wt3. Historical root-cause analysis follows:
 
 **Earlier diagnosis was WRONG and is corrected here.** The halt is *not* a
 cutover consensus divergence. The cutover (C-3, `ad34efb65`) was only the
@@ -108,17 +118,21 @@ These three are now first-class promises under UNBREAKABLE/HONEST above.
 
 ### Who's moving what right now
 
-**Next agent start (2026-05-25):** prior round (bip30 boot-rewind, cutover guard)
-shipped but the halt persists — root cause is deeper (see P0). Fresh assignments:
+**OWNER MANDATE (2026-05-25):** NO whack-a-mole. The node still halts because we
+maintain TWO chain paths — the robust stage pipeline AND the legacy
+connect_tip/chain_advance_coordinator/legacy_mirror mega-modules that run the
+live tip. **Robustness = finishing the refactor: collapse to ONE path, DELETE the
+legacy.** Focus = refactor + DRY + cruft removal + high-performance. SUBTRACTION,
+not more conditions. ~17K LOC of cruft to remove (inventory 2026-05-25).
 
 | Work | Goal | Who |
 |---|---|---|
-| 🔴 connect_block BIP30 self-write fix (THE disease) | Tip advancing | **wt2 (in progress)** |
-| 🆕 `make bench` harness (5 primaries + regression gate) | ALL perf (measure first) | **READY → wt3** |
-| Consolidate recovery sprawl (DRY 3 rewinds, purge band-aids) | Lean, uptime | QUEUED behind P0 |
-| Cutover C-5→C-9 authoritative | Cold sync, validation | UNHALT-gated (see P0) |
-| 4e bodies-into-log | Warm restart, recovery | unclaimed |
-| chain_advance + legacy_mirror / utxo_recovery dissolve | Memory, uptime | gated on cutover |
+| **Master lever:** safe-flip guard + cutover C-3→C-9, DELETE legacy path | One path; ~12.5K LOC out; never-silent | **wt2/wt3** (unblocked: healthy node) |
+| Recovery consolidation (DRY) | Lean, uptime | ✅ wt3 (`f7a643442`) |
+| Import-path DRY: 3 importers → 1 (`wt-consolidate-import-paths.md`) | Lean; ~1.7K LOC out | **unclaimed** |
+| Never-silent alert loop (`EV_OPERATOR_NEEDED` → sinks) | Alerts to a human | ✅ orchestrator |
+| Explorer controller cruft removal | Lean; −118 LOC | orchestrator (integrating) |
+| chain_advance + legacy_mirror + snapshot sprawl dissolve | ~9K LOC out | gated on cutover (C-8/C-9) |
 
 ---
 
