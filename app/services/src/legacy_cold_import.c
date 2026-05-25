@@ -33,9 +33,6 @@
 #include "storage/ldb_snapshot.h"
 #include "models/database.h"
 #include "util/log_macros.h"
-#include "util/long_op.h"
-#include "util/safe_alloc.h"
-#include "util/thread_registry.h"
 #include "validation/chainstate.h"
 #include "validation/main_state.h"
 #include "coins/coins_view.h"
@@ -263,77 +260,6 @@ static bool lci_spotcheck(struct blocks_mmap *bmr,
     return true;
 }
 
-/* Bulk-import chainstate UTXOs from legacy. */
-struct lci_chainstate_ctx {
-    struct utxo_bulk_rec *batch;
-    uint8_t (*txids)[32];
-    uint8_t **scripts;
-    size_t fill;
-    size_t cap;
-    struct coins_view_sqlite *cvs;
-    int64_t inserted;
-    int64_t records;
-    int errors;
-};
-static void lci_chainstate_clear_batch(struct lci_chainstate_ctx *c)
-{
-    if (!c || !c->scripts) return;
-    for (size_t i = 0; i < c->fill; i++) {
-        free(c->scripts[i]);
-        c->scripts[i] = NULL;
-    }
-    c->fill = 0;
-}
-
-static bool lci_chainstate_flush(struct lci_chainstate_ctx *c)
-{
-    if (c->fill == 0) return true;
-    int64_t w = coins_view_sqlite_bulk_insert(c->cvs, c->batch, c->fill);
-    if (w != (int64_t)c->fill) {
-        c->errors++;
-        lci_chainstate_clear_batch(c);
-        return false;
-    }
-    c->inserted += w;
-    lci_chainstate_clear_batch(c);
-    return true;
-}
-
-static bool lci_chainstate_cb(const struct uint256 *txid,
-                              const struct legacy_coins *lc,
-                              void *vctx)
-{
-    struct lci_chainstate_ctx *c = vctx;
-    if (thread_registry_shutdown_requested()) return false;
-    c->records++;
-    for (size_t i = 0; i < lc->num_vouts; i++) {
-        if (c->fill >= c->cap) {
-            if (!lci_chainstate_flush(c)) return false;
-        }
-        size_t script_len = lc->vouts[i].script_len;
-        uint8_t *script_copy = zcl_malloc(script_len ? script_len : 1,
-                                          "lci.chainstate.script");
-        if (!script_copy) {
-            c->errors++;
-            return false;
-        }
-        size_t slot = c->fill;
-        memcpy(c->txids[slot], txid->data, 32);
-        if (script_len) memcpy(script_copy, lc->vouts[i].script, script_len);
-        c->batch[c->fill++] = (struct utxo_bulk_rec){
-            .txid = c->txids[slot],
-            .vout = lc->vouts[i].n,
-            .value = lc->vouts[i].value,
-            .script = script_copy,
-            .script_len = (uint32_t)script_len,
-            .height = (uint32_t)lc->height,
-            .is_coinbase = lc->coinbase ? 1u : 0u,
-        };
-        c->scripts[slot] = script_copy;
-    }
-    return true;
-}
-
 bool legacy_cold_import_blocking(
     struct main_state *ms,
     struct coins_view_sqlite *cvs,
@@ -498,72 +424,32 @@ bool legacy_cold_import_blocking(
             bi_written, lci_now_ms() - t_bi, legacy_tip_h);
 
     /* ── Bulk-import chainstate UTXOs ─────────────────────── */
-    void *cs = NULL;
-    if (!chainstate_legacy_open(cs_dir, &cs)) {
-        fprintf(stderr,
-                "[cold_import] chainstate_legacy_open %s failed\n", cs_dir);
-        ldb_snapshot_destroy(idx_dir);
-        ldb_snapshot_destroy(cs_dir);
-        return false;
-    }
     int64_t t_cs = lci_now_ms();
 
     enum { BATCH = 5000 };
-    struct utxo_bulk_rec *batch =
-        zcl_malloc(sizeof(*batch) * BATCH, "lci.batch");
-    uint8_t (*txids)[32] =
-        zcl_malloc(sizeof(*txids) * BATCH, "lci.batch.txids");
-    uint8_t **scripts =
-        zcl_malloc(sizeof(*scripts) * BATCH, "lci.batch.scripts");
-    if (!batch || !txids || !scripts) {
-        free(batch);
-        free(txids);
-        free(scripts);
-        chainstate_legacy_close(cs);
+    struct legacy_bootstrap_chainstate_import_result cs_import;
+    if (!legacy_bootstrap_import_chainstate_utxos(
+            cs_dir, cvs, BATCH, NULL, "cold_import", &cs_import)) {
         ldb_snapshot_destroy(idx_dir);
         ldb_snapshot_destroy(cs_dir);
         return false;
     }
-    memset(scripts, 0, sizeof(*scripts) * BATCH);
-    struct lci_chainstate_ctx ctx = {
-        .batch = batch, .txids = txids, .scripts = scripts,
-        .fill = 0, .cap = BATCH,
-        .cvs = cvs, .inserted = 0, .records = 0, .errors = 0,
-    };
-    int64_t n = chainstate_legacy_iter(cs, lci_chainstate_cb, &ctx);
-    if (n >= 0 && ctx.fill > 0) lci_chainstate_flush(&ctx);
-
-    struct uint256 cs_best;
-    bool got_best = chainstate_legacy_get_best_block(cs, &cs_best);
-    chainstate_legacy_close(cs);
-    lci_chainstate_clear_batch(&ctx);
-    free(batch);
-    free(txids);
-    free(scripts);
-
-    if (n < 0 || ctx.errors > 0) {
-        fprintf(stderr,
-                "[cold_import] chainstate import failed "
-                "(iter=%" PRId64 " errors=%d)\n", n, ctx.errors);
-        ldb_snapshot_destroy(idx_dir);
-        ldb_snapshot_destroy(cs_dir);
-        return false;
-    }
-    r.utxos_imported = ctx.inserted;
+    r.utxos_imported = cs_import.inserted;
     fprintf(stderr, // obs-ok:pre-existing-diagnostic
             "[cold_import] chainstate: %" PRId64 " UTXOs from "
             "%" PRId64 " records in %" PRId64 " ms\n",
-            ctx.inserted, ctx.records, lci_now_ms() - t_cs);
+            cs_import.inserted, cs_import.records, lci_now_ms() - t_cs);
 
     /* ── Record an unpublished anchor for post-index CSR publication ── */
-    if (got_best) {
+    if (cs_import.got_best_block) {
         bool pending_ok =
             node_db_state_set(ndb, "cold_import_pending_coins_best_block",
-                              cs_best.data, 32) &&
+                              cs_import.best_block.data, 32) &&
             node_db_state_set(ndb, "cold_import_pending_coins_best_height",
                               &legacy_tip_h, sizeof(legacy_tip_h)) &&
             node_db_state_set(ndb, "cold_import_pending_utxo_count",
-                              &ctx.inserted, sizeof(ctx.inserted));
+                              &cs_import.inserted,
+                              sizeof(cs_import.inserted));
         if (!pending_ok) {
             fprintf(stderr,
                     "[cold_import] failed to persist pending CSR anchor\n");
@@ -573,7 +459,8 @@ bool legacy_cold_import_blocking(
         }
         char hex[65] = {0};
         for (int i = 0; i < 32; i++)
-            snprintf(hex + i*2, 3, "%02x", cs_best.data[31 - i]);
+            snprintf(hex + i*2, 3, "%02x",
+                     cs_import.best_block.data[31 - i]);
         fprintf(stderr, // obs-ok:pre-existing-diagnostic
                 "[cold_import] pending CSR anchor recorded %s h=%d\n",
                 hex, legacy_tip_h);

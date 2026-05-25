@@ -43,9 +43,6 @@
 #include "storage/ldb_snapshot.h"
 #include "storage/progress_store.h"
 #include "util/log_macros.h"
-#include "util/long_op.h"
-#include "util/safe_alloc.h"
-#include "util/thread_registry.h"
 #include "validation/chainstate.h"
 #include "validation/main_state.h"
 
@@ -162,79 +159,6 @@ static bool loi_meta_get_tip(sqlite3 *db,
     if (!fh || !fH) return true;  /* not found is not an error */
     if (nh != 32 || nH != sizeof(*out_height)) return true;
     if (out_found) *out_found = true;
-    return true;
-}
-
-/* ── chainstate UTXO bulk import ─────────────────────────────────────── */
-
-struct loi_cs_ctx {
-    struct utxo_bulk_rec *batch;
-    uint8_t (*txids)[32];
-    uint8_t **scripts;
-    size_t fill, cap;
-    struct coins_view_sqlite *cvs;
-    int64_t inserted, records;
-    int errors;
-    struct long_op_scope *lo_scope;
-};
-
-static void loi_cs_clear_batch(struct loi_cs_ctx *c)
-{
-    if (!c || !c->scripts) return;
-    for (size_t i = 0; i < c->fill; i++) {
-        free(c->scripts[i]);
-        c->scripts[i] = NULL;
-    }
-    c->fill = 0;
-}
-
-static bool loi_cs_flush(struct loi_cs_ctx *c)
-{
-    if (c->fill == 0) return true;
-    int64_t w = coins_view_sqlite_bulk_insert(c->cvs, c->batch, c->fill);
-    if (w != (int64_t)c->fill) {
-        c->errors++;
-        loi_cs_clear_batch(c);
-        return false;
-    }
-    c->inserted += w;
-    loi_cs_clear_batch(c);
-    long_op_tick(c->lo_scope);
-    return true;
-}
-
-static bool loi_cs_cb(const struct uint256 *txid,
-                      const struct legacy_coins *lc,
-                      void *vctx)
-{
-    struct loi_cs_ctx *c = vctx;
-    if (thread_registry_shutdown_requested()) return false;
-    c->records++;
-    for (size_t i = 0; i < lc->num_vouts; i++) {
-        if (c->fill >= c->cap) {
-            if (!loi_cs_flush(c)) return false;
-        }
-        size_t script_len = lc->vouts[i].script_len;
-        uint8_t *script_copy = zcl_malloc(script_len ? script_len : 1,
-                                          "loi.chainstate.script");
-        if (!script_copy) {
-            c->errors++;
-            return false;
-        }
-        size_t slot = c->fill;
-        memcpy(c->txids[slot], txid->data, 32);
-        if (script_len) memcpy(script_copy, lc->vouts[i].script, script_len);
-        c->batch[c->fill++] = (struct utxo_bulk_rec){
-            .txid = c->txids[slot],
-            .vout = lc->vouts[i].n,
-            .value = lc->vouts[i].value,
-            .script = script_copy,
-            .script_len = (uint32_t)script_len,
-            .height = (uint32_t)lc->height,
-            .is_coinbase = lc->coinbase ? 1u : 0u,
-        };
-        c->scripts[slot] = script_copy;
-    }
     return true;
 }
 
@@ -652,70 +576,26 @@ bool legacy_oneshot_import_run(
     }
 
     /* ── Import chainstate UTXOs. ────────────────────────────────────── */
-    void *cs = NULL;
-    if (!chainstate_legacy_open(cs_snap, &cs)) {
-        fprintf(stderr,
-            "[legacy_attach] chainstate_legacy_open %s failed\n", cs_snap);
-        ldb_snapshot_destroy(idx_snap);
-        ldb_snapshot_destroy(cs_snap);
-        return false;
-    }
     int64_t t_cs = loi_now_ms();
-    struct long_op_scope cs_scope;
-    long_op_begin(&cs_scope, "legacy_attach.cs_import");
 
     enum { BATCH = 50000 };  /* per plan: 50k rows/txn */
-    struct utxo_bulk_rec *batch =
-        zcl_malloc(sizeof(*batch) * BATCH, "loi.batch");
-    uint8_t (*txids)[32] =
-        zcl_malloc(sizeof(*txids) * BATCH, "loi.batch.txids");
-    uint8_t **scripts =
-        zcl_malloc(sizeof(*scripts) * BATCH, "loi.batch.scripts");
-    if (!batch || !txids || !scripts) {
-        free(batch);
-        free(txids);
-        free(scripts);
-        chainstate_legacy_close(cs);
-        long_op_end(&cs_scope);
+    struct legacy_bootstrap_chainstate_import_result cs_import;
+    if (!legacy_bootstrap_import_chainstate_utxos(
+            cs_snap, cvs, BATCH, "legacy_attach.cs_import",
+            "legacy_attach", &cs_import)) {
         ldb_snapshot_destroy(idx_snap);
         ldb_snapshot_destroy(cs_snap);
         return false;
     }
-    memset(scripts, 0, sizeof(*scripts) * BATCH);
-    struct loi_cs_ctx ctx = {
-        .batch = batch, .txids = txids, .scripts = scripts,
-        .fill = 0, .cap = BATCH,
-        .cvs = cvs, .lo_scope = &cs_scope,
-    };
-    int64_t n = chainstate_legacy_iter(cs, loi_cs_cb, &ctx);
-    if (n >= 0 && ctx.fill > 0) loi_cs_flush(&ctx);
-
-    struct uint256 cs_best;
-    bool got_best = chainstate_legacy_get_best_block(cs, &cs_best);
-    chainstate_legacy_close(cs);
-    loi_cs_clear_batch(&ctx);
-    free(batch);
-    free(txids);
-    free(scripts);
-    long_op_end(&cs_scope);
-
-    if (n < 0 || ctx.errors > 0) {
-        fprintf(stderr,
-            "[legacy_attach] chainstate import failed "
-            "(iter=%" PRId64 " errors=%d)\n", n, ctx.errors);
-        ldb_snapshot_destroy(idx_snap);
-        ldb_snapshot_destroy(cs_snap);
-        return false;
-    }
-    r.utxos_imported = ctx.inserted;
+    r.utxos_imported = cs_import.inserted;
     fprintf(stderr,  // obs-ok:legacy-oneshot-progress
             "[legacy_attach] chainstate: %" PRId64 " UTXOs from "
             "%" PRId64 " records in %" PRId64 " ms\n",
-            ctx.inserted, ctx.records, loi_now_ms() - t_cs);
+            cs_import.inserted, cs_import.records, loi_now_ms() - t_cs);
 
     /* ── Persist pending CSR anchor so the existing boot resolver lifts
      *    the tip into active_chain later in boot. ────────────────────── */
-    if (!got_best) {
+    if (!cs_import.got_best_block) {
         /* Without 'B' we cannot publish a CSR anchor — meaning cursors
          * would be stamped but active_chain would never be lifted to the
          * imported tip. That leaves the node in the worst possible state
@@ -731,11 +611,11 @@ bool legacy_oneshot_import_run(
     }
     bool pending_ok =
         node_db_state_set(ndb, "cold_import_pending_coins_best_block",
-                          cs_best.data, 32) &&
+                          cs_import.best_block.data, 32) &&
         node_db_state_set(ndb, "cold_import_pending_coins_best_height",
                           &legacy_tip_h, sizeof(legacy_tip_h)) &&
         node_db_state_set(ndb, "cold_import_pending_utxo_count",
-                          &ctx.inserted, sizeof(ctx.inserted));
+                          &cs_import.inserted, sizeof(cs_import.inserted));
     if (!pending_ok) {
         fprintf(stderr,
             "[legacy_attach] failed to persist pending CSR anchor\n");
@@ -746,7 +626,7 @@ bool legacy_oneshot_import_run(
 
     /* Use the chainstate 'B' hash as the canonical legacy tip hash for
      * the cursor-stamp record. */
-    const struct uint256 *cursor_hash = &cs_best;
+    const struct uint256 *cursor_hash = &cs_import.best_block;
 
     /* ── Atomic finalization: cursors + completion record + sentinel ── */
     int64_t stages_stamped = 0;

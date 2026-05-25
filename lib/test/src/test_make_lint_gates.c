@@ -1074,7 +1074,8 @@ static int t_cold_import_uses_leveldb_snapshots_contract(void)
         char *height_map = strstr(buf, "bilr_open(idx_dir");
         char *block_index = strstr(buf,
             "legacy_bootstrap_copy_block_index(");
-        char *chainstate = strstr(buf, "chainstate_legacy_iter(cs,");
+        char *chainstate = strstr(buf,
+            "legacy_bootstrap_import_chainstate_utxos(");
         char *destroy = strstr(buf, "ldb_snapshot_destroy(idx_dir)");
         ASSERT(include != NULL);
         ASSERT(stage != NULL);
@@ -1101,7 +1102,7 @@ static int t_legacy_chainstate_batches_own_callback_buffers(void)
     TEST("legacy chainstate import batches own txid and script bytes") {
         char path[PATH_MAX];
         ASSERT(repo_path(path, sizeof(path),
-                         "app/services/src/legacy_cold_import.c") == 0);
+                         "app/services/src/legacy_bootstrap_importer.c") == 0);
         ASSERT(read_entire_file(path, &buf) == 0);
         ASSERT(strstr(buf, "uint8_t (*txids)[32]") != NULL);
         ASSERT(strstr(buf, "uint8_t **scripts") != NULL);
@@ -1110,21 +1111,24 @@ static int t_legacy_chainstate_batches_own_callback_buffers(void)
         ASSERT(strstr(buf, "memcpy(script_copy, lc->vouts[i].script") != NULL);
         ASSERT(strstr(buf, ".txid = c->txids[slot]") != NULL);
         ASSERT(strstr(buf, ".script = script_copy") != NULL);
-        ASSERT(strstr(buf, "lci_chainstate_clear_batch") != NULL);
+        ASSERT(strstr(buf,
+            "legacy_bootstrap_chainstate_clear_batch") != NULL);
+        free(buf);
+        buf = NULL;
+
+        ASSERT(repo_path(path, sizeof(path),
+                         "app/services/src/legacy_cold_import.c") == 0);
+        ASSERT(read_entire_file(path, &buf) == 0);
+        ASSERT(strstr(buf,
+            "legacy_bootstrap_import_chainstate_utxos(") != NULL);
         free(buf);
         buf = NULL;
 
         ASSERT(repo_path(path, sizeof(path),
                          "app/services/src/legacy_oneshot_import.c") == 0);
         ASSERT(read_entire_file(path, &buf) == 0);
-        ASSERT(strstr(buf, "uint8_t (*txids)[32]") != NULL);
-        ASSERT(strstr(buf, "uint8_t **scripts") != NULL);
-        ASSERT(strstr(buf, "memcpy(c->txids[slot], txid->data, 32)") != NULL);
-        ASSERT(strstr(buf, "zcl_malloc(script_len ? script_len : 1") != NULL);
-        ASSERT(strstr(buf, "memcpy(script_copy, lc->vouts[i].script") != NULL);
-        ASSERT(strstr(buf, ".txid = c->txids[slot]") != NULL);
-        ASSERT(strstr(buf, ".script = script_copy") != NULL);
-        ASSERT(strstr(buf, "loi_cs_clear_batch") != NULL);
+        ASSERT(strstr(buf,
+            "legacy_bootstrap_import_chainstate_utxos(") != NULL);
         PASS();
     } _test_next:;
     free(buf);

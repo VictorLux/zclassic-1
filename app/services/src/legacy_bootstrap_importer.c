@@ -8,15 +8,19 @@
 #include "core/serialize.h"
 #include "core/uint256.h"
 #include "storage/block_index_db.h"
+#include "storage/chainstate_legacy_reader.h"
+#include "storage/coins_view_sqlite.h"
 #include "storage/dbwrapper.h"
 #include "storage/ldb_snapshot.h"
 #include "util/long_op.h"
+#include "util/safe_alloc.h"
 #include "util/thread_registry.h"
 
 #include <dirent.h>
 #include <errno.h>
 #include <inttypes.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -360,4 +364,176 @@ int64_t legacy_bootstrap_copy_block_index(const char *legacy_index_dir,
     if (out_tip_height)
         *out_tip_height = best_h;
     return written;
+}
+
+struct legacy_bootstrap_chainstate_ctx {
+    struct utxo_bulk_rec *batch;
+    uint8_t (*txids)[32];
+    uint8_t **scripts;
+    size_t fill;
+    size_t cap;
+    struct coins_view_sqlite *cvs;
+    int64_t inserted;
+    int64_t records;
+    int errors;
+    struct long_op_scope *lo_scope;
+};
+
+static void legacy_bootstrap_chainstate_clear_batch(
+    struct legacy_bootstrap_chainstate_ctx *c)
+{
+    if (!c || !c->scripts) return;
+    for (size_t i = 0; i < c->fill; i++) {
+        free(c->scripts[i]);
+        c->scripts[i] = NULL;
+    }
+    c->fill = 0;
+}
+
+static bool legacy_bootstrap_chainstate_flush(
+    struct legacy_bootstrap_chainstate_ctx *c)
+{
+    if (c->fill == 0) return true;
+    int64_t w = coins_view_sqlite_bulk_insert(c->cvs, c->batch, c->fill);
+    if (w != (int64_t)c->fill) {
+        c->errors++;
+        legacy_bootstrap_chainstate_clear_batch(c);
+        return false;
+    }
+    c->inserted += w;
+    legacy_bootstrap_chainstate_clear_batch(c);
+    if (c->lo_scope)
+        long_op_tick(c->lo_scope);
+    return true;
+}
+
+static bool legacy_bootstrap_chainstate_cb(const struct uint256 *txid,
+                                           const struct legacy_coins *lc,
+                                           void *vctx)
+{
+    struct legacy_bootstrap_chainstate_ctx *c = vctx;
+    if (thread_registry_shutdown_requested()) return false;
+    c->records++;
+    for (size_t i = 0; i < lc->num_vouts; i++) {
+        if (c->fill >= c->cap) {
+            if (!legacy_bootstrap_chainstate_flush(c)) return false;
+        }
+
+        size_t script_len = lc->vouts[i].script_len;
+        uint8_t *script_copy = zcl_malloc(script_len ? script_len : 1,
+                                          "legacy_bootstrap.chainstate.script");
+        if (!script_copy) {
+            c->errors++;
+            return false;
+        }
+
+        size_t slot = c->fill;
+        memcpy(c->txids[slot], txid->data, 32);
+        if (script_len)
+            memcpy(script_copy, lc->vouts[i].script, script_len);
+        c->batch[c->fill++] = (struct utxo_bulk_rec){
+            .txid = c->txids[slot],
+            .vout = lc->vouts[i].n,
+            .value = lc->vouts[i].value,
+            .script = script_copy,
+            .script_len = (uint32_t)script_len,
+            .height = (uint32_t)lc->height,
+            .is_coinbase = lc->coinbase ? 1u : 0u,
+        };
+        c->scripts[slot] = script_copy;
+    }
+    return true;
+}
+
+bool legacy_bootstrap_import_chainstate_utxos(
+    const char *chainstate_dir,
+    struct coins_view_sqlite *cvs,
+    size_t batch_limit,
+    const char *long_op_name,
+    const char *log_prefix,
+    struct legacy_bootstrap_chainstate_import_result *out)
+{
+    if (out)
+        *out = (struct legacy_bootstrap_chainstate_import_result){0};
+    if (!chainstate_dir || !cvs || batch_limit == 0 || !log_prefix) {
+        fprintf(stderr,  // obs-ok:bootstrap-import-terminal-diagnostic
+                "[legacy_bootstrap] import chainstate: bad args\n");
+        return false;
+    }
+
+    void *cs = NULL;
+    if (!chainstate_legacy_open(chainstate_dir, &cs)) {
+        fprintf(stderr,  // obs-ok:bootstrap-import-terminal-diagnostic
+                "[%s] chainstate_legacy_open %s failed\n",
+                log_prefix, chainstate_dir);
+        return false;
+    }
+
+    struct long_op_scope lo_scope;
+    struct long_op_scope *lo_ptr = NULL;
+    if (long_op_name) {
+        long_op_begin(&lo_scope, long_op_name);
+        lo_ptr = &lo_scope;
+    }
+
+    struct utxo_bulk_rec *batch =
+        zcl_malloc(sizeof(*batch) * batch_limit,
+                   "legacy_bootstrap.chainstate.batch");
+    uint8_t (*txids)[32] =
+        zcl_malloc(sizeof(*txids) * batch_limit,
+                   "legacy_bootstrap.chainstate.txids");
+    uint8_t **scripts =
+        zcl_malloc(sizeof(*scripts) * batch_limit,
+                   "legacy_bootstrap.chainstate.scripts");
+    if (!batch || !txids || !scripts) {
+        free(batch);
+        free(txids);
+        free(scripts);
+        if (lo_ptr)
+            long_op_end(lo_ptr);
+        chainstate_legacy_close(cs);
+        return false;
+    }
+    memset(scripts, 0, sizeof(*scripts) * batch_limit);
+
+    struct legacy_bootstrap_chainstate_ctx ctx = {
+        .batch = batch,
+        .txids = txids,
+        .scripts = scripts,
+        .fill = 0,
+        .cap = batch_limit,
+        .cvs = cvs,
+        .lo_scope = lo_ptr,
+    };
+    int64_t n = chainstate_legacy_iter(cs, legacy_bootstrap_chainstate_cb,
+                                       &ctx);
+    if (n >= 0 && ctx.fill > 0)
+        legacy_bootstrap_chainstate_flush(&ctx);
+
+    struct uint256 best_block;
+    bool got_best = chainstate_legacy_get_best_block(cs, &best_block);
+    chainstate_legacy_close(cs);
+    legacy_bootstrap_chainstate_clear_batch(&ctx);
+    free(batch);
+    free(txids);
+    free(scripts);
+    if (lo_ptr)
+        long_op_end(lo_ptr);
+
+    if (n < 0 || ctx.errors > 0) {
+        fprintf(stderr,  // obs-ok:bootstrap-import-terminal-diagnostic
+                "[%s] chainstate import failed "
+                "(iter=%" PRId64 " errors=%d)\n",
+                log_prefix, n, ctx.errors);
+        return false;
+    }
+
+    if (out) {
+        out->inserted = ctx.inserted;
+        out->records = ctx.records;
+        out->got_best_block = got_best;
+        if (got_best)
+            out->best_block = best_block;
+    }
+    return true;
 }
