@@ -107,12 +107,15 @@ marking, not the live event-log appender). Claim it.
 Benchmark moved: production event-log CRC32C now dispatches to SSE4.2 after a
 software-reference self-check; measured active CRC throughput moved from
 0.60 GB/s software to 12.99 GB/s hardware on this box.
-**PR-3 IN PROGRESS (wt2)** — claimed 2026-05-24; live profile in hand (blk*.dat marking = 101s of
-~180s cold-import). First implementation split landed locally: blk*.dat files
-are parsed in parallel with mmap + thread-registry workers, then applied in
-deterministic file order to preserve block_index mutation semantics. PR-2
-(io_uring bulk-append) still spec'd.
-One commit per task; push direct to main; `./test_parallel` before pushing.
+**PR-3 COMPLETE (wt2) — shipped with honest caveat 2026-05-25.** The
+`scan_block_files_mark_data` path now parses blk*.dat files in parallel with
+mmap + thread-registry workers and applies marks in deterministic file order.
+The later cold-import identity work proved that current `-cold-import` no
+longer calls this scanner: it bulk-copies the legacy block index and imports
+chainstate, so `ZCL_BLOCK_SCAN_WORKERS` does not move the measured cold-import
+time. Do not claim a #1 cold-sync win from PR-3; the scanner optimization
+belongs to normal/file-sync boot scanning now. PR-2 (io_uring bulk-append)
+still spec'd/deferred.
 
 <!-- Worker: append a Completion section with the "Benchmark moved" line. -->
 
@@ -271,3 +274,37 @@ change):
   `make -j$(nproc) test_zcl test_parallel`,
   `ZCL_TEST_ONLY=crypto_registry ./test_zcl`, and
   `./test_parallel --jobs=$(nproc)` all pass.
+
+## Completion — PR-3 Parallel blk*.dat marking
+
+Benchmark moved: no net #1 cold-sync win to claim. The production scanner path
+was parallelized, but fresh `-cold-import` no longer exercises that scanner
+after block-index bulk import landed. The benchmark ledger records the honest
+outcome: serial/default cold-import identity matched, while the historical 101s
+blk*.dat marking bottleneck moved out of the current cold-import path.
+
+Summary:
+- `scan_block_files_mark_data` parses blk*.dat files in parallel using mmap and
+  `thread_registry_spawn_ex`, with `ZCL_BLOCK_SCAN_WORKERS=N` available for
+  serial baselines or explicit worker counts.
+- Mutation of `block_index` remains deterministic: parsed metadata is applied
+  in stable file order, then the existing orphan pprev resolution, ancestry
+  recompute, and nChainTx propagation run once.
+- `-cold-import` acceptance changed under our feet: the path now hardlinks
+  blk files, bulk-copies the legacy block index, and imports chainstate without
+  walking blk files. The assignment is closed as a code-path hardening win, not
+  as a measured cold-sync speedup.
+
+Verification:
+- `make -j$(nproc) test_zcl test_parallel` PASS
+- `make lint` PASS
+- `./test_parallel --jobs=$(nproc)` PASS
+- `tools/bench_cold_import_equivalence.sh` PASS on 2026-05-24 with matching
+  serial/default tip hash, UTXO count, and SHA3 commitment; see
+  `docs/BENCHMARKS_LOG.md` rows for commit `078667266` and `6e0f6a82c`.
+
+Follow-up:
+- If normal/file-sync boot scanning still matters for a user-facing benchmark,
+  add a dedicated `scan_block_files_mark_data` harness. The existing
+  cold-import equivalence harness is now the wrong tool for measuring this
+  scanner because `-cold-import` intentionally bypasses it.
