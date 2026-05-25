@@ -18,6 +18,7 @@
 
 #include "net/net_fault.h"
 #include "platform/time_compat.h"
+#include "sim/sim_peer.h"
 #include "util/safe_alloc.h"
 
 #define CHAOS_MAX_LINE 512
@@ -30,6 +31,7 @@ struct chaos_ctx {
     bool seed_set;
     char boot_phase[32];
     unsigned peer_count;
+    struct sim_peer_set peers;
     bool crashed;
     int64_t tip_height;
     int64_t reorg_count;
@@ -163,6 +165,8 @@ static int handle_peer_count(struct chaos_ctx *ctx, int argc, char **argv,
     uint64_t n = 0;
     if (!parse_u64_auto(argv[1], &n) || n > 1024)
         return fail_line(line_no, "peer_count must be 0..1024");
+    if (sim_peer_set_resize(&ctx->peers, (unsigned)n) != 0)
+        return fail_line(line_no, "failed to create simulated peers");
     ctx->peer_count = (unsigned)n;
     return 0;
 }
@@ -191,6 +195,14 @@ static bool metric_value(const struct chaos_ctx *ctx, const char *name,
     }
     if (strcmp(name, "consensus_rejects") == 0) {
         *out = ctx->consensus_rejects;
+        return true;
+    }
+    if (strcmp(name, "active_peers") == 0) {
+        *out = (int64_t)ctx->peers.active_count;
+        return true;
+    }
+    if (strcmp(name, "killed_peers") == 0) {
+        *out = (int64_t)ctx->peers.killed_count;
         return true;
     }
     return false;
@@ -266,6 +278,23 @@ static int handle_trigger_oom_at(struct chaos_ctx *ctx, int argc, char **argv,
     return 0;
 }
 
+static int handle_kill_peer(struct chaos_ctx *ctx, int argc, char **argv,
+                            int line_no)
+{
+    if (argc != 2) return fail_line(line_no, "kill_peer requires one peer id");
+    uint64_t id = 0;
+    if (!parse_u64_auto(argv[1], &id) || id > UINT32_MAX)
+        return fail_line(line_no, "kill_peer id must be an integer");
+    int rc = sim_peer_kill(&ctx->peers, (unsigned)id);
+    if (rc == -ENOENT)
+        return fail_line(line_no, "kill_peer id is not configured");
+    if (rc == -EALREADY)
+        return fail_line(line_no, "kill_peer id is already disconnected");
+    if (rc != 0)
+        return fail_line(line_no, "kill_peer failed");
+    return 0;
+}
+
 static int handle_partition_network(struct chaos_ctx *ctx, int argc,
                                     char **argv, int line_no)
 {
@@ -300,7 +329,7 @@ static const struct chaos_command COMMANDS[] = {
     { "peer_count", handle_peer_count },
     { "expect", handle_expect },
     { "at_event", handle_stub },
-    { "kill_peer", handle_stub },
+    { "kill_peer", handle_kill_peer },
     { "send_block", handle_stub },
     { "send_malformed_block", handle_stub },
     { "advance_clock", handle_stub },

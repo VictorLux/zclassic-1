@@ -137,8 +137,10 @@ $(1): $$(TMPL_GEN) $(2) $$(ALL_SRCS)
 	$$(CC) $$(CFLAGS) $(4) -Wno-deprecated-declarations $$(LDFLAGS) -o $$@ $$(filter-out $$(TMPL_GEN),$$^) $$(TOR_LIBS) $$(LIBS) $$(GTK_LIBS) $$(WEBKIT_LIBS) $(3)
 endef
 
-$(eval $(call BUILD_NODE_TOOL,test_zcl,$(TEST_SRCS_NO_MAIN) lib/test/src/test.c $(SPEC_SRCS),,-DZCL_TESTING))
-$(eval $(call BUILD_NODE_TOOL,test_parallel,$(TEST_SRCS_NO_MAIN) lib/test/src/test_parallel.c $(SPEC_SRCS),,-DZCL_TESTING))
+CHAOS_SIM_SRCS = tools/sim/sim_peer.c
+
+$(eval $(call BUILD_NODE_TOOL,test_zcl,$(TEST_SRCS_NO_MAIN) lib/test/src/test.c $(SPEC_SRCS) $(CHAOS_SIM_SRCS),,-DZCL_TESTING))
+$(eval $(call BUILD_NODE_TOOL,test_parallel,$(TEST_SRCS_NO_MAIN) lib/test/src/test_parallel.c $(SPEC_SRCS) $(CHAOS_SIM_SRCS),,-DZCL_TESTING))
 
 .PHONY: test-parallel
 test-parallel: test_parallel
@@ -248,14 +250,16 @@ explorer-css: app/views/src/explorer_css.css
 test: test_zcl
 	ulimit -s unlimited && ./test_zcl
 
-zclassic23-chaos: tools/sim/chaos.c lib/util/src/safe_alloc.c \
+zclassic23-chaos: tools/sim/chaos.c tools/sim/sim_peer.c \
+	lib/util/src/safe_alloc.c \
 	lib/util/include/util/safe_alloc.h lib/net/src/net_fault.c \
 	lib/net/include/net/net_fault.h lib/platform/src/clock.c \
 	lib/platform/include/platform/clock.h lib/platform/include/platform/time_compat.h
 	$(CC) -std=c23 -O2 -Wall -Wextra -Werror -pedantic \
 	    -D_POSIX_C_SOURCE=200809L -Ilib/util/include -Ilib/net/include \
-	    -Ilib/platform/include \
-	    -o $@ $< lib/util/src/safe_alloc.c lib/net/src/net_fault.c \
+	    -Ilib/platform/include -Itools \
+	    -o $@ tools/sim/chaos.c tools/sim/sim_peer.c \
+	    lib/util/src/safe_alloc.c lib/net/src/net_fault.c \
 	    lib/platform/src/clock.c
 
 chaos: zclassic23-chaos

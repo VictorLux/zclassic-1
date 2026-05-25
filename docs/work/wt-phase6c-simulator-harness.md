@@ -303,5 +303,8 @@ One commit per task. Push after tasks 2, 4, 7.
 - Added the network partition primitive as `net_fault.{c,h}`, wired the drop
   check into `msg_process_messages`, and made `partition_network for=DURATION`
   arm and verify the hook in the chaos harness.
+- Started Task 3 simulated peers with `tools/sim/sim_peer.c`: `peer_count`
+  now creates an in-process peer set, `kill_peer` transitions peer state, and
+  `expect` can assert `active_peers` / `killed_peers`.
 
 <!-- Worker: append a Completion section below when done. -->

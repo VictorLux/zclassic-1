@@ -81,6 +81,8 @@ int test_chaos_harness(void)
     CHAOS_CHECK("valid scenario records boot phase",
                 strcmp(ctx.boot_phase, "listening") == 0);
     CHAOS_CHECK("valid scenario records peers", ctx.peer_count == 3);
+    CHAOS_CHECK("valid scenario creates simulated peers",
+                ctx.peers.count == 3 && ctx.peers.active_count == 3);
     CHAOS_CHECK("valid scenario counts expects", ctx.expect_count == 3);
 
     rc = run_temp_scenario(
@@ -99,10 +101,33 @@ int test_chaos_harness(void)
 
     rc = run_temp_scenario(
         "seed 1\n"
-        "kill_peer 0\n"
+        "send_block peer=0 file=missing\n"
         "expect no_crash\n",
         NULL);
     CHAOS_CHECK("recognized stub command fails", rc != 0);
+
+    rc = run_temp_scenario(
+        "seed 1\n"
+        "peer_count 3\n"
+        "kill_peer 1\n"
+        "expect active_peers == 2\n"
+        "expect killed_peers == 1\n",
+        &ctx);
+    CHAOS_CHECK("kill_peer scenario passes", rc == 0);
+    CHAOS_CHECK("kill_peer records simulated peer state",
+                ctx.peers.count == 3 &&
+                ctx.peers.active_count == 2 &&
+                ctx.peers.killed_count == 1 &&
+                sim_peer_get(&ctx.peers, 1) &&
+                !sim_peer_get(&ctx.peers, 1)->connected);
+
+    rc = run_temp_scenario(
+        "seed 1\n"
+        "peer_count 1\n"
+        "kill_peer 3\n"
+        "expect no_crash\n",
+        NULL);
+    CHAOS_CHECK("kill_peer unknown peer fails", rc != 0);
 
     rc = run_temp_scenario(
         "seed 1\n"
