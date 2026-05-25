@@ -1,6 +1,6 @@
 # Supervisor tree split — from flat list to domain-grouped supervisors
 
-**Status:** PLAN (draft 2026-05-23)
+**Status:** ✅ SHIPPED 2026-05-24 (kept as design reference)
 **Phase:** 2/3 boundary (Wave S "S-10" equivalent)
 **Gated on:** No hard gate — can land in parallel with Wave S cutover and
 mega-module dissolves. Adds structure without removing behavior.
