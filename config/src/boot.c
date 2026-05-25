@@ -148,6 +148,8 @@ static char g_boot_postmortem_dir[1024];
 
 #define BOOT_POSTMORTEM_MAX_AGE_SECONDS (30LL * 24LL * 60LL * 60LL)
 #define BOOT_POSTMORTEM_KEEP_LATEST 100u
+#define BOOT_POSTMORTEM_EVENT_TYPE 1u
+#define BOOT_POSTMORTEM_EVENT_PAYLOAD "boot-postmortem-installed"
 
 /* ── System RAM query ────────────────────────────────────────── */
 
@@ -244,6 +246,9 @@ static bool boot_step_init_postmortem(const char *datadir)
                 "WARNING: seed_tape_open failed; crash capsules disabled\n");
         return false;
     }
+    (void)seed_tape_inject(tape, BOOT_POSTMORTEM_EVENT_TYPE,
+                           BOOT_POSTMORTEM_EVENT_PAYLOAD,
+                           strlen(BOOT_POSTMORTEM_EVENT_PAYLOAD));
 
     int rc = postmortem_install(tape, g_boot_postmortem_dir);
     if (rc != 0) {

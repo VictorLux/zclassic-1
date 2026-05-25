@@ -384,5 +384,8 @@ the capsule API plus the non-signal save/list/load path.
   `rng_count`, `clock_advance_count`, and `inject_count` from the active tape
   before serializing it. Forked signal coverage now asserts the recorded
   advance/inject counts.
+- Added a boot-time seed-tape marker event before installing the crash hook so
+  production-shaped capsules replay with an operator-visible boot breadcrumb
+  even before full platform RNG/clock takeover is enabled.
 
 <!-- Worker: append a Completion section below when done. -->

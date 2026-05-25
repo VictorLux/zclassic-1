@@ -234,8 +234,22 @@ static int test_boot_postmortem_install(void)
                      file_contains(log_path, "boot fatal breadcrumb"));
             seed_tape_t *loaded = postmortem_capsule_load_tape(entries[0].path);
             PM_CHECK("boot postmortem tape loads", loaded != NULL);
-            if (loaded)
+            if (loaded) {
+                PM_CHECK("boot postmortem records boot event",
+                         seed_tape_inject_count(loaded) == 1);
+                uint8_t type = 0;
+                char payload[64];
+                size_t payload_len = 0;
+                int ev_rc = seed_tape_next_event(loaded, &type, payload,
+                                                 sizeof(payload),
+                                                 &payload_len);
+                PM_CHECK("boot postmortem replays boot event",
+                         ev_rc == 0 && type == 1 &&
+                         payload_len == strlen("boot-postmortem-installed") &&
+                         memcmp(payload, "boot-postmortem-installed",
+                                payload_len) == 0);
                 seed_tape_close(loaded);
+            }
         }
     }
 
@@ -326,8 +340,21 @@ static int test_boot_postmortem_restart_compresses_prior_sigsegv(void)
     if (rc == 0 && count == 1) {
         seed_tape_t *loaded = postmortem_capsule_load_tape(entries[0].path);
         PM_CHECK("boot restart compressed tape loads", loaded != NULL);
-        if (loaded)
+        if (loaded) {
+            PM_CHECK("boot restart compressed tape has boot event",
+                     seed_tape_inject_count(loaded) == 1);
+            uint8_t type = 0;
+            char payload[64];
+            size_t payload_len = 0;
+            int ev_rc = seed_tape_next_event(loaded, &type, payload,
+                                             sizeof(payload), &payload_len);
+            PM_CHECK("boot restart compressed replays boot event",
+                     ev_rc == 0 && type == 1 &&
+                     payload_len == strlen("boot-postmortem-installed") &&
+                     memcmp(payload, "boot-postmortem-installed",
+                            payload_len) == 0);
             seed_tape_close(loaded);
+        }
     }
 
     boot_postmortem_shutdown_for_testing();
