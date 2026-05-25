@@ -109,6 +109,14 @@ struct legacy_bootstrap_chainstate_import_result {
     struct uint256 best_block;
 };
 
+struct legacy_bootstrap_staged_snapshot_paths {
+    char stage_dir[1100];
+    char idx_dir[1200];
+    char cs_dir[1200];
+    char legacy_blocks_dir[1100];
+    char our_blocks_dir[1100];
+};
+
 bool legacy_bootstrap_spotcheck_sha3_windows(
     struct blocks_mmap *bmr,
     const struct legacy_block_loc *map,
@@ -374,6 +382,59 @@ static bool legacy_bootstrap_snapshot_leveldbs(const char *legacy_datadir,
     if (!legacy_bootstrap_snapshot_one_leveldb(src_cs, out_cs_path,
                                                "chainstate", log_prefix)) {
         ldb_snapshot_destroy(out_idx_path);
+        return false;
+    }
+    return true;
+}
+
+static void legacy_bootstrap_cleanup_staged_snapshot(
+    const struct legacy_bootstrap_staged_snapshot_paths *paths,
+    bool remove_stage_dir)
+{
+    if (!paths) return;
+    if (paths->idx_dir[0])
+        ldb_snapshot_destroy(paths->idx_dir);
+    if (paths->cs_dir[0])
+        ldb_snapshot_destroy(paths->cs_dir);
+    if (remove_stage_dir && paths->stage_dir[0])
+        rmdir(paths->stage_dir);
+}
+
+static bool legacy_bootstrap_prepare_staged_snapshot(
+    const struct legacy_bootstrap_import_options *opts,
+    const char *stage_subdir,
+    const char *log_prefix,
+    struct legacy_bootstrap_staged_snapshot_paths *paths)
+{
+    if (paths)
+        memset(paths, 0, sizeof(*paths));
+    if (!opts || !opts->our_datadir || !opts->legacy_datadir ||
+        !stage_subdir || !log_prefix || !paths) {
+        fprintf(stderr,  // obs-ok:bootstrap-import-terminal-diagnostic
+                "[legacy_bootstrap] prepare staged snapshot: bad args\n");
+        return false;
+    }
+
+    if (!legacy_bootstrap_make_stage_dir(
+            opts->our_datadir, stage_subdir, paths->stage_dir,
+            sizeof(paths->stage_dir), log_prefix))
+        return false;
+
+    if (!legacy_bootstrap_snapshot_leveldbs(
+            opts->legacy_datadir, paths->stage_dir, paths->idx_dir,
+            sizeof(paths->idx_dir), paths->cs_dir, sizeof(paths->cs_dir),
+            log_prefix))
+        return false;
+
+    if (!legacy_bootstrap_format_child_path(
+            opts->legacy_datadir, "blocks", paths->legacy_blocks_dir,
+            sizeof(paths->legacy_blocks_dir), log_prefix,
+            "legacy blocks directory") ||
+        !legacy_bootstrap_format_child_path(
+            opts->our_datadir, "blocks", paths->our_blocks_dir,
+            sizeof(paths->our_blocks_dir), log_prefix,
+            "local blocks directory")) {
+        legacy_bootstrap_cleanup_staged_snapshot(paths, false);
         return false;
     }
     return true;
@@ -1025,32 +1086,12 @@ static bool legacy_bootstrap_import_cold(
         return false;
     }
 
-    char blk_dir[1024];
-    char our_blocks[1024];
-    if (!legacy_bootstrap_format_child_path(
-            opts->legacy_datadir, "blocks", blk_dir, sizeof(blk_dir),
-            "cold_import", "legacy blocks directory") ||
-        !legacy_bootstrap_format_child_path(
-            opts->our_datadir, "blocks", our_blocks, sizeof(our_blocks),
-            "cold_import", "local blocks directory"))
-        return false;
-
     int64_t t_start = legacy_bootstrap_now_ms();
 
-    char stage_dir[1100], idx_dir[1200], cs_dir[1200];
-    if (!legacy_bootstrap_make_stage_dir(
-            opts->our_datadir, LEGACY_BOOTSTRAP_COLD_STAGE_SUBDIR,
-            stage_dir, sizeof(stage_dir), "cold_import")) {
-        fprintf(stderr,
-                "[cold_import] cannot create stage dir under %s\n",
-                opts->our_datadir);
-        return false;
-    }
+    struct legacy_bootstrap_staged_snapshot_paths paths;
     int64_t t_snap = legacy_bootstrap_now_ms();
-    if (!legacy_bootstrap_snapshot_leveldbs(opts->legacy_datadir, stage_dir,
-                                            idx_dir, sizeof(idx_dir),
-                                            cs_dir, sizeof(cs_dir),
-                                            "cold_import"))
+    if (!legacy_bootstrap_prepare_staged_snapshot(
+            opts, LEGACY_BOOTSTRAP_COLD_STAGE_SUBDIR, "cold_import", &paths))
         return false;
     fprintf(stderr,  // obs-ok:cold-import-progress
             "[cold_import] LevelDB snapshots took %" PRId64 " ms\n",
@@ -1058,17 +1099,15 @@ static bool legacy_bootstrap_import_cold(
 
     struct uint256 cs_best_for_map;
     if (!legacy_bootstrap_read_chainstate_best_block(
-            cs_dir, "cold_import", &cs_best_for_map)) {
-        ldb_snapshot_destroy(idx_dir);
-        ldb_snapshot_destroy(cs_dir);
+            paths.cs_dir, "cold_import", &cs_best_for_map)) {
+        legacy_bootstrap_cleanup_staged_snapshot(&paths, false);
         return false;
     }
 
     struct legacy_bootstrap_height_map_result hmap;
-    if (!legacy_bootstrap_load_height_map(idx_dir, &cs_best_for_map,
+    if (!legacy_bootstrap_load_height_map(paths.idx_dir, &cs_best_for_map,
                                           "cold_import", &hmap)) {
-        ldb_snapshot_destroy(idx_dir);
-        ldb_snapshot_destroy(cs_dir);
+        legacy_bootstrap_cleanup_staged_snapshot(&paths, false);
         return false;
     }
     struct legacy_block_loc *map = hmap.map;
@@ -1082,15 +1121,14 @@ static bool legacy_bootstrap_import_cold(
     struct blocks_mmap *bmr = NULL;
     /* cold-import contract: .require_spotcheck = true */
     if (!legacy_bootstrap_open_block_source(
-            blk_dir, map, map_count, legacy_tip,
+            paths.legacy_blocks_dir, map, map_count, legacy_tip,
             LEGACY_BOOTSTRAP_COLD_SPOTCHECK_K,
             true,  /* require_spotcheck */
             "cold_import", "ZCL_COLD_IMPORT_DEBUG_WINDOW",
             true,  /* dump_map_on_failure */
             &bmr)) {
         bilr_free_height_map(map);
-        ldb_snapshot_destroy(idx_dir);
-        ldb_snapshot_destroy(cs_dir);
+        legacy_bootstrap_cleanup_staged_snapshot(&paths, false);
         return false;
     }
     bmr_close(bmr);
@@ -1098,10 +1136,10 @@ static bool legacy_bootstrap_import_cold(
     struct legacy_bootstrap_snapshot_import_result imported;
     const struct legacy_bootstrap_snapshot_import_options import_opts = {
         .mode = LEGACY_BOOTSTRAP_SNAPSHOT_COLD,
-        .legacy_blocks_dir = blk_dir,
-        .our_blocks_dir = our_blocks,
-        .legacy_index_dir = idx_dir,
-        .chainstate_dir = cs_dir,
+        .legacy_blocks_dir = paths.legacy_blocks_dir,
+        .our_blocks_dir = paths.our_blocks_dir,
+        .legacy_index_dir = paths.idx_dir,
+        .chainstate_dir = paths.cs_dir,
         .btdb = opts->btdb,
         .cvs = opts->cvs,
         .ndb = opts->ndb,
@@ -1112,8 +1150,7 @@ static bool legacy_bootstrap_import_cold(
         legacy_bootstrap_import_snapshot_state(&import_opts, &imported);
     bilr_free_height_map(map);
     if (!import_ok) {
-        ldb_snapshot_destroy(idx_dir);
-        ldb_snapshot_destroy(cs_dir);
+        legacy_bootstrap_cleanup_staged_snapshot(&paths, false);
         return false;
     }
     r.blk_files_linked = imported.blk_files_linked;
@@ -1132,8 +1169,7 @@ static bool legacy_bootstrap_import_cold(
             " utxos=%" PRId64 " blk_files=%" PRId64 "\n",
             total_secs, r.block_index_writes, r.utxos_imported,
             r.blk_files_linked);
-    ldb_snapshot_destroy(idx_dir);
-    ldb_snapshot_destroy(cs_dir);
+    legacy_bootstrap_cleanup_staged_snapshot(&paths, false);
     return true;
 }
 
@@ -1711,41 +1747,19 @@ static bool legacy_bootstrap_import_attach(
         return false;
     }
 
-    char stage_dir[1100], idx_snap[1200], cs_snap[1200];
-    if (!legacy_bootstrap_make_stage_dir(
-            opts->our_datadir, LEGACY_BOOTSTRAP_ATTACH_STAGE_SUBDIR,
-            stage_dir, sizeof(stage_dir), "legacy_attach")) {
-        fprintf(stderr,
-            "[legacy_attach] cannot create stage dir under %s\n",
-            opts->our_datadir);
-        return false;
-    }
-    if (!legacy_bootstrap_snapshot_leveldbs(opts->legacy_datadir, stage_dir,
-                                            idx_snap, sizeof(idx_snap),
-                                            cs_snap, sizeof(cs_snap),
-                                            "legacy_attach")) {
-        return false;
-    }
-
-    char legacy_blocks[1100], our_blocks[1100];
-    if (!legacy_bootstrap_format_child_path(
-            opts->legacy_datadir, "blocks", legacy_blocks,
-            sizeof(legacy_blocks), "legacy_attach",
-            "legacy blocks directory") ||
-        !legacy_bootstrap_format_child_path(
-            opts->our_datadir, "blocks", our_blocks, sizeof(our_blocks),
-            "legacy_attach", "local blocks directory")) {
-        ldb_snapshot_destroy(idx_snap);
-        ldb_snapshot_destroy(cs_snap);
+    struct legacy_bootstrap_staged_snapshot_paths paths;
+    if (!legacy_bootstrap_prepare_staged_snapshot(
+            opts, LEGACY_BOOTSTRAP_ATTACH_STAGE_SUBDIR, "legacy_attach",
+            &paths)) {
         return false;
     }
     struct legacy_bootstrap_snapshot_import_result imported;
     const struct legacy_bootstrap_snapshot_import_options import_opts = {
         .mode = LEGACY_BOOTSTRAP_SNAPSHOT_ATTACH,
-        .legacy_blocks_dir = legacy_blocks,
-        .our_blocks_dir = our_blocks,
-        .legacy_index_dir = idx_snap,
-        .chainstate_dir = cs_snap,
+        .legacy_blocks_dir = paths.legacy_blocks_dir,
+        .our_blocks_dir = paths.our_blocks_dir,
+        .legacy_index_dir = paths.idx_dir,
+        .chainstate_dir = paths.cs_dir,
         .btdb = opts->btdb,
         .cvs = opts->cvs,
         .ndb = opts->ndb,
@@ -1753,8 +1767,7 @@ static bool legacy_bootstrap_import_attach(
     };
     int64_t t_import = legacy_bootstrap_now_ms();
     if (!legacy_bootstrap_import_snapshot_state(&import_opts, &imported)) {
-        ldb_snapshot_destroy(idx_snap);
-        ldb_snapshot_destroy(cs_snap);
+        legacy_bootstrap_cleanup_staged_snapshot(&paths, false);
         return false;
     }
     r.blk_files_linked = imported.blk_files_linked;
@@ -1771,15 +1784,12 @@ static bool legacy_bootstrap_import_attach(
     if (!legacy_bootstrap_attach_finalize_atomic(
             pdb, imported.legacy_tip_height, &imported.best_block,
             &stages_stamped)) {
-        ldb_snapshot_destroy(idx_snap);
-        ldb_snapshot_destroy(cs_snap);
+        legacy_bootstrap_cleanup_staged_snapshot(&paths, false);
         return false;
     }
     r.stages_stamped = stages_stamped;
 
-    ldb_snapshot_destroy(idx_snap);
-    ldb_snapshot_destroy(cs_snap);
-    rmdir(stage_dir);
+    legacy_bootstrap_cleanup_staged_snapshot(&paths, true);
 
     double total_secs = (double)(legacy_bootstrap_now_ms() - t_start) / 1000.0;
     if (r.outcome == LEGACY_ATTACH_OUTCOME_FAILED)

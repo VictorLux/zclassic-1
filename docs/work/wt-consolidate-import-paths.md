@@ -124,6 +124,12 @@ Verification:
   `git diff --check`, and `make -j1 test_parallel &&
   ./test_parallel --jobs=$(nproc)` pass after refreshing stale importer/cutover
   contract tests.
+- Cold and attach now share one private staged-snapshot preparer for stage-dir
+  creation, LevelDB snapshots, block path derivation, and cleanup; their mode
+  functions keep only their policy-specific probe/spotcheck/finalize logic.
+  `make app/services/src/legacy_bootstrap_importer.o`, `make lint`,
+  `git diff --check`, and `make -j1 test_parallel &&
+  ./test_parallel --jobs=$(nproc)` pass after this consolidation.
 
 ## The shape (one canonical importer, pluggable mode)
 
