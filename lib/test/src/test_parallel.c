@@ -251,7 +251,7 @@ static void print_captured(const char *path)
 
 static bool group_requires_exclusive_repo(const char *name)
 {
-    return name && strcmp(name, "test_make_lint_gates") == 0;
+    return name && strcmp(name, "make_lint_gates") == 0;
 }
 
 static void run_group_exclusive(size_t idx, pid_t parent_pid,

@@ -69,6 +69,9 @@ health = load_rpc(health_path)
 preflight = load_rpc(preflight_path)
 checks = health.get("checks") if isinstance(health.get("checks"), dict) else {}
 live = preflight.get("live") if isinstance(preflight.get("live"), dict) else {}
+state = preflight.get("cutover_state")
+if not isinstance(state, dict):
+    state = {}
 ca = checks.get("chain_advance") if isinstance(checks.get("chain_advance"), dict) else {}
 blockers = preflight.get("blockers")
 if not isinstance(blockers, list):
@@ -103,6 +106,15 @@ print(
     f"ready={str(cutover_ready).lower()} "
     f"canary_target_height={live.get('canary_target_height', 0)} "
     f"blockers={','.join(str(b) for b in blockers) if blockers else 'none'}"
+)
+print(
+    "cutover_state="
+    f"has_change={str(bool(state.get('has_change'))).lower()} "
+    f"authoritative_active={str(bool(state.get('authoritative_active'))).lower()} "
+    f"change_height={state.get('change_height', 0)} "
+    f"canary_target_height={state.get('canary_target_height', 0)} "
+    f"current_tip_height={state.get('current_tip_height', 0)} "
+    f"canary_passed={str(bool(state.get('canary_passed'))).lower()}"
 )
 
 if not live_ready:

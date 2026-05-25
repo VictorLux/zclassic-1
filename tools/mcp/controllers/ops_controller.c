@@ -939,7 +939,7 @@ static const struct mcp_tool_route k_routes[] = {
     { "zcl_cutoverpreflight", "ops",
       "Read-only C-3 cutover preflight: runtime modes, header_admit "
       "recent shadow parity, header/validate cursor lag, safety guard, "
-      "next canary target height, blockers, and a conservative ready boolean.",
+      "runtime canary state, blockers, and a conservative ready boolean.",
       p_cutoverpreflight, PARAM_COUNT(p_cutoverpreflight),
       h_zcl_cutoverpreflight, 0, NULL },
     { "zcl_syncdiag", "ops",

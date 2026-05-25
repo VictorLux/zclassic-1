@@ -86,6 +86,7 @@
 #include <sqlite3.h>
 #include <ctype.h>
 #include <regex.h>
+#include <stdatomic.h>
 #include <string.h>
 #include <strings.h>
 #include <limits.h>
@@ -103,6 +104,14 @@ static struct {
     struct main_state *main_state;
     char datadir[1024];
 } g_diag = {0};
+
+static _Atomic int g_cutover_has_change;
+static _Atomic int64_t g_cutover_change_unix;
+static _Atomic int64_t g_cutover_change_height;
+static _Atomic int64_t g_cutover_canary_target_height;
+static _Atomic int64_t g_cutover_change_header_height;
+static _Atomic int64_t g_cutover_change_peer_best_height;
+static _Atomic int64_t g_cutover_change_tip_lag;
 
 void diagnostics_controller_set_state(struct main_state *ms,
                                       const char *datadir)
@@ -612,6 +621,11 @@ static const char *validate_headers_mode_name(validate_headers_mode_t mode)
         ? "authoritative" : "shadow";
 }
 
+#define CUTOVER_PREFLIGHT_MAX_TIP_ADVANCE_AGE_SECS 180
+#define CUTOVER_PREFLIGHT_MAX_GUARD_POLL_SECS 5
+#define CUTOVER_PREFLIGHT_MAX_GUARD_WITNESS_SECS 60
+#define CUTOVER_PREFLIGHT_GUARD_NAME "cutover_no_forward_progress"
+
 static bool parse_cutover_mode(const char *s,
                                header_admit_mode_t *ha,
                                validate_headers_mode_t *vh)
@@ -631,9 +645,66 @@ static bool parse_cutover_mode(const char *s,
     return false;
 }
 
+static bool cutover_any_authoritative_active(void)
+{
+    return header_admit_get_mode() == HEADER_ADMIT_MODE_AUTHORITATIVE ||
+           validate_headers_get_mode() ==
+               VALIDATE_HEADERS_MODE_AUTHORITATIVE;
+}
+
+static void cutover_record_mode_change(
+    const struct node_health_snapshot *health)
+{
+    int64_t height = health ? health->tip_height : -1;
+    atomic_store(&g_cutover_has_change, 1);
+    atomic_store(&g_cutover_change_unix, platform_time_wall_unix());
+    atomic_store(&g_cutover_change_height, height);
+    atomic_store(&g_cutover_canary_target_height,
+                 height >= 0 ? height + 1 : 0);
+    atomic_store(&g_cutover_change_header_height,
+                 health ? health->header_height : -1);
+    atomic_store(&g_cutover_change_peer_best_height,
+                 health ? health->peer_best_height : -1);
+    atomic_store(&g_cutover_change_tip_lag,
+                 health ? health->tip_lag : -1);
+}
+
+static void push_cutover_canary_state(
+    struct json_value *out,
+    const struct node_health_snapshot *health)
+{
+    bool has_change = atomic_load(&g_cutover_has_change) != 0;
+    int64_t target = atomic_load(&g_cutover_canary_target_height);
+    int64_t current_tip = health ? health->tip_height : -1;
+    bool authoritative = cutover_any_authoritative_active();
+
+    json_set_object(out);
+    json_push_kv_bool(out, "has_change", has_change);
+    json_push_kv_bool(out, "authoritative_active", authoritative);
+    json_push_kv_int(out, "changed_at_unix",
+                     atomic_load(&g_cutover_change_unix));
+    json_push_kv_int(out, "change_height",
+                     atomic_load(&g_cutover_change_height));
+    json_push_kv_int(out, "canary_target_height", target);
+    json_push_kv_int(out, "current_tip_height", current_tip);
+    json_push_kv_bool(out, "canary_passed",
+                      has_change && target > 0 && current_tip >= target);
+    json_push_kv_int(out, "change_header_height",
+                     atomic_load(&g_cutover_change_header_height));
+    json_push_kv_int(out, "change_peer_best_height",
+                     atomic_load(&g_cutover_change_peer_best_height));
+    json_push_kv_int(out, "change_tip_lag",
+                     atomic_load(&g_cutover_change_tip_lag));
+    json_push_kv_int(out, "watch_window_seconds",
+                     CUTOVER_PREFLIGHT_MAX_TIP_ADVANCE_AGE_SECS);
+}
+
 static void push_cutover_modes(struct json_value *result, bool changed,
                                const struct node_health_snapshot *health)
 {
+    struct json_value canary;
+    json_init(&canary);
+
     json_set_object(result);
     json_push_kv_bool(result, "changed", changed);
     json_push_kv_str(result, "header_admit",
@@ -656,6 +727,9 @@ static void push_cutover_modes(struct json_value *result, bool changed,
             json_push_kv_int(result, "change_tip_lag", health->tip_lag);
         }
     }
+    push_cutover_canary_state(&canary, health);
+    json_push_kv(result, "cutover_state", &canary);
+    json_free(&canary);
 }
 
 static bool rpc_cutoverpreflight(const struct json_value *params, bool help,
@@ -762,6 +836,7 @@ static bool rpc_cutovermode(const struct json_value *params, bool help,
 
     struct node_health_snapshot health;
     node_health_collect(&health, NULL, NULL);
+    cutover_record_mode_change(&health);
     push_cutover_modes(result, true, &health);
     return true;
 }
@@ -787,11 +862,6 @@ static int64_t json_obj_int_or(const struct json_value *obj,
     const struct json_value *v = json_get(obj, key);
     return v ? json_get_int(v) : fallback;
 }
-
-#define CUTOVER_PREFLIGHT_MAX_TIP_ADVANCE_AGE_SECS 180
-#define CUTOVER_PREFLIGHT_MAX_GUARD_POLL_SECS 5
-#define CUTOVER_PREFLIGHT_MAX_GUARD_WITNESS_SECS 60
-#define CUTOVER_PREFLIGHT_GUARD_NAME "cutover_no_forward_progress"
 
 static void cutover_preflight_push_blocker(struct json_value *blockers,
                                            const char *reason)
@@ -831,10 +901,13 @@ static bool cutover_preflight_tail_window(
     return true;
 }
 
-static bool push_cutover_live_gate_json(struct json_value *live)
+static bool push_cutover_live_gate_json(struct json_value *live,
+                                        struct node_health_snapshot *out)
 {
     struct node_health_snapshot health;
     node_health_collect(&health, NULL, NULL);
+    if (out)
+        *out = health;
 
     json_set_object(live);
     json_push_kv_bool(live, "healthy", health.healthy);
@@ -963,6 +1036,7 @@ static bool rpc_cutoverpreflight(const struct json_value *params, bool help,
     struct json_value live;
     struct json_value chain_evidence;
     struct json_value guard;
+    struct json_value canary;
     struct json_value diff;
     struct json_value vh;
     struct json_value blockers;
@@ -970,6 +1044,7 @@ static bool rpc_cutoverpreflight(const struct json_value *params, bool help,
     json_init(&live);
     json_init(&chain_evidence);
     json_init(&guard);
+    json_init(&canary);
     json_init(&diff);
     json_init(&vh);
     json_init(&blockers);
@@ -990,7 +1065,9 @@ static bool rpc_cutoverpreflight(const struct json_value *params, bool help,
     const char *vh_mode = validate_headers_mode_name(validate_headers_get_mode());
     json_push_kv_str(&modes, "header_admit", ha_mode);
     json_push_kv_str(&modes, "validate_headers", vh_mode);
-    bool live_ready = push_cutover_live_gate_json(&live);
+    struct node_health_snapshot live_health;
+    bool live_ready = push_cutover_live_gate_json(&live, &live_health);
+    push_cutover_canary_state(&canary, &live_health);
     bool guard_ready = push_cutover_guard_gate_json(&guard);
 
     json_push_kv_str(&diff, "status",
@@ -1084,6 +1161,7 @@ static bool rpc_cutoverpreflight(const struct json_value *params, bool help,
     json_push_kv(result, "live", &live);
     json_push_kv(result, "chain_evidence", &chain_evidence);
     json_push_kv(result, "guard", &guard);
+    json_push_kv(result, "cutover_state", &canary);
     json_push_kv(result, "modes", &modes);
     json_push_kv(result, "header_admit_diff", &diff);
     json_push_kv(result, "validate_headers", &vh);
@@ -1093,6 +1171,7 @@ static bool rpc_cutoverpreflight(const struct json_value *params, bool help,
     json_free(&live);
     json_free(&chain_evidence);
     json_free(&guard);
+    json_free(&canary);
     json_free(&diff);
     json_free(&vh);
     return true;
