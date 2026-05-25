@@ -1033,24 +1033,35 @@ static int t_cold_import_spotcheck_diagnostics_contract(void)
     TEST("cold-import spotcheck failure reports deterministic digest evidence") {
         char path[PATH_MAX];
         ASSERT(repo_path(path, sizeof(path),
-                         "app/services/src/legacy_cold_import.c") == 0);
+                         "app/services/src/legacy_bootstrap_importer.c") == 0);
         ASSERT(read_entire_file(path, &buf) == 0);
-        char *debug_env = strstr(buf, "ZCL_COLD_IMPORT_DEBUG_WINDOW");
+        char *spotcheck = strstr(buf,
+            "legacy_bootstrap_spotcheck_sha3_windows(");
         char *debug_check = strstr(buf, "debug spotcheck window");
         char *random_check = strstr(buf, "SHA3 spotcheck: K=%d");
         char *range = strstr(buf, "(h=%d..%d)");
         char *expected = strstr(buf, "expected=%s actual=%s");
-        char *refuse = strstr(buf, "refusing to import");
-        ASSERT(debug_env != NULL);
+        ASSERT(spotcheck != NULL);
         ASSERT(debug_check != NULL);
         ASSERT(random_check != NULL);
         ASSERT(range != NULL);
         ASSERT(expected != NULL);
-        ASSERT(refuse != NULL);
-        ASSERT(debug_env < debug_check);
+        ASSERT(spotcheck < debug_check);
         ASSERT(debug_check < random_check);
         ASSERT(range < expected);
-        ASSERT(expected < refuse);
+        free(buf);
+        buf = NULL;
+
+        ASSERT(repo_path(path, sizeof(path),
+                         "app/services/src/legacy_cold_import.c") == 0);
+        ASSERT(read_entire_file(path, &buf) == 0);
+        char *debug_env = strstr(buf, "ZCL_COLD_IMPORT_DEBUG_WINDOW");
+        char *call = strstr(buf, "legacy_bootstrap_spotcheck_sha3_windows(");
+        char *refuse = strstr(buf, "refusing to import");
+        ASSERT(debug_env != NULL);
+        ASSERT(call != NULL);
+        ASSERT(refuse != NULL);
+        ASSERT(call < refuse);
         PASS();
     } _test_next:;
     free(buf);

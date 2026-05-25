@@ -23,17 +23,14 @@
 
 #include "chain/chain.h"
 #include "chain/chainparams.h"
-#include "chain/sha3_windows.h"
 #include "consensus/validation.h"
-#include "core/random.h"
 #include "core/serialize.h"
 #include "core/uint256.h"
-#include "crypto/sha3.h"
 #include "primitives/block.h"
+#include "services/legacy_bootstrap_importer.h"
 #include "storage/blocks_index_legacy_reader.h"
 #include "storage/blocks_mmap_reader.h"
 #include "util/log_macros.h"
-#include "util/safe_alloc.h"
 #include "util/thread_registry.h"
 #include "validation/chainstate.h"
 #include "validation/main_state.h"
@@ -44,7 +41,6 @@
 #include <stdatomic.h>
 #include <stdint.h>
 #include <stdio.h>
-#include <stdlib.h>
 #include <string.h>
 #include <time.h>
 
@@ -55,113 +51,6 @@ static int64_t ldi_now_ms(void)
     struct timespec ts;
     platform_time_monotonic_timespec(&ts);
     return (int64_t)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
-}
-
-/* Hash one SHA3 window of 1000 consecutive heights using payloads
- * served by the mmap reader. Returns true iff digest matches
- * g_sha3_windows[wi].hash. */
-static bool ldi_verify_window(struct blocks_mmap *bmr,
-                              const struct legacy_block_loc *map,
-                              size_t map_count,
-                              size_t wi)
-{
-    if (wi >= g_sha3_windows_count) return false;
-    int start = g_sha3_windows[wi].start_height;
-    int end   = start + SHA3_WINDOW_SIZE - 1;
-    if (end < 0 || (size_t)end >= map_count) return false;
-
-    struct sha3_256_ctx ctx;
-    sha3_256_init(&ctx);
-
-    for (int h = start; h <= end; h++) {
-        const struct legacy_block_loc *loc = &map[(size_t)h];
-        if (loc->height < 0) {
-            fprintf(stderr,
-                    "[legacy_direct_import] spotcheck w=%zu h=%d "
-                    "MISSING in legacy index\n", wi, h);
-            return false;
-        }
-        size_t len = 0;
-        const uint8_t *bytes =
-            bmr_get_payload(bmr, loc->nFile, loc->nDataPos, &len);
-        if (!bytes || len == 0) {
-            fprintf(stderr,
-                    "[legacy_direct_import] spotcheck w=%zu h=%d "
-                    "mmap fetch failed\n", wi, h);
-            return false;
-        }
-        sha3_256_write(&ctx, bytes, len);
-    }
-
-    uint8_t digest[32];
-    sha3_256_finalize(&ctx, digest);
-    return memcmp(digest, g_sha3_windows[wi].hash, 32) == 0;
-}
-
-/* K=3 random SHA3 windows verified before evidence-mode is armed. */
-static bool ldi_spotcheck_sha3_windows(struct blocks_mmap *bmr,
-                                       const struct legacy_block_loc *map,
-                                       size_t map_count,
-                                       int legacy_tip,
-                                       int k)
-{
-    if (g_sha3_windows_count == 0) {
-        fprintf(stderr,
-                "[legacy_direct_import] spotcheck SKIPPED: no compile-time "
-                "anchor table (g_sha3_windows_count=0)\n");
-        return false;
-    }
-
-    size_t max_w = g_sha3_windows_count;
-    if (legacy_tip > 0) {
-        size_t covered = (size_t)(legacy_tip + 1) / SHA3_WINDOW_SIZE;
-        if (covered < max_w) max_w = covered;
-    }
-    if (max_w == 0) {
-        fprintf(stderr,
-                "[legacy_direct_import] spotcheck SKIPPED: legacy tip h=%d "
-                "is below any complete anchor window\n", legacy_tip);
-        return false;
-    }
-    if ((size_t)k > max_w) k = (int)max_w;
-
-    size_t picked[16];
-    if (k > (int)(sizeof(picked) / sizeof(picked[0])))
-        k = (int)(sizeof(picked) / sizeof(picked[0]));
-    unsigned char rand_buf[16 * 4];
-    GetRandBytes(rand_buf, sizeof(rand_buf));
-    for (int i = 0; i < k; i++) {
-        uint32_t r = (uint32_t)rand_buf[i*4]
-                   | ((uint32_t)rand_buf[i*4+1] << 8)
-                   | ((uint32_t)rand_buf[i*4+2] << 16)
-                   | ((uint32_t)rand_buf[i*4+3] << 24);
-        picked[i] = (size_t)(r % max_w);
-    }
-
-    fprintf(stderr,  // obs-ok:pre-existing-diagnostic
-            "[legacy_direct_import] SHA3 spotcheck: K=%d windows over "
-            "[0..%zu) (legacy_tip=%d)\n", k, max_w, legacy_tip);
-
-    for (int i = 0; i < k; i++) {
-        size_t wi = picked[i];
-        fprintf(stderr,  // obs-ok:pre-existing-diagnostic
-                "[legacy_direct_import] spotcheck: verifying w=%zu "
-                "(h=%d..%d)\n",
-                wi, g_sha3_windows[wi].start_height,
-                g_sha3_windows[wi].start_height + SHA3_WINDOW_SIZE - 1);
-        if (!ldi_verify_window(bmr, map, map_count, wi)) {
-            fprintf(stderr,
-                    "[legacy_direct_import] spotcheck FAILED at window "
-                    "%zu; continuing with full validation\n", wi);
-            return false;
-        }
-        fprintf(stderr,  // obs-ok:pre-existing-diagnostic
-                "[legacy_direct_import] spotcheck: w=%zu OK\n", wi);
-    }
-    fprintf(stderr,  // obs-ok:pre-existing-diagnostic
-            "[legacy_direct_import] SHA3 spotcheck: %d/%d windows match\n",
-            k, k);
-    return true;
 }
 
 bool legacy_direct_import_range_blocking(
@@ -249,8 +138,9 @@ bool legacy_direct_import_range_blocking(
     }
 
     /* ── SHA3 spot-check source blocks; proofs still validate normally ── */
-    if (ldi_spotcheck_sha3_windows(bmr, map, map_count,
-                                    legacy_tip, LDI_SPOTCHECK_K)) {
+    if (legacy_bootstrap_spotcheck_sha3_windows(
+            bmr, map, map_count, legacy_tip, LDI_SPOTCHECK_K,
+            "legacy_direct_import", NULL, false)) {
         r.source_checked = true;
         fprintf(stderr,  // obs-ok:pre-existing-diagnostic
                 "[legacy_direct_import] SHA3 source spotcheck passed; "

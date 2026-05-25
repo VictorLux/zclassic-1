@@ -16,7 +16,9 @@
 #include <stdint.h>
 
 struct block_tree_db;
+struct blocks_mmap;
 struct coins_view_sqlite;
+struct legacy_block_loc;
 
 struct legacy_bootstrap_chainstate_import_result {
     int64_t inserted;
@@ -73,5 +75,20 @@ bool legacy_bootstrap_import_chainstate_utxos(
     const char *long_op_name,
     const char *log_prefix,
     struct legacy_bootstrap_chainstate_import_result *out);
+
+/* Verify k random compile-time SHA3 windows against block payloads served by
+ * bmr/map. debug_env may name an environment variable that forces one window
+ * before random picks. dump_map_on_failure enables heavier parent-link
+ * diagnostics for cold-import aborts.
+ */
+bool legacy_bootstrap_spotcheck_sha3_windows(
+    struct blocks_mmap *bmr,
+    const struct legacy_block_loc *map,
+    size_t map_count,
+    int legacy_tip,
+    int k,
+    const char *log_prefix,
+    const char *debug_env,
+    bool dump_map_on_failure);
 
 #endif /* ZCL_SERVICES_LEGACY_BOOTSTRAP_IMPORTER_H */
