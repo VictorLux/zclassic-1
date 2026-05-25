@@ -578,6 +578,81 @@ bool validate_headers_stage_has_pass_record(int32_t height,
     return found;
 }
 
+static void validate_headers_window_report_init(
+    struct validate_headers_window_report *r,
+    int64_t start_height,
+    int64_t end_height)
+{
+    if (!r) return;
+    memset(r, 0, sizeof(*r));
+    r->start_height = start_height;
+    r->end_height = end_height;
+    r->first_failed_height = -1;
+    r->first_fail_reason[0] = '\0';
+    if (start_height >= 0 && end_height >= start_height)
+        r->expected_count = end_height - start_height + 1;
+}
+
+bool validate_headers_stage_window_report(
+    int64_t start_height,
+    int64_t end_height,
+    struct validate_headers_window_report *out)
+{
+    validate_headers_window_report_init(out, start_height, end_height);
+    if (!out || out->expected_count <= 0)
+        return false;
+
+    sqlite3 *db = progress_store_db();
+    if (!db)
+        return false;
+
+    sqlite3_stmt *st = NULL;
+    int rc = sqlite3_prepare_v2(db,
+        "SELECT COUNT(*),"
+        "       SUM(CASE WHEN ok=0 THEN 1 ELSE 0 END)"
+        "  FROM validate_headers_log"
+        " WHERE height BETWEEN ? AND ?",
+        -1, &st, NULL);
+    if (rc != SQLITE_OK) {
+        LOG_ERR("validate_headers",
+                "window report count prepare failed");
+        return false;
+    }
+    sqlite3_bind_int64(st, 1, (sqlite3_int64)start_height);
+    sqlite3_bind_int64(st, 2, (sqlite3_int64)end_height);
+    if (sqlite3_step(st) == SQLITE_ROW) {  // raw-sql-ok:kernel-primitive
+        out->checked_count = sqlite3_column_int64(st, 0);
+        out->failed_count = sqlite3_column_int64(st, 1);
+        out->available = true;
+    }
+    sqlite3_finalize(st);
+
+    rc = sqlite3_prepare_v2(db,
+        "SELECT height, COALESCE(fail_reason, '')"
+        "  FROM validate_headers_log"
+        " WHERE height BETWEEN ? AND ? AND ok=0"
+        " ORDER BY height ASC LIMIT 1",
+        -1, &st, NULL);
+    if (rc != SQLITE_OK) {
+        LOG_ERR("validate_headers",
+                "window report fail prepare failed");
+        return false;
+    }
+    sqlite3_bind_int64(st, 1, (sqlite3_int64)start_height);
+    sqlite3_bind_int64(st, 2, (sqlite3_int64)end_height);
+    if (sqlite3_step(st) == SQLITE_ROW) {  // raw-sql-ok:kernel-primitive
+        out->first_failed_height = sqlite3_column_int64(st, 0);
+        const unsigned char *reason = sqlite3_column_text(st, 1);
+        snprintf(out->first_fail_reason, sizeof(out->first_fail_reason),
+                 "%s", reason ? (const char *)reason : "");
+    }
+    sqlite3_finalize(st);
+
+    out->complete = out->available &&
+                    out->checked_count == out->expected_count;
+    return out->available;
+}
+
 bool validate_headers_stage_dump_state_json(struct json_value *out,
                                              const char *key)
 {

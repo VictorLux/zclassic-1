@@ -378,6 +378,15 @@ int test_rpc(void) {
         ok = ok && json_get(vh, "persisted_cursor") != NULL;
         ok = ok && json_get(vh, "required_cursor") != NULL;
         ok = ok && json_get(vh, "cursor_lag") != NULL;
+        ok = ok && json_get(vh, "window_available") != NULL;
+        ok = ok && json_get(vh, "window_complete") != NULL;
+        ok = ok && json_get(vh, "window_start_height") != NULL;
+        ok = ok && json_get(vh, "window_end_height") != NULL;
+        ok = ok && json_get(vh, "window_expected_count") != NULL;
+        ok = ok && json_get(vh, "window_checked_count") != NULL;
+        ok = ok && json_get(vh, "window_failed_count") != NULL;
+        ok = ok && json_get(vh, "window_first_failed_height") != NULL;
+        ok = ok && json_get(vh, "window_first_fail_reason") != NULL;
         ok = ok && blockers->type == JSON_ARR;
 
         json_free(&params);

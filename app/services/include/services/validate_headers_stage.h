@@ -121,6 +121,23 @@ uint64_t validate_headers_stage_failed_total(void);
 bool validate_headers_stage_has_pass_record(int32_t height,
                                             const struct uint256 *hash);
 
+struct validate_headers_window_report {
+    bool available;
+    bool complete;
+    int64_t start_height;
+    int64_t end_height;
+    int64_t expected_count;
+    int64_t checked_count;
+    int64_t failed_count;
+    int64_t first_failed_height;
+    char first_fail_reason[VH_MAX_REASON];
+};
+
+bool validate_headers_stage_window_report(
+    int64_t start_height,
+    int64_t end_height,
+    struct validate_headers_window_report *out);
+
 bool validate_headers_stage_dump_state_json(struct json_value *out,
                                              const char *key);
 

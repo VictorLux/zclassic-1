@@ -272,6 +272,14 @@ int test_validate_headers_stage(void)
             log_row_at(db, h, &ok, NULL, 0);
             VH_CHECK("happy: row marks ok=1", ok == 1);
         }
+        struct validate_headers_window_report rep;
+        VH_CHECK("happy: window report available",
+                 validate_headers_stage_window_report(0, 4, &rep));
+        VH_CHECK("happy: window report complete",
+                 rep.available && rep.complete &&
+                 rep.expected_count == 5 && rep.checked_count == 5);
+        VH_CHECK("happy: window report has no failures",
+                 rep.failed_count == 0 && rep.first_failed_height == -1);
 
         /* Next step is IDLE — nothing to validate. */
         stage_result_t r = validate_headers_stage_step_once();
@@ -381,6 +389,15 @@ int test_validate_headers_stage(void)
         int ok0 = -1;
         log_row_at(db, 0, &ok0, NULL, 0);
         VH_CHECK("fail: row at h=0 has ok=1", ok0 == 1);
+        struct validate_headers_window_report rep;
+        VH_CHECK("fail: window report available",
+                 validate_headers_stage_window_report(0, 4, &rep));
+        VH_CHECK("fail: window report counts failure",
+                 rep.complete && rep.failed_count == 1 &&
+                 rep.first_failed_height == 3);
+        VH_CHECK("fail: window report carries reason",
+                 strcmp(rep.first_fail_reason,
+                        "stub-injected-failure") == 0);
 
         vh_teardown(dir, &ms, &sc);
     }

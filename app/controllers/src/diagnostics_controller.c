@@ -863,6 +863,24 @@ static int64_t json_obj_int_or(const struct json_value *obj,
     return v ? json_get_int(v) : fallback;
 }
 
+static void push_validate_headers_window_json(
+    struct json_value *vh,
+    const struct validate_headers_window_report *r)
+{
+    if (!vh || !r) return;
+    json_push_kv_bool(vh, "window_available", r->available);
+    json_push_kv_bool(vh, "window_complete", r->complete);
+    json_push_kv_int(vh, "window_start_height", r->start_height);
+    json_push_kv_int(vh, "window_end_height", r->end_height);
+    json_push_kv_int(vh, "window_expected_count", r->expected_count);
+    json_push_kv_int(vh, "window_checked_count", r->checked_count);
+    json_push_kv_int(vh, "window_failed_count", r->failed_count);
+    json_push_kv_int(vh, "window_first_failed_height",
+                     r->first_failed_height);
+    json_push_kv_str(vh, "window_first_fail_reason",
+                     r->first_fail_reason);
+}
+
 static void cutover_preflight_push_blocker(struct json_value *blockers,
                                            const char *reason)
 {
@@ -1120,9 +1138,18 @@ static bool rpc_cutoverpreflight(const struct json_value *params, bool help,
     json_push_kv_int(&vh, "required_cursor", required_vh_cursor);
     json_push_kv_int(&vh, "cursor_lag", vh_cursor_lag);
 
+    struct validate_headers_window_report vh_window;
+    int64_t vh_window_start = rep.start_height;
+    int64_t vh_window_end = rep.end_height;
+    validate_headers_stage_window_report(vh_window_start, vh_window_end,
+                                         &vh_window);
+    push_validate_headers_window_json(&vh, &vh_window);
+
     bool validate_clean = vh_ok &&
-        json_obj_int_or(&vh, "failed_total", 1) == 0 &&
-        json_obj_int_or(&vh, "error_count", 1) == 0;
+        json_obj_int_or(&vh, "error_count", 1) == 0 &&
+        vh_window.available &&
+        vh_window.complete &&
+        vh_window.failed_count == 0;
     bool validate_caught_up =
         required_vh_cursor > 0 &&
         vh_cursor >= required_vh_cursor &&
