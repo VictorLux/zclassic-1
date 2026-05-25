@@ -267,6 +267,13 @@ dissolve ✅ (981ad4897..1b0847820) · snapshot wedge recovery ✅
 > node that's always stuck is worthless. #1 (perf) runs in parallel; it touches
 > the cold-import scan, not the connect path, so no conflict with #0.
 
+**QUEUED behind the root fix (DRY / purge — do NOT start while Agent 1 is in
+connect/coins/boot):** [`wt-consolidate-recovery-paths.md`](./work/wt-consolidate-recovery-paths.md)
+— research-backed cleanup of the whack-a-mole sprawl: the coins-rewind SQL is
+copy-pasted in 3 files (→ 1 helper); 17 tip/stall conditions (→ ~10 after the root
+fix makes the BIP30 band-aids dead); LEGACY_LIFECYCLE doc-vs-reality drift. Net
+LOC down. Gated so it can't collide with the live root-cause work.
+
 ### Re-flip-gated (read the spec now; start AFTER unwedge + safe-flip guard + a clean C-3 re-flip — there is no soak running, C-3 is reverted)
 - [`wt-phase2-cutover-c3-final-delete.md`](./work/wt-phase2-cutover-c3-final-delete.md) — delete the legacy validate_headers fallback.
 - [`wt-phase2-cutover-c5-body-persist.md`](./work/wt-phase2-cutover-c5-body-persist.md) — body_persist authoritative + DELETE body_fetch. Then C-6→C-9 in sequence per [`wt-phase2-cutover-c3-through-c9.md`](./work/wt-phase2-cutover-c3-through-c9.md) (each + its own soak).
