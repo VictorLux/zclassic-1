@@ -168,6 +168,11 @@ print(
     f"window_failed_count={vh.get('window_failed_count', 0)} "
     f"window_first_failed_height={vh.get('window_first_failed_height', -1)} "
     f"failed_total={vh.get('failed_total', 'unknown')} "
+    f"failure_log_count={vh.get('failure_log_count', 'unknown')} "
+    f"first_failed_height={vh.get('first_failed_height', -1)} "
+    f"first_fail_reason={vh.get('first_fail_reason', '')} "
+    f"last_failed_height={vh.get('last_failed_height', -1)} "
+    f"last_fail_reason={vh.get('last_fail_reason', '')} "
     f"error_count={vh.get('error_count', 'unknown')} "
     f"last_blocked_age_seconds={fmt_age_from_unix(vh, 'last_blocked_unix')}"
 )

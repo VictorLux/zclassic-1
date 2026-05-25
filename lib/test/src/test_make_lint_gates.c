@@ -845,6 +845,11 @@ static int t_scoreboard_operator_gate_contract(void)
         ASSERT(strstr(buf, "cursor_lag") != NULL);
         ASSERT(strstr(buf, "window_complete") != NULL);
         ASSERT(strstr(buf, "failed_total") != NULL);
+        ASSERT(strstr(buf, "failure_log_count") != NULL);
+        ASSERT(strstr(buf, "first_failed_height") != NULL);
+        ASSERT(strstr(buf, "first_fail_reason") != NULL);
+        ASSERT(strstr(buf, "last_failed_height") != NULL);
+        ASSERT(strstr(buf, "last_fail_reason") != NULL);
         ASSERT(strstr(buf, "error_count") != NULL);
         ASSERT(strstr(buf, "last_blocked_age_seconds") != NULL);
         ASSERT(strstr(buf, "cutovermode") == NULL);

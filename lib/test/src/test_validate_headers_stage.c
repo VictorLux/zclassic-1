@@ -648,7 +648,7 @@ int test_validate_headers_stage(void)
         json_init(&v);
         VH_CHECK("dump: returns true",
                  validate_headers_stage_dump_state_json(&v, NULL));
-        char buf[1024];
+        char buf[2048];
         size_t n = json_write(&v, buf, sizeof(buf));
         VH_CHECK("dump: serializes", n > 0 && n < sizeof(buf));
         VH_CHECK("dump: initialised=true",
@@ -659,6 +659,12 @@ int test_validate_headers_stage(void)
                  strstr(buf, "\"passed_total\":2") != NULL);
         VH_CHECK("dump: pool_size present",
                  strstr(buf, "\"pool_size\":4") != NULL);
+        VH_CHECK("dump: failure_log_count present",
+                 strstr(buf, "\"failure_log_count\":0") != NULL);
+        VH_CHECK("dump: first_failed_height present",
+                 strstr(buf, "\"first_failed_height\":-1") != NULL);
+        VH_CHECK("dump: last_failed_height present",
+                 strstr(buf, "\"last_failed_height\":-1") != NULL);
         json_free(&v);
 
         vh_teardown(dir, &ms, &sc);

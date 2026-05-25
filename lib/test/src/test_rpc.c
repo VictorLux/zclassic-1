@@ -407,6 +407,11 @@ int test_rpc(void) {
         ok = ok && json_get(diff, "cursor_lag") != NULL;
         ok = ok && json_get(diff, "log_tip_lag") != NULL;
         ok = ok && json_get(vh, "failed_total") != NULL;
+        ok = ok && json_get(vh, "failure_log_count") != NULL;
+        ok = ok && json_get(vh, "first_failed_height") != NULL;
+        ok = ok && json_get(vh, "first_fail_reason") != NULL;
+        ok = ok && json_get(vh, "last_failed_height") != NULL;
+        ok = ok && json_get(vh, "last_fail_reason") != NULL;
         ok = ok && json_get(vh, "persisted_cursor") != NULL;
         ok = ok && json_get(vh, "required_cursor") != NULL;
         ok = ok && json_get(vh, "cursor_lag") != NULL;

@@ -653,6 +653,76 @@ bool validate_headers_stage_window_report(
     return out->available;
 }
 
+struct validate_headers_failure_summary {
+    int64_t count;
+    int64_t first_height;
+    int64_t last_height;
+    char first_reason[VH_MAX_REASON];
+    char last_reason[VH_MAX_REASON];
+};
+
+static void validate_headers_failure_summary_init(
+    struct validate_headers_failure_summary *s)
+{
+    if (!s) return;
+    memset(s, 0, sizeof(*s));
+    s->first_height = -1;
+    s->last_height = -1;
+}
+
+static void validate_headers_failure_summary_load(
+    struct validate_headers_failure_summary *out)
+{
+    validate_headers_failure_summary_init(out);
+    if (!out) return;
+
+    sqlite3 *db = progress_store_db();
+    if (!db)
+        return;
+
+    sqlite3_stmt *st = NULL;
+    int rc = sqlite3_prepare_v2(db,
+        "SELECT COUNT(*) FROM validate_headers_log WHERE ok=0",
+        -1, &st, NULL);
+    if (rc == SQLITE_OK &&
+        sqlite3_step(st) == SQLITE_ROW) {  // raw-sql-ok:kernel-primitive
+        out->count = sqlite3_column_int64(st, 0);
+    }
+    sqlite3_finalize(st);
+    st = NULL;
+
+    rc = sqlite3_prepare_v2(db,
+        "SELECT height, COALESCE(fail_reason, '')"
+        "  FROM validate_headers_log"
+        " WHERE ok=0"
+        " ORDER BY height ASC LIMIT 1",
+        -1, &st, NULL);
+    if (rc == SQLITE_OK &&
+        sqlite3_step(st) == SQLITE_ROW) {  // raw-sql-ok:kernel-primitive
+        out->first_height = sqlite3_column_int64(st, 0);
+        const unsigned char *reason = sqlite3_column_text(st, 1);
+        snprintf(out->first_reason, sizeof(out->first_reason),
+                 "%s", reason ? (const char *)reason : "");
+    }
+    sqlite3_finalize(st);
+    st = NULL;
+
+    rc = sqlite3_prepare_v2(db,
+        "SELECT height, COALESCE(fail_reason, '')"
+        "  FROM validate_headers_log"
+        " WHERE ok=0"
+        " ORDER BY height DESC LIMIT 1",
+        -1, &st, NULL);
+    if (rc == SQLITE_OK &&
+        sqlite3_step(st) == SQLITE_ROW) {  // raw-sql-ok:kernel-primitive
+        out->last_height = sqlite3_column_int64(st, 0);
+        const unsigned char *reason = sqlite3_column_text(st, 1);
+        snprintf(out->last_reason, sizeof(out->last_reason),
+                 "%s", reason ? (const char *)reason : "");
+    }
+    sqlite3_finalize(st);
+}
+
 bool validate_headers_stage_dump_state_json(struct json_value *out,
                                              const char *key)
 {
@@ -677,6 +747,13 @@ bool validate_headers_stage_dump_state_json(struct json_value *out,
                       atomic_load(&g_last_step_unix));
     json_push_kv_int (out, "last_blocked_unix",
                       atomic_load(&g_last_blocked_unix));
+    struct validate_headers_failure_summary failures;
+    validate_headers_failure_summary_load(&failures);
+    json_push_kv_int(out, "failure_log_count", failures.count);
+    json_push_kv_int(out, "first_failed_height", failures.first_height);
+    json_push_kv_str(out, "first_fail_reason", failures.first_reason);
+    json_push_kv_int(out, "last_failed_height", failures.last_height);
+    json_push_kv_str(out, "last_fail_reason", failures.last_reason);
     if (g_stage) {
         json_push_kv_int(out, "advanced_count",
                          (int64_t)stage_advanced_count(g_stage));
