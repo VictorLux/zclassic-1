@@ -1,5 +1,9 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0 */
 
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE 1
+#endif
+
 #include "sim/postmortem.h"
 
 #include "platform/clock.h"
@@ -15,6 +19,7 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <sys/types.h>
+#include <ucontext.h>
 #include <unistd.h>
 #include <zlib.h>
 
@@ -549,6 +554,28 @@ static int signal_append_u64(char *dst, size_t cap, size_t *off,
     return 0;
 }
 
+static int signal_append_hex_u64(char *dst, size_t cap, size_t *off,
+                                 uint64_t v)
+{
+    static const char hex[] = "0123456789abcdef";
+    if (signal_append_cstr(dst, cap, off, "0x") != 0) return -1;
+    char tmp[16];
+    size_t n = 0;
+    if (v == 0) {
+        tmp[n++] = '0';
+    } else {
+        while (v && n < sizeof(tmp)) {
+            tmp[n++] = hex[v & 0xfu];
+            v >>= 4;
+        }
+    }
+    if (n >= cap - *off) return -1;
+    for (size_t i = 0; i < n; i++)
+        dst[(*off)++] = tmp[n - 1u - i];
+    dst[*off] = '\0';
+    return 0;
+}
+
 static int signal_append_i64(char *dst, size_t cap, size_t *off,
                              int64_t v)
 {
@@ -772,6 +799,72 @@ static int signal_write_coremarker(const char *path, int64_t crash_unix)
     return signal_write_file(path, marker, off);
 }
 
+static int signal_write_registers(const char *path, int sig,
+                                  const siginfo_t *info,
+                                  const void *ucontext)
+{
+    char regs[1024];
+    size_t off = 0;
+    regs[0] = '\0';
+    if (signal_append_cstr(regs, sizeof(regs), &off, "signal: ") != 0)
+        return -1;
+    if (signal_append_i64(regs, sizeof(regs), &off, sig) != 0)
+        return -1;
+    if (signal_append_cstr(regs, sizeof(regs), &off, "\nsi_code: ") != 0)
+        return -1;
+    if (signal_append_i64(regs, sizeof(regs), &off,
+                          info ? (int64_t)info->si_code : 0) != 0)
+        return -1;
+    if (signal_append_cstr(regs, sizeof(regs), &off, "\nfault_addr: ") != 0)
+        return -1;
+    if (signal_append_hex_u64(regs, sizeof(regs), &off,
+                              info ? (uint64_t)(uintptr_t)info->si_addr
+                                   : 0) != 0)
+        return -1;
+
+#if defined(__linux__) && defined(__x86_64__) && defined(REG_RIP)
+    const ucontext_t *uc = (const ucontext_t *)ucontext;
+    if (uc) {
+        const greg_t *g = uc->uc_mcontext.gregs;
+        const struct {
+            const char *name;
+            int idx;
+        } fields[] = {
+            { "rip", REG_RIP },
+            { "rsp", REG_RSP },
+            { "rbp", REG_RBP },
+            { "rax", REG_RAX },
+            { "rbx", REG_RBX },
+            { "rcx", REG_RCX },
+            { "rdx", REG_RDX },
+            { "rsi", REG_RSI },
+            { "rdi", REG_RDI },
+        };
+        for (size_t i = 0; i < sizeof(fields) / sizeof(fields[0]); i++) {
+            if (signal_append_cstr(regs, sizeof(regs), &off, "\n") != 0 ||
+                signal_append_cstr(regs, sizeof(regs), &off,
+                                   fields[i].name) != 0 ||
+                signal_append_cstr(regs, sizeof(regs), &off, ": ") != 0 ||
+                signal_append_hex_u64(regs, sizeof(regs), &off,
+                                      (uint64_t)g[fields[i].idx]) != 0)
+                return -1;
+        }
+    } else if (signal_append_cstr(regs, sizeof(regs), &off,
+                                  "\nregisters: unavailable\n") != 0) {
+        return -1;
+    }
+#else
+    if (signal_append_cstr(regs, sizeof(regs), &off,
+                           "\nregisters: unavailable\n") != 0)
+        return -1;
+#endif
+    if (off == 0 || regs[off - 1u] != '\n') {
+        if (signal_append_cstr(regs, sizeof(regs), &off, "\n") != 0)
+            return -1;
+    }
+    return signal_write_file(path, regs, off);
+}
+
 int postmortem_capture_write(const struct postmortem_capture_opts *opts,
                              char *capsule_path_out,
                              size_t capsule_path_cap)
@@ -853,6 +946,13 @@ int postmortem_capture_write(const struct postmortem_capture_opts *opts,
     rc = copy_log_tail(opts->log_path, log_path);
     if (rc != 0) return rc;
 
+    char regs_path[576];
+    snprintf(regs_path, sizeof(regs_path), "%s/registers.txt", cap_dir);
+    rc = write_bytes_file(regs_path,
+                          "registers unavailable: non-signal capture\n",
+                          strlen("registers unavailable: non-signal capture\n"));
+    if (rc != 0) return rc;
+
     char marker_path[576];
     snprintf(marker_path, sizeof(marker_path), "%s/coremarker.txt", cap_dir);
     char marker[256];
@@ -875,8 +975,6 @@ int postmortem_capture_write(const struct postmortem_capture_opts *opts,
 static void postmortem_crash_hook(int sig, siginfo_t *info, void *ucontext,
                                   void *ctx)
 {
-    (void)info;
-    (void)ucontext;
     (void)ctx;
     if (g_postmortem_in_handler || !g_postmortem_tape ||
         g_postmortem_dir[0] == '\0' || !g_postmortem_signal_tape_buf ||
@@ -947,6 +1045,8 @@ static void postmortem_crash_hook(int sig, siginfo_t *info, void *ucontext,
             (void)signal_write_empty_file(path);
         }
     }
+    if (signal_join_path(path, sizeof(path), cap_dir, "registers.txt") == 0)
+        (void)signal_write_registers(path, sig, info, ucontext);
     if (signal_join_path(path, sizeof(path), cap_dir, "coremarker.txt") == 0)
         (void)signal_write_coremarker(path, crash_unix);
 
@@ -1122,6 +1222,7 @@ int postmortem_capsule_compress(const char *capsule_path,
     const char *optional[] = {
         "procstatus.txt",
         "log.txt",
+        "registers.txt",
         "coremarker.txt",
     };
     for (size_t i = 0; rc == 0 &&

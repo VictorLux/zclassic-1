@@ -162,6 +162,12 @@ static int test_signal_handler_capsule(void)
                                    "\"clock_advance_count\": 1"));
             PM_CHECK("signal manifest records inject count",
                      file_contains(manifest_path, "\"inject_count\": 1"));
+            char regs_path[576];
+            snprintf(regs_path, sizeof(regs_path), "%s/registers.txt",
+                     entries[0].path);
+            PM_CHECK("signal capsule captures register context",
+                     file_contains(regs_path, "signal: 6") &&
+                     file_contains(regs_path, "fault_addr:"));
             seed_tape_t *loaded = postmortem_capsule_load_tape(entries[0].path);
             PM_CHECK("signal capsule tape loads", loaded != NULL);
             if (loaded) {
@@ -562,6 +568,11 @@ int test_postmortem(void)
              file_contains(manifest_path, "\"build_id\": \"ZClassic-C23-"));
     PM_CHECK("manifest records git sha placeholder",
              file_contains(manifest_path, "\"git_sha\": \"unknown\""));
+
+    char regs_path[576];
+    snprintf(regs_path, sizeof(regs_path), "%s/registers.txt", cap_path);
+    PM_CHECK("non-signal register placeholder written",
+             file_contains(regs_path, "non-signal capture"));
 
     char copied_log_path[576];
     snprintf(copied_log_path, sizeof(copied_log_path), "%s/log.txt",

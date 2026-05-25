@@ -385,6 +385,10 @@ One commit per task. Push after tasks 2, 3, 5.
 - Added a boot-time seed-tape marker event before installing the crash hook so
   production-shaped capsules replay with an operator-visible boot breadcrumb
   even before full platform RNG/clock takeover is enabled.
+- Added `registers.txt` to the capsule layout. Fatal-signal capsules now write
+  signal number, `si_code`, fault address, and x86_64 register values when the
+  platform exposes them; non-signal captures write an explicit placeholder, and
+  boot compression preserves the member.
 
 ## Completion (wt2, 2026-05-25)
 
