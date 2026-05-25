@@ -8,7 +8,7 @@
  *   3. Build JSON-RPC requests
  *   4. header_probe_pull_range() — fetch + validate + insert
  *   5. header_probe_tick_once() — scheduler-independent Job body
- *   6. init + stats snapshot + dump_state_json
+ *   6. init + dump_state_json
  *
  * Threading: the service creates no background work. The supervised
  * header_probe_poll Job owns cadence and calls header_probe_tick_once().
@@ -694,19 +694,6 @@ bool header_probe_init(const struct header_probe_config *cfg,
     return true;
 }
 
-/* ── Stats snapshot ────────────────────────────────────────────── */
-
-void header_probe_stats_snapshot(struct header_probe_stats *out)
-{
-    if (!out) return;
-    out->calls_total        = atomic_load(&g_hp.calls_total);
-    out->headers_added      = atomic_load(&g_hp.headers_added);
-    out->headers_rejected   = atomic_load(&g_hp.headers_rejected);
-    out->rpc_errors         = atomic_load(&g_hp.rpc_errors);
-    out->last_remote_height = atomic_load(&g_hp.last_remote_height);
-    out->last_local_height  = atomic_load(&g_hp.last_local_height);
-}
-
 void header_probe_reset_for_test(void)
 {
     pthread_mutex_lock(&g_hp.lock);
@@ -734,8 +721,7 @@ bool header_probe_dump_state_json(struct json_value *out, const char *key)
 {
     (void)key;
     if (!out) return false;
-    struct header_probe_stats s;
-    header_probe_stats_snapshot(&s);
+    json_set_object(out);
 
     pthread_mutex_lock(&g_hp.lock);
     int batch      = g_hp.batch_size;
@@ -756,11 +742,17 @@ bool header_probe_dump_state_json(struct json_value *out, const char *key)
     json_push_kv_bool(out, "have_password",      have_pass);
     json_push_kv_int (out, "batch_size",         batch);
     json_push_kv_int (out, "lag_threshold",      lag);
-    json_push_kv_int (out, "calls_total",        s.calls_total);
-    json_push_kv_int (out, "headers_added",      s.headers_added);
-    json_push_kv_int (out, "headers_rejected",   s.headers_rejected);
-    json_push_kv_int (out, "rpc_errors",         s.rpc_errors);
-    json_push_kv_int (out, "last_remote_height", s.last_remote_height);
-    json_push_kv_int (out, "last_local_height",  s.last_local_height);
+    json_push_kv_int (out, "calls_total",
+                      atomic_load(&g_hp.calls_total));
+    json_push_kv_int (out, "headers_added",
+                      atomic_load(&g_hp.headers_added));
+    json_push_kv_int (out, "headers_rejected",
+                      atomic_load(&g_hp.headers_rejected));
+    json_push_kv_int (out, "rpc_errors",
+                      atomic_load(&g_hp.rpc_errors));
+    json_push_kv_int (out, "last_remote_height",
+                      atomic_load(&g_hp.last_remote_height));
+    json_push_kv_int (out, "last_local_height",
+                      atomic_load(&g_hp.last_local_height));
     return true;
 }

@@ -31,6 +31,20 @@
     else { printf("FAIL\n"); failures++; }          \
 } while (0)
 
+static int64_t hpp_dump_int(const char *key)
+{
+    struct json_value dump;
+    json_init(&dump);
+    int64_t value = INT64_MIN;
+    if (header_probe_dump_state_json(&dump, NULL)) {
+        const struct json_value *v = json_get(&dump, key);
+        if (v && v->type == JSON_INT)
+            value = json_get_int(v);
+    }
+    json_free(&dump);
+    return value;
+}
+
 static void sleep_ms(int ms)
 {
     struct timespec ts = { ms / 1000, (long)(ms % 1000) * 1000000L };
@@ -80,8 +94,8 @@ int test_header_probe_poll(void)
      * supervisor must NOT crash; rpc_errors must NOT bump because
      * the guard exits before hp_fetch_remote_tip. */
     {
-        struct header_probe_stats before, after;
-        header_probe_stats_snapshot(&before);
+        int64_t before_rpc_errors = hpp_dump_int("rpc_errors");
+        int64_t before_calls_total = hpp_dump_int("calls_total");
 
         /* Drive the supervisor loop fast for the test. */
         supervisor_set_tick_ms_for_testing(5);
@@ -95,11 +109,10 @@ int test_header_probe_poll(void)
             supervisor_stop();
         }
 
-        header_probe_stats_snapshot(&after);
         HPP_CHECK("uninitialized tick does not bump rpc_errors",
-                  after.rpc_errors == before.rpc_errors);
+                  hpp_dump_int("rpc_errors") == before_rpc_errors);
         HPP_CHECK("uninitialized tick does not bump calls_total",
-                  after.calls_total == before.calls_total);
+                  hpp_dump_int("calls_total") == before_calls_total);
     }
 
     /* ── 4. ticks_run advances under supervisor drive ───────────── */

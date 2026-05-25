@@ -399,6 +399,20 @@ static void lms_cache_hashes(const char *local, const char *remote)
     pthread_mutex_unlock(&g_lms.lock);
 }
 
+static int lms_header_probe_last_local_height(void)
+{
+    struct json_value dump;
+    json_init(&dump);
+    int h = -1;
+    if (header_probe_dump_state_json(&dump, NULL)) {
+        const struct json_value *v = json_get(&dump, "last_local_height");
+        if (v && v->type == JSON_INT)
+            h = (int)json_get_int(v);
+    }
+    json_free(&dump);
+    return h;
+}
+
 static void lms_refresh_local_heights(int *out_local, int *out_header)
 {
     int local = -1, hdr = -1;
@@ -411,10 +425,9 @@ static void lms_refresh_local_heights(int *out_local, int *out_header)
         zcl_mutex_unlock(&ms->cs_main);
     }
     {
-        struct header_probe_stats hs;
-        header_probe_stats_snapshot(&hs);
-        if (hs.last_local_height > hdr)
-            hdr = hs.last_local_height;
+        int hp_height = lms_header_probe_last_local_height();
+        if (hp_height > hdr)
+            hdr = hp_height;
     }
     atomic_store(&g_lms.local_height, local);
     atomic_store(&g_lms.best_header_height, hdr);

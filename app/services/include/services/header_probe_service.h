@@ -76,16 +76,6 @@ bool header_probe_pull_range(int start_height, int max_headers,
  * "Adding state introspection". Reentrant-safe. */
 bool header_probe_dump_state_json(struct json_value *out, const char *key);
 
-struct header_probe_stats {
-    int64_t calls_total;
-    int64_t headers_added;
-    int64_t headers_rejected;
-    int64_t rpc_errors;
-    int     last_remote_height;
-    int     last_local_height;
-};
-void header_probe_stats_snapshot(struct header_probe_stats *out);
-
 /* Test hooks — reset state between unit tests. */
 void header_probe_reset_for_test(void);
 
