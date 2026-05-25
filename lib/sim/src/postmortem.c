@@ -107,6 +107,77 @@ static int64_t parse_capsule_time(const char *name)
     return (int64_t)v;
 }
 
+static int entry_newer(const struct postmortem_capsule_entry *a,
+                       const struct postmortem_capsule_entry *b)
+{
+    if (a->crash_unix != b->crash_unix)
+        return a->crash_unix > b->crash_unix;
+    return strcmp(a->name, b->name) > 0;
+}
+
+static int compare_entries_newest_first(const void *va, const void *vb)
+{
+    const struct postmortem_capsule_entry *a =
+        (const struct postmortem_capsule_entry *)va;
+    const struct postmortem_capsule_entry *b =
+        (const struct postmortem_capsule_entry *)vb;
+    if (entry_newer(a, b)) return -1;
+    if (entry_newer(b, a)) return 1;
+    return 0;
+}
+
+static int find_oldest_entry(const struct postmortem_capsule_entry *entries,
+                             size_t count)
+{
+    if (!entries || count == 0) return -1;
+    size_t oldest = 0;
+    for (size_t i = 1; i < count; i++) {
+        if (entry_newer(&entries[oldest], &entries[i]))
+            oldest = i;
+    }
+    return (int)oldest;
+}
+
+static int64_t parse_manifest_i64(const char *manifest, const char *key,
+                                  int64_t fallback)
+{
+    if (!manifest || !key) return fallback;
+    const char *p = strstr(manifest, key);
+    if (!p) return fallback;
+    p = strchr(p, ':');
+    if (!p) return fallback;
+    p++;
+    while (*p == ' ' || *p == '\t') p++;
+    char *end = NULL;
+    long long v = strtoll(p, &end, 10);
+    if (end == p) return fallback;
+    return (int64_t)v;
+}
+
+static void read_manifest_summary(struct postmortem_capsule_entry *entry)
+{
+    if (!entry) return;
+
+    char manifest_path[576];
+    int n = snprintf(manifest_path, sizeof(manifest_path),
+                     "%s/manifest.json", entry->path);
+    if (n < 0 || (size_t)n >= sizeof(manifest_path)) return;
+
+    FILE *fp = fopen(manifest_path, "rb");
+    if (!fp) return;
+    char buf[2048];
+    size_t got = fread(buf, 1, sizeof(buf) - 1, fp);
+    fclose(fp);
+    buf[got] = '\0';
+
+    entry->crash_signal = (int)parse_manifest_i64(buf, "\"crash_signal\"",
+                                                  entry->crash_signal);
+    int64_t tape_size = parse_manifest_i64(buf, "\"tape_size_bytes\"",
+                                           (int64_t)entry->tape_size_bytes);
+    if (tape_size >= 0)
+        entry->tape_size_bytes = (size_t)tape_size;
+}
+
 static void json_escape_string(const char *in, char *out, size_t out_cap)
 {
     if (!out || out_cap == 0) return;
@@ -298,14 +369,35 @@ int postmortem_capsule_list(const char *dir,
     struct dirent *de;
     while ((de = readdir(d)) != NULL) {
         if (!has_suffix(de->d_name, ".cap")) continue;
-        if (*count_out < entry_cap) {
-            struct postmortem_capsule_entry *e = &entries[*count_out];
-            snprintf(e->name, sizeof(e->name), "%s", de->d_name);
-            snprintf(e->path, sizeof(e->path), "%s/%s", dir, de->d_name);
-            e->crash_unix = parse_capsule_time(de->d_name);
+
+        struct postmortem_capsule_entry candidate;
+        memset(&candidate, 0, sizeof(candidate));
+        snprintf(candidate.name, sizeof(candidate.name), "%s", de->d_name);
+        snprintf(candidate.path, sizeof(candidate.path), "%s/%s", dir,
+                 de->d_name);
+        candidate.crash_unix = parse_capsule_time(de->d_name);
+
+        struct stat st;
+        if (stat(candidate.path, &st) != 0 || !S_ISDIR(st.st_mode))
+            continue;
+        read_manifest_summary(&candidate);
+
+        if (entry_cap > 0) {
+            if (*count_out < entry_cap) {
+                entries[*count_out] = candidate;
+            } else {
+                int oldest = find_oldest_entry(entries, entry_cap);
+                if (oldest >= 0 && entry_newer(&candidate, &entries[oldest]))
+                    entries[oldest] = candidate;
+            }
         }
         (*count_out)++;
     }
     closedir(d);
+    if (entry_cap > 1) {
+        size_t filled = *count_out < entry_cap ? *count_out : entry_cap;
+        qsort(entries, filled, sizeof(entries[0]),
+              compare_entries_newest_first);
+    }
     return 0;
 }

@@ -317,5 +317,9 @@ the capsule API plus the non-signal save/list/load path.
   postmortem tape capture/replay through it. The current implementation still
   writes unpacked `.cap` directories, but the tape member now uses the same
   caller-owned buffer path needed by the future signal-safe capsule writer.
+- Tightened capsule listing for the reader/MCP path: `.cap` directory scans now
+  return newest-first entries, keep the newest entries when the caller's buffer
+  is smaller than the inventory, and parse manifest signal/tape-size summary
+  fields.
 
 <!-- Worker: append a Completion section below when done. -->

@@ -97,13 +97,32 @@ int test_postmortem(void)
         seed_tape_close(loaded);
     }
 
-    struct postmortem_capsule_entry entries[4];
+    char cap_path_old[512];
+    opts.crash_unix = 1779665001;
+    opts.crash_signal = 6;
+    opts.reason = "older";
+    rc = postmortem_capture_write(&opts, cap_path_old, sizeof(cap_path_old));
+    PM_CHECK("older capture write returns 0", rc == 0);
+
+    char cap_path_new[512];
+    opts.crash_unix = 1779665999;
+    opts.crash_signal = 8;
+    opts.reason = "newer";
+    rc = postmortem_capture_write(&opts, cap_path_new, sizeof(cap_path_new));
+    PM_CHECK("newer capture write returns 0", rc == 0);
+
+    struct postmortem_capsule_entry entries[2];
     size_t count = 0;
-    rc = postmortem_capsule_list(dir, entries, 4, &count);
+    rc = postmortem_capsule_list(dir, entries, 2, &count);
     PM_CHECK("list returns 0", rc == 0);
-    PM_CHECK("list sees one capsule", count == 1);
-    PM_CHECK("list fills crash unix",
-             count > 0 && entries[0].crash_unix == 1779665123);
+    PM_CHECK("list sees three capsules", count == 3);
+    PM_CHECK("list returns newest first within cap",
+             count >= 3 &&
+             entries[0].crash_unix == 1779665999 &&
+             entries[1].crash_unix == 1779665123);
+    PM_CHECK("list parses manifest summary",
+             entries[0].crash_signal == 8 &&
+             entries[0].tape_size_bytes == seed_tape_size_bytes(tape));
 
     char tape_path[576];
     snprintf(tape_path, sizeof(tape_path), "%s/tape.bin", cap_path);

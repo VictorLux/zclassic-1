@@ -32,6 +32,8 @@ struct postmortem_capsule_entry {
     char name[128];
     char path[512];
     int64_t crash_unix;
+    int crash_signal;
+    size_t tape_size_bytes;
 };
 
 int postmortem_capture_write(const struct postmortem_capture_opts *opts,
