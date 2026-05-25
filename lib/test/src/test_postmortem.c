@@ -161,6 +161,80 @@ static int test_boot_postmortem_install(void)
     return failures;
 }
 
+static int test_boot_postmortem_restart_compresses_prior_sigsegv(void)
+{
+    int failures = 0;
+    char dir_template[128];
+    snprintf(dir_template, sizeof(dir_template),
+             "/tmp/zcl_boot_postmortem_restart_%d_XXXXXX", (int)getpid());
+    char *dir = mkdtemp(dir_template);
+    PM_CHECK("boot restart mkdtemp", dir != NULL);
+    if (!dir) return failures + 1;
+
+    bool ok = boot_postmortem_init_for_testing(dir);
+    const char *pm_dir = boot_postmortem_dir_for_testing();
+    PM_CHECK("boot restart initial init", ok && pm_dir != NULL);
+
+    char pm_dir_copy[512];
+    if (pm_dir) {
+        snprintf(pm_dir_copy, sizeof(pm_dir_copy), "%s", pm_dir);
+    } else {
+        pm_dir_copy[0] = '\0';
+    }
+
+    pid_t pid = fork();
+    if (pid == 0) {
+        if (!ok || !pm_dir)
+            _exit(121);
+        raise(SIGSEGV);
+        _exit(122);
+    }
+
+    if (pid < 0) {
+        PM_CHECK("boot restart fork", false);
+    } else {
+        PM_CHECK("boot restart fork", true);
+        int status = 0;
+        pid_t got = waitpid(pid, &status, 0);
+        PM_CHECK("boot restart wait child", got == pid);
+        PM_CHECK("boot restart child SIGSEGV",
+                 got == pid && WIFSIGNALED(status) &&
+                 WTERMSIG(status) == SIGSEGV);
+    }
+
+    struct postmortem_capsule_entry entries[1];
+    size_t count = 0;
+    int rc = postmortem_capsule_list(pm_dir_copy, entries, 1, &count);
+    PM_CHECK("boot restart prior capsule listed", rc == 0 && count == 1);
+    PM_CHECK("boot restart prior capsule unpacked",
+             rc == 0 && count == 1 &&
+             strstr(entries[0].name, ".cap") != NULL &&
+             strstr(entries[0].name, ".cap.gz") == NULL);
+
+    boot_postmortem_shutdown_for_testing();
+
+    ok = boot_postmortem_init_for_testing(dir);
+    pm_dir = boot_postmortem_dir_for_testing();
+    PM_CHECK("boot restart second init", ok && pm_dir != NULL);
+    rc = postmortem_capsule_list(pm_dir_copy, entries, 1, &count);
+    PM_CHECK("boot restart compressed capsule listed",
+             rc == 0 && count == 1);
+    PM_CHECK("boot restart compressed capsule",
+             rc == 0 && count == 1 &&
+             strstr(entries[0].name, ".cap.gz") != NULL &&
+             entries[0].crash_signal == SIGSEGV);
+    if (rc == 0 && count == 1) {
+        seed_tape_t *loaded = postmortem_capsule_load_tape(entries[0].path);
+        PM_CHECK("boot restart compressed tape loads", loaded != NULL);
+        if (loaded)
+            seed_tape_close(loaded);
+    }
+
+    boot_postmortem_shutdown_for_testing();
+    rm_rf_simple(dir);
+    return failures;
+}
+
 static int test_capsule_prune(void)
 {
     int failures = 0;
@@ -438,6 +512,7 @@ int test_postmortem(void)
     failures += test_capsule_prune();
     failures += test_signal_handler_capsule();
     failures += test_boot_postmortem_install();
+    failures += test_boot_postmortem_restart_compresses_prior_sigsegv();
 
     if (failures == 0)
         printf("=== postmortem tests: ALL PASS ===\n\n");

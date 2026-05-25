@@ -354,5 +354,8 @@ the capsule API plus the non-signal save/list/load path.
   archived as `.cap.gz` before retention pruning, and the reader/list/load
   paths now understand both unpacked and compressed capsules. Remaining work is
   deeper crash-path hardening and live production SEGV verification.
+- Added restart-path coverage for the production shape: a boot-installed child
+  raises `SIGSEGV`, the parent verifies the prior unpacked capsule is visible,
+  and a second boot compresses it to `.cap.gz` while preserving replayability.
 
 <!-- Worker: append a Completion section below when done. -->
