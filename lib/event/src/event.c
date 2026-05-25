@@ -66,6 +66,8 @@ struct async_event {
     uint32_t peer_id;
     uint8_t  payload[EVENT_PAYLOAD_SIZE];
     uint32_t payload_len;
+    int observer_count;
+    struct event_observer_entry observers[EVENT_MAX_OBSERVERS];
 };
 
 #define ASYNC_QUEUE_SIZE 4096
@@ -102,24 +104,36 @@ static void notify_async_observers(const struct async_event *ae)
 {
     enum event_type t = ae->type;
     if ((int)t < 0 || t >= EV_NUM_TYPES) return;
-    for (int i = 0; i < g_async_observers[t].count; i++)
-        g_async_observers[t].observers[i].fn(
-            t, ae->peer_id, ae->payload, ae->payload_len,
-            g_async_observers[t].observers[i].ctx);
+    for (int i = 0; i < ae->observer_count; i++)
+        ae->observers[i].fn(t, ae->peer_id, ae->payload, ae->payload_len,
+                            ae->observers[i].ctx);
 }
 
-/* Enqueue event for async dispatch. Lock-free, O(1). */
+/* Enqueue event for async dispatch. Producers serialize on the wake mutex so
+ * write_pos is published only after the selected ring slot is fully populated.
+ * Publishing before the copy lets the dispatcher race ahead and read stale
+ * slot contents under parallel test load. */
 static void async_enqueue(enum event_type type, uint32_t peer_id,
                           const void *payload, uint32_t payload_len)
 {
     /* Check if any async observers exist for this type */
     if ((int)type < 0 || type >= EV_NUM_TYPES) return;
-    if (g_async_observers[type].count == 0) return;
+    int observer_count = g_async_observers[type].count;
+    if (observer_count == 0) return;
 
-    uint64_t wp = atomic_fetch_add(&g_async.write_pos, 1);
+    if (!atomic_load_explicit(&g_async.running, memory_order_acquire) ||
+        !g_async.wake_initialized)
+        return;
+
+    pthread_mutex_lock(&g_async.wake_mutex);
+    uint64_t wp = atomic_load_explicit(&g_async.write_pos,
+                                       memory_order_relaxed);
     struct async_event *ae = &g_async.ring[wp & ASYNC_QUEUE_MASK];
     ae->type = type;
     ae->peer_id = peer_id;
+    ae->observer_count = observer_count;
+    for (int i = 0; i < observer_count; i++)
+        ae->observers[i] = g_async_observers[type].observers[i];
     ae->payload_len = payload_len < EVENT_PAYLOAD_SIZE
                       ? payload_len : EVENT_PAYLOAD_SIZE;
     if (payload && ae->payload_len > 0)
@@ -127,8 +141,8 @@ static void async_enqueue(enum event_type type, uint32_t peer_id,
     else
         ae->payload_len = 0;
 
-    /* Wake the dispatch thread */
-    pthread_mutex_lock(&g_async.wake_mutex);
+    atomic_store_explicit(&g_async.write_pos, wp + 1u,
+                          memory_order_release);
     pthread_cond_signal(&g_async.wake_cond);
     pthread_mutex_unlock(&g_async.wake_mutex);
 }
@@ -137,8 +151,10 @@ static void *async_dispatch_thread(void *arg)
 {
     (void)arg;
     while (atomic_load(&g_async.running)) {
-        uint64_t rp = atomic_load(&g_async.read_pos);
-        uint64_t wp = atomic_load(&g_async.write_pos);
+        uint64_t rp = atomic_load_explicit(&g_async.read_pos,
+                                           memory_order_acquire);
+        uint64_t wp = atomic_load_explicit(&g_async.write_pos,
+                                           memory_order_acquire);
 
         if (rp >= wp) {
             /* Nothing to process — wait for signal. Timed wait so the
@@ -148,7 +164,10 @@ static void *async_dispatch_thread(void *arg)
              * any path that bypasses event_async_stop). 1 s is well
              * below human-noticeable latency for event delivery. */
             pthread_mutex_lock(&g_async.wake_mutex);
-            if (atomic_load(&g_async.read_pos) >= atomic_load(&g_async.write_pos)) {
+            if (atomic_load_explicit(&g_async.read_pos,
+                                     memory_order_acquire) >=
+                atomic_load_explicit(&g_async.write_pos,
+                                     memory_order_acquire)) {
                 struct timespec deadline;
                 platform_time_realtime_timespec(&deadline);
                 deadline.tv_sec += 1;
@@ -165,18 +184,20 @@ static void *async_dispatch_thread(void *arg)
             notify_async_observers(ae);
             rp++;
         }
-        atomic_store(&g_async.read_pos, rp);
+        atomic_store_explicit(&g_async.read_pos, rp, memory_order_release);
     }
 
     /* Drain remaining events on shutdown */
-    uint64_t rp = atomic_load(&g_async.read_pos);
-    uint64_t wp = atomic_load(&g_async.write_pos);
+    uint64_t rp = atomic_load_explicit(&g_async.read_pos,
+                                       memory_order_acquire);
+    uint64_t wp = atomic_load_explicit(&g_async.write_pos,
+                                       memory_order_acquire);
     while (rp < wp) {
         struct async_event *ae = &g_async.ring[rp & ASYNC_QUEUE_MASK];
         notify_async_observers(ae);
         rp++;
     }
-    atomic_store(&g_async.read_pos, rp);
+    atomic_store_explicit(&g_async.read_pos, rp, memory_order_release);
 
     return NULL;
 }
