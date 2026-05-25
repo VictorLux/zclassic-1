@@ -26,19 +26,21 @@ Progress:
   helpers.
 - `legacy_cold_import.c` and `legacy_direct_import.c` were removed; their public
   compatibility wrappers now dispatch through `legacy_bootstrap_importer` modes.
-- `legacy_oneshot_import.c` was removed; its public compatibility wrapper now
-  dispatches through `LEGACY_BOOTSTRAP_IMPORT_ATTACH`.
+- The old attach-only importer source was removed; attach now dispatches
+  through `LEGACY_BOOTSTRAP_IMPORT_ATTACH`.
 - The old `legacy_cold_import.h`, `legacy_direct_import.h`, and
-  `legacy_oneshot_import.h` compatibility headers were removed; wrapper
-  contracts now live in the canonical `legacy_bootstrap_importer.h`.
+  attach-only compatibility headers were removed; wrapper contracts now live in
+  the canonical `legacy_bootstrap_importer.h`.
 - The old wrapper functions (`legacy_cold_import_blocking`,
-  `legacy_direct_import_range_blocking`, `legacy_oneshot_import_run`) and their
+  `legacy_direct_import_range_blocking`, plus the attach-only runner) and their
   adapter-only result structs were removed; boot now calls
   `legacy_bootstrap_import_blocking` directly with `COLD`, `DIRECT`, or `ATTACH`.
 - The canonical importer header now exposes only the true cross-module contract:
   the mode-driven importer, the height-map loader used by `rebuild_recent`, and
   attach-stage test accessors. Snapshot, block-source, chainstate, cursor-anchor,
   and block-index-copy helpers are private implementation details again.
+- The stale attach API/test names from the deleted attach-only importer were renamed
+  to the canonical `legacy_attach_*` / `legacy_bootstrap_attach` surface.
 
 Verification:
 - `make -j$(nproc) test_zcl`, `make -j$(nproc) zclassic23`, `make lint`, and

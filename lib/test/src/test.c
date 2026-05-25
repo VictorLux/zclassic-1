@@ -800,7 +800,7 @@ int main(void)
     failures += test_proof_validate_stage();
     failures += test_utxo_apply_stage();
     failures += test_tip_finalize_stage();
-    failures += test_legacy_oneshot_import();
+    failures += test_legacy_bootstrap_attach();
     failures += test_process_block_revalidate();
     failures += test_domain_consensus_verify();
     failures += test_application_consensus_validate_block();

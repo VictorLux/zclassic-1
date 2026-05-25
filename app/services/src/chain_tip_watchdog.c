@@ -73,7 +73,7 @@ static int64_t mono_us_now(void)
 /* ── Bounded-restart persistence (progress.kv) ─────────────────────────
  *
  * Storage layer is the sanctioned AR-exempt kernel primitive (same as
- * stage_cursor / legacy_oneshot_import) — progress_meta_set/get are the
+ * stage_cursor / legacy_bootstrap_attach) — progress_meta_set/get are the
  * approved path, no AR_*_SAVE wrapping required. Every failure path logs
  * via LOG_* per DEFENSIVE_CODING.md. progress.kv being closed (e.g. very
  * early boot, or unit tests that don't open it) is tolerated: the

@@ -1844,18 +1844,18 @@ bool app_init(struct app_context *ctx)
         }
     }
 
-    /* -legacy-attach (Wave S, S-4b): one-shot import from a running
+    /* -legacy-attach (Wave S, S-4b): attach import from a running
      * zclassicd via ldb_snapshot. Runs at the same boot point as
      * -cold-import but uses snapshots (no need to stop zclassicd) and
      * atomically stamps progress.kv stage cursors so Wave S stages
      * skip imported heights. No-op when legacy_attach_from is NULL. */
     if (ctx->legacy_attach_from && g_block_tree_open && g_coins_sqlite.db) {
-        printf("\n═══ Legacy Attach (one-shot) from %s ═══\n",
+        printf("\n═══ Legacy Attach from %s ═══\n",
                ctx->legacy_attach_from);
         fflush(stdout);
         struct legacy_bootstrap_import_result lr = {
             .legacy_tip = -1,
-            .outcome = LOI_OUTCOME_FAILED,
+            .outcome = LEGACY_ATTACH_OUTCOME_FAILED,
         };
         const struct legacy_bootstrap_import_options import_opts = {
             .mode = LEGACY_BOOTSTRAP_IMPORT_ATTACH,
@@ -1870,7 +1870,8 @@ bool app_init(struct app_context *ctx)
         printf("Legacy attach: ok=%s outcome=%s legacy_tip=%d "
                "block_index=%lld utxos=%lld blk_files=%lld "
                "stages_stamped=%lld elapsed=%.1fs\n",
-               la_ok ? "yes" : "no", loi_outcome_name(lr.outcome),
+               la_ok ? "yes" : "no",
+               legacy_attach_outcome_name(lr.outcome),
                (int)lr.legacy_tip,
                (long long)lr.block_index_writes,
                (long long)lr.utxos_imported,

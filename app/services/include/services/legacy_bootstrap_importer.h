@@ -44,13 +44,13 @@ struct legacy_bootstrap_import_options {
     int from_height;
 };
 
-enum loi_outcome {
-    LOI_OUTCOME_DID_IMPORT = 0,
-    LOI_OUTCOME_NOOP_SAME_TIP = 1,
-    LOI_OUTCOME_RECOVERED_FROM_CRASH = 2,
-    LOI_OUTCOME_REFUSED_HAS_STATE = 3,
-    LOI_OUTCOME_LEGACY_NOT_FOUND = 4,
-    LOI_OUTCOME_FAILED = 5,
+enum legacy_attach_outcome {
+    LEGACY_ATTACH_OUTCOME_DID_IMPORT = 0,
+    LEGACY_ATTACH_OUTCOME_NOOP_SAME_TIP = 1,
+    LEGACY_ATTACH_OUTCOME_RECOVERED_FROM_CRASH = 2,
+    LEGACY_ATTACH_OUTCOME_REFUSED_HAS_STATE = 3,
+    LEGACY_ATTACH_OUTCOME_LEGACY_NOT_FOUND = 4,
+    LEGACY_ATTACH_OUTCOME_FAILED = 5,
 };
 
 struct legacy_bootstrap_import_result {
@@ -62,7 +62,7 @@ struct legacy_bootstrap_import_result {
     int skipped_have_data;
     int skipped_failed;
     int final_tip;
-    enum loi_outcome outcome;
+    enum legacy_attach_outcome outcome;
     int64_t stages_stamped;
     double total_secs;
     bool evidence_armed;
@@ -93,9 +93,9 @@ bool legacy_bootstrap_import_blocking(
     const struct legacy_bootstrap_import_options *opts,
     struct legacy_bootstrap_import_result *out);
 
-const char *loi_outcome_name(enum loi_outcome o);
+const char *legacy_attach_outcome_name(enum legacy_attach_outcome o);
 
-size_t loi_stages_to_stamp_count(void);
-const char *loi_stages_to_stamp_at(size_t i);
+size_t legacy_attach_stages_to_stamp_count(void);
+const char *legacy_attach_stages_to_stamp_at(size_t i);
 
 #endif /* ZCL_SERVICES_LEGACY_BOOTSTRAP_IMPORTER_H */

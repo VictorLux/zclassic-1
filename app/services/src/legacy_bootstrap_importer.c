@@ -1312,15 +1312,15 @@ static bool legacy_bootstrap_import_direct(
     return ok;
 }
 
-const char *loi_outcome_name(enum loi_outcome o)
+const char *legacy_attach_outcome_name(enum legacy_attach_outcome o)
 {
     switch (o) {
-        case LOI_OUTCOME_DID_IMPORT:           return "did_import";
-        case LOI_OUTCOME_NOOP_SAME_TIP:        return "noop_same_tip";
-        case LOI_OUTCOME_RECOVERED_FROM_CRASH: return "recovered_from_crash";
-        case LOI_OUTCOME_REFUSED_HAS_STATE:    return "refused_has_state";
-        case LOI_OUTCOME_LEGACY_NOT_FOUND:     return "legacy_not_found";
-        case LOI_OUTCOME_FAILED:               return "failed";
+        case LEGACY_ATTACH_OUTCOME_DID_IMPORT:           return "did_import";
+        case LEGACY_ATTACH_OUTCOME_NOOP_SAME_TIP:        return "noop_same_tip";
+        case LEGACY_ATTACH_OUTCOME_RECOVERED_FROM_CRASH: return "recovered_from_crash";
+        case LEGACY_ATTACH_OUTCOME_REFUSED_HAS_STATE:    return "refused_has_state";
+        case LEGACY_ATTACH_OUTCOME_LEGACY_NOT_FOUND:     return "legacy_not_found";
+        case LEGACY_ATTACH_OUTCOME_FAILED:               return "failed";
     }
     return "?";
 }
@@ -1383,29 +1383,29 @@ static bool legacy_bootstrap_attach_meta_get_tip(sqlite3 *db,
     return true;
 }
 
-static const char *const LOI_STAGES_TO_STAMP[] = {
+static const char *const LEGACY_ATTACH_STAGES_TO_STAMP[] = {
     "header_admit",
     "validate_headers",
     "body_fetch",
     NULL,
 };
 
-static size_t loi_stages_count_cached(void)
+static size_t legacy_attach_stages_count_cached(void)
 {
     size_t n = 0;
-    while (LOI_STAGES_TO_STAMP[n]) n++;
+    while (LEGACY_ATTACH_STAGES_TO_STAMP[n]) n++;
     return n;
 }
 
-size_t loi_stages_to_stamp_count(void)
+size_t legacy_attach_stages_to_stamp_count(void)
 {
-    return loi_stages_count_cached();
+    return legacy_attach_stages_count_cached();
 }
 
-const char *loi_stages_to_stamp_at(size_t i)
+const char *legacy_attach_stages_to_stamp_at(size_t i)
 {
-    if (i >= loi_stages_count_cached()) return NULL;
-    return LOI_STAGES_TO_STAMP[i];
+    if (i >= legacy_attach_stages_count_cached()) return NULL;
+    return LEGACY_ATTACH_STAGES_TO_STAMP[i];
 }
 
 static bool legacy_bootstrap_attach_stamp_stage_cursor_in_tx(
@@ -1436,7 +1436,7 @@ static bool legacy_bootstrap_attach_stamp_stage_cursor_in_tx(
     }
 
     if (have_row && existing >= new_cursor) {
-        fprintf(stderr,  // obs-ok:legacy-oneshot-no-rewind
+        fprintf(stderr,  // obs-ok:legacy-attach-no-rewind
                 "[legacy_attach] stage '%s': cursor already at %" PRIu64
                 " (>= proposed %" PRIu64 "); leaving as-is\n",
                 name, existing, new_cursor);
@@ -1459,7 +1459,7 @@ static bool legacy_bootstrap_attach_stamp_stage_cursor_in_tx(
     return rc == SQLITE_DONE;
 }
 
-bool loi_stamp_one_for_test(sqlite3 *db, const char *name,
+bool legacy_attach_stamp_one_for_test(sqlite3 *db, const char *name,
                             uint64_t cursor, bool *out_was_write)
 {
     if (!db) return false;
@@ -1483,7 +1483,7 @@ static bool legacy_bootstrap_attach_finalize_atomic(
     if (out_stages_stamped) *out_stages_stamped = 0;
     char *err = NULL;
     if (sqlite3_exec(db, "BEGIN IMMEDIATE", NULL, NULL, &err) != SQLITE_OK) {
-        fprintf(stderr,  // obs-ok:legacy-oneshot-finalize-failure
+        fprintf(stderr,  // obs-ok:legacy-attach-finalize-failure
                 "[legacy_attach] finalize BEGIN failed: %s\n",
                 err ? err : "(no message)");
         if (err) sqlite3_free(err);
@@ -1493,13 +1493,13 @@ static bool legacy_bootstrap_attach_finalize_atomic(
     bool ok = true;
     int64_t stamped = 0;
     uint64_t cursor_value = (uint64_t)(legacy_tip + 1);
-    for (size_t i = 0; ok && LOI_STAGES_TO_STAMP[i]; i++) {
+    for (size_t i = 0; ok && LEGACY_ATTACH_STAGES_TO_STAMP[i]; i++) {
         bool was_write = false;
         if (!legacy_bootstrap_attach_stamp_stage_cursor_in_tx(
-                db, LOI_STAGES_TO_STAMP[i], cursor_value, &was_write)) {
-            fprintf(stderr,  // obs-ok:legacy-oneshot-finalize-failure
+                db, LEGACY_ATTACH_STAGES_TO_STAMP[i], cursor_value, &was_write)) {
+            fprintf(stderr,  // obs-ok:legacy-attach-finalize-failure
                     "[legacy_attach] stamp stage '%s' failed\n",
-                    LOI_STAGES_TO_STAMP[i]);
+                    LEGACY_ATTACH_STAGES_TO_STAMP[i]);
             ok = false;
         } else if (was_write) {
             stamped++;
@@ -1527,7 +1527,7 @@ static bool legacy_bootstrap_attach_finalize_atomic(
 
     const char *fini = ok ? "COMMIT" : "ROLLBACK";
     if (sqlite3_exec(db, fini, NULL, NULL, &err) != SQLITE_OK) {
-        fprintf(stderr,  // obs-ok:legacy-oneshot-finalize-failure
+        fprintf(stderr,  // obs-ok:legacy-attach-finalize-failure
                 "[legacy_attach] finalize %s failed: %s\n",
                 fini, err ? err : "(no message)");
         if (err) sqlite3_free(err);
@@ -1567,7 +1567,7 @@ static bool legacy_bootstrap_attach_wipe_block_index(
     bool ok = db_write_batch(db, &batch, false);
     db_batch_free(&batch);
     db_iter_free(&it);
-    fprintf(stderr,  // obs-ok:legacy-oneshot-wipe
+    fprintf(stderr,  // obs-ok:legacy-attach-wipe
             "[legacy_attach] wiped %" PRId64 " block_index entries "
             "from prior aborted import\n", deleted);
     return ok;
@@ -1579,27 +1579,27 @@ static bool legacy_bootstrap_import_attach(
 {
     struct legacy_bootstrap_import_result r = {
         .legacy_tip = -1,
-        .outcome = LOI_OUTCOME_FAILED,
+        .outcome = LEGACY_ATTACH_OUTCOME_FAILED,
     };
     if (out) *out = r;
 
     if (!opts || !opts->our_datadir || !opts->legacy_datadir || !opts->ms ||
         !opts->cvs || !opts->ndb || !opts->ndb->open || !opts->btdb) {
-        LOG_FAIL("legacy_oneshot_import", "bad args");
+        LOG_FAIL("legacy_bootstrap_attach", "bad args");
     }
 
     sqlite3 *pdb = progress_store_db();
     if (!pdb) {
-        fprintf(stderr,  // obs-ok:legacy-oneshot-preflight
+        fprintf(stderr,  // obs-ok:legacy-attach-preflight
             "[legacy_attach] progress.kv not open — boot order regression?\n");
         return false;
     }
 
     if (!legacy_bootstrap_attach_detect_datadir(opts->legacy_datadir)) {
-        fprintf(stderr,  // obs-ok:legacy-oneshot-soft-skip
+        fprintf(stderr,  // obs-ok:legacy-attach-soft-skip
             "[legacy_attach] %s does not look like a zclassic datadir; "
             "skipping.\n", opts->legacy_datadir);
-        r.outcome = LOI_OUTCOME_LEGACY_NOT_FOUND;
+        r.outcome = LEGACY_ATTACH_OUTCOME_LEGACY_NOT_FOUND;
         if (out) *out = r;
         return true;
     }
@@ -1608,12 +1608,12 @@ static bool legacy_bootstrap_import_attach(
     bool sentinel_present = legacy_bootstrap_attach_meta_has_sentinel(pdb);
     if (our_tip > LEGACY_BOOTSTRAP_ATTACH_REFUSE_ABOVE_TIP &&
         !sentinel_present) {
-        fprintf(stderr,  // obs-ok:legacy-oneshot-refused
+        fprintf(stderr,  // obs-ok:legacy-attach-refused
             "[legacy_attach] REFUSING: our active_tip=%d > %d. "
             "Legacy-attach is for empty datadirs; use other modes for "
             "warm catch-up.\n", our_tip,
             LEGACY_BOOTSTRAP_ATTACH_REFUSE_ABOVE_TIP);
-        r.outcome = LOI_OUTCOME_REFUSED_HAS_STATE;
+        r.outcome = LEGACY_ATTACH_OUTCOME_REFUSED_HAS_STATE;
         if (out) *out = r;
         return true;
     }
@@ -1643,11 +1643,11 @@ static bool legacy_bootstrap_import_attach(
                             memcmp(cur_best.data, last_hash.data, 32) == 0) {
                             chainstate_legacy_close(cs);
                             ldb_snapshot_destroy(cs_path);
-                            r.outcome = LOI_OUTCOME_NOOP_SAME_TIP;
+                            r.outcome = LEGACY_ATTACH_OUTCOME_NOOP_SAME_TIP;
                             r.legacy_tip = last_h;
                             r.ok = true;
                             if (out) *out = r;
-                            fprintf(stderr,  // obs-ok:legacy-oneshot-noop
+                            fprintf(stderr,  // obs-ok:legacy-attach-noop
                                 "[legacy_attach] NOOP: already attached "
                                 "to legacy tip h=%d\n", last_h);
                             return true;
@@ -1660,7 +1660,7 @@ static bool legacy_bootstrap_import_attach(
         }
     } else {
         if (our_tip > 100) {
-            fprintf(stderr,  // obs-ok:legacy-oneshot-wipe-refused
+            fprintf(stderr,  // obs-ok:legacy-attach-wipe-refused
                 "[legacy_attach] REFUSING wipe: sentinel found AND "
                 "active_chain_height=%d > 100. This combination is "
                 "anomalous (sentinel should clear atomically with import "
@@ -1670,7 +1670,7 @@ static bool legacy_bootstrap_import_attach(
                 "stale.\n", our_tip);
             return false;
         }
-        fprintf(stderr,  // obs-ok:legacy-oneshot-recovery
+        fprintf(stderr,  // obs-ok:legacy-attach-recovery
                 "[legacy_attach] sentinel found from a prior aborted "
                 "import — recovering: wipe + re-import (active_tip=%d)\n",
                 our_tip);
@@ -1679,7 +1679,7 @@ static bool legacy_bootstrap_import_attach(
                 "[legacy_attach] wipe of stale block_index failed\n");
             return false;
         }
-        r.outcome = LOI_OUTCOME_RECOVERED_FROM_CRASH;
+        r.outcome = LEGACY_ATTACH_OUTCOME_RECOVERED_FROM_CRASH;
     }
 
     int64_t t_start = legacy_bootstrap_now_ms();
@@ -1739,7 +1739,7 @@ static bool legacy_bootstrap_import_attach(
     r.block_index_writes = imported.block_index_writes;
     r.utxos_imported = imported.utxos_imported;
     r.legacy_tip = imported.legacy_tip_height;
-    fprintf(stderr,  // obs-ok:legacy-oneshot-progress
+    fprintf(stderr,  // obs-ok:legacy-attach-progress
             "[legacy_attach] snapshot state import took %" PRId64 " ms "
             "(best h=%d records=%" PRId64 ")\n",
             legacy_bootstrap_now_ms() - t_import,
@@ -1761,16 +1761,16 @@ static bool legacy_bootstrap_import_attach(
     rmdir(stage_dir);
 
     r.total_secs = (double)(legacy_bootstrap_now_ms() - t_start) / 1000.0;
-    if (r.outcome == LOI_OUTCOME_FAILED)
-        r.outcome = LOI_OUTCOME_DID_IMPORT;
+    if (r.outcome == LEGACY_ATTACH_OUTCOME_FAILED)
+        r.outcome = LEGACY_ATTACH_OUTCOME_DID_IMPORT;
     r.ok = true;
     if (out) *out = r;
 
-    fprintf(stderr,  // obs-ok:legacy-oneshot-done
+    fprintf(stderr,  // obs-ok:legacy-attach-done
         "[legacy_attach] DONE outcome=%s in %.1fs: legacy_tip=%d "
         "block_index=%" PRId64 " utxos=%" PRId64 " blk_files=%" PRId64
         " stages_stamped=%" PRId64 "\n",
-        loi_outcome_name((enum loi_outcome)r.outcome), r.total_secs,
+        legacy_attach_outcome_name((enum legacy_attach_outcome)r.outcome), r.total_secs,
         r.legacy_tip, r.block_index_writes, r.utxos_imported,
         r.blk_files_linked, r.stages_stamped);
 
