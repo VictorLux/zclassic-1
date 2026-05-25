@@ -452,6 +452,55 @@ int test_utxo_activation_paused(void)
         clock_reset_default();
     }
 
+    {
+        reset_conditions();
+        struct fake_clock clock;
+        fake_clock_install(&clock, 8000);
+        bool ok = true;
+        struct main_state ms;
+        struct block_index tip;
+        struct block_index best_header;
+        struct node_db ndb;
+        struct snapshot_sync_service svc;
+        uint8_t block_hash[32];
+        uint8_t chain_work[32];
+
+        memset(&tip, 0, sizeof(tip));
+        memset(&best_header, 0, sizeof(best_header));
+        memset(block_hash, 0x53, sizeof(block_hash));
+        memset(chain_work, 0x57, sizeof(chain_work));
+        main_state_init(&ms);
+        tip.nHeight = 100;
+        tip.nStatus = BLOCK_VALID_SCRIPTS | BLOCK_HAVE_DATA;
+        best_header.nHeight = 110;
+        ms.pindex_best_header = &best_header;
+        ok = ok && active_chain_set_tip(&ms.chain_active, &tip);
+
+        ok = ok && node_db_open(&ndb, ":memory:");
+        ok = ok && seed_snapshot_manifest_db(&ndb, block_hash, chain_work);
+        snapsync_init(&svc, &ndb);
+        svc.state = SNAPSYNC_NEGOTIATING;
+
+        condition_engine_set_main_state(&ms);
+        sync_monitor_init();
+        sync_monitor_set_context(NULL, NULL, &ms);
+        tip_wedged_resnapshot_test_set_runtime(&ndb, &svc);
+        block_failed_mask_at_tip_test_mark_exhausted(101);
+        register_tip_wedged_resnapshot();
+
+        condition_engine_tick();
+        ok = ok && tip_wedged_resnapshot_test_remedy_calls() == 0;
+        ok = ok && tip_wedged_resnapshot_test_recovery_accepted() == 0;
+        ok = ok && svc.state == SNAPSYNC_NEGOTIATING;
+        ok = ok && condition_engine_get_active_count() == 0;
+
+        UAP_CHECK("tip_wedged_resnapshot waits for idle snapshot sync", ok);
+        snapsync_reset(&svc);
+        node_db_close(&ndb);
+        main_state_free(&ms);
+        clock_reset_default();
+    }
+
     reset_conditions();
     clock_reset_default();
     return failures;
