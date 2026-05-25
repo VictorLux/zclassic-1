@@ -80,7 +80,8 @@ assertions over broad smoke checks.
 
 `partition_network for=DURATION`
 : Arms the network partition hook until the virtual wall clock passes the
-  duration.
+  duration. Peer block traffic during the window is counted as
+  `partition_drops` and is not delivered to the simulated node.
 
 `expect no_crash`
 : Asserts that the scenario did not mark itself crashed.
@@ -88,9 +89,10 @@ assertions over broad smoke checks.
 `expect METRIC OP VALUE`
 : Compares a metric with `==`, `!=`, `>=`, `<=`, `>`, or `<`. Current metrics:
   `tip_height`, `reorg_count`, `consensus_rejects`, `mempool_prune_runs`,
-  `active_peers`, `killed_peers`, `blocks_sent`, `malformed_blocks`,
-  `block_bytes`, `clock_advance_count`, `clock_advance_seconds`,
-  `scheduled_events`, `alloc_faults`, `graceful_shutdowns`, and `sim_time`.
+  `mempool_prunes`, `active_peers`, `killed_peers`, `blocks_sent`,
+  `malformed_blocks`, `block_bytes`, `clock_advance_count`,
+  `clock_advance_seconds`, `scheduled_events`, `alloc_faults`,
+  `graceful_shutdowns`, `partition_drops`, and `sim_time`.
 
 ## Adding Fault Injection
 

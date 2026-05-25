@@ -330,5 +330,8 @@ One commit per task. Push after tasks 2, 4, 7.
 - Added failure artifacts for standalone chaos runs: failed scenarios now emit
   a summary plus a copied scenario under `chaos-output/` or an explicit
   `--artifact-dir=PATH`.
+- Made active `partition_network` windows suppress simulated peer block traffic
+  and added `network_partition.scenario` to assert dropped messages do not
+  advance tip height or consensus rejection counters.
 
 <!-- Worker: append a Completion section below when done. -->

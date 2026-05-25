@@ -302,6 +302,36 @@ int test_chaos_harness(void)
                 ctx.net_partition_seconds == 5 &&
                 net_partition_armed_until_unix() == ctx.net_partition_until);
 
+    rc = run_temp_scenario(
+        "seed 1\n"
+        "peer_count 1\n"
+        "partition_network for=5s\n"
+        "send_block peer=0 file=tests/fixtures/blocks/synthetic_good_block.fixture\n"
+        "send_malformed_block peer=0 type=invalid_pow\n"
+        "expect partition_drops == 2\n"
+        "expect blocks_sent == 0\n"
+        "expect consensus_rejects == 0\n"
+        "expect tip_height == 0\n",
+        &ctx);
+    CHAOS_CHECK("partition drops peer messages", rc == 0);
+    CHAOS_CHECK("partition drop counters record suppressed traffic",
+                ctx.net_partition_drops == 2 &&
+                ctx.peers.blocks_sent == 0 &&
+                ctx.consensus_rejects == 0 &&
+                ctx.tip_height == 0);
+
+    rc = run_temp_scenario(
+        "seed 1\n"
+        "peer_count 1\n"
+        "partition_network for=5s\n"
+        "advance_clock +5s\n"
+        "send_block peer=0 file=tests/fixtures/blocks/synthetic_good_block.fixture\n"
+        "expect partition_drops == 0\n"
+        "expect blocks_sent == 1\n"
+        "expect tip_height == 1\n",
+        &ctx);
+    CHAOS_CHECK("partition expiry allows peer messages", rc == 0);
+
     net_partition_until_unix(42);
     CHAOS_CHECK("net partition active before deadline",
                 net_partition_active_at(41) &&

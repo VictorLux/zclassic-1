@@ -56,6 +56,7 @@ struct chaos_ctx {
     int64_t net_partition_seconds;
     int64_t net_partition_until;
     bool net_partition_triggered;
+    int64_t net_partition_drops;
 };
 
 typedef int (*chaos_handler_fn)(struct chaos_ctx *ctx, int argc, char **argv,
@@ -399,6 +400,10 @@ static bool metric_value(const struct chaos_ctx *ctx, const char *name,
         *out = (int64_t)ctx->alloc_fault_count;
         return true;
     }
+    if (strcmp(name, "partition_drops") == 0) {
+        *out = ctx->net_partition_drops;
+        return true;
+    }
     if (strcmp(name, "sim_time") == 0) {
         *out = ctx->sim_wall_unix;
         return true;
@@ -505,6 +510,16 @@ static int handle_send_block(struct chaos_ctx *ctx, int argc, char **argv,
     if (height_arg && (!parse_i64(height_arg, &height) || height <= 0))
         return fail_line(line_no, "send_block height must be a positive integer");
 
+    const struct sim_peer *peer = sim_peer_get(&ctx->peers, (unsigned)peer_id);
+    if (!peer)
+        return fail_line(line_no, "send_block peer is not configured");
+    if (!peer->connected)
+        return fail_line(line_no, "send_block peer is disconnected");
+    if (net_partition_active_at(platform_time_wall_unix())) {
+        ctx->net_partition_drops++;
+        return 0;
+    }
+
     size_t bytes_read = 0;
     int rc = sim_peer_send_block(&ctx->peers, (unsigned)peer_id, path,
                                  &bytes_read);
@@ -545,6 +560,16 @@ static int handle_send_malformed_block(struct chaos_ctx *ctx, int argc,
     }
     if (!type || !sim_peer_malformed_type_known(type))
         return fail_line(line_no, "send_malformed_block unknown type");
+
+    const struct sim_peer *peer = sim_peer_get(&ctx->peers, (unsigned)peer_id);
+    if (!peer)
+        return fail_line(line_no, "send_malformed_block peer is not configured");
+    if (!peer->connected)
+        return fail_line(line_no, "send_malformed_block peer is disconnected");
+    if (net_partition_active_at(platform_time_wall_unix())) {
+        ctx->net_partition_drops++;
+        return 0;
+    }
 
     int rc = sim_peer_send_malformed_block(&ctx->peers, (unsigned)peer_id,
                                            type);
@@ -664,6 +689,7 @@ static const struct chaos_command *find_command(const char *name)
 
 static int run_scenario(struct chaos_ctx *ctx)
 {
+    net_partition_clear();
     platform_clock_set_source(&ctx->clock_src);
     FILE *fp = fopen(ctx->scenario_path, "rb");
     if (!fp) {
