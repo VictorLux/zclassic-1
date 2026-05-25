@@ -695,6 +695,8 @@ static bool process_block_tip_is_best_work(const struct main_state *ms,
     while (block_map_next(&ms->map_block_index, &iter, NULL, &candidate)) {
         if (!candidate || block_has_any_failure(candidate))
             continue;
+        if (!(candidate->nStatus & BLOCK_HAVE_DATA))
+            continue;
         if (arith_uint256_compare(&candidate->nChainWork,
                                   &tip->nChainWork) <= 0)
             continue;
