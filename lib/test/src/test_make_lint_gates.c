@@ -1037,17 +1037,25 @@ static int t_cold_import_spotcheck_diagnostics_contract(void)
         ASSERT(read_entire_file(path, &buf) == 0);
         char *spotcheck = strstr(buf,
             "legacy_bootstrap_spotcheck_sha3_windows(");
-        char *debug_check = strstr(buf, "debug spotcheck window");
+        char *debug_check = strstr(buf, "if (debug_env && debug_env[0])");
+        char *debug_parse = strstr(buf, "strtoull(debug_window");
+        char *debug_verify = debug_check
+            ? strstr(debug_check, "legacy_bootstrap_verify_window_logged(")
+            : NULL;
         char *random_check = strstr(buf, "SHA3 spotcheck: K=%d");
         char *range = strstr(buf, "(h=%d..%d)");
         char *expected = strstr(buf, "expected=%s actual=%s");
         ASSERT(spotcheck != NULL);
         ASSERT(debug_check != NULL);
+        ASSERT(debug_parse != NULL);
+        ASSERT(debug_verify != NULL);
         ASSERT(random_check != NULL);
         ASSERT(range != NULL);
         ASSERT(expected != NULL);
         ASSERT(spotcheck < debug_check);
-        ASSERT(debug_check < random_check);
+        ASSERT(debug_check < debug_parse);
+        ASSERT(debug_parse < debug_verify);
+        ASSERT(debug_verify < random_check);
         ASSERT(range < expected);
         free(buf);
         buf = NULL;
