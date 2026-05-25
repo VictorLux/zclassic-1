@@ -3,6 +3,7 @@
 #include "sim/postmortem.h"
 
 #include "platform/clock.h"
+#include "util/signal_handler.h"
 #include "util/safe_alloc.h"
 
 #include <dirent.h>
@@ -16,6 +17,10 @@
 #include <unistd.h>
 
 #define POSTMORTEM_LOG_TAIL_MAX (64u * 1024u)
+
+static seed_tape_t *g_postmortem_tape = NULL;
+static char g_postmortem_dir[512];
+static volatile sig_atomic_t g_postmortem_in_handler = 0;
 
 static int mkdir_if_needed(const char *path)
 {
@@ -96,6 +101,20 @@ static bool has_suffix(const char *s, const char *suffix)
     size_t sl = strlen(s);
     size_t xl = strlen(suffix);
     return sl >= xl && strcmp(s + sl - xl, suffix) == 0;
+}
+
+static bool fatal_signal_handlers_are_default(void)
+{
+    const int sigs[] = { SIGABRT, SIGSEGV, SIGBUS, SIGFPE };
+    for (size_t i = 0; i < sizeof(sigs) / sizeof(sigs[0]); i++) {
+        struct sigaction old_sa;
+        memset(&old_sa, 0, sizeof(old_sa));
+        if (sigaction(sigs[i], NULL, &old_sa) != 0)
+            return false;
+        if (old_sa.sa_handler != SIG_DFL)
+            return false;
+    }
+    return true;
 }
 
 static int64_t parse_capsule_time(const char *name)
@@ -314,8 +333,59 @@ int postmortem_capture_write(const struct postmortem_capture_opts *opts,
         int pn = snprintf(capsule_path_out, capsule_path_cap, "%s", cap_dir);
         if (pn < 0 || (size_t)pn >= capsule_path_cap) return -ENAMETOOLONG;
     }
-    fprintf(stderr, "[postmortem] capsule written: %s\n", cap_dir);
+    fprintf(stderr,  // obs-ok:postmortem-capsule-path-diagnostic
+            "[postmortem] capsule written: %s\n", cap_dir);
     return 0;
+}
+
+static void postmortem_crash_hook(int sig, siginfo_t *info, void *ucontext,
+                                  void *ctx)
+{
+    (void)info;
+    (void)ucontext;
+    (void)ctx;
+    if (g_postmortem_in_handler || !g_postmortem_tape ||
+        g_postmortem_dir[0] == '\0') {
+        return;
+    }
+    g_postmortem_in_handler = 1;
+    struct postmortem_capture_opts opts = {
+        .dir = g_postmortem_dir,
+        .tape = g_postmortem_tape,
+        .crash_signal = sig,
+        .crash_unix = 0,
+        .reason = "fatal-signal",
+        .log_path = NULL,
+    };
+    char path[512];
+    (void)postmortem_capture_write(&opts, path, sizeof(path));
+    g_postmortem_in_handler = 0;
+}
+
+int postmortem_install(seed_tape_t *tape, const char *dir)
+{
+    if (!tape || !dir || !*dir) return -EINVAL;
+    if (strlen(dir) >= sizeof(g_postmortem_dir)) return -ENAMETOOLONG;
+    int rc = mkdir_if_needed(dir);
+    if (rc != 0) return rc;
+
+    snprintf(g_postmortem_dir, sizeof(g_postmortem_dir), "%s", dir);
+    g_postmortem_tape = tape;
+    g_postmortem_in_handler = 0;
+    signal_handler_set_crash_hook(postmortem_crash_hook, NULL);
+    if (fatal_signal_handlers_are_default() && signal_handler_install() != 0) {
+        postmortem_uninstall();
+        return -errno;
+    }
+    return 0;
+}
+
+void postmortem_uninstall(void)
+{
+    signal_handler_clear_crash_hook();
+    g_postmortem_tape = NULL;
+    g_postmortem_dir[0] = '\0';
+    g_postmortem_in_handler = 0;
 }
 
 seed_tape_t *postmortem_capsule_load_tape(const char *capsule_path)

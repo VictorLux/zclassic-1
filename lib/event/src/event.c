@@ -2,6 +2,7 @@
 
 #include "platform/time_compat.h"
 #include "event/event.h"
+#include "util/signal_handler.h"
 #include "util/thread_registry.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -681,6 +682,7 @@ static void crash_write(const char *s, size_t n)
 static void crash_signal_handler(int sig)
 {
     char buf[128];
+    signal_handler_run_crash_hook(sig, NULL, NULL);
 
     /* snprintf is technically not POSIX async-signal-safe but glibc's
      * implementation of the bounded numeric variant is lock-free, and

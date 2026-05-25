@@ -13,6 +13,33 @@
 #include <sys/syscall.h>
 #include <sys/types.h>
 
+static signal_handler_crash_hook_fn g_crash_hook = NULL;
+static void *g_crash_hook_ctx = NULL;
+static volatile sig_atomic_t g_crash_hook_running = 0;
+
+void signal_handler_set_crash_hook(signal_handler_crash_hook_fn fn,
+                                   void *ctx)
+{
+    g_crash_hook_ctx = ctx;
+    g_crash_hook = fn;
+}
+
+void signal_handler_clear_crash_hook(void)
+{
+    g_crash_hook = NULL;
+    g_crash_hook_ctx = NULL;
+    g_crash_hook_running = 0;
+}
+
+void signal_handler_run_crash_hook(int sig, siginfo_t *info, void *ucontext)
+{
+    signal_handler_crash_hook_fn fn = g_crash_hook;
+    if (!fn || g_crash_hook_running) return;
+    g_crash_hook_running = 1;
+    fn(sig, info, ucontext, g_crash_hook_ctx);
+    g_crash_hook_running = 0;
+}
+
 /* Async-signal-safe unsigned-decimal writer. Returns bytes written. */
 static int write_uint(int fd, unsigned long v)
 {
@@ -49,8 +76,8 @@ static int write_s(int fd, const char *s)
 /* The handler itself. SA_SIGINFO style. */
 static void fatal_handler(int sig, siginfo_t *info, void *ucontext)
 {
-    (void)ucontext;
     const int fd = STDERR_FILENO;
+    signal_handler_run_crash_hook(sig, info, ucontext);
 
     /* Build & emit: [fatal-signal] sig=N code=M addr=0x... pid=P tid=T */
     write_s(fd, "[fatal-signal] sig=");

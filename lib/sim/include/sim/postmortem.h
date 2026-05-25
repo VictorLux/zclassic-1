@@ -48,6 +48,9 @@ int postmortem_capture_write(const struct postmortem_capture_opts *opts,
                              char *capsule_path_out,
                              size_t capsule_path_cap);
 
+int postmortem_install(seed_tape_t *tape, const char *dir);
+void postmortem_uninstall(void);
+
 int postmortem_list(const char *dir,
                     struct postmortem_summary *out,
                     size_t out_cap,

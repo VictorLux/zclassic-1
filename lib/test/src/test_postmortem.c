@@ -8,7 +8,9 @@
 #include <fcntl.h>
 #include <stdio.h>
 #include <string.h>
+#include <signal.h>
 #include <sys/stat.h>
+#include <sys/wait.h>
 #include <unistd.h>
 
 #define PM_CHECK(name, expr) do { \
@@ -46,6 +48,64 @@ static bool file_contains(const char *path, const char *needle)
     fclose(fp);
     buf[n] = '\0';
     return strstr(buf, needle) != NULL;
+}
+
+static int test_signal_handler_capsule(void)
+{
+    int failures = 0;
+    char dir_template[128];
+    snprintf(dir_template, sizeof(dir_template),
+             "/tmp/zcl_postmortem_signal_%d_XXXXXX", (int)getpid());
+    char *dir = mkdtemp(dir_template);
+    PM_CHECK("signal mkdtemp", dir != NULL);
+    if (!dir) return failures + 1;
+
+    seed_tape_t *tape = seed_tape_open(0x51616b65ULL, 1779669000);
+    PM_CHECK("signal seed tape open", tape != NULL);
+    if (tape) {
+        seed_tape_advance(tape, 1234);
+        seed_tape_inject(tape, 13, "sig", 3);
+    }
+
+    pid_t pid = fork();
+    if (pid == 0) {
+        if (!tape || postmortem_install(tape, dir) != 0)
+            _exit(121);
+        raise(SIGABRT);
+        _exit(122);
+    }
+
+    if (pid < 0) {
+        PM_CHECK("fork signal child", false);
+    } else {
+        PM_CHECK("fork signal child", true);
+        int status = 0;
+        pid_t got = waitpid(pid, &status, 0);
+        PM_CHECK("wait signal child", got == pid);
+        PM_CHECK("child terminated by SIGABRT",
+                 got == pid && WIFSIGNALED(status) &&
+                 WTERMSIG(status) == SIGABRT);
+
+        struct postmortem_capsule_entry entries[1];
+        size_t count = 0;
+        int rc = postmortem_capsule_list(dir, entries, 1, &count);
+        PM_CHECK("signal capsule listed", rc == 0 && count == 1);
+        PM_CHECK("signal capsule records signal",
+                 rc == 0 && count == 1 && entries[0].crash_signal == SIGABRT);
+        if (rc == 0 && count == 1) {
+            seed_tape_t *loaded = postmortem_capsule_load_tape(entries[0].path);
+            PM_CHECK("signal capsule tape loads", loaded != NULL);
+            if (loaded) {
+                PM_CHECK("signal capsule preserves event",
+                         seed_tape_inject_count(loaded) == 1);
+                seed_tape_close(loaded);
+            }
+        }
+    }
+
+    seed_tape_close(tape);
+    rm_rf_simple(dir);
+    return failures;
 }
 
 int test_postmortem(void)
@@ -173,9 +233,10 @@ int test_postmortem(void)
 
     seed_tape_close(tape);
     rm_rf_simple(dir);
+    failures += test_signal_handler_capsule();
 
     if (failures == 0)
-        printf("postmortem: 6 passed, 0 failed\n");
+        printf("=== postmortem tests: ALL PASS ===\n\n");
     else
         printf("postmortem: failures=%d\n", failures);
     return failures;

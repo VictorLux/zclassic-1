@@ -333,5 +333,9 @@ the capsule API plus the non-signal save/list/load path.
   `zcl_postmortem_replay` returns seed-tape events with hex payloads for quick
   operator inspection. The remaining Phase 6b work is the signal handler and
   boot integration path.
+- Added a fatal-signal crash-hook bridge plus `postmortem_install` /
+  `postmortem_uninstall`; forked test coverage now proves a child that raises
+  `SIGABRT` leaves a listed, replayable capsule before terminating. Boot-time
+  seed-tape creation and install wiring remain open.
 
 <!-- Worker: append a Completion section below when done. -->
