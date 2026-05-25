@@ -39,6 +39,100 @@ DEFINE_PT(h_zcl_getmininginfo,  "getmininginfo",  "mcp.ops")
 DEFINE_PT(h_zcl_benchmark,      "benchmark",      "mcp.ops")
 DEFINE_PT(h_zcl_dbstats,        "db_info",        "mcp.ops")
 
+static char *json_value_to_body(struct json_value *v, const char *label);
+
+static void status_push_raw_json(struct json_value *obj, const char *key,
+                                 const char *raw)
+{
+    struct json_value child;
+    json_init(&child);
+    if (raw && json_read(&child, raw, strlen(raw))) {
+        json_push_kv(obj, key, &child);
+    } else {
+        json_set_null(&child);
+        json_push_kv(obj, key, &child);
+    }
+    json_free(&child);
+}
+
+static int blocker_status_priority(int cls)
+{
+    switch ((enum blocker_class)cls) {
+    case BLOCKER_RESOURCE:   return 400;
+    case BLOCKER_PERMANENT:  return 300;
+    case BLOCKER_DEPENDENCY: return 200;
+    case BLOCKER_TRANSIENT:  return 100;
+    }
+    return 0;
+}
+
+static void status_push_blocker_summary(struct json_value *root)
+{
+    struct blocker_snapshot snaps[BLOCKER_CAP];
+    int n = blocker_snapshot_all(snaps, BLOCKER_CAP);
+    if (n < 0) n = 0;
+
+    int counts[4] = {0, 0, 0, 0};
+    int dominant = -1;
+    int dominant_prio = -1;
+    for (int i = 0; i < n; i++) {
+        int cls = snaps[i].class;
+        if (cls >= 0 && cls < 4) counts[cls]++;
+
+        int prio = blocker_status_priority(cls);
+        if (dominant < 0 || prio > dominant_prio ||
+            (prio == dominant_prio &&
+             snaps[i].age_us > snaps[dominant].age_us)) {
+            dominant = i;
+            dominant_prio = prio;
+        }
+    }
+
+    struct json_value summary;
+    json_init(&summary);
+    json_set_object(&summary);
+    json_push_kv_int(&summary, "active_count", n);
+    json_push_kv_int(&summary, "permanent_count",
+                     counts[BLOCKER_PERMANENT]);
+    json_push_kv_int(&summary, "transient_count",
+                     counts[BLOCKER_TRANSIENT]);
+    json_push_kv_int(&summary, "dependency_count",
+                     counts[BLOCKER_DEPENDENCY]);
+    json_push_kv_int(&summary, "resource_count",
+                     counts[BLOCKER_RESOURCE]);
+    json_push_kv_int(&summary, "escape_dispatched_total",
+                     blocker_escape_dispatched_count());
+
+    struct json_value dominant_json;
+    json_init(&dominant_json);
+    if (dominant >= 0) {
+        const struct blocker_snapshot *s = &snaps[dominant];
+        json_set_object(&dominant_json);
+        json_push_kv_str(&dominant_json, "id", s->id);
+        json_push_kv_str(&dominant_json, "owner", s->owner_subsystem);
+        json_push_kv_str(&dominant_json, "class",
+                         blocker_class_name((enum blocker_class)s->class));
+        json_push_kv_int(&dominant_json, "age_us", s->age_us);
+        json_push_kv_int(&dominant_json, "deadline_remaining_us",
+                         s->deadline_remaining_us);
+        json_push_kv_str(&dominant_json, "escape_action",
+                         s->escape_action);
+        json_push_kv_int(&dominant_json, "retry_count", s->retry_count);
+        json_push_kv_int(&dominant_json, "retry_budget", s->retry_budget);
+        json_push_kv_int(&dominant_json, "fire_count", s->fire_count);
+        json_push_kv_str(&dominant_json, "reason", s->reason);
+    } else {
+        json_set_null(&dominant_json);
+    }
+
+    json_push_kv(&summary, "dominant", &dominant_json);
+    json_push_kv(root, "blockers", &summary);
+    json_push_kv(root, "dominant_blocker", &dominant_json);
+
+    json_free(&dominant_json);
+    json_free(&summary);
+}
+
 
 /* ── Handlers ───────────────────────────────────────────────── */
 
@@ -108,16 +202,6 @@ static int h_zcl_status(const struct mcp_request *req, struct mcp_response *res)
     if (header_gap < 0) header_gap = 0;
     bool sync_behind = header_gap > 144;
 
-    enum { ZCL_STATUS_BODY_CAP = 65536 };
-    char *out = zcl_malloc(ZCL_STATUS_BODY_CAP, "status_body");
-    if (!out) {
-        free(h); free(p); free(s); free(v); free(hc); free(ci); free(cac);
-        res->error = MCP_ERR_INTERNAL;
-        snprintf(res->error_message, sizeof(res->error_message),
-                 "malloc failed for status response");
-        LOG_ERR("mcp.ops", "malloc failed for status body");
-        return -1;  // raw-return-ok:logged-oom
-    }
     /* Extract memory_rss_mb and uptime_seconds from healthcheck response */
     int64_t memory_rss_mb = -1;
     int64_t uptime_secs = 0;
@@ -136,28 +220,46 @@ static int h_zcl_status(const struct mcp_request *req, struct mcp_response *res)
         }
     }
 
-    snprintf(out, ZCL_STATUS_BODY_CAP,
-             "{\"height\":%d,\"build_commit\":\"%s\","
-             "\"header_height\":%d,"
-             "\"max_peer_height\":%d,\"header_gap\":%d,"
-             "\"sync_behind\":%s,"
-             "\"peers\":%d,"
-             "\"connections\":{\"total\":%d,\"inbound\":%d,"
-             "\"outbound\":%d,\"zcl23\":%d,\"magicbean\":%d},"
-             "\"memory_rss_mb\":%lld,\"uptime_secs\":%lld,"
-             "\"sync\":%s,"
-             "\"validation\":%s,\"health\":%s,"
-             "\"chain_advance\":%s}",
-             block_height, zcl_build_commit(), header_height,
-             max_peer_height, header_gap,
-             sync_behind ? "true" : "false",
-             pc,
-             pc, inbound, outbound, zcl23_cnt, magicbean_cnt,
-             (long long)memory_rss_mb, (long long)uptime_secs,
-             s ? s : "null",
-             v ? v : "null", hc ? hc : "null",
-             cac ? cac : "null");
+    struct json_value root;
+    json_init(&root);
+    json_set_object(&root);
+    json_push_kv_int(&root, "height", block_height);
+    json_push_kv_str(&root, "build_commit", zcl_build_commit());
+    json_push_kv_int(&root, "header_height", header_height);
+    json_push_kv_int(&root, "max_peer_height", max_peer_height);
+    json_push_kv_int(&root, "header_gap", header_gap);
+    json_push_kv_bool(&root, "sync_behind", sync_behind);
+    json_push_kv_int(&root, "peers", pc);
+
+    struct json_value conn;
+    json_init(&conn);
+    json_set_object(&conn);
+    json_push_kv_int(&conn, "total", pc);
+    json_push_kv_int(&conn, "inbound", inbound);
+    json_push_kv_int(&conn, "outbound", outbound);
+    json_push_kv_int(&conn, "zcl23", zcl23_cnt);
+    json_push_kv_int(&conn, "magicbean", magicbean_cnt);
+    json_push_kv(&root, "connections", &conn);
+    json_free(&conn);
+
+    json_push_kv_int(&root, "memory_rss_mb", memory_rss_mb);
+    json_push_kv_int(&root, "uptime_secs", uptime_secs);
+    status_push_raw_json(&root, "sync", s);
+    status_push_raw_json(&root, "validation", v);
+    status_push_raw_json(&root, "health", hc);
+    status_push_raw_json(&root, "chain_advance", cac);
+    status_push_blocker_summary(&root);
+
+    char *out = json_value_to_body(&root, "status_body");
+    json_free(&root);
     free(h); free(p); free(s); free(v); free(hc); free(ci); free(cac);
+    if (!out) {
+        res->error = MCP_ERR_INTERNAL;
+        snprintf(res->error_message, sizeof(res->error_message),
+                 "malloc failed for status response");
+        LOG_ERR("mcp.ops", "malloc failed for status body");
+        return -1;  // raw-return-ok:logged-oom
+    }
     res->body = out;
     return 0;
 }

@@ -30,6 +30,7 @@
 #include "json/json.h"
 #include "sim/postmortem.h"
 #include "sim/seed_tape.h"
+#include "util/blocker.h"
 #include "util/clientversion.h"
 
 #include <dirent.h>
@@ -788,6 +789,15 @@ static int test_zcl_status_includes_chain_advance_dump(void)
         ASSERT(json_read(&root, body, strlen(body)));
         ASSERT_STR_EQ(json_get_str(json_get(&root, "build_commit")),
                       ZCL_BUILD_COMMIT);
+        const struct json_value *blockers = json_get(&root, "blockers");
+        ASSERT(blockers != NULL);
+        ASSERT(json_get_int(json_get(blockers, "active_count")) == 0);
+        ASSERT(json_get_int(json_get(blockers, "permanent_count")) == 0);
+        ASSERT(json_get_int(json_get(blockers, "transient_count")) == 0);
+        ASSERT(json_get_int(json_get(blockers, "dependency_count")) == 0);
+        ASSERT(json_get_int(json_get(blockers, "resource_count")) == 0);
+        ASSERT(json_is_null(json_get(blockers, "dominant")));
+        ASSERT(json_is_null(json_get(&root, "dominant_blocker")));
         const struct json_value *chain_advance =
             json_get(&root, "chain_advance");
         ASSERT(chain_advance != NULL);
@@ -898,6 +908,81 @@ static int test_zcl_status_includes_chain_advance_dump(void)
         PASS();
     } _test_next:;
     mcp_rpc_client_set_test_hook(NULL);
+    return failures;
+}
+
+static int test_zcl_status_includes_dominant_blocker(void)
+{
+    int failures = 0;
+    TEST("controllers: zcl_status includes dominant typed blocker") {
+        register_all();
+        blocker_module_init();
+        blocker_reset_for_testing();
+        blocker_set_rate_limit_ms_for_testing(0);
+        blocker_set_clock_for_testing(1000000);
+
+        struct blocker_record transient;
+        ASSERT(blocker_init(&transient, "peer-slow", "net",
+                            BLOCKER_TRANSIENT, "peer timeout"));
+        transient.escape_deadline_secs = 30;
+        snprintf(transient.escape_action, sizeof(transient.escape_action),
+                 "%s", "retry_peer");
+        ASSERT(blocker_set(&transient) == 0);
+
+        struct blocker_record resource;
+        ASSERT(blocker_init(&resource, "disk-full", "storage",
+                            BLOCKER_RESOURCE, "disk \"full\""));
+        snprintf(resource.escape_action, sizeof(resource.escape_action),
+                 "%s", "page_operator");
+        ASSERT(blocker_set(&resource) == 0);
+        blocker_advance_clock_for_testing(5000000);
+
+        mcp_rpc_client_set_test_hook(mock_status_rpc);
+        struct json_value args;
+        json_init(&args);
+        json_set_object(&args);
+        char *body = mcp_router_dispatch("zcl_status", &args);
+        mcp_rpc_client_set_test_hook(NULL);
+        ASSERT(body != NULL);
+
+        struct json_value root;
+        ASSERT(json_read(&root, body, strlen(body)));
+        const struct json_value *blockers = json_get(&root, "blockers");
+        ASSERT(blockers != NULL);
+        ASSERT(json_get_int(json_get(blockers, "active_count")) == 2);
+        ASSERT(json_get_int(json_get(blockers, "transient_count")) == 1);
+        ASSERT(json_get_int(json_get(blockers, "resource_count")) == 1);
+
+        const struct json_value *dominant =
+            json_get(&root, "dominant_blocker");
+        ASSERT(dominant != NULL);
+        ASSERT(!json_is_null(dominant));
+        ASSERT_STR_EQ(json_get_str(json_get(dominant, "id")),
+                      "disk-full");
+        ASSERT_STR_EQ(json_get_str(json_get(dominant, "owner")),
+                      "storage");
+        ASSERT_STR_EQ(json_get_str(json_get(dominant, "class")),
+                      "resource");
+        ASSERT_STR_EQ(json_get_str(json_get(dominant, "reason")),
+                      "disk \"full\"");
+        ASSERT(json_get_int(json_get(dominant, "age_us")) == 5000000);
+
+        const struct json_value *summary_dom =
+            json_get(blockers, "dominant");
+        ASSERT(summary_dom != NULL);
+        ASSERT_STR_EQ(json_get_str(json_get(summary_dom, "id")),
+                      "disk-full");
+
+        json_free(&root);
+        json_free(&args);
+        free(body);
+        blocker_reset_for_testing();
+        blocker_set_clock_for_testing(0);
+        PASS();
+    } _test_next:;
+    mcp_rpc_client_set_test_hook(NULL);
+    blocker_reset_for_testing();
+    blocker_set_clock_for_testing(0);
     return failures;
 }
 
@@ -1545,6 +1630,7 @@ int test_mcp_controllers(void)
     failures += test_zcl_cutoverpreflight_shape_and_dispatch();
     failures += test_postmortem_tools_list_and_replay();
     failures += test_zcl_status_includes_chain_advance_dump();
+    failures += test_zcl_status_includes_dominant_blocker();
     failures += test_zcl_networkinfo_exposes_reachability_fields();
     failures += test_meta_tools_in_ops_domain();
     failures += test_tools_list_json_well_formed();
