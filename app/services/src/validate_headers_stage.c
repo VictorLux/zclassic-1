@@ -96,7 +96,68 @@ static int64_t wall_now_s(void)
     return (int64_t)ts.tv_sec;
 }
 
-/* ── Default validator: PoW target + Equihash from disk ──────────── */
+/* ── Default validator: PoW target + Equihash ────────────────────── */
+
+static bool header_from_block_index(const struct block_index *bi,
+                                    struct block_header *out,
+                                    char *out_reason,
+                                    size_t out_reason_size)
+{
+    if (!bi || !out) {
+        snprintf(out_reason, out_reason_size, "null-block-index");
+        return false;
+    }
+    if (!bi->nSolution || bi->nSolutionSize == 0) {
+        snprintf(out_reason, out_reason_size, "no-header-solution");
+        return false;
+    }
+    if (bi->nSolutionSize > sizeof(out->nSolution)) {
+        snprintf(out_reason, out_reason_size, "solution-too-large");
+        return false;
+    }
+    if (bi->nHeight > 0 && (!bi->pprev || !bi->pprev->phashBlock)) {
+        snprintf(out_reason, out_reason_size, "missing-parent-header");
+        return false;
+    }
+
+    block_header_init(out);
+    out->nVersion = bi->nVersion;
+    if (bi->pprev && bi->pprev->phashBlock)
+        out->hashPrevBlock = *bi->pprev->phashBlock;
+    else
+        memset(out->hashPrevBlock.data, 0, sizeof(out->hashPrevBlock.data));
+    out->hashMerkleRoot = bi->hashMerkleRoot;
+    out->hashFinalSaplingRoot = bi->hashFinalSaplingRoot;
+    out->nTime = bi->nTime;
+    out->nBits = bi->nBits;
+    out->nNonce = bi->nNonce;
+    memcpy(out->nSolution, bi->nSolution, bi->nSolutionSize);
+    out->nSolutionSize = bi->nSolutionSize;
+    return true;
+}
+
+static bool validate_header_fields(const struct block_header *header,
+                                   const struct chain_params *cp,
+                                   char *out_reason,
+                                   size_t out_reason_size)
+{
+    if (!header || !cp) {
+        snprintf(out_reason, out_reason_size, "missing-header-context");
+        return false;
+    }
+
+    struct uint256 hash;
+    block_header_get_hash(header, &hash);
+    if (!CheckProofOfWork(hash, header->nBits, &cp->consensus)) {
+        snprintf(out_reason, out_reason_size, "high-hash");
+        return false;
+    }
+    if (!check_equihash_solution(header, cp)) {
+        snprintf(out_reason, out_reason_size, "invalid-solution");
+        return false;
+    }
+    return true;
+}
 
 static bool default_validator(const struct block_index *bi,
                                const char *datadir,
@@ -121,9 +182,17 @@ static bool default_validator(const struct block_index *bi,
         snprintf(out_reason, out_reason_size, "no-chain-params");
         return false;
     }
-    if (!CheckProofOfWork(*bi->phashBlock, bi->nBits, &cp->consensus)) {
-        snprintf(out_reason, out_reason_size, "high-hash");
-        return false;
+
+    /* The block index stores full header fields, including nonce and
+     * Equihash solution, for headers admitted through normal P2P/RPC
+     * paths. Validate from that header snapshot first. Body files may
+     * legitimately be absent for the newest headers, and that must not
+     * turn a header-only stage into a body-availability gate. */
+    struct block_header index_header;
+    if (header_from_block_index(bi, &index_header,
+                                out_reason, out_reason_size)) {
+        return validate_header_fields(&index_header, cp,
+                                      out_reason, out_reason_size);
     }
 
     /* (3) Equihash: pull the full block from disk so we have the
@@ -161,14 +230,10 @@ static bool default_validator(const struct block_index *bi,
         return false;
     }
 
-    bool eq_ok = check_equihash_solution(&blk.header, cp);
+    bool ok = validate_header_fields(&blk.header, cp,
+                                     out_reason, out_reason_size);
     block_free(&blk);
-    if (!eq_ok) {
-        snprintf(out_reason, out_reason_size, "invalid-solution");
-        return false;
-    }
-
-    return true;
+    return ok;
 }
 
 /* ── Worker pool ──────────────────────────────────────────────────── */

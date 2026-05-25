@@ -106,6 +106,13 @@ static bool synth_chain_vh_build(struct synth_chain_vh *sc, int n)
 
 static void synth_chain_vh_free(struct synth_chain_vh *sc)
 {
+    if (sc->blocks) {
+        for (int i = 0; i < sc->n; i++) {
+            free(sc->blocks[i].nSolution);
+            sc->blocks[i].nSolution = NULL;
+            sc->blocks[i].nSolutionSize = 0;
+        }
+    }
     free(sc->blocks);
     free(sc->hashes);
     memset(sc, 0, sizeof(*sc));
@@ -398,6 +405,34 @@ int test_validate_headers_stage(void)
         VH_CHECK("fail: window report carries reason",
                  strcmp(rep.first_fail_reason,
                         "stub-injected-failure") == 0);
+
+        vh_teardown(dir, &ms, &sc);
+    }
+
+    /* ── default validator must not require a body file ────────────── */
+    {
+        char dir[256]; struct main_state ms; struct synth_chain_vh sc;
+        VH_CHECK("index-header: setup default validator",
+                 vh_setup("index_header", 1, NULL, NULL,
+                          dir, sizeof(dir), &ms, &sc) == 0);
+        sc.blocks[0].nSolutionSize = 36;
+        sc.blocks[0].nSolution = zcl_malloc(sc.blocks[0].nSolutionSize,
+                                            "vh_test_solution");
+        VH_CHECK("index-header: alloc solution",
+                 sc.blocks[0].nSolution != NULL);
+        if (sc.blocks[0].nSolution)
+            memset(sc.blocks[0].nSolution, 0, sc.blocks[0].nSolutionSize);
+
+        header_admit_stage_drain(10);
+        VH_CHECK("index-header: validate one row",
+                 validate_headers_stage_drain(10) == 1);
+        int ok = -1;
+        char reason[64];
+        VH_CHECK("index-header: row exists",
+                 log_row_at(progress_store_db(), 0, &ok,
+                            reason, sizeof(reason)));
+        VH_CHECK("index-header: failure is header-derived",
+                 ok == 0 && strcmp(reason, "disk-read-failed") != 0);
 
         vh_teardown(dir, &ms, &sc);
     }
