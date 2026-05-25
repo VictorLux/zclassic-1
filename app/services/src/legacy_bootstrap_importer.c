@@ -112,6 +112,15 @@ static const struct legacy_bootstrap_snapshot_mode_config
         },
     };
 
+static const struct legacy_bootstrap_snapshot_mode_config *
+legacy_bootstrap_snapshot_mode_cfg(enum legacy_bootstrap_snapshot_mode mode)
+{
+    return ((size_t)mode <
+            sizeof(g_snapshot_mode_cfg) / sizeof(g_snapshot_mode_cfg[0]))
+        ? &g_snapshot_mode_cfg[mode]
+        : NULL;
+}
+
 struct legacy_bootstrap_snapshot_import_options {
     enum legacy_bootstrap_snapshot_mode mode;
     const char *legacy_blocks_dir;
@@ -958,10 +967,7 @@ static bool legacy_bootstrap_import_snapshot_state(
             .legacy_tip_height = -1,
         };
     const struct legacy_bootstrap_snapshot_mode_config *cfg =
-        (opts && (size_t)opts->mode <
-             sizeof(g_snapshot_mode_cfg) / sizeof(g_snapshot_mode_cfg[0]))
-            ? &g_snapshot_mode_cfg[opts->mode]
-            : NULL;
+        opts ? legacy_bootstrap_snapshot_mode_cfg(opts->mode) : NULL;
     if (!opts || !cfg || !opts->legacy_blocks_dir || !opts->our_blocks_dir ||
         !opts->legacy_index_dir || !opts->chainstate_dir || !opts->btdb ||
         !opts->cvs || cfg->chainstate_batch_limit == 0 ||
@@ -1064,6 +1070,53 @@ static bool legacy_bootstrap_import_snapshot_state(
 
     if (out)
         *out = r;
+    return true;
+}
+
+static bool legacy_bootstrap_import_staged_snapshot(
+    enum legacy_bootstrap_snapshot_mode mode,
+    const struct legacy_bootstrap_import_options *opts,
+    const struct legacy_bootstrap_staged_snapshot_paths *paths,
+    int32_t anchor_height,
+    struct legacy_bootstrap_snapshot_import_result *imported,
+    struct legacy_bootstrap_import_result *result)
+{
+    const struct legacy_bootstrap_snapshot_mode_config *cfg =
+        legacy_bootstrap_snapshot_mode_cfg(mode);
+    if (imported)
+        *imported = (struct legacy_bootstrap_snapshot_import_result){
+            .legacy_tip_height = -1,
+        };
+    if (!cfg || !opts || !paths || !paths->legacy_blocks_dir[0] ||
+        !paths->our_blocks_dir[0] || !paths->idx_dir[0] ||
+        !paths->cs_dir[0] || !imported || !result || !cfg->log_prefix) {
+        fprintf(stderr,  // obs-ok:bootstrap-import-terminal-diagnostic
+                "[legacy_bootstrap] import staged snapshot: bad args\n");
+        return false;
+    }
+
+    const struct legacy_bootstrap_snapshot_import_options import_opts = {
+        .mode = mode,
+        .legacy_blocks_dir = paths->legacy_blocks_dir,
+        .our_blocks_dir = paths->our_blocks_dir,
+        .legacy_index_dir = paths->idx_dir,
+        .chainstate_dir = paths->cs_dir,
+        .btdb = opts->btdb,
+        .cvs = opts->cvs,
+        .ndb = opts->ndb,
+        .anchor_height = anchor_height,
+    };
+    int64_t t_import = legacy_bootstrap_now_ms();
+    if (!legacy_bootstrap_import_snapshot_state(&import_opts, imported))
+        return false;
+
+    result->blk_files_linked = imported->blk_files_linked;
+    result->block_index_writes = imported->block_index_writes;
+    result->utxos_imported = imported->utxos_imported;
+    fprintf(stderr,  // obs-ok:pre-existing-diagnostic
+            "[%s] snapshot state import took %" PRId64 " ms (best h=%d)\n",
+            cfg->log_prefix, legacy_bootstrap_now_ms() - t_import,
+            imported->legacy_tip_height);
     return true;
 }
 
@@ -1206,33 +1259,14 @@ static bool legacy_bootstrap_import_cold(
     bmr_close(bmr);
 
     struct legacy_bootstrap_snapshot_import_result imported;
-    const struct legacy_bootstrap_snapshot_import_options import_opts = {
-        .mode = LEGACY_BOOTSTRAP_SNAPSHOT_COLD,
-        .legacy_blocks_dir = paths.legacy_blocks_dir,
-        .our_blocks_dir = paths.our_blocks_dir,
-        .legacy_index_dir = paths.idx_dir,
-        .chainstate_dir = paths.cs_dir,
-        .btdb = opts->btdb,
-        .cvs = opts->cvs,
-        .ndb = opts->ndb,
-        .anchor_height = legacy_tip,
-    };
-    int64_t t_import = legacy_bootstrap_now_ms();
-    bool import_ok =
-        legacy_bootstrap_import_snapshot_state(&import_opts, &imported);
+    bool import_ok = legacy_bootstrap_import_staged_snapshot(
+        LEGACY_BOOTSTRAP_SNAPSHOT_COLD, opts, &paths, legacy_tip, &imported,
+        &r);
     bilr_free_height_map(map);
     if (!import_ok) {
         legacy_bootstrap_cleanup_staged_snapshot(&paths, false);
         return false;
     }
-    r.blk_files_linked = imported.blk_files_linked;
-    r.block_index_writes = imported.block_index_writes;
-    r.utxos_imported = imported.utxos_imported;
-    fprintf(stderr,  // obs-ok:pre-existing-diagnostic
-            "[cold_import] snapshot state import took %" PRId64 " ms "
-            "(best h=%d)\n",
-            legacy_bootstrap_now_ms() - t_import,
-            imported.legacy_tip_height);
 
     double total_secs = (double)(legacy_bootstrap_now_ms() - t_start) / 1000.0;
     if (out) *out = r;
@@ -1806,31 +1840,13 @@ static bool legacy_bootstrap_import_attach(
         return false;
     }
     struct legacy_bootstrap_snapshot_import_result imported;
-    const struct legacy_bootstrap_snapshot_import_options import_opts = {
-        .mode = LEGACY_BOOTSTRAP_SNAPSHOT_ATTACH,
-        .legacy_blocks_dir = paths.legacy_blocks_dir,
-        .our_blocks_dir = paths.our_blocks_dir,
-        .legacy_index_dir = paths.idx_dir,
-        .chainstate_dir = paths.cs_dir,
-        .btdb = opts->btdb,
-        .cvs = opts->cvs,
-        .ndb = opts->ndb,
-        .anchor_height = -1,
-    };
-    int64_t t_import = legacy_bootstrap_now_ms();
-    if (!legacy_bootstrap_import_snapshot_state(&import_opts, &imported)) {
+    if (!legacy_bootstrap_import_staged_snapshot(
+            LEGACY_BOOTSTRAP_SNAPSHOT_ATTACH, opts, &paths, -1, &imported,
+            &r)) {
         legacy_bootstrap_cleanup_staged_snapshot(&paths, false);
         return false;
     }
-    r.blk_files_linked = imported.blk_files_linked;
-    r.block_index_writes = imported.block_index_writes;
-    r.utxos_imported = imported.utxos_imported;
     r.legacy_tip = imported.legacy_tip_height;
-    fprintf(stderr,  // obs-ok:legacy-attach-progress
-            "[legacy_attach] snapshot state import took %" PRId64 " ms "
-            "(best h=%d)\n",
-            legacy_bootstrap_now_ms() - t_import,
-            imported.legacy_tip_height);
 
     int64_t stages_stamped = 0;
     if (!legacy_bootstrap_attach_finalize_atomic(

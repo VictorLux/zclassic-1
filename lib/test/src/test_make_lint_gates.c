@@ -1175,9 +1175,9 @@ static int t_cold_import_uses_leveldb_snapshots_contract(void)
         char *height_map = strstr(cold_mode,
             "legacy_bootstrap_load_height_map(");
         char *snapshot_import = strstr(cold_mode,
-            "legacy_bootstrap_import_snapshot_state(");
+            "legacy_bootstrap_import_staged_snapshot(");
         char *anchor_height = strstr(cold_mode,
-            ".anchor_height = legacy_tip");
+            "LEGACY_BOOTSTRAP_SNAPSHOT_COLD, opts, &paths, legacy_tip");
         char *destroy = strstr(cold_mode,
             "legacy_bootstrap_cleanup_staged_snapshot(&paths, false)");
         ASSERT(include != NULL);
@@ -1216,22 +1216,8 @@ static int t_legacy_chainstate_batches_own_callback_buffers(void)
         ASSERT(strstr(buf, ".script = script_copy") != NULL);
         ASSERT(strstr(buf,
             "legacy_bootstrap_chainstate_clear_batch") != NULL);
-        free(buf);
-        buf = NULL;
-
-        ASSERT(repo_path(path, sizeof(path),
-                         "app/services/src/legacy_bootstrap_importer.c") == 0);
-        ASSERT(read_entire_file(path, &buf) == 0);
         ASSERT(strstr(buf,
-            "legacy_bootstrap_import_snapshot_state(") != NULL);
-        free(buf);
-        buf = NULL;
-
-        ASSERT(repo_path(path, sizeof(path),
-                         "app/services/src/legacy_bootstrap_importer.c") == 0);
-        ASSERT(read_entire_file(path, &buf) == 0);
-        ASSERT(strstr(buf,
-            "legacy_bootstrap_import_snapshot_state(") != NULL);
+            "legacy_bootstrap_import_staged_snapshot(") != NULL);
         PASS();
     } _test_next:;
     free(buf);

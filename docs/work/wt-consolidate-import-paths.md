@@ -136,6 +136,9 @@ Verification:
 - Cold/direct block-source spotcheck behavior now comes from one private mode
   policy table instead of repeated positional call arguments for K-window size,
   fail-open/fail-closed behavior, debug env, log prefix, and map dump policy.
+- Cold/attach staged snapshot imports now share one private helper for
+  constructing snapshot import options, timing the import, copying common
+  result counters, and logging progress.
 
 ## The shape (one canonical importer, pluggable mode)
 
