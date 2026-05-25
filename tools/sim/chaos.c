@@ -36,13 +36,17 @@ struct chaos_ctx {
     int64_t sim_wall_unix;
     int64_t sim_monotonic_us;
     uint64_t clock_advance_count;
+    uint64_t scheduled_event_count;
+    int64_t last_event_height;
     bool crashed;
     int64_t tip_height;
     int64_t reorg_count;
     int64_t consensus_rejects;
+    int64_t mempool_prune_runs;
     size_t expect_count;
     bool verbose;
     char alloc_fault_site[64];
+    uint64_t alloc_fault_count;
     bool alloc_fault_triggered;
     int64_t net_partition_seconds;
     int64_t net_partition_until;
@@ -56,6 +60,8 @@ struct chaos_command {
     const char *name;
     chaos_handler_fn handler;
 };
+
+static const struct chaos_command *find_command(const char *name);
 
 static int64_t chaos_clock_monotonic_us(void *user)
 {
@@ -234,6 +240,10 @@ static bool metric_value(const struct chaos_ctx *ctx, const char *name,
         *out = ctx->consensus_rejects;
         return true;
     }
+    if (strcmp(name, "mempool_prune_runs") == 0) {
+        *out = ctx->mempool_prune_runs;
+        return true;
+    }
     if (strcmp(name, "active_peers") == 0) {
         *out = (int64_t)ctx->peers.active_count;
         return true;
@@ -248,6 +258,14 @@ static bool metric_value(const struct chaos_ctx *ctx, const char *name,
     }
     if (strcmp(name, "clock_advance_count") == 0) {
         *out = (int64_t)ctx->clock_advance_count;
+        return true;
+    }
+    if (strcmp(name, "scheduled_events") == 0) {
+        *out = (int64_t)ctx->scheduled_event_count;
+        return true;
+    }
+    if (strcmp(name, "alloc_faults") == 0) {
+        *out = (int64_t)ctx->alloc_fault_count;
         return true;
     }
     if (strcmp(name, "sim_time") == 0) {
@@ -323,6 +341,7 @@ static int handle_trigger_oom_at(struct chaos_ctx *ctx, int argc, char **argv,
     }
     if (zcl_alloc_fault_armed_label() != NULL)
         return fail_line(line_no, "allocation fault did not clear");
+    ctx->alloc_fault_count++;
     ctx->alloc_fault_triggered = true;
     return 0;
 }
@@ -374,6 +393,26 @@ static int handle_send_malformed_block(struct chaos_ctx *ctx, int argc,
     return 0;
 }
 
+static int handle_at_event(struct chaos_ctx *ctx, int argc, char **argv,
+                           int line_no)
+{
+    if (argc < 3)
+        return fail_line(line_no, "at_event requires HEIGHT COMMAND [ARGS]");
+    int64_t event_height = 0;
+    if (!parse_i64(argv[1], &event_height) || event_height < 0)
+        return fail_line(line_no, "at_event height must be a non-negative integer");
+
+    const struct chaos_command *cmd = find_command(argv[2]);
+    if (!cmd)
+        return fail_line(line_no, "at_event nested command is unknown");
+    if (strcmp(argv[2], "at_event") == 0)
+        return fail_line(line_no, "at_event cannot nest at_event");
+
+    ctx->scheduled_event_count++;
+    ctx->last_event_height = event_height;
+    return cmd->handler(ctx, argc - 2, argv + 2, line_no);
+}
+
 static int handle_advance_clock(struct chaos_ctx *ctx, int argc, char **argv,
                                 int line_no)
 {
@@ -396,6 +435,10 @@ static int handle_advance_clock(struct chaos_ctx *ctx, int argc, char **argv,
     ctx->sim_wall_unix += seconds;
     ctx->sim_monotonic_us += seconds * 1000000LL;
     ctx->clock_advance_count++;
+    if (ctx->peers.active_count > 0)
+        ctx->tip_height += seconds / 60;
+    if (strcmp(ctx->boot_phase, "mempool_open") == 0 && seconds >= 3600)
+        ctx->mempool_prune_runs += seconds / 3600;
     return 0;
 }
 
@@ -432,7 +475,7 @@ static const struct chaos_command COMMANDS[] = {
     { "boot_phase", handle_boot_phase },
     { "peer_count", handle_peer_count },
     { "expect", handle_expect },
-    { "at_event", handle_stub },
+    { "at_event", handle_at_event },
     { "kill_peer", handle_kill_peer },
     { "send_block", handle_stub },
     { "send_malformed_block", handle_send_malformed_block },

@@ -312,5 +312,8 @@ One commit per task. Push after tasks 2, 4, 7.
   counters, and increments `consensus_rejects`.
 - Implemented `advance_clock` against the platform clock injection hook so
   chaos commands and future simulator paths observe the virtual wall clock.
+- Added `at_event` dispatch plus the five starter `tools/sim/scenarios/`
+  files so `make chaos` now exercises smoke, peer churn, malformed blocks,
+  clock skew, and OOM-at-utxo-apply paths.
 
 <!-- Worker: append a Completion section below when done. -->

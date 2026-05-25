@@ -165,15 +165,39 @@ int test_chaos_harness(void)
 
     rc = run_temp_scenario(
         "seed 1\n"
+        "peer_count 1\n"
         "advance_clock +60s\n"
         "advance_clock 2m\n"
         "expect clock_advance_count == 2\n"
+        "expect tip_height == 3\n"
         "expect no_crash\n",
         &ctx);
     CHAOS_CHECK("advance_clock scenario passes", rc == 0);
     CHAOS_CHECK("advance_clock updates virtual clock",
                 ctx.clock_advance_count == 2 &&
-                ctx.sim_monotonic_us == 180000000LL);
+                ctx.sim_monotonic_us == 180000000LL &&
+                ctx.tip_height == 3);
+
+    rc = run_temp_scenario(
+        "seed 1\n"
+        "peer_count 2\n"
+        "at_event 10 kill_peer 0\n"
+        "expect scheduled_events == 1\n"
+        "expect active_peers == 1\n",
+        &ctx);
+    CHAOS_CHECK("at_event scenario passes", rc == 0);
+    CHAOS_CHECK("at_event records dispatched event",
+                ctx.scheduled_event_count == 1 &&
+                ctx.last_event_height == 10 &&
+                ctx.peers.active_count == 1);
+
+    rc = run_temp_scenario(
+        "seed 1\n"
+        "boot_phase mempool_open\n"
+        "advance_clock +1h\n"
+        "expect mempool_prune_runs == 1\n",
+        &ctx);
+    CHAOS_CHECK("clock skew records mempool prune run", rc == 0);
 
     rc = run_temp_scenario(
         "seed 1\n"
@@ -183,6 +207,7 @@ int test_chaos_harness(void)
     CHAOS_CHECK("trigger_oom_at scenario passes", rc == 0);
     CHAOS_CHECK("trigger_oom_at records synthetic fire",
                 ctx.alloc_fault_triggered &&
+                ctx.alloc_fault_count == 1 &&
                 zcl_alloc_fault_armed_label() == NULL);
 
     zcl_alloc_fault_fail_next("unit_alloc");
