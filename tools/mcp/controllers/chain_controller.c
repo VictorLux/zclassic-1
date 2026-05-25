@@ -21,6 +21,7 @@
 #include "mcp/metrics.h"
 #include "ports/block_log_port.h"
 #include "services/header_admit_stage.h"
+#include "services/replay_verify_service.h"
 #include "storage/block_index_projection.h"
 #include "util/log_macros.h"
 #include "util/safe_alloc.h"
@@ -354,6 +355,85 @@ body_too_big:
     snprintf(res->error_message, sizeof(res->error_message),
              "diff_staged_header_admit: body buffer overflow");
     LOG_ERR("mcp.chain", "diff_staged_header_admit: body buffer overflow");
+    return 0;
+}
+
+/* ── zcl_replay_verify ─────────────────────────────────────────────
+ *
+ * Offline integrity / PoW verification sweep over the legacy on-disk
+ * block log (Tier-1 of the cutover "PROVE" phase). For each block in a
+ * bounded height window it re-derives four cheap consensus invariants:
+ * (1) equihash solution, (2) difficulty target, (3) prev-block linkage,
+ * (4) merkle root. Read-only — does not touch the live node, services,
+ * or wallet. See services/replay_verify_service.{c,h}. */
+static int h_zcl_replay_verify(const struct mcp_request *req,
+                               struct mcp_response *res)
+{
+    int64_t start_h    = json_get_int_or(req->args, "start_height", 0);
+    int64_t max_blocks = json_get_int_or(req->args, "max_blocks", 1000);
+    const char *legacy_dir =
+        json_get_str_or(req->args, "legacy_datadir", NULL);
+
+    if (!legacy_dir || !legacy_dir[0]) {
+        static char def_legacy[1024];
+        const char *home = getenv("HOME");
+        if (home && home[0]) {
+            snprintf(def_legacy, sizeof def_legacy, "%s/.zclassic", home);
+            legacy_dir = def_legacy;
+        } else {
+            res->error = MCP_ERR_HANDLER_FAILED;
+            snprintf(res->error_message, sizeof(res->error_message),
+                     "legacy_datadir not provided and $HOME is unset");
+            LOG_ERR("mcp.chain", "replay_verify: no legacy_datadir");
+            return 0;
+        }
+    }
+
+    if (start_h < 0)               start_h = 0;
+    if (start_h > (int64_t)UINT32_MAX) start_h = UINT32_MAX;
+    if (max_blocks < 0)            max_blocks = 0;   /* 0 == to tip */
+
+    struct replay_verify_report rep;
+    struct zcl_result rr = replay_verify_run(legacy_dir,
+                                             (uint32_t)start_h,
+                                             (uint64_t)max_blocks,
+                                             &rep);
+    if (!rr.ok) {
+        res->error = MCP_ERR_HANDLER_FAILED;
+        snprintf(res->error_message, sizeof(res->error_message),
+                 "replay_verify failed: code=%d %s", rr.code, rr.message);
+        LOG_ERR("mcp.chain", "replay_verify: %s", res->error_message);
+        return 0;
+    }
+
+    char buf[1024];
+    int n = snprintf(buf, sizeof buf,
+            "{\"blocks_checked\":%llu,"
+            "\"pow_failures\":%llu,"
+            "\"linkage_failures\":%llu,"
+            "\"merkle_failures\":%llu,"
+            "\"first_fail_height\":%lld,"
+            "\"first_fail_reason\":\"%s\","
+            "\"start_height\":%u,"
+            "\"end_height\":%u,"
+            "\"tip_height\":%u}",
+            (unsigned long long)rep.blocks_checked,
+            (unsigned long long)rep.pow_failures,
+            (unsigned long long)rep.linkage_failures,
+            (unsigned long long)rep.merkle_failures,
+            (long long)rep.first_fail_height,
+            rep.first_fail_reason ? rep.first_fail_reason : "none",
+            rep.start_height, rep.end_height, rep.tip_height);
+
+    char *body = (n > 0 && n < (int)sizeof buf) ? strdup(buf) : NULL;
+    if (!body) {
+        res->error = MCP_ERR_HANDLER_FAILED;
+        snprintf(res->error_message, sizeof(res->error_message),
+                 "replay_verify: body alloc failed");
+        LOG_ERR("mcp.chain", "replay_verify: body alloc failed");
+        return 0;
+    }
+    res->body = body;
     return 0;
 }
 
@@ -840,6 +920,18 @@ static const struct mcp_param_spec p_diff_staged[] = {
       -1, 100000000, 0, 0, NULL, "-1" },
 };
 
+static const struct mcp_param_spec p_replay_verify[] = {
+    { "start_height", MCP_PARAM_INT, false,
+      "First height to verify (inclusive).",
+      0, 100000000, 0, 0, NULL, "0" },
+    { "max_blocks", MCP_PARAM_INT, false,
+      "Maximum blocks to verify this call; 0 = to tip.",
+      0, 100000000, 0, 0, NULL, "1000" },
+    { "legacy_datadir", MCP_PARAM_STR, false,
+      "Legacy zclassicd data directory. Defaults to $HOME/.zclassic.",
+      0, 0, 0, 1023, NULL, NULL },
+};
+
 static const struct mcp_param_spec p_utxo_audit[] = {
     { "remote_sha3", MCP_PARAM_STR, false,
       "Trusted peer SHA3 commitment to compare against.",
@@ -912,6 +1004,18 @@ static const struct mcp_tool_route k_routes[] = {
       "counts and up to 32 sample mismatches. Read-only diagnostic.",
       p_diff_staged, PARAM_COUNT(p_diff_staged),
       h_zcl_diff_staged_header_admit, 0, NULL },
+    { "zcl_replay_verify", "chain",
+      "Offline integrity/PoW sweep over the legacy block log (cutover "
+      "PROVE phase, Tier-1). For each block in a bounded window verifies "
+      "equihash solution, difficulty target (nBits), prev-block linkage, "
+      "and merkle root — reusing the canonical consensus check_block. "
+      "Returns {blocks_checked, pow_failures, linkage_failures, "
+      "merkle_failures, first_fail_height, first_fail_reason, "
+      "start_height, end_height, tip_height}. Read-only; defaults to "
+      "$HOME/.zclassic and a 1000-block bounded run.",
+      p_replay_verify, PARAM_COUNT(p_replay_verify),
+      h_zcl_replay_verify, 0,
+      .self_test_args = "{\"start_height\":0,\"max_blocks\":4}" },
     { "zcl_utxo_projection_diff", "chain",
       "Phase 4b shadow-diff gate: SHA3 commitment of the legacy "
       "coins.db UTXO set vs the same commitment derived from the "

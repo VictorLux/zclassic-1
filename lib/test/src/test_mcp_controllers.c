@@ -46,7 +46,7 @@
 /* Expected tool counts.  If a future commit intentionally adds or
  * removes tools, bump these numbers in the same commit — they are the
  * contract for "how big is the MCP surface." */
-#define EXPECTED_TOTAL      108 /* +3 power-user tools: chain_tip,
+#define EXPECTED_TOTAL      109 /* +3 power-user tools: chain_tip,
                                  * reorg_history, mempool_inspect;
                                  * +1 Round 6 C5: zcl_blockers;
                                  * +1 I-9 (revamp): zcl_diff_with_legacy_shadow;
@@ -60,7 +60,8 @@
                                  * +3 Phase 4d-5 small projection diff tools
                                  * +2 Phase 6b postmortem capsule tools
                                  * +1 cutover runtime mode control
-                                 * +1 cutover preflight */
+                                 * +1 cutover preflight
+                                 * +1 cutover PROVE Tier-1: zcl_replay_verify */
 #define EXPECTED_OPS        46  /* status, health, kpi, self_heal_stats, mempool*, mininginfo,
                                  * benchmark, dbstats, filemanifest, events,
                                  * rpc, state + node_log + sql (round 6.5 MCP primitives),
@@ -80,11 +81,12 @@
                                  * + small projection diffs (Phase 4d-5)
                                  * + zcl_postmortem_list/replay (Phase 6b)
                                  * + zcl_cutovermode/preflight */
-#define EXPECTED_CHAIN      17  /* + chain_tip + reorg_history
+#define EXPECTED_CHAIN      18  /* + chain_tip + reorg_history
                                  * + zcl_diff_with_legacy_shadow (I-9 revamp)
                                  * + zcl_diff_staged_header_admit (S-11 mini-diff)
                                  * + zcl_utxo_projection_diff (Phase 4b 24h cutover gate)
-                                 * + zcl_block_index_diff (Phase 4c 24h cutover gate) */
+                                 * + zcl_block_index_diff (Phase 4c 24h cutover gate)
+                                 * + zcl_replay_verify (cutover PROVE Tier-1) */
 #define EXPECTED_NET         9  /* + zcl_peer_report (wave 4 #5),
                                  * + zcl_onion_health (wave 6 #7) */
 #define EXPECTED_WALLET     20
@@ -184,7 +186,7 @@ static int test_ops_domain_count(void)
 static int test_chain_domain_count(void)
 {
     int failures = 0;
-    TEST("controllers: chain domain has 16 tools") {
+    TEST("controllers: chain domain has EXPECTED_CHAIN tools") {
         register_all();
         size_t n = count_by_domain("chain");
         if (n != EXPECTED_CHAIN) {
