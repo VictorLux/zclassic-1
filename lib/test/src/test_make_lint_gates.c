@@ -856,6 +856,9 @@ static int t_scoreboard_operator_gate_contract(void)
         ASSERT(strstr(buf, "local_height") != NULL);
         ASSERT(strstr(buf, "target_height") != NULL);
         ASSERT(strstr(buf, "projection_lag") != NULL);
+        ASSERT(strstr(buf, "projection_ready") != NULL);
+        ASSERT(strstr(buf, "projection_gate") != NULL);
+        ASSERT(strstr(buf, "diagnostic_only") != NULL);
         ASSERT(strstr(buf, "state_ready") != NULL);
         ASSERT(strstr(buf, "cursor_lag") != NULL);
         ASSERT(strstr(buf, "window_complete") != NULL);

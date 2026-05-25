@@ -153,7 +153,7 @@ int test_node_health_service(void)
 
         bool ok = node_health_chain_advance_synced(&decision);
         decision.projection_lag = 2;
-        ok = ok && !node_health_chain_advance_synced(&decision);
+        ok = ok && node_health_chain_advance_synced(&decision);
         decision.projection_lag = 0;
         snprintf(decision.blocker, sizeof(decision.blocker),
                  "body-hash-mismatch");

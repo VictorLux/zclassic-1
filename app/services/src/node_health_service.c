@@ -146,9 +146,6 @@ bool node_health_chain_advance_synced(const struct cac_decision *decision)
         return false;
     if (decision->local_height + 1 < decision->target_height)
         return false;
-    if (decision->projection_lag < 0 || decision->projection_lag > 1)
-        return false;
-
     const struct cac_source_status *source =
         &decision->sources[decision->selected_source];
     return source->available && source->healthy && source->selectable &&

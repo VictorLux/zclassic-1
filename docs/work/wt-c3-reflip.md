@@ -164,3 +164,9 @@ binaries do not yet emit `chain_advance.not_ready_reason` or `target_gap`,
 `tools/scoreboard.sh --cutover` derives them from the existing chain-advance
 decision, selected-source, blocker, height, and projection-lag fields. Operators
 get an actionable preflight reason before the next deploy instead of `unknown`.
+
+C-3 gate separation shipped in wt3: read-side SQLite projection lag remains
+visible as `projection_ready`/`projection_gate=diagnostic_only`, but it no longer
+counts as chain-advance unsynced for the validate-headers authority gate. The
+projection backlog is repairable derived state; the C-3 gate now keys on source
+selection, local/target height, explicit blockers, and source health.

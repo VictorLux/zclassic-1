@@ -129,11 +129,12 @@ def chain_advance_not_ready_reason(ca_gate):
         return "invalid_heights"
     if local_height + 1 < target_height:
         return "target_height_gap"
-    projection_lag = int_or(ca_gate, "projection_lag")
-    if projection_lag is None:
-        return "projection_lag_unknown"
-    if projection_lag < 0 or projection_lag > 1:
-        return "projection_lag"
+    if str_or(ca_gate, "projection_gate", "") != "diagnostic_only":
+        projection_lag = int_or(ca_gate, "projection_lag")
+        if projection_lag is None:
+            return "projection_lag_unknown"
+        if projection_lag < 0 or projection_lag > 1:
+            return "projection_lag"
     if fmt_bool(ca_gate, "source_ready") != "true":
         return "source_not_ready"
     return "unknown"
@@ -224,6 +225,8 @@ print(
     f"local_height={ca_gate.get('local_height', 'unknown')} "
     f"target_height={ca_gate.get('target_height', 'unknown')} "
     f"projection_lag={ca_gate.get('projection_lag', 'unknown')} "
+    f"projection_ready={fmt_bool(ca_gate, 'projection_ready')} "
+    f"projection_gate={ca_gate.get('projection_gate', 'unknown')} "
     f"selected_source_blocker={ca_gate.get('selected_source_blocker', '')} "
     f"blocker={ca_gate.get('blocker', '')}"
 )

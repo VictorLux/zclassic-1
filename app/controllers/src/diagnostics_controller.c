@@ -1018,6 +1018,7 @@ static bool push_cutover_chain_advance_gate_json(struct json_value *out)
             s->selection_blocker[0] == '\0';
     }
     bool ready = node_health_chain_advance_synced(&d);
+    bool projection_ready = d.projection_lag >= 0 && d.projection_lag <= 1;
     const char *not_ready_reason = "";
     int64_t target_gap = 0;
     if (d.local_height >= 0 && d.target_height >= 0 &&
@@ -1035,8 +1036,6 @@ static bool push_cutover_chain_advance_gate_json(struct json_value *out)
             not_ready_reason = "invalid_heights";
         else if (d.local_height + 1 < d.target_height)
             not_ready_reason = "target_height_gap";
-        else if (d.projection_lag < 0 || d.projection_lag > 1)
-            not_ready_reason = "projection_lag";
         else if (!source_ready)
             not_ready_reason = "source_not_ready";
         else
@@ -1063,6 +1062,8 @@ static bool push_cutover_chain_advance_gate_json(struct json_value *out)
     json_push_kv_int(out, "projection_height",
                      (int64_t)d.projection_height);
     json_push_kv_int(out, "projection_lag", d.projection_lag);
+    json_push_kv_bool(out, "projection_ready", projection_ready);
+    json_push_kv_str(out, "projection_gate", "diagnostic_only");
     json_push_kv_bool(out, "projection_deferred",
                       d.projection_deferred);
     json_push_kv_str(out, "projection_state", d.projection_state);
