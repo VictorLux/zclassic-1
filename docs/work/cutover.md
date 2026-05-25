@@ -33,6 +33,10 @@ datadir, boot ordering). Prove correctness **off** the live node instead.
   step (port `disconnect_tip` UTXO unwind + `BLOCK_FAILED` propagation), and the
   proof MUST include a **reorg corpus** (branch A, heavier branch B; assert
   disconnect+reconnect+UTXO-unwind byte-matches legacy).
+  - Progress: `tip_finalize` successful rows now persist the finalized tip hash,
+    detect a coherent active-chain fork on restart/step, rewind the durable cursor
+    to the last matching finalized row, and replay from the fork boundary. The
+    remaining hard part is still the actual disconnect/UTXO unwind parity proof.
 - **Tiered replay driver** (~500 LOC over existing primitives: `block_log_legacy_open`
   + `iter_from` → `shadow_feeder_observe_block` → the three divergence counters +
   `diff_with_legacy_shadow`):

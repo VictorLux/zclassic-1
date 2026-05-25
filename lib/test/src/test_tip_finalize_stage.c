@@ -180,6 +180,27 @@ static bool log_row_at(sqlite3 *db, int height, int *out_ok,
     return found;
 }
 
+static bool log_tip_hash_at(sqlite3 *db, int height, struct uint256 *out)
+{
+    uint256_set_null(out);
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(db,
+        "SELECT tip_hash FROM tip_finalize_log WHERE height = ?",
+        -1, &st, NULL) != SQLITE_OK) return false;
+    sqlite3_bind_int(st, 1, height);
+    bool found = false;
+    if (sqlite3_step(st) == SQLITE_ROW) {
+        const void *blob = sqlite3_column_blob(st, 0);
+        int n = sqlite3_column_bytes(st, 0);
+        if (blob && n == 32) {
+            memcpy(out->data, blob, 32);
+            found = true;
+        }
+    }
+    sqlite3_finalize(st);
+    return found;
+}
+
 static bool fake_utxo_count(int height_after, int64_t *out_count, void *user)
 {
     struct synth_chain_tf *sc = user;
@@ -288,6 +309,44 @@ int test_tip_finalize_stage(void)
         TF_CHECK("reorg: depth > 0", depth > 0);
         TF_CHECK("reorg: cursor advances to 2",
                  tip_finalize_stage_cursor() == 2);
+        tf_teardown(dir, &ms, &sc);
+    }
+
+    {
+        char dir[256]; struct main_state ms; struct synth_chain_tf sc;
+        TF_CHECK("reorg_replay: setup",
+                 tf_setup("reorg_replay", 3, TF_FAIL_NONE, -1,
+                          dir, sizeof(dir), &ms, &sc) == 0);
+        TF_CHECK("reorg_replay: initial drain",
+                 tip_finalize_stage_drain(100) == 3);
+        TF_CHECK("reorg_replay: cursor at old tip",
+                 tip_finalize_stage_cursor() == 3);
+
+        sc.hashes[2].data[0] = 0xf2;
+        sc.hashes[3].data[0] = 0xf3;
+        sc.blocks[2].pprev = &sc.blocks[1];
+        sc.blocks[3].pprev = &sc.blocks[2];
+        arith_uint256_set_u64(&sc.blocks[2].nChainWork, 20);
+        arith_uint256_set_u64(&sc.blocks[3].nChainWork, 30);
+        TF_CHECK("reorg_replay: installs coherent fork",
+                 active_chain_set_tip(&ms.chain_active, &sc.blocks[3]));
+
+        TF_CHECK("reorg_replay: rewinds and replays fork block",
+                 tip_finalize_stage_step_once() == STAGE_ADVANCED);
+        TF_CHECK("reorg_replay: cursor is fork+1",
+                 tip_finalize_stage_cursor() == 2);
+        TF_CHECK("reorg_replay: counter increments",
+                 tip_finalize_stage_reorg_detected_total() == 1);
+        int ok = -1, depth = -1; int64_t utxos = -1; char status[32];
+        struct uint256 logged;
+        log_row_at(progress_store_db(), 1, &ok, status, sizeof(status),
+                   &depth, &utxos);
+        TF_CHECK("reorg_replay: row rewritten ok", ok == 1);
+        TF_CHECK("reorg_replay: row rewritten finalized",
+                 strcmp(status, "finalized") == 0);
+        TF_CHECK("reorg_replay: row hash updated",
+                 log_tip_hash_at(progress_store_db(), 1, &logged) &&
+                 uint256_eq(&logged, sc.blocks[2].phashBlock));
         tf_teardown(dir, &ms, &sc);
     }
 

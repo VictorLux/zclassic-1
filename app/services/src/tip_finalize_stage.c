@@ -20,6 +20,7 @@
 #include <pthread.h>
 #include <sqlite3.h>
 #include <stdatomic.h>
+#include <limits.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -30,6 +31,13 @@ struct utxo_apply_row {
     int ok;
     int64_t spent_count;
     int64_t added_count;
+};
+
+struct finalized_tip_row {
+    bool found;
+    bool ok;
+    bool has_tip_hash;
+    struct uint256 tip_hash;
 };
 
 static pthread_mutex_t g_lock = PTHREAD_MUTEX_INITIALIZER;
@@ -74,6 +82,18 @@ static bool ensure_log_schema(sqlite3 *db)
                 err ? err : "(no message)");
         if (err) sqlite3_free(err);
         return false;
+    }
+    if (sqlite3_exec(db,
+        "ALTER TABLE tip_finalize_log ADD COLUMN tip_hash BLOB",
+        NULL, NULL, &err) != SQLITE_OK) {
+        if (!err || strstr(err, "duplicate column name") == NULL) {
+            fprintf(stderr,  // obs-ok:tip-finalize-schema-failure
+                    "[tip_finalize] schema alter failed: %s\n",
+                    err ? err : "(no message)");
+            if (err) sqlite3_free(err);
+            return false;
+        }
+        sqlite3_free(err);
     }
     return true;
 }
@@ -155,14 +175,15 @@ static bool utxo_apply_sums_through(sqlite3 *db, int height,
 
 static bool log_insert(sqlite3 *db, int height, const char *status, bool ok,
                        const struct arith_uint256 *work_delta,
-                       int64_t utxo_size_after, int reorg_depth)
+                       int64_t utxo_size_after, int reorg_depth,
+                       const struct uint256 *tip_hash)
 {
     sqlite3_stmt *stmt = NULL;
     int rc = sqlite3_prepare_v2(db,
         "INSERT OR REPLACE INTO tip_finalize_log "
         "(height, status, ok, work_delta_high, work_delta_low, "
-        " utxo_size_after, reorg_depth, finalized_at) "
-        "VALUES (?,?,?,?,?,?,?,?)",
+        " utxo_size_after, reorg_depth, finalized_at, tip_hash) "
+        "VALUES (?,?,?,?,?,?,?,?,?)",
         -1, &stmt, NULL);
     if (rc != SQLITE_OK) {
         fprintf(stderr,  // obs-ok:tip-finalize-log-prepare-failure
@@ -185,6 +206,10 @@ static bool log_insert(sqlite3 *db, int height, const char *status, bool ok,
     sqlite3_bind_int64(stmt, 6, (sqlite3_int64)utxo_size_after);
     sqlite3_bind_int  (stmt, 7, reorg_depth);
     sqlite3_bind_int64(stmt, 8, (sqlite3_int64)wall_now_s());
+    if (tip_hash)
+        sqlite3_bind_blob(stmt, 9, tip_hash->data, 32, SQLITE_STATIC);
+    else
+        sqlite3_bind_null(stmt, 9);
     rc = sqlite3_step(stmt);  // raw-sql-ok:kernel-primitive
     sqlite3_finalize(stmt);
     if (rc != SQLITE_DONE) {
@@ -192,6 +217,41 @@ static bool log_insert(sqlite3 *db, int height, const char *status, bool ok,
                 "[tip_finalize] insert height=%d rc=%d\n", height, rc);
         return false;
     }
+    return true;
+}
+
+static bool finalized_tip_row_at(sqlite3 *db, int height,
+                                 struct finalized_tip_row *out)
+{
+    memset(out, 0, sizeof(*out));
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(db,
+        "SELECT ok, tip_hash FROM tip_finalize_log WHERE height = ?",
+        -1, &st, NULL) != SQLITE_OK) {
+        fprintf(stderr,  // obs-ok:tip-finalize-hash-prepare-failure
+                "[tip_finalize] finalized row prepare failed: %s\n",
+                sqlite3_errmsg(db));
+        return false;
+    }
+    sqlite3_bind_int(st, 1, height);
+    int rc = sqlite3_step(st);  // raw-sql-ok:kernel-primitive
+    if (rc == SQLITE_ROW) {
+        out->found = true;
+        out->ok = sqlite3_column_int(st, 0) != 0;
+        const void *blob = sqlite3_column_blob(st, 1);
+        int n = sqlite3_column_bytes(st, 1);
+        if (blob && n == 32) {
+            memcpy(out->tip_hash.data, blob, 32);
+            out->has_tip_hash = true;
+        }
+    } else if (rc != SQLITE_DONE) {
+        fprintf(stderr,  // obs-ok:tip-finalize-hash-step-failure
+                "[tip_finalize] finalized row step failed rc=%d: %s\n",
+                rc, sqlite3_errmsg(db));
+        sqlite3_finalize(st);
+        return false;
+    }
+    sqlite3_finalize(st);
     return true;
 }
 
@@ -241,6 +301,81 @@ static bool preconditions_ok(const struct block_index *bi)
     return true;
 }
 
+static bool finalized_row_active_match(sqlite3 *db, int row_height,
+                                       bool *out_known,
+                                       bool *out_matches)
+{
+    *out_known = false;
+    *out_matches = false;
+    struct finalized_tip_row row;
+    if (!finalized_tip_row_at(db, row_height, &row))
+        return false;
+    if (!row.found || !row.ok || !row.has_tip_hash)
+        return true;
+
+    struct main_state *ms = g_ms;
+    struct block_index *active =
+        ms ? active_chain_at(&ms->chain_active, row_height + 1) : NULL;
+    if (!active || !active->phashBlock)
+        return true;
+    *out_known = true;
+    *out_matches = uint256_eq(&row.tip_hash, active->phashBlock);
+    return true;
+}
+
+static bool rewind_cursor_if_active_chain_reorged(sqlite3 *db)
+{
+    if (!g_stage || !g_ms)
+        return true;
+
+    uint64_t cursor = upstream_cursor_persisted(db, STAGE_NAME);
+    if (cursor == 0)
+        return true;
+    if (cursor > (uint64_t)INT32_MAX) {
+        fprintf(stderr,  // obs-ok:tip-finalize-rewind-failure
+                "[tip_finalize] reorg rewind cursor too large: %llu\n",
+                (unsigned long long)cursor);
+        return false;
+    }
+
+    bool known = false;
+    bool matches = false;
+    if (!finalized_row_active_match(db, (int)cursor - 1, &known, &matches))
+        return false;
+    if (!known || matches)
+        return true;
+
+    uint64_t rewind_to = 0;
+    for (int h = (int)cursor - 2; h >= 0; h--) {
+        known = false;
+        matches = false;
+        if (!finalized_row_active_match(db, h, &known, &matches))
+            return false;
+        if (known && matches) {
+            rewind_to = (uint64_t)h + 1u;
+            break;
+        }
+    }
+    if (rewind_to == cursor)
+        return true;
+
+    if (!stage_set_cursor(g_stage, db, rewind_to)) {
+        fprintf(stderr,  // obs-ok:tip-finalize-rewind-failure
+                "[tip_finalize] reorg rewind failed from=%llu to=%llu\n",
+                (unsigned long long)cursor,
+                (unsigned long long)rewind_to);
+        return false;
+    }
+
+    atomic_fetch_add(&g_reorg_detected_total, 1);
+    atomic_store(&g_last_blocked_unix, wall_now_s());
+    event_emitf(EV_BLOCK_REJECTED, 0,
+                "tip_finalize reorg_cursor_rewind from=%llu to=%llu",
+                (unsigned long long)cursor,
+                (unsigned long long)rewind_to);
+    return true;
+}
+
 static bool live_utxo_count_after(int height_after, int64_t *out_count)
 {
     *out_count = -1;
@@ -279,7 +414,7 @@ static stage_result_t step_finalize(struct stage_step_ctx *c)
         struct arith_uint256 zero;
         arith_uint256_set_zero(&zero);
         if (!log_insert(db, next_h, "upstream_failed", false, &zero,
-                        -1, 0))
+                        -1, 0, NULL))
             return STAGE_ERROR;
         atomic_fetch_add(&g_upstream_failed_total, 1);
         atomic_store(&g_last_advance_height, (int64_t)next_h);
@@ -305,7 +440,7 @@ static stage_result_t step_finalize(struct stage_step_ctx *c)
     if (new_tip->pprev != old_tip) {
         int depth = reorg_depth_from(old_tip, new_tip);
         if (!log_insert(db, next_h, "reorg_detected", false, &work_delta,
-                        -1, depth))
+                        -1, depth, NULL))
             return STAGE_ERROR;
         atomic_fetch_add(&g_reorg_detected_total, 1);
         event_emitf(EV_BLOCK_REJECTED, 0,
@@ -319,7 +454,7 @@ static stage_result_t step_finalize(struct stage_step_ctx *c)
         arith_uint256_compare(&new_tip->nChainWork,
                               &old_tip->nChainWork) <= 0) {
         if (!log_insert(db, next_h, "precondition_failed", false,
-                        &work_delta, -1, 0))
+                        &work_delta, -1, 0, NULL))
             return STAGE_ERROR;
         atomic_fetch_add(&g_precondition_failed_total, 1);
         event_emitf(EV_BLOCK_REJECTED, 0,
@@ -341,7 +476,7 @@ static stage_result_t step_finalize(struct stage_step_ctx *c)
         int64_t expected = added - spent;
         if (utxo_size_after != expected) {
             if (!log_insert(db, next_h, "utxo_count_diverged", false,
-                            &work_delta, utxo_size_after, 0))
+                            &work_delta, utxo_size_after, 0, NULL))
                 return STAGE_ERROR;
             atomic_fetch_add(&g_utxo_count_diverged_total, 1);
             event_emitf(EV_BLOCK_REJECTED, 0,
@@ -355,7 +490,7 @@ static stage_result_t step_finalize(struct stage_step_ctx *c)
     }
 
     if (!log_insert(db, next_h, "finalized", true, &work_delta,
-                    utxo_size_after, 0))
+                    utxo_size_after, 0, new_tip->phashBlock))
         return STAGE_ERROR;
 
     atomic_fetch_add(&g_finalized_total, 1);
@@ -410,6 +545,8 @@ stage_result_t tip_finalize_stage_step_once(void)
     if (!g_stage) return STAGE_IDLE;
     sqlite3 *db = progress_store_db();
     if (!db) return STAGE_IDLE;
+    if (!rewind_cursor_if_active_chain_reorged(db))
+        return STAGE_ERROR;
     return stage_run_once(g_stage, db);
 }
 
