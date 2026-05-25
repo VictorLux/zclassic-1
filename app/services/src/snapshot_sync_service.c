@@ -418,6 +418,39 @@ void snapsync_get_negotiation_status(struct snapshot_sync_service *svc,
     snapsync_service_unlock_internal();
 }
 
+void snapsync_get_failed_status(struct snapshot_sync_service *svc,
+                                struct snapsync_failed_status *out)
+{
+    struct snapsync_failed_status local = {0};
+    if (!out)
+        out = &local;
+    memset(out, 0, sizeof(*out));
+
+    if (!svc) {
+        svc = app_runtime_snapshot_sync();
+        if (!svc) {
+            if (!snapsync_global_initialized())
+                return;
+            svc = snapsync_global();
+        }
+    }
+
+    snapsync_service_lock_internal();
+    out->failed = svc->state == SNAPSYNC_FAILED;
+    out->offered_height = svc->offered_height;
+    out->offered_utxos = svc->offered_count;
+    out->serving_peer_id = svc->serving_peer_id;
+    out->turbo_active = svc->turbo_active;
+    out->staged_row_count =
+        (svc->ndb && svc->ndb->open) ? snapsync_staging_count_internal(svc->ndb)
+                                     : 0;
+    if (out->failed && svc->start_time_us > 0) {
+        int64_t elapsed_us = snapsync_now_us_internal() - svc->start_time_us;
+        out->elapsed_secs = elapsed_us > 0 ? elapsed_us / 1000000LL : 0;
+    }
+    snapsync_service_unlock_internal();
+}
+
 bool snapsync_check_negotiation_stall(void)
 {
     struct snapshot_sync_service *svc = app_runtime_snapshot_sync();
@@ -440,6 +473,34 @@ bool snapsync_check_negotiation_stall(void)
                 (unsigned long long)st.offered_utxos);
     snapsync_blacklist_peer(svc, st.serving_peer_id);
     snapsync_reset(svc);
+    return true;
+}
+
+bool snapsync_check_failed_reset(void)
+{
+    struct snapshot_sync_service *svc = app_runtime_snapshot_sync();
+    if (!svc) {
+        if (!snapsync_global_initialized())
+            return false;
+        svc = snapsync_global();
+    }
+
+    struct snapsync_failed_status st;
+    snapsync_get_failed_status(svc, &st);
+    if (!st.failed)
+        return false;
+
+    event_emitf(EV_SNAPSYNC_VERIFIED, st.serving_peer_id,
+                "snapshot=FAILED reason=terminal_failed elapsed_s=%lld "
+                "h=%d utxos=%llu staged=%lld action=blacklist_reset",
+                (long long)st.elapsed_secs,
+                st.offered_height,
+                (unsigned long long)st.offered_utxos,
+                (long long)st.staged_row_count);
+    snapsync_blacklist_peer(svc, st.serving_peer_id);
+    snapsync_reset(svc);
+    if (sync_get_state() == SYNC_SNAPSHOT_RECEIVE)
+        sync_set_state(SYNC_HEADERS_DOWNLOAD, "snapshot failed reset");
     return true;
 }
 
