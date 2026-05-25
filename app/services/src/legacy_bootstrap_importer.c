@@ -100,7 +100,6 @@ struct legacy_bootstrap_block_source_options {
 
 struct legacy_bootstrap_block_source {
     struct blocks_mmap *bmr;
-    bool source_checked;
 };
 
 bool legacy_bootstrap_spotcheck_sha3_windows(
@@ -910,7 +909,6 @@ static bool legacy_bootstrap_open_block_source(
     }
 
     out->bmr = bmr;
-    out->source_checked = checked;
     return true;
 }
 
@@ -921,7 +919,6 @@ static void legacy_bootstrap_close_block_source(
         return;
     bmr_close(src->bmr);
     src->bmr = NULL;
-    src->source_checked = false;
 }
 
 static bool legacy_bootstrap_import_cold(
@@ -1038,7 +1035,6 @@ static bool legacy_bootstrap_import_cold(
         return false;
     }
     legacy_bootstrap_close_block_source(&source);
-    r.evidence_armed = true;
 
     struct legacy_bootstrap_snapshot_import_result imported;
     const struct legacy_bootstrap_snapshot_import_options import_opts = {
@@ -1169,7 +1165,6 @@ static bool legacy_bootstrap_import_direct(
         return false;
     }
     struct blocks_mmap *bmr = source.bmr;
-    r.source_checked = source.source_checked;
 
     atomic_store(&g_body_pull_active, 1);
 
@@ -1758,7 +1753,6 @@ static bool legacy_bootstrap_import_attach(
         return false;
     }
     r.stages_stamped = stages_stamped;
-    r.evidence_armed = false;
 
     ldb_snapshot_destroy(idx_snap);
     ldb_snapshot_destroy(cs_snap);

@@ -65,8 +65,6 @@ struct legacy_bootstrap_import_result {
     enum legacy_attach_outcome outcome;
     int64_t stages_stamped;
     double total_secs;
-    bool evidence_armed;
-    bool source_checked;
     bool ok;
 };
 

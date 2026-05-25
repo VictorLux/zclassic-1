@@ -44,6 +44,9 @@ Progress:
 - Attach-stage drift helpers are no longer part of the production importer
   header; they compile only in `ZCL_TESTING`, keeping the canonical header to
   the runtime import contract plus the shared height-map reader.
+- Dead result fields from the old evidence/direct-import split were removed
+  from the canonical result contract; boot only receives fields it reports or
+  acts on.
 
 Verification:
 - `make -j$(nproc) test_zcl`, `make -j$(nproc) zclassic23`, `make lint`, and
