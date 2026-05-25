@@ -375,5 +375,10 @@ the capsule API plus the non-signal save/list/load path.
   paths: `build_id` records the current `CLIENT_NAME` + `CLIENT_VERSION`, and
   `git_sha` is explicitly set to `unknown` until the build injects a commit
   SHA. Focused tests now assert those manifest fields.
+- Filled in boot-installed fatal-signal `log.txt` capture by deriving
+  `<datadir>/node.log` from the installed `<datadir>/postmortems` path and
+  copying a bounded tail with raw syscalls. Forked boot SIGABRT/SIGSEGV tests
+  now seed the node log and assert the captured capsule preserves the
+  breadcrumb.
 
 <!-- Worker: append a Completion section below when done. -->

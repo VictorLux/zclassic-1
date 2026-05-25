@@ -51,6 +51,17 @@ static bool file_contains(const char *path, const char *needle)
     return strstr(buf, needle) != NULL;
 }
 
+static bool write_text_file(const char *path, const char *text)
+{
+    FILE *fp = fopen(path, "wb");
+    if (!fp) return false;
+    if (text && fputs(text, fp) < 0) {
+        fclose(fp);
+        return false;
+    }
+    return fclose(fp) == 0;
+}
+
 static int test_postmortem_install_validates_dir(void)
 {
     int failures = 0;
@@ -171,6 +182,11 @@ static int test_boot_postmortem_install(void)
     PM_CHECK("boot postmortem mkdtemp", dir != NULL);
     if (!dir) return failures + 1;
 
+    char log_seed_path[256];
+    snprintf(log_seed_path, sizeof(log_seed_path), "%s/node.log", dir);
+    PM_CHECK("boot postmortem seed log",
+             write_text_file(log_seed_path, "boot fatal breadcrumb\n"));
+
     bool ok = boot_postmortem_init_for_testing(dir);
     const char *pm_dir = boot_postmortem_dir_for_testing();
     PM_CHECK("boot postmortem init", ok && pm_dir != NULL);
@@ -206,6 +222,11 @@ static int test_boot_postmortem_install(void)
                      entries[0].path);
             PM_CHECK("boot postmortem proc status captured",
                      file_contains(proc_path, "Name:"));
+            char log_path[576];
+            snprintf(log_path, sizeof(log_path), "%s/log.txt",
+                     entries[0].path);
+            PM_CHECK("boot postmortem log captured",
+                     file_contains(log_path, "boot fatal breadcrumb"));
             seed_tape_t *loaded = postmortem_capsule_load_tape(entries[0].path);
             PM_CHECK("boot postmortem tape loads", loaded != NULL);
             if (loaded)
@@ -227,6 +248,11 @@ static int test_boot_postmortem_restart_compresses_prior_sigsegv(void)
     char *dir = mkdtemp(dir_template);
     PM_CHECK("boot restart mkdtemp", dir != NULL);
     if (!dir) return failures + 1;
+
+    char log_seed_path[256];
+    snprintf(log_seed_path, sizeof(log_seed_path), "%s/node.log", dir);
+    PM_CHECK("boot restart seed log",
+             write_text_file(log_seed_path, "restart fatal breadcrumb\n"));
 
     bool ok = boot_postmortem_init_for_testing(dir);
     const char *pm_dir = boot_postmortem_dir_for_testing();
@@ -273,6 +299,11 @@ static int test_boot_postmortem_restart_compresses_prior_sigsegv(void)
                  entries[0].path);
         PM_CHECK("boot restart proc status captured",
                  file_contains(proc_path, "Name:"));
+        char log_path[576];
+        snprintf(log_path, sizeof(log_path), "%s/log.txt",
+                 entries[0].path);
+        PM_CHECK("boot restart log captured",
+                 file_contains(log_path, "restart fatal breadcrumb"));
     }
 
     boot_postmortem_shutdown_for_testing();

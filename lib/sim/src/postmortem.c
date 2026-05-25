@@ -25,6 +25,7 @@
 
 static seed_tape_t *g_postmortem_tape = NULL;
 static char g_postmortem_dir[512];
+static char g_postmortem_signal_log_path[512];
 static uint8_t *g_postmortem_signal_tape_buf = NULL;
 static size_t g_postmortem_signal_tape_cap = 0;
 static int64_t g_postmortem_install_unix = 0;
@@ -622,6 +623,80 @@ static int signal_copy_file_limited(const char *src, const char *dst,
     return ok;
 }
 
+static int signal_copy_tail_limited(const char *src, const char *dst,
+                                    size_t max_bytes)
+{
+    int in = open(src, O_RDONLY);
+    if (in < 0) return -1;
+
+    off_t end = lseek(in, 0, SEEK_END);
+    if (end < 0) {
+        close(in);
+        return -1;
+    }
+    off_t start = end > (off_t)max_bytes ? end - (off_t)max_bytes : 0;
+    if (lseek(in, start, SEEK_SET) < 0) {
+        close(in);
+        return -1;
+    }
+
+    int out = open(dst, O_CREAT | O_WRONLY | O_TRUNC, 0644);
+    if (out < 0) {
+        close(in);
+        return -1;
+    }
+
+    char buf[512];
+    size_t copied = 0;
+    int ok = 0;
+    while (copied < max_bytes) {
+        size_t want = max_bytes - copied;
+        if (want > sizeof(buf)) want = sizeof(buf);
+        ssize_t got = read(in, buf, want);
+        if (got < 0 && errno == EINTR)
+            continue;
+        if (got < 0) {
+            ok = -1;
+            break;
+        }
+        if (got == 0)
+            break;
+        if (signal_write_all(out, buf, (size_t)got) != got) {
+            ok = -1;
+            break;
+        }
+        copied += (size_t)got;
+    }
+
+    if (close(out) != 0 && ok == 0) ok = -1;
+    if (close(in) != 0 && ok == 0) ok = -1;
+    return ok;
+}
+
+static void derive_signal_log_path(const char *dir)
+{
+    const char suffix[] = "/postmortems";
+    g_postmortem_signal_log_path[0] = '\0';
+
+    if (!dir) return;
+    size_t len = strlen(dir);
+    size_t suffix_len = sizeof(suffix) - 1u;
+    if (len <= suffix_len ||
+        strcmp(dir + len - suffix_len, suffix) != 0) {
+        return;
+    }
+
+    size_t parent_len = len - suffix_len;
+    const char log_suffix[] = "/node.log";
+    size_t log_suffix_len = sizeof(log_suffix) - 1u;
+    if (parent_len + log_suffix_len >= sizeof(g_postmortem_signal_log_path))
+        return;
+
+    memcpy(g_postmortem_signal_log_path, dir, parent_len);
+    memcpy(g_postmortem_signal_log_path + parent_len,
+           log_suffix, log_suffix_len + 1u);
+}
+
 static int signal_write_manifest(const char *path, int sig,
                                  int64_t crash_unix, size_t tape_size)
 {
@@ -841,8 +916,13 @@ static void postmortem_crash_hook(int sig, siginfo_t *info, void *ucontext,
         (void)signal_write_manifest(path, sig, crash_unix, tape_written);
     if (signal_join_path(path, sizeof(path), cap_dir, "procstatus.txt") == 0)
         (void)signal_copy_file_limited("/proc/self/status", path, 8192);
-    if (signal_join_path(path, sizeof(path), cap_dir, "log.txt") == 0)
-        (void)signal_write_empty_file(path);
+    if (signal_join_path(path, sizeof(path), cap_dir, "log.txt") == 0) {
+        if (g_postmortem_signal_log_path[0] == '\0' ||
+            signal_copy_tail_limited(g_postmortem_signal_log_path, path,
+                                     POSTMORTEM_LOG_TAIL_MAX) != 0) {
+            (void)signal_write_empty_file(path);
+        }
+    }
     if (signal_join_path(path, sizeof(path), cap_dir, "coremarker.txt") == 0)
         (void)signal_write_coremarker(path, crash_unix);
 
@@ -866,6 +946,7 @@ int postmortem_install(seed_tape_t *tape, const char *dir)
     }
 
     snprintf(g_postmortem_dir, sizeof(g_postmortem_dir), "%s", dir);
+    derive_signal_log_path(dir);
     g_postmortem_tape = tape;
     g_postmortem_install_unix = clock_now_wall_ms() / 1000;
     g_postmortem_in_handler = 0;
@@ -882,6 +963,7 @@ void postmortem_uninstall(void)
     signal_handler_clear_crash_hook();
     g_postmortem_tape = NULL;
     g_postmortem_dir[0] = '\0';
+    g_postmortem_signal_log_path[0] = '\0';
     free(g_postmortem_signal_tape_buf);
     g_postmortem_signal_tape_buf = NULL;
     g_postmortem_signal_tape_cap = 0;
