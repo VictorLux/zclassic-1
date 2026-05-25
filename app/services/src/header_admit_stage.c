@@ -481,7 +481,9 @@ bool header_admit_stage_diff(int32_t start_h, int32_t end_h,
     out->log_max_height     = log_max_height(db);
     out->chain_tip_height   = active_chain_height(&ms->chain_active);
 
-    /* Resolve auto-bounds. */
+    /* Resolve auto-bounds. A fully automatic diff should answer the
+     * operator question "does the recent stage path match the active
+     * chain?" rather than burning the capped range on genesis. */
     int32_t s = (start_h < 0) ? 0 : start_h;
     int32_t e = end_h;
     if (e < 0) {
@@ -492,6 +494,8 @@ bool header_admit_stage_diff(int32_t start_h, int32_t end_h,
         else if (b < 0)          e = a;
         else                     e = (a < b) ? a : b;
     }
+    if (start_h < 0 && e >= HEADER_ADMIT_DIFF_MAX_RANGE)
+        s = e - HEADER_ADMIT_DIFF_MAX_RANGE + 1;
 
     if (e < s) {
         out->status       = HEADER_ADMIT_DIFF_EMPTY;

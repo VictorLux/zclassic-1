@@ -166,12 +166,14 @@ struct header_admit_diff_report {
 
 /* Compute the diff over [start_h, end_h]. Pass -1 for either bound to
  * mean "auto":
- *   start: 0
+ *   start: recent tail when end is auto, otherwise 0
  *   end:   min(log_max_height, chain_tip_height)
  *
  * The range is hard-capped at HEADER_ADMIT_DIFF_MAX_RANGE heights; if a
- * caller asks for more, the effective end is clamped and reported in
- * `out->end_height`. The caller-owned `out` is fully populated on every
+ * caller asks for more with an explicit start, the effective end is
+ * clamped and reported in `out->end_height`. With both bounds auto, the
+ * effective start is shifted forward so the capped range covers the
+ * most recent heights. The caller-owned `out` is fully populated on every
  * return, including failure cases (status = NOT_READY etc.).
  *
  * Returns true on success (report is valid). Returns false only on

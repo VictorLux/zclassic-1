@@ -832,6 +832,42 @@ int test_header_admit_stage(void)
         test_cleanup_tmpdir(dir);
     }
 
+    /* ── S-11 diff: auto range is the recent tail, not genesis ─────── */
+    {
+        char dir[256];
+        ha_tmpdir(dir, sizeof(dir), "diff_tail");
+        mkdir_p_ha(dir);
+        progress_store_open(dir);
+
+        struct main_state ms;
+        memset(&ms, 0, sizeof(ms));
+        active_chain_init(&ms.chain_active);
+        const int N = HEADER_ADMIT_DIFF_MAX_RANGE + 7;
+        struct synth_chain sc;
+        synth_chain_build(&sc, N);
+        active_chain_set_tip(&ms.chain_active, &sc.blocks[N - 1]);
+
+        header_admit_stage_init(&ms);
+        header_admit_stage_drain(N * 2);
+
+        struct header_admit_diff_report rep;
+        HA_CHECK("diff_tail: auto diff succeeds",
+                 header_admit_stage_diff(-1, -1, &rep));
+        HA_CHECK("diff_tail: auto start is recent tail",
+                 rep.start_height == N - HEADER_ADMIT_DIFF_MAX_RANGE);
+        HA_CHECK("diff_tail: auto end is chain tip",
+                 rep.end_height == N - 1);
+        HA_CHECK("diff_tail: auto checked capped range",
+                 rep.checked_count == HEADER_ADMIT_DIFF_MAX_RANGE &&
+                 rep.match_count == HEADER_ADMIT_DIFF_MAX_RANGE);
+
+        header_admit_stage_shutdown();
+        active_chain_free(&ms.chain_active);
+        synth_chain_free(&sc);
+        progress_store_close();
+        test_cleanup_tmpdir(dir);
+    }
+
     printf("header_admit_stage: %d failures\n", failures);
     return failures;
 }
