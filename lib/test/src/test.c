@@ -236,6 +236,13 @@ int main(void)
                failures);
         return failures ? 1 : 0;
     }
+    if (only && strcmp(only, "shadow_replay_proof") == 0) {
+        printf("[test] ZCL_TEST_ONLY=shadow_replay_proof — running only\n");
+        failures += test_shadow_replay_proof();
+        printf("\n=== shadow_replay_proof subset complete: %d failure(s) ===\n",
+               failures);
+        return failures ? 1 : 0;
+    }
     if (only && strcmp(only, "crypto_registry") == 0) {
         printf("[test] ZCL_TEST_ONLY=crypto_registry — running crypto registry only\n");
         failures += test_crypto_registry();
@@ -810,6 +817,7 @@ int main(void)
     failures += test_shadow_feeder();
     failures += test_shadow_feeder_global();
     failures += test_diff_with_legacy_shadow();
+    failures += test_shadow_replay_proof();
     failures += test_utxo_snapshot_inmem();
     failures += test_make_lint_gates();
     failures += test_multisig();

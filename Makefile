@@ -165,6 +165,7 @@ mock_rpc: tools/mock_rpc.c
 $(eval $(call BUILD_NODE_TOOL,wallet_sim,tools/wallet_sim.c))
 $(eval $(call BUILD_NODE_TOOL,wallet_check,tools/wallet_check.c,-lm))
 $(eval $(call BUILD_NODE_TOOL,rebuild_recent,tools/rebuild_recent.c,-lm,-fopenmp))
+$(eval $(call BUILD_NODE_TOOL,shadow_replay_proof,tools/shadow_replay_proof.c))
 
 .PHONY: sim dump check-wallet
 sim: wallet_sim

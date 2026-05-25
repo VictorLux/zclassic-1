@@ -46,6 +46,10 @@ datadir, boot ordering). Prove correctness **off** the live node instead.
   - *Tier 2 (deep, ~8h nightly/pre-flip):* full `script_validate` + `proof_validate`
     (Groth16), or FlyClient-sampled N at the existing ≥150-bit model.
   - NOT `make chaos` — its consensus is stubbed; it can't prove block equivalence.
+  - Progress: `shadow_replay_proof` now provides the offline byte-replay proof
+    skeleton: primary block log → shadow block log → byte diff, with
+    `blocks_fed == blocks_diffed` required for a passing proof. The CLI can run
+    it against a read-only legacy zclassicd datadir and an empty shadow log.
 - Emits one artifact: *"0 divergences (incl. reorg corpus) across N blocks, commit
   <sha>, datadir <fingerprint>."* Independent of peer count and live state.
 
