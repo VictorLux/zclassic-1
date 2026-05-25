@@ -27,7 +27,7 @@
 #include "conditions/condition_registry.h"
 #include "supervisors/domains.h"
 #include "supervisors/self_heal.h"
-#include "services/header_probe_service.h"
+#include "services/header_probe.h"
 #include "jobs/header_probe_poll.h"
 #include "services/legacy_mirror_sync_service.h"
 #include "services/node_health_service.h"

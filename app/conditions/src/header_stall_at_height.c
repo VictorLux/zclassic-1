@@ -5,7 +5,7 @@
 
 #include "net/connman.h"
 #include "platform/time_compat.h"
-#include "services/header_probe_service.h"
+#include "services/header_probe.h"
 #include "services/sync_monitor.h"
 #include "sync/sync_state.h"
 #include "validation/chainstate.h"

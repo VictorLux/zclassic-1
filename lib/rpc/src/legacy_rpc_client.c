@@ -3,7 +3,7 @@
  * Legacy-node JSON-RPC client. See header for the contract.
  *
  * The implementation mirrors the private helpers that lived in
- * header_probe_service.c (hp_parse_zclassic_conf,
+ * header_probe.c (hp_parse_zclassic_conf,
  * hp_http_rpc_call_dyn, hp_base64_encode). Centralizing them here
  * lets legacy_body_pull share the wire path without forking. */
 

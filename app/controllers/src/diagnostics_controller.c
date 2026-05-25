@@ -39,7 +39,7 @@
 #include "services/chain_restore_service.h"
 #include "services/chain_advance_coordinator.h"
 #include "services/zclassicd_oracle_service.h"
-#include "services/header_probe_service.h"
+#include "services/header_probe.h"
 #include "services/legacy_mirror_sync_service.h"
 #include "services/oracle_policy.h"
 #include "services/quorum_oracle_service.h"

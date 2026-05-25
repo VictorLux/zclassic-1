@@ -1,6 +1,6 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * Header Probe Service — pull headers in bulk from a co-located
+ * Header Probe — pull headers in bulk from a co-located
  * zclassicd (the legacy C++ ZClassic node, RPC 8232) via JSON-RPC
  * when our local header tip lags behind. Validates each fetched
  * header locally via accept_block_header() (Equihash + nBits
@@ -20,7 +20,7 @@
  *   - A supervised header_probe_poll Job calls header_probe_tick_once()
  *     whenever our header tip trails the remote tip by more than
  *     `lag_threshold`.
- *   - No new pthreads. Service is OPT-IN — boot.c does not start it.
+ *   - No new pthreads. The supervised header_probe_poll Job owns cadence.
  *
  * See CLAUDE.md "Adding state introspection" — this module follows
  * the *_dump_state_json convention and is wired into the generic

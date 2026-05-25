@@ -5,7 +5,7 @@
  * A tiny POSIX-sockets HTTP/1.1 JSON-RPC client used to talk to a
  * sibling zclassicd (the legacy C++ daemon) when bootstrapping our
  * tip from its already-synced datadir. Bookkeeping that was previously
- * private to header_probe_service.c lives here so other consumers
+ * private to header_probe.c lives here so other consumers
  * (legacy_body_pull, ad-hoc tooling) can share the transport without
  * forking the code.
  *

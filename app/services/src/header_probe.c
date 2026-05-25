@@ -1,6 +1,6 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * Header Probe Service. See header for the high-level rationale.
+ * Header Probe. See header for the high-level rationale.
  *
  * Layout:
  *   1. Config + creds
@@ -12,7 +12,7 @@
  * header_probe_poll Job owns cadence and calls header_probe_tick_once().
  */
 
-#include "services/header_probe_service.h"
+#include "services/header_probe.h"
 
 #include "platform/clock.h"
 #include "services/header_admit_inbox.h"

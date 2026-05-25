@@ -13,7 +13,7 @@
  */
 
 #include "test/test_helpers.h"
-#include "services/header_probe_service.h"
+#include "services/header_probe.h"
 #include "controllers/wallet_helpers.h"
 #include "validation/main_state.h"
 #include "validation/chainstate.h"
@@ -295,9 +295,9 @@ static void hp_teardown(void)
 
 /* ── Tests ─────────────────────────────────────────────────────── */
 
-int test_header_probe_service(void);
+int test_header_probe(void);
 
-int test_header_probe_service(void)
+int test_header_probe(void)
 {
     printf("\n=== header probe service tests ===\n");
     int failures = 0;

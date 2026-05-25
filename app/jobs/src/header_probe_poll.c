@@ -4,7 +4,7 @@
 
 #include "jobs/header_probe_poll.h"
 
-#include "services/header_probe_service.h"
+#include "services/header_probe.h"
 #include "supervisors/domains.h"
 #include "util/supervisor.h"
 

@@ -482,7 +482,7 @@ int main(void)
     }
     if (only && strcmp(only, "header_probe") == 0) {
         printf("[test] ZCL_TEST_ONLY=header_probe — running header probe service only\n");
-        failures += test_header_probe_service();
+        failures += test_header_probe();
         printf("\n=== header_probe subset complete: %d failure(s) ===\n",
                failures);
         return failures ? 1 : 0;
@@ -745,7 +745,7 @@ int main(void)
     failures += test_disk_block_io();
     failures += test_msg_handlers();
     failures += test_zclassicd_oracle();
-    failures += test_header_probe_service();
+    failures += test_header_probe();
     { extern int test_lag_slo(void); failures += test_lag_slo(); }
 
     /* Spec-based user story tests */

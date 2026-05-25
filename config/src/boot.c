@@ -21,7 +21,7 @@
 #include "services/legacy_cold_import.h"
 #include "services/legacy_direct_import.h"
 #include "services/legacy_oneshot_import.h"
-#include "services/header_probe_service.h"
+#include "services/header_probe.h"
 #include "services/block_index_integrity.h"
 #include "services/wallet_backup_service.h"
 #include "services/disk_monitor.h"

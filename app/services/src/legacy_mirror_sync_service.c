@@ -2,14 +2,14 @@
  *
  * Always-on legacy mirror sync service. zclassicd is used only as an
  * availability source; headers still flow through accept_block_header()
- * via header_probe_service and bodies through process_new_block() via
+ * via header_probe and bodies through process_new_block() via
  * legacy_body_pull.
  */
 
 #include "platform/time_compat.h"
 #include "services/legacy_mirror_sync_service.h"
 
-#include "services/header_probe_service.h"
+#include "services/header_probe.h"
 #include "services/legacy_body_pull.h"
 #include "services/chain_activation_controller.h"
 #include "services/chain_evidence_controller.h"
