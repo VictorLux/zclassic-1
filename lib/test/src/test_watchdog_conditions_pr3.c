@@ -5,8 +5,10 @@
 #include "conditions/watchdog_dissolve_pr3.h"
 #include "framework/condition.h"
 #include "platform/clock.h"
+#include "services/header_admit_stage.h"
 #include "services/snapshot_sync_service.h"
 #include "services/sync_monitor.h"
+#include "services/validate_headers_stage.h"
 #include "sync/sync_state.h"
 #include "validation/chainstate.h"
 
@@ -23,6 +25,7 @@
 void register_peer_floor_violated(void);
 void register_sync_violation_lag(void);
 void register_snapshot_offer_ready(void);
+void register_cutover_no_forward_progress(void);
 
 struct fake_clock_pr3 {
     _Atomic int64_t wall_ms;
@@ -63,6 +66,7 @@ static void reset_pr3(struct connman *cm,
     peer_floor_violated_test_reset();
     sync_violation_lag_test_reset();
     snapshot_offer_ready_test_reset();
+    cutover_no_forward_progress_test_reset();
     memset(cm, 0, sizeof(*cm));
     memset(dm, 0, sizeof(*dm));
     memset(ms, 0, sizeof(*ms));
@@ -82,6 +86,8 @@ static void cleanup_pr3(void)
     sync_monitor_set_context(NULL, NULL, NULL);
     clock_reset_default();
     unsetenv("ZCL_PEERLESS_OK");
+    header_admit_set_mode(HEADER_ADMIT_MODE_SHADOW);
+    validate_headers_set_mode(VALIDATE_HEADERS_MODE_SHADOW);
     if (sync_get_state() != SYNC_IDLE)
         sync_set_state(SYNC_IDLE, "test cleanup");
 }
@@ -239,6 +245,89 @@ int test_watchdog_conditions_pr3(void)
         ok = ok && sync_get_state() == SYNC_AT_TIP;
         ok = ok && condition_engine_get_active_count() == 0;
         WDP3_CHECK("snapshot offer ready ignores at-tip state", ok);
+        cleanup_pr3();
+    }
+
+    {
+        struct fake_clock_pr3 clock;
+        fake_clock_install(&clock, 5000);
+        struct connman cm;
+        struct download_manager dm;
+        struct main_state ms;
+        reset_pr3(&cm, &dm, &ms);
+        bool ok = true;
+        register_cutover_no_forward_progress();
+
+        struct block_index tip = {0};
+        tip.nHeight = 100;
+        ok = ok && active_chain_set_tip(&ms.chain_active, &tip);
+        sync_monitor_on_block_connected(100);
+
+        struct p2p_node peer = {0};
+        peer.id = 1;
+        peer.starting_height = 101;
+        peer.state = PEER_ACTIVE;
+        struct p2p_node *peers[1] = { &peer };
+        cm.manager.nodes = peers;
+        cm.manager.num_nodes = 1;
+
+        header_admit_set_mode(HEADER_ADMIT_MODE_AUTHORITATIVE);
+        validate_headers_set_mode(VALIDATE_HEADERS_MODE_AUTHORITATIVE);
+
+        condition_engine_tick();
+        ok = ok && cutover_no_forward_progress_test_remedy_calls() == 0;
+        ok = ok && header_admit_get_mode() == HEADER_ADMIT_MODE_AUTHORITATIVE;
+        ok = ok && validate_headers_get_mode() ==
+             VALIDATE_HEADERS_MODE_AUTHORITATIVE;
+
+        fake_clock_set(&clock, 5181);
+        condition_engine_tick();
+        ok = ok && cutover_no_forward_progress_test_remedy_calls() == 1;
+        ok = ok && header_admit_get_mode() == HEADER_ADMIT_MODE_SHADOW;
+        ok = ok && validate_headers_get_mode() ==
+             VALIDATE_HEADERS_MODE_SHADOW;
+        ok = ok && condition_engine_get_unresolved_count() == 1;
+
+        struct block_index next = {0};
+        next.nHeight = 101;
+        ok = ok && active_chain_set_tip(&ms.chain_active, &next);
+        sync_monitor_on_block_connected(101);
+        condition_engine_tick();
+        ok = ok && condition_engine_get_active_count() == 0;
+        WDP3_CHECK("cutover guard reverts stuck authoritative stages", ok);
+        cleanup_pr3();
+    }
+
+    {
+        struct fake_clock_pr3 clock;
+        fake_clock_install(&clock, 6000);
+        struct connman cm;
+        struct download_manager dm;
+        struct main_state ms;
+        reset_pr3(&cm, &dm, &ms);
+        bool ok = true;
+        register_cutover_no_forward_progress();
+
+        struct block_index tip = {0};
+        tip.nHeight = 100;
+        ok = ok && active_chain_set_tip(&ms.chain_active, &tip);
+        sync_monitor_on_block_connected(100);
+
+        struct p2p_node peer = {0};
+        peer.id = 1;
+        peer.starting_height = 100;
+        peer.state = PEER_ACTIVE;
+        struct p2p_node *peers[1] = { &peer };
+        cm.manager.nodes = peers;
+        cm.manager.num_nodes = 1;
+
+        validate_headers_set_mode(VALIDATE_HEADERS_MODE_AUTHORITATIVE);
+        fake_clock_set(&clock, 6181);
+        condition_engine_tick();
+        ok = ok && cutover_no_forward_progress_test_remedy_calls() == 0;
+        ok = ok && validate_headers_get_mode() ==
+             VALIDATE_HEADERS_MODE_AUTHORITATIVE;
+        WDP3_CHECK("cutover guard ignores at-tip authoritative mode", ok);
         cleanup_pr3();
     }
 
