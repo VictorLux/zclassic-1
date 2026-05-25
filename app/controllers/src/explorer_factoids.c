@@ -27,11 +27,7 @@
 #include <time.h>
 
 #define fq_i64 sql_query_i64
-
-static void fq_text(sqlite3 *db, const char *sql, char *out, size_t outmax)
-{
-    sql_query_text(db, sql, out, outmax);
-}
+#define fq_text sql_query_text
 
 /* ── SHA3-256 receipt computation ─────────────────────────── */
 
@@ -71,6 +67,56 @@ static void compute_full_hash(char *hex_out, size_t hex_max,
         snprintf(hex_out + i * 2, hex_max - (size_t)(i * 2), "%02x", digest[i]);
 }
 
+/* Rolling SHA3-256 over the last 100 blocks' packed data + hash string.
+ * Shared by the HTML "Data Integrity" section and the JSON API so the
+ * receipt is computed in exactly one place. Writes the full 64-hex
+ * digest into hex_out (must be >= 65 bytes). */
+static void compute_integrity_hash(sqlite3 *db, int64_t chain_height,
+                                   char *hex_out, size_t hex_max)
+{
+    if (hex_max > 0) hex_out[0] = '\0';
+
+    struct sha3_256_ctx ctx;
+    sha3_256_init(&ctx);
+
+    char sql[256];
+    snprintf(sql, sizeof(sql),
+        "SELECT height, hash, time, num_tx, sapling_value, "
+        "COALESCE(sprout_value, 0) "
+        "FROM blocks WHERE height > %" PRId64 " ORDER BY height",
+        chain_height > 100 ? chain_height - 100 : (int64_t)0);
+
+    sqlite3_stmt *s = NULL;
+    if (sqlite3_prepare_v2(db, sql, -1, &s, NULL) == SQLITE_OK && s) {
+        while (AR_STEP_ROW_READONLY(s) == SQLITE_ROW) {
+            int64_t h = sqlite3_column_int64(s, 0);
+            const char *hash = (const char *)sqlite3_column_text(s, 1);
+            int64_t t = sqlite3_column_int64(s, 2);
+            int64_t ntx = sqlite3_column_int64(s, 3);
+            int64_t sv = sqlite3_column_int64(s, 4);
+            int64_t spv = sqlite3_column_int64(s, 5);
+
+            /* Pack: height(8) + time(8) + num_tx(4) + sapling_value(8) +
+             *       sprout_value(8) = 36 bytes */
+            uint8_t data[36];
+            for (int j = 0; j < 8; j++) data[j]      = (uint8_t)((h   >> (j*8)) & 0xff);
+            for (int j = 0; j < 8; j++) data[8 + j]  = (uint8_t)((t   >> (j*8)) & 0xff);
+            for (int j = 0; j < 4; j++) data[16 + j] = (uint8_t)((ntx >> (j*8)) & 0xff);
+            for (int j = 0; j < 8; j++) data[20 + j] = (uint8_t)((sv  >> (j*8)) & 0xff);
+            for (int j = 0; j < 8; j++) data[28 + j] = (uint8_t)((spv >> (j*8)) & 0xff);
+
+            sha3_256_write(&ctx, data, 36);
+            if (hash)
+                sha3_256_write(&ctx, (const unsigned char *)hash, strlen(hash));
+        }
+        sqlite3_finalize(s);
+    }
+
+    unsigned char digest[32];
+    sha3_256_finalize(&ctx, digest);
+    compute_full_hash(hex_out, hex_max, digest, 32);
+}
+
 /* Receipt from two int64s + label */
 static void compute_receipt_i64(char *hex_out, size_t hex_max,
                                 int64_t val1, int64_t val2,
@@ -91,12 +137,11 @@ static void compute_receipt_i64(char *hex_out, size_t hex_max,
 
 /* ── Format helpers ───────────────────────────────────────── */
 
+/* Thin aliases over the canonical formatters in explorer_internal.h /
+ * format_helpers.h — one definition, no reimplementation. */
 static void fmt_time(char *buf, size_t max, int64_t t)
 {
-    time_t ts = (time_t)t;
-    struct tm tm;
-    gmtime_r(&ts, &tm);
-    strftime(buf, max, "%Y-%m-%d %H:%M:%S UTC", &tm);
+    explorer_format_time(buf, max, (uint32_t)t);
 }
 
 static void fmt_zcl(char *buf, size_t max, int64_t zatoshi)
@@ -106,26 +151,7 @@ static void fmt_zcl(char *buf, size_t max, int64_t zatoshi)
 
 static void fmt_comma(char *buf, size_t max, int64_t val)
 {
-    char raw[32];
-    snprintf(raw, sizeof(raw), "%" PRId64, val);
-    size_t len = strlen(raw);
-    size_t start = (raw[0] == '-') ? 1 : 0;
-    size_t digits = len - start;
-    size_t commas = (digits > 0) ? (digits - 1) / 3 : 0;
-    size_t total = len + commas;
-    if (total >= max) { snprintf(buf, max, "%s", raw); return; }
-    buf[total] = '\0';
-    size_t src = len;
-    size_t dst = total;
-    int cnt = 0;
-    while (src > start) {
-        src--;
-        dst--;
-        buf[dst] = raw[src];
-        cnt++;
-        if (cnt == 3 && src > start) { dst--; buf[dst] = ','; cnt = 0; }
-    }
-    if (start) buf[0] = '-';
+    format_with_commas(buf, max, val);
 }
 
 /* ── Shared: get block hash + time at height ─────────────── */
@@ -1630,57 +1656,8 @@ static size_t emit_section_17_integrity(uint8_t *buf, size_t cap, size_t off,
     int64_t tx_count = integrity_tx_stats.total;
 
     char integrity_hash[128] = "";
-    {
-        struct sha3_256_ctx ctx;
-        sha3_256_init(&ctx);
-
-        sqlite3_stmt *s = NULL;
-        char sql[256];
-        snprintf(sql, sizeof(sql),
-            "SELECT height, hash, time, num_tx, sapling_value, "
-            "COALESCE(sprout_value, 0) "
-            "FROM blocks WHERE height > %" PRId64 " ORDER BY height",
-            chain_height > 100 ? chain_height - 100 : (int64_t)0);
-
-        if (sqlite3_prepare_v2(db, sql, -1, &s, NULL) == SQLITE_OK && s) {
-            while (AR_STEP_ROW_READONLY(s) == SQLITE_ROW) {
-                int64_t h = sqlite3_column_int64(s, 0);
-                const char *hash = (const char *)sqlite3_column_text(s, 1);
-                int64_t t = sqlite3_column_int64(s, 2);
-                int64_t ntx = sqlite3_column_int64(s, 3);
-                int64_t sv = sqlite3_column_int64(s, 4);
-                int64_t spv = sqlite3_column_int64(s, 5);
-
-                /* Pack: height(8) + time(8) + num_tx(4) + sapling_value(8) +
-                 *       sprout_value(8) = 36 bytes */
-                uint8_t data[36];
-                for (int j = 0; j < 8; j++)
-                    data[j] = (uint8_t)((h >> (j * 8)) & 0xff);
-                for (int j = 0; j < 8; j++)
-                    data[8 + j] = (uint8_t)((t >> (j * 8)) & 0xff);
-                for (int j = 0; j < 4; j++)
-                    data[16 + j] = (uint8_t)((ntx >> (j * 8)) & 0xff);
-                for (int j = 0; j < 8; j++)
-                    data[20 + j] = (uint8_t)((sv >> (j * 8)) & 0xff);
-                for (int j = 0; j < 8; j++)
-                    data[28 + j] = (uint8_t)((spv >> (j * 8)) & 0xff);
-
-                sha3_256_write(&ctx, data, 36);
-                if (hash)
-                    sha3_256_write(&ctx, (const unsigned char *)hash, strlen(hash));
-            }
-            sqlite3_finalize(s);
-        }
-
-        unsigned char digest[32];
-        sha3_256_finalize(&ctx, digest);
-        for (int i = 0; i < 32 &&
-             (size_t)(i * 2 + 2) <= sizeof(integrity_hash); i++) {
-            snprintf(integrity_hash + i * 2,
-                     sizeof(integrity_hash) - (size_t)(i * 2),
-                     "%02x", digest[i]);
-        }
-    }
+    compute_integrity_hash(db, chain_height, integrity_hash,
+                           sizeof(integrity_hash));
 
     {
         char blk_str[32], tx_str[32];
@@ -2004,38 +1981,8 @@ size_t explorer_factoids_build_json(uint8_t *buf, size_t buf_max,
 
     /* Integrity hash */
     {
-        struct sha3_256_ctx ctx;
-        sha3_256_init(&ctx);
-        sqlite3_stmt *s = NULL;
-        char sql[256];
-        snprintf(sql, sizeof(sql),
-            "SELECT height, hash, time, num_tx, sapling_value, "
-            "COALESCE(sprout_value, 0) "
-            "FROM blocks WHERE height > %" PRId64 " ORDER BY height",
-            chain_height > 100 ? chain_height - 100 : (int64_t)0);
-        if (sqlite3_prepare_v2(db, sql, -1, &s, NULL) == SQLITE_OK && s) {
-            while (AR_STEP_ROW_READONLY(s) == SQLITE_ROW) {
-                int64_t h = sqlite3_column_int64(s, 0);
-                const char *hash = (const char *)sqlite3_column_text(s, 1);
-                int64_t t = sqlite3_column_int64(s, 2);
-                int64_t ntx = sqlite3_column_int64(s, 3);
-                int64_t sv = sqlite3_column_int64(s, 4);
-                int64_t spv = sqlite3_column_int64(s, 5);
-                uint8_t data[36];
-                for (int j = 0; j < 8; j++) data[j] = (uint8_t)((h >> (j*8)) & 0xff);
-                for (int j = 0; j < 8; j++) data[8+j] = (uint8_t)((t >> (j*8)) & 0xff);
-                for (int j = 0; j < 4; j++) data[16+j] = (uint8_t)((ntx >> (j*8)) & 0xff);
-                for (int j = 0; j < 8; j++) data[20+j] = (uint8_t)((sv >> (j*8)) & 0xff);
-                for (int j = 0; j < 8; j++) data[28+j] = (uint8_t)((spv >> (j*8)) & 0xff);
-                sha3_256_write(&ctx, data, 36);
-                if (hash) sha3_256_write(&ctx, (const unsigned char *)hash, strlen(hash));
-            }
-            sqlite3_finalize(s);
-        }
-        unsigned char digest[32];
-        sha3_256_finalize(&ctx, digest);
         char ih[128] = "";
-        compute_full_hash(ih, sizeof(ih), digest, 32);
+        compute_integrity_hash(db, chain_height, ih, sizeof(ih));
         APPEND(off, r, max,
             ",\"integrity\":{\"blocks\":%" PRId64 ",\"hash\":\"%s\"}", chain_height, ih);
     }

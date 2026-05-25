@@ -52,66 +52,6 @@ _Atomic int g_stats_computing = 0;
 _Atomic int g_tokens_computing = 0;
 _Atomic int g_factoids_computing = 0;
 
-__attribute__((unused))
-static void svg_stacked_area(char *out, size_t max, size_t *off,
-                              const char *title,
-                              double bands[][50], int num_bands,
-                              const char band_labels[][32],
-                              const char band_colors[][10],
-                              const char x_labels[][20], int count)
-{
-    if (count < 2) return;
-
-    int w = 800, h = 350, pad_l = 60, pad_r = 20, pad_t = 40, pad_b = 80;
-    int plot_w = w - pad_l - pad_r;
-    int plot_h = h - pad_t - pad_b;
-
-    APPEND(*off, out, max,
-        "<div class='card'>"
-        "<h3 style='color:#33ff99;margin:0 0 8px;font-size:20px'>%s</h3>"
-        "<svg viewBox='0 0 %d %d' style='width:100%%;max-width:%dpx;height:auto;"
-        "background:#0c0c0c;border-radius:8px'>",
-        title, w, h, w);
-
-    /* Draw stacked areas from bottom to top */
-    for (int b = num_bands - 1; b >= 0; b--) {
-        APPEND(*off, out, max,
-            "<polygon fill='%s' fill-opacity='0.7' points='%d,%d ",
-            band_colors[b], pad_l, pad_t + plot_h);
-
-        for (int i = 0; i < count; i++) {
-            double cumulative = 0;
-            for (int k = 0; k <= b; k++) cumulative += bands[k][i];
-            int x = pad_l + plot_w * i / (count - 1);
-            int y = pad_t + plot_h - (int)(cumulative / 100.0 * plot_h);
-            APPEND(*off, out, max, "%d,%d ", x, y);
-        }
-        APPEND(*off, out, max, "%d,%d '/>", w - pad_r, pad_t + plot_h);
-    }
-
-    /* X labels */
-    int label_step = count > 10 ? count / 6 : 1;
-    for (int i = 0; i < count; i += label_step) {
-        int x = pad_l + plot_w * i / (count - 1);
-        APPEND(*off, out, max,
-            "<text x='%d' y='%d' fill='#666' font-size='11' text-anchor='middle'>%s</text>",
-            x, h - pad_b + 16, x_labels[i]);
-    }
-
-    /* Legend */
-    int lx = pad_l;
-    int ly = h - 20;
-    for (int b = 0; b < num_bands; b++) {
-        APPEND(*off, out, max,
-            "<rect x='%d' y='%d' width='12' height='12' fill='%s' rx='2'/>"
-            "<text x='%d' y='%d' fill='#ccc' font-size='11'>%s</text>",
-            lx, ly - 10, band_colors[b], lx + 16, ly, band_labels[b]);
-        lx += 16 + 8 * (int)strlen(band_labels[b]) + 20;
-    }
-
-    APPEND(*off, out, max, "</svg></div>");
-}
-
 /* Stats page — computed in background thread, served from cache */
 #define STATS_CACHE_SIZE (1024 * 1024) /* 1MB for comprehensive stats */
 static char g_stats_cache[STATS_CACHE_SIZE] = "";
@@ -149,6 +89,51 @@ size_t cache_load(const char *name, char *buf, size_t max)
 }
 
 #pragma GCC diagnostic pop
+
+/* Emit the shared "computing in background, auto-refresh" placeholder
+ * served by stats/factoids/tokens while their cache warms. One copy of
+ * the boilerplate instead of three near-identical inline blocks.
+ * `accent` is the heading color; `subtitle` is the one-line status. */
+static size_t serve_loading_placeholder(uint8_t *r, size_t max,
+                                         const char *title,
+                                         const char *accent,
+                                         const char *subtitle)
+{
+    size_t off = 0;
+    APPEND(off, r, max,
+        "HTTP/1.1 200 OK\r\n"
+        "Content-Type: text/html; charset=utf-8\r\n"
+        "Connection: close\r\n\r\n"
+        "<!DOCTYPE html><html><head><meta charset='utf-8'>"
+        "<meta http-equiv='refresh' content='3'>"
+        "<link rel='stylesheet' href='/explorer/style.css'>"
+        "</head><body>" EXPLORER_NAV
+        "<div style='text-align:center;margin:80px 0'>"
+        "<h1 style='font-size:36px;color:%s'>%s</h1>"
+        "<p style='font-size:20px;color:#888'>%s</p>"
+        "<p style='font-size:16px;color:#555'>Auto-refreshing every 3 seconds...</p>"
+        "</div>" EXPLORER_FOOTER,
+        accent, title, subtitle);
+    return off;
+}
+
+/* Reverse a 64-char big-endian hex txid/token-id into display byte order
+ * and lowercase it. out must be >= 65 bytes. Returns false (out empty) if
+ * the input isn't exactly 64 hex chars. */
+static bool explorer_reverse_hex_lower(const char *hex_in, char *out)
+{
+    out[0] = '\0';
+    if (!hex_in || strlen(hex_in) != 64) return false;
+    for (int k = 0; k < 32; k++) {
+        out[k*2]     = hex_in[62 - k*2];
+        out[k*2 + 1] = hex_in[63 - k*2];
+    }
+    out[64] = '\0';
+    for (int k = 0; k < 64; k++)
+        if (out[k] >= 'A' && out[k] <= 'F')
+            out[k] += 32;
+    return true;
+}
 
 void *stats_compute_thread(void *arg)
 {
@@ -194,21 +179,8 @@ size_t serve_stats(uint8_t *r, size_t max)
     /* Not cached yet — trigger background computation if not running */
     explorer_start_once(&g_stats_computing, stats_compute_thread,
                         "stats_compute");
-    size_t off = 0;
-    APPEND(off, r, max,
-        "HTTP/1.1 200 OK\r\n"
-        "Content-Type: text/html; charset=utf-8\r\n"
-        "Connection: close\r\n\r\n"
-        "<!DOCTYPE html><html><head><meta charset='utf-8'>"
-        "<meta http-equiv='refresh' content='3'>"
-        "<link rel='stylesheet' href='/explorer/style.css'>"
-        "</head><body>" EXPLORER_NAV
-        "<div style='text-align:center;margin:80px 0'>"
-        "<h1 style='font-size:36px;color:#33ff99'>Loading Statistics...</h1>"
-        "<p style='font-size:20px;color:#888'>Computing charts from blockchain data.</p>"
-        "<p style='font-size:16px;color:#555'>Auto-refreshing every 3 seconds...</p>"
-        "</div>" EXPLORER_FOOTER);
-    return off;
+    return serve_loading_placeholder(r, max, "Loading Statistics...",
+        "#33ff99", "Computing charts from blockchain data.");
 }
 
 /* ── Factoids Page ────────────────────────────────────────── */
@@ -254,21 +226,8 @@ size_t serve_factoids(uint8_t *r, size_t max)
     /* Not cached yet -- trigger background computation */
     explorer_start_once(&g_factoids_computing, factoids_compute_thread,
                         "factoids_compute");
-    size_t off = 0;
-    APPEND(off, r, max,
-        "HTTP/1.1 200 OK\r\n"
-        "Content-Type: text/html; charset=utf-8\r\n"
-        "Connection: close\r\n\r\n"
-        "<!DOCTYPE html><html><head><meta charset='utf-8'>"
-        "<meta http-equiv='refresh' content='3'>"
-        "<link rel='stylesheet' href='/explorer/style.css'>"
-        "</head><body>" EXPLORER_NAV
-        "<div style='text-align:center;margin:80px 0'>"
-        "<h1 style='font-size:36px;color:#33ff99'>Loading Factoids...</h1>"
-        "<p style='font-size:20px;color:#888'>Computing historian data from blockchain.</p>"
-        "<p style='font-size:16px;color:#555'>Auto-refreshing every 3 seconds...</p>"
-        "</div>" EXPLORER_FOOTER);
-    return off;
+    return serve_loading_placeholder(r, max, "Loading Factoids...",
+        "#33ff99", "Computing historian data from blockchain.");
 }
 
 /* ── ZSLP Tokens Page ─────────────────────────────────────── */
@@ -354,17 +313,7 @@ void *tokens_compute_thread(void *arg)
 
                 /* Build linkable token ID (reverse byte order for display) */
                 char tid_link[65] = "";
-                if (tid_hex && strlen(tid_hex) == 64) {
-                    for (int k = 0; k < 32; k++) {
-                        tid_link[k*2] = tid_hex[62-k*2];
-                        tid_link[k*2+1] = tid_hex[63-k*2];
-                    }
-                    tid_link[64] = '\0';
-                    /* lowercase */
-                    for (int k = 0; k < 64; k++)
-                        if (tid_link[k] >= 'A' && tid_link[k] <= 'F')
-                            tid_link[k] += 32;
-                }
+                explorer_reverse_hex_lower(tid_hex, tid_link);
 
                 APPEND(off, r, max,
                     "<tr><td style='font-size:18px'>"
@@ -665,16 +614,7 @@ size_t serve_token_detail(const char *token_id_hex, uint8_t *r, size_t max)
 
                 /* Reverse txid for display */
                 char txid_disp[65] = "";
-                if (txid_hex && strlen(txid_hex) == 64) {
-                    for (int k = 0; k < 32; k++) {
-                        txid_disp[k*2] = txid_hex[62-k*2];
-                        txid_disp[k*2+1] = txid_hex[63-k*2];
-                    }
-                    txid_disp[64] = '\0';
-                    for (int k = 0; k < 64; k++)
-                        if (txid_disp[k] >= 'A' && txid_disp[k] <= 'F')
-                            txid_disp[k] += 32;
-                }
+                explorer_reverse_hex_lower(txid_hex, txid_disp);
                 char short_tx[18];
                 snprintf(short_tx, sizeof(short_tx), "%.8s...%.4s",
                          txid_disp, txid_disp + 60);

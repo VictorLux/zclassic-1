@@ -449,11 +449,6 @@ static inline bool explorer_block_history_usable_for_height(sqlite3 *db,
     return v.usable;
 }
 
-static inline bool explorer_block_history_usable(sqlite3 *db)
-{
-    return explorer_block_history_usable_for_height(db, -1);
-}
-
 /* ── Number formatting with comma separators ─────────────── */
 
 static inline int format_with_commas(char *buf, size_t max, int64_t val)
