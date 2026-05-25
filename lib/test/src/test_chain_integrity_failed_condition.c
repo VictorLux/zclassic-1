@@ -89,18 +89,18 @@ int test_chain_integrity_failed_condition(void)
 
         struct chain_integrity_result before;
         chain_integrity_check_post_restore(&before, &ms);
-        ok = ok && before.ok == true;
+        ok = ok && before.ok == false;
         ok = ok && before.active_chain_holes == 10;
 
         condition_engine_tick();
 
         struct chain_integrity_result after;
         chain_integrity_check_post_restore(&after, &ms);
-        ok = ok && chain_integrity_failed_test_remedy_calls() == 0;
+        ok = ok && chain_integrity_failed_test_remedy_calls() == 1;
         ok = ok && after.ok == true;
-        ok = ok && after.active_chain_holes == 10;
+        ok = ok && after.active_chain_holes == 0;
         ok = ok && condition_engine_get_active_count() == 0;
-        CIF_CHECK("diagnostic active-chain holes do not trigger remedy", ok);
+        CIF_CHECK("near-tip active-chain holes trigger remedy", ok);
         cleanup_cif(&ms);
     }
 

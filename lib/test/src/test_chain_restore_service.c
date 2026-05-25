@@ -471,7 +471,7 @@ static int test_integrity_anchor_restore_is_benign(void) {
 
 static int test_integrity_live_tip_only_chain_is_operational(void) {
     int failures = 0;
-    TEST("chain_integrity: real tip with below-tip holes is operational") {
+    TEST("chain_integrity: near-tip holes and mismatches need repair") {
         struct main_state ms;
         main_state_init(&ms);
 
@@ -508,7 +508,7 @@ static int test_integrity_live_tip_only_chain_is_operational(void) {
         ASSERT(r.tip_window_holes == 20);
         ASSERT(r.active_chain_mismatches > 0);
         ASSERT(active_chain_at(&ms.chain_active, H) == idx[H]);
-        ASSERT(r.ok == true);
+        ASSERT(r.ok == false);
 
         block_map_free(&ms.map_block_index);
         active_chain_free(&ms.chain_active);

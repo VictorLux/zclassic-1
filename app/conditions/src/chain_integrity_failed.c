@@ -4,6 +4,7 @@
 
 #include "services/chain_restore_integrity.h"
 #include "services/chain_restore_repair.h"
+#include "util/util.h"
 #include "validation/main_state.h"
 
 #include <stdatomic.h>
@@ -67,7 +68,10 @@ static enum condition_remedy_result remedy_chain_integrity_failed(void)
             atomic_load(&g_last_mismatches),
             atomic_load(&g_last_tip_height));
 
-    return chain_restore_finalize(ms, NULL)
+    char datadir[1024];
+    GetDataDir(true, datadir, sizeof(datadir));
+
+    return chain_restore_finalize(ms, datadir)
         ? COND_REMEDY_OK : COND_REMEDY_FAILED;
 }
 

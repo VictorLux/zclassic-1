@@ -105,27 +105,21 @@ void chain_integrity_check_post_restore(struct chain_integrity_result *out,
 
     /* `ok` reflects operational health.
      *
-     * The capped pprev walk during live boot populates ~10k DISTINCT
-     * heights, but those heights can be scattered (the walk follows
-     * pprev pointers which may collapse heights in a partly-restored
-     * block_map). So tip_window_holes can be positive even on a sane
-     * live boot.
-     *
-     * The operational requirement is weaker: the tip itself must be
-     * resolvable (active_chain_at(tip_h) == tip), and nBits must be
-     * intact across the whole map. Lookups by height that miss go
-     * through block_map walks; they're slower but correct.
-     *
-     * Keep tip_window_holes / first_*_height fields as diagnostic
-     * counters but don't gate `ok` on them. `ok` requires only nBits
-     * clean + tip slot populated. */
+     * Holes deep below the tip can appear during live-tip-only boot and
+     * remain diagnostic, but the near-tip window must be dense because
+     * RPC lookups and staged sync use active_chain_at(height) directly.
+     * A height mismatch anywhere is also unsafe: callers believe the
+     * slot index is the canonical height. */
     struct block_index *tip = active_chain_tip(&ms->chain_active);
     bool tip_slot_ok =
         (out->tip_height < 0) ||
         (active_chain_at(&ms->chain_active, out->tip_height) == tip);
     bool tip_real =
         !tip || ((tip->nStatus & BLOCK_HAVE_DATA) && tip->nBits != 0);
-    out->ok = (out->zero_nbits_count == 0 && tip_slot_ok && tip_real);
+    out->ok = (out->zero_nbits_count == 0 &&
+               out->tip_window_holes == 0 &&
+               out->active_chain_mismatches == 0 &&
+               tip_slot_ok && tip_real);
 
     /* Cache the result for `dumpstate subsystem=boot` / `zcl_state`. */
     chain_restore_record_integrity_result(out);
