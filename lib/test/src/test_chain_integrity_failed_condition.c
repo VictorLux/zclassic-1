@@ -89,18 +89,47 @@ int test_chain_integrity_failed_condition(void)
 
         struct chain_integrity_result before;
         chain_integrity_check_post_restore(&before, &ms);
-        ok = ok && before.ok == false;
+        ok = ok && before.ok == true;
         ok = ok && before.active_chain_holes == 10;
 
         condition_engine_tick();
 
         struct chain_integrity_result after;
         chain_integrity_check_post_restore(&after, &ms);
-        ok = ok && chain_integrity_failed_test_remedy_calls() == 1;
+        ok = ok && chain_integrity_failed_test_remedy_calls() == 0;
         ok = ok && after.ok == true;
-        ok = ok && after.active_chain_holes == 0;
+        ok = ok && after.active_chain_holes == 10;
         ok = ok && condition_engine_get_active_count() == 0;
-        CIF_CHECK("repairs active-chain holes through restore finalize", ok);
+        CIF_CHECK("diagnostic active-chain holes do not trigger remedy", ok);
+        cleanup_cif(&ms);
+    }
+
+    {
+        struct main_state ms;
+        struct uint256 hashes[11];
+        reset_cif(&ms);
+        bool ok = true;
+        register_chain_integrity_failed();
+
+        ok = ok && seed_linked_chain(&ms, hashes, 10);
+        struct block_index *tip = active_chain_tip(&ms.chain_active);
+        ok = ok && tip != NULL;
+        if (tip)
+            tip->nBits = 0;
+
+        struct chain_integrity_result before;
+        chain_integrity_check_post_restore(&before, &ms);
+        ok = ok && before.ok == false;
+        ok = ok && before.zero_nbits_count == 1;
+
+        condition_engine_tick();
+
+        struct chain_integrity_result after;
+        chain_integrity_check_post_restore(&after, &ms);
+        ok = ok && chain_integrity_failed_test_remedy_calls() == 1;
+        ok = ok && after.ok == false;
+        ok = ok && condition_engine_get_active_count() == 1;
+        CIF_CHECK("fatal nBits zero triggers restore finalize remedy", ok);
         cleanup_cif(&ms);
     }
 

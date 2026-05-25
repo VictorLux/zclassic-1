@@ -452,13 +452,63 @@ static int test_integrity_anchor_restore_is_benign(void) {
         /* Anchor lacks BLOCK_HAVE_DATA → skipped by nBits scan. */
         ASSERT(r.zero_nbits_count == 0);
         ASSERT(r.first_nbits_zero_height == -1);
-        /* Below-tip holes are now fail-closed for canonical RPC service. */
+        /* A synthetic anchor is not a real validation tip. Even though
+         * below-tip holes are diagnostic-only for real tips, placeholders
+         * must remain fail-closed until backed by block data. */
         ASSERT(r.active_chain_holes == H);
         ASSERT(r.first_hole_height == 0);
         ASSERT(r.tip_height == H);
         /* Tip slot is populated by anchor itself. */
         ASSERT(active_chain_at(&ms.chain_active, H) == anchor);
         ASSERT(r.ok == false);
+
+        block_map_free(&ms.map_block_index);
+        active_chain_free(&ms.chain_active);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int test_integrity_live_tip_only_chain_is_operational(void) {
+    int failures = 0;
+    TEST("chain_integrity: real tip with below-tip holes is operational") {
+        struct main_state ms;
+        main_state_init(&ms);
+
+        const int H = 64;
+        struct uint256 hashes[65];
+        struct block_index *idx[65];
+        memset(idx, 0, sizeof(idx));
+        for (int h = 0; h <= H; h++) {
+            memset(&hashes[h], 0, sizeof(hashes[h]));
+            hashes[h].data[0] = (uint8_t)(h & 0xFF);
+            hashes[h].data[3] = 0xBC;
+            idx[h] = chainstate_insert_block_index(
+                (struct chainstate *)&ms, &hashes[h]);
+            ASSERT(idx[h] != NULL);
+            idx[h]->nHeight = h;
+            idx[h]->nBits = 0x1f07ffff;
+            idx[h]->nStatus = BLOCK_VALID_SCRIPTS | BLOCK_HAVE_DATA;
+            idx[h]->nTx = 1;
+            idx[h]->nChainTx = (uint32_t)(h + 1);
+            if (h > 0)
+                idx[h]->pprev = idx[h - 1];
+            arith_uint256_set_u64(&idx[h]->nChainWork,
+                                  (uint64_t)(h + 1));
+        }
+        ASSERT(active_chain_set_tip(&ms.chain_active, idx[H]));
+
+        for (int h = H - 20; h < H; h++)
+            ms.chain_active.chain[h] = NULL;
+        ms.chain_active.chain[10] = idx[9];
+
+        struct chain_integrity_result r;
+        chain_integrity_check_post_restore(&r, &ms);
+        ASSERT(r.zero_nbits_count == 0);
+        ASSERT(r.tip_window_holes == 20);
+        ASSERT(r.active_chain_mismatches > 0);
+        ASSERT(active_chain_at(&ms.chain_active, H) == idx[H]);
+        ASSERT(r.ok == true);
 
         block_map_free(&ms.map_block_index);
         active_chain_free(&ms.chain_active);
@@ -1145,6 +1195,7 @@ int test_chain_restore_service(void) {
     /* integrity-check tests */
     failures += test_integrity_passes_on_clean_chain();
     failures += test_integrity_anchor_restore_is_benign();
+    failures += test_integrity_live_tip_only_chain_is_operational();
     failures += test_integrity_detects_isolated_nbits_zero();
     /* — post-restore repair tests */
     failures += test_rebuild_active_chain_fills_holes_from_block_map();

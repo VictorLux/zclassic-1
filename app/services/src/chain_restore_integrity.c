@@ -119,12 +119,13 @@ void chain_integrity_check_post_restore(struct chain_integrity_result *out,
      * Keep tip_window_holes / first_*_height fields as diagnostic
      * counters but don't gate `ok` on them. `ok` requires only nBits
      * clean + tip slot populated. */
+    struct block_index *tip = active_chain_tip(&ms->chain_active);
     bool tip_slot_ok =
         (out->tip_height < 0) ||
-        (active_chain_at(&ms->chain_active, out->tip_height) != NULL);
-    out->ok = (out->zero_nbits_count == 0 && tip_slot_ok &&
-               out->tip_window_holes == 0);
-    out->ok = out->ok && out->active_chain_mismatches == 0;
+        (active_chain_at(&ms->chain_active, out->tip_height) == tip);
+    bool tip_real =
+        !tip || ((tip->nStatus & BLOCK_HAVE_DATA) && tip->nBits != 0);
+    out->ok = (out->zero_nbits_count == 0 && tip_slot_ok && tip_real);
 
     /* Cache the result for `dumpstate subsystem=boot` / `zcl_state`. */
     chain_restore_record_integrity_result(out);
