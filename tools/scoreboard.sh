@@ -167,6 +167,7 @@ print(
     f"window_complete={fmt_bool(vh, 'window_complete')} "
     f"window_failed_count={vh.get('window_failed_count', 0)} "
     f"window_first_failed_height={vh.get('window_first_failed_height', -1)} "
+    f"no_failures={fmt_bool(vh, 'no_failures')} "
     f"failed_total={vh.get('failed_total', 'unknown')} "
     f"failure_log_count={vh.get('failure_log_count', 'unknown')} "
     f"first_failed_height={vh.get('first_failed_height', -1)} "

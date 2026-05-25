@@ -1261,7 +1261,12 @@ static bool rpc_cutoverpreflight(const struct json_value *params, bool help,
                                          &vh_window);
     push_validate_headers_window_json(&vh, &vh_window);
 
+    bool validate_no_failures =
+        json_obj_int_or(&vh, "failed_total", 1) == 0 &&
+        json_obj_int_or(&vh, "failure_log_count", 1) == 0;
+    json_push_kv_bool(&vh, "no_failures", validate_no_failures);
     bool validate_clean = vh_ok &&
+        validate_no_failures &&
         json_obj_int_or(&vh, "error_count", 1) == 0 &&
         vh_window.available &&
         vh_window.complete &&
@@ -1294,8 +1299,9 @@ static bool rpc_cutoverpreflight(const struct json_value *params, bool help,
     if (!validate_ready)
         cutover_preflight_push_blocker(
             &blockers,
-            validate_clean ? "validate_headers_cursor_lag"
-                           : "validate_headers_window_not_clean");
+            !validate_no_failures ? "validate_headers_failures_present" :
+            validate_clean ? "validate_headers_cursor_lag" :
+                             "validate_headers_window_not_clean");
     if (!modes_ready)
         cutover_preflight_push_blocker(&blockers,
                                        "cutover_modes_not_shadow");

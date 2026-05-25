@@ -424,6 +424,7 @@ int test_rpc(void) {
         ok = ok && json_get(vh, "window_failed_count") != NULL;
         ok = ok && json_get(vh, "window_first_failed_height") != NULL;
         ok = ok && json_get(vh, "window_first_fail_reason") != NULL;
+        ok = ok && json_get(vh, "no_failures") != NULL;
         ok = ok && blockers->type == JSON_ARR;
 
         json_free(&params);

@@ -127,3 +127,10 @@ share `block_index_have_data_readable()`, a read/hash predicate used by both
 waits for a real tip-advance stall, then clears an unreadable next-block data
 flag so normal P2P block fetch can repersist the body instead of treating stale
 metadata as authority.
+
+Cutover preflight hardening shipped in wt3: `cutoverpreflight` no longer treats
+a clean tail window as enough when `validate_headers` has any durable failed
+rows or nonzero failed counter. The preflight now publishes
+`validate_headers.no_failures`, blocks with `validate_headers_failures_present`,
+and `tools/scoreboard.sh --cutover` prints the boolean beside the failure
+counts.
