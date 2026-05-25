@@ -1100,12 +1100,12 @@ static bool legacy_bootstrap_import_cold(
             legacy_bootstrap_now_ms() - t_import,
             imported.legacy_tip_height);
 
-    r.total_secs = (double)(legacy_bootstrap_now_ms() - t_start) / 1000.0;
+    double total_secs = (double)(legacy_bootstrap_now_ms() - t_start) / 1000.0;
     if (out) *out = r;
     fprintf(stderr,  // obs-ok:pre-existing-diagnostic
             "[cold_import] DONE in %.1fs: block_index=%" PRId64
             " utxos=%" PRId64 " blk_files=%" PRId64 "\n",
-            r.total_secs, r.block_index_writes, r.utxos_imported,
+            total_secs, r.block_index_writes, r.utxos_imported,
             r.blk_files_linked);
     ldb_snapshot_destroy(idx_dir);
     ldb_snapshot_destroy(cs_dir);
@@ -1762,7 +1762,7 @@ static bool legacy_bootstrap_import_attach(
     ldb_snapshot_destroy(cs_snap);
     rmdir(stage_dir);
 
-    r.total_secs = (double)(legacy_bootstrap_now_ms() - t_start) / 1000.0;
+    double total_secs = (double)(legacy_bootstrap_now_ms() - t_start) / 1000.0;
     if (r.outcome == LEGACY_ATTACH_OUTCOME_FAILED)
         r.outcome = LEGACY_ATTACH_OUTCOME_DID_IMPORT;
     if (out) *out = r;
@@ -1771,7 +1771,7 @@ static bool legacy_bootstrap_import_attach(
         "[legacy_attach] DONE outcome=%s in %.1fs: legacy_tip=%d "
         "block_index=%" PRId64 " utxos=%" PRId64 " blk_files=%" PRId64
         " stages_stamped=%" PRId64 "\n",
-        legacy_attach_outcome_name((enum legacy_attach_outcome)r.outcome), r.total_secs,
+        legacy_attach_outcome_name((enum legacy_attach_outcome)r.outcome), total_secs,
         r.legacy_tip, r.block_index_writes, r.utxos_imported,
         r.blk_files_linked, r.stages_stamped);
 

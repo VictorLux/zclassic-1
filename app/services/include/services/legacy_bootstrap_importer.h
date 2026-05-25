@@ -61,7 +61,6 @@ struct legacy_bootstrap_import_result {
     int applied;
     enum legacy_attach_outcome outcome;
     int64_t stages_stamped;
-    double total_secs;
 };
 
 struct legacy_bootstrap_height_map_result {

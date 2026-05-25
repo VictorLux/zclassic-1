@@ -1845,7 +1845,9 @@ bool app_init(struct app_context *ctx)
             .our_datadir = ctx->datadir,
             .legacy_datadir = ctx->legacy_attach_from,
         };
+        int64_t la_start = boot_clock_ms();
         bool la_ok = legacy_bootstrap_import_blocking(&import_opts, &lr);
+        double la_secs = (double)(boot_clock_ms() - la_start) / 1000.0;
         printf("Legacy attach: ok=%s outcome=%s legacy_tip=%d "
                "block_index=%lld utxos=%lld blk_files=%lld "
                "stages_stamped=%lld elapsed=%.1fs\n",
@@ -1856,7 +1858,7 @@ bool app_init(struct app_context *ctx)
                (long long)lr.utxos_imported,
                (long long)lr.blk_files_linked,
                (long long)lr.stages_stamped,
-               lr.total_secs);
+               la_secs);
     }
 
     /* -cold-import: bulk state import from a sibling zclassicd. Runs
@@ -1884,14 +1886,16 @@ bool app_init(struct app_context *ctx)
             .our_datadir = ctx->datadir,
             .legacy_datadir = ctx->cold_import_from,
         };
+        int64_t ci_start = boot_clock_ms();
         bool ci_ok = legacy_bootstrap_import_blocking(&import_opts, &cr);
+        double ci_secs = (double)(boot_clock_ms() - ci_start) / 1000.0;
         printf("Cold import: ok=%s legacy_tip=%d block_index=%lld "
                "utxos=%lld blk_files=%lld elapsed=%.1fs\n",
                ci_ok ? "yes" : "no", cr.legacy_tip,
                (long long)cr.block_index_writes,
                (long long)cr.utxos_imported,
                (long long)cr.blk_files_linked,
-               cr.total_secs);
+               ci_secs);
         if (!ci_ok) {
             fprintf(stderr,
                 "FATAL: cold-import from %s failed; refusing to "
