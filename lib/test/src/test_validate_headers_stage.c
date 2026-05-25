@@ -600,7 +600,7 @@ int test_validate_headers_stage(void)
                      ok && out == bi);
             VH_CHECK("ff: no divergence event emitted", guard_events == 0);
 
-            validate_headers_set_mode(VALIDATE_HEADERS_MODE_AUTHORITATIVE);
+            validate_headers_set_mode(VALIDATE_HEADERS_MODE_SHADOW);
             event_clear_observers(EV_CUTOVER_GUARD_DIVERGED);
             validate_headers_stage_shutdown();
             main_state_free(&ms);

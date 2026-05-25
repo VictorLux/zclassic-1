@@ -495,7 +495,7 @@ int test_header_admit_stage(void)
             HA_CHECK("ff: no divergence event emitted", guard_events == 0);
 
             header_admit_set_mode(HEADER_ADMIT_MODE_SHADOW);
-            validate_headers_set_mode(VALIDATE_HEADERS_MODE_AUTHORITATIVE);
+            validate_headers_set_mode(VALIDATE_HEADERS_MODE_SHADOW);
             event_clear_observers(EV_CUTOVER_GUARD_DIVERGED);
             validate_headers_stage_shutdown();
             header_admit_stage_shutdown();

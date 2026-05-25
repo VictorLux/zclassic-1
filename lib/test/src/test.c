@@ -205,6 +205,16 @@ int main(void)
                failures);
         return failures ? 1 : 0;
     }
+    if (only &&
+        (strcmp(only, "header_validate_sequence") == 0 ||
+         strcmp(only, "header_admit_validate_headers") == 0)) {
+        printf("[test] ZCL_TEST_ONLY=header_validate_sequence — running header_admit then validate_headers\n");
+        failures += test_header_admit_stage();
+        failures += test_validate_headers_stage();
+        printf("\n=== header_validate_sequence subset complete: %d failure(s) ===\n",
+               failures);
+        return failures ? 1 : 0;
+    }
     if (only && strcmp(only, "proof_validate") == 0) {
         printf("[test] ZCL_TEST_ONLY=proof_validate — running proof_validate stage only\n");
         failures += test_proof_validate_stage();
