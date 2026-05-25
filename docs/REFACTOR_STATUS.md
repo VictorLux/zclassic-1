@@ -25,14 +25,14 @@ Honest scoreboard. **MEASURED** = a real number from this box (date + how, in
      Cold sync to tip          180s  (05-24)       30s           ▸ PR-3 building
      Warm restart              37.7s (05-24)       10s           ▸ real restart→tip
      Validation speed          108 blk/s (05-24)   fast          ◷ measured; tip frozen now
-     Stay at tip               WEDGED 474 behind   keep <1 blk    ✗ stale-coins BIP30 @3123689; unwedge NOT built
+     Stay at tip               WEDGED ~18 behind   keep <1 blk    ✗ BIP30 self-write recurs at tip; real fix queued
 
   🪶 LEAN
      Memory (RSS)              2.13 GB (live)*     1.0 GB        ▲ climbs w/ bg-verify
      Binary size               15.4 MB (05-24)     stay slim     ✓ met (docs' 26MB stale)
 
   💪 UNBREAKABLE  ← resilience is a PROMISE, measured by truth not by "result=ok"
-     Tip advancing             NO — frozen ~5h     always         ✗ BIP30 stale coinbase; case-(e) rewind not on live path
+     Tip advancing             NO — re-wedges/blk  always         ✗ connect_block rejects own coinbase (BIP30 self-write)
      Self-heal tells the truth code: gated (47bdbc211) 0 false-ok ◑ fixed in tree · live still lies
      Wedge/crash recovery      180s, manual        <60s, auto    ◑ resnapshot path landed (8e25887b0); BIP30 fix + live timing pending
      Uptime before failure     wedged ~5h, 12 restarts 30 days    ✗ restart loop went quiet — now silently stuck
@@ -59,43 +59,36 @@ cutover consensus divergence. The cutover (C-3, `ad34efb65`) was only the
 block_index fsync). That left a **torn coins state** that is now the active,
 standalone wedge:
 
-**Live forensics (read-only `node.db`, 2026-05-25):**
-- `connect_block FAILED h=3123689: bad-txns-BIP30` on every retry → block marked
-  FAILED → `find_most_work_chain` skips it → tip frozen at **3,123,688** (now 474
-  behind legacy, widening ~1 blk/min).
-- Exactly **1 stale `utxos` row at height 3,123,689** — the coinbase of the wedged
-  block. `coins_best_block` anchor = 3,123,688. So coins holds a lone coinbase at
-  `tip+1`; on retry BIP30 sees it unspent and rejects 3,123,689 as a dup.
-- This is the documented **2026-04-19 BIP30 stall** shape
-  (`docs/archive/2026-04/2026-04-19-bip30-stall.md`). BIP30 is correct; the node
-  is lying to it about which coinbases exist.
+**Root cause — PROVEN, deeper than first thought (2026-05-25):** the node freezes
+~1 block below the tip with `connect_block FAILED: bad-txns-BIP30`, **and it
+recurs at every tip advance.** A cold-import from the good local `zclassicd`
+closed the 536-block gap but the wedge just **moved** 3,123,689 → 3,124,225.
+Live `node.db`:
+```
+chain tip          = 3,124,224
+utxos MAX(height)  = 3,124,225   (one row: txid 98963472…, vout 0, is_coinbase=1)
+→ block 3,124,225's OWN coinbase is in the UTXO set while the tip is 3,124,224.
+  connect_block runs BIP30, sees the block's own coinbase already present, and
+  rejects the block as a duplicate-overwrite.
+```
+So the UTXO set sits **one block ahead of the block-index tip**, and BIP30 treats
+the node's own coinbase as a consensus violation. **Post-BIP34 (coinbase txids
+are height-unique), BIP30 can NEVER legitimately fire at these heights — so this
+is ALWAYS a false positive on stale local data, never a real duplicate.**
 
-**Why it never self-heals (leading hypothesis — confirm at runtime):** the boot
-guard built for exactly this (`coins_view_sqlite_check_tip_consistency`, case
-**(e)** `max_utxo==tip+1` → `rewind_above_tip`,
-`lib/storage/src/coins_view_sqlite.c:309`) emits **none** of its diagnostics and
-the stale row survives all 12 restarts — so the case-(e) rewind is demonstrably
-not clearing it on the live path. Most likely the production coins-view open
-(`leveldb_utxo_migrated=01`) bypasses the SQLite guard at
-`coins_view_sqlite.c:498`. (Caveat: the guard's *healthy* paths log via stdout,
-which this node may not route to `node.log`; only its stderr mismatch/rewind
-path is guaranteed captured — and that is absent. The agent confirms by tracing
-the live coins-open path, not by log absence alone.)
+**The symptom-chasers only move the wedge:**
+| Attempt | Commit | Result |
+|---|---|---|
+| boot single-block rewind | `dbf4845a1` | clears one row on boot; tip re-wedges at the next block |
+| cold-import from zclassicd | (manual) | closed 536-blk gap, wedge moved 3,123,689 → 3,124,225 |
+| cutover→shadow / restart-cap / self-heal-witness | `6e0f6a82c` `82ec4e11f` `47bdbc211` | fix the trigger/loop/lie; do NOT cure the BIP30 false-positive |
 
-**Consequence for the three merged "wedge" fixes — they do NOT unwedge this node:**
-| Fix | Commit | What it actually fixes | Clears the stale row? |
-|---|---|---|---|
-| Cutover → shadow-by-default | `6e0f6a82c` | stops the *trigger* recurring | ✗ no |
-| Self-heal witness gates "ok" | `47bdbc211` | stops the 46× false "ok" lie | ✗ no |
-| Restart cap + page | `82ec4e11f` | stops the kill-9 restart loop | ✗ no |
-
-They're all correct and worth deploying (they prevent recurrence), but a plain
-**deploy alone leaves the node wedged** — the stale 3,123,689 coinbase row still
-trips BIP30 on boot. **The unwedge requires clearing that row** (run the case-(e)
-rewind on the live boot path, or a one-shot coins rewind to the chain tip), then
-letting connect_block re-land 3,123,689 cleanly. New assignment:
-[`work/wt-bip30-stale-coins-unwedge.md`](./work/wt-bip30-stale-coins-unwedge.md)
-(on origin/main — claimable now).
+**The cure (new P0 assignment):**
+[`work/wt-connect-bip30-selfwrite.md`](./work/wt-connect-bip30-selfwrite.md) —
+(1) `connect_block` must not reject a block's OWN same-height coinbase (it's a
+stale self-write, impossible to be a real duplicate post-BIP34); (2) fix the write
+ordering so the UTXO set never commits ahead of the block-index tip. Acceptance is
+**sustained LIVE forward progress at the tip**, not a unit test.
 
 **RESILIENCE DOCTRINE (new, load-bearing):**
 1. **A green test suite is not a healthy node.** No cutover is "done" until the
@@ -112,17 +105,16 @@ These three are now first-class promises under UNBREAKABLE/HONEST above.
 
 ### Who's moving what right now
 
-**Live (2026-05-25):** both workers active on the two critical-path items.
+**Next agent start (2026-05-25):** prior round (bip30 boot-rewind, cutover guard)
+shipped but the wedge persists — root cause is deeper (see P0). Fresh assignments:
 
 | Work | Goal | Who |
 |---|---|---|
-| 🔴 BIP30 stale-coins unwedge (THE live wedge) | Tip advancing, Recovery | **wt2 (in progress)** |
-| 🛡️ cutover safety guard (auto-revert Condition) | Tip advancing, Alerts | **wt3 (in progress)** |
-| PR-3 parallel blk*.dat marking (cold-import 101s→seconds) | Cold sync | unclaimed (next) |
+| 🔴 connect_block BIP30 self-write fix (THE disease) | Tip advancing | unclaimed — P0 |
+| ⚡ PR-3 parallel io_uring blk*.dat marking (high-perf) | Cold sync | unclaimed |
 | Cutover C-5→C-9 authoritative | Cold sync, validation | UNWEDGE-gated (see P0) |
 | 4e bodies-into-log | Warm restart, recovery | unclaimed |
-| chain_advance + legacy_mirror dissolve | Memory, uptime | gated on C-9 |
-| utxo_recovery dissolve | Memory, uptime | gated on C-8 |
+| chain_advance + legacy_mirror / utxo_recovery dissolve | Memory, uptime | gated on cutover |
 
 ---
 
@@ -266,10 +258,14 @@ dissolve ✅ (981ad4897..1b0847820) · snapshot wedge recovery ✅
 (ca74cb4c2..6fb76f2b0).
 
 ### Claimable NOW (no soak gate, fully independent)
-0. 🔴 **[`wt-bip30-stale-coins-unwedge.md`](./work/wt-bip30-stale-coins-unwedge.md) — HIGHEST PRIORITY: this is the live wedge.** Root-caused 2026-05-25: 1 stale coinbase UTXO row at 3,123,689 (chain_tip+1) trips `bad-txns-BIP30` every retry; the case-(e) auto-rewind that would clear it isn't running on the live boot path. RED test + make the single-block rewind run at boot. Moves Tip-advancing + Wedge-recovery. Deploy gated on Rhett. NB: the just-landed resnapshot path (`8e25887b0`) is the heavyweight fallback — this is the targeted 1-row fix; don't re-snapshot 1.3M UTXOs to drop one row.
-1. ⚡ [`wt-perf-integrate-rebuild.md`](./work/wt-perf-integrate-rebuild.md) **PR-3: parallel io_uring blk*.dat marking in cold-import** — cold-import is ~180s, **101s of it is single-threaded blk*.dat marking** (measured `941b9803d`). The `rebuild_recent` prototype already proved the fix on this exact data (5.6s/2GB/s). Parallelize the scan → seconds. Moves #1 cold sync. PR-1 (HW-CRC) ✅ `69939ec97`; PR-2 (io_uring bulk-append) still spec'd.
-2. 🛡️ **[`cutover-safety-protocol.md`](./work/cutover-safety-protocol.md) — auto-revert-on-no-forward-progress Condition.** The guard whose absence let C-3 wedge the chain for a whole session. Buildable now from existing infra (`sync_monitor_tip_advance_age`). REQUIRED before any C-* re-flip. Moves UNBREAKABLE (Tip advancing, Alerts).
-3. More self-heal Conditions — chain_restore/header_probe are dissolved (✅); use [`docs/dissolve/`](./dissolve/) for the remaining mega-module plans (chain_advance, legacy_mirror, utxo_recovery).
+0. 🔴 **[`wt-connect-bip30-selfwrite.md`](./work/wt-connect-bip30-selfwrite.md) — P0, THE disease: BIP30 self-write wedge.** PROVEN root cause of "always stuck": the UTXO set ends up 1 block ahead of the tip, and `connect_block` rejects the block's OWN coinbase as a BIP30 duplicate (impossible post-BIP34 → always a false positive). Recurs at every tip advance; boot-rewind + cold-import only move it. Fix: (1) connect_block tolerates a same-height self-coinbase; (2) write-ordering so coins never commits ahead of the block-index tip. Acceptance = sustained LIVE forward progress. Deploy gated on Rhett.
+1. ⚡ [`wt-perf-integrate-rebuild.md`](./work/wt-perf-integrate-rebuild.md) **PR-3: parallel io_uring blk*.dat marking (HIGH-PERFORMANCE track)** — cold-import ~180s, **101s of it single-threaded blk*.dat marking** (`941b9803d`); `rebuild_recent` proved 5.6s/2GB/s with HW-CRC32C + io_uring on this exact data. Parallelize the scan → seconds. Profile-first, use the hardware. Moves #1 cold sync. PR-1 (HW-CRC) ✅ `69939ec97`; PR-2 (io_uring bulk-append) spec'd.
+2. 🛡️ [`cutover-safety-protocol.md`](./work/cutover-safety-protocol.md) — auto-revert-on-no-forward-progress Condition (wt3 already shipped the core, `230d9b896`). REQUIRED before any C-* re-flip.
+3. More self-heal Conditions — chain_restore/header_probe dissolved (✅); remaining mega-module plans in [`docs/dissolve/`](./dissolve/).
+
+> **Sequencing:** #0 (stop wedging) is the gate on everything — a high-performance
+> node that's always stuck is worthless. #1 (perf) runs in parallel; it touches
+> the cold-import scan, not the connect path, so no conflict with #0.
 
 ### Re-flip-gated (read the spec now; start AFTER unwedge + safe-flip guard + a clean C-3 re-flip — there is no soak running, C-3 is reverted)
 - [`wt-phase2-cutover-c3-final-delete.md`](./work/wt-phase2-cutover-c3-final-delete.md) — delete the legacy validate_headers fallback.
