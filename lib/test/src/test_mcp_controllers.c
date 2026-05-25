@@ -30,6 +30,7 @@
 #include "json/json.h"
 #include "sim/postmortem.h"
 #include "sim/seed_tape.h"
+#include "util/clientversion.h"
 
 #include <dirent.h>
 #include <stdio.h>
@@ -666,6 +667,8 @@ static int test_zcl_status_includes_chain_advance_dump(void)
 
         struct json_value root;
         ASSERT(json_read(&root, body, strlen(body)));
+        ASSERT_STR_EQ(json_get_str(json_get(&root, "build_commit")),
+                      ZCL_BUILD_COMMIT);
         const struct json_value *chain_advance =
             json_get(&root, "chain_advance");
         ASSERT(chain_advance != NULL);

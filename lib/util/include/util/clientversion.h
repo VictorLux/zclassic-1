@@ -13,6 +13,10 @@
 #define CLIENT_VERSION_REVISION 0
 #define CLIENT_VERSION_BUILD 50
 
+#ifndef ZCL_BUILD_COMMIT
+#define ZCL_BUILD_COMMIT "unknown"
+#endif
+
 #if !defined(WINDRES_PREPROC)
 
 #include <stddef.h>
@@ -22,6 +26,11 @@
      100 * CLIENT_VERSION_REVISION + CLIENT_VERSION_BUILD)
 
 extern const char CLIENT_NAME[];
+
+static inline const char *zcl_build_commit(void)
+{
+    return ZCL_BUILD_COMMIT;
+}
 
 void FormatVersion(int nVersion, char *out, size_t out_size);
 

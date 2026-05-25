@@ -22,6 +22,7 @@
 #include "crypto/sha3.h"
 #include "core/uint256.h"
 #include "controllers/explorer_internal.h"
+#include "util/clientversion.h"
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -56,7 +57,8 @@ static const char *bench_history_path(void)
 static const char *bench_commit(void)
 {
     const char *c = getenv("ZCL_BENCH_COMMIT");
-    return (c && *c) ? c : "unknown";
+    if (c && *c) return c;
+    return zcl_build_commit();
 }
 
 static bool bench_env_true(const char *name)

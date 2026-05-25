@@ -20,6 +20,7 @@
 #include "sim/postmortem.h"
 #include "sim/seed_tape.h"
 #include "util/blocker.h"
+#include "util/clientversion.h"
 #include "util/log_macros.h"
 #include "util/safe_alloc.h"
 #include "validation/process_block.h"
@@ -135,7 +136,8 @@ static int h_zcl_status(const struct mcp_request *req, struct mcp_response *res)
     }
 
     snprintf(out, ZCL_STATUS_BODY_CAP,
-             "{\"height\":%d,\"header_height\":%d,"
+             "{\"height\":%d,\"build_commit\":\"%s\","
+             "\"header_height\":%d,"
              "\"max_peer_height\":%d,\"header_gap\":%d,"
              "\"sync_behind\":%s,"
              "\"peers\":%d,"
@@ -145,7 +147,7 @@ static int h_zcl_status(const struct mcp_request *req, struct mcp_response *res)
              "\"sync\":%s,"
              "\"validation\":%s,\"health\":%s,"
              "\"chain_advance\":%s}",
-             block_height, header_height,
+             block_height, zcl_build_commit(), header_height,
              max_peer_height, header_gap,
              sync_behind ? "true" : "false",
              pc,
