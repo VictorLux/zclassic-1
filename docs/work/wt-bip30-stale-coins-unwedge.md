@@ -168,3 +168,27 @@ The production boot cleanup path was the gap: it could remove the stale row,
 but left `utxo_commitment` stale and allowed up to 1000 rows across arbitrary
 heights. The new guard makes that path match the documented single-block memory
 rule.
+
+## Post-completion Live Check (wt2, 2026-05-25 08:01Z)
+
+Read-only live verification confirms the code is still not deployed:
+
+- `./tools/scoreboard.sh` exits `3`: live node remains wedged at `h=3123688`,
+  `520` behind legacy, tip not advancing.
+- `SAMPLES=3 INTERVAL_SECS=5 ./tools/bench_running_lag.sh` exits `2`: chain
+  height stayed `3123688`; peer max height never handshaked in that short
+  sample.
+- `systemctl --user status zclassic23` shows the service running since
+  `2026-05-25 01:55:17 UTC` with restart counter `12`.
+- The running deployed binary is `/home/rhett/zclassic23/zclassic23`, mtime
+  `2026-05-25 00:29`, SHA256
+  `b8a6450f6b94eb49801bd6ff7d662368b5cc4179eb84eef121cfbfc68bd57b6a`.
+- The current worktree binary is newer/different, mtime `2026-05-25 03:22`,
+  SHA256 `c887c3118bf93ebb871acee60269125fa476f7804b91429a89ea439da110e224`.
+- Recent `node.log` still reports `STALL: h=3123688 entries_at_3123689=1`
+  and `[coins] flush ok: max_height=3123689 ... tip_written=1`, matching the
+  stale coinbase-at-tip+1 wedge.
+
+Next operator action remains Task 3: deploy/restart the fixed binary, then run
+`SAMPLES=6 INTERVAL_SECS=15 ./tools/bench_running_lag.sh` and
+`./tools/scoreboard.sh` to prove the tip advances past `3123689`.
