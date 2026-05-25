@@ -2,9 +2,8 @@
  *
  * postmortem — crash capsule writer/reader for Phase 6b.
  *
- * This first primitive writes an unpacked `.cap` directory. Signal-path
- * wiring can call the same writer after preallocating safe inputs; packaging
- * to `.cap.gz` is deliberately outside this primitive's critical path. */
+ * Signal-path capture writes an unpacked `.cap` directory. Boot maintenance
+ * can later package prior capsules as `.cap.gz` outside the crash path. */
 
 #ifndef ZCL_SIM_POSTMORTEM_H
 #define ZCL_SIM_POSTMORTEM_H

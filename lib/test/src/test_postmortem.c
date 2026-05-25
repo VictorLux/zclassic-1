@@ -51,6 +51,48 @@ static bool file_contains(const char *path, const char *needle)
     return strstr(buf, needle) != NULL;
 }
 
+static int test_postmortem_install_validates_dir(void)
+{
+    int failures = 0;
+    char dir_template[128];
+    snprintf(dir_template, sizeof(dir_template),
+             "/tmp/zcl_postmortem_install_%d_XXXXXX", (int)getpid());
+    char *dir = mkdtemp(dir_template);
+    PM_CHECK("install validation mkdtemp", dir != NULL);
+    if (!dir) return failures + 1;
+
+    seed_tape_t *tape = seed_tape_open(0x494e5354414c4cULL, 1779670000);
+    PM_CHECK("install validation seed tape open", tape != NULL);
+    if (!tape) {
+        rm_rf_simple(dir);
+        return failures + 1;
+    }
+
+    char pm_dir[256];
+    snprintf(pm_dir, sizeof(pm_dir), "%s/postmortems-created", dir);
+    int rc = postmortem_install(tape, pm_dir);
+    struct stat st;
+    PM_CHECK("install creates capsule dir",
+             rc == 0 && stat(pm_dir, &st) == 0 && S_ISDIR(st.st_mode));
+    postmortem_uninstall();
+
+    char not_dir[256];
+    snprintf(not_dir, sizeof(not_dir), "%s/not-a-dir", dir);
+    FILE *fp = fopen(not_dir, "wb");
+    PM_CHECK("install validation creates file", fp != NULL);
+    if (fp) {
+        fputs("not a directory\n", fp);
+        fclose(fp);
+    }
+
+    rc = postmortem_install(tape, not_dir);
+    PM_CHECK("install rejects non-directory path", rc == -ENOTDIR);
+
+    seed_tape_close(tape);
+    rm_rf_simple(dir);
+    return failures;
+}
+
 static int test_signal_handler_capsule(void)
 {
     int failures = 0;
@@ -510,6 +552,7 @@ int test_postmortem(void)
     rm_rf_simple(dir);
     failures += test_capsule_compress();
     failures += test_capsule_prune();
+    failures += test_postmortem_install_validates_dir();
     failures += test_signal_handler_capsule();
     failures += test_boot_postmortem_install();
     failures += test_boot_postmortem_restart_compresses_prior_sigsegv();

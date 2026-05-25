@@ -364,5 +364,8 @@ the capsule API plus the non-signal save/list/load path.
   and `coremarker.txt`) with raw `mkdir`/`open`/`write`/`close` syscalls before
   the existing fatal handler re-raises. Remaining work is live production SEGV
   verification and any follow-up needed from that evidence.
+- Hardened `postmortem_install` to create and validate the capsule directory
+  before registering the fatal-signal hook, with focused coverage for
+  auto-created directories and non-directory rejection.
 
 <!-- Worker: append a Completion section below when done. -->
