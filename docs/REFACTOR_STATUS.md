@@ -112,19 +112,17 @@ These three are now first-class promises under UNBREAKABLE/HONEST above.
 
 ### Who's moving what right now
 
-**Reality check (07:08Z):** 0 commits in the last 6h — the workers are idle, not
-mid-build. The rows below are the *next* claims, not work in progress. Nothing
-advances until a worker picks one up (or the live node is unwedged).
+**Live (2026-05-25):** both workers active on the two critical-path items.
 
 | Work | Goal | Who |
 |---|---|---|
-| 🔴 BIP30 stale-coins unwedge (THE live wedge) | Tip advancing, Recovery | unclaimed — HIGHEST |
-| PR-3 parallel blk*.dat marking (cold-import 101s→seconds) | Cold sync | unclaimed (was wt2) |
+| 🔴 BIP30 stale-coins unwedge (THE live wedge) | Tip advancing, Recovery | **wt2 (in progress)** |
+| 🛡️ cutover safety guard (auto-revert Condition) | Tip advancing, Alerts | **wt3 (in progress)** |
+| PR-3 parallel blk*.dat marking (cold-import 101s→seconds) | Cold sync | unclaimed (next) |
 | Cutover C-5→C-9 authoritative | Cold sync, validation | UNWEDGE-gated (see P0) |
 | 4e bodies-into-log | Warm restart, recovery | unclaimed |
 | chain_advance + legacy_mirror dissolve | Memory, uptime | gated on C-9 |
 | utxo_recovery dissolve | Memory, uptime | gated on C-8 |
-| More self-heal Conditions | Alerts, uptime | unclaimed |
 
 ---
 
@@ -230,9 +228,11 @@ re-quote them here; they rot. Add a row to the ledger instead.
 
 ## In flight (worktrees)
 
-Workers currently **idle** (Rhett restarts them). 9 locked worktree dirs remain
-under `.claude/worktrees/agent-*` from prior sessions — leftover, not running.
-Orchestrator on `main` queues; workers push direct to main when started.
+**Workers LIVE (2026-05-25):** wt2 → BIP30 stale-coins unwedge (`ed799dd4a`),
+wt3 → cutover safety guard (`f711ac7b0`) — the two critical-path items.
+Orchestrator on `main` queues + curates; workers push direct to main.
+(Housekeeping: 6 orphaned dead-session sub-agent worktrees pruned; 3 live ones
+remain under `.claude/worktrees/agent-*`.)
 
 **The Phase 2 cutover critical path is UNWEDGE-BLOCKED, not soak-gated.** C-2/C-3
 went authoritative, the chain wedged, and `6e0f6a82c` reverted both stages to
