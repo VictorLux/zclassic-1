@@ -50,16 +50,17 @@ Verification:
   `make -j1 test_parallel && ./test_parallel --jobs=$(nproc)` pass after the
   canonical-header collapse.
 - Scratch `-cold-import=/home/rhett/.zclassic` imports successfully in ~47s and
-  publishes the pending CSR anchor from legacy chainstate. Current observation:
-  legacy `blocks/index` maps to h=3124589, while chainstate `B` anchors h=3124356;
-  boot then advances the delta through normal activation. This is outside the
-  import-path consolidation itself, but it is the remaining acceptance question
-  behind "reaches zclassicd tip".
+  publishes the pending CSR anchor from legacy chainstate.
 - Follow-up fix: the shared snapshot importer now records the pending CSR anchor
   height from the chainstate-best branch, not the copied block-index tip. When
   the two differ, the imported UTXO set, anchor hash, and anchor height now name
   the same chain point; higher block-index entries remain available for normal
   activation above the anchor.
+- Scratch `-legacy-attach=/home/rhett/.zclassic` imports successfully in 34.7s
+  with `outcome=did_import`, publishes CSR anchor h=3124589, imports 1,345,064
+  UTXOs, and stamps 3 stage cursors. The 180s smoke wrapper later times out
+  while the live legacy activation path repeatedly fails at h=3124590; that path
+  is explicitly out of scope for this import-path consolidation.
 
 ## The shape (one canonical importer, pluggable mode)
 
