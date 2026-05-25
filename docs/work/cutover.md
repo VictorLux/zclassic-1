@@ -11,7 +11,7 @@ Two chain paths run today: the legacy `connect_tip` path (drives the live tip)
 and the Wave-S **stage pipeline** (`header_admit → validate_headers → body_fetch
 → body_persist → script_validate → proof_validate → utxo_apply → tip_finalize`),
 which currently runs in **shadow**. Robustness = **ONE path.** When the stages
-are authoritative and the legacy modules are deleted (~12.5K LOC), every step
+are authoritative and the legacy modules are deleted (3 modules = 4,407 LOC + comparison scaffolding), every step
 must "advance the durable cursor or name a typed blocker" — a silent halt becomes
 unreachable by construction.
 
@@ -67,7 +67,8 @@ datadir, boot ordering). Prove correctness **off** the live node instead.
 ## 3. DELETE (extract-then-delete — it is NOT a clean delete)
 
 Three legacy modules carry unique behavior the new path lacks. Re-home first,
-then delete the bulk. Net < 12.5K LOC (some logic re-homes).
+then delete the bulk. Net: the 3 modules = 4,407 LOC measured (some logic
+re-homes), plus the shadow-vs-legacy comparison scaffolding.
 
 1. **Never delete the live-mirror heartbeat.** `legacy_mirror_sync` IS the
    always-on live-sync-from-`zclassicd` heartbeat + lag-SLO monitor. Extract that

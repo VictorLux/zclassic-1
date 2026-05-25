@@ -30,7 +30,7 @@ Honest scoreboard. **MEASURED** = a real number from this box (date + how, in
      Stay at tip               advancing (05-25)   keep <1 blk    ◑ live healthy (connect_block fix + rebuild); structural fix = cutover
 
   🪶 LEAN
-     Memory (RSS)              2.13 GB (live)*     1.0 GB        ▲ climbs w/ bg-verify
+     Memory (RSS)              1.97 GB (05-25)*    1.0 GB        ▲ climbs w/ bg-verify
      Binary size               15.4 MB (05-24)     stay slim     ✓ met (docs' 26MB stale)
 
   💪 UNBREAKABLE  ← resilience is a PROMISE, measured by truth not by "result=ok"
@@ -57,7 +57,7 @@ Live node healthy and advancing (0 restarts). Root cause was the `connect_block`
 BIP30 self-write + write-ordering hazard, now fixed (see git history);
 silent-halt escalation is closed (`EV_OPERATOR_NEEDED` → alert sinks + `zcl_status`
 DEGRADED + sd_notify). The **structural** cure is the cutover below — collapse to
-ONE path, delete the legacy (~12.5K LOC). Full root-cause + resilience doctrine
+ONE path, delete the legacy (3 modules = 4,407 LOC + comparison scaffolding). Full root-cause + resilience doctrine
 live in git history + memory ([[project_silent_halt_architecture_diagnosis_2026-05-25]],
 [[feedback_resilience_first_class_live_truth]]).
 
@@ -153,12 +153,12 @@ re-quote them here; they rot. Add a row to the ledger instead.
 
 | File | LOC | Dissolves into | Phase |
 |---|---|---|---|
-| `chain_advance_coordinator.c` | 1,715 | `services/sync/source_scorer.c` + `jobs/tip_finalize.c` + 1 condition | 2 (S-9) |
+| `chain_advance_coordinator.c` | 1,716 | `services/sync/source_scorer.c` + `jobs/tip_finalize.c` + 1 condition | 2 (S-9) |
 | `chain_restore_service.{c,h}` | DELETED | `chain_restore_{planner,executor,repair,integrity,boot_activation,boot_snapshot}.{c,h}` | 3 |
 | `sync_watchdog_service.c` | DELETED | replaced by 8 supervised conditions | 3 (PR-3) |
-| `legacy_mirror_sync_service.c` | 1,410 | `services/sync/legacy_bridge.c` + `jobs/legacy_poll.c` + 1 condition | 2 (S-12) |
+| `legacy_mirror_sync_service.c` | 1,487 | `services/sync/legacy_bridge.c` + `jobs/legacy_poll.c` + 1 condition | 2 (S-12) |
 | `header_probe_service.c` | DELETED | `header_probe.c` + `legacy_header_client.c` + mailbox use | 3 (PR-3) |
-| `utxo_recovery_service.c` | 1,241 | `conditions/utxo_drift.c` + `jobs/utxo_repair.c` | 3 |
+| `utxo_recovery_service.c` | 1,204 | `conditions/utxo_drift.c` + `jobs/utxo_repair.c` | 3 |
 | `chain_evidence_controller.c` | DELETED | split into chain-evidence storage helpers ✅ | 3 |
 
 ---
@@ -175,7 +175,7 @@ continues on `main`. Everything below the cutover is either done or cutover-gate
    alert loop, header validation decoupled from bodies, HAVE_DATA read-verified).
    Real next work: reorg-capability in `tip_finalize` + the offline replay-proof,
    then a single guarded flip, then delete the legacy path + the shadow-vs-legacy
-   comparison apparatus (~12.5K LOC).
+   comparison apparatus (4,407 LOC across the 3 modules + the diff/shadow scaffolding).
 2. **DRY / cruft** —
    [`work/wt-consolidate-import-paths.md`](./work/wt-consolidate-import-paths.md)
    (3 importers → 1). Independent of the cutover.
