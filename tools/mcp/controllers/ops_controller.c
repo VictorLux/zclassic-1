@@ -188,6 +188,35 @@ static int h_zcl_rpc(const struct mcp_request *req, struct mcp_response *res)
                                 m ? m : "(null)", "mcp.ops");
 }
 
+static int h_zcl_cutovermode(const struct mcp_request *req,
+                             struct mcp_response *res)
+{
+    const struct json_value *stage_v = json_get(req->args, "stage");
+    const struct json_value *mode_v = json_get(req->args, "mode");
+    const char *stage = stage_v ? json_get_str(stage_v) : NULL;
+    const char *mode = mode_v ? json_get_str(mode_v) : NULL;
+
+    struct mcp_params p;
+    mcp_params_init(&p);
+    if (stage && stage[0]) {
+        mcp_params_push_str(&p, stage);
+        if (mode && mode[0])
+            mcp_params_push_str(&p, mode);
+    }
+    char *params = mcp_params_to_json(&p);
+    if (!params) {
+        res->error = MCP_ERR_INTERNAL;
+        snprintf(res->error_message, sizeof(res->error_message),
+                 "malloc failed for cutovermode params");
+        LOG_ERR("mcp.ops", "malloc failed for cutovermode params");
+        return -1;  // raw-return-ok:logged-oom
+    }
+
+    char *out = mcp_node_rpc("cutovermode", params);
+    free(params);
+    return mcp_return_rpc_body(res, out, "cutovermode", "mcp.ops");
+}
+
 /* zcl_kpi — single call that returns every subsystem KPI. Used by
  * operators to take the pulse of the node in one shot. Each nested
  * field is the raw result of the corresponding RPC, so field shapes
@@ -668,6 +697,14 @@ static const struct mcp_param_spec p_rpc[] = {
     { "params", MCP_PARAM_STR, false, "JSON params array",
       0, 0, 0, 0, NULL, "\"[]\"" },
 };
+static const struct mcp_param_spec p_cutovermode[] = {
+    { "stage", MCP_PARAM_STR, false,
+      "Cutover stage to read or set",
+      0, 0, 0, 32, "header_admit,validate_headers,all", NULL },
+    { "mode", MCP_PARAM_STR, false,
+      "Runtime mode to set when stage is present",
+      0, 0, 0, 32, "shadow,authoritative", NULL },
+};
 static const struct mcp_param_spec p_postmortem_list[] = {
     { "dir", MCP_PARAM_STR, false, "Capsule directory",
       0, 0, 0, 512, NULL, NULL },
@@ -752,6 +789,13 @@ static const struct mcp_tool_route k_routes[] = {
       "Call any RPC method directly. 85+ commands available.",
       p_rpc, PARAM_COUNT(p_rpc), h_zcl_rpc,
       .flags = MCP_TOOL_FLAG_DESTRUCTIVE /* arbitrary RPC — skip in self_test */ },
+    { "zcl_cutovermode", "ops",
+      "Read or set guarded runtime cutover modes for header_admit and "
+      "validate_headers. With no args it reads modes; with stage+mode it "
+      "sets one stage or all stages. Destructive because authoritative "
+      "mode changes live chain ownership.",
+      p_cutovermode, PARAM_COUNT(p_cutovermode), h_zcl_cutovermode,
+      .flags = MCP_TOOL_FLAG_DESTRUCTIVE /* runtime mode setter */ },
     { "zcl_syncdiag", "ops",
       "Deep sync diagnostics: sync state, chain height, best header "
       "height, peer max height, header gap, watchdog status and "
