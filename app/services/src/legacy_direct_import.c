@@ -111,27 +111,26 @@ bool legacy_direct_import_range_blocking(
         return true;
     }
 
-    /* ── Open mmap reader ─────────────────────────────────── */
-    struct blocks_mmap *bmr = NULL;
-    if (!bmr_open(blk_dir, &bmr)) {
+    /* ── Open mmap reader + apply SHA3 source policy ───────────────── */
+    struct legacy_bootstrap_block_source source;
+    const struct legacy_bootstrap_block_source_options source_opts = {
+        .legacy_blocks_dir = blk_dir,
+        .map = map,
+        .map_count = map_count,
+        .legacy_tip = legacy_tip,
+        .spotcheck_k = LDI_SPOTCHECK_K,
+        .require_spotcheck = false,
+        .log_prefix = "legacy_direct_import",
+        .debug_env = NULL,
+        .dump_map_on_failure = false,
+    };
+    if (!legacy_bootstrap_open_block_source(&source_opts, &source)) {
         bilr_free_height_map(map);
         if (out) *out = r;
         return false;
     }
-
-    /* ── SHA3 spot-check source blocks; proofs still validate normally ── */
-    if (legacy_bootstrap_spotcheck_sha3_windows(
-            bmr, map, map_count, legacy_tip, LDI_SPOTCHECK_K,
-            "legacy_direct_import", NULL, false)) {
-        r.source_checked = true;
-        fprintf(stderr,  // obs-ok:pre-existing-diagnostic
-                "[legacy_direct_import] SHA3 source spotcheck passed; "
-                "proof validation remains enabled\n");
-    } else {
-        fprintf(stderr,  // obs-ok:pre-existing-diagnostic
-                "[legacy_direct_import] WARNING: SHA3 spotcheck did not "
-                "pass; continuing with full validation\n");
-    }
+    struct blocks_mmap *bmr = source.bmr;
+    r.source_checked = source.source_checked;
 
     /* ── Arm body-pull I/O deferral ───────────────────────── */
     atomic_store(&g_body_pull_active, 1);
@@ -247,7 +246,7 @@ bool legacy_direct_import_range_blocking(
     atomic_store(&g_body_pull_active, 0);
 
     /* ── Cleanup readers ──────────────────────────────────── */
-    bmr_close(bmr);
+    legacy_bootstrap_close_block_source(&source);
     bilr_free_height_map(map);
 
     r.final_tip = active_chain_height(&ms->chain_active);

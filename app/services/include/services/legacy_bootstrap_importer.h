@@ -61,6 +61,23 @@ struct legacy_bootstrap_snapshot_import_result {
     int32_t legacy_tip_height;
 };
 
+struct legacy_bootstrap_block_source_options {
+    const char *legacy_blocks_dir;
+    const struct legacy_block_loc *map;
+    size_t map_count;
+    int legacy_tip;
+    int spotcheck_k;
+    bool require_spotcheck;
+    const char *log_prefix;
+    const char *debug_env;
+    bool dump_map_on_failure;
+};
+
+struct legacy_bootstrap_block_source {
+    struct blocks_mmap *bmr;
+    bool source_checked;
+};
+
 /* Hardlink every blk*.dat from legacy_blocks_dir into our_blocks_dir, with
  * a byte-for-byte copy fallback on EXDEV/EPERM. Existing destination files are
  * skipped. Returns linked+copied count, or -1 after logging a fatal error. */
@@ -135,6 +152,17 @@ bool legacy_bootstrap_record_pending_csr_anchor(
 bool legacy_bootstrap_import_snapshot_state(
     const struct legacy_bootstrap_snapshot_import_options *opts,
     struct legacy_bootstrap_snapshot_import_result *out);
+
+/* Open legacy blk*.dat through the mmap reader and apply the mode's SHA3
+ * spotcheck policy. On success, caller must close out->bmr with
+ * legacy_bootstrap_close_block_source().
+ */
+bool legacy_bootstrap_open_block_source(
+    const struct legacy_bootstrap_block_source_options *opts,
+    struct legacy_bootstrap_block_source *out);
+
+void legacy_bootstrap_close_block_source(
+    struct legacy_bootstrap_block_source *src);
 
 /* Verify k random compile-time SHA3 windows against block payloads served by
  * bmr/map. debug_env may name an environment variable that forces one window

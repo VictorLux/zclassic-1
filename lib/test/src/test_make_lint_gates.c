@@ -1064,9 +1064,19 @@ static int t_cold_import_spotcheck_diagnostics_contract(void)
                          "app/services/src/legacy_cold_import.c") == 0);
         ASSERT(read_entire_file(path, &buf) == 0);
         char *debug_env = strstr(buf, "ZCL_COLD_IMPORT_DEBUG_WINDOW");
-        char *call = strstr(buf, "legacy_bootstrap_spotcheck_sha3_windows(");
-        char *refuse = strstr(buf, "refusing to import");
+        char *call = strstr(buf, "legacy_bootstrap_open_block_source(");
+        char *required = strstr(buf, ".require_spotcheck = true");
         ASSERT(debug_env != NULL);
+        ASSERT(call != NULL);
+        ASSERT(required != NULL);
+        free(buf);
+        buf = NULL;
+
+        ASSERT(repo_path(path, sizeof(path),
+                         "app/services/src/legacy_bootstrap_importer.c") == 0);
+        ASSERT(read_entire_file(path, &buf) == 0);
+        call = strstr(buf, "legacy_bootstrap_spotcheck_sha3_windows(");
+        char *refuse = strstr(buf, "refusing to import");
         ASSERT(call != NULL);
         ASSERT(refuse != NULL);
         ASSERT(call < refuse);

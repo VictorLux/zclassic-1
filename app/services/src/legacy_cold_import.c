@@ -149,26 +149,25 @@ bool legacy_cold_import_blocking(
             legacy_tip, map_count);
 
     /* ── SHA3 spot-check ──────────────────────────────────── */
-    struct blocks_mmap *bmr = NULL;
-    if (!bmr_open(blk_dir, &bmr)) {
+    struct legacy_bootstrap_block_source source;
+    const struct legacy_bootstrap_block_source_options source_opts = {
+        .legacy_blocks_dir = blk_dir,
+        .map = map,
+        .map_count = map_count,
+        .legacy_tip = legacy_tip,
+        .spotcheck_k = LCI_SPOTCHECK_K,
+        .require_spotcheck = true,
+        .log_prefix = "cold_import",
+        .debug_env = "ZCL_COLD_IMPORT_DEBUG_WINDOW",
+        .dump_map_on_failure = true,
+    };
+    if (!legacy_bootstrap_open_block_source(&source_opts, &source)) {
         bilr_free_height_map(map);
         ldb_snapshot_destroy(idx_dir);
         ldb_snapshot_destroy(cs_dir);
         return false;
     }
-    bool evidence_ok = legacy_bootstrap_spotcheck_sha3_windows(
-        bmr, map, map_count, legacy_tip, LCI_SPOTCHECK_K, "cold_import",
-        "ZCL_COLD_IMPORT_DEBUG_WINDOW", true);
-    bmr_close(bmr);
-    if (!evidence_ok) {
-        bilr_free_height_map(map);
-        ldb_snapshot_destroy(idx_dir);
-        ldb_snapshot_destroy(cs_dir);
-        fprintf(stderr,
-                "[cold_import] refusing to import: aborting due to "
-                "spotcheck failure\n");
-        return false;
-    }
+    legacy_bootstrap_close_block_source(&source);
     r.evidence_armed = true;
 
     /* ── Shared snapshot import: blk*.dat + block_index + UTXOs ─────── */

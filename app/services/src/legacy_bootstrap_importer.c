@@ -10,6 +10,7 @@
 #include "models/database.h"
 #include "storage/block_index_db.h"
 #include "storage/blocks_index_legacy_reader.h"
+#include "storage/blocks_mmap_reader.h"
 #include "storage/chainstate_legacy_reader.h"
 #include "storage/coins_view_sqlite.h"
 #include "storage/dbwrapper.h"
@@ -704,4 +705,69 @@ bool legacy_bootstrap_import_snapshot_state(
     if (out)
         *out = r;
     return true;
+}
+
+bool legacy_bootstrap_open_block_source(
+    const struct legacy_bootstrap_block_source_options *opts,
+    struct legacy_bootstrap_block_source *out)
+{
+    if (out)
+        *out = (struct legacy_bootstrap_block_source){0};
+    if (!opts || !opts->legacy_blocks_dir || !opts->map ||
+        opts->map_count == 0 || opts->legacy_tip < 0 ||
+        opts->spotcheck_k <= 0 || !opts->log_prefix || !out) {
+        fprintf(stderr,  // obs-ok:bootstrap-import-terminal-diagnostic
+                "[legacy_bootstrap] open block source: bad args\n");
+        return false;
+    }
+
+    struct blocks_mmap *bmr = NULL;
+    if (!bmr_open(opts->legacy_blocks_dir, &bmr)) {
+        fprintf(stderr,  // obs-ok:bootstrap-import-terminal-diagnostic
+                "[%s] cannot open legacy blocks dir %s\n",
+                opts->log_prefix, opts->legacy_blocks_dir);
+        return false;
+    }
+
+    bool checked = legacy_bootstrap_spotcheck_sha3_windows(
+        bmr, opts->map, opts->map_count, opts->legacy_tip,
+        opts->spotcheck_k, opts->log_prefix, opts->debug_env,
+        opts->dump_map_on_failure);
+    if (!checked) {
+        if (opts->require_spotcheck) {
+            bmr_close(bmr);
+            fprintf(stderr,  // obs-ok:pre-existing-diagnostic
+                    "[%s] refusing to import: aborting due to spotcheck "
+                    "failure\n",
+                    opts->log_prefix);
+            return false;
+        }
+        fprintf(stderr,  // obs-ok:pre-existing-diagnostic
+                "[%s] WARNING: SHA3 spotcheck did not pass; continuing "
+                "with full validation\n",
+                opts->log_prefix);
+    } else if (opts->require_spotcheck) {
+        fprintf(stderr,  // obs-ok:pre-existing-diagnostic
+                "[%s] SHA3 source spotcheck passed\n",
+                opts->log_prefix);
+    } else {
+        fprintf(stderr,  // obs-ok:pre-existing-diagnostic
+                "[%s] SHA3 source spotcheck passed; proof validation "
+                "remains enabled\n",
+                opts->log_prefix);
+    }
+
+    out->bmr = bmr;
+    out->source_checked = checked;
+    return true;
+}
+
+void legacy_bootstrap_close_block_source(
+    struct legacy_bootstrap_block_source *src)
+{
+    if (!src || !src->bmr)
+        return;
+    bmr_close(src->bmr);
+    src->bmr = NULL;
+    src->source_checked = false;
 }
