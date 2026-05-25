@@ -55,11 +55,6 @@ static struct wallet_rpc_context *wallet_ctx(void)
     return wallet_rpc_context_current();
 }
 
-static bool wallet_ctx_db_ready(const struct wallet_rpc_context *ctx)
-{
-    return ctx->node_db && ctx->node_db->open;
-}
-
 static bool rpc_z_getnewaddress(const struct json_value *params, bool help,
                                   struct json_value *result)
 {
@@ -204,14 +199,7 @@ static bool rpc_z_getbalance(const struct json_value *params, bool help,
 
     /* Transparent address — sum UTXOs */
     struct tx_destination dest;
-    const struct chain_params *cp = chain_params_get();
-    size_t pk_pfx_len, sc_pfx_len;
-    const unsigned char *pk_pfx = chain_params_base58_prefix(
-        cp, B58_PUBKEY_ADDRESS, &pk_pfx_len);
-    const unsigned char *sc_pfx = chain_params_base58_prefix(
-        cp, B58_SCRIPT_ADDRESS, &sc_pfx_len);
-    if (!decode_destination(addr_str, pk_pfx, pk_pfx_len,
-                             sc_pfx, sc_pfx_len, &dest)) {
+    if (!wallet_decode_address(addr_str, &dest)) {
         json_set_str(result, "Invalid address");
         LOG_FAIL("wallet_shielded", "z_getbalance: decode_destination failed for addr=%s", addr_str);
     }
@@ -286,8 +274,7 @@ static bool rpc_z_listunspent(const struct json_value *params, bool help,
             json_set_object(&entry);
 
             char txid_hex[65];
-            for (int j = 0; j < 32; j++)
-                snprintf(txid_hex + j * 2, 3, "%02x", n->txid[31 - j]);
+            wallet_txid_hex_le(n->txid, txid_hex);
             json_push_kv_str(&entry, "txid", txid_hex);
             json_push_kv_int(&entry, "outindex", n->output_index);
 
@@ -368,9 +355,6 @@ static bool rpc_z_sendmany(const struct json_value *params, bool help,
 
     /* Verify we own the from address */
     const struct chain_params *cp = chain_params_get();
-    size_t pk_pfx_len, sc_pfx_len;
-    const unsigned char *pk_pfx = chain_params_base58_prefix(cp, B58_PUBKEY_ADDRESS, &pk_pfx_len);
-    const unsigned char *sc_pfx = chain_params_base58_prefix(cp, B58_SCRIPT_ADDRESS, &sc_pfx_len);
 
     /* For shielded from: decode the z-address, find key, validate ownership */
     uint8_t from_z_diversifier[11];
@@ -390,7 +374,7 @@ static bool rpc_z_sendmany(const struct json_value *params, bool help,
             LOG_FAIL("wallet_shielded", "z_sendmany: shielded from addr not found in keystore");
         }
         memset(&from_dest, 0, sizeof(from_dest));
-    } else if (!decode_destination(from_addr, pk_pfx, pk_pfx_len, sc_pfx, sc_pfx_len, &from_dest)) {
+    } else if (!wallet_decode_address(from_addr, &from_dest)) {
         json_set_str(result, "Invalid from address");
         LOG_FAIL("wallet_shielded", "z_sendmany: decode_destination failed for from=%s", from_addr);
     }
@@ -452,8 +436,7 @@ static bool rpc_z_sendmany(const struct json_value *params, bool help,
             num_z_out++;
         } else {
             /* Transparent output */
-            if (!decode_destination(addr, pk_pfx, pk_pfx_len,
-                                     sc_pfx, sc_pfx_len, &t_dests[num_t_out])) {
+            if (!wallet_decode_address(addr, &t_dests[num_t_out])) {
                 json_set_str(result, "Invalid transparent address");
                 LOG_FAIL("wallet_shielded", "z_sendmany: cannot decode transparent recipient addr=%s", addr);
             }
@@ -1595,8 +1578,7 @@ static bool rpc_z_listallnotes(const struct json_value *params, bool help,
         json_set_object(&entry);
 
         char txid_hex[65];
-        for (int j = 0; j < 32; j++)
-            snprintf(txid_hex + j * 2, 3, "%02x", n->txid[31 - j]);
+        wallet_txid_hex_le(n->txid, txid_hex);
         json_push_kv_str(&entry, "txid", txid_hex);
         json_push_kv_int(&entry, "outindex", n->output_index);
 
@@ -1616,8 +1598,7 @@ static bool rpc_z_listallnotes(const struct json_value *params, bool help,
 
         if (n->is_spent) {
             char spent_hex[65];
-            for (int j = 0; j < 32; j++)
-                snprintf(spent_hex + j * 2, 3, "%02x", n->spent_txid[31 - j]);
+            wallet_txid_hex_le(n->spent_txid, spent_hex);
             json_push_kv_str(&entry, "spent_by", spent_hex);
         }
 

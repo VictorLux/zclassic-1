@@ -19,10 +19,11 @@
 
 #include <stdbool.h>
 
-/* Shared helpers (definitions live in wallet_diagnostic_controller.c). */
+/* Shared helpers (definitions live in wallet_diagnostic_controller.c).
+ * wallet_ctx_db_ready is shared across all wallet controllers and is
+ * declared in controllers/wallet_helpers.h. */
 
 struct wallet_rpc_context *wallet_ctx(void);
-bool wallet_ctx_db_ready(const struct wallet_rpc_context *ctx);
 bool wallet_diag_begin_checked(struct node_db *ndb, const char *label);
 bool wallet_diag_commit_checked(struct node_db *ndb, const char *label);
 void wallet_diag_rollback_best_effort(struct node_db *ndb,

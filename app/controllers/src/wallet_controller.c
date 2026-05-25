@@ -69,11 +69,6 @@ static struct wallet_rpc_context *wallet_ctx(void)
     return wallet_rpc_context_current();
 }
 
-static bool wallet_ctx_db_ready(const struct wallet_rpc_context *ctx)
-{
-    return ctx->node_db && ctx->node_db->open;
-}
-
 /* Snapshot the tail key_id in the keystore. Used by rollback paths
  * where we need to undo a keystore add that just happened: after a
  * successful wallet_get_new_address(), the most recently inserted
@@ -259,12 +254,6 @@ static bool rpc_listunspent(const struct json_value *params, bool help,
             ctx->main_state, result, "listunspent", "Chainstate lookup"))
         return false;
 
-    const struct chain_params *cp = chain_params_get();
-    size_t pk_pfx_len, sc_pfx_len;
-    const unsigned char *pk_pfx = chain_params_base58_prefix(
-        cp, B58_PUBKEY_ADDRESS, &pk_pfx_len);
-    const unsigned char *sc_pfx = chain_params_base58_prefix(
-        cp, B58_SCRIPT_ADDRESS, &sc_pfx_len);
 
     int tip = active_chain_height(&ctx->main_state->chain_active);
 
@@ -312,9 +301,7 @@ static bool rpc_listunspent(const struct json_value *params, bool help,
                 struct tx_destination dest;
                 if (script_extract_destination(&sc, &dest)) {
                     char addr[128];
-                    if (encode_destination(&dest, pk_pfx, pk_pfx_len,
-                                           sc_pfx, sc_pfx_len, addr,
-                                           sizeof(addr)))
+                    if (wallet_encode_destination(&dest, addr, sizeof(addr)))
                         json_push_kv_str(&entry, "address", addr);
                 }
             }
@@ -355,8 +342,7 @@ static bool rpc_listunspent(const struct json_value *params, bool help,
         struct tx_destination dest;
         if (script_extract_destination(&out->script_pub_key, &dest)) {
             char addr[128];
-            if (encode_destination(&dest, pk_pfx, pk_pfx_len,
-                                   sc_pfx, sc_pfx_len, addr, sizeof(addr)))
+            if (wallet_encode_destination(&dest, addr, sizeof(addr)))
                 json_push_kv_str(&entry, "address", addr);
         }
 
@@ -395,16 +381,8 @@ static bool rpc_sendtoaddress(const struct json_value *params, bool help,
         LOG_FAIL("wallet", "sendtoaddress: invalid amount %lld", (long long)amount);
     }
 
-    const struct chain_params *cp = chain_params_get();
-    size_t pk_pfx_len, sc_pfx_len;
-    const unsigned char *pk_pfx = chain_params_base58_prefix(
-        cp, B58_PUBKEY_ADDRESS, &pk_pfx_len);
-    const unsigned char *sc_pfx = chain_params_base58_prefix(
-        cp, B58_SCRIPT_ADDRESS, &sc_pfx_len);
-
     struct tx_destination dest;
-    if (!decode_destination(addr_str, pk_pfx, pk_pfx_len,
-                            sc_pfx, sc_pfx_len, &dest)) {
+    if (!wallet_decode_address(addr_str, &dest)) {
         json_set_str(result, "Invalid address");
         LOG_FAIL("wallet", "sendtoaddress: invalid address %s", addr_str);
     }
@@ -465,13 +443,8 @@ bool wallet_direct_sendtoaddress(const char *address, int64_t amount_sat,
         LOG_FAIL("wallet", "direct_sendtoaddress: invalid amount %lld", (long long)amount_sat);
     }
 
-    const struct chain_params *cp = chain_params_get();
-    size_t pk_len, sc_len;
-    const unsigned char *pk = chain_params_base58_prefix(cp, B58_PUBKEY_ADDRESS, &pk_len);
-    const unsigned char *sc = chain_params_base58_prefix(cp, B58_SCRIPT_ADDRESS, &sc_len);
-
     struct tx_destination dest;
-    if (!decode_destination(address, pk, pk_len, sc, sc_len, &dest)) {
+    if (!wallet_decode_address(address, &dest)) {
         snprintf(error_out, error_out_size, "Invalid address");
         LOG_FAIL("wallet", "direct_sendtoaddress: invalid address %s", address);
     }
@@ -683,16 +656,8 @@ static bool rpc_dumpprivkey(const struct json_value *params, bool help,
 
     ENSURE_WALLET(result);
 
-    const struct chain_params *cp = chain_params_get();
-    size_t pk_pfx_len, sc_pfx_len;
-    const unsigned char *pk_pfx = chain_params_base58_prefix(
-        cp, B58_PUBKEY_ADDRESS, &pk_pfx_len);
-    const unsigned char *sc_pfx = chain_params_base58_prefix(
-        cp, B58_SCRIPT_ADDRESS, &sc_pfx_len);
-
     struct tx_destination dest;
-    if (!decode_destination(addr_str, pk_pfx, pk_pfx_len,
-                            sc_pfx, sc_pfx_len, &dest)) {
+    if (!wallet_decode_address(addr_str, &dest)) {
         json_set_str(result, "Invalid address");
         LOG_FAIL("wallet", "dumpprivkey: invalid address %s", addr_str);
     }
@@ -708,6 +673,7 @@ static bool rpc_dumpprivkey(const struct json_value *params, bool help,
         LOG_FAIL("wallet", "dumpprivkey: private key not found for %s", addr_str);
     }
 
+    const struct chain_params *cp = chain_params_get();
     size_t sec_pfx_len;
     const unsigned char *sec_pfx = chain_params_base58_prefix(
         cp, B58_SECRET_KEY, &sec_pfx_len);
@@ -915,16 +881,8 @@ static bool rpc_importaddress(const struct json_value *params, bool help,
 
     ENSURE_WALLET(result);
 
-    const struct chain_params *cp = chain_params_get();
-    size_t pk_pfx_len, sc_pfx_len;
-    const unsigned char *pk_pfx = chain_params_base58_prefix(
-        cp, B58_PUBKEY_ADDRESS, &pk_pfx_len);
-    const unsigned char *sc_pfx = chain_params_base58_prefix(
-        cp, B58_SCRIPT_ADDRESS, &sc_pfx_len);
-
     struct tx_destination dest;
-    if (!decode_destination(addr_str, pk_pfx, pk_pfx_len,
-                            sc_pfx, sc_pfx_len, &dest)) {
+    if (!wallet_decode_address(addr_str, &dest)) {
         json_set_str(result, "Invalid address");
         LOG_FAIL("wallet", "importaddress: invalid address %s", addr_str);
     }
@@ -1351,19 +1309,11 @@ static bool rpc_createmultisig(const struct json_value *params, bool help,
     struct script_id sid;
     script_id_from_script(&sid, &redeem);
 
-    const struct chain_params *cp = chain_params_get();
-    size_t pk_pfx_len, sc_pfx_len;
-    const unsigned char *pk_pfx = chain_params_base58_prefix(
-        cp, B58_PUBKEY_ADDRESS, &pk_pfx_len);
-    const unsigned char *sc_pfx = chain_params_base58_prefix(
-        cp, B58_SCRIPT_ADDRESS, &sc_pfx_len);
-
     struct tx_destination dest;
     dest.type = DEST_SCRIPT_ID;
     dest.id.script = sid;
     char addr[128];
-    encode_destination(&dest, pk_pfx, pk_pfx_len,
-                       sc_pfx, sc_pfx_len, addr, sizeof(addr));
+    wallet_encode_destination(&dest, addr, sizeof(addr));
 
     char redeem_hex[MAX_SCRIPT_SIZE * 2 + 1];
     HexStr(redeem.data, redeem.size, false, redeem_hex, sizeof(redeem_hex));
@@ -1397,13 +1347,6 @@ static bool rpc_sendmany(const struct json_value *params, bool help,
         LOG_FAIL("wallet", "sendmany: amounts param is not a JSON object");
     }
 
-    const struct chain_params *cp = chain_params_get();
-    size_t pk_pfx_len, sc_pfx_len;
-    const unsigned char *pk_pfx = chain_params_base58_prefix(
-        cp, B58_PUBKEY_ADDRESS, &pk_pfx_len);
-    const unsigned char *sc_pfx = chain_params_base58_prefix(
-        cp, B58_SCRIPT_ADDRESS, &sc_pfx_len);
-
     struct tx_destination dests[256];
     int64_t values[256];
     size_t n = 0;
@@ -1413,8 +1356,7 @@ static bool rpc_sendmany(const struct json_value *params, bool help,
         const struct json_value *val = json_at(amounts, i);
         if (!addr || !val) continue;
 
-        if (!decode_destination(addr, pk_pfx, pk_pfx_len,
-                                sc_pfx, sc_pfx_len, &dests[n])) {
+        if (!wallet_decode_address(addr, &dests[n])) {
             json_set_str(result, "Invalid address");
             LOG_FAIL("wallet", "sendmany: invalid address at index %zu", i);
         }
@@ -1532,19 +1474,11 @@ static bool rpc_addmultisigaddress(const struct json_value *params, bool help,
     if (ctx->wallet_db)
         wallet_sqlite_write_script(ctx->wallet_db, &sid.hash, &redeem);
 
-    const struct chain_params *cp = chain_params_get();
-    size_t pk_pfx_len, sc_pfx_len;
-    const unsigned char *pk_pfx = chain_params_base58_prefix(
-        cp, B58_PUBKEY_ADDRESS, &pk_pfx_len);
-    const unsigned char *sc_pfx = chain_params_base58_prefix(
-        cp, B58_SCRIPT_ADDRESS, &sc_pfx_len);
-
     struct tx_destination dest;
     dest.type = DEST_SCRIPT_ID;
     dest.id.script = sid;
     char addr[128];
-    encode_destination(&dest, pk_pfx, pk_pfx_len,
-                       sc_pfx, sc_pfx_len, addr, sizeof(addr));
+    wallet_encode_destination(&dest, addr, sizeof(addr));
 
     char redeem_hex[MAX_SCRIPT_SIZE * 2 + 1];
     HexStr(redeem.data, redeem.size, false, redeem_hex, sizeof(redeem_hex));

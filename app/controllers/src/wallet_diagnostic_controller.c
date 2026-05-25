@@ -26,10 +26,8 @@ struct wallet_rpc_context *wallet_ctx(void)
     return wallet_rpc_context_current();
 }
 
-bool wallet_ctx_db_ready(const struct wallet_rpc_context *ctx)
-{
-    return ctx->node_db && ctx->node_db->open;
-}
+/* wallet_ctx_db_ready lives in wallet_helpers.c (shared by all wallet
+ * controllers) and is declared in controllers/wallet_helpers.h. */
 
 bool wallet_diag_begin_checked(struct node_db *ndb, const char *label)
 {

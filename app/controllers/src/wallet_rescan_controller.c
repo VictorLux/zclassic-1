@@ -65,11 +65,6 @@ static struct wallet_rpc_context *wallet_ctx(void)
     return wallet_rpc_context_current();
 }
 
-static bool wallet_ctx_db_ready(const struct wallet_rpc_context *ctx)
-{
-    return ctx->node_db && ctx->node_db->open;
-}
-
 static bool wallet_reset_begin_checked(struct node_db *ndb,
                                        const char *label)
 {
@@ -443,15 +438,8 @@ static bool rpc_coinanalysis(const struct json_value *params, bool help,
                 untracked_count++;
                 untracked_balance += out->value;
 
-                const struct chain_params *cp = chain_params_get();
-                size_t pk_len = 0, sc_len = 0;
-                const unsigned char *pk_pfx =
-                    chain_params_base58_prefix(cp, B58_PUBKEY_ADDRESS, &pk_len);
-                const unsigned char *sc_pfx =
-                    chain_params_base58_prefix(cp, B58_SCRIPT_ADDRESS, &sc_len);
                 char addr[128];
-                encode_destination(&dest, pk_pfx, pk_len, sc_pfx, sc_len,
-                                  addr, sizeof(addr));
+                wallet_encode_destination(&dest, addr, sizeof(addr));
 
                 char txid_hex[65];
                 uint256_get_hex(&wtx->tx.hash, txid_hex);
@@ -513,8 +501,7 @@ static bool rpc_coinanalysis(const struct json_value *params, bool help,
 
         char txid_hex[65];
         if (ntxid) {
-            for (int j = 0; j < 32; j++)
-                snprintf(txid_hex + j * 2, 3, "%02x", ntxid[31 - j]);
+            wallet_txid_hex_le(ntxid, txid_hex);
         } else {
             txid_hex[0] = '\0';
         }
@@ -537,8 +524,7 @@ static bool rpc_coinanalysis(const struct json_value *params, bool help,
 
         if (is_spent) {
             char spent_hex[65];
-            for (int j = 0; j < 32; j++)
-                snprintf(spent_hex + j * 2, 3, "%02x", spent_by[31 - j]);
+            wallet_txid_hex_le(spent_by, spent_hex);
             json_push_kv_str(&ze, "spent_by", spent_hex);
         }
 

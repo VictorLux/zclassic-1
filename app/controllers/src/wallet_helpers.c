@@ -99,6 +99,42 @@ int64_t parse_amount(const struct json_value *v)
     return neg ? -satoshis : satoshis;
 }
 
+bool wallet_ctx_db_ready(const struct wallet_rpc_context *ctx)
+{
+    return ctx->node_db && ctx->node_db->open;
+}
+
+bool wallet_decode_address(const char *str, struct tx_destination *dest)
+{
+    const struct chain_params *cp = chain_params_get();
+    size_t pk_pfx_len, sc_pfx_len;
+    const unsigned char *pk_pfx = chain_params_base58_prefix(
+        cp, B58_PUBKEY_ADDRESS, &pk_pfx_len);
+    const unsigned char *sc_pfx = chain_params_base58_prefix(
+        cp, B58_SCRIPT_ADDRESS, &sc_pfx_len);
+    return decode_destination(str, pk_pfx, pk_pfx_len,
+                              sc_pfx, sc_pfx_len, dest);
+}
+
+bool wallet_encode_destination(const struct tx_destination *dest,
+                               char *out, size_t out_size)
+{
+    const struct chain_params *cp = chain_params_get();
+    size_t pk_pfx_len, sc_pfx_len;
+    const unsigned char *pk_pfx = chain_params_base58_prefix(
+        cp, B58_PUBKEY_ADDRESS, &pk_pfx_len);
+    const unsigned char *sc_pfx = chain_params_base58_prefix(
+        cp, B58_SCRIPT_ADDRESS, &sc_pfx_len);
+    return encode_destination(dest, pk_pfx, pk_pfx_len,
+                              sc_pfx, sc_pfx_len, out, out_size);
+}
+
+void wallet_txid_hex_le(const uint8_t txid[32], char *out)
+{
+    for (int j = 0; j < 32; j++)
+        snprintf(out + j * 2, 3, "%02x", txid[31 - j]);
+}
+
 int wallet_history_count(void)
 {
     struct wallet *wallet = wallet_rpc_wallet();
@@ -192,12 +228,6 @@ bool wallet_append_tx_entry(const struct transaction *tx,
                             struct json_value *result)
 {
     struct wallet *wallet = wallet_rpc_wallet();
-    const struct chain_params *cp = chain_params_get();
-    size_t pk_pfx_len, sc_pfx_len;
-    const unsigned char *pk_pfx = chain_params_base58_prefix(
-        cp, B58_PUBKEY_ADDRESS, &pk_pfx_len);
-    const unsigned char *sc_pfx = chain_params_base58_prefix(
-        cp, B58_SCRIPT_ADDRESS, &sc_pfx_len);
 
     char txid[65];
     uint256_get_hex(&tx->hash, txid);
@@ -210,8 +240,7 @@ bool wallet_append_tx_entry(const struct transaction *tx,
             addr[0] = '\0';
             if (script_extract_destination(
                     &tx->vout[j].script_pub_key, &dest))
-                encode_destination(&dest, pk_pfx, pk_pfx_len,
-                                   sc_pfx, sc_pfx_len, addr, sizeof(addr));
+                wallet_encode_destination(&dest, addr, sizeof(addr));
 
             int64_t per_fee = 0;
             if (!fee_emitted) { per_fee = -fee; fee_emitted = true; }
@@ -237,8 +266,7 @@ bool wallet_append_tx_entry(const struct transaction *tx,
             addr[0] = '\0';
             if (script_extract_destination(
                     &tx->vout[j].script_pub_key, &dest))
-                encode_destination(&dest, pk_pfx, pk_pfx_len,
-                                   sc_pfx, sc_pfx_len, addr, sizeof(addr));
+                wallet_encode_destination(&dest, addr, sizeof(addr));
 
             append_one_entry(result, txid, (int)j,
                              confirmations > 0 ? "receive" : "immature",

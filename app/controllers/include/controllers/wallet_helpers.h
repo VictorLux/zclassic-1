@@ -18,6 +18,7 @@ struct coins_view_cache;
 struct json_value;
 struct transaction;
 struct db_wallet_tx;
+struct tx_destination;
 
 struct wallet_rpc_context {
     struct wallet *wallet;
@@ -79,6 +80,12 @@ static inline struct coins_view_cache *wallet_rpc_coins_tip(void)
     return g_wallet_ctx.coins_tip;
 }
 
+/* True when the shared node DB is attached and open. Used by every
+ * wallet controller to decide between the authoritative SQLite path
+ * and the in-memory fallback. Defined in wallet_helpers.c so callers
+ * need not pull in the full struct node_db definition. */
+bool wallet_ctx_db_ready(const struct wallet_rpc_context *ctx);
+
 #define ENSURE_WALLET(result) do {                        \
     if (!wallet_rpc_wallet()) {                           \
         json_set_str((result), "Wallet not available");   \
@@ -98,6 +105,19 @@ void wallet_rpc_context_set_coins_tip(struct coins_view_cache *coins_tip);
 /* Amount formatting/parsing */
 void format_amount(int64_t satoshis, char *out, size_t out_size);
 int64_t parse_amount(const struct json_value *v);
+
+/* Address codec wrappers — look up the active chain's base58 pubkey
+ * and script prefixes and delegate to decode/encode_destination. These
+ * collapse the four-line prefix-fetch idiom that was repeated at every
+ * transparent-address call site. */
+bool wallet_decode_address(const char *str, struct tx_destination *dest);
+bool wallet_encode_destination(const struct tx_destination *dest,
+                               char *out, size_t out_size);
+
+/* Write a 64-char big-endian (display order) hex txid into out, which
+ * must hold at least 65 bytes. The on-disk txid bytes are little-endian
+ * so they are emitted reversed. */
+void wallet_txid_hex_le(const uint8_t txid[32], char *out);
 
 /* Transaction history helpers */
 int wallet_history_count(void);
