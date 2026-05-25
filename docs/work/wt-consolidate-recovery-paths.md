@@ -2,9 +2,7 @@
 
 ## Status
 
-**IN PROGRESS (wt3) — claimed 2026-05-25.** Root fix is marked deployed with
-live forward progress in `wt-connect-bip30-selfwrite.md`; start with the bounded
-rewind helper to avoid broad condition churn.
+**✅ DONE — pushed 2026-05-25** to main as commit `2063a384b`.
 
 Task A complete in wt3: `coins_rewind_above_tip(db, tip_height, max_rows)` is
 now the single storage-layer helper for bounded auto-rewind and explicit
@@ -83,7 +81,7 @@ contracts.
 
 ## Tasks (after the gate)
 1. [x] Extract `coins_rewind_above_tip` helper; rewire all 3 callers; one test. (A)
-2. Live-audit the 17 conditions; merge/retire the now-unreachable ones. (B)
+2. [x] Live-audit the 17 conditions; merge/retire the now-unreachable ones. (B)
 3. [x] Fix the LEGACY_LIFECYCLE drift + dead flag docs. (C)
 4. [x] Confirm/collapse redundant import wrappers. (D)
 
@@ -100,3 +98,57 @@ contracts.
 - Root fix this is gated on: `wt-connect-bip30-selfwrite.md`.
 - `LEGACY_LIFECYCLE.md` (active/deprecated source of truth).
 - Memory: `feedback_less_is_more_holistic`, `feedback_stop_drifting_ideal_first`.
+
+## Completion (wt3, 2026-05-25)
+
+### Summary
+Consolidated the repeated above-tip UTXO rewind path into
+`coins_rewind_above_tip`, corrected legacy lifecycle docs against the real CLI
+surface, audited import wrappers, and retired the duplicate mirror stall
+Condition. The registered self-heal set is now 20 → 19, and `app/conditions`
+compiled files are 175 → 174.
+
+### Benchmark moved
+Lean and uptime: net source/doc LOC is down, recovery paths are less duplicated,
+and activation-no-progress now has one owner (`legacy_mirror_stuck`) instead of
+two competing Conditions. Live node source was not deployed in this worker; two
+local `getblockcount` samples both returned `3124301`, so live state remained
+unchanged during the refactor.
+
+### Commits
+- `469954d3f` wt3: claim recovery consolidation
+- `035adef95` wt3: extract coins rewind helper
+- `a12d77563` wt3: correct legacy lifecycle docs
+- `3d9961578` wt3: record import wrapper audit
+- `d440f612e` wt3: narrow chain stalled condition
+- `2063a384b` wt3: retire duplicate mirror stall condition
+
+### Files added/modified
+- `lib/storage/src/coins_view_sqlite.c`
+- `lib/storage/include/storage/coins_view_sqlite.h`
+- `app/services/src/utxo_recovery_service.c`
+- `config/src/boot.c`
+- `app/conditions/src/condition_registry.c`
+- `app/conditions/src/chain_stalled_with_data.c` (deleted)
+- `lib/test/src/test_coins_view_atomicity.c`
+- `lib/test/src/test_condition_engine.c`
+- `lib/test/src/test_legacy_mirror_stuck_condition.c`
+- `LEGACY_LIFECYCLE.md`
+- `docs/REFACTOR_STATUS.md`
+- `docs/dissolve/chain_advance_coordinator.md`
+- `docs/work/wt-consolidate-recovery-paths.md`
+
+### Acceptance verification
+- [x] Focused rewind tests — `ZCL_TEST_ONLY=persistence ./test_zcl` PASS
+- [x] Condition registry and mirror stall tests — `ZCL_TEST_ONLY=condition_engine ./test_zcl`, `ZCL_TEST_ONLY=legacy_mirror_stuck_condition ./test_zcl`, `ZCL_TEST_ONLY=utxo_activation_paused ./test_zcl`, `ZCL_TEST_ONLY=watchdog_dissolve_pr2 ./test_zcl` PASS
+- [x] Lint — `make lint` PASS
+- [x] Full suite — `./test_parallel --jobs=$(nproc)` PASS (`0/212 groups failed`)
+- [x] Chaos harness — `make chaos` PASS
+- [x] Kill-9 loop — `ZCL_STRESS_TESTS=1 ZCL_TEST_ONLY=kill9 ./test_zcl` PASS
+- [x] Live sample — `./tools/zcl-rpc getblockcount` returned `3124301` twice, source not deployed by this worker
+
+### Surprises / follow-ups
+The original 17-condition inventory was stale; the registry had grown to 20.
+Only `chain_stalled_with_data` was safe to retire. The other called-out
+Conditions still cover distinct reachable failures and should stay until their
+own owning modules dissolve.
