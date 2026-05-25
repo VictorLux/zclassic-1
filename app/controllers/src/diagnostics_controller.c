@@ -768,13 +768,13 @@ static void cutover_preflight_push_blocker(struct json_value *blockers,
 }
 
 static bool cutover_preflight_tail_window(
-    const struct json_value *start_v,
-    const struct json_value *end_v,
+    int64_t start_i,
+    int64_t end_i,
     const struct header_admit_diff_report *rep,
     int32_t *start_out,
     int32_t *end_out)
 {
-    if (start_v || end_v || !rep || !start_out || !end_out)
+    if (start_i != -1 || end_i != -1 || !rep || !start_out || !end_out)
         return false;
     if (rep->log_max_height < 0 || rep->chain_tip_height < 0)
         return false;
@@ -849,7 +849,7 @@ static bool rpc_cutoverpreflight(const struct json_value *params, bool help,
         LOG_FAIL("diag", "cutoverpreflight: header_admit diff failed");
     int32_t tail_start = 0;
     int32_t tail_end = 0;
-    if (cutover_preflight_tail_window(start_v, end_v, &rep,
+    if (cutover_preflight_tail_window(start_i, end_i, &rep,
                                       &tail_start, &tail_end) &&
         !header_admit_stage_diff(tail_start, tail_end, &rep))
         LOG_FAIL("diag", "cutoverpreflight: header_admit tail diff failed");

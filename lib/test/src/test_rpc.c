@@ -335,6 +335,20 @@ int test_rpc(void) {
 
         json_free(&params);
         json_free(&result);
+
+        json_set_array(&params);
+        struct json_value v;
+        json_init(&v);
+        json_set_int(&v, -1);
+        ok = ok && json_push_back(&params, &v);
+        ok = ok && json_push_back(&params, &v);
+        ok = ok && cmd->actor(&params, false, &result);
+        diff = json_get(&result, "header_admit_diff");
+        ok = ok && diff && json_get(diff, "cursor_lag") != NULL;
+        json_free(&v);
+        json_free(&params);
+        json_free(&result);
+
         if (ok) printf("OK\n"); else { printf("FAIL\n"); failures++; }
     }
 
