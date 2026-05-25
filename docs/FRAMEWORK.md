@@ -76,7 +76,7 @@ app/                       # the application — composition of framework shapes
   models/                  # business entities (AR lifecycle, before/after save hooks)
   jobs/                    # async cursor-stamped stages (Wave S target)
   supervisors/             # liveness trees — one root per domain
-  conditions/              # auto-healers — one file per wedge class
+  conditions/              # auto-healers — one file per halt class
   events/                  # typed event definitions
   views/                   # explorer page templates
 
@@ -282,7 +282,7 @@ configurable window (default 60s); if witness returns true → condition
 cleared, victory logged. If `MAX_ATTEMPTS` exhausted with `WITNESS = false`
 → condition stays active, operator paged via `EV_OPERATOR_NEEDED`.
 
-**Every wedge class becomes one of these files.** Adding a new
+**Every halt class becomes one of these files.** Adding a new
 auto-healing rule is ~50 LOC.
 
 ### 3.7 Event — typed broadcast
@@ -435,14 +435,14 @@ build), tighten to **FAIL** as each phase's violations are fixed.
 3. Register in `app/supervisors/chain.c`.
 4. Test: stage runs, cursor advances, idempotent under restart.
 
-### 7.3 Add an auto-healer for a new wedge class
+### 7.3 Add an auto-healer for a new halt class
 
-1. Create `app/conditions/<wedge_name>.c` with `CONDITION(...)`.
+1. Create `app/conditions/<condition_name>.c` with `CONDITION(...)`.
 2. Implement `DETECT` (reads model state).
 3. Implement `REMEDY` (calls existing service/model APIs).
 4. Implement `WITNESS` (observable post-condition).
 5. Set `POLL_SECS`, `BACKOFF_SECS`, `MAX_ATTEMPTS`.
-6. Test: induce wedge in test, verify condition fires + heals.
+6. Test: induce halt in test, verify condition fires + heals.
 7. **No need to add an escalator anywhere else.** The engine takes
    care of dispatch, backoff, witness, paging.
 
@@ -470,7 +470,7 @@ Full per-phase detail in [`docs/REFACTOR_STATUS.md`](./REFACTOR_STATUS.md).
 
 | Phase | Topic | Ships |
 |---|---|---|
-| **0** | Condition engine + scaffold | `lib/framework/condition.{c,h}`, first 3 conditions, folder scaffold, lint gate (warn mode), status board. **UNWEDGES LIVE NODE.** |
+| **0** | Condition engine + scaffold | `lib/framework/condition.{c,h}`, first 3 conditions, folder scaffold, lint gate (warn mode), status board. **RECOVERS THE LIVE NODE.** |
 | **1** | Adopt the four unused primitives | Wire `mailbox`, `projection`, `platform.clock`, `platform.rng` into real call sites. Lint gates ratchet to fail mode. |
 | **2** | Wave S → S-12 cutover | Land S-5..S-9 (body_persist, script_validate, proof_validate, utxo_apply, tip_finalize). Delete `chain_advance_coordinator.c`, `legacy_mirror_sync_service.c`, `sync_watchdog_service.c`, etc. **~7,000 LOC deletion.** |
 | **3** | Dissolve remaining mega-modules | `chain_restore_service.c`, `header_probe.c`, `utxo_recovery_service.c` decompose into jobs + conditions. |

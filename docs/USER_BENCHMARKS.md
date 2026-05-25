@@ -1,6 +1,6 @@
 # zclassic23 — User Benchmarks (the only metrics that matter)
 
-> The user does not care about wedges, BLOCK_FAILED_MASK, or stage cursors.
+> The user does not care about halts, BLOCK_FAILED_MASK, or stage cursors.
 > The user wants: install → it works → stays working → doesn't eat the machine.
 > Every architectural decision is judged against these five numbers.
 
@@ -13,7 +13,7 @@
 
 | # | Benchmark | Target | Latest (see ledger) | How measured |
 |---|---|---|---|---|
-| 1 | **Cold-start to operational** (empty datadir → tip current within 100 blocks, RPC + wallet ready) | ≤ **60 s** | 180s (05-24, wedge recovery path) | `time zclassic23 -bench-coldstart` |
+| 1 | **Cold-start to operational** (empty datadir → tip current within 100 blocks, RPC + wallet ready) | ≤ **60 s** | 180s (05-24, halt recovery path) | `time zclassic23 -bench-coldstart` |
 | 2 | **Warm-start to operational** (restart with synced datadir → same tip, RPC ready) | ≤ **10 s** | 37.7s (05-24, real restart→tip) | `time zclassic23 -bench-warmstart` |
 | 3 | **Stay-in-sync MTBF** (mean time between unattended stalls > 60 s) | ≥ **30 days** | soak in progress (started 05-24) | 30-day chaos soak (kill -9, net blip, peer churn) |
 | 4 | **RAM budget steady-state** | ≤ **1 GB RSS** | ~2.4 GB & climbing (05-24 soak, 6.6% bg-verify) | `zcl_status.memory_rss_mb` over a soak |
@@ -29,7 +29,7 @@
 - Network egress idle: ≤ 100 KB/s
 - CPU idle: ≤ 5%
 
-## The wedge clause
+## The halt clause
 
 Operator paging rate target: **0/month**.
 The user is not an operator. If zclassic23 stalls, recovery is automatic or the node
@@ -42,7 +42,7 @@ sentinel from progress.kv" is the answer.
 |---|---|
 | 1 | **A2 peer snapshot bridge** — adapts S-4b's cursor-stamp pattern to a chainstate downloaded over Tor from any peer; SHA3-verified against baked-in `g_sha3_windows`; same atomic stamp at snapshot height. Genesis-walk becomes the always-works fallback, not the default. |
 | 2 | **Mmap'd flat block_index** (file already exists from prior speed work) + **parallel startup** of wallet/mempool/RPC/supervisor instead of the current serial chain. |
-| 3 | **Wave S staged pipeline** (cursor-on-disk per stage = wedges impossible by construction). Lint gate #18 at S-10 makes it permanent. |
+| 3 | **Wave S staged pipeline** (cursor-on-disk per stage = halts impossible by construction). Lint gate #18 at S-10 makes it permanent. |
 | 4 | **Paged block_index** (LRU keeps last N=10k hot; rest live in mmap'd file). UTXO via LSM (already on roadmap at S-8 → utxo.lsm). |
 | 5 | **Stage primitive's BEGIN IMMEDIATE** atomic commit + sentinel pattern (already shipped F-2/S-1/S-4b). Each stage's crash-replay test enforces. |
 
@@ -60,7 +60,7 @@ restart or kill a node remain explicit subcommands.
 ## Dream roadmap (sequenced so each wave moves a benchmark)
 
 1. **Wave B — Benchmarks (1 session).** `zclassic23 -bench` runs all 5 primaries. `docs/bench-history.csv`. CI regression gate. **Today's numbers become the baseline.** Without this, every other wave is unmeasurable.
-2. **Wave S close (3–6 sessions).** S-5..S-12. Wedges extinct. Locks benchmarks 3 + 5.
+2. **Wave S close (3–6 sessions).** S-5..S-12. Halts extinct. Locks benchmarks 3 + 5.
 3. **Wave P — Peer Snapshot (~3 sessions).** A2 of the bridge. Locks benchmark 1 (cold-start over Tor).
 4. **Wave W — Warm-start (1 session).** Mmap + parallel boot. Locks benchmark 2.
 5. **Wave R — RAM diet (2 sessions).** Paged block_index + LSM UTXO. Locks benchmark 4.

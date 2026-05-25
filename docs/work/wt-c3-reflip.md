@@ -1,5 +1,11 @@
 # wt-c3-reflip — re-flip C-3 (validate_headers authoritative) behind the safe-flip guard
 
+> **Governed by [`cutover-revised-plan.md`](./cutover-revised-plan.md) v2.** This
+> doc is **M4** (the flip mechanics). Do **M1 (reorg-capability) + M2 (offline
+> proof)** FIRST — a forward-only flip on a path that can't roll back a reorg is
+> the gap v2 exists to close. Treat the steps below as the *how-to-flip* once
+> M1/M2 are green.
+
 ## Status
 
 **IN PROGRESS (wt3) — guard verified GO 2026-05-25.** Prereqs cleared: live node healthy/

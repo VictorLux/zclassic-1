@@ -51,70 +51,19 @@ bg-verify has buffered. >2× the 1 GB target; real ceiling needs the full ~8h
 run. `✓` met · `▸` in flight · `◷` measuring · `◑` fixed-in-code-not-deployed ·
 `▲` above target · `✗` BROKEN/regressed.
 
-### ✅ RESOLVED 2026-05-25 — halt cured; focus = one-path cutover + DRY  (history kept below for context)
+### Halt cured 2026-05-25 — focus is the one-path cutover + DRY
 
-**The live node no longer halts** — verified HEALTHY 2026-05-25 (advancing past
-the old halt block, 0 restarts), via the `connect_block` self-write + write-order
-fix (shipped, `work/done/wt-connect-bip30-selfwrite.md`) + a clean rebuild from
-the local `zclassicd` when on-disk state was already torn. **Silent-halt
-escalation is now closed:** `EV_OPERATOR_NEEDED` → alert sinks + `zcl_status`
-DEGRADED + sd_notify — a halt can no longer page nobody. **The structural cure is
-the cutover: collapse to ONE path and delete the legacy (~12.5K LOC)** — a node
-where every step must "advance the cursor or name a typed blocker" can't halt
-silently. See [[project_silent_halt_architecture_diagnosis_2026-05-25]] (memory).
-Condition consolidation is owned by wt3. Historical root-cause analysis follows:
+Live node healthy and advancing (0 restarts). Root cause was the `connect_block`
+BIP30 self-write + write-ordering hazard, now fixed
+([`work/done/wt-connect-bip30-selfwrite.md`](./work/done/wt-connect-bip30-selfwrite.md));
+silent-halt escalation is closed (`EV_OPERATOR_NEEDED` → alert sinks + `zcl_status`
+DEGRADED + sd_notify). The **structural** cure is the cutover below — collapse to
+ONE path, delete the legacy (~12.5K LOC). Full root-cause + resilience doctrine
+live in git history + memory ([[project_silent_halt_architecture_diagnosis_2026-05-25]],
+[[feedback_resilience_first_class_live_truth]]).
 
-**Earlier diagnosis was WRONG and is corrected here.** The halt is *not* a
-cutover consensus divergence. The cutover (C-3, `ad34efb65`) was only the
-**trigger**: it flapped the chain, `chain_tip_watchdog` kill-9'd the node 12×
-(`NRestarts=12`), and one of those kills hit the at-tip ordering hazard
-([[feedback_at_tip_kill9_ordering_invariant]] — coins.db commits before the
-block_index fsync). That left a **torn coins state** that is now the active,
-standalone halt:
-
-**Root cause — PROVEN, deeper than first thought (2026-05-25):** the node freezes
-~1 block below the tip with `connect_block FAILED: bad-txns-BIP30`, **and it
-recurs at every tip advance.** A cold-import from the good local `zclassicd`
-closed the 536-block gap but the halt just **moved** 3,123,689 → 3,124,225.
-Live `node.db`:
-```
-chain tip          = 3,124,224
-utxos MAX(height)  = 3,124,225   (one row: txid 98963472…, vout 0, is_coinbase=1)
-→ block 3,124,225's OWN coinbase is in the UTXO set while the tip is 3,124,224.
-  connect_block runs BIP30, sees the block's own coinbase already present, and
-  rejects the block as a duplicate-overwrite.
-```
-So the UTXO set sits **one block ahead of the block-index tip**, and BIP30 treats
-the node's own coinbase as a consensus violation. **Post-BIP34 (coinbase txids
-are height-unique), BIP30 can NEVER legitimately fire at these heights — so this
-is ALWAYS a false positive on stale local data, never a real duplicate.**
-
-**The symptom-chasers only move the halt:**
-| Attempt | Commit | Result |
-|---|---|---|
-| boot single-block rewind | `dbf4845a1` | clears one row on boot; tip re-halts at the next block |
-| cold-import from zclassicd | (manual) | closed 536-blk gap, halt moved 3,123,689 → 3,124,225 |
-| cutover→shadow / restart-cap / self-heal-witness | `6e0f6a82c` `82ec4e11f` `47bdbc211` | fix the trigger/loop/lie; do NOT cure the BIP30 false-positive |
-
-**The cure (new P0 assignment):**
-[`work/wt-connect-bip30-selfwrite.md`](./work/wt-connect-bip30-selfwrite.md) —
-(1) `connect_block` must not reject a block's OWN same-height coinbase (it's a
-stale self-write, impossible to be a real duplicate post-BIP34); (2) fix the write
-ordering so the UTXO set never commits ahead of the block-index tip. Acceptance is
-**sustained LIVE forward progress at the tip**, not a unit test.
-
-**RESILIENCE DOCTRINE (new, load-bearing):**
-1. **A green test suite is not a healthy node.** No cutover is "done" until the
-   *live* node advances past the cutover height. Forward-progress is the gate.
-2. **A remedy that returns `ok` must resolve the symptom.** A Condition that
-   reports success while its symptom persists is worse than none — it hides the
-   failure. Verify by symptom delta, not by "the remedy ran."
-3. **The scoreboard must read live truth, not a cached snapshot.** "At tip" =
-   `tip_advance_age < threshold` AND `gap == 0`, sampled now.
-These three are now first-class promises under UNBREAKABLE/HONEST above.
-
-**When you finish a task, name the goal you moved and the measured delta**
-(e.g. "warm restart 33s→29s"), then add a row to BENCHMARKS_LOG.md.
+**Working rule:** when you finish a task, name the goal you moved and the measured
+delta (e.g. "warm restart 33s→29s") and add a row to BENCHMARKS_LOG.md.
 
 ### Who's moving what right now
 

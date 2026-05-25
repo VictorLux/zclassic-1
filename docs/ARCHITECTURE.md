@@ -8,7 +8,7 @@
 
 > **The database is the only truth. Every byte in the process is a derived projection that can be torn down and rebuilt from disk in bounded time. Chain progress is a stage cursor on disk — it either advances or names a typed blocker.**
 
-Every other choice is a consequence of that sentence. Wedges become unreachable by construction because there is no in-memory state whose loss matters: a stalled actor restarts, reads its cursor, and resumes. Bugs become a 64-bit seed and an event trace in a deterministic simulator.
+Every other choice is a consequence of that sentence. Halts become unreachable by construction because there is no in-memory state whose loss matters: a stalled actor restarts, reads its cursor, and resumes. Bugs become a 64-bit seed and an event trace in a deterministic simulator.
 
 ---
 
@@ -84,7 +84,7 @@ Every layer's interface to the layer above is read-only data plus typed commands
 | `lib/net/src/msgprocessor*.c` (handshake, snapshot, inv, sync, ping) | ~7,000 | TRANSFORM → per-peer actors |
 | `lib/net/src/fast_sync.c` + `flyclient.c` | 2,060 | bedrock (extends into stage `header_admit`) |
 | `lib/net/src/onion_service.c` (embedded Tor + .onion HTTPS) | 868 | bedrock → L5 actor under `onion_sup` |
-| `app/services/src/chain_advance_coordinator.c` (wedge engine) | 1,715 | REPLACE → 8 staged-sync actors + thin source selector |
+| `app/services/src/chain_advance_coordinator.c` (halt engine) | 1,715 | REPLACE → 8 staged-sync actors + thin source selector |
 | `app/services/src/legacy_mirror_sync_service.c` (blocking-RPC monolith) | 1,406 | REPLACE → async supervised state machine |
 | `application/`, `domain/`, `mutator/` (hexagonal skeleton) | 502 | TRANSFORM — becomes the staged-pipeline actor bodies |
 | 8 chain stages: header_admit, validate_headers, body_fetch, body_persist, script_validate, proof_validate, utxo_apply, tip_finalize | 0 | **MISSING — Wave S-2..S-9** |
@@ -138,10 +138,10 @@ Active roadmap lives at `~/.claude/plans/zclassic23-plan.md`. Current waves:
 | Wave | Theme | Status |
 |------|-------|--------|
 | **F** | Foundation: ~2,500 LOC pure-delete purge + `stage` / `mailbox` / `projection` / `platform.clock` / `platform.rng` kernel primitives + this doc + ADR-001 | in progress |
-| **S** | Staged sync — the wedge-extinction wave. 12 milestones (`progress.kv` → 8 stages → `chain_sup` → `zcl_diff_with_legacy_staged` → cutover). Wedge class extinct when the diff is zero for 30 days. | next |
+| **S** | Staged sync — the halt-extinction wave. 12 milestones (`progress.kv` → 8 stages → `chain_sup` → `zcl_diff_with_legacy_staged` → cutover). Halt class extinct when the diff is zero for 30 days. | next |
 | **M** | Claude as participant — consent log + `wallet_agent` / `inbox_agent` / `market_agent` MCP controllers + wallet UI consent panel. | queued |
 | **Z** | ZNAM as decentralized identity — standalone resolver lib, `zcl-resolve` CLI, `.well-known/zcl-name` over onion, formal DID spec. | queued |
-| **T** | Deterministic simulator — single-thread actor scheduler, FS/net/clock injection, first scenario ports the current wedge as a regression test, first TLA+ spec. | queued |
+| **T** | Deterministic simulator — single-thread actor scheduler, FS/net/clock injection, first scenario ports the current halt as a regression test, first TLA+ spec. | queued |
 | **R** | Release engineering — `flake.nix`, signed tarballs with cosign, first real CI workflow. | queued |
 
 See the plan for per-milestone DoD, files-to-touch, and the "where I left off" markers.
@@ -150,7 +150,7 @@ See the plan for per-milestone DoD, files-to-touch, and the "where I left off" m
 
 ## What this architecture buys us
 
-1. **Wedges unreachable by construction.** Chain progress is a number on disk; a stage either advances or names a typed blocker. No silent stalls in the state space.
+1. **Halts unreachable by construction.** Chain progress is a number on disk; a stage either advances or names a typed blocker. No silent stalls in the state space.
 2. **Bugs become seeds.** Deterministic simulator means every failure reduces to a 64-bit seed + event trace; reproduce, fix, prove with a property test.
 3. **Claude as co-pilot, not observer.** 200+ MCP tools + consent log + agent controllers turn the node into a first-class AI operator surface.
 4. **AI-native operator plane.** No curl, no token waste, no manual SSH; all introspection and control flows through typed MCP tools with replay buffer and Prometheus metrics.

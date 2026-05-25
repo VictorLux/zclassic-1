@@ -21,7 +21,7 @@ node well-connected and is its hand-patched datadir intact?" The shadow stages a
 fed ONLY by blocks arriving live at the tip (`shadow_feeder` is called only from
 `msg_blocks.c:1166`); the historical chain 0→tip-1 is never replayed through them.
 So the correctness proof is a *side effect of live operation* and inherits every
-defect of the live node's state (wedge ordering, peer floor, torn cold-import
+defect of the live node's state (halt ordering, peer floor, torn cold-import
 `disk-read-failed`). Meanwhile the path is already bit-clean over 3.1M *headers*
 (`validate_headers_log`). The fix is to prove correctness off the live node — but
 **headers being clean is not the whole proof**, see Finding 1.

@@ -1,4 +1,4 @@
-# Cutover Safety Protocol — never silently wedge the chain again
+# Cutover Safety Protocol — never silently halt the chain again
 
 **Why this exists:** the C-3 validate_headers cutover (`ad34efb65`, 2026-05-24)
 flipped a stage to authoritative, the live chain froze, and **nothing noticed for
@@ -81,7 +81,7 @@ under the chain supervisor; reuse existing infra:
 ## References
 - `docs/REFACTOR_STATUS.md` — RESILIENCE DOCTRINE, P0, cutover block.
 - `wt-phase2-cutover-c3-through-c9.md` — the flip sequence this gates.
-- `wt-bip30-stale-coins-unwedge.md` — the wedge the unguarded C-3 flip caused.
+- `wt-bip30-stale-coins-unwedge.md` — the halt the unguarded C-3 flip caused.
 - Memory: `feedback_resilience_first_class_live_truth`.
 
 ## Completion (wt3, 2026-05-25)
