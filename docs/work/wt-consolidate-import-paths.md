@@ -53,6 +53,8 @@ Progress:
 - Private snapshot-import result state was trimmed again: block-index tip
   height and chainstate-best presence are now local control-flow details, not
   returned metrics.
+- The leftover block-source wrapper was removed; cold/direct import now use the
+  shared checked mmap opener directly instead of a one-field adapter struct.
 
 Verification:
 - `make -j$(nproc) test_zcl`, `make -j$(nproc) zclassic23`, `make lint`, and

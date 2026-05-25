@@ -84,22 +84,6 @@ struct legacy_bootstrap_chainstate_import_result {
     struct uint256 best_block;
 };
 
-struct legacy_bootstrap_block_source_options {
-    const char *legacy_blocks_dir;
-    const struct legacy_block_loc *map;
-    size_t map_count;
-    int legacy_tip;
-    int spotcheck_k;
-    bool require_spotcheck;
-    const char *log_prefix;
-    const char *debug_env;
-    bool dump_map_on_failure;
-};
-
-struct legacy_bootstrap_block_source {
-    struct blocks_mmap *bmr;
-};
-
 bool legacy_bootstrap_spotcheck_sha3_windows(
     struct blocks_mmap *bmr,
     const struct legacy_block_loc *map,
@@ -855,66 +839,63 @@ static bool legacy_bootstrap_import_snapshot_state(
 }
 
 static bool legacy_bootstrap_open_block_source(
-    const struct legacy_bootstrap_block_source_options *opts,
-    struct legacy_bootstrap_block_source *out)
+    const char *legacy_blocks_dir,
+    const struct legacy_block_loc *map,
+    size_t map_count,
+    int legacy_tip,
+    int spotcheck_k,
+    bool require_spotcheck,
+    const char *log_prefix,
+    const char *debug_env,
+    bool dump_map_on_failure,
+    struct blocks_mmap **out_bmr)
 {
-    if (out)
-        *out = (struct legacy_bootstrap_block_source){0};
-    if (!opts || !opts->legacy_blocks_dir || !opts->map ||
-        opts->map_count == 0 || opts->legacy_tip < 0 ||
-        opts->spotcheck_k <= 0 || !opts->log_prefix || !out) {
+    if (out_bmr)
+        *out_bmr = NULL;
+    if (!legacy_blocks_dir || !map || map_count == 0 || legacy_tip < 0 ||
+        spotcheck_k <= 0 || !log_prefix || !out_bmr) {
         fprintf(stderr,  // obs-ok:bootstrap-import-terminal-diagnostic
                 "[legacy_bootstrap] open block source: bad args\n");
         return false;
     }
 
     struct blocks_mmap *bmr = NULL;
-    if (!bmr_open(opts->legacy_blocks_dir, &bmr)) {
+    if (!bmr_open(legacy_blocks_dir, &bmr)) {
         fprintf(stderr,  // obs-ok:bootstrap-import-terminal-diagnostic
                 "[%s] cannot open legacy blocks dir %s\n",
-                opts->log_prefix, opts->legacy_blocks_dir);
+                log_prefix, legacy_blocks_dir);
         return false;
     }
 
     bool checked = legacy_bootstrap_spotcheck_sha3_windows(
-        bmr, opts->map, opts->map_count, opts->legacy_tip,
-        opts->spotcheck_k, opts->log_prefix, opts->debug_env,
-        opts->dump_map_on_failure);
+        bmr, map, map_count, legacy_tip, spotcheck_k, log_prefix, debug_env,
+        dump_map_on_failure);
     if (!checked) {
-        if (opts->require_spotcheck) {
+        if (require_spotcheck) {
             bmr_close(bmr);
             fprintf(stderr,  // obs-ok:pre-existing-diagnostic
                     "[%s] refusing to import: aborting due to spotcheck "
                     "failure\n",
-                    opts->log_prefix);
+                    log_prefix);
             return false;
         }
         fprintf(stderr,  // obs-ok:pre-existing-diagnostic
                 "[%s] WARNING: SHA3 spotcheck did not pass; continuing "
                 "with full validation\n",
-                opts->log_prefix);
-    } else if (opts->require_spotcheck) {
+                log_prefix);
+    } else if (require_spotcheck) {
         fprintf(stderr,  // obs-ok:pre-existing-diagnostic
                 "[%s] SHA3 source spotcheck passed\n",
-                opts->log_prefix);
+                log_prefix);
     } else {
         fprintf(stderr,  // obs-ok:pre-existing-diagnostic
                 "[%s] SHA3 source spotcheck passed; proof validation "
                 "remains enabled\n",
-                opts->log_prefix);
+                log_prefix);
     }
 
-    out->bmr = bmr;
+    *out_bmr = bmr;
     return true;
-}
-
-static void legacy_bootstrap_close_block_source(
-    struct legacy_bootstrap_block_source *src)
-{
-    if (!src || !src->bmr)
-        return;
-    bmr_close(src->bmr);
-    src->bmr = NULL;
 }
 
 static bool legacy_bootstrap_import_cold(
@@ -1012,25 +993,21 @@ static bool legacy_bootstrap_import_cold(
             "[cold_import] legacy tip h=%d (map size=%zu)\n",
             legacy_tip, map_count);
 
-    struct legacy_bootstrap_block_source source;
-    const struct legacy_bootstrap_block_source_options source_opts = {
-        .legacy_blocks_dir = blk_dir,
-        .map = map,
-        .map_count = map_count,
-        .legacy_tip = legacy_tip,
-        .spotcheck_k = LEGACY_BOOTSTRAP_COLD_SPOTCHECK_K,
-        .require_spotcheck = true,
-        .log_prefix = "cold_import",
-        .debug_env = "ZCL_COLD_IMPORT_DEBUG_WINDOW",
-        .dump_map_on_failure = true,
-    };
-    if (!legacy_bootstrap_open_block_source(&source_opts, &source)) {
+    struct blocks_mmap *bmr = NULL;
+    /* cold-import contract: .require_spotcheck = true */
+    if (!legacy_bootstrap_open_block_source(
+            blk_dir, map, map_count, legacy_tip,
+            LEGACY_BOOTSTRAP_COLD_SPOTCHECK_K,
+            true,  /* require_spotcheck */
+            "cold_import", "ZCL_COLD_IMPORT_DEBUG_WINDOW",
+            true,  /* dump_map_on_failure */
+            &bmr)) {
         bilr_free_height_map(map);
         ldb_snapshot_destroy(idx_dir);
         ldb_snapshot_destroy(cs_dir);
         return false;
     }
-    legacy_bootstrap_close_block_source(&source);
+    bmr_close(bmr);
 
     struct legacy_bootstrap_snapshot_import_result imported;
     const struct legacy_bootstrap_snapshot_import_options import_opts = {
@@ -1141,24 +1118,18 @@ static bool legacy_bootstrap_import_direct(
         return true;
     }
 
-    struct legacy_bootstrap_block_source source;
-    const struct legacy_bootstrap_block_source_options source_opts = {
-        .legacy_blocks_dir = blk_dir,
-        .map = map,
-        .map_count = map_count,
-        .legacy_tip = legacy_tip,
-        .spotcheck_k = LEGACY_BOOTSTRAP_DIRECT_SPOTCHECK_K,
-        .require_spotcheck = false,
-        .log_prefix = "legacy_direct_import",
-        .debug_env = NULL,
-        .dump_map_on_failure = false,
-    };
-    if (!legacy_bootstrap_open_block_source(&source_opts, &source)) {
+    struct blocks_mmap *bmr = NULL;
+    if (!legacy_bootstrap_open_block_source(
+            blk_dir, map, map_count, legacy_tip,
+            LEGACY_BOOTSTRAP_DIRECT_SPOTCHECK_K,
+            false,  /* require_spotcheck */
+            "legacy_direct_import", NULL,
+            false,  /* dump_map_on_failure */
+            &bmr)) {
         bilr_free_height_map(map);
         if (out) *out = r;
         return false;
     }
-    struct blocks_mmap *bmr = source.bmr;
 
     atomic_store(&g_body_pull_active, 1);
 
@@ -1270,7 +1241,7 @@ static bool legacy_bootstrap_import_direct(
         ? (double)r.applied / total_secs : 0.0;
 
     atomic_store(&g_body_pull_active, 0);
-    legacy_bootstrap_close_block_source(&source);
+    bmr_close(bmr);
     bilr_free_height_map(map);
 
     r.final_tip = active_chain_height(&opts->ms->chain_active);
