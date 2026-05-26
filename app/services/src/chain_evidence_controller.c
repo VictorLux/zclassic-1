@@ -2,6 +2,7 @@
 
 #include "services/chain_evidence_controller.h"
 #include "services/chain_evidence_store.h"
+#include "chain_evidence_reconstruct.h"
 
 #include "models/database.h"
 #include "models/db_txn.h"
@@ -98,79 +99,6 @@ static bool persist_blob(struct chain_evidence_controller *a, const char *key,
 
 static int state_get_i32(struct node_db *ndb, const char *key, int def);
 
-static bool cec_tip_ancestry_linked(struct chain_state_repository *csr,
-                                    struct block_index *tip)
-{
-    if (!tip || !tip->phashBlock)
-        return false;
-    if (csr && csr->block_map) {
-        struct block_index *found =
-            block_map_find(csr->block_map, tip->phashBlock);
-        if (found != tip)
-            return false;
-    }
-    for (struct block_index *p = tip; p; p = p->pprev) {
-        if (!p->phashBlock)
-            return false;
-        if (csr && csr->block_map &&
-            block_map_find(csr->block_map, p->phashBlock) != p)
-            return false;
-        if (p->nHeight == 0)
-            return p->pprev == NULL;
-        if (!p->pprev || p->pprev->nHeight != p->nHeight - 1)
-            return false;
-    }
-    return false;
-}
-
-static bool cec_reconstruct_active_tip_evidence(
-    struct chain_evidence_controller *authority,
-    struct block_index *active_tip,
-    const struct chain_state_view *csv)
-{
-    if (!authority || !authority->ndb || !active_tip || !active_tip->phashBlock ||
-        !csv || csv->tip_height < 0)
-        return false;
-    if (!cec_tip_ancestry_linked(authority->csr, active_tip))
-        return false;
-    if (csv->header_height >= 0 && csv->header_height < csv->tip_height)
-        return false;
-    if (!u256_equal(&csv->tip_hash, active_tip->phashBlock))
-        return false;
-    if (!u256_equal(&csv->coins_best_block, active_tip->phashBlock))
-        return false;
-    if (arith_uint256_is_zero(&active_tip->nChainWork))
-        return false;
-
-    struct chain_evidence_record reconstructed = {
-        .source_class = CEC_SOURCE_CLASS_NATIVE_P2P,
-        .publish_state = CEC_PUBLISH_LOCAL_EVIDENCE,
-        .header_ancestry_linked = true,
-        .chainwork_recomputed = true,
-        .nakamoto_selected_best_work = true,
-        .block_bytes_hash_checked = true,
-    };
-    return chain_evidence_controller_mark_block_evidence(
-               authority, active_tip->phashBlock, &reconstructed) &&
-           persist_blob(authority, "cec.active_tip_hash",
-                        active_tip->phashBlock->data, 32) &&
-           persist_i64(authority, "cec.active_tip_height",
-                       active_tip->nHeight) &&
-           persist_i64(authority, "cec.coins_best_block_height",
-                       active_tip->nHeight) &&
-           persist_i64(authority, "cec.utxo_max_height",
-                       active_tip->nHeight) &&
-           persist_i64(authority, "cec.publish_state",
-                       CEC_PUBLISH_LOCAL_EVIDENCE) &&
-           persist_i64(authority, "cec.active_tip_source_class",
-                       CEC_SOURCE_CLASS_NATIVE_P2P) &&
-           persist_i64(authority, "cec.repaired_active_tip_evidence", 1) &&
-           chain_evidence_store_persist(authority, "cec.block_index_evidence_state",
-                            &reconstructed) &&
-           chain_evidence_store_persist(authority, "cec.active_tip_evidence",
-                            &reconstructed);
-}
-
 static void chain_evidence_controller_reconcile_startup(
     struct chain_evidence_controller *authority)
 {
@@ -266,9 +194,18 @@ static void chain_evidence_controller_reconcile_startup(
 
     if (!has_active_evidence ||
         !chain_evidence_record_has_block_index_required(&active_evidence)) {
-        if (!cec_reconstruct_active_tip_evidence(authority, active_tip, &csv)) {
-            chain_evidence_controller_freeze(authority,
-                                             "missing_active_tip_evidence");
+        char reason[192];
+        if (!cec_reconstruct_active_tip_evidence(authority, active_tip, &csv,
+                                                 reason)) {
+            /* Reconstruct only fails when the tip genuinely cannot be
+             * proven consistent. It always fills a precise reason; never
+             * freeze with an empty/generic string (that produces a halt
+             * that does not name itself). */
+            if (reason[0] == '\0')
+                snprintf(reason, sizeof(reason),
+                         "active_tip_evidence_unrecoverable (h=%d)",
+                         active_tip->nHeight);
+            chain_evidence_controller_freeze(authority, reason);
         }
     }
 }
@@ -349,6 +286,25 @@ enum chain_evidence_controller_state chain_evidence_controller_load_state(
                                     &zero, sizeof(zero));
         }
     }
+
+    /* No-silent-halt invariant: a frozen controller must always carry a
+     * non-empty reason. If a torn / legacy DB persisted FROZEN with an
+     * empty cec.contradiction_reason (or the key was lost), backfill a
+     * named reason in memory AND on disk so introspection (zcl_state,
+     * the snapshot view) never reports a freeze that does not name
+     * itself. */
+    if (authority->state == CEC_CONTRADICTION_FROZEN &&
+        authority->contradiction_reason[0] == '\0') {
+        snprintf(authority->contradiction_reason,
+                 sizeof(authority->contradiction_reason),
+                 "unspecified_contradiction_persisted_without_reason");
+        fprintf(stderr,  // obs-ok:cec-frozen-empty-reason-backfill
+                "[cec] frozen state had empty reason on load — backfilling "
+                "'%s'\n", authority->contradiction_reason);
+        (void)node_db_state_set(authority->ndb, "cec.contradiction_reason",
+                                authority->contradiction_reason,
+                                strlen(authority->contradiction_reason) + 1);
+    }
     return authority->state;
 }
 
@@ -358,8 +314,10 @@ void chain_evidence_controller_freeze(struct chain_evidence_controller *authorit
     if (!authority)
         return;
     authority->state = CEC_CONTRADICTION_FROZEN;
+    /* A freeze MUST always name itself: a halt with an empty reason
+     * violates the no-silent-halt mandate. Coalesce NULL and "" alike. */
     snprintf(authority->contradiction_reason, sizeof(authority->contradiction_reason),
-             "%s", reason ? reason : "unspecified");
+             "%s", (reason && reason[0]) ? reason : "unspecified_contradiction");
     if (authority->ndb) {
         (void)node_db_state_set(authority->ndb, "cec.contradiction_reason",
                                 authority->contradiction_reason,

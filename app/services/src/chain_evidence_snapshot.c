@@ -127,10 +127,24 @@ void chain_evidence_controller_snapshot(
     snprintf(out->contradiction_reason, sizeof(out->contradiction_reason),
              "%s", authority->contradiction_reason);
 
+    /* "Missing" means the active tip has no publishable evidence at all.
+     * A reconstructed LOCAL_IMPORT tip (ancestry-linked + chainwork-
+     * recomputed, publish_state=LOCAL_EVIDENCE) is publishable low-trust
+     * evidence — NOT missing. It does not satisfy the stricter
+     * block-index-required predicate (which also demands bytes-hash and
+     * nakamoto-selected), and that is correct: background validation
+     * upgrades those flags later. Flagging a publishable local tip as
+     * "missing evidence" would mark a recoverable, advancing node
+     * unhealthy. */
+    bool local_publishable =
+        out->active_tip_evidence.publish_state == CEC_PUBLISH_LOCAL_EVIDENCE &&
+        out->active_tip_evidence.header_ancestry_linked &&
+        out->active_tip_evidence.chainwork_recomputed;
     out->missing_active_tip_evidence =
         out->active_tip_height >= 0 &&
         !chain_evidence_record_has_block_index_required(
-            &out->active_tip_evidence);
+            &out->active_tip_evidence) &&
+        !local_publishable;
     out->publish_state_not_local =
         out->active_tip_height >= 0 &&
         out->publish_state != CEC_PUBLISH_LOCAL_EVIDENCE;

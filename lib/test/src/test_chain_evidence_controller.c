@@ -562,14 +562,159 @@ static int test_startup_reconstructs_missing_active_tip_evidence(void)
         failures++;
     if (!view.repaired_active_tip_evidence)
         failures++;
+    /* A reconstructed local tip is publishable (low-trust), so the
+     * health_reason is empty even though has_block_index_required is
+     * not yet satisfied: publish_state is LOCAL and there is no
+     * contradiction. */
     if (strcmp(view.health_reason, "") != 0)
         failures++;
-    if (!chain_evidence_record_has_block_index_required(
-            &view.active_tip_evidence))
+    /* Honest classification: a tip recovered from local disk is
+     * LOCAL_IMPORT, NOT native_p2p. It carries ONLY the flags actually
+     * established (ancestry + chainwork); it must NOT claim
+     * bytes-verified / nakamoto-selected. */
+    if (view.active_tip_source_class != CEC_SOURCE_CLASS_LOCAL_IMPORT)
         failures++;
-    if (view.active_tip_source_class != CEC_SOURCE_CLASS_NATIVE_P2P)
+    if (!view.active_tip_evidence.header_ancestry_linked ||
+        !view.active_tip_evidence.chainwork_recomputed)
+        failures++;
+    if (view.active_tip_evidence.block_bytes_hash_checked ||
+        view.active_tip_evidence.nakamoto_selected_best_work ||
+        view.active_tip_evidence.utxo_sha3_verified)
         failures++;
     if (view.publish_state != CEC_PUBLISH_LOCAL_EVIDENCE)
+        failures++;
+
+    auth_fixture_free(&f);
+    return failures;
+}
+
+/* A hash-consistent tip whose nChainWork is zero (not yet propagated by
+ * the loader after a restore) must NOT freeze: reconstruct recomputes the
+ * work from ancestry and publishes LOCAL_IMPORT evidence. */
+static int test_startup_zero_chainwork_tip_reconstructs_local_import(void)
+{
+    int failures = 0;
+    struct auth_fixture f;
+    if (!auth_fixture_init(&f))
+        return 1;
+
+    struct chain_state_commit commit = {
+        .new_tip = &f.blocks[2],
+        .new_coins_best = *f.blocks[2].phashBlock,
+        .expected_utxo_count = 0,
+        .update_header_tip = true,
+        .persist_coins_best = true,
+        .rollback_auth = NULL,
+        .wallet_scan_height = -1,
+        .reason = "unit.zero_work_seed",
+    };
+    if (csr_commit_tip(&f.csr, &commit) != CSR_OK)
+        failures++;
+
+    /* Simulate a freshly-restored tip whose work was never propagated. */
+    arith_uint256_set_zero(&f.blocks[2].nChainWork);
+
+    chain_evidence_controller_init(&f.authority, &f.ndb, &f.csr);
+
+    struct chain_evidence_controller_view view;
+    chain_evidence_controller_snapshot(&f.authority, &view);
+    if (view.state == CEC_CONTRADICTION_FROZEN)
+        failures++;
+    if (!view.repaired_active_tip_evidence)
+        failures++;
+    if (view.active_tip_source_class != CEC_SOURCE_CLASS_LOCAL_IMPORT)
+        failures++;
+    if (view.publish_state != CEC_PUBLISH_LOCAL_EVIDENCE)
+        failures++;
+    if (!view.active_tip_evidence.chainwork_recomputed)
+        failures++;
+    /* Work must actually have been recomputed to non-zero. */
+    if (arith_uint256_is_zero(&f.blocks[2].nChainWork))
+        failures++;
+    /* Verification flags it did not perform must remain false. */
+    if (view.active_tip_evidence.block_bytes_hash_checked ||
+        view.active_tip_evidence.nakamoto_selected_best_work)
+        failures++;
+
+    auth_fixture_free(&f);
+    return failures;
+}
+
+/* A tip that genuinely cannot be proven consistent (coins_best_block does
+ * not match the active tip hash, and not a transient lag) must freeze WITH
+ * a specific, non-empty reason — never an empty / unnamed freeze. */
+static int test_startup_inconsistent_tip_freezes_with_named_reason(void)
+{
+    int failures = 0;
+    struct auth_fixture f;
+    if (!auth_fixture_init(&f))
+        return 1;
+
+    struct chain_state_commit commit = {
+        .new_tip = &f.blocks[1],
+        .new_coins_best = *f.blocks[1].phashBlock,
+        .expected_utxo_count = 0,
+        .update_header_tip = true,
+        .persist_coins_best = true,
+        .rollback_auth = NULL,
+        .wallet_scan_height = -1,
+        .reason = "unit.inconsistent_seed",
+    };
+    if (csr_commit_tip(&f.csr, &commit) != CSR_OK)
+        failures++;
+
+    /* Break ancestry: orphan the tip's pprev so the chain cannot link to
+     * genesis. This is a genuine, unrecoverable inconsistency. */
+    f.blocks[1].pprev = NULL;
+
+    chain_evidence_controller_init(&f.authority, &f.ndb, &f.csr);
+
+    struct chain_evidence_controller_view view;
+    chain_evidence_controller_snapshot(&f.authority, &view);
+    if (view.state != CEC_CONTRADICTION_FROZEN)
+        failures++;
+    /* The freeze MUST name itself — non-empty and specific. */
+    if (view.contradiction_reason[0] == '\0')
+        failures++;
+    if (strstr(view.contradiction_reason, "ancestry") == NULL)
+        failures++;
+    if (view.health_reason[0] == '\0')
+        failures++;
+
+    auth_fixture_free(&f);
+    return failures;
+}
+
+/* A controller persisted as FROZEN with an empty reason (legacy / torn
+ * DB) must backfill a named reason on load — a freeze must never report
+ * an empty reason via the snapshot. */
+static int test_frozen_empty_reason_backfilled_on_load(void)
+{
+    int failures = 0;
+    struct auth_fixture f;
+    if (!auth_fixture_init(&f))
+        return 1;
+
+    /* Use a reason NOT in the demoted auto-clear list so the freeze
+     * stays frozen; persist it with an empty reason string. */
+    const char frozen[] = "contradiction_frozen";
+    if (!node_db_state_set(&f.ndb, "cec.sync_state", frozen, sizeof(frozen)))
+        failures++;
+    if (!node_db_state_set(&f.ndb, "cec.contradiction_reason", "", 1))
+        failures++;
+
+    chain_evidence_controller_load_state(&f.authority);
+
+    if (f.authority.state != CEC_CONTRADICTION_FROZEN)
+        failures++;
+    if (f.authority.contradiction_reason[0] == '\0')
+        failures++;
+
+    struct chain_evidence_controller_view view;
+    chain_evidence_controller_snapshot(&f.authority, &view);
+    if (view.contradiction_reason[0] == '\0')
+        failures++;
+    if (view.health_reason[0] == '\0')
         failures++;
 
     auth_fixture_free(&f);
@@ -631,8 +776,10 @@ static int test_startup_clears_stale_missing_evidence_freeze_with_sql_lag(void)
         failures++;
     if (strcmp(view.health_reason, "") != 0)
         failures++;
-    if (!chain_evidence_record_has_block_index_required(
-            &view.active_tip_evidence))
+    if (view.active_tip_source_class != CEC_SOURCE_CLASS_LOCAL_IMPORT)
+        failures++;
+    if (!view.active_tip_evidence.header_ancestry_linked ||
+        !view.active_tip_evidence.chainwork_recomputed)
         failures++;
     if (view.active_tip_height != 1)
         failures++;
@@ -698,6 +845,9 @@ int test_chain_evidence_controller(void)
     failures += test_commit_failure_after_csr_restores_concrete_state();
     failures += test_full_validation_requires_matching_utxo_sha3();
     failures += test_startup_reconstructs_missing_active_tip_evidence();
+    failures += test_startup_zero_chainwork_tip_reconstructs_local_import();
+    failures += test_startup_inconsistent_tip_freezes_with_named_reason();
+    failures += test_frozen_empty_reason_backfilled_on_load();
     failures += test_startup_clears_stale_missing_evidence_freeze_with_sql_lag();
     failures += test_startup_repairs_active_tip_hash_mismatch();
     return failures;
