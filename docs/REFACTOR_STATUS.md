@@ -77,8 +77,8 @@ So this is NOT about building fictional `MODEL(){…}` macros — it's giving th
 three unreal shapes a real, debuggable form.
 
 - [ ] **A1** `lib/framework/job.h` — one uniform Job contract: a step fn returning `JOB_{ADVANCED,BLOCKED,IDLE,FATAL}` + a durable cursor. Then **relocate the 8 `*_stage.c`** from `app/services/` into `app/jobs/` and rename `stage_result_t` → `JOB_*`. *Acceptance:* `app/jobs/` holds the reducer; the empty-scaffold folder becomes real.
-- [ ] **A2** Decide the **Event** shape: either fill `app/events/` with typed emit + subscriber registration, or formally rule events a `lib/` concern and **delete the empty `app/events/` shell**. No empty shape folders.
-- [ ] **A3** Supervisor declarations as **files**, not boot-monolith code. One declarative supervisor per domain (`chain`, `net`, `mempool`, …), shrinking `config/boot_services.c` (3,885 LOC). *Acceptance:* the liveness tree is readable in one place.
+- [x] **A2** Event-shape decision (orchestrator, 2026-05-26): the Event shape STAYS; its implementation is lib-resident today (`lib/event/` in-mem observability ring + `lib/storage/event_log` durable log). `app/events/` is reserved for app-level event definitions + subscriber wiring and gets populated by **B2** (block-body emit) as the log becomes authoritative — not deleted. FRAMEWORK §3 Event row states this.
+- [x] **A3** Supervisor declarations extracted into `app/supervisors/src/{net,chain,staged_sync}_supervisor.c` (8 Wave-S children in pipeline order); `boot_services.c` 3,885 → 3,270 LOC (−615); boot ordering preserved. `fa9e8d0ec`.
 - [ ] **A4** `zcl_result` adoption for services (Law 2). Migrate services off bare `bool`/`int`. *(ratchet — see E2)*
 - [ ] **A5** *(optional)* `tools/` codegen that emits shape skeletons (model, condition, job, controller) — the easy path is the correct path. Generates readable, steppable, committed source. Not metaprogramming.
 
@@ -114,9 +114,9 @@ Hygiene is well-gated (21 live gates). **Architecture is not.** Each gate lands
 with the work it guards (design in `FRAMEWORK.md` §5).
 
 - [x] **E1** `file-size-ceiling` — RATCHET, baseline = 29 grandfathered files (can only shrink). `5daf21742`.
-- [ ] **E2** `one-result-type` — services return `zcl_result`. *(ratchet)*
-- [ ] **E3** `shape-is-content-checked` — a shape file includes its shape header (closes the "mislabeled Service" hole; makes E4/E5 reliable). *(ratchet → hard)*
-- [ ] **E4** `projections-are-pure` — projection files don't `#include` services/controllers and emit no writes. *(hard — small file set)*
+- [x] **E2** `check-one-result-type` — RATCHET (67 service files baselined; new ones must use `zcl_result`). `f331f6e0d`.
+- [x] **E3** `check-shape-includes-header` — HARD; every condition/model/supervisor file includes its shape header. `f331f6e0d`.
+- [x] **E4** `check-projections-pure` — HARD; every `*_projection.c` is a pure fold (no app includes, no AR model saves). `f331f6e0d`.
 - [ ] **E5** `stage-advances-or-blocks` — every Job references a cursor and calls `blocker_set()` on non-progress. *(hard for the Job shape)*
 - [ ] **E6** `one-write-path` — exactly one writer to chain state. *(ratchet → hard once B7 lands)*
 - [ ] **E7** `no-authoritative-RAM-state` — consensus state in log/projections/cursors, not mutable globals. *(ratchet)*
