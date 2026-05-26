@@ -64,7 +64,7 @@ it. Plan detail: [`work/cutover.md`](./work/cutover.md).
 - [ ] **B3** Invert the UTXO emitter. Make `utxo_apply_stage` the **author** of `EV_UTXO_ADD/SPEND` and the **sole writer** of the utxo projection — instead of `update_coins.c` shadow-emitting *after* legacy already wrote. *Acceptance:* utxo projection driven by the stage, not by legacy.
 - [ ] **B4** Point `connect_block` input lookups at the utxo **projection** instead of `coins_view_cache`. Closes the validation feedback loop (Prime Directive). Keep a RAM read-cache for speed; authority is the projection; its write lands in the same txn as the cursor advance.
 - [ ] **B5** Make `log_head` / the `tip_finalize` cursor the **definitional tip**. Demote `chain_active` to a derived in-RAM index rebuilt from `block_index_projection`. *Acceptance:* `health = network_tip − log_head` is one real number.
-- [ ] **B6** Offline PROVE harness, full. *Tier-1 done.* Remaining: full 0→tip replay asserting `blocks_fed == blocks_diffed`; **reorg corpus** asserting UTXO commitment byte-matches legacy across disconnect+reconnect; Tier-2 deep (script + Groth16 proof) nightly. Independent of live peer state.
+- [x] **B6** Offline PROVE harness complete: Tier-1 full-0→tip driver emits `shadow_replay_proof: 0 divergences across N blocks, commit <sha>`; `--deep`/`--tier2` runs full PoW/script/Groth16 sweep via `replay_verify_run`; reorg corpus (`test_reorg_projection_parity`) byte-exact; full-driver CI test. `e7c5c4b74`.
 - [ ] **B7** Flip once, behind the guard. `cutovermode all authoritative` + `cutover_no_forward_progress` auto-revert (180s no-progress → revert to SHADOW + page). Real canary: one block connects through the authoritative path, auto-revert on any divergence.
 - [ ] **B8** Extract-then-delete (see **C**) — the legacy path + the entire shadow-vs-legacy comparison apparatus (`diff_with_legacy_shadow`, `shadow_feeder`, the `*_projection_diff` MCP tools, cutover mode/preflight/canary plumbing). Once there's one path, the comparison apparatus is dead.
 
@@ -102,7 +102,7 @@ From the beauty audit; each is "principle violated → where → the elegant for
 
 - [x] **D1** Dissolve `diagnostics_controller.c` — 2,550 → 51 LOC, split into 6 single-concern files (diagnostics_registry + cutover/projection_diff/nodelog/dbquery/probe controllers). `da9a1fe5a`.
 - [x] **D2** Controllers must not build views — explorer_factoids/stats/pages assembly moved into `app/views/` (controllers now skinny). `dd041e3b8`.
-- [ ] **D3** Stage-services write through Models, not raw SQL (`header_admit_stage.c:60-99` hand-rolls INSERT). Give `header_admit_log` a Model; route through AR.
+- [x] **D3** `header_admit_log` now a Model (`app/models/src/header_admit_log.c`, validates_* + before/after_save + `AR_ADHOC_SAVE`); raw SQL removed from the stage's write path. `aa9b6aaa7`.
 - [ ] **D4** One log call. Collapse the 486 raw `fprintf(stderr)` + `// obs-ok:` sites to `LOG_*`/`log_json` so `zcl_node_log` is structured.
 - [ ] **D5** The 31 `app/` files > 800 LOC → under the cap (mega-module split + dead-code removal). Tracks toward E1.
 
