@@ -46,9 +46,8 @@ static bool file_export_exec_checked(sqlite3 *db, const char *sql,
         LOG_FAIL("file", "exec_checked: NULL %s", !db ? "db" : "sql");
 
     if (sqlite3_exec(db, sql, NULL, NULL, NULL) != SQLITE_OK) {
-        fprintf(stderr, "file_export_snapshot: %s failed: %s\n",
+        LOG_FAIL("file", "file_export_snapshot: %s failed: %s",
                 label, sqlite3_errmsg(db));
-        return false;
     }
     return true;
 }
@@ -62,9 +61,8 @@ static bool file_export_prepare_checked(sqlite3 *db, const char *sql,
 
     if (sqlite3_prepare_v2(db, sql, -1, stmt, NULL) != SQLITE_OK ||
         !*stmt) {
-        fprintf(stderr, "file_export_snapshot: %s failed: %s\n",
+        LOG_FAIL("file", "file_export_snapshot: %s failed: %s",
                 label, sqlite3_errmsg(db));
-        return false;
     }
     return true;
 }
@@ -82,9 +80,8 @@ static bool file_export_step_checked(sqlite3_stmt *stmt, sqlite3 *db,
      * through AR_BEGIN_SAVE. */
     int rc = AR_STEP_ROW_READONLY(stmt);
     if (rc != SQLITE_DONE && rc != SQLITE_ROW) {
-        fprintf(stderr, "file_export_snapshot: %s failed: rc=%d err=%s\n",
+        LOG_FAIL("file", "file_export_snapshot: %s failed: rc=%d err=%s",
                 label, rc, sqlite3_errmsg(db));
-        return false;
     }
     return true;
 }

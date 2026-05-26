@@ -208,8 +208,7 @@ bool node_db_sync_init(struct node_db *ndb, const char *datadir)
     char path[1024];
     snprintf(path, sizeof(path), "%s/node.db", datadir);
     if (!node_db_open(ndb, path)) {
-        fprintf(stderr, "node_db_sync: failed to open %s\n", path);
-        return false;
+        LOG_FAIL("sync", "node_db_sync: failed to open %s", path);
     }
     printf("SQLite database opened: %s (schema v%d)\n",
            path, node_db_schema_version(ndb));
