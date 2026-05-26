@@ -24,6 +24,7 @@
 #include "models/database.h"
 #include "chain/pow.h"
 #include "core/arith_uint256.h"
+#include "util/log_macros.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -128,10 +129,11 @@ bool cec_reconstruct_active_tip_evidence(
         return false;
     }
 
-    /* Hard hash-consistency: in-memory tip, chain-active tip hash, and
-     * coins best block must all agree. A mismatch here is a genuine
-     * contradiction the controller must NOT publish. (Transient coins /
-     * header lag is self-healed in reconcile_startup before we get here.) */
+    /* The block-index evidence we are about to publish proves the TIP:
+     * its PoW-bearing header links to genesis (ancestry) and carries the
+     * most accumulated work (chainwork). The csr active-tip hash must
+     * match the in-memory tip — that IS part of the tip's identity, so a
+     * mismatch is a genuine contradiction we must not publish. */
     if (!cer_u256_equal(&csv->tip_hash, active_tip->phashBlock)) {
         if (reason_out)
             snprintf(reason_out, 192,
@@ -139,12 +141,22 @@ bool cec_reconstruct_active_tip_evidence(
                      active_tip->nHeight);
         return false;
     }
+    /* The coins (UTXO) best-block cursor is a PROJECTION that trails or,
+     * on a torn restart, transiently overshoots the tip — it is NOT part
+     * of the tip's block-index evidence and must NOT gate it. reconcile_
+     * startup already classifies a coins/active-tip mismatch as recoverable
+     * lag ("deferring to next commit"); this once contradicted that policy
+     * by hard-freezing here, parking a provable tip behind its own lagging
+     * cursor. Publishing the tip is correct regardless of cursor position:
+     * if coins is behind it catches up on the next commit; if it overshot
+     * (the BIP30 self-write wedge) connect_block's self-write tolerance
+     * rewinds it. Log the divergence and proceed. */
     if (!cer_u256_equal(&csv->coins_best_block, active_tip->phashBlock)) {
-        if (reason_out)
-            snprintf(reason_out, 192,
-                     "active_tip_hash != coins_best_block (h=%d)",
-                     active_tip->nHeight);
-        return false;
+        LOG_WARN("cec",
+                 "[cec] reconstruct: coins_best_block cursor != active tip "
+                 "h=%d — recoverable projection lag/overshoot; publishing "
+                 "tip evidence and letting the cursor reconcile",
+                 active_tip->nHeight);
     }
 
     /* Ancestry must link to genesis. After a restore it usually does; if
