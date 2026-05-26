@@ -800,9 +800,9 @@ bool msg_process_messages(void *ctx, struct p2p_node *node)
                         "%s size=%u exp=%08x got=%08x",
                         ccmd, msg.hdr.nMessageSize,
                         expected, msg.hdr.nChecksum);
-            fprintf(stderr, "Peer %s: checksum mismatch on '%s' (size=%u exp=%08x got=%08x)\n",  // obs-ok:helper-context-logged
-                   node->addr_name, ccmd, msg.hdr.nMessageSize,
-                   expected, msg.hdr.nChecksum);
+            LOG_WARN("net", "peer %s: checksum mismatch on '%s' (size=%u exp=%08x got=%08x)",
+                     node->addr_name, ccmd, msg.hdr.nMessageSize,
+                     expected, msg.hdr.nChecksum);
             net_message_free(&msg);
             continue;
         }

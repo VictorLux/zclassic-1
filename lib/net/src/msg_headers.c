@@ -429,8 +429,8 @@ bool process_headers(struct msg_processor *mp, struct p2p_node *node,
         int32_t *heights = zcl_malloc(max_collect * sizeof(int32_t), "blk_req_heights");
 
         if (!hashes || !heights) {
-            fprintf(stderr, "msgprocessor: malloc failed for block request " // obs-ok:pre-existing-diagnostic
-                    "arrays (%zu entries)\n", max_collect);
+            LOG_WARN("sync", "malloc failed for block request arrays "
+                     "(%zu entries)", max_collect);
             free(hashes); free(heights);
             hashes = NULL; heights = NULL;
         }
@@ -481,10 +481,10 @@ bool process_headers(struct msg_processor *mp, struct p2p_node *node,
                 if (pindex_last && accepted > 0 &&
                     pindex_last->nHeight < chain_h &&
                     node->starting_height > chain_h + 100) {
-                    fprintf(stderr, // obs-ok:pre-existing-diagnostic
-                        "[sync] STALL DETECTED: accepted %zu headers but "
+                    LOG_WARN("sync",
+                        "STALL DETECTED: accepted %zu headers but "
                         "header tip=%d < chain tip=%d (peer at %d). "
-                        "Block index heights may be corrupted.\n",
+                        "Block index heights may be corrupted.",
                         accepted, pindex_last->nHeight, chain_h,
                         node->starting_height);
                 }
@@ -511,9 +511,8 @@ bool process_headers(struct msg_processor *mp, struct p2p_node *node,
             else
 #endif
             if (hrc != CSR_OK) {
-                fprintf(stderr, // obs-ok:pre-existing-diagnostic
-                        "msg_headers: csr rejected best-header promotion "
-                        "(%s) h=%d\n",
+                LOG_WARN("sync",
+                        "csr rejected best-header promotion (%s) h=%d",
                         csr_result_name(hrc), pindex_last->nHeight);
             }
         }
@@ -579,9 +578,8 @@ bool process_headers(struct msg_processor *mp, struct p2p_node *node,
                         if (rc == CSR_OK) {
                             anchor_recommitted = true;
                         } else if (rc != CSR_REJECTED_NOT_INITIALIZED) {
-                            fprintf(stderr, // obs-ok:pre-existing-diagnostic
-                                "msgprocessor: csr rejected anchor re-commit "
-                                "(%s) h=%d\n",
+                            LOG_WARN("sync",
+                                "csr rejected anchor re-commit (%s) h=%d",
                                 csr_result_name(rc), anc->nHeight);
                         }
 #ifdef ZCL_TESTING
@@ -595,9 +593,9 @@ bool process_headers(struct msg_processor *mp, struct p2p_node *node,
                         }
 #endif
                     } else {
-                        fprintf(stderr, // obs-ok:pre-existing-diagnostic
-                            "msgprocessor: refusing to clear snapshot anchor "
-                            "without block hash h=%d\n", anc->nHeight);
+                        LOG_WARN("sync",
+                            "refusing to clear snapshot anchor "
+                            "without block hash h=%d", anc->nHeight);
                     }
                     if (anchor_recommitted) {
                         snapsync_set_anchor(NULL);
@@ -677,10 +675,10 @@ bool process_headers(struct msg_processor *mp, struct p2p_node *node,
                     event_emitf(EV_BLOCK_REQUESTED, (uint32_t)node->id,
                                 "fallback_queued=%zu total_needed=%zu",
                                 queued, fallback_count);
-                    fprintf(stderr,
-                        "[headers] fallback queued %zu active-tip "
+                    LOG_INFO("headers",
+                        "fallback queued %zu active-tip "
                         "successor blocks after empty header plan "
-                        "(tip=%d header=%d)\n",
+                        "(tip=%d header=%d)",
                         queued, our_height, pindex_last->nHeight);
                 }
             } else if (has_data_successor) {
@@ -727,9 +725,9 @@ bool process_headers(struct msg_processor *mp, struct p2p_node *node,
             int cur_tip = pindex_last->nHeight;
             if (prev_tip > 0 && cur_tip - prev_tip < 100 &&
                 cur_tip > 0 && prev_tip > 0) {
-                fprintf(stderr, // obs-ok:pre-existing-diagnostic
-                    "[headers] SLOW ADVANCE: peer %s sent %zu headers "
-                    "but tip only moved from %d to %d\n",
+                LOG_WARN("headers",
+                    "SLOW ADVANCE: peer %s sent %zu headers "
+                    "but tip only moved from %d to %d",
                     node->addr_name, accepted, prev_tip, cur_tip);
             }
             atomic_store(&g_last_header_tip_height, cur_tip);
@@ -738,9 +736,9 @@ bool process_headers(struct msg_processor *mp, struct p2p_node *node,
         if (syncsvc_should_restart_headers_from_tip(
                 accepted, pindex_last, active_chain_height(
                     &mp->main_state->chain_active), node->starting_height)) {
-            fprintf(stderr, // obs-ok:pre-existing-diagnostic
-                    "[headers] low batch from %s ended at h=%d below "
-                    "chain tip h=%d; restarting getheaders from tip\n",
+            LOG_WARN("headers",
+                    "low batch from %s ended at h=%d below "
+                    "chain tip h=%d; restarting getheaders from tip",
                     node->addr_name,
                     pindex_last ? pindex_last->nHeight : -1,
                     active_chain_height(&mp->main_state->chain_active));
@@ -829,7 +827,7 @@ void push_getheaders_from(struct msg_processor *mp,
         for (size_t li = 0; li < loc.num_hashes && li < 3; li++) {
             char lhex[65];
             uint256_get_hex(&loc.vhave[li], lhex);
-            fprintf(stderr, "getheaders locator[%zu]: %s\n", li, lhex); // obs-ok:pre-existing-diagnostic
+            LOG_INFO("headers", "getheaders locator[%zu]: %s", li, lhex);
         }
     }
 

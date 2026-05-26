@@ -192,10 +192,9 @@ bool process_getdata(struct msg_processor *mp, struct p2p_node *node,
                         char exp[65], got[65];
                         uint256_get_hex(&inv.hash, exp);
                         uint256_get_hex(&disk_hash, got);
-                        fprintf(stderr, "SAFETY: refusing to serve block "  // obs-ok:helper-context-logged
-                                "h=%d — hash mismatch!\n"
-                                "  requested: %s\n  disk:      %s\n",
-                                bi->nHeight, exp, got);
+                        LOG_WARN("net", "SAFETY: refusing to serve block h=%d "
+                                 "— hash mismatch (requested=%s disk=%s)",
+                                 bi->nHeight, exp, got);
                         block_free(&blk);
                         goto skip_block_serve;
                     }
