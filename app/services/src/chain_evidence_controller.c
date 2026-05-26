@@ -271,23 +271,32 @@ enum chain_evidence_controller_state chain_evidence_controller_load_state(
         }
     }
 
-    /* No-silent-halt invariant: a frozen controller must always carry a
-     * non-empty reason. If a torn / legacy DB persisted FROZEN with an
-     * empty cec.contradiction_reason (or the key was lost), backfill a
-     * named reason in memory AND on disk so introspection (zcl_state,
-     * the snapshot view) never reports a freeze that does not name
-     * itself. */
+    /* A freeze is a DERIVED condition, never a permanently-trusted flag.
+     * An unnamed persisted freeze (empty cec.contradiction_reason — e.g.
+     * a torn DB, a lost key, or a pre-fix binary that froze without a
+     * reason) cannot be trusted to still hold: we have no record of WHAT
+     * contradiction it represents, so we must re-derive it from current
+     * truth rather than honour it forever. Clear it to EMPTY here so the
+     * reconcile_startup pass below re-attempts evidence reconstruction.
+     * If a genuine contradiction still exists, reconcile/reconstruct will
+     * re-freeze with a PRECISE reason; if the tip is now provably
+     * consistent, the node publishes and advances. This is what makes a
+     * stale freeze self-healing instead of a silent permanent halt. */
     if (authority->state == CEC_CONTRADICTION_FROZEN &&
         authority->contradiction_reason[0] == '\0') {
-        snprintf(authority->contradiction_reason,
-                 sizeof(authority->contradiction_reason),
-                 "unspecified_contradiction_persisted_without_reason");
         LOG_WARN("cec",
-                 "[cec] frozen state had empty reason on load — backfilling "
-                 "'%s'", authority->contradiction_reason);
-        (void)node_db_state_set(authority->ndb, "cec.contradiction_reason",
-                                authority->contradiction_reason,
-                                strlen(authority->contradiction_reason) + 1);
+                 "[cec] persisted frozen state had no reason — cannot trust "
+                 "an unnamed freeze; clearing to re-derive from current tip "
+                 "(reconcile will re-freeze with a precise reason if a real "
+                 "contradiction remains)");
+        authority->state = CEC_EMPTY;
+        (void)node_db_state_set(authority->ndb, "cec.sync_state",
+                                "empty", strlen("empty") + 1);
+        (void)node_db_state_set(authority->ndb,
+                                "cec.contradiction_reason", "", 1);
+        int32_t zero = 0;
+        (void)node_db_state_set(authority->ndb, "cec.publish_state",
+                                &zero, sizeof(zero));
     }
     return authority->state;
 }
