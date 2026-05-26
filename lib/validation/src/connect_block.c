@@ -230,20 +230,47 @@ bool connect_block(const struct block *block,
             if (coins_view_cache_get_coins(view, &block->vtx[i].hash,
                                            &existing)) {
                 if (!coins_is_pruned(&existing)) {
-                    bool own_coinbase_self_write =
-                        i == 0 &&
-                        transaction_is_coinbase(&block->vtx[i]) &&
-                        existing.is_coinbase &&
+                    /* Self-write tolerance: when the existing unspent
+                     * coin for one of THIS block's own transactions was
+                     * created at THIS exact height, it is the residue of
+                     * a prior partial apply of the same block (the UTXO
+                     * set landed at H+1 while the tip cursor rewound to
+                     * H — see BOOT_INVARIANTS.md "at-tip kill-9 ordering"
+                     * and the BIP30 self-write wedge). connect_block is
+                     * re-connecting the very block whose outputs are
+                     * already present.
+                     *
+                     * This is NOT a real BIP30 violation: BIP30 forbids a
+                     * DIFFERENT block from overwriting another block's
+                     * still-unspent coinbase. A genuine duplicate would
+                     * carry an existing coin from a DIFFERENT (earlier)
+                     * height. Post-BIP34 every coinbase embeds its own
+                     * height, so duplicate txids across distinct heights
+                     * cannot occur — `existing.height == pindex->nHeight`
+                     * uniquely identifies "the block's own prior write".
+                     *
+                     * Tolerating it lets the validator overwrite the
+                     * stale coins with the freshly-validated ones and
+                     * advance the tip; the full script/proof validation
+                     * below still runs. Without this, a personal-stack
+                     * node that took a kill-9 mid-connect wedges forever
+                     * on its own coins. The original tolerance only
+                     * covered vtx[0] (coinbase); a partial apply leaves
+                     * the block's NON-coinbase outputs in the set too,
+                     * so we extend it to every same-height self-write. */
+                    bool own_self_write =
                         existing.height == pindex->nHeight &&
                         pindex->nHeight > 0;
-                    if (own_coinbase_self_write) {
+                    if (own_self_write) {
                         char txid[65];
                         uint256_get_hex(&block->vtx[i].hash, txid);
                         fprintf(stderr, // obs-ok:bip30-self-write-heal
                                 "connect_block: tolerating same-height "
-                                "coinbase self-write h=%d txid=%s "
-                                "(stale local UTXO, BIP34 height-unique)\n",
-                                pindex->nHeight, txid);
+                                "self-write h=%d vtx=%zu txid=%s "
+                                "coinbase=%d (stale local UTXO from prior "
+                                "partial apply, BIP34 height-unique)\n",
+                                pindex->nHeight, i, txid,
+                                (int)existing.is_coinbase);
                         coins_free(&existing);
                         continue;
                     }

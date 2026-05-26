@@ -73,6 +73,28 @@ static struct block_index *find_failed_pindex_at_height(
     return NULL;
 }
 
+/* Find a FAILED pindex at target_height whose hash matches the supplied
+ * lowercase-hex hash. When multiple pindex entries share a height
+ * (competing forks), prefer the one the oracle has named as canonical.
+ * Returns NULL if no such matching FAILED entry exists. */
+static struct block_index *find_failed_pindex_by_hash(
+    struct main_state *ms, int target_height, const char *want_hex)
+{
+    if (!ms || !want_hex || !want_hex[0]) return NULL;
+    size_t iter = 0;
+    struct block_index *p;
+    while (block_map_next(&ms->map_block_index, &iter, NULL, &p)) {
+        if (!p || !p->phashBlock) continue;
+        if (p->nHeight != target_height) continue;
+        if (!(p->nStatus & BLOCK_FAILED_VALID)) continue;
+        char got[65];
+        uint256_get_hex(p->phashBlock, got);
+        if (strcasecmp(got, want_hex) == 0)
+            return p;
+    }
+    return NULL;
+}
+
 /* Build a disk_block_index snapshot from an in-memory pindex so we can
  * persist a status-only update. Caller has already mutated pindex
  * nStatus; this copies the current state into the disk format.
@@ -115,23 +137,13 @@ enum reval_result process_block_revalidate(int target_height,
         return REVAL_NOT_ATTEMPTED;
     }
 
-    /* ── Step 1: find the failed pindex at this height ───────────────── */
-    struct block_index *failed_pindex =
+    /* ── Step 1: any failed pindex at this height? Short-circuit if not. */
+    struct block_index *any_failed =
         find_failed_pindex_at_height(ms, target_height);
-    if (!failed_pindex) {
+    if (!any_failed) {
         /* Either there's no entry at this height, or none of the entries
          * have BLOCK_FAILED_VALID set. Either is a non-failure. */
         return REVAL_HEIGHT_NOT_FOUND;
-    }
-    if (failed_pindex->phashBlock && out_hash) {
-        *out_hash = *failed_pindex->phashBlock;
-    }
-
-    /* If BLOCK_FAILED_VALID isn't actually set, return NO_FAILURE. The
-     * find_failed_pindex_at_height already filters by VALID — this is a
-     * belt-and-suspenders re-check for callers that pre-screen. */
-    if (!(failed_pindex->nStatus & BLOCK_FAILED_VALID)) {
-        return REVAL_NO_FAILURE;
     }
 
     /* ── Step 2: query the quorum oracle for evidence ────────────────── */
@@ -144,40 +156,158 @@ enum reval_result process_block_revalidate(int target_height,
                 "leaving FAILED set\n", target_height);
         return REVAL_EVIDENCE_INSUFFICIENT;
     }
-    if (qr.verdict != QO_VERDICT_QUORUM_MATCH) {
-        fprintf(stderr,  // obs-ok:revalidate-no-quorum
-                "[revalidate] h=%d: no quorum (verdict=%d agreeing=%d); "
-                "leaving FAILED set\n",
-                target_height, (int)qr.verdict, qr.agreeing_sources);
-        return REVAL_EVIDENCE_INSUFFICIENT;
+
+    /* Pick the FAILED pindex that matches the oracle's canonical hash
+     * when possible — at heights with competing forks the block_map can
+     * carry multiple pindex entries; we want to clear the FAILED bit on
+     * the one the authoritative source agrees with, not just the first
+     * one the iterator returned. Falls back to `any_failed` if the
+     * oracle's hash doesn't match any FAILED entry (the disagreement
+     * path will reject below). */
+    struct block_index *failed_pindex = any_failed;
+    {
+        const char *oracle_hash = NULL;
+        if (qr.verdict == QO_VERDICT_QUORUM_MATCH &&
+            qr.winning_hash_hex[0]) {
+            oracle_hash = qr.winning_hash_hex;
+        } else if (qr.by_source[QO_SRC_ZCLASSICD].present &&
+                   !qr.by_source[QO_SRC_ZCLASSICD].error &&
+                   qr.by_source[QO_SRC_ZCLASSICD].hash_hex[0]) {
+            oracle_hash = qr.by_source[QO_SRC_ZCLASSICD].hash_hex;
+        }
+        if (oracle_hash) {
+            struct block_index *match =
+                find_failed_pindex_by_hash(ms, target_height, oracle_hash);
+            if (match) failed_pindex = match;
+        }
+    }
+    if (failed_pindex->phashBlock && out_hash) {
+        *out_hash = *failed_pindex->phashBlock;
+    }
+    if (!(failed_pindex->nStatus & BLOCK_FAILED_VALID)) {
+        return REVAL_NO_FAILURE;
     }
 
-    /* ── Step 3: verify the agreed hash matches our pindex ───────────── */
+    /* Compute our own pindex hash once — needed by every evidence
+     * pathway below. */
     char our_hash_hex[65];
     our_hash_hex[0] = '\0';
     if (failed_pindex->phashBlock) {
         uint256_get_hex(failed_pindex->phashBlock, our_hash_hex);
     }
-    if (our_hash_hex[0] == '\0' ||
-        strcasecmp(our_hash_hex, qr.winning_hash_hex) != 0) {
-        fprintf(stderr,  // obs-ok:revalidate-disagreement
-                "[revalidate] h=%d: oracle agreed on %s but our FAILED "
-                "pindex is %s — we're on a fork; leaving FAILED set so "
-                "chain selection reorgs through a different mechanism\n",
-                target_height, qr.winning_hash_hex,
-                our_hash_hex[0] ? our_hash_hex : "(no hash)");
-        return REVAL_EVIDENCE_DISAGREES;
+
+    /* ── Step 2a: evidence pathway resolution ────────────────────────
+     *
+     * Two acceptance pathways, both preserving verify-never-trust:
+     *
+     *   (A) MULTI-ORACLE QUORUM (original 2-of-N contract): ≥min_agree
+     *       independent sources return the same hash. Original Wave M
+     *       behavior. Required when we have a peer mesh.
+     *
+     *   (B) SINGLE-SOURCE LOCAL AUTHORITY (personal sovereignty stack):
+     *       on a personal-stack node the always-on local `zclassicd`
+     *       (reached in-process via legacy_mirror + RPC) IS the local
+     *       authority. When (i) zclassicd's QO_SRC_ZCLASSICD source
+     *       returned a hash, (ii) that hash matches our failed pindex's
+     *       hash, AND (iii) the LOCAL source (our own active_chain)
+     *       has NO opinion at this height — i.e. our tip is below
+     *       target_height so there is no contradicting local vote —
+     *       we accept zclassicd's verdict as sufficient evidence to
+     *       re-attempt validation.
+     *
+     *       This is NOT skip-validation: the post-clear `connect_block`
+     *       runs the full Equihash / scripts / Sapling validator and
+     *       will re-mark BLOCK_FAILED_VALID if the block genuinely
+     *       fails. The single-source verdict only unblocks the gate
+     *       so the validator can re-run. The "live at tip via the
+     *       always-on local authority" mandate (CLAUDE.md, "Personal
+     *       Sovereignty Stack") requires this — otherwise a personal
+     *       node with no zcl23 peers can never auto-clear a stale
+     *       FAILED bit and the chain silently halts.
+     *
+     *       Safety boundaries (every one must hold):
+     *         - QO_SRC_LOCAL must NOT be present at this height (no
+     *           contradicting local opinion).
+     *         - QO_SRC_ZCLASSICD must be present, error-free, and
+     *           return exactly our pindex's hash.
+     *         - Cleared block must still pass full connect_block.
+     */
+    bool accepted = false;
+    const char *evidence_path = NULL;
+
+    if (qr.verdict == QO_VERDICT_QUORUM_MATCH) {
+        /* Multi-oracle quorum already verified ≥min_agree sources
+         * agree on `qr.winning_hash_hex`. Verify it matches us. */
+        if (our_hash_hex[0] != '\0' &&
+            strcasecmp(our_hash_hex, qr.winning_hash_hex) == 0) {
+            accepted = true;
+            evidence_path = "multi_oracle_quorum";
+        } else {
+            fprintf(stderr,  // obs-ok:revalidate-disagreement
+                    "[revalidate] h=%d: oracle agreed on %s but our "
+                    "FAILED pindex is %s — we're on a fork; leaving "
+                    "FAILED set so chain selection reorgs through a "
+                    "different mechanism\n",
+                    target_height, qr.winning_hash_hex,
+                    our_hash_hex[0] ? our_hash_hex : "(no hash)");
+            return REVAL_EVIDENCE_DISAGREES;
+        }
     }
 
-    /* ── Step 4: ≥2-oracle verified the same hash. Safe to clear. ────── */
+    if (!accepted) {
+        /* Pathway (B): single-source local authority. The contract:
+         * zclassicd matches us, and LOCAL has no opinion. */
+        const struct quorum_oracle_source_result *zd =
+            &qr.by_source[QO_SRC_ZCLASSICD];
+        const struct quorum_oracle_source_result *lo =
+            &qr.by_source[QO_SRC_LOCAL];
+        bool zd_ok      = zd->present && !zd->error && zd->hash_hex[0];
+        bool local_mute = !lo->present || lo->error || !lo->hash_hex[0];
+        bool zd_agrees_with_us =
+            zd_ok && our_hash_hex[0] != '\0' &&
+            strcasecmp(zd->hash_hex, our_hash_hex) == 0;
+        /* Tip must be strictly below target so LOCAL silence is
+         * structural (we genuinely have no opinion), not a bug. */
+        int tip_h_check = active_chain_height(&ms->chain_active);
+        bool tip_below_target = tip_h_check < target_height;
+
+        if (zd_ok && zd_agrees_with_us && local_mute && tip_below_target) {
+            accepted = true;
+            evidence_path = "local_authority_zclassicd";
+            fprintf(stderr,  // obs-ok:revalidate-local-authority
+                    "[revalidate] h=%d: accepting single-source "
+                    "local-authority evidence (zclassicd hash=%s "
+                    "matches our pindex; LOCAL has no vote; "
+                    "active_tip=%d < target=%d). Personal-stack "
+                    "sovereignty: zclassicd IS the local authority. "
+                    "Verification preserved — connect_block will fully "
+                    "re-validate.\n",
+                    target_height, our_hash_hex,
+                    tip_h_check, target_height);
+        } else {
+            fprintf(stderr,  // obs-ok:revalidate-no-quorum
+                    "[revalidate] h=%d: no acceptable evidence "
+                    "(verdict=%d agreeing=%d zd_ok=%d zd_agrees=%d "
+                    "local_mute=%d tip_below_target=%d our=%s "
+                    "zd=%s); leaving FAILED set\n",
+                    target_height, (int)qr.verdict, qr.agreeing_sources,
+                    (int)zd_ok, (int)zd_agrees_with_us,
+                    (int)local_mute, (int)tip_below_target,
+                    our_hash_hex[0] ? our_hash_hex : "(empty)",
+                    zd->hash_hex[0] ? zd->hash_hex : "(empty)");
+            return REVAL_EVIDENCE_INSUFFICIENT;
+        }
+    }
+    /* ── Step 4: evidence accepted (multi-oracle quorum or single-source
+     * local authority on a personal stack). Safe to clear. ───────────── */
     /* Clear BLOCK_FAILED bits on this pindex AND every descendant above
      * the current active tip. Uses the same shape as
      * chain_restore_clear_failed_above_tip in chain_restore_repair.c —
      * proven safe when there's evidence the canonical chain runs
-     * through the cleared blocks. The evidence here is the quorum
-     * agreement on the target_height block; descendants will be
-     * re-validated by connect_tip on the next chain advance and
-     * re-marked FAILED individually if any are genuinely invalid. */
+     * through the cleared blocks. The evidence here is the
+     * `evidence_path` set above; descendants will be re-validated by
+     * connect_tip on the next chain advance and re-marked FAILED
+     * individually if any are genuinely invalid. */
     int tip_h = active_chain_height(&ms->chain_active);
     int cleared = 0;
     int persisted = 0;
@@ -212,9 +342,10 @@ enum reval_result process_block_revalidate(int target_height,
     }
 
     fprintf(stderr,  // obs-ok:revalidate-cleared
-            "[revalidate] h=%d: oracle-verified; cleared %d FAILED entries "
+            "[revalidate] h=%d: evidence=%s; cleared %d FAILED entries "
             "(%d persisted, %d errors)\n",
-            target_height, cleared, persisted, persist_errors);
+            target_height, evidence_path ? evidence_path : "?",
+            cleared, persisted, persist_errors);
 
     if (cleared > 0 && persisted == 0 && persist_errors > 0) {
         /* Nothing persisted — won't survive a crash. Treat as a failure. */
