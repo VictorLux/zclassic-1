@@ -12,6 +12,7 @@
 #include "chain/chain.h"
 #include "core/uint256.h"
 #include "json/json.h"
+#include "models/header_admit_log.h"
 #include "platform/time_compat.h"
 #include "services/cutover_modes.h"
 #include "services/header_admit_inbox.h"
@@ -55,58 +56,27 @@ static int64_t wall_now_s(void)
     return platform_time_wall_unix();
 }
 
-/* ── Schema bootstrap (idempotent) ─────────────────────────────────── */
-
-static bool ensure_log_schema(sqlite3 *db)
-{
-    static const char *const sql =
-        "CREATE TABLE IF NOT EXISTS header_admit_log ("
-        "  height      INTEGER PRIMARY KEY,"
-        "  hash        BLOB    NOT NULL,"
-        "  parent_hash BLOB,"
-        "  admitted_at INTEGER NOT NULL"
-        ")";
-    char *err = NULL;
-    if (sqlite3_exec(db, sql, NULL, NULL, &err) != SQLITE_OK) {
-        fprintf(stderr,  // obs-ok:header-admit-schema-failure
-                "[header_admit] schema ensure failed: %s\n",
-                err ? err : "(no message)");
-        if (err) sqlite3_free(err);
-        return false;
-    }
-    return true;
-}
-
 /* ── Step body ─────────────────────────────────────────────────────── */
 
+/* Write one header_admit_log row through the AR lifecycle (Law 2: the
+ * HeaderAdmitLog model is the only writer of its table). `db` is the
+ * progress.kv handle. */
 static bool log_insert(sqlite3 *db, int height,
                         const struct uint256 *hash,
                         const struct uint256 *parent_hash)
 {
-    sqlite3_stmt *stmt = NULL;
-    int rc = sqlite3_prepare_v2(db,
-        "INSERT OR REPLACE INTO header_admit_log "
-        "(height, hash, parent_hash, admitted_at) VALUES (?,?,?,?)",
-        -1, &stmt, NULL);
-    if (rc != SQLITE_OK) {
-        fprintf(stderr,  // obs-ok:header-admit-log-prepare-failure
-                "[header_admit] prepare insert failed: %s\n",
-                sqlite3_errmsg(db));
-        return false;
-    }
-    sqlite3_bind_int64(stmt, 1, (sqlite3_int64)height);
-    sqlite3_bind_blob (stmt, 2, hash->data, 32, SQLITE_STATIC);
+    struct db_header_admit_log row = {
+        .height      = (int64_t)height,
+        .has_parent  = (parent_hash != NULL),
+        .admitted_at = wall_now_s(),
+    };
+    memcpy(row.hash, hash->data, 32);
     if (parent_hash)
-        sqlite3_bind_blob(stmt, 3, parent_hash->data, 32, SQLITE_STATIC);
-    else
-        sqlite3_bind_null(stmt, 3);
-    sqlite3_bind_int64(stmt, 4, (sqlite3_int64)wall_now_s());
+        memcpy(row.parent_hash, parent_hash->data, 32);
 
-    rc = sqlite3_step(stmt);  // raw-sql-ok:kernel-primitive
-    sqlite3_finalize(stmt);
-    if (rc != SQLITE_DONE) {
+    if (!db_header_admit_log_save(db, &row)) {
         fprintf(stderr,  // obs-ok:header-admit-log-insert-failure
-                "[header_admit] insert height=%d rc=%d\n", height, rc);
+                "[header_admit] log save height=%d failed\n", height);
         return false;
     }
     return true;
@@ -261,7 +231,7 @@ bool header_admit_stage_init(struct main_state *ms)
         return true;
     }
 
-    if (!ensure_log_schema(db)) {
+    if (!db_header_admit_log_ensure_schema(db)) {
         pthread_mutex_unlock(&g_lock);
         return false;
     }
