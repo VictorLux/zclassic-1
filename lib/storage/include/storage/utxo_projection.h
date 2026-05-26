@@ -79,6 +79,16 @@ bool utxo_projection_get(utxo_projection_t *p,
                          uint8_t *script_out, size_t script_cap,
                          size_t *script_len_out);
 
+/* B4: reconstruct a full `struct coins` (all live outputs of a txid)
+ * from the projection — the read primitive behind the projection-backed
+ * coins_view (see coins_view_projection.h). `out` is coins_init'd by
+ * this call; on success it owns an allocated vout array the caller must
+ * coins_free(). Returns false (num_vout==0) if the txid has no live
+ * outputs. `version` is set to 1 to match coins_view_sqlite exactly. */
+struct coins;
+bool utxo_projection_get_coins(utxo_projection_t *p,
+                               const uint8_t txid[32], struct coins *out);
+
 /* Total live UTXOs in the projection. O(SELECT COUNT(*)) — acceptable
  * given we run with WITHOUT ROWID and SQLite caches the count. */
 uint64_t utxo_projection_count(utxo_projection_t *p);

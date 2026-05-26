@@ -32,8 +32,10 @@
 
 #include "storage/utxo_projection.h"
 
+#include "coins/coins.h"
 #include "crypto/sha3.h"
 #include "json/json.h"
+#include "script/script.h"
 #include "platform/time_compat.h"
 #include "storage/event_log_payloads.h"
 #include "util/log_macros.h"
@@ -482,6 +484,74 @@ bool utxo_projection_get(utxo_projection_t *p,
     }
     sqlite3_finalize(s);
     return found;
+}
+
+/* B4: reconstruct a `struct coins` for a txid from the projection's
+ * live rows — the read primitive behind the projection-backed
+ * coins_view. Mirrors coins_view_sqlite_get_coins() byte-for-byte:
+ * two-pass (find max vout, then fill), version hardcoded to 1 (exactly
+ * what coins_view_sqlite returns; `version` is consensus-inert here —
+ * coins.db never persists it and the UTXO commitment omits it).
+ * Returns false (with out coins_init'd, num_vout==0) if the txid has no
+ * live outputs. */
+bool utxo_projection_get_coins(utxo_projection_t *p,
+                               const uint8_t txid[32], struct coins *out)
+{
+    if (!out) return false;
+    coins_init(out);
+    if (!p || !p->db || !txid) return false;
+
+    sqlite3_stmt *s = NULL;
+    if (sqlite3_prepare_v2(p->db,
+        "SELECT vout, value, script, height, is_coinbase "
+        "FROM utxo WHERE txid=?",
+        -1, &s, NULL) != SQLITE_OK)
+        return false;
+    sqlite3_bind_blob(s, 1, txid, 32, SQLITE_TRANSIENT);
+
+    uint32_t max_vout = 0;
+    int nrows = 0, height = 0, is_coinbase = 0;
+    int rc;
+    while ((rc = sqlite3_step(s)) == SQLITE_ROW) {  // raw-sql-ok:projection-primitive
+        uint32_t vi = (uint32_t)sqlite3_column_int(s, 0);
+        if (nrows == 0) {
+            height      = sqlite3_column_int(s, 3);
+            is_coinbase = sqlite3_column_int(s, 4);
+        }
+        if (vi > max_vout) max_vout = vi;
+        nrows++;
+    }
+    if (nrows == 0) {
+        sqlite3_finalize(s);
+        return false;
+    }
+
+    if (!coins_alloc(out, (size_t)(max_vout + 1))) {
+        sqlite3_finalize(s);
+        return false;
+    }
+    out->version     = 1;
+    out->height      = height;
+    out->is_coinbase = (is_coinbase != 0);
+
+    sqlite3_reset(s);
+    sqlite3_bind_blob(s, 1, txid, 32, SQLITE_TRANSIENT);
+    while (sqlite3_step(s) == SQLITE_ROW) {  // raw-sql-ok:projection-primitive
+        uint32_t vi = (uint32_t)sqlite3_column_int(s, 0);
+        if (vi >= out->num_vout) continue;
+        out->vout[vi].value = sqlite3_column_int64(s, 1);
+        const void *script = sqlite3_column_blob(s, 2);
+        int script_len = sqlite3_column_bytes(s, 2);
+        if (script && script_len > 0) {
+            size_t slen = (size_t)script_len;
+            if (slen > MAX_SCRIPT_SIZE) slen = MAX_SCRIPT_SIZE;
+            memcpy(out->vout[vi].script_pub_key.data, script, slen);
+            out->vout[vi].script_pub_key.size = slen;
+        }
+    }
+    coins_cleanup(out);
+    sqlite3_finalize(s);
+    return true;
 }
 
 uint64_t utxo_projection_count(utxo_projection_t *p)
