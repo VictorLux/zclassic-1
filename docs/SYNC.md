@@ -15,8 +15,8 @@ evidence gate:
 - `chain_advance_coordinator` chooses which input source may provide candidate
   headers or bodies.
 - `chain_activation_controller` is the block-connection entrypoint.
-- `chain_evidence_controller` decides whether a tip transition has enough
-  local evidence to publish.
+- the chain-evidence logic (now in `chain_evidence_store`/`_snapshot`/`_names`)
+  decides whether a tip transition has enough local evidence to publish.
 - `chain_state_repository` performs the atomic in-memory/persistent state
   update, and `chain_tip` is the public active-tip publication wrapper.
 - `legacy_mirror_sync_service` may fetch candidate data from `zclassicd` and

@@ -38,7 +38,7 @@ halt remains *possible*; workstream **B** is the structural cure.
 The primitives the north star needs all exist and are tested — they just run in
 **shadow**. This is why the work ahead is *flipping authority*, not building.
 
-- [x] Condition engine + 19 conditions (the model-citizen shape) · Phase 0
+- [x] Condition engine + 22 conditions (the model-citizen shape) · Phase 0
 - [x] Kernel primitives adopted: mailbox, projection, platform.clock/rng (0 raw clock/RNG callers) · Phase 1
 - [x] Wave-S stage pipeline, all 8 stages, SHADOW complete (header_admit → tip_finalize) · Phase 2
 - [x] event_log — durable, fsync'd, CRC32C, torn-write recovery, SHA3 fingerprint · Phase 4a

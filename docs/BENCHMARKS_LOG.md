@@ -24,7 +24,7 @@ Format: `date | commit | benchmark | value | how measured / notes`
 |---|---|---|---|---|
 | 2026-05-24 | be5e90b05 | #3 RSS | 1532 MB | live `zcl_status.memory_rss_mb` (target ≤1000) |
 | 2026-05-24 19:15 | 4ea5f5063 | #3 RSS | 1587 MB | +55MB vs ~1h ago; node restarted (uptime 576s) — RSS creeping while stuck |
-| 2026-05-24 | be5e90b05 | #9 binary size | **14.6 MB** | `ls` of built binary — docs claim "26 MB"; **discrepancy, verify** (target stay small) |
+| 2026-05-24 | be5e90b05 | #9 binary size | **14.6 MB** | `ls` of built binary (now ~15.5 MB; docs corrected from the stale "26 MB" 2026-05-26) (target stay small) |
 | 2026-05-24 | be5e90b05 | #1 cold sync | — | not measured (node stuck, no clean restart this session) |
 | 2026-05-24 | be5e90b05 | #2 warm restart | — | not measured |
 | 2026-05-24 | be5e90b05 | #4 throughput | 0 blk/s | `zcl_validationstatus` — bg-verify idle/complete at local tip |

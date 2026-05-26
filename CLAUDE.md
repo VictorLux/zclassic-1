@@ -2,7 +2,7 @@
 
 ## Vision — Personal Sovereignty Stack
 
-ZClassic23 is one 26 MB statically-linked C23 binary that runs a full ZClassic node (Equihash 200,9 PoW, Sapling shielded txs), an embedded Tor onion service, a block explorer, a shielded wallet, a P2P file marketplace, ZNAM name registry, encrypted P2P messaging, cross-chain atomic swaps (BTC/LTC/DOGE), a P2P game framework, and an MCP server. **Claude is a first-class operator via 200+ typed MCP tools** — not just an observer. Cold sync to tip in 30 seconds via FlyClient + SHA3 UTXO snapshots. Halts are unreachable by construction (chain progress is a stage cursor on disk). Bugs become 64-bit seeds in a deterministic simulator. Reproducible signed releases. **One binary, one onion, one stack — your sovereign personal computing surface.**
+ZClassic23 is one ~15 MB statically-linked C23 binary that runs a full ZClassic node (Equihash 200,9 PoW, Sapling shielded txs), an embedded Tor onion service, a block explorer, a shielded wallet, a P2P file marketplace, ZNAM name registry, encrypted P2P messaging, cross-chain atomic swaps (BTC/LTC/DOGE), a P2P game framework, and an MCP server. **Claude is a first-class operator via 100+ typed MCP tools** — not just an observer. Cold sync to tip in 30 seconds via FlyClient + SHA3 UTXO snapshots. Halts are unreachable by construction (chain progress is a stage cursor on disk). Bugs become 64-bit seeds in a deterministic simulator. Reproducible signed releases. **One binary, one onion, one stack — your sovereign personal computing surface.**
 
 See [`docs/FRAMEWORK.md`](./docs/FRAMEWORK.md) for the canonical architecture (the Prime Directive, the Ten Laws of Beauty, and the eight shapes), [`docs/ARCHITECTURE_DIAGRAMS.md`](./docs/ARCHITECTURE_DIAGRAMS.md) for current subsystem/boot topology, and [`docs/adr/0001-personal-sovereignty-stack.md`](./docs/adr/0001-personal-sovereignty-stack.md) for the 2026-05-22 pivot rationale.
 
@@ -166,7 +166,7 @@ reverse scan in 64 KB chunks.
 
 ## Node Architecture
 
-ZClassic23 is a single 26MB C23 binary that includes:
+ZClassic23 is a single ~15 MB C23 binary that includes:
 
 - Full ZClassic blockchain node (PoW, Equihash 200,9)
 - Block explorer with charts and HODL wave analysis

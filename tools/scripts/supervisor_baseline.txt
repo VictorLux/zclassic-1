@@ -10,8 +10,8 @@
 # How to remove an entry:
 #   1. In the service's start function, after the existing health/
 #      pthread setup, declare a static liveness_contract, init it,
-#      and call supervisor_register(). See sync_watchdog_service.c
-#      for the canonical pattern (g_wd_contract + on_tick + on_stall).
+#      and call supervisor_register(). See chain_tip_watchdog.c
+#      for the canonical pattern (contract + on_tick + on_stall).
 #   2. Decide whether the contract drives the work (period_secs > 0)
 #      or just observes a heartbeat the service already emits.
 #   3. Wire a meaningful on_stall — log + emit an event + try a local

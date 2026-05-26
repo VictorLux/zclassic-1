@@ -317,7 +317,7 @@ lint: check-malloc check-silent-errors check-raw-sqlite \
 ci: lint test fuzz-ci coverage
 ```
 
-**Status: 20 gates active** (as of 2026-05-23). Gates #18-#20 are
+**Status: 21 gates active.** Gates #18-#21 are
 framework-refactor ratchets and currently run in WARN mode; the earlier
 gates fail `make ci` if they fire. An agent that pushes code with raw malloc, silent errors,
 bypassed AR validation, unpaired stderr diagnostics, a critical model
