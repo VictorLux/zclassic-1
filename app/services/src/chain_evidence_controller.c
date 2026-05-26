@@ -282,9 +282,9 @@ enum chain_evidence_controller_state chain_evidence_controller_load_state(
         snprintf(authority->contradiction_reason,
                  sizeof(authority->contradiction_reason),
                  "unspecified_contradiction_persisted_without_reason");
-        fprintf(stderr,  // obs-ok:cec-frozen-empty-reason-backfill
-                "[cec] frozen state had empty reason on load — backfilling "
-                "'%s'\n", authority->contradiction_reason);
+        LOG_WARN("cec",
+                 "[cec] frozen state had empty reason on load — backfilling "
+                 "'%s'", authority->contradiction_reason);
         (void)node_db_state_set(authority->ndb, "cec.contradiction_reason",
                                 authority->contradiction_reason,
                                 strlen(authority->contradiction_reason) + 1);

@@ -220,18 +220,18 @@ static void emit_block_body_event(const struct block *blk,
     stream_init(&s, 1024);
     if (!block_serialize(blk, &s)) {
         stream_free(&s);
-        fprintf(stderr,  // obs-ok:body-persist-shadow-emit
-                "[body_persist] shadow emit: block_serialize failed h=%d\n",
-                height);
+        LOG_WARN("body_persist",
+                 "[body_persist] shadow emit: block_serialize failed h=%d",
+                 height);
         atomic_fetch_add_explicit(&g_body_emit_fail_total, 1,
                                   memory_order_relaxed);
         return;
     }
 
     if (s.size > EV_BLOCK_BODY_MAX_BODY) {
-        fprintf(stderr,  // obs-ok:body-persist-shadow-emit
-                "[body_persist] shadow emit: body %zu > max %u h=%d\n",
-                s.size, (unsigned)EV_BLOCK_BODY_MAX_BODY, height);
+        LOG_WARN("body_persist",
+                 "[body_persist] shadow emit: body %zu > max %u h=%d",
+                 s.size, (unsigned)EV_BLOCK_BODY_MAX_BODY, height);
         stream_free(&s);
         atomic_fetch_add_explicit(&g_body_emit_fail_total, 1,
                                   memory_order_relaxed);
@@ -258,9 +258,9 @@ static void emit_block_body_event(const struct block *blk,
     stream_free(&s);
     if (!ok) {
         free(buf);
-        fprintf(stderr,  // obs-ok:body-persist-shadow-emit
-                "[body_persist] shadow emit: serialize failed h=%d\n",
-                height);
+        LOG_WARN("body_persist",
+                 "[body_persist] shadow emit: serialize failed h=%d",
+                 height);
         atomic_fetch_add_explicit(&g_body_emit_fail_total, 1,
                                   memory_order_relaxed);
         return;
