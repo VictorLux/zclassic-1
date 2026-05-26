@@ -76,7 +76,7 @@ it. Plan detail: [`work/cutover.md`](./work/cutover.md).
 So this is NOT about building fictional `MODEL(){…}` macros — it's giving the
 three unreal shapes a real, debuggable form.
 
-- [ ] **A1** `lib/framework/job.h` — one uniform Job contract: a step fn returning `JOB_{ADVANCED,BLOCKED,IDLE,FATAL}` + a durable cursor. Then **relocate the 8 `*_stage.c`** from `app/services/` into `app/jobs/` and rename `stage_result_t` → `JOB_*`. *Acceptance:* `app/jobs/` holds the reducer; the empty-scaffold folder becomes real.
+- [x] **A1** `app/jobs/include/jobs/job.h` — one uniform Job contract: `job_result_t {JOB_ADVANCED,JOB_BLOCKED,JOB_IDLE,JOB_FATAL}` (replaces `stage_result_t`, integer values preserved byte-for-byte). The 8 reducer `*_stage.c` relocated `app/services/` → `app/jobs/`; kernel `stage.h` now includes `jobs/job.h`. `app/jobs/` now holds the reducer; the empty-scaffold folder is real. `994145f28`.
 - [x] **A2** Event-shape decision (orchestrator, 2026-05-26): the Event shape STAYS; its implementation is lib-resident today (`lib/event/` in-mem observability ring + `lib/storage/event_log` durable log). `app/events/` is reserved for app-level event definitions + subscriber wiring and gets populated by **B2** (block-body emit) as the log becomes authoritative — not deleted. FRAMEWORK §3 Event row states this.
 - [x] **A3** Supervisor declarations extracted into `app/supervisors/src/{net,chain,staged_sync}_supervisor.c` (8 Wave-S children in pipeline order); `boot_services.c` 3,885 → 3,270 LOC (−615); boot ordering preserved. `fa9e8d0ec`.
 - [ ] **A4** `zcl_result` adoption for services (Law 2). Migrate services off bare `bool`/`int`. *(ratchet — see E2)*
@@ -103,7 +103,7 @@ From the beauty audit; each is "principle violated → where → the elegant for
 - [x] **D1** Dissolve `diagnostics_controller.c` — 2,550 → 51 LOC, split into 6 single-concern files (diagnostics_registry + cutover/projection_diff/nodelog/dbquery/probe controllers). `da9a1fe5a`.
 - [x] **D2** Controllers must not build views — explorer_factoids/stats/pages assembly moved into `app/views/` (controllers now skinny). `dd041e3b8`.
 - [x] **D3** `header_admit_log` now a Model (`app/models/src/header_admit_log.c`, validates_* + before/after_save + `AR_ADHOC_SAVE`); raw SQL removed from the stage's write path. `aa9b6aaa7`.
-- [ ] **D4** One log call. Collapse the 486 raw `fprintf(stderr)` + `// obs-ok:` sites to `LOG_*`/`log_json` so `zcl_node_log` is structured.
+- [~] **D4** One log call. **app/controllers slice DONE** (`110859a24`): 25 `fprintf(stderr,…); return` pairs → `LOG_FAIL/ERR/NULL` (151→126 in controllers). Finding: `LOG_*` macros force a `return`, so only fprintf-immediately-before-matching-return are safe drop-ins; the rest are **non-returning** progress/cleanup diagnostics already carrying `// obs-ok:`. **Remaining:** (a) lib/net 68 + lib/wallet 5 returning sites; (b) the design call on non-returning diagnostics — need a non-returning structured macro (`log_jsonf` exists but is JSON-field, not printf). Until that macro decision, obs-ok diagnostics stay as-is.
 - [ ] **D5** The 31 `app/` files > 800 LOC → under the cap (mega-module split + dead-code removal). Tracks toward E1.
 
 ---
