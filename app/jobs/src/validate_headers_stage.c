@@ -10,17 +10,14 @@
 
 #include "platform/time_compat.h"
 #include "jobs/validate_headers_stage.h"
+#include "validate_headers_internal.h"
 #include "services/cutover_modes.h"
 #include "jobs/header_admit_stage.h"
 
 #include "chain/chain.h"
-#include "chain/chainparams.h"
-#include "chain/equihash.h"
-#include "chain/pow.h"
 #include "core/uint256.h"
 #include "json/json.h"
 #include "primitives/block.h"
-#include "storage/block_index_db.h"
 #include "storage/progress_store.h"
 #include "storage/txdb.h"
 #include "util/log_macros.h"
@@ -42,7 +39,8 @@
 
 #define STAGE_NAME       "validate_headers"
 
-extern struct block_tree_db *g_active_block_tree;
+/* The default header validator (PoW target + Equihash-from-nSolution)
+ * lives in validate_headers_validator.c — see validate_headers_internal.h. */
 
 /* ── Job + pool state ─────────────────────────────────────────────── */
 
@@ -97,168 +95,6 @@ static int64_t wall_now_s(void)
     struct timespec ts;
     platform_time_realtime_timespec(&ts);
     return (int64_t)ts.tv_sec;
-}
-
-/* ── Default validator: PoW target + Equihash ────────────────────── */
-
-static bool header_from_block_index(const struct block_index *bi,
-                                    struct block_header *out,
-                                    char *out_reason,
-                                    size_t out_reason_size)
-{
-    if (!bi || !out) {
-        snprintf(out_reason, out_reason_size, "null-block-index");
-        return false;
-    }
-    if (!bi->nSolution || bi->nSolutionSize == 0) {
-        snprintf(out_reason, out_reason_size, "no-header-solution");
-        return false;
-    }
-    if (bi->nSolutionSize > sizeof(out->nSolution)) {
-        snprintf(out_reason, out_reason_size, "solution-too-large");
-        return false;
-    }
-    if (bi->nHeight > 0 && (!bi->pprev || !bi->pprev->phashBlock)) {
-        snprintf(out_reason, out_reason_size, "missing-parent-header");
-        return false;
-    }
-
-    block_header_init(out);
-    out->nVersion = bi->nVersion;
-    if (bi->pprev && bi->pprev->phashBlock)
-        out->hashPrevBlock = *bi->pprev->phashBlock;
-    else
-        memset(out->hashPrevBlock.data, 0, sizeof(out->hashPrevBlock.data));
-    out->hashMerkleRoot = bi->hashMerkleRoot;
-    out->hashFinalSaplingRoot = bi->hashFinalSaplingRoot;
-    out->nTime = bi->nTime;
-    out->nBits = bi->nBits;
-    out->nNonce = bi->nNonce;
-    memcpy(out->nSolution, bi->nSolution, bi->nSolutionSize);
-    out->nSolutionSize = bi->nSolutionSize;
-    return true;
-}
-
-static bool header_from_disk_block_index(const struct disk_block_index *dbi,
-                                         struct block_header *out,
-                                         char *out_reason,
-                                         size_t out_reason_size)
-{
-    if (!dbi || !out) {
-        snprintf(out_reason, out_reason_size, "null-disk-block-index");
-        return false;
-    }
-    if (dbi->nSolutionSize == 0) {
-        snprintf(out_reason, out_reason_size, "no-header-solution");
-        return false;
-    }
-    if (dbi->nSolutionSize > sizeof(out->nSolution)) {
-        snprintf(out_reason, out_reason_size, "solution-too-large");
-        return false;
-    }
-
-    block_header_init(out);
-    out->nVersion = dbi->nVersion;
-    out->hashPrevBlock = dbi->hashPrev;
-    out->hashMerkleRoot = dbi->hashMerkleRoot;
-    out->hashFinalSaplingRoot = dbi->hashFinalSaplingRoot;
-    out->nTime = dbi->nTime;
-    out->nBits = dbi->nBits;
-    out->nNonce = dbi->nNonce;
-    memcpy(out->nSolution, dbi->nSolution, dbi->nSolutionSize);
-    out->nSolutionSize = dbi->nSolutionSize;
-    return true;
-}
-
-static bool header_from_persisted_block_index(const struct block_index *bi,
-                                              struct block_header *out,
-                                              char *out_reason,
-                                              size_t out_reason_size)
-{
-    if (!g_active_block_tree || !bi || !bi->phashBlock) {
-        snprintf(out_reason, out_reason_size, "no-header-solution");
-        return false;
-    }
-
-    struct disk_block_index dbi;
-    if (!block_tree_db_read_block_index(g_active_block_tree,
-                                        bi->phashBlock, &dbi)) {
-        snprintf(out_reason, out_reason_size, "no-header-solution");
-        return false;
-    }
-    return header_from_disk_block_index(&dbi, out,
-                                        out_reason, out_reason_size);
-}
-
-static bool validate_header_fields(const struct block_header *header,
-                                   const struct chain_params *cp,
-                                   char *out_reason,
-                                   size_t out_reason_size)
-{
-    if (!header || !cp) {
-        snprintf(out_reason, out_reason_size, "missing-header-context");
-        return false;
-    }
-
-    struct uint256 hash;
-    block_header_get_hash(header, &hash);
-    if (!CheckProofOfWork(hash, header->nBits, &cp->consensus)) {
-        snprintf(out_reason, out_reason_size, "high-hash");
-        return false;
-    }
-    if (!check_equihash_solution(header, cp)) {
-        snprintf(out_reason, out_reason_size, "invalid-solution");
-        return false;
-    }
-    return true;
-}
-
-static bool default_validator(const struct block_index *bi,
-                               const char *datadir,
-                               char *out_reason, size_t out_reason_size,
-                               void *user)
-{
-    (void)user;
-    (void)datadir;
-    if (!bi || !bi->phashBlock) {
-        snprintf(out_reason, out_reason_size, "null-block-index");
-        return false;
-    }
-
-    /* (1) version. */
-    if (bi->nVersion < MIN_BLOCK_VERSION) {
-        snprintf(out_reason, out_reason_size, "version-too-low");
-        return false;
-    }
-
-    /* (2) PoW target. Cheap — no disk. */
-    const struct chain_params *cp = chain_params_get();
-    if (!cp) {
-        snprintf(out_reason, out_reason_size, "no-chain-params");
-        return false;
-    }
-
-    /* The block index stores full header fields, including nonce and
-     * Equihash solution, for headers admitted through normal P2P/RPC
-     * paths. Validate from that header snapshot first. */
-    struct block_header index_header;
-    if (header_from_block_index(bi, &index_header,
-                                out_reason, out_reason_size)) {
-        return validate_header_fields(&index_header, cp,
-                                      out_reason, out_reason_size);
-    }
-
-    /* Restart/load paths deliberately keep the Equihash solution out
-     * of the hot in-memory index to save RAM. The persisted block-index
-     * record still owns it, so load that compact header record instead
-     * of making header validation depend on readable block bodies. */
-    if (header_from_persisted_block_index(bi, &index_header,
-                                          out_reason, out_reason_size)) {
-        return validate_header_fields(&index_header, cp,
-                                      out_reason, out_reason_size);
-    }
-
-    return false;
 }
 
 /* ── Worker pool ──────────────────────────────────────────────────── */
@@ -629,7 +465,7 @@ bool validate_headers_stage_init(struct main_state *ms)
 
     /* Default validator runs full PoW + Equihash from disk. */
     if (!g_validator) {
-        g_validator      = default_validator;
+        g_validator      = validate_headers_default_validator;
         g_validator_user = NULL;
     }
 
@@ -672,7 +508,7 @@ validate_headers_mode_t validate_headers_get_mode(void)
 void validate_headers_stage_set_validator(vh_validator_fn fn, void *user)
 {
     pthread_mutex_lock(&g_lock);
-    g_validator      = fn ? fn : default_validator;
+    g_validator      = fn ? fn : validate_headers_default_validator;
     g_validator_user = fn ? user : NULL;
     pthread_mutex_unlock(&g_lock);
 }
@@ -773,150 +609,8 @@ bool validate_headers_stage_has_pass_record(int32_t height,
     return found;
 }
 
-static void validate_headers_window_report_init(
-    struct validate_headers_window_report *r,
-    int64_t start_height,
-    int64_t end_height)
-{
-    if (!r) return;
-    memset(r, 0, sizeof(*r));
-    r->start_height = start_height;
-    r->end_height = end_height;
-    r->first_failed_height = -1;
-    r->first_fail_reason[0] = '\0';
-    if (start_height >= 0 && end_height >= start_height)
-        r->expected_count = end_height - start_height + 1;
-}
-
-bool validate_headers_stage_window_report(
-    int64_t start_height,
-    int64_t end_height,
-    struct validate_headers_window_report *out)
-{
-    validate_headers_window_report_init(out, start_height, end_height);
-    if (!out || out->expected_count <= 0)
-        return false;
-
-    sqlite3 *db = progress_store_db();
-    if (!db)
-        return false;
-
-    sqlite3_stmt *st = NULL;
-    int rc = sqlite3_prepare_v2(db,
-        "SELECT COUNT(*),"
-        "       SUM(CASE WHEN ok=0 THEN 1 ELSE 0 END)"
-        "  FROM validate_headers_log"
-        " WHERE height BETWEEN ? AND ?",
-        -1, &st, NULL);
-    if (rc != SQLITE_OK) {
-        LOG_ERR("validate_headers",
-                "window report count prepare failed");
-        return false;
-    }
-    sqlite3_bind_int64(st, 1, (sqlite3_int64)start_height);
-    sqlite3_bind_int64(st, 2, (sqlite3_int64)end_height);
-    if (sqlite3_step(st) == SQLITE_ROW) {  // raw-sql-ok:kernel-primitive
-        out->checked_count = sqlite3_column_int64(st, 0);
-        out->failed_count = sqlite3_column_int64(st, 1);
-        out->available = true;
-    }
-    sqlite3_finalize(st);
-
-    rc = sqlite3_prepare_v2(db,
-        "SELECT height, COALESCE(fail_reason, '')"
-        "  FROM validate_headers_log"
-        " WHERE height BETWEEN ? AND ? AND ok=0"
-        " ORDER BY height ASC LIMIT 1",
-        -1, &st, NULL);
-    if (rc != SQLITE_OK) {
-        LOG_ERR("validate_headers",
-                "window report fail prepare failed");
-        return false;
-    }
-    sqlite3_bind_int64(st, 1, (sqlite3_int64)start_height);
-    sqlite3_bind_int64(st, 2, (sqlite3_int64)end_height);
-    if (sqlite3_step(st) == SQLITE_ROW) {  // raw-sql-ok:kernel-primitive
-        out->first_failed_height = sqlite3_column_int64(st, 0);
-        const unsigned char *reason = sqlite3_column_text(st, 1);
-        snprintf(out->first_fail_reason, sizeof(out->first_fail_reason),
-                 "%s", reason ? (const char *)reason : "");
-    }
-    sqlite3_finalize(st);
-
-    out->complete = out->available &&
-                    out->checked_count == out->expected_count;
-    return out->available;
-}
-
-struct validate_headers_failure_summary {
-    int64_t count;
-    int64_t first_height;
-    int64_t last_height;
-    char first_reason[VH_MAX_REASON];
-    char last_reason[VH_MAX_REASON];
-};
-
-static void validate_headers_failure_summary_init(
-    struct validate_headers_failure_summary *s)
-{
-    if (!s) return;
-    memset(s, 0, sizeof(*s));
-    s->first_height = -1;
-    s->last_height = -1;
-}
-
-static void validate_headers_failure_summary_load(
-    struct validate_headers_failure_summary *out)
-{
-    validate_headers_failure_summary_init(out);
-    if (!out) return;
-
-    sqlite3 *db = progress_store_db();
-    if (!db)
-        return;
-
-    sqlite3_stmt *st = NULL;
-    int rc = sqlite3_prepare_v2(db,
-        "SELECT COUNT(*) FROM validate_headers_log WHERE ok=0",
-        -1, &st, NULL);
-    if (rc == SQLITE_OK &&
-        sqlite3_step(st) == SQLITE_ROW) {  // raw-sql-ok:kernel-primitive
-        out->count = sqlite3_column_int64(st, 0);
-    }
-    sqlite3_finalize(st);
-    st = NULL;
-
-    rc = sqlite3_prepare_v2(db,
-        "SELECT height, COALESCE(fail_reason, '')"
-        "  FROM validate_headers_log"
-        " WHERE ok=0"
-        " ORDER BY height ASC LIMIT 1",
-        -1, &st, NULL);
-    if (rc == SQLITE_OK &&
-        sqlite3_step(st) == SQLITE_ROW) {  // raw-sql-ok:kernel-primitive
-        out->first_height = sqlite3_column_int64(st, 0);
-        const unsigned char *reason = sqlite3_column_text(st, 1);
-        snprintf(out->first_reason, sizeof(out->first_reason),
-                 "%s", reason ? (const char *)reason : "");
-    }
-    sqlite3_finalize(st);
-    st = NULL;
-
-    rc = sqlite3_prepare_v2(db,
-        "SELECT height, COALESCE(fail_reason, '')"
-        "  FROM validate_headers_log"
-        " WHERE ok=0"
-        " ORDER BY height DESC LIMIT 1",
-        -1, &st, NULL);
-    if (rc == SQLITE_OK &&
-        sqlite3_step(st) == SQLITE_ROW) {  // raw-sql-ok:kernel-primitive
-        out->last_height = sqlite3_column_int64(st, 0);
-        const unsigned char *reason = sqlite3_column_text(st, 1);
-        snprintf(out->last_reason, sizeof(out->last_reason),
-                 "%s", reason ? (const char *)reason : "");
-    }
-    sqlite3_finalize(st);
-}
+/* validate_headers_stage_window_report() and the failure-summary loader
+ * live in validate_headers_report.c — see validate_headers_internal.h. */
 
 bool validate_headers_stage_dump_state_json(struct json_value *out,
                                              const char *key)

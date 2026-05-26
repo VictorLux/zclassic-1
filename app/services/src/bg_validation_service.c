@@ -27,6 +27,7 @@
 
 #include "platform/time_compat.h"
 #include "services/bg_validation_service.h"
+#include "bg_validation_internal.h"
 #include "validation/main_state.h"
 #include "validation/chainstate.h"
 #include "validation/check_block.h"
@@ -68,116 +69,9 @@ struct bg_validation_service *g_bg_validation = NULL;
 #define SAVE_INTERVAL  1000
 #define LOG_INTERVAL   10000
 
-/* ── Parallel script verification ────────────────────────────── */
-
-struct script_check_item {
-    const struct transaction *tx;
-    unsigned int input_index;
-    int64_t amount;
-    uint32_t branch_id;
-    struct precomputed_tx_data txdata;
-    struct script script_pub_key;
-    uint32_t flags;
-};
-
-static bool verify_script_item(void *item)
-{
-    struct script_check_item *sc = item;
-    struct tx_sig_checker tsc;
-    tx_sig_checker_init(&tsc, sc->tx, sc->input_index,
-                        sc->amount, sc->branch_id, &sc->txdata);
-    struct sig_checker checker = tx_make_sig_checker(&tsc);
-
-    ScriptError serror = SCRIPT_ERR_OK;
-    return verify_script(&sc->tx->vin[sc->input_index].script_sig,
-                         &sc->script_pub_key,
-                         sc->flags, &checker,
-                         sc->branch_id, &serror);
-}
-
-/* ── Worker thread for parallel verification ─────────────────── */
-
-struct worker_ctx {
-    struct script_check_item *items;
-    size_t start;
-    size_t count;
-    bool result;
-};
-
-static void *worker_thread(void *arg)
-{
-    struct worker_ctx *w = arg;
-    w->result = true;
-    for (size_t i = 0; i < w->count; i++) {
-        if (!verify_script_item(&w->items[w->start + i])) {
-            w->result = false;
-            return NULL;
-        }
-    }
-    return NULL;
-}
-
-/* Verify all script items in parallel using num_workers threads.
- * Falls back to serial for small batches. */
-static bool verify_scripts_parallel(struct script_check_item *items,
-                                    size_t count, int num_workers)
-{
-    if (count == 0)
-        return true;
-
-    /* Serial path for small batches or single-threaded mode */
-    if (num_workers <= 1 || count <= 4) {
-        for (size_t i = 0; i < count; i++) {
-            if (!verify_script_item(&items[i]))
-                return false;
-        }
-        return true;
-    }
-
-    /* Parallel: split work across threads */
-    int nthreads = num_workers;
-    if ((size_t)nthreads > count)
-        nthreads = (int)count;
-
-    struct worker_ctx *workers = zcl_calloc((size_t)nthreads,
-                                        sizeof(struct worker_ctx), "bg_valid workers");
-    pthread_t *threads = zcl_calloc((size_t)nthreads, sizeof(pthread_t), "bg_valid threads");
-    if (!workers || !threads) {
-        free(workers);
-        free(threads);
-        /* Fallback to serial */
-        for (size_t i = 0; i < count; i++) {
-            if (!verify_script_item(&items[i]))
-                return false;
-        }
-        return true;
-    }
-
-    size_t per_thread = count / (size_t)nthreads;
-    size_t remainder = count % (size_t)nthreads;
-    size_t offset = 0;
-
-    for (int t = 0; t < nthreads; t++) {
-        workers[t].items = items;
-        workers[t].start = offset;
-        workers[t].count = per_thread + (t < (int)remainder ? 1 : 0);
-        workers[t].result = true;
-        offset += workers[t].count;
-        /* raw-pthread-ok: short-burst-joined-immediately */
-        pthread_create(&threads[t], NULL, worker_thread, &workers[t]);
-    }
-
-    bool all_ok = true;
-    for (int t = 0; t < nthreads; t++) {
-        pthread_join(threads[t], NULL);
-        if (!workers[t].result)
-            all_ok = false;
-    }
-
-    free(workers);
-    free(threads);
-    return all_ok;
-}
+/* Parallel script verification (struct script_check_item +
+ * bg_validation_verify_scripts_parallel) lives in
+ * bg_validation_scripts.c — see bg_validation_internal.h. */
 
 /* ── Read undo data for a block ──────────────────────────────── */
 
@@ -244,126 +138,8 @@ static bool read_block_undo(struct block_undo *undo,
     return ok;
 }
 
-/* ── Shielded proof verification for a single transaction ────── */
-
-/* Verifies JoinSplit Ed25519 sigs, Sprout Groth16/PHGR13 proofs,
- * and Sapling spend/output proofs + binding signature.
- * Returns false on verification failure, sets *proofs_out. */
-static bool verify_shielded_proofs(const struct transaction *tx,
-                                   int height, size_t tx_idx,
-                                   uint32_t branch_id,
-                                   int64_t *proofs_out)
-{
-    struct uint256 data_to_be_signed;
-    uint256_set_null(&data_to_be_signed);
-    struct script empty_script = { .size = 0 };
-    struct sighash_type ht = { .raw = 1 }; /* SIGHASH_ALL */
-
-    if (!signature_hash(&empty_script, tx, NOT_AN_INPUT, ht, 0,
-                        branch_id, NULL, &data_to_be_signed)) {
-        fprintf(stderr, "[bg-valid] sighash FAILED h=%d tx=%zu\n",
-                height, tx_idx);
-        return false;
-    }
-
-    /* JoinSplit Ed25519 signature */
-    if (tx->num_joinsplit > 0) {
-        if (!ed25519_verify(tx->joinsplit_sig, data_to_be_signed.data,
-                            32, tx->joinsplit_pubkey.data)) {
-            fprintf(stderr, "[bg-valid] Ed25519 JoinSplit sig FAILED "
-                    "h=%d tx=%zu\n", height, tx_idx);
-            return false;
-        }
-    }
-
-    /* Sprout JoinSplit zk-SNARK proofs */
-    for (size_t j = 0; j < tx->num_joinsplit; j++) {
-        const struct js_description *js = &tx->v_joinsplit[j];
-        uint8_t h_sig[32];
-        sprout_h_sig(js->random_seed.data, js->nullifiers[0].data,
-                     js->nullifiers[1].data, tx->joinsplit_pubkey.data,
-                     h_sig);
-
-        if (!js->use_groth) {
-            /* PHGR13 proof (pre-Sapling Sprout, blocks 0-581876) */
-            if (!sprout_verify_phgr13(js->proof,
-                    js->anchor.data, h_sig,
-                    js->macs[0].data, js->macs[1].data,
-                    js->nullifiers[0].data, js->nullifiers[1].data,
-                    js->commitments[0].data, js->commitments[1].data,
-                    (uint64_t)js->vpub_old, (uint64_t)js->vpub_new)) {
-                /* Non-fatal when VK not loaded — sprout_verify_phgr13
-                 * returns false when phgr_vk==NULL. */
-                static _Atomic int phgr_warn = 0;
-                if (atomic_load(&phgr_warn) < 3) {
-                    atomic_fetch_add(&phgr_warn, 1);
-                    LOG_WARN("bg-valid", "SKIPPED h=%d tx=%zu js=%zu (VK not " "loaded)", height, tx_idx, j);
-                }
-                continue;
-            }
-        } else {
-            if (!sprout_verify_groth16(js->proof,
-                    js->anchor.data, h_sig,
-                    js->macs[0].data, js->macs[1].data,
-                    js->nullifiers[0].data, js->nullifiers[1].data,
-                    js->commitments[0].data, js->commitments[1].data,
-                    (uint64_t)js->vpub_old, (uint64_t)js->vpub_new)) {
-                fprintf(stderr, "[bg-valid] Sprout Groth16 proof FAILED "
-                        "h=%d tx=%zu js=%zu\n", height, tx_idx, j);
-                return false;
-            }
-        }
-        (*proofs_out)++;
-    }
-
-    /* Sapling spend/output proofs + binding sig */
-    if (tx->num_shielded_spend == 0 && tx->num_shielded_output == 0)
-        return true;
-
-    void *sctx = zclassic_sapling_verification_ctx_init();
-    if (!sctx)
-        LOG_FAIL("bg_validation", "verify_shielded_proofs: sapling ctx init failed h=%d tx=%zu",
-                 height, tx_idx);
-
-    for (size_t j = 0; j < tx->num_shielded_spend; j++) {
-        const struct spend_description *sd = &tx->v_shielded_spend[j];
-        if (!zclassic_sapling_check_spend(
-                sctx, sd->cv.data, sd->anchor.data,
-                sd->nullifier.data, sd->rk.data,
-                sd->zkproof, sd->spend_auth_sig,
-                data_to_be_signed.data)) {
-            fprintf(stderr, "[bg-valid] Sapling spend check FAILED "
-                    "h=%d tx=%zu spend=%zu\n", height, tx_idx, j);
-            zclassic_sapling_verification_ctx_free(sctx);
-            return false;
-        }
-        (*proofs_out)++;
-    }
-
-    for (size_t j = 0; j < tx->num_shielded_output; j++) {
-        const struct output_description *od = &tx->v_shielded_output[j];
-        if (!zclassic_sapling_check_output(
-                sctx, od->cv.data, od->cm.data,
-                od->ephemeral_key.data, od->zkproof)) {
-            fprintf(stderr, "[bg-valid] Sapling output check FAILED "
-                    "h=%d tx=%zu output=%zu\n", height, tx_idx, j);
-            zclassic_sapling_verification_ctx_free(sctx);
-            return false;
-        }
-        (*proofs_out)++;
-    }
-
-    if (!zclassic_sapling_final_check(
-            sctx, tx->value_balance,
-            tx->binding_sig, data_to_be_signed.data)) {
-        fprintf(stderr, "[bg-valid] Sapling binding sig FAILED "
-                "h=%d tx=%zu\n", height, tx_idx);
-        zclassic_sapling_verification_ctx_free(sctx);
-        return false;
-    }
-    zclassic_sapling_verification_ctx_free(sctx);
-    return true;
-}
+/* Shielded proof verification (bg_validation_verify_shielded_proofs)
+ * lives in bg_validation_proofs.c — see bg_validation_internal.h. */
 
 /* ── Single block full validation (read-only) ────────────────── */
 
@@ -442,7 +218,7 @@ static bool validate_block_proofs(const struct block *block,
         /* 4a. Shielded proof verification */
         if (tx->num_joinsplit > 0 || tx->num_shielded_spend > 0 ||
             tx->num_shielded_output > 0) {
-            if (!verify_shielded_proofs(tx, pindex->nHeight, i,
+            if (!bg_validation_verify_shielded_proofs(tx, pindex->nHeight, i,
                                         branch_id, &proofs))
                 goto out;
         }
@@ -463,7 +239,7 @@ static bool validate_block_proofs(const struct block *block,
         for (size_t j = 0; j < tx->num_vin; j++) {
             /* Flush batch if at capacity */
             if (max_script_batch > 0 && check_count >= max_script_batch) {
-                if (!verify_scripts_parallel(check_items, check_count,
+                if (!bg_validation_verify_scripts_parallel(check_items, check_count,
                                               num_workers))
                     goto out;
                 check_count = 0;
@@ -484,7 +260,7 @@ static bool validate_block_proofs(const struct block *block,
     }
 
     /* 5. Final script verification flush */
-    if (!verify_scripts_parallel(check_items, check_count, num_workers)) {
+    if (!bg_validation_verify_scripts_parallel(check_items, check_count, num_workers)) {
         LOG_WARN("bg-valid", "[bg-valid] script verification FAILED h=%d",
                 pindex->nHeight);
         goto out;
