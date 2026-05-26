@@ -652,6 +652,8 @@ static int run_gate_script(const char *script_rel, const char *mode)
 #define E3_FIXTURE_DST   "app/conditions/src/_e3_shape_include_fixture_tmp.c"
 #define E4_SCRIPT_REL    "tools/scripts/check_projections_pure.sh"
 #define E4_FIXTURE_DST   "lib/storage/src/_e4_pure_fixture_projection.c"
+#define E5_SCRIPT_REL    "tools/scripts/check_stage_advances_or_blocks.sh"
+#define E5_FIXTURE_DST   "app/jobs/src/_e5_stage_fixture_tmp_stage.c"
 
 static int plant_oversized_file(const char *rel, int n_lines)
 {
@@ -849,6 +851,35 @@ static int t_e4_projections_pure(void)
     return failures;
 }
 
+/* E5 — stage-advances-or-blocks HARD: a Job step file that only ever returns
+ * JOB_ADVANCED and references no cursor trips the gate; removing it restores
+ * green. */
+static int t_e5_stage_advances_or_blocks(void)
+{
+    int failures = 0;
+    unlink_rel(E5_FIXTURE_DST);
+    int baseline_rc = run_gate_script(E5_SCRIPT_REL, NULL);
+    char path[PATH_MAX];
+    int planted = (repo_path(path, sizeof(path), E5_FIXTURE_DST) == 0 &&
+                   write_file(path,
+                       "/* mislabeled Job stage: advances only, no cursor */\n"
+                       "typedef int job_result_t;\n"
+                       "#define JOB_ADVANCED 0\n"
+                       "job_result_t fixture_stage_step_once(void){ return JOB_ADVANCED; }\n") == 0)
+                  ? 0 : -1;
+    int trip_rc = planted == 0 ? run_gate_script(E5_SCRIPT_REL, NULL) : -1;
+    unlink_rel(E5_FIXTURE_DST);
+    int recover_rc = run_gate_script(E5_SCRIPT_REL, NULL);
+    TEST("[lint-gate] E5 stage-advances-or-blocks HARD: clean, trips advance-only stage, recovers") {
+        ASSERT(baseline_rc == 0);
+        ASSERT(planted == 0);
+        ASSERT(trip_rc != 0);
+        ASSERT(recover_rc == 0);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 static void unlink_lint_fixtures(void)
 {
     const char *fixtures[] = {
@@ -864,6 +895,7 @@ static void unlink_lint_fixtures(void)
         E2_FIXTURE_DST,
         E3_FIXTURE_DST,
         E4_FIXTURE_DST,
+        E5_FIXTURE_DST,
     };
 
     for (size_t i = 0; i < sizeof(fixtures) / sizeof(fixtures[0]); i++) {
@@ -1657,6 +1689,7 @@ int test_make_lint_gates(void)
     failures += t_e2_one_result_type();
     failures += t_e3_shape_includes_header();
     failures += t_e4_projections_pure();
+    failures += t_e5_stage_advances_or_blocks();
     return failures;
 }
 

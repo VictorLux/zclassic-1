@@ -957,7 +957,15 @@ check-projections-pure:
 	@echo "══ LINT: projections pure (E4) ══"
 	@./tools/scripts/check_projections_pure.sh
 
-lint: check-malloc check-silent-errors check-raw-sqlite check-raw-malloc check-coins-lookup-nullcheck check-observability-pairing check-silent-errors-services check-silent-errors-controllers check-before-save-hooks check-pthread-create check-model-validation check-long-functions check-rpc-registrar check-lag-slo-observable check-lib-layering check-supervisor-registration check-typed-blocker check-framework-shape check-no-raw-clock-outside-platform check-no-raw-sqlite-in-controllers check-supervisor-domain check-file-size-ceiling check-operator-needed-sink check-doc-accuracy check-one-result-type check-shape-includes-header check-projections-pure
+# Gate E5 — Job stages advance OR block (HARD). Every app/jobs/src/*_stage.c
+# step must surface JOB_BLOCKED/JOB_IDLE on non-progress AND reference a cursor
+# (cursor_out / c->cursor_in / stage_cursor) — no silent forward spin. The 8
+# stages already comply, so the gate runs HARD.
+check-stage-advances-or-blocks:
+	@echo "══ LINT: stage advances-or-blocks (E5) ══"
+	@./tools/scripts/check_stage_advances_or_blocks.sh
+
+lint: check-malloc check-silent-errors check-raw-sqlite check-raw-malloc check-coins-lookup-nullcheck check-observability-pairing check-silent-errors-services check-silent-errors-controllers check-before-save-hooks check-pthread-create check-model-validation check-long-functions check-rpc-registrar check-lag-slo-observable check-lib-layering check-supervisor-registration check-typed-blocker check-framework-shape check-no-raw-clock-outside-platform check-no-raw-sqlite-in-controllers check-supervisor-domain check-file-size-ceiling check-operator-needed-sink check-doc-accuracy check-one-result-type check-shape-includes-header check-projections-pure check-stage-advances-or-blocks
 	@echo "══ LINT: all checks passed ══"
 
 ci: lint bench-regress zclassic23 test_zcl

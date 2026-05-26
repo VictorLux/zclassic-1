@@ -119,7 +119,7 @@ with the work it guards (design in `FRAMEWORK.md` §5).
 - [x] **E2** `check-one-result-type` — RATCHET (67 service files baselined; new ones must use `zcl_result`). `f331f6e0d`.
 - [x] **E3** `check-shape-includes-header` — HARD; every condition/model/supervisor file includes its shape header. `f331f6e0d`.
 - [x] **E4** `check-projections-pure` — HARD; every `*_projection.c` is a pure fold (no app includes, no AR model saves). `f331f6e0d`.
-- [ ] **E5** `stage-advances-or-blocks` — every Job references a cursor and calls `blocker_set()` on non-progress. *(hard for the Job shape)*
+- [x] **E5** `stage-advances-or-blocks` — every Job step (`app/jobs/src/*_stage.c`) references a cursor (`cursor_out`/`c->cursor_in`/`stage_cursor`) AND returns `JOB_BLOCKED`/`JOB_IDLE` on non-progress. HARD (all 8 stages comply). `tools/scripts/check_stage_advances_or_blocks.sh`.
 - [ ] **E6** `one-write-path` — exactly one writer to chain state. *(ratchet → hard once B7 lands)*
 - [ ] **E7** `no-authoritative-RAM-state` — consensus state in log/projections/cursors, not mutable globals. *(ratchet)*
 - [ ] **E8** `health-is-the-gap` — one `tip_not_advancing` Condition is the sole liveness authority; others don't emit `EV_OPERATOR_NEEDED` for liveness. *(ratchet)*

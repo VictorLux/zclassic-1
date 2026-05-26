@@ -639,6 +639,7 @@ edit it whenever you add/remove a gate.
 - `check-silent-errors-controllers`
 - `check-shape-includes-header`
 - `check-silent-errors-services`
+- `check-stage-advances-or-blocks`
 - `check-supervisor-domain`
 - `check-supervisor-registration`
 - `check-typed-blocker`
