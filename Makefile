@@ -965,7 +965,11 @@ check-stage-advances-or-blocks:
 	@echo "══ LINT: stage advances-or-blocks (E5) ══"
 	@./tools/scripts/check_stage_advances_or_blocks.sh
 
-lint: check-malloc check-silent-errors check-raw-sqlite check-raw-malloc check-coins-lookup-nullcheck check-observability-pairing check-silent-errors-services check-silent-errors-controllers check-before-save-hooks check-pthread-create check-model-validation check-long-functions check-rpc-registrar check-lag-slo-observable check-lib-layering check-supervisor-registration check-typed-blocker check-framework-shape check-no-raw-clock-outside-platform check-no-raw-sqlite-in-controllers check-supervisor-domain check-file-size-ceiling check-operator-needed-sink check-doc-accuracy check-one-result-type check-shape-includes-header check-projections-pure check-stage-advances-or-blocks
+check-no-silent-ready:
+	@echo "══ LINT: no-silent-ready (E8) ══"
+	@./tools/scripts/check_no_silent_ready.sh
+
+lint: check-malloc check-silent-errors check-raw-sqlite check-raw-malloc check-coins-lookup-nullcheck check-observability-pairing check-silent-errors-services check-silent-errors-controllers check-before-save-hooks check-pthread-create check-model-validation check-long-functions check-rpc-registrar check-lag-slo-observable check-lib-layering check-supervisor-registration check-typed-blocker check-framework-shape check-no-raw-clock-outside-platform check-no-raw-sqlite-in-controllers check-supervisor-domain check-file-size-ceiling check-operator-needed-sink check-doc-accuracy check-one-result-type check-shape-includes-header check-projections-pure check-stage-advances-or-blocks check-no-silent-ready
 	@echo "══ LINT: all checks passed ══"
 
 ci: lint bench-regress zclassic23 test_zcl

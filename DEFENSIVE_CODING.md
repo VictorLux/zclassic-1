@@ -600,6 +600,23 @@ already satisfies). Tested in `lib/test/src/test_make_lint_gates.c`
     cache write — memoizing a derived value back into the projection's
     own table outside the strict fold).
 
+- **Gate E8: `check-no-silent-ready`** (HARD)
+  - Path: `tools/scripts/check_no_silent_ready.sh`
+  - Checks: the block-connection authority
+    (`app/services/src/chain_activation_controller.c`) must
+    advance-the-tip OR name-a-typed-blocker every tick (FRAMEWORK.md Prime
+    Directive). Any file that performs an
+    `activation_set_state(..., ACTIVATION_READY, ...)` transition must also
+    route a typed blocker through `blocker_set(` (or a helper such as
+    `activation_set_behind_blocker(`), so a non-progress stall is always
+    visible in `zcl_state subsystem=blocker` and reaches the supervisor
+    escape / operator sink. Closes the 2026-05-26 silent-ready hole where
+    the authority went READY with reason "behind_peers" while +950 behind
+    the most-work header chain, naming no actionable reason. The tree
+    satisfies it today, so it runs HARD.
+  - Override: `// no-silent-ready-ok:<tag>` (on a READY transition line that
+    provably cannot be a non-progress stall — e.g. a clean caught-up path).
+
 `check-framework-shape` (Gate #18) and `check-no-raw-sqlite-in-controllers`
 (Gate #20) were **graduated WARN → RATCHET (E10)**. Each now fails on a
 new violation while tolerating its baseline:
@@ -627,6 +644,7 @@ edit it whenever you add/remove a gate.
 - `check-model-validation`
 - `check-no-raw-clock-outside-platform`
 - `check-no-raw-sqlite-in-controllers`
+- `check-no-silent-ready`
 - `check-observability-pairing`
 - `check-one-result-type`
 - `check-operator-needed-sink`
