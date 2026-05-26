@@ -829,9 +829,61 @@ static int test_startup_repairs_active_tip_hash_mismatch(void)
     return failures;
 }
 
+/* A persisted freeze whose reason is NOT in the demoted auto-clear list
+ * (so load_state keeps it frozen) must still be LIFTED by reconcile when
+ * the live tip is provably consistent — a stale freeze must not outlive
+ * the condition that caused it, regardless of its label. This exercises
+ * the reconcile_startup lift path, not the load_state demoted-clear. */
+static int test_reconcile_lifts_stale_freeze_with_arbitrary_reason(void)
+{
+    int failures = 0;
+    struct auth_fixture f;
+    if (!auth_fixture_init(&f))
+        return 1;
+
+    struct chain_state_commit commit = {
+        .new_tip = &f.blocks[1],
+        .new_coins_best = *f.blocks[1].phashBlock,
+        .expected_utxo_count = 0,
+        .update_header_tip = true,
+        .persist_coins_best = true,
+        .rollback_auth = NULL,
+        .wallet_scan_height = -1,
+        .reason = "unit.reconcile_seed",
+    };
+    if (csr_commit_tip(&f.csr, &commit) != CSR_OK)
+        failures++;
+
+    /* A reason that is NOT demoted and NOT empty — the kind a torn DB or
+     * a prior session's generic backfill would leave persisted. */
+    const char frozen[] = "contradiction_frozen";
+    const char reason[] = "unspecified_contradiction_persisted_without_reason";
+    if (!node_db_state_set(&f.ndb, "cec.sync_state", frozen, sizeof(frozen)))
+        failures++;
+    if (!node_db_state_set(&f.ndb, "cec.contradiction_reason",
+                           reason, sizeof(reason)))
+        failures++;
+
+    chain_evidence_controller_init(&f.authority, &f.ndb, &f.csr);
+
+    struct chain_evidence_controller_view view;
+    chain_evidence_controller_snapshot(&f.authority, &view);
+    /* Provably-consistent tip → freeze lifted, evidence reconstructed. */
+    if (view.state == CEC_CONTRADICTION_FROZEN)
+        failures++;
+    if (strcmp(view.health_reason, "") != 0)
+        failures++;
+    if (view.active_tip_source_class != CEC_SOURCE_CLASS_LOCAL_IMPORT)
+        failures++;
+
+    auth_fixture_free(&f);
+    return failures;
+}
+
 int test_chain_evidence_controller(void)
 {
     int failures = 0;
+    failures += test_reconcile_lifts_stale_freeze_with_arbitrary_reason();
     failures += test_manifest_missing_proofs_freezes();
     failures += test_old_metadata_is_ignored();
     failures += test_csr_commit_does_not_write_evidence_metadata();

@@ -103,9 +103,16 @@ static int state_get_i32(struct node_db *ndb, const char *key, int def);
 static void chain_evidence_controller_reconcile_startup(
     struct chain_evidence_controller *authority)
 {
-    if (!authority || !authority->ndb || !authority->csr ||
-        authority->state == CEC_CONTRADICTION_FROZEN)
+    if (!authority || !authority->ndb || !authority->csr)
         return;
+
+    /* A persisted freeze is advisory, not permanent. We always re-derive
+     * evidence for the current active tip below; if it proves consistent
+     * we LIFT the freeze (a stale freeze must not outlive the condition
+     * that caused it). If it genuinely cannot be proven, reconstruct
+     * re-freezes with a precise reason. This is what keeps a frozen node
+     * self-healing instead of silently parked forever. */
+    bool was_frozen = (authority->state == CEC_CONTRADICTION_FROZEN);
 
     struct chain_state_view csv;
     memset(&csv, 0, sizeof(csv));
@@ -178,11 +185,15 @@ static void chain_evidence_controller_reconcile_startup(
         LOG_INFO("cec", "[cec] reconcile_startup: blocks.max_height=%lld behind " "active_tip h=%d — projection will backfill", (long long)csv.sql_max_height, active_tip->nHeight);
     }
 
-    if (!has_active_evidence ||
-        !chain_evidence_record_has_block_index_required(&active_evidence)) {
+    bool tip_evidence_ok =
+        has_active_evidence &&
+        chain_evidence_record_has_block_index_required(&active_evidence);
+    if (!tip_evidence_ok) {
         char reason[192];
-        if (!cec_reconstruct_active_tip_evidence(authority, active_tip, &csv,
-                                                 reason)) {
+        if (cec_reconstruct_active_tip_evidence(authority, active_tip, &csv,
+                                                reason)) {
+            tip_evidence_ok = true;
+        } else {
             /* Reconstruct only fails when the tip genuinely cannot be
              * proven consistent. It always fills a precise reason; never
              * freeze with an empty/generic string (that produces a halt
@@ -192,7 +203,29 @@ static void chain_evidence_controller_reconcile_startup(
                          "active_tip_evidence_unrecoverable (h=%d)",
                          active_tip->nHeight);
             chain_evidence_controller_freeze(authority, reason);
+            return;
         }
+    }
+
+    /* The active tip now carries valid block-index evidence (reconstructed
+     * this boot or already present). If we entered frozen, that freeze is
+     * stale — the tip is provably consistent — so lift it and let the node
+     * publish and advance. */
+    if (was_frozen && tip_evidence_ok) {
+        LOG_WARN("cec",
+                 "[cec] lifting stale freeze: active tip h=%d is provably "
+                 "consistent (evidence re-derived) — clearing "
+                 "contradiction and resuming",
+                 active_tip->nHeight);
+        authority->state = CEC_EMPTY;
+        memset(authority->contradiction_reason, 0,
+               sizeof(authority->contradiction_reason));
+        (void)node_db_state_set(authority->ndb, "cec.sync_state",
+                                "empty", strlen("empty") + 1);
+        (void)node_db_state_set(authority->ndb,
+                                "cec.contradiction_reason", "", 1);
+        (void)persist_i64(authority, "cec.publish_state",
+                          CEC_PUBLISH_LOCAL_EVIDENCE);
     }
 }
 
@@ -271,32 +304,28 @@ enum chain_evidence_controller_state chain_evidence_controller_load_state(
         }
     }
 
-    /* A freeze is a DERIVED condition, never a permanently-trusted flag.
-     * An unnamed persisted freeze (empty cec.contradiction_reason — e.g.
-     * a torn DB, a lost key, or a pre-fix binary that froze without a
-     * reason) cannot be trusted to still hold: we have no record of WHAT
-     * contradiction it represents, so we must re-derive it from current
-     * truth rather than honour it forever. Clear it to EMPTY here so the
-     * reconcile_startup pass below re-attempts evidence reconstruction.
-     * If a genuine contradiction still exists, reconcile/reconstruct will
-     * re-freeze with a PRECISE reason; if the tip is now provably
-     * consistent, the node publishes and advances. This is what makes a
-     * stale freeze self-healing instead of a silent permanent halt. */
+    /* No-silent-halt invariant for the LOAD path: a frozen controller
+     * must always carry a non-empty reason. If a torn / legacy DB
+     * persisted FROZEN with an empty cec.contradiction_reason (or the key
+     * was lost), backfill a named reason in memory AND on disk so
+     * introspection never reports a freeze that does not name itself.
+     * load_state does NOT decide whether the freeze still holds — that is
+     * reconcile_startup's job (called next in init), which re-derives
+     * evidence for the live tip and LIFTS the freeze if it is provably
+     * stale, or re-freezes with a precise reason if a contradiction
+     * genuinely remains. */
     if (authority->state == CEC_CONTRADICTION_FROZEN &&
         authority->contradiction_reason[0] == '\0') {
+        snprintf(authority->contradiction_reason,
+                 sizeof(authority->contradiction_reason),
+                 "unspecified_contradiction_persisted_without_reason");
         LOG_WARN("cec",
-                 "[cec] persisted frozen state had no reason — cannot trust "
-                 "an unnamed freeze; clearing to re-derive from current tip "
-                 "(reconcile will re-freeze with a precise reason if a real "
-                 "contradiction remains)");
-        authority->state = CEC_EMPTY;
-        (void)node_db_state_set(authority->ndb, "cec.sync_state",
-                                "empty", strlen("empty") + 1);
-        (void)node_db_state_set(authority->ndb,
-                                "cec.contradiction_reason", "", 1);
-        int32_t zero = 0;
-        (void)node_db_state_set(authority->ndb, "cec.publish_state",
-                                &zero, sizeof(zero));
+                 "[cec] frozen state had empty reason on load — backfilling "
+                 "'%s' (reconcile will re-derive and lift if stale)",
+                 authority->contradiction_reason);
+        (void)node_db_state_set(authority->ndb, "cec.contradiction_reason",
+                                authority->contradiction_reason,
+                                strlen(authority->contradiction_reason) + 1);
     }
     return authority->state;
 }
