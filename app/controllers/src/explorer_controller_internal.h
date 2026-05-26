@@ -111,6 +111,10 @@ size_t serve_search(const char *query, uint8_t *r, size_t max);
  * wallet_view_dashboard.c that the file-split exposed. */
 size_t explorer_serve_dashboard(uint8_t *r, size_t max);
 
+/* explorer_controller_dashboard.c — dashboard rendering (RPC proxy +
+ * native modes). explorer_handle_request routes /explorer here. */
+size_t serve_dashboard_with_page(uint8_t *r, size_t max, int page);
+
 /* explorer_controller_pages.c */
 size_t serve_stats(uint8_t *r, size_t max);
 size_t serve_factoids(uint8_t *r, size_t max);
