@@ -100,8 +100,8 @@ three unreal shapes a real, debuggable form.
 
 From the beauty audit; each is "principle violated → where → the elegant form."
 
-- [ ] **D1** Dissolve `diagnostics_controller.c` (2,550). Extract the beautiful `g_dumpers` registry to its own `diagnostics_registry.c`; split `getnodelog` / `dbquery` / `probezclassicd` / `cutovermode` into their own controllers.
-- [ ] **D2** Controllers must not build views. Move `explorer_factoids.c` (1,994) + `explorer_stats.c` (1,595) + `explorer_controller_pages.c` (1,541) builders into `app/views/`.
+- [x] **D1** Dissolve `diagnostics_controller.c` — 2,550 → 51 LOC, split into 6 single-concern files (diagnostics_registry + cutover/projection_diff/nodelog/dbquery/probe controllers). `da9a1fe5a`.
+- [x] **D2** Controllers must not build views — explorer_factoids/stats/pages assembly moved into `app/views/` (controllers now skinny). `dd041e3b8`.
 - [ ] **D3** Stage-services write through Models, not raw SQL (`header_admit_stage.c:60-99` hand-rolls INSERT). Give `header_admit_log` a Model; route through AR.
 - [ ] **D4** One log call. Collapse the 486 raw `fprintf(stderr)` + `// obs-ok:` sites to `LOG_*`/`log_json` so `zcl_node_log` is structured.
 - [ ] **D5** The 31 `app/` files > 800 LOC → under the cap (mega-module split + dead-code removal). Tracks toward E1.
@@ -113,7 +113,7 @@ From the beauty audit; each is "principle violated → where → the elegant for
 Hygiene is well-gated (21 live gates). **Architecture is not.** Each gate lands
 with the work it guards (design in `FRAMEWORK.md` §5).
 
-- [ ] **E1** `file-size-ceiling` — no `app/` file over the cap. *(ratchet down)*
+- [x] **E1** `file-size-ceiling` — RATCHET, baseline = 29 grandfathered files (can only shrink). `5daf21742`.
 - [ ] **E2** `one-result-type` — services return `zcl_result`. *(ratchet)*
 - [ ] **E3** `shape-is-content-checked` — a shape file includes its shape header (closes the "mislabeled Service" hole; makes E4/E5 reliable). *(ratchet → hard)*
 - [ ] **E4** `projections-are-pure` — projection files don't `#include` services/controllers and emit no writes. *(hard — small file set)*
@@ -121,9 +121,9 @@ with the work it guards (design in `FRAMEWORK.md` §5).
 - [ ] **E6** `one-write-path` — exactly one writer to chain state. *(ratchet → hard once B7 lands)*
 - [ ] **E7** `no-authoritative-RAM-state` — consensus state in log/projections/cursors, not mutable globals. *(ratchet)*
 - [ ] **E8** `health-is-the-gap` — one `tip_not_advancing` Condition is the sole liveness authority; others don't emit `EV_OPERATOR_NEEDED` for liveness. *(ratchet)*
-- [ ] **E9** `operator-needed-has-a-sink` — every `EV_OPERATOR_NEEDED` emit pairs with a registered subscriber. *(hard — pairing check)*
-- [ ] **E10** Graduate `framework-shape` + `controller-SQL` gates WARN → RATCHET (make the boundary load-bearing).
-- [ ] **E11** `doc-accuracy` — cross-check the `DEFENSIVE_CODING.md` gate list against the Makefile `lint:` deps (kills doc rot).
+- [x] **E9** `operator-needed-has-a-sink` — HARD; `EV_OPERATOR_NEEDED` emit paired with the `alerts.c` subscriber (tree already satisfies). `5daf21742`.
+- [x] **E10** `framework-shape` + `controller-SQL` graduated WARN → RATCHET (baselines captured; new violators fail). `5daf21742`.
+- [x] **E11** `doc-accuracy` — HARD; `<!--LINT-GATES-->` block in DEFENSIVE_CODING.md must match Makefile `lint:` deps. 24 gates, agree. `5daf21742`.
 
 ---
 
