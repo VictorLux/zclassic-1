@@ -11,7 +11,7 @@
 # Per-line exception: add // raw-controller-sql-ok on the offending line.
 # Format: one relative path per line; lines starting with # are comments.
 app/controllers/include/controllers/explorer_internal.h
-app/controllers/src/api_controller.c
+app/controllers/src/api_controller_node.c
 app/controllers/src/blockchain_controller_admin.c
 app/controllers/src/blockchain_controller.c
 app/controllers/src/blockchain_controller_chain.c
@@ -24,6 +24,7 @@ app/controllers/src/projection_diff_controller.c
 app/controllers/src/repair_controller.c
 app/controllers/src/repair_controller_utxo.c
 app/controllers/src/snapshot_controller.c
+app/controllers/src/snapshot_controller_txindex.c
 app/controllers/src/store_controller.c
 app/controllers/src/store_controller_schema.c
 app/controllers/src/sync_controller_blocks.c
