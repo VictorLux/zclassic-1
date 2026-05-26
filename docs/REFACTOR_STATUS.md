@@ -31,6 +31,17 @@ Read live from the SERVICE: `zcl_status` (tip, `tip_advance_age_seconds`) +
 adding conditions. Default to SUBTRACTION. While two chain paths coexist a silent
 halt remains *possible*; workstream **B** is the structural cure.
 
+**▶ FOCUS NOW (2026-05-26) — the live proof that B is the cure.** The live node
+recovered from a 15h hard-down (torn-snapshot stale-fork) onto the canonical chain
+but sits **+950 behind, not advancing**: the legacy_mirror `body_pull` SKIPS blocks
+it already has (`skipped_have`) instead of connecting them, and `activate_best_chain`
+defers (`behind_peers`) to a 3-peer P2P quorum a personal stack can't form. This is
+**exactly** the deadlock B7/E6/E8 delete. The single next action is **B** — make the
+reducer advance-the-live-tip-or-name-a-blocker (drive activation of have-data blocks
+from the always-on local authority; no whack-a-mole condition). Repro datadir:
+`~/.zclassic-c23/quarantine-torn-20260526/node.db`. Everything routes through B; do
+not spawn a parallel "fix the mirror" track — that IS B.
+
 ---
 
 ## ✅ Already shipped (the foundation)
@@ -109,7 +120,7 @@ From the beauty audit; each is "principle violated → where → the elegant for
 - [x] **D1** Dissolve `diagnostics_controller.c` — 2,550 → 51 LOC, split into 6 single-concern files (diagnostics_registry + cutover/projection_diff/nodelog/dbquery/probe controllers). `da9a1fe5a`.
 - [x] **D2** Controllers must not build views — explorer_factoids/stats/pages assembly moved into `app/views/` (controllers now skinny). `dd041e3b8`.
 - [x] **D3** `header_admit_log` now a Model (`app/models/src/header_admit_log.c`, validates_* + before/after_save + `AR_ADHOC_SAVE`); raw SQL removed from the stage's write path. `aa9b6aaa7`.
-- [~] **D4** One log call. **app/controllers slice DONE** (`110859a24`): 25 `fprintf(stderr,…); return` pairs → `LOG_FAIL/ERR/NULL` (151→126 in controllers). **lib/net slice (verified no-op):** all 68 are non-returning P2P log-and-continue / void-function diagnostics, already `obs-ok` — zero safe `LOG_*` drop-ins. **ROOT BLOCKER (decisive):** every returning `LOG_*` macro forces a `return`, so the overwhelming majority of raw `fprintf(stderr)` are *non-returning* diagnostics that couldn't convert. **FIXED:** added non-returning `LOG_WARN`/`LOG_INFO` to `util/log_macros.h` (same `[domain] LEVEL file:line func()` prefix; `WARN:` token matches `nodelog_controller`'s level filter; error/fatal stay on the returning macros). **Swept `connman.c`** (9 → 0 raw fprintf) as the proof-of-use. **Remaining:** mechanical sweep of the rest of `lib/net` + the `obs-ok` non-returning sites across `app/` to `LOG_WARN/INFO` (now unblocked — a steady chip, not a blocker).
+- [~] **D4** One log call. **app/controllers slice DONE** (`110859a24`): 25 `fprintf(stderr,…); return` pairs → `LOG_FAIL/ERR/NULL` (151→126 in controllers). **lib/net slice (verified no-op):** all 68 are non-returning P2P log-and-continue / void-function diagnostics, already `obs-ok` — zero safe `LOG_*` drop-ins. **ROOT BLOCKER (decisive):** every returning `LOG_*` macro forces a `return`, so the overwhelming majority of raw `fprintf(stderr)` are *non-returning* diagnostics that couldn't convert. **FIXED:** added non-returning `LOG_WARN`/`LOG_INFO` to `util/log_macros.h` (same `[domain] LEVEL file:line func()` prefix; `WARN:` token matches `nodelog_controller`'s level filter; error/fatal stay on the returning macros). **`lib/net` slice DONE (2026-05-26, `f1e8d51a2`):** swept `connman` + `msg_compact` + `msg_blocks` + `msg_headers` + `msgprocessor` → `LOG_WARN/INFO`; **0 raw `fprintf` left in `lib/net`**. **Remaining:** the `obs-ok` non-returning sites across `app/` → `LOG_WARN/INFO` (steady chip, not a blocker).
 - [ ] **D5** The 31 `app/` files > 800 LOC → under the cap (mega-module split + dead-code removal). Tracks toward E1.
 
 ---
