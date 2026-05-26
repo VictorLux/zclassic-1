@@ -319,13 +319,14 @@ lint: check-malloc check-silent-errors check-raw-sqlite \
 ci: lint test fuzz-ci coverage
 ```
 
-**Status: 24 gates active.** Gates #18 and #20 graduated from WARN to
+**Status: 27 gates active.** Gates #18 and #20 graduated from WARN to
 RATCHET (E10, 2026-05-26) — they fail `make ci` on any *new* off-shape
 file / raw-sqlite controller while tolerating the recorded baseline.
-Gate #19 and #21 are FAIL. The three E-series additions
+Gate #19 and #21 are FAIL. The six E-series additions
 (`check-file-size-ceiling`, `check-operator-needed-sink`,
-`check-doc-accuracy`) are detailed under "Build-checklist gates"
-below. An agent that pushes code with raw malloc, silent errors,
+`check-doc-accuracy`, `check-one-result-type`,
+`check-shape-includes-header`, `check-projections-pure`) are detailed
+under "Build-checklist gates" below. An agent that pushes code with raw malloc, silent errors,
 bypassed AR validation, unpaired stderr diagnostics, a critical model
 missing its before_save hook, a model file with no `validates_*` call
 and no `ar-validate-skip:<tag>` marker, or a controller/service
@@ -553,6 +554,52 @@ already satisfies). Tested in `lib/test/src/test_make_lint_gates.c`
     block — the Makefile is authoritative for what runs.
   - Override: none.
 
+- **Gate E2: `check-one-result-type`** (RATCHET)
+  - Path: `tools/scripts/check_one_result_type.sh`
+  - Checks: new `app/services/src/*.c` files return `struct zcl_result`
+    (§2, `util/result.h`) instead of bare `bool`/`int`, so a failure
+    reason always travels with the failure. The tree is ~98% bare-bool
+    today, so the gate ratchets at FILE granularity: a service file is
+    "result-clean" if it references `struct zcl_result` anywhere; every
+    other service file is grandfathered.
+  - Baseline: `tools/scripts/one_result_type_baseline.txt` lists the 67
+    grandfathered files (one path per line). A NEW service file not in
+    the baseline that does not use `struct zcl_result` fails. The
+    baseline may only shrink — migrate a file to `zcl_result`, delete
+    its line, and the gate then enforces it stays migrated.
+  - Override: `// one-result-type-ok:<tag>` (top of a service file that
+    genuinely owns no fallible service surface — a pure table/registry
+    helper).
+
+- **Gate E3: `check-shape-includes-header`** (HARD)
+  - Path: `tools/scripts/check_shape_includes_header.sh`
+  - Checks: upgrades the path-only shape map (Gate #18) so a shape file
+    must include the header that defines its shape contract — closing
+    the "mislabeled Service in a shape folder" hole:
+    * `app/conditions/src/*.c` → `"framework/condition.h"` (the Condition
+      shape contract) **or** a `"conditions/"` header.
+    * `app/models/src/*.c` → a `"models/"` header (each model header pulls
+      in `models/activerecord.h`, the AR lifecycle).
+    * `app/supervisors/src/*.c` → a `"supervisors/"` header **or**
+      `"util/supervisor.h"` (the supervisor liveness contract).
+    `app/jobs/` is skipped — its `job.h` shape header does not exist yet.
+    The tree fully satisfies this gate today, so it runs HARD.
+  - Override: `// shape-include-ok:<tag>` (anywhere in a shape file that
+    is a genuine registry/aggregator and cannot include the shape header).
+
+- **Gate E4: `check-projections-pure`** (HARD)
+  - Path: `tools/scripts/check_projections_pure.sh`
+  - Checks: a projection (`lib/storage/src/*_projection.c`) is a pure fold
+    over the event/storage log into its own table(s). It must NOT
+    `#include` anything from `app/services/` or `app/controllers/` (that
+    inverts the dependency arrow), and must NOT write through the AR model
+    save path (`AR_ADHOC_SAVE` / `AR_CACHED_SAVE` / `AR_BEGIN_SAVE`, which
+    would fire another model's hooks). The current projection set fully
+    complies, so this gate runs HARD.
+  - Override: `// projection-cache-ok:<tag>` (on the line of a legitimate
+    cache write — memoizing a derived value back into the projection's
+    own table outside the strict fold).
+
 `check-framework-shape` (Gate #18) and `check-no-raw-sqlite-in-controllers`
 (Gate #20) were **graduated WARN → RATCHET (E10)**. Each now fails on a
 new violation while tolerating its baseline:
@@ -581,13 +628,16 @@ edit it whenever you add/remove a gate.
 - `check-no-raw-clock-outside-platform`
 - `check-no-raw-sqlite-in-controllers`
 - `check-observability-pairing`
+- `check-one-result-type`
 - `check-operator-needed-sink`
+- `check-projections-pure`
 - `check-pthread-create`
 - `check-raw-malloc`
 - `check-raw-sqlite`
 - `check-rpc-registrar`
 - `check-silent-errors`
 - `check-silent-errors-controllers`
+- `check-shape-includes-header`
 - `check-silent-errors-services`
 - `check-supervisor-domain`
 - `check-supervisor-registration`
@@ -598,8 +648,8 @@ edit it whenever you add/remove a gate.
 
 ## 8. Lint-override discipline — every escape hatch is named
 
-Seven lint gates accept an inline override marker when the underlying
-rule cannot mechanically hold. The seven marker classes:
+Ten lint gates accept an inline override marker when the underlying
+rule cannot mechanically hold. The ten marker classes:
 
 | Marker | Where allowed | Lint gate |
 |--------|---------------|-----------|
@@ -610,6 +660,9 @@ rule cannot mechanically hold. The seven marker classes:
 | `// long-function-ok:<tag>` | signature line of a top-level controller/service function whose body spans >500 lines | `check-long-functions` |
 | `// lib-layer-ok:<tag>` | line in `lib/` that includes a `controllers/`, `models/`, `services/`, or `views/` header | `check-lib-layering` |
 | `// supervisor-ok:<tag>` | any line in a long-running `app/services/src/*_service.c` that intentionally does not register a supervisor liveness contract | `check-supervisor-registration` |
+| `// one-result-type-ok:<tag>` | top of an `app/services/src/*.c` file that owns no fallible service surface (pure table/registry helper) | `check-one-result-type` |
+| `// shape-include-ok:<tag>` | any line in a shape file (condition/model/supervisor) that is a genuine registry/aggregator and cannot include the shape header | `check-shape-includes-header` |
+| `// projection-cache-ok:<tag>` | line in a `*_projection.c` with a legitimate cache write outside the strict fold | `check-projections-pure` |
 
 **Syntax (machine-enforced).** Every marker requires a non-empty
 single-token tag matching `[A-Za-z][A-Za-z0-9_-]+` immediately after

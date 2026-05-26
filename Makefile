@@ -937,7 +937,27 @@ check-doc-accuracy:
 	@echo "══ LINT: doc accuracy (E11) ══"
 	@./tools/scripts/check_doc_accuracy.sh
 
-lint: check-malloc check-silent-errors check-raw-sqlite check-raw-malloc check-coins-lookup-nullcheck check-observability-pairing check-silent-errors-services check-silent-errors-controllers check-before-save-hooks check-pthread-create check-model-validation check-long-functions check-rpc-registrar check-lag-slo-observable check-lib-layering check-supervisor-registration check-typed-blocker check-framework-shape check-no-raw-clock-outside-platform check-no-raw-sqlite-in-controllers check-supervisor-domain check-file-size-ceiling check-operator-needed-sink check-doc-accuracy
+# Gate E2 — new service functions return struct zcl_result, not bare
+# bool/int (RATCHET at file granularity; baseline at
+# tools/scripts/one_result_type_baseline.txt may only shrink).
+check-one-result-type:
+	@echo "══ LINT: one result type (E2) ══"
+	@./tools/scripts/check_one_result_type.sh
+
+# Gate E3 — shape source files include their shape contract header
+# (conditions -> framework/condition.h, models -> models/ header,
+# supervisors -> supervisor header). HARD: the tree already complies.
+check-shape-includes-header:
+	@echo "══ LINT: shape includes header (E3) ══"
+	@./tools/scripts/check_shape_includes_header.sh
+
+# Gate E4 — projections are pure folds: no app-layer (services/controllers)
+# includes and no AR model saves. HARD: the projection set already complies.
+check-projections-pure:
+	@echo "══ LINT: projections pure (E4) ══"
+	@./tools/scripts/check_projections_pure.sh
+
+lint: check-malloc check-silent-errors check-raw-sqlite check-raw-malloc check-coins-lookup-nullcheck check-observability-pairing check-silent-errors-services check-silent-errors-controllers check-before-save-hooks check-pthread-create check-model-validation check-long-functions check-rpc-registrar check-lag-slo-observable check-lib-layering check-supervisor-registration check-typed-blocker check-framework-shape check-no-raw-clock-outside-platform check-no-raw-sqlite-in-controllers check-supervisor-domain check-file-size-ceiling check-operator-needed-sink check-doc-accuracy check-one-result-type check-shape-includes-header check-projections-pure
 	@echo "══ LINT: all checks passed ══"
 
 ci: lint bench-regress zclassic23 test_zcl

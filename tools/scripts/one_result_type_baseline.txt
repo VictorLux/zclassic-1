@@ -1,0 +1,77 @@
+# E2 check-one-result-type baseline — service .c files that predate the
+# struct zcl_result discipline (DEFENSIVE_CODING.md §2). Each file here is
+# grandfathered: it returns bare bool/int today. A NEW app/services/src/*.c
+# file not in this list must use struct zcl_result.
+#
+# This baseline may ONLY SHRINK. To pay down debt: migrate a file's fallible
+# functions to struct zcl_result (ZCL_OK / ZCL_ERR), then delete its line
+# here — the gate will enforce that it stays migrated.
+#
+# One path per line, repo-relative.
+app/services/src/addrman_integrity.c
+app/services/src/bg_hash_verification_service.c
+app/services/src/bg_validation_service.c
+app/services/src/block_index_integrity.c
+app/services/src/block_index_loader.c
+app/services/src/block_index_sidecar_integrity.c
+app/services/src/block_pruning_service.c
+app/services/src/block_sync_service.c
+app/services/src/body_fetch_stage.c
+app/services/src/body_persist_stage.c
+app/services/src/chain_activation_controller.c
+app/services/src/chain_advance_coordinator.c
+app/services/src/chain_evidence_controller.c
+app/services/src/chain_evidence_names.c
+app/services/src/chain_evidence_snapshot.c
+app/services/src/chain_evidence_store.c
+app/services/src/chain_restore_boot_activation.c
+app/services/src/chain_restore_boot_snapshot.c
+app/services/src/chain_restore_disk_repair.c
+app/services/src/chain_restore_executor.c
+app/services/src/chain_restore_integrity.c
+app/services/src/chain_restore_planner.c
+app/services/src/chain_restore_repair.c
+app/services/src/chain_state_repository.c
+app/services/src/chain_state_validator.c
+app/services/src/chain_tip.c
+app/services/src/chain_tip_watchdog.c
+app/services/src/consensus_reject_index.c
+app/services/src/cutover_modes.c
+app/services/src/db_maintenance.c
+app/services/src/disk_monitor.c
+app/services/src/gap_fill_service.c
+app/services/src/header_admit_stage.c
+app/services/src/header_probe.c
+app/services/src/header_sync_service.c
+app/services/src/hodl_history_service.c
+app/services/src/ibd_throttle.c
+app/services/src/legacy_body_pull.c
+app/services/src/legacy_bootstrap_importer.c
+app/services/src/legacy_bootstrap_spotcheck.c
+app/services/src/legacy_mirror_sync_service.c
+app/services/src/mempool_limits.c
+app/services/src/node_health_service.c
+app/services/src/oracle_policy.c
+app/services/src/proof_validate_stage.c
+app/services/src/quorum_oracle_service.c
+app/services/src/recovery_policy.c
+app/services/src/rolling_anchor_service.c
+app/services/src/script_validate_stage.c
+app/services/src/snapshot_apply.c
+app/services/src/snapshot_fetch.c
+app/services/src/snapshot_manifest.c
+app/services/src/snapshot_offer.c
+app/services/src/snapshot_sync_service.c
+app/services/src/snapshot_verify.c
+app/services/src/sync_monitor.c
+app/services/src/tip_finalize_stage.c
+app/services/src/utxo_apply_stage.c
+app/services/src/utxo_audit_service.c
+app/services/src/utxo_recovery_service.c
+app/services/src/validate_headers_stage.c
+app/services/src/wallet_backup_crypto.c
+app/services/src/wallet_backup_service.c
+app/services/src/wallet_view_projection.c
+app/services/src/zclassicd_oracle_service.c
+app/services/src/zslp_command_service.c
+app/services/src/zslp_service.c

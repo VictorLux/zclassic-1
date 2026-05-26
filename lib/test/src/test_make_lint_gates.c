@@ -646,6 +646,12 @@ static int run_gate_script(const char *script_rel, const char *mode)
 #define E10_SQL_SCRIPT_REL "tools/lint/check_no_raw_sqlite_in_controllers.sh"
 #define E10_SQL_FIXTURE_DST "app/controllers/src/_e10_rawsql_fixture_tmp.c"
 #define E11_SCRIPT_REL   "tools/scripts/check_doc_accuracy.sh"
+#define E2_SCRIPT_REL    "tools/scripts/check_one_result_type.sh"
+#define E2_FIXTURE_DST   "app/services/src/_e2_one_result_fixture_tmp.c"
+#define E3_SCRIPT_REL    "tools/scripts/check_shape_includes_header.sh"
+#define E3_FIXTURE_DST   "app/conditions/src/_e3_shape_include_fixture_tmp.c"
+#define E4_SCRIPT_REL    "tools/scripts/check_projections_pure.sh"
+#define E4_FIXTURE_DST   "lib/storage/src/_e4_pure_fixture_projection.c"
 
 static int plant_oversized_file(const char *rel, int n_lines)
 {
@@ -763,6 +769,86 @@ static int t_e11_doc_accuracy(void)
     return failures;
 }
 
+/* E2 — one-result-type RATCHET: a NEW (non-baselined) service file that
+ * returns bare bool (no struct zcl_result) trips the gate; removing it
+ * restores green. */
+static int t_e2_one_result_type(void)
+{
+    int failures = 0;
+    unlink_rel(E2_FIXTURE_DST);
+    int baseline_rc = run_gate_script(E2_SCRIPT_REL, NULL);
+    char path[PATH_MAX];
+    int planted = (repo_path(path, sizeof(path), E2_FIXTURE_DST) == 0 &&
+                   write_file(path,
+                       "#include <stdbool.h>\n"
+                       "bool e2_fixture(void){ return false; }\n") == 0)
+                  ? 0 : -1;
+    int trip_rc = planted == 0 ? run_gate_script(E2_SCRIPT_REL, NULL) : -1;
+    unlink_rel(E2_FIXTURE_DST);
+    int recover_rc = run_gate_script(E2_SCRIPT_REL, NULL);
+    TEST("[lint-gate] E2 one-result-type RATCHET: clean, trips bare-bool service, recovers") {
+        ASSERT(baseline_rc == 0);
+        ASSERT(planted == 0);
+        ASSERT(trip_rc != 0);
+        ASSERT(recover_rc == 0);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+/* E3 — shape-includes-header HARD: a condition file that includes neither
+ * framework/condition.h nor a conditions/ header trips the gate; removing
+ * it restores green. */
+static int t_e3_shape_includes_header(void)
+{
+    int failures = 0;
+    unlink_rel(E3_FIXTURE_DST);
+    int baseline_rc = run_gate_script(E3_SCRIPT_REL, NULL);
+    char path[PATH_MAX];
+    int planted = (repo_path(path, sizeof(path), E3_FIXTURE_DST) == 0 &&
+                   write_file(path,
+                       "/* mislabeled condition: no shape header */\n"
+                       "int e3_fixture;\n") == 0)
+                  ? 0 : -1;
+    int trip_rc = planted == 0 ? run_gate_script(E3_SCRIPT_REL, NULL) : -1;
+    unlink_rel(E3_FIXTURE_DST);
+    int recover_rc = run_gate_script(E3_SCRIPT_REL, NULL);
+    TEST("[lint-gate] E3 shape-includes-header HARD: clean, trips headerless condition, recovers") {
+        ASSERT(baseline_rc == 0);
+        ASSERT(planted == 0);
+        ASSERT(trip_rc != 0);
+        ASSERT(recover_rc == 0);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+/* E4 — projections-pure HARD: a projection file that includes an app-layer
+ * (services/) header trips the gate; removing it restores green. */
+static int t_e4_projections_pure(void)
+{
+    int failures = 0;
+    unlink_rel(E4_FIXTURE_DST);
+    int baseline_rc = run_gate_script(E4_SCRIPT_REL, NULL);
+    char path[PATH_MAX];
+    int planted = (repo_path(path, sizeof(path), E4_FIXTURE_DST) == 0 &&
+                   write_file(path,
+                       "#include \"services/sync_monitor.h\"\n"
+                       "int e4_fixture;\n") == 0)
+                  ? 0 : -1;
+    int trip_rc = planted == 0 ? run_gate_script(E4_SCRIPT_REL, NULL) : -1;
+    unlink_rel(E4_FIXTURE_DST);
+    int recover_rc = run_gate_script(E4_SCRIPT_REL, NULL);
+    TEST("[lint-gate] E4 projections-pure HARD: clean, trips app-layer include, recovers") {
+        ASSERT(baseline_rc == 0);
+        ASSERT(planted == 0);
+        ASSERT(trip_rc != 0);
+        ASSERT(recover_rc == 0);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 static void unlink_lint_fixtures(void)
 {
     const char *fixtures[] = {
@@ -775,6 +861,9 @@ static void unlink_lint_fixtures(void)
         E1_FIXTURE_DST,
         E10_SHAPE_FIXTURE_DST,
         E10_SQL_FIXTURE_DST,
+        E2_FIXTURE_DST,
+        E3_FIXTURE_DST,
+        E4_FIXTURE_DST,
     };
 
     for (size_t i = 0; i < sizeof(fixtures) / sizeof(fixtures[0]); i++) {
@@ -1565,6 +1654,9 @@ int test_make_lint_gates(void)
     failures += t_e10_framework_shape_ratchet();
     failures += t_e10_no_raw_sqlite_ratchet();
     failures += t_e11_doc_accuracy();
+    failures += t_e2_one_result_type();
+    failures += t_e3_shape_includes_header();
+    failures += t_e4_projections_pure();
     return failures;
 }
 
