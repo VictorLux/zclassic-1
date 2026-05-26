@@ -820,6 +820,7 @@ int main(void)
     failures += test_shadow_feeder_global();
     failures += test_diff_with_legacy_shadow();
     failures += test_shadow_replay_proof();
+    failures += test_shadow_replay_full_driver();
     failures += test_utxo_snapshot_inmem();
     failures += test_make_lint_gates();
     failures += test_multisig();

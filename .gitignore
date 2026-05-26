@@ -9,6 +9,7 @@ zcl-nodectl
 zclassic-cli
 bench_field
 rebuild_recent
+shadow_replay_proof
 hodlwave_chart
 hodlwave_svg
 hodlwave_view
