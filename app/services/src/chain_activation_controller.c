@@ -15,6 +15,61 @@
 #include <signal.h>
 
 #include "util/log_macros.h"
+#include "util/blocker.h"
+
+/* The single typed blocker this authority owns. When the active tip is
+ * below the most-work *valid-header* chain and this tick could not advance,
+ * we MUST name the blocker (height + why + escape) instead of returning to a
+ * quiet READY. Going READY/AT_TIP is only legal when genuinely caught up;
+ * that transition clears this blocker. The escape action is "drive a fresh
+ * connect pass over have-data successors" — the always-on local authority,
+ * not a P2P quorum a personal stack can't form.
+ *
+ * See FRAMEWORK.md Prime Directive + REFACTOR_STATUS.md FOCUS NOW: the
+ * reducer must advance-the-tip OR name-a-typed-blocker every tick. */
+#define ACTIVATION_BEHIND_BLOCKER_ID "chain.tip_behind_header_chain"
+
+/* Name the most-precise reason this tick could not advance. */
+static const char *
+activation_behind_reason(void)
+{
+    /* Successors are on disk with BLOCK_HAVE_DATA but find_most_work_chain
+     * could not connect them this tick (the legacy_body_pull "skipped_have"
+     * + activate "behind_peers" deadlock); OR bodies are still missing at
+     * H+1. process_block tells us which. */
+    if (process_block_active_tip_has_pending())
+        return "successor-have-data-but-not-activated";
+    return "body-missing-at-successor";
+}
+
+/* Register/refresh the typed blocker naming why the tip is behind and what
+ * the escape is. TRANSIENT: the local authority should be able to drive the
+ * connect; the supervisor escape re-triggers a connect pass on deadline. */
+static void
+activation_set_behind_blocker(int tip_h, int best_h)
+{
+    struct blocker_record rec;
+    char reason[BLOCKER_REASON_MAX];
+    snprintf(reason, sizeof(reason),
+             "%s: tip=%d best_valid_header=%d gap=%d — drive activation of "
+             "have-data successors from the local authority",
+             activation_behind_reason(), tip_h, best_h,
+             best_h - tip_h);
+    if (!blocker_init(&rec, ACTIVATION_BEHIND_BLOCKER_ID,
+                      "chain_activation", BLOCKER_TRANSIENT, reason)) {
+        LOG_WARN("activation", "blocker_init overflow id=%s",
+                 ACTIVATION_BEHIND_BLOCKER_ID);
+        return;
+    }
+    rec.escape_deadline_secs = 120;
+    rec.retry_budget = -1; /* keep retrying — the gap is the witness */
+    snprintf(rec.escape_action, sizeof(rec.escape_action),
+             "activation_drive_connect");
+    int rc = blocker_set(&rec);
+    if (rc == 0)
+        event_emitf(EV_ACTIVATION_STATE_CHANGE, 0,
+                    "BLOCKED behind header chain: %s", reason);
+}
 
 /* ── State names ───────────────────────────────────────────────── */
 
@@ -72,6 +127,25 @@ bool activation_transition_valid(enum activation_state from,
     return g_activation_transitions[from][to];
 }
 
+/* Escape action for ACTIVATION_BEHIND_BLOCKER_ID. The supervisor blocker
+ * sweep fires this on deadline edge: drive a fresh connect pass over the
+ * have-data successors from the always-on local authority. Idempotent — a
+ * connect with no new work is a no-op; this is NOT a whack-a-mole "claim
+ * success" remedy: the blocker is only cleared by the AT_TIP transition
+ * above when the tip genuinely catches up (the witness is the gap closing). */
+static void activation_drive_connect_escape(const struct blocker_snapshot *snap)
+{
+    (void)snap;
+    struct chain_activation_controller *ctl = boot_activation_controller();
+    if (!ctl) {
+        LOG_WARN("activation", "escape no controller id=%s",
+                 ACTIVATION_BEHIND_BLOCKER_ID);
+        return;
+    }
+    struct activation_exec_outcome ao;
+    activation_request_connect(ctl, ACTIVATION_SRC_HEADERS_ALL_DATA, NULL, &ao);
+}
+
 /* ── Lifecycle ─────────────────────────────────────────────────── */
 
 void activation_controller_init(struct chain_activation_controller *ctl,
@@ -88,6 +162,11 @@ void activation_controller_init(struct chain_activation_controller *ctl,
     ctl->coins_tip = coins_tip;
     ctl->params = params;
     ctl->datadir = datadir;
+
+    /* Wire the escape for the typed behind-blocker so the supervisor sweep
+     * can re-drive activation on deadline. Idempotent across re-init. */
+    blocker_register_escape("activation_drive_connect",
+                            activation_drive_connect_escape);
 }
 
 int activation_drain_deferred(struct chain_activation_controller *ctl)
@@ -353,13 +432,29 @@ void activation_request_connect(struct chain_activation_controller *ctl,
         int best_h = ctl->ms->pindex_best_header
                    ? ctl->ms->pindex_best_header->nHeight : 0;
         if (best_h > 0 && tip_h + 100 < best_h) {
-            activation_set_state(ctl, ACTIVATION_READY, "behind_peers");
+            /* The tip is below the most-work valid-header chain and this
+             * tick could not advance. Going to a bare READY here is the
+             * silent-ready hole: the reducer would report "ready" while
+             * behind, naming no actionable reason. Instead, register the
+             * typed blocker (height + why + escape) so the stall is always
+             * visible in `zcl_state subsystem=blocker` and reaches the
+             * supervisor escape / operator sink. READY is only honest when
+             * caught up. */
+            activation_set_behind_blocker(tip_h, best_h);
+            activation_set_state(ctl, ACTIVATION_READY,
+                                 ACTIVATION_BEHIND_BLOCKER_ID);
             out->result = ACTIVATION_EXEC_OK;
             out->new_tip_height = tip_h;
             out->reached_tip = false;
             snprintf(out->reason, sizeof(out->reason),
-                     "tip=%d best_header=%d (behind)", tip_h, best_h);
+                     "BLOCKED %s tip=%d best_valid_header=%d gap=%d",
+                     activation_behind_reason(),
+                     tip_h, best_h, best_h - tip_h);
         } else {
+            /* Genuinely caught up: tip == most-work header tip. This is the
+             * only state where reporting "ready"/"at_tip" is honest, so
+             * clear the behind-blocker. */
+            blocker_clear(ACTIVATION_BEHIND_BLOCKER_ID);
             activation_set_state(ctl, ACTIVATION_AT_TIP, "at_tip");
             out->result = ACTIVATION_EXEC_OK;
             out->new_tip_height = tip_h;
