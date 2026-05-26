@@ -70,9 +70,8 @@ static bool reindex_set_coins_best(struct blockchain_context *ctx,
     }
 #endif
 
-    fprintf(stderr, "reindexchainstate: csr rejected coins-best repair: %s\n",
+    LOG_FAIL("blockchain", "reindexchainstate: csr rejected coins-best repair: %s",
             csr_result_name(rc));
-    return false;
 }
 bool rpc_reindexchainstate(const struct json_value *params, bool help,
                                     struct json_value *result)

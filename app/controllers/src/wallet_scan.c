@@ -42,10 +42,9 @@ static bool wallet_scan_begin_checked(struct node_db *ndb,
                                       const char *label)
 {
     if (!ndb || !ndb->open || !node_db_begin(ndb)) {
-        fprintf(stderr, "wallet_scan: %s failed: %s\n",
+        LOG_FAIL("wallet_scan", "wallet_scan: %s failed: %s",
                 label, (ndb && ndb->db) ? sqlite3_errmsg(ndb->db)
                                         : "db unavailable");
-        return false;
     }
     return true;
 }
@@ -54,10 +53,9 @@ static bool wallet_scan_commit_checked(struct node_db *ndb,
                                        const char *label)
 {
     if (!ndb || !ndb->open || !node_db_commit(ndb)) {
-        fprintf(stderr, "wallet_scan: %s failed: %s\n",
+        LOG_FAIL("wallet_scan", "wallet_scan: %s failed: %s",
                 label, (ndb && ndb->db) ? sqlite3_errmsg(ndb->db)
                                         : "db unavailable");
-        return false;
     }
     return true;
 }
@@ -80,9 +78,8 @@ static bool wallet_scan_exec_checked(struct node_db *ndb,
     if (!ndb || !ndb->open || !sql)
         LOG_FAIL("wallet_scan", "exec_checked: invalid args (ndb=%p sql=%p)", (void *)ndb, (void *)sql);
     if (sqlite3_exec(ndb->db, sql, NULL, NULL, NULL) != SQLITE_OK) {
-        fprintf(stderr, "wallet_scan: %s failed: %s\n",
+        LOG_FAIL("wallet_scan", "wallet_scan: %s failed: %s",
                 label, sqlite3_errmsg(ndb->db));
-        return false;
     }
     return true;
 }

@@ -56,9 +56,8 @@ static bool snapshot_sql_exec_checked(sqlite3 *db,
     if (!db || !sql)
         LOG_FAIL("snapshot", "sql_exec_checked: db=%p sql=%p", (void *)db, (void *)sql);
     if (sqlite3_exec(db, sql, NULL, NULL, NULL) != SQLITE_OK) {
-        fprintf(stderr, "snapshot: %s failed: %s\n",
+        LOG_FAIL("snapshot", "snapshot: %s failed: %s",
                 label, sqlite3_errmsg(db));
-        return false;
     }
     return true;
 }
@@ -67,10 +66,9 @@ static bool snapshot_tx_begin_checked(struct node_db *ndb,
                                       const char *label)
 {
     if (!ndb || !ndb->open || !node_db_begin(ndb)) {
-        fprintf(stderr, "snapshot: %s failed: %s\n",
+        LOG_FAIL("snapshot", "snapshot: %s failed: %s",
                 label, (ndb && ndb->db) ? sqlite3_errmsg(ndb->db)
                                         : "db unavailable");
-        return false;
     }
     return true;
 }
@@ -79,10 +77,9 @@ static bool snapshot_tx_commit_checked(struct node_db *ndb,
                                        const char *label)
 {
     if (!ndb || !ndb->open || !node_db_commit(ndb)) {
-        fprintf(stderr, "snapshot: %s failed: %s\n",
+        LOG_FAIL("snapshot", "snapshot: %s failed: %s",
                 label, (ndb && ndb->db) ? sqlite3_errmsg(ndb->db)
                                         : "db unavailable");
-        return false;
     }
     return true;
 }
@@ -243,8 +240,7 @@ static void *import_block_index_thread(void *arg)
     /* Open our own SQLite connection */
     struct node_db ndb;
     if (!node_db_open(&ndb, a->db_path)) {
-        fprintf(stderr, "T1: failed to open SQLite\n");
-        return NULL;
+        LOG_NULL("snapshot", "T1: failed to open SQLite");
     }
 
     /* Open block index LevelDB from snapshot */
@@ -457,8 +453,7 @@ static void *import_utxos_thread(void *arg)
 
     struct node_db ndb;
     if (!node_db_open(&ndb, a->db_path)) {
-        fprintf(stderr, "T2: failed to open SQLite\n");
-        return NULL;
+        LOG_NULL("snapshot", "T2: failed to open SQLite");
     }
 
     char cs_path[1024];
@@ -571,9 +566,7 @@ static bool snapshot_import_job_start(struct snapshot_import_job *job)
                                   import_block_index_thread,
                                   &job->block_index_args,
                                   &job->block_index_thread) != 0) {
-        fprintf(stderr,
-                "snapshot_import: failed to start block-index import thread\n");
-        return false;
+        LOG_FAIL("snapshot", "snapshot_import: failed to start block-index import thread");
     }
     job->block_index_started = true;
 
@@ -610,8 +603,7 @@ static void *import_wallet_thread(void *arg)
 
     struct node_db ndb;
     if (!node_db_open(&ndb, a->db_path)) {
-        fprintf(stderr, "T3: failed to open SQLite\n");
-        return NULL;
+        LOG_NULL("snapshot", "T3: failed to open SQLite");
     }
 
     int wallet_keys = 0;
@@ -705,16 +697,12 @@ int snapshot_import(const char *snapshot_dir,
     block_files_clean(dst);
     int copied = block_files_copy(src, dst);
     if (copied < 0) {
-        fprintf(stderr,
-                "snapshot_import: block file copy failed from %s to %s\n",
+        LOG_ERR("snapshot", "snapshot_import: block file copy failed from %s to %s",
                 src, dst);
-        return -1; // raw-return-ok:logged-above
     }
     if (copied == 0) {
-        fprintf(stderr,
-                "snapshot_import: failed to sync block files from %s to %s\n",
+        LOG_ERR("snapshot", "snapshot_import: failed to sync block files from %s to %s",
                 src, dst);
-        return -1; // raw-return-ok:logged-above
     }
 
     /* Block index: clean copy */
@@ -723,10 +711,8 @@ int snapshot_import(const char *snapshot_dir,
     mkdir(dst, 0700);
     snprintf(src, sizeof(src), "%s/blocks/index", snapshot_dir);
     if (!dir_copy(src, dst)) {
-        fprintf(stderr,
-                "snapshot_import: failed to sync block index from %s to %s\n",
+        LOG_ERR("snapshot", "snapshot_import: failed to sync block index from %s to %s",
                 src, dst);
-        return -1; // raw-return-ok:logged-above
     }
 
     /* Chainstate: clean copy */
@@ -735,10 +721,8 @@ int snapshot_import(const char *snapshot_dir,
     mkdir(dst, 0700);
     snprintf(src, sizeof(src), "%s/chainstate", snapshot_dir);
     if (!dir_copy(src, dst)) {
-        fprintf(stderr,
-                "snapshot_import: failed to sync chainstate from %s to %s\n",
+        LOG_ERR("snapshot", "snapshot_import: failed to sync chainstate from %s to %s",
                 src, dst);
-        return -1; // raw-return-ok:logged-above
     }
 
     struct timespec t2_end;
@@ -928,10 +912,8 @@ static bool snapshot_tx_index_save_block_txs(struct node_db *ndb,
         dt.file_pos = file_pos;
         dt.is_coinbase = (ti == 0);
         if (!db_tx_save(ndb, &dt)) {
-            fprintf(stderr,
-                    "tx_index: failed to save tx index at height %d tx %zu\n",
+            LOG_FAIL("snapshot", "tx_index: failed to save tx index at height %d tx %zu",
                     height, ti);
-            return false;
         }
         (*indexed)++;
         if (!snapshot_tx_index_maybe_commit(ndb, tx_open, *indexed,
@@ -1039,8 +1021,7 @@ static void *build_tx_index_thread(void *arg)
 
     struct node_db ndb;
     if (!node_db_open(&ndb, db_path)) {
-        fprintf(stderr, "tx_index: failed to open SQLite\n");
-        return NULL;
+        LOG_NULL("snapshot", "tx_index: failed to open SQLite");
     }
 
     /* Check how many transactions already indexed. A nonzero count is not

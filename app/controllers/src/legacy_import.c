@@ -42,9 +42,8 @@ static bool legacy_import_exec_checked(struct node_db *ndb,
     if (!ndb || !ndb->open || !sql)
         return false;
     if (sqlite3_exec(ndb->db, sql, NULL, NULL, NULL) != SQLITE_OK) {
-        fprintf(stderr, "legacy_import: %s failed: %s\n",
+        LOG_FAIL("legacy_import", "legacy_import: %s failed: %s",
                 label, sqlite3_errmsg(ndb->db));
-        return false;
     }
     return true;
 }
@@ -53,10 +52,9 @@ static bool legacy_import_begin_checked(struct node_db *ndb,
                                         const char *label)
 {
     if (!ndb || !ndb->open || !node_db_begin(ndb)) {
-        fprintf(stderr, "legacy_import: %s failed: %s\n",
+        LOG_FAIL("legacy_import", "legacy_import: %s failed: %s",
                 label, (ndb && ndb->db) ? sqlite3_errmsg(ndb->db)
                                         : "db unavailable");
-        return false;
     }
     return true;
 }
@@ -65,10 +63,9 @@ static bool legacy_import_commit_checked(struct node_db *ndb,
                                          const char *label)
 {
     if (!ndb || !ndb->open || !node_db_commit(ndb)) {
-        fprintf(stderr, "legacy_import: %s failed: %s\n",
+        LOG_FAIL("legacy_import", "legacy_import: %s failed: %s",
                 label, (ndb && ndb->db) ? sqlite3_errmsg(ndb->db)
                                         : "db unavailable");
-        return false;
     }
     return true;
 }
@@ -77,10 +74,9 @@ static bool legacy_import_rollback_checked(struct node_db *ndb,
                                            const char *label)
 {
     if (!ndb || !ndb->open || !node_db_rollback(ndb)) {
-        fprintf(stderr, "legacy_import: %s failed: %s\n",
+        LOG_FAIL("legacy_import", "legacy_import: %s failed: %s",
                 label, (ndb && ndb->db) ? sqlite3_errmsg(ndb->db)
                                         : "db unavailable");
-        return false;
     }
     return true;
 }
