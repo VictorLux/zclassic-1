@@ -1303,12 +1303,10 @@ static void *thread_socket_handler(void *arg)
                         cm->deferred_free_cap = new_cap;
                         cm->deferred_free[cm->num_deferred_free++] = node;
                     } else if (p2p_node_get_ref(node) > 0) {
-                        fprintf(stderr, // obs-ok:pre-existing-diagnostic
-                                "[connman] %s:%d %s(): "
-                                "deferred_free realloc failed and ref "
-                                "on node %s — leaking to avoid UAF\n",
-                                __FILE__, __LINE__, __func__,
-                                node->addr_name);
+                        LOG_WARN("connman",
+                                 "deferred_free realloc failed and ref "
+                                 "on node %s — leaking to avoid UAF",
+                                 node->addr_name);
                     } else {
                         p2p_node_free(node);
                     }
@@ -1318,13 +1316,12 @@ static void *thread_socket_handler(void *arg)
                      * a stuck message-cycle snapshot). Log loudly — the
                      * signal handler will be invoked if we ever abort
                      * from this path. */
-                    fprintf(stderr, // obs-ok:pre-existing-diagnostic
-                            "[connman] %s:%d %s(): deferred_free "
-                            "HARD CAP %d reached with ref on node %s — "
-                            "leaking to avoid UAF (investigate refs)\n",
-                            __FILE__, __LINE__, __func__,
-                            CONNMAN_DEFERRED_FREE_HARD_CAP,
-                            node->addr_name);
+                    LOG_WARN("connman",
+                             "deferred_free HARD CAP %d reached with ref "
+                             "on node %s — leaking to avoid UAF "
+                             "(investigate refs)",
+                             CONNMAN_DEFERRED_FREE_HARD_CAP,
+                             node->addr_name);
                 } else {
                     p2p_node_free(node);
                 }
@@ -1607,26 +1604,22 @@ void connman_join(struct connman *cm)
         cm->open_thread_started || cm->message_thread_started) {
         if (cm->dns_seed_thread_started) {
             if (!timed_join(g_thread_dns_seed, 5))
-                fprintf(stderr, // obs-ok:pre-existing-diagnostic
-                        "connman: dns_seed thread join timed out\n");
+                LOG_WARN("connman", "dns_seed thread join timed out");
             cm->dns_seed_thread_started = false;
         }
         if (cm->socket_thread_started) {
             if (!timed_join(g_thread_socket, 5))
-                fprintf(stderr, // obs-ok:pre-existing-diagnostic
-                        "connman: socket thread join timed out\n");
+                LOG_WARN("connman", "socket thread join timed out");
             cm->socket_thread_started = false;
         }
         if (cm->open_thread_started) {
             if (!timed_join(g_thread_open, 5))
-                fprintf(stderr, // obs-ok:pre-existing-diagnostic
-                        "connman: open thread join timed out\n");
+                LOG_WARN("connman", "open thread join timed out");
             cm->open_thread_started = false;
         }
         if (cm->message_thread_started) {
             if (!timed_join(g_thread_message, 5))
-                fprintf(stderr, // obs-ok:pre-existing-diagnostic
-                        "connman: message thread join timed out\n");
+                LOG_WARN("connman", "message thread join timed out");
             cm->message_thread_started = false;
         }
         cm->started = false;
@@ -1680,9 +1673,8 @@ void connman_save_addrman(struct connman *cm)
                        addrman_size(&cm->manager.addrman), path, s.size);
             } else {
                 remove(tmp_path);
-                fprintf(stderr, // obs-ok:pre-existing-diagnostic
-                        "addrman save: short write (%zu/%zu)\n",
-                        written, s.size);
+                LOG_WARN("addrman", "save: short write (%zu/%zu)",
+                         written, s.size);
             }
         }
     }
@@ -1709,9 +1701,8 @@ void connman_load_addrman(struct connman *cm)
     enum aii_verdict verdict = aii_verify(cm->datadir, aii_err, sizeof(aii_err));
     if (verdict != AII_OK && verdict != AII_SIDECAR_MISSING &&
         verdict != AII_BODY_MISSING) {
-        fprintf(stderr, // obs-ok:pre-existing-diagnostic
-                "addrman load: integrity check failed (%s): %s\n",
-                aii_verdict_name(verdict), aii_err);
+        LOG_WARN("addrman", "load: integrity check failed (%s): %s",
+                 aii_verdict_name(verdict), aii_err);
         aii_quarantine_corrupt(cm->datadir, verdict);
         return;
     }
@@ -1740,8 +1731,7 @@ void connman_load_addrman(struct connman *cm)
             printf("Loaded %zu peers from %s\n",
                    addrman_size(&cm->manager.addrman), path);
         } else {
-            fprintf(stderr, // obs-ok:pre-existing-diagnostic
-                    "addrman load: deserialize failed, starting fresh\n");
+            LOG_WARN("addrman", "load: deserialize failed, starting fresh");
             addrman_clear(&cm->manager.addrman);
         }
         zcl_mutex_unlock(&cm->manager.addrman.cs);

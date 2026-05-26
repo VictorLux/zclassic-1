@@ -53,6 +53,35 @@
     return (val); \
 } while (0)
 
+/* ── Non-returning level logs ────────────────────────────────────
+ *
+ * The macros above LOG-and-RETURN (for error sites). These LOG and
+ * CONTINUE — for the common case of a diagnostic that must NOT abort
+ * the caller: progress, best-effort cleanup, and warnings on a
+ * log-and-continue path. They replace raw `fprintf(stderr, ...)` (often
+ * marked `// obs-ok:`) so node.log is uniform and `zcl_node_log` can
+ * filter by level.
+ *
+ * Same `[domain] LEVEL file:line func():` prefix the returning macros
+ * use; the level token matches nodelog_controller's filter
+ * (`WARN:` → warn; bare → info; the returning macros cover error/fatal).
+ *
+ *   // Instead of: fprintf(stderr, "[net] short write peer=%d\n", id);
+ *   LOG_WARN("net", "short write peer=%d", id);
+ */
+
+/* Log a warning and continue (no return). */
+#define LOG_WARN(domain, fmt, ...) do { \
+    fprintf(stderr, "[%s] WARN: %s:%d %s(): " fmt "\n", \
+            (domain), __FILE__, __LINE__, __func__, ##__VA_ARGS__); \
+} while (0)
+
+/* Log an informational line and continue (no return). */
+#define LOG_INFO(domain, fmt, ...) do { \
+    fprintf(stderr, "[%s] INFO %s:%d %s(): " fmt "\n", \
+            (domain), __FILE__, __LINE__, __func__, ##__VA_ARGS__); \
+} while (0)
+
 /* ── Guards: check condition, log + return on failure ─────────── */
 
 /* Guard: if condition is false, log and return false. */
