@@ -1,6 +1,11 @@
 #!/usr/bin/env bash
 # Gate #18: every app/*.c file lives under a framework shape folder.
-# Mode: WARN | FAIL (controlled by ZCL_LINT_MODE; default WARN for Phase 0)
+# Mode: WARN | RATCHET | FAIL (controlled by ZCL_LINT_MODE; default WARN).
+#   WARN    — report violations, always exit 0 (Phase 0 measurement).
+#   RATCHET — fail only on violations NOT in framework_shape_allowlist.txt
+#             (the baseline). Allowlisted violations are tolerated; the
+#             allowlist may only shrink. This is the E10 graduation mode.
+#   FAIL    — fail on ANY violation, allowlist ignored.
 set -euo pipefail
 
 MODE="${ZCL_LINT_MODE:-WARN}"
@@ -42,12 +47,15 @@ scanned=0
 violations=0
 allowlisted=0
 
+# In RATCHET mode the allowlist IS the baseline: allowlisted files are
+# tolerated, non-allowlisted violations fail. In FAIL mode the allowlist
+# is ignored (any violation fails).
 while IFS= read -r file; do
     scanned=$((scanned + 1))
     if is_known_shape_path "$file"; then
         continue
     fi
-    if [[ -n "${ALLOWED[$file]:-}" ]]; then
+    if [[ "$MODE" != "FAIL" && -n "${ALLOWED[$file]:-}" ]]; then
         allowlisted=$((allowlisted + 1))
         continue
     fi
@@ -62,7 +70,7 @@ if (( allowlisted > 0 )); then
 fi
 echo "[framework_shape_check] write to tools/lint/framework_shape_allowlist.txt to allowlist existing violations"
 
-if (( violations > 0 )) && [[ "$MODE" == "FAIL" ]]; then
+if (( violations > 0 )) && [[ "$MODE" == "FAIL" || "$MODE" == "RATCHET" ]]; then
     exit 1
 fi
 exit 0

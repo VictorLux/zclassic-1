@@ -311,15 +311,21 @@ lint: check-malloc check-silent-errors check-raw-sqlite \
       check-lag-slo-observable check-lib-layering \
       check-supervisor-registration check-typed-blocker \
       check-framework-shape check-no-raw-clock-outside-platform \
-      check-no-raw-sqlite-in-controllers
+      check-no-raw-sqlite-in-controllers check-supervisor-domain \
+      check-file-size-ceiling check-operator-needed-sink \
+      check-doc-accuracy
 	@echo "All lint checks passed"
 
 ci: lint test fuzz-ci coverage
 ```
 
-**Status: 21 gates active.** Gates #18-#21 are
-framework-refactor ratchets and currently run in WARN mode; the earlier
-gates fail `make ci` if they fire. An agent that pushes code with raw malloc, silent errors,
+**Status: 24 gates active.** Gates #18 and #20 graduated from WARN to
+RATCHET (E10, 2026-05-26) — they fail `make ci` on any *new* off-shape
+file / raw-sqlite controller while tolerating the recorded baseline.
+Gate #19 and #21 are FAIL. The three E-series additions
+(`check-file-size-ceiling`, `check-operator-needed-sink`,
+`check-doc-accuracy`) are detailed under "Build-checklist gates"
+below. An agent that pushes code with raw malloc, silent errors,
 bypassed AR validation, unpaired stderr diagnostics, a critical model
 missing its before_save hook, a model file with no `validates_*` call
 and no `ar-validate-skip:<tag>` marker, or a controller/service
@@ -507,6 +513,86 @@ exempts it (use when the service intentionally manages its own
 lifecycle — e.g. main-thread workers, signal-driven helpers).
 
 Implementation: `tools/scripts/check_supervisor_registration.sh`.
+
+### Build-checklist gates (E-series, 2026-05-26)
+
+Four gates from the "beauty by the build" checklist. Tooling-only:
+each turns the build red on a *regression* without breaking the
+current green tree (RATCHET-with-baseline or a pairing that the tree
+already satisfies). Tested in `lib/test/src/test_make_lint_gates.c`
+(plant fixture → assert trip → remove → assert green).
+
+- **Gate E1: `check-file-size-ceiling`** (RATCHET)
+  - Path: `tools/scripts/check_file_size_ceiling.sh`
+  - Checks: no `app/**/*.c` file exceeds **800 lines**. Mega-modules
+    can otherwise hide behind a wall of <500-LOC functions that each
+    pass `check-long-functions`; this caps the whole file.
+  - Baseline: `tools/scripts/file_size_ceiling_baseline.txt` records
+    each pre-existing oversized file as `<path> <max-loc>`. A NEW file
+    over the ceiling fails; a baselined file that grows ABOVE its
+    recorded LOC fails. The baseline may only shrink.
+  - Override: none inline — the baseline line IS the visible,
+    reviewable escape hatch.
+
+- **Gate E9: `check-operator-needed-sink`** (HARD)
+  - Path: `tools/scripts/check_operator_needed_sink.sh`
+  - Checks: `EV_OPERATOR_NEEDED` (the "auto-healing gave up, page a
+    human" signal) is emitted in production code AND has a registered
+    subscriber in `lib/util/src/alerts.c` (an alert rule with
+    `.trigger = EV_OPERATOR_NEEDED` wired via `event_observe(`).
+    Models the pairing style of `check-lag-slo-observable`. Prevents
+    the silent-halt class where the loud signal reaches no sink.
+  - Override: none — a missing sink is always a bug to fix.
+
+- **Gate E11: `check-doc-accuracy`** (HARD)
+  - Path: `tools/scripts/check_doc_accuracy.sh`
+  - Checks: the canonical gate list in this file (the
+    `<!-- LINT-GATES-BEGIN/END -->` block below) matches the `check-*`
+    prerequisites of the `lint:` target in the Makefile, by both
+    count and name set. Catches doc rot. On mismatch, fix the doc
+    block — the Makefile is authoritative for what runs.
+  - Override: none.
+
+`check-framework-shape` (Gate #18) and `check-no-raw-sqlite-in-controllers`
+(Gate #20) were **graduated WARN → RATCHET (E10)**. Each now fails on a
+new violation while tolerating its baseline:
+- Gate #18 baseline = `tools/lint/framework_shape_allowlist.txt`
+  (currently empty — all app `.c` files already live in a shape folder).
+- Gate #20 baseline = `tools/lint/no_raw_sqlite_in_controllers_baseline.txt`
+  (grandfathered controller files with raw sqlite; may only shrink).
+Both honor `ZCL_LINT_MODE` (`WARN` | `RATCHET` | `FAIL`); `make lint`
+runs them in `RATCHET`.
+
+**Canonical lint-gate list (E11 source of truth).** This block is
+machine-checked against the Makefile `lint:` target. Keep it sorted;
+edit it whenever you add/remove a gate.
+
+<!-- LINT-GATES-BEGIN -->
+- `check-before-save-hooks`
+- `check-coins-lookup-nullcheck`
+- `check-doc-accuracy`
+- `check-file-size-ceiling`
+- `check-framework-shape`
+- `check-lag-slo-observable`
+- `check-lib-layering`
+- `check-long-functions`
+- `check-malloc`
+- `check-model-validation`
+- `check-no-raw-clock-outside-platform`
+- `check-no-raw-sqlite-in-controllers`
+- `check-observability-pairing`
+- `check-operator-needed-sink`
+- `check-pthread-create`
+- `check-raw-malloc`
+- `check-raw-sqlite`
+- `check-rpc-registrar`
+- `check-silent-errors`
+- `check-silent-errors-controllers`
+- `check-silent-errors-services`
+- `check-supervisor-domain`
+- `check-supervisor-registration`
+- `check-typed-blocker`
+<!-- LINT-GATES-END -->
 
 ---
 

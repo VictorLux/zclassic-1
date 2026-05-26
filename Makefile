@@ -95,6 +95,7 @@ LIBS = -Lvendor/lib -lsecp256k1 -lleveldb \
         check-silent-errors-services check-silent-errors-controllers \
         check-before-save-hooks check-pthread-create check-model-validation \
         check-long-functions check-rpc-registrar check-lag-slo-observable \
+        check-file-size-ceiling check-operator-needed-sink check-doc-accuracy \
         fuzz-ci-leaks \
         soak-smoke soak-7day chaos chaos-clean
 
@@ -895,23 +896,48 @@ check-typed-blocker:
 	@echo "══ LINT: typed blocker adoption ══"
 	@./tools/scripts/check_typed_blocker.sh
 
+# Gate #18 graduated WARN → RATCHET (E10): fails on any new off-shape
+# app/ .c file (the allowlist is the baseline and is currently empty).
 check-framework-shape:
 	@echo "→ Gate #18: framework_shape_check"
-	@ZCL_LINT_MODE=WARN ./tools/lint/framework_shape_check.sh
+	@ZCL_LINT_MODE=RATCHET ./tools/lint/framework_shape_check.sh
 
 check-no-raw-clock-outside-platform:
 	@echo "→ Gate #19: no_raw_clock_outside_platform"
 	@./tools/lint/check_no_raw_clock_outside_platform.sh
 
+# Gate #20 graduated WARN → RATCHET (E10): fails on any new controller
+# file that uses raw sqlite. Baseline of grandfathered files lives in
+# tools/lint/no_raw_sqlite_in_controllers_baseline.txt (may only shrink).
 check-no-raw-sqlite-in-controllers:
 	@echo "→ Gate #20: no_raw_sqlite_in_controllers"
-	@ZCL_LINT_MODE=WARN ./tools/lint/check_no_raw_sqlite_in_controllers.sh
+	@ZCL_LINT_MODE=RATCHET ./tools/lint/check_no_raw_sqlite_in_controllers.sh
 
 check-supervisor-domain:
 	@echo "→ Gate #21: supervisor_domain"
 	@./tools/lint/check_supervisor_domain.sh
 
-lint: check-malloc check-silent-errors check-raw-sqlite check-raw-malloc check-coins-lookup-nullcheck check-observability-pairing check-silent-errors-services check-silent-errors-controllers check-before-save-hooks check-pthread-create check-model-validation check-long-functions check-rpc-registrar check-lag-slo-observable check-lib-layering check-supervisor-registration check-typed-blocker check-framework-shape check-no-raw-clock-outside-platform check-no-raw-sqlite-in-controllers check-supervisor-domain
+# Gate E1 — file-size ceiling for app/ .c files (RATCHET). Mega-modules
+# cannot hide behind <500-LOC functions; baseline at
+# tools/scripts/file_size_ceiling_baseline.txt may only shrink.
+check-file-size-ceiling:
+	@echo "══ LINT: app/ file-size ceiling (E1) ══"
+	@./tools/scripts/check_file_size_ceiling.sh
+
+# Gate E9 — EV_OPERATOR_NEEDED emit must reach a registered sink (HARD).
+# The silent-halt fix: the loud "human needed" signal can never be emitted
+# without a subscriber in lib/util/src/alerts.c.
+check-operator-needed-sink:
+	@echo "══ LINT: operator-needed sink (E9) ══"
+	@./tools/scripts/check_operator_needed_sink.sh
+
+# Gate E11 — doc accuracy: the gate list in DEFENSIVE_CODING.md must match
+# the actual check-* dependencies of the lint: target (count + names).
+check-doc-accuracy:
+	@echo "══ LINT: doc accuracy (E11) ══"
+	@./tools/scripts/check_doc_accuracy.sh
+
+lint: check-malloc check-silent-errors check-raw-sqlite check-raw-malloc check-coins-lookup-nullcheck check-observability-pairing check-silent-errors-services check-silent-errors-controllers check-before-save-hooks check-pthread-create check-model-validation check-long-functions check-rpc-registrar check-lag-slo-observable check-lib-layering check-supervisor-registration check-typed-blocker check-framework-shape check-no-raw-clock-outside-platform check-no-raw-sqlite-in-controllers check-supervisor-domain check-file-size-ceiling check-operator-needed-sink check-doc-accuracy
 	@echo "══ LINT: all checks passed ══"
 
 ci: lint bench-regress zclassic23 test_zcl

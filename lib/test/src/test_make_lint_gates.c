@@ -577,6 +577,192 @@ static int run_check_raw_malloc_script(void)
     return -1;
 }
 
+/* Generalized gate-script runner: fork/exec the script at repo-relative
+ * path `script_rel`, optionally with ZCL_LINT_MODE set to `mode` (NULL to
+ * leave unset). Returns the script's exit status (0 = clean, non-zero =
+ * violations), or -1 on harness failure. Mirrors run_check_raw_malloc_script
+ * but parameterized so the four E-series gates share one driver. */
+static int run_gate_script(const char *script_rel, const char *mode)
+{
+    char script[PATH_MAX];
+    if (repo_path(script, sizeof(script), script_rel) != 0)
+        return -1;
+
+    char out_path[PATH_MAX];
+    if (repo_path(out_path, sizeof(out_path),
+                  "test-tmp/zcl_gate_lint.out") != 0)
+        return -1;
+
+    struct sigaction old_chld;
+    struct sigaction dfl_chld;
+    int restore_chld = 0;
+    memset(&old_chld, 0, sizeof(old_chld));
+    memset(&dfl_chld, 0, sizeof(dfl_chld));
+    dfl_chld.sa_handler = SIG_DFL;
+    sigemptyset(&dfl_chld.sa_mask);
+    if (sigaction(SIGCHLD, NULL, &old_chld) == 0 &&
+        sigaction(SIGCHLD, &dfl_chld, NULL) == 0) {
+        restore_chld = 1;
+    }
+
+    pid_t pid = fork();
+    if (pid < 0) {
+        if (restore_chld)
+            (void)sigaction(SIGCHLD, &old_chld, NULL);
+        return -1;
+    }
+    if (pid == 0) {
+        int fd = open(out_path, O_CREAT | O_WRONLY | O_TRUNC, 0600);
+        if (fd >= 0) {
+            (void)dup2(fd, STDOUT_FILENO);
+            (void)dup2(fd, STDERR_FILENO);
+            close(fd);
+        }
+        if (mode)
+            (void)setenv("ZCL_LINT_MODE", mode, 1);
+        execl(script, script, (char *)NULL);
+        _exit(127);
+    }
+
+    int rc = 0;
+    while (waitpid(pid, &rc, 0) < 0) {
+        if (errno == EINTR)
+            continue;
+        if (restore_chld)
+            (void)sigaction(SIGCHLD, &old_chld, NULL);
+        return -1;
+    }
+    if (restore_chld)
+        (void)sigaction(SIGCHLD, &old_chld, NULL);
+    if (WIFEXITED(rc)) return WEXITSTATUS(rc);
+    return -1;
+}
+
+#define E1_SCRIPT_REL    "tools/scripts/check_file_size_ceiling.sh"
+#define E1_FIXTURE_DST   "app/controllers/src/_e1_size_ceiling_fixture_tmp.c"
+#define E9_SCRIPT_REL    "tools/scripts/check_operator_needed_sink.sh"
+#define E10_SHAPE_SCRIPT_REL "tools/lint/framework_shape_check.sh"
+#define E10_SHAPE_FIXTURE_DST "app/_e10_shape_fixture_tmp.c"
+#define E10_SQL_SCRIPT_REL "tools/lint/check_no_raw_sqlite_in_controllers.sh"
+#define E10_SQL_FIXTURE_DST "app/controllers/src/_e10_rawsql_fixture_tmp.c"
+#define E11_SCRIPT_REL   "tools/scripts/check_doc_accuracy.sh"
+
+static int plant_oversized_file(const char *rel, int n_lines)
+{
+    char path[PATH_MAX];
+    if (repo_path(path, sizeof(path), rel) != 0) return -1;
+    FILE *fp = fopen(path, "wb");
+    if (!fp) return -1;
+    for (int i = 0; i < n_lines; i++)
+        fputs("// fixture line\n", fp);
+    fclose(fp);
+    return 0;
+}
+
+static void unlink_rel(const char *rel)
+{
+    char path[PATH_MAX];
+    if (repo_path(path, sizeof(path), rel) == 0)
+        (void)unlink(path);
+}
+
+/* E1 — file-size ceiling: a NEW (non-baselined) app/.c file over the
+ * 800-line ceiling trips the gate; removing it restores green. */
+static int t_e1_file_size_ceiling(void)
+{
+    int failures = 0;
+    unlink_rel(E1_FIXTURE_DST);
+    int baseline_rc = run_gate_script(E1_SCRIPT_REL, NULL);
+    int planted = plant_oversized_file(E1_FIXTURE_DST, 900);
+    int trip_rc = planted == 0 ? run_gate_script(E1_SCRIPT_REL, NULL) : -1;
+    unlink_rel(E1_FIXTURE_DST);
+    int recover_rc = run_gate_script(E1_SCRIPT_REL, NULL);
+    TEST("[lint-gate] E1 file-size ceiling: clean, trips on oversized, recovers") {
+        ASSERT(baseline_rc == 0);
+        ASSERT(planted == 0);
+        ASSERT(trip_rc != 0);
+        ASSERT(recover_rc == 0);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+/* E9 — operator-needed sink: the live tree satisfies the pairing
+ * (emit + alerts.c subscriber), so the gate passes. (HARD gate; the
+ * negative control is covered by the sandbox check in the standalone
+ * script and would require mutating lib/util/src/alerts.c, which we do
+ * not do in-tree.) */
+static int t_e9_operator_needed_sink(void)
+{
+    int failures = 0;
+    TEST("[lint-gate] E9 operator-needed sink pairing present in tree") {
+        ASSERT(run_gate_script(E9_SCRIPT_REL, NULL) == 0);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+/* E10a — framework shape RATCHET: an off-shape app/.c file (not in the
+ * allowlist) trips the gate in RATCHET mode; removing it restores green. */
+static int t_e10_framework_shape_ratchet(void)
+{
+    int failures = 0;
+    unlink_rel(E10_SHAPE_FIXTURE_DST);
+    int baseline_rc = run_gate_script(E10_SHAPE_SCRIPT_REL, "RATCHET");
+    char path[PATH_MAX];
+    int planted = (repo_path(path, sizeof(path), E10_SHAPE_FIXTURE_DST) == 0 &&
+                   write_file(path, "int e10_shape_fixture;\n") == 0) ? 0 : -1;
+    int trip_rc = planted == 0 ? run_gate_script(E10_SHAPE_SCRIPT_REL, "RATCHET") : -1;
+    unlink_rel(E10_SHAPE_FIXTURE_DST);
+    int recover_rc = run_gate_script(E10_SHAPE_SCRIPT_REL, "RATCHET");
+    TEST("[lint-gate] E10 framework-shape RATCHET: clean, trips off-shape, recovers") {
+        ASSERT(baseline_rc == 0);
+        ASSERT(planted == 0);
+        ASSERT(trip_rc != 0);
+        ASSERT(recover_rc == 0);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+/* E10b — no-raw-sqlite-in-controllers RATCHET: a NEW controller file
+ * (not in the baseline) with a raw sqlite call trips the gate; removing
+ * it restores green. */
+static int t_e10_no_raw_sqlite_ratchet(void)
+{
+    int failures = 0;
+    unlink_rel(E10_SQL_FIXTURE_DST);
+    int baseline_rc = run_gate_script(E10_SQL_SCRIPT_REL, "RATCHET");
+    char path[PATH_MAX];
+    int planted = (repo_path(path, sizeof(path), E10_SQL_FIXTURE_DST) == 0 &&
+                   write_file(path,
+                       "void f(void){ sqlite3_prepare_v2(d, s, n, &st, 0); }\n") == 0)
+                  ? 0 : -1;
+    int trip_rc = planted == 0 ? run_gate_script(E10_SQL_SCRIPT_REL, "RATCHET") : -1;
+    unlink_rel(E10_SQL_FIXTURE_DST);
+    int recover_rc = run_gate_script(E10_SQL_SCRIPT_REL, "RATCHET");
+    TEST("[lint-gate] E10 no-raw-sqlite RATCHET: clean, trips new file, recovers") {
+        ASSERT(baseline_rc == 0);
+        ASSERT(planted == 0);
+        ASSERT(trip_rc != 0);
+        ASSERT(recover_rc == 0);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+/* E11 — doc accuracy: the in-tree DEFENSIVE_CODING.md gate block matches
+ * the Makefile lint: target, so the gate passes. */
+static int t_e11_doc_accuracy(void)
+{
+    int failures = 0;
+    TEST("[lint-gate] E11 doc gate list matches Makefile lint: target") {
+        ASSERT(run_gate_script(E11_SCRIPT_REL, NULL) == 0);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 static void unlink_lint_fixtures(void)
 {
     const char *fixtures[] = {
@@ -586,6 +772,9 @@ static void unlink_lint_fixtures(void)
         OBS_OK_FIXTURE_DST_REL,
         RAW_MALLOC_FIXTURE_DST_REL,
         RAW_MALLOC_OK_FIXTURE_DST_REL,
+        E1_FIXTURE_DST,
+        E10_SHAPE_FIXTURE_DST,
+        E10_SQL_FIXTURE_DST,
     };
 
     for (size_t i = 0; i < sizeof(fixtures) / sizeof(fixtures[0]); i++) {
@@ -1371,6 +1560,11 @@ int test_make_lint_gates(void)
     failures += t_sha3_window_tool_check_contract();
     failures += t_block_index_flat_atomic_save_contract();
     failures += t_projection_deferral_is_not_block_rejected_contract();
+    failures += t_e1_file_size_ceiling();
+    failures += t_e9_operator_needed_sink();
+    failures += t_e10_framework_shape_ratchet();
+    failures += t_e10_no_raw_sqlite_ratchet();
+    failures += t_e11_doc_accuracy();
     return failures;
 }
 

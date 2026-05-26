@@ -1,0 +1,41 @@
+# Lint gate E1 baseline — grandfathered oversized app/ .c files.
+#
+# check-file-size-ceiling flags any app/**/*.c whose line count exceeds
+# the ceiling (800). These files pre-date the gate and are recorded here
+# so the ratchet does not regress. Each entry is '<relative path> <LOC>'.
+# The gate fails if:
+#   - a NEW file (not listed here) exceeds the ceiling, OR
+#   - a listed file grows ABOVE its recorded baseline LOC.
+# Shrinking a file below the ceiling lets you delete its baseline line.
+# Goal: empty file. The baseline can only shrink — never grow.
+#
+# Format: <relative-path> <max-loc>   (lines starting with # are comments)
+app/controllers/src/api_controller.c 1326
+app/controllers/src/blockchain_controller_chain.c 806
+app/controllers/src/explorer_controller.c 902
+app/controllers/src/file_controller.c 985
+app/controllers/src/legacy_import.c 1121
+app/controllers/src/repair_controller.c 872
+app/controllers/src/snapshot_controller.c 1358
+app/controllers/src/store_controller.c 1228
+app/controllers/src/sync_controller_catchup.c 1290
+app/controllers/src/sync_controller_import.c 1010
+app/controllers/src/transaction_controller.c 836
+app/controllers/src/wallet_controller.c 1521
+app/controllers/src/wallet_diagnostic_audit.c 870
+app/controllers/src/wallet_diagnostic_health.c 1095
+app/controllers/src/wallet_rescan_controller.c 988
+app/controllers/src/wallet_shielded_controller.c 1657
+app/controllers/src/wallet_view_helpers.c 1218
+app/models/src/database.c 1722
+app/models/src/wallet_tx.c 1149
+app/services/src/bg_validation_service.c 838
+app/services/src/chain_advance_coordinator.c 1716
+app/services/src/legacy_bootstrap_importer.c 1901
+app/services/src/legacy_mirror_sync_service.c 1487
+app/services/src/utxo_recovery_service.c 1204
+app/services/src/validate_headers_stage.c 976
+app/views/src/explorer_factoids_view.c 1996
+app/views/src/explorer_pages_view.c 1322
+app/views/src/explorer_stats_view.c 1597
+app/views/src/wallet_gui.c 813
