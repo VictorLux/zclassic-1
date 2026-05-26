@@ -26,8 +26,8 @@
  * not a P2P quorum a personal stack can't form.
  *
  * See FRAMEWORK.md Prime Directive + REFACTOR_STATUS.md FOCUS NOW: the
- * reducer must advance-the-tip OR name-a-typed-blocker every tick. */
-#define ACTIVATION_BEHIND_BLOCKER_ID "chain.tip_behind_header_chain"
+ * reducer must advance-the-tip OR name-a-typed-blocker every tick.
+ * ACTIVATION_BEHIND_BLOCKER_ID is defined in the header (shared with tests). */
 
 /* Name the most-precise reason this tick could not advance. */
 static const char *
@@ -69,6 +69,25 @@ activation_set_behind_blocker(int tip_h, int best_h)
     if (rc == 0)
         event_emitf(EV_ACTIVATION_STATE_CHANGE, 0,
                     "BLOCKED behind header chain: %s", reason);
+}
+
+/* The single source of truth for the advance-or-block decision after an
+ * activate pass. Returns true when the tip is BEHIND the most-work
+ * valid-header chain (could not advance to tip this tick) → registers the
+ * typed blocker. Returns false when genuinely caught up → clears it. This is
+ * the structural invariant: READY is honest only when caught up; otherwise a
+ * named blocker exists. Exposed (non-static) so the test can drive the exact
+ * production decision against the live blocker registry. */
+bool activation_eval_tip_blocker(int tip_h, int best_h)
+{
+    /* best_h == 0 means we have no header chain yet (fresh boot) — not a
+     * meaningful "behind" yet; treat as caught up and clear. */
+    if (best_h > 0 && tip_h + 100 < best_h) {
+        activation_set_behind_blocker(tip_h, best_h);
+        return true;
+    }
+    blocker_clear(ACTIVATION_BEHIND_BLOCKER_ID);
+    return false;
 }
 
 /* ── State names ───────────────────────────────────────────────── */
@@ -431,16 +450,15 @@ void activation_request_connect(struct chain_activation_controller *ctl,
          * keep the download pipeline active. */
         int best_h = ctl->ms->pindex_best_header
                    ? ctl->ms->pindex_best_header->nHeight : 0;
-        if (best_h > 0 && tip_h + 100 < best_h) {
-            /* The tip is below the most-work valid-header chain and this
-             * tick could not advance. Going to a bare READY here is the
-             * silent-ready hole: the reducer would report "ready" while
-             * behind, naming no actionable reason. Instead, register the
-             * typed blocker (height + why + escape) so the stall is always
-             * visible in `zcl_state subsystem=blocker` and reaches the
-             * supervisor escape / operator sink. READY is only honest when
-             * caught up. */
-            activation_set_behind_blocker(tip_h, best_h);
+        /* Single advance-or-block decision: behind → typed blocker, caught
+         * up → clear. Going to a bare READY without this was the silent-ready
+         * hole — the reducer would report "ready" while behind, naming no
+         * actionable reason and reaching no operator sink. */
+        if (activation_eval_tip_blocker(tip_h, best_h)) {
+            /* BEHIND the most-work valid-header chain; blocker now names
+             * WHY + height + escape (visible in zcl_state subsystem=blocker).
+             * Stay READY to keep the download/connect pipeline active, but it
+             * is NOT a silent ready — the blocker is the truth. */
             activation_set_state(ctl, ACTIVATION_READY,
                                  ACTIVATION_BEHIND_BLOCKER_ID);
             out->result = ACTIVATION_EXEC_OK;
@@ -451,10 +469,8 @@ void activation_request_connect(struct chain_activation_controller *ctl,
                      activation_behind_reason(),
                      tip_h, best_h, best_h - tip_h);
         } else {
-            /* Genuinely caught up: tip == most-work header tip. This is the
-             * only state where reporting "ready"/"at_tip" is honest, so
-             * clear the behind-blocker. */
-            blocker_clear(ACTIVATION_BEHIND_BLOCKER_ID);
+            /* Genuinely caught up: tip == most-work header tip — the only
+             * state where reporting at_tip is honest. */
             activation_set_state(ctl, ACTIVATION_AT_TIP, "at_tip");
             out->result = ACTIVATION_EXEC_OK;
             out->new_tip_height = tip_h;

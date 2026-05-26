@@ -6,6 +6,7 @@
 #include "services/chain_activation_controller.h"
 #include "services/snapshot_sync_service.h"
 #include "validation/main_state.h"
+#include "util/blocker.h"
 #include <string.h>
 
 /* ── Planning tests (pure function, no global state) ───────────── */
@@ -334,6 +335,71 @@ static int test_deferred_accumulates_across_skips(void) {
     return failures;
 }
 
+/* ── Silent-ready guard (advance-or-named-blocker) ─────────────── */
+
+static const struct blocker_snapshot *
+find_behind_blocker(struct blocker_snapshot *snaps, int n) {
+    for (int i = 0; i < n; i++)
+        if (strcmp(snaps[i].id, ACTIVATION_BEHIND_BLOCKER_ID) == 0)
+            return &snaps[i];
+    return NULL;
+}
+
+/* When the tip is below the most-work valid-header chain and cannot advance,
+ * the authority MUST register a typed blocker — never go silently "ready".
+ * When caught up, the blocker MUST be cleared. This drives the exact
+ * production decision (activation_eval_tip_blocker) against the live blocker
+ * registry. */
+static int test_behind_registers_typed_blocker(void) {
+    int failures = 0;
+    TEST("activation behind header chain registers a typed blocker (no silent ready)") {
+        blocker_reset_for_testing();
+        blocker_module_init();
+
+        /* Tip far below the best valid header → cannot advance this tick. */
+        bool behind = activation_eval_tip_blocker(/*tip_h=*/2055000,
+                                                  /*best_h=*/2055950);
+        ASSERT(behind == true);
+
+        struct blocker_snapshot snaps[BLOCKER_CAP];
+        int n = blocker_snapshot_all(snaps, BLOCKER_CAP);
+        const struct blocker_snapshot *b = find_behind_blocker(snaps, n);
+        ASSERT(b != NULL);                       /* it is NAMED, not silent */
+        ASSERT(b->class == BLOCKER_TRANSIENT);
+        ASSERT(strlen(b->escape_action) > 0);    /* has an escape action */
+        ASSERT(strcmp(b->escape_action, "activation_drive_connect") == 0);
+        ASSERT(strstr(b->reason, "best_valid_header=2055950") != NULL);
+        ASSERT(strstr(b->reason, "gap=950") != NULL);
+
+        blocker_reset_for_testing();
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+/* Caught up: tip == most-work header tip → blocker cleared, decision says
+ * "not behind". This is the only honest "ready" path. */
+static int test_caught_up_clears_blocker(void) {
+    int failures = 0;
+    TEST("activation caught up clears the behind-blocker") {
+        blocker_reset_for_testing();
+        blocker_module_init();
+
+        /* First go behind so the blocker exists. */
+        ASSERT(activation_eval_tip_blocker(2055000, 2055950) == true);
+        ASSERT(blocker_exists(ACTIVATION_BEHIND_BLOCKER_ID));
+
+        /* Now at tip (within the 100-block window). */
+        bool behind = activation_eval_tip_blocker(2055950, 2055950);
+        ASSERT(behind == false);
+        ASSERT(!blocker_exists(ACTIVATION_BEHIND_BLOCKER_ID));
+
+        blocker_reset_for_testing();
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 /* ── Registration ──────────────────────────────────────────────── */
 
 int test_chain_activation_controller(void) {
@@ -364,5 +430,8 @@ int test_chain_activation_controller(void) {
     /* deferred-activation tests */
     failures += test_deferred_increments_on_already_running();
     failures += test_deferred_accumulates_across_skips();
+    /* silent-ready guard: advance-or-named-blocker */
+    failures += test_behind_registers_typed_blocker();
+    failures += test_caught_up_clears_blocker();
     return failures;
 }

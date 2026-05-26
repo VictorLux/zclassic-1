@@ -181,6 +181,21 @@ void activation_should_allow_utxo_wipe(struct utxo_wipe_decision *out,
                                        enum activation_state state,
                                        bool anchor_active);
 
+/* ── Advance-or-block decision (the silent-ready guard) ─────────── */
+
+/* The id of the single typed blocker the activation authority owns. Visible
+ * in `zcl_state subsystem=blocker`. */
+#define ACTIVATION_BEHIND_BLOCKER_ID "chain.tip_behind_header_chain"
+
+/* Single source of truth for the post-activate advance-or-block decision.
+ * Returns true when the active tip is BEHIND the most-work valid-header chain
+ * (could not advance this tick) and registers the typed behind-blocker
+ * (ACTIVATION_BEHIND_BLOCKER_ID: TRANSIENT, names why/height/escape). Returns
+ * false when genuinely caught up and clears the blocker. The execution path
+ * uses this so READY is honest only when caught up; otherwise a named blocker
+ * always exists. Exposed for tests to drive the exact production decision. */
+bool activation_eval_tip_blocker(int tip_h, int best_h);
+
 /* ── Global accessor ───────────────────────────────────────────── */
 
 struct chain_activation_controller *boot_activation_controller(void);
