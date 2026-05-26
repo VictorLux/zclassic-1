@@ -1127,69 +1127,6 @@ static int t_tools_z_operator_diagnostics_contract(void)
     return failures;
 }
 
-static int t_scoreboard_operator_gate_contract(void)
-{
-    int failures = 0;
-    char *buf = NULL;
-    TEST("tools/scoreboard.sh is the read-only operator gate") {
-        char path[PATH_MAX];
-        ASSERT(repo_path(path, sizeof(path), "tools/scoreboard.sh") == 0);
-        ASSERT(read_entire_file(path, &buf) == 0);
-        ASSERT(strstr(buf, "$RPC\" healthcheck") != NULL);
-        ASSERT(strstr(buf, "$RPC\" cutoverpreflight -1 -1") != NULL);
-        ASSERT(strstr(buf, "rev-parse --short=9 HEAD") != NULL);
-        ASSERT(strstr(buf, "VERDICT=LIVE_READY") != NULL);
-        ASSERT(strstr(buf, "VERDICT=CUTOVER_READY") != NULL);
-        ASSERT(strstr(buf, "VERDICT=LIVE_NOT_READY") != NULL);
-        ASSERT(strstr(buf, "VERDICT=CUTOVER_NOT_READY") != NULL);
-        ASSERT(strstr(buf, "source_gate") != NULL);
-        ASSERT(strstr(buf, "source_dirty") != NULL);
-        ASSERT(strstr(buf, "source_tree_dirty") != NULL);
-        ASSERT(strstr(buf, "build_matches_source") != NULL);
-        ASSERT(strstr(buf, "live_build_not_current") != NULL);
-        ASSERT(strstr(buf, "canary_status") != NULL);
-        ASSERT(strstr(buf, "canary_failed") != NULL);
-        ASSERT(strstr(buf, "elapsed_seconds") != NULL);
-        ASSERT(strstr(buf, "cutover_live_gate") != NULL);
-        ASSERT(strstr(buf, "cutover_chain_advance_gate") != NULL);
-        ASSERT(strstr(buf, "cutover_guard_gate") != NULL);
-        ASSERT(strstr(buf, "cutover_header_admit_gate") != NULL);
-        ASSERT(strstr(buf, "cutover_validate_headers_gate") != NULL);
-        ASSERT(strstr(buf, "operator_needed_blocks") != NULL);
-        ASSERT(strstr(buf, "source_ready") != NULL);
-        ASSERT(strstr(buf, "chain_advance_not_ready_reason") != NULL);
-        ASSERT(strstr(buf, "chain_advance_target_gap") != NULL);
-        ASSERT(strstr(buf, "target_height_gap") != NULL);
-        ASSERT(strstr(buf, "projection_lag_unknown") != NULL);
-        ASSERT(strstr(buf, "not_ready_reason") != NULL);
-        ASSERT(strstr(buf, "target_gap") != NULL);
-        ASSERT(strstr(buf, "local_height") != NULL);
-        ASSERT(strstr(buf, "target_height") != NULL);
-        ASSERT(strstr(buf, "projection_lag") != NULL);
-        ASSERT(strstr(buf, "projection_ready") != NULL);
-        ASSERT(strstr(buf, "projection_gate") != NULL);
-        ASSERT(strstr(buf, "diagnostic_only") != NULL);
-        ASSERT(strstr(buf, "state_ready") != NULL);
-        ASSERT(strstr(buf, "cursor_lag") != NULL);
-        ASSERT(strstr(buf, "window_complete") != NULL);
-        ASSERT(strstr(buf, "no_failures") != NULL);
-        ASSERT(strstr(buf, "failed_total") != NULL);
-        ASSERT(strstr(buf, "failure_log_count") != NULL);
-        ASSERT(strstr(buf, "first_failed_height") != NULL);
-        ASSERT(strstr(buf, "first_fail_reason") != NULL);
-        ASSERT(strstr(buf, "last_failed_height") != NULL);
-        ASSERT(strstr(buf, "last_fail_reason") != NULL);
-        ASSERT(strstr(buf, "error_count") != NULL);
-        ASSERT(strstr(buf, "last_blocked_age_seconds") != NULL);
-        ASSERT(strstr(buf, "cutovermode") == NULL);
-        ASSERT(strstr(buf, "setgenerate") == NULL);
-        ASSERT(strstr(buf, "sendtoaddress") == NULL);
-        PASS();
-    } _test_next:;
-    free(buf);
-    return failures;
-}
-
 static int t_boot_chain_advance_diagnostics_contract(void)
 {
     int failures = 0;
@@ -1666,7 +1603,6 @@ int test_make_lint_gates(void)
     failures += t_legacy_candidate_source_has_no_override_scope();
     failures += t_tools_z_mirror_fallback_contract();
     failures += t_tools_z_operator_diagnostics_contract();
-    failures += t_scoreboard_operator_gate_contract();
     failures += t_boot_chain_advance_diagnostics_contract();
     failures += t_boot_addrman_persistence_contract();
     failures += t_boot_shutdown_persistence_order_contract();

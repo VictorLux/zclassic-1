@@ -4,54 +4,41 @@ Symptom-driven troubleshooting. Each section: what you see, how to diagnose, how
 
 ---
 
-## BIP30 Stale Coinbase Wedge
+## BIP30 Stale Coinbase Wedge — fixed structurally (2026-05-26)
 
 **Symptoms:** `zcl_status` shows the tip frozen (`tip_advance_age_seconds`
 climbing, gap > 0) while legacy peers advance, and `node.log` repeats lines like
-`STALL: h=<tip> entries_at_<tip+1>=1` or `bad-txns-BIP30`.
+`bad-txns-BIP30` or `csr-tip-commit-rejected` at `tip+1`.
 
-This is the 2026-05-25 stale coinbase-at-`tip+1` shape: `node.db` has one
-unspent UTXO row one block above the active chain tip, with no matching
-`transactions` row above tip. BIP30 is correct; the local coins table is stale.
+This was the stale coinbase / coins-overshoot shape: after a kill-9 mid-connect
+the UTXO set lands at `tip+1` (or higher) while the cursor rewinds, so a retry
+sees the block's own outputs already present and rejects it as BIP30 — a false
+positive (post-BIP34 coinbase txids are height-unique).
+
+**It now self-heals on restart — no manual unwedge.** The cure is structural,
+not operational:
+- `connect_block.c` tolerates a same-height self-write for *every* vtx (overwrites
+  the stale coins instead of rejecting; full script/proof validation still runs).
+- `chain_evidence_reconstruct.c` treats a coins-cursor lag/overshoot as a
+  recoverable projection state, not a freeze — the tip publishes as `LOCAL_IMPORT`.
+- `chain_evidence_controller.c` re-derives any stale freeze on boot and lifts it
+  when the tip is provably consistent.
 
 **Diagnose, read-only:**
 ```bash
-./tools/bip30_unwedge_preflight.sh
-./tools/zcl-rpc healthcheck | jq '.checks.chain_advance'   # canonical C (tip_advance_age + blocker)
+./tools/zcl-rpc healthcheck | jq '.checks.chain_advance'   # tip_advance_age + named blocker
+./tools/zcl-rpc getblockcount                              # is it climbing?
 ```
 
-`bip30_unwedge_preflight.sh` exits:
-- `3` when the stale `tip+1` UTXO row is still present and the node still needs
-  the approved deploy/restart unwedge.
-- `0` when the stale row is gone and the live tip appears healthy.
-- `4` when the stale row is gone but the node is still unhealthy; inspect the
-  reported RPC gap and recent log lines before re-flipping any cutover.
+If the tip is genuinely stuck, the live `chain_evidence` state names the precise
+reason (`zcl_state subsystem=chain_evidence`) — a blocker, never a silent halt.
+Recovery is a plain `systemctl --user restart zclassic23` (or `make deploy` for a
+new binary); boot routes through the tolerant `chain_restore` + evidence
+re-derivation path. Full forensic history: the `project_bip30_stale_coins_wedge`
+memory note.
 
-**Fix:**
-1. Confirm the fixed code is deployed or ready to deploy:
-   ```bash
-   git log --oneline --max-count=5
-   make -j$(nproc) zclassic23
-   ./tools/bip30_unwedge_preflight.sh
-   ```
-2. Pick an operator-approved restart window. Do not run this as an unattended
-   worker action; the live assignment gates deploy/restart on operator approval.
-3. Deploy/restart the fixed binary:
-   ```bash
-   make deploy
-   ```
-4. Prove the single-row rewind happened and the chain advances:
-   ```bash
-   ./tools/bip30_unwedge_preflight.sh
-   ./tools/zcl-rpc healthcheck | jq '.checks.chain_advance'   # canonical C (tip_advance_age + blocker)
-   ```
-
-**Success:** the preflight no longer reports `STALE_TIP_PLUS_ONE_PRESENT`,
-`zcl_status` shows the tip advancing, and it passes the formerly wedged height.
-
-**Do not:** manually delete broad UTXO ranges, bypass BIP30, or re-flip any
-C-* cutover while this check exits non-zero. The boot fix is intentionally
-limited to a one-block overshoot with a bounded row count.
+**Do not:** manually delete UTXO ranges or bypass BIP30. The fix is bounded to a
+same-height self-write; a different-height duplicate is still a hard rejection.
 
 ---
 
