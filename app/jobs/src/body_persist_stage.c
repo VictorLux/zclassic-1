@@ -12,13 +12,18 @@
 
 #include "bloom/merkle.h"
 #include "chain/chain.h"
+#include "core/serialize.h"
 #include "core/uint256.h"
 #include "event/event.h"
 #include "json/json.h"
 #include "primitives/block.h"
 #include "storage/disk_block_io.h"
+#include "storage/event_log.h"
+#include "storage/event_log_payloads.h"
+#include "storage/event_log_singleton.h"
 #include "storage/progress_store.h"
 #include "util/log_macros.h"
+#include "util/safe_alloc.h"
 #include "util/stage.h"
 #include "util/util.h"
 #include "validation/chainstate.h"
@@ -52,6 +57,8 @@ static _Atomic uint64_t g_upstream_failed_total = 0;
 static _Atomic uint64_t g_read_failed_total = 0;
 static _Atomic uint64_t g_header_mismatch_total = 0;
 static _Atomic uint64_t g_merkle_mismatch_total = 0;
+static _Atomic uint64_t g_body_emit_total = 0;
+static _Atomic uint64_t g_body_emit_fail_total = 0;
 static _Atomic int64_t  g_last_step_unix = 0;
 static _Atomic int64_t  g_last_blocked_unix = 0;
 static _Atomic int64_t  g_last_advance_height = -1;
@@ -203,6 +210,83 @@ static bool verify_merkle_root(const struct block *blk)
     return uint256_eq(&root, &blk->header.hashMerkleRoot);
 }
 
+/* B2: emit the validated block body into the append-only event log.
+ * Best-effort shadow emission — mirrors the EV_BLOCK_HEADER pattern in
+ * block_index_db.c: any failure (log not wired, serialize/append error)
+ * is counted and logged, never propagated to the stage result. The body
+ * bytes are the canonical block_serialize() wire form, so a replay
+ * consumer round-trips them via block_deserialize(). */
+static void emit_block_body_event(const struct block *blk,
+                                  const struct uint256 *hash,
+                                  int height)
+{
+    event_log_t *log = event_log_singleton();
+    if (!log) {
+        /* Not wired yet (early boot, or unit tests that don't open the
+         * singleton). Not a hard failure — the projection catches up. */
+        return;
+    }
+
+    struct byte_stream s;
+    stream_init(&s, 1024);
+    if (!block_serialize(blk, &s)) {
+        stream_free(&s);
+        fprintf(stderr,  // obs-ok:body-persist-shadow-emit
+                "[body_persist] shadow emit: block_serialize failed h=%d\n",
+                height);
+        atomic_fetch_add_explicit(&g_body_emit_fail_total, 1,
+                                  memory_order_relaxed);
+        return;
+    }
+
+    if (s.size > EV_BLOCK_BODY_MAX_BODY) {
+        fprintf(stderr,  // obs-ok:body-persist-shadow-emit
+                "[body_persist] shadow emit: body %zu > max %u h=%d\n",
+                s.size, (unsigned)EV_BLOCK_BODY_MAX_BODY, height);
+        stream_free(&s);
+        atomic_fetch_add_explicit(&g_body_emit_fail_total, 1,
+                                  memory_order_relaxed);
+        return;
+    }
+
+    struct ev_block_body b;
+    memset(&b, 0, sizeof(b));
+    memcpy(b.hash, hash->data, 32);
+    b.height   = height;
+    b.body_len = (uint32_t)s.size;
+
+    size_t cap = ev_block_body_wire_size(b.body_len);
+    uint8_t *buf = zcl_malloc(cap, "body_persist/emit_body");
+    if (!buf) {
+        stream_free(&s);
+        atomic_fetch_add_explicit(&g_body_emit_fail_total, 1,
+                                  memory_order_relaxed);
+        return;
+    }
+
+    size_t written = 0;
+    bool ok = ev_block_body_serialize(&b, s.data, buf, cap, &written);
+    stream_free(&s);
+    if (!ok) {
+        free(buf);
+        fprintf(stderr,  // obs-ok:body-persist-shadow-emit
+                "[body_persist] shadow emit: serialize failed h=%d\n",
+                height);
+        atomic_fetch_add_explicit(&g_body_emit_fail_total, 1,
+                                  memory_order_relaxed);
+        return;
+    }
+
+    uint64_t off = event_log_append(log, EV_BLOCK_BODY, buf, written);
+    free(buf);
+    if (off == UINT64_MAX) {
+        atomic_fetch_add_explicit(&g_body_emit_fail_total, 1,
+                                  memory_order_relaxed);
+        return;
+    }
+    atomic_fetch_add_explicit(&g_body_emit_total, 1, memory_order_relaxed);
+}
+
 static job_result_t step_persist(struct stage_step_ctx *c)
 {
     atomic_store(&g_last_step_unix, wall_now_s());
@@ -285,6 +369,10 @@ static job_result_t step_persist(struct stage_step_ctx *c)
         c->cursor_out = c->cursor_in + 1;
         return JOB_ADVANCED;
     }
+
+    /* B2: the body is read, hashes to its header, and merkle-checks —
+     * emit it into the append-only log before freeing (shadow mode). */
+    emit_block_body_event(&blk, &disk_hash, next_h);
 
     block_free(&blk);
     if (!log_insert(db, next_h, "verified", true))
@@ -371,6 +459,8 @@ void body_persist_stage_shutdown(void)
     atomic_store(&g_read_failed_total, (uint64_t)0);
     atomic_store(&g_header_mismatch_total, (uint64_t)0);
     atomic_store(&g_merkle_mismatch_total, (uint64_t)0);
+    atomic_store(&g_body_emit_total, (uint64_t)0);
+    atomic_store(&g_body_emit_fail_total, (uint64_t)0);
     atomic_store(&g_last_step_unix, (int64_t)0);
     atomic_store(&g_last_blocked_unix, (int64_t)0);
     atomic_store(&g_last_advance_height, (int64_t)-1);
@@ -415,6 +505,16 @@ uint64_t body_persist_stage_merkle_mismatch_total(void)
     return atomic_load(&g_merkle_mismatch_total);
 }
 
+uint64_t body_persist_stage_body_emit_total(void)
+{
+    return atomic_load(&g_body_emit_total);
+}
+
+uint64_t body_persist_stage_body_emit_fail_total(void)
+{
+    return atomic_load(&g_body_emit_fail_total);
+}
+
 bool body_persist_dump_state_json(struct json_value *out, const char *key)
 {
     (void)key;
@@ -439,6 +539,10 @@ bool body_persist_dump_state_json(struct json_value *out, const char *key)
                       (int64_t)atomic_load(&g_header_mismatch_total));
     json_push_kv_int (out, "merkle_mismatch_total",
                       (int64_t)atomic_load(&g_merkle_mismatch_total));
+    json_push_kv_int (out, "body_emit_total",
+                      (int64_t)atomic_load(&g_body_emit_total));
+    json_push_kv_int (out, "body_emit_fail_total",
+                      (int64_t)atomic_load(&g_body_emit_fail_total));
     json_push_kv_int (out, "last_advance_height",
                       atomic_load(&g_last_advance_height));
     json_push_kv_int (out, "last_step_unix", last);

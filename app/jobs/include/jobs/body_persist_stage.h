@@ -39,6 +39,11 @@ uint64_t body_persist_stage_read_failed_total(void);
 uint64_t body_persist_stage_header_mismatch_total(void);
 uint64_t body_persist_stage_merkle_mismatch_total(void);
 
+/* B2: count of EV_BLOCK_BODY events emitted into the append-only log for
+ * verified bodies (and best-effort emit failures). */
+uint64_t body_persist_stage_body_emit_total(void);
+uint64_t body_persist_stage_body_emit_fail_total(void);
+
 /* Test seam. Passing NULL restores the production disk reader. */
 void body_persist_stage_set_reader(body_persist_reader_fn fn, void *user);
 
