@@ -10,6 +10,7 @@
  */
 
 #include "platform/time_compat.h"
+#include "util/log_macros.h"
 #include "services/block_index_integrity.h"
 
 #include "services/chain_state_repository.h"
@@ -182,7 +183,7 @@ int block_index_repair_heights(struct main_state *ms)
     /* Collect all entries into an array for sorting. */
     struct block_index **arr = zcl_malloc(n * sizeof(*arr), "height_repair_arr");
     if (!arr) {
-        fprintf(stderr, "[height-repair] malloc failed for %zu entries\n", n); // obs-ok:pre-existing-diagnostic
+        LOG_WARN("height", "[height-repair] malloc failed for %zu entries", n);
         return 0;
     }
 
@@ -277,7 +278,7 @@ int block_index_repair_pprev(struct main_state *ms, const char *datadir)
      * (nFile, nDataPos) so we read each block file sequentially. */
     struct block_index **arr = zcl_malloc(n * sizeof(*arr), "pprev_repair_arr");
     if (!arr) {
-        fprintf(stderr, "[pprev-repair] malloc failed for %zu entries\n", n); // obs-ok:pre-existing-diagnostic
+        LOG_WARN("pprev", "[pprev-repair] malloc failed for %zu entries", n);
         return 0;
     }
 
@@ -550,16 +551,11 @@ int bii_repair_post_activation_anchor(
                 result->tip_restored = true;
 #endif
             } else {
-                fprintf(stderr, // obs-ok:pre-existing-diagnostic
-                    "[bii-anchor] csr rejected disk-backed tip restore "
-                    "(%s) h=%d\n", csr_result_name(rc), pre_scan_coins_h);
+                LOG_WARN("bii", "[bii-anchor] csr rejected disk-backed tip restore " "(%s) h=%d", csr_result_name(rc), pre_scan_coins_h);
                 result->tip_restore_refused = true;
             }
         } else {
-            fprintf(stderr, // obs-ok:pre-existing-diagnostic
-                "[bii-anchor] coins tip h=%d not disk-backed; "
-                "refusing active tip restore over h=%d\n",
-                pre_scan_coins_h, post_act_h);
+            LOG_INFO("bii", "[bii-anchor] coins tip h=%d not disk-backed; " "refusing active tip restore over h=%d", pre_scan_coins_h, post_act_h);
             result->tip_restore_refused = true;
         }
     }

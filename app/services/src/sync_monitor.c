@@ -1,6 +1,7 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0 */
 
 #include "services/sync_monitor.h"
+#include "util/log_macros.h"
 
 #include "framework/condition.h"
 #include "net/connman.h"
@@ -157,10 +158,7 @@ void sync_monitor_kick_local_sync(const char *reason)
     activation_request_connect(ctl, ACTIVATION_SRC_HEADERS_ALL_DATA,
                                NULL, &outcome);
     if (outcome.result == ACTIVATION_EXEC_FAILED) {
-        fprintf(stderr, // obs-ok:pre-existing-diagnostic
-                "[sync_monitor] local activation kick failed (%s): %s\n",
-                reason ? reason : "unspecified",
-                outcome.reason[0] ? outcome.reason : "unknown");
+        LOG_WARN("sync_monitor", "[sync_monitor] local activation kick failed (%s): %s", reason ? reason : "unspecified", outcome.reason[0] ? outcome.reason : "unknown");
     }
 }
 

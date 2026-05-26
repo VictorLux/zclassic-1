@@ -1,6 +1,7 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0 */
 
 #include "platform/time_compat.h"
+#include "util/log_macros.h"
 #include "services/chain_advance_coordinator.h"
 
 #include "services/legacy_mirror_sync_service.h"
@@ -84,10 +85,7 @@ void chain_advance_coordinator_force_mirror_promotion(const char *audit_reason)
                 audit_reason ? audit_reason : "(unspecified)",
                 (long long)FORCE_MIRROR_WINDOW_US,
                 (long long)until);
-    fprintf(stderr,  // obs-ok:coordinator-force-promotion-precedes-event
-        "[coordinator] FORCE_MIRROR_PROMOTION reason=%s "
-        "window=300s — mir->blocked bypass active\n",
-        audit_reason ? audit_reason : "(unspecified)");
+    LOG_INFO("coordinator", "[coordinator] FORCE_MIRROR_PROMOTION reason=%s " "window=300s — mir->blocked bypass active", audit_reason ? audit_reason : "(unspecified)");
     fflush(stderr);
 }
 

@@ -212,9 +212,7 @@ static void *gap_fill_thread_main(void *arg)
             g_gf.stats.passes_idle++;
         } else {
             g_gf.stats.passes_corrupt_walk++;
-            fprintf(stderr, // obs-ok:pre-existing-diagnostic
-                "[gap-fill] %s:%d %s(): corrupt pprev walk detected, "
-                "skipping pass\n", __FILE__, __LINE__, __func__);
+            LOG_WARN("gap", "[gap-fill] %s:%d %s(): corrupt pprev walk detected, " "skipping pass", __FILE__, __LINE__, __func__);
         }
 
         /* Sleep until kicked or GAPFILL_TICK_SECS elapsed. */
@@ -271,9 +269,7 @@ void gap_fill_stop(void)
             ts.tv_sec += 5;
             int rc = pthread_timedjoin_np(g_gf.thread, NULL, &ts);
             if (rc != 0) {
-                fprintf(stderr, // obs-ok:pre-existing-diagnostic
-                        "gap_fill_stop: thread join timed out (rc=%d) — "
-                        "detaching\n", rc);
+                LOG_WARN("gap_fill_stop", "gap_fill_stop: thread join timed out (rc=%d) — " "detaching", rc);
                 pthread_detach(g_gf.thread);
             }
         } else {

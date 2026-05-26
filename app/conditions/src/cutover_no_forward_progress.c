@@ -1,6 +1,7 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0 */
 
 #include "conditions/watchdog_dissolve_pr3.h"
+#include "util/log_macros.h"
 #include "framework/condition.h"
 
 #include "event/event.h"
@@ -74,13 +75,7 @@ static enum condition_remedy_result remedy_cutover_no_forward_progress(void)
     cutover_modes_set_header_pipeline(CUTOVER_STAGE_MODE_SHADOW,
                                       CUTOVER_STAGE_MODE_SHADOW);
 
-    fprintf(stderr,  // obs-ok:condition-cutover-revert
-            "[condition:cutover_no_forward_progress] reverted mask=%d "
-            "local=%d peer_max=%d tip_age=%llds\n",
-            mask,
-            atomic_load(&g_local_height_at_detect),
-            atomic_load(&g_peer_max_at_detect),
-            (long long)atomic_load(&g_tip_age_at_detect));
+    LOG_WARN("condition", "[condition:cutover_no_forward_progress] reverted mask=%d " "local=%d peer_max=%d tip_age=%llds", mask, atomic_load(&g_local_height_at_detect), atomic_load(&g_peer_max_at_detect), (long long)atomic_load(&g_tip_age_at_detect));
     event_emitf(EV_SYNC_STATE_CHANGE, 0,
                 "condition CUTOVER_REVERT mask=%d local=%d peer_max=%d age=%lld",
                 mask,

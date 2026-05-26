@@ -750,8 +750,7 @@ int legacy_import(const char *legacy_datadir,
             /* raw-pthread-ok: short-burst-joined-immediately */
             if (pthread_create(&threads[i], NULL,
                                scan_file_thread, &args[i]) != 0) {
-                fprintf(stderr, // obs-ok:helper-return-path
-                        "legacy_import: failed to start pass-1 scan thread\n");
+                LOG_WARN("legacy_import", "legacy_import: failed to start pass-1 scan thread");
                 for (int j = 0; j < started; j++)
                     pthread_join(threads[j], NULL);
                 goto cleanup;
@@ -857,15 +856,13 @@ int legacy_import(const char *legacy_datadir,
             du.height = u->height;
             du.is_coinbase = u->is_coinbase;
             if (!db_wallet_utxo_save(ndb, &du)) {
-                fprintf(stderr, // obs-ok:helper-return-path
-                        "legacy_import: pass 2 wallet_utxo save failed\n");
+                LOG_WARN("legacy_import", "legacy_import: pass 2 wallet_utxo save failed");
                 goto pass2_db_fail;
             }
             if (u->spent &&
                 !db_wallet_utxo_mark_spent(ndb, u->txid, u->vout,
                                            u->spent_txid, u->spent_vin)) {
-                fprintf(stderr, // obs-ok:helper-return-path
-                        "legacy_import: pass 2 wallet_utxo mark_spent failed\n");
+                LOG_WARN("legacy_import", "legacy_import: pass 2 wallet_utxo mark_spent failed");
                 goto pass2_db_fail;
             }
         }
@@ -883,8 +880,7 @@ int legacy_import(const char *legacy_datadir,
             dt.from_me = t->from_me;
             dt.fee = t->fee;
             if (!db_wallet_tx_save(ndb, &dt)) {
-                fprintf(stderr, // obs-ok:helper-return-path
-                        "legacy_import: pass 2 wallet_tx save failed\n");
+                LOG_WARN("legacy_import", "legacy_import: pass 2 wallet_tx save failed");
                 goto pass2_db_fail;
             }
         }
@@ -898,8 +894,7 @@ int legacy_import(const char *legacy_datadir,
 pass2_db_fail:
         if (import_tx_open &&
             !legacy_import_rollback_checked(ndb, "pass 2 rollback")) {
-            fprintf(stderr, // obs-ok:helper-return-path
-                    "legacy_import: pass 2 rollback failed after DB error\n");
+            LOG_WARN("legacy_import", "legacy_import: pass 2 rollback failed after DB error");
         }
         goto cleanup;
 pass2_db_done:
@@ -918,8 +913,7 @@ pass2_db_done:
 
         fctxs = zcl_calloc((size_t)num_files, sizeof(struct filter_file_ctx), "sapling filter contexts");
         if (!fctxs) {
-            fprintf(stderr, // obs-ok:helper-return-path
-                    "legacy_import: failed to allocate sapling filter contexts\n");
+            LOG_WARN("legacy_import", "legacy_import: failed to allocate sapling filter contexts");
             goto cleanup;
         }
         for (int base = 0; base < num_files; base += batch) {
@@ -934,8 +928,7 @@ pass2_db_done:
                 if (pthread_create(&thr[i], NULL,
                                    sapling_filter_thread,
                                    &fctxs[base + i]) != 0) {
-                    fprintf(stderr, // obs-ok:helper-return-path
-                            "legacy_import: failed to start sapling filter thread\n");
+                    LOG_WARN("legacy_import", "legacy_import: failed to start sapling filter thread");
                     for (int j = 0; j < started; j++)
                         pthread_join(thr[j], NULL);
                     goto cleanup;
@@ -975,8 +968,7 @@ pass2_db_done:
 
         dctxs = zcl_calloc((size_t)num_files, sizeof(struct decrypt_file_ctx), "sapling decrypt contexts");
         if (!dctxs) {
-            fprintf(stderr, // obs-ok:helper-return-path
-                    "legacy_import: failed to allocate sapling decrypt contexts\n");
+            LOG_WARN("legacy_import", "legacy_import: failed to allocate sapling decrypt contexts");
             goto cleanup;
         }
         for (int f = 0; f < num_files; f++) {
@@ -989,8 +981,7 @@ pass2_db_done:
             dctxs[f].result_cap = 64;
             dctxs[f].results = zcl_malloc(64 * sizeof(struct db_sapling_note), "sapling decrypt results");
             if (!dctxs[f].results) {
-                fprintf(stderr, // obs-ok:helper-return-path
-                        "legacy_import: failed to allocate sapling decrypt results\n");
+                LOG_WARN("legacy_import", "legacy_import: failed to allocate sapling decrypt results");
                 goto cleanup;
             }
         }
@@ -1006,8 +997,7 @@ pass2_db_done:
                 if (pthread_create(&thr3[launched], NULL,
                                    decrypt_thread,
                                    &dctxs[base + i]) != 0) {
-                    fprintf(stderr, // obs-ok:helper-return-path
-                            "legacy_import: failed to start sapling decrypt thread\n");
+                    LOG_WARN("legacy_import", "legacy_import: failed to start sapling decrypt thread");
                     for (int j = 0; j < launched; j++)
                         pthread_join(thr3[j], NULL);
                     goto cleanup;
@@ -1032,13 +1022,11 @@ pass2_db_done:
                 sapling_notes += dctxs[f].notes_found;
                 for (int i = 0; i < dctxs[f].result_count; i++) {
                     if (!db_sapling_note_save(ndb, &dctxs[f].results[i])) {
-                        fprintf(stderr, // obs-ok:helper-return-path
-                                "legacy_import: pass 3 sapling note save failed\n");
+                        LOG_WARN("legacy_import", "legacy_import: pass 3 sapling note save failed");
                         if (sapling_tx_open &&
                             !legacy_import_rollback_checked(ndb,
                                 "pass 3 rollback")) {
-                            fprintf(stderr, // obs-ok:helper-return-path
-                                    "legacy_import: pass 3 rollback failed after DB error\n");
+                            LOG_WARN("legacy_import", "legacy_import: pass 3 rollback failed after DB error");
                         }
                         goto cleanup;
                     }

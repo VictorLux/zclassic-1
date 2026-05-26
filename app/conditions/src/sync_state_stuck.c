@@ -1,6 +1,7 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0 */
 
 #include "conditions/watchdog_dissolve_pr2.h"
+#include "util/log_macros.h"
 #include "framework/condition.h"
 
 #include "event/event.h"
@@ -51,11 +52,7 @@ static enum condition_remedy_result remedy_sync_state_stuck(void)
     enum sync_state state = (enum sync_state)atomic_load(&g_state_at_detect);
     struct connman *cm = sync_monitor_connman();
     int peer_max = cm ? connman_max_peer_height(cm) : -1;
-    fprintf(stderr,  // obs-ok:condition-sync-state-stuck
-            "[condition:sync_state_stuck] state=%s age=%llds height=%d "
-            "peer_max=%d action=kick_fsm\n",
-            sync_state_name(state), (long long)atomic_load(&g_age_at_detect),
-            atomic_load(&g_height_at_detect), peer_max);
+    LOG_WARN("condition", "[condition:sync_state_stuck] state=%s age=%llds height=%d " "peer_max=%d action=kick_fsm", sync_state_name(state), (long long)atomic_load(&g_age_at_detect), atomic_load(&g_height_at_detect), peer_max);
     event_emitf(EV_TIP_STALE, 0, "state=%s since=%lld our_h=%d peer_max=%d",
                 sync_state_name(state), (long long)atomic_load(&g_age_at_detect),
                 atomic_load(&g_height_at_detect), peer_max);

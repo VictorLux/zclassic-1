@@ -1,6 +1,7 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0 */
 
 #include "framework/condition.h"
+#include "util/log_macros.h"
 
 #include "services/chain_restore_integrity.h"
 #include "services/chain_restore_repair.h"
@@ -58,15 +59,7 @@ static enum condition_remedy_result remedy_chain_integrity_failed(void)
 
     atomic_fetch_add(&g_remedy_calls, 1);
 
-    fprintf(stderr,  // obs-ok:condition-chain-integrity
-            "[condition:chain_integrity_failed] zero_nbits=%d "
-            "tip_window_holes=%d total_holes=%d mismatches=%d tip_h=%d "
-            "action=chain_restore_finalize\n",
-            atomic_load(&g_last_zero_nbits),
-            atomic_load(&g_last_tip_window_holes),
-            atomic_load(&g_last_total_holes),
-            atomic_load(&g_last_mismatches),
-            atomic_load(&g_last_tip_height));
+    LOG_WARN("condition", "[condition:chain_integrity_failed] zero_nbits=%d " "tip_window_holes=%d total_holes=%d mismatches=%d tip_h=%d " "action=chain_restore_finalize", atomic_load(&g_last_zero_nbits), atomic_load(&g_last_tip_window_holes), atomic_load(&g_last_total_holes), atomic_load(&g_last_mismatches), atomic_load(&g_last_tip_height));
 
     char datadir[1024];
     GetDataDir(true, datadir, sizeof(datadir));

@@ -1,6 +1,7 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0 */
 
 #include "framework/condition.h"
+#include "util/log_macros.h"
 
 #include "services/legacy_mirror_sync_service.h"
 
@@ -36,13 +37,7 @@ static enum condition_remedy_result remedy_legacy_mirror_stuck(void)
 #ifdef ZCL_TESTING
     atomic_fetch_add(&g_test_remedy_calls, 1);
 #endif
-    fprintf(stderr,  // obs-ok:condition-legacy-mirror-stuck
-            "[condition:legacy_mirror_stuck] stuck_height=%d lag=%d "
-            "stalls=%lld reason=%s action=catchup\n",
-            atomic_load(&g_stuck_height_at_detect),
-            atomic_load(&g_lag_at_detect),
-            (long long)atomic_load(&g_stalls_at_detect),
-            s.stuck_reason[0] ? s.stuck_reason : "(none)");
+    LOG_WARN("condition", "[condition:legacy_mirror_stuck] stuck_height=%d lag=%d " "stalls=%lld reason=%s action=catchup", atomic_load(&g_stuck_height_at_detect), atomic_load(&g_lag_at_detect), (long long)atomic_load(&g_stalls_at_detect), s.stuck_reason[0] ? s.stuck_reason : "(none)");
     return legacy_mirror_sync_request_catchup("condition:legacy_mirror_stuck")
         ? COND_REMEDY_OK : COND_REMEDY_FAILED;
 }

@@ -119,9 +119,7 @@ static bool wd_persist_store(int64_t stuck_height, int restarts)
     if (!db) {
         /* No store: degrade to in-memory counting (strictly safer — can
          * only restart MORE, never skip a needed page). Logged, not fatal. */
-        fprintf(stderr,  // obs-ok:tip-wd-no-progress-store
-            "[chain_tip_watchdog] WARN progress.kv not open; "
-            "bounded-restart counter is in-memory only this run\n");
+        LOG_WARN("chain_tip_watchdog", "[chain_tip_watchdog] WARN progress.kv not open; " "bounded-restart counter is in-memory only this run");
         return false;
     }
     int32_t count = (int32_t)restarts;
@@ -174,11 +172,7 @@ static bool wd_decide_restart(int64_t h, int64_t age_s, bool do_shutdown)
          * power-cycle, stay up (degraded), and page a human/MCP. */
         atomic_store(&g_operator_needed, true);
         atomic_fetch_add(&g_fires_operator_needed, 1u);
-        fprintf(stderr,  // obs-ok:tip-wd-operator-needed
-            "[chain_tip_watchdog] OPERATOR NEEDED: tip wedged at h=%lld "
-            "for %llds; %d restarts did not help — NOT restarting again, "
-            "staying up degraded for manual intervention\n",
-            (long long)h, (long long)age_s, restarts);
+        LOG_WARN("chain_tip_watchdog", "[chain_tip_watchdog] OPERATOR NEEDED: tip wedged at h=%lld " "for %llds; %d restarts did not help — NOT restarting again, " "staying up degraded for manual intervention", (long long)h, (long long)age_s, restarts);
         event_emitf(EV_OPERATOR_NEEDED, 0,
             "condition=chain_tip_wedged height=%lld attempts=%d age_s=%lld",
             (long long)h, restarts, (long long)age_s);
@@ -193,10 +187,7 @@ static bool wd_decide_restart(int64_t h, int64_t age_s, bool do_shutdown)
     atomic_fetch_add(&g_fires_restart, 1u);
     (void)wd_persist_store(h, restarts);
 
-    fprintf(stderr,  // obs-ok:tip-wd-restart
-        "[chain_tip_watchdog] requesting shutdown: h=%lld age=%llds "
-        "(no-progress restart %d/%d at this height)\n",
-        (long long)h, (long long)age_s, restarts, CHAIN_TIP_WD_MAX_RESTARTS);
+    LOG_WARN("chain_tip_watchdog", "[chain_tip_watchdog] requesting shutdown: h=%lld age=%llds " "(no-progress restart %d/%d at this height)", (long long)h, (long long)age_s, restarts, CHAIN_TIP_WD_MAX_RESTARTS);
     event_emitf(EV_CHAIN_ADVANCE_DECISION, 0,
         "chain_tip_watchdog request_shutdown h=%lld age=%llds restart=%d/%d",
         (long long)h, (long long)age_s, restarts, CHAIN_TIP_WD_MAX_RESTARTS);
@@ -248,9 +239,7 @@ static void chain_tip_wd_tick(struct liveness_contract *c)
     if (level < 1 && thr_mirror > 0 && age_s >= thr_mirror) {
         atomic_store(&g_escalation, 1);
         atomic_fetch_add(&g_fires_mirror, 1u);
-        fprintf(stderr,  // obs-ok:tip-wd-mirror
-            "[chain_tip_watchdog] forcing mirror promotion: h=%lld age=%llds\n",
-            (long long)h, (long long)age_s);
+        LOG_INFO("chain_tip_watchdog", "[chain_tip_watchdog] forcing mirror promotion: h=%lld age=%llds", (long long)h, (long long)age_s);
         event_emitf(EV_CHAIN_ADVANCE_DECISION, 0,
             "chain_tip_watchdog force_mirror h=%lld age=%llds",
             (long long)h, (long long)age_s);
@@ -291,8 +280,7 @@ void chain_tip_watchdog_register(struct main_state *ms)
     supervisor_domains_init();
     atomic_store(&g_id, supervisor_register_in_domain(g_chain_sup, &g_contract));
     if (atomic_load(&g_id) == SUPERVISOR_INVALID_ID) {
-        fprintf(stderr,  // obs-ok:tip-wd-register-fail
-            "[chain_tip_watchdog] WARN register failed\n");
+        LOG_WARN("chain_tip_watchdog", "[chain_tip_watchdog] WARN register failed");
     }
 }
 

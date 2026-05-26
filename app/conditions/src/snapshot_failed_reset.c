@@ -1,6 +1,7 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0 */
 
 #include "framework/condition.h"
+#include "util/log_macros.h"
 
 #include "config/runtime.h"
 #include "services/snapshot_sync_service.h"
@@ -52,14 +53,7 @@ static enum condition_remedy_result remedy_snapshot_failed_reset(void)
 #ifdef ZCL_TESTING
     atomic_fetch_add(&g_test_remedy_calls, 1);
 #endif
-    fprintf(stderr,  // obs-ok:condition-snapshot-failed-reset
-            "[condition:snapshot_failed_reset] peer=%u elapsed=%llds "
-            "height=%d utxos=%llu staged=%lld action=blacklist_reset\n",
-            (unsigned)atomic_load(&g_peer_at_detect),
-            (long long)atomic_load(&g_elapsed_at_detect),
-            atomic_load(&g_height_at_detect),
-            (unsigned long long)atomic_load(&g_utxos_at_detect),
-            (long long)atomic_load(&g_staged_at_detect));
+    LOG_WARN("condition", "[condition:snapshot_failed_reset] peer=%u elapsed=%llds " "height=%d utxos=%llu staged=%lld action=blacklist_reset", (unsigned)atomic_load(&g_peer_at_detect), (long long)atomic_load(&g_elapsed_at_detect), atomic_load(&g_height_at_detect), (unsigned long long)atomic_load(&g_utxos_at_detect), (long long)atomic_load(&g_staged_at_detect));
     return snapsync_check_failed_reset() ? COND_REMEDY_OK : COND_REMEDY_SKIP;
 }
 

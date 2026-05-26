@@ -1,6 +1,7 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0 */
 
 #include "conditions/watchdog_dissolve_pr3.h"
+#include "util/log_macros.h"
 #include "framework/condition.h"
 
 #include "event/event.h"
@@ -74,13 +75,7 @@ static enum condition_remedy_result remedy_sync_violation_lag(void)
     if (!cm)
         return COND_REMEDY_SKIP;
 
-    fprintf(stderr,  // obs-ok:condition-sync-violation
-            "[condition:sync_violation_lag] local=%d peer_max=%d gap=%d "
-            "age=%llds action=outbound_rotation\n",
-            atomic_load(&g_local_tip_at_detect),
-            atomic_load(&g_peer_max_at_detect),
-            atomic_load(&g_gap_at_detect),
-            (long long)atomic_load(&g_age_at_detect));
+    LOG_WARN("condition", "[condition:sync_violation_lag] local=%d peer_max=%d gap=%d " "age=%llds action=outbound_rotation", atomic_load(&g_local_tip_at_detect), atomic_load(&g_peer_max_at_detect), atomic_load(&g_gap_at_detect), (long long)atomic_load(&g_age_at_detect));
     event_emitf(EV_SYNC_STATE_CHANGE, 0,
                 "condition SYNC_VIOLATION local=%d peer_max=%d gap=%d",
                 atomic_load(&g_local_tip_at_detect),

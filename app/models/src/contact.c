@@ -1,6 +1,7 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0 */
 
 #include "platform/time_compat.h"
+#include "util/log_macros.h"
 #include "models/contact.h"
 #include "models/model_text.h"
 #include "storage/small_projections.h"
@@ -81,8 +82,7 @@ bool db_contact_save(struct node_db *ndb, const struct db_contact *c)
         !contacts_projection_emit_set(c->address, c->name) ||
         !contacts_projection_emit_touched(c->address,
                                           (uint32_t)c->last_used)) {
-        fprintf(stderr,  // obs-ok:contacts-projection-shadow
-                "contacts projection shadow emit failed for save\n");
+        LOG_WARN("model", "contacts projection shadow emit failed for save");
     }
     return true;
 }

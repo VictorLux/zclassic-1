@@ -66,8 +66,7 @@ static void wallet_scan_rollback_best_effort(struct node_db *ndb,
     if (!ndb || !ndb->open)
         return;
     if (!node_db_rollback(ndb)) {
-        fprintf(stderr, "wallet_scan: %s failed: %s\n", // obs-ok:helper-return-path
-                label, ndb->db ? sqlite3_errmsg(ndb->db) : "db unavailable");
+        LOG_WARN("wallet_scan", "wallet_scan: %s failed: %s", label, ndb->db ? sqlite3_errmsg(ndb->db) : "db unavailable");
     }
 }
 
@@ -309,8 +308,7 @@ int wallet_scan_blocks(struct node_db *ndb,
             /* raw-pthread-ok: short-burst-joined-immediately */
             if (pthread_create(&threads[i], NULL,
                                scan_file_thread, &args[i]) != 0) {
-                fprintf(stderr, // obs-ok:helper-return-path
-                        "wallet_scan: failed to start pass-1 scan thread\n");
+                LOG_WARN("wallet_scan", "wallet_scan: failed to start pass-1 scan thread");
                 for (int j = 0; j < started; j++)
                     pthread_join(threads[j], NULL);
                 aht_free(&aht);
@@ -476,14 +474,14 @@ int wallet_scan_blocks(struct node_db *ndb,
             du.height = u->height;
             du.is_coinbase = u->is_coinbase;
             if (!db_wallet_utxo_save(ndb, &du)) {
-                fprintf(stderr, "wallet_scan: wallet_utxo save failed\n"); // obs-ok:helper-return-path
+                LOG_WARN("wallet_scan", "wallet_scan: wallet_utxo save failed");
                 found = -1;
                 goto write_fail;
             }
             if (u->spent &&
                 !db_wallet_utxo_mark_spent(ndb, u->txid, u->vout,
                                            u->spent_txid, u->spent_vin)) {
-                fprintf(stderr, "wallet_scan: wallet_utxo mark_spent failed\n"); // obs-ok:helper-return-path
+                LOG_WARN("wallet_scan", "wallet_scan: wallet_utxo mark_spent failed");
                 found = -1;
                 goto write_fail;
             }
@@ -502,7 +500,7 @@ int wallet_scan_blocks(struct node_db *ndb,
             dt.from_me = t->from_me;
             dt.fee = t->fee;
             if (!db_wallet_tx_save(ndb, &dt)) {
-                fprintf(stderr, "wallet_scan: wallet_tx save failed\n"); // obs-ok:helper-return-path
+                LOG_WARN("wallet_scan", "wallet_scan: wallet_tx save failed");
                 found = -1;
                 goto write_fail;
             }

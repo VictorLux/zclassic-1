@@ -1,6 +1,7 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0 */
 
 #include "conditions/watchdog_dissolve_pr2.h"
+#include "util/log_macros.h"
 #include "framework/condition.h"
 
 #include "net/connman.h"
@@ -61,12 +62,7 @@ static bool detect_download_queue_starved(void)
 
 static enum condition_remedy_result remedy_download_queue_starved(void)
 {
-    fprintf(stderr,  // obs-ok:condition-download-queue-starved
-            "[condition:download_queue_starved] in_flight=%llu queued=%llu "
-            "age=%llds action=kick_refill\n",
-            (unsigned long long)atomic_load(&g_inflight_at_detect),
-            (unsigned long long)atomic_load(&g_queued_at_detect),
-            (long long)atomic_load(&g_age_at_detect));
+    LOG_WARN("condition", "[condition:download_queue_starved] in_flight=%llu queued=%llu " "age=%llds action=kick_refill", (unsigned long long)atomic_load(&g_inflight_at_detect), (unsigned long long)atomic_load(&g_queued_at_detect), (long long)atomic_load(&g_age_at_detect));
     sync_monitor_kick_local_sync("condition:download_queue_starved");
 #ifdef ZCL_TESTING
     atomic_fetch_add(&g_test_remedy_calls, 1);

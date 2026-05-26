@@ -297,9 +297,7 @@ static bool verify_shielded_proofs(const struct transaction *tx,
                 static _Atomic int phgr_warn = 0;
                 if (atomic_load(&phgr_warn) < 3) {
                     atomic_fetch_add(&phgr_warn, 1);
-                    fprintf(stderr,  // obs-ok:bg-validation-diagnostic "[bg-valid] Sprout PHGR13 proof "
-                            "SKIPPED h=%d tx=%zu js=%zu (VK not "
-                            "loaded)\n", height, tx_idx, j);
+                    LOG_WARN("bg-valid", "SKIPPED h=%d tx=%zu js=%zu (VK not " "loaded)", height, tx_idx, j);
                 }
                 continue;
             }
@@ -393,16 +391,14 @@ static bool validate_block_proofs(const struct block *block,
 
     /* 1. Block header: Equihash + PoW + timestamp */
     if (!check_block_header(&block->header, &state, params, true)) {
-        // obs-ok:bg-validation-diagnostic
-        fprintf(stderr, "[bg-valid] check_block_header FAILED h=%d: %s\n",
+        LOG_WARN("bg-valid", "[bg-valid] check_block_header FAILED h=%d: %s",
                 pindex->nHeight, state.reject_reason);
         goto out;
     }
 
     /* 2. Block structure: Merkle root + size limits + tx structure */
     if (!check_block(block, &state, params, true, true, false)) {
-        // obs-ok:bg-validation-diagnostic
-        fprintf(stderr, "[bg-valid] check_block FAILED h=%d: %s\n",
+        LOG_WARN("bg-valid", "[bg-valid] check_block FAILED h=%d: %s",
                 pindex->nHeight, state.reject_reason);
         goto out;
     }
@@ -411,8 +407,7 @@ static bool validate_block_proofs(const struct block *block,
     if (pindex->pprev) {
         if (!contextual_check_block_header(&block->header, &state, params,
                                             pindex->pprev, true)) {
-            // obs-ok:bg-validation-diagnostic
-        fprintf(stderr, "[bg-valid] contextual_check_header FAILED h=%d: %s\n",
+            LOG_WARN("bg-valid", "[bg-valid] contextual_check_header FAILED h=%d: %s",
                     pindex->nHeight, state.reject_reason);
             goto out;
         }
@@ -490,8 +485,7 @@ static bool validate_block_proofs(const struct block *block,
 
     /* 5. Final script verification flush */
     if (!verify_scripts_parallel(check_items, check_count, num_workers)) {
-        // obs-ok:bg-validation-diagnostic
-        fprintf(stderr, "[bg-valid] script verification FAILED h=%d\n",
+        LOG_WARN("bg-valid", "[bg-valid] script verification FAILED h=%d",
                 pindex->nHeight);
         goto out;
     }
@@ -787,9 +781,7 @@ void bg_validation_stop(struct bg_validation_service *svc)
         ts.tv_sec += 5;
         int rc = pthread_timedjoin_np(svc->thread, NULL, &ts);
         if (rc != 0) {
-            fprintf(stderr,  // obs-ok:bg-validation-diagnostic
-                    "bg_validation_stop: thread join timed out (rc=%d) "
-                    "— detaching\n", rc);
+            LOG_WARN("bg_validation_stop", "bg_validation_stop: thread join timed out (rc=%d) " "— detaching", rc);
             pthread_detach(svc->thread);
         }
     } else {

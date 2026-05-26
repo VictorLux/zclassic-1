@@ -75,8 +75,7 @@ static bool log_insert(sqlite3 *db, int height,
         memcpy(row.parent_hash, parent_hash->data, 32);
 
     if (!db_header_admit_log_save(db, &row)) {
-        fprintf(stderr,  // obs-ok:header-admit-log-insert-failure
-                "[header_admit] log save height=%d failed\n", height);
+        LOG_WARN("header_admit", "[header_admit] log save height=%d failed", height);
         return false;
     }
     return true;
@@ -99,9 +98,7 @@ static void handle_header_admit_msg(const struct header_admit_msg *m)
         return;
 
     if (memcmp(bi->phashBlock->data, m->hash.data, 32) != 0) {
-        fprintf(stderr,  // obs-ok:header-admit-inbox-hash-mismatch
-                "[header_admit] inbox hash mismatch height=%lld peer=%u\n",
-                (long long)m->height, m->peer_id);
+        LOG_WARN("header_admit", "[header_admit] inbox hash mismatch height=%lld peer=%u", (long long)m->height, m->peer_id);
         return;
     }
 
@@ -168,9 +165,7 @@ static job_result_t step_admit(struct stage_step_ctx *c)
 
     if (header_admit_get_mode() == HEADER_ADMIT_MODE_AUTHORITATIVE &&
         !authoritative_admit(ms, bi)) {
-        fprintf(stderr,  // obs-ok:header-admit-authoritative-failure
-                "[header_admit] authoritative admit failed height=%d\n",
-                next_h);
+        LOG_WARN("header_admit", "[header_admit] authoritative admit failed height=%d", next_h);
         return JOB_FATAL;
     }
 
@@ -246,10 +241,7 @@ bool header_admit_stage_init(struct main_state *ms)
     g_stage = s;
     pthread_mutex_unlock(&g_lock);
 
-    fprintf(stderr,  // obs-ok:header-admit-lifecycle
-            "[header_admit] stage initialised (mode=%s)\n",
-            header_admit_get_mode() == HEADER_ADMIT_MODE_AUTHORITATIVE
-                ? "authoritative" : "shadow");
+    LOG_INFO("header_admit", "[header_admit] stage initialised (mode=%s)", header_admit_get_mode() == HEADER_ADMIT_MODE_AUTHORITATIVE ? "authoritative" : "shadow");
     return true;
 }
 
@@ -403,7 +395,7 @@ static int32_t log_max_height(sqlite3 *db)
     int rc = sqlite3_prepare_v2(db,
         "SELECT MAX(height) FROM header_admit_log", -1, &st, NULL);
     if (rc != SQLITE_OK) {
-        fprintf(stderr, "[header_admit] diff: prepare MAX(height) failed: %s\n", sqlite3_errmsg(db));  // obs-ok:header-admit-diff-prepare-failure
+        LOG_WARN("header_admit", "[header_admit] diff: prepare MAX(height) failed: %s", sqlite3_errmsg(db));
         return -1;  /* raw-return-ok:diagnostic-treats-as-empty */
     }
     int32_t out = -1;

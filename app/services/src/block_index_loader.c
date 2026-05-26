@@ -149,9 +149,7 @@ void save_block_index_flat(const char *datadir, struct main_state *ms)
     }
 
     if (!bii_write_sidecar(datadir)) {
-        fprintf(stderr,
-                "save_block_index_flat: sidecar write failed for %s\n", // obs-ok:warning-only-on-best-effort-path
-                path);
+        LOG_WARN("save_block_index_flat", "save_block_index_flat: sidecar write failed for %s", path);
     }
 
     int64_t elapsed = (int64_t)platform_time_wall_time_t() - t0;
@@ -233,8 +231,7 @@ bool load_block_index_flat(const char *datadir, struct main_state *ms)
     if (max_h > 0 && max_h < 10000000) {
         by_height = zcl_calloc((size_t)(max_h + 1), sizeof(struct block_index *), "block_index by_height");
         if (!by_height)
-            fprintf(stderr, "block_index_flat: by_height calloc failed " // obs-ok:pre-existing-diagnostic
-                    "(%d entries) — pprev linking will be slow\n", max_h + 1);
+            LOG_WARN("block_index_flat", "block_index_flat: by_height calloc failed " "(%d entries) — pprev linking will be slow", max_h + 1);
     }
 
     /* Phase 1: bulk insert — direct hash table, no locks */
@@ -442,8 +439,7 @@ void save_block_index_recent(struct node_db *ndb, struct main_state *ms)
     return;
 
 fail:
-    fprintf(stderr, "boot-index: block_index_cache save aborted: %s\n", // obs-ok:pre-existing-diagnostic
-            sqlite3_errmsg(ndb->db));
+    LOG_WARN("chain", "boot-index: block_index_cache save aborted: %s", sqlite3_errmsg(ndb->db));
     if (ins)
         sqlite3_finalize(ins);
     if (tx_open)
@@ -614,9 +610,7 @@ bool load_block_index(struct main_state *ms,
                 return true;
             }
 #endif
-            fprintf(stderr, // obs-ok:pre-existing-diagnostic
-                    "block_index_loader: csr rejected genesis init (%s)\n",
-                    csr_result_name(rc));
+            LOG_WARN("block_index_loader", "block_index_loader: csr rejected genesis init (%s)", csr_result_name(rc));
             return false;
         }
         return true;

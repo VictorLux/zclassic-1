@@ -1,6 +1,7 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0 */
 
 #include "conditions/watchdog_dissolve_pr3.h"
+#include "util/log_macros.h"
 #include "framework/condition.h"
 
 #include "config/runtime.h"
@@ -110,10 +111,7 @@ static enum condition_remedy_result remedy_snapshot_offer_ready(void)
     atomic_fetch_add(&g_test_remedy_calls, 1);
 #endif
 
-    fprintf(stderr,  // obs-ok:condition-snapshot-offer-ready
-            "[condition:snapshot_offer_ready] local=%d snapshot=%d "
-            "peer=%d sync_state=%s action=set_snapshot_receive\n",
-            local_h, snap_h, peer_id, sync_state_name(sync_get_state()));
+    LOG_INFO("condition", "[condition:snapshot_offer_ready] local=%d snapshot=%d " "peer=%d sync_state=%s action=set_snapshot_receive", local_h, snap_h, peer_id, sync_state_name(sync_get_state()));
 
     if (!sync_set_state(SYNC_SNAPSHOT_RECEIVE,
                         "condition snapshot_offer_ready")) {

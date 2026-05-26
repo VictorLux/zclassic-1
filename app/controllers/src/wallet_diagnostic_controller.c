@@ -50,8 +50,7 @@ void wallet_diag_rollback_best_effort(struct node_db *ndb, const char *label)
     if (!ndb || !ndb->open)
         return;
     if (!node_db_rollback(ndb)) {
-        fprintf(stderr, "[wallet_diag] %s: rollback failed: %s\n",  // obs-ok:pre-existing-diagnostic
-                label, ndb->db ? sqlite3_errmsg(ndb->db) : "db unavailable");
+        LOG_WARN("wallet_diag", "[wallet_diag] %s: rollback failed: %s", label, ndb->db ? sqlite3_errmsg(ndb->db) : "db unavailable");
     }
 }
 

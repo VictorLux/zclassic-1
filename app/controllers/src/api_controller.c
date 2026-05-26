@@ -447,7 +447,7 @@ static bool api_response_cacheable(const uint8_t *buf, size_t len)
 void api_start_cache(void)
 {
     if (!ensure_cache_thread())
-        fprintf(stderr, "API cache: failed to start background thread\n");  // obs-ok:pre-existing-diagnostic
+        LOG_WARN("controller", "API cache: failed to start background thread");
 }
 
 void api_stop_cache(void)

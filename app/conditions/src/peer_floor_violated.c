@@ -1,6 +1,7 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0 */
 
 #include "conditions/watchdog_dissolve_pr3.h"
+#include "util/log_macros.h"
 #include "framework/condition.h"
 
 #include "event/event.h"
@@ -83,14 +84,7 @@ static enum condition_remedy_result remedy_peer_floor_violated(void)
         atomic_load(&g_local_height_at_detect),
         atomic_load(&g_peer_max_at_detect),
         &decision);
-    fprintf(stderr,  // obs-ok:condition-peer-floor
-            "[condition:peer_floor_violated] outbound=%d inbound=%d "
-            "peer_max=%d decision=%s reason=%s\n",
-            atomic_load(&g_outbound_at_detect),
-            atomic_load(&g_inbound_at_detect),
-            atomic_load(&g_peer_max_at_detect),
-            recover ? "recover" : "wait",
-            decision.reason);
+    LOG_INFO("condition", "[condition:peer_floor_violated] outbound=%d inbound=%d " "peer_max=%d decision=%s reason=%s", atomic_load(&g_outbound_at_detect), atomic_load(&g_inbound_at_detect), atomic_load(&g_peer_max_at_detect), recover ? "recover" : "wait", decision.reason);
     if (!recover)
         return COND_REMEDY_SKIP;
 

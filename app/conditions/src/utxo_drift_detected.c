@@ -1,6 +1,7 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0 */
 
 #include "conditions/utxo_drift_detected.h"
+#include "util/log_macros.h"
 #include "framework/condition.h"
 
 #include "config/runtime.h"
@@ -84,12 +85,7 @@ static enum condition_remedy_result remedy_utxo_drift_detected(void)
     atomic_fetch_add(&g_test_remedy_calls, 1);
 #endif
 
-    fprintf(stderr,  // obs-ok:condition-utxo-drift
-            "[condition:utxo_drift_detected] height=%" PRId64 " "
-            "local_sha3=%s remote_sha3=%s action=operator_escalation\n",
-            atomic_load(&g_height_at_detect),
-            local[0] ? local : "-",
-            remote[0] ? remote : "-");
+    LOG_WARN("condition", "[condition:utxo_drift_detected] height=%" PRId64 " " "local_sha3=%s remote_sha3=%s action=operator_escalation", atomic_load(&g_height_at_detect), local[0] ? local : "-", remote[0] ? remote : "-");
     event_emitf(EV_UTXO_DRIFT_DETECTED, 0,
                 "condition=utxo_drift_detected height=%lld local_sha3=%s "
                 "remote_sha3=%s",

@@ -9,6 +9,7 @@
  * after_save -> emit EV_MODEL_SAVED */
 
 #include "platform/time_compat.h"
+#include "util/log_macros.h"
 #include "models/peer.h"
 #include "event/event.h"
 #include "storage/peers_projection.h"
@@ -151,8 +152,7 @@ static bool db_peer_save_with_attempts(struct node_db *ndb,
     bool ok = rc == SQLITE_DONE;
     if (!ok) {
         if (health_error) {
-            fprintf(stderr, "peer %s failed: rc=%d msg=%s attempts=%d\n", // obs-ok:paired-with-event_emitf-below
-                    op_name, rc, err_msg, attempts);
+            LOG_WARN("net", "peer %s failed: rc=%d msg=%s attempts=%d", op_name, rc, err_msg, attempts);
         } else {
             fprintf(stderr, "peer %s skipped: rc=%d msg=%s attempts=%d\n",
                     op_name, rc, err_msg, attempts);
@@ -173,8 +173,7 @@ bool db_peer_save(struct node_db *ndb, const struct db_peer *p)
     if (ok && peers_projection_event_log() &&
         !peers_projection_emit_observed(p->ip, p->port, p->services,
                                         p->last_seen, -1)) {
-        fprintf(stderr,  // obs-ok:peers-projection-shadow
-                "peer projection shadow emit failed for save\n");
+        LOG_WARN("net", "peer projection shadow emit failed for save");
     }
     return ok;
 }
@@ -187,8 +186,7 @@ bool db_peer_save_advisory(struct node_db *ndb, const struct db_peer *p)
     if (ok && peers_projection_event_log() &&
         !peers_projection_emit_observed(p->ip, p->port, p->services,
                                         p->last_seen, -1)) {
-        fprintf(stderr,  // obs-ok:peers-projection-shadow
-                "peer projection shadow emit failed for advisory save\n");
+        LOG_WARN("net", "peer projection shadow emit failed for advisory save");
     }
     return ok;
 }
@@ -230,8 +228,7 @@ bool db_peer_delete(struct node_db *ndb, const uint8_t ip[16], uint16_t port)
         ar_run_after_destroy(cbs, &p);
     if (ok && peers_projection_event_log() &&
         !peers_projection_emit_dropped(ip, port, 1)) {
-        fprintf(stderr,  // obs-ok:peers-projection-shadow
-                "peer projection shadow emit failed for delete\n");
+        LOG_WARN("net", "peer projection shadow emit failed for delete");
     }
     return ok;
 }

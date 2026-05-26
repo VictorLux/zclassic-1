@@ -115,9 +115,7 @@ void oracle_policy_record_disagreement(int height,
                                         const char *their_hash_hex)
 {
     if (!g_op.initialized) {
-        fprintf(stderr, // obs-ok:pre-existing-diagnostic
-                "[oracle_policy] record_disagreement called before init "
-                "(h=%d) — call oracle_policy_init() first\n", height);
+        LOG_INFO("oracle_policy", "[oracle_policy] record_disagreement called before init " "(h=%d) — call oracle_policy_init() first", height);
         return;
     }
     int64_t now = (int64_t)platform_time_wall_time_t();
@@ -213,7 +211,7 @@ void oracle_policy_clear(void)
     g_op.ring_count = 0;
     pthread_mutex_unlock(&g_op.lock);
     atomic_store(&g_op.state, OP_NORMAL);
-    fprintf(stderr, "[oracle_policy] state cleared by operator\n"); // obs-ok:pre-existing-diagnostic
+    LOG_WARN("oracle_policy", "[oracle_policy] state cleared by operator");
 }
 
 static const char *op_state_name(enum oracle_policy_state s)

@@ -65,17 +65,7 @@ static void chain_restore_log_first_mismatch(
         uint256_get_hex(at->pprev->phashBlock, pprev_hash);
     if (prev_slot && prev_slot->phashBlock)
         uint256_get_hex(prev_slot->phashBlock, prev_slot_hash);
-    fprintf(stderr, // obs-ok:failure-diagnostic
-            "[chain-integrity] first mismatch detail: h=%d at=%p "
-            "at_h=%d at_hash=%s pprev=%p pprev_h=%d pprev_hash=%s "
-            "prev_slot=%p prev_slot_h=%d prev_slot_hash=%s\n",
-            h, (void *)at, at ? at->nHeight : -1,
-            at_hash[0] ? at_hash : "<null>",
-            at ? (void *)at->pprev : NULL,
-            (at && at->pprev) ? at->pprev->nHeight : -1,
-            pprev_hash[0] ? pprev_hash : "<null>",
-            (void *)prev_slot, prev_slot ? prev_slot->nHeight : -1,
-            prev_slot_hash[0] ? prev_slot_hash : "<null>");
+    LOG_WARN("chain", "[chain-integrity] first mismatch detail: h=%d at=%p " "at_h=%d at_hash=%s pprev=%p pprev_h=%d pprev_hash=%s " "prev_slot=%p prev_slot_h=%d prev_slot_hash=%s", h, (void *)at, at ? at->nHeight : -1, at_hash[0] ? at_hash : "<null>", at ? (void *)at->pprev : NULL, (at && at->pprev) ? at->pprev->nHeight : -1, pprev_hash[0] ? pprev_hash : "<null>", (void *)prev_slot, prev_slot ? prev_slot->nHeight : -1, prev_slot_hash[0] ? prev_slot_hash : "<null>");
 }
 
 int chain_restore_rebuild_active_chain(struct main_state *ms,
@@ -434,9 +424,7 @@ bool chain_restore_block_is_consensus_backed_on_disk(
         uint256_get_hex(&disk_hash, got);
         if (tip->phashBlock)
             uint256_get_hex(tip->phashBlock, want);
-        fprintf(stderr, // obs-ok:pre-existing-diagnostic
-                "[chain-restore] disk hash mismatch at h=%d got=%s want=%s\n",
-                tip->nHeight, got, want[0] ? want : "<null>");
+        LOG_WARN("chain", "[chain-restore] disk hash mismatch at h=%d got=%s want=%s", tip->nHeight, got, want[0] ? want : "<null>");
         ok = false;
     }
 
@@ -449,10 +437,7 @@ bool chain_restore_block_is_consensus_backed_on_disk(
             uint256_get_hex(&blk.header.hashPrevBlock, got);
             if (tip->pprev && tip->pprev->phashBlock)
                 uint256_get_hex(tip->pprev->phashBlock, want);
-            fprintf(stderr, // obs-ok:pre-existing-diagnostic
-                    "[chain-restore] disk prev-hash mismatch at h=%d "
-                    "got=%s want=%s\n",
-                    tip->nHeight, got, want[0] ? want : "<null>");
+            LOG_WARN("chain", "[chain-restore] disk prev-hash mismatch at h=%d " "got=%s want=%s", tip->nHeight, got, want[0] ? want : "<null>");
             ok = false;
         }
     }
@@ -463,16 +448,12 @@ bool chain_restore_block_is_consensus_backed_on_disk(
         char want[65] = {0};
         uint256_get_hex(&blk.header.hashMerkleRoot, got);
         uint256_get_hex(&tip->hashMerkleRoot, want);
-        fprintf(stderr, // obs-ok:pre-existing-diagnostic
-                "[chain-restore] disk merkle mismatch at h=%d got=%s want=%s\n",
-                tip->nHeight, got, want);
+        LOG_WARN("chain", "[chain-restore] disk merkle mismatch at h=%d got=%s want=%s", tip->nHeight, got, want);
         ok = false;
     }
 
     if (ok && tip->nBits != 0 && blk.header.nBits != tip->nBits) {
-        fprintf(stderr, // obs-ok:pre-existing-diagnostic
-                "[chain-restore] disk nBits mismatch at h=%d got=%u want=%u\n",
-                tip->nHeight, blk.header.nBits, tip->nBits);
+        LOG_WARN("chain", "[chain-restore] disk nBits mismatch at h=%d got=%u want=%u", tip->nHeight, blk.header.nBits, tip->nBits);
         ok = false;
     }
 
@@ -500,10 +481,7 @@ struct block_index *chain_restore_nearest_consensus_backed_ancestor_on_disk(
             return walk;
         checked++;
         if (checked >= 4096) {
-            fprintf(stderr, // obs-ok:pre-existing-diagnostic
-                    "[chain-restore] no disk-backed ancestor found within "
-                    "%d blocks below h=%d\n", checked,
-                    tip ? tip->nHeight : -1);
+            LOG_INFO("chain", "[chain-restore] no disk-backed ancestor found within " "%d blocks below h=%d", checked, tip ? tip->nHeight : -1);
             return NULL;
         }
     }
@@ -539,20 +517,12 @@ static void chain_restore_quarantine_synthetic_tip(struct main_state *ms,
     if (replacement->phashBlock)
         uint256_get_hex(replacement->phashBlock, new_hash);
 
-    fprintf(stderr, // obs-ok:pre-existing-diagnostic
-            "[chain-restore] quarantining non-consensus active tip "
-            "h=%d hash=%s status=%u file=%d pos=%u tx=%u chaintx=%lld; "
-            "restoring nearest data-backed ancestor h=%d hash=%s\n",
-            tip->nHeight, old_hash[0] ? old_hash : "<null>",
-            tip->nStatus, tip->nFile, tip->nDataPos, tip->nTx,
-            (long long)tip->nChainTx, replacement->nHeight,
-            new_hash[0] ? new_hash : "<null>");
+    LOG_INFO("chain", "[chain-restore] quarantining non-consensus active tip " "h=%d hash=%s status=%u file=%d pos=%u tx=%u chaintx=%lld; " "restoring nearest data-backed ancestor h=%d hash=%s", tip->nHeight, old_hash[0] ? old_hash : "<null>", tip->nStatus, tip->nFile, tip->nDataPos, tip->nTx, (long long)tip->nChainTx, replacement->nHeight, new_hash[0] ? new_hash : "<null>");
 
     if (!chain_restore_commit_tip_via_csr(
             ms, replacement, ms->pindex_best_header == tip,
             "quarantine_synthetic_tip")) {
-        fprintf(stderr, // obs-ok:pre-existing-diagnostic
-                "[chain-restore] failed to quarantine synthetic tip via csr\n");
+        LOG_WARN("chain", "[chain-restore] failed to quarantine synthetic tip via csr");
     }
 }
 
@@ -572,10 +542,7 @@ static void chain_restore_clear_resolved_anchor(struct main_state *ms,
     if (tip->nHeight < anchor->nHeight)
         return;
 
-    fprintf(stderr, // obs-ok:pre-existing-diagnostic
-            "[chain-restore] clearing restore anchor h=%d after resolving "
-            "active consensus tip h=%d\n",
-            anchor->nHeight, tip->nHeight);
+    LOG_INFO("chain", "[chain-restore] clearing restore anchor h=%d after resolving " "active consensus tip h=%d", anchor->nHeight, tip->nHeight);
     snapsync_set_anchor(NULL);
 }
 
@@ -608,24 +575,13 @@ bool chain_restore_finalize(struct main_state *ms, const char *datadir)
             chain_restore_record_csr_consistency(
                 view.consistent, view.tip_height, view.header_height);
             if (!view.consistent) {
-                fprintf(stderr, // obs-ok:pre-existing-diagnostic
-                    "[chain-integrity] CSR tip/coins divergence at boot: "
-                    "tip_h=%d header_h=%d — first activate_best_chain "
-                    "pass should reconcile\n",
-                    view.tip_height, view.header_height);
+                LOG_INFO("chain", "[chain-integrity] CSR tip/coins divergence at boot: " "tip_h=%d header_h=%d — first activate_best_chain " "pass should reconcile", view.tip_height, view.header_height);
             }
         }
     }
 
     if (!r.ok) {
-        fprintf(stderr, // obs-ok:pre-existing-diagnostic
-            "[chain-integrity] post-restore check FAILED: "
-            "zero_nbits=%d (first_h=%d) tip_window_holes=%d (first_h=%d) "
-            "total_holes=%d mismatches=%d (first_h=%d) tip_h=%d\n",
-            r.zero_nbits_count, r.first_nbits_zero_height,
-            r.tip_window_holes, r.first_tip_window_hole,
-            r.active_chain_holes, r.active_chain_mismatches,
-            r.first_mismatch_height, r.tip_height);
+        LOG_WARN("chain", "[chain-integrity] post-restore check FAILED: " "zero_nbits=%d (first_h=%d) tip_window_holes=%d (first_h=%d) " "total_holes=%d mismatches=%d (first_h=%d) tip_h=%d", r.zero_nbits_count, r.first_nbits_zero_height, r.tip_window_holes, r.first_tip_window_hole, r.active_chain_holes, r.active_chain_mismatches, r.first_mismatch_height, r.tip_height);
         chain_restore_log_first_mismatch(&ms->chain_active,
                                          r.first_mismatch_height);
     } else if (tip) {

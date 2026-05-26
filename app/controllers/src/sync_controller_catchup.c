@@ -325,10 +325,7 @@ int sapling_tree_rebuild(struct node_db *ndb,
                     total_commitments =
                         (int)incremental_tree_size(&tree);
                     ckpt_h = flat_h; /* skip the SQLite fallback below */
-                    fprintf(stderr, "sapling_tree_rebuild: resuming "  // obs-ok:helper-context-logged
-                        "from flat-file checkpoint h=%lld "
-                        "(%d commitments,)\n",
-                        (long long)flat_h, total_commitments);
+                    LOG_INFO("sapling_tree_rebuild", "sapling_tree_rebuild: resuming " "from flat-file checkpoint h=%lld " "(%d commitments,)", (long long)flat_h, total_commitments);
                     fflush(stderr);
                 }
             }
@@ -359,9 +356,7 @@ int sapling_tree_rebuild(struct node_db *ndb,
                         start_height = (int)ckpt_h + 1;
                         total_commitments =
                             (int)incremental_tree_size(&tree);
-                        fprintf(stderr, "sapling_tree_rebuild: resuming "  // obs-ok:helper-context-logged
-                            "from checkpoint h=%d (%d commitments)\n",
-                            (int)ckpt_h, total_commitments);
+                        LOG_INFO("sapling_tree_rebuild", "sapling_tree_rebuild: resuming " "from checkpoint h=%d (%d commitments)", (int)ckpt_h, total_commitments);
                         fflush(stderr);
                     } else {
                         /* Checkpoint root doesn't match — start fresh */
@@ -374,10 +369,7 @@ int sapling_tree_rebuild(struct node_db *ndb,
                         start_height = (int)ckpt_h + 1;
                         total_commitments =
                             (int)incremental_tree_size(&tree);
-                        fprintf(stderr, "sapling_tree_rebuild: resuming "  // obs-ok:helper-context-logged
-                            "from unverified checkpoint h=%d "
-                            "(%d commitments)\n",
-                            (int)ckpt_h, total_commitments);
+                        LOG_INFO("sapling_tree_rebuild", "sapling_tree_rebuild: resuming " "from unverified checkpoint h=%d " "(%d commitments)", (int)ckpt_h, total_commitments);
                         fflush(stderr);
                     } else {
                         sapling_tree_init(&tree);
@@ -387,8 +379,7 @@ int sapling_tree_rebuild(struct node_db *ndb,
         }
     }
 
-    fprintf(stderr, "sapling_tree_rebuild: replaying h=%d..%d\n",  // obs-ok:helper-context-logged
-            start_height, chain_tip);
+    LOG_INFO("sapling_tree_rebuild", "sapling_tree_rebuild: replaying h=%d..%d", start_height, chain_tip);
     fflush(stderr);
 
     int64_t t_replay_start = GetTimeMillis();
@@ -455,9 +446,7 @@ int sapling_tree_rebuild(struct node_db *ndb,
 
         if (is_checkpoint) {
 
-            fprintf(stderr, "  sapling_tree_rebuild: h=%d/%d "  // obs-ok:helper-context-logged
-                "commitments=%d mismatches=%d\n",
-                h, chain_tip, total_commitments, mismatches);
+            LOG_WARN("sapling_tree_rebuild", "  sapling_tree_rebuild: h=%d/%d " "commitments=%d mismatches=%d", h, chain_tip, total_commitments, mismatches);
             fflush(stderr);
 
             /* Persist tree checkpoint to survive crashes */
@@ -497,12 +486,8 @@ int sapling_tree_rebuild(struct node_db *ndb,
     int replayed_blocks = (chain_tip >= start_height)
                           ? (chain_tip - start_height + 1)
                           : 0;
-    fprintf(stderr, "sapling_tree_rebuild: replayed %d blocks in %lld ms\n",  // obs-ok:helper-context-logged
-            replayed_blocks, (long long)replay_ms);
-    fprintf(stderr, "sapling_tree_rebuild: DONE commitments=%d "  // obs-ok:helper-context-logged
-        "mismatches=%d root=%s match=%s\n",
-        total_commitments, mismatches, root_hex,
-        match ? "YES" : "NO");
+    LOG_INFO("sapling_tree_rebuild", "sapling_tree_rebuild: replayed %d blocks in %lld ms", replayed_blocks, (long long)replay_ms);
+    LOG_WARN("sapling_tree_rebuild", "sapling_tree_rebuild: DONE commitments=%d " "mismatches=%d root=%s match=%s", total_commitments, mismatches, root_hex, match ? "YES" : "NO");
     fflush(stderr);
 
     /* Copy to caller via ndb — the boot code will read it back */
@@ -563,7 +548,7 @@ int node_db_sync_catchup(struct node_db *ndb,
 
     /* Verify connection works before starting */
     if (!node_db_begin(ndb)) {
-        fprintf(stderr, "catchup: BEGIN failed — aborting\n");  // obs-ok:helper-context-logged
+        LOG_WARN("catchup", "catchup: BEGIN failed — aborting");
         if (!sync_db_turbo_scope_end(&turbo_mode))
             fprintf(stderr, "catchup: failed to restore normal mode after BEGIN failure\n");
         restore_ok = false;
@@ -572,7 +557,7 @@ int node_db_sync_catchup(struct node_db *ndb,
     }
     tx_open = true;
     if (!node_db_commit(ndb)) {
-        fprintf(stderr, "catchup: initial COMMIT failed — aborting\n");  // obs-ok:helper-context-logged
+        LOG_WARN("catchup", "catchup: initial COMMIT failed — aborting");
         node_db_rollback(ndb);
         if (!sync_db_turbo_scope_end(&turbo_mode))
             fprintf(stderr, "catchup: failed to restore normal mode after initial COMMIT failure\n");
@@ -608,7 +593,7 @@ int node_db_sync_catchup(struct node_db *ndb,
     }
 
     if (!node_db_begin(ndb)) {
-        fprintf(stderr, "catchup: failed to open main transaction\n");  // obs-ok:helper-context-logged
+        LOG_WARN("catchup", "catchup: failed to open main transaction");
         if (!sync_db_turbo_scope_end(&turbo_mode))
             fprintf(stderr, "catchup: failed to restore normal mode after tx open failure\n");
         restore_ok = false;
@@ -637,16 +622,14 @@ int node_db_sync_catchup(struct node_db *ndb,
                                           &cached_size);
             cached_file = cached_data ? pindex->nFile : -1;
             if (!cached_data) {
-                fprintf(stderr, "catchup: failed to mmap file blk%05d.dat\n",  // obs-ok:helper-context-logged
-                        pindex->nFile);
+                LOG_WARN("catchup", "catchup: failed to mmap file blk%05d.dat", pindex->nFile);
                 failed = true;
                 break;
             }
         }
 
         if (pindex->nDataPos >= cached_size) {
-            fprintf(stderr, "catchup: malformed block data offset at height %d\n",  // obs-ok:helper-context-logged
-                    h);
+            LOG_INFO("catchup", "catchup: malformed block data offset at height %d", h);
             failed = true;
             break;
         }
@@ -666,8 +649,7 @@ int node_db_sync_catchup(struct node_db *ndb,
 
         /* Lean index: block header + txid index */
         if (!sync_block_lean(ndb, &blk, pindex)) {
-            fprintf(stderr, "catchup: lean index failed at height %d (sqlite=%s)\n",  // obs-ok:helper-context-logged
-                    h, sqlite3_errmsg(ndb->db));
+            LOG_WARN("catchup", "catchup: lean index failed at height %d (sqlite=%s)", h, sqlite3_errmsg(ndb->db));
             block_free(&blk);
             failed = true;
             break;
@@ -680,8 +662,7 @@ int node_db_sync_catchup(struct node_db *ndb,
                 bool tx_ok = false;
                 if (!node_db_sync_wallet_tx_checked(ndb, &blk.vtx[i], w, h,
                                                    &tx_is_ours, &tx_ok) || !tx_ok) {
-                    fprintf(stderr, "catchup: wallet tx sync failed at height %d "  // obs-ok:helper-context-logged
-                            "(tx=%d)\n", h, (int)i);
+                    LOG_WARN("catchup", "catchup: wallet tx sync failed at height %d " "(tx=%d)", h, (int)i);
                     block_free(&blk);
                     failed = true;
                     break;
@@ -692,8 +673,7 @@ int node_db_sync_catchup(struct node_db *ndb,
                 catchup_try_sapling_decrypt(ndb, &blk.vtx[i], w, h,
                                            &decrypt_ok);
                 if (!decrypt_ok) {
-                    fprintf(stderr, "catchup: sapling decrypt failed at height %d "  // obs-ok:helper-context-logged
-                            "(tx=%d)\n", h, (int)i);
+                    LOG_WARN("catchup", "catchup: sapling decrypt failed at height %d " "(tx=%d)", h, (int)i);
                     block_free(&blk);
                     failed = true;
                     break;
@@ -705,10 +685,7 @@ int node_db_sync_catchup(struct node_db *ndb,
                         ndb,
                         blk.vtx[i].v_shielded_spend[si].nullifier.data,
                         mtx->hash.data)) {
-                        fprintf(stderr,  // obs-ok:helper-context-logged
-                                "catchup: sapling spend update failed at height %d "
-                                "(tx=%d, spend=%zu)\n",
-                                h, (int)i, si);
+                        LOG_WARN("catchup", "catchup: sapling spend update failed at height %d " "(tx=%d, spend=%zu)", h, (int)i, si);
                         block_free(&blk);
                         failed = true;
                         break;
@@ -721,8 +698,7 @@ int node_db_sync_catchup(struct node_db *ndb,
 
         /* Advance Sapling tree + wallet witnesses */
         if (!advance_wallet_witnesses(ndb, &blk, &sapling_tree, h)) {
-            fprintf(stderr, "catchup: witness/tree advance failed at height %d\n",  // obs-ok:helper-context-logged
-                    h);
+            LOG_WARN("catchup", "catchup: witness/tree advance failed at height %d", h);
             block_free(&blk);
             failed = true;
             break;
@@ -737,19 +713,17 @@ int node_db_sync_catchup(struct node_db *ndb,
         if (indexed % batch_size == 0) {
             if (pindex->phashBlock) {
                 if (!node_db_sync_set_tip(ndb, pindex->phashBlock->data, h)) {
-                    fprintf(stderr,  // obs-ok:helper-context-logged
-                            "catchup: failed to set tip at batch commit %d\n",
-                            h);
+                    LOG_WARN("catchup", "catchup: failed to set tip at batch commit %d", h);
                     failed = true;
                     break;
                 }
             } else {
-                fprintf(stderr, "catchup: missing hash at batch commit %d\n", h);  // obs-ok:helper-context-logged
+                LOG_WARN("catchup", "catchup: missing hash at batch commit %d", h);
                 failed = true;
                 break;
             }
             if (!node_db_commit(ndb)) {
-                fprintf(stderr, "catchup: batch COMMIT failed at height %d\n", h);  // obs-ok:helper-context-logged
+                LOG_WARN("catchup", "catchup: batch COMMIT failed at height %d", h);
                 node_db_rollback(ndb);
                 tx_open = false;
                 failed = true;
@@ -763,7 +737,7 @@ int node_db_sync_catchup(struct node_db *ndb,
                    indexed, total, h, rate, wallet_hits);
             fflush(stdout);
             if (!node_db_begin(ndb)) {
-                fprintf(stderr, "catchup: failed to reopen transaction after batch commit\n");  // obs-ok:helper-context-logged
+                LOG_WARN("catchup", "catchup: failed to reopen transaction after batch commit");
                 failed = true;
                 break;
             }
@@ -775,7 +749,7 @@ int node_db_sync_catchup(struct node_db *ndb,
 
     if (failed) {
         if (tx_open && !node_db_rollback(ndb))
-            fprintf(stderr, "catchup: rollback failed after failure\n");  // obs-ok:helper-context-logged
+            LOG_WARN("catchup", "catchup: rollback failed after failure");
         tx_open = false;
     }
 
@@ -785,19 +759,18 @@ int node_db_sync_catchup(struct node_db *ndb,
             if (!node_db_sync_set_tip(ndb,
                                       last_indexed_tip->phashBlock->data,
                                       last_indexed_height)) {
-                fprintf(stderr,  // obs-ok:helper-context-logged
-                        "catchup: failed to set tip before final commit\n");
+                LOG_WARN("catchup", "catchup: failed to set tip before final commit");
                 failed = true;
             }
         } else {
-            fprintf(stderr, "catchup: final commit missing tip hash\n");  // obs-ok:helper-context-logged
+            LOG_WARN("catchup", "catchup: final commit missing tip hash");
             failed = true;
         }
         if (!failed) {
             if (!node_db_commit(ndb)) {
-                fprintf(stderr, "catchup: final COMMIT failed\n");  // obs-ok:helper-context-logged
+                LOG_WARN("catchup", "catchup: final COMMIT failed");
                 if (!node_db_rollback(ndb))
-                    fprintf(stderr, "catchup: final ROLLBACK failed\n");  // obs-ok:helper-context-logged
+                    LOG_WARN("catchup", "catchup: final ROLLBACK failed");
                 tx_open = false;
                 failed = true;
                 last_indexed_height = last_committed_height;
@@ -810,13 +783,13 @@ int node_db_sync_catchup(struct node_db *ndb,
 
     if (failed) {
         if (tx_open && !node_db_rollback(ndb))
-            fprintf(stderr, "catchup: final rollback path failed\n");  // obs-ok:helper-context-logged
+            LOG_WARN("catchup", "catchup: final rollback path failed");
         interrupted = false;
     }
 
     /* Restore safe pragmas and rebuild indexes */
     if (!sync_db_turbo_scope_end(&turbo_mode)) {
-        fprintf(stderr, "catchup: failed to restore normal mode\n");  // obs-ok:helper-context-logged
+        LOG_WARN("catchup", "catchup: failed to restore normal mode");
         restore_ok = false;
     }
 
@@ -875,8 +848,7 @@ static void *node_db_sync_catchup_job_thread(void *arg)
         char path[1024];
         if (snprintf(path, sizeof(path), "%s/node.db",
                      job->args.datadir) >= (int)sizeof(path)) {
-            fprintf(stderr, "catchup: datadir path too long: %s\n",  // obs-ok:helper-context-logged
-                    job->args.datadir);
+            LOG_INFO("catchup", "catchup: datadir path too long: %s", job->args.datadir);
         } else {
             private_open = node_db_open(&catchup_db, path);
             if (private_open) {
@@ -1156,7 +1128,7 @@ int node_db_sync_wallet_keys(struct node_db *ndb,
         return 0;
 
     if (!sync_run_write(ndb, node_db_sync_wallet_keys_write, &ctx)) {
-        fprintf(stderr, "SQLite: wallet key sync failed\n");  // obs-ok:helper-context-logged
+        LOG_WARN("sync", "SQLite: wallet key sync failed");
         return 0;
     }
 
@@ -1232,7 +1204,7 @@ int node_db_sync_mempool_save(struct node_db *ndb,
     if (!ndb->open || !mempool) return 0;
 
     if (!sync_run_write(ndb, node_db_sync_mempool_save_write, &ctx)) {
-        fprintf(stderr, "SQLite: mempool save failed\n");  // obs-ok:helper-context-logged
+        LOG_WARN("sync", "SQLite: mempool save failed");
         return 0;
     }
 

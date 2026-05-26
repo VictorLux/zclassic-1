@@ -105,10 +105,7 @@ bool bii_write_sidecar(const char *datadir)
      * something is truncating the file concurrently, which is a
      * bigger problem than this function can solve. */
     if (hashed_size != hdr.body_size) {
-        fprintf(stderr, // obs-ok:pre-existing-diagnostic
-                "bii_write_sidecar: size drift stat=%llu hashed=%llu\n",
-                (unsigned long long)hdr.body_size,
-                (unsigned long long)hashed_size);
+        LOG_WARN("bii_write_sidecar", "bii_write_sidecar: size drift stat=%llu hashed=%llu", (unsigned long long)hdr.body_size, (unsigned long long)hashed_size);
         return false;
     }
 
@@ -292,9 +289,7 @@ static void bii_rename_if_present(const char *src, int64_t ts,
     char dst[1200];
     snprintf(dst, sizeof(dst), "%s.corrupt.%lld", src, (long long)ts);
     if (rename(src, dst) != 0) {
-        fprintf(stderr, // obs-ok:pre-existing-diagnostic
-                "bii_quarantine: rename %s -> %s failed: %s\n",
-                src, dst, strerror(errno));
+        LOG_WARN("bii_quarantine", "bii_quarantine: rename %s -> %s failed: %s", src, dst, strerror(errno));
         return;
     }
     printf("bii: quarantined %s -> %s (%s)\n", src, dst, label);

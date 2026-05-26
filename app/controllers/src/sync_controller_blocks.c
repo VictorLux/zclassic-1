@@ -365,9 +365,7 @@ static bool node_db_sync_connect_block_local(struct node_db *ndb,
                  * will be rebuilt at next boot (Phase 1.2). */
                 if (!atomic_load(&g_sapling_tree_rebuilding)) {
                     atomic_store(&g_sapling_tree_rebuilding, true);
-                    fprintf(stderr, "Sapling tree incomplete "  // obs-ok:helper-context-logged
-                        "(size=%zu at h=%d) — flagged for rebuild\n",
-                        tsize, pindex->nHeight);
+                    LOG_WARN("sync", "Sapling tree incomplete " "(size=%zu at h=%d) — flagged for rebuild", tsize, pindex->nHeight);
                     fflush(stderr);
                 }
             } else {
@@ -380,9 +378,7 @@ static bool node_db_sync_connect_block_local(struct node_db *ndb,
                 static int log_count = 0;
                 if (log_count < 5) {
                     log_count++;
-                    fprintf(stderr, "WARNING: Sapling tree mismatch "  // obs-ok:helper-context-logged
-                        "at h=%d (size=%zu) — will rebuild at next boot\n",
-                        pindex->nHeight, tsize);
+                    LOG_WARN("sync", "Sapling tree mismatch " "at h=%d (size=%zu) — will rebuild at next boot", pindex->nHeight, tsize);
                     fflush(stderr);
                 }
                 if (!atomic_load(&g_sapling_tree_rebuilding))

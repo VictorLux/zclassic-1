@@ -136,9 +136,7 @@ static bool ensure_log_schema(sqlite3 *db)
         ")";
     char *err = NULL;
     if (sqlite3_exec(db, sql, NULL, NULL, &err) != SQLITE_OK) {
-        fprintf(stderr,  // obs-ok:utxo-apply-schema-failure
-                "[utxo_apply] schema ensure failed: %s\n",
-                err ? err : "(no message)");
+        LOG_WARN("utxo_apply", "[utxo_apply] schema ensure failed: %s", err ? err : "(no message)");
         if (err) sqlite3_free(err);
         return false;
     }
@@ -151,9 +149,7 @@ static uint64_t upstream_cursor_persisted(sqlite3 *db, const char *name)
     if (sqlite3_prepare_v2(db,
         "SELECT cursor FROM stage_cursor WHERE name = ?",
         -1, &st, NULL) != SQLITE_OK) {
-        fprintf(stderr,  // obs-ok:utxo-apply-upstream-prepare-failure
-                "[utxo_apply] upstream cursor prepare failed: %s\n",
-                sqlite3_errmsg(db));
+        LOG_WARN("utxo_apply", "[utxo_apply] upstream cursor prepare failed: %s", sqlite3_errmsg(db));
         return 0;
     }
     sqlite3_bind_text(st, 1, name, -1, SQLITE_STATIC);
@@ -173,9 +169,7 @@ static int proof_validate_log_at(sqlite3 *db, int height,
     if (sqlite3_prepare_v2(db,
         "SELECT ok FROM proof_validate_log WHERE height = ?",
         -1, &st, NULL) != SQLITE_OK) {
-        fprintf(stderr,  // obs-ok:utxo-apply-proof-log-prepare-failure
-                "[utxo_apply] proof_validate_log prepare failed: %s\n",
-                sqlite3_errmsg(db));
+        LOG_WARN("utxo_apply", "[utxo_apply] proof_validate_log prepare failed: %s", sqlite3_errmsg(db));
         return -1;  // raw-return-ok:logged-above
     }
     sqlite3_bind_int(st, 1, height);
@@ -203,9 +197,7 @@ static bool log_insert(sqlite3 *db, int height, const char *status, bool ok,
         "VALUES (?,?,?,?,?,?,?,?,?)",
         -1, &stmt, NULL);
     if (rc != SQLITE_OK) {
-        fprintf(stderr,  // obs-ok:utxo-apply-log-prepare-failure
-                "[utxo_apply] prepare insert failed: %s\n",
-                sqlite3_errmsg(db));
+        LOG_WARN("utxo_apply", "[utxo_apply] prepare insert failed: %s", sqlite3_errmsg(db));
         return false;
     }
     sqlite3_bind_int64(stmt, 1, (sqlite3_int64)height);
@@ -226,8 +218,7 @@ static bool log_insert(sqlite3 *db, int height, const char *status, bool ok,
     rc = sqlite3_step(stmt);  // raw-sql-ok:kernel-primitive
     sqlite3_finalize(stmt);
     if (rc != SQLITE_DONE) {
-        fprintf(stderr,  // obs-ok:utxo-apply-log-insert-failure
-                "[utxo_apply] insert height=%d rc=%d\n", height, rc);
+        LOG_WARN("utxo_apply", "[utxo_apply] insert height=%d rc=%d", height, rc);
         return false;
     }
     return true;
@@ -239,9 +230,7 @@ static int64_t log_row_count(sqlite3 *db)
     if (sqlite3_prepare_v2(db,
         "SELECT COUNT(*) FROM utxo_apply_log",
         -1, &st, NULL) != SQLITE_OK) {
-        fprintf(stderr,  // obs-ok:utxo-apply-count-prepare-failure
-                "[utxo_apply] log count prepare failed: %s\n",
-                sqlite3_errmsg(db));
+        LOG_WARN("utxo_apply", "[utxo_apply] log count prepare failed: %s", sqlite3_errmsg(db));
         return -1;  // raw-return-ok:logged-above
     }
     int64_t n = -1;
@@ -609,8 +598,7 @@ bool utxo_apply_stage_init(struct main_state *ms)
     g_stage = s;
     pthread_mutex_unlock(&g_lock);
 
-    fprintf(stderr,  // obs-ok:utxo-apply-lifecycle
-            "[utxo_apply] stage initialised (shadow mode)\n");
+    LOG_INFO("utxo_apply", "[utxo_apply] stage initialised (shadow mode)");
     return true;
 }
 

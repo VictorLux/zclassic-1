@@ -19,6 +19,7 @@
  *   belongs_to :sapling_key */
 
 #include "platform/time_compat.h"
+#include "util/log_macros.h"
 #include "models/wallet_tx.h"
 #include "models/block.h"
 #include "models/wallet_key.h"
@@ -115,8 +116,7 @@ static void wallet_tx_after_save(void *record, void *ctx)
     if (!wallet_projection_emit_tx_seen(t->txid,
             t->has_block ? t->block_height : -1,
             t->fee, t->from_me ? 1u : 0u)) {
-        fprintf(stderr,  // obs-ok:wallet-projection-shadow-emit
-                "[wallet_projection] tx seen shadow emit failed\n");
+        LOG_WARN("wallet_projection", "[wallet_projection] tx seen shadow emit failed");
     }
 }
 
@@ -157,8 +157,7 @@ static void wallet_utxo_after_save(void *record, void *ctx)
                 u->vout, (long long)u->value);
     if (!wallet_projection_emit_utxo_seen(u->txid, u->vout, u->value,
             u->address_hash, u->height, u->is_coinbase ? 1u : 0u)) {
-        fprintf(stderr,  // obs-ok:wallet-projection-shadow-emit
-                "[wallet_projection] utxo seen shadow emit failed\n");
+        LOG_WARN("wallet_projection", "[wallet_projection] utxo seen shadow emit failed");
     }
 }
 
@@ -858,8 +857,7 @@ bool db_sapling_note_save(struct node_db *ndb, const struct db_sapling_note *n)
     AR_FINALIZE(s);
     if (ok && !wallet_projection_emit_note_decrypted(
             n->txid, n->output_index, n->value, n->cm, n->block_height)) {
-        fprintf(stderr,  // obs-ok:wallet-projection-shadow-emit
-                "[wallet_projection] note decrypted shadow emit failed\n");
+        LOG_WARN("wallet_projection", "[wallet_projection] note decrypted shadow emit failed");
     }
     AR_FINISH_SAVE(cbs, n, ok);
 }

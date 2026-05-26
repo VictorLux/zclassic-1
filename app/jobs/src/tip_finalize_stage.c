@@ -77,9 +77,7 @@ static bool ensure_log_schema(sqlite3 *db)
         ")";
     char *err = NULL;
     if (sqlite3_exec(db, sql, NULL, NULL, &err) != SQLITE_OK) {
-        fprintf(stderr,  // obs-ok:tip-finalize-schema-failure
-                "[tip_finalize] schema ensure failed: %s\n",
-                err ? err : "(no message)");
+        LOG_WARN("tip_finalize", "[tip_finalize] schema ensure failed: %s", err ? err : "(no message)");
         if (err) sqlite3_free(err);
         return false;
     }
@@ -87,9 +85,7 @@ static bool ensure_log_schema(sqlite3 *db)
         "ALTER TABLE tip_finalize_log ADD COLUMN tip_hash BLOB",
         NULL, NULL, &err) != SQLITE_OK) {
         if (!err || strstr(err, "duplicate column name") == NULL) {
-            fprintf(stderr,  // obs-ok:tip-finalize-schema-failure
-                    "[tip_finalize] schema alter failed: %s\n",
-                    err ? err : "(no message)");
+            LOG_WARN("tip_finalize", "[tip_finalize] schema alter failed: %s", err ? err : "(no message)");
             if (err) sqlite3_free(err);
             return false;
         }
@@ -104,9 +100,7 @@ static uint64_t upstream_cursor_persisted(sqlite3 *db, const char *name)
     if (sqlite3_prepare_v2(db,
         "SELECT cursor FROM stage_cursor WHERE name = ?",
         -1, &st, NULL) != SQLITE_OK) {
-        fprintf(stderr,  // obs-ok:tip-finalize-upstream-prepare-failure
-                "[tip_finalize] upstream cursor prepare failed: %s\n",
-                sqlite3_errmsg(db));
+        LOG_WARN("tip_finalize", "[tip_finalize] upstream cursor prepare failed: %s", sqlite3_errmsg(db));
         return 0;
     }
     sqlite3_bind_text(st, 1, name, -1, SQLITE_STATIC);
@@ -127,9 +121,7 @@ static int utxo_apply_log_at(sqlite3 *db, int height,
         "SELECT ok, spent_count, added_count "
         "FROM utxo_apply_log WHERE height = ?",
         -1, &st, NULL) != SQLITE_OK) {
-        fprintf(stderr,  // obs-ok:tip-finalize-utxo-log-prepare-failure
-                "[tip_finalize] utxo_apply_log prepare failed: %s\n",
-                sqlite3_errmsg(db));
+        LOG_WARN("tip_finalize", "[tip_finalize] utxo_apply_log prepare failed: %s", sqlite3_errmsg(db));
         return -1;  // raw-return-ok:logged-above
     }
     sqlite3_bind_int(st, 1, height);
@@ -157,9 +149,7 @@ static bool utxo_apply_sums_through(sqlite3 *db, int height,
         "       COALESCE(SUM(added_count),0) "
         "FROM utxo_apply_log WHERE height <= ? AND ok = 1",
         -1, &st, NULL) != SQLITE_OK) {
-        fprintf(stderr,  // obs-ok:tip-finalize-utxo-sum-prepare-failure
-                "[tip_finalize] utxo_apply_log sum prepare failed: %s\n",
-                sqlite3_errmsg(db));
+        LOG_WARN("tip_finalize", "[tip_finalize] utxo_apply_log sum prepare failed: %s", sqlite3_errmsg(db));
         return false;
     }
     sqlite3_bind_int(st, 1, height);
@@ -186,9 +176,7 @@ static bool log_insert(sqlite3 *db, int height, const char *status, bool ok,
         "VALUES (?,?,?,?,?,?,?,?,?)",
         -1, &stmt, NULL);
     if (rc != SQLITE_OK) {
-        fprintf(stderr,  // obs-ok:tip-finalize-log-prepare-failure
-                "[tip_finalize] prepare insert failed: %s\n",
-                sqlite3_errmsg(db));
+        LOG_WARN("tip_finalize", "[tip_finalize] prepare insert failed: %s", sqlite3_errmsg(db));
         return false;
     }
 
@@ -213,8 +201,7 @@ static bool log_insert(sqlite3 *db, int height, const char *status, bool ok,
     rc = sqlite3_step(stmt);  // raw-sql-ok:kernel-primitive
     sqlite3_finalize(stmt);
     if (rc != SQLITE_DONE) {
-        fprintf(stderr,  // obs-ok:tip-finalize-log-insert-failure
-                "[tip_finalize] insert height=%d rc=%d\n", height, rc);
+        LOG_WARN("tip_finalize", "[tip_finalize] insert height=%d rc=%d", height, rc);
         return false;
     }
     return true;
@@ -228,9 +215,7 @@ static bool finalized_tip_row_at(sqlite3 *db, int height,
     if (sqlite3_prepare_v2(db,
         "SELECT ok, tip_hash FROM tip_finalize_log WHERE height = ?",
         -1, &st, NULL) != SQLITE_OK) {
-        fprintf(stderr,  // obs-ok:tip-finalize-hash-prepare-failure
-                "[tip_finalize] finalized row prepare failed: %s\n",
-                sqlite3_errmsg(db));
+        LOG_WARN("tip_finalize", "[tip_finalize] finalized row prepare failed: %s", sqlite3_errmsg(db));
         return false;
     }
     sqlite3_bind_int(st, 1, height);
@@ -245,9 +230,7 @@ static bool finalized_tip_row_at(sqlite3 *db, int height,
             out->has_tip_hash = true;
         }
     } else if (rc != SQLITE_DONE) {
-        fprintf(stderr,  // obs-ok:tip-finalize-hash-step-failure
-                "[tip_finalize] finalized row step failed rc=%d: %s\n",
-                rc, sqlite3_errmsg(db));
+        LOG_WARN("tip_finalize", "[tip_finalize] finalized row step failed rc=%d: %s", rc, sqlite3_errmsg(db));
         sqlite3_finalize(st);
         return false;
     }
@@ -261,9 +244,7 @@ static int64_t log_row_count(sqlite3 *db)
     if (sqlite3_prepare_v2(db,
         "SELECT COUNT(*) FROM tip_finalize_log",
         -1, &st, NULL) != SQLITE_OK) {
-        fprintf(stderr,  // obs-ok:tip-finalize-count-prepare-failure
-                "[tip_finalize] log count prepare failed: %s\n",
-                sqlite3_errmsg(db));
+        LOG_WARN("tip_finalize", "[tip_finalize] log count prepare failed: %s", sqlite3_errmsg(db));
         return -1;  // raw-return-ok:logged-above
     }
     int64_t n = -1;
@@ -332,9 +313,7 @@ static bool rewind_cursor_if_active_chain_reorged(sqlite3 *db)
     if (cursor == 0)
         return true;
     if (cursor > (uint64_t)INT32_MAX) {
-        fprintf(stderr,  // obs-ok:tip-finalize-rewind-failure
-                "[tip_finalize] reorg rewind cursor too large: %llu\n",
-                (unsigned long long)cursor);
+        LOG_WARN("tip_finalize", "[tip_finalize] reorg rewind cursor too large: %llu", (unsigned long long)cursor);
         return false;
     }
 
@@ -360,10 +339,7 @@ static bool rewind_cursor_if_active_chain_reorged(sqlite3 *db)
         return true;
 
     if (!stage_set_cursor(g_stage, db, rewind_to)) {
-        fprintf(stderr,  // obs-ok:tip-finalize-rewind-failure
-                "[tip_finalize] reorg rewind failed from=%llu to=%llu\n",
-                (unsigned long long)cursor,
-                (unsigned long long)rewind_to);
+        LOG_WARN("tip_finalize", "[tip_finalize] reorg rewind failed from=%llu to=%llu", (unsigned long long)cursor, (unsigned long long)rewind_to);
         return false;
     }
 
@@ -535,8 +511,7 @@ bool tip_finalize_stage_init(struct main_state *ms)
     g_stage = s;
     pthread_mutex_unlock(&g_lock);
 
-    fprintf(stderr,  // obs-ok:tip-finalize-lifecycle
-            "[tip_finalize] stage initialised (shadow mode)\n");
+    LOG_INFO("tip_finalize", "[tip_finalize] stage initialised (shadow mode)");
     return true;
 }
 

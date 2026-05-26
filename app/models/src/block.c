@@ -16,6 +16,7 @@
  * after_save -> emit EV_MODEL_SAVED */
 
 #include "models/block.h"
+#include "util/log_macros.h"
 #include "models/tx_index.h"
 #include "models/utxo.h"
 #include "chain/chain.h"
@@ -138,10 +139,7 @@ static bool db_block_step_done_retry(sqlite3 *db,
     if (rc != SQLITE_DONE) {
         char hash_hex[65];
         db_block_hash_hex(hash, hash_hex);
-        fprintf(stderr, "%s: failed height=%d hash=%s step_rc=%d " // obs-ok:model save returns false with exact sqlite rc
-                "step_msg=%s db_rc=%d db_msg=%s attempts=%d\n",
-                stmt_name, height, hash_hex, rc, sqlite3_errstr(rc),
-                sqlite3_errcode(db), sqlite3_errmsg(db), attempts);
+        LOG_WARN("chain", "%s: failed height=%d hash=%s step_rc=%d " "step_msg=%s db_rc=%d db_msg=%s attempts=%d", stmt_name, height, hash_hex, rc, sqlite3_errstr(rc), sqlite3_errcode(db), sqlite3_errmsg(db), attempts);
     }
 
     if (rc_out)
@@ -287,20 +285,10 @@ bool db_block_save(struct node_db *ndb, const struct db_block *b)
         if (db_block_step_is_retryable(rc)) {
             lock_err_count++;
             if (lock_err_count <= 3 || (lock_err_count % 1000 == 0)) {
-                fprintf(stderr, "db_block_save: locked stmt=block_insert " // obs-ok:model save returns false after bounded retry
-                        "height=%d hash=%s attempts=%d total=%d "
-                        "step_rc=%d step_msg=%s db_rc=%d db_msg=%s\n",
-                        b->height, hash_hex, attempts, lock_err_count,
-                        rc, sqlite3_errstr(rc), sqlite3_errcode(ndb->db),
-                        sqlite3_errmsg(ndb->db));
+                LOG_WARN("db_block_save", "db_block_save: locked stmt=block_insert " "height=%d hash=%s attempts=%d total=%d " "step_rc=%d step_msg=%s db_rc=%d db_msg=%s", b->height, hash_hex, attempts, lock_err_count, rc, sqlite3_errstr(rc), sqlite3_errcode(ndb->db), sqlite3_errmsg(ndb->db));
             }
         } else {
-            fprintf(stderr, "db_block_save: failed stmt=block_insert " // obs-ok:model save returns false with exact sqlite rc
-                    "height=%d hash=%s step_rc=%d step_msg=%s "
-                    "db_rc=%d db_msg=%s attempts=%d\n",
-                    b->height, hash_hex, rc, sqlite3_errstr(rc),
-                    sqlite3_errcode(ndb->db), sqlite3_errmsg(ndb->db),
-                    attempts);
+            LOG_WARN("db_block_save", "db_block_save: failed stmt=block_insert " "height=%d hash=%s step_rc=%d step_msg=%s " "db_rc=%d db_msg=%s attempts=%d", b->height, hash_hex, rc, sqlite3_errstr(rc), sqlite3_errcode(ndb->db), sqlite3_errmsg(ndb->db), attempts);
         }
     }
 
@@ -339,11 +327,7 @@ bool db_block_save_canonical(struct node_db *ndb, const struct db_block *b)
     if (prep_rc != SQLITE_OK || !s) {
         char hash_hex[65];
         db_block_hash_hex(b->hash, hash_hex);
-        fprintf(stderr, "db_block_save_canonical: prepare failed " // obs-ok:pre-existing-diagnostic
-                "stmt=block_demote_same_height height=%d hash=%s "
-                "prep_rc=%d prep_msg=%s db_rc=%d db_msg=%s\n",
-                b->height, hash_hex, prep_rc, sqlite3_errstr(prep_rc),
-                sqlite3_errcode(ndb->db), sqlite3_errmsg(ndb->db));
+        LOG_WARN("db_block_save_canonical", "db_block_save_canonical: prepare failed " "stmt=block_demote_same_height height=%d hash=%s " "prep_rc=%d prep_msg=%s db_rc=%d db_msg=%s", b->height, hash_hex, prep_rc, sqlite3_errstr(prep_rc), sqlite3_errcode(ndb->db), sqlite3_errmsg(ndb->db));
         if (s)
             sqlite3_finalize(s);
         if (locked_stmt)
@@ -372,9 +356,7 @@ bool db_block_save_canonical(struct node_db *ndb, const struct db_block *b)
     if (changed > 0) {
         char hash_hex[65];
         db_block_hash_hex(b->hash, hash_hex);
-        fprintf(stderr, "db_block_save_canonical: demoted %d stale " // obs-ok:pre-existing-diagnostic
-                "same-height projection row(s) height=%d hash=%s\n",
-                changed, b->height, hash_hex);
+        LOG_INFO("db_block_save_canonical", "db_block_save_canonical: demoted %d stale " "same-height projection row(s) height=%d hash=%s", changed, b->height, hash_hex);
     }
 
     db_block_reset_cached_readers(ndb);

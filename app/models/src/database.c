@@ -13,6 +13,7 @@
  *   their own validates_* paths. */
 
 #include "platform/time_compat.h"
+#include "util/log_macros.h"
 #include "models/database.h"
 #include "models/database_validators.h"
 #include <errno.h>
@@ -58,8 +59,7 @@ static int db_exec_checked(sqlite3 *db, const char *sql, const char *where)
     char *err = NULL;
     int rc = sqlite3_exec(db, sql, NULL, NULL, &err);
     if (rc != SQLITE_OK) {
-        fprintf(stderr, "[db] %s failed: %s (sql=%s)\n",  // obs-ok:helper-context-logged
-                where, err ? err : "(no errmsg)", sql);
+        LOG_WARN("db", "[db] %s failed: %s (sql=%s)", where, err ? err : "(no errmsg)", sql);
     }
     sqlite3_free(err);
     return rc;
@@ -79,8 +79,7 @@ static int db_exec_tolerant(sqlite3 *db, const char *sql, const char *where,
             sqlite3_free(err);
             return SQLITE_OK;
         }
-        fprintf(stderr, "[db] %s failed: %s (sql=%s)\n",  // obs-ok:helper-context-logged
-                where, err ? err : "(no errmsg)", sql);
+        LOG_WARN("db", "[db] %s failed: %s (sql=%s)", where, err ? err : "(no errmsg)", sql);
     }
     sqlite3_free(err);
     return rc;
@@ -547,11 +546,10 @@ static bool db_quick_check_ok(sqlite3 *db)
         const unsigned char *txt = sqlite3_column_text(stmt, 0);
         ok = txt && strcmp((const char *)txt, "ok") == 0;
         if (!ok && txt) {
-            fprintf(stderr, "db: quick_check failed: %s\n", txt);  // obs-ok:helper-context-logged
+            LOG_WARN("db", "db: quick_check failed: %s", txt);
         }
     } else {
-        fprintf(stderr, "db: quick_check step failed: %s\n",  // obs-ok:helper-context-logged
-                sqlite3_errmsg(db));
+        LOG_WARN("db", "db: quick_check step failed: %s", sqlite3_errmsg(db));
     }
     sqlite3_finalize(stmt);
     return ok;
@@ -563,10 +561,9 @@ static void db_quarantine_one(const char *path, const char *suffix)
     if (access(path, F_OK) != 0) return;
     snprintf(dst, sizeof(dst), "%s.%s", path, suffix);
     if (rename(path, dst) == 0) {
-        fprintf(stderr, "db: quarantined %s -> %s\n", path, dst);  // obs-ok:helper-context-logged
+        LOG_INFO("db", "db: quarantined %s -> %s", path, dst);
     } else {
-        fprintf(stderr, "db: failed to quarantine %s: %s\n",  // obs-ok:helper-context-logged
-                path, strerror(errno));
+        LOG_WARN("db", "db: failed to quarantine %s: %s", path, strerror(errno));
     }
 }
 
@@ -592,8 +589,7 @@ static bool db_open_raw(sqlite3 **db_out, const char *path)
 {
     int rc = sqlite3_open(path, db_out);
     if (rc != SQLITE_OK) {
-        fprintf(stderr, "db: cannot open %s: %s\n",  // obs-ok:helper-context-logged
-                path, sqlite3_errmsg(*db_out));
+        LOG_WARN("db", "db: cannot open %s: %s", path, sqlite3_errmsg(*db_out));
         sqlite3_close(*db_out);
         *db_out = NULL;
         return false;
@@ -638,8 +634,7 @@ bool node_db_open(struct node_db *ndb, const char *path)
     }
 
     if (!db_quick_check_ok(ndb->db)) {
-        fprintf(stderr, "db: %s is malformed; rebuilding fresh SQLite state\n",  // obs-ok:helper-context-logged
-                path);
+        LOG_INFO("db", "db: %s is malformed; rebuilding fresh SQLite state", path);
         sqlite3_close(ndb->db);
         ndb->db = NULL;
         db_quarantine_files(path);
@@ -915,13 +910,7 @@ int node_db_migrate(struct node_db *ndb, const char *datadir)
      * or restore from a backup taken before the upgrade. There is no
      * automatic downgrade path. */
     if (current_ver > NODE_DB_MAX_SCHEMA) {
-        fprintf(stderr,  // obs-ok:db-migrate-downgrade-precedes-abort
-            "\nFATAL: node.db schema_version=%d but this binary only knows up to %d.\n"
-            "       Refusing to open a database written by a newer binary —\n"
-            "       writes through this layer would silently corrupt the data.\n"
-            "       Either run a binary that supports schema v%d+,\n"
-            "       or restore node.db from a backup taken before the upgrade.\n\n",
-            current_ver, NODE_DB_MAX_SCHEMA, current_ver);
+        LOG_WARN("model", "\nFATAL: node.db schema_version=%d but this binary only knows up to %d.\n" "       Refusing to open a database written by a newer binary —\n" "       writes through this layer would silently corrupt the data.\n" "       Either run a binary that supports schema v%d+,\n" "       or restore node.db from a backup taken before the upgrade.\n", current_ver, NODE_DB_MAX_SCHEMA, current_ver);
         fflush(stderr);
         return -2;
     }
@@ -1558,10 +1547,7 @@ bool node_db_wipe_utxos(struct node_db *ndb)
     const char *offline_repair = getenv("ZCL_OFFLINE_REPAIR");
     if (existing > 1000 &&
         (!offline_repair || strcmp(offline_repair, "1") != 0)) {
-        fprintf(stderr,  // obs-ok:helper-context-logged
-                "db: refused to wipe %lld UTXOs without "
-                "ZCL_OFFLINE_REPAIR=1\n",
-                (long long)existing);
+        LOG_INFO("db", "db: refused to wipe %lld UTXOs without " "ZCL_OFFLINE_REPAIR=1", (long long)existing);
         return false;
     }
     bool ok = true;
@@ -1661,10 +1647,7 @@ bool node_db_ibd_turbo_mode(struct node_db *ndb)
     sqlite3_busy_timeout(ndb->db, 10000);
 
     if (!turbo_ok) {
-        fprintf(stderr,  // obs-ok:helper-context-logged
-                "[db] ibd_turbo_mode: one or more PRAGMAs failed; "
-                "falling back to safe defaults (IBD will be slower "
-                "but correct)\n");
+        LOG_WARN("db", "[db] ibd_turbo_mode: one or more PRAGMAs failed; " "falling back to safe defaults (IBD will be slower " "but correct)");
         db_exec_checked(ndb->db, "PRAGMA synchronous=NORMAL",
                         "turbo_fallback synchronous");
         db_exec_checked(ndb->db, "PRAGMA cache_size=-65536",

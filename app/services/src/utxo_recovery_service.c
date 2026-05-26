@@ -91,9 +91,7 @@ static bool utxo_recovery_commit_tip(struct utxo_recovery_ctx *ctx,
     }
 #endif
 
-    fprintf(stderr, // obs-ok:pre-existing-diagnostic
-            "utxo_recovery: csr rejected tip promotion (%s) reason=%s h=%d\n",
-            csr_result_name(rc), reason ? reason : "", tip->nHeight);
+    LOG_WARN("utxo_recovery", "utxo_recovery: csr rejected tip promotion (%s) reason=%s h=%d", csr_result_name(rc), reason ? reason : "", tip->nHeight);
     return false;
 }
 
@@ -107,10 +105,7 @@ static bool utxo_recovery_commit_genesis(struct utxo_recovery_ctx *ctx,
         &ctx->state->map_block_index,
         &ctx->params->consensus.hashGenesisBlock);
     if (!genesis) {
-        fprintf(stderr,  // obs-ok:helper-context-logged
-                "utxo_recovery: cannot reset coins best to genesis; "
-                "genesis is missing from block index (reason=%s)\n",
-                reason ? reason : "");
+        LOG_WARN("utxo_recovery", "utxo_recovery: cannot reset coins best to genesis; " "genesis is missing from block index (reason=%s)", reason ? reason : "");
         return false;
     }
 
@@ -184,11 +179,7 @@ bool utxo_recovery_wipe(struct node_db *ndb, const char *reason)
 
     enum policy_decision d = policy_check_utxo_wipe(&pol, proposed, reason);
     if (d != POLICY_ALLOW) {
-        fprintf(stderr,  // obs-ok:helper-context-logged
-                "utxo_recovery: REFUSING wipe at \"%s\" — would drop %lld rows, "
-                "policy=%s (override with ZCL_MAX_UTXO_WIPE_ROWS=%lld)\n",
-                reason, (long long)proposed,
-                policy_decision_name(d), (long long)(proposed + 1));
+        LOG_INFO("utxo_recovery", "utxo_recovery: REFUSING wipe at \"%s\" — would drop %lld rows, " "policy=%s (override with ZCL_MAX_UTXO_WIPE_ROWS=%lld)", reason, (long long)proposed, policy_decision_name(d), (long long)(proposed + 1));
         return false;
     }
     event_emitf(EV_RECOVERY_ACTION, 0,
@@ -399,9 +390,7 @@ struct utxo_import_result utxo_recovery_import_ldb(
                 imported_count = (uint64_t)actual;
                 res.utxo_count = imported_count;
             } else {
-                fprintf(stderr, "ERROR: only %llu UTXOs imported "  // obs-ok:helper-context-logged
-                        "— will retry on next boot\n",
-                        (unsigned long long)imported_count);
+                LOG_WARN("chain", "only %llu UTXOs imported " "— will retry on next boot", (unsigned long long)imported_count);
                 (void)utxo_recovery_wipe(ctx->ndb,
                     "boot.ldb_import_failed_retry");
             }
@@ -592,9 +581,7 @@ struct chain_restore_result utxo_recovery_restore_chain_tip(
         !uint256_eq(&best_hash, &ctx->params->consensus.hashGenesisBlock)) {
         char hex[65];
         uint256_get_hex(&best_hash, hex);
-        fprintf(stderr,  // obs-ok:helper-context-logged
-            "WARNING: coins DB best block %s mapped to height=0 "
-            "in block_index (not genesis)\n", hex);
+        LOG_WARN("chain", "coins DB best block %s mapped to height=0 " "in block_index (not genesis)", hex);
         if (ctx->ndb->open) {
             struct db_block sqlite_blk;
             if (db_block_find_by_hash(ctx->ndb, best_hash.data,
@@ -620,19 +607,11 @@ struct chain_restore_result utxo_recovery_restore_chain_tip(
             if (utxo_tip && utxo_tip->phashBlock) {
                 char tip_hex[65] = {0};
                 uint256_get_hex(utxo_tip->phashBlock, tip_hex);
-                fprintf(stderr,  // obs-ok:helper-context-logged
-                    "[boot] coins_best_block is genesis but UTXOs reach "
-                    "h=%d; recovering directly to disk-backed UTXO ancestor "
-                    "h=%d hash=%s\n",
-                    max_utxo_h, utxo_tip->nHeight, tip_hex);
+                LOG_INFO("boot", "[boot] coins_best_block is genesis but UTXOs reach " "h=%d; recovering directly to disk-backed UTXO ancestor " "h=%d hash=%s", max_utxo_h, utxo_tip->nHeight, tip_hex);
                 best = utxo_tip;
                 best_hash = *utxo_tip->phashBlock;
             } else {
-                fprintf(stderr,  // obs-ok:helper-context-logged
-                    "[boot] coins_best_block is genesis but UTXOs reach "
-                    "h=%d; no disk-backed UTXO ancestor found within "
-                    "10000 blocks\n",
-                    max_utxo_h);
+                LOG_INFO("boot", "[boot] coins_best_block is genesis but UTXOs reach " "h=%d; no disk-backed UTXO ancestor found within " "10000 blocks", max_utxo_h);
             }
         }
     }
@@ -650,16 +629,7 @@ struct chain_restore_result utxo_recovery_restore_chain_tip(
                 uint256_get_hex(best->phashBlock, best_hex);
             if (best->pprev && best->pprev->phashBlock)
                 uint256_get_hex(best->pprev->phashBlock, prev_hex);
-            fprintf(stderr,  // obs-ok:helper-context-logged
-                "[boot] coins_best_block validation h=%d hash=%s "
-                "status=%u file=%d pos=%u tx=%u chaintx=%lld bits=%u "
-                "pprev_h=%d pprev=%s merkle_null=%d disk_backed=%d\n",
-                best->nHeight, best_hex[0] ? best_hex : "<null>",
-                best->nStatus, best->nFile, best->nDataPos, best->nTx,
-                (long long)best->nChainTx, best->nBits,
-                best->pprev ? best->pprev->nHeight : -1,
-                prev_hex[0] ? prev_hex : "<null>",
-                merkle_null ? 1 : 0, best_backed ? 1 : 0);
+            LOG_INFO("boot", "[boot] coins_best_block validation h=%d hash=%s " "status=%u file=%d pos=%u tx=%u chaintx=%lld bits=%u " "pprev_h=%d pprev=%s merkle_null=%d disk_backed=%d", best->nHeight, best_hex[0] ? best_hex : "<null>", best->nStatus, best->nFile, best->nDataPos, best->nTx, (long long)best->nChainTx, best->nBits, best->pprev ? best->pprev->nHeight : -1, prev_hex[0] ? prev_hex : "<null>", merkle_null ? 1 : 0, best_backed ? 1 : 0);
         }
         if (!best_backed) {
             restore_tip = chain_restore_nearest_consensus_backed_ancestor_on_disk(
@@ -668,11 +638,7 @@ struct chain_restore_result utxo_recovery_restore_chain_tip(
                 char bad_hex[65], good_hex[65];
                 uint256_get_hex(&best_hash, bad_hex);
                 uint256_get_hex(restore_tip->phashBlock, good_hex);
-                fprintf(stderr,  // obs-ok:helper-context-logged
-                    "[boot] coins_best_block %s at h=%d is not backed by "
-                    "real block data; using nearest consensus-backed "
-                    "ancestor h=%d hash=%s\n",
-                    bad_hex, best->nHeight, restore_tip->nHeight, good_hex);
+                LOG_INFO("boot", "[boot] coins_best_block %s at h=%d is not backed by " "real block data; using nearest consensus-backed " "ancestor h=%d hash=%s", bad_hex, best->nHeight, restore_tip->nHeight, good_hex);
             }
         } else if (has_disk_backed_competing_sibling(ctx->state, best,
                                                     ctx->datadir)) {
@@ -681,20 +647,12 @@ struct chain_restore_result utxo_recovery_restore_chain_tip(
                 char bad_hex[65], parent_hex[65];
                 uint256_get_hex(&best_hash, bad_hex);
                 uint256_get_hex(restore_tip->phashBlock, parent_hex);
-                fprintf(stderr,  // obs-ok:helper-context-logged
-                    "[boot] coins_best_block %s at h=%d is a disk-backed "
-                    "fork leaf with a competing disk-backed sibling; "
-                    "restoring common ancestor h=%d hash=%s so normal "
-                    "validation can choose the best branch\n",
-                    bad_hex, best->nHeight, restore_tip->nHeight,
-                    parent_hex);
+                LOG_INFO("boot", "[boot] coins_best_block %s at h=%d is a disk-backed " "fork leaf with a competing disk-backed sibling; " "restoring common ancestor h=%d hash=%s so normal " "validation can choose the best branch", bad_hex, best->nHeight, restore_tip->nHeight, parent_hex);
             }
         }
 
         if (!restore_tip) {
-            fprintf(stderr,  // obs-ok:helper-context-logged
-                "[boot] coins_best_block found in index but no "
-                "consensus-backed ancestor is available; waiting for P2P\n");
+            LOG_INFO("boot", "[boot] coins_best_block found in index but no " "consensus-backed ancestor is available; waiting for P2P");
             return res;
         }
 
@@ -782,11 +740,7 @@ static bool recover_stale_metadata(struct utxo_recovery_ctx *ctx)
     if (actual_utxos <= 1000)
         return false;
 
-    fprintf(stderr,  // obs-ok:helper-context-logged
-        "ABORT WIPE: validation says 'empty' but utxos "
-        "table has %lld rows. coins_best_block may be "
-        "stale, NOT the UTXOs. Refusing to destroy data.\n",
-        (long long)actual_utxos);
+    LOG_WARN("chain", "ABORT WIPE: validation says 'empty' but utxos " "table has %lld rows. coins_best_block may be " "stale, NOT the UTXOs. Refusing to destroy data.", (long long)actual_utxos);
 
     int max_h = 0;
     sqlite3_stmt *st = NULL;
@@ -813,9 +767,7 @@ static bool recover_stale_metadata(struct utxo_recovery_ctx *ctx)
                            max_h);
                 }
             } else if (bi) {
-                fprintf(stderr,  // obs-ok:helper-context-logged
-                    "RECOVERY: UTXO-derived tip h=%d is not disk-backed; "
-                    "not setting active tip\n", max_h);
+                LOG_INFO("chain", "RECOVERY: UTXO-derived tip h=%d is not disk-backed; " "not setting active tip", max_h);
             }
         }
     }
@@ -888,11 +840,7 @@ static bool integrity_checks_boot_ok(struct utxo_recovery_ctx *ctx,
                     tip_h, sha3cp->height, sha3cp->utxo_count,
                     (uint64_t)actual);
             if (count_check.level == UTXO_COUNT_CHECK_CRITICAL)
-                fprintf(stderr, "CRITICAL: UTXO count %lld vs "  // obs-ok:helper-context-logged
-                        "checkpoint %lld (%.1f%% off) — consider "
-                        "reimport\n", (long long)actual,
-                        (long long)sha3cp->utxo_count,
-                        count_check.pct_delta);
+                LOG_WARN("chain", "UTXO count %lld vs " "checkpoint %lld (%.1f%% off) — consider " "reimport", (long long)actual, (long long)sha3cp->utxo_count, count_check.pct_delta);
             else if (count_check.level == UTXO_COUNT_CHECK_WARNING)
                 printf("WARNING: UTXO count %lld vs checkpoint %lld "
                        "(%.1f%% off, chain %d blocks past checkpoint)\n",
@@ -925,9 +873,7 @@ static bool integrity_checks_boot_ok(struct utxo_recovery_ctx *ctx,
             if (!utxo_commitment_equal(&saved_uc, &computed_uc)) {
                 if (utxo_recovery_xor_mismatch_is_corruption_candidate(
                         saved_uc.count, computed_uc.count)) {
-                    fprintf(stderr, "WARNING: XOR commitment mismatch — "  // obs-ok:helper-context-logged
-                            "UTXO set may be corrupted. "
-                            "Consider running --importchainstate\n");
+                    LOG_WARN("chain", "XOR commitment mismatch — " "UTXO set may be corrupted. " "Consider running --importchainstate");
                 } else {
                     printf("INFO: skipping XOR commitment corruption warning: "
                            "stored commitment checkpoint is stale "
@@ -942,8 +888,7 @@ static bool integrity_checks_boot_ok(struct utxo_recovery_ctx *ctx,
                                "checkpoint (count=%llu)\n",
                                (unsigned long long)computed_uc.count);
                     } else {
-                        fprintf(stderr, "WARNING: failed to refresh stale "  // obs-ok:helper-context-logged
-                                "XOR commitment checkpoint\n");
+                        LOG_WARN("chain", "failed to refresh stale " "XOR commitment checkpoint");
                     }
                 }
             }
@@ -1001,10 +946,7 @@ struct recovery_exec_result utxo_recovery_execute(
                 (void)utxo_recovery_commit_tip(
                     ctx, coins_block, "chain_coins_mismatch_reset", true);
             } else {
-                fprintf(stderr,  // obs-ok:helper-context-logged
-                    "Chain tip/coins mismatch: coins tip h=%d is not "
-                    "disk-backed; refusing active-tip reset\n",
-                    vr->coins_height);
+                LOG_WARN("chain", "Chain tip/coins mismatch: coins tip h=%d is not " "disk-backed; refusing active-tip reset", vr->coins_height);
             }
         }
         res.recovered = true;
@@ -1048,11 +990,7 @@ int utxo_recovery_clean_above_tip(struct node_db *ndb,
     if (deleted_total == 0)
         return 0;
     if (deleted_total < 0) {
-        fprintf(stderr,  // obs-ok:helper-context-logged
-            "ABORT: refusing or failing boot UTXO rewind above tip h=%d "
-            "(guard=%d). Only a single-block overshoot with a bounded row "
-            "count is auto-healable; investigate block_index/coins drift.\n",
-            tip_h, UTXO_BOOT_REWIND_MAX_ROWS);
+        LOG_WARN("chain", "ABORT: refusing or failing boot UTXO rewind above tip h=%d " "(guard=%d). Only a single-block overshoot with a bounded row " "count is auto-healable; investigate block_index/coins drift.", tip_h, UTXO_BOOT_REWIND_MAX_ROWS);
         event_emitf(EV_BOOT_VALIDATION_FAILED, 0,
             "wipe_blocked tip=%d guard=%d",
             tip_h, UTXO_BOOT_REWIND_MAX_ROWS);
@@ -1149,8 +1087,7 @@ static bool backfill_shielded_write(struct node_db *ndb, void *ctx_ptr)
         if (AR_STEP_ROW_READONLY(stmt) != SQLITE_DONE) {
             static int errs = 0;
             if (++errs <= 3)
-                fprintf(stderr, "backfill h=%d: %s\n",  // obs-ok:helper-context-logged
-                        bi->nHeight, sqlite3_errmsg(ndb->db));
+                LOG_INFO("chain", "backfill h=%d: %s", bi->nHeight, sqlite3_errmsg(ndb->db));
         } else {
             updated++;
         }

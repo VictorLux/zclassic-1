@@ -268,9 +268,7 @@ static void aii_rename_if_present(const char *src, int64_t ts,
     char dst[1200];
     snprintf(dst, sizeof(dst), "%s.corrupt.%lld", src, (long long)ts);
     if (rename(src, dst) != 0) {
-        fprintf(stderr, // obs-ok:pre-existing-diagnostic
-                "aii_quarantine: rename %s -> %s failed: %s\n",
-                src, dst, strerror(errno));
+        LOG_WARN("aii_quarantine", "aii_quarantine: rename %s -> %s failed: %s", src, dst, strerror(errno));
         return;
     }
     printf("aii: quarantined %s -> %s (%s)\n", src, dst, label);

@@ -1,6 +1,7 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0 */
 
 #include "conditions/watchdog_dissolve_pr3.h"
+#include "util/log_macros.h"
 #include "framework/condition.h"
 
 #include "event/event.h"
@@ -38,12 +39,7 @@ static enum condition_remedy_result remedy_cutover_canary_complete(void)
     cutover_modes_set_header_pipeline(CUTOVER_STAGE_MODE_SHADOW,
                                       CUTOVER_STAGE_MODE_SHADOW);
 
-    fprintf(stderr,  // obs-ok:condition-cutover-canary-complete
-            "[condition:cutover_canary_complete] reverted after canary "
-            "target=%lld current=%lld changed_at=%lld\n",
-            (long long)snap.target_height,
-            (long long)snap.current_tip_height,
-            (long long)snap.changed_at_unix);
+    LOG_WARN("condition", "[condition:cutover_canary_complete] reverted after canary " "target=%lld current=%lld changed_at=%lld", (long long)snap.target_height, (long long)snap.current_tip_height, (long long)snap.changed_at_unix);
     event_emitf(EV_SYNC_STATE_CHANGE, 0,
                 "condition CUTOVER_CANARY_COMPLETE target=%lld current=%lld",
                 (long long)snap.target_height,

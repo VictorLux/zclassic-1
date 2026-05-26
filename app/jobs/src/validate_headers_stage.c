@@ -331,7 +331,7 @@ static bool pool_start(void)
         int rc = thread_registry_spawn_ex(name, worker_entry, NULL,
                                             &g_pool.threads[i]);
         if (rc != 0) {
-            fprintf(stderr, "[validate_headers] worker %d spawn failed: rc=%d\n", i, rc);  // obs-ok:vh-worker-spawn-failure
+            LOG_WARN("validate_headers", "[validate_headers] worker %d spawn failed: rc=%d", i, rc);
             /* Tear down what we started. */
             pthread_mutex_lock(&g_pool.mu);
             g_pool.stop = true;
@@ -383,7 +383,7 @@ static bool ensure_log_schema(sqlite3 *db)
         ")";
     char *err = NULL;
     if (sqlite3_exec(db, sql, NULL, NULL, &err) != SQLITE_OK) {
-        fprintf(stderr, "[validate_headers] schema ensure failed: %s\n", err ? err : "(no message)");  // obs-ok:vh-schema-failure
+        LOG_WARN("validate_headers", "[validate_headers] schema ensure failed: %s", err ? err : "(no message)");
         if (err) sqlite3_free(err);
         return false;
     }
@@ -398,7 +398,7 @@ static bool log_insert(sqlite3 *db, const struct vh_job *job)
         "(height, hash, ok, fail_reason, validated_at) VALUES (?,?,?,?,?)",
         -1, &stmt, NULL);
     if (rc != SQLITE_OK) {
-        fprintf(stderr, "[validate_headers] prepare insert failed: %s\n", sqlite3_errmsg(db));  // obs-ok:vh-log-prepare-failure
+        LOG_WARN("validate_headers", "[validate_headers] prepare insert failed: %s", sqlite3_errmsg(db));
         return false;
     }
     sqlite3_bind_int64(stmt, 1, (sqlite3_int64)job->height);
@@ -413,7 +413,7 @@ static bool log_insert(sqlite3 *db, const struct vh_job *job)
     rc = sqlite3_step(stmt);  // raw-sql-ok:kernel-primitive
     sqlite3_finalize(stmt);
     if (rc != SQLITE_DONE) {
-        fprintf(stderr, "[validate_headers] insert height=%d rc=%d\n", job->height, rc);  // obs-ok:vh-log-insert-failure
+        LOG_WARN("validate_headers", "[validate_headers] insert height=%d rc=%d", job->height, rc);
         return false;
     }
     return true;
@@ -488,9 +488,7 @@ static job_result_t recheck_failed_rows(struct main_state *ms,
     pool_run_batch(jobs, n);
     char *err = NULL;
     if (sqlite3_exec(db, "BEGIN IMMEDIATE", NULL, NULL, &err) != SQLITE_OK) {
-        fprintf(stderr,  // obs-ok:vh-recheck-begin-failure
-                "[validate_headers] failed-row recheck BEGIN failed: %s\n",
-                err ? err : "(no message)");
+        LOG_WARN("validate_headers", "[validate_headers] failed-row recheck BEGIN failed: %s", err ? err : "(no message)");
         if (err) sqlite3_free(err);
         return JOB_FATAL;
     }
@@ -499,9 +497,7 @@ static job_result_t recheck_failed_rows(struct main_state *ms,
             validate_headers_get_mode() ==
                 VALIDATE_HEADERS_MODE_AUTHORITATIVE &&
             !mark_valid_header((struct block_index *)jobs[i].bi)) {
-            fprintf(stderr,  // obs-ok:vh-recheck-status-failure
-                    "[validate_headers] recheck mark failed height=%d\n",
-                    jobs[i].height);
+            LOG_WARN("validate_headers", "[validate_headers] recheck mark failed height=%d", jobs[i].height);
             sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
             return JOB_FATAL;
         }
@@ -515,9 +511,7 @@ static job_result_t recheck_failed_rows(struct main_state *ms,
             atomic_fetch_add(&g_failed_total, 1);
     }
     if (sqlite3_exec(db, "COMMIT", NULL, NULL, &err) != SQLITE_OK) {
-        fprintf(stderr,  // obs-ok:vh-recheck-commit-failure
-                "[validate_headers] failed-row recheck COMMIT failed: %s\n",
-                err ? err : "(no message)");
+        LOG_WARN("validate_headers", "[validate_headers] failed-row recheck COMMIT failed: %s", err ? err : "(no message)");
         if (err) sqlite3_free(err);
         sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
         return JOB_FATAL;
@@ -591,9 +585,7 @@ static job_result_t step_validate(struct stage_step_ctx *c)
             validate_headers_get_mode() ==
                 VALIDATE_HEADERS_MODE_AUTHORITATIVE &&
             !mark_valid_header((struct block_index *)jobs[i].bi)) {
-            fprintf(stderr,  // obs-ok:vh-authoritative-status-failure
-                    "[validate_headers] authoritative mark failed height=%d\n",
-                    jobs[i].height);
+            LOG_WARN("validate_headers", "[validate_headers] authoritative mark failed height=%d", jobs[i].height);
             return JOB_FATAL;
         }
         if (!log_insert(db, &jobs[i])) return JOB_FATAL;
@@ -657,10 +649,7 @@ bool validate_headers_stage_init(struct main_state *ms)
     g_stage = s;
     pthread_mutex_unlock(&g_lock);
 
-    fprintf(stderr, "[validate_headers] stage initialised (mode=%s, pool=%d batch=%d)\n",  // obs-ok:vh-lifecycle
-            validate_headers_get_mode() ==
-                VALIDATE_HEADERS_MODE_AUTHORITATIVE ? "authoritative" : "shadow",
-            VH_POOL_SIZE, VH_BATCH_SIZE);
+    LOG_INFO("validate_headers", "[validate_headers] stage initialised (mode=%s, pool=%d batch=%d)", validate_headers_get_mode() == VALIDATE_HEADERS_MODE_AUTHORITATIVE ? "authoritative" : "shadow", VH_POOL_SIZE, VH_BATCH_SIZE);
     return true;
 }
 

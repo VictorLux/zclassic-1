@@ -1,6 +1,7 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0 */
 
 #include "framework/condition.h"
+#include "util/log_macros.h"
 
 #include "chain/chain.h"
 #include "core/uint256.h"
@@ -114,14 +115,7 @@ static enum condition_remedy_result remedy_block_failed_mask_at_tip(void)
     struct uint256 out_hash;
     enum reval_result r =
         process_block_revalidate((int)target, ms, &out_hash);
-    fprintf(stderr,  // obs-ok:condition-block-failed-revalidate
-            "[condition:block_failed_mask_at_tip] target=%lld "
-            "stall_type=%s tip_age_s=%lld result=%s\n",
-            (long long)target,
-            atomic_load(&g_stall_type_at_detect) == BF_STALL_NO_ADVANCE
-                ? "no_advance" : "failed_mask",
-            (long long)atomic_load(&g_tip_age_at_detect),
-            reval_result_name(r));
+    LOG_WARN("condition", "[condition:block_failed_mask_at_tip] target=%lld " "stall_type=%s tip_age_s=%lld result=%s", (long long)target, atomic_load(&g_stall_type_at_detect) == BF_STALL_NO_ADVANCE ? "no_advance" : "failed_mask", (long long)atomic_load(&g_tip_age_at_detect), reval_result_name(r));
     if (atomic_load(&g_stall_type_at_detect) == BF_STALL_NO_ADVANCE &&
         r == REVAL_HEIGHT_NOT_FOUND)
         return COND_REMEDY_OK;

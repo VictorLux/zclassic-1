@@ -1,6 +1,7 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0 */
 
 #include "conditions/watchdog_dissolve_pr2.h"
+#include "util/log_macros.h"
 #include "framework/condition.h"
 
 #include "net/connman.h"
@@ -70,10 +71,7 @@ static enum condition_remedy_result remedy_header_stall_at_height(void)
 {
     int header_h = atomic_load(&g_header_height_at_detect);
     int peer_max = atomic_load(&g_peer_max_at_detect);
-    fprintf(stderr,  // obs-ok:condition-header-stall
-            "[condition:header_stall_at_height] header=%d peer_max=%d "
-            "age=%llds action=kick_headers\n",
-            header_h, peer_max, (long long)atomic_load(&g_age_at_detect));
+    LOG_WARN("condition", "[condition:header_stall_at_height] header=%d peer_max=%d " "age=%llds action=kick_headers", header_h, peer_max, (long long)atomic_load(&g_age_at_detect));
 
     struct connman *cm = sync_monitor_connman();
     if (cm) {

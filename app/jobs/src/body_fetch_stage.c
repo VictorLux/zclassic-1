@@ -64,9 +64,7 @@ static bool ensure_log_schema(sqlite3 *db)
         ")";
     char *err = NULL;
     if (sqlite3_exec(db, sql, NULL, NULL, &err) != SQLITE_OK) {
-        fprintf(stderr,  // obs-ok:body-fetch-schema-failure
-                "[body_fetch] schema ensure failed: %s\n",
-                err ? err : "(no message)");
+        LOG_WARN("body_fetch", "[body_fetch] schema ensure failed: %s", err ? err : "(no message)");
         if (err) sqlite3_free(err);
         return false;
     }
@@ -87,7 +85,7 @@ static uint64_t upstream_cursor_persisted(sqlite3 *db, const char *name)
     if (sqlite3_prepare_v2(db,
         "SELECT cursor FROM stage_cursor WHERE name = ?",
         -1, &st, NULL) != SQLITE_OK) {
-        fprintf(stderr, "[body_fetch] upstream cursor prepare failed: %s\n", sqlite3_errmsg(db));  // obs-ok:body-fetch-upstream-prepare-failure
+        LOG_WARN("body_fetch", "[body_fetch] upstream cursor prepare failed: %s", sqlite3_errmsg(db));
         return 0;
     }
     sqlite3_bind_text(st, 1, name, -1, SQLITE_STATIC);
@@ -107,7 +105,7 @@ static int vh_log_ok_at(sqlite3 *db, int height, int *out_ok)
         "SELECT ok FROM validate_headers_log WHERE height = ?",
         -1, &st, NULL);
     if (rc != SQLITE_OK) {
-        fprintf(stderr, "[body_fetch] vh log prepare failed: %s\n", sqlite3_errmsg(db));  // obs-ok:body-fetch-vh-prepare-failure
+        LOG_WARN("body_fetch", "[body_fetch] vh log prepare failed: %s", sqlite3_errmsg(db));
         return -1;
     }
     sqlite3_bind_int(st, 1, height);
@@ -135,7 +133,7 @@ static bool log_insert(sqlite3 *db, int height,
         "VALUES (?,?,?,?,?,?,?)",
         -1, &stmt, NULL);
     if (rc != SQLITE_OK) {
-        fprintf(stderr, "[body_fetch] prepare insert failed: %s\n", sqlite3_errmsg(db));  // obs-ok:body-fetch-log-prepare-failure
+        LOG_WARN("body_fetch", "[body_fetch] prepare insert failed: %s", sqlite3_errmsg(db));
         return false;
     }
     sqlite3_bind_int64(stmt, 1, (sqlite3_int64)height);
@@ -152,7 +150,7 @@ static bool log_insert(sqlite3 *db, int height,
     rc = sqlite3_step(stmt);  // raw-sql-ok:kernel-primitive
     sqlite3_finalize(stmt);
     if (rc != SQLITE_DONE) {
-        fprintf(stderr, "[body_fetch] insert height=%d rc=%d\n", height, rc);  // obs-ok:body-fetch-log-insert-failure
+        LOG_WARN("body_fetch", "[body_fetch] insert height=%d rc=%d", height, rc);
         return false;
     }
     return true;
@@ -274,8 +272,7 @@ bool body_fetch_stage_init(struct main_state *ms)
     g_stage = s;
     pthread_mutex_unlock(&g_lock);
 
-    fprintf(stderr,  // obs-ok:body-fetch-lifecycle
-            "[body_fetch] stage initialised (shadow mode)\n");
+    LOG_INFO("body_fetch", "[body_fetch] stage initialised (shadow mode)");
     return true;
 }
 

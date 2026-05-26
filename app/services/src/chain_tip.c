@@ -1,6 +1,7 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0 */
 
 #include "platform/time_compat.h"
+#include "util/log_macros.h"
 #include "services/chain_tip.h"
 
 #include "validation/main_state.h"
@@ -77,9 +78,7 @@ static void chain_tip_fsync_barrier(struct main_state *ms,
         return;
     }
     if (elapsed > FSYNC_BARRIER_BUDGET_MS) {
-        fprintf(stderr,  // obs-ok:fsync-slow-warning
-            "[tip-fsync] slow cacheflush elapsed=%dms (gap=%d seq=%llu)\n",
-            elapsed, gap, (unsigned long long)seq);
+        LOG_WARN("tip", "[tip-fsync] slow cacheflush elapsed=%dms (gap=%d seq=%llu)", elapsed, gap, (unsigned long long)seq);
     }
 }
 

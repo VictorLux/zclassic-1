@@ -175,26 +175,20 @@ static bool lbp_verify_window(const char *host, int port,
         char *hash_hex = lbp_rpc_getblockhash(host, port, user, pass,
                                               h, err, sizeof(err));
         if (!hash_hex) {
-            fprintf(stderr, // obs-ok:pre-existing-diagnostic
-                    "[legacy_body_pull] spotcheck w=%zu h=%d "
-                    "getblockhash failed: %s\n", wi, h, err);
+            LOG_WARN("legacy_body_pull", "[legacy_body_pull] spotcheck w=%zu h=%d " "getblockhash failed: %s", wi, h, err);
             return false;
         }
         char *block_hex = lbp_rpc_getblock_hex(host, port, user, pass,
                                                 hash_hex, err, sizeof(err));
         free(hash_hex);
         if (!block_hex) {
-            fprintf(stderr, // obs-ok:pre-existing-diagnostic
-                    "[legacy_body_pull] spotcheck w=%zu h=%d "
-                    "getblock failed: %s\n", wi, h, err);
+            LOG_WARN("legacy_body_pull", "[legacy_body_pull] spotcheck w=%zu h=%d " "getblock failed: %s", wi, h, err);
             return false;
         }
         size_t hex_len = strlen(block_hex);
         if ((hex_len & 1u) != 0u) {
             free(block_hex);
-            fprintf(stderr, // obs-ok:pre-existing-diagnostic
-                    "[legacy_body_pull] spotcheck w=%zu h=%d "
-                    "odd hex length %zu\n", wi, h, hex_len);
+            LOG_INFO("legacy_body_pull", "[legacy_body_pull] spotcheck w=%zu h=%d " "odd hex length %zu", wi, h, hex_len);
             return false;
         }
         unsigned char *bytes = zcl_malloc(hex_len / 2, "lbp_spot_bytes");
@@ -237,9 +231,7 @@ static bool lbp_spotcheck_sha3_windows(const char *host, int port,
                                        int k)
 {
     if (g_sha3_windows_count == 0) {
-        fprintf(stderr, // obs-ok:pre-existing-diagnostic
-                "[legacy_body_pull] spotcheck SKIPPED: no compile-time "
-                "anchor table (g_sha3_windows_count=0)\n");
+        LOG_WARN("legacy_body_pull", "[legacy_body_pull] spotcheck SKIPPED: no compile-time " "anchor table (g_sha3_windows_count=0)");
         return false;
     }
 
@@ -250,9 +242,7 @@ static bool lbp_spotcheck_sha3_windows(const char *host, int port,
         if (covered < max_w) max_w = covered;
     }
     if (max_w == 0) {
-        fprintf(stderr, // obs-ok:pre-existing-diagnostic
-                "[legacy_body_pull] spotcheck SKIPPED: legacy tip h=%d "
-                "is below any complete anchor window\n", legacy_tip);
+        LOG_WARN("legacy_body_pull", "[legacy_body_pull] spotcheck SKIPPED: legacy tip h=%d " "is below any complete anchor window", legacy_tip);
         return false;
     }
     if ((size_t)k > max_w) k = (int)max_w;
@@ -273,31 +263,19 @@ static bool lbp_spotcheck_sha3_windows(const char *host, int port,
         picked[i] = (size_t)(r % max_w);
     }
 
-    fprintf(stderr, // obs-ok:pre-existing-diagnostic
-            "[legacy_body_pull] SHA3 spotcheck: K=%d windows over [0..%zu) "
-            "(legacy_tip=%d)\n", k, max_w, legacy_tip);
+    LOG_INFO("legacy_body_pull", "[legacy_body_pull] SHA3 spotcheck: K=%d windows over [0..%zu) " "(legacy_tip=%d)", k, max_w, legacy_tip);
 
     for (int i = 0; i < k; i++) {
         size_t wi = picked[i];
-        fprintf(stderr, // obs-ok:pre-existing-diagnostic
-                "[legacy_body_pull] spotcheck: verifying w=%zu "
-                "(h=%d..%d)\n",
-                wi, g_sha3_windows[wi].start_height,
-                g_sha3_windows[wi].start_height + SHA3_WINDOW_SIZE - 1);
+        LOG_INFO("legacy_body_pull", "[legacy_body_pull] spotcheck: verifying w=%zu " "(h=%d..%d)", wi, g_sha3_windows[wi].start_height, g_sha3_windows[wi].start_height + SHA3_WINDOW_SIZE - 1);
         if (!lbp_verify_window(host, port, user, pass, wi)) {
-            fprintf(stderr, // obs-ok:pre-existing-diagnostic
-                    "[legacy_body_pull] spotcheck FAILED at window %zu — "
-                    "body-pull will continue with full validation\n",
-                    wi);
+            LOG_WARN("legacy_body_pull", "[legacy_body_pull] spotcheck FAILED at window %zu — " "body-pull will continue with full validation", wi);
             return false;
         }
-        fprintf(stderr, // obs-ok:pre-existing-diagnostic
-                "[legacy_body_pull] spotcheck: w=%zu OK\n", wi);
+        LOG_INFO("legacy_body_pull", "[legacy_body_pull] spotcheck: w=%zu OK", wi);
     }
 
-    fprintf(stderr, // obs-ok:pre-existing-diagnostic
-            "[legacy_body_pull] SHA3 spotcheck: %d/%d windows match; "
-            "proof validation remains enabled\n", k, k);
+    LOG_INFO("legacy_body_pull", "[legacy_body_pull] SHA3 spotcheck: %d/%d windows match; " "proof validation remains enabled", k, k);
     return true;
 }
 
@@ -321,9 +299,7 @@ static bool legacy_body_pull_range_impl(struct main_state *ms,
         LOG_FAIL("legacy_body_pull", "bad from_height=%d", from_height);
     }
     if (to_height < from_height) {
-        fprintf(stderr,  // obs-ok:pre-existing-diagnostic
-                "[legacy_body_pull] nothing to do (from=%d to=%d)\n",
-                from_height, to_height);
+        LOG_INFO("legacy_body_pull", "[legacy_body_pull] nothing to do (from=%d to=%d)", from_height, to_height);
         return true;
     }
 
@@ -334,9 +310,7 @@ static bool legacy_body_pull_range_impl(struct main_state *ms,
     char user[64] = {0}, pass[128] = {0};
     if (!legacy_rpc_parse_conf(user, sizeof(user),
                                pass, sizeof(pass), &port)) {
-        fprintf(stderr,  // obs-ok:pre-existing-diagnostic
-                "[legacy_body_pull] no zclassic.conf credentials; "
-                "cannot reach legacy node\n");
+        LOG_WARN("legacy_body_pull", "[legacy_body_pull] no zclassic.conf credentials; " "cannot reach legacy node");
         return false;
     }
 
@@ -348,16 +322,10 @@ static bool legacy_body_pull_range_impl(struct main_state *ms,
         !lbp_spotcheck_sha3_windows(host, port, user, pass,
                                     to_height,
                                     LBP_SPOTCHECK_K)) {
-        fprintf(stderr, // obs-ok:pre-existing-diagnostic
-                "[legacy_body_pull] WARNING: SHA3 spotcheck did not pass; "
-                "continuing with full validation\n");
+        LOG_WARN("legacy_body_pull", "[legacy_body_pull] WARNING: SHA3 spotcheck did not pass; " "continuing with full validation");
     }
 
-    fprintf(stderr,  // obs-ok:pre-existing-diagnostic
-            "[legacy_body_pull] starting: window=[%d..%d] "
-            "(%d blocks)\n",
-            from_height, to_height,
-            to_height - from_height + 1);
+    LOG_INFO("legacy_body_pull", "[legacy_body_pull] starting: window=[%d..%d] " "(%d blocks)", from_height, to_height, to_height - from_height + 1);
 
     int applied = 0;
     int rpc_errors = 0;
@@ -379,8 +347,7 @@ static bool legacy_body_pull_range_impl(struct main_state *ms,
 
     for (int h = from_height; h <= to_height; h++) {
         if (thread_registry_shutdown_requested()) {
-            fprintf(stderr,  // obs-ok:pre-existing-diagnostic
-                    "[legacy_body_pull] shutdown requested at h=%d\n", h);
+            LOG_INFO("legacy_body_pull", "[legacy_body_pull] shutdown requested at h=%d", h);
             ok = false;
             break;
         }
@@ -390,9 +357,7 @@ static bool legacy_body_pull_range_impl(struct main_state *ms,
                                               h, err, sizeof(err));
         if (!hash_hex) {
             rpc_errors++;
-            fprintf(stderr,  // obs-ok:pre-existing-diagnostic
-                    "[legacy_body_pull] getblockhash h=%d failed: %s\n",
-                    h, err);
+            LOG_WARN("legacy_body_pull", "[legacy_body_pull] getblockhash h=%d failed: %s", h, err);
             ok = false;
             break;
         }
@@ -427,9 +392,7 @@ static bool legacy_body_pull_range_impl(struct main_state *ms,
         free(hash_hex);
         if (!block_hex) {
             rpc_errors++;
-            fprintf(stderr,  // obs-ok:pre-existing-diagnostic
-                    "[legacy_body_pull] getblock h=%d failed: %s\n",
-                    h, err);
+            LOG_WARN("legacy_body_pull", "[legacy_body_pull] getblock h=%d failed: %s", h, err);
             ok = false;
             break;
         }
@@ -437,9 +400,7 @@ static bool legacy_body_pull_range_impl(struct main_state *ms,
         size_t hex_len = strlen(block_hex);
         if (hex_len < 280 || (hex_len % 2) != 0) {
             free(block_hex);
-            fprintf(stderr,  // obs-ok:pre-existing-diagnostic
-                    "[legacy_body_pull] h=%d bad hex length %zu\n",
-                    h, hex_len);
+            LOG_WARN("legacy_body_pull", "[legacy_body_pull] h=%d bad hex length %zu", h, hex_len);
             ok = false;
             break;
         }
@@ -453,9 +414,7 @@ static bool legacy_body_pull_range_impl(struct main_state *ms,
         free(block_hex);
         if (nbytes < 80) {
             free(bytes);
-            fprintf(stderr,  // obs-ok:pre-existing-diagnostic
-                    "[legacy_body_pull] h=%d ParseHex short (%zu)\n",
-                    h, nbytes);
+            LOG_INFO("legacy_body_pull", "[legacy_body_pull] h=%d ParseHex short (%zu)", h, nbytes);
             ok = false;
             break;
         }
@@ -469,9 +428,7 @@ static bool legacy_body_pull_range_impl(struct main_state *ms,
         free(bytes);
         if (!deser_ok) {
             block_free(&block);
-            fprintf(stderr,  // obs-ok:pre-existing-diagnostic
-                    "[legacy_body_pull] h=%d block_deserialize failed\n",
-                    h);
+            LOG_WARN("legacy_body_pull", "[legacy_body_pull] h=%d block_deserialize failed", h);
             ok = false;
             break;
         }
@@ -483,9 +440,7 @@ static bool legacy_body_pull_range_impl(struct main_state *ms,
             uint256_get_hex(&hash, expected);
             uint256_get_hex(&block_hash, got);
             block_free(&block);
-            fprintf(stderr, // obs-ok:pre-existing-diagnostic
-                    "[legacy_body_pull] h=%d body hash mismatch "
-                    "expected=%s got=%s\n", h, expected, got);
+            LOG_WARN("legacy_body_pull", "[legacy_body_pull] h=%d body hash mismatch " "expected=%s got=%s", h, expected, got);
             mirror_consensus_record_blocker("body-hash-mismatch");
             ok = false;
             break;
@@ -496,20 +451,14 @@ static bool legacy_body_pull_range_impl(struct main_state *ms,
                                         &block, true, our_datadir);
         block_free(&block);
         if (!pn_ok) {
-            fprintf(stderr,  // obs-ok:pre-existing-diagnostic
-                    "[legacy_body_pull] h=%d process_new_block FAILED: "
-                    "%s\n",
-                    h,
-                    vs.reject_reason[0] ? vs.reject_reason : "(unknown)");
+            LOG_WARN("legacy_body_pull", "[legacy_body_pull] h=%d process_new_block FAILED: " "%s", h, vs.reject_reason[0] ? vs.reject_reason : "(unknown)");
             ok = false;
             break;
         }
         applied++;
         /* Heartbeat every 200 blocks. */
         if (last_log_h < 0 || h - last_log_h >= 200) {
-            fprintf(stderr,  // obs-ok:pre-existing-diagnostic
-                    "[legacy_body_pull] applied=%d h=%d (target=%d)\n",
-                    applied, h, to_height);
+            LOG_INFO("legacy_body_pull", "[legacy_body_pull] applied=%d h=%d (target=%d)", applied, h, to_height);
             last_log_h = h;
         }
 
@@ -539,11 +488,7 @@ static bool legacy_body_pull_range_impl(struct main_state *ms,
             (void)node_db_wal_checkpoint(ndb);
     }
 
-    fprintf(stderr,  // obs-ok:pre-existing-diagnostic
-            "[legacy_body_pull] done: applied=%d skipped_have=%d "
-            "skipped_failed=%d rpc_errors=%d window=[%d..%d] ok=%s\n",
-            applied, skipped_have_data, skipped_failed, rpc_errors,
-            from_height, to_height, ok ? "yes" : "no");
+    LOG_WARN("legacy_body_pull", "[legacy_body_pull] done: applied=%d skipped_have=%d " "skipped_failed=%d rpc_errors=%d window=[%d..%d] ok=%s", applied, skipped_have_data, skipped_failed, rpc_errors, from_height, to_height, ok ? "yes" : "no");
 
     if (out_applied) *out_applied = applied;
     return ok;

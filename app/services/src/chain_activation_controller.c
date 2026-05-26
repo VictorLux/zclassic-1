@@ -219,10 +219,7 @@ bool activation_set_state(struct chain_activation_controller *ctl,
         return true;
 
     if (!activation_transition_valid(old, new_state)) {
-        fprintf(stderr, "BUG: activation ILLEGAL transition %s->%s (%s)\n",  // obs-ok:helper-context-logged
-                activation_state_name(old),
-                activation_state_name(new_state),
-                reason ? reason : "");
+        LOG_WARN("chain", "activation ILLEGAL transition %s->%s (%s)", activation_state_name(old), activation_state_name(new_state), reason ? reason : "");
         event_emitf(EV_ACTIVATION_STATE_CHANGE, 0,
                     "ILLEGAL %s->%s: %s",
                     activation_state_name(old),

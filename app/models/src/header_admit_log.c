@@ -10,6 +10,7 @@
  * legacy path; only the path into SQLite changed. */
 
 #include "models/header_admit_log.h"
+#include "util/log_macros.h"
 
 #include "event/event.h"
 #include <stdio.h>
@@ -27,15 +28,11 @@ static bool header_admit_log_before_save(void *record, void *ctx)
     (void)ctx;
     const struct db_header_admit_log *r = record;
     if (r->height < 0) {
-        fprintf(stderr,  // obs-ok:header-admit-log-before-save-reject
-                "[header_admit_log] before_save REJECTED: negative height %lld\n",
-                (long long)r->height);
+        LOG_WARN("header_admit_log", "[header_admit_log] before_save REJECTED: negative height %lld", (long long)r->height);
         return false;
     }
     if (r->height > 0 && !r->has_parent) {
-        fprintf(stderr,  // obs-ok:header-admit-log-before-save-reject
-                "[header_admit_log] before_save REJECTED: height %lld missing parent\n",
-                (long long)r->height);
+        LOG_WARN("header_admit_log", "[header_admit_log] before_save REJECTED: height %lld missing parent", (long long)r->height);
         return false;
     }
     return true;
@@ -85,9 +82,7 @@ bool db_header_admit_log_ensure_schema(sqlite3 *db)
         ")";
     char *err = NULL;
     if (sqlite3_exec(db, sql, NULL, NULL, &err) != SQLITE_OK) {
-        fprintf(stderr,  // obs-ok:header-admit-log-schema-failure
-                "[header_admit_log] schema ensure failed: %s\n",
-                err ? err : "(no message)");
+        LOG_WARN("header_admit_log", "[header_admit_log] schema ensure failed: %s", err ? err : "(no message)");
         if (err) sqlite3_free(err);
         return false;
     }

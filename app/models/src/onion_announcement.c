@@ -1,6 +1,7 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0 */
 
 #include "platform/time_compat.h"
+#include "util/log_macros.h"
 #include "models/onion_announcement.h"
 #include "models/model_text.h"
 #include "storage/small_projections.h"
@@ -94,8 +95,7 @@ bool db_onion_announcement_save(struct node_db *ndb,
         !onion_ann_projection_emit(a->onion_address,
                                    (uint32_t)a->announced_at,
                                    a->script_hex)) {
-        fprintf(stderr,  // obs-ok:onion-ann-projection-shadow
-                "onion announcement projection shadow emit failed for save\n");
+        LOG_WARN("model", "onion announcement projection shadow emit failed for save");
     }
     return true;
 }

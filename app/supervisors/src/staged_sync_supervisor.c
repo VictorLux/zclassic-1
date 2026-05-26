@@ -10,6 +10,7 @@
  *   script_validate → proof_validate → utxo_apply → tip_finalize. */
 
 #include "supervisors/staged_sync_supervisor.h"
+#include "util/log_macros.h"
 #include "supervisors/domains.h"
 
 #include "util/supervisor.h"
@@ -50,11 +51,7 @@ static void header_admit_stall(struct liveness_contract *c)
      * the live chain, NOT that the live chain has stalled. Emit a
      * visible warning so an operator can investigate; do nothing
      * destructive. */
-    fprintf(stderr,  // obs-ok:header-admit-shadow-stall
-            "[supervisor] staged.header_admit stalled "
-            "(cursor=%llu admitted=%llu) — shadow log behind live chain\n",
-            (unsigned long long)header_admit_stage_cursor(),
-            (unsigned long long)header_admit_stage_admitted_total());
+    LOG_WARN("supervisor", "[supervisor] staged.header_admit stalled " "(cursor=%llu admitted=%llu) — shadow log behind live chain", (unsigned long long)header_admit_stage_cursor(), (unsigned long long)header_admit_stage_admitted_total());
 }
 
 static void staged_header_admit_register(struct main_state *ms)
@@ -66,9 +63,7 @@ static void staged_header_admit_register(struct main_state *ms)
      * open at boot, init returns false — log and skip supervisor wire
      * so a misconfigured boot doesn't loop on a perma-IDLE child. */
     if (!header_admit_stage_init(ms)) {
-        fprintf(stderr,  // obs-ok:header-admit-init-warn
-            "[supervisor] WARN staged.header_admit init failed — "
-            "shadow stage not running this boot\n");
+        LOG_WARN("supervisor", "[supervisor] WARN staged.header_admit init failed — " "shadow stage not running this boot");
         return;
     }
 
@@ -85,8 +80,7 @@ static void staged_header_admit_register(struct main_state *ms)
     g_header_admit_id = supervisor_register_in_domain(g_chain_sup,
                                                       &g_header_admit_contract);
     if (g_header_admit_id == SUPERVISOR_INVALID_ID) {
-        fprintf(stderr,  // obs-ok:header-admit-supervisor-fallback-warn
-            "[supervisor] WARN staged.header_admit register failed\n");
+        LOG_WARN("supervisor", "[supervisor] WARN staged.header_admit register failed");
     }
 }
 
@@ -111,12 +105,7 @@ static void vh_stall(struct liveness_contract *c)
     /* Shadow-mode stall = validate falling behind admit OR the live
      * chain itself stalled. Either way, surface but do nothing
      * destructive. */
-    fprintf(stderr,  // obs-ok:vh-shadow-stall
-            "[supervisor] staged.validate_headers stalled "
-            "(cursor=%llu passed=%llu failed=%llu) — shadow validator behind admit\n",
-            (unsigned long long)validate_headers_stage_cursor(),
-            (unsigned long long)validate_headers_stage_passed_total(),
-            (unsigned long long)validate_headers_stage_failed_total());
+    LOG_WARN("supervisor", "[supervisor] staged.validate_headers stalled " "(cursor=%llu passed=%llu failed=%llu) — shadow validator behind admit", (unsigned long long)validate_headers_stage_cursor(), (unsigned long long)validate_headers_stage_passed_total(), (unsigned long long)validate_headers_stage_failed_total());
 }
 
 static void staged_validate_headers_register(struct main_state *ms)
@@ -125,9 +114,7 @@ static void staged_validate_headers_register(struct main_state *ms)
     if (g_vh_id != SUPERVISOR_INVALID_ID) return;  /* idempotent */
 
     if (!validate_headers_stage_init(ms)) {
-        fprintf(stderr,  // obs-ok:vh-init-warn
-            "[supervisor] WARN staged.validate_headers init failed — "
-            "shadow validator not running this boot\n");
+        LOG_WARN("supervisor", "[supervisor] WARN staged.validate_headers init failed — " "shadow validator not running this boot");
         return;
     }
 
@@ -143,8 +130,7 @@ static void staged_validate_headers_register(struct main_state *ms)
     g_vh_contract.on_stall = vh_stall;
     g_vh_id = supervisor_register_in_domain(g_chain_sup, &g_vh_contract);
     if (g_vh_id == SUPERVISOR_INVALID_ID) {
-        fprintf(stderr,  // obs-ok:vh-supervisor-fallback-warn
-            "[supervisor] WARN staged.validate_headers register failed\n");
+        LOG_WARN("supervisor", "[supervisor] WARN staged.validate_headers register failed");
     }
 }
 
@@ -169,12 +155,7 @@ static void bf_stall(struct liveness_contract *c)
     /* Shadow-mode stall = body_fetch falling behind validate OR bodies
      * not arriving on disk. Either way, surface but do nothing
      * destructive. */
-    fprintf(stderr,  // obs-ok:bf-shadow-stall
-            "[supervisor] staged.body_fetch stalled "
-            "(cursor=%llu observed=%llu skipped=%llu) — shadow fetch behind validate\n",
-            (unsigned long long)body_fetch_stage_cursor(),
-            (unsigned long long)body_fetch_stage_observed_total(),
-            (unsigned long long)body_fetch_stage_skipped_total());
+    LOG_WARN("supervisor", "[supervisor] staged.body_fetch stalled " "(cursor=%llu observed=%llu skipped=%llu) — shadow fetch behind validate", (unsigned long long)body_fetch_stage_cursor(), (unsigned long long)body_fetch_stage_observed_total(), (unsigned long long)body_fetch_stage_skipped_total());
 }
 
 static void staged_body_fetch_register(struct main_state *ms)
@@ -183,9 +164,7 @@ static void staged_body_fetch_register(struct main_state *ms)
     if (g_bf_id != SUPERVISOR_INVALID_ID) return;  /* idempotent */
 
     if (!body_fetch_stage_init(ms)) {
-        fprintf(stderr,  // obs-ok:bf-init-warn
-            "[supervisor] WARN staged.body_fetch init failed — "
-            "shadow fetch not running this boot\n");
+        LOG_WARN("supervisor", "[supervisor] WARN staged.body_fetch init failed — " "shadow fetch not running this boot");
         return;
     }
 
@@ -200,8 +179,7 @@ static void staged_body_fetch_register(struct main_state *ms)
     g_bf_contract.on_stall = bf_stall;
     g_bf_id = supervisor_register_in_domain(g_chain_sup, &g_bf_contract);
     if (g_bf_id == SUPERVISOR_INVALID_ID) {
-        fprintf(stderr,  // obs-ok:bf-supervisor-fallback-warn
-            "[supervisor] WARN staged.body_fetch register failed\n");
+        LOG_WARN("supervisor", "[supervisor] WARN staged.body_fetch register failed");
     }
 }
 
@@ -223,14 +201,7 @@ static void bp_tick(struct liveness_contract *c)
 static void bp_stall(struct liveness_contract *c)
 {
     (void)c;
-    fprintf(stderr,  // obs-ok:bp-shadow-stall
-            "[supervisor] staged.body_persist stalled "
-            "(cursor=%llu verified=%llu upstream_failed=%llu read_failed=%llu) "
-            "— shadow persist behind body_fetch\n",
-            (unsigned long long)body_persist_stage_cursor(),
-            (unsigned long long)body_persist_stage_verified_total(),
-            (unsigned long long)body_persist_stage_upstream_failed_total(),
-            (unsigned long long)body_persist_stage_read_failed_total());
+    LOG_WARN("supervisor", "[supervisor] staged.body_persist stalled " "(cursor=%llu verified=%llu upstream_failed=%llu read_failed=%llu) " "— shadow persist behind body_fetch", (unsigned long long)body_persist_stage_cursor(), (unsigned long long)body_persist_stage_verified_total(), (unsigned long long)body_persist_stage_upstream_failed_total(), (unsigned long long)body_persist_stage_read_failed_total());
 }
 
 static void staged_body_persist_register(struct main_state *ms)
@@ -239,9 +210,7 @@ static void staged_body_persist_register(struct main_state *ms)
     if (g_bp_id != SUPERVISOR_INVALID_ID) return;  /* idempotent */
 
     if (!body_persist_stage_init(ms)) {
-        fprintf(stderr,  // obs-ok:bp-init-warn
-            "[supervisor] WARN staged.body_persist init failed — "
-            "shadow persist not running this boot\n");
+        LOG_WARN("supervisor", "[supervisor] WARN staged.body_persist init failed — " "shadow persist not running this boot");
         return;
     }
 
@@ -254,8 +223,7 @@ static void staged_body_persist_register(struct main_state *ms)
     g_bp_contract.on_stall = bp_stall;
     g_bp_id = supervisor_register_in_domain(g_chain_sup, &g_bp_contract);
     if (g_bp_id == SUPERVISOR_INVALID_ID) {
-        fprintf(stderr,  // obs-ok:bp-supervisor-fallback-warn
-            "[supervisor] WARN staged.body_persist register failed\n");
+        LOG_WARN("supervisor", "[supervisor] WARN staged.body_persist register failed");
     }
 }
 
@@ -277,14 +245,7 @@ static void sv_tick(struct liveness_contract *c)
 static void sv_stall(struct liveness_contract *c)
 {
     (void)c;
-    fprintf(stderr,  // obs-ok:sv-shadow-stall
-            "[supervisor] staged.script_validate stalled "
-            "(cursor=%llu verified=%llu upstream_failed=%llu internal_error=%llu) "
-            "— shadow script validation behind body_persist\n",
-            (unsigned long long)script_validate_stage_cursor(),
-            (unsigned long long)script_validate_stage_verified_total(),
-            (unsigned long long)script_validate_stage_upstream_failed_total(),
-            (unsigned long long)script_validate_stage_internal_error_total());
+    LOG_WARN("supervisor", "[supervisor] staged.script_validate stalled " "(cursor=%llu verified=%llu upstream_failed=%llu internal_error=%llu) " "— shadow script validation behind body_persist", (unsigned long long)script_validate_stage_cursor(), (unsigned long long)script_validate_stage_verified_total(), (unsigned long long)script_validate_stage_upstream_failed_total(), (unsigned long long)script_validate_stage_internal_error_total());
 }
 
 static void staged_script_validate_register(struct main_state *ms)
@@ -293,9 +254,7 @@ static void staged_script_validate_register(struct main_state *ms)
     if (g_sv_id != SUPERVISOR_INVALID_ID) return;  /* idempotent */
 
     if (!script_validate_stage_init(ms)) {
-        fprintf(stderr,  // obs-ok:sv-init-warn
-            "[supervisor] WARN staged.script_validate init failed — "
-            "shadow script validation not running this boot\n");
+        LOG_WARN("supervisor", "[supervisor] WARN staged.script_validate init failed — " "shadow script validation not running this boot");
         return;
     }
 
@@ -308,8 +267,7 @@ static void staged_script_validate_register(struct main_state *ms)
     g_sv_contract.on_stall = sv_stall;
     g_sv_id = supervisor_register_in_domain(g_chain_sup, &g_sv_contract);
     if (g_sv_id == SUPERVISOR_INVALID_ID) {
-        fprintf(stderr,  // obs-ok:sv-supervisor-fallback-warn
-            "[supervisor] WARN staged.script_validate register failed\n");
+        LOG_WARN("supervisor", "[supervisor] WARN staged.script_validate register failed");
     }
 }
 
@@ -331,14 +289,7 @@ static void pv_tick(struct liveness_contract *c)
 static void pv_stall(struct liveness_contract *c)
 {
     (void)c;
-    fprintf(stderr,  // obs-ok:pv-shadow-stall
-            "[supervisor] staged.proof_validate stalled "
-            "(cursor=%llu verified=%llu upstream_failed=%llu internal_error=%llu) "
-            "— shadow proof validation behind script_validate\n",
-            (unsigned long long)proof_validate_stage_cursor(),
-            (unsigned long long)proof_validate_stage_verified_total(),
-            (unsigned long long)proof_validate_stage_upstream_failed_total(),
-            (unsigned long long)proof_validate_stage_internal_error_total());
+    LOG_WARN("supervisor", "[supervisor] staged.proof_validate stalled " "(cursor=%llu verified=%llu upstream_failed=%llu internal_error=%llu) " "— shadow proof validation behind script_validate", (unsigned long long)proof_validate_stage_cursor(), (unsigned long long)proof_validate_stage_verified_total(), (unsigned long long)proof_validate_stage_upstream_failed_total(), (unsigned long long)proof_validate_stage_internal_error_total());
 }
 
 static void staged_proof_validate_register(struct main_state *ms)
@@ -347,9 +298,7 @@ static void staged_proof_validate_register(struct main_state *ms)
     if (g_pv_id != SUPERVISOR_INVALID_ID) return;  /* idempotent */
 
     if (!proof_validate_stage_init(ms)) {
-        fprintf(stderr,  // obs-ok:pv-init-warn
-            "[supervisor] WARN staged.proof_validate init failed — "
-            "shadow proof validation not running this boot\n");
+        LOG_WARN("supervisor", "[supervisor] WARN staged.proof_validate init failed — " "shadow proof validation not running this boot");
         return;
     }
 
@@ -362,8 +311,7 @@ static void staged_proof_validate_register(struct main_state *ms)
     g_pv_contract.on_stall = pv_stall;
     g_pv_id = supervisor_register_in_domain(g_chain_sup, &g_pv_contract);
     if (g_pv_id == SUPERVISOR_INVALID_ID) {
-        fprintf(stderr,  // obs-ok:pv-supervisor-fallback-warn
-            "[supervisor] WARN staged.proof_validate register failed\n");
+        LOG_WARN("supervisor", "[supervisor] WARN staged.proof_validate register failed");
     }
 }
 
@@ -385,14 +333,7 @@ static void uv_tick(struct liveness_contract *c)
 static void uv_stall(struct liveness_contract *c)
 {
     (void)c;
-    fprintf(stderr,  // obs-ok:uv-shadow-stall
-            "[supervisor] staged.utxo_apply stalled "
-            "(cursor=%llu verified=%llu upstream_failed=%llu internal_error=%llu) "
-            "— shadow UTXO apply behind proof_validate\n",
-            (unsigned long long)utxo_apply_stage_cursor(),
-            (unsigned long long)utxo_apply_stage_verified_total(),
-            (unsigned long long)utxo_apply_stage_upstream_failed_total(),
-            (unsigned long long)utxo_apply_stage_internal_error_total());
+    LOG_WARN("supervisor", "[supervisor] staged.utxo_apply stalled " "(cursor=%llu verified=%llu upstream_failed=%llu internal_error=%llu) " "— shadow UTXO apply behind proof_validate", (unsigned long long)utxo_apply_stage_cursor(), (unsigned long long)utxo_apply_stage_verified_total(), (unsigned long long)utxo_apply_stage_upstream_failed_total(), (unsigned long long)utxo_apply_stage_internal_error_total());
 }
 
 static void staged_utxo_apply_register(struct main_state *ms)
@@ -401,9 +342,7 @@ static void staged_utxo_apply_register(struct main_state *ms)
     if (g_uv_id != SUPERVISOR_INVALID_ID) return;  /* idempotent */
 
     if (!utxo_apply_stage_init(ms)) {
-        fprintf(stderr,  // obs-ok:uv-init-warn
-            "[supervisor] WARN staged.utxo_apply init failed — "
-            "shadow UTXO apply not running this boot\n");
+        LOG_WARN("supervisor", "[supervisor] WARN staged.utxo_apply init failed — " "shadow UTXO apply not running this boot");
         return;
     }
 
@@ -416,8 +355,7 @@ static void staged_utxo_apply_register(struct main_state *ms)
     g_uv_contract.on_stall = uv_stall;
     g_uv_id = supervisor_register_in_domain(g_chain_sup, &g_uv_contract);
     if (g_uv_id == SUPERVISOR_INVALID_ID) {
-        fprintf(stderr,  // obs-ok:uv-supervisor-fallback-warn
-            "[supervisor] WARN staged.utxo_apply register failed\n");
+        LOG_WARN("supervisor", "[supervisor] WARN staged.utxo_apply register failed");
     }
 }
 
@@ -439,14 +377,7 @@ static void tf_tick(struct liveness_contract *c)
 static void tf_stall(struct liveness_contract *c)
 {
     (void)c;
-    fprintf(stderr,  // obs-ok:tf-shadow-stall
-            "[supervisor] staged.tip_finalize stalled "
-            "(cursor=%llu finalized=%llu upstream_failed=%llu reorg=%llu) "
-            "— shadow tip finalize behind utxo_apply or live tip\n",
-            (unsigned long long)tip_finalize_stage_cursor(),
-            (unsigned long long)tip_finalize_stage_finalized_total(),
-            (unsigned long long)tip_finalize_stage_upstream_failed_total(),
-            (unsigned long long)tip_finalize_stage_reorg_detected_total());
+    LOG_WARN("supervisor", "[supervisor] staged.tip_finalize stalled " "(cursor=%llu finalized=%llu upstream_failed=%llu reorg=%llu) " "— shadow tip finalize behind utxo_apply or live tip", (unsigned long long)tip_finalize_stage_cursor(), (unsigned long long)tip_finalize_stage_finalized_total(), (unsigned long long)tip_finalize_stage_upstream_failed_total(), (unsigned long long)tip_finalize_stage_reorg_detected_total());
 }
 
 static void staged_tip_finalize_register(struct main_state *ms)
@@ -455,9 +386,7 @@ static void staged_tip_finalize_register(struct main_state *ms)
     if (g_tf_id != SUPERVISOR_INVALID_ID) return;  /* idempotent */
 
     if (!tip_finalize_stage_init(ms)) {
-        fprintf(stderr,  // obs-ok:tf-init-warn
-            "[supervisor] WARN staged.tip_finalize init failed — "
-            "shadow tip finalize not running this boot\n");
+        LOG_WARN("supervisor", "[supervisor] WARN staged.tip_finalize init failed — " "shadow tip finalize not running this boot");
         return;
     }
 
@@ -470,8 +399,7 @@ static void staged_tip_finalize_register(struct main_state *ms)
     g_tf_contract.on_stall = tf_stall;
     g_tf_id = supervisor_register_in_domain(g_chain_sup, &g_tf_contract);
     if (g_tf_id == SUPERVISOR_INVALID_ID) {
-        fprintf(stderr,  // obs-ok:tf-supervisor-fallback-warn
-            "[supervisor] WARN staged.tip_finalize register failed\n");
+        LOG_WARN("supervisor", "[supervisor] WARN staged.tip_finalize register failed");
     }
 }
 

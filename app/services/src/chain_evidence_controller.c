@@ -1,6 +1,7 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0 */
 
 #include "services/chain_evidence_controller.h"
+#include "util/log_macros.h"
 #include "services/chain_evidence_store.h"
 #include "chain_evidence_reconstruct.h"
 
@@ -141,20 +142,14 @@ static void chain_evidence_controller_reconcile_startup(
         char old_hex[65], new_hex[65];
         uint256_get_hex(&persisted_hash, old_hex);
         uint256_get_hex(active_tip->phashBlock, new_hex);
-        fprintf(stderr,  // obs-ok:cec-startup-tip-drift
-                "[cec] startup tip drift: persisted=%s in-memory=%s — "
-                "updating persisted to in-memory (h=%d)\n",
-                old_hex, new_hex, active_tip->nHeight);
+        LOG_WARN("cec", "[cec] startup tip drift: persisted=%s in-memory=%s — " "updating persisted to in-memory (h=%d)", old_hex, new_hex, active_tip->nHeight);
         persist_blob(authority, "cec.active_tip_hash",
                      active_tip->phashBlock, sizeof(*active_tip->phashBlock));
         persist_i64(authority, "cec.active_tip_height",
                     active_tip->nHeight);
     }
     if (persisted_height >= 0 && persisted_height != active_tip->nHeight) {
-        fprintf(stderr,  // obs-ok:cec-startup-tip-drift
-                "[cec] startup tip drift: persisted_height=%d "
-                "in-memory_height=%d — updating persisted\n",
-                persisted_height, active_tip->nHeight);
+        LOG_WARN("cec", "[cec] startup tip drift: persisted_height=%d " "in-memory_height=%d — updating persisted", persisted_height, active_tip->nHeight);
         persist_i64(authority, "cec.active_tip_height",
                     active_tip->nHeight);
     }
@@ -166,10 +161,7 @@ static void chain_evidence_controller_reconcile_startup(
      * contradictions where the persisted active_tip_hash itself diverges
      * are still caught above. Log and continue. */
     if (!u256_equal(&csv.coins_best_block, active_tip->phashBlock)) {
-        fprintf(stderr,  // obs-ok:cec-self-heal-csr-cursor
-                "[cec] reconcile_startup: coins_best_block != active_tip "
-                "hash (transient or post-shutdown lag) — deferring to "
-                "next commit\n");
+        LOG_WARN("cec", "[cec] reconcile_startup: coins_best_block != active_tip " "hash (transient or post-shutdown lag) — deferring to " "next commit");
     }
     /* Derived-state lag is not a contradiction. After a clean shutdown the
      * persisted pindex_best_header / blocks-table max can be behind the
@@ -178,18 +170,12 @@ static void chain_evidence_controller_reconcile_startup(
      * will catch up via P2P / projection. A freeze here was sticky and
      * required manual node.db surgery to clear. */
     if (csv.header_height >= 0 && csv.header_height < active_tip->nHeight) {
-        fprintf(stderr,  // obs-ok:cec-self-heal-header-tip
-                "[cec] reconcile_startup: pindex_best_header h=%d behind "
-                "active_tip h=%d — advancing in-memory tracker\n",
-                csv.header_height, active_tip->nHeight);
+        LOG_INFO("cec", "[cec] reconcile_startup: pindex_best_header h=%d behind " "active_tip h=%d — advancing in-memory tracker", csv.header_height, active_tip->nHeight);
         if (authority->csr && authority->csr->pindex_best_hdr)
             *authority->csr->pindex_best_hdr = active_tip;
     }
     if (csv.sql_max_height >= 0 && csv.sql_max_height < active_tip->nHeight) {
-        fprintf(stderr,  // obs-ok:cec-self-heal-sql-max
-                "[cec] reconcile_startup: blocks.max_height=%lld behind "
-                "active_tip h=%d — projection will backfill\n",
-                (long long)csv.sql_max_height, active_tip->nHeight);
+        LOG_INFO("cec", "[cec] reconcile_startup: blocks.max_height=%lld behind " "active_tip h=%d — projection will backfill", (long long)csv.sql_max_height, active_tip->nHeight);
     }
 
     if (!has_active_evidence ||
@@ -271,9 +257,7 @@ enum chain_evidence_controller_state chain_evidence_controller_load_state(
             (strcmp(r, "legacy advisory hash disagreement") == 0) ||
             (strcmp(r, "legacy advisory post-catchup disagreement") == 0);
         if (demoted) {
-            fprintf(stderr,  // obs-ok:cec-auto-clear-demoted-freeze
-                    "[cec] auto-clearing stale freeze (reason=%s now "
-                    "demoted to warning)\n", r);
+            LOG_WARN("cec", "[cec] auto-clearing stale freeze (reason=%s now " "demoted to warning)", r);
             authority->state = CEC_EMPTY;
             memset(authority->contradiction_reason, 0,
                    sizeof(authority->contradiction_reason));
@@ -448,16 +432,7 @@ enum chain_evidence_controller_result chain_evidence_controller_promote_tip(
          * sql-cross-check) before the commit lands. Returning
          * INCOMPLETE_INDEX_EVIDENCE without freeze lets the caller
          * retry on the next pass once the evidence record is rebuilt. */
-        fprintf(stderr,  // obs-ok:incomplete-evidence-transient
-                "[cec] tip promotion missing block-index evidence "
-                "(transient) h=%d ancestry=%d work=%d nakamoto=%d "
-                "bytes=%d — controller stays in state=%s for retry\n",
-                request->new_tip->nHeight,
-                verified.header_ancestry_linked,
-                verified.chainwork_recomputed,
-                verified.nakamoto_selected_best_work,
-                verified.block_bytes_hash_checked,
-                chain_evidence_controller_state_name(authority->state));
+        LOG_WARN("cec", "[cec] tip promotion missing block-index evidence " "(transient) h=%d ancestry=%d work=%d nakamoto=%d " "bytes=%d — controller stays in state=%s for retry", request->new_tip->nHeight, verified.header_ancestry_linked, verified.chainwork_recomputed, verified.nakamoto_selected_best_work, verified.block_bytes_hash_checked, chain_evidence_controller_state_name(authority->state));
         return CEC_REJECTED_INCOMPLETE_INDEX_EVIDENCE;
     }
     if (request->utxo_max_height > request->new_tip->nHeight) {
@@ -514,9 +489,7 @@ enum chain_evidence_controller_result chain_evidence_controller_promote_tip(
     if (!outer_txn_present) {
         txn = db_txn_begin(authority->ndb, "cec.promote_tip");
         if (!txn) {
-            fprintf(stderr,  // obs-ok:transient-txn-failure
-                    "[cec] tip promotion txn open failed (transient) h=%d\n",
-                    request->new_tip->nHeight);
+            LOG_WARN("cec", "[cec] tip promotion txn open failed (transient) h=%d", request->new_tip->nHeight);
             return CEC_REJECTED_PERSIST;
         }
     }
@@ -557,11 +530,7 @@ enum chain_evidence_controller_result chain_evidence_controller_promote_tip(
          * reserved for true contradictions (evidence integrity
          * violations, snapshot/index disagreement). Caller retries on
          * REJECTED_PERSIST. */
-        fprintf(stderr,  // obs-ok:transient-persist-failure-emits-event-below
-                "[cec] tip promotion persist failure (transient) h=%d — "
-                "controller stays in state=%s for retry\n",
-                request->new_tip->nHeight,
-                chain_evidence_controller_state_name(old_state));
+        LOG_WARN("cec", "[cec] tip promotion persist failure (transient) h=%d — " "controller stays in state=%s for retry", request->new_tip->nHeight, chain_evidence_controller_state_name(old_state));
         event_emitf(EV_CHAIN_TIP_REJECTED, 0,
                     "code=cec_persist_transient h=%d",
                     request->new_tip->nHeight);
@@ -622,12 +591,7 @@ enum chain_evidence_controller_result chain_evidence_controller_promote_tip(
          * for the rest of the process lifetime even though the
          * underlying issue might clear in the next pass. Restore
          * old_state and return CEC_REJECTED_CSR; the caller retries. */
-        fprintf(stderr,  // obs-ok:csr-rejection-pre-existing-emit
-                "[cec] csr rejected tip promotion h=%d reason=%s — "
-                "controller stays in state=%s for retry\n",
-                request->new_tip->nHeight,
-                csr_result_name(csr),
-                chain_evidence_controller_state_name(old_state));
+        LOG_WARN("cec", "[cec] csr rejected tip promotion h=%d reason=%s — " "controller stays in state=%s for retry", request->new_tip->nHeight, csr_result_name(csr), chain_evidence_controller_state_name(old_state));
         authority->state = old_state;
         return CEC_REJECTED_CSR;
     }

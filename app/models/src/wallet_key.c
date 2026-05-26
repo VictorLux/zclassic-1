@@ -13,6 +13,7 @@
  * validates :address, string_present: true */
 
 #include "platform/time_compat.h"
+#include "util/log_macros.h"
 #include "models/wallet_key.h"
 #include "models/wallet_tx.h"
 #include "keys/key.h"
@@ -100,8 +101,7 @@ static void wallet_key_after_save(void *record, void *ctx)
 
     if (!wallet_projection_emit_key_add(k->pubkey_hash, address, "",
             (uint32_t)k->created_at)) {
-        fprintf(stderr,  // obs-ok:wallet-projection-shadow-emit
-                "[wallet_projection] key add shadow emit failed\n");
+        LOG_WARN("wallet_projection", "[wallet_projection] key add shadow emit failed");
     }
 }
 

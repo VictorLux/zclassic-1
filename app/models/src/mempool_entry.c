@@ -9,6 +9,7 @@
  * validates :height_added, numericality: { >= 0 } */
 
 #include "platform/time_compat.h"
+#include "util/log_macros.h"
 #include "models/mempool_entry.h"
 #include "storage/mempool_projection.h"
 #include <string.h>
@@ -100,8 +101,7 @@ bool db_mempool_save(struct node_db *ndb, const struct db_mempool_entry *e)
         !mempool_projection_emit_admit(e->txid, e->fee, (uint32_t)e->size,
                                        (uint32_t)e->size, e->time_added,
                                        e->raw_tx, e->raw_tx_len)) {
-        fprintf(stderr,  // obs-ok:mempool-projection-shadow
-                "mempool projection shadow emit failed for save\n");
+        LOG_WARN("model", "mempool projection shadow emit failed for save");
     }
     AR_FINISH_SAVE(cbs, e, ok);
 }
@@ -170,8 +170,7 @@ bool db_mempool_delete(struct node_db *ndb, const uint8_t txid[32])
     AR_FINALIZE(s);
     if (ok && mempool_projection_event_log() &&
         !mempool_projection_emit_remove(txid, 4)) {
-        fprintf(stderr,  // obs-ok:mempool-projection-shadow
-                "mempool projection shadow emit failed for delete\n");
+        LOG_WARN("model", "mempool projection shadow emit failed for delete");
     }
     AR_FINISH_DESTROY(cbs, &e, ok);
 }
@@ -216,8 +215,7 @@ static void emit_clear_removes(uint8_t *txids, int count)
     for (int i = 0; i < count; i++) {
         const uint8_t *txid = txids + (size_t)i * 32u;
         if (!mempool_projection_emit_remove(txid, 3)) {
-            fprintf(stderr,  // obs-ok:mempool-projection-shadow
-                    "mempool projection shadow emit failed for clear\n");
+            LOG_WARN("model", "mempool projection shadow emit failed for clear");
         }
     }
 }

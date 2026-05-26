@@ -1,6 +1,7 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0 */
 
 #include "platform/time_compat.h"
+#include "util/log_macros.h"
 #include "models/store.h"
 #include "models/model_text.h"
 #include <string.h>
@@ -129,7 +130,7 @@ bool db_store_product_save(struct node_db *ndb, const struct db_store_product *p
     bool ok = false;
     AR_FINALIZE_STEP_DONE(s, ok);
     if (!ok) {
-        fprintf(stderr, "store_product save failed: %s\n", sqlite3_errmsg(ndb->db));  // obs-ok:pre-existing-diagnostic
+        LOG_WARN("model", "store_product save failed: %s", sqlite3_errmsg(ndb->db));
     }
     AR_FINISH_SAVE(cbs, p, ok);
 }

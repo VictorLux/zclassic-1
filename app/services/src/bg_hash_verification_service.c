@@ -134,9 +134,7 @@ static void *bg_hash_verify_thread(void *arg)
             char exp[65], got[65];
             uint256_get_hex(&snap_hash, exp);
             uint256_get_hex(&computed, got);
-            fprintf(stderr, // obs-ok:pre-existing-diagnostic
-                    "[bg-hash-verify] MISMATCH at h=%d!\n"
-                    "  stored:   %s\n  computed: %s\n", h, exp, got);
+            LOG_WARN("bg", "[bg-hash-verify] MISMATCH at h=%d!\n" "  stored:   %s\n  computed: %s", h, exp, got);
             mismatches++;
             atomic_store(&svc->progress.mismatches, mismatches);
         }
@@ -177,9 +175,7 @@ static void *bg_hash_verify_thread(void *arg)
         (ts_end.tv_nsec - ts_start.tv_nsec) / 1e9;
 
     if (mismatches > 0) {
-        fprintf(stderr, // obs-ok:pre-existing-diagnostic
-                "[bg-hash-verify] FAILED: %d mismatches in %d blocks "
-                "(%.0fs)\n", mismatches, verified, total);
+        LOG_WARN("bg", "[bg-hash-verify] FAILED: %d mismatches in %d blocks " "(%.0fs)", mismatches, verified, total);
         atomic_store(&svc->progress.state, BG_HASH_VERIFY_FAILED);
     } else if (!atomic_load(&svc->stop_requested)) {
         printf("[bg-hash-verify] Complete: %d blocks verified, 0 mismatches "

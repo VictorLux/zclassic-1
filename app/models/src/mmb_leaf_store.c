@@ -6,6 +6,7 @@
  * 3M blocks × 32 bytes = 96 MB on disk, mmap'd for O(1) access. */
 
 #include "models/mmb_leaf_store.h"
+#include "util/log_macros.h"
 #include "validation/chainstate.h"
 #include <string.h>
 #include <stdio.h>
@@ -61,7 +62,7 @@ bool mmb_leaf_store_open(struct mmb_leaf_store *store, const char *path)
                           MAP_PRIVATE, store->fd, 0);
         if (store->map == MAP_FAILED) {
             store->map = NULL;
-            fprintf(stderr, "mmb_leaf_store: mmap failed for %s\n", path); // obs-ok:warning-only-on-best-effort-path
+            LOG_WARN("mmb_leaf_store", "mmb_leaf_store: mmap failed for %s", path);
         }
     }
 

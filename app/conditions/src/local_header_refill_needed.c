@@ -1,6 +1,7 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0 */
 
 #include "conditions/watchdog_dissolve_pr2.h"
+#include "util/log_macros.h"
 #include "framework/condition.h"
 
 #include "net/connman.h"
@@ -65,11 +66,7 @@ static enum condition_remedy_result remedy_local_header_refill_needed(void)
         1,
         peers >= 3,
         &decision);
-    fprintf(stderr,  // obs-ok:condition-local-header-refill
-            "[condition:local_header_refill_needed] missing=%d peer_max=%d "
-            "eligible=%d decision=%s reason=%s\n",
-            next_h, atomic_load(&g_peer_max_at_detect), peers,
-            proceed ? "proceed" : "wait", decision.reason);
+    LOG_WARN("condition", "[condition:local_header_refill_needed] missing=%d peer_max=%d " "eligible=%d decision=%s reason=%s", next_h, atomic_load(&g_peer_max_at_detect), peers, proceed ? "proceed" : "wait", decision.reason);
     if (proceed) {
         if (!sync_set_state(SYNC_HEADERS_DOWNLOAD,
                             "condition local_header_refill_needed")) {

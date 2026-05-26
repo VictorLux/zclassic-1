@@ -667,7 +667,7 @@ bool file_export_consensus_snapshot(const char *datadir)
     /* Attach source database */
     char *attach_sql = sqlite3_mprintf("ATTACH DATABASE '%q' AS src", src_path);
     if (!attach_sql) {
-        fprintf(stderr, "file_export_snapshot: out of memory building ATTACH SQL\n");  // obs-ok:snapshot-export-failure-bubbles-to-caller
+        LOG_WARN("file_export_snapshot", "file_export_snapshot: out of memory building ATTACH SQL");
         ok = false;
         goto export_cleanup;
     }
@@ -797,7 +797,7 @@ bool file_export_consensus_snapshot(const char *datadir)
            tables_copied, snap_height,
            (double)dst_st.st_size / (1024.0*1024.0));
     if (tables_copied == 0) {
-        fprintf(stderr, "file_export_snapshot: no tables exported\n");  // obs-ok:snapshot-export-failure-bubbles-to-caller
+        LOG_WARN("file_export_snapshot", "file_export_snapshot: no tables exported");
         ok = false;
         goto export_cleanup;
     }

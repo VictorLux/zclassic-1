@@ -1,6 +1,7 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0 */
 
 #include "framework/condition.h"
+#include "util/log_macros.h"
 
 #include "config/runtime.h"
 #include "event/event.h"
@@ -89,20 +90,12 @@ static enum condition_remedy_result remedy_snapshot_complete_resume(void)
 #endif
 
     if (!svc || !ms) {
-        fprintf(stderr,  // obs-ok:condition-snapshot-complete-resume
-                "[condition:snapshot_complete_resume] missing runtime "
-                "svc=%p ms=%p height=%d action=resume_headers\n",
-                (void *)svc, (void *)ms, height);
+        LOG_WARN("condition", "[condition:snapshot_complete_resume] missing runtime " "svc=%p ms=%p height=%d action=resume_headers", (void *)svc, (void *)ms, height);
         return COND_REMEDY_FAILED;
     }
 
     int activated_height = snapsync_activate_verified_tip(svc, ms);
-    fprintf(stderr,  // obs-ok:condition-snapshot-complete-resume
-            "[condition:snapshot_complete_resume] peer=%u height=%d "
-            "utxos=%llu activated=%d action=resume_headers\n",
-            (unsigned)peer, height,
-            (unsigned long long)atomic_load(&g_utxos_at_detect),
-            activated_height);
+    LOG_INFO("condition", "[condition:snapshot_complete_resume] peer=%u height=%d " "utxos=%llu activated=%d action=resume_headers", (unsigned)peer, height, (unsigned long long)atomic_load(&g_utxos_at_detect), activated_height);
 
     event_emitf(EV_SYNC_STATE_CHANGE, peer,
                 "condition snapshot_complete_resume h=%d activated=%d",

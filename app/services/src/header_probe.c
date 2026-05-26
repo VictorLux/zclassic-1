@@ -83,9 +83,7 @@ static void hp_publish_header_admit(const struct block_index *pindex)
         .observed_unix = clock_now_wall_ms() / 1000,
     };
     if (!mailbox_header_admit_push(&msg)) {
-        fprintf(stderr,  // obs-ok:header-probe-header-admit-inbox-full
-                "[header_probe] header_admit inbox full; drop height=%d\n",
-                pindex->nHeight);
+        LOG_INFO("header_probe", "[header_probe] header_admit inbox full; drop height=%d", pindex->nHeight);
     }
 }
 

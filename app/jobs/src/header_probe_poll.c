@@ -3,6 +3,7 @@
  * header_probe_poll Job — see jobs/header_probe_poll.h. */
 
 #include "jobs/header_probe_poll.h"
+#include "util/log_macros.h"
 
 #include "services/header_probe.h"
 #include "supervisors/domains.h"
@@ -57,8 +58,7 @@ void header_probe_poll_register(void)
         supervisor_register_in_domain(g_net_sup, &g_contract);
     atomic_store(&g_id, id);
     if (id == SUPERVISOR_INVALID_ID) {
-        fprintf(stderr,  // obs-ok:header-probe-poll-register-fail
-            "[header_probe_poll] WARN register failed\n");
+        LOG_WARN("header_probe_poll", "[header_probe_poll] WARN register failed");
     }
 }
 

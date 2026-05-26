@@ -536,12 +536,7 @@ enum csr_result csr_commit_header_tip(
     if (rc != CSR_OK) {
         csr->commits_rejected[rc]++;
         pthread_mutex_unlock(&csr->lock);
-        fprintf(stderr,  // obs-ok:paired-with-EV_CHAIN_TIP_REJECTED-counter-above
-                "csr: HEADER_REJECTED code=%s to=%d reason=%s\n",
-                csr_result_name(rc),
-                (commit && commit->new_header_tip)
-                    ? commit->new_header_tip->nHeight : -1,
-                (commit && commit->reason) ? commit->reason : "");
+        LOG_WARN("csr", "csr: HEADER_REJECTED code=%s to=%d reason=%s", csr_result_name(rc), (commit && commit->new_header_tip) ? commit->new_header_tip->nHeight : -1, (commit && commit->reason) ? commit->reason : "");
         return rc;
     }
 
@@ -651,11 +646,7 @@ enum csr_result csr_commit_tip(struct chain_state_repository *csr,
         csr->commits_rejected[rc]++;
         csr_emit_rejected_event(csr, from_height, commit, rc);
         pthread_mutex_unlock(&csr->lock);
-        fprintf(stderr,  // obs-ok:paired-with-csr_emit_rejected_event-above
-                "csr: REJECTED code=%s from=%d to=%d reason=%s\n",
-                csr_result_name(rc), from_height,
-                (commit && commit->new_tip) ? commit->new_tip->nHeight : -1,
-                (commit && commit->reason) ? commit->reason : "");
+        LOG_WARN("csr", "csr: REJECTED code=%s from=%d to=%d reason=%s", csr_result_name(rc), from_height, (commit && commit->new_tip) ? commit->new_tip->nHeight : -1, (commit && commit->reason) ? commit->reason : "");
         return rc;
     }
 
@@ -668,14 +659,7 @@ enum csr_result csr_commit_tip(struct chain_state_repository *csr,
             csr->commits_rejected[prc]++;
             csr_emit_rejected_event(csr, from_height, commit, prc);
             pthread_mutex_unlock(&csr->lock);
-            fprintf(stderr,  // obs-ok:paired-with-csr_emit_rejected_event-above
-                    "csr: REJECTED code=%s from=%d to=%d reason=%s "
-                    "sqlite_rc=%d detail=%s\n",
-                    csr_result_name(prc), from_height,
-                    commit->new_tip ? commit->new_tip->nHeight : -1,
-                    commit->reason ? commit->reason : "",
-                    csr->last_persist_sqlite_rc,
-                    csr->last_persist_error);
+            LOG_WARN("csr", "csr: REJECTED code=%s from=%d to=%d reason=%s " "sqlite_rc=%d detail=%s", csr_result_name(prc), from_height, commit->new_tip ? commit->new_tip->nHeight : -1, commit->reason ? commit->reason : "", csr->last_persist_sqlite_rc, csr->last_persist_error);
             return prc;
         }
     }

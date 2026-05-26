@@ -1,6 +1,7 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0 */
 
 #include "supervisors/self_heal.h"
+#include "util/log_macros.h"
 
 #include "framework/condition.h"
 #include "supervisors/domains.h"
@@ -37,7 +38,6 @@ void self_heal_register(struct main_state *ms)
     supervisor_domains_init();
     atomic_store(&g_id, supervisor_register_in_domain(g_op_sup, &g_contract));
     if (atomic_load(&g_id) == SUPERVISOR_INVALID_ID) {
-        fprintf(stderr,  // obs-ok:self-heal-register-fail
-                "[self_heal] WARN register failed\n");
+        LOG_WARN("self_heal", "[self_heal] WARN register failed");
     }
 }

@@ -1,6 +1,7 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0 */
 
 #include "framework/condition.h"
+#include "util/log_macros.h"
 
 #include "config/runtime.h"
 #include "event/event.h"
@@ -165,10 +166,7 @@ static enum condition_remedy_result remedy_tip_wedged_resnapshot(void)
 #endif
 
     if (!ndb || !svc || target <= 0) {
-        fprintf(stderr,  // obs-ok:condition-tip-wedged-resnapshot
-                "[condition:tip_wedged_resnapshot] missing runtime "
-                "ndb=%p svc=%p target=%d\n",
-                (void *)ndb, (void *)svc, target);
+        LOG_WARN("condition", "[condition:tip_wedged_resnapshot] missing runtime " "ndb=%p svc=%p target=%d", (void *)ndb, (void *)svc, target);
         event_emitf(EV_SYNC_STATE_CHANGE, 0,
                     "condition tip_wedged_resnapshot result=failed "
                     "reason=missing_runtime target=%d",
@@ -177,12 +175,7 @@ static enum condition_remedy_result remedy_tip_wedged_resnapshot(void)
     }
 
     if (!snapsync_build_local_recovery_manifest(ndb, &manifest, 0)) {
-        fprintf(stderr,  // obs-ok:condition-tip-wedged-resnapshot
-                "[condition:tip_wedged_resnapshot] trigger=%s target=%d "
-                "local=%d best=%d result=manifest_unavailable\n",
-                trigger_name(trigger), target,
-                atomic_load(&g_local_height_at_detect),
-                atomic_load(&g_best_header_at_detect));
+        LOG_WARN("condition", "[condition:tip_wedged_resnapshot] trigger=%s target=%d " "local=%d best=%d result=manifest_unavailable", trigger_name(trigger), target, atomic_load(&g_local_height_at_detect), atomic_load(&g_best_header_at_detect));
         event_emitf(EV_SYNC_STATE_CHANGE, 0,
                     "condition tip_wedged_resnapshot result=failed "
                     "reason=manifest_unavailable target=%d",
@@ -193,12 +186,7 @@ static enum condition_remedy_result remedy_tip_wedged_resnapshot(void)
     atomic_store(&g_last_manifest_height, manifest.height);
     bool accepted = snapsync_request_recovery(svc, target, &manifest);
     atomic_store(&g_recovery_accepted, accepted ? 1 : 0);
-    fprintf(stderr,  // obs-ok:condition-tip-wedged-resnapshot
-            "[condition:tip_wedged_resnapshot] trigger=%s target=%d "
-            "manifest_h=%d local=%d best=%d accepted=%d\n",
-            trigger_name(trigger), target, manifest.height,
-            atomic_load(&g_local_height_at_detect),
-            atomic_load(&g_best_header_at_detect), accepted ? 1 : 0);
+    LOG_WARN("condition", "[condition:tip_wedged_resnapshot] trigger=%s target=%d " "manifest_h=%d local=%d best=%d accepted=%d", trigger_name(trigger), target, manifest.height, atomic_load(&g_local_height_at_detect), atomic_load(&g_best_header_at_detect), accepted ? 1 : 0);
     event_emitf(EV_SYNC_STATE_CHANGE, 0,
                 "condition tip_wedged_resnapshot trigger=%s target=%d "
                 "manifest_h=%d accepted=%d",

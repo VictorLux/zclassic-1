@@ -1,6 +1,7 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0 */
 
 #include "framework/condition.h"
+#include "util/log_macros.h"
 
 #include "chain/chain.h"
 #include "event/event.h"
@@ -68,9 +69,7 @@ static enum condition_remedy_result remedy_have_data_unreadable(void)
     if (!p)
         return COND_REMEDY_SKIP;
 
-    fprintf(stderr,  // obs-ok:condition-have-data-unreadable
-            "[condition:have_data_unreadable] clearing h=%d file=%d pos=%u\n",
-            target, p->nFile, p->nDataPos);
+    LOG_WARN("condition", "[condition:have_data_unreadable] clearing h=%d file=%d pos=%u", target, p->nFile, p->nDataPos);
     event_emitf(EV_BLOCK_REJECTED, 0,
                 "HAVE_DATA_UNREADABLE h=%d file=%d pos=%u",
                 target, p->nFile, p->nDataPos);

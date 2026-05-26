@@ -3,6 +3,7 @@
  * SHA3 evidence checks for legacy bootstrap imports. */
 
 #include "services/legacy_bootstrap_importer.h"
+#include "util/log_macros.h"
 
 #include "chain/sha3_windows.h"
 #include "core/random.h"
@@ -37,8 +38,7 @@ static void legacy_bootstrap_log_window_loc(
         return;
     const struct legacy_block_loc *loc = &map[(size_t)h];
     if (loc->height < 0) {
-        fprintf(stderr,  // obs-ok:legacy-map-diagnostic
-                "[%s] selected map h=%d: missing\n", log_prefix, h);
+        LOG_WARN("mirror", "[%s] selected map h=%d: missing", log_prefix, h);
         return;
     }
 
@@ -50,11 +50,7 @@ static void legacy_bootstrap_log_window_loc(
     char hash_hex[65], prev_hex[65];
     legacy_bootstrap_hex32(loc->hash.data, hash_hex);
     legacy_bootstrap_hex32(loc->hashPrev.data, prev_hex);
-    fprintf(stderr,  // obs-ok:legacy-map-diagnostic
-            "[%s] selected map h=%d hash=%.16s prev=%.16s "
-            "file=%d pos=%u status=0x%x prev_ok=%d\n",
-            log_prefix, h, hash_hex, prev_hex, loc->nFile, loc->nDataPos,
-            loc->nStatus, prev_ok ? 1 : 0);
+    LOG_INFO("mirror", "[%s] selected map h=%d hash=%.16s prev=%.16s " "file=%d pos=%u status=0x%x prev_ok=%d", log_prefix, h, hash_hex, prev_hex, loc->nFile, loc->nDataPos, loc->nStatus, prev_ok ? 1 : 0);
 }
 
 static void legacy_bootstrap_log_window_map_diagnostics(
@@ -64,9 +60,7 @@ static void legacy_bootstrap_log_window_map_diagnostics(
     int end,
     const char *log_prefix)
 {
-    fprintf(stderr,  // obs-ok:legacy-map-diagnostic
-            "[%s] selected map diagnostic for h=%d..%d\n",
-            log_prefix, start, end);
+    LOG_INFO("mirror", "[%s] selected map diagnostic for h=%d..%d", log_prefix, start, end);
 
     for (int h = start; h <= end && h < start + 3; h++)
         legacy_bootstrap_log_window_loc(map, map_count, h, log_prefix);
@@ -83,18 +77,14 @@ static void legacy_bootstrap_log_window_map_diagnostics(
         const struct legacy_block_loc *prev = &map[(size_t)(h - 1)];
         if (loc->height < 0 || prev->height < 0 ||
             !uint256_eq(&loc->hashPrev, &prev->hash)) {
-            fprintf(stderr,  // obs-ok:legacy-map-diagnostic
-                    "[%s] first selected-map break in window near h=%d\n",
-                    log_prefix, h);
+            LOG_INFO("mirror", "[%s] first selected-map break in window near h=%d", log_prefix, h);
             legacy_bootstrap_log_window_loc(map, map_count, h - 1,
                                             log_prefix);
             legacy_bootstrap_log_window_loc(map, map_count, h, log_prefix);
             return;
         }
     }
-    fprintf(stderr,  // obs-ok:legacy-map-diagnostic
-            "[%s] selected map has no parent break inside h=%d..%d\n",
-            log_prefix, start, end);
+    LOG_INFO("mirror", "[%s] selected map has no parent break inside h=%d..%d", log_prefix, start, end);
 }
 
 static bool legacy_bootstrap_compute_window_hash(
@@ -116,18 +106,14 @@ static bool legacy_bootstrap_compute_window_hash(
     for (int h = start; h <= end; h++) {
         const struct legacy_block_loc *loc = &map[(size_t)h];
         if (loc->height < 0) {
-            fprintf(stderr,  // obs-ok:bootstrap-import-terminal-diagnostic
-                    "[%s] spotcheck w=%zu h=%d MISSING in legacy index\n",
-                    log_prefix, wi, h);
+            LOG_WARN("mirror", "[%s] spotcheck w=%zu h=%d MISSING in legacy index", log_prefix, wi, h);
             return false;
         }
         size_t len = 0;
         const uint8_t *bytes =
             bmr_get_payload(bmr, loc->nFile, loc->nDataPos, &len);
         if (!bytes || len == 0) {
-            fprintf(stderr,  // obs-ok:bootstrap-import-terminal-diagnostic
-                    "[%s] spotcheck w=%zu h=%d mmap fetch failed\n",
-                    log_prefix, wi, h);
+            LOG_WARN("mirror", "[%s] spotcheck w=%zu h=%d mmap fetch failed", log_prefix, wi, h);
             return false;
         }
         sha3_256_write(&ctx, bytes, len);
@@ -150,15 +136,10 @@ static bool legacy_bootstrap_verify_window_logged(
         g_sha3_windows[wi].start_height : -1;
     int end = start >= 0 ? start + SHA3_WINDOW_SIZE - 1 : -1;
 
-    fprintf(stderr,  // obs-ok:pre-existing-diagnostic
-            "[%s] spotcheck: verifying w=%zu (h=%d..%d)\n",
-            log_prefix, wi, start, end);
+    LOG_INFO("mirror", "[%s] spotcheck: verifying w=%zu (h=%d..%d)", log_prefix, wi, start, end);
     if (!legacy_bootstrap_compute_window_hash(bmr, map, map_count, wi,
                                               log_prefix, actual)) {
-        fprintf(stderr,  // obs-ok:bootstrap-import-terminal-diagnostic
-                "[%s] spotcheck FAILED at window %zu (h=%d..%d): "
-                "unable to compute source digest\n",
-                log_prefix, wi, start, end);
+        LOG_WARN("mirror", "[%s] spotcheck FAILED at window %zu (h=%d..%d): " "unable to compute source digest", log_prefix, wi, start, end);
         if (dump_map_on_failure)
             legacy_bootstrap_log_window_map_diagnostics(
                 map, map_count, start, end, log_prefix);
@@ -168,17 +149,13 @@ static bool legacy_bootstrap_verify_window_logged(
         char expected_hex[65], actual_hex[65];
         legacy_bootstrap_hex32(g_sha3_windows[wi].hash, expected_hex);
         legacy_bootstrap_hex32(actual, actual_hex);
-        fprintf(stderr,  // obs-ok:bootstrap-import-terminal-diagnostic
-                "[%s] spotcheck FAILED at window %zu (h=%d..%d): "
-                "expected=%s actual=%s\n",
-                log_prefix, wi, start, end, expected_hex, actual_hex);
+        LOG_WARN("mirror", "[%s] spotcheck FAILED at window %zu (h=%d..%d): " "expected=%s actual=%s", log_prefix, wi, start, end, expected_hex, actual_hex);
         if (dump_map_on_failure)
             legacy_bootstrap_log_window_map_diagnostics(
                 map, map_count, start, end, log_prefix);
         return false;
     }
-    fprintf(stderr,  // obs-ok:pre-existing-diagnostic
-            "[%s] spotcheck: w=%zu OK\n", log_prefix, wi);
+    LOG_INFO("mirror", "[%s] spotcheck: w=%zu OK", log_prefix, wi);
     return true;
 }
 
@@ -193,14 +170,11 @@ bool legacy_bootstrap_spotcheck_sha3_windows(
     bool dump_map_on_failure)
 {
     if (!bmr || !map || !log_prefix) {
-        fprintf(stderr,  // obs-ok:bootstrap-import-terminal-diagnostic
-                "[legacy_bootstrap] SHA3 spotcheck: bad args\n");
+        LOG_WARN("legacy_bootstrap", "[legacy_bootstrap] SHA3 spotcheck: bad args");
         return false;
     }
     if (g_sha3_windows_count == 0) {
-        fprintf(stderr,  // obs-ok:bootstrap-import-terminal-diagnostic
-                "[%s] spotcheck SKIPPED: no compile-time anchor table "
-                "(g_sha3_windows_count=0)\n", log_prefix);
+        LOG_WARN("mirror", "[%s] spotcheck SKIPPED: no compile-time anchor table " "(g_sha3_windows_count=0)", log_prefix);
         return false;
     }
 
@@ -210,9 +184,7 @@ bool legacy_bootstrap_spotcheck_sha3_windows(
         if (covered < max_w) max_w = covered;
     }
     if (max_w == 0) {
-        fprintf(stderr,  // obs-ok:bootstrap-import-terminal-diagnostic
-                "[%s] spotcheck SKIPPED: legacy tip h=%d is below any "
-                "complete anchor window\n", log_prefix, legacy_tip);
+        LOG_WARN("mirror", "[%s] spotcheck SKIPPED: legacy tip h=%d is below any " "complete anchor window", log_prefix, legacy_tip);
         return false;
     }
     if ((size_t)k > max_w) k = (int)max_w;
@@ -228,14 +200,10 @@ bool legacy_bootstrap_spotcheck_sha3_windows(
             errno = 0;
             unsigned long long forced = strtoull(debug_window, &endp, 10);
             if (errno || !endp || *endp != '\0' || forced >= max_w) {
-                fprintf(stderr,  // obs-ok:operator-requested-diagnostic
-                        "[%s] invalid %s=%s (valid range: 0..%zu)\n",
-                        log_prefix, debug_env, debug_window, max_w - 1);
+                LOG_WARN("mirror", "[%s] invalid %s=%s (valid range: 0..%zu)", log_prefix, debug_env, debug_window, max_w - 1);
                 return false;
             }
-            fprintf(stderr,  // obs-ok:operator-requested-diagnostic
-                    "[%s] debug spotcheck window %llu requested\n",
-                    log_prefix, forced);
+            LOG_WARN("mirror", "[%s] debug spotcheck window %llu requested", log_prefix, forced);
             if (!legacy_bootstrap_verify_window_logged(
                     bmr, map, map_count, (size_t)forced, log_prefix,
                     dump_map_on_failure))
@@ -253,10 +221,7 @@ bool legacy_bootstrap_spotcheck_sha3_windows(
         picked[i] = (size_t)(r % max_w);
     }
 
-    fprintf(stderr,  // obs-ok:pre-existing-diagnostic
-            "[%s] SHA3 spotcheck: K=%d windows over [0..%zu) "
-            "(legacy_tip=%d)\n",
-            log_prefix, k, max_w, legacy_tip);
+    LOG_INFO("mirror", "[%s] SHA3 spotcheck: K=%d windows over [0..%zu) " "(legacy_tip=%d)", log_prefix, k, max_w, legacy_tip);
 
     for (int i = 0; i < k; i++) {
         if (!legacy_bootstrap_verify_window_logged(
@@ -264,8 +229,6 @@ bool legacy_bootstrap_spotcheck_sha3_windows(
                 dump_map_on_failure))
             return false;
     }
-    fprintf(stderr,  // obs-ok:pre-existing-diagnostic
-            "[%s] SHA3 spotcheck: %d/%d windows match\n",
-            log_prefix, k, k);
+    LOG_INFO("mirror", "[%s] SHA3 spotcheck: %d/%d windows match", log_prefix, k, k);
     return true;
 }

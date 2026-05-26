@@ -5,6 +5,7 @@
  * readable in one place. Same contract, same domain, same policy. */
 
 #include "supervisors/net_supervisor.h"
+#include "util/log_macros.h"
 #include "supervisors/domains.h"
 
 #include "util/supervisor.h"
@@ -73,7 +74,6 @@ void net_supervisor_register(struct connman *cm)
     g_peer_floor_id = supervisor_register_in_domain(g_net_sup,
                                                     &g_peer_floor_contract);
     if (g_peer_floor_id == SUPERVISOR_INVALID_ID) {
-        fprintf(stderr,  // obs-ok:peer-floor-supervisor-fallback-warn
-            "[supervisor] WARN net.outbound_floor register failed\n");
+        LOG_WARN("supervisor", "[supervisor] WARN net.outbound_floor register failed");
     }
 }

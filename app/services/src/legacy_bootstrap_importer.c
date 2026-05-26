@@ -183,15 +183,13 @@ static bool legacy_bootstrap_format_child_path(const char *base,
                                                const char *what)
 {
     if (!base || !child || !out || out_sz == 0 || !log_prefix || !what) {
-        fprintf(stderr,  // obs-ok:bootstrap-import-terminal-diagnostic
-                "[legacy_bootstrap] format path: bad args\n");
+        LOG_WARN("legacy_bootstrap", "[legacy_bootstrap] format path: bad args");
         return false;
     }
 
     int n = snprintf(out, out_sz, "%s/%s", base, child);
     if (n <= 0 || (size_t)n >= out_sz) {
-        fprintf(stderr,  // obs-ok:bootstrap-import-terminal-diagnostic
-                "[%s] %s path too long\n", log_prefix, what);
+        LOG_INFO("mirror", "[%s] %s path too long", log_prefix, what);
         return false;
     }
     return true;
@@ -202,23 +200,18 @@ static int64_t legacy_bootstrap_link_blk_files(const char *legacy_blocks_dir,
                                                const char *log_prefix)
 {
     if (!legacy_blocks_dir || !our_blocks_dir || !log_prefix) {
-        fprintf(stderr,  // obs-ok:bootstrap-import-terminal-diagnostic
-                "[legacy_bootstrap] link blk files: NULL argument\n");
+        LOG_INFO("legacy_bootstrap", "[legacy_bootstrap] link blk files: NULL argument");
         return -1;  // raw-return-ok:logged-above
     }
 
     DIR *d = opendir(legacy_blocks_dir);
     if (!d) {
-        fprintf(stderr,  // obs-ok:bootstrap-import-terminal-diagnostic
-                "[%s] cannot opendir %s: %s\n",
-                log_prefix, legacy_blocks_dir, strerror(errno));
+        LOG_WARN("mirror", "[%s] cannot opendir %s: %s", log_prefix, legacy_blocks_dir, strerror(errno));
         return -1;  // raw-return-ok:logged-above
     }
 
     if (mkdir(our_blocks_dir, 0755) != 0 && errno != EEXIST) {
-        fprintf(stderr,  // obs-ok:bootstrap-import-terminal-diagnostic
-                "[%s] cannot mkdir %s: %s\n",
-                log_prefix, our_blocks_dir, strerror(errno));
+        LOG_WARN("mirror", "[%s] cannot mkdir %s: %s", log_prefix, our_blocks_dir, strerror(errno));
         closedir(d);
         return -1;  // raw-return-ok:logged-above
     }
@@ -241,9 +234,7 @@ static int64_t legacy_bootstrap_link_blk_files(const char *legacy_blocks_dir,
                           our_blocks_dir, de->d_name);
         if (ns <= 0 || (size_t)ns >= sizeof(src) ||
             nd <= 0 || (size_t)nd >= sizeof(dst)) {
-            fprintf(stderr,  // obs-ok:bootstrap-import-terminal-diagnostic
-                    "[%s] blk path too long for %s\n",
-                    log_prefix, de->d_name);
+            LOG_INFO("mirror", "[%s] blk path too long for %s", log_prefix, de->d_name);
             errors++;
             continue;
         }
@@ -258,9 +249,7 @@ static int64_t legacy_bootstrap_link_blk_files(const char *legacy_blocks_dir,
             continue;
         }
         if (errno != EXDEV && errno != EPERM) {
-            fprintf(stderr,  // obs-ok:bootstrap-import-terminal-diagnostic
-                    "[%s] link(%s -> %s) failed: %s\n",
-                    log_prefix, src, dst, strerror(errno));
+            LOG_WARN("mirror", "[%s] link(%s -> %s) failed: %s", log_prefix, src, dst, strerror(errno));
             errors++;
             continue;
         }
@@ -270,9 +259,7 @@ static int64_t legacy_bootstrap_link_blk_files(const char *legacy_blocks_dir,
         if (!fsrc || !fdst) {
             if (fsrc) fclose(fsrc);
             if (fdst) fclose(fdst);
-            fprintf(stderr,  // obs-ok:bootstrap-import-terminal-diagnostic
-                    "[%s] open failed for copy %s -> %s\n",
-                    log_prefix, src, dst);
+            LOG_WARN("mirror", "[%s] open failed for copy %s -> %s", log_prefix, src, dst);
             errors++;
             continue;
         }
@@ -293,9 +280,7 @@ static int64_t legacy_bootstrap_link_blk_files(const char *legacy_blocks_dir,
         if (fclose(fdst) != 0)
             copy_ok = false;
         if (!copy_ok) {
-            fprintf(stderr,  // obs-ok:bootstrap-import-terminal-diagnostic
-                    "[%s] copy failed for %s -> %s\n",
-                    log_prefix, src, dst);
+            LOG_WARN("mirror", "[%s] copy failed for %s -> %s", log_prefix, src, dst);
             errors++;
             continue;
         }
@@ -303,10 +288,7 @@ static int64_t legacy_bootstrap_link_blk_files(const char *legacy_blocks_dir,
     }
     closedir(d);
 
-    fprintf(stderr,  // obs-ok:bootstrap-import-terminal-summary
-            "[%s] blk files: linked=%" PRId64 " copied=%" PRId64
-            " skipped=%" PRId64 " errors=%" PRId64 "\n",
-            log_prefix, linked, copied, skipped, errors);
+    LOG_WARN("mirror", "[%s] blk files: linked=%" PRId64 " copied=%" PRId64 " skipped=%" PRId64 " errors=%" PRId64, log_prefix, linked, copied, skipped, errors);
     return (errors > 0) ? -1 : (linked + copied);
 }
 
@@ -341,8 +323,7 @@ static bool legacy_bootstrap_make_stage_dir(const char *datadir,
                                             const char *log_prefix)
 {
     if (!datadir || !stage_subdir || !out_stage_dir || !log_prefix) {
-        fprintf(stderr,  // obs-ok:bootstrap-import-terminal-diagnostic
-                "[legacy_bootstrap] make stage dir: NULL argument\n");
+        LOG_INFO("legacy_bootstrap", "[legacy_bootstrap] make stage dir: NULL argument");
         return false;
     }
 
@@ -352,9 +333,7 @@ static bool legacy_bootstrap_make_stage_dir(const char *datadir,
         return false;
 
     if (mkdir(out_stage_dir, 0700) != 0 && errno != EEXIST) {
-        fprintf(stderr,  // obs-ok:bootstrap-import-terminal-diagnostic
-                "[%s] cannot mkdir %s: %s\n",
-                log_prefix, out_stage_dir, strerror(errno));
+        LOG_WARN("mirror", "[%s] cannot mkdir %s: %s", log_prefix, out_stage_dir, strerror(errno));
         return false;
     }
     return true;
@@ -371,19 +350,13 @@ static bool legacy_bootstrap_snapshot_one_leveldb(const char *src,
         if (ldb_snapshot_make(src, dst, err, sizeof(err)))
             return true;
         if (strcmp(err, "manifest_changed") != 0) {
-            fprintf(stderr,  // obs-ok:bootstrap-import-terminal-diagnostic
-                    "[%s] snapshot of %s failed: %s\n",
-                    log_prefix, src, err);
+            LOG_WARN("mirror", "[%s] snapshot of %s failed: %s", log_prefix, src, err);
             return false;
         }
-        fprintf(stderr,  // obs-ok:retryable-leveldb-snapshot-race
-                "[%s] snapshot %s manifest_changed; retry %d\n",
-                log_prefix, label, tries + 1);
+        LOG_WARN("mirror", "[%s] snapshot %s manifest_changed; retry %d", log_prefix, label, tries + 1);
     }
 
-    fprintf(stderr,  // obs-ok:bootstrap-import-terminal-diagnostic
-            "[%s] snapshot of %s failed after retries: %s\n",
-            log_prefix, src, err);
+    LOG_WARN("mirror", "[%s] snapshot of %s failed after retries: %s", log_prefix, src, err);
     return false;
 }
 
@@ -397,8 +370,7 @@ static bool legacy_bootstrap_snapshot_leveldbs(const char *legacy_datadir,
 {
     if (!legacy_datadir || !stage_dir || !out_idx_path || !out_cs_path ||
         !log_prefix) {
-        fprintf(stderr,  // obs-ok:bootstrap-import-terminal-diagnostic
-                "[legacy_bootstrap] snapshot LevelDBs: NULL argument\n");
+        LOG_INFO("legacy_bootstrap", "[legacy_bootstrap] snapshot LevelDBs: NULL argument");
         return false;
     }
 
@@ -452,8 +424,7 @@ static bool legacy_bootstrap_prepare_staged_snapshot(
         memset(paths, 0, sizeof(*paths));
     if (!opts || !opts->our_datadir || !opts->legacy_datadir ||
         !cfg || !cfg->stage_subdir || !cfg->log_prefix || !paths) {
-        fprintf(stderr,  // obs-ok:bootstrap-import-terminal-diagnostic
-                "[legacy_bootstrap] prepare staged snapshot: bad args\n");
+        LOG_WARN("legacy_bootstrap", "[legacy_bootstrap] prepare staged snapshot: bad args");
         return false;
     }
 
@@ -495,8 +466,7 @@ static bool legacy_bootstrap_probe_chainstate_best(
     if (!opts || !opts->our_datadir || !opts->legacy_datadir ||
         !cfg || !cfg->stage_subdir || !cfg->log_prefix ||
         !snapshot_name || !out_best) {
-        fprintf(stderr,  // obs-ok:bootstrap-import-terminal-diagnostic
-                "[legacy_bootstrap] probe chainstate best: bad args\n");
+        LOG_WARN("legacy_bootstrap", "[legacy_bootstrap] probe chainstate best: bad args");
         return false;
     }
 
@@ -616,9 +586,7 @@ static int64_t legacy_bootstrap_copy_block_index(
 
         if (batch_fill >= BATCH_LIMIT) {
             if (!db_write_batch(&our_btdb->db, &batch, false)) {
-                fprintf(stderr,  // obs-ok:bootstrap-import-terminal-diagnostic
-                        "[%s] db_write_batch failed\n",
-                        log_prefix);
+                LOG_WARN("mirror", "[%s] db_write_batch failed", log_prefix);
                 db_batch_free(&batch);
                 db_iter_free(&it);
                 db_wrapper_close(&src);
@@ -635,9 +603,7 @@ static int64_t legacy_bootstrap_copy_block_index(
 
     if (batch_fill > 0) {
         if (!db_write_batch(&our_btdb->db, &batch, false)) {
-            fprintf(stderr,  // obs-ok:bootstrap-import-terminal-diagnostic
-                    "[%s] final db_write_batch failed\n",
-                    log_prefix);
+            LOG_WARN("mirror", "[%s] final db_write_batch failed", log_prefix);
             db_batch_free(&batch);
             db_iter_free(&it);
             db_wrapper_close(&src);
@@ -669,16 +635,13 @@ bool legacy_bootstrap_load_height_map(
             .tip_height = -1,
         };
     if (!legacy_index_dir || !log_prefix || !out) {
-        fprintf(stderr,  // obs-ok:bootstrap-import-terminal-diagnostic
-                "[legacy_bootstrap] load height map: bad args\n");
+        LOG_WARN("legacy_bootstrap", "[legacy_bootstrap] load height map: bad args");
         return false;
     }
 
     struct bilr *bilr = NULL;
     if (!bilr_open(legacy_index_dir, &bilr)) {
-        fprintf(stderr,  // obs-ok:bootstrap-import-terminal-diagnostic
-                "[%s] cannot open block index %s\n",
-                log_prefix, legacy_index_dir);
+        LOG_WARN("mirror", "[%s] cannot open block index %s", log_prefix, legacy_index_dir);
         return false;
     }
 
@@ -689,9 +652,7 @@ bool legacy_bootstrap_load_height_map(
         : bilr_load_height_map(bilr, &map, &map_count);
     bilr_close(bilr);
     if (!ok) {
-        fprintf(stderr,  // obs-ok:bootstrap-import-terminal-diagnostic
-                "[%s] bilr_load_height_map%s failed\n",
-                log_prefix, tip_filter ? "_for_tip" : "");
+        LOG_WARN("mirror", "[%s] bilr_load_height_map%s failed", log_prefix, tip_filter ? "_for_tip" : "");
         return false;
     }
 
@@ -714,8 +675,7 @@ static bool legacy_bootstrap_resolve_tip_height(
     if (out_height)
         *out_height = -1;
     if (!legacy_index_dir || !tip_hash || !log_prefix || !out_height) {
-        fprintf(stderr,  // obs-ok:bootstrap-import-terminal-diagnostic
-                "[legacy_bootstrap] resolve tip height: bad args\n");
+        LOG_WARN("legacy_bootstrap", "[legacy_bootstrap] resolve tip height: bad args");
         return false;
     }
 
@@ -816,16 +776,13 @@ static bool legacy_bootstrap_import_chainstate_utxos(
     if (out)
         *out = (struct legacy_bootstrap_chainstate_import_result){0};
     if (!chainstate_dir || !cvs || batch_limit == 0 || !log_prefix) {
-        fprintf(stderr,  // obs-ok:bootstrap-import-terminal-diagnostic
-                "[legacy_bootstrap] import chainstate: bad args\n");
+        LOG_WARN("legacy_bootstrap", "[legacy_bootstrap] import chainstate: bad args");
         return false;
     }
 
     void *cs = NULL;
     if (!chainstate_legacy_open(chainstate_dir, &cs)) {
-        fprintf(stderr,  // obs-ok:bootstrap-import-terminal-diagnostic
-                "[%s] chainstate_legacy_open %s failed\n",
-                log_prefix, chainstate_dir);
+        LOG_WARN("mirror", "[%s] chainstate_legacy_open %s failed", log_prefix, chainstate_dir);
         return false;
     }
 
@@ -881,10 +838,7 @@ static bool legacy_bootstrap_import_chainstate_utxos(
         long_op_end(lo_ptr);
 
     if (n < 0 || ctx.errors > 0) {
-        fprintf(stderr,  // obs-ok:bootstrap-import-terminal-diagnostic
-                "[%s] chainstate import failed "
-                "(iter=%" PRId64 " errors=%d)\n",
-                log_prefix, n, ctx.errors);
+        LOG_WARN("mirror", "[%s] chainstate import failed " "(iter=%" PRId64 " errors=%d)", log_prefix, n, ctx.errors);
         return false;
     }
 
@@ -903,24 +857,20 @@ static bool legacy_bootstrap_read_chainstate_best_block(
     struct uint256 *out_best)
 {
     if (!chainstate_dir || !log_prefix || !out_best) {
-        fprintf(stderr,  // obs-ok:bootstrap-import-terminal-diagnostic
-                "[legacy_bootstrap] read chainstate best: bad args\n");
+        LOG_WARN("legacy_bootstrap", "[legacy_bootstrap] read chainstate best: bad args");
         return false;
     }
 
     void *cs = NULL;
     if (!chainstate_legacy_open(chainstate_dir, &cs)) {
-        fprintf(stderr,  // obs-ok:bootstrap-import-terminal-diagnostic
-                "[%s] chainstate_legacy_open %s failed\n",
-                log_prefix, chainstate_dir);
+        LOG_WARN("mirror", "[%s] chainstate_legacy_open %s failed", log_prefix, chainstate_dir);
         return false;
     }
 
     bool ok = chainstate_legacy_get_best_block(cs, out_best);
     chainstate_legacy_close(cs);
     if (!ok)
-        fprintf(stderr,  // obs-ok:bootstrap-import-terminal-diagnostic
-                "[%s] chainstate best block unavailable\n", log_prefix);
+        LOG_WARN("mirror", "[%s] chainstate best block unavailable", log_prefix);
     return ok;
 }
 
@@ -932,8 +882,7 @@ static bool legacy_bootstrap_record_pending_csr_anchor(
     const char *log_prefix)
 {
     if (!ndb || !best_block || !log_prefix) {
-        fprintf(stderr,  // obs-ok:bootstrap-import-terminal-diagnostic
-                "[legacy_bootstrap] record CSR anchor: bad args\n");
+        LOG_WARN("legacy_bootstrap", "[legacy_bootstrap] record CSR anchor: bad args");
         return false;
     }
 
@@ -945,17 +894,14 @@ static bool legacy_bootstrap_record_pending_csr_anchor(
         node_db_state_set(ndb, "cold_import_pending_utxo_count",
                           &utxo_count, sizeof(utxo_count));
     if (!pending_ok) {
-        fprintf(stderr,  // obs-ok:bootstrap-import-terminal-diagnostic
-                "[%s] failed to persist pending CSR anchor\n", log_prefix);
+        LOG_WARN("mirror", "[%s] failed to persist pending CSR anchor", log_prefix);
         return false;
     }
 
     char hex[65] = {0};
     for (int i = 0; i < 32; i++)
         snprintf(hex + i * 2, 3, "%02x", best_block->data[31 - i]);
-    fprintf(stderr,  // obs-ok:pre-existing-diagnostic
-            "[%s] pending CSR anchor recorded %s h=%d\n",
-            log_prefix, hex, best_height);
+    LOG_INFO("mirror", "[%s] pending CSR anchor recorded %s h=%d", log_prefix, hex, best_height);
     return true;
 }
 
@@ -974,8 +920,7 @@ static bool legacy_bootstrap_import_snapshot_state(
         !opts->legacy_index_dir || !opts->chainstate_dir || !opts->btdb ||
         !opts->cvs || !counters || cfg->chainstate_batch_limit == 0 ||
         !cfg->block_index_long_op_name || !cfg->log_prefix) {
-        fprintf(stderr,  // obs-ok:bootstrap-import-terminal-diagnostic
-                "[legacy_bootstrap] import snapshot state: bad args\n");
+        LOG_WARN("legacy_bootstrap", "[legacy_bootstrap] import snapshot state: bad args");
         return false;
     }
 
@@ -1001,11 +946,7 @@ static bool legacy_bootstrap_import_snapshot_state(
 
     if (cfg->min_legacy_tip >= 0 &&
         block_index_tip_height < cfg->min_legacy_tip) {
-        fprintf(stderr,  // obs-ok:bootstrap-import-terminal-diagnostic
-                "[%s] REFUSING: discovered legacy tip h=%d is below "
-                "minimum %d; no chainstate import or cursor publication\n",
-                cfg->log_prefix, block_index_tip_height,
-                cfg->min_legacy_tip);
+        LOG_INFO("mirror", "[%s] REFUSING: discovered legacy tip h=%d is below " "minimum %d; no chainstate import or cursor publication", cfg->log_prefix, block_index_tip_height, cfg->min_legacy_tip);
         return false;
     }
 
@@ -1021,44 +962,27 @@ static bool legacy_bootstrap_import_snapshot_state(
 
     if (!cs_import.got_best_block) {
         if (cfg->require_best_block) {
-            fprintf(stderr,  // obs-ok:bootstrap-import-terminal-diagnostic
-                    "[%s] REFUSING: legacy chainstate had no 'B' key; "
-                    "cannot publish an activatable tip\n",
-                    cfg->log_prefix);
+            LOG_WARN("mirror", "[%s] REFUSING: legacy chainstate had no 'B' key; " "cannot publish an activatable tip", cfg->log_prefix);
             return false;
         }
-        fprintf(stderr,  // obs-ok:pre-existing-diagnostic
-                "[%s] WARNING: legacy chainstate had no 'B' key; "
-                "pending CSR anchor not recorded\n",
-                cfg->log_prefix);
+        LOG_WARN("mirror", "[%s] WARNING: legacy chainstate had no 'B' key; " "pending CSR anchor not recorded", cfg->log_prefix);
     } else if (opts->ndb) {
         int32_t anchor_height = opts->anchor_height;
         if (anchor_height < 0 &&
             !legacy_bootstrap_resolve_tip_height(
                 opts->legacy_index_dir, &cs_import.best_block,
                 cfg->log_prefix, &anchor_height)) {
-            fprintf(stderr,  // obs-ok:bootstrap-import-terminal-diagnostic
-                    "[%s] REFUSING: chainstate best block is not on a "
-                    "usable legacy index chain; no pending CSR anchor "
-                    "published\n", cfg->log_prefix);
+            LOG_INFO("mirror", "[%s] REFUSING: chainstate best block is not on a " "usable legacy index chain; no pending CSR anchor " "published", cfg->log_prefix);
             return false;
         }
         if (cfg->min_legacy_tip >= 0 &&
             anchor_height < cfg->min_legacy_tip) {
-            fprintf(stderr,  // obs-ok:bootstrap-import-terminal-diagnostic
-                    "[%s] REFUSING: chainstate anchor h=%d is below "
-                    "minimum %d; no cursor publication\n",
-                    cfg->log_prefix, anchor_height,
-                    cfg->min_legacy_tip);
+            LOG_INFO("mirror", "[%s] REFUSING: chainstate anchor h=%d is below " "minimum %d; no cursor publication", cfg->log_prefix, anchor_height, cfg->min_legacy_tip);
             return false;
         }
         r.legacy_tip_height = anchor_height;
         if (block_index_tip_height != anchor_height) {
-            fprintf(stderr,  // obs-ok:pre-existing-diagnostic
-                    "[%s] block-index tip h=%d differs from chainstate "
-                    "anchor h=%d; publishing chainstate anchor\n",
-                    cfg->log_prefix, block_index_tip_height,
-                    anchor_height);
+            LOG_INFO("mirror", "[%s] block-index tip h=%d differs from chainstate " "anchor h=%d; publishing chainstate anchor", cfg->log_prefix, block_index_tip_height, anchor_height);
         }
         if (!legacy_bootstrap_record_pending_csr_anchor(
                 opts->ndb, &cs_import.best_block, anchor_height,
@@ -1092,8 +1016,7 @@ static bool legacy_bootstrap_import_staged_snapshot(
     if (!cfg || !opts || !paths || !paths->legacy_blocks_dir[0] ||
         !paths->our_blocks_dir[0] || !paths->idx_dir[0] ||
         !paths->cs_dir[0] || !imported || !result || !cfg->log_prefix) {
-        fprintf(stderr,  // obs-ok:bootstrap-import-terminal-diagnostic
-                "[legacy_bootstrap] import staged snapshot: bad args\n");
+        LOG_WARN("legacy_bootstrap", "[legacy_bootstrap] import staged snapshot: bad args");
         return false;
     }
 
@@ -1113,10 +1036,7 @@ static bool legacy_bootstrap_import_staged_snapshot(
             &import_opts, result, imported))
         return false;
 
-    fprintf(stderr,  // obs-ok:pre-existing-diagnostic
-            "[%s] snapshot state import took %" PRId64 " ms (best h=%d)\n",
-            cfg->log_prefix, legacy_bootstrap_now_ms() - t_import,
-            imported->legacy_tip_height);
+    LOG_INFO("mirror", "[%s] snapshot state import took %" PRId64 " ms (best h=%d)", cfg->log_prefix, legacy_bootstrap_now_ms() - t_import, imported->legacy_tip_height);
     return true;
 }
 
@@ -1137,16 +1057,13 @@ static bool legacy_bootstrap_open_block_source(
             : NULL;
     if (!legacy_blocks_dir || !map || map_count == 0 || legacy_tip < 0 ||
         !cfg || cfg->spotcheck_k <= 0 || !cfg->log_prefix || !out_bmr) {
-        fprintf(stderr,  // obs-ok:bootstrap-import-terminal-diagnostic
-                "[legacy_bootstrap] open block source: bad args\n");
+        LOG_WARN("legacy_bootstrap", "[legacy_bootstrap] open block source: bad args");
         return false;
     }
 
     struct blocks_mmap *bmr = NULL;
     if (!bmr_open(legacy_blocks_dir, &bmr)) {
-        fprintf(stderr,  // obs-ok:bootstrap-import-terminal-diagnostic
-                "[%s] cannot open legacy blocks dir %s\n",
-                cfg->log_prefix, legacy_blocks_dir);
+        LOG_WARN("mirror", "[%s] cannot open legacy blocks dir %s", cfg->log_prefix, legacy_blocks_dir);
         return false;
     }
 
@@ -1156,25 +1073,14 @@ static bool legacy_bootstrap_open_block_source(
     if (!checked) {
         if (cfg->require_spotcheck) {
             bmr_close(bmr);
-            fprintf(stderr,  // obs-ok:pre-existing-diagnostic
-                    "[%s] refusing to import: aborting due to spotcheck "
-                    "failure\n",
-                    cfg->log_prefix);
+            LOG_WARN("mirror", "[%s] refusing to import: aborting due to spotcheck " "failure", cfg->log_prefix);
             return false;
         }
-        fprintf(stderr,  // obs-ok:pre-existing-diagnostic
-                "[%s] WARNING: SHA3 spotcheck did not pass; continuing "
-                "with full validation\n",
-                cfg->log_prefix);
+        LOG_WARN("mirror", "[%s] WARNING: SHA3 spotcheck did not pass; continuing " "with full validation", cfg->log_prefix);
     } else if (cfg->require_spotcheck) {
-        fprintf(stderr,  // obs-ok:pre-existing-diagnostic
-                "[%s] SHA3 source spotcheck passed\n",
-                cfg->log_prefix);
+        LOG_INFO("mirror", "[%s] SHA3 source spotcheck passed", cfg->log_prefix);
     } else {
-        fprintf(stderr,  // obs-ok:pre-existing-diagnostic
-                "[%s] SHA3 source spotcheck passed; proof validation "
-                "remains enabled\n",
-                cfg->log_prefix);
+        LOG_INFO("mirror", "[%s] SHA3 source spotcheck passed; proof validation " "remains enabled", cfg->log_prefix);
     }
 
     *out_bmr = bmr;
@@ -1193,15 +1099,12 @@ static bool legacy_bootstrap_import_cold(
     if (!opts || !opts->ms || !opts->cvs || !opts->ndb ||
         !opts->ndb->open || !opts->btdb || !opts->our_datadir ||
         !opts->legacy_datadir) {
-        fprintf(stderr,  // obs-ok:bootstrap-import-terminal-diagnostic
-                "[cold_import] bad args\n");
+        LOG_WARN("cold_import", "[cold_import] bad args");
         return false;
     }
 
     if (!legacy_bootstrap_detect_datadir(opts->legacy_datadir, false)) {
-        fprintf(stderr,  // obs-ok:bootstrap-import-terminal-diagnostic
-                "[cold_import] source %s does not look like a zclassic "
-                "datadir\n", opts->legacy_datadir);
+        LOG_INFO("cold_import", "[cold_import] source %s does not look like a zclassic " "datadir", opts->legacy_datadir);
         return false;
     }
 
@@ -1222,9 +1125,7 @@ static bool legacy_bootstrap_import_cold(
     if (!legacy_bootstrap_prepare_staged_snapshot(
             LEGACY_BOOTSTRAP_SNAPSHOT_COLD, opts, &paths))
         return false;
-    fprintf(stderr,  // obs-ok:cold-import-progress
-            "[cold_import] LevelDB snapshots took %" PRId64 " ms\n",
-            legacy_bootstrap_now_ms() - t_snap);
+    LOG_INFO("cold_import", "[cold_import] LevelDB snapshots took %" PRId64 " ms", legacy_bootstrap_now_ms() - t_snap);
 
     struct uint256 cs_best_for_map;
     if (!legacy_bootstrap_read_chainstate_best_block(
@@ -1243,9 +1144,7 @@ static bool legacy_bootstrap_import_cold(
     size_t map_count = hmap.map_count;
     int legacy_tip = hmap.tip_height;
     r.legacy_tip = legacy_tip;
-    fprintf(stderr,  // obs-ok:pre-existing-diagnostic
-            "[cold_import] legacy tip h=%d (map size=%zu)\n",
-            legacy_tip, map_count);
+    LOG_INFO("cold_import", "[cold_import] legacy tip h=%d (map size=%zu)", legacy_tip, map_count);
 
     struct blocks_mmap *bmr = NULL;
     if (!legacy_bootstrap_open_block_source(
@@ -1270,11 +1169,7 @@ static bool legacy_bootstrap_import_cold(
 
     double total_secs = (double)(legacy_bootstrap_now_ms() - t_start) / 1000.0;
     if (out) *out = r;
-    fprintf(stderr,  // obs-ok:pre-existing-diagnostic
-            "[cold_import] DONE in %.1fs: block_index=%" PRId64
-            " utxos=%" PRId64 " blk_files=%" PRId64 "\n",
-            total_secs, r.block_index_writes, r.utxos_imported,
-            r.blk_files_linked);
+    LOG_INFO("cold_import", "[cold_import] DONE in %.1fs: block_index=%" PRId64 " utxos=%" PRId64 " blk_files=%" PRId64, total_secs, r.block_index_writes, r.utxos_imported, r.blk_files_linked);
     legacy_bootstrap_cleanup_staged_snapshot(&paths, false);
     return true;
 }
@@ -1290,16 +1185,12 @@ static bool legacy_bootstrap_import_direct(
 
     if (!opts || !opts->ms || !opts->coins_tip || !opts->params ||
         !opts->our_datadir || !opts->legacy_datadir) {
-        fprintf(stderr,  // obs-ok:bootstrap-import-terminal-diagnostic
-                "[legacy_direct_import] bad args\n");
+        LOG_WARN("legacy_direct_import", "[legacy_direct_import] bad args");
         return false;
     }
 
     if (!legacy_bootstrap_detect_datadir(opts->legacy_datadir, false)) {
-        fprintf(stderr,  // obs-ok:pre-existing-diagnostic
-                "[legacy_direct_import] %s does not contain "
-                "blocks/blk00000.dat — skipping\n",
-                opts->legacy_datadir);
+        LOG_WARN("legacy_direct_import", "[legacy_direct_import] %s does not contain " "blocks/blk00000.dat — skipping", opts->legacy_datadir);
         if (out) *out = r;
         return true;
     }
@@ -1324,19 +1215,13 @@ static bool legacy_bootstrap_import_direct(
     size_t map_count = hmap.map_count;
     int legacy_tip = hmap.tip_height;
     r.legacy_tip = legacy_tip;
-    fprintf(stderr,  // obs-ok:pre-existing-diagnostic
-            "[legacy_direct_import] legacy tip h=%d (map_count=%zu, "
-            "load took %" PRId64 " ms)\n",
-            legacy_tip, map_count, legacy_bootstrap_now_ms() - t_open);
+    LOG_INFO("legacy_direct_import", "[legacy_direct_import] legacy tip h=%d (map_count=%zu, " "load took %" PRId64 " ms)", legacy_tip, map_count, legacy_bootstrap_now_ms() - t_open);
 
     int from_height = active_chain_height(&opts->ms->chain_active);
     if (from_height < 0)
         from_height = 0;
     if (from_height >= legacy_tip) {
-        fprintf(stderr,  // obs-ok:pre-existing-diagnostic
-                "[legacy_direct_import] already at/past legacy tip "
-                "(from=%d legacy=%d) — nothing to do\n",
-                from_height, legacy_tip);
+        LOG_INFO("legacy_direct_import", "[legacy_direct_import] already at/past legacy tip " "(from=%d legacy=%d) — nothing to do", from_height, legacy_tip);
         bilr_free_height_map(map);
         if (out) *out = r;
         return true;
@@ -1354,10 +1239,7 @@ static bool legacy_bootstrap_import_direct(
 
     atomic_store(&g_body_pull_active, 1);
 
-    fprintf(stderr,  // obs-ok:pre-existing-diagnostic
-            "[legacy_direct_import] starting walk: [%d+1 .. %d] "
-            "(%d blocks)\n",
-            from_height, legacy_tip, legacy_tip - from_height);
+    LOG_INFO("legacy_direct_import", "[legacy_direct_import] starting walk: [%d+1 .. %d] " "(%d blocks)", from_height, legacy_tip, legacy_tip - from_height);
 
     int64_t t_walk = legacy_bootstrap_now_ms();
     int last_log_h = from_height;
@@ -1368,17 +1250,14 @@ static bool legacy_bootstrap_import_direct(
 
     for (int h = from_height + 1; h <= legacy_tip; h++) {
         if (thread_registry_shutdown_requested()) {
-            fprintf(stderr,  // obs-ok:pre-existing-diagnostic
-                    "[legacy_direct_import] shutdown requested at h=%d\n", h);
+            LOG_INFO("legacy_direct_import", "[legacy_direct_import] shutdown requested at h=%d", h);
             ok = false;
             break;
         }
 
         const struct legacy_block_loc *loc = &map[(size_t)h];
         if (loc->height < 0) {
-            fprintf(stderr,  // obs-ok:pre-existing-diagnostic
-                    "[legacy_direct_import] h=%d MISSING in legacy index "
-                    "(gap in blocks/index/) — aborting\n", h);
+            LOG_WARN("legacy_direct_import", "[legacy_direct_import] h=%d MISSING in legacy index " "(gap in blocks/index/) — aborting", h);
             ok = false;
             break;
         }
@@ -1402,10 +1281,7 @@ static bool legacy_bootstrap_import_direct(
         const uint8_t *payload =
             bmr_get_payload(bmr, loc->nFile, loc->nDataPos, &plen);
         if (!payload || plen == 0) {
-            fprintf(stderr,  // obs-ok:pre-existing-diagnostic
-                    "[legacy_direct_import] h=%d mmap fetch failed "
-                    "(nFile=%d nDataPos=%u)\n",
-                    h, loc->nFile, loc->nDataPos);
+            LOG_WARN("legacy_direct_import", "[legacy_direct_import] h=%d mmap fetch failed " "(nFile=%d nDataPos=%u)", h, loc->nFile, loc->nDataPos);
             ok = false;
             break;
         }
@@ -1418,9 +1294,7 @@ static bool legacy_bootstrap_import_direct(
         stream_free(&s);
         if (!deser_ok) {
             block_free(&block);
-            fprintf(stderr,  // obs-ok:pre-existing-diagnostic
-                    "[legacy_direct_import] h=%d block_deserialize "
-                    "failed\n", h);
+            LOG_WARN("legacy_direct_import", "[legacy_direct_import] h=%d block_deserialize " "failed", h);
             ok = false;
             break;
         }
@@ -1432,10 +1306,7 @@ static bool legacy_bootstrap_import_direct(
                                        opts->our_datadir);
         block_free(&block);
         if (!pn_ok) {
-            fprintf(stderr,  // obs-ok:pre-existing-diagnostic
-                    "[legacy_direct_import] h=%d process_new_block "
-                    "FAILED: %s\n",
-                    h, vs.reject_reason[0] ? vs.reject_reason : "(unknown)");
+            LOG_WARN("legacy_direct_import", "[legacy_direct_import] h=%d process_new_block " "FAILED: %s", h, vs.reject_reason[0] ? vs.reject_reason : "(unknown)");
             ok = false;
             break;
         }
@@ -1447,10 +1318,7 @@ static bool legacy_bootstrap_import_direct(
             double rate = elapsed > 0
                 ? (double)r.applied * 1000.0 / (double)elapsed
                 : 0.0;
-            fprintf(stderr,  // obs-ok:pre-existing-diagnostic
-                    "[legacy_direct_import] applied=%d h=%d rate=%.1f "
-                    "bps (target=%d)\n",
-                    r.applied, h, rate, legacy_tip);
+            LOG_INFO("legacy_direct_import", "[legacy_direct_import] applied=%d h=%d rate=%.1f " "bps (target=%d)", r.applied, h, rate, legacy_tip);
             last_log_h = h;
             t_last_log = now;
         }
@@ -1467,27 +1335,17 @@ static bool legacy_bootstrap_import_direct(
 
     int final_tip = active_chain_height(&opts->ms->chain_active);
 
-    fprintf(stderr,  // obs-ok:pre-existing-diagnostic
-            "[legacy_direct_import] walk %s: applied=%d "
-            "skipped_have=%d skipped_failed=%d elapsed=%.1fs "
-            "rate=%.1f bps final_tip=%d\n",
-            ok ? "complete" : "ABORTED",
-            r.applied, skipped_have_data, skipped_failed,
-            total_secs, avg_rate, final_tip);
+    LOG_WARN("legacy_direct_import", "[legacy_direct_import] walk %s: applied=%d " "skipped_have=%d skipped_failed=%d elapsed=%.1fs " "rate=%.1f bps final_tip=%d", ok ? "complete" : "ABORTED", r.applied, skipped_have_data, skipped_failed, total_secs, avg_rate, final_tip);
 
     if (ok && opts->wallet && r.applied > 0) {
-        fprintf(stderr,  // obs-ok:pre-existing-diagnostic
-                "[legacy_direct_import] starting wallet rescan "
-                "[%d..%d]...\n", from_height + 1, final_tip);
+        LOG_INFO("legacy_direct_import", "[legacy_direct_import] starting wallet rescan " "[%d..%d]...", from_height + 1, final_tip);
         int64_t t_rescan = legacy_bootstrap_now_ms();
         int hits = wallet_rescan(opts->wallet, &opts->ms->chain_active,
                                  from_height + 1, final_tip,
                                  opts->our_datadir);
         double secs = (double)(legacy_bootstrap_now_ms() - t_rescan) /
                       1000.0;
-        fprintf(stderr,  // obs-ok:pre-existing-diagnostic
-                "[legacy_direct_import] wallet rescan complete: "
-                "%d hits in %.1fs\n", hits, secs);
+        LOG_INFO("legacy_direct_import", "[legacy_direct_import] wallet rescan complete: " "%d hits in %.1fs", hits, secs);
     }
 
     if (out) *out = r;
@@ -1599,10 +1457,7 @@ static bool legacy_bootstrap_attach_stamp_stage_cursor_in_tx(
     }
 
     if (have_row && existing >= new_cursor) {
-        fprintf(stderr,  // obs-ok:legacy-attach-no-rewind
-                "[legacy_attach] stage '%s': cursor already at %" PRIu64
-                " (>= proposed %" PRIu64 "); leaving as-is\n",
-                name, existing, new_cursor);
+        LOG_INFO("legacy_attach", "[legacy_attach] stage '%s': cursor already at %" PRIu64 " (>= proposed %" PRIu64 "); leaving as-is", name, existing, new_cursor);
         return true;
     }
 
@@ -1631,9 +1486,7 @@ static bool legacy_bootstrap_attach_finalize_atomic(
     if (out_stages_stamped) *out_stages_stamped = 0;
     char *err = NULL;
     if (sqlite3_exec(db, "BEGIN IMMEDIATE", NULL, NULL, &err) != SQLITE_OK) {
-        fprintf(stderr,  // obs-ok:legacy-attach-finalize-failure
-                "[legacy_attach] finalize BEGIN failed: %s\n",
-                err ? err : "(no message)");
+        LOG_WARN("legacy_attach", "[legacy_attach] finalize BEGIN failed: %s", err ? err : "(no message)");
         if (err) sqlite3_free(err);
         return false;
     }
@@ -1645,9 +1498,7 @@ static bool legacy_bootstrap_attach_finalize_atomic(
         bool was_write = false;
         if (!legacy_bootstrap_attach_stamp_stage_cursor_in_tx(
                 db, LEGACY_ATTACH_STAGES_TO_STAMP[i], cursor_value, &was_write)) {
-            fprintf(stderr,  // obs-ok:legacy-attach-finalize-failure
-                    "[legacy_attach] stamp stage '%s' failed\n",
-                    LEGACY_ATTACH_STAGES_TO_STAMP[i]);
+            LOG_WARN("legacy_attach", "[legacy_attach] stamp stage '%s' failed", LEGACY_ATTACH_STAGES_TO_STAMP[i]);
             ok = false;
         } else if (was_write) {
             stamped++;
@@ -1670,9 +1521,7 @@ static bool legacy_bootstrap_attach_finalize_atomic(
 
     const char *fini = ok ? "COMMIT" : "ROLLBACK";
     if (sqlite3_exec(db, fini, NULL, NULL, &err) != SQLITE_OK) {
-        fprintf(stderr,  // obs-ok:legacy-attach-finalize-failure
-                "[legacy_attach] finalize %s failed: %s\n",
-                fini, err ? err : "(no message)");
+        LOG_WARN("legacy_attach", "[legacy_attach] finalize %s failed: %s", fini, err ? err : "(no message)");
         if (err) sqlite3_free(err);
         return false;
     }
@@ -1727,9 +1576,7 @@ static bool legacy_bootstrap_attach_wipe_block_index(
     bool ok = db_write_batch(db, &batch, false);
     db_batch_free(&batch);
     db_iter_free(&it);
-    fprintf(stderr,  // obs-ok:legacy-attach-wipe
-            "[legacy_attach] wiped %" PRId64 " block_index entries "
-            "from prior aborted import\n", deleted);
+    LOG_WARN("legacy_attach", "[legacy_attach] wiped %" PRId64 " block_index entries " "from prior aborted import", deleted);
     return ok;
 }
 
@@ -1750,15 +1597,12 @@ static bool legacy_bootstrap_import_attach(
 
     sqlite3 *pdb = progress_store_db();
     if (!pdb) {
-        fprintf(stderr,  // obs-ok:legacy-attach-preflight
-            "[legacy_attach] progress.kv not open — boot order regression?\n");
+        LOG_INFO("legacy_attach", "[legacy_attach] progress.kv not open — boot order regression?");
         return false;
     }
 
     if (!legacy_bootstrap_detect_datadir(opts->legacy_datadir, true)) {
-        fprintf(stderr,  // obs-ok:legacy-attach-soft-skip
-            "[legacy_attach] %s does not look like a zclassic datadir; "
-            "skipping.\n", opts->legacy_datadir);
+        LOG_WARN("legacy_attach", "[legacy_attach] %s does not look like a zclassic datadir; " "skipping.", opts->legacy_datadir);
         r.outcome = LEGACY_ATTACH_OUTCOME_LEGACY_NOT_FOUND;
         if (out) *out = r;
         return true;
@@ -1768,11 +1612,7 @@ static bool legacy_bootstrap_import_attach(
     bool sentinel_present = legacy_bootstrap_attach_meta_has_sentinel(pdb);
     if (our_tip > LEGACY_BOOTSTRAP_ATTACH_REFUSE_ABOVE_TIP &&
         !sentinel_present) {
-        fprintf(stderr,  // obs-ok:legacy-attach-refused
-            "[legacy_attach] REFUSING: our active_tip=%d > %d. "
-            "Legacy-attach is for empty datadirs; use other modes for "
-            "warm catch-up.\n", our_tip,
-            LEGACY_BOOTSTRAP_ATTACH_REFUSE_ABOVE_TIP);
+        LOG_INFO("legacy_attach", "[legacy_attach] REFUSING: our active_tip=%d > %d. " "Legacy-attach is for empty datadirs; use other modes for " "warm catch-up.", our_tip, LEGACY_BOOTSTRAP_ATTACH_REFUSE_ABOVE_TIP);
         r.outcome = LEGACY_ATTACH_OUTCOME_REFUSED_HAS_STATE;
         if (out) *out = r;
         return true;
@@ -1793,28 +1633,16 @@ static bool legacy_bootstrap_import_attach(
                 r.outcome = LEGACY_ATTACH_OUTCOME_NOOP_SAME_TIP;
                 r.legacy_tip = last_h;
                 if (out) *out = r;
-                fprintf(stderr,  // obs-ok:legacy-attach-noop
-                    "[legacy_attach] NOOP: already attached "
-                    "to legacy tip h=%d\n", last_h);
+                LOG_INFO("legacy_attach", "[legacy_attach] NOOP: already attached " "to legacy tip h=%d", last_h);
                 return true;
             }
         }
     } else {
         if (our_tip > 100) {
-            fprintf(stderr,  // obs-ok:legacy-attach-wipe-refused
-                "[legacy_attach] REFUSING wipe: sentinel found AND "
-                "active_chain_height=%d > 100. This combination is "
-                "anomalous (sentinel should clear atomically with import "
-                "completion). Manual intervention required: inspect "
-                "progress.kv (sqlite3 -- DELETE FROM progress_meta WHERE "
-                "key='import_in_progress') if the sentinel is truly "
-                "stale.\n", our_tip);
+            LOG_INFO("legacy_attach", "[legacy_attach] REFUSING wipe: sentinel found AND " "active_chain_height=%d > 100. This combination is " "anomalous (sentinel should clear atomically with import " "completion). Manual intervention required: inspect " "progress.kv (sqlite3 -- DELETE FROM progress_meta WHERE " "key='import_in_progress') if the sentinel is truly " "stale.", our_tip);
             return false;
         }
-        fprintf(stderr,  // obs-ok:legacy-attach-recovery
-                "[legacy_attach] sentinel found from a prior aborted "
-                "import — recovering: wipe + re-import (active_tip=%d)\n",
-                our_tip);
+        LOG_WARN("legacy_attach", "[legacy_attach] sentinel found from a prior aborted " "import — recovering: wipe + re-import (active_tip=%d)", our_tip);
         if (!legacy_bootstrap_attach_wipe_block_index(opts->btdb)) {
             fprintf(stderr,
                 "[legacy_attach] wipe of stale block_index failed\n");
@@ -1863,13 +1691,7 @@ static bool legacy_bootstrap_import_attach(
         r.outcome = LEGACY_ATTACH_OUTCOME_DID_IMPORT;
     if (out) *out = r;
 
-    fprintf(stderr,  // obs-ok:legacy-attach-done
-        "[legacy_attach] DONE outcome=%s in %.1fs: legacy_tip=%d "
-        "block_index=%" PRId64 " utxos=%" PRId64 " blk_files=%" PRId64
-        " stages_stamped=%" PRId64 "\n",
-        legacy_attach_outcome_name((enum legacy_attach_outcome)r.outcome), total_secs,
-        r.legacy_tip, r.block_index_writes, r.utxos_imported,
-        r.blk_files_linked, r.stages_stamped);
+    LOG_INFO("legacy_attach", "[legacy_attach] DONE outcome=%s in %.1fs: legacy_tip=%d " "block_index=%" PRId64 " utxos=%" PRId64 " blk_files=%" PRId64 " stages_stamped=%" PRId64, legacy_attach_outcome_name((enum legacy_attach_outcome)r.outcome), total_secs, r.legacy_tip, r.block_index_writes, r.utxos_imported, r.blk_files_linked, r.stages_stamped);
 
     return true;
 }
@@ -1881,8 +1703,7 @@ bool legacy_bootstrap_import_blocking(
     if (out)
         *out = (struct legacy_bootstrap_import_result){.legacy_tip = -1};
     if (!opts) {
-        fprintf(stderr,  // obs-ok:bootstrap-import-terminal-diagnostic
-                "[legacy_bootstrap] import: NULL options\n");
+        LOG_INFO("legacy_bootstrap", "[legacy_bootstrap] import: NULL options");
         return false;
     }
 
@@ -1895,7 +1716,6 @@ bool legacy_bootstrap_import_blocking(
             return legacy_bootstrap_import_attach(opts, out);
     }
 
-    fprintf(stderr,  // obs-ok:bootstrap-import-terminal-diagnostic
-            "[legacy_bootstrap] import: unknown mode %d\n", (int)opts->mode);
+    LOG_INFO("legacy_bootstrap", "[legacy_bootstrap] import: unknown mode %d", (int)opts->mode);
     return false;
 }

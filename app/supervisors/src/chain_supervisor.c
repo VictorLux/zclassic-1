@@ -5,6 +5,7 @@
  * is readable in one place. Same contract, same domain, same policy. */
 
 #include "supervisors/chain_supervisor.h"
+#include "util/log_macros.h"
 #include "supervisors/domains.h"
 
 #include "util/supervisor.h"
@@ -83,9 +84,7 @@ static void coord_esc_stall(struct liveness_contract *c)
     memset(&reval_hash, 0, sizeof(reval_hash));
     enum reval_result rr = process_block_revalidate(stuck_h, g_coord_esc_ms,
                                                      &reval_hash);
-    fprintf(stderr,  // obs-ok:coord-esc-revalidate
-            "[supervisor] chain.coord_escalation: revalidate h=%d -> %s\n",
-            stuck_h, reval_result_name(rr));
+    LOG_WARN("supervisor", "[supervisor] chain.coord_escalation: revalidate h=%d -> %s", stuck_h, reval_result_name(rr));
     event_emitf(EV_CHAIN_ADVANCE_DECISION, 0,
                 "revalidate height=%d result=%s",
                 stuck_h, reval_result_name(rr));
@@ -118,7 +117,6 @@ void chain_supervisor_register(struct main_state *ms)
     g_coord_esc_id = supervisor_register_in_domain(g_chain_sup,
                                                    &g_coord_esc_contract);
     if (g_coord_esc_id == SUPERVISOR_INVALID_ID) {
-        fprintf(stderr,  // obs-ok:coord-esc-supervisor-fallback-warn
-            "[supervisor] WARN chain.coord_escalation register failed\n");
+        LOG_WARN("supervisor", "[supervisor] WARN chain.coord_escalation register failed");
     }
 }

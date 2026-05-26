@@ -117,9 +117,7 @@ static bool ensure_log_schema(sqlite3 *db)
         ")";
     char *err = NULL;
     if (sqlite3_exec(db, sql, NULL, NULL, &err) != SQLITE_OK) {
-        fprintf(stderr,  // obs-ok:proof-validate-schema-failure
-                "[proof_validate] schema ensure failed: %s\n",
-                err ? err : "(no message)");
+        LOG_WARN("proof_validate", "[proof_validate] schema ensure failed: %s", err ? err : "(no message)");
         if (err) sqlite3_free(err);
         return false;
     }
@@ -132,9 +130,7 @@ static uint64_t upstream_cursor_persisted(sqlite3 *db, const char *name)
     if (sqlite3_prepare_v2(db,
         "SELECT cursor FROM stage_cursor WHERE name = ?",
         -1, &st, NULL) != SQLITE_OK) {
-        fprintf(stderr,  // obs-ok:proof-validate-upstream-prepare-failure
-                "[proof_validate] upstream cursor prepare failed: %s\n",
-                sqlite3_errmsg(db));
+        LOG_WARN("proof_validate", "[proof_validate] upstream cursor prepare failed: %s", sqlite3_errmsg(db));
         return 0;
     }
     sqlite3_bind_text(st, 1, name, -1, SQLITE_STATIC);
@@ -154,9 +150,7 @@ static int script_validate_log_at(sqlite3 *db, int height,
     if (sqlite3_prepare_v2(db,
         "SELECT ok FROM script_validate_log WHERE height = ?",
         -1, &st, NULL) != SQLITE_OK) {
-        fprintf(stderr,  // obs-ok:proof-validate-script-log-prepare-failure
-                "[proof_validate] script_validate_log prepare failed: %s\n",
-                sqlite3_errmsg(db));
+        LOG_WARN("proof_validate", "[proof_validate] script_validate_log prepare failed: %s", sqlite3_errmsg(db));
         return -1;  // raw-return-ok:logged-above
     }
     sqlite3_bind_int(st, 1, height);
@@ -186,9 +180,7 @@ static bool log_insert(sqlite3 *db, int height, const char *status, bool ok,
         "VALUES (?,?,?,?,?,?,?,?,?)",
         -1, &stmt, NULL);
     if (rc != SQLITE_OK) {
-        fprintf(stderr,  // obs-ok:proof-validate-log-prepare-failure
-                "[proof_validate] prepare insert failed: %s\n",
-                sqlite3_errmsg(db));
+        LOG_WARN("proof_validate", "[proof_validate] prepare insert failed: %s", sqlite3_errmsg(db));
         return false;
     }
     sqlite3_bind_int64(stmt, 1, (sqlite3_int64)height);
@@ -211,8 +203,7 @@ static bool log_insert(sqlite3 *db, int height, const char *status, bool ok,
     rc = sqlite3_step(stmt);  // raw-sql-ok:kernel-primitive
     sqlite3_finalize(stmt);
     if (rc != SQLITE_DONE) {
-        fprintf(stderr,  // obs-ok:proof-validate-log-insert-failure
-                "[proof_validate] insert height=%d rc=%d\n", height, rc);
+        LOG_WARN("proof_validate", "[proof_validate] insert height=%d rc=%d", height, rc);
         return false;
     }
     return true;
@@ -224,9 +215,7 @@ static int64_t log_row_count(sqlite3 *db)
     if (sqlite3_prepare_v2(db,
         "SELECT COUNT(*) FROM proof_validate_log",
         -1, &st, NULL) != SQLITE_OK) {
-        fprintf(stderr,  // obs-ok:proof-validate-count-prepare-failure
-                "[proof_validate] log count prepare failed: %s\n",
-                sqlite3_errmsg(db));
+        LOG_WARN("proof_validate", "[proof_validate] log count prepare failed: %s", sqlite3_errmsg(db));
         return -1;  // raw-return-ok:logged-above
     }
     int64_t n = -1;
@@ -565,8 +554,7 @@ bool proof_validate_stage_init(struct main_state *ms)
     g_stage = s;
     pthread_mutex_unlock(&g_lock);
 
-    fprintf(stderr,  // obs-ok:proof-validate-lifecycle
-            "[proof_validate] stage initialised (shadow mode)\n");
+    LOG_INFO("proof_validate", "[proof_validate] stage initialised (shadow mode)");
     return true;
 }
 

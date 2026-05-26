@@ -171,9 +171,7 @@ int block_pruning_run_once(struct block_pruning_service *svc)
         disk_block_io_unlock();
 
         if (!blk_ok) {
-            fprintf(stderr, // obs-ok:pre-existing-diagnostic
-                    "[prune] %s:%d %s(): failed to delete %s: %s\n",
-                    __FILE__, __LINE__, __func__, blk_path, strerror(errno));
+            LOG_WARN("prune", "[prune] %s:%d %s(): failed to delete %s: %s", __FILE__, __LINE__, __func__, blk_path, strerror(errno));
             continue;
         }
 
@@ -288,11 +286,7 @@ void block_pruning_init(struct block_pruning_service *svc,
         if (v >= BLOCK_PRUNING_MIN_KEEP_BLOCKS)
             keep = v;
         else
-            fprintf(stderr, // obs-ok:pre-existing-diagnostic
-                    "[prune] ZCL_PRUNE_KEEP_BLOCKS=%s too low "
-                    "(min %d), using default %d\n",
-                    env, BLOCK_PRUNING_MIN_KEEP_BLOCKS,
-                    BLOCK_PRUNING_DEFAULT_KEEP_BLOCKS);
+            LOG_INFO("prune", "[prune] ZCL_PRUNE_KEEP_BLOCKS=%s too low " "(min %d), using default %d", env, BLOCK_PRUNING_MIN_KEEP_BLOCKS, BLOCK_PRUNING_DEFAULT_KEEP_BLOCKS);
     }
     svc->keep_blocks = keep;
 

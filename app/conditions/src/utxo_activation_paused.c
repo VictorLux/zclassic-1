@@ -1,6 +1,7 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0 */
 
 #include "conditions/utxo_activation_paused.h"
+#include "util/log_macros.h"
 #include "framework/condition.h"
 
 #include "platform/time_compat.h"
@@ -76,11 +77,7 @@ static void kick_local_activation(const char *reason)
     activation_request_connect(ctl, ACTIVATION_SRC_HEADERS_ALL_DATA,
                                NULL, &outcome);
     if (outcome.result == ACTIVATION_EXEC_FAILED) {
-        fprintf(stderr,  // obs-ok:condition-utxo-activation-kick
-                "[condition:utxo_activation_paused] activation kick failed "
-                "reason=%s outcome=%s\n",
-                reason ? reason : "unspecified",
-                outcome.reason[0] ? outcome.reason : "unknown");
+        LOG_WARN("condition", "[condition:utxo_activation_paused] activation kick failed " "reason=%s outcome=%s", reason ? reason : "unspecified", outcome.reason[0] ? outcome.reason : "unknown");
     }
 }
 
@@ -91,11 +88,7 @@ static enum condition_remedy_result remedy_utxo_activation_paused(void)
         return COND_REMEDY_SKIP;
 
     bool drift = pause_reason_is_drift();
-    fprintf(stderr,  // obs-ok:condition-utxo-activation-paused
-            "[condition:utxo_activation_paused] h=%d paused_for=%llds "
-            "reason=%s action=%s\n",
-            paused, (long long)atomic_load(&g_pause_age_at_detect),
-            pause_reason(), drift ? "repair" : "resume");
+    LOG_WARN("condition", "[condition:utxo_activation_paused] h=%d paused_for=%llds " "reason=%s action=%s", paused, (long long)atomic_load(&g_pause_age_at_detect), pause_reason(), drift ? "repair" : "resume");
 
 #ifdef ZCL_TESTING
     bool clear_enabled = atomic_load(&g_test_remedy_clear_enabled);

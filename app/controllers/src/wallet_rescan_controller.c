@@ -89,8 +89,7 @@ static void wallet_reset_rollback_best_effort(struct node_db *ndb,
     if (!ndb || !ndb->open)
         return;
     if (!node_db_rollback(ndb)) {
-        fprintf(stderr, "[wallet_rescan] %s: rollback failed: %s\n", // obs-ok:best-effort-rollback-after-failed-write
-                label, ndb->db ? sqlite3_errmsg(ndb->db) : "db unavailable");
+        LOG_WARN("wallet_rescan", "[wallet_rescan] %s: rollback failed: %s", label, ndb->db ? sqlite3_errmsg(ndb->db) : "db unavailable");
     }
 }
 

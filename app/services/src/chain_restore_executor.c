@@ -63,9 +63,7 @@ bool chain_restore_commit_tip_via_csr(struct main_state *ms,
     }
 #endif
 
-    fprintf(stderr, // obs-ok:pre-existing-diagnostic
-            "chain_restore: csr rejected tip commit (%s) reason=%s h=%d\n",
-            csr_result_name(rc), reason ? reason : "", target->nHeight);
+    LOG_WARN("chain_restore", "chain_restore: csr rejected tip commit (%s) reason=%s h=%d", csr_result_name(rc), reason ? reason : "", target->nHeight);
     return false;
 }
 
@@ -103,9 +101,7 @@ bool chain_restore_commit_header_via_csr(struct main_state *ms,
     }
 #endif
 
-    fprintf(stderr, // obs-ok:pre-existing-diagnostic
-            "chain_restore: csr rejected header commit (%s) reason=%s h=%d\n",
-            csr_result_name(rc), reason ? reason : "", target->nHeight);
+    LOG_WARN("chain_restore", "chain_restore: csr rejected header commit (%s) reason=%s h=%d", csr_result_name(rc), reason ? reason : "", target->nHeight);
     return false;
 }
 
@@ -136,8 +132,7 @@ struct block_index *chain_restore_create_anchor(
     anchor->phashBlock = block_map_find_hash(&ms->map_block_index, hash);
     if (!anchor->phashBlock) {
         /* Insert succeeded but hash lookup failed — shouldn't happen */
-        fprintf(stderr, // obs-ok:pre-existing-diagnostic
-                "chain_restore: anchor inserted but hash not found\n");
+        LOG_INFO("chain_restore", "chain_restore: anchor inserted but hash not found");
     }
 
     return anchor;
