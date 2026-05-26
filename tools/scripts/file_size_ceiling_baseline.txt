@@ -10,15 +10,9 @@
 # Goal: empty file. The baseline can only shrink — never grow.
 #
 # Format: <relative-path> <max-loc>   (lines starting with # are comments)
-app/controllers/src/api_controller.c 1326
 app/controllers/src/legacy_import.c 1105
-app/controllers/src/snapshot_controller.c 1300
 app/controllers/src/sync_controller_catchup.c 1262
 app/controllers/src/sync_controller_import.c 995
-app/jobs/src/validate_headers_stage.c 965
-app/models/src/database.c 1705
-app/models/src/wallet_tx.c 1147
-app/services/src/bg_validation_service.c 830
 app/services/src/chain_advance_coordinator.c 1714
 app/services/src/legacy_bootstrap_importer.c 1721
 app/services/src/legacy_mirror_sync_service.c 1487
