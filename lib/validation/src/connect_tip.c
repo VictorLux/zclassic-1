@@ -56,6 +56,8 @@
 #include "storage/txdb.h"
 #include "storage/block_index_db.h"
 #include "storage/coins_view_sqlite.h"
+#include "storage/coins_view_stage_backing.h"
+#include "storage/utxo_projection.h"
 #include "wallet/wallet.h"
 #include "validation/txmempool.h"
 #include "event/event.h"
@@ -246,11 +248,22 @@ bool connect_tip(struct validation_state *state,
     {
         struct coins_view_cache view;
         struct coins_view backing;
+        struct coins_view legacy_backing;
+        struct coins_view_stage_backing stage_backing;
         int recovery_attempts = 0;
         bool missing_utxo_unrecovered = false;
 
 	retry_connect:
-        coins_view_cache_as_view(&backing, coins_tip);
+        /* B4-wiring: authority-gated backing selection. Under the default
+         * LEGACY author this is byte-identical to wrapping coins_tip; under
+         * STAGE (B7 flip) connect_block's input lookups resolve through the
+         * UTXO projection (the authoritative set) while writes/best-block
+         * stay on coins_tip. The RAM read-cache (`view`) is unchanged and
+         * sits in front of whichever backing is chosen. Dormant until B7. */
+        coins_view_cache_as_view(&legacy_backing, coins_tip);
+        coins_view_select_connect_backing(&backing, &stage_backing,
+                                          &legacy_backing,
+                                          utxo_projection_get_global());
         coins_view_cache_init(&view, &backing);
         stage_start_us = GetTimeMicros();
 
