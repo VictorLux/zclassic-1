@@ -16,6 +16,7 @@
 #include "primitives/transaction.h"
 #include "storage/disk_block_io.h"
 #include "storage/progress_store.h"
+#include "storage/utxo_projection.h"
 #include "util/log_macros.h"
 #include "util/safe_alloc.h"
 #include "util/stage.h"
@@ -41,6 +42,13 @@ struct delta_entry {
     struct uint256 txid;
     uint32_t vout;
     int64_t value;
+    /* B3 authorship: added entries also carry what EV_UTXO_ADD needs.
+     * `script` aliases into the live `struct block` and is valid only
+     * until block_free — emission must happen before the block is freed.
+     * Unused for spent entries. */
+    const uint8_t *script;
+    uint32_t script_len;
+    bool is_coinbase;
 };
 
 struct delta_summary {
@@ -51,6 +59,11 @@ struct delta_summary {
     size_t spent_count;
     size_t added_count;
     int64_t total_value_delta;
+    /* On a successful delta these own the spent/added arrays and are
+     * handed back to the caller (which emits then frees). On any
+     * failure path compute_block_delta frees them and leaves NULL. */
+    struct delta_entry *spent;
+    struct delta_entry *added;
 };
 
 static pthread_mutex_t g_lock = PTHREAD_MUTEX_INITIALIZER;
@@ -283,6 +296,26 @@ static void free_delta(struct delta_entry *spent, struct delta_entry *added)
     free(added);
 }
 
+/* B3: author EV_UTXO_ADD/SPEND from a validated block delta. Called
+ * only when the stage holds authority (UTXO_AUTHOR_STAGE) and the block
+ * verified. Adds are emitted before spends: every UTXO key created in
+ * this block is unique (compute_block_delta rejects collisions), and
+ * the only intra-block key interaction is create-then-spend of the same
+ * output — which add-then-spend resolves to "absent", matching the
+ * legacy per-tx order. The projection is a set, so the resulting final
+ * state is byte-identical to legacy's interleaved emission
+ * (proven empirically by test_utxo_apply_authorship_parity). */
+static void emit_delta(const struct delta_summary *s, uint32_t height)
+{
+    for (size_t i = 0; i < s->added_count; i++)
+        utxo_projection_emit_add(s->added[i].txid.data, s->added[i].vout,
+                                 s->added[i].value, height,
+                                 s->added[i].is_coinbase,
+                                 s->added[i].script, s->added[i].script_len);
+    for (size_t i = 0; i < s->spent_count; i++)
+        utxo_projection_emit_spend(s->spent[i].txid.data, s->spent[i].vout);
+}
+
 static void compute_block_delta(const struct block *blk,
                                 struct delta_summary *out)
 {
@@ -394,6 +427,10 @@ static void compute_block_delta(const struct block *blk,
             added[out->added_count].txid = tx->hash;
             added[out->added_count].vout = (uint32_t)vo;
             added[out->added_count].value = txo->value;
+            added[out->added_count].script = txo->script_pub_key.data;
+            added[out->added_count].script_len =
+                (uint32_t)txo->script_pub_key.size;
+            added[out->added_count].is_coinbase = transaction_is_coinbase(tx);
             out->added_count++;
             out->total_value_delta += txo->value;
             tx_output_value += txo->value;
@@ -412,9 +449,14 @@ static void compute_block_delta(const struct block *blk,
         out->ok = false;
         out->status = "value_overflow";
         out->failure_kind = "total_value_delta";
+        free_delta(spent, added);
+        return;
     }
 
-    free_delta(spent, added);
+    /* Success: hand the arrays to the caller, which emits the events
+     * (if authoritative) and then frees them. */
+    out->spent = spent;
+    out->added = added;
 }
 
 static job_result_t step_apply(struct stage_step_ctx *c)
@@ -470,7 +512,6 @@ static job_result_t step_apply(struct stage_step_ctx *c)
 
     struct delta_summary summary;
     compute_block_delta(&blk, &summary);
-    block_free(&blk);
 
     if (summary.ok && g_live_check) {
         const char *detail = NULL;
@@ -483,6 +524,17 @@ static job_result_t step_apply(struct stage_step_ctx *c)
             memset(summary.failure_detail, 0, sizeof(summary.failure_detail));
         }
     }
+
+    /* B3: author the UTXO projection from this validated delta when the
+     * stage holds authority. Scripts in `summary.added` alias into
+     * `blk`, so emit before block_free. Default authority is LEGACY, so
+     * this is a no-op until the B7 cutover flips it. */
+    if (summary.ok && utxo_projection_get_author() == UTXO_AUTHOR_STAGE)
+        emit_delta(&summary, (uint32_t)next_h);
+
+    free_delta(summary.spent, summary.added);
+    summary.spent = summary.added = NULL;
+    block_free(&blk);
 
     if (summary.ok) {
         atomic_fetch_add(&g_verified_total, 1);

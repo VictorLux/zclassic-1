@@ -31,6 +31,25 @@
 
 typedef struct utxo_projection utxo_projection_t;
 
+/* B3 single-writer authority over the UTXO projection.
+ *
+ *   UTXO_AUTHOR_LEGACY (default) — `update_coins()` authors EV_UTXO_*
+ *       events as the legacy connect path runs (shadow emission). This
+ *       is today's behavior; the live node defaults here.
+ *   UTXO_AUTHOR_STAGE — `utxo_apply_stage` authors the events from its
+ *       own validated delta and the legacy emitters become no-ops, so
+ *       there is exactly one writer to the projection.
+ *
+ * The flip is performed by the cutover canary (B7); both emit paths
+ * read this flag atomically and only the matching author writes. */
+typedef enum {
+    UTXO_AUTHOR_LEGACY = 0,
+    UTXO_AUTHOR_STAGE  = 1
+} utxo_author_t;
+
+void utxo_projection_set_author(utxo_author_t who);
+utxo_author_t utxo_projection_get_author(void);
+
 /* Open or create the projection at `projection_path`. Replays from the
  * `last_consumed_offset` stored in the projection's own metadata table
  * (idempotent across crashes). Returns NULL on unrecoverable error

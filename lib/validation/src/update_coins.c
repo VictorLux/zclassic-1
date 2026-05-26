@@ -46,6 +46,11 @@ void update_coins_emit_utxo_add_shadow(const uint8_t txid[32], uint32_t vout,
                                   const uint8_t *script_bytes,
                                   uint32_t script_len)
 {
+    /* B3: legacy authors only while LEGACY. Once utxo_apply_stage is
+     * the authority (STAGE), the stage emits and we yield so there is
+     * exactly one writer to the projection. */
+    if (utxo_projection_get_author() != UTXO_AUTHOR_LEGACY)
+        return;
     /* Shadow mode: emit failures NEVER gate the legacy SQLite write.
      * obs-ok marker downgrades the warning to "operator can grep
      * later" rather than "abort consensus path". */
@@ -66,6 +71,10 @@ void update_coins_emit_utxo_add_shadow(const uint8_t txid[32], uint32_t vout,
 
 void update_coins_emit_utxo_spend_shadow(const uint8_t txid[32], uint32_t vout)
 {
+    /* B3: see update_coins_emit_utxo_add_shadow — yield once the stage
+     * is the authority so the projection has a single writer. */
+    if (utxo_projection_get_author() != UTXO_AUTHOR_LEGACY)
+        return;
     if (utxo_projection_emit_spend(txid, vout)) {
         atomic_fetch_add_explicit(&g_utxo_event_emit_total, 1,
                                   memory_order_relaxed);

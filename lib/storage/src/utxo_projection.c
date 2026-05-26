@@ -87,6 +87,25 @@ struct utxo_projection {
 static _Atomic(utxo_projection_t *) g_projection = NULL;
 static _Atomic(event_log_t *)       g_event_log  = NULL;
 
+/* B3 single-writer authority. LEGACY (default) keeps today's behavior:
+ * update_coins() authors the UTXO events as the legacy connect path
+ * runs. STAGE hands authorship to utxo_apply_stage and makes the
+ * legacy emitters no-op — exactly one writer to the projection. The
+ * flip itself is B7 (cutover canary); default stays LEGACY so the live
+ * node is byte-for-byte unchanged until then. */
+static _Atomic int g_author = (int)UTXO_AUTHOR_LEGACY;
+
+void utxo_projection_set_author(utxo_author_t who)
+{
+    atomic_store_explicit(&g_author, (int)who, memory_order_release);
+}
+
+utxo_author_t utxo_projection_get_author(void)
+{
+    return (utxo_author_t)atomic_load_explicit(&g_author,
+                                               memory_order_acquire);
+}
+
 /* Shadow-emission counters (independent of consumer counters so we can
  * tell emit failures from consume failures in observability). */
 static _Atomic uint64_t g_emit_add_total   = 0;
