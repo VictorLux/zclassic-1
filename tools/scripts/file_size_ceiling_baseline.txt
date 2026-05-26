@@ -27,6 +27,7 @@ app/controllers/src/wallet_diagnostic_health.c 1095
 app/controllers/src/wallet_rescan_controller.c 988
 app/controllers/src/wallet_shielded_controller.c 1657
 app/controllers/src/wallet_view_helpers.c 1218
+app/jobs/src/validate_headers_stage.c 976
 app/models/src/database.c 1722
 app/models/src/wallet_tx.c 1149
 app/services/src/bg_validation_service.c 838
@@ -34,7 +35,6 @@ app/services/src/chain_advance_coordinator.c 1716
 app/services/src/legacy_bootstrap_importer.c 1901
 app/services/src/legacy_mirror_sync_service.c 1487
 app/services/src/utxo_recovery_service.c 1204
-app/services/src/validate_headers_stage.c 976
 app/views/src/explorer_factoids_view.c 1996
 app/views/src/explorer_pages_view.c 1322
 app/views/src/explorer_stats_view.c 1597

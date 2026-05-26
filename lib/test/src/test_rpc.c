@@ -4,8 +4,8 @@
 #include "controllers/diagnostics_controller.h"
 #include "rpc/httpserver.h"
 #include "rpc/legacy_rpc_client.h"
-#include "services/header_admit_stage.h"
-#include "services/validate_headers_stage.h"
+#include "jobs/header_admit_stage.h"
+#include "jobs/validate_headers_stage.h"
 #include <openssl/err.h>
 #include <openssl/pem.h>
 #include <openssl/ssl.h>

@@ -13,14 +13,14 @@
 #include "supervisors/domains.h"
 
 #include "util/supervisor.h"
-#include "services/header_admit_stage.h"
-#include "services/validate_headers_stage.h"
-#include "services/body_fetch_stage.h"
-#include "services/body_persist_stage.h"
-#include "services/script_validate_stage.h"
-#include "services/proof_validate_stage.h"
-#include "services/utxo_apply_stage.h"
-#include "services/tip_finalize_stage.h"
+#include "jobs/header_admit_stage.h"
+#include "jobs/validate_headers_stage.h"
+#include "jobs/body_fetch_stage.h"
+#include "jobs/body_persist_stage.h"
+#include "jobs/script_validate_stage.h"
+#include "jobs/proof_validate_stage.h"
+#include "jobs/utxo_apply_stage.h"
+#include "jobs/tip_finalize_stage.h"
 
 #include <stdatomic.h>
 #include <stdint.h>

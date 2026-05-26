@@ -1,12 +1,12 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * tip_finalize_stage — implementation. See services/tip_finalize_stage.h.
+ * tip_finalize_stage — implementation. See jobs/tip_finalize_stage.h.
  *
  * S-9 consumes utxo_apply_log and records the live tip-finalize event.
  * It writes only tip_finalize_log plus its stage cursor in progress.kv. */
 
 #include "platform/time_compat.h"
-#include "services/tip_finalize_stage.h"
+#include "jobs/tip_finalize_stage.h"
 
 #include "chain/chain.h"
 #include "core/arith_uint256.h"
@@ -384,30 +384,30 @@ static bool live_utxo_count_after(int height_after, int64_t *out_count)
     return g_utxo_counter(height_after, out_count, g_utxo_counter_user);
 }
 
-static stage_result_t step_finalize(struct stage_step_ctx *c)
+static job_result_t step_finalize(struct stage_step_ctx *c)
 {
     atomic_store(&g_last_step_unix, wall_now_s());
 
     struct main_state *ms = g_ms;
-    if (!ms) return STAGE_IDLE;
+    if (!ms) return JOB_IDLE;
     sqlite3 *db = progress_store_db();
-    if (!db) return STAGE_IDLE;
+    if (!db) return JOB_IDLE;
 
     int next_h = (int)c->cursor_in;
-    if (next_h < 0) return STAGE_ERROR;
+    if (next_h < 0) return JOB_FATAL;
 
     uint64_t uv_cursor = upstream_cursor_persisted(db, "utxo_apply");
     if ((uint64_t)next_h >= uv_cursor) {
         atomic_store(&g_last_blocked_unix, wall_now_s());
-        return STAGE_IDLE;
+        return JOB_IDLE;
     }
 
     struct utxo_apply_row upstream;
     int found = utxo_apply_log_at(db, next_h, &upstream);
-    if (found < 0) return STAGE_ERROR;
+    if (found < 0) return JOB_FATAL;
     if (found == 0) {
         atomic_store(&g_last_blocked_unix, wall_now_s());
-        return STAGE_IDLE;
+        return JOB_IDLE;
     }
 
     if (upstream.ok == 0) {
@@ -415,11 +415,11 @@ static stage_result_t step_finalize(struct stage_step_ctx *c)
         arith_uint256_set_zero(&zero);
         if (!log_insert(db, next_h, "upstream_failed", false, &zero,
                         -1, 0, NULL))
-            return STAGE_ERROR;
+            return JOB_FATAL;
         atomic_fetch_add(&g_upstream_failed_total, 1);
         atomic_store(&g_last_advance_height, (int64_t)next_h);
         c->cursor_out = c->cursor_in + 1;
-        return STAGE_ADVANCED;
+        return JOB_ADVANCED;
     }
 
     struct block_index *old_tip = active_chain_at(&ms->chain_active, next_h);
@@ -427,11 +427,11 @@ static stage_result_t step_finalize(struct stage_step_ctx *c)
                                                   next_h + 1);
     if (!new_tip) {
         atomic_store(&g_last_blocked_unix, wall_now_s());
-        return STAGE_IDLE;
+        return JOB_IDLE;
     }
     if (!old_tip) {
         atomic_store(&g_last_blocked_unix, wall_now_s());
-        return STAGE_IDLE;
+        return JOB_IDLE;
     }
 
     struct arith_uint256 work_delta;
@@ -441,13 +441,13 @@ static stage_result_t step_finalize(struct stage_step_ctx *c)
         int depth = reorg_depth_from(old_tip, new_tip);
         if (!log_insert(db, next_h, "reorg_detected", false, &work_delta,
                         -1, depth, NULL))
-            return STAGE_ERROR;
+            return JOB_FATAL;
         atomic_fetch_add(&g_reorg_detected_total, 1);
         event_emitf(EV_BLOCK_REJECTED, 0,
                     "tip_finalize reorg_detected height=%d depth=%d",
                     next_h, depth);
         c->cursor_out = c->cursor_in + 1;
-        return STAGE_ADVANCED;
+        return JOB_ADVANCED;
     }
 
     if (!preconditions_ok(new_tip) ||
@@ -455,12 +455,12 @@ static stage_result_t step_finalize(struct stage_step_ctx *c)
                               &old_tip->nChainWork) <= 0) {
         if (!log_insert(db, next_h, "precondition_failed", false,
                         &work_delta, -1, 0, NULL))
-            return STAGE_ERROR;
+            return JOB_FATAL;
         atomic_fetch_add(&g_precondition_failed_total, 1);
         event_emitf(EV_BLOCK_REJECTED, 0,
                     "tip_finalize precondition_failed height=%d", next_h);
         c->cursor_out = c->cursor_in + 1;
-        return STAGE_ADVANCED;
+        return JOB_ADVANCED;
     }
 
     arith_uint256_sub(&work_delta, &new_tip->nChainWork,
@@ -468,16 +468,16 @@ static stage_result_t step_finalize(struct stage_step_ctx *c)
 
     int64_t utxo_size_after = -1;
     if (!live_utxo_count_after(next_h + 1, &utxo_size_after))
-        return STAGE_ERROR;
+        return JOB_FATAL;
     if (utxo_size_after >= 0) {
         int64_t spent = 0, added = 0;
         if (!utxo_apply_sums_through(db, next_h, &spent, &added))
-            return STAGE_ERROR;
+            return JOB_FATAL;
         int64_t expected = added - spent;
         if (utxo_size_after != expected) {
             if (!log_insert(db, next_h, "utxo_count_diverged", false,
                             &work_delta, utxo_size_after, 0, NULL))
-                return STAGE_ERROR;
+                return JOB_FATAL;
             atomic_fetch_add(&g_utxo_count_diverged_total, 1);
             event_emitf(EV_BLOCK_REJECTED, 0,
                         "tip_finalize utxo_count_diverged height=%d "
@@ -485,13 +485,13 @@ static stage_result_t step_finalize(struct stage_step_ctx *c)
                         next_h, (long long)utxo_size_after,
                         (long long)expected);
             c->cursor_out = c->cursor_in + 1;
-            return STAGE_ADVANCED;
+            return JOB_ADVANCED;
         }
     }
 
     if (!log_insert(db, next_h, "finalized", true, &work_delta,
                     utxo_size_after, 0, new_tip->phashBlock))
-        return STAGE_ERROR;
+        return JOB_FATAL;
 
     atomic_fetch_add(&g_finalized_total, 1);
     atomic_fetch_add(&g_total_work_added_low,
@@ -500,7 +500,7 @@ static stage_result_t step_finalize(struct stage_step_ctx *c)
                      ((uint64_t)work_delta.pn[3] << 32) | work_delta.pn[2]);
     atomic_store(&g_last_advance_height, (int64_t)next_h);
     c->cursor_out = c->cursor_in + 1;
-    return STAGE_ADVANCED;
+    return JOB_ADVANCED;
 }
 
 bool tip_finalize_stage_init(struct main_state *ms)
@@ -540,13 +540,13 @@ bool tip_finalize_stage_init(struct main_state *ms)
     return true;
 }
 
-stage_result_t tip_finalize_stage_step_once(void)
+job_result_t tip_finalize_stage_step_once(void)
 {
-    if (!g_stage) return STAGE_IDLE;
+    if (!g_stage) return JOB_IDLE;
     sqlite3 *db = progress_store_db();
-    if (!db) return STAGE_IDLE;
+    if (!db) return JOB_IDLE;
     if (!rewind_cursor_if_active_chain_reorged(db))
-        return STAGE_ERROR;
+        return JOB_FATAL;
     return stage_run_once(g_stage, db);
 }
 
@@ -555,8 +555,8 @@ int tip_finalize_stage_drain(int max_steps)
     if (max_steps <= 0) return 0;
     int advanced = 0;
     for (int i = 0; i < max_steps; i++) {
-        stage_result_t r = tip_finalize_stage_step_once();
-        if (r != STAGE_ADVANCED) break;
+        job_result_t r = tip_finalize_stage_step_once();
+        if (r != JOB_ADVANCED) break;
         advanced++;
     }
     return advanced;

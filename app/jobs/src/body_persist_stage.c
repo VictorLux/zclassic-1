@@ -1,6 +1,6 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * body_persist_stage — implementation. See services/body_persist_stage.h.
+ * body_persist_stage — implementation. See jobs/body_persist_stage.h.
  *
  * S-5 consumes body_fetch_log and verifies that bodies observed on disk are
  * readable, hash to the active-chain header, and merkle-reconstruct to the
@@ -8,7 +8,7 @@
  * body_persist_log plus its stage cursor in progress.kv. */
 
 #include "platform/time_compat.h"
-#include "services/body_persist_stage.h"
+#include "jobs/body_persist_stage.h"
 
 #include "bloom/merkle.h"
 #include "chain/chain.h"
@@ -203,45 +203,45 @@ static bool verify_merkle_root(const struct block *blk)
     return uint256_eq(&root, &blk->header.hashMerkleRoot);
 }
 
-static stage_result_t step_persist(struct stage_step_ctx *c)
+static job_result_t step_persist(struct stage_step_ctx *c)
 {
     atomic_store(&g_last_step_unix, wall_now_s());
 
     struct main_state *ms = g_ms;
-    if (!ms) return STAGE_IDLE;
+    if (!ms) return JOB_IDLE;
     sqlite3 *db = progress_store_db();
-    if (!db) return STAGE_IDLE;
+    if (!db) return JOB_IDLE;
 
     int next_h = (int)c->cursor_in;
-    if (next_h < 0) return STAGE_ERROR;
+    if (next_h < 0) return JOB_FATAL;
 
     uint64_t bf_cursor = upstream_cursor_persisted(db, "body_fetch");
     if ((uint64_t)next_h >= bf_cursor) {
         atomic_store(&g_last_blocked_unix, wall_now_s());
-        return STAGE_IDLE;
+        return JOB_IDLE;
     }
 
     struct body_fetch_row upstream;
     int found = body_fetch_log_at(db, next_h, &upstream);
-    if (found < 0) return STAGE_ERROR;
+    if (found < 0) return JOB_FATAL;
     if (found == 0) {
         atomic_store(&g_last_blocked_unix, wall_now_s());
-        return STAGE_IDLE;
+        return JOB_IDLE;
     }
 
     if (upstream.ok == 0) {
         if (!log_insert(db, next_h, "upstream_failed", false))
-            return STAGE_ERROR;
+            return JOB_FATAL;
         atomic_fetch_add(&g_upstream_failed_total, 1);
         atomic_store(&g_last_advance_height, (int64_t)next_h);
         c->cursor_out = c->cursor_in + 1;
-        return STAGE_ADVANCED;
+        return JOB_ADVANCED;
     }
 
     struct block_index *bi = active_chain_at(&ms->chain_active, next_h);
     if (!bi || !bi->phashBlock || !(bi->nStatus & BLOCK_HAVE_DATA)) {
         atomic_store(&g_last_blocked_unix, wall_now_s());
-        return STAGE_IDLE;
+        return JOB_IDLE;
     }
 
     struct block blk;
@@ -250,14 +250,14 @@ static stage_result_t step_persist(struct stage_step_ctx *c)
     if (!reader(&blk, bi, g_datadir, g_reader_user)) {
         block_free(&blk);
         if (!log_insert(db, next_h, "read_failed", false))
-            return STAGE_ERROR;
+            return JOB_FATAL;
         atomic_fetch_add(&g_read_failed_total, 1);
         atomic_store(&g_last_advance_height, (int64_t)next_h);
         event_emitf(EV_BLOCK_REJECTED, 0,
                     "body_persist read_failed height=%d source=%s",
                     next_h, upstream.source);
         c->cursor_out = c->cursor_in + 1;
-        return STAGE_ADVANCED;
+        return JOB_ADVANCED;
     }
 
     struct uint256 disk_hash;
@@ -265,34 +265,34 @@ static stage_result_t step_persist(struct stage_step_ctx *c)
     if (uint256_cmp(&disk_hash, bi->phashBlock) != 0) {
         block_free(&blk);
         if (!log_insert(db, next_h, "header_mismatch", false))
-            return STAGE_ERROR;
+            return JOB_FATAL;
         atomic_fetch_add(&g_header_mismatch_total, 1);
         atomic_store(&g_last_advance_height, (int64_t)next_h);
         event_emitf(EV_BLOCK_REJECTED, 0,
                     "body_persist header_mismatch height=%d", next_h);
         c->cursor_out = c->cursor_in + 1;
-        return STAGE_ADVANCED;
+        return JOB_ADVANCED;
     }
 
     if (!verify_merkle_root(&blk)) {
         block_free(&blk);
         if (!log_insert(db, next_h, "merkle_mismatch", false))
-            return STAGE_ERROR;
+            return JOB_FATAL;
         atomic_fetch_add(&g_merkle_mismatch_total, 1);
         atomic_store(&g_last_advance_height, (int64_t)next_h);
         event_emitf(EV_BLOCK_REJECTED, 0,
                     "body_persist merkle_mismatch height=%d", next_h);
         c->cursor_out = c->cursor_in + 1;
-        return STAGE_ADVANCED;
+        return JOB_ADVANCED;
     }
 
     block_free(&blk);
     if (!log_insert(db, next_h, "verified", true))
-        return STAGE_ERROR;
+        return JOB_FATAL;
     atomic_fetch_add(&g_verified_total, 1);
     atomic_store(&g_last_advance_height, (int64_t)next_h);
     c->cursor_out = c->cursor_in + 1;
-    return STAGE_ADVANCED;
+    return JOB_ADVANCED;
 }
 
 bool body_persist_stage_init(struct main_state *ms)
@@ -335,11 +335,11 @@ bool body_persist_stage_init(struct main_state *ms)
     return true;
 }
 
-stage_result_t body_persist_stage_step_once(void)
+job_result_t body_persist_stage_step_once(void)
 {
-    if (!g_stage) return STAGE_IDLE;
+    if (!g_stage) return JOB_IDLE;
     sqlite3 *db = progress_store_db();
-    if (!db) return STAGE_IDLE;
+    if (!db) return JOB_IDLE;
     return stage_run_once(g_stage, db);
 }
 
@@ -348,8 +348,8 @@ int body_persist_stage_drain(int max_steps)
     if (max_steps <= 0) return 0;
     int advanced = 0;
     for (int i = 0; i < max_steps; i++) {
-        stage_result_t r = body_persist_stage_step_once();
-        if (r != STAGE_ADVANCED) break;
+        job_result_t r = body_persist_stage_step_once();
+        if (r != JOB_ADVANCED) break;
         advanced++;
     }
     return advanced;

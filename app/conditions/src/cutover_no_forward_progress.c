@@ -6,9 +6,9 @@
 #include "event/event.h"
 #include "net/connman.h"
 #include "services/cutover_modes.h"
-#include "services/header_admit_stage.h"
+#include "jobs/header_admit_stage.h"
 #include "services/sync_monitor.h"
-#include "services/validate_headers_stage.h"
+#include "jobs/validate_headers_stage.h"
 #include "validation/chainstate.h"
 #include "validation/main_state.h"
 

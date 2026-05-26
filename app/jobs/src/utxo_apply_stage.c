@@ -1,12 +1,12 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * utxo_apply_stage — implementation. See services/utxo_apply_stage.h.
+ * utxo_apply_stage — implementation. See jobs/utxo_apply_stage.h.
  *
  * S-8 consumes proof_validate_log and computes a transparent UTXO delta.
  * It writes only utxo_apply_log plus its stage cursor in progress.kv. */
 
 #include "platform/time_compat.h"
-#include "services/utxo_apply_stage.h"
+#include "jobs/utxo_apply_stage.h"
 
 #include "chain/chain.h"
 #include "core/uint256.h"
@@ -417,46 +417,46 @@ static void compute_block_delta(const struct block *blk,
     free_delta(spent, added);
 }
 
-static stage_result_t step_apply(struct stage_step_ctx *c)
+static job_result_t step_apply(struct stage_step_ctx *c)
 {
     atomic_store(&g_last_step_unix, wall_now_s());
 
     struct main_state *ms = g_ms;
-    if (!ms) return STAGE_IDLE;
+    if (!ms) return JOB_IDLE;
     sqlite3 *db = progress_store_db();
-    if (!db) return STAGE_IDLE;
+    if (!db) return JOB_IDLE;
 
     int next_h = (int)c->cursor_in;
-    if (next_h < 0) return STAGE_ERROR;
+    if (next_h < 0) return JOB_FATAL;
 
     uint64_t pv_cursor = upstream_cursor_persisted(db, "proof_validate");
     if ((uint64_t)next_h >= pv_cursor) {
         atomic_store(&g_last_blocked_unix, wall_now_s());
-        return STAGE_IDLE;
+        return JOB_IDLE;
     }
 
     struct proof_validate_row upstream;
     int found = proof_validate_log_at(db, next_h, &upstream);
-    if (found < 0) return STAGE_ERROR;
+    if (found < 0) return JOB_FATAL;
     if (found == 0) {
         atomic_store(&g_last_blocked_unix, wall_now_s());
-        return STAGE_IDLE;
+        return JOB_IDLE;
     }
 
     if (upstream.ok == 0) {
         if (!log_insert(db, next_h, "upstream_failed", false, 0, 0, 0,
                         NULL, NULL))
-            return STAGE_ERROR;
+            return JOB_FATAL;
         atomic_fetch_add(&g_upstream_failed_total, 1);
         atomic_store(&g_last_advance_height, (int64_t)next_h);
         c->cursor_out = c->cursor_in + 1;
-        return STAGE_ADVANCED;
+        return JOB_ADVANCED;
     }
 
     struct block_index *bi = active_chain_at(&ms->chain_active, next_h);
     if (!bi || !(bi->nStatus & BLOCK_HAVE_DATA)) {
         atomic_store(&g_last_blocked_unix, wall_now_s());
-        return STAGE_IDLE;
+        return JOB_IDLE;
     }
 
     struct block blk;
@@ -465,7 +465,7 @@ static stage_result_t step_apply(struct stage_step_ctx *c)
     if (!reader(&blk, bi, g_datadir, g_reader_user)) {
         block_free(&blk);
         atomic_store(&g_last_blocked_unix, wall_now_s());
-        return STAGE_IDLE;
+        return JOB_IDLE;
     }
 
     struct delta_summary summary;
@@ -516,11 +516,11 @@ static stage_result_t step_apply(struct stage_step_ctx *c)
                     summary.spent_count, summary.added_count,
                     summary.total_value_delta, summary.failure_kind,
                     summary.ok ? NULL : summary.failure_detail))
-        return STAGE_ERROR;
+        return JOB_FATAL;
 
     atomic_store(&g_last_advance_height, (int64_t)next_h);
     c->cursor_out = c->cursor_in + 1;
-    return STAGE_ADVANCED;
+    return JOB_ADVANCED;
 }
 
 bool utxo_apply_stage_init(struct main_state *ms)
@@ -562,11 +562,11 @@ bool utxo_apply_stage_init(struct main_state *ms)
     return true;
 }
 
-stage_result_t utxo_apply_stage_step_once(void)
+job_result_t utxo_apply_stage_step_once(void)
 {
-    if (!g_stage) return STAGE_IDLE;
+    if (!g_stage) return JOB_IDLE;
     sqlite3 *db = progress_store_db();
-    if (!db) return STAGE_IDLE;
+    if (!db) return JOB_IDLE;
     return stage_run_once(g_stage, db);
 }
 
@@ -575,8 +575,8 @@ int utxo_apply_stage_drain(int max_steps)
     if (max_steps <= 0) return 0;
     int advanced = 0;
     for (int i = 0; i < max_steps; i++) {
-        stage_result_t r = utxo_apply_stage_step_once();
-        if (r != STAGE_ADVANCED) break;
+        job_result_t r = utxo_apply_stage_step_once();
+        if (r != JOB_ADVANCED) break;
         advanced++;
     }
     return advanced;

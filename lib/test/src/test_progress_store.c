@@ -44,10 +44,10 @@ static int mkdir_p(const char *p)
 }
 
 /* Tiny stage step that advances the cursor by one each time. */
-static stage_result_t step_advance_by_one(struct stage_step_ctx *c)
+static job_result_t step_advance_by_one(struct stage_step_ctx *c)
 {
     c->cursor_out = c->cursor_in + 1;
-    return STAGE_ADVANCED;
+    return JOB_ADVANCED;
 }
 
 int test_progress_store(void)
@@ -116,7 +116,7 @@ int test_progress_store(void)
         sqlite3 *db = progress_store_db();
         for (int i = 0; i < 5; i++) {
             PS_CHECK("advance step OK",
-                     stage_run_once(s1, db) == STAGE_ADVANCED);
+                     stage_run_once(s1, db) == JOB_ADVANCED);
         }
         PS_CHECK("cursor == 5 after 5 advances",
                  stage_cursor(s1) == 5);
@@ -130,7 +130,7 @@ int test_progress_store(void)
                                     step_advance_by_one, NULL);
         /* stage_run_once will restore cursor from DB on first invocation. */
         PS_CHECK("first step after reopen advances from 5 to 6",
-                 stage_run_once(s2, progress_store_db()) == STAGE_ADVANCED);
+                 stage_run_once(s2, progress_store_db()) == JOB_ADVANCED);
         PS_CHECK("cursor == 6 after reopen + 1 step",
                  stage_cursor(s2) == 6);
 

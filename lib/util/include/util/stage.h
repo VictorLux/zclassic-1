@@ -16,12 +16,12 @@
  *   - On crash-mid-step, the cursor is unchanged on next boot, so the
  *     work is replayed idempotently.
  *
- * Stage states (every step returns one):
+ * Stage states (every step returns a job_result_t; see jobs/job.h):
  *
- *   STAGE_ADVANCED  — cursor moved; output committed
- *   STAGE_BLOCKED   — typed blocker preventing progress; cursor unchanged
- *   STAGE_IDLE      — no work available right now; cursor unchanged
- *   STAGE_ERROR     — unexpected failure; cursor unchanged
+ *   JOB_ADVANCED  — cursor moved; output committed
+ *   JOB_BLOCKED   — typed blocker preventing progress; cursor unchanged
+ *   JOB_IDLE      — no work available right now; cursor unchanged
+ *   JOB_FATAL     — unexpected failure; cursor unchanged
  *
  * Persistence (v1)
  * -----------------
@@ -47,6 +47,7 @@
 #ifndef ZCL_UTIL_STAGE_H
 #define ZCL_UTIL_STAGE_H
 
+#include "jobs/job.h"
 #include "util/blocker.h"
 
 #include <sqlite3.h>
@@ -55,33 +56,26 @@
 
 #define STAGE_NAME_MAX 64
 
-typedef enum {
-    STAGE_ADVANCED = 0,
-    STAGE_BLOCKED  = 1,
-    STAGE_IDLE     = 2,
-    STAGE_ERROR    = 3,
-} stage_result_t;
-
-const char *stage_result_name(stage_result_t r);
+const char *stage_result_name(job_result_t r);
 
 /* Context passed to a step function. The step:
  *   - Reads `cursor_in` (the current persisted cursor).
  *   - Does bounded work.
  *   - On advance: writes `cursor_out` (must be > cursor_in) and returns
- *     STAGE_ADVANCED. The framework commits the new cursor.
+ *     JOB_ADVANCED. The framework commits the new cursor.
  *   - On blocked: fills `blocker` (caller-owned record) and returns
- *     STAGE_BLOCKED. The framework records the blocker via blocker_set
+ *     JOB_BLOCKED. The framework records the blocker via blocker_set
  *     and leaves cursor untouched.
- *   - On idle: returns STAGE_IDLE.
- *   - On error: returns STAGE_ERROR. */
+ *   - On idle: returns JOB_IDLE.
+ *   - On error: returns JOB_FATAL. */
 struct stage_step_ctx {
     uint64_t              cursor_in;
     uint64_t              cursor_out;
-    struct blocker_record blocker;     /* populated iff STAGE_BLOCKED */
+    struct blocker_record blocker;     /* populated iff JOB_BLOCKED */
     void                 *user;
 };
 
-typedef stage_result_t (*stage_step_fn)(struct stage_step_ctx *ctx);
+typedef job_result_t (*stage_step_fn)(struct stage_step_ctx *ctx);
 
 typedef struct stage stage_t;
 
@@ -108,13 +102,13 @@ bool stage_table_ensure(sqlite3 *db);
  *   1. Read the current cursor from `stage_cursor` (defaults to 0 on
  *      first run).
  *   2. Invoke the step function with cursor_in populated.
- *   3. If the step returns STAGE_ADVANCED, persist cursor_out atomically
+ *   3. If the step returns JOB_ADVANCED, persist cursor_out atomically
  *      in the same transaction (the step body should itself enroll any
  *      output writes into the outer txn via the user pointer).
- *   4. If STAGE_BLOCKED, call blocker_set with the filled record.
+ *   4. If JOB_BLOCKED, call blocker_set with the filled record.
  *
- * Returns the step's result code. STAGE_ERROR if persistence fails. */
-stage_result_t stage_run_once(stage_t *s, sqlite3 *db);
+ * Returns the step's result code. JOB_FATAL if persistence fails. */
+job_result_t stage_run_once(stage_t *s, sqlite3 *db);
 
 /* Boot-time restore: explicitly set the cursor. Persists immediately.
  * Intended for replaying a known-good cursor on import. */

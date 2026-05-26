@@ -8,7 +8,7 @@
 #include "core/uint256.h"
 #include "primitives/block.h"
 #include "primitives/transaction.h"
-#include "services/body_persist_stage.h"
+#include "jobs/body_persist_stage.h"
 #include "storage/progress_store.h"
 #include "util/blocker.h"
 #include "util/safe_alloc.h"
@@ -296,7 +296,7 @@ int test_body_persist_stage(void)
                      strcmp(src, "verified") == 0);
         }
         BP_CHECK("happy: next step IDLE",
-                 body_persist_stage_step_once() == STAGE_IDLE);
+                 body_persist_stage_step_once() == JOB_IDLE);
         bp_teardown(dir, &ms, &sc);
     }
 
@@ -375,7 +375,7 @@ int test_body_persist_stage(void)
         BP_CHECK("idle_missing_data: advances to h=3",
                  body_persist_stage_drain(100) == 3);
         BP_CHECK("idle_missing_data: next step IDLE",
-                 body_persist_stage_step_once() == STAGE_IDLE);
+                 body_persist_stage_step_once() == JOB_IDLE);
         BP_CHECK("idle_missing_data: cursor stays 3",
                  body_persist_stage_cursor() == 3);
         bp_teardown(dir, &ms, &sc);
@@ -388,7 +388,7 @@ int test_body_persist_stage(void)
         BP_CHECK("idle_missing_fetch_row: advances 2",
                  body_persist_stage_drain(100) == 2);
         BP_CHECK("idle_missing_fetch_row: next step IDLE",
-                 body_persist_stage_step_once() == STAGE_IDLE);
+                 body_persist_stage_step_once() == JOB_IDLE);
         BP_CHECK("idle_missing_fetch_row: cursor stays 2",
                  body_persist_stage_cursor() == 2);
         bp_teardown(dir, &ms, &sc);
@@ -396,7 +396,7 @@ int test_body_persist_stage(void)
 
     {
         BP_CHECK("guard: step_once with no init returns IDLE",
-                 body_persist_stage_step_once() == STAGE_IDLE);
+                 body_persist_stage_step_once() == JOB_IDLE);
         BP_CHECK("guard: init(NULL) rejected",
                  !body_persist_stage_init(NULL));
     }

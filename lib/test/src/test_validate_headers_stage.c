@@ -20,8 +20,8 @@
 #include "core/uint256.h"
 #include "event/event.h"
 #include "primitives/block.h"
-#include "services/header_admit_stage.h"
-#include "services/validate_headers_stage.h"
+#include "jobs/header_admit_stage.h"
+#include "jobs/validate_headers_stage.h"
 #include "storage/block_index_db.h"
 #include "storage/progress_store.h"
 #include "storage/txdb.h"
@@ -293,8 +293,8 @@ int test_validate_headers_stage(void)
                  rep.failed_count == 0 && rep.first_failed_height == -1);
 
         /* Next step is IDLE — nothing to validate. */
-        stage_result_t r = validate_headers_stage_step_once();
-        VH_CHECK("happy: next step IDLE", r == STAGE_IDLE);
+        job_result_t r = validate_headers_stage_step_once();
+        VH_CHECK("happy: next step IDLE", r == JOB_IDLE);
 
         vh_teardown(dir, &ms, &sc);
     }
@@ -309,15 +309,15 @@ int test_validate_headers_stage(void)
                  header_admit_stage_drain(100) == 20);
 
         VH_CHECK("batched: step 1 ADVANCED",
-                 validate_headers_stage_step_once() == STAGE_ADVANCED);
+                 validate_headers_stage_step_once() == JOB_ADVANCED);
         VH_CHECK("batched: cursor at 8 after step 1",
                  validate_headers_stage_cursor() == VH_BATCH_SIZE);
         VH_CHECK("batched: step 2 ADVANCED",
-                 validate_headers_stage_step_once() == STAGE_ADVANCED);
+                 validate_headers_stage_step_once() == JOB_ADVANCED);
         VH_CHECK("batched: cursor at 16 after step 2",
                  validate_headers_stage_cursor() == 2 * VH_BATCH_SIZE);
         VH_CHECK("batched: step 3 ADVANCED (final partial)",
-                 validate_headers_stage_step_once() == STAGE_ADVANCED);
+                 validate_headers_stage_step_once() == JOB_ADVANCED);
         VH_CHECK("batched: cursor at 20 after step 3",
                  validate_headers_stage_cursor() == 20);
         VH_CHECK("batched: passed_total == 20",
@@ -338,20 +338,20 @@ int test_validate_headers_stage(void)
 
         /* Admit only 3 of 10 → validate can do 3. */
         for (int i = 0; i < 3; i++) {
-            stage_result_t r = header_admit_stage_step_once();
-            VH_CHECK("floor: admit step advances", r == STAGE_ADVANCED);
+            job_result_t r = header_admit_stage_step_once();
+            VH_CHECK("floor: admit step advances", r == JOB_ADVANCED);
         }
         VH_CHECK("floor: admit cursor at 3",
                  header_admit_stage_cursor() == 3);
 
         VH_CHECK("floor: validate step ADVANCED (partial batch of 3)",
-                 validate_headers_stage_step_once() == STAGE_ADVANCED);
+                 validate_headers_stage_step_once() == JOB_ADVANCED);
         VH_CHECK("floor: validate cursor at 3",
                  validate_headers_stage_cursor() == 3);
 
         /* Next validate step has nothing to do → IDLE. */
         VH_CHECK("floor: next validate step IDLE",
-                 validate_headers_stage_step_once() == STAGE_IDLE);
+                 validate_headers_stage_step_once() == JOB_IDLE);
 
         /* Admit 3 more, validate advances 3 more. */
         for (int i = 0; i < 3; i++)
@@ -359,7 +359,7 @@ int test_validate_headers_stage(void)
         VH_CHECK("floor: admit cursor now at 6",
                  header_admit_stage_cursor() == 6);
         VH_CHECK("floor: validate ADVANCED again",
-                 validate_headers_stage_step_once() == STAGE_ADVANCED);
+                 validate_headers_stage_step_once() == JOB_ADVANCED);
         VH_CHECK("floor: validate cursor at 6",
                  validate_headers_stage_cursor() == 6);
 
@@ -527,7 +527,7 @@ int test_validate_headers_stage(void)
         validate_headers_stage_set_validator(stub_pass, NULL);
 
         VH_CHECK("recheck: failed row is retried",
-                 validate_headers_stage_step_once() == STAGE_ADVANCED);
+                 validate_headers_stage_step_once() == JOB_ADVANCED);
         ok = -1;
         reason[0] = 0;
         VH_CHECK("recheck: retried row exists",
@@ -537,7 +537,7 @@ int test_validate_headers_stage(void)
         VH_CHECK("recheck: cursor remains advanced",
                  validate_headers_stage_cursor() == 3);
         VH_CHECK("recheck: next step idle",
-                 validate_headers_stage_step_once() == STAGE_IDLE);
+                 validate_headers_stage_step_once() == JOB_IDLE);
 
         vh_teardown(dir, &ms, &sc);
     }
@@ -565,9 +565,9 @@ int test_validate_headers_stage(void)
                  validate_headers_stage_init(&ms));
         validate_headers_stage_set_validator(stub_pass, NULL);
 
-        stage_result_t r = validate_headers_stage_step_once();
+        job_result_t r = validate_headers_stage_step_once();
         VH_CHECK("replay: first step after reopen is IDLE (cursor=7)",
-                 r == STAGE_IDLE);
+                 r == JOB_IDLE);
         VH_CHECK("replay: cursor restored to 7",
                  validate_headers_stage_cursor() == 7);
 
@@ -589,7 +589,7 @@ int test_validate_headers_stage(void)
         validate_headers_set_mode(VALIDATE_HEADERS_MODE_AUTHORITATIVE);
 
         VH_CHECK("auth: validate advances",
-                 validate_headers_stage_step_once() == STAGE_ADVANCED);
+                 validate_headers_stage_step_once() == JOB_ADVANCED);
         VH_CHECK("auth: h=0 marked valid header",
                  (sc.blocks[0].nStatus & BLOCK_VALID_MASK) >=
                      BLOCK_VALID_HEADER);
@@ -770,7 +770,7 @@ int test_validate_headers_stage(void)
     /* ── pre-init guards ───────────────────────────────────────────── */
     {
         VH_CHECK("guard: step_once with no init returns IDLE",
-                 validate_headers_stage_step_once() == STAGE_IDLE);
+                 validate_headers_stage_step_once() == JOB_IDLE);
         VH_CHECK("guard: init(NULL) rejected",
                  !validate_headers_stage_init(NULL));
     }

@@ -1,13 +1,13 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * script_validate_stage — implementation. See services/script_validate_stage.h.
+ * script_validate_stage — implementation. See jobs/script_validate_stage.h.
  *
  * S-6 consumes body_persist_log and replays script verification over block
  * bodies already proven readable by S-5. It is a shadow stage: it writes only
  * script_validate_log plus its stage cursor in progress.kv. */
 
 #include "platform/time_compat.h"
-#include "services/script_validate_stage.h"
+#include "jobs/script_validate_stage.h"
 
 #include "chain/chain.h"
 #include "chain/chainparams.h"
@@ -351,46 +351,46 @@ static void validate_block_scripts(const struct block *blk, int height,
     }
 }
 
-static stage_result_t step_validate(struct stage_step_ctx *c)
+static job_result_t step_validate(struct stage_step_ctx *c)
 {
     atomic_store(&g_last_step_unix, wall_now_s());
 
     struct main_state *ms = g_ms;
-    if (!ms) return STAGE_IDLE;
+    if (!ms) return JOB_IDLE;
     sqlite3 *db = progress_store_db();
-    if (!db) return STAGE_IDLE;
+    if (!db) return JOB_IDLE;
 
     int next_h = (int)c->cursor_in;
-    if (next_h < 0) return STAGE_ERROR;
+    if (next_h < 0) return JOB_FATAL;
 
     uint64_t bp_cursor = upstream_cursor_persisted(db, "body_persist");
     if ((uint64_t)next_h >= bp_cursor) {
         atomic_store(&g_last_blocked_unix, wall_now_s());
-        return STAGE_IDLE;
+        return JOB_IDLE;
     }
 
     struct body_persist_row upstream;
     int found = body_persist_log_at(db, next_h, &upstream);
-    if (found < 0) return STAGE_ERROR;
+    if (found < 0) return JOB_FATAL;
     if (found == 0) {
         atomic_store(&g_last_blocked_unix, wall_now_s());
-        return STAGE_IDLE;
+        return JOB_IDLE;
     }
 
     if (upstream.ok == 0) {
         if (!log_insert(db, next_h, "upstream_failed", false, 0, 0,
                         NULL, -1))
-            return STAGE_ERROR;
+            return JOB_FATAL;
         atomic_fetch_add(&g_upstream_failed_total, 1);
         atomic_store(&g_last_advance_height, (int64_t)next_h);
         c->cursor_out = c->cursor_in + 1;
-        return STAGE_ADVANCED;
+        return JOB_ADVANCED;
     }
 
     struct block_index *bi = active_chain_at(&ms->chain_active, next_h);
     if (!bi || !(bi->nStatus & BLOCK_HAVE_DATA)) {
         atomic_store(&g_last_blocked_unix, wall_now_s());
-        return STAGE_IDLE;
+        return JOB_IDLE;
     }
 
     struct block blk;
@@ -399,7 +399,7 @@ static stage_result_t step_validate(struct stage_step_ctx *c)
     if (!reader(&blk, bi, g_datadir, g_reader_user)) {
         block_free(&blk);
         atomic_store(&g_last_blocked_unix, wall_now_s());
-        return STAGE_IDLE;
+        return JOB_IDLE;
     }
 
     struct validate_summary summary;
@@ -434,11 +434,11 @@ static stage_result_t step_validate(struct stage_step_ctx *c)
 
     if (!log_insert(db, next_h, status, ok, summary.tx_count,
                     summary.input_count, fail_txid, fail_vin))
-        return STAGE_ERROR;
+        return JOB_FATAL;
 
     atomic_store(&g_last_advance_height, (int64_t)next_h);
     c->cursor_out = c->cursor_in + 1;
-    return STAGE_ADVANCED;
+    return JOB_ADVANCED;
 }
 
 bool script_validate_stage_init(struct main_state *ms)
@@ -481,11 +481,11 @@ bool script_validate_stage_init(struct main_state *ms)
     return true;
 }
 
-stage_result_t script_validate_stage_step_once(void)
+job_result_t script_validate_stage_step_once(void)
 {
-    if (!g_stage) return STAGE_IDLE;
+    if (!g_stage) return JOB_IDLE;
     sqlite3 *db = progress_store_db();
-    if (!db) return STAGE_IDLE;
+    if (!db) return JOB_IDLE;
     return stage_run_once(g_stage, db);
 }
 
@@ -494,8 +494,8 @@ int script_validate_stage_drain(int max_steps)
     if (max_steps <= 0) return 0;
     int advanced = 0;
     for (int i = 0; i < max_steps; i++) {
-        stage_result_t r = script_validate_stage_step_once();
-        if (r != STAGE_ADVANCED) break;
+        job_result_t r = script_validate_stage_step_once();
+        if (r != JOB_ADVANCED) break;
         advanced++;
     }
     return advanced;

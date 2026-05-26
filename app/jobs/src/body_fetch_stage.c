@@ -1,6 +1,6 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * body_fetch_stage — implementation. See services/body_fetch_stage.h.
+ * body_fetch_stage — implementation. See jobs/body_fetch_stage.h.
  *
  * Single-process singleton, single-step (no worker pool). The work per
  * step is one in-memory flag check + one SQL insert, so batching adds
@@ -10,7 +10,7 @@
  * progress.kv alongside the cursor table. */
 
 #include "platform/time_compat.h"
-#include "services/body_fetch_stage.h"
+#include "jobs/body_fetch_stage.h"
 
 #include "chain/chain.h"
 #include "core/uint256.h"
@@ -160,17 +160,17 @@ static bool log_insert(sqlite3 *db, int height,
 
 /* ── Step body ─────────────────────────────────────────────────────── */
 
-static stage_result_t step_body_fetch(struct stage_step_ctx *c)
+static job_result_t step_body_fetch(struct stage_step_ctx *c)
 {
     atomic_store(&g_last_step_unix, wall_now_s());
 
     struct main_state *ms = g_ms;
-    if (!ms) return STAGE_IDLE;
+    if (!ms) return JOB_IDLE;
     sqlite3 *db = progress_store_db();
-    if (!db) return STAGE_IDLE;
+    if (!db) return JOB_IDLE;
 
     int next_h = (int)c->cursor_in;
-    if (next_h < 0) return STAGE_ERROR;
+    if (next_h < 0) return JOB_FATAL;
 
     /* Floor: never overrun validate_headers' DURABLY persisted cursor.
      * validate cursor = "next height to validate" → heights
@@ -181,18 +181,18 @@ static stage_result_t step_body_fetch(struct stage_step_ctx *c)
     uint64_t vh_cursor = upstream_cursor_persisted(db, "validate_headers");
     if ((uint64_t)next_h >= vh_cursor) {
         atomic_store(&g_last_blocked_unix, wall_now_s());
-        return STAGE_IDLE;  /* not BLOCKED — validate will catch up */
+        return JOB_IDLE;  /* not BLOCKED — validate will catch up */
     }
 
     /* Read the validate_headers_log row to learn pass/fail. Floor
      * guarantees the row exists; defend against torn writes anyway. */
     int vh_ok = -1;
     int found = vh_log_ok_at(db, next_h, &vh_ok);
-    if (found < 0) return STAGE_ERROR;
+    if (found < 0) return JOB_FATAL;
     if (found == 0) {
         /* Row missing despite floor — surface as IDLE (will retry). */
         atomic_store(&g_last_blocked_unix, wall_now_s());
-        return STAGE_IDLE;
+        return JOB_IDLE;
     }
 
     /* Look up the in-memory block_index entry — we need the hash and
@@ -203,7 +203,7 @@ static stage_result_t step_body_fetch(struct stage_step_ctx *c)
          * fetch. Surface as IDLE so the supervisor retries; the chain
          * will stabilise. */
         atomic_store(&g_last_blocked_unix, wall_now_s());
-        return STAGE_IDLE;
+        return JOB_IDLE;
     }
 
     if (vh_ok == 0) {
@@ -211,30 +211,30 @@ static stage_result_t step_body_fetch(struct stage_step_ctx *c)
         if (!log_insert(db, next_h, bi->phashBlock,
                          "skipped_invalid", 0, false,
                          "header_validation_failed"))
-            return STAGE_ERROR;
+            return JOB_FATAL;
         atomic_fetch_add(&g_skipped_total, 1);
         atomic_store(&g_last_advance_height, (int64_t)next_h);
         c->cursor_out = c->cursor_in + 1;
-        return STAGE_ADVANCED;
+        return JOB_ADVANCED;
     }
 
     /* Header passed validation; check body availability. */
     if (!(bi->nStatus & BLOCK_HAVE_DATA)) {
-        /* Body not yet on disk — STAGE_IDLE, don't advance. The natural
+        /* Body not yet on disk — JOB_IDLE, don't advance. The natural
          * backpressure: cursor stays put until msg_blocks brings it in. */
         atomic_store(&g_last_blocked_unix, wall_now_s());
-        return STAGE_IDLE;
+        return JOB_IDLE;
     }
 
     /* Body observed on disk. Record presence; bytes=0 in shadow mode
      * (size probing deferred — would add per-height pread cost). */
     if (!log_insert(db, next_h, bi->phashBlock, "disk", 0, true, NULL))
-        return STAGE_ERROR;
+        return JOB_FATAL;
 
     atomic_fetch_add(&g_observed_total, 1);
     atomic_store(&g_last_advance_height, (int64_t)next_h);
     c->cursor_out = c->cursor_in + 1;
-    return STAGE_ADVANCED;
+    return JOB_ADVANCED;
 }
 
 /* ── Public API ────────────────────────────────────────────────────── */
@@ -279,11 +279,11 @@ bool body_fetch_stage_init(struct main_state *ms)
     return true;
 }
 
-stage_result_t body_fetch_stage_step_once(void)
+job_result_t body_fetch_stage_step_once(void)
 {
-    if (!g_stage) return STAGE_IDLE;
+    if (!g_stage) return JOB_IDLE;
     sqlite3 *db = progress_store_db();
-    if (!db) return STAGE_IDLE;
+    if (!db) return JOB_IDLE;
     return stage_run_once(g_stage, db);
 }
 
@@ -292,8 +292,8 @@ int body_fetch_stage_drain(int max_steps)
     if (max_steps <= 0) return 0;
     int advanced = 0;
     for (int i = 0; i < max_steps; i++) {
-        stage_result_t r = body_fetch_stage_step_once();
-        if (r != STAGE_ADVANCED) break;
+        job_result_t r = body_fetch_stage_step_once();
+        if (r != JOB_ADVANCED) break;
         advanced++;
     }
     return advanced;

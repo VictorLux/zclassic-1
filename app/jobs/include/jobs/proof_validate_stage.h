@@ -47,7 +47,7 @@ typedef bool (*proof_validate_tx_verify_fn)(
 bool proof_validate_stage_init(struct main_state *ms);
 void proof_validate_stage_shutdown(void);
 
-stage_result_t proof_validate_stage_step_once(void);
+job_result_t proof_validate_stage_step_once(void);
 int proof_validate_stage_drain(int max_steps);
 
 uint64_t proof_validate_stage_cursor(void);

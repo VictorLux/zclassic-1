@@ -29,7 +29,7 @@ typedef bool (*body_persist_reader_fn)(struct block *out,
 bool body_persist_stage_init(struct main_state *ms);
 void body_persist_stage_shutdown(void);
 
-stage_result_t body_persist_stage_step_once(void);
+job_result_t body_persist_stage_step_once(void);
 int body_persist_stage_drain(int max_steps);
 
 uint64_t body_persist_stage_cursor(void);

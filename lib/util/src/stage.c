@@ -52,13 +52,13 @@ struct stage {
 
 /* ── Helpers ───────────────────────────────────────────────────────── */
 
-const char *stage_result_name(stage_result_t r)
+const char *stage_result_name(job_result_t r)
 {
     switch (r) {
-    case STAGE_ADVANCED: return "advanced";
-    case STAGE_BLOCKED:  return "blocked";
-    case STAGE_IDLE:     return "idle";
-    case STAGE_ERROR:    return "error";
+    case JOB_ADVANCED: return "advanced";
+    case JOB_BLOCKED:  return "blocked";
+    case JOB_IDLE:     return "idle";
+    case JOB_FATAL:    return "error";
     }
     return "(invalid)";
 }
@@ -200,13 +200,13 @@ uint64_t stage_error_count(const stage_t *s)
 
 /* ── Run one step ──────────────────────────────────────────────────── */
 
-stage_result_t stage_run_once(stage_t *s, sqlite3 *db)
+job_result_t stage_run_once(stage_t *s, sqlite3 *db)
 {
     if (!s || !db) {
         fprintf(stderr, "[stage] run_once: null arg s=%p db=%p\n",  // obs-ok:stage-arg-failure
                 (void *)s, (void *)db);
         if (s) atomic_fetch_add(&s->error_count, 1u);
-        return STAGE_ERROR;
+        return JOB_FATAL;
     }
 
     pthread_mutex_lock(&s->lock);
@@ -219,7 +219,7 @@ stage_result_t stage_run_once(stage_t *s, sqlite3 *db)
     if (!cursor_read(db, s->name, &cur)) {
         pthread_mutex_unlock(&s->lock);
         atomic_fetch_add(&s->error_count, 1u);
-        return STAGE_ERROR;
+        return JOB_FATAL;
     }
     s->cursor = cur;
 
@@ -242,14 +242,14 @@ stage_result_t stage_run_once(stage_t *s, sqlite3 *db)
         if (err) sqlite3_free(err);
         pthread_mutex_unlock(&s->lock);
         atomic_fetch_add(&s->error_count, 1u);
-        return STAGE_ERROR;
+        return JOB_FATAL;
     }
 
-    stage_result_t r = s->step(&ctx);
+    job_result_t r = s->step(&ctx);
 
-    if (r == STAGE_ADVANCED) {
+    if (r == JOB_ADVANCED) {
         if (ctx.cursor_out <= cur) {
-            /* Contract violation: STAGE_ADVANCED must move the cursor
+            /* Contract violation: JOB_ADVANCED must move the cursor
              * forward. Roll back to keep the invariant intact. */
             fprintf(stderr,  // obs-ok:stage-advance-noop
                 "[stage] %s: ADVANCED but cursor_out(%llu) <= cursor_in(%llu); rolling back\n",
@@ -259,13 +259,13 @@ stage_result_t stage_run_once(stage_t *s, sqlite3 *db)
             sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
             pthread_mutex_unlock(&s->lock);
             atomic_fetch_add(&s->error_count, 1u);
-            return STAGE_ERROR;
+            return JOB_FATAL;
         }
         if (!cursor_write_locked(db, s->name, ctx.cursor_out)) {
             sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
             pthread_mutex_unlock(&s->lock);
             atomic_fetch_add(&s->error_count, 1u);
-            return STAGE_ERROR;
+            return JOB_FATAL;
         }
         if (sqlite3_exec(db, "COMMIT", NULL, NULL, &err) != SQLITE_OK) {
             fprintf(stderr, "[stage] COMMIT: %s\n",  // obs-ok:stage-commit-failure
@@ -274,12 +274,12 @@ stage_result_t stage_run_once(stage_t *s, sqlite3 *db)
             sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
             pthread_mutex_unlock(&s->lock);
             atomic_fetch_add(&s->error_count, 1u);
-            return STAGE_ERROR;
+            return JOB_FATAL;
         }
         s->cursor = ctx.cursor_out;
         atomic_fetch_add(&s->advanced_count, 1u);
         pthread_mutex_unlock(&s->lock);
-        return STAGE_ADVANCED;
+        return JOB_ADVANCED;
     }
 
     /* Non-advancing outcomes: roll back the txn (the step may have
@@ -287,7 +287,7 @@ stage_result_t stage_run_once(stage_t *s, sqlite3 *db)
     sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
     pthread_mutex_unlock(&s->lock);
 
-    if (r == STAGE_BLOCKED) {
+    if (r == JOB_BLOCKED) {
         /* Record the blocker if the step filled out an id. Empty id
          * means the step signalled BLOCKED but didn't fill the record
          * — log and treat as ERROR so the caller is not misled. */
@@ -295,7 +295,7 @@ stage_result_t stage_run_once(stage_t *s, sqlite3 *db)
             fprintf(stderr, "[stage] %s: BLOCKED with empty id\n",  // obs-ok:stage-blocked-empty
                     s->name);
             atomic_fetch_add(&s->error_count, 1u);
-            return STAGE_ERROR;
+            return JOB_FATAL;
         }
         if (ctx.blocker.owner_subsystem[0] == '\0') {
             /* Owner field is bounded; truncate the (longer) stage name
@@ -308,17 +308,17 @@ stage_result_t stage_run_once(stage_t *s, sqlite3 *db)
         }
         (void)blocker_set(&ctx.blocker);
         atomic_fetch_add(&s->blocked_count, 1u);
-        return STAGE_BLOCKED;
+        return JOB_BLOCKED;
     }
 
-    if (r == STAGE_IDLE) {
+    if (r == JOB_IDLE) {
         atomic_fetch_add(&s->idle_count, 1u);
-        return STAGE_IDLE;
+        return JOB_IDLE;
     }
 
-    /* STAGE_ERROR or any other value */
+    /* JOB_FATAL or any other value */
     atomic_fetch_add(&s->error_count, 1u);
-    return STAGE_ERROR;
+    return JOB_FATAL;
 }
 
 /* ── Boot-time restore ─────────────────────────────────────────────── */

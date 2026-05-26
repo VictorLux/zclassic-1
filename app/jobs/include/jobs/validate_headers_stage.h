@@ -37,7 +37,7 @@
  * ------------
  * The stage never validates beyond the header_admit cursor. If
  * `vh_cursor + VH_BATCH_SIZE > header_admit_cursor`, the batch shrinks
- * to whatever is available; if zero, the step returns STAGE_IDLE.
+ * to whatever is available; if zero, the step returns JOB_IDLE.
  *
  * Schema
  * -------
@@ -112,7 +112,7 @@ bool validate_headers_stage_init(struct main_state *ms);
  * first step. Reset to the default by `shutdown`. */
 void validate_headers_stage_set_validator(vh_validator_fn fn, void *user);
 
-stage_result_t validate_headers_stage_step_once(void);
+job_result_t validate_headers_stage_step_once(void);
 int            validate_headers_stage_drain(int max_steps);
 void           validate_headers_stage_shutdown(void);
 
