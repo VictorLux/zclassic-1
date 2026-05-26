@@ -1,14 +1,16 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * Explorer stats page — comprehensive blockchain statistics.
- * Extracted from explorer_controller.c for maintainability.
+ * Explorer stats VIEW — comprehensive blockchain statistics page.
+ * View shape: the controller parses the request and delegates here;
+ * all page assembly + read-only projection queries live in this file
+ * (moved out of the controller per checklist item D2).
  *
  * Performance: All aggregate data gathered in ~6 consolidated queries
  * (single-pass scans) instead of dozens of individual queries.
  * Chart data uses batch SELECT with height ranges. */
 
 #include "platform/time_compat.h"
-#include "controllers/explorer_stats.h"
+#include "views/explorer_stats_view.h"
 #include "controllers/explorer_internal.h"
 #include "chain/chainparams.h"
 #include "keys/key_io.h"

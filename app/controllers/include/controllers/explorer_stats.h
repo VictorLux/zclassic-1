@@ -1,16 +1,15 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * Explorer stats page — comprehensive blockchain statistics. */
+ * Explorer stats — comprehensive blockchain statistics.
+ *
+ * Compatibility shim: the page-assembly logic moved to the view shape
+ * (app/views/src/explorer_stats_view.c) per checklist item D2
+ * ("controllers must not build views"). This header forwards to the
+ * view header so existing controller includes keep compiling. */
 
 #ifndef ZCL_CONTROLLERS_EXPLORER_STATS_H
 #define ZCL_CONTROLLERS_EXPLORER_STATS_H
 
-#include <stdint.h>
-#include <stddef.h>
-
-/* Compute comprehensive stats into the provided buffer.
- * Called from a background thread. Returns bytes written, 0 on error.
- * datadir: path to data directory (for node.db). */
-size_t explorer_stats_build(uint8_t *buf, size_t buf_max, const char *datadir);
+#include "views/explorer_stats_view.h"
 
 #endif

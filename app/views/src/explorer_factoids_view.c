@@ -1,7 +1,9 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * Explorer factoids page -- comprehensive "historian nerd" page with
- * SHA3 data receipts for every single fact. Queries SQLite read-only.
+ * Explorer factoids VIEW -- comprehensive "historian nerd" page with
+ * SHA3 data receipts for every single fact. Renders HTML/JSON from the
+ * read-only explorer projection (node.db). View shape: the controller
+ * parses the request and delegates here; all page assembly lives here.
  *
  * 17 Sections: Genesis Story, Network Upgrade History, Mining Era Analysis,
  * Network Milestones, All-Time Records, Supply Milestones, Address Stats,
@@ -12,7 +14,7 @@
  *
  * Also provides explorer_factoids_build_json() for /api/factoids. */
 
-#include "controllers/explorer_factoids.h"
+#include "views/explorer_factoids_view.h"
 #include "util/ar_step_readonly.h"
 #include "util/log_macros.h"
 #include "controllers/explorer_internal.h"
