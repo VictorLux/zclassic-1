@@ -35,6 +35,3 @@ app/services/src/chain_advance_coordinator.c 1716
 app/services/src/legacy_bootstrap_importer.c 1901
 app/services/src/legacy_mirror_sync_service.c 1487
 app/services/src/utxo_recovery_service.c 1204
-app/views/src/explorer_pages_view.c 1322
-app/views/src/explorer_stats_view.c 1597
-app/views/src/wallet_gui.c 813
