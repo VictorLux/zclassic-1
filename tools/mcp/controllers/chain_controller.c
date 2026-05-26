@@ -20,7 +20,7 @@
 #include "json/json.h"
 #include "mcp/metrics.h"
 #include "ports/block_log_port.h"
-#include "services/header_admit_stage.h"
+#include "jobs/header_admit_stage.h"
 #include "services/replay_verify_service.h"
 #include "storage/block_index_projection.h"
 #include "util/log_macros.h"

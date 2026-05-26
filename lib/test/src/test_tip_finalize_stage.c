@@ -5,7 +5,7 @@
 
 #include "chain/chain.h"
 #include "json/json.h"
-#include "services/tip_finalize_stage.h"
+#include "jobs/tip_finalize_stage.h"
 #include "storage/progress_store.h"
 #include "util/blocker.h"
 #include "util/stage.h"
@@ -285,7 +285,7 @@ int test_tip_finalize_stage(void)
                      utxos == (int64_t)h + 1);
         }
         TF_CHECK("happy: next step IDLE",
-                 tip_finalize_stage_step_once() == STAGE_IDLE);
+                 tip_finalize_stage_step_once() == JOB_IDLE);
         tf_teardown(dir, &ms, &sc);
     }
 
@@ -295,9 +295,9 @@ int test_tip_finalize_stage(void)
                  tf_setup("reorg", 3, TF_FAIL_REORG, -1, dir, sizeof(dir),
                           &ms, &sc) == 0);
         TF_CHECK("reorg: first finalizes",
-                 tip_finalize_stage_step_once() == STAGE_ADVANCED);
+                 tip_finalize_stage_step_once() == JOB_ADVANCED);
         TF_CHECK("reorg: second logs and advances",
-                 tip_finalize_stage_step_once() == STAGE_ADVANCED);
+                 tip_finalize_stage_step_once() == JOB_ADVANCED);
         TF_CHECK("reorg: counter == 1",
                  tip_finalize_stage_reorg_detected_total() == 1);
         int ok = -1, depth = -1; int64_t utxos = -1; char status[32];
@@ -332,7 +332,7 @@ int test_tip_finalize_stage(void)
                  active_chain_set_tip(&ms.chain_active, &sc.blocks[3]));
 
         TF_CHECK("reorg_replay: rewinds and replays fork block",
-                 tip_finalize_stage_step_once() == STAGE_ADVANCED);
+                 tip_finalize_stage_step_once() == JOB_ADVANCED);
         TF_CHECK("reorg_replay: cursor is fork+1",
                  tip_finalize_stage_cursor() == 2);
         TF_CHECK("reorg_replay: counter increments",
@@ -414,14 +414,14 @@ int test_tip_finalize_stage(void)
             NULL, NULL, NULL);
         TF_CHECK("idle: advances one", tip_finalize_stage_drain(100) == 1);
         TF_CHECK("idle: next step IDLE",
-                 tip_finalize_stage_step_once() == STAGE_IDLE);
+                 tip_finalize_stage_step_once() == JOB_IDLE);
         TF_CHECK("idle: cursor stays 1", tip_finalize_stage_cursor() == 1);
         tf_teardown(dir, &ms, &sc);
     }
 
     {
         TF_CHECK("guard: step_once with no init returns IDLE",
-                 tip_finalize_stage_step_once() == STAGE_IDLE);
+                 tip_finalize_stage_step_once() == JOB_IDLE);
         TF_CHECK("guard: init(NULL) rejected",
                  !tip_finalize_stage_init(NULL));
     }

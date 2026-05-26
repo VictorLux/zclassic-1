@@ -13,7 +13,7 @@
  * -----------------
  *   cursor = next height to admit
  *   cursor_in == 0  → about to admit genesis
- *   cursor_out      == cursor_in + 1 on STAGE_ADVANCED
+ *   cursor_out      == cursor_in + 1 on JOB_ADVANCED
  *
  * Idempotency
  * ------------
@@ -79,8 +79,8 @@ header_admit_mode_t header_admit_get_mode(void);
 bool header_admit_stage_init(struct main_state *ms);
 
 /* Run one saga step. Returns the F-2 result code. Safe to call before
- * init (returns STAGE_IDLE). */
-stage_result_t header_admit_stage_step_once(void);
+ * init (returns JOB_IDLE). */
+job_result_t header_admit_stage_step_once(void);
 
 /* Drain up to `max_steps` consecutive ADVANCE steps. Stops early on
  * IDLE, BLOCKED, or ERROR. Returns the count of ADVANCED steps. */

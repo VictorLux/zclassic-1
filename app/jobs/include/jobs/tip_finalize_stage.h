@@ -26,7 +26,7 @@ typedef bool (*tip_finalize_utxo_count_fn)(int height_after,
 bool tip_finalize_stage_init(struct main_state *ms);
 void tip_finalize_stage_shutdown(void);
 
-stage_result_t tip_finalize_stage_step_once(void);
+job_result_t tip_finalize_stage_step_once(void);
 int tip_finalize_stage_drain(int max_steps);
 
 uint64_t tip_finalize_stage_cursor(void);

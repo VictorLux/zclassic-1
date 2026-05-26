@@ -1,13 +1,13 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * header_admit_stage — implementation. See services/header_admit_stage.h.
+ * header_admit_stage — implementation. See jobs/header_admit_stage.h.
  *
  * Single-process singleton. The F-2 stage primitive does all the
  * cursor / replay heavy lifting; this module is just the step body and
  * the schema-bootstrap glue for the `header_admit_log` table that lives
  * in progress.kv alongside `stage_cursor`. */
 
-#include "services/header_admit_stage.h"
+#include "jobs/header_admit_stage.h"
 
 #include "chain/chain.h"
 #include "core/uint256.h"
@@ -137,21 +137,21 @@ static bool authoritative_admit(struct main_state *ms, struct block_index *bi)
     return true;
 }
 
-static stage_result_t step_admit(struct stage_step_ctx *c)
+static job_result_t step_admit(struct stage_step_ctx *c)
 {
     atomic_store(&g_last_step_unix, wall_now_s());
 
     struct main_state *ms = g_ms;
-    if (!ms) return STAGE_IDLE;
+    if (!ms) return JOB_IDLE;
 
     sqlite3 *db = progress_store_db();
-    if (!db) return STAGE_IDLE;
+    if (!db) return JOB_IDLE;
 
     int next_h = (int)c->cursor_in;
-    if (next_h < 0) return STAGE_ERROR;
+    if (next_h < 0) return JOB_FATAL;
 
     struct block_index *bi = active_chain_at(&ms->chain_active, next_h);
-    if (!bi || !bi->phashBlock) return STAGE_IDLE;
+    if (!bi || !bi->phashBlock) return JOB_IDLE;
 
     const struct uint256 *parent_hash = NULL;
     if (next_h > 0) {
@@ -161,7 +161,7 @@ static stage_result_t step_admit(struct stage_step_ctx *c)
                           BLOCKER_PERMANENT,
                           "block_index entry has no pprev linkage");
             atomic_store(&g_last_blocked_unix, wall_now_s());
-            return STAGE_BLOCKED;
+            return JOB_BLOCKED;
         }
         parent_hash = bi->pprev->phashBlock;
     }
@@ -171,16 +171,16 @@ static stage_result_t step_admit(struct stage_step_ctx *c)
         fprintf(stderr,  // obs-ok:header-admit-authoritative-failure
                 "[header_admit] authoritative admit failed height=%d\n",
                 next_h);
-        return STAGE_ERROR;
+        return JOB_FATAL;
     }
 
     if (!log_insert(db, next_h, bi->phashBlock, parent_hash))
-        return STAGE_ERROR;
+        return JOB_FATAL;
 
     c->cursor_out = c->cursor_in + 1;
     atomic_fetch_add(&g_admitted_total, 1);
     atomic_store(&g_last_admit_height, (int64_t)next_h);
-    return STAGE_ADVANCED;
+    return JOB_ADVANCED;
 }
 
 /* ── Public API ────────────────────────────────────────────────────── */
@@ -253,11 +253,11 @@ bool header_admit_stage_init(struct main_state *ms)
     return true;
 }
 
-stage_result_t header_admit_stage_step_once(void)
+job_result_t header_admit_stage_step_once(void)
 {
-    if (!g_stage) return STAGE_IDLE;
+    if (!g_stage) return JOB_IDLE;
     sqlite3 *db = progress_store_db();
-    if (!db) return STAGE_IDLE;
+    if (!db) return JOB_IDLE;
     (void)mailbox_header_admit_drain(handle_header_admit_msg);
     return stage_run_once(g_stage, db);
 }
@@ -267,8 +267,8 @@ int header_admit_stage_drain(int max_steps)
     if (max_steps <= 0) return 0;
     int advanced = 0;
     for (int i = 0; i < max_steps; i++) {
-        stage_result_t r = header_admit_stage_step_once();
-        if (r != STAGE_ADVANCED) break;
+        job_result_t r = header_admit_stage_step_once();
+        if (r != JOB_ADVANCED) break;
         advanced++;
     }
     return advanced;

@@ -7,7 +7,7 @@
  *   - init / shutdown round-trip; idempotent re-init
  *   - drain a 5-block synthetic chain → cursor = 5, log has 5 rows
  *   - extra drain after no-more-blocks → IDLE, cursor unchanged
- *   - missing-pprev → STAGE_BLOCKED with PERMANENT typed blocker
+ *   - missing-pprev → JOB_BLOCKED with PERMANENT typed blocker
  *   - replay across progress_store close/reopen: cursor + log persist */
 
 #include "test/test_helpers.h"
@@ -16,9 +16,9 @@
 #include "core/uint256.h"
 #include "event/event.h"
 #include "primitives/block.h"
-#include "services/header_admit_stage.h"
+#include "jobs/header_admit_stage.h"
 #include "services/cutover_modes.h"
-#include "services/validate_headers_stage.h"
+#include "jobs/validate_headers_stage.h"
 #include "storage/progress_store.h"
 #include "util/blocker.h"
 #include "util/safe_alloc.h"
@@ -243,8 +243,8 @@ int test_header_admit_stage(void)
         }
 
         /* Extra drain → IDLE, no change. */
-        stage_result_t r = header_admit_stage_step_once();
-        HA_CHECK("next step is IDLE", r == STAGE_IDLE);
+        job_result_t r = header_admit_stage_step_once();
+        HA_CHECK("next step is IDLE", r == JOB_IDLE);
         HA_CHECK("cursor unchanged after IDLE",
                  header_admit_stage_cursor() == 5);
 
@@ -282,9 +282,9 @@ int test_header_admit_stage(void)
         HA_CHECK("replay: re-init stage",
                  header_admit_stage_init(&ms));
         /* Stage cursor reflects persisted state on first step. */
-        stage_result_t r = header_admit_stage_step_once();
+        job_result_t r = header_admit_stage_step_once();
         HA_CHECK("replay: first step after reopen is IDLE (cursor=3)",
-                 r == STAGE_IDLE);
+                 r == JOB_IDLE);
         HA_CHECK("replay: cursor restored to 3",
                  header_admit_stage_cursor() == 3);
 
@@ -299,7 +299,7 @@ int test_header_admit_stage(void)
         test_cleanup_tmpdir(dir);
     }
 
-    /* ── missing-pprev → STAGE_BLOCKED ─────────────────────────────── */
+    /* ── missing-pprev → JOB_BLOCKED ─────────────────────────────── */
     {
         char dir[256];
         ha_tmpdir(dir, sizeof(dir), "blocked");
@@ -323,9 +323,9 @@ int test_header_admit_stage(void)
         HA_CHECK("blocked: init", header_admit_stage_init(&ms));
         /* Step 0 (genesis) succeeds; step 1 hits missing pprev. */
         HA_CHECK("blocked: genesis admits OK",
-                 header_admit_stage_step_once() == STAGE_ADVANCED);
-        stage_result_t r = header_admit_stage_step_once();
-        HA_CHECK("blocked: step 1 returns BLOCKED", r == STAGE_BLOCKED);
+                 header_admit_stage_step_once() == JOB_ADVANCED);
+        job_result_t r = header_admit_stage_step_once();
+        HA_CHECK("blocked: step 1 returns BLOCKED", r == JOB_BLOCKED);
         HA_CHECK("blocked: cursor stuck at 1",
                  header_admit_stage_cursor() == 1);
 
@@ -356,7 +356,7 @@ int test_header_admit_stage(void)
 
         HA_CHECK("auth: init", header_admit_stage_init(&ms));
         HA_CHECK("auth: step calls authoritative hook",
-                 header_admit_stage_step_once() == STAGE_ADVANCED);
+                 header_admit_stage_step_once() == JOB_ADVANCED);
         HA_CHECK("auth: hook saw height 0",
                  st.calls == 1 && st.height == 0);
         HA_CHECK("auth: log still records row",
@@ -559,7 +559,7 @@ int test_header_admit_stage(void)
     /* ── pre-init guard ────────────────────────────────────────────── */
     {
         HA_CHECK("step_once with no init returns IDLE",
-                 header_admit_stage_step_once() == STAGE_IDLE);
+                 header_admit_stage_step_once() == JOB_IDLE);
         HA_CHECK("init(NULL) rejected",
                  !header_admit_stage_init(NULL));
     }
@@ -643,7 +643,7 @@ int test_header_admit_stage(void)
         /* Only drain 3 of 5 — heights 3,4 will be missing from log. */
         for (int i = 0; i < 3; i++)
             HA_CHECK("diff_chainahead: step advances",
-                     header_admit_stage_step_once() == STAGE_ADVANCED);
+                     header_admit_stage_step_once() == JOB_ADVANCED);
 
         struct header_admit_diff_report rep;
         HA_CHECK("diff_chainahead: diff(-1,-1) uses min(log,chain) for end",

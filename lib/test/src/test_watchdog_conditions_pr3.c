@@ -6,10 +6,10 @@
 #include "framework/condition.h"
 #include "platform/clock.h"
 #include "services/cutover_modes.h"
-#include "services/header_admit_stage.h"
+#include "jobs/header_admit_stage.h"
 #include "services/snapshot_sync_service.h"
 #include "services/sync_monitor.h"
-#include "services/validate_headers_stage.h"
+#include "jobs/validate_headers_stage.h"
 #include "sync/sync_state.h"
 #include "validation/chainstate.h"
 

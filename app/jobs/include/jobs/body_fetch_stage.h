@@ -17,14 +17,14 @@
  *   3. Else: look up `active_chain_at(ms, h)` and check the body
  *      availability flag (`BLOCK_HAVE_DATA` in `bi->nStatus`).
  *        - Available: log `source='disk'`, ok=1, advance cursor.
- *        - Not yet available: STAGE_IDLE (cursor unchanged). The next
+ *        - Not yet available: JOB_IDLE (cursor unchanged). The next
  *          tick will retry; this is the natural backpressure that keeps
  *          body_fetch from racing past msg_blocks.
  *
  * Cursor floor
  * ------------
  * `body_fetch_cursor ≤ validate_headers_cursor` always. If the floor
- * is reached, `step_once` returns STAGE_IDLE; the supervisor will retry
+ * is reached, `step_once` returns JOB_IDLE; the supervisor will retry
  * each tick. The cursor never advances ahead of validate, so we never
  * record body status for a header whose PoW we haven't checked.
  *
@@ -77,8 +77,8 @@ struct json_value;
 bool body_fetch_stage_init(struct main_state *ms);
 
 /* Run one saga step. Returns the F-2 result code. Safe to call before
- * init (returns STAGE_IDLE). */
-stage_result_t body_fetch_stage_step_once(void);
+ * init (returns JOB_IDLE). */
+job_result_t body_fetch_stage_step_once(void);
 
 /* Drain up to `max_steps` consecutive ADVANCE steps. Stops early on
  * IDLE, BLOCKED, or ERROR. Returns the count of ADVANCED steps. */

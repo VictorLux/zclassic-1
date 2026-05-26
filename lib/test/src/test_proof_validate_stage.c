@@ -8,7 +8,7 @@
 #include "core/uint256.h"
 #include "primitives/block.h"
 #include "primitives/transaction.h"
-#include "services/proof_validate_stage.h"
+#include "jobs/proof_validate_stage.h"
 #include "storage/progress_store.h"
 #include "util/blocker.h"
 #include "util/safe_alloc.h"
@@ -380,7 +380,7 @@ int test_proof_validate_stage(void)
             PV_CHECK("happy: failure type null", type[0] == 0);
         }
         PV_CHECK("happy: next step IDLE",
-                 proof_validate_stage_step_once() == STAGE_IDLE);
+                 proof_validate_stage_step_once() == JOB_IDLE);
         pv_teardown(dir, &ms, &sc);
     }
 
@@ -442,7 +442,7 @@ int test_proof_validate_stage(void)
             NULL, NULL, NULL);
         PV_CHECK("idle: advances one", proof_validate_stage_drain(100) == 1);
         PV_CHECK("idle: next step IDLE",
-                 proof_validate_stage_step_once() == STAGE_IDLE);
+                 proof_validate_stage_step_once() == JOB_IDLE);
         PV_CHECK("idle: cursor stays 1",
                  proof_validate_stage_cursor() == 1);
         pv_teardown(dir, &ms, &sc);
@@ -450,7 +450,7 @@ int test_proof_validate_stage(void)
 
     {
         PV_CHECK("guard: step_once with no init returns IDLE",
-                 proof_validate_stage_step_once() == STAGE_IDLE);
+                 proof_validate_stage_step_once() == JOB_IDLE);
         PV_CHECK("guard: init(NULL) rejected",
                  !proof_validate_stage_init(NULL));
     }

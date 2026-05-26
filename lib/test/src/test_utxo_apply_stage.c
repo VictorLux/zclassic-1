@@ -8,7 +8,7 @@
 #include "core/uint256.h"
 #include "primitives/block.h"
 #include "primitives/transaction.h"
-#include "services/utxo_apply_stage.h"
+#include "jobs/utxo_apply_stage.h"
 #include "storage/progress_store.h"
 #include "util/blocker.h"
 #include "util/safe_alloc.h"
@@ -401,7 +401,7 @@ int test_utxo_apply_stage(void)
             UV_CHECK("happy: failure kind null", kind[0] == 0);
         }
         UV_CHECK("happy: next step IDLE",
-                 utxo_apply_stage_step_once() == STAGE_IDLE);
+                 utxo_apply_stage_step_once() == JOB_IDLE);
         uv_teardown(dir, &ms, &sc);
     }
 
@@ -442,14 +442,14 @@ int test_utxo_apply_stage(void)
             NULL, NULL, NULL);
         UV_CHECK("idle: advances one", utxo_apply_stage_drain(100) == 1);
         UV_CHECK("idle: next step IDLE",
-                 utxo_apply_stage_step_once() == STAGE_IDLE);
+                 utxo_apply_stage_step_once() == JOB_IDLE);
         UV_CHECK("idle: cursor stays 1", utxo_apply_stage_cursor() == 1);
         uv_teardown(dir, &ms, &sc);
     }
 
     {
         UV_CHECK("guard: step_once with no init returns IDLE",
-                 utxo_apply_stage_step_once() == STAGE_IDLE);
+                 utxo_apply_stage_step_once() == JOB_IDLE);
         UV_CHECK("guard: init(NULL) rejected",
                  !utxo_apply_stage_init(NULL));
     }

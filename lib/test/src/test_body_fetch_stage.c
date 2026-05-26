@@ -8,7 +8,7 @@
  *   - happy path: 5 blocks all HAVE_DATA → 5 "disk" rows
  *   - cursor floor: body_fetch never overruns validate_headers
  *   - skipped_invalid: validate ok=0 → body_fetch records a skip row
- *   - body not yet available (BLOCK_HAVE_DATA unset) → STAGE_IDLE, no advance
+ *   - body not yet available (BLOCK_HAVE_DATA unset) → JOB_IDLE, no advance
  *   - availability flip: set HAVE_DATA later → cursor advances
  *   - replay across progress_store reopen: cursor + log row count persist
  *   - pre-init guards
@@ -23,9 +23,9 @@
 
 #include "chain/chain.h"
 #include "core/uint256.h"
-#include "services/body_fetch_stage.h"
-#include "services/header_admit_stage.h"
-#include "services/validate_headers_stage.h"
+#include "jobs/body_fetch_stage.h"
+#include "jobs/header_admit_stage.h"
+#include "jobs/validate_headers_stage.h"
 #include "storage/progress_store.h"
 #include "util/blocker.h"
 #include "util/safe_alloc.h"
@@ -239,7 +239,7 @@ int test_body_fetch_stage(void)
 
         /* Caught up — next step IDLE. */
         BF_CHECK("happy: next step IDLE",
-                 body_fetch_stage_step_once() == STAGE_IDLE);
+                 body_fetch_stage_step_once() == JOB_IDLE);
 
         bf_teardown(dir, &ms, &sc);
     }
@@ -263,7 +263,7 @@ int test_body_fetch_stage(void)
 
         /* Next step must be IDLE — validate cursor is the wall. */
         BF_CHECK("floor: next step IDLE",
-                 body_fetch_stage_step_once() == STAGE_IDLE);
+                 body_fetch_stage_step_once() == JOB_IDLE);
 
         /* Push validate forward 3 more, body_fetch follows. */
         for (int i = 0; i < 3; i++) header_admit_stage_step_once();
@@ -313,7 +313,7 @@ int test_body_fetch_stage(void)
         bf_teardown(dir, &ms, &sc);
     }
 
-    /* ── body absent: HAVE_DATA cleared → STAGE_IDLE, no advance ─────── */
+    /* ── body absent: HAVE_DATA cleared → JOB_IDLE, no advance ─────── */
     {
         char dir[256]; struct main_state ms; struct synth_chain_bf sc;
         BF_CHECK("absent: setup",
@@ -333,14 +333,14 @@ int test_body_fetch_stage(void)
 
         /* Step again — still IDLE; cursor unchanged. */
         BF_CHECK("absent: next step IDLE",
-                 body_fetch_stage_step_once() == STAGE_IDLE);
+                 body_fetch_stage_step_once() == JOB_IDLE);
         BF_CHECK("absent: cursor still 2",
                  body_fetch_stage_cursor() == 2);
 
         /* Flip HAVE_DATA on h=2 — body now appears. */
         sc.blocks[2].nStatus |= BLOCK_HAVE_DATA;
         BF_CHECK("absent: step ADVANCED after flip",
-                 body_fetch_stage_step_once() == STAGE_ADVANCED);
+                 body_fetch_stage_step_once() == JOB_ADVANCED);
         BF_CHECK("absent: cursor at 3", body_fetch_stage_cursor() == 3);
 
         bf_teardown(dir, &ms, &sc);
@@ -373,7 +373,7 @@ int test_body_fetch_stage(void)
         /* The persisted cursor is loaded lazily on first stage_run_once;
          * step_once first to materialise it into memory, then assert. */
         BF_CHECK("replay: first step after reopen is IDLE (cursor=7)",
-                 body_fetch_stage_step_once() == STAGE_IDLE);
+                 body_fetch_stage_step_once() == JOB_IDLE);
         BF_CHECK("replay: cursor restored to 7",
                  body_fetch_stage_cursor() == 7);
 
@@ -386,7 +386,7 @@ int test_body_fetch_stage(void)
     /* ── pre-init guards ─────────────────────────────────────────────── */
     {
         BF_CHECK("guard: step_once with no init returns IDLE",
-                 body_fetch_stage_step_once() == STAGE_IDLE);
+                 body_fetch_stage_step_once() == JOB_IDLE);
         BF_CHECK("guard: init(NULL) rejected",
                  !body_fetch_stage_init(NULL));
     }

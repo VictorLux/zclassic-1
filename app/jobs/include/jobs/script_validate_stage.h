@@ -36,7 +36,7 @@ typedef bool (*script_validate_prevout_fn)(const struct outpoint *prevout,
 bool script_validate_stage_init(struct main_state *ms);
 void script_validate_stage_shutdown(void);
 
-stage_result_t script_validate_stage_step_once(void);
+job_result_t script_validate_stage_step_once(void);
 int script_validate_stage_drain(int max_steps);
 
 uint64_t script_validate_stage_cursor(void);

@@ -9,7 +9,7 @@
 #include "primitives/block.h"
 #include "primitives/transaction.h"
 #include "script/script.h"
-#include "services/script_validate_stage.h"
+#include "jobs/script_validate_stage.h"
 #include "storage/progress_store.h"
 #include "util/blocker.h"
 #include "util/safe_alloc.h"
@@ -335,7 +335,7 @@ int test_script_validate_stage(void)
             SV_CHECK("happy: failure vin null", vin == -1);
         }
         SV_CHECK("happy: next step IDLE",
-                 script_validate_stage_step_once() == STAGE_IDLE);
+                 script_validate_stage_step_once() == JOB_IDLE);
         sv_teardown(dir, &ms, &sc);
     }
 
@@ -403,7 +403,7 @@ int test_script_validate_stage(void)
         SV_CHECK("idle: advances one",
                  script_validate_stage_drain(100) == 1);
         SV_CHECK("idle: next step IDLE",
-                 script_validate_stage_step_once() == STAGE_IDLE);
+                 script_validate_stage_step_once() == JOB_IDLE);
         SV_CHECK("idle: cursor stays 1",
                  script_validate_stage_cursor() == 1);
         sv_teardown(dir, &ms, &sc);
@@ -411,7 +411,7 @@ int test_script_validate_stage(void)
 
     {
         SV_CHECK("guard: step_once with no init returns IDLE",
-                 script_validate_stage_step_once() == STAGE_IDLE);
+                 script_validate_stage_step_once() == JOB_IDLE);
         SV_CHECK("guard: init(NULL) rejected",
                  !script_validate_stage_init(NULL));
     }

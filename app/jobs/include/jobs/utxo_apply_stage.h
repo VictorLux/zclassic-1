@@ -49,7 +49,7 @@ typedef bool (*utxo_apply_live_check_fn)(int height,
 bool utxo_apply_stage_init(struct main_state *ms);
 void utxo_apply_stage_shutdown(void);
 
-stage_result_t utxo_apply_stage_step_once(void);
+job_result_t utxo_apply_stage_step_once(void);
 int utxo_apply_stage_drain(int max_steps);
 
 uint64_t utxo_apply_stage_cursor(void);

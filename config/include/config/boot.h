@@ -55,7 +55,7 @@ struct app_context {
      * locally-running zclassicd. Uses ldb_snapshot_make to avoid
      * stopping zclassicd, and stamps progress.kv stage cursors for
      * header_admit / validate_headers / body_fetch to legacy_tip+1
-     * so Wave S stages return STAGE_IDLE for imported heights.
+     * so Wave S stages return JOB_IDLE for imported heights.
      * Idempotent + crash-safe via progress_meta sentinel. */
     const char *legacy_attach_from;
     const char *snapshot_dir;
