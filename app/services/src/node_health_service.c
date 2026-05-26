@@ -4,6 +4,7 @@
 
 #include "platform/time_compat.h"
 #include "services/node_health_service.h"
+#include "jobs/tip_finalize_stage.h"
 #include "services/chain_advance_coordinator.h"
 #include "services/chain_evidence_controller.h"
 #include "services/chain_state_repository.h"
@@ -170,6 +171,8 @@ void node_health_collect(struct node_health_snapshot *snapshot,
     snapshot->tip_height = -1;
     snapshot->header_height = -1;
     snapshot->peer_best_height = -1;
+    snapshot->log_head = -1;
+    snapshot->log_head_gap = -1;
     snapshot->last_error_age_seconds = -1;
     snapshot->tor_enabled = tor_integration_is_enabled();
     snapshot->tor_ready = tor_integration_is_ready();
@@ -297,6 +300,18 @@ void node_health_collect(struct node_health_snapshot *snapshot,
     if (snapshot->peer_best_height >= 0 && snapshot->tip_height >= 0 &&
         snapshot->peer_best_height > snapshot->tip_height) {
         snapshot->tip_lag = snapshot->peer_best_height - snapshot->tip_height;
+    }
+
+    /* Prime Directive health = network_tip − log_head. log_head is the
+     * tip_finalize cursor (the reducer's finalized height). SHADOW: the
+     * live tip is still tip_height; this just makes the cutover's target
+     * number observable in one place. */
+    {
+        uint64_t lh = tip_finalize_stage_cursor();
+        snapshot->log_head = (lh > 0) ? (int)(lh - 1) : -1;
+        if (snapshot->peer_best_height >= 0 && snapshot->log_head >= 0)
+            snapshot->log_head_gap =
+                snapshot->peer_best_height - snapshot->log_head;
     }
 
     {

@@ -224,6 +224,9 @@ static bool rpc_healthcheck(const struct json_value *params, bool help,
     json_push_kv_bool(&checks, "queue_backed_up", health.queue_backed_up);
     json_push_kv_int(&checks, "peer_count", (int64_t)health.peer_count);
     json_push_kv_int(&checks, "tip_lag", (int64_t)health.tip_lag);
+    /* Prime Directive: health = network_tip − log_head (SHADOW today). */
+    json_push_kv_int(&checks, "log_head", (int64_t)health.log_head);
+    json_push_kv_int(&checks, "log_head_gap", (int64_t)health.log_head_gap);
     json_push_kv_int(&checks, "error_total", health.error_total);
     json_push_kv_int(&checks, "last_error_age_seconds",
                      health.last_error_age_seconds);
