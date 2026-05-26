@@ -75,7 +75,7 @@ Invariants:
 Concrete files: `app/services/README.md`, `config/include/config/runtime.h`,
 `config/src/boot_services.c`, `app/services/src/node_health_service.c`,
 `app/services/src/snapshot_sync_service.c`,
-`app/services/src/sync_watchdog_service.c`.
+`app/conditions/src/sync_state_stuck.c`.
 
 ## Onion Gateway
 

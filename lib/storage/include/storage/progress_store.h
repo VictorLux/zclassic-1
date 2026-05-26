@@ -19,8 +19,8 @@
  *
  *   - Cursor commits are tiny and on the hot path; a dedicated WAL keeps
  *     them out of the way of the much larger node.db txns.
- *   - The architecture doc (docs/ARCHITECTURE.md, L4) lists `progress.kv`
- *     as a distinct storage engine. One file == one writer-actor.
+ *   - `progress.kv` is a distinct storage engine (the durable cursor store;
+ *     see docs/FRAMEWORK.md). One file == one writer-actor.
  *   - Future stages may want to use blob columns, FTS, or LMDB without
  *     dragging node.db's schema along.
  *

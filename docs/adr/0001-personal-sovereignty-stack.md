@@ -61,4 +61,4 @@ Concretely:
 - `~/.claude/plans/archive/zclassic23-plan-audit-first-2026-05-22.md` — superseded plan, kept for archaeology.
 - `~/.claude/projects/-home-rhett-github-zclassic23/memory/feedback_dream_first_dont_flip_flop.md` — user feedback that triggered the pivot.
 - `~/.claude/projects/-home-rhett-github-zclassic23/memory/feedback_less_is_more_holistic.md` — companion feedback on the whack-a-mole pattern.
-- `docs/ARCHITECTURE.md` — current architecture doc reflecting this decision.
+- `docs/FRAMEWORK.md` — canonical architecture doc. (The L1–L7 layer-cake framing this ADR introduced was superseded 2026-05-23 by the eight-shape framework; see FRAMEWORK.md and the REFACTOR_STATUS decision log.)

@@ -1,203 +1,139 @@
-# Framework Refactor — Status Board
+# Build Checklist — the road to the beautiful node
 
-> One-screen summary of where we are. Updated every PR. Single source of
-> truth for "what's done, what's next, what's blocked." Read this first
-> when you start a session. Full architecture: [`FRAMEWORK.md`](./FRAMEWORK.md).
-
-**Updated:** 2026-05-25 (**goals = 4 promises × 10 numbers** — agents report work as "moved number N", not phase codes. Phase detail below is the execution map.)
+> The single tracker for **everything that needs to be created.** Architecture
+> and the laws: [`FRAMEWORK.md`](./FRAMEWORK.md). This file is the *work*: every
+> item is a checkbox, grouped by workstream, ordered by dependency. Check it off
+> when it's shipped + proven. Read this first when you start a session.
+>
+> **Updated:** 2026-05-26. Goal = the Prime Directive: *log-as-truth + pure
+> projections + single reducer; advance-cursor-or-name-blocker; health = the gap.*
+> Five workstreams: **B** flips authority (the north star), **A** makes the canon
+> true, **C** dissolves the legacy, **D** restores beauty, **E** enforces it.
 
 ---
 
-## OUR GOALS — one static C23 binary, four promises
+## Scoreboard — four promises (live truth, not green tests)
 
-Honest scoreboard. **MEASURED** = a real number from this box (date + how, in
-[`BENCHMARKS_LOG.md`](./BENCHMARKS_LOG.md)). **TARGET** = where we're going.
-**not measured** = no harness run yet — don't quote a number.
-
-> Read live from the SERVICE (canonical C, not a shell snapshot): `zcl_status`
-> (tip, sync_state, `tip_advance_age_seconds`) + `zcl_state subsystem=blocker`
-> (the typed blocker registry = "what's blocking"). No-MCP fallback: `tools/zcl-rpc`.
-> **Halt cured 2026-05-25** — the live node was rebuilt from the local zclassicd
-> and is HEALTHY (advancing, 0 restarts). The scoreboard numbers below are a
-> 2026-05-25 07:08Z snapshot from BEFORE the cure and the cutover; re-measure
-> after the cutover lands rather than quoting them.
+Read live from the SERVICE: `zcl_status` (tip, `tip_advance_age_seconds`) +
+`zcl_state subsystem=blocker`. Measured numbers live in
+[`BENCHMARKS_LOG.md`](./BENCHMARKS_LOG.md) (append-only); don't re-quote them here.
 
 ```
-  ⚡ FAST                       live now           target        state
-     Cold sync to tip          180s  (05-24)       30s           ▸ PR-3 building
-     Warm restart              37.7s (05-24)       10s           ▸ real restart→tip
-     Validation speed          108 blk/s (05-24)   fast          ◷ measured; tip frozen now
-     Stay at tip               advancing (05-25)   keep <1 blk    ◑ live healthy (connect_block fix + rebuild); structural fix = cutover
-
-  🪶 LEAN
-     Memory (RSS)              1.97 GB (05-25)*    1.0 GB        ▲ climbs w/ bg-verify
-     Binary size               15.4 MB (05-24)     stay slim     ✓ met (docs' 26MB stale)
-
-  💪 UNBREAKABLE  ← resilience is a PROMISE, measured by truth not by "result=ok"
-     Tip advancing             YES (05-25, 0 restart) always      ◑ live healthy; can't-halt-by-construction still needs the cutover
-     Self-heal tells the truth gated + alert loop    0 false-ok    ✓ witness gating (47bdbc211) + EV_OPERATOR_NEEDED routed
-     Halt/crash recovery       rebuild ~secs (05-25)  <60s, auto   ◑ connect_block fix shipped + rebuild-from-zclassicd proven; auto-heal pending
-     Uptime before failure     rebuilt, advancing     30 days      ◷ re-measuring on the healthy node (was halted ~5h pre-fix)
-     Alerts to a human         loop CLOSED (05-25)    0 / month    ✓ EV_OPERATOR_NEEDED → sinks + zcl_status DEGRADED + sd_notify
-
-  🔬 HONEST
-     Live truth from service   zcl_status (C)      always true    ◑ build-commit + dominant-blocker → surface in zcl_status
-     Bug → reproducible fix    built (postmortem+chaos) 1 tape    ✓ Phase 6 done (6fb76f2b0)
-```
-`*` RSS soak (05-24): fresh boot 1.53 GB → **stair-steps up with bg-validation
-depth** → ~2.4 GB by 17min (only 6.6% validated), still creeping. (Node rebuilt
-2026-05-25 — RSS to be re-measured on the healthy node.) NOT bounded at a low plateau — tracks how much chain
-bg-verify has buffered. >2× the 1 GB target; real ceiling needs the full ~8h
-run. `✓` met · `▸` in flight · `◷` measuring · `◑` fixed-in-code-not-deployed ·
-`▲` above target · `✗` BROKEN/regressed.
-
-### Halt cured 2026-05-25 — focus is the one-path cutover + DRY
-
-Live node healthy and advancing (0 restarts). Root cause was the `connect_block`
-BIP30 self-write + write-ordering hazard, now fixed (see git history);
-silent-halt escalation is closed (`EV_OPERATOR_NEEDED` → alert sinks + `zcl_status`
-DEGRADED + sd_notify). The **structural** cure is the cutover below — collapse to
-ONE path, delete the legacy (3 modules = 4,407 LOC + comparison scaffolding). Full root-cause + resilience doctrine
-live in git history + memory ([[project_silent_halt_architecture_diagnosis_2026-05-25]],
-[[feedback_resilience_first_class_live_truth]]).
-
-**Working rule:** when you finish a task, name the goal you moved and the measured
-delta (e.g. "warm restart 33s→29s") and add a row to BENCHMARKS_LOG.md.
-
-### Owner mandate (2026-05-25)
-
-**NO whack-a-mole. Collapse to ONE path, DELETE the legacy.** The node stays
-robust by *finishing* the refactor, not by adding conditions — default to
-SUBTRACTION. While two chain paths coexist a silent halt remains *possible*; the
-cutover ([`work/cutover.md`](./work/cutover.md)) is the structural cure. Current
-work is in NEXT below.
-
----
-
-## Phases
-
-```
-Phase 0  [██████████] 100%   Condition engine + scaffold              ✅ DONE
-Phase 1  [██████████] 100%   Adopt unused primitives                  ✅ DONE
-Phase 2  [██████████] 100%   Wave S SHADOW complete (S-1..S-9 all shipped)  ✅
-  ├ S-5..S-7 [██████████] 100%   body_persist, script_validate, proof_validate ✅
-  ├ S-8    [██████████] 100%   utxo_apply shadow (wt3)                ✅ 497220f58
-  └ S-9    [██████████] 100%   tip_finalize shadow (wt3)              ✅ 1a65b33c7
-Phase 2 CUTOVER [██░░░░░░░░] ~15%   Flip shadow → authoritative — plan: work/cutover.md
-  Shadow stages all run + match. The cutover = trusting them, then deleting legacy.
-  Simplified to: prove offline (incl reorg) → flip once → delete. NO per-stage soak
-  ceremony (single personal node). Prereqs done: halt cured, guard + alert loop,
-  header validation decoupled from bodies, HAVE_DATA read-verified.
-  Next real work: reorg-capability in tip_finalize + the offline replay-proof.
-Phase 3  [███████░░░]  70%   Dissolve mega-modules                    ← partial
-  ├ watchdog [██████████] 100%   sync_watchdog_service.c DELETED      ✅ 611631541
-  ├ supervisor tree split [██████████] 100%   7 domain supervisors    ✅ dae31dee9
-  ├ chain_advance  [░░░░░░░░░░] gated on C-9 cutover (dissolve plan ready)
-  ├ legacy_mirror  [░░░░░░░░░░] gated on C-9 cutover (dissolve plan ready)
-  ├ chain_restore  [██████████] 100%   service/header deleted; focused modules own restore ✅
-  ├ header_probe   [██████████] 100%   core renamed; old service file deleted ✅ d17eb5ca0
-  └ utxo_recovery  [░░░░░░░░░░] gated on C-8 cutover (dissolve plan ready)
-Phase 4  [█████████░]  95%   Storage unification (event log + projections)
-  ├ 4a     [██████████] 100%   event_log primitive  ✅ 76b3a10b4
-  ├ 4b     [██████████] 100%   utxo_projection — Tasks 1-10 SHIPPED  ✅ (39b1e8efa..ee1c5c7b1, 7 commits)
-  ├ 4c     [██████████] 100%   block_index_projection + finalize (diff tool + 9 tests)  ✅ (…ed34743ba, 066462576, 91b4ee734, 2f23d6a44, 2e289e41b)
-  ├ 4d-1   [██████████] 100%   mempool projection + shadow replay  ✅ da005eb31, cc84e9419
-  ├ 4d-2   [██████████] 100%   peers_projection  ✅ 91aa65c1c + 5dc442a81 + 48e78d801 + f925fb6f3 (wt2)
-  ├ 4d-3   [██████████] 100%   wallet view projection + diff + final verification  ✅ 12284eb3e, 5626552cb
-  ├ 4d-4   [██████████] 100%   znam projection — Tasks 1-5b SHIPPED  ✅ (f52313f02..eb53d9d52, 7 commits, 30 test cases pass)
-  ├ 4d-5   [██████████] 100%   small projections: contacts/onion/hodl ✅ 2f23d8352
-  └ 4e     [░░░░░░░░░░]   0%   block-body migration (spec'd, gated on 4c cutover)
-Phase 5  [██████████] 100%   Crypto agility (registry indirection)    ✅ DONE
-  ├ 5a-1   [██████████] 100%   Crypto registry skeleton  ✅ c4bebe0a2 + polish dde0183c7
-  ├ 5a-2   [██████████] 100%   First call site rewire: Equihash PoW   ✅ f00be351f (wt2)
-  ├ 5a-3   [██████████] 100%   script_validate ECDSA rewire (HOT PATH)  ✅ 7c2c067a0 + cde601acf + e8b926610 (wt3)
-  └ Nix reproducible builds (5b/5c) DROPPED 2026-05-24 — out of scope. Cosign signing (5d) parked pending decision.
-Phase 6  [██████████] 100%   Determinism + simulator                 ✅ DONE
-  ├ 6a     [██████████] 100%   seed_tape primitive  ✅ c2ed3145d + cb03fe595 + c62161c2a + b53f251b7 (sub-agent)
-  ├ 6b     [██████████] 100%   postmortem capsule (crash → seed.cap.gz) ✅ 89fabc360
-  └ 6c     [██████████] 100%   simulator harness (`make chaos`) ✅ 6fb76f2b0
-Phase 7  [░░░░░░░░░░]   0%   Frontier (io_uring, hot reload)
-Phase 8  [░░░░░░░░░░]   0%   Event-log compaction & retention (future)
-  └ (draft)  gated on 4e — checkpoint event + segmentation + prune policy; pairs with SHA3 snapshot/FlyClient cold-sync
-
-Mega-modules still to dissolve (chain_advance_coordinator, legacy_mirror_sync,
-utxo_recovery) are cutover-gated; extract-then-delete plan in work/cutover.md.
+  ⚡ FAST          cold-sync 180s→30s ▸ building   warm 37.7s→10s ▸   stay-at-tip ◑ (cutover)
+  🪶 LEAN          binary 15.4MB ✓ slim            RSS ~2GB→1GB ▲ climbs w/ bg-verify
+  💪 UNBREAKABLE   alert loop ✓ closed             can't-halt-by-construction ◑ needs cutover (B)
+  🔬 HONEST        zcl_status live truth ✓          bug→repro ✓ (chaos/postmortem)
+  ✓ done · ▸ building · ◑ fixed-in-code-not-structural · ▲ above target
 ```
 
----
-
-## Conformance metrics (updated each PR)
-
-This table tracks **architecture conformance** (is the code the new shape?).
-The **user-facing numbers** (cold/warm/MTBF/RSS/kill-9/pages) live in ONE
-place — [`BENCHMARKS_LOG.md`](./BENCHMARKS_LOG.md), the append-only measured
-ledger — and are surfaced on the scoreboard at the top of this file. Don't
-re-quote them here; they rot. Add a row to the ledger instead.
-
-| Conformance metric | Today | Target | Delta |
-|---|---|---|---|
-| Files conforming to shape | scaffold | 342 / 342 | scaffold lint not yet run |
-| `.c` files in `app/` > 800 LOC | **31** | 0 | mostly controllers — large DRY/split + dead-code surface (cruft hunt 05-25) |
-| Mega-modules remaining | **3** | 0 | chain_advance_coordinator · legacy_mirror_sync · utxo_recovery (all cutover-gated); chain_evidence/restore/watchdog/header_probe DISSOLVED |
-| Lint gates active | 20 (1 FAIL'd in P1) | 21 | +1 by Phase 3 (gate #20→FAIL) |
-| Raw clock/RNG callers | **0** | 0 | ✅ Phase 1c (was 443) |
-| Mailbox prod callers | 1 | many | ✅ Phase 1a (header_admit), more in Phase 3 |
-| Conditions registered | 19 | ~15 | `chain_stalled_with_data` retired; activation-no-progress routes through `legacy_mirror_stuck` |
-
-> User-facing numbers (MTBF/RSS/cold/warm/kill-9/pages) intentionally NOT
-> tabled here — they rot. Live values: scoreboard at top + `BENCHMARKS_LOG.md`.
+**Owner mandate (standing):** NO whack-a-mole. The node becomes unbreakable by
+*finishing* the refactor — collapse to ONE path, DELETE the legacy — not by
+adding conditions. Default to SUBTRACTION. While two chain paths coexist a silent
+halt remains *possible*; workstream **B** is the structural cure.
 
 ---
 
-## Mega-module roster (Phase 2-3 deletion targets)
+## ✅ Already shipped (the foundation)
 
-| File | LOC | Dissolves into | Phase |
-|---|---|---|---|
-| `chain_advance_coordinator.c` | 1,716 | `services/sync/source_scorer.c` + `jobs/tip_finalize.c` + 1 condition | 2 (S-9) |
-| `chain_restore_service.{c,h}` | DELETED | `chain_restore_{planner,executor,repair,integrity,boot_activation,boot_snapshot}.{c,h}` | 3 |
-| `sync_watchdog_service.c` | DELETED | replaced by 8 supervised conditions | 3 (PR-3) |
-| `legacy_mirror_sync_service.c` | 1,487 | `services/sync/legacy_bridge.c` + `jobs/legacy_poll.c` + 1 condition | 2 (S-12) |
-| `header_probe_service.c` | DELETED | `header_probe.c` + `legacy_header_client.c` + mailbox use | 3 (PR-3) |
-| `utxo_recovery_service.c` | 1,204 | `conditions/utxo_drift.c` + `jobs/utxo_repair.c` | 3 |
-| `chain_evidence_controller.c` | DELETED | split into chain-evidence storage helpers ✅ | 3 |
+The primitives the north star needs all exist and are tested — they just run in
+**shadow**. This is why the work ahead is *flipping authority*, not building.
+
+- [x] Condition engine + 19 conditions (the model-citizen shape) · Phase 0
+- [x] Kernel primitives adopted: mailbox, projection, platform.clock/rng (0 raw clock/RNG callers) · Phase 1
+- [x] Wave-S stage pipeline, all 8 stages, SHADOW complete (header_admit → tip_finalize) · Phase 2
+- [x] event_log — durable, fsync'd, CRC32C, torn-write recovery, SHA3 fingerprint · Phase 4a
+- [x] 8 pure-fold projections: utxo, block_index, mempool, peers, wallet, znam, contacts/onion/hodl · Phase 4b–d
+- [x] Crypto-agility registry + hot-path rewires (Equihash, ECDSA) · Phase 5
+- [x] Determinism: seed_tape + postmortem capsule + `make chaos` · Phase 6
+- [x] Supervisor tree split into 7 domain supervisors · Phase 3
+- [x] Dissolved already: chain_restore_service, sync_watchdog_service, header_probe_service, chain_evidence_controller
+- [x] **Reorg keystone (2026-05-26):** disconnect emits inverse UTXO deltas (`bfa379bc8`) + byte-exact convergence proof (`1e65f81a0`)
+- [x] Silent-halt escalation closed: `EV_OPERATOR_NEEDED` → sinks + `zcl_status` DEGRADED + sd_notify
+- [x] PROVE Tier-1: offline PoW/integrity sweep `zcl_replay_verify` (`63a9a5de4`) + shadow_replay_proof
+- [x] Test harness: `test_parallel --only=SUBSTR` (1s iteration vs 110s full)
 
 ---
 
-## In flight
+## B — THE CUTOVER: flip authority from coins.db to the log  ← the north star
 
-**Workers stopped 2026-05-25.** wt2/wt3 worktrees reset to origin/main; work
-continues on `main`. Everything below the cutover is either done or cutover-gated.
+Dependency-ordered. This is the structural cure; everything in **C** is gated on
+it. Plan detail: [`work/cutover.md`](./work/cutover.md).
 
-## NEXT
+- [x] **B1** Reorg-capability in `tip_finalize` — disconnect emits inverse deltas; parity proven byte-exact.
+- [ ] **B2** Emit block bodies to the log. `EV_BLOCK_BODY` (type 2) has **zero emitters** today; bodies live in `blocks/*.dat`. Without bodies in the log, the log can't be replayed to rebuild UTXO from scratch — only trail. *(Phase 4e)*
+- [ ] **B3** Invert the UTXO emitter. Make `utxo_apply_stage` the **author** of `EV_UTXO_ADD/SPEND` and the **sole writer** of the utxo projection — instead of `update_coins.c` shadow-emitting *after* legacy already wrote. *Acceptance:* utxo projection driven by the stage, not by legacy.
+- [ ] **B4** Point `connect_block` input lookups at the utxo **projection** instead of `coins_view_cache`. Closes the validation feedback loop (Prime Directive). Keep a RAM read-cache for speed; authority is the projection; its write lands in the same txn as the cursor advance.
+- [ ] **B5** Make `log_head` / the `tip_finalize` cursor the **definitional tip**. Demote `chain_active` to a derived in-RAM index rebuilt from `block_index_projection`. *Acceptance:* `health = network_tip − log_head` is one real number.
+- [ ] **B6** Offline PROVE harness, full. *Tier-1 done.* Remaining: full 0→tip replay asserting `blocks_fed == blocks_diffed`; **reorg corpus** asserting UTXO commitment byte-matches legacy across disconnect+reconnect; Tier-2 deep (script + Groth16 proof) nightly. Independent of live peer state.
+- [ ] **B7** Flip once, behind the guard. `cutovermode all authoritative` + `cutover_no_forward_progress` auto-revert (180s no-progress → revert to SHADOW + page). Real canary: one block connects through the authoritative path, auto-revert on any divergence.
+- [ ] **B8** Extract-then-delete (see **C**) — the legacy path + the entire shadow-vs-legacy comparison apparatus (`diff_with_legacy_shadow`, `shadow_feeder`, the `*_projection_diff` MCP tools, cutover mode/preflight/canary plumbing). Once there's one path, the comparison apparatus is dead.
 
-1. **The cutover — collapse to ONE path.** Full plan:
-   [`work/cutover.md`](./work/cutover.md). Prereqs done (halt cured, guard +
-   alert loop, header validation decoupled from bodies, HAVE_DATA read-verified).
-   Real next work: reorg-capability in `tip_finalize` + the offline replay-proof,
-   then a single guarded flip, then delete the legacy path + the shadow-vs-legacy
-   comparison apparatus (4,407 LOC across the 3 modules + the diff/shadow scaffolding).
-2. **DRY / cruft** —
-   [`work/wt-consolidate-import-paths.md`](./work/wt-consolidate-import-paths.md)
-   (3 importers → 1). Independent of the cutover.
+---
 
-Recent history lives in `git log` — the per-PR refactor changelog used to sit
-here and was removed as journey archaeology.
+## A — Make the canon true (the missing shape primitives)
+
+`FRAMEWORK.md` blesses **struct-registration**, not block-macro DSLs (Law 3).
+So this is NOT about building fictional `MODEL(){…}` macros — it's giving the
+three unreal shapes a real, debuggable form.
+
+- [ ] **A1** `lib/framework/job.h` — one uniform Job contract: a step fn returning `JOB_{ADVANCED,BLOCKED,IDLE,FATAL}` + a durable cursor. Then **relocate the 8 `*_stage.c`** from `app/services/` into `app/jobs/` and rename `stage_result_t` → `JOB_*`. *Acceptance:* `app/jobs/` holds the reducer; the empty-scaffold folder becomes real.
+- [ ] **A2** Decide the **Event** shape: either fill `app/events/` with typed emit + subscriber registration, or formally rule events a `lib/` concern and **delete the empty `app/events/` shell**. No empty shape folders.
+- [ ] **A3** Supervisor declarations as **files**, not boot-monolith code. One declarative supervisor per domain (`chain`, `net`, `mempool`, …), shrinking `config/boot_services.c` (3,885 LOC). *Acceptance:* the liveness tree is readable in one place.
+- [ ] **A4** `zcl_result` adoption for services (Law 2). Migrate services off bare `bool`/`int`. *(ratchet — see E2)*
+- [ ] **A5** *(optional)* `tools/` codegen that emits shape skeletons (model, condition, job, controller) — the easy path is the correct path. Generates readable, steppable, committed source. Not metaprogramming.
+
+---
+
+## C — Dissolve the mega-modules (extract-then-delete)
+
+3 modules = 4,407 LOC. Inventory + caller maps verified 2026-05-25. All gated on
+**B** (they own behavior the new path lacks until the flip).
+
+- [ ] **C1** `chain_advance_coordinator.c` (1,716) → re-home `score_source()` source-selection into `header_probe`/`block_source_policy`; DELETE the mirror force-promotion window. *Gated on B.*
+- [ ] **C2** `legacy_mirror_sync_service.c` (1,487) → extract the live-sync **heartbeat + lag-SLO monitor** to a lean monitor (PRESERVE it); delete only the block-application coordination. *Gated on B.*
+- [ ] **C3** `utxo_recovery_service.c` (1,204) → re-home `clean_above_tip` (orphan-UTXO heal) as a **Condition** first; `restore_chain_tip` / `import_ldb` to a recovery path. *Gated on B.*
+- [ ] **C4** Collapse the **4 importers** (5,519 LOC: `legacy_bootstrap_importer` + `legacy_mirror_sync` + `legacy_import` + `sync_controller_import`) → one `legacy_bridge` + one `legacy_poll` job. [`work/wt-consolidate-import-paths.md`](./work/wt-consolidate-import-paths.md). *Independent of B.*
+
+---
+
+## D — Restore beauty (shape conformance — independent, high-leverage)
+
+From the beauty audit; each is "principle violated → where → the elegant form."
+
+- [ ] **D1** Dissolve `diagnostics_controller.c` (2,550). Extract the beautiful `g_dumpers` registry to its own `diagnostics_registry.c`; split `getnodelog` / `dbquery` / `probezclassicd` / `cutovermode` into their own controllers.
+- [ ] **D2** Controllers must not build views. Move `explorer_factoids.c` (1,994) + `explorer_stats.c` (1,595) + `explorer_controller_pages.c` (1,541) builders into `app/views/`.
+- [ ] **D3** Stage-services write through Models, not raw SQL (`header_admit_stage.c:60-99` hand-rolls INSERT). Give `header_admit_log` a Model; route through AR.
+- [ ] **D4** One log call. Collapse the 486 raw `fprintf(stderr)` + `// obs-ok:` sites to `LOG_*`/`log_json` so `zcl_node_log` is structured.
+- [ ] **D5** The 31 `app/` files > 800 LOC → under the cap (mega-module split + dead-code removal). Tracks toward E1.
+
+---
+
+## E — Enforce it (every law gets a gate; "beauty by the build")
+
+Hygiene is well-gated (21 live gates). **Architecture is not.** Each gate lands
+with the work it guards (design in `FRAMEWORK.md` §5).
+
+- [ ] **E1** `file-size-ceiling` — no `app/` file over the cap. *(ratchet down)*
+- [ ] **E2** `one-result-type` — services return `zcl_result`. *(ratchet)*
+- [ ] **E3** `shape-is-content-checked` — a shape file includes its shape header (closes the "mislabeled Service" hole; makes E4/E5 reliable). *(ratchet → hard)*
+- [ ] **E4** `projections-are-pure` — projection files don't `#include` services/controllers and emit no writes. *(hard — small file set)*
+- [ ] **E5** `stage-advances-or-blocks` — every Job references a cursor and calls `blocker_set()` on non-progress. *(hard for the Job shape)*
+- [ ] **E6** `one-write-path` — exactly one writer to chain state. *(ratchet → hard once B7 lands)*
+- [ ] **E7** `no-authoritative-RAM-state` — consensus state in log/projections/cursors, not mutable globals. *(ratchet)*
+- [ ] **E8** `health-is-the-gap` — one `tip_not_advancing` Condition is the sole liveness authority; others don't emit `EV_OPERATOR_NEEDED` for liveness. *(ratchet)*
+- [ ] **E9** `operator-needed-has-a-sink` — every `EV_OPERATOR_NEEDED` emit pairs with a registered subscriber. *(hard — pairing check)*
+- [ ] **E10** Graduate `framework-shape` + `controller-SQL` gates WARN → RATCHET (make the boundary load-bearing).
+- [ ] **E11** `doc-accuracy` — cross-check the `DEFENSIVE_CODING.md` gate list against the Makefile `lint:` deps (kills doc rot).
+
+---
 
 ## Decision log (binding)
 
-- **2026-05-23** Framework adopted: Rails-style MVC + Phoenix-style supervisors + hexagonal cut + Conditions. Replaces "constitution / invariants" framing of the 50-year-architecture plan.
-- **2026-05-23** Execution model: strangler (per-mega-module PRs), not big-bang single-commit. Commitment is total — no parallel architecture plans.
-- **2026-05-23** Lint gates: ratcheting — start as WARN in Phase 0, tighten to FAIL as violations are fixed.
-- **2026-05-23** Worktree workflow: separate clones at `~/github/zclassic23-{2,3}`, identified by pwd suffix, each on its own branch, pushed to origin for orchestrator merge.
-
----
+- **2026-05-26** Canon made honest: `FRAMEWORK.md` rewritten to bless struct-registration over fictional block-DSLs; the Ten Laws + Prime Directive + validation-feedback honesty added; every law mapped to a gate. `VISION.md` + `ARCHITECTURE.md` (old L1–L7 layer cake) merged in and deleted.
+- **2026-05-23** Framework adopted: Rails-style MVC + Phoenix-style supervisors + hexagonal cut + Conditions. Strangler execution (per-module PRs), not big-bang. Lint gates ratchet WARN→FAIL.
+- **2026-05-23** Worktree workflow: separate clones at `~/github/zclassic23-{2,3}`, identified by pwd suffix, pushed to origin for orchestrator merge.
 
 ## How this file gets updated
 
-- **Orchestrator** (main worktree) updates Phases, Conformance, In flight, Recently completed, Decision log.
-- **Worker agents** (wt2, wt3, ...) DO NOT edit this file directly — they append a Completion section to their own assignment doc under `docs/work/wtN-*.md`. Orchestrator aggregates.
-- **Frequency:** every PR merge updates Recently completed; every conformance number recomputed by `tools/lint/framework_shape_check.sh`.
-
-> Phase 0–1 acceptance evidence lived here; removed 2026-05-25 as done-phase
-> archaeology (git history + the Phases section retain it). This board stays a
-> one-screen current-state view.
+- Check an item `[x]` only when it's shipped **and** proven (forward-progress / test / measured delta). Add a row to `BENCHMARKS_LOG.md` for any number moved.
+- Orchestrator (main) edits this file; workers append a Completion section to their own `docs/work/wtN-*.md`. Recent history lives in `git log`, not here.
