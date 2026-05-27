@@ -49,9 +49,8 @@
 #include <sys/time.h>
 #include <time.h>
 
-#include <sys/stat.h>
-
-#include <sqlite3.h>
+#include "adapters/outbound/persistence/db_maintenance_sqlite.h"
+#include "ports/db_maintenance_port.h"
 
 #include "util/log_macros.h"
 #include "util/thread_registry.h"
@@ -145,15 +144,29 @@ static int64_t dbm_now_unix(void)
     return (int64_t)platform_time_wall_time_t();
 }
 
-/* Maps an op name to the SQL string to execute. NULL for an
- * unknown op. Caller validates. */
-static const char *dbm_sql_for_op(const char *op)
+/* Returns true if `op` is one of the three recognised maintenance ops.
+ * The SQL each op runs lives behind the db_maintenance_port adapter —
+ * this service only names the ops. */
+static bool dbm_op_known(const char *op)
 {
-    if (!op) return NULL;
-    if (strcmp(op, "wal")     == 0) return "PRAGMA wal_checkpoint(TRUNCATE);";
-    if (strcmp(op, "analyze") == 0) return "ANALYZE;";
-    if (strcmp(op, "vacuum")  == 0) return "VACUUM;";
-    return NULL;
+    if (!op) return false;
+    return strcmp(op, "wal")     == 0
+        || strcmp(op, "analyze") == 0
+        || strcmp(op, "vacuum")  == 0;
+}
+
+/* Dispatch a known op to the matching port method. `op` must already be
+ * validated by dbm_op_known(). Returns the port method's bool; the error
+ * text (on failure) lands in err/errsz. */
+static bool dbm_run_op_via_port(const struct db_maintenance_port *port,
+                                const char *op, char *err, size_t errsz)
+{
+    if (strcmp(op, "wal") == 0)
+        return port->wal_checkpoint(port->self, err, errsz);
+    if (strcmp(op, "analyze") == 0)
+        return port->analyze(port->self, err, errsz);
+    /* "vacuum" — the only remaining known op. */
+    return port->vacuum(port->self, err, errsz);
 }
 
 /* Update the per-op last-run state after a successful run.
@@ -179,31 +192,37 @@ struct zcl_result db_maintenance_run_now(struct node_db *db, const char *op)
 {
     if (!db || !db->open || !db->db)
         return ZCL_ERR(-1, "db_maint: run_now called with null or closed db");
-    const char *sql = dbm_sql_for_op(op);
-    if (!sql)
+    if (!dbm_op_known(op))
         return ZCL_ERR(-2, "db_maint: unknown maintenance op: %s",
                        op ? op : "(null)");
+
+    /* The actual SQL execution lives behind the db_maintenance_port. We
+     * bind the default sqlite adapter to this db's connection for the
+     * duration of the call — the adapter never closes the handle. */
+    struct db_maintenance_sqlite_ctx store_ctx;
+    struct db_maintenance_port port = {0};
+    db_maintenance_sqlite_bind(&store_ctx, db->db, &port);
 
     pthread_mutex_lock(&g_dbm.lock);
 
     event_emitf(EV_DB_MAINTENANCE_START, 0, "op=%s", op);
 
     int64_t start_ms = dbm_now_ms();
-    char *errmsg = NULL;
-    int rc = sqlite3_exec(db->db, sql, NULL, NULL, &errmsg);
+    char errmsg[256];
+    errmsg[0] = '\0';
+    bool ok = dbm_run_op_via_port(&port, op, errmsg, sizeof(errmsg));
     int64_t elapsed_ms = dbm_now_ms() - start_ms;
 
-    if (rc != SQLITE_OK) {
+    if (!ok) {
         g_dbm.total_failures++;
         snprintf(g_dbm.last_error, sizeof(g_dbm.last_error),
-                 "op=%s %s", op, errmsg ? errmsg : "sqlite error");
+                 "op=%s %s", op, errmsg[0] ? errmsg : "sqlite error");
         event_emitf(EV_DB_MAINTENANCE_FAILED, 0,
                     "op=%s reason=%s", op,
-                    errmsg ? errmsg : "sqlite error");
-        struct zcl_result r = ZCL_ERR(-3, "db_maint: op=%s rc=%d %s",
-                                      op, rc,
-                                      errmsg ? errmsg : "sqlite error");
-        sqlite3_free(errmsg);
+                    errmsg[0] ? errmsg : "sqlite error");
+        struct zcl_result r = ZCL_ERR(-3, "db_maint: op=%s %s",
+                                      op,
+                                      errmsg[0] ? errmsg : "sqlite error");
         pthread_mutex_unlock(&g_dbm.lock);
         return r;
     }
@@ -235,17 +254,19 @@ static bool dbm_due(int64_t last_unix, int64_t interval_seconds)
     return (dbm_now_unix() - last_unix) >= interval_seconds;
 }
 
-/* Returns the WAL file size in bytes, or 0 if unavailable. */
+/* Returns the WAL file size in bytes, or 0 if unavailable. The on-disk
+ * probe lives behind the db_maintenance_port adapter so this service
+ * never names sqlite. */
 static int64_t dbm_wal_size(struct node_db *db)
 {
     if (!db || !db->open || !db->db) return 0;
-    const char *db_path = sqlite3_db_filename(db->db, "main");
-    if (!db_path) return 0;
-    char wal_path[1024];
-    snprintf(wal_path, sizeof(wal_path), "%s-wal", db_path);
-    struct stat st;
-    if (stat(wal_path, &st) != 0) return 0;
-    return (int64_t)st.st_size;
+    struct db_maintenance_sqlite_ctx store_ctx;
+    struct db_maintenance_port port = {0};
+    db_maintenance_sqlite_bind(&store_ctx, db->db, &port);
+    int64_t bytes = 0;
+    if (!port.wal_size_bytes(port.self, &bytes))
+        return 0;
+    return bytes;
 }
 
 static void *dbm_thread_fn(void *arg)
