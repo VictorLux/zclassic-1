@@ -7,10 +7,11 @@
 #include "platform/time_compat.h"
 #include "services/block_index_integrity.h"
 
+#include "adapters/outbound/persistence/block_index_sidecar_sqlite.h"
 #include "crypto/sha3.h"
 #include "encoding/utilstrencodings.h"
 #include "event/event.h"
-#include "util/ar_step_readonly.h"
+#include "ports/block_index_sidecar_port.h"
 #include "util/log_macros.h"
 #include "util/result.h"
 #include "util/safe_alloc.h"
@@ -21,8 +22,6 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <unistd.h>
-
-#include <sqlite3.h>
 
 struct bii_sidecar_header {
     uint8_t  magic[4];
@@ -157,29 +156,43 @@ static enum bii_verdict bii_read_sidecar(const char *side_path,
     return BII_OK;
 }
 
+/* Cross-check the loader's declared tip against the SQLite `blocks`
+ * table. The single SELECT this used to issue inline now lives behind
+ * block_index_sidecar_port; we bind the default sqlite adapter to the
+ * node DB connection and translate the port's three-way lookup result
+ * back to the EXACT verdict the inline code produced:
+ *
+ *   FOUND + height matches    -> BII_OK
+ *   FOUND + height differs     -> BII_TIP_HEIGHT_MISMATCH
+ *   NOT_FOUND                  -> BII_TIP_MISSING_IN_SQL
+ *   UNAVAILABLE (skip)         -> BII_OK   (defer to CSR)
+ */
 static enum bii_verdict bii_check_tip_in_sql(struct node_db *db,
                                                const struct block_index *tip)
 {
     if (!db || !db->open || !db->db || !tip || !tip->phashBlock)
         return BII_OK;  /* nothing to cross-check */
 
-    sqlite3_stmt *st = NULL;
-    enum bii_verdict verdict = BII_OK;
-    if (sqlite3_prepare_v2(db->db,
-            "SELECT height FROM blocks WHERE hash=?", -1, &st, NULL) != SQLITE_OK)
-        return BII_OK;  /* schema may not be ready — defer to CSR */
+    struct block_index_sidecar_sqlite_ctx ctx;
+    struct block_index_sidecar_port port = {0};
+    if (!block_index_sidecar_sqlite_bind(&ctx, db->db, &port))
+        return BII_OK;  /* bind only fails on NULL args — skip cross-check */
 
-    sqlite3_bind_blob(st, 1, tip->phashBlock->data, 32, SQLITE_STATIC);
-    int rc = AR_STEP_ROW_READONLY(st);
-    if (rc == SQLITE_ROW) {
-        int64_t sql_h = sqlite3_column_int64(st, 0);
-        if (sql_h != (int64_t)tip->nHeight)
-            verdict = BII_TIP_HEIGHT_MISMATCH;
-    } else {
-        verdict = BII_TIP_MISSING_IN_SQL;
+    int64_t sql_h = 0;
+    enum bii_height_lookup got =
+        port.lookup_block_height(port.self, tip->phashBlock->data, &sql_h);
+
+    switch (got) {
+    case BII_HEIGHT_FOUND:
+        return sql_h != (int64_t)tip->nHeight
+                   ? BII_TIP_HEIGHT_MISMATCH
+                   : BII_OK;
+    case BII_HEIGHT_NOT_FOUND:
+        return BII_TIP_MISSING_IN_SQL;
+    case BII_HEIGHT_UNAVAILABLE:
+    default:
+        return BII_OK;  /* schema may not be ready — defer to CSR */
     }
-    sqlite3_finalize(st);
-    return verdict;
 }
 
 enum bii_verdict bii_verify(const char *datadir,
