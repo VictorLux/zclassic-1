@@ -3361,7 +3361,13 @@ sapling_tree_boot_check_done:
     {
         struct boot_phase bp_fin;
         boot_phase_begin(&bp_fin, "chain_restore_finalize");
-        bool finalize_ok = chain_restore_finalize(&g_state, ctx->datadir);
+        struct zcl_result finalize_r =
+            chain_restore_finalize(&g_state, ctx->datadir);
+        bool finalize_ok = finalize_r.ok;
+        if (!finalize_ok)
+            fprintf(stderr,
+                    "[boot] chain_restore_finalize failed: code=%d msg=%s\n",
+                    finalize_r.code, finalize_r.message);
         boot_phase_end(&bp_fin);
         int  tip_h = active_chain_height(&g_state.chain_active);
         bool fatal = !finalize_ok && tip_h > 1000;

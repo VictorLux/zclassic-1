@@ -105,8 +105,9 @@ int chain_restore_rebuild_active_chain(struct main_state *ms,
             printf("[chain-restore] installed live tip without full "
                    "active_chain walk: h=%d\n", tip_h);
         } else {
-            if (!chain_restore_commit_tip_via_csr(
-                    ms, tip, false, "rebuild_active_chain_full"))
+            struct zcl_result cr = chain_restore_commit_tip_via_csr(
+                    ms, tip, false, "rebuild_active_chain_full");
+            if (!cr.ok)
                 return 0;
         }
     }
@@ -519,9 +520,10 @@ static void chain_restore_quarantine_synthetic_tip(struct main_state *ms,
 
     LOG_INFO("chain", "[chain-restore] quarantining non-consensus active tip " "h=%d hash=%s status=%u file=%d pos=%u tx=%u chaintx=%lld; " "restoring nearest data-backed ancestor h=%d hash=%s", tip->nHeight, old_hash[0] ? old_hash : "<null>", tip->nStatus, tip->nFile, tip->nDataPos, tip->nTx, (long long)tip->nChainTx, replacement->nHeight, new_hash[0] ? new_hash : "<null>");
 
-    if (!chain_restore_commit_tip_via_csr(
+    struct zcl_result qr = chain_restore_commit_tip_via_csr(
             ms, replacement, ms->pindex_best_header == tip,
-            "quarantine_synthetic_tip")) {
+            "quarantine_synthetic_tip");
+    if (!qr.ok) {
         LOG_WARN("chain", "[chain-restore] failed to quarantine synthetic tip via csr");
     }
 }
@@ -546,9 +548,9 @@ static void chain_restore_clear_resolved_anchor(struct main_state *ms,
     snapsync_set_anchor(NULL);
 }
 
-bool chain_restore_finalize(struct main_state *ms, const char *datadir)
+struct zcl_result chain_restore_finalize(struct main_state *ms, const char *datadir)
 {
-    if (!ms) return false;
+    if (!ms) return ZCL_ERR(-1, "chain_restore_finalize: null main_state");
 
     chain_restore_quarantine_synthetic_tip(ms, datadir);
     chain_restore_clear_resolved_anchor(ms, datadir);
@@ -604,5 +606,13 @@ bool chain_restore_finalize(struct main_state *ms, const char *datadir)
             false, false);
     }
 
-    return r.ok;
+    if (!r.ok)
+        return ZCL_ERR(-2,
+                       "post-restore integrity FAILED: zero_nbits=%d "
+                       "tip_window_holes=%d total_holes=%d mismatches=%d "
+                       "tip_h=%d",
+                       r.zero_nbits_count, r.tip_window_holes,
+                       r.active_chain_holes, r.active_chain_mismatches,
+                       r.tip_height);
+    return ZCL_OK;
 }

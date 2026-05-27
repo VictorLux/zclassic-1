@@ -21,13 +21,15 @@
 #include "util/log_macros.h"
 #include "util/safe_alloc.h"
 
-bool chain_restore_commit_tip_via_csr(struct main_state *ms,
-                                      struct block_index *target,
-                                      bool update_header_tip,
-                                      const char *reason)
+struct zcl_result chain_restore_commit_tip_via_csr(struct main_state *ms,
+                                                   struct block_index *target,
+                                                   bool update_header_tip,
+                                                   const char *reason)
 {
     if (!ms || !target || !target->phashBlock)
-        return false;
+        return ZCL_ERR(-1, "chain_restore: null arg (ms=%p target=%p phash=%p)",
+                       (void *)ms, (void *)target,
+                       target ? (void *)target->phashBlock : NULL);
 
     struct chain_state_rollback_authorization rollback_auth = {
         .source = CSR_ROLLBACK_SOURCE_RESTORE,
@@ -51,7 +53,7 @@ bool chain_restore_commit_tip_via_csr(struct main_state *ms,
     struct chain_state_repository *csr = csr_instance();
     enum csr_result rc = csr_commit_tip(csr, &commit);
     if (rc == CSR_OK)
-        return true;
+        return ZCL_OK;
 
 #ifdef ZCL_TESTING
     if (rc == CSR_REJECTED_NOT_INITIALIZED) {
@@ -59,20 +61,25 @@ bool chain_restore_commit_tip_via_csr(struct main_state *ms,
                              reason ? reason : "csr_uninit_fallback");
         if (update_header_tip)
             ms->pindex_best_header = target;
-        return true;
+        return ZCL_OK;
     }
 #endif
 
     LOG_WARN("chain_restore", "chain_restore: csr rejected tip commit (%s) reason=%s h=%d", csr_result_name(rc), reason ? reason : "", target->nHeight);
-    return false;
+    return ZCL_ERR((int)rc,
+                   "csr rejected tip commit (%s) reason=%s h=%d",
+                   csr_result_name(rc), reason ? reason : "",
+                   target->nHeight);
 }
 
-bool chain_restore_commit_header_via_csr(struct main_state *ms,
-                                         struct block_index *target,
-                                         const char *reason)
+struct zcl_result chain_restore_commit_header_via_csr(struct main_state *ms,
+                                                      struct block_index *target,
+                                                      const char *reason)
 {
     if (!ms || !target || !target->phashBlock)
-        return false;
+        return ZCL_ERR(-1, "chain_restore: null arg (ms=%p target=%p phash=%p)",
+                       (void *)ms, (void *)target,
+                       target ? (void *)target->phashBlock : NULL);
 
     struct chain_state_rollback_authorization rollback_auth = {
         .source = CSR_ROLLBACK_SOURCE_RESTORE,
@@ -92,17 +99,20 @@ bool chain_restore_commit_header_via_csr(struct main_state *ms,
 
     enum csr_result rc = csr_commit_header_tip(csr_instance(), &commit);
     if (rc == CSR_OK)
-        return true;
+        return ZCL_OK;
 
 #ifdef ZCL_TESTING
     if (rc == CSR_REJECTED_NOT_INITIALIZED) {
         ms->pindex_best_header = target;
-        return true;
+        return ZCL_OK;
     }
 #endif
 
     LOG_WARN("chain_restore", "chain_restore: csr rejected header commit (%s) reason=%s h=%d", csr_result_name(rc), reason ? reason : "", target->nHeight);
-    return false;
+    return ZCL_ERR((int)rc,
+                   "csr rejected header commit (%s) reason=%s h=%d",
+                   csr_result_name(rc), reason ? reason : "",
+                   target->nHeight);
 }
 
 struct block_index *chain_restore_create_anchor(
@@ -180,24 +190,28 @@ struct block_index *chain_restore_execute(
                     "chain_restore: failed to open db_txn scope\n");
                 return NULL;
             }
-            if (!chain_restore_commit_tip_via_csr(
+            struct zcl_result r = chain_restore_commit_tip_via_csr(
                     ms, target, plan->should_set_best_header,
-                    "chain_restore.execute")) {
+                    "chain_restore.execute");
+            if (!r.ok) {
                 /* Scope auto-rollback fires on return. */
                 return NULL;
             }
             if (!db_txn_commit(txn))
                 return NULL;
-        } else if (!chain_restore_commit_tip_via_csr(
+        } else {
+            struct zcl_result r = chain_restore_commit_tip_via_csr(
                        ms, target, plan->should_set_best_header,
-                       "chain_restore.execute")) {
-            return NULL;
+                       "chain_restore.execute");
+            if (!r.ok)
+                return NULL;
         }
     } else if (plan->should_set_best_header) {
         /* Extremely rare: plan asked for header-only update with no
          * chain tip change. Preserve legacy behaviour. */
-        if (!chain_restore_commit_header_via_csr(
-                ms, target, "chain_restore.header_only")) {
+        struct zcl_result r = chain_restore_commit_header_via_csr(
+                ms, target, "chain_restore.header_only");
+        if (!r.ok) {
             return NULL;
         }
     }
@@ -209,6 +223,7 @@ struct block_index *chain_restore_execute(
      * and surface the integrity result. Unit tests pass
      * datadir implicitly via the NULL path (skips disk-backfill); real
      * boot paths call chain_restore_finalize directly with a datadir. */
+    /* discard result — boot finalize at top level handles propagation */
     (void)chain_restore_finalize(ms, NULL);
 
     return target;

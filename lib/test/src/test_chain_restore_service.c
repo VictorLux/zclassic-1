@@ -1152,8 +1152,8 @@ static int test_finalize_null_datadir_skips_disk(void) {
                                    "unit-test stale reconcile",
                                    true, false);
 
-        /* Fully clean chain — finalize returns true. */
-        ASSERT(chain_restore_finalize(&ms, NULL) == true);
+        /* Fully clean chain — finalize returns ZCL_OK. */
+        ASSERT(chain_restore_finalize(&ms, NULL).ok == true);
         struct bii_recovery_status st;
         memset(&st, 0, sizeof(st));
         bii_get_recovery_status(&st);

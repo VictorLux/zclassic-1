@@ -7,19 +7,21 @@
 
 #include <stdbool.h>
 
+#include "util/result.h"
+
 struct main_state;
 struct block_index;
 struct uint256;
 struct chain_restore_plan;
 
-bool chain_restore_commit_tip_via_csr(struct main_state *ms,
-                                      struct block_index *target,
-                                      bool update_header_tip,
-                                      const char *reason);
+struct zcl_result chain_restore_commit_tip_via_csr(struct main_state *ms,
+                                                   struct block_index *target,
+                                                   bool update_header_tip,
+                                                   const char *reason);
 
-bool chain_restore_commit_header_via_csr(struct main_state *ms,
-                                         struct block_index *target,
-                                         const char *reason);
+struct zcl_result chain_restore_commit_header_via_csr(struct main_state *ms,
+                                                      struct block_index *target,
+                                                      const char *reason);
 
 /* Create a placeholder anchor block_index at `height` with `hash`.
  * Inserts it into ms->map_block_index as metadata only. The anchor is

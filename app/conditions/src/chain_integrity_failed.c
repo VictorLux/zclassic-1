@@ -64,8 +64,12 @@ static enum condition_remedy_result remedy_chain_integrity_failed(void)
     char datadir[1024];
     GetDataDir(true, datadir, sizeof(datadir));
 
-    return chain_restore_finalize(ms, datadir)
-        ? COND_REMEDY_OK : COND_REMEDY_FAILED;
+    struct zcl_result fr = chain_restore_finalize(ms, datadir);
+    if (!fr.ok)
+        LOG_WARN("condition",
+                 "[condition:chain_integrity_failed] finalize failed "
+                 "code=%d msg=%s", fr.code, fr.message);
+    return fr.ok ? COND_REMEDY_OK : COND_REMEDY_FAILED;
 }
 
 static bool witness_chain_integrity_failed(int64_t target_at_detect)

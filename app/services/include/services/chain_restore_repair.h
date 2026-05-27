@@ -7,6 +7,8 @@
 
 #include <stdbool.h>
 
+#include "util/result.h"
+
 struct main_state;
 struct block_index;
 
@@ -42,6 +44,6 @@ struct block_index *chain_restore_nearest_consensus_backed_ancestor_on_disk(
     struct block_index *tip,
     const char *datadir);
 
-bool chain_restore_finalize(struct main_state *ms, const char *datadir);
+struct zcl_result chain_restore_finalize(struct main_state *ms, const char *datadir);
 
 #endif
