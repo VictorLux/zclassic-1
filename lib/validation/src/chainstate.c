@@ -6,6 +6,8 @@
 
 #include "validation/chainstate.h"
 #include "util/log_macros.h"
+#include "storage/progress_store.h"
+#include <sqlite3.h>
 #include <stdlib.h>
 #include <string.h>
 #include "util/safe_alloc.h"
@@ -232,8 +234,10 @@ void active_chain_free(struct active_chain *c)
 
 struct block_index *active_chain_tip(const struct active_chain *c)
 {
-    if (!c || !c->chain || c->height < 0) return NULL;
-    return c->chain[c->height];
+    if (!c || !c->chain) return NULL;
+    int h = active_chain_height(c);
+    if (h < 0) return NULL;
+    return c->chain[h];
 }
 
 struct block_index *active_chain_at(const struct active_chain *c, int height)
@@ -303,7 +307,18 @@ bool active_chain_set_tip(struct active_chain *c, struct block_index *bi)
 int active_chain_height(const struct active_chain *c)
 {
     if (!c) return -1;
-    return c->height;
+    sqlite3 *db = progress_store_db();
+    if (!db) return -1;
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(db, "SELECT MAX(height) FROM tip_finalize_log WHERE ok = 1", -1, &st, NULL) != SQLITE_OK)
+        return -1;
+    int h = -1;
+    int rc = sqlite3_step(st);  // raw-sql-ok:kernel-primitive
+    if (rc == SQLITE_ROW && sqlite3_column_type(st, 0) != SQLITE_NULL) {
+        h = sqlite3_column_int(st, 0);
+    }
+    sqlite3_finalize(st);
+    return h;
 }
 
 /* --- Chainstate --- */
