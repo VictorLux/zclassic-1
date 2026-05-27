@@ -18,6 +18,8 @@
 #ifndef ZCL_SERVICES_HODL_HISTORY_SERVICE_H
 #define ZCL_SERVICES_HODL_HISTORY_SERVICE_H
 
+#include "util/result.h"
+
 #include <sqlite3.h>
 #include <stdbool.h>
 #include <stdint.h>
@@ -33,9 +35,12 @@ struct hodl_history_row {
     double  older_1y_pct;
 };
 
-/* Compute and persist one snapshot. Returns false on SQL error or if
- * the height predates enough chain history to be meaningful. */
-bool hodl_history_fill_one(sqlite3 *db, int64_t height);
+/* Compute and persist one snapshot. Returns a non-ok zcl_result on SQL
+ * error or if the height predates enough chain history to be meaningful
+ * (the message names the failing reason; the bare no-op cases — bad
+ * args, block not yet indexed, snapshot compute miss — carry distinct
+ * codes so the caller's log explains why no row was written). */
+struct zcl_result hodl_history_fill_one(sqlite3 *db, int64_t height);
 
 /* Walk from the most recent filled sample up to (chain_tip - stride),
  * filling at most max_rows new rows. Returns rows filled. */

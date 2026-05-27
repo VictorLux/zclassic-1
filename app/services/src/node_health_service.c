@@ -2,6 +2,16 @@
  * Distributed under the MIT software license, see the accompanying
  * file COPYING or http://www.opensource.org/licenses/mit-license.php. */
 
+// one-result-type-ok:health-no-fallible-surface
+/* E2 (one-result-type) override. This service owns no fallible public
+ * surface: node_health_collect() returns void (it best-effort fills a
+ * caller-owned snapshot, defaulting fields it cannot read rather than
+ * failing), and node_health_chain_advance_synced() is a pure predicate
+ * (a yes/no question over a cac_decision, not an operation that can
+ * fail for a reason). There is no error to carry, so zcl_result would
+ * add a code/message that is always ZCL_OK. Marker, not a baseline
+ * entry, per check_one_result_type.sh's override path. */
+
 #include "platform/time_compat.h"
 #include "services/node_health_service.h"
 #include "jobs/tip_finalize_stage.h"

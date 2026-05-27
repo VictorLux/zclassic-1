@@ -101,15 +101,25 @@ static bool fill_one_via_port(struct hodl_history_port *port, int64_t height)
     return true;
 }
 
-bool hodl_history_fill_one(sqlite3 *db, int64_t height)
+struct zcl_result hodl_history_fill_one(sqlite3 *db, int64_t height)
 {
     if (!db || height < 1)
-        return false;
+        return ZCL_ERR(-1, "bad args: db=%p height=%" PRId64,
+                       (void *)db, height);
     struct hodl_history_port port;
     if (!hodl_history_sqlite_bind(db, &port)) {
-        LOG_FAIL("hodl_history", "failed to bind sqlite port");
+        /* Preserves the prior LOG_FAIL("hodl_history", ...) line and its
+         * early-return-on-bind-failure behavior, now carrying the reason. */
+        fprintf(stderr, // obs-ok:paired-with-ZCL_ERR-return
+                "[hodl_history] %s:%d %s(): failed to bind sqlite port\n",
+                __FILE__, __LINE__, __func__);
+        return ZCL_ERR(-3, "failed to bind sqlite port");
     }
-    return fill_one_via_port(&port, height);
+    if (!fill_one_via_port(&port, height))
+        return ZCL_ERR(-2, "no snapshot written for height %" PRId64
+                           " (block not yet indexed or compute miss)",
+                       height);
+    return ZCL_OK;
 }
 
 int hodl_history_fill_pending(sqlite3 *db, int64_t chain_tip, int max_rows)

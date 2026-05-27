@@ -180,7 +180,7 @@ int test_hodl_history_port(void)
         }
 
         /* fill_one drives the same aggregate + clamp + pct + upsert. */
-        HH_CHECK("service fill_one(3)", hodl_history_fill_one(db, 3));
+        HH_CHECK("service fill_one(3)", hodl_history_fill_one(db, 3).ok);
 
         struct hodl_history_row rows[8];
         int n = hodl_history_load_all(db, rows, 8);
@@ -196,7 +196,7 @@ int test_hodl_history_port(void)
         /* fill_one on a missing height is a clean no-op false (block
          * not indexed) and must NOT persist a row. */
         HH_CHECK("service fill_one(99) false",
-                 !hodl_history_fill_one(db, 99));
+                 !hodl_history_fill_one(db, 99).ok);
         n = hodl_history_load_all(db, rows, 8);
         HH_CHECK("still 1 row after miss", n == 1);
 
@@ -209,9 +209,9 @@ int test_hodl_history_port(void)
         HH_CHECK("bind rejects NULL db",
                  !hodl_history_sqlite_bind(NULL, &port));
         HH_CHECK("fill_one rejects NULL db",
-                 !hodl_history_fill_one(NULL, 1));
+                 !hodl_history_fill_one(NULL, 1).ok);
         HH_CHECK("fill_one rejects height<1",
-                 !hodl_history_fill_one((sqlite3 *)0x1, 0));
+                 !hodl_history_fill_one((sqlite3 *)0x1, 0).ok);
         HH_CHECK("load_all rejects NULL db",
                  hodl_history_load_all(NULL, NULL, 8) == 0);
         HH_CHECK("fill_pending rejects small tip",
