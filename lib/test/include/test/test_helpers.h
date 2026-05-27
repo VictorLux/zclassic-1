@@ -382,6 +382,7 @@ int test_domain_consensus_upgrades(void);
 int test_domain_consensus_coinbase(void);
 int test_domain_consensus_header_accept(void);
 int test_domain_wallet_key_derivation(void);
+int test_domain_wallet_mnemonic(void);
 int test_application_consensus_validate_block(void);
 int test_block_log_file(void);
 int test_block_log_legacy(void);
