@@ -1,60 +1,49 @@
 /* Copyright (c) 2009-2014 The Bitcoin Core developers
  * Copyright 2026 Rhett Creighton - Apache License 2.0
  * Distributed under the MIT software license, see the accompanying
- * file COPYING or http://www.opensource.org/licenses/mit-license.php. */
+ * file COPYING or http://www.opensource.org/licenses/mit-license.php.
+ *
+ * Thin lib/ adapter over the pure
+ * domain/consensus/checkpoints.{c,h} primitives. Holds the single
+ * clock read (`platform_time_wall_time_t`) plus the NULL-arg
+ * logging policy. All matching/lookup logic is in the domain layer. */
 
 #include "platform/time_compat.h"
 #include "chain/checkpoints.h"
+#include "domain/consensus/checkpoints.h"
 #include "util/log_macros.h"
 #include <stddef.h>
-#include <time.h>
-
-static const double SIGCHECK_VERIFICATION_FACTOR = 5.0;
 
 int checkpoints_get_total_blocks_estimate(const struct checkpoint_data *data)
 {
-    if (data->nEntries == 0)
-        return 0;
-    return data->entries[data->nEntries - 1].height;
+    return domain_consensus_checkpoints_total_blocks_estimate(data);
 }
 
 double checkpoints_guess_verification_progress(
     const struct checkpoint_data *data,
     const struct block_index *pindex, bool fSigchecks)
 {
+    /* Legacy contract: NULL pindex -> 0.0. The domain primitive can't
+     * see "pindex was NULL" — that's a wrapper concern, so we keep
+     * the early-return here and read the clock only when there's
+     * actual work to do. */
     if (pindex == NULL)
         return 0.0;
 
-    int64_t nNow = platform_time_wall_time_t();
-    double fSigcheckFactor = fSigchecks ? SIGCHECK_VERIFICATION_FACTOR : 1.0;
-    double fWorkBefore = 0.0;
-    double fWorkAfter = 0.0;
-
-    if ((int64_t)pindex->nChainTx <= data->nTransactionsLastCheckpoint) {
-        double nCheapBefore = (double)pindex->nChainTx;
-        double nCheapAfter = (double)data->nTransactionsLastCheckpoint - nCheapBefore;
-        double nExpensiveAfter = (double)(nNow - data->nTimeLastCheckpoint) /
-                                 86400.0 * data->fTransactionsPerDay;
-        fWorkBefore = nCheapBefore;
-        fWorkAfter = nCheapAfter + nExpensiveAfter * fSigcheckFactor;
-    } else {
-        double nCheapBefore = (double)data->nTransactionsLastCheckpoint;
-        double nExpensiveBefore = (double)pindex->nChainTx - nCheapBefore;
-        double nExpensiveAfter = (double)(nNow - block_index_get_time(pindex)) /
-                                 86400.0 * data->fTransactionsPerDay;
-        fWorkBefore = nCheapBefore + nExpensiveBefore * fSigcheckFactor;
-        fWorkAfter = nExpensiveAfter * fSigcheckFactor;
-    }
-
-    return fWorkBefore / (fWorkBefore + fWorkAfter);
+    int64_t now = platform_time_wall_time_t();
+    return domain_consensus_checkpoints_progress_at_now(
+            data,
+            (uint64_t)pindex->nChainTx,
+            block_index_get_time(pindex),
+            now,
+            fSigchecks);
 }
 
 /* ── Enforcement helpers ───────────────────────────────────
  *
- * The active checkpoint list is tiny (≤10 entries on mainnet)
- * so linear scans are fine here. If that ever grows, convert
- * to a binary search keyed on `height`.
- */
+ * Thin wrappers — the matching logic lives in the domain layer.
+ * The lib/ wrapper preserves the legacy LOG_FAIL / LOG_ERR
+ * observability on NULL arguments. */
 
 bool checkpoints_hash_at_height(const struct checkpoint_data *data,
                                  int height,
@@ -63,41 +52,21 @@ bool checkpoints_hash_at_height(const struct checkpoint_data *data,
     if (!data || !out_hash)
         LOG_FAIL("checkpoints", "hash_at_height: NULL argument (data=%p, out_hash=%p)",
                  (const void *)data, (const void *)out_hash);
-    for (int i = 0; i < data->nEntries; i++) {
-        if (data->entries[i].height == height) {
-            *out_hash = data->entries[i].hash;
-            return true;
-        }
-    }
-    /* No checkpoint at this height — this is normal for 99.99% of heights.
-     * Only checkpoint violations (hash mismatch) are worth logging. */
-    return false;
+    return domain_consensus_checkpoints_hash_at_height(data, height, out_hash);
 }
 
 int checkpoints_last_height(const struct checkpoint_data *data)
 {
     if (!data || data->nEntries == 0)
         LOG_ERR("checkpoints", "last_height: no checkpoint data (data=%p)", (const void *)data);
-    /* The list is ascending-height in practice (see
-     * chainparams.c), so the final entry is the deepest.
-     * Defensive scan in case that ever gets shuffled. */
-    int best = -1;
-    for (int i = 0; i < data->nEntries; i++) {
-        if (data->entries[i].height > best)
-            best = data->entries[i].height;
-    }
-    return best;
+    return domain_consensus_checkpoints_last_height(data);
 }
 
 bool checkpoints_validate_header(const struct checkpoint_data *data,
                                   int height,
                                   const struct uint256 *hash)
 {
-    if (!data || !hash) return true;  /* degenerate: nothing to check */
-    struct uint256 expected;
-    if (!checkpoints_hash_at_height(data, height, &expected))
-        return true;  /* no checkpoint at this height */
-    return uint256_cmp(hash, &expected) == 0;
+    return domain_consensus_checkpoints_validate_header(data, height, hash);
 }
 
 /* ── SHA3 UTXO checkpoint ──────────────────────────────── */
