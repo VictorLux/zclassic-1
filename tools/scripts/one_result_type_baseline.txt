@@ -38,18 +38,14 @@ app/services/src/chain_tip_watchdog.c
 app/services/src/consensus_reject_index.c
 app/services/src/cutover_modes.c
 app/services/src/db_maintenance.c
-app/services/src/disk_monitor.c
-app/services/src/gap_fill_service.c
 app/services/src/header_admit_stage.c
 app/services/src/header_probe.c
 app/services/src/header_sync_service.c
 app/services/src/hodl_history_service.c
-app/services/src/ibd_throttle.c
 app/services/src/legacy_body_pull.c
 app/services/src/legacy_bootstrap_importer.c
 app/services/src/legacy_bootstrap_spotcheck.c
 app/services/src/legacy_mirror_sync_service.c
-app/services/src/mempool_limits.c
 app/services/src/node_health_service.c
 app/services/src/oracle_policy.c
 app/services/src/proof_validate_stage.c
@@ -57,12 +53,8 @@ app/services/src/quorum_oracle_service.c
 app/services/src/recovery_policy.c
 app/services/src/rolling_anchor_service.c
 app/services/src/script_validate_stage.c
-app/services/src/snapshot_apply.c
-app/services/src/snapshot_fetch.c
 app/services/src/snapshot_manifest.c
-app/services/src/snapshot_offer.c
 app/services/src/snapshot_sync_service.c
-app/services/src/snapshot_verify.c
 app/services/src/sync_monitor.c
 app/services/src/tip_finalize_stage.c
 app/services/src/utxo_apply_stage.c
@@ -71,5 +63,3 @@ app/services/src/utxo_recovery_service.c
 app/services/src/validate_headers_stage.c
 app/services/src/wallet_view_projection.c
 app/services/src/zclassicd_oracle_service.c
-app/services/src/zslp_command_service.c
-app/services/src/zslp_service.c
