@@ -179,18 +179,19 @@ know the shape.
 
 | # | Shape | Folder | Canonical form | Status | Exemplar |
 |---|-------|--------|----------------|--------|----------|
-| 1 | **Controller** | `app/controllers/` | `static int h_x(req,res)` + route table | legacy-C, large files | `chain_projection.c` |
-| 2 | **Service** | `app/services/` | functions returning `struct zcl_result` | partial; `bool` still dominates | `replay_verify_service.c` |
-| 3 | **Model** | `app/models/` | `DEFINE_MODEL_CALLBACKS` + `validates_*` + AR save | **real, enforced** | `block.c` |
-| 4 | **Job** | `app/jobs/` | cursor-stamped stage: advance-or-blocker | misfiled (the 8 `*_stage.c` live in `services/`) | `*_stage.c` |
-| 5 | **Supervisor** | `app/supervisors/` | declared liveness tree, restart policy | leaky (wired inside boot monolith) | `lib/util/supervisor.c` |
-| 6 | **Condition** | `app/conditions/` | `{detect, remedy, witness}` struct + `register()` | **real, the model citizen** | `block_failed_mask_at_tip.c` |
-| 7 | **Event** | `app/events/` | typed append-only emit + subscribers | empty shell (events live in `lib/`) | `lib/storage/event_log.c` |
+| 1 | **Controller** | `app/controllers/` | `static int h_x(req,res)` + route table | legacy-C; 12 oversized controllers split, 3 remain (all legacy-import) | `chain_projection.c` |
+| 2 | **Service** | `app/services/` | functions returning `struct zcl_result` | partial; 49 baselined, down from 77 (A4 in flight, cluster-by-cluster) | `replay_verify_service.c` |
+| 3 | **Model** | `app/models/` | `DEFINE_MODEL_CALLBACKS` + `validates_*` + AR save | **real, enforced** (29 models, E3+E4+model-validation HARD) | `block.c` |
+| 4 | **Job** | `app/jobs/` | cursor-stamped stage: advance-or-blocker | **real** — 8 Wave-S stages relocated to `app/jobs/`; E5 HARD (advance-or-block) | `*_stage.c` |
+| 5 | **Supervisor** | `app/supervisors/` | declared liveness tree, restart policy | partial — `net`/`chain`/`staged_sync` declared; `boot_services.c` still owns lifecycle wiring | `app/supervisors/src/staged_sync_supervisor.c` |
+| 6 | **Condition** | `app/conditions/` | `{detect, remedy, witness}` struct + `register()` | **real, the model citizen** (22 conditions live) | `block_failed_mask_at_tip.c` |
+| 7 | **Event** | `app/events/` | typed append-only emit + subscribers | scaffold (definitions + subscribers populate as B2 makes the log authoritative; impl lives in `lib/`) | `lib/storage/event_log.c` |
 | 8 | **Storage Adapter** | `adapters/` + `ports/` | port interface + swappable impl | partial; most storage still direct | `adapters/outbound/persistence/` |
 
-The honest read: **three shapes are real (Model, Condition, the projection +
-`*_dump_state_json` registry); the rest are legacy C wearing a shape label, or
-scaffold.** That gap — not the absence of ideas — is the work.
+The honest read: **four shapes are real and enforced today (Model, Condition,
+Job, plus the projection + `*_dump_state_json` registry); Supervisor is
+partial; the rest are legacy C wearing a shape label, or scaffold.** That gap
+— not the absence of ideas — is the work.
 
 ### The canonical form is struct-registration, not a block-DSL
 
@@ -278,18 +279,19 @@ human reviewer. The ladder is deliberate:
 - **RATCHET** — a law the tree doesn't yet satisfy but must monotonically approach. The baseline can only shrink; growing it costs an ADR.
 - **HARD** — a law the tree already satisfies. One regression is one too many.
 
-**Live gates (21).** Hygiene and adoption are well covered: no bare malloc, no
+**Live gates (29).** Hygiene + adoption are well covered: no bare malloc, no
 raw `sqlite3_step` (compiler-poisoned), no silent error returns, no raw
 clock/RNG outside `lib/platform/`, threads only via the registry,
 observability-pairing, before/after-save hooks, function ≤500 LOC,
 `lib/`→`app/` layering (ratchet), supervisor registration (ratchet), typed
-blockers (ratchet), framework-shape (WARN). The gates are themselves under test
-(`test_make_lint_gates.c` plants a fixture, asserts the gate trips, removes it,
-asserts green).
+blockers (ratchet), framework-shape (ratchet). The gates are themselves under
+test (`test_make_lint_gates.c` plants a fixture, asserts the gate trips,
+removes it, asserts green).
 
-**The gap: hygiene is enforced; *architecture* is not.** The Ten Laws and the
-Prime Directive need their own gates. These are designed in the checklist and
-land with the work they guard:
+**9 of the 11 architecture gates are now enforced** (6 HARD: E3, E4, E5, E8,
+E9, E11; 3 RATCHET: E1, E2, E10). Only **E6** (one-write-path) and **E7**
+(no-authoritative-RAM-state) remain — they land with B7. The Ten Laws and the
+Prime Directive land as gates with the work they guard:
 
 | Gate | Enforces (law) | Mode |
 |------|----------------|------|
@@ -303,8 +305,9 @@ land with the work they guard:
 | **file-size-ceiling** | no `app/` file over the cap; mega-modules can't hide under <500-LOC functions (Law 1) | ratchet down |
 | **one-result-type** | services return `zcl_result`, not bare `bool`/`int` (Law 2) | ratchet |
 
-Two strategic WARN gates (`framework-shape`, `controller-SQL`) graduate to
-RATCHET as the refactor makes the boundary load-bearing.
+Both strategic gates (`framework-shape`, `controller-SQL`) have graduated
+WARN → RATCHET (`5daf21742`); they harden as the refactor makes the boundary
+load-bearing.
 
 ---
 
