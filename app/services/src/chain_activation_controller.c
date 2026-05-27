@@ -3,6 +3,22 @@
  * Chain Activation Controller — single authority for block connection.
  * See chain_activation_controller.h for architecture overview. */
 
+// one-result-type-ok:decision-out-structs
+//
+// Activation is a state machine + decision planner. Every fallible decision
+// is reported through a domain OUT-STRUCT that carries a reason[]:
+//   - activation_should_connect()      -> activation_decision   (result enum + reason)
+//   - activation_request_connect()     -> activation_exec_outcome (result enum + reason)
+//   - activation_should_allow_utxo_wipe() -> utxo_wipe_decision  (safe + reason)
+// The bool returns are PREDICATES, not lost-reason failures:
+//   - activation_eval_tip_blocker() — "tip behind?"; the why+escape travels
+//     via the typed blocker_record it registers (activation_set_behind_blocker).
+//   - activation_set_state() — transition gate; illegal transitions log via
+//     LOG_WARN + emit EV_ACTIVATION_STATE_CHANGE.
+//   - activation_transition_valid() — pure transition-table lookup.
+// activation_state_name() is an enum->name table; activation_drain_deferred()
+// returns a count. No bare-bool strips a failure reason. Behavior bit-for-bit.
+
 #include "services/chain_activation_controller.h"
 #include "validation/main_state.h"
 #include "validation/chainstate.h"

@@ -25,6 +25,20 @@
  * Resets g_deferred_proof_validation_below_height = -1 when complete.
  */
 
+// one-result-type-ok:validation-progress-result
+//
+// The service result of this file is the validation PROGRESS — a single
+// coherent type carried by struct bg_validation_progress (returned by
+// bg_validation_get_progress) and the enum bg_validation_state within it
+// (IDLE/RUNNING/PAUSED/COMPLETE/FAILED). A validation failure surfaces as
+// progress.state = BG_VALIDATION_FAILED, not a reason-less bool.
+// The bool/int helpers do NOT strip a failure reason:
+//   - read_block_undo(), validate_block_proofs(), bg_validation_start() each
+//     LOG_FAIL / LOG_WARN (with state.reject_reason) on every failure branch.
+//   - load_progress() returns a height-or-sentinel and LOG_ERRs when absent.
+//   - bg_validation_state_name() is the enum->name table.
+// init/stop/reset are void lifecycle. Behavior bit-for-bit.
+
 #include "platform/time_compat.h"
 #include "services/bg_validation_service.h"
 #include "bg_validation_internal.h"

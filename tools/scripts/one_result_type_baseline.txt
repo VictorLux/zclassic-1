@@ -8,20 +8,15 @@
 # here — the gate will enforce that it stays migrated.
 #
 # One path per line, repo-relative.
-app/services/src/bg_validation_service.c
 app/services/src/block_index_loader.c
-app/services/src/block_sync_service.c
 app/services/src/body_fetch_stage.c
 app/services/src/body_persist_stage.c
-app/services/src/chain_activation_controller.c
 app/services/src/chain_advance_coordinator.c
-app/services/src/chain_evidence_controller.c
 app/services/src/chain_evidence_snapshot.c
 app/services/src/chain_evidence_store.c
 app/services/src/chain_restore_boot_snapshot.c
 app/services/src/chain_restore_disk_repair.c
 app/services/src/chain_state_repository.c
-app/services/src/chain_tip_watchdog.c
 app/services/src/cutover_modes.c
 app/services/src/header_admit_stage.c
 app/services/src/hodl_history_service.c

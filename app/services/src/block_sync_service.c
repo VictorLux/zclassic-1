@@ -2,6 +2,21 @@
  * Distributed under the MIT software license, see the accompanying
  * file COPYING or http://www.opensource.org/licenses/mit-license.php. */
 
+// one-result-type-ok:planner-decision-out-structs
+//
+// This is a pure sync planner. Every syncsvc_* entry that decides anything
+// fills a domain decision OUT-STRUCT (sync_getheaders_action,
+// sync_block_assignment, sync_block_batch, sync_block_acceptance,
+// sync_progress_snapshot, sync_stall_recovery, sync_next_block_download)
+// and the failure/why context travels IN that struct (e.g.
+// sync_next_block_download.reason[]). The bool returns are non-fallible
+// "should I act" PREDICATES whose richer reasoning already lives in the
+// out-struct (build_stall_recovery / queue_next_block_download /
+// should_warn_tip_stale); the enum return (syncsvc_recovery_header_anchor)
+// is a pure mapping. No bare-bool strips a lost failure reason — the null/
+// arg failures in build_stall_recovery log via LOG_FAIL. The coherent result
+// type of this file is "a planned decision out-struct". Behavior bit-for-bit.
+
 #include "platform/time_compat.h"
 #include "services/block_sync_service.h"
 #include "services/header_sync_service.h"

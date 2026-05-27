@@ -2,6 +2,24 @@
  *
  * Tip-stuck watchdog. See services/chain_tip_watchdog.h. */
 
+// one-result-type-ok:watchdog-no-fallible-surface
+//
+// This is a supervisor-child monitor, not a fallible service executor. It
+// owns no pass/fail operation that a caller branches on. Its surfaces are:
+//   - void tick / register / setters,
+//   - a single coherent stats out-struct (chain_tip_watchdog_stats) returned
+//     by get_stats() and projected by dump_state_json(),
+//   - bool returns that are DECISIONS or PREDICATES, not lost-reason failures:
+//       * wd_decide_restart() returns "did/would request shutdown"; the
+//         escalation reason travels via EV_OPERATOR_NEEDED /
+//         EV_CHAIN_ADVANCE_DECISION + LOG_WARN on every branch.
+//       * wd_persist_load/store() degrade gracefully (no-store is not an
+//         error); every real failure logs via LOG_FAIL/LOG_WARN.
+//       * dump_state_json() is the mandated *_dump_state_json -> bool
+//         introspection convention, which must stay bool.
+// No bare-bool here strips a failure reason — they all log or carry the
+// reason in an event/out-struct. Behavior bit-for-bit.
+
 #include "platform/time_compat.h"
 #include "services/chain_tip_watchdog.h"
 

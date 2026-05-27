@@ -1,5 +1,23 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0 */
 
+// one-result-type-ok:single-cec-result-enum
+//
+// Every fallible mutation entry on this authority returns ONE coherent domain
+// result type: enum chain_evidence_controller_result. It is richer than a
+// generic ok/err carrier — each CEC_REJECTED_* code IS the named failure
+// reason the callers switch on:
+//   - import_snapshot_evidence(), promote_tip(), mark_background_progress(),
+//     mark_fully_validated() all return enum chain_evidence_controller_result.
+// Non-fallible surfaces:
+//   - load_state() returns the state enum (a getter); freeze() is void but
+//     ALWAYS names itself (no-silent-halt) and persists the reason.
+//   - the bool helpers (bytes32_nonzero, u256_nonzero/equal, load_u256,
+//     has_*_required, persist_state/i64/blob, state_allows_tip_promotion) are
+//     PRIVATE predicates feeding the result enum; parse_state/state_get_i32 are
+//     pure decoders with defaults.
+// No public fallible operation returns a bare reason-less bool. Behavior
+// bit-for-bit.
+
 #include "services/chain_evidence_controller.h"
 #include "util/log_macros.h"
 #include "services/chain_evidence_store.h"
