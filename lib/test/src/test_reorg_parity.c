@@ -31,23 +31,30 @@
  *   canonical byte-level fingerprint of the coin set. Two views with
  *   equal commitments hold byte-identical UTXO sets.
  *
- *   IMPORTANT: the live IN-MEMORY accumulator (`cache->commitment`) is
+ *   The in-memory incremental accumulator (`cache->commitment`) is
  *   maintained only on the forward path (update_coins add/remove);
- *   disconnect_block does NOT decrement it. So after a reorg the
- *   in-memory accumulator is path-DEPENDENT (stale). The live node's
- *   authoritative fingerprint is utxo_commitment_compute_db() — a
- *   recompute over the actual coin set. This test mirrors that: it
- *   recomputes a PATH-INDEPENDENT commitment over the coin set and
- *   asserts the reorged view and the direct-build view converge to an
- *   identical fingerprint, plus per-outpoint presence/value/height
- *   equality so a commitment collision cannot mask a divergence.
+ *   disconnect_block does NOT decrement it. Trusting it directly after a
+ *   reorg would be path-DEPENDENT (stale). The fix (CLOSED — see below)
+ *   is an authoritative QUERY that recomputes from the coin set:
+ *   coins_view_cache_recompute_commitment() — the in-memory analogue of
+ *   the live node's utxo_commitment_compute_db() (which iterates the
+ *   SQLite `utxos` table). This test exercises that query and asserts the
+ *   reorged view and the direct-build view converge to an identical
+ *   fingerprint, plus per-outpoint presence/value/height equality so a
+ *   commitment collision cannot mask a divergence.
  *
- *   FINDING surfaced by this corpus: a cutover proof MUST recompute the
- *   commitment from the coin set after any reorg; trusting the in-memory
- *   accumulator post-reorg would report a false divergence (or, worse,
- *   mask a real one). The test prints the stale-accumulator delta so the
- *   gap stays visible. The real invariant — the byte-exact coin SET — is
- *   path-independent and PASSES.
+ *   BUG (now CLOSED): "cache->commitment is path-dependent across reorgs."
+ *   ROOT: disconnect_block never decrements the XOR accumulator, so the
+ *   incremental field encodes connect/disconnect HISTORY rather than the
+ *   current coin set. FIX (this branch): rather than mutate the validation
+ *   hot path (disconnect_block), the authoritative commitment is now a
+ *   path-INDEPENDENT recompute over the live coin SET
+ *   (coins_view_cache_recompute_commitment in lib/coins). The forward-only
+ *   incremental value is unchanged byte-for-byte (same per-UTXO hash
+ *   inputs; XOR is commutative), so persisted snapshots stay valid; the
+ *   recompute is O(N) on-demand, off the per-block hot path. This test now
+ *   ASSERTS path-independence: the queried recompute over the reorged view
+ *   equals a from-scratch recompute, and equals the direct-build view.
  *
  *   This mirrors shadow_replay_proof's convergence idiom: the proof
  *   passes only when the two paths converge to an identical fingerprint
@@ -219,15 +226,14 @@ static bool connect_block_with_undo(struct block *blk, int height,
 /* Recompute a PATH-INDEPENDENT UTXO commitment for `view` by XOR-ing in
  * every still-available output across the supplied candidate txid set.
  *
- * The in-memory `view->commitment` accumulator is maintained only on the
- * forward path (update_coins add/remove); disconnect_block does NOT
- * decrement it (documented in test_reorg_safety.c and confirmed: the
- * disconnect path touches no UTXO XOR accumulator). So `view->commitment`
- * after a reorg is stale. The AUTHORITATIVE byte-exact fingerprint the
- * live node uses is utxo_commitment_compute_db() — a recompute over the
- * actual coin set. This helper is the in-memory equivalent: it proves the
- * coin SET is byte-identical regardless of path, independent of any
- * stale incremental accumulator. */
+ * This is the explicit-universe twin of the production query
+ * coins_view_cache_recompute_commitment() (which iterates the cache's own
+ * live entries). Both derive the fingerprint from the coin SET, not the
+ * incremental `view->commitment` accumulator, so both are independent of
+ * any reorg history. We keep this universe-driven helper to cross-check the
+ * production query against an INDEPENDENT recompute over a known outpoint
+ * set: if a cache entry leaked or went missing, the universe-driven count
+ * and the cache-iterating count would disagree. */
 static void recompute_commitment(struct coins_view_cache *view,
                                  const struct uint256 *txids, size_t ntx,
                                  struct utxo_commitment *out)
@@ -474,24 +480,57 @@ int test_reorg_parity(void)
     RP_CHECK("parity: recomputed UTXO count matches",
              c_reorg.count == c_direct.count);
 
-    /* FINDING (documented, not a regression): the in-memory incremental
-     * commitment accumulator is path-DEPENDENT because disconnect_block
-     * never decrements it. After a reorg, v_reorg.commitment carries the
-     * unwound branch-A entries (count and accumulator both stale), while
-     * the recomputed set above is identical. A cutover proof MUST recompute
-     * from the coin set (utxo_commitment_compute_db) after any reorg — it
-     * may NOT trust the live in-memory accumulator. We print the delta so
-     * the gap is visible, but do not fail on it: it is a known property,
-     * and the byte-exact coin SET (the real invariant) is identical. */
-    if (!utxo_commitment_equal(&v_reorg.commitment, &v_direct.commitment)) {
-        printf("[finding] in-memory accumulator path-dependent after reorg: "
-               "reorg.count=%llu direct.count=%llu recomputed.count=%llu "
-               "(disconnect_block does not decrement the UTXO accumulator; "
-               "cutover must recompute from the coin set)\n",
+    /* ── PATH-INDEPENDENCE (BUG CLOSED) ────────────────────────────
+     * The production authoritative query coins_view_cache_recompute_
+     * commitment() derives the fingerprint from the live coin SET, so it
+     * must be path-INDEPENDENT: the reorged view (A → unwind → B) and the
+     * direct-built B (never saw A) must query IDENTICAL commitment + count,
+     * and each must equal the universe-driven recompute above. This is the
+     * fix for the formerly-open bug "cache->commitment path-dependent
+     * across reorgs": we never read the stale incremental accumulator for
+     * the authoritative answer — we recompute from the set. */
+    struct utxo_commitment q_reorg, q_direct;
+    coins_view_cache_recompute_commitment(&v_reorg, &q_reorg);
+    coins_view_cache_recompute_commitment(&v_direct, &q_direct);
+
+    RP_CHECK("parity: queried commitment is path-independent "
+             "(reorg view == direct view)",
+             utxo_commitment_equal(&q_reorg, &q_direct));
+    RP_CHECK("parity: queried count is path-independent",
+             q_reorg.count == q_direct.count);
+    /* The production query and the independent universe-driven recompute
+     * must agree — neither leaks nor drops a coin. */
+    RP_CHECK("parity: production query == universe recompute (reorg view)",
+             utxo_commitment_equal(&q_reorg, &c_reorg) &&
+             q_reorg.count == c_reorg.count);
+    RP_CHECK("parity: production query == universe recompute (direct view)",
+             utxo_commitment_equal(&q_direct, &c_direct) &&
+             q_direct.count == c_direct.count);
+
+    /* Sanity that the bug was REAL: the stale incremental accumulator on the
+     * reorged view differs from the authoritative recompute (it still
+     * carries branch-A's unwound entries). The fix is to NEVER trust this
+     * field across a reorg — the assertions above use the recompute, which
+     * is correct regardless. This is a diagnostic print, not a gate. */
+    if (!utxo_commitment_equal(&v_reorg.commitment, &q_reorg)) {
+        printf("[confirmed] stale incremental accumulator differs from "
+               "authoritative recompute after reorg: incremental.count=%llu "
+               "recompute.count=%llu (disconnect_block does not decrement the "
+               "accumulator; the query recomputes from the coin set)\n",
                (unsigned long long)v_reorg.commitment.count,
-               (unsigned long long)v_direct.commitment.count,
-               (unsigned long long)c_reorg.count);
+               (unsigned long long)q_reorg.count);
     }
+
+    /* ── FORWARD-ONLY VALUE UNCHANGED (snapshot compatibility) ─────
+     * v_direct was built forward-only (no disconnect), so its incremental
+     * accumulator IS the authoritative value. The recompute query must
+     * return that SAME value byte-for-byte — proving the fix did not alter
+     * the forward-only commitment that persisted snapshots are pinned to.
+     * (Same per-UTXO hash inputs; XOR is commutative, so set-iteration
+     * order is irrelevant.) */
+    RP_CHECK("parity: forward-only incremental == recompute (byte-exact)",
+             utxo_commitment_equal(&v_direct.commitment, &q_direct) &&
+             v_direct.commitment.count == q_direct.count);
 
     /* Per-outpoint: genesis coinbase (spent in B2 on both paths). */
     RP_CHECK("parity: genesis coinbase identical in both views",
@@ -586,6 +625,18 @@ int test_reorg_parity(void)
                  ok && utxo_commitment_equal(&c_cyc, &c_dir2));
         RP_CHECK("parity: cycled recomputed count == direct-build count",
                  ok && c_cyc.count == c_dir2.count);
+
+        /* Same invariant through the PRODUCTION query: after two full
+         * A->B->A->B cycles the queried commitment must still equal the
+         * direct build — path-independence holds no matter how convoluted
+         * the connect/disconnect history. */
+        struct utxo_commitment q_cyc, q_dir2;
+        coins_view_cache_recompute_commitment(&v_cyc, &q_cyc);
+        coins_view_cache_recompute_commitment(&v_direct, &q_dir2);
+        RP_CHECK("parity: cycled queried commitment == direct-build "
+                 "(path-independent after 2 cycles)",
+                 ok && utxo_commitment_equal(&q_cyc, &q_dir2) &&
+                 q_cyc.count == q_dir2.count);
 
         /* And every outpoint in the universe is identical between the
          * cycled view and the direct build. */

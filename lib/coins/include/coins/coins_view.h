@@ -117,6 +117,36 @@ void coins_view_cache_free(struct coins_view_cache *c);
 void coins_view_cache_as_view(struct coins_view *out,
                                struct coins_view_cache *cache);
 
+/* Authoritative, PATH-INDEPENDENT UTXO commitment for this cache.
+ *
+ * Recomputes the XOR-hash accumulator + count directly from the live coin
+ * SET (every available output of every non-pruned entry currently held in
+ * cache_coins), rather than reading the incremental `c->commitment` field.
+ *
+ * Why this exists: the incremental `c->commitment` accumulator is maintained
+ * only on the FORWARD path (update_coins add/remove). disconnect_block does
+ * NOT decrement it, so after a chain reorg `c->commitment` is path-DEPENDENT:
+ * it reflects the history of connects/disconnects rather than the resulting
+ * coin set. A cutover proof (and any commitment QUERY that must hold across a
+ * reorg) MUST therefore recompute from the coin set — this function — and may
+ * NOT trust the stale incremental field.
+ *
+ * Equivalence guarantee: for a coin set produced by forward-only connects
+ * (no disconnect), the recomputed value is BYTE-IDENTICAL to the incremental
+ * `c->commitment` (same per-UTXO hash inputs: txid, vout, value, creation
+ * height; XOR is commutative so iteration order is irrelevant). The persisted
+ * forward-only commitment value is therefore unchanged — existing snapshots
+ * stay valid.
+ *
+ * Cost: O(N) over the cache's live entries. Call it on-demand / for a proof
+ * or checkpoint — NOT on the per-block hot path (the incremental field
+ * already serves the forward path at O(1) per change).
+ *
+ * Only the in-memory cache is iterated; the backing view is not consulted
+ * (the live tip cache holds the full set during validation). */
+void coins_view_cache_recompute_commitment(const struct coins_view_cache *c,
+                                            struct utxo_commitment *out);
+
 bool coins_view_cache_get_coins(struct coins_view_cache *c,
                                 const struct uint256 *txid,
                                 struct coins *out);

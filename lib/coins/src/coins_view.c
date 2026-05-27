@@ -295,7 +295,8 @@ static bool cvc_batch_write(void *self, struct coins_map *map_coins,
 
     /* Diagnostic: log if no entries were written (indicates a bug) */
     if (written == 0 && map_coins->size > 0) {
-        fprintf(stderr, "cvc_batch_write: WARNING wrote 0 entries "
+        fprintf(stderr,  // obs-ok:cvc-wrote-zero-bug-sentinel
+                "cvc_batch_write: WARNING wrote 0 entries "
                 "(map_size=%zu pruned=%zu skipped=%zu)\n",
                 map_coins->size, pruned, skipped);
     }
@@ -347,7 +348,8 @@ bool coins_view_cache_flush(struct coins_view_cache *c)
         /* Reset child commitment after flush (deltas merged into parent) */
         utxo_commitment_init(&c->commitment);
     } else {
-        fprintf(stderr, "WARNING: coins cache flush FAILED — retaining %zu "
+        fprintf(stderr,  // obs-ok:coins-flush-failed-propagated-via-return
+                "WARNING: coins cache flush FAILED — retaining %zu "
                 "dirty entries for retry\n", c->cache_coins.size);
     }
     return ok;
@@ -360,6 +362,36 @@ void coins_view_cache_clear(struct coins_view_cache *c)
     utxo_commitment_init(&c->commitment);
     /* hash_block intentionally NOT cleared — caller sets it explicitly
      * via coins_view_cache_set_best_block after clearing. */
+}
+
+void coins_view_cache_recompute_commitment(const struct coins_view_cache *c,
+                                           struct utxo_commitment *out)
+{
+    /* Path-independent: derive the commitment purely from the live coin
+     * SET. We XOR in every still-available output of every non-pruned
+     * entry. This is the in-memory analogue of utxo_commitment_compute_db()
+     * (which iterates the SQLite `utxos` table) and uses the IDENTICAL
+     * per-UTXO hash inputs the forward path fed to utxo_commitment_add:
+     * txid, vout, the output's value, and the coin's creation height. XOR
+     * is commutative, so bucket-iteration order does not affect the result.
+     * For a forward-only coin set the output is therefore byte-identical to
+     * the incremental c->commitment accumulator. */
+    utxo_commitment_init(out);
+    const struct coins_map *m = &c->cache_coins;
+    for (size_t b = 0; b < m->num_buckets; b++) {
+        const struct coins_map_entry *e = &m->buckets[b];
+        if (!e->occupied)
+            continue;
+        const struct coins *coins = &e->entry.coins;
+        if (coins_is_pruned(coins))
+            continue;
+        for (size_t i = 0; i < coins->num_vout; i++) {
+            if (!coins_is_available(coins, (unsigned)i))
+                continue;
+            utxo_commitment_add(out, e->txid.data, (uint32_t)i,
+                                coins->vout[i].value, (int32_t)coins->height);
+        }
+    }
 }
 
 const struct tx_out *coins_view_cache_get_output_for(
