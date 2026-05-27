@@ -13,6 +13,7 @@
 #include "validation/contextual_check_tx.h"
 #include "consensus/consensus.h"
 #include "consensus/upgrades.h"
+#include "domain/consensus/sapling_structural.h"
 #include "validation/sighash.h"
 #include "crypto/ed25519.h"
 #include "sapling/sapling.h"
@@ -34,57 +35,42 @@ bool contextual_check_transaction(const struct transaction *tx,
                                    int nHeight,
                                    int dosLevel)
 {
-    bool overwinterActive = consensus_network_upgrade_active(
-        params, nHeight, UPGRADE_OVERWINTER);
-    bool saplingActive = consensus_network_upgrade_active(
-        params, nHeight, UPGRADE_SAPLING);
-    bool isSprout = !overwinterActive;
-
-    /* ── Network upgrade version rules ──────────────────────── */
-    REJECT_IF_DOS(isSprout && tx->overwintered,
-                  state, dosLevel, "tx-overwinter-not-active");
-
-    if (saplingActive) {
-        REJECT_IF_DOS(tx->version >= SAPLING_MIN_TX_VERSION && !tx->overwintered,
-                      state, dosLevel, "tx-overwintered-flag-not-set");
-
-        REJECT_IF_DOS(tx->overwintered &&
-                      tx->version_group_id != SAPLING_VERSION_GROUP_ID,
-                      state, dosLevel, "bad-sapling-tx-version-group-id");
-
-        REJECT_IF(tx->overwintered && tx->version < SAPLING_MIN_TX_VERSION,
-                  state, 100, "bad-tx-sapling-version-too-low");
-
-        REJECT_IF(tx->overwintered && tx->version > SAPLING_MAX_TX_VERSION,
-                  state, 100, "bad-tx-sapling-version-too-high");
-    } else if (overwinterActive) {
-        REJECT_IF_DOS(tx->version >= OVERWINTER_MIN_TX_VERSION && !tx->overwintered,
-                      state, dosLevel, "tx-overwinter-flag-not-set");
-
-        REJECT_IF_DOS(tx->overwintered &&
-                      tx->version_group_id != OVERWINTER_VERSION_GROUP_ID,
-                      state, dosLevel, "bad-overwinter-tx-version-group-id");
-
-        REJECT_IF(tx->overwintered && tx->version > OVERWINTER_MAX_TX_VERSION,
-                  state, 100, "bad-tx-overwinter-version-too-high");
+    /* ── Pure height-aware Sapling/Overwinter structural checks ──
+     * Delegates to domain/consensus/sapling_structural. Translates
+     * the typed zcl_result + (reject_reason, dos) pair back into the
+     * legacy `validation_state` byte-identically (reject_reason
+     * strings and DoS scores are tx-relay-visible). Mirrors the
+     * REJECT_IF/REJECT_IF_DOS expansion exactly: each macro called
+     * validation_state_dos(state, dos, false, REJECT_INVALID, reason,
+     * false, NULL). */
+    {
+        struct domain_consensus_sapling_structural_failure f = {0};
+        struct zcl_result r =
+            domain_consensus_check_transaction_sapling_structural(
+                tx, params, nHeight, dosLevel, &f);
+        if (!r.ok) {
+            const char *reason = f.reject_reason ? f.reject_reason : "";
+            return validation_state_dos(state, f.dos, false, REJECT_INVALID,
+                                        reason, false, NULL);
+        }
     }
 
-    /* ── Overwinter rules (apply when active, regardless of Sapling) ── */
+    /* ── Overwinter expiry (uses domain locktime predicate) ───
+     * Left in the wrapper because the dosLevel branch depends on
+     * is_expired_tx(tx, nHeight - 1), which composes the pure
+     * locktime predicate with caller context. Reject string and
+     * DoS-score branching are byte-identical to the legacy code.
+     *
+     * Reads consensus_network_upgrade_active lazily so we don't
+     * compute it on every tx — only the post-Overwinter expiry path
+     * needs it now. */
+    bool overwinterActive = consensus_network_upgrade_active(
+        params, nHeight, UPGRADE_OVERWINTER);
     if (overwinterActive) {
-        REJECT_IF_DOS(!tx->overwintered,
-                      state, dosLevel, "tx-overwinter-active");
-
         if (is_expired_tx(tx, nHeight)) {
             int expiredDosLevel = is_expired_tx(tx, nHeight - 1) ? dosLevel : 0;
             REJECT_IF_DOS(true, state, expiredDosLevel, "tx-overwinter-expired");
         }
-    }
-
-    /* ── Pre-Sapling size limit ─────────────────────────────── */
-    if (!saplingActive) {
-        size_t tx_size = transaction_serialize_size(tx);
-        REJECT_IF(tx_size > MAX_TX_SIZE_BEFORE_SAPLING,
-                  state, 100, "bad-txns-oversize");
     }
 
     /* ── Defer expensive shielded proofs below the local policy height ── */
