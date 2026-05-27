@@ -830,6 +830,8 @@ int main(void)
     failures += test_domain_consensus_header_accept();
     failures += test_domain_wallet_key_derivation();
     failures += test_domain_wallet_mnemonic();
+    failures += test_domain_encoding_base58();
+    failures += test_domain_encoding_bech32();
     failures += test_application_consensus_validate_block();
     failures += test_block_log_file();
     failures += test_block_log_legacy();

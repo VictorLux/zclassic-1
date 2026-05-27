@@ -123,6 +123,7 @@ volatile sig_atomic_t g_shutdown_requested = 0;
     X(domain_consensus_upgrades) X(domain_consensus_coinbase) \
     X(domain_consensus_header_accept) \
     X(domain_wallet_key_derivation) X(domain_wallet_mnemonic) \
+    X(domain_encoding_base58) X(domain_encoding_bech32) \
     X(application_consensus_validate_block) \
     X(block_log_file) X(block_log_legacy) X(replay_verify) \
     X(mutator) X(shadow_feeder) X(shadow_feeder_global) \
