@@ -825,6 +825,7 @@ int main(void)
     failures += test_domain_consensus_coins_math();
     failures += test_domain_consensus_checkpoints();
     failures += test_domain_consensus_locktime();
+    failures += test_domain_consensus_upgrades();
     failures += test_application_consensus_validate_block();
     failures += test_block_log_file();
     failures += test_block_log_legacy();

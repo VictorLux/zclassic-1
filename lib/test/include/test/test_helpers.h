@@ -378,6 +378,7 @@ int test_domain_consensus_script_interp(void);
 int test_domain_consensus_coins_math(void);
 int test_domain_consensus_checkpoints(void);
 int test_domain_consensus_locktime(void);
+int test_domain_consensus_upgrades(void);
 int test_application_consensus_validate_block(void);
 int test_block_log_file(void);
 int test_block_log_legacy(void);

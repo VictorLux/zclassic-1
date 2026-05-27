@@ -1,9 +1,17 @@
 /* Copyright (c) 2018 The Zcash developers
  * Copyright 2026 Rhett Creighton - Apache License 2.0
  * Distributed under the MIT software license, see the accompanying
- * file COPYING or http://www.opensource.org/licenses/mit-license.php. */
+ * file COPYING or http://www.opensource.org/licenses/mit-license.php.
+ *
+ * Epoch-I thin wrapper. The pure protocol-upgrade activation-height
+ * arithmetic lives in domain/consensus/upgrades.{h,c}; this file
+ * preserves the legacy bool / int / uint32_t-returning signatures so
+ * existing callers (wallet, validation, mining, consensus_params,
+ * RPC, ...) stay unchanged while the domain functions return typed
+ * zcl_result. */
 
 #include "consensus/upgrades.h"
+#include "domain/consensus/upgrades.h"
 #include "util/log_macros.h"
 #include <assert.h>
 
@@ -34,37 +42,37 @@ enum upgrade_state consensus_upgrade_state(int nHeight, const struct consensus_p
 {
     assert(nHeight >= 0);
     assert(idx >= BASE_SPROUT && idx < MAX_NETWORK_UPGRADES);
-    int activation = params->vUpgrades[idx].nActivationHeight;
-
-    if (activation == NETWORK_UPGRADE_NO_ACTIVATION)
-        return UPGRADE_DISABLED;
-    else if (nHeight >= activation)
-        return UPGRADE_ACTIVE;
-    else
-        return UPGRADE_PENDING;
+    enum upgrade_state st = UPGRADE_DISABLED;
+    struct zcl_result r = domain_consensus_upgrade_state(nHeight, params, idx, &st);
+    (void)r; /* asserts above match the domain contract; on success r.ok */
+    return st;
 }
 
 int consensus_current_epoch(int nHeight, const struct consensus_params *params)
 {
-    for (int i = MAX_NETWORK_UPGRADES - 1; i >= BASE_SPROUT; i--) {
-        if (consensus_network_upgrade_active(params, nHeight, (enum upgrade_index)i))
-            return i;
-    }
-    return BASE_SPROUT;
+    int epoch = (int)BASE_SPROUT;
+    struct zcl_result r = domain_consensus_current_epoch(nHeight, params, &epoch);
+    (void)r;
+    return epoch;
 }
 
 uint32_t consensus_current_epoch_branch_id(int nHeight, const struct consensus_params *params)
 {
-    return NetworkUpgradeInfo[consensus_current_epoch(nHeight, params)].nBranchId;
+    uint32_t branch = 0;
+    struct zcl_result r = domain_consensus_current_epoch_branch_id(nHeight, params, &branch);
+    (void)r;
+    return branch;
 }
 
 bool consensus_is_branch_id(int branchId)
 {
-    for (int i = BASE_SPROUT; i < MAX_NETWORK_UPGRADES; i++) {
-        if ((uint32_t)branchId == NetworkUpgradeInfo[i].nBranchId)
-            return true;
-    }
-    LOG_FAIL("consensus", "unrecognized branch id 0x%08x", branchId);
+    bool known = false;
+    struct zcl_result r = domain_consensus_is_branch_id((uint32_t)branchId, &known);
+    if (!r.ok)
+        LOG_FAIL("consensus", "is_branch_id: %s", r.message);
+    if (!known)
+        LOG_FAIL("consensus", "unrecognized branch id 0x%08x", (uint32_t)branchId);
+    return true;
 }
 
 bool consensus_is_activation_height(int nHeight, const struct consensus_params *params,
@@ -73,35 +81,42 @@ bool consensus_is_activation_height(int nHeight, const struct consensus_params *
     assert(idx >= BASE_SPROUT && idx < MAX_NETWORK_UPGRADES);
     if (idx == BASE_SPROUT)
         LOG_FAIL("consensus", "BASE_SPROUT has no activation height");
-    return nHeight >= 0 && nHeight == params->vUpgrades[idx].nActivationHeight;
+    bool match = false;
+    struct zcl_result r = domain_consensus_is_activation_height(nHeight, params, idx, &match);
+    if (!r.ok)
+        LOG_FAIL("consensus", "is_activation_height: %s", r.message);
+    return match;
 }
 
 bool consensus_is_activation_height_any(int nHeight, const struct consensus_params *params)
 {
     if (nHeight < 0)
         LOG_FAIL("consensus", "is_activation_height_any: negative height %d", nHeight);
-    for (int i = BASE_SPROUT + 1; i < MAX_NETWORK_UPGRADES; i++) {
-        if (nHeight == params->vUpgrades[i].nActivationHeight)
-            return true;
-    }
-    LOG_FAIL("consensus", "height %d is not an activation height for any upgrade", nHeight);
+    bool match = false;
+    struct zcl_result r = domain_consensus_is_activation_height_any(nHeight, params, &match);
+    if (!r.ok)
+        LOG_FAIL("consensus", "is_activation_height_any: %s", r.message);
+    if (!match)
+        LOG_FAIL("consensus", "height %d is not an activation height for any upgrade", nHeight);
+    return true;
 }
 
 int consensus_next_epoch(int nHeight, const struct consensus_params *params)
 {
     if (nHeight < 0)
         LOG_ERR("consensus", "next_epoch: negative height %d", nHeight);
-    for (int i = BASE_SPROUT + 1; i < MAX_NETWORK_UPGRADES; i++) {
-        if (consensus_upgrade_state(nHeight, params, (enum upgrade_index)i) == UPGRADE_PENDING)
-            return i;
-    }
-    LOG_ERR("consensus", "next_epoch: no pending upgrade at height %d", nHeight);
+    int epoch = 0;
+    struct zcl_result r = domain_consensus_next_epoch(nHeight, params, &epoch);
+    if (!r.ok)
+        LOG_ERR("consensus", "next_epoch: no pending upgrade at height %d", nHeight);
+    return epoch;
 }
 
 int consensus_next_activation_height(int nHeight, const struct consensus_params *params)
 {
-    int idx = consensus_next_epoch(nHeight, params);
-    if (idx >= 0)
-        return params->vUpgrades[idx].nActivationHeight;
-    LOG_ERR("consensus", "next_activation_height: no next epoch at height %d", nHeight);
+    int act = 0;
+    struct zcl_result r = domain_consensus_next_activation_height(nHeight, params, &act);
+    if (!r.ok)
+        LOG_ERR("consensus", "next_activation_height: no next epoch at height %d", nHeight);
+    return act;
 }
