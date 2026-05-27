@@ -25,6 +25,8 @@
 
 #include <stdbool.h>
 
+#include "util/result.h"
+
 struct main_state;
 struct block_index;
 
@@ -51,18 +53,19 @@ const char *tip_source_name(enum tip_source src);
  *   - EV_TIP_UPDATED event with hash + height payload
  *   - EV_CHAIN_TIP_COMMIT event with from/to/reason payload
  *
- * Returns true on success, false if `active_chain_set_tip` returns
- * false (typically realloc OOM at very high heights).
+ * Returns ZCL_OK on success, or a zcl_result carrying code+message
+ * if `active_chain_set_tip` returns false (typically realloc OOM at
+ * very high heights) or `ms` is NULL.
  *
- * `new_tip` may be NULL to clear the tip (returns true; emits a
+ * `new_tip` may be NULL to clear the tip (returns ZCL_OK; emits a
  * "[tip] CLEARED" log line). `reason` may be NULL.
  *
  * Does NOT take any locks — the caller is responsible for serializing
  * with other chain mutations (typically `ms->cs_main` or the
  * activation_controller mutex). */
-bool chain_set_active_tip(struct main_state *ms,
-                          struct block_index *new_tip,
-                          enum tip_source src,
-                          const char *reason);
+struct zcl_result chain_set_active_tip(struct main_state *ms,
+                                       struct block_index *new_tip,
+                                       enum tip_source src,
+                                       const char *reason);
 
 #endif /* ZCL_CHAIN_TIP_H */

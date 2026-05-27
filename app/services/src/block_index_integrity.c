@@ -545,7 +545,7 @@ int bii_repair_post_activation_anchor(
                 result->tip_restored = true;
 #ifdef ZCL_TESTING
             } else if (rc == CSR_REJECTED_NOT_INITIALIZED) {
-                chain_set_active_tip(ms, coins_bi, TIP_FROM_P2P_REPAIR,
+                (void)chain_set_active_tip(ms, coins_bi, TIP_FROM_P2P_REPAIR,
                                       "bii_anchor_restore_csr_uninit");
                 ms->pindex_best_header = coins_bi;
                 result->tip_restored = true;

@@ -239,7 +239,7 @@ static bool snapsync_commit_tip(struct main_state *ms,
         /* Test harness path: singleton was never wired. Fall back to
          * the canonical chain_set_active_tip so existing unit tests
          * still exercise the snapshot activation logic end-to-end. */
-        chain_set_active_tip(ms, new_tip, TIP_FROM_SNAPSHOT,
+        (void)chain_set_active_tip(ms, new_tip, TIP_FROM_SNAPSHOT,
                              reason ? reason : "csr_uninit_fallback");
         ms->pindex_best_header = new_tip;
         return true;

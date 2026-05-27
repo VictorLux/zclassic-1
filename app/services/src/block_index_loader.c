@@ -604,7 +604,7 @@ bool load_block_index(struct main_state *ms,
             }
 #ifdef ZCL_TESTING
             if (rc == CSR_REJECTED_NOT_INITIALIZED) {
-                chain_set_active_tip(ms, genesis, TIP_FROM_RESTORE,
+                (void)chain_set_active_tip(ms, genesis, TIP_FROM_RESTORE,
                                       "loader_init_genesis_csr_uninit");
                 ms->pindex_best_header = genesis;
                 return true;

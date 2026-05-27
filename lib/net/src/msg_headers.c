@@ -586,7 +586,7 @@ bool process_headers(struct msg_processor *mp, struct p2p_node *node,
                         if (rc == CSR_REJECTED_NOT_INITIALIZED) {
                             /* Test harness path: use the canonical
                              * helper so events still fire. */
-                            chain_set_active_tip(mp->main_state, anc,
+                            (void)chain_set_active_tip(mp->main_state, anc,
                                 TIP_FROM_P2P_REPAIR,
                                 "anchor_recommit_csr_uninit");
                             anchor_recommitted = true;

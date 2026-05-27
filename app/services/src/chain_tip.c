@@ -102,33 +102,42 @@ const char *tip_source_name(enum tip_source src)
     return g_tip_source_names[src] ? g_tip_source_names[src] : "unknown";
 }
 
-bool chain_set_active_tip(struct main_state *ms,
-                          struct block_index *new_tip,
-                          enum tip_source src,
-                          const char *reason)
+struct zcl_result chain_set_active_tip(struct main_state *ms,
+                                       struct block_index *new_tip,
+                                       enum tip_source src,
+                                       const char *reason)
 {
-    if (!ms) return false;
+    if (!ms)
+        return ZCL_ERR(-1, "chain_set_active_tip: NULL main_state src=%s reason=%s",
+                       tip_source_name(src), reason ? reason : "");
 
     int from_h = active_chain_height(&ms->chain_active);
 
     if (!new_tip) {
         if (!active_chain_set_tip(&ms->chain_active, NULL))
-            return false;
+            return ZCL_ERR(-2,
+                "chain_set_active_tip: active_chain_set_tip(NULL) failed "
+                "from_h=%d src=%s reason=%s",
+                from_h, tip_source_name(src), reason ? reason : "");
         printf("[tip] CLEARED (from h=%d) src=%s reason=%s\n",
                from_h, tip_source_name(src),
                reason ? reason : "");
         event_emitf(EV_CHAIN_TIP_COMMIT, 0,
                     "from=%d to=-1 reason=%s",
                     from_h, reason ? reason : "");
-        return true;
+        return ZCL_OK;
     }
 
     if (!active_chain_set_tip(&ms->chain_active, new_tip)) {
-        fprintf(stderr,
+        fprintf(stderr, // obs-ok:paired-with-ZCL_ERR-return
             "[tip] set_active_tip FAILED at h=%d src=%s reason=%s\n",
             new_tip->nHeight, tip_source_name(src),
             reason ? reason : "");
-        return false;
+        return ZCL_ERR(-3,
+            "chain_set_active_tip: active_chain_set_tip failed at h=%d "
+            "src=%s reason=%s",
+            new_tip->nHeight, tip_source_name(src),
+            reason ? reason : "");
     }
 
     char hex16[33] = "(no-hash)";
@@ -156,5 +165,5 @@ bool chain_set_active_tip(struct main_state *ms,
      * DB so a kill -9 after this point cannot leave coins ahead of
      * block_index. Auto-throttled during catch-up. */
     chain_tip_fsync_barrier(ms, new_tip);
-    return true;
+    return ZCL_OK;
 }

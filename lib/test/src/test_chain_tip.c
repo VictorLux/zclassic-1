@@ -48,7 +48,7 @@ int test_chain_tip(void)
 
     printf("chain_set_active_tip: NULL ms returns false... ");
     {
-        bool r = chain_set_active_tip(NULL, NULL, TIP_FROM_TEST, "null_ms");
+        bool r = chain_set_active_tip(NULL, NULL, TIP_FROM_TEST, "null_ms").ok;
         if (!r) printf("OK\n");
         else { printf("FAIL\n"); failures++; }
     }
@@ -67,9 +67,9 @@ int test_chain_tip(void)
         int updated_before = g_tip_updated_count;
         int commit_before = g_tip_commit_count;
         bool ok1 = chain_set_active_tip(&ms, &bi,
-                                        TIP_FROM_TEST, "set_h5");
+                                        TIP_FROM_TEST, "set_h5").ok;
         bool ok2 = chain_set_active_tip(&ms, NULL,
-                                        TIP_FROM_TEST, "clear");
+                                        TIP_FROM_TEST, "clear").ok;
 
         if (ok1 && ok2 &&
             g_tip_updated_count == updated_before + 1 &&

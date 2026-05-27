@@ -803,7 +803,7 @@ bool process_block_commit_tip(struct main_state *ms,
     if (rc == CSR_REJECTED_NOT_INITIALIZED) {
         /* Test harness path: the singleton was never wired. Use the
          * canonical helper so events still fire. */
-        chain_set_active_tip(ms, new_tip, TIP_FROM_CONNECT,
+        (void)chain_set_active_tip(ms, new_tip, TIP_FROM_CONNECT,
                              reason ? reason : "csr_uninit_fallback");
         if (update_header_tip) ms->pindex_best_header = new_tip;
         if (coins_tip) coins_view_cache_set_best_block(coins_tip,
@@ -876,7 +876,7 @@ bool update_tip(struct main_state *ms, struct block_index *pindex_new)
         enum csr_result rc = csr_clear_active_tip(csr_instance(), &clear);
 #ifdef ZCL_TESTING
         if (rc == CSR_REJECTED_NOT_INITIALIZED) {
-            chain_set_active_tip(ms, NULL, TIP_FROM_DISCONNECT,
+            (void)chain_set_active_tip(ms, NULL, TIP_FROM_DISCONNECT,
                                  "disconnect_past_genesis");
         } else
 #endif

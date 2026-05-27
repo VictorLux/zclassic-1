@@ -84,7 +84,7 @@ static bool utxo_recovery_commit_tip(struct utxo_recovery_ctx *ctx,
         if (persist_coins_best && ctx->ndb && ctx->ndb->open)
             (void)node_db_state_set(ctx->ndb, "coins_best_block",
                                     tip->phashBlock->data, 32);
-        chain_set_active_tip(ctx->state, tip, TIP_FROM_UTXO_REPAIR,
+        (void)chain_set_active_tip(ctx->state, tip, TIP_FROM_UTXO_REPAIR,
                              reason ? reason : "utxo_recovery_csr_uninit");
         ctx->state->pindex_best_header = tip;
         return true;

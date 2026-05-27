@@ -57,7 +57,7 @@ struct zcl_result chain_restore_commit_tip_via_csr(struct main_state *ms,
 
 #ifdef ZCL_TESTING
     if (rc == CSR_REJECTED_NOT_INITIALIZED) {
-        chain_set_active_tip(ms, target, TIP_FROM_RESTORE,
+        (void)chain_set_active_tip(ms, target, TIP_FROM_RESTORE,
                              reason ? reason : "csr_uninit_fallback");
         if (update_header_tip)
             ms->pindex_best_header = target;
