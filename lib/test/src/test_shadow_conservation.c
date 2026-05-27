@@ -32,9 +32,11 @@
 #include "adapters/inbound/shadow_feeder.h"
 #include "consensus/params.h"
 #include "core/uint256.h"
+#include "json/json.h"
 #include "mutator/mutator.h"
 #include "primitives/block.h"
 #include "primitives/transaction.h"
+#include "services/cutover_modes.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -269,6 +271,76 @@ int test_shadow_conservation(void)
         SC_CHECK("diffed>fed -> NOT conserved",
                  !ok && fed == 3 && diffed == 4);
     }
+
+    /* ── 6. zcl_state subsystem=cutover dumper: consolidates per-stage
+     *    modes + authoritative_active + canary anchor + conservation into
+     *    one read-only, reentrant-safe, non-allocating snapshot. Pin the
+     *    object shape and that it reflects the live cutover_modes /
+     *    conservation state. */
+#ifdef ZCL_TESTING
+    {
+        cutover_modes_test_reset();
+        shadow_conservation_reset();
+
+        /* Authoritative header_admit, shadow validate_headers; record a
+         * conservation drop (fed > diffed) so conserved is observably
+         * FALSE in the dump. */
+        cutover_modes_set_header_pipeline(CUTOVER_STAGE_MODE_AUTHORITATIVE,
+                                          CUTOVER_STAGE_MODE_SHADOW);
+        cutover_modes_record_change(100, 100, 101, 1);
+        shadow_conservation_record_fed(5);
+        shadow_conservation_record_diffed(4);
+
+        struct json_value v;
+        json_init(&v);
+        json_set_object(&v);
+        bool ok = cutover_dump_state_json(&v, NULL);
+        SC_CHECK("cutover dump returns true", ok);
+
+        const struct json_value *modes = json_get(&v, "modes");
+        SC_CHECK("cutover dump has modes object", modes != NULL);
+        if (modes) {
+            const char *ha = json_get_str(json_get(modes, "header_admit"));
+            const char *vh =
+                json_get_str(json_get(modes, "validate_headers"));
+            SC_CHECK("modes.header_admit == authoritative",
+                     ha && strcmp(ha, "authoritative") == 0);
+            SC_CHECK("modes.validate_headers == shadow",
+                     vh && strcmp(vh, "shadow") == 0);
+        }
+        SC_CHECK("authoritative_active == true",
+                 json_get_bool(json_get(&v, "authoritative_active")));
+
+        const struct json_value *canary = json_get(&v, "canary");
+        SC_CHECK("cutover dump has canary object", canary != NULL);
+        if (canary) {
+            SC_CHECK("canary.has_change == true",
+                     json_get_bool(json_get(canary, "has_change")));
+            SC_CHECK("canary.change_height == 100",
+                     json_get_int(json_get(canary, "change_height")) == 100);
+        }
+
+        const struct json_value *cons = json_get(&v, "conservation");
+        SC_CHECK("cutover dump has conservation object", cons != NULL);
+        if (cons) {
+            SC_CHECK("conservation.fed == 5",
+                     json_get_int(json_get(cons, "fed")) == 5);
+            SC_CHECK("conservation.diffed == 4",
+                     json_get_int(json_get(cons, "diffed")) == 4);
+            SC_CHECK("conservation.skipped == 0",
+                     json_get_int(json_get(cons, "skipped")) == 0);
+            SC_CHECK("conservation.conserved == false (fed>diffed)",
+                     !json_get_bool(json_get(cons, "conserved")));
+        }
+        json_free(&v);
+
+        /* NULL out -> false, no crash. */
+        SC_CHECK("cutover dump NULL out -> false",
+                 !cutover_dump_state_json(NULL, NULL));
+
+        cutover_modes_test_reset();
+    }
+#endif
 
     shadow_conservation_reset();
     return failures;

@@ -3,6 +3,8 @@
 #include "services/cutover_modes.h"
 
 #include "platform/time_compat.h"
+#include "adapters/inbound/shadow_conservation.h"
+#include "json/json.h"
 
 #include <stdatomic.h>
 #include <string.h>
@@ -129,6 +131,89 @@ bool cutover_modes_canary_target_reached(int64_t current_tip_height)
     struct cutover_canary_snapshot snap;
     cutover_modes_canary_snapshot(current_tip_height, &snap);
     return snap.has_change && snap.authoritative_active && snap.passed;
+}
+
+static const char *cutover_mode_name(cutover_stage_mode_t mode)
+{
+    return mode == CUTOVER_STAGE_MODE_AUTHORITATIVE
+        ? "authoritative" : "shadow";
+}
+
+/* zcl_state subsystem=cutover. Reentrant-safe, non-allocating, READ-ONLY:
+ * every read here is a relaxed atomic load (modes + canary anchor) or a
+ * best-effort observe-only counter snapshot (conservation) — it never
+ * mutates cutover state, never triggers a flip, and never touches the live
+ * tip / runs the header diff. The tip-relative canary verdict and the full
+ * `ready` gate breakdown live on the heavier `cutoverpreflight` RPC. */
+bool cutover_dump_state_json(struct json_value *out, const char *key)
+{
+    (void)key;
+    if (!out)
+        return false;
+
+    cutover_stage_mode_t ha = cutover_modes_get_header_admit();
+    cutover_stage_mode_t vh = cutover_modes_get_validate_headers();
+    bool authoritative_active = cutover_modes_any_authoritative_active();
+
+    /* Per-stage runtime modes + the aggregate authoritative flag. */
+    struct json_value modes;
+    json_init(&modes);
+    json_set_object(&modes);
+    json_push_kv_str(&modes, "header_admit", cutover_mode_name(ha));
+    json_push_kv_str(&modes, "validate_headers", cutover_mode_name(vh));
+    json_push_kv(out, "modes", &modes);
+    json_free(&modes);
+    json_push_kv_bool(out, "authoritative_active", authoritative_active);
+
+    /* Recorded canary change anchor — atomic loads only, no live tip. The
+     * tip-relative passed/failed verdict needs the current tip height and
+     * stays on cutoverpreflight (cutover_state). */
+    bool has_change = atomic_load(&g_cutover_has_change) != 0;
+    int64_t changed_at = atomic_load(&g_cutover_change_unix);
+    int64_t deadline = has_change && changed_at > 0
+        ? changed_at + CUTOVER_CANARY_WATCH_SECS : 0;
+    struct json_value canary;
+    json_init(&canary);
+    json_set_object(&canary);
+    json_push_kv_bool(&canary, "has_change", has_change);
+    json_push_kv_int(&canary, "changed_at_unix", changed_at);
+    json_push_kv_int(&canary, "change_height",
+                     atomic_load(&g_cutover_change_height));
+    json_push_kv_int(&canary, "target_height",
+                     atomic_load(&g_cutover_canary_target_height));
+    json_push_kv_int(&canary, "change_header_height",
+                     atomic_load(&g_cutover_change_header_height));
+    json_push_kv_int(&canary, "change_peer_best_height",
+                     atomic_load(&g_cutover_change_peer_best_height));
+    json_push_kv_int(&canary, "change_tip_lag",
+                     atomic_load(&g_cutover_change_tip_lag));
+    json_push_kv_int(&canary, "deadline_unix", deadline);
+    json_push_kv_int(&canary, "watch_window_seconds",
+                     CUTOVER_CANARY_WATCH_SECS);
+    json_push_kv(out, "canary", &canary);
+    json_free(&canary);
+
+    /* Shadow-pipeline conservation: best-effort observe-only counters
+     * (fed == diffed at quiesce). conserved is a snapshot of the predicate;
+     * a transient fed > diffed while blocks are in flight is expected and
+     * is not a true violation (see shadow_conservation.h). */
+    unsigned long fed = 0, diffed = 0, skipped = 0;
+    bool conserved = shadow_conservation_ok(&fed, &diffed, &skipped);
+    struct json_value cons;
+    json_init(&cons);
+    json_set_object(&cons);
+    json_push_kv_bool(&cons, "conserved", conserved);
+    json_push_kv_int(&cons, "fed", (int64_t)fed);
+    json_push_kv_int(&cons, "diffed", (int64_t)diffed);
+    json_push_kv_int(&cons, "skipped", (int64_t)skipped);
+    json_push_kv_str(&cons, "law",
+                     "fed == diffed (every fed block diffed)");
+    json_push_kv(out, "conservation", &cons);
+    json_free(&cons);
+
+    json_push_kv_str(out, "ready_gate",
+                     "see cutoverpreflight RPC for full ready breakdown");
+    return true;
 }
 
 #ifdef ZCL_TESTING

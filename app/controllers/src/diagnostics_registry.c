@@ -40,6 +40,7 @@
 #include "services/chain_evidence_controller.h"
 #include "jobs/header_admit_stage.h"
 #include "jobs/validate_headers_stage.h"
+#include "services/cutover_modes.h"
 #include "services/node_health_service.h"
 #include "jobs/body_fetch_stage.h"
 #include "jobs/body_persist_stage.h"
@@ -450,6 +451,12 @@ static const struct dump_entry g_dumpers[] = {
                      "canonical chain-advance source scoring: P2P, snapshot, local import, mirror fallback" },
     { "chain_tip_watchdog", chain_tip_watchdog_dump_state_json,
                      "tip-stuck overlord: highest_tip, age_secs since last advance, escalation level + fire counts" },
+    { "cutover",     cutover_dump_state_json,
+                     "cutover flip readiness in one call: per-stage modes "
+                     "(header_admit/validate_headers shadow|authoritative), "
+                     "authoritative_active, canary change anchor, and shadow "
+                     "conservation (fed/diffed/skipped/conserved). Full ready "
+                     "gate breakdown stays on the cutoverpreflight RPC." },
     { "condition_engine", condition_engine_dump_state_json,
                      "self-heal engine: registered conditions with active/cleared status, attempts, thresholds" },
     { "long_op",     long_op_dump_state_json,

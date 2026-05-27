@@ -51,4 +51,17 @@ bool cutover_modes_canary_target_reached(int64_t current_tip_height);
 void cutover_modes_test_reset(void);
 #endif
 
+/* See CLAUDE.md "Adding state introspection". Reentrant-safe,
+ * non-allocating, READ-ONLY. Consolidates the cheap, lock-free cutover
+ * flip state into one `zcl_state subsystem=cutover` snapshot: per-stage
+ * modes (header_admit / validate_headers, shadow vs authoritative) plus
+ * authoritative_active, the recorded canary change anchor (atomic loads
+ * only — no live tip), and the shadow-pipeline conservation counters
+ * (fed / diffed / skipped / conserved). The tip-relative `passed`/`failed`
+ * canary verdict and the full `ready` gate breakdown stay on the heavier
+ * `cutoverpreflight` RPC (it runs a header_admit diff + node_health
+ * collect — too heavy / not reentrant-safe for a dumper). */
+struct json_value;
+bool cutover_dump_state_json(struct json_value *out, const char *key);
+
 #endif /* ZCL_SERVICES_CUTOVER_MODES_H */
