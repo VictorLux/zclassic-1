@@ -283,13 +283,19 @@ static int test_merkle_tree_scale(void)
         if (!ok) failures++;
     }
 
-    printf("Sapling TREE serialize/deserialize preserves root (100K)... ");
+    printf("Sapling TREE serialize/deserialize preserves root (25K)... ");
     {
+        /* 25000 appends fill 14 of the 32 parent levels (has_left/has_right
+         * both set), which is the structure that drives tree
+         * serialize/deserialize: every active parent level is emitted and
+         * read back. A larger count only re-fills the cached-empty upper
+         * half identically — it adds Pedersen hashes, not coverage. The
+         * dedicated large-scale stress anchor stays at 50K below. */
         struct incremental_merkle_tree t;
         sapling_tree_init(&t);
         struct uint256 cm;
         memset(cm.data, 0x42, 32);
-        for (int i = 0; i < 100000; i++) {
+        for (int i = 0; i < 25000; i++) {
             cm.data[0]=(unsigned char)(i&0xff); cm.data[1]=(unsigned char)((i>>8)&0xff); cm.data[2]=(unsigned char)((i>>16)&0xff);
             incremental_tree_append(&t, &cm);
         }
@@ -710,31 +716,40 @@ static int test_merkle_tree_scale(void)
         stream_free(&ws);
     }
 
-    printf("Witness serialize/deserialize roundtrip at 100K with cursor... ");
+    printf("Witness serialize/deserialize roundtrip at 25K with cursor... ");
     {
         struct incremental_merkle_tree t;
         sapling_tree_init(&t);
         struct uint256 cm;
         memset(cm.data, 0, 32);
 
-        /* Build tree with 100000 elements, witness at 50000 */
+        /* Build tree with 25000 elements, witness at 12500, then advance the
+         * witness by 1000 more. This produces num_filled=7 (the full
+         * MAX_WITNESS_FILLS-bounded fill array) with an active cursor at
+         * depth 14 — the same structural witness shape the serialize/
+         * deserialize roundtrip exercises at 100K (which only reaches
+         * cursor depth 16, still far short of the 32-deep tree). num_filled,
+         * the active cursor, and the multi-level fill array are all
+         * populated identically, so every roundtrip + cursor-preservation
+         * assertion below is exercised. The 50K stress test further down
+         * remains the dedicated large-scale anchor. */
         struct incremental_witness w;
         bool w_init = false;
-        for (int i = 0; i < 100000; i++) {
+        for (int i = 0; i < 25000; i++) {
             cm.data[0] = (unsigned char)(i & 0xff);
             cm.data[1] = (unsigned char)((i >> 8) & 0xff);
             cm.data[2] = (unsigned char)((i >> 16) & 0xff);
             if (w_init)
                 incremental_witness_append(&w, &cm);
             incremental_tree_append(&t, &cm);
-            if (i == 49999) {
+            if (i == 12499) {
                 incremental_witness_init(&w, &t);
                 w_init = true;
             }
         }
 
         /* Advance witness with 1000 more to create interesting cursor state */
-        for (int i = 100000; i < 101000; i++) {
+        for (int i = 25000; i < 26000; i++) {
             cm.data[0] = (unsigned char)(i & 0xff);
             cm.data[1] = (unsigned char)((i >> 8) & 0xff);
             cm.data[2] = (unsigned char)((i >> 16) & 0xff);
