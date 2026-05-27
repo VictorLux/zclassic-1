@@ -17,6 +17,14 @@
  *   stays POLICY_PROMPT_OPERATOR so the caller knows to stop.
  */
 
+// one-result-type-ok:single-policy-decision-enum — E2 (one way out):
+// every public fallible entry point returns one domain type,
+// enum policy_decision (allow / refuse_* / prompt_operator). The bare
+// bool helpers (parse_int64, parse_bool, write_prompt_ack_file) are
+// private input-validation predicates, not a service surface, and the
+// void setters cannot fail. Each decision is logged via EV_RECOVERY_POLICY_*
+// events, so the refusal reason always travels with the decision.
+
 #include "services/recovery_policy.h"
 
 #include "event/event.h"

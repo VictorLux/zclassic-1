@@ -10,6 +10,15 @@
  *     Once HALTED or PANIC, we stay there until the operator says
  *     otherwise — this is the safe default. */
 
+// one-result-type-ok:state-machine-no-fallible-surface — E2 (one way
+// out): this is a lock-guarded state machine with no fallible service
+// surface to carry a zcl_result. Its bool returns are non-failing
+// predicates/queries: chain_extension_allowed() is a yes/no gate and
+// dump_state_json() follows the mandated `<name>_dump_state_json` ->
+// bool introspection convention (see CLAUDE.md "Adding state
+// introspection"), which must stay bool. State transitions are recorded
+// via EV_ANCHOR_PANIC / EV_FORK_SUSPECTED / EV_CHAIN_HALTED events.
+
 #include "platform/time_compat.h"
 #include "services/oracle_policy.h"
 

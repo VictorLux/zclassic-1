@@ -5,6 +5,14 @@
  *
  * Extracted from config/src/boot_index.c (boot decomposition Phase B). */
 
+// one-result-type-ok:single-boot-validation-result — E2 (one way out):
+// the sole fallible entry point returns one domain type,
+// struct boot_validation_result (carrying action + heights + coins hash).
+// That is richer than zcl_result and is the byte-for-byte contract its
+// callers switch on; collapsing it to zcl_result would drop the decision
+// payload. Failure context still travels via EV_BOOT_VALIDATION_FAILED /
+// EV_RECOVERY_ACTION events emitted on every non-OK branch.
+
 #include "services/chain_state_validator.h"
 #include "validation/main_state.h"
 #include "chain/chain.h"

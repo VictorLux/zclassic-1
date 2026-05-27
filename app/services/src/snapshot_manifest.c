@@ -1,5 +1,13 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0 */
 
+// one-result-type-ok:single-snapshot-manifest-result-enum — E2 (one way
+// out): the validate_offer / validate_recovery / validate_common surface
+// all return one domain type, enum snapshot_manifest_result, and parse()
+// reports the same enum via its out-param. That enum is the wire-level
+// contract callers switch on (snapshot_manifest_result_name maps each
+// code), so it cannot collapse to zcl_result without losing the typed
+// rejection reason that already travels with every failure.
+
 #include "services/snapshot_manifest.h"
 
 #include "core/serialize.h"

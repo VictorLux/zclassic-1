@@ -17,7 +17,6 @@ app/services/src/body_persist_stage.c
 app/services/src/chain_activation_controller.c
 app/services/src/chain_advance_coordinator.c
 app/services/src/chain_evidence_controller.c
-app/services/src/chain_evidence_names.c
 app/services/src/chain_evidence_snapshot.c
 app/services/src/chain_evidence_store.c
 app/services/src/chain_restore_boot_activation.c
@@ -26,7 +25,6 @@ app/services/src/chain_restore_disk_repair.c
 app/services/src/chain_restore_integrity.c
 app/services/src/chain_restore_planner.c
 app/services/src/chain_state_repository.c
-app/services/src/chain_state_validator.c
 app/services/src/chain_tip_watchdog.c
 app/services/src/cutover_modes.c
 app/services/src/header_admit_stage.c
@@ -34,11 +32,8 @@ app/services/src/hodl_history_service.c
 app/services/src/legacy_bootstrap_importer.c
 app/services/src/legacy_mirror_sync_service.c
 app/services/src/node_health_service.c
-app/services/src/oracle_policy.c
 app/services/src/proof_validate_stage.c
-app/services/src/recovery_policy.c
 app/services/src/script_validate_stage.c
-app/services/src/snapshot_manifest.c
 app/services/src/snapshot_sync_service.c
 app/services/src/sync_monitor.c
 app/services/src/tip_finalize_stage.c

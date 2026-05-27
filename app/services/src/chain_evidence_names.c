@@ -1,5 +1,10 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0 */
 
+// one-result-type-ok:pure-enum-name-table — E2 (one way out): every
+// function here is a pure enum -> const char* name mapper. There is no
+// fallible service surface to carry a zcl_result; the single return type
+// is const char* (with an "unknown" fallback, never NULL).
+
 #include "services/chain_evidence_controller.h"
 
 const char *chain_evidence_controller_state_name(enum chain_evidence_controller_state state)
