@@ -816,6 +816,7 @@ int main(void)
     failures += test_domain_consensus_subsidy();
     failures += test_domain_consensus_pow();
     failures += test_domain_consensus_sigops();
+    failures += test_domain_consensus_tx_structural();
     failures += test_application_consensus_validate_block();
     failures += test_block_log_file();
     failures += test_block_log_legacy();
