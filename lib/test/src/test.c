@@ -813,6 +813,7 @@ int main(void)
     failures += test_legacy_bootstrap_attach();
     failures += test_process_block_revalidate();
     failures += test_domain_consensus_verify();
+    failures += test_domain_consensus_subsidy();
     failures += test_application_consensus_validate_block();
     failures += test_block_log_file();
     failures += test_block_log_legacy();
