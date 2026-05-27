@@ -4,16 +4,23 @@
 #define ZCL_SERVICES_CHAIN_EVIDENCE_STORE_H
 
 #include "services/chain_evidence_controller.h"
+#include "util/result.h"
 
 #include <stdbool.h>
 
-bool chain_evidence_store_persist(
+/* Persist a chain-evidence record under `key`. Returns ZCL_OK on success;
+ * a non-ok zcl_result carrying the failing input or the node_db error
+ * otherwise (DEFENSIVE_CODING.md §2). */
+struct zcl_result chain_evidence_store_persist(
     struct chain_evidence_controller *authority,
     const char *key,
     const struct chain_evidence_record *evidence);
 
-bool chain_evidence_store_load(struct node_db *ndb,
-                               const char *key,
-                               struct chain_evidence_record *out);
+/* Load a chain-evidence record from `key` into *out. On any failure *out is
+ * left zeroed (when out != NULL) and a non-ok zcl_result explains why
+ * (null arg, missing key, or malformed record). */
+struct zcl_result chain_evidence_store_load(struct node_db *ndb,
+                                            const char *key,
+                                            struct chain_evidence_record *out);
 
 #endif /* ZCL_SERVICES_CHAIN_EVIDENCE_STORE_H */

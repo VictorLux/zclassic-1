@@ -409,9 +409,9 @@ int test_node_health_service(void)
                                              CEC_SOURCE_CLASS_NATIVE_P2P);
             ok = ok && chain_evidence_store_persist(
                            &seed, "cec.block_index_evidence_state",
-                           &evidence);
+                           &evidence).ok;
             ok = ok && chain_evidence_store_persist(
-                           &seed, "cec.active_tip_evidence", &evidence);
+                           &seed, "cec.active_tip_evidence", &evidence).ok;
         }
 
         cm.manager.nodes = zcl_calloc(1, sizeof(*cm.manager.nodes),

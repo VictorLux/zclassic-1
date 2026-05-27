@@ -14,6 +14,7 @@
 #include "core/uint256.h"
 #include "chain/chain.h"
 #include "services/chain_state_repository.h"
+#include "util/result.h"
 
 #include <stdbool.h>
 #include <stdint.h>
@@ -165,7 +166,7 @@ void chain_evidence_controller_freeze(struct chain_evidence_controller *authorit
 void chain_evidence_controller_snapshot(struct chain_evidence_controller *authority,
                              struct chain_evidence_controller_view *out);
 
-bool chain_evidence_controller_mark_block_evidence(
+struct zcl_result chain_evidence_controller_mark_block_evidence(
     struct chain_evidence_controller *authority,
     const struct uint256 *block_hash,
     const struct chain_evidence_record *evidence);

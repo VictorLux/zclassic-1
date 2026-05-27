@@ -111,13 +111,13 @@ void chain_evidence_controller_snapshot(
         out->repaired_active_tip_evidence = v != 0;
     (void)chain_evidence_store_load(authority->ndb,
                                     "cec.block_index_evidence_state",
-                                    &out->block_index_evidence_state);
+                                    &out->block_index_evidence_state).ok;
     (void)chain_evidence_store_load(authority->ndb, "cec.active_tip_evidence",
-                                    &out->active_tip_evidence);
+                                    &out->active_tip_evidence).ok;
     (void)chain_evidence_store_load(authority->ndb, "cec.snapshot_evidence",
-                                    &out->snapshot_evidence);
+                                    &out->snapshot_evidence).ok;
     (void)chain_evidence_store_load(authority->ndb, "cec.header_chain_evidence",
-                                    &out->header_chain_evidence);
+                                    &out->header_chain_evidence).ok;
     if (out->active_tip_source_class == CEC_SOURCE_CLASS_UNKNOWN &&
         out->active_tip_evidence.source_class != CEC_SOURCE_CLASS_UNKNOWN)
         out->active_tip_source_class = out->active_tip_evidence.source_class;

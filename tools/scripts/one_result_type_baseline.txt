@@ -13,7 +13,6 @@ app/services/src/body_fetch_stage.c
 app/services/src/body_persist_stage.c
 app/services/src/chain_advance_coordinator.c
 app/services/src/chain_evidence_snapshot.c
-app/services/src/chain_evidence_store.c
 app/services/src/chain_restore_boot_snapshot.c
 app/services/src/chain_restore_disk_repair.c
 app/services/src/chain_state_repository.c

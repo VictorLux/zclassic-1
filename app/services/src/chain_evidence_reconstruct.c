@@ -192,7 +192,7 @@ bool cec_reconstruct_active_tip_evidence(
         .chainwork_recomputed = true,
     };
     return chain_evidence_controller_mark_block_evidence(
-               authority, active_tip->phashBlock, &reconstructed) &&
+               authority, active_tip->phashBlock, &reconstructed).ok &&
            cer_persist_blob(authority, "cec.active_tip_hash",
                             active_tip->phashBlock->data, 32) &&
            cer_persist_i64(authority, "cec.active_tip_height",
@@ -208,7 +208,7 @@ bool cec_reconstruct_active_tip_evidence(
            cer_persist_i64(authority, "cec.repaired_active_tip_evidence", 1) &&
            chain_evidence_store_persist(authority,
                             "cec.block_index_evidence_state",
-                            &reconstructed) &&
+                            &reconstructed).ok &&
            chain_evidence_store_persist(authority, "cec.active_tip_evidence",
-                            &reconstructed);
+                            &reconstructed).ok;
 }

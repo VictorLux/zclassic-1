@@ -3,6 +3,7 @@
 #include "services/chain_evidence_store.h"
 
 #include "models/database.h"
+#include "util/log_macros.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -112,29 +113,72 @@ static bool evidence_from_persisted(const void *buf, size_t len,
     return true;
 }
 
-bool chain_evidence_store_persist(
+struct zcl_result chain_evidence_store_persist(
     struct chain_evidence_controller *authority,
     const char *key,
     const struct chain_evidence_record *evidence)
 {
     struct persisted_evidence_record p;
     evidence_to_persisted(evidence, &p);
-    return authority && authority->ndb &&
-           node_db_state_set(authority->ndb, key, &p, sizeof(p));
+    /* Preserve the original decision exactly: success iff authority &&
+     * authority->ndb && node_db_state_set(...) all held. Each failure now
+     * carries a reason instead of a bare false. */
+    if (!authority) {
+        LOG_WARN("cec.store", "persist: null authority key=%s",
+                 key ? key : "(null)");
+        return ZCL_ERR(-1, "persist: null authority key=%s",
+                       key ? key : "(null)");
+    }
+    if (!authority->ndb) {
+        LOG_WARN("cec.store", "persist: null ndb key=%s",
+                 key ? key : "(null)");
+        return ZCL_ERR(-2, "persist: null ndb key=%s",
+                       key ? key : "(null)");
+    }
+    if (!node_db_state_set(authority->ndb, key, &p, sizeof(p))) {
+        LOG_WARN("cec.store", "persist: node_db_state_set failed key=%s",
+                 key ? key : "(null)");
+        return ZCL_ERR(-3, "persist: node_db_state_set failed key=%s",
+                       key ? key : "(null)");
+    }
+    return ZCL_OK;
 }
 
-bool chain_evidence_store_load(struct node_db *ndb,
-                               const char *key,
-                               struct chain_evidence_record *out)
+struct zcl_result chain_evidence_store_load(struct node_db *ndb,
+                                            const char *key,
+                                            struct chain_evidence_record *out)
 {
     struct persisted_evidence_record p;
     size_t len = 0;
-    if (!out)
-        return false;
+    /* Decision order preserved verbatim: reject null out first, then zero
+     * out, then attempt the load, then parse. Each branch now reports why
+     * instead of returning a bare false. */
+    if (!out) {
+        LOG_WARN("cec.store", "load: null out key=%s", key ? key : "(null)");
+        return ZCL_ERR(-1, "load: null out key=%s", key ? key : "(null)");
+    }
     memset(out, 0, sizeof(*out));
-    if (!ndb || !node_db_state_get(ndb, key, &p, sizeof(p), &len))
-        return false;
-    return evidence_from_persisted(&p, len, out);
+    if (!ndb) {
+        LOG_WARN("cec.store", "load: null ndb key=%s", key ? key : "(null)");
+        return ZCL_ERR(-2, "load: null ndb key=%s", key ? key : "(null)");
+    }
+    if (!node_db_state_get(ndb, key, &p, sizeof(p), &len)) {
+        /* Missing key is the common, expected case at boot; report it but
+         * keep it diagnostic (out stays zeroed, exactly as before). */
+        LOG_WARN("cec.store", "load: node_db_state_get miss key=%s",
+                 key ? key : "(null)");
+        return ZCL_ERR(-3, "load: node_db_state_get miss key=%s",
+                       key ? key : "(null)");
+    }
+    if (!evidence_from_persisted(&p, len, out)) {
+        LOG_WARN("cec.store",
+                 "load: evidence_from_persisted rejected key=%s len=%zu",
+                 key ? key : "(null)", len);
+        return ZCL_ERR(-4,
+                       "load: evidence_from_persisted rejected key=%s len=%zu",
+                       key ? key : "(null)", len);
+    }
+    return ZCL_OK;
 }
 
 static bool block_evidence_key(const struct uint256 *hash,
@@ -149,14 +193,27 @@ static bool block_evidence_key(const struct uint256 *hash,
     return true;
 }
 
-bool chain_evidence_controller_mark_block_evidence(
+struct zcl_result chain_evidence_controller_mark_block_evidence(
     struct chain_evidence_controller *authority,
     const struct uint256 *block_hash,
     const struct chain_evidence_record *evidence)
 {
     char key[sizeof("cec.block_evidence.") + 64];
+    /* Same combined guard as before, now reporting which input was bad.
+     * block_evidence_key only fails on the null checks already covered, so
+     * the original combined `||` decision is preserved bit-for-bit. */
     if (!authority || !authority->ndb || !block_hash || !evidence ||
-        !block_evidence_key(block_hash, key))
-        return false;
+        !block_evidence_key(block_hash, key)) {
+        LOG_WARN("cec.store",
+                 "mark_block_evidence: bad args authority=%d ndb=%d "
+                 "block_hash=%d evidence=%d",
+                 authority != NULL, authority && authority->ndb,
+                 block_hash != NULL, evidence != NULL);
+        return ZCL_ERR(-1,
+                       "mark_block_evidence: bad args authority=%d ndb=%d "
+                       "block_hash=%d evidence=%d",
+                       authority != NULL, authority && authority->ndb,
+                       block_hash != NULL, evidence != NULL);
+    }
     return chain_evidence_store_persist(authority, key, evidence);
 }

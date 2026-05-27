@@ -151,7 +151,7 @@ static void chain_evidence_controller_reconcile_startup(
     struct chain_evidence_record active_evidence;
     bool has_active_evidence =
         chain_evidence_store_load(authority->ndb, "cec.active_tip_evidence",
-                      &active_evidence);
+                      &active_evidence).ok;
 
     /* Persisted hash / height mismatches between the in-memory active_tip
      * and the cec.active_tip_* keys are NOT contradictions during startup
@@ -418,7 +418,7 @@ enum chain_evidence_controller_result chain_evidence_controller_import_snapshot_
                      snapshot->schema_version) ||
         !persist_i64(authority, "cec.snapshot_finality_depth",
                      snapshot->finality_depth) ||
-        !chain_evidence_store_persist(authority, "cec.header_chain_evidence", &header)) {
+        !chain_evidence_store_persist(authority, "cec.header_chain_evidence", &header).ok) {
         chain_evidence_controller_freeze(authority, "snapshot metadata persistence failed");
         return CEC_REJECTED_PERSIST;
     }
@@ -430,7 +430,7 @@ enum chain_evidence_controller_result chain_evidence_controller_import_snapshot_
         }
     }
     if (!chain_evidence_store_persist(authority, "cec.snapshot_evidence",
-                          &snapshot->verified) ||
+                          &snapshot->verified).ok ||
         !persist_state(authority, CEC_SNAPSHOT_UTXO_HASH_VERIFIED))
         return CEC_REJECTED_PERSIST;
     return CEC_OK;
@@ -552,7 +552,7 @@ enum chain_evidence_controller_result chain_evidence_controller_promote_tip(
 
     bool persisted =
         chain_evidence_controller_mark_block_evidence(
-            authority, request->new_tip->phashBlock, &verified) &&
+            authority, request->new_tip->phashBlock, &verified).ok &&
         persist_blob(authority, "cec.active_tip_hash",
                      request->new_tip->phashBlock->data, 32) &&
         persist_i64(authority, "cec.active_tip_height",
@@ -566,9 +566,9 @@ enum chain_evidence_controller_result chain_evidence_controller_promote_tip(
         persist_i64(authority, "cec.active_tip_source_class",
                     verified.source_class) &&
         chain_evidence_store_persist(authority, "cec.block_index_evidence_state",
-                         &verified) &&
+                         &verified).ok &&
         chain_evidence_store_persist(authority, "cec.active_tip_evidence",
-                         &verified);
+                         &verified).ok;
     if (persisted && next_state != old_state) {
         const char *name = chain_evidence_controller_state_name(next_state);
         persisted = persist_blob(authority, "cec.sync_state",
@@ -720,11 +720,11 @@ enum chain_evidence_controller_result chain_evidence_controller_mark_fully_valid
     }
     struct chain_evidence_record snapshot_evidence;
     (void)chain_evidence_store_load(authority->ndb, "cec.snapshot_evidence",
-                        &snapshot_evidence);
+                        &snapshot_evidence).ok;
     snapshot_evidence.full_validation_complete = true;
     if (!persist_i64(authority, "cec.snapshot_validated", 1) ||
         !chain_evidence_store_persist(authority, "cec.snapshot_evidence",
-                          &snapshot_evidence) ||
+                          &snapshot_evidence).ok ||
         !persist_state(authority, CEC_FULLY_VALIDATED))
         return CEC_REJECTED_PERSIST;
     return CEC_OK;
