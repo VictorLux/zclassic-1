@@ -16,6 +16,7 @@
 #include "chain/pow.h"
 #include "core/uint256.h"
 #include "crypto_registry/crypto_registry.h"
+#include "domain/consensus/check_block.h"
 #include "event/event.h"
 #include "validation/check_transaction.h"
 #include "validation/contextual_check_tx.h"
@@ -196,52 +197,60 @@ static bool check_block_impl(const struct block *block,
     if (!check_block_header(&block->header, state, params, check_pow))
         LOG_FAIL("check_block", "check_block_header failed");
 
+    /* Merkle-root and size/coinbase/sigops are pure structural checks:
+     * they look only at the block's own bytes. Both have been
+     * extracted into the hexagonal domain layer
+     * (domain/consensus/check_block). The wrapper still owns the
+     * rejection-emission style (DoS-or-corrupt flag, REJECT_* macros)
+     * so the byte-identical reject_reason strings reach the P2P layer
+     * unchanged. */
     if (check_merkle_root) {
-        struct uint256 *txids = zcl_malloc(block->num_vtx * sizeof(struct uint256), "check_block_txids");
-        if (!txids && block->num_vtx > 0)
-            REJECT_FATAL(state, "out-of-memory");
-
-        for (size_t i = 0; i < block->num_vtx; i++)
-            txids[i] = block->vtx[i].hash;
-
-        bool mutated;
-        struct uint256 merkle_root =
-            compute_merkle_root_mutated(txids, block->num_vtx, &mutated);
-        free(txids);
-
-        REJECT_CORRUPT_IF(
-            !uint256_eq(&block->header.hashMerkleRoot, &merkle_root),
-            state, 100, "bad-txnmrklroot");
-
-        REJECT_CORRUPT_IF(mutated, state, 100, "bad-txns-duplicate");
+        char domain_reason[DOMAIN_CHECK_BLOCK_REASON_MAX] = {0};
+        int  domain_dos = 0;
+        struct zcl_result r = domain_consensus_check_block_merkle_root(
+                block, domain_reason, sizeof(domain_reason), &domain_dos);
+        if (!r.ok) {
+            /* Both merkle rejections are corruption-class in the legacy
+             * code (REJECT_CORRUPT_IF). Out-of-memory remains a fatal
+             * error rather than a peer-rejection. */
+            if (r.code == DOMAIN_CONSENSUS_CHECK_BLOCK_ERR_OUT_OF_MEMORY)
+                REJECT_FATAL(state, "out-of-memory");
+            REJECT_CORRUPT_IF(true, state, domain_dos, domain_reason);
+        }
     }
 
     if (check_size_limits) {
-        const unsigned int GENEROUS_BLOCK_SIZE_LIMIT = 2000000;
-
-        REJECT_IF(block->num_vtx == 0 ||
-                  block->num_vtx > GENEROUS_BLOCK_SIZE_LIMIT,
-                  state, 100, "bad-blk-length");
-
-        REJECT_IF(!transaction_is_coinbase(&block->vtx[0]),
-                  state, 100, "bad-cb-missing");
-
-        for (size_t i = 1; i < block->num_vtx; i++) {
-            REJECT_IF(transaction_is_coinbase(&block->vtx[i]),
-                      state, 100, "bad-cb-multiple");
+        /* (1) num_vtx bounds + coinbase placement. Legacy used plain
+         * REJECT_IF (corruption flag = false) for all three. */
+        {
+            char domain_reason[DOMAIN_CHECK_BLOCK_REASON_MAX] = {0};
+            int  domain_dos = 0;
+            struct zcl_result r =
+                    domain_consensus_check_block_size_and_coinbase(
+                            block, domain_reason, sizeof(domain_reason),
+                            &domain_dos);
+            if (!r.ok)
+                REJECT_IF(true, state, domain_dos, domain_reason);
         }
 
+        /* (2) Per-tx structural checks. Order preserved from legacy:
+         * runs AFTER the block-shape gates, BEFORE the sigops total. */
         for (size_t i = 0; i < block->num_vtx; i++) {
             if (!check_transaction(&block->vtx[i], state))
                 LOG_FAIL("check_block", "check_transaction failed for tx[%zu]", i);
         }
 
-        unsigned int nSigOps = 0;
-        for (size_t i = 0; i < block->num_vtx; i++)
-            nSigOps += (unsigned int)get_legacy_sig_op_count(
-                &block->vtx[i], SCRIPT_VERIFY_NONE);
-        REJECT_CORRUPT_IF(nSigOps > MAX_BLOCK_SIGOPS,
-                          state, 100, "bad-blk-sigops");
+        /* (3) Aggregate sigop count. Legacy used REJECT_CORRUPT_IF
+         * (corruption flag = true), so we preserve that here. */
+        {
+            char domain_reason[DOMAIN_CHECK_BLOCK_REASON_MAX] = {0};
+            int  domain_dos = 0;
+            struct zcl_result r = domain_consensus_check_block_sigops(
+                    block, domain_reason, sizeof(domain_reason),
+                    &domain_dos);
+            if (!r.ok)
+                REJECT_CORRUPT_IF(true, state, domain_dos, domain_reason);
+        }
     }
 
     return true;
