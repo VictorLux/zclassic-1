@@ -188,17 +188,17 @@ static bool wbs_write_file_atomic(const char *path,
     return true;
 }
 
-bool wallet_backup_encrypt_file(const char *src_path,
+struct zcl_result wallet_backup_encrypt_file(const char *src_path,
                                  const char *dst_path,
                                  const char *password)
 {
     if (!src_path || !dst_path || !password || !*password)
-        LOG_FAIL("wallet_backup", "encrypt_file: NULL or empty argument");
+        return ZCL_ERR(-1, "encrypt_file: NULL or empty argument");
 
     uint8_t *plain = NULL;
     size_t   plen  = 0;
     if (!wbs_read_whole_file(src_path, &plain, &plen))
-        LOG_FAIL("wallet_backup", "encrypt_file: failed to read %s", src_path);
+        return ZCL_ERR(-2, "encrypt_file: failed to read %s", src_path);
 
     /* Fresh salt + nonce from the system CSPRNG. */
     uint8_t salt[WALLET_BACKUP_ENC_SALT_LEN];
@@ -237,7 +237,7 @@ bool wallet_backup_encrypt_file(const char *src_path,
     if (!out) {
         free(plain);
         memset(key, 0, sizeof(key));
-        LOG_FAIL("wallet_backup", "encrypt_file: malloc failed (%zu bytes) for %s", out_len, src_path);
+        return ZCL_ERR(-3, "encrypt_file: malloc failed (%zu bytes) for %s", out_len, src_path);
     }
     memcpy(out, header, sizeof(header));
 
@@ -254,33 +254,35 @@ bool wallet_backup_encrypt_file(const char *src_path,
 
     if (!ok) {
         free(out);
-        LOG_FAIL("wallet_backup", "encrypt_file: AEAD encryption failed for %s", src_path);
+        return ZCL_ERR(-4, "encrypt_file: AEAD encryption failed for %s", src_path);
     }
 
     bool wrote = wbs_write_file_atomic(dst_path, out, out_len);
     free(out);
-    return wrote;
+    if (!wrote)
+        return ZCL_ERR(-5, "encrypt_file: failed to write %s", dst_path);
+    return ZCL_OK;
 }
 
-bool wallet_backup_decrypt_file(const char *src_path,
+struct zcl_result wallet_backup_decrypt_file(const char *src_path,
                                  const char *dst_path,
                                  const char *password)
 {
     if (!src_path || !dst_path || !password || !*password)
-        LOG_FAIL("wallet_backup", "decrypt_file: NULL or empty argument");
+        return ZCL_ERR(-1, "decrypt_file: NULL or empty argument");
 
     uint8_t *enc = NULL;
     size_t   elen = 0;
     if (!wbs_read_whole_file(src_path, &enc, &elen))
-        LOG_FAIL("wallet_backup", "decrypt_file: failed to read %s", src_path);
+        return ZCL_ERR(-2, "decrypt_file: failed to read %s", src_path);
 
     if (elen < (size_t)(WALLET_BACKUP_ENC_HEADER_LEN +
                          WALLET_BACKUP_ENC_TAG_LEN)) {
-        free(enc); LOG_FAIL("wallet_backup", "decrypt_file: %s too short (%zu bytes)", src_path, elen);
+        free(enc); return ZCL_ERR(-3, "decrypt_file: %s too short (%zu bytes)", src_path, elen);
     }
 
     if (memcmp(enc, WALLET_BACKUP_ENC_MAGIC, 4) != 0) {
-        free(enc); LOG_FAIL("wallet_backup", "decrypt_file: bad magic in %s", src_path);
+        free(enc); return ZCL_ERR(-4, "decrypt_file: bad magic in %s", src_path);
     }
 
     uint32_t ver = (uint32_t)enc[4]       |
@@ -288,14 +290,14 @@ bool wallet_backup_decrypt_file(const char *src_path,
                    ((uint32_t)enc[6] << 16) |
                    ((uint32_t)enc[7] << 24);
     if (ver != WALLET_BACKUP_ENC_VERSION) {
-        free(enc); LOG_FAIL("wallet_backup", "decrypt_file: unsupported version %u in %s", ver, src_path);
+        free(enc); return ZCL_ERR(-5, "decrypt_file: unsupported version %u in %s", ver, src_path);
     }
     uint32_t its = (uint32_t)enc[8]       |
                    ((uint32_t)enc[9]  <<  8) |
                    ((uint32_t)enc[10] << 16) |
                    ((uint32_t)enc[11] << 24);
     if (its == 0 || its > (1u << 24)) { /* sanity cap */
-        free(enc); LOG_FAIL("wallet_backup", "decrypt_file: bad iteration count %u in %s", its, src_path);
+        free(enc); return ZCL_ERR(-6, "decrypt_file: bad iteration count %u in %s", its, src_path);
     }
 
     const uint8_t *salt  = enc + 16;
@@ -315,7 +317,7 @@ bool wallet_backup_decrypt_file(const char *src_path,
         if (!plain) {
             free(enc);
             memset(key, 0, sizeof(key));
-            LOG_FAIL("wallet_backup", "decrypt_file: malloc failed (%zu bytes) for %s", plain_len, src_path);
+            return ZCL_ERR(-7, "decrypt_file: malloc failed (%zu bytes) for %s", plain_len, src_path);
         }
     }
 
@@ -330,11 +332,13 @@ bool wallet_backup_decrypt_file(const char *src_path,
     if (!ok) {
         if (plain) memset(plain, 0, plain_len);
         free(plain);
-        LOG_FAIL("wallet_backup", "decrypt_file: AEAD decryption failed for %s", src_path);
+        return ZCL_ERR(-8, "decrypt_file: AEAD decryption failed for %s", src_path);
     }
 
     bool wrote = wbs_write_file_atomic(dst_path, plain, plain_len);
     if (plain) memset(plain, 0, plain_len);
     free(plain);
-    return wrote;
+    if (!wrote)
+        return ZCL_ERR(-9, "decrypt_file: failed to write %s", dst_path);
+    return ZCL_OK;
 }

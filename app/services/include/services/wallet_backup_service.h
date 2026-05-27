@@ -60,6 +60,7 @@
 #define ZCL_SERVICES_WALLET_BACKUP_SERVICE_H
 
 #include "models/database.h"
+#include "util/result.h"
 
 #include <stdbool.h>
 #include <stddef.h>
@@ -130,19 +131,21 @@ void wallet_backup_status_snapshot(struct wallet_backup_status *out);
 
 /* Start the background backup thread. `db` is the opened node_db
  * that owns the wallet tables. If the service is already running,
- * this is a no-op and returns true. Returns false on any setup
- * error (missing backup_dir permission, thread create failure,
- * etc). Safe to call from any thread. */
-bool wallet_backup_start(const struct wallet_backup_config *cfg,
-                          struct node_db *db);
+ * this is a no-op and returns ZCL_OK. Returns a non-ok zcl_result on
+ * any setup error (missing backup_dir permission, thread create
+ * failure, etc) — the .message explains why. Safe to call from any
+ * thread. */
+struct zcl_result wallet_backup_start(const struct wallet_backup_config *cfg,
+                                       struct node_db *db);
 
 /* Stop the background thread. Safe to call even if not running. */
 void wallet_backup_stop(void);
 
-/* Run one backup synchronously. Returns true on success. Callable
- * whether or not the thread is running. Safe to call from any
- * thread — serialised by the service mutex. */
-bool wallet_backup_now(void);
+/* Run one backup synchronously. Returns ZCL_OK on success, otherwise
+ * a non-ok zcl_result whose .message carries the failure reason.
+ * Callable whether or not the thread is running. Safe to call from
+ * any thread — serialised by the service mutex. */
+struct zcl_result wallet_backup_now(void);
 
 /* ── Event triggers (debounced) ─────────────────────────────── */
 
@@ -178,15 +181,17 @@ void wallet_backup_service_on_keypool_topup(void);
 /* Create one backup file in `backup_dir` reading from `db`. On
  * success, writes the full path to `out_path` (if non-NULL) and
  * the wallet_keys row count to `out_key_count` (if non-NULL).
- * Returns false on any IO/SQL error. This is the single
- * entry point used by both the thread and wallet_backup_now,
- * exposed so tests can call it directly without spinning a
- * thread.
+ * Returns ZCL_OK on success or a non-ok zcl_result on any IO/SQL
+ * error. This is the single entry point used by both the thread and
+ * wallet_backup_now, exposed so tests can call it directly without
+ * spinning a thread.
  *
- * err_out/err_cap take a caller-provided diagnostic buffer — the
- * same shape as bii_verify — so tests can assert the failure
- * reason without reading the event ring. */
-bool wallet_backup_run_once(const char *backup_dir,
+ * err_out/err_cap take a optional caller-provided diagnostic buffer —
+ * the same shape as bii_verify — populated with the failure reason on
+ * error (a copy of the returned result's .message) so callers that
+ * keep the buffer form still work. The returned zcl_result is the
+ * source of truth. */
+struct zcl_result wallet_backup_run_once(const char *backup_dir,
                              struct node_db *db,
                              char *out_path, size_t out_path_cap,
                              int64_t *out_key_count,
@@ -208,18 +213,20 @@ int wallet_backup_list(const char *backup_dir,
 /* Encrypt `src_path` to `dst_path` using PBKDF2-HMAC-SHA256 to
  * derive a 256-bit ChaCha20-Poly1305 key from `password`. Generates
  * a fresh random salt + nonce and writes the header described
- * above followed by the ciphertext + tag. Returns true on success;
- * on failure the partial dst file (if any) is removed. Passing
- * NULL or empty `password` is rejected. */
-bool wallet_backup_encrypt_file(const char *src_path,
+ * above followed by the ciphertext + tag. Returns ZCL_OK on success;
+ * on failure a non-ok zcl_result (whose .message explains the cause)
+ * and the partial dst file (if any) is removed. Passing NULL or empty
+ * `password` is rejected. */
+struct zcl_result wallet_backup_encrypt_file(const char *src_path,
                                  const char *dst_path,
                                  const char *password);
 
-/* Decrypt `src_path` to `dst_path`. Returns true only when the
- * header magic, version, AEAD tag, and AAD all verify. On any
+/* Decrypt `src_path` to `dst_path`. Returns ZCL_OK only when the
+ * header magic, version, AEAD tag, and AAD all verify; otherwise a
+ * non-ok zcl_result whose .message explains the failure. On any
  * failure the partial dst file is removed so callers never see
  * half-decrypted bytes. */
-bool wallet_backup_decrypt_file(const char *src_path,
+struct zcl_result wallet_backup_decrypt_file(const char *src_path,
                                  const char *dst_path,
                                  const char *password);
 

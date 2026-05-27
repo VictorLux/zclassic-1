@@ -69,8 +69,6 @@ app/services/src/utxo_apply_stage.c
 app/services/src/utxo_audit_service.c
 app/services/src/utxo_recovery_service.c
 app/services/src/validate_headers_stage.c
-app/services/src/wallet_backup_crypto.c
-app/services/src/wallet_backup_service.c
 app/services/src/wallet_view_projection.c
 app/services/src/zclassicd_oracle_service.c
 app/services/src/zslp_command_service.c

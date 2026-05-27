@@ -1084,12 +1084,15 @@ static bool boot_wallet_backup_service_start(void *ctx)
             snprintf(backup_dir, sizeof(backup_dir), "wallet_backups");
         g_wallet_backup_cfg.backup_dir = backup_dir;
     }
-    if (wallet_backup_start(&g_wallet_backup_cfg, db)) {
+    struct zcl_result br = wallet_backup_start(&g_wallet_backup_cfg, db);
+    if (br.ok) {
         printf("Wallet backup started (interval=%ds max=%d)\n",
                g_wallet_backup_cfg.interval_seconds,
                g_wallet_backup_cfg.max_versions);
         return true;
     }
+    fprintf(stderr, "[boot] %s:%d wallet_backup_start failed: code=%d %s\n",
+            br.source_file, br.source_line, br.code, br.message);
     return false;
 }
 

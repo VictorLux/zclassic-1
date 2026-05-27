@@ -158,7 +158,7 @@ static int t_happy(void)
     bool ok = wallet_backup_run_once(f.backup_dir, &f.ndb,
                                       path, sizeof(path),
                                       &key_count,
-                                      err, sizeof(err));
+                                      err, sizeof(err)).ok;
 
     bool file_exists = false;
     int64_t file_keys = -1;
@@ -196,7 +196,7 @@ static int t_missing_dir_created(void)
 
     char err[256] = "";
     bool ok = wallet_backup_run_once(nested, &f.ndb,
-                                      NULL, 0, NULL, err, sizeof(err));
+                                      NULL, 0, NULL, err, sizeof(err)).ok;
     struct stat st;
     bool dir_created = stat(nested, &st) == 0 && S_ISDIR(st.st_mode);
 
@@ -224,7 +224,7 @@ static int t_zero_keys(void)
     int64_t key_count = -1;
     bool ok = wallet_backup_run_once(f.backup_dir, &f.ndb,
                                       path, sizeof(path),
-                                      &key_count, NULL, 0);
+                                      &key_count, NULL, 0).ok;
     int64_t n = wb_count_rows_in_file(path, "wallet_keys");
 
     bool success = ok && key_count == 0 && n == 0;
@@ -248,12 +248,12 @@ static int t_two_runs_distinct_files(void)
 
     char p1[512] = "", p2[512] = "";
     bool ok1 = wallet_backup_run_once(f.backup_dir, &f.ndb,
-                                       p1, sizeof(p1), NULL, NULL, 0);
+                                       p1, sizeof(p1), NULL, NULL, 0).ok;
     /* usec-level filename disambiguation still needs at least one
      * usec gap, so sleep a touch. */
     struct timespec ts = { 0, 2000000L }; nanosleep(&ts, NULL);
     bool ok2 = wallet_backup_run_once(f.backup_dir, &f.ndb,
-                                       p2, sizeof(p2), NULL, NULL, 0);
+                                       p2, sizeof(p2), NULL, NULL, 0).ok;
 
     bool success = ok1 && ok2 && strcmp(p1, p2) != 0 &&
                    atomic_load(&g_wb_ok) == 2;
@@ -346,7 +346,7 @@ static int t_refuses_same_dir(void)
     wallet_backup_config_defaults(&cfg);
     cfg.backup_dir = f.datadir;
 
-    bool started = wallet_backup_start(&cfg, &f.ndb);
+    bool started = wallet_backup_start(&cfg, &f.ndb).ok;
     WB_RUN("wb: start refuses to back up into source datadir", !started);
 
     if (started) wallet_backup_stop();
@@ -374,7 +374,7 @@ static int t_status_snapshot(void)
     cfg.backup_dir = f.backup_dir;
     cfg.interval_seconds = 3600;
 
-    bool started = wallet_backup_start(&cfg, &f.ndb);
+    bool started = wallet_backup_start(&cfg, &f.ndb).ok;
     /* Give the thread a moment for its start-of-day backup. */
     for (int i = 0; i < 50; i++) {
         struct wallet_backup_status s;
@@ -414,16 +414,16 @@ static int t_force_now_repeatable(void)
     cfg.backup_dir = f.backup_dir;
     cfg.interval_seconds = 999999;  /* effectively disable tick */
 
-    bool started = wallet_backup_start(&cfg, &f.ndb);
+    bool started = wallet_backup_start(&cfg, &f.ndb).ok;
 
     /* Allow the initial auto-backup to land before we start
      * counting additional ones. */
     struct timespec ts = { 0, 200000000L }; nanosleep(&ts, NULL);
     int baseline = atomic_load(&g_wb_ok);
 
-    bool n1 = wallet_backup_now();
-    bool n2 = wallet_backup_now();
-    bool n3 = wallet_backup_now();
+    bool n1 = wallet_backup_now().ok;
+    bool n2 = wallet_backup_now().ok;
+    bool n3 = wallet_backup_now().ok;
 
     wallet_backup_stop();
 
@@ -460,7 +460,7 @@ static int t_roundtrip_verify(void)
 
     char path[512] = "";
     bool ok = wallet_backup_run_once(f.backup_dir, &f.ndb,
-                                      path, sizeof(path), NULL, NULL, 0);
+                                      path, sizeof(path), NULL, NULL, 0).ok;
     int64_t n = wb_count_rows_in_file(path, "wallet_keys");
 
     /* Verify each seeded pubkey_hash lands in the backup. */
@@ -559,10 +559,10 @@ static int t_encrypt_roundtrip(void)
 
     wb_write_blob(src, plain, plain_len);
 
-    bool enc_ok = wallet_backup_encrypt_file(src, enc, "correct horse battery staple");
+    bool enc_ok = wallet_backup_encrypt_file(src, enc, "correct horse battery staple").ok;
     WB_RUN("wbenc: encrypt_file succeeds on a 32KB plaintext", enc_ok);
 
-    bool dec_ok = wallet_backup_decrypt_file(enc, dst, "correct horse battery staple");
+    bool dec_ok = wallet_backup_decrypt_file(enc, dst, "correct horse battery staple").ok;
     WB_RUN("wbenc: decrypt_file succeeds with correct password", dec_ok);
 
     uint8_t *round = NULL; size_t round_len = 0;
@@ -602,15 +602,15 @@ static int t_encrypt_wrong_password(void)
 
     wb_write_blob(src, (const uint8_t *)plain, strlen(plain));
 
-    bool enc_ok = wallet_backup_encrypt_file(src, enc, "password-a");
-    bool dec_wrong = !wallet_backup_decrypt_file(enc, dst, "password-b");
+    bool enc_ok = wallet_backup_encrypt_file(src, enc, "password-a").ok;
+    bool dec_wrong = !wallet_backup_decrypt_file(enc, dst, "password-b").ok;
     WB_RUN("wbenc: encrypt under one password", enc_ok);
     WB_RUN("wbenc: decrypt with wrong password is rejected (tag mismatch)",
            dec_wrong);
 
     /* Decrypt with empty/NULL password is also rejected. */
-    bool rej_empty = !wallet_backup_decrypt_file(enc, dst, "");
-    bool rej_null  = !wallet_backup_decrypt_file(enc, dst, NULL);
+    bool rej_empty = !wallet_backup_decrypt_file(enc, dst, "").ok;
+    bool rej_null  = !wallet_backup_decrypt_file(enc, dst, NULL).ok;
     WB_RUN("wbenc: decrypt rejects empty password", rej_empty);
     WB_RUN("wbenc: decrypt rejects NULL password",  rej_null);
 
@@ -641,7 +641,7 @@ static int t_encrypt_tamper_detected(void)
     bool setup_ok = ct != NULL && clen > 20;
     if (setup_ok) ct[20] ^= 0x01; /* flip a bit in the salt */
     wb_write_blob(enc, ct, clen);
-    bool rejected_salt = !wallet_backup_decrypt_file(enc, dst, "pw");
+    bool rejected_salt = !wallet_backup_decrypt_file(enc, dst, "pw").ok;
     WB_RUN("wbenc: flipped salt byte fails tag verification",
            setup_ok && rejected_salt);
 
@@ -651,7 +651,7 @@ static int t_encrypt_tamper_detected(void)
     if (clen > (size_t)WALLET_BACKUP_ENC_HEADER_LEN)
         ct[WALLET_BACKUP_ENC_HEADER_LEN] ^= 0x01;
     wb_write_blob(enc, ct, clen);
-    bool rejected_ct = !wallet_backup_decrypt_file(enc, dst, "pw");
+    bool rejected_ct = !wallet_backup_decrypt_file(enc, dst, "pw").ok;
     WB_RUN("wbenc: flipped ciphertext byte fails tag verification",
            rejected_ct);
 
@@ -661,7 +661,7 @@ static int t_encrypt_tamper_detected(void)
     if (clen > (size_t)WALLET_BACKUP_ENC_HEADER_LEN)
         ct[WALLET_BACKUP_ENC_HEADER_LEN] ^= 0x01;
     wb_write_blob(enc, ct, clen);
-    bool restored_ok = wallet_backup_decrypt_file(enc, dst, "pw");
+    bool restored_ok = wallet_backup_decrypt_file(enc, dst, "pw").ok;
     WB_RUN("wbenc: restoring the flipped byte lets decrypt succeed again",
            restored_ok);
     free(ct);

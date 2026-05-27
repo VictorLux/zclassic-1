@@ -203,7 +203,17 @@ static int64_t wbs_count_rows(sqlite3 *db, const char *table)
 
 /* ── Core primitive ─────────────────────────────────────────── */
 
-bool wallet_backup_run_once(const char *backup_dir,
+/* Copy a non-ok result's message into the caller's err_out buffer
+ * (the legacy buffer-form diagnostic) and return the result. The
+ * zcl_result is the source of truth; err_out is a convenience mirror. */
+#define WBS_FAIL(err_out, err_cap, code, ...) do {                       \
+    struct zcl_result _wbs_r = ZCL_ERR((code), __VA_ARGS__);             \
+    if ((err_out) && (err_cap))                                          \
+        snprintf((err_out), (err_cap), "%s", _wbs_r.message);            \
+    return _wbs_r;                                                       \
+} while (0)
+
+struct zcl_result wallet_backup_run_once(const char *backup_dir,
                              struct node_db *db,
                              char *out_path, size_t out_path_cap,
                              int64_t *out_key_count,
@@ -213,23 +223,15 @@ bool wallet_backup_run_once(const char *backup_dir,
     if (out_path && out_path_cap) out_path[0] = '\0';
     if (out_key_count) *out_key_count = -1;
 
-    if (!backup_dir || !db || !db->open || !db->db) {
-        if (err_out) snprintf(err_out, err_cap, "null arg or db not open");
-        return false;
-    }
+    if (!backup_dir || !db || !db->open || !db->db)
+        WBS_FAIL(err_out, err_cap, -1, "null arg or db not open");
 
-    if (!wbs_ensure_backup_dir(backup_dir)) {
-        if (err_out) snprintf(err_out, err_cap,
-                "cannot create backup_dir %s", backup_dir);
-        return false;
-    }
+    if (!wbs_ensure_backup_dir(backup_dir))
+        WBS_FAIL(err_out, err_cap, -2, "cannot create backup_dir %s", backup_dir);
 
     const char *src_path = wbs_source_path(db->db);
-    if (!src_path) {
-        if (err_out) snprintf(err_out, err_cap,
-                "source db has no file path (in-memory?)");
-        return false;
-    }
+    if (!src_path)
+        WBS_FAIL(err_out, err_cap, -3, "source db has no file path (in-memory?)");
 
     /* In-memory source is valid for tests: use the ATTACH TO
      * "file::memory:?cache=shared" form only if the caller opened
@@ -244,11 +246,12 @@ bool wallet_backup_run_once(const char *backup_dir,
     int rc = sqlite3_open_v2(dst_path, &dst,
         SQLITE_OPEN_CREATE | SQLITE_OPEN_READWRITE, NULL);
     if (rc != SQLITE_OK) {
-        if (err_out) snprintf(err_out, err_cap,
-                "sqlite3_open dst: %s", sqlite3_errmsg(dst));
+        struct zcl_result r = ZCL_ERR(-4, "sqlite3_open dst: %s",
+                                      sqlite3_errmsg(dst));
+        if (err_out) snprintf(err_out, err_cap, "%s", r.message);
         if (dst) sqlite3_close(dst);
         unlink(dst_path);
-        return false;
+        return r;
     }
 
     /* ATTACH the source by absolute path under alias "src". */
@@ -257,21 +260,23 @@ bool wallet_backup_run_once(const char *backup_dir,
         rc = sqlite3_prepare_v2(dst,
             "ATTACH DATABASE ? AS src", -1, &att, NULL);
         if (rc != SQLITE_OK || !att) {
-            if (err_out) snprintf(err_out, err_cap,
-                    "prepare ATTACH: %s", sqlite3_errmsg(dst));
+            struct zcl_result r = ZCL_ERR(-5, "prepare ATTACH: %s",
+                                          sqlite3_errmsg(dst));
+            if (err_out) snprintf(err_out, err_cap, "%s", r.message);
             if (att) sqlite3_finalize(att);
             sqlite3_close(dst);
             unlink(dst_path);
-            return false;
+            return r;
         }
         sqlite3_bind_text(att, 1, src_path, -1, SQLITE_STATIC);
         if (AR_STEP_ROW_READONLY(att) != SQLITE_DONE) {
-            if (err_out) snprintf(err_out, err_cap,
-                    "step ATTACH: %s", sqlite3_errmsg(dst));
+            struct zcl_result r = ZCL_ERR(-6, "step ATTACH: %s",
+                                          sqlite3_errmsg(dst));
+            if (err_out) snprintf(err_out, err_cap, "%s", r.message);
             sqlite3_finalize(att);
             sqlite3_close(dst);
             unlink(dst_path);
-            return false;
+            return r;
         }
         sqlite3_finalize(att);
     }
@@ -282,6 +287,7 @@ bool wallet_backup_run_once(const char *backup_dir,
      * skip it (older databases may not have every table). */
     char *errmsg = NULL;
     bool all_ok = true;
+    char copy_err[ZCL_RESULT_MSG_MAX] = "";
     for (size_t i = 0; i < WALLET_TABLE_COUNT; i++) {
         const char *table = WALLET_TABLES[i];
         /* Check the source even has this table. */
@@ -302,7 +308,7 @@ bool wallet_backup_run_once(const char *backup_dir,
             "CREATE TABLE %s AS SELECT * FROM src.%s", table, table);
         rc = sqlite3_exec(dst, sql, NULL, NULL, &errmsg);
         if (rc != SQLITE_OK) {
-            if (err_out) snprintf(err_out, err_cap,
+            snprintf(copy_err, sizeof(copy_err),
                     "copy %s: %s", table, errmsg ? errmsg : "?");
             sqlite3_free(errmsg);
             errmsg = NULL;
@@ -320,11 +326,12 @@ bool wallet_backup_run_once(const char *backup_dir,
          * failure event and bail out. */
         struct stat st;
         int64_t bytes = stat(dst_path, &st) == 0 ? (int64_t)st.st_size : -1;
+        struct zcl_result r = ZCL_ERR(-7, "%s", copy_err);
+        if (err_out) snprintf(err_out, err_cap, "%s", r.message);
         event_emitf(EV_WALLET_BACKUP_FAILED, 0,
                     "path=%s bytes=%lld reason=%s",
-                    dst_path, (long long)bytes,
-                    err_out ? err_out : "unknown");
-        return false;
+                    dst_path, (long long)bytes, r.message);
+        return r;
     }
 
     /* Round-trip verification: reopen the backup file read-only,
@@ -343,13 +350,13 @@ bool wallet_backup_run_once(const char *backup_dir,
     }
 
     if (dst_key_count < 0 || dst_key_count != src_key_count) {
-        if (err_out) snprintf(err_out, err_cap,
+        struct zcl_result r = ZCL_ERR(-8,
                 "verify row count mismatch src=%lld dst=%lld",
                 (long long)src_key_count, (long long)dst_key_count);
+        if (err_out) snprintf(err_out, err_cap, "%s", r.message);
         event_emitf(EV_WALLET_BACKUP_FAILED, 0,
-                    "path=%s reason=%s",
-                    dst_path, err_out ? err_out : "count_mismatch");
-        return false;
+                    "path=%s reason=%s", dst_path, r.message);
+        return r;
     }
 
     struct stat st;
@@ -361,7 +368,7 @@ bool wallet_backup_run_once(const char *backup_dir,
     if (out_path) snprintf(out_path, out_path_cap, "%s", dst_path);
     if (out_key_count) *out_key_count = dst_key_count;
 
-    return true;
+    return ZCL_OK;
 }
 
 /* ── Rotation / listing ─────────────────────────────────────── */
@@ -439,16 +446,17 @@ int wallet_backup_rotate(const char *backup_dir, int max_versions)
 
 /* ── Synchronous entry points ───────────────────────────────── */
 
-static bool wbs_run_one_locked(void)
+static struct zcl_result wbs_run_one_locked(void)
 {
     int64_t started_ms = wbs_now_ms();
     char path[512] = "";
     char err[256]  = "";
     int64_t key_count = -1;
-    bool ok = wallet_backup_run_once(g_wbs.cfg.backup_dir, g_wbs.db,
+    struct zcl_result res = wallet_backup_run_once(g_wbs.cfg.backup_dir, g_wbs.db,
                                       path, sizeof(path),
                                       &key_count,
                                       err, sizeof(err));
+    bool ok = res.ok;
     int64_t elapsed = wbs_now_ms() - started_ms;
 
     if (ok) {
@@ -470,20 +478,22 @@ static bool wbs_run_one_locked(void)
         g_wbs.total_failures++;
         snprintf(g_wbs.last_error, sizeof(g_wbs.last_error), "%s", err);
     }
-    return ok;
+    return res;
 }
 
-bool wallet_backup_now(void)
+struct zcl_result wallet_backup_now(void)
 {
     pthread_mutex_lock(&g_wbs.lock);
     if (!g_wbs.db || !g_wbs.cfg.backup_dir) {
+        struct zcl_result r = ZCL_ERR(-10,
+                "backup_now: service not initialized (db=%p dir=%s)",
+                (void *)g_wbs.db, g_wbs.cfg.backup_dir ? g_wbs.cfg.backup_dir : "NULL");
         pthread_mutex_unlock(&g_wbs.lock);
-        LOG_FAIL("wallet_backup", "backup_now: service not initialized (db=%p dir=%s)",
-                 (void *)g_wbs.db, g_wbs.cfg.backup_dir ? g_wbs.cfg.backup_dir : "NULL");
+        return r;
     }
-    bool ok = wbs_run_one_locked();
+    struct zcl_result res = wbs_run_one_locked();
     pthread_mutex_unlock(&g_wbs.lock);
-    return ok;
+    return res;
 }
 
 /* ── Thread loop ────────────────────────────────────────────── */
@@ -561,16 +571,16 @@ static void *wbs_thread_fn(void *arg)
     return NULL;
 }
 
-bool wallet_backup_start(const struct wallet_backup_config *cfg,
+struct zcl_result wallet_backup_start(const struct wallet_backup_config *cfg,
                           struct node_db *db)
 {
     if (!cfg || !db || !cfg->backup_dir)
-        LOG_FAIL("wallet_backup", "start: NULL config, db, or backup_dir");
+        return ZCL_ERR(-20, "start: NULL config, db, or backup_dir");
 
     pthread_mutex_lock(&g_wbs.lock);
     if (g_wbs.thread_running) {
         pthread_mutex_unlock(&g_wbs.lock);
-        return true;
+        return ZCL_OK;
     }
 
     /* Refuse to back up into the same datadir as the source — the
@@ -584,17 +594,18 @@ bool wallet_backup_start(const struct wallet_backup_config *cfg,
         char *slash = strrchr(src_dir, '/');
         if (slash) *slash = '\0';
         if (strcmp(src_dir, cfg->backup_dir) == 0) {
+            struct zcl_result r = ZCL_ERR(-21,
+                "start: refusing to back up into source dir %s", src_dir);
             pthread_mutex_unlock(&g_wbs.lock);
-            fprintf(stderr,
-                "wallet_backup: refusing to back up into source dir %s\n",
-                src_dir);
-            return false;
+            return r;
         }
     }
 
     if (!wbs_ensure_backup_dir(cfg->backup_dir)) {
+        struct zcl_result r = ZCL_ERR(-22,
+                "start: cannot create backup dir %s", cfg->backup_dir);
         pthread_mutex_unlock(&g_wbs.lock);
-        LOG_FAIL("wallet_backup", "start: cannot create backup dir %s", cfg->backup_dir);
+        return r;
     }
 
     g_wbs.cfg = *cfg;
@@ -606,12 +617,13 @@ bool wallet_backup_start(const struct wallet_backup_config *cfg,
                                        &g_wbs.thread);
     if (rc != 0) {
         g_wbs.thread_running = false;
+        struct zcl_result r = ZCL_ERR(-23,
+                "start: thread_registry_spawn_ex failed (%d)", rc);
         pthread_mutex_unlock(&g_wbs.lock);
-        fprintf(stderr, "wallet_backup: thread_registry_spawn_ex failed (%d)\n", rc);
-        return false;
+        return r;
     }
     pthread_mutex_unlock(&g_wbs.lock);
-    return true;
+    return ZCL_OK;
 }
 
 void wallet_backup_stop(void)
