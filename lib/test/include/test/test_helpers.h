@@ -367,6 +367,7 @@ int test_legacy_bootstrap_attach(void);
 int test_process_block_revalidate(void);
 int test_domain_consensus_verify(void);
 int test_domain_consensus_subsidy(void);
+int test_domain_consensus_pow(void);
 int test_application_consensus_validate_block(void);
 int test_block_log_file(void);
 int test_block_log_legacy(void);

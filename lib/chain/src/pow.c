@@ -2,30 +2,38 @@
  * Copyright (c) 2009-2014 The Bitcoin Core developers
  * Copyright 2026 Rhett Creighton - Apache License 2.0
  * Distributed under the MIT software license, see the accompanying
- * file COPYING or http://www.opensource.org/licenses/mit-license.php. */
+ * file COPYING or http://www.opensource.org/licenses/mit-license.php.
+ *
+ * Epoch-I thin wrapper. The pure PoW difficulty arithmetic lives in
+ * domain/consensus/pow.{h,c}; this file preserves the legacy
+ * uint32_t-returning / bool-returning signatures so existing callers
+ * stay unchanged while the domain functions return a typed zcl_result.
+ *
+ * The CheckProofOfWork() bool wrapper delegates to
+ * domain_consensus_verify_pow_solution() in domain/consensus/verify.c
+ * (which has been mirroring this logic since the verify extraction). */
 
 #include "chain/pow.h"
+#include "domain/consensus/pow.h"
+#include "domain/consensus/verify.h"
 #include "util/util.h"
 #include <limits.h>
 
 unsigned int IncreaseDifficultyBy(unsigned int nBits, int64_t multiplier,
                                   const struct consensus_params *params)
 {
-    struct arith_uint256 target;
-    arith_uint256_set_compact(&target, nBits, NULL, NULL);
-
-    struct arith_uint256 div;
-    arith_uint256_set_u64(&div, (uint64_t)multiplier);
-    struct arith_uint256 result;
-    arith_uint256_div(&result, &target, &div);
-    target = result;
-
-    struct arith_uint256 pow_limit;
-    uint256_to_arith(&pow_limit, &params->powLimit);
-    if (arith_uint256_compare(&target, &pow_limit) > 0)
-        target = pow_limit;
-
-    return arith_uint256_get_compact(&target, false);
+    uint32_t out = 0;
+    struct zcl_result r = domain_consensus_increase_difficulty_by(
+            (uint32_t)nBits, multiplier, params, &out);
+    if (!r.ok) {
+        /* Preserve legacy fail-safe: on any contract violation, return
+         * the input nBits unchanged. The domain function already
+         * captured the precise reason in zcl_result. */
+        LogPrintf("IncreaseDifficultyBy: %s\n",
+                  r.message[0] ? r.message : "(no message)");
+        return nBits;
+    }
+    return out;
 }
 
 unsigned int GetNextWorkRequired(const struct block_index *pindexLast,
@@ -104,91 +112,46 @@ unsigned int CalculateNextWorkRequired(struct arith_uint256 bnAvg,
                                        const struct consensus_params *params,
                                        int nextHeight)
 {
-    int64_t avgTimespan = consensus_averaging_window_timespan(params, nextHeight);
-    int64_t minTimespan = consensus_min_actual_timespan(params, nextHeight);
-    int64_t maxTimespan = consensus_max_actual_timespan(params, nextHeight);
-
-    int64_t nActualTimespan = nLastBlockTime - nFirstBlockTime;
-    nActualTimespan = avgTimespan + (nActualTimespan - avgTimespan) / 4;
-
-    if (nActualTimespan < minTimespan)
-        nActualTimespan = minTimespan;
-    if (nActualTimespan > maxTimespan)
-        nActualTimespan = maxTimespan;
-
-    struct arith_uint256 bnPowLimit;
-    uint256_to_arith(&bnPowLimit, &params->powLimit);
-
-    struct arith_uint256 avgTs, actTs;
-    arith_uint256_set_u64(&avgTs, (uint64_t)avgTimespan);
-    arith_uint256_set_u64(&actTs, (uint64_t)nActualTimespan);
-
-    struct arith_uint256 bnNew;
-    arith_uint256_div(&bnNew, &bnAvg, &avgTs);
-    struct arith_uint256 bnResult;
-    arith_uint256_mul(&bnResult, &bnNew, &actTs);
-    bnNew = bnResult;
-
-    if (arith_uint256_compare(&bnNew, &bnPowLimit) > 0)
-        bnNew = bnPowLimit;
-
-    return arith_uint256_get_compact(&bnNew, false);
+    uint32_t out = 0;
+    struct zcl_result r = domain_consensus_calculate_next_work_required(
+            bnAvg, nLastBlockTime, nFirstBlockTime, params, nextHeight, &out);
+    if (!r.ok) {
+        /* Preserve legacy fail-safe: fall back to powLimit-as-compact
+         * if anything went wrong (null params/out). The domain function
+         * already captured the precise reason. */
+        LogPrintf("CalculateNextWorkRequired: %s\n",
+                  r.message[0] ? r.message : "(no message)");
+        if (params) {
+            struct arith_uint256 pow_limit;
+            uint256_to_arith(&pow_limit, &params->powLimit);
+            return arith_uint256_get_compact(&pow_limit, false);
+        }
+        return 0;
+    }
+    return out;
 }
 
 bool CheckProofOfWork(struct uint256 hash, unsigned int nBits,
                       const struct consensus_params *params)
 {
-    bool fNegative = false;
-    bool fOverflow = false;
-    struct arith_uint256 bnTarget;
-    arith_uint256_set_compact(&bnTarget, nBits, &fNegative, &fOverflow);
-
-    struct arith_uint256 pow_limit;
-    uint256_to_arith(&pow_limit, &params->powLimit);
-
-    if (fNegative || arith_uint256_is_zero(&bnTarget) || fOverflow ||
-        arith_uint256_compare(&bnTarget, &pow_limit) > 0) {
-        LogPrintf("CheckProofOfWork(): nBits below minimum work\n");
+    struct zcl_result r =
+        domain_consensus_verify_pow_solution(&hash, (uint32_t)nBits, params);
+    if (!r.ok) {
+        LogPrintf("CheckProofOfWork(): %s\n",
+                  r.message[0] ? r.message : "rejected");
         return false;
     }
-
-    struct arith_uint256 hash_arith;
-    uint256_to_arith(&hash_arith, &hash);
-    if (arith_uint256_compare(&hash_arith, &bnTarget) > 0) {
-        LogPrintf("CheckProofOfWork(): hash doesn't match nBits\n");
-        return false;
-    }
-
     return true;
 }
 
 struct arith_uint256 GetBlockProof(const struct block_index *block)
 {
-    bool fNegative, fOverflow;
-    struct arith_uint256 bnTarget;
-    arith_uint256_set_compact(&bnTarget, block->nBits, &fNegative, &fOverflow);
-
-    struct arith_uint256 zero;
-    arith_uint256_set_zero(&zero);
-
-    if (fNegative || fOverflow || arith_uint256_is_zero(&bnTarget))
-        return zero;
-
-    /* 2**256 / (bnTarget+1) == ~bnTarget / (bnTarget+1) + 1 */
-    struct arith_uint256 notTarget;
-    arith_uint256_complement(&notTarget, &bnTarget);
-
-    struct arith_uint256 one;
-    arith_uint256_set_u64(&one, 1);
-
-    struct arith_uint256 targetPlusOne;
-    arith_uint256_add(&targetPlusOne, &bnTarget, &one);
-
-    struct arith_uint256 result;
-    arith_uint256_div(&result, &notTarget, &targetPlusOne);
-    arith_uint256_add(&result, &result, &one);
-
-    return result;
+    struct arith_uint256 work;
+    arith_uint256_set_zero(&work);
+    if (!block)
+        return work;
+    (void)domain_consensus_block_proof(block->nBits, &work);
+    return work;
 }
 
 int64_t GetBlockProofEquivalentTime(const struct block_index *to,
