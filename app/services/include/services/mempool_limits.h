@@ -57,6 +57,7 @@
 #define ZCL_SERVICES_MEMPOOL_LIMITS_H
 
 #include "platform/time_compat.h"
+#include "util/result.h"
 #include <stdbool.h>
 #include <stdint.h>
 #include <stddef.h>
@@ -151,8 +152,9 @@ bool mempool_limits_passes_min_relay(const struct mempool_limits_config *cfg,
  * Stores `pool` and `cfg` internally — both must outlive the
  * service (typical pattern: globals owned by boot). Safe to call
  * from any thread, idempotent across a matching stop(). Returns
- * false if already running. */
-bool mempool_limits_start(struct tx_mempool *pool,
+ * ZCL_OK on a successful start; a non-ok result carries the reason
+ * it could not start (NULL pool, already running, or spawn failure). */
+struct zcl_result mempool_limits_start(struct tx_mempool *pool,
                            const struct mempool_limits_config *cfg);
 
 /* Stop background thread and unregister the hook. Safe to call

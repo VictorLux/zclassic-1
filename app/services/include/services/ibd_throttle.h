@@ -58,6 +58,7 @@
 #ifndef ZCL_SERVICES_IBD_THROTTLE_H
 #define ZCL_SERVICES_IBD_THROTTLE_H
 
+#include "util/result.h"
 #include <stdbool.h>
 #include <stdint.h>
 
@@ -101,9 +102,9 @@ bool ibd_throttle_dump_state_json(struct json_value *out, const char *key);
 /* ── Lifecycle ──────────────────────────────────────────────── */
 
 /* Start the throttle with the given config. `cfg` may be NULL,
- * in which case the env-derived defaults are used. Returns false
- * if already running. */
-bool ibd_throttle_start(const struct ibd_throttle_config *cfg);
+ * in which case the env-derived defaults are used. Returns ZCL_OK
+ * on success; a non-ok result if already running. */
+struct zcl_result ibd_throttle_start(const struct ibd_throttle_config *cfg);
 
 /* Stop the throttle. After this returns `acquire()` is a no-op
  * again. Safe to call when not running. */

@@ -207,14 +207,15 @@ static void *dm_thread_fn(void *arg)
 
 /* ── Lifecycle ──────────────────────────────────────────────── */
 
-bool disk_monitor_start(const struct disk_monitor_config *cfg)
+struct zcl_result disk_monitor_start(const struct disk_monitor_config *cfg)
 {
-    if (!cfg || !cfg->datadir) LOG_FAIL("disk_monitor", "start called with null config or datadir");
+    if (!cfg || !cfg->datadir)
+        return ZCL_ERR(-1, "start called with null config or datadir");
 
     pthread_mutex_lock(&g_dm.lock);
     if (g_dm.thread_running) {
         pthread_mutex_unlock(&g_dm.lock);
-        LOG_FAIL("disk_monitor", "start called but monitor thread already running");
+        return ZCL_ERR(-2, "start called but monitor thread already running");
     }
 
     g_dm.cfg = *cfg;
@@ -232,7 +233,7 @@ bool disk_monitor_start(const struct disk_monitor_config *cfg)
      * thread that will just emit -1 forever. */
     if (disk_monitor_free_bytes(cfg->datadir) < 0) {
         pthread_mutex_unlock(&g_dm.lock);
-        LOG_FAIL("disk_monitor", "cannot stat datadir %s", cfg->datadir);
+        return ZCL_ERR(-3, "cannot stat datadir %s", cfg->datadir);
     }
 
     /* Synchronous first poll so callers know the level before
@@ -246,11 +247,10 @@ bool disk_monitor_start(const struct disk_monitor_config *cfg)
     if (rc != 0) {
         g_dm.thread_running = false;
         pthread_mutex_unlock(&g_dm.lock);
-        fprintf(stderr, "disk_monitor: thread_registry_spawn_ex failed (%d)\n", rc);
-        return false;
+        return ZCL_ERR(-4, "thread_registry_spawn_ex failed (%d)", rc);
     }
     pthread_mutex_unlock(&g_dm.lock);
-    return true;
+    return ZCL_OK;
 }
 
 void disk_monitor_stop(void)

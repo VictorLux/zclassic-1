@@ -413,15 +413,15 @@ static void *ml_thread_fn(void *arg)
 
 /* ── Lifecycle ──────────────────────────────────────────────── */
 
-bool mempool_limits_start(struct tx_mempool *pool,
+struct zcl_result mempool_limits_start(struct tx_mempool *pool,
                            const struct mempool_limits_config *cfg_in)
 {
-    if (!pool) LOG_FAIL("mempool_limits", "start called with null pool");
+    if (!pool) return ZCL_ERR(-1, "start called with null pool");
 
     pthread_mutex_lock(&g_ml.lock);
     if (g_ml.thread_running) {
         pthread_mutex_unlock(&g_ml.lock);
-        LOG_FAIL("mempool_limits", "start called but thread already running");
+        return ZCL_ERR(-2, "start called but thread already running");
     }
     g_ml.pool = pool;
     g_ml.cfg  = ml_resolve_cfg(cfg_in);
@@ -440,10 +440,9 @@ bool mempool_limits_start(struct tx_mempool *pool,
         pthread_mutex_lock(&g_ml.lock);
         g_ml.thread_running = false;
         pthread_mutex_unlock(&g_ml.lock);
-        fprintf(stderr, "mempool_limits: pthread_create failed (%d)\n", rc);
-        return false;
+        return ZCL_ERR(-3, "thread_registry_spawn_ex failed (%d)", rc);
     }
-    return true;
+    return ZCL_OK;
 }
 
 void mempool_limits_stop(void)

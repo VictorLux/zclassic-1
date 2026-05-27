@@ -154,10 +154,10 @@ int test_ibd_throttle(void)
     {
         struct ibd_throttle_config cfg = { .blocks_per_sec = 10000,
                                             .burst = 3 };
-        bool ok = ibd_throttle_start(&cfg);
+        bool ok = ibd_throttle_start(&cfg).ok;
         IT_CHECK("it: start with explicit cfg", ok == true);
         IT_CHECK("it: double start returns false",
-                 ibd_throttle_start(&cfg) == false);
+                 ibd_throttle_start(&cfg).ok == false);
         IT_CHECK("it: is_running true after start",
                  ibd_throttle_is_running() == true);
         ibd_throttle_stop();

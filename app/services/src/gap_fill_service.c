@@ -234,23 +234,22 @@ static void *gap_fill_thread_main(void *arg)
     return NULL;
 }
 
-bool gap_fill_start(struct main_state *ms, struct download_manager *dm)
+struct zcl_result gap_fill_start(struct main_state *ms, struct download_manager *dm)
 {
-    if (!ms || !dm) {
-        LOG_FAIL("gap-fill", "start: null ms or dm");
-    }
-    if (atomic_load(&g_gf.running)) return true;
+    if (!ms || !dm)
+        return ZCL_ERR(-1, "start: null ms or dm");
+    if (atomic_load(&g_gf.running)) return ZCL_OK;
     g_gf.ms = ms;
     g_gf.dm = dm;
     memset(&g_gf.stats, 0, sizeof(g_gf.stats));
     atomic_store(&g_gf.stop_requested, false);
     if (thread_registry_spawn_ex("zcl_gap_fill", gap_fill_thread_main, NULL,
                                   &g_gf.thread) != 0) {
-        LOG_FAIL("gap-fill", "thread_registry_spawn_ex failed: errno=%d", errno);
+        return ZCL_ERR(-2, "thread_registry_spawn_ex failed: errno=%d", errno);
     }
     g_gf.thread_started = true;
     atomic_store(&g_gf.running, true);
-    return true;
+    return ZCL_OK;
 }
 
 void gap_fill_stop(void)

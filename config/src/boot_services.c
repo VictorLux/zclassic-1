@@ -313,8 +313,12 @@ static bool boot_mempool_limits_start(void *ctx)
 
     struct mempool_limits_config ml_cfg;
     mempool_limits_config_defaults(&ml_cfg);
-    if (!mempool_limits_start(svc->mempool, &ml_cfg))
+    struct zcl_result mr = mempool_limits_start(svc->mempool, &ml_cfg);
+    if (!mr.ok) {
+        fprintf(stderr, "[boot] %s:%d mempool_limits_start failed: code=%d %s\n",
+                mr.source_file, mr.source_line, mr.code, mr.message);
         return false;
+    }
 
     printf("Mempool limits started (max=%lldMB max_tx=%lld)\n",
            (long long)(ml_cfg.max_bytes >> 20),
@@ -565,11 +569,13 @@ static bool boot_gap_fill_start(void *ctx)
     struct boot_svc_ctx *svc = ctx;
     if (!svc)
         return false;
-    if (gap_fill_start(svc->state, msg_get_download_mgr())) {
+    struct zcl_result gr = gap_fill_start(svc->state, msg_get_download_mgr());
+    if (gr.ok) {
         printf("[gap-fill] background gap-fill service started\n");
         return true;
     }
-    fprintf(stderr, "WARNING: gap_fill_start failed\n");
+    fprintf(stderr, "WARNING: gap_fill_start failed: %s:%d code=%d %s\n",
+            gr.source_file, gr.source_line, gr.code, gr.message);
     return false;
 }
 

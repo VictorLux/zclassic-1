@@ -353,7 +353,7 @@ int test_mempool_limits(void)
         struct mempool_limits_config cfg = {0};
         cfg.max_tx_count = 2;
         cfg.tick_seconds = 3600; /* never tick during test */
-        bool started = mempool_limits_start(&pool, &cfg);
+        bool started = mempool_limits_start(&pool, &cfg).ok;
         atomic_store(&g_ev_evict, 0);
 
         /* Add 5 txs with strictly ascending fees — every add past
@@ -386,8 +386,8 @@ int test_mempool_limits(void)
         struct mempool_limits_config cfg = {0};
         cfg.tick_seconds = 3600;
 
-        bool r1 = mempool_limits_start(&pool, &cfg);
-        bool r2 = mempool_limits_start(&pool, &cfg); /* already running */
+        bool r1 = mempool_limits_start(&pool, &cfg).ok;
+        bool r2 = mempool_limits_start(&pool, &cfg).ok; /* already running */
         struct mempool_limits_stats st;
         mempool_limits_stats_snapshot(&st);
         bool running = st.running;

@@ -26,6 +26,7 @@
 #ifndef ZCL_GAP_FILL_SERVICE_H
 #define ZCL_GAP_FILL_SERVICE_H
 
+#include "util/result.h"
 #include <stdbool.h>
 #include <stdint.h>
 
@@ -54,8 +55,10 @@ struct gap_fill_stats {
 };
 
 /* Start the service. Spawns one pthread. ms and dm must outlive the
- * service. Returns true on success. Idempotent — safe to call twice. */
-bool gap_fill_start(struct main_state *ms, struct download_manager *dm);
+ * service. Returns ZCL_OK on success (including the already-running
+ * no-op); a non-ok result on bad args or spawn failure. Idempotent —
+ * safe to call twice. */
+struct zcl_result gap_fill_start(struct main_state *ms, struct download_manager *dm);
 
 /* Request shutdown and join the thread. Safe if never started. */
 void gap_fill_stop(void);

@@ -37,6 +37,7 @@
 #ifndef ZCL_SERVICES_DISK_MONITOR_H
 #define ZCL_SERVICES_DISK_MONITOR_H
 
+#include "util/result.h"
 #include <stdbool.h>
 #include <stdint.h>
 
@@ -79,11 +80,11 @@ void disk_monitor_status_snapshot(struct disk_monitor_status *out);
 
 /* ── Lifecycle ──────────────────────────────────────────────── */
 
-/* Start the background thread. Returns false if already running
- * or if the datadir path can't be stat'd. Safe to call from any
- * thread. Running the first poll is synchronous so callers know
+/* Start the background thread. Returns a non-ok result if already
+ * running or if the datadir path can't be stat'd. Safe to call from
+ * any thread. Running the first poll is synchronous so callers know
  * the current level before the function returns. */
-bool disk_monitor_start(const struct disk_monitor_config *cfg);
+struct zcl_result disk_monitor_start(const struct disk_monitor_config *cfg);
 
 /* Stop and join. Safe to call when not running. */
 void disk_monitor_stop(void);

@@ -167,7 +167,7 @@ static bool it_drain_pending_event_locked(int64_t now_us,
 
 /* ── Lifecycle ──────────────────────────────────────────────── */
 
-bool ibd_throttle_start(const struct ibd_throttle_config *cfg)
+struct zcl_result ibd_throttle_start(const struct ibd_throttle_config *cfg)
 {
     struct ibd_throttle_config resolved;
     if (cfg) {
@@ -183,7 +183,7 @@ bool ibd_throttle_start(const struct ibd_throttle_config *cfg)
     pthread_mutex_lock(&g_it.lock);
     if (g_it.running) {
         pthread_mutex_unlock(&g_it.lock);
-        LOG_FAIL("ibd_throttle", "start called but throttle already running");
+        return ZCL_ERR(-1, "start called but throttle already running");
     }
     g_it.running        = true;
     g_it.blocks_per_sec = resolved.blocks_per_sec;
@@ -200,7 +200,7 @@ bool ibd_throttle_start(const struct ibd_throttle_config *cfg)
     g_it.blocked_since_last_event = 0;
     g_it.wait_since_last_event_us = 0;
     pthread_mutex_unlock(&g_it.lock);
-    return true;
+    return ZCL_OK;
 }
 
 void ibd_throttle_stop(void)

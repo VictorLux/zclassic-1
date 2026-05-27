@@ -94,7 +94,7 @@ int test_disk_monitor(void)
         cfg.warn_free_bytes   = 1;   /* any real fs has >= 1 byte free */
         cfg.refuse_free_bytes = 1;
         cfg.poll_seconds      = 3600;
-        bool started = disk_monitor_start(&cfg);
+        bool started = disk_monitor_start(&cfg).ok;
         DM_CHECK("dm: start succeeds with small thresholds",
                  started && disk_monitor_level() == DISK_MONITOR_OK);
         disk_monitor_stop();
@@ -109,7 +109,7 @@ int test_disk_monitor(void)
         cfg.warn_free_bytes   = INT64_MAX;  /* free < warn → LOW */
         cfg.refuse_free_bytes = 1;
         cfg.poll_seconds      = 3600;
-        bool started = disk_monitor_start(&cfg);
+        bool started = disk_monitor_start(&cfg).ok;
         bool is_low  = disk_monitor_level() == DISK_MONITOR_LOW;
         int  low_count = atomic_load(&g_ev_low);
 
@@ -137,7 +137,7 @@ int test_disk_monitor(void)
         cfg.warn_free_bytes   = INT64_MAX;
         cfg.refuse_free_bytes = INT64_MAX;  /* free < refuse → CRITICAL */
         cfg.poll_seconds      = 3600;
-        bool started = disk_monitor_start(&cfg);
+        bool started = disk_monitor_start(&cfg).ok;
         bool is_crit = disk_monitor_level() == DISK_MONITOR_CRITICAL;
         int  crit_count = atomic_load(&g_ev_crit);
         DM_CHECK("dm: CRITICAL threshold flips level to DISK_MONITOR_CRITICAL",
@@ -185,8 +185,8 @@ int test_disk_monitor(void)
         disk_monitor_config_defaults(&cfg);
         cfg.datadir      = DM_SCRATCH_DIR;
         cfg.poll_seconds = 3600;
-        bool first  = disk_monitor_start(&cfg);
-        bool second = disk_monitor_start(&cfg);
+        bool first  = disk_monitor_start(&cfg).ok;
+        bool second = disk_monitor_start(&cfg).ok;
         DM_CHECK("dm: start() rejects when already running",
                  first && !second);
         disk_monitor_stop();
@@ -198,7 +198,7 @@ int test_disk_monitor(void)
         disk_monitor_config_defaults(&cfg);
         cfg.datadir      = "/nonexistent-path-for-dm-test-67890";
         cfg.poll_seconds = 3600;
-        bool rejected = !disk_monitor_start(&cfg);
+        bool rejected = !disk_monitor_start(&cfg).ok;
         DM_CHECK("dm: start() refuses a datadir that can't be stat'd",
                  rejected);
     }

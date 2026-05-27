@@ -1030,12 +1030,15 @@ static bool boot_disk_monitor_service_start(void *ctx)
         return false;
     disk_monitor_config_defaults(&g_disk_monitor_cfg);
     g_disk_monitor_cfg.datadir = datadir;
-    if (disk_monitor_start(&g_disk_monitor_cfg)) {
+    struct zcl_result dr = disk_monitor_start(&g_disk_monitor_cfg);
+    if (dr.ok) {
         printf("Disk monitor started (warn=%lldGB refuse=%lldGB)\n",
                (long long)(g_disk_monitor_cfg.warn_free_bytes >> 30),
                (long long)(g_disk_monitor_cfg.refuse_free_bytes >> 30));
         return true;
     }
+    fprintf(stderr, "[boot] %s:%d disk_monitor_start failed: code=%d %s\n",
+            dr.source_file, dr.source_line, dr.code, dr.message);
     return false;
 }
 
@@ -1050,12 +1053,15 @@ static bool boot_ibd_throttle_service_start(void *ctx)
     (void)ctx;
     ibd_throttle_config_defaults(&g_ibd_throttle_cfg);
     ibd_throttle_config_from_env(&g_ibd_throttle_cfg);
-    if (ibd_throttle_start(&g_ibd_throttle_cfg)) {
+    struct zcl_result ir = ibd_throttle_start(&g_ibd_throttle_cfg);
+    if (ir.ok) {
         printf("IBD throttle started (rate=%lld/s burst=%lld)\n",
                (long long)g_ibd_throttle_cfg.blocks_per_sec,
                (long long)g_ibd_throttle_cfg.burst);
         return true;
     }
+    fprintf(stderr, "[boot] %s:%d ibd_throttle_start failed: code=%d %s\n",
+            ir.source_file, ir.source_line, ir.code, ir.message);
     return false;
 }
 
