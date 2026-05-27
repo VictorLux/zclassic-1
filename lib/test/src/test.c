@@ -845,6 +845,7 @@ int main(void)
     failures += test_cutover_tip_parity();
     failures += test_utxo_snapshot_inmem();
     failures += test_hodl_history_port();
+    failures += test_node_health_store_port();
     failures += test_make_lint_gates();
     failures += test_multisig();
     failures += test_mcp_fuzz();

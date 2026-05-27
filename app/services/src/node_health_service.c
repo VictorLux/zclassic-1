@@ -22,17 +22,16 @@
 #include "net/download.h"
 #include "net/msg_internal.h"
 #include "net/tor_integration.h"
-#include <sqlite3.h>
+#include "adapters/outbound/persistence/node_health_store_sqlite.h"
+#include "ports/node_health_store_port.h"
 #include <stdio.h>
 #include <errno.h>
 #include <string.h>
-#include <sys/stat.h>
 #include <time.h>
 #include <unistd.h>
 
 #include "util/log_macros.h"
 #include "util/alerts.h"
-#include "util/ar_step_readonly.h"
 
 /* Read process start time from /proc/self/stat (field 22, starttime in
  * clock ticks since boot).  Combined with /proc/uptime this gives the
@@ -97,40 +96,6 @@ static int64_t get_rss_kb(void)
 }
 static const int64_t HEALTH_JOB_STALL_SECONDS = 120;
 static const int64_t HEALTH_RECENT_ERROR_SECONDS = 300;
-
-static bool health_query_int(sqlite3 *db, const char *sql, int *out)
-{
-    sqlite3_stmt *stmt = NULL;
-    bool ok = false;
-
-    if (!db || !sql || !out)
-        return false;
-    if (sqlite3_prepare_v2(db, sql, -1, &stmt, NULL) != SQLITE_OK)
-        return false;
-    if (AR_STEP_ROW_READONLY(stmt) == SQLITE_ROW) {
-        *out = sqlite3_column_int(stmt, 0);
-        ok = true;
-    }
-    sqlite3_finalize(stmt);
-    return ok;
-}
-
-static bool health_query_int64(sqlite3 *db, const char *sql, int64_t *out)
-{
-    sqlite3_stmt *stmt = NULL;
-    bool ok = false;
-
-    if (!db || !sql || !out)
-        return false;
-    if (sqlite3_prepare_v2(db, sql, -1, &stmt, NULL) != SQLITE_OK)
-        return false;
-    if (AR_STEP_ROW_READONLY(stmt) == SQLITE_ROW) {
-        *out = sqlite3_column_int64(stmt, 0);
-        ok = true;
-    }
-    sqlite3_finalize(stmt);
-    return ok;
-}
 
 bool node_health_chain_advance_synced(const struct cac_decision *decision)
 {
@@ -228,7 +193,15 @@ void node_health_collect(struct node_health_snapshot *snapshot,
         struct node_db_status dbs = {0};
         struct db_service *dbsvc = app_runtime_db_service();
         struct db_service_status svc_status = {0};
-        sqlite3 *query_db = app_runtime_query_db();
+        /* The three persistent reads node_health does go through the
+         * node_health_store port so the service never names sqlite. The
+         * two SELECTs read the shared query connection; the WAL stat
+         * resolves the primary node-DB filename. Same SQL, same WAL path,
+         * same fall-back-to-in-memory-estimate behaviour as before. */
+        struct node_health_store_sqlite_ctx store_ctx;
+        struct node_health_store_port store = {0};
+        node_health_store_sqlite_bind(&store_ctx, app_runtime_query_db(),
+                                      ndb->db, &store);
         node_db_get_status(ndb, &dbs);
         db_service_get_status(dbsvc, &svc_status);
         snapshot->db_open = dbs.open;
@@ -254,26 +227,18 @@ void node_health_collect(struct node_health_snapshot *snapshot,
                     now - dbs.last_activity_time;
         }
         if (snapshot->tip_height < 0) {
-            if (!health_query_int(query_db,
-                                  "SELECT COALESCE(MAX(height), -1) FROM blocks",
-                                  &snapshot->tip_height)) {
+            if (!store.tip_height_from_blocks(store.self,
+                                              &snapshot->tip_height)) {
                 snapshot->tip_height = db_block_max_height(ndb);
             }
         }
-        if (!health_query_int64(query_db,
-                                "SELECT count(*) FROM utxos",
-                                &snapshot->utxo_count)) {
+        if (!store.utxo_count(store.self, &snapshot->utxo_count)) {
             snapshot->utxo_count = node_db_utxo_count(ndb);
         }
 
-        const char *db_path = sqlite3_db_filename(ndb->db, "main");
-        if (db_path) {
-            char wal_path[1024];
-            struct stat wal_st;
-            snprintf(wal_path, sizeof(wal_path), "%s-wal", db_path);
-            if (stat(wal_path, &wal_st) == 0)
-                snapshot->wal_size_bytes = wal_st.st_size;
-        }
+        int64_t wal_bytes = 0;
+        if (store.wal_size_bytes(store.self, &wal_bytes))
+            snapshot->wal_size_bytes = wal_bytes;
     }
 
     if (ms && ms->pindex_best_header)
