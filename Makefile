@@ -944,6 +944,30 @@ check-one-result-type:
 	@echo "══ LINT: one result type (E2) ══"
 	@./tools/scripts/check_one_result_type.sh
 
+# ── Shape-skeleton generator (Workstream A5, FRAMEWORK.md Law 3) ──────
+# Emit a correct, compiling, readable skeleton for one of the four shapes
+# into the right shape folder. Plain committed source (no metaprogramming),
+# matching the exemplars so it passes the framework lint gates the day it
+# lands. The generator never edits a registry — it prints the wiring step.
+#
+#   make new-condition  NAME=foo_bar   -> app/conditions/src/foo_bar.c
+#   make new-model      NAME=foo        -> app/models/src/foo.c
+#   make new-job        NAME=foo_stage  -> app/jobs/src/foo_stage.c
+#   make new-controller NAME=foo        -> app/controllers/src/foo_controller.c
+.PHONY: new-condition new-model new-job new-controller
+new-condition:
+	@test -n "$(NAME)" || { echo "usage: make new-condition NAME=foo_bar"; exit 1; }
+	@./tools/new_shape.sh condition "$(NAME)"
+new-model:
+	@test -n "$(NAME)" || { echo "usage: make new-model NAME=foo"; exit 1; }
+	@./tools/new_shape.sh model "$(NAME)"
+new-job:
+	@test -n "$(NAME)" || { echo "usage: make new-job NAME=foo_stage"; exit 1; }
+	@./tools/new_shape.sh job "$(NAME)"
+new-controller:
+	@test -n "$(NAME)" || { echo "usage: make new-controller NAME=foo"; exit 1; }
+	@./tools/new_shape.sh controller "$(NAME)"
+
 # Gate E3 — shape source files include their shape contract header
 # (conditions -> framework/condition.h, models -> models/ header,
 # supervisors -> supervisor header). HARD: the tree already complies.
