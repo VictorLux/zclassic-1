@@ -129,7 +129,8 @@ volatile sig_atomic_t g_shutdown_requested = 0;
     X(block_log_file) X(block_log_legacy) X(replay_verify) \
     X(mutator) X(shadow_feeder) X(shadow_feeder_global) \
     X(diff_with_legacy_shadow) X(shadow_replay_proof) \
-    X(shadow_replay_full_driver) X(utxo_snapshot_inmem)
+    X(shadow_replay_full_driver) X(cutover_tip_parity) \
+    X(utxo_snapshot_inmem)
 
 #define SPEC_LIST(X) \
     X(wallet_dashboard) X(wallet_send) X(wallet_receive) \

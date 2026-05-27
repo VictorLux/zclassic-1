@@ -363,6 +363,7 @@ int test_script_validate_stage(void);
 int test_proof_validate_stage(void);
 int test_utxo_apply_stage(void);
 int test_tip_finalize_stage(void);
+int test_cutover_tip_parity(void);
 int test_legacy_bootstrap_attach(void);
 int test_process_block_revalidate(void);
 int test_domain_consensus_verify(void);
