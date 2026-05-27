@@ -523,6 +523,7 @@ int test_cutover_postflip_reorg(void)
         int64_t flip_tip = active_chain_height(&ms.chain_active);  /* == N */
         cutover_modes_set_header_pipeline(CUTOVER_STAGE_MODE_AUTHORITATIVE,
                                           CUTOVER_STAGE_MODE_AUTHORITATIVE);
+        tip_finalize_set_mode(TIP_FINALIZE_MODE_AUTHORITATIVE);
         cutover_modes_record_change(flip_tip, flip_tip, flip_tip, /*tip_lag*/ 0);
         CPR_CHECK("flip accepted -> authoritative_active",
                   cutover_modes_any_authoritative_active());

@@ -560,6 +560,7 @@ int test_cutover_flip_dryrun(void)
         int64_t flip_tip = active_chain_height(&ms.chain_active);  /* == CATCHUP */
         cutover_modes_set_header_pipeline(CUTOVER_STAGE_MODE_AUTHORITATIVE,
                                           CUTOVER_STAGE_MODE_AUTHORITATIVE);
+        tip_finalize_set_mode(TIP_FINALIZE_MODE_AUTHORITATIVE);
         cutover_modes_record_change(flip_tip, /*header*/ flip_tip,
                                     /*peer_best*/ flip_tip, /*tip_lag*/ 0);
         CFD_CHECK("B: flip accepted -> authoritative_active true",

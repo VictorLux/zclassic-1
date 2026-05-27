@@ -102,6 +102,16 @@ bool active_chain_contains(const struct active_chain *c,
 bool active_chain_set_tip(struct active_chain *c, struct block_index *bi);
 int active_chain_height(const struct active_chain *c);
 
+struct active_chain_authority {
+    int64_t (*get_height)(void);
+    bool    (*get_hash)(uint8_t hash[32]);
+    void    (*set_tip)(int height, const uint8_t hash[32]);
+    bool    (*is_authoritative)(void);
+};
+
+void active_chain_register_authority(const struct active_chain_authority *auth);
+void active_chain_register_block_map(struct block_map *m);
+
 struct chainstate {
     zcl_mutex_t cs_main;
     struct block_map map_block_index;

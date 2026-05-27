@@ -217,6 +217,19 @@ bool block_map_next(const struct block_map *m, size_t *iter,
 
 /* --- Active Chain --- */
 
+static struct active_chain_authority g_chain_authority = {0};
+static struct block_map *g_chain_block_map = NULL;
+
+void active_chain_register_authority(const struct active_chain_authority *auth)
+{
+    if (auth) g_chain_authority = *auth;
+}
+
+void active_chain_register_block_map(struct block_map *m)
+{
+    g_chain_block_map = m;
+}
+
 void active_chain_init(struct active_chain *c)
 {
     c->chain = NULL;
@@ -235,6 +248,16 @@ void active_chain_free(struct active_chain *c)
 struct block_index *active_chain_tip(const struct active_chain *c)
 {
     if (!c || !c->chain) return NULL;
+    if (g_chain_authority.is_authoritative &&
+        g_chain_authority.is_authoritative()) {
+        uint8_t h32[32];
+        if (g_chain_authority.get_hash && g_chain_authority.get_hash(h32)) {
+            struct uint256 hash;
+            memcpy(hash.data, h32, 32);
+            struct block_index *bi = block_map_find(g_chain_block_map, &hash);
+            if (bi) return bi;
+        }
+    }
     int h = active_chain_height(c);
     if (h < 0) return NULL;
     return c->chain[h];
@@ -301,24 +324,41 @@ bool active_chain_set_tip(struct active_chain *c, struct block_index *bi)
         h--;
     }
     c->height = new_height;
+
+    if (g_chain_authority.is_authoritative &&
+        g_chain_authority.set_tip &&
+        g_chain_authority.is_authoritative()) {
+        const uint8_t *h32 = bi ? bi->phashBlock->data : NULL;
+        g_chain_authority.set_tip(new_height, h32);
+    }
+
     return true;
 }
 
 int active_chain_height(const struct active_chain *c)
 {
     if (!c) return -1;
+    if (g_chain_authority.is_authoritative &&
+        g_chain_authority.get_height &&
+        g_chain_authority.is_authoritative()) {
+        int64_t ah = g_chain_authority.get_height();
+        if (ah >= 0) return (int)ah;
+        return -1;
+    }
+
     sqlite3 *db = progress_store_db();
-    if (!db) return -1;
+    if (!db) return c->height;
     sqlite3_stmt *st = NULL;
     if (sqlite3_prepare_v2(db, "SELECT MAX(height) FROM tip_finalize_log WHERE ok = 1", -1, &st, NULL) != SQLITE_OK)
-        return -1;
+        return c->height;
     int h = -1;
     int rc = sqlite3_step(st);  // raw-sql-ok:kernel-primitive
     if (rc == SQLITE_ROW && sqlite3_column_type(st, 0) != SQLITE_NULL) {
         h = sqlite3_column_int(st, 0);
     }
     sqlite3_finalize(st);
-    return h;
+    if (h > c->height) return h;
+    return c->height;
 }
 
 /* --- Chainstate --- */
