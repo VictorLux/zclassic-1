@@ -9,39 +9,45 @@
 
 #include "consensus/params.h"
 #include "consensus/validation.h"
+#include "domain/consensus/locktime.h"
 #include "primitives/transaction.h"
 #include <stdbool.h>
 
-#define TX_EXPIRING_SOON_THRESHOLD 3
+/* The pure lock-time predicates is_final_tx / is_expired_tx /
+ * is_expiring_soon_tx have moved to domain/consensus/locktime.{h,c}.
+ * These inline wrappers preserve the exact legacy signatures used by
+ * check_block.c, txmempool.c, and the BIP113/BIP65 test corpus.
+ *
+ * The wrappers stay thin and inline: callers pass already-computed
+ * scalars (block height, MTP cutoff) — the impure work of computing
+ * those scalars from chain state lives in the wrapper's caller, not
+ * here. See domain/consensus/locktime.h for the contract. */
+
+/* TX_EXPIRING_SOON_THRESHOLD is also defined (identically) in
+ * lib/validation/include/validation/main_constants.h. That definition
+ * is canonical at the lib/ layer. The domain layer mirrors the same
+ * literal under DOMAIN_CONSENSUS_TX_EXPIRING_SOON_THRESHOLD, and a
+ * compile-time assert here pins them together so they cannot drift. */
+#define LOCKTIME_THRESHOLD_TX DOMAIN_CONSENSUS_LOCKTIME_THRESHOLD
+
+_Static_assert(DOMAIN_CONSENSUS_TX_EXPIRING_SOON_THRESHOLD == 3,
+               "domain expiring-soon threshold drift");
 
 static inline bool is_expired_tx(const struct transaction *tx, int nHeight)
 {
-    if (tx->expiry_height == 0 || transaction_is_coinbase(tx))
-        return false;
-    return (uint32_t)nHeight >= tx->expiry_height;
+    return domain_consensus_tx_is_expired(tx, nHeight);
 }
 
 static inline bool is_expiring_soon_tx(const struct transaction *tx,
                                        int nNextBlockHeight)
 {
-    return is_expired_tx(tx, nNextBlockHeight + TX_EXPIRING_SOON_THRESHOLD);
+    return domain_consensus_tx_is_expiring_soon(tx, nNextBlockHeight);
 }
-
-#define LOCKTIME_THRESHOLD_TX 500000000
 
 static inline bool is_final_tx(const struct transaction *tx,
                                 int nBlockHeight, int64_t nBlockTime)
 {
-    if (tx->lock_time == 0)
-        return true;
-    int64_t lt = (int64_t)tx->lock_time;
-    if (lt < (lt < LOCKTIME_THRESHOLD_TX ? (int64_t)nBlockHeight : nBlockTime))
-        return true;
-    for (size_t i = 0; i < tx->num_vin; i++) {
-        if (!tx_in_is_final(&tx->vin[i]))
-            return false;
-    }
-    return true;
+    return domain_consensus_tx_is_final(tx, nBlockHeight, nBlockTime);
 }
 
 bool contextual_check_transaction(const struct transaction *tx,

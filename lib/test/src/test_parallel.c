@@ -119,7 +119,7 @@ volatile sig_atomic_t g_shutdown_requested = 0;
     X(domain_consensus_tx_structural) X(domain_consensus_sighash) \
     X(domain_consensus_check_block) X(domain_consensus_equihash) \
     X(domain_consensus_script_interp) X(domain_consensus_coins_math) \
-    X(domain_consensus_checkpoints) \
+    X(domain_consensus_checkpoints) X(domain_consensus_locktime) \
     X(application_consensus_validate_block) \
     X(block_log_file) X(block_log_legacy) X(replay_verify) \
     X(mutator) X(shadow_feeder) X(shadow_feeder_global) \
