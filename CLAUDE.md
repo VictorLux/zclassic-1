@@ -19,7 +19,7 @@ The refactor adopts Rails-style MVC + Phoenix-style supervised actors + hexagona
 
 Type **`continue zclassic23 development`**. The agent will:
 1. Run `pwd` to detect worktree ID (`main`, `wt2`, `wt3`, ...).
-2. `cat docs/FRAMEWORK.md` and `cat docs/REFACTOR_STATUS.md`.
+2. `cat docs/HANDOFF.md` FIRST (the current entry point), then `docs/FRAMEWORK.md` and `docs/REFACTOR_STATUS.md`.
 3. If worker → read `docs/work/wt<N>-*.md` and follow `docs/work/agent-protocol.md`.
 4. If orchestrator → review in-flight work in status board, merge pushed branches, dispatch next assignments.
 
