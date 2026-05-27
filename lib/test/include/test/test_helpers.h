@@ -375,6 +375,7 @@ int test_domain_consensus_sighash(void);
 int test_domain_consensus_check_block(void);
 int test_domain_consensus_equihash(void);
 int test_domain_consensus_script_interp(void);
+int test_domain_consensus_coins_math(void);
 int test_application_consensus_validate_block(void);
 int test_block_log_file(void);
 int test_block_log_legacy(void);

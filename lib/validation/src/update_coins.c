@@ -13,6 +13,7 @@
 
 #include "validation/update_coins.h"
 #include "coins/utxo_commitment.h"
+#include "domain/consensus/coins_math.h"
 #include "storage/utxo_projection.h"
 #include "util/log_macros.h"
 #include <assert.h>
@@ -145,14 +146,20 @@ bool update_coins_with_undo(const struct transaction *tx,
             update_coins_emit_utxo_spend_shadow(tx->vin[i].prevout.hash.data,
                                                 nPos);
 
-            txundo->vprevout[i].txout = entry->coins.vout[nPos];
-            coins_spend(&entry->coins, nPos);
-
-            if (coins_is_pruned(&entry->coins)) {
-                txundo->vprevout[i].height = (unsigned int)entry->coins.height;
-                txundo->vprevout[i].coinbase = entry->coins.is_coinbase;
-                txundo->vprevout[i].version = entry->coins.version;
-            }
+            /* Pure domain mutation: snapshot the txout into the undo
+             * record, null the vout, and (if the coin is now fully
+             * pruned) populate the parent metadata so a reorg can
+             * rebuild it. This is the slice of update_coins that does
+             * not touch the cache. Range / liveness preconditions
+             * were already established above (we grew the array and
+             * logged NULL-out / corrupt-value with LOG_FAIL); the
+             * domain call cannot fail in this code path. */
+            struct zcl_result _cu = coins_math_capture_undo(
+                    &entry->coins, nPos, &txundo->vprevout[i]);
+            if (!_cu.ok)
+                LOG_FAIL("update_coins",
+                         "coins_math_capture_undo failed code=%d msg=%s h=%d",
+                         _cu.code, _cu.message, nHeight);
         }
     }
 

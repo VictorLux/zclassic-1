@@ -8,8 +8,14 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "domain/consensus/coins_math.h"
 #include "util/log_macros.h"
 #include "util/safe_alloc.h"
+
+/* Pure coins arithmetic (is_pruned, is_available, spend, cleanup) lives
+ * in domain/consensus/coins_math.{c,h}. This file is the lib/ adapter:
+ * it owns the construct/copy/free lifecycle (which allocates via the
+ * label-tagged safe_alloc allocator) and forwards the pure helpers. */
 
 void coins_init(struct coins *c)
 {
@@ -84,31 +90,20 @@ void coins_from_transaction(struct coins *c, const struct transaction *tx, int h
 
 bool coins_spend(struct coins *c, uint32_t pos)
 {
-    if (pos >= c->num_vout || tx_out_is_null(&c->vout[pos]))
-        return false;
-    tx_out_set_null(&c->vout[pos]);
-    /* Do NOT call coins_cleanup() here. While ZClassic C++ does call
-     * Cleanup() from Spend(), the C++ vector auto-grows when disconnect
-     * restores UTXOs. Our C array doesn't auto-grow. Calling cleanup
-     * truncates num_vout, then the assert in update_coins crashes when
-     * a subsequent spend targets a position >= the new num_vout.
-     * Cleanup is still called from coins_from_transaction (creation)
-     * and coins_view_db_get_coins (deserialization). */
-    return true;
+    /* Thin forwarder to the pure domain mutator. The "do NOT cleanup
+     * after spend" invariant is documented and enforced inside
+     * coins_math_spend(); see domain/consensus/coins_math.h. */
+    return coins_math_spend(c, pos);
 }
 
 bool coins_is_available(const struct coins *c, unsigned int pos)
 {
-    return pos < c->num_vout && !tx_out_is_null(&c->vout[pos]);
+    return coins_math_is_available(c, pos);
 }
 
 bool coins_is_pruned(const struct coins *c)
 {
-    for (size_t i = 0; i < c->num_vout; i++) {
-        if (!tx_out_is_null(&c->vout[i]))
-            return false;
-    }
-    return true;
+    return coins_math_is_pruned(c);
 }
 
 void coins_copy(struct coins *dst, const struct coins *src)
@@ -127,7 +122,8 @@ void coins_copy(struct coins *dst, const struct coins *src)
              * dst->num_vout would act on zero outputs and treat the
              * record as fully spent.  Log so operators can correlate
              * a cache miss with an allocation failure. */
-            fprintf(stderr, "[coins] %s:%d %s(): zcl_malloc failed for "
+            fprintf(stderr,  // obs-ok:coins-copy-oom-sentinel
+                    "[coins] %s:%d %s(): zcl_malloc failed for "
                     "%zu-vout copy; dst reset to empty\n",
                     __FILE__, __LINE__, __func__, src->num_vout);
             dst->num_vout = 0;
@@ -140,8 +136,7 @@ void coins_copy(struct coins *dst, const struct coins *src)
 
 void coins_cleanup(struct coins *c)
 {
-    while (c->num_vout > 0 && tx_out_is_null(&c->vout[c->num_vout - 1]))
-        c->num_vout--;
+    coins_math_cleanup(c);
 }
 
 void coins_stats_init(struct coins_stats *s)
