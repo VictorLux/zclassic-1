@@ -50,11 +50,17 @@
 #include <time.h>
 #include <unistd.h>
 
-#include <sqlite3.h>
+#include "adapters/outbound/persistence/wallet_backup_store_sqlite.h"
+#include "ports/wallet_backup_store_port.h"
 
-#include "util/ar_step_readonly.h"
 #include "util/log_macros.h"
 #include "util/thread_registry.h"
+
+/* The wallet-backup sqlite surface lives behind wallet_backup_store_port.
+ * This service binds the default sqlite adapter to the source node_db
+ * connection per call; sqlite is named only by the adapter. The header
+ * comment's "ATTACH + CREATE TABLE AS SELECT" strategy is unchanged — it
+ * now executes inside the adapter. */
 
 /* ── Wallet table list ──────────────────────────────────────── */
 
@@ -159,14 +165,30 @@ static bool wbs_ensure_backup_dir(const char *dir)
     return true;
 }
 
-/* Return the on-disk path backing the source sqlite connection.
- * Returns NULL for memory databases. */
-static const char *wbs_source_path(sqlite3 *src)
+/* Bind the default sqlite adapter to the source node_db connection.
+ * Returns true (filling ctx and port) when db has an open sqlite handle. */
+static bool wbs_bind_store(struct node_db *db,
+                           struct wallet_backup_store_sqlite_ctx *ctx,
+                           struct wallet_backup_store_port *port)
 {
-    if (!src) LOG_NULL("wallet_backup", "source_path: NULL db handle");
-    const char *p = sqlite3_db_filename(src, "main");
-    if (!p || !*p) LOG_NULL("wallet_backup", "source_path: db has no file path (in-memory?)");
-    return p;
+    if (!db || !db->open || !db->db || !ctx || !port)
+        return false;
+    return wallet_backup_store_sqlite_bind(ctx, db->db, port);
+}
+
+/* Write the on-disk path backing the source connection into `out`.
+ * Returns false for memory databases (out untouched / empty). */
+static bool wbs_source_path(struct node_db *db, char *out, size_t cap)
+{
+    struct wallet_backup_store_sqlite_ctx ctx;
+    struct wallet_backup_store_port port = {0};
+    if (out && cap) out[0] = '\0';
+    if (!wbs_bind_store(db, &ctx, &port))
+        LOG_FAIL("wallet_backup", "source_path: NULL/closed db handle");
+    if (!port.source_path(port.self, out, cap))
+        LOG_FAIL("wallet_backup",
+                 "source_path: db has no file path (in-memory?)");
+    return true;
 }
 
 /* SHA-style filename: wallet_backup_<unix_ts>_<usec>.sqlite. The
@@ -182,23 +204,6 @@ static void wbs_build_backup_path(const char *dir, char *out, size_t cap)
              (long long)tv.tv_sec,
              (long)tv.tv_usec,
              WALLET_BACKUP_FILENAME_SUFFIX);
-}
-
-/* ── Row-count reader ──────────────────────────────────────── */
-
-static int64_t wbs_count_rows(sqlite3 *db, const char *table)
-{
-    if (!db || !table) LOG_ERR("wallet_backup", "count_rows: NULL db or table");
-    char sql[128];
-    snprintf(sql, sizeof(sql), "SELECT count(*) FROM %s", table);
-    sqlite3_stmt *st = NULL;
-    int64_t n = -1;
-    if (sqlite3_prepare_v2(db, sql, -1, &st, NULL) == SQLITE_OK) {
-        if (AR_STEP_ROW_READONLY(st) == SQLITE_ROW)
-            n = sqlite3_column_int64(st, 0);
-        sqlite3_finalize(st);
-    }
-    return n;
 }
 
 /* ── Core primitive ─────────────────────────────────────────── */
@@ -229,8 +234,15 @@ struct zcl_result wallet_backup_run_once(const char *backup_dir,
     if (!wbs_ensure_backup_dir(backup_dir))
         WBS_FAIL(err_out, err_cap, -2, "cannot create backup_dir %s", backup_dir);
 
-    const char *src_path = wbs_source_path(db->db);
-    if (!src_path)
+    /* Bind the sqlite adapter to the source connection. All sqlite
+     * work below goes through the port. */
+    struct wallet_backup_store_sqlite_ctx store_ctx;
+    struct wallet_backup_store_port store = {0};
+    if (!wbs_bind_store(db, &store_ctx, &store))
+        WBS_FAIL(err_out, err_cap, -3, "cannot bind wallet backup store");
+
+    char src_path[1024];
+    if (!store.source_path(store.self, src_path, sizeof(src_path)))
         WBS_FAIL(err_out, err_cap, -3, "source db has no file path (in-memory?)");
 
     /* In-memory source is valid for tests: use the ATTACH TO
@@ -241,87 +253,22 @@ struct zcl_result wallet_backup_run_once(const char *backup_dir,
     char dst_path[640];
     wbs_build_backup_path(backup_dir, dst_path, sizeof(dst_path));
 
-    /* Open the destination as a fresh empty db. */
-    sqlite3 *dst = NULL;
-    int rc = sqlite3_open_v2(dst_path, &dst,
-        SQLITE_OPEN_CREATE | SQLITE_OPEN_READWRITE, NULL);
-    if (rc != SQLITE_OK) {
-        struct zcl_result r = ZCL_ERR(-4, "sqlite3_open dst: %s",
-                                      sqlite3_errmsg(dst));
-        if (err_out) snprintf(err_out, err_cap, "%s", r.message);
-        if (dst) sqlite3_close(dst);
-        unlink(dst_path);
-        return r;
-    }
-
-    /* ATTACH the source by absolute path under alias "src". */
-    {
-        sqlite3_stmt *att = NULL;
-        rc = sqlite3_prepare_v2(dst,
-            "ATTACH DATABASE ? AS src", -1, &att, NULL);
-        if (rc != SQLITE_OK || !att) {
-            struct zcl_result r = ZCL_ERR(-5, "prepare ATTACH: %s",
-                                          sqlite3_errmsg(dst));
-            if (err_out) snprintf(err_out, err_cap, "%s", r.message);
-            if (att) sqlite3_finalize(att);
-            sqlite3_close(dst);
-            unlink(dst_path);
-            return r;
-        }
-        sqlite3_bind_text(att, 1, src_path, -1, SQLITE_STATIC);
-        if (AR_STEP_ROW_READONLY(att) != SQLITE_DONE) {
-            struct zcl_result r = ZCL_ERR(-6, "step ATTACH: %s",
-                                          sqlite3_errmsg(dst));
-            if (err_out) snprintf(err_out, err_cap, "%s", r.message);
-            sqlite3_finalize(att);
-            sqlite3_close(dst);
-            unlink(dst_path);
-            return r;
-        }
-        sqlite3_finalize(att);
-    }
-
-    /* For each wallet table, run CREATE TABLE IF NOT EXISTS t AS
-     * SELECT ... The AS SELECT form copies both schema and rows
-     * in one statement; if the source table is missing we just
-     * skip it (older databases may not have every table). */
-    char *errmsg = NULL;
-    bool all_ok = true;
+    /* Open dst, ATTACH source, CREATE TABLE AS SELECT per wallet table,
+     * DETACH, close — all inside the adapter. The AS SELECT form copies
+     * both schema and rows; missing source tables are skipped (older
+     * databases may not have every table). */
     char copy_err[ZCL_RESULT_MSG_MAX] = "";
-    for (size_t i = 0; i < WALLET_TABLE_COUNT; i++) {
-        const char *table = WALLET_TABLES[i];
-        /* Check the source even has this table. */
-        char exists_sql[256];
-        snprintf(exists_sql, sizeof(exists_sql),
-            "SELECT name FROM src.sqlite_master "
-            "WHERE type='table' AND name='%s'", table);
-        sqlite3_stmt *chk = NULL;
-        bool src_has = false;
-        if (sqlite3_prepare_v2(dst, exists_sql, -1, &chk, NULL) == SQLITE_OK) {
-            src_has = AR_STEP_ROW_READONLY(chk) == SQLITE_ROW;
-            sqlite3_finalize(chk);
-        }
-        if (!src_has) continue;
+    enum wallet_backup_store_status status =
+        store.write_snapshot(store.self, dst_path, src_path,
+                             WALLET_TABLES, WALLET_TABLE_COUNT,
+                             copy_err, sizeof(copy_err));
 
-        char sql[256];
-        snprintf(sql, sizeof(sql),
-            "CREATE TABLE %s AS SELECT * FROM src.%s", table, table);
-        rc = sqlite3_exec(dst, sql, NULL, NULL, &errmsg);
-        if (rc != SQLITE_OK) {
-            snprintf(copy_err, sizeof(copy_err),
-                    "copy %s: %s", table, errmsg ? errmsg : "?");
-            sqlite3_free(errmsg);
-            errmsg = NULL;
-            all_ok = false;
-            break;
-        }
-    }
+    if (status == WB_STORE_OPEN_DST_FAILED)
+        WBS_FAIL(err_out, err_cap, -4, "open dst failed: %s", dst_path);
+    if (status == WB_STORE_ATTACH_FAILED)
+        WBS_FAIL(err_out, err_cap, -5, "attach source failed: %s", src_path);
 
-    /* Detach + close. */
-    (void)sqlite3_exec(dst, "DETACH DATABASE src", NULL, NULL, NULL);
-    sqlite3_close(dst);
-
-    if (!all_ok) {
+    if (status == WB_STORE_COPY_FAILED) {
         /* Leave the dst file on disk for forensics, but emit the
          * failure event and bail out. */
         struct stat st;
@@ -338,16 +285,10 @@ struct zcl_result wallet_backup_run_once(const char *backup_dir,
      * count the wallet_keys rows, and compare against the source.
      * If the counts differ the file is left on disk but we return
      * false so the caller knows the output is not usable. */
-    int64_t src_key_count = wbs_count_rows(db->db, "wallet_keys");
-    int64_t dst_key_count = -1;
-    {
-        sqlite3 *verify = NULL;
-        if (sqlite3_open_v2(dst_path, &verify,
-                SQLITE_OPEN_READONLY, NULL) == SQLITE_OK) {
-            dst_key_count = wbs_count_rows(verify, "wallet_keys");
-            sqlite3_close(verify);
-        }
-    }
+    int64_t src_key_count = -1;
+    (void)store.count_rows(store.self, "wallet_keys", &src_key_count);
+    int64_t dst_key_count =
+        store.count_rows_in_file(store.self, dst_path, "wallet_keys");
 
     if (dst_key_count < 0 || dst_key_count != src_key_count) {
         struct zcl_result r = ZCL_ERR(-8,
@@ -587,8 +528,8 @@ struct zcl_result wallet_backup_start(const struct wallet_backup_config *cfg,
      * whole point is an *external* copy. We detect this by
      * comparing the backup_dir to the directory containing the
      * source db file. */
-    const char *src_path = wbs_source_path(db->db);
-    if (src_path) {
+    char src_path[1024];
+    if (wbs_source_path(db, src_path, sizeof(src_path))) {
         char src_dir[1024];
         snprintf(src_dir, sizeof(src_dir), "%s", src_path);
         char *slash = strrchr(src_dir, '/');

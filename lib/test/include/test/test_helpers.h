@@ -402,6 +402,7 @@ int test_utxo_snapshot_inmem(void);
 int test_hodl_history_port(void);
 int test_node_health_store_port(void);
 int test_db_maintenance_port(void);
+int test_wallet_backup_port(void);
 
 /* Spec-based user story tests (one per feature area) */
 int spec_wallet_dashboard(void);
