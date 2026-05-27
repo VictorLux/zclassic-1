@@ -205,14 +205,14 @@ static bool rpc_name_register(const struct json_value *params, bool help,
 
         /* Build base tx with a dust output (546 satoshi) */
         if (!zslp_command_build_genesis_base_tx(g_name_wallet, &wtx,
-                                                &fee_paid, &tx_error)) {
+                                                &fee_paid, &tx_error).ok) {
             json_set_str(result, tx_error ? tx_error : "Failed to build transaction");
             return false;
         }
 
         /* Prepend OP_RETURN, re-sign, broadcast */
         if (!zslp_command_commit_with_op_return(g_name_wallet, g_name_mempool,
-                                                &wtx, script, script_len)) {
+                                                &wtx, script, script_len).ok) {
             json_set_str(result, "Failed to broadcast transaction");
             return false;
         }

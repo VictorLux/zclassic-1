@@ -182,29 +182,33 @@ const char *zslp_service_validate_transfer_request(
     return NULL;
 }
 
-bool zslp_service_open_db(const char *datadir, sqlite3 **db_out, bool *owns_db)
+struct zcl_result zslp_service_open_db(const char *datadir, sqlite3 **db_out,
+                                       bool *owns_db)
 {
     struct node_db *ndb = app_runtime_node_db();
 
-    if (!db_out || !owns_db) LOG_FAIL("zslp_svc", "open_db: NULL output pointer");
+    if (!db_out || !owns_db)
+        return ZCL_ERR(-1, "open_db: NULL output pointer");
     *db_out = NULL;
     *owns_db = false;
 
     if (ndb && ndb->open && ndb->db) {
         *db_out = ndb->db;
-        return true;
+        return ZCL_OK;
     }
     if (!datadir)
-        LOG_FAIL("zslp_svc", "open_db: NULL datadir and no runtime db");
+        return ZCL_ERR(-2, "open_db: NULL datadir and no runtime db");
 
     char db_path[1024];
     snprintf(db_path, sizeof(db_path), "%s/node.db", datadir);
     if (sqlite3_open(db_path, db_out) != SQLITE_OK) {
+        struct zcl_result r =
+            ZCL_ERR(-3, "open_db: sqlite3_open failed for %s", db_path);
         if (*db_out) {
             sqlite3_close(*db_out);
             *db_out = NULL;
         }
-        LOG_FAIL("zslp_svc", "open_db: sqlite3_open failed for %s", db_path);
+        return r;
     }
     sqlite3_busy_timeout(*db_out, 5000);
     sqlite3_exec(*db_out,
@@ -215,7 +219,7 @@ bool zslp_service_open_db(const char *datadir, sqlite3 **db_out, bool *owns_db)
         "PRIMARY KEY (token_id, address))",
         NULL, NULL, NULL);
     *owns_db = true;
-    return true;
+    return ZCL_OK;
 }
 
 void zslp_service_close_db(sqlite3 *db, bool owns_db)
@@ -242,19 +246,22 @@ uint64_t zslp_service_get_balance(sqlite3 *db, const char *token_id,
     return balance.balance < 0 ? 0 : (uint64_t)balance.balance;
 }
 
-bool zslp_service_get_token(sqlite3 *db, const char *token_id,
-                            struct db_zslp_token_info *out)
+struct zcl_result zslp_service_get_token(sqlite3 *db, const char *token_id,
+                                         struct db_zslp_token_info *out)
 {
     struct node_db ndb;
     char token_key[ZSLP_MAX_TOKEN_KEY_LEN + 1];
 
     if (!db || !out || !zslp_service_validate_token_key(token_id))
-        LOG_FAIL("zslp_svc", "get_token: invalid args (db=%p out=%p token_id=%s)",
+        return ZCL_ERR(-1,
+                 "get_token: invalid args (db=%p out=%p token_id=%s)",
                  (void *)db, (void *)out, token_id ? token_id : "NULL");
 
     zslp_service_canonicalize_token_key(token_id, token_key);
     zslp_service_wrap_sqlite(db, &ndb);
-    return db_zslp_token_find(&ndb, token_key, out);
+    if (!db_zslp_token_find(&ndb, token_key, out))
+        return ZCL_ERR(-2, "get_token: token not found: %s", token_key);
+    return ZCL_OK;
 }
 
 int zslp_service_list_tokens(sqlite3 *db, struct db_zslp_token_info *out,
@@ -285,47 +292,56 @@ int zslp_service_list_transfers(sqlite3 *db, const char *token_id,
     return db_zslp_transfer_list_by_token(&ndb, token_key, out, max_out);
 }
 
-bool zslp_service_credit_balance(sqlite3 *db, const char *token_id,
-                                 const char *recipient_addr, uint64_t amount)
+struct zcl_result zslp_service_credit_balance(sqlite3 *db, const char *token_id,
+                                              const char *recipient_addr,
+                                              uint64_t amount)
 {
     struct node_db ndb;
     char token_key[ZSLP_MAX_TOKEN_KEY_LEN + 1];
 
     if (!db || amount == 0 || !zslp_service_validate_token_key(token_id) ||
         !zslp_service_validate_recipient_addr(recipient_addr, false))
-        LOG_FAIL("zslp_svc", "credit_balance: invalid args (token=%s addr=%s amount=%llu)",
+        return ZCL_ERR(-1,
+                 "credit_balance: invalid args (token=%s addr=%s amount=%llu)",
                  token_id ? token_id : "NULL", recipient_addr ? recipient_addr : "NULL",
                  (unsigned long long)amount);
     if (amount > (uint64_t)INT64_MAX)
-        LOG_FAIL("zslp_svc", "credit_balance: amount %llu exceeds INT64_MAX",
+        return ZCL_ERR(-2, "credit_balance: amount %llu exceeds INT64_MAX",
                  (unsigned long long)amount);
     zslp_service_canonicalize_token_key(token_id, token_key);
     zslp_service_wrap_sqlite(db, &ndb);
-    return db_zslp_balance_credit(&ndb, token_key, recipient_addr, (int64_t)amount);
+    if (!db_zslp_balance_credit(&ndb, token_key, recipient_addr, (int64_t)amount))
+        return ZCL_ERR(-3, "credit_balance: db_zslp_balance_credit failed for token=%s",
+                 token_key);
+    return ZCL_OK;
 }
 
-bool zslp_service_store_token(sqlite3 *db, const char *token_id,
-                              const char *ticker, const char *name,
-                              int decimals, int64_t initial_supply)
+struct zcl_result zslp_service_store_token(sqlite3 *db, const char *token_id,
+                                           const char *ticker, const char *name,
+                                           int decimals, int64_t initial_supply)
 {
     struct node_db ndb;
     char token_key[ZSLP_MAX_TOKEN_KEY_LEN + 1];
 
     if (!db || !token_id || !ticker || !name)
-        LOG_FAIL("zslp_svc", "store_token: NULL argument (db=%p token_id=%s)",
+        return ZCL_ERR(-1, "store_token: NULL argument (db=%p token_id=%s)",
                  (void *)db, token_id ? token_id : "NULL");
 
     zslp_service_canonicalize_token_key(token_id, token_key);
     zslp_service_wrap_sqlite(db, &ndb);
-    return db_zslp_token_save_key(&ndb, token_key, ticker, name, decimals,
-                                  "", 0, initial_supply);
+    if (!db_zslp_token_save_key(&ndb, token_key, ticker, name, decimals,
+                                "", 0, initial_supply))
+        return ZCL_ERR(-2, "store_token: db_zslp_token_save_key failed for %s",
+                 token_key);
+    return ZCL_OK;
 }
 
-bool zslp_payment_generate_address(struct wallet *wallet,
-                                   char *z_addr_out, size_t max)
+struct zcl_result zslp_payment_generate_address(struct wallet *wallet,
+                                                char *z_addr_out, size_t max)
 {
     if (!z_addr_out || max < 80)
-        LOG_FAIL("zslp_payment", "generate_address: NULL output or max too small (%zu)", max);
+        return ZCL_ERR(-1,
+                 "generate_address: NULL output or max too small (%zu)", max);
 
     if (wallet && wallet->sapling_keys.num_keys > 0) {
         uint8_t diversifier[ZC_DIVERSIFIER_SIZE];
@@ -337,12 +353,12 @@ bool zslp_payment_generate_address(struct wallet *wallet,
             sapling_encode_payment_address(diversifier, pk_d,
                 cp->bech32HRPs[BECH32_SAPLING_PAYMENT_ADDRESS],
                 z_addr_out, max)) {
-            return true;
+            return ZCL_OK;
         }
     }
 
     snprintf(z_addr_out, max, "zs1_pay_%lld", (long long)platform_time_wall_time_t());
-    return true;
+    return ZCL_OK;
 }
 
 int64_t zslp_payment_check_received(const char *datadir,

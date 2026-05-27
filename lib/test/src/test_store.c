@@ -589,7 +589,7 @@ int test_store(void)
             .initial_supply = 77
         };
         char token_id[ZSLP_TOKEN_KEY_MAX + 1];
-        bool ok = zslp_command_finalize_genesis(test_datadir, NULL, &req, token_id);
+        bool ok = zslp_command_finalize_genesis(test_datadir, NULL, &req, token_id).ok;
         ok = ok && (strcmp(token_id, "METATEST") == 0);
         if (ok) printf("OK\n");
         else { printf("FAIL\n"); failures++; }
@@ -603,7 +603,7 @@ int test_store(void)
             .amount = 12,
             .strict_chain_addr = false
         };
-        bool ok = zslp_command_credit_transfer(test_datadir, &req);
+        bool ok = zslp_command_credit_transfer(test_datadir, &req).ok;
         ok = ok && (zslp_balance(test_datadir, "METATEST", "t1MetaBuyer") == 12);
         if (ok) printf("OK\n");
         else { printf("FAIL\n"); failures++; }

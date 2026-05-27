@@ -9,6 +9,8 @@
 #include <stdint.h>
 #include <sqlite3.h>
 
+#include "util/result.h"
+
 struct tx_destination;
 struct db_zslp_token_info;
 struct db_zslp_transfer_info;
@@ -40,26 +42,28 @@ const char *zslp_service_validate_create_request(
 const char *zslp_service_validate_transfer_request(
     const struct zslp_token_transfer_request *req);
 
-bool zslp_service_open_db(const char *datadir, sqlite3 **db_out, bool *owns_db);
+struct zcl_result zslp_service_open_db(const char *datadir, sqlite3 **db_out,
+                                       bool *owns_db);
 void zslp_service_close_db(sqlite3 *db, bool owns_db);
 
 uint64_t zslp_service_get_balance(sqlite3 *db, const char *token_id,
                                   const char *addr);
-bool zslp_service_get_token(sqlite3 *db, const char *token_id,
-                            struct db_zslp_token_info *out);
+struct zcl_result zslp_service_get_token(sqlite3 *db, const char *token_id,
+                                         struct db_zslp_token_info *out);
 int zslp_service_list_tokens(sqlite3 *db, struct db_zslp_token_info *out,
                              size_t max_out);
 int zslp_service_list_transfers(sqlite3 *db, const char *token_id,
                                 struct db_zslp_transfer_info *out,
                                 size_t max_out);
-bool zslp_service_credit_balance(sqlite3 *db, const char *token_id,
-                                 const char *recipient_addr, uint64_t amount);
-bool zslp_service_store_token(sqlite3 *db, const char *token_id,
-                              const char *ticker, const char *name,
-                              int decimals, int64_t initial_supply);
+struct zcl_result zslp_service_credit_balance(sqlite3 *db, const char *token_id,
+                                              const char *recipient_addr,
+                                              uint64_t amount);
+struct zcl_result zslp_service_store_token(sqlite3 *db, const char *token_id,
+                                           const char *ticker, const char *name,
+                                           int decimals, int64_t initial_supply);
 
-bool zslp_payment_generate_address(struct wallet *wallet,
-                                   char *z_addr_out, size_t max);
+struct zcl_result zslp_payment_generate_address(struct wallet *wallet,
+                                                char *z_addr_out, size_t max);
 int64_t zslp_payment_check_received(const char *datadir,
                                     const char *z_addr,
                                     int64_t min_amount);

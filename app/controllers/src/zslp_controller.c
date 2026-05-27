@@ -60,7 +60,11 @@ static const char *zslp_effective_datadir(const char *datadir)
 static bool zslp_open_runtime_db(const char *datadir, sqlite3 **db_out,
                                  bool *owns_db)
 {
-    return zslp_service_open_db(zslp_effective_datadir(datadir), db_out, owns_db);
+    struct zcl_result r =
+        zslp_service_open_db(zslp_effective_datadir(datadir), db_out, owns_db);
+    if (!r.ok)
+        LOG_FAIL("zslp", "open_runtime_db: %s", r.message);
+    return true;
 }
 
 static bool zslp_require_token_key(const char *token_key, struct json_value *result)
@@ -138,12 +142,12 @@ const char *zslp_create_token(const char *datadir,
     int64_t fee_paid = 0;
     const char *tx_error = NULL;
     if (!zslp_command_build_genesis_base_tx(wallet, &wtx,
-                                            &fee_paid, &tx_error))
+                                            &fee_paid, &tx_error).ok)
         LOG_NULL("zslp", "create_token: tx build failed: %s",
                  tx_error ? tx_error : "unknown");
 
     if (!zslp_command_commit_with_op_return(wallet, mempool, &wtx,
-                                            script, slen)) {
+                                            script, slen).ok) {
         fprintf(stderr, "zslp: commit failed\n");
         transaction_free(&wtx.tx);
         return NULL;
@@ -158,7 +162,7 @@ store_sqlite:
     ;
     static char result[128];
     if (!zslp_command_finalize_genesis(effective_datadir, broadcast_txid, &req,
-                                       result))
+                                       result).ok)
         LOG_NULL("zslp", "finalize_genesis failed for ticker=%s", ticker);
     return result;
 }
@@ -191,7 +195,11 @@ bool zslp_generate_payment_address(const char *datadir,
 {
     if (!zslp_effective_datadir(datadir))
         LOG_FAIL("zslp", "generate_payment_address: datadir not initialized");
-    return zslp_payment_generate_address(zslp_wallet(), z_addr_out, max);
+    struct zcl_result r =
+        zslp_payment_generate_address(zslp_wallet(), z_addr_out, max);
+    if (!r.ok)
+        LOG_FAIL("zslp", "generate_payment_address: %s", r.message);
+    return true;
 }
 
 /* ── Payment detection ───────────────────────────────────── */
@@ -231,7 +239,7 @@ bool zslp_mint(const char *datadir,
     validation_error = zslp_service_validate_transfer_request(&req);
     if (validation_error)
         LOG_FAIL("zslp", "mint: %s", validation_error);
-    if (!zslp_command_credit_transfer(zslp_effective_datadir(datadir), &req))
+    if (!zslp_command_credit_transfer(zslp_effective_datadir(datadir), &req).ok)
         LOG_FAIL("zslp", "mint: balance update failed for token=%s",
                  token_id_hex ? token_id_hex : "?");
 
@@ -259,12 +267,12 @@ bool zslp_mint(const char *datadir,
     int64_t fee_paid = 0;
     const char *tx_error = NULL;
     if (!zslp_command_build_send_base_tx(wallet, recipient_addr, &wtx,
-                                         &fee_paid, &tx_error))
+                                         &fee_paid, &tx_error).ok)
         LOG_FAIL("zslp", "mint: tx build failed: %s",
                  tx_error ? tx_error : "unknown");
 
     if (!zslp_command_commit_with_op_return(wallet, mempool, &wtx,
-                                            op_script, slen)) {
+                                            op_script, slen).ok) {
         fprintf(stderr, "zslp: mint commit failed\n");
         transaction_free(&wtx.tx);
         return false;
@@ -305,7 +313,11 @@ bool zslp_send(const char *datadir,
 
     if (!wallet || !mempool) {
         /* No wallet (test mode) — just update SQLite balances */
-        return zslp_command_credit_transfer(zslp_effective_datadir(datadir), &req);
+        struct zcl_result r =
+            zslp_command_credit_transfer(zslp_effective_datadir(datadir), &req);
+        if (!r.ok)
+            LOG_FAIL("zslp", "send: balance update failed: %s", r.message);
+        return true;
     }
 
     /* Build SEND OP_RETURN script */
@@ -326,19 +338,19 @@ bool zslp_send(const char *datadir,
     int64_t fee_paid = 0;
     const char *tx_error = NULL;
     if (!zslp_command_build_send_base_tx(wallet, to_addr, &wtx,
-                                         &fee_paid, &tx_error))
+                                         &fee_paid, &tx_error).ok)
         LOG_FAIL("zslp", "send: tx build failed: %s",
                  tx_error ? tx_error : "unknown");
 
     if (!zslp_command_commit_with_op_return(wallet, mempool, &wtx,
-                                            op_script, slen)) {
+                                            op_script, slen).ok) {
         fprintf(stderr, "zslp: commit failed\n");
         transaction_free(&wtx.tx);
         return false;
     }
 
     /* Update balances in SQLite */
-    if (!zslp_command_credit_transfer(zslp_effective_datadir(datadir), &req))
+    if (!zslp_command_credit_transfer(zslp_effective_datadir(datadir), &req).ok)
         LOG_FAIL("zslp", "send: balance update failed for token=%s",
                  token_id_hex ? token_id_hex : "?");
 
@@ -598,7 +610,7 @@ static bool rpc_zslp_gettoken(const struct json_value *params,
         json_set_str(result, "zslp database unavailable");
         return false;
     }
-    if (!zslp_service_get_token(db, token_id, &token)) {
+    if (!zslp_service_get_token(db, token_id, &token).ok) {
         zslp_service_close_db(db, owns_db);
         json_set_str(result, "token not found");
         return false;
