@@ -26,6 +26,8 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+#include "util/result.h"
+
 struct json_value;
 
 enum quorum_oracle_source {
@@ -62,10 +64,12 @@ struct quorum_oracle_config {
 
 void quorum_oracle_init(const struct quorum_oracle_config *cfg);
 
-/* Synchronous probe. Returns true if any source contributed data;
- * verdict + per-source fields populated in *out. On QO_VERDICT_QUORUM_SPLIT
- * the disagreement is forwarded to oracle_policy. */
-bool quorum_oracle_probe(int height, struct quorum_oracle_result *out);
+/* Synchronous probe. Returns ZCL_OK on a completed probe (verdict +
+ * per-source fields populated in *out, including QO_VERDICT_NO_DATA);
+ * returns non-ok only on logic-level argument failure (NULL out,
+ * negative height). On QO_VERDICT_QUORUM_SPLIT the disagreement is
+ * forwarded to oracle_policy. */
+struct zcl_result quorum_oracle_probe(int height, struct quorum_oracle_result *out);
 
 void quorum_oracle_record_peer_header_vote(uint32_t peer_id,
                                            int height,

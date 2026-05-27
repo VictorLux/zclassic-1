@@ -588,7 +588,7 @@ static void boot_gap_fill_stop(void *ctx)
 static bool boot_zclassicd_oracle_start(void *ctx)
 {
     (void)ctx;
-    if (zclassicd_oracle_start())
+    if (zclassicd_oracle_start().ok)
         printf("[oracle] zclassicd oracle service started\n");
     return true;
 }
@@ -604,7 +604,7 @@ static bool boot_rolling_anchor_start(void *ctx)
     struct boot_svc_ctx *svc = ctx;
     if (!svc)
         return false;
-    if (rolling_anchor_start(svc->state, svc->datadir))
+    if (rolling_anchor_start(svc->state, svc->datadir).ok)
         printf("[rolling-anchor] periodic tick registered\n");
     return true;
 }

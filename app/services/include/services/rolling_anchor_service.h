@@ -35,6 +35,8 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+#include "util/result.h"
+
 struct main_state;
 struct chain_params;
 struct json_value;
@@ -45,10 +47,10 @@ struct rolling_anchor_config {
 };
 
 /* Load persisted runtime anchors from <datadir>/sha3_windows_runtime.dat.
- * Returns true on success or when the file is absent (clean start).
- * Returns false only when the file is present but corrupt — caller
+ * Returns ZCL_OK on success or when the file is absent (clean start).
+ * Returns non-ok only when the file is present but corrupt — caller
  * may delete it. Idempotent; safe to call multiple times. */
-bool rolling_anchor_init(const char *datadir,
+struct zcl_result rolling_anchor_init(const char *datadir,
                           const struct rolling_anchor_config *cfg);
 
 /* Discard all runtime anchors (in-memory and on-disk). Used for the
@@ -71,8 +73,8 @@ int rolling_anchor_extend_if_due(struct main_state *ms,
 
 /* Boot-time entry: call rolling_anchor_init(datadir) and register a
  * periodic health tick that invokes rolling_anchor_extend_if_due(ms,
- * datadir) every ~60 seconds. Idempotent. Returns true on success. */
-bool rolling_anchor_start(struct main_state *ms, const char *datadir);
+ * datadir) every ~60 seconds. Idempotent. Returns ZCL_OK on success. */
+struct zcl_result rolling_anchor_start(struct main_state *ms, const char *datadir);
 
 /* Stop the periodic tick. Safe to call when not started. */
 void rolling_anchor_stop(void);

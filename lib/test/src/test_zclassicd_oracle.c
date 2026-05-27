@@ -255,10 +255,10 @@ int test_zclassicd_oracle(void)
             .cadence_secs = 60,
             .heights_per_tick = 1,
         };
-        ZO_CHECK("init", zclassicd_oracle_init(&cfg));
+        ZO_CHECK("init", zclassicd_oracle_init(&cfg).ok);
 
         struct zclassicd_oracle_probe_result r;
-        bool ok = zclassicd_oracle_probe(7, &r);
+        bool ok = zclassicd_oracle_probe(7, &r).ok;
         ZO_CHECK("probe returned true", ok);
         ZO_CHECK("no rpc error",    !r.error);
         ZO_CHECK("our_have_block",   r.our_have_block);
@@ -341,7 +341,7 @@ int test_zclassicd_oracle(void)
             .rpc_user = "u", .rpc_password = "p",
             .cadence_secs = 60, .heights_per_tick = 1,
         };
-        ZO_CHECK("init (disagree)", zclassicd_oracle_init(&cfg));
+        ZO_CHECK("init (disagree)", zclassicd_oracle_init(&cfg).ok);
 
         struct zclassicd_oracle_probe_result r;
         (void)zclassicd_oracle_probe(7, &r);
@@ -373,7 +373,7 @@ int test_zclassicd_oracle(void)
             .rpc_user = "u", .rpc_password = "p",
             .cadence_secs = 60, .heights_per_tick = 1,
         };
-        ZO_CHECK("init (err)", zclassicd_oracle_init(&cfg));
+        ZO_CHECK("init (err)", zclassicd_oracle_init(&cfg).ok);
 
         struct zclassicd_oracle_probe_result r;
         (void)zclassicd_oracle_probe(7, &r);
@@ -404,11 +404,11 @@ int test_zclassicd_oracle(void)
             .cadence_secs = 1,     /* fastest cadence */
             .heights_per_tick = 1,
         };
-        ZO_CHECK("init (tick)", zclassicd_oracle_init(&cfg));
+        ZO_CHECK("init (tick)", zclassicd_oracle_init(&cfg).ok);
 
         health_reset_for_test();
         health_set_check_interval_ms(50);
-        ZO_CHECK("oracle_start", zclassicd_oracle_start());
+        ZO_CHECK("oracle_start", zclassicd_oracle_start().ok);
 
         /* Wait up to ~3s for the periodic tick. */
         bool saw_tick = false;

@@ -144,10 +144,11 @@ static int our_tip_height(void)
 
 /* ── Public probe ──────────────────────────────────────────────── */
 
-bool zclassicd_oracle_probe(int height,
+struct zcl_result zclassicd_oracle_probe(int height,
                             struct zclassicd_oracle_probe_result *out)
 {
-    if (!out) return false;
+    if (!out)
+        return ZCL_ERR(-1, "zclassicd_oracle_probe: NULL out");
     memset(out, 0, sizeof(*out));
     out->height = height;
 
@@ -155,7 +156,7 @@ bool zclassicd_oracle_probe(int height,
         out->error = true;
         snprintf(out->error_msg, sizeof(out->error_msg),
                  "negative height %d", height);
-        return false;
+        return ZCL_ERR(-2, "zclassicd_oracle_probe: negative height %d", height);
     }
 
     /* Snapshot config */
@@ -185,7 +186,7 @@ bool zclassicd_oracle_probe(int height,
         gettimeofday(&tv, NULL);
         atomic_store(&g_oracle.last_probe_unix_us,
                      (int64_t)tv.tv_sec * 1000000 + tv.tv_usec);
-        return true;
+        return ZCL_OK;
     }
 
     if (!parse_rpc_hex_result(resp, out->their_hash,
@@ -193,7 +194,7 @@ bool zclassicd_oracle_probe(int height,
         free(resp);
         out->error = true;
         atomic_fetch_add(&g_oracle.rpc_errors, 1);
-        return true;
+        return ZCL_OK;
     }
     free(resp);
 
@@ -228,7 +229,7 @@ bool zclassicd_oracle_probe(int height,
     }
     /* If we don't have the block locally, neither agree nor disagree;
      * still counted in probes_total. */
-    return true;
+    return ZCL_OK;
 }
 
 /* ── Periodic tick (heartbeat callback) ────────────────────────── */
@@ -254,13 +255,13 @@ static void zclassicd_oracle_on_tick(void *ctx)
     for (int i = 0; i < n; i++) {
         int h = GetRandInt(max_h + 1);
         struct zclassicd_oracle_probe_result r;
-        (void)zclassicd_oracle_probe(h, &r);
+        (void)zclassicd_oracle_probe(h, &r);  /* periodic; discard result */
     }
 }
 
 /* ── init / start / stop ───────────────────────────────────────── */
 
-bool zclassicd_oracle_init(const struct zclassicd_oracle_config *cfg)
+struct zcl_result zclassicd_oracle_init(const struct zclassicd_oracle_config *cfg)
 {
     pthread_mutex_lock(&g_oracle.lock);
 
@@ -301,8 +302,8 @@ bool zclassicd_oracle_init(const struct zclassicd_oracle_config *cfg)
                 g_oracle.rpc_port = port_from_conf;
         } else if (need_user || need_pass) {
             pthread_mutex_unlock(&g_oracle.lock);
-            LOG_FAIL("oracle",
-                     "no RPC credentials: pass via config or ~/.zclassic/zclassic.conf");
+            return ZCL_ERR(-1,
+                "zclassicd_oracle_init: no RPC credentials: pass via config or ~/.zclassic/zclassic.conf");
         }
     }
 
@@ -313,26 +314,26 @@ bool zclassicd_oracle_init(const struct zclassicd_oracle_config *cfg)
      * can be recorded. Idempotent — safe even if init runs multiple
      * times. */
     oracle_policy_init(NULL);
-    return true;
+    return ZCL_OK;
 }
 
-bool zclassicd_oracle_start(void)
+struct zcl_result zclassicd_oracle_start(void)
 {
-    if (g_oracle.health_id != HEALTH_INVALID_ID) return true;
+    if (g_oracle.health_id != HEALTH_INVALID_ID) return ZCL_OK;
     if (!g_oracle.initialized) {
-        if (!zclassicd_oracle_init(NULL)) {
-            LOG_FAIL("oracle", "init failed");
-        }
+        struct zcl_result init_r = zclassicd_oracle_init(NULL);
+        if (!init_r.ok)
+            return ZCL_ERR(-1, "zclassicd_oracle_start: init failed: %s",
+                           init_r.message);
     }
     (void)health_start();  /* idempotent */
     int cad = g_oracle.cadence_secs > 0
                   ? g_oracle.cadence_secs : ORACLE_DEFAULT_CADENCE;
     g_oracle.health_id = health_register_periodic(
         "oracle.zclassicd", cad, zclassicd_oracle_on_tick, NULL);
-    if (g_oracle.health_id == HEALTH_INVALID_ID) {
-        LOG_FAIL("oracle", "health_register_periodic failed");
-    }
-    return true;
+    if (g_oracle.health_id == HEALTH_INVALID_ID)
+        return ZCL_ERR(-2, "zclassicd_oracle_start: health_register_periodic failed");
+    return ZCL_OK;
 }
 
 void zclassicd_oracle_stop(void)

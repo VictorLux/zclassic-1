@@ -268,14 +268,15 @@ static bool ra_load_locked(void)
     return true;
 }
 
-bool rolling_anchor_init(const char *datadir,
+struct zcl_result rolling_anchor_init(const char *datadir,
                           const struct rolling_anchor_config *cfg)
 {
-    if (!datadir || !datadir[0]) return false;
+    if (!datadir || !datadir[0])
+        return ZCL_ERR(-1, "rolling_anchor_init: NULL/empty datadir");
     pthread_mutex_lock(&g_ra.lock);
     if (g_ra.initialized) {
         pthread_mutex_unlock(&g_ra.lock);
-        return true;
+        return ZCL_OK;
     }
     g_ra.confirmation_depth =
         (cfg && cfg->confirmation_depth > 0)
@@ -297,7 +298,10 @@ bool rolling_anchor_init(const char *datadir,
     }
     g_ra.initialized = true;
     pthread_mutex_unlock(&g_ra.lock);
-    return ok;
+    if (!ok)
+        return ZCL_ERR(-2, "rolling_anchor_init: load failed (corrupt file wiped) datadir=%s",
+                       datadir);
+    return ZCL_OK;
 }
 
 void rolling_anchor_discard(const char *datadir)
@@ -387,7 +391,7 @@ static bool ra_quorum_allows_commit(int height)
     struct quorum_oracle_result qr;
     int present = 0;
 
-    if (!quorum_oracle_probe(height, &qr))
+    if (!quorum_oracle_probe(height, &qr).ok)
         return true;
     for (int i = 0; i < QO_SRC_NUM; i++) {
         if (qr.by_source[i].present && !qr.by_source[i].error &&
@@ -516,14 +520,15 @@ static void rolling_anchor_on_tick(void *ctx)
     (void)rolling_anchor_extend_if_due(ms, datadir);
 }
 
-bool rolling_anchor_start(struct main_state *ms, const char *datadir)
+struct zcl_result rolling_anchor_start(struct main_state *ms, const char *datadir)
 {
-    if (!ms || !datadir || !datadir[0]) {
-        LOG_FAIL("rolling_anchor", "start: bad args");
-    }
-    if (g_ra.health_id != HEALTH_INVALID_ID) return true; /* already up */
+    if (!ms || !datadir || !datadir[0])
+        return ZCL_ERR(-1, "rolling_anchor_start: bad args ms=%p datadir=%s",
+                       (void*)ms, datadir ? datadir : "(null)");
+    if (g_ra.health_id != HEALTH_INVALID_ID)
+        return ZCL_OK; /* already up */
 
-    /* Idempotent — init() returns true if file absent. */
+    /* Idempotent — init() returns ZCL_OK if file absent. */
     (void)rolling_anchor_init(datadir, NULL);
 
     pthread_mutex_lock(&g_ra.lock);
@@ -534,10 +539,9 @@ bool rolling_anchor_start(struct main_state *ms, const char *datadir)
     (void)health_start();  /* idempotent */
     g_ra.health_id = health_register_periodic(
         "rolling_anchor", RA_TICK_SECS, rolling_anchor_on_tick, NULL);
-    if (g_ra.health_id == HEALTH_INVALID_ID) {
-        LOG_FAIL("rolling_anchor", "health_register_periodic failed");
-    }
-    return true;
+    if (g_ra.health_id == HEALTH_INVALID_ID)
+        return ZCL_ERR(-2, "rolling_anchor_start: health_register_periodic failed");
+    return ZCL_OK;
 }
 
 void rolling_anchor_stop(void)

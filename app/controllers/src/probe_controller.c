@@ -40,7 +40,7 @@ bool diag_rpc_probezclassicd(const struct json_value *params, bool help,
     }
 
     struct zclassicd_oracle_probe_result r;
-    bool ok = zclassicd_oracle_probe(height, &r);
+    struct zcl_result probe_r = zclassicd_oracle_probe(height, &r);
 
     json_set_object(result);
     json_push_kv_int (result, "height",         r.height);
@@ -50,5 +50,5 @@ bool diag_rpc_probezclassicd(const struct json_value *params, bool help,
     json_push_kv_bool(result, "our_have_block", r.our_have_block);
     json_push_kv_bool(result, "error",          r.error);
     json_push_kv_str (result, "error_msg",      r.error_msg);
-    return ok;
+    return probe_r.ok;
 }

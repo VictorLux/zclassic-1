@@ -149,11 +149,12 @@ enum reval_result process_block_revalidate(int target_height,
     /* ── Step 2: query the quorum oracle for evidence ────────────────── */
     struct quorum_oracle_result qr;
     memset(&qr, 0, sizeof(qr));
-    bool probed = quorum_oracle_probe(target_height, &qr);
-    if (!probed) {
+    struct zcl_result probe_r = quorum_oracle_probe(target_height, &qr);
+    if (!probe_r.ok) {
         fprintf(stderr,  // obs-ok:revalidate-probe-failure
-                "[revalidate] h=%d: quorum_oracle_probe returned false; "
-                "leaving FAILED set\n", target_height);
+                "[revalidate] h=%d: quorum_oracle_probe failed (code=%d %s); "
+                "leaving FAILED set\n", target_height,
+                probe_r.code, probe_r.message);
         return REVAL_EVIDENCE_INSUFFICIENT;
     }
 

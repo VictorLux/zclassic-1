@@ -176,7 +176,7 @@ static void qo_probe_zclassicd(int height,
     out->error = false;
     out->hash_hex[0] = '\0';
     struct zclassicd_oracle_probe_result r;
-    if (!zclassicd_oracle_probe(height, &r)) return;
+    if (!zclassicd_oracle_probe(height, &r).ok) return;
     if (r.error) {
         out->present = true;
         out->error = true;
@@ -229,9 +229,12 @@ static void qo_probe_peer(int height,
     }
 }
 
-bool quorum_oracle_probe(int height, struct quorum_oracle_result *out)
+struct zcl_result quorum_oracle_probe(int height, struct quorum_oracle_result *out)
 {
-    if (!out || height < 0) return false;
+    if (!out)
+        return ZCL_ERR(-1, "quorum_oracle_probe: NULL out");
+    if (height < 0)
+        return ZCL_ERR(-2, "quorum_oracle_probe: negative height %d", height);
     memset(out, 0, sizeof(*out));
     out->height = height;
 
@@ -279,7 +282,7 @@ bool quorum_oracle_probe(int height, struct quorum_oracle_result *out)
         atomic_store(&g_qo.last_verdict, out->verdict);
         atomic_store(&g_qo.last_agreeing_sources, 0);
         atomic_fetch_add(&g_qo.total_no_data, 1);
-        return true;
+        return ZCL_OK;
     }
     if (best_count >= min_agree) {
         out->verdict = QO_VERDICT_QUORUM_MATCH;
@@ -295,7 +298,7 @@ bool quorum_oracle_probe(int height, struct quorum_oracle_result *out)
         atomic_store(&g_qo.last_verdict, out->verdict);
         atomic_store(&g_qo.last_agreeing_sources, best_count);
         atomic_fetch_add(&g_qo.total_matches, 1);
-        return true;
+        return ZCL_OK;
     }
 
     /* Split. Find any two non-matching sources and feed their pair to
@@ -327,7 +330,7 @@ bool quorum_oracle_probe(int height, struct quorum_oracle_result *out)
         oracle_policy_record_disagreement(height, a, b);
         LOG_INFO("quorum_oracle", "[quorum_oracle] split at h=%d: %s vs %s", height, a, b);
     }
-    return true;
+    return ZCL_OK;
 }
 
 bool quorum_oracle_dump_state_json(struct json_value *out, const char *key)

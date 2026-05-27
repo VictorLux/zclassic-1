@@ -30,6 +30,8 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+#include "util/result.h"
+
 struct json_value;
 
 struct zclassicd_oracle_config {
@@ -42,12 +44,12 @@ struct zclassicd_oracle_config {
 };
 
 /* Apply config + load credentials. Safe to call before start to override
- * the defaults. Idempotent. Returns false only on a missing zclassic.conf
- * when no user/password were supplied. */
-bool zclassicd_oracle_init(const struct zclassicd_oracle_config *cfg);
+ * the defaults. Idempotent. Returns non-ok only on a missing
+ * zclassic.conf when no user/password were supplied. */
+struct zcl_result zclassicd_oracle_init(const struct zclassicd_oracle_config *cfg);
 
 /* Register the periodic tick with the heartbeat ring. Idempotent. */
-bool zclassicd_oracle_start(void);
+struct zcl_result zclassicd_oracle_start(void);
 
 /* Unregister the periodic tick. Idempotent. */
 void zclassicd_oracle_stop(void);
@@ -62,11 +64,11 @@ struct zclassicd_oracle_probe_result {
     char   error_msg[128];
 };
 
-/* Synchronous probe. Returns true if the call completed (regardless of
- * agreement); returns false only on a logic-level failure (NULL out,
- * out-of-range height, etc.). RPC unreachability sets `error=true` and
- * still returns true. */
-bool zclassicd_oracle_probe(int height,
+/* Synchronous probe. Returns ZCL_OK if the call completed (regardless
+ * of agreement); returns non-ok only on a logic-level failure (NULL
+ * out, out-of-range height, etc.). RPC unreachability sets
+ * `error=true` and still returns ZCL_OK. */
+struct zcl_result zclassicd_oracle_probe(int height,
                             struct zclassicd_oracle_probe_result *out);
 
 /* zcl_state subsystem=oracle dispatcher entry. See CLAUDE.md
