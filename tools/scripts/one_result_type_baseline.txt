@@ -8,13 +8,9 @@
 # here — the gate will enforce that it stays migrated.
 #
 # One path per line, repo-relative.
-app/services/src/addrman_integrity.c
-app/services/src/bg_hash_verification_service.c
 app/services/src/bg_validation_service.c
 app/services/src/block_index_integrity.c
 app/services/src/block_index_loader.c
-app/services/src/block_index_sidecar_integrity.c
-app/services/src/block_pruning_service.c
 app/services/src/block_sync_service.c
 app/services/src/body_fetch_stage.c
 app/services/src/body_persist_stage.c
@@ -32,16 +28,10 @@ app/services/src/chain_restore_planner.c
 app/services/src/chain_state_repository.c
 app/services/src/chain_state_validator.c
 app/services/src/chain_tip_watchdog.c
-app/services/src/consensus_reject_index.c
 app/services/src/cutover_modes.c
-app/services/src/db_maintenance.c
 app/services/src/header_admit_stage.c
-app/services/src/header_probe.c
-app/services/src/header_sync_service.c
 app/services/src/hodl_history_service.c
-app/services/src/legacy_body_pull.c
 app/services/src/legacy_bootstrap_importer.c
-app/services/src/legacy_bootstrap_spotcheck.c
 app/services/src/legacy_mirror_sync_service.c
 app/services/src/node_health_service.c
 app/services/src/oracle_policy.c
@@ -53,7 +43,6 @@ app/services/src/snapshot_sync_service.c
 app/services/src/sync_monitor.c
 app/services/src/tip_finalize_stage.c
 app/services/src/utxo_apply_stage.c
-app/services/src/utxo_audit_service.c
 app/services/src/utxo_recovery_service.c
 app/services/src/validate_headers_stage.c
 app/services/src/wallet_view_projection.c
