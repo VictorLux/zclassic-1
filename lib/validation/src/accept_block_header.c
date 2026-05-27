@@ -16,12 +16,135 @@
 #include "validation/process_block.h"
 #include "validation/main_logic.h"
 #include "validation/check_block.h"
+#include "validation/accept_block_header.h"
 #include "chain/pow.h"
+#include "domain/consensus/header_accept.h"
 #include "event/event.h"
 #include "storage/progress_store.h"
 #include "util/log_macros.h"
 
 #include "process_block_internal.h"
+
+/* ── Lib-side wrappers around the pure DOMAIN header checks ──────
+ *
+ * These translate a domain `zcl_result` into a `validation_state`
+ * populated identically to the legacy REJECT_* macros. The reject
+ * reason strings are byte-identical to what legacy
+ * check_block_header_impl / contextual_check_block_header produce on
+ * the same rejection — peer-visible REJECT messages MUST NOT drift.
+ *
+ * Each domain function writes the reason and DoS score into its
+ * out-params; the wrapper forwards them through
+ * validation_state_dos / validation_state_invalid using the same
+ * reject_code (REJECT_INVALID vs REJECT_OBSOLETE) the legacy macro
+ * used. The high-level accept_block_header() entry point further
+ * down this file still calls the older check_block_header /
+ * contextual_check_block_header functions (its scope is unchanged);
+ * these wrappers are the seam future callers reach for.
+ */
+
+bool accept_block_header_check_version_too_low(
+        const struct block_header *header,
+        int32_t min_version,
+        struct validation_state *state)
+{
+    char reason[DOMAIN_HEADER_ACCEPT_REASON_MAX] = {0};
+    int  dos = 0;
+    struct zcl_result r =
+        domain_consensus_check_header_version_too_low(
+            header, min_version, reason, sizeof(reason), &dos);
+    if (r.ok) return true;
+    /* Legacy REJECT_IF: dos=100, corruption=false, code=REJECT_INVALID.
+     * The domain returns dos=100 in `dos` on this rejection. */
+    return validation_state_dos(state, dos, false, REJECT_INVALID,
+                                reason, false, NULL);
+}
+
+bool accept_block_header_check_version_obsolete(
+        const struct block_header *header,
+        int32_t obsolete_below,
+        struct validation_state *state)
+{
+    char reason[DOMAIN_HEADER_ACCEPT_REASON_MAX] = {0};
+    int  dos = 0;
+    struct zcl_result r =
+        domain_consensus_check_header_version_obsolete(
+            header, obsolete_below, reason, sizeof(reason), &dos);
+    if (r.ok) return true;
+    /* Legacy REJECT_OBSOLETE_IF: dos=0, corruption=false,
+     * code=REJECT_OBSOLETE. */
+    return validation_state_invalid(state, false, REJECT_OBSOLETE,
+                                    reason, NULL);
+}
+
+bool accept_block_header_check_timestamp_too_new(
+        const struct block_header *header,
+        int64_t now_upper_bound,
+        struct validation_state *state)
+{
+    char reason[DOMAIN_HEADER_ACCEPT_REASON_MAX] = {0};
+    int  dos = 0;
+    struct zcl_result r =
+        domain_consensus_check_header_timestamp_too_new(
+            header, now_upper_bound, reason, sizeof(reason), &dos);
+    if (r.ok) return true;
+    /* Legacy REJECT_INVALID_IF: dos=0, corruption=false,
+     * code=REJECT_INVALID. */
+    return validation_state_invalid(state, false, REJECT_INVALID,
+                                    reason, NULL);
+}
+
+bool accept_block_header_check_timestamp_too_old(
+        const struct block_header *header,
+        int64_t prev_mtp,
+        struct validation_state *state)
+{
+    char reason[DOMAIN_HEADER_ACCEPT_REASON_MAX] = {0};
+    int  dos = 0;
+    struct zcl_result r =
+        domain_consensus_check_header_timestamp_too_old(
+            header, prev_mtp, reason, sizeof(reason), &dos);
+    if (r.ok) return true;
+    /* Legacy REJECT_INVALID_IF: dos=0, corruption=false,
+     * code=REJECT_INVALID. */
+    return validation_state_invalid(state, false, REJECT_INVALID,
+                                    reason, NULL);
+}
+
+bool accept_block_header_check_equihash_solution_size(
+        const struct block_header *header,
+        size_t expected_solution_size,
+        struct validation_state *state)
+{
+    char reason[DOMAIN_HEADER_ACCEPT_REASON_MAX] = {0};
+    int  dos = 0;
+    struct zcl_result r =
+        domain_consensus_check_header_equihash_solution_size(
+            header, expected_solution_size,
+            reason, sizeof(reason), &dos);
+    if (r.ok) return true;
+    /* Legacy REJECT_IF: dos=100, corruption=false,
+     * code=REJECT_INVALID. */
+    return validation_state_dos(state, dos, false, REJECT_INVALID,
+                                reason, false, NULL);
+}
+
+bool accept_block_header_check_bits_match(
+        const struct block_header *header,
+        uint32_t expected_bits,
+        struct validation_state *state)
+{
+    char reason[DOMAIN_HEADER_ACCEPT_REASON_MAX] = {0};
+    int  dos = 0;
+    struct zcl_result r =
+        domain_consensus_check_header_bits_match(
+            header, expected_bits, reason, sizeof(reason), &dos);
+    if (r.ok) return true;
+    /* Legacy REJECT_IF: dos=100, corruption=false,
+     * code=REJECT_INVALID. */
+    return validation_state_dos(state, dos, false, REJECT_INVALID,
+                                reason, false, NULL);
+}
 
 /* Avoid a lib/validation -> app/services include while the C-2 cutover
  * guard still needs the stage mode and parity record check.
