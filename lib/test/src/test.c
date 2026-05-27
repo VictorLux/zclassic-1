@@ -846,6 +846,7 @@ int main(void)
     failures += test_shadow_replay_full_driver();
     failures += test_cutover_tip_parity();
     failures += test_cutover_flip_dryrun();
+    failures += test_cutover_postflip_reorg();
     failures += test_utxo_snapshot_inmem();
     failures += test_hodl_history_port();
     failures += test_node_health_store_port();
