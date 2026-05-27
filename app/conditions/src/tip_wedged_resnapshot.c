@@ -174,7 +174,7 @@ static enum condition_remedy_result remedy_tip_wedged_resnapshot(void)
         return COND_REMEDY_FAILED;
     }
 
-    if (!snapsync_build_local_recovery_manifest(ndb, &manifest, 0)) {
+    if (!snapsync_build_local_recovery_manifest(ndb, &manifest, 0).ok) {
         LOG_WARN("condition", "[condition:tip_wedged_resnapshot] trigger=%s target=%d " "local=%d best=%d result=manifest_unavailable", trigger_name(trigger), target, atomic_load(&g_local_height_at_detect), atomic_load(&g_best_header_at_detect));
         event_emitf(EV_SYNC_STATE_CHANGE, 0,
                     "condition tip_wedged_resnapshot result=failed "
@@ -184,7 +184,7 @@ static enum condition_remedy_result remedy_tip_wedged_resnapshot(void)
     }
 
     atomic_store(&g_last_manifest_height, manifest.height);
-    bool accepted = snapsync_request_recovery(svc, target, &manifest);
+    bool accepted = snapsync_request_recovery(svc, target, &manifest).ok;
     atomic_store(&g_recovery_accepted, accepted ? 1 : 0);
     LOG_WARN("condition", "[condition:tip_wedged_resnapshot] trigger=%s target=%d " "manifest_h=%d local=%d best=%d accepted=%d", trigger_name(trigger), target, manifest.height, atomic_load(&g_local_height_at_detect), atomic_load(&g_best_header_at_detect), accepted ? 1 : 0);
     event_emitf(EV_SYNC_STATE_CHANGE, 0,

@@ -181,7 +181,7 @@ void snapsync_params_from_manifest_internal(struct snapshot_offer_params *p,
     p->peer_tip_height = m->peer_tip_height;
 }
 
-bool snapsync_build_local_recovery_manifest(struct node_db *ndb,
+struct zcl_result snapsync_build_local_recovery_manifest(struct node_db *ndb,
                                             struct snapshot_offer_params *out,
                                             uint32_t peer_id)
 {
@@ -190,12 +190,13 @@ bool snapsync_build_local_recovery_manifest(struct node_db *ndb,
     uint64_t utxo_count = 0;
 
     if (!ndb || !ndb->open || !out)
-        return false;
+        return ZCL_ERR(-1, "build_local_recovery_manifest: null/closed ndb or null out");
 
     memset(out, 0, sizeof(*out));
     if (!snapsync_read_i64_state_internal(ndb, "tip_height", &tip_height) ||
         tip_height <= 0 || tip_height > INT32_MAX)
-        return false;
+        return ZCL_ERR(-2, "build_local_recovery_manifest: invalid tip_height=%lld",
+                       (long long)tip_height);
     out->height = (int32_t)tip_height;
     out->peer_tip_height = out->height;
     out->our_height = out->height;
@@ -207,30 +208,30 @@ bool snapsync_build_local_recovery_manifest(struct node_db *ndb,
                            &hash_len) ||
         hash_len != 32 ||
         !snapsync_bytes32_nonzero_internal(out->block_hash))
-        return false;
+        return ZCL_ERR(-3, "build_local_recovery_manifest: missing/invalid tip_hash");
     if (!snapsync_read_tip_chainwork_internal(ndb, out->block_hash,
                                               out->chain_work))
-        return false;
+        return ZCL_ERR(-4, "build_local_recovery_manifest: missing tip chainwork");
     if (!snapsync_load_state_mmr_root_internal(ndb, out->mmr_root) ||
         !snapsync_load_state_mmb_root_internal(ndb, out->mmb_root))
-        return false;
+        return ZCL_ERR(-5, "build_local_recovery_manifest: missing MMR/MMB root");
 
     fast_sync_compute_utxo_root_db(ndb->db, out->utxo_root);
     if (!snapsync_bytes32_nonzero_internal(out->utxo_root))
-        return false;
+        return ZCL_ERR(-6, "build_local_recovery_manifest: zero utxo root");
 
     sqlite3_stmt *s = NULL;
     if (sqlite3_prepare_v2(ndb->db, "SELECT count(*) FROM utxos",
                            -1, &s, NULL) != SQLITE_OK || !s)
-        return false;
+        return ZCL_ERR(-7, "build_local_recovery_manifest: prepare utxo count failed");
     if (AR_STEP_ROW_READONLY(s) == SQLITE_ROW)
         utxo_count = (uint64_t)sqlite3_column_int64(s, 0);
     sqlite3_finalize(s);
     if (utxo_count == 0)
-        return false;
+        return ZCL_ERR(-8, "build_local_recovery_manifest: zero utxos");
     out->num_utxos = utxo_count;
     out->total_bytes = utxo_count * 80;
-    return true;
+    return ZCL_OK;
 }
 
 /* ── Accept Offer ────────────────────────────────────────── */
@@ -290,16 +291,19 @@ static bool snapsync_accept_offer_internal(struct snapshot_sync_service *svc,
     return true;
 }
 
-bool snapsync_accept_offer(struct snapshot_sync_service *svc,
+struct zcl_result snapsync_accept_offer(struct snapshot_sync_service *svc,
                            int32_t height, uint64_t num_utxos,
                            const uint8_t utxo_root[32],
                            const uint8_t mmb_root[32],
                            const uint8_t block_hash[32],
                            uint32_t peer_id)
 {
-    return snapsync_accept_offer_internal(svc, height, num_utxos, utxo_root,
-                                          mmb_root, block_hash, peer_id,
-                                          false);
+    if (!snapsync_accept_offer_internal(svc, height, num_utxos, utxo_root,
+                                        mmb_root, block_hash, peer_id,
+                                        false))
+        return ZCL_ERR(-1, "accept_offer: rejected (busy/invalid/populated) h=%d utxos=%llu peer=%u",
+                       height, (unsigned long long)num_utxos, peer_id);
+    return ZCL_OK;
 }
 
 enum snapsync_followup_action snapsync_offer_followup_action(
@@ -323,20 +327,22 @@ enum snapsync_followup_action snapsync_verify_followup_action(bool verified)
                     : SNAPSYNC_FOLLOWUP_NONE;
 }
 
-bool snapsync_build_request_pow(const uint8_t peer_ip[16],
+struct zcl_result snapsync_build_request_pow(const uint8_t peer_ip[16],
                                 struct fast_sync_pow *pow)
 {
     uint8_t peer_id[32];
 
     if (!peer_ip || !pow)
-        LOG_FAIL("snapshot_sync", "build_request_pow: peer_ip=%p pow=%p", (void*)peer_ip, (void*)pow);
+        return ZCL_ERR(-1, "build_request_pow: peer_ip=%p pow=%p", (const void*)peer_ip, (void*)pow);
 
     memset(pow, 0, sizeof(*pow));
     sha3_256(peer_ip, 16, peer_id);
-    return fast_sync_solve_pow(peer_id, pow);
+    if (!fast_sync_solve_pow(peer_id, pow))
+        return ZCL_ERR(-2, "build_request_pow: fast_sync_solve_pow failed");
+    return ZCL_OK;
 }
 
-bool snapsync_parse_offer_params(struct snapshot_offer_params *params,
+struct zcl_result snapsync_parse_offer_params(struct snapshot_offer_params *params,
                                  struct byte_stream *s)
 {
     struct snapshot_manifest manifest;
@@ -344,34 +350,38 @@ bool snapsync_parse_offer_params(struct snapshot_offer_params *params,
         SNAPSHOT_MANIFEST_OK;
 
     if (!params || !s)
-        LOG_FAIL("snapshot_sync", "parse_offer_params: params=%p stream=%p", (void*)params, (void*)s);
+        return ZCL_ERR(-1, "parse_offer_params: params=%p stream=%p", (void*)params, (void*)s);
 
     memset(params, 0, sizeof(*params));
     if (!snapshot_manifest_parse(&manifest, s, &parse_result))
-        LOG_FAIL("snapshot_sync",
+        return ZCL_ERR(-2,
                  "parse_offer_params: invalid v2 manifest reason=%s pos=%zu/%zu",
                  snapshot_manifest_result_name(parse_result),
                  s->read_pos, s->size);
     snapsync_params_from_manifest_internal(params, &manifest);
-    return true;
+    return ZCL_OK;
 }
 
-bool snapsync_write_snapshot_request(struct byte_stream *s,
+struct zcl_result snapsync_write_snapshot_request(struct byte_stream *s,
                                      int32_t our_height,
                                      const uint8_t peer_ip[16])
 {
     struct fast_sync_pow pow;
 
     if (!s || !peer_ip)
-        LOG_FAIL("snapshot_sync", "write_snapshot_request: s=%p peer_ip=%p", (void*)s, (void*)peer_ip);
-    if (!snapsync_build_request_pow(peer_ip, &pow))
-        LOG_FAIL("snapshot_sync", "write_snapshot_request: build_request_pow failed");
+        return ZCL_ERR(-1, "write_snapshot_request: s=%p peer_ip=%p", (void*)s, (const void*)peer_ip);
+    {
+        struct zcl_result pr = snapsync_build_request_pow(peer_ip, &pow);
+        if (!pr.ok)
+            return ZCL_ERR(-2, "write_snapshot_request: build_request_pow failed: %s",
+                           pr.message);
+    }
 
     stream_write_i32_le(s, our_height);
     stream_write_bytes(s, pow.peer_id, 32);
     stream_write_i64_le(s, pow.timestamp);
     stream_write_u64_le(s, pow.nonce);
-    return true;
+    return ZCL_OK;
 }
 
 void snapsync_build_offer_acceptance(struct snapsync_offer_acceptance *result)
@@ -552,7 +562,7 @@ enum snapsync_offer_result snapsync_handle_offer(
     /* Accept the offer via service */
     if (!snapsync_accept_offer(svc, params->height, params->num_utxos,
                                params->utxo_root, params->mmb_root,
-                               params->block_hash, params->peer_id)) {
+                               params->block_hash, params->peer_id).ok) {
         (void)chain_advance_coordinator_snapshot_offer_allowed(
             params->our_height,
             params->height,
@@ -606,7 +616,7 @@ enum snapsync_offer_result snapsync_handle_offer(
     return SNAPSYNC_OFFER_ACCEPTED;
 }
 
-bool snapsync_request_recovery(struct snapshot_sync_service *svc,
+struct zcl_result snapsync_request_recovery(struct snapshot_sync_service *svc,
                                int32_t target_height,
                                const struct snapshot_offer_params *manifest)
 {
@@ -617,7 +627,8 @@ bool snapsync_request_recovery(struct snapshot_sync_service *svc,
     uint8_t fc_seed[32];
 
     if (!svc || !manifest)
-        return false;
+        return ZCL_ERR(-1, "request_recovery: svc=%p manifest=%p",
+                       (void*)svc, (const void*)manifest);
 
     snapsync_manifest_from_params_internal(&m, manifest);
     manifest_result = snapshot_manifest_validate_recovery(&m, target_height);
@@ -626,7 +637,9 @@ bool snapsync_request_recovery(struct snapshot_sync_service *svc,
                     "accepted=false recovery=true reason=%s h=%d target=%d",
                     snapshot_manifest_result_name(manifest_result),
                     manifest->height, target_height);
-        return false;
+        return ZCL_ERR(-2, "request_recovery: manifest invalid reason=%s h=%d target=%d",
+                       snapshot_manifest_result_name(manifest_result),
+                       manifest->height, target_height);
     }
 
     snapsync_service_lock_internal();
@@ -636,7 +649,8 @@ bool snapsync_request_recovery(struct snapshot_sync_service *svc,
         event_emitf(EV_SNAPSHOT_OFFER_RECEIVED, manifest->peer_id,
                     "accepted=false recovery=true reason=busy h=%d target=%d",
                     manifest->height, target_height);
-        return false;
+        return ZCL_ERR(-3, "request_recovery: busy (state != IDLE) h=%d target=%d",
+                       manifest->height, target_height);
     }
 
     if (!snapsync_accept_offer_internal(svc, manifest->height,
@@ -650,7 +664,8 @@ bool snapsync_request_recovery(struct snapshot_sync_service *svc,
                     "accepted=false recovery=true reason=accept_failed "
                     "h=%d target=%d",
                     manifest->height, target_height);
-        return false;
+        return ZCL_ERR(-4, "request_recovery: accept_offer failed h=%d target=%d",
+                       manifest->height, target_height);
     }
 
     GetRandBytes(fc_seed, sizeof(fc_seed));
@@ -669,5 +684,5 @@ bool snapsync_request_recovery(struct snapshot_sync_service *svc,
                 "accepted=true recovery=true h=%d target=%d utxos=%llu",
                 manifest->height, target_height,
                 (unsigned long long)manifest->num_utxos);
-    return true;
+    return ZCL_OK;
 }

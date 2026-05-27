@@ -206,7 +206,7 @@ static int test_snapshot_sync_service_verify_flyclient_begin_failure(void)
                                 (const uint8_t (*)[32])leaf_hashes,
                                 &resp));
         ASSERT(resp.num_samples > 0);
-        ASSERT(!snapsync_verify_flyclient(&svc, &resp));
+        ASSERT(!snapsync_verify_flyclient(&svc, &resp).ok);
         ASSERT(!svc.fc_verified);
         ASSERT(svc.state == SNAPSYNC_NEGOTIATING);
         PASS();
@@ -325,7 +325,7 @@ static int test_snapshot_sync_service_builds_pow(void)
         struct fast_sync_pow pow;
 
         ip[15] = 1;
-        ASSERT(snapsync_build_request_pow(ip, &pow));
+        ASSERT(snapsync_build_request_pow(ip, &pow).ok);
         ASSERT(fast_sync_verify_pow(&pow));
         PASS();
     } _test_next:;
@@ -365,7 +365,7 @@ static int test_snapshot_sync_service_stream_helpers(void)
         stream_write_i32_le(&offer, 109);
         for (int i = 0; i < 32; i++) stream_write_u8(&offer, (uint8_t)(i + 4));
 
-        ASSERT(snapsync_parse_offer_params(&params, &offer));
+        ASSERT(snapsync_parse_offer_params(&params, &offer).ok);
         ASSERT(params.height == 99);
         ASSERT(params.num_utxos == 1234);
         ASSERT(params.total_bytes == 5678);
@@ -379,11 +379,11 @@ static int test_snapshot_sync_service_stream_helpers(void)
         ASSERT(params.chain_work[0] == 4);
 
         stream_init(&challenge, 72);
-        ASSERT(snapsync_write_fc_challenge(&svc, &challenge));
+        ASSERT(snapsync_write_fc_challenge(&svc, &challenge).ok);
         ASSERT(challenge.size == 72);
 
         stream_init(&request, 52);
-        ASSERT(snapsync_write_snapshot_request(&request, 88, ip));
+        ASSERT(snapsync_write_snapshot_request(&request, 88, ip).ok);
         ASSERT(request.size == 52);
 
         stream_free(&offer);
@@ -516,9 +516,9 @@ static int test_snapshot_sync_service_fc_roundtrip(void)
         memset(resp.samples[0].proof.peaks[0], 0x46, 32);
 
         stream_init(&s, 512);
-        ASSERT(snapsync_write_fc_response(&s, &resp));
+        ASSERT(snapsync_write_fc_response(&s, &resp).ok);
         s.read_pos = 0;
-        ASSERT(snapsync_parse_fc_response(&parsed, &s));
+        ASSERT(snapsync_parse_fc_response(&parsed, &s).ok);
         ASSERT(parsed.num_samples == 1);
         ASSERT(parsed.samples[0].leaf.height == 42);
         ASSERT(parsed.samples[0].proof.leaf_index == 7);
@@ -799,7 +799,7 @@ static int test_snapshot_sync_service_db_service_runtime(void)
 
         snapsync_init(&svc, &ndb);
         svc.state = SNAPSYNC_NEGOTIATING;
-        ASSERT(snapsync_begin_receive(&svc));
+        ASSERT(snapsync_begin_receive(&svc).ok);
         ASSERT(svc.state == SNAPSYNC_RECEIVING);
         ASSERT(svc.turbo_active);
         node_db_get_status(&ndb, &st);
@@ -890,7 +890,7 @@ static int test_snapshot_sync_service_db_service_chunk_finalize(void)
         memset(svc.offered_mmb_root, 0x55, sizeof(svc.offered_mmb_root));
         memset(svc.offered_chain_work, 0x66, sizeof(svc.offered_chain_work));
 
-        ASSERT(snapsync_begin_receive(&svc));
+        ASSERT(snapsync_begin_receive(&svc).ok);
         build_snapshot_chunk(&chunk);
         ASSERT(snapsync_apply_chunk(&svc, chunk.data, chunk.size) == 1);
         ASSERT(svc.received_utxos == 1);
@@ -902,7 +902,7 @@ static int test_snapshot_sync_service_db_service_chunk_finalize(void)
         memcpy(svc.offered_utxo_root, root, sizeof(root));
         ASSERT(db_service_begin_write(&dbsvc));
 
-        ASSERT(snapsync_finalize(&svc));
+        ASSERT(snapsync_finalize(&svc).ok);
         ASSERT(svc.state == SNAPSYNC_COMPLETE);
         ASSERT(!svc.turbo_active);
         node_db_get_status(&ndb, &st);
@@ -965,7 +965,7 @@ static int test_snapshot_sync_service_stages_before_activation(void)
         svc.serving_peer_id = 15;
         memset(svc.offered_block_hash, 0x44, sizeof(svc.offered_block_hash));
 
-        ASSERT(snapsync_begin_receive(&svc));
+        ASSERT(snapsync_begin_receive(&svc).ok);
         build_snapshot_chunk(&chunk);
         ASSERT(snapsync_apply_chunk(&svc, chunk.data, chunk.size) == 1);
         ASSERT(db_service_commit_write(&dbsvc));
@@ -978,7 +978,7 @@ static int test_snapshot_sync_service_stages_before_activation(void)
         memcpy(svc.offered_utxo_root, root, sizeof(root));
         ASSERT(db_service_begin_write(&dbsvc));
 
-        ASSERT(snapsync_finalize(&svc));
+        ASSERT(snapsync_finalize(&svc).ok);
         ASSERT(count_table_rows(ndb.db, "utxos") == 1);
         ASSERT(count_table_rows(ndb.db, "snapshot_staging_utxos") == 0);
 
@@ -1064,7 +1064,7 @@ static int test_snapshot_sync_service_finalize_mismatch(void)
         svc.serving_peer_id = 12;
         memset(svc.offered_block_hash, 0x44, sizeof(svc.offered_block_hash));
 
-        ASSERT(snapsync_begin_receive(&svc));
+        ASSERT(snapsync_begin_receive(&svc).ok);
         build_snapshot_chunk(&chunk);
         ASSERT(snapsync_apply_chunk(&svc, chunk.data, chunk.size) == 1);
 
@@ -1081,7 +1081,7 @@ static int test_snapshot_sync_service_finalize_mismatch(void)
         }
         memcpy(svc.offered_utxo_root, bad_root, sizeof(bad_root));
 
-        ASSERT(!snapsync_finalize(&svc));
+        ASSERT(!snapsync_finalize(&svc).ok);
         ASSERT(svc.state == SNAPSYNC_FAILED);
         ASSERT(!svc.turbo_active);
         node_db_get_status(&ndb, &st);
@@ -1125,7 +1125,7 @@ static int test_snapshot_sync_service_chunk_apply_failure_fails_closed(void)
         svc.offered_count = 2;
         svc.serving_peer_id = 7;
 
-        ASSERT(snapsync_begin_receive(&svc));
+        ASSERT(snapsync_begin_receive(&svc).ok);
         build_truncated_snapshot_chunk(&chunk);
         ASSERT(snapsync_apply_chunk(&svc, chunk.data, chunk.size) < 0);
         ASSERT(svc.state == SNAPSYNC_FAILED);
@@ -1170,7 +1170,7 @@ static int test_snapshot_accept_offer_with_few_utxos(void)
 
         bool accepted = snapsync_accept_offer(&svc, 3000000, 1350000,
                                                utxo_root, mmb_root,
-                                               block_hash, 42);
+                                               block_hash, 42).ok;
         ASSERT(accepted);
         ASSERT(svc.state == SNAPSYNC_NEGOTIATING);
 
@@ -1218,7 +1218,7 @@ static int test_snapshot_accept_offer_with_real_utxos(void)
 
         bool accepted = snapsync_accept_offer(&svc, 3000000, 1350000,
                                                utxo_root, mmb_root,
-                                               block_hash, 42);
+                                               block_hash, 42).ok;
         ASSERT(!accepted);
         ASSERT(svc.state == SNAPSYNC_IDLE);
 
@@ -1266,7 +1266,7 @@ static int test_snapshot_recovery_request_allows_populated_utxos(void)
                SNAPSYNC_OFFER_REJECTED_NOT_AHEAD);
         ASSERT(svc.state == SNAPSYNC_IDLE);
 
-        ASSERT(snapsync_request_recovery(&svc, 2999500, &params));
+        ASSERT(snapsync_request_recovery(&svc, 2999500, &params).ok);
         ASSERT(svc.state == SNAPSYNC_NEGOTIATING);
         ASSERT(svc.offered_height == params.height);
         ASSERT(svc.offered_count == params.num_utxos);
@@ -1296,11 +1296,11 @@ static int test_snapshot_recovery_request_rejects_unverified_manifest(void)
         fill_v2_offer_params(&params, 3000000, 2999000, 0);
         params.peer_tip_height = params.height + 10;
 
-        ASSERT(!snapsync_request_recovery(&svc, 3000001, &params));
+        ASSERT(!snapsync_request_recovery(&svc, 3000001, &params).ok);
         ASSERT(svc.state == SNAPSYNC_IDLE);
 
         memset(params.chain_work, 0, sizeof(params.chain_work));
-        ASSERT(!snapsync_request_recovery(&svc, 2999500, &params));
+        ASSERT(!snapsync_request_recovery(&svc, 2999500, &params).ok);
         ASSERT(svc.state == SNAPSYNC_IDLE);
         PASS();
     } _test_next:;
@@ -1334,26 +1334,26 @@ static int test_snapshot_recovery_requires_flyclient_and_sha3(void)
         params.total_bytes = 128;
         params.peer_tip_height = params.height + 10;
 
-        ASSERT(snapsync_request_recovery(&svc, 2999500, &params));
+        ASSERT(snapsync_request_recovery(&svc, 2999500, &params).ok);
         ASSERT(svc.state == SNAPSYNC_NEGOTIATING);
         ASSERT(!svc.fc_verified);
 
         build_snapshot_chunk(&chunk);
         ASSERT(snapsync_apply_chunk(&svc, chunk.data, chunk.size) == 0);
         ASSERT(count_table_rows(ndb.db, "snapshot_staging_utxos") == 0);
-        ASSERT(!snapsync_handle_end(&svc, params.peer_id));
+        ASSERT(!snapsync_handle_end(&svc, params.peer_id).ok);
         ASSERT(svc.state == SNAPSYNC_NEGOTIATING);
 
-        ASSERT(snapsync_begin_receive(&svc));
+        ASSERT(snapsync_begin_receive(&svc).ok);
         ASSERT(snapsync_apply_chunk(&svc, chunk.data, chunk.size) == 1);
-        ASSERT(!snapsync_handle_end(&svc, params.peer_id));
+        ASSERT(!snapsync_handle_end(&svc, params.peer_id).ok);
         ASSERT(svc.state == SNAPSYNC_FAILED);
         ASSERT(count_table_rows(ndb.db, "utxos") == 1);
         ASSERT(count_table_rows(ndb.db, "snapshot_staging_utxos") == 0);
 
         snapsync_reset(&svc);
-        ASSERT(snapsync_request_recovery(&svc, 2999500, &params));
-        ASSERT(snapsync_begin_receive(&svc));
+        ASSERT(snapsync_request_recovery(&svc, 2999500, &params).ok);
+        ASSERT(snapsync_begin_receive(&svc).ok);
         ASSERT(snapsync_apply_chunk(&svc, chunk.data, chunk.size) == 1);
         ASSERT(node_db_commit(&ndb));
         utxo_commitment_sha3_compute_table(ndb.db, "snapshot_staging_utxos",
@@ -1362,7 +1362,7 @@ static int test_snapshot_recovery_requires_flyclient_and_sha3(void)
         memcpy(svc.offered_utxo_root, staged_root, sizeof(staged_root));
         ASSERT(node_db_begin(&ndb));
         svc.fc_verified = true;
-        ASSERT(snapsync_handle_end(&svc, params.peer_id));
+        ASSERT(snapsync_handle_end(&svc, params.peer_id).ok);
         ASSERT(svc.state == SNAPSYNC_COMPLETE);
         ASSERT(count_table_rows(ndb.db, "utxos") == 1);
         ASSERT(count_table_rows(ndb.db, "snapshot_staging_utxos") == 0);
@@ -1452,9 +1452,9 @@ static int test_snapshot_local_recovery_manifest_builder(void)
             "VALUES (X'0102030405060708090A0B0C0D0E0F101112131415161718"
             "191A1B1C1D1E1F20',0,5000,X'51',0,1,0)"));
 
-        ASSERT(!snapsync_build_local_recovery_manifest(&ndb, &params, 0));
+        ASSERT(!snapsync_build_local_recovery_manifest(&ndb, &params, 0).ok);
         persist_test_roots(&ndb, block_hash, chain_work);
-        ASSERT(snapsync_build_local_recovery_manifest(&ndb, &params, 0));
+        ASSERT(snapsync_build_local_recovery_manifest(&ndb, &params, 0).ok);
 
         utxo_commitment_sha3_compute(ndb.db, expected_root, &expected_count);
         ASSERT(params.height == 1);

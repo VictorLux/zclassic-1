@@ -202,7 +202,7 @@ void snapsync_reset(struct snapshot_sync_service *svc)
         }
     }
     if (turbo_active) {
-        bool ok = snapsync_exit_turbo_mode_internal(svc);
+        bool ok = snapsync_exit_turbo_mode_internal(svc).ok;
         if (!ok) {
             snapsync_service_lock_internal();
             snapsync_set_state(SNAPSYNC_FAILED, "normal mode reset failed");
@@ -532,7 +532,7 @@ bool snapsync_check_stall(void)
     /* Discard committed staging rows so the next offer starts clean.
      * Active UTXOs were never touched by the stalled receive. */
     if (svc->ndb && svc->ndb->open) {
-        if (snapsync_discard_staging_internal(svc->ndb, "stall_cleanup"))
+        if (snapsync_discard_staging_internal(svc->ndb, "stall_cleanup").ok)
             event_emitf(EV_SNAPSYNC_VERIFIED, stall.serving_peer_id,
                         "snapshot=FAILED reason=stall staging_discarded=true");
     }

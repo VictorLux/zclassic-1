@@ -28,10 +28,11 @@
 
 /* ── Staging helpers ─────────────────────────────────────── */
 
-bool snapsync_discard_staging_internal(struct node_db *ndb, const char *reason)
+struct zcl_result snapsync_discard_staging_internal(struct node_db *ndb,
+                                                    const char *reason)
 {
     if (!ndb || !ndb->open)
-        return false;
+        return ZCL_ERR(-1, "discard_staging: ndb null or not open");
     bool ok = node_db_exec(ndb, "DELETE FROM " SNAPSYNC_STAGING_TABLE);
     ok &= node_db_exec(ndb,
                        "DELETE FROM node_state WHERE key LIKE 'snapshot_staging_%'");
@@ -39,34 +40,43 @@ bool snapsync_discard_staging_internal(struct node_db *ndb, const char *reason)
         ok &= node_db_state_set(ndb, SNAPSYNC_STAGING_LAST_DISCARD_KEY,
                                 reason, strlen(reason));
     }
-    return ok;
+    if (!ok)
+        return ZCL_ERR(-2, "discard_staging: exec failed reason=%s",
+                       reason ? reason : "");
+    return ZCL_OK;
 }
 
-bool snapsync_discard_staging_txn_internal(struct node_db *ndb,
+struct zcl_result snapsync_discard_staging_txn_internal(struct node_db *ndb,
                                            const char *label,
                                            const char *reason)
 {
     if (!ndb || !ndb->open)
-        return false;
+        return ZCL_ERR(-1, "discard_staging_txn: ndb null or not open");
     DB_TXN_SCOPE(txn, ndb, label ? label : "snapsync.discard_staging");
     if (!txn)
-        return false;
-    if (!snapsync_discard_staging_internal(ndb, reason))
-        return false;
-    return db_txn_commit(txn);
+        return ZCL_ERR(-2, "discard_staging_txn: failed to open db_txn scope");
+    struct zcl_result r = snapsync_discard_staging_internal(ndb, reason);
+    if (!r.ok)
+        return r;
+    if (!db_txn_commit(txn))
+        return ZCL_ERR(-3, "discard_staging_txn: db_txn_commit failed");
+    return ZCL_OK;
 }
 
-bool snapsync_set_staging_phase_internal(struct node_db *ndb, const char *phase)
+struct zcl_result snapsync_set_staging_phase_internal(struct node_db *ndb,
+                                                      const char *phase)
 {
     if (!ndb || !ndb->open || !phase || !*phase)
-        return false;
-    return node_db_state_set(ndb, SNAPSYNC_STAGING_PHASE_KEY,
-                             phase, strlen(phase));
+        return ZCL_ERR(-1, "set_staging_phase: null/closed ndb or empty phase");
+    if (!node_db_state_set(ndb, SNAPSYNC_STAGING_PHASE_KEY,
+                           phase, strlen(phase)))
+        return ZCL_ERR(-2, "set_staging_phase: state_set failed phase=%s", phase);
+    return ZCL_OK;
 }
 
 bool snapsync_discard_staging_write_internal(struct node_db *ndb, void *ctx)
 {
-    return snapsync_discard_staging_internal(ndb, (const char *)ctx);
+    return snapsync_discard_staging_internal(ndb, (const char *)ctx).ok;
 }
 
 static bool snapsync_insert_staging_raw(struct node_db *ndb,
@@ -192,19 +202,19 @@ static bool snapsync_exit_receive_mode_write(struct node_db *ndb, void *ctx)
     return true;
 }
 
-bool snapsync_exit_turbo_mode_internal(struct snapshot_sync_service *svc)
+struct zcl_result snapsync_exit_turbo_mode_internal(struct snapshot_sync_service *svc)
 {
     bool turbo_active = false;
     bool ok = false;
 
     if (!svc || !svc->ndb)
-        LOG_FAIL("snapshot_sync", "exit_turbo_mode: svc or ndb is NULL");
+        return ZCL_ERR(-1, "exit_turbo_mode: svc or ndb is NULL");
 
     snapsync_service_lock_internal();
     turbo_active = svc->turbo_active;
     snapsync_service_unlock_internal();
     if (!turbo_active)
-        return true;
+        return ZCL_OK;
 
     ok = snapsync_run_write_internal(svc, snapsync_exit_receive_mode_write, &ok) && ok;
 
@@ -212,7 +222,9 @@ bool snapsync_exit_turbo_mode_internal(struct snapshot_sync_service *svc)
     svc->turbo_active = false;
     snapsync_service_unlock_internal();
 
-    return ok;
+    if (!ok)
+        return ZCL_ERR(-2, "exit_turbo_mode: exit_receive_mode write failed");
+    return ZCL_OK;
 }
 
 static bool snapsync_begin_receive_write(struct node_db *ndb, void *ctx)
@@ -242,9 +254,9 @@ static bool snapsync_begin_receive_write(struct node_db *ndb, void *ctx)
         if (!txn)
             LOG_FAIL("snapshot_sync", "begin_receive_write: failed to open db_txn scope");
 
-        if (!snapsync_discard_staging_internal(ndb, "begin_receive"))
+        if (!snapsync_discard_staging_internal(ndb, "begin_receive").ok)
             LOG_FAIL("snapshot_sync", "begin_receive_write: staging cleanup failed");
-        if (!snapsync_set_staging_phase_internal(ndb, SNAPSYNC_PHASE_CHUNK_RECEIVE))
+        if (!snapsync_set_staging_phase_internal(ndb, SNAPSYNC_PHASE_CHUNK_RECEIVE).ok)
             LOG_FAIL("snapshot_sync", "begin_receive_write: failed to set staging phase");
 
         if (!db_txn_commit(txn))
@@ -393,7 +405,7 @@ static bool snapsync_apply_chunk_write(struct node_db *ndb, void *ctx)
 
 /* ── Begin Receive ───────────────────────────────────────── */
 
-bool snapsync_begin_receive(struct snapshot_sync_service *svc)
+struct zcl_result snapsync_begin_receive(struct snapshot_sync_service *svc)
 {
     struct trace_span *ss_span = trace_start("snapsync.begin_receive");
 
@@ -401,7 +413,7 @@ bool snapsync_begin_receive(struct snapshot_sync_service *svc)
         trace_set_status(ss_span, TRACE_STATUS_ERROR);
         trace_attr_str(ss_span, "error", "null_svc");
         trace_end(ss_span);
-        return false;
+        return ZCL_ERR(-1, "begin_receive: svc is NULL");
     }
     trace_attr_int(ss_span, "snap_height", svc->offered_height);
 
@@ -414,7 +426,7 @@ bool snapsync_begin_receive(struct snapshot_sync_service *svc)
         trace_set_status(ss_span, TRACE_STATUS_ERROR);
         trace_attr_str(ss_span, "error", "wrong_state");
         trace_end(ss_span);
-        return false;
+        return ZCL_ERR(-2, "begin_receive: wrong state (not NEGOTIATING)");
     }
     if (!svc->ndb) {
         event_emitf(EV_SNAPSYNC_VERIFIED, svc->serving_peer_id,
@@ -422,7 +434,7 @@ bool snapsync_begin_receive(struct snapshot_sync_service *svc)
         snapsync_service_unlock_internal();
         trace_set_status(ss_span, TRACE_STATUS_ERROR);
         trace_end(ss_span);
-        return false;
+        return ZCL_ERR(-3, "begin_receive: no db");
     }
     if (!svc->ndb->open) {
         event_emitf(EV_SNAPSYNC_VERIFIED, svc->serving_peer_id,
@@ -430,7 +442,7 @@ bool snapsync_begin_receive(struct snapshot_sync_service *svc)
         snapsync_service_unlock_internal();
         trace_set_status(ss_span, TRACE_STATUS_ERROR);
         trace_end(ss_span);
-        return false;
+        return ZCL_ERR(-4, "begin_receive: db closed");
     }
 
     /* Snapshot receive is a live-node path after startup. Keep schema stable
@@ -443,7 +455,7 @@ bool snapsync_begin_receive(struct snapshot_sync_service *svc)
         trace_set_status(ss_span, TRACE_STATUS_ERROR);
         trace_attr_str(ss_span, "error", "enter_receive_mode");
         trace_end(ss_span);
-        return false;
+        return ZCL_ERR(-5, "begin_receive: enter_receive_mode failed");
     }
     svc->turbo_active = true;
     snapsync_service_unlock_internal();
@@ -453,7 +465,7 @@ bool snapsync_begin_receive(struct snapshot_sync_service *svc)
         trace_set_status(ss_span, TRACE_STATUS_ERROR);
         trace_attr_str(ss_span, "error", "begin_receive_write");
         trace_end(ss_span);
-        return false;
+        return ZCL_ERR(-6, "begin_receive: begin_receive_write failed");
     }
     if (!sync_set_state(SYNC_SNAPSHOT_RECEIVE, "snapshot receive started")) {
         snapsync_run_write_internal(svc, snapsync_rollback_receive_write_internal, NULL);
@@ -461,7 +473,7 @@ bool snapsync_begin_receive(struct snapshot_sync_service *svc)
         trace_set_status(ss_span, TRACE_STATUS_ERROR);
         trace_attr_str(ss_span, "error", "sync_set_state");
         trace_end(ss_span);
-        return false;
+        return ZCL_ERR(-7, "begin_receive: sync_set_state failed");
     }
 
     snapsync_service_lock_internal();
@@ -471,7 +483,7 @@ bool snapsync_begin_receive(struct snapshot_sync_service *svc)
     snapsync_set_state(SNAPSYNC_RECEIVING, "receive mode active");
     snapsync_service_unlock_internal();
     trace_end(ss_span);
-    return true;
+    return ZCL_OK;
 }
 
 /* ── Apply Chunk ─────────────────────────────────────────── */
@@ -519,7 +531,7 @@ int snapsync_apply_chunk(struct snapshot_sync_service *svc,
         svc->state = SNAPSYNC_FAILED;
         snapsync_set_state(SNAPSYNC_FAILED, "snapshot chunk apply failed");
         snapsync_service_unlock_internal();
-        if (restore_turbo && !snapsync_exit_turbo_mode_internal(svc))
+        if (restore_turbo && !snapsync_exit_turbo_mode_internal(svc).ok)
             event_emitf(EV_SNAPSYNC_VERIFIED, 0,
                         "snapshot=FAILED reason=turbo_exit_failed path=chunk_apply");
         LOG_ERR("snapsync", "chunk apply failed");
@@ -530,13 +542,13 @@ int snapsync_apply_chunk(struct snapshot_sync_service *svc,
 
 /* Action: handle snapshot end from peer.
  * Validates peer identity and state, finalizes. */
-bool snapsync_handle_end(struct snapshot_sync_service *svc, uint32_t peer_id)
+struct zcl_result snapsync_handle_end(struct snapshot_sync_service *svc, uint32_t peer_id)
 {
     enum snapshot_sync_state state = SNAPSYNC_IDLE;
     uint32_t serving_peer_id = 0;
     uint64_t received = 0;
 
-    if (!svc) LOG_FAIL("snapshot_sync", "handle_end: svc is NULL");
+    if (!svc) return ZCL_ERR(-1, "handle_end: svc is NULL");
     snapsync_service_lock_internal();
     state = svc->state;
     serving_peer_id = svc->serving_peer_id;
@@ -547,13 +559,15 @@ bool snapsync_handle_end(struct snapshot_sync_service *svc, uint32_t peer_id)
     if (serving_peer_id != peer_id) {
         printf("[snapsync] Ignoring zsnapend from peer %u "
                "(serving from %u)\n", peer_id, serving_peer_id);
-        return false;
+        return ZCL_ERR(-2, "handle_end: peer %u not serving peer %u",
+                       peer_id, serving_peer_id);
     }
 
     if (state != SNAPSYNC_RECEIVING) {
         printf("[snapsync] Ignoring zsnapend in state %s\n",
                snapsync_state_name(state));
-        return false;
+        return ZCL_ERR(-3, "handle_end: not in RECEIVING state (%s)",
+                       snapsync_state_name(state));
     }
 
     event_emitf(EV_SNAPSHOT_COMPLETE, peer_id,

@@ -38,7 +38,7 @@
 
 /* ── Stage promotion ─────────────────────────────────────── */
 
-bool snapsync_stage_promote_active_internal(struct node_db *ndb,
+struct zcl_result snapsync_stage_promote_active_internal(struct node_db *ndb,
                                             const struct snapshot_sync_service *svc,
                                             const uint8_t local_root[32],
                                             uint64_t local_count,
@@ -47,19 +47,20 @@ bool snapsync_stage_promote_active_internal(struct node_db *ndb,
     bool has_mmb = false;
 
     if (!ndb || !svc || !local_root)
-        return false;
-    if (!snapsync_set_staging_phase_internal(ndb, SNAPSYNC_PHASE_ATOMIC_ACTIVATE))
-        LOG_FAIL("snapshot_sync", "activate: failed to set staging phase");
+        return ZCL_ERR(-1, "activate: null args ndb=%p svc=%p root=%p",
+                       (void*)ndb, (void*)svc, (const void*)local_root);
+    if (!snapsync_set_staging_phase_internal(ndb, SNAPSYNC_PHASE_ATOMIC_ACTIVATE).ok)
+        return ZCL_ERR(-2, "activate: failed to set staging phase");
     if (!node_db_exec(ndb, "DELETE FROM utxos"))
-        LOG_FAIL("snapshot_sync", "activate: failed to clear active utxos");
+        return ZCL_ERR(-3, "activate: failed to clear active utxos");
     if (!node_db_exec(ndb,
             "INSERT OR REPLACE INTO utxos"
             "(txid,vout,value,script,script_type,address_hash,height,is_coinbase)"
             " SELECT txid,vout,value,script,script_type,address_hash,height,is_coinbase"
             " FROM " SNAPSYNC_STAGING_TABLE))
-        LOG_FAIL("snapshot_sync", "activate: failed to promote staged utxos");
+        return ZCL_ERR(-4, "activate: failed to promote staged utxos");
     if (node_db_utxo_count(ndb) != (int64_t)local_count)
-        LOG_FAIL("snapshot_sync", "activate: active/staged UTXO count mismatch");
+        return ZCL_ERR(-5, "activate: active/staged UTXO count mismatch");
     /* Record the verified snapshot anchor as pending recovery metadata.
      * The publishable coins_best_block cursor is written only by
      * chain_state_repository during evidenced tip activation. */
@@ -67,7 +68,7 @@ bool snapsync_stage_promote_active_internal(struct node_db *ndb,
                            svc->offered_block_hash, 32) ||
         !node_db_state_set_int(ndb, "snapshot_pending_coins_best_height",
                                svc->offered_height))
-        LOG_FAIL("snapshot_sync", "activate: failed to set pending coins anchor");
+        return ZCL_ERR(-6, "activate: failed to set pending coins anchor");
 
     for (int i = 0; i < 32; i++) {
         if (svc->offered_mmb_root[i]) {
@@ -80,11 +81,11 @@ bool snapsync_stage_promote_active_internal(struct node_db *ndb,
                                svc->offered_mmb_root, 32) ||
             !node_db_state_set(ndb, "snapshot_mmr_height",
                                &svc->offered_height, 4))
-            LOG_FAIL("snapshot_sync", "activate: failed to set snapshot MMB metadata");
+            return ZCL_ERR(-7, "activate: failed to set snapshot MMB metadata");
     }
     if (!utxo_commitment_sha3_save(ndb->db, local_root,
                                    svc->offered_height, local_count))
-        LOG_FAIL("snapshot_sync", "activate: failed to save utxo_sha3");
+        return ZCL_ERR(-8, "activate: failed to save utxo_sha3");
     if (!zcl_chainwork_is_zero(svc->offered_chain_work) &&
         !zcl_chainwork_is_zero(svc->offered_mmb_root) &&
         verified && chain_evidence_record_has_snapshot_required(verified)) {
@@ -104,16 +105,16 @@ bool snapsync_stage_promote_active_internal(struct node_db *ndb,
         chain_evidence_controller_init(&authority, ndb, csr_instance());
         if (chain_evidence_controller_import_snapshot_evidence(&authority, &meta)
             != CEC_OK)
-            LOG_FAIL("snapshot_sync",
+            return ZCL_ERR(-9,
                      "activate: failed to persist snapshot evidence metadata");
     } else if (!zcl_chainwork_is_zero(svc->offered_chain_work) &&
                !zcl_chainwork_is_zero(svc->offered_mmb_root)) {
         event_emitf(EV_SNAPSYNC_VERIFIED, svc->serving_peer_id,
                     "snapshot_evidence=SKIPPED reason=incomplete_verified_inputs");
     }
-    if (!snapsync_discard_staging_internal(ndb, "activated"))
-        LOG_FAIL("snapshot_sync", "activate: failed to clear staging after promotion");
-    return true;
+    if (!snapsync_discard_staging_internal(ndb, "activated").ok)
+        return ZCL_ERR(-10, "activate: failed to clear staging after promotion");
+    return ZCL_OK;
 }
 
 /* ── Tip activation ──────────────────────────────────────── */

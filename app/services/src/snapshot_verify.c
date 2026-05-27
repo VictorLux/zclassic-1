@@ -48,7 +48,7 @@ void snapsync_mark_failed_internal(struct snapshot_sync_service *svc,
     snapsync_service_unlock_internal();
 }
 
-bool snapsync_finalize_fail_internal(struct snapsync_finalize_ctx *finalize,
+struct zcl_result snapsync_finalize_fail_internal(struct snapsync_finalize_ctx *finalize,
                                      struct node_db *ndb,
                                      struct snapshot_sync_service *svc,
                                      uint32_t peer_id,
@@ -59,7 +59,7 @@ bool snapsync_finalize_fail_internal(struct snapsync_finalize_ctx *finalize,
 
     if (ndb && ndb->open) {
         bool discarded =
-            snapsync_discard_staging_txn_internal(ndb, "snapsync.finalize_fail", r);
+            snapsync_discard_staging_txn_internal(ndb, "snapsync.finalize_fail", r).ok;
         event_emitf(EV_SNAPSYNC_VERIFIED, peer_id,
                     "snapshot=FAILED reason=%s staging_discarded=%s",
                     r, discarded ? "true" : "false");
@@ -71,7 +71,7 @@ bool snapsync_finalize_fail_internal(struct snapsync_finalize_ctx *finalize,
     snapsync_mark_failed_internal(svc, state_reason);
     if (finalize)
         finalize->ok = false;
-    return false;
+    return ZCL_ERR(-1, "snapshot finalize failed: %s", r);
 }
 
 /* ── Finalize (SHA3 verification + atomic activate) ──────── */
@@ -106,7 +106,7 @@ static bool snapsync_finalize_write(struct node_db *ndb, void *ctx)
     if (!fc_verified)
         return snapsync_finalize_fail_internal(finalize, ndb, svc, serving_peer_id,
                                                "proof_missing",
-                                               "snapshot proof missing");
+                                               "snapshot proof missing").ok;
 
     if (svc->offered_count == 0 ||
         svc->received_utxos != svc->offered_count) {
@@ -116,7 +116,7 @@ static bool snapsync_finalize_write(struct node_db *ndb, void *ctx)
                     (unsigned long long)svc->offered_count);
         return snapsync_finalize_fail_internal(finalize, ndb, svc, serving_peer_id,
                                                "count_mismatch",
-                                               "snapshot count mismatch");
+                                               "snapshot count mismatch").ok;
     }
 
     elapsed_s = (double)(snapsync_now_us_internal() - svc->start_time_us) / 1000000.0;
@@ -126,7 +126,7 @@ static bool snapsync_finalize_write(struct node_db *ndb, void *ctx)
                 (unsigned long long)svc->offered_count,
                 elapsed_s > 0 ? (double)svc->received_utxos / elapsed_s : 0);
 
-    if (!snapsync_set_staging_phase_internal(ndb, SNAPSYNC_PHASE_SNAPSHOT_VERIFY))
+    if (!snapsync_set_staging_phase_internal(ndb, SNAPSYNC_PHASE_SNAPSHOT_VERIFY).ok)
         LOG_FAIL("snapshot_sync", "finalize_write: failed to set verify phase");
     snapsync_hash_staging_internal(ndb, local_root, &local_count);
     sha3_ok = (memcmp(local_root, svc->offered_utxo_root, 32) == 0);
@@ -150,13 +150,13 @@ static bool snapsync_finalize_write(struct node_db *ndb, void *ctx)
 
             if (!snapsync_stage_promote_active_internal(ndb, svc, local_root,
                                                        local_count,
-                                                       &snapshot_verified))
+                                                       &snapshot_verified).ok)
                 LOG_FAIL("snapshot_sync", "finalize_write: atomic activation failed");
 
             if (!db_txn_commit(txn))
                 LOG_FAIL("snapshot_sync", "finalize_write: db_txn_commit failed for atomic activation");
         }
-        if (!snapsync_exit_turbo_mode_internal(svc))
+        if (!snapsync_exit_turbo_mode_internal(svc).ok)
             LOG_FAIL("snapshot_sync", "finalize_write: exit_turbo_mode failed after SHA3 pass");
         snapsync_service_lock_internal();
         svc->state = SNAPSYNC_COMPLETE;
@@ -176,7 +176,7 @@ static bool snapsync_finalize_write(struct node_db *ndb, void *ctx)
         char exp[65], got[65];
         HexStr(svc->offered_utxo_root, 32, false, exp, sizeof(exp));
         HexStr(local_root, 32, false, got, sizeof(got));
-        if (!snapsync_exit_turbo_mode_internal(svc))
+        if (!snapsync_exit_turbo_mode_internal(svc).ok)
             event_emitf(EV_SNAPSYNC_VERIFIED, serving_peer_id,
                         "snapshot=FAILED reason=turbo_exit_failed");
         event_emitf(EV_UTXO_CHECKPOINT_FAIL, 0,
@@ -186,11 +186,11 @@ static bool snapsync_finalize_write(struct node_db *ndb, void *ctx)
                     (unsigned long long)svc->offered_count);
         return snapsync_finalize_fail_internal(finalize, ndb, svc, serving_peer_id,
                                                "sha3_failed",
-                                               "SHA3 verification failed");
+                                               "SHA3 verification failed").ok;
     }
 }
 
-bool snapsync_finalize(struct snapshot_sync_service *svc)
+struct zcl_result snapsync_finalize(struct snapshot_sync_service *svc)
 {
     struct snapsync_finalize_ctx ctx;
     bool finalize_allowed = false;
@@ -198,7 +198,7 @@ bool snapsync_finalize(struct snapshot_sync_service *svc)
     bool keep_failed_state = false;
 
     if (!svc)
-        LOG_FAIL("snapshot_sync", "finalize: svc is NULL");
+        return ZCL_ERR(-1, "finalize: svc is NULL");
     snapsync_service_lock_internal();
     finalize_allowed = (svc->state == SNAPSYNC_RECEIVING &&
                        svc->ndb && svc->ndb->open);
@@ -207,7 +207,7 @@ bool snapsync_finalize(struct snapshot_sync_service *svc)
     snapsync_service_unlock_internal();
 
     if (!finalize_allowed) {
-        LOG_FAIL("snapshot_sync", "finalize: not allowed (state != RECEIVING or ndb not open)");
+        return ZCL_ERR(-2, "finalize: not allowed (state != RECEIVING or ndb not open)");
     }
 
     memset(&ctx, 0, sizeof(ctx));
@@ -222,15 +222,15 @@ bool snapsync_finalize(struct snapshot_sync_service *svc)
 
         if (!keep_failed_state) {
             snapsync_set_state(SNAPSYNC_FAILED, "finalize write path failed");
-            if (!snapsync_exit_turbo_mode_internal(svc))
+            if (!snapsync_exit_turbo_mode_internal(svc).ok)
                 event_emitf(EV_SNAPSYNC_VERIFIED, 0,
                             "snapshot=FAILED reason=turbo_exit_failed path=finalize");
         } else if (turbo_active) {
-            if (!snapsync_exit_turbo_mode_internal(svc))
+            if (!snapsync_exit_turbo_mode_internal(svc).ok)
                 event_emitf(EV_SNAPSYNC_VERIFIED, 0,
                             "snapshot=FAILED reason=turbo_exit_failed path=finalize_failed_state");
         }
-        return false;
+        return ZCL_ERR(-3, "finalize: write path failed");
     }
     snapsync_service_lock_internal();
     if (!ctx.ok) {
@@ -239,23 +239,25 @@ bool snapsync_finalize(struct snapshot_sync_service *svc)
         svc->state = SNAPSYNC_FAILED;
     }
     snapsync_service_unlock_internal();
-    return ctx.ok;
+    if (!ctx.ok)
+        return ZCL_ERR(-4, "finalize: SHA3 verification failed");
+    return ZCL_OK;
 }
 
 /* ── FlyClient wire format helpers ───────────────────────── */
 
-bool snapsync_parse_fc_response(struct fc_response *resp,
+struct zcl_result snapsync_parse_fc_response(struct fc_response *resp,
                                 struct byte_stream *s)
 {
     uint32_t num_samples = 0;
 
     if (!resp || !s)
-        LOG_FAIL("snapshot_sync", "parse_fc_response: resp=%p stream=%p", (void*)resp, (void*)s);
+        return ZCL_ERR(-1, "parse_fc_response: resp=%p stream=%p", (void*)resp, (void*)s);
 
     memset(resp, 0, sizeof(*resp));
     if (!stream_read_u32_le(s, &num_samples) ||
         num_samples == 0 || num_samples > FC_MAX_SAMPLES) {
-        LOG_FAIL("snapshot_sync", "parse_fc_response: bad num_samples=%u (max=%d)",
+        return ZCL_ERR(-2, "parse_fc_response: bad num_samples=%u (max=%d)",
                  num_samples, FC_MAX_SAMPLES);
     }
 
@@ -272,48 +274,48 @@ bool snapsync_parse_fc_response(struct fc_response *resp,
             !stream_read_bytes(s, sample->proof.leaf_hash, 32) ||
             !stream_read_u32_le(s, &sample->proof.num_siblings) ||
             sample->proof.num_siblings > MMB_MAX_MOUNTAINS) {
-            LOG_FAIL("snapshot_sync", "parse_fc_response: truncated sample %u at pos %zu/%zu",
+            return ZCL_ERR(-3, "parse_fc_response: truncated sample %u at pos %zu/%zu",
                      i, s->read_pos, s->size);
         }
 
         for (uint32_t j = 0; j < sample->proof.num_siblings; j++) {
             if (!stream_read_bytes(s, sample->proof.siblings[j], 32))
-                LOG_FAIL("snapshot_sync", "parse_fc_response: truncated sibling %u/%u in sample %u",
+                return ZCL_ERR(-4, "parse_fc_response: truncated sibling %u/%u in sample %u",
                          j, sample->proof.num_siblings, i);
         }
 
         if (!stream_read_u32_le(s, &sample->proof.num_peaks) ||
             sample->proof.num_peaks > MMB_MAX_MOUNTAINS) {
-            LOG_FAIL("snapshot_sync", "parse_fc_response: bad num_peaks=%u in sample %u",
+            return ZCL_ERR(-5, "parse_fc_response: bad num_peaks=%u in sample %u",
                      sample->proof.num_peaks, i);
         }
 
         for (uint32_t j = 0; j < sample->proof.num_peaks; j++) {
             if (!stream_read_bytes(s, sample->proof.peaks[j], 32))
-                LOG_FAIL("snapshot_sync", "parse_fc_response: truncated peak %u/%u in sample %u",
+                return ZCL_ERR(-6, "parse_fc_response: truncated peak %u/%u in sample %u",
                          j, sample->proof.num_peaks, i);
         }
 
         if (!stream_read_u64_le(s, &sample->proof.mmb_size))
-            LOG_FAIL("snapshot_sync", "parse_fc_response: truncated mmb_size in sample %u", i);
+            return ZCL_ERR(-7, "parse_fc_response: truncated mmb_size in sample %u", i);
     }
 
-    return true;
+    return ZCL_OK;
 }
 
-bool snapsync_write_fc_challenge(const struct snapshot_sync_service *svc,
+struct zcl_result snapsync_write_fc_challenge(const struct snapshot_sync_service *svc,
                                  struct byte_stream *s)
 {
     if (!svc || !s)
-        LOG_FAIL("snapshot_sync", "write_fc_challenge: svc=%p stream=%p", (void*)svc, (void*)s);
+        return ZCL_ERR(-1, "write_fc_challenge: svc=%p stream=%p", (void*)svc, (void*)s);
 
     stream_write_bytes(s, svc->fc_challenge.seed, 32);
     stream_write_u64_le(s, svc->fc_challenge.chain_length);
     stream_write_bytes(s, svc->fc_challenge.mmb_root, 32);
-    return true;
+    return ZCL_OK;
 }
 
-bool snapsync_build_fc_response(struct fc_response *resp,
+struct zcl_result snapsync_build_fc_response(struct fc_response *resp,
                                 const struct fc_challenge *challenge,
                                 const struct active_chain *chain_active,
                                 const struct mmb_leaf_store *leaf_store)
@@ -324,14 +326,14 @@ bool snapsync_build_fc_response(struct fc_response *resp,
 
     if (!resp || !challenge || !chain_active || !leaf_store ||
         !leaf_store->open || leaf_store->num_leaves == 0) {
-        LOG_FAIL("snapshot_sync", "build_fc_response: invalid args resp=%p challenge=%p chain=%p leaves=%llu",
+        return ZCL_ERR(-1, "build_fc_response: invalid args resp=%p challenge=%p chain=%p leaves=%llu",
                  (void*)resp, (void*)challenge, (void*)chain_active,
                  leaf_store ? (unsigned long long)leaf_store->num_leaves : 0ULL);
     }
 
     all_hashes = mmb_leaf_store_all(leaf_store);
     if (!all_hashes)
-        LOG_FAIL("snapshot_sync", "build_fc_response: mmb_leaf_store_all returned NULL");
+        return ZCL_ERR(-2, "build_fc_response: mmb_leaf_store_all returned NULL");
 
     memset(resp, 0, sizeof(*resp));
     fc_generate_indices(challenge->seed, challenge->chain_length,
@@ -356,7 +358,7 @@ bool snapsync_build_fc_response(struct fc_response *resp,
         if (!have_leaf && legacy_chain_rpc_get_mmb_leaf(h, &sample->leaf))
             have_leaf = true;
         if (!have_leaf) {
-            LOG_FAIL("snapshot_sync",
+            return ZCL_ERR(-3,
                      "build_fc_response: no block metadata at height %d for sample %u",
                      h, i);
         }
@@ -364,7 +366,7 @@ bool snapsync_build_fc_response(struct fc_response *resp,
         if (prove_len > leaf_store->num_leaves)
             prove_len = leaf_store->num_leaves;
         if (!mmb_prove(all_hashes, prove_len, (uint64_t)h, &sample->proof))
-            LOG_FAIL("snapshot_sync", "build_fc_response: mmb_prove failed for height %d sample %u", h, i);
+            return ZCL_ERR(-4, "build_fc_response: mmb_prove failed for height %d sample %u", h, i);
 
         uint8_t sample_leaf_hash[32];
         mmb_hash_leaf(&sample->leaf, sample_leaf_hash);
@@ -377,12 +379,12 @@ bool snapsync_build_fc_response(struct fc_response *resp,
                 if (memcmp(oracle_leaf_hash, sample->proof.leaf_hash, 32) == 0) {
                     sample->leaf = oracle_leaf;
                 } else {
-                    LOG_FAIL("snapshot_sync",
+                    return ZCL_ERR(-5,
                              "build_fc_response: leaf/proof hash mismatch at height %d sample %u",
                              h, i);
                 }
             } else {
-                LOG_FAIL("snapshot_sync",
+                return ZCL_ERR(-6,
                          "build_fc_response: cannot reconcile leaf/proof hash mismatch at height %d sample %u",
                          h, i);
             }
@@ -391,18 +393,18 @@ bool snapsync_build_fc_response(struct fc_response *resp,
 
     for (uint32_t i = 0; i < count; i++) {
         if (!mmb_verify(&resp->samples[i].proof, challenge->mmb_root))
-            LOG_FAIL("snapshot_sync", "build_fc_response: mmb_verify failed for sample %u", i);
+            return ZCL_ERR(-7, "build_fc_response: mmb_verify failed for sample %u", i);
     }
 
-    return true;
+    return ZCL_OK;
 }
 
-bool snapsync_write_fc_response(struct byte_stream *s,
+struct zcl_result snapsync_write_fc_response(struct byte_stream *s,
                                 const struct fc_response *resp)
 {
     if (!s || !resp || resp->num_samples == 0 ||
         resp->num_samples > FC_MAX_SAMPLES) {
-        LOG_FAIL("snapshot_sync", "write_fc_response: invalid args s=%p resp=%p samples=%u",
+        return ZCL_ERR(-1, "write_fc_response: invalid args s=%p resp=%p samples=%u",
                  (void*)s, (void*)resp, resp ? resp->num_samples : 0);
     }
 
@@ -426,7 +428,7 @@ bool snapsync_write_fc_response(struct byte_stream *s,
         stream_write_u64_le(s, sample->proof.mmb_size);
     }
 
-    return true;
+    return ZCL_OK;
 }
 
 /* ── FlyClient verification (Phase 1) ────────────────────── */
@@ -434,7 +436,7 @@ bool snapsync_write_fc_response(struct byte_stream *s,
 /* Action: verify FlyClient proofs — Phase 1 chain verification.
  * Checks 20 random block samples with MMB inclusion proofs
  * and PoW target verification (block_hash < target(nBits)). */
-bool snapsync_verify_flyclient(struct snapshot_sync_service *svc,
+struct zcl_result snapsync_verify_flyclient(struct snapshot_sync_service *svc,
                                const struct fc_response *resp)
 {
     enum snapshot_sync_state state = SNAPSYNC_IDLE;
@@ -442,7 +444,7 @@ bool snapsync_verify_flyclient(struct snapshot_sync_service *svc,
     struct fc_challenge challenge;
 
     if (!svc || !resp)
-        LOG_FAIL("snapshot_sync", "verify_flyclient: svc=%p resp=%p", (void*)svc, (void*)resp);
+        return ZCL_ERR(-1, "verify_flyclient: svc=%p resp=%p", (void*)svc, (void*)resp);
 
     snapsync_service_lock_internal();
     state = svc->state;
@@ -452,7 +454,8 @@ bool snapsync_verify_flyclient(struct snapshot_sync_service *svc,
     if (state != SNAPSYNC_NEGOTIATING) {
         printf("[snapsync] FlyClient: wrong state %s\n",
                snapsync_state_name(state));
-        return false;  /* already logged */
+        return ZCL_ERR(-2, "verify_flyclient: wrong state %s",
+                       snapsync_state_name(state));
     }
 
     /* Verify all samples against the challenge */
@@ -460,7 +463,8 @@ bool snapsync_verify_flyclient(struct snapshot_sync_service *svc,
         printf("[snapsync] FlyClient: MMB proof verification FAILED\n");
         event_emitf(EV_FC_CHAIN_VERIFIED, serving_peer_id,
                     "flyclient=FAILED samples=%u", resp->num_samples);
-        return false;
+        return ZCL_ERR(-3, "verify_flyclient: MMB proof verification failed samples=%u",
+                       resp->num_samples);
     }
 
     uint8_t offered_chain_work[32];
@@ -471,7 +475,7 @@ bool snapsync_verify_flyclient(struct snapshot_sync_service *svc,
         printf("[snapsync] FlyClient: missing offered chainwork\n");
         event_emitf(EV_FC_CHAIN_VERIFIED, serving_peer_id,
                     "flyclient=FAILED chainwork=missing");
-        return false;
+        return ZCL_ERR(-4, "verify_flyclient: missing offered chainwork");
     }
 
     /* Additional check: verify PoW targets for each sample.
@@ -481,7 +485,7 @@ bool snapsync_verify_flyclient(struct snapshot_sync_service *svc,
     const struct consensus_params *consensus = cp ? &cp->consensus : NULL;
     if (!consensus) {
         printf("[snapsync] FlyClient: no chain params for PoW check\n");
-        return false;
+        return ZCL_ERR(-5, "verify_flyclient: no chain params for PoW check");
     }
     uint32_t pow_failures = 0;
     uint32_t work_failures = 0;
@@ -509,7 +513,8 @@ bool snapsync_verify_flyclient(struct snapshot_sync_service *svc,
         event_emitf(EV_FC_CHAIN_VERIFIED, serving_peer_id,
                     "flyclient=FAILED pow_failures=%u/%u",
                     pow_failures, resp->num_samples);
-        return false;
+        return ZCL_ERR(-6, "verify_flyclient: %u/%u PoW checks failed",
+                       pow_failures, resp->num_samples);
     }
     if (work_failures > 0) {
         printf("[snapsync] FlyClient: %u/%u chainwork checks FAILED\n",
@@ -517,14 +522,19 @@ bool snapsync_verify_flyclient(struct snapshot_sync_service *svc,
         event_emitf(EV_FC_CHAIN_VERIFIED, serving_peer_id,
                     "flyclient=FAILED work_failures=%u/%u",
                     work_failures, resp->num_samples);
-        return false;
+        return ZCL_ERR(-7, "verify_flyclient: %u/%u chainwork checks failed",
+                       work_failures, resp->num_samples);
     }
 
     snapsync_service_lock_internal();
     svc->fc_verified = false;
     snapsync_service_unlock_internal();
-    if (!snapsync_begin_receive(svc))
-        LOG_FAIL("snapshot_sync", "verify_flyclient: begin_receive failed after FlyClient pass");
+    {
+        struct zcl_result br = snapsync_begin_receive(svc);
+        if (!br.ok)
+            return ZCL_ERR(-8, "verify_flyclient: begin_receive failed: %s",
+                           br.message);
+    }
 
     snapsync_service_lock_internal();
     svc->fc_verified = true;
@@ -536,5 +546,5 @@ bool snapsync_verify_flyclient(struct snapshot_sync_service *svc,
                 resp->num_samples,
                 (unsigned long long)challenge.chain_length);
 
-    return true;
+    return ZCL_OK;
 }

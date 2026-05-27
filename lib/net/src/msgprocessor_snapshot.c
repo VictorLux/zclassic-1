@@ -737,7 +737,7 @@ bool mp_handle_zcl23_sync(struct msg_processor *mp,
     if (strcmp(cmd, MSG_SNAPSHOT_OFFER) == 0) {
             /* ── Route: zsnapshot → snapsync_handle_offer ──────── */
             struct snapshot_offer_params params;
-            if (snapsync_parse_offer_params(&params, s)) {
+            if (snapsync_parse_offer_params(&params, s).ok) {
                 struct snapsync_status snap_status = {0};
                 params.peer_id = (uint32_t)node->id;
                 params.our_height = active_chain_height(
@@ -811,7 +811,7 @@ bool mp_handle_zcl23_sync(struct msg_processor *mp,
                                 stream_init(&rq, 52);
                                 if (snapsync_write_snapshot_request(
                                         &rq, params.our_height,
-                                        node->addr.svc.addr.ip)) {
+                                        node->addr.svc.addr.ip).ok) {
                                     p2p_node_begin_message(node, MSG_SNAPSHOT_REQ,
                                         mp->params->pchMessageStart);
                                     p2p_node_write_message_data(node, rq.data, rq.size);
@@ -964,7 +964,7 @@ bool mp_handle_zcl23_sync(struct msg_processor *mp,
             } else {
                 struct snapsync_end_result end_result = {0};
                 bool verified = snapsync_handle_end(svc,
-                                                    (uint32_t)node->id);
+                                                    (uint32_t)node->id).ok;
                 snapsync_build_end_result(&end_result, verified);
                 if (end_result.verified) {
                 if (end_result.should_update_peer_state) {
@@ -1051,7 +1051,7 @@ bool mp_handle_zcl23_sync(struct msg_processor *mp,
                         if (snapsync_build_fc_response(
                                 &resp, &challenge,
                                 &mp->main_state->chain_active,
-                                &g_mmb_leaf_store)) {
+                                &g_mmb_leaf_store).ok) {
                             /* Send zfcproofs */
                             p2p_node_begin_message(node, MSG_FC_PROOFS,
                                 mp->params->pchMessageStart);
@@ -1074,7 +1074,7 @@ bool mp_handle_zcl23_sync(struct msg_processor *mp,
         } else if (strcmp(cmd, MSG_FC_PROOFS) == 0) {
             /* ── Route: zfcproofs → snapsync_verify_flyclient ──── */
             struct fc_response resp;
-            if (!snapsync_parse_fc_response(&resp, s)) {
+            if (!snapsync_parse_fc_response(&resp, s).ok) {
                 peer_misbehaving(mp->net_mgr, node, 20,
                     "truncated FlyClient proofs");
             } else {
@@ -1083,7 +1083,7 @@ bool mp_handle_zcl23_sync(struct msg_processor *mp,
                 if (svc) {
                     snapsync_build_verify_result(
                         &verify_result,
-                        snapsync_verify_flyclient(svc, &resp));
+                        snapsync_verify_flyclient(svc, &resp).ok);
                 }
                 if (verify_result.should_send &&
                     verify_result.action == SNAPSYNC_FOLLOWUP_SEND_SNAPSHOT_REQ) {
@@ -1093,7 +1093,7 @@ bool mp_handle_zcl23_sync(struct msg_processor *mp,
                     struct byte_stream rq;
                     stream_init(&rq, 52);
                     if (snapsync_write_snapshot_request(
-                            &rq, our_h, node->addr.svc.addr.ip)) {
+                            &rq, our_h, node->addr.svc.addr.ip).ok) {
                         p2p_node_begin_message(node, MSG_SNAPSHOT_REQ,
                             mp->params->pchMessageStart);
                         p2p_node_write_message_data(node, rq.data, rq.size);

@@ -20,6 +20,7 @@
 #include "services/snapshot_sync_service.h"
 #include "services/snapshot_manifest.h"
 #include "models/database.h"
+#include "util/result.h"
 
 #include <stdbool.h>
 #include <stdint.h>
@@ -80,24 +81,30 @@ void snapsync_params_from_manifest_internal(struct snapshot_offer_params *p,
                                             const struct snapshot_manifest *m);
 
 /* ── Staging helpers (snapshot_fetch.c) ────────────────────────── */
-bool snapsync_discard_staging_internal(struct node_db *ndb, const char *reason);
-bool snapsync_discard_staging_txn_internal(struct node_db *ndb,
+struct zcl_result snapsync_discard_staging_internal(struct node_db *ndb,
+                                                    const char *reason);
+struct zcl_result snapsync_discard_staging_txn_internal(struct node_db *ndb,
                                            const char *label,
                                            const char *reason);
-bool snapsync_set_staging_phase_internal(struct node_db *ndb, const char *phase);
+struct zcl_result snapsync_set_staging_phase_internal(struct node_db *ndb,
+                                                      const char *phase);
+/* db_service_write_fn callback — fixed bool(struct node_db*, void*) signature. */
 bool snapsync_discard_staging_write_internal(struct node_db *ndb, void *ctx);
 int64_t snapsync_staging_count_internal(struct node_db *ndb);
 void snapsync_hash_staging_internal(struct node_db *ndb, uint8_t out[32],
                                     uint64_t *utxo_count);
 
 /* ── Receive-mode helpers (snapshot_fetch.c) ───────────────────── */
+/* db_service_write_fn callback — fixed bool(struct node_db*, void*) signature. */
 bool snapsync_rollback_receive_write_internal(struct node_db *ndb, void *ctx);
-bool snapsync_exit_turbo_mode_internal(struct snapshot_sync_service *svc);
+struct zcl_result snapsync_exit_turbo_mode_internal(struct snapshot_sync_service *svc);
 
 /* ── Failure helpers (snapshot_verify.c) ───────────────────────── */
 void snapsync_mark_failed_internal(struct snapshot_sync_service *svc,
                                    const char *state_reason);
-bool snapsync_finalize_fail_internal(struct snapsync_finalize_ctx *finalize,
+/* Records the failure (event + state) and returns a non-ok result whose
+ * .code/.message carry `reason`. Always non-ok by construction. */
+struct zcl_result snapsync_finalize_fail_internal(struct snapsync_finalize_ctx *finalize,
                                      struct node_db *ndb,
                                      struct snapshot_sync_service *svc,
                                      uint32_t peer_id,
@@ -105,7 +112,7 @@ bool snapsync_finalize_fail_internal(struct snapsync_finalize_ctx *finalize,
                                      const char *state_reason);
 
 /* ── Stage promotion (snapshot_apply.c) ────────────────────────── */
-bool snapsync_stage_promote_active_internal(struct node_db *ndb,
+struct zcl_result snapsync_stage_promote_active_internal(struct node_db *ndb,
                                             const struct snapshot_sync_service *svc,
                                             const uint8_t local_root[32],
                                             uint64_t local_count,

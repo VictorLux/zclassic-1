@@ -1126,7 +1126,7 @@ static int test_cac_dump_populates_live_snapshot_source(void)
         memset(&runtime, 0, sizeof(runtime));
         snapsync_init(&svc, NULL);
         ASSERT(snapsync_accept_offer(&svc, 10000, 1234, root_hash,
-                                     root_hash, block_hash, 77));
+                                     root_hash, block_hash, 77).ok);
         runtime.snapshot_sync = &svc;
         app_runtime_set_current(&runtime);
 

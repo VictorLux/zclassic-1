@@ -108,11 +108,11 @@ int test_snapshot_failed_reset_condition(void)
         svc.state = SNAPSYNC_FAILED;
         svc.serving_peer_id = 23;
         ok = ok && !snapsync_accept_offer(&svc, 3000000, 1350000,
-                                          root, mmb, block, 24);
+                                          root, mmb, block, 24).ok;
         ok = ok && snapsync_check_failed_reset();
         ok = ok && svc.state == SNAPSYNC_IDLE;
         ok = ok && snapsync_accept_offer(&svc, 3000000, 1350000,
-                                         root, mmb, block, 24);
+                                         root, mmb, block, 24).ok;
         ok = ok && svc.state == SNAPSYNC_NEGOTIATING;
         ok = ok && svc.serving_peer_id == 24;
         SFR_CHECK("reset reopens snapshot offer path", ok);

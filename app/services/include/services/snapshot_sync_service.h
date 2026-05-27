@@ -27,6 +27,7 @@
 #include "config/runtime.h"
 #include "event/event.h"
 #include "net/flyclient.h"
+#include "util/result.h"
 #include <stdint.h>
 #include <stdbool.h>
 
@@ -237,26 +238,26 @@ struct snapshot_offer_params {
 enum snapsync_offer_result snapsync_handle_offer(
     struct snapshot_sync_service *svc,
     const struct snapshot_offer_params *params);
-bool snapsync_request_recovery(struct snapshot_sync_service *svc,
+struct zcl_result snapsync_request_recovery(struct snapshot_sync_service *svc,
                                int32_t target_height,
                                const struct snapshot_offer_params *manifest);
-bool snapsync_build_local_recovery_manifest(struct node_db *ndb,
+struct zcl_result snapsync_build_local_recovery_manifest(struct node_db *ndb,
                                             struct snapshot_offer_params *out,
                                             uint32_t peer_id);
-bool snapsync_parse_offer_params(struct snapshot_offer_params *params,
+struct zcl_result snapsync_parse_offer_params(struct snapshot_offer_params *params,
                                  struct byte_stream *s);
-bool snapsync_parse_fc_response(struct fc_response *resp,
+struct zcl_result snapsync_parse_fc_response(struct fc_response *resp,
                                 struct byte_stream *s);
-bool snapsync_write_fc_challenge(const struct snapshot_sync_service *svc,
+struct zcl_result snapsync_write_fc_challenge(const struct snapshot_sync_service *svc,
                                  struct byte_stream *s);
-bool snapsync_write_snapshot_request(struct byte_stream *s,
+struct zcl_result snapsync_write_snapshot_request(struct byte_stream *s,
                                      int32_t our_height,
                                      const uint8_t peer_ip[16]);
-bool snapsync_build_fc_response(struct fc_response *resp,
+struct zcl_result snapsync_build_fc_response(struct fc_response *resp,
                                 const struct fc_challenge *challenge,
                                 const struct active_chain *chain_active,
                                 const struct mmb_leaf_store *leaf_store);
-bool snapsync_write_fc_response(struct byte_stream *s,
+struct zcl_result snapsync_write_fc_response(struct byte_stream *s,
                                 const struct fc_response *resp);
 int snapsync_activate_verified_tip(const struct snapshot_sync_service *svc,
                                    struct main_state *ms);
@@ -278,8 +279,8 @@ bool snapsync_prepare_serve_step(struct snapsync_serve_step *step,
 /* Action: verify FlyClient proofs from peer.
  * Checks 20 random block samples with MMB inclusion proofs
  * and PoW target verification. If ALL pass, sets fc_verified=true.
- * Router should only send zsnapreq after this returns true. */
-bool snapsync_verify_flyclient(struct snapshot_sync_service *svc,
+ * Router should only send zsnapreq after this returns ok. */
+struct zcl_result snapsync_verify_flyclient(struct snapshot_sync_service *svc,
                                const struct fc_response *resp);
 
 /* Action: apply a chunk of UTXO data from wire.
@@ -290,8 +291,8 @@ int snapsync_apply_chunk(struct snapshot_sync_service *svc,
 
 /* Action: handle snapshot end — finalize + SHA3 verify.
  * Only accepts from the serving peer.
- * Returns true if snapshot verified successfully. */
-bool snapsync_handle_end(struct snapshot_sync_service *svc,
+ * Returns ok if snapshot verified successfully. */
+struct zcl_result snapsync_handle_end(struct snapshot_sync_service *svc,
                          uint32_t peer_id);
 
 /* Result codes for serve request validation */
@@ -311,16 +312,16 @@ enum snapsync_serve_result snapsync_validate_serve_request(
 
 /* ── Low-level (used internally / by handle_offer) ─────────────── */
 
-bool snapsync_accept_offer(struct snapshot_sync_service *svc,
+struct zcl_result snapsync_accept_offer(struct snapshot_sync_service *svc,
                            int32_t height, uint64_t num_utxos,
                            const uint8_t utxo_root[32],
                            const uint8_t mmb_root[32],
                            const uint8_t block_hash[32],
                            uint32_t peer_id);
 
-bool snapsync_begin_receive(struct snapshot_sync_service *svc);
+struct zcl_result snapsync_begin_receive(struct snapshot_sync_service *svc);
 
-bool snapsync_finalize(struct snapshot_sync_service *svc);
+struct zcl_result snapsync_finalize(struct snapshot_sync_service *svc);
 
 /* Query progress */
 void snapsync_get_progress(const struct snapshot_sync_service *svc,
@@ -332,7 +333,7 @@ enum snapsync_followup_action snapsync_offer_followup_action(
     const struct snapshot_sync_service *svc);
 enum snapsync_followup_action snapsync_verify_followup_action(
     bool verified);
-bool snapsync_build_request_pow(const uint8_t peer_ip[16],
+struct zcl_result snapsync_build_request_pow(const uint8_t peer_ip[16],
                                 struct fast_sync_pow *pow);
 
 /* True if snapshot sync is in any active state (not IDLE/COMPLETE/FAILED).
