@@ -42,8 +42,17 @@ bool diag_chain_evidence_dump_state_json(struct json_value *out,
 /* cutover_controller.c */
 bool diag_rpc_cutovermode(const struct json_value *params, bool help,
                           struct json_value *result);
+/* cutover_controller_preflight.c — split out of cutover_controller.c to
+ * keep each file under the app/ file-size ceiling. */
 bool diag_rpc_cutoverpreflight(const struct json_value *params, bool help,
                                struct json_value *result);
+
+/* Canary-state snapshot, shared between cutover_controller.c (the
+ * cutovermode RPC) and cutover_controller_preflight.c. Defined in
+ * cutover_controller.c. `out` is set to an object; `health` may be NULL. */
+struct node_health_snapshot;
+void cutover_push_canary_state(struct json_value *out,
+                               const struct node_health_snapshot *health);
 
 /* nodelog_controller.c */
 bool diag_rpc_getnodelog(const struct json_value *params, bool help,

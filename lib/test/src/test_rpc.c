@@ -6,6 +6,7 @@
 #include "rpc/legacy_rpc_client.h"
 #include "jobs/header_admit_stage.h"
 #include "jobs/validate_headers_stage.h"
+#include "adapters/inbound/shadow_conservation.h"
 #include <openssl/err.h>
 #include <openssl/pem.h>
 #include <openssl/ssl.h>
@@ -327,6 +328,9 @@ int test_rpc(void) {
 
         header_admit_set_mode(HEADER_ADMIT_MODE_SHADOW);
         validate_headers_set_mode(VALIDATE_HEADERS_MODE_SHADOW);
+        /* Clean conservation ledger so this shape-check exercises the
+         * conserved (ok) path; the refusal path is its own block below. */
+        shadow_conservation_reset();
 
         struct json_value params;
         struct json_value result;
@@ -340,12 +344,13 @@ int test_rpc(void) {
         const struct json_value *ca = json_get(&result, "chain_advance");
         const struct json_value *ce = json_get(&result, "chain_evidence");
         const struct json_value *guard = json_get(&result, "guard");
+        const struct json_value *cons = json_get(&result, "conservation");
         const struct json_value *state = json_get(&result, "cutover_state");
         const struct json_value *diff = json_get(&result, "header_admit_diff");
         const struct json_value *vh = json_get(&result, "validate_headers");
         const struct json_value *blockers = json_get(&result, "blockers");
-        ok = ok && modes && live && ca && ce && guard && state && diff && vh &&
-             blockers;
+        ok = ok && modes && live && ca && ce && guard && cons && state &&
+             diff && vh && blockers;
         ok = ok && strcmp(json_get_str(json_get(modes, "header_admit")),
                           "shadow") == 0;
         ok = ok && strcmp(json_get_str(json_get(modes, "validate_headers")),
@@ -394,6 +399,12 @@ int test_rpc(void) {
         ok = ok && json_get(guard, "witness_window_secs") != NULL;
         ok = ok && json_get(guard, "max_poll_secs") != NULL;
         ok = ok && json_get(guard, "max_witness_window_secs") != NULL;
+        ok = ok && json_get(cons, "ok") != NULL;
+        ok = ok && json_get(cons, "fed") != NULL;
+        ok = ok && json_get(cons, "diffed") != NULL;
+        ok = ok && json_get(cons, "skipped") != NULL;
+        /* Clean ledger -> conserved -> ok=true. */
+        ok = ok && json_get_bool(json_get(cons, "ok"));
         ok = ok && json_get(state, "has_change") != NULL;
         ok = ok && json_get(state, "authoritative_active") != NULL;
         ok = ok && json_get(state, "canary_status") != NULL;
@@ -444,6 +455,73 @@ int test_rpc(void) {
         json_free(&v);
         json_free(&params);
         json_free(&result);
+
+        if (ok) printf("OK\n"); else { printf("FAIL\n"); failures++; }
+    }
+
+    /* Conservation gate: a shadow pipeline that DROPPED a block (fed !=
+     * diffed) must make the cutover preflight REFUSE the flip — ready is
+     * FALSE and a typed blocker names the drop (no silent false). This is
+     * the load-bearing safety addition: authority must never flip onto a
+     * pipeline that has been silently dropping blocks. */
+    printf("cutoverpreflight refuses flip when shadow pipeline drops a "
+           "block... ");
+    {
+        struct rpc_table t;
+        rpc_table_init(&t);
+        register_diagnostics_rpc_commands(&t);
+        const struct rpc_command *cmd = rpc_table_find(&t, "cutoverpreflight");
+
+        /* Forge a silent drop: 5 fed, only 4 diffed (the negative control
+         * from test_shadow_conservation, via the public test seam). */
+        shadow_conservation_reset();
+        shadow_conservation_record_fed(5);
+        shadow_conservation_record_diffed(4);
+
+        struct json_value params;
+        struct json_value result;
+        json_init(&params);
+        json_init(&result);
+        json_set_array(&params);
+
+        bool ok = cmd && cmd->actor(&params, false, &result);
+        const struct json_value *cons = json_get(&result, "conservation");
+        const struct json_value *ready = json_get(&result, "ready");
+        const struct json_value *blockers = json_get(&result, "blockers");
+        ok = ok && cons && ready && blockers;
+
+        /* conservation object reflects the drop honestly. */
+        ok = ok && json_get_bool(json_get(cons, "ok")) == false;
+        ok = ok && json_get_int(json_get(cons, "fed")) == 5;
+        ok = ok && json_get_int(json_get(cons, "diffed")) == 4;
+
+        /* The whole gate is REFUSED — ready can only be made harder, so it
+         * is false regardless of the other gates' state in this fixture. */
+        ok = ok && json_get_bool(ready) == false;
+
+        /* A typed blocker names the drop and its counts (self-explaining
+         * refusal). Scan the blockers array for the conservation reason. */
+        bool found_blocker = false;
+        if (blockers && blockers->type == JSON_ARR) {
+            size_t n = json_size(blockers);
+            for (size_t i = 0; i < n; i++) {
+                const struct json_value *b = json_at(blockers, i);
+                const char *s = b ? json_get_str(b) : NULL;
+                if (s && strstr(s, "shadow_pipeline_dropped_blocks") &&
+                    strstr(s, "fed=5") && strstr(s, "diffed=4")) {
+                    found_blocker = true;
+                    break;
+                }
+            }
+        }
+        ok = ok && found_blocker;
+
+        json_free(&params);
+        json_free(&result);
+
+        /* Restore a clean ledger so later tests sharing the process do not
+         * inherit the forged drop. */
+        shadow_conservation_reset();
 
         if (ok) printf("OK\n"); else { printf("FAIL\n"); failures++; }
     }
