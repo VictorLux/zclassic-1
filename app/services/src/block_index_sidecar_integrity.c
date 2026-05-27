@@ -12,6 +12,7 @@
 #include "event/event.h"
 #include "util/ar_step_readonly.h"
 #include "util/log_macros.h"
+#include "util/result.h"
 #include "util/safe_alloc.h"
 
 #include <errno.h>
@@ -77,9 +78,9 @@ static bool bii_hash_body(const char *body_path,
     return true;
 }
 
-bool bii_write_sidecar(const char *datadir)
+struct zcl_result bii_write_sidecar(const char *datadir)
 {
-    if (!datadir) return false;
+    if (!datadir) return ZCL_ERR(-1, "bii_write_sidecar: null datadir");
 
     char body_path[1024];
     char side_path[1024];
@@ -90,7 +91,7 @@ bool bii_write_sidecar(const char *datadir)
 
     struct stat st;
     if (stat(body_path, &st) != 0)
-        LOG_FAIL("bii", "stat %s: %s", body_path, strerror(errno));
+        return ZCL_ERR(-2, "stat %s: %s", body_path, strerror(errno));
 
     struct bii_sidecar_header hdr;
     memset(&hdr, 0, sizeof(hdr));
@@ -100,26 +101,26 @@ bool bii_write_sidecar(const char *datadir)
 
     uint64_t hashed_size = 0;
     if (!bii_hash_body(body_path, hdr.body_sha3, &hashed_size))
-        LOG_FAIL("bii", "hash body failed");
+        return ZCL_ERR(-3, "hash body failed");
     /* stat size and streamed size must agree — disagreement means
      * something is truncating the file concurrently, which is a
      * bigger problem than this function can solve. */
     if (hashed_size != hdr.body_size) {
-        LOG_WARN("bii_write_sidecar", "bii_write_sidecar: size drift stat=%llu hashed=%llu", (unsigned long long)hdr.body_size, (unsigned long long)hashed_size);
-        return false;
+        return ZCL_ERR(-4,
+            "bii_write_sidecar: size drift stat=%llu hashed=%llu",
+            (unsigned long long)hdr.body_size,
+            (unsigned long long)hashed_size);
     }
 
     FILE *f = fopen(tmp_path, "wb");
     if (!f) {
-        fprintf(stderr, "bii_write_sidecar: fopen %s: %s\n",
-                tmp_path, strerror(errno));
-        return false;
+        return ZCL_ERR(-5, "bii_write_sidecar: fopen %s: %s",
+                       tmp_path, strerror(errno));
     }
     if (fwrite(&hdr, sizeof(hdr), 1, f) != 1) {
-        fprintf(stderr, "bii_write_sidecar: fwrite failed\n");
         fclose(f);
         unlink(tmp_path);
-        return false;
+        return ZCL_ERR(-6, "bii_write_sidecar: fwrite failed");
     }
     fflush(f);
     int fd = fileno(f);
@@ -127,12 +128,13 @@ bool bii_write_sidecar(const char *datadir)
     fclose(f);
 
     if (rename(tmp_path, side_path) != 0) {
-        fprintf(stderr, "bii_write_sidecar: rename %s -> %s: %s\n",
-                tmp_path, side_path, strerror(errno));
+        struct zcl_result r = ZCL_ERR(-7,
+            "bii_write_sidecar: rename %s -> %s: %s",
+            tmp_path, side_path, strerror(errno));
         unlink(tmp_path);
-        return false;
+        return r;
     }
-    return true;
+    return ZCL_OK;
 }
 
 static enum bii_verdict bii_read_sidecar(const char *side_path,

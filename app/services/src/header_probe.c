@@ -28,6 +28,7 @@
 #include "rpc/legacy_header_client.h"
 #include "rpc/legacy_rpc_client.h"
 #include "util/log_macros.h"
+#include "util/result.h"
 #include "util/safe_alloc.h"
 
 #include <pthread.h>
@@ -89,19 +90,18 @@ static void hp_publish_header_admit(const struct block_index *pindex)
 
 /* ── Public pull-range ─────────────────────────────────────────── */
 
-bool header_probe_pull_range(int start_height, int max_headers,
-                             int *out_added)
+struct zcl_result header_probe_pull_range(int start_height, int max_headers,
+                                          int *out_added)
 {
     if (out_added) *out_added = 0;
     if (start_height < 0) {
-        LOG_FAIL("header_probe", "pull_range: bad start_height=%d",
-                 start_height);
+        return ZCL_ERR(-1, "pull_range: bad start_height=%d", start_height);
     }
 
     pthread_mutex_lock(&g_hp.lock);
     if (!g_hp.initialized || !g_hp.ms || !g_hp.params) {
         pthread_mutex_unlock(&g_hp.lock);
-        LOG_FAIL("header_probe", "pull_range: not initialized");
+        return ZCL_ERR(-2, "pull_range: not initialized");
     }
     char host[64], user[64], pass[128];
     int port;
@@ -126,9 +126,9 @@ bool header_probe_pull_range(int start_height, int max_headers,
     if (!legacy_header_rpc_fetch_remote_tip(host, port, user, pass,
                                             &remote_tip, err, sizeof(err))) {
         atomic_fetch_add(&g_hp.rpc_errors, 1);
-        /* Not a fatal logic failure — return true with 0 added so the
+        /* Not a fatal logic failure — return OK with 0 added so the
          * MCP/test callers can distinguish "RPC unreachable" via state. */
-        return true;
+        return ZCL_OK;
     }
     atomic_store(&g_hp.last_remote_height, remote_tip);
 
@@ -143,7 +143,7 @@ bool header_probe_pull_range(int start_height, int max_headers,
 
     int end_height = start_height + max_headers - 1;
     if (end_height > remote_tip) end_height = remote_tip;
-    if (end_height < start_height) return true;  /* nothing to do */
+    if (end_height < start_height) return ZCL_OK;  /* nothing to do */
 
     int added = 0;
     int h = start_height;
@@ -154,7 +154,7 @@ bool header_probe_pull_range(int start_height, int max_headers,
         zcl_malloc(sizeof(*hbuf) * LEGACY_HEADER_RPC_BATCH_MAX,
                    "hp_pullrange_hbuf");
     if (!hbuf) {
-        LOG_FAIL("header_probe", "pull_range: oom hbuf");
+        return ZCL_ERR(-3, "pull_range: oom hbuf");
     }
 
     while (h <= end_height) {
@@ -224,7 +224,7 @@ bool header_probe_pull_range(int start_height, int max_headers,
     free(hbuf);
 
     if (out_added) *out_added = added;
-    return true;
+    return ZCL_OK;
 }
 
 /* ── Poll tick body used by the supervised header_probe_poll Job ── */
@@ -268,14 +268,14 @@ void header_probe_tick_once(void)
     if (remote_tip <= local_tip + lag_thresh) return;  /* under-lag */
 
     int added = 0;
-    (void)header_probe_pull_range(local_tip + 1, batch, &added);
+    (void)header_probe_pull_range(local_tip + 1, batch, &added);  /* result ignored — RPC errors surface via state counters */
 }
 
 /* ── init ──────────────────────────────────────────────────────── */
 
-bool header_probe_init(const struct header_probe_config *cfg,
-                       struct main_state *ms,
-                       const struct chain_params *params)
+struct zcl_result header_probe_init(const struct header_probe_config *cfg,
+                                    struct main_state *ms,
+                                    const struct chain_params *params)
 {
     pthread_mutex_lock(&g_hp.lock);
 
@@ -316,14 +316,14 @@ bool header_probe_init(const struct header_probe_config *cfg,
                 g_hp.rpc_port = port_from_conf;
         } else if (need_user || need_pass) {
             pthread_mutex_unlock(&g_hp.lock);
-            LOG_FAIL("header_probe",
-                     "no RPC credentials: pass via config or ~/.zclassic/zclassic.conf");
+            return ZCL_ERR(-1,
+                "no RPC credentials: pass via config or ~/.zclassic/zclassic.conf");
         }
     }
 
     g_hp.initialized = true;
     pthread_mutex_unlock(&g_hp.lock);
-    return true;
+    return ZCL_OK;
 }
 
 void header_probe_reset_for_test(void)

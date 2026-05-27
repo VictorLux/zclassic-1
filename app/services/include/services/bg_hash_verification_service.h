@@ -22,6 +22,8 @@
 #include <stdatomic.h>
 #include <pthread.h>
 
+#include "util/result.h"
+
 struct main_state;
 struct node_db;
 struct chain_params;
@@ -59,7 +61,7 @@ void bg_hash_verify_init(struct bg_hash_verification_service *svc,
                          const char *datadir,
                          const struct chain_params *params);
 
-bool bg_hash_verify_start(struct bg_hash_verification_service *svc);
+struct zcl_result bg_hash_verify_start(struct bg_hash_verification_service *svc);
 void bg_hash_verify_stop(struct bg_hash_verification_service *svc);
 
 struct bg_hash_verify_progress bg_hash_verify_get_progress(

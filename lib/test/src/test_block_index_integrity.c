@@ -98,7 +98,7 @@ static int t_happy_path(void)
 
     const char body[] = "ZCLI" "\x00\x00\x00\x00" "block_index_body_placeholder_payload";
     bool body_ok = bii_write_body(dir, body, sizeof(body) - 1);
-    bool side_ok = bii_write_sidecar(dir);
+    bool side_ok = bii_write_sidecar(dir).ok;
     bool sidecar_present = bii_sidecar_exists(dir);
 
     char err[256];
@@ -158,7 +158,7 @@ static int t_sidecar_stale(void)
 
     const char body1[] = "original-body-bytes";
     bii_write_body(dir, body1, sizeof(body1) - 1);
-    bii_write_sidecar(dir);
+    (void)bii_write_sidecar(dir);
 
     /* Grow the body; sidecar's body_size is now stale. */
     const char body2[] = "original-body-bytes-EXTRA-EXTRA";
@@ -183,7 +183,7 @@ static int t_hash_mismatch(void)
 
     const char body1[] = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
     bii_write_body(dir, body1, sizeof(body1) - 1);
-    bii_write_sidecar(dir);
+    (void)bii_write_sidecar(dir);
 
     /* Same length, different bytes → size check passes but hash
      * check fires. */
@@ -209,7 +209,7 @@ static int t_sidecar_bad_magic(void)
 
     const char body[] = "body-for-bad-magic";
     bii_write_body(dir, body, sizeof(body) - 1);
-    bii_write_sidecar(dir);
+    (void)bii_write_sidecar(dir);
 
     /* Corrupt the magic in-place. */
     char side_path[1024];
@@ -239,7 +239,7 @@ static int t_tip_missing_in_sql(void)
 
     const char body[] = "body-for-tip-check";
     bii_write_body(dir, body, sizeof(body) - 1);
-    bii_write_sidecar(dir);
+    (void)bii_write_sidecar(dir);
 
     /* Open an in-memory node_db (empty blocks table). Build a
      * declared_tip that points at a hash the DB doesn't know. */
@@ -273,7 +273,7 @@ static int t_tip_height_mismatch(void)
 
     const char body[] = "body-for-height-check";
     bii_write_body(dir, body, sizeof(body) - 1);
-    bii_write_sidecar(dir);
+    (void)bii_write_sidecar(dir);
 
     struct node_db ndb;
     memset(&ndb, 0, sizeof(ndb));
@@ -338,7 +338,7 @@ static int t_quarantine_renames(void)
 
     const char body[] = "to-be-quarantined";
     bii_write_body(dir, body, sizeof(body) - 1);
-    bii_write_sidecar(dir);
+    (void)bii_write_sidecar(dir);
 
     bii_quarantine_corrupt(dir, BII_HASH_MISMATCH);
 

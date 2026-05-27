@@ -326,10 +326,10 @@ int test_header_probe(void)
             .batch_size = 5,
             .lag_threshold = 1,
         };
-        HP_CHECK("init", header_probe_init(&cfg, &g_hp_ms, params));
+        HP_CHECK("init", header_probe_init(&cfg, &g_hp_ms, params).ok);
 
         int added = 0;
-        bool ok = header_probe_pull_range(1, 5, &added);
+        bool ok = header_probe_pull_range(1, 5, &added).ok;
         HP_CHECK("pull_range returns true", ok);
 
         int64_t calls_total = hp_dump_int("calls_total");
@@ -364,7 +364,7 @@ int test_header_probe(void)
             .lag_threshold = 1,
         };
         HP_CHECK("init (malformed)",
-                 header_probe_init(&cfg, &g_hp_ms, params));
+                 header_probe_init(&cfg, &g_hp_ms, params).ok);
 
         int added = 0;
         (void)header_probe_pull_range(1, 3, &added);
@@ -396,7 +396,7 @@ int test_header_probe(void)
             .lag_threshold = 1,
         };
         HP_CHECK("init (err)",
-                 header_probe_init(&cfg, &g_hp_ms, params));
+                 header_probe_init(&cfg, &g_hp_ms, params).ok);
 
         int added = 0;
         (void)header_probe_pull_range(1, 5, &added);
@@ -425,7 +425,7 @@ int test_header_probe(void)
             .lag_threshold = 100,
         };
         HP_CHECK("init (under-lag)",
-                 header_probe_init(&cfg, &g_hp_ms, params));
+                 header_probe_init(&cfg, &g_hp_ms, params).ok);
 
         header_probe_tick_once();
 
@@ -455,7 +455,7 @@ int test_header_probe(void)
             .lag_threshold = 1,
         };
         HP_CHECK("init (dump)",
-                 header_probe_init(&cfg, &g_hp_ms, params));
+                 header_probe_init(&cfg, &g_hp_ms, params).ok);
         int added = 0;
         (void)header_probe_pull_range(1, 5, &added);
 

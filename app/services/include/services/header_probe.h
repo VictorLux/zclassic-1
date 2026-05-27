@@ -33,6 +33,8 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+#include "util/result.h"
+
 struct main_state;
 struct chain_params;
 struct json_value;
@@ -47,11 +49,11 @@ struct header_probe_config {
 };
 
 /* Apply config + load credentials. Safe to call before start to
- * override defaults. Idempotent. Returns false only on a missing
- * zclassic.conf when no user/password were supplied. */
-bool header_probe_init(const struct header_probe_config *cfg,
-                       struct main_state *ms,
-                       const struct chain_params *params);
+ * override defaults. Idempotent. Returns a non-ok zcl_result only on a
+ * missing zclassic.conf when no user/password were supplied. */
+struct zcl_result header_probe_init(const struct header_probe_config *cfg,
+                                    struct main_state *ms,
+                                    const struct chain_params *params);
 
 /* One-shot poll tick. Cheap getblockcount discovers the remote tip,
  * compares it against the local header tip, and pulls a batch if the
@@ -67,10 +69,12 @@ void header_probe_tick_once(void);
  *   max_headers:  cap on number of headers to pull in this call
  *                 (clamped to [1, 5000]).
  *   out_added:    receives the number successfully accepted (NULL OK).
- * Returns true if at least one header was added or we're already at
- * tip; false if init() hasn't been called or arguments are bogus. */
-bool header_probe_pull_range(int start_height, int max_headers,
-                             int *out_added);
+ * Returns ZCL_OK if at least one header was added, we're already at
+ * tip, or the legacy node is unreachable (RPC errors are surfaced via
+ * state counters, not the return). Returns a non-ok zcl_result only if
+ * init() hasn't been called or arguments are bogus. */
+struct zcl_result header_probe_pull_range(int start_height, int max_headers,
+                                          int *out_added);
 
 /* zcl_state subsystem=header_probe dispatcher entry. See CLAUDE.md
  * "Adding state introspection". Reentrant-safe. */

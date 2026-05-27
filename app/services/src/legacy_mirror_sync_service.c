@@ -756,7 +756,7 @@ static bool lms_drain_headers_to_target(int from_height, int target_height,
             want = LMS_HEADER_DRAIN_BATCH;
 
         int added = 0;
-        if (!header_probe_pull_range(cursor, want, &added))
+        if (!header_probe_pull_range(cursor, want, &added).ok)
             break;
         if (added == 0) {
             if (++zero_streak >= 3) break;
@@ -900,7 +900,7 @@ bool legacy_mirror_sync_request_catchup(const char *reason)
         if (!legacy_body_pull_range_incremental(g_lms.ms, g_lms.coins_tip,
                                                 g_lms.params, g_lms.datadir,
                                                 local + 1, target,
-                                                &applied)) {
+                                                &applied).ok) {
             struct mirror_consensus_stats mcs;
             mirror_consensus_stats_snapshot(&mcs);
             if (strcmp(mcs.activation_blocker, "body-hash-mismatch") == 0)

@@ -18,6 +18,8 @@
 
 #include <stdbool.h>
 
+#include "util/result.h"
+
 struct main_state;
 struct coins_view_cache;
 struct chain_params;
@@ -39,7 +41,7 @@ struct chain_params;
  *    ~/.zclassic/zclassic.conf (or via legacy_rpc env).
  *  - our_datadir writable for blocks/blkNNNNN.dat appends.
  */
-bool legacy_body_pull_range_blocking(struct main_state *ms,
+struct zcl_result legacy_body_pull_range_blocking(struct main_state *ms,
                                      struct coins_view_cache *coins_tip,
                                      const struct chain_params *params,
                                      const char *our_datadir,
@@ -51,7 +53,7 @@ bool legacy_body_pull_range_blocking(struct main_state *ms,
  * for always-on mirror ticks: bounded caller-supplied ranges and no
  * expensive SHA3 window spotcheck on each small catch-up. The mirror
  * service performs active-chain hash anchors before/after the pull. */
-bool legacy_body_pull_range_incremental(struct main_state *ms,
+struct zcl_result legacy_body_pull_range_incremental(struct main_state *ms,
                                         struct coins_view_cache *coins_tip,
                                         const struct chain_params *params,
                                         const char *our_datadir,

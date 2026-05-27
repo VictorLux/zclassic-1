@@ -18,6 +18,7 @@
 #include <unistd.h>
 #include <time.h>
 #include "util/log_macros.h"
+#include "util/result.h"
 #include "util/thread_registry.h"
 
 #define SAVE_INTERVAL 1000
@@ -203,19 +204,20 @@ void bg_hash_verify_init(struct bg_hash_verification_service *svc,
     atomic_store(&svc->progress.state, BG_HASH_VERIFY_IDLE);
 }
 
-bool bg_hash_verify_start(struct bg_hash_verification_service *svc)
+struct zcl_result bg_hash_verify_start(struct bg_hash_verification_service *svc)
 {
     if (!svc || !svc->ms || svc->thread_started)
-        LOG_FAIL("bg_hash", "bg_hash_verify_start: null svc=%d ms=%d or already started=%d",
-                 !svc, svc ? !svc->ms : 1, svc ? svc->thread_started : 0);
+        return ZCL_ERR(-1,
+            "bg_hash_verify_start: null svc=%d ms=%d or already started=%d",
+            !svc, svc ? !svc->ms : 1, svc ? svc->thread_started : 0);
 
     if (thread_registry_spawn_ex("zcl_bg_hash", bg_hash_verify_thread, svc,
                                   &svc->thread) != 0)
-        LOG_FAIL("bg_hash", "thread_registry_spawn_ex failed");
+        return ZCL_ERR(-2, "thread_registry_spawn_ex failed");
 
     svc->thread_started = true;
     g_bg_hash_verify = svc;
-    return true;
+    return ZCL_OK;
 }
 
 void bg_hash_verify_stop(struct bg_hash_verification_service *svc)

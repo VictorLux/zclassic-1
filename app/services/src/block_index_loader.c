@@ -148,8 +148,11 @@ void save_block_index_flat(const char *datadir, struct main_state *ms)
         return;
     }
 
-    if (!bii_write_sidecar(datadir)) {
-        LOG_WARN("save_block_index_flat", "save_block_index_flat: sidecar write failed for %s", path);
+    {
+        struct zcl_result br = bii_write_sidecar(datadir);
+        if (!br.ok) {
+            LOG_WARN("save_block_index_flat", "save_block_index_flat: sidecar write failed for %s: %s", path, br.message);
+        }
     }
 
     int64_t elapsed = (int64_t)platform_time_wall_time_t() - t0;

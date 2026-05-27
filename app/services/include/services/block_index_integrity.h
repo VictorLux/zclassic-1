@@ -58,6 +58,7 @@
 
 #include "models/database.h"
 #include "chain/chain.h"
+#include "util/result.h"
 
 #include <stdbool.h>
 #include <stddef.h>
@@ -138,10 +139,11 @@ enum bii_verdict bii_verify(const char *datadir,
 
 /* ── Sidecar writer ───────────────────────────────────────────
  * Call AFTER save_block_index_flat() has completed. Hashes the
- * body and writes the 48-byte sidecar atomically. Returns false
- * on any I/O error; the caller may choose to leave the body in
- * place (a future bii_verify() will then return SIDECAR_MISSING). */
-bool bii_write_sidecar(const char *datadir);
+ * body and writes the 48-byte sidecar atomically. Returns a
+ * non-ok zcl_result on any I/O error; the caller may choose to
+ * leave the body in place (a future bii_verify() will then return
+ * SIDECAR_MISSING). */
+struct zcl_result bii_write_sidecar(const char *datadir);
 
 /* ── Quarantine ───────────────────────────────────────────────
  * Renames both block_index.bin and block_index.bin.sha3 to

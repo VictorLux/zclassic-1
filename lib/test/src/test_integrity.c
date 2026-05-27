@@ -347,7 +347,7 @@ static int test_integrity_bg_hash_verify_no_start_without_ms(void)
         struct bg_hash_verification_service svc;
         bg_hash_verify_init(&svc, NULL, NULL, "/tmp", NULL);
 
-        ASSERT(!bg_hash_verify_start(&svc));
+        ASSERT(!bg_hash_verify_start(&svc).ok);
         ASSERT(!svc.thread_started);
         PASS();
     } _test_next:;

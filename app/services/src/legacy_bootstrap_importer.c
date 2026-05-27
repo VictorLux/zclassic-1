@@ -20,6 +20,7 @@
 #include "storage/ldb_snapshot.h"
 #include "storage/progress_store.h"
 #include "util/log_macros.h"
+#include "util/result.h"
 #include "util/long_op.h"
 #include "util/safe_alloc.h"
 #include "util/thread_registry.h"
@@ -153,15 +154,10 @@ struct legacy_bootstrap_staged_snapshot_paths {
     char our_blocks_dir[1100];
 };
 
-bool legacy_bootstrap_spotcheck_sha3_windows(
-    struct blocks_mmap *bmr,
-    const struct legacy_block_loc *map,
-    size_t map_count,
-    int legacy_tip,
-    int k,
-    const char *log_prefix,
-    const char *debug_env,
-    bool dump_map_on_failure);
+struct zcl_result legacy_bootstrap_spotcheck_sha3_windows(
+    struct blocks_mmap *bmr, const struct legacy_block_loc *map,
+    size_t map_count, int legacy_tip, int k, const char *log_prefix,
+    const char *debug_env, bool dump_map_on_failure);
 
 static bool legacy_bootstrap_read_chainstate_best_block(
     const char *chainstate_dir,
@@ -1069,7 +1065,7 @@ static bool legacy_bootstrap_open_block_source(
 
     bool checked = legacy_bootstrap_spotcheck_sha3_windows(
         bmr, map, map_count, legacy_tip, cfg->spotcheck_k, cfg->log_prefix,
-        cfg->debug_env, cfg->dump_map_on_failure);
+        cfg->debug_env, cfg->dump_map_on_failure).ok;
     if (!checked) {
         if (cfg->require_spotcheck) {
             bmr_close(bmr);

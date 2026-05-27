@@ -383,10 +383,14 @@ static bool boot_bg_hash_verify_start(void *ctx)
         printf("[bg-hash] Disabled via -nobgvalidation\n");
         return true;
     }
-    if (bg_hash_verify_start(&svc->bg_hash_verify)) {
-        printf("[bg-hash] Started background hash verification\n");
-    } else {
-        printf("[bg-hash] Deferred - already complete or chain not ready\n");
+    {
+        struct zcl_result r = bg_hash_verify_start(&svc->bg_hash_verify);
+        if (r.ok) {
+            printf("[bg-hash] Started background hash verification\n");
+        } else {
+            printf("[bg-hash] Deferred - already complete or chain not ready (%s)\n",
+                   r.message);
+        }
     }
     return true;
 }
@@ -407,8 +411,14 @@ static bool boot_header_probe_start(void *ctx)
     /* Keep header_probe initialized/running for diagnostics and manual
      * use, but leave lockstep catch-up ownership with legacy_mirror. */
     cfg.lag_threshold = 1000000000;
-    if (!header_probe_init(&cfg, svc->state, svc->params))
-        return false;
+    {
+        struct zcl_result hpr = header_probe_init(&cfg, svc->state, svc->params);
+        if (!hpr.ok) {
+            fprintf(stderr,  // obs-ok:header-probe-init-fail
+                    "[header-probe] init failed: %s\n", hpr.message);
+            return false;
+        }
+    }
     /* Phase 3 dissolve PR-1: register the polling cadence as a
      * supervised Job in the network domain instead of using the
      * shared heartbeat ring. Same 30 s cadence, same RPC, same

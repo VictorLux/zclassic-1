@@ -31,6 +31,7 @@
 #include <sys/time.h>
 
 #include "util/log_macros.h"
+#include "util/result.h"
 #include "util/safe_alloc.h"
 
 /* ── Module state ───────────────────────────────────────────── */
@@ -177,18 +178,18 @@ static void cri_observer(enum event_type type, uint32_t peer_id,
 
 /* ── Lifecycle ──────────────────────────────────────────────── */
 
-bool consensus_reject_index_start(size_t capacity)
+struct zcl_result consensus_reject_index_start(size_t capacity)
 {
     pthread_mutex_lock(&g_cri.lock);
     if (g_cri.running) {
         pthread_mutex_unlock(&g_cri.lock);
-        return true;
+        return ZCL_OK;
     }
     size_t cap = capacity == 0 ? CRI_DEFAULT_CAPACITY : round_pow2(capacity);
     struct cri_entry *ring = zcl_calloc(cap, sizeof(*ring), "cri ring buffer");
     if (!ring) {
         pthread_mutex_unlock(&g_cri.lock);
-        LOG_FAIL("consensus_reject", "calloc failed for ring capacity %zu", cap);
+        return ZCL_ERR(-1, "calloc failed for ring capacity %zu", cap);
     }
     g_cri.ring       = ring;
     g_cri.capacity   = cap;
@@ -203,7 +204,7 @@ bool consensus_reject_index_start(size_t capacity)
      * re-enter us while we hold our own mutex. */
     event_observe(EV_CONSENSUS_REJECT_TX,    cri_observer, NULL);
     event_observe(EV_CONSENSUS_REJECT_BLOCK, cri_observer, NULL);
-    return true;
+    return ZCL_OK;
 }
 
 void consensus_reject_index_stop(void)

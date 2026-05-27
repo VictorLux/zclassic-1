@@ -4,6 +4,7 @@
 
 #include "services/legacy_bootstrap_importer.h"
 #include "util/log_macros.h"
+#include "util/result.h"
 
 #include "chain/sha3_windows.h"
 #include "core/random.h"
@@ -159,7 +160,7 @@ static bool legacy_bootstrap_verify_window_logged(
     return true;
 }
 
-bool legacy_bootstrap_spotcheck_sha3_windows(
+struct zcl_result legacy_bootstrap_spotcheck_sha3_windows(
     struct blocks_mmap *bmr,
     const struct legacy_block_loc *map,
     size_t map_count,
@@ -171,11 +172,11 @@ bool legacy_bootstrap_spotcheck_sha3_windows(
 {
     if (!bmr || !map || !log_prefix) {
         LOG_WARN("legacy_bootstrap", "[legacy_bootstrap] SHA3 spotcheck: bad args");
-        return false;
+        return ZCL_ERR(-1, "spotcheck: bad args");
     }
     if (g_sha3_windows_count == 0) {
         LOG_WARN("mirror", "[%s] spotcheck SKIPPED: no compile-time anchor table " "(g_sha3_windows_count=0)", log_prefix);
-        return false;
+        return ZCL_ERR(-2, "spotcheck: no compile-time anchor table");
     }
 
     size_t max_w = g_sha3_windows_count;
@@ -185,7 +186,9 @@ bool legacy_bootstrap_spotcheck_sha3_windows(
     }
     if (max_w == 0) {
         LOG_WARN("mirror", "[%s] spotcheck SKIPPED: legacy tip h=%d is below any " "complete anchor window", log_prefix, legacy_tip);
-        return false;
+        return ZCL_ERR(-3,
+            "spotcheck: legacy tip h=%d below any complete anchor window",
+            legacy_tip);
     }
     if ((size_t)k > max_w) k = (int)max_w;
 
@@ -201,13 +204,15 @@ bool legacy_bootstrap_spotcheck_sha3_windows(
             unsigned long long forced = strtoull(debug_window, &endp, 10);
             if (errno || !endp || *endp != '\0' || forced >= max_w) {
                 LOG_WARN("mirror", "[%s] invalid %s=%s (valid range: 0..%zu)", log_prefix, debug_env, debug_window, max_w - 1);
-                return false;
+                return ZCL_ERR(-4, "spotcheck: invalid debug env %s=%s",
+                               debug_env, debug_window);
             }
             LOG_WARN("mirror", "[%s] debug spotcheck window %llu requested", log_prefix, forced);
             if (!legacy_bootstrap_verify_window_logged(
                     bmr, map, map_count, (size_t)forced, log_prefix,
                     dump_map_on_failure))
-                return false;
+                return ZCL_ERR(-5,
+                    "spotcheck: debug window %llu mismatch", forced);
         }
     }
 
@@ -227,8 +232,8 @@ bool legacy_bootstrap_spotcheck_sha3_windows(
         if (!legacy_bootstrap_verify_window_logged(
                 bmr, map, map_count, picked[i], log_prefix,
                 dump_map_on_failure))
-            return false;
+            return ZCL_ERR(-6, "spotcheck: window %zu mismatch", picked[i]);
     }
     LOG_INFO("mirror", "[%s] SHA3 spotcheck: %d/%d windows match", log_prefix, k, k);
-    return true;
+    return ZCL_OK;
 }

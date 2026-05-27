@@ -46,6 +46,7 @@
 #include "encoding/utilstrencodings.h"
 #include "json/json.h"
 #include "util/log_macros.h"
+#include "util/result.h"
 #include "util/safe_alloc.h"
 #include "util/thread_registry.h"
 
@@ -279,7 +280,7 @@ static bool lbp_spotcheck_sha3_windows(const char *host, int port,
     return true;
 }
 
-static bool legacy_body_pull_range_impl(struct main_state *ms,
+static struct zcl_result legacy_body_pull_range_impl(struct main_state *ms,
                                         struct coins_view_cache *coins_tip,
                                         const struct chain_params *params,
                                         const char *our_datadir,
@@ -290,17 +291,17 @@ static bool legacy_body_pull_range_impl(struct main_state *ms,
 {
     if (out_applied) *out_applied = 0;
     if (!ms || !params || !our_datadir) {
-        LOG_FAIL("legacy_body_pull",
-                 "bad args ms=%p params=%p datadir=%p",
-                 (void *)ms, (const void *)params,
-                 (const void *)our_datadir);
+        return ZCL_ERR(-1,
+            "bad args ms=%p params=%p datadir=%p",
+            (void *)ms, (const void *)params,
+            (const void *)our_datadir);
     }
     if (from_height < 1) {
-        LOG_FAIL("legacy_body_pull", "bad from_height=%d", from_height);
+        return ZCL_ERR(-2, "bad from_height=%d", from_height);
     }
     if (to_height < from_height) {
         LOG_INFO("legacy_body_pull", "[legacy_body_pull] nothing to do (from=%d to=%d)", from_height, to_height);
-        return true;
+        return ZCL_OK;
     }
 
     /* Resolve credentials from ~/.zclassic/zclassic.conf. */
@@ -311,7 +312,8 @@ static bool legacy_body_pull_range_impl(struct main_state *ms,
     if (!legacy_rpc_parse_conf(user, sizeof(user),
                                pass, sizeof(pass), &port)) {
         LOG_WARN("legacy_body_pull", "[legacy_body_pull] no zclassic.conf credentials; " "cannot reach legacy node");
-        return false;
+        return ZCL_ERR(-3,
+            "no zclassic.conf credentials; cannot reach legacy node");
     }
 
     /* ── SHA3 spotcheck source blocks ───────────────────────────────
@@ -323,6 +325,8 @@ static bool legacy_body_pull_range_impl(struct main_state *ms,
                                     to_height,
                                     LBP_SPOTCHECK_K)) {
         LOG_WARN("legacy_body_pull", "[legacy_body_pull] WARNING: SHA3 spotcheck did not pass; " "continuing with full validation");
+        /* Source-integrity check failed — surfaced via log + non-fatal: full
+         * proof validation still runs on every body. Continue. */
     }
 
     LOG_INFO("legacy_body_pull", "[legacy_body_pull] starting: window=[%d..%d] " "(%d blocks)", from_height, to_height, to_height - from_height + 1);
@@ -408,7 +412,7 @@ static bool legacy_body_pull_range_impl(struct main_state *ms,
         unsigned char *bytes = zcl_malloc(hex_len / 2, "lbp_block_bytes");
         if (!bytes) {
             free(block_hex);
-            LOG_FAIL("legacy_body_pull", "oom decode h=%d", h);
+            return ZCL_ERR(-4, "oom decode h=%d", h);
         }
         size_t nbytes = ParseHex(block_hex, bytes, hex_len / 2);
         free(block_hex);
@@ -491,10 +495,14 @@ static bool legacy_body_pull_range_impl(struct main_state *ms,
     LOG_WARN("legacy_body_pull", "[legacy_body_pull] done: applied=%d skipped_have=%d " "skipped_failed=%d rpc_errors=%d window=[%d..%d] ok=%s", applied, skipped_have_data, skipped_failed, rpc_errors, from_height, to_height, ok ? "yes" : "no");
 
     if (out_applied) *out_applied = applied;
-    return ok;
+    if (!ok)
+        return ZCL_ERR(-5,
+            "pull aborted: applied=%d rpc_errors=%d window=[%d..%d]",
+            applied, rpc_errors, from_height, to_height);
+    return ZCL_OK;
 }
 
-bool legacy_body_pull_range_blocking(struct main_state *ms,
+struct zcl_result legacy_body_pull_range_blocking(struct main_state *ms,
                                      struct coins_view_cache *coins_tip,
                                      const struct chain_params *params,
                                      const char *our_datadir,
@@ -507,7 +515,7 @@ bool legacy_body_pull_range_blocking(struct main_state *ms,
                                        true);
 }
 
-bool legacy_body_pull_range_incremental(struct main_state *ms,
+struct zcl_result legacy_body_pull_range_incremental(struct main_state *ms,
                                         struct coins_view_cache *coins_tip,
                                         const struct chain_params *params,
                                         const char *our_datadir,

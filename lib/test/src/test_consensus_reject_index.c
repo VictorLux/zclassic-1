@@ -96,13 +96,13 @@ int test_consensus_reject_index(void)
         CRI_CHECK("cri: not running before start",
                   !consensus_reject_index_running());
         CRI_CHECK("cri: start with default capacity",
-                  consensus_reject_index_start(0));
+                  consensus_reject_index_start(0).ok);
         CRI_CHECK("cri: running after start",
                   consensus_reject_index_running());
         CRI_CHECK("cri: default capacity is 256",
                   consensus_reject_index_capacity() == 256);
         CRI_CHECK("cri: start twice is idempotent",
-                  consensus_reject_index_start(0));
+                  consensus_reject_index_start(0).ok);
         consensus_reject_index_stop();
         CRI_CHECK("cri: stopped after stop",
                   !consensus_reject_index_running());

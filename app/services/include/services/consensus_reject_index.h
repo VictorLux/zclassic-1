@@ -64,6 +64,7 @@
 #define ZCL_SERVICES_CONSENSUS_REJECT_INDEX_H
 
 #include "core/uint256.h"
+#include "util/result.h"
 
 #include <stdbool.h>
 #include <stddef.h>
@@ -93,9 +94,9 @@ struct cri_entry {
 /* Start the index with the given ring capacity. capacity=0 picks
  * the default (256). Capacity is clamped to [8, CRI_MAX_CAPACITY]
  * and rounded up to the next power of two. Idempotent — calling
- * start while already running is a no-op that returns true.
- * Returns false on allocation failure. */
-bool consensus_reject_index_start(size_t capacity);
+ * start while already running is a no-op that returns ZCL_OK.
+ * Returns a non-ok zcl_result on allocation failure. */
+struct zcl_result consensus_reject_index_start(size_t capacity);
 
 /* Stop the index and free the ring. Unregisters observers.
  * Safe to call when not running. */
