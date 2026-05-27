@@ -363,6 +363,7 @@ int test_script_validate_stage(void);
 int test_proof_validate_stage(void);
 int test_utxo_apply_stage(void);
 int test_tip_finalize_stage(void);
+int test_reducer_stage_fuzz(void);
 int test_cutover_tip_parity(void);
 int test_cutover_flip_dryrun(void);
 int test_cutover_postflip_reorg(void);
