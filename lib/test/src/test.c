@@ -836,6 +836,7 @@ int main(void)
     failures += test_application_consensus_validate_block();
     failures += test_block_log_file();
     failures += test_block_log_legacy();
+    failures += test_replay_verify();
     failures += test_mutator();
     failures += test_shadow_feeder();
     failures += test_shadow_feeder_global();

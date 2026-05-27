@@ -35,6 +35,8 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+struct block_log_port;
+
 /* Accumulated outcome of one sweep. All counts are over the heights that
  * were actually iterated (blocks_checked). On the first failure of any
  * class, first_fail_height records the height and first_fail_reason a short
@@ -69,5 +71,24 @@ struct zcl_result replay_verify_run(const char *datadir,
                                      uint32_t start_height,
                                      uint64_t max_blocks,
                                      struct replay_verify_report *out);
+
+/* Same sweep as replay_verify_run, but driven over a caller-supplied
+ * block_log_port instead of opening the legacy datadir adapter. This is
+ * the reusable core: replay_verify_run() opens block_log_legacy and
+ * delegates here. It lets CI prove the verifier's teeth over a small,
+ * self-contained block_log_file fixture — no live datadir, no
+ * reimplemented crypto (the per-block verdict is still the canonical
+ * check_block).
+ *
+ * `port` must have iter_from and tip_height populated. Returns ZCL_OK
+ * when the sweep ran to completion (inspect the report counts for any
+ * per-block verification failures), and a non-OK result only on
+ * operational failure (NULL/incomplete port, empty log, start beyond
+ * tip, iteration error, or a block that could not be deserialized).
+ * The port is NOT closed here — the caller owns its lifecycle. */
+struct zcl_result replay_verify_run_port(struct block_log_port *port,
+                                         uint32_t start_height,
+                                         uint64_t max_blocks,
+                                         struct replay_verify_report *out);
 
 #endif /* ZCL_SERVICES_REPLAY_VERIFY_SERVICE_H */

@@ -146,15 +146,15 @@ static bool sweep_cb(uint32_t height,
     return true;
 }
 
-struct zcl_result replay_verify_run(const char *datadir,
-                                    uint32_t start_height,
-                                    uint64_t max_blocks,
-                                    struct replay_verify_report *out)
+struct zcl_result replay_verify_run_port(struct block_log_port *port,
+                                         uint32_t start_height,
+                                         uint64_t max_blocks,
+                                         struct replay_verify_report *out)
 {
-    if (!datadir || !datadir[0])
-        return ZCL_ERR(-1, "replay_verify_run: datadir is NULL/empty");
+    if (!port || !port->iter_from || !port->tip_height)
+        return ZCL_ERR(-1, "replay_verify_run_port: port is NULL/incomplete");
     if (!out)
-        return ZCL_ERR(-1, "replay_verify_run: out report is NULL");
+        return ZCL_ERR(-1, "replay_verify_run_port: out report is NULL");
 
     /* Zero the report and mark "no failure yet". */
     memset(out, 0, sizeof *out);
@@ -164,34 +164,17 @@ struct zcl_result replay_verify_run(const char *datadir,
 
     const struct chain_params *params = chain_params_get();
     if (!params)
-        return ZCL_ERR(-2, "replay_verify_run: chain params not selected");
+        return ZCL_ERR(-2, "replay_verify_run_port: chain params not selected");
 
-    /* Open the read-only legacy block log. */
-    struct block_log_legacy *h = NULL;
-    struct block_log_port    port = {0};
-    struct zcl_result ro = block_log_legacy_open(datadir, &h, &port);
-    if (!ro.ok) {
-        LOG_RETURN(ZCL_ERR(-3,
-                       "replay_verify_run: block_log_legacy_open(%s) "
-                       "failed: code=%d %s",
-                       datadir, ro.code, ro.message),
-                   "replay_verify",
-                   "open_failed datadir=%s code=%d", datadir, ro.code);
-    }
-
-    uint32_t tip = port.tip_height(port.self);
+    uint32_t tip = port->tip_height(port->self);
     out->tip_height = tip;
 
-    if (tip == UINT32_MAX) {
-        block_log_legacy_close(h);
-        return ZCL_ERR(-4, "replay_verify_run: legacy log is empty");
-    }
-    if (start_height > tip) {
-        block_log_legacy_close(h);
+    if (tip == UINT32_MAX)
+        return ZCL_ERR(-4, "replay_verify_run_port: block log is empty");
+    if (start_height > tip)
         return ZCL_ERR(-5,
-                   "replay_verify_run: start_height %u beyond tip %u",
+                   "replay_verify_run_port: start_height %u beyond tip %u",
                    start_height, tip);
-    }
 
     /* Derive the intended end height for the report (informational; the
      * callback enforces max_blocks as the hard stop). */
@@ -211,14 +194,12 @@ struct zcl_result replay_verify_run(const char *datadir,
         .deser_height = 0,
     };
 
-    struct zcl_result ri = port.iter_from(port.self, start_height,
-                                          sweep_cb, &st);
-
-    block_log_legacy_close(h);
+    struct zcl_result ri = port->iter_from(port->self, start_height,
+                                           sweep_cb, &st);
 
     if (!ri.ok) {
         LOG_RETURN(ZCL_ERR(-6,
-                       "replay_verify_run: iter_from(start=%u) failed: "
+                       "replay_verify_run_port: iter_from(start=%u) failed: "
                        "code=%d %s",
                        start_height, ri.code, ri.message),
                    "replay_verify",
@@ -228,10 +209,53 @@ struct zcl_result replay_verify_run(const char *datadir,
 
     if (st.deser_failed) {
         return ZCL_ERR(-7,
-                   "replay_verify_run: block deserialize failed at "
-                   "height %u (corrupt/truncated legacy storage)",
+                   "replay_verify_run_port: block deserialize failed at "
+                   "height %u (corrupt/truncated storage)",
                    st.deser_height);
     }
+
+    return ZCL_OK;
+}
+
+struct zcl_result replay_verify_run(const char *datadir,
+                                    uint32_t start_height,
+                                    uint64_t max_blocks,
+                                    struct replay_verify_report *out)
+{
+    if (!datadir || !datadir[0])
+        return ZCL_ERR(-1, "replay_verify_run: datadir is NULL/empty");
+    if (!out)
+        return ZCL_ERR(-1, "replay_verify_run: out report is NULL");
+
+    /* Open the read-only legacy block log. */
+    struct block_log_legacy *h = NULL;
+    struct block_log_port    port = {0};
+    struct zcl_result ro = block_log_legacy_open(datadir, &h, &port);
+    if (!ro.ok) {
+        /* Mirror the open failure into the report so callers that only
+         * inspect the report (not the result) still see a sane shape. */
+        memset(out, 0, sizeof *out);
+        out->first_fail_height = -1;
+        out->start_height      = start_height;
+        LOG_RETURN(ZCL_ERR(-3,
+                       "replay_verify_run: block_log_legacy_open(%s) "
+                       "failed: code=%d %s",
+                       datadir, ro.code, ro.message),
+                   "replay_verify",
+                   "open_failed datadir=%s code=%d", datadir, ro.code);
+    }
+
+    /* Delegate the whole sweep to the port-driven core. This keeps the
+     * canonical consensus logic in exactly one place (sweep_cb +
+     * check_block), reusable over ANY block_log_port — including the
+     * writable block_log_file fixture the CI teeth test drives. */
+    struct zcl_result r = replay_verify_run_port(&port, start_height,
+                                                 max_blocks, out);
+
+    block_log_legacy_close(h);
+
+    if (!r.ok)
+        return r;
 
     /* One-line artifact-style summary. fields_fmt is a JSON fragment;
      * the datadir path is JSON-escaped before interpolation. */
