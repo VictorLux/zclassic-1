@@ -17,9 +17,11 @@
 #include "consensus/upgrades.h"
 #include "bloom/merkle.h"
 #include "core/random.h"
+#include "domain/consensus/coinbase.h"
 #include "script/script.h"
 #include "script/script_flags.h"
 #include "util/timedata.h"
+#include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
 #include "util/safe_alloc.h"
@@ -136,45 +138,34 @@ struct block_template *create_new_block(const struct script *coinbase_script,
         block_size += tx_size;
     }
 
-    /* Create coinbase transaction */
+    /* Create coinbase transaction. Allocation is an adapter concern
+     * (lives here); shaping (scriptSig, vout value, version/group_id
+     * per epoch, hash) is pure and lives in
+     * domain/consensus/coinbase.c. */
     struct transaction *coinbase = &bt->block.vtx[0];
     transaction_free(coinbase);
     transaction_init(coinbase);
-
-    coinbase->num_vin = 1;
-    coinbase->vin = zcl_calloc(1, sizeof(struct tx_in), "coinbase_vin");
-    if (!coinbase->vin) return NULL;
-    tx_in_init(&coinbase->vin[0]);
-    uint256_set_null(&coinbase->vin[0].prevout.hash);
-    coinbase->vin[0].prevout.n = 0xffffffff;
-
-    /* Script: push 3-byte height, then OP_0 */
-    coinbase->vin[0].script_sig.data[0] = 3;
-    coinbase->vin[0].script_sig.data[1] = (uint8_t)(height & 0xff);
-    coinbase->vin[0].script_sig.data[2] = (uint8_t)((height >> 8) & 0xff);
-    coinbase->vin[0].script_sig.data[3] = (uint8_t)((height >> 16) & 0xff);
-    coinbase->vin[0].script_sig.data[4] = OP_0;
-    coinbase->vin[0].script_sig.size = 5;
-
-    coinbase->num_vout = 1;
-    coinbase->vout = zcl_calloc(1, sizeof(struct tx_out), "coinbase_vout");
-    if (!coinbase->vout) return NULL;
-    tx_out_set_null(&coinbase->vout[0]);
-    coinbase->vout[0].script_pub_key = *coinbase_script;
-    coinbase->vout[0].value = get_block_subsidy(height, &params->consensus) +
-                               total_fees;
-
-    /* Set version appropriate for current epoch */
-    if (consensus_network_upgrade_active(&params->consensus, height, UPGRADE_SAPLING)) {
-        coinbase->version = SAPLING_TX_VERSION;
-        coinbase->version_group_id = SAPLING_VERSION_GROUP_ID;
-    } else if (consensus_network_upgrade_active(&params->consensus, height, UPGRADE_OVERWINTER)) {
-        coinbase->version = OVERWINTER_TX_VERSION;
-        coinbase->version_group_id = OVERWINTER_VERSION_GROUP_ID;
+    if (!transaction_alloc(coinbase, 1, 1)) {
+        block_template_free(bt);
+        free(bt);
+        return NULL;
     }
-    coinbase->expiry_height = 0;
-
-    transaction_compute_hash(coinbase);
+    struct domain_consensus_coinbase_inputs cb_in = {
+        .n_height     = height,
+        .subsidy      = get_block_subsidy(height, &params->consensus),
+        .total_fees   = total_fees,
+        .miner_script = coinbase_script,
+        .params       = &params->consensus,
+    };
+    struct zcl_result cb_r = domain_consensus_coinbase_build(&cb_in, coinbase);
+    if (!cb_r.ok) {
+        fprintf(stderr, "[miner] coinbase_build failed at height %d: "
+                "code=%d %s (%s:%d)\n", height, cb_r.code, cb_r.message,
+                cb_r.source_file, cb_r.source_line);
+        block_template_free(bt);
+        free(bt);
+        return NULL;
+    }
 
     bt->tx_fees[0] = -total_fees;
 
@@ -204,24 +195,18 @@ void increment_extra_nonce(struct block *pblock,
     int height = pindex_prev->nHeight + 1;
     struct transaction *cb = &pblock->vtx[0];
 
-    cb->vin[0].script_sig.data[0] = 3;
-    cb->vin[0].script_sig.data[1] = (uint8_t)(height & 0xff);
-    cb->vin[0].script_sig.data[2] = (uint8_t)((height >> 8) & 0xff);
-    cb->vin[0].script_sig.data[3] = (uint8_t)((height >> 16) & 0xff);
-
-    uint8_t en_bytes[4];
-    en_bytes[0] = (uint8_t)(*extra_nonce & 0xff);
-    en_bytes[1] = (uint8_t)((*extra_nonce >> 8) & 0xff);
-    en_bytes[2] = (uint8_t)((*extra_nonce >> 16) & 0xff);
-    en_bytes[3] = (uint8_t)((*extra_nonce >> 24) & 0xff);
-
-    int en_len = 4;
-    while (en_len > 1 && en_bytes[en_len - 1] == 0)
-        en_len--;
-
-    cb->vin[0].script_sig.data[4] = (uint8_t)en_len;
-    memcpy(cb->vin[0].script_sig.data + 5, en_bytes, (size_t)en_len);
-    cb->vin[0].script_sig.size = (uint16_t)(5 + en_len);
+    /* scriptSig shaping is pure — delegate to domain layer. The
+     * legacy semantics (3-byte BIP34 height push followed by a
+     * minimal-length extra-nonce push, zero nonce -> single zero byte)
+     * are preserved exactly. */
+    struct zcl_result sr = domain_consensus_coinbase_script_sig_with_extra_nonce(
+            height, *extra_nonce, &cb->vin[0].script_sig);
+    if (!sr.ok) {
+        fprintf(stderr, "[miner] increment_extra_nonce script_sig failed "
+                "at height %d: code=%d %s (%s:%d)\n", height, sr.code,
+                sr.message, sr.source_file, sr.source_line);
+        return;
+    }
 
     transaction_compute_hash(cb);
     block_compute_merkle_root(pblock);
