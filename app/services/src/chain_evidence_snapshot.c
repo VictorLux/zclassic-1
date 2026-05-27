@@ -1,5 +1,11 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0 */
 
+// one-result-type-ok:void-snapshot-projection — the sole public surface,
+// chain_evidence_controller_snapshot(), returns void: it fills an
+// out-view from persisted state with no fallible service decision. Every
+// per-field load tolerates absence (defaults already set) so there is no
+// failure reason to carry. Single, coherent return type by construction.
+
 #include "services/chain_evidence_controller.h"
 #include "services/chain_evidence_store.h"
 

@@ -2,6 +2,15 @@
  *
  * Chain Restore Disk Repair — disk-backed active-chain reconstruction helpers. */
 
+// one-result-type-ok:count-of-populated-entries — both public functions
+// (rebuild_active_chain_from_disk / _from_block_files) return int = the
+// number of active-chain entries populated, which IS the payload, not a
+// fail-vs-ok bool. Partial progress is a valid, expected outcome (a torn
+// ancestry rebuilds as far as disk allows); the early-stop reason is
+// already logged with full context via printf. Wrapping the count in
+// zcl_result would discard the count. Internal helpers return bool but
+// are static and not part of the service surface.
+
 #include "services/chain_restore_disk_repair.h"
 #include "services/chain_restore_repair.h"
 

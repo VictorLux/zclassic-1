@@ -2,6 +2,15 @@
  *
  * Chain restore boot snapshot — diagnostic state captured during restore. */
 
+// one-result-type-ok:diagnostic-recorder — this file is a pure in-memory
+// recorder of restore diagnostics: every chain_restore_record_*() and the
+// getter return void (they cannot fail; they just stamp a static struct).
+// The single bool return, chain_restore_dump_state_json(), is the
+// standardized *_dump_state_json introspection contract (see CLAUDE.md
+// "Adding state introspection") whose bool signature is fixed across the
+// codebase and dispatched from diagnostics_controller — not a fallible
+// service result. No service surface to migrate.
+
 #include "services/chain_restore_boot_snapshot.h"
 #include "services/chain_restore_integrity.h"
 #include "services/chain_restore_planner.h"

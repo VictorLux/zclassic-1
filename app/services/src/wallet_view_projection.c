@@ -1,5 +1,13 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0 */
 
+// one-result-type-ok:count-of-rows-projected — both public functions
+// (wv_list_receive_addresses / wv_list_held_tokens) return int = the
+// number of rows written into the caller's out-array, which IS the
+// payload. An empty wallet legitimately returns 0; a prepare failure also
+// returns 0 because there are simply no rows to project. The read-only
+// projection has no mutating decision and nothing to carry beyond the
+// count. Wrapping it in zcl_result would discard the row count.
+
 #include "services/wallet_view_projection.h"
 #include "util/ar_step_readonly.h"
 #include "util/log_macros.h"
