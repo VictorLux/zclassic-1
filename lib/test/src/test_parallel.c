@@ -114,7 +114,7 @@ volatile sig_atomic_t g_shutdown_requested = 0;
     X(body_persist_stage) X(script_validate_stage) X(proof_validate_stage) \
     X(utxo_apply_stage) X(tip_finalize_stage) \
     X(domain_consensus_verify) X(domain_consensus_subsidy) \
-    X(domain_consensus_pow) \
+    X(domain_consensus_pow) X(domain_consensus_sigops) \
     X(application_consensus_validate_block) \
     X(block_log_file) X(block_log_legacy) X(replay_verify) \
     X(mutator) X(shadow_feeder) X(shadow_feeder_global) \
