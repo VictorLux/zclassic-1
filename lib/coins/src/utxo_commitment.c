@@ -23,6 +23,7 @@
 /* Log helper for non-bool paths in this file.  `return false` /
  * `return` paths already use LOG_FAIL / bare logging; these void
  * helpers need a log-and-return pattern that LOG_FAIL doesn't fit. */
+// obs-ok:prepare-fail-terminal — every call site returns immediately after.
 #define UTXO_CMT_LOG_PREPARE(db, sql) \
     fprintf(stderr, "[utxo_cmt] %s:%d %s(): prepare failed: %s " \
             "(sql=%s)\n", __FILE__, __LINE__, __func__, \
@@ -167,6 +168,7 @@ bool utxo_commitment_verify_db(sqlite3 *db,
     utxo_commitment_compute_db(db, &computed);
     bool ok = utxo_commitment_equal(&computed, expected);
     if (!ok) {
+        // obs-ok:mismatch-returned-to-caller — `ok` is returned to caller below.
         fprintf(stderr, "UTXO commitment mismatch: expected count=%lu, "
                 "got count=%lu\n",
                 (unsigned long)expected->count,
@@ -264,33 +266,60 @@ void utxo_commitment_sha3_compute_table(sqlite3 *db, const char *table,
 
         /* Serialize: txid(32) || vout_le(4) || value_le(8) ||
          *            script_len_le(4) || script(var) ||
-         *            height_le(4) || is_coinbase(1) */
-        sha3_256_write(&ctx, txid, 32);
-
-        uint8_t le4[4];
-        le4[0] = (uint8_t)(vout); le4[1] = (uint8_t)(vout >> 8);
-        le4[2] = (uint8_t)(vout >> 16); le4[3] = (uint8_t)(vout >> 24);
-        sha3_256_write(&ctx, le4, 4);
-
-        uint8_t le8[8];
-        uint64_t v = (uint64_t)value;
-        for (int i = 0; i < 8; i++) le8[i] = (uint8_t)(v >> (8 * i));
-        sha3_256_write(&ctx, le8, 8);
-
+         *            height_le(4) || is_coinbase(1)
+         *
+         * Pack the whole fixed-layout record into one stack buffer and
+         * feed it to the sponge with a single sha3_256_write. This is
+         * byte-for-byte identical to the prior seven separate writes
+         * (verified against the committed UTXO-set seals + the streamed-
+         * vs-oneshot SHA3 test), but does one absorb call instead of
+         * seven per UTXO — fewer branches and partial-lane memcpys in
+         * the hot loop over ~1.3M UTXOs. Real ZCL output scripts fit
+         * easily in SCRIPT_INLINE_CAP; the rare oversized script falls
+         * back to the original multi-write so behavior is unconditional.
+         */
         uint32_t slen = (uint32_t)(script_len > 0 ? script_len : 0);
-        le4[0] = (uint8_t)(slen); le4[1] = (uint8_t)(slen >> 8);
-        le4[2] = (uint8_t)(slen >> 16); le4[3] = (uint8_t)(slen >> 24);
-        sha3_256_write(&ctx, le4, 4);
-        if (script && script_len > 0)
-            sha3_256_write(&ctx, script, (size_t)script_len);
+        enum { SCRIPT_INLINE_CAP = 1024,
+               REC_HDR = 32 + 4 + 8 + 4, REC_TRL = 4 + 1 };
 
-        uint32_t ht = (uint32_t)height;
-        le4[0] = (uint8_t)(ht); le4[1] = (uint8_t)(ht >> 8);
-        le4[2] = (uint8_t)(ht >> 16); le4[3] = (uint8_t)(ht >> 24);
-        sha3_256_write(&ctx, le4, 4);
-
-        uint8_t cb = (uint8_t)(is_coinbase ? 1 : 0);
-        sha3_256_write(&ctx, &cb, 1);
+        if (script_len <= SCRIPT_INLINE_CAP) {
+            uint8_t rec[REC_HDR + SCRIPT_INLINE_CAP + REC_TRL];
+            uint8_t *p = rec;
+            memcpy(p, txid, 32);                                p += 32;
+            *p++ = (uint8_t)(vout);       *p++ = (uint8_t)(vout >> 8);
+            *p++ = (uint8_t)(vout >> 16); *p++ = (uint8_t)(vout >> 24);
+            uint64_t v = (uint64_t)value;
+            for (int i = 0; i < 8; i++) *p++ = (uint8_t)(v >> (8 * i));
+            *p++ = (uint8_t)(slen);       *p++ = (uint8_t)(slen >> 8);
+            *p++ = (uint8_t)(slen >> 16); *p++ = (uint8_t)(slen >> 24);
+            if (script && script_len > 0) { memcpy(p, script, slen); p += slen; }
+            uint32_t ht = (uint32_t)height;
+            *p++ = (uint8_t)(ht);       *p++ = (uint8_t)(ht >> 8);
+            *p++ = (uint8_t)(ht >> 16); *p++ = (uint8_t)(ht >> 24);
+            *p++ = (uint8_t)(is_coinbase ? 1 : 0);
+            sha3_256_write(&ctx, rec, (size_t)(p - rec));
+        } else {
+            sha3_256_write(&ctx, txid, 32);
+            uint8_t le4[4];
+            le4[0] = (uint8_t)(vout); le4[1] = (uint8_t)(vout >> 8);
+            le4[2] = (uint8_t)(vout >> 16); le4[3] = (uint8_t)(vout >> 24);
+            sha3_256_write(&ctx, le4, 4);
+            uint8_t le8[8];
+            uint64_t v = (uint64_t)value;
+            for (int i = 0; i < 8; i++) le8[i] = (uint8_t)(v >> (8 * i));
+            sha3_256_write(&ctx, le8, 8);
+            le4[0] = (uint8_t)(slen); le4[1] = (uint8_t)(slen >> 8);
+            le4[2] = (uint8_t)(slen >> 16); le4[3] = (uint8_t)(slen >> 24);
+            sha3_256_write(&ctx, le4, 4);
+            if (script && script_len > 0)
+                sha3_256_write(&ctx, script, (size_t)script_len);
+            uint32_t ht = (uint32_t)height;
+            le4[0] = (uint8_t)(ht); le4[1] = (uint8_t)(ht >> 8);
+            le4[2] = (uint8_t)(ht >> 16); le4[3] = (uint8_t)(ht >> 24);
+            sha3_256_write(&ctx, le4, 4);
+            uint8_t cb = (uint8_t)(is_coinbase ? 1 : 0);
+            sha3_256_write(&ctx, &cb, 1);
+        }
 
         count++;
     }
