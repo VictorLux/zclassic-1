@@ -819,6 +819,7 @@ int main(void)
     failures += test_domain_consensus_tx_structural();
     failures += test_domain_consensus_sighash();
     failures += test_domain_consensus_check_block();
+    failures += test_domain_consensus_equihash();
     failures += test_application_consensus_validate_block();
     failures += test_block_log_file();
     failures += test_block_log_legacy();

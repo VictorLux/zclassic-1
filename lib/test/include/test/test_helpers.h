@@ -372,6 +372,7 @@ int test_domain_consensus_sigops(void);
 int test_domain_consensus_tx_structural(void);
 int test_domain_consensus_sighash(void);
 int test_domain_consensus_check_block(void);
+int test_domain_consensus_equihash(void);
 int test_application_consensus_validate_block(void);
 int test_block_log_file(void);
 int test_block_log_legacy(void);
