@@ -9,86 +9,68 @@
  * "Alive at H" means o was created on a block ≤ H and not spent on a
  * block ≤ H. tx_inputs holds (prev_txid, prev_vout, block_height) for
  * every spend; we LEFT JOIN to find unspent.
+ *
+ * Storage is reached ONLY through hodl_history_port — the raw sqlite
+ * queries live in the sqlite adapter. This file is pure domain logic:
+ * cutoff arithmetic, the older<=total clamp, the percentage, sample
+ * striding, and the projection shadow emit. The public functions still
+ * accept a sqlite3* so callers (boot_services, explorer, tests) are
+ * unchanged; each binds the default sqlite adapter and drives the port.
  */
 
 #include "services/hodl_history_service.h"
 
+#include "adapters/outbound/persistence/hodl_history_sqlite.h"
+#include "ports/hodl_history_port.h"
 #include "storage/small_projections.h"
-#include "util/ar_step_readonly.h"
 #include "util/log_macros.h"
 
 #include <inttypes.h>
+#include <stddef.h>
 #include <stdio.h>
 #include <string.h>
 #include <time.h>
 
+/* struct hodl_history_row (public service type) and struct
+ * hodl_history_snapshot (port type) are deliberately kept layout-
+ * identical so load_all can fill the caller's buffer in one shot with
+ * no per-row copy. These asserts fail the build if either drifts. */
+_Static_assert(sizeof(struct hodl_history_row) ==
+                   sizeof(struct hodl_history_snapshot),
+               "hodl_history_row size must match hodl_history_snapshot");
+_Static_assert(offsetof(struct hodl_history_row, height) ==
+                   offsetof(struct hodl_history_snapshot, height) &&
+               offsetof(struct hodl_history_row, time) ==
+                   offsetof(struct hodl_history_snapshot, time) &&
+               offsetof(struct hodl_history_row, total_zat) ==
+                   offsetof(struct hodl_history_snapshot, total_zat) &&
+               offsetof(struct hodl_history_row, older_1y_zat) ==
+                   offsetof(struct hodl_history_snapshot, older_1y_zat) &&
+               offsetof(struct hodl_history_row, older_1y_pct) ==
+                   offsetof(struct hodl_history_snapshot, older_1y_pct),
+               "hodl_history_row fields must match hodl_history_snapshot");
+
 #define JULIAN_YEAR_SECONDS  ((int64_t)31557600)
 
-static int64_t fq_i64(sqlite3 *db, const char *sql)
+/* Compute and persist one snapshot via the storage port. This is the
+ * port-driven core that hodl_history_fill_one wraps once it has bound
+ * the default adapter to a sqlite3*. */
+static bool fill_one_via_port(struct hodl_history_port *port, int64_t height)
 {
-    sqlite3_stmt *s = NULL;
-    int64_t v = 0;
-    if (sqlite3_prepare_v2(db, sql, -1, &s, NULL) == SQLITE_OK && s) {
-        if (AR_STEP_ROW_READONLY(s) == SQLITE_ROW)
-            v = sqlite3_column_int64(s, 0);
-        sqlite3_finalize(s);
-    }
-    return v;
-}
-
-bool hodl_history_fill_one(sqlite3 *db, int64_t height)
-{
-    if (!db || height < 1)
-        return false;
-
     /* Resolve block timestamp first. If we don't have the block,
      * the chain hasn't reached this height yet and we can't sample. */
     int64_t block_time = 0;
-    {
-        sqlite3_stmt *s = NULL;
-        if (sqlite3_prepare_v2(db, "SELECT time FROM blocks WHERE height = ?",
-                               -1, &s, NULL) != SQLITE_OK || !s)
-            return false;
-        sqlite3_bind_int64(s, 1, height);
-        if (AR_STEP_ROW_READONLY(s) == SQLITE_ROW)
-            block_time = sqlite3_column_int64(s, 0);
-        sqlite3_finalize(s);
-    }
+    if (!port->block_time(port->self, height, &block_time))
+        return false;
     if (block_time <= 0)
         return false;
 
     int64_t cutoff_time = block_time - JULIAN_YEAR_SECONDS;
 
-    /* Compute total + older-than-1y in a single pass.
-     *   o "alive at H": LEFT JOIN tx_inputs filtered to spends ≤ H,
-     *                   keep only rows where no such spend exists.
-     *   "older than 1y": creation-block time ≤ block_time - 1y. */
     int64_t total = 0, older = 0;
-    {
-        const char *sql =
-            "SELECT "
-            "  COALESCE(SUM(o.value), 0) AS total_zat,"
-            "  COALESCE(SUM(CASE WHEN b.time <= ?1 THEN o.value ELSE 0 END), 0) "
-            "    AS older_zat "
-            "FROM tx_outputs o "
-            "JOIN blocks b ON b.height = o.block_height "
-            "LEFT JOIN tx_inputs i "
-            "  ON i.prev_txid = o.txid AND i.prev_vout = o.vout "
-            "     AND i.block_height <= ?2 "
-            "WHERE o.block_height <= ?2 AND i.txid IS NULL";
-        sqlite3_stmt *s = NULL;
-        if (sqlite3_prepare_v2(db, sql, -1, &s, NULL) != SQLITE_OK || !s) {
-            LOG_FAIL("hodl_history",
-                     "prepare snapshot SQL failed: %s", sqlite3_errmsg(db));
-        }
-        sqlite3_bind_int64(s, 1, cutoff_time);
-        sqlite3_bind_int64(s, 2, height);
-        if (AR_STEP_ROW_READONLY(s) == SQLITE_ROW) {
-            total = sqlite3_column_int64(s, 0);
-            older = sqlite3_column_int64(s, 1);
-        }
-        sqlite3_finalize(s);
-    }
+    if (!port->compute_snapshot(port->self, height, cutoff_time,
+                                &total, &older))
+        return false;
 
     /* Clamp older to total — same invariant the CHECK constraint
      * enforces. A small underflow from concurrent writes would only
@@ -100,26 +82,17 @@ bool hodl_history_fill_one(sqlite3 *db, int64_t height)
         ? (double)older / (double)total * 100.0
         : 0.0;
 
-    sqlite3_stmt *ins = NULL;
-    const char *ins_sql =
-        "INSERT OR REPLACE INTO hodl_history "
-        "(height, time, total_zat, older_1y_zat, older_1y_pct) "
-        "VALUES (?1, ?2, ?3, ?4, ?5)";
-    if (sqlite3_prepare_v2(db, ins_sql, -1, &ins, NULL) != SQLITE_OK || !ins) {
-        LOG_FAIL("hodl_history",
-                 "prepare INSERT failed: %s", sqlite3_errmsg(db));
+    struct hodl_history_snapshot row = {
+        .height       = height,
+        .time         = block_time,
+        .total_zat    = total,
+        .older_1y_zat = older,
+        .older_1y_pct = pct,
+    };
+    if (!port->upsert_snapshot(port->self, &row)) {
+        /* upsert already logged the failure context. */
     }
-    sqlite3_bind_int64(ins, 1, height);
-    sqlite3_bind_int64(ins, 2, block_time);
-    sqlite3_bind_int64(ins, 3, total);
-    sqlite3_bind_int64(ins, 4, older);
-    sqlite3_bind_double(ins, 5, pct);
-    int rc = sqlite3_step(ins);  // raw-sql-ok:hodl-history-insert-rc-checked
-    sqlite3_finalize(ins);
-    if (rc != SQLITE_DONE && rc != SQLITE_ROW) {
-        LOG_FAIL("hodl_history",
-                 "INSERT step rc=%d: %s", rc, sqlite3_errmsg(db));
-    }
+
     if (height > INT32_MAX || block_time > UINT32_MAX ||
         !hodl_history_projection_emit_snapshot(
             (int32_t)height, (uint32_t)block_time, total, older, pct)) {
@@ -128,13 +101,28 @@ bool hodl_history_fill_one(sqlite3 *db, int64_t height)
     return true;
 }
 
+bool hodl_history_fill_one(sqlite3 *db, int64_t height)
+{
+    if (!db || height < 1)
+        return false;
+    struct hodl_history_port port;
+    if (!hodl_history_sqlite_bind(db, &port)) {
+        LOG_FAIL("hodl_history", "failed to bind sqlite port");
+    }
+    return fill_one_via_port(&port, height);
+}
+
 int hodl_history_fill_pending(sqlite3 *db, int64_t chain_tip, int max_rows)
 {
     if (!db || chain_tip < HODL_HISTORY_SAMPLE_STRIDE || max_rows <= 0)
         return 0;
 
-    int64_t last_filled = fq_i64(db,
-        "SELECT COALESCE(MAX(height), 0) FROM hodl_history");
+    struct hodl_history_port port;
+    if (!hodl_history_sqlite_bind(db, &port)) {
+        LOG_FAIL("hodl_history", "failed to bind sqlite port");
+    }
+
+    int64_t last_filled = port.max_filled_height(port.self);
 
     /* The most recent useful sample is (chain_tip - 1y_blocks) — beyond
      * that "older than 1y" can't be true. We do still sample within the
@@ -153,7 +141,7 @@ int hodl_history_fill_pending(sqlite3 *db, int64_t chain_tip, int max_rows)
          * next = MAX(filled) + stride. Leaving `next` unchanged on
          * failure means the next tick (after the indexer makes more
          * progress) will retry the same height. */
-        if (!hodl_history_fill_one(db, next))
+        if (!fill_one_via_port(&port, next))
             break;
         filled++;
         next += HODL_HISTORY_SAMPLE_STRIDE;
@@ -166,21 +154,11 @@ int hodl_history_load_all(sqlite3 *db, struct hodl_history_row *out,
 {
     if (!db || !out || max_rows <= 0)
         return 0;
-    const char *sql =
-        "SELECT height, time, total_zat, older_1y_zat, older_1y_pct "
-        "FROM hodl_history ORDER BY height ASC";
-    sqlite3_stmt *s = NULL;
-    if (sqlite3_prepare_v2(db, sql, -1, &s, NULL) != SQLITE_OK || !s)
+    struct hodl_history_port port;
+    if (!hodl_history_sqlite_bind(db, &port))
         return 0;
-    int n = 0;
-    while (n < max_rows && AR_STEP_ROW_READONLY(s) == SQLITE_ROW) {
-        out[n].height       = sqlite3_column_int64(s, 0);
-        out[n].time         = sqlite3_column_int64(s, 1);
-        out[n].total_zat    = sqlite3_column_int64(s, 2);
-        out[n].older_1y_zat = sqlite3_column_int64(s, 3);
-        out[n].older_1y_pct = sqlite3_column_double(s, 4);
-        n++;
-    }
-    sqlite3_finalize(s);
-    return n;
+    /* Layout-identical to struct hodl_history_snapshot (asserted at the
+     * top of this file); load directly into the caller's buffer. */
+    return port.load_all(port.self,
+                         (struct hodl_history_snapshot *)out, max_rows);
 }
