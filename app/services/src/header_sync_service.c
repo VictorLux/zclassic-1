@@ -456,7 +456,7 @@ bool syncsvc_should_scan_block_files_after_headers(size_t accepted,
     return true;
 }
 
-bool syncsvc_build_getheaders_locator(struct block_locator *loc,
+struct zcl_result syncsvc_build_getheaders_locator(struct block_locator *loc,
                                       const struct active_chain *chain,
                                       const struct block_index *from,
                                       const struct uint256 *genesis_hash)
@@ -465,8 +465,7 @@ bool syncsvc_build_getheaders_locator(struct block_locator *loc,
     size_t i;
 
     if (!loc || !genesis_hash)
-        LOG_FAIL("header_sync", "build_getheaders_locator: null loc=%d genesis_hash=%d",
-                 !loc, !genesis_hash);
+        return ZCL_ERR(-1, "null loc=%d genesis_hash=%d", !loc, !genesis_hash);
 
     block_locator_init(loc);
     if (from)
@@ -477,10 +476,10 @@ bool syncsvc_build_getheaders_locator(struct block_locator *loc,
     if (loc->num_hashes == 0) {
         loc->vhave = zcl_malloc(sizeof(struct uint256), "header_sync genesis locator");
         if (!loc->vhave)
-            LOG_FAIL("header_sync", "build_getheaders_locator: malloc failed for genesis-only locator");
+            return ZCL_ERR(-2, "malloc failed for genesis-only locator");
         loc->vhave[0] = *genesis_hash;
         loc->num_hashes = 1;
-        return true;
+        return ZCL_OK;
     }
 
     for (i = 0; i < loc->num_hashes; i++) {
@@ -496,15 +495,14 @@ bool syncsvc_build_getheaders_locator(struct block_locator *loc,
             "header_sync.getheaders_locator");
         if (!new_vhave) {
             block_locator_free(loc);
-            LOG_FAIL("header_sync", "build_getheaders_locator: realloc failed for %zu hashes",
-                     loc->num_hashes + 1);
+            return ZCL_ERR(-3, "realloc failed for %zu hashes", loc->num_hashes + 1);
         }
         loc->vhave = new_vhave;
         loc->vhave[loc->num_hashes] = *genesis_hash;
         loc->num_hashes++;
     }
 
-    return true;
+    return ZCL_OK;
 }
 
 enum sync_header_log_mode syncsvc_header_log_mode(

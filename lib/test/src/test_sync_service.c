@@ -674,7 +674,7 @@ static int test_sync_service_builds_getheaders_locator_from_chain(void)
         b2.phashBlock = &h2; b2.nHeight = 2; b2.pprev = &b1;
         ASSERT(active_chain_set_tip(&chain, &b2));
 
-        ASSERT(syncsvc_build_getheaders_locator(&loc, &chain, NULL, &hg));
+        ASSERT(syncsvc_build_getheaders_locator(&loc, &chain, NULL, &hg).ok);
         ASSERT(loc.num_hashes >= 2);
         ASSERT(uint256_eq(&loc.vhave[0], &h2));
         ASSERT(uint256_eq(&loc.vhave[1], &h1));
@@ -701,7 +701,7 @@ static int test_sync_service_builds_getheaders_locator_empty_chain(void)
         active_chain_init(&chain);
         hg.data[0] = 60;
 
-        ASSERT(syncsvc_build_getheaders_locator(&loc, &chain, NULL, &hg));
+        ASSERT(syncsvc_build_getheaders_locator(&loc, &chain, NULL, &hg).ok);
         ASSERT(loc.num_hashes == 1);
         ASSERT(uint256_eq(&loc.vhave[0], &hg));
         block_locator_free(&loc);

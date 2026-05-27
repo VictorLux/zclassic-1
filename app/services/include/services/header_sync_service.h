@@ -7,6 +7,7 @@
 
 #include "event/event.h"
 #include "primitives/block.h"
+#include "util/result.h"
 #include <stdbool.h>
 #include <stdint.h>
 
@@ -151,7 +152,7 @@ bool syncsvc_should_begin_blocks_download(enum sync_state sync_state,
 bool syncsvc_headers_chain_from_tip(const struct block_index *candidate,
                                     const struct block_index *tip,
                                     int our_height);
-bool syncsvc_build_getheaders_locator(struct block_locator *loc,
+struct zcl_result syncsvc_build_getheaders_locator(struct block_locator *loc,
                                       const struct active_chain *chain,
                                       const struct block_index *from,
                                       const struct uint256 *genesis_hash);

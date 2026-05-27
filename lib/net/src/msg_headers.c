@@ -803,15 +803,25 @@ void push_getheaders_from(struct msg_processor *mp,
         loc.vhave = tmp;
         loc.num_hashes = (size_t)nh;
     } else if (from && from->phashBlock) {
-        if (!syncsvc_build_getheaders_locator(&loc,
+        struct zcl_result _r = syncsvc_build_getheaders_locator(&loc,
                                               &mp->main_state->chain_active,
                                               from,
-                                              &mp->params->consensus.hashGenesisBlock))
+                                              &mp->params->consensus.hashGenesisBlock);
+        if (!_r.ok) {
+            fprintf(stderr, "[headers] %s:%d push_getheaders_from: build_locator failed: %s\n",
+                    _r.source_file, _r.source_line, _r.message);
             return;
-    } else if (!syncsvc_build_getheaders_locator(&loc, &mp->main_state->chain_active,
-                                                  NULL,
-                                                  &mp->params->consensus.hashGenesisBlock)) {
-        return;
+        }
+    } else {
+        struct zcl_result _r = syncsvc_build_getheaders_locator(&loc,
+                                              &mp->main_state->chain_active,
+                                              NULL,
+                                              &mp->params->consensus.hashGenesisBlock);
+        if (!_r.ok) {
+            fprintf(stderr, "[headers] %s:%d push_getheaders_from: build_locator failed: %s\n",
+                    _r.source_file, _r.source_line, _r.message);
+            return;
+        }
     }
 
     struct byte_stream s;
@@ -852,7 +862,7 @@ void push_getheaders(struct msg_processor *mp, struct p2p_node *node)
         block_locator_init(&loc);
         if (syncsvc_build_getheaders_locator(
                 &loc, &mp->main_state->chain_active, NULL,
-                &mp->params->consensus.hashGenesisBlock)) {
+                &mp->params->consensus.hashGenesisBlock).ok) {
             struct byte_stream s;
             stream_init(&s, 512);
             if (getheaders_serialize(&s, &loc, NULL)) {
@@ -865,6 +875,8 @@ void push_getheaders(struct msg_processor *mp, struct p2p_node *node)
             block_locator_free(&loc);
             return;
         }
+        /* Fall through to snapsync anchor locator path. Builder
+         * already logged via ZCL_ERR source/line; no need to dup. */
     }
 
     /* After snapshot sync, use the snapshot anchor as the locator start. */
