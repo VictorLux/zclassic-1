@@ -79,7 +79,7 @@ for high-performance C, not Rails cosplay.
    the fictional `MODEL(){…}` / `SERVICE_BEGIN` / `JOB(){…}` forms — see §3.)
 
 4. **The core is pure; the shell is dirty.** No clock, no RNG, no I/O in
-   `lib/domain/`. A pure core replays from a 64-bit seed and benchmarks
+   `domain/`. A pure core replays from a 64-bit seed and benchmarks
    honestly. Lint-enforced, FAIL mode.
 
 5. **Behavior attaches to the type, not the byte.** Fat models, lean structs:
@@ -180,18 +180,20 @@ know the shape.
 | # | Shape | Folder | Canonical form | Status | Exemplar |
 |---|-------|--------|----------------|--------|----------|
 | 1 | **Controller** | `app/controllers/` | `static int h_x(req,res)` + route table | legacy-C; 12 oversized controllers split, 3 remain (all legacy-import) | `chain_projection.c` |
-| 2 | **Service** | `app/services/` | functions returning `struct zcl_result` | partial; 49 baselined, down from 77 (A4 in flight, cluster-by-cluster) | `replay_verify_service.c` |
+| 2 | **Service** | `app/services/` | functions returning `struct zcl_result` | partial; 33 baselined, down from 77 (A4 in flight, cluster-by-cluster) | `replay_verify_service.c` |
 | 3 | **Model** | `app/models/` | `DEFINE_MODEL_CALLBACKS` + `validates_*` + AR save | **real, enforced** (29 models, E3+E4+model-validation HARD) | `block.c` |
 | 4 | **Job** | `app/jobs/` | cursor-stamped stage: advance-or-blocker | **real** — 8 Wave-S stages relocated to `app/jobs/`; E5 HARD (advance-or-block) | `*_stage.c` |
 | 5 | **Supervisor** | `app/supervisors/` | declared liveness tree, restart policy | partial — `net`/`chain`/`staged_sync` declared; `boot_services.c` still owns lifecycle wiring | `app/supervisors/src/staged_sync_supervisor.c` |
 | 6 | **Condition** | `app/conditions/` | `{detect, remedy, witness}` struct + `register()` | **real, the model citizen** (22 conditions live) | `block_failed_mask_at_tip.c` |
 | 7 | **Event** | `app/events/` | typed append-only emit + subscribers | scaffold (definitions + subscribers populate as B2 makes the log authoritative; impl lives in `lib/`) | `lib/storage/event_log.c` |
-| 8 | **Storage Adapter** | `adapters/` + `ports/` | port interface + swappable impl | partial; most storage still direct | `adapters/outbound/persistence/` |
+| 8 | **Storage Adapter** | `adapters/` + `ports/` | port interface + swappable impl | partial; 9 ports, 4 services behind them (hodl_history, node_health, db_maintenance, wallet_backup), most storage still direct | `adapters/outbound/persistence/` |
 
 The honest read: **four shapes are real and enforced today (Model, Condition,
 Job, plus the projection + `*_dump_state_json` registry); Supervisor is
 partial; the rest are legacy C wearing a shape label, or scaffold.** That gap
-— not the absence of ideas — is the work.
+— not the absence of ideas — is the work. Underneath the shapes the pure
+`domain/` core is now real (21 sealed modules, see §6) and the storage seam
+carries 4 services behind ports — both partial, both moving the right direction.
 
 ### The canonical form is struct-registration, not a block-DSL
 
@@ -249,14 +251,16 @@ app/
   events/        typed event definitions + subscribers
   views/         explorer templates
 
+domain/          pure consensus core — NO clock/RNG/IO    21 modules: consensus/ wallet/ encoding/
+                 (each fronted by a thin lib/ legacy wrapper + a seal test)
+
 lib/
   framework/     the shape primitives (condition, projection, mailbox real; rest WIP)
-  domain/        pure consensus core — NO clock/RNG/IO          (aspirational: empty today)
   platform/      clock, rng — the only sanctioned source of time/entropy
   storage/       event_log + projections + (legacy) coins/sqlite
   net/ rpc/ crypto/ chain/ validation/ …                (primitives, incremental migration)
 
-adapters/ ports/  hexagonal seam (real seed; most storage still bypasses it)
+adapters/ ports/  hexagonal seam (9 ports; 4 services behind them; most storage still bypasses it)
 config/           composition root (today: boot monoliths — to become supervisor decls)
 tools/lint/       the ratcheting gates — beauty enforced by the build
 docs/             FRAMEWORK.md (this) · REFACTOR_STATUS.md (checklist) · work/ (assignments)
@@ -316,7 +320,7 @@ load-bearing.
 ```
                  ┌──────────────────────┐
                  │       DOMAIN          │   pure: consensus rules, validation
-                 │    lib/domain/        │   predicates, UTXO arithmetic, crypto
+                 │      domain/          │   predicates, UTXO arithmetic, crypto
                  │  (no clock/RNG/IO)    │   registry. Replays from a seed.
                  └──────────┬───────────┘
                             │ depends on PORTS (interfaces)
@@ -332,10 +336,12 @@ Adapters → Domain. The domain depends on nothing dirty. This is what makes the
 node 50-year-replaceable: C23 → next language, SQLite → next engine, Tor v3 →
 next routing, all without the domain moving.
 
-Honest status: `lib/domain/` and the full adapter tree are **aspirational** —
-the seam exists (`ports/` + `adapters/`) but most storage still calls
-`lib/storage/*_sqlite.c` directly. The `check-lib-layering` ratchet guards the
-direction; populating the domain is checklist work.
+Honest status: the domain core is **real but partial** — `domain/` (top-level)
+holds 21 pure no-clock/no-RNG/no-IO modules (consensus/ wallet/ encoding/), each
+fronted by a thin `lib/` legacy wrapper and sealed by a `test_domain_*` regression
+test. The adapter tree is partial: 9 ports, 4 services read/write through them,
+but most storage still calls `lib/storage/*_sqlite.c` directly. The
+`check-lib-layering` ratchet guards the direction; finishing both is checklist work.
 
 ---
 
