@@ -1,14 +1,24 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * BIP44 multi-account hierarchy for ZClassic.
+ * BIP44 multi-account hierarchy — thin wrapper layer.
+ *
+ * Pure derivation math (path-building + ext_key walk) lives in
+ * domain/wallet/key_derivation.{c,h}. This file preserves the
+ * original bool-returning API for legacy callers and adds the
+ * keypair extraction step (privkey_get_pubkey) that touches the
+ * keys/ adapter directly.
+ *
  * Path: m/44'/147'/account'/change/index
  */
 
 #include "wallet/bip44.h"
-#include "util/log_macros.h"
+
+#include "domain/wallet/key_derivation.h"
 #include "support/cleanse.h"
-#include <string.h>
+#include "util/log_macros.h"
+
 #include <stdio.h>
+#include <string.h>
 
 #define DOMAIN "bip44"
 
@@ -16,21 +26,10 @@ bool bip44_derive_account(const struct ext_key *master,
                           struct ext_key *account_out,
                           uint32_t account)
 {
-    GUARD_NOT_NULL(master, DOMAIN, "master");
-    GUARD_NOT_NULL(account_out, DOMAIN, "account_out");
-    GUARD(account <= BIP44_MAX_ACCOUNT, DOMAIN,
-          "account index too large: %u", account);
-
-    /* m/44'/147'/account' */
-    uint32_t indices[3] = {
-        BIP44_PURPOSE  | BIP32_HARDENED,
-        BIP44_ZCL_COIN | BIP32_HARDENED,
-        account        | BIP32_HARDENED
-    };
-
-    if (!hd_derive_path(master, account_out, indices, 3))
-        LOG_FAIL(DOMAIN, "failed to derive account %u", account);
-
+    struct zcl_result r = domain_wallet_bip44_derive_account(
+            master, account_out, account);
+    if (!r.ok)
+        LOG_FAIL(DOMAIN, "bip44_derive_account: %s", r.message);
     return true;
 }
 
@@ -38,23 +37,10 @@ bool bip44_derive_chain(const struct ext_key *master,
                         struct ext_key *chain_out,
                         uint32_t account, uint32_t change)
 {
-    GUARD_NOT_NULL(master, DOMAIN, "master");
-    GUARD_NOT_NULL(chain_out, DOMAIN, "chain_out");
-    GUARD(change == BIP44_EXTERNAL || change == BIP44_INTERNAL,
-          DOMAIN, "change must be 0 or 1, got %u", change);
-
-    /* m/44'/147'/account'/change */
-    uint32_t indices[4] = {
-        BIP44_PURPOSE  | BIP32_HARDENED,
-        BIP44_ZCL_COIN | BIP32_HARDENED,
-        account        | BIP32_HARDENED,
-        change
-    };
-
-    if (!hd_derive_path(master, chain_out, indices, 4))
-        LOG_FAIL(DOMAIN, "failed to derive chain account=%u change=%u",
-                 account, change);
-
+    struct zcl_result r = domain_wallet_bip44_derive_chain(
+            master, chain_out, account, change);
+    if (!r.ok)
+        LOG_FAIL(DOMAIN, "bip44_derive_chain: %s", r.message);
     return true;
 }
 
@@ -62,26 +48,10 @@ bool bip44_derive_key(const struct ext_key *master,
                       struct ext_key *key_out,
                       uint32_t account, uint32_t change, uint32_t index)
 {
-    GUARD_NOT_NULL(master, DOMAIN, "master");
-    GUARD_NOT_NULL(key_out, DOMAIN, "key_out");
-    GUARD(change == BIP44_EXTERNAL || change == BIP44_INTERNAL,
-          DOMAIN, "change must be 0 or 1, got %u", change);
-    GUARD(index <= BIP44_MAX_INDEX, DOMAIN,
-          "address index too large: %u", index);
-
-    /* m/44'/147'/account'/change/index */
-    uint32_t indices[5] = {
-        BIP44_PURPOSE  | BIP32_HARDENED,
-        BIP44_ZCL_COIN | BIP32_HARDENED,
-        account        | BIP32_HARDENED,
-        change,
-        index
-    };
-
-    if (!hd_derive_path(master, key_out, indices, 5))
-        LOG_FAIL(DOMAIN, "failed to derive key account=%u change=%u index=%u",
-                 account, change, index);
-
+    struct zcl_result r = domain_wallet_bip44_derive_key(
+            master, key_out, account, change, index);
+    if (!r.ok)
+        LOG_FAIL(DOMAIN, "bip44_derive_key: %s", r.message);
     return true;
 }
 
@@ -94,9 +64,11 @@ bool bip44_derive_keypair(const struct ext_key *master,
     GUARD_NOT_NULL(pub_out, DOMAIN, "pub_out");
 
     struct ext_key child;
-    if (!bip44_derive_key(master, &child, account, change, index)) {
+    struct zcl_result r = domain_wallet_bip44_derive_key(
+            master, &child, account, change, index);
+    if (!r.ok) {
         memory_cleanse(&child, sizeof(child));
-        return false;
+        LOG_FAIL(DOMAIN, "bip44_derive_keypair: %s", r.message);
     }
 
     *priv_out = child.key;
@@ -113,12 +85,10 @@ bool bip44_derive_keypair(const struct ext_key *master,
 int bip44_format_path(char *buf, size_t buf_size,
                       uint32_t account, uint32_t change, uint32_t index)
 {
-    if (!buf || buf_size == 0)
+    int written = 0;
+    struct zcl_result r = domain_wallet_bip44_format_path(
+            buf, buf_size, account, change, index, &written);
+    if (!r.ok)
         return -1;
-
-    int n = snprintf(buf, buf_size, "m/44'/147'/%u'/%u/%u",
-                     account, change, index);
-    if (n < 0 || (size_t)n >= buf_size)
-        return -1;
-    return n;
+    return written;
 }

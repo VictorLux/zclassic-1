@@ -1,24 +1,30 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * BIP32 HD keychain implementation.
- * Master seed -> account -> change -> address derivation.
+ * BIP32 HD keychain — thin wrapper layer.
+ *
+ * Pure derivation math (HMAC-SHA512, secp256k1 chain) lives in
+ * domain/wallet/key_derivation.{c,h}. This file:
+ *   - generates seeds via the platform RNG (impure — stays here);
+ *   - serializes xpub/xprv via encoding/base58 (encoding, not math);
+ *   - presents the original bool-returning API for legacy callers.
  */
 
 #include "wallet/hd_keychain.h"
+
+#include "domain/wallet/key_derivation.h"
 #include "core/random.h"
 #include "encoding/base58.h"
 #include "support/cleanse.h"
 #include "util/log_macros.h"
+
 #include <string.h>
-#include <stdlib.h>
-#include <errno.h>
 
 #define DOMAIN "hd"
 
 /* BIP32 serialized key is 78 bytes: 4 version + 74 ext_key payload */
 #define BIP32_SERIALIZED_SIZE 78
 
-/* ── Seed generation ──────────────────────────────────────────────── */
+/* ── Seed generation (impure: platform RNG) ───────────────────────── */
 
 bool hd_generate_seed(unsigned char *seed_out, size_t seed_len)
 {
@@ -30,112 +36,39 @@ bool hd_generate_seed(unsigned char *seed_out, size_t seed_len)
     return true;
 }
 
-/* ── Master key creation ──────────────────────────────────────────── */
+/* ── Master key creation (delegates to pure domain) ───────────────── */
 
 bool hd_master_from_seed(struct ext_key *master_out,
                          const unsigned char *seed, size_t seed_len)
 {
-    GUARD_NOT_NULL(master_out, DOMAIN, "master_out");
-    GUARD_NOT_NULL(seed, DOMAIN, "seed");
-    GUARD(seed_len >= HD_SEED_MIN_BYTES && seed_len <= HD_SEED_MAX_BYTES,
-          DOMAIN, "seed_len out of range: %zu", seed_len);
-
-    ext_key_set_master(master_out, seed, (unsigned int)seed_len);
-
-    if (!privkey_is_valid(&master_out->key))
-        LOG_FAIL(DOMAIN, "master key derivation produced invalid key");
-
+    struct zcl_result r =
+            domain_wallet_master_from_seed(master_out, seed, seed_len);
+    if (!r.ok)
+        LOG_FAIL(DOMAIN, "hd_master_from_seed: %s", r.message);
     return true;
 }
 
-/* ── Path parsing ─────────────────────────────────────────────────── */
+/* ── Path parsing (delegates) ─────────────────────────────────────── */
 
 int hd_parse_path(const char *path, uint32_t *indices_out, int max_indices)
 {
-    if (!path || !indices_out || max_indices <= 0)
-        return -1;
-
-    const char *p = path;
-
-    /* Skip optional leading "m" or "m/" */
-    if (*p == 'm' || *p == 'M') {
-        p++;
-        if (*p == '/') {
-            p++;
-            if (*p == '\0')
-                return -1; /* "m/" with nothing after slash is invalid */
-        }
-    }
-
-    if (*p == '\0')
-        return 0; /* "m" alone = master key, zero components */
-
     int count = 0;
-    while (*p != '\0') {
-        if (count >= max_indices)
-            return -1; /* too many components */
-
-        /* Parse the numeric index */
-        char *endptr;
-        errno = 0;
-        unsigned long val = strtoul(p, &endptr, 10);
-        if (errno != 0 || endptr == p || val > 0x7FFFFFFFu)
-            return -1; /* invalid number */
-
-        uint32_t index = (uint32_t)val;
-
-        /* Check for hardened marker: ' or h or H */
-        if (*endptr == '\'' || *endptr == 'h' || *endptr == 'H') {
-            index |= BIP32_HARDENED;
-            endptr++;
-        }
-
-        indices_out[count++] = index;
-
-        /* Expect '/' separator or end of string */
-        if (*endptr == '/') {
-            endptr++;
-            if (*endptr == '\0')
-                return -1; /* trailing slash */
-        } else if (*endptr != '\0') {
-            return -1; /* unexpected character */
-        }
-
-        p = endptr;
-    }
-
+    struct zcl_result r = domain_wallet_parse_path(path, indices_out,
+                                                   max_indices, &count);
+    if (!r.ok)
+        return -1;
     return count;
 }
 
-/* ── Path derivation ──────────────────────────────────────────────── */
+/* ── Path derivation (delegates) ──────────────────────────────────── */
 
 bool hd_derive_path(const struct ext_key *parent, struct ext_key *child_out,
                     const uint32_t *indices, int num_indices)
 {
-    GUARD_NOT_NULL(parent, DOMAIN, "parent");
-    GUARD_NOT_NULL(child_out, DOMAIN, "child_out");
-    GUARD(num_indices >= 0 && num_indices <= HD_MAX_DEPTH,
-          DOMAIN, "num_indices out of range: %d", num_indices);
-
-    if (num_indices == 0) {
-        *child_out = *parent;
-        return true;
-    }
-
-    struct ext_key current = *parent;
-    struct ext_key next;
-
-    for (int i = 0; i < num_indices; i++) {
-        if (!ext_key_derive(&current, &next, indices[i])) {
-            LOG_FAIL(DOMAIN, "derivation failed at depth %d, index 0x%08x",
-                     i, indices[i]);
-        }
-        current = next;
-        memory_cleanse(&next, sizeof(next));
-    }
-
-    *child_out = current;
-    memory_cleanse(&current, sizeof(current));
+    struct zcl_result r = domain_wallet_derive_path(parent, child_out,
+                                                    indices, num_indices);
+    if (!r.ok)
+        LOG_FAIL(DOMAIN, "hd_derive_path: %s", r.message);
     return true;
 }
 
@@ -145,9 +78,12 @@ bool hd_derive_path_str(const struct ext_key *master, struct ext_key *child_out,
     GUARD_NOT_NULL(path, DOMAIN, "path");
 
     uint32_t indices[HD_MAX_PATH_COMPONENTS];
-    int count = hd_parse_path(path, indices, HD_MAX_PATH_COMPONENTS);
-    if (count < 0)
-        LOG_FAIL(DOMAIN, "invalid path: %s", path);
+    int count = 0;
+    struct zcl_result r = domain_wallet_parse_path(path, indices,
+                                                   HD_MAX_PATH_COMPONENTS,
+                                                   &count);
+    if (!r.ok)
+        LOG_FAIL(DOMAIN, "invalid path '%s': %s", path, r.message);
 
     return hd_derive_path(master, child_out, indices, count);
 }
@@ -155,49 +91,27 @@ bool hd_derive_path_str(const struct ext_key *master, struct ext_key *child_out,
 bool hd_derive_child_index(const struct ext_key *parent,
                            struct ext_key *child_out, uint32_t index)
 {
-    GUARD_NOT_NULL(parent, DOMAIN, "parent");
-    GUARD_NOT_NULL(child_out, DOMAIN, "child_out");
-
-    if (!ext_key_derive(parent, child_out, index))
-        LOG_FAIL(DOMAIN, "child derivation failed at index %u", index);
-
+    struct zcl_result r = domain_wallet_derive_child_index(parent, child_out,
+                                                           index);
+    if (!r.ok)
+        LOG_FAIL(DOMAIN, "hd_derive_child_index: %s", r.message);
     return true;
 }
 
-/* ── Public key path derivation ───────────────────────────────────── */
+/* ── Public key path derivation (delegates) ───────────────────────── */
 
 bool hd_derive_pubkey_path(const struct ext_pubkey *parent,
                            struct ext_pubkey *child_out,
                            const uint32_t *indices, int num_indices)
 {
-    GUARD_NOT_NULL(parent, DOMAIN, "parent");
-    GUARD_NOT_NULL(child_out, DOMAIN, "child_out");
-    GUARD(num_indices >= 0 && num_indices <= HD_MAX_DEPTH,
-          DOMAIN, "num_indices out of range: %d", num_indices);
-
-    if (num_indices == 0) {
-        *child_out = *parent;
-        return true;
-    }
-
-    struct ext_pubkey current = *parent;
-    struct ext_pubkey next;
-
-    for (int i = 0; i < num_indices; i++) {
-        if (indices[i] & BIP32_HARDENED)
-            LOG_FAIL(DOMAIN, "cannot derive hardened child from public key at depth %d", i);
-
-        if (!ext_pubkey_derive(&current, &next, indices[i]))
-            LOG_FAIL(DOMAIN, "pubkey derivation failed at depth %d, index %u",
-                     i, indices[i]);
-        current = next;
-    }
-
-    *child_out = current;
+    struct zcl_result r = domain_wallet_derive_pubkey_path(parent, child_out,
+                                                           indices, num_indices);
+    if (!r.ok)
+        LOG_FAIL(DOMAIN, "hd_derive_pubkey_path: %s", r.message);
     return true;
 }
 
-/* ── Serialization ────────────────────────────────────────────────── */
+/* ── Serialization (encoding/base58 wrappers, not derivation math) ── */
 
 bool hd_serialize_xprv(const struct ext_key *ek,
                        const unsigned char version[4],

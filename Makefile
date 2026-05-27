@@ -27,7 +27,7 @@ PORTS_INCLUDES = -Iports/include
 
 # Domain layer (pure, framework-free, no I/O).
 # Bounded contexts under domain/<context>/ each expose include/domain/<context>/.
-DOMAIN_CONTEXTS = consensus
+DOMAIN_CONTEXTS = consensus wallet
 DOMAIN_INCLUDES = $(foreach c,$(DOMAIN_CONTEXTS),-Idomain/$(c)/include)
 DOMAIN_SRCS = $(foreach c,$(DOMAIN_CONTEXTS),$(wildcard domain/$(c)/src/*.c))
 
