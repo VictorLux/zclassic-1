@@ -27,13 +27,10 @@ app/services/src/chain_evidence_store.c
 app/services/src/chain_restore_boot_activation.c
 app/services/src/chain_restore_boot_snapshot.c
 app/services/src/chain_restore_disk_repair.c
-app/services/src/chain_restore_executor.c
 app/services/src/chain_restore_integrity.c
 app/services/src/chain_restore_planner.c
-app/services/src/chain_restore_repair.c
 app/services/src/chain_state_repository.c
 app/services/src/chain_state_validator.c
-app/services/src/chain_tip.c
 app/services/src/chain_tip_watchdog.c
 app/services/src/consensus_reject_index.c
 app/services/src/cutover_modes.c
@@ -49,9 +46,7 @@ app/services/src/legacy_mirror_sync_service.c
 app/services/src/node_health_service.c
 app/services/src/oracle_policy.c
 app/services/src/proof_validate_stage.c
-app/services/src/quorum_oracle_service.c
 app/services/src/recovery_policy.c
-app/services/src/rolling_anchor_service.c
 app/services/src/script_validate_stage.c
 app/services/src/snapshot_manifest.c
 app/services/src/snapshot_sync_service.c
@@ -62,4 +57,3 @@ app/services/src/utxo_audit_service.c
 app/services/src/utxo_recovery_service.c
 app/services/src/validate_headers_stage.c
 app/services/src/wallet_view_projection.c
-app/services/src/zclassicd_oracle_service.c
