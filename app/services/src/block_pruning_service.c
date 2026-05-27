@@ -294,18 +294,19 @@ void block_pruning_init(struct block_pruning_service *svc,
     svc->tick_seconds = BLOCK_PRUNING_DEFAULT_TICK_SECONDS;
 }
 
-bool block_pruning_start(struct block_pruning_service *svc)
+struct zcl_result block_pruning_start(struct block_pruning_service *svc)
 {
     if (!svc || !svc->ms || !svc->datadir)
-        LOG_FAIL("block_pruning", "start: null svc, ms, or datadir");
+        return ZCL_ERR(-1, "block_pruning: start: null svc, ms, or datadir");
     if (svc->thread_started)
-        LOG_FAIL("block_pruning", "start: thread already running");
+        return ZCL_ERR(-2, "block_pruning: start: thread already running");
 
     atomic_store(&svc->stop_requested, false);
     svc->ready = false;
     if (thread_registry_spawn_ex("zcl_block_prune", block_pruning_thread, svc,
                                   &svc->thread) != 0)
-        LOG_FAIL("block_pruning", "failed to create thread: %s", strerror(errno));
+        return ZCL_ERR(-3, "block_pruning: failed to create thread: %s",
+                       strerror(errno));
     svc->thread_started = true;
 
     /* Wait for thread to confirm it's running — no sleeps, no races.
@@ -337,13 +338,13 @@ bool block_pruning_start(struct block_pruning_service *svc)
         atomic_store(&svc->stop_requested, true);
         pthread_detach(svc->thread);
         svc->thread_started = false;
-        LOG_FAIL("block_pruning",
-                 "thread did not signal ready within 30 s — aborted start");
+        return ZCL_ERR(-4,
+            "block_pruning: thread did not signal ready within 30 s — aborted start");
     }
 
     printf("[prune] started — keep_blocks=%d tick=%ds\n",
            svc->keep_blocks, svc->tick_seconds);
-    return true;
+    return ZCL_OK;
 }
 
 void block_pruning_stop(struct block_pruning_service *svc)

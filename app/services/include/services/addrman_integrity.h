@@ -52,6 +52,8 @@
 #ifndef ZCL_SERVICES_ADDRMAN_INTEGRITY_H
 #define ZCL_SERVICES_ADDRMAN_INTEGRITY_H
 
+#include "util/result.h"
+
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -81,10 +83,10 @@ enum aii_verdict aii_verify(const char *datadir,
                              char *err_out, size_t err_cap);
 
 /* Write the SHA3 sidecar for the current peers.dat. Call AFTER
- * the body has been renamed into place. Returns false on any
- * I/O error. The caller is free to ignore the return value — a
- * later `aii_verify` will just return AII_SIDECAR_MISSING. */
-bool aii_write_sidecar(const char *datadir);
+ * the body has been renamed into place. Returns a non-ok zcl_result
+ * on any I/O error. The caller is free to ignore the return value —
+ * a later `aii_verify` will just return AII_SIDECAR_MISSING. */
+struct zcl_result aii_write_sidecar(const char *datadir);
 
 /* Rename `peers.dat` and `peers.dat.sha3` aside as
  * `<name>.corrupt.<unix_ts>`. Does NOT delete — operators need

@@ -26,17 +26,17 @@ const char *utxo_audit_status_name(enum utxo_audit_status status)
     }
 }
 
-bool utxo_audit_local(struct node_db *ndb, int32_t height,
-                      struct utxo_audit_result *out)
+struct zcl_result utxo_audit_local(struct node_db *ndb, int32_t height,
+                                   struct utxo_audit_result *out)
 {
     if (!out)
-        return false;
+        return ZCL_ERR(-1, "utxo_audit: null out");
     memset(out, 0, sizeof(*out));
     out->status = UTXO_AUDIT_ERROR;
 
     if (!ndb || !ndb->open || !ndb->db) {
         snprintf(out->error, sizeof(out->error), "database not available");
-        LOG_FAIL("utxo_audit", "local audit without open database");
+        return ZCL_ERR(-2, "utxo_audit: local audit without open database");
     }
 
     uint8_t local_hash[32];
@@ -51,24 +51,25 @@ bool utxo_audit_local(struct node_db *ndb, int32_t height,
                             out->local_sha3, strlen(out->local_sha3));
     (void)node_db_state_set_int(ndb, "utxo_audit_last_height",
                                 (int64_t)height);
-    return true;
+    return ZCL_OK;
 }
 
-bool utxo_audit_compare_remote(struct node_db *ndb,
-                               const char *remote_sha3,
-                               int32_t remote_height,
-                               const char *source,
-                               struct utxo_audit_result *out)
+struct zcl_result utxo_audit_compare_remote(struct node_db *ndb,
+                                            const char *remote_sha3,
+                                            int32_t remote_height,
+                                            const char *source,
+                                            struct utxo_audit_result *out)
 {
     if (!out)
-        return false;
-    if (!utxo_audit_local(ndb, remote_height, out))
-        return false;
+        return ZCL_ERR(-1, "utxo_audit: null out");
+    struct zcl_result local = utxo_audit_local(ndb, remote_height, out);
+    if (!local.ok)
+        return local;
 
     if (!is_sha3_hex(remote_sha3)) {
         out->status = UTXO_AUDIT_ERROR;
         snprintf(out->error, sizeof(out->error), "remote_sha3 must be 64 hex chars");
-        LOG_FAIL("utxo_audit", "invalid remote sha3");
+        return ZCL_ERR(-3, "utxo_audit: invalid remote sha3");
     }
 
     snprintf(out->remote_sha3, sizeof(out->remote_sha3), "%s", remote_sha3);
@@ -95,5 +96,5 @@ bool utxo_audit_compare_remote(struct node_db *ndb,
                     (unsigned long long)out->local_utxo_count);
     }
 
-    return true;
+    return ZCL_OK;
 }

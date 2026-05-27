@@ -426,10 +426,10 @@ int test_block_pruning(void)
         fixture_init(&f, 100, "lifecycle");
         f.svc.tick_seconds = 3600;  /* long tick so thread doesn't run_once */
 
-        bool start_ok = block_pruning_start(&f.svc);
+        bool start_ok = block_pruning_start(&f.svc).ok;
         PRUNE_CHECK("prune: start() succeeds", start_ok);
 
-        bool start2 = block_pruning_start(&f.svc);
+        bool start2 = block_pruning_start(&f.svc).ok;
         PRUNE_CHECK("prune: second start() rejected", !start2);
 
         /* start() blocks until the thread is live — no sleep needed. */

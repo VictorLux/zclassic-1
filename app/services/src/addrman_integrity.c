@@ -110,9 +110,9 @@ static bool aii_hash_body(const char *body_path,
 
 /* ── Sidecar writer ─────────────────────────────────────────── */
 
-bool aii_write_sidecar(const char *datadir)
+struct zcl_result aii_write_sidecar(const char *datadir)
 {
-    if (!datadir) return false;
+    if (!datadir) return ZCL_ERR(-1, "aii: null datadir");
 
     char body_path[1024];
     char side_path[1024];
@@ -123,7 +123,7 @@ bool aii_write_sidecar(const char *datadir)
 
     struct stat st;
     if (stat(body_path, &st) != 0)
-        LOG_FAIL("aii", "stat %s: %s", body_path, strerror(errno));
+        return ZCL_ERR(-2, "aii: stat %s: %s", body_path, strerror(errno));
 
     struct aii_sidecar_header hdr;
     memset(&hdr, 0, sizeof(hdr));
@@ -133,20 +133,19 @@ bool aii_write_sidecar(const char *datadir)
 
     uint64_t hashed_size = 0;
     if (!aii_hash_body(body_path, hdr.body_sha3, &hashed_size))
-        LOG_FAIL("aii", "hash body failed");
+        return ZCL_ERR(-3, "aii: hash body failed");
     if (hashed_size != hdr.body_size)
-        LOG_FAIL("aii", "size drift stat=%llu hashed=%llu",
-                 (unsigned long long)hdr.body_size,
-                 (unsigned long long)hashed_size);
+        return ZCL_ERR(-4, "aii: size drift stat=%llu hashed=%llu",
+                       (unsigned long long)hdr.body_size,
+                       (unsigned long long)hashed_size);
 
     FILE *f = fopen(tmp_path, "wb");
     if (!f)
-        LOG_FAIL("aii", "fopen %s: %s", tmp_path, strerror(errno));
+        return ZCL_ERR(-5, "aii: fopen %s: %s", tmp_path, strerror(errno));
     if (fwrite(&hdr, sizeof(hdr), 1, f) != 1) {
-        fprintf(stderr, "aii_write_sidecar: fwrite failed\n");
         fclose(f);
         unlink(tmp_path);
-        return false;
+        return ZCL_ERR(-6, "aii_write_sidecar: fwrite failed");
     }
     fflush(f);
     int fd = fileno(f);
@@ -154,12 +153,13 @@ bool aii_write_sidecar(const char *datadir)
     fclose(f);
 
     if (rename(tmp_path, side_path) != 0) {
-        fprintf(stderr, "aii_write_sidecar: rename %s -> %s: %s\n",
-                tmp_path, side_path, strerror(errno));
+        struct zcl_result r = ZCL_ERR(-7,
+            "aii_write_sidecar: rename %s -> %s: %s",
+            tmp_path, side_path, strerror(errno));
         unlink(tmp_path);
-        return false;
+        return r;
     }
-    return true;
+    return ZCL_OK;
 }
 
 /* ── Sidecar reader ─────────────────────────────────────────── */

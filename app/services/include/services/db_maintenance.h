@@ -51,6 +51,7 @@
 #define ZCL_SERVICES_DB_MAINTENANCE_H
 
 #include "models/database.h"
+#include "util/result.h"
 
 #include <stdbool.h>
 #include <stdint.h>
@@ -98,10 +99,10 @@ void db_maintenance_status_snapshot(struct db_maintenance_status *out);
 /* ── Lifecycle ──────────────────────────────────────────────── */
 
 /* Launch the background thread. `db` must be an opened node_db.
- * Returns false if already running, if db is not open, or if
- * thread create fails. Safe to call from any thread. */
-bool db_maintenance_start(struct node_db *db,
-                           const struct db_maintenance_schedule *s);
+ * Returns a non-ok zcl_result if already running, if db is not open,
+ * or if thread create fails. Safe to call from any thread. */
+struct zcl_result db_maintenance_start(struct node_db *db,
+                                       const struct db_maintenance_schedule *s);
 
 void db_maintenance_stop(void);
 
@@ -110,9 +111,9 @@ void db_maintenance_stop(void);
  *   "analyze" — ANALYZE
  *   "vacuum"  — VACUUM  (caller is responsible for idle check)
  *
- * Returns true on SQLite success. `db` must be opened. Emits the
+ * Returns ZCL_OK on SQLite success. `db` must be opened. Emits the
  * _START / _DONE / _FAILED events on success and failure paths. */
-bool db_maintenance_run_now(struct node_db *db, const char *op);
+struct zcl_result db_maintenance_run_now(struct node_db *db, const char *op);
 
 /* ── Vacuum gate ────────────────────────────────────────────── */
 

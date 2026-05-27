@@ -479,13 +479,14 @@ bool rpc_getutxoaudit(const struct json_value *params, bool help,
         remote_height = height;
 
     struct utxo_audit_result audit;
-    bool ok = remote_sha3 && remote_sha3[0]
+    struct zcl_result audit_res = remote_sha3 && remote_sha3[0]
         ? utxo_audit_compare_remote(ctx->node_db, remote_sha3,
                                     (int32_t)remote_height, source, &audit)
         : utxo_audit_local(ctx->node_db, height, &audit);
-    if (!ok) {
+    if (!audit_res.ok) {
         json_set_str(result, "UTXO audit failed");
-        LOG_FAIL("blockchain", "getutxoaudit: audit failed");
+        LOG_FAIL("blockchain", "getutxoaudit: audit failed: %s",
+                 audit_res.message);
     }
     utxo_audit_result_to_json(&audit, result);
     return audit.status != UTXO_AUDIT_ERROR;

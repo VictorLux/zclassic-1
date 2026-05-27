@@ -130,7 +130,7 @@ int test_addrman_integrity(void)
         for (size_t i = 0; i < sizeof(body); i++) body[i] = (uint8_t)(i * 7 + 1);
         aii_write_body(dir, body, sizeof(body));
 
-        bool wrote = aii_write_sidecar(dir);
+        bool wrote = aii_write_sidecar(dir).ok;
         char side[1024];
         snprintf(side, sizeof(side), "%s/peers.dat.sha3", dir);
         bool exists = aii_file_exists(side);
@@ -320,9 +320,9 @@ int test_addrman_integrity(void)
         for (size_t i = 0; i < sizeof(body); i++) body[i] = (uint8_t)i;
         aii_write_body(dir, body, sizeof(body));
 
-        bool w1 = aii_write_sidecar(dir);
-        bool w2 = aii_write_sidecar(dir);
-        bool w3 = aii_write_sidecar(dir);
+        bool w1 = aii_write_sidecar(dir).ok;
+        bool w2 = aii_write_sidecar(dir).ok;
+        bool w3 = aii_write_sidecar(dir).ok;
         enum aii_verdict v = aii_verify(dir, NULL, 0);
         bool ok = w1 && w2 && w3 && v == AII_OK;
         aii_cleanup(dir);

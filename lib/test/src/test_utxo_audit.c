@@ -69,7 +69,7 @@ static int test_utxo_audit_detects_drift(void)
 
         struct utxo_audit_result result;
         ASSERT(utxo_audit_compare_remote(&ndb, remote_hex, 3078015,
-                                         "unit-peer", &result));
+                                         "unit-peer", &result).ok);
         ASSERT(result.status == UTXO_AUDIT_DRIFT);
         ASSERT(result.local_utxo_count == count);
         ASSERT(strcmp(result.remote_sha3, remote_hex) == 0);

@@ -138,9 +138,9 @@ int test_db_maintenance(void)
         DBM_CHECK("dbm: fixture opens",
                   dbm_fixture_init(&f, "runops"));
 
-        bool wal_ok     = db_maintenance_run_now(&f.ndb, "wal");
-        bool analyze_ok = db_maintenance_run_now(&f.ndb, "analyze");
-        bool vacuum_ok  = db_maintenance_run_now(&f.ndb, "vacuum");
+        bool wal_ok     = db_maintenance_run_now(&f.ndb, "wal").ok;
+        bool analyze_ok = db_maintenance_run_now(&f.ndb, "analyze").ok;
+        bool vacuum_ok  = db_maintenance_run_now(&f.ndb, "vacuum").ok;
 
         DBM_CHECK("dbm: run_now(wal) succeeds",     wal_ok);
         DBM_CHECK("dbm: run_now(analyze) succeeds", analyze_ok);
@@ -165,7 +165,7 @@ int test_db_maintenance(void)
         struct dbm_fixture f;
         dbm_fixture_init(&f, "badop");
 
-        bool ok = db_maintenance_run_now(&f.ndb, "defrag-please");
+        bool ok = db_maintenance_run_now(&f.ndb, "defrag-please").ok;
         DBM_CHECK("dbm: unknown op rejected by run_now", !ok);
         DBM_CHECK("dbm: unknown op emits no events",
                   atomic_load(&g_ev_start)  == 0 &&
@@ -179,7 +179,7 @@ int test_db_maintenance(void)
     {
         struct node_db fake = {0};
         /* fake.open is false, fake.db is NULL → run_now refuses */
-        bool ok = db_maintenance_run_now(&fake, "analyze");
+        bool ok = db_maintenance_run_now(&fake, "analyze").ok;
         DBM_CHECK("dbm: run_now with unopened db returns false", !ok);
     }
 
@@ -213,8 +213,8 @@ int test_db_maintenance(void)
          * scheduled runs during the test. */
         sched.tick_seconds           = 3600;
 
-        bool start1 = db_maintenance_start(&f.ndb, &sched);
-        bool reject = !db_maintenance_start(&f.ndb, &sched);
+        bool start1 = db_maintenance_start(&f.ndb, &sched).ok;
+        bool reject = !db_maintenance_start(&f.ndb, &sched).ok;
         DBM_CHECK("dbm: start() succeeds", start1);
         DBM_CHECK("dbm: second start() rejected while running", reject);
 
@@ -244,7 +244,7 @@ int test_db_maintenance(void)
          * scheduler won't vacuum while the node is busy, without
          * blocking operators who want to force a VACUUM. */
         db_maintenance_set_vacuum_gate(dbm_gate_always_false);
-        bool vacuum_ok = db_maintenance_run_now(&f.ndb, "vacuum");
+        bool vacuum_ok = db_maintenance_run_now(&f.ndb, "vacuum").ok;
         DBM_CHECK("dbm: run_now(vacuum) bypasses the gate (manual override)",
                   vacuum_ok);
         db_maintenance_set_vacuum_gate(NULL);

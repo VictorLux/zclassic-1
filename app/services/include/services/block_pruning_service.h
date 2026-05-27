@@ -44,6 +44,7 @@
 #ifndef ZCL_SERVICES_BLOCK_PRUNING_SERVICE_H
 #define ZCL_SERVICES_BLOCK_PRUNING_SERVICE_H
 
+#include "util/result.h"
 #include "validation/main_state.h"
 #include <pthread.h>
 #include <stdbool.h>
@@ -114,9 +115,9 @@ void block_pruning_init(struct block_pruning_service *svc,
                         struct main_state *ms,
                         const char *datadir);
 
-/* Launch the background thread. Returns false if already running
- * or if ms/datadir are NULL. */
-bool block_pruning_start(struct block_pruning_service *svc);
+/* Launch the background thread. Returns a non-ok zcl_result if
+ * already running or if ms/datadir are NULL. */
+struct zcl_result block_pruning_start(struct block_pruning_service *svc);
 
 /* Signal and join the background thread. Safe to call if not started. */
 void block_pruning_stop(struct block_pruning_service *svc);

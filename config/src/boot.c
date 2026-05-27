@@ -1117,12 +1117,14 @@ static bool boot_db_maintenance_service_start(void *ctx)
     struct db_maintenance_schedule dbm_sched;
     db_maintenance_schedule_defaults(&dbm_sched);
     dbm_sched.wal_checkpoint_minutes = 5;
-    if (db_maintenance_start(db, &dbm_sched)) {
+    struct zcl_result _dbm_r = db_maintenance_start(db, &dbm_sched);
+    if (_dbm_r.ok) {
         printf("DB maintenance started (wal=%dmin analyze=%dh)\n",
                dbm_sched.wal_checkpoint_minutes,
                dbm_sched.analyze_hours);
         return true;
     }
+    fprintf(stderr, "db_maintenance_start failed: %s\n", _dbm_r.message);
     return false;
 }
 

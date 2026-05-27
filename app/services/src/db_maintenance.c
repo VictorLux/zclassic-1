@@ -175,11 +175,14 @@ static void dbm_note_run_locked(const char *op,
 
 /* ── run_now ────────────────────────────────────────────────── */
 
-bool db_maintenance_run_now(struct node_db *db, const char *op)
+struct zcl_result db_maintenance_run_now(struct node_db *db, const char *op)
 {
-    if (!db || !db->open || !db->db) LOG_FAIL("db_maint", "run_now called with null or closed db");
+    if (!db || !db->open || !db->db)
+        return ZCL_ERR(-1, "db_maint: run_now called with null or closed db");
     const char *sql = dbm_sql_for_op(op);
-    if (!sql) LOG_FAIL("db_maint", "unknown maintenance op: %s", op ? op : "(null)");
+    if (!sql)
+        return ZCL_ERR(-2, "db_maint: unknown maintenance op: %s",
+                       op ? op : "(null)");
 
     pthread_mutex_lock(&g_dbm.lock);
 
@@ -197,9 +200,12 @@ bool db_maintenance_run_now(struct node_db *db, const char *op)
         event_emitf(EV_DB_MAINTENANCE_FAILED, 0,
                     "op=%s reason=%s", op,
                     errmsg ? errmsg : "sqlite error");
+        struct zcl_result r = ZCL_ERR(-3, "db_maint: op=%s rc=%d %s",
+                                      op, rc,
+                                      errmsg ? errmsg : "sqlite error");
         sqlite3_free(errmsg);
         pthread_mutex_unlock(&g_dbm.lock);
-        return false;
+        return r;
     }
 
     dbm_note_run_locked(op, dbm_now_unix(), elapsed_ms);
@@ -210,7 +216,7 @@ bool db_maintenance_run_now(struct node_db *db, const char *op)
                 "op=%s elapsed_ms=%" PRId64,
                 op, elapsed_ms);
     pthread_mutex_unlock(&g_dbm.lock);
-    return true;
+    return ZCL_OK;
 }
 
 /* ── Thread loop ────────────────────────────────────────────── */
@@ -299,15 +305,17 @@ static void *dbm_thread_fn(void *arg)
 
 /* ── Lifecycle ──────────────────────────────────────────────── */
 
-bool db_maintenance_start(struct node_db *db,
-                           const struct db_maintenance_schedule *s)
+struct zcl_result db_maintenance_start(struct node_db *db,
+                                       const struct db_maintenance_schedule *s)
 {
-    if (!db || !db->open || !db->db || !s) LOG_FAIL("db_maint", "start called with null db or schedule");
+    if (!db || !db->open || !db->db || !s)
+        return ZCL_ERR(-10, "db_maint: start called with null db or schedule");
 
     pthread_mutex_lock(&g_dbm.lock);
     if (g_dbm.thread_running) {
         pthread_mutex_unlock(&g_dbm.lock);
-        LOG_FAIL("db_maint", "start called but maintenance thread already running");
+        return ZCL_ERR(-11,
+            "db_maint: start called but maintenance thread already running");
     }
 
     g_dbm.db    = db;
@@ -340,11 +348,11 @@ bool db_maintenance_start(struct node_db *db,
     if (rc != 0) {
         g_dbm.thread_running = false;
         pthread_mutex_unlock(&g_dbm.lock);
-        fprintf(stderr, "db_maintenance: thread_registry_spawn_ex failed (%d)\n", rc);
-        return false;
+        return ZCL_ERR(-12,
+            "db_maintenance: thread_registry_spawn_ex failed (%d)", rc);
     }
     pthread_mutex_unlock(&g_dbm.lock);
-    return true;
+    return ZCL_OK;
 }
 
 void db_maintenance_stop(void)
