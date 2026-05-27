@@ -3,6 +3,7 @@
 
 #include "adapters/inbound/shadow_feeder.h"
 
+#include "adapters/inbound/shadow_conservation.h"
 #include "adapters/outbound/persistence/block_log_file.h"
 #include "mutator/cmd.h"
 #include "mutator/input_queue.h"
@@ -107,12 +108,22 @@ struct zcl_result shadow_feeder_observe_block(
          * so the log stays a strict superset of dispatch attempts —
          * that's intentional: a recovery scan can re-feed missed
          * blocks. */
-        if (q.code == MUTATOR_ERR_BACKPRESSURE)
+        if (q.code == MUTATOR_ERR_BACKPRESSURE) {
             atomic_fetch_add_explicit(&f->backpressure_hits, 1,
                                       memory_order_relaxed);
+            /* Process-global mirror: a backpressure-dropped block is
+             * fed to the feeder (it is in the shadow log) but is not
+             * pushed into the validate/diff path on this pass. It is a
+             * legitimate skip in the conservation law. Best-effort. */
+            shadow_conservation_record_skipped(1);
+        }
         return q;
     }
     atomic_fetch_add_explicit(&f->observed, 1, memory_order_relaxed);
+    /* Process-global mirror of the per-handle `observed` bump: this
+     * block was appended to the shadow log AND queued for validate, so
+     * the diff path is expected to cover it. Best-effort. */
+    shadow_conservation_record_fed(1);
     return ZCL_OK;
 }
 

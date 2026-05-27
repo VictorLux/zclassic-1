@@ -9,6 +9,7 @@
 #include "../rpc_client.h"
 #include "../rpc_params.h"
 
+#include "adapters/inbound/shadow_conservation.h"
 #include "adapters/inbound/shadow_feeder_global.h"
 #include "adapters/outbound/persistence/block_log_file.h"
 #include "adapters/outbound/persistence/block_log_legacy.h"
@@ -179,6 +180,14 @@ static int h_zcl_diff_with_legacy_shadow(const struct mcp_request *req,
     struct diff_with_legacy_shadow_report report = {0};
     struct zcl_result rd = diff_with_legacy_shadow(&in, &report);
 
+    /* Conservation ledger: record the heights this diff actually
+     * compared against the live shadow log. The diff use case itself is
+     * pure (no globals); the global mirror lives here, at the live-shadow
+     * diff completion. Best-effort, observe-only — it never changes the
+     * diff RESULT below. */
+    if (rd.ok)
+        shadow_conservation_record_diffed(report.checked_count);
+
     /* Update Prometheus gauges. divergence_count == 1 for any non-CONVERGED
      * /non-EMPTY_RANGE result (the use case stops at the first divergence,
      * so we can't return an exact count without a second walk). For the
@@ -209,6 +218,14 @@ static int h_zcl_diff_with_legacy_shadow(const struct mcp_request *req,
                 (long long)start_h, (long long)end_h,
                 shadow_dir, legacy_dir);
     } else {
+        /* Conservation snapshot: process-global fed/diffed/skipped and
+         * the conservation predicate. Surfaced here so the cutover proof
+         * can read it alongside the per-call diff result. `conserved` is
+         * a snapshot — a transient fed>diffed while blocks are in flight
+         * is expected (see shadow_conservation.h). */
+        unsigned long c_fed = 0, c_diffed = 0, c_skipped = 0;
+        bool conserved = shadow_conservation_ok(&c_fed, &c_diffed,
+                                                &c_skipped);
         written = snprintf(buf, sizeof buf,
                 "{\"status\":\"%s\","
                 "\"checked_count\":%u,"
@@ -217,6 +234,8 @@ static int h_zcl_diff_with_legacy_shadow(const struct mcp_request *req,
                 "\"shadow_tip\":%u,"
                 "\"start_height\":%lld,"
                 "\"end_height\":%lld,"
+                "\"conservation\":{\"fed\":%lu,\"diffed\":%lu,"
+                "\"skipped\":%lu,\"conserved\":%s},"
                 "\"shadow_dir\":\"%s\","
                 "\"legacy_datadir\":\"%s\"}",
                 diff_status_name(report.status),
@@ -225,6 +244,8 @@ static int h_zcl_diff_with_legacy_shadow(const struct mcp_request *req,
                 report.primary_tip,
                 report.shadow_tip,
                 (long long)start_h, (long long)end_h,
+                c_fed, c_diffed, c_skipped,
+                conserved ? "true" : "false",
                 shadow_dir, legacy_dir);
     }
     char *body = (written > 0 && written < (int)sizeof buf)

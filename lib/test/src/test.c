@@ -839,6 +839,7 @@ int main(void)
     failures += test_mutator();
     failures += test_shadow_feeder();
     failures += test_shadow_feeder_global();
+    failures += test_shadow_conservation();
     failures += test_diff_with_legacy_shadow();
     failures += test_shadow_replay_proof();
     failures += test_shadow_replay_full_driver();

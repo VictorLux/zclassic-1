@@ -128,6 +128,7 @@ volatile sig_atomic_t g_shutdown_requested = 0;
     X(application_consensus_validate_block) \
     X(block_log_file) X(block_log_legacy) X(replay_verify) \
     X(mutator) X(shadow_feeder) X(shadow_feeder_global) \
+    X(shadow_conservation) \
     X(diff_with_legacy_shadow) X(shadow_replay_proof) \
     X(shadow_replay_full_driver) X(cutover_tip_parity) \
     X(utxo_snapshot_inmem) X(hodl_history_port) X(node_health_store_port)

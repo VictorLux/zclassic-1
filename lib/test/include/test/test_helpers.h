@@ -393,6 +393,7 @@ int test_block_log_legacy(void);
 int test_mutator(void);
 int test_shadow_feeder(void);
 int test_shadow_feeder_global(void);
+int test_shadow_conservation(void);
 int test_diff_with_legacy_shadow(void);
 int test_shadow_replay_proof(void);
 int test_shadow_replay_full_driver(void);
