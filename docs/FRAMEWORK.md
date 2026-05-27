@@ -186,14 +186,14 @@ know the shape.
 | 5 | **Supervisor** | `app/supervisors/` | declared liveness tree, restart policy | partial — `net`/`chain`/`staged_sync` declared; `boot_services.c` still owns lifecycle wiring | `app/supervisors/src/staged_sync_supervisor.c` |
 | 6 | **Condition** | `app/conditions/` | `{detect, remedy, witness}` struct + `register()` | **real, the model citizen** (22 conditions live) | `block_failed_mask_at_tip.c` |
 | 7 | **Event** | `app/events/` | typed append-only emit + subscribers | scaffold (definitions + subscribers populate as B2 makes the log authoritative; impl lives in `lib/`) | `lib/storage/event_log.c` |
-| 8 | **Storage Adapter** | `adapters/` + `ports/` | port interface + swappable impl | partial; 9 ports, 4 services behind them (hodl_history, node_health, db_maintenance, wallet_backup), most storage still direct | `adapters/outbound/persistence/` |
+| 8 | **Storage Adapter** | `adapters/` + `ports/` | port interface + swappable impl | partial; 10 ports, 5 services behind them (hodl_history, node_health, db_maintenance, wallet_backup, block_index_sidecar), most storage still direct | `adapters/outbound/persistence/` |
 
 The honest read: **four shapes are real and enforced today (Model, Condition,
 Job, plus the projection + `*_dump_state_json` registry); Supervisor is
 partial; the rest are legacy C wearing a shape label, or scaffold.** That gap
 — not the absence of ideas — is the work. Underneath the shapes the pure
 `domain/` core is now real (21 sealed modules, see §6) and the storage seam
-carries 4 services behind ports — both partial, both moving the right direction.
+carries 5 services behind ports — both partial, both moving the right direction.
 
 ### The canonical form is struct-registration, not a block-DSL
 
@@ -260,7 +260,7 @@ lib/
   storage/       event_log + projections + (legacy) coins/sqlite
   net/ rpc/ crypto/ chain/ validation/ …                (primitives, incremental migration)
 
-adapters/ ports/  hexagonal seam (9 ports; 4 services behind them; most storage still bypasses it)
+adapters/ ports/  hexagonal seam (10 ports; 5 services behind them; most storage still bypasses it)
 config/           composition root (today: boot monoliths — to become supervisor decls)
 tools/lint/       the ratcheting gates — beauty enforced by the build
 docs/             FRAMEWORK.md (this) · REFACTOR_STATUS.md (checklist) · work/ (assignments)
@@ -339,7 +339,7 @@ next routing, all without the domain moving.
 Honest status: the domain core is **real but partial** — `domain/` (top-level)
 holds 21 pure no-clock/no-RNG/no-IO modules (consensus/ wallet/ encoding/), each
 fronted by a thin `lib/` legacy wrapper and sealed by a `test_domain_*` regression
-test. The adapter tree is partial: 9 ports, 4 services read/write through them,
+test. The adapter tree is partial: 10 ports, 5 services read/write through them,
 but most storage still calls `lib/storage/*_sqlite.c` directly. The
 `check-lib-layering` ratchet guards the direction; finishing both is checklist work.
 
