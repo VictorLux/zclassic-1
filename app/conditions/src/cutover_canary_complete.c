@@ -9,6 +9,7 @@
 #include "services/sync_monitor.h"
 #include "validation/chainstate.h"
 #include "validation/main_state.h"
+#include "jobs/tip_finalize_stage.h"
 
 #include <stdatomic.h>
 #include <stdio.h>
@@ -36,14 +37,26 @@ static enum condition_remedy_result remedy_cutover_canary_complete(void)
     if (!snap.authoritative_active || !snap.passed)
         return COND_REMEDY_SKIP;
 
-    cutover_modes_set_header_pipeline(CUTOVER_STAGE_MODE_SHADOW,
-                                      CUTOVER_STAGE_MODE_SHADOW);
+    uint64_t diverged = tip_finalize_stage_utxo_count_diverged_total() +
+                        tip_finalize_stage_precondition_failed_total() +
+                        tip_finalize_stage_upstream_failed_total();
 
-    LOG_WARN("condition", "[condition:cutover_canary_complete] reverted after canary " "target=%lld current=%lld changed_at=%lld", (long long)snap.target_height, (long long)snap.current_tip_height, (long long)snap.changed_at_unix);
-    event_emitf(EV_SYNC_STATE_CHANGE, 0,
-                "condition CUTOVER_CANARY_COMPLETE target=%lld current=%lld",
-                (long long)snap.target_height,
-                (long long)snap.current_tip_height);
+    if (diverged > 0) {
+        cutover_modes_set_header_pipeline(CUTOVER_STAGE_MODE_SHADOW,
+                                          CUTOVER_STAGE_MODE_SHADOW);
+
+        LOG_WARN("condition", "[condition:cutover_canary_complete] REVERTED DUE TO DIVERGENCE! " "target=%lld current=%lld changed_at=%lld diverged=%llu", (long long)snap.target_height, (long long)snap.current_tip_height, (long long)snap.changed_at_unix, (unsigned long long)diverged);
+        event_emitf(EV_SYNC_STATE_CHANGE, 0,
+                    "condition CUTOVER_CANARY_COMPLETE FAILED_DIVERGENCE target=%lld current=%lld",
+                    (long long)snap.target_height,
+                    (long long)snap.current_tip_height);
+    } else {
+        cutover_modes_clear_canary();
+        LOG_INFO("condition", "[condition:cutover_canary_complete] passed with NO divergence! target=%lld. Authoritative mode locked in.", (long long)snap.target_height);
+        event_emitf(EV_SYNC_STATE_CHANGE, 0,
+                    "condition CUTOVER_CANARY_COMPLETE PASSED target=%lld",
+                    (long long)snap.target_height);
+    }
 
 #ifdef ZCL_TESTING
     atomic_fetch_add(&g_test_remedy_calls, 1);

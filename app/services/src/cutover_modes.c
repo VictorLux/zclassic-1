@@ -133,6 +133,11 @@ bool cutover_modes_canary_target_reached(int64_t current_tip_height)
     return snap.has_change && snap.authoritative_active && snap.passed;
 }
 
+void cutover_modes_clear_canary(void)
+{
+    atomic_store(&g_cutover_has_change, 0);
+}
+
 static const char *cutover_mode_name(cutover_stage_mode_t mode)
 {
     return mode == CUTOVER_STAGE_MODE_AUTHORITATIVE

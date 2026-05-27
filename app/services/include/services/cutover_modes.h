@@ -46,6 +46,7 @@ void cutover_modes_record_change(int64_t height,
 void cutover_modes_canary_snapshot(int64_t current_tip_height,
                                    struct cutover_canary_snapshot *out);
 bool cutover_modes_canary_target_reached(int64_t current_tip_height);
+void cutover_modes_clear_canary(void);
 
 #ifdef ZCL_TESTING
 void cutover_modes_test_reset(void);
