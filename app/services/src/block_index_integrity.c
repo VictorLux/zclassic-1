@@ -9,6 +9,20 @@
  * structural height/pprev/anchor repair.
  */
 
+// one-result-type-ok:repair-counts-and-out-struct — E2 (one way out): this is
+// a block-index repair toolkit, not a pass/fail service. The repair entry
+// points return int *counts* of entries fixed (block_index_repair_heights /
+// _pprev — callers accumulate them: `index_repaired += ...`), not error
+// codes; bii_repair_post_activation_anchor returns 0/-1 sentinels (each
+// `raw-return-ok:sentinel`) while its real verdict travels in struct
+// bii_post_activation_result (tip_restored / tip_restore_refused / heights
+// fixed). The remaining surface is enum->name getters (const char*), void
+// status recorders/getters, and one bool status query
+// (block_index_heights_repaired). No fallible bool/int loses a reason:
+// repair outcomes are logged + emitted via EV_BLOCK_INDEX_REPAIR, and the tip
+// restore path goes through csr_commit_tip (enum csr_result, logged on
+// refusal).
+
 #include "platform/time_compat.h"
 #include "util/log_macros.h"
 #include "services/block_index_integrity.h"

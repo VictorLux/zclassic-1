@@ -1,5 +1,16 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0 */
 
+// one-result-type-ok:monitor-no-fallible-surface — E2 (one way out): this is
+// a sync-monitor / recovery-stats recorder, not an operation executor. Its
+// functions are void recorders + setters (init/set_context/record_*/get_*),
+// pointer accessors (connman/download_manager/main_state), pure query
+// predicates (bool sync_monitor_active_next_child_exists — an existence
+// check), and counts/ages (int eligible peers, int64_t tip_advance_age with a
+// documented `raw-return-ok:sentinel` -1). None of these is a success/failure
+// result that bare bool would strip a reason from. Stats travel via the
+// struct watchdog_stats / watchdog_local_recovery_stats out-params; the one
+// kick path logs failure context via LOG_WARN with outcome.reason.
+
 #include "services/sync_monitor.h"
 #include "util/log_macros.h"
 

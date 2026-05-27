@@ -3,6 +3,15 @@
  * Chain restore planner — deterministic, side-effect-light planning for
  * chain tip restoration. */
 
+// one-result-type-ok:single-plan-out-struct — E2 (one way out): the sole
+// public entry point `chain_restore_plan()` returns void and emits one
+// domain output, struct chain_restore_plan, which carries the next_state
+// (enum chain_restore_state, incl. CHAIN_RESTORE_FAILED) plus the full
+// decision payload and a human-readable `reason[128]`. There is no fallible
+// bool/int surface to lose a reason; collapsing the plan to zcl_result would
+// drop the action fields the caller switches on. Every branch fills `reason`
+// and records via chain_restore_record_plan_result() for `zcl_state`.
+
 #include "services/chain_restore_planner.h"
 #include "services/chain_restore_boot_snapshot.h"
 

@@ -2,6 +2,16 @@
  *
  * Chain Restore Integrity — post-restore validation and health checks. */
 
+// one-result-type-ok:diagnostic-out-structs — E2 (one way out): both public
+// entry points return void and produce a single domain output struct each
+// (struct chain_restore_validation, struct chain_integrity_result). Each
+// struct carries its own ok/all_ok verdict plus the per-check diagnostic
+// breakdown (zero_nbits_count, hole/mismatch heights, ...) that callers and
+// `zcl_state` inspect. There is no fallible bool/int surface; collapsing the
+// rich verdict to zcl_result would discard the breakdown the boot fail-fast
+// gate switches on. chain_integrity records via
+// chain_restore_record_integrity_result() for diagnostics.
+
 #include "services/chain_restore_integrity.h"
 #include "services/chain_restore_boot_snapshot.h"
 #include "validation/main_state.h"

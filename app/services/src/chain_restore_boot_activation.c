@@ -2,6 +2,13 @@
  *
  * Chain Restore Boot Activation — pure boot activate/skip decision. */
 
+// one-result-type-ok:single-decision-out-struct — E2 (one way out): the sole
+// entry point `boot_should_activate_chain()` returns void and produces one
+// domain output, struct boot_activation_decision, carrying should_activate
+// plus enum activation_skip_reason (the skip cause travels with the
+// decision). It owns no fallible bool/int surface; this is a pure,
+// deterministic predicate over its inputs, not a service operation.
+
 #include "services/chain_restore_boot_activation.h"
 #include <string.h>
 
