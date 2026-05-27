@@ -18,7 +18,6 @@
 #include "util/log_macros.h"
 #include "util/safe_alloc.h"
 #include "util/trace.h"
-#include "util/ar_step_readonly.h"
 
 #include "snapshot_sync_internal.h"
 
@@ -82,45 +81,26 @@ bool snapsync_discard_staging_write_internal(struct node_db *ndb, void *ctx)
 static bool snapsync_insert_staging_raw(struct node_db *ndb,
                                         const struct db_utxo *u)
 {
-    sqlite3_stmt *s;
+    struct snapshot_store_sqlite_ctx sctx;
+    struct snapshot_store_port store = {0};
 
-    if (!ndb || !ndb->stmt_snapshot_staging_insert || !u)
+    if (!snapsync_bind_store_internal(&sctx, ndb, &store))
         return false;
-    s = ndb->stmt_snapshot_staging_insert;
-    sqlite3_reset(s);
-    sqlite3_clear_bindings(s);
-    sqlite3_bind_blob(s, 1, u->txid, 32, SQLITE_STATIC);
-    sqlite3_bind_int(s, 2, (int)u->vout);
-    sqlite3_bind_int64(s, 3, u->value);
-    sqlite3_bind_blob(s, 4, u->script, (int)u->script_len, SQLITE_STATIC);
-    sqlite3_bind_int(s, 5, (int)u->script_type);
-    if (u->has_address)
-        sqlite3_bind_blob(s, 6, u->address_hash, 20, SQLITE_STATIC);
-    else
-        sqlite3_bind_null(s, 6);
-    sqlite3_bind_int(s, 7, u->height);
-    sqlite3_bind_int(s, 8, u->is_coinbase ? 1 : 0);
-    return sqlite3_step(s) == SQLITE_DONE;  // raw-sql-ok:state-kv-write-caller-handles-rc
+    return store.staging_insert(store.self, u);
 }
 
 int64_t snapsync_staging_count_internal(struct node_db *ndb)
 {
-    sqlite3_stmt *st = NULL;
-    int64_t result = -1;
+    struct snapshot_store_sqlite_ctx sctx;
+    struct snapshot_store_port store = {0};
 
     if (!ndb || !ndb->open || !ndb->db)
         LOG_ERR("snapshot_sync", "staging_count: ndb=%p open=%d db=%p",
                 (void*)ndb, ndb ? ndb->open : 0,
                 ndb ? (void*)ndb->db : NULL);
-    if (sqlite3_prepare_v2(ndb->db,
-            "SELECT COUNT(*) FROM " SNAPSYNC_STAGING_TABLE,
-            -1, &st, NULL) != SQLITE_OK)
-        LOG_ERR("snapshot_sync", "staging_count: prepare failed: %s",
-                sqlite3_errmsg(ndb->db));
-    if (AR_STEP_ROW_READONLY(st) == SQLITE_ROW)
-        result = sqlite3_column_int64(st, 0);
-    sqlite3_finalize(st);
-    return result;
+    if (!snapsync_bind_store_internal(&sctx, ndb, &store))
+        LOG_ERR("snapshot_sync", "staging_count: bind snapshot store failed");
+    return store.staging_count(store.self);
 }
 
 void snapsync_hash_staging_internal(struct node_db *ndb, uint8_t out[32],
@@ -165,7 +145,12 @@ static bool snapsync_enter_receive_mode_write(struct node_db *ndb, void *ctx)
             *ok = false;
         LOG_FAIL("snapshot_sync", "enter_receive_mode: PRAGMA setup failed");
     }
-    sqlite3_busy_timeout(ndb->db, 10000);
+    {
+        struct snapshot_store_sqlite_ctx sctx;
+        struct snapshot_store_port store = {0};
+        if (snapsync_bind_store_internal(&sctx, ndb, &store))
+            (void)store.set_busy_timeout(store.self, 10000);
+    }
     snapsync_set_db_mode_flag(ndb, true);
     printf("db: snapshot receive mode (synchronous=NORMAL, WAL deferred, 512MB cache)\n");
     if (ok)

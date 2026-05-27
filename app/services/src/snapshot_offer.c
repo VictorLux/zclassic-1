@@ -20,8 +20,6 @@
 #include "event/event.h"
 #include "config/runtime.h"
 #include "util/log_macros.h"
-#include "util/ar_step_readonly.h"
-#include "validation/sync_evidence_policy.h"
 #include "core/serialize.h"
 
 #include "snapshot_sync_internal.h"
@@ -100,25 +98,14 @@ static bool snapsync_read_tip_chainwork_internal(struct node_db *ndb,
                                                  const uint8_t hash[32],
                                                  uint8_t chain_work[32])
 {
-    sqlite3_stmt *s = NULL;
-    bool ok = false;
+    struct snapshot_store_sqlite_ctx sctx;
+    struct snapshot_store_port store = {0};
 
     if (!ndb || !ndb->open || !hash || !chain_work)
         return false;
-    if (sqlite3_prepare_v2(ndb->db,
-            "SELECT chain_work FROM blocks WHERE hash=?",
-            -1, &s, NULL) != SQLITE_OK || !s)
+    if (!snapsync_bind_store_internal(&sctx, ndb, &store))
         return false;
-    sqlite3_bind_blob(s, 1, hash, 32, SQLITE_STATIC);
-    if (AR_STEP_ROW_READONLY(s) == SQLITE_ROW) {
-        const void *cw = sqlite3_column_blob(s, 0);
-        if (cw && sqlite3_column_bytes(s, 0) >= 32) {
-            memcpy(chain_work, cw, 32);
-            ok = !zcl_chainwork_is_zero(chain_work);
-        }
-    }
-    sqlite3_finalize(s);
-    return ok;
+    return store.tip_chainwork(store.self, hash, chain_work);
 }
 
 enum snapsync_offer_result snapsync_offer_result_from_manifest_internal(
@@ -216,17 +203,21 @@ struct zcl_result snapsync_build_local_recovery_manifest(struct node_db *ndb,
         !snapsync_load_state_mmb_root_internal(ndb, out->mmb_root))
         return ZCL_ERR(-5, "build_local_recovery_manifest: missing MMR/MMB root");
 
+    /* SHA3 UTXO-root commitment math stays inline with the live handle —
+     * it is the value the snapshot is pinned to, not storage access. */
     fast_sync_compute_utxo_root_db(ndb->db, out->utxo_root);
     if (!snapsync_bytes32_nonzero_internal(out->utxo_root))
         return ZCL_ERR(-6, "build_local_recovery_manifest: zero utxo root");
 
-    sqlite3_stmt *s = NULL;
-    if (sqlite3_prepare_v2(ndb->db, "SELECT count(*) FROM utxos",
-                           -1, &s, NULL) != SQLITE_OK || !s)
-        return ZCL_ERR(-7, "build_local_recovery_manifest: prepare utxo count failed");
-    if (AR_STEP_ROW_READONLY(s) == SQLITE_ROW)
-        utxo_count = (uint64_t)sqlite3_column_int64(s, 0);
-    sqlite3_finalize(s);
+    {
+        struct snapshot_store_sqlite_ctx sctx;
+        struct snapshot_store_port store = {0};
+        int64_t count = 0;
+        if (!snapsync_bind_store_internal(&sctx, ndb, &store) ||
+            !store.utxo_count(store.self, &count))
+            return ZCL_ERR(-7, "build_local_recovery_manifest: prepare utxo count failed");
+        utxo_count = (uint64_t)count;
+    }
     if (utxo_count == 0)
         return ZCL_ERR(-8, "build_local_recovery_manifest: zero utxos");
     out->num_utxos = utxo_count;
@@ -261,14 +252,10 @@ static bool snapsync_accept_offer_internal(struct snapshot_sync_service *svc,
      * (100K+ UTXOs from file sync or a previous P2P snapshot). */
     if (svc->ndb && svc->ndb->open) {
         int64_t utxo_count = 0;
-        sqlite3_stmt *sc = NULL;
-        if (sqlite3_prepare_v2(svc->ndb->db,
-                "SELECT COUNT(*) FROM utxos", -1, &sc, NULL) == SQLITE_OK
-            && sc) {
-            if (AR_STEP_ROW_READONLY(sc) == SQLITE_ROW)
-                utxo_count = sqlite3_column_int64(sc, 0);
-            sqlite3_finalize(sc);
-        }
+        struct snapshot_store_sqlite_ctx sctx;
+        struct snapshot_store_port store = {0};
+        if (snapsync_bind_store_internal(&sctx, svc->ndb, &store))
+            (void)store.utxo_count(store.self, &utxo_count);
         if (utxo_count > 100000 && !allow_populated_utxos) {
             printf("[snapsync] Skipping P2P snapshot — %lld UTXOs already "
                    "imported\n", (long long)utxo_count);

@@ -21,6 +21,8 @@
 #include "services/snapshot_manifest.h"
 #include "models/database.h"
 #include "util/result.h"
+#include "ports/snapshot_store_port.h"
+#include "adapters/outbound/persistence/snapshot_store_sqlite.h"
 
 #include <stdbool.h>
 #include <stdint.h>
@@ -64,6 +66,17 @@ int64_t snapsync_now_us_internal(void);
 bool snapsync_run_write_internal(struct snapshot_sync_service *svc,
                                  db_service_write_fn fn,
                                  void *ctx);
+
+/* Bind the default snapshot storage port (sqlite adapter) onto `ndb`.
+ * The caller owns `ctx` (stack storage); it must outlive every call made
+ * through `*out_port`. This is the single place the subsystem chooses its
+ * storage adapter — the service files name only the port. Returns true on
+ * success; false on a NULL out_port (a NULL ndb is permitted, the port's
+ * methods then fail safely). The SHA3 commitment math is NOT routed through
+ * this port — it stays inline in the service with the live sqlite handle. */
+bool snapsync_bind_store_internal(struct snapshot_store_sqlite_ctx *ctx,
+                                  struct node_db *ndb,
+                                  struct snapshot_store_port *out_port);
 
 /* Anchor slot accessor — exposes the static g_snapshot_anchor pointer
  * to snapshot_apply.c, which needs to set it on metadata-anchor paths.

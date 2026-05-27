@@ -133,6 +133,7 @@ volatile sig_atomic_t g_shutdown_requested = 0;
     X(shadow_replay_full_driver) X(cutover_tip_parity) \
     X(utxo_snapshot_inmem) X(hodl_history_port) X(node_health_store_port) \
     X(db_maintenance_port) X(wallet_backup_port) \
+    X(snapshot_store_port) \
     X(block_index_sidecar_port)
 
 #define SPEC_LIST(X) \

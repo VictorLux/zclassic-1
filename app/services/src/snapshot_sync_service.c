@@ -33,7 +33,6 @@
 #include "net/fast_sync.h"
 #include "net/net.h"
 #include "util/log_macros.h"
-#include "util/ar_step_readonly.h"
 
 #include "snapshot_sync_internal.h"
 
@@ -109,6 +108,17 @@ bool snapsync_run_write_internal(struct snapshot_sync_service *svc,
     if (dbsvc)
         return db_service_run_write(dbsvc, fn, ctx);
     return fn(svc->ndb, ctx);
+}
+
+/* Single place the snapshot subsystem selects its storage adapter. The
+ * service/offer/fetch files name only snapshot_store_port; here we bind the
+ * default sqlite adapter. (The two SHA3 commitment calls stay inline with
+ * the live handle — they are commitment math, not storage access.) */
+bool snapsync_bind_store_internal(struct snapshot_store_sqlite_ctx *ctx,
+                                  struct node_db *ndb,
+                                  struct snapshot_store_port *out_port)
+{
+    return snapshot_store_sqlite_bind(ctx, ndb, out_port);
 }
 
 /* ── Peer Blacklist ──────────────────────────────────────── */
@@ -307,14 +317,10 @@ bool snapsync_awaiting_utxos(void)
              * connect).  If the height is below the snapshot offer height
              * and below a safety threshold, we're still waiting. */
             int64_t utxo_count = 0;
-            sqlite3_stmt *sc = NULL;
-            if (sqlite3_prepare_v2(svc->ndb->db,
-                    "SELECT COUNT(*) FROM utxos", -1, &sc, NULL) == SQLITE_OK
-                && sc) {
-                if (AR_STEP_ROW_READONLY(sc) == SQLITE_ROW)
-                    utxo_count = sqlite3_column_int64(sc, 0);
-                sqlite3_finalize(sc);
-            }
+            struct snapshot_store_sqlite_ctx sctx;
+            struct snapshot_store_port store = {0};
+            if (snapsync_bind_store_internal(&sctx, svc->ndb, &store))
+                (void)store.utxo_count(store.self, &utxo_count);
             /* A real snapshot import produces 1M+ UTXOs.  A partial
              * block connect from genesis produces very few. */
             if (utxo_count > 100000)

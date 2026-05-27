@@ -403,6 +403,7 @@ int test_hodl_history_port(void);
 int test_node_health_store_port(void);
 int test_db_maintenance_port(void);
 int test_wallet_backup_port(void);
+int test_snapshot_store_port(void);
 int test_block_index_sidecar_port(void);
 
 /* Spec-based user story tests (one per feature area) */
