@@ -115,6 +115,7 @@ volatile sig_atomic_t g_shutdown_requested = 0;
     X(utxo_apply_stage) X(tip_finalize_stage) \
     X(domain_consensus_verify) X(domain_consensus_subsidy) \
     X(domain_consensus_pow) X(domain_consensus_sigops) \
+    X(domain_consensus_script_standard) \
     X(domain_consensus_tx_structural) X(domain_consensus_sighash) \
     X(domain_consensus_check_block) X(domain_consensus_equihash) \
     X(domain_consensus_script_interp) \

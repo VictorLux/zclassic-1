@@ -369,6 +369,7 @@ int test_domain_consensus_verify(void);
 int test_domain_consensus_subsidy(void);
 int test_domain_consensus_pow(void);
 int test_domain_consensus_sigops(void);
+int test_domain_consensus_script_standard(void);
 int test_domain_consensus_tx_structural(void);
 int test_domain_consensus_sighash(void);
 int test_domain_consensus_check_block(void);
