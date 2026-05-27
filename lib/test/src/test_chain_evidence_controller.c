@@ -788,6 +788,80 @@ static int test_startup_clears_stale_missing_evidence_freeze_with_sql_lag(void)
     return failures;
 }
 
+/* The coins_best_block cursor is a PROJECTION, not part of the tip's
+ * block-index evidence. When it OVERSHOOTS the active tip (points to a
+ * HIGHER block than the tip — the BIP30 self-write wedge, where the UTXO
+ * set landed at H+1 while the tip cursor sits at H), reconstruct must NOT
+ * freeze: it publishes LOCAL_IMPORT evidence and lets connect_block's
+ * self-write tolerance reconcile the cursor. This pins the non-gating of
+ * the coins cursor specifically for the overshoot direction (the existing
+ * lag test covers the behind direction). */
+static int test_startup_coins_cursor_overshoot_does_not_freeze(void)
+{
+    int failures = 0;
+    struct auth_fixture f;
+    if (!auth_fixture_init(&f))
+        return 1;
+
+    /* Commit the active tip at height 1 (hash-consistent). */
+    struct chain_state_commit commit = {
+        .new_tip = &f.blocks[1],
+        .new_coins_best = *f.blocks[1].phashBlock,
+        .expected_utxo_count = 0,
+        .update_header_tip = true,
+        .persist_coins_best = true,
+        .rollback_auth = NULL,
+        .wallet_scan_height = -1,
+        .reason = "unit.overshoot_seed",
+    };
+    if (csr_commit_tip(&f.csr, &commit) != CSR_OK)
+        failures++;
+
+    /* Now make the coins cursor OVERSHOOT: point it at block 2 (height 2),
+     * one ahead of the active tip at height 1. csr_snapshot reads this
+     * cursor; reconstruct must treat the divergence as a recoverable
+     * projection overshoot, not a tip_hash contradiction. */
+    coins_view_cache_set_best_block(&f.coins_tip, f.blocks[2].phashBlock);
+
+    chain_evidence_controller_init(&f.authority, &f.ndb, &f.csr);
+
+    struct chain_evidence_controller_view view;
+    chain_evidence_controller_snapshot(&f.authority, &view);
+    /* The cursor overshoot must NOT freeze the controller... */
+    if (view.state == CEC_CONTRADICTION_FROZEN)
+        failures++;
+    /* ...the tip evidence is reconstructed and published as low-trust
+     * LOCAL_IMPORT (the node can advance), and the active tip stays the
+     * in-memory tip (height 1), NOT the cursor's overshoot height. */
+    if (!view.repaired_active_tip_evidence)
+        failures++;
+    if (view.active_tip_source_class != CEC_SOURCE_CLASS_LOCAL_IMPORT)
+        failures++;
+    if (view.publish_state != CEC_PUBLISH_LOCAL_EVIDENCE)
+        failures++;
+    if (view.active_tip_height != 1)
+        failures++;
+    /* The cursor divergence is surfaced as an ADVISORY health reason
+     * (csr_cursor_mismatch) — logged, not gated. It must specifically NOT
+     * be the freeze reason: a non-empty advisory that names the cursor,
+     * never a contradiction. This is the no-silent-halt + non-gating
+     * contract: the overshoot is visible but does not park the tip. */
+    if (strcmp(view.health_reason, "csr_cursor_mismatch") != 0)
+        failures++;
+
+    auth_fixture_free(&f);
+    return failures;
+}
+
+/* A genuine tip_hash contradiction (the persisted active_tip_hash key
+ * names a DIFFERENT block than the in-memory tip AND that persisted hash
+ * is what the evidence would prove) is distinct from a coins-cursor
+ * divergence: the cursor is non-gating, the tip identity is gating. This
+ * companion to the overshoot test confirms a real tip mismatch is still
+ * caught with a specific outcome rather than silently published. We drive
+ * it via a broken ancestry (unlinkable to genesis), which is the
+ * unrecoverable case reconstruct freezes on with a named reason. The
+ * coins-cursor overshoot above must NOT take this path. */
 static int test_startup_repairs_active_tip_hash_mismatch(void)
 {
     int failures = 0;
@@ -901,6 +975,7 @@ int test_chain_evidence_controller(void)
     failures += test_startup_inconsistent_tip_freezes_with_named_reason();
     failures += test_frozen_empty_reason_backfilled_on_load();
     failures += test_startup_clears_stale_missing_evidence_freeze_with_sql_lag();
+    failures += test_startup_coins_cursor_overshoot_does_not_freeze();
     failures += test_startup_repairs_active_tip_hash_mismatch();
     return failures;
 }
