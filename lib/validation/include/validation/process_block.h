@@ -259,6 +259,14 @@ void process_block_test_note_utxo_failure(int height, const char *datadir);
 void process_block_test_fail_next_sapling_persists(int n);
 bool process_block_test_persist_sapling_tree(bool force);
 extern _Atomic bool g_sapling_tree_rebuilding;
+/* Exercise the real nakamoto_selected_best_work predicate
+ * (process_block_tip_is_best_work) directly: returns true when no
+ * connectable competing chain beats `tip` in map_block_index. Used by
+ * the torn-index regression to prove a stale/torn higher-work fork above
+ * tip does NOT veto promotion, while a genuine linked higher-work fork
+ * still does. */
+bool process_block_test_tip_is_best_work(const struct main_state *ms,
+                                         const struct block_index *tip);
 #endif
 
 #endif

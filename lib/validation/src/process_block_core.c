@@ -683,6 +683,38 @@ static bool process_block_chainwork_recomputed(const struct block_index *tip)
            !arith_uint256_is_zero(&tip->nChainWork);
 }
 
+/* Evidence-side mirror of find_most_work_chain's candidate eligibility.
+ *
+ * The two functions scan the SAME map_block_index and MUST agree about
+ * which entries represent a real competing chain. They diverged: a prior
+ * recompute_index_from_genesis stamped nChainWork (and left BLOCK_HAVE_DATA)
+ * on thousands of STALE off-chain fork/orphan entries above the header tip,
+ * whose pprev pointers are not linked down to the active tip. The original
+ * predicate counted ANY such higher-work HAVE_DATA entry whose
+ * block_index_get_ancestor(candidate, tip->nHeight) != tip as a competing
+ * chain — but for a torn fork that walk returns NULL (chain.c: unlinked
+ * pprev), and NULL != tip flipped the result to "not best work" forever,
+ * permanently wedging tip promotion.
+ *
+ * find_most_work_chain (process_block_core.c:344-413), the authority on
+ * selection, requires BLOCK_VALID_TREE (:368), tolerates unlinked pprev
+ * (:398-406), and never reorgs below the tip (:430) — so it had already
+ * selected our tip's path. The disagreement was purely this predicate's
+ * looser filter. Align the filter:
+ *   - require BLOCK_VALID_TREE (mirror :368) — stale entries that lost
+ *     tree validity are not selectable and cannot be "better work";
+ *   - a candidate only beats the tip when its ancestry RESOLVES to a real
+ *     block at tip->nHeight that is NOT the tip (a genuine connectable
+ *     sibling fork → we SHOULD reorg → return false). A NULL resolution
+ *     means the candidate is not contiguous-data-linked down to tip height
+ *     (torn/orphan fork): find_most_work_chain could never select it, so
+ *     it must NOT veto promotion.
+ *
+ * Reorg safety: a genuinely better, fully-downloaded, fully-linked
+ * competing chain still resolves block_index_get_ancestor(candidate,
+ * tip->nHeight) to a real block != tip, so this still returns false and
+ * the reorg path runs. Only the unresolvable (NULL) torn-fork case is
+ * reclassified, and that case was never a valid reorg target. */
 static bool process_block_tip_is_best_work(const struct main_state *ms,
                                            const struct block_index *tip)
 {
@@ -694,16 +726,34 @@ static bool process_block_tip_is_best_work(const struct main_state *ms,
     while (block_map_next(&ms->map_block_index, &iter, NULL, &candidate)) {
         if (!candidate || block_has_any_failure(candidate))
             continue;
+        /* Match find_most_work_chain :368 — only header-tree-valid blocks
+         * are selectable; stale invalidated forks cannot be "best work". */
+        if (!block_index_is_valid(candidate, BLOCK_VALID_TREE))
+            continue;
         if (!(candidate->nStatus & BLOCK_HAVE_DATA))
             continue;
         if (arith_uint256_compare(&candidate->nChainWork,
                                   &tip->nChainWork) <= 0)
             continue;
-        if (block_index_get_ancestor(candidate, tip->nHeight) != tip)
+        struct block_index *anc =
+            block_index_get_ancestor(candidate, tip->nHeight);
+        /* Only a RESOLVED, non-tip ancestor proves a real connectable
+         * competing chain (→ reorg). A NULL resolution is a torn/orphan
+         * fork that find_most_work_chain cannot select — it must not veto
+         * the tip and wedge promotion. */
+        if (anc && anc != tip)
             return false;
     }
     return true;
 }
+
+#ifdef ZCL_TESTING
+bool process_block_test_tip_is_best_work(const struct main_state *ms,
+                                         const struct block_index *tip)
+{
+    return process_block_tip_is_best_work(ms, tip);
+}
+#endif
 
 static struct chain_evidence_record process_block_verified_tip_evidence(
     const struct main_state *ms,

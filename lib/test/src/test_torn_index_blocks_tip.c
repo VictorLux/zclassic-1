@@ -34,6 +34,9 @@
 #include "test/test_helpers.h"
 
 #include "services/chain_evidence_controller.h"
+#include "validation/process_block.h"
+#include "validation/main_state.h"
+#include "chain/chain.h"
 #include "coins/coins_view.h"
 #include "models/database.h"
 
@@ -231,9 +234,123 @@ static int test_torn_index_wedges_tip_promotion(void)
     return failures;
 }
 
+/* =========================================================================
+ * Predicate-level proof of the FIX (consensus path).
+ *
+ * Exercises the REAL process_block_tip_is_best_work predicate (via the
+ * ZCL_TESTING hook process_block_test_tip_is_best_work) — the exact
+ * function that computes nakamoto_selected_best_work and whose false
+ * negative wedged the live tip at 3125314.
+ *
+ * Two cases, both over the SAME map_block_index, against tip at height 2:
+ *
+ *   CASE A — torn/stale non-ancestor fork above tip (the wedge):
+ *     a fork entry at height 4 with HAVE_DATA + higher nChainWork than the
+ *     tip but UNLINKED pprev (block_index_get_ancestor → NULL). Before the
+ *     fix this returned NOT-best-work forever; after the fix the predicate
+ *     is READY (true) because a torn fork is not a connectable competitor.
+ *
+ *   CASE B — guard: a GENUINE higher-work, fully-downloaded, fully-LINKED
+ *     competing fork that branches at height 2 (sibling of the tip). Its
+ *     ancestry resolves to a real block != tip at tip->nHeight, so the
+ *     predicate MUST still return NOT-best-work (false) — the reorg is
+ *     correctly detected and promotion is correctly withheld.
+ *
+ * Together these prove the fix removes the false negative WITHOUT masking a
+ * real reorg.
+ * ========================================================================= */
+static int test_tip_is_best_work_predicate(void)
+{
+    int failures = 0;
+
+    /* Linked main chain: 0 <- 1 <- 2 (tip at height 2). */
+    struct uint256 h[3];
+    struct block_index main_blk[3];
+    struct main_state ms;
+    main_state_init(&ms);
+
+    for (int i = 0; i < 3; i++) {
+        memset(h[i].data, i + 1, 32);
+        block_index_init(&main_blk[i]);
+        main_blk[i].phashBlock = &h[i];
+        main_blk[i].nHeight = i;
+        main_blk[i].pprev = i ? &main_blk[i - 1] : NULL;
+        main_blk[i].nStatus = BLOCK_VALID_TREE | BLOCK_HAVE_DATA;
+        arith_uint256_set_u64(&main_blk[i].nChainWork, (uint64_t)(i + 1));
+        block_map_insert(&ms.map_block_index, &h[i], &main_blk[i]);
+    }
+    struct block_index *tip = &main_blk[2];
+
+    /* Baseline: with only the linked main chain, the tip is best work. */
+    if (!process_block_test_tip_is_best_work(&ms, tip))
+        failures++;
+
+    /* --- CASE A: torn/stale non-ancestor fork above tip. ---
+     * height 4, HAVE_DATA, higher work, but pprev UNLINKED (orphan/torn),
+     * exactly the ~4,600 stale entries recompute_index stamped work onto.
+     * block_index_get_ancestor(torn, 2) walks pprev, hits NULL → returns
+     * NULL. The fixed predicate must NOT treat this as a competing chain. */
+    struct uint256 torn_hash;
+    struct block_index torn_fork;
+    memset(torn_hash.data, 0x90, 32);
+    block_index_init(&torn_fork);
+    torn_fork.phashBlock = &torn_hash;
+    torn_fork.nHeight = 4;
+    torn_fork.pprev = NULL;                 /* TORN: ancestry unresolvable */
+    torn_fork.nStatus = BLOCK_VALID_TREE | BLOCK_HAVE_DATA;
+    arith_uint256_set_u64(&torn_fork.nChainWork, 99); /* > tip work (3) */
+    block_map_insert(&ms.map_block_index, &torn_hash, &torn_fork);
+
+    /* Sanity: the ancestry really is unresolvable to tip height. */
+    if (block_index_get_ancestor(&torn_fork, tip->nHeight) != NULL)
+        failures++;
+    /* THE FIX: torn fork above tip does NOT veto promotion. */
+    if (!process_block_test_tip_is_best_work(&ms, tip))
+        failures++;
+
+    /* --- CASE B: genuine higher-work, fully-linked competing fork. ---
+     * Branch a sibling at height 2 off the same parent (main_blk[1]) and a
+     * child at height 3 with higher work than the tip. fork3's ancestry at
+     * height 2 resolves to fork2 (a real block != tip) → MUST still report
+     * NOT-best-work so the reorg is detected. */
+    struct uint256 fh[2];          /* fork heights 2 and 3 */
+    struct block_index fork_blk[2];
+    memset(fh[0].data, 0xA2, 32);
+    memset(fh[1].data, 0xA3, 32);
+    block_index_init(&fork_blk[0]);
+    block_index_init(&fork_blk[1]);
+    fork_blk[0].phashBlock = &fh[0];
+    fork_blk[0].nHeight = 2;
+    fork_blk[0].pprev = &main_blk[1];        /* sibling of the tip */
+    fork_blk[0].nStatus = BLOCK_VALID_TREE | BLOCK_HAVE_DATA;
+    arith_uint256_set_u64(&fork_blk[0].nChainWork, 3);
+    fork_blk[1].phashBlock = &fh[1];
+    fork_blk[1].nHeight = 3;
+    fork_blk[1].pprev = &fork_blk[0];
+    fork_blk[1].nStatus = BLOCK_VALID_TREE | BLOCK_HAVE_DATA;
+    arith_uint256_set_u64(&fork_blk[1].nChainWork, 50); /* > tip work (3) */
+    block_map_insert(&ms.map_block_index, &fh[0], &fork_blk[0]);
+    block_map_insert(&ms.map_block_index, &fh[1], &fork_blk[1]);
+
+    /* Sanity: the genuine fork's ancestry resolves to a real, non-tip
+     * block at tip height. */
+    struct block_index *fanc = block_index_get_ancestor(&fork_blk[1],
+                                                        tip->nHeight);
+    if (fanc != &fork_blk[0] || fanc == tip)
+        failures++;
+    /* REORG STILL DETECTED: a genuine connectable higher-work fork makes
+     * the tip NOT best-work, so promotion is correctly withheld. */
+    if (process_block_test_tip_is_best_work(&ms, tip))
+        failures++;
+
+    main_state_free(&ms);
+    return failures;
+}
+
 int test_torn_index_blocks_tip(void)
 {
     int failures = 0;
     failures += test_torn_index_wedges_tip_promotion();
+    failures += test_tip_is_best_work_predicate();
     return failures;
 }

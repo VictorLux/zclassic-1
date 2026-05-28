@@ -60,7 +60,7 @@ lib/validation/src/connect_tip.c:80:bool connect_tip(struct validation_state *st
 lib/validation/src/connect_tip.c:636: if (!coins_view_cache_flush(&view)) {
 lib/validation/src/disconnect_tip.c:50:bool disconnect_tip(struct validation_state *state,
 lib/validation/src/disconnect_tip.c:192: if (!coins_view_cache_flush(&view)) {
-lib/validation/src/process_block_core.c:1016:bool process_new_block(struct validation_state *state,
+lib/validation/src/process_block_core.c:1066:bool process_new_block(struct validation_state *state,
 lib/validation/src/process_block_flush_policy.c:237: ok = coins_view_sqlite_batch_write_ex(g_coins_sqlite_ptr,
 lib/validation/src/process_block_flush_policy.c:251: ok = coins_view_cache_flush(coins_tip);
 lib/validation/src/process_block_self_heal.c:572: if (disconnect_tip(&ds, ms, coins_tip, datadir)) {
