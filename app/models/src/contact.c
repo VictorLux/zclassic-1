@@ -57,8 +57,7 @@ bool db_contact_save(struct node_db *ndb, const struct db_contact *c)
 
     cbs = contact_callbacks_ready();
     if (!ar_run_before_save(cbs, (void *)c)) {
-        fprintf(stderr, "contact save vetoed by before_save\n");
-        return false;
+        LOG_FAIL("model", "contact save vetoed by before_save");
     }
     AR_VALIDATE_RECORD(cbs, "contact", c, db_contact_validate);
 
@@ -72,7 +71,7 @@ bool db_contact_save(struct node_db *ndb, const struct db_contact *c)
     AR_BIND_TEXT(s, 2, c->name);
     AR_BIND_INT(s, 3, c->last_used);
     if (!AR_STEP_DONE(s)) {
-        fprintf(stderr, "contact save failed: %s\n", sqlite3_errmsg(ndb->db));
+        LOG_WARN("model", "contact save failed: %s", sqlite3_errmsg(ndb->db));
         AR_FINALIZE(s);
         return false;
     }

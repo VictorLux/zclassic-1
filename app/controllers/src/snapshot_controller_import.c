@@ -64,7 +64,7 @@ static void *import_block_index_thread(void *arg)
 
     struct db_wrapper dbw;
     if (!db_wrapper_open(&dbw, idx_path, 256 << 20, false, false)) {
-        fprintf(stderr, "T1: failed to open block index at %s\n", idx_path);
+        LOG_WARN("snapshot", "T1: failed to open block index at %s", idx_path);
         node_db_close(&ndb);
         return NULL;
     }
@@ -104,7 +104,7 @@ static void *import_block_index_thread(void *arg)
     {
         static const uint8_t zero_hash[32] = {0};
         if (!node_db_sync_set_tip(&ndb, zero_hash, -1)) {
-            fprintf(stderr, "T1: failed to reset tip state\n");
+            LOG_WARN("snapshot", "T1: failed to reset tip state");
             db_wrapper_close(&dbw);
             node_db_close(&ndb);
             return NULL;
@@ -275,7 +275,7 @@ static void *import_utxos_thread(void *arg)
 
     struct coins_view_db cvdb;
     if (!coins_view_db_open(&cvdb, cs_path, 256 << 20, false, false)) {
-        fprintf(stderr, "T2: failed to open chainstate at %s\n", cs_path);
+        LOG_WARN("snapshot", "T2: failed to open chainstate at %s", cs_path);
         node_db_close(&ndb);
         return NULL;
     }
@@ -285,7 +285,7 @@ static void *import_utxos_thread(void *arg)
 
     node_db_sync_import_job_init(&job);
     if (!node_db_sync_import_job_start(&job, &ndb, &cvdb)) {
-        fprintf(stderr, "T2: failed to start UTXO import job\n");
+        LOG_WARN("snapshot", "T2: failed to start UTXO import job");
         coins_view_db_close(&cvdb);
         node_db_close(&ndb);
         return NULL;
@@ -388,8 +388,7 @@ static bool snapshot_import_job_start(struct snapshot_import_job *job)
                                   import_utxos_thread,
                                   &job->utxo_args,
                                   &job->utxo_thread) != 0) {
-        fprintf(stderr,
-                "snapshot_import: failed to start UTXO import thread\n");
+        LOG_WARN("snapshot", "snapshot_import: failed to start UTXO import thread");
         snapshot_import_job_join(job);
         return false;
     }
@@ -399,8 +398,7 @@ static bool snapshot_import_job_start(struct snapshot_import_job *job)
                                   import_wallet_thread,
                                   &job->wallet_args,
                                   &job->wallet_thread) != 0) {
-        fprintf(stderr,
-                "snapshot_import: failed to start wallet import thread\n");
+        LOG_WARN("snapshot", "snapshot_import: failed to start wallet import thread");
         snapshot_import_job_join(job);
         return false;
     }

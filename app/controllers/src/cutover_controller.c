@@ -22,6 +22,7 @@
 #include "services/cutover_modes.h"
 #include "jobs/header_admit_stage.h"
 #include "jobs/validate_headers_stage.h"
+#include "jobs/tip_finalize_stage.h"
 #include "services/node_health_service.h"
 #include "util/log_macros.h"
 
@@ -43,39 +44,32 @@ static const char *validate_headers_mode_name(validate_headers_mode_t mode)
         ? "authoritative" : "shadow";
 }
 
+static const char *tip_finalize_mode_name(tip_finalize_mode_t mode)
+{
+    return mode == TIP_FINALIZE_MODE_AUTHORITATIVE
+        ? "authoritative" : "shadow";
+}
+
 static bool parse_cutover_mode(const char *s,
                                header_admit_mode_t *ha,
-                               validate_headers_mode_t *vh)
+                               validate_headers_mode_t *vh,
+                               tip_finalize_mode_t *tf)
 {
     if (!s || !s[0]) return false;
     if (strcasecmp(s, "shadow") == 0) {
         if (ha) *ha = HEADER_ADMIT_MODE_SHADOW;
         if (vh) *vh = VALIDATE_HEADERS_MODE_SHADOW;
+        if (tf) *tf = TIP_FINALIZE_MODE_SHADOW;
         return true;
     }
     if (strcasecmp(s, "authoritative") == 0 ||
         strcasecmp(s, "auth") == 0) {
         if (ha) *ha = HEADER_ADMIT_MODE_AUTHORITATIVE;
         if (vh) *vh = VALIDATE_HEADERS_MODE_AUTHORITATIVE;
+        if (tf) *tf = TIP_FINALIZE_MODE_AUTHORITATIVE;
         return true;
     }
     return false;
-}
-
-static cutover_stage_mode_t cutover_stage_mode_from_header_admit(
-    header_admit_mode_t mode)
-{
-    return mode == HEADER_ADMIT_MODE_AUTHORITATIVE
-        ? CUTOVER_STAGE_MODE_AUTHORITATIVE
-        : CUTOVER_STAGE_MODE_SHADOW;
-}
-
-static cutover_stage_mode_t cutover_stage_mode_from_validate_headers(
-    validate_headers_mode_t mode)
-{
-    return mode == VALIDATE_HEADERS_MODE_AUTHORITATIVE
-        ? CUTOVER_STAGE_MODE_AUTHORITATIVE
-        : CUTOVER_STAGE_MODE_SHADOW;
 }
 
 static void cutover_record_mode_change(
@@ -140,6 +134,8 @@ static void push_cutover_modes(struct json_value *result, bool changed,
                      header_admit_mode_name(header_admit_get_mode()));
     json_push_kv_str(result, "validate_headers",
                      validate_headers_mode_name(validate_headers_get_mode()));
+    json_push_kv_str(result, "tip_finalize",
+                     tip_finalize_mode_name(tip_finalize_get_mode()));
     if (changed) {
         json_push_kv_int(result, "changed_at_unix",
                          platform_time_wall_unix());
@@ -164,15 +160,19 @@ static void push_cutover_modes(struct json_value *result, bool changed,
 static bool cutover_stage_requests_authoritative(
     const char *stage,
     header_admit_mode_t ha_mode,
-    validate_headers_mode_t vh_mode)
+    validate_headers_mode_t vh_mode,
+    tip_finalize_mode_t tf_mode)
 {
     if (strcasecmp(stage, "header_admit") == 0)
         return ha_mode == HEADER_ADMIT_MODE_AUTHORITATIVE;
     if (strcasecmp(stage, "validate_headers") == 0)
         return vh_mode == VALIDATE_HEADERS_MODE_AUTHORITATIVE;
+    if (strcasecmp(stage, "tip_finalize") == 0)
+        return tf_mode == TIP_FINALIZE_MODE_AUTHORITATIVE;
     if (strcasecmp(stage, "all") == 0)
         return ha_mode == HEADER_ADMIT_MODE_AUTHORITATIVE ||
-               vh_mode == VALIDATE_HEADERS_MODE_AUTHORITATIVE;
+               vh_mode == VALIDATE_HEADERS_MODE_AUTHORITATIVE ||
+               tf_mode == TIP_FINALIZE_MODE_AUTHORITATIVE;
     return false;
 }
 
@@ -204,7 +204,7 @@ bool diag_rpc_cutovermode(const struct json_value *params, bool help,
     RPC_HELP(help, result,
         "cutovermode [stage] [mode]\n"
         "\nRead or set runtime cutover modes. stage is one of:\n"
-        "  header_admit | validate_headers | all\n"
+        "  header_admit | validate_headers | tip_finalize | all\n"
         "mode is one of:\n"
         "  shadow | authoritative\n"
         "\nAuthoritative mode is refused unless cutoverpreflight.ready is true.\n"
@@ -230,16 +230,18 @@ bool diag_rpc_cutovermode(const struct json_value *params, bool help,
 
     header_admit_mode_t ha_mode = HEADER_ADMIT_MODE_SHADOW;
     validate_headers_mode_t vh_mode = VALIDATE_HEADERS_MODE_SHADOW;
-    if (!parse_cutover_mode(mode_s, &ha_mode, &vh_mode))
+    tip_finalize_mode_t tf_mode = TIP_FINALIZE_MODE_SHADOW;
+    if (!parse_cutover_mode(mode_s, &ha_mode, &vh_mode, &tf_mode))
         LOG_FAIL("diag", "cutovermode: invalid mode '%s'", mode_s);
 
     if (strcasecmp(stage, "header_admit") != 0 &&
         strcasecmp(stage, "validate_headers") != 0 &&
+        strcasecmp(stage, "tip_finalize") != 0 &&
         strcasecmp(stage, "all") != 0)
         LOG_FAIL("diag", "cutovermode: invalid stage '%s'", stage);
 
     bool wants_authoritative =
-        cutover_stage_requests_authoritative(stage, ha_mode, vh_mode);
+        cutover_stage_requests_authoritative(stage, ha_mode, vh_mode, tf_mode);
     if (wants_authoritative &&
         !cutover_authoritative_request_is_paired(stage))
         LOG_FAIL("diag",
@@ -255,10 +257,12 @@ bool diag_rpc_cutovermode(const struct json_value *params, bool help,
         header_admit_set_mode(ha_mode);
     } else if (strcasecmp(stage, "validate_headers") == 0) {
         validate_headers_set_mode(vh_mode);
+    } else if (strcasecmp(stage, "tip_finalize") == 0) {
+        tip_finalize_set_mode(tf_mode);
     } else if (strcasecmp(stage, "all") == 0) {
-        cutover_modes_set_header_pipeline(
-            cutover_stage_mode_from_header_admit(ha_mode),
-            cutover_stage_mode_from_validate_headers(vh_mode));
+        header_admit_set_mode(ha_mode);
+        validate_headers_set_mode(vh_mode);
+        tip_finalize_set_mode(tf_mode);
     }
 
     struct node_health_snapshot health;

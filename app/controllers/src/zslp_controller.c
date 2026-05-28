@@ -148,7 +148,7 @@ const char *zslp_create_token(const char *datadir,
 
     if (!zslp_command_commit_with_op_return(wallet, mempool, &wtx,
                                             script, slen).ok) {
-        fprintf(stderr, "zslp: commit failed\n");
+        LOG_WARN("zslp", "zslp: commit failed");
         transaction_free(&wtx.tx);
         return NULL;
     }
@@ -273,7 +273,7 @@ bool zslp_mint(const char *datadir,
 
     if (!zslp_command_commit_with_op_return(wallet, mempool, &wtx,
                                             op_script, slen).ok) {
-        fprintf(stderr, "zslp: mint commit failed\n");
+        LOG_WARN("zslp", "zslp: mint commit failed");
         transaction_free(&wtx.tx);
         return false;
     }
@@ -344,7 +344,7 @@ bool zslp_send(const char *datadir,
 
     if (!zslp_command_commit_with_op_return(wallet, mempool, &wtx,
                                             op_script, slen).ok) {
-        fprintf(stderr, "zslp: commit failed\n");
+        LOG_WARN("zslp", "zslp: commit failed");
         transaction_free(&wtx.tx);
         return false;
     }

@@ -23,6 +23,7 @@
 #include "models/db_txn.h"
 
 #include "event/event.h"
+#include "util/log_macros.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -92,10 +93,9 @@ struct db_txn *db_txn_begin(struct node_db *db, const char *label)
     node_db_get_status(db, &status);
     if (status.tx_open) {
         emit_rejected(label, "already_open");
-        fprintf(stderr,
+        LOG_NULL("db",
                 "db_txn: REJECTED nesting for label='%s' "
-                "(underlying tx already open)\n", label);
-        return NULL;
+                "(underlying tx already open)", label);
     }
 
     if (!node_db_begin(db)) {

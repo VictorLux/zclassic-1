@@ -32,11 +32,14 @@ struct cutover_canary_snapshot {
 
 void cutover_modes_set_header_admit(cutover_stage_mode_t mode);
 void cutover_modes_set_validate_headers(cutover_stage_mode_t mode);
+void cutover_modes_set_tip_finalize(cutover_stage_mode_t mode);
 void cutover_modes_set_header_pipeline(cutover_stage_mode_t header_admit,
                                        cutover_stage_mode_t validate_headers);
+void cutover_modes_revert_all_to_shadow(void);
 
 cutover_stage_mode_t cutover_modes_get_header_admit(void);
 cutover_stage_mode_t cutover_modes_get_validate_headers(void);
+cutover_stage_mode_t cutover_modes_get_tip_finalize(void);
 bool cutover_modes_any_authoritative_active(void);
 
 void cutover_modes_record_change(int64_t height,

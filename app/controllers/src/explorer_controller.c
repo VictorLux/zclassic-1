@@ -190,9 +190,7 @@ bool explorer_start_once(_Atomic int *flag,
         return expected == 1;
     if (!explorer_start_detached_thread(&t, entry, NULL, 2 * 1024 * 1024)) {
         atomic_store(flag, 0);
-        if (name)
-            fprintf(stderr, "Explorer: failed to start %s thread\n", name);
-        return false;
+        LOG_FAIL("explorer", "Explorer: failed to start %s thread", name ? name : "unknown");
     }
     return true;
 }

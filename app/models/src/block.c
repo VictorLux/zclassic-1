@@ -38,14 +38,12 @@ static bool block_before_save(void *record, void *ctx)
     (void)ctx;
     const struct db_block *b = record;
     if (b->height < 0) {
-        fprintf(stderr, "[block] before_save REJECTED: negative height %d\n", b->height);
-        return false;
+        LOG_FAIL("block", "before_save REJECTED: negative height %d", b->height);
     }
     /* Check hash is not all zeros */
     static const uint8_t zero[32] = {0};
     if (memcmp(b->hash, zero, 32) == 0) {
-        fprintf(stderr, "[block] before_save REJECTED: null hash\n");
-        return false;
+        LOG_FAIL("block", "before_save REJECTED: null hash");
     }
     return true;
 }

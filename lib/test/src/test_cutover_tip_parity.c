@@ -307,7 +307,7 @@ int test_cutover_tip_parity(void)
         /* chain_active tip = the highest block; tips exist at heights 1..N */
         active_chain_set_tip(&ms.chain_active, &sc.blocks[N]);
         CTP_CHECK("linear: chain height is N",
-                  active_chain_height(&ms.chain_active) == N);
+                  ms.chain_active.height == N);
         CTP_CHECK("linear: utxo_apply seeded",
                   ctp_seed_utxo_apply(progress_store_db(), N));
         CTP_CHECK("linear: stage init", tip_finalize_stage_init(&ms));
@@ -345,7 +345,7 @@ int test_cutover_tip_parity(void)
         /* P3: at full convergence the finalize cursor equals the chain tip
          * height with zero lag — derived tip height == chain_active height.
          * (chain tip is at height N here; the stage finalized heights 0..N-1.) */
-        int64_t need = required_finalize_cursor(active_chain_height(&ms.chain_active));
+        int64_t need = required_finalize_cursor(ms.chain_active.height);
         CTP_CHECK("linear: P3 cursor == chain tip height (lag 0)",
                   (int64_t)tip_finalize_stage_cursor() == need);
 
@@ -406,7 +406,7 @@ int test_cutover_tip_parity(void)
                   tip_finalize_stage_drain(100) == N);
         CTP_CHECK("reorg: pre-reorg cursor == chain tip (lag 0)",
                   (int64_t)tip_finalize_stage_cursor() ==
-                      required_finalize_cursor(active_chain_height(&ms.chain_active)));
+                      required_finalize_cursor(ms.chain_active.height));
         bool pre_parity = true;
         for (int tip_height = 1; tip_height <= N; tip_height++)
             if (!parity_holds_at(db, &ms.chain_active, tip_height))
@@ -425,7 +425,7 @@ int test_cutover_tip_parity(void)
         CTP_CHECK("reorg: competing fork installed onto chain_active",
                   active_chain_set_tip(&ms.chain_active, &sc.blocks[3]));
         CTP_CHECK("reorg: chain_active still height N (same-height fork)",
-                  active_chain_height(&ms.chain_active) == N);
+                  ms.chain_active.height == N);
 
         /* Before re-driving, the STALE recorded tip at the fork point must no
          * longer match chain_active — that is the divergence the rewind keys
@@ -445,7 +445,7 @@ int test_cutover_tip_parity(void)
                   tip_finalize_stage_reorg_detected_total() >= 1);
         CTP_CHECK("reorg: post-reorg cursor back at chain tip (lag 0)",
                   (int64_t)tip_finalize_stage_cursor() ==
-                      required_finalize_cursor(active_chain_height(&ms.chain_active)));
+                      required_finalize_cursor(ms.chain_active.height));
 
         /* Parity must now hold against the NEW chain_active at every live
          * height (1..N): the rewritten log rows carry the fork's block hashes,

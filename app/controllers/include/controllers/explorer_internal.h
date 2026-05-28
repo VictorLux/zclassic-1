@@ -14,6 +14,7 @@
 #include <math.h>
 #include <time.h>
 #include <sqlite3.h>
+#include "util/log_macros.h"
 #include "views/format_helpers.h"
 
 #define ZCL_EXPLORER_GENESIS_TIME 1478403829LL
@@ -124,16 +125,15 @@ static inline int64_t sql_query_i64(sqlite3 *db, const char *sql)
     sqlite3_stmt *s = NULL;
     int rc = sqlite3_prepare_v2(db, sql, -1, &s, NULL);  // raw-controller-sql-ok:explorer-read-projection-helper
     if (rc != SQLITE_OK) {
-        fprintf(stderr, "sql_query_i64: prepare failed (%d): %s [%s]\n",
+        LOG_ERR("explorer", "sql_query_i64: prepare failed (%d): %s [%s]",
                 rc, sqlite3_errmsg(db), sql);
-        return -1;
     }
     if (s) {
         rc = sqlite3_step(s);  // raw-sql-ok:read-only-introspection
         if (rc == SQLITE_ROW)
             val = sqlite3_column_int64(s, 0);
         else if (rc != SQLITE_DONE)
-            fprintf(stderr, "sql_query_i64: step failed (%d): %s [%s]\n",
+            LOG_WARN("explorer", "sql_query_i64: step failed (%d): %s [%s]",
                     rc, sqlite3_errmsg(db), sql);
         sqlite3_finalize(s);
     }

@@ -117,10 +117,9 @@ int node_db_schema_version(struct node_db *ndb)
 #define DB_MIGRATE_PERSIST_VERSION(ndb, ver) do { \
     int32_t _v = (int32_t)(ver); \
     if (!node_db_state_set((ndb), "schema_version", &_v, sizeof(_v))) { \
-        fprintf(stderr, "[db] migrate: failed to persist " \
+        LOG_ERR("db", "migrate: failed to persist " \
                 "schema_version=%d; aborting migration to prevent " \
-                "loop on next boot\n", (int)_v); \
-        return -1; \
+                "loop on next boot", (int)_v); \
     } \
 } while (0)
 
@@ -138,9 +137,8 @@ int node_db_migrate(struct node_db *ndb, const char *datadir)
         "  applied_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now'))"
         ");"
         "INSERT OR IGNORE INTO schema_migrations(version) VALUES('001');")) {
-        fprintf(stderr, "[db] migrate: schema_migrations bootstrap failed; "
-                "aborting to avoid re-applying migrations on next boot\n");
-        return -1;
+        LOG_ERR("db", "migrate: schema_migrations bootstrap failed; "
+                "aborting to avoid re-applying migrations on next boot");
     }
 
     int applied = 0;

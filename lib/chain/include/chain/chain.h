@@ -83,6 +83,7 @@ struct block_index {
     struct block_index *pskip;
 
     /* --- 32-byte fields --- */
+    struct uint256 hashBlock;  /* Stable storage for phashBlock */
     struct arith_uint256 nChainWork;
     struct uint256 hashMerkleRoot;
     struct uint256 hashFinalSaplingRoot;

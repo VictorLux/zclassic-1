@@ -107,11 +107,10 @@ bool z_sendmany_shielded(
                 char ah[65], wh[65];
                 uint256_get_hex((const struct uint256 *)anchor, ah);
                 uint256_get_hex(&wroot, wh);
-                fprintf(stderr, "z_sendmany: witness %zu root differs from witness 0 "
-                    "w0=%s w%zu=%s\n", vi, ah, vi, wh);
                 free(witnesses);
                 json_set_str(result, "Witness roots inconsistent (run rescanwitnesses)");
-                return false;
+                LOG_FAIL("wallet_shielded", "z_sendmany: witness %zu root differs from witness 0 "
+                    "w0=%s w%zu=%s", vi, ah, vi, wh);
             }
         }
 

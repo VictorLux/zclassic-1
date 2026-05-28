@@ -44,14 +44,12 @@ bool mmb_leaf_store_open(struct mmb_leaf_store *store, const char *path)
     if (!mmb_leaf_store_validate(store, &errors)) {
         char msg[512];
         ar_errors_full_messages(&errors, msg, sizeof(msg));
-        fprintf(stderr, "mmb_leaf_store: invalid: %s\n", msg);
-        return false;
+        LOG_FAIL("mmb_leaf_store", "mmb_leaf_store: invalid: %s", msg);
     }
 
     store->fd = open(path, O_RDWR | O_CREAT, 0644);
     if (store->fd < 0) {
-        fprintf(stderr, "mmb_leaf_store: cannot open %s\n", path);
-        return false;
+        LOG_FAIL("mmb_leaf_store", "mmb_leaf_store: cannot open %s", path);
     }
 
     struct stat st;

@@ -370,9 +370,8 @@ static bool prepare_statements(struct node_db *ndb)
 #define PREP(field, sql) do { \
     rc = sqlite3_prepare_v2(db, sql, -1, &ndb->field, NULL); \
     if (rc != SQLITE_OK) { \
-        fprintf(stderr, "db: prepare %s: %s\n", #field, \
+        LOG_FAIL("db", "db: prepare %s: %s", #field, \
                 sqlite3_errmsg(db)); \
-        return false; \
     } \
 } while (0)
 
@@ -538,9 +537,8 @@ static bool db_quick_check_ok(sqlite3 *db)
     bool ok = false;
     int rc = sqlite3_prepare_v2(db, "PRAGMA quick_check(1)", -1, &stmt, NULL);
     if (rc != SQLITE_OK) {
-        fprintf(stderr, "db: quick_check prepare failed: %s\n",
+        LOG_FAIL("db", "db: quick_check prepare failed: %s",
                 sqlite3_errmsg(db));
-        return false;
     }
     rc = sqlite3_step(stmt);  // raw-sql-ok:read-only-introspection
     if (rc == SQLITE_ROW) {
@@ -700,7 +698,7 @@ bool node_db_exec(struct node_db *ndb, const char *sql)
     char *err = NULL;
     int rc = sqlite3_exec(ndb->db, sql, NULL, NULL, &err);
     if (rc != SQLITE_OK) {
-        fprintf(stderr, "db: exec failed: %s\n", err);
+        LOG_WARN("db", "db: exec failed: %s", err);
         node_db_note_activity(ndb, sql ? sql : "exec", rc);
         sqlite3_free(err);
         return false;

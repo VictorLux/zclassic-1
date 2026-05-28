@@ -42,8 +42,7 @@ static enum condition_remedy_result remedy_cutover_canary_complete(void)
                         tip_finalize_stage_upstream_failed_total();
 
     if (diverged > 0) {
-        cutover_modes_set_header_pipeline(CUTOVER_STAGE_MODE_SHADOW,
-                                          CUTOVER_STAGE_MODE_SHADOW);
+        cutover_modes_revert_all_to_shadow();
 
         LOG_WARN("condition", "[condition:cutover_canary_complete] REVERTED DUE TO DIVERGENCE! " "target=%lld current=%lld changed_at=%lld diverged=%llu", (long long)snap.target_height, (long long)snap.current_tip_height, (long long)snap.changed_at_unix, (unsigned long long)diverged);
         event_emitf(EV_SYNC_STATE_CHANGE, 0,

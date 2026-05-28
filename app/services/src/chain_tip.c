@@ -11,6 +11,7 @@
 #include "event/event.h"
 #include "models/database.h"
 #include "config/runtime.h"
+#include "jobs/tip_finalize_stage.h"
 
 #include <sqlite3.h>
 #include <stdatomic.h>
@@ -138,6 +139,16 @@ struct zcl_result chain_set_active_tip(struct main_state *ms,
             "src=%s reason=%s",
             new_tip->nHeight, tip_source_name(src),
             reason ? reason : "");
+    }
+
+    /* If we are authoritative, and this tip set came from a trusted source
+     * (like connect_tip or bootstrap), ensure the authority atomics match
+     * what we just wrote to RAM. This allows legacy/sync paths to still
+     * drive the definitional tip during transition. */
+    if (tip_finalize_get_mode() == TIP_FINALIZE_MODE_AUTHORITATIVE &&
+        new_tip->phashBlock) {
+        tip_finalize_stage_set_authoritative_tip(new_tip->nHeight,
+                                                 new_tip->phashBlock->data);
     }
 
     char hex16[33] = "(no-hash)";

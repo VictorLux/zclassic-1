@@ -11,6 +11,7 @@
 
 #define CUTOVER_MODE_HEADER_ADMIT      0x01u
 #define CUTOVER_MODE_VALIDATE_HEADERS  0x02u
+#define CUTOVER_MODE_TIP_FINALIZE      0x04u
 
 static _Atomic unsigned g_header_pipeline_modes = 0;
 static _Atomic int g_cutover_has_change;
@@ -48,13 +49,24 @@ void cutover_modes_set_validate_headers(cutover_stage_mode_t mode)
     cutover_modes_update_one(CUTOVER_MODE_VALIDATE_HEADERS, mode);
 }
 
+void cutover_modes_set_tip_finalize(cutover_stage_mode_t mode)
+{
+    cutover_modes_update_one(CUTOVER_MODE_TIP_FINALIZE, mode);
+}
+
 void cutover_modes_set_header_pipeline(cutover_stage_mode_t header_admit,
                                        cutover_stage_mode_t validate_headers)
 {
-    unsigned bits = bit_for_mode(CUTOVER_MODE_HEADER_ADMIT, header_admit) |
-                    bit_for_mode(CUTOVER_MODE_VALIDATE_HEADERS,
-                                 validate_headers);
+    unsigned bits = atomic_load(&g_header_pipeline_modes);
+    bits &= ~(CUTOVER_MODE_HEADER_ADMIT | CUTOVER_MODE_VALIDATE_HEADERS);
+    bits |= bit_for_mode(CUTOVER_MODE_HEADER_ADMIT, header_admit);
+    bits |= bit_for_mode(CUTOVER_MODE_VALIDATE_HEADERS, validate_headers);
     atomic_store(&g_header_pipeline_modes, bits);
+}
+
+void cutover_modes_revert_all_to_shadow(void)
+{
+    atomic_store(&g_header_pipeline_modes, 0u);
 }
 
 cutover_stage_mode_t cutover_modes_get_header_admit(void)
@@ -69,6 +81,14 @@ cutover_stage_mode_t cutover_modes_get_validate_headers(void)
 {
     return (atomic_load(&g_header_pipeline_modes) &
             CUTOVER_MODE_VALIDATE_HEADERS)
+        ? CUTOVER_STAGE_MODE_AUTHORITATIVE
+        : CUTOVER_STAGE_MODE_SHADOW;
+}
+
+cutover_stage_mode_t cutover_modes_get_tip_finalize(void)
+{
+    return (atomic_load(&g_header_pipeline_modes) &
+            CUTOVER_MODE_TIP_FINALIZE)
         ? CUTOVER_STAGE_MODE_AUTHORITATIVE
         : CUTOVER_STAGE_MODE_SHADOW;
 }
@@ -158,6 +178,7 @@ bool cutover_dump_state_json(struct json_value *out, const char *key)
 
     cutover_stage_mode_t ha = cutover_modes_get_header_admit();
     cutover_stage_mode_t vh = cutover_modes_get_validate_headers();
+    cutover_stage_mode_t tf = cutover_modes_get_tip_finalize();
     bool authoritative_active = cutover_modes_any_authoritative_active();
 
     /* Per-stage runtime modes + the aggregate authoritative flag. */
@@ -166,6 +187,7 @@ bool cutover_dump_state_json(struct json_value *out, const char *key)
     json_set_object(&modes);
     json_push_kv_str(&modes, "header_admit", cutover_mode_name(ha));
     json_push_kv_str(&modes, "validate_headers", cutover_mode_name(vh));
+    json_push_kv_str(&modes, "tip_finalize", cutover_mode_name(tf));
     json_push_kv(out, "modes", &modes);
     json_free(&modes);
     json_push_kv_bool(out, "authoritative_active", authoritative_active);

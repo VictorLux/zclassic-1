@@ -515,8 +515,8 @@ bool file_chunk_read(const struct file_chunk *chunk, const char *datadir,
     uint8_t hash[32];
     sha3_256(buf, chunk->size, hash);
     if (memcmp(hash, chunk->sha3, 32) != 0) {
-        fprintf(stderr, "file_chunk_read: SHA3 mismatch for chunk at "
-                "file=%d offset=%llu\n",
+        LOG_WARN("file", "chunk_read: SHA3 mismatch for chunk at "
+                "file=%d offset=%llu",
                 chunk->file_index, (unsigned long long)chunk->offset);
         free(buf);
         return false;

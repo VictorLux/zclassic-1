@@ -28,13 +28,11 @@ static bool mempool_before_save(void *record, void *ctx)
     const struct db_mempool_entry *e = record;
     static const uint8_t zero[32] = {0};
     if (memcmp(e->txid, zero, 32) == 0) {
-        fprintf(stderr, "[mempool] before_save REJECTED: null txid\n");
-        return false;
+        LOG_FAIL("mempool", "before_save REJECTED: null txid");
     }
     if (e->fee < 0) {
-        fprintf(stderr, "[mempool] before_save REJECTED: negative fee %lld\n",
+        LOG_FAIL("mempool", "before_save REJECTED: negative fee %lld",
                 (long long)e->fee);
-        return false;
     }
     return true;
 }
