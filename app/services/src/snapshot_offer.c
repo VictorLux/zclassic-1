@@ -103,7 +103,7 @@ static bool snapsync_read_tip_chainwork_internal(struct node_db *ndb,
 
     if (!ndb || !ndb->open || !hash || !chain_work)
         return false;
-    if (!snapsync_bind_store_internal(&sctx, ndb, &store))
+    if (!snapsync_bind_store_internal(&sctx, ndb, &store).ok)
         return false;
     return store.tip_chainwork(store.self, hash, chain_work);
 }
@@ -213,8 +213,10 @@ struct zcl_result snapsync_build_local_recovery_manifest(struct node_db *ndb,
         struct snapshot_store_sqlite_ctx sctx;
         struct snapshot_store_port store = {0};
         int64_t count = 0;
-        if (!snapsync_bind_store_internal(&sctx, ndb, &store) ||
-            !store.utxo_count(store.self, &count))
+        struct zcl_result bind = snapsync_bind_store_internal(&sctx, ndb, &store);
+        if (!bind.ok)
+            return ZCL_ERR(-7, "build_local_recovery_manifest: %s", bind.message);
+        if (!store.utxo_count(store.self, &count))
             return ZCL_ERR(-7, "build_local_recovery_manifest: prepare utxo count failed");
         utxo_count = (uint64_t)count;
     }
@@ -254,7 +256,7 @@ static bool snapsync_accept_offer_internal(struct snapshot_sync_service *svc,
         int64_t utxo_count = 0;
         struct snapshot_store_sqlite_ctx sctx;
         struct snapshot_store_port store = {0};
-        if (snapsync_bind_store_internal(&sctx, svc->ndb, &store))
+        if (snapsync_bind_store_internal(&sctx, svc->ndb, &store).ok)
             (void)store.utxo_count(store.self, &utxo_count);
         if (utxo_count > 100000 && !allow_populated_utxos) {
             printf("[snapsync] Skipping P2P snapshot — %lld UTXOs already "

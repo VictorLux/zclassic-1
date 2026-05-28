@@ -17,7 +17,6 @@ app/services/src/header_admit_stage.c
 app/services/src/legacy_mirror_sync_service.c
 app/services/src/proof_validate_stage.c
 app/services/src/script_validate_stage.c
-app/services/src/snapshot_sync_service.c
 app/services/src/tip_finalize_stage.c
 app/services/src/utxo_apply_stage.c
 app/services/src/utxo_recovery_service.c

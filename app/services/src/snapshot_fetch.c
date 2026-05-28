@@ -84,7 +84,7 @@ static bool snapsync_insert_staging_raw(struct node_db *ndb,
     struct snapshot_store_sqlite_ctx sctx;
     struct snapshot_store_port store = {0};
 
-    if (!snapsync_bind_store_internal(&sctx, ndb, &store))
+    if (!snapsync_bind_store_internal(&sctx, ndb, &store).ok)
         return false;
     return store.staging_insert(store.self, u);
 }
@@ -98,7 +98,7 @@ int64_t snapsync_staging_count_internal(struct node_db *ndb)
         LOG_ERR("snapshot_sync", "staging_count: ndb=%p open=%d db=%p",
                 (void*)ndb, ndb ? ndb->open : 0,
                 ndb ? (void*)ndb->db : NULL);
-    if (!snapsync_bind_store_internal(&sctx, ndb, &store))
+    if (!snapsync_bind_store_internal(&sctx, ndb, &store).ok)
         LOG_ERR("snapshot_sync", "staging_count: bind snapshot store failed");
     return store.staging_count(store.self);
 }
@@ -148,7 +148,7 @@ static bool snapsync_enter_receive_mode_write(struct node_db *ndb, void *ctx)
     {
         struct snapshot_store_sqlite_ctx sctx;
         struct snapshot_store_port store = {0};
-        if (snapsync_bind_store_internal(&sctx, ndb, &store))
+        if (snapsync_bind_store_internal(&sctx, ndb, &store).ok)
             (void)store.set_busy_timeout(store.self, 10000);
     }
     snapsync_set_db_mode_flag(ndb, true);

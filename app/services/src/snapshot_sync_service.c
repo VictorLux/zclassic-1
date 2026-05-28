@@ -114,11 +114,15 @@ bool snapsync_run_write_internal(struct snapshot_sync_service *svc,
  * service/offer/fetch files name only snapshot_store_port; here we bind the
  * default sqlite adapter. (The two SHA3 commitment calls stay inline with
  * the live handle — they are commitment math, not storage access.) */
-bool snapsync_bind_store_internal(struct snapshot_store_sqlite_ctx *ctx,
-                                  struct node_db *ndb,
-                                  struct snapshot_store_port *out_port)
+struct zcl_result snapsync_bind_store_internal(
+    struct snapshot_store_sqlite_ctx *ctx,
+    struct node_db *ndb,
+    struct snapshot_store_port *out_port)
 {
-    return snapshot_store_sqlite_bind(ctx, ndb, out_port);
+    if (!snapshot_store_sqlite_bind(ctx, ndb, out_port))
+        return ZCL_ERR(-1, "bind_store: null ctx (%p) or out_port (%p)",
+                       (void *)ctx, (void *)out_port);
+    return ZCL_OK;
 }
 
 /* ── Peer Blacklist ──────────────────────────────────────── */
@@ -319,7 +323,7 @@ bool snapsync_awaiting_utxos(void)
             int64_t utxo_count = 0;
             struct snapshot_store_sqlite_ctx sctx;
             struct snapshot_store_port store = {0};
-            if (snapsync_bind_store_internal(&sctx, svc->ndb, &store))
+            if (snapsync_bind_store_internal(&sctx, svc->ndb, &store).ok)
                 (void)store.utxo_count(store.self, &utxo_count);
             /* A real snapshot import produces 1M+ UTXOs.  A partial
              * block connect from genesis produces very few. */
