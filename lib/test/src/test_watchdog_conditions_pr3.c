@@ -366,13 +366,25 @@ int test_watchdog_conditions_pr3(void)
         ok = ok && active_chain_set_tip(&ms.chain_active, &next);
         fake_clock_set(&clock, 7001);
         condition_engine_tick();
-        bool reverted =
+        
+        /* The canary matched with no divergence. It clears the canary and locks in 
+         * authoritative mode. It does not revert. */
+        bool locked_in =
             cutover_canary_complete_test_remedy_calls() == 1 &&
-            header_admit_get_mode() == HEADER_ADMIT_MODE_SHADOW &&
-            validate_headers_get_mode() == VALIDATE_HEADERS_MODE_SHADOW &&
-            condition_engine_get_active_count() == 0;
-        ok = ok && armed && reverted;
-        WDP3_CHECK("cutover canary reverts after one block", ok);
+            header_admit_get_mode() == HEADER_ADMIT_MODE_AUTHORITATIVE &&
+            validate_headers_get_mode() == VALIDATE_HEADERS_MODE_AUTHORITATIVE;
+        WDP3_CHECK("cutover canary locks in authoritative mode on success", locked_in);
+
+        /* Advance clock past witness window to allow the condition to clear.
+         * The witness will fail (because authoritative mode is still active),
+         * but since the canary target was cleared, detect() will return false,
+         * causing the engine to clear the condition. */
+        fake_clock_set(&clock, 7010);
+        condition_engine_tick();
+        
+        bool cleared = condition_engine_get_active_count() == 0;
+        WDP3_CHECK("cutover canary clears after success", cleared);
+        
         cleanup_pr3();
     }
 

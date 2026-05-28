@@ -493,6 +493,13 @@ void csr_free(struct chain_state_repository *csr)
         pthread_mutex_destroy(&csr->lock);
     }
     csr->initialized = false;
+    csr->block_map = NULL;
+    csr->chain_active = NULL;
+    csr->pindex_best_hdr = NULL;
+    csr->coins_tip = NULL;
+    csr->ndb = NULL;
+    csr->db_service = NULL;
+    csr->wallet_scan_h = NULL;
 }
 
 void csr_set_db_service(struct chain_state_repository *csr,

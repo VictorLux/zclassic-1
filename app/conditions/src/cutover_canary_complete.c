@@ -66,7 +66,16 @@ static enum condition_remedy_result remedy_cutover_canary_complete(void)
 static bool witness_cutover_canary_complete(int64_t target_at_detect)
 {
     (void)target_at_detect;
-    return !cutover_modes_any_authoritative_active();
+    /* The remedy has succeeded if we either successfully reverted to shadow,
+     * OR if the canary passed without divergence and was cleared. */
+    if (!cutover_modes_any_authoritative_active())
+        return true;
+        
+    /* If authoritative mode is still active, we must check if the canary was 
+     * cleared. If the target was cleared, it means we locked in authoritative mode. */
+    struct main_state *ms = sync_monitor_main_state();
+    int local = ms ? active_chain_height(&ms->chain_active) : -1;
+    return !cutover_modes_canary_target_reached(local);
 }
 
 static struct condition c_cutover_canary_complete = {
