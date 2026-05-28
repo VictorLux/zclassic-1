@@ -7,71 +7,63 @@
 // returns 0 because there are simply no rows to project. The read-only
 // projection has no mutating decision and nothing to carry beyond the
 // count. Wrapping it in zcl_result would discard the row count.
+//
+// Storage is reached ONLY through wallet_view_port — the raw sqlite
+// queries live in the sqlite adapter. This file is pure domain logic:
+// it binds the default sqlite adapter and drives the port. The public
+// functions still accept a sqlite3* so callers (wallet_view controllers,
+// tests) are unchanged.
 
 #include "services/wallet_view_projection.h"
-#include "util/ar_step_readonly.h"
-#include "util/log_macros.h"
 
-#include <stdio.h>
+#include "adapters/outbound/persistence/wallet_view_sqlite.h"
+#include "ports/wallet_view_port.h"
+
+#include <stddef.h>
+
+/* struct wv_receive_address / struct wv_held_token (public service types)
+ * and the port row types are deliberately kept layout-identical so the
+ * port can fill the caller's buffer in one shot with no per-row copy.
+ * These asserts fail the build if either drifts. */
+_Static_assert(sizeof(struct wv_receive_address) ==
+                   sizeof(struct wallet_view_receive_address),
+               "wv_receive_address size must match port row");
+_Static_assert(offsetof(struct wv_receive_address, address) ==
+                   offsetof(struct wallet_view_receive_address, address),
+               "wv_receive_address layout must match port row");
+_Static_assert(sizeof(struct wv_held_token) ==
+                   sizeof(struct wallet_view_held_token),
+               "wv_held_token size must match port row");
+_Static_assert(offsetof(struct wv_held_token, token_id) ==
+                       offsetof(struct wallet_view_held_token, token_id) &&
+                   offsetof(struct wv_held_token, ticker) ==
+                       offsetof(struct wallet_view_held_token, ticker) &&
+                   offsetof(struct wv_held_token, decimals) ==
+                       offsetof(struct wallet_view_held_token, decimals),
+               "wv_held_token layout must match port row");
 
 int wv_list_receive_addresses(sqlite3 *db, struct wv_receive_address *out,
                               size_t max)
 {
-    sqlite3_stmt *s = NULL;
-    size_t count = 0;
-
     if (!db || !out || max == 0)
         return 0;
-
-    if (sqlite3_prepare_v2(db,
-            "SELECT address FROM wallet_sapling_keys "
-            "WHERE address IS NOT NULL AND length(address) > 0 "
-            "ORDER BY rowid",
-            -1, &s, NULL) != SQLITE_OK || !s)
+    struct wallet_view_port port;
+    if (!wallet_view_sqlite_bind(db, &port))
         return 0;
-
-    while (AR_STEP_ROW_READONLY(s) == SQLITE_ROW && count < max) {
-        const char *raw = (const char *)sqlite3_column_text(s, 0);
-        if (!raw || !raw[0])
-            continue;
-        snprintf(out[count].address, sizeof(out[count].address), "%s", raw);
-        count++;
-    }
-    sqlite3_finalize(s);
-    return (int)count;
+    /* Layout-identical to struct wallet_view_receive_address (asserted
+     * above); project directly into the caller's buffer. */
+    return port.list_receive_addresses(
+        port.self, (struct wallet_view_receive_address *)out, max);
 }
 
 int wv_list_held_tokens(sqlite3 *db, struct wv_held_token *out, size_t max)
 {
-    sqlite3_stmt *s = NULL;
-    size_t count = 0;
-
     if (!db || !out || max == 0)
         return 0;
-
-    if (sqlite3_prepare_v2(db,
-            "SELECT hex(t.token_id), t.ticker, t.decimals "
-            "FROM zslp_tokens t "
-            "JOIN zslp_transfers tr ON tr.token_id = t.token_id "
-            "WHERE tr.to_addr IN (SELECT pubkey_hash FROM wallet_keys) "
-            "  AND tr.tx_type IN ('GENESIS','MINT','SEND') "
-            "GROUP BY t.token_id HAVING SUM(tr.amount) > 0 "
-            "ORDER BY SUM(tr.amount) DESC LIMIT 10",
-            -1, &s, NULL) != SQLITE_OK || !s)
+    struct wallet_view_port port;
+    if (!wallet_view_sqlite_bind(db, &port))
         return 0;
-
-    while (AR_STEP_ROW_READONLY(s) == SQLITE_ROW && count < max) {
-        const char *tid = (const char *)sqlite3_column_text(s, 0);
-        const char *ticker = (const char *)sqlite3_column_text(s, 1);
-        int decimals = sqlite3_column_int(s, 2);
-
-        if (!tid || !ticker)
-            continue;
-        snprintf(out[count].token_id, sizeof(out[count].token_id), "%s", tid);
-        snprintf(out[count].ticker, sizeof(out[count].ticker), "%s", ticker);
-        out[count].decimals = decimals;
-        count++;
-    }
-    sqlite3_finalize(s);
-    return (int)count;
+    /* Layout-identical to struct wallet_view_held_token (asserted above). */
+    return port.list_held_tokens(
+        port.self, (struct wallet_view_held_token *)out, max);
 }

@@ -856,6 +856,7 @@ int main(void)
     failures += test_wallet_backup_port();
     failures += test_snapshot_store_port();
     failures += test_block_index_sidecar_port();
+    failures += test_wallet_view_port();
     failures += test_make_lint_gates();
     failures += test_multisig();
     failures += test_mcp_fuzz();
