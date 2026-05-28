@@ -24,6 +24,8 @@
 
 #include "util/result.h"
 
+#include "ports/bg_hash_verify_store_port.h"
+
 struct main_state;
 struct node_db;
 struct chain_params;
@@ -47,6 +49,11 @@ struct bg_hash_verification_service {
     struct node_db *ndb;
     const char *datadir;
     const struct chain_params *params;
+
+    /* Crash-resume cursor storage behind a port; bound from `ndb` in
+     * bg_hash_verify_init. The service never names sqlite — all cursor
+     * persistence flows through this seam. */
+    struct bg_hash_verify_store_port progress_store;
 
     pthread_t thread;
     bool thread_started;

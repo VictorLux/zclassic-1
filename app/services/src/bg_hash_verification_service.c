@@ -6,11 +6,12 @@
 
 #include "platform/time_compat.h"
 #include "services/bg_hash_verification_service.h"
+#include "adapters/outbound/persistence/bg_hash_verify_store_sqlite.h"
+#include "ports/bg_hash_verify_store_port.h"
 #include "validation/main_state.h"
 #include "validation/chainstate.h"
 #include "storage/disk_block_io.h"
 #include "primitives/block.h"
-#include "models/database.h"
 #include "event/event.h"
 #include <stdio.h>
 #include <string.h>
@@ -28,19 +29,20 @@ struct bg_hash_verification_service *g_bg_hash_verify = NULL;
 
 /* ── Progress persistence ─────────────────────────────────────── */
 
-static int load_progress(struct node_db *ndb)
+static int load_progress(const struct bg_hash_verify_store_port *store)
 {
-    if (!ndb || !ndb->open) return 0;
-    int64_t val = 0;
-    if (node_db_state_get_int(ndb, "bg_hash_verification_height", &val))
-        return (int)val;
+    int val = 0;
+    if (store && store->load_progress &&
+        store->load_progress(store->self, &val))
+        return val;
     return 0;
 }
 
-static void save_progress(struct node_db *ndb, int height)
+static void save_progress(const struct bg_hash_verify_store_port *store,
+                          int height)
 {
-    if (!ndb || !ndb->open) return;
-    node_db_state_set_int(ndb, "bg_hash_verification_height", (int64_t)height);
+    if (store && store->save_progress)
+        store->save_progress(store->self, height);
 }
 
 /* ── State names ──────────────────────────────────────────────── */
@@ -63,7 +65,7 @@ static void *bg_hash_verify_thread(void *arg)
     struct bg_hash_verification_service *svc = arg;
     struct main_state *ms = svc->ms;
 
-    int start_height = load_progress(svc->ndb);
+    int start_height = load_progress(&svc->progress_store);
     if (start_height < 1) start_height = 1; /* skip genesis (no block file) */
 
     zcl_mutex_lock(&ms->cs_main);
@@ -145,7 +147,7 @@ static void *bg_hash_verify_thread(void *arg)
 
         /* Periodic save + log */
         if (h % SAVE_INTERVAL == 0)
-            save_progress(svc->ndb, h);
+            save_progress(&svc->progress_store, h);
         if (h % LOG_INTERVAL == 0) {
             struct timespec now;
             platform_time_monotonic_timespec(&now);
@@ -168,7 +170,7 @@ static void *bg_hash_verify_thread(void *arg)
 
     /* Final save */
     if (!atomic_load(&svc->stop_requested))
-        save_progress(svc->ndb, chain_height);
+        save_progress(&svc->progress_store, chain_height);
 
     struct timespec ts_end;
     platform_time_monotonic_timespec(&ts_end);
@@ -200,6 +202,7 @@ void bg_hash_verify_init(struct bg_hash_verification_service *svc,
     svc->ndb = ndb;
     svc->datadir = datadir;
     svc->params = params;
+    bg_hash_verify_store_sqlite_bind(ndb, &svc->progress_store);
     atomic_store(&svc->stop_requested, false);
     atomic_store(&svc->progress.state, BG_HASH_VERIFY_IDLE);
 }
