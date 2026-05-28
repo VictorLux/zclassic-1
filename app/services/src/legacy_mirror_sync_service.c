@@ -1,16 +1,19 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * Always-on legacy mirror sync service. zclassicd is used only as an
- * availability source; headers still flow through accept_block_header()
- * via header_probe and bodies through process_new_block() via
- * legacy_body_pull.
+ * Always-on legacy mirror MONITOR. Post-B7 cutover the staged sync
+ * pipeline is the authoritative block writer, so this service no
+ * longer applies blocks. It only observes lag against a sibling
+ * zclassicd: fetch chain-info, compute lag, evaluate the lag-SLO,
+ * verify anchor/tip hashes agree, cache hashes, and surface a blocker
+ * when the local tip is behind. The heartbeat, lag-SLO monitor, and
+ * stats/introspection feed health, metrics, conditions, and the
+ * supervisor tree.
  */
 
 #include "platform/time_compat.h"
 #include "services/legacy_mirror_sync_service.h"
 
 #include "services/header_probe.h"
-#include "services/legacy_body_pull.h"
 #include "services/chain_activation_controller.h"
 #include "services/chain_tip.h"
 #include "services/gap_fill_service.h"
@@ -453,22 +456,6 @@ static void lms_record_stuck_status(int height)
     atomic_store(&g_lms.stuck_status_flags, flags);
 }
 
-static bool lms_try_recover_stale_next_failed(int local_height)
-{
-    (void)local_height;
-    lms_set_blocker("activation-no-progress",
-                    "legacy advisory cannot clear validation blockers; native_failed_mask_revalidation_required");
-    return false;
-}
-
-static bool lms_consensus_blocker_is(const char *code)
-{
-    struct mirror_consensus_stats mcs;
-
-    mirror_consensus_stats_snapshot(&mcs);
-    return code && strcmp(mcs.activation_blocker, code) == 0;
-}
-
 static const char *lms_state_name(const struct legacy_mirror_sync_stats *s)
 {
     if (!s || !s->enabled || !s->running)
@@ -572,85 +559,6 @@ static void lms_evaluate_lag_slo(int lag, int legacy_height, int local_height,
     }
 }
 
-static bool lms_next_block_needs_mirror_body(int local_height, int lag)
-{
-    (void)lag;
-    if (!g_lms.ms || local_height < 0)
-        return false;
-
-    int h = local_height + 1;
-    char remote[65] = {0};
-    char err[160] = {0};
-    if (!lms_fetch_hash(h, remote, err, sizeof(err))) {
-        atomic_fetch_add(&g_lms.rpc_errors, 1);
-        lms_set_blocker("rpc-unreachable", err);
-        return false;
-    }
-
-    struct uint256 hash;
-    uint256_set_hex(&hash, remote);
-    bool needs_body = false;
-    unsigned int flags = 0;
-    bool no_authorized_child = false;
-
-    zcl_mutex_lock(&g_lms.ms->cs_main);
-    struct block_index *bi = block_map_find(&g_lms.ms->map_block_index,
-                                            &hash);
-    if (!bi) {
-        lms_set_stuck_reason("no-authorized-child");
-        no_authorized_child = true;
-    } else {
-        atomic_store(&g_lms.no_authorized_child_first_seen, 0);
-        flags = bi->nStatus;
-        if (!(bi->nStatus & BLOCK_HAVE_DATA)) {
-            lms_set_stuck_reason("missing-have-data");
-            needs_body = true;
-        } else if (bi->nStatus & BLOCK_FAILED_MASK) {
-            lms_set_stuck_reason("failed-mask");
-            needs_body = true;
-        } else if (process_block_get_utxo_activation_paused_height() == h) {
-            lms_set_stuck_reason("utxo-pause");
-            needs_body = true;
-        } else {
-            /* The authority child is known and has data, but the active
-             * chain still did not advance. Run the validated body/activation
-             * path so this either makes progress or records an explicit
-             * activation-no-progress blocker instead of silently observing
-             * local sync forever. */
-            lms_set_stuck_reason("activation-state");
-            needs_body = true;
-        }
-    }
-    zcl_mutex_unlock(&g_lms.ms->cs_main);
-
-    atomic_store(&g_lms.stuck_height, h);
-    atomic_store(&g_lms.stuck_status_flags, flags);
-
-    if (no_authorized_child) {
-        lms_set_error("native_next_block_download_required");
-        atomic_store(&g_lms.no_authorized_child_first_seen,
-                     (int64_t)platform_time_wall_time_t());
-        return true;
-    }
-    return needs_body;
-}
-
-static void lms_kick_local_pipeline(void)
-{
-    gap_fill_kick();
-
-    struct chain_activation_controller *ctl = boot_activation_controller();
-    if (!ctl || !ctl->ms || !ctl->coins_tip || !ctl->params || !ctl->datadir)
-        return;
-    enum activation_state st = activation_get_state(ctl);
-    if (st != ACTIVATION_READY && st != ACTIVATION_AT_TIP)
-        return;
-
-    struct activation_exec_outcome act = {0};
-    activation_request_connect(ctl, ACTIVATION_SRC_HEADERS_ALL_DATA,
-                               NULL, &act);
-}
-
 static void lms_observe_local_primary(int local, int legacy_blocks)
 {
     atomic_store(&g_lms.target_height, legacy_blocks);
@@ -658,7 +566,6 @@ static void lms_observe_local_primary(int local, int legacy_blocks)
     atomic_store(&g_lms.last_advanced_height, local);
     atomic_store(&g_lms.no_authorized_child_first_seen, 0);
     lms_set_error("local sync primary; mirror observing");
-    lms_kick_local_pipeline();
 }
 
 static void lms_mark_success(int local, int progress)
@@ -673,102 +580,6 @@ static void lms_mark_success(int local, int progress)
     lms_set_stuck_reason("");
     lms_clear_csr_failure();
     lms_clear_blocker();
-}
-
-static bool lms_run_activation_to_target(int target,
-                                         int *out_before,
-                                         int *out_after)
-{
-    int local = -1, hdr = -1;
-    lms_refresh_local_heights(&local, &hdr);
-    if (out_before) *out_before = local;
-
-    struct chain_activation_controller *ctl = boot_activation_controller();
-    if (!ctl) {
-        if (out_after) *out_after = local;
-        return true;
-    }
-
-    if (target > local &&
-        activation_get_state(ctl) == ACTIVATION_ANCHOR_ACTIVE) {
-        struct block_index *anc = snapsync_get_anchor();
-        bool clear_anchor = false;
-
-        if (!anc) {
-            clear_anchor = true;
-        } else if (local >= anc->nHeight && lms_verify_anchor(local)) {
-            clear_anchor = true;
-        }
-        if (clear_anchor) {
-            snapsync_set_anchor(NULL);
-            activation_clear_anchor(ctl, "mirror_anchor_cleared");
-        }
-    }
-
-    const int64_t budget_us = 2500 * 1000;
-    const int hard_cap = 4096;
-    int64_t start_us = GetTimeMicros();
-    int rounds = 0;
-    int no_progress = 0;
-
-    while (local < target && rounds < hard_cap) {
-        int before_round = local;
-        struct activation_exec_outcome act = {0};
-        activation_request_connect(ctl, ACTIVATION_SRC_NEW_BLOCK,
-                                   NULL, &act);
-        if (act.result == ACTIVATION_EXEC_FAILED) {
-            lms_set_blocker("activation-failed",
-                            act.reason[0] ? act.reason
-                                           : "activation failed");
-            if (out_after) *out_after = local;
-            return false;
-        }
-
-        lms_refresh_local_heights(&local, &hdr);
-        if (local > before_round) {
-            no_progress = 0;
-            atomic_store(&g_lms.last_advanced_height, local);
-        } else if (++no_progress >= 2) {
-            break;
-        }
-        rounds++;
-        if (GetTimeMicros() - start_us > budget_us)
-            break;
-    }
-
-    if (out_after) *out_after = local;
-    return true;
-}
-
-static bool lms_drain_headers_to_target(int from_height, int target_height,
-                                        int *out_total_added)
-{
-    if (out_total_added) *out_total_added = 0;
-    if (from_height < 0 || target_height < from_height)
-        return true;
-
-    int cursor = from_height;
-    int total = 0;
-    int zero_streak = 0;
-    while (cursor <= target_height) {
-        int want = target_height - cursor + 1;
-        if (want > LMS_HEADER_DRAIN_BATCH)
-            want = LMS_HEADER_DRAIN_BATCH;
-
-        int added = 0;
-        if (!header_probe_pull_range(cursor, want, &added).ok)
-            break;
-        if (added == 0) {
-            if (++zero_streak >= 3) break;
-            continue;
-        }
-        zero_streak = 0;
-        cursor += added;
-        total += added;
-    }
-
-    if (out_total_added) *out_total_added = total;
-    return cursor > target_height;
 }
 
 bool legacy_mirror_sync_request_catchup(const char *reason)
@@ -864,119 +675,15 @@ bool legacy_mirror_sync_request_catchup(const char *reason)
         }
     }
 
-    if (!lms_next_block_needs_mirror_body(local, lag)) {
-        lms_observe_local_primary(local, legacy_blocks);
-        ok = true;
-        goto out;
-    }
-
-    if (legacy_headers > hdr) {
-        int before_hdr = hdr;
-        int added = 0;
-        if (!lms_drain_headers_to_target(hdr + 1, legacy_headers,
-                                         &added)) {
-            /* Header probe is an accelerator, not the authority path.
-             * Full body import below also carries and validates each
-             * header, so a stalled header probe must not prevent the
-             * node from advancing itself. */
-            lms_set_error("header probe stalled; continuing with body path");
-        }
-        atomic_fetch_add(&g_lms.headers_added, added);
-        lms_refresh_local_heights(&local, &hdr);
-        if (hdr <= before_hdr && legacy_headers > before_hdr) {
-            lms_set_error("header probe made no progress; continuing with body path");
-        }
-    }
-
-    int target = legacy_blocks;
-    if (g_lms.max_blocks_tick > 0 &&
-        target > local + g_lms.max_blocks_tick)
-        target = local + g_lms.max_blocks_tick;
-    atomic_store(&g_lms.target_height, target);
-
-    int applied = 0;
-    int before_activation = local;
-    if (target > local) {
-        if (!legacy_body_pull_range_incremental(g_lms.ms, g_lms.coins_tip,
-                                                g_lms.params, g_lms.datadir,
-                                                local + 1, target,
-                                                &applied).ok) {
-            struct mirror_consensus_stats mcs;
-            mirror_consensus_stats_snapshot(&mcs);
-            if (strcmp(mcs.activation_blocker, "body-hash-mismatch") == 0)
-                lms_set_blocker("body-hash-mismatch",
-                                "body hash mismatch");
-            else
-                lms_set_blocker("rpc-unreachable", "body catchup failed");
-            ok = false;
-            goto out;
-        }
-        atomic_fetch_add(&g_lms.blocks_applied, applied);
-        if (applied > 0 && g_lms.lag_sla_breach_blocks > 0 &&
-            lag >= g_lms.lag_sla_breach_blocks) {
-            event_emitf(EV_MIRROR_CONCURRENT_CATCHUP, 0,
-                        "applied=%d target=%d source=mirror reason=%s",
-                        applied, target,
-                        reason && reason[0] ? reason : "tick");
-        }
-
-        int after_activation = local;
-        if (!lms_run_activation_to_target(target, NULL,
-                                          &after_activation)) {
-            if (lms_consensus_blocker_is("db-writer-busy"))
-                lms_set_blocker("db-writer-busy",
-                                "SQLite projection writer busy");
-            ok = false;
-            goto out;
-        }
-        local = after_activation;
-    }
-
-    lms_refresh_local_heights(&local, &hdr);
-    int progress = local - before_activation;
-    if (progress < 0) progress = 0;
-    atomic_store(&g_lms.last_progress_blocks, progress);
-    if (target > local) {
-        if (progress == 0 && lms_try_recover_stale_next_failed(local)) {
-            int retry_before = local, retry_after = local;
-            if (!lms_run_activation_to_target(target, &retry_before,
-                                              &retry_after)) {
-                if (lms_consensus_blocker_is("db-writer-busy"))
-                    lms_set_blocker("db-writer-busy",
-                                    "SQLite projection writer busy");
-                ok = false;
-                goto out;
-            }
-            lms_refresh_local_heights(&local, &hdr);
-            progress += retry_after - retry_before;
-            atomic_store(&g_lms.last_progress_blocks,
-                         progress < 0 ? 0 : progress);
-        }
-    }
-    if (target > local && progress == 0) {
-        lms_record_stuck_status(local + 1);
-        lms_set_blocker("activation-no-progress",
-                        "body data available but activation did not advance; native_failed_mask_revalidation_required");
-        ok = false;
-        goto out;
-    }
-    if (local >= target && !lms_verify_after_tip(target)) {
-        ok = false;
-        goto out;
-    }
-    {
-        char local_hash[65] = {0}, remote_hash[65] = {0};
-        char hash_err[160] = {0};
-        if (lms_local_hash_at(local, local_hash))
-            lms_cache_hashes(local_hash, NULL);
-        if (local == legacy_blocks &&
-            lms_fetch_hash(local, remote_hash, hash_err, sizeof(hash_err)))
-            lms_cache_hashes(NULL, remote_hash);
-    }
-    if (progress > 0 || local >= target) {
-        atomic_fetch_add(&g_lms.catchups_total, 1);
-        lms_mark_success(local, progress);
-    }
+    /* Monitor-only: post-B7 the stage pipeline is the authoritative
+     * block writer. The mirror no longer applies blocks; it observes
+     * the lag, records the stuck status when behind, and lets the
+     * native pipeline advance the tip. */
+    atomic_store(&g_lms.target_height, legacy_blocks);
+    lms_record_stuck_status(local + 1);
+    lms_observe_local_primary(local, legacy_blocks);
+    ok = true;
+    goto out;
 
 out:
     lms_refresh_local_heights(NULL, NULL);

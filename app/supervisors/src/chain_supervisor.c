@@ -12,7 +12,6 @@
 #include "platform/time_compat.h"
 #include "validation/main_state.h"
 #include "validation/chainstate.h"
-#include "services/chain_advance_coordinator.h"
 #include "services/chain_state_repository.h"
 #include "services/legacy_mirror_sync_service.h"
 #include "validation/process_block_revalidate.h"
@@ -67,8 +66,9 @@ static void coord_esc_stall(struct liveness_contract *c)
 {
     (void)c;
     if (!g_coord_esc_ms) {
-        chain_advance_coordinator_force_mirror_promotion(
-            "supervisor:fatal_breach_900s");
+        event_emitf(EV_CHAIN_ADVANCE_DECISION, 0,
+                    "chain.coord_escalation stalled without main_state");
+        LOG_WARN("supervisor", "[supervisor] chain.coord_escalation stalled without main_state");
         return;
     }
     /* Wave M: before falling back to the legacy force-mirror hammer,
@@ -94,10 +94,12 @@ static void coord_esc_stall(struct liveness_contract *c)
         return;
     }
     /* Revalidation couldn't help (no failed pindex at this height, no
-     * quorum, evidence disagreed, or connect_block re-failed). Fall
-     * back to the original force-mirror promotion path. */
-    chain_advance_coordinator_force_mirror_promotion(
-        "supervisor:fatal_breach_900s");
+     * quorum, evidence disagreed, or connect_block re-failed). Post-B7
+     * there is no mirror writer to force-promote; surface the named
+     * stall and let the reducer/condition path keep ownership. */
+    event_emitf(EV_CHAIN_ADVANCE_DECISION, 0,
+                "chain.coord_escalation revalidation_exhausted height=%d result=%s",
+                stuck_h, reval_result_name(rr));
 }
 
 void chain_supervisor_register(struct main_state *ms)

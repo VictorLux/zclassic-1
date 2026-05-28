@@ -2920,8 +2920,8 @@ bool app_init_services(struct app_context *ctx,
     net_supervisor_register(svc->connman);
     chain_supervisor_register(svc->state);
     /* Wave M-W: tip-stuck overlord watchdog. Single-purpose: watches
-     * active_chain_height advance and escalates to force_mirror +
-     * orderly shutdown if it doesn't. See services/chain_tip_watchdog.h. */
+     * active_chain_height advance, emits a named stall event, and lets
+     * the operator-needed/condition loop handle recovery. */
     chain_tip_watchdog_register(svc->state);
     condition_registry_register_all();
     /* Close the alert loop: install the event→sink routing (incl. the

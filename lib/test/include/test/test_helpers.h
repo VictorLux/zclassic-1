@@ -368,7 +368,6 @@ int test_reducer_stage_fuzz(void);
 int test_cutover_tip_parity(void);
 int test_cutover_flip_dryrun(void);
 int test_cutover_postflip_reorg(void);
-int test_legacy_bootstrap_attach(void);
 int test_process_block_revalidate(void);
 int test_domain_consensus_verify(void);
 int test_domain_consensus_subsidy(void);

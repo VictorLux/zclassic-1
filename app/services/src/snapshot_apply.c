@@ -12,7 +12,6 @@
  * Pure code-motion split from snapshot_sync_service.c. */
 
 #include "services/snapshot_sync_service.h"
-#include "services/chain_advance_coordinator.h"
 #include "services/chain_restore_executor.h"
 #include "services/chain_restore_repair.h"
 #include "services/chain_state_repository.h"

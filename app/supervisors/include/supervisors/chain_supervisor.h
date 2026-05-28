@@ -2,11 +2,10 @@
  *
  * Chain domain supervisor children — declarative liveness registration.
  *
- * Owns the chain.coord_escalation child: a Round-5 C4 contract that, after
- * 900 s of fatal mirror-lag breach + frozen local height, tries
- * evidence-based revalidation of the next-child block (Wave M) and falls
- * back to force_mirror_promotion. Registered in the `chain` domain
- * (g_chain_sup). */
+ * Owns the chain.coord_escalation child: after 900 s of fatal mirror-lag
+ * breach + frozen local height, it tries evidence-based revalidation of the
+ * next-child block (Wave M) and reports the named stall if revalidation cannot
+ * help. Registered in the `chain` domain (g_chain_sup). */
 
 #ifndef ZCL_CHAIN_SUPERVISOR_H
 #define ZCL_CHAIN_SUPERVISOR_H

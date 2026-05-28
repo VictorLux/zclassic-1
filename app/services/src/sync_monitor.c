@@ -19,7 +19,6 @@
 #include "platform/time_compat.h"
 #include "services/block_sync_service.h"
 #include "services/chain_activation_controller.h"
-#include "services/chain_advance_coordinator.h"
 #include "services/gap_fill_service.h"
 #include "sync/sync_state.h"
 #include "validation/chainstate.h"

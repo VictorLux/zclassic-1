@@ -8,7 +8,6 @@
 # here — the gate will enforce that it stays migrated.
 #
 # One path per line, repo-relative.
-app/services/src/block_index_loader.c
 app/services/src/body_fetch_stage.c
 app/services/src/body_persist_stage.c
 app/services/src/chain_advance_coordinator.c

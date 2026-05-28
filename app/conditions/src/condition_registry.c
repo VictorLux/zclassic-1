@@ -23,6 +23,7 @@ void register_snapshot_complete_resume(void);
 void register_cutover_no_forward_progress(void);
 void register_cutover_canary_complete(void);
 void register_have_data_unreadable(void);
+void register_orphan_utxo_above_tip(void);
 
 void condition_registry_register_all(void)
 {
@@ -47,4 +48,5 @@ void condition_registry_register_all(void)
     register_cutover_no_forward_progress();
     register_cutover_canary_complete();
     register_have_data_unreadable();
+    register_orphan_utxo_above_tip();
 }

@@ -812,7 +812,6 @@ int main(void)
     failures += test_utxo_apply_stage();
     failures += test_tip_finalize_stage();
     failures += test_reducer_stage_fuzz();
-    failures += test_legacy_bootstrap_attach();
     failures += test_process_block_revalidate();
     failures += test_domain_consensus_verify();
     failures += test_domain_consensus_subsidy();

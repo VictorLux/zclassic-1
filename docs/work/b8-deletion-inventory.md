@@ -1,10 +1,14 @@
 # B8 — Exact Legacy-Deletion Inventory
 
 > **Status:** research-only checklist for **B8** (`docs/REFACTOR_STATUS.md`).
-> Produced 2026-05-27 against `main` worktree. No code changed.
+> Updated 2026-05-28: `legacy_bootstrap_importer` is already deleted in this tree.
 > **Read [`docs/REFACTOR_STATUS.md`](../REFACTOR_STATUS.md) C1–C4 first** — the
 > C-workstream is the *how*; this doc is the *exact symbol/caller/test/build
-> ledger* so B8 is mechanical once B7 holds.
+> ledger* so B8 is mechanical with B7 completed.
+
+**C1 status:** force-window deletion is complete (`force_mirror_promotion` and
+`force_mirror_active` are removed from live paths); remaining C1 work is policy
+rewire/consumer re-pointing.
 
 ## TL;DR — the framing was wrong; correct it before deleting
 
@@ -14,9 +18,9 @@ classification, derived below from `git grep` + reading every call site:
 
 | Module | LOC | B8 verdict | Why |
 |---|---|---|---|
-| `app/services/src/legacy_bootstrap_importer.c` | 1721 | **DELETE (wholesale)** — *gated on retiring the 3 CLI import flags, not on B7* | Only entered via `-cold-import` / `-fastimport` / `-legacy-attach` in `boot.c`. No live-tip path. C4. |
+| `app/services/src/legacy_bootstrap_importer.c` | 1721 | **DELETED in-tree** | The module is gone already (flags, module, and attach test were removed). |
 | `app/services/src/legacy_mirror_sync_service.c` | 1487 | **KEEP the heartbeat/monitor; DELETE only the block-application half** | The always-on live-sync from zclassicd. Heartbeat + lag-SLO monitor + stats snapshot are load-bearing (health, metrics, conditions, supervisor all consume it). C2. |
-| `app/services/src/chain_advance_coordinator.c` | 1714 | **REWIRE (mostly) — DELETE only the force-promotion window** | Source-scoring policy + status/dump consumed by Conditions, snapshot_offer, connect_tip, controllers, `zcl_status`. Re-home `score_source` to header_probe / block_source_policy. C1. |
+| `app/services/src/chain_advance_coordinator.c` | 1354 | **REWIRE shell — pure policy already extracted** | Source-scoring/name/plan policy now lives in `block_source_policy.{h,c}` behind CAC compatibility wrappers. Remaining CAC shell owns runtime input, state/status/dump, Conditions, snapshot_offer, connect_tip, controllers, `zcl_status`. C1. |
 | `app/services/src/utxo_recovery_service.c` | 1141 | **REWIRE — `clean_above_tip` → Condition; rest is boot-recovery, survives until A-workstream re-homes it** | Almost entirely `boot.c` boot-time recovery (wipe/import/restore/integrity). Not a live-tip feeder. C3. |
 | `lib/validation/src/connect_tip.c` | 1087 | **KEEP — this is the SURVIVING authoritative connect path** | Called by `activate_best_chain.c` (10 sites). This is the *post-flip* consensus connect, not legacy. The brief's "connect_tip paths that exist only to feed the legacy tip" do **not** exist — there is one connect_tip and it survives. |
 | `app/controllers/src/legacy_import.c` | 1105 | **KEEP / OUT OF SCOPE — wallet-scan utility, not a tip feeder** | Reads block files to recover the *wallet's own* txs (`snapshot_controller_import.c`, `wallet_diagnostic_repair.c`). Despite the `legacy_` prefix it is wallet recovery, not the chain pipeline. |
@@ -27,10 +31,9 @@ is what the mirror catchup calls to actually *apply* blocks. This is the
 "block-application coordination" C2 deletes. It is NOT baselined and NOT in the
 brief's list, but it is the real deletable core that the mirror's KEEP half calls.
 
-**Net wholesale-deletable now (flag-gated, B7-independent):** `legacy_bootstrap_importer.c`
-(1721) + its test pin `test_legacy_bootstrap_attach.c`. Everything else is a
-*surgical extraction* (C1/C2/C3), not a file delete — getting this wrong (esp.
-deleting the mirror heartbeat) is the worst possible error.
+**Net wholesale-deletable now:** `legacy_bootstrap_importer.c` and its attach test are already removed. Everything else is a
+*surgical extraction* (C1/C2/C3), not a file delete — deleting the mirror heartbeat
+is still the real risk.
 
 ---
 
@@ -38,24 +41,17 @@ deleting the mirror heartbeat) is the worst possible error.
 
 Call sites from `git grep -n <symbol>`; each spot-checked by reading ±20 lines.
 
-### 1a. `legacy_bootstrap_importer.c` — DELETE (wholesale, flag-gated)
+### 1a. `legacy_bootstrap_importer.c` — DELETED (already complete)
 
-Header: `app/services/include/services/legacy_bootstrap_importer.h`.
+The module, header, and importer attach test are removed from this tree.
 
-| Symbol (def line) | Purpose | Call sites | Verdict |
-|---|---|---|---|
-| `legacy_bootstrap_load_height_map` (`:621`) | Load legacy blocks/index height map | `tools/rebuild_recent.c:446`; lint pin `test_make_lint_gates.c:1425` | **REWIRE** — `rebuild_recent` is the recovery primitive (MEMORY: "fast rebuild is the recovery primitive"); it must keep a height-map reader. Extract this one reader into `rebuild_recent` or a tiny shared helper *before* deleting the module. |
-| `legacy_bootstrap_import_blocking` (`:1695`) | Canonical mode-driven importer for `-cold-import`/`-fastimport`/`-legacy-attach` | `config/src/boot.c:1005, 1859, 1900`; test `test_legacy_bootstrap_attach.c:345,347` | **DELETE** — only the 3 CLI flag handlers. Deleting requires retiring the flags (§5). |
-| `legacy_attach_outcome_name` (`:1351`) | Enum→string for attach outcome | `boot.c:1865`; test `test_legacy_bootstrap_attach.c` (×6) | **DELETE** with module. |
-| `legacy_attach_stages_to_stamp_count` (`:1416`) | Count of stage cursors to stamp on attach | test only (`test_legacy_bootstrap_attach.c:38,231`) | **DELETE** with module. |
-| `legacy_attach_stages_to_stamp_at` (`:1421`) | i-th stage name to stamp | test only (`test_legacy_bootstrap_attach.c:39,236,240,242`) | **DELETE** with module. |
-| `legacy_attach_stamp_one_for_test` (`:1529`) | Test seam: stamp one stage cursor | test only (`test_legacy_bootstrap_attach.c:40,259…`) | **DELETE** with module. |
-
-> Note: `legacy_bootstrap_spotcheck_sha3_windows` lives in a **separate** file
-> `app/services/src/legacy_bootstrap_spotcheck.c` (def `:163`), called from
-> `legacy_bootstrap_importer.c:1066`. If the importer is deleted, spotcheck loses
-> its sole production caller (`test_make_lint_gates.c:1355` is a lint pin). Mark
-> **DELETE-CASCADE** — verify no other caller before removing spotcheck too.
+| Artifact | Final state |
+|---|---|
+| `app/services/src/legacy_bootstrap_importer.c` / `.../legacy_bootstrap_importer.h` | Deleted |
+| `config/src/boot.c` CLI import flag branches | Deleted |
+| `lib/test/src/test_legacy_bootstrap_attach.c` | Deleted |
+| `app/services/src/legacy_bootstrap_spotcheck.c` | Deleted (importer delete-cascade) |
+| `tools/rebuild_recent.c:499` height-map reader | Kept (`legacy_bootstrap_load_height_map` remains as local recovery reader; no importer dependency) |
 
 ### 1b. `legacy_mirror_sync_service.c` — KEEP heartbeat / DELETE block-apply
 
@@ -83,27 +79,27 @@ Header: `app/services/include/services/legacy_mirror_sync_service.h`.
 > `lms_cache_hashes`, `lms_record_stuck_status`, `lms_observe_local_primary`,
 > `lms_mark_success`, `lms_state_name`, all `lms_set_*`/`lms_clear_*`.
 
-### 1c. `chain_advance_coordinator.c` — REWIRE / DELETE force-window
+### 1c. `chain_advance_coordinator.c` — policy extracted / force-window deleted
 
 Header: `app/services/include/services/chain_advance_coordinator.h`.
 
 | Symbol (def line) | Purpose | External (non-test) call sites | Verdict |
 |---|---|---|---|
-| `cac_source_name` (`:646`) | enum→string | `cutover_controller.c:466`, `event_controller.c:264`, `health_controller.c:387` | **REWIRE** — survives with the scoring policy wherever it re-homes (header_probe / block_source_policy). |
-| `cac_source_trust_name` (`:671`) | trust label | `cutover_controller.c:468`, `event_controller.c:266`, `health_controller.c:389` | **REWIRE**. |
-| `cac_decision_result_name` (`:659`) | result→string | `cutover_controller.c:464`, `event_controller.c:262`, `health_controller.c:383` | **REWIRE**. Note: `cutover_controller.c` itself is B8-deleted apparatus (the cutover plumbing line in REFACTOR_STATUS B8) — these 3 callers vanish with it. |
-| `chain_advance_coordinator_init` (`:1120`) | Init policy | `boot_services.c:2732` | **REWIRE** to the re-homed policy init. |
-| `chain_advance_coordinator_plan` (`:834`) | Score sources, pick one | **test-only** | **DELETE** if no live caller remains post-rehome; the *logic* moves to the new policy module. UNCERTAIN — confirm `build_runtime_input`/`get_status` path isn't the de-facto live entry. |
-| `chain_advance_coordinator_mirror_repair_allowed` (`:911`) | Mirror-repair gate | **test-only** | **DELETE** with the force/mirror-repair window (C1 says delete the mirror force-promotion window). |
-| `chain_advance_coordinator_peer_floor_recovery_needed` (`:965`) | Peer-floor recovery decision | `app/conditions/src/peer_floor_violated.c:81` | **REWIRE** — a Condition consumes it; the decision must survive (move to the policy module the Condition calls). |
-| `chain_advance_coordinator_snapshot_offer_allowed` (`:1016`) | Snapshot-offer gate | `app/services/src/snapshot_offer.c:503,520,552,566,575` | **REWIRE** — snapshot_offer survives; re-home the gate. |
-| `chain_advance_coordinator_local_header_refill_needed` (`:1066`) | Header-refill decision | `app/conditions/src/local_header_refill_needed.c:61` | **REWIRE** — Condition consumer. |
-| `chain_advance_coordinator_note_projection_deferred` (`:1402`) | Record projection deferral | `sync_controller_blocks.c:543`, **`connect_tip.c:938`** | **REWIRE** — connect_tip (the surviving path) calls this; the projection-deferral counter must live somewhere connect_tip can reach. |
-| `chain_advance_coordinator_get_status` (`:1393`) | Read last decision | `cutover_controller.c:425`, `event_controller.c:258`, `health_controller.c:372`, `node_health_service.c:319` | **REWIRE** — `node_health_service` + health survive. |
-| `chain_advance_coordinator_dump_state_json` (`:1597`) | `zcl_state subsystem=chain_advance_coordinator` | `diagnostics_registry.c:449`, `event_controller.c:315`, `health_controller.c:442` | **REWIRE** — also feeds `zcl_status` MCP (§5). |
-| `chain_advance_coordinator_reset_for_test` (`:1691`) | Test reset | tests only | **DELETE/REWIRE** with module. |
-| `chain_advance_coordinator_force_mirror_promotion` (`:76`) | Force-promote mirror window | `chain_tip_watchdog.c:246`, `chain_supervisor.c:70,99` | **DELETE** — C1 explicitly deletes the mirror force-promotion window. The two live callers (watchdog, supervisor) must drop these calls post-flip (the stage pipeline is the writer; there is no mirror to force-promote). |
-| `chain_advance_coordinator_force_mirror_active` (`:69`) | Is force-window active | test/introspection only | **DELETE** with the force window. |
+| `cac_source_name` (`block_source_policy.c`) | enum→string | `cutover_controller.c:466`, `event_controller.c:264`, `health_controller.c:387` | **EXTRACTED** — compatibility name survives from `block_source_policy`; direct callers can repoint later. |
+| `cac_source_trust_name` (`block_source_policy.c`) | trust label | `cutover_controller.c:468`, `event_controller.c:266`, `health_controller.c:389` | **EXTRACTED**. |
+| `cac_decision_result_name` (`block_source_policy.c`) | result→string | `cutover_controller.c:464`, `event_controller.c:262`, `health_controller.c:383` | **EXTRACTED**. Note: `cutover_controller.c` itself is B8-deleted apparatus (the cutover plumbing line in REFACTOR_STATUS B8) — these 3 callers vanish with it. |
+| `chain_advance_coordinator_init` (`:995`) | Init policy | `boot_services.c:2732` | **REWIRE** to the re-homed policy init. |
+| `chain_advance_coordinator_plan` (`:607`) | Compatibility wrapper for score sources / pick one | **test-only** | **WRAPPER** over `block_source_policy_plan`; delete or repoint tests when the CAC shell is dissolved. |
+| `chain_advance_coordinator_mirror_repair_allowed` | Mirror-repair gate | **test-only** | **DELETED** with the force/mirror-repair window. |
+| `chain_advance_coordinator_peer_floor_recovery_needed` (`:840`) | Peer-floor recovery decision | `app/conditions/src/peer_floor_violated.c:81` | **REWIRE** — a Condition consumes it; the decision must survive (move to the policy module the Condition calls). |
+| `chain_advance_coordinator_snapshot_offer_allowed` (`:891`) | Snapshot-offer gate | `app/services/src/snapshot_offer.c:503,520,552,566,575` | **REWIRE** — snapshot_offer survives; re-home the gate. |
+| `chain_advance_coordinator_local_header_refill_needed` (`:941`) | Header-refill decision | `app/conditions/src/local_header_refill_needed.c:61` | **REWIRE** — Condition consumer. |
+| `chain_advance_coordinator_note_projection_deferred` (`:1277`) | Record projection deferral | `sync_controller_blocks.c:543`, **`connect_tip.c:938`** | **REWIRE** — connect_tip (the surviving path) calls this; the projection-deferral counter must live somewhere connect_tip can reach. |
+| `chain_advance_coordinator_get_status` (`:1268`) | Read last decision | `cutover_controller.c:425`, `event_controller.c:258`, `health_controller.c:372`, `node_health_service.c:319` | **REWIRE** — `node_health_service` + health survive. |
+| `chain_advance_coordinator_dump_state_json` (`:1472`) | `zcl_state subsystem=chain_advance_coordinator` | `diagnostics_registry.c:449`, `event_controller.c:315`, `health_controller.c:442` | **REWIRE** — also feeds `zcl_status` MCP (§5). |
+| `chain_advance_coordinator_reset_for_test` (`:1566`) | Test reset | tests only | **DELETE/REWIRE** with module. |
+| `chain_advance_coordinator_force_mirror_promotion` | Force-promote mirror window | removed from `chain_tip_watchdog.c`, `chain_supervisor.c` | **DELETED** — the stage pipeline is the writer; there is no mirror to force-promote. |
+| `chain_advance_coordinator_force_mirror_active` | Is force-window active | removed from tests/introspection | **DELETED** with the force window. |
 
 ### 1d. `utxo_recovery_service.c` — REWIRE (boot-recovery + one Condition)
 
@@ -133,8 +129,9 @@ caller is `config/src/boot.c` (boot-time recovery) except `clean_above_tip`.
 Single public symbol `connect_tip` (`:80`), called by `activate_best_chain.c`
 at `:205,255,282,354,409,417,474,833`. Declared in
 `lib/validation/include/validation/process_block.h:42`. **This is the canonical
-consensus block-connection.** B7 points its UTXO reads at the projection (B4,
-DORMANT); it is the *destination* of the cutover, not legacy. **Do not delete.**
+consensus block-connection.** B7 activates projection reads during cutover authority;
+outside cutover, it remains on legacy reader defaults. It is the *destination* of the
+cutover, not legacy. **Do not delete.**
 
 ### 1f. `legacy_import.c` (controller) — KEEP / out of scope
 
@@ -153,9 +150,9 @@ edits land *before* any deletion.
 
 | Caller file:line | Calls | Post-flip action |
 |---|---|---|
-| `config/src/boot.c:1005,1859,1900` | `legacy_bootstrap_import_blocking` | Delete the 3 flag branches (`boot_step_fastimport`, legacy-attach block ~`:1841`, cold-import block ~`:1880`). |
-| `config/src/boot.c:1865` | `legacy_attach_outcome_name` | Deleted with the attach branch. |
-| `tools/rebuild_recent.c:446` | `legacy_bootstrap_load_height_map` | **Extract the height-map reader first** into rebuild_recent (or shared helper) — this is the recovery primitive; it cannot lose its reader. |
+| `config/src/boot.c:1005,1859,1900` | `legacy_bootstrap_import_blocking` | No longer present (flag branches removed). |
+| `config/src/boot.c:1865` | `legacy_attach_outcome_name` | Removed with the importer branch. |
+| `tools/rebuild_recent.c:499` | `legacy_bootstrap_load_height_map` | Confirmed as the surviving recovery reader. |
 | `config/src/boot_services.c:452,455,465` | mirror `init`/`start`/`stop` | **KEEP** — heartbeat lifecycle. |
 | `app/conditions/src/legacy_mirror_stuck.c:22,36,41,49` | mirror `stats_snapshot`, `request_catchup` | **KEEP** — Condition's detect/remedy/witness over the surviving monitor. (remedy calls `request_catchup`, which post-split must only re-probe, not apply blocks.) |
 | `app/conditions/src/peer_floor_violated.c:81` | CAC `peer_floor_recovery_needed` | **REWIRE** to re-homed policy. |
@@ -164,8 +161,8 @@ edits land *before* any deletion.
 | `app/controllers/src/sync_controller_blocks.c:543` | CAC `note_projection_deferred` | **REWIRE**. |
 | `lib/validation/src/connect_tip.c:938` | CAC `note_projection_deferred` | **REWIRE** — surviving path; keep the deferral counter reachable. |
 | `app/services/src/node_health_service.c:319,515` | CAC `get_status`, mirror `stats_snapshot` | **REWIRE** (CAC) / **KEEP** (mirror). |
-| `app/supervisors/src/chain_supervisor.c:44,70,99` | mirror `stats_snapshot`, CAC `force_mirror_promotion` | **KEEP** stats; **DELETE** the 2 force-promotion calls. |
-| `app/services/src/chain_tip_watchdog.c:246` | CAC `force_mirror_promotion` | **DELETE** the call. |
+| `app/supervisors/src/chain_supervisor.c:44` | mirror `stats_snapshot` | **KEEP** stats; force-promotion calls were deleted and replaced with named stall/revalidation-exhausted events. |
+| `app/services/src/chain_tip_watchdog.c` | tip-stall escalation | **KEEP** watchdog; force-promotion call was deleted and replaced with a named stall event. |
 | `app/controllers/src/health_controller.c:63,309,372,383,387,389,442` | mirror stats + CAC status/names/dump | **KEEP** mirror; **REWIRE** CAC. |
 | `app/controllers/src/event_controller.c:258,262,264,266,315,352` | CAC status/names/dump + mirror stats | **KEEP** mirror; **REWIRE** CAC. |
 | `app/controllers/src/cutover_controller.c:425,464,466,468` | CAC status/names | **DELETED** — cutover_controller is itself B8 apparatus (the cutover plumbing). |
@@ -179,7 +176,7 @@ edits land *before* any deletion.
 **Cut-point count (live, non-test, non-comment files):** ~16 distinct files.
 Of these, the *hard* edits (must precede deletion) are: `boot.c` (flag branches),
 `rebuild_recent.c` (extract height-map reader), `chain_supervisor.c` +
-`chain_tip_watchdog.c` (drop force-promotion), and the CAC consumers that must
+the CAC consumers that must
 repoint at the re-homed policy.
 
 ---
@@ -191,7 +188,7 @@ Registered in `lib/test/src/test.c` and `test_parallel.c` (decls in
 
 | Test file | Group | Verdict |
 |---|---|---|
-| `test_legacy_bootstrap_attach.c` | `test_legacy_bootstrap_attach` (`test.c:813`) | **DELETE-WITH-MODULE** — exercises only the importer's attach path. |
+| `test_legacy_bootstrap_attach.c` | `test_legacy_bootstrap_attach` (`test.c:813`) | **DELETED** — this test was import-only and is removed with the module. |
 | `test_chain_advance_coordinator.c` | `test_chain_advance_coordinator` (`test.c:64,680`) | **MIGRATE** — the scoring-policy behavior survives (re-homed). Repoint at the new policy module; drop the force-promotion sub-tests (`:331,362`) and `mirror_repair_allowed` tests with the deleted window. |
 | `test_lag_slo.c` | `test_lag_slo` (`test.c:854`) | **MIGRATE** — lag-SLO is the KEPT monitor behavior; keep, repointed at the surviving mirror monitor. |
 | `test_legacy_mirror_stuck_condition.c` | `test_legacy_mirror_stuck_condition` (`test.c:438,779`) | **MIGRATE** — the Condition survives; ensure its remedy (`request_catchup`) still targets the monitor-only path. |
@@ -200,9 +197,9 @@ Registered in `lib/test/src/test.c` and `test_parallel.c` (decls in
 | `test_zclassicd_oracle.c` | `test_zclassicd_oracle` (`test.c:473,852`) | **MIGRATE** — exercises the mirror monitor/oracle; KEEP behaviors. |
 | `test_syncdiag_rpc.c` | `test_syncdiag_rpc` (`test.c:480,670`) | **MIGRATE** — calls `*_reset_for_test` on both CAC + mirror; repoint. |
 | `test_node_health_service.c` | `test_node_health_service` (`test.c:78,669`) | **MIGRATE** — consumes CAC status + mirror stats; KEEP, repoint CAC. |
-| `test_make_lint_gates.c` | (lint self-test) | **EDIT** — has string pins for `legacy_bootstrap_load_height_map`, `legacy_bootstrap_spotcheck_sha3_windows`, `utxo_recovery_import_ldb`, `utxo_recovery_restore_chain_tip`, `chain_advance_coordinator_init` (`:1138,1279,1326,1355,1394,1425`). Update/remove these assertions when the symbols move/delete, or the lint self-test fails. |
+| `test_make_lint_gates.c` | (lint self-test) | **EDIT** — still checks `utxo_recovery_import_ldb`, `utxo_recovery_restore_chain_tip`, `chain_advance_coordinator_init` (`:1138,1279,1326,1394`). Remove or update these assertions when symbols move/delete. |
 
-No `.c` test file is a pure DELETE except `test_legacy_bootstrap_attach.c`.
+No new `.c` test files are pure DELETE beyond the already-removed `test_legacy_bootstrap_attach.c`.
 
 ---
 
@@ -211,8 +208,8 @@ No `.c` test file is a pure DELETE except `test_legacy_bootstrap_attach.c`.
 | Location | What it lists | Action on B8 |
 |---|---|---|
 | `Makefile:10` `APP_SRCS = $(wildcard app/$(d)/src/*.c)` | **Glob** — no explicit list | Deleting the `.c` auto-drops it. **No Makefile edit needed.** |
-| `tools/scripts/file_size_ceiling_baseline.txt` (E1) | `chain_advance_coordinator.c 1714`, `legacy_bootstrap_importer.c 1721`, `legacy_mirror_sync_service.c 1487`, `utxo_recovery_service.c 1141`, `legacy_import.c 1105`, `sync_controller_catchup.c 1262`, `sync_controller_import.c 995` | **DROP baseline lines** for each file actually deleted/shrunk below 800. Wholesale delete → drop `legacy_bootstrap_importer.c`. Shrink (mirror/CAC/utxo) → drop the line once under 800. E1 baseline can only shrink — every removal ratchets the gate forward. |
-| `tools/scripts/one_result_type_baseline.txt` (E2) | Lists **all 4**: `chain_advance_coordinator.c` (`:18`), `legacy_bootstrap_importer.c` (`:34`), `legacy_mirror_sync_service.c` (`:35`), `utxo_recovery_service.c` (`:46`) | **DROP** the line for any deleted file. NOTE: `legacy_bootstrap_importer.c` **already** uses `zcl_result` — `make lint` today says "delete their baseline line to ratchet forward" (also `block_index_loader.c`). That baseline line is droppable *now*, independent of B8. |
+| `tools/scripts/file_size_ceiling_baseline.txt` (E1) | `chain_advance_coordinator.c 1355`, `legacy_mirror_sync_service.c 1487`, `utxo_recovery_service.c 1141`, `legacy_import.c 1105`, `sync_controller_catchup.c 1262`, `sync_controller_import.c 995` | **DROP baseline lines** for each file actually deleted/shrunk below 800. Shrink (mirror/CAC/utxo) → drop the line once under 800. E1 baseline can only shrink — every removal ratchets the gate forward. |
+| `tools/scripts/one_result_type_baseline.txt` (E2) | `chain_advance_coordinator.c` (`:18`), `legacy_mirror_sync_service.c` (`:35`), `utxo_recovery_service.c` (`:46`) | **DROP** the line for any deleted file. `legacy_bootstrap_importer.c` no longer belongs here and the line is already absent in-tree. |
 | `tools/scripts/supervisor_baseline.txt` | `legacy_mirror_sync_service.c` (`:33`) + comment "the alt source" (`:26`) | **KEEP** while the mirror monitor survives; the supervisor-child registration is part of the heartbeat. Do not drop. |
 | `tools/scripts/typed_blocker_baseline.txt` | `legacy_mirror_sync_service.c`, `chain_advance_coordinator.{c,h}`, `legacy_mirror_sync_service.h` (`:26-29`) | **EDIT** — `lms_set_blocker()` string surface stays with the monitor (KEEP `legacy_mirror_sync_service.*`); drop `chain_advance_coordinator.{c,h}` lines when the typed-blocker classification table moves to the re-homed policy. |
 | `tools/scripts/lib_layering_baseline.txt` | `metrics.c → legacy_mirror_sync_service.h` (`:20`); `activate_best_chain.c`, `connect_tip.c`, `process_block_core.c → chain_advance_coordinator.h` (`:83,94,107`) | **EDIT** — keep the mirror line (KEEP); repoint the 3 CAC include lines at the re-homed policy header (these are `lib/validation` → `app/services` layering exceptions; they move, not vanish). |
@@ -228,10 +225,10 @@ means file deletion is self-effecting; only the **baseline txt files** and the
 
 | Surface | Names which module | Action |
 |---|---|---|
-| **Flag** `-cold-import[=path]` | `main.c:1456-1466` → `boot.c:1880` → `legacy_bootstrap_import_blocking` | Retire flag (delete parse branch + `ctx.cold_import_from`). |
-| **Flag** `-fastimport[=path]` | `main.c:1492-1502` → `boot.c:981`/`boot_step_fastimport` | Retire flag. |
-| **Flag** `-legacy-attach[=path]` | `main.c:1474-1484` → `boot.c:1841` | Retire flag. |
-| `config/include/config/boot.h:46,53,60` | `fastimport_from`, `cold_import_from`, `legacy_attach_from` fields | Remove fields with the flags. |
+| **Flag** `-cold-import[=path]` | `main.c:1456-1466` → `boot.c:1880` → `legacy_bootstrap_import_blocking` | Removed (no parse branch; ctx field removed). |
+| **Flag** `-fastimport[=path]` | `main.c:1492-1502` → `boot.c:981`/`boot_step_fastimport` | Removed. |
+| **Flag** `-legacy-attach[=path]` | `main.c:1474-1484` → `boot.c:1841` | Removed. |
+| `config/include/config/boot.h:46,53,60` | `fastimport_from`, `cold_import_from`, `legacy_attach_from` fields | Removed. |
 | **MCP `zcl_state subsystem=legacy_mirror`** | `diagnostics_registry.c:421` | **KEEP** — monitor survives. |
 | **MCP `zcl_state subsystem=chain_advance_coordinator`** | `diagnostics_registry.c:449` + help text `:520` | **REWIRE** the dumper to the re-homed policy so the subsystem name keeps resolving (or rename the subsystem — but `zcl_status` depends on it, see next row). |
 | **MCP `zcl_status`** | `tools/mcp/controllers/ops_controller.c:148` calls `dumpstate ["chain_advance_coordinator"]` | **HARD DEPENDENCY** — if the CAC dumpstate key is removed without a replacement, `zcl_status` (the daily-driver tool) silently loses its source field. Repoint to the re-homed policy's dumpstate key. |
@@ -250,28 +247,30 @@ The RPC `dumpstate` method is generic; only the **string keys** `legacy_mirror`
 Rewire callers FIRST, delete second, drop baselines third, delete tests last,
 rebuild. Each step independently `make lint`-clean and `test_parallel`-green.
 
-**Phase A — `legacy_bootstrap_importer.c` wholesale (flag-gated, B7-independent, do first):**
-- [ ] Extract `legacy_bootstrap_load_height_map` reader into `tools/rebuild_recent.c` (or a tiny shared helper); repoint `rebuild_recent.c:446`.
-- [ ] Delete `-cold-import` / `-fastimport` / `-legacy-attach` parse branches in `main.c:1456-1505`; remove `fastimport_from`/`cold_import_from`/`legacy_attach_from` from `config/include/config/boot.h` + the 3 branches in `boot.c` (`boot_step_fastimport`, ~`:1841`, ~`:1880`).
-- [ ] Confirm `legacy_bootstrap_spotcheck.c` has no other production caller; delete it too (DELETE-CASCADE) or keep if a spotcheck caller survives. **UNCERTAIN — verify.**
-- [ ] Delete `app/services/src/legacy_bootstrap_importer.c` + its header.
-- [ ] Delete `lib/test/src/test_legacy_bootstrap_attach.c`; remove its decl (`test_helpers.h:366`) + registration (`test.c:813`).
-- [ ] Drop baseline lines: `file_size_ceiling_baseline.txt` (`legacy_bootstrap_importer.c 1721`), `one_result_type_baseline.txt` (`legacy_bootstrap_importer.c`).
-- [ ] Update `test_make_lint_gates.c` pins (`:1355,1394,1425`).
-- [ ] `make lint && ./test_parallel`. Est. **−1721 (importer) − ~600 (spotcheck, if cascaded) − ~360 (test)**.
+**Phase A — `legacy_bootstrap_importer.c` wholesale (already complete):**
+- [x] Extracted/retained `legacy_bootstrap_load_height_map` reader in `tools/rebuild_recent.c` (`:499`) while deleting importer.
+- [x] Deleted `-cold-import` / `-fastimport` / `-legacy-attach` parse branches in `main.c` + `boot.c`.
+- [x] Confirmed no spotcheck caller remains and deleted `legacy_bootstrap_spotcheck.c` as a delete-cascade.
+- [x] Deleted `app/services/src/legacy_bootstrap_importer.c` + its header.
+- [x] Deleted `lib/test/src/test_legacy_bootstrap_attach.c`; removed its decl (`test_helpers.h`) + registration (`test.c`).
+- [x] Drop `file_size_ceiling_baseline.txt` line (`legacy_bootstrap_importer.c 1721`).
+- [x] Update `test_make_lint_gates.c` pins (legacy importer pins removed; legacy boot strings no longer present).
+- [ ] `make lint && ./test_parallel`. Est. **−600 (mirror block-apply half)** residual; importer delta is already reflected. 
 
 **Phase B — `chain_advance_coordinator.c` rewire + force-window delete (gated on B7):**
-- [ ] Stand up the re-homed scoring policy (header_probe / block_source_policy per C1) with the same public surface the surviving consumers need (`peer_floor_recovery_needed`, `snapshot_offer_allowed`, `local_header_refill_needed`, `note_projection_deferred`, `get_status`, `dump_state_json`, `*_name`).
+- [x] Stand up the re-homed scoring policy (`block_source_policy.{h,c}`) for the pure source-selection/name/plan surface.
+- [ ] Re-home or wrap the remaining surviving CAC surface (`peer_floor_recovery_needed`, `snapshot_offer_allowed`, `local_header_refill_needed`, `note_projection_deferred`, `get_status`, `dump_state_json`).
 - [ ] Repoint consumers: `peer_floor_violated.c:81`, `local_header_refill_needed.c:61`, `snapshot_offer.c` (×5), `sync_controller_blocks.c:543`, `connect_tip.c:938`, `node_health_service.c:319`, `health_controller.c`, `event_controller.c`, `boot_services.c:2732`, `diagnostics_registry.c:449`.
 - [ ] Repoint `zcl_status` MCP key (`ops_controller.c:148`) + the `zcl_state` dumper.
-- [ ] Delete force-promotion: `force_mirror_promotion` + `force_mirror_active`; drop calls in `chain_tip_watchdog.c:246`, `chain_supervisor.c:70,99`, `mirror_repair_allowed`.
+- [x] Delete force-promotion: `force_mirror_promotion` + `force_mirror_active`; drop calls in `chain_tip_watchdog.c`, `chain_supervisor.c`, and `mirror_repair_allowed`.
 - [ ] Delete `chain_advance_coordinator.c` + header (or shrink to the moved surface).
-- [ ] Migrate `test_chain_advance_coordinator.c` (drop force/repair sub-tests); update `test_make_lint_gates.c:1138`.
-- [ ] Drop/edit baselines: E1 (`chain_advance_coordinator.c 1714`), E2, `typed_blocker_baseline.txt` (CAC lines), `lib_layering_baseline.txt:83,94,107`.
+- [x] Migrate `test_chain_advance_coordinator.c` (drop force/repair sub-tests).
+- [ ] Update `test_make_lint_gates.c:1138` when the remaining CAC surface moves.
+- [~] Drop/edit baselines: E1 ratcheted (`chain_advance_coordinator.c 1355`, importer line dropped), `typed_blocker_baseline.txt` repointed to `block_source_policy.h`; remaining E2 and `lib_layering_baseline.txt:83,94,107` wait for CAC shell deletion/repoint.
 - [ ] `make lint && ./test_parallel`. Est. **−1714** (less the surface moved to the policy module).
 
 **Phase C — `legacy_mirror_sync_service.c` block-apply removal (gated on B7) + `legacy_body_pull.c`:**
-- [ ] Confirm B7 holds: stage pipeline is the authoritative writer (the mirror no longer needs to apply blocks).
+- [x] Confirmed in B7 rollout: stage pipeline is the authoritative writer (the mirror no longer needs to apply blocks).
 - [ ] In `request_catchup`, delete the body-pull/activation block (`:893-:962`) and the `static` helpers `lms_run_activation_to_target`, `lms_drain_headers_to_target`, `lms_try_recover_stale_next_failed`, `lms_kick_local_pipeline`, `lms_next_block_needs_mirror_body`. Keep the monitor (fetch/verify/lag-SLO/observe/mark_success). The function becomes "probe + report lag," not "apply."
 - [ ] Delete `app/services/src/legacy_body_pull.c` + header once the mirror is its last caller and that call is removed.
 - [ ] Migrate `test_lag_slo.c`, `test_legacy_mirror_stuck_condition.c`, `test_zclassicd_oracle.c` to the monitor-only contract.
@@ -284,7 +283,7 @@ rebuild. Each step independently `make lint`-clean and `test_parallel`-green.
 - [ ] Leave the rest (wipe/restore/execute/backfill/classifiers) until A re-homes boot recovery — **not a B8 tip-deletion concern.**
 
 **Net LOC removed by B8 proper (Phases A–C, the "legacy tip" surface):**
-≈ **1721 (importer) + ~1100 (CAC net of moved policy) + ~600 (mirror block-apply) + 529 (body_pull)** ≈ **3,900–4,000 LOC**, plus ~360 (attach test) and baseline lines. The brief's "6,059" over-counts because `connect_tip` (1087) and `legacy_import` controller (1105) are KEEP, and `utxo_recovery` (1141) is mostly KEEP/A-workstream.
+≈ **~1100 (CAC net of moved policy) + ~600 (mirror block-apply) + 529 (body_pull)**. The brief's "6,059" over-counts because `connect_tip` (1087) and `legacy_import` controller (1105) are KEEP, and `utxo_recovery` (1141) is mostly KEEP/A-workstream.
 
 ---
 
@@ -325,8 +324,7 @@ the internal body-pull/activation statics (no external caller) are deletable.
 
 ## Open UNCERTAINs (verify during execution, do not guess)
 
-1. `legacy_bootstrap_spotcheck.c` — sole production caller is the importer? Grep
-   again at delete time; it has a separate lint pin.
+1. Resolved — `legacy_bootstrap_spotcheck.c` was removed with importer deletion.
 2. CAC `chain_advance_coordinator_plan` — is `build_runtime_input`/`get_status`
    the de-facto live entry, or is `plan` truly test-only? Read `node_health_service.c:319`
    path before deleting `plan`.

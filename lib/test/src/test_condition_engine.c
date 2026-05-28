@@ -313,6 +313,7 @@ int test_condition_engine(void)
             "cutover_no_forward_progress",
             "cutover_canary_complete",
             "have_data_unreadable",
+            "orphan_utxo_above_tip",
         };
         const int expected_count =
             (int)(sizeof(expected) / sizeof(expected[0]));

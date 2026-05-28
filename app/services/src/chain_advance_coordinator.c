@@ -18,7 +18,6 @@
 
 #include <stdio.h>
 #include <stdarg.h>
-#include <stdatomic.h>
 #include <string.h>
 #include <time.h>
 
@@ -38,56 +37,6 @@ static struct {
     int64_t last_projection_deferred_time;
     char last_projection_deferred_reason[64];
 } g_cac;
-
-/* Round 5 C4: force-promotion deadline.
- *
- * When the supervisor's coord-escalation child observes a sustained
- * "fatal" mirror-lag breach with no chain advance, it calls
- * chain_advance_coordinator_force_mirror_promotion(), which sets
- * g_force_mirror_until_us to (now + 300 s). While this window is
- * active:
- *   - mirror_fallback_allowed() short-circuits true.
- *   - score_source() bypasses the if (s->blocked) early-out.
- * Bodies still validate through local consensus — only the source
- * gate is bypassed. The 5-minute bound limits exposure to a poisoned
- * mirror; the supervisor decides whether to extend on its next edge. */
-static _Atomic int64_t g_force_mirror_until_us = 0;
-
-static int64_t cac_mono_us(void)
-{
-    struct timespec ts;
-    platform_time_monotonic_timespec(&ts);
-    return (int64_t)ts.tv_sec * 1000000 + ts.tv_nsec / 1000;
-}
-
-static bool force_mirror_active_now(void)
-{
-    int64_t until = atomic_load(&g_force_mirror_until_us);
-    return until > cac_mono_us();
-}
-
-bool chain_advance_coordinator_force_mirror_active(void)
-{
-    return force_mirror_active_now();
-}
-
-#define FORCE_MIRROR_WINDOW_US ((int64_t)300 * 1000 * 1000)
-
-void chain_advance_coordinator_force_mirror_promotion(const char *audit_reason)
-{
-    int64_t now = cac_mono_us();
-    int64_t until = now + FORCE_MIRROR_WINDOW_US;
-    atomic_store(&g_force_mirror_until_us, until);
-    /* Emit a structured event for the audit trail. EV_COORDINATOR_FORCE_PROMOTION
-     * is defined just for this — operator-visible in zcl_events / Prometheus. */
-    event_emitf(EV_COORDINATOR_FORCE_PROMOTION, 0,
-                "reason=%s dur_us=%lld until_us=%lld",
-                audit_reason ? audit_reason : "(unspecified)",
-                (long long)FORCE_MIRROR_WINDOW_US,
-                (long long)until);
-    LOG_INFO("coordinator", "[coordinator] FORCE_MIRROR_PROMOTION reason=%s " "window=300s — mir->blocked bypass active", audit_reason ? audit_reason : "(unspecified)");
-    fflush(stderr);
-}
 
 #define CAC_STATE_PREFIX "chain_advance_coordinator."
 #define CAC_KEY_LAST_OP CAC_STATE_PREFIX "last_op"
@@ -135,37 +84,34 @@ static void copy_text(char *dst, size_t dst_len, const char *src)
     snprintf(dst, dst_len, "%s", src);
 }
 
-/* Round 6 C3 — classify legacy_mirror_sync_service blocker strings into
- * the typed enum used by the force-window bypass at score_source().
+/* Classify legacy_mirror_sync_service blocker strings into the typed enum
+ * reported by source scoring, status, and decision events.
  *
- * The string codes come from lms_set_blocker() in
+ * The string codes come from the legacy mirror blocker setter in
  * legacy_mirror_sync_service.c. They're stable identifiers, not free
  * text — this table is the canonical mapping. Any unknown code is
- * conservatively TRANSIENT (recoverable by default; force-window may
- * bypass) so an un-mapped new code doesn't accidentally become a hard
- * gate. Reverse risk — accidentally classifying a real consensus
- * divergence as TRANSIENT — is bounded: hash-disagreement and
- * body-hash-mismatch are the only PERMANENT entries and they are the
- * existing codes that signal consensus divergence today; any future
- * consensus-divergence code MUST be added here.
+ * conservatively TRANSIENT (recoverable by default) so an un-mapped new
+ * code doesn't accidentally look like a hard consensus gate. Reverse
+ * risk — accidentally classifying a real consensus divergence as
+ * TRANSIENT — is bounded: hash-disagreement and body-hash-mismatch are
+ * the only PERMANENT entries and they are the existing codes that signal
+ * consensus divergence today; any future consensus-divergence code MUST
+ * be added here.
  *
- * Update sites: when lms_set_blocker() gains a new code, add it here. */
+ * Update sites: when the legacy mirror blocker setter gains a new code,
+ * add it here. */
 static enum blocker_class classify_mirror_blocker_class(const char *code)
 {
     if (!code || code[0] == '\0')
         return BLOCKER_TRANSIENT;
 
-    /* Consensus divergence — the mirror disagrees with us on a hash.
-     * Bypassing this in force-window means activating a chain we know
-     * disagrees with native consensus; never allowed. */
+    /* Consensus divergence — the mirror disagrees with us on a hash. */
     if (strcmp(code, "hash-disagreement") == 0 ||
         strcmp(code, "body-hash-mismatch") == 0)
         return BLOCKER_PERMANENT;
 
     /* Resource contention — DB writer busy or similar. RESOURCE class
-     * signals "operator action may be needed" but the force window
-     * may still bypass briefly if higher policy decides the cost is
-     * acceptable. */
+     * signals "operator action may be needed". */
     if (strcmp(code, "db-writer-busy") == 0)
         return BLOCKER_RESOURCE;
 
@@ -174,7 +120,7 @@ static enum blocker_class classify_mirror_blocker_class(const char *code)
         return BLOCKER_DEPENDENCY;
 
     /* Default: network/timeout/no-progress class — transient by
-     * construction; retry under the force window is the desired path. */
+     * construction. */
     return BLOCKER_TRANSIENT;
 }
 
@@ -452,7 +398,7 @@ static void restore_decision(struct node_db *ndb)
     char blocker[sizeof(d.blocker)] = {0};
     char source_state[sizeof(d.sources[0].state)] = {0};
     char source_reason[sizeof(d.sources[0].reason)] = {0};
-    char source_blocker[sizeof(d.sources[0].blocker)] = {0};
+    char source_block_text[sizeof(d.sources[0].blocker)] = {0};
     size_t len = 0;
     int64_t v = 0;
     int64_t total = 0;
@@ -497,9 +443,9 @@ static void restore_decision(struct node_db *ndb)
         if (node_db_state_get(ndb, CAC_KEY_SOURCE_REASON, source_reason,
                               sizeof(source_reason) - 1, &len))
             copy_text(s->reason, sizeof(s->reason), source_reason);
-        if (node_db_state_get(ndb, CAC_KEY_SOURCE_BLOCKER, source_blocker,
-                              sizeof(source_blocker) - 1, &len))
-            copy_text(s->blocker, sizeof(s->blocker), source_blocker);
+        if (node_db_state_get(ndb, CAC_KEY_SOURCE_BLOCKER, source_block_text,
+                              sizeof(source_block_text) - 1, &len))
+            copy_text(s->blocker, sizeof(s->blocker), source_block_text);
         if (node_db_state_get_int(ndb, CAC_KEY_SOURCE_HEIGHT, &v))
             s->height = (int)v;
         if (node_db_state_get_int(ndb, CAC_KEY_SOURCE_HEALTHY, &v))
@@ -643,44 +589,6 @@ static void emit_decision_event(const char *op,
                 extra);
 }
 
-const char *cac_source_name(enum cac_source source)
-{
-    switch (source) {
-        case CAC_SOURCE_NONE:              return "none";
-        case CAC_SOURCE_P2P:               return "p2p";
-        case CAC_SOURCE_SNAPSHOT:          return "snapshot";
-        case CAC_SOURCE_LOCAL_IMPORT:      return "local_import";
-        case CAC_SOURCE_ZCLASSICD_MIRROR:  return "zclassicd_mirror";
-        case CAC_SOURCE_NUM:               break;
-    }
-    return "unknown";
-}
-
-const char *cac_decision_result_name(enum cac_decision_result result)
-{
-    switch (result) {
-        case CAC_DECISION_WAIT:       return "wait";
-        case CAC_DECISION_USE_SOURCE: return "use_source";
-        case CAC_DECISION_BLOCKED:    return "blocked";
-        case CAC_DECISION_RECOVER:    return "recover";
-        case CAC_DECISION_NUM:        break;
-    }
-    return "unknown";
-}
-
-const char *cac_source_trust_name(enum cac_source source)
-{
-    switch (source) {
-        case CAC_SOURCE_NONE:             return "none";
-        case CAC_SOURCE_P2P:              return "native_peer_validated";
-        case CAC_SOURCE_SNAPSHOT:         return "native_snapshot_proof_validated";
-        case CAC_SOURCE_LOCAL_IMPORT:     return "local_consensus_import";
-        case CAC_SOURCE_ZCLASSICD_MIRROR: return "bounded_advisory_fallback";
-        case CAC_SOURCE_NUM:              break;
-    }
-    return "unknown";
-}
-
 static const char *cac_source_class_name(enum cac_source source)
 {
     switch (source) {
@@ -694,272 +602,10 @@ static const char *cac_source_class_name(enum cac_source source)
     return "unknown";
 }
 
-static int source_base_score(enum cac_source source)
-{
-    switch (source) {
-        case CAC_SOURCE_P2P:              return 100;
-        case CAC_SOURCE_SNAPSHOT:         return 85;
-        case CAC_SOURCE_LOCAL_IMPORT:     return 75;
-        case CAC_SOURCE_ZCLASSICD_MIRROR: return 45;
-        default:                          return -1000;
-    }
-}
-
-static bool mirror_fallback_allowed(const struct cac_plan_input *in)
-{
-    if (!in) return false;
-    /* Round 5 C4: supervisor-initiated force-promotion window bypasses
-     * every other gate. Local consensus still validates each body. */
-    if (force_mirror_active_now()) return true;
-    if (in->local_retries_exhausted) return true;
-    /* Concurrent-redundancy override: once mirror lag breaches the SLO
-     * and zclassicd is reachable, the mirror MUST be allowed to pull
-     * bodies regardless of local recovery state. The mirror is the
-     * redundancy guarantee — gating it behind "local fully exhausted"
-     * makes it tertiary, not redundant. Bodies still validate through
-     * local consensus; only the *source* is the mirror. */
-    if (in->mirror_lag_sla_breach_blocks > 0) {
-        const struct cac_source_status *mir =
-            &in->sources[CAC_SOURCE_ZCLASSICD_MIRROR];
-        if (mir->available && mir->lag >= in->mirror_lag_sla_breach_blocks)
-            return true;
-    }
-    return !in->local_recovery_active;
-}
-
-static int bounded_height_bonus(int local_height, int source_height)
-{
-    int gap = source_height - local_height;
-    if (gap <= 0) return -20;
-    if (gap > 10000) return 30;
-    if (gap > 1000) return 20;
-    return 10;
-}
-
-static int target_lag_penalty(const struct cac_plan_input *in,
-                              const struct cac_source_status *s)
-{
-    if (!in || !s)
-        return 0;
-    if (in->target_height <= in->local_height)
-        return 0;
-    if (s->height <= in->local_height || s->height >= in->target_height)
-        return 0;
-
-    int lag = in->target_height - s->height;
-    if (lag > 10000)
-        return 70;
-    if (lag > 1000)
-        return 50;
-    if (lag > 100)
-        return 35;
-    return 25;
-}
-
-static int failure_penalty(const struct cac_source_status *s)
-{
-    if (!s)
-        return 0;
-    int64_t penalty = s->failures * 4 + s->timeouts * 6;
-    if (penalty > 60)
-        penalty = 60;
-    return (int)penalty;
-}
-
-static void score_source(const struct cac_plan_input *in,
-                         struct cac_source_status *s)
-{
-    if (!in || !s || s->source <= CAC_SOURCE_NONE ||
-        s->source >= CAC_SOURCE_NUM || !s->available) {
-        if (s)
-            s->score = -1000;
-        return;
-    }
-    if (s->blocked) {
-        /* Round 5 C4 + Round 6 C3: during the force-promotion window,
-         * ignore the `blocked` flag for the mirror source specifically
-         * so the score loop can still pick it. Other sources stay
-         * blocked. PERMANENT blockers (e.g. mirror hash-disagreement)
-         * are NEVER bypassed regardless of window state — activating a
-         * chain a typed-PERMANENT blocker covers means activating a
-         * known-divergent chain. */
-        bool mirror_force_eligible =
-            s->source == CAC_SOURCE_ZCLASSICD_MIRROR &&
-            force_mirror_active_now() &&
-            s->blocked_class != BLOCKER_PERMANENT;
-        if (!mirror_force_eligible) {
-            s->score = -900;
-            return;
-        }
-    }
-
-    s->score_base = source_base_score(s->source);
-    s->score_health = s->healthy ? 20 : -35;
-    s->score_height = bounded_height_bonus(in->local_height, s->height);
-    s->score_authorized = s->authorized ? 5 : 0;
-    s->score_target_lag_penalty = target_lag_penalty(in, s);
-    s->score_failure_penalty = failure_penalty(s);
-    s->score_mirror_gate_penalty =
-        s->source == CAC_SOURCE_ZCLASSICD_MIRROR &&
-        !mirror_fallback_allowed(in) ? 100 : 0;
-
-    s->score = s->score_base +
-               s->score_health +
-               s->score_height +
-               s->score_authorized -
-               s->score_target_lag_penalty -
-               s->score_failure_penalty -
-               s->score_mirror_gate_penalty;
-}
-
-static const char *source_selection_blocker(const struct cac_plan_input *in,
-                                            const struct cac_source_status *s)
-{
-    if (!in || !s) return "invalid_source";
-    if (!s->available) return "unavailable";
-    if (!s->healthy) return "unhealthy";
-    if (s->blocked) return s->blocker[0] ? s->blocker : "blocked";
-    if (s->source == CAC_SOURCE_ZCLASSICD_MIRROR &&
-        !mirror_fallback_allowed(in))
-        return "local_recovery_gate";
-    if (s->source == CAC_SOURCE_P2P &&
-        in->best_header_height >= in->local_height &&
-        s->height >= in->best_header_height)
-        return "";
-    if (in->target_height > in->local_height && s->height <= in->local_height)
-        return "no_forward_progress";
-    return "";
-}
-
 void chain_advance_coordinator_plan(const struct cac_plan_input *in,
                                     struct cac_decision *out)
 {
-    if (!out) return;
-    memset(out, 0, sizeof(*out));
-    out->result = CAC_DECISION_RECOVER;
-    out->selected_source = CAC_SOURCE_NONE;
-    out->selected_score = -1000;
-    copy_text(out->reason, sizeof(out->reason), "no_healthy_source");
-    if (!in) {
-        copy_text(out->blocker, sizeof(out->blocker), "null_input");
-        return;
-    }
-
-    out->mirror_fallback_allowed = mirror_fallback_allowed(in);
-    out->activation_allowed = false;
-    out->local_height = in->local_height;
-    out->best_header_height = in->best_header_height;
-    out->target_height = in->target_height;
-    out->projection_height = in->projection_height;
-    out->projection_lag = in->projection_lag;
-    out->projection_deferred = in->projection_deferred;
-    copy_text(out->projection_state, sizeof(out->projection_state),
-              in->projection_state);
-
-    bool any_blocker = false;
-    const char *first_blocker = NULL;
-
-    for (int i = 0; i < CAC_SOURCE_NUM; i++) {
-        out->sources[i] = in->sources[i];
-        out->sources[i].source = (enum cac_source)i;
-        score_source(in, &out->sources[i]);
-        const char *selection_blocker =
-            source_selection_blocker(in, &out->sources[i]);
-        out->sources[i].selectable =
-            selection_blocker && selection_blocker[0] == '\0';
-        copy_text(out->sources[i].selection_blocker,
-                  sizeof(out->sources[i].selection_blocker),
-                  selection_blocker ? selection_blocker : "invalid_source");
-        if (out->sources[i].blocked && out->sources[i].blocker[0]) {
-            any_blocker = true;
-            if (!first_blocker) first_blocker = out->sources[i].blocker;
-        }
-        if (!out->sources[i].selectable)
-            continue;
-        if (out->sources[i].score > out->selected_score) {
-            out->selected_source = out->sources[i].source;
-            out->selected_score = out->sources[i].score;
-        }
-    }
-
-    if (out->selected_source != CAC_SOURCE_NONE) {
-        out->result = CAC_DECISION_USE_SOURCE;
-        out->activation_allowed = true;
-        snprintf(out->reason, sizeof(out->reason),
-                 "selected_%s", cac_source_name(out->selected_source));
-        return;
-    }
-
-    if (in->local_recovery_active && !in->local_retries_exhausted) {
-        out->result = CAC_DECISION_WAIT;
-        copy_text(out->reason, sizeof(out->reason), "local_retries_pending");
-        copy_text(out->blocker, sizeof(out->blocker), "local_recovery_gate");
-        return;
-    }
-
-    if (any_blocker) {
-        out->result = CAC_DECISION_BLOCKED;
-        copy_text(out->reason, sizeof(out->reason), "source_blocked");
-        copy_text(out->blocker, sizeof(out->blocker), first_blocker);
-        return;
-    }
-
-    out->result = CAC_DECISION_RECOVER;
-    copy_text(out->reason, sizeof(out->reason), "no_healthy_source");
-}
-
-bool chain_advance_coordinator_mirror_repair_allowed(
-    int local_height,
-    int target_height,
-    bool local_retries_exhausted,
-    struct cac_decision *out)
-{
-    struct cac_plan_input in;
-    struct cac_decision local_out;
-    struct cac_decision *decision = out ? out : &local_out;
-
-    memset(&in, 0, sizeof(in));
-    in.local_height = local_height;
-    in.best_header_height = local_height;
-    in.target_height = target_height;
-    /* Mirror repair is only considered after a local recovery condition
-     * exists. The coordinator owns the local-first gate. */
-    in.local_recovery_active = true;
-    in.local_retries_exhausted = local_retries_exhausted;
-    /* Pull the breach threshold from the live mirror config so the
-     * concurrent-redundancy override applies here too. */
-    {
-        struct legacy_mirror_sync_stats msnap;
-        memset(&msnap, 0, sizeof(msnap));
-        legacy_mirror_sync_stats_snapshot(&msnap);
-        in.mirror_lag_sla_breach_blocks = msnap.lag_sla_breach_blocks;
-    }
-    in.sources[CAC_SOURCE_ZCLASSICD_MIRROR].source =
-        CAC_SOURCE_ZCLASSICD_MIRROR;
-    in.sources[CAC_SOURCE_ZCLASSICD_MIRROR].available = true;
-    in.sources[CAC_SOURCE_ZCLASSICD_MIRROR].healthy = true;
-    in.sources[CAC_SOURCE_ZCLASSICD_MIRROR].authorized = true;
-    in.sources[CAC_SOURCE_ZCLASSICD_MIRROR].height = target_height;
-    in.sources[CAC_SOURCE_ZCLASSICD_MIRROR].lag =
-        target_height > local_height ? target_height - local_height : 0;
-    copy_text(in.sources[CAC_SOURCE_ZCLASSICD_MIRROR].state,
-              sizeof(in.sources[CAC_SOURCE_ZCLASSICD_MIRROR].state),
-              local_retries_exhausted ? "repair_allowed" : "gated");
-
-    chain_advance_coordinator_plan(&in, decision);
-    record_decision("mirror_repair", decision);
-    const char *mirror_blocker =
-        decision->sources[CAC_SOURCE_ZCLASSICD_MIRROR].selection_blocker[0] ?
-        decision->sources[CAC_SOURCE_ZCLASSICD_MIRROR].selection_blocker : "-";
-    emit_decision_event(
-        "mirror_repair", "allowed",
-        decision->selected_source == CAC_SOURCE_ZCLASSICD_MIRROR,
-        decision,
-        "local=%d target=%d retries_exhausted=%s mirsb=%s",
-        local_height, target_height,
-        local_retries_exhausted ? "true" : "false",
-        mirror_blocker);
-    return decision->selected_source == CAC_SOURCE_ZCLASSICD_MIRROR;
+    block_source_policy_plan(in, out);
 }
 
 bool chain_advance_coordinator_peer_floor_recovery_needed(
@@ -1705,10 +1351,5 @@ void chain_advance_coordinator_reset_for_test(void)
     g_cac.last_projection_deferred_time = 0;
     memset(g_cac.last_projection_deferred_reason, 0,
            sizeof(g_cac.last_projection_deferred_reason));
-    /* Round 6 C3 — clear force-mirror window state so tests that
-     * invoke chain_advance_coordinator_force_mirror_promotion() do
-     * not leak the 300s bypass into subsequent tests in the same
-     * process. */
-    atomic_store(&g_force_mirror_until_us, 0);
     zcl_mutex_unlock(&g_cac.lock);
 }

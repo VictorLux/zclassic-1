@@ -981,6 +981,19 @@ check-projections-pure:
 	@echo "══ LINT: projections pure (E4) ══"
 	@./tools/scripts/check_projections_pure.sh
 
+# Gate E6 — one chain-state write path (RATCHET). Legacy writer surfaces
+# are grandfathered in tools/scripts/one_write_path_baseline.txt and shrink
+# as B8 deletes them; new write surfaces fail.
+check-one-write-path:
+	@echo "══ LINT: one write path (E6) ══"
+	@./tools/scripts/check_one_write_path.sh
+
+# Gate E7 — no authoritative RAM state (RATCHET). Direct active_chain
+# internals/global active_chain state are forbidden outside the baseline.
+check-no-authoritative-ram-state:
+	@echo "══ LINT: no authoritative RAM state (E7) ══"
+	@./tools/scripts/check_no_authoritative_ram_state.sh
+
 # Gate E5 — Job stages advance OR block (HARD). Every app/jobs/src/*_stage.c
 # step must surface JOB_BLOCKED/JOB_IDLE on non-progress AND reference a cursor
 # (cursor_out / c->cursor_in / stage_cursor) — no silent forward spin. The 8
@@ -993,7 +1006,7 @@ check-no-silent-ready:
 	@echo "══ LINT: no-silent-ready (E8) ══"
 	@./tools/scripts/check_no_silent_ready.sh
 
-lint: check-malloc check-silent-errors check-raw-sqlite check-raw-malloc check-coins-lookup-nullcheck check-observability-pairing check-silent-errors-services check-silent-errors-controllers check-before-save-hooks check-pthread-create check-model-validation check-long-functions check-rpc-registrar check-lag-slo-observable check-lib-layering check-supervisor-registration check-typed-blocker check-framework-shape check-no-raw-clock-outside-platform check-no-raw-sqlite-in-controllers check-supervisor-domain check-file-size-ceiling check-operator-needed-sink check-doc-accuracy check-one-result-type check-shape-includes-header check-projections-pure check-stage-advances-or-blocks check-no-silent-ready
+lint: check-malloc check-silent-errors check-raw-sqlite check-raw-malloc check-coins-lookup-nullcheck check-observability-pairing check-silent-errors-services check-silent-errors-controllers check-before-save-hooks check-pthread-create check-model-validation check-long-functions check-rpc-registrar check-lag-slo-observable check-lib-layering check-supervisor-registration check-typed-blocker check-framework-shape check-no-raw-clock-outside-platform check-no-raw-sqlite-in-controllers check-supervisor-domain check-file-size-ceiling check-operator-needed-sink check-doc-accuracy check-one-result-type check-shape-includes-header check-projections-pure check-one-write-path check-no-authoritative-ram-state check-stage-advances-or-blocks check-no-silent-ready
 	@echo "══ LINT: all checks passed ══"
 
 ci: lint bench-regress zclassic23 test_zcl

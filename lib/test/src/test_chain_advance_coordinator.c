@@ -228,27 +228,6 @@ static int test_cac_below_breach_still_gates_mirror(void)
     return failures;
 }
 
-static int test_cac_mirror_repair_helper_gates_local_first(void)
-{
-    int failures = 0;
-    TEST_CASE("chain_advance_coordinator: mirror repair helper gates local-first")
-    {
-        struct cac_decision out;
-        ASSERT(!chain_advance_coordinator_mirror_repair_allowed(
-            100, 130, false, &out));
-        ASSERT(out.result == CAC_DECISION_WAIT);
-        ASSERT(out.selected_source == CAC_SOURCE_NONE);
-        ASSERT_STR_EQ(out.reason, "local_retries_pending");
-
-        ASSERT(chain_advance_coordinator_mirror_repair_allowed(
-            100, 130, true, &out));
-        ASSERT(out.result == CAC_DECISION_USE_SOURCE);
-        ASSERT(out.selected_source == CAC_SOURCE_ZCLASSICD_MIRROR);
-        ASSERT(out.mirror_fallback_allowed);
-    } TEST_END
-    return failures;
-}
-
 static int test_cac_peer_floor_helper_classifies_recovery(void)
 {
     int failures = 0;
@@ -299,75 +278,6 @@ static int test_cac_blocks_unsafe_mirror(void)
         ASSERT(out.result == CAC_DECISION_BLOCKED);
         ASSERT(out.selected_source == CAC_SOURCE_NONE);
         ASSERT_STR_EQ(out.blocker, "body_hash_mismatch");
-    } TEST_END
-    return failures;
-}
-
-/* Round 6 C3 — typed blocker class gates the force-window bypass.
- *
- * Force-promotion (Round 5 C4) was designed to bypass `s->blocked`
- * temporarily for the mirror source when the supervisor escalates a
- * fatal lag breach. The original implementation bypassed *all*
- * mirror blockers indiscriminately, which would activate a chain we
- * KNOW disagrees with us if the typed class is PERMANENT (e.g.
- * hash-disagreement / body-hash-mismatch). C3 narrows the bypass to
- * non-PERMANENT classes only. */
-static int test_cac_force_window_refuses_permanent(void)
-{
-    int failures = 0;
-    TEST_CASE("force window: PERMANENT blocker is NEVER bypassed")
-    {
-        struct cac_plan_input in = base_input();
-        struct cac_decision out;
-        init_source(&in, CAC_SOURCE_ZCLASSICD_MIRROR, true, true, 130);
-        in.sources[CAC_SOURCE_ZCLASSICD_MIRROR].authorized = true;
-        in.sources[CAC_SOURCE_ZCLASSICD_MIRROR].blocked = true;
-        in.sources[CAC_SOURCE_ZCLASSICD_MIRROR].blocked_class =
-            BLOCKER_PERMANENT;
-        snprintf(in.sources[CAC_SOURCE_ZCLASSICD_MIRROR].blocker,
-                 sizeof(in.sources[CAC_SOURCE_ZCLASSICD_MIRROR].blocker),
-                 "hash-disagreement");
-
-        chain_advance_coordinator_force_mirror_promotion(
-            "test: hash divergence + force-window simulation");
-
-        chain_advance_coordinator_plan(&in, &out);
-
-        /* Mirror is force-eligible by source, force window active, but
-         * blocker class is PERMANENT → bypass refused. Decision must
-         * NOT select the mirror. */
-        ASSERT(out.selected_source != CAC_SOURCE_ZCLASSICD_MIRROR);
-        ASSERT(out.sources[CAC_SOURCE_ZCLASSICD_MIRROR].score <= -900);
-        chain_advance_coordinator_reset_for_test();
-    } TEST_END
-    return failures;
-}
-
-static int test_cac_force_window_allows_transient(void)
-{
-    int failures = 0;
-    TEST_CASE("force window: TRANSIENT blocker IS bypassed for mirror")
-    {
-        struct cac_plan_input in = base_input();
-        struct cac_decision out;
-        init_source(&in, CAC_SOURCE_ZCLASSICD_MIRROR, true, true, 130);
-        in.sources[CAC_SOURCE_ZCLASSICD_MIRROR].authorized = true;
-        in.sources[CAC_SOURCE_ZCLASSICD_MIRROR].blocked = true;
-        in.sources[CAC_SOURCE_ZCLASSICD_MIRROR].blocked_class =
-            BLOCKER_TRANSIENT;
-        snprintf(in.sources[CAC_SOURCE_ZCLASSICD_MIRROR].blocker,
-                 sizeof(in.sources[CAC_SOURCE_ZCLASSICD_MIRROR].blocker),
-                 "rpc-unreachable");
-
-        chain_advance_coordinator_force_mirror_promotion(
-            "test: transient network blocker + force-window");
-
-        chain_advance_coordinator_plan(&in, &out);
-
-        /* Mirror's transient blocker is bypassed inside the force
-         * window → mirror gets a positive score. */
-        ASSERT(out.sources[CAC_SOURCE_ZCLASSICD_MIRROR].score > -900);
-        chain_advance_coordinator_reset_for_test();
     } TEST_END
     return failures;
 }
@@ -1347,8 +1257,8 @@ static int test_cac_dump_records_live_decision(void)
         const struct json_value *reason;
 
         chain_advance_coordinator_reset_for_test();
-        ASSERT(!chain_advance_coordinator_mirror_repair_allowed(
-            100, 130, false, NULL));
+        ASSERT(chain_advance_coordinator_peer_floor_recovery_needed(
+            0, 2, 100, 120, NULL));
 
         json_init(&root);
         ASSERT(chain_advance_coordinator_dump_state_json(&root, NULL));
@@ -1366,9 +1276,9 @@ static int test_cac_dump_records_live_decision(void)
         ASSERT(op != NULL);
         ASSERT(decision != NULL);
         ASSERT(reason != NULL);
-        ASSERT_STR_EQ(json_get_str(op), "mirror_repair");
-        ASSERT_STR_EQ(json_get_str(decision), "wait");
-        ASSERT_STR_EQ(json_get_str(reason), "local_retries_pending");
+        ASSERT_STR_EQ(json_get_str(op), "peer_floor");
+        ASSERT_STR_EQ(json_get_str(decision), "recover");
+        ASSERT_STR_EQ(json_get_str(reason), "no_healthy_source");
         json_free(&root);
     } TEST_END
     return failures;
@@ -1535,39 +1445,6 @@ static int test_cac_peer_floor_event_explains_no_source(void)
         ASSERT(strstr(buf, "min=3") != NULL);
         ASSERT(strstr(buf, "peer=130") != NULL);
         ASSERT(strstr(buf, "p2psb=unavailable") != NULL);
-    } TEST_END
-    return failures;
-}
-
-static int test_cac_mirror_repair_event_explains_local_gate(void)
-{
-    int failures = 0;
-    TEST_CASE("chain_advance_coordinator: mirror repair event explains local gate")
-    {
-        char buf[4096];
-        size_t len;
-
-        event_log_init();
-        chain_advance_coordinator_reset_for_test();
-        ASSERT(!chain_advance_coordinator_mirror_repair_allowed(
-            100, 130, false, NULL));
-
-        len = event_dump_json(buf, sizeof(buf), 8);
-        ASSERT(len > 0);
-        ASSERT(len < sizeof(buf));
-        buf[len] = '\0';
-
-        ASSERT(strstr(buf, "chain.advance_decision") != NULL);
-        ASSERT(strstr(buf, "op=mirror_repair") != NULL);
-        ASSERT(strstr(buf, "ok=false") != NULL);
-        ASSERT(strstr(buf, "authority=local_consensus_validation") != NULL);
-        ASSERT(strstr(buf, "source=none") != NULL);
-        ASSERT(strstr(buf, "trust=none") != NULL);
-        ASSERT(strstr(buf, "decision=wait") != NULL);
-        ASSERT(strstr(buf, "sel=false") != NULL);
-        ASSERT(strstr(buf, "reason=local_retries_pending") != NULL);
-        ASSERT(strstr(buf, "retries_exhausted=false") != NULL);
-        ASSERT(strstr(buf, "mirsb=local_recovery_gate") != NULL);
     } TEST_END
     return failures;
 }
@@ -1839,12 +1716,9 @@ int test_chain_advance_coordinator(void)
     failures += test_cac_allows_bounded_mirror_after_retries();
     failures += test_cac_lag_slo_overrides_local_gate();
     failures += test_cac_below_breach_still_gates_mirror();
-    failures += test_cac_mirror_repair_helper_gates_local_first();
     failures += test_cac_peer_floor_helper_classifies_recovery();
     failures += test_cac_peer_floor_helper_accepts_healthy_p2p();
     failures += test_cac_blocks_unsafe_mirror();
-    failures += test_cac_force_window_refuses_permanent();
-    failures += test_cac_force_window_allows_transient();
     failures += test_cac_avoids_stale_dead_p2p();
     failures += test_cac_snapshot_can_outrank_mirror();
     failures += test_cac_fresh_snapshot_outranks_stale_p2p();
@@ -1869,7 +1743,6 @@ int test_chain_advance_coordinator(void)
     failures += test_cac_dump_records_snapshot_offer_decision();
     failures += test_cac_decision_event_contract();
     failures += test_cac_peer_floor_event_explains_no_source();
-    failures += test_cac_mirror_repair_event_explains_local_gate();
     failures += test_cac_dump_records_local_header_refill_decision();
     failures += test_cac_restores_last_decision_from_node_state();
     failures += test_cac_restores_peer_floor_sources_from_node_state();

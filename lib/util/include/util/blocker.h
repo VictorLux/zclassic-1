@@ -19,10 +19,10 @@
  * `activation_blocker = "activation-no-progress"` re-firing every ~3 s
  * (~5/sec at peak), 193+ counter increments in 10 s of telemetry —
  * because the underlying recorder had no de-duplication and the
- * coordinator's force-window bypass had no way to distinguish a
- * transient blocker from a permanent one. The Round 5 supervisor was
- * firing recoveries, but the recovery target itself was wedged behind
- * a typeless blocker that had no escape.
+ * coordinator had no durable way to distinguish a transient blocker
+ * from a permanent one. The Round 5 supervisor was firing recoveries,
+ * but the recovery target itself was wedged behind a typeless blocker
+ * that had no escape.
  *
  * The primitive
  * --------------

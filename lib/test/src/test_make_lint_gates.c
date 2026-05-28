@@ -654,6 +654,10 @@ static int run_gate_script(const char *script_rel, const char *mode)
 #define E4_FIXTURE_DST   "lib/storage/src/_e4_pure_fixture_projection.c"
 #define E5_SCRIPT_REL    "tools/scripts/check_stage_advances_or_blocks.sh"
 #define E5_FIXTURE_DST   "app/jobs/src/_e5_stage_fixture_tmp_stage.c"
+#define E6_SCRIPT_REL    "tools/scripts/check_one_write_path.sh"
+#define E6_FIXTURE_DST   "app/services/src/_e6_write_path_fixture_tmp.c"
+#define E7_SCRIPT_REL    "tools/scripts/check_no_authoritative_ram_state.sh"
+#define E7_FIXTURE_DST   "app/services/src/_e7_ram_state_fixture_tmp.c"
 
 static int plant_oversized_file(const char *rel, int n_lines)
 {
@@ -880,6 +884,59 @@ static int t_e5_stage_advances_or_blocks(void)
     return failures;
 }
 
+/* E6 — one-write-path RATCHET: a new production write surface outside the
+ * baseline trips the gate; removing it restores green. */
+static int t_e6_one_write_path(void)
+{
+    int failures = 0;
+    unlink_rel(E6_FIXTURE_DST);
+    int baseline_rc = run_gate_script(E6_SCRIPT_REL, NULL);
+    char path[PATH_MAX];
+    int planted = (repo_path(path, sizeof(path), E6_FIXTURE_DST) == 0 &&
+                   write_file(path,
+                       "struct active_chain; struct block_index;\n"
+                       "int active_chain_set_tip(struct active_chain *, struct block_index *);\n"
+                       "int e6_fixture(struct active_chain *c, struct block_index *b){ return active_chain_set_tip(c, b); }\n") == 0)
+                  ? 0 : -1;
+    int trip_rc = planted == 0 ? run_gate_script(E6_SCRIPT_REL, NULL) : -1;
+    unlink_rel(E6_FIXTURE_DST);
+    int recover_rc = run_gate_script(E6_SCRIPT_REL, NULL);
+    TEST("[lint-gate] E6 one-write-path RATCHET: clean, trips new writer, recovers") {
+        ASSERT(baseline_rc == 0);
+        ASSERT(planted == 0);
+        ASSERT(trip_rc != 0);
+        ASSERT(recover_rc == 0);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+/* E7 — no-authoritative-RAM-state RATCHET: a new direct active_chain
+ * internals access trips the gate; removing it restores green. */
+static int t_e7_no_authoritative_ram_state(void)
+{
+    int failures = 0;
+    unlink_rel(E7_FIXTURE_DST);
+    int baseline_rc = run_gate_script(E7_SCRIPT_REL, NULL);
+    char path[PATH_MAX];
+    int planted = (repo_path(path, sizeof(path), E7_FIXTURE_DST) == 0 &&
+                   write_file(path,
+                       "struct main_state { struct { int height; } chain_active; };\n"
+                       "int e7_fixture(struct main_state *s){ return s->chain_active.height; }\n") == 0)
+                  ? 0 : -1;
+    int trip_rc = planted == 0 ? run_gate_script(E7_SCRIPT_REL, NULL) : -1;
+    unlink_rel(E7_FIXTURE_DST);
+    int recover_rc = run_gate_script(E7_SCRIPT_REL, NULL);
+    TEST("[lint-gate] E7 no-authoritative-RAM-state RATCHET: clean, trips direct RAM state, recovers") {
+        ASSERT(baseline_rc == 0);
+        ASSERT(planted == 0);
+        ASSERT(trip_rc != 0);
+        ASSERT(recover_rc == 0);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 static void unlink_lint_fixtures(void)
 {
     const char *fixtures[] = {
@@ -896,6 +953,8 @@ static void unlink_lint_fixtures(void)
         E3_FIXTURE_DST,
         E4_FIXTURE_DST,
         E5_FIXTURE_DST,
+        E6_FIXTURE_DST,
+        E7_FIXTURE_DST,
     };
 
     for (size_t i = 0; i < sizeof(fixtures) / sizeof(fixtures[0]); i++) {
@@ -1041,28 +1100,17 @@ static int t_service_tip_mutation_gate(void)
 static int t_legacy_candidate_source_has_no_override_scope(void)
 {
     int failures = 0;
-    char *body_pull = NULL;
     char *mirror = NULL;
-    TEST("legacy candidate source has no mirror override mutation path") {
-        char body_path[PATH_MAX];
+    TEST("legacy mirror monitor has no tip-mutation path") {
         char mirror_path[PATH_MAX];
-        ASSERT(repo_path(body_path, sizeof(body_path),
-                         "app/services/src/legacy_body_pull.c") == 0);
         ASSERT(repo_path(mirror_path, sizeof(mirror_path),
                          "app/services/src/legacy_mirror_sync_service.c") == 0);
-        ASSERT(read_entire_file(body_path, &body_pull) == 0);
         ASSERT(read_entire_file(mirror_path, &mirror) == 0);
-        ASSERT(strstr(body_pull, "mirror_consensus_scope_enter") == NULL);
-        ASSERT(strstr(body_pull, "mirror_consensus_record_override") == NULL);
-        ASSERT(strstr(body_pull, "mirror_consensus_authorize_block") == NULL);
-        ASSERT(strstr(body_pull,
-                      "process_block_clear_utxo_activation_pause_range") == NULL);
         ASSERT(strstr(mirror, "CSR_ROLLBACK_SOURCE_MIRROR") == NULL);
         ASSERT(strstr(mirror, "chain_set_active_tip(") == NULL);
         ASSERT(strstr(mirror, "active_chain_set_tip(") == NULL);
         PASS();
     } _test_next:;
-    free(body_pull);
     free(mirror);
     return failures;
 }
@@ -1452,6 +1500,8 @@ int test_make_lint_gates(void)
     failures += t_e3_shape_includes_header();
     failures += t_e4_projections_pure();
     failures += t_e5_stage_advances_or_blocks();
+    failures += t_e6_one_write_path();
+    failures += t_e7_no_authoritative_ram_state();
     return failures;
 }
 

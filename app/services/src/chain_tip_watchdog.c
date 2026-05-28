@@ -23,7 +23,6 @@
 #include "platform/time_compat.h"
 #include "services/chain_tip_watchdog.h"
 
-#include "services/chain_advance_coordinator.h"
 #include "supervisors/domains.h"
 #include "validation/chainstate.h"
 #include "validation/main_state.h"
@@ -257,11 +256,10 @@ static void chain_tip_wd_tick(struct liveness_contract *c)
     if (level < 1 && thr_mirror > 0 && age_s >= thr_mirror) {
         atomic_store(&g_escalation, 1);
         atomic_fetch_add(&g_fires_mirror, 1u);
-        LOG_INFO("chain_tip_watchdog", "[chain_tip_watchdog] forcing mirror promotion: h=%lld age=%llds", (long long)h, (long long)age_s);
+        LOG_INFO("chain_tip_watchdog", "[chain_tip_watchdog] tip stalled: h=%lld age=%llds", (long long)h, (long long)age_s);
         event_emitf(EV_CHAIN_ADVANCE_DECISION, 0,
-            "chain_tip_watchdog force_mirror h=%lld age=%llds",
+            "chain_tip_watchdog tip_stalled h=%lld age=%llds",
             (long long)h, (long long)age_s);
-        chain_advance_coordinator_force_mirror_promotion("chain_tip_watchdog:mirror");
     }
 
     if (level < 3 && thr_restart > 0 && age_s >= thr_restart) {

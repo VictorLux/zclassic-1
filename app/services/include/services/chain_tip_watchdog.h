@@ -12,8 +12,8 @@
  *   genuinely caught up. If it doesn't, escalate within 30 s.
  *
  * Escalation ladder (configurable thresholds; defaults below):
- *   t=300s  no advance → force_mirror_promotion("tip_wd:300s")
- *   t=600s  no advance → reserved (for future score_reset)
+ *   t=300s  no advance → emit a named chain.advance_decision stall event
+ *   t=600s  no advance → reserved
  *   t=1200s no advance → request orderly shutdown; systemd Restart=always
  *                        brings us back with fresh state.
  *

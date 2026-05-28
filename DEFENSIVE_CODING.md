@@ -319,7 +319,7 @@ lint: check-malloc check-silent-errors check-raw-sqlite \
 ci: lint test fuzz-ci coverage
 ```
 
-**Status: 27 gates active.** Gates #18 and #20 graduated from WARN to
+**Status: 31 gates active.** Gates #18 and #20 graduated from WARN to
 RATCHET (E10, 2026-05-26) — they fail `make ci` on any *new* off-shape
 file / raw-sqlite controller while tolerating the recorded baseline.
 Gate #19 and #21 are FAIL. The six E-series additions
@@ -600,6 +600,31 @@ already satisfies). Tested in `lib/test/src/test_make_lint_gates.c`
     cache write — memoizing a derived value back into the projection's
     own table outside the strict fold).
 
+- **Gate E6: `check-one-write-path`** (RATCHET)
+  - Path: `tools/scripts/check_one_write_path.sh`
+  - Checks: new production chain-state write surfaces are forbidden unless
+    they route through the existing reducer/log authority or carry a narrow
+    `// one-write-path-ok:<tag>` marker. The gate scans for the legacy write
+    APIs (`active_chain_set_tip`, `coins_view_*` flush/write calls,
+    `process_new_block`, `connect_tip`, `disconnect_tip`,
+    `utxo_projection_set_author`) and compares them to
+    `tools/scripts/one_write_path_baseline.txt`.
+  - Baseline: grandfathered B8 debt. Delete lines as legacy writers are
+    removed; growing the file means a new writer appeared and requires an ADR.
+  - Override: `// one-write-path-ok:<tag>` only for a compatibility wrapper
+    that is demonstrably not a second consensus writer.
+
+- **Gate E7: `check-no-authoritative-ram-state`** (RATCHET)
+  - Path: `tools/scripts/check_no_authoritative_ram_state.sh`
+  - Checks: direct access to `active_chain` internals and new global/static
+    `struct active_chain` instances. Derived in-RAM indexes are allowed only
+    through accessors; consensus authority must be the log/projection/cursor
+    surface.
+  - Baseline: `tools/scripts/no_authoritative_ram_state_baseline.txt`
+    (currently empty). Delete lines as debt shrinks; do not add without ADR.
+  - Override: `// ram-state-ok:<tag>` on a line that is explicitly a derived
+    cache with a documented invariant.
+
 - **Gate E8: `check-no-silent-ready`** (HARD)
   - Path: `tools/scripts/check_no_silent_ready.sh`
   - Checks: the block-connection authority
@@ -644,9 +669,11 @@ edit it whenever you add/remove a gate.
 - `check-model-validation`
 - `check-no-raw-clock-outside-platform`
 - `check-no-raw-sqlite-in-controllers`
+- `check-no-authoritative-ram-state`
 - `check-no-silent-ready`
 - `check-observability-pairing`
 - `check-one-result-type`
+- `check-one-write-path`
 - `check-operator-needed-sink`
 - `check-projections-pure`
 - `check-pthread-create`
@@ -680,8 +707,10 @@ rule cannot mechanically hold. The ten marker classes:
 | `// lib-layer-ok:<tag>` | line in `lib/` that includes a `controllers/`, `models/`, `services/`, or `views/` header | `check-lib-layering` |
 | `// supervisor-ok:<tag>` | any line in a long-running `app/services/src/*_service.c` that intentionally does not register a supervisor liveness contract | `check-supervisor-registration` |
 | `// one-result-type-ok:<tag>` | top of an `app/services/src/*.c` file that owns no fallible service surface (pure table/registry helper) | `check-one-result-type` |
+| `// one-write-path-ok:<tag>` | chain-state compatibility wrapper that is not a second consensus writer | `check-one-write-path` |
 | `// shape-include-ok:<tag>` | any line in a shape file (condition/model/supervisor) that is a genuine registry/aggregator and cannot include the shape header | `check-shape-includes-header` |
 | `// projection-cache-ok:<tag>` | line in a `*_projection.c` with a legitimate cache write outside the strict fold | `check-projections-pure` |
+| `// ram-state-ok:<tag>` | line with derived active-chain cache state that must stay non-authoritative | `check-no-authoritative-ram-state` |
 
 **Syntax (machine-enforced).** Every marker requires a non-empty
 single-token tag matching `[A-Za-z][A-Za-z0-9_-]+` immediately after

@@ -6,18 +6,18 @@ State at handoff: `origin/main`, working tree clean, one branch, build + lint + 
 
 ---
 
-## The one thing that's left: the cutover flip
+## The one thing that's left: cutover stabilization + cleanup
 
-The node is mid-migration from a **legacy** consensus pipeline (`connect_tip`, whose
+The node is in late-stage migration from a **legacy** consensus pipeline (`connect_tip`, whose
 tip is `chain_active`) to an **event-sourced** one (the Wave-S reducer, whose tip
 derives from an append-only `log_head`). All 8 reducer stages already run in **shadow**
-and produce the same answers as legacy on every block. **The only work left is making
-the new one authoritative, then deleting the old one.** Everything else is built.
+and produce the same answers as legacy on every block. **B5 and B7 are done; remaining work
+is live preflight verification plus B8 cleanup.** Everything else is built.
 
 ```
-B5  make log_head the tip ...... a 2-FUNCTION change (active_chain_tip + active_chain_height)
-B7  flip to authoritative ...... refused at runtime until cutoverpreflight.ready is true
-B8  delete legacy (~3,900 LOC) .. exact checklist already written
+B5  make log_head the tip ...... done (2-FUNCTION accessor flip: active_chain_tip + active_chain_height)
+B7  flip authoritative with auto-revert guard ...... done (cutover with `cutovermode` + `cutover_no_forward_progress`)
+B8  live preflight verification + delete legacy (~3,900 LOC) .. exact checklist already written
 ```
 
 - B5 audit: `docs/work/b5-chain-active-readers.md`
