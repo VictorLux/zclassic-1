@@ -781,6 +781,7 @@ int main(void)
     failures += test_snapshot_failed_reset_condition();
     failures += test_snapshot_complete_resume_condition();
     failures += test_chain_integrity_failed_condition();
+    failures += test_orphan_utxo_above_tip();
     failures += test_chain_tip_watchdog_bounded_restart();
     failures += test_blocker();
     failures += test_clock();
