@@ -964,65 +964,6 @@ static bool boot_step_init_crypto_and_state(struct app_context *ctx,
     return true;
 }
 
-
-/* Direct LevelDB+mmap fast-import from a sibling zclassicd.
- *
- * Bypasses JSON-RPC entirely — reads the legacy node's blocks/index/
- * LevelDB to build a height-ordered map, mmap()'s the blk*.dat files,
- * and feeds payloads to process_new_block.
- *
- * Requires the legacy LevelDB to be unlocked (stop zclassicd first;
- * the operator pays a brief downtime to gain a >10x cold-catchup
- * speedup). On open failure (LOCK held, dir missing), logs and falls
- * through to standard P2P sync. */
-static bool boot_step_fastimport(struct app_context *ctx,
-                                  const struct chain_params *params)
-{
-    if (!ctx || !ctx->fastimport_from) return true;
-
-    printf("\n═══ Fast Import (direct LevelDB+mmap) from %s ═══\n",
-           ctx->fastimport_from);
-    fflush(stdout);
-
-    int64_t t_start = boot_clock_ms();
-
-    bool turbo_on = boot_db_enter_turbo_mode();
-    if (turbo_on) {
-        printf("Fast import: node.db turbo mode ON "
-               "(synchronous=OFF, indexes dropped)\n");
-    }
-
-    struct legacy_bootstrap_import_result r = {.legacy_tip = -1};
-    const struct legacy_bootstrap_import_options import_opts = {
-        .mode = LEGACY_BOOTSTRAP_IMPORT_DIRECT,
-        .ms = &g_state,
-        .coins_tip = &g_coins_tip,
-        .params = params,
-        .wallet = &g_wallet,
-        .our_datadir = ctx->datadir,
-        .legacy_datadir = ctx->fastimport_from,
-    };
-    bool ok = legacy_bootstrap_import_blocking(&import_opts, &r);
-
-    if (turbo_on) {
-        if (!boot_db_restore_normal_mode()) {
-            fprintf(stderr,
-                    "Fast import: failed to restore normal mode — "
-                    "node.db left in turbo state; investigate before "
-                    "next boot\n");
-        }
-    }
-
-    int64_t t_ms = boot_clock_ms() - t_start;
-    int final_tip = active_chain_height(&g_state.chain_active);
-    printf("Fast import: applied=%d ok=%s final_tip=%d legacy_tip=%d "
-           "elapsed=%.1fs\n",
-           r.applied, ok ? "yes" : "no",
-           final_tip, r.legacy_tip,
-           (double)t_ms / 1000.0);
-    return true;
-}
-
 static bool boot_disk_monitor_service_start(void *ctx)
 {
     const char *datadir = ctx;
@@ -1833,89 +1774,6 @@ bool app_init(struct app_context *ctx)
         }
     }
 
-    /* -legacy-attach (Wave S, S-4b): attach import from a running
-     * zclassicd via ldb_snapshot. Runs at the same boot point as
-     * -cold-import but uses snapshots (no need to stop zclassicd) and
-     * atomically stamps progress.kv stage cursors so Wave S stages
-     * skip imported heights. No-op when legacy_attach_from is NULL. */
-    if (ctx->legacy_attach_from && g_block_tree_open && g_coins_sqlite.db) {
-        printf("\n═══ Legacy Attach from %s ═══\n",
-               ctx->legacy_attach_from);
-        fflush(stdout);
-        struct legacy_bootstrap_import_result lr = {
-            .legacy_tip = -1,
-            .outcome = LEGACY_ATTACH_OUTCOME_FAILED,
-        };
-        const struct legacy_bootstrap_import_options import_opts = {
-            .mode = LEGACY_BOOTSTRAP_IMPORT_ATTACH,
-            .ms = &g_state,
-            .cvs = &g_coins_sqlite,
-            .ndb = &g_node_db,
-            .btdb = &g_block_tree,
-            .our_datadir = ctx->datadir,
-            .legacy_datadir = ctx->legacy_attach_from,
-        };
-        int64_t la_start = boot_clock_ms();
-        bool la_ok = legacy_bootstrap_import_blocking(&import_opts, &lr);
-        double la_secs = (double)(boot_clock_ms() - la_start) / 1000.0;
-        printf("Legacy attach: ok=%s outcome=%s legacy_tip=%d "
-               "block_index=%lld utxos=%lld blk_files=%lld "
-               "stages_stamped=%lld elapsed=%.1fs\n",
-               la_ok ? "yes" : "no",
-               legacy_attach_outcome_name(lr.outcome),
-               (int)lr.legacy_tip,
-               (long long)lr.block_index_writes,
-               (long long)lr.utxos_imported,
-               (long long)lr.blk_files_linked,
-               (long long)lr.stages_stamped,
-               la_secs);
-    }
-
-    /* -cold-import: bulk state import from a sibling zclassicd. Runs
-     * AFTER block_tree_db + coins_view_sqlite open but BEFORE block
-     * index load (so the freshly-written LevelDB entries get picked
-     * up). Explicit cold-import is all-or-nothing: continuing after
-     * a spotcheck/open/import failure can mix sources and publish a
-     * mislabeled UTXO anchor. */
-    if (ctx->cold_import_from) {
-        if (!g_block_tree_open || !g_coins_sqlite.db) {
-            fprintf(stderr,
-                "FATAL: cold-import requested but block tree or coins DB "
-                "is not open\n");
-            return false;
-        }
-        printf("\n═══ Cold Import from %s ═══\n", ctx->cold_import_from);
-        fflush(stdout);
-        struct legacy_bootstrap_import_result cr = {.legacy_tip = -1};
-        const struct legacy_bootstrap_import_options import_opts = {
-            .mode = LEGACY_BOOTSTRAP_IMPORT_COLD,
-            .ms = &g_state,
-            .cvs = &g_coins_sqlite,
-            .ndb = &g_node_db,
-            .btdb = &g_block_tree,
-            .our_datadir = ctx->datadir,
-            .legacy_datadir = ctx->cold_import_from,
-        };
-        int64_t ci_start = boot_clock_ms();
-        bool ci_ok = legacy_bootstrap_import_blocking(&import_opts, &cr);
-        double ci_secs = (double)(boot_clock_ms() - ci_start) / 1000.0;
-        printf("Cold import: ok=%s legacy_tip=%d block_index=%lld "
-               "utxos=%lld blk_files=%lld elapsed=%.1fs\n",
-               ci_ok ? "yes" : "no", cr.legacy_tip,
-               (long long)cr.block_index_writes,
-               (long long)cr.utxos_imported,
-               (long long)cr.blk_files_linked,
-               ci_secs);
-        if (!ci_ok) {
-            fprintf(stderr,
-                "FATAL: cold-import from %s failed; refusing to "
-                "continue with fallback import paths\n",
-                ctx->cold_import_from);
-            return false;
-        }
-        ctx->no_legacy_auto_import = true;
-    }
-
     /* Block index load: flat file first (mmap, <2s), then SQLite, then LevelDB.
      * Jeff Dean rule: use the fastest data structure available. */
     t_phase = boot_clock_ms();
@@ -2620,12 +2478,6 @@ bool app_init(struct app_context *ctx)
             }
         }
     }
-
-    /* Direct LevelDB+mmap fast-import path (no JSON-RPC). Preferred
-     * when the legacy datadir is local and zclassicd is stopped.
-     * No-op when ctx->fastimport_from is NULL. */
-    if (!boot_step_fastimport(ctx, params))
-        return false;
 
     /* Repair block index from SQLite.
      * After legacy import, blocks in the LevelDB index may lack BLOCK_VALID_SCRIPTS

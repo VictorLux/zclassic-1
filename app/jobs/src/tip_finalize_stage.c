@@ -16,6 +16,7 @@
 #include "util/log_macros.h"
 #include "util/stage.h"
 #include "validation/main_state.h"
+#include "services/cutover_modes.h"
 
 #include <pthread.h>
 #include <sqlite3.h>
@@ -56,6 +57,26 @@ static _Atomic uint64_t g_total_work_added_low = 0;
 static _Atomic int64_t  g_last_step_unix = 0;
 static _Atomic int64_t  g_last_blocked_unix = 0;
 static _Atomic int64_t  g_last_advance_height = -1;
+static uint8_t         g_last_advance_hash[32];
+static zcl_mutex_t     g_last_advance_hash_mu;
+
+static void update_last_advance(int height, const uint8_t hash[32])
+{
+    atomic_store(&g_last_advance_height, (int64_t)height);
+    zcl_mutex_lock(&g_last_advance_hash_mu);
+    memcpy(g_last_advance_hash, hash, 32);
+    zcl_mutex_unlock(&g_last_advance_hash_mu);
+}
+
+static bool get_last_advance(int64_t *height, uint8_t hash[32])
+{
+    *height = atomic_load(&g_last_advance_height);
+    if (*height < 0) return false;
+    zcl_mutex_lock(&g_last_advance_hash_mu);
+    memcpy(hash, g_last_advance_hash, 32);
+    zcl_mutex_unlock(&g_last_advance_hash_mu);
+    return true;
+}
 
 static int64_t wall_now_s(void)
 {
@@ -474,9 +495,34 @@ static job_result_t step_finalize(struct stage_step_ctx *c)
                      arith_uint256_get_low64(&work_delta));
     atomic_fetch_add(&g_total_work_added_high,
                      ((uint64_t)work_delta.pn[3] << 32) | work_delta.pn[2]);
-    atomic_store(&g_last_advance_height, (int64_t)next_h);
+    update_last_advance(next_h, new_tip->phashBlock->data);
     c->cursor_out = c->cursor_in + 1;
     return JOB_ADVANCED;
+}
+
+static bool is_authoritative(void)
+{
+    bool res = tip_finalize_get_mode() == TIP_FINALIZE_MODE_AUTHORITATIVE;
+    return res;
+}
+
+static int64_t get_height(void)
+{
+    return tip_finalize_stage_last_height();
+}
+
+static bool get_hash(uint8_t hash[32])
+{
+    int64_t h;
+    return get_last_advance(&h, hash);
+}
+
+static void set_tip_cb(int height, const uint8_t hash[32])
+{
+    if (hash)
+        update_last_advance(height, hash);
+    else
+        atomic_store(&g_last_advance_height, (int64_t)height);
 }
 
 bool tip_finalize_stage_init(struct main_state *ms)
@@ -487,12 +533,20 @@ bool tip_finalize_stage_init(struct main_state *ms)
     if (!db) LOG_FAIL("tip_finalize", "init: progress_store not open");
 
     pthread_mutex_lock(&g_lock);
+    zcl_mutex_init(&g_last_advance_hash_mu);
+    g_ms = ms;
+
+    struct active_chain_authority auth = {
+        .get_height = get_height,
+        .get_hash = get_hash,
+        .set_tip = set_tip_cb,
+        .is_authoritative = is_authoritative
+    };
+    active_chain_register_authority(&auth);
+    active_chain_register_block_map(&ms->map_block_index);
+
     if (g_stage != NULL) {
-        bool same = (g_ms == ms);
         pthread_mutex_unlock(&g_lock);
-        if (!same)
-            LOG_FAIL("tip_finalize",
-                "init: already bound to a different main_state");
         return true;
     }
 
@@ -557,7 +611,30 @@ void tip_finalize_stage_shutdown(void)
     atomic_store(&g_last_step_unix, (int64_t)0);
     atomic_store(&g_last_blocked_unix, (int64_t)0);
     atomic_store(&g_last_advance_height, (int64_t)-1);
+    zcl_mutex_destroy(&g_last_advance_hash_mu);
     pthread_mutex_unlock(&g_lock);
+}
+
+void tip_finalize_set_mode(tip_finalize_mode_t mode)
+{
+    cutover_modes_set_tip_finalize(
+        mode == TIP_FINALIZE_MODE_AUTHORITATIVE
+            ? CUTOVER_STAGE_MODE_AUTHORITATIVE
+            : CUTOVER_STAGE_MODE_SHADOW);
+}
+
+tip_finalize_mode_t tip_finalize_get_mode(void)
+{
+    return cutover_modes_get_tip_finalize() ==
+               CUTOVER_STAGE_MODE_AUTHORITATIVE
+        ? TIP_FINALIZE_MODE_AUTHORITATIVE
+        : TIP_FINALIZE_MODE_SHADOW;
+}
+
+void tip_finalize_stage_set_authoritative_tip(int height,
+                                              const uint8_t hash[32])
+{
+    update_last_advance(height, hash);
 }
 
 void tip_finalize_stage_set_utxo_counter(tip_finalize_utxo_count_fn fn,
@@ -572,6 +649,11 @@ void tip_finalize_stage_set_utxo_counter(tip_finalize_utxo_count_fn fn,
 uint64_t tip_finalize_stage_cursor(void)
 {
     return g_stage ? stage_cursor(g_stage) : 0;
+}
+
+int64_t tip_finalize_stage_last_height(void)
+{
+    return atomic_load(&g_last_advance_height);
 }
 
 uint64_t tip_finalize_stage_finalized_total(void)

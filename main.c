@@ -1453,60 +1453,6 @@ int main(int argc, char **argv)
         else if (strncmp(argv[i], "-connect=", 9) == 0) { ctx.connect_only = true; /* after init */ }
         else if (strncmp(argv[i], "-mineraddress=", 14) == 0) ctx.miner_address = argv[i]+14;
         else if (strncmp(argv[i], "-genproclimit=", 14) == 0) ctx.gen_threads = atoi(argv[i]+14);
-        else if (strncmp(argv[i], "-cold-import=", 13) == 0) {
-            ctx.cold_import_from = argv[i]+13;
-        }
-        else if (strcmp(argv[i], "-cold-import") == 0) {
-            const char *home = getenv("HOME");
-            static char default_cold_import_path[1024];
-            if (home && *home) {
-                snprintf(default_cold_import_path,
-                         sizeof(default_cold_import_path),
-                         "%s/.zclassic", home);
-                ctx.cold_import_from = default_cold_import_path;
-            } else {
-                fprintf(stderr,
-                    "-cold-import with no path requires $HOME; "
-                    "use -cold-import=PATH\n");
-                return 1;
-            }
-        }
-        else if (strncmp(argv[i], "-legacy-attach=", 15) == 0) {
-            ctx.legacy_attach_from = argv[i]+15;
-        }
-        else if (strcmp(argv[i], "-legacy-attach") == 0) {
-            const char *home = getenv("HOME");
-            static char default_legacy_attach_path[1024];
-            if (home && *home) {
-                snprintf(default_legacy_attach_path,
-                         sizeof(default_legacy_attach_path),
-                         "%s/.zclassic", home);
-                ctx.legacy_attach_from = default_legacy_attach_path;
-            } else {
-                fprintf(stderr,
-                    "-legacy-attach with no path requires $HOME; "
-                    "use -legacy-attach=PATH\n");
-                return 1;
-            }
-        }
-        else if (strncmp(argv[i], "-fastimport=", 12) == 0) {
-            ctx.fastimport_from = argv[i]+12;
-        }
-        else if (strcmp(argv[i], "-fastimport") == 0) {
-            const char *home = getenv("HOME");
-            static char default_fastimport_path[1024];
-            if (home && *home) {
-                snprintf(default_fastimport_path,
-                         sizeof(default_fastimport_path),
-                         "%s/.zclassic", home);
-                ctx.fastimport_from = default_fastimport_path;
-            } else {
-                fprintf(stderr,
-                    "-fastimport with no path requires $HOME; "
-                    "use -fastimport=PATH\n");
-                return 1;
-            }
-        }
         else if (strncmp(argv[i], "-snapshot=", 10) == 0) ctx.snapshot_dir = argv[i]+10;
         else if (strcmp(argv[i], "-saplingscan") == 0) ctx.sapling_scan = true;
         else if (strcmp(argv[i], "-reindex-chainstate") == 0) ctx.reindex_chainstate = true;

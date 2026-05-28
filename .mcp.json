@@ -2,9 +2,10 @@
   "mcpServers": {
     "zcl23": {
       "type": "stdio",
-      "command": "/home/rhett/zclassic23/zclassic23",
+      "command": "/home/rhett/github/zclassic23/zclassic23",
       "args": [
-        "-mcp"
+        "-mcp",
+        "-datadir=test-tmp/clean5"
       ]
     }
   }

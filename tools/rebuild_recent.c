@@ -27,7 +27,6 @@
 #define _GNU_SOURCE 1
 
 #include "platform/time_compat.h"
-#include "services/legacy_bootstrap_importer.h"
 #include "storage/blocks_index_legacy_reader.h"
 #include "storage/blocks_mmap_reader.h"
 #include "storage/event_log.h"
@@ -48,6 +47,60 @@
 #include <signal.h>
 #include <fcntl.h>
 #include <errno.h>
+#include <liburing.h>
+#include <sys/stat.h>
+#include <omp.h>
+
+struct legacy_bootstrap_height_map_result {
+    struct legacy_block_loc *map;
+    size_t map_count;
+    int tip_height;
+};
+
+static bool legacy_bootstrap_load_height_map(
+    const char *legacy_index_dir,
+    const struct uint256 *tip_filter,
+    const char *log_prefix,
+    struct legacy_bootstrap_height_map_result *out)
+{
+    if (out)
+        *out = (struct legacy_bootstrap_height_map_result){
+            .map = NULL,
+            .map_count = 0,
+            .tip_height = -1,
+        };
+    if (!legacy_index_dir || !log_prefix || !out) {
+        fprintf(stderr, "[%s] load height map: bad args\n", log_prefix);
+        return false;
+    }
+
+    struct bilr *bilr = NULL;
+    if (!bilr_open(legacy_index_dir, &bilr)) {
+        fprintf(stderr, "[%s] cannot open block index %s\n", log_prefix, legacy_index_dir);
+        return false;
+    }
+
+    struct legacy_block_loc *map = NULL;
+    size_t map_count = 0;
+    bool ok = tip_filter
+        ? bilr_load_height_map_for_tip(bilr, tip_filter, &map, &map_count)
+        : bilr_load_height_map(bilr, &map, &map_count);
+    bilr_close(bilr);
+    if (!ok) {
+        fprintf(stderr, "[%s] bilr_load_height_map%s failed\n", log_prefix, tip_filter ? "_for_tip" : "");
+        return false;
+    }
+
+    int legacy_tip = (int)map_count - 1;
+    while (legacy_tip > 0 && map[(size_t)legacy_tip].height < 0)
+        legacy_tip--;
+
+    out->map = map;
+    out->map_count = map_count;
+    out->tip_height = legacy_tip;
+    return true;
+}
+
 #include <sys/mman.h>
 #include <sys/syscall.h>
 #include <linux/io_uring.h>

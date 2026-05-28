@@ -37,27 +37,6 @@ struct app_context {
     bool checkpoints_enabled;
     enum zcl_runtime_profile runtime_profile;
     bool sapling_scan;
-    /* -fastimport[=PATH] : direct LevelDB+mmap import from a sibling
-     * zclassicd's blocks/. Bypasses JSON-RPC entirely — reads the
-     * legacy node's blocks/index/ LevelDB to build a height-ordered
-     * map, then mmap()s the blk*.dat files and feeds payloads to
-     * process_new_block. Requires the legacy LevelDB to be unlocked
-     * (stop zclassicd first). Bare form defaults to ~/.zclassic. */
-    const char *fastimport_from;
-    /* -cold-import[=PATH] : full state-only import from a sibling
-     * zclassicd's data directory. Hardlinks blk*.dat, bulk-copies
-     * blocks/index/ LevelDB, bulk-imports chainstate UTXOs, sets
-     * coins best_block to legacy chain tip. Never walks blocks.
-     * Designed for empty datadirs — refuses if active_tip > 1000.
-     * Requires zclassicd stopped (LOCK on blocks/index/). */
-    const char *cold_import_from;
-    /* -legacy-attach[=PATH] : Wave S S-4b attach import from a
-     * locally-running zclassicd. Uses ldb_snapshot_make to avoid
-     * stopping zclassicd, and stamps progress.kv stage cursors for
-     * header_admit / validate_headers / body_fetch to legacy_tip+1
-     * so Wave S stages return JOB_IDLE for imported heights.
-     * Idempotent + crash-safe via progress_meta sentinel. */
-    const char *legacy_attach_from;
     const char *snapshot_dir;
     bool reindex_chainstate;
     bool reimport_utxos;
