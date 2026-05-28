@@ -1340,7 +1340,7 @@ static int t_boot_genesis_init_preserves_restored_authority_contract(void)
         free(buf);
         buf = NULL;
         ASSERT(repo_path(path, sizeof(path),
-                         "app/services/src/utxo_recovery_service.c") == 0);
+                         "app/services/src/utxo_recovery_restore.c") == 0);
         ASSERT(read_entire_file(path, &buf) == 0);
         ASSERT(strstr(buf, "coins_best_block is genesis but UTXOs reach")
                != NULL);

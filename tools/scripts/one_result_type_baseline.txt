@@ -19,4 +19,5 @@ app/services/src/chain_advance_coordinator.c
 app/services/src/chain_state_repository.c
 app/services/src/cutover_modes.c
 app/services/src/legacy_mirror_sync_service.c
+app/services/src/utxo_recovery_restore.c
 app/services/src/utxo_recovery_service.c
