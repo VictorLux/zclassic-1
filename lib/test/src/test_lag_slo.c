@@ -16,6 +16,7 @@
 
 #include "services/legacy_mirror_sync_service.h"
 #include "event/event.h"
+#include "json/json.h"
 
 #include <stdatomic.h>
 #include <string.h>
@@ -148,6 +149,65 @@ static int test_concurrent_catchup_observer_fires(void)
     return failures;
 }
 
+/* C2 monitor-extraction pin: the lean monitor's dump_state_json must
+ * keep emitting every key that downstream consumers (node_health,
+ * metrics, chain_advance_coordinator, deploy_verify.sh, and the MCP
+ * zcl_state=legacy_mirror primitive) read. A careless lean-up that
+ * drops an include or a stats field would silently shrink this shape;
+ * this test fails loudly if any contract key disappears. */
+static int test_dump_shape_is_stable(void)
+{
+    int failures = 0;
+    TEST_CASE("lag_slo: dump_state_json keeps the full monitor contract shape")
+    {
+        legacy_mirror_sync_reset_for_test();
+        struct legacy_mirror_sync_stats in = {0};
+        in.enabled = true;
+        in.running = true;
+        in.reachable = true;
+        in.legacy_height = 100;
+        in.local_height = 95;
+        legacy_mirror_sync_test_set_stats(&in, NULL);
+
+        struct json_value out;
+        json_init(&out);
+        json_set_object(&out);
+        ASSERT(legacy_mirror_sync_dump_state_json(&out, NULL));
+
+        /* Heartbeat / lag-SLO monitor surface — the half C2 preserves. */
+        static const char *const required_keys[] = {
+            "mirror_enabled", "state", "mirror_running", "running",
+            "reachable", "mirror_reachable", "in_flight",
+            "zclassic23_height", "zclassic23_hash",
+            "zclassicd_height", "zclassicd_hash",
+            "legacy_height", "legacy_headers", "local_height",
+            "best_header_height", "lag",
+            "candidate_source", "candidate_trust", "candidate_lag",
+            "candidate_blocker", "target_height", "authority_rewind_target",
+            "last_advanced_height", "last_progress_blocks",
+            "stuck_height", "stuck_status_flags", "stuck_reason",
+            "stalls_total", "last_catchup", "last_attempt",
+            "catchups_total", "rpc_errors", "blocks_applied",
+            "headers_added", "consensus_authority", "blockers_total",
+            "activation_blocker", "last_blocker_code", "last_error",
+            "lag_sla_breach_blocks", "lag_sla_breach_secs",
+            "lag_sla_critical_blocks", "lag_sla_critical_secs",
+            "lag_breach_since", "lag_breach_seconds",
+            "lag_critical_since", "lag_critical_seconds",
+            "lag_breach_severity",
+        };
+        for (size_t i = 0; i < sizeof(required_keys) / sizeof(*required_keys);
+             i++) {
+            if (json_get(&out, required_keys[i]) == NULL) {
+                printf("    missing dump key: %s\n", required_keys[i]);
+                failures++;
+            }
+        }
+        json_free(&out);
+    } TEST_END
+    return failures;
+}
+
 int test_lag_slo(void)
 {
     int failures = 0;
@@ -158,6 +218,7 @@ int test_lag_slo(void)
     failures += test_snapshot_surfaces_thresholds();
     failures += test_slo_breach_observer_fires();
     failures += test_concurrent_catchup_observer_fires();
+    failures += test_dump_shape_is_stable();
     legacy_mirror_sync_reset_for_test();
     return failures;
 }

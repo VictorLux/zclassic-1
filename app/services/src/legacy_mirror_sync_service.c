@@ -14,27 +14,16 @@
 #include "services/legacy_mirror_sync_service.h"
 
 #include "services/header_probe.h"
-#include "services/chain_activation_controller.h"
-#include "services/chain_tip.h"
-#include "services/gap_fill_service.h"
 #include "services/oracle_policy.h"
-#include "services/snapshot_sync_service.h"
 #include "services/sync_monitor.h"
 
-#include "config/db_service.h"
-#include "config/runtime.h"
 #include "validation/main_state.h"
 #include "validation/chainstate.h"
 #include "validation/mirror_consensus.h"
-#include "validation/process_block.h"
 #include "chain/chain.h"
-#include "chain/chainparams.h"
-#include "coins/coins_view.h"
-#include "core/utiltime.h"
 #include "core/uint256.h"
 #include "json/json.h"
 #include "health/heartbeat.h"
-#include "models/database.h"
 #include "rpc/legacy_rpc_client.h"
 #include "util/log_macros.h"
 #include "event/event.h"
@@ -56,7 +45,6 @@
 #define LMS_DEFAULT_LAG_SLA_BREACH_SECS     60
 #define LMS_DEFAULT_LAG_SLA_CRITICAL_BLOCKS 100
 #define LMS_DEFAULT_LAG_SLA_CRITICAL_SECS   300
-#define LMS_HEADER_DRAIN_BATCH              5000
 
 static struct {
     pthread_mutex_t lock;
@@ -96,7 +84,6 @@ static struct {
     _Atomic int target_height;
     _Atomic int authority_rewind_target;
     _Atomic int csr_sqlite_rc;
-    _Atomic int64_t no_authorized_child_first_seen;
     _Atomic int last_advanced_height;
     _Atomic int last_progress_blocks;
     _Atomic int stuck_height;
@@ -564,7 +551,6 @@ static void lms_observe_local_primary(int local, int legacy_blocks)
     atomic_store(&g_lms.target_height, legacy_blocks);
     atomic_store(&g_lms.last_progress_blocks, 0);
     atomic_store(&g_lms.last_advanced_height, local);
-    atomic_store(&g_lms.no_authorized_child_first_seen, 0);
     lms_set_error("local sync primary; mirror observing");
 }
 
