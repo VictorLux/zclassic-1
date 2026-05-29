@@ -783,6 +783,7 @@ int main(void)
     failures += test_snapshot_complete_resume_condition();
     failures += test_chain_integrity_failed_condition();
     failures += test_orphan_utxo_above_tip();
+    failures += test_tip_fork_stale();
     failures += test_rebuild_recent();
     failures += test_torn_index_blocks_tip();
     failures += test_chain_tip_watchdog_bounded_restart();

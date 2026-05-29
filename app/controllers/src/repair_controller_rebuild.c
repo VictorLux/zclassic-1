@@ -192,6 +192,173 @@ static bool rebuild_recent_fetch_and_connect(struct repair_context *ctx,
     return true;
 }
 
+/* Outcome of a rebuild_recent run, shared by the RPC and the programmatic
+ * self-heal entry point. */
+struct rebuild_recent_report {
+    int from_height;
+    int to_height;
+    int remote_height;
+    int fetched;
+    int connected;
+    bool reorged;
+    int start_tip;
+    int new_tip;
+    bool at_tip;
+    bool complete;
+    char error[256];
+};
+
+/* Core: resolve the range, fetch + connect each canonical block through the
+ * validated accept path, and fill *rep. Returns false (with rep->error set)
+ * on a setup error (no node, bad range, zclassicd unreachable). A partial
+ * run that hit a rejected block returns true with rep->complete == false.
+ * Shared by rpc_rebuild_recent and rebuild_recent_repair. */
+static bool rebuild_recent_run(struct repair_context *ctx,
+                               int64_t from_arg, bool from_present,
+                               struct rebuild_recent_report *rep)
+{
+    memset(rep, 0, sizeof(*rep));
+    rep->to_height = -1;
+
+    if (!ctx->main_state) {
+        snprintf(rep->error, sizeof(rep->error),
+                 "Node not fully initialized");
+        return false;
+    }
+
+    int tip_height = active_chain_height(&ctx->main_state->chain_active);
+
+    int remote_height = 0;
+    if (!legacy_chain_rpc_get_block_count(&remote_height)) {
+        snprintf(rep->error, sizeof(rep->error),
+                 "Cannot reach zclassicd (getblockcount) — is it running?");
+        return false;
+    }
+
+    int lo = 0, hi = -1;
+    char rerr[256] = {0};
+    if (!rebuild_recent_resolve_range(tip_height, remote_height,
+                                      from_arg, from_present,
+                                      &lo, &hi, rerr, sizeof(rerr))) {
+        snprintf(rep->error, sizeof(rep->error), "%s",
+                 rerr[0] ? rerr : "invalid rebuild range");
+        return false;
+    }
+
+    int start_tip = tip_height;
+    struct uint256 start_tip_hash = {0};
+    {
+        struct block_index *t0 =
+            active_chain_tip(&ctx->main_state->chain_active);
+        if (t0 && t0->phashBlock)
+            start_tip_hash = *t0->phashBlock;
+    }
+
+    rep->from_height = lo;
+    rep->to_height = hi;
+    rep->remote_height = remote_height;
+    rep->start_tip = start_tip;
+
+    /* Idempotent no-op: nothing recent to fetch (already at/above tip). */
+    if (hi < lo) {
+        rep->new_tip = start_tip;
+        rep->at_tip = true;
+        rep->complete = true;
+        printf("rebuild_recent: no-op — local tip %d already at/above "
+               "remote %d\n", tip_height, remote_height);
+        fflush(stdout);
+        return true;
+    }
+
+    char *hex_buf = zcl_malloc(REBUILD_RECENT_HEX_CAP,
+                               "rebuild_recent_hex");
+    if (!hex_buf) {
+        snprintf(rep->error, sizeof(rep->error),
+                 "Out of memory allocating block buffer");
+        return false;
+    }
+
+    printf("rebuild_recent: fetching canonical blocks [%d..%d] from "
+           "zclassicd (local tip=%d, remote=%d)\n",
+           lo, hi, tip_height, remote_height);
+    fflush(stdout);
+
+    int fetched = 0, connected = 0;
+    bool complete = true;
+    char ferr[256] = {0};
+    for (int h = lo; h <= hi; h++) {
+        bool accepted = false;
+        if (!rebuild_recent_fetch_and_connect(ctx, h, hex_buf,
+                                              &accepted, ferr,
+                                              sizeof(ferr))) {
+            LOG_WARN("rebuild_recent", "rebuild_recent: stopping at %d: %s",
+                     h, ferr);
+            complete = false;
+            break;
+        }
+        fetched++;
+        if (accepted) connected++;
+        if (fetched % 100 == 0) {
+            printf("rebuild_recent: processed %d/%d blocks (tip=%d)\n",
+                   fetched, hi - lo + 1,
+                   active_chain_height(&ctx->main_state->chain_active));
+            fflush(stdout);
+        }
+    }
+
+    free(hex_buf);
+
+    int new_tip = active_chain_height(&ctx->main_state->chain_active);
+
+    /* Reorg = the active tip's identity (not just its height) changed in
+     * a way that disconnected the old tip. */
+    bool reorged = false;
+    {
+        struct block_index *t1 =
+            active_chain_tip(&ctx->main_state->chain_active);
+        struct uint256 new_tip_hash = {0};
+        if (t1 && t1->phashBlock) new_tip_hash = *t1->phashBlock;
+        if (new_tip < start_tip) {
+            reorged = true;
+        } else if (new_tip == start_tip &&
+                   uint256_cmp(&new_tip_hash, &start_tip_hash) != 0) {
+            reorged = true;
+        }
+    }
+
+    rep->fetched = fetched;
+    rep->connected = connected;
+    rep->reorged = reorged;
+    rep->new_tip = new_tip;
+    rep->at_tip = (new_tip >= remote_height);
+    rep->complete = complete;
+    if (!complete)
+        snprintf(rep->error, sizeof(rep->error), "%s", ferr);
+
+    printf("rebuild_recent: done — fetched=%d connected=%d start_tip=%d "
+           "new_tip=%d remote=%d complete=%s\n",
+           fetched, connected, start_tip, new_tip, remote_height,
+           complete ? "true" : "false");
+    fflush(stdout);
+    return true;
+}
+
+/* Programmatic entry — see repair_controller.h. */
+bool rebuild_recent_repair(int from_height)
+{
+    struct repair_context *ctx = repair_ctx();
+    if (from_height < 0)
+        from_height = 0;
+    struct rebuild_recent_report rep;
+    if (!rebuild_recent_run(ctx, (int64_t)from_height, true, &rep)) {
+        LOG_WARN("rebuild_recent",
+                 "rebuild_recent_repair(from=%d) setup error: %s",
+                 from_height, rep.error[0] ? rep.error : "unknown");
+        return false;
+    }
+    return rep.complete;
+}
+
 static bool rpc_rebuild_recent(const struct json_value *params, bool help,
                                struct json_value *result)
 {
@@ -231,130 +398,26 @@ static bool rpc_rebuild_recent(const struct json_value *params, bool help,
     int64_t from_arg = rpc_permit_int(&p, 0, "from_height", 0);
     if (rpc_params_invalid(&p)) { rpc_params_error(&p, result); return false; }
 
-    int tip_height = active_chain_height(&ctx->main_state->chain_active);
-
-    int remote_height = 0;
-    if (!legacy_chain_rpc_get_block_count(&remote_height)) {
-        json_set_str(result,
-                     "Cannot reach zclassicd (getblockcount) — is it running?");
+    struct rebuild_recent_report rep;
+    if (!rebuild_recent_run(ctx, from_arg, from_present, &rep)) {
+        json_set_str(result, rep.error[0] ? rep.error
+                                          : "invalid rebuild range");
         return false;
-    }
-
-    int lo = 0, hi = -1;
-    char rerr[256] = {0};
-    if (!rebuild_recent_resolve_range(tip_height, remote_height,
-                                      from_arg, from_present,
-                                      &lo, &hi, rerr, sizeof(rerr))) {
-        json_set_str(result, rerr[0] ? rerr : "invalid rebuild range");
-        return false;
-    }
-
-    int start_tip = tip_height;
-    struct uint256 start_tip_hash = {0};
-    {
-        struct block_index *t0 =
-            active_chain_tip(&ctx->main_state->chain_active);
-        if (t0 && t0->phashBlock)
-            start_tip_hash = *t0->phashBlock;
-    }
-
-    /* Idempotent no-op: nothing recent to fetch (already at/above tip). */
-    if (hi < lo) {
-        json_set_object(result);
-        json_push_kv_int(result, "from_height", lo);
-        json_push_kv_int(result, "to_height", hi);
-        json_push_kv_int(result, "remote_height", remote_height);
-        json_push_kv_int(result, "fetched", 0);
-        json_push_kv_int(result, "connected", 0);
-        json_push_kv_bool(result, "reorged", false);
-        json_push_kv_int(result, "start_tip", start_tip);
-        json_push_kv_int(result, "new_tip", start_tip);
-        json_push_kv_bool(result, "at_tip", true);
-        printf("rebuild_recent: no-op — local tip %d already at/above "
-               "remote %d\n", tip_height, remote_height);
-        fflush(stdout);
-        return true;
-    }
-
-    char *hex_buf = zcl_malloc(REBUILD_RECENT_HEX_CAP,
-                               "rebuild_recent_hex");
-    if (!hex_buf) {
-        json_set_str(result, "Out of memory allocating block buffer");
-        return false;
-    }
-
-    printf("rebuild_recent: fetching canonical blocks [%d..%d] from "
-           "zclassicd (local tip=%d, remote=%d)\n",
-           lo, hi, tip_height, remote_height);
-    fflush(stdout);
-
-    int fetched = 0, connected = 0;
-    bool complete = true;
-    char ferr[256] = {0};
-    for (int h = lo; h <= hi; h++) {
-        bool accepted = false;
-        if (!rebuild_recent_fetch_and_connect(ctx, h, hex_buf,
-                                              &accepted, ferr,
-                                              sizeof(ferr))) {
-            LOG_WARN("rebuild_recent", "rebuild_recent: stopping at %d: %s",
-                     h, ferr);
-            complete = false;
-            break;
-        }
-        fetched++;
-        if (accepted) connected++;
-        if (fetched % 100 == 0) {
-            printf("rebuild_recent: processed %d/%d blocks (tip=%d)\n",
-                   fetched, hi - lo + 1,
-                   active_chain_height(&ctx->main_state->chain_active));
-            fflush(stdout);
-        }
-    }
-
-    free(hex_buf);
-
-    int new_tip = active_chain_height(&ctx->main_state->chain_active);
-
-    /* Reorg = the active tip's identity (not just its height) changed in
-     * a way that disconnected the old tip. A pure forward extension
-     * keeps start_tip_hash as an ancestor; a reorg replaces it. We detect
-     * the unambiguous cases: the new tip is lower than the old one
-     * (reorg-down), OR the old tip hash is no longer the active tip while
-     * the height did not advance past it (same/lower height with a
-     * different hash). Forward-only extension reports reorged=false. */
-    bool reorged = false;
-    {
-        struct block_index *t1 =
-            active_chain_tip(&ctx->main_state->chain_active);
-        struct uint256 new_tip_hash = {0};
-        if (t1 && t1->phashBlock) new_tip_hash = *t1->phashBlock;
-        if (new_tip < start_tip) {
-            reorged = true;
-        } else if (new_tip == start_tip &&
-                   uint256_cmp(&new_tip_hash, &start_tip_hash) != 0) {
-            reorged = true;
-        }
     }
 
     json_set_object(result);
-    json_push_kv_int(result, "from_height", lo);
-    json_push_kv_int(result, "to_height", hi);
-    json_push_kv_int(result, "remote_height", remote_height);
-    json_push_kv_int(result, "fetched", fetched);
-    json_push_kv_int(result, "connected", connected);
-    json_push_kv_bool(result, "reorged", reorged);
-    json_push_kv_int(result, "start_tip", start_tip);
-    json_push_kv_int(result, "new_tip", new_tip);
-    json_push_kv_bool(result, "at_tip", new_tip >= remote_height);
-    json_push_kv_bool(result, "complete", complete);
-    if (!complete)
-        json_push_kv_str(result, "error", ferr);
-
-    printf("rebuild_recent: done — fetched=%d connected=%d start_tip=%d "
-           "new_tip=%d remote=%d complete=%s\n",
-           fetched, connected, start_tip, new_tip, remote_height,
-           complete ? "true" : "false");
-    fflush(stdout);
+    json_push_kv_int(result, "from_height", rep.from_height);
+    json_push_kv_int(result, "to_height", rep.to_height);
+    json_push_kv_int(result, "remote_height", rep.remote_height);
+    json_push_kv_int(result, "fetched", rep.fetched);
+    json_push_kv_int(result, "connected", rep.connected);
+    json_push_kv_bool(result, "reorged", rep.reorged);
+    json_push_kv_int(result, "start_tip", rep.start_tip);
+    json_push_kv_int(result, "new_tip", rep.new_tip);
+    json_push_kv_bool(result, "at_tip", rep.at_tip);
+    json_push_kv_bool(result, "complete", rep.complete);
+    if (!rep.complete)
+        json_push_kv_str(result, "error", rep.error);
     return true;
 }
 

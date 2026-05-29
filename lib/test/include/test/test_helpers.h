@@ -335,6 +335,7 @@ int test_snapshot_failed_reset_condition(void);
 int test_snapshot_complete_resume_condition(void);
 int test_chain_integrity_failed_condition(void);
 int test_orphan_utxo_above_tip(void);
+int test_tip_fork_stale(void);
 int test_rebuild_recent(void);
 int test_torn_index_blocks_tip(void);
 int test_chain_tip_watchdog_bounded_restart(void);

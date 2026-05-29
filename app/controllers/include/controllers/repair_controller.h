@@ -24,4 +24,18 @@ void register_repair_rpc_commands(struct rpc_table *t);
  * rpc_repair_set_state() must be called before registration. */
 void register_rebuild_recent_rpc_commands(struct rpc_table *t);
 
+/* Programmatic entry to the same rebuild_recent recovery logic the RPC
+ * runs — for self-heal Conditions that must call the validated repair
+ * directly (no RPC text round-trip). Fetches the canonical recent range
+ * from zclassicd starting at from_height and connects each block through
+ * the normal validated accept path, reorging off any stale local fork.
+ *
+ * Returns true if the run completed (all in-range blocks fetched +
+ * accepted, or an idempotent no-op because the local tip is already at/
+ * above the remote). Returns false if the node is not initialized, the
+ * range is invalid, zclassicd is unreachable, or a block was rejected
+ * before the range completed. Bounded + idempotent (re-running once at
+ * tip is a no-op). Implemented in repair_controller_rebuild.c. */
+bool rebuild_recent_repair(int from_height);
+
 #endif

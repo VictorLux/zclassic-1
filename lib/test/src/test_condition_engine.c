@@ -314,6 +314,7 @@ int test_condition_engine(void)
             "cutover_canary_complete",
             "have_data_unreadable",
             "orphan_utxo_above_tip",
+            "tip_fork_stale",
         };
         const int expected_count =
             (int)(sizeof(expected) / sizeof(expected[0]));
