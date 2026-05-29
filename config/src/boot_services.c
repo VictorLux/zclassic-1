@@ -293,6 +293,16 @@ static bool boot_profile_has_file_service(const struct app_context *ctx)
     return app_runtime_profile_has_file_service(ctx->runtime_profile);
 }
 
+/* Boot timing helper — mirrors boot.c:boot_clock_ms() so the
+ * app_init_services sub-stage markers use the same monotonic-ms basis as
+ * the top-level [boot] <phase> Nms markers. Timing only. */
+static int64_t svc_clock_ms(void)
+{
+    struct timespec ts;
+    platform_time_monotonic_timespec(&ts);
+    return (int64_t)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
+}
+
 static void *payment_processor_thread(void *arg);
 static void *background_utxo_replay(void *arg);
 static void *build_snapshot_offer_thread(void *arg);
@@ -2128,6 +2138,14 @@ bool app_init_services(struct app_context *ctx,
                         const struct chain_params *params,
                         struct boot_svc_ctx *svc)
 {
+    /* Timing only (no behavior change): break p2p_services_start
+     * (~11s in docs/work/sync-perf-profile-2026-05-29.md) into its
+     * synchronous sub-stages so projection-shadow / file-sync / network /
+     * RPC-register / frontend(Tor) / runtime costs are individually
+     * visible. Markers reuse the existing [boot] <phase> Nms idiom on the
+     * same monotonic-ms basis. */
+    int64_t t_svc = svc_clock_ms();
+
     S = svc;
     node_db_sync_catchup_job_init(&svc->catchup_job);
     snapshot_tx_index_job_init(&svc->tx_index_job);
@@ -2339,6 +2357,10 @@ bool app_init_services(struct app_context *ctx,
         if (!atomic_load(svc->params_loaded))
             fprintf(stderr, "Warning: ZK params not loaded\n");
     }
+
+    printf("[boot]   %-28s %lldms\n", "svc.init_shadow_wallet",
+           (long long)(svc_clock_ms() - t_svc));
+    t_svc = svc_clock_ms();
 
     /* File sync BEFORE P2P — download block files first, then start P2P.
      * This prevents concurrent writes to block files (file sync + P2P
@@ -2599,12 +2621,20 @@ bool app_init_services(struct app_context *ctx,
     }
     skip_file_sync: ;
 
+    printf("[boot]   %-28s %lldms\n", "svc.file_sync",
+           (long long)(svc_clock_ms() - t_svc));
+    t_svc = svc_clock_ms();
+
     if (!boot_register_network_services(svc) ||
         !zcl_service_kernel_start_all(&svc->network_kernel)) {
         fprintf(stderr, "FATAL: failed to start P2P threads\n");
         return false;
     }
     sync_set_state(SYNC_FINDING_PEERS, "P2P started");
+
+    printf("[boot]   %-28s %lldms\n", "svc.network_start",
+           (long long)(svc_clock_ms() - t_svc));
+    t_svc = svc_clock_ms();
 
     /* Advertise our external IP in version messages so peers relay us */
     if (ctx->external_ip)
@@ -2814,13 +2844,23 @@ bool app_init_services(struct app_context *ctx,
     /* Initialize metrics observers for Prometheus /metrics */
     mcp_metrics_init();
 
+    printf("[boot]   %-28s %lldms\n", "svc.rpc_mmb_register",
+           (long long)(svc_clock_ms() - t_svc));
+    t_svc = svc_clock_ms();
+
     boot_configure_frontend_rpc(svc);
 
+    /* frontend kernel start includes onion_tor bootstrap (Tor) — the
+     * span the profile flagged as the likely bulk of the ~11s. */
     if (!boot_register_frontend_services(svc) ||
         !zcl_service_kernel_start_all(&svc->frontend_kernel)) {
         fprintf(stderr, "FATAL: failed to start frontend services\n");
         return false;
     }
+
+    printf("[boot]   %-28s %lldms\n", "svc.frontend_tor_start",
+           (long long)(svc_clock_ms() - t_svc));
+    t_svc = svc_clock_ms();
 
     /* Discover peer reachability */
     {
@@ -2969,6 +3009,9 @@ bool app_init_services(struct app_context *ctx,
                     "WARNING: failed to start projection backfill watcher\n");
         }
     }
+
+    printf("[boot]   %-28s %lldms\n", "svc.peers_supervisors_runtime",
+           (long long)(svc_clock_ms() - t_svc));
 
     return true;
 }

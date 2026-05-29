@@ -1207,6 +1207,15 @@ bool app_init(struct app_context *ctx)
     if (!boot_step_init_crypto_and_state(ctx, params))
         return false;
 
+    /* Timing only (no behavior change): the prologue above
+     * (observability, chain/datadir select, postmortem, unclean-shutdown
+     * detect, disk/IBD guards, crypto+state init) was previously
+     * uninstrumented — part of the ~20s warm-start "unattributed gap" in
+     * docs/work/sync-perf-profile-2026-05-29.md. Emit it as a named phase
+     * matching the existing [boot] <phase> Nms idiom. */
+    printf("[boot] %-30s %lldms\n", "prologue",
+           (long long)(boot_clock_ms() - t_boot_start));
+
     /* Initialize wallet (before block index — needed for -importlegacy).
      *
      * Wallet persistence boot state machine (per WALLET_PERSISTENCE_PLAN.md §7).
@@ -2287,6 +2296,14 @@ bool app_init(struct app_context *ctx)
     printf("[boot] %-30s %lldms\n", "utxo_import",
            (long long)(boot_clock_ms() - t_phase));
 
+    /* Timing only (no behavior change): mark the start of the
+     * block-index reconcile span — single-pass block-index scan,
+     * utxo_recovery_restore_chain_tip, block-index repair/relink,
+     * utxo_recovery_execute, and the on-disk block-file scan. This stretch
+     * sat between the utxo_import and sapling_tree_load markers and was
+     * part of the warm-start unattributed gap. */
+    int64_t t_reconcile_blockindex = boot_clock_ms();
+
     /* Resolve -deferproofvalidationbelow=<hash> now that block index is loaded */
     if (ctx->defer_proof_validation_below && strcmp(ctx->defer_proof_validation_below, "0") != 0) {
         struct uint256 av_hash;
@@ -2833,6 +2850,9 @@ bool app_init(struct app_context *ctx)
         }
     }
 
+    printf("[boot] %-30s %lldms\n", "block_index_reconcile",
+           (long long)(boot_clock_ms() - t_reconcile_blockindex));
+
     t_phase = boot_clock_ms();
     /* Wire the flat-file sapling checkpoint. Tells
      * process_block.c where to flush every 10K blocks; separate from
@@ -2955,6 +2975,14 @@ sapling_tree_boot_check_done:
 
     printf("[boot] %-30s %lldms\n", "sapling_tree_load",
            (long long)(boot_clock_ms() - t_phase));
+
+    /* Timing only (no behavior change): mark the start of the
+     * UTXO/chain reconcile span — clear-failed-above-tip, the
+     * coins-vs-chain height mismatch repair, clean-above-tip, and the
+     * activation anchor cleanup. This stretch sat between the
+     * sapling_tree_load marker and the activate_best_chain boot_phase and
+     * was part of the warm-start unattributed gap. */
+    int64_t t_reconcile_utxochain = boot_clock_ms();
 
     /* Clear BLOCK_FAILED flags above the chain tip on boot.
      * After a UTXO repair or crash recovery, blocks may be marked
@@ -3129,6 +3157,9 @@ sapling_tree_boot_check_done:
             activation_clear_anchor(&g_activation_ctl, "tip_past_anchor");
         }
     }
+    printf("[boot] %-30s %lldms\n", "utxo_chain_reconcile",
+           (long long)(boot_clock_ms() - t_reconcile_utxochain));
+
     {
         int restored_h = active_chain_height(&g_state.chain_active);
         if (boot_restored_authority_tip && restored_h > 1000) {
@@ -3260,6 +3291,12 @@ sapling_tree_boot_check_done:
         }
     }
 
+    /* Timing only (no behavior change): mark the start of the
+     * finalize-and-build span — finalize_chain_state, shielded backfill,
+     * and svc-ctx build — which sat uninstrumented between the
+     * wallet_scan_blocks boot_phase and the p2p_services_start marker. */
+    int64_t t_finalize_build = boot_clock_ms();
+
     boot_step_finalize_chain_state();
     struct block_index *tip = active_chain_tip(&g_state.chain_active);
 
@@ -3285,6 +3322,9 @@ sapling_tree_boot_check_done:
         event_emitf(EV_CRASH_RECOVERY_COMPLETE, 0,
             "chain_height=%d", chain_h);
     }
+
+    printf("[boot] %-30s %lldms\n", "finalize_and_build",
+           (long long)(boot_clock_ms() - t_finalize_build));
 
     t_phase = boot_clock_ms();
     bool svc_ok = app_init_services(ctx, params, &g_svc);

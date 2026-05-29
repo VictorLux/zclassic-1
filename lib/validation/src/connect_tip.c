@@ -772,6 +772,15 @@ bool connect_tip(struct validation_state *state,
      * force a per-block coins flush after the block_index write so the
      * durable UTXO set never gets ahead of the durable chain tip. */
 
+    /* Timing only (no behavior change): the post-update_tip durable
+     * write path (LevelDB block_index write+fsync, forced at-tip coins.db
+     * commit, tx_index, wallet sync) was previously outside any stage
+     * marker. Per docs/work/sync-perf-profile-2026-05-29.md this splits
+     * the inferred fsync-vs-rest cost into measured sub-stages, reusing
+     * the existing connect_tip: h=… stage=… elapsed_ms=… per-block idiom
+     * (live-height-gated, same density as the existing 4 stages). */
+    stage_start_us = GetTimeMicros();
+
     /* Persist block_index entry to LevelDB */
     if (g_active_block_tree) {
         struct disk_block_index dbi;
@@ -816,7 +825,10 @@ bool connect_tip(struct validation_state *state,
         pindex_new->nSolutionSize = 0;
     }
     process_block_check_crash_stage(PBCS_AFTER_BLOCK_INDEX_WRITE);
+    process_block_log_live_stage(live_height, "index_write",
+                                 GetTimeMicros() - stage_start_us);
 
+    stage_start_us = GetTimeMicros();
     if (!is_initial_block_download(ms)) {
         if (!flush_coins_if_needed(coins_tip, true)) {
             fprintf(stderr, // obs-ok:pre-existing-diagnostic
@@ -833,7 +845,10 @@ bool connect_tip(struct validation_state *state,
         }
     }
     process_block_check_crash_stage(PBCS_AFTER_COINS_DISK_FLUSH);
+    process_block_log_live_stage(live_height, "coins_commit",
+                                 GetTimeMicros() - stage_start_us);
 
+    stage_start_us = GetTimeMicros();
     /* Write transaction index if enabled */
     if (g_active_block_tree && ms->fTxIndex && pblock->num_vtx > 0) {
         struct uint256 *txids = zcl_malloc(pblock->num_vtx * sizeof(struct uint256), "connect_tip_txids");
@@ -869,7 +884,10 @@ bool connect_tip(struct validation_state *state,
         free(txids);
         free(positions);
     }
+    process_block_log_live_stage(live_height, "tx_index",
+                                 GetTimeMicros() - stage_start_us);
 
+    stage_start_us = GetTimeMicros();
     /* Notify wallet of transactions in the connected block.
      * Skipped during fast-sync body-pull: evidence-mode caller runs a
      * single wallet_rescan over the imported range at the end. */
@@ -915,6 +933,8 @@ bool connect_tip(struct validation_state *state,
             wallet->best_block_height = pindex_new->nHeight;
         }
     }
+    process_block_log_live_stage(live_height, "wallet_sync",
+                                 GetTimeMicros() - stage_start_us);
 
     /* Remove confirmed transactions from mempool */
     {
