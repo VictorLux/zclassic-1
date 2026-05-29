@@ -13,8 +13,9 @@
  *                                 shielded render helpers.
  *   - explorer_stats_sections.c — the section emitters (emit_stats_header
  *                                 + emit_section_*), each appending one
- *                                 logical section of HTML, plus the
- *                                 stats_addr_encode helper they use.
+ *                                 logical section of HTML; address
+ *                                 encoding uses the shared
+ *                                 wallet_encode_destination helper.
  *
  * Each emitter appends one section starting at `off` and returns the new
  * offset. They take a const struct stats_ctx* (every phase-1 value bundled
@@ -146,10 +147,6 @@ struct stats_chart_data {
 void gather_deep_chain_data(sqlite3 *db, struct stats_ctx *c);
 void gather_chart_data(sqlite3 *db, int tip, double diff,
                        struct stats_chart_data *out);
-
-/* ── Address encoding helper (defined in explorer_stats_sections.c) ── */
-bool stats_addr_encode(char *out, size_t outmax,
-                       const struct tx_destination *dest);
 
 /* ── Section emitters (defined in explorer_stats_sections.c) ──────────
  *

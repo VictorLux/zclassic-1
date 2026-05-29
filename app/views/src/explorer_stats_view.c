@@ -28,9 +28,9 @@
 #include "util/log_macros.h"
 
 /* Data structs (stats_ctx/shielded_stats/stats_chart_data), the
- * stats_q_i64 alias, the stats_addr_encode helper, and the section
- * emitters live in views/explorer_stats_internal.h +
- * explorer_stats_sections.c (checklist D5 split). */
+ * stats_q_i64 alias, and the section emitters live in
+ * views/explorer_stats_internal.h + explorer_stats_sections.c
+ * (checklist D5 split). */
 
 /* Generate CSS for tab sections — each section needs unique IDs */
 static void stats_tab_css(char *r, size_t max, size_t *off,

@@ -4,28 +4,16 @@
  *
  * Part of the deep-stats page split: this TU owns the per-section HTML
  * emitters (emit_stats_header + emit_section_*), each appending one
- * logical section of the stats page, plus the stats_addr_encode helper
- * they share. The public entry point (explorer_stats_build), the phase-1
+ * logical section of the stats page. Address encoding is delegated to
+ * the shared wallet_encode_destination helper (controllers/wallet_helpers.h).
+ * The public entry point (explorer_stats_build), the phase-1
  * data gather, the degraded verified-summary fallback, and the chart /
  * shielded render helpers live in explorer_stats_view.c. Shared data
  * structs + emitter declarations come from views/explorer_stats_internal.h.
  * Behavior is byte-identical to the original single-file definitions. */
 
 #include "views/explorer_stats_internal.h"
-
-/* ── Address encoding helper ─────────────────────────────── */
-
-bool stats_addr_encode(char *out, size_t outmax,
-                              const struct tx_destination *dest)
-{
-    if (!out || outmax == 0 || !dest) LOG_FAIL("explorer_stats", "stats_addr_encode: NULL out, zero outmax, or NULL dest");
-    const struct chain_params *cp = chain_params_get();
-    if (!cp) LOG_FAIL("explorer_stats", "stats_addr_encode: chain_params_get returned NULL");
-    size_t pk_len = 0, sh_len = 0;
-    const unsigned char *pk_pfx = chain_params_base58_prefix(cp, B58_PUBKEY_ADDRESS, &pk_len);
-    const unsigned char *sh_pfx = chain_params_base58_prefix(cp, B58_SCRIPT_ADDRESS, &sh_len);
-    return encode_destination(dest, pk_pfx, pk_len, sh_pfx, sh_len, out, outmax);
-}
+#include "controllers/wallet_helpers.h"
 
 /* ── Section emit helpers ──────────────────────────────────────────
  *
@@ -298,7 +286,7 @@ size_t emit_section_7_address_distribution(uint8_t *r, size_t max, size_t off,
                         dest.type = DEST_KEY_ID;
                         memcpy(dest.id.key.id.data, ah, 20);
                     }
-                    stats_addr_encode(addr, sizeof(addr), &dest);
+                    wallet_encode_destination(&dest, addr, sizeof(addr));
                 }
                 APPEND(off, r, max,
                     "<tr><td>%d</td>"
