@@ -136,6 +136,7 @@ volatile sig_atomic_t g_shutdown_requested = 0;
     X(diff_with_legacy_shadow) X(shadow_replay_proof) \
     X(shadow_replay_full_driver) X(cutover_tip_parity) \
     X(cutover_flip_dryrun) X(cutover_postflip_reorg) \
+    X(cutover_preflight) \
     X(utxo_snapshot_inmem) X(hodl_history_port) X(node_health_store_port) \
     X(db_maintenance_port) X(wallet_backup_port) \
     X(snapshot_store_port) \

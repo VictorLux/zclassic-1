@@ -31,6 +31,10 @@
 #include "services/node_health_service.h"
 #include "adapters/inbound/shadow_conservation.h"
 #include "framework/condition.h"
+#include "config/runtime.h"
+#include "models/database.h"
+#include "storage/utxo_projection.h"
+#include "coins/utxo_commitment.h"
 #include "util/log_macros.h"
 
 #include <stdint.h>
@@ -385,6 +389,96 @@ static bool push_cutover_conservation_gate_json(struct json_value *out,
     return conserved;
 }
 
+static void cutover_commitment_hex(const uint8_t hash[32], char out[65])
+{
+    static const char hx[] = "0123456789abcdef";
+    for (int i = 0; i < 32; i++) {
+        out[i * 2] = hx[(hash[i] >> 4) & 0x0f];
+        out[i * 2 + 1] = hx[hash[i] & 0x0f];
+    }
+    out[64] = '\0';
+}
+
+/* UTXO-set commitment parity gate. This is THE keystone gate for moving
+ * the UTXO authority onto the log-derived pipeline: the SHA3-256 over the
+ * entire legacy coins.db UTXO set MUST equal the SHA3-256 over the
+ * log-folded utxo_projection, BYTE-FOR-BYTE. Both use the identical
+ * canonical serialisation (txid|vout_le|value_le|script_len_le|script|
+ * height_le|is_coinbase in (txid,vout) order — see
+ * lib/coins/src/utxo_commitment.c and storage/utxo_projection.h), so a
+ * match proves the projection reproduces the live UTXO set exactly. We
+ * catch_up the projection first so a transient "events emitted but not yet
+ * folded" gap reads as not-ready (DEFER) rather than a false divergence —
+ * the SAFE direction. Read-only: both walks only SELECT. A NULL projection
+ * (shadow not wired) or unopened legacy db reads NOT ready. */
+static bool push_cutover_utxo_commitment_gate_json(struct json_value *out)
+{
+    json_set_object(out);
+    json_push_kv_str(out, "law",
+        "legacy_coins_db_sha3 == utxo_projection_sha3 (byte-for-byte)");
+
+    struct node_db *ndb = app_runtime_node_db();
+    utxo_projection_t *proj = utxo_projection_get_global();
+    if (!ndb || !ndb->open || !ndb->db) {
+        json_push_kv_bool(out, "ok", false);
+        json_push_kv_str(out, "not_ready_reason", "legacy_db_not_open");
+        json_push_kv_bool(out, "projection_open", proj != NULL);
+        return false;
+    }
+    if (!proj) {
+        json_push_kv_bool(out, "ok", false);
+        json_push_kv_str(out, "not_ready_reason", "projection_not_open");
+        json_push_kv_bool(out, "projection_open", false);
+        return false;
+    }
+
+    /* Drain pending folds so we compare quiesced states. */
+    if (utxo_projection_catch_up(proj) == UINT64_MAX) {
+        json_push_kv_bool(out, "ok", false);
+        json_push_kv_str(out, "not_ready_reason",
+                         "projection_catch_up_failed");
+        json_push_kv_bool(out, "projection_open", true);
+        return false;
+    }
+
+    uint8_t legacy_hash[32] = {0};
+    uint64_t legacy_count = 0;
+    utxo_commitment_sha3_compute(ndb->db, legacy_hash, &legacy_count);
+
+    uint8_t proj_hash[32] = {0};
+    if (utxo_projection_commitment(proj, proj_hash) != 0) {
+        json_push_kv_bool(out, "ok", false);
+        json_push_kv_str(out, "not_ready_reason",
+                         "projection_commitment_failed");
+        json_push_kv_bool(out, "projection_open", true);
+        LOG_FAIL("diag",
+                 "cutoverpreflight: utxo_projection_commitment failed");
+        return false;
+    }
+    uint64_t proj_count = utxo_projection_count(proj);
+
+    bool match = memcmp(legacy_hash, proj_hash, 32) == 0;
+    bool count_match = legacy_count == proj_count;
+    bool ok = match && count_match;
+
+    char legacy_hex[65], proj_hex[65];
+    cutover_commitment_hex(legacy_hash, legacy_hex);
+    cutover_commitment_hex(proj_hash, proj_hex);
+
+    json_push_kv_bool(out, "ok", ok);
+    json_push_kv_bool(out, "projection_open", true);
+    json_push_kv_bool(out, "commitment_match", match);
+    json_push_kv_bool(out, "count_match", count_match);
+    json_push_kv_str(out, "legacy_sha3", legacy_hex);
+    json_push_kv_str(out, "projection_sha3", proj_hex);
+    json_push_kv_int(out, "legacy_utxo_count", (int64_t)legacy_count);
+    json_push_kv_int(out, "projection_utxo_count", (int64_t)proj_count);
+    if (!ok)
+        json_push_kv_str(out, "not_ready_reason",
+                         !match ? "commitment_divergent" : "count_divergent");
+    return ok;
+}
+
 bool diag_rpc_cutoverpreflight(const struct json_value *params, bool help,
                                struct json_value *result)
 {
@@ -394,11 +488,13 @@ bool diag_rpc_cutoverpreflight(const struct json_value *params, bool help,
         "cutover-specific live progress, chain-advance source selection, "
         "header_admit shadow-vs-active-chain diff, validate_headers "
         "persisted window/cursor coverage, shadow-pipeline conservation "
-        "(fed == diffed), and a conservative ready boolean gated by the "
-        "cutover no-progress guard.\n"
+        "(fed == diffed), UTXO-set commitment parity (legacy coins.db SHA3 "
+        "== utxo_projection SHA3, byte-for-byte), and a conservative ready "
+        "boolean gated by the cutover no-progress guard.\n"
         "\nHeights default to the most recent header_admit diff window. "
         "Result: { ready, blockers, live, chain_advance, chain_evidence, "
-        "guard, conservation, modes, header_admit_diff, validate_headers }");
+        "guard, conservation, utxo_commitment, modes, header_admit_diff, "
+        "validate_headers }");
 
     const struct json_value *start_v = json_at(params, 0);
     const struct json_value *end_v = json_at(params, 1);
@@ -425,6 +521,7 @@ bool diag_rpc_cutoverpreflight(const struct json_value *params, bool help,
     struct json_value chain_evidence;
     struct json_value guard;
     struct json_value conservation;
+    struct json_value utxo_commitment;
     struct json_value canary;
     struct json_value diff;
     struct json_value vh;
@@ -435,6 +532,7 @@ bool diag_rpc_cutoverpreflight(const struct json_value *params, bool help,
     json_init(&chain_evidence);
     json_init(&guard);
     json_init(&conservation);
+    json_init(&utxo_commitment);
     json_init(&canary);
     json_init(&diff);
     json_init(&vh);
@@ -466,6 +564,8 @@ bool diag_rpc_cutoverpreflight(const struct json_value *params, bool help,
     bool conservation_ok =
         push_cutover_conservation_gate_json(&conservation,
                                             &cons_fed, &cons_diffed);
+    bool utxo_commitment_ok =
+        push_cutover_utxo_commitment_gate_json(&utxo_commitment);
 
     json_push_kv_str(&diff, "status",
                      header_admit_diff_status_rpc_name(rep.status));
@@ -577,17 +677,27 @@ bool diag_rpc_cutoverpreflight(const struct json_value *params, bool help,
                  cons_fed, cons_diffed);
         cutover_preflight_push_blocker(&blockers, reason);
     }
+    if (!utxo_commitment_ok) {
+        const struct json_value *rv =
+            json_get(&utxo_commitment, "not_ready_reason");
+        const char *why = rv ? json_get_str(rv) : NULL;
+        char reason[80];
+        snprintf(reason, sizeof reason, "utxo_commitment_%s",
+                 why && why[0] ? why : "not_ready");
+        cutover_preflight_push_blocker(&blockers, reason);
+    }
 
     json_push_kv_bool(result, "ready",
                       live_ready && chain_advance_ready && guard_ready &&
                       header_ready && validate_ready && modes_ready &&
-                      conservation_ok);
+                      conservation_ok && utxo_commitment_ok);
     json_push_kv(result, "blockers", &blockers);
     json_push_kv(result, "live", &live);
     json_push_kv(result, "chain_advance", &chain_advance);
     json_push_kv(result, "chain_evidence", &chain_evidence);
     json_push_kv(result, "guard", &guard);
     json_push_kv(result, "conservation", &conservation);
+    json_push_kv(result, "utxo_commitment", &utxo_commitment);
     json_push_kv(result, "cutover_state", &canary);
     json_push_kv(result, "modes", &modes);
     json_push_kv(result, "header_admit_diff", &diff);
@@ -600,6 +710,7 @@ bool diag_rpc_cutoverpreflight(const struct json_value *params, bool help,
     json_free(&chain_evidence);
     json_free(&guard);
     json_free(&conservation);
+    json_free(&utxo_commitment);
     json_free(&canary);
     json_free(&diff);
     json_free(&vh);
