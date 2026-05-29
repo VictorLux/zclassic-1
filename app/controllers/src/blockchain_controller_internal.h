@@ -98,4 +98,10 @@ bool rpc_reindexchainstate(const struct json_value *params, bool help,
 bool rpc_importchainstate(const struct json_value *params, bool help,
                           struct json_value *result);
 
+/* blockchain_controller_recovery.c — invalidateblock / reconsiderblock */
+bool rpc_invalidateblock(const struct json_value *params, bool help,
+                         struct json_value *result);
+bool rpc_reconsiderblock(const struct json_value *params, bool help,
+                         struct json_value *result);
+
 #endif

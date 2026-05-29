@@ -897,7 +897,43 @@ static int h_zcl_getblock(const struct mcp_request *req, struct mcp_response *re
                                    "id=%s", id_str ? id_str : "(null)");
 }
 
+/* invalidateblock — the operator recovery lever. Drop a stale fork
+ * (mark BLOCK_FAILED_VALID + disconnect-and-reorg). Destructive. */
+static int h_zcl_invalidateblock(const struct mcp_request *req,
+                                 struct mcp_response *res)
+{
+    const char *hash_str = json_get_str(json_get(req->args, "hash"));
+    struct mcp_params p;
+    mcp_params_init(&p);
+    mcp_params_push_str(&p, hash_str ? hash_str : "");
+    char *params = mcp_params_to_json(&p);
+    char *out = params ? mcp_node_rpc("invalidateblock", params) : NULL;
+    free(params);
+    return mcp_return_rpc_body_ctx(res, out, "invalidateblock", "mcp.chain",
+                                   "hash=%s", hash_str ? hash_str : "(null)");
+}
+
+/* reconsiderblock — the inverse of invalidateblock. Destructive. */
+static int h_zcl_reconsiderblock(const struct mcp_request *req,
+                                 struct mcp_response *res)
+{
+    const char *hash_str = json_get_str(json_get(req->args, "hash"));
+    struct mcp_params p;
+    mcp_params_init(&p);
+    mcp_params_push_str(&p, hash_str ? hash_str : "");
+    char *params = mcp_params_to_json(&p);
+    char *out = params ? mcp_node_rpc("reconsiderblock", params) : NULL;
+    free(params);
+    return mcp_return_rpc_body_ctx(res, out, "reconsiderblock", "mcp.chain",
+                                   "hash=%s", hash_str ? hash_str : "(null)");
+}
+
 /* ── Route table ─────────────────────────────────────────────── */
+
+static const struct mcp_param_spec p_recovery_block[] = {
+    { "hash", MCP_PARAM_STR, true, "Block hash (hex) to invalidate/reconsider",
+      0, 0, 64, 64, NULL, NULL },
+};
 
 static const struct mcp_param_spec p_getblock[] = {
     { "block_id",  MCP_PARAM_STR, true,  "Height or hash",
@@ -1054,6 +1090,21 @@ static const struct mcp_tool_route k_routes[] = {
       "Gates the cutover PR — 24h of match=true on every hourly call "
       "is the green light to flip the projection authoritative.",
       NULL, 0, h_zcl_block_index_diff, 0, NULL },
+    { "zcl_invalidateblock", "chain",
+      "Recovery lever: permanently mark a block invalid by hash. The "
+      "active chain disconnects back below it (if on the active chain) "
+      "and reorgs to the next-best fully-valid chain; every reconnected "
+      "block is fully re-validated. Mirrors Bitcoin Core invalidateblock. "
+      "Use zcl_reconsiderblock to undo. Destructive — rate-gated.",
+      p_recovery_block, PARAM_COUNT(p_recovery_block),
+      h_zcl_invalidateblock, MCP_TOOL_FLAG_DESTRUCTIVE, NULL },
+    { "zcl_reconsiderblock", "chain",
+      "Recovery lever: clear invalidity from a block and its descendants "
+      "by hash, re-adding them to chain selection. If the reconsidered "
+      "chain has the most work it is re-validated and reconnected. The "
+      "inverse of zcl_invalidateblock. Destructive — rate-gated.",
+      p_recovery_block, PARAM_COUNT(p_recovery_block),
+      h_zcl_reconsiderblock, MCP_TOOL_FLAG_DESTRUCTIVE, NULL },
 };
 
 void mcp_register_chain(void)

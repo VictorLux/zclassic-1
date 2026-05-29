@@ -334,6 +334,8 @@ void register_blockchain_rpc_commands(struct rpc_table *t)
         /* HODL wave commands in hodl_controller.c */
         { "blockchain", "reindexchainstate",    rpc_reindexchainstate,     false },
         { "blockchain", "importchainstate",     rpc_importchainstate,       false },
+        { "blockchain", "invalidateblock",      rpc_invalidateblock,       false },
+        { "blockchain", "reconsiderblock",      rpc_reconsiderblock,       false },
         { "blockchain", "getutxocommitment",   rpc_getutxocommitment,     true },
         { "blockchain", "getutxoaudit",        rpc_getutxoaudit,          true },
         { "blockchain", "getmmrroot",          rpc_getmmrroot,            true },

@@ -732,6 +732,7 @@ int main(void)
       failures += test_no_hardcoded_home(); }
     failures += test_cookie_rotation();
     failures += test_reorg_safety();
+    failures += test_invalidateblock();
     failures += test_reorg_parity();
     failures += test_reorg_projection_parity();
     failures += test_connect_block_self_write();
