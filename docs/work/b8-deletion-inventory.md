@@ -271,11 +271,11 @@ rebuild. Each step independently `make lint`-clean and `test_parallel`-green.
 
 **Phase C — `legacy_mirror_sync_service.c` block-apply removal (gated on B7) + `legacy_body_pull.c`:**
 - [x] Confirmed in B7 rollout: stage pipeline is the authoritative writer (the mirror no longer needs to apply blocks).
-- [ ] In `request_catchup`, delete the body-pull/activation block (`:893-:962`) and the `static` helpers `lms_run_activation_to_target`, `lms_drain_headers_to_target`, `lms_try_recover_stale_next_failed`, `lms_kick_local_pipeline`, `lms_next_block_needs_mirror_body`. Keep the monitor (fetch/verify/lag-SLO/observe/mark_success). The function becomes "probe + report lag," not "apply."
-- [ ] Delete `app/services/src/legacy_body_pull.c` + header once the mirror is its last caller and that call is removed.
-- [ ] Migrate `test_lag_slo.c`, `test_legacy_mirror_stuck_condition.c`, `test_zclassicd_oracle.c` to the monitor-only contract.
-- [ ] Drop E1 baseline line for `legacy_mirror_sync_service.c` once it falls under 800; keep E2/supervisor/typed-blocker/lib-layering mirror lines (monitor survives).
-- [ ] `make lint && ./test_parallel`. Est. **−529 (body_pull) − ~600 (mirror block-apply half)**; mirror file shrinks to a lean monitor.
+- [x] In `request_catchup`, deleted the body-pull/activation block and the `static` helpers (`lms_run_activation_to_target` et al.); kept the monitor (fetch/verify/lag-SLO/observe/mark_success). Done in `6ef905772` (`legacy_mirror_sync_service.c` 1487→1194, the block-application half removed; none of the `lms_*` apply statics remain in tree).
+- [x] Deleted `app/services/src/legacy_body_pull.c` + header (`-529 +-64 header`) in `6ef905772`. **No `legacy_body_pull*` source/header exists in tree; the only residual `legacy_body_pull` references are stale doc-comments in `process_block.h:72`, `legacy_rpc_client.{c,h}`, and `chain_activation_controller.c:53`.** The `-bodypull-from-legacy` CLI flag was removed earlier in `56977057a` (no parse case, no `boot.h` field remains).
+- [x] Migrated `test_chain_advance_coordinator.c` / lint self-test for the monitor-only contract (`6ef905772`). `g_body_pull_active` survives as a generic bulk-ingest durability-defer flag read by `connect_tip` (the protected connect path); it now has no setter and stays 0 — out of B8 scope.
+- [~] E1 baseline for `legacy_mirror_sync_service.c` ratchets as the file shrinks (now ~1180); drop the line once under 800. E2/supervisor/typed-blocker/lib-layering mirror lines kept (monitor survives).
+- [x] `make lint && ./test_parallel` verified green at `6ef905772`. Net for this item: **−529 (body_pull) + −327 (mirror block-apply half)**; mirror file is now a lean monitor.
 
 **Phase D — `utxo_recovery_service.c` (gated on A-workstream re-homing boot recovery; only `clean_above_tip` + `import_ldb` are B8-adjacent):**
 - [ ] Re-home `clean_above_tip` as a Condition (C3); repoint `boot.c:3259`; migrate its test.
