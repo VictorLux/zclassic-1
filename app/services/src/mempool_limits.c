@@ -360,12 +360,6 @@ static void ml_post_add_hook(struct tx_mempool *pool)
 
 /* ── Thread loop ────────────────────────────────────────────── */
 
-static void ml_sleep_ms(int ms)
-{
-    struct timespec ts = { ms / 1000, (ms % 1000) * 1000000L };
-    nanosleep(&ts, NULL);
-}
-
 static void *ml_thread_fn(void *arg)
 {
     (void)arg;
@@ -402,7 +396,7 @@ static void *ml_thread_fn(void *arg)
             }
             next_at_ms = now_ms + (int64_t)cfg.tick_seconds * 1000;
         }
-        ml_sleep_ms(100);
+        platform_sleep_ms(100);
     }
 
     pthread_mutex_lock(&g_ml.lock);

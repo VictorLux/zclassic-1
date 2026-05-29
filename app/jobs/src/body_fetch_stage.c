@@ -11,6 +11,7 @@
 
 #include "platform/time_compat.h"
 #include "jobs/body_fetch_stage.h"
+#include "jobs/stage_helpers.h"
 
 #include "chain/chain.h"
 #include "core/uint256.h"
@@ -40,13 +41,6 @@ static _Atomic uint64_t g_skipped_total  = 0;
 static _Atomic int64_t  g_last_advance_height = -1;
 static _Atomic int64_t  g_last_step_unix = 0;
 static _Atomic int64_t  g_last_blocked_unix = 0;
-
-static int64_t wall_now_s(void)
-{
-    struct timespec ts;
-    platform_time_realtime_timespec(&ts);
-    return (int64_t)ts.tv_sec;
-}
 
 /* ── Schema bootstrap (idempotent) ─────────────────────────────────── */
 
@@ -78,23 +72,8 @@ static bool ensure_log_schema(sqlite3 *db)
  * `validate_headers_stage_cursor()` so that body_fetch's floor check is
  * decoupled from the upstream stage's runtime init order — and so the
  * floor reflects what is DURABLY committed, not the in-memory value
- * which is 0 on a fresh init until the first stage_run_once. */
-static uint64_t upstream_cursor_persisted(sqlite3 *db, const char *name)
-{
-    sqlite3_stmt *st = NULL;
-    if (sqlite3_prepare_v2(db,
-        "SELECT cursor FROM stage_cursor WHERE name = ?",
-        -1, &st, NULL) != SQLITE_OK) {
-        LOG_WARN("body_fetch", "[body_fetch] upstream cursor prepare failed: %s", sqlite3_errmsg(db));
-        return 0;
-    }
-    sqlite3_bind_text(st, 1, name, -1, SQLITE_STATIC);
-    uint64_t out = 0;
-    if (sqlite3_step(st) == SQLITE_ROW)  // raw-sql-ok:kernel-primitive
-        out = (uint64_t)sqlite3_column_int64(st, 0);
-    sqlite3_finalize(st);
-    return out;
-}
+ * which is 0 on a fresh init until the first stage_run_once.
+ * See stage_cursor_persisted() in jobs/stage_helpers.h. */
 
 /* Returns 1 if found and ok-flag retrieved, 0 if no row, -1 on error. */
 static int vh_log_ok_at(sqlite3 *db, int height, int *out_ok)
@@ -140,7 +119,7 @@ static bool log_insert(sqlite3 *db, int height,
     sqlite3_bind_blob (stmt, 2, hash->data, 32, SQLITE_STATIC);
     sqlite3_bind_text (stmt, 3, source, -1, SQLITE_STATIC);
     sqlite3_bind_int64(stmt, 4, (sqlite3_int64)bytes);
-    sqlite3_bind_int64(stmt, 5, (sqlite3_int64)wall_now_s());
+    sqlite3_bind_int64(stmt, 5, (sqlite3_int64)platform_time_wall_unix());
     sqlite3_bind_int  (stmt, 6, ok ? 1 : 0);
     if (reason)
         sqlite3_bind_text(stmt, 7, reason, -1, SQLITE_TRANSIENT);
@@ -160,7 +139,7 @@ static bool log_insert(sqlite3 *db, int height,
 
 static job_result_t step_body_fetch(struct stage_step_ctx *c)
 {
-    atomic_store(&g_last_step_unix, wall_now_s());
+    atomic_store(&g_last_step_unix, platform_time_wall_unix());
 
     struct main_state *ms = g_ms;
     if (!ms) return JOB_IDLE;
@@ -176,9 +155,10 @@ static job_result_t step_body_fetch(struct stage_step_ctx *c)
      * Reading from disk (vs the in-memory accessor) means body_fetch
      * never advances past what is actually committed upstream, and
      * keeps body_fetch testable in isolation. */
-    uint64_t vh_cursor = upstream_cursor_persisted(db, "validate_headers");
+    uint64_t vh_cursor = stage_cursor_persisted(db, "validate_headers",
+                                                STAGE_NAME);
     if ((uint64_t)next_h >= vh_cursor) {
-        atomic_store(&g_last_blocked_unix, wall_now_s());
+        atomic_store(&g_last_blocked_unix, platform_time_wall_unix());
         return JOB_IDLE;  /* not BLOCKED — validate will catch up */
     }
 
@@ -189,7 +169,7 @@ static job_result_t step_body_fetch(struct stage_step_ctx *c)
     if (found < 0) return JOB_FATAL;
     if (found == 0) {
         /* Row missing despite floor — surface as IDLE (will retry). */
-        atomic_store(&g_last_blocked_unix, wall_now_s());
+        atomic_store(&g_last_blocked_unix, platform_time_wall_unix());
         return JOB_IDLE;
     }
 
@@ -200,7 +180,7 @@ static job_result_t step_body_fetch(struct stage_step_ctx *c)
         /* Concurrent reorg through this height between validate and
          * fetch. Surface as IDLE so the supervisor retries; the chain
          * will stabilise. */
-        atomic_store(&g_last_blocked_unix, wall_now_s());
+        atomic_store(&g_last_blocked_unix, platform_time_wall_unix());
         return JOB_IDLE;
     }
 
@@ -220,7 +200,7 @@ static job_result_t step_body_fetch(struct stage_step_ctx *c)
     if (!(bi->nStatus & BLOCK_HAVE_DATA)) {
         /* Body not yet on disk — JOB_IDLE, don't advance. The natural
          * backpressure: cursor stays put until msg_blocks brings it in. */
-        atomic_store(&g_last_blocked_unix, wall_now_s());
+        atomic_store(&g_last_blocked_unix, platform_time_wall_unix());
         return JOB_IDLE;
     }
 
@@ -284,17 +264,7 @@ job_result_t body_fetch_stage_step_once(void)
     return stage_run_once(g_stage, db);
 }
 
-int body_fetch_stage_drain(int max_steps)
-{
-    if (max_steps <= 0) return 0;
-    int advanced = 0;
-    for (int i = 0; i < max_steps; i++) {
-        job_result_t r = body_fetch_stage_step_once();
-        if (r != JOB_ADVANCED) break;
-        advanced++;
-    }
-    return advanced;
-}
+STAGE_DRAIN_IMPL(body_fetch)
 
 void body_fetch_stage_shutdown(void)
 {

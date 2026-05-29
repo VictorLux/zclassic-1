@@ -47,14 +47,6 @@ static void make_tmpdir(char *buf, size_t cap)
     }
 }
 
-static void rm_rf(const char *dir)
-{
-    if (!dir || !dir[0]) return;
-    char cmd[4200];
-    snprintf(cmd, sizeof cmd, "rm -rf '%s'", dir);
-    (void)!system(cmd);
-}
-
 static void fill_hash(struct block_hash *h, uint8_t seed)
 {
     memset(h->bytes, 0, 32);
@@ -108,7 +100,7 @@ int test_block_log_file(void)
                   !r.ok && r.code == BLOCK_LOG_ERR_NOT_FOUND);
 
         block_log_file_close(h);
-        rm_rf(dir);
+        test_rm_rf(dir);
     }
 
     /* ── 2. Append + read back. */
@@ -139,7 +131,7 @@ int test_block_log_file(void)
                   p.tip_height(p.self) == 0);
 
         block_log_file_close(h);
-        rm_rf(dir);
+        test_rm_rf(dir);
     }
 
     /* ── 3. Idempotent re-append: same hash + same bytes -> OK. */
@@ -163,7 +155,7 @@ int test_block_log_file(void)
                   !r.ok && r.code == BLOCK_LOG_ERR_CORRUPT);
 
         block_log_file_close(h);
-        rm_rf(dir);
+        test_rm_rf(dir);
     }
 
     /* ── 4. Iteration order. */
@@ -187,7 +179,7 @@ int test_block_log_file(void)
                   strcmp(st.buf, "1,2") == 0);
 
         block_log_file_close(h);
-        rm_rf(dir);
+        test_rm_rf(dir);
     }
 
     /* ── 5. Persistence across close/reopen. */
@@ -213,7 +205,7 @@ int test_block_log_file(void)
                   memcmp(out, buf, sizeof buf) == 0);
 
         block_log_file_close(h);
-        rm_rf(dir);
+        test_rm_rf(dir);
     }
 
     /* ── 6. Crash class A: log fsynced, index never written.
@@ -247,7 +239,7 @@ int test_block_log_file(void)
                   memcmp(out, payload, sizeof payload) == 0);
 
         block_log_file_close(h);
-        rm_rf(dir);
+        test_rm_rf(dir);
     }
 
     /* ── 7. Crash class B: torn log payload — extra garbage bytes
@@ -285,7 +277,7 @@ int test_block_log_file(void)
                   memcmp(out, payload, sizeof payload) == 0);
 
         block_log_file_close(h);
-        rm_rf(dir);
+        test_rm_rf(dir);
     }
 
     /* ── 8. Tip selection across multi-block append. */
@@ -308,7 +300,7 @@ int test_block_log_file(void)
                   p.tip_height(p.self) == 3);
 
         block_log_file_close(h);
-        rm_rf(dir);
+        test_rm_rf(dir);
     }
 
     return failures;

@@ -47,14 +47,6 @@ static void srfd_tmpdir(char *buf, size_t cap)
         buf[0] = '\0';
 }
 
-static void srfd_rm_rf(const char *dir)
-{
-    if (!dir || !dir[0]) return;
-    char cmd[4200];
-    snprintf(cmd, sizeof(cmd), "rm -rf '%s'", dir);
-    (void)!system(cmd);
-}
-
 /* Deterministic per-height block bytes + hash, so primary and shadow agree
  * byte-for-byte when fed the same way. */
 static void srfd_make_block(uint32_t h, struct block_hash *hash,
@@ -121,8 +113,8 @@ int test_shadow_replay_full_driver(void)
 
         block_log_file_close(primary_h);
         block_log_file_close(shadow_h);
-        srfd_rm_rf(primary_dir);
-        srfd_rm_rf(shadow_dir);
+        test_rm_rf(primary_dir);
+        test_rm_rf(shadow_dir);
     }
 
     /* ── Case 2: one divergent interior block is caught ─────────────────
@@ -198,8 +190,8 @@ int test_shadow_replay_full_driver(void)
 
         block_log_file_close(primary_h);
         block_log_file_close(shadow_h);
-        srfd_rm_rf(primary_dir);
-        srfd_rm_rf(shadow_dir);
+        test_rm_rf(primary_dir);
+        test_rm_rf(shadow_dir);
     }
 
     return failures;

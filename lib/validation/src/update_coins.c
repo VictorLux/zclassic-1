@@ -129,8 +129,7 @@ bool update_coins_with_undo(const struct transaction *tx,
             }
 
             /* Validate output value before spending */
-            if (entry->coins.vout[nPos].value < 0 ||
-                entry->coins.vout[nPos].value > 2100000000000000LL)
+            if (!MoneyRange(entry->coins.vout[nPos].value))
                 LOG_FAIL("update_coins", "corrupt output value %lld at h=%d",
                          (long long)entry->coins.vout[nPos].value, nHeight);
 
@@ -173,8 +172,7 @@ bool update_coins_with_undo(const struct transaction *tx,
     /* Validate new output values before adding to commitment */
     for (size_t vi = 0; vi < new_entry->coins.num_vout; vi++) {
         if (!tx_out_is_null(&new_entry->coins.vout[vi])) {
-            if (new_entry->coins.vout[vi].value < 0 ||
-                new_entry->coins.vout[vi].value > 2100000000000000LL)
+            if (!MoneyRange(new_entry->coins.vout[vi].value))
                 LOG_FAIL("update_coins",
                          "new output[%zu] value %lld out of range at h=%d",
                          vi, (long long)new_entry->coins.vout[vi].value, nHeight);

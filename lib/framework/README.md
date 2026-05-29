@@ -14,7 +14,7 @@ Files (target — empty in Phase 0 scaffold, populated incrementally):
 | `model.h`      | Model — re-export of existing `app/models/include/models/activerecord.h` with MODEL/ATTR/QUERY/BEFORE_SAVE | Phase 1 |
 | `job.h`        | Job — thin wrapper over existing `lib/util/stage.h` with `JOB(name, period_secs)` macro | Phase 1 |
 | `supervisor.h` | Supervisor — re-export of existing `lib/util/supervisor.h` plus `SUPERVISOR_ROOT(...)` | Phase 1 |
-| `condition.h`  | Condition — `CONDITION(...) DETECT/REMEDY/WITNESS` (NEW) | **Phase 0** ← wt2 ships |
+| `condition.h`  | Condition — `CONDITION(...) DETECT/REMEDY/WITNESS` (NEW) | Shipped — struct-registration (no macro); see FRAMEWORK.md §198 |
 | `event_log.h`  | Event — `EVENT(name, ARGS)` declaration + typed emit | Phase 4 |
 | `projection.h` | Projection — re-export of existing `lib/util/projection.h` with read-view macros | Phase 1 |
 | `mailbox.h`    | Mailbox — re-export of existing `lib/util/mailbox.h` with typed-message macros | Phase 1 |

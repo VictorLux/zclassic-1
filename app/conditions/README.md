@@ -2,26 +2,34 @@
 
 **Shape:** Condition — `(detect, remedy, witness)` auto-healer.
 
-Each file in `src/` is one Condition using `CONDITION(...)` from
-`lib/framework/condition.h`. A Condition declares:
+Each file in `src/` is one Condition: a plain `static struct condition`
+plus three file-static functions, registered with one line. There is no
+block-DSL — `condition.h` defines only `CONDITION_MAX_NAME`,
+`CONDITION_MAX_REGISTRY`, and the `struct condition` shape:
 
-- `DETECT { ... }` — predicate that returns true when the halt is present
-- `REMEDY { ... }` — action that attempts to fix it (calls existing
-  service/model APIs)
-- `WITNESS { ... }` — observable post-condition that confirms the
-  remedy worked
+```c
+static bool detect_fn(void);                         /* halt present?      */
+static enum condition_remedy_result remedy_fn(void); /* attempt the fix    */
+static bool witness_fn(int64_t target_at_detect);    /* confirm it worked  */
 
-Plus tuning: `POLL_SECS`, `BACKOFF_SECS`, `MAX_ATTEMPTS`.
+static struct condition c = {
+    .name = "...", .severity = COND_WARN,
+    .poll_secs = 5, .backoff_secs = 60, .max_attempts = 2,
+    .detect = detect_fn, .remedy = remedy_fn, .witness = witness_fn,
+    .witness_window_secs = 60,
+};
+void register_<name>(void) { condition_register(&c); }  /* registry calls this */
+```
 
 The condition engine (in `lib/framework/condition.{c,h}`) polls every
 registered condition, dispatches remedies under backoff, and pages the
-operator only if `MAX_ATTEMPTS` is exhausted with `WITNESS = false`.
+operator only if `max_attempts` is exhausted with the witness still false.
+
+See [`docs/FRAMEWORK.md`](../../docs/FRAMEWORK.md) §"The canonical form is
+struct-registration, not a block-DSL" (lines 198-226) and the exemplar
+[`block_failed_mask_at_tip.c`](./src/block_failed_mask_at_tip.c).
 
 **Every halt class becomes a file here.** This is the auto-resolution
-substrate. See [`docs/FRAMEWORK.md`](../../docs/FRAMEWORK.md) § 3.6
-for the contract and § 7.3 for the cookbook.
-
-Phase 0 ships:
-- `block_failed_mask_at_tip.c` — wires `process_block_revalidate`
-- `contradiction_frozen.c`     — chain_evidence frozen rebuild
-- `legacy_mirror_stuck.c`      — mirror catch-up stuck at a reachable height
+substrate — see the source files in `src/` for the conditions shipped so
+far (e.g. `block_failed_mask_at_tip.c`, `contradiction_frozen.c`, the
+`snapshot_*` stall healers).

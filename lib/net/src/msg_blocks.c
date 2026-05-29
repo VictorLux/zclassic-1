@@ -20,6 +20,7 @@
 #include "consensus/validation.h"
 #include "controllers/sync_controller.h"
 #include "net/download.h"
+#include "net/https_server.h"
 #include "event/event.h"
 #include "wallet/wallet.h"
 #include "models/database.h"
@@ -427,7 +428,6 @@ bool process_block_msg(struct msg_processor *mp, struct p2p_node *node,
                                            "chain caught up");
                 }
                 /* Start deferred HTTPS server now that it's safe */
-                extern void https_deferred_check(void);
                 https_deferred_check();
                 if (acceptance.should_emit_tip_updated)
                     event_emitf(EV_TIP_UPDATED, 0,

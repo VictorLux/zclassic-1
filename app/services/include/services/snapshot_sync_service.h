@@ -197,6 +197,11 @@ struct snapshot_sync_service *snapsync_global(void);
 bool snapsync_global_initialized(void);
 void snapsync_global_ensure_init(struct node_db *ndb);
 
+/* Resolve the active snapshot sync service for Condition detect/witness
+ * paths: prefer the wired runtime service, else the lazily-initialized
+ * global, else NULL. Non-test accessor (no g_test_svc override). */
+struct snapshot_sync_service *snapsync_condition_service(void);
+
 /* ── Controller Actions (called from message router) ───────────── */
 
 /* Result codes for controller actions */

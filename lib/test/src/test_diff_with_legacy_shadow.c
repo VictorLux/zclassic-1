@@ -37,14 +37,6 @@ static void make_tmpdir(char *buf, size_t cap)
     if (!mkdtemp(buf)) { perror("mkdtemp"); buf[0] = '\0'; }
 }
 
-static void rm_rf(const char *dir)
-{
-    if (!dir || !dir[0]) return;
-    char cmd[4200];
-    snprintf(cmd, sizeof cmd, "rm -rf '%s'", dir);
-    (void)!system(cmd);
-}
-
 static void append_block(struct block_log_port *p, uint32_t h, uint8_t seed,
                          const uint8_t *bytes, size_t len)
 {
@@ -74,7 +66,7 @@ int test_diff_with_legacy_shadow(void)
                   r.ok && rep.status == DIFF_STATUS_EMPTY_RANGE);
 
         block_log_file_close(h1); block_log_file_close(h2);
-        rm_rf(d1); rm_rf(d2);
+        test_rm_rf(d1); test_rm_rf(d2);
     }
 
     /* ── 2. Converged: same N blocks on both sides. */
@@ -106,7 +98,7 @@ int test_diff_with_legacy_shadow(void)
         DLS_CHECK("shadow_tip = 2", rep.shadow_tip == 2);
 
         block_log_file_close(h1); block_log_file_close(h2);
-        rm_rf(d1); rm_rf(d2);
+        test_rm_rf(d1); test_rm_rf(d2);
     }
 
     /* ── 3. Shadow missing: primary has h=5 that shadow doesn't.
@@ -138,7 +130,7 @@ int test_diff_with_legacy_shadow(void)
                   rep.first_divergent_height == 5);
 
         block_log_file_close(h1); block_log_file_close(h2);
-        rm_rf(d1); rm_rf(d2);
+        test_rm_rf(d1); test_rm_rf(d2);
     }
 
     /* ── 4. Primary missing: symmetric to #3. */
@@ -167,7 +159,7 @@ int test_diff_with_legacy_shadow(void)
                   rep.first_divergent_height == 3);
 
         block_log_file_close(h1); block_log_file_close(h2);
-        rm_rf(d1); rm_rf(d2);
+        test_rm_rf(d1); test_rm_rf(d2);
     }
 
     /* ── 5. Divergent: same height, different bytes. */
@@ -200,7 +192,7 @@ int test_diff_with_legacy_shadow(void)
                   rep.first_divergent_height == 0);
 
         block_log_file_close(h1); block_log_file_close(h2);
-        rm_rf(d1); rm_rf(d2);
+        test_rm_rf(d1); test_rm_rf(d2);
     }
 
     /* ── 6. NULL guards. */

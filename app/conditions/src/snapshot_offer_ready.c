@@ -26,7 +26,7 @@ static struct snapshot_sync_service *g_test_svc;
 static _Atomic int g_test_remedy_calls;
 #endif
 
-static struct snapshot_sync_service *runtime_snapshot_service(void)
+static struct snapshot_sync_service *runtime_snapsync(void)
 {
 #ifdef ZCL_TESTING
     if (g_test_svc)
@@ -66,7 +66,7 @@ static bool sync_state_can_receive_snapshot(enum sync_state state)
 
 static bool detect_snapshot_offer_ready(void)
 {
-    struct snapshot_sync_service *svc = runtime_snapshot_service();
+    struct snapshot_sync_service *svc = runtime_snapsync();
     struct snapsync_status status = {0};
     if (!svc)
         return false;

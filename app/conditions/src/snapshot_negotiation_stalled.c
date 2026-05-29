@@ -18,19 +18,9 @@ static _Atomic uint32_t g_peer_at_detect;
 static _Atomic int g_test_remedy_calls;
 #endif
 
-static struct snapshot_sync_service *runtime_snapsync(void)
-{
-    struct snapshot_sync_service *svc = app_runtime_snapshot_sync();
-    if (svc)
-        return svc;
-    if (!snapsync_global_initialized())
-        return NULL;
-    return snapsync_global();
-}
-
 static bool detect_snapshot_negotiation_stalled(void)
 {
-    struct snapshot_sync_service *svc = runtime_snapsync();
+    struct snapshot_sync_service *svc = snapsync_condition_service();
     struct snapsync_negotiation_status st;
     if (!svc)
         return false;
@@ -59,7 +49,7 @@ static enum condition_remedy_result remedy_snapshot_negotiation_stalled(void)
 static bool witness_snapshot_negotiation_stalled(int64_t target_at_detect)
 {
     (void)target_at_detect;
-    struct snapshot_sync_service *svc = runtime_snapsync();
+    struct snapshot_sync_service *svc = snapsync_condition_service();
     struct snapsync_negotiation_status st;
     if (!svc)
         return true;

@@ -19,21 +19,6 @@
     if (!_ok) failures++; \
 } while (0)
 
-static void mp_tmpdir(char *buf, size_t n, const char *tag)
-{
-    snprintf(buf, n, "./test-tmp/mempool_projection_%d_%s",
-             (int)getpid(), tag);
-    test_cleanup_tmpdir(buf);
-    mkdir("test-tmp", 0755);
-    mkdir(buf, 0755);
-}
-
-static void mp_paths(const char *dir, char *elog, size_t elog_n,
-                     char *proj, size_t proj_n)
-{
-    snprintf(elog, elog_n, "%s/event_log.dat", dir);
-    snprintf(proj, proj_n, "%s/mempool_projection.db", dir);
-}
 
 static void fill_txid(uint8_t txid[32], uint8_t seed)
 {
@@ -127,8 +112,9 @@ static int t_add_remove_replay(void)
     uint8_t txid[32];
     int64_t fee = 0;
     uint32_t size = 0, weight = 0;
-    mp_tmpdir(dir, sizeof(dir), "addremove");
-    mp_paths(dir, elog_path, sizeof(elog_path), proj_path, sizeof(proj_path));
+    test_make_tmpdir(dir, sizeof(dir), "mempool_projection", "addremove");
+    test_projection_paths(dir, "mempool", elog_path, sizeof(elog_path),
+                          proj_path, sizeof(proj_path));
     fill_txid(txid, 42);
     event_log_t *log = event_log_open(elog_path);
     mempool_projection_t *p = mempool_projection_open(proj_path, log);
@@ -179,8 +165,9 @@ static int t_iterate_sorted(void)
     char dir[256], elog_path[300], proj_path[300];
     uint8_t txid1[32], txid2[32], txid3[32];
     struct iter_ctx ctx = {0};
-    mp_tmpdir(dir, sizeof(dir), "iter");
-    mp_paths(dir, elog_path, sizeof(elog_path), proj_path, sizeof(proj_path));
+    test_make_tmpdir(dir, sizeof(dir), "mempool_projection", "iter");
+    test_projection_paths(dir, "mempool", elog_path, sizeof(elog_path),
+                          proj_path, sizeof(proj_path));
     fill_txid(txid1, 3);
     fill_txid(txid2, 1);
     fill_txid(txid3, 2);
@@ -207,8 +194,9 @@ static int t_emit_helpers(void)
     char dir[256], elog_path[300], proj_path[300];
     uint8_t txid[32];
     uint8_t raw[] = {0x10, 0x20, 0x30, 0x40, 0x50};
-    mp_tmpdir(dir, sizeof(dir), "emit");
-    mp_paths(dir, elog_path, sizeof(elog_path), proj_path, sizeof(proj_path));
+    test_make_tmpdir(dir, sizeof(dir), "mempool_projection", "emit");
+    test_projection_paths(dir, "mempool", elog_path, sizeof(elog_path),
+                          proj_path, sizeof(proj_path));
     fill_txid(txid, 91);
     event_log_t *log = event_log_open(elog_path);
     mempool_projection_t *p = mempool_projection_open(proj_path, log);
@@ -237,8 +225,9 @@ static int t_model_clear_emits_removes(void)
     char dir[256], elog_path[300], proj_path[300], db_path[300];
     uint8_t txid[32];
     uint8_t raw[] = {0x01, 0x02, 0x03};
-    mp_tmpdir(dir, sizeof(dir), "clear");
-    mp_paths(dir, elog_path, sizeof(elog_path), proj_path, sizeof(proj_path));
+    test_make_tmpdir(dir, sizeof(dir), "mempool_projection", "clear");
+    test_projection_paths(dir, "mempool", elog_path, sizeof(elog_path),
+                          proj_path, sizeof(proj_path));
     snprintf(db_path, sizeof(db_path), "%s/node.db", dir);
     fill_txid(txid, 122);
 

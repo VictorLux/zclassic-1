@@ -4,156 +4,52 @@
  * block_index.bin. Split from block_index_integrity.c so the sidecar
  * verifier and structural repair paths stay separately readable. */
 
-#include "platform/time_compat.h"
 #include "services/block_index_integrity.h"
+#include "services/sha3_sidecar_io.h"
 
 #include "adapters/outbound/persistence/block_index_sidecar_sqlite.h"
-#include "crypto/sha3.h"
 #include "encoding/utilstrencodings.h"
 #include "event/event.h"
 #include "ports/block_index_sidecar_port.h"
-#include "util/log_macros.h"
 #include "util/result.h"
-#include "util/safe_alloc.h"
 
 #include <errno.h>
 #include <stdio.h>
-#include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
-#include <unistd.h>
 
-struct bii_sidecar_header {
-    uint8_t  magic[4];
-    uint32_t version;
-    uint64_t body_size;
-    uint8_t  body_sha3[32];
-};
-
-_Static_assert(sizeof(struct bii_sidecar_header) == BII_SIDECAR_BYTES,
+_Static_assert(BII_SIDECAR_BYTES == 48u,
                "BII_SIDECAR_BYTES must match sidecar header layout");
 
-static void bii_body_path(char *out, size_t cap, const char *datadir)
-{
-    snprintf(out, cap, "%s/block_index.bin", datadir);
-}
+/* ── Sidecar spec ───────────────────────────────────────────── */
 
-static void bii_sidecar_path(char *out, size_t cap, const char *datadir)
-{
-    snprintf(out, cap, "%s/block_index.bin.sha3", datadir);
-}
-
-static bool bii_hash_body(const char *body_path,
-                          uint8_t out_hash[32],
-                          uint64_t *out_size)
-{
-    FILE *f = fopen(body_path, "rb");
-    if (!f) return false;
-
-    struct sha3_256_ctx ctx;
-    sha3_256_init(&ctx);
-
-    enum { BUF_SIZE = 1u << 20 };  /* 1 MiB */
-    uint8_t *buf = zcl_malloc(BUF_SIZE, "integrity_hash_buf");
-    if (!buf) {
-        fclose(f);
-        LOG_FAIL("block_integrity", "hash_block_body: malloc(%u) failed",
-                 (unsigned)BUF_SIZE);
-    }
-
-    uint64_t total = 0;
-    size_t n;
-    while ((n = fread(buf, 1, BUF_SIZE, f)) > 0) {
-        sha3_256_write(&ctx, buf, n);
-        total += n;
-    }
-    bool io_err = ferror(f) != 0;
-    free(buf);
-    fclose(f);
-    if (io_err) return false;
-
-    sha3_256_finalize(&ctx, out_hash);
-    if (out_size) *out_size = total;
-    return true;
-}
+static const struct ssio_spec bii_spec = {
+    .body_name     = "block_index.bin",
+    .sidecar_name  = "block_index.bin.sha3",
+    .magic         = BII_MAGIC,
+    .version       = BII_SIDECAR_VERSION,
+    .domain        = "bii",
+    .malloc_label  = "integrity_hash_buf",
+    .corrupt_event = EV_BLOCK_INDEX_CORRUPT,
+};
 
 struct zcl_result bii_write_sidecar(const char *datadir)
 {
-    if (!datadir) return ZCL_ERR(-1, "bii_write_sidecar: null datadir");
-
-    char body_path[1024];
-    char side_path[1024];
-    char tmp_path[1056];
-    bii_body_path(body_path, sizeof(body_path), datadir);
-    bii_sidecar_path(side_path, sizeof(side_path), datadir);
-    snprintf(tmp_path, sizeof(tmp_path), "%s.tmp", side_path);
-
-    struct stat st;
-    if (stat(body_path, &st) != 0)
-        return ZCL_ERR(-2, "stat %s: %s", body_path, strerror(errno));
-
-    struct bii_sidecar_header hdr;
-    memset(&hdr, 0, sizeof(hdr));
-    memcpy(hdr.magic, BII_MAGIC, 4);
-    hdr.version = BII_SIDECAR_VERSION;
-    hdr.body_size = (uint64_t)st.st_size;
-
-    uint64_t hashed_size = 0;
-    if (!bii_hash_body(body_path, hdr.body_sha3, &hashed_size))
-        return ZCL_ERR(-3, "hash body failed");
-    /* stat size and streamed size must agree — disagreement means
-     * something is truncating the file concurrently, which is a
-     * bigger problem than this function can solve. */
-    if (hashed_size != hdr.body_size) {
-        return ZCL_ERR(-4,
-            "bii_write_sidecar: size drift stat=%llu hashed=%llu",
-            (unsigned long long)hdr.body_size,
-            (unsigned long long)hashed_size);
-    }
-
-    FILE *f = fopen(tmp_path, "wb");
-    if (!f) {
-        return ZCL_ERR(-5, "bii_write_sidecar: fopen %s: %s",
-                       tmp_path, strerror(errno));
-    }
-    if (fwrite(&hdr, sizeof(hdr), 1, f) != 1) {
-        fclose(f);
-        unlink(tmp_path);
-        return ZCL_ERR(-6, "bii_write_sidecar: fwrite failed");
-    }
-    fflush(f);
-    int fd = fileno(f);
-    if (fd >= 0) (void)fsync(fd);
-    fclose(f);
-
-    if (rename(tmp_path, side_path) != 0) {
-        struct zcl_result r = ZCL_ERR(-7,
-            "bii_write_sidecar: rename %s -> %s: %s",
-            tmp_path, side_path, strerror(errno));
-        unlink(tmp_path);
-        return r;
-    }
-    return ZCL_OK;
+    return ssio_write_sidecar(datadir, &bii_spec);
 }
 
-static enum bii_verdict bii_read_sidecar(const char *side_path,
-                                          struct bii_sidecar_header *out)
+static enum bii_verdict bii_read_sidecar(const char *datadir,
+                                          struct ssio_sidecar_header *out)
 {
-    FILE *f = fopen(side_path, "rb");
-    if (!f) {
-        if (errno == ENOENT) return BII_SIDECAR_MISSING;
-        return BII_BODY_UNREADABLE;
+    switch (ssio_read_sidecar(datadir, &bii_spec, out)) {
+    case SSIO_READ_OK:          return BII_OK;
+    case SSIO_READ_MISSING:     return BII_SIDECAR_MISSING;
+    case SSIO_READ_UNREADABLE:  return BII_BODY_UNREADABLE;
+    case SSIO_READ_STALE:       return BII_SIDECAR_STALE;
+    case SSIO_READ_BAD_MAGIC:   return BII_SIDECAR_BAD_MAGIC;
+    case SSIO_READ_UNSUPPORTED: return BII_SIDECAR_UNSUPPORTED;
     }
-    size_t n = fread(out, 1, sizeof(*out), f);
-    bool io_err = ferror(f) != 0;
-    fclose(f);
-    if (io_err || n != sizeof(*out))
-        return BII_SIDECAR_STALE;
-    if (memcmp(out->magic, BII_MAGIC, 4) != 0)
-        return BII_SIDECAR_BAD_MAGIC;
-    if (out->version != BII_SIDECAR_VERSION)
-        return BII_SIDECAR_UNSUPPORTED;
-    return BII_OK;
+    return BII_BODY_UNREADABLE;
 }
 
 /* Cross-check the loader's declared tip against the SQLite `blocks`
@@ -208,8 +104,8 @@ enum bii_verdict bii_verify(const char *datadir,
 
     char body_path[1024];
     char side_path[1024];
-    bii_body_path(body_path, sizeof(body_path), datadir);
-    bii_sidecar_path(side_path, sizeof(side_path), datadir);
+    snprintf(body_path, sizeof(body_path), "%s/%s", datadir, bii_spec.body_name);
+    snprintf(side_path, sizeof(side_path), "%s/%s", datadir, bii_spec.sidecar_name);
 
     /* Body presence. */
     struct stat body_st;
@@ -220,8 +116,8 @@ enum bii_verdict bii_verify(const char *datadir,
     }
 
     /* Sidecar read. */
-    struct bii_sidecar_header hdr;
-    enum bii_verdict rv = bii_read_sidecar(side_path, &hdr);
+    struct ssio_sidecar_header hdr;
+    enum bii_verdict rv = bii_read_sidecar(datadir, &hdr);
     if (rv == BII_SIDECAR_MISSING) {
         if (err_out) snprintf(err_out, err_cap,
                 "no sidecar at %s (first run after upgrade?)", side_path);
@@ -259,7 +155,7 @@ enum bii_verdict bii_verify(const char *datadir,
     /* Full hash. */
     uint8_t actual_hash[32];
     uint64_t hashed_size = 0;
-    if (!bii_hash_body(body_path, actual_hash, &hashed_size)) {
+    if (!ssio_hash_body(datadir, &bii_spec, actual_hash, &hashed_size)) {
         if (err_out) snprintf(err_out, err_cap,
                 "failed to hash %s: %s", body_path, strerror(errno));
         return BII_BODY_UNREADABLE;
@@ -295,35 +191,7 @@ enum bii_verdict bii_verify(const char *datadir,
     return BII_OK;
 }
 
-static void bii_rename_if_present(const char *src, int64_t ts,
-                                    const char *label)
-{
-    struct stat st;
-    if (stat(src, &st) != 0) return;  /* nothing to do */
-
-    char dst[1200];
-    snprintf(dst, sizeof(dst), "%s.corrupt.%lld", src, (long long)ts);
-    if (rename(src, dst) != 0) {
-        LOG_WARN("bii_quarantine", "bii_quarantine: rename %s -> %s failed: %s", src, dst, strerror(errno));
-        return;
-    }
-    printf("bii: quarantined %s -> %s (%s)\n", src, dst, label);
-}
-
 void bii_quarantine_corrupt(const char *datadir, enum bii_verdict v)
 {
-    if (!datadir) return;
-    int64_t ts = (int64_t)platform_time_wall_time_t();
-
-    char body_path[1024];
-    char side_path[1024];
-    bii_body_path(body_path, sizeof(body_path), datadir);
-    bii_sidecar_path(side_path, sizeof(side_path), datadir);
-
-    bii_rename_if_present(body_path, ts, bii_verdict_name(v));
-    bii_rename_if_present(side_path, ts, bii_verdict_name(v));
-
-    event_emitf(EV_BLOCK_INDEX_CORRUPT, 0,
-                "verdict=%s ts=%lld",
-                bii_verdict_name(v), (long long)ts);
+    ssio_quarantine(datadir, &bii_spec, bii_verdict_name(v));
 }

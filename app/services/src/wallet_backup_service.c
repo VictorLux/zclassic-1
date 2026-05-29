@@ -111,18 +111,6 @@ static struct wallet_backup_service_state g_wbs = {
 
 /* ── Helpers ────────────────────────────────────────────────── */
 
-static int64_t wbs_now_ms(void)
-{
-    struct timespec ts;
-    platform_time_monotonic_timespec(&ts);
-    return (int64_t)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
-}
-
-static int64_t wbs_now_unix(void)
-{
-    return (int64_t)platform_time_wall_time_t();
-}
-
 void wallet_backup_config_defaults(struct wallet_backup_config *cfg)
 {
     if (!cfg) return;
@@ -389,7 +377,7 @@ int wallet_backup_rotate(const char *backup_dir, int max_versions)
 
 static struct zcl_result wbs_run_one_locked(void)
 {
-    int64_t started_ms = wbs_now_ms();
+    int64_t started_ms = platform_time_monotonic_ms();
     char path[512] = "";
     char err[256]  = "";
     int64_t key_count = -1;
@@ -398,11 +386,11 @@ static struct zcl_result wbs_run_one_locked(void)
                                       &key_count,
                                       err, sizeof(err));
     bool ok = res.ok;
-    int64_t elapsed = wbs_now_ms() - started_ms;
+    int64_t elapsed = platform_time_monotonic_ms() - started_ms;
 
     if (ok) {
         g_wbs.total_runs++;
-        g_wbs.last_run_unix    = wbs_now_unix();
+        g_wbs.last_run_unix    = platform_time_wall_unix();
         g_wbs.last_key_count   = key_count;
         g_wbs.last_duration_ms = elapsed;
         snprintf(g_wbs.last_path, sizeof(g_wbs.last_path), "%s", path);
@@ -439,12 +427,6 @@ struct zcl_result wallet_backup_now(void)
 
 /* ── Thread loop ────────────────────────────────────────────── */
 
-static void wbs_sleep_ms(int ms)
-{
-    struct timespec ts = { ms / 1000, (ms % 1000) * 1000000L };
-    nanosleep(&ts, NULL);
-}
-
 static void *wbs_thread_fn(void *arg)
 {
     (void)arg;
@@ -459,7 +441,7 @@ static void *wbs_thread_fn(void *arg)
      * is the boot that hasn't reached its first hourly tick yet. */
     (void)wallet_backup_now();
 
-    int64_t next_at_ms = wbs_now_ms() + (int64_t)interval * 1000;
+    int64_t next_at_ms = platform_time_monotonic_ms() + (int64_t)interval * 1000;
     while (true) {
         pthread_mutex_lock(&g_wbs.lock);
         bool stop = g_wbs.stop_requested;
@@ -469,7 +451,7 @@ static void *wbs_thread_fn(void *arg)
         if (stop) break;
 
         bool ran_this_tick = false;
-        if (wbs_now_ms() >= next_at_ms) {
+        if (platform_time_monotonic_ms() >= next_at_ms) {
             (void)wallet_backup_now();
             ran_this_tick = true;
             /* Re-read interval in case config was updated. */
@@ -478,13 +460,13 @@ static void *wbs_thread_fn(void *arg)
                 ? g_wbs.cfg.interval_seconds
                 : WALLET_BACKUP_DEFAULT_INTERVAL_SEC;
             pthread_mutex_unlock(&g_wbs.lock);
-            next_at_ms = wbs_now_ms() + (int64_t)interval * 1000;
+            next_at_ms = platform_time_monotonic_ms() + (int64_t)interval * 1000;
         } else if (pending) {
             /* Debounced trigger path: fire if the last backup (of any
              * kind) is older than WALLET_BACKUP_TRIGGER_MIN_INTERVAL_SEC.
              * Multiple triggers that arrive inside the window collapse
              * into this single run. */
-            int64_t now_s = wbs_now_unix();
+            int64_t now_s = platform_time_wall_unix();
             if (last_ok == 0 ||
                 now_s >= last_ok + WALLET_BACKUP_TRIGGER_MIN_INTERVAL_SEC) {
                 (void)wallet_backup_now();
@@ -503,7 +485,7 @@ static void *wbs_thread_fn(void *arg)
 
         /* Sleep in small increments so stop_requested is honoured
          * without waiting up to `interval` seconds. */
-        wbs_sleep_ms(200);
+        platform_sleep_ms(200);
     }
 
     pthread_mutex_lock(&g_wbs.lock);

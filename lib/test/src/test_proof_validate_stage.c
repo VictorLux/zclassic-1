@@ -56,12 +56,6 @@ static int mkdir_p_pv(const char *p)
     return -1;
 }
 
-static void pv_tmpdir(char *buf, size_t n, const char *tag)
-{
-    snprintf(buf, n, "./test-tmp/proof_validate_%d_%s",
-             (int)getpid(), tag);
-}
-
 static bool make_shielded_tx(struct transaction *tx, int h)
 {
     transaction_init(tx);
@@ -292,7 +286,7 @@ static int pv_setup(const char *tag, int n, int upstream_fail_height,
                     char *dir_out, size_t dir_out_size,
                     struct main_state *ms, struct synth_chain_pv *sc)
 {
-    pv_tmpdir(dir_out, dir_out_size, tag);
+    test_fmt_tmpdir(dir_out, dir_out_size, "proof_validate", tag);
     mkdir_p_pv("./test-tmp");
     mkdir_p_pv(dir_out);
     if (!progress_store_open(dir_out)) return 1;

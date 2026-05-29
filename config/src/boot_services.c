@@ -772,7 +772,6 @@ static bool boot_https_explorer_start(void *ctx)
         static char s_cert[1024], s_key[1024];
         strncpy(s_cert, cert_path, sizeof(s_cert) - 1);
         strncpy(s_key, key_path, sizeof(s_key) - 1);
-        extern void https_deferred_set(const char *cert, const char *key);
         https_deferred_set(s_cert, s_key);
     }
     return true;

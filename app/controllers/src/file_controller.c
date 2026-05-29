@@ -555,8 +555,7 @@ static bool rpc_getfilemanifest(const struct json_value *params, bool help,
     json_set_object(result);
 
     char root_hex[65];
-    for (int i = 0; i < 32; i++)
-        snprintf(root_hex + i * 2, 3, "%02x", manifest.root_hash[i]);
+    HexStr(manifest.root_hash, 32, false, root_hex, sizeof(root_hex));
     json_push_kv_str(result, "root_hash", root_hex);
     json_push_kv_int(result, "num_chunks", (int64_t)manifest.num_chunks);
     json_push_kv_int(result, "total_bytes", (int64_t)manifest.total_bytes);
@@ -569,8 +568,7 @@ static bool rpc_getfilemanifest(const struct json_value *params, bool help,
         json_set_object(&chunk_obj);
 
         char hex[65];
-        for (int j = 0; j < 32; j++)
-            snprintf(hex + j * 2, 3, "%02x", manifest.chunks[i].sha3[j]);
+        HexStr(manifest.chunks[i].sha3, 32, false, hex, sizeof(hex));
         json_push_kv_str(&chunk_obj, "sha3", hex);
         json_push_kv_int(&chunk_obj, "size",
                           (int64_t)manifest.chunks[i].size);

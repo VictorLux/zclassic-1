@@ -61,12 +61,6 @@ static int mkdir_p_uv(const char *p)
     return -1;
 }
 
-static void uv_tmpdir(char *buf, size_t n, const char *tag)
-{
-    snprintf(buf, n, "./test-tmp/utxo_apply_%d_%s",
-             (int)getpid(), tag);
-}
-
 static void synthetic_txid(struct uint256 *out, int h, int salt)
 {
     uint256_set_null(out);
@@ -317,7 +311,7 @@ static int uv_setup(const char *tag, int n, enum uv_fail_kind fail_kind,
                     size_t dir_out_size, struct main_state *ms,
                     struct synth_chain_uv *sc)
 {
-    uv_tmpdir(dir_out, dir_out_size, tag);
+    test_fmt_tmpdir(dir_out, dir_out_size, "utxo_apply", tag);
     mkdir_p_uv("./test-tmp");
     mkdir_p_uv(dir_out);
     if (!progress_store_open(dir_out)) return 1;

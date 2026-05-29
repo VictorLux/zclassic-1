@@ -59,8 +59,6 @@ double explorer_get_difficulty(const struct block_index *bi);
 bool explorer_param_is_printable_ascii(const char *s);
 void format_time(char *buf, size_t max, uint32_t t);
 void format_time_ago(char *buf, size_t max, uint32_t t);
-void format_zcl(char *buf, size_t max, int64_t zatoshi);
-bool is_all_digits(const char *s);
 bool addr_encode(char *out, size_t outmax,
                  const struct tx_destination *dest);
 bool addr_decode(const char *str, struct tx_destination *dest);

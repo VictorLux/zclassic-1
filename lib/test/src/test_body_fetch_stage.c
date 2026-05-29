@@ -58,12 +58,6 @@ static int mkdir_p_bf(const char *p)
     return -1;
 }
 
-static void bf_tmpdir(char *buf, size_t n, const char *tag)
-{
-    snprintf(buf, n, "./test-tmp/body_fetch_%d_%s",
-             (int)getpid(), tag);
-}
-
 /* Synthetic chain — fully controllable nStatus + nHeight per block. */
 struct synth_chain_bf {
     struct block_index *blocks;
@@ -171,7 +165,7 @@ static int bf_setup(const char *tag, int n,
                      struct main_state *ms,
                      struct synth_chain_bf *sc)
 {
-    bf_tmpdir(dir_out, dir_out_size, tag);
+    test_fmt_tmpdir(dir_out, dir_out_size, "body_fetch", tag);
     mkdir_p_bf(dir_out);
     if (!progress_store_open(dir_out)) return 1;
 
@@ -435,7 +429,7 @@ int test_body_fetch_stage(void)
      * in the random window, guaranteeing the kill lands mid-drain. */
     {
         char dir[256];
-        bf_tmpdir(dir, sizeof(dir), "crash_replay");
+        test_fmt_tmpdir(dir, sizeof(dir), "body_fetch", "crash_replay");
         mkdir_p_bf(dir);
 
         /* Temporarily restore default SIGCHLD: alerts.c installs

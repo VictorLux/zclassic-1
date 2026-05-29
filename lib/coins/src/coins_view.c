@@ -448,25 +448,25 @@ int64_t coins_view_cache_get_value_in(struct coins_view_cache *c,
         }
         /* Per-input MoneyRange: each input must be in [0, MAX_MONEY].
          * Catches corrupted coins with invalid values before summing. */
-        if (out->value < 0 || out->value > 2100000000000000LL)
+        if (!MoneyRange(out->value))
             LOG_RETURN((int64_t)-1, "coins_view",
                        "get_value_in: input[%zu] value %lld out of range",
                        i, (long long)out->value);
         value += out->value;
         /* Overflow check: cumulative transparent inputs can't exceed MAX_MONEY */
-        if (value < 0 || value > 2100000000000000LL)
+        if (!MoneyRange(value))
             return -1;
     }
     /* Sapling value balance: positive = value FROM shielded pool */
     if (tx->value_balance >= 0) {
         value += tx->value_balance;
-        if (value < 0 || value > 2100000000000000LL)
+        if (!MoneyRange(value))
             return -1;
     }
     /* JoinSplit vpub_new: value FROM Sprout pool */
     for (size_t i = 0; i < tx->num_joinsplit; i++) {
         value += tx->v_joinsplit[i].vpub_new;
-        if (value < 0 || value > 2100000000000000LL)
+        if (!MoneyRange(value))
             return -1;
     }
     return value;

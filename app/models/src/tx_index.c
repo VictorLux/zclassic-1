@@ -9,6 +9,7 @@
 
 #include "models/tx_index.h"
 #include "models/block.h"
+#include "util/log_macros.h"
 #include <string.h>
 
 /* ── Callbacks ─────────────────────────────────────────────────── */
@@ -22,18 +23,15 @@ static bool tx_index_before_save(void *record, void *ctx)
     const struct db_tx_index *t = record;
     static const uint8_t zero[32] = {0};
     if (memcmp(t->txid, zero, 32) == 0) {
-        fprintf(stderr, "[tx_index] before_save REJECTED: null txid\n");
-        return false;
+        LOG_FAIL("tx_index", "before_save REJECTED: null txid");
     }
     if (t->block_height < 0) {
-        fprintf(stderr, "[tx_index] before_save REJECTED: negative height %d\n",
-                t->block_height);
-        return false;
+        LOG_FAIL("tx_index", "before_save REJECTED: negative height %d",
+                 t->block_height);
     }
     if (t->file_num < 0) {
-        fprintf(stderr, "[tx_index] before_save REJECTED: negative file_num %d\n",
-                t->file_num);
-        return false;
+        LOG_FAIL("tx_index", "before_save REJECTED: negative file_num %d",
+                 t->file_num);
     }
     return true;
 }

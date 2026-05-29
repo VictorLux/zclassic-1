@@ -371,8 +371,6 @@ static void ensure_directory_table(sqlite3 *db)
 static void populate_directory_from_chain(sqlite3 *db)
 {
     struct onion_context *ctx = onion_ctx();
-    extern int blog_discover_onion_peers(const char *,
-                                          struct onion_peer *, size_t);
     if (!ctx->datadir) return;
 
     struct onion_peer peers[256];

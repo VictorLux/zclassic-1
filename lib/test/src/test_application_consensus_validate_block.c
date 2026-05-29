@@ -100,16 +100,11 @@ static void fake_utxo_free(struct fake_utxo_state *s)
 
 /* ---- params + block builders ----------------------------------- */
 
-/* powLimit set to all-ones so any target derived from a legal nBits
- * is at or below it. With nBits = 0x207fffff (regtest-style
- * "trivially easy" target ~ 2^255) and a small mining loop on
- * nNonce.data[0], we deterministically find a header whose hash
- * satisfies PoW in ~1-2 iterations. */
-static void easy_params(struct consensus_params *p)
-{
-    memset(p, 0, sizeof(*p));
-    for (int i = 0; i < 32; i++) p->powLimit.data[i] = 0xff;
-}
+/* test_make_easy_consensus_params() sets powLimit to all-ones so any
+ * target derived from a legal nBits is at or below it. With
+ * nBits = 0x207fffff (regtest-style "trivially easy" target ~ 2^255)
+ * and a small mining loop on nNonce.data[0], we deterministically find
+ * a header whose hash satisfies PoW in ~1-2 iterations. */
 
 /* Mine the header by bumping nNonce until block_get_hash <= target.
  * Bounded to 1024 iterations — at the easy target the loop exits in
@@ -170,7 +165,7 @@ int test_application_consensus_validate_block(void)
 
     /* 2. Block with zero transactions. */
     {
-        struct consensus_params p; easy_params(&p);
+        struct consensus_params p; test_make_easy_consensus_params(&p);
         struct block b; block_init(&b);
         b.header.nBits = 0x207fffff;
         mine_easy_pow(&b);
@@ -185,7 +180,7 @@ int test_application_consensus_validate_block(void)
 
     /* 3. Coinbase-only block, no UTXO port — should pass. */
     {
-        struct consensus_params p; easy_params(&p);
+        struct consensus_params p; test_make_easy_consensus_params(&p);
         struct block b; block_init(&b);
         b.header.nBits = 0x207fffff;
         b.vtx = calloc(1, sizeof(struct transaction));
@@ -203,7 +198,7 @@ int test_application_consensus_validate_block(void)
 
     /* 4. First tx is NOT coinbase. */
     {
-        struct consensus_params p; easy_params(&p);
+        struct consensus_params p; test_make_easy_consensus_params(&p);
         struct block b; block_init(&b);
         b.header.nBits = 0x207fffff;
         b.vtx = calloc(1, sizeof(struct transaction));
@@ -224,7 +219,7 @@ int test_application_consensus_validate_block(void)
 
     /* 5. Two coinbases (extra coinbase) — reject. */
     {
-        struct consensus_params p; easy_params(&p);
+        struct consensus_params p; test_make_easy_consensus_params(&p);
         struct block b; block_init(&b);
         b.header.nBits = 0x207fffff;
         b.vtx = calloc(2, sizeof(struct transaction));
@@ -244,7 +239,7 @@ int test_application_consensus_validate_block(void)
 
     /* 6. Non-coinbase input not in UTXO -> ERR_INPUT_NOT_FOUND. */
     {
-        struct consensus_params p; easy_params(&p);
+        struct consensus_params p; test_make_easy_consensus_params(&p);
 
         struct fake_utxo_state s;
         struct utxo_snapshot_port port;
@@ -274,7 +269,7 @@ int test_application_consensus_validate_block(void)
 
     /* 7. Non-coinbase input PRESENT in UTXO -> OK. */
     {
-        struct consensus_params p; easy_params(&p);
+        struct consensus_params p; test_make_easy_consensus_params(&p);
 
         struct fake_utxo_state s;
         struct utxo_snapshot_port port;

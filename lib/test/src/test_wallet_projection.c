@@ -23,21 +23,6 @@ static void fill_seq(uint8_t *dst, size_t len, uint8_t seed)
         dst[i] = (uint8_t)(seed + (uint8_t)i);
 }
 
-static void wp_tmpdir(char *buf, size_t n, const char *tag)
-{
-    snprintf(buf, n, "./test-tmp/wallet_projection_%d_%s",
-             (int)getpid(), tag);
-    test_cleanup_tmpdir(buf);
-    mkdir("test-tmp", 0755);
-    mkdir(buf, 0755);
-}
-
-static void wp_paths(const char *dir, char *elog, size_t elog_n,
-                     char *proj, size_t proj_n)
-{
-    snprintf(elog, elog_n, "%s/event_log.dat", dir);
-    snprintf(proj, proj_n, "%s/wallet_projection.db", dir);
-}
 
 static bool table_exists(const char *db_path, const char *name)
 {
@@ -377,8 +362,9 @@ static int t_projection_skeleton_open_reopen(void)
 {
     int failures = 0;
     char dir[256], elog_path[300], proj_path[300];
-    wp_tmpdir(dir, sizeof(dir), "skeleton");
-    wp_paths(dir, elog_path, sizeof(elog_path), proj_path, sizeof(proj_path));
+    test_make_tmpdir(dir, sizeof(dir), "wallet_projection", "skeleton");
+    test_projection_paths(dir, "wallet", elog_path, sizeof(elog_path),
+                          proj_path, sizeof(proj_path));
 
     event_log_t *log = event_log_open(elog_path);
     wallet_projection_t *p = wallet_projection_open(proj_path, log);
@@ -437,8 +423,9 @@ static int t_reader_api_aggregates(void)
 {
     int failures = 0;
     char dir[256], elog_path[300], proj_path[300];
-    wp_tmpdir(dir, sizeof(dir), "readers");
-    wp_paths(dir, elog_path, sizeof(elog_path), proj_path, sizeof(proj_path));
+    test_make_tmpdir(dir, sizeof(dir), "wallet_projection", "readers");
+    test_projection_paths(dir, "wallet", elog_path, sizeof(elog_path),
+                          proj_path, sizeof(proj_path));
 
     event_log_t *log = event_log_open(elog_path);
     wallet_projection_t *p = wallet_projection_open(proj_path, log);
@@ -470,8 +457,9 @@ static int t_projection_catch_up_replay(void)
 {
     int failures = 0;
     char dir[256], elog_path[300], proj_path[300];
-    wp_tmpdir(dir, sizeof(dir), "replay");
-    wp_paths(dir, elog_path, sizeof(elog_path), proj_path, sizeof(proj_path));
+    test_make_tmpdir(dir, sizeof(dir), "wallet_projection", "replay");
+    test_projection_paths(dir, "wallet", elog_path, sizeof(elog_path),
+                          proj_path, sizeof(proj_path));
 
     event_log_t *log = event_log_open(elog_path);
     wallet_projection_t *p = wallet_projection_open(proj_path, log);
@@ -532,8 +520,9 @@ static int t_replace_on_duplicate_key(void)
     int failures = 0;
     char dir[256], elog_path[300], proj_path[300];
     char label[64];
-    wp_tmpdir(dir, sizeof(dir), "duplicate_key");
-    wp_paths(dir, elog_path, sizeof(elog_path), proj_path, sizeof(proj_path));
+    test_make_tmpdir(dir, sizeof(dir), "wallet_projection", "duplicate_key");
+    test_projection_paths(dir, "wallet", elog_path, sizeof(elog_path),
+                          proj_path, sizeof(proj_path));
 
     event_log_t *log = event_log_open(elog_path);
     wallet_projection_t *p = wallet_projection_open(proj_path, log);
@@ -561,8 +550,9 @@ static int t_resume_from_partial_projection(void)
 {
     int failures = 0;
     char dir[256], elog_path[300], proj_path[300];
-    wp_tmpdir(dir, sizeof(dir), "partial_resume");
-    wp_paths(dir, elog_path, sizeof(elog_path), proj_path, sizeof(proj_path));
+    test_make_tmpdir(dir, sizeof(dir), "wallet_projection", "partial_resume");
+    test_projection_paths(dir, "wallet", elog_path, sizeof(elog_path),
+                          proj_path, sizeof(proj_path));
 
     event_log_t *log = event_log_open(elog_path);
     wallet_projection_t *p = wallet_projection_open(proj_path, log);
@@ -595,8 +585,9 @@ static int t_emit_helpers_replay_public_view(void)
     int failures = 0;
     char dir[256], elog_path[300], proj_path[300];
     uint8_t pubhash[20], derived[20], txid[32], cm[32];
-    wp_tmpdir(dir, sizeof(dir), "emit_helpers");
-    wp_paths(dir, elog_path, sizeof(elog_path), proj_path, sizeof(proj_path));
+    test_make_tmpdir(dir, sizeof(dir), "wallet_projection", "emit_helpers");
+    test_projection_paths(dir, "wallet", elog_path, sizeof(elog_path),
+                          proj_path, sizeof(proj_path));
 
     event_log_t *log = event_log_open(elog_path);
     wallet_projection_t *p = wallet_projection_open(proj_path, log);
@@ -638,8 +629,9 @@ static int t_model_shadow_emits(void)
     int failures = 0;
     char dir[256], elog_path[300], proj_path[300], db_path[300];
     struct node_db ndb;
-    wp_tmpdir(dir, sizeof(dir), "model_shadow");
-    wp_paths(dir, elog_path, sizeof(elog_path), proj_path, sizeof(proj_path));
+    test_make_tmpdir(dir, sizeof(dir), "wallet_projection", "model_shadow");
+    test_projection_paths(dir, "wallet", elog_path, sizeof(elog_path),
+                          proj_path, sizeof(proj_path));
     snprintf(db_path, sizeof(db_path), "%s/node.db", dir);
     memset(&ndb, 0, sizeof(ndb));
 

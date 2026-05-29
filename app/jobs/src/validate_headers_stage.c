@@ -90,13 +90,6 @@ static void           *g_validator_user = NULL;
 /* Datadir cached at init for the workers (g_validator may need it). */
 static char            g_datadir[2048] = {0};
 
-static int64_t wall_now_s(void)
-{
-    struct timespec ts;
-    platform_time_realtime_timespec(&ts);
-    return (int64_t)ts.tv_sec;
-}
-
 /* ── Worker pool ──────────────────────────────────────────────────── */
 
 static void *worker_entry(void *arg)
@@ -244,7 +237,7 @@ static bool log_insert(sqlite3 *db, const struct vh_job *job)
         sqlite3_bind_text(stmt, 4, job->reason, -1, SQLITE_TRANSIENT);
     else
         sqlite3_bind_null(stmt, 4);
-    sqlite3_bind_int64(stmt, 5, (sqlite3_int64)wall_now_s());
+    sqlite3_bind_int64(stmt, 5, (sqlite3_int64)platform_time_wall_unix());
 
     rc = sqlite3_step(stmt);  // raw-sql-ok:kernel-primitive
     sqlite3_finalize(stmt);
@@ -302,7 +295,7 @@ static job_result_t recheck_failed_rows(struct main_state *ms,
         struct block_index *bi = active_chain_at(&ms->chain_active, (int)h64);
         if (!bi || !bi->phashBlock) {
             sqlite3_finalize(stmt);
-            atomic_store(&g_last_blocked_unix, wall_now_s());
+            atomic_store(&g_last_blocked_unix, platform_time_wall_unix());
             return JOB_IDLE;
         }
         jobs[n].bi = bi;
@@ -370,7 +363,7 @@ static bool mark_valid_header(struct block_index *bi)
 
 static job_result_t step_validate(struct stage_step_ctx *c)
 {
-    atomic_store(&g_last_step_unix, wall_now_s());
+    atomic_store(&g_last_step_unix, platform_time_wall_unix());
 
     struct main_state *ms = g_ms;
     if (!ms) return JOB_IDLE;
@@ -385,7 +378,7 @@ static job_result_t step_validate(struct stage_step_ctx *c)
      * admitted. We can validate up to ha_cursor-1. */
     uint64_t ha_cursor = header_admit_stage_cursor();
     if ((uint64_t)next_h >= ha_cursor) {
-        atomic_store(&g_last_blocked_unix, wall_now_s());
+        atomic_store(&g_last_blocked_unix, platform_time_wall_unix());
         return JOB_IDLE;  /* not BLOCKED — header_admit will catch up */
     }
 
@@ -405,7 +398,7 @@ static job_result_t step_validate(struct stage_step_ctx *c)
              * since header_admit just admitted it, but a concurrent
              * reorg between admission and validation is conceivable.
              * Block on this specific case so the supervisor surfaces it. */
-            atomic_store(&g_last_blocked_unix, wall_now_s());
+            atomic_store(&g_last_blocked_unix, platform_time_wall_unix());
             return JOB_IDLE;
         }
         jobs[i].bi     = bi;
@@ -525,17 +518,7 @@ job_result_t validate_headers_stage_step_once(void)
     return stage_run_once(g_stage, db);
 }
 
-int validate_headers_stage_drain(int max_steps)
-{
-    if (max_steps <= 0) return 0;
-    int advanced = 0;
-    for (int i = 0; i < max_steps; i++) {
-        job_result_t r = validate_headers_stage_step_once();
-        if (r != JOB_ADVANCED) break;
-        advanced++;
-    }
-    return advanced;
-}
+STAGE_DRAIN_IMPL(validate_headers)
 
 void validate_headers_stage_shutdown(void)
 {

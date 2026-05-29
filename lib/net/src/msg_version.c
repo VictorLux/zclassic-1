@@ -189,10 +189,7 @@ void msg_version_build(struct version_message *ver,
     if (g_has_external_ip) {
         ver->addr_from.nServices = ver->services;
         ver->addr_from.nTime = (uint32_t)platform_time_wall_time_t();
-        memset(ver->addr_from.svc.addr.ip, 0, 10);
-        ver->addr_from.svc.addr.ip[10] = 0xff;
-        ver->addr_from.svc.addr.ip[11] = 0xff;
-        memcpy(ver->addr_from.svc.addr.ip + 12, g_external_ip, 4);
+        net_addr_set_ipv4(&ver->addr_from.svc.addr, g_external_ip);
         ver->addr_from.svc.port = g_external_port;
     }
     ver->nonce = mp->net_mgr->local_host_nonce;
@@ -341,10 +338,7 @@ bool process_version(struct msg_processor *mp, struct p2p_node *node,
         memset(&self, 0, sizeof(self));
         self.nServices = NODE_NETWORK;
         self.nTime = (uint32_t)platform_time_wall_time_t();
-        memset(self.svc.addr.ip, 0, 10);
-        self.svc.addr.ip[10] = 0xff;
-        self.svc.addr.ip[11] = 0xff;
-        memcpy(self.svc.addr.ip + 12, g_external_ip, 4);
+        net_addr_set_ipv4(&self.svc.addr, g_external_ip);
         self.svc.port = g_external_port;
         p2p_node_push_address(node, &self);
     }

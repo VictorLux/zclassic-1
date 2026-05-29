@@ -27,6 +27,13 @@
 #include <stdint.h>
 #include <stdio.h>
 
+/* Generous progress-quiet window shared by all eight shadow stages:
+ * 1800s (30 min) of IDLE before emitting a "behind live chain" warning.
+ * Shadow stages legitimately idle for long stretches when the live
+ * chain is wedged, so this is intentionally longer than the 900s
+ * COORD_ESC_QUIET_US escalation window in chain_supervisor.c. */
+#define SHADOW_STAGE_QUIET_US ((int64_t)1800 * 1000 * 1000)
+
 /* ── Wave S, S-2: header_admit shadow-stage supervisor child ──── */
 static struct liveness_contract g_header_admit_contract;
 static supervisor_child_id      g_header_admit_id = SUPERVISOR_INVALID_ID;
@@ -74,7 +81,7 @@ static void staged_header_admit_register(struct main_state *ms)
      * for long stretches when the live chain is stuck. 30 min before
      * we emit a "behind live chain" warning. */
     atomic_store(&g_header_admit_contract.progress_max_quiet_us,
-                 (int64_t)1800 * 1000 * 1000);
+                 SHADOW_STAGE_QUIET_US);
     g_header_admit_contract.on_tick  = header_admit_tick;
     g_header_admit_contract.on_stall = header_admit_stall;
     g_header_admit_id = supervisor_register_in_domain(g_chain_sup,
@@ -125,7 +132,7 @@ static void staged_validate_headers_register(struct main_state *ms)
      * tracks admission, which itself can be idle for hours when the
      * live chain is wedged. */
     atomic_store(&g_vh_contract.progress_max_quiet_us,
-                 (int64_t)1800 * 1000 * 1000);
+                 SHADOW_STAGE_QUIET_US);
     g_vh_contract.on_tick  = vh_tick;
     g_vh_contract.on_stall = vh_stall;
     g_vh_id = supervisor_register_in_domain(g_chain_sup, &g_vh_contract);
@@ -174,7 +181,7 @@ static void staged_body_fetch_register(struct main_state *ms)
     /* Same generous quiet window as upstream shadow stages — body_fetch
      * naturally idles whenever validate is idle. */
     atomic_store(&g_bf_contract.progress_max_quiet_us,
-                 (int64_t)1800 * 1000 * 1000);
+                 SHADOW_STAGE_QUIET_US);
     g_bf_contract.on_tick  = bf_tick;
     g_bf_contract.on_stall = bf_stall;
     g_bf_id = supervisor_register_in_domain(g_chain_sup, &g_bf_contract);
@@ -218,7 +225,7 @@ static void staged_body_persist_register(struct main_state *ms)
     liveness_contract_init(&g_bp_contract, "staged.body_persist");
     atomic_store(&g_bp_contract.period_secs, (int64_t)2);
     atomic_store(&g_bp_contract.progress_max_quiet_us,
-                 (int64_t)1800 * 1000 * 1000);
+                 SHADOW_STAGE_QUIET_US);
     g_bp_contract.on_tick  = bp_tick;
     g_bp_contract.on_stall = bp_stall;
     g_bp_id = supervisor_register_in_domain(g_chain_sup, &g_bp_contract);
@@ -262,7 +269,7 @@ static void staged_script_validate_register(struct main_state *ms)
     liveness_contract_init(&g_sv_contract, "staged.script_validate");
     atomic_store(&g_sv_contract.period_secs, (int64_t)2);
     atomic_store(&g_sv_contract.progress_max_quiet_us,
-                 (int64_t)1800 * 1000 * 1000);
+                 SHADOW_STAGE_QUIET_US);
     g_sv_contract.on_tick  = sv_tick;
     g_sv_contract.on_stall = sv_stall;
     g_sv_id = supervisor_register_in_domain(g_chain_sup, &g_sv_contract);
@@ -306,7 +313,7 @@ static void staged_proof_validate_register(struct main_state *ms)
     liveness_contract_init(&g_pv_contract, "staged.proof_validate");
     atomic_store(&g_pv_contract.period_secs, (int64_t)2);
     atomic_store(&g_pv_contract.progress_max_quiet_us,
-                 (int64_t)1800 * 1000 * 1000);
+                 SHADOW_STAGE_QUIET_US);
     g_pv_contract.on_tick  = pv_tick;
     g_pv_contract.on_stall = pv_stall;
     g_pv_id = supervisor_register_in_domain(g_chain_sup, &g_pv_contract);
@@ -350,7 +357,7 @@ static void staged_utxo_apply_register(struct main_state *ms)
     liveness_contract_init(&g_uv_contract, "staged.utxo_apply");
     atomic_store(&g_uv_contract.period_secs, (int64_t)2);
     atomic_store(&g_uv_contract.progress_max_quiet_us,
-                 (int64_t)1800 * 1000 * 1000);
+                 SHADOW_STAGE_QUIET_US);
     g_uv_contract.on_tick  = uv_tick;
     g_uv_contract.on_stall = uv_stall;
     g_uv_id = supervisor_register_in_domain(g_chain_sup, &g_uv_contract);
@@ -394,7 +401,7 @@ static void staged_tip_finalize_register(struct main_state *ms)
     liveness_contract_init(&g_tf_contract, "staged.tip_finalize");
     atomic_store(&g_tf_contract.period_secs, (int64_t)2);
     atomic_store(&g_tf_contract.progress_max_quiet_us,
-                 (int64_t)1800 * 1000 * 1000);
+                 SHADOW_STAGE_QUIET_US);
     g_tf_contract.on_tick  = tf_tick;
     g_tf_contract.on_stall = tf_stall;
     g_tf_id = supervisor_register_in_domain(g_chain_sup, &g_tf_contract);

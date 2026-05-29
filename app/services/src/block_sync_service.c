@@ -25,6 +25,7 @@
 #include "net/net.h"
 #include "validation/main_state.h"
 #include "validation/process_block.h"
+#include "consensus/params.h"
 #include <stdlib.h>
 #include <string.h>
 #include "util/log_macros.h"
@@ -136,7 +137,8 @@ void syncsvc_note_valid_block(struct sync_block_acceptance *result,
      * handshake is stale — the peer advanced while we were syncing,
      * so new_tip_height never reaches the old starting_height. */
     bool tip_is_recent = (new_tip_time > 0 &&
-        (int64_t)new_tip_time > (int64_t)platform_time_wall_time_t() - 75 * 2);
+        (int64_t)new_tip_time > (int64_t)platform_time_wall_time_t()
+            - POST_BUTTERCUP_POW_TARGET_SPACING * 2);
     bool reached_peer = (node->starting_height > 0 &&
                          new_tip_height >= node->starting_height);
     /* Guard against stale starting_height: if peers have advanced

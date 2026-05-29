@@ -87,11 +87,8 @@ static void dns_seed_resolve(struct connman *cm)
 
             if (p->ai_family == AF_INET) {
                 struct sockaddr_in *s4 = (struct sockaddr_in *)p->ai_addr;
-                memset(addr.svc.addr.ip, 0, 10);
-                addr.svc.addr.ip[10] = 0xff;
-                addr.svc.addr.ip[11] = 0xff;
-                memcpy(addr.svc.addr.ip + 12,
-                       &s4->sin_addr, 4);
+                net_addr_set_ipv4(&addr.svc.addr,
+                                  (const unsigned char *)&s4->sin_addr);
                 addr.nServices = NODE_NETWORK;
             } else if (p->ai_family == AF_INET6) {
                 struct sockaddr_in6 *s6 = (struct sockaddr_in6 *)p->ai_addr;
@@ -144,9 +141,6 @@ void connman_kick_seed_discovery(struct connman *cm)
 /* Fetch /directory.json from a .onion seed and add clearnet IPs */
 static void try_onion_seed_fetch(struct connman *cm, const char *onion)
 {
-    extern int tor_integration_fetch_onion_blocking(const char *, const char *,
-        struct onion_fetch_result *, int);
-
     printf("Onion seed: fetching /directory.json from %s...\n", onion);
     fflush(stdout);
 
@@ -191,13 +185,9 @@ static void try_onion_seed_fetch(struct connman *cm, const char *onion)
             unsigned a, b, c, d;
             if (sscanf(ip, "%u.%u.%u.%u", &a, &b, &c, &d) == 4) {
                 /* IPv4-mapped IPv6 */
-                memset(addr.svc.addr.ip, 0, 10);
-                addr.svc.addr.ip[10] = 0xff;
-                addr.svc.addr.ip[11] = 0xff;
-                addr.svc.addr.ip[12] = (uint8_t)a;
-                addr.svc.addr.ip[13] = (uint8_t)b;
-                addr.svc.addr.ip[14] = (uint8_t)c;
-                addr.svc.addr.ip[15] = (uint8_t)d;
+                unsigned char ip4[4] = {(unsigned char)a, (unsigned char)b,
+                                        (unsigned char)c, (unsigned char)d};
+                net_addr_set_ipv4(&addr.svc.addr, ip4);
                 addr.svc.port = port;
                 addr.nServices = NODE_NETWORK;
                 struct net_addr src;
@@ -245,7 +235,6 @@ static void *thread_dns_seed(void *arg)
                            peers[i].hostname, peers[i].height);
             }
             /* Try fetching clearnet IPs from discovered .onion peers */
-            extern bool tor_integration_is_ready(void);
             if (tor_integration_is_ready()) {
                 for (int i = 0; i < found && i < 3 && !g_stop; i++) {
                     try_onion_seed_fetch(cm, peers[i].hostname);
@@ -262,7 +251,6 @@ static void *thread_dns_seed(void *arg)
      * peer has us in their directory.json the fleet bootstraps via
      * gossip without a static seed). */
     if (!g_stop && cm->manager.num_nodes < 3) {
-        extern bool tor_integration_is_ready(void);
         if (tor_integration_is_ready()) {
             char buf[32][96];
             int n_seeds = 0;
@@ -1799,10 +1787,8 @@ void connman_add_seed_node(struct connman *cm, const char *host,
     if (getaddrinfo(host, NULL, &hints, &res) == 0 && res) {
         if (res->ai_family == AF_INET) {
             struct sockaddr_in *s4 = (struct sockaddr_in *)res->ai_addr;
-            memset(addr.svc.addr.ip, 0, 10);
-            addr.svc.addr.ip[10] = 0xff;
-            addr.svc.addr.ip[11] = 0xff;
-            memcpy(addr.svc.addr.ip + 12, &s4->sin_addr, 4);
+            net_addr_set_ipv4(&addr.svc.addr,
+                              (const unsigned char *)&s4->sin_addr);
         } else if (res->ai_family == AF_INET6) {
             struct sockaddr_in6 *s6 = (struct sockaddr_in6 *)res->ai_addr;
             memcpy(addr.svc.addr.ip, &s6->sin6_addr, 16);

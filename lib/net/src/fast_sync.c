@@ -12,6 +12,7 @@
 #include "core/hash.h"
 #include "crypto/sha256.h"
 #include "crypto/sha3.h"
+#include "crypto/common.h"
 #include "rpc/legacy_chain_oracle.h"
 #include "validation/chainstate.h"
 #include "validation/main_constants.h"
@@ -239,26 +240,6 @@ static uint64_t *g_snapshot_chunk_offsets = NULL;
 static uint32_t g_snapshot_num_chunks = 0;
 static pthread_mutex_t g_snapshot_cache_mutex = PTHREAD_MUTEX_INITIALIZER;
 
-static uint32_t read_le32(const uint8_t *p)
-{
-    return ((uint32_t)p[0]) |
-           ((uint32_t)p[1] << 8) |
-           ((uint32_t)p[2] << 16) |
-           ((uint32_t)p[3] << 24);
-}
-
-static uint64_t read_le64(const uint8_t *p)
-{
-    return ((uint64_t)p[0]) |
-           ((uint64_t)p[1] << 8) |
-           ((uint64_t)p[2] << 16) |
-           ((uint64_t)p[3] << 24) |
-           ((uint64_t)p[4] << 32) |
-           ((uint64_t)p[5] << 40) |
-           ((uint64_t)p[6] << 48) |
-           ((uint64_t)p[7] << 56);
-}
-
 static void sha3_write_u16_le(struct sha3_256_ctx *ctx, uint16_t v)
 {
     uint8_t le[2] = {
@@ -349,7 +330,7 @@ static bool snapshot_build_chunk_offsets_locked(void)
     size_t size = (size_t)g_snapshot_buf_size;
     while (pos + 4 <= size && g_snapshot_num_chunks < expected_chunks) {
         g_snapshot_chunk_offsets[g_snapshot_num_chunks++] = (uint64_t)pos;
-        uint32_t entries = read_le32(g_snapshot_buf + pos);
+        uint32_t entries = ReadLE32(g_snapshot_buf + pos);
         pos += 4;
         if (entries == 0 || entries > 1000)
             return false;
@@ -377,7 +358,7 @@ static bool snapshot_read_chunk_locked(uint32_t chunk_index,
     if (pos + 4 > size)
         return false;
 
-    uint32_t entries = read_le32(g_snapshot_buf + pos);
+    uint32_t entries = ReadLE32(g_snapshot_buf + pos);
     pos += 4;
     if (entries == 0 || entries > 1000)
         return false;
@@ -388,11 +369,11 @@ static bool snapshot_read_chunk_locked(uint32_t chunk_index,
 
         memcpy(out->entries[i].txid, g_snapshot_buf + pos, 32);
         pos += 32;
-        out->entries[i].vout = read_le32(g_snapshot_buf + pos);
+        out->entries[i].vout = ReadLE32(g_snapshot_buf + pos);
         pos += 4;
-        out->entries[i].value = (int64_t)read_le64(g_snapshot_buf + pos);
+        out->entries[i].value = (int64_t)ReadLE64(g_snapshot_buf + pos);
         pos += 8;
-        out->entries[i].height = (int32_t)read_le32(g_snapshot_buf + pos);
+        out->entries[i].height = (int32_t)ReadLE32(g_snapshot_buf + pos);
         pos += 4;
         out->entries[i].is_coinbase = g_snapshot_buf[pos++] != 0;
 

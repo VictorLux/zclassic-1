@@ -17,21 +17,6 @@
     if (!_ok) failures++; \
 } while (0)
 
-static void zp_tmpdir(char *buf, size_t n, const char *tag)
-{
-    snprintf(buf, n, "./test-tmp/znam_projection_%d_%s",
-             (int)getpid(), tag);
-    test_cleanup_tmpdir(buf);
-    mkdir("test-tmp", 0755);
-    mkdir(buf, 0755);
-}
-
-static void zp_paths(const char *dir, char *elog, size_t elog_n,
-                     char *proj, size_t proj_n)
-{
-    snprintf(elog, elog_n, "%s/event_log.dat", dir);
-    snprintf(proj, proj_n, "%s/znam_projection.db", dir);
-}
 
 static void fill_txid(uint8_t txid[32], uint8_t tail)
 {
@@ -270,8 +255,9 @@ static int t_open_close_clean(void)
 {
     int failures = 0;
     char dir[256], elog_path[300], proj_path[300];
-    zp_tmpdir(dir, sizeof(dir), "open");
-    zp_paths(dir, elog_path, sizeof(elog_path), proj_path, sizeof(proj_path));
+    test_make_tmpdir(dir, sizeof(dir), "znam_projection", "open");
+    test_projection_paths(dir, "znam", elog_path, sizeof(elog_path),
+                          proj_path, sizeof(proj_path));
     event_log_t *log = event_log_open(elog_path);
     znam_projection_t *p = znam_projection_open(proj_path, log);
     ZP_CHECK("open handles", log && p);
@@ -292,8 +278,9 @@ static int t_register_replay(void)
 {
     int failures = 0;
     char dir[256], elog_path[300], proj_path[300];
-    zp_tmpdir(dir, sizeof(dir), "register");
-    zp_paths(dir, elog_path, sizeof(elog_path), proj_path, sizeof(proj_path));
+    test_make_tmpdir(dir, sizeof(dir), "znam_projection", "register");
+    test_projection_paths(dir, "znam", elog_path, sizeof(elog_path),
+                          proj_path, sizeof(proj_path));
     event_log_t *log = event_log_open(elog_path);
     znam_projection_t *p = znam_projection_open(proj_path, log);
 
@@ -330,8 +317,9 @@ static int t_update_addr_and_text(void)
 {
     int failures = 0;
     char dir[256], elog_path[300], proj_path[300];
-    zp_tmpdir(dir, sizeof(dir), "update");
-    zp_paths(dir, elog_path, sizeof(elog_path), proj_path, sizeof(proj_path));
+    test_make_tmpdir(dir, sizeof(dir), "znam_projection", "update");
+    test_projection_paths(dir, "znam", elog_path, sizeof(elog_path),
+                          proj_path, sizeof(proj_path));
     event_log_t *log = event_log_open(elog_path);
     znam_projection_t *p = znam_projection_open(proj_path, log);
 
@@ -369,8 +357,9 @@ static int t_transfer_renew_expire(void)
 {
     int failures = 0;
     char dir[256], elog_path[300], proj_path[300];
-    zp_tmpdir(dir, sizeof(dir), "lifecycle");
-    zp_paths(dir, elog_path, sizeof(elog_path), proj_path, sizeof(proj_path));
+    test_make_tmpdir(dir, sizeof(dir), "znam_projection", "lifecycle");
+    test_projection_paths(dir, "znam", elog_path, sizeof(elog_path),
+                          proj_path, sizeof(proj_path));
     event_log_t *log = event_log_open(elog_path);
     znam_projection_t *p = znam_projection_open(proj_path, log);
 
@@ -420,8 +409,9 @@ static int t_persists_across_reopen(void)
 {
     int failures = 0;
     char dir[256], elog_path[300], proj_path[300];
-    zp_tmpdir(dir, sizeof(dir), "persist");
-    zp_paths(dir, elog_path, sizeof(elog_path), proj_path, sizeof(proj_path));
+    test_make_tmpdir(dir, sizeof(dir), "znam_projection", "persist");
+    test_projection_paths(dir, "znam", elog_path, sizeof(elog_path),
+                          proj_path, sizeof(proj_path));
 
     event_log_t *log = event_log_open(elog_path);
     znam_projection_t *p = znam_projection_open(proj_path, log);

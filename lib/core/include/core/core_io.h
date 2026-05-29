@@ -18,8 +18,6 @@ bool parse_script(const char *asm_str, struct script *out);
 size_t script_to_asm_str(const struct script *s, bool attempt_sighash_decode,
                          char *out, size_t out_size);
 
-size_t format_script(const struct script *s, char *out, size_t out_size);
-
 bool decode_hex_tx(struct transaction *tx, const char *hex_str);
 
 bool parse_hash_str(const char *hex_str, struct uint256 *out);

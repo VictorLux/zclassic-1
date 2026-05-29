@@ -27,6 +27,7 @@
 #include "coins/utxo_commitment.h"
 #include "core/serialize.h"
 #include "core/uint256.h"
+#include "encoding/utilstrencodings.h"
 #include "event/event.h"
 #include "json/json.h"
 #include "net/connman.h"
@@ -415,8 +416,7 @@ bool rpc_getutxocommitment(const struct json_value *params, bool help,
     utxo_commitment_sha3_save(ctx->node_db->db, sha3_hash, tip, count);
 
     char hex[65];
-    for (int i = 0; i < 32; i++)
-        snprintf(hex + i * 2, 3, "%02x", sha3_hash[i]);
+    HexStr(sha3_hash, 32, false, hex, sizeof(hex));
 
     json_set_object(result);
     json_push_kv_str(result, "sha3_hash", hex);
@@ -538,10 +538,8 @@ bool rpc_verifycheckpoint(const struct json_value *params, bool help,
     bool match = (memcmp(sha3_hash, cp->sha3_hash, 32) == 0);
 
     char local_hex[65], expected_hex[65];
-    for (int i = 0; i < 32; i++) {
-        snprintf(local_hex + i * 2, 3, "%02x", sha3_hash[i]);
-        snprintf(expected_hex + i * 2, 3, "%02x", cp->sha3_hash[i]);
-    }
+    HexStr(sha3_hash, 32, false, local_hex, sizeof(local_hex));
+    HexStr(cp->sha3_hash, 32, false, expected_hex, sizeof(expected_hex));
 
     json_set_object(result);
     json_push_kv_str(result, "status", match ? "PASSED" : "FAILED");
@@ -611,8 +609,7 @@ bool rpc_getdataintegrity(const struct json_value *params, bool help,
 
     for (size_t i = 0; i < sizeof(tables) / sizeof(tables[0]); i++) {
         char hex[65];
-        for (int j = 0; j < 32; j++)
-            snprintf(hex + j * 2, 3, "%02x", tables[i].hash[j]);
+        HexStr(tables[i].hash, 32, false, hex, sizeof(hex));
         json_push_kv_str(result, tables[i].name, hex);
     }
 

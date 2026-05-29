@@ -71,12 +71,6 @@ static bool vh_stamp_cursor(sqlite3 *db, const char *name, int64_t cursor)
     return rc == SQLITE_DONE;
 }
 
-static void vh_tmpdir(char *buf, size_t n, const char *tag)
-{
-    snprintf(buf, n, "./test-tmp/validate_headers_%d_%s",
-             (int)getpid(), tag);
-}
-
 struct synth_chain_vh {
     struct block_index *blocks;
     struct uint256     *hashes;
@@ -210,7 +204,7 @@ static int vh_setup(const char *tag, int n, vh_validator_fn fn, void *user,
                      struct main_state *ms,
                      struct synth_chain_vh *sc)
 {
-    vh_tmpdir(dir_out, dir_out_size, tag);
+    test_fmt_tmpdir(dir_out, dir_out_size, "validate_headers", tag);
     mkdir_p_vh(dir_out);
     if (!progress_store_open(dir_out)) return 1;
 
@@ -603,7 +597,7 @@ int test_validate_headers_stage(void)
     /* ── authoritative legacy ingress guard detects missing pass row ─ */
     {
         char dir[256];
-        vh_tmpdir(dir, sizeof(dir), "cutover_guard");
+        test_fmt_tmpdir(dir, sizeof(dir), "validate_headers", "cutover_guard");
         mkdir_p_vh(dir);
         VH_CHECK("guard: store opens", progress_store_open(dir));
 
@@ -683,7 +677,7 @@ int test_validate_headers_stage(void)
     /* ── fast-forwarded cursor permits the first post-import header ── */
     {
         char dir[256];
-        vh_tmpdir(dir, sizeof(dir), "fast_forward_guard");
+        test_fmt_tmpdir(dir, sizeof(dir), "validate_headers", "fast_forward_guard");
         mkdir_p_vh(dir);
         VH_CHECK("ff: store opens", progress_store_open(dir));
 

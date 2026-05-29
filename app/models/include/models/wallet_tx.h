@@ -53,10 +53,6 @@ bool db_wallet_tx_delete(struct node_db *ndb, const uint8_t txid[32]);
 int db_wallet_tx_count(struct node_db *ndb);
 void db_wallet_tx_free(struct db_wallet_tx *t);
 
-/* List recent transactions. Returns count. */
-int db_wallet_tx_recent(struct node_db *ndb, struct db_wallet_tx *out,
-                        size_t max);
-
 /* Read-only projection for raw wallet transactions ordered by height desc.
  * Intended for controller/service scans that need deserializable tx blobs
  * without owning SQL directly. Caller must free rows with

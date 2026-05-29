@@ -330,7 +330,7 @@ size_t api_serve_node_mmb(uint8_t *response, size_t response_max)
     uint8_t root[32] = {0};
     if (mb && mb->num_leaves > 0) mmb_root(mb, root);
     char hex[65];
-    for (int i = 0; i < 32; i++) sprintf(hex + i*2, "%02x", root[i]);
+    HexStr(root, 32, false, hex, sizeof(hex));
     return (size_t)snprintf((char *)response, response_max,
         "HTTP/1.1 200 OK\r\n"
         "Content-Type: application/json\r\n"
@@ -663,8 +663,7 @@ size_t api_serve_files_manifest(uint8_t *response, size_t response_max)
         return api_json_error(response, response_max, JSON_500_HEADERS, "OOM");
     size_t w = 0;
     char root_hex[65];
-    for (int i = 0; i < 32; i++)
-        snprintf(root_hex + i * 2, 3, "%02x", manifest.root_hash[i]);
+    HexStr(manifest.root_hash, 32, false, root_hex, sizeof(root_hex));
 
     w += (size_t)snprintf(buf + w, 131072 - w,
         "{\"root_hash\":\"%s\","
@@ -675,8 +674,7 @@ size_t api_serve_files_manifest(uint8_t *response, size_t response_max)
         (unsigned long long)manifest.total_bytes);
     for (uint32_t i = 0; i < manifest.num_chunks && w + 256 < 131072; i++) {
         char hex[65];
-        for (int j = 0; j < 32; j++)
-            snprintf(hex + j * 2, 3, "%02x", manifest.chunks[i].sha3[j]);
+        HexStr(manifest.chunks[i].sha3, 32, false, hex, sizeof(hex));
         w += (size_t)snprintf(buf + w, 131072 - w,
             "%s{\"sha3\":\"%s\",\"size\":%u,\"file\":%d,\"offset\":%llu}",
             i > 0 ? "," : "", hex, manifest.chunks[i].size,

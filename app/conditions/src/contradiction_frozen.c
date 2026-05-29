@@ -23,9 +23,11 @@ static bool detect_contradiction_frozen(void)
 
 static enum condition_remedy_result remedy_contradiction_frozen(void)
 {
-    /* The private reconstruction helper lives inside the existing
-     * chain_evidence_controller mega-module. Phase 0 keeps this condition
-     * scoped to detection/escalation rather than editing that module. */
+    /* No automatic repair: a frozen contradiction means the evidence
+     * sources disagree and needs operator review, not a blind restore.
+     * The reconstruction primitive (cec_reconstruct_active_tip_evidence,
+     * app/services/src/chain_evidence_reconstruct.c) is intentionally
+     * not invoked here. */
     LOG_WARN("condition", "[condition:contradiction_frozen] repair hook unavailable; " "operator follow-up required");
     return COND_REMEDY_SKIP;
 }

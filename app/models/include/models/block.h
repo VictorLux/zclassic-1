@@ -49,10 +49,6 @@ bool db_block_delete(struct node_db *ndb, const uint8_t hash[32]);
 int db_block_max_height(struct node_db *ndb);
 int db_block_count(struct node_db *ndb);
 
-/* Batch insert for initial block index load. Call within begin/commit. */
-bool db_block_save_batch(struct node_db *ndb, const struct db_block *blocks,
-                         size_t count);
-
 /* ── Relationships ─────────────────────────────────────────────── */
 
 /* has_many :transactions — find all txids in this block */

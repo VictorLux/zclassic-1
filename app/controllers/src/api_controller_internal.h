@@ -83,7 +83,6 @@ bool api_json_extract_str(const char *json, const char *key,
                       char *out, size_t outmax);
 int64_t api_json_extract_int(const char *json, const char *key);
 double api_json_extract_real(const char *json, const char *key);
-bool api_is_all_digits(const char *s);
 bool api_is_json_safe_param(const char *s, size_t maxlen);
 struct node_db *api_node_db(void);
 bool api_is_printable_ascii(const char *s);

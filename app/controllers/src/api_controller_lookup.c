@@ -68,7 +68,7 @@ size_t compute_block(const char *param, uint8_t *r, size_t max)
     char hash[65] = "";
 
     /* Resolve height to hash if needed */
-    if (api_is_all_digits(param)) {
+    if (zcl_is_all_digits(param)) {
         char params[64];
         snprintf(params, sizeof(params), "[%s]", param);
         if (api_rpc_call("getblockhash", params, buf, sizeof(buf)) <= 0)

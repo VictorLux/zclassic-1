@@ -51,11 +51,6 @@ static void *g_authoritative_hook_user = NULL;
 MAILBOX_DEFINE(header_admit, struct header_admit_msg,
                HEADER_ADMIT_INBOX_CAPACITY)
 
-static int64_t wall_now_s(void)
-{
-    return platform_time_wall_unix();
-}
-
 /* ── Step body ─────────────────────────────────────────────────────── */
 
 /* Write one header_admit_log row through the AR lifecycle (Law 2: the
@@ -68,7 +63,7 @@ static bool log_insert(sqlite3 *db, int height,
     struct db_header_admit_log row = {
         .height      = (int64_t)height,
         .has_parent  = (parent_hash != NULL),
-        .admitted_at = wall_now_s(),
+        .admitted_at = platform_time_wall_unix(),
     };
     memcpy(row.hash, hash->data, 32);
     if (parent_hash)
@@ -136,7 +131,7 @@ static bool authoritative_admit(struct main_state *ms, struct block_index *bi)
 
 static job_result_t step_admit(struct stage_step_ctx *c)
 {
-    atomic_store(&g_last_step_unix, wall_now_s());
+    atomic_store(&g_last_step_unix, platform_time_wall_unix());
 
     struct main_state *ms = g_ms;
     if (!ms) return JOB_IDLE;
@@ -157,7 +152,7 @@ static job_result_t step_admit(struct stage_step_ctx *c)
                           "missing_parent",
                           BLOCKER_PERMANENT,
                           "block_index entry has no pprev linkage");
-            atomic_store(&g_last_blocked_unix, wall_now_s());
+            atomic_store(&g_last_blocked_unix, platform_time_wall_unix());
             return JOB_BLOCKED;
         }
         parent_hash = bi->pprev->phashBlock;
@@ -254,17 +249,7 @@ job_result_t header_admit_stage_step_once(void)
     return stage_run_once(g_stage, db);
 }
 
-int header_admit_stage_drain(int max_steps)
-{
-    if (max_steps <= 0) return 0;
-    int advanced = 0;
-    for (int i = 0; i < max_steps; i++) {
-        job_result_t r = header_admit_stage_step_once();
-        if (r != JOB_ADVANCED) break;
-        advanced++;
-    }
-    return advanced;
-}
+STAGE_DRAIN_IMPL(header_admit)
 
 void header_admit_stage_shutdown(void)
 {

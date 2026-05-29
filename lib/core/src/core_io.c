@@ -225,80 +225,6 @@ size_t script_to_asm_str(const struct script *s, bool attempt_sighash_decode,
     return pos;
 }
 
-size_t format_script(const struct script *s, char *out, size_t out_size)
-{
-    size_t pos = 0;
-    size_t pc = 0;
-    enum opcodetype op;
-    unsigned char data[MAX_SCRIPT_ELEMENT_SIZE];
-    size_t datalen;
-
-    while (pc < s->size) {
-        size_t prev_pc = pc;
-        datalen = 0;
-        if (!script_get_op(s, &pc, &op, data, &datalen)) {
-            char hex[MAX_SCRIPT_SIZE * 2 + 1];
-            HexStr(s->data + prev_pc, s->size - prev_pc, false, hex, sizeof(hex));
-            size_t w = (size_t)snprintf(
-                out + (pos < out_size ? pos : out_size - 1),
-                pos < out_size ? out_size - pos : 1, "0x%s ", hex);
-            pos += w;
-            break;
-        }
-        if (op == OP_0) {
-            size_t w = (size_t)snprintf(
-                out + (pos < out_size ? pos : out_size - 1),
-                pos < out_size ? out_size - pos : 1, "0 ");
-            pos += w;
-        } else if ((op >= OP_1 && op <= OP_16) || op == OP_1NEGATE) {
-            int n = (int)op - (int)OP_1NEGATE - 1;
-            size_t w = (size_t)snprintf(
-                out + (pos < out_size ? pos : out_size - 1),
-                pos < out_size ? out_size - pos : 1, "%d ", n);
-            pos += w;
-        } else if (op >= OP_NOP && op < FIRST_UNDEFINED_OP_VALUE) {
-            const char *name = script_get_op_name(op);
-            if (strncmp(name, "OP_", 3) == 0) {
-                size_t w = (size_t)snprintf(
-                    out + (pos < out_size ? pos : out_size - 1),
-                    pos < out_size ? out_size - pos : 1, "%s ", name + 3);
-                pos += w;
-            } else {
-                char hex[MAX_SCRIPT_ELEMENT_SIZE * 2 + 1];
-                HexStr(s->data + prev_pc, pc - prev_pc, false, hex, sizeof(hex));
-                size_t w = (size_t)snprintf(
-                    out + (pos < out_size ? pos : out_size - 1),
-                    pos < out_size ? out_size - pos : 1, "0x%s ", hex);
-                pos += w;
-            }
-        } else if (datalen > 0) {
-            char hex1[MAX_SCRIPT_ELEMENT_SIZE * 2 + 1];
-            char hex2[MAX_SCRIPT_ELEMENT_SIZE * 2 + 1];
-            size_t push_len = pc - datalen - prev_pc;
-            HexStr(s->data + prev_pc, push_len, false, hex1, sizeof(hex1));
-            HexStr(data, datalen, false, hex2, sizeof(hex2));
-            size_t w = (size_t)snprintf(
-                out + (pos < out_size ? pos : out_size - 1),
-                pos < out_size ? out_size - pos : 1, "0x%s 0x%s ", hex1, hex2);
-            pos += w;
-        } else {
-            char hex[MAX_SCRIPT_ELEMENT_SIZE * 2 + 1];
-            HexStr(s->data + prev_pc, pc - prev_pc, false, hex, sizeof(hex));
-            size_t w = (size_t)snprintf(
-                out + (pos < out_size ? pos : out_size - 1),
-                pos < out_size ? out_size - pos : 1, "0x%s ", hex);
-            pos += w;
-        }
-    }
-    if (pos > 0 && pos <= out_size && out[pos - 1] == ' ')
-        pos--;
-    if (pos < out_size)
-        out[pos] = '\0';
-    else if (out_size > 0)
-        out[out_size - 1] = '\0';
-    return pos;
-}
-
 bool decode_hex_tx(struct transaction *tx, const char *hex_str)
 {
     if (!IsHex(hex_str)) return false;
@@ -502,9 +428,10 @@ void tx_to_json(const struct transaction *tx,
         json_push_kv_str(entry, "blockhash", bh);
     }
 
-    char *hex_buf = zcl_malloc(transaction_serialize_size(tx) * 2 + 1, "tx_hex_buf");
+    size_t hex_len = encode_hex_tx(tx, NULL, 0);  /* measuring mode: s.size*2 */
+    char *hex_buf = zcl_malloc(hex_len + 1, "tx_hex_buf");
     if (hex_buf) {
-        encode_hex_tx(tx, hex_buf, transaction_serialize_size(tx) * 2 + 1);
+        encode_hex_tx(tx, hex_buf, hex_len + 1);
         json_push_kv_str(entry, "hex", hex_buf);
         free(hex_buf);
     }

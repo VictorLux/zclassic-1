@@ -38,7 +38,7 @@ static size_t serve_block_rpc(const char *param, uint8_t *r, size_t max)
 
     /* Get block hash */
     char hash[65] = "";
-    if (is_all_digits(param)) {
+    if (zcl_is_all_digits(param)) {
         char params[64];
         snprintf(params, sizeof(params), "[%s]", param);
         rpc_call("getblockhash", params, buf, sizeof(buf));
@@ -168,7 +168,7 @@ size_t serve_block(const char *param, uint8_t *r, size_t max)
 
     const struct block_index *bi = NULL;
 
-    if (is_all_digits(param)) {
+    if (zcl_is_all_digits(param)) {
         int h = atoi(param);
         int tip = active_chain_height(&ctx->main_state->chain_active);
         if (h >= 0 && h <= tip)
@@ -216,9 +216,9 @@ size_t serve_block(const char *param, uint8_t *r, size_t max)
     char ts[32];
     format_time(ts, sizeof(ts), bi->nTime);
     char sap_val[32] = "0";
-    format_zcl(sap_val, sizeof(sap_val), bi->nSaplingValue);
+    zcl_format_zcl(sap_val, sizeof(sap_val), bi->nSaplingValue);
     char sprout_val[32] = "0";
-    format_zcl(sprout_val, sizeof(sprout_val), bi->nSproutValue);
+    zcl_format_zcl(sprout_val, sizeof(sprout_val), bi->nSproutValue);
 
     APPEND(off, r, max, EXPLORER_HEADER("Block"));
     off += explorer_emit_nav((char *)r + off, max - off, "blocks");
@@ -277,7 +277,7 @@ size_t serve_block(const char *param, uint8_t *r, size_t max)
             snprintf(short_txid, sizeof(short_txid), "%.8s...%.4s", txid, txid + 60);
 
             char val[32];
-            format_zcl(val, sizeof(val), transaction_get_value_out(tx));
+            zcl_format_zcl(val, sizeof(val), transaction_get_value_out(tx));
 
             bool is_cb = transaction_is_coinbase(tx);
             bool has_shielded = (tx->num_shielded_spend > 0 || tx->num_shielded_output > 0 ||

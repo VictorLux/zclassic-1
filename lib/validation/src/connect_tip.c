@@ -77,6 +77,16 @@
 
 #include "process_block_internal.h"
 
+/* Forward-order hex of a raw byte buffer (NOT reversed like
+ * uint256_get_hex). `out` must hold n*2+1 bytes. snprintf keeps each
+ * write bounded. */
+static void bytes_to_hex(const uint8_t *src, size_t n, char *out)
+{
+    for (size_t i = 0; i < n; i++)
+        snprintf(out + i*2, 3, "%02x", src[i]);
+    out[n*2] = '\0';
+}
+
 bool connect_tip(struct validation_state *state,
                  struct main_state *ms,
                  struct coins_view_cache *coins_tip,
@@ -253,7 +263,7 @@ bool connect_tip(struct validation_state *state,
         int recovery_attempts = 0;
         bool missing_utxo_unrecovered = false;
 
-	retry_connect:
+    retry_connect:
         /* B4-wiring: authority-gated backing selection. Under the default
          * LEGACY author this is byte-identical to wrapping coins_tip; under
          * STAGE (B7 flip) connect_block's input lookups resolve through the
@@ -277,255 +287,132 @@ bool connect_tip(struct validation_state *state,
                                      GetTimeMicros() - stage_start_us);
         if (!rv) {
             /* ── Self-healing: recover missing UTXO from block data ── */
-	            if (state->has_missing_utxo &&
+                if (state->has_missing_utxo &&
                 strcmp(state->reject_reason, "bad-txns-inputs-missingorspent") == 0 &&
-                recovery_attempts < 100 &&
-	                g_active_block_tree != NULL) {
-	                bool recovered = false;
-	                char hex[65];
-	                uint256_get_hex(&state->missing_txid, hex);
-	                process_block_log_live_stage(live_height,
-	                                             "self_heal_start",
-	                                             GetTimeMicros() -
-	                                                 connect_tip_start_us);
+                recovery_attempts < SELF_HEAL_MAX_RECOVERY_ATTEMPTS &&
+                    g_active_block_tree != NULL) {
+                    bool recovered = false;
+                    char hex[65];
+                    uint256_get_hex(&state->missing_txid, hex);
+                    process_block_log_live_stage(live_height,
+                                                 "self_heal_start",
+                                                 GetTimeMicros() -
+                                                     connect_tip_start_us);
 
-                if (!g_active_block_tree) {
-                    fprintf(stderr, // obs-ok:pre-existing-diagnostic
-                            "[self-heal] tx index not available "
-                            "(no block tree DB)\n");
-                } else {
-                    struct disk_tx_pos txpos;
-                    disk_tx_pos_init(&txpos);
-                    if (!block_tree_db_read_tx_index(g_active_block_tree,
-                                                     &state->missing_txid,
-                                                     &txpos)) {
-                        if (process_block_recover_missing_utxo_from_sqlite_tx_index(
-                                ms, coins_tip, &state->missing_txid,
-                                state->missing_vout, datadir,
-                                recovery_attempts + 1)) {
-                            recovered = true;
-                        }
-                    }
-
-                    if (!recovered && txpos.block_pos.nFile < 0 &&
-                        process_block_recover_missing_utxo_from_legacy_rpc(
-                            coins_tip, &state->missing_txid,
-                            state->missing_vout, recovery_attempts + 1)) {
+                struct disk_tx_pos txpos;
+                disk_tx_pos_init(&txpos);
+                if (!block_tree_db_read_tx_index(g_active_block_tree,
+                                                 &state->missing_txid,
+                                                 &txpos)) {
+                    if (process_block_recover_missing_utxo_from_sqlite_tx_index(
+                            ms, coins_tip, &state->missing_txid,
+                            state->missing_vout, datadir,
+                            recovery_attempts + 1)) {
                         recovered = true;
                     }
+                }
 
-                    if (!recovered && txpos.block_pos.nFile < 0 &&
-                        !process_block_self_heal_scan_enabled()) {
-                        fprintf(stderr, // obs-ok:pre-existing-diagnostic
-                                "[self-heal] tx %s is absent from "
-                                "LevelDB and SQLite tx indexes; broad disk "
-                                "scan is disabled by default "
-                                "(set ZCL_SELF_HEAL_SCAN_ENABLE=1 for "
-                                "operator-directed forensics). Requesting "
-                                "chainstate repair instead.\n", hex);
-                        atomic_fetch_add_explicit(
-                            &g_self_heal_scan_exhausted, 1,
-                            memory_order_relaxed);
-                        event_emitf(EV_SELF_HEAL_SCAN_EXHAUSTED, 0,
-                            "tx=%s tip_h=%d depth=0 disabled=true",
-                            hex, active_chain_height(&ms->chain_active));
-                    } else if (!recovered && txpos.block_pos.nFile < 0) {
-                        fprintf(stderr, // obs-ok:pre-existing-diagnostic
-                                "[self-heal] tx %s not in LevelDB tx "
-                                "index and SQLite index was unavailable or "
-                                "unverified — falling back to bounded-depth "
-                                "chain scan\n", hex);
-                        /* ── Scan fallback ( surgical coordinator
-                         *    commit 2026-04-22 05:11, pre-landed ahead of
-                         *    Agent-2's RED/factoring row).
-                         *
-                         * The tx index can be empty for this tx because
-                         * LDB fast-sync imports UTXOs but doesn't
-                         * populate block_tree_db's tx-offset entries.
-                         * Before surrendering the block as
-                         * BLOCK_FAILED_VALID, walk the active chain
-                         * backward a bounded number of blocks and
-                         * search each for the missing txid.  If found,
-                         * inject its outputs into the coins cache AND
-                         * backfill the tx_index entry so the next
-                         * spend of the same tx is O(log N).
-                         *
-                         * 2026-05-10 stalls: live imports have needed
-                         * UTXOs 150k-200k blocks behind tip after
-                         * partial chainstate recovery.  Default to a
-                         * deep bounded scan and keep
-                         * ZCL_SELF_HEAL_SCAN_DEPTH as an operator
-                         * override for deeper exceptional repairs.
-                         * Lower values are ignored because they make
-                         * the live recovery path fail open into a
-                         * restart loop. */
-                        int tip_h = active_chain_height(
-                            &ms->chain_active);
-                        int depth_limit =
-                            process_block_self_heal_scan_depth_limit();
-                        int scan_stop =
-                            (tip_h - depth_limit < 0) ? 0
-                                                      : tip_h - depth_limit;
+                if (!recovered && txpos.block_pos.nFile < 0 &&
+                    process_block_recover_missing_utxo_from_legacy_rpc(
+                        coins_tip, &state->missing_txid,
+                        state->missing_vout, recovery_attempts + 1)) {
+                    recovered = true;
+                }
 
-                        bool scan_hit = false;
-                        int scan_blocks_checked = 0;
-                        int scan_hit_height = -1;
-                        for (int h = tip_h;
-                             h >= scan_stop && !scan_hit; h--) {
-                            struct block_index *bi = active_chain_at(
-                                &ms->chain_active, h);
-                            if (!bi || !(bi->nStatus & BLOCK_HAVE_DATA))
-                                continue;
-                            scan_blocks_checked++;
-                            struct block scan_b;
-                            block_init(&scan_b);
-                            if (!read_block_from_disk_index(
-                                    &scan_b, bi, datadir)) {
-                                block_free(&scan_b);
-                                continue;
-                            }
-                            for (size_t ti = 0;
-                                 ti < scan_b.num_vtx; ti++) {
-                                if (!uint256_eq(&scan_b.vtx[ti].hash,
-                                                 &state->missing_txid))
-                                    continue;
-                                if (process_block_inject_missing_utxo(
+                if (!recovered && txpos.block_pos.nFile < 0 &&
+                    !process_block_self_heal_scan_enabled()) {
+                    fprintf(stderr, // obs-ok:pre-existing-diagnostic
+                            "[self-heal] tx %s is absent from "
+                            "LevelDB and SQLite tx indexes; broad disk "
+                            "scan is disabled by default "
+                            "(set ZCL_SELF_HEAL_SCAN_ENABLE=1 for "
+                            "operator-directed forensics). Requesting "
+                            "chainstate repair instead.\n", hex);
+                    atomic_fetch_add_explicit(
+                        &g_self_heal_scan_exhausted, 1,
+                        memory_order_relaxed);
+                    event_emitf(EV_SELF_HEAL_SCAN_EXHAUSTED, 0,
+                        "tx=%s tip_h=%d depth=0 disabled=true",
+                        hex, active_chain_height(&ms->chain_active));
+                } else if (!recovered && txpos.block_pos.nFile < 0) {
+                    fprintf(stderr, // obs-ok:pre-existing-diagnostic
+                            "[self-heal] tx %s not in LevelDB tx "
+                            "index and SQLite index was unavailable or "
+                            "unverified — falling back to bounded-depth "
+                            "chain scan\n", hex);
+                    if (process_block_recover_missing_utxo_from_chain_scan(
+                            ms, coins_tip, &state->missing_txid,
+                            state->missing_vout, datadir,
+                            recovery_attempts + 1))
+                        recovered = true;
+                } else if (!recovered && txpos.block_pos.nFile < 0) {
+                    fprintf(stderr, // obs-ok:pre-existing-diagnostic
+                            "[self-heal] tx %s nFile=%d "
+                            "(tx index entry too small or corrupt)\n",
+                            hex, txpos.block_pos.nFile);
+                } else if (!recovered) {
+                    atomic_fetch_add_explicit(
+                        &g_self_heal_tx_index_hits, 1,
+                        memory_order_relaxed);
+                    struct block src_block;
+                    block_init(&src_block);
+                    if (!read_block_from_disk(&src_block,
+                                              &txpos.block_pos, datadir)) {
+                        fprintf(stderr, // obs-ok:pre-existing-diagnostic
+                                "[self-heal] failed to read block "
+                                "file=%d pos=%u for tx %s\n",
+                                txpos.block_pos.nFile,
+                                txpos.block_pos.nPos, hex);
+                        recovered =
+                            process_block_recover_missing_utxo_from_legacy_rpc(
+                                coins_tip, &state->missing_txid,
+                                state->missing_vout,
+                                recovery_attempts + 1);
+                        block_free(&src_block);
+                    } else {
+                        for (size_t ti = 0; ti < src_block.num_vtx; ti++) {
+                            if (uint256_eq(&src_block.vtx[ti].hash,
+                                           &state->missing_txid)) {
+                                struct uint256 src_hash;
+                                block_get_hash(&src_block, &src_hash);
+                                struct block_index *src_idx =
+                                    block_map_find(&ms->map_block_index,
+                                                   &src_hash);
+                                int src_height = src_idx ?
+                                    src_idx->nHeight : 0;
+
+                                recovered =
+                                    process_block_inject_missing_utxo(
                                         coins_tip, &state->missing_txid,
                                         state->missing_vout,
-                                        &scan_b.vtx[ti], h,
-                                        "verified chain scan",
-                                        recovery_attempts + 1)) {
-                                    scan_hit = true;
-                                    scan_hit_height = h;
-                                    /* Backfill tx_index — on the next
-                                     * spend of this tx we take the
-                                     * fast O(log N) path instead of
-                                     * re-scanning.  Not fatal if the
-                                     * write fails; the recovery still
-                                     * happened. */
-                                    struct disk_tx_pos tx_new;
-                                    disk_tx_pos_init(&tx_new);
-                                    tx_new.block_pos.nFile = bi->nFile;
-                                    tx_new.block_pos.nPos =
-                                        bi->nDataPos;
-                                    (void)block_tree_db_write_tx_index(
-                                        g_active_block_tree,
-                                        &state->missing_txid,
-                                        &tx_new, 1);
-                                }
+                                        &src_block.vtx[ti], src_height,
+                                        "LevelDB tx index",
+                                        recovery_attempts + 1);
                                 break;
                             }
-                            block_free(&scan_b);
                         }
-
-                        if (scan_hit) {
-                            atomic_fetch_add_explicit(
-                                &g_self_heal_scan_hits, 1,
-                                memory_order_relaxed);
-                            atomic_fetch_add_explicit(
-                                &g_self_heal_scan_blocks_checked_total,
-                                (uint64_t)scan_blocks_checked,
-                                memory_order_relaxed);
-                            printf("[self-heal] RECOVERED UTXO %s via "
-                                   "chain scan (hit_h=%d, depth=%d, "
-                                   "blocks_checked=%d) — retry %d\n",
-                                   hex, scan_hit_height,
-                                   tip_h - scan_hit_height,
-                                   scan_blocks_checked,
-                                   recovery_attempts + 1);
-                            fflush(stdout);
-                            event_emitf(EV_SELF_HEAL_SCAN_HIT, 0,
-                                "tx=%s h=%d depth=%d",
-                                hex, scan_hit_height,
-                                tip_h - scan_hit_height);
-                            recovered = true;
-                        } else {
-                            atomic_fetch_add_explicit(
-                                &g_self_heal_scan_exhausted, 1,
-                                memory_order_relaxed);
-                            atomic_fetch_add_explicit(
-                                &g_self_heal_scan_blocks_checked_total,
-                                (uint64_t)scan_blocks_checked,
-                                memory_order_relaxed);
-                            fprintf(stderr, // obs-ok:pre-existing-diagnostic
-                                "[self-heal] scan exhausted "
-                                "(tx=%s, tip_h=%d, depth_limit=%d, "
-                                "blocks_checked=%d) — no match\n",
-                                hex, tip_h, depth_limit,
-                                scan_blocks_checked);
-                            event_emitf(EV_SELF_HEAL_SCAN_EXHAUSTED, 0,
-                                "tx=%s tip_h=%d depth=%d",
-                                hex, tip_h, depth_limit);
-                        }
-                    } else if (!recovered && txpos.block_pos.nFile < 0) {
-                        fprintf(stderr, // obs-ok:pre-existing-diagnostic
-                                "[self-heal] tx %s nFile=%d "
-                                "(tx index entry too small or corrupt)\n",
-                                hex, txpos.block_pos.nFile);
-                    } else if (!recovered) {
-                        atomic_fetch_add_explicit(
-                            &g_self_heal_tx_index_hits, 1,
-                            memory_order_relaxed);
-                        struct block src_block;
-                        block_init(&src_block);
-                        if (!read_block_from_disk(&src_block,
-                                                  &txpos.block_pos, datadir)) {
-                            fprintf(stderr, // obs-ok:pre-existing-diagnostic
-                                    "[self-heal] failed to read block "
-                                    "file=%d pos=%u for tx %s\n",
-                                    txpos.block_pos.nFile,
-                                    txpos.block_pos.nPos, hex);
+                        if (!recovered) {
                             recovered =
                                 process_block_recover_missing_utxo_from_legacy_rpc(
                                     coins_tip, &state->missing_txid,
                                     state->missing_vout,
                                     recovery_attempts + 1);
-                            block_free(&src_block);
-                        } else {
-                            for (size_t ti = 0; ti < src_block.num_vtx; ti++) {
-                                if (uint256_eq(&src_block.vtx[ti].hash,
-                                               &state->missing_txid)) {
-                                    struct uint256 src_hash;
-                                    block_get_hash(&src_block, &src_hash);
-                                    struct block_index *src_idx =
-                                        block_map_find(&ms->map_block_index,
-                                                       &src_hash);
-                                    int src_height = src_idx ?
-                                        src_idx->nHeight : 0;
-
-                                    recovered =
-                                        process_block_inject_missing_utxo(
-                                            coins_tip, &state->missing_txid,
-                                            state->missing_vout,
-                                            &src_block.vtx[ti], src_height,
-                                            "LevelDB tx index",
-                                            recovery_attempts + 1);
-                                    break;
-                                }
-                            }
-                            if (!recovered) {
-                                recovered =
-                                    process_block_recover_missing_utxo_from_legacy_rpc(
-                                        coins_tip, &state->missing_txid,
-                                        state->missing_vout,
-                                        recovery_attempts + 1);
-                            }
-                            block_free(&src_block);
                         }
+                        block_free(&src_block);
                     }
                 }
 
-	                if (recovered) {
-	                    coins_view_cache_free(&view);
-	                    memset(&view, 0, sizeof(view));
-	                    recovery_attempts++;
-	                    validation_state_init(state);
-	                    process_block_log_live_stage(live_height,
-	                                                 "self_heal_recovered",
-	                                                 GetTimeMicros() -
-	                                                     connect_tip_start_us);
-	                    goto retry_connect;
-	                }
+                    if (recovered) {
+                        coins_view_cache_free(&view);
+                        memset(&view, 0, sizeof(view));
+                        recovery_attempts++;
+                        validation_state_init(state);
+                        process_block_log_live_stage(live_height,
+                                                     "self_heal_recovered",
+                                                     GetTimeMicros() -
+                                                         connect_tip_start_us);
+                        goto retry_connect;
+                    }
                 /* Recovery failed. A missing UTXO at live height is local
                  * chainstate/index corruption until proven otherwise, not
                  * consensus evidence that the block is invalid. Do not poison
@@ -630,24 +517,24 @@ bool connect_tip(struct validation_state *state,
             return false;
         }
 
-	        process_block_check_crash_stage(PBCS_AFTER_CONNECT_BLOCK);
+            process_block_check_crash_stage(PBCS_AFTER_CONNECT_BLOCK);
 
-	        stage_start_us = GetTimeMicros();
-	        if (!coins_view_cache_flush(&view)) {
-	            fprintf(stderr, "connect_tip: FATAL coins flush failed h=%d\n", // obs-ok:pre-existing-diagnostic
-	                    pindex_new->nHeight);
+            stage_start_us = GetTimeMicros();
+            if (!coins_view_cache_flush(&view)) {
+                fprintf(stderr, "connect_tip: FATAL coins flush failed h=%d\n", // obs-ok:pre-existing-diagnostic
+                        pindex_new->nHeight);
             coins_view_cache_free(&view);
             if (pblock == &local_block)
                 block_free(&local_block);
             trace_set_status(ct_span, TRACE_STATUS_ERROR);
             trace_end(ct_span);
-	            return validation_state_error(state, "coins-flush-failed");
-	        }
-	        process_block_log_live_stage(live_height, "coins_flush",
-	                                     GetTimeMicros() - stage_start_us);
-	        coins_view_cache_free(&view);
-	        process_block_check_crash_stage(PBCS_AFTER_COINS_VIEW_FLUSH);
-	    }
+                return validation_state_error(state, "coins-flush-failed");
+            }
+            process_block_log_live_stage(live_height, "coins_flush",
+                                         GetTimeMicros() - stage_start_us);
+            coins_view_cache_free(&view);
+            process_block_check_crash_stage(PBCS_AFTER_COINS_VIEW_FLUSH);
+        }
 
     /* ── Mandatory SHA3 UTXO checkpoint verification ──────────── */
     /* When we reach a hardcoded checkpoint height, flush all coins to
@@ -668,10 +555,8 @@ bool connect_tip(struct validation_state *state,
 
                 if (memcmp(sha3, cp->sha3_hash, 32) != 0) {
                     char exp[65], got[65];
-                    for (int i = 0; i < 32; i++) {
-                        snprintf(exp + i*2, 3, "%02x", cp->sha3_hash[i]);
-                        snprintf(got + i*2, 3, "%02x", sha3[i]);
-                    }
+                    bytes_to_hex(cp->sha3_hash, 32, exp);
+                    bytes_to_hex(sha3, 32, got);
                     fprintf(stderr, // obs-ok:pre-existing-diagnostic
                         "\n*** SHA3 UTXO CHECKPOINT FAILED at height %d ***\n"
                         "Expected: %s\n"
@@ -727,9 +612,9 @@ bool connect_tip(struct validation_state *state,
             memset(&coins_hash_pre_commit, 0, sizeof(coins_hash_pre_commit));
         }
 
-	    stage_start_us = GetTimeMicros();
-	    if (!update_tip(ms, pindex_new)) {
-	        fprintf(stderr, // obs-ok:pre-existing-diagnostic
+        stage_start_us = GetTimeMicros();
+        if (!update_tip(ms, pindex_new)) {
+            fprintf(stderr, // obs-ok:pre-existing-diagnostic
                 "connect_tip: update_tip rejected h=%d — csr refused "
                 "the commit (see `csr: REJECTED` above). Rolling back "
                 "coins_tip.hash_block to the pre-commit value to keep "
@@ -747,12 +632,12 @@ bool connect_tip(struct validation_state *state,
             block_free(&local_block);
         trace_set_status(ct_span, TRACE_STATUS_ERROR);
         trace_end(ct_span);
-	        return validation_state_error(state, "csr-tip-commit-rejected");
-	    }
+            return validation_state_error(state, "csr-tip-commit-rejected");
+        }
         (void)coins_hash_pre_commit;  /* held for future structured rollback */
-	    process_block_log_live_stage(live_height, "update_tip",
-	                                 GetTimeMicros() - stage_start_us);
-	    process_block_check_crash_stage(PBCS_AFTER_UPDATE_TIP);
+        process_block_log_live_stage(live_height, "update_tip",
+                                     GetTimeMicros() - stage_start_us);
+        process_block_check_crash_stage(PBCS_AFTER_UPDATE_TIP);
     pindex_new->nStatus = (pindex_new->nStatus & ~BLOCK_VALID_MASK) |
                            BLOCK_VALID_SCRIPTS;
 
@@ -1047,10 +932,8 @@ bool connect_tip(struct validation_state *state,
                             NULL, NULL, NULL);
                     } else {
                         char exp_hex[65], got_hex[65];
-                        for (int i = 0; i < 32; i++) {
-                            sprintf(exp_hex + i*2, "%02x", s_mmr_expected[i]);
-                            sprintf(got_hex + i*2, "%02x", local_root[i]);
-                        }
+                        bytes_to_hex(s_mmr_expected, 32, exp_hex);
+                        bytes_to_hex(local_root, 32, got_hex);
                         fprintf(stderr, // obs-ok:pre-existing-diagnostic
                             "*** MMR VERIFICATION FAILED at height %d ***\n"
                             "  Expected: %s\n"

@@ -132,18 +132,6 @@ void db_maintenance_set_vacuum_gate(db_maintenance_vacuum_gate_fn fn)
 
 /* ── Helpers ────────────────────────────────────────────────── */
 
-static int64_t dbm_now_ms(void)
-{
-    struct timespec ts;
-    platform_time_monotonic_timespec(&ts);
-    return (int64_t)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
-}
-
-static int64_t dbm_now_unix(void)
-{
-    return (int64_t)platform_time_wall_time_t();
-}
-
 /* Returns true if `op` is one of the three recognised maintenance ops.
  * The SQL each op runs lives behind the db_maintenance_port adapter —
  * this service only names the ops. */
@@ -207,11 +195,11 @@ struct zcl_result db_maintenance_run_now(struct node_db *db, const char *op)
 
     event_emitf(EV_DB_MAINTENANCE_START, 0, "op=%s", op);
 
-    int64_t start_ms = dbm_now_ms();
+    int64_t start_ms = platform_time_monotonic_ms();
     char errmsg[256];
     errmsg[0] = '\0';
     bool ok = dbm_run_op_via_port(&port, op, errmsg, sizeof(errmsg));
-    int64_t elapsed_ms = dbm_now_ms() - start_ms;
+    int64_t elapsed_ms = platform_time_monotonic_ms() - start_ms;
 
     if (!ok) {
         g_dbm.total_failures++;
@@ -227,7 +215,7 @@ struct zcl_result db_maintenance_run_now(struct node_db *db, const char *op)
         return r;
     }
 
-    dbm_note_run_locked(op, dbm_now_unix(), elapsed_ms);
+    dbm_note_run_locked(op, platform_time_wall_unix(), elapsed_ms);
     g_dbm.total_runs++;
     g_dbm.last_error[0] = '\0';
 
@@ -240,18 +228,12 @@ struct zcl_result db_maintenance_run_now(struct node_db *db, const char *op)
 
 /* ── Thread loop ────────────────────────────────────────────── */
 
-static void dbm_sleep_ms(int ms)
-{
-    struct timespec ts = { ms / 1000, (ms % 1000) * 1000000L };
-    nanosleep(&ts, NULL);
-}
-
 /* Returns true if `last_unix == 0` (never run) or the interval
  * has elapsed since the last run. */
 static bool dbm_due(int64_t last_unix, int64_t interval_seconds)
 {
     if (last_unix == 0) return true;
-    return (dbm_now_unix() - last_unix) >= interval_seconds;
+    return (platform_time_wall_unix() - last_unix) >= interval_seconds;
 }
 
 /* Returns the WAL file size in bytes, or 0 if unavailable. The on-disk
@@ -313,7 +295,7 @@ static void *dbm_thread_fn(void *arg)
             bool st = g_dbm.stop_requested;
             pthread_mutex_unlock(&g_dbm.lock);
             if (st) break;
-            dbm_sleep_ms(200);
+            platform_sleep_ms(200);
             slept += 200;
         }
     }

@@ -226,11 +226,6 @@ double api_json_extract_real(const char *json, const char *key)
     return v;
 }
 
-bool api_is_all_digits(const char *s)
-{
-    return zcl_is_all_digits(s);
-}
-
 /* Validate address/param is safe to embed in JSON (alphanumeric only).
  * Prevents JSON injection via crafted params. */
 bool api_is_json_safe_param(const char *s, size_t maxlen)

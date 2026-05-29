@@ -53,20 +53,6 @@ static void make_tmpdir(char *buf, size_t cap)
     if (!mkdtemp(buf)) { perror("mkdtemp"); buf[0] = '\0'; }
 }
 
-static void rm_rf(const char *dir)
-{
-    if (!dir || !dir[0]) return;
-    char cmd[4200];
-    snprintf(cmd, sizeof cmd, "rm -rf '%s'", dir);
-    (void)!system(cmd);
-}
-
-static void easy_params(struct consensus_params *p)
-{
-    memset(p, 0, sizeof *p);
-    for (int i = 0; i < 32; i++) p->powLimit.data[i] = 0xff;
-}
-
 static void minimal_coinbase(struct transaction *tx)
 {
     transaction_init(tx);
@@ -121,7 +107,7 @@ int test_shadow_feeder(void)
         struct mutator_config mc = { .queue_capacity = 8, .thread_name = "sf-test" };
         mutator_start(&mc, &m);
 
-        struct consensus_params p; easy_params(&p);
+        struct consensus_params p; test_make_easy_consensus_params(&p);
         struct shadow_feeder_config cfg = {
             .shadow_dir = dir, .mutator = m, .params = &p,
         };
@@ -155,7 +141,7 @@ int test_shadow_feeder(void)
         block_free(&b);
         shadow_feeder_destroy(f);
         mutator_stop(m);
-        rm_rf(dir);
+        test_rm_rf(dir);
     }
 
     /* ── 3. Idempotency: observing the same block twice does not
@@ -167,7 +153,7 @@ int test_shadow_feeder(void)
         struct mutator_config mc = { .queue_capacity = 8, .thread_name = "sf-test2" };
         mutator_start(&mc, &m);
 
-        struct consensus_params p; easy_params(&p);
+        struct consensus_params p; test_make_easy_consensus_params(&p);
         struct shadow_feeder_config cfg = {
             .shadow_dir = dir, .mutator = m, .params = &p,
         };
@@ -195,7 +181,7 @@ int test_shadow_feeder(void)
         block_free(&b);
         shadow_feeder_destroy(f);
         mutator_stop(m);
-        rm_rf(dir);
+        test_rm_rf(dir);
     }
 
     /* ── 4. observe(NULL block) returns NULL_ARG. */
@@ -204,7 +190,7 @@ int test_shadow_feeder(void)
         struct mutator *m = NULL;
         struct mutator_config mc = { .queue_capacity = 4, .thread_name = "sf-test3" };
         mutator_start(&mc, &m);
-        struct consensus_params p; easy_params(&p);
+        struct consensus_params p; test_make_easy_consensus_params(&p);
         struct shadow_feeder_config cfg = {
             .shadow_dir = dir, .mutator = m, .params = &p,
         };
@@ -218,7 +204,7 @@ int test_shadow_feeder(void)
 
         shadow_feeder_destroy(f);
         mutator_stop(m);
-        rm_rf(dir);
+        test_rm_rf(dir);
     }
 
     return failures;

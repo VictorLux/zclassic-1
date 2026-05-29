@@ -95,7 +95,7 @@ static size_t serve_tx_rpc(const char *param, uint8_t *r, size_t max)
             "<div class='label'>Expiry Height</div><div class='val'>%" PRId64 "</div>", expiry);
     if (value_balance != 0.0) {
         char vb[32];
-        format_zcl(vb, sizeof(vb), (int64_t)(value_balance * (double)ZATOSHI_PER_ZCL));
+        zcl_format_zcl(vb, sizeof(vb), (int64_t)(value_balance * (double)ZATOSHI_PER_ZCL));
         APPEND(off, r, max,
             "<div class='label'>Value Balance</div><div class='val amount'>%s ZCL</div>", vb);
     }
@@ -126,7 +126,7 @@ static size_t serve_tx_rpc(const char *param, uint8_t *r, size_t max)
 
             double val = strtod(val_str + 8, NULL);
             char val_fmt[32];
-            format_zcl(val_fmt, sizeof(val_fmt), (int64_t)(val * (double)ZATOSHI_PER_ZCL));
+            zcl_format_zcl(val_fmt, sizeof(val_fmt), (int64_t)(val * (double)ZATOSHI_PER_ZCL));
 
             /* Try to find address */
             char addr[64] = "";
@@ -322,7 +322,7 @@ size_t serve_tx(const char *param, uint8_t *r, size_t max)
     /* Value balance for Sapling */
     if (tx.overwintered && tx.version >= 4) {
         char vb[32];
-        format_zcl(vb, sizeof(vb), tx.value_balance);
+        zcl_format_zcl(vb, sizeof(vb), tx.value_balance);
         APPEND(off, r, max,
             "<div class='label'>Value Balance</div><div class='val amount'>%s ZCL</div>",
             vb);
@@ -336,7 +336,7 @@ size_t serve_tx(const char *param, uint8_t *r, size_t max)
         if (transaction_is_coinbase(&tx) && i == 0) {
             char subsidy[32];
             int64_t reward = block_height >= 0 ? get_block_subsidy(block_height, &chain_params_get()->consensus) : 0;
-            format_zcl(subsidy, sizeof(subsidy), reward);
+            zcl_format_zcl(subsidy, sizeof(subsidy), reward);
             APPEND(off, r, max,
                 "<div class='io-row'>"
                 "<div class='io-idx'>%zu</div>"
@@ -362,7 +362,7 @@ size_t serve_tx(const char *param, uint8_t *r, size_t max)
                     sqlite3_bind_int(vs, 2, (int)tx.vin[i].prevout.n);
                     if (AR_STEP_ROW_READONLY(vs) == SQLITE_ROW) {
                         int64_t prev_val = sqlite3_column_int64(vs, 0);
-                        format_zcl(in_val, sizeof(in_val), prev_val);
+                        zcl_format_zcl(in_val, sizeof(in_val), prev_val);
                     }
                     sqlite3_finalize(vs);
                 }
@@ -392,7 +392,7 @@ size_t serve_tx(const char *param, uint8_t *r, size_t max)
     APPEND(off, r, max, "<h2>Outputs (%zu)</h2><div class='io-box'>", tx.num_vout);
     for (size_t i = 0; i < tx.num_vout && off + 512 < max; i++) {
         char val[32];
-        format_zcl(val, sizeof(val), tx.vout[i].value);
+        zcl_format_zcl(val, sizeof(val), tx.vout[i].value);
         total_out += tx.vout[i].value;
 
         /* Try to extract destination address */
@@ -432,7 +432,7 @@ size_t serve_tx(const char *param, uint8_t *r, size_t max)
     }
     {
         char tot[32];
-        format_zcl(tot, sizeof(tot), total_out);
+        zcl_format_zcl(tot, sizeof(tot), total_out);
         APPEND(off, r, max,
             "<div class='io-row' style='font-weight:bold;border-top:1px solid #333'>"
             "<div class='io-idx'></div><div class='io-addr'>Total</div>"
@@ -458,8 +458,8 @@ size_t serve_tx(const char *param, uint8_t *r, size_t max)
                 js_out += tx.v_joinsplit[j].vpub_new;
             }
             char jsi[32], jso[32];
-            format_zcl(jsi, sizeof(jsi), js_in);
-            format_zcl(jso, sizeof(jso), js_out);
+            zcl_format_zcl(jsi, sizeof(jsi), js_in);
+            zcl_format_zcl(jso, sizeof(jso), js_out);
             APPEND(off, r, max,
                 "<div class='label'>JoinSplits</div><div class='val'>%zu</div>"
                 "<div class='label'>vpub_old (t&rarr;z)</div><div class='val amount'>%s ZCL</div>"

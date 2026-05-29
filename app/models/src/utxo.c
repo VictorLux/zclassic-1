@@ -14,6 +14,7 @@
 
 #include "models/utxo.h"
 #include "models/tx_index.h"
+#include "util/log_macros.h"
 #include "event/event.h"
 #include "crypto/sha3.h"
 #include <stdint.h>
@@ -64,18 +65,15 @@ static bool utxo_before_save(void *record, void *ctx)
     (void)ctx;
     const struct db_utxo *u = record;
     if (u->value < 0 || u->value > 2100000000000000LL) {
-        fprintf(stderr, "[utxo] before_save REJECTED: value %lld out of money range\n",
-                (long long)u->value);
-        return false;
+        LOG_FAIL("utxo", "before_save REJECTED: value %lld out of money range",
+                 (long long)u->value);
     }
     if (u->height < 0) {
-        fprintf(stderr, "[utxo] before_save REJECTED: negative height %d\n", u->height);
-        return false;
+        LOG_FAIL("utxo", "before_save REJECTED: negative height %d", u->height);
     }
     if (u->script_len > 0 && !u->script) {
-        fprintf(stderr, "[utxo] before_save REJECTED: script_len=%zu but script is NULL\n",
-                u->script_len);
-        return false;
+        LOG_FAIL("utxo", "before_save REJECTED: script_len=%zu but script is NULL",
+                 u->script_len);
     }
     return true;
 }

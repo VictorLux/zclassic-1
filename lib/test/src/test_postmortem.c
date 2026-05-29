@@ -20,26 +20,6 @@
     else { printf("FAIL\n"); failures++; } \
 } while (0)
 
-static int rm_rf_simple(const char *path)
-{
-    DIR *d = opendir(path);
-    if (!d) return unlink(path);
-
-    struct dirent *de;
-    while ((de = readdir(d)) != NULL) {
-        if (strcmp(de->d_name, ".") == 0 ||
-            strcmp(de->d_name, "..") == 0) {
-            continue;
-        }
-        char child[768];
-        int n = snprintf(child, sizeof(child), "%s/%s", path, de->d_name);
-        if (n < 0 || (size_t)n >= sizeof(child)) continue;
-        rm_rf_simple(child);
-    }
-    closedir(d);
-    return rmdir(path);
-}
-
 static bool file_contains(const char *path, const char *needle)
 {
     FILE *fp = fopen(path, "rb");
@@ -75,7 +55,7 @@ static int test_postmortem_install_validates_dir(void)
     seed_tape_t *tape = seed_tape_open(0x494e5354414c4cULL, 1779670000);
     PM_CHECK("install validation seed tape open", tape != NULL);
     if (!tape) {
-        rm_rf_simple(dir);
+        test_rm_rf_recursive(dir);
         return failures + 1;
     }
 
@@ -100,7 +80,7 @@ static int test_postmortem_install_validates_dir(void)
     PM_CHECK("install rejects non-directory path", rc == -ENOTDIR);
 
     seed_tape_close(tape);
-    rm_rf_simple(dir);
+    test_rm_rf_recursive(dir);
     return failures;
 }
 
@@ -179,7 +159,7 @@ static int test_signal_handler_capsule(void)
     }
 
     seed_tape_close(tape);
-    rm_rf_simple(dir);
+    test_rm_rf_recursive(dir);
     return failures;
 }
 
@@ -260,7 +240,7 @@ static int test_boot_postmortem_install(void)
     }
 
     boot_postmortem_shutdown_for_testing();
-    rm_rf_simple(dir);
+    test_rm_rf_recursive(dir);
     return failures;
 }
 
@@ -364,7 +344,7 @@ static int test_boot_postmortem_restart_compresses_prior_sigsegv(void)
     }
 
     boot_postmortem_shutdown_for_testing();
-    rm_rf_simple(dir);
+    test_rm_rf_recursive(dir);
     return failures;
 }
 
@@ -381,7 +361,7 @@ static int test_capsule_prune(void)
     seed_tape_t *tape = seed_tape_open(0x5052554e45ULL, 1000);
     PM_CHECK("prune seed tape open", tape != NULL);
     if (!tape) {
-        rm_rf_simple(dir);
+        test_rm_rf_recursive(dir);
         return failures + 1;
     }
 
@@ -425,7 +405,7 @@ static int test_capsule_prune(void)
              rc == 0 && count == 1 && entries[0].crash_unix == 4000);
 
     seed_tape_close(tape);
-    rm_rf_simple(dir);
+    test_rm_rf_recursive(dir);
     return failures;
 }
 
@@ -442,7 +422,7 @@ static int test_capsule_compress(void)
     seed_tape_t *tape = seed_tape_open(0x434f4d5052455353ULL, 1779667000);
     PM_CHECK("compress seed tape open", tape != NULL);
     if (!tape) {
-        rm_rf_simple(dir);
+        test_rm_rf_recursive(dir);
         return failures + 1;
     }
     seed_tape_advance(tape, 42);
@@ -512,7 +492,7 @@ static int test_capsule_compress(void)
     PM_CHECK("compressed prune removes archives", pruned == 2);
 
     seed_tape_close(tape);
-    rm_rf_simple(dir);
+    test_rm_rf_recursive(dir);
     return failures;
 }
 
@@ -649,7 +629,7 @@ int test_postmortem(void)
              postmortem_capture_write(NULL, NULL, 0) == -EINVAL);
 
     seed_tape_close(tape);
-    rm_rf_simple(dir);
+    test_rm_rf_recursive(dir);
     failures += test_capsule_compress();
     failures += test_capsule_prune();
     failures += test_postmortem_install_validates_dir();

@@ -260,25 +260,6 @@ int db_peer_recent(struct node_db *ndb, struct db_peer *out, size_t max)
     return count;
 }
 
-/* ── To Try ───────────────────────────────────────────────────── */
-
-int db_peer_to_try(struct node_db *ndb, struct db_peer *out, size_t max)
-{
-    if (!ndb->open) return 0;
-    sqlite3_stmt *s = NULL;
-    int count = 0;
-
-    AR_PREPARE_RET(ndb, s,
-        "SELECT id,ip,port,services,last_seen,last_try,attempts,"
-        "source,bandwidth_score,is_zcl23"
-        " FROM peers ORDER BY last_try ASC, last_seen DESC LIMIT ?",
-        0);
-    AR_BIND_INT(s, 1, (int)max);
-    AR_LIST_ROWS(s, out, max, row_to_peer(s, &out[count], 0));
-    AR_FINALIZE(s);
-    return count;
-}
-
 /* ── Mark Tried ───────────────────────────────────────────────── */
 
 bool db_peer_mark_tried(struct node_db *ndb,

@@ -51,12 +51,6 @@ static int mkdir_p_bp(const char *p)
     return -1;
 }
 
-static void bp_tmpdir(char *buf, size_t n, const char *tag)
-{
-    snprintf(buf, n, "./test-tmp/body_persist_%d_%s",
-             (int)getpid(), tag);
-}
-
 static bool make_body(struct block *b, int h)
 {
     block_init(b);
@@ -246,7 +240,7 @@ static int bp_setup(const char *tag, int n, int upstream_fail_height,
                     size_t dir_out_size, struct main_state *ms,
                     struct synth_chain_bp *sc)
 {
-    bp_tmpdir(dir_out, dir_out_size, tag);
+    test_fmt_tmpdir(dir_out, dir_out_size, "body_persist", tag);
     mkdir_p_bp("./test-tmp");
     mkdir_p_bp(dir_out);
     if (!progress_store_open(dir_out)) return 1;

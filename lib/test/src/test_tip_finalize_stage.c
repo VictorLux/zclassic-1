@@ -48,12 +48,6 @@ static int mkdir_p_tf(const char *p)
     return -1;
 }
 
-static void tf_tmpdir(char *buf, size_t n, const char *tag)
-{
-    snprintf(buf, n, "./test-tmp/tip_finalize_%d_%s",
-             (int)getpid(), tag);
-}
-
 static void synthetic_hash(struct uint256 *out, int h)
 {
     uint256_set_null(out);
@@ -218,7 +212,7 @@ static int tf_setup(const char *tag, int log_rows,
                     char *dir_out, size_t dir_out_size,
                     struct main_state *ms, struct synth_chain_tf *sc)
 {
-    tf_tmpdir(dir_out, dir_out_size, tag);
+    test_fmt_tmpdir(dir_out, dir_out_size, "tip_finalize", tag);
     mkdir_p_tf("./test-tmp");
     mkdir_p_tf(dir_out);
     if (!progress_store_open(dir_out)) return 1;

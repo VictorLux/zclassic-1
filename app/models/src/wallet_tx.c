@@ -20,6 +20,7 @@
 
 #include "platform/time_compat.h"
 #include "util/log_macros.h"
+#include "encoding/utilstrencodings.h"
 #include "models/wallet_tx.h"
 #include "models/wallet_tx_internal.h"
 #include "models/block.h"
@@ -94,8 +95,7 @@ static bool wallet_tx_before_save(void *record, void *ctx)
     const struct db_wallet_tx *t = record;
     static const uint8_t zero[32] = {0};
     if (memcmp(t->txid, zero, 32) == 0) {
-        fprintf(stderr, "[wallet_tx] before_save REJECTED: null txid\n");
-        return false;
+        LOG_FAIL("wallet_tx", "before_save REJECTED: null txid");
     }
     return true;
 }
@@ -104,13 +104,8 @@ static void wallet_tx_after_save(void *record, void *ctx)
 {
     (void)ctx;
     const struct db_wallet_tx *t = record;
-    static const char hex[] = "0123456789abcdef";
     char txid_hex[65];
-    for (size_t i = 0; i < 32; i++) {
-        txid_hex[i * 2]     = hex[(t->txid[i] >> 4) & 0x0f];
-        txid_hex[i * 2 + 1] = hex[t->txid[i] & 0x0f];
-    }
-    txid_hex[64] = '\0';
+    HexStr(t->txid, 32, false, txid_hex, sizeof(txid_hex));
     const char *category = t->from_me ? "send" : "receive";
     event_emitf(EV_WALLET_TX_SAVED, 0,
                 "txid=%s category=%s", txid_hex, category);
@@ -138,13 +133,11 @@ static bool wallet_utxo_before_save(void *record, void *ctx)
     const struct db_wallet_utxo *u = record;
     static const uint8_t zero[32] = {0};
     if (memcmp(u->txid, zero, 32) == 0) {
-        fprintf(stderr, "[wallet_utxo] before_save REJECTED: null txid\n");
-        return false;
+        LOG_FAIL("wallet_utxo", "before_save REJECTED: null txid");
     }
     if (u->value < 0 || u->value > 2100000000000000LL) {
-        fprintf(stderr, "[wallet_utxo] before_save REJECTED: value %lld out of range\n",
-                (long long)u->value);
-        return false;
+        LOG_FAIL("wallet_utxo", "before_save REJECTED: value %lld out of range",
+                 (long long)u->value);
     }
     return true;
 }
@@ -389,12 +382,6 @@ void db_wallet_utxo_free(struct db_wallet_utxo *u)
     free(u->script);
     u->script = NULL;
     u->script_len = 0;
-}
-
-int db_wallet_tx_recent(struct node_db *ndb, struct db_wallet_tx *out,
-                        size_t max)
-{
-    return db_wallet_tx_list(ndb, out, max, 0);
 }
 
 int db_wallet_tx_list(struct node_db *ndb, struct db_wallet_tx *out,

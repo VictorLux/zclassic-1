@@ -33,15 +33,6 @@ void rpc_market_set_state(struct node_db *ndb)
     g_market_ndb = ndb;
 }
 
-/* ── Helper: bytes to hex ───────────────────────────────────────── */
-
-static void hash_to_hex(const uint8_t hash[32], char out[65])
-{
-    for (int i = 0; i < 32; i++)
-        sprintf(out + i * 2, "%02x", hash[i]);
-    out[64] = '\0';
-}
-
 /* ── zmarket_list ───────────────────────────────────────────────── */
 
 static bool rpc_zmarket_list(const struct json_value *params, bool help,
@@ -66,7 +57,7 @@ static bool rpc_zmarket_list(const struct json_value *params, bool help,
         json_set_object(&entry);
 
         char hex[65];
-        hash_to_hex(offers[i].root_hash, hex);
+        HexStr(offers[i].root_hash, 32, false, hex, sizeof(hex));
         json_push_kv_str(&entry, "root_hash", hex);
         json_push_kv_str(&entry, "filename", offers[i].filename);
         json_push_kv_int(&entry, "size_bytes", (int64_t)offers[i].size_bytes);
@@ -184,7 +175,7 @@ static bool rpc_zmarket_offer(const struct json_value *params, bool help,
     /* Return the offer */
     json_set_object(result);
     char hex[65];
-    hash_to_hex(offer.root_hash, hex);
+    HexStr(offer.root_hash, 32, false, hex, sizeof(hex));
     json_push_kv_str(result, "root_hash", hex);
     json_push_kv_str(result, "filename", offer.filename);
     json_push_kv_int(result, "size_bytes", (int64_t)offer.size_bytes);
@@ -251,7 +242,7 @@ static bool rpc_zmarket_buy(const struct json_value *params, bool help,
 
     json_set_object(result);
     char out_hex[65];
-    hash_to_hex(root_hash, out_hex);
+    HexStr(root_hash, 32, false, out_hex, sizeof(out_hex));
     json_push_kv_str(result, "root_hash", out_hex);
     json_push_kv_str(result, "filename", offer.filename);
     json_push_kv_int(result, "size_bytes", (int64_t)offer.size_bytes);

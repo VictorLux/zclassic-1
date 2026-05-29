@@ -14,6 +14,7 @@
 
 #include "platform/time_compat.h"
 #include "util/log_macros.h"
+#include "encoding/utilstrencodings.h"
 #include "models/wallet_key.h"
 #include "models/wallet_tx.h"
 #include "keys/key.h"
@@ -41,20 +42,6 @@ DEFINE_MODEL_CALLBACKS(wallet_key)
 DEFINE_MODEL_CALLBACKS(sapling_key)
 DEFINE_MODEL_CALLBACKS(wallet_script)
 
-static void wk_hash_hex_short(const uint8_t *bytes, size_t nbytes,
-                              char *out, size_t out_cap)
-{
-    static const char hex[] = "0123456789abcdef";
-    size_t cap = out_cap == 0 ? 0 : out_cap - 1;
-    size_t max = nbytes * 2;
-    if (max > cap) max = cap;
-    for (size_t i = 0; i < max / 2; i++) {
-        out[i * 2]     = hex[(bytes[i] >> 4) & 0x0f];
-        out[i * 2 + 1] = hex[bytes[i] & 0x0f];
-    }
-    out[max] = '\0';
-}
-
 static bool wallet_key_before_save(void *record, void *ctx)
 {
     (void)record;
@@ -76,8 +63,7 @@ static void wallet_key_after_save(void *record, void *ctx)
     const struct db_wallet_key *k = record;
     char addr_hex[41];
     char address[EV_WALLET_ADDRESS_MAX + 1];
-    wk_hash_hex_short(k->pubkey_hash, sizeof(k->pubkey_hash),
-                      addr_hex, sizeof(addr_hex));
+    HexStr(k->pubkey_hash, 20, false, addr_hex, sizeof(addr_hex));
     event_emitf(EV_WALLET_KEY_SAVED, 0,
                 "kind=transparent addr_hash=%s", addr_hex);
 
@@ -107,25 +93,12 @@ static void wallet_key_after_save(void *record, void *ctx)
 
 static void wallet_key_init_hooks(void)
 {
+    static bool done = false;
+    if (done) return;
     struct ar_callbacks *cbs = db_wallet_key_callbacks();
-    bool before_present = false;
-    bool after_present = false;
-    for (int i = 0; i < cbs->n_before_save; i++) {
-        if (cbs->before_save[i] == wallet_key_before_save) {
-            before_present = true;
-            break;
-        }
-    }
-    for (int i = 0; i < cbs->n_after_save; i++) {
-        if (cbs->after_save[i] == wallet_key_after_save) {
-            after_present = true;
-            break;
-        }
-    }
-    if (!before_present)
-        ar_register_before_save(cbs, wallet_key_before_save);
-    if (!after_present)
-        ar_register_after_save(cbs, wallet_key_after_save);
+    ar_register_before_save(cbs, wallet_key_before_save);
+    ar_register_after_save(cbs, wallet_key_after_save);
+    done = true;
 }
 
 static bool sapling_key_before_save(void *record, void *ctx)
@@ -143,9 +116,9 @@ static void sapling_key_after_save(void *record, void *ctx)
     (void)ctx;
     const struct db_sapling_key *k = record;
     char fvk_hex[33];
-    wk_hash_hex_short(k->xfvk, 16, fvk_hex, sizeof(fvk_hex));
+    HexStr(k->xfvk, 16, false, fvk_hex, sizeof(fvk_hex));
     char addr_hex[33];
-    wk_hash_hex_short(k->ivk, 16, addr_hex, sizeof(addr_hex));
+    HexStr(k->ivk, 16, false, addr_hex, sizeof(addr_hex));
     event_emitf(EV_WALLET_KEY_SAVED, 0,
                 "kind=sapling addr_hash=%s", addr_hex);
     event_emitf(EV_SAPLING_KEY_SAVED, 0, "fvk_hash=%s", fvk_hex);
@@ -153,25 +126,12 @@ static void sapling_key_after_save(void *record, void *ctx)
 
 static void sapling_key_init_hooks(void)
 {
+    static bool done = false;
+    if (done) return;
     struct ar_callbacks *cbs = db_sapling_key_callbacks();
-    bool before_present = false;
-    bool after_present = false;
-    for (int i = 0; i < cbs->n_before_save; i++) {
-        if (cbs->before_save[i] == sapling_key_before_save) {
-            before_present = true;
-            break;
-        }
-    }
-    for (int i = 0; i < cbs->n_after_save; i++) {
-        if (cbs->after_save[i] == sapling_key_after_save) {
-            after_present = true;
-            break;
-        }
-    }
-    if (!before_present)
-        ar_register_before_save(cbs, sapling_key_before_save);
-    if (!after_present)
-        ar_register_after_save(cbs, sapling_key_after_save);
+    ar_register_before_save(cbs, sapling_key_before_save);
+    ar_register_after_save(cbs, sapling_key_after_save);
+    done = true;
 }
 
 /* ── Validation ────────────────────────────────────────────────── */

@@ -100,7 +100,7 @@ int swap_parse_chain(const char *name)
 size_t htlc_build_script(const struct htlc_params *params,
                          uint8_t *out, size_t out_len)
 {
-    if (out_len < 97) return 0;
+    if (out_len < HTLC_CONTRACT_SIZE) return 0;
 
     size_t off = 0;
 
@@ -151,7 +151,7 @@ size_t htlc_build_script(const struct htlc_params *params,
     out[off++] = OP_EQUALVERIFY;
     out[off++] = OP_CHECKSIG;
 
-    return off; /* should be exactly 97 */
+    return off; /* should be exactly HTLC_CONTRACT_SIZE */
 }
 
 bool htlc_p2sh_address(const uint8_t *redeem_script, size_t script_len,
@@ -328,6 +328,13 @@ void swap_compute_id(const char *my_addr, const char *counter_addr,
 
 /* ── SQLite Persistence ─────────────────────────────────────────── */
 
+/* Single source of truth for the zswp_contracts column list. Position-coupled
+ * to row_to_swap() and the db_swap_save() bind sequence (columns 0..15). */
+#define SWAP_COLS \
+    "swap_id,role,state,chain,secret_hash,secret,amount,locktime," \
+    "my_address,counter_address,funding_txid,funding_vout," \
+    "redeem_script,redeem_script_len,p2sh_address,created_at"
+
 bool db_swap_save(struct node_db *ndb, const struct swap_contract *swap)
 {
     if (!ndb || !ndb->open) LOG_FAIL("htlc", "db_swap_save: db not open");
@@ -339,11 +346,7 @@ bool db_swap_save(struct node_db *ndb, const struct swap_contract *swap)
         return false;
 
     const char *sql =
-        "INSERT OR REPLACE INTO zswp_contracts"
-        "(swap_id,role,state,chain,secret_hash,secret,amount,"
-        "locktime,my_address,counter_address,funding_txid,"
-        "funding_vout,redeem_script,redeem_script_len,"
-        "p2sh_address,created_at)"
+        "INSERT OR REPLACE INTO zswp_contracts(" SWAP_COLS ")"
         " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)";
 
     sqlite3_stmt *s = NULL;
@@ -427,11 +430,7 @@ bool db_swap_find(struct node_db *ndb, const char *swap_id,
     if (!ndb || !ndb->open) return false;
 
     const char *sql =
-        "SELECT swap_id,role,state,chain,secret_hash,secret,amount,"
-        "locktime,my_address,counter_address,funding_txid,"
-        "funding_vout,redeem_script,redeem_script_len,"
-        "p2sh_address,created_at"
-        " FROM zswp_contracts WHERE swap_id=?";
+        "SELECT " SWAP_COLS " FROM zswp_contracts WHERE swap_id=?";
 
     sqlite3_stmt *s = NULL;
     int rc = sqlite3_prepare_v2(ndb->db, sql, -1, &s, NULL);
@@ -453,15 +452,9 @@ int db_swap_list(struct node_db *ndb, struct swap_contract *out,
     if (!ndb || !ndb->open) return 0;
 
     const char *sql = (state_filter >= 0)
-        ? "SELECT swap_id,role,state,chain,secret_hash,secret,amount,"
-          "locktime,my_address,counter_address,funding_txid,"
-          "funding_vout,redeem_script,redeem_script_len,"
-          "p2sh_address,created_at"
+        ? "SELECT " SWAP_COLS
           " FROM zswp_contracts WHERE state=? ORDER BY created_at DESC LIMIT ?"
-        : "SELECT swap_id,role,state,chain,secret_hash,secret,amount,"
-          "locktime,my_address,counter_address,funding_txid,"
-          "funding_vout,redeem_script,redeem_script_len,"
-          "p2sh_address,created_at"
+        : "SELECT " SWAP_COLS
           " FROM zswp_contracts ORDER BY created_at DESC LIMIT ?";
 
     sqlite3_stmt *s = NULL;

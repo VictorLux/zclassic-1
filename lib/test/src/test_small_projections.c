@@ -155,15 +155,6 @@ static int t_hodl_payload_roundtrip(void)
     return failures;
 }
 
-static void sp_tmpdir(char *buf, size_t n, const char *tag)
-{
-    snprintf(buf, n, "./test-tmp/small_projections_%d_%s",
-             (int)getpid(), tag);
-    test_cleanup_tmpdir(buf);
-    mkdir("test-tmp", 0755);
-    mkdir(buf, 0755);
-}
-
 static bool index_exists(const char *db_path, const char *name)
 {
     sqlite3 *db = NULL;
@@ -210,7 +201,7 @@ static int t_projection_skeletons_fresh(void)
     char contacts_path[320];
     char onion_path[320];
     char hodl_path[320];
-    sp_tmpdir(dir, sizeof(dir), "fresh");
+    test_make_tmpdir(dir, sizeof(dir), "small_projections", "fresh");
     snprintf(elog_path, sizeof(elog_path), "%s/event_log.dat", dir);
     snprintf(contacts_path, sizeof(contacts_path), "%s/contacts.db", dir);
     snprintf(onion_path, sizeof(onion_path), "%s/onion_announcements.db",
@@ -378,7 +369,7 @@ static int t_projection_catchup_mixed(void)
     char contacts_path[320];
     char onion_path[320];
     char hodl_path[320];
-    sp_tmpdir(dir, sizeof(dir), "mixed");
+    test_make_tmpdir(dir, sizeof(dir), "small_projections", "mixed");
     snprintf(elog_path, sizeof(elog_path), "%s/event_log.dat", dir);
     snprintf(contacts_path, sizeof(contacts_path), "%s/contacts.db", dir);
     snprintf(onion_path, sizeof(onion_path), "%s/onion_announcements.db",
@@ -514,7 +505,7 @@ static int t_projection_emit_helpers(void)
     char onion_path[320];
     char hodl_path[320];
     char legacy_path[320];
-    sp_tmpdir(dir, sizeof(dir), "emit");
+    test_make_tmpdir(dir, sizeof(dir), "small_projections", "emit");
     snprintf(elog_path, sizeof(elog_path), "%s/event_log.dat", dir);
     snprintf(contacts_path, sizeof(contacts_path), "%s/contacts.db", dir);
     snprintf(onion_path, sizeof(onion_path), "%s/onion_announcements.db",

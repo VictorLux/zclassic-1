@@ -39,18 +39,11 @@ void rpc_msg_set_state(struct node_db *ndb, struct connman *cm)
 
 /* ── Helpers ────────────────────────────────────────────────────── */
 
-static void hash_to_hex(const uint8_t hash[32], char out[65])
-{
-    for (int i = 0; i < 32; i++)
-        sprintf(out + i * 2, "%02x", hash[i]);
-    out[64] = '\0';
-}
-
 static void msg_to_json(const struct zmsg_message *msg, struct json_value *obj)
 {
     json_set_object(obj);
     char hex[65];
-    hash_to_hex(msg->msg_id, hex);
+    HexStr(msg->msg_id, 32, false, hex, sizeof(hex));
     json_push_kv_str(obj, "msg_id", hex);
     json_push_kv_str(obj, "direction",
                      msg->direction == ZMSG_OUTBOUND ? "outbound" : "inbound");
@@ -144,7 +137,7 @@ static bool rpc_msg_send(const struct json_value *params, bool help,
     /* Return result */
     json_set_object(result);
     char hex[65];
-    hash_to_hex(msg.msg_id, hex);
+    HexStr(msg.msg_id, 32, false, hex, sizeof(hex));
     json_push_kv_str(result, "msg_id", hex);
     json_push_kv_int(result, "peer_id", peer_id);
     json_push_kv_str(result, "status", "sent");
@@ -277,7 +270,7 @@ static bool rpc_msg_send_named(const struct json_value *params, bool help,
 
     json_set_object(result);
     char hex[65];
-    hash_to_hex(msg.msg_id, hex);
+    HexStr(msg.msg_id, 32, false, hex, sizeof(hex));
     json_push_kv_str(result, "msg_id", hex);
     json_push_kv_str(result, "resolved_name", name);
     json_push_kv_str(result, "resolved_to", entry.target_value);

@@ -26,14 +26,6 @@ static void srp_tmpdir(char *buf, size_t cap)
     }
 }
 
-static void srp_rm_rf(const char *dir)
-{
-    if (!dir || !dir[0]) return;
-    char cmd[4200];
-    snprintf(cmd, sizeof(cmd), "rm -rf '%s'", dir);
-    (void)!system(cmd);
-}
-
 static void srp_append(struct block_log_port *p,
                        uint32_t h,
                        uint8_t seed,
@@ -81,8 +73,8 @@ int test_shadow_replay_proof(void)
 
         block_log_file_close(primary_h);
         block_log_file_close(shadow_h);
-        srp_rm_rf(primary_dir);
-        srp_rm_rf(shadow_dir);
+        test_rm_rf(primary_dir);
+        test_rm_rf(shadow_dir);
     }
 
     {
@@ -112,8 +104,8 @@ int test_shadow_replay_proof(void)
 
         block_log_file_close(primary_h);
         block_log_file_close(shadow_h);
-        srp_rm_rf(primary_dir);
-        srp_rm_rf(shadow_dir);
+        test_rm_rf(primary_dir);
+        test_rm_rf(shadow_dir);
     }
 
     {
@@ -139,8 +131,8 @@ int test_shadow_replay_proof(void)
 
         block_log_file_close(primary_h);
         block_log_file_close(shadow_h);
-        srp_rm_rf(primary_dir);
-        srp_rm_rf(shadow_dir);
+        test_rm_rf(primary_dir);
+        test_rm_rf(shadow_dir);
     }
 
     return failures;

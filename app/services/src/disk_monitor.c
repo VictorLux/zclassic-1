@@ -160,12 +160,6 @@ void disk_monitor_poll_now(void)
 
 /* ── Thread loop ────────────────────────────────────────────── */
 
-static void dm_sleep_ms(int ms)
-{
-    struct timespec ts = { ms / 1000, (ms % 1000) * 1000000L };
-    nanosleep(&ts, NULL);
-}
-
 static void *dm_thread_fn(void *arg)
 {
     (void)arg;
@@ -196,7 +190,7 @@ static void *dm_thread_fn(void *arg)
             pthread_mutex_unlock(&g_dm.lock);
             next_at_ms = now_ms + (int64_t)poll_seconds * 1000;
         }
-        dm_sleep_ms(100);
+        platform_sleep_ms(100);
     }
 
     pthread_mutex_lock(&g_dm.lock);

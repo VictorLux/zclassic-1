@@ -36,11 +36,6 @@
     else { printf("FAIL\n"); failures++; } \
 } while (0)
 
-static void up_tmpdir(char *buf, size_t n, const char *tag)
-{
-    snprintf(buf, n, "./test-tmp/utxo_projection_%d_%s", (int)getpid(), tag);
-}
-
 static int up_mkdir_p(const char *p)
 {
     if (mkdir(p, 0700) == 0) return 0;
@@ -113,7 +108,7 @@ static int run_open_close_clean(int *failures_out)
 {
     int failures = 0;
     char dir[256];
-    up_tmpdir(dir, sizeof(dir), "occ");
+    test_fmt_tmpdir(dir, sizeof(dir), "utxo_projection","occ");
     up_mkdir_p(dir);
     char log_path[512], proj_path[512];
     snprintf(log_path,  sizeof(log_path),  "%s/events.log",          dir);
@@ -148,7 +143,7 @@ static int run_single_add_consumed(int *failures_out)
 {
     int failures = 0;
     char dir[256];
-    up_tmpdir(dir, sizeof(dir), "single");
+    test_fmt_tmpdir(dir, sizeof(dir), "utxo_projection","single");
     up_mkdir_p(dir);
     char log_path[512], proj_path[512];
     snprintf(log_path,  sizeof(log_path),  "%s/events.log",          dir);
@@ -195,7 +190,7 @@ static int run_add_then_spend(int *failures_out)
 {
     int failures = 0;
     char dir[256];
-    up_tmpdir(dir, sizeof(dir), "spend");
+    test_fmt_tmpdir(dir, sizeof(dir), "utxo_projection","spend");
     up_mkdir_p(dir);
     char log_path[512], proj_path[512];
     snprintf(log_path,  sizeof(log_path),  "%s/events.log",          dir);
@@ -228,7 +223,7 @@ static int run_replay_idempotent(int *failures_out)
 {
     int failures = 0;
     char dir[256];
-    up_tmpdir(dir, sizeof(dir), "replay");
+    test_fmt_tmpdir(dir, sizeof(dir), "utxo_projection","replay");
     up_mkdir_p(dir);
     char log_path[512], proj_path[512];
     snprintf(log_path,  sizeof(log_path),  "%s/events.log",          dir);
@@ -282,8 +277,8 @@ static int run_commitment_canonical(int *failures_out)
 {
     int failures = 0;
     char dirA[256], dirB[256];
-    up_tmpdir(dirA, sizeof(dirA), "cmtA");
-    up_tmpdir(dirB, sizeof(dirB), "cmtB");
+    test_fmt_tmpdir(dirA, sizeof(dirA), "utxo_projection", "cmtA");
+    test_fmt_tmpdir(dirB, sizeof(dirB), "utxo_projection", "cmtB");
     up_mkdir_p(dirA);
     up_mkdir_p(dirB);
 
@@ -358,7 +353,7 @@ static int run_reorg_replace(int *failures_out)
 {
     int failures = 0;
     char dir[256];
-    up_tmpdir(dir, sizeof(dir), "reorg");
+    test_fmt_tmpdir(dir, sizeof(dir), "utxo_projection","reorg");
     up_mkdir_p(dir);
     char log_path[512], proj_path[512];
     snprintf(log_path,  sizeof(log_path),  "%s/events.log",          dir);
@@ -415,7 +410,7 @@ static int run_resume_from_partial(int *failures_out)
 {
     int failures = 0;
     char dir[256];
-    up_tmpdir(dir, sizeof(dir), "resume");
+    test_fmt_tmpdir(dir, sizeof(dir), "utxo_projection","resume");
     up_mkdir_p(dir);
     char log_path[512], proj_path[512];
     snprintf(log_path,  sizeof(log_path),  "%s/events.log",          dir);

@@ -50,12 +50,6 @@ static int mkdir_p_sv(const char *p)
     return -1;
 }
 
-static void sv_tmpdir(char *buf, size_t n, const char *tag)
-{
-    snprintf(buf, n, "./test-tmp/script_validate_%d_%s",
-             (int)getpid(), tag);
-}
-
 static void make_prevout(struct tx_out *out, bool valid)
 {
     tx_out_set_null(out);
@@ -279,7 +273,7 @@ static int sv_setup(const char *tag, int n, int upstream_fail_height,
                     char *dir_out, size_t dir_out_size,
                     struct main_state *ms, struct synth_chain_sv *sc)
 {
-    sv_tmpdir(dir_out, dir_out_size, tag);
+    test_fmt_tmpdir(dir_out, dir_out_size, "script_validate", tag);
     mkdir_p_sv("./test-tmp");
     mkdir_p_sv(dir_out);
     if (!progress_store_open(dir_out)) return 1;

@@ -39,9 +39,6 @@ int db_peer_count(struct node_db *ndb);
 /* Get recently-seen peers for addr relay. Returns count. */
 int db_peer_recent(struct node_db *ndb, struct db_peer *out, size_t max);
 
-/* Get peers to try connecting to (ordered by last_try ASC). */
-int db_peer_to_try(struct node_db *ndb, struct db_peer *out, size_t max);
-
 /* Update last_try and increment attempts for a peer. */
 bool db_peer_mark_tried(struct node_db *ndb,
                         const uint8_t ip[16], uint16_t port);

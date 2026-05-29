@@ -7,6 +7,7 @@
 
 #include "platform/time_compat.h"
 #include "jobs/tip_finalize_stage.h"
+#include "jobs/stage_helpers.h"
 
 #include "chain/chain.h"
 #include "core/arith_uint256.h"
@@ -78,11 +79,6 @@ static bool get_last_advance(int64_t *height, uint8_t hash[32])
     return true;
 }
 
-static int64_t wall_now_s(void)
-{
-    return (int64_t)platform_time_wall_time_t();
-}
-
 static bool ensure_log_schema(sqlite3 *db)
 {
     static const char *const sql =
@@ -113,23 +109,6 @@ static bool ensure_log_schema(sqlite3 *db)
         sqlite3_free(err);
     }
     return true;
-}
-
-static uint64_t upstream_cursor_persisted(sqlite3 *db, const char *name)
-{
-    sqlite3_stmt *st = NULL;
-    if (sqlite3_prepare_v2(db,
-        "SELECT cursor FROM stage_cursor WHERE name = ?",
-        -1, &st, NULL) != SQLITE_OK) {
-        LOG_WARN("tip_finalize", "[tip_finalize] upstream cursor prepare failed: %s", sqlite3_errmsg(db));
-        return 0;
-    }
-    sqlite3_bind_text(st, 1, name, -1, SQLITE_STATIC);
-    uint64_t out = 0;
-    if (sqlite3_step(st) == SQLITE_ROW)  // raw-sql-ok:kernel-primitive
-        out = (uint64_t)sqlite3_column_int64(st, 0);
-    sqlite3_finalize(st);
-    return out;
 }
 
 static int utxo_apply_log_at(sqlite3 *db, int height,
@@ -214,7 +193,7 @@ static bool log_insert(sqlite3 *db, int height, const char *status, bool ok,
     sqlite3_bind_int64(stmt, 5, (sqlite3_int64)lo);
     sqlite3_bind_int64(stmt, 6, (sqlite3_int64)utxo_size_after);
     sqlite3_bind_int  (stmt, 7, reorg_depth);
-    sqlite3_bind_int64(stmt, 8, (sqlite3_int64)wall_now_s());
+    sqlite3_bind_int64(stmt, 8, (sqlite3_int64)platform_time_wall_unix());
     if (tip_hash)
         sqlite3_bind_blob(stmt, 9, tip_hash->data, 32, SQLITE_STATIC);
     else
@@ -257,22 +236,6 @@ static bool finalized_tip_row_at(sqlite3 *db, int height,
     }
     sqlite3_finalize(st);
     return true;
-}
-
-static int64_t log_row_count(sqlite3 *db)
-{
-    sqlite3_stmt *st = NULL;
-    if (sqlite3_prepare_v2(db,
-        "SELECT COUNT(*) FROM tip_finalize_log",
-        -1, &st, NULL) != SQLITE_OK) {
-        LOG_WARN("tip_finalize", "[tip_finalize] log count prepare failed: %s", sqlite3_errmsg(db));
-        return -1;  // raw-return-ok:logged-above
-    }
-    int64_t n = -1;
-    if (sqlite3_step(st) == SQLITE_ROW)  // raw-sql-ok:kernel-primitive
-        n = sqlite3_column_int64(st, 0);
-    sqlite3_finalize(st);
-    return n;
 }
 
 static int reorg_depth_from(struct block_index *old_tip,
@@ -330,7 +293,7 @@ static bool rewind_cursor_if_active_chain_reorged(sqlite3 *db)
     if (!g_stage || !g_ms)
         return true;
 
-    uint64_t cursor = upstream_cursor_persisted(db, STAGE_NAME);
+    uint64_t cursor = stage_cursor_persisted(db, STAGE_NAME, STAGE_NAME);
     if (cursor == 0)
         return true;
     if (cursor > (uint64_t)INT32_MAX) {
@@ -365,7 +328,7 @@ static bool rewind_cursor_if_active_chain_reorged(sqlite3 *db)
     }
 
     atomic_fetch_add(&g_reorg_detected_total, 1);
-    atomic_store(&g_last_blocked_unix, wall_now_s());
+    atomic_store(&g_last_blocked_unix, platform_time_wall_unix());
     event_emitf(EV_BLOCK_REJECTED, 0,
                 "tip_finalize reorg_cursor_rewind from=%llu to=%llu",
                 (unsigned long long)cursor,
@@ -383,7 +346,7 @@ static bool live_utxo_count_after(int height_after, int64_t *out_count)
 
 static job_result_t step_finalize(struct stage_step_ctx *c)
 {
-    atomic_store(&g_last_step_unix, wall_now_s());
+    atomic_store(&g_last_step_unix, platform_time_wall_unix());
 
     struct main_state *ms = g_ms;
     if (!ms) return JOB_IDLE;
@@ -393,9 +356,10 @@ static job_result_t step_finalize(struct stage_step_ctx *c)
     int next_h = (int)c->cursor_in;
     if (next_h < 0) return JOB_FATAL;
 
-    uint64_t uv_cursor = upstream_cursor_persisted(db, "utxo_apply");
+    uint64_t uv_cursor = stage_cursor_persisted(db, "utxo_apply",
+                                               STAGE_NAME);
     if ((uint64_t)next_h >= uv_cursor) {
-        atomic_store(&g_last_blocked_unix, wall_now_s());
+        atomic_store(&g_last_blocked_unix, platform_time_wall_unix());
         return JOB_IDLE;
     }
 
@@ -403,7 +367,7 @@ static job_result_t step_finalize(struct stage_step_ctx *c)
     int found = utxo_apply_log_at(db, next_h, &upstream);
     if (found < 0) return JOB_FATAL;
     if (found == 0) {
-        atomic_store(&g_last_blocked_unix, wall_now_s());
+        atomic_store(&g_last_blocked_unix, platform_time_wall_unix());
         return JOB_IDLE;
     }
 
@@ -423,11 +387,11 @@ static job_result_t step_finalize(struct stage_step_ctx *c)
     struct block_index *new_tip = active_chain_at(&ms->chain_active,
                                                   next_h + 1);
     if (!new_tip) {
-        atomic_store(&g_last_blocked_unix, wall_now_s());
+        atomic_store(&g_last_blocked_unix, platform_time_wall_unix());
         return JOB_IDLE;
     }
     if (!old_tip) {
-        atomic_store(&g_last_blocked_unix, wall_now_s());
+        atomic_store(&g_last_blocked_unix, platform_time_wall_unix());
         return JOB_IDLE;
     }
 
@@ -579,17 +543,7 @@ job_result_t tip_finalize_stage_step_once(void)
     return stage_run_once(g_stage, db);
 }
 
-int tip_finalize_stage_drain(int max_steps)
-{
-    if (max_steps <= 0) return 0;
-    int advanced = 0;
-    for (int i = 0; i < max_steps; i++) {
-        job_result_t r = tip_finalize_stage_step_once();
-        if (r != JOB_ADVANCED) break;
-        advanced++;
-    }
-    return advanced;
-}
+STAGE_DRAIN_IMPL(tip_finalize)
 
 void tip_finalize_stage_shutdown(void)
 {
@@ -698,7 +652,7 @@ bool tip_finalize_dump_state_json(struct json_value *out, const char *key)
     json_set_object(out);
 
     sqlite3 *db = progress_store_db();
-    int64_t now = wall_now_s();
+    int64_t now = platform_time_wall_unix();
     int64_t last = atomic_load(&g_last_step_unix);
 
     json_push_kv_bool(out, "initialised", g_stage != NULL);
@@ -726,7 +680,9 @@ bool tip_finalize_dump_state_json(struct json_value *out, const char *key)
                       last > 0 ? now - last : -1);
     json_push_kv_int (out, "last_blocked_unix",
                       atomic_load(&g_last_blocked_unix));
-    json_push_kv_int (out, "log_rows", db ? log_row_count(db) : 0);
+    json_push_kv_int (out, "log_rows",
+                      db ? stage_log_row_count(db, STAGE_NAME,
+                                               "tip_finalize_log") : 0);
     if (g_stage) {
         json_push_kv_int(out, "advanced_count",
                          (int64_t)stage_advanced_count(g_stage));

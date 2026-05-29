@@ -75,12 +75,6 @@ static int64_t it_now_us(void)
     return (int64_t)ts.tv_sec * 1000000 + ts.tv_nsec / 1000;
 }
 
-static void it_sleep_ms(int ms)
-{
-    struct timespec ts = { ms / 1000, (ms % 1000) * 1000000L };
-    nanosleep(&ts, NULL);
-}
-
 /* ── Config ─────────────────────────────────────────────────── */
 
 void ibd_throttle_config_defaults(struct ibd_throttle_config *cfg)
@@ -252,7 +246,7 @@ bool ibd_throttle_acquire(void)
     int64_t  ev_burst = 0;
 
     while (true) {
-        it_sleep_ms(1);
+        platform_sleep_ms(1);
 
         pthread_mutex_lock(&g_it.lock);
         if (!g_it.running) {

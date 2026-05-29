@@ -17,6 +17,7 @@
 
 #include "models/block.h"
 #include "util/log_macros.h"
+#include "encoding/utilstrencodings.h"
 #include "models/tx_index.h"
 #include "models/utxo.h"
 #include "chain/chain.h"
@@ -94,17 +95,6 @@ static bool db_block_step_is_retryable(int rc)
     return rc == SQLITE_BUSY || rc == SQLITE_LOCKED;
 }
 
-static void db_block_hash_hex(const uint8_t hash[32], char out[65])
-{
-    static const char hex[] = "0123456789abcdef";
-
-    for (size_t i = 0; i < 32; i++) {
-        out[i * 2] = hex[(hash[i] >> 4) & 0x0f];
-        out[i * 2 + 1] = hex[hash[i] & 0x0f];
-    }
-    out[64] = '\0';
-}
-
 static bool db_block_step_done_retry(sqlite3 *db,
                                      sqlite3_stmt *s,
                                      const char *stmt_name,
@@ -136,7 +126,7 @@ static bool db_block_step_done_retry(sqlite3 *db,
 
     if (rc != SQLITE_DONE) {
         char hash_hex[65];
-        db_block_hash_hex(hash, hash_hex);
+        HexStr(hash, 32, false, hash_hex, sizeof(hash_hex));
         LOG_WARN("chain", "%s: failed height=%d hash=%s step_rc=%d " "step_msg=%s db_rc=%d db_msg=%s attempts=%d", stmt_name, height, hash_hex, rc, sqlite3_errstr(rc), sqlite3_errcode(db), sqlite3_errmsg(db), attempts);
     }
 
@@ -279,7 +269,7 @@ bool db_block_save(struct node_db *ndb, const struct db_block *b)
     if (!ok) {
         static int lock_err_count = 0;
         char hash_hex[65];
-        db_block_hash_hex(b->hash, hash_hex);
+        HexStr(b->hash, 32, false, hash_hex, sizeof(hash_hex));
         if (db_block_step_is_retryable(rc)) {
             lock_err_count++;
             if (lock_err_count <= 3 || (lock_err_count % 1000 == 0)) {
@@ -324,7 +314,7 @@ bool db_block_save_canonical(struct node_db *ndb, const struct db_block *b)
         -1, &s, NULL);
     if (prep_rc != SQLITE_OK || !s) {
         char hash_hex[65];
-        db_block_hash_hex(b->hash, hash_hex);
+        HexStr(b->hash, 32, false, hash_hex, sizeof(hash_hex));
         LOG_WARN("db_block_save_canonical", "db_block_save_canonical: prepare failed " "stmt=block_demote_same_height height=%d hash=%s " "prep_rc=%d prep_msg=%s db_rc=%d db_msg=%s", b->height, hash_hex, prep_rc, sqlite3_errstr(prep_rc), sqlite3_errcode(ndb->db), sqlite3_errmsg(ndb->db));
         if (s)
             sqlite3_finalize(s);
@@ -353,7 +343,7 @@ bool db_block_save_canonical(struct node_db *ndb, const struct db_block *b)
 
     if (changed > 0) {
         char hash_hex[65];
-        db_block_hash_hex(b->hash, hash_hex);
+        HexStr(b->hash, 32, false, hash_hex, sizeof(hash_hex));
         LOG_INFO("db_block_save_canonical", "db_block_save_canonical: demoted %d stale " "same-height projection row(s) height=%d hash=%s", changed, b->height, hash_hex);
     }
 
@@ -478,17 +468,6 @@ int db_block_count(struct node_db *ndb)
 {
     if (!ndb->open) return 0;
     AR_QUERY_COUNT_SQL(ndb, "SELECT COUNT(*) FROM blocks");
-}
-
-bool db_block_save_batch(struct node_db *ndb,
-                         const struct db_block *blocks,
-                         size_t count)
-{
-    for (size_t i = 0; i < count; i++) {
-        if (!db_block_save(ndb, &blocks[i]))
-            return false;
-    }
-    return true;
 }
 
 /* ── Relationships ─────────────────────────────────────────────── */

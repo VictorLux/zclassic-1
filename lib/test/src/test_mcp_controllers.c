@@ -136,24 +136,6 @@ static bool contains(const char *haystack, const char *needle)
     return haystack && needle && strstr(haystack, needle) != NULL;
 }
 
-static int rm_rf_simple(const char *path)
-{
-    DIR *d = opendir(path);
-    if (!d) return unlink(path);
-    struct dirent *de;
-    while ((de = readdir(d)) != NULL) {
-        if (strcmp(de->d_name, ".") == 0 ||
-            strcmp(de->d_name, "..") == 0)
-            continue;
-        char child[768];
-        int n = snprintf(child, sizeof(child), "%s/%s", path, de->d_name);
-        if (n < 0 || (size_t)n >= sizeof(child)) continue;
-        rm_rf_simple(child);
-    }
-    closedir(d);
-    return rmdir(path);
-}
-
 /* ── Tests ──────────────────────────────────────────────────── */
 
 static int test_register_total_count(void)
@@ -423,7 +405,7 @@ static int test_postmortem_tools_dispatch(void)
         json_free(&args);
 
         seed_tape_close(tape);
-        rm_rf_simple(dir);
+        test_rm_rf_recursive(dir);
         PASS();
     } _test_next:;
     return failures;
@@ -699,7 +681,7 @@ static int test_postmortem_tools_list_and_replay(void)
         json_free(&replay_root);
         free(replay_body);
         json_free(&replay_args);
-        rm_rf_simple(dir);
+        test_rm_rf_recursive(dir);
         PASS();
     } _test_next:;
     return failures;

@@ -76,7 +76,7 @@ size_t serve_address(const char *param, uint8_t *r, size_t max)
     if (ctx->node_db && addr_hash) {
         int64_t balance = db_utxo_balance_for_address(ctx->node_db, addr_hash);
         char bal[32];
-        format_zcl(bal, sizeof(bal), balance);
+        zcl_format_zcl(bal, sizeof(bal), balance);
         APPEND(off, r, max,
             "<div class='label'>Balance</div><div class='val amount'>%s ZCL</div>",
             bal);
@@ -103,7 +103,7 @@ size_t serve_address(const char *param, uint8_t *r, size_t max)
                      txid_hex, txid_hex + 60);
 
             char val[32];
-            format_zcl(val, sizeof(val), utxos[i].value);
+            zcl_format_zcl(val, sizeof(val), utxos[i].value);
 
             APPEND(off, r, max,
                 "<tr><td class='hash'><a href='/explorer/tx/%s'>%s</a></td>"
@@ -182,7 +182,7 @@ size_t serve_search(const char *query, uint8_t *r, size_t max)
             "<p>Search input contains unsupported characters.</p>" EXPLORER_FOOTER);
 
     /* Block height? Always try — serve_block handles RPC fallback */
-    if (is_all_digits(q)) {
+    if (zcl_is_all_digits(q)) {
         int h = atoi(q);
         if (h >= 0 && h < 100000000)
             return serve_block(q, r, max);

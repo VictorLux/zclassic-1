@@ -70,6 +70,16 @@ struct block_index **snapsync_anchor_slot_internal(void)
 struct snapshot_sync_service *snapsync_global(void) { return &g_snapsync_instance; }
 bool snapsync_global_initialized(void) { return g_snapsync_init_done; }
 
+struct snapshot_sync_service *snapsync_condition_service(void)
+{
+    struct snapshot_sync_service *svc = app_runtime_snapshot_sync();
+    if (svc)
+        return svc;
+    if (!snapsync_global_initialized())
+        return NULL;
+    return snapsync_global();
+}
+
 void snapsync_global_ensure_init(struct node_db *ndb)
 {
     snapsync_service_lock_internal();

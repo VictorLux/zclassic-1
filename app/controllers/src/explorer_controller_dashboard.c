@@ -207,7 +207,7 @@ static size_t serve_dashboard_native_page(uint8_t *r, size_t max, int page)
         snprintf(short_hash, sizeof(short_hash), "%.8s...%.4s", hash, hash + 60);
         char sap_val[32] = "";
         if (bi->nSaplingValue != 0)
-            format_zcl(sap_val, sizeof(sap_val), bi->nSaplingValue);
+            zcl_format_zcl(sap_val, sizeof(sap_val), bi->nSaplingValue);
 
         char h_fmt[32];
         format_with_commas(h_fmt, sizeof(h_fmt), h);

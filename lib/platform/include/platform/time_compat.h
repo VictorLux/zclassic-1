@@ -41,4 +41,18 @@ static inline int platform_time_realtime_timespec(struct timespec *ts)
     return 0;
 }
 
+static inline int64_t platform_time_monotonic_ms(void)
+{
+    return clock_now_monotonic_ns() / 1000000;
+}
+
+/* Sleep helper: deliberately uses raw nanosleep and does NOT route
+ * through platform.clock — sleeping is not a clock read. Matches the
+ * prior behavior of the per-service sleep_ms wrappers it replaces. */
+static inline void platform_sleep_ms(int ms)
+{
+    struct timespec ts = { ms / 1000, (ms % 1000) * 1000000L };
+    nanosleep(&ts, NULL);
+}
+
 #endif /* ZCL_PLATFORM_TIME_COMPAT_H */

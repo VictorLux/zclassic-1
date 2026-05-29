@@ -356,10 +356,8 @@ static bool rpc_addnode(const struct json_value *params, bool help,
         if (getaddrinfo(host, NULL, &hints, &res) == 0 && res) {
             if (res->ai_family == AF_INET) {
                 struct sockaddr_in *s4 = (struct sockaddr_in *)res->ai_addr;
-                memset(addr.svc.addr.ip, 0, 10);
-                addr.svc.addr.ip[10] = 0xff;
-                addr.svc.addr.ip[11] = 0xff;
-                memcpy(addr.svc.addr.ip + 12, &s4->sin_addr, 4);
+                net_addr_set_ipv4(&addr.svc.addr,
+                                  (const unsigned char *)&s4->sin_addr);
             } else if (res->ai_family == AF_INET6) {
                 struct sockaddr_in6 *s6 = (struct sockaddr_in6 *)res->ai_addr;
                 memcpy(addr.svc.addr.ip, &s6->sin6_addr, 16);

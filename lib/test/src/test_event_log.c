@@ -50,11 +50,6 @@ static void sleep_us(uint64_t us)
     else { printf("FAIL\n"); failures++; } \
 } while (0)
 
-static void el_tmpdir(char *buf, size_t n, const char *tag)
-{
-    snprintf(buf, n, "./test-tmp/event_log_%d_%s", (int)getpid(), tag);
-}
-
 static int el_mkdir_p(const char *p)
 {
     if (mkdir(p, 0700) == 0) return 0;
@@ -81,7 +76,7 @@ static int run_append_read_roundtrip(int *failures)
 {
     int start_failures = *failures;
     char dir[256];
-    el_tmpdir(dir, sizeof(dir), "rt");
+    test_fmt_tmpdir(dir, sizeof(dir), "event_log", "rt");
     el_mkdir_p(dir);
     char path[512];
     snprintf(path, sizeof(path), "%s/events.log", dir);
@@ -164,7 +159,7 @@ static int run_stream(int *failures)
 {
     int start_failures = *failures;
     char dir[256];
-    el_tmpdir(dir, sizeof(dir), "stream");
+    test_fmt_tmpdir(dir, sizeof(dir), "event_log", "stream");
     el_mkdir_p(dir);
     char path[512];
     snprintf(path, sizeof(path), "%s/events.log", dir);
@@ -207,8 +202,8 @@ static int run_fingerprint(int *failures)
 {
     int start_failures = *failures;
     char dir1[256], dir2[256];
-    el_tmpdir(dir1, sizeof(dir1), "fp1");
-    el_tmpdir(dir2, sizeof(dir2), "fp2");
+    test_fmt_tmpdir(dir1, sizeof(dir1), "event_log", "fp1");
+    test_fmt_tmpdir(dir2, sizeof(dir2), "event_log", "fp2");
     el_mkdir_p(dir1);
     el_mkdir_p(dir2);
     char p1[512], p2[512];
@@ -244,7 +239,7 @@ static int run_fingerprint(int *failures)
 
     /* fingerprint over empty log is deterministic (SHA3-256 of empty). */
     char dir3[256];
-    el_tmpdir(dir3, sizeof(dir3), "fp3");
+    test_fmt_tmpdir(dir3, sizeof(dir3), "event_log", "fp3");
     el_mkdir_p(dir3);
     char p3[512];
     snprintf(p3, sizeof(p3), "%s/events.log", dir3);
@@ -397,7 +392,7 @@ static int run_kill9_fuzz(int *failures)
 {
     int start_failures = *failures;
     char dir[256];
-    el_tmpdir(dir, sizeof(dir), "kill9");
+    test_fmt_tmpdir(dir, sizeof(dir), "event_log", "kill9");
     el_mkdir_p(dir);
     char path[512];
     snprintf(path, sizeof(path), "%s/events.log", dir);
@@ -438,7 +433,7 @@ static int run_targeted_recovery(int *failures)
 {
     int start_failures = *failures;
     char dir[256];
-    el_tmpdir(dir, sizeof(dir), "recov");
+    test_fmt_tmpdir(dir, sizeof(dir), "event_log", "recov");
     el_mkdir_p(dir);
     char path[512];
     snprintf(path, sizeof(path), "%s/events.log", dir);
@@ -525,7 +520,7 @@ static int run_benchmark(int *failures)
 {
     int start_failures = *failures;
     char dir[256];
-    el_tmpdir(dir, sizeof(dir), "bench");
+    test_fmt_tmpdir(dir, sizeof(dir), "event_log", "bench");
     el_mkdir_p(dir);
     char path[512];
     snprintf(path, sizeof(path), "%s/events.log", dir);
@@ -579,7 +574,7 @@ static int run_edge_cases(int *failures)
 {
     int start_failures = *failures;
     char dir[256];
-    el_tmpdir(dir, sizeof(dir), "edge");
+    test_fmt_tmpdir(dir, sizeof(dir), "event_log", "edge");
     el_mkdir_p(dir);
     char path[512];
     snprintf(path, sizeof(path), "%s/events.log", dir);
@@ -647,7 +642,7 @@ static int run_persistence(int *failures)
 {
     int start_failures = *failures;
     char dir[256];
-    el_tmpdir(dir, sizeof(dir), "persist");
+    test_fmt_tmpdir(dir, sizeof(dir), "event_log", "persist");
     el_mkdir_p(dir);
     char path[512];
     snprintf(path, sizeof(path), "%s/events.log", dir);

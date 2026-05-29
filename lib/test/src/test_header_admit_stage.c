@@ -63,12 +63,6 @@ static bool ha_stamp_cursor(sqlite3 *db, const char *name, int64_t cursor)
     return rc == SQLITE_DONE;
 }
 
-static void ha_tmpdir(char *buf, size_t n, const char *tag)
-{
-    snprintf(buf, n, "./test-tmp/header_admit_%d_%s",
-             (int)getpid(), tag);
-}
-
 /* Build a chain of `n` synthetic block_index entries linked via pprev,
  * with deterministic hashes derived from height. Caller owns the
  * blocks + hashes arrays. */
@@ -205,7 +199,7 @@ int test_header_admit_stage(void)
     /* ── happy path: drain a 5-block synthetic chain ───────────────── */
     {
         char dir[256];
-        ha_tmpdir(dir, sizeof(dir), "happy");
+        test_fmt_tmpdir(dir, sizeof(dir), "header_admit","happy");
         mkdir_p_ha(dir);
 
         HA_CHECK("progress_store opens", progress_store_open(dir));
@@ -258,7 +252,7 @@ int test_header_admit_stage(void)
     /* ── replay across reopen: cursor + log persist ────────────────── */
     {
         char dir[256];
-        ha_tmpdir(dir, sizeof(dir), "replay");
+        test_fmt_tmpdir(dir, sizeof(dir), "header_admit","replay");
         mkdir_p_ha(dir);
 
         HA_CHECK("replay: store opens", progress_store_open(dir));
@@ -302,7 +296,7 @@ int test_header_admit_stage(void)
     /* ── missing-pprev → JOB_BLOCKED ─────────────────────────────── */
     {
         char dir[256];
-        ha_tmpdir(dir, sizeof(dir), "blocked");
+        test_fmt_tmpdir(dir, sizeof(dir), "header_admit","blocked");
         mkdir_p_ha(dir);
         HA_CHECK("blocked: store opens", progress_store_open(dir));
 
@@ -339,7 +333,7 @@ int test_header_admit_stage(void)
     /* ── authoritative path is gated behind mode flag ──────────────── */
     {
         char dir[256];
-        ha_tmpdir(dir, sizeof(dir), "authoritative");
+        test_fmt_tmpdir(dir, sizeof(dir), "header_admit","authoritative");
         mkdir_p_ha(dir);
         HA_CHECK("auth: store opens", progress_store_open(dir));
 
@@ -373,7 +367,7 @@ int test_header_admit_stage(void)
     /* ── authoritative legacy ingress guard detects missing stage row ─ */
     {
         char dir[256];
-        ha_tmpdir(dir, sizeof(dir), "cutover_guard");
+        test_fmt_tmpdir(dir, sizeof(dir), "header_admit","cutover_guard");
         mkdir_p_ha(dir);
         HA_CHECK("guard: store opens", progress_store_open(dir));
 
@@ -437,7 +431,7 @@ int test_header_admit_stage(void)
     /* ── cold-import fast-forward lets first post-anchor header in ─── */
     {
         char dir[256];
-        ha_tmpdir(dir, sizeof(dir), "fast_forward_guard");
+        test_fmt_tmpdir(dir, sizeof(dir), "header_admit","fast_forward_guard");
         mkdir_p_ha(dir);
         HA_CHECK("ff: store opens", progress_store_open(dir));
 
@@ -520,7 +514,7 @@ int test_header_admit_stage(void)
     /* ── dump_state_json shape ─────────────────────────────────────── */
     {
         char dir[256];
-        ha_tmpdir(dir, sizeof(dir), "dump");
+        test_fmt_tmpdir(dir, sizeof(dir), "header_admit","dump");
         mkdir_p_ha(dir);
         progress_store_open(dir);
 
@@ -581,7 +575,7 @@ int test_header_admit_stage(void)
     /* ── S-11 diff: CONVERGED on fully drained chain ───────────────── */
     {
         char dir[256];
-        ha_tmpdir(dir, sizeof(dir), "diff_conv");
+        test_fmt_tmpdir(dir, sizeof(dir), "header_admit","diff_conv");
         mkdir_p_ha(dir);
         HA_CHECK("diff_conv: store opens", progress_store_open(dir));
 
@@ -628,7 +622,7 @@ int test_header_admit_stage(void)
     /* ── S-11 diff: CHAIN_AHEAD when cursor lags behind tip ────────── */
     {
         char dir[256];
-        ha_tmpdir(dir, sizeof(dir), "diff_chainahead");
+        test_fmt_tmpdir(dir, sizeof(dir), "header_admit","diff_chainahead");
         mkdir_p_ha(dir);
         HA_CHECK("diff_chainahead: store opens", progress_store_open(dir));
 
@@ -684,7 +678,7 @@ int test_header_admit_stage(void)
     /* ── S-11 diff: DIVERGENT on real hash mismatch ────────────────── */
     {
         char dir[256];
-        ha_tmpdir(dir, sizeof(dir), "diff_div");
+        test_fmt_tmpdir(dir, sizeof(dir), "header_admit","diff_div");
         mkdir_p_ha(dir);
         HA_CHECK("diff_div: store opens", progress_store_open(dir));
 
@@ -734,7 +728,7 @@ int test_header_admit_stage(void)
     /* ── S-11 diff: LOG_AHEAD when chain shrinks below log ─────────── */
     {
         char dir[256];
-        ha_tmpdir(dir, sizeof(dir), "diff_logahead");
+        test_fmt_tmpdir(dir, sizeof(dir), "header_admit","diff_logahead");
         mkdir_p_ha(dir);
         HA_CHECK("diff_logahead: store opens", progress_store_open(dir));
 
@@ -779,7 +773,7 @@ int test_header_admit_stage(void)
     /* ── S-11 diff: EMPTY when range inverted ──────────────────────── */
     {
         char dir[256];
-        ha_tmpdir(dir, sizeof(dir), "diff_empty");
+        test_fmt_tmpdir(dir, sizeof(dir), "header_admit","diff_empty");
         mkdir_p_ha(dir);
         progress_store_open(dir);
 
@@ -808,7 +802,7 @@ int test_header_admit_stage(void)
     /* ── S-11 diff: sample_count caps at MAX_SAMPLES ───────────────── */
     {
         char dir[256];
-        ha_tmpdir(dir, sizeof(dir), "diff_cap");
+        test_fmt_tmpdir(dir, sizeof(dir), "header_admit","diff_cap");
         mkdir_p_ha(dir);
         progress_store_open(dir);
 
@@ -846,7 +840,7 @@ int test_header_admit_stage(void)
     /* ── S-11 diff: auto range is the recent tail, not genesis ─────── */
     {
         char dir[256];
-        ha_tmpdir(dir, sizeof(dir), "diff_tail");
+        test_fmt_tmpdir(dir, sizeof(dir), "header_admit","diff_tail");
         mkdir_p_ha(dir);
         progress_store_open(dir);
 

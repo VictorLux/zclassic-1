@@ -5,9 +5,7 @@
  *
  * Lifecycle:
  *   1. boot:  rolling_anchor_init(datadir)
- *   2. tick:  rolling_anchor_extend_if_due(ms, datadir)  (every 60s)
- *   3. boot+: rolling_anchor_effective_prefix_end_height() consulted by
- *             bg-validation skip path and operator diagnostics. */
+ *   2. tick:  rolling_anchor_extend_if_due(ms, datadir)  (every 60s) */
 
 #include "platform/time_compat.h"
 #include "services/rolling_anchor_service.h"
@@ -18,6 +16,7 @@
 #include "chain/sha3_windows.h"
 #include "core/serialize.h"
 #include "crypto/sha3.h"
+#include "encoding/utilstrencodings.h"
 #include "event/event.h"
 #include "health/heartbeat.h"
 #include "json/json.h"
@@ -304,35 +303,6 @@ struct zcl_result rolling_anchor_init(const char *datadir,
     return ZCL_OK;
 }
 
-void rolling_anchor_discard(const char *datadir)
-{
-    char path[1024];
-    if (datadir && datadir[0])
-        snprintf(path, sizeof(path), "%s/%s", datadir, RA_FILE_NAME);
-    else
-        path[0] = '\0';
-
-    pthread_mutex_lock(&g_ra.lock);
-    free(g_ra.windows);
-    g_ra.windows = NULL;
-    g_ra.count = 0;
-    g_ra.capacity = 0;
-    if (path[0])
-        snprintf(g_ra.file_path, sizeof(g_ra.file_path), "%s", path);
-    if (g_ra.file_path[0])
-        unlink(g_ra.file_path);
-    pthread_mutex_unlock(&g_ra.lock);
-    LOG_WARN("rolling_anchor", "[rolling_anchor] discarded");
-}
-
-int rolling_anchor_effective_prefix_end_height(void)
-{
-    pthread_mutex_lock(&g_ra.lock);
-    int end = ra_runtime_end_locked();
-    pthread_mutex_unlock(&g_ra.lock);
-    return end;
-}
-
 /* Caller holds lock. Compute SHA3 over heights [start_h..start_h+999]
  * by reading each block from disk via active_chain. Returns true if
  * every block was read; false on any I/O failure. */
@@ -493,9 +463,7 @@ int rolling_anchor_extend_if_due(struct main_state *ms,
         }
 
         char hex[65];
-        for (int i = 0; i < 32; i++)
-            snprintf(hex + 2 * i, 3, "%02x", hash[i]);
-        hex[64] = '\0';
+        HexStr(hash, 32, false, hex, sizeof(hex));
         LOG_INFO("rolling_anchor", "[rolling_anchor] extended: start=%d end=%d sha3=%s", next_start, last_h_in_win, hex);
         atomic_fetch_add(&g_ra.total_extended, 1);
         atomic_store(&g_ra.last_extend_unix, (int64_t)platform_time_wall_time_t());

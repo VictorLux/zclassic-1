@@ -35,6 +35,7 @@ struct tx_mempool;
 
 /* ── Defaults / tunables ─────────────────────────────────────── */
 #define SELF_HEAL_SCAN_DEFAULT_DEPTH 250000
+#define SELF_HEAL_MAX_RECOVERY_ATTEMPTS 100
 #define ACTIVE_TIP_CHILD_CONNECT_DEFAULT_LIMIT 128
 
 /* ── Shared file-scope globals (own definitions in named .c file)
@@ -113,6 +114,18 @@ bool process_block_recover_missing_utxo_from_sqlite_tx_index(
     struct coins_view_cache *coins_tip,
     const struct uint256 *txid,
     uint32_t missing_vout,
+    const char *datadir,
+    int retry_no);
+
+/* Bounded backward chain scan: walk the active chain from tip down a
+ * bounded depth searching each on-disk block for `txid`, inject its
+ * outputs into the coins cache, and backfill the LevelDB tx_index.
+ * Accounts hits/exhaustion to the g_self_heal_scan_* counters. */
+bool process_block_recover_missing_utxo_from_chain_scan(
+    struct main_state *ms,
+    struct coins_view_cache *coins_tip,
+    const struct uint256 *txid,
+    uint32_t vout,
     const char *datadir,
     int retry_no);
 

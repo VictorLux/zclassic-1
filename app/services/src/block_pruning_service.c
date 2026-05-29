@@ -220,12 +220,6 @@ int block_pruning_run_once(struct block_pruning_service *svc)
 
 /* ── Background thread ─────────────────────────────────────── */
 
-static void prune_sleep_ms(int ms)
-{
-    struct timespec ts = { .tv_sec = ms / 1000, .tv_nsec = (ms % 1000) * 1000000L };
-    nanosleep(&ts, NULL);
-}
-
 static void *block_pruning_thread(void *arg)
 {
     struct block_pruning_service *svc = arg;
@@ -249,7 +243,7 @@ static void *block_pruning_thread(void *arg)
         int slept = 0;
         while (slept < total_ms) {
             if (atomic_load(&svc->stop_requested)) break;
-            prune_sleep_ms(500);
+            platform_sleep_ms(500);
             slept += 500;
         }
     }

@@ -432,16 +432,6 @@ void format_time_ago(char *buf, size_t max, uint32_t t)
         snprintf(buf, max, "%"PRId64"d ago", diff / 86400);
 }
 
-void format_zcl(char *buf, size_t max, int64_t zatoshi)
-{
-    zcl_format_zcl(buf, max, zatoshi);
-}
-
-bool is_all_digits(const char *s)
-{
-    return zcl_is_all_digits(s);
-}
-
 /* Encode a tx_destination to a t-address string */
 bool addr_encode(char *out, size_t outmax,
                          const struct tx_destination *dest)

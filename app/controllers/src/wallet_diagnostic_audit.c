@@ -372,9 +372,7 @@ bool rpc_diagnoseutxos(const struct json_value *params, bool help,
 
         /* Key hash hex */
         char keyhash[41];
-        for (int k = 0; k < 20; k++)
-            snprintf(keyhash + k * 2, 3, "%02x",
-                     dest.id.key.id.data[k]);
+        HexStr(dest.id.key.id.data, 20, false, keyhash, sizeof(keyhash));
         json_push_kv_str(&entry, "key_id", keyhash);
 
         /* Check key availability */

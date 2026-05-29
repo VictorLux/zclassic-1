@@ -165,10 +165,40 @@ static inline void test_cleanup_tmpdir(const char *path)
     rmdir(path);
 }
 
+/* Build "./test-tmp/<prefix>_<pid>_<tag>" into buf (snprintf-only, no
+ * directory creation). Shared by the per-stage *_tmpdir helpers. */
+static inline void test_fmt_tmpdir(char *buf, size_t n,
+                                   const char *prefix, const char *tag)
+{
+    snprintf(buf, n, "./test-tmp/%s_%d_%s", prefix, (int)getpid(), tag);
+}
+
 /* Shared helper functions */
 int check_hex(const unsigned char *data, size_t len, const char *expected);
 void test_hex_to_bytes(const char *hex, uint8_t *out, int len);
 void test_hex_to_bytes_rev(const char *hex, uint8_t *out, int len);
+
+/* Recursively delete a directory tree via system("rm -rf ..."). No-op
+ * for NULL/empty input. */
+void test_rm_rf(const char *dir);
+
+/* Recursively delete a directory tree in pure C (opendir/unlink/rmdir).
+ * Returns the rmdir/unlink result of the top-level path. */
+int test_rm_rf_recursive(const char *path);
+
+/* Build "./test-tmp/<prefix>_<pid>_<tag>" into buf, clean any stale
+ * directory at that path, then mkdir test-tmp and the dir itself. */
+void test_make_tmpdir(char *buf, size_t n, const char *prefix,
+                      const char *tag);
+
+/* Zero a consensus_params and set powLimit to all-ones (trivially-easy
+ * target) for deterministic PoW in tests. */
+void test_make_easy_consensus_params(struct consensus_params *p);
+
+/* Build "<dir>/event_log.dat" and "<dir>/<name>_projection.db". */
+void test_projection_paths(const char *dir, const char *name,
+                           char *elog, size_t elog_n,
+                           char *proj, size_t proj_n);
 
 /* Test group functions — each returns failure count */
 int test_crypto(void);

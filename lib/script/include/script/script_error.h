@@ -48,8 +48,6 @@ typedef enum {
 
 #define SCRIPT_ERR_LAST SCRIPT_ERR_ERROR_COUNT
 
-const char *ScriptErrorString(ScriptError error);
-
 static inline bool set_script_success(ScriptError *ret)
 {
     if (ret) *ret = SCRIPT_ERR_OK;

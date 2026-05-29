@@ -28,13 +28,6 @@ void rpc_swap_set_state(struct node_db *ndb)
 
 /* ── Helpers ────────────────────────────────────────────────────── */
 
-static void hash_to_hex(const uint8_t *data, size_t len, char *out)
-{
-    for (size_t i = 0; i < len; i++)
-        sprintf(out + i * 2, "%02x", data[i]);
-    out[len * 2] = '\0';
-}
-
 static const char *state_name(enum swap_state s)
 {
     switch (s) {
@@ -59,11 +52,11 @@ static void swap_to_json(const struct swap_contract *swap, struct json_value *ob
     json_push_kv_str(obj, "chain", cp ? cp->ticker : "?");
 
     char hex[513]; /* large enough for 256-byte redeem script */
-    hash_to_hex(swap->secret_hash, 32, hex);
+    HexStr(swap->secret_hash, 32, false, hex, sizeof(hex));
     json_push_kv_str(obj, "secret_hash", hex);
 
     if (swap->has_secret) {
-        hash_to_hex(swap->secret, 32, hex);
+        HexStr(swap->secret, 32, false, hex, sizeof(hex));
         json_push_kv_str(obj, "secret", hex);
     }
 
@@ -75,7 +68,7 @@ static void swap_to_json(const struct swap_contract *swap, struct json_value *ob
     json_push_kv_str(obj, "counter_address", swap->counter_address);
     json_push_kv_str(obj, "p2sh_address", swap->p2sh_address);
 
-    hash_to_hex(swap->redeem_script, swap->redeem_script_len, hex);
+    HexStr(swap->redeem_script, swap->redeem_script_len, false, hex, sizeof(hex));
     json_push_kv_str(obj, "redeem_script_hex", hex);
     json_push_kv_int(obj, "redeem_script_size", (int64_t)swap->redeem_script_len);
 

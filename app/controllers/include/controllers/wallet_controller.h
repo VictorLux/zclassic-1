@@ -28,9 +28,5 @@ void register_wallet_rpc_commands(struct rpc_table *t);
 bool wallet_direct_sendtoaddress(const char *address, int64_t amount_sat,
                                   char *txid_out, size_t txid_out_size,
                                   char *error_out, size_t error_out_size);
-bool wallet_direct_shield(const char *z_address, int64_t amount_sat,
-                           int64_t fee_sat,
-                           char *opid_out, size_t opid_out_size,
-                           char *error_out, size_t error_out_size);
 
 #endif

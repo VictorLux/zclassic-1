@@ -17,21 +17,6 @@
     if (!_ok) failures++; \
 } while (0)
 
-static void pp_tmpdir(char *buf, size_t n, const char *tag)
-{
-    snprintf(buf, n, "./test-tmp/peers_projection_%d_%s",
-             (int)getpid(), tag);
-    test_cleanup_tmpdir(buf);
-    mkdir("test-tmp", 0755);
-    mkdir(buf, 0755);
-}
-
-static void pp_paths(const char *dir, char *elog, size_t elog_n,
-                     char *proj, size_t proj_n)
-{
-    snprintf(elog, elog_n, "%s/event_log.dat", dir);
-    snprintf(proj, proj_n, "%s/peers_projection.db", dir);
-}
 
 static void fill_ip(uint8_t ip[16], uint8_t tail)
 {
@@ -127,8 +112,9 @@ static int t_open_close_clean(void)
 {
     int failures = 0;
     char dir[256], elog_path[300], proj_path[300];
-    pp_tmpdir(dir, sizeof(dir), "open");
-    pp_paths(dir, elog_path, sizeof(elog_path), proj_path, sizeof(proj_path));
+    test_make_tmpdir(dir, sizeof(dir), "peers_projection", "open");
+    test_projection_paths(dir, "peers", elog_path, sizeof(elog_path),
+                          proj_path, sizeof(proj_path));
     event_log_t *log = event_log_open(elog_path);
     peers_projection_t *p = peers_projection_open(proj_path, log);
     PP_CHECK("open handles", log && p);
@@ -153,8 +139,9 @@ static int t_add_drop_replay(void)
     uint64_t services = 0;
     int64_t seen = 0;
     int32_t height = 0;
-    pp_tmpdir(dir, sizeof(dir), "adddrop");
-    pp_paths(dir, elog_path, sizeof(elog_path), proj_path, sizeof(proj_path));
+    test_make_tmpdir(dir, sizeof(dir), "peers_projection", "adddrop");
+    test_projection_paths(dir, "peers", elog_path, sizeof(elog_path),
+                          proj_path, sizeof(proj_path));
     fill_ip(ip, 42);
     event_log_t *log = event_log_open(elog_path);
     peers_projection_t *p = peers_projection_open(proj_path, log);
@@ -185,8 +172,9 @@ static int t_replace_collision(void)
     uint64_t services = 0;
     int64_t seen = 0;
     int32_t height = 0;
-    pp_tmpdir(dir, sizeof(dir), "replace");
-    pp_paths(dir, elog_path, sizeof(elog_path), proj_path, sizeof(proj_path));
+    test_make_tmpdir(dir, sizeof(dir), "peers_projection", "replace");
+    test_projection_paths(dir, "peers", elog_path, sizeof(elog_path),
+                          proj_path, sizeof(proj_path));
     fill_ip(ip, 77);
     event_log_t *log = event_log_open(elog_path);
     peers_projection_t *p = peers_projection_open(proj_path, log);

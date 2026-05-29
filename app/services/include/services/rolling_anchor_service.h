@@ -23,8 +23,7 @@
  *
  * On load: any failure (bad magic / schema / checksum / non-monotonic
  * heights / mismatch with compile-time prefix end) discards the file
- * and falls back to compile-time-only trust.  An operator flag
- * (-discardruntimeanchors) forces this fallback.
+ * and falls back to compile-time-only trust.
  *
  * See CLAUDE.md "Adding state introspection" — dump_state_json
  * follows that convention. */
@@ -52,14 +51,6 @@ struct rolling_anchor_config {
  * may delete it. Idempotent; safe to call multiple times. */
 struct zcl_result rolling_anchor_init(const char *datadir,
                           const struct rolling_anchor_config *cfg);
-
-/* Discard all runtime anchors (in-memory and on-disk). Used for the
- * -discardruntimeanchors operator flag. */
-void rolling_anchor_discard(const char *datadir);
-
-/* Effective last height covered by union(compile-time, runtime).
- * Returns -1 if no anchors are loaded. */
-int rolling_anchor_effective_prefix_end_height(void);
 
 /* Attempt to commit one or more new 1000-block windows past the
  * current effective prefix, up to `cfg.max_extend_per_call`. Reads

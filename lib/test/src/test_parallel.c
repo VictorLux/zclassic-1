@@ -146,7 +146,14 @@ volatile sig_atomic_t g_shutdown_requested = 0;
     X(wallet_view_port) \
     X(bg_hash_verify_store_port) \
     X(bg_validation_store_port) \
-    X(zslp_store_port)
+    X(zslp_store_port) \
+    X(sapling_tree) X(heartbeat) X(syncdiag_rpc) X(peer_lifecycle) \
+    X(chainstate_legacy_reader) X(chain_stall_repro) \
+    X(connect_tip_hot_loop_exit) X(connman_addnode_fallback) \
+    X(failed_child_cap) X(header_probe) X(parity_diff_gate) \
+    X(power_node_contract_spec) X(process_block_revalidate) \
+    X(rpc_safety) X(service_kernel) X(sync_state_fsm) \
+    X(unclean_shutdown_advance) X(utxo_audit) X(zclassicd_oracle)
 
 #define SPEC_LIST(X) \
     X(wallet_dashboard) X(wallet_send) X(wallet_receive) \
