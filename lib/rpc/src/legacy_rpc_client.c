@@ -24,7 +24,11 @@
 #include <unistd.h>
 
 #define LRC_TIMEOUT_SECS    5
-#define LRC_RESP_MAX        (1u << 20) /* 1 MB hard cap */
+/* 8 MB hard cap. A full getblock verbose=0 response is the serialized
+ * block as hex (≤2 MB consensus block → ≤4 MB hex) plus the JSON-RPC
+ * envelope; 8 MB leaves comfortable headroom for the largest block.
+ * This is a bridge/oracle transport, not a consensus path. */
+#define LRC_RESP_MAX        (8u << 20)
 
 /* ── zclassic.conf parser ──────────────────────────────────────── */
 

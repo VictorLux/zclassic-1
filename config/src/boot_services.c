@@ -2704,6 +2704,7 @@ bool app_init_services(struct app_context *ctx,
     rpc_repair_set_state(svc->state, svc->coins_tip, boot_node_db(),
                          ctx->datadir, params);
     register_repair_rpc_commands(svc->rpc_table);
+    register_rebuild_recent_rpc_commands(svc->rpc_table);
 
     rpc_chain_inspect_set_state(svc->state, ctx->datadir,
                                  NULL, svc->coins_tip, boot_node_db());

@@ -189,3 +189,69 @@ bool legacy_chain_rpc_get_chainwork(const uint8_t block_hash[32],
     free(resp);
     return ok && !zcl_chainwork_is_zero(chain_work);
 }
+
+bool legacy_chain_rpc_get_block_count(int *out_height)
+{
+    char user[128], pass[256], err[256];
+    char req[256];
+    char *resp = NULL;
+    int port = 8232;
+    int64_t h = 0;
+    bool ok;
+
+    if (!out_height)
+        return false;
+    *out_height = 0;
+    if (!lco_rpc_creds(user, sizeof(user), pass, sizeof(pass), &port))
+        return false;
+
+    snprintf(req, sizeof(req),
+             "{\"jsonrpc\":\"1.0\",\"id\":\"zcl23-chain\","
+             "\"method\":\"getblockcount\",\"params\":[]}");
+    if (!legacy_rpc_call("127.0.0.1", port, user, pass, req, &resp,
+                         err, sizeof(err)))
+        return false;
+
+    ok = legacy_rpc_parse_result_int(resp, &h, err, sizeof(err)) &&
+         h >= 0 && h <= INT32_MAX;
+    free(resp);
+    if (ok)
+        *out_height = (int)h;
+    return ok;
+}
+
+bool legacy_chain_rpc_get_block_hex(int height, char *out_hex,
+                                    size_t out_hex_sz)
+{
+    char user[128], pass[256], err[256];
+    char req[256], hash_hex[65];
+    char *resp = NULL;
+    int port = 8232;
+    bool ok;
+
+    if (!out_hex || out_hex_sz == 0 || height < 0)
+        return false;
+    out_hex[0] = '\0';
+    if (!lco_rpc_creds(user, sizeof(user), pass, sizeof(pass), &port))
+        return false;
+    if (!legacy_chain_rpc_get_block_hash_hex(height, hash_hex))
+        return false;
+
+    /* verbose=0 → result is the serialized block as a hex string. */
+    snprintf(req, sizeof(req),
+             "{\"jsonrpc\":\"1.0\",\"id\":\"zcl23-chain\","
+             "\"method\":\"getblock\",\"params\":[\"%s\",0]}", hash_hex);
+    if (!legacy_rpc_call("127.0.0.1", port, user, pass, req, &resp,
+                         err, sizeof(err)))
+        return false;
+
+    ok = legacy_rpc_parse_result_string(resp, out_hex, out_hex_sz,
+                                        err, sizeof(err));
+    /* A valid block hex is non-empty and even-length. */
+    if (ok) {
+        size_t n = strlen(out_hex);
+        ok = (n > 0) && (n % 2 == 0);
+    }
+    free(resp);
+    return ok;
+}

@@ -103,6 +103,7 @@ volatile sig_atomic_t g_shutdown_requested = 0;
     X(snapshot_negotiation_stalled_condition) X(snapshot_failed_reset_condition) \
     X(snapshot_complete_resume_condition) X(chain_integrity_failed_condition) \
     X(orphan_utxo_above_tip) \
+    X(rebuild_recent) \
     X(torn_index_blocks_tip) \
     X(chain_tip_watchdog_bounded_restart) X(blocker) \
     X(clock) X(rng) X(seed_tape) X(postmortem) X(chaos_harness) X(stage) X(mailbox) X(mailbox_adoption) \

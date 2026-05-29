@@ -46,7 +46,7 @@
 /* Expected tool counts.  If a future commit intentionally adds or
  * removes tools, bump these numbers in the same commit — they are the
  * contract for "how big is the MCP surface." */
-#define EXPECTED_TOTAL      111 /* +2 recovery: zcl_invalidateblock, zcl_reconsiderblock;
+#define EXPECTED_TOTAL      112 /* +3 recovery: zcl_invalidateblock, zcl_reconsiderblock, zcl_rebuild_recent;
                                  * +3 power-user tools: chain_tip,
                                  * reorg_history, mempool_inspect;
                                  * +1 Round 6 C5: zcl_blockers;
@@ -63,7 +63,8 @@
                                  * +1 cutover runtime mode control
                                  * +1 cutover preflight
                                  * +1 cutover PROVE Tier-1: zcl_replay_verify */
-#define EXPECTED_OPS        46  /* status, health, kpi, self_heal_stats, mempool*, mininginfo,
+#define EXPECTED_OPS        47  /* + zcl_rebuild_recent (bounded recovery);
+                                 * status, health, kpi, self_heal_stats, mempool*, mininginfo,
                                  * benchmark, dbstats, filemanifest, events,
                                  * rpc, state + node_log + sql (round 6.5 MCP primitives),
                                  * tools_list, self_test, logtail,

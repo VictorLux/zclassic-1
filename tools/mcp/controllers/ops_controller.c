@@ -506,6 +506,25 @@ static int h_zcl_syncdiag(const struct mcp_request *req,
     return 0;
 }
 
+/* zcl_rebuild_recent — bounded recovery: fetch the canonical recent
+ * block range from the authoritative local zclassicd and connect it
+ * through the normal validated accept path, reorging off any stale
+ * local fork. Destructive (mutates the live chainstate) but never wipes
+ * the UTXO set and never bypasses validation. */
+static int h_zcl_rebuild_recent(const struct mcp_request *req,
+                                struct mcp_response *res)
+{
+    const struct json_value *fh = json_get(req->args, "from_height");
+    char params[64];
+    if (fh)
+        snprintf(params, sizeof(params), "[%lld]",
+                 (long long)json_get_int(fh));
+    else
+        snprintf(params, sizeof(params), "[]");
+    return mcp_return_rpc_body(res, mcp_node_rpc("rebuild_recent", params),
+                                "rebuild_recent", "mcp.ops");
+}
+
 /* zcl_blockers — dedicated MCP tool returning the typed blocker
  * registry (Round 6 C5).
  *
@@ -855,6 +874,11 @@ static const struct mcp_param_spec p_postmortem_replay[] = {
     { "limit", MCP_PARAM_INT, false, "Max injected events to return",
       1, 1000, 0, 0, NULL, "100" },
 };
+static const struct mcp_param_spec p_rebuild_recent[] = {
+    { "from_height", MCP_PARAM_INT, false,
+      "Start height (default: active_tip - 10, floored at 0)",
+      0, INT32_MAX, 0, 0, NULL, NULL },
+};
 static const struct mcp_tool_route k_routes[] = {
     { "zcl_status", "ops",
       "Node status: block height, peers, sync state, onion address, "
@@ -948,6 +972,17 @@ static const struct mcp_tool_route k_routes[] = {
       "escalation level, header batch counters, download queue size "
       "and in-flight count. The single tool for diagnosing sync stalls.",
       NULL, 0, h_zcl_syncdiag, 0, NULL },
+    { "zcl_rebuild_recent", "ops",
+      "Bounded recovery: fetch the canonical recent block range from the "
+      "authoritative local zclassicd and connect each block through the "
+      "normal validated accept path, reorging off any stale local fork. "
+      "NOT a reindex — does not wipe the UTXO set, does not replay from "
+      "genesis, does not bypass validation; the range is capped. "
+      "Idempotent: a no-op when already at tip. Destructive because it "
+      "mutates the live chainstate.",
+      p_rebuild_recent, PARAM_COUNT(p_rebuild_recent),
+      h_zcl_rebuild_recent,
+      .flags = MCP_TOOL_FLAG_DESTRUCTIVE },
 };
 
 void mcp_register_ops(void)
