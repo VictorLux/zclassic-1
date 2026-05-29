@@ -141,8 +141,13 @@ struct recovery_exec_result utxo_recovery_execute(
 /* ── UTXO cleanup ────────────────────────────────────────── */
 
 /* Delete UTXOs with height above chain tip.
- * SAFETY: refuses if >1000 UTXOs would be wiped (tip is likely wrong).
- * Returns count of UTXOs deleted (0 if refused or none found). */
+ * SAFETY: only a single-block overshoot of <= UTXO_BOOT_REWIND_MAX_ROWS (32)
+ * rows is auto-healable; a larger proposed wipe is refused (tip is likely
+ * wrong — investigate block_index/coins drift instead).
+ * Returns count of UTXOs deleted (0 if refused or none found).
+ * NOTE: this is also the single heal mechanism reused by the continuous
+ * orphan_utxo_above_tip Condition; the boot.c one-shot caller is a
+ * boot-ordering requirement (runs before the Condition engine registers). */
 int utxo_recovery_clean_above_tip(struct node_db *ndb,
                                    struct main_state *state);
 
