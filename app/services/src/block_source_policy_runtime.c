@@ -1,14 +1,17 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0 */
 
-/* Stateful block-source decision runtime — the live state, persistence,
- * runtime-input builder, decision recorder, projection-deferral counter,
- * status read, and the zcl_state dumper for the block-source policy.
- * Re-homed verbatim from the dissolved chain_advance_coordinator shell
- * (B8). The pure scoring/name/plan policy lives in block_source_policy.c;
- * this file is the cohesive stateful seam split out to respect the E1
- * file-size ceiling. */
+/* Stateful block-source decision runtime — the live state, lifecycle,
+ * runtime-input builder, projection-deferral counter, and the shared mirror
+ * blocker classifier for the block-source policy. Re-homed verbatim from the
+ * dissolved chain_advance_coordinator shell (B8). The pure scoring/name/plan
+ * policy lives in block_source_policy.c; the cohesive stateful siblings are:
+ *   - block_source_policy_persist.c   : node.db persist/restore
+ *   - block_source_policy_decisions.c : decision predicates + event/record
+ *   - block_source_policy_status.c    : status read + zcl_state JSON dumper
+ * Split out of the oversized runtime file along its cohesive seams to
+ * respect the E1 file-size ceiling (D5). Behavior-preserving. */
 
-#include "services/block_source_policy.h"
+#include "block_source_policy_internal.h"
 
 #include "platform/time_compat.h"
 #include "util/log_macros.h"
@@ -24,55 +27,15 @@
 #include "validation/main_state.h"
 #include "util/sync.h"
 
-#include <stdarg.h>
 #include <stdio.h>
 #include <string.h>
 #include <time.h>
 
-static void copy_text(char *dst, size_t dst_len, const char *src)
-{
-    if (!dst || dst_len == 0) return;
-    if (!src) src = "";
-    snprintf(dst, dst_len, "%s", src);
-}
-/* ---------------------------------------------------------------------------
- * Stateful block-source decision surface (re-homed from the dissolved
- * chain_advance_coordinator shell, B8). Behavior-preserving: the runtime-input
- * builder, decision recorder, persistence, status read, projection-deferral
- * counter, and the zcl_state dumper are moved verbatim from the old shell.
- * --------------------------------------------------------------------------- */
-
-static struct {
-    zcl_mutex_t lock;
-    bool lock_init;
-    struct connman *connman;
-    struct main_state *main_state;
-    struct node_db *node_db;
-    struct cac_decision last;
-    bool has_last;
-    int64_t last_decision_time;
-    char last_op[32];
-    int64_t decisions_total;
-    int64_t projection_deferred_total;
-    int last_projection_deferred_height;
-    int64_t last_projection_deferred_time;
-    char last_projection_deferred_reason[64];
-} g_bsp;
-
+/* Projection-deferral persistence keys. These mirror the prefix used by the
+ * persistence seam (block_source_policy_persist.c); the projection-deferral
+ * counter persists alongside the last decision but its writer lives here with
+ * the runtime that owns the counter. */
 #define BSP_STATE_PREFIX "chain_advance_coordinator."
-#define BSP_KEY_LAST_OP BSP_STATE_PREFIX "last_op"
-#define BSP_KEY_LAST_TIME BSP_STATE_PREFIX "last_time"
-#define BSP_KEY_DECISIONS_TOTAL BSP_STATE_PREFIX "decisions_total"
-#define BSP_KEY_RESULT BSP_STATE_PREFIX "last_result"
-#define BSP_KEY_SOURCE BSP_STATE_PREFIX "last_source"
-#define BSP_KEY_ACTIVATION_ALLOWED BSP_STATE_PREFIX "last_activation_allowed"
-#define BSP_KEY_MIRROR_FALLBACK_ALLOWED BSP_STATE_PREFIX "last_mirror_fallback_allowed"
-#define BSP_KEY_SELECTED_SCORE BSP_STATE_PREFIX "last_selected_score"
-#define BSP_KEY_REASON BSP_STATE_PREFIX "last_reason"
-#define BSP_KEY_BLOCKER BSP_STATE_PREFIX "last_blocker"
-#define BSP_KEY_LOCAL_HEIGHT BSP_STATE_PREFIX "last_local_height"
-#define BSP_KEY_BEST_HEADER_HEIGHT BSP_STATE_PREFIX "last_best_header_height"
-#define BSP_KEY_TARGET_HEIGHT BSP_STATE_PREFIX "last_target_height"
 #define BSP_KEY_PROJECTION_DEFERRED_TOTAL \
     BSP_STATE_PREFIX "projection_deferred_total"
 #define BSP_KEY_LAST_PROJECTION_DEFERRED_HEIGHT \
@@ -81,16 +44,22 @@ static struct {
     BSP_STATE_PREFIX "last_projection_deferred_time"
 #define BSP_KEY_LAST_PROJECTION_DEFERRED_REASON \
     BSP_STATE_PREFIX "last_projection_deferred_reason"
-#define BSP_KEY_SOURCE_STATE BSP_STATE_PREFIX "last_source_state"
-#define BSP_KEY_SOURCE_REASON BSP_STATE_PREFIX "last_source_reason"
-#define BSP_KEY_SOURCE_BLOCKER BSP_STATE_PREFIX "last_source_blocker"
-#define BSP_KEY_SOURCE_HEIGHT BSP_STATE_PREFIX "last_source_height"
-#define BSP_KEY_SOURCE_HEALTHY BSP_STATE_PREFIX "last_source_healthy"
-#define BSP_KEY_SOURCE_AVAILABLE BSP_STATE_PREFIX "last_source_available"
-#define BSP_KEY_SOURCE_BLOCKED BSP_STATE_PREFIX "last_source_blocked"
-#define BSP_KEY_SOURCE_PREFIX BSP_STATE_PREFIX "last_source."
 
-static void bsp_lock_init_once(void)
+/* ---------------------------------------------------------------------------
+ * Stateful block-source decision surface (re-homed from the dissolved
+ * chain_advance_coordinator shell, B8). Behavior-preserving.
+ * --------------------------------------------------------------------------- */
+
+struct bsp_state g_bsp;
+
+void bsp_copy_text(char *dst, size_t dst_len, const char *src)
+{
+    if (!dst || dst_len == 0) return;
+    if (!src) src = "";
+    snprintf(dst, dst_len, "%s", src);
+}
+
+void bsp_lock_init_once(void)
 {
     if (!g_bsp.lock_init) {
         zcl_mutex_init(&g_bsp.lock);
@@ -114,7 +83,7 @@ static void bsp_lock_init_once(void)
  *
  * Update sites: when the legacy mirror blocker setter gains a new code,
  * add it here. */
-static enum blocker_class classify_mirror_blocker_class(const char *code)
+enum blocker_class bsp_classify_mirror_blocker_class(const char *code)
 {
     if (!code || code[0] == '\0')
         return BLOCKER_TRANSIENT;
@@ -138,383 +107,7 @@ static enum blocker_class classify_mirror_blocker_class(const char *code)
     return BLOCKER_TRANSIENT;
 }
 
-static bool persist_text(struct node_db *ndb, const char *key, const char *val)
-{
-    if (!ndb || !key || !val)
-        return false;
-    return node_db_state_set(ndb, key, val, strlen(val) + 1);
-}
-
-static bool source_field_key(char *buf, size_t buflen,
-                             enum cac_source source,
-                             const char *field)
-{
-    if (!buf || buflen == 0 || !field)
-        return false;
-    int n = snprintf(buf, buflen, "%s%d.%s", BSP_KEY_SOURCE_PREFIX,
-                     (int)source, field);
-    return n > 0 && (size_t)n < buflen;
-}
-
-static void persist_source_int(struct node_db *ndb,
-                               enum cac_source source,
-                               const char *field,
-                               int64_t value)
-{
-    char key[96];
-    if (source_field_key(key, sizeof(key), source, field))
-        (void)node_db_state_set_int(ndb, key, value);
-}
-
-static void restore_source_int(struct node_db *ndb,
-                               enum cac_source source,
-                               const char *field,
-                               int64_t *out)
-{
-    char key[96];
-    int64_t v = 0;
-    if (!out)
-        return;
-    *out = 0;
-    if (source_field_key(key, sizeof(key), source, field) &&
-        node_db_state_get_int(ndb, key, &v))
-        *out = v;
-}
-
-static void persist_source_snapshot(struct node_db *ndb,
-                                    enum cac_source source,
-                                    const struct cac_source_status *s)
-{
-    if (!ndb || !s || source <= CAC_SOURCE_NONE || source >= CAC_SOURCE_NUM)
-        return;
-    char key[96];
-    if (source_field_key(key, sizeof(key), source, "state"))
-        (void)persist_text(ndb, key, s->state);
-    if (source_field_key(key, sizeof(key), source, "selection_blocker"))
-        (void)persist_text(ndb, key, s->selection_blocker);
-    if (source_field_key(key, sizeof(key), source, "reason"))
-        (void)persist_text(ndb, key, s->reason);
-    if (source_field_key(key, sizeof(key), source, "blocker"))
-        (void)persist_text(ndb, key, s->blocker);
-    persist_source_int(ndb, source, "height", (int64_t)s->height);
-    persist_source_int(ndb, source, "score", (int64_t)s->score);
-    persist_source_int(ndb, source, "score_base", s->score_base);
-    persist_source_int(ndb, source, "score_health", s->score_health);
-    persist_source_int(ndb, source, "score_height", s->score_height);
-    persist_source_int(ndb, source, "score_authorized",
-                       s->score_authorized);
-    persist_source_int(ndb, source, "score_target_lag_penalty",
-                       s->score_target_lag_penalty);
-    persist_source_int(ndb, source, "score_failure_penalty",
-                       s->score_failure_penalty);
-    persist_source_int(ndb, source, "score_mirror_gate_penalty",
-                       s->score_mirror_gate_penalty);
-    persist_source_int(ndb, source, "healthy", s->healthy ? 1 : 0);
-    persist_source_int(ndb, source, "available", s->available ? 1 : 0);
-    persist_source_int(ndb, source, "blocked", s->blocked ? 1 : 0);
-    persist_source_int(ndb, source, "blocked_class",
-                       (int64_t)s->blocked_class);
-    persist_source_int(ndb, source, "authorized", s->authorized ? 1 : 0);
-    persist_source_int(ndb, source, "selectable", s->selectable ? 1 : 0);
-    persist_source_int(ndb, source, "failures", s->failures);
-    persist_source_int(ndb, source, "timeouts", s->timeouts);
-    persist_source_int(ndb, source, "outbound_total", s->outbound_total);
-    persist_source_int(ndb, source, "inbound_total", s->inbound_total);
-    persist_source_int(ndb, source, "healthy_peers", s->healthy_peers);
-    persist_source_int(ndb, source, "inbound_healthy_peers",
-                       s->inbound_healthy_peers);
-    persist_source_int(ndb, source, "total_healthy_peers",
-                       s->total_healthy_peers);
-    persist_source_int(ndb, source, "connecting_peers", s->connecting_peers);
-    persist_source_int(ndb, source, "handshake_incomplete",
-                       s->handshake_incomplete);
-    persist_source_int(ndb, source, "inbound_handshake_incomplete",
-                       s->inbound_handshake_incomplete);
-    persist_source_int(ndb, source, "peer_groups", s->peer_groups);
-    persist_source_int(ndb, source, "max_peer_group_size",
-                       s->max_peer_group_size);
-    persist_source_int(ndb, source, "healthy_peer_groups",
-                       s->healthy_peer_groups);
-    persist_source_int(ndb, source, "healthy_max_peer_group_size",
-                       s->healthy_max_peer_group_size);
-    persist_source_int(ndb, source, "addnode_count", s->addnode_count);
-    persist_source_int(ndb, source, "addnode_backoff_active",
-                       s->addnode_backoff_active);
-    persist_source_int(ndb, source, "addnode_backoff_max_sec",
-                       s->addnode_backoff_max_sec);
-    persist_source_int(ndb, source, "addnode_tcp_failures",
-                       s->addnode_tcp_failures);
-    persist_source_int(ndb, source, "addnode_protocol_failures",
-                       s->addnode_protocol_failures);
-    persist_source_int(ndb, source, "progress_current",
-                       s->progress_current);
-    persist_source_int(ndb, source, "progress_total", s->progress_total);
-    persist_source_int(ndb, source, "lag", s->lag);
-    persist_source_int(ndb, source, "retry_count", s->retry_count);
-    persist_source_int(ndb, source, "distinct_peer_count",
-                       s->distinct_peer_count);
-    persist_source_int(ndb, source, "serving_peer_id", s->serving_peer_id);
-}
-
-static void restore_source_snapshot(struct node_db *ndb,
-                                    enum cac_source source,
-                                    struct cac_source_status *s)
-{
-    if (!ndb || !s || source <= CAC_SOURCE_NONE || source >= CAC_SOURCE_NUM)
-        return;
-    char key[96];
-    char text[384] = {0};
-    size_t len = 0;
-    int64_t v = 0;
-
-    s->source = source;
-    if (source_field_key(key, sizeof(key), source, "state") &&
-        node_db_state_get(ndb, key, text, sizeof(text) - 1, &len))
-        copy_text(s->state, sizeof(s->state), text);
-    text[0] = '\0';
-    if (source_field_key(key, sizeof(key), source, "selection_blocker") &&
-        node_db_state_get(ndb, key, text, sizeof(text) - 1, &len))
-        copy_text(s->selection_blocker, sizeof(s->selection_blocker), text);
-    text[0] = '\0';
-    if (source_field_key(key, sizeof(key), source, "reason") &&
-        node_db_state_get(ndb, key, text, sizeof(text) - 1, &len))
-        copy_text(s->reason, sizeof(s->reason), text);
-    text[0] = '\0';
-    if (source_field_key(key, sizeof(key), source, "blocker") &&
-        node_db_state_get(ndb, key, text, sizeof(text) - 1, &len))
-        copy_text(s->blocker, sizeof(s->blocker), text);
-    restore_source_int(ndb, source, "height", &v); s->height = (int)v;
-    restore_source_int(ndb, source, "score", &v); s->score = (int)v;
-    restore_source_int(ndb, source, "score_base", &v);
-    s->score_base = (int)v;
-    restore_source_int(ndb, source, "score_health", &v);
-    s->score_health = (int)v;
-    restore_source_int(ndb, source, "score_height", &v);
-    s->score_height = (int)v;
-    restore_source_int(ndb, source, "score_authorized", &v);
-    s->score_authorized = (int)v;
-    restore_source_int(ndb, source, "score_target_lag_penalty", &v);
-    s->score_target_lag_penalty = (int)v;
-    restore_source_int(ndb, source, "score_failure_penalty", &v);
-    s->score_failure_penalty = (int)v;
-    restore_source_int(ndb, source, "score_mirror_gate_penalty", &v);
-    s->score_mirror_gate_penalty = (int)v;
-    restore_source_int(ndb, source, "healthy", &v); s->healthy = v != 0;
-    restore_source_int(ndb, source, "available", &v); s->available = v != 0;
-    restore_source_int(ndb, source, "blocked", &v); s->blocked = v != 0;
-    restore_source_int(ndb, source, "blocked_class", &v);
-    s->blocked_class = (v >= 0 && v <= BLOCKER_RESOURCE)
-                            ? (enum blocker_class)v
-                            : BLOCKER_TRANSIENT;
-    restore_source_int(ndb, source, "authorized", &v);
-    s->authorized = v != 0;
-    restore_source_int(ndb, source, "selectable", &v);
-    s->selectable = v != 0;
-    restore_source_int(ndb, source, "failures", &s->failures);
-    restore_source_int(ndb, source, "timeouts", &s->timeouts);
-    restore_source_int(ndb, source, "outbound_total", &s->outbound_total);
-    restore_source_int(ndb, source, "inbound_total", &s->inbound_total);
-    restore_source_int(ndb, source, "healthy_peers", &s->healthy_peers);
-    restore_source_int(ndb, source, "inbound_healthy_peers",
-                       &s->inbound_healthy_peers);
-    restore_source_int(ndb, source, "total_healthy_peers",
-                       &s->total_healthy_peers);
-    restore_source_int(ndb, source, "connecting_peers", &s->connecting_peers);
-    restore_source_int(ndb, source, "handshake_incomplete",
-                       &s->handshake_incomplete);
-    restore_source_int(ndb, source, "inbound_handshake_incomplete",
-                       &s->inbound_handshake_incomplete);
-    restore_source_int(ndb, source, "peer_groups", &s->peer_groups);
-    restore_source_int(ndb, source, "max_peer_group_size",
-                       &s->max_peer_group_size);
-    restore_source_int(ndb, source, "healthy_peer_groups",
-                       &s->healthy_peer_groups);
-    restore_source_int(ndb, source, "healthy_max_peer_group_size",
-                       &s->healthy_max_peer_group_size);
-    restore_source_int(ndb, source, "addnode_count", &s->addnode_count);
-    restore_source_int(ndb, source, "addnode_backoff_active",
-                       &s->addnode_backoff_active);
-    restore_source_int(ndb, source, "addnode_backoff_max_sec",
-                       &s->addnode_backoff_max_sec);
-    restore_source_int(ndb, source, "addnode_tcp_failures",
-                       &s->addnode_tcp_failures);
-    restore_source_int(ndb, source, "addnode_protocol_failures",
-                       &s->addnode_protocol_failures);
-    restore_source_int(ndb, source, "progress_current",
-                       &s->progress_current);
-    restore_source_int(ndb, source, "progress_total", &s->progress_total);
-    restore_source_int(ndb, source, "lag", &s->lag);
-    restore_source_int(ndb, source, "retry_count", &s->retry_count);
-    restore_source_int(ndb, source, "distinct_peer_count",
-                       &s->distinct_peer_count);
-    restore_source_int(ndb, source, "serving_peer_id", &s->serving_peer_id);
-}
-
-static void persist_decision(struct node_db *ndb,
-                             const char *op,
-                             const struct cac_decision *d,
-                             int64_t when,
-                             int64_t total)
-{
-    if (!ndb || !d)
-        return;
-
-    (void)persist_text(ndb, BSP_KEY_LAST_OP, op ? op : "unknown");
-    (void)node_db_state_set_int(ndb, BSP_KEY_LAST_TIME, when);
-    (void)node_db_state_set_int(ndb, BSP_KEY_DECISIONS_TOTAL, total);
-    (void)node_db_state_set_int(ndb, BSP_KEY_RESULT, (int64_t)d->result);
-    (void)node_db_state_set_int(ndb, BSP_KEY_SOURCE,
-                                (int64_t)d->selected_source);
-    (void)node_db_state_set_int(ndb, BSP_KEY_ACTIVATION_ALLOWED,
-                                d->activation_allowed ? 1 : 0);
-    (void)node_db_state_set_int(ndb, BSP_KEY_MIRROR_FALLBACK_ALLOWED,
-                                d->mirror_fallback_allowed ? 1 : 0);
-    (void)node_db_state_set_int(ndb, BSP_KEY_SELECTED_SCORE,
-                                (int64_t)d->selected_score);
-    (void)persist_text(ndb, BSP_KEY_REASON, d->reason);
-    (void)persist_text(ndb, BSP_KEY_BLOCKER, d->blocker);
-    (void)node_db_state_set_int(ndb, BSP_KEY_LOCAL_HEIGHT,
-                                (int64_t)d->local_height);
-    (void)node_db_state_set_int(ndb, BSP_KEY_BEST_HEADER_HEIGHT,
-                                (int64_t)d->best_header_height);
-    (void)node_db_state_set_int(ndb, BSP_KEY_TARGET_HEIGHT,
-                                (int64_t)d->target_height);
-
-    for (int i = 1; i < CAC_SOURCE_NUM; i++)
-        persist_source_snapshot(ndb, (enum cac_source)i, &d->sources[i]);
-
-    if (d->selected_source > CAC_SOURCE_NONE &&
-        d->selected_source < CAC_SOURCE_NUM) {
-        const struct cac_source_status *s = &d->sources[d->selected_source];
-        (void)persist_text(ndb, BSP_KEY_SOURCE_STATE, s->state);
-        (void)persist_text(ndb, BSP_KEY_SOURCE_REASON, s->reason);
-        (void)persist_text(ndb, BSP_KEY_SOURCE_BLOCKER, s->blocker);
-        (void)node_db_state_set_int(ndb, BSP_KEY_SOURCE_HEIGHT,
-                                    (int64_t)s->height);
-        (void)node_db_state_set_int(ndb, BSP_KEY_SOURCE_HEALTHY,
-                                    s->healthy ? 1 : 0);
-        (void)node_db_state_set_int(ndb, BSP_KEY_SOURCE_AVAILABLE,
-                                    s->available ? 1 : 0);
-        (void)node_db_state_set_int(ndb, BSP_KEY_SOURCE_BLOCKED,
-                                    s->blocked ? 1 : 0);
-    }
-}
-
-static void restore_decision(struct node_db *ndb)
-{
-    if (!ndb)
-        return;
-
-    struct cac_decision d;
-    memset(&d, 0, sizeof(d));
-    char op[32] = {0};
-    char reason[sizeof(d.reason)] = {0};
-    char blocker[sizeof(d.blocker)] = {0};
-    char source_state[sizeof(d.sources[0].state)] = {0};
-    char source_reason[sizeof(d.sources[0].reason)] = {0};
-    char source_block_text[sizeof(d.sources[0].blocker)] = {0};
-    size_t len = 0;
-    int64_t v = 0;
-    int64_t total = 0;
-    int64_t when = 0;
-
-    if (!node_db_state_get(ndb, BSP_KEY_LAST_OP, op, sizeof(op) - 1, &len))
-        return;
-    if (!node_db_state_get_int(ndb, BSP_KEY_RESULT, &v))
-        return;
-    d.result = (enum cac_decision_result)v;
-    if (!node_db_state_get_int(ndb, BSP_KEY_SOURCE, &v))
-        return;
-    d.selected_source = (enum cac_source)v;
-    if (node_db_state_get_int(ndb, BSP_KEY_ACTIVATION_ALLOWED, &v))
-        d.activation_allowed = v != 0;
-    if (node_db_state_get_int(ndb, BSP_KEY_MIRROR_FALLBACK_ALLOWED, &v))
-        d.mirror_fallback_allowed = v != 0;
-    if (node_db_state_get_int(ndb, BSP_KEY_SELECTED_SCORE, &v))
-        d.selected_score = (int)v;
-    if (node_db_state_get(ndb, BSP_KEY_REASON, reason,
-                          sizeof(reason) - 1, &len))
-        copy_text(d.reason, sizeof(d.reason), reason);
-    if (node_db_state_get(ndb, BSP_KEY_BLOCKER, blocker,
-                          sizeof(blocker) - 1, &len))
-        copy_text(d.blocker, sizeof(d.blocker), blocker);
-    if (node_db_state_get_int(ndb, BSP_KEY_LOCAL_HEIGHT, &v))
-        d.local_height = (int)v;
-    if (node_db_state_get_int(ndb, BSP_KEY_BEST_HEADER_HEIGHT, &v))
-        d.best_header_height = (int)v;
-    if (node_db_state_get_int(ndb, BSP_KEY_TARGET_HEIGHT, &v))
-        d.target_height = (int)v;
-    for (int i = 1; i < CAC_SOURCE_NUM; i++)
-        restore_source_snapshot(ndb, (enum cac_source)i, &d.sources[i]);
-    if (d.selected_source > CAC_SOURCE_NONE &&
-        d.selected_source < CAC_SOURCE_NUM) {
-        struct cac_source_status *s = &d.sources[d.selected_source];
-        s->source = d.selected_source;
-        s->score = d.selected_score;
-        if (node_db_state_get(ndb, BSP_KEY_SOURCE_STATE, source_state,
-                              sizeof(source_state) - 1, &len))
-            copy_text(s->state, sizeof(s->state), source_state);
-        if (node_db_state_get(ndb, BSP_KEY_SOURCE_REASON, source_reason,
-                              sizeof(source_reason) - 1, &len))
-            copy_text(s->reason, sizeof(s->reason), source_reason);
-        if (node_db_state_get(ndb, BSP_KEY_SOURCE_BLOCKER, source_block_text,
-                              sizeof(source_block_text) - 1, &len))
-            copy_text(s->blocker, sizeof(s->blocker), source_block_text);
-        if (node_db_state_get_int(ndb, BSP_KEY_SOURCE_HEIGHT, &v))
-            s->height = (int)v;
-        if (node_db_state_get_int(ndb, BSP_KEY_SOURCE_HEALTHY, &v))
-            s->healthy = v != 0;
-        if (node_db_state_get_int(ndb, BSP_KEY_SOURCE_AVAILABLE, &v))
-            s->available = v != 0;
-        if (node_db_state_get_int(ndb, BSP_KEY_SOURCE_BLOCKED, &v))
-            s->blocked = v != 0;
-    }
-    (void)node_db_state_get_int(ndb, BSP_KEY_LAST_TIME, &when);
-    (void)node_db_state_get_int(ndb, BSP_KEY_DECISIONS_TOTAL, &total);
-
-    bsp_lock_init_once();
-    zcl_mutex_lock(&g_bsp.lock);
-    g_bsp.last = d;
-    g_bsp.has_last = true;
-    g_bsp.last_decision_time = when;
-    g_bsp.decisions_total = total > 0 ? total : 1;
-    copy_text(g_bsp.last_op, sizeof(g_bsp.last_op), op);
-    zcl_mutex_unlock(&g_bsp.lock);
-}
-
-static void restore_projection_deferral(struct node_db *ndb)
-{
-    if (!ndb)
-        return;
-
-    int64_t total = 0;
-    int64_t height = 0;
-    int64_t when = 0;
-    char reason[64] = {0};
-    size_t len = 0;
-
-    (void)node_db_state_get_int(ndb, BSP_KEY_PROJECTION_DEFERRED_TOTAL,
-                                &total);
-    (void)node_db_state_get_int(ndb,
-                                BSP_KEY_LAST_PROJECTION_DEFERRED_HEIGHT,
-                                &height);
-    (void)node_db_state_get_int(ndb, BSP_KEY_LAST_PROJECTION_DEFERRED_TIME,
-                                &when);
-    (void)node_db_state_get(ndb, BSP_KEY_LAST_PROJECTION_DEFERRED_REASON,
-                            reason, sizeof(reason) - 1, &len);
-
-    bsp_lock_init_once();
-    zcl_mutex_lock(&g_bsp.lock);
-    g_bsp.projection_deferred_total = total;
-    g_bsp.last_projection_deferred_height = (int)height;
-    g_bsp.last_projection_deferred_time = when;
-    copy_text(g_bsp.last_projection_deferred_reason,
-              sizeof(g_bsp.last_projection_deferred_reason),
-              reason);
-    zcl_mutex_unlock(&g_bsp.lock);
-}
-
-static void enrich_projection_deferral(struct cac_decision *d)
+void bsp_enrich_projection_deferral(struct cac_decision *d)
 {
     if (!d)
         return;
@@ -525,250 +118,10 @@ static void enrich_projection_deferral(struct cac_decision *d)
     d->last_projection_deferred_height =
         g_bsp.last_projection_deferred_height;
     d->last_projection_deferred_time = g_bsp.last_projection_deferred_time;
-    copy_text(d->last_projection_deferred_reason,
-              sizeof(d->last_projection_deferred_reason),
-              g_bsp.last_projection_deferred_reason);
+    bsp_copy_text(d->last_projection_deferred_reason,
+                  sizeof(d->last_projection_deferred_reason),
+                  g_bsp.last_projection_deferred_reason);
     zcl_mutex_unlock(&g_bsp.lock);
-}
-
-static void record_decision(const char *op, const struct cac_decision *d)
-{
-    if (!d) return;
-    struct node_db *ndb = NULL;
-    int64_t when = (int64_t)platform_time_wall_time_t();
-    int64_t total = 0;
-    char op_copy[32];
-    copy_text(op_copy, sizeof(op_copy), op ? op : "unknown");
-
-    bsp_lock_init_once();
-    zcl_mutex_lock(&g_bsp.lock);
-    g_bsp.last = *d;
-    g_bsp.has_last = true;
-    g_bsp.last_decision_time = when;
-    copy_text(g_bsp.last_op, sizeof(g_bsp.last_op), op_copy);
-    g_bsp.decisions_total++;
-    total = g_bsp.decisions_total;
-    ndb = g_bsp.node_db;
-    zcl_mutex_unlock(&g_bsp.lock);
-
-    persist_decision(ndb, op_copy, d, when, total);
-}
-
-static void emit_decision_event(const char *op,
-                                const char *action_key,
-                                bool action_value,
-                                const struct cac_decision *d,
-                                const char *extra_fmt,
-                                ...)
-{
-    if (!d) return;
-    (void)action_key;
-
-    char extra[256] = {0};
-    if (extra_fmt && *extra_fmt) {
-        va_list ap;
-        va_start(ap, extra_fmt);
-        vsnprintf(extra, sizeof(extra), extra_fmt, ap);
-        va_end(ap);
-    }
-
-    const struct cac_source_status *s = NULL;
-    if (d->selected_source > CAC_SOURCE_NONE &&
-        d->selected_source < CAC_SOURCE_NUM)
-        s = &d->sources[d->selected_source];
-    const char *selection_blocker =
-        s && s->selection_blocker[0] ? s->selection_blocker : "-";
-
-    const char *source_name = cac_source_name(d->selected_source);
-    const char *trust_name = cac_source_trust_name(d->selected_source);
-    const char *decision_name = cac_decision_result_name(d->result);
-
-    event_emitf(EV_CHAIN_ADVANCE_DECISION, 0,
-                "op=%s ok=%s authority=local_consensus_validation "
-                "source=%s trust=%s decision=%s score=%d "
-                "reason=%s lh=%d th=%d sh=%d sel=%s sb=%s%s%s",
-                op ? op : "unknown",
-                action_value ? "true" : "false",
-                source_name,
-                trust_name,
-                decision_name,
-                d->selected_score,
-                d->reason,
-                d->local_height,
-                d->target_height,
-                s ? s->height : 0,
-                s && s->selectable ? "true" : "false",
-                selection_blocker,
-                extra[0] ? " " : "",
-                extra);
-}
-
-static const char *cac_source_class_name(enum cac_source source)
-{
-    switch (source) {
-        case CAC_SOURCE_NONE:             return "none";
-        case CAC_SOURCE_P2P:              return "native_p2p";
-        case CAC_SOURCE_SNAPSHOT:         return "snapshot";
-        case CAC_SOURCE_LOCAL_IMPORT:     return "local_import";
-        case CAC_SOURCE_ZCLASSICD_MIRROR: return "legacy_advisory";
-        case CAC_SOURCE_NUM:              break;
-    }
-    return "unknown";
-}
-
-bool block_source_policy_peer_floor_recovery_needed(
-    int healthy_outbound,
-    int min_healthy,
-    int local_height,
-    int peer_height,
-    struct cac_decision *out)
-{
-    struct cac_plan_input in;
-    struct cac_decision local_out;
-    struct cac_decision *decision = out ? out : &local_out;
-    int target_height = peer_height > local_height ? peer_height
-                                                   : local_height;
-
-    memset(&in, 0, sizeof(in));
-    in.local_height = local_height;
-    in.best_header_height = local_height;
-    in.target_height = target_height;
-
-    struct cac_source_status *p2p = &in.sources[CAC_SOURCE_P2P];
-    p2p->source = CAC_SOURCE_P2P;
-    p2p->available = healthy_outbound > 0;
-    p2p->healthy = min_healthy > 0 && healthy_outbound >= min_healthy;
-    p2p->height = peer_height;
-    p2p->healthy_peers = healthy_outbound;
-    p2p->progress_current = healthy_outbound;
-    p2p->progress_total = min_healthy;
-    copy_text(p2p->state, sizeof(p2p->state),
-              p2p->healthy ? "healthy" : "peer_floor");
-    snprintf(p2p->reason, sizeof(p2p->reason),
-             "healthy_outbound=%d min_healthy=%d",
-             healthy_outbound, min_healthy);
-    if (healthy_outbound < min_healthy) {
-        snprintf(p2p->blocker, sizeof(p2p->blocker), "peer_floor");
-    }
-
-    block_source_policy_plan(&in, decision);
-    record_decision("peer_floor", decision);
-
-    bool recover = healthy_outbound < min_healthy &&
-                   decision->selected_source != CAC_SOURCE_P2P;
-    const char *p2p_blocker =
-        decision->sources[CAC_SOURCE_P2P].selection_blocker[0] ?
-        decision->sources[CAC_SOURCE_P2P].selection_blocker : "-";
-    emit_decision_event(
-        "peer_floor", "recover", recover, decision,
-        "healthy=%d min=%d local=%d peer=%d p2psb=%s",
-        healthy_outbound, min_healthy, local_height, peer_height,
-        p2p_blocker);
-    return recover;
-}
-
-bool block_source_policy_snapshot_offer_allowed(
-    int local_height,
-    int snapshot_height,
-    int peer_tip_height,
-    bool offer_valid,
-    const char *reason,
-    struct cac_decision *out)
-{
-    struct cac_plan_input in;
-    struct cac_decision local_out;
-    struct cac_decision *decision = out ? out : &local_out;
-    int target_height = peer_tip_height > snapshot_height ? peer_tip_height
-                                                          : snapshot_height;
-
-    memset(&in, 0, sizeof(in));
-    in.local_height = local_height;
-    in.best_header_height = local_height;
-    in.target_height = target_height > local_height ? target_height
-                                                    : local_height;
-
-    struct cac_source_status *snap = &in.sources[CAC_SOURCE_SNAPSHOT];
-    snap->source = CAC_SOURCE_SNAPSHOT;
-    snap->available = true;
-    snap->healthy = offer_valid;
-    snap->authorized = offer_valid;
-    snap->blocked = !offer_valid;
-    snap->height = snapshot_height;
-    snap->progress_current = snapshot_height;
-    snap->progress_total = peer_tip_height;
-    copy_text(snap->state, sizeof(snap->state),
-              offer_valid ? "offer_valid" : "offer_rejected");
-    snprintf(snap->reason, sizeof(snap->reason), "%s",
-             reason && *reason ? reason : "snapshot_offer");
-    if (!offer_valid) {
-        snprintf(snap->blocker, sizeof(snap->blocker), "%s",
-                 reason && *reason ? reason : "snapshot_offer_rejected");
-    }
-
-    block_source_policy_plan(&in, decision);
-    record_decision("snapshot_offer", decision);
-
-    bool allowed = offer_valid &&
-                   decision->selected_source == CAC_SOURCE_SNAPSHOT;
-    emit_decision_event(
-        "snapshot_offer", "allowed", allowed, decision,
-        "local=%d snapshot=%d peer_tip=%d",
-        local_height, snapshot_height, peer_tip_height);
-    return allowed;
-}
-
-bool block_source_policy_local_header_refill_needed(
-    int local_height,
-    int missing_height,
-    int peer_height,
-    int eligible_peers,
-    int retry_count,
-    bool retries_exhausted,
-    struct cac_decision *out)
-{
-    struct cac_plan_input in;
-    struct cac_decision local_out;
-    struct cac_decision *decision = out ? out : &local_out;
-    int target_height = peer_height > missing_height ? peer_height
-                                                     : missing_height;
-
-    memset(&in, 0, sizeof(in));
-    in.local_height = local_height;
-    in.best_header_height = local_height;
-    in.target_height = target_height > local_height ? target_height
-                                                    : local_height;
-    in.local_recovery_active = true;
-    in.local_retries_exhausted = retries_exhausted;
-
-    struct cac_source_status *li = &in.sources[CAC_SOURCE_LOCAL_IMPORT];
-    li->source = CAC_SOURCE_LOCAL_IMPORT;
-    li->available = missing_height == local_height + 1;
-    li->healthy = eligible_peers > 0;
-    li->height = peer_height;
-    li->progress_current = local_height;
-    li->progress_total = missing_height;
-    li->retry_count = retry_count;
-    li->distinct_peer_count = eligible_peers;
-    copy_text(li->state, sizeof(li->state),
-              li->healthy ? "refill_ready" : "waiting_for_peer");
-    snprintf(li->reason, sizeof(li->reason),
-             "missing_height=%d eligible_peers=%d retry=%d",
-             missing_height, eligible_peers, retry_count);
-    if (!li->available || !li->healthy) {
-        snprintf(li->blocker, sizeof(li->blocker),
-                 "local_header_refill_no_peer");
-    }
-
-    block_source_policy_plan(&in, decision);
-    record_decision("local_header_refill", decision);
-
-    bool proceed = decision->result != CAC_DECISION_BLOCKED;
-    emit_decision_event(
-        "local_header_refill", "proceed", proceed, decision,
-        "local=%d missing=%d peer=%d eligible=%d retry=%d",
-        local_height, missing_height, peer_height, eligible_peers,
-        retry_count);
-    return proceed;
 }
 
 void block_source_policy_init(struct connman *cm,
@@ -781,8 +134,8 @@ void block_source_policy_init(struct connman *cm,
     g_bsp.main_state = ms;
     g_bsp.node_db = ndb;
     zcl_mutex_unlock(&g_bsp.lock);
-    restore_decision(ndb);
-    restore_projection_deferral(ndb);
+    bsp_restore_decision(ndb);
+    bsp_restore_projection_deferral(ndb);
 }
 
 static int runtime_local_height(struct main_state *ms)
@@ -824,7 +177,7 @@ static bool p2p_minimum_viable(const struct cac_plan_input *in,
     return true;
 }
 
-static void build_runtime_input(struct cac_plan_input *in)
+void bsp_build_runtime_input(struct cac_plan_input *in)
 {
     memset(in, 0, sizeof(*in));
     in->local_height = -1;
@@ -881,9 +234,9 @@ static void build_runtime_input(struct cac_plan_input *in)
     p2p->addnode_protocol_failures = ph.addnode_protocol_failures;
     p2p->progress_current = pls.handshake_complete;
     p2p->progress_total = pls.attempted;
-    copy_text(p2p->state, sizeof(p2p->state),
-              p2p->healthy ? "healthy" :
-              (p2p->available ? "degraded" : "unavailable"));
+    bsp_copy_text(p2p->state, sizeof(p2p->state),
+                  p2p->healthy ? "healthy" :
+                  (p2p->available ? "degraded" : "unavailable"));
     snprintf(p2p->reason, sizeof(p2p->reason),
              "peer_height=%d header_height=%d stale_lag=%lld "
              "handshakes=%lld healthy=%zu inbound_healthy=%zu "
@@ -911,9 +264,9 @@ static void build_runtime_input(struct cac_plan_input *in)
              (long long)ph.addnode_tcp_failures,
              (long long)ph.addnode_protocol_failures);
     if (ph.outbound_total > 0 && ph.healthy == 0)
-        copy_text(p2p->blocker, sizeof(p2p->blocker), "no_healthy_outbound");
+        bsp_copy_text(p2p->blocker, sizeof(p2p->blocker), "no_healthy_outbound");
     else if (p2p->available && !p2p->healthy)
-        copy_text(p2p->blocker, sizeof(p2p->blocker), "peer_floor");
+        bsp_copy_text(p2p->blocker, sizeof(p2p->blocker), "peer_floor");
 
     struct watchdog_local_recovery_stats wr;
     memset(&wr, 0, sizeof(wr));
@@ -931,8 +284,8 @@ static void build_runtime_input(struct cac_plan_input *in)
     li->progress_total = wr.missing_height;
     li->retry_count = wr.retry_count;
     li->distinct_peer_count = wr.distinct_peer_count;
-    copy_text(li->state, sizeof(li->state),
-              wr.mode[0] ? wr.mode : (wr.active ? "active" : "idle"));
+    bsp_copy_text(li->state, sizeof(li->state),
+                  wr.mode[0] ? wr.mode : (wr.active ? "active" : "idle"));
     snprintf(li->reason, sizeof(li->reason),
              "mode=%s retries=%d distinct_peers=%d",
              wr.mode, wr.retry_count, wr.distinct_peer_count);
@@ -956,10 +309,10 @@ static void build_runtime_input(struct cac_plan_input *in)
     snap->progress_current = sstat.staged_row_count;
     snap->progress_total = (int64_t)sstat.offered_count;
     snap->serving_peer_id = (int64_t)sstat.serving_peer_id;
-    copy_text(snap->state, sizeof(snap->state),
-              snapsync_state_name(sstat.state));
+    bsp_copy_text(snap->state, sizeof(snap->state),
+                  snapsync_state_name(sstat.state));
     if (snap->blocked)
-        copy_text(snap->blocker, sizeof(snap->blocker), "snapshot_failed");
+        bsp_copy_text(snap->blocker, sizeof(snap->blocker), "snapshot_failed");
     snprintf(snap->reason, sizeof(snap->reason),
              "state=%s peer=%u staged=%lld offered=%llu",
              snapsync_state_name(sstat.state),
@@ -986,16 +339,16 @@ static void build_runtime_input(struct cac_plan_input *in)
     mir->lag = msnap.lag;
     mir->retry_count = msnap.local_retry_count;
     mir->distinct_peer_count = msnap.local_distinct_peer_count;
-    copy_text(mir->state, sizeof(mir->state),
-              msnap.state[0] ? msnap.state :
-              (mir->available ? "healthy" : "unavailable"));
+    bsp_copy_text(mir->state, sizeof(mir->state),
+                  msnap.state[0] ? msnap.state :
+                  (mir->available ? "healthy" : "unavailable"));
     mir->blocked = msnap.activation_blocker[0] != '\0' ||
                    strcmp(msnap.state, "blocked") == 0;
     if (mir->blocked) {
-        copy_text(mir->blocker, sizeof(mir->blocker),
-                  msnap.activation_blocker[0] ? msnap.activation_blocker
-                                               : msnap.last_blocker_code);
-        mir->blocked_class = classify_mirror_blocker_class(mir->blocker);
+        bsp_copy_text(mir->blocker, sizeof(mir->blocker),
+                      msnap.activation_blocker[0] ? msnap.activation_blocker
+                                                   : msnap.last_blocker_code);
+        mir->blocked_class = bsp_classify_mirror_blocker_class(mir->blocker);
     } else {
         mir->blocked_class = BLOCKER_TRANSIENT;
     }
@@ -1019,7 +372,8 @@ static void build_runtime_input(struct cac_plan_input *in)
     in->projection_height = -1;
     in->projection_lag = -1;
     in->projection_deferred = false;
-    copy_text(in->projection_state, sizeof(in->projection_state), "unknown");
+    bsp_copy_text(in->projection_state, sizeof(in->projection_state),
+                  "unknown");
     if (ndb && ndb->open) {
         int projection_height = db_block_max_height(ndb);
         in->projection_height = projection_height;
@@ -1034,23 +388,14 @@ static void build_runtime_input(struct cac_plan_input *in)
                     ? (int64_t)(projection_basis - projection_height)
                     : 0;
             in->projection_deferred = in->projection_lag > 0;
-            copy_text(in->projection_state, sizeof(in->projection_state),
-                      in->projection_deferred ? "deferred" : "current");
+            bsp_copy_text(in->projection_state, sizeof(in->projection_state),
+                          in->projection_deferred ? "deferred" : "current");
         } else {
             in->projection_deferred = in->local_height > 0;
-            copy_text(in->projection_state, sizeof(in->projection_state),
-                      in->projection_deferred ? "missing" : "empty");
+            bsp_copy_text(in->projection_state, sizeof(in->projection_state),
+                          in->projection_deferred ? "missing" : "empty");
         }
     }
-}
-
-void block_source_policy_get_status(struct cac_decision *out)
-{
-    if (!out) return;
-    struct cac_plan_input in;
-    build_runtime_input(&in);
-    block_source_policy_plan(&in, out);
-    enrich_projection_deferral(out);
 }
 
 void block_source_policy_note_projection_deferred(int height,
@@ -1061,8 +406,8 @@ void block_source_policy_note_projection_deferred(int height,
     int64_t when = (int64_t)platform_time_wall_time_t();
     char reason_copy[64];
 
-    copy_text(reason_copy, sizeof(reason_copy),
-              reason && *reason ? reason : "unknown");
+    bsp_copy_text(reason_copy, sizeof(reason_copy),
+                  reason && *reason ? reason : "unknown");
 
     bsp_lock_init_once();
     zcl_mutex_lock(&g_bsp.lock);
@@ -1070,9 +415,9 @@ void block_source_policy_note_projection_deferred(int height,
     total = g_bsp.projection_deferred_total;
     g_bsp.last_projection_deferred_height = height;
     g_bsp.last_projection_deferred_time = when;
-    copy_text(g_bsp.last_projection_deferred_reason,
-              sizeof(g_bsp.last_projection_deferred_reason),
-              reason_copy);
+    bsp_copy_text(g_bsp.last_projection_deferred_reason,
+                  sizeof(g_bsp.last_projection_deferred_reason),
+                  reason_copy);
     ndb = g_bsp.node_db;
     zcl_mutex_unlock(&g_bsp.lock);
 
@@ -1084,262 +429,14 @@ void block_source_policy_note_projection_deferred(int height,
             (int64_t)height);
         (void)node_db_state_set_int(ndb, BSP_KEY_LAST_PROJECTION_DEFERRED_TIME,
                                     when);
-        (void)persist_text(ndb, BSP_KEY_LAST_PROJECTION_DEFERRED_REASON,
-                           reason_copy);
+        (void)node_db_state_set(ndb, BSP_KEY_LAST_PROJECTION_DEFERRED_REASON,
+                                reason_copy, strlen(reason_copy) + 1);
     }
 
     event_emitf(EV_CHAIN_ADVANCE_DECISION, 0,
                 "op=projection_deferred reason=%s h=%d total=%lld "
                 "authority=local_consensus_validation",
                 reason_copy, height, (long long)total);
-}
-
-static void source_to_json(const struct cac_source_status *s,
-                           struct json_value *out)
-{
-    json_set_object(out);
-    json_push_kv_str(out, "source", cac_source_name(s->source));
-    json_push_kv_str(out, "source_class", cac_source_class_name(s->source));
-    json_push_kv_str(out, "candidate_source", cac_source_class_name(s->source));
-    json_push_kv_str(out, "trust", cac_source_trust_name(s->source));
-    json_push_kv_str(out, "candidate_trust", cac_source_trust_name(s->source));
-    json_push_kv_bool(out, "available", s->available);
-    json_push_kv_bool(out, "healthy", s->healthy);
-    json_push_kv_bool(out, "blocked", s->blocked);
-    json_push_kv_str(out, "blocked_class",
-                     blocker_class_name(s->blocked_class));
-    json_push_kv_bool(out, "authorized", s->authorized);
-    json_push_kv_bool(out, "selectable", s->selectable);
-    json_push_kv_str(out, "selection_blocker", s->selection_blocker);
-    json_push_kv_int(out, "height", (int64_t)s->height);
-    json_push_kv_int(out, "score", (int64_t)s->score);
-    json_push_kv_int(out, "score_base", s->score_base);
-    json_push_kv_int(out, "score_health", s->score_health);
-    json_push_kv_int(out, "score_height", s->score_height);
-    json_push_kv_int(out, "score_authorized", s->score_authorized);
-    json_push_kv_int(out, "score_target_lag_penalty",
-                     s->score_target_lag_penalty);
-    json_push_kv_int(out, "score_failure_penalty",
-                     s->score_failure_penalty);
-    json_push_kv_int(out, "score_mirror_gate_penalty",
-                     s->score_mirror_gate_penalty);
-    json_push_kv_int(out, "failures", s->failures);
-    json_push_kv_int(out, "timeouts", s->timeouts);
-    json_push_kv_int(out, "outbound_total", s->outbound_total);
-    json_push_kv_int(out, "inbound_total", s->inbound_total);
-    json_push_kv_int(out, "healthy_peers", s->healthy_peers);
-    json_push_kv_int(out, "inbound_healthy_peers",
-                     s->inbound_healthy_peers);
-    json_push_kv_int(out, "total_healthy_peers", s->total_healthy_peers);
-    json_push_kv_int(out, "connecting_peers", s->connecting_peers);
-    json_push_kv_int(out, "handshake_incomplete",
-                     s->handshake_incomplete);
-    json_push_kv_int(out, "inbound_handshake_incomplete",
-                     s->inbound_handshake_incomplete);
-    json_push_kv_int(out, "peer_groups", s->peer_groups);
-    json_push_kv_int(out, "max_peer_group_size", s->max_peer_group_size);
-    json_push_kv_int(out, "healthy_peer_groups", s->healthy_peer_groups);
-    json_push_kv_int(out, "healthy_max_peer_group_size",
-                     s->healthy_max_peer_group_size);
-    json_push_kv_int(out, "addnode_count", s->addnode_count);
-    json_push_kv_int(out, "addnode_backoff_active",
-                     s->addnode_backoff_active);
-    json_push_kv_int(out, "addnode_backoff_max_sec",
-                     s->addnode_backoff_max_sec);
-    json_push_kv_int(out, "addnode_tcp_failures",
-                     s->addnode_tcp_failures);
-    json_push_kv_int(out, "addnode_protocol_failures",
-                     s->addnode_protocol_failures);
-    json_push_kv_int(out, "progress_current", s->progress_current);
-    json_push_kv_int(out, "progress_total", s->progress_total);
-    json_push_kv_int(out, "lag", s->lag);
-    json_push_kv_int(out, "candidate_lag", s->lag);
-    json_push_kv_int(out, "retry_count", s->retry_count);
-    json_push_kv_int(out, "distinct_peer_count", s->distinct_peer_count);
-    json_push_kv_int(out, "serving_peer_id", s->serving_peer_id);
-    json_push_kv_str(out, "state", s->state);
-    json_push_kv_str(out, "reason", s->reason);
-    json_push_kv_str(out, "blocker", s->blocker);
-    json_push_kv_str(out, "candidate_blocker",
-                     s->blocker[0] ? s->blocker : s->selection_blocker);
-}
-
-static void decision_to_json(const struct cac_decision *d,
-                             struct json_value *out)
-{
-    json_set_object(out);
-    if (!d) return;
-    json_push_kv_str(out, "decision",
-                     cac_decision_result_name(d->result));
-    json_push_kv_str(out, "selected_source",
-                     cac_source_name(d->selected_source));
-    json_push_kv_str(out, "candidate_source",
-                     cac_source_class_name(d->selected_source));
-    json_push_kv_str(out, "selected_source_trust",
-                     cac_source_trust_name(d->selected_source));
-    json_push_kv_str(out, "candidate_trust",
-                     cac_source_trust_name(d->selected_source));
-    json_push_kv_str(out, "authority", "local_consensus_validation");
-    json_push_kv_bool(out, "activation_allowed", d->activation_allowed);
-    json_push_kv_bool(out, "mirror_fallback_allowed",
-                      d->mirror_fallback_allowed);
-    json_push_kv_int(out, "local_height", (int64_t)d->local_height);
-    json_push_kv_int(out, "best_header_height",
-                     (int64_t)d->best_header_height);
-    json_push_kv_int(out, "target_height", (int64_t)d->target_height);
-    json_push_kv_int(out, "projection_height",
-                     (int64_t)d->projection_height);
-    json_push_kv_int(out, "projection_lag", d->projection_lag);
-    json_push_kv_bool(out, "projection_deferred",
-                      d->projection_deferred);
-    json_push_kv_str(out, "projection_state", d->projection_state);
-    json_push_kv_int(out, "projection_deferred_total",
-                     d->projection_deferred_total);
-    json_push_kv_int(out, "last_projection_deferred_height",
-                     d->last_projection_deferred_height);
-    json_push_kv_int(out, "last_projection_deferred_time",
-                     d->last_projection_deferred_time);
-    json_push_kv_str(out, "last_projection_deferred_reason",
-                     d->last_projection_deferred_reason);
-    json_push_kv_int(out, "selected_score", (int64_t)d->selected_score);
-    json_push_kv_str(out, "reason", d->reason);
-    json_push_kv_str(out, "blocker", d->blocker);
-    if (d->selected_source > CAC_SOURCE_NONE &&
-        d->selected_source < CAC_SOURCE_NUM) {
-        const struct cac_source_status *s = &d->sources[d->selected_source];
-        json_push_kv_str(out, "selected_source_state", s->state);
-        json_push_kv_str(out, "selected_source_reason", s->reason);
-        json_push_kv_str(out, "selected_source_blocker", s->blocker);
-        json_push_kv_bool(out, "selected_source_selectable",
-                          s->selectable);
-        json_push_kv_str(out, "selected_source_selection_blocker",
-                         s->selection_blocker);
-        json_push_kv_int(out, "selected_source_height", s->height);
-        json_push_kv_int(out, "selected_source_score_base", s->score_base);
-        json_push_kv_int(out, "selected_source_score_health",
-                         s->score_health);
-        json_push_kv_int(out, "selected_source_score_height",
-                         s->score_height);
-        json_push_kv_int(out, "selected_source_score_authorized",
-                         s->score_authorized);
-        json_push_kv_int(out, "selected_source_score_target_lag_penalty",
-                         s->score_target_lag_penalty);
-        json_push_kv_int(out, "selected_source_score_failure_penalty",
-                         s->score_failure_penalty);
-        json_push_kv_int(out, "selected_source_score_mirror_gate_penalty",
-                         s->score_mirror_gate_penalty);
-        json_push_kv_bool(out, "selected_source_healthy", s->healthy);
-        json_push_kv_bool(out, "selected_source_available", s->available);
-        json_push_kv_bool(out, "selected_source_blocked", s->blocked);
-    }
-
-    struct json_value arr = {0};
-    json_set_array(&arr);
-    for (int i = 1; i < CAC_SOURCE_NUM; i++) {
-        struct cac_source_status source = d->sources[i];
-        struct json_value child = {0};
-        if (source.source == CAC_SOURCE_NONE)
-            source.source = (enum cac_source)i;
-        source_to_json(&source, &child);
-        json_push_back(&arr, &child);
-        json_free(&child);
-    }
-    json_push_kv(out, "sources", &arr);
-    json_free(&arr);
-}
-
-bool block_source_policy_dump_state_json(struct json_value *out,
-                                         const char *key)
-{
-    (void)key;
-    if (!out) return false;
-    struct cac_decision d;
-    block_source_policy_get_status(&d);
-
-    bsp_lock_init_once();
-    zcl_mutex_lock(&g_bsp.lock);
-    int64_t decisions_total = g_bsp.decisions_total;
-    bool has_last = g_bsp.has_last;
-    int64_t last_decision_time = g_bsp.last_decision_time;
-    char last_op[32];
-    struct cac_decision last = g_bsp.last;
-    bool has_connman = g_bsp.connman != NULL;
-    bool has_main_state = g_bsp.main_state != NULL;
-    bool has_node_db = g_bsp.node_db != NULL;
-    copy_text(last_op, sizeof(last_op), g_bsp.last_op);
-    zcl_mutex_unlock(&g_bsp.lock);
-
-    json_set_object(out);
-    json_push_kv_bool(out, "initialized",
-                      has_connman && has_main_state && has_node_db);
-    json_push_kv_bool(out, "has_connman", has_connman);
-    json_push_kv_bool(out, "has_main_state", has_main_state);
-    json_push_kv_bool(out, "has_node_db", has_node_db);
-    json_push_kv_str(out, "authority", "local_consensus_validation");
-    json_push_kv_str(out, "decision",
-                     cac_decision_result_name(d.result));
-    json_push_kv_str(out, "selected_source",
-                     cac_source_name(d.selected_source));
-    json_push_kv_str(out, "candidate_source",
-                     cac_source_class_name(d.selected_source));
-    json_push_kv_str(out, "selected_source_trust",
-                     cac_source_trust_name(d.selected_source));
-    json_push_kv_str(out, "candidate_trust",
-                     cac_source_trust_name(d.selected_source));
-    json_push_kv_bool(out, "activation_allowed", d.activation_allowed);
-    json_push_kv_bool(out, "mirror_fallback_allowed",
-                      d.mirror_fallback_allowed);
-    json_push_kv_int(out, "local_height", (int64_t)d.local_height);
-    json_push_kv_int(out, "best_header_height",
-                     (int64_t)d.best_header_height);
-    json_push_kv_int(out, "target_height", (int64_t)d.target_height);
-    json_push_kv_int(out, "projection_height",
-                     (int64_t)d.projection_height);
-    json_push_kv_int(out, "projection_lag", d.projection_lag);
-    json_push_kv_bool(out, "projection_deferred",
-                      d.projection_deferred);
-    json_push_kv_str(out, "projection_state", d.projection_state);
-    json_push_kv_int(out, "projection_deferred_total",
-                     d.projection_deferred_total);
-    json_push_kv_int(out, "last_projection_deferred_height",
-                     d.last_projection_deferred_height);
-    json_push_kv_int(out, "last_projection_deferred_time",
-                     d.last_projection_deferred_time);
-    json_push_kv_str(out, "last_projection_deferred_reason",
-                     d.last_projection_deferred_reason);
-    json_push_kv_int(out, "selected_score", (int64_t)d.selected_score);
-    json_push_kv_str(out, "reason", d.reason);
-    json_push_kv_str(out, "blocker", d.blocker);
-    json_push_kv_int(out, "decisions_total", decisions_total);
-    json_push_kv_bool(out, "has_last_decision", has_last);
-    if (has_last) {
-        struct json_value last_json = {0};
-        last.projection_deferred_total = d.projection_deferred_total;
-        last.last_projection_deferred_height =
-            d.last_projection_deferred_height;
-        last.last_projection_deferred_time =
-            d.last_projection_deferred_time;
-        copy_text(last.last_projection_deferred_reason,
-                  sizeof(last.last_projection_deferred_reason),
-                  d.last_projection_deferred_reason);
-        decision_to_json(&last, &last_json);
-        json_push_kv_str(&last_json, "op", last_op);
-        json_push_kv_int(&last_json, "time", last_decision_time);
-        json_push_kv(out, "last_decision", &last_json);
-        json_free(&last_json);
-    }
-
-    struct json_value arr = {0};
-    json_set_array(&arr);
-    for (int i = 1; i < CAC_SOURCE_NUM; i++) {
-        struct json_value child = {0};
-        source_to_json(&d.sources[i], &child);
-        json_push_back(&arr, &child);
-        json_free(&child);
-    }
-    json_push_kv(out, "sources", &arr);
-    json_free(&arr);
-    return true;
 }
 
 void block_source_policy_reset_for_test(void)
