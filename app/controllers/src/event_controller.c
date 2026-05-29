@@ -9,7 +9,7 @@
 #include "services/node_health_service.h"
 #include "services/bg_validation_service.h"
 #include "services/block_index_integrity.h"
-#include "services/chain_advance_coordinator.h"
+#include "services/block_source_policy.h"
 #include "services/chain_evidence_controller.h"
 #include "services/chain_state_repository.h"
 #include "services/legacy_mirror_sync_service.h"
@@ -255,7 +255,7 @@ static bool rpc_healthcheck(const struct json_value *params, bool help,
         struct cac_decision d;
         struct json_value ca = {0};
 
-        chain_advance_coordinator_get_status(&d);
+        block_source_policy_get_status(&d);
         json_set_object(&ca);
         json_push_kv_str(&ca, "authority", "local_consensus_validation");
         json_push_kv_str(&ca, "decision",
@@ -312,7 +312,7 @@ static bool rpc_healthcheck(const struct json_value *params, bool help,
         json_push_kv_str(&ca, "blocker", d.blocker);
         {
             struct json_value dump = {0};
-            if (chain_advance_coordinator_dump_state_json(&dump, NULL)) {
+            if (block_source_policy_dump_state_json(&dump, NULL)) {
                 const struct json_value *has_last =
                     json_get(&dump, "has_last_decision");
                 const struct json_value *last =

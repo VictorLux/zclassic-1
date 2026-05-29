@@ -2,7 +2,7 @@
 
 #include "test/test_helpers.h"
 
-#include "services/chain_advance_coordinator.h"
+#include "services/block_source_policy.h"
 #include "services/legacy_mirror_sync_service.h"
 #include "services/snapshot_sync_service.h"
 #include "services/sync_monitor.h"
@@ -88,7 +88,7 @@ static int test_cac_prefers_native_p2p(void)
         init_source(&in, CAC_SOURCE_ZCLASSICD_MIRROR, true, true, 130);
         in.sources[CAC_SOURCE_ZCLASSICD_MIRROR].authorized = true;
 
-        chain_advance_coordinator_plan(&in, &out);
+        block_source_policy_plan(&in, &out);
         ASSERT(out.result == CAC_DECISION_USE_SOURCE);
         ASSERT(out.selected_source == CAC_SOURCE_P2P);
         ASSERT(out.activation_allowed);
@@ -117,7 +117,7 @@ static int test_cac_keeps_caught_up_p2p_when_legacy_is_ahead(void)
                  "activation-no-progress");
         in.sources[CAC_SOURCE_ZCLASSICD_MIRROR].blocked = true;
 
-        chain_advance_coordinator_plan(&in, &out);
+        block_source_policy_plan(&in, &out);
         ASSERT(out.result == CAC_DECISION_USE_SOURCE);
         ASSERT(out.selected_source == CAC_SOURCE_P2P);
         ASSERT(out.sources[CAC_SOURCE_P2P].selectable);
@@ -138,7 +138,7 @@ static int test_cac_gates_mirror_during_local_retries(void)
         init_source(&in, CAC_SOURCE_ZCLASSICD_MIRROR, true, true, 130);
         in.sources[CAC_SOURCE_ZCLASSICD_MIRROR].authorized = true;
 
-        chain_advance_coordinator_plan(&in, &out);
+        block_source_policy_plan(&in, &out);
         ASSERT(out.result == CAC_DECISION_WAIT);
         ASSERT(out.selected_source == CAC_SOURCE_NONE);
         ASSERT(!out.mirror_fallback_allowed);
@@ -162,7 +162,7 @@ static int test_cac_allows_bounded_mirror_after_retries(void)
         init_source(&in, CAC_SOURCE_ZCLASSICD_MIRROR, true, true, 130);
         in.sources[CAC_SOURCE_ZCLASSICD_MIRROR].authorized = true;
 
-        chain_advance_coordinator_plan(&in, &out);
+        block_source_policy_plan(&in, &out);
         ASSERT(out.result == CAC_DECISION_USE_SOURCE);
         ASSERT(out.selected_source == CAC_SOURCE_ZCLASSICD_MIRROR);
         ASSERT(out.mirror_fallback_allowed);
@@ -195,7 +195,7 @@ static int test_cac_lag_slo_overrides_local_gate(void)
         in.sources[CAC_SOURCE_ZCLASSICD_MIRROR].lag = 200; /* over breach */
         in.target_height = 2300;
 
-        chain_advance_coordinator_plan(&in, &out);
+        block_source_policy_plan(&in, &out);
         ASSERT(out.mirror_fallback_allowed);
         ASSERT(out.result == CAC_DECISION_USE_SOURCE);
         ASSERT(out.selected_source == CAC_SOURCE_ZCLASSICD_MIRROR);
@@ -221,7 +221,7 @@ static int test_cac_below_breach_still_gates_mirror(void)
         in.sources[CAC_SOURCE_ZCLASSICD_MIRROR].lag = 5; /* below breach */
         in.target_height = 120;
 
-        chain_advance_coordinator_plan(&in, &out);
+        block_source_policy_plan(&in, &out);
         ASSERT(!out.mirror_fallback_allowed);
         ASSERT(out.result == CAC_DECISION_WAIT);
     } TEST_END
@@ -234,7 +234,7 @@ static int test_cac_peer_floor_helper_classifies_recovery(void)
     TEST_CASE("chain_advance_coordinator: peer floor helper records recovery")
     {
         struct cac_decision out;
-        ASSERT(chain_advance_coordinator_peer_floor_recovery_needed(
+        ASSERT(block_source_policy_peer_floor_recovery_needed(
             1, 3, 100, 130, &out));
         ASSERT(out.result == CAC_DECISION_RECOVER);
         ASSERT(out.selected_source == CAC_SOURCE_NONE);
@@ -251,7 +251,7 @@ static int test_cac_peer_floor_helper_accepts_healthy_p2p(void)
     TEST_CASE("chain_advance_coordinator: peer floor helper accepts healthy P2P")
     {
         struct cac_decision out;
-        ASSERT(!chain_advance_coordinator_peer_floor_recovery_needed(
+        ASSERT(!block_source_policy_peer_floor_recovery_needed(
             3, 3, 100, 130, &out));
         ASSERT(out.result == CAC_DECISION_USE_SOURCE);
         ASSERT(out.selected_source == CAC_SOURCE_P2P);
@@ -274,7 +274,7 @@ static int test_cac_blocks_unsafe_mirror(void)
                  sizeof(in.sources[CAC_SOURCE_ZCLASSICD_MIRROR].blocker),
                  "body_hash_mismatch");
 
-        chain_advance_coordinator_plan(&in, &out);
+        block_source_policy_plan(&in, &out);
         ASSERT(out.result == CAC_DECISION_BLOCKED);
         ASSERT(out.selected_source == CAC_SOURCE_NONE);
         ASSERT_STR_EQ(out.blocker, "body_hash_mismatch");
@@ -292,7 +292,7 @@ static int test_cac_avoids_stale_dead_p2p(void)
         init_source(&in, CAC_SOURCE_P2P, true, false, 90);
         in.sources[CAC_SOURCE_P2P].timeouts = 5;
 
-        chain_advance_coordinator_plan(&in, &out);
+        block_source_policy_plan(&in, &out);
         ASSERT(out.result == CAC_DECISION_RECOVER);
         ASSERT(out.selected_source == CAC_SOURCE_NONE);
         ASSERT_STR_EQ(out.reason, "no_healthy_source");
@@ -314,7 +314,7 @@ static int test_cac_snapshot_can_outrank_mirror(void)
         init_source(&in, CAC_SOURCE_ZCLASSICD_MIRROR, true, true, 140);
         in.sources[CAC_SOURCE_ZCLASSICD_MIRROR].authorized = true;
 
-        chain_advance_coordinator_plan(&in, &out);
+        block_source_policy_plan(&in, &out);
         ASSERT(out.result == CAC_DECISION_USE_SOURCE);
         ASSERT(out.selected_source == CAC_SOURCE_SNAPSHOT);
     } TEST_END
@@ -334,7 +334,7 @@ static int test_cac_fresh_snapshot_outranks_stale_p2p(void)
         in.sources[CAC_SOURCE_P2P].lag = 40;
         init_source(&in, CAC_SOURCE_SNAPSHOT, true, true, 150);
 
-        chain_advance_coordinator_plan(&in, &out);
+        block_source_policy_plan(&in, &out);
         ASSERT(out.result == CAC_DECISION_USE_SOURCE);
         ASSERT(out.selected_source == CAC_SOURCE_SNAPSHOT);
         ASSERT(out.selected_score >
@@ -357,7 +357,7 @@ static int test_cac_stale_p2p_can_still_advance_when_alone(void)
         init_source(&in, CAC_SOURCE_P2P, true, true, 110);
         in.sources[CAC_SOURCE_P2P].lag = 40;
 
-        chain_advance_coordinator_plan(&in, &out);
+        block_source_policy_plan(&in, &out);
         ASSERT(out.result == CAC_DECISION_USE_SOURCE);
         ASSERT(out.selected_source == CAC_SOURCE_P2P);
         ASSERT(out.activation_allowed);
@@ -381,7 +381,7 @@ static int test_cac_projection_status_propagates(void)
         snprintf(in.projection_state, sizeof(in.projection_state),
                  "deferred");
 
-        chain_advance_coordinator_plan(&in, &out);
+        block_source_policy_plan(&in, &out);
         ASSERT(out.result == CAC_DECISION_USE_SOURCE);
         ASSERT(out.projection_height == 99);
         ASSERT(out.projection_lag == 21);
@@ -397,7 +397,7 @@ static int test_cac_snapshot_offer_helper_allows_valid_offer(void)
     TEST_CASE("chain_advance_coordinator: snapshot offer helper allows valid offer")
     {
         struct cac_decision out;
-        ASSERT(chain_advance_coordinator_snapshot_offer_allowed(
+        ASSERT(block_source_policy_snapshot_offer_allowed(
             100, 10000, 10100, true, "manifest_ok", &out));
         ASSERT(out.result == CAC_DECISION_USE_SOURCE);
         ASSERT(out.selected_source == CAC_SOURCE_SNAPSHOT);
@@ -415,7 +415,7 @@ static int test_cac_snapshot_offer_helper_blocks_invalid_offer(void)
     TEST_CASE("chain_advance_coordinator: snapshot offer helper blocks invalid offer")
     {
         struct cac_decision out;
-        ASSERT(!chain_advance_coordinator_snapshot_offer_allowed(
+        ASSERT(!block_source_policy_snapshot_offer_allowed(
             100, 10000, 10100, false, "weak_work", &out));
         ASSERT(out.result == CAC_DECISION_BLOCKED);
         ASSERT(out.selected_source == CAC_SOURCE_NONE);
@@ -431,7 +431,7 @@ static int test_cac_local_header_refill_helper_records_retry(void)
     TEST_CASE("chain_advance_coordinator: local header refill helper records retry")
     {
         struct cac_decision out;
-        ASSERT(chain_advance_coordinator_local_header_refill_needed(
+        ASSERT(block_source_policy_local_header_refill_needed(
             100, 101, 130, 2, 1, false, &out));
         ASSERT(out.result == CAC_DECISION_USE_SOURCE);
         ASSERT(out.selected_source == CAC_SOURCE_LOCAL_IMPORT);
@@ -448,7 +448,7 @@ static int test_cac_local_header_refill_helper_recovers_without_peers(void)
     TEST_CASE("chain_advance_coordinator: local header refill helper recovers without peers")
     {
         struct cac_decision out;
-        ASSERT(chain_advance_coordinator_local_header_refill_needed(
+        ASSERT(block_source_policy_local_header_refill_needed(
             100, 101, 130, 0, 3, true, &out));
         ASSERT(out.result == CAC_DECISION_RECOVER);
         ASSERT(out.selected_source == CAC_SOURCE_NONE);
@@ -479,9 +479,9 @@ static int test_cac_dump_json_contract(void)
         const struct json_value *last_projection_deferred_time;
         const struct json_value *last_projection_deferred_reason;
         const struct json_value *p2p;
-        chain_advance_coordinator_reset_for_test();
+        block_source_policy_reset_for_test();
         json_init(&root);
-        ASSERT(chain_advance_coordinator_dump_state_json(&root, NULL));
+        ASSERT(block_source_policy_dump_state_json(&root, NULL));
         initialized = json_get(&root, "initialized");
         has_connman = json_get(&root, "has_connman");
         has_main_state = json_get(&root, "has_main_state");
@@ -602,10 +602,10 @@ static int test_cac_dump_reports_projection_lag(void)
         blk.num_tx = 1;
         ASSERT(db_block_save(&ndb, &blk));
 
-        chain_advance_coordinator_reset_for_test();
-        chain_advance_coordinator_init(NULL, &ms, &ndb);
+        block_source_policy_reset_for_test();
+        block_source_policy_init(NULL, &ms, &ndb);
         json_init(&root);
-        ASSERT(chain_advance_coordinator_dump_state_json(&root, NULL));
+        ASSERT(block_source_policy_dump_state_json(&root, NULL));
         projection_height = json_get(&root, "projection_height");
         projection_lag = json_get(&root, "projection_lag");
         projection_deferred = json_get(&root, "projection_deferred");
@@ -620,7 +620,7 @@ static int test_cac_dump_reports_projection_lag(void)
         ASSERT_STR_EQ(json_get_str(projection_state), "deferred");
         json_free(&root);
 
-        chain_advance_coordinator_reset_for_test();
+        block_source_policy_reset_for_test();
         main_state_free(&ms);
         node_db_close(&ndb);
     } TEST_END
@@ -639,12 +639,12 @@ static int test_cac_projection_deferral_accounting(void)
         const struct json_value *when;
         const struct json_value *reason;
 
-        chain_advance_coordinator_reset_for_test();
-        chain_advance_coordinator_note_projection_deferred(
+        block_source_policy_reset_for_test();
+        block_source_policy_note_projection_deferred(
             42, "consensus_path");
 
         memset(&status, 0, sizeof(status));
-        chain_advance_coordinator_get_status(&status);
+        block_source_policy_get_status(&status);
         ASSERT(status.projection_deferred_total == 1);
         ASSERT(status.last_projection_deferred_height == 42);
         ASSERT(status.last_projection_deferred_time > 0);
@@ -652,7 +652,7 @@ static int test_cac_projection_deferral_accounting(void)
                       "consensus_path");
 
         json_init(&root);
-        ASSERT(chain_advance_coordinator_dump_state_json(&root, NULL));
+        ASSERT(block_source_policy_dump_state_json(&root, NULL));
         total = json_get(&root, "projection_deferred_total");
         height = json_get(&root, "last_projection_deferred_height");
         when = json_get(&root, "last_projection_deferred_time");
@@ -667,7 +667,7 @@ static int test_cac_projection_deferral_accounting(void)
         ASSERT_STR_EQ(json_get_str(reason), "consensus_path");
         json_free(&root);
 
-        chain_advance_coordinator_reset_for_test();
+        block_source_policy_reset_for_test();
     } TEST_END
     return failures;
 }
@@ -738,10 +738,10 @@ static int test_cac_dump_populates_p2p_diversity(void)
         ASSERT(inbound_peer != NULL);
         inbound_peer->inbound = true;
 
-        chain_advance_coordinator_reset_for_test();
-        chain_advance_coordinator_init(&cm, NULL, NULL);
+        block_source_policy_reset_for_test();
+        block_source_policy_init(&cm, NULL, NULL);
         json_init(&root);
-        ASSERT(chain_advance_coordinator_dump_state_json(&root, NULL));
+        ASSERT(block_source_policy_dump_state_json(&root, NULL));
         sources = json_get(&root, "sources");
         ASSERT(sources != NULL);
         p2p = json_at(sources, 0);
@@ -789,7 +789,7 @@ static int test_cac_dump_populates_p2p_diversity(void)
         ASSERT(strstr(json_get_str(reason), "proto_fail=1") != NULL);
         json_free(&root);
 
-        chain_advance_coordinator_reset_for_test();
+        block_source_policy_reset_for_test();
         net_manager_free(&cm.manager);
     } TEST_END
     return failures;
@@ -842,10 +842,10 @@ static int test_cac_selects_viable_caught_up_p2p(void)
         stats.target_height = 130;
         legacy_mirror_sync_test_set_stats(&stats, &ms);
 
-        chain_advance_coordinator_reset_for_test();
-        chain_advance_coordinator_init(&cm, &ms, NULL);
+        block_source_policy_reset_for_test();
+        block_source_policy_init(&cm, &ms, NULL);
         json_init(&root);
-        ASSERT(chain_advance_coordinator_dump_state_json(&root, NULL));
+        ASSERT(block_source_policy_dump_state_json(&root, NULL));
         selected = json_get(&root, "selected_source");
         sources = json_get(&root, "sources");
         ASSERT(selected != NULL);
@@ -867,7 +867,7 @@ static int test_cac_selects_viable_caught_up_p2p(void)
         ASSERT(strstr(json_get_str(reason), "ideal_floor=3") != NULL);
         json_free(&root);
 
-        chain_advance_coordinator_reset_for_test();
+        block_source_policy_reset_for_test();
         legacy_mirror_sync_reset_for_test();
         main_state_free(&ms);
         net_manager_free(&cm.manager);
@@ -918,10 +918,10 @@ static int test_cac_inbound_assists_near_tip_p2p(void)
         ASSERT(inbound_peer != NULL);
         inbound_peer->inbound = true;
 
-        chain_advance_coordinator_reset_for_test();
-        chain_advance_coordinator_init(&cm, &ms, NULL);
+        block_source_policy_reset_for_test();
+        block_source_policy_init(&cm, &ms, NULL);
         json_init(&root);
-        ASSERT(chain_advance_coordinator_dump_state_json(&root, NULL));
+        ASSERT(block_source_policy_dump_state_json(&root, NULL));
         selected = json_get(&root, "selected_source");
         sources = json_get(&root, "sources");
         ASSERT(selected != NULL);
@@ -946,7 +946,7 @@ static int test_cac_inbound_assists_near_tip_p2p(void)
         ASSERT(strstr(json_get_str(reason), "inbound_healthy=1") != NULL);
         json_free(&root);
 
-        chain_advance_coordinator_reset_for_test();
+        block_source_policy_reset_for_test();
         main_state_free(&ms);
         net_manager_free(&cm.manager);
     } TEST_END
@@ -989,10 +989,10 @@ static int test_cac_dump_explains_stale_p2p_height(void)
         ASSERT(test_cac_add_peer(&cm, 198, 51, 100, 3,
                                  PEER_HANDSHAKE_COMPLETE) != NULL);
 
-        chain_advance_coordinator_reset_for_test();
-        chain_advance_coordinator_init(&cm, &ms, NULL);
+        block_source_policy_reset_for_test();
+        block_source_policy_init(&cm, &ms, NULL);
         json_init(&root);
-        ASSERT(chain_advance_coordinator_dump_state_json(&root, NULL));
+        ASSERT(block_source_policy_dump_state_json(&root, NULL));
         sources = json_get(&root, "sources");
         ASSERT(sources != NULL);
         p2p = find_source_json(sources, "p2p");
@@ -1007,7 +1007,7 @@ static int test_cac_dump_explains_stale_p2p_height(void)
         ASSERT(strstr(json_get_str(reason), "stale_lag=20") != NULL);
         json_free(&root);
 
-        chain_advance_coordinator_reset_for_test();
+        block_source_policy_reset_for_test();
         main_state_free(&ms);
         net_manager_free(&cm.manager);
     } TEST_END
@@ -1040,9 +1040,9 @@ static int test_cac_dump_populates_live_snapshot_source(void)
         runtime.snapshot_sync = &svc;
         app_runtime_set_current(&runtime);
 
-        chain_advance_coordinator_reset_for_test();
+        block_source_policy_reset_for_test();
         json_init(&root);
-        ASSERT(chain_advance_coordinator_dump_state_json(&root, NULL));
+        ASSERT(block_source_policy_dump_state_json(&root, NULL));
         sources = json_get(&root, "sources");
         ASSERT(sources != NULL);
         snapshot = json_at(sources, 1);
@@ -1119,14 +1119,14 @@ static int test_cac_dump_populates_local_import_recovery(void)
         cm.manager.nodes = peers;
         cm.manager.num_nodes = 1;
 
-        chain_advance_coordinator_reset_for_test();
-        chain_advance_coordinator_init(&cm, &ms, NULL);
+        block_source_policy_reset_for_test();
+        block_source_policy_init(&cm, &ms, NULL);
         sync_monitor_set_context(&cm, &dm, &ms);
         condition_engine_set_main_state(&ms);
         register_local_header_refill_needed();
         condition_engine_tick();
         json_init(&root);
-        ASSERT(chain_advance_coordinator_dump_state_json(&root, NULL));
+        ASSERT(block_source_policy_dump_state_json(&root, NULL));
         sources = json_get(&root, "sources");
         ASSERT(sources != NULL);
         local_import = json_at(sources, 2);
@@ -1150,7 +1150,7 @@ static int test_cac_dump_populates_local_import_recovery(void)
 
         cm.manager.nodes = NULL;
         cm.manager.num_nodes = 0;
-        chain_advance_coordinator_reset_for_test();
+        block_source_policy_reset_for_test();
     } TEST_END
     return failures;
 }
@@ -1191,10 +1191,10 @@ static int test_cac_dump_populates_live_mirror_source(void)
         stats.blocks_applied = 42;
         legacy_mirror_sync_test_set_stats(&stats, &ms);
 
-        chain_advance_coordinator_reset_for_test();
-        chain_advance_coordinator_init(NULL, &ms, NULL);
+        block_source_policy_reset_for_test();
+        block_source_policy_init(NULL, &ms, NULL);
         json_init(&root);
-        ASSERT(chain_advance_coordinator_dump_state_json(&root, NULL));
+        ASSERT(block_source_policy_dump_state_json(&root, NULL));
         sources = json_get(&root, "sources");
         ASSERT(sources != NULL);
         mirror = json_at(sources, 3);
@@ -1220,7 +1220,7 @@ static int test_cac_dump_populates_live_mirror_source(void)
         legacy_mirror_sync_test_set_stats(&stats, &ms);
 
         json_init(&root);
-        ASSERT(chain_advance_coordinator_dump_state_json(&root, NULL));
+        ASSERT(block_source_policy_dump_state_json(&root, NULL));
         sources = json_get(&root, "sources");
         ASSERT(sources != NULL);
         mirror = json_at(sources, 3);
@@ -1236,7 +1236,7 @@ static int test_cac_dump_populates_live_mirror_source(void)
         ASSERT_STR_EQ(json_get_str(blocker), "body-hash-mismatch");
         json_free(&root);
 
-        chain_advance_coordinator_reset_for_test();
+        block_source_policy_reset_for_test();
         mirror_consensus_reset_for_test();
         legacy_mirror_sync_reset_for_test();
     } TEST_END
@@ -1256,12 +1256,12 @@ static int test_cac_dump_records_live_decision(void)
         const struct json_value *decision;
         const struct json_value *reason;
 
-        chain_advance_coordinator_reset_for_test();
-        ASSERT(chain_advance_coordinator_peer_floor_recovery_needed(
+        block_source_policy_reset_for_test();
+        ASSERT(block_source_policy_peer_floor_recovery_needed(
             0, 2, 100, 120, NULL));
 
         json_init(&root);
-        ASSERT(chain_advance_coordinator_dump_state_json(&root, NULL));
+        ASSERT(block_source_policy_dump_state_json(&root, NULL));
         total = json_get(&root, "decisions_total");
         has_last = json_get(&root, "has_last_decision");
         last = json_get(&root, "last_decision");
@@ -1303,12 +1303,12 @@ static int test_cac_dump_records_peer_floor_decision(void)
         const struct json_value *score_base;
         const struct json_value *score_failure_penalty;
 
-        chain_advance_coordinator_reset_for_test();
-        ASSERT(chain_advance_coordinator_peer_floor_recovery_needed(
+        block_source_policy_reset_for_test();
+        ASSERT(block_source_policy_peer_floor_recovery_needed(
             0, 3, 100, 130, NULL));
 
         json_init(&root);
-        ASSERT(chain_advance_coordinator_dump_state_json(&root, NULL));
+        ASSERT(block_source_policy_dump_state_json(&root, NULL));
         total = json_get(&root, "decisions_total");
         last = json_get(&root, "last_decision");
         ASSERT(total != NULL);
@@ -1356,12 +1356,12 @@ static int test_cac_dump_records_snapshot_offer_decision(void)
         const struct json_value *op;
         const struct json_value *source;
 
-        chain_advance_coordinator_reset_for_test();
-        ASSERT(chain_advance_coordinator_snapshot_offer_allowed(
+        block_source_policy_reset_for_test();
+        ASSERT(block_source_policy_snapshot_offer_allowed(
             100, 10000, 10100, true, "manifest_ok", NULL));
 
         json_init(&root);
-        ASSERT(chain_advance_coordinator_dump_state_json(&root, NULL));
+        ASSERT(block_source_policy_dump_state_json(&root, NULL));
         last = json_get(&root, "last_decision");
         ASSERT(last != NULL);
         op = json_get(last, "op");
@@ -1384,8 +1384,8 @@ static int test_cac_decision_event_contract(void)
         size_t len;
 
         event_log_init();
-        chain_advance_coordinator_reset_for_test();
-        ASSERT(chain_advance_coordinator_snapshot_offer_allowed(
+        block_source_policy_reset_for_test();
+        ASSERT(block_source_policy_snapshot_offer_allowed(
             100, 10000, 10100, true, "manifest_ok", NULL));
 
         len = event_dump_json(buf, sizeof(buf), 8);
@@ -1419,8 +1419,8 @@ static int test_cac_peer_floor_event_explains_no_source(void)
         size_t len;
 
         event_log_init();
-        chain_advance_coordinator_reset_for_test();
-        ASSERT(chain_advance_coordinator_peer_floor_recovery_needed(
+        block_source_policy_reset_for_test();
+        ASSERT(block_source_policy_peer_floor_recovery_needed(
             0, 3, 100, 130, NULL));
 
         len = event_dump_json(buf, sizeof(buf), 8);
@@ -1459,12 +1459,12 @@ static int test_cac_dump_records_local_header_refill_decision(void)
         const struct json_value *op;
         const struct json_value *source;
 
-        chain_advance_coordinator_reset_for_test();
-        ASSERT(chain_advance_coordinator_local_header_refill_needed(
+        block_source_policy_reset_for_test();
+        ASSERT(block_source_policy_local_header_refill_needed(
             100, 101, 130, 1, 1, false, NULL));
 
         json_init(&root);
-        ASSERT(chain_advance_coordinator_dump_state_json(&root, NULL));
+        ASSERT(block_source_policy_dump_state_json(&root, NULL));
         last = json_get(&root, "last_decision");
         ASSERT(last != NULL);
         op = json_get(last, "op");
@@ -1507,16 +1507,16 @@ static int test_cac_restores_last_decision_from_node_state(void)
         const struct json_value *source_available;
 
         ASSERT(node_db_open(&ndb, ":memory:"));
-        chain_advance_coordinator_reset_for_test();
-        chain_advance_coordinator_init(NULL, NULL, &ndb);
-        ASSERT(chain_advance_coordinator_snapshot_offer_allowed(
+        block_source_policy_reset_for_test();
+        block_source_policy_init(NULL, NULL, &ndb);
+        ASSERT(block_source_policy_snapshot_offer_allowed(
             100, 10000, 10100, true, "manifest_ok", NULL));
 
-        chain_advance_coordinator_reset_for_test();
-        chain_advance_coordinator_init(NULL, NULL, &ndb);
+        block_source_policy_reset_for_test();
+        block_source_policy_init(NULL, NULL, &ndb);
 
         json_init(&root);
-        ASSERT(chain_advance_coordinator_dump_state_json(&root, NULL));
+        ASSERT(block_source_policy_dump_state_json(&root, NULL));
         total = json_get(&root, "decisions_total");
         last = json_get(&root, "last_decision");
         ASSERT(total != NULL);
@@ -1583,10 +1583,10 @@ static int test_cac_restores_last_decision_from_node_state(void)
         ASSERT(json_get_bool(source_available));
         json_free(&root);
 
-        ASSERT(chain_advance_coordinator_peer_floor_recovery_needed(
+        ASSERT(block_source_policy_peer_floor_recovery_needed(
             0, 3, 100, 130, NULL));
         json_init(&root);
-        ASSERT(chain_advance_coordinator_dump_state_json(&root, NULL));
+        ASSERT(block_source_policy_dump_state_json(&root, NULL));
         total = json_get(&root, "decisions_total");
         last = json_get(&root, "last_decision");
         ASSERT(total != NULL);
@@ -1597,7 +1597,7 @@ static int test_cac_restores_last_decision_from_node_state(void)
         ASSERT_STR_EQ(json_get_str(op), "peer_floor");
         json_free(&root);
 
-        chain_advance_coordinator_reset_for_test();
+        block_source_policy_reset_for_test();
         node_db_close(&ndb);
     } TEST_END
     return failures;
@@ -1619,16 +1619,16 @@ static int test_cac_restores_peer_floor_sources_from_node_state(void)
         const struct json_value *score_failure_penalty;
 
         ASSERT(node_db_open(&ndb, ":memory:"));
-        chain_advance_coordinator_reset_for_test();
-        chain_advance_coordinator_init(NULL, NULL, &ndb);
-        ASSERT(chain_advance_coordinator_peer_floor_recovery_needed(
+        block_source_policy_reset_for_test();
+        block_source_policy_init(NULL, NULL, &ndb);
+        ASSERT(block_source_policy_peer_floor_recovery_needed(
             0, 3, 100, 130, NULL));
 
-        chain_advance_coordinator_reset_for_test();
-        chain_advance_coordinator_init(NULL, NULL, &ndb);
+        block_source_policy_reset_for_test();
+        block_source_policy_init(NULL, NULL, &ndb);
 
         json_init(&root);
-        ASSERT(chain_advance_coordinator_dump_state_json(&root, NULL));
+        ASSERT(block_source_policy_dump_state_json(&root, NULL));
         last = json_get(&root, "last_decision");
         ASSERT(last != NULL);
         sources = json_get(last, "sources");
@@ -1648,7 +1648,7 @@ static int test_cac_restores_peer_floor_sources_from_node_state(void)
         ASSERT_STR_EQ(json_get_str(blocker), "peer_floor");
         json_free(&root);
 
-        chain_advance_coordinator_reset_for_test();
+        block_source_policy_reset_for_test();
         node_db_close(&ndb);
     } TEST_END
     return failures;
@@ -1670,16 +1670,16 @@ static int test_cac_restores_local_header_refill_progress(void)
         const struct json_value *progress_total;
 
         ASSERT(node_db_open(&ndb, ":memory:"));
-        chain_advance_coordinator_reset_for_test();
-        chain_advance_coordinator_init(NULL, NULL, &ndb);
-        ASSERT(chain_advance_coordinator_local_header_refill_needed(
+        block_source_policy_reset_for_test();
+        block_source_policy_init(NULL, NULL, &ndb);
+        ASSERT(block_source_policy_local_header_refill_needed(
             100, 101, 130, 2, 3, false, NULL));
 
-        chain_advance_coordinator_reset_for_test();
-        chain_advance_coordinator_init(NULL, NULL, &ndb);
+        block_source_policy_reset_for_test();
+        block_source_policy_init(NULL, NULL, &ndb);
 
         json_init(&root);
-        ASSERT(chain_advance_coordinator_dump_state_json(&root, NULL));
+        ASSERT(block_source_policy_dump_state_json(&root, NULL));
         last = json_get(&root, "last_decision");
         ASSERT(last != NULL);
         sources = json_get(last, "sources");
@@ -1700,7 +1700,7 @@ static int test_cac_restores_local_header_refill_progress(void)
         ASSERT(json_get_int(progress_total) == 101);
         json_free(&root);
 
-        chain_advance_coordinator_reset_for_test();
+        block_source_policy_reset_for_test();
         node_db_close(&ndb);
     } TEST_END
     return failures;

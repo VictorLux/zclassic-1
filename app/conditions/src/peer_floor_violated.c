@@ -7,7 +7,7 @@
 #include "event/event.h"
 #include "net/connman.h"
 #include "platform/time_compat.h"
-#include "services/chain_advance_coordinator.h"
+#include "services/block_source_policy.h"
 #include "services/sync_monitor.h"
 #include "validation/chainstate.h"
 #include "validation/main_state.h"
@@ -78,7 +78,7 @@ static enum condition_remedy_result remedy_peer_floor_violated(void)
         return COND_REMEDY_SKIP;
 
     struct cac_decision decision;
-    bool recover = chain_advance_coordinator_peer_floor_recovery_needed(
+    bool recover = block_source_policy_peer_floor_recovery_needed(
         atomic_load(&g_outbound_at_detect),
         PEER_FLOOR_MIN_HEALTHY,
         atomic_load(&g_local_height_at_detect),

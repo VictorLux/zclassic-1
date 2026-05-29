@@ -7,7 +7,7 @@
 #include "platform/time_compat.h"
 #include "config/boot_internal.h"
 #include "services/chain_activation_controller.h"
-#include "services/chain_advance_coordinator.h"
+#include "services/block_source_policy.h"
 #include "services/chain_state_repository.h"
 #include "services/chain_tip.h"
 #include "services/gap_fill_service.h"
@@ -2730,7 +2730,7 @@ bool app_init_services(struct app_context *ctx,
     rpc_misc_set_wallet(svc->wallet);
     register_misc_rpc_commands(svc->rpc_table);
     rpc_net_set_connman(svc->connman);
-    chain_advance_coordinator_init(svc->connman, svc->state,
+    block_source_policy_init(svc->connman, svc->state,
                                    boot_node_db());
     register_net_rpc_commands(svc->rpc_table);
 

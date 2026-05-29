@@ -11,7 +11,7 @@
 
 #include "services/snapshot_sync_service.h"
 #include "services/snapshot_manifest.h"
-#include "services/chain_advance_coordinator.h"
+#include "services/block_source_policy.h"
 #include "chain/mmb.h"
 #include "chain/mmr.h"
 #include "net/fast_sync.h"
@@ -489,7 +489,7 @@ enum snapsync_offer_result snapsync_handle_offer(
     manifest_result =
         snapshot_manifest_validate_offer(&manifest, params->our_height);
     if (manifest_result != SNAPSHOT_MANIFEST_OK) {
-        (void)chain_advance_coordinator_snapshot_offer_allowed(
+        (void)block_source_policy_snapshot_offer_allowed(
             params->our_height,
             params->height,
             params->peer_tip_height,
@@ -506,7 +506,7 @@ enum snapsync_offer_result snapsync_handle_offer(
 
     /* Reject peers that previously stalled during snapshot transfer */
     if (snapsync_is_peer_blacklisted(svc, params->peer_id)) {
-        (void)chain_advance_coordinator_snapshot_offer_allowed(
+        (void)block_source_policy_snapshot_offer_allowed(
             params->our_height,
             params->height,
             params->peer_tip_height,
@@ -538,7 +538,7 @@ enum snapsync_offer_result snapsync_handle_offer(
                (unsigned long long)prior_received);
         snapsync_reset(svc);
     } else if (current_state != SNAPSYNC_IDLE) {
-        (void)chain_advance_coordinator_snapshot_offer_allowed(
+        (void)block_source_policy_snapshot_offer_allowed(
             params->our_height,
             params->height,
             params->peer_tip_height,
@@ -552,7 +552,7 @@ enum snapsync_offer_result snapsync_handle_offer(
     if (!snapsync_accept_offer(svc, params->height, params->num_utxos,
                                params->utxo_root, params->mmb_root,
                                params->block_hash, params->peer_id).ok) {
-        (void)chain_advance_coordinator_snapshot_offer_allowed(
+        (void)block_source_policy_snapshot_offer_allowed(
             params->our_height,
             params->height,
             params->peer_tip_height,
@@ -561,7 +561,7 @@ enum snapsync_offer_result snapsync_handle_offer(
             NULL);
         return SNAPSYNC_OFFER_REJECTED_BUSY;
     }
-    if (!chain_advance_coordinator_snapshot_offer_allowed(
+    if (!block_source_policy_snapshot_offer_allowed(
             params->our_height,
             params->height,
             params->peer_tip_height,

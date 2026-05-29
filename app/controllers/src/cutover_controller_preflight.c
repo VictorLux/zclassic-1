@@ -24,7 +24,7 @@
 #include "json/json.h"
 #include "rpc/server.h"
 #include "controllers/strong_params.h"
-#include "services/chain_advance_coordinator.h"
+#include "services/block_source_policy.h"
 #include "services/cutover_modes.h"
 #include "jobs/header_admit_stage.h"
 #include "jobs/validate_headers_stage.h"
@@ -206,7 +206,7 @@ static bool push_cutover_live_gate_json(struct json_value *live,
 static bool push_cutover_chain_advance_gate_json(struct json_value *out)
 {
     struct cac_decision d;
-    chain_advance_coordinator_get_status(&d);
+    block_source_policy_get_status(&d);
 
     bool source_ready = false;
     if (d.selected_source > CAC_SOURCE_NONE &&

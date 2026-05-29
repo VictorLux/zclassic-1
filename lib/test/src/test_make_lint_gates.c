@@ -1183,7 +1183,7 @@ static int t_boot_chain_advance_diagnostics_contract(void)
         char path[PATH_MAX];
         ASSERT(repo_path(path, sizeof(path), "config/src/boot_services.c") == 0);
         ASSERT(read_entire_file(path, &buf) == 0);
-        char *init = strstr(buf, "chain_advance_coordinator_init(");
+        char *init = strstr(buf, "block_source_policy_init(");
         char *diag_state = strstr(buf, "diagnostics_controller_set_state(");
         char *diag_register = strstr(buf, "register_diagnostics_rpc_commands(");
         ASSERT(init != NULL);
@@ -1422,7 +1422,7 @@ static int t_projection_deferral_is_not_block_rejected_contract(void)
         char path[PATH_MAX];
         ASSERT(repo_path(path, sizeof(path), "lib/validation/src/connect_tip.c") == 0);
         ASSERT(read_entire_file(path, &buf) == 0);
-        ASSERT(strstr(buf, "chain_advance_coordinator_note_projection_deferred") != NULL);
+        ASSERT(strstr(buf, "block_source_policy_note_projection_deferred") != NULL);
         ASSERT(strstr(buf, "\"consensus_path\"") != NULL);
         ASSERT(strstr(buf, "projection-deferred-consensus-path") == NULL);
         ASSERT(strstr(buf, "EV_CHAIN_ADVANCE_DECISION") == NULL);
@@ -1431,14 +1431,14 @@ static int t_projection_deferral_is_not_block_rejected_contract(void)
         ASSERT(repo_path(path, sizeof(path),
                          "app/controllers/src/sync_controller_blocks.c") == 0);
         ASSERT(read_entire_file(path, &buf) == 0);
-        ASSERT(strstr(buf, "chain_advance_coordinator_note_projection_deferred") != NULL);
+        ASSERT(strstr(buf, "block_source_policy_note_projection_deferred") != NULL);
         ASSERT(strstr(buf, "\"no_db_service\"") != NULL);
         ASSERT(strstr(buf, "projection-deferred-no-db-service") == NULL);
         ASSERT(strstr(buf, "EV_CHAIN_ADVANCE_DECISION") == NULL);
         free(buf);
         buf = NULL;
         ASSERT(repo_path(path, sizeof(path),
-                         "app/services/src/chain_advance_coordinator.c") == 0);
+                         "app/services/src/block_source_policy_runtime.c") == 0);
         ASSERT(read_entire_file(path, &buf) == 0);
         ASSERT(strstr(buf, "op=projection_deferred reason=%s") != NULL);
         ASSERT(strstr(buf, "projection_deferred_total") != NULL);

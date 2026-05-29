@@ -6,7 +6,7 @@
 #
 #   legacy_mirror_sync_service.c — lms_set_blocker() string surface;
 #       Round 7 will migrate lms_set_blocker to wrap blocker_set with
-#       the classification table from chain_advance_coordinator.c.
+#       the classification table from block_source_policy_runtime.c.
 #       Once migrated, this file's blocker_set() call removes it from
 #       the baseline automatically.
 #

@@ -5,7 +5,7 @@
 #include "controllers/health_controller.h"
 #include "controllers/strong_params.h"
 #include "framework/condition.h"
-#include "services/chain_advance_coordinator.h"
+#include "services/block_source_policy.h"
 #include "services/sync_monitor.h"
 #include "services/legacy_mirror_sync_service.h"
 #include "validation/chainstate.h"
@@ -369,7 +369,7 @@ static bool rpc_getservicehealth(const struct json_value *params, bool help,
     /* Canonical chain advance coordinator */
     {
         struct cac_decision d;
-        chain_advance_coordinator_get_status(&d);
+        block_source_policy_get_status(&d);
 
         struct json_value svc = {0};
         json_set_object(&svc);
@@ -439,7 +439,7 @@ static bool rpc_getservicehealth(const struct json_value *params, bool help,
         json_push_kv_str(&svc, "blocker", d.blocker);
         {
             struct json_value dump = {0};
-            if (chain_advance_coordinator_dump_state_json(&dump, NULL)) {
+            if (block_source_policy_dump_state_json(&dump, NULL)) {
                 const struct json_value *has_last =
                     json_get(&dump, "has_last_decision");
                 const struct json_value *last =

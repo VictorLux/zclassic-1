@@ -1,9 +1,17 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0 */
 
+/* Stateful block-source decision runtime — the live state, persistence,
+ * runtime-input builder, decision recorder, projection-deferral counter,
+ * status read, and the zcl_state dumper for the block-source policy.
+ * Re-homed verbatim from the dissolved chain_advance_coordinator shell
+ * (B8). The pure scoring/name/plan policy lives in block_source_policy.c;
+ * this file is the cohesive stateful seam split out to respect the E1
+ * file-size ceiling. */
+
+#include "services/block_source_policy.h"
+
 #include "platform/time_compat.h"
 #include "util/log_macros.h"
-#include "services/chain_advance_coordinator.h"
-
 #include "services/legacy_mirror_sync_service.h"
 #include "services/snapshot_sync_service.h"
 #include "services/sync_monitor.h"
@@ -16,10 +24,23 @@
 #include "validation/main_state.h"
 #include "util/sync.h"
 
-#include <stdio.h>
 #include <stdarg.h>
+#include <stdio.h>
 #include <string.h>
 #include <time.h>
+
+static void copy_text(char *dst, size_t dst_len, const char *src)
+{
+    if (!dst || dst_len == 0) return;
+    if (!src) src = "";
+    snprintf(dst, dst_len, "%s", src);
+}
+/* ---------------------------------------------------------------------------
+ * Stateful block-source decision surface (re-homed from the dissolved
+ * chain_advance_coordinator shell, B8). Behavior-preserving: the runtime-input
+ * builder, decision recorder, persistence, status read, projection-deferral
+ * counter, and the zcl_state dumper are moved verbatim from the old shell.
+ * --------------------------------------------------------------------------- */
 
 static struct {
     zcl_mutex_t lock;
@@ -36,52 +57,45 @@ static struct {
     int last_projection_deferred_height;
     int64_t last_projection_deferred_time;
     char last_projection_deferred_reason[64];
-} g_cac;
+} g_bsp;
 
-#define CAC_STATE_PREFIX "chain_advance_coordinator."
-#define CAC_KEY_LAST_OP CAC_STATE_PREFIX "last_op"
-#define CAC_KEY_LAST_TIME CAC_STATE_PREFIX "last_time"
-#define CAC_KEY_DECISIONS_TOTAL CAC_STATE_PREFIX "decisions_total"
-#define CAC_KEY_RESULT CAC_STATE_PREFIX "last_result"
-#define CAC_KEY_SOURCE CAC_STATE_PREFIX "last_source"
-#define CAC_KEY_ACTIVATION_ALLOWED CAC_STATE_PREFIX "last_activation_allowed"
-#define CAC_KEY_MIRROR_FALLBACK_ALLOWED CAC_STATE_PREFIX "last_mirror_fallback_allowed"
-#define CAC_KEY_SELECTED_SCORE CAC_STATE_PREFIX "last_selected_score"
-#define CAC_KEY_REASON CAC_STATE_PREFIX "last_reason"
-#define CAC_KEY_BLOCKER CAC_STATE_PREFIX "last_blocker"
-#define CAC_KEY_LOCAL_HEIGHT CAC_STATE_PREFIX "last_local_height"
-#define CAC_KEY_BEST_HEADER_HEIGHT CAC_STATE_PREFIX "last_best_header_height"
-#define CAC_KEY_TARGET_HEIGHT CAC_STATE_PREFIX "last_target_height"
-#define CAC_KEY_PROJECTION_DEFERRED_TOTAL \
-    CAC_STATE_PREFIX "projection_deferred_total"
-#define CAC_KEY_LAST_PROJECTION_DEFERRED_HEIGHT \
-    CAC_STATE_PREFIX "last_projection_deferred_height"
-#define CAC_KEY_LAST_PROJECTION_DEFERRED_TIME \
-    CAC_STATE_PREFIX "last_projection_deferred_time"
-#define CAC_KEY_LAST_PROJECTION_DEFERRED_REASON \
-    CAC_STATE_PREFIX "last_projection_deferred_reason"
-#define CAC_KEY_SOURCE_STATE CAC_STATE_PREFIX "last_source_state"
-#define CAC_KEY_SOURCE_REASON CAC_STATE_PREFIX "last_source_reason"
-#define CAC_KEY_SOURCE_BLOCKER CAC_STATE_PREFIX "last_source_blocker"
-#define CAC_KEY_SOURCE_HEIGHT CAC_STATE_PREFIX "last_source_height"
-#define CAC_KEY_SOURCE_HEALTHY CAC_STATE_PREFIX "last_source_healthy"
-#define CAC_KEY_SOURCE_AVAILABLE CAC_STATE_PREFIX "last_source_available"
-#define CAC_KEY_SOURCE_BLOCKED CAC_STATE_PREFIX "last_source_blocked"
-#define CAC_KEY_SOURCE_PREFIX CAC_STATE_PREFIX "last_source."
+#define BSP_STATE_PREFIX "chain_advance_coordinator."
+#define BSP_KEY_LAST_OP BSP_STATE_PREFIX "last_op"
+#define BSP_KEY_LAST_TIME BSP_STATE_PREFIX "last_time"
+#define BSP_KEY_DECISIONS_TOTAL BSP_STATE_PREFIX "decisions_total"
+#define BSP_KEY_RESULT BSP_STATE_PREFIX "last_result"
+#define BSP_KEY_SOURCE BSP_STATE_PREFIX "last_source"
+#define BSP_KEY_ACTIVATION_ALLOWED BSP_STATE_PREFIX "last_activation_allowed"
+#define BSP_KEY_MIRROR_FALLBACK_ALLOWED BSP_STATE_PREFIX "last_mirror_fallback_allowed"
+#define BSP_KEY_SELECTED_SCORE BSP_STATE_PREFIX "last_selected_score"
+#define BSP_KEY_REASON BSP_STATE_PREFIX "last_reason"
+#define BSP_KEY_BLOCKER BSP_STATE_PREFIX "last_blocker"
+#define BSP_KEY_LOCAL_HEIGHT BSP_STATE_PREFIX "last_local_height"
+#define BSP_KEY_BEST_HEADER_HEIGHT BSP_STATE_PREFIX "last_best_header_height"
+#define BSP_KEY_TARGET_HEIGHT BSP_STATE_PREFIX "last_target_height"
+#define BSP_KEY_PROJECTION_DEFERRED_TOTAL \
+    BSP_STATE_PREFIX "projection_deferred_total"
+#define BSP_KEY_LAST_PROJECTION_DEFERRED_HEIGHT \
+    BSP_STATE_PREFIX "last_projection_deferred_height"
+#define BSP_KEY_LAST_PROJECTION_DEFERRED_TIME \
+    BSP_STATE_PREFIX "last_projection_deferred_time"
+#define BSP_KEY_LAST_PROJECTION_DEFERRED_REASON \
+    BSP_STATE_PREFIX "last_projection_deferred_reason"
+#define BSP_KEY_SOURCE_STATE BSP_STATE_PREFIX "last_source_state"
+#define BSP_KEY_SOURCE_REASON BSP_STATE_PREFIX "last_source_reason"
+#define BSP_KEY_SOURCE_BLOCKER BSP_STATE_PREFIX "last_source_blocker"
+#define BSP_KEY_SOURCE_HEIGHT BSP_STATE_PREFIX "last_source_height"
+#define BSP_KEY_SOURCE_HEALTHY BSP_STATE_PREFIX "last_source_healthy"
+#define BSP_KEY_SOURCE_AVAILABLE BSP_STATE_PREFIX "last_source_available"
+#define BSP_KEY_SOURCE_BLOCKED BSP_STATE_PREFIX "last_source_blocked"
+#define BSP_KEY_SOURCE_PREFIX BSP_STATE_PREFIX "last_source."
 
-static void cac_lock_init_once(void)
+static void bsp_lock_init_once(void)
 {
-    if (!g_cac.lock_init) {
-        zcl_mutex_init(&g_cac.lock);
-        g_cac.lock_init = true;
+    if (!g_bsp.lock_init) {
+        zcl_mutex_init(&g_bsp.lock);
+        g_bsp.lock_init = true;
     }
-}
-
-static void copy_text(char *dst, size_t dst_len, const char *src)
-{
-    if (!dst || dst_len == 0) return;
-    if (!src) src = "";
-    snprintf(dst, dst_len, "%s", src);
 }
 
 /* Classify legacy_mirror_sync_service blocker strings into the typed enum
@@ -137,7 +151,7 @@ static bool source_field_key(char *buf, size_t buflen,
 {
     if (!buf || buflen == 0 || !field)
         return false;
-    int n = snprintf(buf, buflen, "%s%d.%s", CAC_KEY_SOURCE_PREFIX,
+    int n = snprintf(buf, buflen, "%s%d.%s", BSP_KEY_SOURCE_PREFIX,
                      (int)source, field);
     return n > 0 && (size_t)n < buflen;
 }
@@ -345,25 +359,25 @@ static void persist_decision(struct node_db *ndb,
     if (!ndb || !d)
         return;
 
-    (void)persist_text(ndb, CAC_KEY_LAST_OP, op ? op : "unknown");
-    (void)node_db_state_set_int(ndb, CAC_KEY_LAST_TIME, when);
-    (void)node_db_state_set_int(ndb, CAC_KEY_DECISIONS_TOTAL, total);
-    (void)node_db_state_set_int(ndb, CAC_KEY_RESULT, (int64_t)d->result);
-    (void)node_db_state_set_int(ndb, CAC_KEY_SOURCE,
+    (void)persist_text(ndb, BSP_KEY_LAST_OP, op ? op : "unknown");
+    (void)node_db_state_set_int(ndb, BSP_KEY_LAST_TIME, when);
+    (void)node_db_state_set_int(ndb, BSP_KEY_DECISIONS_TOTAL, total);
+    (void)node_db_state_set_int(ndb, BSP_KEY_RESULT, (int64_t)d->result);
+    (void)node_db_state_set_int(ndb, BSP_KEY_SOURCE,
                                 (int64_t)d->selected_source);
-    (void)node_db_state_set_int(ndb, CAC_KEY_ACTIVATION_ALLOWED,
+    (void)node_db_state_set_int(ndb, BSP_KEY_ACTIVATION_ALLOWED,
                                 d->activation_allowed ? 1 : 0);
-    (void)node_db_state_set_int(ndb, CAC_KEY_MIRROR_FALLBACK_ALLOWED,
+    (void)node_db_state_set_int(ndb, BSP_KEY_MIRROR_FALLBACK_ALLOWED,
                                 d->mirror_fallback_allowed ? 1 : 0);
-    (void)node_db_state_set_int(ndb, CAC_KEY_SELECTED_SCORE,
+    (void)node_db_state_set_int(ndb, BSP_KEY_SELECTED_SCORE,
                                 (int64_t)d->selected_score);
-    (void)persist_text(ndb, CAC_KEY_REASON, d->reason);
-    (void)persist_text(ndb, CAC_KEY_BLOCKER, d->blocker);
-    (void)node_db_state_set_int(ndb, CAC_KEY_LOCAL_HEIGHT,
+    (void)persist_text(ndb, BSP_KEY_REASON, d->reason);
+    (void)persist_text(ndb, BSP_KEY_BLOCKER, d->blocker);
+    (void)node_db_state_set_int(ndb, BSP_KEY_LOCAL_HEIGHT,
                                 (int64_t)d->local_height);
-    (void)node_db_state_set_int(ndb, CAC_KEY_BEST_HEADER_HEIGHT,
+    (void)node_db_state_set_int(ndb, BSP_KEY_BEST_HEADER_HEIGHT,
                                 (int64_t)d->best_header_height);
-    (void)node_db_state_set_int(ndb, CAC_KEY_TARGET_HEIGHT,
+    (void)node_db_state_set_int(ndb, BSP_KEY_TARGET_HEIGHT,
                                 (int64_t)d->target_height);
 
     for (int i = 1; i < CAC_SOURCE_NUM; i++)
@@ -372,16 +386,16 @@ static void persist_decision(struct node_db *ndb,
     if (d->selected_source > CAC_SOURCE_NONE &&
         d->selected_source < CAC_SOURCE_NUM) {
         const struct cac_source_status *s = &d->sources[d->selected_source];
-        (void)persist_text(ndb, CAC_KEY_SOURCE_STATE, s->state);
-        (void)persist_text(ndb, CAC_KEY_SOURCE_REASON, s->reason);
-        (void)persist_text(ndb, CAC_KEY_SOURCE_BLOCKER, s->blocker);
-        (void)node_db_state_set_int(ndb, CAC_KEY_SOURCE_HEIGHT,
+        (void)persist_text(ndb, BSP_KEY_SOURCE_STATE, s->state);
+        (void)persist_text(ndb, BSP_KEY_SOURCE_REASON, s->reason);
+        (void)persist_text(ndb, BSP_KEY_SOURCE_BLOCKER, s->blocker);
+        (void)node_db_state_set_int(ndb, BSP_KEY_SOURCE_HEIGHT,
                                     (int64_t)s->height);
-        (void)node_db_state_set_int(ndb, CAC_KEY_SOURCE_HEALTHY,
+        (void)node_db_state_set_int(ndb, BSP_KEY_SOURCE_HEALTHY,
                                     s->healthy ? 1 : 0);
-        (void)node_db_state_set_int(ndb, CAC_KEY_SOURCE_AVAILABLE,
+        (void)node_db_state_set_int(ndb, BSP_KEY_SOURCE_AVAILABLE,
                                     s->available ? 1 : 0);
-        (void)node_db_state_set_int(ndb, CAC_KEY_SOURCE_BLOCKED,
+        (void)node_db_state_set_int(ndb, BSP_KEY_SOURCE_BLOCKED,
                                     s->blocked ? 1 : 0);
     }
 }
@@ -404,31 +418,31 @@ static void restore_decision(struct node_db *ndb)
     int64_t total = 0;
     int64_t when = 0;
 
-    if (!node_db_state_get(ndb, CAC_KEY_LAST_OP, op, sizeof(op) - 1, &len))
+    if (!node_db_state_get(ndb, BSP_KEY_LAST_OP, op, sizeof(op) - 1, &len))
         return;
-    if (!node_db_state_get_int(ndb, CAC_KEY_RESULT, &v))
+    if (!node_db_state_get_int(ndb, BSP_KEY_RESULT, &v))
         return;
     d.result = (enum cac_decision_result)v;
-    if (!node_db_state_get_int(ndb, CAC_KEY_SOURCE, &v))
+    if (!node_db_state_get_int(ndb, BSP_KEY_SOURCE, &v))
         return;
     d.selected_source = (enum cac_source)v;
-    if (node_db_state_get_int(ndb, CAC_KEY_ACTIVATION_ALLOWED, &v))
+    if (node_db_state_get_int(ndb, BSP_KEY_ACTIVATION_ALLOWED, &v))
         d.activation_allowed = v != 0;
-    if (node_db_state_get_int(ndb, CAC_KEY_MIRROR_FALLBACK_ALLOWED, &v))
+    if (node_db_state_get_int(ndb, BSP_KEY_MIRROR_FALLBACK_ALLOWED, &v))
         d.mirror_fallback_allowed = v != 0;
-    if (node_db_state_get_int(ndb, CAC_KEY_SELECTED_SCORE, &v))
+    if (node_db_state_get_int(ndb, BSP_KEY_SELECTED_SCORE, &v))
         d.selected_score = (int)v;
-    if (node_db_state_get(ndb, CAC_KEY_REASON, reason,
+    if (node_db_state_get(ndb, BSP_KEY_REASON, reason,
                           sizeof(reason) - 1, &len))
         copy_text(d.reason, sizeof(d.reason), reason);
-    if (node_db_state_get(ndb, CAC_KEY_BLOCKER, blocker,
+    if (node_db_state_get(ndb, BSP_KEY_BLOCKER, blocker,
                           sizeof(blocker) - 1, &len))
         copy_text(d.blocker, sizeof(d.blocker), blocker);
-    if (node_db_state_get_int(ndb, CAC_KEY_LOCAL_HEIGHT, &v))
+    if (node_db_state_get_int(ndb, BSP_KEY_LOCAL_HEIGHT, &v))
         d.local_height = (int)v;
-    if (node_db_state_get_int(ndb, CAC_KEY_BEST_HEADER_HEIGHT, &v))
+    if (node_db_state_get_int(ndb, BSP_KEY_BEST_HEADER_HEIGHT, &v))
         d.best_header_height = (int)v;
-    if (node_db_state_get_int(ndb, CAC_KEY_TARGET_HEIGHT, &v))
+    if (node_db_state_get_int(ndb, BSP_KEY_TARGET_HEIGHT, &v))
         d.target_height = (int)v;
     for (int i = 1; i < CAC_SOURCE_NUM; i++)
         restore_source_snapshot(ndb, (enum cac_source)i, &d.sources[i]);
@@ -437,35 +451,35 @@ static void restore_decision(struct node_db *ndb)
         struct cac_source_status *s = &d.sources[d.selected_source];
         s->source = d.selected_source;
         s->score = d.selected_score;
-        if (node_db_state_get(ndb, CAC_KEY_SOURCE_STATE, source_state,
+        if (node_db_state_get(ndb, BSP_KEY_SOURCE_STATE, source_state,
                               sizeof(source_state) - 1, &len))
             copy_text(s->state, sizeof(s->state), source_state);
-        if (node_db_state_get(ndb, CAC_KEY_SOURCE_REASON, source_reason,
+        if (node_db_state_get(ndb, BSP_KEY_SOURCE_REASON, source_reason,
                               sizeof(source_reason) - 1, &len))
             copy_text(s->reason, sizeof(s->reason), source_reason);
-        if (node_db_state_get(ndb, CAC_KEY_SOURCE_BLOCKER, source_block_text,
+        if (node_db_state_get(ndb, BSP_KEY_SOURCE_BLOCKER, source_block_text,
                               sizeof(source_block_text) - 1, &len))
             copy_text(s->blocker, sizeof(s->blocker), source_block_text);
-        if (node_db_state_get_int(ndb, CAC_KEY_SOURCE_HEIGHT, &v))
+        if (node_db_state_get_int(ndb, BSP_KEY_SOURCE_HEIGHT, &v))
             s->height = (int)v;
-        if (node_db_state_get_int(ndb, CAC_KEY_SOURCE_HEALTHY, &v))
+        if (node_db_state_get_int(ndb, BSP_KEY_SOURCE_HEALTHY, &v))
             s->healthy = v != 0;
-        if (node_db_state_get_int(ndb, CAC_KEY_SOURCE_AVAILABLE, &v))
+        if (node_db_state_get_int(ndb, BSP_KEY_SOURCE_AVAILABLE, &v))
             s->available = v != 0;
-        if (node_db_state_get_int(ndb, CAC_KEY_SOURCE_BLOCKED, &v))
+        if (node_db_state_get_int(ndb, BSP_KEY_SOURCE_BLOCKED, &v))
             s->blocked = v != 0;
     }
-    (void)node_db_state_get_int(ndb, CAC_KEY_LAST_TIME, &when);
-    (void)node_db_state_get_int(ndb, CAC_KEY_DECISIONS_TOTAL, &total);
+    (void)node_db_state_get_int(ndb, BSP_KEY_LAST_TIME, &when);
+    (void)node_db_state_get_int(ndb, BSP_KEY_DECISIONS_TOTAL, &total);
 
-    cac_lock_init_once();
-    zcl_mutex_lock(&g_cac.lock);
-    g_cac.last = d;
-    g_cac.has_last = true;
-    g_cac.last_decision_time = when;
-    g_cac.decisions_total = total > 0 ? total : 1;
-    copy_text(g_cac.last_op, sizeof(g_cac.last_op), op);
-    zcl_mutex_unlock(&g_cac.lock);
+    bsp_lock_init_once();
+    zcl_mutex_lock(&g_bsp.lock);
+    g_bsp.last = d;
+    g_bsp.has_last = true;
+    g_bsp.last_decision_time = when;
+    g_bsp.decisions_total = total > 0 ? total : 1;
+    copy_text(g_bsp.last_op, sizeof(g_bsp.last_op), op);
+    zcl_mutex_unlock(&g_bsp.lock);
 }
 
 static void restore_projection_deferral(struct node_db *ndb)
@@ -479,25 +493,25 @@ static void restore_projection_deferral(struct node_db *ndb)
     char reason[64] = {0};
     size_t len = 0;
 
-    (void)node_db_state_get_int(ndb, CAC_KEY_PROJECTION_DEFERRED_TOTAL,
+    (void)node_db_state_get_int(ndb, BSP_KEY_PROJECTION_DEFERRED_TOTAL,
                                 &total);
     (void)node_db_state_get_int(ndb,
-                                CAC_KEY_LAST_PROJECTION_DEFERRED_HEIGHT,
+                                BSP_KEY_LAST_PROJECTION_DEFERRED_HEIGHT,
                                 &height);
-    (void)node_db_state_get_int(ndb, CAC_KEY_LAST_PROJECTION_DEFERRED_TIME,
+    (void)node_db_state_get_int(ndb, BSP_KEY_LAST_PROJECTION_DEFERRED_TIME,
                                 &when);
-    (void)node_db_state_get(ndb, CAC_KEY_LAST_PROJECTION_DEFERRED_REASON,
+    (void)node_db_state_get(ndb, BSP_KEY_LAST_PROJECTION_DEFERRED_REASON,
                             reason, sizeof(reason) - 1, &len);
 
-    cac_lock_init_once();
-    zcl_mutex_lock(&g_cac.lock);
-    g_cac.projection_deferred_total = total;
-    g_cac.last_projection_deferred_height = (int)height;
-    g_cac.last_projection_deferred_time = when;
-    copy_text(g_cac.last_projection_deferred_reason,
-              sizeof(g_cac.last_projection_deferred_reason),
+    bsp_lock_init_once();
+    zcl_mutex_lock(&g_bsp.lock);
+    g_bsp.projection_deferred_total = total;
+    g_bsp.last_projection_deferred_height = (int)height;
+    g_bsp.last_projection_deferred_time = when;
+    copy_text(g_bsp.last_projection_deferred_reason,
+              sizeof(g_bsp.last_projection_deferred_reason),
               reason);
-    zcl_mutex_unlock(&g_cac.lock);
+    zcl_mutex_unlock(&g_bsp.lock);
 }
 
 static void enrich_projection_deferral(struct cac_decision *d)
@@ -505,16 +519,16 @@ static void enrich_projection_deferral(struct cac_decision *d)
     if (!d)
         return;
 
-    cac_lock_init_once();
-    zcl_mutex_lock(&g_cac.lock);
-    d->projection_deferred_total = g_cac.projection_deferred_total;
+    bsp_lock_init_once();
+    zcl_mutex_lock(&g_bsp.lock);
+    d->projection_deferred_total = g_bsp.projection_deferred_total;
     d->last_projection_deferred_height =
-        g_cac.last_projection_deferred_height;
-    d->last_projection_deferred_time = g_cac.last_projection_deferred_time;
+        g_bsp.last_projection_deferred_height;
+    d->last_projection_deferred_time = g_bsp.last_projection_deferred_time;
     copy_text(d->last_projection_deferred_reason,
               sizeof(d->last_projection_deferred_reason),
-              g_cac.last_projection_deferred_reason);
-    zcl_mutex_unlock(&g_cac.lock);
+              g_bsp.last_projection_deferred_reason);
+    zcl_mutex_unlock(&g_bsp.lock);
 }
 
 static void record_decision(const char *op, const struct cac_decision *d)
@@ -526,16 +540,16 @@ static void record_decision(const char *op, const struct cac_decision *d)
     char op_copy[32];
     copy_text(op_copy, sizeof(op_copy), op ? op : "unknown");
 
-    cac_lock_init_once();
-    zcl_mutex_lock(&g_cac.lock);
-    g_cac.last = *d;
-    g_cac.has_last = true;
-    g_cac.last_decision_time = when;
-    copy_text(g_cac.last_op, sizeof(g_cac.last_op), op_copy);
-    g_cac.decisions_total++;
-    total = g_cac.decisions_total;
-    ndb = g_cac.node_db;
-    zcl_mutex_unlock(&g_cac.lock);
+    bsp_lock_init_once();
+    zcl_mutex_lock(&g_bsp.lock);
+    g_bsp.last = *d;
+    g_bsp.has_last = true;
+    g_bsp.last_decision_time = when;
+    copy_text(g_bsp.last_op, sizeof(g_bsp.last_op), op_copy);
+    g_bsp.decisions_total++;
+    total = g_bsp.decisions_total;
+    ndb = g_bsp.node_db;
+    zcl_mutex_unlock(&g_bsp.lock);
 
     persist_decision(ndb, op_copy, d, when, total);
 }
@@ -602,13 +616,7 @@ static const char *cac_source_class_name(enum cac_source source)
     return "unknown";
 }
 
-void chain_advance_coordinator_plan(const struct cac_plan_input *in,
-                                    struct cac_decision *out)
-{
-    block_source_policy_plan(in, out);
-}
-
-bool chain_advance_coordinator_peer_floor_recovery_needed(
+bool block_source_policy_peer_floor_recovery_needed(
     int healthy_outbound,
     int min_healthy,
     int local_height,
@@ -643,7 +651,7 @@ bool chain_advance_coordinator_peer_floor_recovery_needed(
         snprintf(p2p->blocker, sizeof(p2p->blocker), "peer_floor");
     }
 
-    chain_advance_coordinator_plan(&in, decision);
+    block_source_policy_plan(&in, decision);
     record_decision("peer_floor", decision);
 
     bool recover = healthy_outbound < min_healthy &&
@@ -659,7 +667,7 @@ bool chain_advance_coordinator_peer_floor_recovery_needed(
     return recover;
 }
 
-bool chain_advance_coordinator_snapshot_offer_allowed(
+bool block_source_policy_snapshot_offer_allowed(
     int local_height,
     int snapshot_height,
     int peer_tip_height,
@@ -697,7 +705,7 @@ bool chain_advance_coordinator_snapshot_offer_allowed(
                  reason && *reason ? reason : "snapshot_offer_rejected");
     }
 
-    chain_advance_coordinator_plan(&in, decision);
+    block_source_policy_plan(&in, decision);
     record_decision("snapshot_offer", decision);
 
     bool allowed = offer_valid &&
@@ -709,7 +717,7 @@ bool chain_advance_coordinator_snapshot_offer_allowed(
     return allowed;
 }
 
-bool chain_advance_coordinator_local_header_refill_needed(
+bool block_source_policy_local_header_refill_needed(
     int local_height,
     int missing_height,
     int peer_height,
@@ -751,7 +759,7 @@ bool chain_advance_coordinator_local_header_refill_needed(
                  "local_header_refill_no_peer");
     }
 
-    chain_advance_coordinator_plan(&in, decision);
+    block_source_policy_plan(&in, decision);
     record_decision("local_header_refill", decision);
 
     bool proceed = decision->result != CAC_DECISION_BLOCKED;
@@ -763,16 +771,16 @@ bool chain_advance_coordinator_local_header_refill_needed(
     return proceed;
 }
 
-void chain_advance_coordinator_init(struct connman *cm,
-                                    struct main_state *ms,
-                                    struct node_db *ndb)
+void block_source_policy_init(struct connman *cm,
+                              struct main_state *ms,
+                              struct node_db *ndb)
 {
-    cac_lock_init_once();
-    zcl_mutex_lock(&g_cac.lock);
-    g_cac.connman = cm;
-    g_cac.main_state = ms;
-    g_cac.node_db = ndb;
-    zcl_mutex_unlock(&g_cac.lock);
+    bsp_lock_init_once();
+    zcl_mutex_lock(&g_bsp.lock);
+    g_bsp.connman = cm;
+    g_bsp.main_state = ms;
+    g_bsp.node_db = ndb;
+    zcl_mutex_unlock(&g_bsp.lock);
     restore_decision(ndb);
     restore_projection_deferral(ndb);
 }
@@ -823,12 +831,12 @@ static void build_runtime_input(struct cac_plan_input *in)
     in->best_header_height = -1;
     in->target_height = -1;
 
-    cac_lock_init_once();
-    zcl_mutex_lock(&g_cac.lock);
-    struct connman *cm = g_cac.connman;
-    struct main_state *ms = g_cac.main_state;
-    struct node_db *ndb = g_cac.node_db;
-    zcl_mutex_unlock(&g_cac.lock);
+    bsp_lock_init_once();
+    zcl_mutex_lock(&g_bsp.lock);
+    struct connman *cm = g_bsp.connman;
+    struct main_state *ms = g_bsp.main_state;
+    struct node_db *ndb = g_bsp.node_db;
+    zcl_mutex_unlock(&g_bsp.lock);
 
     in->local_height = runtime_local_height(ms);
     in->best_header_height = runtime_best_header_height(ms);
@@ -1036,17 +1044,17 @@ static void build_runtime_input(struct cac_plan_input *in)
     }
 }
 
-void chain_advance_coordinator_get_status(struct cac_decision *out)
+void block_source_policy_get_status(struct cac_decision *out)
 {
     if (!out) return;
     struct cac_plan_input in;
     build_runtime_input(&in);
-    chain_advance_coordinator_plan(&in, out);
+    block_source_policy_plan(&in, out);
     enrich_projection_deferral(out);
 }
 
-void chain_advance_coordinator_note_projection_deferred(int height,
-                                                        const char *reason)
+void block_source_policy_note_projection_deferred(int height,
+                                                  const char *reason)
 {
     struct node_db *ndb = NULL;
     int64_t total = 0;
@@ -1056,27 +1064,27 @@ void chain_advance_coordinator_note_projection_deferred(int height,
     copy_text(reason_copy, sizeof(reason_copy),
               reason && *reason ? reason : "unknown");
 
-    cac_lock_init_once();
-    zcl_mutex_lock(&g_cac.lock);
-    g_cac.projection_deferred_total++;
-    total = g_cac.projection_deferred_total;
-    g_cac.last_projection_deferred_height = height;
-    g_cac.last_projection_deferred_time = when;
-    copy_text(g_cac.last_projection_deferred_reason,
-              sizeof(g_cac.last_projection_deferred_reason),
+    bsp_lock_init_once();
+    zcl_mutex_lock(&g_bsp.lock);
+    g_bsp.projection_deferred_total++;
+    total = g_bsp.projection_deferred_total;
+    g_bsp.last_projection_deferred_height = height;
+    g_bsp.last_projection_deferred_time = when;
+    copy_text(g_bsp.last_projection_deferred_reason,
+              sizeof(g_bsp.last_projection_deferred_reason),
               reason_copy);
-    ndb = g_cac.node_db;
-    zcl_mutex_unlock(&g_cac.lock);
+    ndb = g_bsp.node_db;
+    zcl_mutex_unlock(&g_bsp.lock);
 
     if (ndb) {
-        (void)node_db_state_set_int(ndb, CAC_KEY_PROJECTION_DEFERRED_TOTAL,
+        (void)node_db_state_set_int(ndb, BSP_KEY_PROJECTION_DEFERRED_TOTAL,
                                     total);
         (void)node_db_state_set_int(
-            ndb, CAC_KEY_LAST_PROJECTION_DEFERRED_HEIGHT,
+            ndb, BSP_KEY_LAST_PROJECTION_DEFERRED_HEIGHT,
             (int64_t)height);
-        (void)node_db_state_set_int(ndb, CAC_KEY_LAST_PROJECTION_DEFERRED_TIME,
+        (void)node_db_state_set_int(ndb, BSP_KEY_LAST_PROJECTION_DEFERRED_TIME,
                                     when);
-        (void)persist_text(ndb, CAC_KEY_LAST_PROJECTION_DEFERRED_REASON,
+        (void)persist_text(ndb, BSP_KEY_LAST_PROJECTION_DEFERRED_REASON,
                            reason_copy);
     }
 
@@ -1240,26 +1248,26 @@ static void decision_to_json(const struct cac_decision *d,
     json_free(&arr);
 }
 
-bool chain_advance_coordinator_dump_state_json(struct json_value *out,
-                                               const char *key)
+bool block_source_policy_dump_state_json(struct json_value *out,
+                                         const char *key)
 {
     (void)key;
     if (!out) return false;
     struct cac_decision d;
-    chain_advance_coordinator_get_status(&d);
+    block_source_policy_get_status(&d);
 
-    cac_lock_init_once();
-    zcl_mutex_lock(&g_cac.lock);
-    int64_t decisions_total = g_cac.decisions_total;
-    bool has_last = g_cac.has_last;
-    int64_t last_decision_time = g_cac.last_decision_time;
+    bsp_lock_init_once();
+    zcl_mutex_lock(&g_bsp.lock);
+    int64_t decisions_total = g_bsp.decisions_total;
+    bool has_last = g_bsp.has_last;
+    int64_t last_decision_time = g_bsp.last_decision_time;
     char last_op[32];
-    struct cac_decision last = g_cac.last;
-    bool has_connman = g_cac.connman != NULL;
-    bool has_main_state = g_cac.main_state != NULL;
-    bool has_node_db = g_cac.node_db != NULL;
-    copy_text(last_op, sizeof(last_op), g_cac.last_op);
-    zcl_mutex_unlock(&g_cac.lock);
+    struct cac_decision last = g_bsp.last;
+    bool has_connman = g_bsp.connman != NULL;
+    bool has_main_state = g_bsp.main_state != NULL;
+    bool has_node_db = g_bsp.node_db != NULL;
+    copy_text(last_op, sizeof(last_op), g_bsp.last_op);
+    zcl_mutex_unlock(&g_bsp.lock);
 
     json_set_object(out);
     json_push_kv_bool(out, "initialized",
@@ -1334,22 +1342,22 @@ bool chain_advance_coordinator_dump_state_json(struct json_value *out,
     return true;
 }
 
-void chain_advance_coordinator_reset_for_test(void)
+void block_source_policy_reset_for_test(void)
 {
-    cac_lock_init_once();
-    zcl_mutex_lock(&g_cac.lock);
-    g_cac.connman = NULL;
-    g_cac.main_state = NULL;
-    g_cac.node_db = NULL;
-    memset(&g_cac.last, 0, sizeof(g_cac.last));
-    g_cac.has_last = false;
-    g_cac.last_decision_time = 0;
-    memset(g_cac.last_op, 0, sizeof(g_cac.last_op));
-    g_cac.decisions_total = 0;
-    g_cac.projection_deferred_total = 0;
-    g_cac.last_projection_deferred_height = 0;
-    g_cac.last_projection_deferred_time = 0;
-    memset(g_cac.last_projection_deferred_reason, 0,
-           sizeof(g_cac.last_projection_deferred_reason));
-    zcl_mutex_unlock(&g_cac.lock);
+    bsp_lock_init_once();
+    zcl_mutex_lock(&g_bsp.lock);
+    g_bsp.connman = NULL;
+    g_bsp.main_state = NULL;
+    g_bsp.node_db = NULL;
+    memset(&g_bsp.last, 0, sizeof(g_bsp.last));
+    g_bsp.has_last = false;
+    g_bsp.last_decision_time = 0;
+    memset(g_bsp.last_op, 0, sizeof(g_bsp.last_op));
+    g_bsp.decisions_total = 0;
+    g_bsp.projection_deferred_total = 0;
+    g_bsp.last_projection_deferred_height = 0;
+    g_bsp.last_projection_deferred_time = 0;
+    memset(g_bsp.last_projection_deferred_reason, 0,
+           sizeof(g_bsp.last_projection_deferred_reason));
+    zcl_mutex_unlock(&g_bsp.lock);
 }

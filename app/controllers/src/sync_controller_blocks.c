@@ -9,7 +9,7 @@
 
 #include "controllers/sync_controller.h"
 #include "sync_controller_internal.h"
-#include "services/chain_advance_coordinator.h"
+#include "services/block_source_policy.h"
 #include "services/recovery_policy.h"
 #include "models/db_txn.h"
 #include "models/wallet_key.h"
@@ -540,7 +540,7 @@ bool node_db_sync_connect_block_async(struct node_db *ndb,
          * DB service is not started yet, and falling back to a synchronous
          * write here lets SQLite projection contention stall canonical chain
          * advance. Leave the projection for later repair/backfill instead. */
-        chain_advance_coordinator_note_projection_deferred(
+        block_source_policy_note_projection_deferred(
             pindex->nHeight, "no_db_service");
         return true;
     }

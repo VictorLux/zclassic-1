@@ -28,7 +28,7 @@
 #   - appear in `tools/scripts/typed_blocker_baseline.txt`.
 #
 # To clean up debt: pick a baseline entry, migrate it to blocker_set()
-# (see app/services/src/chain_advance_coordinator.c
+# (see app/services/src/block_source_policy_runtime.c
 # classify_mirror_blocker_class() + score_source for the typed pattern),
 # delete the baseline line, re-run `make lint`.
 set -euo pipefail
@@ -93,7 +93,7 @@ done
 echo ""
 echo "Fix options (preferred → fallback):"
 echo "  1. Call blocker_set() to register the blocker through the typed"
-echo "     primitive. See app/services/src/chain_advance_coordinator.c"
+echo "     primitive. See app/services/src/block_source_policy_runtime.c"
 echo "     classify_mirror_blocker_class() for the classification pattern."
 echo "  2. Add a per-file marker '// blocker-ok:<tag>' explaining why"
 echo "     this site uses raw strings (typically: scheduled for migration"

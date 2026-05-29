@@ -68,7 +68,7 @@
 #include "util/safe_alloc.h"
 #include "util/trace.h"
 #include "services/snapshot_sync_service.h"
-#include "services/chain_advance_coordinator.h"
+#include "services/block_source_policy.h"
 #include "services/chain_activation_controller.h"
 #include "services/chain_evidence_controller.h"
 #include "services/chain_state_repository.h"
@@ -935,7 +935,7 @@ bool connect_tip(struct validation_state *state,
     {
         struct node_db *ndb = process_block_node_db_internal();
         if (ndb) {
-            chain_advance_coordinator_note_projection_deferred(
+            block_source_policy_note_projection_deferred(
                 pindex_new->nHeight, "consensus_path");
             /* Wallet tx scan deferred to tip — expensive per-tx SQLite
              * queries slow down IBD and can corrupt heap (db_wallet_utxo_find

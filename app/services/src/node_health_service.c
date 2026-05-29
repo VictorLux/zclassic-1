@@ -15,7 +15,7 @@
 #include "platform/time_compat.h"
 #include "services/node_health_service.h"
 #include "jobs/tip_finalize_stage.h"
-#include "services/chain_advance_coordinator.h"
+#include "services/block_source_policy.h"
 #include "services/chain_evidence_controller.h"
 #include "services/chain_state_repository.h"
 #include "services/legacy_mirror_sync_service.h"
@@ -291,7 +291,7 @@ void node_health_collect(struct node_health_snapshot *snapshot,
 
     {
         struct cac_decision decision;
-        chain_advance_coordinator_get_status(&decision);
+        block_source_policy_get_status(&decision);
         if (node_health_chain_advance_synced(&decision))
             snapshot->synced = true;
     }

@@ -5,7 +5,7 @@
 #include "framework/condition.h"
 
 #include "net/connman.h"
-#include "services/chain_advance_coordinator.h"
+#include "services/block_source_policy.h"
 #include "services/sync_monitor.h"
 #include "sync/sync_state.h"
 #include "validation/chainstate.h"
@@ -58,7 +58,7 @@ static enum condition_remedy_result remedy_local_header_refill_needed(void)
     int peers = sync_monitor_local_header_refill(
         cm, next_h, "condition:local_header_refill_needed");
     struct cac_decision decision;
-    bool proceed = chain_advance_coordinator_local_header_refill_needed(
+    bool proceed = block_source_policy_local_header_refill_needed(
         atomic_load(&g_tip_at_detect),
         next_h,
         atomic_load(&g_peer_max_at_detect),

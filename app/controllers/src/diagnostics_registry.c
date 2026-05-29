@@ -28,7 +28,7 @@
 #include "controllers/explorer_internal.h"
 #include "controllers/strong_params.h"
 #include "services/chain_restore_boot_snapshot.h"
-#include "services/chain_advance_coordinator.h"
+#include "services/block_source_policy.h"
 #include "services/zclassicd_oracle_service.h"
 #include "services/header_probe.h"
 #include "services/legacy_mirror_sync_service.h"
@@ -447,7 +447,7 @@ static const struct dump_entry g_dumpers[] = {
                      "multi-source quorum oracle: per-source vote stats + last verdict" },
     { "peer_lifecycle", peer_lifecycle_dump_state_json,
                      "P2P peer lifecycle attempts, handshakes, timeouts, and rejects by address/source" },
-    { "chain_advance_coordinator", chain_advance_coordinator_dump_state_json,
+    { "chain_advance_coordinator", block_source_policy_dump_state_json,
                      "canonical chain-advance source scoring: P2P, snapshot, local import, mirror fallback" },
     { "chain_tip_watchdog", chain_tip_watchdog_dump_state_json,
                      "tip-stuck overlord: highest_tip, age_secs since last advance, escalation level + fire counts" },

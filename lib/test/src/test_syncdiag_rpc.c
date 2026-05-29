@@ -21,7 +21,7 @@
 #include "controllers/event_controller.h"
 #include "controllers/health_controller.h"
 #include "controllers/network_controller.h"
-#include "services/chain_advance_coordinator.h"
+#include "services/block_source_policy.h"
 #include "services/legacy_mirror_sync_service.h"
 #include "services/sync_monitor.h"
 #include "validation/mirror_consensus.h"
@@ -469,11 +469,11 @@ int test_syncdiag_rpc(void)
     {
         struct json_value result;
         json_init(&result);
-        chain_advance_coordinator_reset_for_test();
+        block_source_policy_reset_for_test();
         mirror_consensus_reset_for_test();
         mirror_consensus_set_enabled(true);
         mirror_consensus_record_blocker("body-hash-mismatch");
-        bool seeded = chain_advance_coordinator_snapshot_offer_allowed(
+        bool seeded = block_source_policy_snapshot_offer_allowed(
             100, 10000, 10100, true, "manifest_ok", NULL);
         bool ok = seeded && api_getservicehealth(&result);
         const struct json_value *svc =
@@ -555,7 +555,7 @@ int test_syncdiag_rpc(void)
                    "manifest_ok") == 0;
 
         json_free(&result);
-        chain_advance_coordinator_reset_for_test();
+        block_source_policy_reset_for_test();
 
         if (ok) printf("OK\n");
         else    { printf("FAIL\n"); failures++; }
@@ -652,12 +652,12 @@ int test_syncdiag_rpc(void)
         struct json_value result;
         json_init(&result);
 
-        chain_advance_coordinator_reset_for_test();
+        block_source_policy_reset_for_test();
         mirror_consensus_reset_for_test();
         mirror_consensus_set_enabled(true);
         mirror_consensus_record_override(100, "body-hash-mismatch");
         mirror_consensus_record_blocker("body-hash-mismatch");
-        bool seeded = chain_advance_coordinator_snapshot_offer_allowed(
+        bool seeded = block_source_policy_snapshot_offer_allowed(
             100, 10000, 10100, true, "manifest_ok", NULL);
         bool executed = rpc_table_execute(&tbl, "healthcheck",
                                           &params, &result);
@@ -788,7 +788,7 @@ int test_syncdiag_rpc(void)
         else    { printf("FAIL\n"); failures++; }
         json_free(&params);
         json_free(&result);
-        chain_advance_coordinator_reset_for_test();
+        block_source_policy_reset_for_test();
         mirror_consensus_reset_for_test();
     }
 

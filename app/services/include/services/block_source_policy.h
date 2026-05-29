@@ -3,10 +3,15 @@
 #ifndef ZCL_SERVICES_BLOCK_SOURCE_POLICY_H
 #define ZCL_SERVICES_BLOCK_SOURCE_POLICY_H
 
+#include "json/json.h"
 #include "util/blocker.h"
 
 #include <stdbool.h>
 #include <stdint.h>
+
+struct connman;
+struct main_state;
+struct node_db;
 
 enum cac_source {
     CAC_SOURCE_NONE = 0,
@@ -125,5 +130,43 @@ const char *cac_decision_result_name(enum cac_decision_result result);
 
 void block_source_policy_plan(const struct cac_plan_input *in,
                               struct cac_decision *out);
+
+/* Stateful block-source decision surface (re-homed from the dissolved
+ * chain_advance_coordinator shell, B8). This layer does not connect
+ * blocks. It scores candidate advance sources (native P2P, snapshots,
+ * local import, zclassicd mirror) and makes the trust/fallback decision
+ * explicit before the lower-level chain_advance() path applies anything
+ * through local consensus validation. */
+void block_source_policy_init(struct connman *cm,
+                              struct main_state *ms,
+                              struct node_db *ndb);
+bool block_source_policy_peer_floor_recovery_needed(
+    int healthy_outbound,
+    int min_healthy,
+    int local_height,
+    int peer_height,
+    struct cac_decision *out);
+bool block_source_policy_snapshot_offer_allowed(
+    int local_height,
+    int snapshot_height,
+    int peer_tip_height,
+    bool offer_valid,
+    const char *reason,
+    struct cac_decision *out);
+bool block_source_policy_local_header_refill_needed(
+    int local_height,
+    int missing_height,
+    int peer_height,
+    int eligible_peers,
+    int retry_count,
+    bool retries_exhausted,
+    struct cac_decision *out);
+void block_source_policy_note_projection_deferred(int height,
+                                                  const char *reason);
+void block_source_policy_get_status(struct cac_decision *out);
+/* See CLAUDE.md "Adding state introspection". Reentrant-safe. */
+bool block_source_policy_dump_state_json(struct json_value *out,
+                                         const char *key);
+void block_source_policy_reset_for_test(void);
 
 #endif /* ZCL_SERVICES_BLOCK_SOURCE_POLICY_H */
