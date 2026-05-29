@@ -16,8 +16,18 @@
   folded (printf→LOG_*, magic 8232/100 named, equihash params unified, MMR/MMB bag/append folded).
   Integration fixed 2 breaks: nested `/*` in an equihash comment, and an unguarded duplicate
   `MAX_BLOCK_SIZE` (now `#ifndef`-guarded in consensus.h). Node builds; `test_parallel` 0/268 failed (72s).
-- [ ] Wave C — larger dedup (controllers, jobs, storage-projection, mcp, views, services, conditions)
-- [ ] Serial/shared-file batches — test_helpers.h trio (checkqueue, tests-helpers), boot_services.c pair (net-hygiene), `root-config` (merges with the uncommitted `main.c` foundation)
+- **[x] Wave C-0 (10 batches) + C-1 (5 batches): DONE + GREEN.** controllers, jobs, models, services ×2,
+  conditions, consensus-adj, net-hygiene, tests-helpers, validation-connect-tip (C-0); storage-projection-
+  helpers, mcp, util-time, views, dead-validation-checkqueue (C-1). New shared modules: `stage_helpers.h`,
+  `sha3_sidecar_io.{c,h}`, `projection_util.h`. Two workflow-caught build breaks fixed (`/*`/`*/` in a
+  comment ×2); E6 one-write-path baseline line-numbers refreshed twice (writer set identical 64→64,
+  multiset-proven — not a ratchet change); E4 projection-purity gate still HARD-passes. `test_parallel` 0/287.
+- [ ] **root-config-cli-flags-includes — DEFERRED (1 batch, ~-150 LOC).** It edits `main.c`, which holds the
+  uncommitted `--importblockindex`/`--mintutxocommitment` foundation that must NOT be committed until its
+  FATAL-verify security gate lands. This last batch will land together with that work.
+
+**Total committed:** 28/29 batches, 3 commits (`400dd42bf`, `04516d837`, `37128da64`), net **−2,790 LOC**
+(219 files, +2,589/−5,379), 12 dead files deleted, 6 shared modules created. All green; node builds.
 
 ## How to read this
 - `auto` = trivial, mechanical, zero behavior change (proven-dead deletion, unused include, exact-duplicate fold). Anything needing judgment is **not** auto.
