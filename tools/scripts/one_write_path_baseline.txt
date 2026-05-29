@@ -12,9 +12,9 @@ app/controllers/src/hodl_controller.c:235: coins_view_cache_flush(ctx->coins_tip
 app/controllers/src/mining_controller.c:196: bool ok = process_new_block(&state, ctx->main_state, ctx->coins_tip, cp,
 app/controllers/src/repair_controller_utxo.c:311: coins_view_cache_flush(ctx->coins_tip);
 app/controllers/src/repair_controller_utxo.c:522: coins_view_cache_flush(ctx->coins_tip);
-app/services/src/chain_state_repository.c:575: if (!active_chain_set_tip(csr->chain_active, NULL)) {
-app/services/src/chain_state_repository.c:631: ok = active_chain_set_tip(csr->chain_active, old_tip);
-app/services/src/chain_state_repository.c:679: if (!active_chain_set_tip(csr->chain_active, commit->new_tip)) {
+app/services/src/chain_state_repository.c:598: if (!active_chain_set_tip(csr->chain_active, NULL)) {
+app/services/src/chain_state_repository.c:654: ok = active_chain_set_tip(csr->chain_active, old_tip);
+app/services/src/chain_state_repository.c:702: if (!active_chain_set_tip(csr->chain_active, commit->new_tip)) {
 app/services/src/chain_tip.c:118: if (!active_chain_set_tip(&ms->chain_active, NULL))
 app/services/src/chain_tip.c:120: "chain_set_active_tip: active_chain_set_tip(NULL) failed "
 app/services/src/chain_tip.c:132: if (!active_chain_set_tip(&ms->chain_active, new_tip)) {

@@ -533,6 +533,114 @@ static int t_header_commit_api_gates_regression(void)
     return failures;
 }
 
+/* Header tip is chainwork-ranked, not height-ranked. A taller-but-
+ * lighter fork must NOT displace a heavier (more-work) header, and a
+ * heavier candidate MUST advance the header tip even when it is no
+ * taller. Mirrors Bitcoin Core's pindexBestHeader semantics. */
+static int t_header_chainwork_ranked(void)
+{
+    int failures = 0;
+    struct chain_state_repository csr;
+    struct csr_fixture f; csr_fix_init(&f);
+    csr_init(&csr, &f.bm, &f.chain, &f.header_tip, &f.coins_tip, NULL, NULL);
+
+    /* heavy: the genuine most-work header (lower height, more work).
+     * light_high: a competing fork that is HIGHER by raw height but
+     * carries LESS cumulative work. heavier: a strictly-more-work
+     * advance over `heavy` at the same height as `heavy`. */
+    struct block_index *heavy      = csr_fix_add(&f, 0x40);
+    struct block_index *light_high = csr_fix_add(&f, 0x41);
+    struct block_index *heavier    = csr_fix_add(&f, 0x42);
+
+    /* Stamp explicit chainwork so the gate's work comparison engages.
+     * heavy has more work than the taller light_high fork. */
+    arith_uint256_set_u64(&heavy->nChainWork, 1000);
+    arith_uint256_set_u64(&light_high->nChainWork, 500);
+    arith_uint256_set_u64(&heavier->nChainWork, 2000);
+    /* light_high is taller by raw height than heavy. */
+    light_high->nHeight = heavy->nHeight + 1;
+    heavier->nHeight    = heavy->nHeight; /* not taller, just heavier */
+
+    /* Promote the genuine most-work header. */
+    struct chain_state_header_commit ch = {
+        .new_header_tip = heavy,
+        .rollback_auth = NULL,
+        .reason = "unit.header_heavy",
+    };
+    bool ok = csr_commit_header_tip(&csr, &ch) == CSR_OK &&
+              f.header_tip == heavy;
+
+    /* Taller-but-lighter fork must be rejected as a regression and must
+     * NOT displace the heavier header — even though it is higher. */
+    struct chain_state_header_commit cl = {
+        .new_header_tip = light_high,
+        .rollback_auth = NULL,
+        .reason = "unit.header_light_high",
+    };
+    ok = ok && csr_commit_header_tip(&csr, &cl) ==
+         CSR_REJECTED_HEADER_REGRESSION &&
+         f.header_tip == heavy;
+
+    /* A strictly-heavier header advances the tip even at equal height. */
+    struct chain_state_header_commit chh = {
+        .new_header_tip = heavier,
+        .rollback_auth = NULL,
+        .reason = "unit.header_heavier",
+    };
+    ok = ok && csr_commit_header_tip(&csr, &chh) == CSR_OK &&
+         f.header_tip == heavier;
+
+    CSR_RUN("csr: header tip is chainwork-ranked, not height-ranked", ok);
+    csr_free(&csr);
+    csr_fix_free(&f);
+    return failures;
+}
+
+/* Conservative fallback: when nChainWork has not yet been stamped
+ * (still zero), the gate falls back to height ranking so a valid higher
+ * header is never dropped just because work is not yet computed. */
+static int t_header_zero_work_falls_back_to_height(void)
+{
+    int failures = 0;
+    struct chain_state_repository csr;
+    struct csr_fixture f; csr_fix_init(&f);
+    csr_init(&csr, &f.bm, &f.chain, &f.header_tip, &f.coins_tip, NULL, NULL);
+
+    /* Linear chain, all nChainWork == 0 (unstamped flat-index load). */
+    struct block_index *b0 = csr_fix_add(&f, 0x50);
+    struct block_index *b1 = csr_fix_add(&f, 0x51);
+    (void)b0;
+
+    struct chain_state_header_commit c0 = {
+        .new_header_tip = b0, .rollback_auth = NULL,
+        .reason = "unit.header_zero0",
+    };
+    bool ok = csr_commit_header_tip(&csr, &c0) == CSR_OK &&
+              f.header_tip == b0;
+
+    /* Higher height, both works zero -> advance (no regression). */
+    struct chain_state_header_commit c1 = {
+        .new_header_tip = b1, .rollback_auth = NULL,
+        .reason = "unit.header_zero1",
+    };
+    ok = ok && csr_commit_header_tip(&csr, &c1) == CSR_OK &&
+         f.header_tip == b1;
+
+    /* Lower height, both works zero -> rejected (height fallback). */
+    struct chain_state_header_commit c0b = {
+        .new_header_tip = b0, .rollback_auth = NULL,
+        .reason = "unit.header_zero0b",
+    };
+    ok = ok && csr_commit_header_tip(&csr, &c0b) ==
+         CSR_REJECTED_HEADER_REGRESSION &&
+         f.header_tip == b1;
+
+    CSR_RUN("csr: zero-work header tip falls back to height ranking", ok);
+    csr_free(&csr);
+    csr_fix_free(&f);
+    return failures;
+}
+
 static int t_clear_active_tip_requires_typed_auth(void)
 {
     int failures = 0;
@@ -1260,6 +1368,8 @@ int test_chain_state_repo(void)
     failures += t_header_no_regress();
     failures += t_header_regress_requires_typed_auth();
     failures += t_header_commit_api_gates_regression();
+    failures += t_header_chainwork_ranked();
+    failures += t_header_zero_work_falls_back_to_height();
     failures += t_clear_active_tip_requires_typed_auth();
     failures += t_coins_best_repair_requires_typed_auth();
     failures += t_extend_chain();

@@ -385,10 +385,33 @@ static enum csr_result csr_validate_header_locked(
             return CSR_REJECTED_MISSING_PREV;
     }
 
+    /* Header-tip promotion is chainwork-ranked, mirroring Bitcoin Core's
+     * pindexBestHeader semantics: the body-downloader must follow the
+     * most-WORK header chain, not merely the highest-HEIGHT one. A fork
+     * that is taller by raw height but carries less cumulative proof-of-
+     * work must NOT displace the current best header.
+     *
+     * Conservative fallback (matches accept_block.c's nChainWork repair
+     * path and find_most_work_chain): if either side's nChainWork has not
+     * been stamped yet (still zero — e.g. flat-index load before the
+     * pprev walk recomputes work), we cannot trust the work comparison,
+     * so we fall back to the historical height-based regression rule.
+     * This never drops a valid higher header just because its work is not
+     * yet computed. */
     if (csr->pindex_best_hdr && *csr->pindex_best_hdr &&
-        new_tip->nHeight < (*csr->pindex_best_hdr)->nHeight &&
         !csr_rollback_authorization_valid(commit->rollback_auth)) {
-        return CSR_REJECTED_HEADER_REGRESSION;
+        struct block_index *cur = *csr->pindex_best_hdr;
+        bool have_work = !arith_uint256_is_zero(&new_tip->nChainWork) &&
+                         !arith_uint256_is_zero(&cur->nChainWork);
+        if (have_work) {
+            /* Strictly-less work is a regression; equal work keeps the
+             * incumbent (no churn between equal-work tips). */
+            if (arith_uint256_compare(&new_tip->nChainWork,
+                                      &cur->nChainWork) < 0)
+                return CSR_REJECTED_HEADER_REGRESSION;
+        } else if (new_tip->nHeight < cur->nHeight) {
+            return CSR_REJECTED_HEADER_REGRESSION;
+        }
     }
 
     return CSR_OK;
