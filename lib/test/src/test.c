@@ -853,6 +853,7 @@ int main(void)
     failures += test_cutover_tip_parity();
     failures += test_cutover_flip_dryrun();
     failures += test_cutover_postflip_reorg();
+    failures += test_cutover_autorevert();
     failures += test_cutover_preflight();
     failures += test_utxo_snapshot_inmem();
     failures += test_hodl_history_port();
