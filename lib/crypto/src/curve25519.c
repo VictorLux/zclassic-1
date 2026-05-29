@@ -7,10 +7,10 @@
  * ── Constant-time properties ───────────────────────────────────
  *
  * The Montgomery ladder below is constant-time **by construction**, and
- * the rest of this file preserves that property. Three callers feed
- * secret material in: secure_channel DH (ephemeral privkey), Sprout
- * note encryption (esk, sk_enc), and Sapling note encryption — so a
- * timing leak here would directly compromise wallet keys.
+ * the rest of this file preserves that property. Two callers feed
+ * secret material in: Sprout note encryption (esk, sk_enc) and Sapling
+ * note encryption — so a timing leak here would directly compromise
+ * wallet keys.
  *
  * Properties confirmed:
  *   - sel25519: branchless mask `~(b - 1)` cswap; caller must pass b∈{0,1}

@@ -12,7 +12,7 @@
 
 static inline uint64_t rotl64(uint64_t x, int n) { return (x << n) | (x >> (64 - n)); }
 
-void keccakf(uint64_t st[25])
+static void keccakf(uint64_t st[25])
 {
     static const uint64_t RNDC[24] = {
         0x0000000000000001, 0x0000000000008082, 0x800000000000808a, 0x8000000080008000,
@@ -143,11 +143,6 @@ void sha3_256_finalize(struct sha3_256_ctx *ctx, unsigned char *output)
     }
 }
 
-void sha3_256_reset(struct sha3_256_ctx *ctx)
-{
-    sha3_256_init(ctx);
-}
-
 /* SHA3-512: rate = 576 bits (9 uint64s), capacity = 1024, output = 64 bytes */
 
 void sha3_512_init(struct sha3_512_ctx *ctx)
@@ -194,11 +189,6 @@ void sha3_512_finalize(struct sha3_512_ctx *ctx, unsigned char output[64])
     keccakf(ctx->state);
     for (unsigned i = 0; i < 8; ++i)
         WriteLE64(output + 8 * i, ctx->state[i]);
-}
-
-void sha3_512_reset(struct sha3_512_ctx *ctx)
-{
-    sha3_512_init(ctx);
 }
 
 void zcl_sha3_256(const unsigned char *data, size_t len, unsigned char output[32])

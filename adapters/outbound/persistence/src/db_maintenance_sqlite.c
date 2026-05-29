@@ -16,7 +16,6 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
-#include <string.h>
 #include <sys/stat.h>
 
 static inline struct db_maintenance_sqlite_ctx *ctx_of(void *self)

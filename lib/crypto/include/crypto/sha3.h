@@ -32,17 +32,13 @@ struct sha3_512_ctx {
     unsigned pos;
 };
 
-void keccakf(uint64_t st[25]);
-
 void sha3_256_init(struct sha3_256_ctx *ctx);
 void sha3_256_write(struct sha3_256_ctx *ctx, const unsigned char *data, size_t len);
 void sha3_256_finalize(struct sha3_256_ctx *ctx, unsigned char *output);
-void sha3_256_reset(struct sha3_256_ctx *ctx);
 
 void sha3_512_init(struct sha3_512_ctx *ctx);
 void sha3_512_write(struct sha3_512_ctx *ctx, const unsigned char *data, size_t len);
 void sha3_512_finalize(struct sha3_512_ctx *ctx, unsigned char output[64]);
-void sha3_512_reset(struct sha3_512_ctx *ctx);
 
 /* One-shot convenience — prefixed to avoid conflict with Tor's keccak-tiny
  * which exports sha3_256/sha3_512 with different signatures. */

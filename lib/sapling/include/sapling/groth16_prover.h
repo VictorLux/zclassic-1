@@ -141,6 +141,32 @@ void groth16_pk_free(struct groth16_pk *pk);
  * proofs. */
 bool fr_fft(struct fr *coeffs, size_t n, bool inverse);
 
+/* Smallest k such that 2^k >= n (ceil(log2(n))). Underflow-safe at
+ * n=0 (returns 0). Shared by fr_fft and fr_fft_parallel. */
+static inline unsigned int fr_log2_ceil(size_t n)
+{
+    unsigned int k = 0;
+    size_t v = 1;
+    while (v < n) { v <<= 1; k++; }
+    return k;
+}
+
+/* In-place bit-reversal permutation of arr (length n, log_n = log2(n)).
+ * Shared by fr_fft and fr_fft_parallel. */
+static inline void bit_reverse(struct fr *arr, size_t n, unsigned int log_n)
+{
+    for (size_t i = 0; i < n; i++) {
+        size_t j = 0;
+        for (unsigned int b = 0; b < log_n; b++)
+            j |= ((i >> b) & 1) << (log_n - 1 - b);
+        if (j > i) {
+            struct fr tmp = arr[i];
+            arr[i] = arr[j];
+            arr[j] = tmp;
+        }
+    }
+}
+
 /* ── Multi-scalar multiplication ────────────────────────────────── */
 
 void g1_msm(struct g1_point *result,
@@ -150,16 +176,6 @@ void g1_msm(struct g1_point *result,
 void g2_msm(struct g2_point *result,
             const struct g2_point *points, const struct fr *scalars,
             size_t n);
-
-/* ── Parallel MSM (pthread, ~Nx on N cores) ─────────────────────── */
-
-void g1_msm_parallel(struct g1_point *result,
-                     const struct g1_point *points, const struct fr *scalars,
-                     size_t n, int num_threads);
-
-void g2_msm_parallel(struct g2_point *result,
-                     const struct g2_point *points, const struct fr *scalars,
-                     size_t n, int num_threads);
 
 /* ── Parallel FFT ───────────────────────────────────────────────── */
 

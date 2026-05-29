@@ -103,12 +103,9 @@ struct zcl_result domain_consensus_current_epoch_branch_id(
                        "current_epoch_branch_id: negative height %d", n_height);
 
     int epoch = (int)BASE_SPROUT;
-    for (int i = (int)MAX_NETWORK_UPGRADES - 1; i >= (int)BASE_SPROUT; i--) {
-        if (dcu_is_active(n_height, params, (enum upgrade_index)i)) {
-            epoch = i;
-            break;
-        }
-    }
+    struct zcl_result r = domain_consensus_current_epoch(n_height, params, &epoch);
+    if (!r.ok)
+        return r;
     *out_branch_id = NetworkUpgradeInfo[epoch].nBranchId;
     return ZCL_OK;
 }

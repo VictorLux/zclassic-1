@@ -17,12 +17,10 @@ struct coins_view_cache;
 struct block_index;
 struct coins_view_sqlite;
 struct block_tree_db;
-struct node_db;
 
 /* Accessors for file-static globals/handles. */
 struct coins_view_sqlite *process_block_get_coins_sqlite(void);
 struct block_tree_db *process_block_get_block_tree(void);
-struct node_db *process_block_get_node_db(void);
 
 /* csr_commit_tip wrapper used internally by update_tip + the
  * chain_advance protocol. Returns true on CSR_OK or the test-harness

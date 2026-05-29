@@ -24,28 +24,6 @@
 #include <stdint.h>
 #include <string.h>
 
-/* Map a serialized solution length to its (N, K) parameter set. The
- * mapping matches the legacy lib/chain/src/equihash.c demux exactly:
- *
- *   1344 bytes -> (200, 9)   ZClassic mainnet
- *     36 bytes -> ( 48, 5)   short regtest
- *     68 bytes -> ( 96, 5)   testnet small
- *    400 bytes -> (192, 7)   testnet large
- *
- * Returns true on a recognised size; false otherwise. */
-static bool map_solution_size(size_t sol_size,
-                              unsigned int *out_n,
-                              unsigned int *out_k)
-{
-    switch (sol_size) {
-        case 1344: *out_n = 200; *out_k = 9; return true;
-        case 36:   *out_n =  48; *out_k = 5; return true;
-        case 68:   *out_n =  96; *out_k = 5; return true;
-        case 400:  *out_n = 192; *out_k = 7; return true;
-        default:   return false;
-    }
-}
-
 /* Little-endian helpers — the Equihash challenge serialization is
  * defined by the consensus rules to be little-endian. We avoid the
  * heap-allocating byte_stream primitive in lib/core/ to keep the
@@ -73,7 +51,7 @@ struct zcl_result domain_consensus_verify_equihash_solution(
                        "verify_equihash_solution: null out_valid");
 
     unsigned int n = 0, k = 0;
-    if (!map_solution_size(header->nSolutionSize, &n, &k))
+    if (!equihash_solution_params(header->nSolutionSize, &n, &k))
         return ZCL_ERR(DOMAIN_CONSENSUS_EQUIHASH_ERR_BAD_SOL_SIZE,
                        "verify_equihash_solution: unrecognised solution size %zu",
                        header->nSolutionSize);

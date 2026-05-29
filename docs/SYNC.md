@@ -161,7 +161,7 @@ after sync completes:
 | Boot checks      | UTXO count + XOR commitment vs checkpoint | ~2 s |
 | Post-import      | SHA3-256 full UTXO set vs hardcoded commitment | ~5 s |
 
-See `lib/validation/include/validation/validation_audit.h` for the full matrix.
+See [`validation/VALIDATION_MATRIX.md`](validation/VALIDATION_MATRIX.md) for the full matrix.
 
 ---
 

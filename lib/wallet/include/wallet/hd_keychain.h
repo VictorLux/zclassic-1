@@ -107,7 +107,4 @@ bool hd_deserialize_xpub(const char *str,
 bool hd_get_pubkey(const struct ext_key *ek, struct pubkey *pk_out);
 struct key_id hd_get_key_id(const struct ext_key *ek);
 
-/* Get fingerprint of a key (first 4 bytes of hash160 of its pubkey). */
-void hd_get_fingerprint(const struct ext_key *ek, unsigned char fp[4]);
-
 #endif /* ZCL_WALLET_HD_KEYCHAIN_H */

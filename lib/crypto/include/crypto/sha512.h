@@ -21,6 +21,5 @@ struct sha512_ctx {
 void sha512_init(struct sha512_ctx *ctx);
 void sha512_write(struct sha512_ctx *ctx, const unsigned char *data, size_t len);
 void sha512_finalize(struct sha512_ctx *ctx, unsigned char hash[SHA512_OUTPUT_SIZE]);
-void sha512_reset(struct sha512_ctx *ctx);
 
 #endif

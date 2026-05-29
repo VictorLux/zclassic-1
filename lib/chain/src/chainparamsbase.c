@@ -9,9 +9,6 @@
 #include <assert.h>
 #include <stddef.h>
 
-/* GetBoolArg is defined in util.c */
-extern bool GetBoolArg(const char *arg, bool default_val);
-
 static struct base_chain_params mainParams = { 8023, "" };
 static struct base_chain_params testNetParams = { 18023, "testnet3" };
 static struct base_chain_params regTestParams = { 18023, "regtest" };
@@ -40,29 +37,6 @@ void SelectBaseParams(enum chain_network network)
         assert(0 && "Unimplemented network");
         return;
     }
-}
-
-enum chain_network NetworkIdFromCommandLine(void)
-{
-    bool fRegTest = GetBoolArg("-regtest", false);
-    bool fTestNet = GetBoolArg("-testnet", false);
-
-    if (fTestNet && fRegTest)
-        return CHAIN_MAX_NETWORK_TYPES;
-    if (fRegTest)
-        return CHAIN_REGTEST;
-    if (fTestNet)
-        return CHAIN_TESTNET;
-    return CHAIN_MAIN;
-}
-
-bool SelectBaseParamsFromCommandLine(void)
-{
-    enum chain_network network = NetworkIdFromCommandLine();
-    if (network == CHAIN_MAX_NETWORK_TYPES)
-        LOG_FAIL("chainparams", "conflicting -testnet and -regtest flags");
-    SelectBaseParams(network);
-    return true;
 }
 
 bool AreBaseParamsConfigured(void)

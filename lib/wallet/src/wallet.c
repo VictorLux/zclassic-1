@@ -8,7 +8,9 @@
 #include "wallet/bip44.h"
 #include "wallet/mnemonic.h"
 #include "chain/chainparams.h"
+#include "consensus/consensus.h"
 #include "consensus/upgrades.h"
+#include "util/log_macros.h"
 #include "core/random.h"
 #include "core/utiltime.h"
 #include "keys/key_io.h"
@@ -161,7 +163,7 @@ void wallet_rebuild_spent_set(struct wallet *w)
             }
         }
     }
-    printf("Wallet spent set rebuilt: %zu spent outpoints\n", w->num_spent);
+    LOG_INFO("wallet", "Wallet spent set rebuilt: %zu spent outpoints", w->num_spent);
 }
 
 void wallet_verify_utxos(struct wallet *w, struct coins_view_cache *coins_tip)
@@ -191,8 +193,8 @@ void wallet_verify_utxos(struct wallet *w, struct coins_view_cache *coins_tip)
             verified++;
         }
     }
-    printf("Wallet UTXO verification: %zu checked, %zu pruned (spent on-chain)\n",
-           verified, pruned);
+    LOG_INFO("wallet", "Wallet UTXO verification: %zu checked, %zu pruned (spent on-chain)",
+             verified, pruned);
 }
 
 void wallet_free(struct wallet *w)
@@ -321,6 +323,25 @@ bool wallet_has_hd(const struct wallet *w)
     return w && w->has_master_key;
 }
 
+static bool wallet_pubkey_to_addr(const struct pubkey *pk, char *addr_out,
+                                  size_t addr_size)
+{
+    struct key_id kid = pubkey_get_id(pk);
+    struct tx_destination dest;
+    dest.type = DEST_KEY_ID;
+    dest.id.key = kid;
+
+    const struct chain_params *cp = chain_params_get();
+    size_t pk_pfx_len, sc_pfx_len;
+    const unsigned char *pk_pfx = chain_params_base58_prefix(
+        cp, B58_PUBKEY_ADDRESS, &pk_pfx_len);
+    const unsigned char *sc_pfx = chain_params_base58_prefix(
+        cp, B58_SCRIPT_ADDRESS, &sc_pfx_len);
+
+    return encode_destination(&dest, pk_pfx, pk_pfx_len,
+                              sc_pfx, sc_pfx_len, addr_out, addr_size);
+}
+
 bool wallet_get_new_change_address(struct wallet *w, char *addr_out,
                                     size_t addr_size)
 {
@@ -335,20 +356,7 @@ bool wallet_get_new_change_address(struct wallet *w, char *addr_out,
             return false;
     }
 
-    struct key_id kid = pubkey_get_id(&pk);
-    struct tx_destination dest;
-    dest.type = DEST_KEY_ID;
-    dest.id.key = kid;
-
-    const struct chain_params *cp = chain_params_get();
-    size_t pk_pfx_len, sc_pfx_len;
-    const unsigned char *pk_pfx = chain_params_base58_prefix(
-        cp, B58_PUBKEY_ADDRESS, &pk_pfx_len);
-    const unsigned char *sc_pfx = chain_params_base58_prefix(
-        cp, B58_SCRIPT_ADDRESS, &sc_pfx_len);
-
-    return encode_destination(&dest, pk_pfx, pk_pfx_len,
-                              sc_pfx, sc_pfx_len, addr_out, addr_size);
+    return wallet_pubkey_to_addr(&pk, addr_out, addr_size);
 }
 
 bool wallet_get_new_address(struct wallet *w, char *addr_out, size_t addr_size)
@@ -365,20 +373,7 @@ bool wallet_get_new_address(struct wallet *w, char *addr_out, size_t addr_size)
             return false;
     }
 
-    struct key_id kid = pubkey_get_id(&pk);
-    struct tx_destination dest;
-    dest.type = DEST_KEY_ID;
-    dest.id.key = kid;
-
-    const struct chain_params *cp = chain_params_get();
-    size_t pk_pfx_len, sc_pfx_len;
-    const unsigned char *pk_pfx = chain_params_base58_prefix(
-        cp, B58_PUBKEY_ADDRESS, &pk_pfx_len);
-    const unsigned char *sc_pfx = chain_params_base58_prefix(
-        cp, B58_SCRIPT_ADDRESS, &sc_pfx_len);
-
-    return encode_destination(&dest, pk_pfx, pk_pfx_len,
-                              sc_pfx, sc_pfx_len, addr_out, addr_size);
+    return wallet_pubkey_to_addr(&pk, addr_out, addr_size);
 }
 
 bool wallet_top_up_key_pool(struct wallet *w, unsigned int target_size)
@@ -768,6 +763,83 @@ bool wallet_select_coins(const struct wallet *w,
     return *value_out >= target_value;
 }
 
+/* Sign every input of wtx_out from the selected coins. On any failure this
+ * unlocks w->cs, frees wtx_out->tx, sets *error and returns false; on success
+ * it returns true with w->cs released. The caller computes the tx hash. */
+static bool wallet_sign_inputs(struct wallet *w, struct wallet_tx *wtx_out,
+                               const struct coin_entry *selected,
+                               size_t num_selected, int height,
+                               const char **error)
+{
+    const struct chain_params *cp = chain_params_get();
+
+    zcl_mutex_lock(&w->cs);
+    for (size_t i = 0; i < num_selected; i++) {
+        struct privkey skey;
+        const struct tx_out *prev_out =
+            &selected[i].wtx->tx.vout[selected[i].i];
+        struct tx_destination prev_dest;
+        if (!script_extract_destination(&prev_out->script_pub_key, &prev_dest)) {
+            zcl_mutex_unlock(&w->cs);
+            transaction_free(&wtx_out->tx);
+            *error = "Cannot determine input destination";
+            return false;
+        }
+
+        if (!keystore_get_key(&w->keystore, &prev_dest.id.key, &skey)) {
+            zcl_mutex_unlock(&w->cs);
+            transaction_free(&wtx_out->tx);
+            *error = "Private key not available";
+            return false;
+        }
+
+        struct pubkey spk;
+        privkey_get_pubkey(&skey, &spk);
+
+        uint32_t branch_id = consensus_current_epoch_branch_id(
+            height + 1, &cp->consensus);
+        struct sighash_type ht;
+        ht.raw = SIGHASH_ALL;
+        struct precomputed_tx_data txdata;
+        precompute_tx_data(&wtx_out->tx, &txdata);
+
+        struct uint256 sighash;
+        if (!signature_hash(&prev_out->script_pub_key, &wtx_out->tx,
+                            (unsigned int)i, ht, prev_out->value,
+                            branch_id, &txdata, &sighash)) {
+            memory_cleanse(skey.vch, 32);
+            zcl_mutex_unlock(&w->cs);
+            transaction_free(&wtx_out->tx);
+            *error = "Sighash computation failed";
+            return false;
+        }
+
+        unsigned char sig[SIGNATURE_SIZE + 1];
+        size_t siglen = 0;
+        if (!privkey_sign(&skey, &sighash, sig, &siglen)) {
+            memory_cleanse(skey.vch, 32);
+            zcl_mutex_unlock(&w->cs);
+            transaction_free(&wtx_out->tx);
+            *error = "Signing failed";
+            return false;
+        }
+        sig[siglen++] = 0x01;
+
+        struct script *ss = &wtx_out->tx.vin[i].script_sig;
+        ss->size = 0;
+        ss->data[ss->size++] = (unsigned char)siglen;
+        memcpy(&ss->data[ss->size], sig, siglen);
+        ss->size += siglen;
+        ss->data[ss->size++] = (unsigned char)spk.size;
+        memcpy(&ss->data[ss->size], spk.vch, spk.size);
+        ss->size += spk.size;
+
+        memory_cleanse(skey.vch, 32);
+    }
+    zcl_mutex_unlock(&w->cs);
+    return true;
+}
+
 bool wallet_create_transaction(struct wallet *w,
                                 const struct tx_destination *dest,
                                 int64_t value,
@@ -850,70 +922,8 @@ bool wallet_create_transaction(struct wallet *w,
         wtx_out->tx.vin[i].sequence = UINT32_MAX - 1;
     }
 
-    zcl_mutex_lock(&w->cs);
-    for (size_t i = 0; i < num_selected; i++) {
-        struct privkey skey;
-        const struct tx_out *prev_out =
-            &selected[i].wtx->tx.vout[selected[i].i];
-        struct tx_destination prev_dest;
-        if (!script_extract_destination(&prev_out->script_pub_key, &prev_dest)) {
-            zcl_mutex_unlock(&w->cs);
-            transaction_free(&wtx_out->tx);
-            *error = "Cannot determine input destination";
-            return false;
-        }
-
-        if (!keystore_get_key(&w->keystore, &prev_dest.id.key, &skey)) {
-            zcl_mutex_unlock(&w->cs);
-            transaction_free(&wtx_out->tx);
-            *error = "Private key not available";
-            return false;
-        }
-
-        struct pubkey spk;
-        privkey_get_pubkey(&skey, &spk);
-
-        uint32_t branch_id = consensus_current_epoch_branch_id(
-            height + 1, &cp->consensus);
-        struct sighash_type ht;
-        ht.raw = SIGHASH_ALL;
-        struct precomputed_tx_data txdata;
-        precompute_tx_data(&wtx_out->tx, &txdata);
-
-        struct uint256 sighash;
-        if (!signature_hash(&prev_out->script_pub_key, &wtx_out->tx,
-                            (unsigned int)i, ht, prev_out->value,
-                            branch_id, &txdata, &sighash)) {
-            memory_cleanse(skey.vch, 32);
-            zcl_mutex_unlock(&w->cs);
-            transaction_free(&wtx_out->tx);
-            *error = "Sighash computation failed";
-            return false;
-        }
-
-        unsigned char sig[SIGNATURE_SIZE + 1];
-        size_t siglen = 0;
-        if (!privkey_sign(&skey, &sighash, sig, &siglen)) {
-            memory_cleanse(skey.vch, 32);
-            zcl_mutex_unlock(&w->cs);
-            transaction_free(&wtx_out->tx);
-            *error = "Signing failed";
-            return false;
-        }
-        sig[siglen++] = 0x01;
-
-        struct script *ss = &wtx_out->tx.vin[i].script_sig;
-        ss->size = 0;
-        ss->data[ss->size++] = (unsigned char)siglen;
-        memcpy(&ss->data[ss->size], sig, siglen);
-        ss->size += siglen;
-        ss->data[ss->size++] = (unsigned char)spk.size;
-        memcpy(&ss->data[ss->size], spk.vch, spk.size);
-        ss->size += spk.size;
-
-        memory_cleanse(skey.vch, 32);
-    }
-    zcl_mutex_unlock(&w->cs);
+    if (!wallet_sign_inputs(w, wtx_out, selected, num_selected, height, error))
+        return false;
 
     transaction_compute_hash(&wtx_out->tx);
     wtx_out->time_received = GetTime();
@@ -1022,70 +1032,8 @@ bool wallet_create_transaction_multi(struct wallet *w,
         wtx_out->tx.vin[i].sequence = UINT32_MAX - 1;
     }
 
-    zcl_mutex_lock(&w->cs);
-    for (size_t i = 0; i < num_selected; i++) {
-        struct privkey skey;
-        const struct tx_out *prev_out =
-            &selected[i].wtx->tx.vout[selected[i].i];
-        struct tx_destination prev_dest;
-        if (!script_extract_destination(&prev_out->script_pub_key, &prev_dest)) {
-            zcl_mutex_unlock(&w->cs);
-            transaction_free(&wtx_out->tx);
-            *error = "Cannot determine input destination";
-            return false;
-        }
-
-        if (!keystore_get_key(&w->keystore, &prev_dest.id.key, &skey)) {
-            zcl_mutex_unlock(&w->cs);
-            transaction_free(&wtx_out->tx);
-            *error = "Private key not available";
-            return false;
-        }
-
-        struct pubkey spk;
-        privkey_get_pubkey(&skey, &spk);
-
-        uint32_t branch_id = consensus_current_epoch_branch_id(
-            height + 1, &cp->consensus);
-        struct sighash_type ht;
-        ht.raw = SIGHASH_ALL;
-        struct precomputed_tx_data txdata;
-        precompute_tx_data(&wtx_out->tx, &txdata);
-
-        struct uint256 sighash;
-        if (!signature_hash(&prev_out->script_pub_key, &wtx_out->tx,
-                            (unsigned int)i, ht, prev_out->value,
-                            branch_id, &txdata, &sighash)) {
-            memory_cleanse(skey.vch, 32);
-            zcl_mutex_unlock(&w->cs);
-            transaction_free(&wtx_out->tx);
-            *error = "Sighash computation failed";
-            return false;
-        }
-
-        unsigned char sig[SIGNATURE_SIZE + 1];
-        size_t siglen = 0;
-        if (!privkey_sign(&skey, &sighash, sig, &siglen)) {
-            memory_cleanse(skey.vch, 32);
-            zcl_mutex_unlock(&w->cs);
-            transaction_free(&wtx_out->tx);
-            *error = "Signing failed";
-            return false;
-        }
-        sig[siglen++] = 0x01;
-
-        struct script *ss = &wtx_out->tx.vin[i].script_sig;
-        ss->size = 0;
-        ss->data[ss->size++] = (unsigned char)siglen;
-        memcpy(&ss->data[ss->size], sig, siglen);
-        ss->size += siglen;
-        ss->data[ss->size++] = (unsigned char)spk.size;
-        memcpy(&ss->data[ss->size], spk.vch, spk.size);
-        ss->size += spk.size;
-
-        memory_cleanse(skey.vch, 32);
-    }
-    zcl_mutex_unlock(&w->cs);
+    if (!wallet_sign_inputs(w, wtx_out, selected, num_selected, height, error))
+        return false;
 
     transaction_compute_hash(&wtx_out->tx);
     wtx_out->time_received = GetTime();
@@ -1174,8 +1122,8 @@ void wallet_sync_transaction(struct wallet *w, const struct transaction *tx,
         int depth = w->best_block_height - pindex->nHeight + 1;
         wtx.confirms = depth > 0 ? depth : 1;
         if (dominated && depth <= 0)
-            printf("  [wallet] tx at height %d, best=%d, depth=%d, confirms=%d\n",
-                   pindex->nHeight, w->best_block_height, depth, wtx.confirms);
+            LOG_WARN("wallet", "tx at height %d, best=%d, depth=%d, confirms=%d",
+                     pindex->nHeight, w->best_block_height, depth, wtx.confirms);
     }
 
     for (size_t i = 0; i < tx->num_vin; i++) {
@@ -1242,7 +1190,7 @@ int wallet_tx_get_blocks_to_maturity(const struct wallet_tx *wtx)
 {
     if (!transaction_is_coinbase(&wtx->tx))
         return 0;
-    int maturity = 100 - wtx->confirms;
+    int maturity = COINBASE_MATURITY - wtx->confirms;
     return maturity > 0 ? maturity : 0;
 }
 
@@ -1294,7 +1242,7 @@ int wallet_rescan(struct wallet *w, const struct active_chain *chain,
     if (start_height > stop_height)
         return 0;
 
-    printf("Rescanning blocks %d to %d...\n", start_height, stop_height);
+    LOG_INFO("wallet", "Rescanning blocks %d to %d...", start_height, stop_height);
     int64_t t_start = GetTime();
     int total_found = 0;
     int last_log = start_height;
@@ -1311,9 +1259,9 @@ int wallet_rescan(struct wallet *w, const struct active_chain *chain,
         total_found += wallet_scan_block(w, pindex, datadir);
 
         if (h - last_log >= 10000) {
-            printf("  rescan progress: height %d / %d (%.1f%%)\n",
-                   h, stop_height,
-                   100.0 * (h - start_height) / (stop_height - start_height + 1));
+            LOG_INFO("wallet", "rescan progress: height %d / %d (%.1f%%)",
+                     h, stop_height,
+                     100.0 * (h - start_height) / (stop_height - start_height + 1));
             last_log = h;
         }
     }
@@ -1325,8 +1273,8 @@ int wallet_rescan(struct wallet *w, const struct active_chain *chain,
     }
 
     int64_t elapsed = GetTime() - t_start;
-    printf("Rescan complete: %d blocks scanned in %"PRId64"s, %d wallet outputs found.\n",
-           stop_height - start_height + 1, elapsed, total_found);
+    LOG_INFO("wallet", "Rescan complete: %d blocks scanned in %"PRId64"s, %d wallet outputs found.",
+             stop_height - start_height + 1, elapsed, total_found);
 
     return total_found;
 }
@@ -1380,7 +1328,7 @@ static void wallet_process_block_for_spent(struct wallet *w,
 
 int wallet_scan_blockfiles(struct wallet *w, const char *datadir)
 {
-    printf("Scanning block files for wallet transactions...\n");
+    LOG_INFO("wallet", "Scanning block files for wallet transactions...");
     int64_t t_start = GetTime();
     int total_found = 0;
     int blocks_scanned = 0;
@@ -1445,13 +1393,13 @@ int wallet_scan_blockfiles(struct wallet *w, const char *datadir)
         free(buf);
 
         if (file_num % 10 == 0)
-            printf("  scanned blk%05d.dat (%d blocks so far)\n",
-                   file_num, blocks_scanned);
+            LOG_INFO("wallet", "scanned blk%05d.dat (%d blocks so far)",
+                     file_num, blocks_scanned);
     }
 
     int64_t elapsed = GetTime() - t_start;
-    printf("Block file scan: %d blocks in %"PRId64"s, %d wallet outputs, %zu spent outpoints.\n",
-           blocks_scanned, elapsed, total_found, w->num_spent);
+    LOG_INFO("wallet", "Block file scan: %d blocks in %"PRId64"s, %d wallet outputs, %zu spent outpoints.",
+             blocks_scanned, elapsed, total_found, w->num_spent);
 
     return total_found;
 }

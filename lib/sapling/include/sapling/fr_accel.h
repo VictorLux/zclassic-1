@@ -20,11 +20,6 @@ void fp_mont_mul_asm(uint64_t r[6], const uint64_t a[6], const uint64_t b[6]);
 void fr_mul_batch8(struct fr r[8], const struct fr a[8], const struct fr b[8]);
 #endif
 
-/* Parallel MSM (pthread-based) */
-void g1_msm_parallel(struct g1_point *result,
-                     const struct g1_point *points, const struct fr *scalars,
-                     size_t n, int num_threads);
-
 /* Parallel FFT (pthread-based). Returns false on non-pow-2 n. */
 bool fr_fft_parallel(struct fr *coeffs, size_t n, bool inverse, int num_threads);
 

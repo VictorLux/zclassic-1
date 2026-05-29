@@ -22,8 +22,6 @@ struct base_chain_params {
 
 const struct base_chain_params *BaseParams(void);
 void SelectBaseParams(enum chain_network network);
-enum chain_network NetworkIdFromCommandLine(void);
-bool SelectBaseParamsFromCommandLine(void);
 bool AreBaseParamsConfigured(void);
 
 #endif

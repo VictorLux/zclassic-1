@@ -32,10 +32,10 @@ size_t json_rpc_request(const char *method,
     return n + 1;
 }
 
-void json_rpc_reply_obj(struct json_value *reply,
-                        const struct json_value *result,
-                        const struct json_value *error,
-                        const struct json_value *id)
+static void json_rpc_reply_obj(struct json_value *reply,
+                               const struct json_value *result,
+                               const struct json_value *error,
+                               const struct json_value *id)
 {
     json_init(reply);
     json_set_object(reply);

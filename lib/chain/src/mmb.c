@@ -371,27 +371,7 @@ bool mmb_prove(const uint8_t (*all_leaf_hashes)[32],
 
     proof->num_siblings = sib_count;
 
-    /* Store lr_bits in leaf_hash[0..7] area — we repurpose mmb_size for this.
-     * Actually, store it as a separate field via the proof struct.
-     * Since we can't add fields, encode lr_bits into mmb_size (which is
-     * also stored). The verifier will use it directly. */
-    /* Better: store lr_bits in the high bits of mmb_size. Since num_leaves
-     * fits in 40 bits, we use the upper 24 bits for lr flags. But that's
-     * fragile. Instead, encode the path in the leaf_index field:
-     * leaf_index is used for identification; lr_bits for reconstruction.
-     * Let's just use the proof->mmb_size to also carry the lr_bits. */
-
-    /* Cleanest: just set mmb_size to the actual leaf count, and store
-     * lr_bits in a way the verifier can use. Since the siblings array
-     * already captures the path, we encode lr_bits by placing left siblings
-     * with a 0x00 prefix marker and right siblings with 0x01.
-     * Actually, simplest: just use mmb_size for leaf count and let the
-     * verifier try both directions at each level (at most 2^depth attempts,
-     * but depth is small). */
-
-    /* Actually the cleanest: just put lr_bits into mmb_size since we
-     * know num_leaves < 2^40 and sib_count < 24. Pack them. */
-
+    /* num_leaves < 2^40 and sib_count < 24, so pack both into mmb_size. */
     /* Pack: low 40 bits = num_leaves, bits 40-63 = lr_bits */
     proof->mmb_size = (num_leaves & 0xFFFFFFFFFFULL) |
                       ((lr_bits & 0xFFFFFFULL) << 40);

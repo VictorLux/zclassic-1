@@ -21,27 +21,12 @@
 
 #include "domain/consensus/header_accept.h"
 
+#include "reject_out.h"
+
 #include "primitives/block.h"
 
 #include <stddef.h>
 #include <string.h>
-
-/* Write the canonical legacy reject_reason token to the caller's
- * buffer (if any). NUL-terminated truncation is safe because all known
- * reasons are far shorter than DOMAIN_HEADER_ACCEPT_REASON_MAX (256). */
-static void set_reject(char *buf, size_t cap, const char *reason)
-{
-    if (!buf || cap == 0) return;
-    size_t n = strlen(reason);
-    if (n >= cap) n = cap - 1;
-    memcpy(buf, reason, n);
-    buf[n] = '\0';
-}
-
-static void set_dos(int *out_dos, int dos)
-{
-    if (out_dos) *out_dos = dos;
-}
 
 struct zcl_result domain_consensus_check_header_version_too_low(
         const struct block_header *header,

@@ -9,14 +9,14 @@
 #include "support/cleanse.h"
 #include <string.h>
 
-static bool key_id_eq(const struct key_id *a, const struct key_id *b)
-{
-    return memcmp(a->id.data, b->id.data, 20) == 0;
-}
-
 static bool uint160_eq(const struct uint160 *a, const struct uint160 *b)
 {
     return memcmp(a->data, b->data, 20) == 0;
+}
+
+static bool key_id_eq(const struct key_id *a, const struct key_id *b)
+{
+    return uint160_eq(&a->id, &b->id);
 }
 
 void keystore_init(struct basic_keystore *ks)

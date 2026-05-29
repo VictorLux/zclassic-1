@@ -1331,6 +1331,12 @@ bool g2_from_uncompressed(struct g2_point *p, const uint8_t in[192])
 /* BLS parameter x = -0xd201000000010000 */
 #define BLS_X 0xd201000000010000ULL
 
+/* Fr modulus is 255-bit, so a scalar safely holds 254 bits of payload
+ * (BLS12-381). Was previously 253 (BN-254), which broke Sapling Groth16
+ * verification — bit 253 of the nullifier landed in the wrong packed
+ * scalar. Used by both multipack_bytes_to_fr variants. */
+#define BLS12_381_FR_CAPACITY 254
+
 /* Doubling step for Miller loop (Algorithm 26 from https://eprint.iacr.org/2010/354.pdf) */
 static void doubling_step(struct g2_point *r, struct fp2 *c0, struct fp2 *c1, struct fp2 *c2)
 {
@@ -1567,63 +1573,6 @@ static void bls12_381_final_exp(struct fp12 *result, const struct fp12 *f_in)
     /* Hard part */
     struct fp12 y0, y1, y2, y3;
 
-    fp12_sq(&y0, &f);
-
-    fp12_pow_u64(&y1, &y0, BLS_X);
-    fp12_conjugate(&y1);
-
-    fp12_pow_u64(&y2, &y1, BLS_X >> 1);
-    fp12_conjugate(&y2);
-
-    y3 = f;
-    fp12_conjugate(&y3);
-    fp12_mul(&y1, &y1, &y3);
-    fp12_conjugate(&y1);
-    fp12_mul(&y1, &y1, &y2);
-
-    fp12_pow_u64(&y2, &y1, BLS_X);
-    fp12_conjugate(&y2);
-
-    fp12_pow_u64(&y3, &y2, BLS_X);
-    fp12_conjugate(&y3);
-
-    fp12_conjugate(&y1);
-    fp12_mul(&y3, &y3, &y1);
-
-    fp12_conjugate(&y1);
-    fp12_frobenius_map(&y1, 3);
-
-    y2 = y3; /* save y3 before overwrite */
-    /* Wait, let me re-follow the Rust code more carefully */
-
-    /* Re-do the hard part following Rust exactly:
-     * let mut y0 = r; y0.square();
-     * let mut y1 = y0; exp_by_x(&mut y1, x);      // y1 = y0^x, then conjugate
-     * x >>= 1;
-     * let mut y2 = y1; exp_by_x(&mut y2, x);       // y2 = y1^(x/2), then conjugate
-     * x <<= 1;
-     * let mut y3 = r; y3.conjugate();
-     * y1 *= y3;                                      // y1 = y1 * r^{-1}
-     * y1.conjugate();                                 // y1 = conj(y1 * r^{-1})
-     * y1 *= y2;                                       // y1 = conj(y1*r^{-1}) * y2
-     * y2 = y1; exp_by_x(&mut y2, x);
-     * y3 = y2; exp_by_x(&mut y3, x);
-     * y1.conjugate();
-     * y3 *= y1;
-     * y1.conjugate();
-     * y1.frobenius_map(3);
-     * y2.frobenius_map(2);
-     * y1 *= y2;
-     * y2 = y3; exp_by_x(&mut y2, x);
-     * y2 *= y0;
-     * y2 *= r;
-     * y1 *= y2;
-     * y2 = y3; y2.frobenius_map(1);
-     * y1 *= y2;
-     * result = y1
-     */
-
-    /* Redo cleanly */
     struct fp12 r_save = f;
 
     fp12_sq(&y0, &f);
@@ -1771,11 +1720,7 @@ bool groth16_proof_read(struct groth16_proof *proof, const uint8_t data[192])
 void multipack_bytes_to_fr(uint64_t (*out)[4], size_t *n_out,
                            const uint8_t *bytes, size_t n_bytes)
 {
-    /* BLS12-381 Fr::CAPACITY = 254 (modulus is 255 bits).
-     * Previously hardcoded to 253 (BN-254) — caused Sapling Groth16
-     * verification to fail because bit 253 of the nullifier ended up
-     * in the wrong packed scalar. */
-    const size_t capacity = 254;  /* BLS12-381 */
+    const size_t capacity = BLS12_381_FR_CAPACITY;
     size_t n_bits = n_bytes * 8;
     size_t n_scalars = (n_bits + capacity - 1) / capacity;
 
@@ -1821,9 +1766,8 @@ void multipack_bytes_to_fr(uint64_t (*out)[4], size_t *n_out,
 void multipack_bytes_to_fr_be(uint64_t (*out)[4], size_t *n_out,
                                const uint8_t *bytes, size_t n_bytes)
 {
-    /* BLS12-381 Fr::CAPACITY = 254 (same as LE version above).
-     * Sprout Groth16 uses BLS12-381, BE bit order. */
-    const size_t capacity = 254;
+    /* Sprout Groth16 uses BLS12-381, BE bit order. */
+    const size_t capacity = BLS12_381_FR_CAPACITY;
     size_t n_bits = n_bytes * 8;
     size_t n_scalars = (n_bits + capacity - 1) / capacity;
 

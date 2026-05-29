@@ -16,7 +16,6 @@ struct chain_params;
 
 extern _Atomic uint64_t g_transactions_validated;
 extern _Atomic uint64_t g_eh_solver_runs;
-extern _Atomic uint64_t g_solution_target_checks;
 
 struct metrics_context {
     struct main_state *ms;
@@ -39,11 +38,6 @@ static inline void metrics_increment_tx_validated(void)
 static inline void metrics_increment_eh_solver_runs(void)
 {
     atomic_fetch_add(&g_eh_solver_runs, 1);
-}
-
-static inline void metrics_increment_solution_checks(void)
-{
-    atomic_fetch_add(&g_solution_target_checks, 1);
 }
 
 #endif

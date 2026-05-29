@@ -10,8 +10,6 @@
  *                                + msg_send_messages + lifecycle init
  *   msgprocessor_handshake.c   — version, verack, sendheaders
  *   msgprocessor_inv.c         — inv, getdata, notfound, addr, getaddr
- *   msgprocessor_sync.c        — headers, getheaders, getblocks,
- *                                cmpctblock, blocktxn, block
  *   msgprocessor_pingpong.c    — ping, pong, feefilter, reject
  *   msgprocessor_snapshot.c    — sync_manifest, chunk_*, block_piece_*,
  *                                swarm state, fc_rate, fast-sync globals
@@ -61,23 +59,10 @@ bool mp_handle_addr(struct msg_processor *mp, struct p2p_node *node,
 bool mp_handle_getaddr(struct msg_processor *mp, struct p2p_node *node,
                        struct byte_stream *s);
 
-/* msgprocessor_sync.c */
-bool mp_handle_getheaders(struct msg_processor *mp, struct p2p_node *node,
-                          struct byte_stream *s);
-bool mp_handle_headers(struct msg_processor *mp, struct p2p_node *node,
-                       struct byte_stream *s);
-bool mp_handle_getblocks(struct msg_processor *mp, struct p2p_node *node,
-                         struct byte_stream *s);
-bool mp_handle_block_msg(struct msg_processor *mp, struct p2p_node *node,
-                         struct byte_stream *s);
-bool mp_handle_sendcmpct(struct msg_processor *mp, struct p2p_node *node,
-                         struct byte_stream *s);
-bool mp_handle_cmpctblock(struct msg_processor *mp, struct p2p_node *node,
-                          struct byte_stream *s);
-bool mp_handle_getblocktxn(struct msg_processor *mp, struct p2p_node *node,
-                           struct byte_stream *s);
-bool mp_handle_blocktxn(struct msg_processor *mp, struct p2p_node *node,
-                        struct byte_stream *s);
+/* The chain-sync family (getheaders, headers, getblocks, block,
+ * sendcmpct, cmpctblock, getblocktxn, blocktxn) is dispatched directly
+ * to the process_* handlers declared in net/msg_internal.h — no
+ * mp_handle_* wrappers. */
 
 /* msgprocessor_snapshot.c — combined ZCL23 snapshot/chunk/block-piece
  * dispatcher. Called by msg_process_messages for any z-prefixed command

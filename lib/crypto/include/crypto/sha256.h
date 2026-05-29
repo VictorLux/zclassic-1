@@ -24,7 +24,6 @@ void sha256_write(struct sha256_ctx *ctx, const unsigned char *data, size_t len)
 void sha256_finalize(struct sha256_ctx *ctx, unsigned char hash[SHA256_OUTPUT_SIZE]);
 int sha256_finalize_no_padding(struct sha256_ctx *ctx, unsigned char hash[SHA256_OUTPUT_SIZE],
                                int enforce_compression);
-void sha256_reset(struct sha256_ctx *ctx);
 
 /* Runtime self-test: verifies SHA-NI matches portable. Returns true if OK.
  * Call once at startup. If false, SHA-NI is auto-disabled. */

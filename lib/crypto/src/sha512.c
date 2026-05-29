@@ -175,8 +175,3 @@ void sha512_finalize(struct sha512_ctx *ctx, unsigned char hash[SHA512_OUTPUT_SI
     WriteBE64(hash + 48, ctx->s[6]);
     WriteBE64(hash + 56, ctx->s[7]);
 }
-
-void sha512_reset(struct sha512_ctx *ctx)
-{
-    sha512_init(ctx);
-}

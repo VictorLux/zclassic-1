@@ -95,9 +95,7 @@ void process_block_set_node_db(struct node_db *ndb);
 /* Return the wired node_db (may be NULL if not yet set or if the DB
  * is closed). Callers in bulk-ingest paths (legacy body-pull, cold
  * import, snapshot apply) use this to trigger periodic
- * wal_checkpoint(PASSIVE) and bound rewind cost on SIGKILL. Also
- * declared in process_block_internals.h for in-tree callers; the
- * public copy here lets services include process_block.h alone. */
+ * wal_checkpoint(PASSIVE) and bound rewind cost on SIGKILL. */
 struct node_db *process_block_get_node_db(void);
 
 /* Configure the coins flush policy (short-term → long-term layer bridge).

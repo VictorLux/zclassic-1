@@ -9,7 +9,9 @@
  * The per-message-family bodies live in:
  *   msgprocessor_handshake.c  — version, verack, sendheaders
  *   msgprocessor_inv.c        — inv, getdata, notfound, addr, getaddr
- *   msgprocessor_sync.c       — headers/getheaders/getblocks/block + BIP152
+ *   msg_headers.c / msg_blocks.c / msg_compact.c
+ *                             — headers/getheaders/getblocks/block + BIP152
+ *                               (dispatched directly via process_*)
  *   msgprocessor_pingpong.c   — ping/pong/feefilter/reject
  *   msgprocessor_snapshot.c   — every ZCL23 fast-sync/snapshot message
  *
@@ -245,45 +247,40 @@ static bool handle_tx_msg(struct msg_processor *mp, struct p2p_node *node,
  * Default OFF — enable only with ZCL_ENABLE_BIP37=1. When disabled,
  * filterload/filteradd/filterclear score the peer as misbehaving. */
 
-static bool handle_filterload(struct msg_processor *mp, struct p2p_node *node,
-                               struct byte_stream *s)
+/* Shared reject path for the three BIP37 filter commands. When BIP37 is
+ * disabled (the default) the peer is scored as misbehaving and dropped.
+ * Full BIP37 filter loading is not implemented — reject even when enabled
+ * until a use case justifies it. */
+static bool handle_bip37_rejected(struct msg_processor *mp, struct p2p_node *node,
+                                  struct byte_stream *s, const char *cmd)
 {
     (void)s;
     if (!bip37_enabled()) {
-        peer_misbehaving(mp->net_mgr, node, 100,
-                         "filterload rejected: BIP37 disabled");
-        LOG_FAIL("bip37", "filterload from %s — BIP37 disabled, disconnecting",
-                 node->addr_name);
+        char reason[64];
+        snprintf(reason, sizeof(reason), "%s rejected: BIP37 disabled", cmd);
+        peer_misbehaving(mp->net_mgr, node, 100, reason);
+        LOG_FAIL("bip37", "%s from %s — BIP37 disabled, disconnecting",
+                 cmd, node->addr_name);
     }
-    /* Full BIP37 filter loading not implemented — reject even when enabled
-     * until a use case justifies it. */
     return true;
+}
+
+static bool handle_filterload(struct msg_processor *mp, struct p2p_node *node,
+                               struct byte_stream *s)
+{
+    return handle_bip37_rejected(mp, node, s, "filterload");
 }
 
 static bool handle_filteradd(struct msg_processor *mp, struct p2p_node *node,
                               struct byte_stream *s)
 {
-    (void)s;
-    if (!bip37_enabled()) {
-        peer_misbehaving(mp->net_mgr, node, 100,
-                         "filteradd rejected: BIP37 disabled");
-        LOG_FAIL("bip37", "filteradd from %s — BIP37 disabled, disconnecting",
-                 node->addr_name);
-    }
-    return true;
+    return handle_bip37_rejected(mp, node, s, "filteradd");
 }
 
 static bool handle_filterclear(struct msg_processor *mp, struct p2p_node *node,
                                 struct byte_stream *s)
 {
-    (void)s;
-    if (!bip37_enabled()) {
-        peer_misbehaving(mp->net_mgr, node, 100,
-                         "filterclear rejected: BIP37 disabled");
-        LOG_FAIL("bip37", "filterclear from %s — BIP37 disabled, disconnecting",
-                 node->addr_name);
-    }
-    return true;
+    return handle_bip37_rejected(mp, node, s, "filterclear");
 }
 
 /* ── ZCL Messaging handlers ───────────────────────────────────── */
@@ -649,8 +646,20 @@ static bool handle_game_msg(struct msg_processor *mp, struct p2p_node *node,
 
 /* ── P2P Message Dispatch Table ──────────────────────────────────
  * Maps command strings to handler functions. The mp_handle_* entries
- * live in the split files; everything else (filter*, zmsg, zfile*,
- * zgame, mempool, tx) is local. Sentinel at the end. */
+ * live in the split files; the chain-sync family (getblocks, getheaders,
+ * block, headers, cmpctblock, getblocktxn, blocktxn) points directly at
+ * the process_* handlers in msg_headers.c / msg_blocks.c / msg_compact.c;
+ * everything else (filter*, zmsg, zfile*, zgame, mempool, tx) is local.
+ * Sentinel at the end. */
+
+/* process_sendcmpct's signature omits the mp parameter; this shim adapts
+ * it to the uniform (mp, node, s) dispatch signature. */
+static bool mp_sendcmpct(struct msg_processor *mp, struct p2p_node *node,
+                         struct byte_stream *s)
+{
+    (void)mp;
+    return process_sendcmpct(node, s);
+}
 
 static const struct msg_dispatch_entry g_msg_dispatch[] = {
     /* ── Bitcoin P2P ── */
@@ -661,11 +670,11 @@ static const struct msg_dispatch_entry g_msg_dispatch[] = {
     { "addr",         mp_handle_addr,         true,  false, "p2p" },
     { "inv",          mp_handle_inv,          true,  false, "sync" },
     { "getdata",      mp_handle_getdata,      true,  false, "sync" },
-    { "getblocks",    mp_handle_getblocks,    true,  false, "sync" },
-    { "getheaders",   mp_handle_getheaders,   true,  false, "sync" },
-    { "block",        mp_handle_block_msg,    true,  false, "sync" },
+    { "getblocks",    process_getblocks,      true,  false, "sync" },
+    { "getheaders",   process_getheaders,     true,  false, "sync" },
+    { "block",        process_block_msg,      true,  false, "sync" },
     { "tx",           handle_tx_msg,          true,  false, "mempool" },
-    { "headers",      mp_handle_headers,      true,  false, "sync" },
+    { "headers",      process_headers,        true,  false, "sync" },
     { "getaddr",      mp_handle_getaddr,      true,  false, "p2p" },
     { "mempool",      handle_mempool,         true,  false, "mempool" },
     { "sendheaders",  mp_handle_sendheaders,  true,  false, "p2p" },
@@ -673,10 +682,10 @@ static const struct msg_dispatch_entry g_msg_dispatch[] = {
     { "feefilter",    mp_handle_feefilter,    true,  false, "mempool" },
     { "notfound",     mp_handle_notfound,     true,  false, "sync" },
     /* ── BIP152 compact blocks ── */
-    { "sendcmpct",   mp_handle_sendcmpct,    true,  false, "compact" },
-    { "cmpctblock",  mp_handle_cmpctblock,   true,  false, "compact" },
-    { "getblocktxn", mp_handle_getblocktxn,  true,  false, "compact" },
-    { "blocktxn",    mp_handle_blocktxn,     true,  false, "compact" },
+    { "sendcmpct",   mp_sendcmpct,           true,  false, "compact" },
+    { "cmpctblock",  process_cmpctblock,     true,  false, "compact" },
+    { "getblocktxn", process_getblocktxn,    true,  false, "compact" },
+    { "blocktxn",    process_blocktxn,       true,  false, "compact" },
     /* ── BIP37 bloom filters (gated by ZCL_ENABLE_BIP37) ── */
     { "filterload",   handle_filterload,     true,  false, "bloom" },
     { "filteradd",    handle_filteradd,      true,  false, "bloom" },

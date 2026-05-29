@@ -34,6 +34,13 @@ struct equihash_params {
 void equihash_params_init(struct equihash_params *p,
                           unsigned int N, unsigned int K);
 
+/* Map a serialized Equihash solution length to its (N, K) parameter set.
+ * Recognised sizes: 1344 -> (200,9), 400 -> (192,7), 68 -> (96,5),
+ * 36 -> (48,5). Returns true on a recognised size (and writes *n and *k);
+ * false otherwise, including when n or k is NULL. */
+bool equihash_solution_params(size_t solution_len,
+                              unsigned int *n, unsigned int *k);
+
 int equihash_initialise_state(const struct equihash_params *p,
                               struct blake2b_ctx *state);
 

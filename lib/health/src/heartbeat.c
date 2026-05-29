@@ -46,51 +46,16 @@ void health_set_check_interval_ms(int ms)
     atomic_store(&g_check_interval_ms, ms);
 }
 
-health_subsystem_id health_register(const char *name,
-                                     int64_t deadline_secs,
-                                     void (*on_stall)(void *),
-                                     void *ctx)
-{
-    if (!name || !on_stall || deadline_secs <= 0)
-        return HEALTH_INVALID_ID;
-
-    int64_t now_us = GetTimeMicros();
-
-    pthread_mutex_lock(&g_mu);
-    int slot = -1;
-    for (int i = 0; i < HEALTH_REGISTRY_CAP; i++) {
-        if (!g_entries[i].active) { slot = i; break; }
-    }
-    if (slot < 0) {
-        pthread_mutex_unlock(&g_mu);
-        fprintf(stderr, "[health] registry full (cap=%d), cannot register '%s'\n",
-                HEALTH_REGISTRY_CAP, name);
-        return HEALTH_INVALID_ID;
-    }
-
-    g_entries[slot].active = true;
-    g_entries[slot].periodic = false;
-    strncpy(g_entries[slot].name, name, HEALTH_NAME_MAX - 1);
-    g_entries[slot].name[HEALTH_NAME_MAX - 1] = '\0';
-    g_entries[slot].deadline_secs = deadline_secs;
-    g_entries[slot].on_stall = on_stall;
-    g_entries[slot].ctx = ctx;
-    atomic_store(&g_entries[slot].last_beat_us, now_us);
-    /* Sentinel: NEVER seed last_stall_beat_us == last_beat_us, because
-     * the edge-trigger check skips when they're equal (treating it as
-     * "already fired against this beat"). 0 means "no stall ever fired
-     * against this entry"; the first missed-deadline sweep will fire. */
-    g_entries[slot].last_stall_beat_us = 0;
-    g_entries[slot].on_stall_fired = 0;
-    pthread_mutex_unlock(&g_mu);
-
-    return slot;
-}
-
-health_subsystem_id health_register_periodic(const char *name,
-                                              int64_t period_secs,
-                                              void (*cb)(void *),
-                                              void *ctx)
+/* Shared slot find + init for both register entry points. The two
+ * public callers differ only in the `periodic` flag and the registry-
+ * full error string (which branches on `periodic`); everything else —
+ * the NULL/period guard, the now_us capture, the slot-find loop, and
+ * the full field init — is identical. */
+static health_subsystem_id slot_alloc_and_fill(const char *name,
+                                               int64_t period_secs,
+                                               void (*cb)(void *),
+                                               void *ctx,
+                                               bool periodic)
 {
     if (!name || !cb || period_secs <= 0)
         return HEALTH_INVALID_ID;
@@ -104,26 +69,52 @@ health_subsystem_id health_register_periodic(const char *name,
     }
     if (slot < 0) {
         pthread_mutex_unlock(&g_mu);
-        fprintf(stderr, "[health] registry full (cap=%d), cannot register periodic '%s'\n",
-                HEALTH_REGISTRY_CAP, name);
+        if (periodic)
+            fprintf(stderr, "[health] registry full (cap=%d), cannot register periodic '%s'\n",
+                    HEALTH_REGISTRY_CAP, name);
+        else
+            fprintf(stderr, "[health] registry full (cap=%d), cannot register '%s'\n",
+                    HEALTH_REGISTRY_CAP, name);
         return HEALTH_INVALID_ID;
     }
+
     g_entries[slot].active = true;
-    g_entries[slot].periodic = true;
+    g_entries[slot].periodic = periodic;
     strncpy(g_entries[slot].name, name, HEALTH_NAME_MAX - 1);
     g_entries[slot].name[HEALTH_NAME_MAX - 1] = '\0';
     g_entries[slot].deadline_secs = period_secs;
     g_entries[slot].on_stall = cb;
     g_entries[slot].ctx = ctx;
-    /* For periodic, last_beat_us tracks "last fire". Seeding to now
+    /* For periodic, last_beat_us tracks "last fire"; seeding to now
      * means the first fire happens `period_secs` from registration,
-     * not immediately. */
+     * not immediately. For stall entries it tracks the last heartbeat. */
     atomic_store(&g_entries[slot].last_beat_us, now_us);
+    /* Sentinel: NEVER seed last_stall_beat_us == last_beat_us, because
+     * the edge-trigger check skips when they're equal (treating it as
+     * "already fired against this beat"). 0 means "no stall ever fired
+     * against this entry"; the first missed-deadline sweep will fire.
+     * Unused for periodic. */
     g_entries[slot].last_stall_beat_us = 0;
     g_entries[slot].on_stall_fired = 0;
     pthread_mutex_unlock(&g_mu);
 
     return slot;
+}
+
+health_subsystem_id health_register(const char *name,
+                                     int64_t deadline_secs,
+                                     void (*on_stall)(void *),
+                                     void *ctx)
+{
+    return slot_alloc_and_fill(name, deadline_secs, on_stall, ctx, false);
+}
+
+health_subsystem_id health_register_periodic(const char *name,
+                                              int64_t period_secs,
+                                              void (*cb)(void *),
+                                              void *ctx)
+{
+    return slot_alloc_and_fill(name, period_secs, cb, ctx, true);
 }
 
 void health_heartbeat(health_subsystem_id id)

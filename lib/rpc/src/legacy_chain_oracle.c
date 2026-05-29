@@ -12,38 +12,18 @@
 #include <stdlib.h>
 #include <string.h>
 
+/* Default zclassicd JSON-RPC port (matches ORACLE_DEFAULT_PORT,
+ * LMS_DEFAULT_PORT, HP_DEFAULT_PORT, ZCLASSICD_PORT elsewhere). */
+#define LCO_LEGACY_DEFAULT_PORT 8232
+
 static bool lco_rpc_creds(char *user, size_t user_sz,
                           char *pass, size_t pass_sz, int *port)
 {
-    int p = (port && *port > 0) ? *port : 8232;
+    int p = (port && *port > 0) ? *port : LCO_LEGACY_DEFAULT_PORT;
 
     if (!legacy_rpc_parse_conf(user, user_sz, pass, pass_sz, &p))
         return false;
     if (port) *port = p;
-    return true;
-}
-
-static bool lco_rpc_result_str(const char *raw, char *out, size_t out_sz)
-{
-    const char *body = legacy_rpc_http_body(raw);
-    struct json_value root = {0};
-    const struct json_value *result;
-
-    if (!body || !out || out_sz == 0)
-        return false;
-    out[0] = '\0';
-    json_init(&root);
-    if (!json_read(&root, body, strlen(body))) {
-        json_free(&root);
-        return false;
-    }
-    result = json_get(&root, "result");
-    if (!result || result->type != JSON_STR || !json_get_str(result)) {
-        json_free(&root);
-        return false;
-    }
-    snprintf(out, out_sz, "%s", json_get_str(result));
-    json_free(&root);
     return true;
 }
 
@@ -68,7 +48,7 @@ bool legacy_chain_rpc_get_block_hash_hex(int height, char out_hex[65])
     char user[128], pass[256], err[256];
     char req[256];
     char *resp = NULL;
-    int port = 8232;
+    int port = LCO_LEGACY_DEFAULT_PORT;
     bool ok;
 
     if (!out_hex || height < 0)
@@ -84,7 +64,7 @@ bool legacy_chain_rpc_get_block_hash_hex(int height, char out_hex[65])
                          err, sizeof(err)))
         return false;
 
-    ok = lco_rpc_result_str(resp, out_hex, 65) && strlen(out_hex) == 64;
+    ok = legacy_rpc_parse_result_string(resp, out_hex, 65, err, sizeof(err)) && strlen(out_hex) == 64;
     free(resp);
     return ok;
 }
@@ -94,7 +74,7 @@ bool legacy_chain_rpc_get_mmb_leaf(int height, struct mmb_leaf *leaf)
     char user[128], pass[256], err[256];
     char req[512], hash_hex[65];
     char *resp = NULL;
-    int port = 8232;
+    int port = LCO_LEGACY_DEFAULT_PORT;
     bool ok;
 
     if (!leaf || height < 0)
@@ -155,7 +135,7 @@ bool legacy_chain_rpc_get_chainwork(const uint8_t block_hash[32],
     char user[128], pass[256], err[256];
     char req[512], hash_hex[65];
     char *resp = NULL;
-    int port = 8232;
+    int port = LCO_LEGACY_DEFAULT_PORT;
     bool ok;
 
     if (!block_hash || !chain_work)
@@ -195,7 +175,7 @@ bool legacy_chain_rpc_get_block_count(int *out_height)
     char user[128], pass[256], err[256];
     char req[256];
     char *resp = NULL;
-    int port = 8232;
+    int port = LCO_LEGACY_DEFAULT_PORT;
     int64_t h = 0;
     bool ok;
 
@@ -226,7 +206,7 @@ bool legacy_chain_rpc_get_block_hex(int height, char *out_hex,
     char user[128], pass[256], err[256];
     char req[256], hash_hex[65];
     char *resp = NULL;
-    int port = 8232;
+    int port = LCO_LEGACY_DEFAULT_PORT;
     bool ok;
 
     if (!out_hex || out_hex_sz == 0 || height < 0)

@@ -26,7 +26,6 @@
 
 _Atomic uint64_t g_transactions_validated = 0;
 _Atomic uint64_t g_eh_solver_runs = 0;
-_Atomic uint64_t g_solution_target_checks = 0;
 
 static int64_t g_start_time = 0;
 static pthread_t g_metrics_thread;
@@ -211,7 +210,7 @@ static int estimate_net_height(const struct consensus_params *cp,
 
 static int print_stats(struct metrics_context *ctx)
 {
-    int lines = 4;
+    int lines = 3;
 
     zcl_mutex_lock(&ctx->ms->cs_main);
     struct block_index *tip = active_chain_tip(&ctx->ms->chain_active);
@@ -244,7 +243,6 @@ static int print_stats(struct metrics_context *ctx)
                height);
     }
     printf("            Connections | %zu    \n", connections);
-    printf("  Network solution rate | 0 Sol/s    \n");
     printf("\n");
 
     return lines;

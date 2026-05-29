@@ -65,11 +65,6 @@ size_t json_rpc_request(const char *method,
                         const struct json_value *id,
                         char *out, size_t out_size);
 
-void json_rpc_reply_obj(struct json_value *reply,
-                        const struct json_value *result,
-                        const struct json_value *error,
-                        const struct json_value *id);
-
 size_t json_rpc_reply(const struct json_value *result,
                       const struct json_value *error,
                       const struct json_value *id,

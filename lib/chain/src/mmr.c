@@ -36,10 +36,13 @@ void mmr_init(struct mmr *m)
     memset(m, 0, sizeof(*m));
 }
 
-int mmr_append(struct mmr *m, const uint8_t block_hash[32])
+/* Shared append: takes an already-hashed leaf and runs the peak-merge loop.
+ * Copies the incoming hash into a local working buffer because the merge
+ * loop mutates it in place. */
+static int mmr_append_prehashed(struct mmr *m, const uint8_t h_in[32])
 {
     uint8_t h[32];
-    mmr_hash_leaf(block_hash, h);
+    memcpy(h, h_in, 32);
 
     int merges = 0;
 
@@ -63,6 +66,25 @@ int mmr_append(struct mmr *m, const uint8_t block_hash[32])
     return merges;
 }
 
+int mmr_append(struct mmr *m, const uint8_t block_hash[32])
+{
+    uint8_t h[32];
+    mmr_hash_leaf(block_hash, h);
+    return mmr_append_prehashed(m, h);
+}
+
+/* Bag all peaks: SHA3-256(0x02 || peak_0 || ... || peak_k) */
+static void mmr_bag_peaks(const uint8_t (*peaks)[32], uint32_t n, uint8_t *out)
+{
+    struct sha3_256_ctx ctx;
+    sha3_256_init(&ctx);
+    uint8_t tag = MMR_TAG_ROOT;
+    sha3_256_write(&ctx, &tag, 1);
+    for (uint32_t i = 0; i < n; i++)
+        sha3_256_write(&ctx, peaks[i], 32);
+    sha3_256_finalize(&ctx, out);
+}
+
 void mmr_root(const struct mmr *m, uint8_t out[32])
 {
     if (m->num_peaks == 0) {
@@ -74,14 +96,7 @@ void mmr_root(const struct mmr *m, uint8_t out[32])
         return;
     }
 
-    /* Bag all peaks: SHA3-256(0x02 || peak_0 || ... || peak_k) */
-    struct sha3_256_ctx ctx;
-    sha3_256_init(&ctx);
-    uint8_t tag = MMR_TAG_ROOT;
-    sha3_256_write(&ctx, &tag, 1);
-    for (uint32_t i = 0; i < m->num_peaks; i++)
-        sha3_256_write(&ctx, m->peaks[i], 32);
-    sha3_256_finalize(&ctx, out);
+    mmr_bag_peaks(m->peaks, m->num_peaks, out);
 }
 
 /* ── Serialization ─────────────────────────────────────── */
@@ -229,27 +244,7 @@ int mmr_append_commitment(struct mmr *m, const struct mmr_commitment *c)
 {
     uint8_t leaf[32];
     mmr_hash_commitment(c, leaf);
-
-    /* Same append logic but skip mmr_hash_leaf — we already hashed */
-    uint8_t h[32];
-    memcpy(h, leaf, 32);
-
-    int merges = 0;
-    uint64_t n = m->num_leaves + 1;
-    while (n % 2 == 0 && m->num_peaks > 0) {
-        uint8_t parent[32];
-        mmr_hash_internal(m->peaks[m->num_peaks - 1], h, parent);
-        memcpy(h, parent, 32);
-        m->num_peaks--;
-        n /= 2;
-        merges++;
-    }
-
-    memcpy(m->peaks[m->num_peaks], h, 32);
-    m->num_peaks++;
-    m->num_leaves++;
-
-    return merges;
+    return mmr_append_prehashed(m, leaf);
 }
 
 /* ── Proof verification ────────────────────────────────── */
@@ -296,13 +291,7 @@ bool mmr_verify(const struct mmr_proof *proof,
     if (proof->num_peaks == 1) {
         memcpy(root, proof->peak_hashes[0], 32);
     } else {
-        struct sha3_256_ctx ctx;
-        sha3_256_init(&ctx);
-        uint8_t tag = MMR_TAG_ROOT;
-        sha3_256_write(&ctx, &tag, 1);
-        for (uint32_t i = 0; i < proof->num_peaks; i++)
-            sha3_256_write(&ctx, proof->peak_hashes[i], 32);
-        sha3_256_finalize(&ctx, root);
+        mmr_bag_peaks(proof->peak_hashes, proof->num_peaks, root);
     }
 
     return memcmp(root, expected_root, 32) == 0;

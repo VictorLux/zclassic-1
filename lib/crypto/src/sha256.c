@@ -508,8 +508,3 @@ int sha256_finalize_no_padding(struct sha256_ctx *ctx, unsigned char hash[SHA256
     WriteBE32(hash + 28, ctx->s[7]);
     return 0;
 }
-
-void sha256_reset(struct sha256_ctx *ctx)
-{
-    sha256_init(ctx);
-}

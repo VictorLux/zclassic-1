@@ -20,6 +20,8 @@
 
 #include "domain/consensus/check_block.h"
 
+#include "reject_out.h"
+
 #include "bloom/merkle.h"
 #include "core/uint256.h"
 #include "primitives/block.h"
@@ -41,23 +43,6 @@
  * while remaining trivially auditable against either source. */
 #define DOMAIN_GENEROUS_BLOCK_TXN_LIMIT  ((unsigned int)2000000)
 #define DOMAIN_MAX_BLOCK_SIGOPS          ((unsigned int)20000)
-
-/* Write the canonical legacy reject_reason token to the caller's
- * buffer (if any). NUL-terminated truncation is safe because all known
- * reasons are far shorter than DOMAIN_CHECK_BLOCK_REASON_MAX (256). */
-static void set_reject(char *buf, size_t cap, const char *reason)
-{
-    if (!buf || cap == 0) return;
-    size_t n = strlen(reason);
-    if (n >= cap) n = cap - 1;
-    memcpy(buf, reason, n);
-    buf[n] = '\0';
-}
-
-static void set_dos(int *out_dos, int dos)
-{
-    if (out_dos) *out_dos = dos;
-}
 
 struct zcl_result domain_consensus_check_block_merkle_root(
         const struct block *block,

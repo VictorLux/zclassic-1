@@ -57,13 +57,8 @@ static bool equihash_verify_direct(const uint8_t *input, size_t input_len,
 {
     unsigned int n = 0;
     unsigned int k = 0;
-    switch (solution_len) {
-    case 1344: n = 200; k = 9; break;
-    case 400:  n = 192; k = 7; break;
-    case 68:   n = 96;  k = 5; break;
-    case 36:   n = 48;  k = 5; break;
-    default: return false;
-    }
+    if (!equihash_solution_params(solution_len, &n, &k))
+        return false;
 
     struct equihash_params ep;
     equihash_params_init(&ep, n, k);

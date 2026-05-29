@@ -114,7 +114,7 @@ struct mmb_proof {
     uint32_t num_siblings;
     uint8_t  peaks[MMB_MAX_MOUNTAINS][MMB_HASH_SIZE];
     uint32_t num_peaks;
-    uint64_t mmb_size;                            /* num_leaves at proof time */
+    uint64_t mmb_size;                            /* packed: low 40 bits = num_leaves, bits 40-63 = lr_bits */
 };
 
 /* Generate inclusion proof for a leaf.

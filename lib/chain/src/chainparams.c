@@ -438,6 +438,47 @@ static void init_main_params(void)
         strcpy(p->vFoundersRewardAddress[i], main_founders[i]);
 }
 
+/* Base58 prefixes shared by testnet and regtest (mainnet differs). */
+static void apply_testnet_b58_prefixes(struct chain_params *p)
+{
+    /* tm addresses */
+    p->base58Prefixes[B58_PUBKEY_ADDRESS][0] = 0x1D;
+    p->base58Prefixes[B58_PUBKEY_ADDRESS][1] = 0x25;
+    p->base58PrefixLengths[B58_PUBKEY_ADDRESS] = 2;
+    /* t2 addresses */
+    p->base58Prefixes[B58_SCRIPT_ADDRESS][0] = 0x1C;
+    p->base58Prefixes[B58_SCRIPT_ADDRESS][1] = 0xBA;
+    p->base58PrefixLengths[B58_SCRIPT_ADDRESS] = 2;
+    /* 9/c WIF */
+    p->base58Prefixes[B58_SECRET_KEY][0] = 0xEF;
+    p->base58PrefixLengths[B58_SECRET_KEY] = 1;
+    /* BIP32 tpub */
+    p->base58Prefixes[B58_EXT_PUBLIC_KEY][0] = 0x04;
+    p->base58Prefixes[B58_EXT_PUBLIC_KEY][1] = 0x35;
+    p->base58Prefixes[B58_EXT_PUBLIC_KEY][2] = 0x87;
+    p->base58Prefixes[B58_EXT_PUBLIC_KEY][3] = 0xCF;
+    p->base58PrefixLengths[B58_EXT_PUBLIC_KEY] = 4;
+    /* BIP32 tprv */
+    p->base58Prefixes[B58_EXT_SECRET_KEY][0] = 0x04;
+    p->base58Prefixes[B58_EXT_SECRET_KEY][1] = 0x35;
+    p->base58Prefixes[B58_EXT_SECRET_KEY][2] = 0x83;
+    p->base58Prefixes[B58_EXT_SECRET_KEY][3] = 0x94;
+    p->base58PrefixLengths[B58_EXT_SECRET_KEY] = 4;
+    /* zt payment address */
+    p->base58Prefixes[B58_ZCPAYMENT_ADDRESS][0] = 0x16;
+    p->base58Prefixes[B58_ZCPAYMENT_ADDRESS][1] = 0xB6;
+    p->base58PrefixLengths[B58_ZCPAYMENT_ADDRESS] = 2;
+    /* ST spending key */
+    p->base58Prefixes[B58_ZCSPENDING_KEY][0] = 0xAC;
+    p->base58Prefixes[B58_ZCSPENDING_KEY][1] = 0x08;
+    p->base58PrefixLengths[B58_ZCSPENDING_KEY] = 2;
+    /* ZiVt viewing key */
+    p->base58Prefixes[B58_ZCVIEWING_KEY][0] = 0xA8;
+    p->base58Prefixes[B58_ZCVIEWING_KEY][1] = 0xAC;
+    p->base58Prefixes[B58_ZCVIEWING_KEY][2] = 0x0C;
+    p->base58PrefixLengths[B58_ZCVIEWING_KEY] = 3;
+}
+
 static void init_test_params(void)
 {
     struct chain_params *p = &testNetParams;
@@ -499,42 +540,7 @@ static void init_test_params(void)
     p->vSeeds[0] = (struct dns_seed){ "testnet_node1", "167.71.172.5" };
     p->nSeeds = 1;
 
-    /* tm addresses */
-    p->base58Prefixes[B58_PUBKEY_ADDRESS][0] = 0x1D;
-    p->base58Prefixes[B58_PUBKEY_ADDRESS][1] = 0x25;
-    p->base58PrefixLengths[B58_PUBKEY_ADDRESS] = 2;
-    /* t2 addresses */
-    p->base58Prefixes[B58_SCRIPT_ADDRESS][0] = 0x1C;
-    p->base58Prefixes[B58_SCRIPT_ADDRESS][1] = 0xBA;
-    p->base58PrefixLengths[B58_SCRIPT_ADDRESS] = 2;
-    /* 9/c WIF */
-    p->base58Prefixes[B58_SECRET_KEY][0] = 0xEF;
-    p->base58PrefixLengths[B58_SECRET_KEY] = 1;
-    /* BIP32 tpub */
-    p->base58Prefixes[B58_EXT_PUBLIC_KEY][0] = 0x04;
-    p->base58Prefixes[B58_EXT_PUBLIC_KEY][1] = 0x35;
-    p->base58Prefixes[B58_EXT_PUBLIC_KEY][2] = 0x87;
-    p->base58Prefixes[B58_EXT_PUBLIC_KEY][3] = 0xCF;
-    p->base58PrefixLengths[B58_EXT_PUBLIC_KEY] = 4;
-    /* BIP32 tprv */
-    p->base58Prefixes[B58_EXT_SECRET_KEY][0] = 0x04;
-    p->base58Prefixes[B58_EXT_SECRET_KEY][1] = 0x35;
-    p->base58Prefixes[B58_EXT_SECRET_KEY][2] = 0x83;
-    p->base58Prefixes[B58_EXT_SECRET_KEY][3] = 0x94;
-    p->base58PrefixLengths[B58_EXT_SECRET_KEY] = 4;
-    /* zt payment address */
-    p->base58Prefixes[B58_ZCPAYMENT_ADDRESS][0] = 0x16;
-    p->base58Prefixes[B58_ZCPAYMENT_ADDRESS][1] = 0xB6;
-    p->base58PrefixLengths[B58_ZCPAYMENT_ADDRESS] = 2;
-    /* ST spending key */
-    p->base58Prefixes[B58_ZCSPENDING_KEY][0] = 0xAC;
-    p->base58Prefixes[B58_ZCSPENDING_KEY][1] = 0x08;
-    p->base58PrefixLengths[B58_ZCSPENDING_KEY] = 2;
-    /* ZiVt viewing key */
-    p->base58Prefixes[B58_ZCVIEWING_KEY][0] = 0xA8;
-    p->base58Prefixes[B58_ZCVIEWING_KEY][1] = 0xAC;
-    p->base58Prefixes[B58_ZCVIEWING_KEY][2] = 0x0C;
-    p->base58PrefixLengths[B58_ZCVIEWING_KEY] = 3;
+    apply_testnet_b58_prefixes(p);
 
     strcpy(p->bech32HRPs[BECH32_SAPLING_PAYMENT_ADDRESS], "ztestsapling");
     strcpy(p->bech32HRPs[BECH32_SAPLING_FULL_VIEWING_KEY], "zviewtestsapling");
@@ -620,34 +626,7 @@ static void init_regtest_params(void)
     p->nSeeds = 0;
 
     /* Same as testnet prefixes */
-    p->base58Prefixes[B58_PUBKEY_ADDRESS][0] = 0x1D;
-    p->base58Prefixes[B58_PUBKEY_ADDRESS][1] = 0x25;
-    p->base58PrefixLengths[B58_PUBKEY_ADDRESS] = 2;
-    p->base58Prefixes[B58_SCRIPT_ADDRESS][0] = 0x1C;
-    p->base58Prefixes[B58_SCRIPT_ADDRESS][1] = 0xBA;
-    p->base58PrefixLengths[B58_SCRIPT_ADDRESS] = 2;
-    p->base58Prefixes[B58_SECRET_KEY][0] = 0xEF;
-    p->base58PrefixLengths[B58_SECRET_KEY] = 1;
-    p->base58Prefixes[B58_EXT_PUBLIC_KEY][0] = 0x04;
-    p->base58Prefixes[B58_EXT_PUBLIC_KEY][1] = 0x35;
-    p->base58Prefixes[B58_EXT_PUBLIC_KEY][2] = 0x87;
-    p->base58Prefixes[B58_EXT_PUBLIC_KEY][3] = 0xCF;
-    p->base58PrefixLengths[B58_EXT_PUBLIC_KEY] = 4;
-    p->base58Prefixes[B58_EXT_SECRET_KEY][0] = 0x04;
-    p->base58Prefixes[B58_EXT_SECRET_KEY][1] = 0x35;
-    p->base58Prefixes[B58_EXT_SECRET_KEY][2] = 0x83;
-    p->base58Prefixes[B58_EXT_SECRET_KEY][3] = 0x94;
-    p->base58PrefixLengths[B58_EXT_SECRET_KEY] = 4;
-    p->base58Prefixes[B58_ZCPAYMENT_ADDRESS][0] = 0x16;
-    p->base58Prefixes[B58_ZCPAYMENT_ADDRESS][1] = 0xB6;
-    p->base58PrefixLengths[B58_ZCPAYMENT_ADDRESS] = 2;
-    p->base58Prefixes[B58_ZCSPENDING_KEY][0] = 0xAC;
-    p->base58Prefixes[B58_ZCSPENDING_KEY][1] = 0x08;
-    p->base58PrefixLengths[B58_ZCSPENDING_KEY] = 2;
-    p->base58Prefixes[B58_ZCVIEWING_KEY][0] = 0xA8;
-    p->base58Prefixes[B58_ZCVIEWING_KEY][1] = 0xAC;
-    p->base58Prefixes[B58_ZCVIEWING_KEY][2] = 0x0C;
-    p->base58PrefixLengths[B58_ZCVIEWING_KEY] = 3;
+    apply_testnet_b58_prefixes(p);
 
     strcpy(p->bech32HRPs[BECH32_SAPLING_PAYMENT_ADDRESS], "zregtestsapling");
     strcpy(p->bech32HRPs[BECH32_SAPLING_FULL_VIEWING_KEY], "zviewregtestsapling");

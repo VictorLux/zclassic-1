@@ -10,34 +10,8 @@
  * All integer fields are big-endian. */
 
 #include "zslp/slp.h"
+#include "script/op_return_push.h"
 #include <string.h>
-
-/* Read a Bitcoin script PUSH data field.
- * Returns pointer past the field, or NULL on error.
- * Sets *data and *len to the pushed bytes. */
-static const uint8_t *read_push(const uint8_t *p, const uint8_t *end,
-                                  const uint8_t **data, size_t *len)
-{
-    if (p >= end) return NULL;
-    uint8_t opcode = *p++;
-
-    if (opcode >= 0x01 && opcode <= 0x4b) {
-        *len = opcode;
-    } else if (opcode == 0x4c) { /* OP_PUSHDATA1 */
-        if (p >= end) return NULL;
-        *len = *p++;
-    } else if (opcode == 0x4d) { /* OP_PUSHDATA2 */
-        if (p + 2 > end) return NULL;
-        *len = (size_t)p[0] | ((size_t)p[1] << 8);
-        p += 2;
-    } else {
-        return NULL; /* invalid push opcode */
-    }
-
-    if (p + *len > end) return NULL;
-    *data = p;
-    return p + *len;
-}
 
 /* Read a big-endian uint64 from data of given length (1-8 bytes). */
 static uint64_t be_to_u64(const uint8_t *data, size_t len)
@@ -192,30 +166,6 @@ bool slp_parse(const uint8_t *script, size_t script_len,
 }
 
 /* ── Builders ────────────────────────────────────────────────── */
-
-static size_t push_data(uint8_t *out, const uint8_t *data, size_t len)
-{
-    size_t off = 0;
-    if (len <= 0x4b) {
-        out[off++] = (uint8_t)len;
-    } else if (len <= 0xff) {
-        out[off++] = 0x4c;
-        out[off++] = (uint8_t)len;
-    } else {
-        out[off++] = 0x4d;
-        out[off++] = (uint8_t)(len & 0xff);
-        out[off++] = (uint8_t)((len >> 8) & 0xff);
-    }
-    memcpy(out + off, data, len);
-    return off + len;
-}
-
-static size_t push_empty(uint8_t *out)
-{
-    out[0] = 0x4c;
-    out[1] = 0x00;
-    return 2;
-}
 
 size_t slp_build_genesis(uint8_t *out, size_t out_len,
                           const char *ticker, const char *name,

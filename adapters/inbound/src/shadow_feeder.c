@@ -98,7 +98,7 @@ struct zcl_result shadow_feeder_observe_block(
     cmd.completion = NULL;
     cmd.u.validate_block.block = block;
     cmd.u.validate_block.params = f->params;
-    cmd.u.validate_block.utxo = NULL;  /* UTXO snapshot adapter lands in I-7b/I-8 */
+    cmd.u.validate_block.utxo = NULL;  /* No UTXO snapshot port is plumbed into the shadow feeder yet; VALIDATE_BLOCK here covers PoW + structural checks only (validate_block skips input checks when utxo==NULL — see application/consensus/validate_block.h). */
 
     struct zcl_result q = mutator_input_queue_push(
             mutator_input_queue_of(f->mutator), &cmd);

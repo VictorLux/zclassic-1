@@ -1148,7 +1148,7 @@ int test_sapling_crypto(void)
     printf("fr_fft_parallel returns false on non-pow-2 n... ");
     {
         /* n=300 is >= 256 (parallel-dispatch threshold) and non-pow-2,
-         * so we hit the par_log2_ceil guard, not the serial dispatch. */
+         * so we hit the fr_log2_ceil guard, not the serial dispatch. */
         struct fr coeffs[300];
         for (size_t i = 0; i < 300; i++)
             fr_zero(&coeffs[i]);

@@ -18,7 +18,6 @@
 
 #include <stddef.h>
 #include <stdio.h>
-#include <string.h>
 #include <sys/stat.h>
 
 static inline struct node_health_store_sqlite_ctx *ctx_of(void *self)

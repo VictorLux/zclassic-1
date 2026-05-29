@@ -28,6 +28,21 @@ void equihash_params_init(struct equihash_params *p,
     p->solution_width = ((size_t)1 << K) * (p->collision_bit_length + 1) / 8;
 }
 
+bool equihash_solution_params(size_t solution_len,
+                              unsigned int *n, unsigned int *k)
+{
+    if (!n || !k)
+        return false;
+
+    switch (solution_len) {
+    case 1344: *n = 200; *k = 9; return true;
+    case 400:  *n = 192; *k = 7; return true;
+    case 68:   *n =  96; *k = 5; return true;
+    case 36:   *n =  48; *k = 5; return true;
+    default:   return false;
+    }
+}
+
 int equihash_initialise_state(const struct equihash_params *p,
                               struct blake2b_ctx *state)
 {

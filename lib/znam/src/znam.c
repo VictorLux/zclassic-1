@@ -11,53 +11,14 @@
 #include "storage/znam_projection.h"
 #include "util/ar_step_readonly.h"
 #include "util/log_macros.h"
+#include "script/op_return_push.h"
 #include <string.h>
 #include <stdio.h>
 #include <ctype.h>
 #include <time.h>
 
-/* ── Script push helpers (same as ZSLP) ─────────────────────────── */
-
-static const uint8_t *read_push(const uint8_t *p, const uint8_t *end,
-                                const uint8_t **data, size_t *len)
-{
-    if (p >= end) return NULL;
-    uint8_t opcode = *p++;
-
-    if (opcode >= 0x01 && opcode <= 0x4b) {
-        *len = opcode;
-    } else if (opcode == 0x4c) {
-        if (p >= end) return NULL;
-        *len = *p++;
-    } else if (opcode == 0x4d) {
-        if (p + 2 > end) return NULL;
-        *len = (size_t)p[0] | ((size_t)p[1] << 8);
-        p += 2;
-    } else {
-        return NULL;
-    }
-
-    if (p + *len > end) return NULL;
-    *data = p;
-    return p + *len;
-}
-
-static size_t push_data(uint8_t *out, const uint8_t *data, size_t len)
-{
-    size_t off = 0;
-    if (len <= 0x4b) {
-        out[off++] = (uint8_t)len;
-    } else if (len <= 0xff) {
-        out[off++] = 0x4c;
-        out[off++] = (uint8_t)len;
-    } else {
-        out[off++] = 0x4d;
-        out[off++] = (uint8_t)(len & 0xff);
-        out[off++] = (uint8_t)((len >> 8) & 0xff);
-    }
-    memcpy(out + off, data, len);
-    return off + len;
-}
+/* Script push helpers (read_push/push_data) live in
+ * script/op_return_push.h — same encoding as ZSLP. */
 
 /* ── Name validation ────────────────────────────────────────────── */
 

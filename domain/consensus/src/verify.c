@@ -3,14 +3,10 @@
 
 #include "domain/consensus/verify.h"
 
-#include "chain/pow.h"
+#include "consensus/params.h"
 #include "core/arith_uint256.h"
 #include "core/uint256.h"
 
-/* During Epoch I this delegates to CheckProofOfWork() in lib/chain.
- * The delegation is one-shot: we re-check the same conditions here
- * so the precise error code can be returned through zcl_result.
- * In later epochs the implementation moves inline into this file. */
 struct zcl_result domain_consensus_verify_pow_solution(
         const struct uint256 *block_hash,
         uint32_t n_bits,

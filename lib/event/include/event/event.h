@@ -391,8 +391,4 @@ size_t error_ring_dump_json(const struct error_ring *r, char *buf, size_t sz);
 /* Global error ring (initialized in event_log_init). */
 struct error_ring *error_ring_global(void);
 
-/* Sync state machine API moved to lib/sync/include/sync/sync_state.h.
- * The re-export at the top of this file keeps the declarations
- * visible to existing consumers. */
-
 #endif /* ZCL_EVENT_H */

@@ -279,36 +279,14 @@ static void fr_get_root_of_unity(struct fr *omega, unsigned int log_n)
         fr_sq(omega, omega);
 }
 
-static unsigned int log2_ceil(size_t n)
-{
-    unsigned int k = 0;
-    size_t v = 1;
-    while (v < n) { v <<= 1; k++; }
-    return k;
-}
-
-static void bit_reverse(struct fr *arr, size_t n, unsigned int log_n)
-{
-    for (size_t i = 0; i < n; i++) {
-        size_t j = 0;
-        for (unsigned int b = 0; b < log_n; b++)
-            j |= ((i >> b) & 1) << (log_n - 1 - b);
-        if (j > i) {
-            struct fr tmp = arr[i];
-            arr[i] = arr[j];
-            arr[j] = tmp;
-        }
-    }
-}
-
 bool fr_fft(struct fr *coeffs, size_t n, bool inverse)
 {
     if (n <= 1) return true;
 
-    unsigned int log_n = log2_ceil(n);
+    unsigned int log_n = fr_log2_ceil(n);
     if ((size_t)1 << log_n != n)
         LOG_FAIL("groth16",
-                 "fr_fft: n=%zu is not a power of 2 (log2_ceil=%u, "
+                 "fr_fft: n=%zu is not a power of 2 (fr_log2_ceil=%u, "
                  "2^log_n=%zu); refusing to transform — caller would "
                  "silently receive un-FFT'd data",
                  n, log_n, (size_t)1 << log_n);

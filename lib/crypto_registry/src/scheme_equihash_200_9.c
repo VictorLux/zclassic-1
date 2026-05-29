@@ -4,27 +4,6 @@
 #include "crypto/blake2b.h"
 #include "crypto/equihash.h"
 
-static bool equihash_params_for_solution(size_t solution_len,
-                                         unsigned int *n,
-                                         unsigned int *k)
-{
-    if (!n || !k)
-        return false;
-
-    switch (solution_len) {
-    case 1344:
-        *n = 200; *k = 9; return true;
-    case 400:
-        *n = 192; *k = 7; return true;
-    case 68:
-        *n = 96; *k = 5; return true;
-    case 36:
-        *n = 48; *k = 5; return true;
-    default:
-        return false;
-    }
-}
-
 static bool registry_equihash_200_9_verify(const uint8_t *vk,
                                            size_t vk_len,
                                            const uint8_t *public_inputs,
@@ -32,6 +11,11 @@ static bool registry_equihash_200_9_verify(const uint8_t *vk,
                                            const uint8_t *proof,
                                            size_t proof_len)
 {
+    /* Equihash is PoW, not a ZK proof: it has no verification key. The (n,k)
+     * params are derived from the solution length (proof_len) below. We reuse
+     * the crypto_zk_verify_fn interface for registry uniformity with Groth16,
+     * so vk/vk_len are ignored — the only caller (lib/validation/src/check_block.c)
+     * already passes NULL,0. */
     (void)vk;
     (void)vk_len;
 
@@ -40,7 +24,7 @@ static bool registry_equihash_200_9_verify(const uint8_t *vk,
 
     unsigned int n = 0;
     unsigned int k = 0;
-    if (!equihash_params_for_solution(proof_len, &n, &k))
+    if (!equihash_solution_params(proof_len, &n, &k))
         return false;
 
     struct equihash_params ep;

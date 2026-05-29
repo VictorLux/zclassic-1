@@ -15,7 +15,9 @@
 #define OVERWINTER_MAX_TX_VERSION  3
 #define SAPLING_MIN_TX_VERSION     4
 #define SAPLING_MAX_TX_VERSION     4
+#ifndef MAX_BLOCK_SIZE  /* also defined (same value) in primitives/block.h + validation/main_constants.h */
 #define MAX_BLOCK_SIZE             2000000U
+#endif
 #define MAX_BLOCK_SIGOPS           20000U
 #define MAX_TX_SIZE_BEFORE_SAPLING 100000U
 #define MAX_TX_SIZE_AFTER_SAPLING  2000000U

@@ -240,11 +240,3 @@ struct key_id hd_get_key_id(const struct ext_key *ek)
     privkey_get_pubkey(&ek->key, &pk);
     return pubkey_get_id(&pk);
 }
-
-void hd_get_fingerprint(const struct ext_key *ek, unsigned char fp[4])
-{
-    struct pubkey pk;
-    privkey_get_pubkey(&ek->key, &pk);
-    struct key_id kid = pubkey_get_id(&pk);
-    memcpy(fp, kid.id.data, 4);
-}

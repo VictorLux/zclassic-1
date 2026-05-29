@@ -270,14 +270,15 @@ int test_hd_keychain(void)
     }
 
     /* ── Test 15: fingerprint matches parent tracking ────────────── */
-    printf("hd_get_fingerprint matches child's vchFingerprint... ");
+    printf("hd_get_key_id fingerprint matches child's vchFingerprint... ");
     {
         struct ext_key master, child;
         hd_master_from_seed(&master, tv1_seed, sizeof(tv1_seed));
         hd_derive_child_index(&master, &child, BIP32_HARDENED);
 
+        struct key_id kid = hd_get_key_id(&master);
         unsigned char master_fp[4];
-        hd_get_fingerprint(&master, master_fp);
+        memcpy(master_fp, kid.id.data, 4);
 
         if (memcmp(master_fp, child.vchFingerprint, 4) == 0)
             printf("OK\n");
