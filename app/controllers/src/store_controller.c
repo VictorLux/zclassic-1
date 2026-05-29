@@ -4,12 +4,9 @@
 
 
 #include "controllers/store_controller_internal.h"
+#include "controllers/zslp_controller.h"
 
 /* Forward declarations (helpers that stay static to this file) */
-static size_t serve_gated_content(sqlite3 *db, const char *customer_addr,
-                                   const char *token_id, uint64_t required,
-                                   const char *datadir,
-                                   uint8_t *resp, size_t max);
 static bool store_csrf_verify(const char *context, const char *provided);
 static bool store_parse_access_query(const char *path,
                                      char *addr, size_t addr_max,
@@ -22,104 +19,97 @@ static bool store_mark_order_paid(const char *datadir,
                                   int status);
 
 
-/* Format ZCL price: trim trailing zeros but keep at least 2 decimals. */
-void format_zcl_price(char *out, size_t out_len, int64_t zatoshi)
+/* POST /store/buy/:id — create order. This is a request action (it mints a
+ * payment z-address and writes the order row), so it lives in the controller;
+ * it calls the store view's render helpers to build the response page. */
+static size_t serve_create_order(sqlite3 *db, int64_t product_id,
+                                  const char *customer_addr,
+                                  const char *datadir,
+                                  uint8_t *resp, size_t max)
 {
-    snprintf(out, out_len, "%.8f", (double)zatoshi / 1e8);
-    /* Find decimal point */
-    char *dot = strchr(out, '.');
-    if (!dot) return;
-    /* Trim trailing zeros, but keep at least 2 decimal places */
-    char *end = out + strlen(out) - 1;
-    char *min_pos = dot + 2; /* keep at least ".XX" */
-    while (end > min_pos && *end == '0') end--;
-    *(end + 1) = '\0';
+    struct node_db ndb = { .db = db, .open = true };
+    struct db_store_product product;
+    memset(&product, 0, sizeof(product));
+
+    if (!db_store_product_find_active(&ndb, product_id, &product)) {
+        return (size_t)snprintf((char *)resp, max,
+            "HTTP/1.1 404 Not Found\r\nContent-Type: text/html\r\n"
+            "Connection: close\r\n\r\n<h1>Product not found</h1>");
+    }
+
+    /* Generate a unique Sapling z-address for this payment.
+     * NEVER fall back to a fake address — that loses user funds. */
+    char payment_addr[128];
+    if (!zslp_generate_payment_address(datadir, payment_addr,
+                                        sizeof(payment_addr))) {
+        printf("store: CRITICAL — z-address generation failed for product %lld\n",
+               (long long)product_id);
+        fflush(stdout);
+        return (size_t)snprintf((char *)resp, max,
+            "HTTP/1.1 503 Service Unavailable\r\nContent-Type: text/html\r\n"
+            "Connection: close\r\n\r\n"
+            "<h1>Payment Temporarily Unavailable</h1>"
+            "<p>The node is still loading cryptographic keys. "
+            "Please try again in a few minutes.</p>"
+            "<p><a href='/store/products'>Back to Store</a></p>");
+    }
+
+    struct db_store_order order;
+    memset(&order, 0, sizeof(order));
+    order.product_id = product_id;
+    snprintf(order.customer_addr, sizeof(order.customer_addr), "%s",
+             customer_addr ? customer_addr : "");
+    snprintf(order.payment_addr, sizeof(order.payment_addr), "%s", payment_addr);
+    order.amount_zatoshi = product.price_zatoshi;
+    order.status = STORE_ORDER_PENDING;
+    if (!db_store_order_save(&ndb, &order)) {
+        printf("store: order INSERT failed: %s\n", sqlite3_errmsg(db));
+        return (size_t)snprintf((char *)resp, max,
+            "HTTP/1.1 500 Internal Server Error\r\nContent-Type: text/html\r\n"
+            "Connection: close\r\n\r\n<h1>Order creation failed</h1>");
+    }
+    int64_t order_id = order.id;
+
+    /* Show payment page */
+    char body[8192];
+    size_t off = 0;
+    int n = html_body_start(body, sizeof(body), "Payment");
+    if (n > 0) off = (size_t)n;
+
+    char safe_pay[256], safe_cust[256];
+    html_escape(safe_pay, sizeof(safe_pay), payment_addr);
+    html_escape(safe_cust, sizeof(safe_cust),
+                customer_addr ? customer_addr : "(not provided)");
+
+    char order_price[32];
+    format_zcl_price(order_price, sizeof(order_price), product.price_zatoshi);
+
+    n = snprintf(body + off, sizeof(body) - off,
+        "<h2>Order #%lld</h2>"
+        "<div class='product'>"
+        "<p>Send exactly <span class='price'>%s ZCL</span> to:</p>"
+        "<div class='addr'>%s</div>"
+        "<button class='btn' style='font-size:12px;padding:6px 12px;cursor:pointer;border:none' "
+        "onclick=\"navigator.clipboard?navigator.clipboard.writeText('%s'):void(0);"
+        "this.textContent='Copied!'\">Copy Address</button>"
+        "<p>After payment confirms, tokens will be sent to:</p>"
+        "<div class='addr'>%s</div>"
+        "<p><a href='/store/orders/%lld'>Check payment status</a></p>"
+        "</div>"
+        "<p><a href='/store/products'>&larr; Back to store</a></p>"
+        "</body></html>",
+        (long long)order_id,
+        order_price,
+        safe_pay,
+        safe_pay,
+        safe_cust,
+        (long long)order_id);
+    if (n > 0) off += (size_t)n;
+
+    return store_html_response(body, off, resp, max);
 }
 
-const char *store_get_onion_address(void)
-{
-    extern const char *onion_service_get_address(void);
-    return onion_service_get_address();
-}
 
-/* HTML body start (no HTTP headers — those are added by store_wrap_response) */
-int html_body_start(char *buf, size_t max, const char *title)
-{
-    const char *onion = store_get_onion_address();
-    return snprintf(buf, max,
-        "<!DOCTYPE html><html><head><meta charset='utf-8'>"
-        "<title>%s</title><style>"
-        "body{font-family:monospace;background:#0a0a0a;color:#e0e0e0;"
-        "max-width:800px;margin:0 auto;padding:20px}"
-        "h1{color:#00ff88}h2{color:#00cc66}"
-        "a{color:#00aaff;text-decoration:none}"
-        ".header-nav{display:flex;align-items:center;gap:16px;"
-        "border-bottom:1px solid #333;padding-bottom:12px;margin-bottom:16px;"
-        "flex-wrap:wrap}"
-        ".header-nav a{font-size:13px}"
-        ".onion-id{font-size:11px;color:#666;word-break:break-all}"
-        ".product{background:#1a1a1a;padding:20px;margin:15px 0;"
-        "border-radius:8px;border-left:3px solid #00ff88}"
-        ".price{color:#00ff88;font-size:20px;font-weight:bold}"
-        ".btn{display:inline-block;background:#00ff88;color:#0a0a0a;"
-        "padding:10px 20px;border-radius:4px;font-weight:bold;margin-top:10px}"
-        ".addr{background:#111;padding:10px;border-radius:4px;word-break:break-all;"
-        "font-size:12px;margin:10px 0}"
-        ".status{padding:8px 16px;border-radius:4px;display:inline-block}"
-        ".pending{background:#333;color:#ff8800}"
-        ".paid{background:#1a3a1a;color:#00ff88}"
-        ".failed{background:#3a1a1a;color:#ff4444}"
-        "input{background:#1a1a1a;color:#e0e0e0;border:1px solid #333;"
-        "padding:8px;font-family:monospace;width:100%%;margin:5px 0;"
-        "box-sizing:border-box}"
-        "</style></head><body>"
-        "<div class='header-nav'>"
-        "<h1 style='margin:0'><a href='/store'>ZCL Store</a></h1>"
-        "<a href='/'>Home</a>"
-        "<a href='/store/products'>Products</a>"
-        "<a href='/store/orders'>Orders</a>"
-        "%s%s%s"
-        "</div>",
-        title,
-        onion ? "<div class='onion-id'>" : "",
-        onion ? onion : "",
-        onion ? "</div>" : "");
-}
-
-/* Wrap an HTML body with HTTP headers including Content-Length. */
-static size_t store_wrap_response(const char *body, size_t body_len,
-                                   const char *status,
-                                   const char *content_type,
-                                   uint8_t *resp, size_t max)
-{
-    return (size_t)snprintf((char *)resp, max,
-        "HTTP/1.1 %s\r\n"
-        "Content-Type: %s\r\n"
-        "Content-Length: %zu\r\n"
-        "Connection: close\r\n\r\n"
-        "%.*s",
-        status, content_type, body_len,
-        (int)body_len, body);
-}
-
-/* Convenience: wrap a 200 OK HTML response with Content-Length. */
-size_t store_html_response(const char *body, size_t body_len,
-                                   uint8_t *resp, size_t max)
-{
-    return store_wrap_response(body, body_len,
-        "200 OK", "text/html; charset=utf-8", resp, max);
-}
-
-/* Convenience: wrap an error HTML response with Content-Length. */
-size_t store_error_response(const char *status_code,
-                                    const char *body, size_t body_len,
-                                    uint8_t *resp, size_t max)
-{
-    return store_wrap_response(body, body_len,
-        status_code, "text/html; charset=utf-8", resp, max);
-}
-
-/* Product card template: {{var}} = HTML-escaped, {{{var}}} = raw. */
 /* Parse resource id from the last path segment and reject malformed ids. */
 static bool parse_positive_path_id(const char *path, int64_t *id_out)
 {
@@ -305,26 +295,6 @@ static bool store_mark_order_paid(const char *datadir,
     }
     node_db_close(&ndb);
     return ok;
-}
-
-const char *store_order_status_text(int status)
-{
-    switch (status) {
-    case STORE_ORDER_PENDING: return "Pending Payment";
-    case STORE_ORDER_PAID: return "Payment Received";
-    case STORE_ORDER_SENT: return "Tokens Sent";
-    case STORE_ORDER_FAILED: return "Mint Failed (contact support)";
-    default: return "Unknown";
-    }
-}
-
-const char *store_order_status_class(int status)
-{
-    switch (status) {
-    case STORE_ORDER_PENDING: return "pending";
-    case STORE_ORDER_FAILED: return "failed";
-    default: return "paid";
-    }
 }
 
 /* ── CSRF form token ─────────────────────────────────────
@@ -664,65 +634,4 @@ bool store_check_token_access(const char *datadir,
 
     uint64_t balance = zslp_balance(datadir, token_id, customer_addr);
     return balance >= required;
-}
-
-/* Serve a token-gated page. Checks balance, returns content or 403. */
-static size_t serve_gated_content(sqlite3 *db, const char *customer_addr,
-                                   const char *token_id, uint64_t required,
-                                   const char *datadir,
-                                   uint8_t *resp, size_t max)
-{
-    (void)db;
-    uint64_t balance = zslp_balance(datadir, token_id, customer_addr);
-
-    char safe_token[128], safe_addr[256];
-    html_escape(safe_token, sizeof(safe_token), token_id ? token_id : "");
-    html_escape(safe_addr, sizeof(safe_addr),
-                customer_addr ? customer_addr : "");
-
-    if (!store_check_token_access(datadir, customer_addr, token_id, required)) {
-        char body[2048];
-        int blen = snprintf(body, sizeof(body),
-            "<!DOCTYPE html><html><head><style>"
-            "body{font-family:monospace;background:#0a0a0a;color:#e0e0e0;"
-            "max-width:800px;margin:0 auto;padding:40px}"
-            "h1{color:#ff4444}a{color:#00aaff;text-decoration:none}"
-            "</style></head><body>"
-            "<h1>Access Denied</h1>"
-            "<p>This service requires %llu %s tokens.</p>"
-            "<p>Your balance: %llu</p>"
-            "<p><a href='/store'>&larr; Get tokens</a> | "
-            "<a href='/'>Home</a></p>"
-            "</body></html>",
-            (unsigned long long)required, safe_token,
-            (unsigned long long)balance);
-        if (blen < 0) blen = 0;
-        return store_error_response("403 Forbidden",
-            body, (size_t)blen, resp, max);
-    }
-
-    /* Customer has tokens — serve the content */
-    char body[2048];
-    int blen = snprintf(body, sizeof(body),
-        "<!DOCTYPE html><html><head><style>"
-        "body{font-family:monospace;background:#0a0a0a;color:#e0e0e0;"
-        "max-width:800px;margin:0 auto;padding:40px}"
-        "h1{color:#00ff88}a{color:#00aaff;text-decoration:none}"
-        ".card{background:#1a1a1a;padding:20px;margin:15px 0;border-radius:8px;"
-        "border-left:3px solid #00ff88}"
-        "</style></head><body>"
-        "<h1>Premium Service</h1>"
-        "<div class='card'>"
-        "<p>Welcome, %s</p>"
-        "<p>Your token balance: %llu %s</p>"
-        "<p>You have access to this service.</p>"
-        "</div>"
-        "<p><a href='/store'>&larr; Back to store</a> | "
-        "<a href='/'>Home</a></p>"
-        "</body></html>",
-        safe_addr,
-        (unsigned long long)balance,
-        safe_token);
-    if (blen < 0) blen = 0;
-    return store_html_response(body, (size_t)blen, resp, max);
 }
