@@ -143,7 +143,8 @@ volatile sig_atomic_t g_shutdown_requested = 0;
     X(block_index_sidecar_port) \
     X(wallet_view_port) \
     X(bg_hash_verify_store_port) \
-    X(bg_validation_store_port)
+    X(bg_validation_store_port) \
+    X(zslp_store_port)
 
 #define SPEC_LIST(X) \
     X(wallet_dashboard) X(wallet_send) X(wallet_receive) \

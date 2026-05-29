@@ -3,6 +3,8 @@
 
 #include "platform/time_compat.h"
 #include "services/zslp_service.h"
+#include "adapters/outbound/persistence/zslp_store_sqlite.h"
+#include "ports/zslp_store_port.h"
 #include "config/runtime.h"
 #include "models/database.h"
 #include "models/wallet_tx.h"
@@ -186,6 +188,8 @@ struct zcl_result zslp_service_open_db(const char *datadir, sqlite3 **db_out,
                                        bool *owns_db)
 {
     struct node_db *ndb = app_runtime_node_db();
+    struct zslp_store_port store = {0};
+    void *opened = NULL;
 
     if (!db_out || !owns_db)
         return ZCL_ERR(-1, "open_db: NULL output pointer");
@@ -199,33 +203,28 @@ struct zcl_result zslp_service_open_db(const char *datadir, sqlite3 **db_out,
     if (!datadir)
         return ZCL_ERR(-2, "open_db: NULL datadir and no runtime db");
 
-    char db_path[1024];
-    snprintf(db_path, sizeof(db_path), "%s/node.db", datadir);
-    if (sqlite3_open(db_path, db_out) != SQLITE_OK) {
-        struct zcl_result r =
-            ZCL_ERR(-3, "open_db: sqlite3_open failed for %s", db_path);
-        if (*db_out) {
-            sqlite3_close(*db_out);
-            *db_out = NULL;
-        }
-        return r;
+    /* No in-process runtime connection: acquire a fresh, owned connection
+     * to "<datadir>/node.db" through the zslp_store port. The adapter under
+     * adapters/outbound/persistence/ is the only thing that names sqlite —
+     * same open, busy timeout, and zslp_balances DDL as the inline code. */
+    zslp_store_sqlite_bind(&store);
+    if (!store.open(store.self, datadir, &opened)) {
+        char db_path[1024];
+        snprintf(db_path, sizeof(db_path), "%s/node.db", datadir);
+        return ZCL_ERR(-3, "open_db: sqlite3_open failed for %s", db_path);
     }
-    sqlite3_busy_timeout(*db_out, 5000);
-    sqlite3_exec(*db_out,
-        "CREATE TABLE IF NOT EXISTS zslp_balances ("
-        "token_id TEXT NOT NULL,"
-        "address TEXT NOT NULL,"
-        "balance INTEGER NOT NULL DEFAULT 0,"
-        "PRIMARY KEY (token_id, address))",
-        NULL, NULL, NULL);
+    *db_out = (sqlite3 *)opened;
     *owns_db = true;
     return ZCL_OK;
 }
 
 void zslp_service_close_db(sqlite3 *db, bool owns_db)
 {
-    if (owns_db && db)
-        sqlite3_close(db);
+    if (owns_db && db) {
+        struct zslp_store_port store = {0};
+        zslp_store_sqlite_bind(&store);
+        store.close(store.self, db);
+    }
 }
 
 uint64_t zslp_service_get_balance(sqlite3 *db, const char *token_id,
