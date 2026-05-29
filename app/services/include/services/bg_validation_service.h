@@ -28,6 +28,8 @@
 #include <stdatomic.h>
 #include <pthread.h>
 
+#include "ports/bg_validation_store_port.h"
+
 struct main_state;
 struct coins_view_cache;
 struct node_db;
@@ -57,6 +59,10 @@ struct bg_validation_service {
     struct node_db *ndb;
     const char *datadir;
     const struct chain_params *params;
+
+    /* Crash-resume cursor storage behind a port; bound from `ndb` in
+     * bg_validation_init. The adapter is the only sqlite-aware code. */
+    struct bg_validation_store_port progress_store;
 
     /* Thread management */
     pthread_t thread;

@@ -60,6 +60,8 @@
 #include "sapling/bn254.h"
 #include "sapling/sapling_prover.h"
 #include "models/database.h"
+#include "adapters/outbound/persistence/bg_validation_store_sqlite.h"
+#include "ports/bg_validation_store_port.h"
 #include "event/event.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -76,8 +78,8 @@
 /* Global instance for RPC access */
 struct bg_validation_service *g_bg_validation = NULL;
 
-/* ── Progress persistence key ────────────────────────────────── */
-#define BG_VALID_KEY "bg_validation_height"
+/* The crash-resume cursor (state key "bg_validation_height") now lives
+ * behind bg_validation_store_port; the sqlite adapter owns the key. */
 
 /* ── How often to save progress and log ─────────────────────── */
 #define SAVE_INTERVAL  1000
@@ -293,21 +295,20 @@ out:
 
 /* ── Load/save progress from SQLite ──────────────────────────── */
 
-static int load_progress(struct node_db *ndb)
+static int load_progress(const struct bg_validation_store_port *store)
 {
-    if (!ndb || !ndb->open)
-        LOG_ERR("bgv", "ndb not available");
-    int64_t val = -1;
-    if (node_db_state_get_int(ndb, BG_VALID_KEY, &val))
-        return (int)val;
+    int val = -1;
+    if (store && store->load_progress &&
+        store->load_progress(store->self, &val))
+        return val;
     LOG_ERR("bgv", "no saved progress found");
 }
 
-static void save_progress(struct node_db *ndb, int height)
+static void save_progress(const struct bg_validation_store_port *store,
+                          int height)
 {
-    if (!ndb || !ndb->open)
-        return;
-    node_db_state_set_int(ndb, BG_VALID_KEY, (int64_t)height);
+    if (store && store->save_progress)
+        store->save_progress(store->self, height);
 }
 
 /* ── Main validation thread ──────────────────────────────────── */
@@ -321,7 +322,7 @@ static void *bg_validation_thread(void *arg)
     int num_workers = svc->num_workers;
 
     /* Load resume point */
-    int start_height = load_progress(svc->ndb);
+    int start_height = load_progress(&svc->progress_store);
     if (start_height < 0)
         start_height = 0;
     else
@@ -396,7 +397,7 @@ static void *bg_validation_thread(void *arg)
 
         /* Save progress periodically */
         if (h % SAVE_INTERVAL == 0)
-            save_progress(svc->ndb, h);
+            save_progress(&svc->progress_store, h);
 
         /* Log progress */
         if (h % LOG_INTERVAL == 0 && h > start_height) {
@@ -425,7 +426,7 @@ static void *bg_validation_thread(void *arg)
 
     if (!atomic_load(&svc->stop_requested)) {
         /* Validation complete — save final progress */
-        save_progress(svc->ndb, chain_height);
+        save_progress(&svc->progress_store, chain_height);
         atomic_store(&svc->progress.verified_height, chain_height);
         atomic_store(&svc->progress.state, BG_VALIDATION_COMPLETE);
 
@@ -452,7 +453,7 @@ static void *bg_validation_thread(void *arg)
     } else {
         /* Stopped early — save where we got to */
         int verified = atomic_load(&svc->progress.verified_height);
-        save_progress(svc->ndb, verified);
+        save_progress(&svc->progress_store, verified);
         printf("[bg-valid] Stopped at height %d (will resume next start)\n",
                verified);
     }
@@ -475,6 +476,11 @@ void bg_validation_init(struct bg_validation_service *svc,
     svc->params = params;
     svc->thread_started = false;
     atomic_store(&svc->stop_requested, false);
+
+    /* Bind the crash-resume cursor store to the (already-open) node DB.
+     * The sqlite adapter is the only code that names the DB for this
+     * subsystem; the cursor key/semantics are unchanged. */
+    bg_validation_store_sqlite_bind(ndb, &svc->progress_store);
 
     /* Use nproc/2 workers for parallel script verification, capped at 4.
      * pread()-based disk I/O is fully thread-safe, so multiple workers
@@ -513,7 +519,7 @@ bool bg_validation_start(struct bg_validation_service *svc)
         LOG_FAIL("bg_validation", "bg_validation_start: null svc or thread already started");
 
     /* Don't start if already fully validated */
-    int saved = load_progress(svc->ndb);
+    int saved = load_progress(&svc->progress_store);
     int chain_h = active_chain_height(&svc->ms->chain_active);
     if (saved >= chain_h && chain_h > 0) {
         printf("[bg-valid] Already fully validated to height %d\n", saved);
@@ -597,7 +603,7 @@ void bg_validation_reset(struct bg_validation_service *svc)
 {
     if (!svc) return;
     bg_validation_stop(svc);
-    save_progress(svc->ndb, -1);
+    save_progress(&svc->progress_store, -1);
     atomic_store(&svc->progress.verified_height, -1);
     atomic_store(&svc->progress.sigs_verified, 0);
     atomic_store(&svc->progress.proofs_verified, 0);

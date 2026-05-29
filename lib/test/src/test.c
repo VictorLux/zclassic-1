@@ -861,6 +861,7 @@ int main(void)
     failures += test_block_index_sidecar_port();
     failures += test_wallet_view_port();
     failures += test_bg_hash_verify_store_port();
+    failures += test_bg_validation_store_port();
     failures += test_make_lint_gates();
     failures += test_multisig();
     failures += test_mcp_fuzz();
