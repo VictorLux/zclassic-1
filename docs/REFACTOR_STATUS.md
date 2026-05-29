@@ -53,6 +53,15 @@ path + canary checks), then **B8** deletion cleanup and **E6/E7** hardening.
 Everything routes through B; do not spawn a parallel "fix the mirror" track — that IS
 B.
 
+**Preflight go/no-go hardened (2026-05-29):** `cutoverpreflight` (RPC + MCP `zcl_cutoverpreflight`)
+now ANDs a complete invariant set into one `ready` boolean with a typed blocker per failing
+gate: tip parity (height+hash via header_admit_diff CONVERGED), `blocks_fed==blocks_diffed`
+conservation, auto-revert wiring armed (`cutover_no_forward_progress` registered/CRITICAL/
+max_attempts==1/witnessed/not-active), header+validate cursor-lag, modes-are-shadow, and the
+net-new **UTXO-set commitment (SHA3) parity gate** (`SHA3(legacy coins.db utxos) ==
+SHA3(log-folded utxo_projection)` + count match; projection caught up first so an in-flight
+gap reads DEFER, never false-divergence). Read-only; cannot make `ready` easier.
+
 ---
 
 ## ✅ Already shipped (the foundation)
@@ -76,7 +85,7 @@ The primitives the north star needs all exist and are tested — they just run i
 - [x] **Recovery moles fixed (2026-05-27):** 5 layers (BIP30 self-write tolerance, CEC cursor non-gating, stale-freeze reconcile, LOCAL_IMPORT reconstruct, no-silent-ready E8) all on main, pinned by `test_connect_block_self_write.c` + `test_chain_evidence_controller.c` (`4ccacf3ab`). The live node can no longer wedge silently on these classes.
 - [x] **A5 shape codegen (2026-05-27):** `tools/new_shape.sh` + `make new-{condition,model,job,controller}` (`497b48781`). The easy path is the correct path.
 - [x] **Pure domain core extracted (2026-05-27):** `domain/` (top-level, not `lib/`) holds **21** pure modules across 3 contexts — `domain/consensus/src/` (17: check_block, checkpoints, coinbase, coins_math, equihash, header_accept, locktime, pow, sapling_structural, script_interp, script_standard, sighash, sigops, subsidy, tx_structural, upgrades, verify), `domain/wallet/src/` (2: key_derivation, mnemonic), `domain/encoding/src/` (2: base58, bech32). Each is no-clock/no-RNG/no-IO, fronted by a thin `lib/` legacy wrapper that `#include "domain/<ctx>/<name>.h"` and delegates (e.g. `lib/chain/src/pow.c`, `lib/encoding/src/base58.c`, `lib/script/src/standard.c`), and sealed by a regression test — **21** `lib/test/src/test_domain_*.c` files (1:1 with the modules). Verify: `find domain -name '*.c' | wc -l` → 21; `ls lib/test/src/test_domain_*.c | wc -l` → 21.
-- [x] **Ports/adapters seam populated (2026-05-27):** `ports/include/ports/` has **10** port headers; **5 services** now read/write through a port instead of touching SQLite directly — hodl_history (`hodl_history_port.h`), node_health (`node_health_store_port.h`), db_maintenance (`db_maintenance_port.h`), wallet_backup (`wallet_backup_store_port.h`), block_index_sidecar (`block_index_sidecar_port.h`) — plus the pre-existing block_log, clock, consensus_log, event_emitter, utxo_snapshot ports. SQLite adapters live in `adapters/outbound/persistence/src/` (one `*_sqlite.c` per service, 5 total), each with a port test (`lib/test/src/test_*_port.c`). Most storage still calls `lib/storage/*_sqlite.c` directly; this is a real seam, not full coverage.
+- [x] **Ports/adapters seam populated (2026-05-27; extended 2026-05-29):** **9 services** now read/write through a port instead of touching SQLite directly — hodl_history (`hodl_history_port.h`), node_health (`node_health_store_port.h`), db_maintenance (`db_maintenance_port.h`), wallet_backup (`wallet_backup_store_port.h`), block_index_sidecar (`block_index_sidecar_port.h`), block_log, bg_hash_verify (`bg_hash_verify_store_port.h`), bg_validation (`bg_validation_store_port.h`), zslp (`zslp_store_port.h`) — plus the pre-existing clock, consensus_log, event_emitter, utxo_snapshot ports. SQLite adapters live in `adapters/outbound/persistence/src/` (one `*_sqlite.c` per service), each with a port test (`lib/test/src/test_*_port.c`). The remaining services-direct-sqlite files are all B-gated / chain-entangled (block_index_loader, chain_state_repository, chain_tip, utxo_recovery_*); this is a real seam, not full coverage.
 
 ---
 
