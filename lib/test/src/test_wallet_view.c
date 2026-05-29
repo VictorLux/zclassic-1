@@ -23,10 +23,115 @@
 #include "platform/time_compat.h"
 #include "test/test_helpers.h"
 #include "controllers/wallet_view_controller.h"
+#include "models/database.h"
 #include "util/template.h"
 #include <unistd.h>
 #include <sys/stat.h>
 #include <time.h>
+
+/* ── Hermetic fixture DB ──────────────────────────────────────
+ * The data-driven render tests must never touch the live node's
+ * ~/.zclassic-c23/node.db. Coupling to it produced two problems:
+ *   (1) non-deterministic assertions (balances/txs change minute to
+ *       minute as the node syncs), and
+ *   (2) "[explorer] ... no such table: mempool_entries" noise whenever
+ *       the live DB's projection tables weren't built yet — which
+ *       masked real failures in ./test_parallel.
+ *
+ * Instead we build a private, deterministic node.db in a temp datadir
+ * using the authoritative production schema (node_db_open applies
+ * SCHEMA[]), add the mempool_entries projection table the read paths
+ * expect, and seed known rows. wallet_view_init(fixture_dir) then points
+ * every wv_open_db() at it. The tests assert against the seeded values. */
+
+/* Seeded transparent balance: 0.05 ZCL (5,000,000 zatoshi), unspent. */
+#define WV_FIX_TBAL_SAT   5000000LL
+/* Seeded shielded balance: 0.02 ZCL (2,000,000 zatoshi), unspent. */
+#define WV_FIX_ZBAL_SAT   2000000LL
+
+/* Build a temp datadir containing a seeded node.db. Returns true on
+ * success and writes the datadir path into out (caller owns the dir). */
+static bool wv_build_fixture_datadir(char *out, size_t out_sz)
+{
+    char tmpl[] = "/tmp/zcl_wv_fixture_XXXXXX";
+    char *dir = mkdtemp(tmpl);
+    if (!dir)
+        return false;
+    snprintf(out, out_sz, "%s", dir);
+
+    char dbpath[512];
+    snprintf(dbpath, sizeof(dbpath), "%s/node.db", dir);
+
+    struct node_db ndb;
+    if (!node_db_open(&ndb, dbpath))
+        return false;
+
+    bool ok = true;
+    /* Projection table read by the dashboard/node/pulse paths. Not part
+     * of the base SCHEMA (it is built by a runtime projection on the live
+     * node), so create it here to keep the read paths "no such table"-free. */
+    ok = ok && node_db_exec(&ndb,
+        "CREATE TABLE IF NOT EXISTS mempool_entries ("
+        "txid BLOB PRIMARY KEY, fee INTEGER, size INTEGER, time_added INTEGER)");
+
+    /* One block at height 100 (deterministic chain tip). */
+    ok = ok && node_db_exec(&ndb,
+        "INSERT INTO blocks(hash,height,prev_hash,version,merkle_root,time,"
+        "bits,nonce,solution,chain_work,status,num_tx,sapling_value,sprout_value) "
+        "VALUES(x'aa00',100,x'bb00',4,x'cc00',1700000000,0x1d00ffff,x'00',x'00',"
+        "x'00',3,1,0,0)");
+
+    /* One unspent transparent UTXO → 0.05 ZCL ground-truth balance. */
+    char sql[512];
+    snprintf(sql, sizeof(sql),
+        "INSERT INTO wallet_utxos(txid,vout,value,address_hash,script,height,"
+        "is_coinbase) VALUES(x'd1',0,%lld,x'1234567890abcdef1234567890abcdef12345678',"
+        "x'76a914',100,0)", (long long)WV_FIX_TBAL_SAT);
+    ok = ok && node_db_exec(&ndb, sql);
+
+    /* One wallet transaction (received) referencing that UTXO's txid. */
+    ok = ok && node_db_exec(&ndb,
+        "INSERT INTO wallet_transactions(txid,raw_tx,block_hash,block_height,"
+        "time_received,from_me,fee) "
+        "VALUES(x'd1',x'00',x'aa00',100,1700000000,0,10000)");
+
+    /* One unspent sapling note → 0.02 ZCL shielded balance. */
+    snprintf(sql, sizeof(sql),
+        "INSERT INTO wallet_sapling_notes(txid,output_index,value,rcm,ivk,"
+        "diversifier,pk_d,cm,nullifier,block_height,address) "
+        "VALUES(x'e1',0,%lld,x'00',x'01',x'02',x'03',x'04',x'05',100,"
+        "'zs1fixturenote')", (long long)WV_FIX_ZBAL_SAT);
+    ok = ok && node_db_exec(&ndb, sql);
+
+    /* One sapling key so receive/shield paths see a private address. */
+    ok = ok && node_db_exec(&ndb,
+        "INSERT INTO wallet_sapling_keys(ivk,xsk,xfvk,diversifier,pk_d,"
+        "child_index,address) VALUES(x'01',x'02',x'03',x'04',x'05',0,"
+        "'zs1fixtureaddress')");
+
+    /* One peer (count > 0). */
+    ok = ok && node_db_exec(&ndb,
+        "INSERT INTO peers(ip,port,services,last_seen) "
+        "VALUES(x'7f000001',8033,1,1700000000)");
+
+    node_db_close(&ndb);
+    return ok;
+}
+
+/* Recursively remove the fixture datadir (db + wal/shm + dir). */
+static void wv_cleanup_fixture_datadir(const char *dir)
+{
+    if (!dir || !dir[0])
+        return;
+    const char *files[] = {"node.db", "node.db-wal", "node.db-shm",
+                           "node.db-journal", "wallet.backup", NULL};
+    for (int i = 0; files[i]; i++) {
+        char p[600];
+        snprintf(p, sizeof(p), "%s/%s", dir, files[i]);
+        unlink(p);
+    }
+    rmdir(dir);
+}
 
 /* Response buffer — 64KB is enough for any wallet page */
 static uint8_t _wv_resp[131072];
@@ -968,35 +1073,24 @@ int test_wallet_view(void)
     }
 
     /* ═══════════════════════════════════════════════════════════
-     * 13. LIVE RENDER — real datadir, real data, production-grade audit
-     *     These tests only run if ~/.zclassic-c23/node.db exists.
+     * 13. FIXTURE RENDER — hermetic datadir, deterministic seeded data.
+     *     Builds a private node.db (authoritative schema + seeded rows);
+     *     never touches the live node. See wv_build_fixture_datadir().
      * ═══════════════════════════════════════════════════════════ */
 
-    const char *home = getenv("HOME");
-    char live_datadir[256], live_db[300];
-    if (home) {
-        snprintf(live_datadir, sizeof(live_datadir), "%s/.zclassic-c23", home);
-        snprintf(live_db, sizeof(live_db), "%s/node.db", live_datadir);
-    } else {
-        live_datadir[0] = '\0';
-        live_db[0] = '\0';
+    char fixture_datadir[256] = "";
+    if (!wv_build_fixture_datadir(fixture_datadir, sizeof(fixture_datadir))) {
+        printf("wallet_view: FIXTURE BUILD FAILED — skipping data-driven tests\n");
+        wallet_view_init(NULL);
+        return failures;  /* don't fall back to the live node */
     }
 
-    bool have_live_db = (access(live_db, R_OK) == 0);
-    if (!have_live_db) {
-        printf("wallet_view: LIVE TESTS SKIPPED (no %s)\n", live_db);
-        return failures;
-    }
+    /* Switch to the hermetic fixture datadir for data-driven tests. */
+    wallet_view_init(fixture_datadir);
+    printf("\n=== FIXTURE WALLET RENDER TESTS (deterministic seeded data) ===\n\n");
 
-    /* Switch to real datadir for live tests */
-    wallet_view_init(live_datadir);
-    printf("\n=== LIVE WALLET RENDER TESTS (real data) ===\n\n");
-
-    /* Check if wallet daemon has funds — some tests require it */
-    wv_get("/api/wallet/pulse");
-    const char *_bal_check = strstr((char *)_wv_resp, "\"balance\":");
-    int64_t _wallet_balance = _bal_check ? strtoll(_bal_check + 10, NULL, 10) : 0;
-    bool have_wallet_funds = (_wallet_balance > 0);
+    /* The fixture always seeds funds (transparent + shielded). */
+    bool have_wallet_funds = (WV_FIX_TBAL_SAT + WV_FIX_ZBAL_SAT > 0);
 
     /* ── Dashboard with real data ────────────────────────────── */
 
@@ -2307,8 +2401,9 @@ int test_wallet_view(void)
         else { printf("FAIL (%.2f ms)\n", ms); failures++; }
     }
 
-    /* Restore NULL for safety */
+    /* Restore NULL for safety, then tear down the fixture datadir. */
     wallet_view_init(NULL);
+    wv_cleanup_fixture_datadir(fixture_datadir);
 
     return failures;
 }

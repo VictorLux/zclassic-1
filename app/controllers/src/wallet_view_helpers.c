@@ -275,8 +275,11 @@ void wv_get_funded_taddr(char *out, size_t max) {
 /* ── DB helpers ────────────────────────────────────────────── */
 
 sqlite3 *wv_open_db(void) {
+    /* No datadir is a normal, handled state (fresh install, hermetic
+     * tests): callers degrade gracefully on NULL. Return quietly rather
+     * than logging — a per-request WARN here is noise, not a fault. */
     if (!g_wv_datadir)
-        LOG_NULL("wallet_view", "open_db: no datadir set");
+        return NULL;
     char path[1024];
     snprintf(path, sizeof(path), "%s/node.db", g_wv_datadir);
     sqlite3 *db = NULL;
@@ -289,8 +292,9 @@ sqlite3 *wv_open_db(void) {
 }
 
 sqlite3 *wv_open_db_rw(void) {
+    /* See wv_open_db(): no datadir is a handled state, not a fault. */
     if (!g_wv_datadir)
-        LOG_NULL("wallet_view", "open_db_rw: no datadir set");
+        return NULL;
     char path[1024];
     snprintf(path, sizeof(path), "%s/node.db", g_wv_datadir);
     sqlite3 *db = NULL;
