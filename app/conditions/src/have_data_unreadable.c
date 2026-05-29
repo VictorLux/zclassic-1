@@ -1,5 +1,6 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0 */
 
+#include "conditions/have_data_unreadable.h"
 #include "framework/condition.h"
 #include "util/log_macros.h"
 
@@ -17,6 +18,7 @@
 static _Atomic int g_target_at_detect = -1;
 static _Atomic int g_file_at_detect = -1;
 static _Atomic unsigned g_pos_at_detect = 0;
+static _Atomic int g_remedy_calls = 0;
 
 static struct block_index *target_index(struct main_state *ms, int target)
 {
@@ -69,6 +71,7 @@ static enum condition_remedy_result remedy_have_data_unreadable(void)
     if (!p)
         return COND_REMEDY_SKIP;
 
+    atomic_fetch_add(&g_remedy_calls, 1);
     LOG_WARN("condition", "[condition:have_data_unreadable] clearing h=%d file=%d pos=%u", target, p->nFile, p->nDataPos);
     event_emitf(EV_BLOCK_REJECTED, 0,
                 "HAVE_DATA_UNREADABLE h=%d file=%d pos=%u",
@@ -123,8 +126,14 @@ void have_data_unreadable_test_reset(void)
     atomic_store(&g_target_at_detect, -1);
     atomic_store(&g_file_at_detect, -1);
     atomic_store(&g_pos_at_detect, 0);
+    atomic_store(&g_remedy_calls, 0);
     atomic_store(&s->attempts, 0);
     atomic_store(&s->last_outcome, COND_REMEDY_SKIP);
     atomic_store(&s->currently_active, false);
+}
+
+int have_data_unreadable_test_remedy_calls(void)
+{
+    return atomic_load(&g_remedy_calls);
 }
 #endif

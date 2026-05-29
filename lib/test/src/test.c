@@ -786,6 +786,7 @@ int main(void)
     failures += test_tip_fork_stale();
     failures += test_rebuild_recent();
     failures += test_torn_index_blocks_tip();
+    failures += test_have_data_unreadable();
     failures += test_chain_tip_watchdog_bounded_restart();
     failures += test_blocker();
     failures += test_clock();

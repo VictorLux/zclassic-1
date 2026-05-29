@@ -331,4 +331,9 @@ void sync_monitor_test_set_local_recovery(bool active,
              mode ? mode : "");
     g_local_recovery.last_reason[0] = '\0';
 }
+
+void sync_monitor_test_set_tip_advance_ts(int64_t ts)
+{
+    atomic_store(&g_last_block_connected_ts, ts);
+}
 #endif

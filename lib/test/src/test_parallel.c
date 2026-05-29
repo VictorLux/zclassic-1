@@ -106,6 +106,7 @@ volatile sig_atomic_t g_shutdown_requested = 0;
     X(tip_fork_stale) \
     X(rebuild_recent) \
     X(torn_index_blocks_tip) \
+    X(have_data_unreadable) \
     X(chain_tip_watchdog_bounded_restart) X(blocker) \
     X(clock) X(rng) X(seed_tape) X(postmortem) X(chaos_harness) X(stage) X(mailbox) X(mailbox_adoption) \
     X(projection) X(projection_adoption) X(progress_store) X(event_log) \
