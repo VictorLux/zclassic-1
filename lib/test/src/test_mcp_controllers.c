@@ -1597,6 +1597,64 @@ static int test_mcp_params_escapes_backslash_and_control(void)
     return failures;
 }
 
+/* Regression: zcl_state (and every other MCP tool) must NOT silently send
+ * an empty credential and surface a cryptic 401 when the RPC auth cookie is
+ * missing/unreadable.  This was the recurring "zcl_state returns 401" bug:
+ * mcp_node_rpc ignored read_cookie()'s failure return, sent an empty Basic
+ * credential, and the node answered 401 Unauthorized with no hint about the
+ * real cause.  We now fail fast with an actionable message that names the
+ * cookie path.  Exercises the REAL mcp_node_rpc path (no ZCL_TESTING hook). */
+static int test_mcp_node_rpc_missing_cookie_is_actionable(void)
+{
+    int failures = 0;
+    TEST("controllers: mcp_node_rpc reports missing cookie, never a bare 401") {
+        /* Ensure the real RPC path runs, not the test hook. */
+        mcp_rpc_client_set_test_hook(NULL);
+
+        /* Point the client at a datadir that has no .cookie file.  Use a
+         * port that nothing listens on so that IF the cookie gate were
+         * (wrongly) bypassed, we'd see a connect error rather than a real
+         * 401 — but the cookie gate must fire FIRST. */
+        char tmpdir[] = "/tmp/zcl_mcp_nocookie_XXXXXX";
+        ASSERT(mkdtemp(tmpdir) != NULL);
+        mcp_rpc_client_init(tmpdir, 1 /* unused: rejected before connect */);
+
+        char *body = mcp_node_rpc("dumpstate", "[\"boot\"]");
+        ASSERT(body != NULL);
+        /* Must be an actionable cookie message, NOT a bare 401/Unauthorized
+         * and NOT a connection error (the gate runs before connect). */
+        ASSERT(contains(body, "cookie"));
+        ASSERT(contains(body, ".cookie"));
+        ASSERT(contains(body, tmpdir));
+        ASSERT(!contains(body, "Unauthorized"));
+        ASSERT(!contains(body, "cannot connect"));
+        free(body);
+
+        /* Now write a cookie: the gate must NOT fire — the request proceeds
+         * to the socket and fails with a connect error instead (proving the
+         * gate is scoped strictly to the missing-cookie condition). */
+        char cpath[1024];
+        snprintf(cpath, sizeof(cpath), "%s/.cookie", tmpdir);
+        FILE *cf = fopen(cpath, "w");
+        ASSERT(cf != NULL);
+        fputs("__cookie__:deadbeefdeadbeefdeadbeefdeadbeef\n", cf);
+        fclose(cf);
+
+        body = mcp_node_rpc("dumpstate", "[\"boot\"]");
+        ASSERT(body != NULL);
+        /* With a valid cookie present and a dead port, we get a connect
+         * error — crucially NOT the cookie message. */
+        ASSERT(!contains(body, "cannot read RPC auth cookie"));
+        free(body);
+
+        unlink(cpath);
+        rmdir(tmpdir);
+        PASS();
+    } _test_next:;
+    mcp_rpc_client_set_test_hook(NULL);
+    return failures;
+}
+
 static int test_final_reset_leaves_clean_table(void)
 {
     int failures = 0;
@@ -1655,6 +1713,7 @@ int test_mcp_controllers(void)
     failures += test_zcl_send_escapes_json_injection();
     failures += test_zcl_sendtoaddress_escapes_json_injection();
     failures += test_mcp_params_escapes_backslash_and_control();
+    failures += test_mcp_node_rpc_missing_cookie_is_actionable();
     failures += test_final_reset_leaves_clean_table();
 
     return failures;

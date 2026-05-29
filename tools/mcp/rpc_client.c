@@ -61,18 +61,51 @@ static void base64_encode(const char *in, size_t len, char *out)
     out[j] = 0;
 }
 
+/* Re-read the RPC auth cookie from <datadir>/.cookie on EVERY call so a
+ * node restart that rotates the cookie is picked up by the long-lived MCP
+ * server.  Returns false (and clears any stale cookie) if the file is
+ * missing/unreadable/empty — callers MUST NOT proceed to send a request
+ * with an empty credential, because the node then answers 401 Unauthorized
+ * with no hint that the real cause is a cookie problem.  That silent 401
+ * was the recurring "zcl_state returns 401" symptom: it bites every tool
+ * but is noticed on zcl_state because operators reach for it during
+ * incidents. */
 static bool read_cookie(void)
 {
     char path[600];
     snprintf(path, sizeof(path), "%s/.cookie", g_datadir);
     FILE *f = fopen(path, "r");
-    if (!f) return false;
+    if (!f) {
+        /* Drop any previously-loaded cookie so we never send a stale
+         * credential after the file goes away (e.g. datadir unmounted). */
+        g_cookie[0] = 0;
+        return false;
+    }
     size_t n = fread(g_cookie, 1, sizeof(g_cookie) - 1, f);
     fclose(f);
     g_cookie[n] = 0;
     char *nl = strchr(g_cookie, '\n');
     if (nl) *nl = 0;
+    if (g_cookie[0] == 0)
+        return false;
     return n > 0;
+}
+
+/* Build a self-describing error body for the "no usable auth cookie" case.
+ * Heap-allocated like every other mcp_node_rpc return value; caller frees.
+ * Naming the cookie path turns a cryptic 401 into an actionable message
+ * ("is the node running? is -datadir correct?"). */
+static char *cookie_error_body(void)
+{
+    char *out = zcl_malloc(768, "mcp rpc cookie error json");
+    if (!out) return NULL;
+    snprintf(out, 768,
+        "{\"error\":{\"code\":-32603,\"message\":"
+        "\"cannot read RPC auth cookie at %s/.cookie — is the node "
+        "running and is the MCP -datadir correct? (proceeding would "
+        "send an empty credential and 401)\"}}",
+        g_datadir[0] ? g_datadir : "(unset datadir)");
+    return out;
 }
 
 void mcp_rpc_client_init(const char *datadir, int rpc_port)
@@ -92,7 +125,10 @@ char *mcp_node_rpc(const char *method, const char *params_json)
     if (g_test_rpc_hook)
         return g_test_rpc_hook(method, params_json);
 #endif
-    read_cookie();
+    /* Fail fast with an actionable message rather than sending an empty
+     * credential that the node would reject with a cryptic 401. */
+    if (!read_cookie())
+        return cookie_error_body();
 
     char body[8192];
     int blen;
