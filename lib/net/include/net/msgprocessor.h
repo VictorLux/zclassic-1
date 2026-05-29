@@ -95,11 +95,7 @@ bool msg_processor_get_block_manifest_header(struct block_piece_manifest *out,
                                             int32_t *built_at_height);
 uint64_t msg_processor_block_manifest_cache_version(void);
 
-/* Clear a block hash from the "recently seen" dedup buffer, allowing
- * it to be reprocessed. Used by stall recovery to unblock re-downloads
- * of blocks that were received but failed their first validation. */
 #include "core/uint256.h"
-void msgprocessor_block_clear_seen(const struct uint256 *hash);
 
 /* per-peer FlyClient challenge rate-limit tuning. See
  * msgprocessor.c for the full rationale — short version: each

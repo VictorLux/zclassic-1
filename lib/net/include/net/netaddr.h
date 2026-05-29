@@ -123,7 +123,6 @@ bool net_addr_is_rfc2544(const struct net_addr *a);
 bool net_addr_is_rfc3927(const struct net_addr *a);
 bool net_addr_is_rfc6598(const struct net_addr *a);
 bool net_addr_is_rfc5737(const struct net_addr *a);
-bool net_addr_is_rfc3849(const struct net_addr *a);
 bool net_addr_is_rfc3964(const struct net_addr *a);
 bool net_addr_is_rfc6052(const struct net_addr *a);
 bool net_addr_is_rfc4380(const struct net_addr *a);

@@ -365,7 +365,6 @@ bool p2p_node_begin_message(struct p2p_node *node, const char *command,
 void p2p_node_write_message_data(struct p2p_node *node,
                                   const uint8_t *data, size_t len);
 bool p2p_node_end_message(struct p2p_node *node);
-void p2p_node_abort_message(struct p2p_node *node);
 
 void socket_send_data(struct p2p_node *node);
 

@@ -20,7 +20,6 @@
 #include "models/peer.h"
 #include "models/database.h"
 #include "core/serialize.h"
-#include "services/header_sync_service.h"
 #include "util/timedata.h"
 #include "event/event.h"
 #include "util/log_macros.h"

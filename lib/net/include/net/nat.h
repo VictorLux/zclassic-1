@@ -22,9 +22,6 @@ bool nat_add_port_mapping(uint16_t external_port, uint16_t internal_port,
                            uint32_t lifetime, const char *protocol,
                            uint8_t public_ip_out[4]);
 
-/* Remove a port mapping. */
-bool nat_remove_port_mapping(uint16_t external_port, const char *protocol);
-
 /* Discover public IP via NAT-PMP or UPnP. */
 bool nat_discover_public_ip(uint8_t ip_out[4]);
 

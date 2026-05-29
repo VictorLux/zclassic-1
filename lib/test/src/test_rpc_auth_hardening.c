@@ -15,6 +15,7 @@
 #include "test/test_helpers.h"
 #include "rpc/http_middleware.h"
 #include "rpc/httpserver.h"
+#include "encoding/utilstrencodings.h"
 
 #include <arpa/inet.h>
 #include <netinet/in.h>
@@ -370,26 +371,6 @@ static int test_loopback_subnet_exemption(void)
  *   3. Correct cookie    → expect 200 with a Prometheus body.
  */
 
-static const char metrics_b64_chars[] =
-    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-
-static size_t metrics_b64_encode(const unsigned char *in, size_t inlen,
-                                 char *out, size_t outmax)
-{
-    size_t olen = 0;
-    for (size_t i = 0; i < inlen && olen + 4 < outmax; i += 3) {
-        unsigned int n = (unsigned int)in[i] << 16;
-        if (i + 1 < inlen) n |= (unsigned int)in[i + 1] << 8;
-        if (i + 2 < inlen) n |= (unsigned int)in[i + 2];
-        out[olen++] = metrics_b64_chars[(n >> 18) & 0x3F];
-        out[olen++] = metrics_b64_chars[(n >> 12) & 0x3F];
-        out[olen++] = (i + 1 < inlen) ? metrics_b64_chars[(n >> 6) & 0x3F] : '=';
-        out[olen++] = (i + 2 < inlen) ? metrics_b64_chars[n & 0x3F] : '=';
-    }
-    out[olen] = '\0';
-    return olen;
-}
-
 static bool metrics_read_cookie(const char *dir, char *out, size_t outsz)
 {
     char path[1024];
@@ -541,8 +522,8 @@ static int test_metrics_auth_required(void)
         ASSERT(metrics_read_cookie(dir, cookie, sizeof(cookie)));
 
         char good_b64[1024];
-        metrics_b64_encode((const unsigned char *)cookie, strlen(cookie),
-                           good_b64, sizeof(good_b64));
+        EncodeBase64((const unsigned char *)cookie, strlen(cookie),
+                     good_b64, sizeof(good_b64));
 
         /* 1. No Authorization header → 401. */
         int status = metrics_get(port, NULL, NULL, 0);
@@ -558,8 +539,8 @@ static int test_metrics_auth_required(void)
         /* 2. Wrong credentials → 401. */
         char bad_creds[] = "__user:__pass";
         char bad_b64[1024];
-        metrics_b64_encode((const unsigned char *)bad_creds,
-                           strlen(bad_creds), bad_b64, sizeof(bad_b64));
+        EncodeBase64((const unsigned char *)bad_creds,
+                     strlen(bad_creds), bad_b64, sizeof(bad_b64));
         status = metrics_get(port, bad_b64, NULL, 0);
         if (status != 401) {
             printf("FAIL (bad-auth got %d, want 401)\n", status);

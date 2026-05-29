@@ -181,15 +181,3 @@ void tip_watchdog_test_inject_tip_advance(int height, int64_t when_ns)
     atomic_store(&g_last_tip_height, height);
     atomic_store(&g_last_tip_advance_ns, when_ns);
 }
-
-void tip_watchdog_get_stats(struct tip_watchdog_stats *out)
-{
-    if (!out) return;
-    out->entered_active        = atomic_load(&g_stat_entered);
-    out->cleared               = atomic_load(&g_stat_cleared);
-    out->rejected_messages     = atomic_load(&g_stat_rejected);
-    out->drained_queue_entries = atomic_load(&g_stat_drained);
-    out->last_tip_advance_ns   = atomic_load(&g_last_tip_advance_ns);
-    out->entered_active_ns     = atomic_load(&g_entered_active_ns);
-    out->active                = atomic_load(&g_active);
-}

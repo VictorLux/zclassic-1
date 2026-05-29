@@ -9,6 +9,7 @@
 #include "test/test_helpers.h"
 #include "rpc/httpserver.h"
 #include "rpc/server.h"
+#include "encoding/utilstrencodings.h"
 
 #include <arpa/inet.h>
 #include <errno.h>
@@ -62,26 +63,6 @@ static bool read_cookie_password(const char *datadir, char *pass, size_t passsz)
     return true;
 }
 
-static const char base64_chars[] =
-    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-
-static size_t base64_encode(const unsigned char *in, size_t inlen,
-                            char *out, size_t outmax)
-{
-    size_t olen = 0;
-    for (size_t i = 0; i < inlen && olen + 4 < outmax; i += 3) {
-        unsigned int n = (unsigned int)in[i] << 16;
-        if (i + 1 < inlen) n |= (unsigned int)in[i + 1] << 8;
-        if (i + 2 < inlen) n |= (unsigned int)in[i + 2];
-        out[olen++] = base64_chars[(n >> 18) & 0x3F];
-        out[olen++] = base64_chars[(n >> 12) & 0x3F];
-        out[olen++] = (i + 1 < inlen) ? base64_chars[(n >> 6) & 0x3F] : '=';
-        out[olen++] = (i + 2 < inlen) ? base64_chars[n & 0x3F] : '=';
-    }
-    out[olen] = '\0';
-    return olen;
-}
-
 /* Send an RPC request with given credentials, return HTTP status code.
  * Returns -1 on connection/network error. */
 static int rpc_with_auth(uint16_t port, const char *user, const char *pass)
@@ -108,8 +89,8 @@ static int rpc_with_auth(uint16_t port, const char *user, const char *pass)
     char creds[256];
     snprintf(creds, sizeof(creds), "%s:%s", user, pass);
     char b64[512];
-    base64_encode((const unsigned char *)creds, strlen(creds),
-                  b64, sizeof(b64));
+    EncodeBase64((const unsigned char *)creds, strlen(creds),
+                 b64, sizeof(b64));
 
     const char *body = "{\"method\":\"getblockcount\",\"params\":[],\"id\":1}";
     char req[2048];

@@ -551,16 +551,6 @@ void p2p_node_write_message_data(struct p2p_node *node,
         stream_write(&tls_msg_stream, data, len);
 }
 
-void p2p_node_abort_message(struct p2p_node *node)
-{
-    (void)node;
-    if (tls_msg_active) {
-        stream_free(&tls_msg_stream);
-        tls_msg_active = false;
-    }
-    zcl_mutex_unlock(&node->cs_send);
-}
-
 bool p2p_node_end_message(struct p2p_node *node)
 {
     if (!tls_msg_active) {

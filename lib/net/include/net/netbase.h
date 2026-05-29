@@ -59,8 +59,6 @@ bool zcl_set_socket_nonblocking(zcl_socket_t sock, bool nonblocking);
 void split_host_port(const char *in, char *host_out, size_t host_size,
                      int *port_out);
 
-void network_error_string(int err, char *buf, size_t bufsize);
-
 struct timeval millis_to_timeval(int64_t ms);
 
 #endif

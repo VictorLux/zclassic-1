@@ -20,9 +20,7 @@ enum
     // (softfork safe, but not used or intended as a consensus rule).
     SCRIPT_VERIFY_STRICTENC = (1U << 1),
 
-    // Passing a non-strict-DER signature to a checksig operation causes script failure (softfork safe, BIP62 rule 1)
-    // In Zclassic this is required, and validation of non-strict-DER signatures is not implemented.
-    //SCRIPT_VERIFY_DERSIG    = (1U << 2),
+    // Bit 2 (BIP62 rule 1, strict-DER signatures) is unused in Zclassic.
 
     // Passing a non-strict-DER signature or one with S > order/2 to a checksig operation causes script failure
     // (softfork safe, BIP62 rule 5).

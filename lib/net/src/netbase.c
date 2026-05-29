@@ -257,13 +257,3 @@ bool zcl_set_socket_nonblocking(zcl_socket_t sock, bool nonblocking)
     return fcntl(sock, F_SETFL, flags) != -1;
 #endif
 }
-
-void network_error_string(int err, char *buf, size_t bufsize)
-{
-#ifdef _WIN32
-    FormatMessageA(FORMAT_MESSAGE_FROM_SYSTEM, NULL, err, 0,
-                   buf, (DWORD)bufsize, NULL);
-#else
-    strerror_r(err, buf, bufsize);
-#endif
-}

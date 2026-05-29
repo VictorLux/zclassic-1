@@ -194,9 +194,6 @@ bool msgprocessor_test_accept_block_for_processing(const struct uint256 *hash,
     block_mark_seen(hash);
     return true;
 }
-void msgprocessor_block_clear_seen(const struct uint256 *hash) {
-    block_clear_seen(hash);
-}
 void msgprocessor_test_reset_recent_blocks(void) {
     g_recent_block_count = 0;
     memset(g_recent_blocks, 0, sizeof(g_recent_blocks));

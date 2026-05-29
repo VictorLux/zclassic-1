@@ -1983,7 +1983,3 @@ void connman_get_outbound_health(struct connman *cm,
     out->healthy_ipv4_group_count = healthy_num_groups;
 }
 
-struct peer_bandwidth *connman_peer_bandwidth(void)
-{
-    return g_peer_bw_active ? &g_peer_bw : NULL;
-}

@@ -477,17 +477,6 @@ bool nat_add_port_mapping(uint16_t external_port, uint16_t internal_port,
     return false;
 }
 
-bool nat_remove_port_mapping(uint16_t external_port, const char *protocol)
-{
-    uint8_t gw[4];
-    if (!nat_get_gateway(gw))
-        LOG_FAIL("nat", "no gateway for port unmapping: ext=%u", (unsigned)external_port);
-
-    bool tcp = (strcmp(protocol, "TCP") == 0);
-    /* NAT-PMP: lifetime=0 means delete */
-    return natpmp_map_port(gw, external_port, external_port, 0, tcp);
-}
-
 bool nat_discover_public_ip(uint8_t ip_out[4])
 {
     uint8_t gw[4];

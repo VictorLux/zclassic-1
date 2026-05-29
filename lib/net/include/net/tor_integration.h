@@ -63,11 +63,6 @@ bool tor_integration_is_ready(void);
 /* Check if Tor was started (may still be bootstrapping). */
 bool tor_integration_is_enabled(void);
 
-/* Set vanity .onion prefix (e.g., "zcl" for zcl...onion).
- * Must be called before tor_integration_start().
- * 3 chars ≈ instant, 4 chars ≈ seconds, 5 chars ≈ minutes. */
-void tor_integration_set_vanity_prefix(const char *prefix);
-
 /* Write torrc to datadir. We do NOT use SOCKS — dynhost handles
  * everything. A localhost-only SocksPort is opened as a bootstrap
  * workaround (Tor refuses to start without a listener). The port is

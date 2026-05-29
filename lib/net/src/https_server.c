@@ -661,11 +661,6 @@ void https_server_stop(void)
     printf("HTTPS server stopped.\n");
 }
 
-bool https_server_is_running(void)
-{
-    return atomic_load(&g_running);
-}
-
 /* ── Deferred HTTPS start (after IBD completes) ──────────── */
 
 static char g_deferred_cert[1024];

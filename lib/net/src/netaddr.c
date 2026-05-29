@@ -46,12 +46,6 @@ bool net_addr_is_rfc5737(const struct net_addr *a)
           net_addr_get_byte(a, 1) == 113));
 }
 
-bool net_addr_is_rfc3849(const struct net_addr *a)
-{
-    return net_addr_get_byte(a, 15) == 0x20 && net_addr_get_byte(a, 14) == 0x01 &&
-           net_addr_get_byte(a, 13) == 0x0D && net_addr_get_byte(a, 12) == 0xB8;
-}
-
 bool net_addr_is_rfc3964(const struct net_addr *a)
 {
     return net_addr_get_byte(a, 15) == 0x20 && net_addr_get_byte(a, 14) == 0x02;

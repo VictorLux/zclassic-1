@@ -118,11 +118,6 @@ int connman_force_outbound_rotation(struct connman *cm, const char *reason);
 void connman_relay_transaction(struct connman *cm,
                                 const struct uint256 *txid);
 
-/* Access the connman's per-peer bandwidth state.
- * Returns NULL if bandwidth quotas are not active. */
-struct peer_bandwidth;
-struct peer_bandwidth *connman_peer_bandwidth(void);
-
 /* one pass of the message-handler loop body.
  *
  * Snapshots cm->manager.nodes[] under cs_nodes + bumps ref_count on each

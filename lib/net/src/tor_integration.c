@@ -361,13 +361,6 @@ bool tor_integration_is_enabled(void)
     return atomic_load(&g_tor_running);
 }
 
-void tor_integration_set_vanity_prefix(const char *prefix)
-{
-    extern void dynhost_set_vanity_prefix(const char *) __attribute__((weak));
-    if (dynhost_set_vanity_prefix && prefix && prefix[0])
-        dynhost_set_vanity_prefix(prefix);
-}
-
 /* ── Outbound .onion fetch ─────────────────────────────────── */
 
 /* Weak reference to dynhost_client_fetch — resolved at link time.

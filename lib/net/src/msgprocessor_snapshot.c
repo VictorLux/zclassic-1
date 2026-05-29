@@ -31,7 +31,6 @@
 #include "net/peer_scoring.h"
 #include "net/peer_lifecycle.h"
 #include "net/file_service.h"
-#include "models/peer.h"
 #include "models/block.h"
 #include "models/database.h"
 #include "coins/utxo_commitment.h"

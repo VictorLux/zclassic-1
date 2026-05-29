@@ -84,16 +84,4 @@ void tip_watchdog_test_set_now_ns(int64_t now_ns);
 void tip_watchdog_test_set_queue_bytes(size_t bytes);
 void tip_watchdog_test_inject_tip_advance(int height, int64_t when_ns);
 
-struct tip_watchdog_stats {
-    uint64_t entered_active;        /* EV_BACKPRESSURE_ACTIVE emits */
-    uint64_t cleared;               /* EV_BACKPRESSURE_CLEAR emits */
-    uint64_t rejected_messages;     /* EV_BACKPRESSURE_REJECT emits */
-    uint64_t drained_queue_entries; /* slots+queue entries dropped on entry */
-    int64_t  last_tip_advance_ns;
-    int64_t  entered_active_ns;
-    bool     active;
-};
-
-void tip_watchdog_get_stats(struct tip_watchdog_stats *out);
-
 #endif /* ZCL_NET_TIP_WATCHDOG_H */
