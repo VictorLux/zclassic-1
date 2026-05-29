@@ -99,7 +99,8 @@ struct sapling_note_sync_ctx {
 struct sapling_spend_sync_ctx {
     uint8_t nullifier[32];
     uint8_t spending_txid[32];
-    bool ok;
+    bool ok;                              /* legacy: true iff an indexed note */
+    enum db_mark_spent_result result;     /* tri-state for catchup callers    */
 };
 
 
@@ -405,13 +406,19 @@ static bool node_db_sync_sapling_spend_write(struct node_db *ndb, void *ctx)
                       SQLITE_STATIC);
     sqlite3_step(s);  // raw-sql-ok:state-kv-write-caller-handles-rc
 
-    spend->ok = db_sapling_note_mark_spent(ndb,
-                                           spend->nullifier,
-                                           spend->spending_txid);
-    return spend->ok;
+    spend->result = db_sapling_note_mark_spent_ex(ndb,
+                                                  spend->nullifier,
+                                                  spend->spending_txid);
+    spend->ok = (spend->result == DB_MARK_SPENT_OK);
+    /* The write callback succeeds (transaction stays committable) for both
+     * OK and the BENIGN not-in-our-index miss. Only a real DB write error
+     * fails the callback. The catchup driver inspects ctx.result to decide
+     * whether to count a wallet hit; it must NOT abort on NOT_FOUND. */
+    return spend->result != DB_MARK_SPENT_ERROR;
 }
 
-bool node_db_sync_sapling_spend(struct node_db *ndb,
+enum db_mark_spent_result node_db_sync_sapling_spend_ex(
+                                struct node_db *ndb,
                                 const uint8_t nullifier[32],
                                 const uint8_t spending_txid[32])
 {
@@ -421,9 +428,20 @@ bool node_db_sync_sapling_spend(struct node_db *ndb,
         LOG_FAIL("sync", "sapling_spend: nullifier=%p spending_txid=%p",
                  (void *)nullifier, (void *)spending_txid);
     memset(&ctx, 0, sizeof(ctx));
+    ctx.result = DB_MARK_SPENT_ERROR;
     memcpy(ctx.nullifier, nullifier, sizeof(ctx.nullifier));
     memcpy(ctx.spending_txid, spending_txid, sizeof(ctx.spending_txid));
-    return sync_run_write(ndb, node_db_sync_sapling_spend_write, &ctx) && ctx.ok;
+    if (!sync_run_write(ndb, node_db_sync_sapling_spend_write, &ctx))
+        return DB_MARK_SPENT_ERROR;
+    return ctx.result;
+}
+
+bool node_db_sync_sapling_spend(struct node_db *ndb,
+                                const uint8_t nullifier[32],
+                                const uint8_t spending_txid[32])
+{
+    return node_db_sync_sapling_spend_ex(ndb, nullifier, spending_txid)
+           == DB_MARK_SPENT_OK;
 }
 
 static bool node_db_sync_peer_write(struct node_db *ndb, void *ctx)

@@ -171,6 +171,31 @@ struct db_sapling_note {
 bool db_sapling_note_validate(const struct db_sapling_note *n,
                                struct ar_errors *errors);
 bool db_sapling_note_save(struct node_db *ndb, const struct db_sapling_note *n);
+
+/* Tri-state result for marking a sapling note spent.
+ *
+ * The node.db index only tracks wallet/indexed sapling notes, NOT every
+ * note on the chain. During projection catchup we replay EVERY on-chain
+ * sapling spend; the vast majority reference notes we never indexed. That
+ * is a BENIGN miss, not an error — the caller must keep going. Only a real
+ * SQLite write failure (busy/error/corrupt) is fatal. The legacy bool API
+ * conflated the two (returned false for both), which wedged the whole
+ * backfill on the first not-our-note spend. */
+enum db_mark_spent_result {
+    DB_MARK_SPENT_OK = 0,        /* matched an indexed note and updated it   */
+    DB_MARK_SPENT_NOT_FOUND = 1, /* nullifier not in our index (benign skip) */
+    DB_MARK_SPENT_ERROR = 2,     /* real DB write error (fatal)              */
+};
+
+/* Tri-state variant. Distinguishes benign-miss from real write error so the
+ * projection catchup can skip not-our-note spends without aborting. */
+enum db_mark_spent_result db_sapling_note_mark_spent_ex(
+                                struct node_db *ndb,
+                                const uint8_t nullifier[32],
+                                const uint8_t spent_by[32]);
+
+/* Legacy bool wrapper: true only when an indexed note was updated.
+ * Treats both NOT_FOUND and ERROR as false — do NOT use this in catchup. */
 bool db_sapling_note_mark_spent(struct node_db *ndb,
                                 const uint8_t nullifier[32],
                                 const uint8_t spent_by[32]);

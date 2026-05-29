@@ -635,6 +635,35 @@ int test_sqlite(void) {
         ok = ok && node_db_sync_sapling_spend(&ndb, nullifier, spending_txid);
         ok = ok && db_sapling_note_balance_for_ivk(&ndb, note.ivk) == 0;
 
+        /* Tri-state contract: an indexed note that just got spent must
+         * report OK (already spent above, so re-marking changes no row →
+         * NOT_FOUND is also acceptable; what matters is it is never ERROR). */
+        {
+            enum db_mark_spent_result re =
+                node_db_sync_sapling_spend_ex(&ndb, nullifier, spending_txid);
+            ok = ok && re != DB_MARK_SPENT_ERROR;
+        }
+
+        /* Benign not-in-our-index spend: a nullifier we never indexed must
+         * report NOT_FOUND (NOT ERROR) so the projection catchup skips it
+         * and keeps advancing instead of aborting the whole backfill.
+         * Regression guard for the catchup wedge at height 3125020. */
+        {
+            uint8_t unknown_nf[32];
+            uint8_t unknown_txid[32];
+            memset(unknown_nf, 0xEE, sizeof(unknown_nf));
+            memset(unknown_txid, 0x09, sizeof(unknown_txid));
+            enum db_mark_spent_result rmiss =
+                node_db_sync_sapling_spend_ex(&ndb, unknown_nf, unknown_txid);
+            ok = ok && rmiss == DB_MARK_SPENT_NOT_FOUND;
+            /* Legacy bool wrapper reports false for the benign miss but must
+             * not be treated as fatal by the tri-state catchup path. */
+            ok = ok && !node_db_sync_sapling_spend(&ndb, unknown_nf, unknown_txid);
+            /* Model-level tri-state is consistent with the controller. */
+            ok = ok && db_sapling_note_mark_spent_ex(&ndb, unknown_nf, unknown_txid)
+                       == DB_MARK_SPENT_NOT_FOUND;
+        }
+
         app_runtime_set_current(NULL);
         db_service_stop(&svc);
         free_sync_test_tx(&tx);

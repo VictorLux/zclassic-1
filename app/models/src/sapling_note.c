@@ -157,14 +157,15 @@ bool db_sapling_note_save(struct node_db *ndb, const struct db_sapling_note *n)
     AR_FINISH_SAVE(cbs, n, ok);
 }
 
-bool db_sapling_note_mark_spent(struct node_db *ndb,
+enum db_mark_spent_result db_sapling_note_mark_spent_ex(
+                                struct node_db *ndb,
                                 const uint8_t nullifier[32],
                                 const uint8_t spent_by[32])
 {
     sqlite3_stmt *s = NULL;
 
     if (!ndb || !ndb->open || !nullifier || !spent_by)
-        return false;
+        return DB_MARK_SPENT_ERROR;
     AR_PREPARE_BOOL(ndb, s,
         "UPDATE wallet_sapling_notes SET spent_txid=?"
         " WHERE nullifier=?");
@@ -173,8 +174,25 @@ bool db_sapling_note_mark_spent(struct node_db *ndb,
     {
         bool ok = false;
         AR_FINALIZE_STEP_DONE(s, ok);
-        return ok && sqlite3_changes(ndb->db) > 0;
+        /* ok==false  → the UPDATE statement itself failed (busy/error/
+         *              corrupt) — a REAL write error, fatal.
+         * ok==true but changes()==0 → statement ran fine, no row matched
+         *              this nullifier: the note is simply not in our index
+         *              (we only track wallet notes). BENIGN — caller skips. */
+        if (!ok)
+            return DB_MARK_SPENT_ERROR;
+        return sqlite3_changes(ndb->db) > 0
+            ? DB_MARK_SPENT_OK
+            : DB_MARK_SPENT_NOT_FOUND;
     }
+}
+
+bool db_sapling_note_mark_spent(struct node_db *ndb,
+                                const uint8_t nullifier[32],
+                                const uint8_t spent_by[32])
+{
+    return db_sapling_note_mark_spent_ex(ndb, nullifier, spent_by)
+           == DB_MARK_SPENT_OK;
 }
 
 bool db_sapling_note_is_nullifier_spent(struct node_db *ndb,
