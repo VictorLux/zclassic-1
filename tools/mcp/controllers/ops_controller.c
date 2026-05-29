@@ -16,6 +16,7 @@
 #include "../rpc_client.h"
 #include "../rpc_params.h"
 
+#include "encoding/utilstrencodings.h"
 #include "json/json.h"
 #include "sim/postmortem.h"
 #include "sim/seed_tape.h"
@@ -378,6 +379,7 @@ static int h_zcl_kpi(const struct mcp_request *req, struct mcp_response *res)
         snprintf(res->error_message, sizeof(res->error_message),
                  "malloc failed for KPI response");
         LOG_ERR("mcp.ops", "malloc failed for kpi body (%zu bytes)", cap);
+        return -1; // raw-return-ok:logged-oom
     }
 
     snprintf(out, cap,
@@ -637,16 +639,6 @@ static char *json_value_to_body(struct json_value *v, const char *label)
     return out;
 }
 
-static void bytes_to_hex(const uint8_t *in, size_t len, char *out)
-{
-    static const char k_hex[] = "0123456789abcdef";
-    for (size_t i = 0; i < len; i++) {
-        out[i * 2] = k_hex[in[i] >> 4];
-        out[i * 2 + 1] = k_hex[in[i] & 0x0f];
-    }
-    out[len * 2] = '\0';
-}
-
 static int h_zcl_postmortem_list(const struct mcp_request *req,
                                  struct mcp_response *res)
 {
@@ -790,7 +782,7 @@ static int h_zcl_postmortem_replay(const struct mcp_request *req,
             rc = -ENOMEM;
             break;
         }
-        bytes_to_hex(payload, payload_len, hex);
+        HexStr(payload, payload_len, false, hex, payload_len * 2 + 1);
 
         struct json_value item;
         json_init(&item); json_set_object(&item);

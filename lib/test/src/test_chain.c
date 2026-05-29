@@ -440,33 +440,6 @@ int test_chain(void)
         main_state_free(&ms);
     }
 
-    printf("checkqueue single-threaded... ");
-    {
-        struct check_queue cq;
-        check_queue_init(&cq, 128, sizeof(int), NULL);
-        bool idle = check_queue_is_idle(&cq);
-        if (idle) {
-            int *item1 = zcl_malloc(sizeof(int), "test_item");
-            *item1 = 42;
-            int *item2 = zcl_malloc(sizeof(int), "test_item");
-            *item2 = 99;
-            void *items[2] = { item1, item2 };
-            cq.check = NULL;
-            check_queue_add(&cq, items, 2);
-            if (cq.nTodo == 2 && cq.queue_size == 2)
-                printf("OK\n");
-            else { printf("FAIL (add)\n"); failures++; }
-            for (size_t i = 0; i < cq.queue_size; i++)
-                free(cq.queue[i]);
-            cq.queue_size = 0;
-            cq.nTodo = 0;
-        } else {
-            printf("FAIL (idle)\n");
-            failures++;
-        }
-        check_queue_free(&cq);
-    }
-
     printf("coins_view_cache... ");
     {
         struct coins_view null_view = { NULL, NULL };

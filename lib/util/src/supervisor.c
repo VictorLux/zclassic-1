@@ -50,15 +50,6 @@ static _Atomic int    g_tick_ms       = 1000;
 static pthread_t      g_thread_id;
 static _Atomic bool   g_thread_handle_set = false;
 
-/* ── Time helpers ──────────────────────────────────────────────────── */
-
-static int64_t mono_us(void)
-{
-    struct timespec ts;
-    platform_time_monotonic_timespec(&ts);
-    return (int64_t)ts.tv_sec * 1000000 + ts.tv_nsec / 1000;
-}
-
 const char *supervisor_stall_reason_name(enum supervisor_stall_reason r)
 {
     switch (r) {
@@ -85,8 +76,8 @@ void liveness_contract_init(struct liveness_contract *c, const char *name)
     c->parent = -1;
     /* All atomic fields zero-initialize to their value-equivalent of
      * the underlying type (0 for ints), which is correct for first use. */
-    atomic_store(&c->last_tick_us, mono_us());
-    atomic_store(&c->progress_changed_at_us, mono_us());
+    atomic_store(&c->last_tick_us, platform_time_monotonic_us());
+    atomic_store(&c->progress_changed_at_us, platform_time_monotonic_us());
 }
 
 static supervisor_child_id supervisor_register_locked(
@@ -193,7 +184,7 @@ void supervisor_tick(supervisor_child_id id)
 {
     struct liveness_contract *c = contract_for(id);
     if (!c) return;
-    atomic_store(&c->last_tick_us, mono_us());
+    atomic_store(&c->last_tick_us, platform_time_monotonic_us());
     atomic_fetch_add(&c->ticks_run, 1u);
     /* Edge-rearm: ticking clears a TIME_DEADLINE stall. NO_PROGRESS
      * is cleared by progress changes, not by ticks. */
@@ -211,7 +202,7 @@ void supervisor_progress(supervisor_child_id id, int64_t marker)
     int64_t prev = atomic_load(&c->progress_marker);
     if (marker != prev) {
         atomic_store(&c->progress_marker, marker);
-        atomic_store(&c->progress_changed_at_us, mono_us());
+        atomic_store(&c->progress_changed_at_us, platform_time_monotonic_us());
         /* Progress rearm: clears NO_PROGRESS. */
         int sr = atomic_load(&c->stall_reason);
         if (sr == SUPERVISOR_STALL_NO_PROGRESS)
@@ -255,7 +246,7 @@ void supervisor_set_progress_max_quiet(supervisor_child_id id,
 
 static void sweep_once(void)
 {
-    int64_t now = mono_us();
+    int64_t now = platform_time_monotonic_us();
 
     /* Snapshot the list of pointers under lock; release before
      * invoking any callback so callbacks can re-enter the API safely. */
@@ -285,7 +276,7 @@ static void sweep_once(void)
              * now so we don't busy-fire. */
             int64_t after = atomic_load(&c->last_tick_us);
             if (after == last_tick) {
-                atomic_store(&c->last_tick_us, mono_us());
+                atomic_store(&c->last_tick_us, platform_time_monotonic_us());
                 atomic_fetch_add(&c->ticks_run, 1u);
             }
         }
@@ -420,7 +411,7 @@ int supervisor_child_count_total(void)
 int supervisor_snapshot_all(struct supervisor_snapshot *out, int max)
 {
     if (!out || max <= 0) return 0;
-    int64_t now = mono_us();
+    int64_t now = platform_time_monotonic_us();
     pthread_mutex_lock(&g_lock);
     int n = g_contract_count;
     if (n > max) n = max;
@@ -555,7 +546,7 @@ bool supervisor_domain_dump_state_json(supervisor_domain_t *domain,
     struct json_value children;
     json_init(&children);
     json_set_array(&children);
-    int64_t now = mono_us();
+    int64_t now = platform_time_monotonic_us();
     for (int i = 0; i < n; i++) {
         if (snap[i]) push_contract_json(&children, snap[i], now);
     }

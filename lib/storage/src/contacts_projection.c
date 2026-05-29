@@ -5,6 +5,7 @@
 #include "json/json.h"
 #include "platform/time_compat.h"
 #include "storage/event_log_payloads.h"
+#include "storage/projection_util.h"
 #include "util/safe_alloc.h"
 
 #include <inttypes.h>
@@ -15,7 +16,6 @@
 #include <string.h>
 
 #define CONTACTS_PROJECTION_SCHEMA_VERSION 1
-#define EVENT_LOG_FRAME_OVERHEAD 32u
 
 struct contacts_projection {
     sqlite3 *db;
@@ -36,21 +36,9 @@ static _Atomic uint64_t g_emit_touched_total = 0;
 static _Atomic uint64_t g_emit_delete_total = 0;
 static _Atomic uint64_t g_emit_fail_total = 0;
 
-static int64_t now_ms(void)
-{
-    struct timespec ts;
-    platform_time_monotonic_timespec(&ts);
-    return (int64_t)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
-}
-
-static size_t bounded_strlen(const char *s, size_t max)
-{
-    if (!s) return 0;
-    size_t n = 0;
-    while (n <= max && s[n] != '\0')
-        n++;
-    return n;
-}
+/* now_ms / apply_pragmas / meta_get_u64 / meta_set_u64 / bounded_strlen
+ * live in storage/projection_util.h. exec_sql stays local for its
+ * "[contacts_projection]" log prefix. */
 
 static bool append_contact_event(enum event_log_type type,
                                  const void *payload, size_t len,
@@ -88,13 +76,6 @@ static bool exec_sql(sqlite3 *db, const char *sql, const char *ctx)
     return true;
 }
 
-static bool apply_pragmas(sqlite3 *db)
-{
-    return exec_sql(db, "PRAGMA journal_mode=WAL", "journal_mode") &&
-           exec_sql(db, "PRAGMA synchronous=NORMAL", "synchronous") &&
-           exec_sql(db, "PRAGMA busy_timeout=5000", "busy_timeout");
-}
-
 static bool ensure_schema(sqlite3 *db)
 {
     return exec_sql(db,
@@ -118,40 +99,6 @@ static bool ensure_schema(sqlite3 *db)
         "INSERT OR IGNORE INTO projection_meta(k,v) "
         "VALUES('last_consumed_offset','0')",
         "insert last_consumed_offset");
-}
-
-static uint64_t meta_get_u64(sqlite3 *db, const char *key)
-{
-    sqlite3_stmt *s = NULL;
-    uint64_t v = 0;
-    int rc = sqlite3_prepare_v2(db,
-        "SELECT v FROM projection_meta WHERE k=?",
-        -1, &s, NULL);
-    if (rc != SQLITE_OK) return 0;
-    sqlite3_bind_text(s, 1, key, -1, SQLITE_TRANSIENT);
-    rc = sqlite3_step(s);  // raw-sql-ok:projection-primitive
-    if (rc == SQLITE_ROW) {
-        const unsigned char *txt = sqlite3_column_text(s, 0);
-        if (txt) v = (uint64_t)strtoull((const char *)txt, NULL, 10);
-    }
-    sqlite3_finalize(s);
-    return v;
-}
-
-static bool meta_set_u64(sqlite3 *db, const char *key, uint64_t value)
-{
-    sqlite3_stmt *s = NULL;
-    char buf[32];
-    snprintf(buf, sizeof(buf), "%" PRIu64, value);
-    int rc = sqlite3_prepare_v2(db,
-        "INSERT OR REPLACE INTO projection_meta(k,v) VALUES(?,?)",
-        -1, &s, NULL);
-    if (rc != SQLITE_OK) return false;
-    sqlite3_bind_text(s, 1, key, -1, SQLITE_TRANSIENT);
-    sqlite3_bind_text(s, 2, buf, -1, SQLITE_TRANSIENT);
-    rc = sqlite3_step(s);  // raw-sql-ok:projection-primitive
-    sqlite3_finalize(s);
-    return rc == SQLITE_DONE;
 }
 
 contacts_projection_t *contacts_projection_open(const char *path,

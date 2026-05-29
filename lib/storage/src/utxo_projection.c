@@ -38,6 +38,7 @@
 #include "script/script.h"
 #include "platform/time_compat.h"
 #include "storage/event_log_payloads.h"
+#include "storage/projection_util.h"
 #include "util/log_macros.h"
 #include "util/safe_alloc.h"
 
@@ -48,14 +49,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-
-/* The event log frames each event with a 16-byte header + 16-byte
- * sentinel (see storage/event_log.h). The stream callback only sees
- * `(offset, type, payload, len)`, so to compute "next offset after
- * this event" we add this constant. event_log.h locks the framing
- * size; if it ever changes, this constant must move with it (and the
- * peers_projection already encodes the same number — keep in sync). */
-#define EVENT_LOG_FRAME_OVERHEAD 32u
 
 /* Commit cursor checkpoint every N consumed events inside catch_up.
  * The whole catch_up is a single IMMEDIATE txn so this is not a
@@ -131,12 +124,9 @@ event_log_t *utxo_projection_event_log(void)
 
 /* ── Tiny helpers ──────────────────────────────────────────────────── */
 
-static int64_t now_ms(void)
-{
-    struct timespec ts;
-    platform_time_monotonic_timespec(&ts);
-    return (int64_t)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
-}
+/* now_ms / apply_pragmas / meta_get_u64 / meta_set_u64 live in
+ * storage/projection_util.h (shared across the projection consumers).
+ * exec_sql stays local to keep its "[utxo_projection]" log prefix. */
 
 static bool exec_sql(sqlite3 *db, const char *sql, const char *ctx)
 {
@@ -150,13 +140,6 @@ static bool exec_sql(sqlite3 *db, const char *sql, const char *ctx)
         return false;
     }
     return true;
-}
-
-static bool apply_pragmas(sqlite3 *db)
-{
-    return exec_sql(db, "PRAGMA journal_mode=WAL", "journal_mode") &&
-           exec_sql(db, "PRAGMA synchronous=NORMAL", "synchronous") &&
-           exec_sql(db, "PRAGMA busy_timeout=5000", "busy_timeout");
 }
 
 static bool ensure_schema(sqlite3 *db)
@@ -186,43 +169,6 @@ static bool ensure_schema(sqlite3 *db)
         "INSERT OR IGNORE INTO projection_meta(k,v) "
         "VALUES('last_consumed_offset','0')",
         "insert last_consumed_offset");
-}
-
-static uint64_t meta_get_u64(sqlite3 *db, const char *key)
-{
-    sqlite3_stmt *s = NULL;
-    uint64_t v = 0;
-    int rc = sqlite3_prepare_v2(db,
-        "SELECT v FROM projection_meta WHERE k=?",
-        -1, &s, NULL);
-    if (rc != SQLITE_OK) return 0;
-    sqlite3_bind_text(s, 1, key, -1, SQLITE_TRANSIENT);
-    rc = sqlite3_step(s);  // raw-sql-ok:projection-primitive
-    if (rc == SQLITE_ROW) {
-        const unsigned char *txt = sqlite3_column_text(s, 0);
-        if (txt) v = (uint64_t)strtoull((const char *)txt, NULL, 10);
-    }
-    sqlite3_finalize(s);
-    return v;
-}
-
-/* meta_set_u64 must run inside the caller's open txn (catch_up wraps
- * the stream in IMMEDIATE) so cursor + UTXO mutations commit
- * atomically. */
-static bool meta_set_u64(sqlite3 *db, const char *key, uint64_t value)
-{
-    sqlite3_stmt *s = NULL;
-    char buf[32];
-    snprintf(buf, sizeof(buf), "%" PRIu64, value);
-    int rc = sqlite3_prepare_v2(db,
-        "INSERT OR REPLACE INTO projection_meta(k,v) VALUES(?,?)",
-        -1, &s, NULL);
-    if (rc != SQLITE_OK) return false;
-    sqlite3_bind_text(s, 1, key, -1, SQLITE_TRANSIENT);
-    sqlite3_bind_text(s, 2, buf, -1, SQLITE_TRANSIENT);
-    rc = sqlite3_step(s);  // raw-sql-ok:projection-primitive
-    sqlite3_finalize(s);
-    return rc == SQLITE_DONE;
 }
 
 /* ── Open / close ──────────────────────────────────────────────────── */

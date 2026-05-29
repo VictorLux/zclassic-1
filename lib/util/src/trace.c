@@ -18,15 +18,6 @@
 #include <time.h>
 #include <pthread.h>
 
-/* ── Timing ────────────────────────────────────────────────── */
-
-static uint64_t trace_now_us(void)
-{
-    struct timespec ts;
-    platform_time_monotonic_timespec(&ts);
-    return (uint64_t)ts.tv_sec * 1000000ULL + (uint64_t)ts.tv_nsec / 1000ULL;
-}
-
 /* ── Random ID generation ──────────────────────────────────── */
 
 /* Use /dev/urandom for trace/span IDs.  Falls back to time-based
@@ -41,7 +32,7 @@ static void trace_random_bytes(uint8_t *buf, size_t len)
     }
     /* Fallback: mix time + thread ID.  Not cryptographic but
      * sufficient for trace correlation. */
-    uint64_t seed = trace_now_us() ^ (uint64_t)(uintptr_t)pthread_self();
+    uint64_t seed = platform_time_monotonic_us() ^ (uint64_t)(uintptr_t)pthread_self();
     for (size_t i = 0; i < len; i++) {
         seed = seed * 6364136223846793005ULL + 1442695040888963407ULL;
         buf[i] = (uint8_t)(seed >> 33);
@@ -116,7 +107,7 @@ struct trace_span *trace_start(const char *operation)
      * be a parent for deeper spans.  This is a safety valve, not
      * a normal path. */
 
-    s->start_us = trace_now_us();
+    s->start_us = platform_time_monotonic_us();
     s->status = TRACE_STATUS_UNSET;
     return s;
 }
@@ -157,7 +148,7 @@ void trace_end(struct trace_span *s)
 {
     if (!s) return;
 
-    uint64_t end_us = trace_now_us();
+    uint64_t end_us = platform_time_monotonic_us();
     uint64_t duration_us = (end_us >= s->start_us)
                            ? (end_us - s->start_us) : 0;
 

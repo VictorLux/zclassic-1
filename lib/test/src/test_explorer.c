@@ -148,7 +148,7 @@ int test_explorer(void)
     printf("explorer: format_zcl handles negative values... ");
     {
         char buf[64];
-        explorer_format_zcl(buf, sizeof(buf), -100000000LL);
+        zcl_format_zcl(buf, sizeof(buf), -100000000LL);
         bool ok = (strcmp(buf, "-1.00000000") == 0);
         if (ok) printf("OK\n");
         else { printf("FAIL (got '%s')\n", buf); failures++; }
@@ -157,7 +157,7 @@ int test_explorer(void)
     printf("explorer: format_zcl handles zero... ");
     {
         char buf[64];
-        explorer_format_zcl(buf, sizeof(buf), 0);
+        zcl_format_zcl(buf, sizeof(buf), 0);
         bool ok = (strcmp(buf, "0.00000000") == 0);
         if (ok) printf("OK\n");
         else { printf("FAIL (got '%s')\n", buf); failures++; }
@@ -166,7 +166,7 @@ int test_explorer(void)
     printf("explorer: format_zcl handles 12.5 ZCL... ");
     {
         char buf[64];
-        explorer_format_zcl(buf, sizeof(buf), 1250000000LL);
+        zcl_format_zcl(buf, sizeof(buf), 1250000000LL);
         bool ok = (strcmp(buf, "12.50000000") == 0);
         if (ok) printf("OK\n");
         else { printf("FAIL (got '%s')\n", buf); failures++; }

@@ -133,12 +133,12 @@ static void render_shielded_section(char *r, size_t max, size_t *off,
         peak_unshield_val = ss->peak_pos_value;
         peak_unshield_h = ss->peak_pos_height;
     }
-    explorer_format_zcl(in_str, sizeof(in_str), total_shielded);
-    explorer_format_zcl(out_str, sizeof(out_str), total_unshielded);
-    explorer_format_zcl(peak_str, sizeof(peak_str), peak_shield_val);
-    explorer_format_zcl(peak_neg_str, sizeof(peak_neg_str), peak_unshield_val);
+    zcl_format_zcl(in_str, sizeof(in_str), total_shielded);
+    zcl_format_zcl(out_str, sizeof(out_str), total_unshielded);
+    zcl_format_zcl(peak_str, sizeof(peak_str), peak_shield_val);
+    zcl_format_zcl(peak_neg_str, sizeof(peak_neg_str), peak_unshield_val);
     int64_t net = (int64_t)total_shielded - (int64_t)total_unshielded;
-    explorer_format_zcl(net_str, sizeof(net_str), net);
+    zcl_format_zcl(net_str, sizeof(net_str), net);
 
     char first_ts[32] = "N/A", last_ts[32] = "N/A";
     if (ss->first_time > 0) explorer_format_time(first_ts, sizeof(first_ts), (uint32_t)ss->first_time);
@@ -226,9 +226,9 @@ static void render_shielded_section(char *r, size_t max, size_t *off,
                         yr_shield = unshield < 0 ? -unshield : unshield;
                         yr_unshield = shield;
                     }
-                    explorer_format_zcl(sh, sizeof(sh), yr_shield);
-                    explorer_format_zcl(un, sizeof(un), yr_unshield);
-                    explorer_format_zcl(nt, sizeof(nt), yr_shield - yr_unshield);
+                    zcl_format_zcl(sh, sizeof(sh), yr_shield);
+                    zcl_format_zcl(un, sizeof(un), yr_unshield);
+                    zcl_format_zcl(nt, sizeof(nt), yr_shield - yr_unshield);
                     APPEND(*off, r, max,
                         "<tr><td>%d</td><td>%" PRId64 "</td>"
                         "<td class='amount'>%s</td>"
@@ -261,7 +261,7 @@ static void render_shielded_section(char *r, size_t max, size_t *off,
                 int64_t v = sqlite3_column_int64(s, 2);
                 char ts[32], vs[32];
                 explorer_format_time(ts, sizeof(ts), (uint32_t)t);
-                explorer_format_zcl(vs, sizeof(vs), v < 0 ? -v : v);
+                zcl_format_zcl(vs, sizeof(vs), v < 0 ? -v : v);
                 APPEND(*off, r, max,
                     "<tr><td><a href='/explorer/block/%" PRId64 "'>%" PRId64 "</a></td>"
                     "<td>%s</td><td class='amount'>%s ZCL</td>"
@@ -320,8 +320,8 @@ static size_t explorer_stats_build_verified_summary(uint8_t *r, size_t max,
     int64_t supply = zcl_total_supply_zatoshi(chain_height);
 
     char supply_str[64], utxo_str[64];
-    explorer_format_zcl(supply_str, sizeof(supply_str), supply);
-    explorer_format_zcl(utxo_str, sizeof(utxo_str), utxo_value);
+    zcl_format_zcl(supply_str, sizeof(supply_str), supply);
+    zcl_format_zcl(utxo_str, sizeof(utxo_str), utxo_value);
 
     APPEND(off, (char *)r, max, EXPLORER_HEADER("ZClassic Stats"));
     off += explorer_emit_nav((char *)r + off, max - off, "stats");
@@ -572,7 +572,7 @@ size_t explorer_stats_build(uint8_t *r, size_t buf_max, const char *datadir)
     else snprintf(hr_str, sizeof(hr_str), "%.0f H/s", hashrate);
 
     char supply_str[32];
-    explorer_format_zcl(supply_str, sizeof(supply_str), total_supply);
+    zcl_format_zcl(supply_str, sizeof(supply_str), total_supply);
 
     int64_t chain_age_days = 0;
     if (genesis_time > 0 && tip_time > genesis_time)

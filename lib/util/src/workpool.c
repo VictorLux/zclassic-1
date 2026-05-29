@@ -7,21 +7,7 @@
 #include <string.h>
 #include <unistd.h>
 #include "util/safe_alloc.h"
-
-/* Avoid pulling in util.h just for GetNumCores */
-static int workpool_num_cpus(void)
-{
-#ifdef _WIN32
-    SYSTEM_INFO si;
-    GetSystemInfo(&si);
-    return (int)si.dwNumberOfProcessors;
-#elif defined(_SC_NPROCESSORS_ONLN)
-    long n = sysconf(_SC_NPROCESSORS_ONLN);
-    return n > 0 ? (int)n : 1;
-#else
-    return 1;
-#endif
-}
+#include "util/util.h"
 
 static void *worker_thread(void *arg)
 {
@@ -80,7 +66,7 @@ bool workpool_init(struct workpool *wp, int num_threads, size_t queue_cap,
     memset(wp, 0, sizeof(*wp));
 
     if (num_threads <= 0)
-        num_threads = workpool_num_cpus();
+        num_threads = GetNumCores();
     if (num_threads < 1)
         num_threads = 1;
     if (num_threads > WORKPOOL_MAX_THREADS)

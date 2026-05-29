@@ -489,20 +489,6 @@ static inline void explorer_format_time(char *buf, size_t max, uint32_t t)
     strftime(buf, max, "%Y-%m-%d %H:%M:%S UTC", &tm);
 }
 
-static inline void explorer_format_zcl(char *buf, size_t max, int64_t zatoshi)
-{
-    int64_t whole, frac;
-    if (zatoshi < 0) {
-        whole = (-zatoshi) / ZATOSHI_PER_ZCL;
-        frac = (-zatoshi) % ZATOSHI_PER_ZCL;
-        snprintf(buf, max, "-%" PRId64 ".%08" PRId64, whole, frac);
-    } else {
-        whole = zatoshi / ZATOSHI_PER_ZCL;
-        frac = zatoshi % ZATOSHI_PER_ZCL;
-        snprintf(buf, max, "%" PRId64 ".%08" PRId64, whole, frac);
-    }
-}
-
 /* Shared difficulty calculation — canonical version in chain/pow.h */
 #include "chain/pow.h"
 static inline double explorer_difficulty_from_bits(uint32_t bits)

@@ -6,7 +6,6 @@
 
 #include "util/util.h"
 #include "chain/chainparamsbase.h"
-#include "core/utiltime.h"
 #include <ctype.h>
 #include <stdlib.h>
 #include <string.h>
@@ -33,12 +32,6 @@
 struct arg_entry g_args[MAX_ARGS];
 int g_nargs = 0;
 
-bool fDebug = false;
-bool fPrintToConsole = false;
-bool fPrintToDebugLog = false;
-bool fLogTimestamps = true;
-
-static FILE *fileout = NULL;
 static char cachedDataDir[4096] = "";
 static char cachedDataDirNet[4096] = "";
 
@@ -144,8 +137,8 @@ bool SoftSetArg(const char *arg, const char *value)
 bool LogAcceptCategory(const char *category)
 {
     if (category != NULL) {
-        if (!fDebug) return false;
-        /* Check if -debug includes this category */
+        /* Category logging emits only when -debug (optionally
+         * -debug=<category>) was passed on the command line. */
         for (int i = 0; i < g_nargs; i++) {
             if (strcmp(g_args[i].key, "-debug") == 0) {
                 if (g_args[i].value[0] == '\0' ||
@@ -161,22 +154,8 @@ bool LogAcceptCategory(const char *category)
 
 int LogPrintStr(const char *str)
 {
-    if (fPrintToConsole) {
-        int ret = (int)fwrite(str, 1, strlen(str), stdout);
-        fflush(stdout);
-        return ret;
-    } else if (fPrintToDebugLog && fileout) {
-        if (fLogTimestamps) {
-            char ts[64];
-            DateTimeStrFormat(ts, sizeof(ts), "%Y-%m-%d %H:%M:%S", GetTime());
-            fprintf(fileout, "%s %s", ts, str);
-        } else {
-            fputs(str, fileout);
-        }
-        fflush(fileout);
-        return (int)strlen(str);
-    }
-    return 0;
+    fputs(str, stderr);
+    return (int)strlen(str);
 }
 
 void GetDefaultDataDir(char *out, size_t out_size)

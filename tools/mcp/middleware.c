@@ -316,24 +316,6 @@ static char *dispatch_with_timeout(const char *tool_name,
     return result;
 }
 
-/* ── Envelope helper ─────────────────────────────────────────── */
-
-static char *make_envelope(enum mcp_error_code code, const char *tool,
-                            const char *param, const char *msg)
-{
-    char tmp[2048];
-    size_t n = mcp_router_error_envelope(tmp, sizeof(tmp), code, tool,
-                                          param, msg);
-    if (n == 0) {
-        return strdup("{\"error\":{\"code\":\"INTERNAL\",\"message\":\"envelope build failed\"}}");
-    }
-    char *out = zcl_malloc(n + 1, "mcp middleware error envelope");
-    if (!out) return NULL;
-    memcpy(out, tmp, n);
-    out[n] = 0;
-    return out;
-}
-
 /* ── Public dispatch ─────────────────────────────────────────── */
 
 char *mcp_middleware_dispatch(struct mcp_middleware *mw,
@@ -352,8 +334,8 @@ char *mcp_middleware_dispatch(struct mcp_middleware *mw,
         mw->stat_auth_denied++;
         event_emitf(EV_MCP_REQUEST, 0,
                     "tool=%s code=AUTH_REQUIRED", tool_name);
-        return make_envelope(MCP_ERR_AUTH_REQUIRED, tool_name, NULL,
-                              "bearer token required");
+        return mcp_router_error_envelope_strdup(MCP_ERR_AUTH_REQUIRED,
+                              tool_name, NULL, "bearer token required");
     }
 
     /* 2. Global rate limit */
@@ -361,8 +343,8 @@ char *mcp_middleware_dispatch(struct mcp_middleware *mw,
         mw->stat_rate_limited_global++;
         event_emitf(EV_MCP_REQUEST, 0,
                     "tool=%s code=RATE_LIMITED kind=global", tool_name);
-        return make_envelope(MCP_ERR_RATE_LIMITED, tool_name, "global",
-                              "global rate limit exceeded");
+        return mcp_router_error_envelope_strdup(MCP_ERR_RATE_LIMITED,
+                              tool_name, "global", "global rate limit exceeded");
     }
 
     /* 3. Destructive rate limit */
@@ -372,7 +354,8 @@ char *mcp_middleware_dispatch(struct mcp_middleware *mw,
         event_emitf(EV_MCP_REQUEST, 0,
                     "tool=%s code=RATE_LIMITED kind=destructive",
                     tool_name);
-        return make_envelope(MCP_ERR_RATE_LIMITED, tool_name, "destructive",
+        return mcp_router_error_envelope_strdup(MCP_ERR_RATE_LIMITED,
+                              tool_name, "destructive",
                               "destructive rate limit exceeded");
     }
 
@@ -385,8 +368,8 @@ char *mcp_middleware_dispatch(struct mcp_middleware *mw,
         event_emitf(EV_MCP_REQUEST, 0,
                     "tool=%s code=TOOL_TIMEOUT deadline_ms=%lld",
                     tool_name, (long long)mw->default_timeout_ms);
-        return make_envelope(MCP_ERR_TOOL_TIMEOUT, tool_name, NULL,
-                              "handler exceeded timeout");
+        return mcp_router_error_envelope_strdup(MCP_ERR_TOOL_TIMEOUT,
+                              tool_name, NULL, "handler exceeded timeout");
     }
 
     mw->stat_allowed++;

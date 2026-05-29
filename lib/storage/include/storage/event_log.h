@@ -91,6 +91,12 @@ enum event_log_type {
  * on disk so the byte sequence on disk reads "ZCLEVTLG". */
 #define EVENT_LOG_SENTINEL_MAGIC UINT64_C(0x474C5456454C435A)
 
+/* Per-event framing overhead: 16B header (len/type/flags/crc, see wire
+ * format above) + 16B fsync sentinel. Given a stream callback's
+ * (offset, len), the next event begins at offset + EVENT_LOG_FRAME_OVERHEAD
+ * + len. */
+#define EVENT_LOG_FRAME_OVERHEAD 32u
+
 /* Maximum payload length (defensive cap — 256 MiB). Larger payloads
  * indicate a bug in the caller and are rejected. */
 #define EVENT_LOG_MAX_PAYLOAD ((size_t)(256u * 1024u * 1024u))

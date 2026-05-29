@@ -92,7 +92,6 @@
 #include "storage/disk_block_io.h"
 #include "validation/main_state.h"
 #include "validation/main_logic.h"
-#include "validation/checkqueue.h"
 #include "coins/coins_view.h"
 #include "storage/coins_db.h"
 #include "validation/update_coins.h"

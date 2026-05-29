@@ -22,11 +22,6 @@ struct arg_entry {
 extern struct arg_entry g_args[MAX_ARGS];
 extern int g_nargs;
 
-extern bool fDebug;
-extern bool fPrintToConsole;
-extern bool fPrintToDebugLog;
-extern bool fLogTimestamps;
-
 void ParseParameters(int argc, const char *const argv[]);
 const char *GetArg(const char *arg, const char *default_val);
 int64_t GetArgInt(const char *arg, int64_t default_val);

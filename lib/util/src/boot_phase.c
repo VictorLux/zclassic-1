@@ -11,18 +11,11 @@
 
 #define BOOT_PHASE_STALL_SECS 30
 
-static int64_t mono_ms(void)
-{
-    struct timespec ts;
-    platform_time_monotonic_timespec(&ts);
-    return (int64_t)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
-}
-
 static void boot_phase_on_stall(void *ctx)
 {
     struct boot_phase *p = (struct boot_phase *)ctx;
     if (!p) return;
-    int64_t elapsed = mono_ms() - p->start_ms;
+    int64_t elapsed = platform_time_monotonic_ms() - p->start_ms;
     fprintf(stderr,  // obs-ok:boot-phase-stall-observed-via-heartbeat
         "[boot-phase] STALL %s %lldms (no progress reported)\n",
         p->name, (long long)elapsed);
@@ -41,7 +34,7 @@ void boot_phase_begin(struct boot_phase *p, const char *name)
     } else {
         snprintf(p->name, sizeof(p->name), "(unnamed)");
     }
-    p->start_ms = mono_ms();
+    p->start_ms = platform_time_monotonic_ms();
     p->health_id = HEALTH_INVALID_ID;
 
     fprintf(stderr, "[boot-phase] BEGIN %s\n", p->name);  // obs-ok:boot-phase-trace-marker
@@ -63,7 +56,7 @@ void boot_phase_begin(struct boot_phase *p, const char *name)
 void boot_phase_end(struct boot_phase *p)
 {
     if (!p) return;
-    int64_t elapsed = mono_ms() - p->start_ms;
+    int64_t elapsed = platform_time_monotonic_ms() - p->start_ms;
     if (p->health_id != HEALTH_INVALID_ID) {
         health_unregister(p->health_id);
         p->health_id = HEALTH_INVALID_ID;

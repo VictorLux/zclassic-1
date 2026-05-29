@@ -17,17 +17,9 @@
 static _Atomic int64_t g_last_us = 0;
 static _Atomic(const char *) g_last_label = NULL;
 
-static int64_t monotonic_us(void)
-{
-    struct timespec ts;
-    if (platform_time_monotonic_timespec(&ts) != 0)
-        return 0;
-    return (int64_t)ts.tv_sec * 1000000 + (int64_t)ts.tv_nsec / 1000;
-}
-
 void boot_progress_tick(const char *label)
 {
-    atomic_store_explicit(&g_last_us, monotonic_us(),
+    atomic_store_explicit(&g_last_us, platform_time_monotonic_us(),
                           memory_order_relaxed);
     if (label)
         atomic_store_explicit(&g_last_label, label,

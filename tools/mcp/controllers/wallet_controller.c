@@ -100,19 +100,7 @@ static int h_zcl_listtransactions(const struct mcp_request *req,
                                 "listtransactions", "mcp.wallet");
 }
 
-static int h_zcl_gettransaction(const struct mcp_request *req,
-                                  struct mcp_response *res)
-{
-    const char *txid = json_get_str(json_get(req->args, "txid"));
-    struct mcp_params p;
-    mcp_params_init(&p);
-    mcp_params_push_str(&p, txid);
-    char *params = mcp_params_to_json(&p);
-    char *out = params ? mcp_node_rpc("gettransaction", params) : NULL;
-    free(params);
-    return mcp_return_rpc_body_ctx(res, out, "gettransaction", "mcp.wallet",
-                                   "txid=%s", txid ? txid : "(null)");
-}
+DEFINE_PT_STR(h_zcl_gettransaction, "txid", "gettransaction", "mcp.wallet")
 
 static int h_zcl_listaddresses(const struct mcp_request *req,
                                 struct mcp_response *res)
@@ -182,19 +170,7 @@ static int h_zcl_listaddresses(const struct mcp_request *req,
     return 0;
 }
 
-static int h_zcl_dumpprivkey(const struct mcp_request *req,
-                               struct mcp_response *res)
-{
-    const char *addr = json_get_str(json_get(req->args, "address"));
-    struct mcp_params p;
-    mcp_params_init(&p);
-    mcp_params_push_str(&p, addr);
-    char *params = mcp_params_to_json(&p);
-    char *out = params ? mcp_node_rpc("dumpprivkey", params) : NULL;
-    free(params);
-    return mcp_return_rpc_body_ctx(res, out, "dumpprivkey", "mcp.wallet",
-                                   "address=%s", addr ? addr : "(null)");
-}
+DEFINE_PT_STR(h_zcl_dumpprivkey, "address", "dumpprivkey", "mcp.wallet")
 
 static int h_zcl_importprivkey(const struct mcp_request *req,
                                  struct mcp_response *res)
@@ -212,19 +188,7 @@ static int h_zcl_importprivkey(const struct mcp_request *req,
     return mcp_return_rpc_body(res, out, "importprivkey", "mcp.wallet");
 }
 
-static int h_zcl_importaddress(const struct mcp_request *req,
-                                 struct mcp_response *res)
-{
-    const char *addr = json_get_str(json_get(req->args, "address"));
-    struct mcp_params p;
-    mcp_params_init(&p);
-    mcp_params_push_str(&p, addr);
-    char *params = mcp_params_to_json(&p);
-    char *out = params ? mcp_node_rpc("importaddress", params) : NULL;
-    free(params);
-    return mcp_return_rpc_body_ctx(res, out, "importaddress", "mcp.wallet",
-                                   "address=%s", addr ? addr : "(null)");
-}
+DEFINE_PT_STR(h_zcl_importaddress, "address", "importaddress", "mcp.wallet")
 
 static int h_zcl_z_listunspent(const struct mcp_request *req,
                                  struct mcp_response *res)

@@ -109,66 +109,29 @@ static int h_zcl_state(const struct mcp_request *req, struct mcp_response *res)
                                     "subsystem=%s", sub ? sub : "(null)");
 }
 
-static int h_zcl_peers_projection_diff(const struct mcp_request *req,
-                                       struct mcp_response *res)
+/* ── zcl_conditions ──────────────────────────────────────────── */
+
+/* Self-heal condition engine dump. A fixed `zcl_state subsystem=
+ * condition_engine`: dispatches dumpstate with a literal param so
+ * DEFINE_PT (which passes NULL params) can't express it. */
+static int h_zcl_conditions(const struct mcp_request *req,
+                            struct mcp_response *res)
 {
     (void)req;
-    char *out = mcp_node_rpc("peersprojectiondiff", NULL);
-    return mcp_return_rpc_body(res, out, "peersprojectiondiff", "mcp.diag");
+    return mcp_return_rpc_body(res,
+                               mcp_node_rpc("dumpstate",
+                                            "[\"condition_engine\"]"),
+                               "dumpstate", "mcp.conditions");
 }
 
-static int h_zcl_mempool_projection_diff(const struct mcp_request *req,
-                                         struct mcp_response *res)
-{
-    (void)req;
-    char *out = mcp_node_rpc("mempoolprojectiondiff", NULL);
-    return mcp_return_rpc_body(res, out, "mempoolprojectiondiff",
-                               "mcp.diag");
-}
-
-static int h_zcl_znam_projection_diff(const struct mcp_request *req,
-                                      struct mcp_response *res)
-{
-    (void)req;
-    char *out = mcp_node_rpc("znamprojectiondiff", NULL);
-    return mcp_return_rpc_body(res, out, "znamprojectiondiff", "mcp.diag");
-}
-
-static int h_zcl_wallet_projection_diff(const struct mcp_request *req,
-                                        struct mcp_response *res)
-{
-    (void)req;
-    char *out = mcp_node_rpc("walletprojectiondiff", NULL);
-    return mcp_return_rpc_body(res, out, "walletprojectiondiff",
-                               "mcp.diag");
-}
-
-static int h_zcl_contacts_projection_diff(const struct mcp_request *req,
-                                          struct mcp_response *res)
-{
-    (void)req;
-    char *out = mcp_node_rpc("contactsprojectiondiff", NULL);
-    return mcp_return_rpc_body(res, out, "contactsprojectiondiff",
-                               "mcp.diag");
-}
-
-static int h_zcl_onion_announcements_projection_diff(
-    const struct mcp_request *req, struct mcp_response *res)
-{
-    (void)req;
-    char *out = mcp_node_rpc("onionannouncementsprojectiondiff", NULL);
-    return mcp_return_rpc_body(res, out, "onionannouncementsprojectiondiff",
-                               "mcp.diag");
-}
-
-static int h_zcl_hodl_history_projection_diff(const struct mcp_request *req,
-                                              struct mcp_response *res)
-{
-    (void)req;
-    char *out = mcp_node_rpc("hodlhistoryprojectiondiff", NULL);
-    return mcp_return_rpc_body(res, out, "hodlhistoryprojectiondiff",
-                               "mcp.diag");
-}
+/* ── projection diff pass-throughs (Phase 4d shadow-vs-legacy) ── */
+DEFINE_PT(h_zcl_peers_projection_diff,        "peersprojectiondiff",              "mcp.diag")
+DEFINE_PT(h_zcl_mempool_projection_diff,      "mempoolprojectiondiff",            "mcp.diag")
+DEFINE_PT(h_zcl_znam_projection_diff,         "znamprojectiondiff",               "mcp.diag")
+DEFINE_PT(h_zcl_wallet_projection_diff,       "walletprojectiondiff",             "mcp.diag")
+DEFINE_PT(h_zcl_contacts_projection_diff,     "contactsprojectiondiff",           "mcp.diag")
+DEFINE_PT(h_zcl_onion_announcements_projection_diff, "onionannouncementsprojectiondiff", "mcp.diag")
+DEFINE_PT(h_zcl_hodl_history_projection_diff, "hodlhistoryprojectiondiff",        "mcp.diag")
 
 /* ── zcl_probe_zclassicd ─────────────────────────────────────── */
 
@@ -214,24 +177,9 @@ static int h_zcl_probe_zclassicd(const struct mcp_request *req,
 
 /* ── zcl_diff_with_legacy ────────────────────────────────────── */
 
-/* Tiny helpers: pull "key":N (or :true) out of a JSON-ish string.
- * Not a real parser — we only read fields we know our own RPCs emit. */
-static long long diag_scan_int(const char *body, const char *key)
-{
-    if (!body || !key) return -1;  // raw-return-ok:sentinel
-    char needle[64];
-    int n = snprintf(needle, sizeof(needle), "\"%s\":", key);
-    if (n <= 0 || (size_t)n >= sizeof(needle)) return -1;  // raw-return-ok:sentinel
-    const char *p = strstr(body, needle);
-    if (!p) return -1;  // raw-return-ok:sentinel
-    p += (size_t)n;
-    while (*p == ' ') p++;
-    char *end = NULL;
-    long long v = strtoll(p, &end, 10);
-    if (end == p) return -1;  // raw-return-ok:sentinel
-    return v;
-}
-
+/* Tiny helper: pull "key":true out of a JSON-ish string. The integer
+ * twin lives in controllers.h as mcp_scan_int_field. Not a real parser
+ * — we only read fields we know our own RPCs emit. */
 static bool diag_scan_bool(const char *body, const char *key)
 {
     if (!body || !key) return false;
@@ -262,9 +210,9 @@ static int h_zcl_diff_with_legacy(const struct mcp_request *req,
         LOG_ERR("mcp.diag", "diff_with_legacy: getmirrorstatus null");
         return 0;
     }
-    int local_h    = (int)diag_scan_int(mstatus, "local_height");
-    int legacy_h   = (int)diag_scan_int(mstatus, "legacy_height");
-    int lag        = (int)diag_scan_int(mstatus, "lag");
+    int local_h    = (int)mcp_scan_int_field(mstatus, "local_height");
+    int legacy_h   = (int)mcp_scan_int_field(mstatus, "legacy_height");
+    int lag        = (int)mcp_scan_int_field(mstatus, "lag");
     bool reachable = diag_scan_bool(mstatus, "reachable");
 
     char *probe = NULL;
@@ -674,6 +622,10 @@ static const struct mcp_tool_route k_routes[] = {
       "For block_index, pass `key`=height or hex hash. New subsystems "
       "plug in via *_dump_state_json (see CLAUDE.md).",
       p_state, PARAM_COUNT(p_state), h_zcl_state, 0, NULL },
+    { "zcl_conditions", "ops",
+      "Self-heal condition engine state: registered conditions, active "
+      "flags, remedy attempts, outcomes, clear counts, and thresholds.",
+      NULL, 0, h_zcl_conditions, 0, NULL },
     { "zcl_peers_projection_diff", "ops",
       "Compare Phase 4d peers_projection against the legacy peers table: "
       "row counts plus recent peer samples.",

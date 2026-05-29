@@ -24,18 +24,7 @@ DEFINE_PT(h_zcl_tokens, "zslp_listtokens", "mcp.app")
 
 DEFINE_PT(h_zcl_name_list, "name_list", "mcp.app")
 
-static int h_zcl_name_resolve(const struct mcp_request *req, struct mcp_response *res)
-{
-    const char *n = json_get_str(json_get(req->args, "name"));
-    struct mcp_params p;
-    mcp_params_init(&p);
-    mcp_params_push_str(&p, n);
-    char *params = mcp_params_to_json(&p);
-    char *out = params ? mcp_node_rpc("name_resolve", params) : NULL;
-    free(params);
-    return mcp_return_rpc_body_ctx(res, out, "name_resolve", "mcp.app",
-                                   "name=%s", n ? n : "(null)");
-}
+DEFINE_PT_STR(h_zcl_name_resolve, "name", "name_resolve", "mcp.app")
 
 static int h_zcl_name_register(const struct mcp_request *req, struct mcp_response *res)
 {
@@ -95,18 +84,7 @@ static int h_zcl_msg_inbox(const struct mcp_request *req, struct mcp_response *r
     return mcp_return_rpc_body(res, out, "msg_inbox", "mcp.app");
 }
 
-static int h_zcl_msg_read(const struct mcp_request *req, struct mcp_response *res)
-{
-    const char *mid = json_get_str(json_get(req->args, "msg_id"));
-    struct mcp_params p;
-    mcp_params_init(&p);
-    mcp_params_push_str(&p, mid);
-    char *params = mcp_params_to_json(&p);
-    char *out = params ? mcp_node_rpc("msg_read", params) : NULL;
-    free(params);
-    return mcp_return_rpc_body_ctx(res, out, "msg_read", "mcp.app",
-                                   "msg_id=%s", mid ? mid : "(null)");
-}
+DEFINE_PT_STR(h_zcl_msg_read, "msg_id", "msg_read", "mcp.app")
 
 /* ── File market ────────────────────────────────────────────── */
 
@@ -135,18 +113,7 @@ static int h_zcl_market_offer(const struct mcp_request *req, struct mcp_response
                                    "filepath=%s", fp ? fp : "(null)");
 }
 
-static int h_zcl_market_buy(const struct mcp_request *req, struct mcp_response *res)
-{
-    const char *rh = json_get_str(json_get(req->args, "root_hash"));
-    struct mcp_params p;
-    mcp_params_init(&p);
-    mcp_params_push_str(&p, rh);
-    char *params = mcp_params_to_json(&p);
-    char *out = params ? mcp_node_rpc("zmarket_buy", params) : NULL;
-    free(params);
-    return mcp_return_rpc_body_ctx(res, out, "zmarket_buy", "mcp.app",
-                                   "root_hash=%s", rh ? rh : "(null)");
-}
+DEFINE_PT_STR(h_zcl_market_buy, "root_hash", "zmarket_buy", "mcp.app")
 
 /* ── Atomic swaps (ZSWP) ────────────────────────────────────── */
 

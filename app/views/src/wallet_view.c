@@ -19,11 +19,6 @@
 #include <stdint.h>
 #include <inttypes.h>
 
-static void format_zcl(int64_t satoshis, char *out, size_t out_size)
-{
-    zcl_format_zcl(out, out_size, satoshis);
-}
-
 void wallet_view_utxo(struct json_value *out,
                       const struct coin_entry *coin,
                       const struct wallet *w)
@@ -53,7 +48,7 @@ void wallet_view_utxo(struct json_value *out,
     }
 
     char amt[32];
-    format_zcl(txout->value, amt, sizeof(amt));
+    zcl_format_zcl(amt, sizeof(amt), txout->value);
     json_push_kv_real(out, "amount", strtod(amt, NULL));
     json_push_kv_int(out, "confirmations", coin->depth);
     json_push_kv_bool(out, "spendable", coin->spendable);
@@ -90,9 +85,9 @@ void wallet_view_info(struct json_value *out,
     json_set_object(out);
 
     char amt[32];
-    format_zcl(balance, amt, sizeof(amt));
+    zcl_format_zcl(amt, sizeof(amt), balance);
     json_push_kv_real(out, "balance", strtod(amt, NULL));
-    format_zcl(unconfirmed, amt, sizeof(amt));
+    zcl_format_zcl(amt, sizeof(amt), unconfirmed);
     json_push_kv_real(out, "unconfirmed_balance", strtod(amt, NULL));
     json_push_kv_int(out, "txcount", (int64_t)w->num_wallet_tx);
     json_push_kv_int(out, "keypoolsize", (int64_t)w->key_pool_size);
@@ -105,11 +100,11 @@ void wallet_view_balance(struct json_value *out,
 {
     json_set_object(out);
     char amt[32];
-    format_zcl(balance, amt, sizeof(amt));
+    zcl_format_zcl(amt, sizeof(amt), balance);
     json_push_kv_real(out, "balance", strtod(amt, NULL));
-    format_zcl(unconfirmed, amt, sizeof(amt));
+    zcl_format_zcl(amt, sizeof(amt), unconfirmed);
     json_push_kv_real(out, "unconfirmed", strtod(amt, NULL));
-    format_zcl(immature, amt, sizeof(amt));
+    zcl_format_zcl(amt, sizeof(amt), immature);
     json_push_kv_real(out, "immature", strtod(amt, NULL));
 }
 
@@ -129,7 +124,7 @@ void wallet_view_key_entry(struct json_value *out,
     json_push_kv_int(out, "unspent_count", unspent_count);
 
     char amt[32];
-    format_zcl(balance, amt, sizeof(amt));
+    zcl_format_zcl(amt, sizeof(amt), balance);
     json_push_kv_real(out, "balance", strtod(amt, NULL));
 }
 
@@ -146,7 +141,7 @@ void wallet_view_utxo_trace(struct json_value *out,
     json_push_kv_str(out, "status", status);
 
     char amt[32];
-    format_zcl(value, amt, sizeof(amt));
+    zcl_format_zcl(amt, sizeof(amt), value);
     json_push_kv_real(out, "value", strtod(amt, NULL));
     json_push_kv_int(out, "height", height);
     if (spent_by)
@@ -166,14 +161,14 @@ void wallet_view_flow_entry(struct json_value *out,
     json_push_kv_str(out, "category", category);
 
     char amt[32];
-    format_zcl(amount, amt, sizeof(amt));
+    zcl_format_zcl(amt, sizeof(amt), amount);
     json_push_kv_real(out, "amount", strtod(amt, NULL));
     if (fee != 0) {
-        format_zcl(-fee, amt, sizeof(amt));
+        zcl_format_zcl(amt, sizeof(amt), -fee);
         json_push_kv_real(out, "fee", strtod(amt, NULL));
     }
     json_push_kv_int(out, "height", height);
-    format_zcl(running_balance, amt, sizeof(amt));
+    zcl_format_zcl(amt, sizeof(amt), running_balance);
     json_push_kv_real(out, "running_balance", strtod(amt, NULL));
 }
 
@@ -189,9 +184,9 @@ void wallet_view_reconcile_summary(struct json_value *out,
     json_push_kv_int(out, "fixed", fixed);
 
     char amt[32];
-    format_zcl(balance_before, amt, sizeof(amt));
+    zcl_format_zcl(amt, sizeof(amt), balance_before);
     json_push_kv_real(out, "balance_before", strtod(amt, NULL));
-    format_zcl(balance_after, amt, sizeof(amt));
+    zcl_format_zcl(amt, sizeof(amt), balance_after);
     json_push_kv_real(out, "balance_after", strtod(amt, NULL));
 }
 
@@ -204,11 +199,11 @@ void wallet_view_purge_summary(struct json_value *out,
     json_push_kv_int(out, "txs_deleted", txs_deleted);
 
     char amt[32];
-    format_zcl(amount_purged, amt, sizeof(amt));
+    zcl_format_zcl(amt, sizeof(amt), amount_purged);
     json_push_kv_real(out, "amount_purged", strtod(amt, NULL));
-    format_zcl(balance_before, amt, sizeof(amt));
+    zcl_format_zcl(amt, sizeof(amt), balance_before);
     json_push_kv_real(out, "balance_before", strtod(amt, NULL));
-    format_zcl(balance_after, amt, sizeof(amt));
+    zcl_format_zcl(amt, sizeof(amt), balance_after);
     json_push_kv_real(out, "balance_after", strtod(amt, NULL));
 }
 
@@ -221,9 +216,9 @@ void wallet_view_replay_summary(struct json_value *out,
     json_push_kv_int(out, "txs_found", txs_found);
 
     char amt[32];
-    format_zcl(new_balance, amt, sizeof(amt));
+    zcl_format_zcl(amt, sizeof(amt), new_balance);
     json_push_kv_real(out, "new_balance", strtod(amt, NULL));
-    format_zcl(old_balance, amt, sizeof(amt));
+    zcl_format_zcl(amt, sizeof(amt), old_balance);
     json_push_kv_real(out, "old_balance", strtod(amt, NULL));
 }
 
@@ -237,9 +232,9 @@ void wallet_view_sync_summary(struct json_value *out,
     json_push_kv_int(out, "marked_spent", marked_spent);
 
     char amt[32];
-    format_zcl(balance_before, amt, sizeof(amt));
+    zcl_format_zcl(amt, sizeof(amt), balance_before);
     json_push_kv_real(out, "balance_before", strtod(amt, NULL));
-    format_zcl(balance_after, amt, sizeof(amt));
+    zcl_format_zcl(amt, sizeof(amt), balance_after);
     json_push_kv_real(out, "balance_after", strtod(amt, NULL));
 }
 
@@ -258,9 +253,9 @@ void wallet_view_legacy_import(struct json_value *out,
     json_push_kv_int(&src_info, "block_files", snap->src_block_files);
 
     char sz[32];
-    format_zcl(snap->src_blocks_bytes / 1048576, sz, sizeof(sz));
+    zcl_format_zcl(sz, sizeof(sz), snap->src_blocks_bytes / 1048576);
     json_push_kv_str(&src_info, "blocks_mb", sz);
-    format_zcl(snap->src_chainstate_bytes / 1048576, sz, sizeof(sz));
+    zcl_format_zcl(sz, sizeof(sz), snap->src_chainstate_bytes / 1048576);
     json_push_kv_str(&src_info, "chainstate_mb", sz);
     json_push_kv(out, "source", &src_info);
     json_free(&src_info);
@@ -279,7 +274,7 @@ void wallet_view_legacy_import(struct json_value *out,
     json_push_kv_int(&wallet_info, "keys_total", keys_total);
 
     char amt[32];
-    format_zcl(balance, amt, sizeof(amt));
+    zcl_format_zcl(amt, sizeof(amt), balance);
     json_push_kv_str(&wallet_info, "balance", amt);
     json_push_kv(out, "wallet", &wallet_info);
     json_free(&wallet_info);
@@ -294,7 +289,7 @@ void wallet_view_chain_coin(struct json_value *out,
     json_push_kv_int(out, "vout", vout);
 
     char amt[32];
-    format_zcl(value, amt, sizeof(amt));
+    zcl_format_zcl(amt, sizeof(amt), value);
     json_push_kv_real(out, "value", strtod(amt, NULL));
     json_push_kv_str(out, "status", available ? "unspent" : "spent");
     if (address)

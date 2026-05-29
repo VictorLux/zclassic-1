@@ -11,6 +11,8 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 
 #include "json/json.h"
 #include "router.h"
@@ -18,8 +20,7 @@
 #include "util/log_macros.h"
 
 void mcp_register_ops(void);      /* zcl_status, zcl_health, zcl_events, zcl_rpc, ... */
-void mcp_register_diagnostics(void); /* zcl_sql, zcl_state, zcl_node_log, zcl_profile, ... */
-void mcp_register_conditions(void);  /* zcl_conditions */
+void mcp_register_diagnostics(void); /* zcl_sql, zcl_state, zcl_node_log, zcl_conditions, zcl_profile, ... */
 void mcp_register_chain(void);    /* zcl_getblock, zcl_mmb, zcl_syncstate, ...        */
 void mcp_register_net(void);      /* zcl_peers, zcl_addnode, zcl_pingpeer, ...        */
 void mcp_register_wallet(void);   /* zcl_balance, zcl_send, zcl_getnewaddress, ...    */
@@ -93,6 +94,41 @@ json_get_str_or(const struct json_value *obj, const char *key, const char *dflt)
                                     rpc_method, log_tag);                      \
     }
 
+/* ── Single-string-arg pass-through macro ──────────────────────────
+ *
+ * DEFINE_PT_STR generates a handler for the very common shape: read one
+ * string field `param_key` from args, build a one-element params array,
+ * dispatch `rpc_method`, free the params, and forward the body with a
+ * `"<param_key>=<value>"` failure context. The ctx label is derived from
+ * the literal param_key so there is one fewer thing to keep in sync.
+ *
+ * Usage:
+ *   DEFINE_PT_STR(h_zcl_gettransaction, "txid", "gettransaction", "mcp.wallet")
+ *
+ * Required headers in the .c that uses this macro (a superset of
+ * DEFINE_PT's): also needs "../rpc_params.h" (mcp_params_*) and
+ * <stdlib.h> (free). All current callers already include them.
+ *
+ * Handlers that need extra args, a typed (non-string) arg, or
+ * pre-dispatch validation (e.g. path_check_fs_arg in h_zcl_market_offer,
+ * the 2-arg getrawtransaction / getblock) stay hand-written — this macro
+ * is deliberately limited to the single-string-arg shape.
+ */
+#define DEFINE_PT_STR(fn_name, param_key, rpc_method, log_tag)                 \
+    static int fn_name(const struct mcp_request *req,                          \
+                       struct mcp_response *res)                               \
+    {                                                                          \
+        const char *v = json_get_str(json_get(req->args, param_key));          \
+        struct mcp_params p;                                                   \
+        mcp_params_init(&p);                                                   \
+        mcp_params_push_str(&p, v);                                            \
+        char *params = mcp_params_to_json(&p);                                 \
+        char *out = params ? mcp_node_rpc(rpc_method, params) : NULL;          \
+        free(params);                                                          \
+        return mcp_return_rpc_body_ctx(res, out, rpc_method, log_tag,          \
+                                       param_key "=%s", v ? v : "(null)");     \
+    }
+
 /* ── Shared handler tail ──────────────────────────────────────────
  *
  * Many handlers do the same thing after calling mcp_node_rpc(): if the
@@ -147,6 +183,31 @@ static inline int mcp_return_rpc_body_ctx(struct mcp_response *res,
     }
     res->body = body_or_null;
     return 0;
+}
+
+/* ── Lightweight "key":N scanner ──────────────────────────────────
+ *
+ * Pull an integer out of a JSON-ish body for cheap field reads.
+ * Returns -1 if the key isn't present or can't be parsed as an
+ * integer. Intentionally not a full parser — we only read counters
+ * our own RPCs/handlers emit. The `// raw-return-ok:sentinel` markers
+ * keep the silent-error lint gate green (-1 is a documented sentinel,
+ * not an unlogged failure). */
+static inline long long mcp_scan_int_field(const char *body, const char *key)
+{
+    if (!body || !key) return -1;  // raw-return-ok:sentinel
+    char needle[64];
+    int n = snprintf(needle, sizeof(needle), "\"%s\":", key);
+    if (n <= 0 || (size_t)n >= sizeof(needle)) return -1;  // raw-return-ok:sentinel
+    const char *p = strstr(body, needle);
+    if (!p) return -1;  // raw-return-ok:sentinel
+    p += (size_t)n;
+    while (*p == ' ') p++;
+    if (*p == '\0') return -1;  // raw-return-ok:sentinel
+    char *end = NULL;
+    long long v = strtoll(p, &end, 10);
+    if (end == p) return -1;  // raw-return-ok:sentinel
+    return v;
 }
 
 #endif

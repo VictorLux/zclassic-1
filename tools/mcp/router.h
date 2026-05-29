@@ -163,6 +163,15 @@ size_t mcp_router_error_envelope(char *buf, size_t buflen,
                                   const char *param,
                                   const char *message);
 
+/* Build the error envelope into a freshly malloc'd, NUL-terminated string
+ * (caller frees). Wraps mcp_router_error_envelope with a fixed 2 KB scratch
+ * buffer; on overflow/failure returns a strdup'd INTERNAL fallback. Returns
+ * NULL only if the final allocation fails. */
+char *mcp_router_error_envelope_strdup(enum mcp_error_code code,
+                                       const char *tool,
+                                       const char *param,
+                                       const char *msg);
+
 const char *mcp_error_code_name(enum mcp_error_code c);
 const char *mcp_param_type_name(enum mcp_param_type t);
 

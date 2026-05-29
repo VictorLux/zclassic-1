@@ -39,7 +39,7 @@ lib/storage/src/coins_view_sqlite.c:55: return coins_view_sqlite_batch_write(cvs
 lib/storage/src/coins_view_sqlite.c:689:bool coins_view_sqlite_batch_write(struct coins_view_sqlite *cvs,
 lib/storage/src/coins_view_sqlite.c:693: return coins_view_sqlite_batch_write_ex(cvs, map_coins, hash_block, NULL);
 lib/storage/src/coins_view_sqlite.c:696:bool coins_view_sqlite_batch_write_ex(struct coins_view_sqlite *cvs,
-lib/storage/src/utxo_projection.c:100:void utxo_projection_set_author(utxo_author_t who)
+lib/storage/src/utxo_projection.c:93:void utxo_projection_set_author(utxo_author_t who)
 lib/validation/include/validation/chainstate.h:102:bool active_chain_set_tip(struct active_chain *c, struct block_index *bi);
 lib/validation/include/validation/process_block.h:42:bool connect_tip(struct validation_state *state,
 lib/validation/include/validation/process_block.h:50:bool disconnect_tip(struct validation_state *state,

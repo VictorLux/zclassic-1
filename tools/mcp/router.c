@@ -258,20 +258,6 @@ enum mcp_error_code mcp_router_validate(const struct mcp_tool_route *route,
 
 /* ── Schema / envelope JSON ──────────────────────────────────── */
 
-/* Map an MCP_PARAM_* to its JSON-Schema "type" name. */
-static const char *json_schema_type(enum mcp_param_type t)
-{
-    switch (t) {
-    case MCP_PARAM_STR:    return "string";
-    case MCP_PARAM_INT:    return "integer";
-    case MCP_PARAM_REAL:   return "number";
-    case MCP_PARAM_BOOL:   return "boolean";
-    case MCP_PARAM_ARRAY:  return "array";
-    case MCP_PARAM_OBJECT: return "object";
-    }
-    return "string";
-}
-
 /* Append a JSON array of enum values split from a csv string. */
 static size_t append_enum_array(char *buf, size_t buflen, size_t pos,
                                  const char *csv)
@@ -321,7 +307,7 @@ size_t mcp_router_input_schema_json(const struct mcp_tool_route *route,
         }
         n = snprintf(buf + pos, buflen - pos,
                      "\"%s\":{\"type\":\"%s\"",
-                     p->name, json_schema_type(p->type));
+                     p->name, mcp_param_type_name(p->type));
         if (n < 0 || (size_t)n >= buflen - pos) return pos;
         pos += (size_t)n;
 
@@ -480,8 +466,9 @@ size_t mcp_router_error_envelope(char *buf, size_t buflen,
 
 /* ── Dispatch ────────────────────────────────────────────────── */
 
-static char *envelope_strdup(enum mcp_error_code code, const char *tool,
-                              const char *param, const char *msg)
+char *mcp_router_error_envelope_strdup(enum mcp_error_code code,
+                                       const char *tool,
+                                       const char *param, const char *msg)
 {
     char tmp[2048];
     size_t n = mcp_router_error_envelope(tmp, sizeof(tmp), code, tool,
@@ -491,7 +478,7 @@ static char *envelope_strdup(enum mcp_error_code code, const char *tool,
             "{\"error\":{\"code\":\"INTERNAL\",\"message\":\"envelope build failed\"}}";
         return strdup(fallback);
     }
-    char *out = zcl_malloc(n + 1, "mcp router error envelope");
+    char *out = zcl_malloc(n + 1, "mcp error envelope");
     if (!out) return NULL;
     memcpy(out, tmp, n);
     out[n] = 0;
@@ -530,7 +517,7 @@ char *mcp_router_dispatch(const char *tool_name,
         char msg[200];
         snprintf(msg, sizeof(msg), "unknown tool: %s",
                  tool_name ? tool_name : "(null)");
-        char *out = envelope_strdup(MCP_ERR_UNKNOWN_TOOL,
+        char *out = mcp_router_error_envelope_strdup(MCP_ERR_UNKNOWN_TOOL,
                                      tool_name ? tool_name : "", NULL, msg);
         uint64_t dur = now_us() - t0;
         event_emitf(EV_MCP_REQUEST, 0,
@@ -550,7 +537,7 @@ char *mcp_router_dispatch(const char *tool_name,
         mcp_router_validate(route, args, err_param, sizeof(err_param),
                             err_msg, sizeof(err_msg));
     if (vcode != MCP_OK) {
-        char *out = envelope_strdup(vcode, tool_name,
+        char *out = mcp_router_error_envelope_strdup(vcode, tool_name,
                                      err_param[0] ? err_param : NULL, err_msg);
         uint64_t dur = now_us() - t0;
         event_emitf(EV_MCP_REQUEST, 0,
@@ -575,7 +562,7 @@ char *mcp_router_dispatch(const char *tool_name,
         const char *msg = res.error_message[0] ? res.error_message
                                                : "handler failed";
         const char *prm = res.error_param[0] ? res.error_param : NULL;
-        char *out = envelope_strdup(ec, tool_name, prm, msg);
+        char *out = mcp_router_error_envelope_strdup(ec, tool_name, prm, msg);
         free(res.body);
         event_emitf(EV_MCP_REQUEST, 0,
                     "tool=%s code=%s dur_us=%lld",

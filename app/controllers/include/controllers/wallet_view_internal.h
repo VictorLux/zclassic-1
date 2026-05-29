@@ -32,7 +32,6 @@
 #define PRIMARY_ADDR "t1YRBXKYLhrb4X8sTkBeRysAzBTMMHpUXrn"
 #define FEE_ZCL 0.0001
 #define ZCLASSICD_PORT 8232
-#define ZATOSHI_PER_ZCL 100000000LL
 
 /* ── Shared global state ──────────────────────────────────── */
 

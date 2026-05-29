@@ -38,14 +38,6 @@
 static pthread_mutex_t g_mu = PTHREAD_MUTEX_INITIALIZER;
 static struct long_op_scope *g_table[LONG_OP_TABLE_SIZE];
 
-static int64_t monotonic_us(void)
-{
-    struct timespec ts;
-    if (platform_time_monotonic_timespec(&ts) != 0)
-        return 0;
-    return (int64_t)ts.tv_sec * 1000000 + (int64_t)ts.tv_nsec / 1000;
-}
-
 void long_op_begin(struct long_op_scope *s, const char *label)
 {
     if (!s) {
@@ -55,7 +47,7 @@ void long_op_begin(struct long_op_scope *s, const char *label)
         return;
     }
 
-    int64_t now = monotonic_us();
+    int64_t now = platform_time_monotonic_us();
     s->label         = label ? label : "(unnamed)";
     s->begin_us      = now;
     s->last_tick_us  = now;
@@ -89,7 +81,7 @@ void long_op_tick(struct long_op_scope *s)
 {
     if (!s) return;
 
-    int64_t now = monotonic_us();
+    int64_t now = platform_time_monotonic_us();
     int64_t prev = s->last_tick_us;
     s->last_tick_us = now;
     s->tick_count++;
@@ -111,7 +103,7 @@ void long_op_end(struct long_op_scope *s)
 {
     if (!s) return;
 
-    int64_t now = monotonic_us();
+    int64_t now = platform_time_monotonic_us();
     int64_t duration_us = now - s->begin_us;
 
     if (s->registered) {
@@ -135,7 +127,7 @@ void long_op_end(struct long_op_scope *s)
 
 bool long_op_is_active(int64_t *last_tick_age_secs)
 {
-    int64_t now = monotonic_us();
+    int64_t now = platform_time_monotonic_us();
     int64_t window_us = (int64_t)LONG_OP_ACTIVE_WINDOW_SECS * 1000000;
     int64_t newest_tick_us = 0;
     bool active = false;
@@ -185,7 +177,7 @@ bool long_op_dump_state_json(struct json_value *out, const char *key)
     if (!out) return false;
 
     json_set_object(out);
-    int64_t now = monotonic_us();
+    int64_t now = platform_time_monotonic_us();
 
     struct json_value arr = {0};
     json_set_array(&arr);

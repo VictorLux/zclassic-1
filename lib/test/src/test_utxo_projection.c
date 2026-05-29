@@ -401,7 +401,7 @@ static bool stop_cb(uint64_t offset, enum event_log_type type,
 {
     (void)type; (void)payload;
     struct stop_ctx *c = user;
-    c->resume_off = offset + 32u + (uint64_t)len; /* matches EVENT_LOG_FRAME_OVERHEAD */
+    c->resume_off = offset + EVENT_LOG_FRAME_OVERHEAD + (uint64_t)len;
     c->seen++;
     return c->seen < c->stop_after;
 }

@@ -348,7 +348,7 @@ static bool catch_up_cb(uint64_t offset, enum event_log_type type,
 
     /* Always advance the cursor past this event, regardless of type —
      * irrelevant types are simply skipped. */
-    uint64_t event_end = offset + 16 + (uint64_t)len + 16;  /* hdr + payload + sentinel */
+    uint64_t event_end = offset + EVENT_LOG_FRAME_OVERHEAD + (uint64_t)len;  /* hdr + payload + sentinel */
     c->last_offset_after = event_end;
 
     if (type != EV_BLOCK_HEADER) {

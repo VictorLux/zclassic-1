@@ -16,6 +16,7 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include <stdbool.h>
+#include <string.h>
 
 /* ── Phase 6c allocation fault injection ─────────────────────────
  *
@@ -110,7 +111,6 @@ static inline void *zcl_malloc_or_die_impl(size_t size, const char *label,
  * enforced for malloc/calloc/realloc. Returns NULL on failure with
  * logged context. Tolerates a NULL input (returns NULL silently — the
  * caller already knows there's no source string). */
-#include <string.h>
 static inline char *zcl_strdup_impl(const char *s, const char *label,
                                      const char *file, int line)
 {

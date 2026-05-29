@@ -75,7 +75,7 @@ size_t emit_section_2_chain_history(uint8_t *r, size_t max, size_t off,
     char genesis_ts[32], tip_ts[32], subsidy_str[32];
     explorer_format_time(genesis_ts, sizeof(genesis_ts), (uint32_t)c->genesis_time);
     explorer_format_time(tip_ts, sizeof(tip_ts), (uint32_t)c->tip_time);
-    explorer_format_zcl(subsidy_str, sizeof(subsidy_str), c->current_subsidy);
+    zcl_format_zcl(subsidy_str, sizeof(subsidy_str), c->current_subsidy);
     APPEND(off, r, max,
         "<h2>Chain History</h2><div class='card'><div class='grid'>"
         "<div class='label'>Genesis Block</div><div class='val'>"
@@ -126,9 +126,9 @@ size_t emit_section_6_utxo_distribution(uint8_t *r, size_t max, size_t off,
                                                const struct stats_ctx *c, sqlite3 *db)
 {
     char max_val[32], avg_val[32], cb_val[32];
-    explorer_format_zcl(max_val, sizeof(max_val), c->utxo_max_value);
-    explorer_format_zcl(avg_val, sizeof(avg_val), (int64_t)c->utxo_avg);
-    explorer_format_zcl(cb_val, sizeof(cb_val), c->utxo_coinbase_value);
+    zcl_format_zcl(max_val, sizeof(max_val), c->utxo_max_value);
+    zcl_format_zcl(avg_val, sizeof(avg_val), (int64_t)c->utxo_avg);
+    zcl_format_zcl(cb_val, sizeof(cb_val), c->utxo_coinbase_value);
 
     APPEND(off, r, max,
         "<h2>UTXO Set Distribution</h2>"
@@ -176,7 +176,7 @@ size_t emit_section_6_utxo_distribution(uint8_t *r, size_t max, size_t off,
                 const char *txhex = (const char *)sqlite3_column_text(s, 3);
                 char ts[32], vs[32], txid[65] = "", short_tx[18] = "";
                 explorer_format_time(ts, sizeof(ts), (uint32_t)t);
-                explorer_format_zcl(vs, sizeof(vs), v);
+                zcl_format_zcl(vs, sizeof(vs), v);
                 if (txhex && strlen(txhex) == 64) {
                     for (int i = 0; i < 32; i++) {
                         txid[i*2]   = txhex[62-i*2];
@@ -211,7 +211,7 @@ size_t emit_section_6_utxo_distribution(uint8_t *r, size_t max, size_t off,
                 int64_t h = sqlite3_column_int64(s, 1);
                 const char *txhex = (const char *)sqlite3_column_text(s, 2);
                 char vs[32], txid[65] = "", short_tx[18] = "";
-                explorer_format_zcl(vs, sizeof(vs), v);
+                zcl_format_zcl(vs, sizeof(vs), v);
                 if (txhex && strlen(txhex) == 64) {
                     for (int i = 0; i < 32; i++) {
                         txid[i*2]   = txhex[62-i*2];
@@ -246,8 +246,8 @@ size_t emit_section_7_address_distribution(uint8_t *r, size_t max, size_t off,
                                                   const struct stats_ctx *c, sqlite3 *db)
 {
     char top10_str[32], top100_str[32];
-    explorer_format_zcl(top10_str, sizeof(top10_str), c->top10_balance);
-    explorer_format_zcl(top100_str, sizeof(top100_str), c->top100_balance);
+    zcl_format_zcl(top10_str, sizeof(top10_str), c->top10_balance);
+    zcl_format_zcl(top100_str, sizeof(top100_str), c->top100_balance);
 
     APPEND(off, r, max,
         "<h2>Address Distribution</h2>"
@@ -287,7 +287,7 @@ size_t emit_section_7_address_distribution(uint8_t *r, size_t max, size_t off,
                 int64_t uc = sqlite3_column_int64(s, 2);
                 int st = sqlite3_column_int(s, 3);
                 char bs[32], addr[64] = "unknown";
-                explorer_format_zcl(bs, sizeof(bs), bal);
+                zcl_format_zcl(bs, sizeof(bs), bal);
                 if (ah && ah_len == 20) {
                     struct tx_destination dest;
                     memset(&dest, 0, sizeof(dest));
@@ -343,8 +343,8 @@ size_t emit_section_8b_tx_io(uint8_t *r, size_t max, size_t off,
                                     const struct stats_ctx *c)
 {
     char max_out_str[32], total_moved_str[32];
-    explorer_format_zcl(max_out_str, sizeof(max_out_str), c->max_output_value);
-    explorer_format_zcl(total_moved_str, sizeof(total_moved_str), c->total_value_moved);
+    zcl_format_zcl(max_out_str, sizeof(max_out_str), c->max_output_value);
+    zcl_format_zcl(total_moved_str, sizeof(total_moved_str), c->total_value_moved);
     double io_ratio = c->total_inputs > 0 ? (double)c->total_outputs / c->total_inputs : 0;
 
     APPEND(off, r, max,
@@ -385,8 +385,8 @@ size_t emit_section_8c_shielded_detail(uint8_t *r, size_t max, size_t off,
                                               const struct stats_ctx *c)
 {
     char vpub_old_str[32], vpub_new_str[32];
-    explorer_format_zcl(vpub_old_str, sizeof(vpub_old_str), c->total_vpub_old);
-    explorer_format_zcl(vpub_new_str, sizeof(vpub_new_str), c->total_vpub_new);
+    zcl_format_zcl(vpub_old_str, sizeof(vpub_old_str), c->total_vpub_old);
+    zcl_format_zcl(vpub_new_str, sizeof(vpub_new_str), c->total_vpub_new);
     double sap_ratio = c->total_sap_outputs > 0
         ? (double)c->total_sap_spends / c->total_sap_outputs : 0;
 
@@ -588,7 +588,7 @@ size_t emit_section_10_utxo_age(uint8_t *r, size_t max, size_t off,
                 int64_t val = sqlite3_column_int64(s, 2);
                 if (cnt == 0) continue;
                 char vs[32];
-                explorer_format_zcl(vs, sizeof(vs), val);
+                zcl_format_zcl(vs, sizeof(vs), val);
                 int64_t band_end = band + 100000;
                 int mid = (int)((band + (band_end < c->tip ? band_end : c->tip)) / 2);
                 int days = (int)(hodl_wave_age_seconds(mid, c->tip) / 86400);

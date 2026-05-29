@@ -59,6 +59,7 @@ static int h_zcl_tools_list(const struct mcp_request *req,
         snprintf(res->error_message, sizeof(res->error_message),
                  "malloc failed for tools list response");
         LOG_ERR("mcp.meta", "malloc failed for tools_list body (%zu bytes)", cap);
+        return -1; // raw-return-ok:logged-oom
     }
     int pos = snprintf(out, cap, "{\"count\":%zu,\"tools\":",
                        mcp_router_count());
@@ -80,6 +81,7 @@ static int h_zcl_self_test(const struct mcp_request *req,
         snprintf(res->error_message, sizeof(res->error_message),
                  "malloc failed for self-test response");
         LOG_ERR("mcp.meta", "malloc failed for self_test body (%zu bytes)", cap);
+        return -1; // raw-return-ok:logged-oom
     }
     size_t pos = 0;
     pos += (size_t)snprintf(out + pos, cap - pos,
@@ -191,6 +193,7 @@ static int h_zcl_logtail(const struct mcp_request *req,
         snprintf(res->error_message, sizeof(res->error_message),
                  "malloc failed for logtail filtered response");
         LOG_ERR("mcp.meta", "malloc failed for logtail filtered body (%zu bytes)", out_cap);
+        return -1; // raw-return-ok:logged-oom
     }
     size_t pos = 0;
     pos += (size_t)snprintf(out + pos, out_cap - pos,
@@ -241,6 +244,7 @@ static int h_zcl_openapi(const struct mcp_request *req,
         snprintf(res->error_message, sizeof(res->error_message),
                  "malloc failed for OpenAPI response");
         LOG_ERR("mcp.meta", "malloc failed for openapi body (%zu bytes)", cap);
+        return -1; // raw-return-ok:logged-oom
     }
     size_t pos = 0;
 
@@ -327,6 +331,7 @@ static int h_zcl_metrics(const struct mcp_request *req,
         snprintf(res->error_message, sizeof(res->error_message),
                  "malloc failed for metrics buffer");
         LOG_ERR("mcp.meta", "malloc failed for metrics raw buffer (%zu bytes)", cap);
+        return -1; // raw-return-ok:logged-oom
     }
     size_t n = mcp_metrics_render_prometheus(raw, cap);
 
@@ -340,6 +345,7 @@ static int h_zcl_metrics(const struct mcp_request *req,
         snprintf(res->error_message, sizeof(res->error_message),
                  "malloc failed for metrics JSON envelope");
         LOG_ERR("mcp.meta", "malloc failed for metrics json body (%zu bytes)", out_cap);
+        return -1; // raw-return-ok:logged-oom
     }
     size_t pos = 0;
     pos += (size_t)snprintf(out + pos, out_cap - pos,
@@ -491,26 +497,8 @@ static size_t embed_or_null(const char *body, char *dst, size_t cap)
     return n;
 }
 
-/* Quick substring lookup on a JSON body to pull an integer out for
- * the alerts heuristics.  Returns -1 if the key isn't present or can't
- * be parsed as an integer.  Intentionally lightweight — we don't need
- * a full parser here because we only read counters we emit ourselves. */
-static long long scan_int_field(const char *body, const char *key)
-{
-    if (!body || !key) return -1;  // raw-return-ok:sentinel
-    char needle[64];
-    int n = snprintf(needle, sizeof(needle), "\"%s\":", key);
-    if (n <= 0 || (size_t)n >= sizeof(needle)) return -1;  // raw-return-ok:sentinel
-    const char *p = strstr(body, needle);
-    if (!p) return -1;  // raw-return-ok:sentinel
-    p += (size_t)n;
-    while (*p == ' ') p++;
-    if (*p == '\0') return -1;  // raw-return-ok:sentinel
-    char *end = NULL;
-    long long v = strtoll(p, &end, 10);
-    if (end == p) return -1;  // raw-return-ok:sentinel
-    return v;
-}
+/* The alerts heuristics in h_zcl_admin pull integers out of the
+ * embedded JSON counters via mcp_scan_int_field (controllers.h). */
 
 /* zcl_config_reload — on-demand re-read of env-tunable config
  * without restarting the node.  Applies to the live HTTP RPC
@@ -583,6 +571,7 @@ static int h_zcl_config_reload(const struct mcp_request *req,
         snprintf(res->error_message, sizeof(res->error_message),
                  "malloc failed for config reload response");
         LOG_ERR("mcp.meta", "malloc failed for config_reload body (%zu bytes)", cap);
+        return -1; // raw-return-ok:logged-oom
     }
     snprintf(out, cap,
         "{\"ok\":true,"
@@ -663,6 +652,7 @@ static int h_zcl_admin(const struct mcp_request *req,
         snprintf(res->error_message, sizeof(res->error_message),
                  "malloc failed for admin dashboard response");
         LOG_ERR("mcp.meta", "malloc failed for admin body (%zu bytes)", cap);
+        return -1; // raw-return-ok:logged-oom
     }
     size_t pos = 0;
 
@@ -691,11 +681,11 @@ static int h_zcl_admin(const struct mcp_request *req,
                                     "\"" fmt "\"", __VA_ARGS__);            \
         } while (0)
 
-    long long rpc_rl_global = scan_int_field(rpc, "rate_limited_global");
-    long long rpc_rl_per_ip = scan_int_field(rpc, "rate_limited_per_ip");
-    long long rpc_banned    = scan_int_field(rpc, "banned_rejected");
-    long long rpc_active    = scan_int_field(rpc, "active_bans");
-    long long rpc_auth_fail = scan_int_field(rpc, "auth_failures");
+    long long rpc_rl_global = mcp_scan_int_field(rpc, "rate_limited_global");
+    long long rpc_rl_per_ip = mcp_scan_int_field(rpc, "rate_limited_per_ip");
+    long long rpc_banned    = mcp_scan_int_field(rpc, "banned_rejected");
+    long long rpc_active    = mcp_scan_int_field(rpc, "active_bans");
+    long long rpc_auth_fail = mcp_scan_int_field(rpc, "auth_failures");
     if (rpc_rl_global > 0)
         PUSH_ALERT("rpc_rate_limited_global=%lld", rpc_rl_global);
     if (rpc_rl_per_ip > 0)
@@ -707,8 +697,8 @@ static int h_zcl_admin(const struct mcp_request *req,
     if (rpc_auth_fail > 0)
         PUSH_ALERT("rpc_auth_failures=%lld", rpc_auth_fail);
 
-    long long peer_bans     = scan_int_field(peer, "bans_total");
-    long long peer_offences = scan_int_field(peer, "offences_total");
+    long long peer_bans     = mcp_scan_int_field(peer, "bans_total");
+    long long peer_offences = mcp_scan_int_field(peer, "offences_total");
     if (peer_bans > 0)
         PUSH_ALERT("peer_bans_total=%lld", peer_bans);
     if (peer_offences > 100)

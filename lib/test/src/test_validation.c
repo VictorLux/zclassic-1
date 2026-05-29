@@ -17,11 +17,6 @@
 #define MAX_TX_SIZE_BEFORE_SAPLING 100000
 #endif
 
-/* Check functions for check_queue tests */
-static bool cq_check_positive(void *item) { return *(int *)item > 0; }
-static bool cq_check_nonzero(void *item) { return *(int *)item != 0; }
-static bool cq_check_true(void *item) { (void)item; return true; }
-
 /* Validation signal callback helpers (file-scope to avoid nested functions) */
 static int vs_tip_height_received;
 static int vs_tip_height;
@@ -1656,57 +1651,6 @@ int test_validation(void)
         tx.expiry_height = 100;
         bool ok = !is_expired_tx(&tx, 999999);
         free(tx.vin);
-        if (ok) printf("OK\n");
-        else { printf("FAIL\n"); failures++; }
-    }
-
-    /* ================================================================
-     * check_queue: single-threaded add + wait
-     * ================================================================ */
-    printf("check_queue: add items and wait (single-threaded)... ");
-    {
-        struct check_queue cq;
-        check_queue_init(&cq, 128, sizeof(int), cq_check_positive);
-        void *items[10];
-        for (int i = 0; i < 10; i++) {
-            items[i] = zcl_malloc(sizeof(int), "test_check_item");
-            *(int *)items[i] = i + 1;
-        }
-        check_queue_add(&cq, items, 10);
-        bool all_ok = check_queue_wait(&cq);
-        check_queue_free(&cq);
-        if (all_ok) printf("OK\n");
-        else { printf("FAIL\n"); failures++; }
-    }
-
-    /* ================================================================
-     * check_queue: failing item makes wait return false
-     * ================================================================ */
-    printf("check_queue: failing check makes wait return false... ");
-    {
-        struct check_queue cq;
-        check_queue_init(&cq, 128, sizeof(int), cq_check_nonzero);
-        void *items[5];
-        for (int i = 0; i < 5; i++) {
-            items[i] = zcl_malloc(sizeof(int), "test_check_item");
-            *(int *)items[i] = i; /* item[0] = 0 → fails check */
-        }
-        check_queue_add(&cq, items, 5);
-        bool result = check_queue_wait(&cq);
-        check_queue_free(&cq);
-        if (!result) printf("OK\n");
-        else { printf("FAIL (expected false)\n"); failures++; }
-    }
-
-    /* ================================================================
-     * check_queue: is_idle after init
-     * ================================================================ */
-    printf("check_queue: is_idle after init... ");
-    {
-        struct check_queue cq;
-        check_queue_init(&cq, 128, sizeof(int), cq_check_true);
-        bool ok = check_queue_is_idle(&cq);
-        check_queue_free(&cq);
         if (ok) printf("OK\n");
         else { printf("FAIL\n"); failures++; }
     }

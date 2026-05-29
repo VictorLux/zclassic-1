@@ -899,34 +899,10 @@ static int h_zcl_getblock(const struct mcp_request *req, struct mcp_response *re
 
 /* invalidateblock — the operator recovery lever. Drop a stale fork
  * (mark BLOCK_FAILED_VALID + disconnect-and-reorg). Destructive. */
-static int h_zcl_invalidateblock(const struct mcp_request *req,
-                                 struct mcp_response *res)
-{
-    const char *hash_str = json_get_str(json_get(req->args, "hash"));
-    struct mcp_params p;
-    mcp_params_init(&p);
-    mcp_params_push_str(&p, hash_str ? hash_str : "");
-    char *params = mcp_params_to_json(&p);
-    char *out = params ? mcp_node_rpc("invalidateblock", params) : NULL;
-    free(params);
-    return mcp_return_rpc_body_ctx(res, out, "invalidateblock", "mcp.chain",
-                                   "hash=%s", hash_str ? hash_str : "(null)");
-}
+DEFINE_PT_STR(h_zcl_invalidateblock, "hash", "invalidateblock", "mcp.chain")
 
 /* reconsiderblock — the inverse of invalidateblock. Destructive. */
-static int h_zcl_reconsiderblock(const struct mcp_request *req,
-                                 struct mcp_response *res)
-{
-    const char *hash_str = json_get_str(json_get(req->args, "hash"));
-    struct mcp_params p;
-    mcp_params_init(&p);
-    mcp_params_push_str(&p, hash_str ? hash_str : "");
-    char *params = mcp_params_to_json(&p);
-    char *out = params ? mcp_node_rpc("reconsiderblock", params) : NULL;
-    free(params);
-    return mcp_return_rpc_body_ctx(res, out, "reconsiderblock", "mcp.chain",
-                                   "hash=%s", hash_str ? hash_str : "(null)");
-}
+DEFINE_PT_STR(h_zcl_reconsiderblock, "hash", "reconsiderblock", "mcp.chain")
 
 /* ── Route table ─────────────────────────────────────────────── */
 
