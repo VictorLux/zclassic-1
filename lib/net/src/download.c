@@ -94,14 +94,51 @@ static bool dl_queue_grow(struct download_manager *dm)
     return true;
 }
 
-/* Append a block to the download queue. Caller holds mutex. */
+/* Sort key for queue ordering: lowest height first (= closest to the
+ * tip = the block that actually advances the active chain). A height of
+ * -1 means "unknown" — such blocks must NOT preempt known tip-adjacent
+ * blocks, so they sort to the BACK (treated as +infinity). */
+static inline int64_t dl_sort_key(int32_t height)
+{
+    return height < 0 ? (int64_t)INT64_MAX : (int64_t)height;
+}
+
+/* Insert a block into the download queue, keeping it sorted by height
+ * ascending (lowest height = front). This is the STRUCTURAL guarantee
+ * that tip-advancing blocks can never be tail-starved: dl_assign_to_peer
+ * pops from the front, so the block closest to the tip is always fetched
+ * first regardless of any caller's enqueue order. Caller holds mutex.
+ *
+ * Cost: O(log n) to find the slot + O(n) memmove to open it. Pushes are
+ * one-at-a-time and the queue is bounded (<= 65536), so this is cheap
+ * relative to the per-item O(n) dedup scan callers already perform. */
 static bool dl_queue_push(struct download_manager *dm,
                            const struct uint256 *hash, int32_t height)
 {
     if (dm->queue_len >= dm->queue_cap && !dl_queue_grow(dm))
         LOG_FAIL("net", "dl_queue_push: queue full and grow failed (len=%zu, cap=%zu)", dm->queue_len, dm->queue_cap);
-    dm->queue[dm->queue_len] = *hash;
-    dm->queue_heights[dm->queue_len] = height;
+
+    /* Binary search for the first entry whose key is strictly greater
+     * than ours; insert there (stable for equal heights). */
+    int64_t key = dl_sort_key(height);
+    size_t lo = 0, hi = dm->queue_len;
+    while (lo < hi) {
+        size_t mid = lo + (hi - lo) / 2;
+        if (dl_sort_key(dm->queue_heights[mid]) <= key)
+            lo = mid + 1;
+        else
+            hi = mid;
+    }
+    size_t pos = lo;
+
+    if (pos < dm->queue_len) {
+        memmove(&dm->queue[pos + 1], &dm->queue[pos],
+                (dm->queue_len - pos) * sizeof(struct uint256));
+        memmove(&dm->queue_heights[pos + 1], &dm->queue_heights[pos],
+                (dm->queue_len - pos) * sizeof(int32_t));
+    }
+    dm->queue[pos] = *hash;
+    dm->queue_heights[pos] = height;
     dm->queue_len++;
     return true;
 }
@@ -420,7 +457,7 @@ void dl_queue_priority(struct download_manager *dm,
         return;
     }
 
-    /* Remove from queue if already present (we'll re-add at front) */
+    /* Remove from queue if already present (we'll re-insert sorted) */
     for (size_t j = 0; j < dm->queue_len; j++) {
         if (uint256_eq(&dm->queue[j], hash)) {
             memmove(&dm->queue[j], &dm->queue[j+1],
@@ -432,25 +469,12 @@ void dl_queue_priority(struct download_manager *dm,
         }
     }
 
-    /* Ensure capacity */
-    if (dm->queue_len >= dm->queue_cap) {
-        size_t nc = dm->queue_cap * 2;
-        struct uint256 *nq = zcl_realloc(dm->queue, nc * sizeof(struct uint256), "dl_queue");
-        int32_t *nh = zcl_realloc(dm->queue_heights, nc * sizeof(int32_t), "dl_queue_heights");
-        if (!nq || !nh) { zcl_mutex_unlock(&dm->cs); return; }
-        dm->queue = nq;
-        dm->queue_heights = nh;
-        dm->queue_cap = nc;
-    }
-
-    /* Shift everything right and insert at front */
-    memmove(&dm->queue[1], &dm->queue[0],
-            dm->queue_len * sizeof(dm->queue[0]));
-    memmove(&dm->queue_heights[1], &dm->queue_heights[0],
-            dm->queue_len * sizeof(dm->queue_heights[0]));
-    dm->queue[0] = *hash;
-    dm->queue_heights[0] = height;
-    dm->queue_len++;
+    /* Insert keeping the queue sorted by height ascending. Because the
+     * queue is height-ordered and dl_assign_to_peer pops from the front,
+     * a priority block (always tip-adjacent / lowest-height in practice)
+     * lands at the front and is fetched first — without breaking the
+     * single sorted invariant that makes tail-starvation impossible. */
+    dl_queue_push(dm, hash, height);
 
     zcl_mutex_unlock(&dm->cs);
 }
@@ -497,7 +521,12 @@ size_t dl_assign_to_peer(struct download_manager *dm,
     if (dm->num_active + available > global_limit)
         available = global_limit - dm->num_active;
 
-    /* Pop from front — batch the memmove after the loop (O(1) per pop) */
+    /* Pop from front — the queue is kept height-sorted ascending by
+     * dl_queue_push, so the front is always the LOWEST-height queued
+     * block (the one closest to the tip). Popping front therefore hands
+     * out tip-advancing blocks first, making it structurally impossible
+     * for any caller's enqueue order to tail-starve the connectable
+     * bottom. Batch the memmove after the loop (O(1) amortized per pop). */
     size_t pop_count = 0;
     size_t assigned = 0;
     while (assigned < available && pop_count < dm->queue_len) {

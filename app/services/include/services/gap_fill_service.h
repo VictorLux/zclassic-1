@@ -42,6 +42,12 @@ struct download_manager;
                                       * long disconnection. */
 #define GAPFILL_WALK_CAP     131072  /* hard pprev step cap, 2x window for
                                       * defense against pprev cycles */
+#define GAPFILL_PRIORITY_BOTTOM_N 16 /* front-insert the lowest N missing
+                                      * blocks of the window (the
+                                      * connectable bottom: tip+1..) so the
+                                      * tip-advancing body can never be
+                                      * tail-starved behind far-ahead live
+                                      * blocks. See gap_fill_pass(). */
 
 struct gap_fill_stats {
     uint64_t passes;

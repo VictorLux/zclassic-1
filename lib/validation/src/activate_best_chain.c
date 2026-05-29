@@ -221,6 +221,43 @@ bool activate_best_chain(struct validation_state *state,
              * connect yet, so priority-queueing only that block creates a
              * dead end and can crowd out the connectable bottom range. */
             gap_fill_kick();
+
+            /* Belt-and-suspenders: gap-fill is asynchronous (ticks every
+             * GAPFILL_TICK_SECS). To avoid even a transient window where
+             * the connectable bottom is starved, descend pprev from
+             * pindex_new toward the tip (bounded) and priority-queue the
+             * lowest missing-data block(s) — those at tip+1, tip+2, ...
+             * The download queue is height-sorted, so these land at the
+             * front and are fetched first. Bounded by ABC_DEFER_WALK_CAP
+             * so a huge gap doesn't stall here (gap-fill's unbounded walk
+             * covers the rest). */
+            enum { ABC_DEFER_WALK_CAP = 4096,
+                   ABC_DEFER_PRIORITY_N = 16 };
+            struct download_manager *dm_defer = msg_get_download_mgr();
+            if (dm_defer) {
+                int target_bottom = tip->nHeight + ABC_DEFER_PRIORITY_N;
+                struct block_index *w = pindex_new;
+                int steps = 0;
+                /* Descend until we are within the bottom band (or run
+                 * out of budget / chain). */
+                while (w && w->nHeight > target_bottom &&
+                       steps++ < ABC_DEFER_WALK_CAP) {
+                    w = w->pprev;
+                }
+                /* From here down to tip+1, priority-queue any block that
+                 * still needs data (bounded count). */
+                int queued = 0;
+                while (w && w->nHeight > tip->nHeight &&
+                       queued < ABC_DEFER_PRIORITY_N) {
+                    if (!(w->nStatus & BLOCK_HAVE_DATA) && w->phashBlock) {
+                        dl_queue_priority(dm_defer, w->phashBlock,
+                                          w->nHeight);
+                        queued++;
+                    }
+                    w = w->pprev;
+                }
+            }
+
             printf("activate_best_chain: defer far-ahead live block h=%d "
                    "tip=%d (gap-fill kicked)\n",
                    pindex_new->nHeight, tip->nHeight);

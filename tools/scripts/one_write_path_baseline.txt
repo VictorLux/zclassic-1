@@ -45,16 +45,16 @@ lib/validation/include/validation/process_block.h:42:bool connect_tip(struct val
 lib/validation/include/validation/process_block.h:50:bool disconnect_tip(struct validation_state *state,
 lib/validation/include/validation/process_block.h:62:bool process_new_block(struct validation_state *state,
 lib/validation/src/activate_best_chain.c:204: if (!connect_tip(state, ms, coins_tip, pindex_new,
-lib/validation/src/activate_best_chain.c:254: if (!connect_tip(state, ms, coins_tip, pindex_new,
-lib/validation/src/activate_best_chain.c:281: if (!connect_tip(state, ms, coins_tip, path[i],
-lib/validation/src/activate_best_chain.c:338: if (!disconnect_tip(state, ms, coins_tip, datadir)) {
-lib/validation/src/activate_best_chain.c:353: if (!connect_tip(state, ms, coins_tip, pindex_new,
-lib/validation/src/activate_best_chain.c:399: if (!disconnect_tip(state, ms, coins_tip, datadir)) {
-lib/validation/src/activate_best_chain.c:408: if (!connect_tip(state, ms, coins_tip, peer_parent,
-lib/validation/src/activate_best_chain.c:416: if (!connect_tip(state, ms, coins_tip, pindex_new,
-lib/validation/src/activate_best_chain.c:473: if (!connect_tip(state, ms, coins_tip, tip_child,
-lib/validation/src/activate_best_chain.c:709: if (!disconnect_tip(state, ms, coins_tip, datadir)) {
-lib/validation/src/activate_best_chain.c:832: if (!connect_tip(state, ms, coins_tip, connect_path[i],
+lib/validation/src/activate_best_chain.c:291: if (!connect_tip(state, ms, coins_tip, pindex_new,
+lib/validation/src/activate_best_chain.c:318: if (!connect_tip(state, ms, coins_tip, path[i],
+lib/validation/src/activate_best_chain.c:375: if (!disconnect_tip(state, ms, coins_tip, datadir)) {
+lib/validation/src/activate_best_chain.c:390: if (!connect_tip(state, ms, coins_tip, pindex_new,
+lib/validation/src/activate_best_chain.c:436: if (!disconnect_tip(state, ms, coins_tip, datadir)) {
+lib/validation/src/activate_best_chain.c:445: if (!connect_tip(state, ms, coins_tip, peer_parent,
+lib/validation/src/activate_best_chain.c:453: if (!connect_tip(state, ms, coins_tip, pindex_new,
+lib/validation/src/activate_best_chain.c:510: if (!connect_tip(state, ms, coins_tip, tip_child,
+lib/validation/src/activate_best_chain.c:746: if (!disconnect_tip(state, ms, coins_tip, datadir)) {
+lib/validation/src/activate_best_chain.c:869: if (!connect_tip(state, ms, coins_tip, connect_path[i],
 lib/validation/src/chainstate.c:279:bool active_chain_set_tip(struct active_chain *c, struct block_index *bi)
 lib/validation/src/connect_tip.c:80:bool connect_tip(struct validation_state *state,
 lib/validation/src/connect_tip.c:636: if (!coins_view_cache_flush(&view)) {

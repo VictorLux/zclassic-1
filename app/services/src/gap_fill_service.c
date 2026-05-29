@@ -187,6 +187,21 @@ static int gap_fill_pass(void)
                         "gap_fill queued=%zu lo=%d hi=%d tip=%d best=%d",
                         added, lo, hi, tip_h, best_h);
         }
+
+        /* Explicitly front-insert (priority) the LOWEST N missing blocks
+         * of the window — the connectable bottom (tip+1, tip+2, ...).
+         * hashes[]/heights[] were built from bis[] which is highest-first
+         * (collect_pprev_window walks pprev from the top), so the lowest
+         * heights are at the END of the parallel arrays. Even though
+         * dl_queue_push now keeps the queue height-sorted, this guarantees
+         * the connectable bottom is queued first regardless of any later
+         * far-ahead enqueue, belt-and-suspenders against starvation. */
+        int prio = n_need < GAPFILL_PRIORITY_BOTTOM_N
+                       ? n_need : GAPFILL_PRIORITY_BOTTOM_N;
+        for (int i = 0; i < prio; i++) {
+            int idx = n_need - 1 - i; /* lowest heights live at the tail */
+            dl_queue_priority(dm, &hashes[idx], heights[idx]);
+        }
     }
 
     free(hashes);

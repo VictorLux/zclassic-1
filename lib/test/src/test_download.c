@@ -533,6 +533,144 @@ static int test_dl_null_throughput_params(void)
     return failures;
 }
 
+/* Make a uint256 from a 16-bit value (for >256 distinct hashes). */
+static struct uint256 make_hash16(uint16_t v)
+{
+    struct uint256 h;
+    memset(h.data, 0, 32);
+    h.data[0] = (uint8_t)(v & 0xFF);
+    h.data[1] = (uint8_t)(v >> 8);
+    h.data[31] = 0xAB; /* non-zero tail for probe-chain robustness */
+    return h;
+}
+
+/* REGRESSION: the live wedge. gap_fill builds its window highest-first
+ * and tail-appends, so the connectable bottom (tip+1) lands at the TAIL
+ * of a deep FIFO queue while far-ahead live blocks saturate the front.
+ * With strict FIFO, dl_assign_to_peer never reaches the bottom → the
+ * tip-advancing body is perpetually starved → permanent wedge.
+ *
+ * The fix keeps the queue height-sorted, so dl_assign_to_peer always
+ * hands out the LOWEST-height block first regardless of enqueue order.
+ * This test reproduces the starvation layout and asserts the bottom is
+ * NOT starved. */
+static int test_dl_lowest_height_first(void)
+{
+    int failures = 0;
+    TEST("dl_assign_to_peer hands out lowest height first (anti-starvation)") {
+        struct download_manager dm;
+        dl_init(&dm);
+
+        /* Enqueue far-ahead blocks FIRST (heights 3127000..3127999),
+         * exactly as a saturated front would look. */
+        const int FAR_N = 1000;
+        for (int i = 0; i < FAR_N; i++) {
+            struct uint256 h = make_hash16((uint16_t)(2000 + i));
+            int32_t height = 3127000 + i;
+            dl_queue_blocks(&dm, &h, &height, 1);
+        }
+
+        /* Now enqueue the connectable bottom LAST (the tip+1 block at
+         * height 3125315) — the one block that advances the tip. This is
+         * the tail of the FIFO under the old behavior. */
+        struct uint256 bottom = make_hash16(1);
+        int32_t bottom_h = 3125315;
+        dl_queue_blocks(&dm, &bottom, &bottom_h, 1);
+
+        uint64_t req, recv, tout, inflight, queued;
+        dl_get_stats(&dm, &req, &recv, &tout, &inflight, &queued);
+        ASSERT(queued == (uint64_t)(FAR_N + 1));
+
+        /* Assign a single block to a peer. It MUST be the connectable
+         * bottom (lowest height), not a far-ahead block. Under the old
+         * FIFO this returned the height-3127000 block and the bottom
+         * stayed starved at the tail. */
+        struct uint256 out[1];
+        size_t assigned = dl_assign_to_peer(&dm, 1, out, 1);
+        ASSERT(assigned == 1);
+        ASSERT(uint256_eq(&out[0], &bottom)); /* lowest height wins */
+
+        dl_free(&dm);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+/* The bottom must win even when it is appended into the MIDDLE of an
+ * already-deep queue and via multiple enqueue paths (blocks + priority
+ * + timeout requeue). All paths funnel through the sorted insert. */
+static int test_dl_sorted_across_paths(void)
+{
+    int failures = 0;
+    TEST("queue stays height-sorted across blocks/priority/timeout paths") {
+        struct download_manager dm;
+        dl_init(&dm);
+
+        /* A deep spread of high heights. */
+        for (int i = 0; i < 300; i++) {
+            struct uint256 h = make_hash16((uint16_t)(5000 + i));
+            int32_t height = 3126000 + i * 3;
+            dl_queue_blocks(&dm, &h, &height, 1);
+        }
+
+        /* A mid-range block via the priority path. */
+        struct uint256 mid = make_hash16(40);
+        dl_queue_priority(&dm, &mid, 3125900);
+
+        /* The connectable bottom via a plain enqueue, after everything. */
+        struct uint256 bottom = make_hash16(41);
+        int32_t bottom_h = 3125315;
+        dl_queue_blocks(&dm, &bottom, &bottom_h, 1);
+
+        /* Simulate a timeout requeue of a low block: mark in-flight then
+         * time it out so it re-enters the queue via dl_queue_push. */
+        struct uint256 reto = make_hash16(42);
+        dl_mark_requested(&dm, &reto, 3125316, 7);
+        int64_t now = (int64_t)platform_time_wall_time_t();
+        ASSERT(dl_check_timeouts(&dm, now + DL_REQUEST_TIMEOUT_SECS + 1) == 1);
+
+        /* Drain a handful and assert heights come out monotonically
+         * non-decreasing, with the bottom (3125315) first. */
+        struct uint256 out[8];
+        size_t got = dl_assign_to_peer(&dm, 1, out, 8);
+        ASSERT(got == 8);
+        ASSERT(uint256_eq(&out[0], &bottom)); /* 3125315 is the global min */
+        ASSERT(uint256_eq(&out[1], &reto));   /* 3125316 next */
+
+        dl_free(&dm);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+/* Unknown-height (-1) blocks must sort to the BACK so they never preempt
+ * a known tip-adjacent block. */
+static int test_dl_unknown_height_sorts_last(void)
+{
+    int failures = 0;
+    TEST("unknown-height (-1) blocks never preempt known low heights") {
+        struct download_manager dm;
+        dl_init(&dm);
+
+        struct uint256 unk = make_hash16(100);
+        int32_t unk_h = -1;
+        dl_queue_blocks(&dm, &unk, &unk_h, 1); /* enqueued first */
+
+        struct uint256 low = make_hash16(101);
+        int32_t low_h = 3125315;
+        dl_queue_blocks(&dm, &low, &low_h, 1); /* enqueued second */
+
+        struct uint256 out[1];
+        size_t got = dl_assign_to_peer(&dm, 1, out, 1);
+        ASSERT(got == 1);
+        ASSERT(uint256_eq(&out[0], &low)); /* known low beats unknown */
+
+        dl_free(&dm);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 int test_download(void)
 {
     int failures = 0;
@@ -550,5 +688,8 @@ int test_download(void)
     failures += test_dl_byte_tracking_before_sync();
     failures += test_dl_byte_tracking_large();
     failures += test_dl_null_throughput_params();
+    failures += test_dl_lowest_height_first();
+    failures += test_dl_sorted_across_paths();
+    failures += test_dl_unknown_height_sorts_last();
     return failures;
 }
