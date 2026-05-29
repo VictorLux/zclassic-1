@@ -651,6 +651,272 @@ int test_reorg_parity(void)
         coins_view_cache_free(&v_cyc);
     }
 
+    /* ── ADVERSARIAL #1: in-block create+spend rolled back ─────────
+     * A single block X both CREATES a UTXO (tx1 spends genesis -> output O1)
+     * and SPENDS it (tx2 spends O1 -> output O2) — the created coin lives and
+     * dies entirely within one block. Connecting the block leaves the cache
+     * with genesis spent, O1 spent, O2 present. Disconnecting that ONE block
+     * must reverse the intra-block dependency in the correct order (undo tx2
+     * first to restore O1, then undo tx1 to restore genesis), yielding a coin
+     * set BYTE-EXACT with the pre-block state (genesis present & unspent, O1
+     * and O2 absent). This stresses disconnect_block's reverse-order undo of a
+     * within-block create/spend chain — a case the cross-block A2 spend above
+     * does NOT exercise. */
+    {
+        struct coins_view_cache v_pre, v_post;
+        struct coins_view nvp1, nvp2;
+        memset(&nvp1, 0, sizeof(nvp1));
+        memset(&nvp2, 0, sizeof(nvp2));
+        coins_view_cache_init(&v_pre, &nvp1);
+        coins_view_cache_init(&v_post, &nvp2);
+
+        /* Both views start at the same pre-block state: genesis only. */
+        update_coins(&genesis.vtx[0], &v_pre, 0);
+        update_coins(&genesis.vtx[0], &v_post, 0);
+
+        /* Baseline fingerprint of the pre-block state (genesis present). */
+        struct utxo_commitment c_pre_baseline;
+        coins_view_cache_recompute_commitment(&v_pre, &c_pre_baseline);
+
+        /* Block X at height 1: coinbase + tx1(genesis->O1) + tx2(O1->O2).
+         * tx1 spends genesis output 0; tx2 spends tx1's output 0. */
+        struct transaction xcb = make_coinbase_seeded(1, 0x31);
+        struct transaction xt1 = make_spend(&g_cb_hash, 0, 800000000LL, 0x3A);
+        struct uint256 o1_hash = xt1.hash;
+        struct transaction xt2 = make_spend(&o1_hash, 0, 700000000LL, 0x3B);
+        struct uint256 o2_hash = xt2.hash;
+        struct uint256 xcb_hash = xcb.hash;
+
+        struct transaction xtxs[3] = { xcb, xt1, xt2 };
+        struct block x_blk;
+        make_block_txs(&x_blk, 1, &g_hash, 0x31, xtxs, 3);
+        struct uint256 x_hash;
+        block_header_get_hash(&x_blk.header, &x_hash);
+
+        struct block_index x_idx;
+        block_index_init(&x_idx);
+        x_idx.nHeight = 1;
+        x_idx.phashBlock = &x_hash;
+        x_idx.pprev = &gi;
+
+        struct block_undo x_undo;
+        bool x_built = connect_block_with_undo(&x_blk, 1, &v_post, &x_undo);
+        RP_CHECK("adversarial1: in-block create+spend block connects", x_built);
+
+        /* After connect: genesis spent, O1 spent, O2 present, coinbase present. */
+        RP_CHECK("adversarial1: genesis consumed by in-block tx1",
+                 !coins_view_cache_have_coins(&v_post, &g_cb_hash));
+        RP_CHECK("adversarial1: O1 created-then-spent within the block (absent)",
+                 !coins_view_cache_have_coins(&v_post, &o1_hash));
+        RP_CHECK("adversarial1: O2 (final spend output) present after connect",
+                 coins_view_cache_have_coins(&v_post, &o2_hash));
+
+        /* Disconnect block X — single-block reorg of an intra-block chain. */
+        struct validation_state xvs;
+        validation_state_init(&xvs);
+        bool x_undone = x_built &&
+            disconnect_block(&x_blk, &xvs, &x_idx, &v_post, &x_undo);
+        RP_CHECK("adversarial1: in-block create+spend block disconnects",
+                 x_undone);
+
+        /* Post-disconnect coin set must be BYTE-EXACT with the pre-block state. */
+        struct utxo_commitment c_post_unwind;
+        coins_view_cache_recompute_commitment(&v_post, &c_post_unwind);
+        RP_CHECK("adversarial1: unwound set byte-exact vs pre-block "
+                 "(commitment)",
+                 x_undone &&
+                 utxo_commitment_equal(&c_post_unwind, &c_pre_baseline) &&
+                 c_post_unwind.count == c_pre_baseline.count);
+
+        /* Genesis restored & unspent; O1/O2/coinbase gone (created on X only). */
+        RP_CHECK("adversarial1: genesis restored after disconnect",
+                 x_undone && coins_identical(&v_post, &v_pre, &g_cb_hash));
+        RP_CHECK("adversarial1: O1 absent after disconnect",
+                 x_undone && !coins_view_cache_have_coins(&v_post, &o1_hash));
+        RP_CHECK("adversarial1: O2 absent after disconnect",
+                 x_undone && !coins_view_cache_have_coins(&v_post, &o2_hash));
+        RP_CHECK("adversarial1: block-X coinbase absent after disconnect",
+                 x_undone && !coins_view_cache_have_coins(&v_post, &xcb_hash));
+
+        block_undo_free(&x_undo);
+        free_block(&x_blk);
+        coins_view_cache_free(&v_pre);
+        coins_view_cache_free(&v_post);
+    }
+
+    /* ── ADVERSARIAL #2: spend/unspend symmetry across a reorg ─────
+     * The complement of the B2-spends-genesis case above. Here the OLD tip
+     * (branch S) SPENDS a pre-fork output; the WINNING fork (branch U) does
+     * NOT touch it. After reorg the disconnected spend must be REVERSED so the
+     * pre-fork output re-enters the UTXO set UNSPENT — and the result must be
+     * byte-exact with a direct build of U that never spent it (proving the
+     * unspend is real, not a stale leak). This is the inverse direction of the
+     * existing proof and guards the "restored input -> ADD" disconnect path
+     * for a genuine reorg (not just a single-tip rollback).
+     *
+     * Fork point: a 2-output funding coinbase F at height 0 (its output 1 is
+     * the contested coin). Branch S (height 1) spends F:1. Branch U (heights
+     * 1..2, heavier) leaves F:1 untouched. */
+    {
+        /* Funding coinbase with TWO outputs so F:1 is an ordinary (non-
+         * coinbase-output-0) spendable target distinct from the chain genesis. */
+        struct transaction fcb;
+        memset(&fcb, 0, sizeof(fcb));
+        fcb.version = 1;
+        fcb.num_vin = 1;
+        fcb.vin = zcl_calloc(1, sizeof(struct tx_in), "rp_fcb_vin");
+        uint8_t fsig[6] = {4, 0, 0, 0, 0, 0x40};
+        script_set(&fcb.vin[0].script_sig, fsig, 6);
+        uint256_set_null(&fcb.vin[0].prevout.hash);
+        fcb.vin[0].prevout.n = 0xFFFFFFFF;
+        fcb.vin[0].sequence = 0xFFFFFFFF;
+        fcb.num_vout = 2;
+        fcb.vout = zcl_calloc(2, sizeof(struct tx_out), "rp_fcb_vout");
+        fcb.vout[0].value = 500000000LL;
+        fcb.vout[1].value = 400000000LL;
+        uint8_t fpk[3] = {0x76, 0xa9, 0x14};
+        script_set(&fcb.vout[0].script_pub_key, fpk, 3);
+        script_set(&fcb.vout[1].script_pub_key, fpk, 3);
+        transaction_compute_hash(&fcb);
+        struct uint256 f_hash = fcb.hash;
+
+        struct block fgen;
+        struct transaction fgtx[1] = { fcb };
+        make_block_txs(&fgen, 0, NULL, 0x40, fgtx, 1);
+        struct uint256 fg_hash;
+        block_header_get_hash(&fgen.header, &fg_hash);
+
+        struct block_index fgi;
+        block_index_init(&fgi);
+        fgi.nHeight = 0;
+        fgi.phashBlock = &fg_hash;
+
+        /* Branch S (height 1): coinbase + spend of F:1 (the contested coin). */
+        struct uint256 s_hash;
+        struct transaction scb = make_coinbase_seeded(1, 0x41);
+        struct transaction ssp = make_spend(&f_hash, 1, 350000000LL, 0x4A);
+        struct uint256 ssp_out = ssp.hash;
+        struct transaction stxs[2] = { scb, ssp };
+        struct block s_blk;
+        make_block_txs(&s_blk, 1, &fg_hash, 0x41, stxs, 2);
+        block_header_get_hash(&s_blk.header, &s_hash);
+        struct block_index s_idx;
+        block_index_init(&s_idx);
+        s_idx.nHeight = 1;
+        s_idx.phashBlock = &s_hash;
+        s_idx.pprev = &fgi;
+
+        /* Branch U (heights 1..2, heavier): coinbases only — F:1 untouched. */
+        struct block u_blk[3];
+        struct uint256 u_hash[3];
+        u_hash[0] = fg_hash;
+        {
+            struct transaction txs[1] = { make_coinbase_seeded(1, 0x51) };
+            make_block_txs(&u_blk[1], 1, &u_hash[0], 0x51, txs, 1);
+            block_header_get_hash(&u_blk[1].header, &u_hash[1]);
+        }
+        {
+            struct transaction txs[1] = { make_coinbase_seeded(2, 0x52) };
+            make_block_txs(&u_blk[2], 2, &u_hash[1], 0x52, txs, 1);
+            block_header_get_hash(&u_blk[2].header, &u_hash[2]);
+        }
+
+        /* Reorg view: connect S (spends F:1), disconnect S, connect U. */
+        struct coins_view_cache v_sym;
+        struct coins_view nvs;
+        memset(&nvs, 0, sizeof(nvs));
+        coins_view_cache_init(&v_sym, &nvs);
+        update_coins(&fcb, &v_sym, 0);
+
+        /* F:1 spendable before S. */
+        struct coins fc_before;
+        coins_init(&fc_before);
+        bool f1_avail_before =
+            coins_view_cache_get_coins(&v_sym, &f_hash, &fc_before) &&
+            fc_before.num_vout > 1 && coins_is_available(&fc_before, 1);
+        coins_free(&fc_before);
+        RP_CHECK("adversarial2: contested output F:1 available pre-reorg",
+                 f1_avail_before);
+
+        struct block_undo s_undo;
+        bool s_ok = connect_block_with_undo(&s_blk, 1, &v_sym, &s_undo);
+        RP_CHECK("adversarial2: branch S connects (spends F:1)", s_ok);
+        /* F:1 now spent. */
+        {
+            struct coins fc;
+            coins_init(&fc);
+            bool spent = coins_view_cache_get_coins(&v_sym, &f_hash, &fc) &&
+                         !coins_is_available(&fc, 1);
+            coins_free(&fc);
+            RP_CHECK("adversarial2: F:1 spent after branch S", s_ok && spent);
+        }
+
+        struct validation_state svs;
+        validation_state_init(&svs);
+        bool s_undone = s_ok &&
+            disconnect_block(&s_blk, &svs, &s_idx, &v_sym, &s_undo);
+        RP_CHECK("adversarial2: branch S disconnects (unspends F:1)", s_undone);
+
+        struct block_undo u_undo_r[3];
+        bool u_ok = s_undone;
+        for (int h = 1; h <= 2 && u_ok; h++)
+            u_ok = connect_block_with_undo(&u_blk[h], h, &v_sym, &u_undo_r[h]);
+        RP_CHECK("adversarial2: heavier branch U connects after reorg", u_ok);
+
+        /* Direct build of U from the same funding point — never saw S. */
+        struct coins_view_cache v_symd;
+        struct coins_view nvsd;
+        memset(&nvsd, 0, sizeof(nvsd));
+        coins_view_cache_init(&v_symd, &nvsd);
+        update_coins(&fcb, &v_symd, 0);
+        struct block_undo u_undo_d[3];
+        bool ud_ok = true;
+        for (int h = 1; h <= 2 && ud_ok; h++)
+            ud_ok = connect_block_with_undo(&u_blk[h], h, &v_symd, &u_undo_d[h]);
+        RP_CHECK("adversarial2: branch U builds directly", ud_ok);
+
+        /* THE SYMMETRY PROOF: reorged view (spent then unspent) == direct
+         * build (never spent), byte-exact over the whole coin set. */
+        struct utxo_commitment q_sym, q_symd;
+        coins_view_cache_recompute_commitment(&v_sym, &q_sym);
+        coins_view_cache_recompute_commitment(&v_symd, &q_symd);
+        RP_CHECK("adversarial2: reorged (unspend) == direct (never-spent) "
+                 "byte-exact",
+                 u_ok && ud_ok &&
+                 utxo_commitment_equal(&q_sym, &q_symd) &&
+                 q_sym.count == q_symd.count);
+
+        /* F:1 restored to UNSPENT and identical to the direct build. */
+        {
+            struct coins fc;
+            coins_init(&fc);
+            bool restored =
+                coins_view_cache_get_coins(&v_sym, &f_hash, &fc) &&
+                fc.num_vout > 1 && coins_is_available(&fc, 1) &&
+                fc.vout[1].value == 400000000LL;
+            coins_free(&fc);
+            RP_CHECK("adversarial2: F:1 restored UNSPENT after reorg",
+                     u_ok && restored);
+        }
+        RP_CHECK("adversarial2: funding coin identical in both views",
+                 u_ok && ud_ok && coins_identical(&v_sym, &v_symd, &f_hash));
+        /* The abandoned S spend output must NOT leak into the reorged view. */
+        RP_CHECK("adversarial2: branch-S spend output absent after reorg",
+                 u_ok && !coins_view_cache_have_coins(&v_sym, &ssp_out));
+
+        if (s_ok) block_undo_free(&s_undo);
+        for (int h = 1; h <= 2; h++) {
+            if (u_ok) block_undo_free(&u_undo_r[h]);
+            if (ud_ok) block_undo_free(&u_undo_d[h]);
+        }
+        coins_view_cache_free(&v_sym);
+        coins_view_cache_free(&v_symd);
+        free_block(&s_blk);
+        for (int h = 1; h <= 2; h++)
+            free_block(&u_blk[h]);
+        free_block(&fgen);
+    }
+
     /* ── Cleanup ──────────────────────────────────────────────── */
 
     for (int h = 1; h <= 4; h++) {
