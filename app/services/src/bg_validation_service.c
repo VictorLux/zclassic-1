@@ -71,6 +71,9 @@
 #include <fcntl.h>
 #include <sys/stat.h>
 #include <sched.h>
+#ifdef __GLIBC__
+#include <malloc.h>  /* malloc_trim — return retained transient heap to the OS */
+#endif
 #include "util/log_macros.h"
 #include "util/safe_alloc.h"
 #include "util/thread_registry.h"
@@ -396,8 +399,28 @@ static void *bg_validation_thread(void *arg)
         atomic_store(&svc->progress.proofs_verified, total_proofs);
 
         /* Save progress periodically */
-        if (h % SAVE_INTERVAL == 0)
+        if (h % SAVE_INTERVAL == 0) {
             save_progress(&svc->progress_store, h);
+
+            /* Bound peak RSS. Every block here churns large transient
+             * heap — a per-block undo buffer (up to MAX_UNDO_READ = 4 MB),
+             * the script_check_item array, and a fully-deserialized block
+             * (hundreds of small tx/vin/vout/joinsplit allocations) — all
+             * freed before the next iteration. The PER-BLOCK footprint is
+             * already bounded, but glibc keeps freed chunks in its arenas
+             * instead of returning them to the OS, so RESIDENT memory
+             * stair-steps upward as the walk deepens (~1.5 GB -> 2.4 GB+
+             * over millions of blocks) and never falls back. malloc_trim
+             * hands the retained pages back to the kernel, flattening peak
+             * RSS. This is purely memory discipline — it does not change
+             * what gets verified. Same idiom fast_sync.c uses after its
+             * bulk UTXO serialization. Called once per SAVE_INTERVAL
+             * (1000 blocks) so the cost is negligible vs. the per-block
+             * crypto. */
+#ifdef __GLIBC__
+            malloc_trim(0);
+#endif
+        }
 
         /* Log progress */
         if (h % LOG_INTERVAL == 0 && h > start_height) {
