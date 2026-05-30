@@ -234,12 +234,6 @@ static size_t serve_dashboard_native_page(uint8_t *r, size_t max, int page)
     return off;
 }
 
-__attribute__((unused))
-static size_t serve_dashboard_native(uint8_t *r, size_t max)
-{
-    return serve_dashboard_native_page(r, max, 0);
-}
-
 /* ── Dashboard (SQLite-only, no RPC or main_state needed) ── */
 
 

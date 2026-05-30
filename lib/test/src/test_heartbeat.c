@@ -42,7 +42,7 @@ static void sleep_ms(int ms)
 static int64_t monotonic_us(void)
 {
     struct timespec ts;
-    clock_gettime(CLOCK_MONOTONIC, &ts);
+    clock_gettime(CLOCK_MONOTONIC, &ts);  // platform-ok:test-monotonic-jitter-realtime
     return (int64_t)ts.tv_sec * 1000000 + ts.tv_nsec / 1000;
 }
 

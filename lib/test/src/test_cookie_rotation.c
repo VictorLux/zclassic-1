@@ -128,7 +128,7 @@ static int rpc_with_auth(uint16_t port, const char *user, const char *pass)
 static void wait_rpc_ready(uint16_t port)
 {
     struct timespec start;
-    clock_gettime(CLOCK_MONOTONIC, &start);
+    clock_gettime(CLOCK_MONOTONIC, &start);  // platform-ok:test-rpc-ready-realtime-deadline
     long backoff_us = 10000;          /* 10 ms */
     const long max_backoff_us = 100000; /* 100 ms */
     const double timeout_s = 5.0;
@@ -138,7 +138,7 @@ static void wait_rpc_ready(uint16_t port)
             return; /* server accepted a connection and returned a status */
 
         struct timespec now;
-        clock_gettime(CLOCK_MONOTONIC, &now);
+        clock_gettime(CLOCK_MONOTONIC, &now);  // platform-ok:test-rpc-ready-realtime-deadline
         double elapsed = (double)(now.tv_sec - start.tv_sec)
                        + (double)(now.tv_nsec - start.tv_nsec) / 1e9;
         if (elapsed >= timeout_s)

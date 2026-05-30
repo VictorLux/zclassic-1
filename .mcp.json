@@ -5,7 +5,7 @@
       "command": "/home/rhett/github/zclassic23/zclassic23",
       "args": [
         "-mcp",
-        "-datadir=test-tmp/clean5"
+        "-datadir=/home/rhett/.zclassic-c23"
       ]
     }
   }

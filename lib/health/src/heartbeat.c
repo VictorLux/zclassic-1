@@ -75,7 +75,7 @@ static health_subsystem_id slot_alloc_and_fill(const char *name,
         else
             fprintf(stderr, "[health] registry full (cap=%d), cannot register '%s'\n",
                     HEALTH_REGISTRY_CAP, name);
-        return HEALTH_INVALID_ID;
+        return HEALTH_INVALID_ID; // obs-ok:health-registry-full-sentinel-return
     }
 
     g_entries[slot].active = true;

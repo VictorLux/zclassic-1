@@ -42,23 +42,6 @@ static bool has(const char *needle) {
     return strstr((char *)page, needle) != NULL;
 }
 
-/* Extract a number that appears after a prefix string in the HTML */
-__attribute__((unused))
-static double extract_zcl_amount(const char *prefix) {
-    const char *p = strstr((char *)page, prefix);
-    if (!p) return -1;
-    p += strlen(prefix);
-    /* Skip HTML tags and whitespace */
-    while (*p == '<' || *p == ' ' || *p == '\n' || *p == '\t') {
-        if (*p == '<') { while (*p && *p != '>') p++; if (*p) p++; }
-        else p++;
-    }
-    char *end = NULL;
-    double val = strtod(p, &end);
-    if (end == p) return -1;
-    return val;
-}
-
 /* ── RPC queries ───────────────────────────────────────── */
 
 static double rpc_transparent, rpc_private, rpc_total;

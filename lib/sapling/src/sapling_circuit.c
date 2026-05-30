@@ -72,31 +72,6 @@ static void compute_note_commitment(uint8_t cm_out[32],
 
 /* ── Helper: compute nullifier outside circuit ──────────────────── */
 
-__attribute__((unused))
-static void compute_nullifier(uint8_t nf_out[32],
-                                const uint8_t nk[32],
-                                const uint8_t cm[32],
-                                uint64_t position)
-{
-    /* nf = Blake2s("Zcash_nf", nk || rho)
-     * where rho = cm XOR position (simplified) */
-    uint8_t input[64];
-    memcpy(input, nk, 32);
-    memcpy(input + 32, cm, 32);
-
-    /* Add position to rho */
-    for (int i = 0; i < 8; i++)
-        input[32 + i] ^= (uint8_t)(position >> (i * 8));
-
-    /* Blake2s with personalization */
-    uint8_t pers[BLAKE2S_PERSONALBYTES] = {0};
-    memcpy(pers, "Zcash_nf", 8);
-    struct blake2s_ctx bctx;
-    blake2s_init_personal(&bctx, 32, pers);
-    blake2s_update(&bctx, input, 64);
-    blake2s_final(&bctx, nf_out, 32);
-}
-
 /* ── Spend Circuit Synthesis ────────────────────────────────────── */
 
 bool sapling_spend_synthesize(struct constraint_system *cs,

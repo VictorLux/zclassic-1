@@ -641,11 +641,11 @@ static int test_async_dispatch_lifecycle(void)
         event_emitf(EV_NODE_READY, 7, "ready");
 
         struct timespec deadline;
-        clock_gettime(CLOCK_MONOTONIC, &deadline);
+        clock_gettime(CLOCK_MONOTONIC, &deadline);  // platform-ok:test-async-observer-realtime-deadline
         deadline.tv_sec += 10;
         while (atomic_load(&g_async_observer_calls) == 0) {
             struct timespec now;
-            clock_gettime(CLOCK_MONOTONIC, &now);
+            clock_gettime(CLOCK_MONOTONIC, &now);  // platform-ok:test-async-observer-realtime-deadline
             if (now.tv_sec > deadline.tv_sec ||
                 (now.tv_sec == deadline.tv_sec && now.tv_nsec >= deadline.tv_nsec))
                 break;

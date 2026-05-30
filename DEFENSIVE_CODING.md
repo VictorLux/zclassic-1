@@ -455,7 +455,7 @@ backward include typically means the lib/ file is doing something that
 belongs in app/ or relying on a symbol that should live in lib/.
 
 The gate ships with a baseline file at
-`tools/scripts/lib_layering_baseline.txt` listing the 105 violations
+`tools/scripts/lib_layering_baseline.txt` listing the 98 violations
 that pre-existed at the time the gate was introduced (round 4). Each
 entry is `<file>:<exact #include directive>`. Any *new* violation not
 in the baseline fails CI. The list is a ratchet: shrinking it is
@@ -562,7 +562,7 @@ already satisfies). Tested in `lib/test/src/test_make_lint_gates.c`
     today, so the gate ratchets at FILE granularity: a service file is
     "result-clean" if it references `struct zcl_result` anywhere; every
     other service file is grandfathered.
-  - Baseline: `tools/scripts/one_result_type_baseline.txt` lists the 67
+  - Baseline: `tools/scripts/one_result_type_baseline.txt` lists the 9
     grandfathered files (one path per line). A NEW service file not in
     the baseline that does not use `struct zcl_result` fails. The
     baseline may only shrink — migrate a file to `zcl_result`, delete

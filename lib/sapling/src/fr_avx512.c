@@ -59,19 +59,6 @@ static void detect_cpu_features(void)
     cpu_detected = true;
 }
 
-/* Public query functions */
-bool fr_accel_has_bmi2_adx(void)
-{
-    detect_cpu_features();
-    return cpu_has_bmi2 && cpu_has_adx;
-}
-
-bool fr_accel_has_avx512ifma(void)
-{
-    detect_cpu_features();
-    return cpu_has_avx512ifma;
-}
-
 const char *fr_accel_implementation(void)
 {
     detect_cpu_features();

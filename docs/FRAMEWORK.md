@@ -180,11 +180,11 @@ know the shape.
 | # | Shape | Folder | Canonical form | Status | Exemplar |
 |---|-------|--------|----------------|--------|----------|
 | 1 | **Controller** | `app/controllers/` | `static int h_x(req,res)` + route table | legacy-C; 12 oversized controllers split, 3 remain (all legacy-import) | `chain_projection.c` |
-| 2 | **Service** | `app/services/` | functions returning `struct zcl_result` | partial; 33 baselined, down from 77 (A4 in flight, cluster-by-cluster) | `replay_verify_service.c` |
+| 2 | **Service** | `app/services/` | functions returning `struct zcl_result` | partial; 9 baselined, down from 77 (A4 in flight, cluster-by-cluster) | `replay_verify_service.c` |
 | 3 | **Model** | `app/models/` | `DEFINE_MODEL_CALLBACKS` + `validates_*` + AR save | **real, enforced** (29 models, E3+E4+model-validation HARD) | `block.c` |
 | 4 | **Job** | `app/jobs/` | cursor-stamped stage: advance-or-blocker | **real** — 8 Wave-S stages relocated to `app/jobs/`; E5 HARD (advance-or-block) | `*_stage.c` |
 | 5 | **Supervisor** | `app/supervisors/` | declared liveness tree, restart policy | partial — `net`/`chain`/`staged_sync` declared; `boot_services.c` still owns lifecycle wiring | `app/supervisors/src/staged_sync_supervisor.c` |
-| 6 | **Condition** | `app/conditions/` | `{detect, remedy, witness}` struct + `register()` | **real, the model citizen** (22 conditions live) | `block_failed_mask_at_tip.c` |
+| 6 | **Condition** | `app/conditions/` | `{detect, remedy, witness}` struct + `register()` | **real, the model citizen** (23 conditions live) | `block_failed_mask_at_tip.c` |
 | 7 | **Event** | `app/events/` | typed append-only emit + subscribers | scaffold (definitions + subscribers populate as B2 makes the log authoritative; impl lives in `lib/`) | `lib/storage/event_log.c` |
 | 8 | **Storage Adapter** | `adapters/` + `ports/` | port interface + swappable impl | partial; 10 ports, 5 services behind them (hodl_history, node_health, db_maintenance, wallet_backup, block_index_sidecar), most storage still direct | `adapters/outbound/persistence/` |
 

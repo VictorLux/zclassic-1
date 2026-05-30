@@ -2,7 +2,7 @@
 
 **Restart command:** type **`continue zclassic23 development`** (3 words). That's all you need.
 
-State at handoff: `origin/main`, working tree clean, one branch, build + lint + 256-group test suite all green.
+State at handoff: `origin/main`, working tree clean, one branch, build + lint + 287-group test suite all green.
 
 ---
 
@@ -31,7 +31,7 @@ B8  live preflight verification + delete legacy (~3,900 LOC) .. exact checklist 
 2. **Never stop `zclassicd`** (`zclassicd-rhett`). Both nodes run under systemd `--user`
    linger 24/7. Manage via `systemctl`, never manual runs. `-cold-import` is **forbidden**
    (corrupts state). For a torn local chain use the fast rebuild (`rebuild_recent`).
-3. **Never weaken a lint gate** to make progress. Baselines (E1=7, E2=16) only go down.
+3. **Never weaken a lint gate** to make progress. Baselines (E1=4, E2=9) only go down.
 
 ## Two gotchas that will bite you
 1. **Stale test binary** — `make` doesn't relink `test_parallel`. Always:
@@ -49,7 +49,7 @@ B8  live preflight verification + delete legacy (~3,900 LOC) .. exact checklist 
 ## First 5 minutes
 ```
 make -j$(nproc) && make lint
-touch lib/test/src/test_parallel.c && make test_parallel && ./test_parallel   # expect 256/256
+touch lib/test/src/test_parallel.c && make test_parallel && ./test_parallel   # expect 287/287
 zcl_status                          # live node state
 zcl_state subsystem=cutover         # flip readiness
 ```
