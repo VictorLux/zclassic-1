@@ -873,6 +873,67 @@ int test_header_admit_stage(void)
         test_cleanup_tmpdir(dir);
     }
 
+    /* ── Reorg self-heal: DIVERGENT below a matching tip → CONVERGED ──
+     * Mirrors the live first_divergent_height=3129671 case at small
+     * scale: the stale log row sits BELOW the (still-matching) tip. The
+     * forward-only stage would never revisit it; the new reorg-rewind
+     * must detect it, rewind the cursor to the fork point, and re-admit
+     * (INSERT OR REPLACE) so the canonical hash overwrites the stale one. */
+    {
+        char dir[256];
+        test_fmt_tmpdir(dir, sizeof(dir), "header_admit","reorg_heal");
+        mkdir_p_ha(dir);
+        HA_CHECK("reorg_heal: store opens", progress_store_open(dir));
+
+        struct main_state ms;
+        memset(&ms, 0, sizeof(ms));
+        active_chain_init(&ms.chain_active);
+        struct synth_chain sc;
+        synth_chain_build(&sc, 5);
+        active_chain_set_tip(&ms.chain_active, &sc.blocks[4]);
+
+        HA_CHECK("reorg_heal: init", header_admit_stage_init(&ms));
+        HA_CHECK("reorg_heal: drain 5 → cursor=5",
+                 header_admit_stage_drain(100) == 5 &&
+                 header_admit_stage_cursor() == 5);
+        HA_CHECK("reorg_heal: rewind counter starts at 0",
+                 header_admit_stage_reorg_rewind_total() == 0);
+
+        /* Reorg height 2 ONLY (cursor-3). The tip rows (3,4) still match
+         * the active chain, so a tip-only check would miss this — the
+         * divergence is strictly below the matching tip. */
+        sc.hashes[2].data[31] ^= 0xFF;
+
+        struct header_admit_diff_report rep;
+        HA_CHECK("reorg_heal: pre status DIVERGENT",
+                 header_admit_stage_diff(0, 4, &rep) &&
+                 rep.status == HEADER_ADMIT_DIFF_DIVERGENT);
+        HA_CHECK("reorg_heal: pre mismatch=1 at height 2",
+                 rep.mismatch_count == 1 &&
+                 rep.first_divergent_height == 2);
+
+        /* Drive steps: the first step's reorg-rewind rewinds the cursor
+         * to 2; subsequent steps re-admit 2,3,4 → cursor back to 5. */
+        for (int i = 0; i < 8; i++)
+            (void)header_admit_stage_step_once();
+
+        HA_CHECK("reorg_heal: rewind fired (counter incremented)",
+                 header_admit_stage_reorg_rewind_total() >= 1);
+        HA_CHECK("reorg_heal: cursor restored to 5",
+                 header_admit_stage_cursor() == 5);
+        HA_CHECK("reorg_heal: post status CONVERGED",
+                 header_admit_stage_diff(0, 4, &rep) &&
+                 rep.status == HEADER_ADMIT_DIFF_CONVERGED);
+        HA_CHECK("reorg_heal: post mismatch=0, 5 matches",
+                 rep.mismatch_count == 0 && rep.match_count == 5);
+
+        header_admit_stage_shutdown();
+        active_chain_free(&ms.chain_active);
+        synth_chain_free(&sc);
+        progress_store_close();
+        test_cleanup_tmpdir(dir);
+    }
+
     printf("header_admit_stage: %d failures\n", failures);
     return failures;
 }
