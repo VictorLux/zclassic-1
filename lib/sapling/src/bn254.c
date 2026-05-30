@@ -1936,6 +1936,63 @@ void ppzksnark_vk_free(struct ppzksnark_vk *vk)
     vk->ic_len = 0;
 }
 
+/* The canonical alt_bn128 (BN254) G2 generator = libsnark G2::one(), the
+ * "G2_one" every PHGR13/BCTV14 pairing check pairs against. SINGLE SOURCE OF
+ * TRUTH — bn254.c's verifier and the tests both build it here, so the constant
+ * cannot drift independently again (it was corrupted before 2026-05-30, which
+ * false-rejected every Sprout proof; the test that should have caught it only
+ * checked VK parsing). The bytes are the canonical big-endian encodings,
+ * independently verified on-curve:
+ *   x = (10857046999023057135944570762232829481370756359578518086990519993285655852781,
+ *        11559732032986387107991004021392285783925812861821192530917403151452391805634)
+ *   y = (8495653923123431417604973247489272438418190587263600148770280649306958101930,
+ *        4082367875863433681332203403145435568316851327593401208105741076214120093531)
+ * bn_fq_from_bytes_be range-checks < q and converts to Montgomery. */
+void bn254_g2_one(struct bn_g2 *out)
+{
+    static const uint8_t g2_x_c0[32] = {
+        0x18,0x00,0xde,0xef,0x12,0x1f,0x1e,0x76,0x42,0x6a,0x00,0x66,0x5e,0x5c,0x44,0x79,
+        0x67,0x43,0x22,0xd4,0xf7,0x5e,0xda,0xdd,0x46,0xde,0xbd,0x5c,0xd9,0x92,0xf6,0xed
+    };
+    static const uint8_t g2_x_c1[32] = {
+        0x19,0x8e,0x93,0x93,0x92,0x0d,0x48,0x3a,0x72,0x60,0xbf,0xb7,0x31,0xfb,0x5d,0x25,
+        0xf1,0xaa,0x49,0x33,0x35,0xa9,0xe7,0x12,0x97,0xe4,0x85,0xb7,0xae,0xf3,0x12,0xc2
+    };
+    static const uint8_t g2_y_c0[32] = {
+        0x12,0xc8,0x5e,0xa5,0xdb,0x8c,0x6d,0xeb,0x4a,0xab,0x71,0x80,0x8d,0xcb,0x40,0x8f,
+        0xe3,0xd1,0xe7,0x69,0x0c,0x43,0xd3,0x7b,0x4c,0xe6,0xcc,0x01,0x66,0xfa,0x7d,0xaa
+    };
+    static const uint8_t g2_y_c1[32] = {
+        0x09,0x06,0x89,0xd0,0x58,0x5f,0xf0,0x75,0xec,0x9e,0x99,0xad,0x69,0x0c,0x33,0x95,
+        0xbc,0x4b,0x31,0x33,0x70,0xb3,0x8e,0xf3,0x55,0xac,0xda,0xdc,0xd1,0x22,0x97,0x5b
+    };
+    bn_fq_from_bytes_be(&out->x.c0, g2_x_c0);
+    bn_fq_from_bytes_be(&out->x.c1, g2_x_c1);
+    bn_fq_from_bytes_be(&out->y.c0, g2_y_c0);
+    bn_fq_from_bytes_be(&out->y.c1, g2_y_c1);
+    bn_fq2_one(&out->z);
+}
+
+/* True iff the affine G2 point (z assumed normalized to 1) lies on the BN254
+ * twist curve y^2 = x^3 + b', with b' = 3/(9+u). Used to guard the hardcoded
+ * G2 generator ("G2_one") against constant corruption — a bad G2_one silently
+ * false-rejects every pairing check (the 2026-05-30 PHGR13 flood). */
+bool bn_g2_is_on_curve(const struct bn_g2 *p)
+{
+    struct bn_fq2 y2, x2, x3, xi, twist_b, three, rhs;
+    bn_fq2_mul(&y2, &p->y, &p->y);
+    bn_fq2_mul(&x2, &p->x, &p->x);
+    bn_fq2_mul(&x3, &x2, &p->x);
+    bn_fq_from_u64(&xi.c0, 9);
+    bn_fq_one(&xi.c1);
+    bn_fq2_inv(&twist_b, &xi);
+    bn_fq_from_u64(&three.c0, 3);
+    bn_fq_zero(&three.c1);
+    bn_fq2_mul(&twist_b, &twist_b, &three);
+    bn_fq2_add(&rhs, &x3, &twist_b);
+    return bn_fq2_eq(&y2, &rhs);
+}
+
 /* PPZKSNARK verification: 5 pairing checks.
  *
  * 1. Knowledge of A:  e(g_A, alpha_A) == e(g_A', G2_one)
@@ -1968,37 +2025,18 @@ bool ppzksnark_verify(const struct ppzksnark_vk *vk,
         bn_g1_add(&acc, &acc, &term);
     }
 
-    /* G2 generator (identity for "G2_one" in the pairing checks) */
-    /* In libsnark, G2::one() is the generator of G2.
-     * For BN254: G2 generator is a known constant. */
+    /* G2 generator ("G2_one" in the pairing checks). Single source of truth
+     * (bn254_g2_one) shared with the tests so the constant can never silently
+     * drift again — it was CORRUPTED before 2026-05-30 and false-rejected every
+     * Sprout PHGR13 proof at pairing check 1 (this verifier is also on the
+     * consensus path). The on-curve guard makes any future drift fail LOUD. */
     struct bn_g2 g2_gen;
-    /* alt_bn128 G2 generator coordinates (from libsnark): */
-    /* x = (10857046999023057135944570762232829481370756359578518086990519993285655852781,
-     *      11559732032986387107991004021392285783925812861821192530917403151452391805634)
-     * y = (8495653923123431417604973247489272438418190587263600148770280649306958101930,
-     *      4082367875863433681332203403145435568316851327593401208105741076214120093531) */
-    /* These are in raw form, need to convert to Montgomery */
-    static const uint8_t g2_x_c0[32] = {
-        0x18,0x00,0xde,0xef,0x12,0x1f,0x1e,0x76,0x42,0x6a,0x00,0x66,0x5e,0x5c,0x44,0x79,
-        0x67,0x44,0x22,0xce,0x15,0x39,0x28,0x47,0x02,0xb3,0xf6,0x6f,0x43,0x60,0x0e,0xd3
-    };
-    static const uint8_t g2_x_c1[32] = {
-        0x19,0x8e,0x95,0x93,0x92,0x0d,0x48,0x3a,0x72,0x60,0xbf,0xb7,0x31,0xfb,0x5d,0x25,
-        0xf1,0xaa,0x49,0x33,0x35,0xa9,0xe7,0x12,0x97,0xe4,0x85,0xb7,0xae,0xf3,0x12,0xc2
-    };
-    static const uint8_t g2_y_c0[32] = {
-        0x12,0xc8,0x5e,0xa5,0xdb,0x8c,0x6d,0xeb,0x4a,0xab,0x71,0x80,0x8d,0xcb,0x40,0x8f,
-        0xe3,0xd1,0xe7,0x69,0x0c,0x43,0xd3,0x7b,0x49,0x03,0x87,0x01,0x06,0x42,0xac,0xca
-    };
-    static const uint8_t g2_y_c1[32] = {
-        0x09,0x0e,0xf9,0xd8,0xbe,0x39,0x9a,0xf0,0x09,0x96,0x0a,0x6a,0xdb,0x13,0x23,0xd2,
-        0xdc,0x5c,0xf0,0x14,0x0c,0xac,0x34,0x15,0x22,0x99,0x0b,0x5c,0x27,0x13,0xef,0x0b
-    };
-    bn_fq_from_bytes_be(&g2_gen.x.c0, g2_x_c0);
-    bn_fq_from_bytes_be(&g2_gen.x.c1, g2_x_c1);
-    bn_fq_from_bytes_be(&g2_gen.y.c0, g2_y_c0);
-    bn_fq_from_bytes_be(&g2_gen.y.c1, g2_y_c1);
-    bn_fq2_one(&g2_gen.z);
+    bn254_g2_one(&g2_gen);
+    if (!bn_g2_is_on_curve(&g2_gen)) {
+        LOG_FAIL("phgr13", "verify: G2 generator off-curve — refusing "
+                 "(corrupt g2_gen constant; would false-reject all proofs)");
+        return false;
+    }
 
     /* Check 1: Knowledge of A
      * e(g_A, alpha_A) * e(-g_A', G2_one) == 1 */

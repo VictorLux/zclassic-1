@@ -90,6 +90,26 @@ int test_phgr13_fix(void)
     printf("\n=== PHGR13 fix ===\n");
     int failures = 0;
 
+    /* ── 0. The G2 generator the verifier pairs against MUST be on-curve.
+     * This is the regression that was MISSING: a corrupted g2_gen constant
+     * silently false-rejected EVERY Sprout proof at pairing check 1 (the
+     * 2026-05-30 flood) and the same verifier is on the consensus path. Runs
+     * unconditionally — needs no params file, so CI always exercises it. */
+    {
+        struct bn_g2 g2_one;
+        bn254_g2_one(&g2_one);
+        PHGR_CHECK("phgr13: bn254_g2_one() is on the BN254 twist curve",
+                   bn_g2_is_on_curve(&g2_one));
+
+        /* The guard must REJECT a corrupted generator (perturb y.c0 → off-curve). */
+        struct bn_g2 bad = g2_one;
+        struct bn_fq one_fq;
+        bn_fq_from_u64(&one_fq, 1);
+        bn_fq_add(&bad.y.c0, &bad.y.c0, &one_fq);
+        PHGR_CHECK("phgr13: bn_g2_is_on_curve rejects a corrupted generator",
+                   !bn_g2_is_on_curve(&bad));
+    }
+
     /* ── 1. Parse sprout-verifying.key ─────────────────────── */
     size_t len = 0;
     char vk_path[512];

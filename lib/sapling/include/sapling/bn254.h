@@ -114,6 +114,11 @@ void bn_g2_neg(struct bn_g2 *r, const struct bn_g2 *p);
 void bn_g2_add(struct bn_g2 *r, const struct bn_g2 *a, const struct bn_g2 *b);
 void bn_g2_double(struct bn_g2 *r, const struct bn_g2 *a);
 void bn_g2_to_affine(struct bn_fq2 *ax, struct bn_fq2 *ay, const struct bn_g2 *p);
+/* Canonical alt_bn128 G2 generator (libsnark G2::one) — single source of
+ * truth shared by the PHGR13 verifier and its tests. */
+void bn254_g2_one(struct bn_g2 *out);
+/* True iff the affine G2 point (z assumed 1) is on the BN254 twist curve. */
+bool bn_g2_is_on_curve(const struct bn_g2 *p);
 
 /* Decompress G2 point (65 bytes: 1 leading byte + 64 BE x-coordinate) */
 bool bn_g2_decompress(struct bn_g2 *p, const uint8_t data[65]);
