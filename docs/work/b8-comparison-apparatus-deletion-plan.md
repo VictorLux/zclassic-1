@@ -282,9 +282,17 @@ it worked, or the net that catches it failing. There is no safe reordering.
 - Delete `application/operations/{src,include}/diff_with_legacy_shadow.*`,
   `shadow_replay_proof.*`, `tools/shadow_replay_proof.c`.
 - Delete `adapters/inbound/src/shadow_feeder.c`, `shadow_feeder_global.c`,
-  their headers, and `shadow_conservation.h`. Remove the `-shadow` flag
+  **`adapters/inbound/src/shadow_conservation.c` (70 LOC)**, their headers, and
+  `shadow_conservation.h`. Remove the `-shadow` flag
   (`main.c:1485`, `boot.h:54`), `boot_services.c:156-230,2949,3167,3180` feeder
   lifecycle, and the `msg_blocks.c:266-410` extern + observe call.
+- **Conservation-API orphan trim (do in this same commit, glob-build link-safety):**
+  deleting `shadow_conservation.*` orphans three live references in KEEP files —
+  (1) `app/services/src/cutover_modes.c:228` (`shadow_conservation_ok` inside the
+  KEEP `cutover_dump_state_json`) — **must be removed by Step 1's canary trim FIRST**
+  (Step 4 depends on it); (2) `lib/test/src/test_rpc.c:333,477-479,524`
+  (`shadow_conservation_reset/record_fed/record_diffed` + the `#include` at `:9`) —
+  trim in lockstep with this delete or `test_rpc.c` (a KEEP test) won't link.
 
 **Step 5 — delete the proof test corpus.**
 - Remove `test_{diff_with_legacy_shadow,shadow_feeder,shadow_feeder_global,
