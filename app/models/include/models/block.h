@@ -45,6 +45,21 @@ bool db_block_find_by_hash(struct node_db *ndb, const uint8_t hash[32],
                            struct db_block *out);
 bool db_block_find_by_height(struct node_db *ndb, int height,
                              struct db_block *out);
+
+/* Load just the Equihash solution BLOB for a connected (status>=3) block
+ * at `height` into `out` (up to `max` bytes), setting *out_len. The full
+ * read helpers above deliberately drop the solution bytes (only the
+ * length is recorded); this is the narrow accessor that materialises the
+ * real solution for header re-validation.
+ *
+ * Returns false on: closed db, no matching connected row, an empty/NULL
+ * solution column, or a solution larger than `max`. A false return MUST
+ * be treated as "no usable solution" — callers must NOT fabricate or skip
+ * Equihash verification on false. */
+bool db_block_load_solution_by_height(struct node_db *ndb, int height,
+                                      unsigned char *out, size_t *out_len,
+                                      size_t max);
+
 bool db_block_delete(struct node_db *ndb, const uint8_t hash[32]);
 int db_block_max_height(struct node_db *ndb);
 int db_block_count(struct node_db *ndb);

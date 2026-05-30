@@ -19,6 +19,8 @@
 #include "chain/chainparams.h"
 #include "core/uint256.h"
 #include "event/event.h"
+#include "models/block.h"
+#include "models/database.h"
 #include "primitives/block.h"
 #include "jobs/header_admit_stage.h"
 #include "jobs/validate_headers_stage.h"
@@ -48,6 +50,32 @@
 } while (0)
 
 extern struct block_tree_db *g_active_block_tree;
+
+/* Item 2 seam: inject the node.db handle used by the default validator's
+ * SQLite solution fallback (declared in validate_headers_internal.h, a
+ * sibling-private header). */
+void validate_headers_validator_set_node_db(struct node_db *ndb);
+
+/* Insert one connected (status>=3) block row at `height` carrying
+ * `sol`/`sol_len` as its Equihash solution. A NULL/0 solution exercises
+ * the empty-column residual path. Returns true on save. */
+static bool vh_db_put_block(struct node_db *ndb, int height,
+                            const unsigned char *sol, size_t sol_len)
+{
+    struct db_block blk;
+    memset(&blk, 0, sizeof(blk));
+    memset(blk.hash, (uint8_t)(0x40 + (height & 0x3F)), 32);
+    blk.hash[31] = (uint8_t)height;          /* keep hashes distinct */
+    memset(blk.prev_hash, 0xBB, 32);
+    memset(blk.merkle_root, 0xCC, 32);
+    blk.height = height;
+    blk.time = 1700000000;
+    blk.bits = 0x1d00ffff;
+    blk.status = 3;                          /* connected floor */
+    blk.solution = (uint8_t *)sol;           /* may be NULL → empty col */
+    blk.solution_len = sol_len;
+    return db_block_save(ndb, &blk);
+}
 
 static int mkdir_p_vh(const char *p)
 {
@@ -488,6 +516,193 @@ int test_validate_headers_stage(void)
         if (btdb_open)
             block_tree_db_close(&btdb);
         vh_teardown(dir, &ms, &sc);
+    }
+
+    /* ── Item 2: node.db solution loader bounds (case c) ───────────── */
+    {
+        struct node_db ndb;
+        VH_CHECK("loader: db opens",
+                 node_db_open(&ndb, ":memory:"));
+
+        unsigned char sol[64];
+        memset(sol, 0xA5, sizeof(sol));
+        VH_CHECK("loader: insert connected block w/ 64B solution",
+                 vh_db_put_block(&ndb, 100, sol, sizeof(sol)));
+
+        /* Present + fits → loads exactly, sets out_len. */
+        unsigned char out[MAX_SOLUTION_SIZE];
+        size_t out_len = 999;
+        VH_CHECK("loader: loads present solution",
+                 db_block_load_solution_by_height(&ndb, 100, out,
+                                                  &out_len, sizeof(out)));
+        VH_CHECK("loader: out_len == 64 + bytes match",
+                 out_len == sizeof(sol) &&
+                 memcmp(out, sol, sizeof(sol)) == 0);
+
+        /* Oversize: max smaller than the stored blob → false, out_len 0. */
+        out_len = 999;
+        VH_CHECK("loader: oversize (max<len) → false",
+                 !db_block_load_solution_by_height(&ndb, 100, out,
+                                                   &out_len, 32) &&
+                 out_len == 0);
+
+        /* Missing height → false. */
+        out_len = 999;
+        VH_CHECK("loader: missing row → false",
+                 !db_block_load_solution_by_height(&ndb, 4242, out,
+                                                   &out_len, sizeof(out)) &&
+                 out_len == 0);
+
+        /* Wrong status (below the >=3 connected floor) → invisible. */
+        {
+            sqlite3_stmt *st = NULL;
+            unsigned char z32[32]; memset(z32, 0x11, 32);
+            int rc = sqlite3_prepare_v2(ndb.db,
+                "INSERT INTO blocks(hash,height,prev_hash,version,"
+                "merkle_root,time,bits,nonce,solution,chain_work,status,"
+                "num_tx) VALUES(?,?,?,4,?,1,1,?,?,?,1,0)",
+                -1, &st, NULL);
+            VH_CHECK("loader: prepare status-2 insert", rc == SQLITE_OK);
+            if (rc == SQLITE_OK) {
+                unsigned char h[32]; memset(h, 0x77, 32);
+                sqlite3_bind_blob(st, 1, h, 32, SQLITE_STATIC);
+                sqlite3_bind_int(st, 2, 101);
+                sqlite3_bind_blob(st, 3, z32, 32, SQLITE_STATIC);
+                sqlite3_bind_blob(st, 4, z32, 32, SQLITE_STATIC);
+                sqlite3_bind_blob(st, 5, z32, 32, SQLITE_STATIC);
+                sqlite3_bind_blob(st, 6, sol, (int)sizeof(sol), SQLITE_STATIC);
+                sqlite3_bind_blob(st, 7, z32, 32, SQLITE_STATIC);
+                (void)sqlite3_step(st);  // raw-sql-ok:test-direct
+                sqlite3_finalize(st);
+            }
+            out_len = 999;
+            VH_CHECK("loader: status<3 row not returned",
+                     !db_block_load_solution_by_height(&ndb, 101, out,
+                                                       &out_len, sizeof(out)));
+        }
+
+        /* Empty solution column at status>=3 → false (backfill residual). */
+        {
+            sqlite3_stmt *st = NULL;
+            unsigned char z32[32]; memset(z32, 0x22, 32);
+            int rc = sqlite3_prepare_v2(ndb.db,
+                "INSERT INTO blocks(hash,height,prev_hash,version,"
+                "merkle_root,time,bits,nonce,solution,chain_work,status,"
+                "num_tx) VALUES(?,?,?,4,?,1,1,?,?,?,3,0)",
+                -1, &st, NULL);
+            VH_CHECK("loader: prepare empty-solution insert", rc == SQLITE_OK);
+            if (rc == SQLITE_OK) {
+                unsigned char h[32]; memset(h, 0x88, 32);
+                sqlite3_bind_blob(st, 1, h, 32, SQLITE_STATIC);
+                sqlite3_bind_int(st, 2, 102);
+                sqlite3_bind_blob(st, 3, z32, 32, SQLITE_STATIC);
+                sqlite3_bind_blob(st, 4, z32, 32, SQLITE_STATIC);
+                /* zero-length, non-NULL blob → satisfies NOT NULL but empty */
+                sqlite3_bind_blob(st, 5, z32, 32, SQLITE_STATIC);
+                sqlite3_bind_blob(st, 6, "", 0, SQLITE_STATIC);
+                sqlite3_bind_blob(st, 7, z32, 32, SQLITE_STATIC);
+                (void)sqlite3_step(st);  // raw-sql-ok:test-direct
+                sqlite3_finalize(st);
+            }
+            out_len = 999;
+            VH_CHECK("loader: empty solution col → false (no false data)",
+                     !db_block_load_solution_by_height(&ndb, 102, out,
+                                                       &out_len, sizeof(out)) &&
+                     out_len == 0);
+        }
+
+        /* NULL-arg / out_len-only guards. */
+        VH_CHECK("loader: NULL ndb → false",
+                 !db_block_load_solution_by_height(NULL, 100, out,
+                                                   &out_len, sizeof(out)));
+        VH_CHECK("loader: max==0 → false",
+                 !db_block_load_solution_by_height(&ndb, 100, out,
+                                                   &out_len, 0));
+
+        node_db_close(&ndb);
+    }
+
+    /* ── Item 2: validator fallback loads from node.db (case a) ────── *
+     * block_index solution empty, persisted index absent, BUT node.db
+     * carries a solution at this height. The fallback must LOAD it and
+     * push it through the IDENTICAL validate_header_fields path — so the
+     * verdict is a real PoW/Equihash result, never the backfill reason
+     * and never "no-header-solution". (A synthetic 1344B zero blob will
+     * fail Equihash, which is exactly correct: no false pass.) */
+    {
+        char dir[256]; struct main_state ms; struct synth_chain_vh sc;
+        struct node_db ndb;
+        VH_CHECK("fallback: node.db opens",
+                 node_db_open(&ndb, ":memory:"));
+
+        unsigned char sol[MAX_SOLUTION_SIZE];
+        memset(sol, 0x00, sizeof(sol));
+        VH_CHECK("fallback: seed node.db solution at h=0",
+                 vh_db_put_block(&ndb, 0, sol, sizeof(sol)));
+
+        VH_CHECK("fallback: setup default validator",
+                 vh_setup("fallback_loads", 1, NULL, NULL,
+                          dir, sizeof(dir), &ms, &sc) == 0);
+        /* Leave sc.blocks[0].nSolution NULL (index empty) and inject the
+         * fixture node.db so the fallback resolves it. */
+        validate_headers_validator_set_node_db(&ndb);
+
+        header_admit_stage_drain(10);
+        VH_CHECK("fallback: validate one row",
+                 validate_headers_stage_drain(10) == 1);
+        int ok = -1;
+        char reason[64] = {0};
+        VH_CHECK("fallback: row exists",
+                 log_row_at(progress_store_db(), 0, &ok,
+                            reason, sizeof(reason)));
+        /* Loader was reached: verdict is a real validation failure, NOT
+         * the residual backfill reason and NOT the pre-loader empty
+         * reason. This proves the node.db bytes flowed into identical
+         * Equihash verification. */
+        VH_CHECK("fallback: node.db solution reached identical validation",
+                 ok == 0 &&
+                 strcmp(reason, "no-header-solution") != 0 &&
+                 strcmp(reason,
+                        "no-header-solution-backfill-required") != 0);
+
+        validate_headers_validator_set_node_db(NULL);
+        vh_teardown(dir, &ms, &sc);
+        node_db_close(&ndb);
+    }
+
+    /* ── Item 2: node.db ALSO empty → fail with backfill reason (b) ── *
+     * The 675K residual rows. block_index empty, persisted index empty,
+     * node.db has no solution at this height → the validator MUST fail
+     * with the distinct backfill reason. Proves there is NO false-pass on
+     * a header lacking a real, verified solution. */
+    {
+        char dir[256]; struct main_state ms; struct synth_chain_vh sc;
+        struct node_db ndb;
+        VH_CHECK("residual: node.db opens",
+                 node_db_open(&ndb, ":memory:"));
+        /* node.db is empty — no row at h=0 at all. */
+
+        VH_CHECK("residual: setup default validator",
+                 vh_setup("residual_backfill", 1, NULL, NULL,
+                          dir, sizeof(dir), &ms, &sc) == 0);
+        validate_headers_validator_set_node_db(&ndb);
+
+        header_admit_stage_drain(10);
+        VH_CHECK("residual: validate one row",
+                 validate_headers_stage_drain(10) == 1);
+        int ok = -1;
+        char reason[64] = {0};
+        VH_CHECK("residual: row exists",
+                 log_row_at(progress_store_db(), 0, &ok,
+                            reason, sizeof(reason)));
+        VH_CHECK("residual: fails with distinct backfill reason (no false pass)",
+                 ok == 0 &&
+                 strcmp(reason,
+                        "no-header-solution-backfill-required") == 0);
+
+        validate_headers_validator_set_node_db(NULL);
+        vh_teardown(dir, &ms, &sc);
+        node_db_close(&ndb);
     }
 
     /* ── persisted failures are rechecked after restart ────────────── */

@@ -417,6 +417,59 @@ bool db_block_find_by_height(struct node_db *ndb, int height,
     return true;
 }
 
+/* ── Solution accessor ─────────────────────────────────────────── */
+
+/* Materialise the Equihash solution BLOB for a connected block.
+ *
+ * `status>=3` matches the canonical connected-block floor used by
+ * db_block_max_height() and the idx_blocks_height unique index — we only
+ * trust solutions on rows that won an active-chain slot. A NULL/empty
+ * column, missing row, or oversize blob all return false so the caller
+ * keeps failing Equihash validation rather than ever passing without a
+ * verified solution. */
+bool db_block_load_solution_by_height(struct node_db *ndb, int height,
+                                      unsigned char *out, size_t *out_len,
+                                      size_t max)
+{
+    if (out_len) *out_len = 0;
+    if (!ndb || !ndb->open || !out || !out_len || max == 0) {
+        /* LOG_WARN, not LOG_FAIL/LOG_NULL: those macros return for us and
+         * LOG_NULL would yield NULL where a bool is expected. */
+        LOG_WARN("block", "load_solution: null arg / closed db (height=%d)",
+                 height);
+        return false;
+    }
+
+    sqlite3_stmt *s = NULL;
+    AR_PREPARE_RET(ndb, s,
+        "SELECT solution FROM blocks WHERE height=? AND status>=3",
+        false);
+    AR_BIND_INT(s, 1, height);
+
+    if (!AR_STEP_ROW(s)) {
+        AR_FINALIZE(s);
+        return false;   /* no connected row at this height */
+    }
+
+    int blen = AR_COL_BYTES(s, 0);
+    const void *bdata = sqlite3_column_blob(s, 0);
+    if (!bdata || blen <= 0) {
+        AR_FINALIZE(s);
+        return false;   /* solution column empty — backfill required */
+    }
+    if ((size_t)blen > max) {
+        LOG_WARN("block", "load_solution: oversize solution height=%d "
+                 "len=%d max=%zu", height, blen, max);
+        AR_FINALIZE(s);
+        return false;
+    }
+
+    memcpy(out, bdata, (size_t)blen);
+    *out_len = (size_t)blen;
+    AR_FINALIZE(s);
+    return true;
+}
+
 /* ── Delete ────────────────────────────────────────────────────── */
 
 bool db_block_delete(struct node_db *ndb, const uint8_t hash[32])
