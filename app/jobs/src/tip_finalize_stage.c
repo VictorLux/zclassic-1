@@ -358,6 +358,24 @@ static job_result_t step_finalize(struct stage_step_ctx *c)
 
     uint64_t uv_cursor = stage_cursor_persisted(db, "utxo_apply",
                                                STAGE_NAME);
+    /* B5 ordering invariant: tip_finalize's cursor must NEVER exceed
+     * utxo_apply's persisted cursor. The supervisor drains utxo_apply
+     * (incl. its reorg unwind, which rewinds the utxo_apply cursor to the
+     * fork boundary) BEFORE tip_finalize each tick, and tip_finalize's own
+     * rewind_cursor_if_active_chain_reorged runs at the top of step_once.
+     * If we observe cursor_in > uv_cursor here, utxo_apply rewound under a
+     * reorg but tip_finalize has not yet followed — a strict-greater
+     * overshoot. Log loudly and idle so tip_finalize's rewind (which has
+     * already run this tick or runs next tick) re-converges; finalizing a
+     * tip whose UTXO set is mid-unwind would be a consensus hazard. */
+    if ((uint64_t)next_h > uv_cursor) {
+        LOG_WARN("tip_finalize",
+            "[tip_finalize] cursor_in=%d exceeds utxo_apply cursor=%llu "
+            "(reorg unwind in flight) — idling until follower rewind",
+            next_h, (unsigned long long)uv_cursor);
+        atomic_store(&g_last_blocked_unix, platform_time_wall_unix());
+        return JOB_IDLE;
+    }
     if ((uint64_t)next_h >= uv_cursor) {
         atomic_store(&g_last_blocked_unix, platform_time_wall_unix());
         return JOB_IDLE;

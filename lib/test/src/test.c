@@ -735,6 +735,7 @@ int main(void)
     failures += test_invalidateblock();
     failures += test_reorg_parity();
     failures += test_reorg_projection_parity();
+    failures += test_stage_reorg_unwind_parity();
     failures += test_connect_block_self_write();
     failures += test_key_scrub();
     failures += test_block_index_loader();

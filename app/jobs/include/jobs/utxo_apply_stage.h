@@ -24,9 +24,33 @@ struct tx_out;
 
 #define UTXO_APPLY_BATCH_PER_TICK 100
 
+/* The full pre-image of a coin, as needed to emit a correct restore-ADD
+ * on a stage-side reorg unwind (the inverse of the SPEND emitted when an
+ * input is first consumed). value alone is insufficient: the projection
+ * commitment is taken over (txid|vout|value|script|height|is_coinbase),
+ * so a restored coin MUST carry its original height/is_coinbase/script
+ * or the post-reorg commitment diverges byte-for-byte. Mirrors exactly
+ * what legacy disconnect_block pulls from undo->txout/undo->height
+ * (connect_block.c:733-757).
+ *
+ * `script` points into caller-owned storage and is copied immediately by
+ * compute_block_delta; it need not outlive the lookup call. A UTXO
+ * scriptPubKey is consensus-bounded to MAX_SCRIPT_SIZE, which is exactly
+ * UTXO_APPLY_SCRIPT_MAX — so the buffer always holds the full script and
+ * the lookup MUST return it whole (the projection stores it whole). If
+ * `script_len` ever exceeds UTXO_APPLY_SCRIPT_MAX (a contract violation,
+ * unreachable with valid chain data) compute_block_delta FAILS the delta
+ * rather than over-read the buffer or persist a truncated coin. */
+#define UTXO_APPLY_SCRIPT_MAX 10000
+
 struct utxo_apply_lookup {
     bool found;
     int64_t value;
+    /* Full pre-image (see comment above). Only meaningful when found. */
+    uint32_t height;
+    bool is_coinbase;
+    uint32_t script_len;
+    uint8_t script[UTXO_APPLY_SCRIPT_MAX];
 };
 
 typedef bool (*utxo_apply_reader_fn)(struct block *out,
@@ -60,6 +84,7 @@ uint64_t utxo_apply_stage_value_overflow_total(void);
 uint64_t utxo_apply_stage_delta_diverged_total(void);
 uint64_t utxo_apply_stage_upstream_failed_total(void);
 uint64_t utxo_apply_stage_internal_error_total(void);
+uint64_t utxo_apply_stage_reorg_unwound_total(void);
 uint64_t utxo_apply_stage_outputs_added_total(void);
 uint64_t utxo_apply_stage_outputs_spent_total(void);
 

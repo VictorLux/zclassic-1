@@ -7,6 +7,7 @@
 
 #include "platform/time_compat.h"
 #include "jobs/utxo_apply_stage.h"
+#include "jobs/utxo_apply_delta.h"
 #include "jobs/stage_helpers.h"
 
 #include "chain/chain.h"
@@ -33,39 +34,15 @@
 #include <string.h>
 
 #define STAGE_NAME "utxo_apply"
-#define MAX_MONEY_ZAT 2100000000000000LL
 
 struct proof_validate_row {
     int ok;
 };
 
-struct delta_entry {
-    struct uint256 txid;
-    uint32_t vout;
-    int64_t value;
-    /* B3 authorship: added entries also carry what EV_UTXO_ADD needs.
-     * `script` aliases into the live `struct block` and is valid only
-     * until block_free — emission must happen before the block is freed.
-     * Unused for spent entries. */
-    const uint8_t *script;
-    uint32_t script_len;
-    bool is_coinbase;
-};
-
-struct delta_summary {
-    bool ok;
-    const char *status;
-    const char *failure_kind;
-    uint8_t failure_detail[36];
-    size_t spent_count;
-    size_t added_count;
-    int64_t total_value_delta;
-    /* On a successful delta these own the spent/added arrays and are
-     * handed back to the caller (which emits then frees). On any
-     * failure path compute_block_delta frees them and leaves NULL. */
-    struct delta_entry *spent;
-    struct delta_entry *added;
-};
+/* struct delta_entry / struct delta_summary + the inverse-delta
+ * persistence and reorg-unwind machinery live in jobs/utxo_apply_delta.h
+ * / utxo_apply_delta.c (split out to keep this file under the E1
+ * file-size ceiling). */
 
 static pthread_mutex_t g_lock = PTHREAD_MUTEX_INITIALIZER;
 static struct main_state *g_ms = NULL;
@@ -85,22 +62,12 @@ static _Atomic uint64_t g_value_overflow_total = 0;
 static _Atomic uint64_t g_delta_diverged_total = 0;
 static _Atomic uint64_t g_upstream_failed_total = 0;
 static _Atomic uint64_t g_internal_error_total = 0;
+static _Atomic uint64_t g_reorg_unwound_total = 0;
 static _Atomic uint64_t g_total_outputs_added = 0;
 static _Atomic uint64_t g_total_outputs_spent = 0;
 static _Atomic int64_t  g_last_step_unix = 0;
 static _Atomic int64_t  g_last_blocked_unix = 0;
 static _Atomic int64_t  g_last_advance_height = -1;
-
-static void failure_detail_set(uint8_t out[36], const struct uint256 *txid,
-                               uint32_t vout)
-{
-    memset(out, 0, 36);
-    if (txid) memcpy(out, txid->data, 32);
-    out[32] = (uint8_t)(vout & 0xff);
-    out[33] = (uint8_t)((vout >> 8) & 0xff);
-    out[34] = (uint8_t)((vout >> 16) & 0xff);
-    out[35] = (uint8_t)((vout >> 24) & 0xff);
-}
 
 static bool ensure_log_schema(sqlite3 *db)
 {
@@ -189,50 +156,9 @@ static bool log_insert(sqlite3 *db, int height, const char *status, bool ok,
     return true;
 }
 
-static bool lookup_added(const struct delta_entry *added, size_t n,
-                         const struct uint256 *txid, uint32_t vout,
-                         int64_t *out_value)
-{
-    for (size_t i = 0; i < n; i++) {
-        if (added[i].vout == vout && uint256_eq(&added[i].txid, txid)) {
-            if (out_value) *out_value = added[i].value;
-            return true;
-        }
-    }
-    return false;
-}
-
-static bool external_lookup(const struct uint256 *txid, uint32_t vout,
-                            struct utxo_apply_lookup *out)
-{
-    memset(out, 0, sizeof(*out));
-    if (!g_lookup)
-        return true;
-    return g_lookup(txid, vout, out, g_lookup_user);
-}
-
-static void delta_summary_init(struct delta_summary *s)
-{
-    memset(s, 0, sizeof(*s));
-    s->ok = true;
-    s->status = "verified";
-}
-
-static void delta_fail(struct delta_summary *s, const char *status,
-                       const char *kind, const struct uint256 *txid,
-                       uint32_t vout)
-{
-    s->ok = false;
-    s->status = status;
-    s->failure_kind = kind;
-    failure_detail_set(s->failure_detail, txid, vout);
-}
-
-static void free_delta(struct delta_entry *spent, struct delta_entry *added)
-{
-    free(spent);
-    free(added);
-}
+/* The delta structs, free_delta(_arr), and the block-delta builder
+ * (utxo_apply_compute_block_delta) live in utxo_apply_delta.c, shared
+ * with the inverse-delta persistence + reorg-unwind path. */
 
 /* B3: author EV_UTXO_ADD/SPEND from a validated block delta. Called
  * only when the stage holds authority (UTXO_AUTHOR_STAGE) and the block
@@ -254,148 +180,9 @@ static void emit_delta(const struct delta_summary *s, uint32_t height)
         utxo_projection_emit_spend(s->spent[i].txid.data, s->spent[i].vout);
 }
 
-static void compute_block_delta(const struct block *blk,
-                                struct delta_summary *out)
-{
-    delta_summary_init(out);
-    if (!blk) {
-        out->ok = false;
-        out->status = "internal_error";
-        out->failure_kind = "missing_block";
-        return;
-    }
-
-    size_t spend_cap = 0, add_cap = 0;
-    for (size_t ti = 0; ti < blk->num_vtx; ti++) {
-        const struct transaction *tx = &blk->vtx[ti];
-        if (!transaction_is_coinbase(tx))
-            spend_cap += tx->num_vin;
-        add_cap += tx->num_vout;
-    }
-
-    struct delta_entry *spent = spend_cap
-        ? zcl_calloc(spend_cap, sizeof(*spent), "utxo_apply_spent")
-        : NULL;
-    struct delta_entry *added = add_cap
-        ? zcl_calloc(add_cap, sizeof(*added), "utxo_apply_added")
-        : NULL;
-    if ((spend_cap && !spent) || (add_cap && !added)) {
-        out->ok = false;
-        out->status = "internal_error";
-        out->failure_kind = "alloc";
-        free_delta(spent, added);
-        return;
-    }
-
-    for (size_t ti = 0; ti < blk->num_vtx; ti++) {
-        const struct transaction *tx = &blk->vtx[ti];
-        int64_t tx_input_value = 0;
-        int64_t tx_output_value = 0;
-
-        if (!transaction_is_coinbase(tx)) {
-            for (size_t vi = 0; vi < tx->num_vin; vi++) {
-                const struct outpoint *op = &tx->vin[vi].prevout;
-                int64_t value = 0;
-                bool found = lookup_added(added, out->added_count,
-                                          &op->hash, op->n, &value);
-                if (!found) {
-                    struct utxo_apply_lookup lk;
-                    if (!external_lookup(&op->hash, op->n, &lk)) {
-                        out->ok = false;
-                        out->status = "internal_error";
-                        out->failure_kind = "lookup";
-                        free_delta(spent, added);
-                        return;
-                    }
-                    found = lk.found;
-                    value = lk.value;
-                }
-                if (!found) {
-                    delta_fail(out, "spend_unknown_utxo",
-                               "spend_unknown_utxo", &op->hash, op->n);
-                    free_delta(spent, added);
-                    return;
-                }
-                if (value < 0 || value > MAX_MONEY_ZAT) {
-                    delta_fail(out, "value_overflow",
-                               "input_value", &op->hash, op->n);
-                    free_delta(spent, added);
-                    return;
-                }
-                spent[out->spent_count].txid = op->hash;
-                spent[out->spent_count].vout = op->n;
-                spent[out->spent_count].value = value;
-                out->spent_count++;
-                out->total_value_delta -= value;
-                tx_input_value += value;
-            }
-        }
-
-        for (size_t vo = 0; vo < tx->num_vout; vo++) {
-            const struct tx_out *txo = &tx->vout[vo];
-            if (tx_out_is_null(txo))
-                continue;
-            if (txo->value < 0 || txo->value > MAX_MONEY_ZAT) {
-                delta_fail(out, "value_overflow", "output_value",
-                           &tx->hash, (uint32_t)vo);
-                free_delta(spent, added);
-                return;
-            }
-            if (lookup_added(added, out->added_count, &tx->hash,
-                             (uint32_t)vo, NULL)) {
-                delta_fail(out, "utxo_collision", "duplicate_output",
-                           &tx->hash, (uint32_t)vo);
-                free_delta(spent, added);
-                return;
-            }
-            struct utxo_apply_lookup lk;
-            if (!external_lookup(&tx->hash, (uint32_t)vo, &lk)) {
-                out->ok = false;
-                out->status = "internal_error";
-                out->failure_kind = "lookup";
-                free_delta(spent, added);
-                return;
-            }
-            if (lk.found) {
-                delta_fail(out, "utxo_collision", "utxo_collision",
-                           &tx->hash, (uint32_t)vo);
-                free_delta(spent, added);
-                return;
-            }
-            added[out->added_count].txid = tx->hash;
-            added[out->added_count].vout = (uint32_t)vo;
-            added[out->added_count].value = txo->value;
-            added[out->added_count].script = txo->script_pub_key.data;
-            added[out->added_count].script_len =
-                (uint32_t)txo->script_pub_key.size;
-            added[out->added_count].is_coinbase = transaction_is_coinbase(tx);
-            out->added_count++;
-            out->total_value_delta += txo->value;
-            tx_output_value += txo->value;
-        }
-
-        if (!transaction_is_coinbase(tx) && tx_output_value > tx_input_value) {
-            delta_fail(out, "value_overflow", "outputs_exceed_inputs",
-                       &tx->hash, 0);
-            free_delta(spent, added);
-            return;
-        }
-    }
-
-    if (out->total_value_delta > MAX_MONEY_ZAT ||
-        out->total_value_delta < -MAX_MONEY_ZAT) {
-        out->ok = false;
-        out->status = "value_overflow";
-        out->failure_kind = "total_value_delta";
-        free_delta(spent, added);
-        return;
-    }
-
-    /* Success: hand the arrays to the caller, which emits the events
-     * (if authoritative) and then frees them. */
-    out->spent = spent;
-    out->added = added;
-}
+/* compute_block_delta now lives in utxo_apply_delta.c as
+ * utxo_apply_compute_block_delta (it owns the delta structs + the
+ * persistence/inversion of the same arrays). */
 
 static job_result_t step_apply(struct stage_step_ctx *c)
 {
@@ -451,7 +238,8 @@ static job_result_t step_apply(struct stage_step_ctx *c)
     }
 
     struct delta_summary summary;
-    compute_block_delta(&blk, &summary);
+    utxo_apply_compute_block_delta(&blk, (uint32_t)next_h,
+                                   g_lookup, g_lookup_user, &summary);
 
     if (summary.ok && g_live_check) {
         const char *detail = NULL;
@@ -472,8 +260,22 @@ static job_result_t step_apply(struct stage_step_ctx *c)
     if (summary.ok && utxo_projection_get_author() == UTXO_AUTHOR_STAGE)
         emit_delta(&summary, (uint32_t)next_h);
 
-    free_delta(summary.spent, summary.added);
-    summary.spent = summary.added = NULL;
+    /* B5 reorg-unwind keystone: persist the per-block inverse-delta
+     * (stage analogue of legacy block_undo) so a later disconnect can be
+     * reconstructed without re-reading legacy undo files. Stamped with
+     * the OLD branch hash so a fork at the same height is distinguishable.
+     * Inside the stage txn (stage_run_once's BEGIN IMMEDIATE), so the
+     * delta + log row + cursor land atomically. Persisted only on a
+     * successful apply — failure rows have nothing to invert. */
+    if (summary.ok) {
+        if (!utxo_apply_delta_persist(db, next_h, bi->phashBlock, &summary)) {
+            free_delta(&summary);
+            block_free(&blk);
+            return JOB_FATAL;
+        }
+    }
+
+    free_delta(&summary);
     block_free(&blk);
 
     if (summary.ok) {
@@ -536,6 +338,10 @@ bool utxo_apply_stage_init(struct main_state *ms)
         pthread_mutex_unlock(&g_lock);
         return false;
     }
+    if (!utxo_apply_ensure_delta_schema(db)) {
+        pthread_mutex_unlock(&g_lock);
+        return false;
+    }
 
     GetDataDir(true, g_datadir, sizeof(g_datadir));
 
@@ -558,6 +364,14 @@ job_result_t utxo_apply_stage_step_once(void)
     if (!g_stage) return JOB_IDLE;
     sqlite3 *db = progress_store_db();
     if (!db) return JOB_IDLE;
+    /* B5: drain any pending stage-side reorg disconnect BEFORE the next
+     * forward apply (and before tip_finalize, which the supervisor drains
+     * after us, reads our cursor). Self-contained txn; on failure the
+     * cursor is untouched so the next tick retries. */
+    if (!utxo_apply_reorg_unwind_if_needed(db, g_stage, g_ms,
+                                           &g_reorg_unwound_total,
+                                           &g_last_blocked_unix))
+        return JOB_FATAL;
     return stage_run_once(g_stage, db);
 }
 
@@ -585,6 +399,7 @@ void utxo_apply_stage_shutdown(void)
     atomic_store(&g_delta_diverged_total, (uint64_t)0);
     atomic_store(&g_upstream_failed_total, (uint64_t)0);
     atomic_store(&g_internal_error_total, (uint64_t)0);
+    atomic_store(&g_reorg_unwound_total, (uint64_t)0);
     atomic_store(&g_total_outputs_added, (uint64_t)0);
     atomic_store(&g_total_outputs_spent, (uint64_t)0);
     atomic_store(&g_last_step_unix, (int64_t)0);
@@ -657,6 +472,11 @@ uint64_t utxo_apply_stage_internal_error_total(void)
     return atomic_load(&g_internal_error_total);
 }
 
+uint64_t utxo_apply_stage_reorg_unwound_total(void)
+{
+    return atomic_load(&g_reorg_unwound_total);
+}
+
 uint64_t utxo_apply_stage_outputs_added_total(void)
 {
     return atomic_load(&g_total_outputs_added);
@@ -695,6 +515,8 @@ bool utxo_apply_dump_state_json(struct json_value *out, const char *key)
                       (int64_t)atomic_load(&g_upstream_failed_total));
     json_push_kv_int (out, "internal_error_total",
                       (int64_t)atomic_load(&g_internal_error_total));
+    json_push_kv_int (out, "reorg_unwound_total",
+                      (int64_t)atomic_load(&g_reorg_unwound_total));
     json_push_kv_int (out, "outputs_added_total",
                       (int64_t)atomic_load(&g_total_outputs_added));
     json_push_kv_int (out, "outputs_spent_total",

@@ -24,6 +24,7 @@
 #include "jobs/validate_headers_stage.h"
 #include "jobs/tip_finalize_stage.h"
 #include "services/node_health_service.h"
+#include "storage/utxo_projection.h"
 #include "util/log_macros.h"
 
 #include <stdint.h>
@@ -263,6 +264,20 @@ bool diag_rpc_cutovermode(const struct json_value *params, bool help,
         header_admit_set_mode(ha_mode);
         validate_headers_set_mode(vh_mode);
         tip_finalize_set_mode(tf_mode);
+        /* B5 keystone: the UTXO projection author flips ATOMICALLY with the
+         * stage=all authority flip. Going authoritative makes
+         * utxo_apply_stage the single writer (forward delta emit AND the
+         * stage-side reorg-unwind inverse path), while silencing the legacy
+         * update_coins / disconnect_block emitters — which is precisely why
+         * the stage-side inverse path (utxo_apply_reorg_unwind_if_needed)
+         * must exist before this line ever fires. Flipping back to shadow
+         * restores LEGACY authority symmetrically. This is reachable ONLY
+         * after the cutover_preflight_ready_now() gate above; the
+         * COMPILE-TIME DEFAULT stays UTXO_AUTHOR_LEGACY so a bad flip is one
+         * RPC to revert, never a rebuild. */
+        utxo_projection_set_author(  // one-write-path-ok:cutover-author-flip
+            tf_mode == TIP_FINALIZE_MODE_AUTHORITATIVE
+                ? UTXO_AUTHOR_STAGE : UTXO_AUTHOR_LEGACY);
     }
 
     struct node_health_snapshot health;
