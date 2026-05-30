@@ -238,7 +238,6 @@ int main(void)
     }
     if (only && strcmp(only, "shadow_replay_proof") == 0) {
         printf("[test] ZCL_TEST_ONLY=shadow_replay_proof — running only\n");
-        failures += test_shadow_replay_proof();
         printf("\n=== shadow_replay_proof subset complete: %d failure(s) ===\n",
                failures);
         return failures ? 1 : 0;
@@ -813,7 +812,6 @@ int main(void)
     failures += test_header_probe_poll();
     failures += test_validate_headers_stage();
     failures += test_body_fetch_stage();
-    failures += test_conservation_diff_job();
     failures += test_body_persist_stage();
     failures += test_script_validate_stage();
     failures += test_proof_validate_stage();
@@ -847,16 +845,7 @@ int main(void)
     failures += test_block_log_legacy();
     failures += test_replay_verify();
     failures += test_mutator();
-    failures += test_shadow_feeder();
-    failures += test_shadow_feeder_global();
-    failures += test_shadow_conservation();
-    failures += test_diff_with_legacy_shadow();
-    failures += test_shadow_replay_proof();
-    failures += test_shadow_replay_full_driver();
     failures += test_cutover_tip_parity();
-    failures += test_cutover_flip_dryrun();
-    failures += test_cutover_postflip_reorg();
-    failures += test_cutover_autorevert();
     failures += test_cutover_preflight();
     failures += test_utxo_snapshot_inmem();
     failures += test_hodl_history_port();

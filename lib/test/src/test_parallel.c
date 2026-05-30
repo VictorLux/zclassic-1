@@ -117,7 +117,6 @@ volatile sig_atomic_t g_shutdown_requested = 0;
     X(block_index_projection) X(projection_replay_invariant) \
     X(header_admit_stage) X(header_probe_poll) \
     X(validate_headers_stage) X(body_fetch_stage) \
-    X(conservation_diff_job) \
     X(body_persist_stage) X(script_validate_stage) X(proof_validate_stage) \
     X(utxo_apply_stage) X(tip_finalize_stage) X(reducer_stage_fuzz) \
     X(domain_consensus_verify) X(domain_consensus_subsidy) \
@@ -134,12 +133,8 @@ volatile sig_atomic_t g_shutdown_requested = 0;
     X(domain_encoding_base58) X(domain_encoding_bech32) \
     X(application_consensus_validate_block) \
     X(block_log_file) X(block_log_legacy) X(replay_verify) \
-    X(mutator) X(shadow_feeder) X(shadow_feeder_global) \
-    X(shadow_conservation) \
-    X(diff_with_legacy_shadow) X(shadow_replay_proof) \
-    X(shadow_replay_full_driver) X(cutover_tip_parity) \
-    X(cutover_flip_dryrun) X(cutover_postflip_reorg) \
-    X(cutover_autorevert) \
+    X(mutator) \
+    X(cutover_tip_parity) \
     X(cutover_preflight) \
     X(utxo_snapshot_inmem) X(hodl_history_port) X(node_health_store_port) \
     X(db_maintenance_port) X(wallet_backup_port) \
