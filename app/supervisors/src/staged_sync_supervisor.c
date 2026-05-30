@@ -22,7 +22,6 @@
 #include "jobs/proof_validate_stage.h"
 #include "jobs/utxo_apply_stage.h"
 #include "jobs/tip_finalize_stage.h"
-#include "jobs/conservation_diff_job.h"
 
 #include <stdatomic.h>
 #include <stdint.h>
@@ -411,62 +410,11 @@ static void staged_tip_finalize_register(struct main_state *ms)
     }
 }
 
-/* ── Cutover Item 3: conservation_diff Job supervisor child ────────── */
-static struct liveness_contract g_cd_contract;
-static supervisor_child_id      g_cd_id = SUPERVISOR_INVALID_ID;
-
-static void cd_tick(struct liveness_contract *c)
-{
-    (void)c;
-    /* Drain a bounded batch each tick — one shadow read + one zclassicd
-     * RPC round trip per step, so keep the batch modest. */
-    (void)conservation_diff_job_drain(CONSERVATION_DIFF_BATCH_PER_TICK);
-    supervisor_progress(g_cd_id,
-                        (int64_t)conservation_diff_job_cursor());
-    supervisor_tick(g_cd_id);
-}
-
-static void cd_stall(struct liveness_contract *c)
-{
-    (void)c;
-    /* A stall here means the conservation diff is not advancing: either
-     * the feeder is idle (nothing new fed) or zclassicd is unreachable /
-     * the fed side is diverging from legacy. Surface but do nothing
-     * destructive — the BLOCKED reason carries the height. */
-    LOG_WARN("supervisor", "[supervisor] staged.conservation_diff stalled " "(cursor=%llu diffed=%llu last_blocked_h=%lld) — diff behind feeder or zclassicd unreachable", (unsigned long long)conservation_diff_job_cursor(), (unsigned long long)conservation_diff_job_diffed_total(), (long long)conservation_diff_job_last_blocked_height());
-}
-
-static void staged_conservation_diff_register(const char *datadir)
-{
-    if (!datadir || !datadir[0]) {
-        LOG_WARN("supervisor", "[supervisor] WARN staged.conservation_diff: no datadir — " "Job not running this boot");
-        return;
-    }
-    if (g_cd_id != SUPERVISOR_INVALID_ID) return;  /* idempotent */
-
-    if (!conservation_diff_job_init(datadir)) {
-        LOG_WARN("supervisor", "[supervisor] WARN staged.conservation_diff init failed — " "Job not running this boot");
-        return;
-    }
-
-    liveness_contract_init(&g_cd_contract, "staged.conservation_diff");
-    atomic_store(&g_cd_contract.period_secs, (int64_t)2);
-    /* Same generous quiet window as the upstream shadow stages — the
-     * diff legitimately idles whenever the feeder is idle. */
-    atomic_store(&g_cd_contract.progress_max_quiet_us,
-                 SHADOW_STAGE_QUIET_US);
-    g_cd_contract.on_tick  = cd_tick;
-    g_cd_contract.on_stall = cd_stall;
-    g_cd_id = supervisor_register_in_domain(g_chain_sup, &g_cd_contract);
-    if (g_cd_id == SUPERVISOR_INVALID_ID) {
-        LOG_WARN("supervisor", "[supervisor] WARN staged.conservation_diff register failed");
-    }
-}
-
 void staged_sync_supervisor_register(struct main_state *ms,
                                      const char *datadir)
 {
     if (!ms) return;
+    (void)datadir;
     supervisor_domains_init();
     /* Pipeline order — identical to the original boot_services.c
      * registration sequence (S-2 → S-9), then the cutover Item 3
@@ -479,5 +427,4 @@ void staged_sync_supervisor_register(struct main_state *ms,
     staged_proof_validate_register(ms);
     staged_utxo_apply_register(ms);
     staged_tip_finalize_register(ms);
-    staged_conservation_diff_register(datadir);
 }

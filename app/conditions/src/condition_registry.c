@@ -20,8 +20,6 @@ void register_snapshot_offer_ready(void);
 void register_snapshot_negotiation_stalled(void);
 void register_snapshot_failed_reset(void);
 void register_snapshot_complete_resume(void);
-void register_cutover_no_forward_progress(void);
-void register_cutover_canary_complete(void);
 void register_have_data_unreadable(void);
 void register_orphan_utxo_above_tip(void);
 void register_tip_fork_stale(void);
@@ -46,8 +44,6 @@ void condition_registry_register_all(void)
     register_snapshot_negotiation_stalled();
     register_snapshot_failed_reset();
     register_snapshot_complete_resume();
-    register_cutover_no_forward_progress();
-    register_cutover_canary_complete();
     register_have_data_unreadable();
     register_orphan_utxo_above_tip();
     register_tip_fork_stale();
