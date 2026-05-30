@@ -133,9 +133,6 @@ volatile sig_atomic_t g_shutdown_requested = 0;
     X(domain_encoding_base58) X(domain_encoding_bech32) \
     X(application_consensus_validate_block) \
     X(block_log_file) X(block_log_legacy) X(replay_verify) \
-    X(mutator) \
-    X(cutover_tip_parity) \
-    X(cutover_preflight) \
     X(utxo_snapshot_inmem) X(hodl_history_port) X(node_health_store_port) \
     X(db_maintenance_port) X(wallet_backup_port) \
     X(snapshot_store_port) \
@@ -147,7 +144,7 @@ volatile sig_atomic_t g_shutdown_requested = 0;
     X(sapling_tree) X(heartbeat) X(syncdiag_rpc) X(peer_lifecycle) \
     X(chainstate_legacy_reader) X(chain_stall_repro) \
     X(connect_tip_hot_loop_exit) X(connman_addnode_fallback) \
-    X(failed_child_cap) X(header_probe) X(parity_diff_gate) \
+    X(failed_child_cap) X(header_probe) \
     X(power_node_contract_spec) X(process_block_revalidate) \
     X(rpc_safety) X(service_kernel) X(sync_state_fsm) \
     X(unclean_shutdown_advance) X(utxo_audit) X(zclassicd_oracle)

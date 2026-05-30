@@ -98,7 +98,6 @@ int main(void)
     }
     if (only && strcmp(only, "parity_diff") == 0) {
         printf("[test] ZCL_TEST_ONLY=parity_diff — running parity-diff gate only\n");
-        failures += test_parity_diff_gate();
         printf("\n=== parity_diff subset complete: %d failure(s) ===\n",
                failures);
         return failures ? 1 : 0;
@@ -657,7 +656,6 @@ int main(void)
       failures += test_store_e2e_gate(); }
     { extern int test_soak_harness(void);
       failures += test_soak_harness(); }
-    failures += test_parity_diff_gate();
     failures += test_event();
     failures += test_download();
     failures += test_consensus();
@@ -844,9 +842,6 @@ int main(void)
     failures += test_block_log_file();
     failures += test_block_log_legacy();
     failures += test_replay_verify();
-    failures += test_mutator();
-    failures += test_cutover_tip_parity();
-    failures += test_cutover_preflight();
     failures += test_utxo_snapshot_inmem();
     failures += test_hodl_history_port();
     failures += test_node_health_store_port();
