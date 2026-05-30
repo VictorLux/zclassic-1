@@ -1,5 +1,7 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0 */
 
+#define _GNU_SOURCE  /* sigaltstack / SA_ONSTACK in the crash handler */
+
 #include "platform/time_compat.h"
 #include "event/event.h"
 #include "util/signal_handler.h"
@@ -694,35 +696,50 @@ size_t event_dump_json_filtered(char *buf, size_t buf_size, size_t count,
  * not the header or the backtrace line.  Fix: everything this handler
  * emits goes through write(2) directly, and we flush+fsync before
  * _exit so event_dump_recent's fprintf output lands too. */
-static void crash_write(const char *s, size_t n)
+static void crash_write_fd(int fd, const char *s, size_t n)
 {
-    ssize_t w = write(STDERR_FILENO, s, n);
-    (void)w;  /* best-effort — nothing we can do if stderr is gone */
+    ssize_t w = write(fd, s, n);
+    (void)w;  /* best-effort — nothing we can do if the fd is gone */
+}
+
+/* Emit header + backtrace to one fd. Reused for stderr and the durable
+ * crash log so a crash is recorded in BOTH places (the durable file
+ * survives even when systemd's stderr routing loses the buffer — the gap
+ * that swallowed 6 SEGV backtraces on 2026-05-30). */
+static void crash_emit_to(int fd, int sig, void *const *frames, int nframes)
+{
+    char buf[160];
+    /* snprintf is technically not POSIX async-signal-safe but glibc's
+     * bounded numeric variant is lock-free; the alternative (hand-rolled
+     * itoa) doesn't meaningfully improve safety here. Trade-off acknowledged. */
+    int n = snprintf(buf, sizeof(buf),
+                     "\n\n*** FATAL SIGNAL %d (pid=%d t=%ld) ***\n",
+                     sig, (int)getpid(),
+                     (long)time(NULL));  // platform-ok:async-signal-safe-crash-handler (platform.clock may lock)
+    if (n > 0) crash_write_fd(fd, buf, (size_t)n);
+    n = snprintf(buf, sizeof(buf),
+                 "=== STACK BACKTRACE (%d frames) ===\n", nframes);
+    if (n > 0) crash_write_fd(fd, buf, (size_t)n);
+    backtrace_symbols_fd(frames, nframes, fd);  /* -rdynamic for symbol names */
+    static const char end_bt[] = "=== END BACKTRACE ===\n\n";
+    crash_write_fd(fd, end_bt, sizeof(end_bt) - 1);
 }
 
 static void crash_signal_handler(int sig)
 {
-    char buf[128];
     signal_handler_run_crash_hook(sig, NULL, NULL);
 
-    /* snprintf is technically not POSIX async-signal-safe but glibc's
-     * implementation of the bounded numeric variant is lock-free, and
-     * the alternative (hand-rolled itoa) doesn't meaningfully improve
-     * safety — any crash that corrupts stderr's fd table already
-     * invalidates every code path below.  Trade-off acknowledged. */
-    int n = snprintf(buf, sizeof(buf),
-                     "\n\n*** FATAL SIGNAL %d ***\n", sig);
-    if (n > 0) crash_write(buf, (size_t)n);
-
-    /* Stack backtrace — requires -rdynamic for symbol names. */
     void *frames[64];
     int nframes = backtrace(frames, 64);
-    n = snprintf(buf, sizeof(buf),
-                 "\n=== STACK BACKTRACE (%d frames) ===\n", nframes);
-    if (n > 0) crash_write(buf, (size_t)n);
-    backtrace_symbols_fd(frames, nframes, STDERR_FILENO);
-    static const char end_bt[] = "=== END BACKTRACE ===\n\n";
-    crash_write(end_bt, sizeof(end_bt) - 1);
+
+    crash_emit_to(STDERR_FILENO, sig, frames, nframes);
+
+    /* Durable, fsync'd copy independent of stderr routing. */
+    int cfd = signal_handler_crash_log_fd();
+    if (cfd >= 0) {
+        crash_emit_to(cfd, sig, frames, nframes);
+        fsync(cfd);
+    }
 
     event_emitf(EV_CRASH, 0, "signal %d", sig);
     event_dump_recent(200);  /* fprintf-based; flushes stderr at end */
@@ -740,10 +757,24 @@ static void crash_signal_handler(int sig)
 
 void event_install_crash_handler(void)
 {
+    /* Alternate signal stack: without SA_ONSTACK + a registered alt stack a
+     * stack-overflow SIGSEGV cannot run this handler at all (the thread stack
+     * is already exhausted) — exactly how 6 SEGVs on 2026-05-30 produced ZERO
+     * backtraces. The static buffer lives for the process lifetime. */
+    static char alt_stack[64 * 1024];
+    stack_t ss;
+    memset(&ss, 0, sizeof(ss));
+    ss.ss_sp = alt_stack;
+    ss.ss_size = sizeof(alt_stack);
+    ss.ss_flags = 0;
+    sigaltstack(&ss, NULL);  /* best-effort; safe at boot (single-threaded) */
+
     struct sigaction sa;
     memset(&sa, 0, sizeof(sa));
     sa.sa_handler = crash_signal_handler;
-    sa.sa_flags = SA_RESETHAND; /* one-shot: avoid infinite recursion */
+    /* one-shot (avoid infinite recursion) + run on the alt stack. */
+    sa.sa_flags = SA_RESETHAND | SA_ONSTACK;
+    sigemptyset(&sa.sa_mask);
     sigaction(SIGSEGV, &sa, NULL);
     sigaction(SIGABRT, &sa, NULL);
     sigaction(SIGBUS, &sa, NULL);

@@ -6,9 +6,11 @@
 #include "util/signal_handler.h"
 
 #include <execinfo.h>
+#include <fcntl.h>
 #include <signal.h>
 #include <stdint.h>
 #include <string.h>
+#include <time.h>
 #include <unistd.h>
 #include <sys/syscall.h>
 #include <sys/types.h>
@@ -16,6 +18,25 @@
 static signal_handler_crash_hook_fn g_crash_hook = NULL;
 static void *g_crash_hook_ctx = NULL;
 static volatile sig_atomic_t g_crash_hook_running = 0;
+
+/* Durable, append-only crash log (best-effort). Opened once the datadir is
+ * known via signal_handler_set_crash_log(). Both this module's handler and
+ * the event-log crash handler mirror their backtrace here and fsync, so a
+ * crash leaves a forensic record even when stderr routing is lost — the gap
+ * that swallowed 6 SEGV backtraces on 2026-05-30. */
+static volatile int g_crash_fd = -1;
+
+void signal_handler_set_crash_log(const char *path)
+{
+    if (g_crash_fd >= 0 || !path || !*path) return;
+    int fd = open(path, O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC, 0600);
+    if (fd >= 0) g_crash_fd = fd;
+}
+
+int signal_handler_crash_log_fd(void)
+{
+    return g_crash_fd;
+}
 
 void signal_handler_set_crash_hook(signal_handler_crash_hook_fn fn,
                                    void *ctx)
@@ -73,13 +94,11 @@ static int write_s(int fd, const char *s)
     return (int)write(fd, s, strlen(s));
 }
 
-/* The handler itself. SA_SIGINFO style. */
-static void fatal_handler(int sig, siginfo_t *info, void *ucontext)
+/* Emit the marker + backtrace to one fd. Async-signal-safe throughout. */
+static void emit_report(int fd, int sig, siginfo_t *info,
+                        void *const *frames, int nframes)
 {
-    const int fd = STDERR_FILENO;
-    signal_handler_run_crash_hook(sig, info, ucontext);
-
-    /* Build & emit: [fatal-signal] sig=N code=M addr=0x... pid=P tid=T */
+    /* [fatal-signal] sig=N code=M addr=0x... pid=P tid=T time=T */
     write_s(fd, "[fatal-signal] sig=");
     write_uint(fd, (unsigned long)sig);
     write_s(fd, " code=");
@@ -90,15 +109,30 @@ static void fatal_handler(int sig, siginfo_t *info, void *ucontext)
     write_uint(fd, (unsigned long)getpid());
     write_s(fd, " tid=");
     write_uint(fd, (unsigned long)syscall(SYS_gettid));
+    write_s(fd, " time=");
+    write_uint(fd, (unsigned long)time(NULL));  // platform-ok:async-signal-safe-crash-handler (platform.clock may lock)
     write_s(fd, "\n");
+    backtrace_symbols_fd(frames, nframes, fd);
+    write_s(fd, "[fatal-signal] end\n");
+}
+
+/* The handler itself. SA_SIGINFO style. */
+static void fatal_handler(int sig, siginfo_t *info, void *ucontext)
+{
+    signal_handler_run_crash_hook(sig, info, ucontext);
 
     /* Backtrace — up to 64 frames. backtrace + backtrace_symbols_fd are
      * documented async-signal-safe (glibc allocates internal buffers
-     * lazily but uses mmap, not malloc, on the hot path). */
+     * lazily but uses mmap, not malloc, on the hot path). Capture once,
+     * emit to stderr AND the durable crash log. */
     void *frames[64];
     int n = backtrace(frames, 64);
-    backtrace_symbols_fd(frames, n, fd);
-    write_s(fd, "[fatal-signal] end\n");
+
+    emit_report(STDERR_FILENO, sig, info, frames, n);
+    if (g_crash_fd >= 0) {
+        emit_report(g_crash_fd, sig, info, frames, n);
+        fsync(g_crash_fd);  /* survive even if the process dies hard next */
+    }
 
     /* Restore default handler and re-raise so:
      *   - systemd still reports the original status code (e.g. 134),
@@ -113,10 +147,20 @@ static void fatal_handler(int sig, siginfo_t *info, void *ucontext)
 
 int signal_handler_install(void)
 {
+    /* Alternate signal stack so a stack-overflow SIGSEGV (which exhausts the
+     * thread stack) can still run the handler instead of silently dying. */
+    static char alt_stack[64 * 1024];
+    stack_t ss;
+    memset(&ss, 0, sizeof(ss));
+    ss.ss_sp = alt_stack;
+    ss.ss_size = sizeof(alt_stack);
+    ss.ss_flags = 0;
+    if (sigaltstack(&ss, NULL) != 0) return -1;
+
     struct sigaction sa;
     memset(&sa, 0, sizeof(sa));
     sa.sa_sigaction = fatal_handler;
-    sa.sa_flags = SA_SIGINFO | SA_RESTART;
+    sa.sa_flags = SA_SIGINFO | SA_RESTART | SA_ONSTACK;
     sigemptyset(&sa.sa_mask);
 
     const int sigs[] = { SIGABRT, SIGSEGV, SIGBUS, SIGFPE };

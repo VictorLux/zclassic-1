@@ -6,24 +6,26 @@ zclassic23 SEGV-crash-looped ~hourly (6 core-dumps), each unclean kill scramblin
 block-file↔index consistency across ~2,700 blocks (3,126,939–3,129,625) until the tip
 wedged at 3,126,938; node halted for forensics._
 
-## Headline: the crash-loudness promise is broken where it mattered
+## Headline: the crash-loudness promise is broken where it mattered — **P0 FIXED 2026-05-30**
 
 The node crashed **6 times today and produced 0 backtraces anywhere** (journald + node.log
-both empty of `[fatal-signal]`). Confirmed causes:
+both empty). Confirmed causes — and the fix that landed:
 
-- `lib/util/src/signal_handler.c:119` — `sa_flags = SA_SIGINFO | SA_RESTART`, **no `SA_ONSTACK` / no `sigaltstack()`** → a stack-overflow SEGV cannot run the handler at all.
-- Service `StandardError=append` + `core_pattern=|…/apport` which **discards** non-packaged cores → no core, no trace.
-- `config/src/boot.c:525` — `signal_handler_install()` failure only `fprintf(WARNING)` and continues.
-- Backtrace (when it fires) goes only to **ephemeral stderr** — never to the durable event log; not queryable via `zcl_state`/MCP.
+- **Correction to the original diagnosis:** the *active* runtime handler is **`event.c:crash_signal_handler`**, not `signal_handler.c`'s — `event_install_crash_handler()` runs right after `signal_handler_install()` in boot and `sigaction()`-overrides all four signals. So the live marker is `FATAL SIGNAL`, not `[fatal-signal]` (the audit grep missed it). BOTH handlers are now fixed.
+- ~~no `SA_ONSTACK` / no `sigaltstack()` → stack-overflow SEGV cannot run the handler~~ **FIXED:** both `event_install_crash_handler()` and `signal_handler_install()` now register a 64 KB alternate signal stack + `SA_ONSTACK`. A stack-overflow SEGV now runs the handler.
+- ~~backtrace goes only to ephemeral stderr~~ **FIXED:** `signal_handler_set_crash_log($datadir/crash_log.txt)` (wired in `boot.c` once the datadir is known) opens an `O_APPEND|O_CLOEXEC` fd; both handlers mirror the marker + backtrace there and `fsync()` — survives even when systemd's stderr routing loses the buffer. Handler also stamps `pid` + `time`.
+- ~~`config/src/boot.c:525` warns-and-continues~~ **FIXED:** install failure is now FATAL (`return false` → boot aborts; never run blind).
+- Still external, owner-side: service `StandardError=append` + `core_pattern=|…/apport` discards non-packaged cores. The durable `crash_log.txt` makes this non-blocking for diagnosis (we no longer depend on the core or stderr). `EV_CRASH` is emitted to the in-RAM event ring by the active handler.
 
-Net: a crash is the *least* loud failure in the system, the inverse of the Prime Directive.
+Net: a crash now leaves an fsync'd, located backtrace on disk regardless of stderr/core policy.
 
 ## Loudness gaps — by file (make every failure loud)
 
 | sev | file | gap | fix | effort |
 |---|---|---|---|---|
-| 🔴 | `lib/util/src/signal_handler.c` | no alt-stack ⇒ stack-overflow SEGV silent; backtrace only to stderr; no `EV_CRASH` to log; no height/stage in trace | add `sigaltstack()`+`SA_ONSTACK`; emit `EV_CRASH{sig,addr,stage,height}` to event log + a durable `$datadir/crash_log.txt` (O_APPEND+fsync); name current stage/height | medium |
-| 🔴 | `config/src/boot.c:525` | signal-handler install failure warns-and-continues → early crashes silent | make install failure FATAL (`LOG_FAIL`+exit) | trivial |
+| ✅ | `lib/event/src/event.c` (active handler) + `lib/util/src/signal_handler.c` | no alt-stack ⇒ stack-overflow SEGV silent; backtrace only to stderr | **DONE:** alt-stack + `SA_ONSTACK` on both installers; durable fsync'd `$datadir/crash_log.txt` (mirrored from both handlers); `pid`+`time` stamped; `EV_CRASH` emitted to event ring | medium |
+| ✅ | `config/src/boot.c` | signal-handler install failure warns-and-continues → early crashes silent | **DONE:** install failure now FATAL (`return false` → boot aborts) | trivial |
+| 🟠 | `lib/sapling/src/bn254.c:2011` (`ppzksnark_verify`) | **loud-but-useless:** bg-validation re-verifying ancient Sprout proofs floods node.log with `pairing rejected` (1835 of 2000 recent lines = 92%) at 133% CPU, with **no height/txid context**. The chain itself is valid (tip byte-matches network), so these are advisory re-verify failures — either a phgr13 verifier limitation/false-reject or it should be silenced for trusted history | rate-limit/dedup the leaf log line; have the bg-validation caller emit ONE located `EV_PROOF_REJECTED{height,txid}` instead; separately investigate whether the phgr13 verifier false-rejects valid historical Sprout proofs (compare a fixed height vs zclassicd) | small (log) / medium (verifier) |
 | 🔴 | `app/models/src/utxo.c:370-496` | **11 `fwrite`, 0 error checks** in snapshot writer; `fclose` unchecked; returns success on silent partial write (disk-full/IO) — *the snapshot-corruption enabler* | check each write/`ferror`/`fclose`; `io_error` flag; `LOG_FAIL` + fail the serialize | small |
 | 🔴 | `app/jobs/src/proof_validate_stage.c`, `utxo_apply_stage.c`, `script_validate_stage.c` | reader (block deser) failure → `JOB_IDLE` + bare timestamp; indistinguishable from normal backpressure; no log, no blocker | `LOG_ERR` + register named `BLOCKER_TRANSIENT` + return `JOB_BLOCKED` on sustained reader failure | small |
 | 🔴 | `lib/storage/src/coins_view_sqlite.c:360-382` | boot integrity guard **defers** drift >1000 blocks (returns true) — exactly how the 3,497-block drift slipped past auto-heal with no forward recovery | reject ANY >1-block overshoot with a named blocker that halts advance until cleared; document the recovery path | medium |

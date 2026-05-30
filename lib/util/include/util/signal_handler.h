@@ -35,9 +35,21 @@ typedef void (*signal_handler_crash_hook_fn)(int sig,
                                              void *ucontext,
                                              void *ctx);
 
-/* Install handlers for SIGABRT, SIGSEGV, SIGBUS, SIGFPE.
- * Idempotent. Returns 0 on success, -1 on sigaction failure. */
+/* Install handlers for SIGABRT, SIGSEGV, SIGBUS, SIGFPE on an alternate
+ * signal stack (so a stack-overflow SIGSEGV can still produce a backtrace).
+ * Idempotent. Returns 0 on success, -1 on sigaltstack/sigaction failure. */
 int signal_handler_install(void);
+
+/* Open a durable, append-only crash log at `path` (best-effort, idempotent).
+ * Both this module's handler and the event-log crash handler mirror their
+ * backtrace there in addition to stderr, then fsync — so a crash leaves a
+ * forensic record even when stderr routing is lost (the gap that swallowed
+ * 6 SEGV backtraces on 2026-05-30). Call once the datadir is known. */
+void signal_handler_set_crash_log(const char *path);
+
+/* The durable crash-log fd opened by signal_handler_set_crash_log(), or -1
+ * if none. For other fatal handlers that want to mirror their output there. */
+int signal_handler_crash_log_fd(void);
 
 /* Register one best-effort callback to run before the fatal handler
  * emits diagnostics or re-raises. The callback executes inside the

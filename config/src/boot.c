@@ -523,8 +523,12 @@ static bool boot_step_init_observability(void)
      * handler is inherited process-wide. Any SIGABRT/SIGSEGV/SIGBUS/SIGFPE
      * gets a logged backtrace before systemd sees the exit. */
     if (signal_handler_install() != 0) {
-        fprintf(stderr, "WARNING: signal_handler_install failed; "
-                        "crashes will not log backtrace\n");
+        /* Fatal: booting without a crash handler means the next SEGV/ABRT is
+         * silent and undiagnosable — the exact failure mode that scrambled
+         * block storage on 2026-05-30. Refuse to start blind. */
+        fprintf(stderr, "FATAL: signal_handler_install failed; refusing to "
+                        "boot without a crash handler\n");
+        return false;
     }
 
     db_service_init(&g_db_service);
@@ -568,6 +572,17 @@ static bool boot_step_select_chain_and_datadir(struct app_context *ctx)
     if (stat(ctx->datadir, &st) != 0) {
         mkdir(ctx->datadir, 0700);
         printf("Created data directory: %s\n", ctx->datadir);
+    }
+
+    /* Now that the datadir is known, point the crash handler at a durable,
+     * fsync'd crash log there. Until this call a crash still lands on stderr;
+     * after it, the backtrace also survives in $datadir/crash_log.txt
+     * independent of systemd's stderr routing. */
+    {
+        char crash_path[600];
+        snprintf(crash_path, sizeof(crash_path), "%s/crash_log.txt",
+                 ctx->datadir);
+        signal_handler_set_crash_log(crash_path);
     }
 
     /* Acquire data directory lock — prevents two instances from
