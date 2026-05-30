@@ -70,7 +70,7 @@ Restart Claude Code after adding. The tools appear automatically.
 
 ### Quick Reference
 
-There are ~105 typed tools. **This table lists only the ones you reach for
+There are 112 typed tools. **This table lists only the ones you reach for
 daily** — it is deliberately not exhaustive. For the full catalog, call
 `zcl_tools_list` (live routing table) or read the source of truth:
 `tools/mcp/controllers/{app,chain,meta,net,ops,wallet}_controller.c`.
