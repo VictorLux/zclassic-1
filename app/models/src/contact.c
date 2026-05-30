@@ -22,7 +22,35 @@ static bool contact_before_save(void *record, void *ctx)
     return true;
 }
 
-DEFINE_MODEL_BEFORE_SAVE_READY(contact, contact_before_save)
+/* Shadow projection emit runs as a registered after_save callback (the
+ * wallet_key pattern) so it fires through the AR lifecycle on a successful
+ * save instead of as inline post-save code. Best-effort: a failed emit is
+ * logged but does not fail the save. */
+static void contact_after_save(void *record, void *ctx)
+{
+    (void)ctx;
+    const struct db_contact *c = record;
+    if (c->last_used < 0 || c->last_used > UINT32_MAX ||
+        !contacts_projection_emit_set(c->address, c->name) ||
+        !contacts_projection_emit_touched(c->address,
+                                          (uint32_t)c->last_used)) {
+        LOG_WARN("model", "contacts projection shadow emit failed for save");
+    }
+}
+
+/* Registers contact's before_save + after_save hooks once on the callback
+ * singleton (db_contact_callbacks returns a static struct). */
+static struct ar_callbacks *contact_callbacks_ready(void)
+{
+    struct ar_callbacks *cbs = db_contact_callbacks();
+    static bool hooks_done = false;
+    if (!hooks_done) {
+        ar_register_before_save(cbs, contact_before_save);
+        ar_register_after_save(cbs, contact_after_save);
+        hooks_done = true;
+    }
+    return cbs;
+}
 
 bool db_contact_validate(const struct db_contact *c, struct ar_errors *errors)
 {
@@ -77,12 +105,6 @@ bool db_contact_save(struct node_db *ndb, const struct db_contact *c)
     }
     AR_FINALIZE(s);
     ar_run_after_save(cbs, (void *)c);
-    if (c->last_used < 0 || c->last_used > UINT32_MAX ||
-        !contacts_projection_emit_set(c->address, c->name) ||
-        !contacts_projection_emit_touched(c->address,
-                                          (uint32_t)c->last_used)) {
-        LOG_WARN("model", "contacts projection shadow emit failed for save");
-    }
     return true;
 }
 

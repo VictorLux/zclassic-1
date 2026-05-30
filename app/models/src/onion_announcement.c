@@ -24,8 +24,36 @@ static bool onion_announcement_before_save(void *record, void *ctx)
     return true;
 }
 
-DEFINE_MODEL_BEFORE_SAVE_READY(onion_announcement,
-                               onion_announcement_before_save)
+/* Shadow projection emit runs as a registered after_save callback (the
+ * wallet_key pattern) so it fires through the AR lifecycle on a successful
+ * save instead of as inline post-save code. Best-effort: a failed emit is
+ * logged but does not fail the save. */
+static void onion_announcement_after_save(void *record, void *ctx)
+{
+    (void)ctx;
+    const struct db_onion_announcement *a = record;
+    if (a->announced_at < 0 || a->announced_at > UINT32_MAX ||
+        !onion_ann_projection_emit(a->onion_address,
+                                   (uint32_t)a->announced_at,
+                                   a->script_hex)) {
+        LOG_WARN("model", "onion announcement projection shadow emit failed for save");
+    }
+}
+
+/* Registers onion_announcement's before_save + after_save hooks once on the
+ * callback singleton (db_onion_announcement_callbacks returns a static
+ * struct). */
+static struct ar_callbacks *onion_announcement_callbacks_ready(void)
+{
+    struct ar_callbacks *cbs = db_onion_announcement_callbacks();
+    static bool hooks_done = false;
+    if (!hooks_done) {
+        ar_register_before_save(cbs, onion_announcement_before_save);
+        ar_register_after_save(cbs, onion_announcement_after_save);
+        hooks_done = true;
+    }
+    return cbs;
+}
 
 bool db_onion_announcement_validate(const struct db_onion_announcement *a,
                                     struct ar_errors *errors)
@@ -91,12 +119,6 @@ bool db_onion_announcement_save(struct node_db *ndb,
     }
     AR_FINALIZE(s);
     ar_run_after_save(cbs, (void *)a);
-    if (a->announced_at < 0 || a->announced_at > UINT32_MAX ||
-        !onion_ann_projection_emit(a->onion_address,
-                                   (uint32_t)a->announced_at,
-                                   a->script_hex)) {
-        LOG_WARN("model", "onion announcement projection shadow emit failed for save");
-    }
     return true;
 }
 
