@@ -1192,6 +1192,30 @@ static void boot_start_phase4_storage_shadow(const char *datadir)
                 (unsigned long long)uoff);
     }
 
+    /* Phase 4b-seed: one-time anchor-seed the projection from the legacy
+     * coins.db so SHA3(projection)==SHA3(coins.db) and counts match (the
+     * utxo_commitment cutover preflight gate). The shadow projection only
+     * holds tail deltas emitted since shadow boot; the historical set that
+     * predates shadow emission was never folded in. Idempotent: the seed
+     * refuses (returns -1) once anchor_seeded is stamped, so this is a
+     * no-op on every boot after the first. Shadow-only — seeding the
+     * projection never touches the authoritative legacy coins.db. */
+    {
+        struct node_db *seed_ndb = boot_node_db();
+        if (seed_ndb && seed_ndb->db) {
+            int64_t seeded = utxo_projection_seed_from_legacy(
+                g_phase4_utxo_projection, seed_ndb->db);
+            if (seeded >= 0)
+                fprintf(stderr,  // obs-ok:phase4-shadow
+                        "[phase4] utxo_projection anchor-seeded %lld UTXOs "
+                        "from coins.db\n", (long long)seeded);
+            else
+                fprintf(stderr,  // obs-ok:phase4-shadow
+                        "[phase4] utxo_projection anchor-seed skipped "
+                        "(already seeded or legacy db unavailable)\n");
+        }
+    }
+
     /* Phase 4c: block_index_projection shadow */
     char bip_path[PATH_MAX];
     int n5 = snprintf(bip_path, sizeof(bip_path),
