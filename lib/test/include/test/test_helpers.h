@@ -140,6 +140,7 @@
 #include "net/connman.h"
 #include "net/tor_integration.h"
 #include "services/node_health_service.h"
+#include "util/safe_alloc.h"
 #include <dirent.h>
 #include <unistd.h>
 
@@ -170,6 +171,27 @@ static inline void test_fmt_tmpdir(char *buf, size_t n,
                                    const char *prefix, const char *tag)
 {
     snprintf(buf, n, "./test-tmp/%s_%d_%s", prefix, (int)getpid(), tag);
+}
+
+/* Deep-copy a block (header + vtx with per-tx transaction_copy) for the
+ * staged-pipeline fake readers. Shared by the body_persist / script_validate
+ * / proof_validate / utxo_apply stage tests; `label` tags the vtx allocation
+ * for leak attribution. Returns false on allocation/copy failure. */
+static inline bool test_block_copy(struct block *dst, const struct block *src,
+                                   const char *label)
+{
+    block_init(dst);
+    dst->header = src->header;
+    dst->num_vtx = src->num_vtx;
+    if (src->num_vtx == 0) return true;
+    dst->vtx = zcl_calloc(src->num_vtx, sizeof(struct transaction), label);
+    if (!dst->vtx) return false;
+    for (size_t i = 0; i < src->num_vtx; i++) {
+        transaction_init(&dst->vtx[i]);
+        if (!transaction_copy(&dst->vtx[i], &src->vtx[i]))
+            return false;
+    }
+    return true;
 }
 
 /* Shared helper functions */

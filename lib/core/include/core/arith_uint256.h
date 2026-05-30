@@ -139,7 +139,6 @@ void arith_uint256_shr(struct arith_uint256 *r, const struct arith_uint256 *a, u
 void arith_uint256_mul(struct arith_uint256 *r, const struct arith_uint256 *a, const struct arith_uint256 *b);
 void arith_uint256_div(struct arith_uint256 *r, const struct arith_uint256 *a, const struct arith_uint256 *b);
 unsigned int arith_uint256_bits(const struct arith_uint256 *a);
-double arith_uint256_getdouble(const struct arith_uint256 *a);
 
 void arith_uint256_set_compact(struct arith_uint256 *a, uint32_t compact, bool *negative, bool *overflow);
 uint32_t arith_uint256_get_compact(const struct arith_uint256 *a, bool negative);

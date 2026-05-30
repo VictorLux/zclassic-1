@@ -16,15 +16,4 @@
 
 struct block_index;
 
-/* Minimal block info: hash, height, confirmations, time */
-void block_view_brief(struct json_value *out,
-                      const struct block_index *bi,
-                      int tip_height);
-
-/* Full block with header fields + tx list */
-void block_view_full(struct json_value *out,
-                     const struct block_index *bi,
-                     int tip_height,
-                     const char *datadir);
-
 #endif

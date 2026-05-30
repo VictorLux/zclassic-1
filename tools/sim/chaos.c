@@ -20,6 +20,7 @@
 #include "net/net_fault.h"
 #include "platform/time_compat.h"
 #include "sim/sim_peer.h"
+#include "util/parse_num.h"
 #include "util/safe_alloc.h"
 
 #define CHAOS_MAX_LINE 512
@@ -128,17 +129,6 @@ static int split_args(char *line, char **argv, int argv_cap)
         if (*p) *p++ = '\0';
     }
     return argc;
-}
-
-static bool parse_i64(const char *s, int64_t *out)
-{
-    if (!s || !*s || !out) return false;
-    errno = 0;
-    char *end = NULL;
-    long long v = strtoll(s, &end, 10);
-    if (errno != 0 || end == s || *end != '\0') return false;
-    *out = (int64_t)v;
-    return true;
 }
 
 static bool parse_u64_auto(const char *s, uint64_t *out)
@@ -467,7 +457,7 @@ static int handle_expect(struct chaos_ctx *ctx, int argc, char **argv,
         int64_t expected = 0;
         if (!metric_value(ctx, argv[1], &actual))
             return fail_line(line_no, "unknown expect metric");
-        if (!parse_i64(argv[3], &expected))
+        if (!zcl_parse_i64(argv[3], &expected))
             return fail_line(line_no, "expect value must be an integer");
         int cmp = compare_metric(actual, argv[2], expected);
         if (cmp == -2) return fail_line(line_no, "unknown expect operator");
@@ -581,7 +571,7 @@ static int handle_send_block(struct chaos_ctx *ctx, int argc, char **argv,
     if (!path || !*path)
         return fail_line(line_no, "send_block file is required");
     int64_t height = 0;
-    if (height_arg && (!parse_i64(height_arg, &height) || height <= 0))
+    if (height_arg && (!zcl_parse_i64(height_arg, &height) || height <= 0))
         return fail_line(line_no, "send_block height must be a positive integer");
 
     const struct sim_peer *peer = sim_peer_get(&ctx->peers, (unsigned)peer_id);
@@ -664,7 +654,7 @@ static int handle_at_event(struct chaos_ctx *ctx, int argc, char **argv,
     if (argc < 3)
         return fail_line(line_no, "at_event requires HEIGHT COMMAND [ARGS]");
     int64_t event_height = 0;
-    if (!parse_i64(argv[1], &event_height) || event_height < 0)
+    if (!zcl_parse_i64(argv[1], &event_height) || event_height < 0)
         return fail_line(line_no, "at_event height must be a non-negative integer");
 
     const struct chaos_command *cmd = find_command(argv[2]);

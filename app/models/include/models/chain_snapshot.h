@@ -64,8 +64,4 @@ bool chain_snapshot_validate(struct chain_snapshot *snap);
 /* Saves all three child models */
 bool chain_snapshot_save(struct chain_snapshot *snap);
 
-/* Summary string */
-void chain_snapshot_summary(const struct chain_snapshot *snap,
-                             char *out, size_t out_size);
-
 #endif

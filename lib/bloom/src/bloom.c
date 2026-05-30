@@ -122,18 +122,6 @@ bool bloom_filter_is_within_size_constraints(const struct bloom_filter *f)
     return f->data_size <= MAX_BLOOM_FILTER_SIZE && f->num_hash_funcs <= MAX_BLOOM_HASH_FUNCS;
 }
 
-void bloom_filter_update_empty_full(struct bloom_filter *f)
-{
-    bool full = true;
-    bool empty = true;
-    for (size_t i = 0; i < f->data_size; i++) {
-        full &= (f->data[i] == 0xff);
-        empty &= (f->data[i] == 0);
-    }
-    f->is_full = full;
-    f->is_empty = empty;
-}
-
 bool rolling_bloom_init(struct rolling_bloom_filter *f, unsigned int num_elements, double fp_rate)
 {
     unsigned int tweak = (unsigned int)GetRand(UINT32_MAX);

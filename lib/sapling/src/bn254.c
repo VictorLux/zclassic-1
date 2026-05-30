@@ -489,7 +489,6 @@ static void bn254_init_frobenius(void)
 
 void bn_fq6_zero(struct bn_fq6 *r) { bn_fq2_zero(&r->c0); bn_fq2_zero(&r->c1); bn_fq2_zero(&r->c2); }
 void bn_fq6_one(struct bn_fq6 *r) { bn_fq2_one(&r->c0); bn_fq2_zero(&r->c1); bn_fq2_zero(&r->c2); }
-bool bn_fq6_is_zero(const struct bn_fq6 *a) { return bn_fq2_is_zero(&a->c0) && bn_fq2_is_zero(&a->c1) && bn_fq2_is_zero(&a->c2); }
 
 void bn_fq6_add(struct bn_fq6 *r, const struct bn_fq6 *a, const struct bn_fq6 *b)
 {
@@ -602,35 +601,6 @@ void bn_fq6_inv(struct bn_fq6 *r, const struct bn_fq6 *a)
     bn_fq2_mul(&r->c0, &c0, &det);
     bn_fq2_mul(&r->c1, &c1, &det);
     bn_fq2_mul(&r->c2, &c2, &det);
-}
-
-void bn_fq6_mul_by_01(struct bn_fq6 *r, const struct bn_fq6 *a,
-                       const struct bn_fq2 *c0, const struct bn_fq2 *c1)
-{
-    struct bn_fq2 t0, t1, t;
-    bn_fq2_mul(&t0, &a->c0, c0);
-    bn_fq2_mul(&t1, &a->c1, c1);
-
-    /* r.c0 = t0 + xi * ((a1+a2)*c1 - t1) */
-    bn_fq2_add(&t, &a->c1, &a->c2);
-    bn_fq2_mul(&t, &t, c1);
-    bn_fq2_sub(&t, &t, &t1);
-    bn_fq2_mul_by_nonresidue(&t, &t);
-    bn_fq2_add(&r->c0, &t0, &t);
-
-    /* r.c1 = (a0+a1)*(c0+c1) - t0 - t1 */
-    struct bn_fq2 sum_a, sum_c;
-    bn_fq2_add(&sum_a, &a->c0, &a->c1);
-    bn_fq2_add(&sum_c, c0, c1);
-    bn_fq2_mul(&r->c1, &sum_a, &sum_c);
-    bn_fq2_sub(&r->c1, &r->c1, &t0);
-    bn_fq2_sub(&r->c1, &r->c1, &t1);
-
-    /* r.c2 = (a0+a2)*c0 - t0 + t1 */
-    bn_fq2_add(&sum_a, &a->c0, &a->c2);
-    bn_fq2_mul(&r->c2, &sum_a, c0);
-    bn_fq2_sub(&r->c2, &r->c2, &t0);
-    bn_fq2_add(&r->c2, &r->c2, &t1);
 }
 
 /* ══════════════════════════════════════════════════════════════

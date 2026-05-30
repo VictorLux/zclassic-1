@@ -92,17 +92,6 @@ unsigned int arith_uint256_bits(const struct arith_uint256 *a)
     return 0;
 }
 
-double arith_uint256_getdouble(const struct arith_uint256 *a)
-{
-    double ret = 0.0;
-    double fact = 1.0;
-    for (int i = 0; i < ARITH_UINT256_WIDTH; i++) {
-        ret += fact * a->pn[i];
-        fact *= 4294967296.0;
-    }
-    return ret;
-}
-
 void arith_uint256_set_compact(struct arith_uint256 *a, uint32_t compact,
                                 bool *negative, bool *overflow)
 {

@@ -65,7 +65,6 @@ struct bn_fq6 {
 
 void bn_fq6_zero(struct bn_fq6 *r);
 void bn_fq6_one(struct bn_fq6 *r);
-bool bn_fq6_is_zero(const struct bn_fq6 *a);
 void bn_fq6_add(struct bn_fq6 *r, const struct bn_fq6 *a, const struct bn_fq6 *b);
 void bn_fq6_sub(struct bn_fq6 *r, const struct bn_fq6 *a, const struct bn_fq6 *b);
 void bn_fq6_neg(struct bn_fq6 *r, const struct bn_fq6 *a);
@@ -73,8 +72,6 @@ void bn_fq6_mul(struct bn_fq6 *r, const struct bn_fq6 *a, const struct bn_fq6 *b
 void bn_fq6_sq(struct bn_fq6 *r, const struct bn_fq6 *a);
 void bn_fq6_inv(struct bn_fq6 *r, const struct bn_fq6 *a);
 void bn_fq6_mul_by_nonresidue(struct bn_fq6 *r, const struct bn_fq6 *a);
-void bn_fq6_mul_by_01(struct bn_fq6 *r, const struct bn_fq6 *a,
-                       const struct bn_fq2 *c0, const struct bn_fq2 *c1);
 
 /* Fq12 = Fq6[w] / (w^2 - v) */
 struct bn_fq12 {

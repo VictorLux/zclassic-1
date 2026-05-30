@@ -41,7 +41,6 @@ bool bloom_filter_contains_uint256(const struct bloom_filter *f, const struct ui
 void bloom_filter_clear(struct bloom_filter *f);
 void bloom_filter_reset(struct bloom_filter *f, unsigned int new_tweak);
 bool bloom_filter_is_within_size_constraints(const struct bloom_filter *f);
-void bloom_filter_update_empty_full(struct bloom_filter *f);
 
 struct rolling_bloom_filter {
     struct bloom_filter b1;

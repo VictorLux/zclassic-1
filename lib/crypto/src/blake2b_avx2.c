@@ -40,12 +40,6 @@ static void detect_features(void)
 #endif
 }
 
-bool blake2b_avx2_available(void)
-{
-    detect_features();
-    return g_has_avx2;
-}
-
 /* ── Constants ───────────────────────────────────────────────── */
 
 static const uint64_t IV[8] = {

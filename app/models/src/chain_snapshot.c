@@ -100,19 +100,3 @@ bool chain_snapshot_save(struct chain_snapshot *snap)
            snap->copy_chainstate_ok ? "ok" : "FAIL");
     return snap->copy_blocks_ok && snap->copy_chainstate_ok;
 }
-
-void chain_snapshot_summary(const struct chain_snapshot *snap,
-                             char *out, size_t out_size)
-{
-    snprintf(out, out_size,
-             "src=%s valid=%s blocks=%d(%.1fGB) chainstate=%.0fMB "
-             "copy: blocks=%s index=%s chainstate=%s",
-             snap->src_dir,
-             snap->src_valid ? "yes" : "no",
-             snap->src_block_files,
-             (double)snap->src_blocks_bytes / (1024.0 * 1024.0 * 1024.0),
-             (double)snap->src_chainstate_bytes / (1024.0 * 1024.0),
-             snap->copy_blocks_ok ? "ok" : "fail",
-             snap->copy_index_ok ? "ok" : "fail",
-             snap->copy_chainstate_ok ? "ok" : "fail");
-}

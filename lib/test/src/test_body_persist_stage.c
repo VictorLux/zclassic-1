@@ -110,23 +110,6 @@ static void synth_chain_bp_free(struct synth_chain_bp *sc)
     memset(sc, 0, sizeof(*sc));
 }
 
-static bool block_copy_for_test(struct block *dst, const struct block *src)
-{
-    block_init(dst);
-    dst->header = src->header;
-    dst->num_vtx = src->num_vtx;
-    if (src->num_vtx == 0) return true;
-    dst->vtx = zcl_calloc(src->num_vtx, sizeof(struct transaction),
-                          "bp_tx_copy");
-    if (!dst->vtx) return false;
-    for (size_t i = 0; i < src->num_vtx; i++) {
-        transaction_init(&dst->vtx[i]);
-        if (!transaction_copy(&dst->vtx[i], &src->vtx[i]))
-            return false;
-    }
-    return true;
-}
-
 static bool fake_reader(struct block *out, const struct block_index *bi,
                         const char *datadir, void *user)
 {
@@ -136,7 +119,7 @@ static bool fake_reader(struct block *out, const struct block_index *bi,
         return false;
     if (bi->nHeight == sc->fail_read_height)
         return false;
-    if (!block_copy_for_test(out, &sc->bodies[bi->nHeight]))
+    if (!test_block_copy(out, &sc->bodies[bi->nHeight], "bp_tx_copy"))
         return false;
     if (bi->nHeight == sc->header_mismatch_height)
         out->header.nTime++;

@@ -93,12 +93,3 @@ bool block_data_save(struct block_data *bd)
 
     return bd->copy_blk_ok;
 }
-
-void block_data_summary(const struct block_data *bd, char *out, size_t len)
-{
-    snprintf(out, len, "blk=%d(%.1fGB) rev=%d copy=%s",
-             bd->num_blk_files,
-             (double)bd->blk_bytes / (1024.0 * 1024.0 * 1024.0),
-             bd->num_rev_files,
-             bd->copy_blk_ok ? "ok" : "fail");
-}

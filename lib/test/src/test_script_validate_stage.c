@@ -144,23 +144,6 @@ static void synth_chain_sv_free(struct synth_chain_sv *sc)
     memset(sc, 0, sizeof(*sc));
 }
 
-static bool block_copy_for_test(struct block *dst, const struct block *src)
-{
-    block_init(dst);
-    dst->header = src->header;
-    dst->num_vtx = src->num_vtx;
-    if (src->num_vtx == 0) return true;
-    dst->vtx = zcl_calloc(src->num_vtx, sizeof(struct transaction),
-                          "sv_tx_copy");
-    if (!dst->vtx) return false;
-    for (size_t i = 0; i < src->num_vtx; i++) {
-        transaction_init(&dst->vtx[i]);
-        if (!transaction_copy(&dst->vtx[i], &src->vtx[i]))
-            return false;
-    }
-    return true;
-}
-
 static bool fake_reader(struct block *out, const struct block_index *bi,
                         const char *datadir, void *user)
 {
@@ -168,7 +151,7 @@ static bool fake_reader(struct block *out, const struct block_index *bi,
     struct synth_chain_sv *sc = user;
     if (!out || !bi || !sc || bi->nHeight < 0 || bi->nHeight >= sc->n)
         return false;
-    return block_copy_for_test(out, &sc->bodies[bi->nHeight]);
+    return test_block_copy(out, &sc->bodies[bi->nHeight], "sv_tx_copy");
 }
 
 static bool fake_prevout(const struct outpoint *prevout, struct tx_out *out,

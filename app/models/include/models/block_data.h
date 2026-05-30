@@ -39,7 +39,4 @@ bool block_data_validate(struct block_data *bd, struct ar_errors *errors);
 /* save: cp -au blk*.dat and rev*.dat (append-only, update-only) */
 bool block_data_save(struct block_data *bd);
 
-/* Summary string */
-void block_data_summary(const struct block_data *bd, char *out, size_t len);
-
 #endif

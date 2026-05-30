@@ -27,12 +27,12 @@
  *
  *     DB_TXN_SCOPE(txn, ndb, "snapshot.prepare_receive");
  *     if (!txn) return false;
- *     if (!prepare_utxo_tables(ndb))   return false;   // auto-rollback
- *     if (!import_initial_headers(ndb))return false;   // auto-rollback
- *     if (!db_txn_commit(txn))         return false;
+ *     if (!first_destructive_step(ndb))  return false;  // auto-rollback
+ *     if (!second_destructive_step(ndb)) return false;  // auto-rollback
+ *     if (!db_txn_commit(txn))           return false;
  *     return true;
  *
- * If the function returns early because `prepare_utxo_tables` fails,
+ * If the function returns early because a destructive step fails,
  * the DB_TXN_SCOPE cleanup fires, db_txn_rollback runs, and
  * EV_DB_TXN_LEAKED is emitted with the label so an operator can trace
  * which destructive step left a mess.

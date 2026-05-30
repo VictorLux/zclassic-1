@@ -20,7 +20,7 @@
 // one-result-type-ok:single-policy-decision-enum — E2 (one way out):
 // every public fallible entry point returns one domain type,
 // enum policy_decision (allow / refuse_* / prompt_operator). The bare
-// bool helpers (parse_int64, parse_bool, write_prompt_ack_file) are
+// bool helpers (zcl_parse_i64, parse_bool, write_prompt_ack_file) are
 // private input-validation predicates, not a service surface, and the
 // void setters cannot fail. Each decision is logged via EV_RECOVERY_POLICY_*
 // events, so the refusal reason always travels with the decision.
@@ -36,6 +36,7 @@
 #include <strings.h>  /* strcasecmp */
 
 #include "util/log_macros.h"
+#include "util/parse_num.h"
 
 /* ── Decision names ─────────────────────────────────────────────── */
 const char *policy_decision_name(enum policy_decision d)
@@ -53,17 +54,6 @@ const char *policy_decision_name(enum policy_decision d)
 }
 
 /* ── Env helpers ────────────────────────────────────────────────── */
-
-static bool parse_int64(const char *s, int64_t *out)
-{
-    if (!s || !*s || !out) return false;
-    char *end = NULL;
-    errno = 0;
-    long long v = strtoll(s, &end, 10);
-    if (errno != 0 || end == s || (end && *end != '\0')) return false;
-    *out = (int64_t)v;
-    return true;
-}
 
 static bool parse_bool(const char *s, bool *out)
 {
@@ -104,11 +94,11 @@ void policy_load_from_env(struct recovery_policy *p)
     bool    vb;
     const char *s;
 
-    if ((s = getenv("ZCL_MAX_UTXO_WIPE_ROWS")) && parse_int64(s, &v64))
+    if ((s = getenv("ZCL_MAX_UTXO_WIPE_ROWS")) && zcl_parse_i64(s, &v64))
         p->max_utxo_wipe_rows = v64;
-    if ((s = getenv("ZCL_MAX_BLOCK_ROLLBACK")) && parse_int64(s, &v64))
+    if ((s = getenv("ZCL_MAX_BLOCK_ROLLBACK")) && zcl_parse_i64(s, &v64))
         p->max_block_rollback = v64;
-    if ((s = getenv("ZCL_MAX_HEADER_REWIND")) && parse_int64(s, &v64))
+    if ((s = getenv("ZCL_MAX_HEADER_REWIND")) && zcl_parse_i64(s, &v64))
         p->max_header_rewind = v64;
     if ((s = getenv("ZCL_REQUIRE_BACKUP_VERIFIED")) && parse_bool(s, &vb))
         p->require_backup_verified = vb;
