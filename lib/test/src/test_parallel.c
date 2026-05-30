@@ -117,6 +117,7 @@ volatile sig_atomic_t g_shutdown_requested = 0;
     X(block_index_projection) X(projection_replay_invariant) \
     X(header_admit_stage) X(header_probe_poll) \
     X(validate_headers_stage) X(body_fetch_stage) \
+    X(conservation_diff_job) \
     X(body_persist_stage) X(script_validate_stage) X(proof_validate_stage) \
     X(utxo_apply_stage) X(tip_finalize_stage) X(reducer_stage_fuzz) \
     X(domain_consensus_verify) X(domain_consensus_subsidy) \

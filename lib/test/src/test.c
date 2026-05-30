@@ -813,6 +813,7 @@ int main(void)
     failures += test_header_probe_poll();
     failures += test_validate_headers_stage();
     failures += test_body_fetch_stage();
+    failures += test_conservation_diff_job();
     failures += test_body_persist_stage();
     failures += test_script_validate_stage();
     failures += test_proof_validate_stage();

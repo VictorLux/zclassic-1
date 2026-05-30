@@ -48,6 +48,7 @@
 #include "jobs/proof_validate_stage.h"
 #include "jobs/utxo_apply_stage.h"
 #include "jobs/tip_finalize_stage.h"
+#include "jobs/conservation_diff_job.h"
 #include "services/chain_tip_watchdog.h"
 #include "framework/condition.h"
 #include "storage/block_index_projection.h"
@@ -443,6 +444,9 @@ static const struct dump_entry g_dumpers[] = {
                      "Wave S utxo_apply shadow stage: cursor, UTXO delta counters, log rows" },
     { "tip_finalize", tip_finalize_dump_state_json,
                      "Wave S tip_finalize shadow stage: cursor, finalize counters, log rows" },
+    { "conservation_diff", conservation_diff_job_dump_state_json,
+                     "cutover Item 3 conservation diff Job: cursor, diffed_total, "
+                     "last_advance/blocked height (drives the fed==diffed law)" },
     { "quorum_oracle", quorum_oracle_dump_state_json,
                      "multi-source quorum oracle: per-source vote stats + last verdict" },
     { "peer_lifecycle", peer_lifecycle_dump_state_json,

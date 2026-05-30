@@ -22,6 +22,7 @@
 #include "jobs/proof_validate_stage.h"
 #include "jobs/utxo_apply_stage.h"
 #include "jobs/tip_finalize_stage.h"
+#include "jobs/conservation_diff_job.h"
 #include "services/chain_tip_watchdog.h"
 #include "conditions/condition_registry.h"
 #include "supervisors/domains.h"
@@ -2994,7 +2995,7 @@ bool app_init_services(struct app_context *ctx,
      * surface instead of dead-ending. Was never called in production. */
     alerts_init();
     self_heal_register(svc->state);
-    staged_sync_supervisor_register(svc->state);
+    staged_sync_supervisor_register(svc->state, svc->datadir);
 
     if (!boot_register_runtime_services(svc) ||
         !zcl_service_kernel_start_all(&svc->runtime_kernel)) {
@@ -3158,6 +3159,12 @@ static void shutdown_release_owned_resources(struct boot_svc_ctx *svc)
     tx_mempool_free(svc->mempool);
     main_state_free(svc->state);
     sapling_free_params();
+
+    /* Cutover Item 3: the conservation diff Job is a leaf consumer (reads
+     * the shadow log + zclassicd RPC, writes only its own cursor in
+     * progress.kv). Tear it down first so it stops issuing RPCs and
+     * closes its read ports before progress.kv closes below. */
+    conservation_diff_job_shutdown();
 
     /* Wave S shutdown order: bottom-up through the saga so each stage's
      * upstream is still alive while it drains in-flight work. S-9
