@@ -34,6 +34,18 @@ static void sleep_ms(int ms)
     nanosleep(&ts, NULL);
 }
 
+/* Monotonic elapsed microseconds since an arbitrary fixed point. Used
+ * by the periodic-tick test to bound observation against REAL elapsed
+ * time rather than a single fixed sleep whose duration is at the mercy
+ * of scheduler jitter (CLOCK_MONOTONIC is unaffected by wall-clock
+ * adjustments). */
+static int64_t monotonic_us(void)
+{
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (int64_t)ts.tv_sec * 1000000 + ts.tv_nsec / 1000;
+}
+
 static int test_heartbeat_register_and_snapshot(void)
 {
     int failures = 0;
@@ -193,13 +205,34 @@ static int test_heartbeat_periodic_tick(void)
         ASSERT(health_start());
 
         /* period = 1s. Over 3.3s we expect ~3 fires. The test gives a
-         * generous tolerance (2..5) because sweeper jitter is real. */
+         * generous tolerance (2..5) because sweeper jitter is real.
+         *
+         * Rather than trust a single fixed sleep_ms(3300) (whose actual
+         * duration drifts under scheduler load — wall-clock-sensitive),
+         * poll a monotonic clock in ~100ms steps and capture the live
+         * callback count at each checkpoint until REAL elapsed time has
+         * crossed 3300ms. The fire count we judge is the one observed at
+         * the confirmed 3300ms boundary, so the 2..5 band is measured
+         * against genuine elapsed time, not a possibly-short/long sleep.
+         * Detection power is intact: a missed-fire bug still yields <2,
+         * a duplicate/runaway-fire bug still yields >5, deterministically. */
         health_subsystem_id id = health_register_periodic("test.tick", 1,
                                                            stall_cb, NULL);
         ASSERT(id >= 0);
-        sleep_ms(3300);
 
+        const int64_t start_us  = monotonic_us();
+        const int64_t window_us = 3300 * 1000;  /* observe over 3.3s real time */
         int n = atomic_load(&g_stall_count);
+        for (;;) {
+            int64_t elapsed_us = monotonic_us() - start_us;
+            /* Record the count observed at this checkpoint. The final
+             * recorded value is the one at/after the 3300ms boundary. */
+            n = atomic_load(&g_stall_count);
+            if (elapsed_us >= window_us)
+                break;
+            sleep_ms(100);
+        }
+
         if (n < 2 || n > 5) {
             printf("FAIL (expected 2..5 periodic fires, got %d)\n", n);
             failures++; goto _cleanup;

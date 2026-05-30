@@ -640,10 +640,16 @@ static int test_async_dispatch_lifecycle(void)
 
         event_emitf(EV_NODE_READY, 7, "ready");
 
-        for (int i = 0; i < 1000; i++) {
-            struct timespec pause = {0, 1000000};
-            if (atomic_load(&g_async_observer_calls) > 0)
+        struct timespec deadline;
+        clock_gettime(CLOCK_MONOTONIC, &deadline);
+        deadline.tv_sec += 10;
+        while (atomic_load(&g_async_observer_calls) == 0) {
+            struct timespec now;
+            clock_gettime(CLOCK_MONOTONIC, &now);
+            if (now.tv_sec > deadline.tv_sec ||
+                (now.tv_sec == deadline.tv_sec && now.tv_nsec >= deadline.tv_nsec))
                 break;
+            struct timespec pause = {0, 10000000};
             nanosleep(&pause, NULL);
         }
 

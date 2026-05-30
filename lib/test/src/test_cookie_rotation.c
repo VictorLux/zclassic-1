@@ -19,6 +19,7 @@
 #include <string.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
+#include <time.h>
 #include <unistd.h>
 
 /* ── helpers ─────────────────────────────────────────────────── */
@@ -116,6 +117,40 @@ static int rpc_with_auth(uint16_t port, const char *user, const char *pass)
     return status;
 }
 
+/* Poll until the RPC listener is accepting and dispatching, replacing a
+ * fixed sleep that raced against thread-scheduler startup. We probe with a
+ * deliberately-wrong password so readiness never depends on cookie state;
+ * ANY real HTTP status (200 or 401) proves the server is up and routing,
+ * while a not-yet-listening server returns -1 (connect/read error). This
+ * only establishes liveness — each test still makes its own auth assertion
+ * afterward, so a genuinely broken auth path still fails deterministically.
+ * Monotonic 5 s deadline; 10 ms initial retry, doubling up to 100 ms. */
+static void wait_rpc_ready(uint16_t port)
+{
+    struct timespec start;
+    clock_gettime(CLOCK_MONOTONIC, &start);
+    long backoff_us = 10000;          /* 10 ms */
+    const long max_backoff_us = 100000; /* 100 ms */
+    const double timeout_s = 5.0;
+
+    for (;;) {
+        if (rpc_with_auth(port, "__cookie__", "__readiness_probe__") >= 0)
+            return; /* server accepted a connection and returned a status */
+
+        struct timespec now;
+        clock_gettime(CLOCK_MONOTONIC, &now);
+        double elapsed = (double)(now.tv_sec - start.tv_sec)
+                       + (double)(now.tv_nsec - start.tv_nsec) / 1e9;
+        if (elapsed >= timeout_s)
+            return; /* give up polling; the test's own assertion still runs */
+
+        usleep((useconds_t)backoff_us);
+        backoff_us *= 2;
+        if (backoff_us > max_backoff_us)
+            backoff_us = max_backoff_us;
+    }
+}
+
 /* ── tests ───────────────────────────────────────────────────── */
 
 int test_cookie_rotation(void)
@@ -181,8 +216,8 @@ int test_cookie_rotation(void)
         char pass[128] = {0};
         ok = ok && read_cookie_password(tmpdir, pass, sizeof(pass));
 
-        /* Give server threads a moment to start */
-        usleep(50000);
+        /* Wait for the server to start accepting connections */
+        wait_rpc_ready(port);
 
         int status = rpc_with_auth(port, "__cookie__", pass);
         ok = ok && (status == 200);
@@ -206,7 +241,7 @@ int test_cookie_rotation(void)
         char pass_v2[128] = {0};
         ok = ok && read_cookie_password(tmpdir, pass_v2, sizeof(pass_v2));
 
-        usleep(50000);
+        wait_rpc_ready(port);
 
         /* Both v1 (previous) and v2 (current) should authenticate */
         int s2 = rpc_with_auth(port, "__cookie__", pass_v2);
@@ -235,7 +270,7 @@ int test_cookie_rotation(void)
         char pass_v3[128] = {0};
         ok = ok && read_cookie_password(tmpdir, pass_v3, sizeof(pass_v3));
 
-        usleep(50000);
+        wait_rpc_ready(port);
 
         /* v3 current, v2 previous — both work */
         int s3 = rpc_with_auth(port, "__cookie__", pass_v3);
@@ -257,7 +292,7 @@ int test_cookie_rotation(void)
         if (ok)
             ok = rpc_http_start(&empty_table, port, NULL, NULL, tmpdir);
 
-        usleep(50000);
+        wait_rpc_ready(port);
         int s = rpc_with_auth(port, "__cookie__", "totallyWrongPassword123");
         ok = ok && (s == 401);
 
@@ -272,7 +307,7 @@ int test_cookie_rotation(void)
         if (ok)
             ok = rpc_http_start(&empty_table, port, "testuser", "testpass", NULL);
 
-        usleep(50000);
+        wait_rpc_ready(port);
         ok = ok && (rpc_with_auth(port, "testuser", "testpass") == 200);
 
         /* rotate is a no-op in explicit auth mode */

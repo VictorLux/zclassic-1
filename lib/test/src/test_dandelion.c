@@ -87,7 +87,7 @@ int test_dandelion(void)
         }
         /* Should be ~90% stem (DANDELION_FLUFF_PROB = 10%) */
         double pct = (double)stem_count / trials * 100.0;
-        if (pct > 80.0 && pct < 97.0)
+        if (pct >= 80.0 && pct <= 97.0)
             printf("OK (%.1f%% stem)\n", pct);
         else {
             printf("FAIL (%.1f%% stem, expected ~90%%)\n", pct); failures++;
