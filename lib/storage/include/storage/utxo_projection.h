@@ -68,6 +68,21 @@ void utxo_projection_close(utxo_projection_t *p);
  * last_consumed_offset on success, or `UINT64_MAX` on error. */
 uint64_t utxo_projection_catch_up(utxo_projection_t *p);
 
+/* One-time anchor-seed: bulk-copy the full legacy coins.db `utxos` table
+ * into the projection so SHA3(projection)==SHA3(coins.db) and counts match
+ * (the utxo_commitment cutover preflight gate). The live projection only
+ * holds the tail deltas emitted since shadow boot (e.g. 154 of 1.34M); it
+ * was never seeded with the historical set that predates shadow emission.
+ * Clears any existing rows, then copies the full authoritative set in one
+ * IMMEDIATE txn, and stamps the cursor to the current event-log head so a
+ * later catch_up does NOT re-fold the tail deltas already captured by the
+ * snapshot — ongoing catch_up then keeps the projection tracking coins.db.
+ * Idempotent/one-time: refuses (returns -1) if already anchor-seeded.
+ * Returns the number of UTXOs seeded, or -1 on error/refusal. */
+struct sqlite3;
+int64_t utxo_projection_seed_from_legacy(utxo_projection_t *p,
+                                         struct sqlite3 *legacy_db);
+
 /* Lookup a UTXO by (txid, vout). Returns true if present; fills
  * value/script if the corresponding out-pointer is non-NULL. If the
  * caller's `script_cap` is smaller than the stored script length, the

@@ -398,6 +398,106 @@ uint64_t utxo_projection_catch_up(utxo_projection_t *p)
     return p->last_consumed_offset;
 }
 
+/* ── One-time anchor-seed (cutover utxo_commitment gate) ───────────── */
+
+int64_t utxo_projection_seed_from_legacy(utxo_projection_t *p,
+                                         sqlite3 *legacy_db)
+{
+    if (!p || !p->db || !legacy_db) {
+        fprintf(stderr,  // obs-ok:utxo-projection-seed
+                "[utxo_projection] anchor-seed: null arg\n");
+        return -1;
+    }
+    if (meta_get_u64(p->db, "anchor_seeded") != 0) {
+        fprintf(stderr,  // obs-ok:utxo-projection-seed
+                "[utxo_projection] anchor-seed refused: already seeded\n");
+        return -1;
+    }
+
+    /* Capture the log head BEFORE the copy so any block that connects
+     * during the scan has its events re-applied by a later catch_up
+     * (idempotently) rather than skipped. */
+    uint64_t log_head = p->log ? event_log_size(p->log) : 0;
+
+    if (!exec_sql(p->db, "BEGIN IMMEDIATE", "seed begin"))
+        return -1;
+
+    /* Clear any tail-delta rows so the seed is a clean snapshot of
+     * coins.db (byte-for-byte SHA3), not a merge that could strand a
+     * since-spent tail UTXO. */
+    if (!exec_sql(p->db, "DELETE FROM utxo", "seed clear")) {
+        exec_sql(p->db, "ROLLBACK", "seed rollback");
+        return -1;
+    }
+
+    sqlite3_stmt *rd = NULL;
+    if (sqlite3_prepare_v2(legacy_db,
+            "SELECT txid,vout,value,script,height,is_coinbase "
+            "FROM utxos ORDER BY txid,vout",
+            -1, &rd, NULL) != SQLITE_OK) {
+        fprintf(stderr,  // obs-ok:utxo-projection-seed
+                "[utxo_projection] seed read prepare failed: %s\n",
+                sqlite3_errmsg(legacy_db));
+        exec_sql(p->db, "ROLLBACK", "seed rollback");
+        return -1;
+    }
+    sqlite3_stmt *ins = NULL;
+    if (sqlite3_prepare_v2(p->db,
+            "INSERT OR REPLACE INTO utxo"
+            "(txid,vout,value,height,is_coinbase,script) VALUES(?,?,?,?,?,?)",
+            -1, &ins, NULL) != SQLITE_OK) {
+        sqlite3_finalize(rd);
+        exec_sql(p->db, "ROLLBACK", "seed rollback");
+        return -1;
+    }
+
+    int64_t rows = 0;
+    bool ok = true;
+    int rrc;
+    while ((rrc = sqlite3_step(rd)) == SQLITE_ROW) {  // raw-sql-ok:projection-primitive
+        const uint8_t *txid = (const uint8_t *)sqlite3_column_blob(rd, 0);
+        int txid_len = sqlite3_column_bytes(rd, 0);
+        if (!txid || txid_len < 32) continue;  /* skip malformed */
+        uint32_t vout   = (uint32_t)sqlite3_column_int(rd, 1);
+        int64_t  value  = sqlite3_column_int64(rd, 2);
+        const uint8_t *script = (const uint8_t *)sqlite3_column_blob(rd, 3);
+        int script_len  = sqlite3_column_bytes(rd, 3);
+        int32_t  height = sqlite3_column_int(rd, 4);
+        int      is_cb  = sqlite3_column_int(rd, 5);
+
+        sqlite3_bind_blob (ins, 1, txid, 32, SQLITE_TRANSIENT);
+        sqlite3_bind_int  (ins, 2, (int)vout);
+        sqlite3_bind_int64(ins, 3, (sqlite3_int64)value);
+        sqlite3_bind_int64(ins, 4, (sqlite3_int64)height);
+        sqlite3_bind_int  (ins, 5, is_cb ? 1 : 0);
+        if (script && script_len > 0)
+            sqlite3_bind_blob(ins, 6, script, script_len, SQLITE_TRANSIENT);
+        else
+            sqlite3_bind_blob(ins, 6, "", 0, SQLITE_STATIC);
+
+        int irc = sqlite3_step(ins);  // raw-sql-ok:projection-primitive
+        sqlite3_reset(ins);
+        sqlite3_clear_bindings(ins);
+        if (irc != SQLITE_DONE) { ok = false; break; }
+        rows++;
+    }
+    if (ok && rrc != SQLITE_DONE) ok = false;  /* read cursor error */
+    sqlite3_finalize(rd);
+    sqlite3_finalize(ins);
+
+    if (ok)
+        ok = meta_set_u64(p->db, "last_consumed_offset", log_head) &&
+             meta_set_u64(p->db, "anchor_seeded", 1);
+
+    if (!exec_sql(p->db, ok ? "COMMIT" : "ROLLBACK",
+                  ok ? "seed commit" : "seed rollback") || !ok) {
+        p->last_consumed_offset = meta_get_u64(p->db, "last_consumed_offset");
+        return -1;
+    }
+    p->last_consumed_offset = log_head;
+    return rows;
+}
+
 /* ── Reads ─────────────────────────────────────────────────────────── */
 
 bool utxo_projection_get(utxo_projection_t *p,

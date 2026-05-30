@@ -219,6 +219,46 @@ int test_cutover_preflight(void)
             PF_CHECK("PARITY: gate go/no-go == GO", ok);
         }
 
+        /* (1b) SEED — anchor-seed a FRESH empty projection directly from
+         * the legacy `utxos` table (no event log involved) and assert
+         * byte-exact parity + the one-time guard. This is the live
+         * utxo_commitment fix: the projection holds only tail deltas
+         * (154 of 1.34M live); seeding copies the full set from coins.db. */
+        {
+            char seed_log_path[400], seed_proj_path[400];
+            snprintf(seed_log_path,  sizeof(seed_log_path),
+                     "%s/seed_events.log", dir);
+            snprintf(seed_proj_path, sizeof(seed_proj_path),
+                     "%s/seed_proj.db", dir);
+            event_log_t *seed_log = event_log_open(seed_log_path);
+            utxo_projection_t *seed_proj =
+                utxo_projection_open(seed_proj_path, seed_log);
+            PF_CHECK("SEED: open fresh projection", seed_log && seed_proj);
+            if (seed_log && seed_proj) {
+                PF_CHECK("SEED: fresh projection starts empty",
+                         utxo_projection_count(seed_proj) == 0);
+                int64_t seeded =
+                    utxo_projection_seed_from_legacy(seed_proj, legacy);
+                PF_CHECK("SEED: seeded row count == fixture size",
+                         seeded == (int64_t)NU);
+                bool cm = false, nm = false;
+                bool ok = pf_gate_ok(legacy, seed_proj, &cm, &nm);
+                PF_CHECK("SEED: seeded SHA3 == legacy SHA3", cm);
+                PF_CHECK("SEED: seeded count == legacy count", nm);
+                PF_CHECK("SEED: gate go/no-go == GO after seed", ok);
+                /* one-time guard: a second seed must REFUSE. */
+                int64_t again =
+                    utxo_projection_seed_from_legacy(seed_proj, legacy);
+                PF_CHECK("SEED: second seed refuses (one-time guard)",
+                         again < 0);
+                bool cm2 = false;
+                (void)pf_gate_ok(legacy, seed_proj, &cm2, NULL);
+                PF_CHECK("SEED: parity intact after refused re-seed", cm2);
+            }
+            if (seed_proj) utxo_projection_close(seed_proj);
+            if (seed_log) event_log_close(seed_log);
+        }
+
         /* (2) TEETH — perturb ONE coin's value on the legacy side; the
          * commitment MUST diverge (proves the gate is not vacuous). */
         {
