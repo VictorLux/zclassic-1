@@ -65,13 +65,13 @@ WEBKIT_CFLAGS := $(shell pkg-config --cflags webkit2gtk-4.1 2>/dev/null)
 WEBKIT_LIBS   := $(shell pkg-config --libs webkit2gtk-4.1 2>/dev/null)
 WEBKIT_DEF    := $(if $(WEBKIT_CFLAGS),-DHAVE_WEBKIT,)
 
-CFLAGS = -std=c23 -O3 -march=native -flto -Wall -Wextra -Werror -pedantic \
+CFLAGS = -std=c23 -O3 -march=native -flto=auto -Wall -Wextra -Werror -pedantic \
 	-Wno-stringop-overflow -Wno-unused-result \
 	$(APP_INCLUDES) $(CONFIG_INCLUDES) $(LIB_INCLUDES) $(PORTS_INCLUDES) $(DOMAIN_INCLUDES) $(APPLICATION_INCLUDES) $(ADAPTERS_INCLUDES) $(MUTATOR_INCLUDES) $(MCP_INCLUDES) \
 	-Ilib/test/include \
 	-D_POSIX_C_SOURCE=200809L -DZCL_AR_ENFORCE -DZCL_BUILD_COMMIT=\"$(BUILD_COMMIT)\" -Ivendor/include $(GTK_DEF) $(GTK_CFLAGS) \
 	$(WEBKIT_DEF) $(WEBKIT_CFLAGS)
-LDFLAGS = -pthread -flto -rdynamic
+LDFLAGS = -pthread -flto=auto -rdynamic
 # Use vendor/tor/libtor.a when Tor is built from source.
 # Tor: use full Tor if built, otherwise fall back to stub.
 TOR_FULL = $(wildcard vendor/tor/libtor.a \
