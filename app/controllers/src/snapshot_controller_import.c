@@ -22,6 +22,7 @@
 #include "storage/dbwrapper.h"
 #include "storage/block_index_db.h"
 #include "storage/coins_db.h"
+#include "chain/chain.h"   /* BLOCK_HAVE_DATA / BLOCK_HAVE_UNDO */
 #include "models/block.h"
 #include "models/utxo.h"
 #include "wallet/wallet.h"
@@ -42,6 +43,7 @@
 struct block_index_import_args {
     const char *snapshot_dir;
     const char *db_path;
+    bool header_only;   /* strip HAVE_DATA + file positions (lazy bodies) */
     int result;
     int count;
 };
@@ -168,11 +170,27 @@ static void *import_block_index_thread(void *arg)
         memcpy(db_blk.nonce, dbi.nNonce.data, 32);
         db_blk.solution = dbi.nSolution;
         db_blk.solution_len = dbi.nSolutionSize;
-        db_blk.status = (int)dbi.nStatus;
-        db_blk.file_num = dbi.nFile;
-        db_blk.data_pos = (int)dbi.nDataPos;
-        db_blk.undo_pos = (int)dbi.nUndoPos;
         db_blk.num_tx = (int)dbi.nTx;
+        if (a->header_only) {
+            /* We have the header (incl. nSolution, so validate_headers
+             * passes) but NOT the source's block files — strip the
+             * body-location metadata so the node fetches bodies lazily
+             * via P2P instead of trying to read files it doesn't have.
+             * This is the fast-sync model for seeding the header chain
+             * from a running zclassicd. */
+            db_blk.status = (int)dbi.nStatus & ~(BLOCK_HAVE_DATA | BLOCK_HAVE_UNDO);
+            /* Positions stay 0 (the model requires non-negative); they are
+             * never read because HAVE_DATA/HAVE_UNDO are cleared — the node
+             * gates all block-file reads on those status bits. */
+            db_blk.file_num = 0;
+            db_blk.data_pos = 0;
+            db_blk.undo_pos = 0;
+        } else {
+            db_blk.status = (int)dbi.nStatus;
+            db_blk.file_num = dbi.nFile;
+            db_blk.data_pos = (int)dbi.nDataPos;
+            db_blk.undo_pos = (int)dbi.nUndoPos;
+        }
 
         if (!db_block_save(&ndb, &db_blk)) {
             LOG_WARN("snapshot", "T1: block save failed at height %d", db_blk.height);
@@ -247,6 +265,27 @@ static void *import_block_index_thread(void *arg)
 
     a->result = 0;
     return NULL;
+}
+
+/* Synchronous block-index import — runs the same code path as the snapshot
+ * import thread (above), reused for the standalone --importblockindex CLI.
+ * snapshot_dir is the PARENT of blocks/index (e.g. ~/.zclassic for a running
+ * zclassicd). header_only=true seeds the header chain only (lazy bodies).
+ * Returns true on success; *out_count gets the number of headers imported. */
+bool snapshot_import_block_index(const char *snapshot_dir, const char *db_path,
+                                 bool header_only, int *out_count)
+{
+    struct block_index_import_args a = {
+        .snapshot_dir = snapshot_dir,
+        .db_path = db_path,
+        .header_only = header_only,
+        .result = -1,
+        .count = 0,
+    };
+    import_block_index_thread(&a);
+    if (out_count)
+        *out_count = a.count;
+    return a.result == 0;
 }
 
 /* ---- Thread 2: Chainstate LevelDB → SQLite utxos table ---- */

@@ -14,6 +14,7 @@
 #include "views/wallet_gui.h"
 #include "models/database.h"
 #include "controllers/sync_controller.h"
+#include "controllers/snapshot_controller.h"
 #include "storage/coins_db.h"
 #include "storage/chainstate_legacy_reader.h"
 #include "storage/ldb_snapshot.h"
@@ -1378,6 +1379,179 @@ int main(int argc, char **argv)
         }
 
         node_db_close(&ndb);
+        return 0;
+    }
+
+    /* Direct block-index (header chain) import — seeds the SQLite blocks
+     * table from a LevelDB block index, header-only (clears HAVE_DATA + file
+     * positions so bodies fetch lazily). Pair with --importchainstate (or the
+     * boot UTXO auto-import) so an imported UTXO anchor immediately becomes the
+     * tip instead of waiting on P2P header sync.
+     * Usage: zclassic23 --importblockindex /path/to/datadir [dbpath]
+     *   where /path/to/datadir is the PARENT of blocks/index (e.g. ~/.zclassic
+     *   for a running zclassicd — the on-disk format is shared). */
+    if (argc >= 3 && strcmp(argv[1], "--importblockindex") == 0) {
+        const char *snap_dir = argv[2];
+        const char *home = getenv("HOME");
+        char db_path[512];
+        if (argc > 3)
+            snprintf(db_path, sizeof(db_path), "%s", argv[3]);
+        else
+            snprintf(db_path, sizeof(db_path), "%s/.zclassic-c23/node.db",
+                     home ? home : ".");
+
+        printf("=== ZClassic Block-Index (header) Import ===\n");
+        printf("Source: %s/blocks/index (LevelDB CDiskBlockIndex)\n", snap_dir);
+        printf("Target: %s (SQLite blocks)\n", db_path);
+        printf("Mode:   header-only (bodies fetched lazily via P2P)\n\n");
+
+        /* If the source LevelDB is LOCKed (e.g. a running zclassicd owns
+         * it), copy blocks/index to a temp dir and remove the copied LOCK —
+         * NEVER touch another process's LOCK. Mirrors utxo_recovery_import_ldb.
+         * Then import from the temp parent. */
+        char import_parent[1024];
+        char tmp_cleanup[1100] = "";
+        snprintf(import_parent, sizeof(import_parent), "%s", snap_dir);
+        {
+            char src_lock[1100];
+            snprintf(src_lock, sizeof(src_lock), "%s/blocks/index/LOCK", snap_dir);
+            struct stat lst;
+            if (stat(src_lock, &lst) == 0) {
+                /* Derive a temp parent next to the target db. */
+                char ddir[700];
+                snprintf(ddir, sizeof(ddir), "%s", db_path);
+                char *slash = strrchr(ddir, '/');
+                if (slash) *slash = '\0'; else snprintf(ddir, sizeof(ddir), ".");
+                char tmp_parent[900];
+                snprintf(tmp_parent, sizeof(tmp_parent), "%s/bidx_import_tmp", ddir);
+                char cmd[2400];
+                snprintf(cmd, sizeof(cmd),
+                         "rm -rf '%s' && mkdir -p '%s/blocks' && "
+                         "cp -a '%s/blocks/index' '%s/blocks/index'",
+                         tmp_parent, tmp_parent, snap_dir, tmp_parent);
+                printf("Copying block index (source LOCK present)...\n");
+                fflush(stdout);
+                if (system(cmd) != 0) {
+                    fprintf(stderr, "Failed to copy block index\n");
+                    return 1;
+                }
+                char tmp_lock[1100];
+                snprintf(tmp_lock, sizeof(tmp_lock), "%s/blocks/index/LOCK", tmp_parent);
+                unlink(tmp_lock);
+                snprintf(import_parent, sizeof(import_parent), "%s", tmp_parent);
+                snprintf(tmp_cleanup, sizeof(tmp_cleanup), "%s", tmp_parent);
+            }
+        }
+
+        int64_t t0 = (int64_t)time(NULL);
+        int count = 0;
+        bool ok = snapshot_import_block_index(import_parent, db_path, true, &count);
+        int64_t t1 = (int64_t)time(NULL);
+        if (tmp_cleanup[0]) {
+            char rmcmd[1200];
+            snprintf(rmcmd, sizeof(rmcmd), "rm -rf '%s'", tmp_cleanup);
+            if (system(rmcmd) != 0)
+                fprintf(stderr, "warning: failed to clean temp %s\n", tmp_cleanup);
+        }
+        if (!ok) {
+            fprintf(stderr, "Block-index import failed\n");
+            return 1;
+        }
+        printf("\nImported %d headers in %llds\n", count, (long long)(t1 - t0));
+        return 0;
+    }
+
+    /* UTXO commitment MINT ceremony — compute the SHA3 commitment over the
+     * current (operator-trusted, synced) UTXO set and emit a paste-ready
+     * sha3_utxo_checkpoint for lib/chain/src/checkpoints.c. This is the
+     * "fresh checkpoint" half of the trust model (decision 2026-05-29): a
+     * release ceremony run on a node synced+verified from a trusted source,
+     * so that future fast-imports can FATAL-verify their UTXO set against a
+     * signed commitment near the tip instead of trusting the source blindly.
+     * Read-only. Usage: zclassic23 --mintutxocommitment [dbpath] */
+    if (argc >= 2 && strcmp(argv[1], "--mintutxocommitment") == 0) {
+        const char *home = getenv("HOME");
+        char db_path[512];
+        if (argc > 2)
+            snprintf(db_path, sizeof(db_path), "%s", argv[2]);
+        else
+            snprintf(db_path, sizeof(db_path), "%s/.zclassic-c23/node.db",
+                     home ? home : ".");
+
+        struct node_db ndb;
+        if (!node_db_open(&ndb, db_path)) {
+            fprintf(stderr, "Cannot open SQLite: %s\n", db_path);
+            return 1;
+        }
+
+        /* Height = the UTXO set's height (coins best block height). */
+        int32_t height = 0;
+        sqlite3_stmt *hs = NULL;
+        sqlite3_prepare_v2(ndb.db, "SELECT MAX(height) FROM utxos", -1, &hs, NULL);
+        if (hs && sqlite3_step(hs) == SQLITE_ROW)
+            height = sqlite3_column_int(hs, 0);
+        if (hs) sqlite3_finalize(hs);
+
+        /* Block hash at that height (prefer a data-bearing canonical row). */
+        uint8_t block_hash[32] = {0};
+        sqlite3_stmt *bs = NULL;
+        sqlite3_prepare_v2(ndb.db,
+            "SELECT hash FROM blocks WHERE height = ? "
+            "ORDER BY (status & 8) DESC LIMIT 1", -1, &bs, NULL);
+        if (bs) {
+            sqlite3_bind_int(bs, 1, height);
+            if (sqlite3_step(bs) == SQLITE_ROW &&
+                sqlite3_column_bytes(bs, 0) == 32)
+                memcpy(block_hash, sqlite3_column_blob(bs, 0), 32);
+            sqlite3_finalize(bs);
+        }
+
+        /* Total transparent supply (zatoshi). */
+        int64_t total_supply = 0;
+        sqlite3_stmt *ts = NULL;
+        sqlite3_prepare_v2(ndb.db,
+            "SELECT COALESCE(SUM(value),0) FROM utxos", -1, &ts, NULL);
+        if (ts && sqlite3_step(ts) == SQLITE_ROW)
+            total_supply = sqlite3_column_int64(ts, 0);
+        if (ts) sqlite3_finalize(ts);
+
+        /* SHA3 over the canonical UTXO set. */
+        uint8_t sha3[32];
+        uint64_t count = 0;
+        utxo_commitment_sha3_compute(ndb.db, sha3, &count);
+        node_db_close(&ndb);
+
+        if (height <= 0 || count == 0) {
+            fprintf(stderr, "Refusing to mint: empty/incomplete UTXO set "
+                    "(height=%d count=%llu). Sync to tip from a trusted "
+                    "source first.\n", height, (unsigned long long)count);
+            return 1;
+        }
+
+        char bh_hex[65], s3_hex[65];
+        for (int i = 0; i < 32; i++) {
+            snprintf(bh_hex + i * 2, 3, "%02x", block_hash[31 - i]); /* display = reversed */
+            snprintf(s3_hex + i * 2, 3, "%02x", sha3[i]);
+        }
+        printf("=== ZClassic SHA3 UTXO Commitment (MINT ceremony) ===\n");
+        printf("height=%d count=%llu supply=%lld zatoshi\n",
+               height, (unsigned long long)count, (long long)total_supply);
+        printf("block_hash=%s\nsha3=%s\n\n", bh_hex, s3_hex);
+        printf("/* Paste into lib/chain/src/checkpoints.c as the latest\n"
+               " * g_sha3_checkpoint, then commit (signed release). */\n");
+        printf("static const struct sha3_utxo_checkpoint g_sha3_checkpoint = {\n");
+        printf("    .height = %d,\n", height);
+        printf("    .block_hash = { /* %s */\n        ", bh_hex);
+        for (int i = 0; i < 32; i++)
+            printf("0x%02x,%s", block_hash[i], (i % 8 == 7) ? "\n        " : " ");
+        printf("\n    },\n");
+        printf("    .sha3_hash = { /* %s */\n        ", s3_hex);
+        for (int i = 0; i < 32; i++)
+            printf("0x%02x,%s", sha3[i], (i % 8 == 7) ? "\n        " : " ");
+        printf("\n    },\n");
+        printf("    .utxo_count = %llu,\n", (unsigned long long)count);
+        printf("    .total_supply = %lldLL,\n", (long long)total_supply);
+        printf("};\n");
         return 0;
     }
 

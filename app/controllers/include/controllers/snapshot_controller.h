@@ -47,6 +47,17 @@ int snapshot_import(const char *snapshot_dir,
                     struct node_db *ndb,
                     struct wallet *w);
 
+/* Import ONLY the block index (headers) from snapshot_dir/blocks/index into
+ * the SQLite blocks table. snapshot_dir is the parent of blocks/index (e.g.
+ * ~/.zclassic for a running zclassicd — the on-disk CDiskBlockIndex format is
+ * shared). header_only=true clears HAVE_DATA/HAVE_UNDO + file positions so the
+ * node keeps the header (incl. nSolution) but fetches bodies lazily via P2P —
+ * the fast-sync path that lets an already-imported UTXO set anchor become the
+ * tip in seconds instead of waiting on P2P header sync.
+ * Returns true on success; *out_count = number of headers imported. */
+bool snapshot_import_block_index(const char *snapshot_dir, const char *db_path,
+                                 bool header_only, int *out_count);
+
 /* Build transaction index from block files on a caller-owned thread.
  * Reads block positions from blocks table, parses block files
  * to extract txids, inserts into transactions table.
