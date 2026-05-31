@@ -658,11 +658,21 @@ bool utxo_apply_reorg_unwind_if_needed(sqlite3 *db,
     }
     int C = (int)cursor;  /* next height to apply; [0, C) already applied */
 
+    /* DRIVER vs FOLLOWER. Under UTXO_AUTHOR_STAGE the stage is itself the
+     * tip authority (tip_finalize sets the in-mem chain[] — design step 1),
+     * so the active chain at C-1 reflects the stage's OWN tip, not a tip the
+     * legacy engine already swapped ahead of us. Under the default
+     * UTXO_AUTHOR_LEGACY the stage is a FOLLOWER: it re-converges onto a
+     * chain[] that legacy connect_tip/activate_best_chain drove, and must
+     * WAIT (no-op) until legacy has populated C-1. The driver flag selects
+     * which discipline applies; the divergence detection + fork walk below
+     * are identical in both. */
+
     /* Compare the OLD branch hash recorded for the highest applied height
      * (C-1) against the block now occupying that height on the active
-     * chain. A mismatch is the divergence signal (tip already swapped to
-     * the winning branch by the live driver; our delta rows recorded the
-     * losing branch). */
+     * chain. A mismatch is the divergence signal: the winning branch now
+     * occupies C-1 (set by the stage itself in driver mode, or by the live
+     * driver in follower mode); our delta rows recorded the losing branch. */
     struct uint256 recorded;
     int have = delta_branch_hash_at(db, C - 1, &recorded);
     if (have < 0)
@@ -671,8 +681,13 @@ bool utxo_apply_reorg_unwind_if_needed(sqlite3 *db,
         return true;  /* no delta at C-1 (e.g. all-failure tail) → nothing to do */
 
     struct block_index *active = active_chain_at(&ms->chain_active, C - 1);
-    if (!active || !active->phashBlock)
-        return true;  /* chain shorter than our cursor: wait, don't unwind */
+    if (!active || !active->phashBlock) {
+        /* Chain shorter than our cursor at C-1. In FOLLOWER mode this means
+         * legacy has not yet driven the tip to C-1: wait, don't unwind. In
+         * DRIVER mode the stage owns the tip, so there is simply no fork to
+         * disconnect here yet — also a no-op. Either way: nothing to do. */
+        return true;
+    }
     if (uint256_eq(&recorded, active->phashBlock))
         return true;  /* no divergence */
 
@@ -695,20 +710,26 @@ bool utxo_apply_reorg_unwind_if_needed(sqlite3 *db,
     /* Finality-depth floor: never unwind below tip - ZCL_FINALITY_DEPTH,
      * exactly as legacy refuses in activate_best_chain. The deepest
      * disconnected block is at fork_plus1, whose fork point is `fork`;
-     * the reorg depth is (C-1) - fork.
+     * the reorg depth is (C-1) - fork. This reorg_is_allowed(C-1, fork)
+     * check is the SOLE gate on whether the unwind proceeds.
      *
-     * INVARIANT — why (C-1), the stage cursor, is the correct depth
-     * reference and NOT the global active-chain tip: this unwind only ever
-     * rewinds the stage's OWN applied range [fork+1, C-1] to re-converge
-     * onto the active chain (the guard above refuses to unwind at all
-     * unless the active chain already reaches C-1). The active chain is
-     * driven AND finality-gated by legacy activate_best_chain
-     * (reorg_is_allowed at tip->nHeight), so it never presents a reorg
-     * deeper than ZCL_FINALITY_DEPTH for the stage to follow. Measuring
-     * from C-1 is therefore a defensive backstop equivalent to legacy's
-     * check; using the global active tip instead would WEDGE a lagging
-     * stage on a side branch. REVISIT when the stage itself drives the
-     * live tip (then C-1 becomes the authoritative tip and this is exact). */
+     * Why (C-1), the stage cursor, is the correct depth reference:
+     *
+     *   DRIVER mode (UTXO_AUTHOR_STAGE): the stage drives the tip, so C-1
+     *   IS the authoritative tip height and reorg_is_allowed(C-1, fork) is
+     *   the exact finality check — the same one legacy applies at
+     *   tip->nHeight. The unwind is gated purely on this; there is no
+     *   "wait for legacy to reach C-1" precondition (the stage cannot wait
+     *   on an engine it has replaced).
+     *
+     *   FOLLOWER mode (UTXO_AUTHOR_LEGACY, the default): the unwind only
+     *   re-converges the stage's OWN applied range [fork+1, C-1] onto a
+     *   chain[] that legacy already reorged and finality-gated
+     *   (reorg_is_allowed at tip->nHeight in activate_best_chain), so the
+     *   active chain never presents a reorg deeper than ZCL_FINALITY_DEPTH
+     *   for the stage to follow. Measuring from C-1 is a defensive backstop
+     *   equivalent to legacy's check; using the global active tip instead
+     *   would WEDGE a lagging stage on a side branch. */
     {
         const char *reason = NULL;
         if (!reorg_is_allowed(C - 1, fork, &reason)) {
