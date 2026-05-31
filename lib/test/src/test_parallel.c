@@ -114,7 +114,8 @@ volatile sig_atomic_t g_shutdown_requested = 0;
     X(mempool_projection) X(peers_projection) X(znam_projection) \
     X(wallet_projection) X(small_projections) \
     X(utxo_projection) X(utxo_apply_authorship) X(coins_view_projection) \
-    X(block_index_projection) X(block_index_rebuild) X(projection_replay_invariant) \
+    X(block_index_projection) X(block_index_rebuild) X(block_index_backfill) \
+    X(projection_replay_invariant) \
     X(header_admit_stage) X(header_probe_poll) \
     X(validate_headers_stage) X(body_fetch_stage) \
     X(body_persist_stage) X(script_validate_stage) X(proof_validate_stage) \
