@@ -14,6 +14,7 @@
 
 #include "coins/coins.h"
 #include "core/uint256.h"
+#include "storage/coins_view_sqlite.h"
 #include "util/log_macros.h"
 
 #include <stdio.h>
@@ -54,6 +55,29 @@ static bool csb_batch_write_impl(void *self, struct coins_map *map_coins,
     if (!sb->legacy.vtable || !sb->legacy.vtable->batch_write)
         LOG_FAIL("coins_view_stage_backing",
                  "batch_write: legacy backing has no batch_write");
+
+    /* Step-3 (reducer-as-ingest): the STAGE owns the authoritative
+     * coins.db write. When the author is STAGE and we hold the coins.db
+     * handle, commit this block's validated delta DURABLY to coins.db
+     * ourselves (its own BEGIN IMMEDIATE / COMMIT) so coins.db is a STAGE
+     * OUTPUT — the SHA3 UTXO checkpoint + gettxoutsetinfo (both read
+     * coins.db) stay consistent with the projection the stage authors.
+     *
+     * This is the destination reducer-path writer, NOT a legacy surface:
+     * it is gated dormant behind UTXO_AUTHOR_STAGE (default LEGACY), so
+     * under the live default this branch is never taken and the path
+     * below is byte-identical to what ships today. */
+    if (sb->coins_db &&
+        utxo_projection_get_author() == UTXO_AUTHOR_STAGE) {
+        bool durable = coins_view_sqlite_batch_write( // one-write-path-ok:reducer-utxo-authority
+            sb->coins_db, map_coins, hash_block);
+        if (!durable)
+            LOG_FAIL("coins_view_stage_backing",
+                     "batch_write: STAGE-owned coins.db commit failed");
+        /* Keep the legacy coins_tip mirror warm so the downstream
+         * connect_tip flush + SHA3 checkpoint see a consistent cache. */
+    }
+
     return sb->legacy.vtable->batch_write(sb->legacy.impl, map_coins,
                                           hash_block);
 }
@@ -76,10 +100,11 @@ static struct coins_view_vtable csb_vtable = {
     .get_stats      = csb_get_stats_impl,
 };
 
-bool coins_view_select_connect_backing(struct coins_view *out,
-                                       struct coins_view_stage_backing *sb,
-                                       const struct coins_view *legacy,
-                                       utxo_projection_t *proj)
+bool coins_view_select_connect_backing_ex(struct coins_view *out,
+                                          struct coins_view_stage_backing *sb,
+                                          const struct coins_view *legacy,
+                                          utxo_projection_t *proj,
+                                          struct coins_view_sqlite *coins_db)
 {
     if (!out || !legacy)
         LOG_FAIL("coins_view_stage_backing",
@@ -116,8 +141,19 @@ bool coins_view_select_connect_backing(struct coins_view *out,
         return false;
     }
     sb->legacy      = *legacy;
+    sb->coins_db    = coins_db;   /* STAGE-owned durable coins.db (may be NULL) */
     sb->view.vtable = &csb_vtable;
     sb->view.impl   = sb;
     *out = sb->view;
     return true;
+}
+
+bool coins_view_select_connect_backing(struct coins_view *out,
+                                       struct coins_view_stage_backing *sb,
+                                       const struct coins_view *legacy,
+                                       utxo_projection_t *proj)
+{
+    /* coins_db == NULL: the legacy coins_tip flush stays the coins.db
+     * writer (the existing behavior, unchanged). */
+    return coins_view_select_connect_backing_ex(out, sb, legacy, proj, NULL);
 }

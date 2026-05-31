@@ -271,9 +271,15 @@ bool connect_tip(struct validation_state *state,
          * stay on coins_tip. The RAM read-cache (`view`) is unchanged and
          * sits in front of whichever backing is chosen. Dormant until B7. */
         coins_view_cache_as_view(&legacy_backing, coins_tip);
-        coins_view_select_connect_backing(&backing, &stage_backing,
-                                          &legacy_backing,
-                                          utxo_projection_get_global());
+        /* Pass the authoritative coins.db handle so that under the STAGE
+         * author (B7 flip) the stage backing owns the durable coins.db
+         * commit. Dormant under the default LEGACY author: the handle is
+         * never consulted and the legacy coins_tip flush remains the
+         * coins.db writer (byte-identical to today). */
+        coins_view_select_connect_backing_ex(&backing, &stage_backing,
+                                             &legacy_backing,
+                                             utxo_projection_get_global(),
+                                             process_block_coins_sqlite_ptr());
         coins_view_cache_init(&view, &backing);
         stage_start_us = GetTimeMicros();
 
