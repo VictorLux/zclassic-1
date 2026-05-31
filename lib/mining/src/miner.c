@@ -9,6 +9,7 @@
 #include "validation/check_transaction.h"
 #include "validation/connect_block.h"
 #include "validation/process_block.h"
+#include "services/chain_activation_controller.h"
 #include "validation/sigops.h"
 #include "validation/update_coins.h"
 #include "validation/main_constants.h"
@@ -221,6 +222,17 @@ bool process_block_found(struct block *pblock,
     struct validation_state state;
     validation_state_init(&state);
 
+    /* mined-block intake: when the reducer is authoritative (cutover step
+     * 13, NOT yet flipped — SHADOW default = false), the synchronous
+     * reducer_ingest_block drives the eight Wave-S stages and fills the
+     * SAME validation_state. Otherwise the unchanged legacy
+     * process_new_block path runs. force=true mirrors the locally-mined
+     * relay-pre-filter-skipping semantics process_block_found already had.
+     * Either way the verdict bool flows back to the mining loop unchanged. */
+    if (reducer_is_authoritative()) {
+        return reducer_ingest_block(boot_activation_controller(), pblock,
+                                    REDUCER_SRC_MINED, true, &state);
+    }
     return process_new_block(&state, ms, coins_tip, params, pblock, true,
                              datadir);
 }
