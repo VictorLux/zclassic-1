@@ -6,7 +6,7 @@ app/controllers/src/blockchain_controller_admin.c:203: coins_view_cache_flush(ct
 app/controllers/src/blockchain_controller_chain.c:581: coins_view_cache_flush(ctx->coins_tip);
 app/controllers/src/hodl_controller.c:235: coins_view_cache_flush(ctx->coins_tip);
 app/controllers/src/hodl_controller.c:90: coins_view_cache_flush(ctx->coins_tip);
-app/controllers/src/mining_controller.c:196: bool ok = process_new_block(&state, ctx->main_state, ctx->coins_tip, cp,
+app/controllers/src/mining_controller.c:210: ok = process_new_block(&state, ctx->main_state, ctx->coins_tip, cp,
 app/controllers/src/repair_controller_utxo.c:311: coins_view_cache_flush(ctx->coins_tip);
 app/controllers/src/repair_controller_utxo.c:522: coins_view_cache_flush(ctx->coins_tip);
 app/services/src/chain_state_repository.c:598: if (!active_chain_set_tip(csr->chain_active, NULL)) {

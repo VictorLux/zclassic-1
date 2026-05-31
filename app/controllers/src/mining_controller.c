@@ -19,6 +19,7 @@
 #include "script/script.h"
 #include "validation/chainstate.h"
 #include "validation/process_block.h"
+#include "services/chain_activation_controller.h"
 #include "chain/subsidy.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -193,8 +194,22 @@ static bool rpc_submitblock(const struct json_value *params, bool help,
     struct validation_state state;
     validation_state_init(&state);
 
-    bool ok = process_new_block(&state, ctx->main_state, ctx->coins_tip, cp,
-                                 &blk, true, ctx->datadir);
+    /* submitblock intake: when the reducer is authoritative (cutover step
+     * 13, NOT yet flipped — SHADOW default = false), the synchronous
+     * reducer_ingest_block drives the eight Wave-S stages and fills the
+     * SAME validation_state. Otherwise the unchanged legacy
+     * process_new_block path runs. force=true mirrors the locally-requested
+     * relay-pre-filter-skipping semantics submitblock already had. Either
+     * way the verdict in `state` flows into format_state_message below, so
+     * the RPC still returns null on accept / the reject reason on reject. */
+    bool ok;
+    if (reducer_is_authoritative()) {
+        ok = reducer_ingest_block(boot_activation_controller(), &blk,
+                                  REDUCER_SRC_SUBMIT, true, &state);
+    } else {
+        ok = process_new_block(&state, ctx->main_state, ctx->coins_tip, cp,
+                               &blk, true, ctx->datadir);
+    }
     block_free(&blk);
 
     if (!ok) {
