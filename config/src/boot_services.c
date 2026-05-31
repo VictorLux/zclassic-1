@@ -1082,6 +1082,46 @@ utxo_projection_t *boot_ensure_log_and_utxo_projection(const char *datadir)
     return g_phase4_utxo_projection;
 }
 
+/* Idempotent open of the block_index_projection (the log-derived
+ * authoritative source for the single-engine boot rebuild,
+ * load_block_index_from_projection). Like boot_ensure_log_and_utxo_projection
+ * this is hoisted so boot.c can open + publish + catch up the projection
+ * BEFORE the block-index load (which optionally rebuilds from it under
+ * -rebuildfromlog), well before app_init_services runs. Called twice: once
+ * early from boot.c and once (no-op reuse) from boot_start_phase4_storage_shadow.
+ * First opener wins — one handle, no split-brain. Requires the event log
+ * to already be published (boot_ensure_log_and_utxo_projection first).
+ * Returns the published projection or NULL. */
+block_index_projection_t *boot_ensure_block_index_projection(const char *datadir)
+{
+    block_index_projection_t *existing = block_index_projection_singleton();
+    if (existing)
+        return existing;
+    if (!datadir || !datadir[0])
+        return NULL;
+    if (!g_phase4_event_log)
+        return NULL;  /* event log must be published first */
+
+    char bip_path[PATH_MAX];
+    int n5 = snprintf(bip_path, sizeof(bip_path),
+                      "%s/block_index_projection.db", datadir);
+    if (n5 <= 0 || (size_t)n5 >= sizeof(bip_path)) {
+        fprintf(stderr,  // obs-ok:phase4-shadow
+                "[phase4] block_index_projection path too long\n");
+        return NULL;
+    }
+    g_phase4_block_index_projection =
+        block_index_projection_open(bip_path, g_phase4_event_log);
+    if (!g_phase4_block_index_projection) {
+        fprintf(stderr,  // obs-ok:phase4-shadow
+                "[phase4] block_index_projection unavailable\n");
+        return NULL;
+    }
+    block_index_projection_set_singleton(g_phase4_block_index_projection);
+    (void)block_index_projection_catch_up(g_phase4_block_index_projection);
+    return g_phase4_block_index_projection;
+}
+
 static void boot_start_phase4_storage_shadow(const char *datadir)
 {
     if (!datadir || !datadir[0])
@@ -1175,24 +1215,14 @@ static void boot_start_phase4_storage_shadow(const char *datadir)
         }
     }
 
-    /* Phase 4c: block_index_projection shadow */
-    char bip_path[PATH_MAX];
-    int n5 = snprintf(bip_path, sizeof(bip_path),
-                      "%s/block_index_projection.db", datadir);
-    if (n5 <= 0 || (size_t)n5 >= sizeof(bip_path)) {
-        fprintf(stderr,  // obs-ok:phase4-shadow
-                "[phase4] block_index_projection path too long\n");
-        return;
-    }
-    g_phase4_block_index_projection =
-        block_index_projection_open(bip_path, g_phase4_event_log);
-    if (!g_phase4_block_index_projection) {
+    /* Phase 4c: block_index_projection shadow. Opened (or reused, if boot.c
+     * already opened it for the -rebuildfromlog boot path) via the hoisted
+     * helper — first opener wins. */
+    if (!boot_ensure_block_index_projection(datadir)) {
         fprintf(stderr,  // obs-ok:phase4-shadow
                 "[phase4] block_index_projection unavailable\n");
         return;
     }
-    block_index_projection_set_singleton(g_phase4_block_index_projection);
-    (void)block_index_projection_catch_up(g_phase4_block_index_projection);
 
     /* Phase 4d-4: znam_projection shadow */
     char znam_path[PATH_MAX];

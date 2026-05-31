@@ -55,7 +55,9 @@
 #include "controllers/transaction_controller.h"
 #include "rpc/server.h"
 #include "storage/block_index_db.h"
+#include "storage/block_index_projection.h"
 #include "storage/disk_block_io.h"
+#include "services/block_index_loader.h"
 #include "validation/chainstate.h"
 #include "validation/main_state.h"
 #include "validation/process_block.h"
@@ -1757,6 +1759,15 @@ bool app_init(struct app_context *ctx)
     }
     coins_view_cache_init(&g_coins_tip, &g_coins_read_view.view);
 
+    /* Hoist the block_index_projection open next to the log/utxo projection
+     * so the single-engine boot rebuild (load_block_index_from_projection,
+     * under -rebuildfromlog) has the caught-up projection available BEFORE
+     * the block-index load below. The phase-4 fan-out re-call in
+     * boot_start_phase4_storage_shadow is a no-op reuse (first opener wins).
+     * Non-fatal if it cannot open: -rebuildfromlog simply falls through to
+     * the legacy loaders. */
+    (void)boot_ensure_block_index_projection(ctx->datadir);
+
     /* Wire the process-lifetime chain_state_repository singleton now
      * that g_coins_tip is alive. From this point on, call-site
      * migrations can go through csr_commit_tip() and get all six
@@ -1783,6 +1794,10 @@ bool app_init(struct app_context *ctx)
 
     /* skip_activate removed — activation controller is the authority */
     bool fast_restart = false;
+    /* Set true if the block index + tip were rebuilt purely from the
+     * log-derived projection (-rebuildfromlog). Function-scoped so the
+     * legacy UTXO importer block below can also be skipped. */
+    bool rebuilt_from_log = false;
     bool boot_restored_authority_tip = false;
     int boot_restored_authority_height = -1;
     struct uint256 boot_restored_authority_hash;
@@ -1826,15 +1841,61 @@ bool app_init(struct app_context *ctx)
     t_phase = boot_clock_ms();
     {
         bool loaded = false;
-        loaded = load_block_index_flat(ctx->datadir, &g_state);
-        if (!loaded && g_node_db.open)
+
+        /* Single-engine cold-start (-rebuildfromlog): rebuild the in-memory
+         * block index + active tip purely from the log-derived projection,
+         * so boot no longer reads the legacy flat/SQLite/LevelDB loaders, the
+         * zclassicd-LDB import, or the legacy UTXO importer. The projection
+         * read-view (set above) is already the coins authority. Opt-in: only
+         * taken when ctx->boot_from_log is set AND the rebuild yields a
+         * non-trivial map with an authority tip — otherwise it falls through
+         * to the legacy loaders so a sparse/empty projection never bricks
+         * boot. fast-sync (snapshot_apply) seeds the projection+cursor on the
+         * FRESH path; a warm boot of that node rebuilds here. */
+        if (ctx->boot_from_log) {
+            struct block_index_projection *bip =
+                block_index_projection_singleton();
+            if (load_block_index_from_projection(&g_state, params, bip,
+                                                 progress_store_db())) {
+                struct block_index *log_tip =
+                    active_chain_tip(&g_state.chain_active);
+                if (log_tip && g_state.map_block_index.size > 1000) {
+                    rebuilt_from_log = true;
+                    loaded = true;
+                    printf("[boot] block index rebuilt from log: %zu entries, "
+                           "tip height=%d\n",
+                           g_state.map_block_index.size, log_tip->nHeight);
+                    event_emitf(EV_BOOT_BLOCK_INDEX, 0,
+                                "rebuilt_from_log entries=%zu tip=%d",
+                                g_state.map_block_index.size, log_tip->nHeight);
+                } else {
+                    fprintf(stderr,
+                            "[boot] -rebuildfromlog: projection rebuild "
+                            "yielded %zu entries / tip=%s — falling back to "
+                            "legacy loaders\n",
+                            g_state.map_block_index.size,
+                            log_tip ? "set" : "none");
+                }
+            } else {
+                fprintf(stderr,
+                        "[boot] -rebuildfromlog: load_block_index_from_"
+                        "projection failed — falling back to legacy loaders\n");
+            }
+        }
+
+        if (!rebuilt_from_log)
+            loaded = load_block_index_flat(ctx->datadir, &g_state);
+        if (!rebuilt_from_log && !loaded && g_node_db.open)
             loaded = load_block_index_sqlite(&g_node_db, &g_state);
 
         /* Check if flat file is stale — if it loaded but has far fewer
          * entries than the chain (checked via SQLite), reload from LevelDB.
          * This fixes the case where an old flat file with 6K entries
-         * prevents loading the full 3M+ entry index. */
-        if (loaded && g_node_db.open) {
+         * prevents loading the full 3M+ entry index.
+         * Skipped on the log-rebuild path: the legacy SQLite db_height is
+         * not the authority there (the log/cursor tip is), and comparing
+         * against it would spuriously discard the valid log-rebuilt map. */
+        if (!rebuilt_from_log && loaded && g_node_db.open) {
             int64_t db_height = node_db_sync_get_tip_height(&g_node_db);
             if (db_height < 0)
                 db_height = db_block_max_height(&g_node_db);
@@ -1893,7 +1954,7 @@ bool app_init(struct app_context *ctx)
             }
         }
 
-        if (!loaded) {
+        if (!rebuilt_from_log && !loaded) {
             int64_t t_idx_start = (int64_t)platform_time_wall_time_t();
             printf("Loading block index from LevelDB...\n");
             if (!load_block_index(&g_state, params, &g_block_tree, g_block_tree_open)) {
@@ -1913,8 +1974,10 @@ bool app_init(struct app_context *ctx)
         /* If block index is much smaller than the chain, try loading
          * from zclassicd's LevelDB. This gives us 3M+ entries with
          * correct heights and pprev chains in seconds. Triggers when
-         * we have <10% of expected entries (e.g., 3K vs 3M chain). */
-        if (!ctx->no_legacy_auto_import) {
+         * we have <10% of expected entries (e.g., 3K vs 3M chain).
+         * Skipped on the log-rebuild path: the log/projection is the sole
+         * authority there, so no legacy LevelDB read is performed. */
+        if (!rebuilt_from_log && !ctx->no_legacy_auto_import) {
             int chain_h = active_chain_height(&g_state.chain_active);
             if (chain_h < 1000) {
                 /* Estimate expected height from SQLite or coins */
@@ -2312,9 +2375,13 @@ bool app_init(struct app_context *ctx)
     if (!boot_resolve_cold_import_pending_anchor())
         return false;
 
-    /* ── LDB UTXO import (runs AFTER block index load) ── */
+    /* ── LDB UTXO import (runs AFTER block index load) ──
+     * Skipped on the log-rebuild path: the UTXO projection (bound as the
+     * coins read view above) is the sole money authority there; reading the
+     * legacy ~/.zclassic chainstate LevelDB into coins.db would re-introduce
+     * the legacy seed this path exists to eliminate. */
     t_phase = boot_clock_ms();
-    if (!ctx->no_legacy_auto_import) {
+    if (!rebuilt_from_log && !ctx->no_legacy_auto_import) {
         struct utxo_recovery_ctx uctx = {
             .state = &g_state,
             .coins_sqlite = &g_coins_sqlite,

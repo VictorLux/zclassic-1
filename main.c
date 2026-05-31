@@ -716,6 +716,8 @@ static void print_usage(const char *prog)
     printf("  -tor                Start Tor hidden service (dynhost blog)\n");
     printf("  -profile=<name>     Service profile: full, zclassic-only, explorer, onion-node, legacy-compat\n");
     printf("  -nolegacyimport     Do not auto-read/link ~/.zclassic during boot\n");
+    printf("  -rebuildfromlog     Rebuild block index + tip from the event-log\n");
+    printf("                      projection (single-engine cold-start; opt-in)\n");
     printf("  -bench              Run all five user benchmark probes\n");
     printf("  -bench-regress      Fail if bench-history numeric rows regress >20%%\n");
     printf("  -help               This help\n\n");
@@ -1657,6 +1659,7 @@ int main(int argc, char **argv)
         else if (strcmp(argv[i], "-nofilesync") == 0) ctx.no_file_sync = true;
         else if (strcmp(argv[i], "-nobgvalidation") == 0) ctx.no_bg_validation = true;
         else if (strcmp(argv[i], "-nolegacyimport") == 0) ctx.no_legacy_auto_import = true;
+        else if (strcmp(argv[i], "-rebuildfromlog") == 0) ctx.boot_from_log = true;
         else if (strcmp(argv[i], "-leveldb-no-verify-checksums") == 0) {
             /* Turns off LevelDB checksum verification for both point
              * reads and iteration.  Use only when chasing a suspected

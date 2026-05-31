@@ -96,6 +96,52 @@ static bool bir_emit_height(event_log_t *log, int height)
     return event_log_append(log, EV_BLOCK_HEADER, buf, written) != UINT64_MAX;
 }
 
+/* Deterministic per-height STALE-FORK block hash, distinct from both the
+ * canonical hash (bir_hash_at) and the zero sentinel. Models a competing
+ * block at a shared height as a real zclassicd index carries. */
+static struct uint256 bir_fork_hash_at(int height)
+{
+    struct uint256 h;
+    memset(&h, 0, sizeof(h));
+    h.data[0] = (uint8_t)((height + 1) & 0xFF);
+    h.data[1] = (uint8_t)(((height + 1) >> 8) & 0xFF);
+    h.data[2] = (uint8_t)(((height + 1) >> 16) & 0xFF);
+    h.data[30] = 0xF0;  /* fork tag */
+    h.data[31] = 0xC3;
+    return h;
+}
+
+/* Emit a competing fork block at `height` whose parent is the CANONICAL
+ * block at height-1 (a sibling of the canonical block at this height).
+ * Marked HAVE_DATA | VALID_SCRIPTS so it is a finalize-eligible candidate
+ * — exactly the trap the canonical-only seed must not fall into. */
+static bool bir_emit_fork(event_log_t *log, int height)
+{
+    struct ev_block_header h;
+    memset(&h, 0, sizeof(h));
+
+    struct uint256 hash = bir_fork_hash_at(height);
+    memcpy(h.hash, hash.data, 32);
+    struct uint256 prev = bir_hash_at(height - 1);  /* canonical parent */
+    memcpy(h.hashPrev, prev.data, 32);
+    h.height   = height;
+    h.nStatus  = BLOCK_VALID_SCRIPTS | BLOCK_HAVE_DATA;
+    h.nFile    = height / 1000;
+    h.nDataPos = (uint32_t)(height * 4096 + 200);
+    h.nUndoPos = (uint32_t)(height * 128 + 9);
+    h.nTime    = 1700000000u + (uint32_t)height * 150u;
+    h.nBits    = 0x1f07ffffu;
+    h.nVersion = 4;
+    h.nTx      = 1;
+    h.nSolutionSize = 0;
+
+    uint8_t buf[256];
+    size_t written = 0;
+    if (!ev_block_header_serialize(&h, NULL, buf, sizeof(buf), &written))
+        return false;
+    return event_log_append(log, EV_BLOCK_HEADER, buf, written) != UINT64_MAX;
+}
+
 /* Seed the tip_finalize cursor + a finalized tip row at `tip_height` in
  * the progress.kv store, exactly as the live tip_finalize stage would. */
 static bool bir_seed_tip_cursor(sqlite3 *pk, int tip_height,
@@ -290,6 +336,91 @@ static int run_rebuild_null_bip(int *failures)
     return *failures - start_failures;
 }
 
+/* ── Test 4: competing fork at a shared height — the tip seeds CANONICAL ──
+ *
+ * A real zclassicd block index carries stale forks at shared heights. The
+ * tip_finalize cursor records the CANONICAL tip hash, so even though the
+ * fork block is folded into the map (HAVE_DATA + VALID_SCRIPTS, identical
+ * height), the rebuild must seed the active tip from the cursor's canonical
+ * hash, NOT the fork. A linear fixture would falsely pass this contract
+ * (finish-runbook step 9 BLOCKER), so this fixture is the one that bites. */
+static int run_rebuild_competing_fork(int *failures)
+{
+    int start_failures = *failures;
+    const int N = 32;           /* canonical heights 0..N-1 */
+    const int FORK_AT = N - 1;  /* fork competes at the tip height */
+
+    char dir[256];
+    snprintf(dir, sizeof(dir), "./test-tmp/bir_%d_fork", (int)getpid());
+    mkdir("./test-tmp", 0755);
+    mkdir(dir, 0755);
+
+    char el_path[320]; snprintf(el_path, sizeof(el_path), "%s/event_log.dat", dir);
+    char db_path[320]; snprintf(db_path, sizeof(db_path), "%s/bip.db", dir);
+
+    event_log_t *log = event_log_open(el_path);
+    BIR_CHECK("fork: event log opens", log != NULL);
+    if (!log) goto done;
+
+    bool emit_ok = true;
+    for (int h = 0; h < N; h++)
+        emit_ok = emit_ok && bir_emit_height(log, h);
+    /* Emit the competing fork at the tip height AFTER the canonical block,
+     * so naive last-writer/iteration-order logic would prefer the fork. */
+    emit_ok = emit_ok && bir_emit_fork(log, FORK_AT);
+    BIR_CHECK("fork: emitted canonical chain + competing fork", emit_ok);
+
+    block_index_projection_t *bip = block_index_projection_open(db_path, log);
+    BIR_CHECK("fork: projection opens", bip != NULL);
+    if (!bip) { event_log_close(log); goto done; }
+
+    /* Cursor records the CANONICAL tip hash at height N-1. */
+    progress_store_close();
+    bool pk_ok = progress_store_open(dir);
+    BIR_CHECK("fork: progress store opens", pk_ok);
+    sqlite3 *pk = progress_store_db();
+    struct uint256 canon_tip = bir_hash_at(FORK_AT);
+    BIR_CHECK("fork: seed canonical tip cursor",
+              pk && bir_seed_tip_cursor(pk, FORK_AT, &canon_tip));
+
+    struct main_state ms;
+    main_state_init(&ms);
+
+    bool rebuilt = load_block_index_from_projection(&ms, chain_params_get(),
+                                                    bip, pk);
+    BIR_CHECK("fork: rebuild returns true", rebuilt);
+
+    /* Both the canonical block AND the fork are in the map (N canonical +
+     * 1 fork = N+1 entries). The fold keeps every header; only the tip
+     * selection must be canonical. */
+    BIR_CHECK("fork: map holds canonical + fork (N+1)",
+              ms.map_block_index.size == (size_t)(N + 1));
+
+    struct uint256 fork_hash = bir_fork_hash_at(FORK_AT);
+    struct block_index *fork_bi = block_map_find(&ms.map_block_index, &fork_hash);
+    BIR_CHECK("fork: fork block present in map", fork_bi != NULL);
+
+    /* THE contract: active tip is the CANONICAL hash, not the fork. */
+    struct block_index *active = active_chain_tip(&ms.chain_active);
+    BIR_CHECK("fork: active tip set", active != NULL);
+    BIR_CHECK("fork: active tip height == N-1",
+              active && active->nHeight == FORK_AT);
+    BIR_CHECK("fork: active tip is CANONICAL hash (not the fork)",
+              active && active->phashBlock &&
+              uint256_eq(active->phashBlock, &canon_tip));
+    BIR_CHECK("fork: active tip is NOT the fork hash",
+              active && active->phashBlock &&
+              !uint256_eq(active->phashBlock, &fork_hash));
+
+    main_state_free(&ms);
+    block_index_projection_close(bip);
+    progress_store_close();
+    event_log_close(log);
+    test_cleanup_tmpdir(dir);
+done:
+    return *failures - start_failures;
+}
+
 int test_block_index_rebuild(void)
 {
     printf("\n=== block_index_rebuild tests ===\n");
@@ -298,6 +429,7 @@ int test_block_index_rebuild(void)
     run_rebuild_n_headers(&failures);
     run_rebuild_empty(&failures);
     run_rebuild_null_bip(&failures);
+    run_rebuild_competing_fork(&failures);
 
     printf("block_index_rebuild: %d failures\n", failures);
     return failures;

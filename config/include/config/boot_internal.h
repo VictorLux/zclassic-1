@@ -137,6 +137,14 @@ void boot_stop_db_service_kernel(void);
  * Returns the published projection or NULL. */
 utxo_projection_t *boot_ensure_log_and_utxo_projection(const char *datadir);
 
+/* Idempotent open of the block_index_projection (log-derived source for the
+ * single-engine boot rebuild). Hoisted so boot.c can open + publish + catch
+ * up before the block-index load; the phase-4 fan-out call is a no-op reuse.
+ * Requires the event log already published. Returns the projection or NULL. */
+struct block_index_projection;
+struct block_index_projection *boot_ensure_block_index_projection(
+    const char *datadir);
+
 /* Shutdown phase order:
  * 1. stop externally visible services
  * 2. persist fast-restart state
