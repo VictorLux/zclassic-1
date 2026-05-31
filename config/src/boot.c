@@ -40,6 +40,8 @@
 #include "coins/utxo_commitment.h"
 #include "chain/checkpoints.h"
 #include "storage/coins_view_sqlite.h"
+#include "storage/coins_view_projection.h"
+#include "storage/utxo_projection.h"
 #include "storage/coins_db.h"
 #include "storage/ldb_snapshot.h"
 #include "consensus/validation.h"
@@ -112,6 +114,11 @@
 
 static struct main_state g_state;
 static struct coins_view_sqlite g_coins_sqlite;
+/* Read authority for the coins_tip cache backing (single-engine, step 8):
+ * a read-only coins_view over the log-derived UTXO projection. The legacy
+ * g_coins_sqlite is still opened during the cutover window for the
+ * damage-recovery best-block reads below; it is removed in step 10. */
+static struct coins_view_projection g_coins_read_view;
 static struct coins_view_cache g_coins_tip;
 static struct chain_activation_controller g_activation_ctl;
 
@@ -1730,7 +1737,25 @@ bool app_init(struct app_context *ctx)
         /* LDB UTXO import deferred to post-block-index (see below). */
     }
 
-    coins_view_cache_init(&g_coins_tip, &g_coins_sqlite.view);
+    /* Single-engine read authority (step 8): the coins_tip RAM cache
+     * resolves misses against the log-derived UTXO projection, not the
+     * legacy coins.db `utxos` table. utxo_projection_open publishes the
+     * process-global handle; it normally happens later in
+     * boot_start_phase4_storage_shadow (via app_init_services), so open it
+     * here first — that call becomes a no-op reuse. FATAL if the projection
+     * cannot be opened: with the projection as the sole read source there is
+     * no fallback, and serving reads off a half-built backing would be a
+     * silent correctness hole. */
+    if (!boot_ensure_log_and_utxo_projection(ctx->datadir) ||
+        !coins_view_projection_init(&g_coins_read_view,
+                                    utxo_projection_get_global())) {
+        fprintf(stderr,
+                "FATAL: utxo_projection not open; cannot serve coins reads\n");
+        event_emitf(EV_BOOT_VALIDATION_FAILED, 0,
+                    "utxo_projection unavailable for coins read view");
+        _exit(EXIT_FAILURE);
+    }
+    coins_view_cache_init(&g_coins_tip, &g_coins_read_view.view);
 
     /* Wire the process-lifetime chain_state_repository singleton now
      * that g_coins_tip is alive. From this point on, call-site
@@ -2693,7 +2718,15 @@ bool app_init(struct app_context *ctx)
                  *   (b) active_chain tip is far below the coins tip
                  *       (scan picked a wrong short fork). */
                 struct uint256 post_scan_best;
-                coins_view_cache_get_best_block(&g_coins_tip, &post_scan_best);
+                /* This LDB/damage-recovery branch needs the LEGACY coins.db
+                 * best-block, not the projection (the projection read view
+                 * tracks a consume offset, not a best-block hash). Read it
+                 * straight from g_coins_sqlite, which is still open during
+                 * the cutover window (removed in step 10). */
+                uint256_set_null(&post_scan_best);
+                if (g_coins_sqlite.db)
+                    coins_view_sqlite_get_best_block(&g_coins_sqlite,
+                                                     &post_scan_best);
                 /* Restore chain tip to match UTXO snapshot height when
                  * the active chain is far below the coins tip. This happens
                  * after LDB import: the UTXO set is at 3M+ but block files
@@ -3013,7 +3046,12 @@ sapling_tree_boot_check_done:
      * coins tip is far above the chain tip, correct it now. */
     {
         struct uint256 coins_hash;
-        coins_view_cache_get_best_block(&g_coins_tip, &coins_hash);
+        /* Legacy LDB-import safety check: needs the coins.db best-block, not
+         * the projection (no best-block). Read from g_coins_sqlite directly
+         * (still open during the cutover window; removed in step 10). */
+        uint256_set_null(&coins_hash);
+        if (g_coins_sqlite.db)
+            coins_view_sqlite_get_best_block(&g_coins_sqlite, &coins_hash);
         int chain_h = active_chain_height(&g_state.chain_active);
         struct block_index *coins_bi = NULL;
 

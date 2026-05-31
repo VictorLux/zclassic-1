@@ -1018,38 +1018,96 @@ static bool boot_start_catchup_service(struct boot_svc_ctx *svc,
                                           svc->wallet, datadir);
 }
 
+/* Idempotent open of the append-only event_log + utxo_projection — the
+ * read authority for the single-engine UTXO path (B3/step-8). boot.c must
+ * have these published (event_log_set_singleton / utxo_projection_get_global
+ * non-NULL) BEFORE it builds the coins_tip read view from
+ * coins_view_projection, which is well before app_init_services runs. So
+ * this is hoisted here and called twice: once early from app_init (read-view
+ * build) and once from boot_start_phase4_storage_shadow (the rest of the
+ * projection fan-out). The second call is a no-op reuse — first opener wins,
+ * one handle, no split-brain. Returns the published projection or NULL.
+ *
+ * Note: the legacy anchor-seed (utxo_projection_seed_from_legacy) is NOT done
+ * here — it needs boot_node_db() which is only available after `S` is set in
+ * app_init_services, so it stays in boot_start_phase4_storage_shadow below. */
+utxo_projection_t *boot_ensure_log_and_utxo_projection(const char *datadir)
+{
+    utxo_projection_t *existing = utxo_projection_get_global();
+    if (existing)
+        return existing;
+    if (!datadir || !datadir[0])
+        return NULL;
+
+    char event_path[PATH_MAX];
+    char utxo_path[PATH_MAX];
+    int ne = snprintf(event_path, sizeof(event_path), "%s/event_log.dat",
+                      datadir);
+    int nu = snprintf(utxo_path, sizeof(utxo_path),
+                      "%s/utxo_projection.db", datadir);
+    if (ne <= 0 || (size_t)ne >= sizeof(event_path) ||
+        nu <= 0 || (size_t)nu >= sizeof(utxo_path)) {
+        fprintf(stderr,  // obs-ok:phase4-shadow
+                "[phase4] storage shadow paths too long\n");
+        return NULL;
+    }
+
+    if (!g_phase4_event_log) {
+        g_phase4_event_log = event_log_open(event_path);
+        if (!g_phase4_event_log) {
+            fprintf(stderr,  // obs-ok:phase4-shadow
+                    "[phase4] event log unavailable; projections disabled\n");
+            return NULL;
+        }
+        event_log_set_singleton(g_phase4_event_log);
+    }
+
+    utxo_projection_set_event_log(g_phase4_event_log);
+    g_phase4_utxo_projection =
+        utxo_projection_open(utxo_path, g_phase4_event_log);
+    if (!g_phase4_utxo_projection) {
+        fprintf(stderr,  // obs-ok:phase4-shadow
+                "[phase4] utxo_projection unavailable; shadow emit only\n");
+        return NULL;
+    }
+    uint64_t uoff = utxo_projection_catch_up(g_phase4_utxo_projection);
+    if (uoff == UINT64_MAX) {
+        fprintf(stderr,  // obs-ok:phase4-shadow
+                "[phase4] utxo_projection catch_up failed\n");
+    } else {
+        fprintf(stderr,  // obs-ok:phase4-shadow
+                "[phase4] utxo_projection caught up to offset=%llu\n",
+                (unsigned long long)uoff);
+    }
+    return g_phase4_utxo_projection;
+}
+
 static void boot_start_phase4_storage_shadow(const char *datadir)
 {
     if (!datadir || !datadir[0])
         return;
-    char event_path[PATH_MAX];
     char mempool_path[PATH_MAX];
     char peers_path[PATH_MAX];
-    char utxo_path[PATH_MAX];
-    int n1 = snprintf(event_path, sizeof(event_path), "%s/event_log.dat",
-                      datadir);
     int n2 = snprintf(mempool_path, sizeof(mempool_path),
                       "%s/mempool_projection.db", datadir);
     int n3 = snprintf(peers_path, sizeof(peers_path),
                       "%s/peers_projection.db", datadir);
-    int n4 = snprintf(utxo_path, sizeof(utxo_path),
-                      "%s/utxo_projection.db", datadir);
-    if (n1 <= 0 || (size_t)n1 >= sizeof(event_path) ||
-        n2 <= 0 || (size_t)n2 >= sizeof(mempool_path) ||
-        n3 <= 0 || (size_t)n3 >= sizeof(peers_path) ||
-        n4 <= 0 || (size_t)n4 >= sizeof(utxo_path)) {
+    if (n2 <= 0 || (size_t)n2 >= sizeof(mempool_path) ||
+        n3 <= 0 || (size_t)n3 >= sizeof(peers_path)) {
         fprintf(stderr,  // obs-ok:phase4-shadow
                 "[phase4] storage shadow paths too long\n");
         return;
     }
 
-    g_phase4_event_log = event_log_open(event_path);
-    if (!g_phase4_event_log) {
+    /* Open (or reuse, if boot.c already opened them for the coins read
+     * view) the event_log + utxo_projection. After this g_phase4_event_log
+     * is published. */
+    if (!boot_ensure_log_and_utxo_projection(datadir)) {
         fprintf(stderr,  // obs-ok:phase4-shadow
-                "[phase4] event log unavailable; projections disabled\n");
+                "[phase4] event log / utxo_projection unavailable; "
+                "projections disabled\n");
         return;
     }
-    event_log_set_singleton(g_phase4_event_log);
 
     mempool_projection_set_event_log(g_phase4_event_log);
     g_phase4_mempool_projection =
@@ -1088,27 +1146,10 @@ static void boot_start_phase4_storage_shadow(const char *datadir)
                 (unsigned long long)off);
     }
 
-    /* Phase 4b: utxo_projection — first PRODUCTION consumer of the
-     * event log. Shadow mode only here; legacy update_coins.c still
-     * authors coins.db. The shadow-diff MCP tool gates the 24h cutover
-     * soak before the legacy path is disabled. */
-    utxo_projection_set_event_log(g_phase4_event_log);
-    g_phase4_utxo_projection =
-        utxo_projection_open(utxo_path, g_phase4_event_log);
-    if (!g_phase4_utxo_projection) {
-        fprintf(stderr,  // obs-ok:phase4-shadow
-                "[phase4] utxo_projection unavailable; shadow emit only\n");
-        return;
-    }
-    uint64_t uoff = utxo_projection_catch_up(g_phase4_utxo_projection);
-    if (uoff == UINT64_MAX) {
-        fprintf(stderr,  // obs-ok:phase4-shadow
-                "[phase4] utxo_projection catch_up failed\n");
-    } else {
-        fprintf(stderr,  // obs-ok:phase4-shadow
-                "[phase4] utxo_projection caught up to offset=%llu\n",
-                (unsigned long long)uoff);
-    }
+    /* Phase 4b: utxo_projection — first PRODUCTION consumer of the event
+     * log. Opened + caught up above by boot_ensure_log_and_utxo_projection
+     * (so the coins_tip read view can bind to it before this runs). Shadow
+     * mode only here; legacy update_coins.c still authors coins.db. */
 
     /* Phase 4b-seed: one-time anchor-seed the projection from the legacy
      * coins.db so SHA3(projection)==SHA3(coins.db) and counts match (the

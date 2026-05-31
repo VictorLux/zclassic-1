@@ -10,6 +10,7 @@
 #include "config/runtime.h"
 #include "validation/main_state.h"
 #include "storage/coins_view_sqlite.h"
+#include "storage/utxo_projection.h"
 #include "coins/coins_view.h"
 #include "validation/txmempool.h"
 #include "net/connman.h"
@@ -128,6 +129,13 @@ bool app_init_services(struct app_context *ctx,
                         const struct chain_params *params,
                         struct boot_svc_ctx *svc);
 void boot_stop_db_service_kernel(void);
+
+/* Idempotent open of the append-only event_log + utxo_projection (the read
+ * authority for the single-engine UTXO path). Called early from app_init so
+ * the coins_tip read view can bind to utxo_projection_get_global() before
+ * app_init_services runs, then again (no-op reuse) from the phase-4 fan-out.
+ * Returns the published projection or NULL. */
+utxo_projection_t *boot_ensure_log_and_utxo_projection(const char *datadir);
 
 /* Shutdown phase order:
  * 1. stop externally visible services
