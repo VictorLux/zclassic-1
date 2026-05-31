@@ -472,6 +472,30 @@ static job_result_t step_finalize(struct stage_step_ctx *c)
                     utxo_size_after, 0, new_tip->phashBlock))
         return JOB_FATAL;
 
+    /* STEP 1 keystone — make tip_finalize the WRITER of the in-mem tip,
+     * not just the authority that reports it. After the log row is durable,
+     * advance the physical chain_active.chain[] array (the structure every
+     * stage READS) to new_tip. This is the only new chain[] writer outside
+     * the legacy connect_tip path.
+     *
+     * STRICTLY gated on AUTHORITATIVE: in the default SHADOW mode this is a
+     * no-op and legacy connect_tip->update_tip remains the sole tip writer,
+     * so live behaviour is UNCHANGED. Only when the operator flips
+     * tip_finalize to AUTHORITATIVE (cutover step 13, not here) does the
+     * reducer physically drive the tip forward.
+     *
+     * active_chain_set_tip re-invokes our registered authority set_tip_cb
+     * when authoritative; that only does atomic stores (update_last_advance),
+     * matching the value step_finalize stamps below — no lock re-entrancy. */
+    if (tip_finalize_get_mode() == TIP_FINALIZE_MODE_AUTHORITATIVE) {
+        if (!active_chain_set_tip(&ms->chain_active, new_tip)) { // one-write-path-ok:reducer-tip-authority
+            LOG_WARN("tip_finalize",
+                "[tip_finalize] AUTHORITATIVE chain_active set_tip failed "
+                "height=%d — chain[] not advanced", next_h);
+            return JOB_FATAL;
+        }
+    }
+
     atomic_fetch_add(&g_finalized_total, 1);
     atomic_fetch_add(&g_total_work_added_low,
                      arith_uint256_get_low64(&work_delta));
