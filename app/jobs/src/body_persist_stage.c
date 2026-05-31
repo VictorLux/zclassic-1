@@ -22,6 +22,7 @@
 #include "storage/event_log.h"
 #include "storage/event_log_payloads.h"
 #include "storage/event_log_singleton.h"
+#include "jobs/block_header_emit.h"
 #include "storage/progress_store.h"
 #include "util/log_macros.h"
 #include "util/safe_alloc.h"
@@ -227,88 +228,6 @@ static void emit_block_body_event(const struct block *blk,
     atomic_fetch_add_explicit(&g_body_emit_total, 1, memory_order_relaxed);
 }
 
-/* ── EV_BLOCK_HEADER re-emit (single-engine BLOCKER 1 PIECE 3) ───────────
- *
- * After body_persist sets BLOCK_HAVE_DATA on the in-memory block_index, the
- * projection must learn that the body landed — otherwise a projection-driven
- * rebuild would never see HAVE_DATA and the body would look absent. Mirrors
- * the step-3 emitter in header_admit_stage.c (sources scalars from the
- * in-memory `struct block_index`); EV_BLOCK_HEADER into block_index_projection
- * is idempotent (INSERT OR REPLACE keyed on hash), so re-emitting with the
- * updated nStatus is harmless. Best-effort/counted, never fatal — exactly the
- * block_index_db.c / header_admit semantics. The legacy HAVE_DATA setter
- * (disk_block_io.c set_have_data_verified) is left in place; this is additive. */
-static void emit_block_header_event_from_bi(const struct block_index *bi)
-{
-    if (!bi || !bi->phashBlock)
-        return;
-
-    event_log_t *log = event_log_singleton();
-    if (!log) {
-        /* Not wired yet (early boot, or unit tests). The projection
-         * catches up once boot completes — not a hard failure. */
-        return;
-    }
-
-    if (bi->nSolutionSize > EV_BLOCK_HEADER_MAX_SOLUTION) {
-        LOG_WARN("body_persist",
-                 "[body_persist] header emit: solution size %zu > max %u "
-                 "for h=%d; skipping",
-                 bi->nSolutionSize, (unsigned)EV_BLOCK_HEADER_MAX_SOLUTION,
-                 bi->nHeight);
-        atomic_fetch_add_explicit(&g_header_event_emit_fail_total, 1,
-                                  memory_order_relaxed);
-        return;
-    }
-
-    struct ev_block_header h;
-    memset(&h, 0, sizeof(h));
-    memcpy(h.hash, bi->phashBlock->data, 32);
-    if (bi->pprev && bi->pprev->phashBlock)
-        memcpy(h.hashPrev, bi->pprev->phashBlock->data, 32);
-    /* else: genesis — hashPrev stays all-zero (memset above) */
-    h.height        = bi->nHeight;
-    h.nStatus       = bi->nStatus;
-    h.nFile         = bi->nFile;
-    h.nDataPos      = bi->nDataPos;
-    h.nUndoPos      = bi->nUndoPos;
-    h.nTime         = bi->nTime;
-    h.nBits         = bi->nBits;
-    memcpy(h.nNonce, bi->nNonce.data, 32);
-    memcpy(h.hashMerkleRoot, bi->hashMerkleRoot.data, 32);
-    memcpy(h.hashFinalSaplingRoot, bi->hashFinalSaplingRoot.data, 32);
-    h.nVersion      = bi->nVersion;
-    h.nTx           = bi->nTx;
-    h.nSolutionSize = (uint16_t)bi->nSolutionSize;
-
-    size_t bufcap = ev_block_header_wire_size(h.nSolutionSize);
-    uint8_t stackbuf[256 + 1344];  /* fixed 200 + max solution 1344 */
-    if (bufcap > sizeof(stackbuf)) {
-        /* Shouldn't happen — capped above. Defensive bail. */
-        atomic_fetch_add_explicit(&g_header_event_emit_fail_total, 1,
-                                  memory_order_relaxed);
-        return;
-    }
-    size_t written = 0;
-    if (!ev_block_header_serialize(&h, bi->nSolution, stackbuf, bufcap,
-                                   &written)) {
-        LOG_WARN("body_persist",
-                 "[body_persist] header emit: serialize failed h=%d",
-                 bi->nHeight);
-        atomic_fetch_add_explicit(&g_header_event_emit_fail_total, 1,
-                                  memory_order_relaxed);
-        return;
-    }
-
-    uint64_t off = event_log_append(log, EV_BLOCK_HEADER, stackbuf, written);
-    if (off == UINT64_MAX) {
-        atomic_fetch_add_explicit(&g_header_event_emit_fail_total, 1,
-                                  memory_order_relaxed);
-        return;
-    }
-    atomic_fetch_add_explicit(&g_header_event_emit_total, 1,
-                              memory_order_relaxed);
-}
 
 static job_result_t step_persist(struct stage_step_ctx *c)
 {
@@ -405,7 +324,7 @@ static job_result_t step_persist(struct stage_step_ctx *c)
      * EV_BLOCK_HEADER for bi with the updated nStatus so the projection
      * persists the HAVE_DATA bit (idempotent INSERT OR REPLACE keyed on hash). */
     bi->nStatus |= BLOCK_HAVE_DATA;
-    emit_block_header_event_from_bi(bi);
+    block_index_emit_header_event(bi, "body_persist", &g_header_event_emit_total, &g_header_event_emit_fail_total);
 
     block_free(&blk);
     if (!log_insert(db, next_h, "verified", true))
