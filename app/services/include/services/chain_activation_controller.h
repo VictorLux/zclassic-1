@@ -183,6 +183,16 @@ enum reducer_source {
     REDUCER_SRC_REPAIR,        /* rebuild_recent recovery */
 };
 
+/* reducer_is_authoritative — the single consistent gate every live
+ * block-intake call site uses to choose the reducer over legacy
+ * process_new_block. True iff tip_finalize is AUTHORITATIVE.
+ *
+ * Under the live default (SHADOW) this is false, so every repointed call
+ * site (msg_blocks, msg_compact, mining, miner, rebuild) stays on the
+ * unchanged legacy process_new_block path. The cutover flip to
+ * AUTHORITATIVE is step 13 — NOT this phase. */
+bool reducer_is_authoritative(void);
+
 /* reducer_ingest_block — the synchronous block-intake entry that drives
  * the eight Wave-S Job stages instead of legacy activate_best_chain.
  *

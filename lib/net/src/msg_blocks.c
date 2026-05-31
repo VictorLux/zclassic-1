@@ -17,6 +17,7 @@
 #include "services/header_sync_service.h"
 #include "services/sync_monitor.h"
 #include "validation/process_block.h"
+#include "services/chain_activation_controller.h"
 #include "consensus/validation.h"
 #include "controllers/sync_controller.h"
 #include "net/download.h"
@@ -321,8 +322,19 @@ bool process_block_msg(struct msg_processor *mp, struct p2p_node *node,
 
     struct validation_state state;
     validation_state_init(&state);
-    process_new_block(&state, mp->main_state, mp->coins_tip,
-                      mp->params, &blk, false, mp->datadir);
+    /* Block intake: when the reducer is authoritative (cutover step 13,
+     * NOT yet flipped — SHADOW default = false), the synchronous
+     * reducer_ingest_block drives the eight Wave-S stages and fills the
+     * SAME validation_state. Otherwise the unchanged legacy
+     * process_new_block path runs. Either way the verdict in `state`
+     * preserves the exact mark-seen + DoS/getheaders contract below. */
+    if (reducer_is_authoritative()) {
+        reducer_ingest_block(boot_activation_controller(), &blk,
+                             REDUCER_SRC_P2P, false, &state);
+    } else {
+        process_new_block(&state, mp->main_state, mp->coins_tip,
+                          mp->params, &blk, false, mp->datadir);
+    }
 
     if (!validation_state_is_valid(&state)) {
         char hex[65];

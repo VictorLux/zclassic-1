@@ -567,13 +567,23 @@ static int reducer_drain_to_convergence(void)
     return total;
 }
 
+bool reducer_is_authoritative(void)
+{
+    /* The single consistent gate every live block-intake call site uses to
+     * choose the reducer over legacy process_new_block. The reducer is the
+     * engine only when tip_finalize is AUTHORITATIVE (the cutover flip is
+     * step 13, NOT this phase) — so under the live default (SHADOW) this is
+     * false and every site stays on the unchanged legacy path. */
+    return tip_finalize_get_mode() == TIP_FINALIZE_MODE_AUTHORITATIVE;
+}
+
 int reducer_kick(struct chain_activation_controller *ctl)
 {
     if (!ctl)
         return 0;
     /* AUTHORITATIVE-gated: a no-op in SHADOW so live behaviour is
      * unchanged. The supervisor tickers still drive the SHADOW pipeline. */
-    if (tip_finalize_get_mode() != TIP_FINALIZE_MODE_AUTHORITATIVE)
+    if (!reducer_is_authoritative())
         return 0;
 
     zcl_mutex_lock(&ctl->mutex);
@@ -642,7 +652,7 @@ bool reducer_ingest_block(struct chain_activation_controller *ctl,
     /* AUTHORITATIVE-gated. In SHADOW (the live default) the reducer is not
      * the engine — refuse rather than silently no-op, so a stray call can
      * never be mistaken for an accept. There is no live caller this phase. */
-    if (tip_finalize_get_mode() != TIP_FINALIZE_MODE_AUTHORITATIVE)
+    if (!reducer_is_authoritative())
         return validation_state_error(out, "reducer-not-authoritative");
 
     /* (1) Stateless gate FIRST, inline, BEFORE any log/stage mutation —
