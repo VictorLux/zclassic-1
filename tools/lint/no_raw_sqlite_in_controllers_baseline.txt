@@ -18,7 +18,6 @@ app/controllers/src/blockchain_controller_chain.c
 app/controllers/src/dbquery_controller.c
 app/controllers/src/file_controller_export.c
 app/controllers/src/legacy_import.c
-app/controllers/src/projection_diff_controller.c
 app/controllers/src/repair_controller.c
 app/controllers/src/repair_controller_utxo.c
 app/controllers/src/snapshot_controller.c
