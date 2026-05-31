@@ -29,20 +29,29 @@ bits + emit `EV_BLOCK_HEADER`.
 4. **Relocate** `add_to_block_index()` out of `process_block_core.c` (e.g. into `accept_block_header.c`) so the runtime producer survives the delete.
 5. `script_validate_stage` nStatus setter + `EV_BLOCK_HEADER` re-emit — sets `BLOCK_VALID_SCRIPTS` (which `tip_finalize.preconditions_ok` HARD-gates on). **Omitted by the first design pass; without it the tip never advances post-delete.**
 
+## Status (2026-05-31): the ADDITIVE phase (steps 1–5) is DONE + on `main`, green.
+
+Steps 1–5 landed (commits `bfc2e302f`, `daecdaec4`) + a DRY follow-up (`8fcf45f19`,
+the shared `block_index_emit_header_event`). The reducer now produces everything
+the legacy engine produces — block_index entries (relocated producer), headers,
+`HAVE_DATA`, `VALID_SCRIPTS` — running ALONGSIDE the still-present legacy engine.
+Build + `make lint` clean + `test_parallel` 0/275 at each step. Remaining: steps
+6–10 (the cutover + delete), gated on the cold/restart/read proof on a datadir copy.
+
 ## Ordered steps (build checkpoint after each; verify on a datadir COPY)
 
-| # | File(s) | Does | Risk |
-|---|---|---|---|
-| 1 | `utxo_projection.c` | add `setinfo` + `seed_from_snapshot` (pure additions) | none |
-| 2 | `accept_block_header.c` | relocate `add_to_block_index` here (producer survives delete) | low |
-| 3 | `header_admit_stage.c` | emit `EV_BLOCK_HEADER` when authoritative (2nd emitter alongside legacy) | low — idempotent |
-| 4 | `body_persist_stage.c` | set `BLOCK_HAVE_DATA` + re-emit header | low |
-| 5 | `script_validate_stage.c` | set `BLOCK_VALID_SCRIPTS` + re-emit header | low |
-| 6 | `block_index_loader.c` + `boot.c` | `boot_rebuild_from_log()`: catch_up → fold projection → map + pprev + nChainWork → seed tip from cursor | medium |
-| 7 | `snapshot_apply.c` + `utxo_projection.c` | cold-start: seed projection from snapshot + anchor header + cursor stamp | medium |
-| 8 | `boot.c` + `utxo_projection.h` | flip `coins_tip` read view to `coins_view_projection` (FATAL if projection null) | medium — parity-gate |
-| 9 | `blockchain_controller_chain.c` | `gettxoutsetinfo`/commitment read off the projection | medium — parity-gate |
-| 10 | `block_index_db.c`, `connect_tip.c`, `activate_best_chain.c`, `accept_block.c`, `process_block_core.c`, `block_index_loader.c` legacy loaders, `coins_view_sqlite.c`, `coins_view_stage_backing.c` | **DELETE the legacy engine — LAST**, only after 1–9 green on a COPY | high — the cut |
+| # | File(s) | Does | Risk | Status |
+|---|---|---|---|---|
+| 1 | `utxo_projection.c` | add `setinfo` + `seed_from_snapshot` (pure additions) | none | ✅ done |
+| 2 | `accept_block_header.c` | relocate `add_to_block_index` here (producer survives delete) | low | ✅ done |
+| 3 | `header_admit_stage.c` | emit `EV_BLOCK_HEADER` when authoritative (2nd emitter alongside legacy) | low — idempotent | ✅ done |
+| 4 | `body_persist_stage.c` | set `BLOCK_HAVE_DATA` + re-emit header | low | ✅ done |
+| 5 | `script_validate_stage.c` | set `BLOCK_VALID_SCRIPTS` + re-emit header | low | ✅ done |
+| 6 | `block_index_loader.c` + `boot.c` | `boot_rebuild_from_log()`: catch_up → fold projection → map + pprev + nChainWork → seed tip from cursor | medium | 🔲 next |
+| 7 | `snapshot_apply.c` + `utxo_projection.c` | cold-start: seed projection from snapshot + anchor header + cursor stamp | medium | 🔲 |
+| 8 | `boot.c` + `utxo_projection.h` | flip `coins_tip` read view to `coins_view_projection` (FATAL if projection null) | medium — parity-gate | 🔲 |
+| 9 | `blockchain_controller_chain.c` | `gettxoutsetinfo`/commitment read off the projection | medium — parity-gate | 🔲 |
+| 10 | `block_index_db.c`, `connect_tip.c`, `activate_best_chain.c`, `accept_block.c`, `process_block_core.c`, `block_index_loader.c` legacy loaders, `coins_view_sqlite.c`, `coins_view_stage_backing.c` | **DELETE the legacy engine — LAST**, only after 1–9 green on a COPY | high — the cut | 🔲 |
 
 ## End-to-end proof (on a COPY, `~/.zclassic` renamed away)
 
