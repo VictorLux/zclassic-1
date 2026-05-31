@@ -1,57 +1,26 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * Block explorer controller — comprehensive blockchain explorer served
- * over Tor .onion. Supports blocks, transactions (transparent + shielded),
- * ZSLP tokens, and address lookups. */
+ * Block explorer DASHBOARD controller — thin parse-fetch-delegate glue
+ * for the /explorer landing page. Supports two data sources: the
+ * RPC-proxy mode (when no in-process chain is loaded) and the
+ * native-chain mode. The controller fetches the four header stats and
+ * the latest-block rows, packs them into the view structs, and delegates
+ * the HTML/HTTP assembly to the dashboard view in
+ *   app/views/src/explorer_dashboard_view.c
+ * (checklist item D2 — controllers must not build views). */
 
 #include "platform/time_compat.h"
 #include "controllers/explorer_controller.h"
-#include "controllers/explorer_stats.h"
-#include "controllers/explorer_factoids.h"
-#include "controllers/api_controller.h"
 #include "chain/chain.h"
-#include "chain/chainparams.h"
-#include "chain/subsidy.h"
-#include "coins/coins.h"
-#include "coins/coins_view.h"
 #include "core/uint256.h"
-#include "encoding/utilstrencodings.h"
-#include "core/serialize.h"
-#include "keys/key_io.h"
-#include "models/database.h"
-#include "models/hodl_wave.h"
-#include "models/tx_index.h"
-#include "models/utxo.h"
 #include "primitives/block.h"
-#include "primitives/transaction.h"
-#include "zslp/slp.h"
-#include "script/standard.h"
-#include "storage/disk_block_io.h"
-#include "validation/chainstate.h"
 #include "validation/main_state.h"
 #include "validation/txmempool.h"
 #include <stdio.h>
-#include <stdlib.h>
 #include <string.h>
-#include <time.h>
-#include <ctype.h>
-#include <inttypes.h>
-#include <sys/socket.h>
-#include <sys/time.h>
-#include <netinet/in.h>
-#include <arpa/inet.h>
-#include <stdatomic.h>
-#include <unistd.h>
-#include <sys/stat.h>
-#include <pthread.h>
-#include <math.h>
-#include "util/ar_step_readonly.h"
-#include "util/log_macros.h"
-#include "util/safe_alloc.h"
 
 #include "controllers/explorer_internal.h"
-#include "util/template.h"
-#include "views/wallet_templates_gen.h"
+#include "views/explorer_dashboard_view.h"
 #include "views/format_helpers.h"
 #include "explorer_controller_internal.h"
 
@@ -59,7 +28,6 @@
 
 static size_t serve_dashboard_rpc(uint8_t *r, size_t max)
 {
-    size_t off = 0;
     char buf[65536];
 
     /* Get blockchain info */
@@ -72,28 +40,11 @@ static size_t serve_dashboard_rpc(uint8_t *r, size_t max)
     int64_t mp_count = json_extract_int(buf, "size");
     int64_t mp_bytes = json_extract_int(buf, "bytes");
 
-    APPEND(off, r, max, EXPLORER_HEADER("Dashboard"));
-    off += explorer_emit_nav((char *)r + off, max - off, "blocks");
-
-    char ht_fmt[32];
-    format_with_commas(ht_fmt, sizeof(ht_fmt), tip);
-    APPEND(off, r, max,
-        "<div class='stats-row'>"
-        "<div class='stat'><div class='num'>%s</div><div class='lbl'>Block Height</div></div>"
-        "<div class='stat'><div class='num'>%.2f</div><div class='lbl'>Difficulty</div></div>"
-        "<div class='stat'><div class='num'>%" PRId64 "</div><div class='lbl'>Mempool Txs</div></div>"
-        "<div class='stat'><div class='num'>%.1f KB</div><div class='lbl'>Mempool Size</div></div>"
-        "</div>",
-        ht_fmt, diff, mp_count, (double)mp_bytes / 1024.0);
-
-    /* Latest blocks */
-    APPEND(off, r, max,
-        "<h2>Latest Blocks</h2>"
-        "<table><tr><th>Height</th><th>Hash</th><th>Time</th>"
-        "<th>Txs</th><th>Difficulty</th></tr>");
-
     int show = 25;
-    for (int h = tip; h > tip - show && h >= 0 && off + 600 < max; h--) {
+    static struct explorer_dashboard_rpc_row rows[25];
+    int n = 0;
+
+    for (int h = tip; h > tip - show && h >= 0 && n < show; h--) {
         char params[64];
         snprintf(params, sizeof(params), "[%d]", h);
         rpc_call("getblockhash", params, buf, sizeof(buf));
@@ -136,25 +87,25 @@ static size_t serve_dashboard_rpc(uint8_t *r, size_t max)
         }
         (void)ntx;
 
-        char ts[32];
-        format_time(ts, sizeof(ts), (uint32_t)blk_time);
-
-        char short_hash[18];
-        snprintf(short_hash, sizeof(short_hash), "%.8s...%.4s", hash, hash + 60);
-
-        char ago[32];
-        format_time_ago(ago, sizeof(ago), (uint32_t)blk_time);
-
-        APPEND(off, r, max,
-            "<tr><td><a href='/explorer/block/%d'><b>%d</b></a></td>"
-            "<td class='hash'><a href='/explorer/block/%s'>%s</a></td>"
-            "<td>%s<br><small style='color:#666'>%s</small></td>"
-            "<td>%d</td><td>%.2f</td></tr>",
-            h, h, hash, short_hash, ago, ts, tx_count, blk_diff);
+        struct explorer_dashboard_rpc_row *row = &rows[n++];
+        row->height = h;
+        snprintf(row->hash, sizeof(row->hash), "%s", hash);
+        snprintf(row->short_hash, sizeof(row->short_hash), "%.8s...%.4s", hash, hash + 60);
+        format_time_ago(row->ago, sizeof(row->ago), (uint32_t)blk_time);
+        format_time(row->ts, sizeof(row->ts), (uint32_t)blk_time);
+        row->tx_count = tx_count;
+        row->difficulty = blk_diff;
     }
 
-    APPEND(off, r, max, "</table>" EXPLORER_FOOTER);
-    return off;
+    struct explorer_dashboard_rpc_view v = {
+        .tip = tip,
+        .difficulty = diff,
+        .mempool_count = mp_count,
+        .mempool_bytes = mp_bytes,
+        .rows = rows,
+        .row_count = n,
+    };
+    return explorer_dashboard_view_rpc(r, max, &v);
 }
 
 /* ── Dashboard (native chain mode) ───────────────────────── */
@@ -162,32 +113,12 @@ static size_t serve_dashboard_rpc(uint8_t *r, size_t max)
 static size_t serve_dashboard_native_page(uint8_t *r, size_t max, int page)
 {
     struct explorer_context *ctx = explorer_ctx();
-    size_t off = 0;
 
     int tip = active_chain_height(&ctx->main_state->chain_active);
     const struct block_index *tip_bi = active_chain_tip(&ctx->main_state->chain_active);
 
-    APPEND(off, r, max, EXPLORER_HEADER("Dashboard"));
-    off += explorer_emit_nav((char *)r + off, max - off, "blocks");
-
     size_t mp_count = ctx->mempool ? tx_mempool_size(ctx->mempool) : 0;
     uint64_t mp_bytes = ctx->mempool ? tx_mempool_total_size(ctx->mempool) : 0;
-
-    char ht_fmt[32];
-    format_with_commas(ht_fmt, sizeof(ht_fmt), tip);
-    APPEND(off, r, max,
-        "<div class='stats-row'>"
-        "<div class='stat'><div class='num'>%s</div><div class='lbl'>Block Height</div></div>"
-        "<div class='stat'><div class='num'>%.2f</div><div class='lbl'>Difficulty</div></div>"
-        "<div class='stat'><div class='num'>%zu</div><div class='lbl'>Mempool Txs</div></div>"
-        "<div class='stat'><div class='num'>%.1f KB</div><div class='lbl'>Mempool Size</div></div>"
-        "</div>",
-        ht_fmt, explorer_get_difficulty(tip_bi), mp_count, (double)mp_bytes / 1024.0);
-
-    APPEND(off, r, max,
-        "<h2>Latest Blocks</h2>"
-        "<table><tr><th>Height</th><th>Hash</th><th>Time</th>"
-        "<th>Txs</th><th>Difficulty</th><th>Shielded</th></tr>");
 
     int per_page = 25;
     if (page < 0) page = 0;
@@ -195,43 +126,39 @@ static size_t serve_dashboard_native_page(uint8_t *r, size_t max, int page)
     int end_height = start_height - per_page + 1;
     if (end_height < 0) end_height = 0;
 
+    static struct explorer_dashboard_native_row rows[25];
+    int n = 0;
+
     for (int h = start_height; h >= end_height && h >= 0; h--) {
         const struct block_index *bi = active_chain_at(&ctx->main_state->chain_active, h);
         if (!bi) continue;
 
+        struct explorer_dashboard_native_row *row = &rows[n++];
+        row->height = h;
         char hash[65] = "";
         if (bi->phashBlock) uint256_get_hex(bi->phashBlock, hash);
-        char ts[32];
-        format_time(ts, sizeof(ts), bi->nTime);
-        char short_hash[18];
-        snprintf(short_hash, sizeof(short_hash), "%.8s...%.4s", hash, hash + 60);
-        char sap_val[32] = "";
+        snprintf(row->hash, sizeof(row->hash), "%s", hash);
+        format_time(row->ts, sizeof(row->ts), bi->nTime);
+        snprintf(row->short_hash, sizeof(row->short_hash), "%.8s...%.4s", hash, hash + 60);
+        row->sapling[0] = '\0';
         if (bi->nSaplingValue != 0)
-            zcl_format_zcl(sap_val, sizeof(sap_val), bi->nSaplingValue);
-
-        char h_fmt[32];
-        format_with_commas(h_fmt, sizeof(h_fmt), h);
-        APPEND(off, r, max,
-            "<tr><td><a href='/explorer/block/%d'>%s</a></td>"
-            "<td class='hash'><a href='/explorer/block/%s'>%s</a></td>"
-            "<td>%s</td><td>%u</td><td>%.4f</td><td class='amount'>%s</td></tr>",
-            h, h_fmt, hash, short_hash, ts, bi->nTx, explorer_get_difficulty(bi), sap_val);
-
-        if (off + 512 >= max) break;
+            zcl_format_zcl(row->sapling, sizeof(row->sapling), bi->nSaplingValue);
+        format_with_commas(row->h_fmt, sizeof(row->h_fmt), h);
+        row->ntx = bi->nTx;
+        row->difficulty = explorer_get_difficulty(bi);
     }
 
-    APPEND(off, r, max, "</table>");
-
-    /* Pagination */
-    APPEND(off, r, max, "<div class='pager'>");
-    if (page > 0)
-        APPEND(off, r, max, "<a href='/explorer?page=%d'>&larr; Newer</a>", page - 1);
-    if (end_height > 0)
-        APPEND(off, r, max, "<a href='/explorer?page=%d'>Older &rarr;</a>", page + 1);
-    APPEND(off, r, max, "</div>");
-
-    APPEND(off, r, max, EXPLORER_FOOTER);
-    return off;
+    struct explorer_dashboard_native_view v = {
+        .tip = tip,
+        .difficulty = explorer_get_difficulty(tip_bi),
+        .mempool_count = mp_count,
+        .mempool_bytes = mp_bytes,
+        .rows = rows,
+        .row_count = n,
+        .page = page,
+        .end_height = end_height,
+    };
+    return explorer_dashboard_view_native(r, max, &v);
 }
 
 /* ── Dashboard (SQLite-only, no RPC or main_state needed) ── */
