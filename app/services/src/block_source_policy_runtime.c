@@ -134,8 +134,16 @@ void block_source_policy_init(struct connman *cm,
     g_bsp.main_state = ms;
     g_bsp.node_db = ndb;
     zcl_mutex_unlock(&g_bsp.lock);
-    bsp_restore_decision(ndb);
-    bsp_restore_projection_deferral(ndb);
+
+    /* Restore the persisted decision + projection-deferral mirror. A miss is
+     * non-fatal (cold start returns ZCL_OK; a real node.db read error is
+     * logged but init still proceeds with empty in-memory state). */
+    struct zcl_result r = bsp_restore_decision(ndb);
+    if (!r.ok)
+        LOG_WARN("bsp", "restore decision: %s", r.message);
+    r = bsp_restore_projection_deferral(ndb);
+    if (!r.ok)
+        LOG_WARN("bsp", "restore projection deferral: %s", r.message);
 }
 
 static int runtime_local_height(struct main_state *ms)

@@ -15,10 +15,6 @@
 # shared Job vtable in test_reducer_stage_fuzz.c). Their return-shape discipline
 # is owned by the A1 Job contract, not E2 — so their stale service-path entries
 # are dropped from this baseline.
-app/services/src/block_source_policy_decisions.c
-app/services/src/block_source_policy_persist.c
-app/services/src/block_source_policy_runtime.c
-app/services/src/block_source_policy_status.c
 app/services/src/chain_state_repository.c
 app/services/src/cutover_modes.c
 app/services/src/legacy_mirror_sync_service.c

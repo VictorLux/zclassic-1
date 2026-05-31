@@ -17,6 +17,7 @@
 #define ZCL_SERVICES_BLOCK_SOURCE_POLICY_INTERNAL_H
 
 #include "services/block_source_policy.h"
+#include "util/result.h"
 #include "util/sync.h"
 
 #include <stdbool.h>
@@ -47,15 +48,22 @@ extern struct bsp_state {
 void bsp_lock_init_once(void);
 void bsp_copy_text(char *dst, size_t dst_len, const char *src);
 
-/* Persistence seam (block_source_policy_persist.c). */
-void bsp_persist_decision(struct node_db *ndb, const char *op,
-                          const struct cac_decision *d, int64_t when,
-                          int64_t total);
-void bsp_restore_decision(struct node_db *ndb);
-void bsp_restore_projection_deferral(struct node_db *ndb);
+/* Persistence seam (block_source_policy_persist.c). node.db writes are a
+ * genuine error channel (the disk mirror can fail); these carry the failure
+ * reason via struct zcl_result rather than swallowing it. The persisted
+ * state is a best-effort mirror of in-memory decision state, so callers log
+ * a non-ok result but do not change the decision (DEFENSIVE_CODING.md §2). */
+struct zcl_result bsp_persist_decision(struct node_db *ndb, const char *op,
+                                       const struct cac_decision *d,
+                                       int64_t when, int64_t total);
+struct zcl_result bsp_restore_decision(struct node_db *ndb);
+struct zcl_result bsp_restore_projection_deferral(struct node_db *ndb);
 
-/* Decision seam (block_source_policy_decisions.c). */
-void bsp_record_decision(const char *op, const struct cac_decision *d);
+/* Decision seam (block_source_policy_decisions.c). Records the decision in
+ * memory and mirrors it to node.db; returns the persist result so a failed
+ * disk write is logged with context (the decision itself never fails). */
+struct zcl_result bsp_record_decision(const char *op,
+                                      const struct cac_decision *d);
 const char *bsp_source_class_name(enum cac_source source);
 
 /* Runtime seam (block_source_policy_runtime.c). */

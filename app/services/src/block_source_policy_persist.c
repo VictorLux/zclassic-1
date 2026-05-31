@@ -46,11 +46,16 @@
 #define BSP_KEY_SOURCE_BLOCKED BSP_STATE_PREFIX "last_source_blocked"
 #define BSP_KEY_SOURCE_PREFIX BSP_STATE_PREFIX "last_source."
 
-static bool persist_text(struct node_db *ndb, const char *key, const char *val)
+static struct zcl_result persist_text(struct node_db *ndb, const char *key,
+                                      const char *val)
 {
     if (!ndb || !key || !val)
-        return false;
-    return node_db_state_set(ndb, key, val, strlen(val) + 1);
+        return ZCL_ERR(-1, "persist_text: null arg key=%s",
+                       key ? key : "(null)");
+    if (!node_db_state_set(ndb, key, val, strlen(val) + 1))
+        return ZCL_ERR(-2, "persist_text: node_db_state_set failed key=%s",
+                       key);
+    return ZCL_OK;
 }
 
 static bool source_field_key(char *buf, size_t buflen,
@@ -258,17 +263,23 @@ static void restore_source_snapshot(struct node_db *ndb,
     restore_source_int(ndb, source, "serving_peer_id", &s->serving_peer_id);
 }
 
-void bsp_persist_decision(struct node_db *ndb,
-                          const char *op,
-                          const struct cac_decision *d,
-                          int64_t when,
-                          int64_t total)
+struct zcl_result bsp_persist_decision(struct node_db *ndb,
+                                       const char *op,
+                                       const struct cac_decision *d,
+                                       int64_t when,
+                                       int64_t total)
 {
     if (!ndb || !d)
-        return;
+        return ZCL_ERR(-1, "bsp_persist_decision: null %s",
+                       !ndb ? "ndb" : "decision");
 
-    (void)persist_text(ndb, BSP_KEY_LAST_OP, op ? op : "unknown");
-    (void)node_db_state_set_int(ndb, BSP_KEY_LAST_TIME, when);
+    /* Best-effort mirror of the in-memory decision to node.db. We attempt
+     * every field; the first write failure becomes the returned result so
+     * the caller can log it (the in-memory decision is authoritative and is
+     * not rolled back on a disk-write miss). */
+    bool ok = true;
+    ok = persist_text(ndb, BSP_KEY_LAST_OP, op ? op : "unknown").ok && ok;
+    ok = node_db_state_set_int(ndb, BSP_KEY_LAST_TIME, when) && ok;
     (void)node_db_state_set_int(ndb, BSP_KEY_DECISIONS_TOTAL, total);
     (void)node_db_state_set_int(ndb, BSP_KEY_RESULT, (int64_t)d->result);
     (void)node_db_state_set_int(ndb, BSP_KEY_SOURCE,
@@ -306,12 +317,19 @@ void bsp_persist_decision(struct node_db *ndb,
         (void)node_db_state_set_int(ndb, BSP_KEY_SOURCE_BLOCKED,
                                     s->blocked ? 1 : 0);
     }
+
+    if (!ok)
+        return ZCL_ERR(-3,
+                       "bsp_persist_decision: node.db mirror write failed "
+                       "op=%s (decision kept in memory)",
+                       op ? op : "unknown");
+    return ZCL_OK;
 }
 
-void bsp_restore_decision(struct node_db *ndb)
+struct zcl_result bsp_restore_decision(struct node_db *ndb)
 {
     if (!ndb)
-        return;
+        return ZCL_ERR(-1, "bsp_restore_decision: null ndb");
 
     struct cac_decision d;
     memset(&d, 0, sizeof(d));
@@ -326,13 +344,15 @@ void bsp_restore_decision(struct node_db *ndb)
     int64_t total = 0;
     int64_t when = 0;
 
+    /* No persisted decision yet (cold start) is a successful no-op, not a
+     * failure — there is simply nothing to restore. */
     if (!node_db_state_get(ndb, BSP_KEY_LAST_OP, op, sizeof(op) - 1, &len))
-        return;
+        return ZCL_OK;
     if (!node_db_state_get_int(ndb, BSP_KEY_RESULT, &v))
-        return;
+        return ZCL_OK;
     d.result = (enum cac_decision_result)v;
     if (!node_db_state_get_int(ndb, BSP_KEY_SOURCE, &v))
-        return;
+        return ZCL_OK;
     d.selected_source = (enum cac_source)v;
     if (node_db_state_get_int(ndb, BSP_KEY_ACTIVATION_ALLOWED, &v))
         d.activation_allowed = v != 0;
@@ -388,12 +408,13 @@ void bsp_restore_decision(struct node_db *ndb)
     g_bsp.decisions_total = total > 0 ? total : 1;
     bsp_copy_text(g_bsp.last_op, sizeof(g_bsp.last_op), op);
     zcl_mutex_unlock(&g_bsp.lock);
+    return ZCL_OK;
 }
 
-void bsp_restore_projection_deferral(struct node_db *ndb)
+struct zcl_result bsp_restore_projection_deferral(struct node_db *ndb)
 {
     if (!ndb)
-        return;
+        return ZCL_ERR(-1, "bsp_restore_projection_deferral: null ndb");
 
     int64_t total = 0;
     int64_t height = 0;
@@ -420,4 +441,5 @@ void bsp_restore_projection_deferral(struct node_db *ndb)
                   sizeof(g_bsp.last_projection_deferred_reason),
                   reason);
     zcl_mutex_unlock(&g_bsp.lock);
+    return ZCL_OK;
 }

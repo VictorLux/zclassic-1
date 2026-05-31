@@ -1,4 +1,13 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0 */
+// one-result-type-ok:bsp-status-pure-serializers
+/* This seam owns no fallible service surface: pure JSON serializers
+ * (bsp_source_to_json / bsp_decision_to_json), a name lookup
+ * (bsp_source_class_name), a void status read (block_source_policy_get_status),
+ * and block_source_policy_dump_state_json — whose bool return is the
+ * g_dumpers[] dispatch-table convention (a serialize-into-out getter, not an
+ * error channel; see CLAUDE.md "Adding state introspection"). No node.db
+ * writes, no failure path to carry. The fallible persist/restore/record seam
+ * lives in the sibling files and returns struct zcl_result. */
 
 /* Status / introspection seam for the block-source policy stateful runtime.
  * The status read (block_source_policy_get_status), the per-source and

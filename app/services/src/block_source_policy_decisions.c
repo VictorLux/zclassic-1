@@ -12,15 +12,19 @@
 
 #include "platform/time_compat.h"
 #include "event/event.h"
+#include "util/log_macros.h"
 #include "util/sync.h"
 
 #include <stdarg.h>
 #include <stdio.h>
 #include <string.h>
 
-void bsp_record_decision(const char *op, const struct cac_decision *d)
+struct zcl_result bsp_record_decision(const char *op,
+                                      const struct cac_decision *d)
 {
-    if (!d) return;
+    if (!d)
+        return ZCL_ERR(-1, "bsp_record_decision: null decision op=%s",
+                       op ? op : "unknown");
     struct node_db *ndb = NULL;
     int64_t when = (int64_t)platform_time_wall_time_t();
     int64_t total = 0;
@@ -38,7 +42,9 @@ void bsp_record_decision(const char *op, const struct cac_decision *d)
     ndb = g_bsp.node_db;
     zcl_mutex_unlock(&g_bsp.lock);
 
-    bsp_persist_decision(ndb, op_copy, d, when, total);
+    /* The decision is now authoritative in memory; the node.db mirror is
+     * best-effort. Propagate (don't swallow) a disk-write failure. */
+    return bsp_persist_decision(ndb, op_copy, d, when, total);
 }
 
 static void emit_decision_event(const char *op,
@@ -126,7 +132,9 @@ bool block_source_policy_peer_floor_recovery_needed(
     }
 
     block_source_policy_plan(&in, decision);
-    bsp_record_decision("peer_floor", decision);
+    struct zcl_result rec = bsp_record_decision("peer_floor", decision);
+    if (!rec.ok)
+        LOG_WARN("bsp", "record peer_floor decision: %s", rec.message);
 
     bool recover = healthy_outbound < min_healthy &&
                    decision->selected_source != CAC_SOURCE_P2P;
@@ -180,7 +188,9 @@ bool block_source_policy_snapshot_offer_allowed(
     }
 
     block_source_policy_plan(&in, decision);
-    bsp_record_decision("snapshot_offer", decision);
+    struct zcl_result rec = bsp_record_decision("snapshot_offer", decision);
+    if (!rec.ok)
+        LOG_WARN("bsp", "record snapshot_offer decision: %s", rec.message);
 
     bool allowed = offer_valid &&
                    decision->selected_source == CAC_SOURCE_SNAPSHOT;
@@ -234,7 +244,11 @@ bool block_source_policy_local_header_refill_needed(
     }
 
     block_source_policy_plan(&in, decision);
-    bsp_record_decision("local_header_refill", decision);
+    struct zcl_result rec =
+        bsp_record_decision("local_header_refill", decision);
+    if (!rec.ok)
+        LOG_WARN("bsp", "record local_header_refill decision: %s",
+                 rec.message);
 
     bool proceed = decision->result != CAC_DECISION_BLOCKED;
     emit_decision_event(
