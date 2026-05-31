@@ -18,6 +18,7 @@
 #include "primitives/block.h"
 #include "jobs/header_admit_stage.h"
 #include "services/cutover_modes.h"
+#include "services/header_admit_inbox.h"
 #include "jobs/validate_headers_stage.h"
 #include "storage/progress_store.h"
 #include "util/blocker.h"
@@ -360,6 +361,115 @@ int test_header_admit_stage(void)
         header_admit_stage_shutdown();
         active_chain_free(&ms.chain_active);
         synth_chain_free(&sc);
+        progress_store_close();
+        test_cleanup_tmpdir(dir);
+    }
+
+    /* ── producer path: a staged raw header CREATES a block_index ──────
+     * Reducer step 2. AUTHORITATIVE-only: when the active chain has no
+     * block at the needed height, a raw header pushed through the inbox
+     * lets the stage build the block_index via add_to_block_index — the
+     * reducer extends the chain without legacy accept_block_header.
+     * Dormant in SHADOW (the hash-hint path never sets has_header). */
+    {
+        char dir[256];
+        test_fmt_tmpdir(dir, sizeof(dir), "header_admit","producer");
+        mkdir_p_ha(dir);
+        HA_CHECK("producer: store opens", progress_store_open(dir));
+
+        struct main_state ms;
+        main_state_init(&ms);
+
+        /* Parent at height 0, in the map AND the active chain. */
+        struct uint256 parent_hash;
+        memset(&parent_hash, 0, sizeof(parent_hash));
+        parent_hash.data[0] = 0x77;
+        struct block_index *parent = chainstate_insert_block_index(
+            (struct chainstate *)&ms, &parent_hash);
+        HA_CHECK("producer: parent inserted", parent != NULL);
+        if (parent) {
+            parent->nHeight = 0;
+            parent->nStatus = BLOCK_VALID_TREE;
+            active_chain_set_tip(&ms.chain_active, parent);
+            ms.pindex_best_header = parent;
+        }
+
+        header_admit_set_mode(HEADER_ADMIT_MODE_AUTHORITATIVE);
+        HA_CHECK("producer: stage init", header_admit_stage_init(&ms));
+        HA_CHECK("producer: produced_total starts at 0",
+                 header_admit_stage_produced_total() == 0);
+
+        /* A child header for height 1, carried as raw bytes in the inbox. */
+        struct block_header child;
+        block_header_init(&child);
+        child.hashPrevBlock = parent_hash;
+        child.nTime = 1;
+        child.nBits = 1;
+        child.nSolutionSize = 0;
+        struct uint256 child_hash;
+        block_header_get_hash(&child, &child_hash);
+
+        struct header_admit_msg msg;
+        memset(&msg, 0, sizeof(msg));
+        msg.height = 1;
+        msg.hash = child_hash;
+        msg.has_header = true;
+        msg.header = child;
+        HA_CHECK("producer: push raw header to inbox",
+                 mailbox_header_admit_push(&msg));
+
+        /* Before production, the child is not in the block_index. */
+        HA_CHECK("producer: child absent from map pre-step",
+                 block_map_find(&ms.map_block_index, &child_hash) == NULL);
+
+        /* Step 1 drains the inbox (staging the header) and admits the
+         * height-0 parent (already in the active chain). Step 2 hits the
+         * absent height 1 → producer path CREATES the entry. */
+        HA_CHECK("producer: step 0 admits parent (ADVANCED)",
+                 header_admit_stage_step_once() == JOB_ADVANCED);
+        HA_CHECK("producer: step 1 produces+admits child (ADVANCED)",
+                 header_admit_stage_step_once() == JOB_ADVANCED);
+
+        HA_CHECK("producer: produced_total == 1",
+                 header_admit_stage_produced_total() == 1);
+        struct block_index *created =
+            block_map_find(&ms.map_block_index, &child_hash);
+        HA_CHECK("producer: child now in block_index", created != NULL);
+        HA_CHECK("producer: created entry at height 1, VALID_TREE",
+                 created != NULL && created->nHeight == 1 &&
+                 (created->nStatus & BLOCK_VALID_MASK) >= BLOCK_VALID_TREE);
+        HA_CHECK("producer: created links to parent",
+                 created != NULL && created->pprev == parent);
+        HA_CHECK("producer: cursor advanced to 2",
+                 header_admit_stage_cursor() == 2);
+
+        /* SHADOW dormancy: a fresh header pushed in SHADOW is NOT staged,
+         * so no production happens (the path is gated AUTHORITATIVE). */
+        header_admit_set_mode(HEADER_ADMIT_MODE_SHADOW);
+        struct block_header child2;
+        block_header_init(&child2);
+        child2.hashPrevBlock = child_hash;
+        child2.nTime = 2;
+        child2.nBits = 1;
+        struct uint256 child2_hash;
+        block_header_get_hash(&child2, &child2_hash);
+        struct header_admit_msg msg2;
+        memset(&msg2, 0, sizeof(msg2));
+        msg2.height = 2;
+        msg2.hash = child2_hash;
+        msg2.has_header = true;
+        msg2.header = child2;
+        HA_CHECK("producer: push raw header in SHADOW",
+                 mailbox_header_admit_push(&msg2));
+        HA_CHECK("producer: SHADOW step is IDLE (no production)",
+                 header_admit_stage_step_once() == JOB_IDLE);
+        HA_CHECK("producer: SHADOW left produced_total at 1",
+                 header_admit_stage_produced_total() == 1);
+        HA_CHECK("producer: SHADOW did NOT create child2",
+                 block_map_find(&ms.map_block_index, &child2_hash) == NULL);
+
+        header_admit_stage_shutdown();
+        main_state_free(&ms);
         progress_store_close();
         test_cleanup_tmpdir(dir);
     }

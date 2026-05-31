@@ -96,6 +96,9 @@ uint64_t header_admit_stage_admitted_total(void);
  * cursor, the cursor was rewound to the fork point so the stale log rows
  * get re-admitted (INSERT OR REPLACE) with the canonical hashes. */
 uint64_t header_admit_stage_reorg_rewind_total(void);
+/* Count of block_index entries the stage CREATED from staged raw header
+ * bytes (the reducer producer path, AUTHORITATIVE only). Zero in SHADOW. */
+uint64_t header_admit_stage_produced_total(void);
 bool header_admit_stage_has_record(int32_t height,
                                    const struct uint256 *hash);
 

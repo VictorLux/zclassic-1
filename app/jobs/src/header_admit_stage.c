@@ -9,6 +9,8 @@
 
 #include "jobs/header_admit_stage.h"
 
+#include "header_admit_internal.h"
+
 #include "chain/chain.h"
 #include "core/uint256.h"
 #include "event/event.h"
@@ -27,8 +29,10 @@
 #include "util/log_macros.h"
 #include "util/safe_alloc.h"
 #include "util/stage.h"
+#include "validation/accept_block_header.h"
 #include "validation/chainstate.h"
 #include "validation/main_state.h"
+#include "primitives/block.h"
 
 #include <pthread.h>
 #include <stdatomic.h>
@@ -54,6 +58,9 @@ static _Atomic uint64_t g_inbox_logged_total = 0;
 static _Atomic uint64_t g_reorg_rewind_total = 0;
 static _Atomic uint64_t g_header_event_emit_total = 0;
 static _Atomic uint64_t g_header_event_emit_fail_total = 0;
+/* Reducer producer path: count of block_index entries CREATED by the
+ * stage from raw header bytes (add_to_block_index), AUTHORITATIVE only. */
+static _Atomic uint64_t g_produced_total = 0;
 static _Atomic int64_t  g_last_admit_height = -1;
 static _Atomic int64_t  g_last_step_unix = 0;
 static _Atomic int64_t  g_last_blocked_unix = 0;
@@ -64,6 +71,81 @@ static void *g_authoritative_hook_user = NULL;
 
 MAILBOX_DEFINE(header_admit, struct header_admit_msg,
                HEADER_ADMIT_INBOX_CAPACITY)
+
+/* ── Pending raw-header staging (reducer producer path) ──────────────
+ *
+ * The inbox drain copies any message carrying raw header bytes
+ * (m->has_header) into this small bounded ring, keyed by hash. step_admit
+ * consults it when the active chain has no block at the height it needs
+ * and the stage is AUTHORITATIVE, then CREATES the block_index entry via
+ * add_to_block_index — letting the reducer extend the chain without the
+ * legacy accept_block_header.
+ *
+ * Touched only on the stage's single step thread (drain + step both run
+ * inside header_admit_stage_step_once), so no lock is needed. DORMANT in
+ * SHADOW: hash-hint pushers never set has_header, so the ring stays empty
+ * and the producer path never fires. */
+#define HEADER_ADMIT_PENDING_CAP 64
+
+struct pending_header {
+    struct uint256       hash;
+    struct block_header  header;
+    bool                 occupied;
+};
+
+static struct pending_header g_pending[HEADER_ADMIT_PENDING_CAP];
+
+/* Stage a raw header for later production. Overwrites the oldest slot on
+ * collision (simple ring); idempotent on identical hash. */
+static void pending_header_stage(const struct block_header *h)
+{
+    struct uint256 hash;
+    block_header_get_hash(h, &hash);
+
+    int free_slot = -1;
+    for (int i = 0; i < HEADER_ADMIT_PENDING_CAP; i++) {
+        if (g_pending[i].occupied) {
+            if (memcmp(g_pending[i].hash.data, hash.data, 32) == 0)
+                return;  /* already staged */
+        } else if (free_slot < 0) {
+            free_slot = i;
+        }
+    }
+    static int rr = 0;
+    int slot = (free_slot >= 0) ? free_slot
+                                : (rr = (rr + 1) % HEADER_ADMIT_PENDING_CAP);
+    g_pending[slot].hash     = hash;
+    g_pending[slot].header   = *h;
+    g_pending[slot].occupied = true;
+}
+
+/* Find a staged raw header whose parent is already in the block_index and
+ * would land at `want_height`. Returns the slot's header pointer, or NULL.
+ * Consumes (frees) the slot on a hit. */
+static const struct block_header *pending_header_take(struct main_state *ms,
+                                                      int want_height)
+{
+    for (int i = 0; i < HEADER_ADMIT_PENDING_CAP; i++) {
+        if (!g_pending[i].occupied)
+            continue;
+        const struct block_header *h = &g_pending[i].header;
+        int produced_height;
+        if (want_height == 0) {
+            produced_height = 0;  /* genesis: no parent */
+        } else {
+            struct block_index *pprev = block_map_find(&ms->map_block_index,
+                                                       &h->hashPrevBlock);
+            if (!pprev)
+                continue;
+            produced_height = pprev->nHeight + 1;
+        }
+        if (produced_height != want_height)
+            continue;
+        g_pending[i].occupied = false;
+        return h;
+    }
+    return NULL;
+}
 
 /* ── Step body ─────────────────────────────────────────────────────── */
 
@@ -100,6 +182,13 @@ static void handle_header_admit_msg(const struct header_admit_msg *m)
     sqlite3 *db = progress_store_db();
     if (!ms || !db || m->height < 0 || m->height > INT32_MAX)
         return;
+
+    /* Reducer producer path: stage any carried raw header so step_admit
+     * can CREATE the block_index entry. AUTHORITATIVE-only and DORMANT in
+     * SHADOW (hash-hint pushers leave has_header false). */
+    if (m->has_header &&
+        header_admit_get_mode() == HEADER_ADMIT_MODE_AUTHORITATIVE)
+        pending_header_stage(&m->header);
 
     struct block_index *bi = active_chain_at(&ms->chain_active,
                                              (int)m->height);
@@ -254,6 +343,28 @@ static bool rewind_cursor_if_active_chain_reorged(sqlite3 *db)
     return true;
 }
 
+/* Reducer producer: CREATE the block_index entry for `want_height` from a
+ * staged raw header (add_to_block_index). AUTHORITATIVE-only; returns the
+ * created (or already-mapped) entry, or NULL when no staged header lands
+ * at this height (the SHADOW/legacy follower behaviour — caller IDLEs).
+ * Does not touch coins.db, disk, or the active-chain tip — it only adds
+ * to ms->map_block_index, exactly as legacy accept_block_header would. */
+static struct block_index *produce_block_index(struct main_state *ms,
+                                               int want_height)
+{
+    const struct block_header *h = pending_header_take(ms, want_height);
+    if (!h)
+        return NULL;
+
+    struct block_index *bi = add_to_block_index(ms, h);
+    if (!bi || !bi->phashBlock) {
+        LOG_WARN("header_admit", "[header_admit] produce add_to_block_index failed height=%d", want_height);
+        return NULL;
+    }
+    atomic_fetch_add(&g_produced_total, 1);
+    return bi;
+}
+
 static job_result_t step_admit(struct stage_step_ctx *c)
 {
     atomic_store(&g_last_step_unix, platform_time_wall_unix());
@@ -268,7 +379,16 @@ static job_result_t step_admit(struct stage_step_ctx *c)
     if (next_h < 0) return JOB_FATAL;
 
     struct block_index *bi = active_chain_at(&ms->chain_active, next_h);
-    if (!bi || !bi->phashBlock) return JOB_IDLE;
+    if (!bi || !bi->phashBlock) {
+        /* Reducer producer path (AUTHORITATIVE only): the active chain has
+         * no block here yet — if a raw header for this height was staged
+         * via the inbox, CREATE the block_index entry so the reducer can
+         * extend the chain without the legacy accept_block_header. SHADOW
+         * stays a pure follower: no staged headers → IDLE as before. */
+        if (header_admit_get_mode() == HEADER_ADMIT_MODE_AUTHORITATIVE)
+            bi = produce_block_index(ms, next_h);
+        if (!bi || !bi->phashBlock) return JOB_IDLE;
+    }
 
     const struct uint256 *parent_hash = NULL;
     if (next_h > 0) {
@@ -403,9 +523,11 @@ void header_admit_stage_shutdown(void)
     atomic_store(&g_reorg_rewind_total, (uint64_t)0);
     atomic_store(&g_header_event_emit_total, (uint64_t)0);
     atomic_store(&g_header_event_emit_fail_total, (uint64_t)0);
+    atomic_store(&g_produced_total, (uint64_t)0);
     atomic_store(&g_last_admit_height, (int64_t)-1);
     atomic_store(&g_last_step_unix, (int64_t)0);
     atomic_store(&g_last_blocked_unix, (int64_t)0);
+    memset(g_pending, 0, sizeof(g_pending));
 #ifdef ZCL_TESTING
     g_authoritative_hook = NULL;
     g_authoritative_hook_user = NULL;
@@ -441,6 +563,11 @@ uint64_t header_admit_stage_admitted_total(void)
 uint64_t header_admit_stage_reorg_rewind_total(void)
 {
     return atomic_load(&g_reorg_rewind_total);
+}
+
+uint64_t header_admit_stage_produced_total(void)
+{
+    return atomic_load(&g_produced_total);
 }
 
 bool header_admit_stage_has_record(int32_t height,
@@ -495,6 +622,8 @@ bool header_admit_stage_dump_state_json(struct json_value *out,
                       (int64_t)atomic_load(&g_header_event_emit_total));
     json_push_kv_int (out, "header_event_emit_fail_total",
                       (int64_t)atomic_load(&g_header_event_emit_fail_total));
+    json_push_kv_int (out, "produced_total",
+                      (int64_t)atomic_load(&g_produced_total));
     json_push_kv_int (out, "last_admit_height",
                       atomic_load(&g_last_admit_height));
     json_push_kv_int (out, "last_step_unix",
@@ -519,179 +648,14 @@ bool header_admit_stage_dump_state_json(struct json_value *out,
     return true;
 }
 
-/* ── S-11 mini-diff harness ─────────────────────────────────────────── */
+/* ── Sibling-private accessors (header_admit_stage_diff.c) ──────────── */
 
-/* SELECT MAX(height) FROM header_admit_log. Returns -1 if empty. */
-static int32_t log_max_height(sqlite3 *db)
+struct main_state *header_admit_internal_ms(void)
 {
-    sqlite3_stmt *st = NULL;
-    int rc = sqlite3_prepare_v2(db,
-        "SELECT MAX(height) FROM header_admit_log", -1, &st, NULL);
-    if (rc != SQLITE_OK) {
-        LOG_WARN("header_admit", "[header_admit] diff: prepare MAX(height) failed: %s", sqlite3_errmsg(db));
-        return -1;  /* raw-return-ok:diagnostic-treats-as-empty */
-    }
-    int32_t out = -1;
-    if (sqlite3_step(st) == SQLITE_ROW &&  // raw-sql-ok:kernel-primitive
-        sqlite3_column_type(st, 0) != SQLITE_NULL) {
-        out = (int32_t)sqlite3_column_int(st, 0);
-    }
-    sqlite3_finalize(st);
-    return out;
+    return g_ms;
 }
 
-static void diff_sample_record(struct header_admit_diff_report *r,
-                                int32_t h,
-                                const uint8_t *log_hash, bool log_present,
-                                const uint8_t *chain_hash, bool chain_present)
+struct stage *header_admit_internal_stage(void)
 {
-    if (r->sample_count >= HEADER_ADMIT_DIFF_MAX_SAMPLES) return;
-    struct header_admit_diff_sample *s = &r->samples[r->sample_count++];
-    s->height        = h;
-    s->log_present   = log_present;
-    s->chain_present = chain_present;
-    if (log_present && log_hash)   memcpy(s->log_hash,   log_hash,   32);
-    else                           memset(s->log_hash,   0, 32);
-    if (chain_present && chain_hash) memcpy(s->chain_hash, chain_hash, 32);
-    else                             memset(s->chain_hash, 0, 32);
-}
-
-bool header_admit_stage_diff(int32_t start_h, int32_t end_h,
-                              struct header_admit_diff_report *out)
-{
-    if (!out) return false;
-    memset(out, 0, sizeof(*out));
-    out->first_divergent_height = -1;
-    out->log_max_height         = -1;
-    out->chain_tip_height       = -1;
-
-    /* Not-ready guard: stage uninit or progress.kv closed. The report
-     * is still populated with sensible defaults so callers can render. */
-    struct main_state *ms = g_ms;
-    sqlite3 *db = progress_store_db();
-    if (!g_stage || !ms || !db) {
-        out->status = HEADER_ADMIT_DIFF_NOT_READY;
-        out->start_height = (start_h < 0) ? 0 : start_h;
-        out->end_height   = (end_h   < 0) ? 0 : end_h;
-        return true;
-    }
-
-    out->cursor             = (int32_t)stage_cursor(g_stage);
-    out->log_max_height     = log_max_height(db);
-    out->chain_tip_height   = active_chain_height(&ms->chain_active);
-
-    /* Resolve auto-bounds. A fully automatic diff should answer the
-     * operator question "does the recent stage path match the active
-     * chain?" rather than burning the capped range on genesis. */
-    int32_t s = (start_h < 0) ? 0 : start_h;
-    int32_t e = end_h;
-    if (e < 0) {
-        int32_t a = out->log_max_height;
-        int32_t b = out->chain_tip_height;
-        if (a < 0 && b < 0)      e = -1;
-        else if (a < 0)          e = b;
-        else if (b < 0)          e = a;
-        else                     e = (a < b) ? a : b;
-    }
-    if (start_h < 0 && e >= HEADER_ADMIT_DIFF_MAX_RANGE)
-        s = e - HEADER_ADMIT_DIFF_MAX_RANGE + 1;
-
-    if (e < s) {
-        out->status       = HEADER_ADMIT_DIFF_EMPTY;
-        out->start_height = s;
-        out->end_height   = e;
-        return true;
-    }
-
-    /* Hard cap the range. */
-    int64_t span = (int64_t)e - (int64_t)s + 1;
-    if (span > HEADER_ADMIT_DIFF_MAX_RANGE) {
-        e = s + HEADER_ADMIT_DIFF_MAX_RANGE - 1;
-        span = HEADER_ADMIT_DIFF_MAX_RANGE;
-    }
-    out->start_height = s;
-    out->end_height   = e;
-
-    /* Load all log rows in the range into a packed array indexed by
-     * (height - s). Bounded: span <= HEADER_ADMIT_DIFF_MAX_RANGE → ≤ 330 KB. */
-    struct row {
-        uint8_t hash[32];
-        bool    present;
-    };
-    struct row *rows = zcl_calloc((size_t)span, sizeof(struct row),
-                                   "header_admit_diff_rows");
-    if (!rows) {
-        out->status = HEADER_ADMIT_DIFF_NOT_READY;
-        return true;
-    }
-
-    sqlite3_stmt *st = NULL;
-    int rc = sqlite3_prepare_v2(db,
-        "SELECT height, hash FROM header_admit_log "
-        "WHERE height BETWEEN ? AND ? ORDER BY height",
-        -1, &st, NULL);
-    if (rc != SQLITE_OK) {
-        free(rows);
-        out->status = HEADER_ADMIT_DIFF_NOT_READY;
-        return true;
-    }
-    sqlite3_bind_int(st, 1, s);
-    sqlite3_bind_int(st, 2, e);
-    while ((rc = sqlite3_step(st)) == SQLITE_ROW) {  // raw-sql-ok:kernel-primitive
-        int32_t h = sqlite3_column_int(st, 0);
-        const void *blob = sqlite3_column_blob(st, 1);
-        int nb = sqlite3_column_bytes(st, 1);
-        if (h < s || h > e || !blob || nb != 32) continue;
-        struct row *r = &rows[h - s];
-        memcpy(r->hash, blob, 32);
-        r->present = true;
-    }
-    sqlite3_finalize(st);
-
-    /* Walk the range. For each height, compare log row vs in-memory chain. */
-    for (int32_t h = s; h <= e; h++) {
-        const struct row *r = &rows[h - s];
-        struct block_index *bi = active_chain_at(&ms->chain_active, h);
-        bool chain_present = (bi != NULL && bi->phashBlock != NULL);
-        const uint8_t *chain_hash =
-            chain_present ? bi->phashBlock->data : NULL;
-
-        if (!r->present && !chain_present) continue;  /* both missing → skip */
-
-        out->checked_count++;
-        if (r->present && chain_present) {
-            if (memcmp(r->hash, chain_hash, 32) == 0) {
-                out->match_count++;
-            } else {
-                out->mismatch_count++;
-                if (out->first_divergent_height < 0)
-                    out->first_divergent_height = h;
-                diff_sample_record(out, h, r->hash, true, chain_hash, true);
-            }
-        } else if (r->present && !chain_present) {
-            /* log has it, chain doesn't — chain shrank or reorged through. */
-            out->missing_in_chain_count++;
-            if (out->first_divergent_height < 0)
-                out->first_divergent_height = h;
-            diff_sample_record(out, h, r->hash, true, NULL, false);
-        } else {
-            /* chain has it, log doesn't — S-2 cursor lag. */
-            out->missing_in_log_count++;
-            if (out->first_divergent_height < 0)
-                out->first_divergent_height = h;
-            diff_sample_record(out, h, NULL, false, chain_hash, true);
-        }
-    }
-
-    free(rows);
-
-    /* Status: hash mismatches dominate; reorg-style log-ahead next;
-     * normal cursor-lag third; otherwise converged or empty. */
-    if (out->mismatch_count > 0)             out->status = HEADER_ADMIT_DIFF_DIVERGENT;
-    else if (out->missing_in_chain_count > 0) out->status = HEADER_ADMIT_DIFF_LOG_AHEAD;
-    else if (out->missing_in_log_count > 0)   out->status = HEADER_ADMIT_DIFF_CHAIN_AHEAD;
-    else if (out->checked_count > 0)          out->status = HEADER_ADMIT_DIFF_CONVERGED;
-    else                                       out->status = HEADER_ADMIT_DIFF_EMPTY;
-
-    return true;
+    return g_stage;
 }

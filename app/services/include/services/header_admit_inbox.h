@@ -9,7 +9,9 @@
 
 #include "core/uint256.h"
 #include "framework/mailbox.h"
+#include "primitives/block.h"
 
+#include <stdbool.h>
 #include <stdint.h>
 
 #define HEADER_ADMIT_INBOX_CAPACITY 1024
@@ -19,6 +21,13 @@ struct header_admit_msg {
     struct uint256 hash;
     uint32_t peer_id;         /* zero when source is local legacy RPC */
     int64_t observed_unix;
+    /* Reducer producer path (AUTHORITATIVE only): when `has_header` is
+     * set, `header` carries the raw header bytes so header_admit can
+     * CREATE the block_index entry via add_to_block_index without the
+     * legacy accept_block_header. Hash-hint-only pushers leave this
+     * false (the legacy observe path is byte-for-byte unchanged). */
+    bool has_header;
+    struct block_header header;
 };
 
 MAILBOX_DECLARE(header_admit, struct header_admit_msg);

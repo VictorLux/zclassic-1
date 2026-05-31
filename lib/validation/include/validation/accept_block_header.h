@@ -31,6 +31,20 @@
 #include "consensus/validation.h"
 #include "primitives/block.h"
 
+struct main_state;
+struct block_index;
+
+/* Create (or return the already-mapped) in-memory block_index entry for
+ * `header`: inserts into ms->map_block_index, links pprev, and computes
+ * nHeight + nChainWork. This is the sole runtime block_index producer
+ * (relocated verbatim into accept_block_header.c). Declared here so the
+ * Wave-S reducer (app/jobs header_admit stage, AUTHORITATIVE only) can
+ * CREATE the index entry from raw header bytes without routing through
+ * the legacy accept_block_header(). Returns NULL on allocation failure.
+ * Does NOT touch coins.db, the active-chain tip, or disk. */
+struct block_index *add_to_block_index(struct main_state *ms,
+                                       const struct block_header *header);
+
 /* Run domain_consensus_check_header_version_too_low() and, on
  * rejection, populate `state` exactly as the legacy
  *   REJECT_IF(header->nVersion < MIN_BLOCK_VERSION,
