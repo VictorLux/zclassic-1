@@ -2,10 +2,14 @@
  * Distributed under the MIT software license, see the accompanying
  * file COPYING or http://www.opensource.org/licenses/mit-license.php. */
 
-/* Explorer address + search pages.
- * See explorer_controller_internal.h for shared declarations and
- * controllers/explorer_internal.h for the EXPLORER_HEADER / APPEND
- * macros. */
+/* Explorer address + search CONTROLLER. Thin parse-delegate glue: it
+ * decodes the address, fetches the balance + UTXO list via its existing
+ * projection calls, packs the results into the view structs, and hands
+ * them to the view shape (app/views/src/explorer_address_view.c). The
+ * search handler keeps the routing/dispatch logic and delegates only the
+ * error/not-found page assembly to the view (checklist item D2 —
+ * controllers must not build views). See explorer_controller_internal.h
+ * for shared declarations. */
 
 #include "controllers/explorer_controller.h"
 #include "controllers/explorer_internal.h"
@@ -23,6 +27,7 @@
 #include "util/ar_step_readonly.h"
 #include "util/template.h"
 #include "validation/main_state.h"
+#include "views/explorer_address_view.h"
 #include "views/format_helpers.h"
 #include "views/wallet_templates_gen.h"
 
@@ -40,20 +45,13 @@ size_t serve_address(const char *param, uint8_t *r, size_t max)
         !explorer_param_is_printable_ascii(param))
         return 0;
 
-    size_t off = 0;
     char safe_addr[128];
     html_escape(safe_addr, sizeof(safe_addr), param);
 
     struct tx_destination dest;
     memset(&dest, 0, sizeof(dest));
-    if (!addr_decode(param, &dest)) {
-        return (size_t)snprintf((char *)r, max,
-            "HTTP/1.1 400 Bad Request\r\nContent-Type: text/html\r\nConnection: close\r\n\r\n"
-            "<!DOCTYPE html><html><head><link rel='stylesheet' href='/explorer/style.css'></head><body>"
-            EXPLORER_NAV "<h2>Invalid Address</h2>"
-            "<p><code>%s</code> is not a valid ZClassic address.</p>"
-            EXPLORER_FOOTER, safe_addr);
-    }
+    if (!addr_decode(param, &dest))
+        return explorer_view_address_invalid(safe_addr, r, max);
 
     /* Get the 20-byte hash */
     const uint8_t *addr_hash = NULL;
@@ -62,72 +60,47 @@ size_t serve_address(const char *param, uint8_t *r, size_t max)
     else if (dest.type == DEST_SCRIPT_ID)
         addr_hash = dest.id.script.hash.data;
 
-    APPEND(off, r, max, EXPLORER_HEADER("Address"));
-    off += explorer_emit_nav((char *)r + off, max - off, NULL);
-
-    APPEND(off, r, max,
-        "<h2>Address</h2>"
-        "<div class='card'><div class='grid'>"
-        "<div class='label'>Address</div><div class='val hash'>%s</div>"
-        "<div class='label'>Type</div><div class='val'>%s</div>",
-        safe_addr,
-        dest.type == DEST_KEY_ID ? "P2PKH (Pay-to-PubKey-Hash)" : "P2SH (Pay-to-Script-Hash)");
+    struct explorer_address_view_data d;
+    memset(&d, 0, sizeof(d));
+    d.safe_addr = safe_addr;
+    d.is_p2pkh = (dest.type == DEST_KEY_ID);
 
     if (ctx->node_db && addr_hash) {
         int64_t balance = db_utxo_balance_for_address(ctx->node_db, addr_hash);
-        char bal[32];
-        zcl_format_zcl(bal, sizeof(bal), balance);
-        APPEND(off, r, max,
-            "<div class='label'>Balance</div><div class='val amount'>%s ZCL</div>",
-            bal);
+        zcl_format_zcl(d.balance, sizeof(d.balance), balance);
+        d.have_balance = true;
     }
-    APPEND(off, r, max, "</div></div>");
 
     /* UTXO list */
+    struct explorer_address_utxo_row rows[100];
+    size_t nrows = 0;
     if (ctx->node_db && addr_hash) {
+        d.have_utxos = true;
         struct db_utxo utxos[100];
         int count = db_utxo_list_for_address(ctx->node_db, addr_hash, utxos, 100);
+        d.utxo_count = count;
 
-        APPEND(off, r, max,
-            "<h2>Unspent Outputs (%d)</h2>"
-            "<table><tr><th>TxID</th><th>Vout</th><th>Value</th>"
-            "<th>Height</th><th>Type</th></tr>", count);
-
-        for (int i = 0; i < count && off + 512 < max; i++) {
-            char txid_hex[65];
+        for (int i = 0; i < count; i++) {
+            struct explorer_address_utxo_row *row = &rows[nrows];
             struct uint256 utxo_txid;
             memcpy(utxo_txid.data, utxos[i].txid, 32);
-            uint256_get_hex(&utxo_txid, txid_hex);
-            char short_txid[18];
-            snprintf(short_txid, sizeof(short_txid), "%.8s...%.4s",
-                     txid_hex, txid_hex + 60);
+            uint256_get_hex(&utxo_txid, row->txid_hex);
+            snprintf(row->short_txid, sizeof(row->short_txid), "%.8s...%.4s",
+                     row->txid_hex, row->txid_hex + 60);
 
-            char val[32];
-            zcl_format_zcl(val, sizeof(val), utxos[i].value);
-
-            APPEND(off, r, max,
-                "<tr><td class='hash'><a href='/explorer/tx/%s'>%s</a></td>"
-                "<td>%u</td><td class='amount'>%s ZCL</td>"
-                "<td>%d</td><td>%s</td></tr>",
-                txid_hex, short_txid, utxos[i].vout, val,
-                utxos[i].height,
-                utxos[i].is_coinbase ? "<span class='tag tag-cb'>CB</span>" : "");
+            zcl_format_zcl(row->value, sizeof(row->value), utxos[i].value);
+            row->vout = utxos[i].vout;
+            row->height = utxos[i].height;
+            row->is_coinbase = utxos[i].is_coinbase;
+            nrows++;
 
             db_utxo_free(&utxos[i]);
         }
-
-        APPEND(off, r, max, "</table>");
-        if (count == 0) {
-            APPEND(off, r, max,
-                "<p style='color:#666'>No unspent outputs found for this address.</p>");
-        }
-    } else {
-        APPEND(off, r, max,
-            "<p style='color:#666'>UTXO index not available.</p>");
     }
+    d.rows = rows;
+    d.num_rows = nrows;
 
-    APPEND(off, r, max, EXPLORER_FOOTER);
-    return off;
+    return explorer_view_address(&d, r, max);
 }
 
 /* ── Search ───────────────────────────────────────────────── */
@@ -147,11 +120,8 @@ size_t serve_search(const char *query, uint8_t *r, size_t max)
                 char *endp = NULL;
                 long v = strtol(hex, &endp, 16);
                 if (!endp || *endp != '\0' || v < 0 || v > 255)
-                    return (size_t)snprintf((char *)r, max,
-                        "HTTP/1.1 400 Bad Request\r\nContent-Type: text/html\r\nConnection: close\r\n\r\n"
-                        "<!DOCTYPE html><html><head><link rel='stylesheet' href='/explorer/style.css'></head><body>"
-                        EXPLORER_NAV "<h2>Invalid Search Query</h2>"
-                        "<p>Malformed percent-encoding in query.</p>" EXPLORER_FOOTER);
+                    return explorer_view_search_invalid(
+                        "Malformed percent-encoding in query.", r, max);
                 decoded[di++] = (char)v;
                 si += 2;
             } else if (query[si] == '+') {
@@ -175,11 +145,8 @@ size_t serve_search(const char *query, uint8_t *r, size_t max)
 
     if (!qlen) return explorer_serve_dashboard(r, max);
     if (!explorer_param_is_printable_ascii(q))
-        return (size_t)snprintf((char *)r, max,
-            "HTTP/1.1 400 Bad Request\r\nContent-Type: text/html\r\nConnection: close\r\n\r\n"
-            "<!DOCTYPE html><html><head><link rel='stylesheet' href='/explorer/style.css'></head><body>"
-            EXPLORER_NAV "<h2>Invalid Search Query</h2>"
-            "<p>Search input contains unsupported characters.</p>" EXPLORER_FOOTER);
+        return explorer_view_search_invalid(
+            "Search input contains unsupported characters.", r, max);
 
     /* Block height? Always try — serve_block handles RPC fallback */
     if (zcl_is_all_digits(q)) {
@@ -240,19 +207,9 @@ size_t serve_search(const char *query, uint8_t *r, size_t max)
     /* Not found */
     char safe[512];
     html_escape(safe, sizeof(safe), q);
-    size_t off = 0;
-    APPEND(off, r, max, EXPLORER_HEADER("Search"));
-    off += explorer_emit_nav((char *)r + off, max - off, NULL);
-    APPEND(off, r, max,
-        "<h2>Search Results</h2>"
-        "<div class='card'>"
-        "<p>No results for: <code>%s</code></p>"
-        "<p style='color:#666'>Try a block height, block hash, transaction ID, or address.</p>"
-        "</div>" EXPLORER_FOOTER, safe);
-    return off;
+    return explorer_view_search_not_found(safe, r, max);
 }
 
 /* ── Stats Page with SVG Charts ────────────────────────────── */
 
 /* format_y_label and svg_line_chart moved to explorer_internal.h */
-
