@@ -211,6 +211,34 @@ bool process_block_disconnect_to_parent(struct validation_state *state,
     if (!active_chain_contains(&ms->chain_active, target))
         return true;
 
+    /* AUTHORITATIVE (the reducer is the engine): the STAGE owns the
+     * coins.db / UTXO unwind, NOT legacy disconnect_tip. Drive the
+     * stage-side reorg unwind exactly as the live reorg path does — move
+     * the active-chain cursor DOWN to target's parent (a pure cursor move,
+     * no legacy coins write), then kick the reducer. The stage's own
+     * unwind machinery (utxo_apply_reorg_unwind_if_needed /
+     * rewind_cursor_if_active_chain_reorged) then OBSERVES the branch_hash
+     * divergence at the now-lowered active tip, walks DOWN to the fork
+     * boundary emitting the inverse-delta events, deletes the stale
+     * log/delta rows, and rewinds the stage cursors to the invalidated
+     * height — the byte-exact stage analogue of the legacy undo restore.
+     * The cutover flip to AUTHORITATIVE is step 13, NOT here — under the
+     * live default (SHADOW) reducer_is_authoritative() is false and the
+     * legacy disconnect_tip loop below runs unchanged. */
+    if (reducer_is_authoritative()) {
+        struct block_index *parent = target->pprev; /* != NULL: non-genesis */
+        if (!active_chain_set_tip(&ms->chain_active, parent)) {
+            LOG_RETURN(false, "validation",
+                       "invalidate: stage-unwind cursor move to parent "
+                       "(h=%d) failed for target h=%d",
+                       parent ? parent->nHeight : -1, target->nHeight);
+        }
+        /* Drive the stage inverse-delta unwind to convergence; a no-op in
+         * SHADOW, but reducer_is_authoritative() gated true here. */
+        (void)reducer_kick(boot_activation_controller());
+        return true;
+    }
+
     /* Disconnect the active tip until the tip is target's parent. Each
      * step is the EXISTING validated disconnect_tip — it writes undo,
      * restores coins, and advances the active-chain cursor down. Bound
@@ -307,15 +335,23 @@ enum invalidate_result process_block_invalidate(struct main_state *ms,
                     "(in-memory mark holds until restart)", target->nHeight);
     }
 
-    /* Kick activation so activate_best_chain reconnects the next-best
-     * fully-valid chain. Every reconnected block runs full connect_block. */
+    /* Kick the engine so the next-best fully-valid chain is reconnected.
+     * AUTHORITATIVE: the reducer re-walks the best chain by draining the
+     * eight Wave-S stages (reducer_kick) — the stage forward-apply that
+     * mirrors connect_block. Otherwise legacy activate_best_chain runs via
+     * activation_request_connect. SHADOW (the live default) is false, so
+     * the legacy kick below is unchanged. */
     if (ctl) {
-        enum activation_state s = activation_get_state(ctl);
-        if (s == ACTIVATION_READY || s == ACTIVATION_AT_TIP) {
-            struct activation_exec_outcome outcome;
-            memset(&outcome, 0, sizeof(outcome));
-            activation_request_connect(ctl, ACTIVATION_SRC_REVALIDATE,
-                                       NULL, &outcome);
+        if (reducer_is_authoritative()) {
+            (void)reducer_kick(ctl);
+        } else {
+            enum activation_state s = activation_get_state(ctl);
+            if (s == ACTIVATION_READY || s == ACTIVATION_AT_TIP) {
+                struct activation_exec_outcome outcome;
+                memset(&outcome, 0, sizeof(outcome));
+                activation_request_connect(ctl, ACTIVATION_SRC_REVALIDATE,
+                                           NULL, &outcome);
+            }
         }
     }
 
@@ -368,17 +404,23 @@ enum reconsider_result process_block_reconsider(struct main_state *ms,
                     target->nHeight);
     }
 
-    /* Kick activation so the now-eligible chain is re-evaluated by
-     * find_most_work_chain and (if best) fully re-validated by
-     * connect_block. */
+    /* Kick the engine so the now-eligible chain is re-evaluated.
+     * AUTHORITATIVE: the reducer re-walks via reducer_kick (the stage
+     * forward-apply that mirrors connect_block); otherwise legacy
+     * activate_best_chain runs via activation_request_connect. SHADOW
+     * (the live default) is false, so the legacy kick is unchanged. */
     struct chain_activation_controller *ctl = boot_activation_controller();
     if (ctl) {
-        enum activation_state s = activation_get_state(ctl);
-        if (s == ACTIVATION_READY || s == ACTIVATION_AT_TIP) {
-            struct activation_exec_outcome outcome;
-            memset(&outcome, 0, sizeof(outcome));
-            activation_request_connect(ctl, ACTIVATION_SRC_REVALIDATE,
-                                       NULL, &outcome);
+        if (reducer_is_authoritative()) {
+            (void)reducer_kick(ctl);
+        } else {
+            enum activation_state s = activation_get_state(ctl);
+            if (s == ACTIVATION_READY || s == ACTIVATION_AT_TIP) {
+                struct activation_exec_outcome outcome;
+                memset(&outcome, 0, sizeof(outcome));
+                activation_request_connect(ctl, ACTIVATION_SRC_REVALIDATE,
+                                           NULL, &outcome);
+            }
         }
     }
 

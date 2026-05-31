@@ -60,4 +60,13 @@ lib/validation/src/disconnect_tip.c:50:bool disconnect_tip(struct validation_sta
 lib/validation/src/process_block_core.c:1012:bool process_new_block(struct validation_state *state,
 lib/validation/src/process_block_flush_policy.c:237: ok = coins_view_sqlite_batch_write_ex(g_coins_sqlite_ptr,
 lib/validation/src/process_block_flush_policy.c:251: ok = coins_view_cache_flush(coins_tip);
-lib/validation/src/process_block_self_heal.c:695: if (disconnect_tip(&ds, ms, coins_tip, datadir)) {
+lib/validation/src/process_block_self_heal.c:725: if (disconnect_tip(&ds, ms, coins_tip, datadir)) {
+# active_chain_set_tip is the in-memory active-chain cursor move already
+# grandfathered above for chain_state_repository.c/chain_tip.c (the
+# reducer/stage commit path). Takeover step 12 reaches the SAME primitive
+# from the AUTHORITATIVE invalidate/self-heal branch to drive the stage-side
+# reorg unwind (move the cursor DOWN so the stage observes branch_hash
+# divergence, then reducer_kick). Same writer, new gated (dormant in SHADOW)
+# caller — not a new chain writer.
+lib/validation/src/process_block_invalidate.c:230: if (!active_chain_set_tip(&ms->chain_active, parent)) {
+lib/validation/src/process_block_self_heal.c:710: if (active_chain_set_tip(&ms->chain_active, tip->pprev)) {

@@ -379,10 +379,21 @@ enum reval_result process_block_revalidate(int target_height,
         return REVAL_RECOVERED;
     }
 
+    /* Kick the engine to reconnect the now-eligible chain. AUTHORITATIVE:
+     * the reducer re-walks the best chain by draining the eight Wave-S
+     * stages (reducer_kick) — the stage forward-apply that mirrors
+     * connect_block. Otherwise legacy activate_best_chain runs via
+     * activation_request_connect. SHADOW (the live default) is false, so
+     * the legacy kick is unchanged. The diagnostic at the tail reads
+     * outcome.result, so keep it in scope across both branches. */
     struct activation_exec_outcome outcome;
     memset(&outcome, 0, sizeof(outcome));
-    activation_request_connect(ctl, ACTIVATION_SRC_REVALIDATE,
-                               NULL, &outcome);
+    if (reducer_is_authoritative()) {
+        (void)reducer_kick(ctl);
+    } else {
+        activation_request_connect(ctl, ACTIVATION_SRC_REVALIDATE,
+                                   NULL, &outcome);
+    }
 
     /* Inspect: did the chain actually advance? */
     int new_tip_h = active_chain_height(&ms->chain_active);

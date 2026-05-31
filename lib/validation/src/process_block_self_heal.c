@@ -30,6 +30,12 @@
 #include "validation/process_block.h"
 #include "validation/main_logic.h"
 #include "validation/connect_block.h"
+/* AUTHORITATIVE recovery retry routes through the reducer (cursor move +
+ * reducer_kick) instead of legacy disconnect_tip — same app-layer
+ * controller reach process_block_revalidate.c/process_block_invalidate.c
+ * already take. Inline marker keeps the lib_layering baseline flat. */
+#include "validation/chainstate.h"
+#include "services/chain_activation_controller.h"  // lib-layer-ok:self-heal-reducer-retry
 #include "coins/utxo_commitment.h"
 #include "core/serialize.h"
 #include "core/core_io.h"
@@ -685,7 +691,31 @@ void process_block_note_utxo_failure(struct main_state *ms,
          * durable recovery route. */
         struct block_index *tip = ms ? active_chain_tip(&ms->chain_active)
                                      : NULL;
-        if (tip && tip->pprev && tip->nUndoPos > 0) {
+        if (reducer_is_authoritative() && tip && tip->pprev) {
+            /* AUTHORITATIVE: the STAGE owns the coins.db / UTXO unwind, NOT
+             * legacy disconnect_tip (which would write the legacy coins.db
+             * and diverge from the stage-authored UTXO set). Drive the
+             * stage-side unwind exactly as the live reorg path does — move
+             * the active-chain cursor DOWN one (a pure cursor move, no
+             * legacy coins write), then kick the reducer so its inverse-
+             * delta machinery rewinds the stage cursors and re-walks. No
+             * nUndoPos guard: the stage holds its own inverse-delta rows,
+             * not the legacy undo file. Unreachable in SHADOW (the live
+             * default) — there reducer_is_authoritative() is false and the
+             * legacy disconnect_tip retry below runs unchanged. */
+            fprintf(stderr, // obs-ok:pre-existing-diagnostic
+                "[recovery] %d UTXO failures at h=%d — stage-unwinding tip "
+                "h=%d to retry (reducer-authoritative)\n",
+                s_utxo_fail_count, height, tip->nHeight);
+            if (active_chain_set_tip(&ms->chain_active, tip->pprev)) {
+                (void)reducer_kick(boot_activation_controller());
+                s_utxo_fail_count = 0;
+                s_utxo_fail_height = -1;
+                fprintf(stderr, // obs-ok:pre-existing-diagnostic
+                    "[recovery] Stage-unwound tip — retrying from h=%d\n",
+                    active_chain_height(&ms->chain_active));
+            }
+        } else if (tip && tip->pprev && tip->nUndoPos > 0) {
             fprintf(stderr, // obs-ok:pre-existing-diagnostic
                 "[recovery] %d UTXO failures at h=%d — "
                 "disconnecting tip h=%d to retry\n",
