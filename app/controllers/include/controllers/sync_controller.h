@@ -106,13 +106,6 @@ bool node_db_sync_connect_block_async(struct node_db *ndb,
                                       const struct block *blk,
                                       const struct block_index *pindex);
 
-/* Called when a block is disconnected during a reorg.
- * Removes the block's transaction index entries and
- * restores the UTXO set to pre-block state. */
-bool node_db_sync_disconnect_block(struct node_db *ndb,
-                                   const struct block *blk,
-                                   const struct block_index *pindex);
-
 /* Called when a transaction is added to the wallet.
  * Tracks wallet-owned UTXOs and marks spent inputs. */
 bool node_db_sync_wallet_tx(struct node_db *ndb,

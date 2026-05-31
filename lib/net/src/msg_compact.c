@@ -44,6 +44,9 @@ static void compact_submit_block(struct msg_processor *mp,
                                  struct p2p_node *node,
                                  struct block *blk)
 {
+    /* mp retained for call-site symmetry; the reducer resolves the chain
+     * context from boot_activation_controller() internally. */
+    (void)mp;
     struct uint256 hash;
     block_header_get_hash(&blk->header, &hash);
 
@@ -58,21 +61,14 @@ static void compact_submit_block(struct msg_processor *mp,
 
     struct validation_state state;
     validation_state_init(&state);
-    /* Compact-block intake: when the reducer is authoritative (cutover
-     * step 13, NOT yet flipped — SHADOW default = false), the synchronous
-     * reducer_ingest_block drives the eight Wave-S stages on the
-     * reassembled block and fills the SAME validation_state. Otherwise the
-     * unchanged legacy process_new_block path runs. Either way the verdict
-     * in `state` preserves the exact already-seen / DoS-scoring contract
-     * below. force=false mirrors the relay-pre-filter semantics of the
-     * full-block P2P intake site (msg_blocks). */
-    if (reducer_is_authoritative()) {
-        reducer_ingest_block(boot_activation_controller(), blk,
-                             REDUCER_SRC_COMPACT, false, &state);
-    } else {
-        process_new_block(&state, mp->main_state, mp->coins_tip,
-                          mp->params, blk, false, mp->datadir);
-    }
+    /* Compact-block intake: the synchronous reducer_ingest_block drives the
+     * eight Wave-S stages on the reassembled block and fills the
+     * validation_state. The verdict in `state` preserves the exact
+     * already-seen / DoS-scoring contract below. force=false mirrors the
+     * relay-pre-filter semantics of the full-block P2P intake site
+     * (msg_blocks). */
+    reducer_ingest_block(boot_activation_controller(), blk,
+                         REDUCER_SRC_COMPACT, false, &state);
 
     if (!validation_state_is_valid(&state)) {
         char hex[65];

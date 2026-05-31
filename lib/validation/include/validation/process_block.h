@@ -31,41 +31,12 @@ bool accept_block_header(const struct block_header *header,
                          const struct chain_params *params,
                          struct block_index **ppindex);
 
-bool accept_block(struct block *block,
-                  struct validation_state *state,
-                  struct main_state *ms,
-                  const struct chain_params *params,
-                  struct block_index **ppindex,
-                  bool requested,
-                  const char *datadir);
-
-bool connect_tip(struct validation_state *state,
-                 struct main_state *ms,
-                 struct coins_view_cache *coins_tip,
-                 struct block_index *pindex_new,
-                 struct block *pblock,
-                 const struct chain_params *params,
-                 const char *datadir);
-
-bool disconnect_tip(struct validation_state *state,
-                    struct main_state *ms,
-                    struct coins_view_cache *coins_tip,
-                    const char *datadir);
-
-bool activate_best_chain(struct validation_state *state,
-                         struct main_state *ms,
-                         struct coins_view_cache *coins_tip,
-                         const struct chain_params *params,
-                         struct block *pblock,
-                         const char *datadir);
-
-bool process_new_block(struct validation_state *state,
-                       struct main_state *ms,
-                       struct coins_view_cache *coins_tip,
-                       const struct chain_params *params,
-                       struct block *pblock,
-                       bool force_processing,
-                       const char *datadir);
+/* accept_block / connect_tip / disconnect_tip / activate_best_chain /
+ * process_new_block were the legacy single-engine validation surface. They
+ * were DELETED with the one-engine cutover: the reducer (reducer_ingest_block
+ * / reducer_kick, see services/chain_activation_controller.h) is now the sole
+ * block-connect engine. accept_block_header (below) survives — header admit
+ * still uses it. */
 
 /* Fast-sync body-pull / direct-import mode flag.
  *

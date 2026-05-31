@@ -1,12 +1,17 @@
 # E6 ratchet baseline: legacy chain-state write surfaces to delete in B8.
 # Format: <file>:<line>: <matched source>
+#
+# The legacy validation engine (process_new_block / accept_block / connect_tip
+# / disconnect_tip / activate_best_chain) has been DELETED — the reducer
+# (reducer_ingest_block / reducer_kick) is the sole block-connect engine. The
+# surfaces below are the remaining durable cursor / UTXO-projection writers the
+# reducer/stage path and boot/recovery wrappers go through.
 app/controllers/src/blockchain_controller_admin.c:106: coins_view_cache_flush(ctx->coins_tip);
 app/controllers/src/blockchain_controller_admin.c:192: coins_view_cache_flush(ctx->coins_tip);
 app/controllers/src/blockchain_controller_admin.c:203: coins_view_cache_flush(ctx->coins_tip);
 app/controllers/src/blockchain_controller_chain.c:581: coins_view_cache_flush(ctx->coins_tip);
 app/controllers/src/hodl_controller.c:235: coins_view_cache_flush(ctx->coins_tip);
 app/controllers/src/hodl_controller.c:90: coins_view_cache_flush(ctx->coins_tip);
-app/controllers/src/mining_controller.c:210: ok = process_new_block(&state, ctx->main_state, ctx->coins_tip, cp,
 app/controllers/src/repair_controller_utxo.c:311: coins_view_cache_flush(ctx->coins_tip);
 app/controllers/src/repair_controller_utxo.c:522: coins_view_cache_flush(ctx->coins_tip);
 app/services/src/chain_state_repository.c:598: if (!active_chain_set_tip(csr->chain_active, NULL)) {
@@ -26,9 +31,6 @@ config/src/boot_services.c:3049: coins_view_cache_flush(svc->coins_tip);
 config/src/boot_services.c:3187: coins_view_cache_flush(svc->coins_tip);
 lib/coins/include/coins/coins_view.h:163:bool coins_view_cache_flush(struct coins_view_cache *c);
 lib/coins/src/coins_view.c:322:bool coins_view_cache_flush(struct coins_view_cache *c)
-lib/mining/src/miner.c:236: return process_new_block(&state, ms, coins_tip, params, pblock, true,
-lib/net/src/msg_blocks.c:335: process_new_block(&state, mp->main_state, mp->coins_tip,
-lib/net/src/msg_compact.c:73: process_new_block(&state, mp->main_state, mp->coins_tip,
 lib/storage/include/storage/coins_view_sqlite.h:49:bool coins_view_sqlite_batch_write(struct coins_view_sqlite *cvs,
 lib/storage/include/storage/coins_view_sqlite.h:54:bool coins_view_sqlite_batch_write_ex(struct coins_view_sqlite *cvs,
 lib/storage/include/storage/utxo_projection.h:50:void utxo_projection_set_author(utxo_author_t who);
@@ -38,35 +40,14 @@ lib/storage/src/coins_view_sqlite.c:693: return coins_view_sqlite_batch_write_ex
 lib/storage/src/coins_view_sqlite.c:696:bool coins_view_sqlite_batch_write_ex(struct coins_view_sqlite *cvs,
 lib/storage/src/utxo_projection.c:93:void utxo_projection_set_author(utxo_author_t who)
 lib/validation/include/validation/chainstate.h:102:bool active_chain_set_tip(struct active_chain *c, struct block_index *bi);
-lib/validation/include/validation/process_block.h:42:bool connect_tip(struct validation_state *state,
-lib/validation/include/validation/process_block.h:50:bool disconnect_tip(struct validation_state *state,
-lib/validation/include/validation/process_block.h:62:bool process_new_block(struct validation_state *state,
-lib/validation/src/activate_best_chain.c:204: if (!connect_tip(state, ms, coins_tip, pindex_new,
-lib/validation/src/activate_best_chain.c:291: if (!connect_tip(state, ms, coins_tip, pindex_new,
-lib/validation/src/activate_best_chain.c:318: if (!connect_tip(state, ms, coins_tip, path[i],
-lib/validation/src/activate_best_chain.c:375: if (!disconnect_tip(state, ms, coins_tip, datadir)) {
-lib/validation/src/activate_best_chain.c:390: if (!connect_tip(state, ms, coins_tip, pindex_new,
-lib/validation/src/activate_best_chain.c:436: if (!disconnect_tip(state, ms, coins_tip, datadir)) {
-lib/validation/src/activate_best_chain.c:445: if (!connect_tip(state, ms, coins_tip, peer_parent,
-lib/validation/src/activate_best_chain.c:453: if (!connect_tip(state, ms, coins_tip, pindex_new,
-lib/validation/src/activate_best_chain.c:510: if (!connect_tip(state, ms, coins_tip, tip_child,
-lib/validation/src/activate_best_chain.c:746: if (!disconnect_tip(state, ms, coins_tip, datadir)) {
-lib/validation/src/activate_best_chain.c:869: if (!connect_tip(state, ms, coins_tip, connect_path[i],
 lib/validation/src/chainstate.c:333:bool active_chain_set_tip(struct active_chain *c, struct block_index *bi)
-lib/validation/src/connect_tip.c:529: if (!coins_view_cache_flush(&view)) {
-lib/validation/src/connect_tip.c:90:bool connect_tip(struct validation_state *state,
-lib/validation/src/disconnect_tip.c:192: if (!coins_view_cache_flush(&view)) {
-lib/validation/src/disconnect_tip.c:50:bool disconnect_tip(struct validation_state *state,
-lib/validation/src/process_block_core.c:1012:bool process_new_block(struct validation_state *state,
 lib/validation/src/process_block_flush_policy.c:237: ok = coins_view_sqlite_batch_write_ex(g_coins_sqlite_ptr,
 lib/validation/src/process_block_flush_policy.c:251: ok = coins_view_cache_flush(coins_tip);
-lib/validation/src/process_block_self_heal.c:725: if (disconnect_tip(&ds, ms, coins_tip, datadir)) {
 # active_chain_set_tip is the in-memory active-chain cursor move already
 # grandfathered above for chain_state_repository.c/chain_tip.c (the
-# reducer/stage commit path). Takeover step 12 reaches the SAME primitive
-# from the AUTHORITATIVE invalidate/self-heal branch to drive the stage-side
-# reorg unwind (move the cursor DOWN so the stage observes branch_hash
-# divergence, then reducer_kick). Same writer, new gated (dormant in SHADOW)
-# caller — not a new chain writer.
-lib/validation/src/process_block_invalidate.c:230: if (!active_chain_set_tip(&ms->chain_active, parent)) {
-lib/validation/src/process_block_self_heal.c:710: if (active_chain_set_tip(&ms->chain_active, tip->pprev)) {
+# reducer/stage commit path). The AUTHORITATIVE invalidate/self-heal branch
+# reaches the SAME primitive to drive the stage-side reorg unwind (move the
+# cursor DOWN so the stage observes branch_hash divergence, then reducer_kick).
+# Same writer, same caller — not a new chain writer.
+lib/validation/src/process_block_invalidate.c:232: if (!active_chain_set_tip(&ms->chain_active, parent)) {
+lib/validation/src/process_block_self_heal.c:709: if (active_chain_set_tip(&ms->chain_active, tip->pprev)) {

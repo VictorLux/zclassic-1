@@ -32,8 +32,10 @@
 #include "controllers/blockchain_controller.h"
 #include "controllers/sync_controller.h"
 #include "core/uint256.h"
+#include "models/database.h"            /* struct node_db */
 #include "primitives/block.h"
 #include "primitives/transaction.h"
+#include "services/block_source_policy.h" /* projection-deferred diagnostic */
 #include "util/util.h"                  /* GetDataDir */
 #include "validation/process_block.h"   /* g_body_pull_active */
 #include "validation/txmempool.h"
@@ -111,6 +113,21 @@ void tip_finalize_run_post_finalize(struct block_index *pindex_new)
             tx_mempool_remove_for_block(mempool,
                 blk.vtx, blk.num_vtx,
                 (unsigned int)pindex_new->nHeight);
+    }
+
+    /* Projection-deferred DIAGNOSTIC (preserved from legacy connect_tip).
+     * The reducer consensus path does NOT write the derived block/tx SQLite
+     * projection inline — the active chain, block index, and coins view are
+     * authoritative and the projection is repairable from verified block
+     * bytes. Record that the per-block projection write was deferred as a
+     * DIAGNOSTIC counter. This is NOT a block reject: the tip already
+     * advanced. Explicit import/catchup paths backfill the projection under
+     * the DB service's write ownership. */
+    {
+        struct node_db *ndb = app_runtime_node_db();
+        if (ndb)
+            block_source_policy_note_projection_deferred(
+                pindex_new->nHeight, "consensus_path");
     }
 
     /* Append block hash to Merkle Mountain Range */

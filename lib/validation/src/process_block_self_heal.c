@@ -647,6 +647,10 @@ void process_block_note_utxo_failure(struct main_state *ms,
                                      int height,
                                      const char *datadir)
 {
+    /* coins_tip retained in the signature (public API / test injection); the
+     * UTXO unwind now goes through the reducer's inverse-delta machinery via
+     * reducer_kick, not the legacy coins-view disconnect path. */
+    (void)coins_tip;
     if (height == s_utxo_fail_height)
         s_utxo_fail_count++;
     else {
@@ -691,18 +695,13 @@ void process_block_note_utxo_failure(struct main_state *ms,
          * durable recovery route. */
         struct block_index *tip = ms ? active_chain_tip(&ms->chain_active)
                                      : NULL;
-        if (reducer_is_authoritative() && tip && tip->pprev) {
-            /* AUTHORITATIVE: the STAGE owns the coins.db / UTXO unwind, NOT
-             * legacy disconnect_tip (which would write the legacy coins.db
-             * and diverge from the stage-authored UTXO set). Drive the
-             * stage-side unwind exactly as the live reorg path does — move
-             * the active-chain cursor DOWN one (a pure cursor move, no
-             * legacy coins write), then kick the reducer so its inverse-
-             * delta machinery rewinds the stage cursors and re-walks. No
-             * nUndoPos guard: the stage holds its own inverse-delta rows,
-             * not the legacy undo file. Unreachable in SHADOW (the live
-             * default) — there reducer_is_authoritative() is false and the
-             * legacy disconnect_tip retry below runs unchanged. */
+        if (tip && tip->pprev) {
+            /* The STAGE owns the coins.db / UTXO unwind. Drive the stage-side
+             * unwind exactly as the live reorg path does — move the
+             * active-chain cursor DOWN one (a pure cursor move, no legacy
+             * coins write), then kick the reducer so its inverse-delta
+             * machinery rewinds the stage cursors and re-walks. The stage
+             * holds its own inverse-delta rows, not the legacy undo file. */
             fprintf(stderr, // obs-ok:pre-existing-diagnostic
                 "[recovery] %d UTXO failures at h=%d — stage-unwinding tip "
                 "h=%d to retry (reducer-authoritative)\n",
@@ -713,20 +712,6 @@ void process_block_note_utxo_failure(struct main_state *ms,
                 s_utxo_fail_height = -1;
                 fprintf(stderr, // obs-ok:pre-existing-diagnostic
                     "[recovery] Stage-unwound tip — retrying from h=%d\n",
-                    active_chain_height(&ms->chain_active));
-            }
-        } else if (tip && tip->pprev && tip->nUndoPos > 0) {
-            fprintf(stderr, // obs-ok:pre-existing-diagnostic
-                "[recovery] %d UTXO failures at h=%d — "
-                "disconnecting tip h=%d to retry\n",
-                s_utxo_fail_count, height, tip->nHeight);
-            struct validation_state ds;
-            validation_state_init(&ds);
-            if (disconnect_tip(&ds, ms, coins_tip, datadir)) {
-                s_utxo_fail_count = 0;
-                s_utxo_fail_height = -1;
-                fprintf(stderr, // obs-ok:pre-existing-diagnostic
-                    "[recovery] Disconnected tip — retrying from h=%d\n",
                     active_chain_height(&ms->chain_active));
             }
         } else {

@@ -1416,11 +1416,14 @@ static int t_projection_deferral_is_not_block_rejected_contract(void)
     int failures = 0;
     char *buf = NULL;
     TEST("projection deferral is chain advance diagnostic, not block reject") {
-        /* WS-6 phase 1 moved connect_tip() out of process_block_core.c
-         * into its own file. The projection-deferred contract now lives
-         * in connect_tip.c — check there instead. */
+        /* The one-engine deletion removed legacy connect_tip(); the reducer
+         * consensus path (tip_finalize_post_step.c) is now the sole producer
+         * of the projection-deferred DIAGNOSTIC. The contract anchor follows
+         * the live consensus path: a deferred projection write is a
+         * diagnostic counter on the new path, never a block reject. */
         char path[PATH_MAX];
-        ASSERT(repo_path(path, sizeof(path), "lib/validation/src/connect_tip.c") == 0);
+        ASSERT(repo_path(path, sizeof(path),
+                         "app/jobs/src/tip_finalize_post_step.c") == 0);
         ASSERT(read_entire_file(path, &buf) == 0);
         ASSERT(strstr(buf, "block_source_policy_note_projection_deferred") != NULL);
         ASSERT(strstr(buf, "\"consensus_path\"") != NULL);

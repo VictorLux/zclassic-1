@@ -1002,49 +1002,15 @@ process_block_propagate_failed_child(struct block_map *map,
 }
 
 /* accept_block_header()   moved to lib/validation/src/accept_block_header.c
- * accept_block()          moved to lib/validation/src/accept_block.c
- * connect_tip()           moved to lib/validation/src/connect_tip.c
- * disconnect_tip()        moved to lib/validation/src/disconnect_tip.c
- * activate_best_chain()   moved to lib/validation/src/activate_best_chain.c
- * (along with its private helper recover_from_disconnect_failure)
- * during WS-6 phase 1 file-level split. */
-
-bool process_new_block(struct validation_state *state,
-                       struct main_state *ms,
-                       struct coins_view_cache *coins_tip,
-                       const struct chain_params *params,
-                       struct block *pblock,
-                       bool force_processing,
-                       const char *datadir)
-{
-    (void)coins_tip;  /* activation controller owns coins_tip reference */
-
-    bool checked = check_block(pblock, state, params, true, true, true);
-    if (!checked)
-        LOG_FAIL("validation", "check_block failed: %s",
-                 state->reject_reason[0] ? state->reject_reason : "unknown");
-
-    struct block_index *pindex = NULL;
-    bool requested = force_processing;
-
-    if (!accept_block(pblock, state, ms, params, &pindex, requested, datadir))
-        LOG_FAIL("validation", "accept_block failed: %s",
-                 state->reject_reason[0] ? state->reject_reason : "unknown");
-
-    /* Do NOT connect blocks if we're waiting for a UTXO snapshot.
-     * Connecting blocks from genesis with an empty UTXO set permanently
-     * marks valid blocks as BLOCK_FAILED (e.g. coinbase maturity checks
-     * fail because the coinbase outputs were never added to the view).
-     * accept_block above is safe — it only indexes the block on disk. */
-    /* Connect blocks via controller (single authority). The controller
-     * handles: anchor check, UTXO availability, mutex serialization. */
-    {
-        struct activation_exec_outcome ao;
-        activation_request_connect(boot_activation_controller(),
-                                   ACTIVATION_SRC_NEW_BLOCK, pblock, &ao);
-        if (ao.result == ACTIVATION_EXEC_FAILED)
-            LOG_FAIL("validation", "activation FAILED: %s", ao.reason);
-    }
-
-    return true;
-}
+ * accept_block()          DELETED with the legacy validation engine.
+ * connect_tip()           DELETED with the legacy validation engine.
+ * disconnect_tip()        DELETED with the legacy validation engine.
+ * activate_best_chain()   DELETED with the legacy validation engine.
+ * process_new_block()     DELETED with the legacy validation engine.
+ *
+ * The reducer (reducer_ingest_block / reducer_kick, app/services + app/jobs)
+ * is the sole block-connect engine; every ingest call site routes through it
+ * directly. The shared infra below (find_most_work_chain,
+ * process_block_commit_tip, update_tip, process_block_propagate_failed_child,
+ * process_block_test_hydrate_index_from_disk) survives — the reducer stages
+ * and the keeper tests call it. */

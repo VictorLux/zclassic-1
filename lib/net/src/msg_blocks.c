@@ -322,19 +322,11 @@ bool process_block_msg(struct msg_processor *mp, struct p2p_node *node,
 
     struct validation_state state;
     validation_state_init(&state);
-    /* Block intake: when the reducer is authoritative (cutover step 13,
-     * NOT yet flipped — SHADOW default = false), the synchronous
-     * reducer_ingest_block drives the eight Wave-S stages and fills the
-     * SAME validation_state. Otherwise the unchanged legacy
-     * process_new_block path runs. Either way the verdict in `state`
+    /* Block intake: the synchronous reducer_ingest_block drives the eight
+     * Wave-S stages and fills the validation_state. The verdict in `state`
      * preserves the exact mark-seen + DoS/getheaders contract below. */
-    if (reducer_is_authoritative()) {
-        reducer_ingest_block(boot_activation_controller(), &blk,
-                             REDUCER_SRC_P2P, false, &state);
-    } else {
-        process_new_block(&state, mp->main_state, mp->coins_tip,
-                          mp->params, &blk, false, mp->datadir);
-    }
+    reducer_ingest_block(boot_activation_controller(), &blk,
+                         REDUCER_SRC_P2P, false, &state);
 
     if (!validation_state_is_valid(&state)) {
         char hex[65];

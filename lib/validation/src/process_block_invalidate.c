@@ -203,7 +203,14 @@ bool process_block_disconnect_to_parent(struct validation_state *state,
                                          struct block_index *target,
                                          const char *datadir)
 {
-    (void)params; /* disconnect_tip derives params internally */
+    /* The reducer is the engine; the legacy disconnect_tip path is gone.
+     * state / coins_tip / params / datadir are retained in the signature
+     * (callers pass the controller-owned context) but the stage-side unwind
+     * needs only the active-chain cursor + a reducer kick. */
+    (void)state;
+    (void)coins_tip;
+    (void)params;
+    (void)datadir;
     if (!ms || !target) return false;
 
     /* If the target is not on the active chain there is nothing to roll
@@ -211,56 +218,25 @@ bool process_block_disconnect_to_parent(struct validation_state *state,
     if (!active_chain_contains(&ms->chain_active, target))
         return true;
 
-    /* AUTHORITATIVE (the reducer is the engine): the STAGE owns the
-     * coins.db / UTXO unwind, NOT legacy disconnect_tip. Drive the
-     * stage-side reorg unwind exactly as the live reorg path does — move
-     * the active-chain cursor DOWN to target's parent (a pure cursor move,
-     * no legacy coins write), then kick the reducer. The stage's own
-     * unwind machinery (utxo_apply_reorg_unwind_if_needed /
+    /* The STAGE owns the coins.db / UTXO unwind. Drive the stage-side reorg
+     * unwind exactly as the live reorg path does — move the active-chain
+     * cursor DOWN to target's parent (a pure cursor move, no legacy coins
+     * write), then kick the reducer. The stage's own unwind machinery
+     * (utxo_apply_reorg_unwind_if_needed /
      * rewind_cursor_if_active_chain_reorged) then OBSERVES the branch_hash
      * divergence at the now-lowered active tip, walks DOWN to the fork
      * boundary emitting the inverse-delta events, deletes the stale
      * log/delta rows, and rewinds the stage cursors to the invalidated
-     * height — the byte-exact stage analogue of the legacy undo restore.
-     * The cutover flip to AUTHORITATIVE is step 13, NOT here — under the
-     * live default (SHADOW) reducer_is_authoritative() is false and the
-     * legacy disconnect_tip loop below runs unchanged. */
-    if (reducer_is_authoritative()) {
-        struct block_index *parent = target->pprev; /* != NULL: non-genesis */
-        if (!active_chain_set_tip(&ms->chain_active, parent)) {
-            LOG_RETURN(false, "validation",
-                       "invalidate: stage-unwind cursor move to parent "
-                       "(h=%d) failed for target h=%d",
-                       parent ? parent->nHeight : -1, target->nHeight);
-        }
-        /* Drive the stage inverse-delta unwind to convergence; a no-op in
-         * SHADOW, but reducer_is_authoritative() gated true here. */
-        (void)reducer_kick(boot_activation_controller());
-        return true;
+     * height — the byte-exact stage analogue of the legacy undo restore. */
+    struct block_index *parent = target->pprev; /* != NULL: non-genesis */
+    if (!active_chain_set_tip(&ms->chain_active, parent)) {
+        LOG_RETURN(false, "validation",
+                   "invalidate: stage-unwind cursor move to parent "
+                   "(h=%d) failed for target h=%d",
+                   parent ? parent->nHeight : -1, target->nHeight);
     }
-
-    /* Disconnect the active tip until the tip is target's parent. Each
-     * step is the EXISTING validated disconnect_tip — it writes undo,
-     * restores coins, and advances the active-chain cursor down. Bound
-     * the loop defensively so a stuck disconnect can't spin forever. */
-    int guard = 0;
-    const int GUARD_MAX = 200000;
-    while (active_chain_contains(&ms->chain_active, target)) {
-        struct block_index *tip = active_chain_tip(&ms->chain_active);
-        if (!tip) return false;
-        if (guard++ > GUARD_MAX) {
-            LOG_FAIL("validation",
-                     "invalidate: disconnect-to-parent exceeded guard "
-                     "(tip h=%d target h=%d)",
-                     tip->nHeight, target->nHeight);
-        }
-        if (!disconnect_tip(state, ms, coins_tip, datadir)) { // one-write-path-ok:invalidate-reuses-validated-disconnect
-            LOG_RETURN(false, "validation",
-                       "invalidate: disconnect_tip FAILED at h=%d "
-                       "(target h=%d)",
-                       tip->nHeight, target->nHeight);
-        }
-    }
+    /* Drive the stage inverse-delta unwind to convergence. */
+    (void)reducer_kick(boot_activation_controller());
     return true;
 }
 
@@ -336,24 +312,10 @@ enum invalidate_result process_block_invalidate(struct main_state *ms,
     }
 
     /* Kick the engine so the next-best fully-valid chain is reconnected.
-     * AUTHORITATIVE: the reducer re-walks the best chain by draining the
-     * eight Wave-S stages (reducer_kick) — the stage forward-apply that
-     * mirrors connect_block. Otherwise legacy activate_best_chain runs via
-     * activation_request_connect. SHADOW (the live default) is false, so
-     * the legacy kick below is unchanged. */
-    if (ctl) {
-        if (reducer_is_authoritative()) {
-            (void)reducer_kick(ctl);
-        } else {
-            enum activation_state s = activation_get_state(ctl);
-            if (s == ACTIVATION_READY || s == ACTIVATION_AT_TIP) {
-                struct activation_exec_outcome outcome;
-                memset(&outcome, 0, sizeof(outcome));
-                activation_request_connect(ctl, ACTIVATION_SRC_REVALIDATE,
-                                           NULL, &outcome);
-            }
-        }
-    }
+     * The reducer re-walks the best chain by draining the eight Wave-S stages
+     * (reducer_kick) — the stage forward-apply that mirrors connect_block. */
+    if (ctl)
+        (void)reducer_kick(ctl);
 
     int tip_h_after = active_chain_height(&ms->chain_active);
     fprintf(stderr, // obs-ok:invalidate-done
@@ -405,24 +367,11 @@ enum reconsider_result process_block_reconsider(struct main_state *ms,
     }
 
     /* Kick the engine so the now-eligible chain is re-evaluated.
-     * AUTHORITATIVE: the reducer re-walks via reducer_kick (the stage
-     * forward-apply that mirrors connect_block); otherwise legacy
-     * activate_best_chain runs via activation_request_connect. SHADOW
-     * (the live default) is false, so the legacy kick is unchanged. */
+     * The reducer re-walks via reducer_kick (the stage forward-apply that
+     * mirrors connect_block). */
     struct chain_activation_controller *ctl = boot_activation_controller();
-    if (ctl) {
-        if (reducer_is_authoritative()) {
-            (void)reducer_kick(ctl);
-        } else {
-            enum activation_state s = activation_get_state(ctl);
-            if (s == ACTIVATION_READY || s == ACTIVATION_AT_TIP) {
-                struct activation_exec_outcome outcome;
-                memset(&outcome, 0, sizeof(outcome));
-                activation_request_connect(ctl, ACTIVATION_SRC_REVALIDATE,
-                                           NULL, &outcome);
-            }
-        }
-    }
+    if (ctl)
+        (void)reducer_kick(ctl);
 
     int tip_h = active_chain_height(&ms->chain_active);
     fprintf(stderr, // obs-ok:reconsider-done
