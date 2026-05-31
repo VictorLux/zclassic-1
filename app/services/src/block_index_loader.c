@@ -66,6 +66,51 @@ static int cmp_height(const void *a, const void *b)
     return 0;
 }
 
+/* Forward pass over a height-sorted block_index array: recompute
+ * nChainWork, nChainTx, skip links, cached branch id, and failed-child
+ * propagation from each entry's (already-linked) pprev. Lifted verbatim
+ * from load_block_index's post-load loop; shared by the legacy LevelDB
+ * loader and the single-engine projection rebuild so both compute the
+ * pointer-graph-derived fields identically. Declared in
+ * services/block_index_loader.h (internal cross-TU helper). */
+void block_index_forward_pass(struct block_index **sorted,
+                              size_t count)
+{
+    for (size_t i = 0; i < count; i++) {
+        struct block_index *pindex = sorted[i];
+
+        struct arith_uint256 proof = GetBlockProof(pindex);
+        if (pindex->pprev)
+            arith_uint256_add(&pindex->nChainWork,
+                              &pindex->pprev->nChainWork, &proof);
+        else
+            pindex->nChainWork = proof;
+
+        if (pindex->nTx > 0) {
+            if (pindex->pprev) {
+                if (pindex->pprev->nChainTx)
+                    pindex->nChainTx = pindex->pprev->nChainTx + pindex->nTx;
+                else
+                    pindex->nChainTx = 0;
+            } else {
+                pindex->nChainTx = pindex->nTx;
+            }
+        }
+
+        block_index_build_skip(pindex);
+
+        if (pindex->pprev) {
+            if (block_index_is_valid(pindex, BLOCK_VALID_CONSENSUS) &&
+                !pindex->nCachedBranchId)
+                pindex->nCachedBranchId = pindex->pprev->nCachedBranchId;
+        }
+
+        if (!(pindex->nStatus & BLOCK_FAILED_MASK) && pindex->pprev &&
+            (pindex->pprev->nStatus & BLOCK_FAILED_MASK))
+            pindex->nStatus |= BLOCK_FAILED_CHILD;
+    }
+}
+
 /* ── save_block_index_flat ───────────────────────────────── */
 
 void save_block_index_flat(const char *datadir, struct main_state *ms)
@@ -636,39 +681,7 @@ bool load_block_index(struct main_state *ms,
 
     qsort(sorted, count, sizeof(struct block_index *), cmp_height);
 
-    for (size_t i = 0; i < count; i++) {
-        pindex = sorted[i];
-
-        struct arith_uint256 proof = GetBlockProof(pindex);
-        if (pindex->pprev)
-            arith_uint256_add(&pindex->nChainWork,
-                              &pindex->pprev->nChainWork, &proof);
-        else
-            pindex->nChainWork = proof;
-
-        if (pindex->nTx > 0) {
-            if (pindex->pprev) {
-                if (pindex->pprev->nChainTx)
-                    pindex->nChainTx = pindex->pprev->nChainTx + pindex->nTx;
-                else
-                    pindex->nChainTx = 0;
-            } else {
-                pindex->nChainTx = pindex->nTx;
-            }
-        }
-
-        block_index_build_skip(pindex);
-
-        if (pindex->pprev) {
-            if (block_index_is_valid(pindex, BLOCK_VALID_CONSENSUS) &&
-                !pindex->nCachedBranchId)
-                pindex->nCachedBranchId = pindex->pprev->nCachedBranchId;
-        }
-
-        if (!(pindex->nStatus & BLOCK_FAILED_MASK) && pindex->pprev &&
-            (pindex->pprev->nStatus & BLOCK_FAILED_MASK))
-            pindex->nStatus |= BLOCK_FAILED_CHILD;
-    }
+    block_index_forward_pass(sorted, count);
 
     free(sorted);
     return true;

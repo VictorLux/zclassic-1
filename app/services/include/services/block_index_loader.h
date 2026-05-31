@@ -28,6 +28,7 @@
 #define ZCL_SERVICES_BLOCK_INDEX_LOADER_H
 
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 
 /* Forward declarations — avoids pulling in heavy headers */
@@ -35,6 +36,8 @@ struct main_state;
 struct node_db;
 struct chain_params;
 struct block_tree_db;
+struct block_index_projection;
+struct sqlite3;
 
 /* ── Flat file (block_index.bin) ─────────────────────────── */
 
@@ -66,5 +69,55 @@ bool load_block_index_sqlite(struct node_db *ndb, struct main_state *ms);
 bool load_block_index(struct main_state *ms,
                        const struct chain_params *params,
                        struct block_tree_db *btdb, bool btdb_open);
+
+/* ── Shared internal helpers ─────────────────────────────────────── */
+
+struct block_index;
+
+/* Forward pass over a height-sorted block_index array: recompute
+ * nChainWork, nChainTx, skip links, cached branch id, and failed-child
+ * propagation from each entry's (already-linked) pprev. Shared by the
+ * legacy LevelDB loader (load_block_index) and the single-engine
+ * projection rebuild so both compute the pointer-graph-derived fields
+ * identically. `sorted` must be height-ASC ordered. */
+void block_index_forward_pass(struct block_index **sorted, size_t count);
+
+/* ── Single-engine boot rebuild (event_log → projection → map) ───── */
+
+/* Rebuild the in-memory block_index map purely from the
+ * block_index_projection (the log-derived authoritative source), then
+ * seed the active tip from the tip_finalize cursor in progress.kv.
+ *
+ * This is the single-engine replacement for the three legacy loaders
+ * (flat / SQLite / LevelDB). It does NOT touch any $HOME/.zclassic path.
+ *
+ * Sequence:
+ *   1. block_index_projection_catch_up(bip) — drain the event log.
+ *   2. block_index_projection_iterate — fold every disk_block_index into
+ *      ms->map_block_index via chainstate_insert_block_index (fields per
+ *      block_index_db.c, OMITTING the +1703 file-0 fixup since the
+ *      projection's nDataPos is this node's own body_persist position).
+ *   3. Link pprev via the carried hashPrev.
+ *   4. Forward pass: recompute nChainWork, nChainTx, skip links, branch
+ *      ids, failed-child propagation (mirrors load_block_index post-load).
+ *   5. Seed the tip: read the tip_finalize cursor from `progress_db`
+ *      (stage_cursor table), look up the finalized tip hash at cursor-1,
+ *      find that block_index, set the authoritative tip + publish via
+ *      chain_set_active_tip.
+ *
+ * Empty projection (cold datadir) → no entries folded, no tip set,
+ * returns true (the node sits at genesis; fast_sync seeds it).
+ *
+ * `bip` is the open projection; `progress_db` is the progress.kv handle
+ * (progress_store_db()). Both may be NULL — a NULL `bip` makes this a
+ * no-op (returns true, empty map); a NULL `progress_db` skips the tip
+ * seed (map rebuilt, no tip published).
+ *
+ * Returns true on success (including the empty case), false on a hard
+ * fold/iterate error. */
+bool load_block_index_from_projection(struct main_state *ms,
+                                      const struct chain_params *params,
+                                      struct block_index_projection *bip,
+                                      struct sqlite3 *progress_db);
 
 #endif /* ZCL_SERVICES_BLOCK_INDEX_LOADER_H */

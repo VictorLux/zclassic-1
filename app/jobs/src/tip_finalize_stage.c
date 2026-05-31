@@ -609,6 +609,20 @@ void tip_finalize_stage_set_authoritative_tip(int height,
     update_last_advance(height, hash);
 }
 
+bool tip_finalize_stage_finalized_tip_at(sqlite3 *db, int height,
+                                         uint8_t out_hash[32])
+{
+    if (!db || !out_hash || height < 0)
+        return false;
+    struct finalized_tip_row row;
+    if (!finalized_tip_row_at(db, height, &row))
+        return false;
+    if (!row.found || !row.ok || !row.has_tip_hash)
+        return false;
+    memcpy(out_hash, row.tip_hash.data, 32);
+    return true;
+}
+
 void tip_finalize_stage_set_utxo_counter(tip_finalize_utxo_count_fn fn,
                                          void *user)
 {

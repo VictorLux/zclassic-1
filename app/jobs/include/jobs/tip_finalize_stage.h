@@ -39,6 +39,16 @@ tip_finalize_mode_t tip_finalize_get_mode(void);
 void tip_finalize_stage_set_authoritative_tip(int height,
                                               const uint8_t hash[32]);
 
+/* Read the durably-recorded finalized tip hash at `height` from the
+ * tip_finalize_log table on `db` (the progress.kv handle). Returns true
+ * and fills `out_hash[32]` iff a finalized (ok=1) row with a 32-byte
+ * tip_hash exists at that height. Used by boot_rebuild_from_log to seed
+ * the active tip from the durable cursor without re-running the stage.
+ * `db` must be the progress store handle (progress_store_db()). */
+struct sqlite3;
+bool tip_finalize_stage_finalized_tip_at(struct sqlite3 *db, int height,
+                                         uint8_t out_hash[32]);
+
 job_result_t tip_finalize_stage_step_once(void);
 int tip_finalize_stage_drain(int max_steps);
 
