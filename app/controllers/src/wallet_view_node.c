@@ -2,7 +2,7 @@
 
 #include "controllers/wallet_view_internal.h"
 #include "controllers/wallet_controller.h"
-#include "util/ar_step_readonly.h"
+#include "views/wallet_view_node_view.h"
 #include "util/log_macros.h"
 
 /* ── Node / Command Center (/wallet/node) ───────────────────── */
@@ -87,60 +87,14 @@ size_t serve_node(uint8_t *r, size_t max) {
                 tor_section, sizeof(tor_section));
     }
 
-    /* Peer table */
+    /* Peer table — fetch rows via the port, render via the view. */
     char peer_table[8192];
-    size_t pt = 0;
     {
-        int n = snprintf(peer_table, sizeof(peer_table),
-            "<div class='overflow-x'>"
-            "<table><tr><th>Address</th><th>Dir</th>"
-            "<th>Version</th><th>Height</th></tr>");
-        if (n > 0) pt = (size_t)n;
-
-        sqlite3_stmt *ps = NULL;
-        int peer_shown = 0;
-        if (db && sqlite3_prepare_v2(db,
-                "SELECT addr, subver, starting_height, inbound "
-                "FROM peers ORDER BY starting_height DESC LIMIT 25",
-                -1, &ps, NULL) == SQLITE_OK) {
-            while (AR_STEP_ROW_READONLY(ps) == SQLITE_ROW &&
-                   pt + 400 < sizeof(peer_table)) {
-                const char *addr = (const char *)sqlite3_column_text(ps, 0);
-                const char *subver = (const char *)sqlite3_column_text(ps, 1);
-                int sh = sqlite3_column_int(ps, 2);
-                int inbound = sqlite3_column_int(ps, 3);
-                if (!addr) continue;
-
-                char esc_addr[128], esc_sub[64], sh_s[16];
-                html_escape(esc_addr, sizeof(esc_addr), addr);
-                html_escape(esc_sub, sizeof(esc_sub),
-                    subver ? subver : "unknown");
-                snprintf(sh_s, sizeof(sh_s), "%d", sh);
-
-                struct template_var tv[] = {
-                    { "addr",      esc_addr },
-                    { "dir_class", inbound ? "pill-z" : "pill-t" },
-                    { "direction", inbound ? "In" : "Out" },
-                    { "subver",    esc_sub },
-                    { "height",    sh_s },
-                };
-                pt += template_render(TMPL_NODE_PEER_ROW, tv, 5,
-                    peer_table + pt, sizeof(peer_table) - pt);
-                peer_shown++;
-            }
-            sqlite3_finalize(ps);
-        }
-        if (peer_shown == 0) {
-            int n2 = snprintf(peer_table + pt, sizeof(peer_table) - pt,
-                "<tr><td colspan='4' style='color:#888;text-align:center;"
-                "padding:16px'>Connecting to network...</td></tr>");
-            if (n2 > 0) pt += (size_t)n2;
-        }
-        int n2 = snprintf(peer_table + pt, sizeof(peer_table) - pt,
-            "</table></div>");
-        if (n2 > 0) pt += (size_t)n2;
+        struct wallet_view_peer_row peers[25];
+        int n_peers = db ? wv_list_peers(db, peers,
+            sizeof(peers) / sizeof(peers[0])) : 0;
+        wv_render_peer_table(peer_table, sizeof(peer_table), peers, n_peers);
     }
-    peer_table[pt] = '\0';
 
     size_t off = wv_emit_header(r, max, "Node — ZClassic23", "/wallet/node");
 

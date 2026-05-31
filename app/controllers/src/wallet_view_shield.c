@@ -3,7 +3,7 @@
 #include "platform/time_compat.h"
 #include "controllers/wallet_view_internal.h"
 #include "controllers/wallet_controller.h"
-#include "util/ar_step_readonly.h"
+#include "views/wallet_view_shield_view.h"
 #include "util/log_macros.h"
 
 /* Shield: one-click fund securing. User confirms the amount. */
@@ -46,26 +46,7 @@ size_t serve_shield(uint8_t *r, size_t max, const char *query) {
 
         if (avail < (int64_t)(FEE_ZCL * ZATOSHI_PER_ZCL + 1)) {
             /* Nothing to shield — transparent balance is dust */
-            struct template_var bv[] = {
-                { "parent_href",  "/wallet" },
-                { "parent_label", "Home" },
-                { "current",      "Shield" },
-            };
-            off += template_render(TMPL_BREADCRUMB, bv, 3,
-                (char *)r + off, max - off);
-            APPEND(off, r, max,
-                "<div style='text-align:center;padding:32px 0'>"
-                "<div style='font-size:24px;margin-bottom:12px'>"
-                "&#x2705;</div>"
-                "<div style='color:#34d399;font-size:18px;"
-                "font-weight:700'>Nothing to shield</div>"
-                "<div style='color:#888;font-size:14px;"
-                "margin-top:8px'>"
-                "All spendable funds are already in z-addresses."
-                "</div>"
-                "<div style='margin-top:24px'>"
-                "<a href='/wallet' style='color:#34d399'>"
-                "Back to Wallet</a></div></div>");
+            wv_render_shield_nothing(r, max, &off);
         } else {
             char avail_str[32], max_str_buf[32];
             zcl_format_zcl(avail_str, sizeof(avail_str), avail);
@@ -134,18 +115,7 @@ size_t serve_shield_confirm(uint8_t *r, size_t max,
     {
         sqlite3 *sdb = wv_open_db();
         if (sdb) {
-            sqlite3_stmt *zs = NULL;
-            if (sqlite3_prepare_v2(sdb,
-                    "SELECT address FROM wallet_sapling_keys "
-                    "WHERE address IS NOT NULL AND length(address) > 0 "
-                    "ORDER BY rowid LIMIT 1",
-                    -1, &zs, NULL) == SQLITE_OK && zs) {
-                if (AR_STEP_ROW_READONLY(zs) == SQLITE_ROW) {
-                    const char *a = (const char *)sqlite3_column_text(zs, 0);
-                    if (a) snprintf(z_dest, sizeof(z_dest), "%s", a);
-                }
-                sqlite3_finalize(zs);
-            }
+            wv_first_sapling_address(sdb, z_dest, sizeof(z_dest));
             sqlite3_close(sdb);
         }
     }

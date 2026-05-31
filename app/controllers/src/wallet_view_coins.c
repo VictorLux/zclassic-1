@@ -2,7 +2,7 @@
 
 #include "controllers/wallet_view_internal.h"
 #include "controllers/wallet_controller.h"
-#include "util/ar_step_readonly.h"
+#include "views/wallet_view_coins_view.h"
 #include "util/log_macros.h"
 
 /* ── Coins (/wallet/coins) — Full UTXO audit view ──────────── */
@@ -20,62 +20,17 @@ size_t serve_coins(uint8_t *r, size_t max) {
     int tip = wv_effective_tip(db);
     size_t off = wv_emit_header(r, max, "Coins — ZClassic23", "/wallet/coins");
 
-    /* Pre-render UTXO rows into buffer */
+    /* Pre-render UTXO rows into buffer (fetch via port, render via view) */
     char utxo_rows[16384];
-    size_t ur = 0;
     int64_t t_total = 0;
     int t_count = 0;
-    sqlite3_stmt *s = NULL;
-    const char *coins_sql =
-        "SELECT hex(wu.txid), wu.vout, wu.value, wu.height, "
-        "  CASE WHEN wu.is_coinbase THEN 'Coinbase' ELSE 'Standard' END "
-        "FROM wallet_utxos wu "
-        "WHERE wu.spent_txid IS NULL "
-        "ORDER BY wu.value DESC";
-    if (sqlite3_prepare_v2(db, coins_sql, -1, &s, NULL) == SQLITE_OK) {
-        while (AR_STEP_ROW_READONLY(s) == SQLITE_ROW && ur + 500 < sizeof(utxo_rows)) {
-            const char *txid = (const char *)sqlite3_column_text(s, 0);
-            int vout = sqlite3_column_int(s, 1);
-            int64_t val = sqlite3_column_int64(s, 2);
-            int h = sqlite3_column_int(s, 3);
-            const char *stype = (const char *)sqlite3_column_text(s, 4);
-            if (!txid) continue;
-
-            char short_tx[18], lower_tx[65];
-            wv_txid_short(txid, short_tx, sizeof(short_tx));
-            wv_txid_lower(txid, lower_tx, sizeof(lower_tx));
-
-            int confs = (tip > 0 && h > 0) ? (tip - h + 1) : 0;
-            if (confs < 0) confs = 0;
-
-            int n = snprintf(utxo_rows + ur, sizeof(utxo_rows) - ur,
-                "<tr>"
-                "<td><a href='/explorer/tx/%s' class='hash'>"
-                "%s:%d</a></td>"
-                "<td><span class='pill pill-%s' style='font-size:13px'>"
-                "%s</span></td>"
-                "<td class='zcl'>%.8f</td>",
-                lower_tx, short_tx, vout,
-                stype && stype[0] == 'C' ? "pending" : "t",
-                stype ? stype : "Standard",
-                (double)val / 1e8);
-            if (n > 0) ur += (size_t)n;
-            if (h > 0)
-                n = snprintf(utxo_rows + ur, sizeof(utxo_rows) - ur,
-                    "<td>%d</td><td>%d</td>", h, confs);
-            else
-                n = snprintf(utxo_rows + ur, sizeof(utxo_rows) - ur,
-                    "<td><span class='pill pill-pending'>Pending</span></td>"
-                    "<td><span class='pill pill-pending'>Pending</span></td>");
-            if (n > 0) ur += (size_t)n;
-            n = snprintf(utxo_rows + ur, sizeof(utxo_rows) - ur, "</tr>");
-            if (n > 0) ur += (size_t)n;
-            t_total += val;
-            t_count++;
-        }
-        sqlite3_finalize(s);
+    {
+        struct wallet_view_coin coins[256];
+        int n_coins = wv_list_unspent_coins(db, coins,
+            sizeof(coins) / sizeof(coins[0]));
+        wv_render_coin_rows(utxo_rows, sizeof(utxo_rows), coins, n_coins,
+            tip, &t_total, &t_count);
     }
-    utxo_rows[ur] = '\0';
 
     /* Shielded notes */
     int z_notes = 0;
@@ -86,52 +41,12 @@ size_t serve_coins(uint8_t *r, size_t max) {
     size_t ns = 0;
     if (z_notes > 0) {
         char note_rows[6144];
-        size_t nr = 0;
-        s = NULL;
-        if (sqlite3_prepare_v2(db,
-                "SELECT n.value, n.address, COUNT(*) as cnt, "
-                "  MIN(n.block_height) as min_h, MAX(n.block_height) as max_h "
-                "FROM wallet_sapling_notes n"
-                " WHERE NOT EXISTS ("
-                "   SELECT 1 FROM sapling_spends ss"
-                "   WHERE ss.nullifier = n.nullifier)"
-                " GROUP BY n.value, n.address"
-                " ORDER BY n.value DESC",
-                -1, &s, NULL) == SQLITE_OK) {
-            while (AR_STEP_ROW_READONLY(s) == SQLITE_ROW && nr + 400 < sizeof(note_rows)) {
-                int64_t val = sqlite3_column_int64(s, 0);
-                const char *addr = (const char *)sqlite3_column_text(s, 1);
-                int cnt = sqlite3_column_int(s, 2);
-                int min_h = sqlite3_column_int(s, 3);
-                int max_h = sqlite3_column_int(s, 4);
-                char short_addr[18] = "\xe2\x80\x94";
-                if (addr && addr[0] && strlen(addr) > 3)
-                    wv_txid_short(addr + 3, short_addr, sizeof(short_addr));
-                int n = snprintf(note_rows + nr, sizeof(note_rows) - nr,
-                    "<tr>"
-                    "<td class='zcl'>%.8f</td>"
-                    "<td class='hash' style='color:#a78bfa'>zs1%s</td>"
-                    "<td>%d</td>",
-                    (double)val / 1e8, short_addr, cnt);
-                if (n > 0) nr += (size_t)n;
-                if (min_h > 0) {
-                    if (min_h == max_h)
-                        n = snprintf(note_rows + nr, sizeof(note_rows) - nr,
-                            "<td>%d</td>", min_h);
-                    else
-                        n = snprintf(note_rows + nr, sizeof(note_rows) - nr,
-                            "<td>%d\xe2\x80\x93%d</td>", min_h, max_h);
-                } else {
-                    n = snprintf(note_rows + nr, sizeof(note_rows) - nr,
-                        "<td><span class='pill pill-pending'>Pending</span></td>");
-                }
-                if (n > 0) nr += (size_t)n;
-                n = snprintf(note_rows + nr, sizeof(note_rows) - nr, "</tr>");
-                if (n > 0) nr += (size_t)n;
-            }
-            sqlite3_finalize(s);
+        {
+            struct wallet_view_note_group groups[64];
+            int n_groups = wv_list_note_groups(db, groups,
+                sizeof(groups) / sizeof(groups[0]));
+            wv_render_note_rows(note_rows, sizeof(note_rows), groups, n_groups);
         }
-        note_rows[nr] = '\0';
 
         char z_total_s[32], z_notes_s[16];
         snprintf(z_total_s, sizeof(z_total_s), "%.8f", (double)z_total / 1e8);
@@ -159,46 +74,15 @@ size_t serve_coins(uint8_t *r, size_t max) {
     char token_section[8192];
     size_t tks = 0;
     {
-        sqlite3_stmt *tok = NULL;
         int token_count = 0;
         char token_rows[6144];
-        size_t tr_off = 0;
-        if (sqlite3_prepare_v2(db,
-                "SELECT hex(t.token_id), t.ticker, t.name, t.decimals, "
-                "  SUM(tr.amount) as balance "
-                "FROM zslp_tokens t "
-                "JOIN zslp_transfers tr ON tr.token_id = t.token_id "
-                "WHERE tr.to_addr IN (SELECT pubkey_hash FROM wallet_keys) "
-                "  AND tr.tx_type IN ('GENESIS','MINT','SEND') "
-                "GROUP BY t.token_id "
-                "HAVING balance > 0 "
-                "ORDER BY balance DESC LIMIT 50",
-                -1, &tok, NULL) == SQLITE_OK) {
-            while (AR_STEP_ROW_READONLY(tok) == SQLITE_ROW) {
-                const char *ticker = (const char *)sqlite3_column_text(tok, 1);
-                const char *name = (const char *)sqlite3_column_text(tok, 2);
-                int decimals = sqlite3_column_int(tok, 3);
-                int64_t bal = sqlite3_column_int64(tok, 4);
-                char esc_ticker[64] = "", esc_name[128] = "";
-                if (ticker) html_escape(esc_ticker, sizeof(esc_ticker), ticker);
-                if (name) html_escape(esc_name, sizeof(esc_name), name);
-                double divisor = 1.0;
-                for (int d = 0; d < decimals; d++) divisor *= 10.0;
-                double disp = (double)bal / divisor;
-                int n = snprintf(token_rows + tr_off,
-                    sizeof(token_rows) - tr_off,
-                    "<tr><td><span class='pill pill-z'>%s</span></td>"
-                    "<td>%s</td>"
-                    "<td class='zcl' style='color:#a78bfa'>%.*f</td></tr>",
-                    esc_ticker[0] ? esc_ticker : "\xe2\x80\x94",
-                    esc_name[0] ? esc_name : "\xe2\x80\x94",
-                    decimals, disp);
-                if (n > 0) tr_off += (size_t)n;
-                token_count++;
-            }
-            sqlite3_finalize(tok);
+        {
+            struct wallet_view_token_balance tokens[50];
+            token_count = wv_list_token_balances(db, tokens,
+                sizeof(tokens) / sizeof(tokens[0]));
+            wv_render_token_rows(token_rows, sizeof(token_rows),
+                tokens, token_count);
         }
-        token_rows[tr_off] = '\0';
 
         if (token_count > 0) {
             struct template_var tv[] = { { "token_rows", token_rows } };

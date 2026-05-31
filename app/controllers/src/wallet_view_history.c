@@ -2,7 +2,7 @@
 
 #include "controllers/wallet_view_internal.h"
 #include "controllers/wallet_controller.h"
-#include "util/ar_step_readonly.h"
+#include "views/wallet_view_history_view.h"
 #include "util/log_macros.h"
 
 enum history_filter_mode {
@@ -29,42 +29,21 @@ static const char *history_filter_name(enum history_filter_mode mode)
     }
 }
 
-static void history_bind_filter_params(sqlite3_stmt *s, int start_index,
-                                       enum history_filter_mode mode,
-                                       const char *search_hex)
+static int history_filter_restrict(enum history_filter_mode mode)
 {
-    int restrict_mode = mode == HISTORY_FILTER_ALL ? 0 : 1;
-    int from_me = mode == HISTORY_FILTER_SENT ? 1 : 0;
-    const char *search = (search_hex && search_hex[0]) ? search_hex : "";
+    return mode == HISTORY_FILTER_ALL ? 0 : 1;
+}
 
-    sqlite3_bind_int(s, start_index + 0, restrict_mode);
-    sqlite3_bind_int(s, start_index + 1, from_me);
-    sqlite3_bind_text(s, start_index + 2, search, -1, SQLITE_STATIC);
+static int history_filter_from_me(enum history_filter_mode mode)
+{
+    return mode == HISTORY_FILTER_SENT ? 1 : 0;
 }
 
 static int history_query_count(sqlite3 *db, enum history_filter_mode mode,
                                const char *search_hex)
 {
-    static const char *sql =
-        "SELECT count(*) FROM wallet_transactions wt "
-        "WHERE (?1 = 0 OR wt.from_me = ?2) "
-        "AND (wt.from_me = 1 OR EXISTS ("
-        "  SELECT 1 FROM wallet_utxos wu "
-        "  WHERE wu.txid = wt.txid AND wu.value > 0"
-        ")) "
-        "AND (?3 = '' OR hex(wt.txid) LIKE '%' || ?3 || '%')";
-    sqlite3_stmt *s = NULL;
-    int count = 0;
-
-    if (!db)
-        return 0;
-    if (sqlite3_prepare_v2(db, sql, -1, &s, NULL) != SQLITE_OK || !s)
-        return 0;
-    history_bind_filter_params(s, 1, mode, search_hex);
-    if (AR_STEP_ROW_READONLY(s) == SQLITE_ROW)
-        count = sqlite3_column_int(s, 0);
-    sqlite3_finalize(s);
-    return count;
+    return wv_count_ledger_rows(db, history_filter_restrict(mode),
+                                history_filter_from_me(mode), search_hex);
 }
 
 /* ── History (/wallet/history) ──────────────────────────────── */
@@ -137,223 +116,24 @@ size_t serve_history(uint8_t *r, size_t max, int page,
             (char *)r + off, max - off);
     }
 
-    /* Timeline view (tx-cards).
-     * Use from_me to determine send vs receive.
-     * Compute net value from wallet UTXOs for this txid. */
-    sqlite3_stmt *s = NULL;
-    static const char *history_sql =
-        "SELECT hex(wt.txid), "
-        /* Use UTXO height as fallback when wallet_transactions.block_height=0 */
-        "COALESCE(NULLIF(wt.block_height,0),"
-        "  (SELECT MAX(wu0.height) FROM wallet_utxos wu0 WHERE wu0.txid = wt.txid),"
-        "  0) as ht, "
-        "COALESCE(b.time,"
-        "  (SELECT b2.time FROM blocks b2 WHERE b2.height = "
-        "    (SELECT MAX(wu0b.height) FROM wallet_utxos wu0b WHERE wu0b.txid = wt.txid)),"
-        "  0), "
-        "wt.from_me, wt.fee, "
-        /* Outputs to our wallet (received or change) */
-        "COALESCE("
-        "  (SELECT SUM(wu.value) FROM wallet_utxos wu WHERE wu.txid = wt.txid),"
-        "  (SELECT SUM(o.value) FROM tx_outputs o "
-        "    WHERE o.txid = wt.txid AND o.address_hash IN "
-        "    (SELECT pubkey_hash FROM wallet_keys)),"
-        "  0), "
-        /* Inputs from our wallet (spent by this tx) */
-        "COALESCE("
-        "  (SELECT SUM(wu2.value) FROM wallet_utxos wu2 "
-        "    WHERE wu2.spent_txid = wt.txid), 0) "
-        "FROM wallet_transactions wt "
-        "LEFT JOIN blocks b ON COALESCE(NULLIF(wt.block_height,0),"
-        "  (SELECT MAX(wu0c.height) FROM wallet_utxos wu0c WHERE wu0c.txid = wt.txid)) "
-        "  = b.height "
-        "WHERE (?1 = 0 OR wt.from_me = ?2) "
-        "AND (wt.from_me = 1 OR EXISTS ("
-        "  SELECT 1 FROM wallet_utxos wu "
-        "  WHERE wu.txid = wt.txid AND wu.value > 0"
-        ")) "
-        "AND (?3 = '' OR hex(wt.txid) LIKE '%' || ?3 || '%') "
-        "ORDER BY ht DESC LIMIT ?4 OFFSET ?5";
-    if (sqlite3_prepare_v2(db, history_sql, -1, &s, NULL) == SQLITE_OK) {
-        history_bind_filter_params(s, 1, filter_mode, safe_search);
-        sqlite3_bind_int(s, 4, per_page);
-        sqlite3_bind_int(s, 5, page * per_page);
-        while (AR_STEP_ROW_READONLY(s) == SQLITE_ROW && off + 600 < max) {
-            const char *txid = (const char *)sqlite3_column_text(s, 0);
-            int h = sqlite3_column_int(s, 1);
-            int64_t btime = sqlite3_column_int64(s, 2);
-            int from_me = sqlite3_column_int(s, 3);
-            int64_t fee = sqlite3_column_int64(s, 4);
-            int64_t wallet_output = sqlite3_column_int64(s, 5);
-            int64_t wallet_input = sqlite3_column_int64(s, 6);
-            if (!txid) continue;
-            /* Skip ghost entries (no data AND not a send we initiated) */
-            if (wallet_output == 0 && wallet_input == 0 && h == 0 && !from_me)
-                continue;
-
-            bool is_recv = (from_me == 0);
-            int64_t display_val;
-            if (is_recv) {
-                /* Received: show wallet outputs (amount received) */
-                display_val = wallet_output;
-            } else if (wallet_input > 0) {
-                /* Sent: amount = inputs - change_outputs (includes fee) */
-                display_val = wallet_input - wallet_output;
-                if (display_val < 0) display_val = 0;
-            } else {
-                display_val = wallet_output;
-            }
-            /* Shield operations: from_me with no transparent output = secured */
-            bool is_shield_op = (from_me && wallet_output == 0 &&
-                                  wallet_input == 0 && display_val == 0);
-            /* Skip zero-value entries (change outputs, empty notes) */
-            if (display_val == 0 && !is_shield_op) continue;
-
-            char short_tx[18], lower_tx[65], rel_time[48], ts[32];
-            wv_txid_short(txid, short_tx, sizeof(short_tx));
-            wv_txid_lower(txid, lower_tx, sizeof(lower_tx));
-            wv_format_relative_time(btime, rel_time, sizeof(rel_time));
-            wv_format_time(btime, ts, sizeof(ts));
-
-            char esc_short[64], esc_lower[256], esc_rel[96], esc_ts[64];
-            html_escape(esc_short, sizeof(esc_short), short_tx);
-            html_escape(esc_lower, sizeof(esc_lower), lower_tx);
-            html_escape(esc_rel, sizeof(esc_rel), rel_time);
-            html_escape(esc_ts, sizeof(esc_ts), ts);
-
-            int confs = (tip > 0 && h > 0) ? (tip - h + 1) : 0;
-            if (confs < 0) confs = 0;
-
-            /* Format height with commas */
-            char h_fmt[20];
-            {
-                char tmp[20];
-                int tl = snprintf(tmp, sizeof(tmp), "%d", h);
-                int ci = 0, ti = 0;
-                int digits_left = tl;
-                for (int di = 0; di < tl && ci < (int)sizeof(h_fmt)-1; di++) {
-                    h_fmt[ci++] = tmp[ti++];
-                    digits_left--;
-                    if (digits_left > 0 && digits_left % 3 == 0)
-                        h_fmt[ci++] = ',';
-                }
-                h_fmt[ci] = '\0';
-            }
-
-            /* Build confirmation HTML snippet */
-            char conf_html[256] = "";
-            if (h > 0) {
-                char confs_s[16];
-                snprintf(confs_s, sizeof(confs_s), "%d", confs);
-                struct template_var cv[] = {
-                    { "block", h_fmt }, { "confs", confs_s }
-                };
-                template_render(TMPL_CONF_CONFIRMED, cv, 2,
-                    conf_html, sizeof(conf_html));
-            } else {
-                template_render(TMPL_CONF_PENDING, NULL, 0,
-                    conf_html, sizeof(conf_html));
-            }
-
-            /* Render card — use short format, better labels */
-            char amt_s[32];
-            zcl_format_zcl_short(amt_s, sizeof(amt_s), display_val);
-
-            if (is_shield_op) {
-                /* Show fee if known, otherwise just label */
-                char fee_s[32] = "";
-                if (fee > 0)
-                    zcl_format_zcl_short(fee_s, sizeof(fee_s), fee);
-
-                struct template_var sv[] = {
-                    { "txid",      esc_lower },
-                    { "fee",       fee_s },
-                    { "timestamp", esc_ts },
-                    { "rel_time",  esc_rel },
-                };
-                off += template_render(TMPL_HISTORY_SHIELD, sv, 4,
-                    (char *)r + off, max - off);
-            } else {
-                struct template_var tv[] = {
-                    { "txid",        esc_lower },
-                    { "color",       is_recv ? "#34d399" : "#f87171" },
-                    { "amount_class", is_recv ? "recv" : "send" },
-                    { "sign",        is_recv ? "+" : "-" },
-                    { "amount",      amt_s },
-                    { "pill_class",  is_recv ? "pill-t" : "pill-send" },
-                    { "pill_label",  is_recv ? "Received" : "Sent" },
-                    { "timestamp",   esc_ts },
-                    { "rel_time",    esc_rel },
-                    { "conf_html",   conf_html },
-                };
-                off += template_render(TMPL_HISTORY_CARD, tv, 10,
-                    (char *)r + off, max - off);
-            }
-        }
-        sqlite3_finalize(s);
+    /* Timeline view (tx-cards). Fetch the page of ledger rows via the
+     * port, then render the cards via the history view. */
+    {
+        struct wallet_view_ledger_row rows[64];
+        int n_rows = wv_list_ledger_rows(db, rows,
+            sizeof(rows) / sizeof(rows[0]),
+            true, history_filter_restrict(filter_mode),
+            history_filter_from_me(filter_mode), safe_search,
+            per_page, page * per_page);
+        wv_render_history_cards(r, max, &off, rows, n_rows, tip);
     }
 
     /* Shielded note activity — show recent note deposits */
     if (page == 0 && (strcmp(f, "all") == 0 || strcmp(f, "recv") == 0)) {
-        sqlite3_stmt *ns = NULL;
-        if (sqlite3_prepare_v2(db,
-                "SELECT n.value, n.block_height, n.address, "
-                "COALESCE(b.time, 0) "
-                "FROM wallet_sapling_notes n "
-                "LEFT JOIN blocks b ON n.block_height = b.height "
-                "WHERE NOT EXISTS ("
-                "  SELECT 1 FROM sapling_spends ss "
-                "  WHERE ss.nullifier = n.nullifier) "
-                "AND n.value > 0 "
-                "ORDER BY n.block_height DESC LIMIT 10",
-                -1, &ns, NULL) == SQLITE_OK) {
-
-            bool header_shown = false;
-            while (AR_STEP_ROW_READONLY(ns) == SQLITE_ROW && off + 600 < max) {
-                int64_t val = sqlite3_column_int64(ns, 0);
-                (void)sqlite3_column_int(ns, 1); /* block height */
-                const char *addr = (const char *)sqlite3_column_text(ns, 2);
-                int64_t ntime = sqlite3_column_int64(ns, 3);
-
-                if (!header_shown) {
-                    APPEND(off, r, max,
-                        "<div class='section-header' style='margin-top:16px'>"
-                        "<span>&#x1F512; Shielded Notes</span></div>");
-                    header_shown = true;
-                }
-
-                char amt_s[32];
-                zcl_format_zcl_short(amt_s, sizeof(amt_s), val);
-                char rel[48], esc_rel[96];
-                wv_format_relative_time(ntime, rel, sizeof(rel));
-                html_escape(esc_rel, sizeof(esc_rel), rel);
-
-                /* Short z-address label */
-                char addr_short[24] = "";
-                if (addr && strlen(addr) > 12)
-                    snprintf(addr_short, sizeof(addr_short),
-                        "%.8s...%.4s", addr, addr + strlen(addr) - 4);
-
-                /* Is this one of my addresses? (all z-addresses in wallet are mine) */
-                bool is_mine = (addr && addr[0]);
-
-                APPEND(off, r, max,
-                    "<div class='tx-card' style='border-left-color:#a78bfa'>"
-                    "<div style='display:flex;justify-content:space-between;"
-                    "align-items:baseline'>"
-                    "<span class='tx-amount recv'>+%s ZCL</span>"
-                    "<span class='pill pill-z'>%s</span></div>"
-                    "<div class='tx-meta'>"
-                    "<span style='color:#888;font-size:13px'>%s</span>"
-                    "<span class='tx-time'>%s</span>"
-                    "</div></div>",
-                    amt_s,
-                    is_mine ? "my z-addr" : "external",
-                    addr_short,
-                    esc_rel);
-            }
-            sqlite3_finalize(ns);
-        }
+        struct wallet_view_note_row notes[10];
+        int n_notes = wv_list_recent_notes(db, notes,
+            sizeof(notes) / sizeof(notes[0]), true, 0);
+        wv_render_history_notes(r, max, &off, notes, n_notes);
     }
 
     /* Pagination (preserve filter + search) */
@@ -431,24 +211,13 @@ size_t serve_tx_detail(uint8_t *r, size_t max, const char *txid_hex) {
     int block_height = 0, from_me = 0;
     int64_t fee = 0, btime = 0;
 
-    sqlite3_stmt *s = NULL;
-    const char *tx_lookup_sql =
-        "SELECT wt.block_height, wt.from_me, wt.fee, "
-        "COALESCE(b.time, 0) "
-        "FROM wallet_transactions wt "
-        "LEFT JOIN blocks b ON wt.block_height = b.height "
-        "WHERE hex(wt.txid) = ?";
-    bool found = false;
-    if (sqlite3_prepare_v2(db, tx_lookup_sql, -1, &s, NULL) == SQLITE_OK) {
-        sqlite3_bind_text(s, 1, upper_txid, -1, SQLITE_STATIC);
-        if (AR_STEP_ROW_READONLY(s) == SQLITE_ROW) {
-            block_height = sqlite3_column_int(s, 0);
-            from_me = sqlite3_column_int(s, 1);
-            fee = sqlite3_column_int64(s, 2);
-            btime = sqlite3_column_int64(s, 3);
-            found = true;
-        }
-        sqlite3_finalize(s);
+    struct wallet_view_tx_header hdr = {0};
+    bool found = wv_lookup_tx_header(db, upper_txid, &hdr);
+    if (found) {
+        block_height = hdr.block_height;
+        from_me = hdr.from_me;
+        fee = hdr.fee;
+        btime = hdr.block_time;
     }
 
     if (!found) {
@@ -480,39 +249,15 @@ size_t serve_tx_detail(uint8_t *r, size_t max, const char *txid_hex) {
             "<div class='val zcl'>%.8f ZCL</div>",
             (double)fee / 1e8);
 
-    /* Pre-render wallet outputs */
+    /* Pre-render wallet outputs (fetch via port, render via view) */
     char outputs_section[4096];
-    size_t os = 0;
-    s = NULL;
-    if (sqlite3_prepare_v2(db,
-            "SELECT vout, value, hex(address_hash) "
-            "FROM wallet_utxos WHERE hex(txid) = ? "
-            "ORDER BY vout",
-            -1, &s, NULL) == SQLITE_OK) {
-        sqlite3_bind_text(s, 1, upper_txid, -1, SQLITE_STATIC);
-        bool header_shown = false;
-        while (AR_STEP_ROW_READONLY(s) == SQLITE_ROW && os + 300 < sizeof(outputs_section)) {
-            if (!header_shown) {
-                int n = snprintf(outputs_section + os,
-                    sizeof(outputs_section) - os,
-                    "<h3>Wallet Outputs</h3>");
-                if (n > 0) os += (size_t)n;
-                header_shown = true;
-            }
-            int vout = sqlite3_column_int(s, 0);
-            int64_t val = sqlite3_column_int64(s, 1);
-            int n = snprintf(outputs_section + os,
-                sizeof(outputs_section) - os,
-                "<div class='utxo-row'>"
-                "<span class='mono' style='color:#888'>:%d</span>"
-                "<span class='zcl'>%.8f ZCL</span>"
-                "</div>",
-                vout, (double)val / 1e8);
-            if (n > 0) os += (size_t)n;
-        }
-        sqlite3_finalize(s);
+    {
+        struct wallet_view_tx_output outs[64];
+        int n_outs = wv_list_tx_outputs(db, upper_txid, outs,
+            sizeof(outs) / sizeof(outs[0]));
+        wv_render_tx_outputs(outputs_section, sizeof(outputs_section),
+            outs, n_outs);
     }
-    outputs_section[os] = '\0';
 
     /* Format template variables */
     char confs_s[16], conf_pct_s[8], block_h_s[16];

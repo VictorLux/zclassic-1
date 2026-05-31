@@ -3,7 +3,7 @@
 #include "platform/time_compat.h"
 #include "controllers/wallet_view_internal.h"
 #include "controllers/wallet_controller.h"
-#include "util/ar_step_readonly.h"
+#include "views/wallet_view_dashboard_view.h"
 #include "util/log_macros.h"
 
 /* ── Dashboard (/wallet) ────────────────────────────────────── */
@@ -168,171 +168,31 @@ size_t serve_dashboard(uint8_t *r, size_t max) {
         }
     }
 
-    /* Token cards */
+    /* Token cards — fetch top-5 held tokens via the port, render via
+     * the dashboard view. */
     char token_buf[2048] = "";
     {
-        size_t toff = 0;
-        sqlite3_stmt *tok = NULL;
-        int tok_count = 0;
-        if (sqlite3_prepare_v2(db,
-                "SELECT t.ticker, t.name, t.decimals, SUM(tr.amount) as bal "
-                "FROM zslp_tokens t "
-                "JOIN zslp_transfers tr ON tr.token_id = t.token_id "
-                "WHERE tr.to_addr IN (SELECT pubkey_hash FROM wallet_keys) "
-                "  AND tr.tx_type IN ('GENESIS','MINT','SEND') "
-                "GROUP BY t.token_id HAVING bal > 0 "
-                "ORDER BY bal DESC LIMIT 5",
-                -1, &tok, NULL) == SQLITE_OK) {
-            while (AR_STEP_ROW_READONLY(tok) == SQLITE_ROW &&
-                   toff + 300 < sizeof(token_buf)) {
-                const char *ticker = (const char *)sqlite3_column_text(tok, 0);
-                int decimals = sqlite3_column_int(tok, 2);
-                int64_t bal = sqlite3_column_int64(tok, 3);
-                if (!ticker || bal <= 0) continue;
-                if (tok_count == 0)
-                    toff += (size_t)snprintf(token_buf + toff,
-                        sizeof(token_buf) - toff,
-                        "<div style='margin:12px 0'>"
-                        "<div class='section-header'>"
-                        "<span>Tokens</span>"
-                        "<a href='/wallet/coins'>View all</a></div>");
-                double div = 1.0;
-                for (int d = 0; d < decimals; d++) div *= 10.0;
-                char esc_tk[32];
-                html_escape(esc_tk, sizeof(esc_tk), ticker);
-                toff += (size_t)snprintf(token_buf + toff,
-                    sizeof(token_buf) - toff,
-                    "<div class='tx-row'>"
-                    "<div><span class='pill pill-z'>%s</span></div>"
-                    "<div style='text-align:right;color:#a78bfa;"
-                    "font-family:\"JetBrains Mono\",monospace;"
-                    "font-weight:700'>%.*f</div></div>",
-                    esc_tk, decimals, (double)bal / div);
-                tok_count++;
-            }
-            sqlite3_finalize(tok);
-        }
-        if (tok_count > 0)
-            snprintf(token_buf + toff, sizeof(token_buf) - toff, "</div>");
+        struct wallet_view_token_balance tokens[5];
+        int n_tokens = wv_list_token_cards(db, tokens,
+            sizeof(tokens) / sizeof(tokens[0]));
+        wv_render_dashboard_tokens(token_buf, sizeof(token_buf),
+            tokens, n_tokens);
     }
 
-    /* Recent transactions */
+    /* Recent transactions — fetch recent ledger rows + shielded notes
+     * via the port, render via the dashboard view (which caps at 5
+     * total and falls back to the empty-state). */
     char tx_buf[4096] = "";
     {
-        size_t txoff = 0;
-        int tx_shown = 0;
-        sqlite3_stmt *s = NULL;
-        if (sqlite3_prepare_v2(db,
-                "SELECT hex(wt.txid), wt.block_height, COALESCE(b.time,0), "
-                "wt.from_me, "
-                "COALESCE("
-                "  (SELECT SUM(wu.value) FROM wallet_utxos wu "
-                "    WHERE wu.txid = wt.txid),"
-                "  (SELECT SUM(o.value) FROM tx_outputs o "
-                "    WHERE o.txid = wt.txid AND o.address_hash IN "
-                "    (SELECT pubkey_hash FROM wallet_keys)),"
-                "  0), "
-                "COALESCE("
-                "  (SELECT SUM(wu2.value) FROM wallet_utxos wu2 "
-                "    WHERE wu2.spent_txid = wt.txid), 0) "
-                "FROM wallet_transactions wt "
-                "LEFT JOIN blocks b ON wt.block_height = b.height "
-                "ORDER BY wt.block_height DESC LIMIT 20",
-                -1, &s, NULL) == SQLITE_OK) {
-            while (AR_STEP_ROW_READONLY(s) == SQLITE_ROW &&
-                   txoff + 512 < sizeof(tx_buf) && tx_shown < 5) {
-                const char *txid = (const char *)sqlite3_column_text(s, 0);
-                int height = sqlite3_column_int(s, 1);
-                int64_t btime = sqlite3_column_int64(s, 2);
-                int from_me = sqlite3_column_int(s, 3);
-                int64_t wallet_output = sqlite3_column_int64(s, 4);
-                int64_t wallet_input = sqlite3_column_int64(s, 5);
-                if (!txid) continue;
-                int64_t display_amount = wallet_output;
-                if (from_me && wallet_input > 0) {
-                    display_amount = wallet_input - wallet_output;
-                    if (display_amount < 0) display_amount = 0;
-                }
-                if (display_amount == 0) continue; /* skip zero-value entries */
-
-                bool is_recv = (from_me == 0);
-                char rel_time[48], esc_rel[96];
-                wv_format_relative_time(btime, rel_time, sizeof(rel_time));
-                html_escape(esc_rel, sizeof(esc_rel), rel_time);
-                char lower_tx[65];
-                wv_txid_lower(txid, lower_tx, sizeof(lower_tx));
-                int confs = (tip > 0 && height > 0) ? (tip - height + 1) : 0;
-                char amt[32];
-                zcl_format_zcl_short(amt, sizeof(amt), display_amount);
-                char conf_str[32] = "";
-                /* Show time, not conf count — users don't need "3256 confs" */
-                (void)confs;
-                char link[80];
-                snprintf(link, sizeof(link), "/wallet/tx/%s", lower_tx);
-
-                struct template_var tv[] = {
-                    { "link",            link },
-                    { "direction_class", is_recv ? "recv" : "send" },
-                    { "sign",            is_recv ? "+" : "-" },
-                    { "amount",          amt },
-                    { "time_style",      "" },
-                    { "time_label",      esc_rel },
-                    { "conf_label",      conf_str },
-                };
-                txoff += template_render(TMPL_TX_ROW, tv, 7,
-                    tx_buf + txoff, sizeof(tx_buf) - txoff);
-                tx_shown++;
-            }
-            sqlite3_finalize(s);
-
-            /* Shielded notes */
-            if (tx_shown < 5) {
-                sqlite3_stmt *zs = NULL;
-                if (sqlite3_prepare_v2(db,
-                        "SELECT n.value, n.block_height, n.address "
-                        "FROM wallet_sapling_notes n "
-                        "WHERE NOT EXISTS ("
-                        "  SELECT 1 FROM sapling_spends ss"
-                        "  WHERE ss.nullifier = n.nullifier) "
-                        "ORDER BY n.block_height DESC LIMIT ?",
-                        -1, &zs, NULL) == SQLITE_OK) {
-                    sqlite3_bind_int(zs, 1, 5 - tx_shown);
-                    while (AR_STEP_ROW_READONLY(zs) == SQLITE_ROW && tx_shown < 5 &&
-                           txoff + 512 < sizeof(tx_buf)) {
-                        int64_t val = sqlite3_column_int64(zs, 0);
-                        int nh = sqlite3_column_int(zs, 1);
-                        int nc = (tip > 0 && nh > 0) ? (tip - nh + 1) : 0;
-                        if (nc < 0) nc = 0;
-                        char amt[32];
-                        zcl_format_zcl_short(amt, sizeof(amt), val);
-                        /* Don't show confs on dashboard — just time context */
-                        char nc_str[32] = "";
-                        (void)nc;
-
-                        struct template_var tv[] = {
-                            { "link",            "/wallet/coins" },
-                            { "direction_class", "recv" },
-                            { "sign",            "+" },
-                            { "amount",          amt },
-                            { "time_style",      " style='color:#a78bfa'" },
-                            { "time_label",      "&#x1F512; Private" },
-                            { "conf_label",      nc_str },
-                        };
-                        txoff += template_render(TMPL_TX_ROW, tv, 7,
-                            tx_buf + txoff, sizeof(tx_buf) - txoff);
-                        tx_shown++;
-                    }
-                    sqlite3_finalize(zs);
-                }
-            }
-
-            if (tx_shown == 0) {
-                snprintf(tx_buf, sizeof(tx_buf),
-                    "<div class='empty-state'>%s</div>",
-                    total_balance > 0 ? "Transaction history syncing..."
-                                      : "No transactions yet");
-            }
-        }
+        struct wallet_view_ledger_row rows[20];
+        int n_rows = wv_list_ledger_rows(db, rows,
+            sizeof(rows) / sizeof(rows[0]),
+            false, 0, 0, NULL, 0, 0);
+        struct wallet_view_note_row notes[5];
+        int n_notes = wv_list_recent_notes(db, notes,
+            sizeof(notes) / sizeof(notes[0]), false, 5);
+        wv_render_dashboard_recent(tx_buf, sizeof(tx_buf),
+            rows, n_rows, notes, n_notes, tip, total_balance);
     }
 
     /* Backup warning */

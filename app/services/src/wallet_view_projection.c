@@ -67,3 +67,134 @@ int wv_list_held_tokens(sqlite3 *db, struct wv_held_token *out, size_t max)
     return port.list_held_tokens(
         port.self, (struct wallet_view_held_token *)out, max);
 }
+
+/* ── Page projection wrappers ─────────────────────────────────
+ * Each binds the sqlite adapter and forwards to the port. The wallet
+ * view PAGE controllers call these instead of touching sqlite. */
+
+int wv_list_token_cards(sqlite3 *db,
+                        struct wallet_view_token_balance *out, size_t max)
+{
+    if (!db || !out || max == 0)
+        return 0;
+    struct wallet_view_port port;
+    if (!wallet_view_sqlite_bind(db, &port))
+        return 0;
+    return port.list_token_cards(port.self, out, max);
+}
+
+int wv_list_token_balances(sqlite3 *db,
+                           struct wallet_view_token_balance *out, size_t max)
+{
+    if (!db || !out || max == 0)
+        return 0;
+    struct wallet_view_port port;
+    if (!wallet_view_sqlite_bind(db, &port))
+        return 0;
+    return port.list_token_balances(port.self, out, max);
+}
+
+int wv_list_unspent_coins(sqlite3 *db,
+                          struct wallet_view_coin *out, size_t max)
+{
+    if (!db || !out || max == 0)
+        return 0;
+    struct wallet_view_port port;
+    if (!wallet_view_sqlite_bind(db, &port))
+        return 0;
+    return port.list_unspent_coins(port.self, out, max);
+}
+
+int wv_list_note_groups(sqlite3 *db,
+                        struct wallet_view_note_group *out, size_t max)
+{
+    if (!db || !out || max == 0)
+        return 0;
+    struct wallet_view_port port;
+    if (!wallet_view_sqlite_bind(db, &port))
+        return 0;
+    return port.list_note_groups(port.self, out, max);
+}
+
+int wv_list_ledger_rows(sqlite3 *db,
+                        struct wallet_view_ledger_row *out, size_t max,
+                        bool with_filter, int restrict_mode, int from_me,
+                        const char *search_hex, int limit, int offset)
+{
+    if (!db || !out || max == 0)
+        return 0;
+    struct wallet_view_port port;
+    if (!wallet_view_sqlite_bind(db, &port))
+        return 0;
+    return port.list_ledger_rows(port.self, out, max, with_filter,
+                                 restrict_mode, from_me, search_hex,
+                                 limit, offset);
+}
+
+int wv_count_ledger_rows(sqlite3 *db, int restrict_mode, int from_me,
+                         const char *search_hex)
+{
+    if (!db)
+        return 0;
+    struct wallet_view_port port;
+    if (!wallet_view_sqlite_bind(db, &port))
+        return 0;
+    return port.count_ledger_rows(port.self, restrict_mode, from_me,
+                                  search_hex);
+}
+
+int wv_list_recent_notes(sqlite3 *db,
+                         struct wallet_view_note_row *out, size_t max,
+                         bool with_block_time, int limit)
+{
+    if (!db || !out || max == 0)
+        return 0;
+    struct wallet_view_port port;
+    if (!wallet_view_sqlite_bind(db, &port))
+        return 0;
+    return port.list_recent_notes(port.self, out, max, with_block_time,
+                                  limit);
+}
+
+int wv_list_peers(sqlite3 *db,
+                  struct wallet_view_peer_row *out, size_t max)
+{
+    if (!db || !out || max == 0)
+        return 0;
+    struct wallet_view_port port;
+    if (!wallet_view_sqlite_bind(db, &port))
+        return 0;
+    return port.list_peers(port.self, out, max);
+}
+
+bool wv_first_sapling_address(sqlite3 *db, char *out, size_t outmax)
+{
+    if (!db || !out || outmax == 0)
+        return false;
+    struct wallet_view_port port;
+    if (!wallet_view_sqlite_bind(db, &port))
+        return false;
+    return port.first_sapling_address(port.self, out, outmax);
+}
+
+bool wv_lookup_tx_header(sqlite3 *db, const char *upper_txid,
+                         struct wallet_view_tx_header *out)
+{
+    if (!db || !upper_txid || !out)
+        return false;
+    struct wallet_view_port port;
+    if (!wallet_view_sqlite_bind(db, &port))
+        return false;
+    return port.lookup_tx_header(port.self, upper_txid, out);
+}
+
+int wv_list_tx_outputs(sqlite3 *db, const char *upper_txid,
+                       struct wallet_view_tx_output *out, size_t max)
+{
+    if (!db || !upper_txid || !out || max == 0)
+        return 0;
+    struct wallet_view_port port;
+    if (!wallet_view_sqlite_bind(db, &port))
+        return 0;
+    return port.list_tx_outputs(port.self, upper_txid, out, max);
+}

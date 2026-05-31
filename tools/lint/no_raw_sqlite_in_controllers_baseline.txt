@@ -34,8 +34,3 @@ app/controllers/src/wallet_controller_keys.c
 app/controllers/src/wallet_rescan_controller_coins.c
 app/controllers/src/wallet_scan.c
 app/controllers/src/wallet_shielded_controller.c
-app/controllers/src/wallet_view_coins.c
-app/controllers/src/wallet_view_dashboard.c
-app/controllers/src/wallet_view_history.c
-app/controllers/src/wallet_view_node.c
-app/controllers/src/wallet_view_shield.c
