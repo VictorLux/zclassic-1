@@ -24,13 +24,9 @@ app/services/src/utxo_recovery_service.c:270: coins_view_cache_flush(ctx->coins_
 config/src/boot_index.c:156: coins_view_cache_flush(cvtip);
 config/src/boot_index.c:226: coins_view_cache_flush(cvtip);
 config/src/boot_index.c:239: coins_view_cache_flush(cvtip);
-config/src/boot_services.c:3079: if (coins_view_cache_flush(svc->coins_tip)) {
-config/src/boot_services.c:3095: coins_view_cache_flush(svc->coins_tip);
-config/src/boot_services.c:3234: coins_view_cache_flush(svc->coins_tip);
 lib/coins/include/coins/coins_view.h:163:bool coins_view_cache_flush(struct coins_view_cache *c);
 lib/coins/src/coins_view.c:322:bool coins_view_cache_flush(struct coins_view_cache *c)
 lib/mining/src/miner.c:224: return process_new_block(&state, ms, coins_tip, params, pblock, true,
-lib/net/src/msg_blocks.c:340: process_new_block(&state, mp->main_state, mp->coins_tip,
 lib/net/src/msg_compact.c:60: process_new_block(&state, mp->main_state, mp->coins_tip,
 lib/storage/include/storage/coins_view_sqlite.h:49:bool coins_view_sqlite_batch_write(struct coins_view_sqlite *cvs,
 lib/storage/include/storage/coins_view_sqlite.h:54:bool coins_view_sqlite_batch_write_ex(struct coins_view_sqlite *cvs,
@@ -64,3 +60,7 @@ lib/validation/src/process_block_core.c:1066:bool process_new_block(struct valid
 lib/validation/src/process_block_flush_policy.c:237: ok = coins_view_sqlite_batch_write_ex(g_coins_sqlite_ptr,
 lib/validation/src/process_block_flush_policy.c:251: ok = coins_view_cache_flush(coins_tip);
 lib/validation/src/process_block_self_heal.c:695: if (disconnect_tip(&ds, ms, coins_tip, datadir)) {
+config/src/boot_services.c:2992: if (coins_view_cache_flush(svc->coins_tip)) {
+config/src/boot_services.c:3008: coins_view_cache_flush(svc->coins_tip);
+config/src/boot_services.c:3146: coins_view_cache_flush(svc->coins_tip);
+lib/net/src/msg_blocks.c:324: process_new_block(&state, mp->main_state, mp->coins_tip,
