@@ -55,6 +55,12 @@
 #include "jobs/utxo_apply_stage.h"
 #include "jobs/tip_finalize_stage.h"
 
+/* Forward decl: the non-locking reducer drain helper (defined below). The
+ * AUTHORITATIVE branch of activation_request_connect calls it directly under
+ * the controller mutex it already holds — reducer_kick/reducer_ingest_block
+ * lock that same mutex and would deadlock from inside the chokepoint. */
+static int reducer_drain_to_convergence(void);
+
 /* The single typed blocker this authority owns. When the active tip is
  * below the most-work *valid-header* chain and this tick could not advance,
  * we MUST name the blocker (height + why + escape) instead of returning to a
@@ -421,47 +427,88 @@ void activation_request_connect(struct chain_activation_controller *ctl,
                          source == ACTIVATION_SRC_NEW_BLOCK ? "new_block" :
                          "p2p_trigger");
 
-    /* Execute */
+    /* Execute. The chokepoint chooses the engine on the single consistent
+     * reducer_is_authoritative() gate every block-intake site uses:
+     *   - AUTHORITATIVE (the live default after the step-13 cutover): drive
+     *     the eight Wave-S Job stages to convergence — the reducer is the
+     *     engine. This is the step-14 repoint: every Group-2 NULL-block caller
+     *     (boot, msg_headers all-data, sync_monitor, utxo_activation_paused,
+     *     repair_controller, invalidate/revalidate reconnect, the behind-
+     *     blocker escape) funnels here and now connects via the reducer, NOT
+     *     legacy activate_best_chain. We are already under ctl->mutex (the same
+     *     serialization point), so we call the non-locking drain helper
+     *     directly — reducer_kick/reducer_ingest_block lock the mutex and would
+     *     deadlock here.
+     *   - SHADOW: the unchanged legacy activate_best_chain path. */
+    bool ok = true;
     struct validation_state vs;
     validation_state_init(&vs);
-    bool ok = activate_best_chain(&vs, ctl->ms, ctl->coins_tip,
-                                  ctl->params, pblock, ctl->datadir);
 
-    /* Drain deferred activation requests that arrived while we were
-     * holding the mutex. Each pass is activate_best_chain(pblock=NULL)
-     * — the newly-accepted block is on disk, so the disk-read path
-     * picks it up. find_most_work_chain is idempotent when no new
-     * work arrived, so the loop converges quickly.
-     *
-     * replace the 8-round cap with a millisecond
-     * budget. A 2,500-block gap with one block arriving per drain
-     * cannot complete in 8 rounds; the ms budget lets the loop run
-     * to convergence within bounded mutex-held latency. Boot path
-     * still skips the drain (source==BOOT) — boot must return
-     * quickly to open the RPC port. */
-    if (source != ACTIVATION_SRC_BOOT) {
-        const int64_t drain_budget_us = 2000 * 1000; /* 2s */
-        const int     drain_hard_cap  = 4096;        /* belt + suspenders */
-        int64_t       drain_start_us  = GetTimeMicros();
-        int           drain_rounds    = 0;
-        while (drain_rounds < drain_hard_cap) {
-            /* also drain when activate_best_chain returned
-             * early because of tip_child_connect_limit — otherwise we
-             * stall the chain until the next P2P block arrival.
-             * The OR is short-circuit, so the atomic_exchange on
-             * deferred_pending still resets it whenever it is set. */
-            bool deferred = atomic_exchange(&ctl->deferred_pending, 0) != 0;
-            bool more_pending = process_block_active_tip_has_pending();
-            if (!deferred && !more_pending)
-                break;
-            struct validation_state vs_r;
-            validation_state_init(&vs_r);
-            bool ok_r = activate_best_chain(&vs_r, ctl->ms, ctl->coins_tip,
-                                             ctl->params, NULL, ctl->datadir);
-            if (!ok_r) ok = false;
-            drain_rounds++;
-            if (GetTimeMicros() - drain_start_us > drain_budget_us)
-                break;
+    if (reducer_is_authoritative()) {
+        /* A non-NULL pblock can only reach this chokepoint via the dead
+         * process_new_block tail (the live Group-1 ingest callers route to
+         * reducer_ingest_block directly in AUTHORITATIVE and never call
+         * process_new_block). Admit it to the header inbox so the producer
+         * path can build its block_index, then drive the stages; a NULL
+         * pblock is a pure cursor-driven kick (the Group-2 path). */
+        if (pblock) {
+            struct uint256 block_hash;
+            block_get_hash(pblock, &block_hash);
+            struct header_admit_msg msg;
+            memset(&msg, 0, sizeof(msg));
+            msg.hash = block_hash;
+            msg.observed_unix = (int64_t)GetTime();
+            msg.has_header = true;
+            msg.header = pblock->header;
+            msg.height = -1;
+            (void)mailbox_header_admit_push(&msg);
+        }
+        (void)reducer_drain_to_convergence();
+        /* The reducer reports its verdict through the tip advance + the typed
+         * behind-blocker (registered below by activation_eval_tip_blocker),
+         * exactly as activate_best_chain does — there is no hard-failure bool
+         * to surface here, so `ok` stays true and the advance-or-block
+         * decision below names any remaining gap. */
+    } else {
+        ok = activate_best_chain(&vs, ctl->ms, ctl->coins_tip,
+                                 ctl->params, pblock, ctl->datadir);
+
+        /* Drain deferred activation requests that arrived while we were
+         * holding the mutex. Each pass is activate_best_chain(pblock=NULL)
+         * — the newly-accepted block is on disk, so the disk-read path
+         * picks it up. find_most_work_chain is idempotent when no new
+         * work arrived, so the loop converges quickly.
+         *
+         * replace the 8-round cap with a millisecond
+         * budget. A 2,500-block gap with one block arriving per drain
+         * cannot complete in 8 rounds; the ms budget lets the loop run
+         * to convergence within bounded mutex-held latency. Boot path
+         * still skips the drain (source==BOOT) — boot must return
+         * quickly to open the RPC port. */
+        if (source != ACTIVATION_SRC_BOOT) {
+            const int64_t drain_budget_us = 2000 * 1000; /* 2s */
+            const int     drain_hard_cap  = 4096;        /* belt + suspenders */
+            int64_t       drain_start_us  = GetTimeMicros();
+            int           drain_rounds    = 0;
+            while (drain_rounds < drain_hard_cap) {
+                /* also drain when activate_best_chain returned
+                 * early because of tip_child_connect_limit — otherwise we
+                 * stall the chain until the next P2P block arrival.
+                 * The OR is short-circuit, so the atomic_exchange on
+                 * deferred_pending still resets it whenever it is set. */
+                bool deferred = atomic_exchange(&ctl->deferred_pending, 0) != 0;
+                bool more_pending = process_block_active_tip_has_pending();
+                if (!deferred && !more_pending)
+                    break;
+                struct validation_state vs_r;
+                validation_state_init(&vs_r);
+                bool ok_r = activate_best_chain(&vs_r, ctl->ms, ctl->coins_tip,
+                                                 ctl->params, NULL, ctl->datadir);
+                if (!ok_r) ok = false;
+                drain_rounds++;
+                if (GetTimeMicros() - drain_start_us > drain_budget_us)
+                    break;
+            }
         }
     }
 
