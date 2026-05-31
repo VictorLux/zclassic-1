@@ -79,3 +79,23 @@ become dead and deletable. This is the next focused effort (its own design pass)
 - **C Warm restart:** `kill -9` + reboot; height restored from log alone (±WAL rewind); no genesis re-validation storm (proves nStatus persisted).
 - **D Read:** `gettxoutsetinfo` txouts == `utxo_projection_count`, matches pre-delete baseline; `zcl_utxo_projection_diff==0`; `getblock` body still served from `disk_block_io`.
 - **Gate:** A–D green + `make lint` clean + `test_parallel` `N passed, 0 failed`.
+
+
+## UPDATE 2026-05-31 — reducer-ingest PROVEN; keystone wedge fixed
+
+Steps 1-12 (capability + gated repoint) are on main. A new end-to-end test
+(lib/test/src/test_reducer_ingest_e2e.c) drives reducer_ingest_block under
+AUTHORITATIVE and CAUGHT A FATAL BUG: the keystone collapsed the lookahead window
+(active_chain_set_tip shrank chain[] to the finalized height) so the reducer
+wedged after ONE block — no stage re-extended chain_active to the next candidate.
+FIXED (7b9e42b53): active_chain_extend_window + active_chain_most_work_candidate
+(chainstate.c) re-widen the candidate window each tick (forward-only, tip stays
+owned by tip_finalize); tip_finalize + utxo_apply call it AUTHORITATIVE-gated.
+Test now passes for real: multi-block advance, invalid-block stop, reorg byte-exact
+(commitment match). SHADOW byte-identical. The reorg-unwind/invalid-rejection/UTXO
+machinery were already correct.
+
+REMAINING: step 13 flip the default to AUTHORITATIVE (gate: full test_parallel
+green with the reducer driving) -> steps 14-15 delete the ~9,800-line legacy
+engine (repoint the remaining legacy callers first). DEPLOY (live network) stays
+a separate owner-gated step with a datadir-copy check.
