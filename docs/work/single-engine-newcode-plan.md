@@ -47,11 +47,30 @@ Build + `make lint` clean + `test_parallel` 0/275 at each step. Remaining: steps
 | 3 | `header_admit_stage.c` | emit `EV_BLOCK_HEADER` when authoritative (2nd emitter alongside legacy) | low — idempotent | ✅ done |
 | 4 | `body_persist_stage.c` | set `BLOCK_HAVE_DATA` + re-emit header | low | ✅ done |
 | 5 | `script_validate_stage.c` | set `BLOCK_VALID_SCRIPTS` + re-emit header | low | ✅ done |
-| 6 | `block_index_loader.c` + `boot.c` | `boot_rebuild_from_log()`: catch_up → fold projection → map + pprev + nChainWork → seed tip from cursor | medium | 🔲 next |
-| 7 | `snapshot_apply.c` + `utxo_projection.c` | cold-start: seed projection from snapshot + anchor header + cursor stamp | medium | 🔲 |
-| 8 | `boot.c` + `utxo_projection.h` | flip `coins_tip` read view to `coins_view_projection` (FATAL if projection null) | medium — parity-gate | 🔲 |
-| 9 | `blockchain_controller_chain.c` | `gettxoutsetinfo`/commitment read off the projection | medium — parity-gate | 🔲 |
-| 10 | `block_index_db.c`, `connect_tip.c`, `activate_best_chain.c`, `accept_block.c`, `process_block_core.c`, `block_index_loader.c` legacy loaders, `coins_view_sqlite.c`, `coins_view_stage_backing.c` | **DELETE the legacy engine — LAST**, only after 1–9 green on a COPY | high — the cut | 🔲 |
+| 6 | `block_index_loader.c` + `boot.c` | `boot_rebuild_from_log()`: catch_up → fold projection → map + pprev + nChainWork → seed tip from cursor | medium | ✅ done |
+| 7 | `snapshot_apply.c` + `utxo_projection.c` | cold-start: seed projection from snapshot + anchor header + cursor stamp | medium | ✅ done |
+| 8 | `boot.c` + `utxo_projection.h` | point `coins_tip` read view at `coins_view_projection` | medium | ✅ done |
+| 9 | `blockchain_controller_chain.c` | `gettxoutsetinfo`/commitment read off the projection | medium | ✅ done |
+| 10 | (legacy connect path + importers) | **DELETE the legacy engine** | high | ⛔ BLOCKED |
+
+## Step 10 finding (2026-05-31): the reducer must DRIVE ingestion before the delete
+
+Step 10 stopped without editing — correctly. The legacy connect path
+(`connect_tip` / `activate_best_chain` / `accept_block` / `process_block_core` /
+`process_new_block`) is **still the live, unconditional block-ingest engine**, not
+dead code shadowed by the reducer. It is called from ~20+ live sites: P2P delivery
+(`msg_blocks.c:324`, `msg_compact.c`, `msg_headers.c`, `download.c`), mining
+(`miner.c`, `mining_controller.c` submitblock), reorg/repair (`process_block_*`,
+`chain_activation_controller`, `gap_fill_service`), and boot. The reducer stages
+today RUN ALONGSIDE it (they emit `EV_BLOCK_HEADER` + set nStatus + feed the
+projection) but they do **not** drive block connection — `connect_tip` still does.
+
+So deleting the legacy path is NOT a mechanical removal. The remaining real work:
+**route block ingestion through the Job reducer** — `process_new_block` / the P2P
++ mining + submitblock entry points must apply blocks via the reducer pipeline
+(header_admit → … → tip_finalize) instead of `connect_tip`/`activate_best_chain`.
+Only once the reducer is the actual ingest engine does the legacy connect path
+become dead and deletable. This is the next focused effort (its own design pass).
 
 ## End-to-end proof (on a COPY, `~/.zclassic` renamed away)
 
