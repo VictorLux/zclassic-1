@@ -614,6 +614,30 @@ uint64_t utxo_projection_count(utxo_projection_t *p)
     return n;
 }
 
+/* gettxoutsetinfo aggregate over the projection: distinct txids, total UTXO
+ * outputs, and summed value (zatoshi). The SQL mirrors the legacy coins.db
+ * gettxoutsetinfo exactly (same columns, table `utxo` not `utxos`) so the
+ * projection-backed RPC returns byte-identical numbers. */
+bool utxo_projection_setinfo(utxo_projection_t *p, int64_t *num_txs,
+                             int64_t *num_txouts, int64_t *total_amount)
+{
+    if (!p || !p->db) return false;
+    sqlite3_stmt *s = NULL;
+    if (sqlite3_prepare_v2(p->db,
+            "SELECT COUNT(DISTINCT txid), COUNT(*), COALESCE(SUM(value),0) "
+            "FROM utxo", -1, &s, NULL) != SQLITE_OK)
+        return false;
+    bool ok = false;
+    if (sqlite3_step(s) == SQLITE_ROW) {  // raw-sql-ok:projection-primitive
+        if (num_txs)      *num_txs      = sqlite3_column_int64(s, 0);
+        if (num_txouts)   *num_txouts   = sqlite3_column_int64(s, 1);
+        if (total_amount) *total_amount = sqlite3_column_int64(s, 2);
+        ok = true;
+    }
+    sqlite3_finalize(s);
+    return ok;
+}
+
 /* Canonical serialisation matches `utxo_commitment_sha3_compute_table`
  * in `lib/coins/src/utxo_commitment.c` exactly so the legacy and
  * projection commitments are bytewise identical when the UTXO sets

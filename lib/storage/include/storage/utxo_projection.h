@@ -108,6 +108,13 @@ bool utxo_projection_get_coins(utxo_projection_t *p,
  * given we run with WITHOUT ROWID and SQLite caches the count. */
 uint64_t utxo_projection_count(utxo_projection_t *p);
 
+/* gettxoutsetinfo aggregate over the projection: distinct txids, total UTXO
+ * outputs, summed value (zatoshi). Byte-compatible with the legacy coins.db
+ * query so the projection-backed RPC matches exactly. Returns false if the
+ * projection is unavailable; out params are optional (NULL to skip). */
+bool utxo_projection_setinfo(utxo_projection_t *p, int64_t *num_txs,
+                             int64_t *num_txouts, int64_t *total_amount);
+
 /* SHA3-256 over every (txid|vout_le|value_le|script_len_le|script|
  * height_le|is_coinbase) UTXO in ORDER BY txid, vout. Matches the
  * canonical serialisation in `lib/coins/src/utxo_commitment.c` so
